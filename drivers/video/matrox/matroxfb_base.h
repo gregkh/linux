@@ -170,14 +170,14 @@ static inline void mga_memcpy_toio(vaddr_t va, const void* src, int len) {
 
 	if ((unsigned long)src & 3) {
 		while (len >= 4) {
-			writel(get_unaligned((u32 *)src), addr);
+			fb_writel(get_unaligned((u32 *)src), addr);
 			addr++;
 			len -= 4;
 			src += 4;
 		}
 	} else {
 		while (len >= 4) {
-			writel(*(u32 *)src, addr);
+			fb_writel(*(u32 *)src, addr);
 			addr++;
 			len -= 4;
 			src += 4;
