@@ -685,6 +685,8 @@ root_found:
 	  sbi->s_log_zone_size = isonum_723 (h_pri->logical_block_size);
 	  sbi->s_max_size = isonum_733(h_pri->volume_space_size);
 	} else {
+	  if (!pri)
+	    goto out_freebh;
 	  rootp = (struct iso_directory_record *) pri->root_directory_record;
 	  sbi->s_nzones = isonum_733 (pri->volume_space_size);
 	  sbi->s_log_zone_size = isonum_723 (pri->logical_block_size);
@@ -1394,6 +1396,9 @@ struct inode *isofs_iget(struct super_block *sb,
 	unsigned long hashval;
 	struct inode *inode;
 	struct isofs_iget5_callback_data data;
+
+	if (offset >= 1ul << sb->s_blocksize_bits)
+		return NULL;
 
 	data.block = block;
 	data.offset = offset;
