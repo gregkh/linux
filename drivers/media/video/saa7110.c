@@ -60,8 +60,10 @@ MODULE_PARM_DESC(debug, "Debug level (0-1)");
 
 #define	I2C_SAA7110		0x9C	/* or 0x9E */
 
+#define SAA7110_NR_REG		0x35
+
 struct saa7110 {
-	unsigned char reg[54];
+	u8 reg[SAA7110_NR_REG];
 
 	int norm;
 	int input;
@@ -95,31 +97,28 @@ saa7110_write_block (struct i2c_client *client,
 		     unsigned int       len)
 {
 	int ret = -1;
-	u8 reg = *data++;
+	u8 reg = *data;		/* first register to write to */
 
-	len--;
+	/* Sanity check */
+	if (reg + (len - 1) > SAA7110_NR_REG)
+		return ret;
 
 	/* the saa7110 has an autoincrement function, use it if
 	 * the adapter understands raw I2C */
 	if (i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		struct saa7110 *decoder = i2c_get_clientdata(client);
 		struct i2c_msg msg;
-		u8 block_data[54];
 
-		msg.len = 0;
-		msg.buf = (char *) block_data;
+		msg.len = len;
+		msg.buf = (char *) data;
 		msg.addr = client->addr;
-		msg.flags = client->flags;
-		while (len >= 1) {
-			msg.len = 0;
-			block_data[msg.len++] = reg;
-			while (len-- >= 1 && msg.len < 54)
-				block_data[msg.len++] =
-				    decoder->reg[reg++] = *data++;
-			ret = i2c_transfer(client->adapter, &msg, 1);
-		}
+		msg.flags = 0;
+		ret = i2c_transfer(client->adapter, &msg, 1);
+
+		/* Cache the written data */
+		memcpy(decoder->reg + reg, data + 1, len - 1);
 	} else {
-		while (len-- >= 1) {
+		for (++data, --len; len; len--) {
 			if ((ret = saa7110_write(client, reg++,
 						 *data++)) < 0)
 				break;
@@ -192,7 +191,7 @@ saa7110_selmux (struct i2c_client *client,
 	return 0;
 }
 
-static const unsigned char initseq[] = {
+static const unsigned char initseq[1 + SAA7110_NR_REG] = {
 	0, 0x4C, 0x3C, 0x0D, 0xEF, 0xBD, 0xF2, 0x03, 0x00,
 	/* 0x08 */ 0xF8, 0xF8, 0x60, 0x60, 0x00, 0x86, 0x18, 0x90,
 	/* 0x10 */ 0x00, 0x59, 0x40, 0x46, 0x42, 0x1A, 0xFF, 0xDA,
