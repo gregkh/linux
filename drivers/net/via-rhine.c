@@ -1899,6 +1899,9 @@ static void rhine_shutdown (struct device *gendev)
 	struct rhine_private *rp = netdev_priv(dev);
 	void __iomem *ioaddr = rp->base;
 
+	if (!(rp->quirks & rqWOL))
+		return; /* Nothing to do for non-WOL adapters */
+
 	rhine_power_init(dev);
 
 	/* Make sure we use pattern 0, 1 and not 4, 5 */
