@@ -1683,16 +1683,19 @@ static void rtl8169_free_rx_skb(struct rtl8169_private *tp,
 	rtl8169_make_unusable_by_asic(desc);
 }
 
-static inline void rtl8169_return_to_asic(struct RxDesc *desc, int rx_buf_sz)
+static inline void rtl8169_mark_to_asic(struct RxDesc *desc, u32 rx_buf_sz)
 {
-	desc->opts1 |= cpu_to_le32(DescOwn + rx_buf_sz);
+	u32 eor = le32_to_cpu(desc->opts1) & RingEnd;
+
+	desc->opts1 = cpu_to_le32(DescOwn | eor | rx_buf_sz);
 }
 
-static inline void rtl8169_give_to_asic(struct RxDesc *desc, dma_addr_t mapping,
-					int rx_buf_sz)
+static inline void rtl8169_map_to_asic(struct RxDesc *desc, dma_addr_t mapping,
+				       u32 rx_buf_sz)
 {
 	desc->addr = cpu_to_le64(mapping);
-	desc->opts1 |= cpu_to_le32(DescOwn + rx_buf_sz);
+	wmb();
+	rtl8169_mark_to_asic(desc, rx_buf_sz);
 }
 
 static int rtl8169_alloc_rx_skb(struct pci_dev *pdev, struct sk_buff **sk_buff,
@@ -1712,7 +1715,7 @@ static int rtl8169_alloc_rx_skb(struct pci_dev *pdev, struct sk_buff **sk_buff,
 	mapping = pci_map_single(pdev, skb->tail, rx_buf_sz,
 				 PCI_DMA_FROMDEVICE);
 
-	rtl8169_give_to_asic(desc, mapping, rx_buf_sz);
+	rtl8169_map_to_asic(desc, mapping, rx_buf_sz);
 
 out:
 	return ret;
@@ -2150,7 +2153,7 @@ static inline int rtl8169_try_rx_copy(struct sk_buff **sk_buff, int pkt_size,
 			skb_reserve(skb, NET_IP_ALIGN);
 			eth_copy_and_sum(skb, sk_buff[0]->tail, pkt_size, 0);
 			*sk_buff = skb;
-			rtl8169_return_to_asic(desc, rx_buf_sz);
+			rtl8169_mark_to_asic(desc, rx_buf_sz);
 			ret = 0;
 		}
 	}
