@@ -268,7 +268,8 @@ void ext3_discard_reservation(struct inode *inode)
 
 	if (!rsv_is_empty(&rsv->rsv_window)) {
 		spin_lock(rsv_lock);
-		rsv_window_remove(inode->i_sb, rsv);
+		if (!rsv_is_empty(&rsv->rsv_window))
+			rsv_window_remove(inode->i_sb, rsv);
 		spin_unlock(rsv_lock);
 	}
 }
