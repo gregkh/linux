@@ -315,7 +315,7 @@ static inline void sca_rx(card_t *card, port_t *port, pkt_desc __iomem *desc, u1
 #endif
 	stats->rx_packets++;
 	stats->rx_bytes += skb->len;
-	skb->dev->last_rx = jiffies;
+	dev->last_rx = jiffies;
 	skb->protocol = hdlc_type_trans(skb, dev);
 	netif_rx(skb);
 }
