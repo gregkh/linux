@@ -74,6 +74,10 @@
     offset1 = 0; \
     pbh = sb_bread(DEV->i_sb, block); \
     if(pbh){       \
+      if (offset > pbh->b_size || offset + cont_size > pbh->b_size){	\
+	brelse(pbh); \
+	goto out; \
+      } \
       memcpy(buffer + offset1, pbh->b_data + offset, cont_size - offset1); \
       brelse(pbh); \
       chr = (unsigned char *) buffer; \
