@@ -38,6 +38,7 @@ static void tcp_keepalive_timer (unsigned long data);
 
 #ifdef TCP_DEBUG
 const char tcp_timer_bug_msg[] = KERN_DEBUG "tcpbug: unknown timer value\n";
+EXPORT_SYMBOL(tcp_timer_bug_msg);
 #endif
 
 /*
