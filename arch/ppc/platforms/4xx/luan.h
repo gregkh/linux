@@ -47,9 +47,9 @@
 #define RS_TABLE_SIZE	3
 
 /* PIBS defined UART mappings, used before early_serial_setup */
-#define UART0_IO_BASE	(u8 *) 0xa0000200
-#define UART1_IO_BASE	(u8 *) 0xa0000300
-#define UART2_IO_BASE	(u8 *) 0xa0000600
+#define UART0_IO_BASE	0xa0000200
+#define UART1_IO_BASE	0xa0000300
+#define UART2_IO_BASE	0xa0000600
 
 #define BASE_BAUD	11059200
 #define STD_UART_OP(num)					\
