@@ -70,6 +70,7 @@ static struct inode *get_cramfs_inode(struct super_block *sb, struct cramfs_inod
 			inode->i_data.a_ops = &cramfs_aops;
 		} else {
 			inode->i_size = 0;
+			inode->i_blocks = 0;
 			init_special_inode(inode, inode->i_mode,
 				old_decode_dev(cramfs_inode->size));
 		}
