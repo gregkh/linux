@@ -619,6 +619,7 @@ eexit_1:
 	return error;
 }
 
+#define MAX_EVENTS (INT_MAX / sizeof(struct epoll_event))
 
 /*
  * Implement the event wait interface for the eventpoll file. It is the kernel
@@ -635,7 +636,7 @@ asmlinkage long sys_epoll_wait(int epfd, struct epoll_event __user *events,
 		     current, epfd, events, maxevents, timeout));
 
 	/* The maximum number of event must be greater than zero */
-	if (maxevents <= 0)
+	if (maxevents <= 0 || maxevents > MAX_EVENTS)
 		return -EINVAL;
 
 	/* Verify that the area passed by the user is writeable */
