@@ -1728,6 +1728,7 @@ do_signal_stop(int signr)
 			 * with another processor delivering a stop signal,
 			 * then the SIGCONT that wakes us up should clear it.
 			 */
+			read_unlock(&tasklist_lock);
 			return 0;
 		}
 
