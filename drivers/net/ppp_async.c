@@ -1000,7 +1000,7 @@ static void async_lcp_peek(struct asyncppp *ap, unsigned char *data,
 	data += 4;
 	dlen -= 4;
 	/* data[0] is code, data[1] is length */
-	while (dlen >= 2 && dlen >= data[1]) {
+	while (dlen >= 2 && dlen >= data[1] && data[1] >= 2) {
 		switch (data[0]) {
 		case LCP_MRU:
 			val = (data[2] << 8) + data[3];
