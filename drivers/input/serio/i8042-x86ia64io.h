@@ -88,7 +88,7 @@ static struct dmi_system_id __initdata i8042_dmi_table[] = {
 };
 #endif
 
-#ifdef CONFIG_ACPI
+#if defined(__ia64__) && defined(CONFIG_ACPI)
 #include <linux/acpi.h>
 #include <acpi/acpi_bus.h>
 
@@ -281,7 +281,7 @@ static inline int i8042_platform_init(void)
 	i8042_kbd_irq = I8042_MAP_IRQ(1);
 	i8042_aux_irq = I8042_MAP_IRQ(12);
 
-#ifdef CONFIG_ACPI
+#if defined(__ia64__) && defined(CONFIG_ACPI)
 	if (i8042_acpi_init())
 		return -1;
 #endif
@@ -300,7 +300,7 @@ static inline int i8042_platform_init(void)
 
 static inline void i8042_platform_exit(void)
 {
-#ifdef CONFIG_ACPI
+#if defined(__ia64__) && defined(CONFIG_ACPI)
 	i8042_acpi_exit();
 #endif
 }
