@@ -179,9 +179,10 @@ unsigned int ebt_do_table (unsigned int hook, struct sk_buff **pskb,
 	struct ebt_chainstack *cs;
 	struct ebt_entries *chaininfo;
 	char *base;
-	struct ebt_table_info *private = table->private;
+	struct ebt_table_info *private;
 
 	read_lock_bh(&table->lock);
+	private = table->private;
 	cb_base = COUNTER_BASE(private->counters, private->nentries,
 	   smp_processor_id());
 	if (private->chainstack)
