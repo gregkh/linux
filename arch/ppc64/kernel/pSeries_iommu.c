@@ -401,6 +401,8 @@ static void iommu_bus_setup_pSeriesLP(struct pci_bus *bus)
 	struct device_node *dn, *pdn;
 	unsigned int *dma_window = NULL;
 
+	DBG("iommu_bus_setup_pSeriesLP, bus %p, bus->self %p\n", bus, bus->self);
+
 	dn = pci_bus_to_OF_node(bus);
 
 	/* Find nearest ibm,dma-window, walking up the device tree */
@@ -455,6 +457,56 @@ static void iommu_dev_setup_pSeries(struct pci_dev *dev)
 	}
 }
 
+static void iommu_dev_setup_pSeriesLP(struct pci_dev *dev)
+{
+	struct device_node *pdn, *dn;
+	struct iommu_table *tbl;
+	int *dma_window = NULL;
+
+	DBG("iommu_dev_setup_pSeriesLP, dev %p (%s)\n", dev, dev->pretty_name);
+
+	/* dev setup for LPAR is a little tricky, since the device tree might
+	 * contain the dma-window properties per-device and not neccesarily
+	 * for the bus. So we need to search upwards in the tree until we
+	 * either hit a dma-window property, OR find a parent with a table
+	 * already allocated.
+	 */
+	dn = pci_device_to_OF_node(dev);
+
+	for (pdn = dn; pdn && !pdn->iommu_table; pdn = pdn->parent) {
+		dma_window = (unsigned int *)get_property(pdn, "ibm,dma-window", NULL);
+		if (dma_window)
+			break;
+	}
+
+	/* Check for parent == NULL so we don't try to setup the empty EADS
+	 * slots on POWER4 machines.
+	 */
+	if (dma_window == NULL || pdn->parent == NULL) {
+		/* Fall back to regular (non-LPAR) dev setup */
+		DBG("No dma window for device, falling back to regular setup\n");
+		iommu_dev_setup_pSeries(dev);
+		return;
+	} else {
+		DBG("Found DMA window, allocating table\n");
+	}
+
+	if (!pdn->iommu_table) {
+		/* iommu_table_setparms_lpar needs bussubno. */
+		pdn->bussubno = pdn->phb->bus->number;
+
+		tbl = (struct iommu_table *)kmalloc(sizeof(struct iommu_table),
+						    GFP_KERNEL);
+
+		iommu_table_setparms_lpar(pdn->phb, pdn, tbl, dma_window);
+
+		pdn->iommu_table = iommu_init_table(tbl);
+	}
+
+	if (pdn != dn)
+		dn->iommu_table = pdn->iommu_table;
+}
+
 static void iommu_bus_setup_null(struct pci_bus *b) { }
 static void iommu_dev_setup_null(struct pci_dev *d) { }
 
@@ -479,13 +531,14 @@ void iommu_init_early_pSeries(void)
 			ppc_md.tce_free	 = tce_free_pSeriesLP;
 		}
 		ppc_md.iommu_bus_setup = iommu_bus_setup_pSeriesLP;
+		ppc_md.iommu_dev_setup = iommu_dev_setup_pSeriesLP;
 	} else {
 		ppc_md.tce_build = tce_build_pSeries;
 		ppc_md.tce_free  = tce_free_pSeries;
 		ppc_md.iommu_bus_setup = iommu_bus_setup_pSeries;
+		ppc_md.iommu_dev_setup = iommu_dev_setup_pSeries;
 	}
 
-	ppc_md.iommu_dev_setup = iommu_dev_setup_pSeries;
 
 	pci_iommu_init();
 }
