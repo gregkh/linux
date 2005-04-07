@@ -140,12 +140,12 @@ void fastcall __sched __down_read(struct rw_semaphore *sem)
 
 	rwsemtrace(sem, "Entering __down_read");
 
-	spin_lock(&sem->wait_lock);
+	spin_lock_irq(&sem->wait_lock);
 
 	if (sem->activity >= 0 && list_empty(&sem->wait_list)) {
 		/* granted */
 		sem->activity++;
-		spin_unlock(&sem->wait_lock);
+		spin_unlock_irq(&sem->wait_lock);
 		goto out;
 	}
 
@@ -160,7 +160,7 @@ void fastcall __sched __down_read(struct rw_semaphore *sem)
 	list_add_tail(&waiter.list, &sem->wait_list);
 
 	/* we don't need to touch the semaphore struct anymore */
-	spin_unlock(&sem->wait_lock);
+	spin_unlock_irq(&sem->wait_lock);
 
 	/* wait to be given the lock */
 	for (;;) {
@@ -181,10 +181,12 @@ void fastcall __sched __down_read(struct rw_semaphore *sem)
  */
 int fastcall __down_read_trylock(struct rw_semaphore *sem)
 {
+	unsigned long flags;
 	int ret = 0;
+
 	rwsemtrace(sem, "Entering __down_read_trylock");
 
-	spin_lock(&sem->wait_lock);
+	spin_lock_irqsave(&sem->wait_lock, flags);
 
 	if (sem->activity >= 0 && list_empty(&sem->wait_list)) {
 		/* granted */
@@ -192,7 +194,7 @@ int fastcall __down_read_trylock(struct rw_semaphore *sem)
 		ret = 1;
 	}
 
-	spin_unlock(&sem->wait_lock);
+	spin_unlock_irqrestore(&sem->wait_lock, flags);
 
 	rwsemtrace(sem, "Leaving __down_read_trylock");
 	return ret;
@@ -209,12 +211,12 @@ void fastcall __sched __down_write(struct rw_semaphore *sem)
 
 	rwsemtrace(sem, "Entering __down_write");
 
-	spin_lock(&sem->wait_lock);
+	spin_lock_irq(&sem->wait_lock);
 
 	if (sem->activity == 0 && list_empty(&sem->wait_list)) {
 		/* granted */
 		sem->activity = -1;
-		spin_unlock(&sem->wait_lock);
+		spin_unlock_irq(&sem->wait_lock);
 		goto out;
 	}
 
@@ -229,7 +231,7 @@ void fastcall __sched __down_write(struct rw_semaphore *sem)
 	list_add_tail(&waiter.list, &sem->wait_list);
 
 	/* we don't need to touch the semaphore struct anymore */
-	spin_unlock(&sem->wait_lock);
+	spin_unlock_irq(&sem->wait_lock);
 
 	/* wait to be given the lock */
 	for (;;) {
@@ -250,10 +252,12 @@ void fastcall __sched __down_write(struct rw_semaphore *sem)
  */
 int fastcall __down_write_trylock(struct rw_semaphore *sem)
 {
+	unsigned long flags;
 	int ret = 0;
+
 	rwsemtrace(sem, "Entering __down_write_trylock");
 
-	spin_lock(&sem->wait_lock);
+	spin_lock_irqsave(&sem->wait_lock, flags);
 
 	if (sem->activity == 0 && list_empty(&sem->wait_list)) {
 		/* granted */
@@ -261,7 +265,7 @@ int fastcall __down_write_trylock(struct rw_semaphore *sem)
 		ret = 1;
 	}
 
-	spin_unlock(&sem->wait_lock);
+	spin_unlock_irqrestore(&sem->wait_lock, flags);
 
 	rwsemtrace(sem, "Leaving __down_write_trylock");
 	return ret;
@@ -272,14 +276,16 @@ int fastcall __down_write_trylock(struct rw_semaphore *sem)
  */
 void fastcall __up_read(struct rw_semaphore *sem)
 {
+	unsigned long flags;
+
 	rwsemtrace(sem, "Entering __up_read");
 
-	spin_lock(&sem->wait_lock);
+	spin_lock_irqsave(&sem->wait_lock, flags);
 
 	if (--sem->activity == 0 && !list_empty(&sem->wait_list))
 		sem = __rwsem_wake_one_writer(sem);
 
-	spin_unlock(&sem->wait_lock);
+	spin_unlock_irqrestore(&sem->wait_lock, flags);
 
 	rwsemtrace(sem, "Leaving __up_read");
 }
@@ -289,15 +295,17 @@ void fastcall __up_read(struct rw_semaphore *sem)
  */
 void fastcall __up_write(struct rw_semaphore *sem)
 {
+	unsigned long flags;
+
 	rwsemtrace(sem, "Entering __up_write");
 
-	spin_lock(&sem->wait_lock);
+	spin_lock_irqsave(&sem->wait_lock, flags);
 
 	sem->activity = 0;
 	if (!list_empty(&sem->wait_list))
 		sem = __rwsem_do_wake(sem, 1);
 
-	spin_unlock(&sem->wait_lock);
+	spin_unlock_irqrestore(&sem->wait_lock, flags);
 
 	rwsemtrace(sem, "Leaving __up_write");
 }
@@ -308,15 +316,17 @@ void fastcall __up_write(struct rw_semaphore *sem)
  */
 void fastcall __downgrade_write(struct rw_semaphore *sem)
 {
+	unsigned long flags;
+
 	rwsemtrace(sem, "Entering __downgrade_write");
 
-	spin_lock(&sem->wait_lock);
+	spin_lock_irqsave(&sem->wait_lock, flags);
 
 	sem->activity = 1;
 	if (!list_empty(&sem->wait_list))
 		sem = __rwsem_do_wake(sem, 0);
 
-	spin_unlock(&sem->wait_lock);
+	spin_unlock_irqrestore(&sem->wait_lock, flags);
 
 	rwsemtrace(sem, "Leaving __downgrade_write");
 }
