@@ -130,7 +130,8 @@ static ssize_t eeprom_read(struct kobject *kobj, char *buf, loff_t off, size_t c
 
 	/* Hide Vaio security settings to regular users (16 first bytes) */
 	if (data->nature == VAIO && off < 16 && !capable(CAP_SYS_ADMIN)) {
-		int in_row1 = 16 - off;
+		size_t in_row1 = 16 - off;
+		in_row1 = min(in_row1, count);
 		memset(buf, 0, in_row1);
 		if (count - in_row1 > 0)
 			memcpy(buf + in_row1, &data->data[16], count - in_row1);
