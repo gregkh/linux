@@ -1653,7 +1653,10 @@ static void DBGUNDO(struct sock *sk, struct tcp_sock *tp, const char *msg)
 static void tcp_undo_cwr(struct tcp_sock *tp, int undo)
 {
 	if (tp->prior_ssthresh) {
-		tp->snd_cwnd = max(tp->snd_cwnd, tp->snd_ssthresh<<1);
+		if (tcp_is_bic(tp))
+			tp->snd_cwnd = max(tp->snd_cwnd, tp->bictcp.last_max_cwnd);
+		else
+			tp->snd_cwnd = max(tp->snd_cwnd, tp->snd_ssthresh<<1);
 
 		if (undo && tp->prior_ssthresh > tp->snd_ssthresh) {
 			tp->snd_ssthresh = tp->prior_ssthresh;
