@@ -61,7 +61,8 @@ static void do_buffer_op(void *jmpbuf, void *arg_ptr)
 	void *arg;
 	int *res;
 
-	va_copy(args, *(va_list *)arg_ptr);
+	/* Some old gccs recognize __va_copy, but not va_copy */
+	__va_copy(args, *(va_list *)arg_ptr);
 	addr = va_arg(args, unsigned long);
 	len = va_arg(args, int);
 	is_write = va_arg(args, int);
