@@ -57,9 +57,10 @@ struct key_user *key_user_lookup(uid_t uid)
 {
 	struct key_user *candidate = NULL, *user;
 	struct rb_node *parent = NULL;
-	struct rb_node **p = &key_user_tree.rb_node;
+	struct rb_node **p;
 
  try_again:
+	p = &key_user_tree.rb_node;
 	spin_lock(&key_user_lock);
 
 	/* search the tree for a user record with a matching UID */
