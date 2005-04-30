@@ -23,6 +23,9 @@ extern long sys_mmap2(unsigned long addr, unsigned long len,
 		      unsigned long prot, unsigned long flags,
 		      unsigned long fd, unsigned long pgoff);
 
+/* On i386 they choose a meaningless naming.*/
+#define __NR_kexec_load __NR_sys_kexec_load
+
 #define ARCH_SYSCALLS \
 	[ __NR_waitpid ] = (syscall_handler_t *) sys_waitpid, \
 	[ __NR_break ] = (syscall_handler_t *) sys_ni_syscall, \
@@ -101,15 +104,12 @@ extern long sys_mmap2(unsigned long addr, unsigned long len,
 	[ 223 ] = (syscall_handler_t *) sys_ni_syscall, \
 	[ __NR_set_thread_area ] = (syscall_handler_t *) sys_ni_syscall, \
 	[ __NR_get_thread_area ] = (syscall_handler_t *) sys_ni_syscall, \
-	[ __NR_fadvise64 ] = (syscall_handler_t *) sys_fadvise64, \
 	[ 251 ] = (syscall_handler_t *) sys_ni_syscall, \
-        [ __NR_remap_file_pages ] = (syscall_handler_t *) sys_remap_file_pages, \
-	[ __NR_utimes ] = (syscall_handler_t *) sys_utimes, \
-	[ __NR_vserver ] = (syscall_handler_t *) sys_ni_syscall,
-        
+	[ 285 ] = (syscall_handler_t *) sys_ni_syscall,
+
 /* 222 doesn't yet have a name in include/asm-i386/unistd.h */
 
-#define LAST_ARCH_SYSCALL __NR_vserver
+#define LAST_ARCH_SYSCALL 285
 
 /*
  * Overrides for Emacs so that we follow Linus's tabbing style.

@@ -48,7 +48,6 @@ extern syscall_handler_t sys_vfork;
 extern syscall_handler_t old_select;
 extern syscall_handler_t sys_modify_ldt;
 extern syscall_handler_t sys_rt_sigsuspend;
-extern syscall_handler_t sys_vserver;
 extern syscall_handler_t sys_mbind;
 extern syscall_handler_t sys_get_mempolicy;
 extern syscall_handler_t sys_set_mempolicy;
@@ -242,6 +241,7 @@ syscall_handler_t *sys_call_table[] = {
 	[ __NR_epoll_create ] = (syscall_handler_t *) sys_epoll_create,
 	[ __NR_epoll_ctl ] = (syscall_handler_t *) sys_epoll_ctl,
 	[ __NR_epoll_wait ] = (syscall_handler_t *) sys_epoll_wait,
+	[ __NR_remap_file_pages ] = (syscall_handler_t *) sys_remap_file_pages,
         [ __NR_set_tid_address ] = (syscall_handler_t *) sys_set_tid_address,
 	[ __NR_timer_create ] = (syscall_handler_t *) sys_timer_create,
 	[ __NR_timer_settime ] = (syscall_handler_t *) sys_timer_settime,
@@ -252,12 +252,10 @@ syscall_handler_t *sys_call_table[] = {
 	[ __NR_clock_gettime ] = (syscall_handler_t *) sys_clock_gettime,
 	[ __NR_clock_getres ] = (syscall_handler_t *) sys_clock_getres,
 	[ __NR_clock_nanosleep ] = (syscall_handler_t *) sys_clock_nanosleep,
-	[ __NR_statfs64 ] = (syscall_handler_t *) sys_statfs64,
-	[ __NR_fstatfs64 ] = (syscall_handler_t *) sys_fstatfs64,
 	[ __NR_tgkill ] = (syscall_handler_t *) sys_tgkill,
 	[ __NR_utimes ] = (syscall_handler_t *) sys_utimes,
-	[ __NR_fadvise64_64 ] = (syscall_handler_t *) sys_fadvise64_64,
-	[ __NR_vserver ] = (syscall_handler_t *) sys_vserver,
+	[ __NR_fadvise64 ] = (syscall_handler_t *) sys_fadvise64,
+	[ __NR_vserver ] = (syscall_handler_t *) sys_ni_syscall,
 	[ __NR_mbind ] = (syscall_handler_t *) sys_mbind,
 	[ __NR_get_mempolicy ] = (syscall_handler_t *) sys_get_mempolicy,
 	[ __NR_set_mempolicy ] = (syscall_handler_t *) sys_set_mempolicy,
@@ -267,9 +265,8 @@ syscall_handler_t *sys_call_table[] = {
 	[ __NR_mq_timedreceive ] = (syscall_handler_t *) sys_mq_timedreceive,
 	[ __NR_mq_notify ] = (syscall_handler_t *) sys_mq_notify,
 	[ __NR_mq_getsetattr ] = (syscall_handler_t *) sys_mq_getsetattr,
-	[ __NR_sys_kexec_load ] = (syscall_handler_t *) sys_ni_syscall,
+	[ __NR_kexec_load ] = (syscall_handler_t *) sys_ni_syscall,
 	[ __NR_waitid ] = (syscall_handler_t *) sys_waitid,
-	[ 285 ] = (syscall_handler_t *) sys_ni_syscall,
 	[ __NR_add_key ] = (syscall_handler_t *) sys_add_key,
 	[ __NR_request_key ] = (syscall_handler_t *) sys_request_key,
 	[ __NR_keyctl ] = (syscall_handler_t *) sys_keyctl,

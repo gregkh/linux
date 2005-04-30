@@ -71,12 +71,7 @@ extern syscall_handler_t sys_arch_prctl;
 	[ __NR_iopl ] = (syscall_handler_t *) sys_ni_syscall, \
 	[ __NR_set_thread_area ] = (syscall_handler_t *) sys_ni_syscall, \
 	[ __NR_get_thread_area ] = (syscall_handler_t *) sys_ni_syscall, \
-        [ __NR_remap_file_pages ] = (syscall_handler_t *) sys_remap_file_pages, \
 	[ __NR_semtimedop ] = (syscall_handler_t *) sys_semtimedop, \
-	[ __NR_fadvise64 ] = (syscall_handler_t *) sys_fadvise64, \
-	[ 223 ] = (syscall_handler_t *) sys_ni_syscall, \
-	[ __NR_utimes ] = (syscall_handler_t *) sys_utimes, \
-	[ __NR_vserver ] = (syscall_handler_t *) sys_ni_syscall, \
 	[ 251 ] = (syscall_handler_t *) sys_ni_syscall,
 
 #define LAST_ARCH_SYSCALL 251
