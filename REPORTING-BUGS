@@ -16,6 +16,10 @@ code relevant to what you were doing. If it occurs repeatably try and
 describe how to recreate it. That is worth even more than the oops itself.
 The list of maintainers is in the MAINTAINERS file in this directory.
 
+      If it is a security bug, please copy the Security Contact listed
+in the MAINTAINERS file.  They can help coordinate bugfix and disclosure.
+See Documentation/SecurityBugs for more infomation.
+
       If you are totally stumped as to whom to send the report, send it to
 linux-kernel@vger.kernel.org. (For more information on the linux-kernel
 mailing list see http://www.tux.org/lkml/).
