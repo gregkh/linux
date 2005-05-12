@@ -1,0 +1,12 @@
+# 
+# Copyright (C) 2002 Jeff Dike (jdike@karaya.com)
+# Licensed under the GPL
+#
+
+PROFILE += -pg
+
+CFLAGS-$(CONFIG_GCOV) += -fprofile-arcs -ftest-coverage
+CFLAGS-$(CONFIG_GPROF) += $(PROFILE)
+LINK-$(CONFIG_GPROF) += $(PROFILE)
+
+GEN_HEADERS += $(ARCH_DIR)/include/skas_ptregs.h

@@ -1,0 +1,37 @@
+#
+# Mouse driver configuration
+#
+config INPUT_TOUCHSCREEN
+	bool "Touchscreens"
+	depends on INPUT
+	help
+	  Say Y here, and a list of supported touchscreens will be displayed.
+	  This option doesn't affect the kernel.
+
+	  If unsure, say Y.
+
+config TOUCHSCREEN_BITSY
+	tristate "Compaq iPAQ H3600 (Bitsy) touchscreen input driver"
+	depends on SA1100_BITSY && INPUT && INPUT_TOUCHSCREEN
+	select SERIO
+	help
+	  Say Y here if you have the h3600 (Bitsy) touchscreen.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called h3600_ts_input.
+
+config TOUCHSCREEN_GUNZE
+	tristate "Gunze AHL-51S touchscreen"
+	depends on INPUT && INPUT_TOUCHSCREEN
+	select SERIO
+	help
+	  Say Y here if you have the Gunze AHL-51 touchscreen connected to
+	  your system.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called gunze.
+

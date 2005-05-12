@@ -1,0 +1,120 @@
+#
+# USB Storage driver configuration
+#
+
+comment "NOTE: USB_STORAGE enables SCSI, and 'SCSI disk support' may also be needed; see USB_STORAGE Help for more information"
+
+config USB_STORAGE
+	tristate "USB Mass Storage support"
+	depends on USB
+	select SCSI
+	---help---
+	  Say Y here if you want to connect USB mass storage devices to your
+	  computer's USB port. This is the driver you need for USB
+	  floppy drives, USB hard disks, USB tape drives, USB CD-ROMs,
+	  USB flash devices, and memory sticks, along with
+	  similar devices. This driver may also be used for some cameras
+	  and card readers.
+
+	  This option 'selects' (turns on, enables) 'SCSI', but you
+	  probably also need 'SCSI device support: SCSI disk support'
+	  (BLK_DEV_SD) for most USB storage devices.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called usb-storage.
+
+config USB_STORAGE_DEBUG
+	bool "USB Mass Storage verbose debug"
+	depends on USB_STORAGE
+	help
+	  Say Y here in order to have the USB Mass Storage code generate
+	  verbose debugging messages.
+
+config USB_STORAGE_RW_DETECT
+	bool "USB Mass Storage Write-Protected Media Detection (EXPERIMENTAL)"
+	depends on USB_STORAGE && EXPERIMENTAL
+	help
+	  Say Y here in order to have the USB Mass Storage code indicate to
+	  the SCSI layer that using MODE SENSE(6) and MODE SENSE(10) to
+	  determine if the media is write-protected is a good thing to do.
+
+	  Many devices have historically had trouble with these commands,
+	  hence the default 2.6.x behavior has been to suppress their use.
+	  2.4.x used these commands with (at best) mixed results, often
+	  crashing the firmware of the device.  However, the SCSI layer now
+	  issues these commands in a manner more consistent with other
+	  "popular" OSes, in an attempt to improve compatibility.
+
+	  Saying Y here allows these commands to be sent to a USB device.
+	  If you find a device this doesn't work for, switch to N and let
+	  us know at <usb-storage@lists.one-eyed-alien.net>
+
+	  If you say N here, the kernel will assume that all disk-like USB
+	  devices are write-enabled.
+
+config USB_STORAGE_DATAFAB
+	bool "Datafab Compact Flash Reader support (EXPERIMENTAL)"
+	depends on USB_STORAGE && EXPERIMENTAL
+	help
+	  Support for certain Datafab CompactFlash readers.
+	  Datafab has a web page at <http://www.datafabusa.com/>.
+
+config USB_STORAGE_FREECOM
+	bool "Freecom USB/ATAPI Bridge support"
+	depends on USB_STORAGE
+	help
+	  Support for the Freecom USB to IDE/ATAPI adaptor.
+	  Freecom has a web page at <http://www.freecom.de/>.
+
+config USB_STORAGE_ISD200
+	bool "ISD-200 USB/ATA Bridge support"
+	depends on USB_STORAGE && BLK_DEV_IDE
+	---help---
+	  Say Y here if you want to use USB Mass Store devices based
+	  on the In-Systems Design ISD-200 USB/ATA bridge.
+
+	  Some of the products that use this chip are:
+
+	  - Archos Jukebox 6000
+	  - ISD SmartCable for Storage
+	  - Taiwan Skymaster CD530U/DEL-0241 IDE bridge
+	  - Sony CRX10U CD-R/RW drive
+	  - CyQ've CQ8060A CDRW drive
+	  - Planex eXtreme Drive RX-25HU USB-IDE cable (not model RX-25U)
+
+config USB_STORAGE_DPCM
+	bool "Microtech/ZiO! CompactFlash/SmartMedia support"
+	depends on USB_STORAGE
+	help
+	  Say Y here to support the Microtech/ZiO! CompactFlash reader.
+	  There is a web page at <http://www.ziocorp.com/products/>.
+
+config USB_STORAGE_HP8200e
+	bool "HP CD-Writer 82xx support (EXPERIMENTAL)"
+	depends on USB_STORAGE && EXPERIMENTAL
+	help
+	  Say Y here to include additional code to support Hewlett-Packard
+	  8200e/8210e/8230e CD-Writer Plus drives.
+
+config USB_STORAGE_SDDR09
+	bool "SanDisk SDDR-09 (and other SmartMedia) support (EXPERIMENTAL)"
+	depends on USB_STORAGE && EXPERIMENTAL
+	help
+	  Say Y here to include additional code to support the Sandisk SDDR-09
+	  SmartMedia reader in the USB Mass Storage driver.
+	  Also works for the Microtech Zio! SmartMedia reader.
+
+config USB_STORAGE_SDDR55
+	bool "SanDisk SDDR-55 SmartMedia support (EXPERIMENTAL)"
+	depends on USB_STORAGE && EXPERIMENTAL
+	help
+	  Say Y here to include additional code to support the Sandisk SDDR-55
+	  SmartMedia reader in the USB Mass Storage driver.
+
+config USB_STORAGE_JUMPSHOT
+	bool "Lexar Jumpshot Compact Flash Reader (EXPERIMENTAL)"
+	depends on USB_STORAGE && EXPERIMENTAL
+	help
+	  Say Y here to include additional code to support the Lexar Jumpshot
+	  USB CompactFlash reader.
+

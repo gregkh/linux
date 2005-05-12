@@ -1,0 +1,6 @@
+#ifndef SETUP_H_INCLUDED
+#define SETUP_H_INCLUDED
+
+#define COMMAND_LINE_SIZE 512
+
+#endif		/* SETUP_H_INCLUDED */

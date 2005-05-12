@@ -1,0 +1,99 @@
+#
+# Input core configuration
+#
+config INPUT_KEYBOARD
+	bool "Keyboards" if EMBEDDED || !X86
+	default y
+	depends on INPUT
+	help
+	  Say Y here, and a list of supported keyboards will be displayed.
+	  This option doesn't affect the kernel.
+
+	  If unsure, say Y.
+
+config KEYBOARD_ATKBD
+	tristate "AT keyboard support" if !PC
+	default y
+	depends on INPUT && INPUT_KEYBOARD
+	select SERIO
+	select SERIO_LIBPS2
+	select SERIO_I8042 if PC
+	select SERIO_GSCPS2 if GSC
+	help
+	  Say Y here if you want to use a standard AT or PS/2 keyboard. Usually
+	  you'll need this, unless you have a different type keyboard (USB, ADB
+	  or other). This also works for AT and PS/2 keyboards connected over a
+	  PS/2 to serial converter.
+
+	  If unsure, say Y.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called atkbd.
+
+config KEYBOARD_SUNKBD
+	tristate "Sun Type 4 and Type 5 keyboard support"
+	depends on INPUT && INPUT_KEYBOARD
+	select SERIO
+	help
+	  Say Y here if you want to use a Sun Type 4 or Type 5 keyboard,
+	  connected either to the Sun keyboard connector or to an serial
+	  (RS-232) port via a simple adapter.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called sunkbd.
+
+config KEYBOARD_LKKBD
+	tristate "DECstation/VAXstation LK201/LK401 keyboard support"
+	depends on INPUT && INPUT_KEYBOARD
+	select SERIO
+	help
+	  Say Y here if you want to use a LK201 or LK401 style serial
+	  keyboard. This keyboard is also useable on PCs if you attach
+	  it with the inputattach program. The connector pinout is
+	  described within lkkbd.c.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called lkkbd.
+
+config KEYBOARD_XTKBD
+	tristate "XT Keyboard support"
+	depends on INPUT && INPUT_KEYBOARD
+	select SERIO
+	help
+	  Say Y here if you want to use the old IBM PC/XT keyboard (or
+	  compatible) on your system. This is only possible with a
+	  parallel port keyboard adapter, you cannot connect it to the
+	  keyboard port on a PC that runs Linux.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called xtkbd.
+
+config KEYBOARD_NEWTON
+	tristate "Newton keyboard"
+	depends on INPUT && INPUT_KEYBOARD
+	select SERIO
+	help
+	  Say Y here if you have a Newton keyboard on a serial port.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called newtonkbd.
+
+config KEYBOARD_MAPLE
+	tristate "Maple bus keyboard support"
+	depends on SH_DREAMCAST && INPUT && INPUT_KEYBOARD && MAPLE
+	help
+	  Say Y here if you have a DreamCast console running Linux and have
+	  a keyboard attached to its Maple bus.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called maple_keyb.
+
+config KEYBOARD_AMIGA
+	tristate "Amiga keyboard"
+	depends on AMIGA && INPUT && INPUT_KEYBOARD
+	help
+	  Say Y here if you are running Linux on any AMIGA and have a keyboard
+	  attached.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called amikbd.

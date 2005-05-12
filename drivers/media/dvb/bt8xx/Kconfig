@@ -1,0 +1,17 @@
+config DVB_BT8XX
+	tristate "Nebula/Pinnacle PCTV/Twinhan PCI cards"
+	depends on DVB_CORE && PCI && VIDEO_BT848
+	select DVB_MT352
+	select DVB_SP887X
+	select DVB_NXT6000
+	select DVB_CX24110
+	help
+	  Support for PCI cards based on the Bt8xx PCI bridge. Examples are
+	  the Nebula cards, the Pinnacle PCTV cards and Twinhan DST cards.
+
+          Since these cards have no MPEG decoder onboard, they transmit
+	  only compressed MPEG data over the PCI bus, so you need
+	  an external software decoder to watch TV on your computer.
+
+	  Say Y if you own such a device and want to use it.
+
