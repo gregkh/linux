@@ -641,7 +641,7 @@ static void try_to_unmap_cluster(unsigned long cursor,
 	pgd_t *pgd;
 	pud_t *pud;
 	pmd_t *pmd;
-	pte_t *pte;
+	pte_t *pte, *original_pte;
 	pte_t pteval;
 	struct page *page;
 	unsigned long address;
@@ -673,7 +673,7 @@ static void try_to_unmap_cluster(unsigned long cursor,
 	if (!pmd_present(*pmd))
 		goto out_unlock;
 
-	for (pte = pte_offset_map(pmd, address);
+	for (original_pte = pte = pte_offset_map(pmd, address);
 			address < end; pte++, address += PAGE_SIZE) {
 
 		if (!pte_present(*pte))
@@ -710,7 +710,7 @@ static void try_to_unmap_cluster(unsigned long cursor,
 		(*mapcount)--;
 	}
 
-	pte_unmap(pte);
+	pte_unmap(original_pte);
 
 out_unlock:
 	spin_unlock(&mm->page_table_lock);
