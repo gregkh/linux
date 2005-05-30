@@ -207,7 +207,9 @@ static void hfsplus_write_super(struct super_block *sb)
 static void hfsplus_put_super(struct super_block *sb)
 {
 	dprint(DBG_SUPER, "hfsplus_put_super\n");
-	if (!(sb->s_flags & MS_RDONLY)) {
+	if (!sb->s_fs_info)
+		return;
+	if (!(sb->s_flags & MS_RDONLY) && HFSPLUS_SB(sb).s_vhdr) {
 		struct hfsplus_vh *vhdr = HFSPLUS_SB(sb).s_vhdr;
 
 		vhdr->modify_date = hfsp_now2mt();
@@ -223,6 +225,8 @@ static void hfsplus_put_super(struct super_block *sb)
 	iput(HFSPLUS_SB(sb).alloc_file);
 	iput(HFSPLUS_SB(sb).hidden_dir);
 	brelse(HFSPLUS_SB(sb).s_vhbh);
+	kfree(sb->s_fs_info);
+	sb->s_fs_info = NULL;
 }
 
 static int hfsplus_statfs(struct super_block *sb, struct kstatfs *buf)
