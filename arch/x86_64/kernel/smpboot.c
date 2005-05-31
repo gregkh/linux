@@ -309,8 +309,6 @@ void __init smp_callin(void)
 	Dprintk("CALLIN, before setup_local_APIC().\n");
 	setup_local_APIC();
 
-	local_irq_enable();
-
 	/*
 	 * Get our bogomips.
 	 */
@@ -323,8 +321,6 @@ void __init smp_callin(void)
 	 * Save our processor parameters
 	 */
  	smp_store_cpu_info(cpuid);
-
-	local_irq_disable();
 
 	/*
 	 * Allow the master to continue.
