@@ -184,10 +184,15 @@ static int netem_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	/* Random duplication */
 	if (q->duplicate && q->duplicate >= get_crandom(&q->dup_cor)) {
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
+		if (skb2) {
+			struct Qdisc *rootq = sch->dev->qdisc;
+			u32 dupsave = q->duplicate;
 
-		pr_debug("netem_enqueue: dup %p\n", skb2);
-		if (skb2)
-			delay_skb(sch, skb2);
+			/* prevent duplicating a dup... */
+			q->duplicate = 0;
+			rootq->enqueue(skb2, rootq);
+			q->duplicate = dupsave;
+		}
 	}
 
 	/* If doing simple delay then gap == 0 so all packets
