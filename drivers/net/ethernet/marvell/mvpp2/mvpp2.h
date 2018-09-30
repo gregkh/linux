@@ -781,6 +781,7 @@
 /* Port flags */
 #define MVPP2_F_LOOPBACK		BIT(0)
 #define MVPP2_F_DT_COMPAT		BIT(1)
+#define MVPP22_F_IF_MUSDK		BIT(2) /* musdk port */
 
 /* Marvell tag types */
 enum mvpp2_tag_type {
@@ -1175,6 +1176,9 @@ struct mvpp2_port {
 	bool rx_hwtstamp;
 	enum hwtstamp_tx_types tx_hwtstamp_type;
 	struct mvpp2_hwtstamp_queue tx_hwtstamp_queue[2];
+
+	/* us private storage, allocated/used by User/Kernel mode toggling */
+	void *us_cfg;
 };
 
 /* The mvpp2_tx_desc and mvpp2_rx_desc structures describe the
