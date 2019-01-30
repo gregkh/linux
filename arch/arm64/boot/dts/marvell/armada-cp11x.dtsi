@@ -127,6 +127,13 @@
 			};
 		};
 
+		CP11X_LABEL(uio_ethernet): EVALUATOR(uio_pp_, CP11X_NAME)@0 {
+			compatible = "generic-uio";
+			reg = <0x0 0x90000>, <0x130000 0x6000>,
+			      <0x220000 0x1000>;
+			reg-names = "pp", "mspg", "cm3";
+		};
+
 		CP11X_LABEL(comphy): phy@120000 {
 			compatible = "marvell,comphy-cp110";
 			reg = <0x120000 0x6000>;
