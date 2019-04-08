@@ -927,6 +927,11 @@ void mvpp2_cls_init(struct mvpp2 *priv)
 		mvpp2_cls_lookup_write(priv, &le);
 	}
 
+	/* Clear CLS_SWFWD_PCTRL register - value of QueueHigh is defined by
+	 * the Classifier
+	 */
+	mvpp2_write(priv, MVPP2_CLS_SWFWD_PCTRL_REG, 0);
+
 	/* Clear C2 TCAM engine table */
 	memset(&c2, 0, sizeof(c2));
 	c2.valid = false;
@@ -1061,17 +1066,8 @@ static void mvpp22_port_c2_lookup_disable(struct mvpp2_port *port, int entry)
 /* Set CPU queue number for oversize packets */
 void mvpp2_cls_oversize_rxq_set(struct mvpp2_port *port)
 {
-	u32 val;
-
 	mvpp2_write(port->priv, MVPP2_CLS_OVERSIZE_RXQ_LOW_REG(port->id),
 		    port->first_rxq & MVPP2_CLS_OVERSIZE_RXQ_LOW_MASK);
-
-	mvpp2_write(port->priv, MVPP2_CLS_SWFWD_P2HQ_REG(port->id),
-		    (port->first_rxq >> MVPP2_CLS_OVERSIZE_RXQ_LOW_BITS));
-
-	val = mvpp2_read(port->priv, MVPP2_CLS_SWFWD_PCTRL_REG);
-	val &= ~MVPP2_CLS_SWFWD_PCTRL_MASK(port->id);
-	mvpp2_write(port->priv, MVPP2_CLS_SWFWD_PCTRL_REG, val);
 }
 
 static int mvpp2_port_c2_tcam_rule_add(struct mvpp2_port *port,
