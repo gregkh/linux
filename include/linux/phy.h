@@ -731,6 +731,9 @@ struct phy_driver {
 	/** @resume: Resume the hardware, restoring state if needed */
 	int (*resume)(struct phy_device *phydev);
 
+	int (*start)(struct phy_device *phydev);
+	void (*stop)(struct phy_device *phydev);
+
 	/**
 	 * @config_aneg: Configures the advertisement and resets
 	 * autonegotiation if phydev->autoneg is on,
