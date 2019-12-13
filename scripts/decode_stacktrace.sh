@@ -28,7 +28,7 @@ parse_symbol() {
 		local objfile=${modcache[$module]}
 	else
 		[[ $modpath == "" ]] && return
-		local objfile=$(find "$modpath" -name $module.ko -print -quit)
+		local objfile=$(find "$modpath" -name "${module//_/[-_]}.ko*" -print -quit)
 		[[ $objfile == "" ]] && return
 		modcache[$module]=$objfile
 	fi
@@ -36,6 +36,13 @@ parse_symbol() {
 	# Remove the englobing parenthesis
 	symbol=${symbol#\(}
 	symbol=${symbol%\)}
+
+	# Strip segment
+	local segment
+	if [[ $symbol == *:* ]] ; then
+		segment=${symbol%%:*}:
+		symbol=${symbol#*:}
+	fi
 
 	# Strip the symbol name so that we could look it up
 	local name=${symbol%+*}
@@ -84,7 +91,7 @@ parse_symbol() {
 	code=${code//$'\n'/' '}
 
 	# Replace old address with pretty line numbers
-	symbol="$name ($code)"
+	symbol="$segment$name ($code)"
 }
 
 decode_code() {

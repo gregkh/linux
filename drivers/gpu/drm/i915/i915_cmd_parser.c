@@ -25,8 +25,10 @@
  *
  */
 
+#include "gt/intel_engine.h"
+
 #include "i915_drv.h"
-#include "intel_ringbuffer.h"
+#include "i915_memcpy.h"
 
 /**
  * DOC: batch buffer command parser
@@ -937,12 +939,12 @@ void intel_engine_init_cmd_parser(struct intel_engine_cs *engine)
 	int cmd_table_count;
 	int ret;
 
-	if (!IS_GEN7(engine->i915) && !(IS_GEN9(engine->i915) &&
-					engine->id == BCS))
+	if (!IS_GEN(engine->i915, 7) && !(IS_GEN(engine->i915, 9) &&
+					  engine->class == COPY_ENGINE_CLASS))
 		return;
 
-	switch (engine->id) {
-	case RCS:
+	switch (engine->class) {
+	case RENDER_CLASS:
 		if (IS_HASWELL(engine->i915)) {
 			cmd_tables = hsw_render_ring_cmd_table;
 			cmd_table_count =
@@ -961,14 +963,14 @@ void intel_engine_init_cmd_parser(struct intel_engine_cs *engine)
 		}
 		engine->get_cmd_length_mask = gen7_render_get_cmd_length_mask;
 		break;
-	case VCS:
+	case VIDEO_DECODE_CLASS:
 		cmd_tables = gen7_video_cmd_table;
 		cmd_table_count = ARRAY_SIZE(gen7_video_cmd_table);
 		engine->get_cmd_length_mask = gen7_bsd_get_cmd_length_mask;
 		break;
-	case BCS:
+	case COPY_ENGINE_CLASS:
 		engine->get_cmd_length_mask = gen7_blt_get_cmd_length_mask;
-		if (IS_GEN9(engine->i915)) {
+		if (IS_GEN(engine->i915, 9)) {
 			cmd_tables = gen9_blt_cmd_table;
 			cmd_table_count = ARRAY_SIZE(gen9_blt_cmd_table);
 			engine->get_cmd_length_mask =
@@ -984,7 +986,7 @@ void intel_engine_init_cmd_parser(struct intel_engine_cs *engine)
 			cmd_table_count = ARRAY_SIZE(gen7_blt_cmd_table);
 		}
 
-		if (IS_GEN9(engine->i915)) {
+		if (IS_GEN(engine->i915, 9)) {
 			engine->reg_tables = gen9_blt_reg_tables;
 			engine->reg_table_count =
 				ARRAY_SIZE(gen9_blt_reg_tables);
@@ -996,14 +998,14 @@ void intel_engine_init_cmd_parser(struct intel_engine_cs *engine)
 			engine->reg_table_count = ARRAY_SIZE(ivb_blt_reg_tables);
 		}
 		break;
-	case VECS:
+	case VIDEO_ENHANCEMENT_CLASS:
 		cmd_tables = hsw_vebox_cmd_table;
 		cmd_table_count = ARRAY_SIZE(hsw_vebox_cmd_table);
 		/* VECS can use the same length_mask function as VCS */
 		engine->get_cmd_length_mask = gen7_bsd_get_cmd_length_mask;
 		break;
 	default:
-		MISSING_CASE(engine->id);
+		MISSING_CASE(engine->class);
 		return;
 	}
 
@@ -1134,19 +1136,20 @@ static u32 *copy_batch(struct drm_i915_gem_object *dst_obj,
 	void *dst, *src;
 	int ret;
 
-	ret = i915_gem_obj_prepare_shmem_read(src_obj, &src_needs_clflush);
+	ret = i915_gem_object_prepare_write(dst_obj, &dst_needs_clflush);
 	if (ret)
 		return ERR_PTR(ret);
 
-	ret = i915_gem_obj_prepare_shmem_write(dst_obj, &dst_needs_clflush);
-	if (ret) {
-		dst = ERR_PTR(ret);
-		goto unpin_src;
-	}
-
 	dst = i915_gem_object_pin_map(dst_obj, I915_MAP_FORCE_WB);
+	i915_gem_object_finish_access(dst_obj);
 	if (IS_ERR(dst))
-		goto unpin_dst;
+		return dst;
+
+	ret = i915_gem_object_prepare_read(src_obj, &src_needs_clflush);
+	if (ret) {
+		i915_gem_object_unpin_map(dst_obj);
+		return ERR_PTR(ret);
+	}
 
 	src = ERR_PTR(-ENODEV);
 	if (src_needs_clflush &&
@@ -1192,13 +1195,11 @@ static u32 *copy_batch(struct drm_i915_gem_object *dst_obj,
 		}
 	}
 
+	i915_gem_object_finish_access(src_obj);
+
 	/* dst_obj is returned with vmap pinned */
 	*needs_clflush_after = dst_needs_clflush & CLFLUSH_AFTER;
 
-unpin_dst:
-	i915_gem_obj_finish_shmem_access(dst_obj);
-unpin_src:
-	i915_gem_obj_finish_shmem_access(src_obj);
 	return dst;
 }
 
@@ -1528,11 +1529,10 @@ err:
 int i915_cmd_parser_get_version(struct drm_i915_private *dev_priv)
 {
 	struct intel_engine_cs *engine;
-	enum intel_engine_id id;
 	bool active = false;
 
 	/* If the command parser is not enabled, report 0 - unsupported */
-	for_each_engine(engine, dev_priv, id) {
+	for_each_uabi_engine(engine, dev_priv) {
 		if (intel_engine_using_cmd_parser(engine)) {
 			active = true;
 			break;

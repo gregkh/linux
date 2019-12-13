@@ -1,15 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 Red Hat
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License v2. See the file COPYING in the main directory of this archive for
- * more details.
  */
 
-#include <drm/drmP.h>
-#include "udl_drv.h"
-#include <linux/shmem_fs.h>
 #include <linux/dma-buf.h>
+#include <linux/vmalloc.h>
+
+#include <drm/drm_mode.h>
+#include <drm/drm_prime.h>
+
+#include "udl_drv.h"
 
 struct udl_gem_object *udl_gem_alloc_object(struct drm_device *dev,
 					    size_t size)

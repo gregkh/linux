@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HD-audio codec driver binding
  * Copyright (c) Takashi Iwai <tiwai@suse.de>
@@ -11,7 +12,7 @@
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <sound/core.h>
-#include "hda_codec.h"
+#include <sound/hda_codec.h>
 #include "hda_local.h"
 
 /*
@@ -85,6 +86,12 @@ static int hda_codec_driver_probe(struct device *dev)
 	hda_codec_patch_t patch;
 	int err;
 
+	if (codec->bus->core.ext_ops) {
+		if (WARN_ON(!codec->bus->core.ext_ops->hdev_attach))
+			return -EINVAL;
+		return codec->bus->core.ext_ops->hdev_attach(&codec->core);
+	}
+
 	if (WARN_ON(!codec->preset))
 		return -EINVAL;
 
@@ -138,6 +145,12 @@ static int hda_codec_driver_probe(struct device *dev)
 static int hda_codec_driver_remove(struct device *dev)
 {
 	struct hda_codec *codec = dev_to_hda_codec(dev);
+
+	if (codec->bus->core.ext_ops) {
+		if (WARN_ON(!codec->bus->core.ext_ops->hdev_detach))
+			return -EINVAL;
+		return codec->bus->core.ext_ops->hdev_detach(&codec->core);
+	}
 
 	if (codec->patch_ops.free)
 		codec->patch_ops.free(codec);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
 
+#include <linux/acpi.h>
 #include <linux/clk.h>
 #include <linux/slab.h>
 #include <linux/dma-mapping.h>
@@ -215,6 +216,16 @@ static void geni_se_io_init(void __iomem *base)
 	writel_relaxed(FORCE_DEFAULT, base + GENI_FORCE_DEFAULT_REG);
 }
 
+static void geni_se_irq_clear(struct geni_se *se)
+{
+	writel_relaxed(0, se->base + SE_GSI_EVENT_EN);
+	writel_relaxed(0xffffffff, se->base + SE_GENI_M_IRQ_CLEAR);
+	writel_relaxed(0xffffffff, se->base + SE_GENI_S_IRQ_CLEAR);
+	writel_relaxed(0xffffffff, se->base + SE_DMA_TX_IRQ_CLR);
+	writel_relaxed(0xffffffff, se->base + SE_DMA_RX_IRQ_CLR);
+	writel_relaxed(0xffffffff, se->base + SE_IRQ_EN);
+}
+
 /**
  * geni_se_init() - Initialize the GENI serial engine
  * @se:		Pointer to the concerned serial engine.
@@ -228,6 +239,7 @@ void geni_se_init(struct geni_se *se, u32 rx_wm, u32 rx_rfr)
 {
 	u32 val;
 
+	geni_se_irq_clear(se);
 	geni_se_io_init(se->base);
 	geni_se_io_set_mode(se->base);
 
@@ -249,12 +261,7 @@ static void geni_se_select_fifo_mode(struct geni_se *se)
 	u32 proto = geni_se_read_proto(se);
 	u32 val;
 
-	writel_relaxed(0, se->base + SE_GSI_EVENT_EN);
-	writel_relaxed(0xffffffff, se->base + SE_GENI_M_IRQ_CLEAR);
-	writel_relaxed(0xffffffff, se->base + SE_GENI_S_IRQ_CLEAR);
-	writel_relaxed(0xffffffff, se->base + SE_DMA_TX_IRQ_CLR);
-	writel_relaxed(0xffffffff, se->base + SE_DMA_RX_IRQ_CLR);
-	writel_relaxed(0xffffffff, se->base + SE_IRQ_EN);
+	geni_se_irq_clear(se);
 
 	val = readl_relaxed(se->base + SE_GENI_M_IRQ_EN);
 	if (proto != GENI_SE_UART) {
@@ -277,12 +284,7 @@ static void geni_se_select_dma_mode(struct geni_se *se)
 {
 	u32 val;
 
-	writel_relaxed(0, se->base + SE_GSI_EVENT_EN);
-	writel_relaxed(0xffffffff, se->base + SE_GENI_M_IRQ_CLEAR);
-	writel_relaxed(0xffffffff, se->base + SE_GENI_S_IRQ_CLEAR);
-	writel_relaxed(0xffffffff, se->base + SE_DMA_TX_IRQ_CLR);
-	writel_relaxed(0xffffffff, se->base + SE_DMA_RX_IRQ_CLR);
-	writel_relaxed(0xffffffff, se->base + SE_IRQ_EN);
+	geni_se_irq_clear(se);
 
 	val = readl_relaxed(se->base + SE_GENI_DMA_MODE_EN);
 	val |= GENI_DMA_MODE_EN;
@@ -449,6 +451,9 @@ int geni_se_resources_off(struct geni_se *se)
 {
 	int ret;
 
+	if (has_acpi_companion(se->dev))
+		return 0;
+
 	ret = pinctrl_pm_select_sleep_state(se->dev);
 	if (ret)
 		return ret;
@@ -485,6 +490,9 @@ static int geni_se_clks_on(struct geni_se *se)
 int geni_se_resources_on(struct geni_se *se)
 {
 	int ret;
+
+	if (has_acpi_companion(se->dev))
+		return 0;
 
 	ret = geni_se_clks_on(se);
 	if (ret)
@@ -622,6 +630,9 @@ int geni_se_tx_dma_prep(struct geni_se *se, void *buf, size_t len,
 	struct geni_wrapper *wrapper = se->wrapper;
 	u32 val;
 
+	if (!wrapper)
+		return -EINVAL;
+
 	*iova = dma_map_single(wrapper->dev, buf, len, DMA_TO_DEVICE);
 	if (dma_mapping_error(wrapper->dev, *iova))
 		return -EIO;
@@ -654,6 +665,9 @@ int geni_se_rx_dma_prep(struct geni_se *se, void *buf, size_t len,
 {
 	struct geni_wrapper *wrapper = se->wrapper;
 	u32 val;
+
+	if (!wrapper)
+		return -EINVAL;
 
 	*iova = dma_map_single(wrapper->dev, buf, len, DMA_FROM_DEVICE);
 	if (dma_mapping_error(wrapper->dev, *iova))
@@ -723,12 +737,14 @@ static int geni_se_probe(struct platform_device *pdev)
 	if (IS_ERR(wrapper->base))
 		return PTR_ERR(wrapper->base);
 
-	wrapper->ahb_clks[0].id = "m-ahb";
-	wrapper->ahb_clks[1].id = "s-ahb";
-	ret = devm_clk_bulk_get(dev, NUM_AHB_CLKS, wrapper->ahb_clks);
-	if (ret) {
-		dev_err(dev, "Err getting AHB clks %d\n", ret);
-		return ret;
+	if (!has_acpi_companion(&pdev->dev)) {
+		wrapper->ahb_clks[0].id = "m-ahb";
+		wrapper->ahb_clks[1].id = "s-ahb";
+		ret = devm_clk_bulk_get(dev, NUM_AHB_CLKS, wrapper->ahb_clks);
+		if (ret) {
+			dev_err(dev, "Err getting AHB clks %d\n", ret);
+			return ret;
+		}
 	}
 
 	dev_set_drvdata(dev, wrapper);

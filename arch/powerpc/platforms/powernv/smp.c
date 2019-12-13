@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * SMP support for PowerNV machines.
  *
  * Copyright 2011 IBM Corp.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -223,7 +219,7 @@ static void pnv_smp_cpu_kill_self(void)
 		 * for coming online, which are handled via
 		 * generic_check_cpu_restart() calls.
 		 */
-		kvmppc_set_host_ipi(cpu, 0);
+		kvmppc_clear_host_ipi(cpu);
 
 		srr1 = pnv_cpu_offline(cpu);
 

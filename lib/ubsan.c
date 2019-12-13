@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * UBSAN error reporting functions
  *
  * Copyright (c) 2014 Samsung Electronics Co., Ltd.
  * Author: Andrey Ryabinin <ryabinin.a.a@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/bitops.h>
@@ -17,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/sched.h>
+#include <linux/uaccess.h>
 
 #include "ubsan.h"
 
@@ -311,6 +308,7 @@ static void handle_object_size_mismatch(struct type_mismatch_data_common *data,
 static void ubsan_type_mismatch_common(struct type_mismatch_data_common *data,
 				unsigned long ptr)
 {
+	unsigned long flags = user_access_save();
 
 	if (!ptr)
 		handle_null_ptr_deref(data);
@@ -318,6 +316,8 @@ static void ubsan_type_mismatch_common(struct type_mismatch_data_common *data,
 		handle_misaligned_access(data, ptr);
 	else
 		handle_object_size_mismatch(data, ptr);
+
+	user_access_restore(flags);
 }
 
 void __ubsan_handle_type_mismatch(struct type_mismatch_data *data,
@@ -348,24 +348,6 @@ void __ubsan_handle_type_mismatch_v1(struct type_mismatch_data_v1 *data,
 	ubsan_type_mismatch_common(&common_data, (unsigned long)ptr);
 }
 EXPORT_SYMBOL(__ubsan_handle_type_mismatch_v1);
-
-void __ubsan_handle_vla_bound_not_positive(struct vla_bound_data *data,
-					void *bound)
-{
-	unsigned long flags;
-	char bound_str[VALUE_LENGTH];
-
-	if (suppress_report(&data->location))
-		return;
-
-	ubsan_prologue(&data->location, &flags);
-
-	val_to_string(bound_str, sizeof(bound_str), data->type, bound);
-	pr_err("variable length array bound value %s <= 0\n", bound_str);
-
-	ubsan_epilogue(&flags);
-}
-EXPORT_SYMBOL(__ubsan_handle_vla_bound_not_positive);
 
 void __ubsan_handle_out_of_bounds(struct out_of_bounds_data *data, void *index)
 {

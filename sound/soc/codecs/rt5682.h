@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * rt5682.h  --  RT5682/RT5658 ALSA SoC audio driver
  *
  * Copyright 2018 Realtek Microelectronics
  * Author: Bard Liao <bardliao@realtek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __RT5682_H__
@@ -1213,6 +1210,20 @@
 #define RT5682_JDH_RS_MASK			(0x1 << 4)
 #define RT5682_JDH_NO_PLUG			(0x1 << 4)
 #define RT5682_JDH_PLUG				(0x0 << 4)
+
+/* Bias current control 8 (0x0111) */
+#define RT5682_HPA_CP_BIAS_CTRL_MASK			(0x3 << 2)
+#define RT5682_HPA_CP_BIAS_2UA			(0x0 << 2)
+#define RT5682_HPA_CP_BIAS_3UA			(0x1 << 2)
+#define RT5682_HPA_CP_BIAS_4UA			(0x2 << 2)
+#define RT5682_HPA_CP_BIAS_6UA			(0x3 << 2)
+
+/* Charge Pump Internal Register1 (0x0125) */
+#define RT5682_CP_CLK_HP_MASK			(0x3 << 4)
+#define RT5682_CP_CLK_HP_100KHZ			(0x0 << 4)
+#define RT5682_CP_CLK_HP_200KHZ			(0x1 << 4)
+#define RT5682_CP_CLK_HP_300KHZ			(0x2 << 4)
+#define RT5682_CP_CLK_HP_600KHZ			(0x3 << 4)
 
 /* Chopper and Clock control for DAC (0x013a)*/
 #define RT5682_CKXEN_DAC1_MASK			(0x1 << 13)

@@ -142,7 +142,8 @@ static const struct regmap_config mlx90632_regmap = {
 	.rd_table = &mlx90632_readable_regs_tbl,
 	.wr_table = &mlx90632_writeable_regs_tbl,
 
-	.use_single_rw = true,
+	.use_single_read = true,
+	.use_single_write = true,
 	.reg_format_endian = REGMAP_ENDIAN_BIG,
 	.val_format_endian = REGMAP_ENDIAN_BIG,
 	.cache_type = REGCACHE_RBTREE,
@@ -670,7 +671,7 @@ static int mlx90632_probe(struct i2c_client *client,
 			"Detected Consumer EEPROM calibration %x\n", read);
 	} else if ((read & MLX90632_DSP_MASK) == MLX90632_DSP_VERSION) {
 		dev_dbg(&client->dev,
-			"Detected Unknown EEPROM calibration %x\n", read);
+			"Detected Unknown EEPROM calibration %x\n", read);	
 	} else {
 		dev_err(&client->dev,
 			"Wrong DSP version %x (expected %x)\n",

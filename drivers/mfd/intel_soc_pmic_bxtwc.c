@@ -1,27 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * MFD core driver for Intel Broxton Whiskey Cove PMIC
  *
  * Copyright (C) 2015 Intel Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
-#include <linux/module.h>
 #include <linux/acpi.h>
-#include <linux/err.h>
 #include <linux/delay.h>
+#include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/intel_soc_pmic.h>
 #include <linux/mfd/intel_soc_pmic_bxtwc.h>
+#include <linux/module.h>
+
 #include <asm/intel_pmc_ipc.h>
 
 /* PMIC device registers */
@@ -457,10 +450,8 @@ static int bxtwc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ret = platform_get_irq(pdev, 0);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "Invalid IRQ\n");
+	if (ret < 0)
 		return ret;
-	}
 	pmic->irq = ret;
 
 	dev_set_drvdata(&pdev->dev, pmic);

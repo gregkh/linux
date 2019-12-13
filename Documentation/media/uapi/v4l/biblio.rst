@@ -1,4 +1,11 @@
-.. -*- coding: utf-8; mode: rst -*-
+.. Permission is granted to copy, distribute and/or modify this
+.. document under the terms of the GNU Free Documentation License,
+.. Version 1.1 or any later version published by the Free Software
+.. Foundation, with no Invariant Sections, no Front-Cover Texts
+.. and no Back-Cover Texts. A copy of the license is included at
+.. Documentation/media/uapi/fdl-appendix.rst.
+..
+.. TODO: replace it to GFDL-1.1-or-later WITH no-invariant-sections
 
 **********
 References
@@ -112,6 +119,15 @@ ITU BT.1119
 
 
 :title:     ITU-R Recommendation BT.1119 "625-line television Wide Screen Signalling (WSS)"
+
+:author:    International Telecommunication Union (http://www.itu.ch)
+
+.. _h264:
+
+ITU-T Rec. H.264 Specification (04/2017 Edition)
+================================================
+
+:title:     ITU-T Recommendation H.264 "Advanced Video Coding for Generic Audiovisual Services"
 
 :author:    International Telecommunication Union (http://www.itu.ch)
 
@@ -379,3 +395,13 @@ colimg
 :title:     Color Imaging: Fundamentals and Applications
 
 :author:    Erik Reinhard et al.
+
+.. _vp8:
+
+VP8
+===
+
+
+:title:     RFC 6386: "VP8 Data Format and Decoding Guide"
+
+:author:    J. Bankoski et al.

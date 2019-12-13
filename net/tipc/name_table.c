@@ -744,6 +744,7 @@ int tipc_nametbl_init(struct net *net)
 
 	INIT_LIST_HEAD(&nt->node_scope);
 	INIT_LIST_HEAD(&nt->cluster_scope);
+	rwlock_init(&nt->cluster_scope_lock);
 	tn->nametbl = nt;
 	spin_lock_init(&tn->nametbl_lock);
 	return 0;
@@ -828,11 +829,11 @@ static int __tipc_nl_add_nametable_publ(struct tipc_nl_msg *msg,
 		if (!hdr)
 			return -EMSGSIZE;
 
-		attrs = nla_nest_start(msg->skb, TIPC_NLA_NAME_TABLE);
+		attrs = nla_nest_start_noflag(msg->skb, TIPC_NLA_NAME_TABLE);
 		if (!attrs)
 			goto msg_full;
 
-		b = nla_nest_start(msg->skb, TIPC_NLA_NAME_TABLE_PUBL);
+		b = nla_nest_start_noflag(msg->skb, TIPC_NLA_NAME_TABLE_PUBL);
 		if (!b)
 			goto attr_msg_full;
 

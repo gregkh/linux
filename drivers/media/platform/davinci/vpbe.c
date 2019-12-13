@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2010 Texas Instruments Inc
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation version 2.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -93,28 +85,6 @@ static int vpbe_find_encoder_sd_index(struct vpbe_config *cfg,
 }
 
 /**
- * vpbe_g_cropcap - Get crop capabilities of the display
- * @vpbe_dev: vpbe device ptr
- * @cropcap: cropcap is a ptr to struct v4l2_cropcap
- *
- * Update the crop capabilities in crop cap for current
- * mode
- */
-static int vpbe_g_cropcap(struct vpbe_device *vpbe_dev,
-			  struct v4l2_cropcap *cropcap)
-{
-	if (!cropcap)
-		return -EINVAL;
-	cropcap->bounds.left = 0;
-	cropcap->bounds.top = 0;
-	cropcap->bounds.width = vpbe_dev->current_timings.xres;
-	cropcap->bounds.height = vpbe_dev->current_timings.yres;
-	cropcap->defrect = cropcap->bounds;
-
-	return 0;
-}
-
-/**
  * vpbe_enum_outputs - enumerate outputs
  * @vpbe_dev: vpbe device ptr
  * @output: ptr to v4l2_output structure
@@ -126,7 +96,7 @@ static int vpbe_enum_outputs(struct vpbe_device *vpbe_dev,
 			     struct v4l2_output *output)
 {
 	struct vpbe_config *cfg = vpbe_dev->cfg;
-	int temp_index = output->index;
+	unsigned int temp_index = output->index;
 
 	if (temp_index >= cfg->num_outputs)
 		return -EINVAL;
@@ -264,7 +234,7 @@ static int vpbe_set_output(struct vpbe_device *vpbe_dev, int index)
 		goto unlock;
 
 	/*
-	 * It is assumed that venc or extenal encoder will set a default
+	 * It is assumed that venc or external encoder will set a default
 	 * mode in the sub device. For external encoder or LCD pannel output,
 	 * we also need to set up the lcd port for the required mode. So setup
 	 * the lcd port for the default mode that is configured in the board
@@ -796,7 +766,6 @@ static void vpbe_deinitialize(struct device *dev, struct vpbe_device *vpbe_dev)
 }
 
 static const struct vpbe_device_ops vpbe_dev_ops = {
-	.g_cropcap = vpbe_g_cropcap,
 	.enum_outputs = vpbe_enum_outputs,
 	.set_output = vpbe_set_output,
 	.get_output = vpbe_get_output,

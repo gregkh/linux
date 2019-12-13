@@ -102,37 +102,30 @@ MODULE_PARM_DESC(video_debug, "enable debug messages [video]");
 /* supported video standards */
 static struct em28xx_fmt format[] = {
 	{
-		.name     = "16 bpp YUY2, 4:2:2, packed",
 		.fourcc   = V4L2_PIX_FMT_YUYV,
 		.depth    = 16,
 		.reg	  = EM28XX_OUTFMT_YUV422_Y0UY1V,
 	}, {
-		.name     = "16 bpp RGB 565, LE",
 		.fourcc   = V4L2_PIX_FMT_RGB565,
 		.depth    = 16,
 		.reg      = EM28XX_OUTFMT_RGB_16_656,
 	}, {
-		.name     = "8 bpp Bayer RGRG..GBGB",
 		.fourcc   = V4L2_PIX_FMT_SRGGB8,
 		.depth    = 8,
 		.reg      = EM28XX_OUTFMT_RGB_8_RGRG,
 	}, {
-		.name     = "8 bpp Bayer BGBG..GRGR",
 		.fourcc   = V4L2_PIX_FMT_SBGGR8,
 		.depth    = 8,
 		.reg      = EM28XX_OUTFMT_RGB_8_BGBG,
 	}, {
-		.name     = "8 bpp Bayer GRGR..BGBG",
 		.fourcc   = V4L2_PIX_FMT_SGRBG8,
 		.depth    = 8,
 		.reg      = EM28XX_OUTFMT_RGB_8_GRGR,
 	}, {
-		.name     = "8 bpp Bayer GBGB..RGRG",
 		.fourcc   = V4L2_PIX_FMT_SGBRG8,
 		.depth    = 8,
 		.reg      = EM28XX_OUTFMT_RGB_8_GBGB,
 	}, {
-		.name     = "12 bpp YUV411",
 		.fourcc   = V4L2_PIX_FMT_YUV411P,
 		.depth    = 12,
 		.reg      = EM28XX_OUTFMT_YUV411,
@@ -1517,7 +1510,6 @@ static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 	else
 		f->fmt.pix.field = v4l2->interlaced_fieldmode ?
 			   V4L2_FIELD_INTERLACED : V4L2_FIELD_TOP;
-	f->fmt.pix.priv = 0;
 
 	return 0;
 }
@@ -1678,7 +1670,7 @@ static int vidioc_enum_input(struct file *file, void *priv,
 
 	i->type = V4L2_INPUT_TYPE_CAMERA;
 
-	strcpy(i->name, iname[INPUT(n)->type]);
+	strscpy(i->name, iname[INPUT(n)->type], sizeof(i->name));
 
 	if (INPUT(n)->type == EM28XX_VMUX_TELEVISION)
 		i->type = V4L2_INPUT_TYPE_TUNER;
@@ -1738,28 +1730,28 @@ static int em28xx_fill_audio_input(struct em28xx *dev,
 
 	switch (idx) {
 	case EM28XX_AMUX_VIDEO:
-		strcpy(a->name, "Television");
+		strscpy(a->name, "Television", sizeof(a->name));
 		break;
 	case EM28XX_AMUX_LINE_IN:
-		strcpy(a->name, "Line In");
+		strscpy(a->name, "Line In", sizeof(a->name));
 		break;
 	case EM28XX_AMUX_VIDEO2:
-		strcpy(a->name, "Television alt");
+		strscpy(a->name, "Television alt", sizeof(a->name));
 		break;
 	case EM28XX_AMUX_PHONE:
-		strcpy(a->name, "Phone");
+		strscpy(a->name, "Phone", sizeof(a->name));
 		break;
 	case EM28XX_AMUX_MIC:
-		strcpy(a->name, "Mic");
+		strscpy(a->name, "Mic", sizeof(a->name));
 		break;
 	case EM28XX_AMUX_CD:
-		strcpy(a->name, "CD");
+		strscpy(a->name, "CD", sizeof(a->name));
 		break;
 	case EM28XX_AMUX_AUX:
-		strcpy(a->name, "Aux");
+		strscpy(a->name, "Aux", sizeof(a->name));
 		break;
 	case EM28XX_AMUX_PCM_OUT:
-		strcpy(a->name, "PCM");
+		strscpy(a->name, "PCM", sizeof(a->name));
 		break;
 	case EM28XX_AMUX_UNUSED:
 	default:
@@ -1845,7 +1837,7 @@ static int vidioc_g_tuner(struct file *file, void *priv,
 	if (t->index != 0)
 		return -EINVAL;
 
-	strcpy(t->name, "Tuner");
+	strscpy(t->name, "Tuner", sizeof(t->name));
 
 	v4l2_device_call_all(&dev->v4l2->v4l2_dev, 0, tuner, g_tuner, t);
 	return 0;
@@ -1902,9 +1894,9 @@ static int vidioc_g_chip_info(struct file *file, void *priv,
 	if (chip->match.addr > 1)
 		return -EINVAL;
 	if (chip->match.addr == 1)
-		strlcpy(chip->name, "ac97", sizeof(chip->name));
+		strscpy(chip->name, "ac97", sizeof(chip->name));
 	else
-		strlcpy(chip->name,
+		strscpy(chip->name,
 			dev->v4l2->v4l2_dev.name, sizeof(chip->name));
 	return 0;
 }
@@ -1984,32 +1976,20 @@ static int vidioc_s_register(struct file *file, void *priv,
 static int vidioc_querycap(struct file *file, void  *priv,
 			   struct v4l2_capability *cap)
 {
-	struct video_device   *vdev = video_devdata(file);
 	struct em28xx         *dev  = video_drvdata(file);
 	struct em28xx_v4l2    *v4l2 = dev->v4l2;
 	struct usb_device *udev = interface_to_usbdev(dev->intf);
 
-	strlcpy(cap->driver, "em28xx", sizeof(cap->driver));
-	strlcpy(cap->card, em28xx_boards[dev->model].name, sizeof(cap->card));
+	strscpy(cap->driver, "em28xx", sizeof(cap->driver));
+	strscpy(cap->card, em28xx_boards[dev->model].name, sizeof(cap->card));
 	usb_make_path(udev, cap->bus_info, sizeof(cap->bus_info));
 
-	if (vdev->vfl_type == VFL_TYPE_GRABBER)
-		cap->device_caps = V4L2_CAP_READWRITE |
-			V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
-	else if (vdev->vfl_type == VFL_TYPE_RADIO)
-		cap->device_caps = V4L2_CAP_RADIO;
-	else
-		cap->device_caps = V4L2_CAP_READWRITE | V4L2_CAP_VBI_CAPTURE;
-
-	if (dev->int_audio_type != EM28XX_INT_AUDIO_NONE)
-		cap->device_caps |= V4L2_CAP_AUDIO;
-
-	if (dev->tuner_type != TUNER_ABSENT)
-		cap->device_caps |= V4L2_CAP_TUNER;
-
-	cap->capabilities = cap->device_caps |
-			    V4L2_CAP_DEVICE_CAPS | V4L2_CAP_READWRITE |
+	cap->capabilities = V4L2_CAP_DEVICE_CAPS | V4L2_CAP_READWRITE |
 			    V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
+	if (dev->int_audio_type != EM28XX_INT_AUDIO_NONE)
+		cap->capabilities |= V4L2_CAP_AUDIO;
+	if (dev->tuner_type != TUNER_ABSENT)
+		cap->capabilities |= V4L2_CAP_TUNER;
 	if (video_is_registered(&v4l2->vbi_dev))
 		cap->capabilities |= V4L2_CAP_VBI_CAPTURE;
 	if (video_is_registered(&v4l2->radio_dev))
@@ -2023,7 +2003,6 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 	if (unlikely(f->index >= ARRAY_SIZE(format)))
 		return -EINVAL;
 
-	strlcpy(f->description, format[f->index].name, sizeof(f->description));
 	f->pixelformat = format[f->index].fourcc;
 
 	return 0;
@@ -2114,7 +2093,7 @@ static int radio_g_tuner(struct file *file, void *priv,
 	if (unlikely(t->index > 0))
 		return -EINVAL;
 
-	strcpy(t->name, "Radio");
+	strscpy(t->name, "Radio", sizeof(t->name));
 
 	v4l2_device_call_all(&dev->v4l2->v4l2_dev, 0, tuner, g_tuner, t);
 
@@ -2220,7 +2199,7 @@ static int em28xx_v4l2_open(struct file *filp)
 /*
  * em28xx_v4l2_fini()
  * unregisters the v4l2,i2c and usb devices
- * called when the device gets disconected or at module unload
+ * called when the device gets disconnected or at module unload
  */
 static int em28xx_v4l2_fini(struct em28xx *dev)
 {
@@ -2782,6 +2761,13 @@ static int em28xx_v4l2_init(struct em28xx *dev)
 	mutex_init(&v4l2->vb_vbi_queue_lock);
 	v4l2->vdev.queue = &v4l2->vb_vidq;
 	v4l2->vdev.queue->lock = &v4l2->vb_queue_lock;
+	v4l2->vdev.device_caps = V4L2_CAP_READWRITE | V4L2_CAP_VIDEO_CAPTURE |
+				 V4L2_CAP_STREAMING;
+	if (dev->int_audio_type != EM28XX_INT_AUDIO_NONE)
+		v4l2->vdev.device_caps |= V4L2_CAP_AUDIO;
+	if (dev->tuner_type != TUNER_ABSENT)
+		v4l2->vdev.device_caps |= V4L2_CAP_TUNER;
+
 
 	/* disable inapplicable ioctls */
 	if (dev->is_webcam) {
@@ -2818,6 +2804,10 @@ static int em28xx_v4l2_init(struct em28xx *dev)
 
 		v4l2->vbi_dev.queue = &v4l2->vb_vbiq;
 		v4l2->vbi_dev.queue->lock = &v4l2->vb_vbi_queue_lock;
+		v4l2->vbi_dev.device_caps = V4L2_CAP_STREAMING |
+			V4L2_CAP_READWRITE | V4L2_CAP_VBI_CAPTURE;
+		if (dev->tuner_type != TUNER_ABSENT)
+			v4l2->vbi_dev.device_caps |= V4L2_CAP_TUNER;
 
 		/* disable inapplicable ioctls */
 		v4l2_disable_ioctl(&v4l2->vbi_dev, VIDIOC_S_PARM);
@@ -2845,6 +2835,7 @@ static int em28xx_v4l2_init(struct em28xx *dev)
 	if (em28xx_boards[dev->model].radio.type == EM28XX_RADIO) {
 		em28xx_vdev_init(dev, &v4l2->radio_dev, &em28xx_radio_template,
 				 "radio");
+		v4l2->radio_dev.device_caps = V4L2_CAP_RADIO | V4L2_CAP_TUNER;
 		ret = video_register_device(&v4l2->radio_dev, VFL_TYPE_RADIO,
 					    radio_nr[dev->devno]);
 		if (ret < 0) {
