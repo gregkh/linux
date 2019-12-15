@@ -588,6 +588,18 @@ static bool mv3310_has_pma_ngbaset_quirk(struct phy_device *phydev)
 		MV_PHY_ALASKA_NBT_QUIRK_MASK) == MV_PHY_ALASKA_NBT_QUIRK_REV;
 }
 
+static void mv3310_config_init_clear_power_down(struct phy_device *phydev) {
+	// TODO: move this to generic 10g code (the first two, at least).
+	// Copper PCS
+	phy_clear_bits_mmd(phydev, MDIO_MMD_PCS, MDIO_CTRL1, MDIO_CTRL1_LPOWER);
+	// Copper Control
+	phy_clear_bits_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1, MDIO_CTRL1_LPOWER);
+	// (HOST) 10GBASE-R PCS Control
+	phy_clear_bits_mmd(phydev, MDIO_MMD_PHYXS, 0x1000+MDIO_CTRL1, MDIO_CTRL1_LPOWER);
+	// (HOST) SGMII control
+	phy_clear_bits_mmd(phydev, MDIO_MMD_PHYXS, 0x2000+MDIO_CTRL1, MDIO_CTRL1_LPOWER);
+}
+
 static int mv3310_config_init(struct phy_device *phydev)
 {
 	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
@@ -608,6 +620,8 @@ static int mv3310_config_init(struct phy_device *phydev)
 	err = mv3310_power_up(phydev);
 	if (err)
 		return err;
+
+	mv3310_config_init_clear_power_down(phydev);
 
 	val = phy_read_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL);
 	if (val < 0)
