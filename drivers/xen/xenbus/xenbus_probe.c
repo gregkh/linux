@@ -240,7 +240,9 @@ int xenbus_dev_probe(struct device *_dev)
 		goto fail;
 	}
 
+	spin_lock(&dev->reclaim_lock);
 	err = drv->probe(dev, id);
+	spin_unlock(&dev->reclaim_lock);
 	if (err)
 		goto fail_put;
 
@@ -270,8 +272,11 @@ int xenbus_dev_remove(struct device *_dev)
 
 	free_otherend_watch(dev);
 
-	if (drv->remove)
+	if (drv->remove) {
+		spin_lock(&dev->reclaim_lock);
 		drv->remove(dev);
+		spin_unlock(&dev->reclaim_lock);
+	}
 
 	module_put(drv->driver.owner);
 
@@ -484,6 +489,7 @@ int xenbus_probe_node(struct xen_bus_type *bus,
 		goto fail;
 
 	dev_set_name(&xendev->dev, "%s", devname);
+	spin_lock_init(&xendev->reclaim_lock);
 
 	/* Register with generic device framework. */
 	err = device_register(&xendev->dev);
