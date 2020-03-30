@@ -28,15 +28,26 @@
 #include <linux/marvell_phy.h>
 #include <linux/phy.h>
 #include <linux/sfp.h>
+#include <linux/firmware.h>
 
 #define MV_PHY_ALASKA_NBT_QUIRK_MASK	0xfffffffe
 #define MV_PHY_ALASKA_NBT_QUIRK_REV	(MARVELL_PHY_ID_88X3310 | 0xa)
+
+#define MV_FIRMWARE_HEADER_SIZE		32
 
 enum {
 	MV_PMA_FW_VER0		= 0xc011,
 	MV_PMA_FW_VER1		= 0xc012,
 	MV_PMA_BOOT		= 0xc050,
 	MV_PMA_BOOT_FATAL	= BIT(0),
+	MV_PMA_BOOT_PROGRESS_MASK = 0x0006,
+	MV_PMA_BOOT_WAITING	= 0x0002,
+	MV_PMA_BOOT_FW_LOADED	= BIT(6),
+
+	MV_PCS_FW_LOW_WORD	= 0xd0f0,
+	MV_PCS_FW_HIGH_WORD	= 0xd0f1,
+	MV_PCS_RAM_DATA		= 0xd0f2,
+	MV_PCS_RAM_CHECKSUM	= 0xd0f3,
 
 	MV_PCS_BASE_T		= 0x0000,
 	MV_PCS_BASE_R		= 0x1000,
@@ -255,10 +266,16 @@ static int mv3310_power_down(struct phy_device *phydev)
 				MV_V2_PORT_CTRL_PWRDOWN);
 }
 
+static int mv3310_check_firmware(struct phy_device *phydev);
+
 static int mv3310_power_up(struct phy_device *phydev)
 {
 	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
 	int ret;
+
+	ret = mv3310_check_firmware(phydev);
+	if (ret < 0)
+		return ret;
 
 	ret = phy_clear_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				 MV_V2_PORT_CTRL_PWRDOWN);
@@ -355,6 +372,112 @@ static int mv3310_sfp_insert(void *upstream, const struct sfp_eeprom_id *id)
 	return 0;
 }
 
+static int mv3310_write_firmware(struct phy_device *phydev, const u8 *data,
+		unsigned int size)
+{
+	unsigned int low_byte, high_byte;
+	u16 checksum = 0, ram_checksum;
+	unsigned int i = 0;
+	int ret;
+
+	while (i < size) {
+		low_byte = data[i++];
+		high_byte = data[i++];
+		checksum += low_byte + high_byte;
+		ret = phy_write_mmd(phydev, MDIO_MMD_PCS, MV_PCS_RAM_DATA,
+				(high_byte << 8) | low_byte);
+		if (ret < 0)
+			return ret;
+		cond_resched();
+	}
+
+	ram_checksum = phy_read_mmd(phydev, MDIO_MMD_PCS, MV_PCS_RAM_CHECKSUM);
+	if (ram_checksum != checksum) {
+		dev_err(&phydev->mdio.dev, "firmware checksum failed");
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int mv3310_load_firmware(struct phy_device *phydev)
+{
+	const struct firmware *fw_entry;
+	char *fw_file;
+	int ret;
+
+	switch (phydev->drv->phy_id) {
+	case MARVELL_PHY_ID_88X3310:
+		fw_file = "mrvl/x3310fw.hdr";
+		break;
+	case MARVELL_PHY_ID_88E2110:
+		fw_file = "mrvl/e21x0fw.hdr";
+		break;
+	default:
+		dev_warn(&phydev->mdio.dev, "unknown firmware file for %s PHY",
+				phydev->drv->name);
+		return -EINVAL;
+	}
+
+	ret = request_firmware(&fw_entry, fw_file, &phydev->mdio.dev);
+	if (ret < 0)
+		return ret;
+
+	/* Firmware size must be larger than header, and even */
+	if (fw_entry->size <= MV_FIRMWARE_HEADER_SIZE ||
+			(fw_entry->size % 2) != 0) {
+		dev_err(&phydev->mdio.dev, "firmware file invalid");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	/* Clear checksum register */
+	phy_read_mmd(phydev, MDIO_MMD_PCS, MV_PCS_RAM_CHECKSUM);
+
+	/* Set firmware load address */
+	phy_write_mmd(phydev, MDIO_MMD_PCS, MV_PCS_FW_LOW_WORD, 0);
+	phy_write_mmd(phydev, MDIO_MMD_PCS, MV_PCS_FW_HIGH_WORD, 0x0010);
+
+	ret = mv3310_write_firmware(phydev,
+			fw_entry->data + MV_FIRMWARE_HEADER_SIZE,
+			fw_entry->size - MV_FIRMWARE_HEADER_SIZE);
+	if (ret < 0)
+		goto out;
+
+	phy_modify_mmd(phydev, MDIO_MMD_PMAPMD, MV_PMA_BOOT,
+			MV_PMA_BOOT_FW_LOADED, MV_PMA_BOOT_FW_LOADED);
+
+	msleep(100);
+
+out:
+	release_firmware(fw_entry);
+
+	return ret;
+}
+
+static int mv3310_check_firmware(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MV_PMA_BOOT);
+	if (ret < 0)
+		return ret;
+
+	if (ret & MV_PMA_BOOT_FATAL) {
+		dev_warn(&phydev->mdio.dev,
+			 "PHY failed to boot firmware, status=%04x\n", ret);
+		return -ENODEV;
+	}
+
+	if ((ret & MV_PMA_BOOT_PROGRESS_MASK) == MV_PMA_BOOT_WAITING) {
+		ret = mv3310_load_firmware(phydev);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
 static const struct sfp_upstream_ops mv3310_sfp_ops = {
 	.attach = phy_sfp_attach,
 	.detach = phy_sfp_detach,
@@ -371,15 +494,9 @@ static int mv3310_probe(struct phy_device *phydev)
 	    (phydev->c45_ids.devices_in_package & mmd_mask) != mmd_mask)
 		return -ENODEV;
 
-	ret = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MV_PMA_BOOT);
+	ret = mv3310_check_firmware(phydev);
 	if (ret < 0)
 		return ret;
-
-	if (ret & MV_PMA_BOOT_FATAL) {
-		dev_warn(&phydev->mdio.dev,
-			 "PHY failed to boot firmware, status=%04x\n", ret);
-		return -ENODEV;
-	}
 
 	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -806,6 +923,8 @@ static struct mdio_device_id __maybe_unused mv3310_tbl[] = {
 	{ MARVELL_PHY_ID_88E2110, MARVELL_PHY_ID_MASK },
 	{ },
 };
+MODULE_FIRMWARE("mrvl/x3310fw.hdr");
+MODULE_FIRMWARE("mrvl/e21x0fw.hdr");
 MODULE_DEVICE_TABLE(mdio, mv3310_tbl);
 MODULE_DESCRIPTION("Marvell Alaska X 10Gigabit Ethernet PHY driver (MV88X3310)");
 MODULE_LICENSE("GPL");
