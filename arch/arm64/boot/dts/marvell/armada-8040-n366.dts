@@ -1,0 +1,372 @@
+#include "armada-8040.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "Siklu N366";
+	compatible = "marvell,armada8040",
+			"marvell,armada-ap806-quad", "marvell,armada-ap806";
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@00000000 {
+		device_type = "memory";
+		reg = <0x0 0x0 0x0 0x80000000>;
+	};
+
+	aliases {
+	/* For u-boot, set setup mac addresses */
+		ethernet0 = &cp0_eth1; /* 1G SGMII Copper */
+		ethernet1 = &cp0_eth0; /* 10G Copper */
+		ethernet2 = &cp1_eth0; /* 10G SFP */
+
+	/* Setup mac addresses for wigig devices */
+		ethernet3 = &wigig0;
+		ethernet4 = &wigig1;
+		ethernet5 = &wigig2;
+		ethernet6 = &wigig3;
+	};
+
+	/* Declare wigig devices for the gen_node_info_file.sh script */
+	wigig_devices {
+		wigig0: wigig@0 {
+			pci-bus = "0000:01:00.0";
+		};
+		wigig1: wigig@1 {
+			pci-bus = "0002:01:00.0";
+		};
+		wigig2: wigig@2 {
+			pci-bus = "0003:01:00.0";
+		};
+		wigig3: wigig@3 {
+			pci-bus = "0001:01:00.0";
+		};
+	};
+
+	v_5v0_usb3_hst_vbus: regulator-usb3-vbus0 {
+		compatible = "regulator-fixed";
+		enable-active-high;
+		gpio = <&cp0_gpio2 23 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cp0_xhci_vbus_pins>;
+		regulator-name = "v_5v0_usb3_hst_vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		status = "okay";
+	};
+
+	usb3h0_phy: usb3_phy0 {
+		compatible = "usb-nop-xceiv";
+		vcc-supply = <&v_5v0_usb3_hst_vbus>;
+	};
+
+	sfp: sfp {
+		/* SFP */
+		compatible = "sff,sfp";
+		i2c-bus = <&cp0_i2c0>;
+		los-gpio = <&cp1_gpio1 10 GPIO_ACTIVE_HIGH>; /* CP1_MPP[10] SFP_P0_LOS_S */
+		mod-def0-gpio = <&cp0_gpio2 28 GPIO_ACTIVE_LOW>; /* CP0_MPP[60] SFP_P0_EXIST */
+		tx-disable-gpio = <&cp1_gpio1 8 GPIO_ACTIVE_HIGH>; /* CP1_MPP[8] SFP_P0_TX_DIS */
+		tx-fault-gpio = <&cp1_gpio1 12 GPIO_ACTIVE_HIGH>; /* CP1_MPP[12] SFP_P0_FAULT */
+		pinctrl-names = "default";
+		pinctrl-0 = <&cp0_sfpp1_pins &cp1_sfpp1_pins>;
+	};
+};
+
+/* RTC TEMP eCompass I2C bus */
+&i2c0 {
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&ap_i2c_pins>;
+	status = "okay";
+
+	i2c-tmp421-temp@4c {
+		compatible = "ti,tmp421";
+		reg = <0x4c>;
+	};
+
+	i2c-pcf8523-rtc@68 {
+		compatible = "nxp,pcf8523";
+		reg = <0x68>;
+	};
+
+	i2c-fxos8700-ecompass@1e {
+		compatible = "nxp,fxos8700";
+		reg = <0x1e>;
+	};
+};
+
+/* SFP i2c bus */
+&cp0_i2c0 {
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp0_i2c0_pins>;
+	status = "okay";
+};
+
+/* Enable this bus as a workaround. Hold the CP110_GATE_SLOW_IO clock gate
+ * enabled to avoid hard lockup when the UART driver toggles the clock.
+ */
+&cp1_i2c0 {
+	clock-frequency = <100000>;
+	status = "okay";
+};
+
+/* SFP eth */
+&cp1_eth0 {
+	phy-mode = "10gbase-kr";
+	phys = <&cp1_comphy2 0>;
+	phy-names = "sfp-comphy";
+	managed = "in-band-status";
+	sfp = <&sfp>;
+	status = "okay";
+};
+
+/* Enable UART console. */
+&uart0 {
+	status = "okay";
+};
+
+/* Enable USB3, lane 1 */
+&cp0_usb3_1 {
+	usb-phy = <&usb3h0_phy>;
+	status = "okay";
+};
+
+&cp1_nand_controller {
+	pinctrl-0 = <&cp1_nand_pins &cp1_dev_nand_pins>;
+	status = "okay";
+
+	nand@0 {
+		reg = <0>;
+		nand-rb = <0>;
+		nand-ecc-step-size = <512>;
+		nand-ecc-strength = <8>;
+		nand-on-flash-bbt;
+	};
+};
+
+&cp0_pinctrl {
+	pinctrl-0 = <&cp0_hw_version>;
+
+	cp0_xhci_vbus_pins: cp0-xhci-vbus-pins {
+		marvell,pins = "mpp55";
+		marvell,function = "gpio";
+	};
+
+	cp0_sfpp1_pins: sfpp1-pins {
+		marvell,pins = "mpp60";
+		marvell,function = "gpio";
+	};
+
+	cp0_i2c0_pins: i2c0-pins {
+		marvell,pins = "mpp37", "mpp38";
+		marvell,function = "i2c0";
+	};
+
+	phy0_10g_3310_reset_pins: phy0-3310-reset-pins {
+		marvell,pins = "mpp61";
+		marvell,function = "gpio";
+	};
+
+	phy0_1g_1512_reset_pins: phy01-3310-reset-pins {
+		marvell,pins = "mpp41";
+		marvell,function = "gpio";
+	};
+
+	phy0_10g_3310_xmdio_pins: phy0-3310-xmdio-pins {
+		marvell,pins = "mpp42", "mpp43";
+		marvell,function = "xg";
+	};
+
+	cp0_pcie1_pins: cp0-pcie1-pins {
+		marvell,pins = "mpp33";
+		marvell,function = "gpio";
+	};
+
+	cp0_pcie0_pins: cp0-pcie0-pins {
+		marvell,pins = "mpp32";
+		marvell,function = "gpio";
+	};
+
+	/* WG1_Exist_n */
+	cp0_pcie1_exist: wgig-pins {
+		marvell,pins = "mpp57";
+		marvell,function = "gpio";
+	};
+
+	cp0_hw_version: cp0-hw-version-pins {
+		marvell,pins = "mpp58", "mpp59", "mpp32";
+		marvell,function = "gpio";
+	};
+};
+
+&cp1_pinctrl {
+	pinctrl-0 = <&cp1_hw_version>;
+
+	cp1_nand_pins: cp0-nand-pins {
+		marvell,pins = "mpp13";
+		marvell,function = "nf";
+	};
+	cp1_dev_nand_pins: cp0-dev-nand-pins {
+		marvell,pins =  "mpp15", "mpp16", "mpp17",
+				"mpp18", "mpp19", "mpp20",
+				"mpp21", "mpp22", "mpp23",
+				"mpp24", "mpp25", "mpp26",
+				"mpp27";
+		marvell,function = "dev";
+	};
+
+	cp1_sfpp1_pins: sfpp1-pins {
+		marvell,pins = "mpp8", "mpp10", "mpp12", "mpp30", "mpp31";
+		marvell,function = "gpio";
+	};
+
+	cp1_mdio_pins: cp1-mdio-pins {
+		marvell,pins = "mpp4", "mpp5";
+		marvell,function = "ge";
+	};
+
+	cp1_pcie1_pins: cp1-pcie1-pins {
+		marvell,pins = "mpp28";
+		marvell,function = "gpio";
+	};
+
+	cp1_pcie0_pins: cp1-pcie0-pins {
+		marvell,pins = "mpp29";
+		marvell,function = "gpio";
+	};
+	cp1_uart0_pins: cp1-uart0-pins {
+		marvell,pins = "mpp0", "mpp1";
+		marvell,function = "uart0";
+	};
+
+	cp1_hw_version: cp1-hw-version-pins {
+		marvell,pins = "mpp7";
+		marvell,function = "gpio";
+	};
+};
+
+&cp1_uart0 {
+	pinctrl-0 = <&cp1_uart0_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&ap_pinctrl {
+	pinctrl-0 = <&ap_reset_pins>;
+	pinctrl-names = "default";
+
+	ap_spi_pins: ap-spi-pins {
+		marvell,pins		= "mpp0", "mpp1", "mpp2", "mpp3";
+		marvell,function	= "spi0";
+	};
+
+	ap_reset_pins: ap-reset-pins {
+		marvell,pins = "mpp12";
+		marvell,function = "gpio";
+	};
+
+	ap_i2c_pins: ap-i2c-pins {
+		marvell,pins		= "mpp4", "mpp5";
+		marvell,function	= "i2c0";
+	};
+};
+
+&spi0 {
+	pinctrl-0 = <&ap_spi_pins>;
+	status = "okay";
+	pinctrl-names = "default";
+
+	spi-flash@0 {
+		status = "okay";
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <20000000>;
+	};
+};
+
+&cp0_xmdio {
+	status = "okay";
+	pinctrl-names = "default";
+	reset-gpios = <&cp0_gpio2 29 GPIO_ACTIVE_LOW>;
+	reset-delay-us = <100000>;
+	pinctrl-0 = <&phy0_10g_3310_reset_pins &phy0_10g_3310_xmdio_pins>;
+
+	phy0: ethernet-phy@2 {
+		compatible = "ethernet-phy-ieee802.3-c45";
+		reg = <2>;
+	};
+};
+
+&cp0_eth0 {
+	status = "okay";
+	phy = <&phy0>;
+	phy-mode = "10gbase-kr";
+	phys = <&cp0_comphy2 0>;
+};
+
+&cp1_mdio {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp1_mdio_pins &phy0_1g_1512_reset_pins>;
+	reset-gpios = <&cp0_gpio2 9 GPIO_ACTIVE_LOW>;
+	reset-delay-us = <100000>;
+
+	mdio_phy0: mdio-phy0 {
+		reg = <0>;
+	};
+};
+
+&cp0_eth1 {
+	status = "okay";
+	phy = <&mdio_phy0>;
+	phy-mode = "sgmii";
+	phys = <&cp0_comphy3 1>;
+};
+
+&cp0_ethernet {
+	status = "okay";
+};
+
+&cp1_ethernet {
+	status = "okay";
+};
+
+&cp0_pcie0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp0_pcie0_pins>;
+	num-lanes = <2>;
+	reset-gpio = <&cp0_gpio2 0 GPIO_ACTIVE_HIGH>;
+	phys = <&cp0_comphy0 0>;
+	status = "okay";
+};
+
+&cp0_pcie1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp0_pcie1_pins>;
+	num-lanes = <1>;
+	reset-gpio = <&cp0_gpio2 1 GPIO_ACTIVE_HIGH>;
+	phys = <&cp0_comphy4 1>;
+	status = "okay";
+};
+
+&cp1_pcie0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp1_pcie0_pins>;
+	num-lanes = <2>;
+	reset-gpio = <&cp1_gpio1 29 GPIO_ACTIVE_HIGH>;
+	phys = <&cp1_comphy0 0>;
+	status = "okay";
+};
+
+&cp1_pcie1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp1_pcie1_pins>;
+	num-lanes = <1>;
+	reset-gpio = <&cp1_gpio1 28 GPIO_ACTIVE_HIGH>;
+	phys = <&cp1_comphy4 1>;
+	status = "okay";
+};
