@@ -285,8 +285,10 @@ static int mv3310_power_up(struct phy_device *phydev)
 	    priv->firmware_ver < 0x00030000)
 		return ret;
 
-	return phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
+	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				MV_V2_PORT_CTRL_SWRST);
+	msleep(100);
+	return ret;
 }
 
 static int mv3310_reset(struct phy_device *phydev, u32 unit)
@@ -403,6 +405,7 @@ static int mv3310_write_firmware(struct phy_device *phydev, const u8 *data,
 
 static int mv3310_load_firmware(struct phy_device *phydev)
 {
+	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
 	const struct firmware *fw_entry;
 	char *fw_file;
 	int ret;
@@ -428,8 +431,8 @@ static int mv3310_load_firmware(struct phy_device *phydev)
 	if (fw_entry->size <= MV_FIRMWARE_HEADER_SIZE ||
 			(fw_entry->size % 2) != 0) {
 		dev_err(&phydev->mdio.dev, "firmware file invalid");
-		ret = -EINVAL;
-		goto out;
+		release_firmware(fw_entry);
+		return -EINVAL;
 	}
 
 	/* Clear checksum register */
@@ -442,18 +445,32 @@ static int mv3310_load_firmware(struct phy_device *phydev)
 	ret = mv3310_write_firmware(phydev,
 			fw_entry->data + MV_FIRMWARE_HEADER_SIZE,
 			fw_entry->size - MV_FIRMWARE_HEADER_SIZE);
+	release_firmware(fw_entry);
 	if (ret < 0)
-		goto out;
+		return ret;
 
 	phy_modify_mmd(phydev, MDIO_MMD_PMAPMD, MV_PMA_BOOT,
 			MV_PMA_BOOT_FW_LOADED, MV_PMA_BOOT_FW_LOADED);
 
 	msleep(100);
 
-out:
-	release_firmware(fw_entry);
+	ret = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MV_PMA_FW_VER0);
+	if (ret < 0)
+		return ret;
 
-	return ret;
+	priv->firmware_ver = ret << 16;
+
+	ret = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MV_PMA_FW_VER1);
+	if (ret < 0)
+		return ret;
+
+	priv->firmware_ver |= ret;
+
+	phydev_info(phydev, "Firmware version %u.%u.%u.%u\n",
+		    priv->firmware_ver >> 24, (priv->firmware_ver >> 16) & 255,
+		    (priv->firmware_ver >> 8) & 255, priv->firmware_ver & 255);
+
+	return 0;
 }
 
 static int mv3310_check_firmware(struct phy_device *phydev)
@@ -497,31 +514,11 @@ static int mv3310_probe(struct phy_device *phydev)
 	    (phydev->c45_ids.devices_in_package & mmd_mask) != mmd_mask)
 		return -ENODEV;
 
-	ret = mv3310_check_firmware(phydev);
-	if (ret < 0)
-		return ret;
-
 	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	dev_set_drvdata(&phydev->mdio.dev, priv);
-
-	ret = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MV_PMA_FW_VER0);
-	if (ret < 0)
-		return ret;
-
-	priv->firmware_ver = ret << 16;
-
-	ret = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MV_PMA_FW_VER1);
-	if (ret < 0)
-		return ret;
-
-	priv->firmware_ver |= ret;
-
-	phydev_info(phydev, "Firmware version %u.%u.%u.%u\n",
-		    priv->firmware_ver >> 24, (priv->firmware_ver >> 16) & 255,
-		    (priv->firmware_ver >> 8) & 255, priv->firmware_ver & 255);
 
 	/* Powering down the port when not in use saves about 600mW */
 	ret = mv3310_power_down(phydev);
@@ -559,12 +556,17 @@ static int mv3310_resume(struct phy_device *phydev)
 static int mv3310_start(struct phy_device *phydev)
 {
 	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
+	int ret;
 
 	if (priv->firmware_failed) {
 		dev_warn(&phydev->mdio.dev,
 			 "PHY firmware failure: PHY not starting");
 		return -EINVAL;
 	}
+
+	ret = mv3310_check_firmware(phydev);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
