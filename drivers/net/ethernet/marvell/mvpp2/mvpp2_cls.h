@@ -187,7 +187,7 @@ enum mvpp2_prs_flow {
 
 enum mvpp2_cls_lu_type {
 	/* rule->loc is used as a lu-type for the entries 0 - 62. */
-	MVPP22_CLS_LU_TYPE_ALL = 63,
+	MVPP22_CLS_LU_TYPE_ALL = 3, /* HACK: MUSDK compatibility */
 };
 
 #define MVPP2_N_FLOWS		(MVPP2_FL_LAST - MVPP2_FL_START)
