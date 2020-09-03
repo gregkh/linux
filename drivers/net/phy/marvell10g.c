@@ -983,6 +983,13 @@ static int mv3310_config_init(struct phy_device *phydev)
 
 	mv3310_config_init_clear_power_down(phydev);
 
+	/* Force XFI/SGMII/Auto-neg mode regardless of strap configuration */
+	err = phy_modify_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
+				     MV_V2_33X0_PORT_CTRL_MACTYPE_MASK,
+				     MV_V2_33X0_PORT_CTRL_MACTYPE_10GBASER);
+	if (err)
+		return err;
+
 	/* If host provided host supported interface modes, try to select the
 	 * best one
 	 */
