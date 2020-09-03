@@ -92,6 +92,7 @@ enum {
 	MV_V2_PORT_CTRL_SWRST	= BIT(15),
 	MV_V2_PORT_CTRL_PWRDOWN = BIT(11),
 	MV_V2_PORT_MAC_TYPE_MASK = 0x7,
+	MV_V2_PORT_MAC_TYPE_XFI_SGMII_AUTONEG = 0x4,
 	MV_V2_PORT_MAC_TYPE_RATE_MATCH = 0x6,
 	/* Temperature control/read registers (88X3310 only) */
 	MV_V2_TEMP_CTRL		= 0xf08a,
@@ -622,6 +623,13 @@ static int mv3310_config_init(struct phy_device *phydev)
 		return err;
 
 	mv3310_config_init_clear_power_down(phydev);
+
+	/* Force XFI/SGMII/Auto-neg mode regardless of strap configuration */
+	err = phy_modify_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
+				     MV_V2_PORT_MAC_TYPE_MASK,
+				     MV_V2_PORT_MAC_TYPE_XFI_SGMII_AUTONEG);
+	if (err)
+		return err;
 
 	val = phy_read_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL);
 	if (val < 0)
