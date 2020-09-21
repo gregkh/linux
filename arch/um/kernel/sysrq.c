@@ -47,14 +47,12 @@ void show_stack_loglvl(struct task_struct *task, unsigned long *stack,
 		if (kstack_end(stack))
 			break;
 		if (i && ((i % STACKSLOTS_PER_LINE) == 0))
-			printk("%s\n", loglvl);
+			pr_cont("\n");
 		pr_cont(" %08lx", *stack++);
 	}
-	printk("%s\n", loglvl);
 
 	printk("%sCall Trace:\n", loglvl);
 	dump_trace(current, &stackops, (void *)loglvl);
-	printk("%s\n", loglvl);
 }
 
 void show_stack(struct task_struct *task, unsigned long *stack)
