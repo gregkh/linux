@@ -3,6 +3,7 @@
 #define __ASM_POINTER_AUTH_H
 
 #include <linux/bitops.h>
+#include <linux/random.h>
 
 #include <asm/cpufeature.h>
 #include <asm/memory.h>
@@ -32,13 +33,6 @@ struct ptrauth_keys_user {
 struct ptrauth_keys_kernel {
 	struct ptrauth_key apia;
 };
-
-/*
- * Only include random.h once ptrauth_keys_* structures are defined
- * to avoid yet another circular include hell (random.h * ends up
- * including asm/smp.h, which requires ptrauth_keys_kernel).
- */
-#include <linux/random.h>
 
 static inline void ptrauth_keys_init_user(struct ptrauth_keys_user *keys)
 {

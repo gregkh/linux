@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2014-2017 Broadcom
+ * Copyright (c) 2014-2020 Broadcom
  */
 
 #ifndef __BCMGENET_H__
@@ -32,6 +32,7 @@
 #define DMA_MAX_BURST_LENGTH    0x10
 
 /* misc. configuration */
+#define MAX_NUM_OF_FS_RULES		16
 #define CLEAR_ALL_HFB			0xFF
 #define DMA_FC_THRESH_HI		(TOTAL_DESC >> 4)
 #define DMA_FC_THRESH_LO		5
@@ -311,6 +312,8 @@ struct bcmgenet_mib_counters {
 #define UMAC_IRQ_HFB_SM			(1 << 10)
 #define UMAC_IRQ_HFB_MM			(1 << 11)
 #define UMAC_IRQ_MPD_R			(1 << 12)
+#define UMAC_IRQ_WAKE_EVENT		(UMAC_IRQ_HFB_SM | UMAC_IRQ_HFB_MM | \
+					 UMAC_IRQ_MPD_R)
 #define UMAC_IRQ_RXDMA_MBDONE		(1 << 13)
 #define UMAC_IRQ_RXDMA_PDONE		(1 << 14)
 #define UMAC_IRQ_RXDMA_BDONE		(1 << 15)
@@ -609,6 +612,18 @@ struct bcmgenet_rx_ring {
 	struct bcmgenet_priv *priv;
 };
 
+enum bcmgenet_rxnfc_state {
+	BCMGENET_RXNFC_STATE_UNUSED = 0,
+	BCMGENET_RXNFC_STATE_DISABLED,
+	BCMGENET_RXNFC_STATE_ENABLED
+};
+
+struct bcmgenet_rxnfc_rule {
+	struct	list_head list;
+	struct ethtool_rx_flow_spec	fs;
+	enum bcmgenet_rxnfc_state state;
+};
+
 /* device context */
 struct bcmgenet_priv {
 	void __iomem *base;
@@ -627,6 +642,8 @@ struct bcmgenet_priv {
 	struct enet_cb *rx_cbs;
 	unsigned int num_rx_bds;
 	unsigned int rx_buf_len;
+	struct bcmgenet_rxnfc_rule rxnfc_rules[MAX_NUM_OF_FS_RULES];
+	struct list_head rxnfc_list;
 
 	struct bcmgenet_rx_ring rx_rings[DESC_INDEX + 1];
 
@@ -678,6 +695,7 @@ struct bcmgenet_priv {
 	struct clk *clk_wol;
 	u32 wolopts;
 	u8 sopass[SOPASS_MAX];
+	bool wol_active;
 
 	struct bcmgenet_mib_counters mib;
 

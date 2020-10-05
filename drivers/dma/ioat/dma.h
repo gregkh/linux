@@ -81,6 +81,11 @@ struct ioatdma_device {
 	u32 msixpba;
 };
 
+#define IOAT_MAX_ORDER 16
+#define IOAT_MAX_DESCS (1 << IOAT_MAX_ORDER)
+#define IOAT_CHUNK_SIZE (SZ_512K)
+#define IOAT_DESCS_PER_CHUNK (IOAT_CHUNK_SIZE / IOAT_DESC_SZ)
+
 struct ioat_descs {
 	void *virt;
 	dma_addr_t hw;
@@ -126,7 +131,7 @@ struct ioatdma_chan {
 	u16 produce;
 	struct ioat_ring_ent **ring;
 	spinlock_t prep_lock;
-	struct ioat_descs descs[2];
+	struct ioat_descs descs[IOAT_MAX_DESCS / IOAT_DESCS_PER_CHUNK];
 	int desc_chunks;
 	int intr_coalesce;
 	int prev_intr_coalesce;
@@ -299,9 +304,6 @@ static inline bool is_ioat_bug(unsigned long err)
 	return !!err;
 }
 
-#define IOAT_MAX_ORDER 16
-#define IOAT_MAX_DESCS 65536
-#define IOAT_DESCS_PER_2M 32768
 
 static inline u32 ioat_ring_size(struct ioatdma_chan *ioat_chan)
 {

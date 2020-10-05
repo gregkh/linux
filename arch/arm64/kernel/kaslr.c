@@ -10,6 +10,7 @@
 #include <linux/mm_types.h>
 #include <linux/sched.h>
 #include <linux/types.h>
+#include <linux/pgtable.h>
 #include <linux/random.h>
 
 #include <asm/cacheflush.h>
@@ -17,7 +18,6 @@
 #include <asm/kernel-pgtable.h>
 #include <asm/memory.h>
 #include <asm/mmu.h>
-#include <asm/pgtable.h>
 #include <asm/sections.h>
 
 enum kaslr_status {

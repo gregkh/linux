@@ -302,7 +302,7 @@ static void deferred_unmap_destructor(struct sk_buff *skb)
 
 /**
  *	free_tx_desc - reclaims Tx descriptors and their buffers
- *	@adapter: the adapter
+ *	@adap: the adapter
  *	@q: the Tx queue to reclaim descriptors from
  *	@n: the number of descriptors to reclaim
  *	@unmap: whether the buffers should be unmapped for DMA
@@ -722,6 +722,7 @@ static inline unsigned int flits_to_desc(unsigned int n)
 /**
  *	is_eth_imm - can an Ethernet packet be sent as immediate data?
  *	@skb: the packet
+ *	@chip_ver: chip version
  *
  *	Returns whether an Ethernet packet is small enough to fit as
  *	immediate data. Return value corresponds to headroom required.
@@ -749,6 +750,7 @@ static inline int is_eth_imm(const struct sk_buff *skb, unsigned int chip_ver)
 /**
  *	calc_tx_flits - calculate the number of flits for a packet Tx WR
  *	@skb: the packet
+ *	@chip_ver: chip version
  *
  *	Returns the number of flits needed for a Tx WR for the given Ethernet
  *	packet, including the needed WR and CPL headers.
@@ -804,6 +806,7 @@ static inline unsigned int calc_tx_flits(const struct sk_buff *skb,
 /**
  *	calc_tx_descs - calculate the number of Tx descriptors for a packet
  *	@skb: the packet
+ *	@chip_ver: chip version
  *
  *	Returns the number of Tx descriptors needed for the given Ethernet
  *	packet, including the needed WR and CPL headers.
@@ -1524,8 +1527,7 @@ static netdev_tx_t cxgb4_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 			if (iph->version == 4) {
 				iph->check = 0;
 				iph->tot_len = 0;
-				iph->check = (u16)(~ip_fast_csum((u8 *)iph,
-								 iph->ihl));
+				iph->check = ~ip_fast_csum((u8 *)iph, iph->ihl);
 			}
 			if (skb->ip_summed == CHECKSUM_PARTIAL)
 				cntrl = hwcsum(adap->params.chip, skb);
@@ -2080,10 +2082,9 @@ static inline u8 ethofld_calc_tx_flits(struct adapter *adap,
 	return flits + nsgl;
 }
 
-static inline void *write_eo_wr(struct adapter *adap,
-				struct sge_eosw_txq *eosw_txq,
-				struct sk_buff *skb, struct fw_eth_tx_eo_wr *wr,
-				u32 hdr_len, u32 wrlen)
+static void *write_eo_wr(struct adapter *adap, struct sge_eosw_txq *eosw_txq,
+			 struct sk_buff *skb, struct fw_eth_tx_eo_wr *wr,
+			 u32 hdr_len, u32 wrlen)
 {
 	const struct skb_shared_info *ssi = skb_shinfo(skb);
 	struct cpl_tx_pkt_core *cpl;
@@ -2102,7 +2103,8 @@ static inline void *write_eo_wr(struct adapter *adap,
 	immd_len += hdr_len;
 
 	if (!eosw_txq->ncompl ||
-	    eosw_txq->last_compl >= adap->params.ofldq_wr_cred / 2) {
+	    (eosw_txq->last_compl + wrlen16) >=
+	    (adap->params.ofldq_wr_cred / 2)) {
 		compl = true;
 		eosw_txq->ncompl++;
 		eosw_txq->last_compl = 0;
@@ -2142,8 +2144,8 @@ static inline void *write_eo_wr(struct adapter *adap,
 	return cpl;
 }
 
-static void ethofld_hard_xmit(struct net_device *dev,
-			      struct sge_eosw_txq *eosw_txq)
+static int ethofld_hard_xmit(struct net_device *dev,
+			     struct sge_eosw_txq *eosw_txq)
 {
 	struct port_info *pi = netdev2pinfo(dev);
 	struct adapter *adap = netdev2adap(dev);
@@ -2156,8 +2158,8 @@ static void ethofld_hard_xmit(struct net_device *dev,
 	bool skip_eotx_wr = false;
 	struct tx_sw_desc *d;
 	struct sk_buff *skb;
+	int left, ret = 0;
 	u8 flits, ndesc;
-	int left;
 
 	eohw_txq = &adap->sge.eohw_txq[eosw_txq->hwqid];
 	spin_lock(&eohw_txq->lock);
@@ -2187,11 +2189,19 @@ static void ethofld_hard_xmit(struct net_device *dev,
 	wrlen = flits * 8;
 	wrlen16 = DIV_ROUND_UP(wrlen, 16);
 
-	/* If there are no CPL credits, then wait for credits
-	 * to come back and retry again
+	left = txq_avail(&eohw_txq->q) - ndesc;
+
+	/* If there are no descriptors left in hardware queues or no
+	 * CPL credits left in software queues, then wait for them
+	 * to come back and retry again. Note that we always request
+	 * for credits update via interrupt for every half credits
+	 * consumed. So, the interrupt will eventually restore the
+	 * credits and invoke the Tx path again.
 	 */
-	if (unlikely(wrlen16 > eosw_txq->cred))
+	if (unlikely(left < 0 || wrlen16 > eosw_txq->cred)) {
+		ret = -ENOMEM;
 		goto out_unlock;
+	}
 
 	if (unlikely(skip_eotx_wr)) {
 		start = (u64 *)wr;
@@ -2220,7 +2230,8 @@ write_wr_headers:
 	sgl = (u64 *)inline_tx_skb_header(skb, &eohw_txq->q, (void *)start,
 					  hdr_len);
 	if (data_len) {
-		if (unlikely(cxgb4_map_skb(adap->pdev_dev, skb, d->addr))) {
+		ret = cxgb4_map_skb(adap->pdev_dev, skb, d->addr);
+		if (unlikely(ret)) {
 			memset(d->addr, 0, sizeof(d->addr));
 			eohw_txq->mapping_err++;
 			goto out_unlock;
@@ -2266,12 +2277,13 @@ write_wr_headers:
 
 out_unlock:
 	spin_unlock(&eohw_txq->lock);
+	return ret;
 }
 
 static void ethofld_xmit(struct net_device *dev, struct sge_eosw_txq *eosw_txq)
 {
 	struct sk_buff *skb;
-	int pktcount;
+	int pktcount, ret;
 
 	switch (eosw_txq->state) {
 	case CXGB4_EO_STATE_ACTIVE:
@@ -2296,7 +2308,9 @@ static void ethofld_xmit(struct net_device *dev, struct sge_eosw_txq *eosw_txq)
 			continue;
 		}
 
-		ethofld_hard_xmit(dev, eosw_txq);
+		ret = ethofld_hard_xmit(dev, eosw_txq);
+		if (ret)
+			break;
 	}
 }
 
@@ -2397,9 +2411,9 @@ static void eosw_txq_flush_pending_skbs(struct sge_eosw_txq *eosw_txq)
 
 /**
  * cxgb4_ethofld_send_flowc - Send ETHOFLD flowc request to bind eotid to tc.
- * @dev - netdevice
- * @eotid - ETHOFLD tid to bind/unbind
- * @tc - traffic class. If set to FW_SCHED_CLS_NONE, then unbinds the @eotid
+ * @dev: netdevice
+ * @eotid: ETHOFLD tid to bind/unbind
+ * @tc: traffic class. If set to FW_SCHED_CLS_NONE, then unbinds the @eotid
  *
  * Send a FLOWC work request to bind an ETHOFLD TID to a traffic class.
  * If @tc is set to FW_SCHED_CLS_NONE, then the @eotid is unbound from
@@ -2678,7 +2692,6 @@ static inline unsigned int calc_tx_flits_ofld(const struct sk_buff *skb)
 
 /**
  *	txq_stop_maperr - stop a Tx queue due to I/O MMU exhaustion
- *	@adap: the adapter
  *	@q: the queue to stop
  *
  *	Mark a Tx queue stopped due to I/O MMU exhaustion and resulting
@@ -3274,7 +3287,7 @@ enum {
 
 /**
  *     t4_systim_to_hwstamp - read hardware time stamp
- *     @adap: the adapter
+ *     @adapter: the adapter
  *     @skb: the packet
  *
  *     Read Time Stamp from MPS packet and insert in skb which
@@ -3308,8 +3321,9 @@ static noinline int t4_systim_to_hwstamp(struct adapter *adapter,
 
 /**
  *     t4_rx_hststamp - Recv PTP Event Message
- *     @adap: the adapter
+ *     @adapter: the adapter
  *     @rsp: the response queue descriptor holding the RX_PKT message
+ *     @rxq: the response queue holding the RX_PKT message
  *     @skb: the packet
  *
  *     PTP enabled and MPS packet, read HW timestamp
@@ -3333,7 +3347,7 @@ static int t4_rx_hststamp(struct adapter *adapter, const __be64 *rsp,
 
 /**
  *      t4_tx_hststamp - Loopback PTP Transmit Event Message
- *      @adap: the adapter
+ *      @adapter: the adapter
  *      @skb: the packet
  *      @dev: the ingress net device
  *

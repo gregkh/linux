@@ -135,6 +135,27 @@ output:
 	}
 }
 
+static void __qdio_free_queues(struct qdio_q **queues, unsigned int count)
+{
+	struct qdio_q *q;
+	unsigned int i;
+
+	for (i = 0; i < count; i++) {
+		q = queues[i];
+		free_page((unsigned long) q->slib);
+		kmem_cache_free(qdio_q_cache, q);
+	}
+}
+
+void qdio_free_queues(struct qdio_irq *irq_ptr)
+{
+	__qdio_free_queues(irq_ptr->input_qs, irq_ptr->max_input_qs);
+	irq_ptr->max_input_qs = 0;
+
+	__qdio_free_queues(irq_ptr->output_qs, irq_ptr->max_output_qs);
+	irq_ptr->max_output_qs = 0;
+}
+
 static int __qdio_allocate_qs(struct qdio_q **irq_ptr_qs, int nr_queues)
 {
 	struct qdio_q *q;
@@ -142,12 +163,15 @@ static int __qdio_allocate_qs(struct qdio_q **irq_ptr_qs, int nr_queues)
 
 	for (i = 0; i < nr_queues; i++) {
 		q = kmem_cache_zalloc(qdio_q_cache, GFP_KERNEL);
-		if (!q)
+		if (!q) {
+			__qdio_free_queues(irq_ptr_qs, i);
 			return -ENOMEM;
+		}
 
 		q->slib = (struct slib *) __get_free_page(GFP_KERNEL);
 		if (!q->slib) {
 			kmem_cache_free(qdio_q_cache, q);
+			__qdio_free_queues(irq_ptr_qs, i);
 			return -ENOMEM;
 		}
 		irq_ptr_qs[i] = q;
@@ -162,8 +186,16 @@ int qdio_allocate_qs(struct qdio_irq *irq_ptr, int nr_input_qs, int nr_output_qs
 	rc = __qdio_allocate_qs(irq_ptr->input_qs, nr_input_qs);
 	if (rc)
 		return rc;
+
 	rc = __qdio_allocate_qs(irq_ptr->output_qs, nr_output_qs);
-	return rc;
+	if (rc) {
+		__qdio_free_queues(irq_ptr->input_qs, nr_input_qs);
+		return rc;
+	}
+
+	irq_ptr->max_input_qs = nr_input_qs;
+	irq_ptr->max_output_qs = nr_output_qs;
+	return 0;
 }
 
 static void setup_queues_misc(struct qdio_q *q, struct qdio_irq *irq_ptr,
@@ -347,45 +379,28 @@ void qdio_setup_ssqd_info(struct qdio_irq *irq_ptr)
 	DBF_EVENT("3:%4x qib:%4x", irq_ptr->ssqd_desc.qdioac3, irq_ptr->qib.ac);
 }
 
-void qdio_release_memory(struct qdio_irq *irq_ptr)
+void qdio_free_async_data(struct qdio_irq *irq_ptr)
 {
 	struct qdio_q *q;
 	int i;
 
-	/*
-	 * Must check queue array manually since irq_ptr->nr_input_queues /
-	 * irq_ptr->nr_input_queues may not yet be set.
-	 */
-	for (i = 0; i < QDIO_MAX_QUEUES_PER_IRQ; i++) {
-		q = irq_ptr->input_qs[i];
-		if (q) {
-			free_page((unsigned long) q->slib);
-			kmem_cache_free(qdio_q_cache, q);
-		}
-	}
-	for (i = 0; i < QDIO_MAX_QUEUES_PER_IRQ; i++) {
+	for (i = 0; i < irq_ptr->max_output_qs; i++) {
 		q = irq_ptr->output_qs[i];
-		if (q) {
-			if (q->u.out.use_cq) {
-				int n;
+		if (q->u.out.use_cq) {
+			unsigned int n;
 
-				for (n = 0; n < QDIO_MAX_BUFFERS_PER_Q; ++n) {
-					struct qaob *aob = q->u.out.aobs[n];
-					if (aob) {
-						qdio_release_aob(aob);
-						q->u.out.aobs[n] = NULL;
-					}
+			for (n = 0; n < QDIO_MAX_BUFFERS_PER_Q; n++) {
+				struct qaob *aob = q->u.out.aobs[n];
+
+				if (aob) {
+					qdio_release_aob(aob);
+					q->u.out.aobs[n] = NULL;
 				}
-
-				qdio_disable_async_operation(&q->u.out);
 			}
-			free_page((unsigned long) q->slib);
-			kmem_cache_free(qdio_q_cache, q);
+
+			qdio_disable_async_operation(&q->u.out);
 		}
 	}
-	free_page((unsigned long) irq_ptr->qdr);
-	free_page(irq_ptr->chsc_page);
-	free_page((unsigned long) irq_ptr);
 }
 
 static void __qdio_allocate_fill_qdr(struct qdio_irq *irq_ptr,

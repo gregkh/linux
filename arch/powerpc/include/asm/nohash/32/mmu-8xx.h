@@ -36,16 +36,16 @@
  * Therefore, we define 2 APG groups. lsb is _PMD_USER
  * 0 => Kernel => 01 (all accesses performed according to page definition)
  * 1 => User => 00 (all accesses performed as supervisor iaw page definition)
- * 2-16 => NA => 11 (all accesses performed as user iaw page definition)
+ * 2-15 => Not Used
  */
-#define MI_APG_INIT	0x4fffffff
+#define MI_APG_INIT	0x40000000
 
 /*
  * 0 => Kernel => 01 (all accesses performed according to page definition)
  * 1 => User => 10 (all accesses performed according to swaped page definition)
- * 2-16 => NA => 11 (all accesses performed as user iaw page definition)
+ * 2-15 => Not Used
  */
-#define MI_APG_KUEP	0x6fffffff
+#define MI_APG_KUEP	0x60000000
 
 /* The effective page number register.  When read, contains the information
  * about the last instruction TLB miss.  When MI_RPN is written, bits in
@@ -115,16 +115,16 @@
  * Therefore, we define 2 APG groups. lsb is _PMD_USER
  * 0 => Kernel => 01 (all accesses performed according to page definition)
  * 1 => User => 00 (all accesses performed as supervisor iaw page definition)
- * 2-16 => NA => 11 (all accesses performed as user iaw page definition)
+ * 2-15 => Not Used
  */
-#define MD_APG_INIT	0x4fffffff
+#define MD_APG_INIT	0x40000000
 
 /*
  * 0 => No user => 01 (all accesses performed according to page definition)
  * 1 => User => 10 (all accesses performed according to swaped page definition)
- * 2-16 => NA => 11 (all accesses performed as user iaw page definition)
+ * 2-15 => Not Used
  */
-#define MD_APG_KUAP	0x6fffffff
+#define MD_APG_KUAP	0x60000000
 
 /* The effective page number register.  When read, contains the information
  * about the last instruction TLB miss.  When MD_RPN is written, bits in
@@ -176,12 +176,6 @@
  */
 #define SPRN_M_TW	799
 
-#ifdef CONFIG_PPC_MM_SLICES
-#include <asm/nohash/32/slice.h>
-#define SLICE_ARRAY_SIZE	(1 << (32 - SLICE_LOW_SHIFT - 1))
-#define LOW_SLICE_ARRAY_SZ	SLICE_ARRAY_SIZE
-#endif
-
 #if defined(CONFIG_PPC_4K_PAGES)
 #define mmu_virtual_psize	MMU_PAGE_4K
 #elif defined(CONFIG_PPC_16K_PAGES)
@@ -199,70 +193,14 @@
 
 #include <linux/mmdebug.h>
 
-struct slice_mask {
-	u64 low_slices;
-	DECLARE_BITMAP(high_slices, 0);
-};
+void mmu_pin_tlb(unsigned long top, bool readonly);
 
 typedef struct {
 	unsigned int id;
 	unsigned int active;
 	unsigned long vdso_base;
-#ifdef CONFIG_PPC_MM_SLICES
-	u16 user_psize;		/* page size index */
-	unsigned char low_slices_psize[SLICE_ARRAY_SIZE];
-	unsigned char high_slices_psize[0];
-	unsigned long slb_addr_limit;
-	struct slice_mask mask_base_psize; /* 4k or 16k */
-	struct slice_mask mask_512k;
-	struct slice_mask mask_8m;
-#endif
 	void *pte_frag;
 } mm_context_t;
-
-#ifdef CONFIG_PPC_MM_SLICES
-static inline u16 mm_ctx_user_psize(mm_context_t *ctx)
-{
-	return ctx->user_psize;
-}
-
-static inline void mm_ctx_set_user_psize(mm_context_t *ctx, u16 user_psize)
-{
-	ctx->user_psize = user_psize;
-}
-
-static inline unsigned char *mm_ctx_low_slices(mm_context_t *ctx)
-{
-	return ctx->low_slices_psize;
-}
-
-static inline unsigned char *mm_ctx_high_slices(mm_context_t *ctx)
-{
-	return ctx->high_slices_psize;
-}
-
-static inline unsigned long mm_ctx_slb_addr_limit(mm_context_t *ctx)
-{
-	return ctx->slb_addr_limit;
-}
-
-static inline void mm_ctx_set_slb_addr_limit(mm_context_t *ctx, unsigned long limit)
-{
-	ctx->slb_addr_limit = limit;
-}
-
-static inline struct slice_mask *slice_mask_for_size(mm_context_t *ctx, int psize)
-{
-	if (psize == MMU_PAGE_512K)
-		return &ctx->mask_512k;
-	if (psize == MMU_PAGE_8M)
-		return &ctx->mask_8m;
-
-	BUG_ON(psize != mmu_virtual_psize);
-
-	return &ctx->mask_base_psize;
-}
-#endif /* CONFIG_PPC_MM_SLICE */
 
 #define PHYS_IMMR_BASE (mfspr(SPRN_IMMR) & 0xfff80000)
 #define VIRT_IMMR_BASE (__fix_to_virt(FIX_IMMR_BASE))
@@ -302,13 +240,7 @@ static inline unsigned int mmu_psize_to_shift(unsigned int mmu_psize)
 }
 
 /* patch sites */
-extern s32 patch__itlbmiss_linmem_top, patch__itlbmiss_linmem_top8;
-extern s32 patch__dtlbmiss_linmem_top, patch__dtlbmiss_immr_jmp;
-extern s32 patch__fixupdar_linmem_top;
-extern s32 patch__dtlbmiss_romem_top, patch__dtlbmiss_romem_top8;
-
-extern s32 patch__itlbmiss_exit_1, patch__itlbmiss_exit_2;
-extern s32 patch__dtlbmiss_exit_1, patch__dtlbmiss_exit_2, patch__dtlbmiss_exit_3;
+extern s32 patch__itlbmiss_exit_1, patch__dtlbmiss_exit_1;
 extern s32 patch__itlbmiss_perf, patch__dtlbmiss_perf;
 
 #endif /* !__ASSEMBLY__ */

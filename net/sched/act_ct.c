@@ -30,6 +30,7 @@
 #include <net/netfilter/nf_conntrack_core.h>
 #include <net/netfilter/nf_conntrack_zones.h>
 #include <net/netfilter/nf_conntrack_helper.h>
+#include <net/netfilter/nf_conntrack_acct.h>
 #include <net/netfilter/ipv6/nf_defrag_ipv6.h>
 #include <uapi/linux/netfilter/nf_nat.h>
 
@@ -539,6 +540,7 @@ static bool tcf_ct_flow_table_lookup(struct tcf_ct_params *p,
 	flow_offload_refresh(nf_ft, flow);
 	nf_conntrack_get(&ct->ct_general);
 	nf_ct_set(skb, ct, ctinfo);
+	nf_ct_acct_update(ct, dir, skb->len);
 
 	return true;
 }
@@ -704,10 +706,8 @@ static int tcf_ct_handle_fragments(struct net *net, struct sk_buff *skb,
 		if (err && err != -EINPROGRESS)
 			goto out_free;
 
-		if (!err) {
+		if (!err)
 			*defrag = true;
-			cb.mru = IPCB(skb)->frag_max_size;
-		}
 	} else { /* NFPROTO_IPV6 */
 #if IS_ENABLED(CONFIG_NF_DEFRAG_IPV6)
 		enum ip6_defrag_users user = IP6_DEFRAG_CONNTRACK_IN + zone;
@@ -717,10 +717,8 @@ static int tcf_ct_handle_fragments(struct net *net, struct sk_buff *skb,
 		if (err && err != -EINPROGRESS)
 			goto out_free;
 
-		if (!err) {
+		if (!err)
 			*defrag = true;
-			cb.mru = IP6CB(skb)->frag_max_size;
-		}
 #else
 		err = -EOPNOTSUPP;
 		goto out_free;
@@ -936,6 +934,8 @@ static int tcf_ct_act(struct sk_buff *skb, const struct tc_action *a,
 	clear = p->ct_action & TCA_CT_ACT_CLEAR;
 	force = p->ct_action & TCA_CT_ACT_FORCE;
 	tmpl = p->tmpl;
+
+	tcf_lastuse_update(&c->tcf_tm);
 
 	if (clear) {
 		ct = nf_ct_get(skb, &ctinfo);
@@ -1543,10 +1543,10 @@ static int __init ct_init_module(void)
 
 	return 0;
 
-err_tbl_init:
-	destroy_workqueue(act_ct_wq);
 err_register:
 	tcf_ct_flow_tables_uninit();
+err_tbl_init:
+	destroy_workqueue(act_ct_wq);
 	return err;
 }
 
@@ -1556,17 +1556,6 @@ static void __exit ct_cleanup_module(void)
 	tcf_ct_flow_tables_uninit();
 	destroy_workqueue(act_ct_wq);
 }
-
-void tcf_ct_flow_table_restore_skb(struct sk_buff *skb, unsigned long cookie)
-{
-	enum ip_conntrack_info ctinfo = cookie & NFCT_INFOMASK;
-	struct nf_conn *ct;
-
-	ct = (struct nf_conn *)(cookie & NFCT_PTRMASK);
-	nf_conntrack_get(&ct->ct_general);
-	nf_ct_set(skb, ct, ctinfo);
-}
-EXPORT_SYMBOL_GPL(tcf_ct_flow_table_restore_skb);
 
 module_init(ct_init_module);
 module_exit(ct_cleanup_module);

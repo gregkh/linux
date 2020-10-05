@@ -160,6 +160,7 @@ static void nvmet_async_events_process(struct nvmet_ctrl *ctrl)
 		kfree(aen);
 
 		mutex_unlock(&ctrl->lock);
+		trace_nvmet_async_event(ctrl, req->cqe->result.u32);
 		nvmet_req_complete(req, 0);
 		mutex_lock(&ctrl->lock);
 	}
@@ -331,11 +332,20 @@ int nvmet_enable_port(struct nvmet_port *port)
 	if (!try_module_get(ops->owner))
 		return -EINVAL;
 
-	ret = ops->add_port(port);
-	if (ret) {
-		module_put(ops->owner);
-		return ret;
+	/*
+	 * If the user requested PI support and the transport isn't pi capable,
+	 * don't enable the port.
+	 */
+	if (port->pi_enable && !ops->metadata_support) {
+		pr_err("T10-PI is not supported by transport type %d\n",
+		       port->disc_addr.trtype);
+		ret = -EINVAL;
+		goto out_put;
 	}
+
+	ret = ops->add_port(port);
+	if (ret)
+		goto out_put;
 
 	/* If the transport didn't set inline_data_size, then disable it. */
 	if (port->inline_data_size < 0)
@@ -344,6 +354,10 @@ int nvmet_enable_port(struct nvmet_port *port)
 	port->enabled = true;
 	port->tr_ops = ops;
 	return 0;
+
+out_put:
+	module_put(ops->owner);
+	return ret;
 }
 
 void nvmet_disable_port(struct nvmet_port *port)
@@ -521,6 +535,19 @@ static void nvmet_p2pmem_ns_add_p2p(struct nvmet_ctrl *ctrl,
 
 	pr_info("using p2pmem on %s for nsid %d\n", pci_name(p2p_dev),
 		ns->nsid);
+}
+
+void nvmet_ns_revalidate(struct nvmet_ns *ns)
+{
+	loff_t oldsize = ns->size;
+
+	if (ns->bdev)
+		nvmet_bdev_ns_revalidate(ns);
+	else
+		nvmet_file_ns_revalidate(ns);
+
+	if (oldsize != ns->size)
+		nvmet_ns_changed(ns->subsys, ns->nsid);
 }
 
 int nvmet_ns_enable(struct nvmet_ns *ns)
@@ -879,8 +906,11 @@ bool nvmet_req_init(struct nvmet_req *req, struct nvmet_cq *cq,
 	req->sq = sq;
 	req->ops = ops;
 	req->sg = NULL;
+	req->metadata_sg = NULL;
 	req->sg_cnt = 0;
+	req->metadata_sg_cnt = 0;
 	req->transfer_len = 0;
+	req->metadata_len = 0;
 	req->cqe->status = 0;
 	req->cqe->sq_head = 0;
 	req->ns = NULL;
@@ -942,9 +972,9 @@ void nvmet_req_uninit(struct nvmet_req *req)
 }
 EXPORT_SYMBOL_GPL(nvmet_req_uninit);
 
-bool nvmet_check_data_len(struct nvmet_req *req, size_t data_len)
+bool nvmet_check_transfer_len(struct nvmet_req *req, size_t len)
 {
-	if (unlikely(data_len != req->transfer_len)) {
+	if (unlikely(len != req->transfer_len)) {
 		req->error_loc = offsetof(struct nvme_common_command, dptr);
 		nvmet_req_complete(req, NVME_SC_SGL_INVALID_DATA | NVME_SC_DNR);
 		return false;
@@ -952,7 +982,7 @@ bool nvmet_check_data_len(struct nvmet_req *req, size_t data_len)
 
 	return true;
 }
-EXPORT_SYMBOL_GPL(nvmet_check_data_len);
+EXPORT_SYMBOL_GPL(nvmet_check_transfer_len);
 
 bool nvmet_check_data_len_lte(struct nvmet_req *req, size_t data_len)
 {
@@ -965,50 +995,90 @@ bool nvmet_check_data_len_lte(struct nvmet_req *req, size_t data_len)
 	return true;
 }
 
-int nvmet_req_alloc_sgl(struct nvmet_req *req)
+static unsigned int nvmet_data_transfer_len(struct nvmet_req *req)
 {
-	struct pci_dev *p2p_dev = NULL;
+	return req->transfer_len - req->metadata_len;
+}
 
-	if (IS_ENABLED(CONFIG_PCI_P2PDMA)) {
-		if (req->sq->ctrl && req->ns)
-			p2p_dev = radix_tree_lookup(&req->sq->ctrl->p2p_ns_map,
-						    req->ns->nsid);
+static int nvmet_req_alloc_p2pmem_sgls(struct nvmet_req *req)
+{
+	req->sg = pci_p2pmem_alloc_sgl(req->p2p_dev, &req->sg_cnt,
+			nvmet_data_transfer_len(req));
+	if (!req->sg)
+		goto out_err;
 
-		req->p2p_dev = NULL;
-		if (req->sq->qid && p2p_dev) {
-			req->sg = pci_p2pmem_alloc_sgl(p2p_dev, &req->sg_cnt,
-						       req->transfer_len);
-			if (req->sg) {
-				req->p2p_dev = p2p_dev;
-				return 0;
-			}
-		}
+	if (req->metadata_len) {
+		req->metadata_sg = pci_p2pmem_alloc_sgl(req->p2p_dev,
+				&req->metadata_sg_cnt, req->metadata_len);
+		if (!req->metadata_sg)
+			goto out_free_sg;
+	}
+	return 0;
+out_free_sg:
+	pci_p2pmem_free_sgl(req->p2p_dev, req->sg);
+out_err:
+	return -ENOMEM;
+}
 
-		/*
-		 * If no P2P memory was available we fallback to using
-		 * regular memory
-		 */
+static bool nvmet_req_find_p2p_dev(struct nvmet_req *req)
+{
+	if (!IS_ENABLED(CONFIG_PCI_P2PDMA))
+		return false;
+
+	if (req->sq->ctrl && req->sq->qid && req->ns) {
+		req->p2p_dev = radix_tree_lookup(&req->sq->ctrl->p2p_ns_map,
+						 req->ns->nsid);
+		if (req->p2p_dev)
+			return true;
 	}
 
-	req->sg = sgl_alloc(req->transfer_len, GFP_KERNEL, &req->sg_cnt);
+	req->p2p_dev = NULL;
+	return false;
+}
+
+int nvmet_req_alloc_sgls(struct nvmet_req *req)
+{
+	if (nvmet_req_find_p2p_dev(req) && !nvmet_req_alloc_p2pmem_sgls(req))
+		return 0;
+
+	req->sg = sgl_alloc(nvmet_data_transfer_len(req), GFP_KERNEL,
+			    &req->sg_cnt);
 	if (unlikely(!req->sg))
-		return -ENOMEM;
+		goto out;
+
+	if (req->metadata_len) {
+		req->metadata_sg = sgl_alloc(req->metadata_len, GFP_KERNEL,
+					     &req->metadata_sg_cnt);
+		if (unlikely(!req->metadata_sg))
+			goto out_free;
+	}
 
 	return 0;
+out_free:
+	sgl_free(req->sg);
+out:
+	return -ENOMEM;
 }
-EXPORT_SYMBOL_GPL(nvmet_req_alloc_sgl);
+EXPORT_SYMBOL_GPL(nvmet_req_alloc_sgls);
 
-void nvmet_req_free_sgl(struct nvmet_req *req)
+void nvmet_req_free_sgls(struct nvmet_req *req)
 {
-	if (req->p2p_dev)
+	if (req->p2p_dev) {
 		pci_p2pmem_free_sgl(req->p2p_dev, req->sg);
-	else
+		if (req->metadata_sg)
+			pci_p2pmem_free_sgl(req->p2p_dev, req->metadata_sg);
+	} else {
 		sgl_free(req->sg);
+		if (req->metadata_sg)
+			sgl_free(req->metadata_sg);
+	}
 
 	req->sg = NULL;
+	req->metadata_sg = NULL;
 	req->sg_cnt = 0;
+	req->metadata_sg_cnt = 0;
 }
-EXPORT_SYMBOL_GPL(nvmet_req_free_sgl);
+EXPORT_SYMBOL_GPL(nvmet_req_free_sgls);
 
 static inline bool nvmet_cc_en(u32 cc)
 {

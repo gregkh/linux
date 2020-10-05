@@ -35,11 +35,16 @@
 
 #define CRC_AUTOSUSPEND_DELAY	50
 
+static unsigned int burst_size;
+module_param(burst_size, uint, 0644);
+MODULE_PARM_DESC(burst_size, "Select burst byte size (0 unlimited)");
+
 struct stm32_crc {
 	struct list_head list;
 	struct device    *dev;
 	void __iomem     *regs;
 	struct clk       *clk;
+	spinlock_t       lock;
 };
 
 struct stm32_crc_list {
@@ -109,12 +114,15 @@ static int stm32_crc_init(struct shash_desc *desc)
 	struct stm32_crc_desc_ctx *ctx = shash_desc_ctx(desc);
 	struct stm32_crc_ctx *mctx = crypto_shash_ctx(desc->tfm);
 	struct stm32_crc *crc;
+	unsigned long flags;
 
 	crc = stm32_crc_get_next_crc();
 	if (!crc)
 		return -ENODEV;
 
 	pm_runtime_get_sync(crc->dev);
+
+	spin_lock_irqsave(&crc->lock, flags);
 
 	/* Reset, set key, poly and configure in bit reverse mode */
 	writel_relaxed(bitrev32(mctx->key), crc->regs + CRC_INIT);
@@ -125,24 +133,29 @@ static int stm32_crc_init(struct shash_desc *desc)
 	/* Store partial result */
 	ctx->partial = readl_relaxed(crc->regs + CRC_DR);
 
+	spin_unlock_irqrestore(&crc->lock, flags);
+
 	pm_runtime_mark_last_busy(crc->dev);
 	pm_runtime_put_autosuspend(crc->dev);
 
 	return 0;
 }
 
-static int stm32_crc_update(struct shash_desc *desc, const u8 *d8,
-			    unsigned int length)
+static int burst_update(struct shash_desc *desc, const u8 *d8,
+			size_t length)
 {
 	struct stm32_crc_desc_ctx *ctx = shash_desc_ctx(desc);
 	struct stm32_crc_ctx *mctx = crypto_shash_ctx(desc->tfm);
 	struct stm32_crc *crc;
+	unsigned long flags;
 
 	crc = stm32_crc_get_next_crc();
 	if (!crc)
 		return -ENODEV;
 
 	pm_runtime_get_sync(crc->dev);
+
+	spin_lock_irqsave(&crc->lock, flags);
 
 	/*
 	 * Restore previously calculated CRC for this context as init value
@@ -182,8 +195,36 @@ static int stm32_crc_update(struct shash_desc *desc, const u8 *d8,
 	/* Store partial result */
 	ctx->partial = readl_relaxed(crc->regs + CRC_DR);
 
+	spin_unlock_irqrestore(&crc->lock, flags);
+
 	pm_runtime_mark_last_busy(crc->dev);
 	pm_runtime_put_autosuspend(crc->dev);
+
+	return 0;
+}
+
+static int stm32_crc_update(struct shash_desc *desc, const u8 *d8,
+			    unsigned int length)
+{
+	const unsigned int burst_sz = burst_size;
+	unsigned int rem_sz;
+	const u8 *cur;
+	size_t size;
+	int ret;
+
+	if (!burst_sz)
+		return burst_update(desc, d8, length);
+
+	/* Digest first bytes not 32bit aligned at first pass in the loop */
+	size = min(length,
+		   burst_sz + (unsigned int)d8 - ALIGN_DOWN((unsigned int)d8,
+							    sizeof(u32)));
+	for (rem_sz = length, cur = d8; rem_sz;
+	     rem_sz -= size, cur += size, size = min(rem_sz, burst_sz)) {
+		ret = burst_update(desc, cur, size);
+		if (ret)
+			return ret;
+	}
 
 	return 0;
 }
@@ -297,7 +338,10 @@ static int stm32_crc_probe(struct platform_device *pdev)
 
 	pm_runtime_get_noresume(dev);
 	pm_runtime_set_active(dev);
+	pm_runtime_irq_safe(dev);
 	pm_runtime_enable(dev);
+
+	spin_lock_init(&crc->lock);
 
 	platform_set_drvdata(pdev, crc);
 
@@ -350,34 +394,60 @@ static int stm32_crc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int stm32_crc_runtime_suspend(struct device *dev)
-{
-	struct stm32_crc *crc = dev_get_drvdata(dev);
-
-	clk_disable_unprepare(crc->clk);
-
-	return 0;
-}
-
-static int stm32_crc_runtime_resume(struct device *dev)
+static int __maybe_unused stm32_crc_suspend(struct device *dev)
 {
 	struct stm32_crc *crc = dev_get_drvdata(dev);
 	int ret;
 
-	ret = clk_prepare_enable(crc->clk);
+	ret = pm_runtime_force_suspend(dev);
+	if (ret)
+		return ret;
+
+	clk_unprepare(crc->clk);
+
+	return 0;
+}
+
+static int __maybe_unused stm32_crc_resume(struct device *dev)
+{
+	struct stm32_crc *crc = dev_get_drvdata(dev);
+	int ret;
+
+	ret = clk_prepare(crc->clk);
 	if (ret) {
-		dev_err(crc->dev, "Failed to prepare_enable clock\n");
+		dev_err(crc->dev, "Failed to prepare clock\n");
+		return ret;
+	}
+
+	return pm_runtime_force_resume(dev);
+}
+
+static int __maybe_unused stm32_crc_runtime_suspend(struct device *dev)
+{
+	struct stm32_crc *crc = dev_get_drvdata(dev);
+
+	clk_disable(crc->clk);
+
+	return 0;
+}
+
+static int __maybe_unused stm32_crc_runtime_resume(struct device *dev)
+{
+	struct stm32_crc *crc = dev_get_drvdata(dev);
+	int ret;
+
+	ret = clk_enable(crc->clk);
+	if (ret) {
+		dev_err(crc->dev, "Failed to enable clock\n");
 		return ret;
 	}
 
 	return 0;
 }
-#endif
 
 static const struct dev_pm_ops stm32_crc_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(stm32_crc_suspend,
+				stm32_crc_resume)
 	SET_RUNTIME_PM_OPS(stm32_crc_runtime_suspend,
 			   stm32_crc_runtime_resume, NULL)
 };

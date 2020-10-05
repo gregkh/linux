@@ -109,9 +109,7 @@ struct inode_smack {
 	struct smack_known	*smk_inode;	/* label of the fso */
 	struct smack_known	*smk_task;	/* label of the task */
 	struct smack_known	*smk_mmap;	/* label of the mmap domain */
-	struct mutex		smk_lock;	/* initialization lock */
 	int			smk_flags;	/* smack inode flags */
-	struct rcu_head         smk_rcu;	/* for freeing inode_smack */
 };
 
 struct task_smack {
@@ -497,10 +495,6 @@ static inline void smk_ad_setfield_u_tsk(struct smk_audit_info *a,
 }
 static inline void smk_ad_setfield_u_fs_path_dentry(struct smk_audit_info *a,
 						    struct dentry *d)
-{
-}
-static inline void smk_ad_setfield_u_fs_path_mnt(struct smk_audit_info *a,
-						 struct vfsmount *m)
 {
 }
 static inline void smk_ad_setfield_u_fs_inode(struct smk_audit_info *a,

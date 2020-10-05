@@ -63,13 +63,22 @@ EXPORT_SYMBOL_GPL(lockdep_rht_bucket_is_held);
 #define ASSERT_RHT_MUTEX(HT)
 #endif
 
+static inline union nested_table *nested_table_top(
+	const struct bucket_table *tbl)
+{
+	/* The top-level bucket entry does not need RCU protection
+	 * because it's set at the same time as tbl->nest.
+	 */
+	return (void *)rcu_dereference_protected(tbl->buckets[0], 1);
+}
+
 static void nested_table_free(union nested_table *ntbl, unsigned int size)
 {
 	const unsigned int shift = PAGE_SHIFT - ilog2(sizeof(void *));
 	const unsigned int len = 1 << shift;
 	unsigned int i;
 
-	ntbl = rcu_dereference_raw(ntbl->table);
+	ntbl = rcu_dereference_protected(ntbl->table, 1);
 	if (!ntbl)
 		return;
 
@@ -89,7 +98,7 @@ static void nested_bucket_table_free(const struct bucket_table *tbl)
 	union nested_table *ntbl;
 	unsigned int i;
 
-	ntbl = (union nested_table *)rcu_dereference_raw(tbl->buckets[0]);
+	ntbl = nested_table_top(tbl);
 
 	for (i = 0; i < len; i++)
 		nested_table_free(ntbl + i, size);
@@ -1171,7 +1180,7 @@ struct rhash_lock_head __rcu **__rht_bucket_nested(
 	unsigned int subhash = hash;
 	union nested_table *ntbl;
 
-	ntbl = (union nested_table *)rcu_dereference_raw(tbl->buckets[0]);
+	ntbl = nested_table_top(tbl);
 	ntbl = rht_dereference_bucket_rcu(ntbl[index].table, tbl, hash);
 	subhash >>= tbl->nest;
 
@@ -1210,7 +1219,7 @@ struct rhash_lock_head __rcu **rht_bucket_nested_insert(
 	unsigned int size = tbl->size >> tbl->nest;
 	union nested_table *ntbl;
 
-	ntbl = (union nested_table *)rcu_dereference_raw(tbl->buckets[0]);
+	ntbl = nested_table_top(tbl);
 	hash >>= tbl->nest;
 	ntbl = nested_table_alloc(ht, &ntbl[index].table,
 				  size <= (1 << shift));

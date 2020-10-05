@@ -19,7 +19,6 @@
 #include <linux/ptdump.h>
 
 #include <asm/e820/types.h>
-#include <asm/pgtable.h>
 
 /*
  * The dumper groups pagetable entries of the same type into one, and for
@@ -273,7 +272,7 @@ static void effective_prot(struct ptdump_state *pt_st, int level, u64 val)
  * print what we collected so far.
  */
 static void note_page(struct ptdump_state *pt_st, unsigned long addr, int level,
-		      unsigned long val)
+		      u64 val)
 {
 	struct pg_state *st = container_of(pt_st, struct pg_state, ptdump);
 	pgprotval_t new_prot, new_eff;
