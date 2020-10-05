@@ -307,7 +307,8 @@ void dcn20_init_blank(
 			COLOR_DEPTH_UNDEFINED,
 			&black_color,
 			otg_active_width,
-			otg_active_height);
+			otg_active_height,
+			0);
 
 	if (num_opps == 2) {
 		bottom_opp->funcs->opp_set_disp_pattern_generator(
@@ -317,7 +318,8 @@ void dcn20_init_blank(
 				COLOR_DEPTH_UNDEFINED,
 				&black_color,
 				otg_active_width,
-				otg_active_height);
+				otg_active_height,
+				0);
 	}
 
 	hws->funcs.wait_for_blank_complete(opp);
@@ -644,6 +646,9 @@ enum dc_status dcn20_enable_stream_timing(
 		BREAK_TO_DEBUGGER();
 		return DC_ERROR_UNEXPECTED;
 	}
+
+	if (dc->hwseq->funcs.PLAT_58856_wa && (!dc_is_dp_signal(stream->signal)))
+		dc->hwseq->funcs.PLAT_58856_wa(context, pipe_ctx);
 
 	pipe_ctx->stream_res.tg->funcs->program_timing(
 			pipe_ctx->stream_res.tg,
@@ -974,7 +979,8 @@ void dcn20_blank_pixel_data(
 			stream->timing.display_color_depth,
 			&black_color,
 			width,
-			height);
+			height,
+			0);
 
 	for (odm_pipe = pipe_ctx->next_odm_pipe; odm_pipe; odm_pipe = odm_pipe->next_odm_pipe) {
 		odm_pipe->stream_res.opp->funcs->opp_set_disp_pattern_generator(
@@ -985,7 +991,8 @@ void dcn20_blank_pixel_data(
 				stream->timing.display_color_depth,
 				&black_color,
 				width,
-				height);
+				height,
+				0);
 	}
 
 	if (!blank)
@@ -1094,7 +1101,6 @@ void dcn20_pipe_control_lock(
 	bool lock)
 {
 	bool flip_immediate = false;
-	bool dig_update_required = false;
 
 	/* use TG master update lock to lock everything on the TG
 	 * therefore only top pipe need to lock
@@ -1132,19 +1138,6 @@ void dcn20_pipe_control_lock(
 		    (!flip_immediate && pipe->stream_res.gsl_group > 0))
 			dcn20_setup_gsl_group_as_lock(dc, pipe, flip_immediate);
 
-	if (pipe->stream && pipe->stream->update_flags.bits.dsc_changed)
-		dig_update_required = true;
-
-	/* Need double buffer lock mode in order to synchronize front end pipe
-	 * updates with dig updates.
-	 */
-	if (dig_update_required) {
-		if (lock) {
-			pipe->stream_res.tg->funcs->lock_doublebuffer_enable(
-					pipe->stream_res.tg);
-		}
-	}
-
 	if (pipe->plane_state != NULL && pipe->plane_state->triplebuffer_flips) {
 		if (lock)
 			pipe->stream_res.tg->funcs->triplebuffer_lock(pipe->stream_res.tg);
@@ -1155,19 +1148,6 @@ void dcn20_pipe_control_lock(
 			pipe->stream_res.tg->funcs->lock(pipe->stream_res.tg);
 		else
 			pipe->stream_res.tg->funcs->unlock(pipe->stream_res.tg);
-	}
-
-	if (dig_update_required) {
-		if (!lock) {
-			pipe->stream_res.tg->funcs->wait_for_state(pipe->stream_res.tg,
-					CRTC_STATE_VACTIVE);
-			pipe->stream_res.tg->funcs->wait_for_state(pipe->stream_res.tg,
-					CRTC_STATE_VBLANK);
-			pipe->stream_res.tg->funcs->wait_for_state(pipe->stream_res.tg,
-					CRTC_STATE_VACTIVE);
-			pipe->stream_res.tg->funcs->lock_doublebuffer_disable(
-					pipe->stream_res.tg);
-		}
 	}
 }
 
@@ -1393,6 +1373,7 @@ static void dcn20_update_dchubp_dpp(
 	}
 
 	if (pipe_ctx->update_flags.bits.viewport ||
+			(context == dc->current_state && plane_state->update_flags.bits.position_change) ||
 			(context == dc->current_state && plane_state->update_flags.bits.scaling_change) ||
 			(context == dc->current_state && pipe_ctx->stream->update_flags.bits.scaling)) {
 
@@ -1562,12 +1543,6 @@ void dcn20_program_front_end_for_ctx(
 		}
 	}
 
-	/* Carry over GSL groups in case the context is changing. */
-	for (i = 0; i < dc->res_pool->pipe_count; i++)
-		if (context->res_ctx.pipe_ctx[i].stream == dc->current_state->res_ctx.pipe_ctx[i].stream)
-			context->res_ctx.pipe_ctx[i].stream_res.gsl_group =
-				dc->current_state->res_ctx.pipe_ctx[i].stream_res.gsl_group;
-
 	/* Set pipe update flags and lock pipes */
 	for (i = 0; i < dc->res_pool->pipe_count; i++)
 		dcn20_detect_pipe_changes(&dc->current_state->res_ctx.pipe_ctx[i],
@@ -1617,6 +1592,7 @@ void dcn20_post_unlock_program_front_end(
 {
 	int i;
 	const unsigned int TIMEOUT_FOR_PIPE_ENABLE_MS = 100;
+	struct dce_hwseq *hwseq = dc->hwseq;
 
 	DC_LOGGER_INIT(dc->ctx->logger);
 
@@ -1644,8 +1620,24 @@ void dcn20_post_unlock_program_front_end(
 	}
 
 	/* WA to apply WM setting*/
-	if (dc->hwseq->wa.DEGVIDCN21)
+	if (hwseq->wa.DEGVIDCN21)
 		dc->res_pool->hubbub->funcs->apply_DEDCN21_147_wa(dc->res_pool->hubbub);
+
+
+	/* WA for stutter underflow during MPO transitions when adding 2nd plane */
+	if (hwseq->wa.disallow_self_refresh_during_multi_plane_transition) {
+
+		if (dc->current_state->stream_status[0].plane_count == 1 &&
+				context->stream_status[0].plane_count > 1) {
+
+			struct timing_generator *tg = dc->res_pool->timing_generators[0];
+
+			dc->res_pool->hubbub->funcs->allow_self_refresh_control(dc->res_pool->hubbub, false);
+
+			hwseq->wa_state.disallow_self_refresh_during_multi_plane_transition_applied = true;
+			hwseq->wa_state.disallow_self_refresh_during_multi_plane_transition_applied_on_frame = tg->funcs->get_frame_count(tg);
+		}
+	}
 }
 
 void dcn20_prepare_bandwidth(
@@ -1660,7 +1652,7 @@ void dcn20_prepare_bandwidth(
 			false);
 
 	/* program dchubbub watermarks */
-	hubbub->funcs->program_watermarks(hubbub,
+	dc->wm_optimized_required = hubbub->funcs->program_watermarks(hubbub,
 					&context->bw_ctx.bw.dcn.watermarks,
 					dc->res_pool->ref_clocks.dchub_ref_clock_inKhz / 1000,
 					false);
@@ -2044,6 +2036,10 @@ static void dcn20_reset_back_end_for_pipe(
 	 * parent pipe.
 	 */
 	if (pipe_ctx->top_pipe == NULL) {
+
+		if (pipe_ctx->stream_res.abm)
+			pipe_ctx->stream_res.abm->funcs->set_abm_immediate_disable(pipe_ctx->stream_res.abm);
+
 		pipe_ctx->stream_res.tg->funcs->disable_crtc(pipe_ctx->stream_res.tg);
 
 		pipe_ctx->stream_res.tg->funcs->enable_optc_clock(pipe_ctx->stream_res.tg, false);

@@ -85,7 +85,7 @@ struct ucma_file {
 struct ucma_context {
 	u32			id;
 	struct completion	comp;
-	atomic_t		ref;
+	refcount_t		ref;
 	int			events_reported;
 	int			backlog;
 
@@ -153,7 +153,7 @@ static struct ucma_context *ucma_get_ctx(struct ucma_file *file, int id)
 		if (ctx->closing)
 			ctx = ERR_PTR(-EIO);
 		else
-			atomic_inc(&ctx->ref);
+			refcount_inc(&ctx->ref);
 	}
 	xa_unlock(&ctx_table);
 	return ctx;
@@ -161,7 +161,7 @@ static struct ucma_context *ucma_get_ctx(struct ucma_file *file, int id)
 
 static void ucma_put_ctx(struct ucma_context *ctx)
 {
-	if (atomic_dec_and_test(&ctx->ref))
+	if (refcount_dec_and_test(&ctx->ref))
 		complete(&ctx->comp);
 }
 
@@ -213,7 +213,7 @@ static struct ucma_context *ucma_alloc_ctx(struct ucma_file *file)
 		return NULL;
 
 	INIT_WORK(&ctx->close_work, ucma_close_id);
-	atomic_set(&ctx->ref, 1);
+	refcount_set(&ctx->ref, 1);
 	init_completion(&ctx->comp);
 	INIT_LIST_HEAD(&ctx->mc_list);
 	ctx->file = file;
@@ -1063,7 +1063,7 @@ static void ucma_copy_conn_param(struct rdma_cm_id *id,
 	dst->retry_count = src->retry_count;
 	dst->rnr_retry_count = src->rnr_retry_count;
 	dst->srq = src->srq;
-	dst->qp_num = src->qp_num;
+	dst->qp_num = src->qp_num & 0xFFFFFF;
 	dst->qkey = (id->route.addr.src_addr.ss_family == AF_IB) ? src->qkey : 0;
 }
 
@@ -1544,7 +1544,7 @@ static ssize_t ucma_leave_multicast(struct ucma_file *file,
 		mc = ERR_PTR(-ENOENT);
 	else if (mc->ctx->file != file)
 		mc = ERR_PTR(-EINVAL);
-	else if (!atomic_inc_not_zero(&mc->ctx->ref))
+	else if (!refcount_inc_not_zero(&mc->ctx->ref))
 		mc = ERR_PTR(-ENXIO);
 	else
 		__xa_erase(&multicast_table, mc->id);

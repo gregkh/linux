@@ -7,6 +7,11 @@
  *
  * Copyright (c) 2019 Advantech
  * Author: Amy.Shih <amy.shih@advantech.com.tw>
+ *
+ * Supports the following chips:
+ *
+ * Chip        #vin  #fan  #pwm  #temp  #dts  chip ID
+ * nct7904d     20    12    4     5      8    0xc5
  */
 
 #include <linux/module.h>
@@ -36,6 +41,7 @@
 #define FANCTL_MAX		4	/* Counted from 1 */
 #define TCPU_MAX		8	/* Counted from 1 */
 #define TEMP_MAX		4	/* Counted from 1 */
+#define SMI_STS_MAX		10	/* Counted from 1 */
 
 #define VT_ADC_CTRL0_REG	0x20	/* Bank 0 */
 #define VT_ADC_CTRL1_REG	0x21	/* Bank 0 */
@@ -822,6 +828,10 @@ static const struct hwmon_channel_info *nct7904_info[] = {
 			   HWMON_F_INPUT | HWMON_F_MIN | HWMON_F_ALARM,
 			   HWMON_F_INPUT | HWMON_F_MIN | HWMON_F_ALARM,
 			   HWMON_F_INPUT | HWMON_F_MIN | HWMON_F_ALARM,
+			   HWMON_F_INPUT | HWMON_F_MIN | HWMON_F_ALARM,
+			   HWMON_F_INPUT | HWMON_F_MIN | HWMON_F_ALARM,
+			   HWMON_F_INPUT | HWMON_F_MIN | HWMON_F_ALARM,
+			   HWMON_F_INPUT | HWMON_F_MIN | HWMON_F_ALARM,
 			   HWMON_F_INPUT | HWMON_F_MIN | HWMON_F_ALARM),
 	HWMON_CHANNEL_INFO(pwm,
 			   HWMON_PWM_INPUT | HWMON_PWM_ENABLE,
@@ -829,6 +839,18 @@ static const struct hwmon_channel_info *nct7904_info[] = {
 			   HWMON_PWM_INPUT | HWMON_PWM_ENABLE,
 			   HWMON_PWM_INPUT | HWMON_PWM_ENABLE),
 	HWMON_CHANNEL_INFO(temp,
+			   HWMON_T_INPUT | HWMON_T_ALARM | HWMON_T_MAX |
+			   HWMON_T_MAX_HYST | HWMON_T_TYPE | HWMON_T_CRIT |
+			   HWMON_T_CRIT_HYST,
+			   HWMON_T_INPUT | HWMON_T_ALARM | HWMON_T_MAX |
+			   HWMON_T_MAX_HYST | HWMON_T_TYPE | HWMON_T_CRIT |
+			   HWMON_T_CRIT_HYST,
+			   HWMON_T_INPUT | HWMON_T_ALARM | HWMON_T_MAX |
+			   HWMON_T_MAX_HYST | HWMON_T_TYPE | HWMON_T_CRIT |
+			   HWMON_T_CRIT_HYST,
+			   HWMON_T_INPUT | HWMON_T_ALARM | HWMON_T_MAX |
+			   HWMON_T_MAX_HYST | HWMON_T_TYPE | HWMON_T_CRIT |
+			   HWMON_T_CRIT_HYST,
 			   HWMON_T_INPUT | HWMON_T_ALARM | HWMON_T_MAX |
 			   HWMON_T_MAX_HYST | HWMON_T_TYPE | HWMON_T_CRIT |
 			   HWMON_T_CRIT_HYST,
@@ -988,6 +1010,13 @@ static int nct7904_probe(struct i2c_client *client,
 		if (ret < 0)
 			return ret;
 		data->fan_mode[i] = ret;
+	}
+
+	/* Read all of SMI status register to clear alarms */
+	for (i = 0; i < SMI_STS_MAX; i++) {
+		ret = nct7904_read_reg(data, BANK_0, SMI_STS1_REG + i);
+		if (ret < 0)
+			return ret;
 	}
 
 	hwmon_dev =

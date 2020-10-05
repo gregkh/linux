@@ -842,6 +842,4 @@ extern int ipoib_debug_level;
 
 #define IPOIB_QPN(ha) (be32_to_cpup((__be32 *) ha) & 0xffffff)
 
-extern const char ipoib_driver_version[];
-
 #endif /* _IPOIB_H */

@@ -247,6 +247,36 @@ static int parse_audio_format_rates_v1(struct snd_usb_audio *chip, struct audiof
 	return 0;
 }
 
+
+/*
+ * Presonus Studio 1810c supports a limited set of sampling
+ * rates per altsetting but reports the full set each time.
+ * If we don't filter out the unsupported rates and attempt
+ * to configure the card, it will hang refusing to do any
+ * further audio I/O until a hard reset is performed.
+ *
+ * The list of supported rates per altsetting (set of available
+ * I/O channels) is described in the owner's manual, section 2.2.
+ */
+static bool s1810c_valid_sample_rate(struct audioformat *fp,
+				     unsigned int rate)
+{
+	switch (fp->altsetting) {
+	case 1:
+		/* All ADAT ports available */
+		return rate <= 48000;
+	case 2:
+		/* Half of ADAT ports available */
+		return (rate == 88200 || rate == 96000);
+	case 3:
+		/* Analog I/O only (no S/PDIF nor ADAT) */
+		return rate >= 176400;
+	default:
+		return false;
+	}
+	return false;
+}
+
 /*
  * Many Focusrite devices supports a limited set of sampling rates per
  * altsetting. Maximum rate is exposed in the last 4 bytes of Format Type
@@ -329,6 +359,12 @@ static int parse_uac2_sample_rate_range(struct snd_usb_audio *chip,
 		}
 
 		for (rate = min; rate <= max; rate += res) {
+
+			/* Filter out invalid rates on Presonus Studio 1810c */
+			if (chip->usb_id == USB_ID(0x0194f, 0x010c) &&
+			    !s1810c_valid_sample_rate(fp, rate))
+				goto skip_rate;
+
 			/* Filter out invalid rates on Focusrite devices */
 			if (USB_ID_VENDOR(chip->usb_id) == 0x1235 &&
 			    !focusrite_valid_sample_rate(chip, fp, rate))
