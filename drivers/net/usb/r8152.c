@@ -9800,6 +9800,8 @@ static bool rtl8152_supports_lenovo_macpassthru(struct usb_device *udev)
 	return 0;
 }
 
+const char *ifname = "usb%d";
+
 static int rtl8152_probe_once(struct usb_interface *intf,
 			      const struct usb_device_id *id, u8 version)
 {
@@ -9812,6 +9814,11 @@ static int rtl8152_probe_once(struct usb_interface *intf,
 	netdev = alloc_etherdev(sizeof(struct r8152));
 	if (!netdev) {
 		dev_err(&intf->dev, "Out of memory\n");
+		return -ENOMEM;
+	}
+
+	if (dev_alloc_name(netdev, ifname) < 0) {
+		dev_err(&intf->dev, "Failed to allocate device name\n");
 		return -ENOMEM;
 	}
 
