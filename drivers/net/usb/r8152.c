@@ -6655,6 +6655,8 @@ static u8 rtl_get_version(struct usb_interface *intf)
 	return version;
 }
 
+const char *ifname = "usb%d";
+
 static int rtl8152_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
@@ -6679,6 +6681,11 @@ static int rtl8152_probe(struct usb_interface *intf,
 	netdev = alloc_etherdev(sizeof(struct r8152));
 	if (!netdev) {
 		dev_err(&intf->dev, "Out of memory\n");
+		return -ENOMEM;
+	}
+
+	if (dev_alloc_name(netdev, ifname) < 0) {
+		dev_err(&intf->dev, "Failed to allocate device name\n");
 		return -ENOMEM;
 	}
 
