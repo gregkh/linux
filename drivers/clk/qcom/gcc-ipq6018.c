@@ -2190,7 +2190,7 @@ static struct clk_branch gcc_blsp1_qup6_i2c_apps_clk = {
 			.parent_hws = (const struct clk_hw *[]){
 					&blsp1_qup6_i2c_apps_clk_src.clkr.hw },
 			.num_parents = 1,
-			.flags = CLK_SET_RATE_PARENT,
+			.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
 			.ops = &clk_branch2_ops,
 		},
 	},
