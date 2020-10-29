@@ -32,6 +32,7 @@ static struct clk_alpha_pll ipq_pll = {
 			},
 			.num_parents = 1,
 			.ops = &clk_alpha_pll_huayra_ops,
+			.flags = CLK_IS_CRITICAL,
 		},
 	},
 };
