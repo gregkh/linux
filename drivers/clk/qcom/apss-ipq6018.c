@@ -39,15 +39,21 @@ static const struct parent_map parents_apcs_alias0_clk_src_map[] = {
 	{ P_APSS_PLL_EARLY, 5 },
 };
 
+static const struct freq_tbl ftbl_apcs_alias0_clk_src[] = {
+	{ .src = P_APSS_PLL_EARLY, .pre_div = 1 },
+	{ }
+};
+
 static struct clk_rcg2 apcs_alias0_clk_src = {
 	.cmd_rcgr = 0x0050,
+	.freq_tbl = ftbl_apcs_alias0_clk_src,
 	.hid_width = 5,
 	.parent_map = parents_apcs_alias0_clk_src_map,
 	.clkr.hw.init = &(struct clk_init_data){
 		.name = "apcs_alias0_clk_src",
 		.parent_data = parents_apcs_alias0_clk_src,
 		.num_parents = ARRAY_SIZE(parents_apcs_alias0_clk_src),
-		.ops = &clk_rcg2_mux_closest_ops,
+		.ops = &clk_rcg2_ops,
 		.flags = CLK_SET_RATE_PARENT,
 	},
 };
