@@ -105,7 +105,8 @@ struct nexthop {
 };
 
 enum nexthop_event_type {
-	NEXTHOP_EVENT_DEL
+	NEXTHOP_EVENT_DEL,
+	NEXTHOP_EVENT_REPLACE,
 };
 
 int register_nexthop_notifier(struct net *net, struct notifier_block *nb);
