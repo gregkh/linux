@@ -270,7 +270,12 @@ static void __gfs2_glock_put(struct gfs2_glock *gl)
 	gfs2_glock_remove_from_lru(gl);
 	spin_unlock(&gl->gl_lockref.lock);
 	GLOCK_BUG_ON(gl, !list_empty(&gl->gl_holders));
-	GLOCK_BUG_ON(gl, mapping && mapping->nrpages && !gfs2_withdrawn(sdp));
+	if (mapping) {
+		truncate_inode_pages_final(mapping);
+		if (!gfs2_withdrawn(sdp))
+			GLOCK_BUG_ON(gl, mapping->nrpages ||
+				     mapping->nrexceptional);
+	}
 	trace_gfs2_glock_put(gl);
 	sdp->sd_lockstruct.ls_ops->lm_put_lock(gl);
 }
@@ -1049,7 +1054,8 @@ int gfs2_glock_get(struct gfs2_sbd *sdp, u64 number,
 	gl->gl_object = NULL;
 	gl->gl_hold_time = GL_GLOCK_DFT_HOLD;
 	INIT_DELAYED_WORK(&gl->gl_work, glock_work_func);
-	INIT_DELAYED_WORK(&gl->gl_delete, delete_work_func);
+	if (gl->gl_name.ln_type == LM_TYPE_IOPEN)
+		INIT_DELAYED_WORK(&gl->gl_delete, delete_work_func);
 
 	mapping = gfs2_glock2aspace(gl);
 	if (mapping) {
@@ -1901,9 +1907,11 @@ bool gfs2_delete_work_queued(const struct gfs2_glock *gl)
 
 static void flush_delete_work(struct gfs2_glock *gl)
 {
-	if (cancel_delayed_work(&gl->gl_delete)) {
-		queue_delayed_work(gfs2_delete_workqueue,
-				   &gl->gl_delete, 0);
+	if (gl->gl_name.ln_type == LM_TYPE_IOPEN) {
+		if (cancel_delayed_work(&gl->gl_delete)) {
+			queue_delayed_work(gfs2_delete_workqueue,
+					   &gl->gl_delete, 0);
+		}
 	}
 	gfs2_glock_queue_work(gl, 0);
 }
@@ -2108,6 +2116,12 @@ static const char *gflags2str(char *buf, const struct gfs2_glock *gl)
 		*p++ = 'o';
 	if (test_bit(GLF_BLOCKING, gflags))
 		*p++ = 'b';
+	if (test_bit(GLF_INODE_CREATING, gflags))
+		*p++ = 'c';
+	if (test_bit(GLF_PENDING_DELETE, gflags))
+		*p++ = 'P';
+	if (test_bit(GLF_FREEING, gflags))
+		*p++ = 'x';
 	*p = 0;
 	return buf;
 }

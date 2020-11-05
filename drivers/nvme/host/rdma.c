@@ -96,6 +96,7 @@ struct nvme_rdma_queue {
 	int			cm_error;
 	struct completion	cm_done;
 	bool			pi_support;
+	int			cq_size;
 };
 
 struct nvme_rdma_ctrl {
@@ -150,6 +151,7 @@ MODULE_PARM_DESC(register_always,
 static int nvme_rdma_cm_handler(struct rdma_cm_id *cm_id,
 		struct rdma_cm_event *event);
 static void nvme_rdma_recv_done(struct ib_cq *cq, struct ib_wc *wc);
+static void nvme_rdma_complete_rq(struct request *rq);
 
 static const struct blk_mq_ops nvme_rdma_mq_ops;
 static const struct blk_mq_ops nvme_rdma_admin_mq_ops;
@@ -275,6 +277,7 @@ static int nvme_rdma_create_qp(struct nvme_rdma_queue *queue, const int factor)
 	init_attr.recv_cq = queue->ib_cq;
 	if (queue->pi_support)
 		init_attr.create_flags |= IB_QP_CREATE_INTEGRITY_EN;
+	init_attr.qp_context = queue;
 
 	ret = rdma_create_qp(queue->cm_id, dev->pd, &init_attr);
 
@@ -409,6 +412,14 @@ out_err:
 	return NULL;
 }
 
+static void nvme_rdma_free_cq(struct nvme_rdma_queue *queue)
+{
+	if (nvme_rdma_poll_queue(queue))
+		ib_free_cq(queue->ib_cq);
+	else
+		ib_cq_pool_put(queue->ib_cq, queue->cq_size);
+}
+
 static void nvme_rdma_destroy_queue_ib(struct nvme_rdma_queue *queue)
 {
 	struct nvme_rdma_device *dev;
@@ -430,7 +441,7 @@ static void nvme_rdma_destroy_queue_ib(struct nvme_rdma_queue *queue)
 	 * the destruction of the QP shouldn't use rdma_cm API.
 	 */
 	ib_destroy_qp(queue->qp);
-	ib_free_cq(queue->ib_cq);
+	nvme_rdma_free_cq(queue);
 
 	nvme_rdma_free_ring(ibdev, queue->rsp_ring, queue->queue_size,
 			sizeof(struct nvme_completion), DMA_FROM_DEVICE);
@@ -450,13 +461,42 @@ static int nvme_rdma_get_max_fr_pages(struct ib_device *ibdev, bool pi_support)
 	return min_t(u32, NVME_RDMA_MAX_SEGMENTS, max_page_list_len - 1);
 }
 
+static int nvme_rdma_create_cq(struct ib_device *ibdev,
+		struct nvme_rdma_queue *queue)
+{
+	int ret, comp_vector, idx = nvme_rdma_queue_idx(queue);
+	enum ib_poll_context poll_ctx;
+
+	/*
+	 * Spread I/O queues completion vectors according their queue index.
+	 * Admin queues can always go on completion vector 0.
+	 */
+	comp_vector = (idx == 0 ? idx : idx - 1) % ibdev->num_comp_vectors;
+
+	/* Polling queues need direct cq polling context */
+	if (nvme_rdma_poll_queue(queue)) {
+		poll_ctx = IB_POLL_DIRECT;
+		queue->ib_cq = ib_alloc_cq(ibdev, queue, queue->cq_size,
+					   comp_vector, poll_ctx);
+	} else {
+		poll_ctx = IB_POLL_SOFTIRQ;
+		queue->ib_cq = ib_cq_pool_get(ibdev, queue->cq_size,
+					      comp_vector, poll_ctx);
+	}
+
+	if (IS_ERR(queue->ib_cq)) {
+		ret = PTR_ERR(queue->ib_cq);
+		return ret;
+	}
+
+	return 0;
+}
+
 static int nvme_rdma_create_queue_ib(struct nvme_rdma_queue *queue)
 {
 	struct ib_device *ibdev;
 	const int send_wr_factor = 3;			/* MR, SEND, INV */
 	const int cq_factor = send_wr_factor + 1;	/* + RECV */
-	int comp_vector, idx = nvme_rdma_queue_idx(queue);
-	enum ib_poll_context poll_ctx;
 	int ret, pages_per_mr;
 
 	queue->device = nvme_rdma_find_get_device(queue->cm_id);
@@ -467,26 +507,12 @@ static int nvme_rdma_create_queue_ib(struct nvme_rdma_queue *queue)
 	}
 	ibdev = queue->device->dev;
 
-	/*
-	 * Spread I/O queues completion vectors according their queue index.
-	 * Admin queues can always go on completion vector 0.
-	 */
-	comp_vector = (idx == 0 ? idx : idx - 1) % ibdev->num_comp_vectors;
-
-	/* Polling queues need direct cq polling context */
-	if (nvme_rdma_poll_queue(queue))
-		poll_ctx = IB_POLL_DIRECT;
-	else
-		poll_ctx = IB_POLL_SOFTIRQ;
-
 	/* +1 for ib_stop_cq */
-	queue->ib_cq = ib_alloc_cq(ibdev, queue,
-				cq_factor * queue->queue_size + 1,
-				comp_vector, poll_ctx);
-	if (IS_ERR(queue->ib_cq)) {
-		ret = PTR_ERR(queue->ib_cq);
+	queue->cq_size = cq_factor * queue->queue_size + 1;
+
+	ret = nvme_rdma_create_cq(ibdev, queue);
+	if (ret)
 		goto out_put_dev;
-	}
 
 	ret = nvme_rdma_create_qp(queue, send_wr_factor);
 	if (ret)
@@ -512,7 +538,7 @@ static int nvme_rdma_create_queue_ib(struct nvme_rdma_queue *queue)
 	if (ret) {
 		dev_err(queue->ctrl->ctrl.device,
 			"failed to initialize MR pool sized %d for QID %d\n",
-			queue->queue_size, idx);
+			queue->queue_size, nvme_rdma_queue_idx(queue));
 		goto out_destroy_ring;
 	}
 
@@ -523,7 +549,7 @@ static int nvme_rdma_create_queue_ib(struct nvme_rdma_queue *queue)
 		if (ret) {
 			dev_err(queue->ctrl->ctrl.device,
 				"failed to initialize PI MR pool sized %d for QID %d\n",
-				queue->queue_size, idx);
+				queue->queue_size, nvme_rdma_queue_idx(queue));
 			goto out_destroy_mr_pool;
 		}
 	}
@@ -540,7 +566,7 @@ out_destroy_ring:
 out_destroy_qp:
 	rdma_destroy_qp(queue->cm_id);
 out_destroy_ib_cq:
-	ib_free_cq(queue->ib_cq);
+	nvme_rdma_free_cq(queue);
 out_put_dev:
 	nvme_rdma_dev_put(queue->device);
 	return ret;
@@ -1175,10 +1201,20 @@ static void nvme_rdma_error_recovery(struct nvme_rdma_ctrl *ctrl)
 	queue_work(nvme_reset_wq, &ctrl->err_work);
 }
 
+static void nvme_rdma_end_request(struct nvme_rdma_request *req)
+{
+	struct request *rq = blk_mq_rq_from_pdu(req);
+
+	if (!refcount_dec_and_test(&req->ref))
+		return;
+	if (!nvme_try_complete_req(rq, req->status, req->result))
+		nvme_rdma_complete_rq(rq);
+}
+
 static void nvme_rdma_wr_error(struct ib_cq *cq, struct ib_wc *wc,
 		const char *op)
 {
-	struct nvme_rdma_queue *queue = cq->cq_context;
+	struct nvme_rdma_queue *queue = wc->qp->qp_context;
 	struct nvme_rdma_ctrl *ctrl = queue->ctrl;
 
 	if (ctrl->ctrl.state == NVME_CTRL_LIVE)
@@ -1199,16 +1235,11 @@ static void nvme_rdma_inv_rkey_done(struct ib_cq *cq, struct ib_wc *wc)
 {
 	struct nvme_rdma_request *req =
 		container_of(wc->wr_cqe, struct nvme_rdma_request, reg_cqe);
-	struct request *rq = blk_mq_rq_from_pdu(req);
 
-	if (unlikely(wc->status != IB_WC_SUCCESS)) {
+	if (unlikely(wc->status != IB_WC_SUCCESS))
 		nvme_rdma_wr_error(cq, wc, "LOCAL_INV");
-		return;
-	}
-
-	if (refcount_dec_and_test(&req->ref))
-		nvme_end_request(rq, req->status, req->result);
-
+	else
+		nvme_rdma_end_request(req);
 }
 
 static int nvme_rdma_inv_rkey(struct nvme_rdma_queue *queue,
@@ -1573,15 +1604,11 @@ static void nvme_rdma_send_done(struct ib_cq *cq, struct ib_wc *wc)
 		container_of(wc->wr_cqe, struct nvme_rdma_qe, cqe);
 	struct nvme_rdma_request *req =
 		container_of(qe, struct nvme_rdma_request, sqe);
-	struct request *rq = blk_mq_rq_from_pdu(req);
 
-	if (unlikely(wc->status != IB_WC_SUCCESS)) {
+	if (unlikely(wc->status != IB_WC_SUCCESS))
 		nvme_rdma_wr_error(cq, wc, "SEND");
-		return;
-	}
-
-	if (refcount_dec_and_test(&req->ref))
-		nvme_end_request(rq, req->status, req->result);
+	else
+		nvme_rdma_end_request(req);
 }
 
 static int nvme_rdma_post_send(struct nvme_rdma_queue *queue,
@@ -1723,15 +1750,14 @@ static void nvme_rdma_process_nvme_rsp(struct nvme_rdma_queue *queue,
 		return;
 	}
 
-	if (refcount_dec_and_test(&req->ref))
-		nvme_end_request(rq, req->status, req->result);
+	nvme_rdma_end_request(req);
 }
 
 static void nvme_rdma_recv_done(struct ib_cq *cq, struct ib_wc *wc)
 {
 	struct nvme_rdma_qe *qe =
 		container_of(wc->wr_cqe, struct nvme_rdma_qe, cqe);
-	struct nvme_rdma_queue *queue = cq->cq_context;
+	struct nvme_rdma_queue *queue = wc->qp->qp_context;
 	struct ib_device *ibdev = queue->device->dev;
 	struct nvme_completion *cqe = qe->data;
 	const size_t len = sizeof(struct nvme_completion);
@@ -1900,14 +1926,13 @@ static int nvme_rdma_cm_handler(struct rdma_cm_id *cm_id,
 		complete(&queue->cm_done);
 		return 0;
 	case RDMA_CM_EVENT_REJECTED:
-		nvme_rdma_destroy_queue_ib(queue);
 		cm_error = nvme_rdma_conn_rejected(queue, ev);
 		break;
 	case RDMA_CM_EVENT_ROUTE_ERROR:
 	case RDMA_CM_EVENT_CONNECT_ERROR:
 	case RDMA_CM_EVENT_UNREACHABLE:
 		nvme_rdma_destroy_queue_ib(queue);
-		/* fall through */
+		fallthrough;
 	case RDMA_CM_EVENT_ADDR_ERROR:
 		dev_dbg(queue->ctrl->ctrl.device,
 			"CM error event %d\n", ev->event);

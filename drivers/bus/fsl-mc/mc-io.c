@@ -82,7 +82,7 @@ int __must_check fsl_create_mc_io(struct device *dev,
 	mc_io->portal_phys_addr = mc_portal_phys_addr;
 	mc_io->portal_size = mc_portal_size;
 	if (flags & FSL_MC_IO_ATOMIC_CONTEXT_PORTAL)
-		spin_lock_init(&mc_io->spinlock);
+		raw_spin_lock_init(&mc_io->spinlock);
 	else
 		mutex_init(&mc_io->mutex);
 
@@ -129,7 +129,12 @@ error_destroy_mc_io:
  */
 void fsl_destroy_mc_io(struct fsl_mc_io *mc_io)
 {
-	struct fsl_mc_device *dpmcp_dev = mc_io->dpmcp_dev;
+	struct fsl_mc_device *dpmcp_dev;
+
+	if (!mc_io)
+		return;
+
+	dpmcp_dev = mc_io->dpmcp_dev;
 
 	if (dpmcp_dev)
 		fsl_mc_io_unset_dpmcp(mc_io);

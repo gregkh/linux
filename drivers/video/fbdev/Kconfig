@@ -844,7 +844,7 @@ config FB_OPENCORES
 	  systems (e.g. Altera socfpga or Xilinx Zynq) on FPGAs.
 
 	  The source code and specification for the core is available at
-	  <http://opencores.org/project,vga_lcd>
+	  <https://opencores.org/project,vga_lcd>
 
 config FB_S1D13XXX
 	tristate "Epson S1D13XXX framebuffer support"
@@ -855,7 +855,7 @@ config FB_S1D13XXX
 	help
 	  Support for S1D13XXX framebuffer device family (currently only
 	  working with S1D13806). Product specs at
-	  <http://vdc.epson.com/>
+	  <https://vdc.epson.com/>
 
 config FB_ATMEL
 	tristate "AT91 LCD Controller support"
@@ -1213,7 +1213,7 @@ config FB_RADEON
 	  don't need to choose this to run the Radeon in plain VGA mode.
 
 	  There is a product page at
-	  http://products.amd.com/en-us/GraphicCardResult.aspx
+	  https://products.amd.com/en-us/GraphicCardResult.aspx
 
 config FB_RADEON_I2C
 	bool "DDC/I2C for ATI Radeon support"
@@ -1381,7 +1381,7 @@ config FB_SIS
 	help
 	  This is the frame buffer device driver for the SiS 300, 315, 330
 	  and 340 series as well as XGI V3XT, V5, V8, Z7 graphics chipsets.
-	  Specs available at <http://www.sis.com> and <http://www.xgitech.com>.
+	  Specs available at <https://www.sis.com> and <http://www.xgitech.com>.
 
 	  To compile this driver as a module, choose M here; the module
 	  will be called sisfb.
@@ -2197,17 +2197,6 @@ config FB_BROADSHEET
 	  controller. The release name for this device was Epson S1D13521
 	  and could also have been called by other names when coupled with
 	  a bridge adapter.
-
-config FB_PUV3_UNIGFX
-	tristate "PKUnity v3 Unigfx framebuffer support"
-	depends on FB && UNICORE32 && ARCH_PUV3
-	select FB_SYS_FILLRECT
-	select FB_SYS_COPYAREA
-	select FB_SYS_IMAGEBLIT
-	select FB_SYS_FOPS
-	help
-	  Choose this option if you want to use the Unigfx device as a
-	  framebuffer device. Without the support of PCI & AGP.
 
 config FB_HYPERV
 	tristate "Microsoft Hyper-V Synthetic Video support"

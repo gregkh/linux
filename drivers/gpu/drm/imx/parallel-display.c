@@ -88,14 +88,6 @@ static int imx_pd_connector_get_modes(struct drm_connector *connector)
 	return num_modes;
 }
 
-static struct drm_encoder *imx_pd_connector_best_encoder(
-		struct drm_connector *connector)
-{
-	struct imx_parallel_display *imxpd = con_to_imxpd(connector);
-
-	return &imxpd->encoder;
-}
-
 static void imx_pd_bridge_enable(struct drm_bridge *bridge)
 {
 	struct imx_parallel_display *imxpd = bridge_to_imxpd(bridge);
@@ -217,7 +209,7 @@ static int imx_pd_bridge_atomic_check(struct drm_bridge *bridge,
 
 	if (next_bridge_state)
 		bus_flags = next_bridge_state->input_bus_cfg.flags;
-	else if (!imxpd->bus_format && di->num_bus_formats)
+	else if (di->num_bus_formats)
 		bus_flags = di->bus_flags;
 	else
 		bus_flags = imxpd->bus_flags;
@@ -254,7 +246,6 @@ static const struct drm_connector_funcs imx_pd_connector_funcs = {
 
 static const struct drm_connector_helper_funcs imx_pd_connector_helper_funcs = {
 	.get_modes = imx_pd_connector_get_modes,
-	.best_encoder = imx_pd_connector_best_encoder,
 };
 
 static const struct drm_bridge_funcs imx_pd_bridge_funcs = {
@@ -329,6 +320,12 @@ static int imx_pd_bind(struct device *dev, struct device *master, void *data)
 	imxpd = dev_get_drvdata(dev);
 	memset(imxpd, 0, sizeof(*imxpd));
 
+	/* port@1 is the output port */
+	ret = drm_of_find_panel_or_bridge(np, 1, 0, &imxpd->panel,
+					  &imxpd->next_bridge);
+	if (ret && ret != -ENODEV)
+		return ret;
+
 	edidp = of_get_property(np, "edid", &imxpd->edid_len);
 	if (edidp)
 		imxpd->edid = kmemdup(edidp, imxpd->edid_len, GFP_KERNEL);
@@ -345,12 +342,6 @@ static int imx_pd_bind(struct device *dev, struct device *master, void *data)
 			bus_format = MEDIA_BUS_FMT_RGB666_1X24_CPADHI;
 	}
 	imxpd->bus_format = bus_format;
-
-	/* port@1 is the output port */
-	ret = drm_of_find_panel_or_bridge(np, 1, 0, &imxpd->panel,
-					  &imxpd->next_bridge);
-	if (ret && ret != -ENODEV)
-		return ret;
 
 	imxpd->dev = dev;
 

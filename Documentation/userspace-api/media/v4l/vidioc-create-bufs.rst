@@ -120,6 +120,7 @@ than the number requested.
 	If you want to just query the capabilities without making any
 	other changes, then set ``count`` to 0, ``memory`` to
 	``V4L2_MEMORY_MMAP`` and ``format.type`` to the buffer type.
+
     * - __u32
       - ``reserved``\ [7]
       - A place holder for future extensions. Drivers and applications

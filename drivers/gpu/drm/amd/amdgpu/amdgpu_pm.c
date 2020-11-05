@@ -1105,7 +1105,7 @@ static ssize_t amdgpu_set_pp_dpm_sclk(struct device *dev,
 	}
 
 	if (is_support_sw_smu(adev))
-		ret = smu_force_clk_levels(&adev->smu, SMU_SCLK, mask, true);
+		ret = smu_force_clk_levels(&adev->smu, SMU_SCLK, mask);
 	else if (adev->powerplay.pp_funcs->force_clock_level)
 		ret = amdgpu_dpm_force_clock_level(adev, PP_SCLK, mask);
 
@@ -1173,7 +1173,7 @@ static ssize_t amdgpu_set_pp_dpm_mclk(struct device *dev,
 	}
 
 	if (is_support_sw_smu(adev))
-		ret = smu_force_clk_levels(&adev->smu, SMU_MCLK, mask, true);
+		ret = smu_force_clk_levels(&adev->smu, SMU_MCLK, mask);
 	else if (adev->powerplay.pp_funcs->force_clock_level)
 		ret = amdgpu_dpm_force_clock_level(adev, PP_MCLK, mask);
 
@@ -1241,7 +1241,7 @@ static ssize_t amdgpu_set_pp_dpm_socclk(struct device *dev,
 	}
 
 	if (is_support_sw_smu(adev))
-		ret = smu_force_clk_levels(&adev->smu, SMU_SOCCLK, mask, true);
+		ret = smu_force_clk_levels(&adev->smu, SMU_SOCCLK, mask);
 	else if (adev->powerplay.pp_funcs->force_clock_level)
 		ret = amdgpu_dpm_force_clock_level(adev, PP_SOCCLK, mask);
 	else
@@ -1311,7 +1311,7 @@ static ssize_t amdgpu_set_pp_dpm_fclk(struct device *dev,
 	}
 
 	if (is_support_sw_smu(adev))
-		ret = smu_force_clk_levels(&adev->smu, SMU_FCLK, mask, true);
+		ret = smu_force_clk_levels(&adev->smu, SMU_FCLK, mask);
 	else if (adev->powerplay.pp_funcs->force_clock_level)
 		ret = amdgpu_dpm_force_clock_level(adev, PP_FCLK, mask);
 	else
@@ -1381,7 +1381,7 @@ static ssize_t amdgpu_set_pp_dpm_dcefclk(struct device *dev,
 	}
 
 	if (is_support_sw_smu(adev))
-		ret = smu_force_clk_levels(&adev->smu, SMU_DCEFCLK, mask, true);
+		ret = smu_force_clk_levels(&adev->smu, SMU_DCEFCLK, mask);
 	else if (adev->powerplay.pp_funcs->force_clock_level)
 		ret = amdgpu_dpm_force_clock_level(adev, PP_DCEFCLK, mask);
 	else
@@ -1451,7 +1451,7 @@ static ssize_t amdgpu_set_pp_dpm_pcie(struct device *dev,
 	}
 
 	if (is_support_sw_smu(adev))
-		ret = smu_force_clk_levels(&adev->smu, SMU_PCIE, mask, true);
+		ret = smu_force_clk_levels(&adev->smu, SMU_PCIE, mask);
 	else if (adev->powerplay.pp_funcs->force_clock_level)
 		ret = amdgpu_dpm_force_clock_level(adev, PP_PCIE, mask);
 	else
@@ -1669,7 +1669,7 @@ static ssize_t amdgpu_set_pp_power_profile_mode(struct device *dev,
 		const char *buf,
 		size_t count)
 {
-	int ret = 0xff;
+	int ret;
 	struct drm_device *ddev = dev_get_drvdata(dev);
 	struct amdgpu_device *adev = ddev->dev_private;
 	uint32_t parameter_size = 0;
@@ -1876,9 +1876,76 @@ static ssize_t amdgpu_get_unique_id(struct device *dev,
 	return 0;
 }
 
+/**
+ * DOC: thermal_throttling_logging
+ *
+ * Thermal throttling pulls down the clock frequency and thus the performance.
+ * It's an useful mechanism to protect the chip from overheating. Since it
+ * impacts performance, the user controls whether it is enabled and if so,
+ * the log frequency.
+ *
+ * Reading back the file shows you the status(enabled or disabled) and
+ * the interval(in seconds) between each thermal logging.
+ *
+ * Writing an integer to the file, sets a new logging interval, in seconds.
+ * The value should be between 1 and 3600. If the value is less than 1,
+ * thermal logging is disabled. Values greater than 3600 are ignored.
+ */
+static ssize_t amdgpu_get_thermal_throttling_logging(struct device *dev,
+						     struct device_attribute *attr,
+						     char *buf)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct amdgpu_device *adev = ddev->dev_private;
+
+	return snprintf(buf, PAGE_SIZE, "%s: thermal throttling logging %s, with interval %d seconds\n",
+			adev->ddev->unique,
+			atomic_read(&adev->throttling_logging_enabled) ? "enabled" : "disabled",
+			adev->throttling_logging_rs.interval / HZ + 1);
+}
+
+static ssize_t amdgpu_set_thermal_throttling_logging(struct device *dev,
+						     struct device_attribute *attr,
+						     const char *buf,
+						     size_t count)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct amdgpu_device *adev = ddev->dev_private;
+	long throttling_logging_interval;
+	unsigned long flags;
+	int ret = 0;
+
+	ret = kstrtol(buf, 0, &throttling_logging_interval);
+	if (ret)
+		return ret;
+
+	if (throttling_logging_interval > 3600)
+		return -EINVAL;
+
+	if (throttling_logging_interval > 0) {
+		raw_spin_lock_irqsave(&adev->throttling_logging_rs.lock, flags);
+		/*
+		 * Reset the ratelimit timer internals.
+		 * This can effectively restart the timer.
+		 */
+		adev->throttling_logging_rs.interval =
+			(throttling_logging_interval - 1) * HZ;
+		adev->throttling_logging_rs.begin = 0;
+		adev->throttling_logging_rs.printed = 0;
+		adev->throttling_logging_rs.missed = 0;
+		raw_spin_unlock_irqrestore(&adev->throttling_logging_rs.lock, flags);
+
+		atomic_set(&adev->throttling_logging_enabled, 1);
+	} else {
+		atomic_set(&adev->throttling_logging_enabled, 0);
+	}
+
+	return count;
+}
+
 static struct amdgpu_device_attr amdgpu_device_attrs[] = {
 	AMDGPU_DEVICE_ATTR_RW(power_dpm_state,				ATTR_FLAG_BASIC|ATTR_FLAG_ONEVF),
-	AMDGPU_DEVICE_ATTR_RW(power_dpm_force_performance_level,	ATTR_FLAG_BASIC|ATTR_FLAG_ONEVF),
+	AMDGPU_DEVICE_ATTR_RW(power_dpm_force_performance_level,	ATTR_FLAG_BASIC),
 	AMDGPU_DEVICE_ATTR_RO(pp_num_states,				ATTR_FLAG_BASIC),
 	AMDGPU_DEVICE_ATTR_RO(pp_cur_state,				ATTR_FLAG_BASIC),
 	AMDGPU_DEVICE_ATTR_RW(pp_force_state,				ATTR_FLAG_BASIC),
@@ -1898,6 +1965,7 @@ static struct amdgpu_device_attr amdgpu_device_attrs[] = {
 	AMDGPU_DEVICE_ATTR_RO(pcie_bw,					ATTR_FLAG_BASIC),
 	AMDGPU_DEVICE_ATTR_RW(pp_features,				ATTR_FLAG_BASIC),
 	AMDGPU_DEVICE_ATTR_RO(unique_id,				ATTR_FLAG_BASIC),
+	AMDGPU_DEVICE_ATTR_RW(thermal_throttling_logging,		ATTR_FLAG_BASIC),
 };
 
 static int default_attr_update(struct amdgpu_device *adev, struct amdgpu_device_attr *attr,
@@ -1940,7 +2008,9 @@ static int default_attr_update(struct amdgpu_device *adev, struct amdgpu_device_
 		if (adev->flags & AMD_IS_APU)
 			*states = ATTR_STATE_UNSUPPORTED;
 	} else if (DEVICE_ATTR_IS(unique_id)) {
-		if (!adev->unique_id)
+		if (asic_type != CHIP_VEGA10 &&
+		    asic_type != CHIP_VEGA20 &&
+		    asic_type != CHIP_ARCTURUS)
 			*states = ATTR_STATE_UNSUPPORTED;
 	} else if (DEVICE_ATTR_IS(pp_features)) {
 		if (adev->flags & AMD_IS_APU || asic_type < CHIP_VEGA10)
@@ -2769,7 +2839,7 @@ static ssize_t amdgpu_hwmon_show_power_cap_max(struct device *dev,
 	}
 
 	if (is_support_sw_smu(adev)) {
-		smu_get_power_limit(&adev->smu, &limit, true, true);
+		smu_get_power_limit(&adev->smu, &limit, true);
 		size = snprintf(buf, PAGE_SIZE, "%u\n", limit * 1000000);
 	} else if (adev->powerplay.pp_funcs && adev->powerplay.pp_funcs->get_power_limit) {
 		adev->powerplay.pp_funcs->get_power_limit(adev->powerplay.pp_handle, &limit, true);
@@ -2803,7 +2873,7 @@ static ssize_t amdgpu_hwmon_show_power_cap(struct device *dev,
 	}
 
 	if (is_support_sw_smu(adev)) {
-		smu_get_power_limit(&adev->smu, &limit, false,  true);
+		smu_get_power_limit(&adev->smu, &limit, false);
 		size = snprintf(buf, PAGE_SIZE, "%u\n", limit * 1000000);
 	} else if (adev->powerplay.pp_funcs && adev->powerplay.pp_funcs->get_power_limit) {
 		adev->powerplay.pp_funcs->get_power_limit(adev->powerplay.pp_handle, &limit, false);
@@ -3143,6 +3213,12 @@ static umode_t hwmon_attributes_visible(struct kobject *kobj,
 	     attr == &sensor_dev_attr_fan1_max.dev_attr.attr ||
 	     attr == &sensor_dev_attr_fan1_target.dev_attr.attr ||
 	     attr == &sensor_dev_attr_fan1_enable.dev_attr.attr))
+		return 0;
+
+	/* Skip crit temp on APU */
+	if ((adev->flags & AMD_IS_APU) && (adev->family >= AMDGPU_FAMILY_CZ) &&
+	    (attr == &sensor_dev_attr_temp1_crit.dev_attr.attr ||
+	     attr == &sensor_dev_attr_temp1_crit_hyst.dev_attr.attr))
 		return 0;
 
 	/* Skip limit attributes if DPM is not enabled */
@@ -3488,21 +3564,34 @@ void amdgpu_dpm_enable_uvd(struct amdgpu_device *adev, bool enable)
 {
 	int ret = 0;
 
-	ret = amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_UVD, !enable);
-	if (ret)
-		DRM_ERROR("Dpm %s uvd failed, ret = %d. \n",
-			  enable ? "enable" : "disable", ret);
+	if (adev->family == AMDGPU_FAMILY_SI) {
+		mutex_lock(&adev->pm.mutex);
+		if (enable) {
+			adev->pm.dpm.uvd_active = true;
+			adev->pm.dpm.state = POWER_STATE_TYPE_INTERNAL_UVD;
+		} else {
+			adev->pm.dpm.uvd_active = false;
+		}
+		mutex_unlock(&adev->pm.mutex);
 
-	/* enable/disable Low Memory PState for UVD (4k videos) */
-	if (adev->asic_type == CHIP_STONEY &&
-		adev->uvd.decode_image_width >= WIDTH_4K) {
-		struct pp_hwmgr *hwmgr = adev->powerplay.pp_handle;
+		amdgpu_pm_compute_clocks(adev);
+	} else {
+		ret = amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_UVD, !enable);
+		if (ret)
+			DRM_ERROR("Dpm %s uvd failed, ret = %d. \n",
+				  enable ? "enable" : "disable", ret);
 
-		if (hwmgr && hwmgr->hwmgr_func &&
-		    hwmgr->hwmgr_func->update_nbdpm_pstate)
-			hwmgr->hwmgr_func->update_nbdpm_pstate(hwmgr,
-							       !enable,
-							       true);
+		/* enable/disable Low Memory PState for UVD (4k videos) */
+		if (adev->asic_type == CHIP_STONEY &&
+			adev->uvd.decode_image_width >= WIDTH_4K) {
+			struct pp_hwmgr *hwmgr = adev->powerplay.pp_handle;
+
+			if (hwmgr && hwmgr->hwmgr_func &&
+			    hwmgr->hwmgr_func->update_nbdpm_pstate)
+				hwmgr->hwmgr_func->update_nbdpm_pstate(hwmgr,
+								       !enable,
+								       true);
+		}
 	}
 }
 
@@ -3510,10 +3599,24 @@ void amdgpu_dpm_enable_vce(struct amdgpu_device *adev, bool enable)
 {
 	int ret = 0;
 
-	ret = amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_VCE, !enable);
-	if (ret)
-		DRM_ERROR("Dpm %s vce failed, ret = %d. \n",
-			  enable ? "enable" : "disable", ret);
+	if (adev->family == AMDGPU_FAMILY_SI) {
+		mutex_lock(&adev->pm.mutex);
+		if (enable) {
+			adev->pm.dpm.vce_active = true;
+			/* XXX select vce level based on ring/task */
+			adev->pm.dpm.vce_level = AMD_VCE_LEVEL_AC_ALL;
+		} else {
+			adev->pm.dpm.vce_active = false;
+		}
+		mutex_unlock(&adev->pm.mutex);
+
+		amdgpu_pm_compute_clocks(adev);
+	} else {
+		ret = amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_VCE, !enable);
+		if (ret)
+			DRM_ERROR("Dpm %s vce failed, ret = %d. \n",
+				  enable ? "enable" : "disable", ret);
+	}
 }
 
 void amdgpu_pm_print_power_states(struct amdgpu_device *adev)

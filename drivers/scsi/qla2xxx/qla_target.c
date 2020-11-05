@@ -442,7 +442,7 @@ void qlt_response_pkt_all_vps(struct scsi_qla_host *vha,
 		ql_dbg(ql_dbg_tgt, vha, 0xe073,
 			"qla_target(%d):%s: CRC2 Response pkt\n",
 			vha->vp_idx, __func__);
-		/* fall through */
+		fallthrough;
 	case CTIO_TYPE7:
 	{
 		struct ctio7_from_24xx *entry = (struct ctio7_from_24xx *)pkt;
@@ -1229,14 +1229,15 @@ void qlt_schedule_sess_for_deletion(struct fc_port *sess)
 	case DSC_DELETE_PEND:
 		return;
 	case DSC_DELETED:
-		if (tgt && tgt->tgt_stop && (tgt->sess_count == 0))
-			wake_up_all(&tgt->waitQ);
-		if (sess->vha->fcport_count == 0)
-			wake_up_all(&sess->vha->fcport_waitQ);
-
 		if (!sess->plogi_link[QLT_PLOGI_LINK_SAME_WWN] &&
-			!sess->plogi_link[QLT_PLOGI_LINK_CONFLICT])
+			!sess->plogi_link[QLT_PLOGI_LINK_CONFLICT]) {
+			if (tgt && tgt->tgt_stop && tgt->sess_count == 0)
+				wake_up_all(&tgt->waitQ);
+
+			if (sess->vha->fcport_count == 0)
+				wake_up_all(&sess->vha->fcport_waitQ);
 			return;
+		}
 		break;
 	case DSC_UPD_FCPORT:
 		/*
@@ -4423,7 +4424,7 @@ static int qlt_issue_task_mgmt(struct fc_port *sess, u64 lun,
 	case QLA_TGT_CLEAR_TS:
 	case QLA_TGT_ABORT_TS:
 		abort_cmds_for_lun(vha, lun, a->u.isp24.fcp_hdr.s_id);
-		/* fall through */
+		fallthrough;
 	case QLA_TGT_CLEAR_ACA:
 		h = qlt_find_qphint(vha, mcmd->unpacked_lun);
 		mcmd->qpair = h->qpair;
@@ -5057,7 +5058,7 @@ static int qlt_24xx_handle_els(struct scsi_qla_host *vha,
 			res = 1;
 			break;
 		}
-		/* fall through */
+		fallthrough;
 	case ELS_LOGO:
 	case ELS_PRLO:
 		spin_lock_irqsave(&ha->tgt.sess_lock, flags);

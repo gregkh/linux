@@ -602,7 +602,7 @@ config MMC_GOLDFISH
 
 config MMC_SPI
 	tristate "MMC/SD/SDIO over SPI"
-	depends on SPI_MASTER && HAS_DMA
+	depends on SPI_MASTER
 	select CRC7
 	select CRC_ITU_T
 	help
@@ -1009,6 +1009,7 @@ config MMC_MTK
 	tristate "MediaTek SD/MMC Card Interface support"
 	depends on HAS_DMA
 	select REGULATOR
+	select MMC_CQHCI
 	help
 	  This selects the MediaTek(R) Secure digital and Multimedia card Interface.
 	  If you have a machine with a integrated SD/MMC card reader, say Y or M here.

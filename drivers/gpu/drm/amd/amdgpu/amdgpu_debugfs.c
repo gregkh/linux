@@ -1073,6 +1073,57 @@ static ssize_t amdgpu_debugfs_gfxoff_write(struct file *f, const char __user *bu
 }
 
 
+/**
+ * amdgpu_debugfs_regs_gfxoff_status - read gfxoff status
+ *
+ * @f: open file handle
+ * @buf: User buffer to store read data in
+ * @size: Number of bytes to read
+ * @pos:  Offset to seek to
+ */
+static ssize_t amdgpu_debugfs_gfxoff_read(struct file *f, char __user *buf,
+					 size_t size, loff_t *pos)
+{
+	struct amdgpu_device *adev = file_inode(f)->i_private;
+	ssize_t result = 0;
+	int r;
+
+	if (size & 0x3 || *pos & 0x3)
+		return -EINVAL;
+
+	r = pm_runtime_get_sync(adev->ddev->dev);
+	if (r < 0)
+		return r;
+
+	while (size) {
+		uint32_t value;
+
+		r = amdgpu_get_gfx_off_status(adev, &value);
+		if (r) {
+			pm_runtime_mark_last_busy(adev->ddev->dev);
+			pm_runtime_put_autosuspend(adev->ddev->dev);
+			return r;
+		}
+
+		r = put_user(value, (uint32_t *)buf);
+		if (r) {
+			pm_runtime_mark_last_busy(adev->ddev->dev);
+			pm_runtime_put_autosuspend(adev->ddev->dev);
+			return r;
+		}
+
+		result += 4;
+		buf += 4;
+		*pos += 4;
+		size -= 4;
+	}
+
+	pm_runtime_mark_last_busy(adev->ddev->dev);
+	pm_runtime_put_autosuspend(adev->ddev->dev);
+
+	return result;
+}
+
 static const struct file_operations amdgpu_debugfs_regs_fops = {
 	.owner = THIS_MODULE,
 	.read = amdgpu_debugfs_regs_read,
@@ -1123,7 +1174,9 @@ static const struct file_operations amdgpu_debugfs_gpr_fops = {
 
 static const struct file_operations amdgpu_debugfs_gfxoff_fops = {
 	.owner = THIS_MODULE,
+	.read = amdgpu_debugfs_gfxoff_read,
 	.write = amdgpu_debugfs_gfxoff_write,
+	.llseek = default_llseek
 };
 
 static const struct file_operations *debugfs_regs[] = {
@@ -1471,10 +1524,12 @@ static int amdgpu_debugfs_sclk_set(void *data, u64 val)
 	}
 
 	if (is_support_sw_smu(adev)) {
-		ret = smu_get_dpm_freq_range(&adev->smu, SMU_SCLK, &min_freq, &max_freq, true);
+		ret = smu_get_dpm_freq_range(&adev->smu, SMU_SCLK, &min_freq, &max_freq);
 		if (ret || val > max_freq || val < min_freq)
 			return -EINVAL;
-		ret = smu_set_soft_freq_range(&adev->smu, SMU_SCLK, (uint32_t)val, (uint32_t)val, true);
+		ret = smu_set_soft_freq_range(&adev->smu, SMU_SCLK, (uint32_t)val, (uint32_t)val);
+	} else {
+		return 0;
 	}
 
 	pm_runtime_mark_last_busy(adev->ddev->dev);

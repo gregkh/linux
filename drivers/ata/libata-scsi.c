@@ -93,7 +93,7 @@ static ssize_t ata_scsi_park_show(struct device *device,
 	struct ata_link *link;
 	struct ata_device *dev;
 	unsigned long now;
-	unsigned int uninitialized_var(msecs);
+	unsigned int msecs;
 	int rc = 0;
 
 	ap = ata_shost_to_port(sdev->host);
@@ -4168,7 +4168,7 @@ void ata_scsi_simulate(struct ata_device *dev, struct scsi_cmnd *cmd)
 				ata_scsi_rbuf_fill(&args, ata_scsiop_inq_b6);
 				break;
 			}
-			/* Fallthrough */
+			fallthrough;
 		default:
 			ata_scsi_set_invalid_field(dev, cmd, 2, 0xff);
 			break;
@@ -4204,7 +4204,7 @@ void ata_scsi_simulate(struct ata_device *dev, struct scsi_cmnd *cmd)
 	 * turning this into a no-op.
 	 */
 	case SYNCHRONIZE_CACHE:
-		/* fall through */
+		fallthrough;
 
 	/* no-op's, complete with success */
 	case REZERO_UNIT:

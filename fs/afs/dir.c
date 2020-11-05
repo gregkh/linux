@@ -281,8 +281,7 @@ retry:
 			if (ret < 0)
 				goto error;
 
-			set_page_private(req->pages[i], 1);
-			SetPagePrivate(req->pages[i]);
+			attach_page_private(req->pages[i], (void *)1);
 			unlock_page(req->pages[i]);
 			i++;
 		} else {
@@ -1053,7 +1052,7 @@ static int afs_d_revalidate_rcu(struct dentry *dentry)
 static int afs_d_revalidate(struct dentry *dentry, unsigned int flags)
 {
 	struct afs_vnode *vnode, *dir;
-	struct afs_fid uninitialized_var(fid);
+	struct afs_fid fid;
 	struct dentry *parent;
 	struct inode *inode;
 	struct key *key;
@@ -1975,8 +1974,7 @@ static int afs_dir_releasepage(struct page *page, gfp_t gfp_flags)
 
 	_enter("{{%llx:%llu}[%lu]}", dvnode->fid.vid, dvnode->fid.vnode, page->index);
 
-	set_page_private(page, 0);
-	ClearPagePrivate(page);
+	detach_page_private(page);
 
 	/* The directory will need reloading. */
 	if (test_and_clear_bit(AFS_VNODE_DIR_VALID, &dvnode->flags))
@@ -2003,8 +2001,6 @@ static void afs_dir_invalidatepage(struct page *page, unsigned int offset,
 		afs_stat_v(dvnode, n_inval);
 
 	/* we clean up only if the entire page is being invalidated */
-	if (offset == 0 && length == PAGE_SIZE) {
-		set_page_private(page, 0);
-		ClearPagePrivate(page);
-	}
+	if (offset == 0 && length == PAGE_SIZE)
+		detach_page_private(page);
 }

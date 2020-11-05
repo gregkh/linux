@@ -11,7 +11,7 @@
 #include <linux/export.h>
 #include <linux/mutex.h>
 #include <linux/err.h>
-#include <linux/of.h>
+#include <linux/property.h>
 #include <linux/rbtree.h>
 #include <linux/sched.h>
 #include <linux/delay.h>
@@ -581,14 +581,34 @@ static void regmap_range_exit(struct regmap *map)
 	kfree(map->selector_work_buf);
 }
 
+static int regmap_set_name(struct regmap *map, const struct regmap_config *config)
+{
+	if (config->name) {
+		const char *name = kstrdup_const(config->name, GFP_KERNEL);
+
+		if (!name)
+			return -ENOMEM;
+
+		kfree_const(map->name);
+		map->name = name;
+	}
+
+	return 0;
+}
+
 int regmap_attach_dev(struct device *dev, struct regmap *map,
 		      const struct regmap_config *config)
 {
 	struct regmap **m;
+	int ret;
 
 	map->dev = dev;
 
-	regmap_debugfs_init(map, config->name);
+	ret = regmap_set_name(map, config);
+	if (ret)
+		return ret;
+
+	regmap_debugfs_init(map);
 
 	/* Add a devres resource for dev_get_regmap() */
 	m = devres_alloc(dev_get_regmap_release, sizeof(*m), GFP_KERNEL);
@@ -631,7 +651,7 @@ enum regmap_endian regmap_get_val_endian(struct device *dev,
 					 const struct regmap_bus *bus,
 					 const struct regmap_config *config)
 {
-	struct device_node *np;
+	struct fwnode_handle *fwnode = dev ? dev_fwnode(dev) : NULL;
 	enum regmap_endian endian;
 
 	/* Retrieve the endianness specification from the regmap config */
@@ -641,22 +661,17 @@ enum regmap_endian regmap_get_val_endian(struct device *dev,
 	if (endian != REGMAP_ENDIAN_DEFAULT)
 		return endian;
 
-	/* If the dev and dev->of_node exist try to get endianness from DT */
-	if (dev && dev->of_node) {
-		np = dev->of_node;
+	/* If the firmware node exist try to get endianness from it */
+	if (fwnode_property_read_bool(fwnode, "big-endian"))
+		endian = REGMAP_ENDIAN_BIG;
+	else if (fwnode_property_read_bool(fwnode, "little-endian"))
+		endian = REGMAP_ENDIAN_LITTLE;
+	else if (fwnode_property_read_bool(fwnode, "native-endian"))
+		endian = REGMAP_ENDIAN_NATIVE;
 
-		/* Parse the device's DT node for an endianness specification */
-		if (of_property_read_bool(np, "big-endian"))
-			endian = REGMAP_ENDIAN_BIG;
-		else if (of_property_read_bool(np, "little-endian"))
-			endian = REGMAP_ENDIAN_LITTLE;
-		else if (of_property_read_bool(np, "native-endian"))
-			endian = REGMAP_ENDIAN_NATIVE;
-
-		/* If the endianness was specified in DT, use that */
-		if (endian != REGMAP_ENDIAN_DEFAULT)
-			return endian;
-	}
+	/* If the endianness was specified in fwnode, use that */
+	if (endian != REGMAP_ENDIAN_DEFAULT)
+		return endian;
 
 	/* Retrieve the endianness specification from the bus config */
 	if (bus && bus->val_format_endian_default)
@@ -692,13 +707,11 @@ struct regmap *__regmap_init(struct device *dev,
 		goto err;
 	}
 
-	if (config->name) {
-		map->name = kstrdup_const(config->name, GFP_KERNEL);
-		if (!map->name) {
-			ret = -ENOMEM;
-			goto err_map;
-		}
-	}
+	ret = regmap_set_name(map, config);
+	if (ret)
+		goto err_map;
+
+	ret = -EINVAL; /* Later error paths rely on this */
 
 	if (config->disable_locking) {
 		map->lock = map->unlock = regmap_lock_unlock_none;
@@ -1142,7 +1155,7 @@ skip_format_initialization:
 		if (ret != 0)
 			goto err_regcache;
 	} else {
-		regmap_debugfs_init(map, config->name);
+		regmap_debugfs_init(map);
 	}
 
 	return map;
@@ -1302,6 +1315,8 @@ EXPORT_SYMBOL_GPL(regmap_field_free);
  */
 int regmap_reinit_cache(struct regmap *map, const struct regmap_config *config)
 {
+	int ret;
+
 	regcache_exit(map);
 	regmap_debugfs_exit(map);
 
@@ -1314,7 +1329,11 @@ int regmap_reinit_cache(struct regmap *map, const struct regmap_config *config)
 	map->readable_noinc_reg = config->readable_noinc_reg;
 	map->cache_type = config->cache_type;
 
-	regmap_debugfs_init(map, config->name);
+	ret = regmap_set_name(map, config);
+	if (ret)
+		return ret;
+
+	regmap_debugfs_init(map);
 
 	map->cache_bypass = false;
 	map->cache_only = false;
@@ -2025,7 +2044,7 @@ EXPORT_SYMBOL_GPL(regmap_field_update_bits_base);
  * A value of zero will be returned on success, a negative errno will
  * be returned in error cases.
  */
-int regmap_fields_update_bits_base(struct regmap_field *field,  unsigned int id,
+int regmap_fields_update_bits_base(struct regmap_field *field, unsigned int id,
 				   unsigned int mask, unsigned int val,
 				   bool *change, bool async, bool force)
 {

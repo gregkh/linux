@@ -461,6 +461,7 @@ static void io_impersonate_work(struct io_worker *worker,
 		io_wq_switch_mm(worker, work);
 	if (worker->cur_creds != work->creds)
 		io_wq_switch_creds(worker, work);
+	current->signal->rlim[RLIMIT_FSIZE].rlim_cur = work->fsize;
 }
 
 static void io_assign_current_work(struct io_worker *worker,
@@ -488,7 +489,6 @@ static void io_worker_handle_work(struct io_worker *worker)
 
 	do {
 		struct io_wq_work *work;
-		unsigned int hash;
 get_next:
 		/*
 		 * If we got some work, mark us as busy. If we didn't, but
@@ -511,6 +511,7 @@ get_next:
 		/* handle a whole dependent link */
 		do {
 			struct io_wq_work *old_work, *next_hashed, *linked;
+			unsigned int hash = io_get_work_hash(work);
 
 			next_hashed = wq_next_work(work);
 			io_impersonate_work(worker, work);
@@ -521,10 +522,8 @@ get_next:
 			if (test_bit(IO_WQ_BIT_CANCEL, &wq->state))
 				work->flags |= IO_WQ_WORK_CANCEL;
 
-			hash = io_get_work_hash(work);
-			linked = old_work = work;
-			wq->do_work(&linked);
-			linked = (old_work == linked) ? NULL : linked;
+			old_work = work;
+			linked = wq->do_work(work);
 
 			work = next_hashed;
 			if (!work && linked && !io_wq_is_hashed(linked)) {
@@ -541,8 +540,6 @@ get_next:
 				raw_spin_lock_irq(&wqe->lock);
 				wqe->hash_map &= ~BIT_ULL(hash);
 				wqe->flags &= ~IO_WQE_FLAG_STALLED;
-				/* dependent work is not hashed */
-				hash = -1U;
 				/* skip unnecessary unlock-lock wqe->lock */
 				if (!work)
 					goto get_next;
@@ -657,6 +654,7 @@ static bool create_io_worker(struct io_wq *wq, struct io_wqe *wqe, int index)
 		kfree(worker);
 		return false;
 	}
+	kthread_bind_mask(worker->task, cpumask_of_node(wqe->node));
 
 	raw_spin_lock_irq(&wqe->lock);
 	hlist_nulls_add_head_rcu(&worker->nulls_node, &wqe->free_list);
@@ -822,8 +820,7 @@ static void io_run_cancel(struct io_wq_work *work, struct io_wqe *wqe)
 		struct io_wq_work *old_work = work;
 
 		work->flags |= IO_WQ_WORK_CANCEL;
-		wq->do_work(&work);
-		work = (work == old_work) ? NULL : work;
+		work = wq->do_work(work);
 		wq->free_work(old_work);
 	} while (work);
 }

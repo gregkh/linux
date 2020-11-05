@@ -160,6 +160,13 @@ static int cml_rt5682_codec_init(struct snd_soc_pcm_runtime *rtd)
 	return ret;
 };
 
+static void cml_rt5682_codec_exit(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_component *component = asoc_rtd_to_codec(rtd, 0)->component;
+
+	snd_soc_component_set_jack(component, NULL, NULL);
+}
+
 static int cml_rt1011_spk_init(struct snd_soc_pcm_runtime *rtd)
 {
 	int ret = 0;
@@ -192,7 +199,7 @@ static int cml_rt1011_spk_init(struct snd_soc_pcm_runtime *rtd)
 static int cml_rt5682_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	int clk_id, clk_freq, pll_out, ret;
 
@@ -225,7 +232,7 @@ static int cml_rt5682_hw_params(struct snd_pcm_substream *substream,
 static int cml_rt1011_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_soc_dai *codec_dai;
 	struct snd_soc_card *card = rtd->card;
 	int srate, i, ret = 0;
@@ -421,6 +428,7 @@ static struct snd_soc_dai_link cml_rt1011_rt5682_dailink[] = {
 		.name = "SSP0-Codec",
 		.id = 0,
 		.init = cml_rt5682_codec_init,
+		.exit = cml_rt5682_codec_exit,
 		.ignore_pmdown_time = 1,
 		.ops = &cml_rt5682_ops,
 		.dpcm_playback = 1,
@@ -525,6 +533,7 @@ static struct snd_soc_card snd_soc_card_cml = {
 
 static int snd_cml_rt1011_probe(struct platform_device *pdev)
 {
+	struct snd_soc_dai_link *dai_link;
 	struct card_private *ctx;
 	struct snd_soc_acpi_mach *mach;
 	const char *platform_name;
@@ -541,17 +550,16 @@ static int snd_cml_rt1011_probe(struct platform_device *pdev)
 
 	dmi_check_system(sof_rt1011_quirk_table);
 
-	dev_info(&pdev->dev, "sof_rt1011_quirk = %lx\n", sof_rt1011_quirk);
+	dev_dbg(&pdev->dev, "sof_rt1011_quirk = %lx\n", sof_rt1011_quirk);
 
 	/* when 4 speaker is available, update codec config */
 	if (sof_rt1011_quirk & (SOF_RT1011_SPEAKER_TL |
 				SOF_RT1011_SPEAKER_TR)) {
-		for (i = 0; i < ARRAY_SIZE(cml_rt1011_rt5682_dailink); i++) {
-			if (!strcmp(cml_rt1011_rt5682_dailink[i].codecs->dai_name,
+		for_each_card_prelinks(&snd_soc_card_cml, i, dai_link) {
+			if (!strcmp(dai_link->codecs[0].dai_name,
 				    CML_RT1011_CODEC_DAI)) {
-				cml_rt1011_rt5682_dailink[i].codecs = ssp1_codec_4spk;
-				cml_rt1011_rt5682_dailink[i].num_codecs =
-						ARRAY_SIZE(ssp1_codec_4spk);
+				dai_link->codecs = ssp1_codec_4spk;
+				dai_link->num_codecs = ARRAY_SIZE(ssp1_codec_4spk);
 			}
 		}
 	}

@@ -152,7 +152,6 @@ static void panfrost_job_hw_submit(struct panfrost_job *job, int js)
 		return;
 
 	if (WARN_ON(job_read(pfdev, JS_COMMAND_NEXT(js)))) {
-		pm_runtime_put_sync_autosuspend(pfdev->dev);
 		return;
 	}
 
@@ -282,7 +281,7 @@ static void panfrost_job_cleanup(struct kref *ref)
 
 	if (job->bos) {
 		for (i = 0; i < job->bo_count; i++)
-			drm_gem_object_put_unlocked(job->bos[i]);
+			drm_gem_object_put(job->bos[i]);
 
 		kvfree(job->bos);
 	}

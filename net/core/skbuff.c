@@ -820,6 +820,7 @@ void skb_tx_error(struct sk_buff *skb)
 }
 EXPORT_SYMBOL(skb_tx_error);
 
+#ifdef CONFIG_TRACEPOINTS
 /**
  *	consume_skb - free an skbuff
  *	@skb: buffer to free
@@ -837,6 +838,7 @@ void consume_skb(struct sk_buff *skb)
 	__kfree_skb(skb);
 }
 EXPORT_SYMBOL(consume_skb);
+#endif
 
 /**
  *	consume_stateless_skb - free an skbuff, assuming it is stateless
@@ -3758,7 +3760,6 @@ struct sk_buff *skb_segment(struct sk_buff *head_skb,
 	int err = -ENOMEM;
 	int i = 0;
 	int pos;
-	int dummy;
 
 	if (list_skb && !list_skb->head_frag && skb_headlen(list_skb) &&
 	    (skb_shinfo(head_skb)->gso_type & SKB_GSO_DODGY)) {
@@ -3780,7 +3781,7 @@ struct sk_buff *skb_segment(struct sk_buff *head_skb,
 	}
 
 	__skb_push(head_skb, doffset);
-	proto = skb_network_protocol(head_skb, &dummy);
+	proto = skb_network_protocol(head_skb, NULL);
 	if (unlikely(!proto))
 		return ERR_PTR(-EINVAL);
 
@@ -4413,7 +4414,7 @@ int skb_cow_data(struct sk_buff *skb, int tailbits, struct sk_buff **trailer)
 	 * at the moment even if they are anonymous).
 	 */
 	if ((skb_cloned(skb) || skb_shinfo(skb)->nr_frags) &&
-	    __pskb_pull_tail(skb, skb_pagelen(skb)-skb_headlen(skb)) == NULL)
+	    !__pskb_pull_tail(skb, __skb_pagelen(skb)))
 		return -ENOMEM;
 
 	/* Easy case. Most of packets will go this way. */
@@ -4692,7 +4693,7 @@ void __skb_tstamp_tx(struct sk_buff *orig_skb,
 		if ((sk->sk_tsflags & SOF_TIMESTAMPING_OPT_STATS) &&
 		    sk->sk_protocol == IPPROTO_TCP &&
 		    sk->sk_type == SOCK_STREAM) {
-			skb = tcp_get_timestamping_opt_stats(sk);
+			skb = tcp_get_timestamping_opt_stats(sk, orig_skb);
 			opt_stats = true;
 		} else
 #endif
@@ -4854,7 +4855,7 @@ static int skb_checksum_setup_ipv4(struct sk_buff *skb, bool recalculate)
 	if (err < 0)
 		goto out;
 
-	if (ip_hdr(skb)->frag_off & htons(IP_OFFSET | IP_MF))
+	if (ip_is_fragment(ip_hdr(skb)))
 		fragment = true;
 
 	off = ip_hdrlen(skb);

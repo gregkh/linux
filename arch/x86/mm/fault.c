@@ -21,7 +21,6 @@
 
 #include <asm/cpufeature.h>		/* boot_cpu_has, ...		*/
 #include <asm/traps.h>			/* dotraplinkage, ...		*/
-#include <asm/pgalloc.h>		/* pgd_*(), ...			*/
 #include <asm/fixmap.h>			/* VSYSCALL_ADDR		*/
 #include <asm/vsyscall.h>		/* emulate_vsyscall		*/
 #include <asm/vm86.h>			/* struct vm86			*/
@@ -191,34 +190,19 @@ static inline pmd_t *vmalloc_sync_one(pgd_t *pgd, unsigned long address)
 	return pmd_k;
 }
 
-void arch_sync_kernel_mappings(unsigned long start, unsigned long end)
-{
-	unsigned long addr;
-
-	for (addr = start & PMD_MASK;
-	     addr >= TASK_SIZE_MAX && addr < VMALLOC_END;
-	     addr += PMD_SIZE) {
-		struct page *page;
-
-		spin_lock(&pgd_lock);
-		list_for_each_entry(page, &pgd_list, lru) {
-			spinlock_t *pgt_lock;
-
-			/* the pgt_lock only for Xen */
-			pgt_lock = &pgd_page_get_mm(page)->page_table_lock;
-
-			spin_lock(pgt_lock);
-			vmalloc_sync_one(page_address(page), addr);
-			spin_unlock(pgt_lock);
-		}
-		spin_unlock(&pgd_lock);
-	}
-}
-
 /*
- * 32-bit:
- *
  *   Handle a fault on the vmalloc or module mapping area
+ *
+ *   This is needed because there is a race condition between the time
+ *   when the vmalloc mapping code updates the PMD to the point in time
+ *   where it synchronizes this update with the other page-tables in the
+ *   system.
+ *
+ *   In this race window another thread/CPU can map an area on the same
+ *   PMD, finds it already present and does not synchronize it with the
+ *   rest of the system yet. As a result v[mz]alloc might return areas
+ *   which are not mapped in every page-table in the system, causing an
+ *   unhandled page-fault when they are accessed.
  */
 static noinline int vmalloc_fault(unsigned long address)
 {
@@ -252,6 +236,30 @@ static noinline int vmalloc_fault(unsigned long address)
 	return 0;
 }
 NOKPROBE_SYMBOL(vmalloc_fault);
+
+void arch_sync_kernel_mappings(unsigned long start, unsigned long end)
+{
+	unsigned long addr;
+
+	for (addr = start & PMD_MASK;
+	     addr >= TASK_SIZE_MAX && addr < VMALLOC_END;
+	     addr += PMD_SIZE) {
+		struct page *page;
+
+		spin_lock(&pgd_lock);
+		list_for_each_entry(page, &pgd_list, lru) {
+			spinlock_t *pgt_lock;
+
+			/* the pgt_lock only for Xen */
+			pgt_lock = &pgd_page_get_mm(page)->page_table_lock;
+
+			spin_lock(pgt_lock);
+			vmalloc_sync_one(page_address(page), addr);
+			spin_unlock(pgt_lock);
+		}
+		spin_unlock(&pgd_lock);
+	}
+}
 
 /*
  * Did it hit the DOS screen memory VA from vm86 mode?
@@ -316,79 +324,6 @@ out:
 }
 
 #else /* CONFIG_X86_64: */
-
-/*
- * 64-bit:
- *
- *   Handle a fault on the vmalloc area
- */
-static noinline int vmalloc_fault(unsigned long address)
-{
-	pgd_t *pgd, *pgd_k;
-	p4d_t *p4d, *p4d_k;
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *pte;
-
-	/* Make sure we are in vmalloc area: */
-	if (!(address >= VMALLOC_START && address < VMALLOC_END))
-		return -1;
-
-	/*
-	 * Copy kernel mappings over when needed. This can also
-	 * happen within a race in page table update. In the later
-	 * case just flush:
-	 */
-	pgd = (pgd_t *)__va(read_cr3_pa()) + pgd_index(address);
-	pgd_k = pgd_offset_k(address);
-	if (pgd_none(*pgd_k))
-		return -1;
-
-	if (pgtable_l5_enabled()) {
-		if (pgd_none(*pgd)) {
-			set_pgd(pgd, *pgd_k);
-			arch_flush_lazy_mmu_mode();
-		} else {
-			BUG_ON(pgd_page_vaddr(*pgd) != pgd_page_vaddr(*pgd_k));
-		}
-	}
-
-	/* With 4-level paging, copying happens on the p4d level. */
-	p4d = p4d_offset(pgd, address);
-	p4d_k = p4d_offset(pgd_k, address);
-	if (p4d_none(*p4d_k))
-		return -1;
-
-	if (p4d_none(*p4d) && !pgtable_l5_enabled()) {
-		set_p4d(p4d, *p4d_k);
-		arch_flush_lazy_mmu_mode();
-	} else {
-		BUG_ON(p4d_pfn(*p4d) != p4d_pfn(*p4d_k));
-	}
-
-	BUILD_BUG_ON(CONFIG_PGTABLE_LEVELS < 4);
-
-	pud = pud_offset(p4d, address);
-	if (pud_none(*pud))
-		return -1;
-
-	if (pud_large(*pud))
-		return 0;
-
-	pmd = pmd_offset(pud, address);
-	if (pmd_none(*pmd))
-		return -1;
-
-	if (pmd_large(*pmd))
-		return 0;
-
-	pte = pte_offset_kernel(pmd, address);
-	if (!pte_present(*pte))
-		return -1;
-
-	return 0;
-}
-NOKPROBE_SYMBOL(vmalloc_fault);
 
 #ifdef CONFIG_CPU_SUP_AMD
 static const char errata93_warning[] =
@@ -1222,6 +1157,7 @@ do_kern_addr_fault(struct pt_regs *regs, unsigned long hw_error_code,
 	 */
 	WARN_ON_ONCE(hw_error_code & X86_PF_PK);
 
+#ifdef CONFIG_X86_32
 	/*
 	 * We can fault-in kernel-space virtual memory on-demand. The
 	 * 'reference' page table is init_mm.pgd.
@@ -1239,11 +1175,18 @@ do_kern_addr_fault(struct pt_regs *regs, unsigned long hw_error_code,
 	 * 3. A fault caused by a page-level protection violation.
 	 *    (A demand fault would be on a non-present page which
 	 *     would have X86_PF_PROT==0).
+	 *
+	 * This is only needed to close a race condition on x86-32 in
+	 * the vmalloc mapping/unmapping code. See the comment above
+	 * vmalloc_fault() for details. On x86-64 the race does not
+	 * exist as the vmalloc mappings don't need to be synchronized
+	 * there.
 	 */
 	if (!(hw_error_code & (X86_PF_RSVD | X86_PF_USER | X86_PF_PROT))) {
 		if (vmalloc_fault(address) >= 0)
 			return;
 	}
+#endif
 
 	/* Was the fault spurious, caused by lazy TLB invalidation? */
 	if (spurious_kernel_fault(hw_error_code, address))
@@ -1274,7 +1217,7 @@ void do_user_addr_fault(struct pt_regs *regs,
 	struct vm_area_struct *vma;
 	struct task_struct *tsk;
 	struct mm_struct *mm;
-	vm_fault_t fault, major = 0;
+	vm_fault_t fault;
 	unsigned int flags = FAULT_FLAG_DEFAULT;
 
 	tsk = current;
@@ -1426,8 +1369,7 @@ good_area:
 	 * userland). The return to userland is identified whenever
 	 * FAULT_FLAG_USER|FAULT_FLAG_KILLABLE are both set in flags.
 	 */
-	fault = handle_mm_fault(vma, address, flags);
-	major |= fault & VM_FAULT_MAJOR;
+	fault = handle_mm_fault(vma, address, flags, regs);
 
 	/* Quick path to respond to signals */
 	if (fault_signal_pending(fault, regs)) {
@@ -1452,18 +1394,6 @@ good_area:
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		mm_fault_error(regs, hw_error_code, address, fault);
 		return;
-	}
-
-	/*
-	 * Major/minor page fault accounting. If any of the events
-	 * returned VM_FAULT_MAJOR, we account it as a major fault.
-	 */
-	if (major) {
-		tsk->maj_flt++;
-		perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MAJ, 1, regs, address);
-	} else {
-		tsk->min_flt++;
-		perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MIN, 1, regs, address);
 	}
 
 	check_v8086_mode(regs, address, tsk);
@@ -1511,7 +1441,7 @@ handle_page_fault(struct pt_regs *regs, unsigned long error_code,
 DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)
 {
 	unsigned long address = read_cr2();
-	bool rcu_exit;
+	irqentry_state_t state;
 
 	prefetchw(&current->mm->mmap_lock);
 
@@ -1546,11 +1476,11 @@ DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)
 	 * code reenabled RCU to avoid subsequent wreckage which helps
 	 * debugability.
 	 */
-	rcu_exit = idtentry_enter_cond_rcu(regs);
+	state = irqentry_enter(regs);
 
 	instrumentation_begin();
 	handle_page_fault(regs, error_code, address);
 	instrumentation_end();
 
-	idtentry_exit_cond_rcu(regs, rcu_exit);
+	irqentry_exit(regs, state);
 }

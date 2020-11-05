@@ -199,10 +199,8 @@ static struct v4l2_subdev *rkisp1_get_remote_sensor(struct v4l2_subdev *sd)
 
 	local = &sd->entity.pads[RKISP1_ISP_PAD_SINK_VIDEO];
 	remote = media_entity_remote_pad(local);
-	if (!remote) {
-		dev_warn(sd->dev, "No link between isp and sensor\n");
+	if (!remote)
 		return NULL;
-	}
 
 	sensor_me = remote->entity;
 	return media_entity_to_v4l2_subdev(sensor_me);
@@ -885,18 +883,20 @@ static const struct v4l2_subdev_pad_ops rkisp1_isp_pad_ops = {
 static int rkisp1_mipi_csi2_start(struct rkisp1_isp *isp,
 				  struct rkisp1_sensor_async *sensor)
 {
+	struct rkisp1_device *rkisp1 =
+		container_of(isp->sd.v4l2_dev, struct rkisp1_device, v4l2_dev);
 	union phy_configure_opts opts;
 	struct phy_configure_opts_mipi_dphy *cfg = &opts.mipi_dphy;
 	s64 pixel_clock;
 
 	if (!sensor->pixel_rate_ctrl) {
-		dev_warn(sensor->sd->dev, "No pixel rate control in subdev\n");
+		dev_warn(rkisp1->dev, "No pixel rate control in sensor subdev\n");
 		return -EPIPE;
 	}
 
 	pixel_clock = v4l2_ctrl_g_ctrl_int64(sensor->pixel_rate_ctrl);
 	if (!pixel_clock) {
-		dev_err(sensor->sd->dev, "Invalid pixel rate value\n");
+		dev_err(rkisp1->dev, "Invalid pixel rate value\n");
 		return -EINVAL;
 	}
 
@@ -929,8 +929,11 @@ static int rkisp1_isp_s_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	sensor_sd = rkisp1_get_remote_sensor(sd);
-	if (!sensor_sd)
+	if (!sensor_sd) {
+		dev_warn(rkisp1->dev, "No link between isp and sensor\n");
 		return -ENODEV;
+	}
+
 	rkisp1->active_sensor = container_of(sensor_sd->asd,
 					     struct rkisp1_sensor_async, asd);
 
@@ -1017,7 +1020,7 @@ int rkisp1_isp_register(struct rkisp1_device *rkisp1,
 
 	ret = v4l2_device_register_subdev(v4l2_dev, sd);
 	if (ret) {
-		dev_err(sd->dev, "Failed to register isp subdev\n");
+		dev_err(rkisp1->dev, "Failed to register isp subdev\n");
 		goto err_cleanup_media_entity;
 	}
 
@@ -1119,8 +1122,13 @@ void rkisp1_isp_isr(struct rkisp1_device *rkisp1)
 	if (status & RKISP1_CIF_ISP_PIC_SIZE_ERROR) {
 		/* Clear pic_size_error */
 		isp_err = rkisp1_read(rkisp1, RKISP1_CIF_ISP_ERR);
+		if (isp_err & RKISP1_CIF_ISP_ERR_INFORM_SIZE)
+			rkisp1->debug.inform_size_error++;
+		if (isp_err & RKISP1_CIF_ISP_ERR_IS_SIZE)
+			rkisp1->debug.img_stabilization_size_error++;
+		if (isp_err & RKISP1_CIF_ISP_ERR_OUTFORM_SIZE)
+			rkisp1->debug.outform_size_error++;
 		rkisp1_write(rkisp1, isp_err, RKISP1_CIF_ISP_ERR_CLR);
-		rkisp1->debug.pic_size_error++;
 	} else if (status & RKISP1_CIF_ISP_DATA_LOSS) {
 		/* keep track of data_loss in debugfs */
 		rkisp1->debug.data_loss++;
@@ -1131,10 +1139,7 @@ void rkisp1_isp_isr(struct rkisp1_device *rkisp1)
 
 		/* New frame from the sensor received */
 		isp_ris = rkisp1_read(rkisp1, RKISP1_CIF_ISP_RIS);
-		if (isp_ris & (RKISP1_CIF_ISP_AWB_DONE |
-			       RKISP1_CIF_ISP_AFM_FIN |
-			       RKISP1_CIF_ISP_EXP_END |
-			       RKISP1_CIF_ISP_HIST_MEASURE_RDY))
+		if (isp_ris & RKISP1_STATS_MEAS_MASK)
 			rkisp1_stats_isr(&rkisp1->stats, isp_ris);
 	}
 

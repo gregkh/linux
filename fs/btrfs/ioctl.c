@@ -618,7 +618,7 @@ static noinline int create_subvol(struct inode *dir,
 	trans = btrfs_start_transaction(root, 0);
 	if (IS_ERR(trans)) {
 		ret = PTR_ERR(trans);
-		btrfs_subvolume_release_metadata(fs_info, &block_rsv);
+		btrfs_subvolume_release_metadata(root, &block_rsv);
 		goto fail_free;
 	}
 	trans->block_rsv = &block_rsv;
@@ -742,7 +742,7 @@ fail:
 	kfree(root_item);
 	trans->block_rsv = NULL;
 	trans->bytes_reserved = 0;
-	btrfs_subvolume_release_metadata(fs_info, &block_rsv);
+	btrfs_subvolume_release_metadata(root, &block_rsv);
 
 	err = btrfs_commit_transaction(trans);
 	if (err && !ret)
@@ -856,7 +856,7 @@ fail:
 	if (ret && pending_snapshot->snap)
 		pending_snapshot->snap->anon_dev = 0;
 	btrfs_put_root(pending_snapshot->snap);
-	btrfs_subvolume_release_metadata(fs_info, &pending_snapshot->block_rsv);
+	btrfs_subvolume_release_metadata(root, &pending_snapshot->block_rsv);
 free_pending:
 	if (pending_snapshot->anon_dev)
 		free_anon_bdev(pending_snapshot->anon_dev);
@@ -1276,7 +1276,7 @@ static int cluster_pages_for_defrag(struct inode *inode,
 
 	page_cnt = min_t(u64, (u64)num_pages, (u64)file_end - start_index + 1);
 
-	ret = btrfs_delalloc_reserve_space(inode, &data_reserved,
+	ret = btrfs_delalloc_reserve_space(BTRFS_I(inode), &data_reserved,
 			start_index << PAGE_SHIFT,
 			page_cnt << PAGE_SHIFT);
 	if (ret)
@@ -1298,7 +1298,7 @@ again:
 		while (1) {
 			lock_extent_bits(tree, page_start, page_end,
 					 &cached_state);
-			ordered = btrfs_lookup_ordered_extent(inode,
+			ordered = btrfs_lookup_ordered_extent(BTRFS_I(inode),
 							      page_start);
 			unlock_extent_cached(tree, page_start, page_end,
 					     &cached_state);
@@ -1366,7 +1366,7 @@ again:
 		spin_lock(&BTRFS_I(inode)->lock);
 		btrfs_mod_outstanding_extents(BTRFS_I(inode), 1);
 		spin_unlock(&BTRFS_I(inode)->lock);
-		btrfs_delalloc_release_space(inode, data_reserved,
+		btrfs_delalloc_release_space(BTRFS_I(inode), data_reserved,
 				start_index << PAGE_SHIFT,
 				(page_cnt - i_done) << PAGE_SHIFT, true);
 	}
@@ -1394,7 +1394,7 @@ out:
 		unlock_page(pages[i]);
 		put_page(pages[i]);
 	}
-	btrfs_delalloc_release_space(inode, data_reserved,
+	btrfs_delalloc_release_space(BTRFS_I(inode), data_reserved,
 			start_index << PAGE_SHIFT,
 			page_cnt << PAGE_SHIFT, true);
 	btrfs_delalloc_release_extents(BTRFS_I(inode), page_cnt << PAGE_SHIFT);
@@ -3273,6 +3273,17 @@ static long btrfs_ioctl_fs_info(struct btrfs_fs_info *fs_info,
 		fi_args->csum_type = btrfs_super_csum_type(fs_info->super_copy);
 		fi_args->csum_size = btrfs_super_csum_size(fs_info->super_copy);
 		fi_args->flags |= BTRFS_FS_INFO_FLAG_CSUM_INFO;
+	}
+
+	if (flags_in & BTRFS_FS_INFO_FLAG_GENERATION) {
+		fi_args->generation = fs_info->generation;
+		fi_args->flags |= BTRFS_FS_INFO_FLAG_GENERATION;
+	}
+
+	if (flags_in & BTRFS_FS_INFO_FLAG_METADATA_UUID) {
+		memcpy(&fi_args->metadata_uuid, fs_devices->metadata_uuid,
+		       sizeof(fi_args->metadata_uuid));
+		fi_args->flags |= BTRFS_FS_INFO_FLAG_METADATA_UUID;
 	}
 
 	if (copy_to_user(arg, fi_args, sizeof(*fi_args)))

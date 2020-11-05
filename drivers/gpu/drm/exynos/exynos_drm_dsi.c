@@ -547,9 +547,9 @@ static unsigned long exynos_dsi_pll_find_pms(struct exynos_dsi *dsi,
 	unsigned long best_freq = 0;
 	u32 min_delta = 0xffffffff;
 	u8 p_min, p_max;
-	u8 _p, uninitialized_var(best_p);
-	u16 _m, uninitialized_var(best_m);
-	u8 _s, uninitialized_var(best_s);
+	u8 _p, best_p;
+	u16 _m, best_m;
+	u8 _s, best_s;
 
 	p_min = DIV_ROUND_UP(fin, (12 * MHZ));
 	p_max = fin / (6 * MHZ);
@@ -987,10 +987,10 @@ static void exynos_dsi_send_to_fifo(struct exynos_dsi *dsi,
 	switch (length) {
 	case 3:
 		reg |= payload[2] << 16;
-		/* Fall through */
+		fallthrough;
 	case 2:
 		reg |= payload[1] << 8;
-		/* Fall through */
+		fallthrough;
 	case 1:
 		reg |= payload[0];
 		exynos_dsi_write(dsi, DSIM_PAYLOAD_REG, reg);
@@ -1038,7 +1038,7 @@ static void exynos_dsi_read_from_fifo(struct exynos_dsi *dsi,
 				payload[1] = reg >> 16;
 				++xfer->rx_done;
 			}
-			/* Fall through */
+			fallthrough;
 		case MIPI_DSI_RX_GENERIC_SHORT_READ_RESPONSE_1BYTE:
 		case MIPI_DSI_RX_DCS_SHORT_READ_RESPONSE_1BYTE:
 			payload[0] = reg >> 8;
@@ -1082,10 +1082,10 @@ static void exynos_dsi_read_from_fifo(struct exynos_dsi *dsi,
 		switch (length) {
 		case 3:
 			payload[2] = (reg >> 16) & 0xff;
-			/* Fall through */
+			fallthrough;
 		case 2:
 			payload[1] = (reg >> 8) & 0xff;
-			/* Fall through */
+			fallthrough;
 		case 1:
 			payload[0] = reg & 0xff;
 		}

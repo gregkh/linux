@@ -269,7 +269,6 @@ static int dlpar_offline_cpu(struct device_node *dn)
 				break;
 
 			cpu_maps_update_done();
-			timed_topology_update(1);
 			rc = device_offline(get_cpu_device(cpu));
 			if (rc)
 				goto out;
@@ -308,7 +307,6 @@ static int dlpar_online_cpu(struct device_node *dn)
 			if (get_hard_smp_processor_id(cpu) != thread)
 				continue;
 			cpu_maps_update_done();
-			timed_topology_update(1);
 			find_and_online_cpu_nid(cpu);
 			rc = device_online(get_cpu_device(cpu));
 			if (rc) {
@@ -783,25 +781,6 @@ static int dlpar_cpu_add_by_count(u32 cpus_to_add)
 	}
 
 	kfree(cpu_drcs);
-	return rc;
-}
-
-int dlpar_cpu_readd(int cpu)
-{
-	struct device_node *dn;
-	struct device *dev;
-	u32 drc_index;
-	int rc;
-
-	dev = get_cpu_device(cpu);
-	dn = dev->of_node;
-
-	rc = of_property_read_u32(dn, "ibm,my-drc-index", &drc_index);
-
-	rc = dlpar_cpu_remove_by_index(drc_index);
-	if (!rc)
-		rc = dlpar_cpu_add(drc_index);
-
 	return rc;
 }
 

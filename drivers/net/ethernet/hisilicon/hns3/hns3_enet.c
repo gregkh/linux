@@ -8,6 +8,7 @@
 #include <linux/cpu_rmap.h>
 #endif
 #include <linux/if_vlan.h>
+#include <linux/irq.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/module.h>
@@ -155,6 +156,7 @@ static int hns3_nic_init_irq(struct hns3_nic_priv *priv)
 
 		tqp_vectors->name[HNAE3_INT_NAME_LEN - 1] = '\0';
 
+		irq_set_status_flags(tqp_vectors->vector_irq, IRQ_NOAUTOEN);
 		ret = request_irq(tqp_vectors->vector_irq, hns3_irq_handle, 0,
 				  tqp_vectors->name, tqp_vectors);
 		if (ret) {
@@ -163,8 +165,6 @@ static int hns3_nic_init_irq(struct hns3_nic_priv *priv)
 			hns3_nic_uninit_irq(priv);
 			return ret;
 		}
-
-		disable_irq(tqp_vectors->vector_irq);
 
 		irq_set_affinity_hint(tqp_vectors->vector_irq,
 				      &tqp_vectors->affinity_mask);
@@ -2095,10 +2095,8 @@ static int hns3_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	pci_set_drvdata(pdev, ae_dev);
 
 	ret = hnae3_register_ae_dev(ae_dev);
-	if (ret) {
-		devm_kfree(&pdev->dev, ae_dev);
+	if (ret)
 		pci_set_drvdata(pdev, NULL);
-	}
 
 	return ret;
 }
@@ -2155,7 +2153,6 @@ static void hns3_shutdown(struct pci_dev *pdev)
 	struct hnae3_ae_dev *ae_dev = pci_get_drvdata(pdev);
 
 	hnae3_unregister_ae_dev(ae_dev);
-	devm_kfree(&pdev->dev, ae_dev);
 	pci_set_drvdata(pdev, NULL);
 
 	if (system_state == SYSTEM_POWER_OFF)
@@ -2406,7 +2403,7 @@ static int hns3_alloc_desc(struct hns3_enet_ring *ring)
 	return 0;
 }
 
-static int hns3_reserve_buffer_map(struct hns3_enet_ring *ring,
+static int hns3_alloc_and_map_buffer(struct hns3_enet_ring *ring,
 				   struct hns3_desc_cb *cb)
 {
 	int ret;
@@ -2427,9 +2424,9 @@ out:
 	return ret;
 }
 
-static int hns3_alloc_buffer_attach(struct hns3_enet_ring *ring, int i)
+static int hns3_alloc_and_attach_buffer(struct hns3_enet_ring *ring, int i)
 {
-	int ret = hns3_reserve_buffer_map(ring, &ring->desc_cb[i]);
+	int ret = hns3_alloc_and_map_buffer(ring, &ring->desc_cb[i]);
 
 	if (ret)
 		return ret;
@@ -2445,7 +2442,7 @@ static int hns3_alloc_ring_buffers(struct hns3_enet_ring *ring)
 	int i, j, ret;
 
 	for (i = 0; i < ring->desc_num; i++) {
-		ret = hns3_alloc_buffer_attach(ring, i);
+		ret = hns3_alloc_and_attach_buffer(ring, i);
 		if (ret)
 			goto out_buffer_fail;
 	}
@@ -2474,6 +2471,11 @@ static void hns3_reuse_buffer(struct hns3_enet_ring *ring, int i)
 	ring->desc[i].addr = cpu_to_le64(ring->desc_cb[i].dma +
 					 ring->desc_cb[i].page_offset);
 	ring->desc[i].rx.bd_base_info = 0;
+
+	dma_sync_single_for_device(ring_to_dev(ring),
+			ring->desc_cb[i].dma + ring->desc_cb[i].page_offset,
+			hns3_buf_size(ring),
+			DMA_FROM_DEVICE);
 }
 
 static void hns3_nic_reclaim_desc(struct hns3_enet_ring *ring, int head,
@@ -2591,7 +2593,7 @@ static void hns3_nic_alloc_rx_buffers(struct hns3_enet_ring *ring,
 
 			hns3_reuse_buffer(ring, ring->next_to_use);
 		} else {
-			ret = hns3_reserve_buffer_map(ring, &res_cbs);
+			ret = hns3_alloc_and_map_buffer(ring, &res_cbs);
 			if (ret) {
 				u64_stats_update_begin(&ring->syncp);
 				ring->stats.sw_err_cnt++;
@@ -2746,7 +2748,7 @@ static void hns3_rx_checksum(struct hns3_enet_ring *ring, struct sk_buff *skb,
 	case HNS3_OL4_TYPE_MAC_IN_UDP:
 	case HNS3_OL4_TYPE_NVGRE:
 		skb->csum_level = 1;
-		/* fall through */
+		fallthrough;
 	case HNS3_OL4_TYPE_NO_TUN:
 		l3_type = hnae3_get_field(l234info, HNS3_RXD_L3ID_M,
 					  HNS3_RXD_L3ID_S);
@@ -2919,6 +2921,11 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 			skb = ring->tail_skb;
 		}
 
+		dma_sync_single_for_cpu(ring_to_dev(ring),
+				desc_cb->dma + desc_cb->page_offset,
+				hns3_buf_size(ring),
+				DMA_FROM_DEVICE);
+
 		hns3_nic_reuse_page(skb, ring->frag_num++, ring, 0, desc_cb);
 		trace_hns3_rx_desc(ring);
 		ring_ptr_move_fw(ring, next_to_clean);
@@ -3070,8 +3077,14 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 	if (unlikely(!(bd_base_info & BIT(HNS3_RXD_VLD_B))))
 		return -ENXIO;
 
-	if (!skb)
-		ring->va = (unsigned char *)desc_cb->buf + desc_cb->page_offset;
+	if (!skb) {
+		ring->va = desc_cb->buf + desc_cb->page_offset;
+
+		dma_sync_single_for_cpu(ring_to_dev(ring),
+				desc_cb->dma + desc_cb->page_offset,
+				hns3_buf_size(ring),
+				DMA_FROM_DEVICE);
+	}
 
 	/* Prefetch first cache line of first page
 	 * Idea is to cache few bytes of the header of the packet. Our L1 Cache
@@ -4184,7 +4197,7 @@ static int hns3_clear_rx_ring(struct hns3_enet_ring *ring)
 		 * stack, so we need to replace the buffer here.
 		 */
 		if (!ring->desc_cb[ring->next_to_use].reuse_flag) {
-			ret = hns3_reserve_buffer_map(ring, &res_cbs);
+			ret = hns3_alloc_and_map_buffer(ring, &res_cbs);
 			if (ret) {
 				u64_stats_update_begin(&ring->syncp);
 				ring->stats.sw_err_cnt++;

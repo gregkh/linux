@@ -65,6 +65,8 @@ struct wpan_dev;
 struct mpls_dev;
 /* UDP Tunnel offloads */
 struct udp_tunnel_info;
+struct udp_tunnel_nic_info;
+struct udp_tunnel_nic;
 struct bpf_prog;
 struct xdp_buff;
 
@@ -874,8 +876,6 @@ enum bpf_netdev_command {
 	 */
 	XDP_SETUP_PROG,
 	XDP_SETUP_PROG_HW,
-	XDP_QUERY_PROG,
-	XDP_QUERY_PROG_HW,
 	/* BPF program for offload callbacks, invoked at program load time. */
 	BPF_OFFLOAD_MAP_ALLOC,
 	BPF_OFFLOAD_MAP_FREE,
@@ -886,6 +886,19 @@ struct bpf_prog_offload_ops;
 struct netlink_ext_ack;
 struct xdp_umem;
 struct xdp_dev_bulk_queue;
+struct bpf_xdp_link;
+
+enum bpf_xdp_mode {
+	XDP_MODE_SKB = 0,
+	XDP_MODE_DRV = 1,
+	XDP_MODE_HW = 2,
+	__MAX_XDP_MODE
+};
+
+struct bpf_xdp_entity {
+	struct bpf_prog *prog;
+	struct bpf_xdp_link *link;
+};
 
 struct netdev_bpf {
 	enum bpf_netdev_command command;
@@ -895,12 +908,6 @@ struct netdev_bpf {
 			u32 flags;
 			struct bpf_prog *prog;
 			struct netlink_ext_ack *extack;
-		};
-		/* XDP_QUERY_PROG, XDP_QUERY_PROG_HW */
-		struct {
-			u32 prog_id;
-			/* flags with which program was installed */
-			u32 prog_flags;
 		};
 		/* BPF_OFFLOAD_MAP_ALLOC, BPF_OFFLOAD_MAP_FREE */
 		struct {
@@ -1742,6 +1749,8 @@ enum netdev_priv_flags {
  *	@real_num_rx_queues: 	Number of RX queues currently active in device
  *	@xdp_prog:		XDP sockets filter program pointer
  *	@gro_flush_timeout:	timeout for GRO layer in NAPI
+ *	@napi_defer_hard_irqs:	If not zero, provides a counter that would
+ *				allow to avoid NIC hard IRQ, on busy queues.
  *
  *	@rx_handler:		handler for received packets
  *	@rx_handler_data: 	XXX: need comments on this one
@@ -1775,6 +1784,7 @@ enum netdev_priv_flags {
  *				the watchdog (see dev_watchdog())
  *	@watchdog_timer:	List of timers
  *
+ *	@proto_down_reason:	reason a netdev interface is held down
  *	@pcpu_refcnt:		Number of references to this device
  *	@todo_list:		Delayed register/unregister
  *	@link_watch_list:	XXX: need comments on this one
@@ -1835,6 +1845,16 @@ enum netdev_priv_flags {
  *				to another network namespace.
  *
  *	@macsec_ops:    MACsec offloading ops
+ *
+ *	@udp_tunnel_nic_info:	static structure describing the UDP tunnel
+ *				offload capabilities of the device
+ *	@udp_tunnel_nic:	UDP tunnel offload state
+ *	@xdp_state:		stores info on attached XDP BPF programs
+ *
+ *	@nested_level:	Used as as a parameter of spin_lock_nested() of
+ *			dev->addr_list_lock.
+ *	@unlink_list:	As netif_addr_lock() can be called recursively,
+ *			keep a list of interfaces to be deleted.
  *
  *	FIXME: cleanup struct net_device such that network protocol info
  *	moves out.
@@ -1940,6 +1960,7 @@ struct net_device {
 	unsigned short		type;
 	unsigned short		hard_header_len;
 	unsigned char		min_header_len;
+	unsigned char		name_assign_type;
 
 	unsigned short		needed_headroom;
 	unsigned short		needed_tailroom;
@@ -1950,12 +1971,12 @@ struct net_device {
 	unsigned char		addr_len;
 	unsigned char		upper_level;
 	unsigned char		lower_level;
+
 	unsigned short		neigh_priv_len;
 	unsigned short          dev_id;
 	unsigned short          dev_port;
 	spinlock_t		addr_list_lock;
-	unsigned char		name_assign_type;
-	bool			uc_promisc;
+
 	struct netdev_hw_addr_list	uc;
 	struct netdev_hw_addr_list	mc;
 	struct netdev_hw_addr_list	dev_addrs;
@@ -1963,8 +1984,15 @@ struct net_device {
 #ifdef CONFIG_SYSFS
 	struct kset		*queues_kset;
 #endif
+#ifdef CONFIG_LOCKDEP
+	struct list_head	unlink_list;
+#endif
 	unsigned int		promiscuity;
 	unsigned int		allmulti;
+	bool			uc_promisc;
+#ifdef CONFIG_LOCKDEP
+	unsigned char		nested_level;
+#endif
 
 
 	/* Protocol-specific pointers */
@@ -2052,6 +2080,8 @@ struct net_device {
 	struct timer_list	watchdog_timer;
 	int			watchdog_timeo;
 
+	u32                     proto_down_reason;
+
 	struct list_head	todo_list;
 	int __percpu		*pcpu_refcnt;
 
@@ -2134,6 +2164,11 @@ struct net_device {
 	/* MACsec management functions */
 	const struct macsec_ops *macsec_ops;
 #endif
+	const struct udp_tunnel_nic_info	*udp_tunnel_nic_info;
+	struct udp_tunnel_nic	*udp_tunnel_nic;
+
+	/* protected by rtnl_lock */
+	struct bpf_xdp_entity	xdp_state[__MAX_XDP_MODE];
 };
 #define to_net_dev(d) container_of(d, struct net_device, dev)
 
@@ -3802,6 +3837,8 @@ int dev_get_port_parent_id(struct net_device *dev,
 bool netdev_port_same_parent_id(struct net_device *a, struct net_device *b);
 int dev_change_proto_down(struct net_device *dev, bool proto_down);
 int dev_change_proto_down_generic(struct net_device *dev, bool proto_down);
+void dev_change_proto_down_reason(struct net_device *dev, unsigned long mask,
+				  u32 value);
 struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *dev, bool *again);
 struct sk_buff *dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev,
 				    struct netdev_queue *txq, int *ret);
@@ -3809,8 +3846,9 @@ struct sk_buff *dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev,
 typedef int (*bpf_op_t)(struct net_device *dev, struct netdev_bpf *bpf);
 int dev_change_xdp_fd(struct net_device *dev, struct netlink_ext_ack *extack,
 		      int fd, int expected_fd, u32 flags);
-u32 __dev_xdp_query(struct net_device *dev, bpf_op_t xdp_op,
-		    enum bpf_netdev_command cmd);
+int bpf_xdp_link_attach(const union bpf_attr *attr, struct bpf_prog *prog);
+u32 dev_xdp_prog_id(struct net_device *dev, enum bpf_xdp_mode mode);
+
 int xdp_umem_query(struct net_device *dev, u16 queue_id);
 
 int __dev_forward_skb(struct net_device *dev, struct sk_buff *skb);
@@ -4235,17 +4273,23 @@ static inline void netif_tx_disable(struct net_device *dev)
 
 static inline void netif_addr_lock(struct net_device *dev)
 {
-	spin_lock(&dev->addr_list_lock);
-}
+	unsigned char nest_level = 0;
 
-static inline void netif_addr_lock_nested(struct net_device *dev)
-{
-	spin_lock_nested(&dev->addr_list_lock, dev->lower_level);
+#ifdef CONFIG_LOCKDEP
+	nest_level = dev->nested_level;
+#endif
+	spin_lock_nested(&dev->addr_list_lock, nest_level);
 }
 
 static inline void netif_addr_lock_bh(struct net_device *dev)
 {
-	spin_lock_bh(&dev->addr_list_lock);
+	unsigned char nest_level = 0;
+
+#ifdef CONFIG_LOCKDEP
+	nest_level = dev->nested_level;
+#endif
+	local_bh_disable();
+	spin_lock_nested(&dev->addr_list_lock, nest_level);
 }
 
 static inline void netif_addr_unlock(struct net_device *dev)
@@ -4430,11 +4474,37 @@ extern int		dev_rx_weight;
 extern int		dev_tx_weight;
 extern int		gro_normal_batch;
 
+enum {
+	NESTED_SYNC_IMM_BIT,
+	NESTED_SYNC_TODO_BIT,
+};
+
+#define __NESTED_SYNC_BIT(bit)	((u32)1 << (bit))
+#define __NESTED_SYNC(name)	__NESTED_SYNC_BIT(NESTED_SYNC_ ## name ## _BIT)
+
+#define NESTED_SYNC_IMM		__NESTED_SYNC(IMM)
+#define NESTED_SYNC_TODO	__NESTED_SYNC(TODO)
+
+struct netdev_nested_priv {
+	unsigned char flags;
+	void *data;
+};
+
 bool netdev_has_upper_dev(struct net_device *dev, struct net_device *upper_dev);
 struct net_device *netdev_upper_get_next_dev_rcu(struct net_device *dev,
 						     struct list_head **iter);
 struct net_device *netdev_all_upper_get_next_dev_rcu(struct net_device *dev,
 						     struct list_head **iter);
+
+#ifdef CONFIG_LOCKDEP
+static LIST_HEAD(net_unlink_list);
+
+static inline void net_unlink_todo(struct net_device *dev)
+{
+	if (list_empty(&dev->unlink_list))
+		list_add_tail(&dev->unlink_list, &net_unlink_list);
+}
+#endif
 
 /* iterate through upper list, must be called under RCU read lock */
 #define netdev_for_each_upper_dev_rcu(dev, updev, iter) \
@@ -4445,8 +4515,8 @@ struct net_device *netdev_all_upper_get_next_dev_rcu(struct net_device *dev,
 
 int netdev_walk_all_upper_dev_rcu(struct net_device *dev,
 				  int (*fn)(struct net_device *upper_dev,
-					    void *data),
-				  void *data);
+					    struct netdev_nested_priv *priv),
+				  struct netdev_nested_priv *priv);
 
 bool netdev_has_upper_dev_all_rcu(struct net_device *dev,
 				  struct net_device *upper_dev);
@@ -4483,12 +4553,12 @@ struct net_device *netdev_next_lower_dev_rcu(struct net_device *dev,
 					     struct list_head **iter);
 int netdev_walk_all_lower_dev(struct net_device *dev,
 			      int (*fn)(struct net_device *lower_dev,
-					void *data),
-			      void *data);
+					struct netdev_nested_priv *priv),
+			      struct netdev_nested_priv *priv);
 int netdev_walk_all_lower_dev_rcu(struct net_device *dev,
 				  int (*fn)(struct net_device *lower_dev,
-					    void *data),
-				  void *data);
+					    struct netdev_nested_priv *priv),
+				  struct netdev_nested_priv *priv);
 
 void *netdev_adjacent_get_private(struct list_head *adj_list);
 void *netdev_lower_get_first_private_rcu(struct net_device *dev);
@@ -4817,6 +4887,11 @@ static inline bool netif_is_ovs_master(const struct net_device *dev)
 static inline bool netif_is_ovs_port(const struct net_device *dev)
 {
 	return dev->priv_flags & IFF_OVS_DATAPATH;
+}
+
+static inline bool netif_is_any_bridge_port(const struct net_device *dev)
+{
+	return netif_is_bridge_port(dev) || netif_is_ovs_port(dev);
 }
 
 static inline bool netif_is_team_master(const struct net_device *dev)

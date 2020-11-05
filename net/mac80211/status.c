@@ -802,7 +802,6 @@ static int ieee80211_tx_get_rates(struct ieee80211_hw *hw,
 				  struct ieee80211_tx_info *info,
 				  int *retry_count)
 {
-	int rates_idx = -1;
 	int count = -1;
 	int i;
 
@@ -824,13 +823,12 @@ static int ieee80211_tx_get_rates(struct ieee80211_hw *hw,
 
 		count += info->status.rates[i].count;
 	}
-	rates_idx = i - 1;
 
 	if (count < 0)
 		count = 0;
 
 	*retry_count = count;
-	return rates_idx;
+	return i - 1;
 }
 
 void ieee80211_tx_monitor(struct ieee80211_local *local, struct sk_buff *skb,
@@ -1140,8 +1138,16 @@ void ieee80211_tx_status_ext(struct ieee80211_hw *hw,
 	struct ieee80211_tx_info *info = status->info;
 	struct ieee80211_sta *pubsta = status->sta;
 	struct ieee80211_supported_band *sband;
+	struct sta_info *sta;
 	int retry_count;
 	bool acked, noack_success;
+
+	if (pubsta) {
+		sta = container_of(pubsta, struct sta_info, sta);
+
+		if (status->rate)
+			sta->tx_stats.last_rate_info = *status->rate;
+	}
 
 	if (status->skb)
 		return __ieee80211_tx_status(hw, status);
@@ -1157,10 +1163,6 @@ void ieee80211_tx_status_ext(struct ieee80211_hw *hw,
 	noack_success = !!(info->flags & IEEE80211_TX_STAT_NOACK_TRANSMITTED);
 
 	if (pubsta) {
-		struct sta_info *sta;
-
-		sta = container_of(pubsta, struct sta_info, sta);
-
 		if (!acked && !noack_success)
 			sta->status_stats.retry_failed++;
 		sta->status_stats.retry_count += retry_count;

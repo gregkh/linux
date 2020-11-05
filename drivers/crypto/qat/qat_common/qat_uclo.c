@@ -1,49 +1,5 @@
-/*
-  This file is provided under a dual BSD/GPLv2 license.  When using or
-  redistributing this file, you may do so under either license.
-
-  GPL LICENSE SUMMARY
-  Copyright(c) 2014 Intel Corporation.
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of version 2 of the GNU General Public License as
-  published by the Free Software Foundation.
-
-  This program is distributed in the hope that it will be useful, but
-  WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  General Public License for more details.
-
-  Contact Information:
-  qat-linux@intel.com
-
-  BSD LICENSE
-  Copyright(c) 2014 Intel Corporation.
-  Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions
-  are met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in
-      the documentation and/or other materials provided with the
-      distribution.
-    * Neither the name of Intel Corporation nor the names of its
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-  OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+// SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0-only)
+/* Copyright(c) 2014 - 2020 Intel Corporation */
 #include <linux/slab.h>
 #include <linux/ctype.h>
 #include <linux/kernel.h>
@@ -416,16 +372,16 @@ static int qat_uclo_init_ustore(struct icp_qat_fw_loader_handle *handle,
 	unsigned int ustore_size;
 	unsigned int patt_pos;
 	struct icp_qat_uclo_objhandle *obj_handle = handle->obj_handle;
-	uint64_t *fill_data;
+	u64 *fill_data;
 
 	uof_image = image->img_ptr;
-	fill_data = kcalloc(ICP_QAT_UCLO_MAX_USTORE, sizeof(uint64_t),
+	fill_data = kcalloc(ICP_QAT_UCLO_MAX_USTORE, sizeof(u64),
 			    GFP_KERNEL);
 	if (!fill_data)
 		return -ENOMEM;
 	for (i = 0; i < ICP_QAT_UCLO_MAX_USTORE; i++)
 		memcpy(&fill_data[i], &uof_image->fill_pattern,
-		       sizeof(uint64_t));
+		       sizeof(u64));
 	page = image->page;
 
 	for (ae = 0; ae < handle->hal_handle->ae_max_num; ae++) {
@@ -796,7 +752,7 @@ static int qat_uclo_init_reg(struct icp_qat_fw_loader_handle *handle,
 	case ICP_GPA_ABS:
 	case ICP_GPB_ABS:
 		ctx_mask = 0;
-		/* fall through */
+		fallthrough;
 	case ICP_GPA_REL:
 	case ICP_GPB_REL:
 		return qat_hal_init_gpr(handle, ae, ctx_mask, reg_type,
@@ -806,7 +762,7 @@ static int qat_uclo_init_reg(struct icp_qat_fw_loader_handle *handle,
 	case ICP_SR_RD_ABS:
 	case ICP_DR_RD_ABS:
 		ctx_mask = 0;
-		/* fall through */
+		fallthrough;
 	case ICP_SR_REL:
 	case ICP_DR_REL:
 	case ICP_SR_RD_REL:
@@ -816,7 +772,7 @@ static int qat_uclo_init_reg(struct icp_qat_fw_loader_handle *handle,
 	case ICP_SR_WR_ABS:
 	case ICP_DR_WR_ABS:
 		ctx_mask = 0;
-		/* fall through */
+		fallthrough;
 	case ICP_SR_WR_REL:
 	case ICP_DR_WR_REL:
 		return qat_hal_init_wr_xfer(handle, ae, ctx_mask, reg_type,
@@ -986,7 +942,7 @@ static int qat_uclo_parse_uof_obj(struct icp_qat_fw_loader_handle *handle)
 		pr_err("QAT: UOF incompatible\n");
 		return -EINVAL;
 	}
-	obj_handle->uword_buf = kcalloc(UWORD_CPYBUF_SIZE, sizeof(uint64_t),
+	obj_handle->uword_buf = kcalloc(UWORD_CPYBUF_SIZE, sizeof(u64),
 					GFP_KERNEL);
 	if (!obj_handle->uword_buf)
 		return -ENOMEM;
@@ -1190,7 +1146,7 @@ static int qat_uclo_map_suof(struct icp_qat_fw_loader_handle *handle,
 	return 0;
 }
 
-#define ADD_ADDR(high, low)  ((((uint64_t)high) << 32) + low)
+#define ADD_ADDR(high, low)  ((((u64)high) << 32) + low)
 #define BITS_IN_DWORD 32
 
 static int qat_uclo_auth_fw(struct icp_qat_fw_loader_handle *handle,
@@ -1519,10 +1475,10 @@ void qat_uclo_del_uof_obj(struct icp_qat_fw_loader_handle *handle)
 
 static void qat_uclo_fill_uwords(struct icp_qat_uclo_objhandle *obj_handle,
 				 struct icp_qat_uclo_encap_page *encap_page,
-				 uint64_t *uword, unsigned int addr_p,
-				 unsigned int raddr, uint64_t fill)
+				 u64 *uword, unsigned int addr_p,
+				 unsigned int raddr, u64 fill)
 {
-	uint64_t uwrd = 0;
+	u64 uwrd = 0;
 	unsigned int i;
 
 	if (!encap_page) {
@@ -1552,12 +1508,12 @@ static void qat_uclo_wr_uimage_raw_page(struct icp_qat_fw_loader_handle *handle,
 {
 	unsigned int uw_physical_addr, uw_relative_addr, i, words_num, cpylen;
 	struct icp_qat_uclo_objhandle *obj_handle = handle->obj_handle;
-	uint64_t fill_pat;
+	u64 fill_pat;
 
 	/* load the page starting at appropriate ustore address */
 	/* get fill-pattern from an image -- they are all the same */
 	memcpy(&fill_pat, obj_handle->ae_uimage[0].img_ptr->fill_pattern,
-	       sizeof(uint64_t));
+	       sizeof(u64));
 	uw_physical_addr = encap_page->beg_addr_p;
 	uw_relative_addr = 0;
 	words_num = encap_page->micro_words_num;

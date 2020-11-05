@@ -121,8 +121,10 @@ tcl_ring_sel:
 	spin_unlock_bh(&tx_ring->tx_idr_lock);
 
 	if (ret < 0) {
-		if (ring_map == (BIT(DP_TCL_NUM_RING_MAX) - 1))
+		if (ring_map == (BIT(DP_TCL_NUM_RING_MAX) - 1)) {
+			atomic_inc(&ab->soc_stats.tx_err.misc_fail);
 			return -ENOSPC;
+		}
 
 		/* Check if the next ring is available */
 		ring_selector++;
@@ -180,11 +182,13 @@ tcl_ring_sel:
 	default:
 		/* TODO: Take care of other encap modes as well */
 		ret = -EINVAL;
+		atomic_inc(&ab->soc_stats.tx_err.misc_fail);
 		goto fail_remove_idr;
 	}
 
 	ti.paddr = dma_map_single(ab->dev, skb->data, skb->len, DMA_TO_DEVICE);
 	if (dma_mapping_error(ab->dev, ti.paddr)) {
+		atomic_inc(&ab->soc_stats.tx_err.misc_fail);
 		ath11k_warn(ab, "failed to DMA map data Tx buffer\n");
 		ret = -ENOMEM;
 		goto fail_remove_idr;
@@ -208,6 +212,7 @@ tcl_ring_sel:
 		 * desc because the desc is directly enqueued onto hw queue.
 		 */
 		ath11k_hal_srng_access_end(ab, tcl_ring);
+		ab->soc_stats.tx_err.desc_na[ti.ring_id]++;
 		spin_unlock_bh(&tcl_ring->lock);
 		ret = -ENOMEM;
 
@@ -509,6 +514,8 @@ void ath11k_dp_tx_completion_handler(struct ath11k_base *ab, int ring_id)
 	u32 msdu_id;
 	u8 mac_id;
 
+	spin_lock_bh(&status_ring->lock);
+
 	ath11k_hal_srng_access_begin(ab, status_ring);
 
 	while ((ATH11K_TX_COMPL_NEXT(tx_ring->tx_status_head) !=
@@ -527,6 +534,8 @@ void ath11k_dp_tx_completion_handler(struct ath11k_base *ab, int ring_id)
 	}
 
 	ath11k_hal_srng_access_end(ab, status_ring);
+
+	spin_unlock_bh(&status_ring->lock);
 
 	while (ATH11K_TX_COMPL_NEXT(tx_ring->tx_status_tail) != tx_ring->tx_status_head) {
 		struct hal_wbm_release_ring *tx_status;

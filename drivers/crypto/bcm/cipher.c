@@ -3246,7 +3246,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(md5),cbc(aes))",
 			.cra_driver_name = "authenc-hmac-md5-cbc-aes-iproc",
 			.cra_blocksize = AES_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		.ivsize = AES_BLOCK_SIZE,
@@ -3269,7 +3271,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha1),cbc(aes))",
 			.cra_driver_name = "authenc-hmac-sha1-cbc-aes-iproc",
 			.cra_blocksize = AES_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = AES_BLOCK_SIZE,
@@ -3292,7 +3296,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha256),cbc(aes))",
 			.cra_driver_name = "authenc-hmac-sha256-cbc-aes-iproc",
 			.cra_blocksize = AES_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = AES_BLOCK_SIZE,
@@ -3315,7 +3321,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(md5),cbc(des))",
 			.cra_driver_name = "authenc-hmac-md5-cbc-des-iproc",
 			.cra_blocksize = DES_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES_BLOCK_SIZE,
@@ -3338,7 +3346,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha1),cbc(des))",
 			.cra_driver_name = "authenc-hmac-sha1-cbc-des-iproc",
 			.cra_blocksize = DES_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES_BLOCK_SIZE,
@@ -3361,7 +3371,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha224),cbc(des))",
 			.cra_driver_name = "authenc-hmac-sha224-cbc-des-iproc",
 			.cra_blocksize = DES_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES_BLOCK_SIZE,
@@ -3384,7 +3396,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha256),cbc(des))",
 			.cra_driver_name = "authenc-hmac-sha256-cbc-des-iproc",
 			.cra_blocksize = DES_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES_BLOCK_SIZE,
@@ -3407,7 +3421,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha384),cbc(des))",
 			.cra_driver_name = "authenc-hmac-sha384-cbc-des-iproc",
 			.cra_blocksize = DES_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES_BLOCK_SIZE,
@@ -3430,7 +3446,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha512),cbc(des))",
 			.cra_driver_name = "authenc-hmac-sha512-cbc-des-iproc",
 			.cra_blocksize = DES_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES_BLOCK_SIZE,
@@ -3453,7 +3471,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(md5),cbc(des3_ede))",
 			.cra_driver_name = "authenc-hmac-md5-cbc-des3-iproc",
 			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES3_EDE_BLOCK_SIZE,
@@ -3476,7 +3496,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha1),cbc(des3_ede))",
 			.cra_driver_name = "authenc-hmac-sha1-cbc-des3-iproc",
 			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES3_EDE_BLOCK_SIZE,
@@ -3499,7 +3521,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha224),cbc(des3_ede))",
 			.cra_driver_name = "authenc-hmac-sha224-cbc-des3-iproc",
 			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES3_EDE_BLOCK_SIZE,
@@ -3522,7 +3546,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha256),cbc(des3_ede))",
 			.cra_driver_name = "authenc-hmac-sha256-cbc-des3-iproc",
 			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES3_EDE_BLOCK_SIZE,
@@ -3545,7 +3571,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha384),cbc(des3_ede))",
 			.cra_driver_name = "authenc-hmac-sha384-cbc-des3-iproc",
 			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES3_EDE_BLOCK_SIZE,
@@ -3568,7 +3596,9 @@ static struct iproc_alg_s driver_algs[] = {
 			.cra_name = "authenc(hmac(sha512),cbc(des3_ede))",
 			.cra_driver_name = "authenc-hmac-sha512-cbc-des3-iproc",
 			.cra_blocksize = DES3_EDE_BLOCK_SIZE,
-			.cra_flags = CRYPTO_ALG_NEED_FALLBACK | CRYPTO_ALG_ASYNC
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
+				     CRYPTO_ALG_ASYNC |
+				     CRYPTO_ALG_ALLOCATES_MEMORY
 		 },
 		 .setkey = aead_authenc_setkey,
 		 .ivsize = DES3_EDE_BLOCK_SIZE,
@@ -3824,7 +3854,8 @@ static struct iproc_alg_s driver_algs[] = {
 				    .cra_name = "md5",
 				    .cra_driver_name = "md5-iproc",
 				    .cra_blocksize = MD5_BLOCK_WORDS * 4,
-				    .cra_flags = CRYPTO_ALG_ASYNC,
+				    .cra_flags = CRYPTO_ALG_ASYNC |
+						 CRYPTO_ALG_ALLOCATES_MEMORY,
 				}
 		      },
 	 .cipher_info = {
@@ -4521,7 +4552,9 @@ static int spu_register_skcipher(struct iproc_alg_s *driver_alg)
 	crypto->base.cra_priority = cipher_pri;
 	crypto->base.cra_alignmask = 0;
 	crypto->base.cra_ctxsize = sizeof(struct iproc_ctx_s);
-	crypto->base.cra_flags = CRYPTO_ALG_ASYNC | CRYPTO_ALG_KERN_DRIVER_ONLY;
+	crypto->base.cra_flags = CRYPTO_ALG_ASYNC |
+				 CRYPTO_ALG_ALLOCATES_MEMORY |
+				 CRYPTO_ALG_KERN_DRIVER_ONLY;
 
 	crypto->init = skcipher_init_tfm;
 	crypto->exit = skcipher_exit_tfm;
@@ -4560,7 +4593,8 @@ static int spu_register_ahash(struct iproc_alg_s *driver_alg)
 	hash->halg.base.cra_ctxsize = sizeof(struct iproc_ctx_s);
 	hash->halg.base.cra_init = ahash_cra_init;
 	hash->halg.base.cra_exit = generic_cra_exit;
-	hash->halg.base.cra_flags = CRYPTO_ALG_ASYNC;
+	hash->halg.base.cra_flags = CRYPTO_ALG_ASYNC |
+				    CRYPTO_ALG_ALLOCATES_MEMORY;
 	hash->halg.statesize = sizeof(struct spu_hash_export_s);
 
 	if (driver_alg->auth_info.mode != HASH_MODE_HMAC) {
@@ -4604,7 +4638,7 @@ static int spu_register_aead(struct iproc_alg_s *driver_alg)
 	aead->base.cra_alignmask = 0;
 	aead->base.cra_ctxsize = sizeof(struct iproc_ctx_s);
 
-	aead->base.cra_flags |= CRYPTO_ALG_ASYNC;
+	aead->base.cra_flags |= CRYPTO_ALG_ASYNC | CRYPTO_ALG_ALLOCATES_MEMORY;
 	/* setkey set in alg initialization */
 	aead->setauthsize = aead_setauthsize;
 	aead->encrypt = aead_encrypt;

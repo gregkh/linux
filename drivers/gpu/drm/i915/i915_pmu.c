@@ -474,7 +474,7 @@ config_status(struct drm_i915_private *i915, u64 config)
 		if (IS_VALLEYVIEW(i915) || IS_CHERRYVIEW(i915))
 			/* Requires a mutex for sampling! */
 			return -ENODEV;
-		/* Fall-through. */
+		fallthrough;
 	case I915_PMU_REQUESTED_FREQUENCY:
 		if (INTEL_GEN(i915) < 6)
 			return -ENODEV;
@@ -561,7 +561,10 @@ static u64 __i915_pmu_event_read(struct perf_event *event)
 			/* Do nothing */
 		} else if (sample == I915_SAMPLE_BUSY &&
 			   intel_engine_supports_stats(engine)) {
-			val = ktime_to_ns(intel_engine_get_busy_time(engine));
+			ktime_t unused;
+
+			val = ktime_to_ns(intel_engine_get_busy_time(engine,
+								     &unused));
 		} else {
 			val = engine->pmu.sample[sample].cur;
 		}

@@ -276,7 +276,7 @@ static void *i915_gem_object_map(struct drm_i915_gem_object *obj,
 	switch (type) {
 	default:
 		MISSING_CASE(type);
-		/* fallthrough - to use PAGE_KERNEL anyway */
+		fallthrough;	/* to use PAGE_KERNEL anyway */
 	case I915_MAP_WB:
 		pgprot = PAGE_KERNEL;
 		break;
@@ -406,6 +406,21 @@ void __i915_gem_object_flush_map(struct drm_i915_gem_object *obj,
 		obj->write_domain &= ~I915_GEM_DOMAIN_CPU;
 		obj->cache_dirty = false;
 	}
+}
+
+void __i915_gem_object_release_map(struct drm_i915_gem_object *obj)
+{
+	GEM_BUG_ON(!obj->mm.mapping);
+
+	/*
+	 * We allow removing the mapping from underneath pinned pages!
+	 *
+	 * Furthermore, since this is an unsafe operation reserved only
+	 * for construction time manipulation, we ignore locking prudence.
+	 */
+	unmap_object(obj, page_mask_bits(fetch_and_zero(&obj->mm.mapping)));
+
+	i915_gem_object_unpin_map(obj);
 }
 
 struct scatterlist *

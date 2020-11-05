@@ -156,14 +156,6 @@ static int imx_ldb_connector_get_modes(struct drm_connector *connector)
 	return num_modes;
 }
 
-static struct drm_encoder *imx_ldb_connector_best_encoder(
-		struct drm_connector *connector)
-{
-	struct imx_ldb_channel *imx_ldb_ch = con_to_imx_ldb_ch(connector);
-
-	return &imx_ldb_ch->encoder;
-}
-
 static void imx_ldb_set_clock(struct imx_ldb *ldb, int mux, int chno,
 		unsigned long serial_clk, unsigned long di_clk)
 {
@@ -392,7 +384,6 @@ static const struct drm_connector_funcs imx_ldb_connector_funcs = {
 
 static const struct drm_connector_helper_funcs imx_ldb_connector_helper_funcs = {
 	.get_modes = imx_ldb_connector_get_modes,
-	.best_encoder = imx_ldb_connector_best_encoder,
 };
 
 static const struct drm_encoder_helper_funcs imx_ldb_encoder_helper_funcs = {
@@ -473,11 +464,6 @@ static int imx_ldb_register(struct drm_device *drm,
 
 	return 0;
 }
-
-enum {
-	LVDS_BIT_MAP_SPWG,
-	LVDS_BIT_MAP_JEIDA
-};
 
 struct imx_ldb_bit_mapping {
 	u32 bus_format;

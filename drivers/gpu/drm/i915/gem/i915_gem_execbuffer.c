@@ -808,23 +808,28 @@ static int __eb_add_lut(struct i915_execbuffer *eb,
 
 	/* Check that the context hasn't been closed in the meantime */
 	err = -EINTR;
-	if (!mutex_lock_interruptible(&ctx->mutex)) {
-		err = -ENOENT;
-		if (likely(!i915_gem_context_is_closed(ctx)))
+	if (!mutex_lock_interruptible(&ctx->lut_mutex)) {
+		struct i915_address_space *vm = rcu_access_pointer(ctx->vm);
+
+		if (unlikely(vm && vma->vm != vm))
+			err = -EAGAIN; /* user racing with ctx set-vm */
+		else if (likely(!i915_gem_context_is_closed(ctx)))
 			err = radix_tree_insert(&ctx->handles_vma, handle, vma);
+		else
+			err = -ENOENT;
 		if (err == 0) { /* And nor has this handle */
 			struct drm_i915_gem_object *obj = vma->obj;
 
-			i915_gem_object_lock(obj);
+			spin_lock(&obj->lut_lock);
 			if (idr_find(&eb->file->object_idr, handle) == obj) {
 				list_add(&lut->obj_link, &obj->lut_list);
 			} else {
 				radix_tree_delete(&ctx->handles_vma, handle);
 				err = -ENOENT;
 			}
-			i915_gem_object_unlock(obj);
+			spin_unlock(&obj->lut_lock);
 		}
-		mutex_unlock(&ctx->mutex);
+		mutex_unlock(&ctx->lut_mutex);
 	}
 	if (unlikely(err))
 		goto err;
@@ -840,6 +845,8 @@ err:
 
 static struct i915_vma *eb_lookup_vma(struct i915_execbuffer *eb, u32 handle)
 {
+	struct i915_address_space *vm = eb->context->vm;
+
 	do {
 		struct drm_i915_gem_object *obj;
 		struct i915_vma *vma;
@@ -847,7 +854,7 @@ static struct i915_vma *eb_lookup_vma(struct i915_execbuffer *eb, u32 handle)
 
 		rcu_read_lock();
 		vma = radix_tree_lookup(&eb->gem_context->handles_vma, handle);
-		if (likely(vma))
+		if (likely(vma && vma->vm == vm))
 			vma = i915_vma_tryget(vma);
 		rcu_read_unlock();
 		if (likely(vma))
@@ -857,7 +864,7 @@ static struct i915_vma *eb_lookup_vma(struct i915_execbuffer *eb, u32 handle)
 		if (unlikely(!obj))
 			return ERR_PTR(-ENOENT);
 
-		vma = i915_vma_instance(obj, eb->context->vm, NULL);
+		vma = i915_vma_instance(obj, vm, NULL);
 		if (IS_ERR(vma)) {
 			i915_gem_object_put(obj);
 			return vma;
@@ -1626,8 +1633,7 @@ eb_relocate_entry(struct i915_execbuffer *eb,
 			err = i915_vma_bind(target->vma,
 					    target->vma->obj->cache_level,
 					    PIN_GLOBAL, NULL);
-			if (WARN_ONCE(err,
-				      "Unexpected failure to bind target VMA!"))
+			if (err)
 				return err;
 		}
 	}
@@ -1911,8 +1917,8 @@ static int i915_reset_gen7_sol_offsets(struct i915_request *rq)
 	u32 *cs;
 	int i;
 
-	if (!IS_GEN(rq->i915, 7) || rq->engine->id != RCS0) {
-		drm_dbg(&rq->i915->drm, "sol reset is gen7/rcs only\n");
+	if (!IS_GEN(rq->engine->i915, 7) || rq->engine->id != RCS0) {
+		drm_dbg(&rq->engine->i915->drm, "sol reset is gen7/rcs only\n");
 		return -EINVAL;
 	}
 
@@ -2246,8 +2252,7 @@ static int eb_submit(struct i915_execbuffer *eb, struct i915_vma *batch)
 
 static int num_vcs_engines(const struct drm_i915_private *i915)
 {
-	return hweight64(INTEL_INFO(i915)->engine_mask &
-			 GENMASK_ULL(VCS0 + I915_MAX_VCS - 1, VCS0));
+	return hweight64(VDBOX_MASK(&i915->gt));
 }
 
 /*

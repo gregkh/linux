@@ -14,6 +14,7 @@
 #include <linux/init.h>
 #include <linux/cpu.h>
 #include <linux/sched/cputime.h>
+#include <trace/events/power.h>
 #include <asm/nmi.h>
 #include <asm/smp.h>
 #include "entry.h"
@@ -37,15 +38,14 @@ void enabled_wait(void)
 	psw_idle(idle, psw_mask);
 	local_irq_restore(flags);
 
-
 	/* Account time spent with enabled wait psw loaded as idle time. */
-	write_seqcount_begin(&idle->seqcount);
+	raw_write_seqcount_begin(&idle->seqcount);
 	idle_time = idle->clock_idle_exit - idle->clock_idle_enter;
 	idle->clock_idle_enter = idle->clock_idle_exit = 0ULL;
 	idle->idle_time += idle_time;
 	idle->idle_count++;
 	account_idle_time(cputime_to_nsecs(idle_time));
-	write_seqcount_end(&idle->seqcount);
+	raw_write_seqcount_end(&idle->seqcount);
 }
 NOKPROBE_SYMBOL(enabled_wait);
 

@@ -274,7 +274,7 @@ static int sst_platform_init_stream(struct snd_pcm_substream *substream)
 {
 	struct sst_runtime_stream *stream =
 			substream->runtime->private_data;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	int ret_val;
 
 	dev_dbg(rtd->dev, "setting buffer ptr param\n");
@@ -332,6 +332,17 @@ static int sst_media_open(struct snd_pcm_substream *substream,
 	ret_val = power_up_sst(stream);
 	if (ret_val < 0)
 		goto out_power_up;
+
+	/*
+	 * Make sure the period to be multiple of 1ms to align the
+	 * design of firmware. Apply same rule to buffer size to make
+	 * sure alsa could always find a value for period size
+	 * regardless the buffer size given by user space.
+	 */
+	snd_pcm_hw_constraint_step(substream->runtime, 0,
+			   SNDRV_PCM_HW_PARAM_PERIOD_SIZE, 48);
+	snd_pcm_hw_constraint_step(substream->runtime, 0,
+			   SNDRV_PCM_HW_PARAM_BUFFER_SIZE, 48);
 
 	/* Make sure, that the period size is always even */
 	snd_pcm_hw_constraint_step(substream->runtime, 0,
@@ -583,7 +594,7 @@ static int sst_soc_trigger(struct snd_soc_component *component,
 	int ret_val = 0, str_id;
 	struct sst_runtime_stream *stream;
 	int status;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 
 	dev_dbg(rtd->dev, "%s called\n", __func__);
 	if (substream->pcm->internal)
@@ -631,7 +642,7 @@ static snd_pcm_uframes_t sst_soc_pointer(struct snd_soc_component *component,
 	struct sst_runtime_stream *stream;
 	int ret_val, status;
 	struct pcm_stream_info *str_info;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 
 	stream = substream->runtime->private_data;
 	status = sst_get_stream_status(stream);

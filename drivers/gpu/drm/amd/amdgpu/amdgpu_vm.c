@@ -1691,13 +1691,13 @@ static int amdgpu_vm_bo_split_mapping(struct amdgpu_device *adev,
 		uint64_t max_entries;
 		uint64_t addr, last;
 
+		max_entries = mapping->last - start + 1;
 		if (nodes) {
 			addr = nodes->start << PAGE_SHIFT;
-			max_entries = (nodes->size - pfn) *
-				AMDGPU_GPU_PAGES_IN_CPU_PAGE;
+			max_entries = min((nodes->size - pfn) *
+				AMDGPU_GPU_PAGES_IN_CPU_PAGE, max_entries);
 		} else {
 			addr = 0;
-			max_entries = S64_MAX;
 		}
 
 		if (pages_addr) {
@@ -1727,7 +1727,7 @@ static int amdgpu_vm_bo_split_mapping(struct amdgpu_device *adev,
 			addr += pfn << PAGE_SHIFT;
 		}
 
-		last = min((uint64_t)mapping->last, start + max_entries - 1);
+		last = start + max_entries - 1;
 		r = amdgpu_vm_bo_update_mapping(adev, vm, false, false, resv,
 						start, last, flags, addr,
 						dma_addr, fence);
@@ -2208,7 +2208,8 @@ int amdgpu_vm_bo_map(struct amdgpu_device *adev,
 	/* make sure object fit at this offset */
 	eaddr = saddr + size - 1;
 	if (saddr >= eaddr ||
-	    (bo && offset + size > amdgpu_bo_size(bo)))
+	    (bo && offset + size > amdgpu_bo_size(bo)) ||
+	    (eaddr >= adev->vm_manager.max_pfn << AMDGPU_GPU_PAGE_SHIFT))
 		return -EINVAL;
 
 	saddr /= AMDGPU_GPU_PAGE_SIZE;
@@ -2273,7 +2274,8 @@ int amdgpu_vm_bo_replace_map(struct amdgpu_device *adev,
 	/* make sure object fit at this offset */
 	eaddr = saddr + size - 1;
 	if (saddr >= eaddr ||
-	    (bo && offset + size > amdgpu_bo_size(bo)))
+	    (bo && offset + size > amdgpu_bo_size(bo)) ||
+	    (eaddr >= adev->vm_manager.max_pfn << AMDGPU_GPU_PAGE_SHIFT))
 		return -EINVAL;
 
 	/* Allocate all the needed memory */

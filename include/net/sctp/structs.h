@@ -433,19 +433,9 @@ struct sctp_af {
 	int		(*setsockopt)	(struct sock *sk,
 					 int level,
 					 int optname,
-					 char __user *optval,
+					 sockptr_t optval,
 					 unsigned int optlen);
 	int		(*getsockopt)	(struct sock *sk,
-					 int level,
-					 int optname,
-					 char __user *optval,
-					 int __user *optlen);
-	int		(*compat_setsockopt)	(struct sock *sk,
-					 int level,
-					 int optname,
-					 char __user *optval,
-					 unsigned int optlen);
-	int		(*compat_getsockopt)	(struct sock *sk,
 					 int level,
 					 int optname,
 					 char __user *optval,
@@ -1400,7 +1390,7 @@ struct sctp_stream_priorities {
 	struct list_head prio_sched;
 	/* List of streams scheduled */
 	struct list_head active;
-	/* The next stream stream in line */
+	/* The next stream in line */
 	struct sctp_stream_out_ext *next;
 	__u16 prio;
 };
@@ -1462,7 +1452,7 @@ struct sctp_stream {
 		struct {
 			/* List of streams scheduled */
 			struct list_head rr_list;
-			/* The next stream stream in line */
+			/* The next stream in line */
 			struct sctp_stream_out_ext *rr_next;
 		};
 	};
@@ -1772,7 +1762,7 @@ struct sctp_association {
 	int max_burst;
 
 	/* This is the max_retrans value for the association.  This value will
-	 * be initialized initialized from system defaults, but can be
+	 * be initialized from system defaults, but can be
 	 * modified by the SCTP_ASSOCINFO socket option.
 	 */
 	int max_retrans;

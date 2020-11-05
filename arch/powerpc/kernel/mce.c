@@ -49,6 +49,20 @@ static struct irq_work mce_ue_event_irq_work = {
 
 DECLARE_WORK(mce_ue_event_work, machine_process_ue_event);
 
+static BLOCKING_NOTIFIER_HEAD(mce_notifier_list);
+
+int mce_register_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&mce_notifier_list, nb);
+}
+EXPORT_SYMBOL_GPL(mce_register_notifier);
+
+int mce_unregister_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&mce_notifier_list, nb);
+}
+EXPORT_SYMBOL_GPL(mce_unregister_notifier);
+
 static void mce_set_error_info(struct machine_check_event *mce,
 			       struct mce_error_info *mce_err)
 {
@@ -278,6 +292,7 @@ static void machine_process_ue_event(struct work_struct *work)
 	while (__this_cpu_read(mce_ue_count) > 0) {
 		index = __this_cpu_read(mce_ue_count) - 1;
 		evt = this_cpu_ptr(&mce_ue_event_queue[index]);
+		blocking_notifier_call_chain(&mce_notifier_list, 0, evt);
 #ifdef CONFIG_MEMORY_FAILURE
 		/*
 		 * This should probably queued elsewhere, but
@@ -370,6 +385,7 @@ void machine_check_print_event_info(struct machine_check_event *evt,
 	static const char *mc_user_types[] = {
 		"Indeterminate",
 		"tlbie(l) invalid",
+		"scv invalid",
 	};
 	static const char *mc_ra_types[] = {
 		"Indeterminate",
@@ -575,12 +591,11 @@ EXPORT_SYMBOL_GPL(machine_check_print_event_info);
 long notrace machine_check_early(struct pt_regs *regs)
 {
 	long handled = 0;
-	bool nested = in_nmi();
 	u8 ftrace_enabled = this_cpu_get_ftrace_enabled();
 
 	this_cpu_set_ftrace_enabled(0);
-
-	if (!nested)
+	/* Do not use nmi_enter/exit for pseries hpte guest */
+	if (radix_enabled() || !firmware_has_feature(FW_FEATURE_LPAR))
 		nmi_enter();
 
 	hv_nmi_check_nonrecoverable(regs);
@@ -591,7 +606,7 @@ long notrace machine_check_early(struct pt_regs *regs)
 	if (ppc_md.machine_check_early)
 		handled = ppc_md.machine_check_early(regs);
 
-	if (!nested)
+	if (radix_enabled() || !firmware_has_feature(FW_FEATURE_LPAR))
 		nmi_exit();
 
 	this_cpu_set_ftrace_enabled(ftrace_enabled);
@@ -711,7 +726,7 @@ long hmi_exception_realmode(struct pt_regs *regs)
 {	
 	int ret;
 
-	__this_cpu_inc(irq_stat.hmi_exceptions);
+	local_paca->hmi_irqs++;
 
 	ret = hmi_handle_debugtrig(regs);
 	if (ret >= 0)

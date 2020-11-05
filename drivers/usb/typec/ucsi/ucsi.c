@@ -1021,7 +1021,7 @@ out:
  *
  * Registers all ports @ucsi has and enables all notification events.
  */
-int ucsi_init(struct ucsi *ucsi)
+static int ucsi_init(struct ucsi *ucsi)
 {
 	struct ucsi_connector *con;
 	u64 command;
@@ -1091,7 +1091,6 @@ err_reset:
 err:
 	return ret;
 }
-EXPORT_SYMBOL_GPL(ucsi_init);
 
 static void ucsi_init_work(struct work_struct *work)
 {

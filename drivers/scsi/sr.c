@@ -392,14 +392,10 @@ static blk_status_t sr_init_command(struct scsi_cmnd *SCpnt)
 	struct request *rq = SCpnt->request;
 	blk_status_t ret;
 
-	ret = scsi_init_io(SCpnt);
+	ret = scsi_alloc_sgtables(SCpnt);
 	if (ret != BLK_STS_OK)
-		goto out;
+		return ret;
 	cd = scsi_cd(rq->rq_disk);
-
-	/* from here on until we're complete, any goto out
-	 * is used for a killable error condition */
-	ret = BLK_STS_IOERR;
 
 	SCSI_LOG_HLQUEUE(1, scmd_printk(KERN_INFO, SCpnt,
 		"Doing sr request, block = %d\n", block));
@@ -509,12 +505,12 @@ static blk_status_t sr_init_command(struct scsi_cmnd *SCpnt)
 	SCpnt->allowed = MAX_RETRIES;
 
 	/*
-	 * This indicates that the command is ready from our end to be
-	 * queued.
+	 * This indicates that the command is ready from our end to be queued.
 	 */
-	ret = BLK_STS_OK;
+	return BLK_STS_OK;
  out:
-	return ret;
+	scsi_free_sgtables(SCpnt);
+	return BLK_STS_IOERR;
 }
 
 static int sr_block_open(struct block_device *bdev, fmode_t mode)
@@ -877,10 +873,10 @@ static void get_sectorsize(struct scsi_cd *cd)
 		case 2340:
 		case 2352:
 			sector_size = 2048;
-			/* fall through */
+			fallthrough;
 		case 2048:
 			cd->capacity *= 4;
-			/* fall through */
+			fallthrough;
 		case 512:
 			break;
 		default:

@@ -186,7 +186,7 @@ void vmw_kms_cursor_snoop(struct vmw_surface *srf,
 		/* TODO handle none page aligned offsets */
 		/* TODO handle more dst & src != 0 */
 		/* TODO handle more then one copy */
-		DRM_ERROR("Cant snoop dma request for cursor!\n");
+		DRM_ERROR("Can't snoop dma request for cursor!\n");
 		DRM_ERROR("(%u, %u, %u) (%u, %u, %u) (%ux%ux%u) %u %u\n",
 			  box->srcx, box->srcy, box->srcz,
 			  box->x, box->y, box->z,
@@ -629,8 +629,7 @@ void vmw_du_crtc_reset(struct drm_crtc *crtc)
 		return;
 	}
 
-	crtc->state = &vcs->base;
-	crtc->state->crtc = crtc;
+	__drm_atomic_helper_crtc_reset(crtc, &vcs->base);
 }
 
 
@@ -2138,7 +2137,6 @@ void vmw_guess_mode_timing(struct drm_display_mode *mode)
 	mode->vtotal = mode->vsync_end + 50;
 
 	mode->clock = (u32)mode->htotal * (u32)mode->vtotal / 100 * 6;
-	mode->vrefresh = drm_mode_vrefresh(mode);
 }
 
 
@@ -2212,7 +2210,6 @@ int vmw_du_connector_fill_modes(struct drm_connector *connector,
 		mode = drm_mode_duplicate(dev, bmode);
 		if (!mode)
 			return 0;
-		mode->vrefresh = drm_mode_vrefresh(mode);
 
 		drm_mode_probed_add(connector, mode);
 	}

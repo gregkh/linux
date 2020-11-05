@@ -83,11 +83,13 @@ static int panfrost_perfcnt_enable_locked(struct panfrost_device *pfdev,
 
 	ret = pm_runtime_get_sync(pfdev->dev);
 	if (ret < 0)
-		return ret;
+		goto err_put_pm;
 
 	bo = drm_gem_shmem_create(pfdev->ddev, perfcnt->bosize);
-	if (IS_ERR(bo))
-		return PTR_ERR(bo);
+	if (IS_ERR(bo)) {
+		ret = PTR_ERR(bo);
+		goto err_put_pm;
+	}
 
 	/* Map the perfcnt buf in the address space attached to file_priv. */
 	ret = panfrost_gem_open(&bo->base, file_priv);
@@ -156,7 +158,7 @@ static int panfrost_perfcnt_enable_locked(struct panfrost_device *pfdev,
 		gpu_write(pfdev, GPU_PRFCNT_TILER_EN, 0xffffffff);
 
 	/* The BO ref is retained by the mapping. */
-	drm_gem_object_put_unlocked(&bo->base);
+	drm_gem_object_put(&bo->base);
 
 	return 0;
 
@@ -167,7 +169,9 @@ err_put_mapping:
 err_close_bo:
 	panfrost_gem_close(&bo->base, file_priv);
 err_put_bo:
-	drm_gem_object_put_unlocked(&bo->base);
+	drm_gem_object_put(&bo->base);
+err_put_pm:
+	pm_runtime_put(pfdev->dev);
 	return ret;
 }
 

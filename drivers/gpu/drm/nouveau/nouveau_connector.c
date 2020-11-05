@@ -60,7 +60,6 @@ nouveau_conn_native_mode(struct drm_connector *connector)
 	int high_w = 0, high_h = 0, high_v = 0;
 
 	list_for_each_entry(mode, &connector->probed_modes, head) {
-		mode->vrefresh = drm_mode_vrefresh(mode);
 		if (helper->mode_valid(connector, mode) != MODE_OK ||
 		    (mode->flags & DRM_MODE_FLAG_INTERLACE))
 			continue;
@@ -81,12 +80,12 @@ nouveau_conn_native_mode(struct drm_connector *connector)
 			continue;
 
 		if (mode->hdisplay == high_w && mode->vdisplay == high_h &&
-		    mode->vrefresh < high_v)
+		    drm_mode_vrefresh(mode) < high_v)
 			continue;
 
 		high_w = mode->hdisplay;
 		high_h = mode->vdisplay;
-		high_v = mode->vrefresh;
+		high_v = drm_mode_vrefresh(mode);
 		largest = mode;
 	}
 
@@ -331,7 +330,7 @@ nouveau_conn_attach_properties(struct drm_connector *connector)
 	case DRM_MODE_CONNECTOR_VGA:
 		if (disp->disp.object.oclass < NV50_DISP)
 			break; /* Can only scale on DFPs. */
-		/* Fall-through. */
+		fallthrough;
 	default:
 		drm_object_attach_property(&connector->base, dev->mode_config.
 					   scaling_mode_property,
@@ -410,7 +409,7 @@ static void
 nouveau_connector_destroy(struct drm_connector *connector)
 {
 	struct nouveau_connector *nv_connector = nouveau_connector(connector);
-	nvif_notify_fini(&nv_connector->hpd);
+	nvif_notify_dtor(&nv_connector->hpd);
 	kfree(nv_connector->edid);
 	drm_connector_unregister(connector);
 	drm_connector_cleanup(connector);
@@ -446,7 +445,7 @@ nouveau_connector_ddc_detect(struct drm_connector *connector)
 		case DCB_OUTPUT_LVDS:
 			switcheroo_ddc = !!(vga_switcheroo_handler_flags() &
 					    VGA_SWITCHEROO_CAN_SWITCH_DDC);
-		/* fall-through */
+			fallthrough;
 		default:
 			if (!nv_encoder->i2c)
 				break;
@@ -1451,7 +1450,8 @@ nouveau_connector_create(struct drm_device *dev,
 		break;
 	}
 
-	ret = nvif_notify_init(&disp->disp.object, nouveau_connector_hotplug,
+	ret = nvif_notify_ctor(&disp->disp.object, "kmsHotplug",
+			       nouveau_connector_hotplug,
 			       true, NV04_DISP_NTFY_CONN,
 			       &(struct nvif_notify_conn_req_v0) {
 				.mask = NVIF_NOTIFY_CONN_V0_ANY,

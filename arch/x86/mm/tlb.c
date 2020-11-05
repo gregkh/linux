@@ -317,34 +317,6 @@ void switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	local_irq_restore(flags);
 }
 
-static void sync_current_stack_to_mm(struct mm_struct *mm)
-{
-	unsigned long sp = current_stack_pointer;
-	pgd_t *pgd = pgd_offset(mm, sp);
-
-	if (pgtable_l5_enabled()) {
-		if (unlikely(pgd_none(*pgd))) {
-			pgd_t *pgd_ref = pgd_offset_k(sp);
-
-			set_pgd(pgd, *pgd_ref);
-		}
-	} else {
-		/*
-		 * "pgd" is faked.  The top level entries are "p4d"s, so sync
-		 * the p4d.  This compiles to approximately the same code as
-		 * the 5-level case.
-		 */
-		p4d_t *p4d = p4d_offset(pgd, sp);
-
-		if (unlikely(p4d_none(*p4d))) {
-			pgd_t *pgd_ref = pgd_offset_k(sp);
-			p4d_t *p4d_ref = p4d_offset(pgd_ref, sp);
-
-			set_p4d(p4d, *p4d_ref);
-		}
-	}
-}
-
 static inline unsigned long mm_mangle_tif_spec_ib(struct task_struct *next)
 {
 	unsigned long next_tif = task_thread_info(next)->flags;
@@ -553,15 +525,6 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		 */
 		cond_ibpb(tsk);
 
-		if (IS_ENABLED(CONFIG_VMAP_STACK)) {
-			/*
-			 * If our current stack is in vmalloc space and isn't
-			 * mapped in the new pgd, we'll double-fault.  Forcibly
-			 * map it.
-			 */
-			sync_current_stack_to_mm(next);
-		}
-
 		/*
 		 * Stop remote flushes for the previous mm.
 		 * Skip kernel threads; we never send init_mm TLB flushing IPIs,
@@ -592,21 +555,12 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 		this_cpu_write(cpu_tlbstate.ctxs[new_asid].tlb_gen, next_tlb_gen);
 		load_new_mm_cr3(next->pgd, new_asid, true);
 
-		/*
-		 * NB: This gets called via leave_mm() in the idle path
-		 * where RCU functions differently.  Tracing normally
-		 * uses RCU, so we need to use the _rcuidle variant.
-		 *
-		 * (There is no good reason for this.  The idle code should
-		 *  be rearranged to call this before rcu_idle_enter().)
-		 */
-		trace_tlb_flush_rcuidle(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
+		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, TLB_FLUSH_ALL);
 	} else {
 		/* The new ASID is already up to date. */
 		load_new_mm_cr3(next->pgd, new_asid, false);
 
-		/* See above wrt _rcuidle. */
-		trace_tlb_flush_rcuidle(TLB_FLUSH_ON_TASK_SWITCH, 0);
+		trace_tlb_flush(TLB_FLUSH_ON_TASK_SWITCH, 0);
 	}
 
 	/* Make sure we write CR3 before loaded_mm. */

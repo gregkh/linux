@@ -2465,8 +2465,7 @@ cleanup:
  * ext4_generic_delete_entry deletes a directory entry by merging it
  * with the previous entry
  */
-int ext4_generic_delete_entry(handle_t *handle,
-			      struct inode *dir,
+int ext4_generic_delete_entry(struct inode *dir,
 			      struct ext4_dir_entry_2 *de_del,
 			      struct buffer_head *bh,
 			      void *entry_buf,
@@ -2527,8 +2526,7 @@ static int ext4_delete_entry(handle_t *handle,
 	if (unlikely(err))
 		goto out;
 
-	err = ext4_generic_delete_entry(handle, dir, de_del,
-					bh, bh->b_data,
+	err = ext4_generic_delete_entry(dir, de_del, bh, bh->b_data,
 					dir->i_sb->s_blocksize, csum_size);
 	if (err)
 		goto out;
@@ -3203,30 +3201,33 @@ static int ext4_unlink(struct inode *dir, struct dentry *dentry)
 	 * in separate transaction */
 	retval = dquot_initialize(dir);
 	if (retval)
-		return retval;
+		goto out_trace;
 	retval = dquot_initialize(d_inode(dentry));
 	if (retval)
-		return retval;
+		goto out_trace;
 
-	retval = -ENOENT;
 	bh = ext4_find_entry(dir, &dentry->d_name, &de, NULL);
-	if (IS_ERR(bh))
-		return PTR_ERR(bh);
-	if (!bh)
-		goto end_unlink;
+	if (IS_ERR(bh)) {
+		retval = PTR_ERR(bh);
+		goto out_trace;
+	}
+	if (!bh) {
+		retval = -ENOENT;
+		goto out_trace;
+	}
 
 	inode = d_inode(dentry);
 
-	retval = -EFSCORRUPTED;
-	if (le32_to_cpu(de->inode) != inode->i_ino)
-		goto end_unlink;
+	if (le32_to_cpu(de->inode) != inode->i_ino) {
+		retval = -EFSCORRUPTED;
+		goto out_bh;
+	}
 
 	handle = ext4_journal_start(dir, EXT4_HT_DIR,
 				    EXT4_DATA_TRANS_BLOCKS(dir->i_sb));
 	if (IS_ERR(handle)) {
 		retval = PTR_ERR(handle);
-		handle = NULL;
-		goto end_unlink;
+		goto out_bh;
 	}
 
 	if (IS_DIRSYNC(dir))
@@ -3234,12 +3235,12 @@ static int ext4_unlink(struct inode *dir, struct dentry *dentry)
 
 	retval = ext4_delete_entry(handle, dir, de, bh);
 	if (retval)
-		goto end_unlink;
+		goto out_handle;
 	dir->i_ctime = dir->i_mtime = current_time(dir);
 	ext4_update_dx_flag(dir);
 	retval = ext4_mark_inode_dirty(handle, dir);
 	if (retval)
-		goto end_unlink;
+		goto out_handle;
 	if (inode->i_nlink == 0)
 		ext4_warning_inode(inode, "Deleting file '%.*s' with no links",
 				   dentry->d_name.len, dentry->d_name.name);
@@ -3261,10 +3262,11 @@ static int ext4_unlink(struct inode *dir, struct dentry *dentry)
 		d_invalidate(dentry);
 #endif
 
-end_unlink:
+out_handle:
+	ext4_journal_stop(handle);
+out_bh:
 	brelse(bh);
-	if (handle)
-		ext4_journal_stop(handle);
+out_trace:
 	trace_ext4_unlink_exit(dentry, retval);
 	return retval;
 }

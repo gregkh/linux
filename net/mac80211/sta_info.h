@@ -385,6 +385,7 @@ DECLARE_EWMA(mesh_tx_rate_avg, 8, 16)
  * @processed_beacon: set to true after peer rates and capabilities are
  *	processed
  * @connected_to_gate: true if mesh STA has a path to a mesh gate
+ * @connected_to_as: true if mesh STA has a path to a authentication server
  * @fail_avg: moving percentage of failed MSDUs
  * @tx_rate_avg: moving average of tx bitrate
  */
@@ -404,6 +405,7 @@ struct mesh_sta {
 
 	bool processed_beacon;
 	bool connected_to_gate;
+	bool connected_to_as;
 
 	enum nl80211_plink_state plink_state;
 	u32 plink_timeout;
@@ -609,6 +611,7 @@ struct sta_info {
 		u64 packets[IEEE80211_NUM_ACS];
 		u64 bytes[IEEE80211_NUM_ACS];
 		struct ieee80211_tx_rate last_rate;
+		struct rate_info last_rate_info;
 		u64 msdu[IEEE80211_NUM_TIDS + 1];
 	} tx_stats;
 	u16 tid_seq[IEEE80211_QOS_CTL_TID_MASK + 1];

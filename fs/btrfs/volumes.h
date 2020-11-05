@@ -50,6 +50,7 @@ struct btrfs_io_geometry {
 #define BTRFS_DEV_STATE_MISSING		(2)
 #define BTRFS_DEV_STATE_REPLACE_TGT	(3)
 #define BTRFS_DEV_STATE_FLUSH_SENT	(4)
+#define BTRFS_DEV_STATE_NO_READA	(5)
 
 struct btrfs_device {
 	struct list_head dev_list; /* device_list_mutex */
@@ -288,7 +289,7 @@ struct btrfs_fs_devices {
  */
 struct btrfs_io_bio {
 	unsigned int mirror_num;
-	unsigned int stripe_index;
+	struct btrfs_device *device;
 	u64 logical;
 	u8 *csum;
 	u8 csum_inline[BTRFS_BIO_INLINE_CSUM_SIZE];

@@ -161,6 +161,10 @@ int ath11k_reg_update_chan_list(struct ath11k *ar)
 			else
 				ch->phy_mode = MODE_11A;
 
+			if (channel->band == NL80211_BAND_6GHZ &&
+			    cfg80211_channel_is_psc(channel))
+				ch->psc_channel = true;
+
 			ath11k_dbg(ar->ab, ATH11K_DBG_WMI,
 				   "mac channel [%d/%d] freq %d maxpower %d regpower %d antenna %d mode %d\n",
 				   i, params->nallchans,
@@ -202,7 +206,7 @@ int ath11k_regd_update(struct ath11k *ar, bool init)
 	ab = ar->ab;
 	pdev_id = ar->pdev_idx;
 
-	spin_lock(&ab->base_lock);
+	spin_lock_bh(&ab->base_lock);
 
 	if (init) {
 		/* Apply the regd received during init through
@@ -223,7 +227,7 @@ int ath11k_regd_update(struct ath11k *ar, bool init)
 
 	if (!regd) {
 		ret = -EINVAL;
-		spin_unlock(&ab->base_lock);
+		spin_unlock_bh(&ab->base_lock);
 		goto err;
 	}
 
@@ -234,7 +238,7 @@ int ath11k_regd_update(struct ath11k *ar, bool init)
 	if (regd_copy)
 		ath11k_copy_regd(regd, regd_copy);
 
-	spin_unlock(&ab->base_lock);
+	spin_unlock_bh(&ab->base_lock);
 
 	if (!regd_copy) {
 		ret = -ENOMEM;

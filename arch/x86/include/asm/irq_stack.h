@@ -3,7 +3,6 @@
 #define _ASM_X86_IRQ_STACK_H
 
 #include <linux/ptrace.h>
-#include <linux/irq.h>
 
 #include <asm/processor.h>
 

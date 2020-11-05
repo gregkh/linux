@@ -109,7 +109,7 @@ static inline void adu_debug_data(struct device *dev, const char *function,
 		function, size, size, data);
 }
 
-/**
+/*
  * adu_abort_transfers
  *      aborts transfers and frees associated data structures
  */
@@ -209,6 +209,7 @@ static void adu_interrupt_out_callback(struct urb *urb)
 
 	if (status != 0) {
 		if ((status != -ENOENT) &&
+		    (status != -ESHUTDOWN) &&
 		    (status != -ECONNRESET)) {
 			dev_dbg(&dev->udev->dev,
 				"%s :nonzero status received: %d\n", __func__,
@@ -642,7 +643,7 @@ static struct usb_class_driver adu_class = {
 	.minor_base = ADU_MINOR_BASE,
 };
 
-/**
+/*
  * adu_probe
  *
  * Called by the usb core when a new device is connected that it thinks
@@ -753,7 +754,7 @@ error:
 	return retval;
 }
 
-/**
+/*
  * adu_disconnect
  *
  * Called by the usb core when the device is removed from the system.

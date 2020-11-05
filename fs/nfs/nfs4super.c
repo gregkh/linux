@@ -7,6 +7,7 @@
 #include <linux/mount.h>
 #include <linux/nfs4_mount.h>
 #include <linux/nfs_fs.h>
+#include <linux/nfs_ssc.h>
 #include "delegation.h"
 #include "internal.h"
 #include "nfs4_fs.h"
@@ -69,6 +70,7 @@ static void nfs4_evict_inode(struct inode *inode)
 	pnfs_destroy_layout(NFS_I(inode));
 	/* First call standard NFS clear_inode() code */
 	nfs_clear_inode(inode);
+	nfs4_xattr_cache_zap(inode);
 }
 
 struct nfs_referral_count {
@@ -268,10 +270,19 @@ static int __init init_nfs_v4(void)
 	if (err)
 		goto out1;
 
+#ifdef CONFIG_NFS_V4_2
+	err = nfs4_xattr_cache_init();
+	if (err)
+		goto out2;
+#endif
+
 	err = nfs4_register_sysctl();
 	if (err)
 		goto out2;
 
+#ifdef CONFIG_NFS_V4_2
+	nfs42_ssc_register_ops();
+#endif
 	register_nfs_version(&nfs_v4);
 	return 0;
 out2:
@@ -288,6 +299,10 @@ static void __exit exit_nfs_v4(void)
 	nfs4_pnfs_v3_ds_connect_unload();
 
 	unregister_nfs_version(&nfs_v4);
+#ifdef CONFIG_NFS_V4_2
+	nfs4_xattr_cache_exit();
+	nfs42_ssc_unregister_ops();
+#endif
 	nfs4_unregister_sysctl();
 	nfs_idmap_quit();
 	nfs_dns_resolver_destroy();

@@ -548,6 +548,7 @@ static int venc_bridge_attach(struct drm_bridge *bridge,
 
 static enum drm_mode_status
 venc_bridge_mode_valid(struct drm_bridge *bridge,
+		       const struct drm_display_info *info,
 		       const struct drm_display_mode *mode)
 {
 	switch (venc_get_videomode(mode)) {
@@ -596,7 +597,7 @@ static void venc_bridge_mode_set(struct drm_bridge *bridge,
 	switch (venc_mode) {
 	default:
 		WARN_ON_ONCE(1);
-		/* Fall-through */
+		fallthrough;
 	case VENC_MODE_PAL:
 		venc->config = &venc_config_pal_trm;
 		break;

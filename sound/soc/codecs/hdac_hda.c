@@ -462,7 +462,7 @@ static int hdac_hda_codec_probe(struct snd_soc_component *component)
 	ret = snd_hda_codec_parse_pcms(hcodec);
 	if (ret < 0) {
 		dev_err(&hdev->dev, "unable to map pcms to dai %d\n", ret);
-		goto error_regmap;
+		goto error_patch;
 	}
 
 	/* HDMI controls need to be created in machine drivers */
@@ -471,7 +471,7 @@ static int hdac_hda_codec_probe(struct snd_soc_component *component)
 		if (ret < 0) {
 			dev_err(&hdev->dev, "unable to create controls %d\n",
 				ret);
-			goto error_regmap;
+			goto error_patch;
 		}
 	}
 
@@ -491,6 +491,9 @@ static int hdac_hda_codec_probe(struct snd_soc_component *component)
 
 	return 0;
 
+error_patch:
+	if (hcodec->patch_ops.free)
+		hcodec->patch_ops.free(hcodec);
 error_regmap:
 	snd_hdac_regmap_exit(hdev);
 error_pm:
@@ -505,6 +508,7 @@ static void hdac_hda_codec_remove(struct snd_soc_component *component)
 	struct hdac_hda_priv *hda_pvt =
 		      snd_soc_component_get_drvdata(component);
 	struct hdac_device *hdev = &hda_pvt->codec.core;
+	struct hda_codec *codec = &hda_pvt->codec;
 	struct hdac_ext_link *hlink = NULL;
 
 	hlink = snd_hdac_ext_bus_get_link(hdev->bus, dev_name(&hdev->dev));
@@ -516,7 +520,10 @@ static void hdac_hda_codec_remove(struct snd_soc_component *component)
 	pm_runtime_disable(&hdev->dev);
 	snd_hdac_ext_bus_link_put(hdev->bus, hlink);
 
-	snd_hdac_regmap_exit(hdev);
+	if (codec->patch_ops.free)
+		codec->patch_ops.free(codec);
+
+	snd_hda_codec_cleanup_for_unbind(codec);
 }
 
 static const struct snd_soc_dapm_route hdac_hda_dapm_routes[] = {
@@ -600,12 +607,10 @@ static int hdac_hda_dev_probe(struct hdac_device *hdev)
 
 static int hdac_hda_dev_remove(struct hdac_device *hdev)
 {
-	struct hdac_hda_priv *hda_pvt;
-
-	hda_pvt = dev_get_drvdata(&hdev->dev);
-	if (hda_pvt && hda_pvt->codec.registered)
-		cancel_delayed_work_sync(&hda_pvt->codec.jackpoll_work);
-
+	/*
+	 * Resources are freed in hdac_hda_codec_remove(). This
+	 * function is kept to keep hda_codec_driver_remove() happy.
+	 */
 	return 0;
 }
 

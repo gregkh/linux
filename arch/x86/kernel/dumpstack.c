@@ -134,15 +134,15 @@ void show_ip(struct pt_regs *regs, const char *loglvl)
 	show_opcodes(regs, loglvl);
 }
 
-void show_iret_regs(struct pt_regs *regs)
+void show_iret_regs(struct pt_regs *regs, const char *log_lvl)
 {
-	show_ip(regs, KERN_DEFAULT);
-	printk(KERN_DEFAULT "RSP: %04x:%016lx EFLAGS: %08lx", (int)regs->ss,
+	show_ip(regs, log_lvl);
+	printk("%sRSP: %04x:%016lx EFLAGS: %08lx", log_lvl, (int)regs->ss,
 		regs->sp, regs->flags);
 }
 
 static void show_regs_if_on_stack(struct stack_info *info, struct pt_regs *regs,
-				  bool partial)
+				  bool partial, const char *log_lvl)
 {
 	/*
 	 * These on_stack() checks aren't strictly necessary: the unwind code
@@ -154,7 +154,7 @@ static void show_regs_if_on_stack(struct stack_info *info, struct pt_regs *regs,
 	 * they can be printed in the right context.
 	 */
 	if (!partial && on_stack(info, regs, sizeof(*regs))) {
-		__show_regs(regs, SHOW_REGS_SHORT);
+		__show_regs(regs, SHOW_REGS_SHORT, log_lvl);
 
 	} else if (partial && on_stack(info, (void *)regs + IRET_FRAME_OFFSET,
 				       IRET_FRAME_SIZE)) {
@@ -163,7 +163,7 @@ static void show_regs_if_on_stack(struct stack_info *info, struct pt_regs *regs,
 		 * full pt_regs might not have been saved yet.  In that case
 		 * just print the iret frame.
 		 */
-		show_iret_regs(regs);
+		show_iret_regs(regs, log_lvl);
 	}
 }
 
@@ -218,7 +218,7 @@ void show_trace_log_lvl(struct task_struct *task, struct pt_regs *regs,
 			printk("%s <%s>\n", log_lvl, stack_name);
 
 		if (regs)
-			show_regs_if_on_stack(&stack_info, regs, partial);
+			show_regs_if_on_stack(&stack_info, regs, partial, log_lvl);
 
 		/*
 		 * Scan the stack, printing any text addresses we find.  At the
@@ -279,7 +279,7 @@ next:
 			/* if the frame has entry regs, print them */
 			regs = unwind_get_entry_regs(&state, &partial);
 			if (regs)
-				show_regs_if_on_stack(&stack_info, regs, partial);
+				show_regs_if_on_stack(&stack_info, regs, partial, log_lvl);
 		}
 
 		if (stack_name)
@@ -353,7 +353,7 @@ void oops_end(unsigned long flags, struct pt_regs *regs, int signr)
 	oops_exit();
 
 	/* Executive summary in case the oops scrolled away */
-	__show_regs(&exec_summary_regs, SHOW_REGS_ALL);
+	__show_regs(&exec_summary_regs, SHOW_REGS_ALL, KERN_DEFAULT);
 
 	if (!signr)
 		return;
@@ -445,9 +445,12 @@ void die_addr(const char *str, struct pt_regs *regs, long err, long gp_addr)
 
 void show_regs(struct pt_regs *regs)
 {
+	enum show_regs_mode print_kernel_regs;
+
 	show_regs_print_info(KERN_DEFAULT);
 
-	__show_regs(regs, user_mode(regs) ? SHOW_REGS_USER : SHOW_REGS_ALL);
+	print_kernel_regs = user_mode(regs) ? SHOW_REGS_USER : SHOW_REGS_ALL;
+	__show_regs(regs, print_kernel_regs, KERN_DEFAULT);
 
 	/*
 	 * When in-kernel, we also print out the stack at the time of the fault..

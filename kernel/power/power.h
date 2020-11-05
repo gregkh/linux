@@ -32,7 +32,7 @@ static inline int init_header_complete(struct swsusp_info *info)
 	return arch_hibernation_header_save(info, MAX_ARCH_HEADER_SIZE);
 }
 
-static inline char *check_image_kernel(struct swsusp_info *info)
+static inline const char *check_image_kernel(struct swsusp_info *info)
 {
 	return arch_hibernation_header_restore(info) ?
 			"architecture specific data" : NULL;
@@ -210,8 +210,7 @@ static inline void suspend_test_finish(const char *label) {}
 
 #ifdef CONFIG_PM_SLEEP
 /* kernel/power/main.c */
-extern int __pm_notifier_call_chain(unsigned long val, int nr_to_call,
-				    int *nr_calls);
+extern int pm_notifier_call_chain_robust(unsigned long val_up, unsigned long val_down);
 extern int pm_notifier_call_chain(unsigned long val);
 #endif
 
