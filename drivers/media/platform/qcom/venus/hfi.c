@@ -212,7 +212,7 @@ int hfi_session_init(struct venus_inst *inst, u32 pixfmt)
 	int ret;
 
 	if (inst->state != INST_UNINIT)
-		return -EINVAL;
+		return -EALREADY;
 
 	inst->hfi_codec = to_codec_type(pixfmt);
 	reinit_completion(&inst->done);
