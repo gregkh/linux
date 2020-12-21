@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * QLogic Fibre Channel HBA Driver
  * Copyright (c)  2003-2014 QLogic Corporation
- *
- * See LICENSE.qla2xxx for copyright and licensing details.
  */
 #include "qla_def.h"
 #include "qla_tmpl.h"
@@ -879,8 +878,8 @@ qla27xx_driver_info(struct qla27xx_fwdt_template *tmp)
 	uint8_t v[] = { 0, 0, 0, 0, 0, 0 };
 
 	WARN_ON_ONCE(sscanf(qla2x00_version_str,
-			    "%hhu.%hhu.%hhu.%hhu.%hhu.%hhu",
-			    v+0, v+1, v+2, v+3, v+4, v+5) != 6);
+			    "%hhu.%hhu.%hhu.%hhu",
+			    v + 0, v + 1, v + 2, v + 3) != 4);
 
 	tmp->driver_info[0] = cpu_to_le32(
 		v[3] << 24 | v[2] << 16 | v[1] << 8 | v[0]);
@@ -1002,10 +1001,8 @@ qla27xx_mpi_fwdump(scsi_qla_host_t *vha, int hardware_locked)
 {
 	ulong flags = 0;
 
-#ifndef __CHECKER__
 	if (!hardware_locked)
 		spin_lock_irqsave(&vha->hw->hardware_lock, flags);
-#endif
 	if (!vha->hw->mpi_fw_dump) {
 		ql_log(ql_log_warn, vha, 0x02f3, "-> mpi_fwdump no buffer\n");
 	} else {
@@ -1051,10 +1048,8 @@ qla27xx_mpi_fwdump(scsi_qla_host_t *vha, int hardware_locked)
 	}
 
 bailout:
-#ifndef __CHECKER__
 	if (!hardware_locked)
 		spin_unlock_irqrestore(&vha->hw->hardware_lock, flags);
-#endif
 }
 
 void

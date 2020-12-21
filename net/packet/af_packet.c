@@ -134,15 +134,15 @@ Resume
 On transmit:
 ------------
 
-dev->hard_header != NULL
+dev->header_ops != NULL
    mac_header -> ll header
    data       -> ll header
 
-dev->hard_header == NULL (ll header is added by device, we cannot control it)
+dev->header_ops == NULL (ll header is invisible to us)
    mac_header -> data
    data       -> data
 
-   We should set nh.raw on output to correct posistion,
+   We should set network_header on output to the correct position,
    packet classifier depends on it.
  */
 
@@ -181,7 +181,6 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 #define BLOCK_LEN(x)		((x)->hdr.bh1.blk_len)
 #define BLOCK_SNUM(x)		((x)->hdr.bh1.seq_num)
 #define BLOCK_O2PRIV(x)	((x)->offset_to_priv)
-#define BLOCK_PRIV(x)		((void *)((char *)(x) + BLOCK_O2PRIV(x)))
 
 struct packet_sock;
 static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,

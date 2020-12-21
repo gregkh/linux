@@ -128,7 +128,7 @@ static ssize_t bin_attr_nvmem_read(struct file *filp, struct kobject *kobj,
 	if (attr->private)
 		dev = attr->private;
 	else
-		dev = container_of(kobj, struct device, kobj);
+		dev = kobj_to_dev(kobj);
 	nvmem = to_nvmem_device(dev);
 
 	/* Stop the user from reading */
@@ -168,7 +168,7 @@ static ssize_t bin_attr_nvmem_write(struct file *filp, struct kobject *kobj,
 	if (attr->private)
 		dev = attr->private;
 	else
-		dev = container_of(kobj, struct device, kobj);
+		dev = kobj_to_dev(kobj);
 	nvmem = to_nvmem_device(dev);
 
 	/* Stop the user from writing */
@@ -219,7 +219,7 @@ static umode_t nvmem_bin_attr_get_umode(struct nvmem_device *nvmem)
 static umode_t nvmem_bin_attr_is_visible(struct kobject *kobj,
 					 struct bin_attribute *attr, int i)
 {
-	struct device *dev = container_of(kobj, struct device, kobj);
+	struct device *dev = kobj_to_dev(kobj);
 	struct nvmem_device *nvmem = to_nvmem_device(dev);
 
 	return nvmem_bin_attr_get_umode(nvmem);
@@ -321,7 +321,7 @@ static void nvmem_release(struct device *dev)
 {
 	struct nvmem_device *nvmem = to_nvmem_device(dev);
 
-	ida_simple_remove(&nvmem_ida, nvmem->id);
+	ida_free(&nvmem_ida, nvmem->id);
 	gpiod_put(nvmem->wp_gpio);
 	kfree(nvmem);
 }
@@ -611,7 +611,7 @@ struct nvmem_device *nvmem_register(const struct nvmem_config *config)
 	if (!nvmem)
 		return ERR_PTR(-ENOMEM);
 
-	rval  = ida_simple_get(&nvmem_ida, 0, 0, GFP_KERNEL);
+	rval  = ida_alloc(&nvmem_ida, GFP_KERNEL);
 	if (rval < 0) {
 		kfree(nvmem);
 		return ERR_PTR(rval);
@@ -623,7 +623,7 @@ struct nvmem_device *nvmem_register(const struct nvmem_config *config)
 		nvmem->wp_gpio = gpiod_get_optional(config->dev, "wp",
 						    GPIOD_OUT_HIGH);
 	if (IS_ERR(nvmem->wp_gpio)) {
-		ida_simple_remove(&nvmem_ida, nvmem->id);
+		ida_free(&nvmem_ida, nvmem->id);
 		rval = PTR_ERR(nvmem->wp_gpio);
 		kfree(nvmem);
 		return ERR_PTR(rval);

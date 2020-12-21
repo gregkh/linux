@@ -98,7 +98,7 @@ static void init_fw_feat_flags(struct device_node *np)
 		security_ftr_clear(SEC_FTR_BNDS_CHK_SPEC_BAR);
 }
 
-static void pnv_setup_rfi_flush(void)
+static void pnv_setup_security_mitigations(void)
 {
 	struct device_node *np, *fw_features;
 	enum l1d_flush_type type;
@@ -145,14 +145,37 @@ static void pnv_setup_rfi_flush(void)
 	enable = security_ftr_enabled(SEC_FTR_FAVOUR_SECURITY) &&
 		 security_ftr_enabled(SEC_FTR_L1D_FLUSH_UACCESS);
 	setup_uaccess_flush(enable);
+
+	setup_stf_barrier();
+}
+
+static void __init pnv_check_guarded_cores(void)
+{
+	struct device_node *dn;
+	int bad_count = 0;
+
+	for_each_node_by_type(dn, "cpu") {
+		if (of_property_match_string(dn, "status", "bad") >= 0)
+			bad_count++;
+	};
+
+	if (bad_count) {
+		printk("  _     _______________\n");
+		pr_cont(" | |   /               \\\n");
+		pr_cont(" | |   |    WARNING!   |\n");
+		pr_cont(" | |   |               |\n");
+		pr_cont(" | |   | It looks like |\n");
+		pr_cont(" |_|   |  you have %*d |\n", 3, bad_count);
+		pr_cont("  _    | guarded cores |\n");
+		pr_cont(" (_)   \\_______________/\n");
+	}
 }
 
 static void __init pnv_setup_arch(void)
 {
 	set_arch_panic_timeout(10, ARCH_PANIC_TIMEOUT);
 
-	pnv_setup_rfi_flush();
-	setup_stf_barrier();
+	pnv_setup_security_mitigations();
 
 	/* Initialize SMP */
 	pnv_smp_init();
@@ -166,6 +189,8 @@ static void __init pnv_setup_arch(void)
 
 	/* Enable NAP mode */
 	powersave_nap = 1;
+
+	pnv_check_guarded_cores();
 
 	/* XXX PMCS */
 }

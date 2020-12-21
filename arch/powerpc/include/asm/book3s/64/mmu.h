@@ -27,21 +27,6 @@ struct mmu_psize_def {
 extern struct mmu_psize_def mmu_psize_defs[MMU_PAGE_COUNT];
 #endif /* __ASSEMBLY__ */
 
-/*
- * If we store section details in page->flags we can't increase the MAX_PHYSMEM_BITS
- * if we increase SECTIONS_WIDTH we will not store node details in page->flags and
- * page_to_nid does a page->section->node lookup
- * Hence only increase for VMEMMAP. Further depending on SPARSEMEM_EXTREME reduce
- * memory requirements with large number of sections.
- * 51 bits is the max physical real address on POWER9
- */
-#if defined(CONFIG_SPARSEMEM_VMEMMAP) && defined(CONFIG_SPARSEMEM_EXTREME) &&  \
-	defined(CONFIG_PPC_64K_PAGES)
-#define MAX_PHYSMEM_BITS 51
-#else
-#define MAX_PHYSMEM_BITS 46
-#endif
-
 /* 64-bit classic hash table MMU */
 #include <asm/book3s/64/mmu-hash.h>
 
@@ -255,6 +240,18 @@ static inline void setup_initial_memory_limit(phys_addr_t first_memblock_base,
 extern void radix_init_pseries(void);
 #else
 static inline void radix_init_pseries(void) { };
+#endif
+
+#ifdef CONFIG_HOTPLUG_CPU
+#define arch_clear_mm_cpumask_cpu(cpu, mm)				\
+	do {								\
+		if (cpumask_test_cpu(cpu, mm_cpumask(mm))) {		\
+			atomic_dec(&(mm)->context.active_cpus);		\
+			cpumask_clear_cpu(cpu, mm_cpumask(mm));		\
+		}							\
+	} while (0)
+
+void cleanup_cpu_mmu_context(void);
 #endif
 
 static inline int get_user_context(mm_context_t *ctx, unsigned long ea)

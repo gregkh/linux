@@ -55,8 +55,6 @@
 #include <setjmp.h>
 #include <signal.h>
 
-#include <asm/cputable.h>
-
 #include "utils.h"
 #include "instructions.h"
 
@@ -268,8 +266,12 @@ int do_test(char *test_name, void (*test_func)(char *, char *))
 	}
 
 	rc = 0;
-	/* offset = 0 no alignment fault, so skip */
-	for (offset = 1; offset < 16; offset++) {
+	/*
+	 * offset = 0 is aligned but tests the workaround for the P9N
+	 * DD2.1 vector CI load issue (see 5080332c2c89 "powerpc/64s:
+	 * Add workaround for P9 vector CI load issue")
+	 */
+	for (offset = 0; offset < 16; offset++) {
 		width = 16; /* vsx == 16 bytes */
 		r = 0;
 

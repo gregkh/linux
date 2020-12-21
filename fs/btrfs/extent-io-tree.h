@@ -40,6 +40,7 @@ struct io_failure_record;
 enum {
 	IO_TREE_FS_PINNED_EXTENTS,
 	IO_TREE_FS_EXCLUDED_EXTENTS,
+	IO_TREE_BTREE_INODE_IO,
 	IO_TREE_INODE_IO,
 	IO_TREE_INODE_IO_FAILURE,
 	IO_TREE_RELOC_BLOCKS,
@@ -62,7 +63,6 @@ struct extent_io_tree {
 	u8 owner;
 
 	spinlock_t lock;
-	const struct extent_io_ops *ops;
 };
 
 struct extent_state {

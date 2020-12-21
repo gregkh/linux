@@ -18,6 +18,7 @@
 #include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/dma-map-ops.h>
 
 #define IORT_TYPE_MASK(type)	(1 << (type))
 #define IORT_MSI_TYPE		(1 << ACPI_IORT_NODE_ITS_GROUP)
@@ -43,7 +44,7 @@ static DEFINE_SPINLOCK(iort_fwnode_lock);
  * iort_set_fwnode() - Create iort_fwnode and use it to register
  *		       iommu data in the iort_fwnode_list
  *
- * @node: IORT table node associated with the IOMMU
+ * @iort_node: IORT table node associated with the IOMMU
  * @fwnode: fwnode associated with the IORT node
  *
  * Returns: 0 on success
@@ -672,7 +673,8 @@ static int iort_dev_find_its_id(struct device *dev, u32 id,
 /**
  * iort_get_device_domain() - Find MSI domain related to a device
  * @dev: The device.
- * @req_id: Requester ID for the device.
+ * @id: Requester ID for the device.
+ * @bus_token: irq domain bus token.
  *
  * Returns: the MSI domain for this device, NULL otherwise
  */
@@ -811,8 +813,7 @@ static inline const struct iommu_ops *iort_fwspec_iommu_ops(struct device *dev)
 	return (fwspec && fwspec->ops) ? fwspec->ops : NULL;
 }
 
-static inline int iort_add_device_replay(const struct iommu_ops *ops,
-					 struct device *dev)
+static inline int iort_add_device_replay(struct device *dev)
 {
 	int err = 0;
 
@@ -1072,7 +1073,7 @@ const struct iommu_ops *iort_iommu_configure_id(struct device *dev,
 	 */
 	if (!err) {
 		ops = iort_fwspec_iommu_ops(dev);
-		err = iort_add_device_replay(ops, dev);
+		err = iort_add_device_replay(dev);
 	}
 
 	/* Ignore all other errors apart from EPROBE_DEFER */
@@ -1087,11 +1088,6 @@ const struct iommu_ops *iort_iommu_configure_id(struct device *dev,
 }
 
 #else
-static inline const struct iommu_ops *iort_fwspec_iommu_ops(struct device *dev)
-{ return NULL; }
-static inline int iort_add_device_replay(const struct iommu_ops *ops,
-					 struct device *dev)
-{ return 0; }
 int iort_iommu_msi_get_resv_regions(struct device *dev, struct list_head *head)
 { return 0; }
 const struct iommu_ops *iort_iommu_configure_id(struct device *dev,
@@ -1141,7 +1137,7 @@ static int rc_dma_get_range(struct device *dev, u64 *size)
  *
  * @dev: device to configure
  * @dma_addr: device DMA address result pointer
- * @size: DMA range size result pointer
+ * @dma_size: DMA range size result pointer
  */
 void iort_dma_setup(struct device *dev, u64 *dma_addr, u64 *dma_size)
 {
@@ -1184,8 +1180,9 @@ void iort_dma_setup(struct device *dev, u64 *dma_addr, u64 *dma_size)
 	*dma_addr = dmaaddr;
 	*dma_size = size;
 
-	dev->dma_pfn_offset = PFN_DOWN(offset);
-	dev_dbg(dev, "dma_pfn_offset(%#08llx)\n", offset);
+	ret = dma_direct_set_offset(dev, dmaaddr + offset, dmaaddr, size);
+
+	dev_dbg(dev, "dma_offset(%#08llx)%s\n", offset, ret ? " failed!" : "");
 }
 
 static void __init acpi_iort_register_irq(int hwirq, const char *name,
@@ -1335,7 +1332,7 @@ static int  __init arm_smmu_v3_set_proximity(struct device *dev,
 
 	smmu = (struct acpi_iort_smmu_v3 *)node->node_data;
 	if (smmu->flags & ACPI_IORT_SMMU_V3_PXM_VALID) {
-		int dev_node = acpi_map_pxm_to_node(smmu->pxm);
+		int dev_node = pxm_to_node(smmu->pxm);
 
 		if (dev_node != NUMA_NO_NODE && !node_online(dev_node))
 			return -EINVAL;
@@ -1530,6 +1527,7 @@ static __init const struct iort_dev_config *iort_get_dev_cfg(
 /**
  * iort_add_platform_device() - Allocate a platform device for IORT node
  * @node: Pointer to device ACPI IORT node
+ * @ops: Pointer to IORT device config struct
  *
  * Returns: 0 on success, <0 failure
  */

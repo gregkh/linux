@@ -1545,16 +1545,8 @@ static struct irq_chip hv_msi_irq_chip = {
 	.irq_unmask		= hv_irq_unmask,
 };
 
-static irq_hw_number_t hv_msi_domain_ops_get_hwirq(struct msi_domain_info *info,
-						   msi_alloc_info_t *arg)
-{
-	return arg->msi_hwirq;
-}
-
 static struct msi_domain_ops hv_msi_ops = {
-	.get_hwirq	= hv_msi_domain_ops_get_hwirq,
 	.msi_prepare	= pci_msi_prepare,
-	.set_desc	= pci_msi_set_desc,
 	.msi_free	= hv_msi_free,
 };
 
@@ -2529,7 +2521,10 @@ static void hv_pci_onchannelcallback(void *context)
 
 /**
  * hv_pci_protocol_negotiation() - Set up protocol
- * @hdev:	VMBus's tracking struct for this root PCI bus
+ * @hdev:		VMBus's tracking struct for this root PCI bus.
+ * @version:		Array of supported channel protocol versions in
+ *			the order of probing - highest go first.
+ * @num_version:	Number of elements in the version array.
  *
  * This driver is intended to support running on Windows 10
  * (server) and later versions. It will not run on earlier

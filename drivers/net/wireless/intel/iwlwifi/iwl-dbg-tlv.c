@@ -182,9 +182,13 @@ static int iwl_dbg_tlv_alloc_buf_alloc(struct iwl_trans *trans,
 	    alloc_id >= IWL_FW_INI_ALLOCATION_NUM)
 		goto err;
 
-	if ((buf_location == IWL_FW_INI_LOCATION_SRAM_PATH ||
-	     buf_location == IWL_FW_INI_LOCATION_NPK_PATH) &&
-	     alloc_id != IWL_FW_INI_ALLOCATION_ID_DBGC1)
+	if (buf_location == IWL_FW_INI_LOCATION_NPK_PATH &&
+	    alloc_id != IWL_FW_INI_ALLOCATION_ID_DBGC1)
+		goto err;
+
+	if (buf_location == IWL_FW_INI_LOCATION_SRAM_PATH &&
+	    alloc_id != IWL_FW_INI_ALLOCATION_ID_DBGC1 &&
+	    alloc_id != IWL_FW_INI_ALLOCATION_ID_INTERNAL)
 		goto err;
 
 	trans->dbg.fw_mon_cfg[alloc_id] = *alloc;
@@ -232,6 +236,13 @@ static int iwl_dbg_tlv_alloc_region(struct iwl_trans *trans,
 
 	if (le32_to_cpu(tlv->length) < sizeof(*reg))
 		return -EINVAL;
+
+	/* For safe using a string from FW make sure we have a
+	 * null terminator
+	 */
+	reg->name[IWL_FW_INI_MAX_NAME - 1] = 0;
+
+	IWL_DEBUG_FW(trans, "WRT: parsing region: %s\n", reg->name);
 
 	if (id >= IWL_FW_INI_MAX_REGION_ID) {
 		IWL_ERR(trans, "WRT: Invalid region id %u\n", id);
@@ -1078,6 +1089,7 @@ void iwl_dbg_tlv_time_point(struct iwl_fw_runtime *fwrt,
 		break;
 	case IWL_FW_INI_TIME_POINT_FW_RSP_OR_NOTIF:
 	case IWL_FW_INI_TIME_POINT_MISSED_BEACONS:
+	case IWL_FW_INI_TIME_POINT_FW_DHC_NOTIFICATION:
 		iwl_dbg_tlv_send_hcmds(fwrt, hcmd_list);
 		iwl_dbg_tlv_tp_trigger(fwrt, trig_list, tp_data,
 				       iwl_dbg_tlv_check_fw_pkt);

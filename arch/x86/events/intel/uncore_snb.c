@@ -398,6 +398,22 @@ void icl_uncore_cpu_init(void)
 	icl_uncore_cbox.num_boxes = icl_get_cbox_num();
 }
 
+static struct intel_uncore_type *tgl_msr_uncores[] = {
+	&icl_uncore_cbox,
+	&snb_uncore_arb,
+	&icl_uncore_clockbox,
+	NULL,
+};
+
+void tgl_uncore_cpu_init(void)
+{
+	uncore_msr_uncores = tgl_msr_uncores;
+	icl_uncore_cbox.num_boxes = icl_get_cbox_num();
+	icl_uncore_cbox.ops = &skl_uncore_msr_ops;
+	icl_uncore_clockbox.ops = &skl_uncore_msr_ops;
+	snb_uncore_arb.ops = &skl_uncore_msr_ops;
+}
+
 enum {
 	SNB_PCI_UNCORE_IMC,
 };

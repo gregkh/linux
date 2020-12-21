@@ -30,18 +30,18 @@
 #include <asm/unistd.h>
 
 /*
- * Context tracking subsystem.  Used to instrument transitions
- * between user and kernel mode.
+ * Context tracking and irqflag tracing need to instrument transitions between
+ * user and kernel mode.
  */
-	.macro ct_user_exit_irqoff
-#ifdef CONFIG_CONTEXT_TRACKING
+	.macro user_exit_irqoff
+#if defined(CONFIG_CONTEXT_TRACKING) || defined(CONFIG_TRACE_IRQFLAGS)
 	bl	enter_from_user_mode
 #endif
 	.endm
 
-	.macro ct_user_enter
-#ifdef CONFIG_CONTEXT_TRACKING
-	bl	context_tracking_user_enter
+	.macro user_enter_irqoff
+#if defined(CONFIG_CONTEXT_TRACKING) || defined(CONFIG_TRACE_IRQFLAGS)
+	bl	exit_to_user_mode
 #endif
 	.endm
 
@@ -132,9 +132,8 @@ alternative_else_nop_endif
 	 * them if required.
 	 */
 	.macro	apply_ssbd, state, tmp1, tmp2
-#ifdef CONFIG_ARM64_SSBD
-alternative_cb	arm64_enable_wa2_handling
-	b	.L__asm_ssbd_skip\@
+alternative_cb	spectre_v4_patch_fw_mitigation_enable
+	b	.L__asm_ssbd_skip\@		// Patched to NOP
 alternative_cb_end
 	ldr_this_cpu	\tmp2, arm64_ssbd_callback_required, \tmp1
 	cbz	\tmp2,	.L__asm_ssbd_skip\@
@@ -142,10 +141,35 @@ alternative_cb_end
 	tbnz	\tmp2, #TIF_SSBD, .L__asm_ssbd_skip\@
 	mov	w0, #ARM_SMCCC_ARCH_WORKAROUND_2
 	mov	w1, #\state
-alternative_cb	arm64_update_smccc_conduit
+alternative_cb	spectre_v4_patch_fw_mitigation_conduit
 	nop					// Patched to SMC/HVC #0
 alternative_cb_end
 .L__asm_ssbd_skip\@:
+	.endm
+
+	/* Check for MTE asynchronous tag check faults */
+	.macro check_mte_async_tcf, flgs, tmp
+#ifdef CONFIG_ARM64_MTE
+alternative_if_not ARM64_MTE
+	b	1f
+alternative_else_nop_endif
+	mrs_s	\tmp, SYS_TFSRE0_EL1
+	tbz	\tmp, #SYS_TFSR_EL1_TF0_SHIFT, 1f
+	/* Asynchronous TCF occurred for TTBR0 access, set the TI flag */
+	orr	\flgs, \flgs, #_TIF_MTE_ASYNC_FAULT
+	str	\flgs, [tsk, #TSK_TI_FLAGS]
+	msr_s	SYS_TFSRE0_EL1, xzr
+1:
+#endif
+	.endm
+
+	/* Clear the MTE asynchronous tag check faults */
+	.macro clear_mte_async_tcf
+#ifdef CONFIG_ARM64_MTE
+alternative_if ARM64_MTE
+	dsb	ish
+	msr_s	SYS_TFSRE0_EL1, xzr
+alternative_else_nop_endif
 #endif
 	.endm
 
@@ -182,6 +206,8 @@ alternative_cb_end
 	ldr	x19, [tsk, #TSK_TI_FLAGS]
 	disable_step_tsk x19, x20
 
+	/* Check for asynchronous tag check faults in user space */
+	check_mte_async_tcf x19, x22
 	apply_ssbd 1, x22, x23
 
 	ptrauth_keys_install_kernel tsk, x20, x22, x23
@@ -233,6 +259,13 @@ alternative_if ARM64_HAS_IRQ_PRIO_MASKING
 	str	x20, [sp, #S_PMR_SAVE]
 alternative_else_nop_endif
 
+	/* Re-enable tag checking (TCO set on exception entry) */
+#ifdef CONFIG_ARM64_MTE
+alternative_if ARM64_MTE
+	SET_PSTATE_TCO(0)
+alternative_else_nop_endif
+#endif
+
 	/*
 	 * Registers that may be useful after this macro is invoked:
 	 *
@@ -265,9 +298,6 @@ alternative_if ARM64_HAS_IRQ_PRIO_MASKING
 alternative_else_nop_endif
 
 	ldp	x21, x22, [sp, #S_PC]		// load ELR, SPSR
-	.if	\el == 0
-	ct_user_enter
-	.endif
 
 #ifdef CONFIG_ARM64_SW_TTBR0_PAN
 alternative_if_not ARM64_HAS_PAN
@@ -332,6 +362,9 @@ alternative_insn eret, nop, ARM64_UNMAP_KERNEL_AT_EL0
 	br	x30
 #endif
 	.else
+	/* Ensure any device/NC reads complete */
+	alternative_insn nop, "dmb sy", ARM64_WORKAROUND_1508412
+
 	eret
 	.endif
 	sb
@@ -601,16 +634,8 @@ SYM_CODE_START_LOCAL_NOALIGN(el1_irq)
 	gic_prio_irq_setup pmr=x20, tmp=x1
 	enable_da_f
 
-#ifdef CONFIG_ARM64_PSEUDO_NMI
-	test_irqs_unmasked	res=x0, pmr=x20
-	cbz	x0, 1f
-	bl	asm_nmi_enter
-1:
-#endif
-
-#ifdef CONFIG_TRACE_IRQFLAGS
-	bl	trace_hardirqs_off
-#endif
+	mov	x0, sp
+	bl	enter_el1_irq_or_nmi
 
 	irq_handler
 
@@ -629,26 +654,8 @@ alternative_else_nop_endif
 1:
 #endif
 
-#ifdef CONFIG_ARM64_PSEUDO_NMI
-	/*
-	 * When using IRQ priority masking, we can get spurious interrupts while
-	 * PMR is set to GIC_PRIO_IRQOFF. An NMI might also have occurred in a
-	 * section with interrupts disabled. Skip tracing in those cases.
-	 */
-	test_irqs_unmasked	res=x0, pmr=x20
-	cbz	x0, 1f
-	bl	asm_nmi_exit
-1:
-#endif
-
-#ifdef CONFIG_TRACE_IRQFLAGS
-#ifdef CONFIG_ARM64_PSEUDO_NMI
-	test_irqs_unmasked	res=x0, pmr=x20
-	cbnz	x0, 1f
-#endif
-	bl	trace_hardirqs_on
-1:
-#endif
+	mov	x0, sp
+	bl	exit_el1_irq_or_nmi
 
 	kernel_exit 1
 SYM_CODE_END(el1_irq)
@@ -690,23 +697,14 @@ SYM_CODE_START_LOCAL_NOALIGN(el0_irq)
 	kernel_entry 0
 el0_irq_naked:
 	gic_prio_irq_setup pmr=x20, tmp=x0
-	ct_user_exit_irqoff
+	user_exit_irqoff
 	enable_da_f
 
-#ifdef CONFIG_TRACE_IRQFLAGS
-	bl	trace_hardirqs_off
-#endif
-
-#ifdef CONFIG_HARDEN_BRANCH_PREDICTOR
 	tbz	x22, #55, 1f
 	bl	do_el0_irq_bp_hardening
 1:
-#endif
 	irq_handler
 
-#ifdef CONFIG_TRACE_IRQFLAGS
-	bl	trace_hardirqs_on
-#endif
 	b	ret_to_user
 SYM_CODE_END(el0_irq)
 
@@ -725,7 +723,7 @@ SYM_CODE_START_LOCAL(el0_error)
 el0_error_naked:
 	mrs	x25, esr_el1
 	gic_prio_kentry_setup tmp=x2
-	ct_user_exit_irqoff
+	user_exit_irqoff
 	enable_dbg
 	mov	x0, sp
 	mov	x1, x25
@@ -740,11 +738,17 @@ SYM_CODE_END(el0_error)
 SYM_CODE_START_LOCAL(ret_to_user)
 	disable_daif
 	gic_prio_kentry_setup tmp=x3
-	ldr	x1, [tsk, #TSK_TI_FLAGS]
-	and	x2, x1, #_TIF_WORK_MASK
+#ifdef CONFIG_TRACE_IRQFLAGS
+	bl	trace_hardirqs_off
+#endif
+	ldr	x19, [tsk, #TSK_TI_FLAGS]
+	and	x2, x19, #_TIF_WORK_MASK
 	cbnz	x2, work_pending
 finish_ret_to_user:
-	enable_step_tsk x1, x2
+	user_enter_irqoff
+	/* Ignore asynchronous tag check faults in the uaccess routines */
+	clear_mte_async_tcf
+	enable_step_tsk x19, x2
 #ifdef CONFIG_GCC_PLUGIN_STACKLEAK
 	bl	stackleak_erase
 #endif
@@ -755,11 +759,9 @@ finish_ret_to_user:
  */
 work_pending:
 	mov	x0, sp				// 'regs'
+	mov	x1, x19
 	bl	do_notify_resume
-#ifdef CONFIG_TRACE_IRQFLAGS
-	bl	trace_hardirqs_on		// enabled while in userspace
-#endif
-	ldr	x1, [tsk, #TSK_TI_FLAGS]	// re-check for single-step
+	ldr	x19, [tsk, #TSK_TI_FLAGS]	// re-check for single-step
 	b	finish_ret_to_user
 SYM_CODE_END(ret_to_user)
 

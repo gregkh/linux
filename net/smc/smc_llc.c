@@ -1207,7 +1207,7 @@ static void smc_llc_process_srv_add_link(struct smc_link_group *lgr)
 /* enqueue a local add_link req to trigger a new add_link flow */
 void smc_llc_add_link_local(struct smc_link *link)
 {
-	struct smc_llc_msg_add_link add_llc = {0};
+	struct smc_llc_msg_add_link add_llc = {};
 
 	add_llc.hd.length = sizeof(add_llc);
 	add_llc.hd.common.type = SMC_LLC_ADD_LINK;
@@ -1240,7 +1240,7 @@ out:
  */
 void smc_llc_srv_delete_link_local(struct smc_link *link, u8 del_link_id)
 {
-	struct smc_llc_msg_del_link del_llc = {0};
+	struct smc_llc_msg_del_link del_llc = {};
 
 	del_llc.hd.length = sizeof(del_llc);
 	del_llc.hd.common.type = SMC_LLC_DELETE_LINK;
@@ -1312,7 +1312,7 @@ out:
  */
 void smc_llc_send_link_delete_all(struct smc_link_group *lgr, bool ord, u32 rsn)
 {
-	struct smc_llc_msg_del_link delllc = {0};
+	struct smc_llc_msg_del_link delllc = {};
 	int i;
 
 	delllc.hd.common.type = SMC_LLC_DELETE_LINK;
@@ -1688,7 +1688,7 @@ static void smc_llc_enqueue(struct smc_link *link, union smc_llc_msg *llc)
 	spin_lock_irqsave(&lgr->llc_event_q_lock, flags);
 	list_add_tail(&qentry->list, &lgr->llc_event_q);
 	spin_unlock_irqrestore(&lgr->llc_event_q_lock, flags);
-	schedule_work(&lgr->llc_event_work);
+	queue_work(system_highpri_wq, &lgr->llc_event_work);
 }
 
 /* copy received msg and add it to the event queue */

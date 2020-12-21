@@ -941,8 +941,7 @@ static int fsl_lpspi_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int fsl_lpspi_suspend(struct device *dev)
+static int __maybe_unused fsl_lpspi_suspend(struct device *dev)
 {
 	int ret;
 
@@ -951,7 +950,7 @@ static int fsl_lpspi_suspend(struct device *dev)
 	return ret;
 }
 
-static int fsl_lpspi_resume(struct device *dev)
+static int __maybe_unused fsl_lpspi_resume(struct device *dev)
 {
 	int ret;
 
@@ -965,7 +964,6 @@ static int fsl_lpspi_resume(struct device *dev)
 
 	return 0;
 }
-#endif /* CONFIG_PM_SLEEP */
 
 static const struct dev_pm_ops fsl_lpspi_pm_ops = {
 	SET_RUNTIME_PM_OPS(fsl_lpspi_runtime_suspend,

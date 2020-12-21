@@ -835,7 +835,7 @@ static int scrub_handle_errored_block(struct scrub_block *sblock_to_check)
 	int success;
 	bool full_stripe_locked;
 	unsigned int nofs_flag;
-	static DEFINE_RATELIMIT_STATE(_rs, DEFAULT_RATELIMIT_INTERVAL,
+	static DEFINE_RATELIMIT_STATE(rs, DEFAULT_RATELIMIT_INTERVAL,
 				      DEFAULT_RATELIMIT_BURST);
 
 	BUG_ON(sblock_to_check->page_count < 1);
@@ -969,14 +969,14 @@ static int scrub_handle_errored_block(struct scrub_block *sblock_to_check)
 		spin_lock(&sctx->stat_lock);
 		sctx->stat.read_errors++;
 		spin_unlock(&sctx->stat_lock);
-		if (__ratelimit(&_rs))
+		if (__ratelimit(&rs))
 			scrub_print_warning("i/o error", sblock_to_check);
 		btrfs_dev_stat_inc_and_print(dev, BTRFS_DEV_STAT_READ_ERRS);
 	} else if (sblock_bad->checksum_error) {
 		spin_lock(&sctx->stat_lock);
 		sctx->stat.csum_errors++;
 		spin_unlock(&sctx->stat_lock);
-		if (__ratelimit(&_rs))
+		if (__ratelimit(&rs))
 			scrub_print_warning("checksum error", sblock_to_check);
 		btrfs_dev_stat_inc_and_print(dev,
 					     BTRFS_DEV_STAT_CORRUPTION_ERRS);
@@ -984,7 +984,7 @@ static int scrub_handle_errored_block(struct scrub_block *sblock_to_check)
 		spin_lock(&sctx->stat_lock);
 		sctx->stat.verify_errors++;
 		spin_unlock(&sctx->stat_lock);
-		if (__ratelimit(&_rs))
+		if (__ratelimit(&rs))
 			scrub_print_warning("checksum/header error",
 					    sblock_to_check);
 		if (sblock_bad->generation_error)
@@ -3866,8 +3866,9 @@ int btrfs_scrub_dev(struct btrfs_fs_info *fs_info, u64 devid, u64 start,
 	if (!is_dev_replace && !readonly &&
 	    !test_bit(BTRFS_DEV_STATE_WRITEABLE, &dev->dev_state)) {
 		mutex_unlock(&fs_info->fs_devices->device_list_mutex);
-		btrfs_err_in_rcu(fs_info, "scrub: device %s is not writable",
-				rcu_str_deref(dev->name));
+		btrfs_err_in_rcu(fs_info,
+			"scrub on devid %llu: filesystem on %s is not writable",
+				 devid, rcu_str_deref(dev->name));
 		ret = -EROFS;
 		goto out;
 	}

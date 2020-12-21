@@ -503,6 +503,7 @@ static blk_status_t sr_init_command(struct scsi_cmnd *SCpnt)
 	SCpnt->transfersize = cd->device->sector_size;
 	SCpnt->underflow = this_count << 9;
 	SCpnt->allowed = MAX_RETRIES;
+	SCpnt->cmd_len = 10;
 
 	/*
 	 * This indicates that the command is ready from our end to be queued.
@@ -511,6 +512,17 @@ static blk_status_t sr_init_command(struct scsi_cmnd *SCpnt)
  out:
 	scsi_free_sgtables(SCpnt);
 	return BLK_STS_IOERR;
+}
+
+static void sr_revalidate_disk(struct scsi_cd *cd)
+{
+	struct scsi_sense_hdr sshdr;
+
+	/* if the unit is not ready, nothing more to do */
+	if (scsi_test_unit_ready(cd->device, SR_TIMEOUT, MAX_RETRIES, &sshdr))
+		return;
+	sr_cd_check(&cd->cdi);
+	get_sectorsize(cd);
 }
 
 static int sr_block_open(struct block_device *bdev, fmode_t mode)
@@ -525,7 +537,8 @@ static int sr_block_open(struct block_device *bdev, fmode_t mode)
 
 	sdev = cd->device;
 	scsi_autopm_get_device(sdev);
-	check_disk_change(bdev);
+	if (bdev_check_media_change(bdev))
+		sr_revalidate_disk(cd);
 
 	mutex_lock(&cd->lock);
 	ret = cdrom_open(&cd->cdi, bdev, mode);
@@ -654,26 +667,6 @@ static unsigned int sr_block_check_events(struct gendisk *disk,
 	return ret;
 }
 
-static int sr_block_revalidate_disk(struct gendisk *disk)
-{
-	struct scsi_sense_hdr sshdr;
-	struct scsi_cd *cd;
-
-	cd = scsi_cd_get(disk);
-	if (!cd)
-		return -ENXIO;
-
-	/* if the unit is not ready, nothing more to do */
-	if (scsi_test_unit_ready(cd->device, SR_TIMEOUT, MAX_RETRIES, &sshdr))
-		goto out;
-
-	sr_cd_check(&cd->cdi);
-	get_sectorsize(cd);
-out:
-	scsi_cd_put(cd);
-	return 0;
-}
-
 static const struct block_device_operations sr_bdops =
 {
 	.owner		= THIS_MODULE,
@@ -684,7 +677,6 @@ static const struct block_device_operations sr_bdops =
 	.compat_ioctl	= sr_block_compat_ioctl,
 #endif
 	.check_events	= sr_block_check_events,
-	.revalidate_disk = sr_block_revalidate_disk,
 };
 
 static int sr_open(struct cdrom_device_info *cdi, int purpose)
@@ -798,6 +790,7 @@ static int sr_probe(struct device *dev)
 
 	dev_set_drvdata(dev, cd);
 	disk->flags |= GENHD_FL_REMOVABLE;
+	sr_revalidate_disk(cd);
 	device_add_disk(&sdev->sdev_gendev, disk, NULL);
 
 	sdev_printk(KERN_DEBUG, sdev,

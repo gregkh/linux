@@ -712,10 +712,6 @@ static bool block_size_is_power_of_two(struct cache *cache)
 	return cache->sectors_per_block_shift >= 0;
 }
 
-/* gcc on ARM generates spurious references to __udivdi3 and __umoddi3 */
-#if defined(CONFIG_ARM) && __GNUC__ == 4 && __GNUC_MINOR__ <= 6
-__always_inline
-#endif
 static dm_block_t block_div(dm_block_t b, uint32_t n)
 {
 	do_div(b, n);
@@ -925,7 +921,7 @@ static enum cache_metadata_mode get_cache_mode(struct cache *cache)
 
 static const char *cache_device_name(struct cache *cache)
 {
-	return dm_device_name(dm_table_get_md(cache->ti->table));
+	return dm_table_device_name(cache->ti->table);
 }
 
 static void notify_mode_switch(struct cache *cache, enum cache_metadata_mode mode)

@@ -30,12 +30,17 @@ unsigned long pseries_memory_block_size(void)
 
 	np = of_find_node_by_path("/ibm,dynamic-reconfiguration-memory");
 	if (np) {
-		const __be64 *size;
+		int len;
+		int size_cells;
+		const __be32 *prop;
 
-		size = of_get_property(np, "ibm,lmb-size", NULL);
-		if (size)
-			memblock_size = be64_to_cpup(size);
+		size_cells = of_n_size_cells(np);
+
+		prop = of_get_property(np, "ibm,lmb-size", &len);
+		if (prop && len >= size_cells * sizeof(__be32))
+			memblock_size = of_read_number(prop, size_cells);
 		of_node_put(np);
+
 	} else  if (machine_is(pseries)) {
 		/* This fallback really only applies to pseries */
 		unsigned int memzero_size = 0;
@@ -619,11 +624,13 @@ static int dlpar_add_lmb(struct drmem_lmb *lmb)
 
 	block_sz = memory_block_size_bytes();
 
-	/* Find the node id for this address. */
-	nid = memory_add_physaddr_to_nid(lmb->base_addr);
+	/* Find the node id for this LMB.  Fake one if necessary. */
+	nid = of_drconf_to_nid_single(lmb);
+	if (nid < 0 || !node_possible(nid))
+		nid = first_online_node;
 
 	/* Add the memory */
-	rc = __add_memory(nid, lmb->base_addr, block_sz);
+	rc = __add_memory(nid, lmb->base_addr, block_sz, MHP_NONE);
 	if (rc) {
 		invalidate_lmb_associativity_index(lmb);
 		return rc;

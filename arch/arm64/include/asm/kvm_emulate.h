@@ -350,6 +350,11 @@ static __always_inline u8 kvm_vcpu_trap_get_fault_type(const struct kvm_vcpu *vc
 	return kvm_vcpu_get_esr(vcpu) & ESR_ELx_FSC_TYPE;
 }
 
+static __always_inline u8 kvm_vcpu_trap_get_fault_level(const struct kvm_vcpu *vcpu)
+{
+	return kvm_vcpu_get_esr(vcpu) & ESR_ELx_FSC_LEVEL;
+}
+
 static __always_inline bool kvm_vcpu_abt_issea(const struct kvm_vcpu *vcpu)
 {
 	switch (kvm_vcpu_trap_get_fault(vcpu)) {
@@ -389,20 +394,6 @@ static inline bool kvm_is_write_fault(struct kvm_vcpu *vcpu)
 static inline unsigned long kvm_vcpu_get_mpidr_aff(struct kvm_vcpu *vcpu)
 {
 	return vcpu_read_sys_reg(vcpu, MPIDR_EL1) & MPIDR_HWID_BITMASK;
-}
-
-static inline bool kvm_arm_get_vcpu_workaround_2_flag(struct kvm_vcpu *vcpu)
-{
-	return vcpu->arch.workaround_flags & VCPU_WORKAROUND_2_FLAG;
-}
-
-static inline void kvm_arm_set_vcpu_workaround_2_flag(struct kvm_vcpu *vcpu,
-						      bool flag)
-{
-	if (flag)
-		vcpu->arch.workaround_flags |= VCPU_WORKAROUND_2_FLAG;
-	else
-		vcpu->arch.workaround_flags &= ~VCPU_WORKAROUND_2_FLAG;
 }
 
 static inline void kvm_vcpu_set_be(struct kvm_vcpu *vcpu)

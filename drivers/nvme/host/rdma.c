@@ -1727,10 +1727,11 @@ static void nvme_rdma_process_nvme_rsp(struct nvme_rdma_queue *queue,
 	req->result = cqe->result;
 
 	if (wc->wc_flags & IB_WC_WITH_INVALIDATE) {
-		if (unlikely(wc->ex.invalidate_rkey != req->mr->rkey)) {
+		if (unlikely(!req->mr ||
+			     wc->ex.invalidate_rkey != req->mr->rkey)) {
 			dev_err(queue->ctrl->ctrl.device,
 				"Bogus remote invalidation for rkey %#x\n",
-				req->mr->rkey);
+				req->mr ? req->mr->rkey : 0);
 			nvme_rdma_error_recovery(queue->ctrl);
 		}
 	} else if (req->mr) {
@@ -1894,10 +1895,10 @@ static int nvme_rdma_route_resolved(struct nvme_rdma_queue *queue)
 		priv.hsqsize = cpu_to_le16(queue->ctrl->ctrl.sqsize);
 	}
 
-	ret = rdma_connect(queue->cm_id, &param);
+	ret = rdma_connect_locked(queue->cm_id, &param);
 	if (ret) {
 		dev_err(ctrl->ctrl.device,
-			"rdma_connect failed (%d).\n", ret);
+			"rdma_connect_locked failed (%d).\n", ret);
 		goto out_destroy_queue_ib;
 	}
 

@@ -177,6 +177,8 @@ static int qedr_iw_register_device(struct qedr_dev *dev)
 }
 
 static const struct ib_device_ops qedr_roce_dev_ops = {
+	.alloc_xrcd = qedr_alloc_xrcd,
+	.dealloc_xrcd = qedr_dealloc_xrcd,
 	.get_port_immutable = qedr_roce_port_immutable,
 	.query_pkey = qedr_query_pkey,
 };
@@ -186,6 +188,10 @@ static void qedr_roce_register_device(struct qedr_dev *dev)
 	dev->ibdev.node_type = RDMA_NODE_IB_CA;
 
 	ib_set_device_ops(&dev->ibdev, &qedr_roce_dev_ops);
+
+	dev->ibdev.uverbs_cmd_mask |= QEDR_UVERBS(OPEN_XRCD) |
+		QEDR_UVERBS(CLOSE_XRCD) |
+		QEDR_UVERBS(CREATE_XSRQ);
 }
 
 static const struct ib_device_ops qedr_dev_ops = {
@@ -232,6 +238,7 @@ static const struct ib_device_ops qedr_dev_ops = {
 	INIT_RDMA_OBJ_SIZE(ib_cq, qedr_cq, ibcq),
 	INIT_RDMA_OBJ_SIZE(ib_pd, qedr_pd, ibpd),
 	INIT_RDMA_OBJ_SIZE(ib_srq, qedr_srq, ibsrq),
+	INIT_RDMA_OBJ_SIZE(ib_xrcd, qedr_xrcd, ibxrcd),
 	INIT_RDMA_OBJ_SIZE(ib_ucontext, qedr_ucontext, ibucontext),
 };
 
@@ -286,7 +293,8 @@ static int qedr_register_device(struct qedr_dev *dev)
 	if (rc)
 		return rc;
 
-	return ib_register_device(&dev->ibdev, "qedr%d");
+	dma_set_max_seg_size(&dev->pdev->dev, UINT_MAX);
+	return ib_register_device(&dev->ibdev, "qedr%d", &dev->pdev->dev);
 }
 
 /* This function allocates fast-path status block memory */
@@ -705,6 +713,18 @@ static void qedr_affiliated_event(void *context, u8 e_code, void *fw_handle)
 			event.event = IB_EVENT_SRQ_ERR;
 			event_type = EVENT_TYPE_SRQ;
 			break;
+		case ROCE_ASYNC_EVENT_XRC_DOMAIN_ERR:
+			event.event = IB_EVENT_QP_ACCESS_ERR;
+			event_type = EVENT_TYPE_QP;
+			break;
+		case ROCE_ASYNC_EVENT_INVALID_XRCETH_ERR:
+			event.event = IB_EVENT_QP_ACCESS_ERR;
+			event_type = EVENT_TYPE_QP;
+			break;
+		case ROCE_ASYNC_EVENT_XRC_SRQ_CATASTROPHIC_ERR:
+			event.event = IB_EVENT_CQ_ERR;
+			event_type = EVENT_TYPE_CQ;
+			break;
 		default:
 			DP_ERR(dev, "unsupported event %d on handle=%llx\n",
 			       e_code, roce_handle64);
@@ -1025,6 +1045,13 @@ static void qedr_notify(struct qedr_dev *dev, enum qede_rdma_event event)
 		break;
 	case QEDE_CHANGE_ADDR:
 		qedr_mac_address_change(dev);
+		break;
+	case QEDE_CHANGE_MTU:
+		if (rdma_protocol_iwarp(&dev->ibdev, 1))
+			if (dev->ndev->mtu != dev->iwarp_max_mtu)
+				DP_NOTICE(dev,
+					  "Mtu was changed from %d to %d. This will not take affect for iWARP until qedr is reloaded\n",
+					  dev->iwarp_max_mtu, dev->ndev->mtu);
 		break;
 	default:
 		pr_err("Event not supported\n");

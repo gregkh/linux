@@ -8,6 +8,8 @@
 #include <linux/clk.h>
 #include <linux/crc32.h>
 #include <linux/crc32poly.h>
+#include <linux/io.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
@@ -225,9 +227,8 @@ static int stm32_crc_update(struct shash_desc *desc, const u8 *d8,
 		return burst_update(desc, d8, length);
 
 	/* Digest first bytes not 32bit aligned at first pass in the loop */
-	size = min(length,
-		   burst_sz + (unsigned int)d8 - ALIGN_DOWN((unsigned int)d8,
-							    sizeof(u32)));
+	size = min_t(size_t, length, burst_sz + (size_t)d8 -
+				     ALIGN_DOWN((size_t)d8, sizeof(u32)));
 	for (rem_sz = length, cur = d8; rem_sz;
 	     rem_sz -= size, cur += size, size = min(rem_sz, burst_sz)) {
 		ret = burst_update(desc, cur, size);

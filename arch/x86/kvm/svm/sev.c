@@ -384,7 +384,8 @@ static void sev_clflush_pages(struct page *pages[], unsigned long npages)
 	uint8_t *page_virtual;
 	unsigned long i;
 
-	if (npages == 0 || pages == NULL)
+	if (this_cpu_has(X86_FEATURE_SME_COHERENT) || npages == 0 ||
+	    pages == NULL)
 		return;
 
 	for (i = 0; i < npages; i++) {
@@ -446,10 +447,8 @@ static int sev_launch_update_data(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	}
 
 	/*
-	 * The LAUNCH_UPDATE command will perform in-place encryption of the
-	 * memory content (i.e it will write the same memory region with C=1).
-	 * It's possible that the cache may contain the data with C=0, i.e.,
-	 * unencrypted so invalidate it first.
+	 * Flush (on non-coherent CPUs) before LAUNCH_UPDATE encrypts pages in
+	 * place; the cache may contain the data that was written unencrypted.
 	 */
 	sev_clflush_pages(inpages, npages);
 
@@ -643,8 +642,8 @@ static int __sev_dbg_decrypt(struct kvm *kvm, unsigned long src_paddr,
 	 * Its safe to read more than we are asked, caller should ensure that
 	 * destination has enough space.
 	 */
-	src_paddr = round_down(src_paddr, 16);
 	offset = src_paddr & 15;
+	src_paddr = round_down(src_paddr, 16);
 	sz = round_up(sz + offset, 16);
 
 	return __sev_issue_dbg_cmd(kvm, src_paddr, dst_paddr, sz, err, false);
@@ -805,10 +804,9 @@ static int sev_dbg_crypt(struct kvm *kvm, struct kvm_sev_cmd *argp, bool dec)
 		}
 
 		/*
-		 * The DBG_{DE,EN}CRYPT commands will perform {dec,en}cryption of the
-		 * memory content (i.e it will write the same memory region with C=1).
-		 * It's possible that the cache may contain the data with C=0, i.e.,
-		 * unencrypted so invalidate it first.
+		 * Flush (on non-coherent CPUs) before DBG_{DE,EN}CRYPT read or modify
+		 * the pages; flush the destination too so that future accesses do not
+		 * see stale data.
 		 */
 		sev_clflush_pages(src_p, 1);
 		sev_clflush_pages(dst_p, 1);
@@ -856,7 +854,7 @@ static int sev_launch_secret(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	struct kvm_sev_launch_secret params;
 	struct page **pages;
 	void *blob, *hdr;
-	unsigned long n;
+	unsigned long n, i;
 	int ret, offset;
 
 	if (!sev_guest(kvm))
@@ -868,6 +866,12 @@ static int sev_launch_secret(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	pages = sev_pin_memory(kvm, params.guest_uaddr, params.guest_len, &n, 1);
 	if (IS_ERR(pages))
 		return PTR_ERR(pages);
+
+	/*
+	 * Flush (on non-coherent CPUs) before LAUNCH_SECRET encrypts pages in
+	 * place; the cache may contain the data that was written unencrypted.
+	 */
+	sev_clflush_pages(pages, n);
 
 	/*
 	 * The secret must be copied into contiguous memory region, lets verify
@@ -914,6 +918,11 @@ e_free_blob:
 e_free:
 	kfree(data);
 e_unpin_memory:
+	/* content of memory is updated, mark pages dirty */
+	for (i = 0; i < n; i++) {
+		set_page_dirty_lock(pages[i]);
+		mark_page_accessed(pages[i]);
+	}
 	sev_unpin_memory(kvm, pages, n);
 	return ret;
 }

@@ -738,6 +738,7 @@ struct scmi_prot_devnames {
 
 static struct scmi_prot_devnames devnames[] = {
 	{ SCMI_PROTOCOL_POWER,  { "genpd" },},
+	{ SCMI_PROTOCOL_SYSTEM, { "syspower" },},
 	{ SCMI_PROTOCOL_PERF,   { "cpufreq" },},
 	{ SCMI_PROTOCOL_CLOCK,  { "clocks" },},
 	{ SCMI_PROTOCOL_SENSOR, { "hwmon" },},
@@ -940,13 +941,27 @@ static int __init scmi_driver_init(void)
 {
 	scmi_bus_init();
 
+	scmi_clock_register();
+	scmi_perf_register();
+	scmi_power_register();
+	scmi_reset_register();
+	scmi_sensors_register();
+	scmi_system_register();
+
 	return platform_driver_register(&scmi_driver);
 }
-module_init(scmi_driver_init);
+subsys_initcall(scmi_driver_init);
 
 static void __exit scmi_driver_exit(void)
 {
 	scmi_bus_exit();
+
+	scmi_clock_unregister();
+	scmi_perf_unregister();
+	scmi_power_unregister();
+	scmi_reset_unregister();
+	scmi_sensors_unregister();
+	scmi_system_unregister();
 
 	platform_driver_unregister(&scmi_driver);
 }
