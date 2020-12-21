@@ -110,27 +110,22 @@ enum max9611_conf_ids {
 	CONF_TEMP,
 };
 
-/**
+/*
  * max9611_mux_conf - associate ADC mux configuration with register address
  *		      where data shall be read from
  */
 static const unsigned int max9611_mux_conf[][2] = {
-	/* CONF_SENSE_1x */
-	{ MAX9611_MUX_SENSE_1x, MAX9611_REG_CSA_DATA },
-	/* CONF_SENSE_4x */
-	{ MAX9611_MUX_SENSE_4x, MAX9611_REG_CSA_DATA },
-	/* CONF_SENSE_8x */
-	{ MAX9611_MUX_SENSE_8x, MAX9611_REG_CSA_DATA },
-	/* CONF_IN_VOLT */
-	{ MAX9611_INPUT_VOLT, MAX9611_REG_RS_DATA },
-	/* CONF_TEMP */
-	{ MAX9611_MUX_TEMP, MAX9611_REG_TEMP_DATA },
+	[CONF_SENSE_1x]	= { MAX9611_MUX_SENSE_1x, MAX9611_REG_CSA_DATA },
+	[CONF_SENSE_4x]	= { MAX9611_MUX_SENSE_4x, MAX9611_REG_CSA_DATA },
+	[CONF_SENSE_8x]	= { MAX9611_MUX_SENSE_8x, MAX9611_REG_CSA_DATA },
+	[CONF_IN_VOLT]	= { MAX9611_INPUT_VOLT, MAX9611_REG_RS_DATA },
+	[CONF_TEMP]	= { MAX9611_MUX_TEMP, MAX9611_REG_TEMP_DATA },
 };
 
 enum max9611_csa_gain {
-	CSA_GAIN_1x,
-	CSA_GAIN_4x,
-	CSA_GAIN_8x,
+	CSA_GAIN_1x = CONF_SENSE_1x,
+	CSA_GAIN_4x = CONF_SENSE_4x,
+	CSA_GAIN_8x = CONF_SENSE_8x,
 };
 
 enum max9611_csa_gain_params {
@@ -138,7 +133,7 @@ enum max9611_csa_gain_params {
 	CSA_GAIN_OFFS_RAW,
 };
 
-/**
+/*
  * max9611_csa_gain_conf - associate gain multiplier with LSB and
  *			   offset values.
  *
@@ -148,18 +143,9 @@ enum max9611_csa_gain_params {
  * value; use this structure to retrieve the correct LSB and offset values.
  */
 static const unsigned int max9611_gain_conf[][2] = {
-	{ /* [0] CSA_GAIN_1x */
-		MAX9611_CSA_1X_LSB_nV,
-		MAX9611_CSA_1X_OFFS_RAW,
-	},
-	{ /* [1] CSA_GAIN_4x */
-		MAX9611_CSA_4X_LSB_nV,
-		MAX9611_CSA_4X_OFFS_RAW,
-	},
-	{ /* [2] CSA_GAIN_8x */
-		MAX9611_CSA_8X_LSB_nV,
-		MAX9611_CSA_8X_OFFS_RAW,
-	},
+	[CSA_GAIN_1x] = { MAX9611_CSA_1X_LSB_nV, MAX9611_CSA_1X_OFFS_RAW, },
+	[CSA_GAIN_4x] = { MAX9611_CSA_4X_LSB_nV, MAX9611_CSA_4X_OFFS_RAW, },
+	[CSA_GAIN_8x] = { MAX9611_CSA_8X_LSB_nV, MAX9611_CSA_8X_OFFS_RAW, },
 };
 
 enum max9611_chan_addrs {
@@ -559,8 +545,6 @@ static int max9611_probe(struct i2c_client *client,
 	if (ret)
 		return ret;
 
-	indio_dev->dev.parent	= &client->dev;
-	indio_dev->dev.of_node	= client->dev.of_node;
 	indio_dev->name		= of_id->data;
 	indio_dev->modes	= INDIO_DIRECT_MODE;
 	indio_dev->info		= &indio_info;

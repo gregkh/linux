@@ -39,8 +39,6 @@
  *	Troy Laramy <t-laramy@ti.com>
  */
 
-#include <asm/cacheflush.h>
-
 #include <linux/clk.h>
 #include <linux/clkdev.h>
 #include <linux/delay.h>
@@ -144,7 +142,7 @@ static struct isp_reg isp_reg_list[] = {
  * readback the same register, in this case the revision register.
  *
  * See this link for reference:
- *   http://www.mail-archive.com/linux-omap@vger.kernel.org/msg08149.html
+ *   https://www.mail-archive.com/linux-omap@vger.kernel.org/msg08149.html
  */
 void omap3isp_flush(struct isp_device *isp)
 {
@@ -810,6 +808,10 @@ static int isp_pipeline_disable(struct isp_pipeline *pipe)
 
 		ret = v4l2_subdev_call(subdev, video, s_stream, 0);
 
+		/* Stop at the first external sub-device. */
+		if (subdev->dev != isp->dev)
+			break;
+
 		if (subdev == &isp->isp_res.subdev)
 			ret |= isp_pipeline_wait(isp, isp_pipeline_wait_resizer);
 		else if (subdev == &isp->isp_prev.subdev)
@@ -837,10 +839,6 @@ static int isp_pipeline_disable(struct isp_pipeline *pipe)
 						      &subdev->entity);
 			failure = -ETIMEDOUT;
 		}
-
-		/* Stop at the first external sub-device. */
-		if (subdev->dev != isp->dev)
-			break;
 	}
 
 	return failure;

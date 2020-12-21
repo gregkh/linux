@@ -7,6 +7,8 @@
 #include <linux/cpu.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
+#include <linux/nospec.h>
+#include <linux/prctl.h>
 #include <linux/seq_buf.h>
 
 #include <asm/asm-prototypes.h>
@@ -14,17 +16,18 @@
 #include <asm/debugfs.h>
 #include <asm/security_features.h>
 #include <asm/setup.h>
+#include <asm/inst.h>
 
 
 u64 powerpc_security_features __read_mostly = SEC_FTR_DEFAULT;
 
-enum count_cache_flush_type {
-	COUNT_CACHE_FLUSH_NONE	= 0x1,
-	COUNT_CACHE_FLUSH_SW	= 0x2,
-	COUNT_CACHE_FLUSH_HW	= 0x4,
+enum branch_cache_flush_type {
+	BRANCH_CACHE_FLUSH_NONE	= 0x1,
+	BRANCH_CACHE_FLUSH_SW	= 0x2,
+	BRANCH_CACHE_FLUSH_HW	= 0x4,
 };
-static enum count_cache_flush_type count_cache_flush_type = COUNT_CACHE_FLUSH_NONE;
-static bool link_stack_flush_enabled;
+static enum branch_cache_flush_type count_cache_flush_type = BRANCH_CACHE_FLUSH_NONE;
+static enum branch_cache_flush_type link_stack_flush_type = BRANCH_CACHE_FLUSH_NONE;
 
 bool barrier_nospec_enabled;
 static bool no_nospec;
@@ -95,13 +98,14 @@ static int barrier_nospec_get(void *data, u64 *val)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(fops_barrier_nospec,
-			barrier_nospec_get, barrier_nospec_set, "%llu\n");
+DEFINE_DEBUGFS_ATTRIBUTE(fops_barrier_nospec, barrier_nospec_get,
+			 barrier_nospec_set, "%llu\n");
 
 static __init int barrier_nospec_debugfs_init(void)
 {
-	debugfs_create_file("barrier_nospec", 0600, powerpc_debugfs_root, NULL,
-			    &fops_barrier_nospec);
+	debugfs_create_file_unsafe("barrier_nospec", 0600,
+				   powerpc_debugfs_root, NULL,
+				   &fops_barrier_nospec);
 	return 0;
 }
 device_initcall(barrier_nospec_debugfs_init);
@@ -215,22 +219,23 @@ ssize_t cpu_show_spectre_v2(struct device *dev, struct device_attribute *attr, c
 		if (ccd)
 			seq_buf_printf(&s, "Indirect branch cache disabled");
 
-		if (link_stack_flush_enabled)
-			seq_buf_printf(&s, ", Software link stack flush");
-
-	} else if (count_cache_flush_type != COUNT_CACHE_FLUSH_NONE) {
+	} else if (count_cache_flush_type != BRANCH_CACHE_FLUSH_NONE) {
 		seq_buf_printf(&s, "Mitigation: Software count cache flush");
 
-		if (count_cache_flush_type == COUNT_CACHE_FLUSH_HW)
+		if (count_cache_flush_type == BRANCH_CACHE_FLUSH_HW)
 			seq_buf_printf(&s, " (hardware accelerated)");
-
-		if (link_stack_flush_enabled)
-			seq_buf_printf(&s, ", Software link stack flush");
 
 	} else if (btb_flush_enabled) {
 		seq_buf_printf(&s, "Mitigation: Branch predictor state flush");
 	} else {
 		seq_buf_printf(&s, "Vulnerable");
+	}
+
+	if (bcs || ccd || count_cache_flush_type != BRANCH_CACHE_FLUSH_NONE) {
+		if (link_stack_flush_type != BRANCH_CACHE_FLUSH_NONE)
+			seq_buf_printf(&s, ", Software link stack flush");
+		if (link_stack_flush_type == BRANCH_CACHE_FLUSH_HW)
+			seq_buf_printf(&s, " (hardware accelerated)");
 	}
 
 	seq_buf_printf(&s, "\n");
@@ -352,6 +357,40 @@ ssize_t cpu_show_spec_store_bypass(struct device *dev, struct device_attribute *
 	return sprintf(buf, "Vulnerable\n");
 }
 
+static int ssb_prctl_get(struct task_struct *task)
+{
+	if (stf_enabled_flush_types == STF_BARRIER_NONE)
+		/*
+		 * We don't have an explicit signal from firmware that we're
+		 * vulnerable or not, we only have certain CPU revisions that
+		 * are known to be vulnerable.
+		 *
+		 * We assume that if we're on another CPU, where the barrier is
+		 * NONE, then we are not vulnerable.
+		 */
+		return PR_SPEC_NOT_AFFECTED;
+	else
+		/*
+		 * If we do have a barrier type then we are vulnerable. The
+		 * barrier is not a global or per-process mitigation, so the
+		 * only value we can report here is PR_SPEC_ENABLE, which
+		 * appears as "vulnerable" in /proc.
+		 */
+		return PR_SPEC_ENABLE;
+
+	return -EINVAL;
+}
+
+int arch_prctl_spec_ctrl_get(struct task_struct *task, unsigned long which)
+{
+	switch (which) {
+	case PR_SPEC_STORE_BYPASS:
+		return ssb_prctl_get(task);
+	default:
+		return -ENODEV;
+	}
+}
+
 #ifdef CONFIG_DEBUG_FS
 static int stf_barrier_set(void *data, u64 val)
 {
@@ -377,68 +416,105 @@ static int stf_barrier_get(void *data, u64 *val)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(fops_stf_barrier, stf_barrier_get, stf_barrier_set, "%llu\n");
+DEFINE_DEBUGFS_ATTRIBUTE(fops_stf_barrier, stf_barrier_get, stf_barrier_set,
+			 "%llu\n");
 
 static __init int stf_barrier_debugfs_init(void)
 {
-	debugfs_create_file("stf_barrier", 0600, powerpc_debugfs_root, NULL, &fops_stf_barrier);
+	debugfs_create_file_unsafe("stf_barrier", 0600, powerpc_debugfs_root,
+				   NULL, &fops_stf_barrier);
 	return 0;
 }
 device_initcall(stf_barrier_debugfs_init);
 #endif /* CONFIG_DEBUG_FS */
 
-static void no_count_cache_flush(void)
+static void update_branch_cache_flush(void)
 {
-	count_cache_flush_type = COUNT_CACHE_FLUSH_NONE;
-	pr_info("count-cache-flush: software flush disabled.\n");
+	u32 *site;
+
+#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
+	site = &patch__call_kvm_flush_link_stack;
+	// This controls the branch from guest_exit_cont to kvm_flush_link_stack
+	if (link_stack_flush_type == BRANCH_CACHE_FLUSH_NONE) {
+		patch_instruction_site(site, ppc_inst(PPC_INST_NOP));
+	} else {
+		// Could use HW flush, but that could also flush count cache
+		patch_branch_site(site, (u64)&kvm_flush_link_stack, BRANCH_SET_LINK);
+	}
+#endif
+
+	// Patch out the bcctr first, then nop the rest
+	site = &patch__call_flush_branch_caches3;
+	patch_instruction_site(site, ppc_inst(PPC_INST_NOP));
+	site = &patch__call_flush_branch_caches2;
+	patch_instruction_site(site, ppc_inst(PPC_INST_NOP));
+	site = &patch__call_flush_branch_caches1;
+	patch_instruction_site(site, ppc_inst(PPC_INST_NOP));
+
+	// This controls the branch from _switch to flush_branch_caches
+	if (count_cache_flush_type == BRANCH_CACHE_FLUSH_NONE &&
+	    link_stack_flush_type == BRANCH_CACHE_FLUSH_NONE) {
+		// Nothing to be done
+
+	} else if (count_cache_flush_type == BRANCH_CACHE_FLUSH_HW &&
+		   link_stack_flush_type == BRANCH_CACHE_FLUSH_HW) {
+		// Patch in the bcctr last
+		site = &patch__call_flush_branch_caches1;
+		patch_instruction_site(site, ppc_inst(0x39207fff)); // li r9,0x7fff
+		site = &patch__call_flush_branch_caches2;
+		patch_instruction_site(site, ppc_inst(0x7d2903a6)); // mtctr r9
+		site = &patch__call_flush_branch_caches3;
+		patch_instruction_site(site, ppc_inst(PPC_INST_BCCTR_FLUSH));
+
+	} else {
+		patch_branch_site(site, (u64)&flush_branch_caches, BRANCH_SET_LINK);
+
+		// If we just need to flush the link stack, early return
+		if (count_cache_flush_type == BRANCH_CACHE_FLUSH_NONE) {
+			patch_instruction_site(&patch__flush_link_stack_return,
+					       ppc_inst(PPC_INST_BLR));
+
+		// If we have flush instruction, early return
+		} else if (count_cache_flush_type == BRANCH_CACHE_FLUSH_HW) {
+			patch_instruction_site(&patch__flush_count_cache_return,
+					       ppc_inst(PPC_INST_BLR));
+		}
+	}
 }
 
-static void toggle_count_cache_flush(bool enable)
+static void toggle_branch_cache_flush(bool enable)
 {
-	if (!security_ftr_enabled(SEC_FTR_FLUSH_COUNT_CACHE) &&
-	    !security_ftr_enabled(SEC_FTR_FLUSH_LINK_STACK))
-		enable = false;
+	if (!enable || !security_ftr_enabled(SEC_FTR_FLUSH_COUNT_CACHE)) {
+		if (count_cache_flush_type != BRANCH_CACHE_FLUSH_NONE)
+			count_cache_flush_type = BRANCH_CACHE_FLUSH_NONE;
 
-	if (!enable) {
-		patch_instruction_site(&patch__call_flush_count_cache, PPC_INST_NOP);
-#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
-		patch_instruction_site(&patch__call_kvm_flush_link_stack, PPC_INST_NOP);
-#endif
-		pr_info("link-stack-flush: software flush disabled.\n");
-		link_stack_flush_enabled = false;
-		no_count_cache_flush();
-		return;
+		pr_info("count-cache-flush: flush disabled.\n");
+	} else {
+		if (security_ftr_enabled(SEC_FTR_BCCTR_FLUSH_ASSIST)) {
+			count_cache_flush_type = BRANCH_CACHE_FLUSH_HW;
+			pr_info("count-cache-flush: hardware flush enabled.\n");
+		} else {
+			count_cache_flush_type = BRANCH_CACHE_FLUSH_SW;
+			pr_info("count-cache-flush: software flush enabled.\n");
+		}
 	}
 
-	// This enables the branch from _switch to flush_count_cache
-	patch_branch_site(&patch__call_flush_count_cache,
-			  (u64)&flush_count_cache, BRANCH_SET_LINK);
+	if (!enable || !security_ftr_enabled(SEC_FTR_FLUSH_LINK_STACK)) {
+		if (link_stack_flush_type != BRANCH_CACHE_FLUSH_NONE)
+			link_stack_flush_type = BRANCH_CACHE_FLUSH_NONE;
 
-#ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
-	// This enables the branch from guest_exit_cont to kvm_flush_link_stack
-	patch_branch_site(&patch__call_kvm_flush_link_stack,
-			  (u64)&kvm_flush_link_stack, BRANCH_SET_LINK);
-#endif
-
-	pr_info("link-stack-flush: software flush enabled.\n");
-	link_stack_flush_enabled = true;
-
-	// If we just need to flush the link stack, patch an early return
-	if (!security_ftr_enabled(SEC_FTR_FLUSH_COUNT_CACHE)) {
-		patch_instruction_site(&patch__flush_link_stack_return, PPC_INST_BLR);
-		no_count_cache_flush();
-		return;
+		pr_info("link-stack-flush: flush disabled.\n");
+	} else {
+		if (security_ftr_enabled(SEC_FTR_BCCTR_LINK_FLUSH_ASSIST)) {
+			link_stack_flush_type = BRANCH_CACHE_FLUSH_HW;
+			pr_info("link-stack-flush: hardware flush enabled.\n");
+		} else {
+			link_stack_flush_type = BRANCH_CACHE_FLUSH_SW;
+			pr_info("link-stack-flush: software flush enabled.\n");
+		}
 	}
 
-	if (!security_ftr_enabled(SEC_FTR_BCCTR_FLUSH_ASSIST)) {
-		count_cache_flush_type = COUNT_CACHE_FLUSH_SW;
-		pr_info("count-cache-flush: full software flush sequence enabled.\n");
-		return;
-	}
-
-	patch_instruction_site(&patch__flush_count_cache_return, PPC_INST_BLR);
-	count_cache_flush_type = COUNT_CACHE_FLUSH_HW;
-	pr_info("count-cache-flush: hardware assisted flush sequence enabled\n");
+	update_branch_cache_flush();
 }
 
 void setup_count_cache_flush(void)
@@ -462,7 +538,7 @@ void setup_count_cache_flush(void)
 	    security_ftr_enabled(SEC_FTR_FLUSH_COUNT_CACHE))
 		security_ftr_set(SEC_FTR_FLUSH_LINK_STACK);
 
-	toggle_count_cache_flush(enable);
+	toggle_branch_cache_flush(enable);
 }
 
 #ifdef CONFIG_DEBUG_FS
@@ -477,14 +553,14 @@ static int count_cache_flush_set(void *data, u64 val)
 	else
 		return -EINVAL;
 
-	toggle_count_cache_flush(enable);
+	toggle_branch_cache_flush(enable);
 
 	return 0;
 }
 
 static int count_cache_flush_get(void *data, u64 *val)
 {
-	if (count_cache_flush_type == COUNT_CACHE_FLUSH_NONE)
+	if (count_cache_flush_type == BRANCH_CACHE_FLUSH_NONE)
 		*val = 0;
 	else
 		*val = 1;
@@ -492,13 +568,14 @@ static int count_cache_flush_get(void *data, u64 *val)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(fops_count_cache_flush, count_cache_flush_get,
-			count_cache_flush_set, "%llu\n");
+DEFINE_DEBUGFS_ATTRIBUTE(fops_count_cache_flush, count_cache_flush_get,
+			 count_cache_flush_set, "%llu\n");
 
 static __init int count_cache_flush_debugfs_init(void)
 {
-	debugfs_create_file("count_cache_flush", 0600, powerpc_debugfs_root,
-			    NULL, &fops_count_cache_flush);
+	debugfs_create_file_unsafe("count_cache_flush", 0600,
+				   powerpc_debugfs_root, NULL,
+				   &fops_count_cache_flush);
 	return 0;
 }
 device_initcall(count_cache_flush_debugfs_init);

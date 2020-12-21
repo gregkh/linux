@@ -58,17 +58,17 @@ int axg_tdm_set_tdm_slots(struct snd_soc_dai *dai, u32 *tx_mask,
 	switch (slot_width) {
 	case 0:
 		slot_width = 32;
-		/* Fall-through */
+		fallthrough;
 	case 32:
 		fmt |= SNDRV_PCM_FMTBIT_S32_LE;
-		/* Fall-through */
+		fallthrough;
 	case 24:
 		fmt |= SNDRV_PCM_FMTBIT_S24_LE;
 		fmt |= SNDRV_PCM_FMTBIT_S20_LE;
-		/* Fall-through */
+		fallthrough;
 	case 16:
 		fmt |= SNDRV_PCM_FMTBIT_S16_LE;
-		/* Fall-through */
+		fallthrough;
 	case 8:
 		fmt |= SNDRV_PCM_FMTBIT_S8;
 		break;
@@ -133,7 +133,7 @@ static int axg_tdm_iface_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	case SND_SOC_DAIFMT_CBS_CFM:
 	case SND_SOC_DAIFMT_CBM_CFS:
 		dev_err(dai->dev, "only CBS_CFS and CBM_CFM are supported\n");
-		/* Fall-through */
+		fallthrough;
 	default:
 		return -EINVAL;
 	}
@@ -156,7 +156,7 @@ static int axg_tdm_iface_startup(struct snd_pcm_substream *substream,
 	}
 
 	/* Apply component wide rate symmetry */
-	if (dai->component->active) {
+	if (snd_soc_component_active(dai->component)) {
 		ret = snd_pcm_hw_constraint_single(substream->runtime,
 						   SNDRV_PCM_HW_PARAM_RATE,
 						   iface->rate);

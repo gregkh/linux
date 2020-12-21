@@ -778,7 +778,7 @@ static int ovs_ct_nat_execute(struct sk_buff *skb, struct nf_conn *ct,
 			}
 		}
 		/* Non-ICMP, fall thru to initialize if needed. */
-		/* fall through */
+		fallthrough;
 	case IP_CT_NEW:
 		/* Seen it before?  This can happen for loopback, retrans,
 		 * or local packets.
@@ -988,6 +988,8 @@ static int __ovs_ct_lookup(struct net *net, struct sw_flow_key *key,
 
 	ct = nf_ct_get(skb, &ctinfo);
 	if (ct) {
+		bool add_helper = false;
+
 		/* Packets starting a new connection must be NATted before the
 		 * helper, so that the helper knows about the NAT.  We enforce
 		 * this by delaying both NAT and helper calls for unconfirmed
@@ -1005,16 +1007,17 @@ static int __ovs_ct_lookup(struct net *net, struct sw_flow_key *key,
 		}
 
 		/* Userspace may decide to perform a ct lookup without a helper
-		 * specified followed by a (recirculate and) commit with one.
-		 * Therefore, for unconfirmed connections which we will commit,
-		 * we need to attach the helper here.
+		 * specified followed by a (recirculate and) commit with one,
+		 * or attach a helper in a later commit.  Therefore, for
+		 * connections which we will commit, we may need to attach
+		 * the helper here.
 		 */
-		if (!nf_ct_is_confirmed(ct) && info->commit &&
-		    info->helper && !nfct_help(ct)) {
+		if (info->commit && info->helper && !nfct_help(ct)) {
 			int err = __nf_ct_try_assign_helper(ct, info->ct,
 							    GFP_ATOMIC);
 			if (err)
 				return err;
+			add_helper = true;
 
 			/* helper installed, add seqadj if NAT is required */
 			if (info->nat && !nfct_seqadj(ct)) {
@@ -1024,11 +1027,13 @@ static int __ovs_ct_lookup(struct net *net, struct sw_flow_key *key,
 		}
 
 		/* Call the helper only if:
-		 * - nf_conntrack_in() was executed above ("!cached") for a
-		 *   confirmed connection, or
+		 * - nf_conntrack_in() was executed above ("!cached") or a
+		 *   helper was just attached ("add_helper") for a confirmed
+		 *   connection, or
 		 * - When committing an unconfirmed connection.
 		 */
-		if ((nf_ct_is_confirmed(ct) ? !cached : info->commit) &&
+		if ((nf_ct_is_confirmed(ct) ? !cached || add_helper :
+					      info->commit) &&
 		    ovs_ct_helper(skb, info->family) != NF_ACCEPT) {
 			return -EINVAL;
 		}
@@ -1539,7 +1544,7 @@ static int parse_ct(const struct nlattr *attr, struct ovs_conntrack_info *info,
 		switch (type) {
 		case OVS_CT_ATTR_FORCE_COMMIT:
 			info->force = true;
-			/* fall through. */
+			fallthrough;
 		case OVS_CT_ATTR_COMMIT:
 			info->commit = true;
 			break;
@@ -1900,8 +1905,8 @@ static void ovs_ct_limit_exit(struct net *net, struct ovs_net *ovs_net)
 					 lockdep_ovsl_is_held())
 			kfree_rcu(ct_limit, rcu);
 	}
-	kfree(ovs_net->ct_limit_info->limits);
-	kfree(ovs_net->ct_limit_info);
+	kfree(info->limits);
+	kfree(info);
 }
 
 static struct sk_buff *
@@ -2230,7 +2235,7 @@ exit_err:
 	return err;
 }
 
-static struct genl_ops ct_limit_genl_ops[] = {
+static const struct genl_small_ops ct_limit_genl_ops[] = {
 	{ .cmd = OVS_CT_LIMIT_CMD_SET,
 		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 		.flags = GENL_ADMIN_PERM, /* Requires CAP_NET_ADMIN
@@ -2262,8 +2267,8 @@ struct genl_family dp_ct_limit_genl_family __ro_after_init = {
 	.policy = ct_limit_policy,
 	.netnsok = true,
 	.parallel_ops = true,
-	.ops = ct_limit_genl_ops,
-	.n_ops = ARRAY_SIZE(ct_limit_genl_ops),
+	.small_ops = ct_limit_genl_ops,
+	.n_small_ops = ARRAY_SIZE(ct_limit_genl_ops),
 	.mcgrps = &ovs_ct_limit_multicast_group,
 	.n_mcgrps = 1,
 	.module = THIS_MODULE,

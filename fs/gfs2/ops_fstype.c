@@ -110,6 +110,8 @@ static struct gfs2_sbd *init_sbd(struct super_block *sb)
 	spin_lock_init(&sdp->sd_trunc_lock);
 	spin_lock_init(&sdp->sd_bitmap_lock);
 
+	INIT_LIST_HEAD(&sdp->sd_sc_inodes_list);
+
 	mapping = &sdp->sd_aspace;
 
 	address_space_init_once(mapping);
@@ -302,6 +304,8 @@ static int gfs2_read_sb(struct gfs2_sbd *sdp, int silent)
 			  sizeof(struct gfs2_dinode)) / sizeof(u64);
 	sdp->sd_inptrs = (sdp->sd_sb.sb_bsize -
 			  sizeof(struct gfs2_meta_header)) / sizeof(u64);
+	sdp->sd_ldptrs = (sdp->sd_sb.sb_bsize -
+			  sizeof(struct gfs2_log_descriptor)) / sizeof(u64);
 	sdp->sd_jbsize = sdp->sd_sb.sb_bsize - sizeof(struct gfs2_meta_header);
 	sdp->sd_hash_bsize = sdp->sd_sb.sb_bsize / 2;
 	sdp->sd_hash_bsize_shift = sdp->sd_sb.sb_bsize_shift - 1;
@@ -554,6 +558,8 @@ static int gfs2_jindex_hold(struct gfs2_sbd *sdp, struct gfs2_holder *ji_gh)
 	mutex_lock(&sdp->sd_jindex_mutex);
 
 	for (;;) {
+		struct gfs2_inode *jip;
+
 		error = gfs2_glock_nq_init(dip->i_gl, LM_ST_SHARED, 0, ji_gh);
 		if (error)
 			break;
@@ -593,6 +599,8 @@ static int gfs2_jindex_hold(struct gfs2_sbd *sdp, struct gfs2_holder *ji_gh)
 
 		spin_lock(&sdp->sd_jindex_spin);
 		jd->jd_jid = sdp->sd_journals++;
+		jip = GFS2_I(jd->jd_inode);
+		jd->jd_no_addr = jip->i_no_addr;
 		list_add_tail(&jd->jd_list, &sdp->sd_jindex_list);
 		spin_unlock(&sdp->sd_jindex_spin);
 	}
@@ -603,45 +611,91 @@ static int gfs2_jindex_hold(struct gfs2_sbd *sdp, struct gfs2_holder *ji_gh)
 }
 
 /**
- * check_journal_clean - Make sure a journal is clean for a spectator mount
+ * init_statfs - look up and initialize master and local (per node) statfs inodes
  * @sdp: The GFS2 superblock
- * @jd: The journal descriptor
  *
- * Returns: 0 if the journal is clean or locked, else an error
+ * This should be called after the jindex is initialized in init_journal() and
+ * before gfs2_journal_recovery() is called because we need to be able to write
+ * to these inodes during recovery.
+ *
+ * Returns: errno
  */
-static int check_journal_clean(struct gfs2_sbd *sdp, struct gfs2_jdesc *jd)
+static int init_statfs(struct gfs2_sbd *sdp)
 {
-	int error;
-	struct gfs2_holder j_gh;
-	struct gfs2_log_header_host head;
+	int error = 0;
+	struct inode *master = d_inode(sdp->sd_master_dir);
+	struct inode *pn = NULL;
+	char buf[30];
+	struct gfs2_jdesc *jd;
 	struct gfs2_inode *ip;
 
-	ip = GFS2_I(jd->jd_inode);
-	error = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, LM_FLAG_NOEXP |
-				   GL_EXACT | GL_NOCACHE, &j_gh);
-	if (error) {
-		fs_err(sdp, "Error locking journal for spectator mount.\n");
-		return -EPERM;
+	sdp->sd_statfs_inode = gfs2_lookup_simple(master, "statfs");
+	if (IS_ERR(sdp->sd_statfs_inode)) {
+		error = PTR_ERR(sdp->sd_statfs_inode);
+		fs_err(sdp, "can't read in statfs inode: %d\n", error);
+		goto out;
 	}
-	error = gfs2_jdesc_check(jd);
-	if (error) {
-		fs_err(sdp, "Error checking journal for spectator mount.\n");
-		goto out_unlock;
-	}
-	error = gfs2_find_jhead(jd, &head, false);
-	if (error) {
-		fs_err(sdp, "Error parsing journal for spectator mount.\n");
-		goto out_unlock;
-	}
-	if (!(head.lh_flags & GFS2_LOG_HEAD_UNMOUNT)) {
-		error = -EPERM;
-		fs_err(sdp, "jid=%u: Journal is dirty, so the first mounter "
-		       "must not be a spectator.\n", jd->jd_jid);
+	if (sdp->sd_args.ar_spectator)
+		goto out;
+
+	pn = gfs2_lookup_simple(master, "per_node");
+	if (IS_ERR(pn)) {
+		error = PTR_ERR(pn);
+		fs_err(sdp, "can't find per_node directory: %d\n", error);
+		goto put_statfs;
 	}
 
-out_unlock:
-	gfs2_glock_dq_uninit(&j_gh);
+	/* For each jid, lookup the corresponding local statfs inode in the
+	 * per_node metafs directory and save it in the sdp->sd_sc_inodes_list. */
+	list_for_each_entry(jd, &sdp->sd_jindex_list, jd_list) {
+		struct local_statfs_inode *lsi =
+			kmalloc(sizeof(struct local_statfs_inode), GFP_NOFS);
+		if (!lsi) {
+			error = -ENOMEM;
+			goto free_local;
+		}
+		sprintf(buf, "statfs_change%u", jd->jd_jid);
+		lsi->si_sc_inode = gfs2_lookup_simple(pn, buf);
+		if (IS_ERR(lsi->si_sc_inode)) {
+			error = PTR_ERR(lsi->si_sc_inode);
+			fs_err(sdp, "can't find local \"sc\" file#%u: %d\n",
+			       jd->jd_jid, error);
+			goto free_local;
+		}
+		lsi->si_jid = jd->jd_jid;
+		if (jd->jd_jid == sdp->sd_jdesc->jd_jid)
+			sdp->sd_sc_inode = lsi->si_sc_inode;
+
+		list_add_tail(&lsi->si_list, &sdp->sd_sc_inodes_list);
+	}
+
+	iput(pn);
+	ip = GFS2_I(sdp->sd_sc_inode);
+	error = gfs2_glock_nq_init(ip->i_gl, LM_ST_EXCLUSIVE, 0,
+				   &sdp->sd_sc_gh);
+	if (error) {
+		fs_err(sdp, "can't lock local \"sc\" file: %d\n", error);
+		goto free_local;
+	}
+	return 0;
+
+free_local:
+	free_local_statfs_inodes(sdp);
+	iput(pn);
+put_statfs:
+	iput(sdp->sd_statfs_inode);
+out:
 	return error;
+}
+
+/* Uninitialize and free up memory used by the list of statfs inodes */
+static void uninit_statfs(struct gfs2_sbd *sdp)
+{
+	if (!sdp->sd_args.ar_spectator) {
+		gfs2_glock_dq_uninit(&sdp->sd_sc_gh);
+		free_local_statfs_inodes(sdp);
+	}
+	iput(sdp->sd_statfs_inode);
 }
 
 static int init_journal(struct gfs2_sbd *sdp, int undo)
@@ -654,7 +708,7 @@ static int init_journal(struct gfs2_sbd *sdp, int undo)
 
 	if (undo) {
 		jindex = 0;
-		goto fail_jinode_gh;
+		goto fail_statfs;
 	}
 
 	sdp->sd_jindex = gfs2_lookup_simple(master, "jindex");
@@ -696,7 +750,8 @@ static int init_journal(struct gfs2_sbd *sdp, int undo)
 
 		error = gfs2_glock_nq_num(sdp, sdp->sd_lockstruct.ls_jid,
 					  &gfs2_journal_glops,
-					  LM_ST_EXCLUSIVE, LM_FLAG_NOEXP,
+					  LM_ST_EXCLUSIVE,
+					  LM_FLAG_NOEXP | GL_NOCACHE,
 					  &sdp->sd_journal_gh);
 		if (error) {
 			fs_err(sdp, "can't acquire journal glock: %d\n", error);
@@ -704,6 +759,7 @@ static int init_journal(struct gfs2_sbd *sdp, int undo)
 		}
 
 		ip = GFS2_I(sdp->sd_jdesc->jd_inode);
+		sdp->sd_jinode_gl = ip->i_gl;
 		error = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED,
 					   LM_FLAG_NOEXP | GL_EXACT | GL_NOCACHE,
 					   &sdp->sd_jinode_gh);
@@ -728,22 +784,27 @@ static int init_journal(struct gfs2_sbd *sdp, int undo)
 	}
 	trace_gfs2_log_blocks(sdp, atomic_read(&sdp->sd_log_blks_free));
 
+	/* Lookup statfs inodes here so journal recovery can use them. */
+	error = init_statfs(sdp);
+	if (error)
+		goto fail_jinode_gh;
+
 	if (sdp->sd_lockstruct.ls_first) {
 		unsigned int x;
 		for (x = 0; x < sdp->sd_journals; x++) {
 			struct gfs2_jdesc *jd = gfs2_jdesc_find(sdp, x);
 
 			if (sdp->sd_args.ar_spectator) {
-				error = check_journal_clean(sdp, jd);
+				error = check_journal_clean(sdp, jd, true);
 				if (error)
-					goto fail_jinode_gh;
+					goto fail_statfs;
 				continue;
 			}
 			error = gfs2_recover_journal(jd, true);
 			if (error) {
 				fs_err(sdp, "error recovering journal %u: %d\n",
 				       x, error);
-				goto fail_jinode_gh;
+				goto fail_statfs;
 			}
 		}
 
@@ -752,7 +813,7 @@ static int init_journal(struct gfs2_sbd *sdp, int undo)
 		error = gfs2_recover_journal(sdp->sd_jdesc, true);
 		if (error) {
 			fs_err(sdp, "error recovering my journal: %d\n", error);
-			goto fail_jinode_gh;
+			goto fail_statfs;
 		}
 	}
 
@@ -763,11 +824,16 @@ static int init_journal(struct gfs2_sbd *sdp, int undo)
 	INIT_WORK(&sdp->sd_freeze_work, gfs2_freeze_func);
 	return 0;
 
+fail_statfs:
+	uninit_statfs(sdp);
 fail_jinode_gh:
-	if (!sdp->sd_args.ar_spectator)
+	/* A withdraw may have done dq/uninit so now we need to check it */
+	if (!sdp->sd_args.ar_spectator &&
+	    gfs2_holder_initialized(&sdp->sd_jinode_gh))
 		gfs2_glock_dq_uninit(&sdp->sd_jinode_gh);
 fail_journal_gh:
-	if (!sdp->sd_args.ar_spectator)
+	if (!sdp->sd_args.ar_spectator &&
+	    gfs2_holder_initialized(&sdp->sd_journal_gh))
 		gfs2_glock_dq_uninit(&sdp->sd_journal_gh);
 fail_jindex:
 	gfs2_jindex_free(sdp);
@@ -793,20 +859,12 @@ static int init_inodes(struct gfs2_sbd *sdp, int undo)
 	if (error)
 		goto fail;
 
-	/* Read in the master statfs inode */
-	sdp->sd_statfs_inode = gfs2_lookup_simple(master, "statfs");
-	if (IS_ERR(sdp->sd_statfs_inode)) {
-		error = PTR_ERR(sdp->sd_statfs_inode);
-		fs_err(sdp, "can't read in statfs inode: %d\n", error);
-		goto fail_journal;
-	}
-
 	/* Read in the resource index inode */
 	sdp->sd_rindex = gfs2_lookup_simple(master, "rindex");
 	if (IS_ERR(sdp->sd_rindex)) {
 		error = PTR_ERR(sdp->sd_rindex);
 		fs_err(sdp, "can't get resource index inode: %d\n", error);
-		goto fail_statfs;
+		goto fail_journal;
 	}
 	sdp->sd_rindex_uptodate = 0;
 
@@ -835,8 +893,6 @@ fail_qinode:
 fail_rindex:
 	gfs2_clear_rgrpd(sdp);
 	iput(sdp->sd_rindex);
-fail_statfs:
-	iput(sdp->sd_statfs_inode);
 fail_journal:
 	init_journal(sdp, UNDO);
 fail:
@@ -864,14 +920,6 @@ static int init_per_node(struct gfs2_sbd *sdp, int undo)
 		return error;
 	}
 
-	sprintf(buf, "statfs_change%u", sdp->sd_jdesc->jd_jid);
-	sdp->sd_sc_inode = gfs2_lookup_simple(pn, buf);
-	if (IS_ERR(sdp->sd_sc_inode)) {
-		error = PTR_ERR(sdp->sd_sc_inode);
-		fs_err(sdp, "can't find local \"sc\" file: %d\n", error);
-		goto fail;
-	}
-
 	sprintf(buf, "quota_change%u", sdp->sd_jdesc->jd_jid);
 	sdp->sd_qc_inode = gfs2_lookup_simple(pn, buf);
 	if (IS_ERR(sdp->sd_qc_inode)) {
@@ -883,33 +931,21 @@ static int init_per_node(struct gfs2_sbd *sdp, int undo)
 	iput(pn);
 	pn = NULL;
 
-	ip = GFS2_I(sdp->sd_sc_inode);
-	error = gfs2_glock_nq_init(ip->i_gl, LM_ST_EXCLUSIVE, 0,
-				   &sdp->sd_sc_gh);
-	if (error) {
-		fs_err(sdp, "can't lock local \"sc\" file: %d\n", error);
-		goto fail_qc_i;
-	}
-
 	ip = GFS2_I(sdp->sd_qc_inode);
 	error = gfs2_glock_nq_init(ip->i_gl, LM_ST_EXCLUSIVE, 0,
 				   &sdp->sd_qc_gh);
 	if (error) {
 		fs_err(sdp, "can't lock local \"qc\" file: %d\n", error);
-		goto fail_ut_gh;
+		goto fail_qc_i;
 	}
 
 	return 0;
 
 fail_qc_gh:
 	gfs2_glock_dq_uninit(&sdp->sd_qc_gh);
-fail_ut_gh:
-	gfs2_glock_dq_uninit(&sdp->sd_sc_gh);
 fail_qc_i:
 	iput(sdp->sd_qc_inode);
 fail_ut_i:
-	iput(sdp->sd_sc_inode);
-fail:
 	iput(pn);
 	return error;
 }
@@ -1010,8 +1046,7 @@ hostdata_error:
 void gfs2_lm_unmount(struct gfs2_sbd *sdp)
 {
 	const struct lm_lockops *lm = sdp->sd_lockstruct.ls_ops;
-	if (likely(!test_bit(SDF_WITHDRAWN, &sdp->sd_flags)) &&
-	    lm->lm_unmount)
+	if (likely(!gfs2_withdrawn(sdp)) && lm->lm_unmount)
 		lm->lm_unmount(sdp);
 }
 
@@ -1164,7 +1199,8 @@ static int gfs2_fill_super(struct super_block *sb, struct fs_context *fc)
 		struct gfs2_holder freeze_gh;
 
 		error = gfs2_glock_nq_init(sdp->sd_freeze_gl, LM_ST_SHARED,
-					   GL_EXACT, &freeze_gh);
+					   LM_FLAG_NOEXP | GL_EXACT,
+					   &freeze_gh);
 		if (error) {
 			fs_err(sdp, "can't make FS RO: %d\n", error);
 			goto fail_per_node;
@@ -1253,6 +1289,7 @@ enum gfs2_param {
 	Opt_upgrade,
 	Opt_acl,
 	Opt_quota,
+	Opt_quota_flag,
 	Opt_suiddir,
 	Opt_data,
 	Opt_meta,
@@ -1267,17 +1304,11 @@ enum gfs2_param {
 	Opt_loccookie,
 };
 
-enum opt_quota {
-	Opt_quota_unset = 0,
-	Opt_quota_off,
-	Opt_quota_account,
-	Opt_quota_on,
-};
-
-static const unsigned int opt_quota_values[] = {
-	[Opt_quota_off]     = GFS2_QUOTA_OFF,
-	[Opt_quota_account] = GFS2_QUOTA_ACCOUNT,
-	[Opt_quota_on]      = GFS2_QUOTA_ON,
+static const struct constant_table gfs2_param_quota[] = {
+	{"off",        GFS2_QUOTA_OFF},
+	{"account",    GFS2_QUOTA_ACCOUNT},
+	{"on",         GFS2_QUOTA_ON},
+	{}
 };
 
 enum opt_data {
@@ -1285,12 +1316,24 @@ enum opt_data {
 	Opt_data_ordered   = GFS2_DATA_ORDERED,
 };
 
+static const struct constant_table gfs2_param_data[] = {
+	{"writeback",  Opt_data_writeback },
+	{"ordered",    Opt_data_ordered },
+	{}
+};
+
 enum opt_errors {
 	Opt_errors_withdraw = GFS2_ERRORS_WITHDRAW,
 	Opt_errors_panic    = GFS2_ERRORS_PANIC,
 };
 
-static const struct fs_parameter_spec gfs2_param_specs[] = {
+static const struct constant_table gfs2_param_errors[] = {
+	{"withdraw",   Opt_errors_withdraw },
+	{"panic",      Opt_errors_panic },
+	{}
+};
+
+static const struct fs_parameter_spec gfs2_fs_parameters[] = {
 	fsparam_string ("lockproto",          Opt_lockproto),
 	fsparam_string ("locktable",          Opt_locktable),
 	fsparam_string ("hostdata",           Opt_hostdata),
@@ -1303,11 +1346,11 @@ static const struct fs_parameter_spec gfs2_param_specs[] = {
 	fsparam_flag   ("upgrade",            Opt_upgrade),
 	fsparam_flag_no("acl",                Opt_acl),
 	fsparam_flag_no("suiddir",            Opt_suiddir),
-	fsparam_enum   ("data",               Opt_data),
+	fsparam_enum   ("data",               Opt_data, gfs2_param_data),
 	fsparam_flag   ("meta",               Opt_meta),
 	fsparam_flag_no("discard",            Opt_discard),
 	fsparam_s32    ("commit",             Opt_commit),
-	fsparam_enum   ("errors",             Opt_errors),
+	fsparam_enum   ("errors",             Opt_errors, gfs2_param_errors),
 	fsparam_s32    ("statfs_quantum",     Opt_statfs_quantum),
 	fsparam_s32    ("statfs_percent",     Opt_statfs_percent),
 	fsparam_s32    ("quota_quantum",      Opt_quota_quantum),
@@ -1315,25 +1358,9 @@ static const struct fs_parameter_spec gfs2_param_specs[] = {
 	fsparam_flag_no("rgrplvb",            Opt_rgrplvb),
 	fsparam_flag_no("loccookie",          Opt_loccookie),
 	/* quota can be a flag or an enum so it gets special treatment */
-	__fsparam(fs_param_is_enum, "quota", Opt_quota, fs_param_neg_with_no|fs_param_v_optional),
+	fsparam_flag_no("quota",	      Opt_quota_flag),
+	fsparam_enum("quota",		      Opt_quota, gfs2_param_quota),
 	{}
-};
-
-static const struct fs_parameter_enum gfs2_param_enums[] = {
-	{ Opt_quota,    "off",        Opt_quota_off },
-	{ Opt_quota,    "account",    Opt_quota_account },
-	{ Opt_quota,    "on",         Opt_quota_on },
-	{ Opt_data,     "writeback",  Opt_data_writeback },
-	{ Opt_data,     "ordered",    Opt_data_ordered },
-	{ Opt_errors,   "withdraw",   Opt_errors_withdraw },
-	{ Opt_errors,   "panic",      Opt_errors_panic },
-	{}
-};
-
-const struct fs_parameter_description gfs2_fs_parameters = {
-	.name = "gfs2",
-	.specs = gfs2_param_specs,
-	.enums = gfs2_param_enums,
 };
 
 /* Parse a single mount parameter */
@@ -1343,7 +1370,7 @@ static int gfs2_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	struct fs_parse_result result;
 	int o;
 
-	o = fs_parse(fc, &gfs2_fs_parameters, param, &result);
+	o = fs_parse(fc, gfs2_fs_parameters, param, &result);
 	if (o < 0)
 		return o;
 
@@ -1371,7 +1398,7 @@ static int gfs2_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		break;
 	case Opt_debug:
 		if (result.boolean && args->ar_errors == GFS2_ERRORS_PANIC)
-			return invalf(fc, "gfs2: -o debug and -o errors=panic are mutually exclusive");
+			return invalfc(fc, "-o debug and -o errors=panic are mutually exclusive");
 		args->ar_debug = result.boolean;
 		break;
 	case Opt_upgrade:
@@ -1380,17 +1407,11 @@ static int gfs2_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	case Opt_acl:
 		args->ar_posix_acl = result.boolean;
 		break;
+	case Opt_quota_flag:
+		args->ar_quota = result.negated ? GFS2_QUOTA_OFF : GFS2_QUOTA_ON;
+		break;
 	case Opt_quota:
-		/* The quota option can be a flag or an enum. A non-zero int_32
-		   result means that we have an enum index. Otherwise we have
-		   to rely on the 'negated' flag to tell us whether 'quota' or
-		   'noquota' was specified. */
-		if (result.negated)
-			args->ar_quota = GFS2_QUOTA_OFF;
-		else if (result.int_32 > 0)
-			args->ar_quota = opt_quota_values[result.int_32];
-		else
-			args->ar_quota = GFS2_QUOTA_ON;
+		args->ar_quota = result.int_32;
 		break;
 	case Opt_suiddir:
 		args->ar_suiddir = result.boolean;
@@ -1407,27 +1428,27 @@ static int gfs2_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		break;
 	case Opt_commit:
 		if (result.int_32 <= 0)
-			return invalf(fc, "gfs2: commit mount option requires a positive numeric argument");
+			return invalfc(fc, "commit mount option requires a positive numeric argument");
 		args->ar_commit = result.int_32;
 		break;
 	case Opt_statfs_quantum:
 		if (result.int_32 < 0)
-			return invalf(fc, "gfs2: statfs_quantum mount option requires a non-negative numeric argument");
+			return invalfc(fc, "statfs_quantum mount option requires a non-negative numeric argument");
 		args->ar_statfs_quantum = result.int_32;
 		break;
 	case Opt_quota_quantum:
 		if (result.int_32 <= 0)
-			return invalf(fc, "gfs2: quota_quantum mount option requires a positive numeric argument");
+			return invalfc(fc, "quota_quantum mount option requires a positive numeric argument");
 		args->ar_quota_quantum = result.int_32;
 		break;
 	case Opt_statfs_percent:
 		if (result.int_32 < 0 || result.int_32 > 100)
-			return invalf(fc, "gfs2: statfs_percent mount option requires a numeric argument between 0 and 100");
+			return invalfc(fc, "statfs_percent mount option requires a numeric argument between 0 and 100");
 		args->ar_statfs_percent = result.int_32;
 		break;
 	case Opt_errors:
 		if (args->ar_debug && result.uint_32 == GFS2_ERRORS_PANIC)
-			return invalf(fc, "gfs2: -o debug and -o errors=panic are mutually exclusive");
+			return invalfc(fc, "-o debug and -o errors=panic are mutually exclusive");
 		args->ar_errors = result.uint_32;
 		break;
 	case Opt_barrier:
@@ -1440,7 +1461,7 @@ static int gfs2_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		args->ar_loccookie = result.boolean;
 		break;
 	default:
-		return invalf(fc, "gfs2: invalid mount option: %s", param->key);
+		return invalfc(fc, "invalid mount option: %s", param->key);
 	}
 	return 0;
 }
@@ -1466,27 +1487,27 @@ static int gfs2_reconfigure(struct fs_context *fc)
 	spin_unlock(&gt->gt_spin);
 
 	if (strcmp(newargs->ar_lockproto, oldargs->ar_lockproto)) {
-		errorf(fc, "gfs2: reconfiguration of locking protocol not allowed");
+		errorfc(fc, "reconfiguration of locking protocol not allowed");
 		return -EINVAL;
 	}
 	if (strcmp(newargs->ar_locktable, oldargs->ar_locktable)) {
-		errorf(fc, "gfs2: reconfiguration of lock table not allowed");
+		errorfc(fc, "reconfiguration of lock table not allowed");
 		return -EINVAL;
 	}
 	if (strcmp(newargs->ar_hostdata, oldargs->ar_hostdata)) {
-		errorf(fc, "gfs2: reconfiguration of host data not allowed");
+		errorfc(fc, "reconfiguration of host data not allowed");
 		return -EINVAL;
 	}
 	if (newargs->ar_spectator != oldargs->ar_spectator) {
-		errorf(fc, "gfs2: reconfiguration of spectator mode not allowed");
+		errorfc(fc, "reconfiguration of spectator mode not allowed");
 		return -EINVAL;
 	}
 	if (newargs->ar_localflocks != oldargs->ar_localflocks) {
-		errorf(fc, "gfs2: reconfiguration of localflocks not allowed");
+		errorfc(fc, "reconfiguration of localflocks not allowed");
 		return -EINVAL;
 	}
 	if (newargs->ar_meta != oldargs->ar_meta) {
-		errorf(fc, "gfs2: switching between gfs2 and gfs2meta not allowed");
+		errorfc(fc, "switching between gfs2 and gfs2meta not allowed");
 		return -EINVAL;
 	}
 	if (oldargs->ar_spectator)
@@ -1496,11 +1517,11 @@ static int gfs2_reconfigure(struct fs_context *fc)
 		if (fc->sb_flags & SB_RDONLY) {
 			error = gfs2_make_fs_ro(sdp);
 			if (error)
-				errorf(fc, "gfs2: unable to remount read-only");
+				errorfc(fc, "unable to remount read-only");
 		} else {
 			error = gfs2_make_fs_rw(sdp);
 			if (error)
-				errorf(fc, "gfs2: unable to remount read-write");
+				errorfc(fc, "unable to remount read-write");
 		}
 	}
 	sdp->sd_args = *newargs;
@@ -1645,7 +1666,7 @@ struct file_system_type gfs2_fs_type = {
 	.name = "gfs2",
 	.fs_flags = FS_REQUIRES_DEV,
 	.init_fs_context = gfs2_init_fs_context,
-	.parameters = &gfs2_fs_parameters,
+	.parameters = gfs2_fs_parameters,
 	.kill_sb = gfs2_kill_sb,
 	.owner = THIS_MODULE,
 };

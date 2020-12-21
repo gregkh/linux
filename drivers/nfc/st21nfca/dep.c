@@ -66,7 +66,7 @@ struct st21nfca_atr_req {
 	u8 bsi;
 	u8 bri;
 	u8 ppi;
-	u8 gbi[0];
+	u8 gbi[];
 } __packed;
 
 struct st21nfca_atr_res {
@@ -79,7 +79,7 @@ struct st21nfca_atr_res {
 	u8 bri;
 	u8 to;
 	u8 ppi;
-	u8 gbi[0];
+	u8 gbi[];
 } __packed;
 
 struct st21nfca_psl_req {
@@ -611,7 +611,7 @@ static void st21nfca_im_recv_dep_res_cb(void *context, struct sk_buff *skb,
 		switch (ST21NFCA_NFC_DEP_PFB_TYPE(dep_res->pfb)) {
 		case ST21NFCA_NFC_DEP_PFB_ACK_NACK_PDU:
 			pr_err("Received a ACK/NACK PDU\n");
-			/* fall through */
+			fallthrough;
 		case ST21NFCA_NFC_DEP_PFB_I_PDU:
 			info->dep_info.curr_nfc_dep_pni =
 			    ST21NFCA_NFC_DEP_PFB_PNI(dep_res->pfb + 1);

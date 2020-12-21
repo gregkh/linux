@@ -20,6 +20,9 @@
  * included with this package.                                     *
  *******************************************************************/
 
+#include <linux/irq_poll.h>
+#include <linux/cpufreq.h>
+
 #if defined(CONFIG_DEBUG_FS) && !defined(CONFIG_SCSI_LPFC_DEBUG_FS)
 #define CONFIG_SCSI_LPFC_DEBUG_FS
 #endif
@@ -41,8 +44,13 @@
 
 /* Multi-queue arrangement for FCP EQ/CQ/WQ tuples */
 #define LPFC_HBA_HDWQ_MIN	0
-#define LPFC_HBA_HDWQ_MAX	128
-#define LPFC_HBA_HDWQ_DEF	0
+#define LPFC_HBA_HDWQ_MAX	256
+#define LPFC_HBA_HDWQ_DEF	LPFC_HBA_HDWQ_MIN
+
+/* irq_chann range, values */
+#define LPFC_IRQ_CHANN_MIN	0
+#define LPFC_IRQ_CHANN_MAX	256
+#define LPFC_IRQ_CHANN_DEF	LPFC_IRQ_CHANN_MIN
 
 /* FCP MQ queue count limiting */
 #define LPFC_FCP_MQ_THRESHOLD_MIN	0
@@ -128,6 +136,16 @@ struct lpfc_rqb {
 				  /* Callback for HBQ buffer free */
 	void               (*rqb_free_buffer)(struct lpfc_hba *,
 					       struct rqb_dmabuf *);
+};
+
+enum lpfc_poll_mode {
+	LPFC_QUEUE_WORK,
+	LPFC_IRQ_POLL
+};
+
+struct lpfc_idle_stat {
+	u64 prev_idle;
+	u64 prev_wall;
 };
 
 struct lpfc_queue {
@@ -216,6 +234,7 @@ struct lpfc_queue {
 	uint8_t q_flag;
 #define HBA_NVMET_WQFULL	0x1 /* We hit WQ Full condition for NVMET */
 #define HBA_NVMET_CQ_NOTIFY	0x1 /* LPFC_NVMET_CQ_NOTIFY CQEs this EQE */
+#define HBA_EQ_DELAY_CHK	0x2 /* EQ is a candidate for coalescing */
 #define LPFC_NVMET_CQ_NOTIFY	4
 	void __iomem *db_regaddr;
 	uint16_t dpp_enable;
@@ -259,6 +278,10 @@ struct lpfc_queue {
 	struct lpfc_queue *assoc_qp;
 	struct list_head _poll_list;
 	void **q_pgs;	/* array to index entries per page */
+
+#define LPFC_IRQ_POLL_WEIGHT 256
+	struct irq_poll iop;
+	enum lpfc_poll_mode poll_mode;
 };
 
 struct lpfc_sli4_link {
@@ -466,10 +489,16 @@ struct lpfc_hba;
 #define LPFC_SLI4_HANDLER_NAME_SZ	16
 struct lpfc_hba_eq_hdl {
 	uint32_t idx;
+	uint16_t irq;
 	char handler_name[LPFC_SLI4_HANDLER_NAME_SZ];
 	struct lpfc_hba *phba;
 	struct lpfc_queue *eq;
+	struct cpumask aff_mask;
 };
+
+#define lpfc_get_eq_hdl(eqidx) (&phba->sli4_hba.hba_eq_hdl[eqidx])
+#define lpfc_get_aff_mask(eqidx) (&phba->sli4_hba.hba_eq_hdl[eqidx].aff_mask)
+#define lpfc_get_irq(eqidx) (phba->sli4_hba.hba_eq_hdl[eqidx].irq)
 
 /*BB Credit recovery value*/
 struct lpfc_bbscn_params {
@@ -528,6 +557,7 @@ struct lpfc_pc_sli4_params {
 	uint8_t cqav;
 	uint8_t wqsize;
 	uint8_t bv1s;
+	uint8_t pls;
 #define LPFC_WQ_SZ64_SUPPORT	1
 #define LPFC_WQ_SZ128_SUPPORT	2
 	uint8_t wqpcnt;
@@ -559,11 +589,10 @@ struct lpfc_sli4_lnk_info {
 #define LPFC_SLI4_HANDLER_CNT		(LPFC_HBA_IO_CHAN_MAX+ \
 					 LPFC_FOF_IO_CHAN_NUM)
 
-/* Used for IRQ vector to CPU mapping */
+/* Used for tracking CPU mapping attributes */
 struct lpfc_vector_map_info {
 	uint16_t	phys_id;
 	uint16_t	core_id;
-	uint16_t	irq;
 	uint16_t	eq;
 	uint16_t	hdwq;
 	uint16_t	flag;
@@ -685,13 +714,6 @@ struct lpfc_sli4_hdw_queue {
 	struct lpfc_lock_stat lock_conflict;
 #endif
 
-#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
-#define LPFC_CHECK_CPU_CNT    128
-	uint32_t cpucheck_rcv_io[LPFC_CHECK_CPU_CNT];
-	uint32_t cpucheck_xmt_io[LPFC_CHECK_CPU_CNT];
-	uint32_t cpucheck_cmpl_io[LPFC_CHECK_CPU_CNT];
-#endif
-
 	/* Per HDWQ pool resources */
 	struct list_head sgl_list;
 	struct list_head cmd_rsp_buf_list;
@@ -726,6 +748,15 @@ struct lpfc_sli4_hdw_queue {
 #define lpfc_qp_spin_lock_irqsave(lock, flag, qp, lstat) \
 	spin_lock_irqsave(lock, flag)
 #define lpfc_qp_spin_lock(lock, qp, lstat) spin_lock(lock)
+#endif
+
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
+struct lpfc_hdwq_stat {
+	u32 hdwq_no;
+	u32 rcv_io;
+	u32 xmt_io;
+	u32 cmpl_io;
+};
 #endif
 
 struct lpfc_sli4_hba {
@@ -906,8 +937,13 @@ struct lpfc_sli4_hba {
 	struct lpfc_vector_map_info *cpu_map;
 	uint16_t num_possible_cpu;
 	uint16_t num_present_cpu;
+	struct cpumask irq_aff_mask;
 	uint16_t curr_disp_cpu;
 	struct lpfc_eq_intr_info __percpu *eq_info;
+#ifdef CONFIG_SCSI_LPFC_DEBUG_FS
+	struct lpfc_hdwq_stat __percpu *c_stat;
+#endif
+	struct lpfc_idle_stat *idle_stat;
 	uint32_t conf_trunk;
 #define lpfc_conf_trunk_port0_WORD	conf_trunk
 #define lpfc_conf_trunk_port0_SHIFT	0

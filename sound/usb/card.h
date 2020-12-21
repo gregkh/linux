@@ -84,6 +84,10 @@ struct snd_usb_endpoint {
 	dma_addr_t sync_dma;		/* DMA address of syncbuf */
 
 	unsigned int pipe;		/* the data i/o pipe */
+	unsigned int packsize[2];	/* small/large packet sizes in samples */
+	unsigned int sample_rem;	/* remainder from division fs/pps */
+	unsigned int sample_accum;	/* sample accumulator */
+	unsigned int pps;		/* packets per second */
 	unsigned int freqn;		/* nominal sampling rate in fs/fps in Q16.16 format */
 	unsigned int freqm;		/* momentary sampling rate in fs/fps in Q16.16 format */
 	int	   freqshift;		/* how much to shift the feedback value to get Q16.16 */

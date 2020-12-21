@@ -435,11 +435,8 @@ static int grgpio_probe(struct platform_device *ofdev)
 static int grgpio_remove(struct platform_device *ofdev)
 {
 	struct grgpio_priv *priv = platform_get_drvdata(ofdev);
-	unsigned long flags;
 	int i;
 	int ret = 0;
-
-	spin_lock_irqsave(&priv->gc.bgpio_lock, flags);
 
 	if (priv->domain) {
 		for (i = 0; i < GRGPIO_MAX_NGPIO; i++) {
@@ -456,8 +453,6 @@ static int grgpio_remove(struct platform_device *ofdev)
 		irq_domain_remove(priv->domain);
 
 out:
-	spin_unlock_irqrestore(&priv->gc.bgpio_lock, flags);
-
 	return ret;
 }
 

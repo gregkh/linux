@@ -14,32 +14,8 @@
 #include <string.h>
 #include <stdio.h>
 #include "utils.h"
+#include "flush_utils.h"
 
-#define CACHELINE_SIZE 128
-
-struct perf_event_read {
-	__u64 nr;
-	__u64 l1d_misses;
-};
-
-static inline __u64 load(void *addr)
-{
-	__u64 tmp;
-
-	asm volatile("ld %0,0(%1)" : "=r"(tmp) : "b"(addr));
-
-	return tmp;
-}
-
-static void syscall_loop(char *p, unsigned long iterations,
-			 unsigned long zero_size)
-{
-	for (unsigned long i = 0; i < iterations; i++) {
-		for (unsigned long j = 0; j < zero_size; j += CACHELINE_SIZE)
-			load(p + j);
-		getppid();
-	}
-}
 
 int rfi_flush_test(void)
 {
@@ -54,6 +30,9 @@ int rfi_flush_test(void)
 	int have_entry_flush, entry_flush_orig;
 
 	SKIP_IF(geteuid() != 0);
+
+	// The PMU event we use only works on Power7 or later
+	SKIP_IF(!have_hwcap(PPC_FEATURE_ARCH_2_06));
 
 	if (read_debugfs_file("powerpc/rfi_flush", &rfi_flush_orig) < 0) {
 		perror("Unable to read powerpc/rfi_flush debugfs file");

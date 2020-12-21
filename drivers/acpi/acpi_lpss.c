@@ -26,8 +26,6 @@
 
 #include "internal.h"
 
-ACPI_MODULE_NAME("acpi_lpss");
-
 #ifdef CONFIG_X86_INTEL_LPSS
 
 #include <asm/cpu_device_id.h>
@@ -67,11 +65,15 @@ ACPI_MODULE_NAME("acpi_lpss");
 #define LPSS_CLK_DIVIDER		BIT(2)
 #define LPSS_LTR			BIT(3)
 #define LPSS_SAVE_CTX			BIT(4)
-#define LPSS_NO_D3_DELAY		BIT(5)
-
-/* Crystal Cove PMIC shares same ACPI ID between different platforms */
-#define BYT_CRC_HRV			2
-#define CHT_CRC_HRV			3
+/*
+ * For some devices the DSDT AML code for another device turns off the device
+ * before our suspend handler runs, causing us to read/save all 1-s (0xffffffff)
+ * as ctx register values.
+ * Luckily these devices always use the same ctx register values, so we can
+ * work around this by saving the ctx registers once on activation.
+ */
+#define LPSS_SAVE_CTX_ONCE		BIT(5)
+#define LPSS_NO_D3_DELAY		BIT(6)
 
 struct lpss_private_data;
 
@@ -158,7 +160,7 @@ static void lpss_deassert_reset(struct lpss_private_data *pdata)
  */
 static struct pwm_lookup byt_pwm_lookup[] = {
 	PWM_LOOKUP_WITH_MODULE("80860F09:00", 0, "0000:00:02.0",
-			       "pwm_backlight", 0, PWM_POLARITY_NORMAL,
+			       "pwm_soc_backlight", 0, PWM_POLARITY_NORMAL,
 			       "pwm-lpss-platform"),
 };
 
@@ -170,8 +172,7 @@ static void byt_pwm_setup(struct lpss_private_data *pdata)
 	if (!adev->pnp.unique_id || strcmp(adev->pnp.unique_id, "1"))
 		return;
 
-	if (!acpi_dev_present("INT33FD", NULL, BYT_CRC_HRV))
-		pwm_add_table(byt_pwm_lookup, ARRAY_SIZE(byt_pwm_lookup));
+	pwm_add_table(byt_pwm_lookup, ARRAY_SIZE(byt_pwm_lookup));
 }
 
 #define LPSS_I2C_ENABLE			0x6c
@@ -204,7 +205,7 @@ static void byt_i2c_setup(struct lpss_private_data *pdata)
 /* BSW PWM used for backlight control by the i915 driver */
 static struct pwm_lookup bsw_pwm_lookup[] = {
 	PWM_LOOKUP_WITH_MODULE("80862288:00", 0, "0000:00:02.0",
-			       "pwm_backlight", 0, PWM_POLARITY_NORMAL,
+			       "pwm_soc_backlight", 0, PWM_POLARITY_NORMAL,
 			       "pwm-lpss-platform"),
 };
 
@@ -259,9 +260,10 @@ static const struct lpss_device_desc byt_pwm_dev_desc = {
 };
 
 static const struct lpss_device_desc bsw_pwm_dev_desc = {
-	.flags = LPSS_SAVE_CTX | LPSS_NO_D3_DELAY,
+	.flags = LPSS_SAVE_CTX_ONCE | LPSS_NO_D3_DELAY,
 	.prv_offset = 0x800,
 	.setup = bsw_pwm_setup,
+	.resume_from_noirq = true,
 };
 
 static const struct lpss_device_desc byt_uart_dev_desc = {
@@ -311,11 +313,9 @@ static const struct lpss_device_desc bsw_spi_dev_desc = {
 	.setup = lpss_deassert_reset,
 };
 
-#define ICPU(model)	{ X86_VENDOR_INTEL, 6, model, X86_FEATURE_ANY, }
-
 static const struct x86_cpu_id lpss_cpu_ids[] = {
-	ICPU(INTEL_FAM6_ATOM_SILVERMONT),	/* Valleyview, Bay Trail */
-	ICPU(INTEL_FAM6_ATOM_AIRMONT),	/* Braswell, Cherry Trail */
+	X86_MATCH_INTEL_FAM6_MODEL(ATOM_SILVERMONT,	NULL),
+	X86_MATCH_INTEL_FAM6_MODEL(ATOM_AIRMONT,	NULL),
 	{}
 };
 
@@ -499,31 +499,16 @@ static const struct lpss_device_links lpss_device_links[] = {
 	{"80860F41", "7", "LNXVIDEO", NULL, DL_FLAG_PM_RUNTIME},
 };
 
-static bool hid_uid_match(struct acpi_device *adev,
-			  const char *hid2, const char *uid2)
-{
-	const char *hid1 = acpi_device_hid(adev);
-	const char *uid1 = acpi_device_uid(adev);
-
-	if (strcmp(hid1, hid2))
-		return false;
-
-	if (!uid2)
-		return true;
-
-	return uid1 && !strcmp(uid1, uid2);
-}
-
 static bool acpi_lpss_is_supplier(struct acpi_device *adev,
 				  const struct lpss_device_links *link)
 {
-	return hid_uid_match(adev, link->supplier_hid, link->supplier_uid);
+	return acpi_dev_hid_uid_match(adev, link->supplier_hid, link->supplier_uid);
 }
 
 static bool acpi_lpss_is_consumer(struct acpi_device *adev,
 				  const struct lpss_device_links *link)
 {
-	return hid_uid_match(adev, link->consumer_hid, link->consumer_uid);
+	return acpi_dev_hid_uid_match(adev, link->consumer_hid, link->consumer_uid);
 }
 
 struct hid_uid {
@@ -539,7 +524,7 @@ static int match_hid_uid(struct device *dev, const void *data)
 	if (!adev)
 		return 0;
 
-	return hid_uid_match(adev, id->hid, id->uid);
+	return acpi_dev_hid_uid_match(adev, id->hid, id->uid);
 }
 
 static struct device *acpi_lpss_find_device(const char *hid, const char *uid)
@@ -906,8 +891,13 @@ static int acpi_lpss_activate(struct device *dev)
 	 * we have to deassert reset line to be sure that ->probe() will
 	 * recognize the device.
 	 */
-	if (pdata->dev_desc->flags & LPSS_SAVE_CTX)
+	if (pdata->dev_desc->flags & (LPSS_SAVE_CTX | LPSS_SAVE_CTX_ONCE))
 		lpss_deassert_reset(pdata);
+
+#ifdef CONFIG_PM
+	if (pdata->dev_desc->flags & LPSS_SAVE_CTX_ONCE)
+		acpi_lpss_save_ctx(dev, pdata);
+#endif
 
 	return 0;
 }
@@ -1052,7 +1042,7 @@ static int acpi_lpss_resume(struct device *dev)
 
 	acpi_lpss_d3_to_d0_delay(pdata);
 
-	if (pdata->dev_desc->flags & LPSS_SAVE_CTX)
+	if (pdata->dev_desc->flags & (LPSS_SAVE_CTX | LPSS_SAVE_CTX_ONCE))
 		acpi_lpss_restore_ctx(dev, pdata);
 
 	return 0;
@@ -1063,7 +1053,7 @@ static int acpi_lpss_do_suspend_late(struct device *dev)
 {
 	int ret;
 
-	if (dev_pm_smart_suspend_and_suspended(dev))
+	if (dev_pm_skip_suspend(dev))
 		return 0;
 
 	ret = pm_generic_suspend_late(dev);
@@ -1115,6 +1105,9 @@ static int acpi_lpss_resume_early(struct device *dev)
 	if (pdata->dev_desc->resume_from_noirq)
 		return 0;
 
+	if (dev_pm_skip_resume(dev))
+		return 0;
+
 	return acpi_lpss_do_resume_early(dev);
 }
 
@@ -1124,11 +1117,8 @@ static int acpi_lpss_resume_noirq(struct device *dev)
 	int ret;
 
 	/* Follow acpi_subsys_resume_noirq(). */
-	if (dev_pm_may_skip_resume(dev))
+	if (dev_pm_skip_resume(dev))
 		return 0;
-
-	if (dev_pm_smart_suspend_and_suspended(dev))
-		pm_runtime_set_active(dev);
 
 	ret = pm_generic_resume_noirq(dev);
 	if (ret)
@@ -1191,7 +1181,7 @@ static int acpi_lpss_poweroff_late(struct device *dev)
 {
 	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
 
-	if (dev_pm_smart_suspend_and_suspended(dev))
+	if (dev_pm_skip_suspend(dev))
 		return 0;
 
 	if (pdata->dev_desc->resume_from_noirq)
@@ -1204,7 +1194,7 @@ static int acpi_lpss_poweroff_noirq(struct device *dev)
 {
 	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
 
-	if (dev_pm_smart_suspend_and_suspended(dev))
+	if (dev_pm_skip_suspend(dev))
 		return 0;
 
 	if (pdata->dev_desc->resume_from_noirq) {

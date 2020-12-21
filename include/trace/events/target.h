@@ -137,6 +137,7 @@ TRACE_EVENT(target_sequencer_start,
 
 	TP_STRUCT__entry(
 		__field( unsigned int,	unpacked_lun	)
+		__field( unsigned long long,	tag	)
 		__field( unsigned int,	opcode		)
 		__field( unsigned int,	data_length	)
 		__field( unsigned int,	task_attribute  )
@@ -147,6 +148,7 @@ TRACE_EVENT(target_sequencer_start,
 
 	TP_fast_assign(
 		__entry->unpacked_lun	= cmd->orig_fe_lun;
+		__entry->tag		= cmd->tag;
 		__entry->opcode		= cmd->t_task_cdb[0];
 		__entry->data_length	= cmd->data_length;
 		__entry->task_attribute	= cmd->sam_task_attr;
@@ -155,9 +157,9 @@ TRACE_EVENT(target_sequencer_start,
 		__assign_str(initiator, cmd->se_sess->se_node_acl->initiatorname);
 	),
 
-	TP_printk("%s -> LUN %03u %s data_length %6u  CDB %s  (TA:%s C:%02x)",
+	TP_printk("%s -> LUN %03u tag %#llx %s data_length %6u  CDB %s  (TA:%s C:%02x)",
 		  __get_str(initiator), __entry->unpacked_lun,
-		  show_opcode_name(__entry->opcode),
+		  __entry->tag, show_opcode_name(__entry->opcode),
 		  __entry->data_length, __print_hex(__entry->cdb, 16),
 		  show_task_attribute_name(__entry->task_attribute),
 		  __entry->control
@@ -172,6 +174,7 @@ TRACE_EVENT(target_cmd_complete,
 
 	TP_STRUCT__entry(
 		__field( unsigned int,	unpacked_lun	)
+		__field( unsigned long long,	tag	)
 		__field( unsigned int,	opcode		)
 		__field( unsigned int,	data_length	)
 		__field( unsigned int,	task_attribute  )
@@ -185,6 +188,7 @@ TRACE_EVENT(target_cmd_complete,
 
 	TP_fast_assign(
 		__entry->unpacked_lun	= cmd->orig_fe_lun;
+		__entry->tag		= cmd->tag;
 		__entry->opcode		= cmd->t_task_cdb[0];
 		__entry->data_length	= cmd->data_length;
 		__entry->task_attribute	= cmd->sam_task_attr;
@@ -197,8 +201,9 @@ TRACE_EVENT(target_cmd_complete,
 		__assign_str(initiator, cmd->se_sess->se_node_acl->initiatorname);
 	),
 
-	TP_printk("%s <- LUN %03u status %s (sense len %d%s%s)  %s data_length %6u  CDB %s  (TA:%s C:%02x)",
+	TP_printk("%s <- LUN %03u tag %#llx status %s (sense len %d%s%s)  %s data_length %6u  CDB %s  (TA:%s C:%02x)",
 		  __get_str(initiator), __entry->unpacked_lun,
+		  __entry->tag,
 		  show_scsi_status_name(__entry->scsi_status),
 		  __entry->sense_length, __entry->sense_length ? " / " : "",
 		  __print_hex(__entry->sense_data, __entry->sense_length),

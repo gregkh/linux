@@ -415,28 +415,10 @@ static struct buffer_head *bclean(handle_t *handle, struct super_block *sb,
 	return bh;
 }
 
-/*
- * If we have fewer than thresh credits, extend by EXT4_MAX_TRANS_DATA.
- * If that fails, restart the transaction & regain write access for the
- * buffer head which is used for block_bitmap modifications.
- */
-static int extend_or_restart_transaction(handle_t *handle, int thresh)
+static int ext4_resize_ensure_credits_batch(handle_t *handle, int credits)
 {
-	int err;
-
-	if (ext4_handle_has_enough_credits(handle, thresh))
-		return 0;
-
-	err = ext4_journal_extend(handle, EXT4_MAX_TRANS_DATA);
-	if (err < 0)
-		return err;
-	if (err) {
-		err = ext4_journal_restart(handle, EXT4_MAX_TRANS_DATA);
-		if (err)
-			return err;
-	}
-
-	return 0;
+	return ext4_journal_ensure_credits_fn(handle, credits,
+		EXT4_MAX_TRANS_DATA, 0, 0);
 }
 
 /*
@@ -478,8 +460,8 @@ static int set_flexbg_block_bitmap(struct super_block *sb, handle_t *handle,
 			continue;
 		}
 
-		err = extend_or_restart_transaction(handle, 1);
-		if (err)
+		err = ext4_resize_ensure_credits_batch(handle, 1);
+		if (err < 0)
 			return err;
 
 		bh = sb_getblk(sb, flex_gd->groups[group].block_bitmap);
@@ -571,8 +553,8 @@ static int setup_new_flex_group_blocks(struct super_block *sb,
 			struct buffer_head *gdb;
 
 			ext4_debug("update backup group %#04llx\n", block);
-			err = extend_or_restart_transaction(handle, 1);
-			if (err)
+			err = ext4_resize_ensure_credits_batch(handle, 1);
+			if (err < 0)
 				goto out;
 
 			gdb = sb_getblk(sb, block);
@@ -629,8 +611,8 @@ handle_bb:
 
 		/* Initialize block bitmap of the @group */
 		block = group_data[i].block_bitmap;
-		err = extend_or_restart_transaction(handle, 1);
-		if (err)
+		err = ext4_resize_ensure_credits_batch(handle, 1);
+		if (err < 0)
 			goto out;
 
 		bh = bclean(handle, sb, block);
@@ -658,8 +640,8 @@ handle_ib:
 
 		/* Initialize inode bitmap of the @group */
 		block = group_data[i].inode_bitmap;
-		err = extend_or_restart_transaction(handle, 1);
-		if (err)
+		err = ext4_resize_ensure_credits_batch(handle, 1);
+		if (err < 0)
 			goto out;
 		/* Mark unused entries in inode bitmap used */
 		bh = bclean(handle, sb, block);
@@ -871,9 +853,8 @@ static int add_new_gdb(handle_t *handle, struct inode *inode,
 	if (unlikely(err))
 		goto errout;
 
-	n_group_desc = ext4_kvmalloc((gdb_num + 1) *
-				     sizeof(struct buffer_head *),
-				     GFP_NOFS);
+	n_group_desc = kvmalloc((gdb_num + 1) * sizeof(struct buffer_head *),
+				GFP_KERNEL);
 	if (!n_group_desc) {
 		err = -ENOMEM;
 		ext4_warning(sb, "not enough memory for %lu groups",
@@ -949,9 +930,8 @@ static int add_new_gdb_meta_bg(struct super_block *sb,
 	gdb_bh = ext4_sb_bread(sb, gdblock, 0);
 	if (IS_ERR(gdb_bh))
 		return PTR_ERR(gdb_bh);
-	n_group_desc = ext4_kvmalloc((gdb_num + 1) *
-				     sizeof(struct buffer_head *),
-				     GFP_NOFS);
+	n_group_desc = kvmalloc((gdb_num + 1) * sizeof(struct buffer_head *),
+				GFP_KERNEL);
 	if (!n_group_desc) {
 		brelse(gdb_bh);
 		err = -ENOMEM;
@@ -1142,10 +1122,8 @@ static void update_backups(struct super_block *sb, sector_t blk_off, char *data,
 		ext4_fsblk_t backup_block;
 
 		/* Out of journal space, and can't get more - abort - so sad */
-		if (ext4_handle_valid(handle) &&
-		    handle->h_buffer_credits == 0 &&
-		    ext4_journal_extend(handle, EXT4_MAX_TRANS_DATA) &&
-		    (err = ext4_journal_restart(handle, EXT4_MAX_TRANS_DATA)))
+		err = ext4_resize_ensure_credits_batch(handle, 1);
+		if (err < 0)
 			break;
 
 		if (meta_bg == 0)
@@ -1267,7 +1245,7 @@ static struct buffer_head *ext4_get_bitmap(struct super_block *sb, __u64 block)
 	if (unlikely(!bh))
 		return NULL;
 	if (!bh_uptodate_or_lock(bh)) {
-		if (bh_submit_read(bh) < 0) {
+		if (ext4_read_bh(bh, 0, NULL) < 0) {
 			brelse(bh);
 			return NULL;
 		}
@@ -1830,8 +1808,8 @@ int ext4_group_extend(struct super_block *sb, struct ext4_super_block *es,
 			     o_blocks_count + add, add);
 
 	/* See if the device is actually as big as what was requested */
-	bh = sb_bread(sb, o_blocks_count + add - 1);
-	if (!bh) {
+	bh = ext4_sb_bread(sb, o_blocks_count + add - 1, 0);
+	if (IS_ERR(bh)) {
 		ext4_warning(sb, "can't read last block, resize aborted");
 		return -ENOSPC;
 	}
@@ -1956,8 +1934,8 @@ int ext4_resize_fs(struct super_block *sb, ext4_fsblk_t n_blocks_count)
 	int meta_bg;
 
 	/* See if the device is actually as big as what was requested */
-	bh = sb_bread(sb, n_blocks_count - 1);
-	if (!bh) {
+	bh = ext4_sb_bread(sb, n_blocks_count - 1, 0);
+	if (IS_ERR(bh)) {
 		ext4_warning(sb, "can't read last block, resize aborted");
 		return -ENOSPC;
 	}

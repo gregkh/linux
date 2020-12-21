@@ -140,7 +140,7 @@ static void decon_ctx_remove(struct decon_context *ctx)
 static u32 decon_calc_clkdiv(struct decon_context *ctx,
 		const struct drm_display_mode *mode)
 {
-	unsigned long ideal_clk = mode->htotal * mode->vtotal * mode->vrefresh;
+	unsigned long ideal_clk = mode->clock;
 	u32 clkdiv;
 
 	/* Find the clock divider value that gets us closest to ideal_clk */
@@ -527,7 +527,7 @@ static void decon_init(struct decon_context *ctx)
 		writel(VIDCON1_VCLK_HOLD, ctx->regs + VIDCON1(0));
 }
 
-static void decon_enable(struct exynos_drm_crtc *crtc)
+static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
 
@@ -547,7 +547,7 @@ static void decon_enable(struct exynos_drm_crtc *crtc)
 	ctx->suspended = false;
 }
 
-static void decon_disable(struct exynos_drm_crtc *crtc)
+static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
 	int i;
@@ -569,8 +569,8 @@ static void decon_disable(struct exynos_drm_crtc *crtc)
 }
 
 static const struct exynos_drm_crtc_ops decon_crtc_ops = {
-	.enable = decon_enable,
-	.disable = decon_disable,
+	.atomic_enable = decon_atomic_enable,
+	.atomic_disable = decon_atomic_disable,
 	.enable_vblank = decon_enable_vblank,
 	.disable_vblank = decon_disable_vblank,
 	.atomic_begin = decon_atomic_begin,
@@ -654,7 +654,7 @@ static void decon_unbind(struct device *dev, struct device *master,
 {
 	struct decon_context *ctx = dev_get_drvdata(dev);
 
-	decon_disable(ctx->crtc);
+	decon_atomic_disable(ctx->crtc);
 
 	if (ctx->encoder)
 		exynos_dpi_remove(ctx->encoder);

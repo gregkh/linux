@@ -144,7 +144,7 @@ static void cqhci_dumpregs(struct cqhci_host *cq_host)
 		CQHCI_DUMP(": ===========================================\n");
 }
 
-/**
+/*
  * The allocated descriptor table for task, link & transfer descritors
  * looks like:
  * |----------|
@@ -322,14 +322,20 @@ static int cqhci_enable(struct mmc_host *mmc, struct mmc_card *card)
 	struct cqhci_host *cq_host = mmc->cqe_private;
 	int err;
 
+	if (!card->ext_csd.cmdq_en)
+		return -EINVAL;
+
 	if (cq_host->enabled)
 		return 0;
 
 	cq_host->rca = card->rca;
 
 	err = cqhci_host_alloc_tdl(cq_host);
-	if (err)
+	if (err) {
+		pr_err("%s: Failed to enable CQE, error %d\n",
+		       mmc_hostname(mmc), err);
 		return err;
+	}
 
 	__cqhci_enable(cq_host);
 
@@ -369,6 +375,9 @@ static void cqhci_off(struct mmc_host *mmc)
 		pr_err("%s: cqhci: CQE stuck on\n", mmc_hostname(mmc));
 	else
 		pr_debug("%s: cqhci: CQE off\n", mmc_hostname(mmc));
+
+	if (cq_host->ops->post_disable)
+		cq_host->ops->post_disable(mmc);
 
 	mmc->cqe_on = false;
 }
@@ -416,7 +425,7 @@ static void cqhci_prep_task_desc(struct mmc_request *mrq,
 		CQHCI_BLK_COUNT(mrq->data->blocks) |
 		CQHCI_BLK_ADDR((u64)mrq->data->blk_addr);
 
-	pr_debug("%s: cqhci: tag %d task descriptor 0x016%llx\n",
+	pr_debug("%s: cqhci: tag %d task descriptor 0x%016llx\n",
 		 mmc_hostname(mrq->host), mrq->tag, (unsigned long long)*data);
 }
 
@@ -574,6 +583,9 @@ static int cqhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		__cqhci_enable(cq_host);
 
 	if (!mmc->cqe_on) {
+		if (cq_host->ops->pre_enable)
+			cq_host->ops->pre_enable(mmc);
+
 		cqhci_writel(cq_host, 0, CQHCI_CTL);
 		mmc->cqe_on = true;
 		pr_debug("%s: cqhci: CQE on\n", mmc_hostname(mmc));
@@ -1070,7 +1082,7 @@ struct cqhci_host *cqhci_pltfm_init(struct platform_device *pdev)
 
 	/* check and setup CMDQ interface */
 	cqhci_memres = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-						   "cqhci_mem");
+						   "cqhci");
 	if (!cqhci_memres) {
 		dev_dbg(&pdev->dev, "CMDQ not supported\n");
 		return ERR_PTR(-EINVAL);

@@ -52,6 +52,7 @@
 #include "bearer.h"
 #include "netlink.h"
 #include "msg.h"
+#include "udp_media.h"
 
 /* IANA assigned UDP port */
 #define UDP_PORT_DEFAULT	6118
@@ -379,6 +380,7 @@ static int tipc_udp_recv(struct sock *sk, struct sk_buff *skb)
 		goto out;
 
 	if (b && test_bit(0, &b->up)) {
+		TIPC_SKB_CB(skb)->flags = 0;
 		tipc_rcv(sock_net(sk), skb, b);
 		return 0;
 	}
@@ -455,14 +457,10 @@ int tipc_udp_nl_dump_remoteip(struct sk_buff *skb, struct netlink_callback *cb)
 	int i;
 
 	if (!bid && !skip_cnt) {
+		struct nlattr **attrs = genl_dumpit_info(cb)->attrs;
 		struct net *net = sock_net(skb->sk);
 		struct nlattr *battrs[TIPC_NLA_BEARER_MAX + 1];
-		struct nlattr **attrs;
 		char *bname;
-
-		err = tipc_nlmsg_parse(cb->nlh, &attrs);
-		if (err)
-			return err;
 
 		if (!attrs[TIPC_NLA_BEARER])
 			return -EINVAL;
@@ -568,7 +566,7 @@ msg_full:
 
 /**
  * tipc_parse_udp_addr - build udp media address from netlink data
- * @nlattr:	netlink attribute containing sockaddr storage aligned address
+ * @nla:	netlink attribute containing sockaddr storage aligned address
  * @addr:	tipc media address to fill with address, port and protocol type
  * @scope_id:	IPv6 scope id pointer, not NULL indicates it's required
  */
@@ -663,6 +661,7 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 	struct udp_tunnel_sock_cfg tuncfg = {NULL};
 	struct nlattr *opts[TIPC_NLA_UDP_MAX + 1];
 	u8 node_id[NODE_ID_LEN] = {0,};
+	struct net_device *dev;
 	int rmcast = 0;
 
 	ub = kzalloc(sizeof(*ub), GFP_ATOMIC);
@@ -717,8 +716,6 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 	rcu_assign_pointer(ub->bearer, b);
 	tipc_udp_media_addr_set(&b->addr, &local);
 	if (local.proto == htons(ETH_P_IP)) {
-		struct net_device *dev;
-
 		dev = __ip_dev_find(net, local.ipv4.s_addr, false);
 		if (!dev) {
 			err = -ENODEV;
@@ -741,6 +738,12 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 		b->mtu = b->media->mtu;
 #if IS_ENABLED(CONFIG_IPV6)
 	} else if (local.proto == htons(ETH_P_IPV6)) {
+		dev = ub->ifindex ? __dev_get_by_index(net, ub->ifindex) : NULL;
+		dev = ipv6_dev_find(net, &local.ipv6, dev);
+		if (!dev) {
+			err = -ENODEV;
+			goto err;
+		}
 		udp_conf.family = AF_INET6;
 		udp_conf.use_udp6_tx_checksums = true;
 		udp_conf.use_udp6_rx_checksums = true;
@@ -748,6 +751,7 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 			udp_conf.local_ip6 = in6addr_any;
 		else
 			udp_conf.local_ip6 = local.ipv6;
+		ub->ifindex = dev->ifindex;
 		b->mtu = 1280;
 #endif
 	} else {
@@ -835,7 +839,8 @@ struct tipc_media udp_media_info = {
 	.msg2addr	= tipc_udp_msg2addr,
 	.priority	= TIPC_DEF_LINK_PRI,
 	.tolerance	= TIPC_DEF_LINK_TOL,
-	.window		= TIPC_DEF_LINK_WIN,
+	.min_win	= TIPC_DEF_LINK_WIN,
+	.max_win	= TIPC_DEF_LINK_WIN,
 	.mtu		= TIPC_DEF_LINK_UDP_MTU,
 	.type_id	= TIPC_MEDIA_TYPE_UDP,
 	.hwaddr_len	= 0,

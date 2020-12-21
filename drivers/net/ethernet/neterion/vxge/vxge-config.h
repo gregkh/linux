@@ -297,7 +297,7 @@ struct vxge_hw_fifo_config {
  * @greedy_return: If Set it forces the device to return absolutely all RxD
  *             that are consumed and still on board when a timer interrupt
  *             triggers. If Clear, then if the device has already returned
- *             RxD before current timer interrupt trigerred and after the
+ *             RxD before current timer interrupt triggered and after the
  *             previous timer interrupt triggered, then the device is not
  *             forced to returned the rest of the consumed RxD that it has
  *             on board which account for a byte count less than the one
@@ -1899,18 +1899,13 @@ static inline void *vxge_os_dma_malloc(struct pci_dev *pdev,
 			struct pci_dev **p_dmah,
 			struct pci_dev **p_dma_acch)
 {
-	gfp_t flags;
 	void *vaddr;
 	unsigned long misaligned = 0;
 	int realloc_flag = 0;
 	*p_dma_acch = *p_dmah = NULL;
 
-	if (in_interrupt())
-		flags = GFP_ATOMIC | GFP_DMA;
-	else
-		flags = GFP_KERNEL | GFP_DMA;
 realloc:
-	vaddr = kmalloc((size), flags);
+	vaddr = kmalloc(size, GFP_KERNEL | GFP_DMA);
 	if (vaddr == NULL)
 		return vaddr;
 	misaligned = (unsigned long)VXGE_ALIGN((unsigned long)vaddr,

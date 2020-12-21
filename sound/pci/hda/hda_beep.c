@@ -102,7 +102,7 @@ static int snd_hda_beep_event(struct input_dev *dev, unsigned int type,
 	case SND_BELL:
 		if (hz)
 			hz = 1000;
-		/* fallthru */
+		fallthrough;
 	case SND_TONE:
 		if (beep->linear_tone)
 			beep->tone = beep_linear_tone(beep, hz);
@@ -192,7 +192,7 @@ static int beep_dev_free(struct snd_device *device)
  */
 int snd_hda_attach_beep_device(struct hda_codec *codec, int nid)
 {
-	static struct snd_device_ops ops = {
+	static const struct snd_device_ops ops = {
 		.dev_register = beep_dev_register,
 		.dev_disconnect = beep_dev_disconnect,
 		.dev_free = beep_dev_free,

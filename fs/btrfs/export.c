@@ -64,36 +64,18 @@ struct dentry *btrfs_get_dentry(struct super_block *sb, u64 objectid,
 	struct btrfs_fs_info *fs_info = btrfs_sb(sb);
 	struct btrfs_root *root;
 	struct inode *inode;
-	struct btrfs_key key;
-	int index;
-	int err = 0;
 
 	if (objectid < BTRFS_FIRST_FREE_OBJECTID)
 		return ERR_PTR(-ESTALE);
 
-	key.objectid = root_objectid;
-	key.type = BTRFS_ROOT_ITEM_KEY;
-	key.offset = (u64)-1;
+	root = btrfs_get_fs_root(fs_info, root_objectid, true);
+	if (IS_ERR(root))
+		return ERR_CAST(root);
 
-	index = srcu_read_lock(&fs_info->subvol_srcu);
-
-	root = btrfs_read_fs_root_no_name(fs_info, &key);
-	if (IS_ERR(root)) {
-		err = PTR_ERR(root);
-		goto fail;
-	}
-
-	key.objectid = objectid;
-	key.type = BTRFS_INODE_ITEM_KEY;
-	key.offset = 0;
-
-	inode = btrfs_iget(sb, &key, root, NULL);
-	if (IS_ERR(inode)) {
-		err = PTR_ERR(inode);
-		goto fail;
-	}
-
-	srcu_read_unlock(&fs_info->subvol_srcu, index);
+	inode = btrfs_iget(sb, objectid, root);
+	btrfs_put_root(root);
+	if (IS_ERR(inode))
+		return ERR_CAST(inode);
 
 	if (check_generation && generation != inode->i_generation) {
 		iput(inode);
@@ -101,9 +83,6 @@ struct dentry *btrfs_get_dentry(struct super_block *sb, u64 objectid,
 	}
 
 	return d_obtain_alias(inode);
-fail:
-	srcu_read_unlock(&fs_info->subvol_srcu, index);
-	return ERR_PTR(err);
 }
 
 static struct dentry *btrfs_fh_to_parent(struct super_block *sb, struct fid *fh,
@@ -212,9 +191,7 @@ struct dentry *btrfs_get_parent(struct dentry *child)
 					found_key.offset, 0, 0);
 	}
 
-	key.type = BTRFS_INODE_ITEM_KEY;
-	key.offset = 0;
-	return d_obtain_alias(btrfs_iget(fs_info->sb, &key, root, NULL));
+	return d_obtain_alias(btrfs_iget(fs_info->sb, key.objectid, root));
 fail:
 	btrfs_free_path(path);
 	return ERR_PTR(ret);

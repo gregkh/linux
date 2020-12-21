@@ -629,7 +629,7 @@ check_abb:
 	return 0;
 }
 
-static struct regulator_ops ti_abb_reg_ops = {
+static const struct regulator_ops ti_abb_reg_ops = {
 	.list_voltage = regulator_list_voltage_table,
 
 	.set_voltage_sel = ti_abb_set_voltage_sel,
@@ -758,7 +758,7 @@ static int ti_abb_probe(struct platform_device *pdev)
 	 * We may have shared interrupt register offsets which are
 	 * write-1-to-clear between domains ensuring exclusivity.
 	 */
-	abb->int_base = devm_ioremap_nocache(dev, res->start,
+	abb->int_base = devm_ioremap(dev, res->start,
 					     resource_size(res));
 	if (!abb->int_base) {
 		dev_err(dev, "Unable to map '%s'\n", pname);
@@ -778,7 +778,7 @@ static int ti_abb_probe(struct platform_device *pdev)
 	 * We may have shared efuse register offsets which are read-only
 	 * between domains
 	 */
-	abb->efuse_base = devm_ioremap_nocache(dev, res->start,
+	abb->efuse_base = devm_ioremap(dev, res->start,
 					       resource_size(res));
 	if (!abb->efuse_base) {
 		dev_err(dev, "Unable to map '%s'\n", pname);

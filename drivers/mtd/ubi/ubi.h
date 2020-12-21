@@ -26,7 +26,7 @@
 #include <linux/notifier.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/ubi.h>
-#include <asm/pgtable.h>
+#include <linux/pgtable.h>
 
 #include "ubi-media.h"
 
@@ -491,7 +491,8 @@ struct ubi_debug_info {
  * @fm_work: fastmap work queue
  * @fm_work_scheduled: non-zero if fastmap work was scheduled
  * @fast_attach: non-zero if UBI was attached by fastmap
- * @fm_anchor: The next anchor PEB to use for fastmap
+ * @fm_anchor: The new anchor PEB used during fastmap update
+ * @fm_next_anchor: An anchor PEB candidate for the next time fastmap is updated
  * @fm_do_produce_anchor: If true produce an anchor PEB in wl
  *
  * @used: RB-tree of used physical eraseblocks
@@ -602,6 +603,7 @@ struct ubi_device {
 	int fm_work_scheduled;
 	int fast_attach;
 	struct ubi_wl_entry *fm_anchor;
+	struct ubi_wl_entry *fm_next_anchor;
 	int fm_do_produce_anchor;
 
 	/* Wear-leveling sub-system's stuff */
@@ -950,6 +952,7 @@ int ubi_volume_notify(struct ubi_device *ubi, struct ubi_volume *vol,
 int ubi_notify_all(struct ubi_device *ubi, int ntype,
 		   struct notifier_block *nb);
 int ubi_enumerate_volumes(struct notifier_block *nb);
+void ubi_free_all_volumes(struct ubi_device *ubi);
 void ubi_free_internal_volumes(struct ubi_device *ubi);
 
 /* kapi.c */
@@ -970,7 +973,7 @@ int ubi_fastmap_init_checkmap(struct ubi_volume *vol, int leb_count);
 void ubi_fastmap_destroy_checkmap(struct ubi_volume *vol);
 #else
 static inline int ubi_update_fastmap(struct ubi_device *ubi) { return 0; }
-int static inline ubi_fastmap_init_checkmap(struct ubi_volume *vol, int leb_count) { return 0; }
+static inline int ubi_fastmap_init_checkmap(struct ubi_volume *vol, int leb_count) { return 0; }
 static inline void ubi_fastmap_destroy_checkmap(struct ubi_volume *vol) {}
 #endif
 

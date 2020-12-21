@@ -187,20 +187,48 @@ static int journal_wait_on_commit_record(journal_t *journal,
  * use writepages() because with delayed allocation we may be doing
  * block allocation in writepages().
  */
-static int journal_submit_inode_data_buffers(struct address_space *mapping,
-		loff_t dirty_start, loff_t dirty_end)
+int jbd2_journal_submit_inode_data_buffers(struct jbd2_inode *jinode)
 {
-	int ret;
+	struct address_space *mapping = jinode->i_vfs_inode->i_mapping;
 	struct writeback_control wbc = {
 		.sync_mode =  WB_SYNC_ALL,
 		.nr_to_write = mapping->nrpages * 2,
-		.range_start = dirty_start,
-		.range_end = dirty_end,
+		.range_start = jinode->i_dirty_start,
+		.range_end = jinode->i_dirty_end,
 	};
 
-	ret = generic_writepages(mapping, &wbc);
-	return ret;
+	/*
+	 * submit the inode data buffers. We use writepage
+	 * instead of writepages. Because writepages can do
+	 * block allocation with delalloc. We need to write
+	 * only allocated blocks here.
+	 */
+	return generic_writepages(mapping, &wbc);
 }
+
+/* Send all the data buffers related to an inode */
+int jbd2_submit_inode_data(struct jbd2_inode *jinode)
+{
+
+	if (!jinode || !(jinode->i_flags & JI_WRITE_DATA))
+		return 0;
+
+	trace_jbd2_submit_inode_data(jinode->i_vfs_inode);
+	return jbd2_journal_submit_inode_data_buffers(jinode);
+
+}
+EXPORT_SYMBOL(jbd2_submit_inode_data);
+
+int jbd2_wait_inode_data(journal_t *journal, struct jbd2_inode *jinode)
+{
+	if (!jinode || !(jinode->i_flags & JI_WAIT_DATA) ||
+		!jinode->i_vfs_inode || !jinode->i_vfs_inode->i_mapping)
+		return 0;
+	return filemap_fdatawait_range_keep_errors(
+		jinode->i_vfs_inode->i_mapping, jinode->i_dirty_start,
+		jinode->i_dirty_end);
+}
+EXPORT_SYMBOL(jbd2_wait_inode_data);
 
 /*
  * Submit all the data buffers of inode associated with the transaction to
@@ -215,29 +243,20 @@ static int journal_submit_data_buffers(journal_t *journal,
 {
 	struct jbd2_inode *jinode;
 	int err, ret = 0;
-	struct address_space *mapping;
 
 	spin_lock(&journal->j_list_lock);
 	list_for_each_entry(jinode, &commit_transaction->t_inode_list, i_list) {
-		loff_t dirty_start = jinode->i_dirty_start;
-		loff_t dirty_end = jinode->i_dirty_end;
-
 		if (!(jinode->i_flags & JI_WRITE_DATA))
 			continue;
-		mapping = jinode->i_vfs_inode->i_mapping;
 		jinode->i_flags |= JI_COMMIT_RUNNING;
 		spin_unlock(&journal->j_list_lock);
-		/*
-		 * submit the inode data buffers. We use writepage
-		 * instead of writepages. Because writepages can do
-		 * block allocation  with delalloc. We need to write
-		 * only allocated blocks here.
-		 */
+		/* submit the inode data buffers. */
 		trace_jbd2_submit_inode_data(jinode->i_vfs_inode);
-		err = journal_submit_inode_data_buffers(mapping, dirty_start,
-				dirty_end);
-		if (!ret)
-			ret = err;
+		if (journal->j_submit_inode_data_buffers) {
+			err = journal->j_submit_inode_data_buffers(jinode);
+			if (!ret)
+				ret = err;
+		}
 		spin_lock(&journal->j_list_lock);
 		J_ASSERT(jinode->i_transaction == commit_transaction);
 		jinode->i_flags &= ~JI_COMMIT_RUNNING;
@@ -246,6 +265,15 @@ static int journal_submit_data_buffers(journal_t *journal,
 	}
 	spin_unlock(&journal->j_list_lock);
 	return ret;
+}
+
+int jbd2_journal_finish_inode_data_buffers(struct jbd2_inode *jinode)
+{
+	struct address_space *mapping = jinode->i_vfs_inode->i_mapping;
+
+	return filemap_fdatawait_range_keep_errors(mapping,
+						   jinode->i_dirty_start,
+						   jinode->i_dirty_end);
 }
 
 /*
@@ -262,18 +290,16 @@ static int journal_finish_inode_data_buffers(journal_t *journal,
 	/* For locking, see the comment in journal_submit_data_buffers() */
 	spin_lock(&journal->j_list_lock);
 	list_for_each_entry(jinode, &commit_transaction->t_inode_list, i_list) {
-		loff_t dirty_start = jinode->i_dirty_start;
-		loff_t dirty_end = jinode->i_dirty_end;
-
 		if (!(jinode->i_flags & JI_WAIT_DATA))
 			continue;
 		jinode->i_flags |= JI_COMMIT_RUNNING;
 		spin_unlock(&journal->j_list_lock);
-		err = filemap_fdatawait_range_keep_errors(
-				jinode->i_vfs_inode->i_mapping, dirty_start,
-				dirty_end);
-		if (!ret)
-			ret = err;
+		/* wait for the inode data buffers writeout. */
+		if (journal->j_finish_inode_data_buffers) {
+			err = journal->j_finish_inode_data_buffers(jinode);
+			if (!ret)
+				ret = err;
+		}
 		spin_lock(&journal->j_list_lock);
 		jinode->i_flags &= ~JI_COMMIT_RUNNING;
 		smp_mb();
@@ -413,6 +439,29 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	J_ASSERT(journal->j_running_transaction != NULL);
 	J_ASSERT(journal->j_committing_transaction == NULL);
 
+	write_lock(&journal->j_state_lock);
+	journal->j_flags |= JBD2_FULL_COMMIT_ONGOING;
+	while (journal->j_flags & JBD2_FAST_COMMIT_ONGOING) {
+		DEFINE_WAIT(wait);
+
+		prepare_to_wait(&journal->j_fc_wait, &wait,
+				TASK_UNINTERRUPTIBLE);
+		write_unlock(&journal->j_state_lock);
+		schedule();
+		write_lock(&journal->j_state_lock);
+		finish_wait(&journal->j_fc_wait, &wait);
+		/*
+		 * TODO: by blocking fast commits here, we are increasing
+		 * fsync() latency slightly. Strictly speaking, we don't need
+		 * to block fast commits until the transaction enters T_FLUSH
+		 * state. So an optimization is possible where we block new fast
+		 * commits here and wait for existing ones to complete
+		 * just before we enter T_FLUSH. That way, the existing fast
+		 * commits and this full commit can proceed parallely.
+		 */
+	}
+	write_unlock(&journal->j_state_lock);
+
 	commit_transaction = journal->j_running_transaction;
 
 	trace_jbd2_start_commit(journal, commit_transaction);
@@ -420,6 +469,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 			commit_transaction->t_tid);
 
 	write_lock(&journal->j_state_lock);
+	journal->j_fc_off = 0;
 	J_ASSERT(commit_transaction->t_state == T_RUNNING);
 	commit_transaction->t_state = T_LOCKED;
 
@@ -482,10 +532,10 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 		if (jh->b_committed_data) {
 			struct buffer_head *bh = jh2bh(jh);
 
-			jbd_lock_bh_state(bh);
+			spin_lock(&jh->b_state_lock);
 			jbd2_free(jh->b_committed_data, bh->b_size);
 			jh->b_committed_data = NULL;
-			jbd_unlock_bh_state(bh);
+			spin_unlock(&jh->b_state_lock);
 		}
 		jbd2_journal_refile_buffer(journal, jh);
 	}
@@ -560,8 +610,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	stats.run.rs_logging = jiffies;
 	stats.run.rs_flushing = jbd2_time_diff(stats.run.rs_flushing,
 					       stats.run.rs_logging);
-	stats.run.rs_blocks =
-		atomic_read(&commit_transaction->t_outstanding_credits);
+	stats.run.rs_blocks = commit_transaction->t_nr_buffers;
 	stats.run.rs_blocks_logged = 0;
 
 	J_ASSERT(commit_transaction->t_nr_buffers <=
@@ -642,8 +691,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 
 		/*
 		 * start_this_handle() uses t_outstanding_credits to determine
-		 * the free space in the log, but this counter is changed
-		 * by jbd2_journal_next_log_block() also.
+		 * the free space in the log.
 		 */
 		atomic_dec(&commit_transaction->t_outstanding_credits);
 
@@ -762,7 +810,7 @@ start_journal_io:
 		if (first_block < journal->j_tail)
 			freed += journal->j_last - journal->j_first;
 		/* Update tail only if we free significant amount of space */
-		if (freed < journal->j_maxlen / 4)
+		if (freed < jbd2_journal_get_max_txn_bufs(journal))
 			update_tail = 0;
 	}
 	J_ASSERT(commit_transaction->t_state == T_COMMIT);
@@ -777,7 +825,7 @@ start_journal_io:
 	if (commit_transaction->t_need_data_flush &&
 	    (journal->j_fs_dev != journal->j_dev) &&
 	    (journal->j_flags & JBD2_BARRIER))
-		blkdev_issue_flush(journal->j_fs_dev, GFP_NOFS, NULL);
+		blkdev_issue_flush(journal->j_fs_dev, GFP_NOFS);
 
 	/* Done it all: now write the commit record asynchronously. */
 	if (jbd2_has_feature_async_commit(journal)) {
@@ -884,11 +932,14 @@ start_journal_io:
 	stats.run.rs_blocks_logged++;
 	if (jbd2_has_feature_async_commit(journal) &&
 	    journal->j_flags & JBD2_BARRIER) {
-		blkdev_issue_flush(journal->j_dev, GFP_NOFS, NULL);
+		blkdev_issue_flush(journal->j_dev, GFP_NOFS);
 	}
 
 	if (err)
 		jbd2_journal_abort(journal, err);
+
+	WARN_ON_ONCE(
+		atomic_read(&commit_transaction->t_outstanding_credits) < 0);
 
 	/*
 	 * Now disk caches for filesystem device are flushed so we are safe to
@@ -920,6 +971,7 @@ restart_loop:
 		transaction_t *cp_transaction;
 		struct buffer_head *bh;
 		int try_to_free = 0;
+		bool drop_ref;
 
 		jh = commit_transaction->t_forget;
 		spin_unlock(&journal->j_list_lock);
@@ -929,7 +981,7 @@ restart_loop:
 		 * done with it.
 		 */
 		get_bh(bh);
-		jbd_lock_bh_state(bh);
+		spin_lock(&jh->b_state_lock);
 		J_ASSERT_JH(jh,	jh->b_transaction == commit_transaction);
 
 		/*
@@ -1029,8 +1081,10 @@ restart_loop:
 				try_to_free = 1;
 		}
 		JBUFFER_TRACE(jh, "refile or unfile buffer");
-		__jbd2_journal_refile_buffer(jh);
-		jbd_unlock_bh_state(bh);
+		drop_ref = __jbd2_journal_refile_buffer(jh);
+		spin_unlock(&jh->b_state_lock);
+		if (drop_ref)
+			jbd2_journal_put_journal_head(jh);
 		if (try_to_free)
 			release_buffer_page(bh);	/* Drops bh reference */
 		else
@@ -1115,12 +1169,16 @@ restart_loop:
 
 	if (journal->j_commit_callback)
 		journal->j_commit_callback(journal, commit_transaction);
+	if (journal->j_fc_cleanup_callback)
+		journal->j_fc_cleanup_callback(journal, 1);
 
 	trace_jbd2_end_commit(journal, commit_transaction);
 	jbd_debug(1, "JBD2: commit %d complete, head %d\n",
 		  journal->j_commit_sequence, journal->j_tail_sequence);
 
 	write_lock(&journal->j_state_lock);
+	journal->j_flags &= ~JBD2_FULL_COMMIT_ONGOING;
+	journal->j_flags &= ~JBD2_FAST_COMMIT_ONGOING;
 	spin_lock(&journal->j_list_lock);
 	commit_transaction->t_state = T_FINISHED;
 	/* Check if the transaction can be dropped now that we are finished */
@@ -1132,6 +1190,7 @@ restart_loop:
 	spin_unlock(&journal->j_list_lock);
 	write_unlock(&journal->j_state_lock);
 	wake_up(&journal->j_wait_done_commit);
+	wake_up(&journal->j_fc_wait);
 
 	/*
 	 * Calculate overall stats

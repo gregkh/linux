@@ -155,6 +155,9 @@ const struct ath10k_hw_values qca6174_values = {
 	.num_target_ce_config_wlan	= 7,
 	.ce_desc_meta_data_mask		= 0xFFFC,
 	.ce_desc_meta_data_lsb		= 2,
+	.rfkill_pin			= 16,
+	.rfkill_cfg			= 0,
+	.rfkill_on_level		= 1,
 };
 
 const struct ath10k_hw_values qca99x0_values = {
@@ -1128,6 +1131,7 @@ static int ath10k_get_htt_tx_data_rssi_pad(struct htt_resp *resp)
 
 const struct ath10k_hw_ops qca988x_ops = {
 	.set_coverage_class = ath10k_hw_qca988x_set_coverage_class,
+	.is_rssi_enable = ath10k_htt_tx_rssi_enable,
 };
 
 static int ath10k_qca99x0_rx_desc_get_l3_pad_bytes(struct htt_rx_desc *rxd)

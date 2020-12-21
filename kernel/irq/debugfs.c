@@ -57,6 +57,7 @@ static const struct irq_bit_descr irqchip_flags[] = {
 	BIT_MASK_DESCR(IRQCHIP_EOI_THREADED),
 	BIT_MASK_DESCR(IRQCHIP_SUPPORTS_LEVEL_MSI),
 	BIT_MASK_DESCR(IRQCHIP_SUPPORTS_NMI),
+	BIT_MASK_DESCR(IRQCHIP_ENABLE_WAKEUP_ON_SUSPEND),
 };
 
 static void
@@ -112,6 +113,7 @@ static const struct irq_bit_descr irqdata_states[] = {
 	BIT_MASK_DESCR(IRQD_AFFINITY_SET),
 	BIT_MASK_DESCR(IRQD_SETAFFINITY_PENDING),
 	BIT_MASK_DESCR(IRQD_AFFINITY_MANAGED),
+	BIT_MASK_DESCR(IRQD_AFFINITY_ON_ACTIVATE),
 	BIT_MASK_DESCR(IRQD_MANAGED_SHUTDOWN),
 	BIT_MASK_DESCR(IRQD_CAN_RESERVE),
 	BIT_MASK_DESCR(IRQD_MSI_NOMASK_QUIRK),
@@ -120,6 +122,12 @@ static const struct irq_bit_descr irqdata_states[] = {
 
 	BIT_MASK_DESCR(IRQD_WAKEUP_STATE),
 	BIT_MASK_DESCR(IRQD_WAKEUP_ARMED),
+
+	BIT_MASK_DESCR(IRQD_DEFAULT_TRIGGER_SET),
+
+	BIT_MASK_DESCR(IRQD_HANDLE_ENFORCE_IRQCTX),
+
+	BIT_MASK_DESCR(IRQD_IRQ_ENABLED_ON_SUSPEND),
 };
 
 static const struct irq_bit_descr irqdesc_states[] = {
@@ -131,6 +139,7 @@ static const struct irq_bit_descr irqdesc_states[] = {
 	BIT_MASK_DESCR(_IRQ_PER_CPU_DEVID),
 	BIT_MASK_DESCR(_IRQ_IS_POLLED),
 	BIT_MASK_DESCR(_IRQ_DISABLE_UNLAZY),
+	BIT_MASK_DESCR(_IRQ_HIDDEN),
 };
 
 static const struct irq_bit_descr irqdesc_istates[] = {
@@ -190,40 +199,7 @@ static ssize_t irq_debug_write(struct file *file, const char __user *user_buf,
 		return -EFAULT;
 
 	if (!strncmp(buf, "trigger", size)) {
-		unsigned long flags;
-		int err;
-
-		/* Try the HW interface first */
-		err = irq_set_irqchip_state(irq_desc_get_irq(desc),
-					    IRQCHIP_STATE_PENDING, true);
-		if (!err)
-			return count;
-
-		/*
-		 * Otherwise, try to inject via the resend interface,
-		 * which may or may not succeed.
-		 */
-		chip_bus_lock(desc);
-		raw_spin_lock_irqsave(&desc->lock, flags);
-
-		/*
-		 * Don't allow injection when the interrupt is:
-		 *  - Level or NMI type
-		 *  - not activated
-		 *  - replaying already
-		 */
-		if (irq_settings_is_level(desc) ||
-		    !irqd_is_activated(&desc->irq_data) ||
-		    (desc->istate & (IRQS_NMI | IRQS_REPLAY))) {
-			err = -EINVAL;
-		} else {
-			desc->istate |= IRQS_PENDING;
-			check_irq_resend(desc);
-			err = 0;
-		}
-
-		raw_spin_unlock_irqrestore(&desc->lock, flags);
-		chip_bus_sync_unlock(desc);
+		int err = irq_inject_interrupt(irq_desc_get_irq(desc));
 
 		return err ? err : count;
 	}

@@ -119,7 +119,7 @@ int pm8001_mem_alloc(struct pci_dev *pdev, void **virt_addr,
 	mem_virt_alloc = dma_alloc_coherent(&pdev->dev, mem_size + align,
 					    &mem_dma_handle, GFP_KERNEL);
 	if (!mem_virt_alloc) {
-		pm8001_printk("memory allocation error\n");
+		pr_err("pm80xx: memory allocation error\n");
 		return -1;
 	}
 	*pphys_addr = mem_dma_handle;
@@ -129,6 +129,7 @@ int pm8001_mem_alloc(struct pci_dev *pdev, void **virt_addr,
 	*pphys_addr_lo = lower_32_bits(phys_align);
 	return 0;
 }
+
 /**
   * pm8001_find_ha_by_dev - from domain device which come from sas layer to
   * find out our hba struct.
@@ -249,6 +250,8 @@ int pm8001_phy_control(struct asd_sas_phy *sas_phy, enum phy_func func,
 		spin_unlock_irqrestore(&pm8001_ha->lock, flags);
 		return 0;
 	default:
+		PM8001_DEVIO_DBG(pm8001_ha,
+			pm8001_printk("func 0x%x\n", func));
 		rc = -EOPNOTSUPP;
 	}
 	msleep(300);
@@ -364,17 +367,15 @@ static int sas_find_local_port_id(struct domain_device *dev)
 	return 0;
 }
 
+#define DEV_IS_GONE(pm8001_dev)	\
+	((!pm8001_dev || (pm8001_dev->dev_type == SAS_PHY_UNUSED)))
 /**
   * pm8001_task_exec - queue the task(ssp, smp && ata) to the hardware.
   * @task: the task to be execute.
-  * @num: if can_queue great than 1, the task can be queued up. for SMP task,
-  * we always execute one one time.
   * @gfp_flags: gfp_flags.
   * @is_tmf: if it is task management task.
   * @tmf: the task management IU
   */
-#define DEV_IS_GONE(pm8001_dev)	\
-	((!pm8001_dev || (pm8001_dev->dev_type == SAS_PHY_UNUSED)))
 static int pm8001_task_exec(struct sas_task *task,
 	gfp_t gfp_flags, int is_tmf, struct pm8001_tmf_task *tmf)
 {
@@ -384,8 +385,9 @@ static int pm8001_task_exec(struct sas_task *task,
 	struct pm8001_port *port = NULL;
 	struct sas_task *t = task;
 	struct pm8001_ccb_info *ccb;
-	u32 tag = 0xdeadbeef, rc, n_elem = 0;
+	u32 tag = 0xdeadbeef, rc = 0, n_elem = 0;
 	unsigned long flags = 0;
+	enum sas_protocol task_proto = t->task_proto;
 
 	if (!dev->port) {
 		struct task_status_struct *tsm = &t->task_status;
@@ -410,7 +412,7 @@ static int pm8001_task_exec(struct sas_task *task,
 		pm8001_dev = dev->lldd_dev;
 		port = &pm8001_ha->port[sas_find_local_port_id(dev)];
 		if (DEV_IS_GONE(pm8001_dev) || !port->port_attached) {
-			if (sas_protocol_ata(t->task_proto)) {
+			if (sas_protocol_ata(task_proto)) {
 				struct task_status_struct *ts = &t->task_status;
 				ts->resp = SAS_TASK_UNDELIVERED;
 				ts->stat = SAS_PHY_DOWN;
@@ -432,7 +434,7 @@ static int pm8001_task_exec(struct sas_task *task,
 			goto err_out;
 		ccb = &pm8001_ha->ccb_info[tag];
 
-		if (!sas_protocol_ata(t->task_proto)) {
+		if (!sas_protocol_ata(task_proto)) {
 			if (t->num_scatter) {
 				n_elem = dma_map_sg(pm8001_ha->dev,
 					t->scatter,
@@ -452,7 +454,7 @@ static int pm8001_task_exec(struct sas_task *task,
 		ccb->ccb_tag = tag;
 		ccb->task = t;
 		ccb->device = pm8001_dev;
-		switch (t->task_proto) {
+		switch (task_proto) {
 		case SAS_PROTOCOL_SMP:
 			rc = pm8001_task_prep_smp(pm8001_ha, ccb);
 			break;
@@ -469,8 +471,7 @@ static int pm8001_task_exec(struct sas_task *task,
 			break;
 		default:
 			dev_printk(KERN_ERR, pm8001_ha->dev,
-				"unknown sas_task proto: 0x%x\n",
-				t->task_proto);
+				"unknown sas_task proto: 0x%x\n", task_proto);
 			rc = -EINVAL;
 			break;
 		}
@@ -493,7 +494,7 @@ err_out_tag:
 	pm8001_tag_free(pm8001_ha, tag);
 err_out:
 	dev_printk(KERN_ERR, pm8001_ha->dev, "pm8001 exec failed[%d]!\n", rc);
-	if (!sas_protocol_ata(t->task_proto))
+	if (!sas_protocol_ata(task_proto))
 		if (n_elem)
 			dma_unmap_sg(pm8001_ha->dev, t->scatter, t->num_scatter,
 				t->data_dir);
@@ -575,6 +576,7 @@ static struct pm8001_device *pm8001_alloc_dev(struct pm8001_hba_info *pm8001_ha)
 /**
   * pm8001_find_dev - find a matching pm8001_device
   * @pm8001_ha: our hba card information
+  * @device_id: device ID to match against
   */
 struct pm8001_device *pm8001_find_dev(struct pm8001_hba_info *pm8001_ha,
 					u32 device_id)
@@ -993,6 +995,7 @@ void pm8001_open_reject_retry(
 /**
   * Standard mandates link reset for ATA  (type 0) and hard reset for
   * SSP (type 1) , only for RECOVERY
+  * @dev: the device structure for the device to reset.
   */
 int pm8001_I_T_nexus_reset(struct domain_device *dev)
 {
@@ -1179,7 +1182,7 @@ int pm8001_query_task(struct sas_task *task)
 			break;
 		}
 	}
-	pm8001_printk(":rc= %d\n", rc);
+	pr_err("pm80xx: rc= %d\n", rc);
 	return rc;
 }
 

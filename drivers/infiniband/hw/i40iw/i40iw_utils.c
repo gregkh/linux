@@ -190,9 +190,8 @@ int i40iw_inetaddr_event(struct notifier_block *notifier,
 	switch (event) {
 	case NETDEV_DOWN:
 		action = I40IW_ARP_DELETE;
-		/* Fall through */
+		fallthrough;
 	case NETDEV_UP:
-		/* Fall through */
 	case NETDEV_CHANGEADDR:
 
 		/* Just skip if no need to handle ARP cache */
@@ -247,9 +246,8 @@ int i40iw_inet6addr_event(struct notifier_block *notifier,
 	switch (event) {
 	case NETDEV_DOWN:
 		action = I40IW_ARP_DELETE;
-		/* Fall through */
+		fallthrough;
 	case NETDEV_UP:
-		/* Fall through */
 	case NETDEV_CHANGEADDR:
 		i40iw_manage_arp_cache(iwdev,
 				       netdev->dev_addr,
@@ -344,7 +342,7 @@ int i40iw_netdevice_event(struct notifier_block *notifier,
 	switch (event) {
 	case NETDEV_DOWN:
 		iwdev->iw_status = 0;
-		/* Fall through */
+		fallthrough;
 	case NETDEV_UP:
 		i40iw_port_ibevent(iwdev);
 		break;
@@ -714,7 +712,7 @@ enum i40iw_status_code i40iw_allocate_dma_mem(struct i40iw_hw *hw,
 					      u64 size,
 					      u32 alignment)
 {
-	struct pci_dev *pcidev = (struct pci_dev *)hw->dev_context;
+	struct pci_dev *pcidev = hw->pcidev;
 
 	if (!mem)
 		return I40IW_ERR_PARAM;
@@ -733,7 +731,7 @@ enum i40iw_status_code i40iw_allocate_dma_mem(struct i40iw_hw *hw,
  */
 void i40iw_free_dma_mem(struct i40iw_hw *hw, struct i40iw_dma_mem *mem)
 {
-	struct pci_dev *pcidev = (struct pci_dev *)hw->dev_context;
+	struct pci_dev *pcidev = hw->pcidev;
 
 	if (!mem || !mem->va)
 		return;

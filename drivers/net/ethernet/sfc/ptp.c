@@ -35,7 +35,6 @@
 #include <linux/time.h>
 #include <linux/ktime.h>
 #include <linux/module.h>
-#include <linux/net_tstamp.h>
 #include <linux/pps_kernel.h>
 #include <linux/ptp_clock_kernel.h>
 #include "net_driver.h"
@@ -44,7 +43,8 @@
 #include "mcdi_pcol.h"
 #include "io.h"
 #include "farch_regs.h"
-#include "nic.h"
+#include "tx.h"
+#include "nic.h" /* indirectly includes ptp.h */
 
 /* Maximum number of events expected to make up a PTP event */
 #define	MAX_EVENT_FRAGS			3
@@ -173,9 +173,11 @@ struct efx_ptp_match {
 
 /**
  * struct efx_ptp_event_rx - A PTP receive event (from MC)
+ * @link: list of events
  * @seq0: First part of (PTP) UUID
  * @seq1: Second part of (PTP) UUID and sequence number
  * @hwtimestamp: Event timestamp
+ * @expiry: Time which the packet arrived
  */
 struct efx_ptp_event_rx {
 	struct list_head link;
@@ -223,11 +225,13 @@ struct efx_ptp_timeset {
  *                  reset (disable, enable).
  * @rxfilter_event: Receive filter when operating
  * @rxfilter_general: Receive filter when operating
+ * @rxfilter_installed: Receive filter installed
  * @config: Current timestamp configuration
  * @enabled: PTP operation enabled
  * @mode: Mode in which PTP operating (PTP version)
  * @ns_to_nic_time: Function to convert from scalar nanoseconds to NIC time
  * @nic_to_kernel_time: Function to convert from NIC to kernel time
+ * @nic_time: contains time details
  * @nic_time.minor_max: Wrap point for NIC minor times
  * @nic_time.sync_event_diff_min: Minimum acceptable difference between time
  * in packet prefix and last MCDI time sync event i.e. how much earlier than
@@ -239,6 +243,7 @@ struct efx_ptp_timeset {
  * field in MCDI time sync event.
  * @min_synchronisation_ns: Minimum acceptable corrected sync window
  * @capabilities: Capabilities flags from the NIC
+ * @ts_corrections: contains corrections details
  * @ts_corrections.ptp_tx: Required driver correction of PTP packet transmit
  *                         timestamps
  * @ts_corrections.ptp_rx: Required driver correction of PTP packet receive
@@ -326,7 +331,7 @@ struct efx_ptp_data {
 	struct work_struct pps_work;
 	struct workqueue_struct *pps_workwq;
 	bool nic_ts_enabled;
-	_MCDI_DECLARE_BUF(txbuf, MC_CMD_PTP_IN_TRANSMIT_LENMAX);
+	efx_dword_t txbuf[MCDI_TX_BUF_LEN(MC_CMD_PTP_IN_TRANSMIT_LENMAX)];
 
 	unsigned int good_syncs;
 	unsigned int fast_syncs;
@@ -352,12 +357,7 @@ static int efx_phc_enable(struct ptp_clock_info *ptp,
 
 bool efx_ptp_use_mac_tx_timestamps(struct efx_nic *efx)
 {
-	struct efx_ef10_nic_data *nic_data = efx->nic_data;
-
-	return ((efx_nic_rev(efx) >= EFX_REV_HUNT_A0) &&
-		(nic_data->datapath_caps2 &
-		 (1 << MC_CMD_GET_CAPABILITIES_V2_OUT_TX_MAC_TIMESTAMPING_LBN)
-		));
+	return efx_has_cap(efx, TX_MAC_TIMESTAMPING);
 }
 
 /* PTP 'extra' channel is still a traffic channel, but we only create TX queues
@@ -1088,10 +1088,10 @@ static int efx_ptp_synchronize(struct efx_nic *efx, unsigned int num_readings)
 static void efx_ptp_xmit_skb_queue(struct efx_nic *efx, struct sk_buff *skb)
 {
 	struct efx_ptp_data *ptp_data = efx->ptp_data;
+	u8 type = efx_tx_csum_type_skb(skb);
 	struct efx_tx_queue *tx_queue;
-	u8 type = skb->ip_summed == CHECKSUM_PARTIAL ? EFX_TXQ_TYPE_OFFLOAD : 0;
 
-	tx_queue = &ptp_data->channel->tx_queue[type];
+	tx_queue = efx_channel_get_tx_queue(ptp_data->channel, type);
 	if (tx_queue && tx_queue->timestamping) {
 		efx_enqueue_skb(tx_queue, skb);
 	} else {
@@ -1160,17 +1160,15 @@ static void efx_ptp_drop_time_expired_events(struct efx_nic *efx)
 
 	/* Drop time-expired events */
 	spin_lock_bh(&ptp->evt_lock);
-	if (!list_empty(&ptp->evt_list)) {
-		list_for_each_safe(cursor, next, &ptp->evt_list) {
-			struct efx_ptp_event_rx *evt;
+	list_for_each_safe(cursor, next, &ptp->evt_list) {
+		struct efx_ptp_event_rx *evt;
 
-			evt = list_entry(cursor, struct efx_ptp_event_rx,
-					 link);
-			if (time_after(jiffies, evt->expiry)) {
-				list_move(&evt->link, &ptp->evt_free_list);
-				netif_warn(efx, hw, efx->net_dev,
-					   "PTP rx event dropped\n");
-			}
+		evt = list_entry(cursor, struct efx_ptp_event_rx,
+				 link);
+		if (time_after(jiffies, evt->expiry)) {
+			list_move(&evt->link, &ptp->evt_free_list);
+			netif_warn(efx, hw, efx->net_dev,
+				   "PTP rx event dropped\n");
 		}
 	}
 	spin_unlock_bh(&ptp->evt_lock);

@@ -295,14 +295,8 @@ static int pwm_fan_probe(struct platform_device *pdev)
 	mutex_init(&ctx->lock);
 
 	ctx->pwm = devm_of_pwm_get(dev, dev->of_node, NULL);
-	if (IS_ERR(ctx->pwm)) {
-		ret = PTR_ERR(ctx->pwm);
-
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Could not get PWM: %d\n", ret);
-
-		return ret;
-	}
+	if (IS_ERR(ctx->pwm))
+		return dev_err_probe(dev, PTR_ERR(ctx->pwm), "Could not get PWM\n");
 
 	platform_set_drvdata(pdev, ctx);
 
@@ -392,8 +386,7 @@ static int pwm_fan_probe(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int pwm_fan_suspend(struct device *dev)
+static int pwm_fan_disable(struct device *dev)
 {
 	struct pwm_fan_ctx *ctx = dev_get_drvdata(dev);
 	struct pwm_args args;
@@ -420,6 +413,17 @@ static int pwm_fan_suspend(struct device *dev)
 	return 0;
 }
 
+static void pwm_fan_shutdown(struct platform_device *pdev)
+{
+	pwm_fan_disable(&pdev->dev);
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int pwm_fan_suspend(struct device *dev)
+{
+	return pwm_fan_disable(dev);
+}
+
 static int pwm_fan_resume(struct device *dev)
 {
 	struct pwm_fan_ctx *ctx = dev_get_drvdata(dev);
@@ -439,7 +443,7 @@ static int pwm_fan_resume(struct device *dev)
 		return 0;
 
 	pwm_get_args(ctx->pwm, &pargs);
-	duty = DIV_ROUND_UP(ctx->pwm_value * (pargs.period - 1), MAX_PWM);
+	duty = DIV_ROUND_UP_ULL(ctx->pwm_value * (pargs.period - 1), MAX_PWM);
 	ret = pwm_config(ctx->pwm, duty, pargs.period);
 	if (ret)
 		return ret;
@@ -457,6 +461,7 @@ MODULE_DEVICE_TABLE(of, of_pwm_fan_match);
 
 static struct platform_driver pwm_fan_driver = {
 	.probe		= pwm_fan_probe,
+	.shutdown	= pwm_fan_shutdown,
 	.driver	= {
 		.name		= "pwm-fan",
 		.pm		= &pwm_fan_pm,

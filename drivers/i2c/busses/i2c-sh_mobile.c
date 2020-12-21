@@ -146,9 +146,6 @@ struct sh_mobile_dt_config {
 
 #define IIC_FLAG_HAS_ICIC67	(1 << 0)
 
-#define STANDARD_MODE		100000
-#define FAST_MODE		400000
-
 /* Register offsets */
 #define ICDR			0x00
 #define ICCR			0x04
@@ -271,11 +268,11 @@ static int sh_mobile_i2c_init(struct sh_mobile_i2c_data *pd)
 
 	i2c_clk_khz = clk_get_rate(pd->clk) / 1000 / pd->clks_per_count;
 
-	if (pd->bus_speed == STANDARD_MODE) {
+	if (pd->bus_speed == I2C_MAX_STANDARD_MODE_FREQ) {
 		tLOW	= 47;	/* tLOW = 4.7 us */
 		tHIGH	= 40;	/* tHD;STA = tHIGH = 4.0 us */
 		tf	= 3;	/* tf = 0.3 us */
-	} else if (pd->bus_speed == FAST_MODE) {
+	} else if (pd->bus_speed == I2C_MAX_FAST_MODE_FREQ) {
 		tLOW	= 13;	/* tLOW = 1.3 us */
 		tHIGH	= 6;	/* tHD;STA = tHIGH = 0.6 us */
 		tf	= 3;	/* tf = 0.3 us */
@@ -372,7 +369,6 @@ static int sh_mobile_i2c_isr_tx(struct sh_mobile_i2c_data *pd)
 
 static int sh_mobile_i2c_isr_rx(struct sh_mobile_i2c_data *pd)
 {
-	unsigned char data;
 	int real_pos;
 
 	/* switch from TX (address) to RX (data) adds two interrupts */
@@ -393,13 +389,11 @@ static int sh_mobile_i2c_isr_rx(struct sh_mobile_i2c_data *pd)
 		if (real_pos < 0)
 			i2c_op(pd, OP_RX_STOP);
 		else
-			data = i2c_op(pd, OP_RX_STOP_DATA);
+			pd->msg->buf[real_pos] = i2c_op(pd, OP_RX_STOP_DATA);
 	} else if (real_pos >= 0) {
-		data = i2c_op(pd, OP_RX);
+		pd->msg->buf[real_pos] = i2c_op(pd, OP_RX);
 	}
 
-	if (real_pos >= 0)
-		pd->msg->buf[real_pos] = data;
  done:
 	pd->pos++;
 	return pd->pos == (pd->msg->len + 2);
@@ -490,7 +484,7 @@ static struct dma_chan *sh_mobile_i2c_request_dma_chan(struct device *dev,
 	char *chan_name = dir == DMA_MEM_TO_DEV ? "tx" : "rx";
 	int ret;
 
-	chan = dma_request_slave_channel_reason(dev, chan_name);
+	chan = dma_request_chan(dev, chan_name);
 	if (IS_ERR(chan)) {
 		dev_dbg(dev, "request_channel failed for %s (%ld)\n", chan_name,
 			PTR_ERR(chan));
@@ -897,7 +891,7 @@ static int sh_mobile_i2c_probe(struct platform_device *dev)
 		return PTR_ERR(pd->reg);
 
 	ret = of_property_read_u32(dev->dev.of_node, "clock-frequency", &bus_speed);
-	pd->bus_speed = (ret || !bus_speed) ? STANDARD_MODE : bus_speed;
+	pd->bus_speed = (ret || !bus_speed) ? I2C_MAX_STANDARD_MODE_FREQ : bus_speed;
 	pd->clks_per_count = 1;
 
 	/* Newer variants come with two new bits in ICIC */
@@ -984,6 +978,7 @@ static void __exit sh_mobile_i2c_adap_exit(void)
 module_exit(sh_mobile_i2c_adap_exit);
 
 MODULE_DESCRIPTION("SuperH Mobile I2C Bus Controller driver");
-MODULE_AUTHOR("Magnus Damm and Wolfram Sang");
+MODULE_AUTHOR("Magnus Damm");
+MODULE_AUTHOR("Wolfram Sang");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:i2c-sh_mobile");

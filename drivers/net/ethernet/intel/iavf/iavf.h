@@ -81,7 +81,7 @@ struct iavf_vsi {
 #define IAVF_TX_DESC(R, i) (&(((struct iavf_tx_desc *)((R)->desc))[i]))
 #define IAVF_TX_CTXTDESC(R, i) \
 	(&(((struct iavf_tx_context_desc *)((R)->desc))[i]))
-#define IAVF_MAX_REQ_QUEUES 4
+#define IAVF_MAX_REQ_QUEUES 16
 
 #define IAVF_HKEY_ARRAY_SIZE ((IAVF_VFQF_HKEY_MAX_INDEX + 1) * 4)
 #define IAVF_HLUT_ARRAY_SIZE ((IAVF_VFQF_HLUT_MAX_INDEX + 1) * 4)
@@ -218,6 +218,10 @@ struct iavf_cloud_filter {
 	bool del;		/* filter needs to be deleted */
 	bool add;		/* filter needs to be added */
 };
+
+#define IAVF_RESET_WAIT_MS 10
+#define IAVF_RESET_WAIT_DETECTED_COUNT 500
+#define IAVF_RESET_WAIT_COMPLETE_COUNT 2000
 
 /* board specific private data structure */
 struct iavf_adapter {
@@ -371,7 +375,6 @@ struct iavf_device {
 
 /* needed by iavf_ethtool.c */
 extern char iavf_driver_name[];
-extern const char iavf_driver_version[];
 extern struct workqueue_struct *iavf_wq;
 
 int iavf_up(struct iavf_adapter *adapter);

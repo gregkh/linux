@@ -282,7 +282,7 @@ out:
 	return err;
 }
 
-static blk_qc_t brd_make_request(struct request_queue *q, struct bio *bio)
+static blk_qc_t brd_submit_bio(struct bio *bio)
 {
 	struct brd_device *brd = bio->bi_disk->private_data;
 	struct bio_vec bvec;
@@ -296,6 +296,10 @@ static blk_qc_t brd_make_request(struct request_queue *q, struct bio *bio)
 	bio_for_each_segment(bvec, bio, iter) {
 		unsigned int len = bvec.bv_len;
 		int err;
+
+		/* Don't support un-aligned buffer */
+		WARN_ON_ONCE((bvec.bv_offset & (SECTOR_SIZE - 1)) ||
+				(len & (SECTOR_SIZE - 1)));
 
 		err = brd_do_bvec(brd, bvec.bv_page, len, bvec.bv_offset,
 				  bio_op(bio), sector);
@@ -326,6 +330,7 @@ static int brd_rw_page(struct block_device *bdev, sector_t sector,
 
 static const struct block_device_operations brd_fops = {
 	.owner =		THIS_MODULE,
+	.submit_bio =		brd_submit_bio,
 	.rw_page =		brd_rw_page,
 };
 
@@ -377,12 +382,9 @@ static struct brd_device *brd_alloc(int i)
 	spin_lock_init(&brd->brd_lock);
 	INIT_RADIX_TREE(&brd->brd_pages, GFP_ATOMIC);
 
-	brd->brd_queue = blk_alloc_queue(GFP_KERNEL);
+	brd->brd_queue = blk_alloc_queue(NUMA_NO_NODE);
 	if (!brd->brd_queue)
 		goto out_free_dev;
-
-	blk_queue_make_request(brd->brd_queue, brd_make_request);
-	blk_queue_max_hw_sectors(brd->brd_queue, 1024);
 
 	/* This is so fdisk will align partitions on 4k, because of
 	 * direct_access API needing 4k alignment, returning a PFN
@@ -401,7 +403,6 @@ static struct brd_device *brd_alloc(int i)
 	disk->flags		= GENHD_FL_EXT_DEVT;
 	sprintf(disk->disk_name, "ram%d", i);
 	set_capacity(disk, rd_size * 2);
-	brd->brd_queue->backing_dev_info->capabilities |= BDI_CAP_SYNCHRONOUS_IO;
 
 	/* Tell the block layer that this is not a rotational device */
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, brd->brd_queue);

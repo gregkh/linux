@@ -31,9 +31,9 @@
 #include <linux/reboot.h>
 #include <linux/spinlock.h>
 #include <linux/pci.h>
+#include <linux/pgtable.h>
 #include <asm/dbdma.h>
 #include <asm/io.h>
-#include <asm/pgtable.h>
 #include <asm/prom.h>
 #include <asm/irq.h>
 #include <asm/hydra.h>
@@ -1457,7 +1457,7 @@ static void cmd_complete(struct mesh_state *ms)
 		/* huh?  we expected a phase mismatch */
 		ms->n_msgin = 0;
 		ms->msgphase = msg_in;
-		/* fall through */
+		fallthrough;
 
 	case msg_in:
 		/* should have some message bytes in fifo */

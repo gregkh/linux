@@ -51,21 +51,27 @@ enum aarch64_insn_encoding_class __kprobes aarch64_get_insn_class(u32 insn)
 	return aarch64_insn_encoding_class[(insn >> 25) & 0xf];
 }
 
-/* NOP is an alias of HINT */
-bool __kprobes aarch64_insn_is_nop(u32 insn)
+bool __kprobes aarch64_insn_is_steppable_hint(u32 insn)
 {
 	if (!aarch64_insn_is_hint(insn))
 		return false;
 
 	switch (insn & 0xFE0) {
-	case AARCH64_INSN_HINT_YIELD:
-	case AARCH64_INSN_HINT_WFE:
-	case AARCH64_INSN_HINT_WFI:
-	case AARCH64_INSN_HINT_SEV:
-	case AARCH64_INSN_HINT_SEVL:
-		return false;
-	default:
+	case AARCH64_INSN_HINT_XPACLRI:
+	case AARCH64_INSN_HINT_PACIA_1716:
+	case AARCH64_INSN_HINT_PACIB_1716:
+	case AARCH64_INSN_HINT_PACIAZ:
+	case AARCH64_INSN_HINT_PACIASP:
+	case AARCH64_INSN_HINT_PACIBZ:
+	case AARCH64_INSN_HINT_PACIBSP:
+	case AARCH64_INSN_HINT_BTI:
+	case AARCH64_INSN_HINT_BTIC:
+	case AARCH64_INSN_HINT_BTIJ:
+	case AARCH64_INSN_HINT_BTIJC:
+	case AARCH64_INSN_HINT_NOP:
 		return true;
+	default:
+		return false;
 	}
 }
 
@@ -123,7 +129,7 @@ int __kprobes aarch64_insn_read(void *addr, u32 *insnp)
 	int ret;
 	__le32 val;
 
-	ret = probe_kernel_read(&val, addr, AARCH64_INSN_SIZE);
+	ret = copy_from_kernel_nofault(&val, addr, AARCH64_INSN_SIZE);
 	if (!ret)
 		*insnp = le32_to_cpu(val);
 
@@ -139,7 +145,7 @@ static int __kprobes __aarch64_insn_write(void *addr, __le32 insn)
 	raw_spin_lock_irqsave(&patch_lock, flags);
 	waddr = patch_map(addr, FIX_TEXT_POKE0);
 
-	ret = probe_kernel_write(waddr, &insn, AARCH64_INSN_SIZE);
+	ret = copy_to_kernel_nofault(waddr, &insn, AARCH64_INSN_SIZE);
 
 	patch_unmap(FIX_TEXT_POKE0);
 	raw_spin_unlock_irqrestore(&patch_lock, flags);
@@ -164,7 +170,7 @@ bool __kprobes aarch64_insn_uses_literal(u32 insn)
 
 bool __kprobes aarch64_insn_is_branch(u32 insn)
 {
-	/* b, bl, cb*, tb*, b.cond, br, blr */
+	/* b, bl, cb*, tb*, ret*, b.cond, br*, blr* */
 
 	return aarch64_insn_is_b(insn) ||
 		aarch64_insn_is_bl(insn) ||
@@ -173,8 +179,11 @@ bool __kprobes aarch64_insn_is_branch(u32 insn)
 		aarch64_insn_is_tbz(insn) ||
 		aarch64_insn_is_tbnz(insn) ||
 		aarch64_insn_is_ret(insn) ||
+		aarch64_insn_is_ret_auth(insn) ||
 		aarch64_insn_is_br(insn) ||
+		aarch64_insn_is_br_auth(insn) ||
 		aarch64_insn_is_blr(insn) ||
+		aarch64_insn_is_blr_auth(insn) ||
 		aarch64_insn_is_bcond(insn);
 }
 
@@ -574,7 +583,7 @@ u32 aarch64_insn_gen_cond_branch_imm(unsigned long pc, unsigned long addr,
 					     offset >> 2);
 }
 
-u32 __kprobes aarch64_insn_gen_hint(enum aarch64_insn_hint_op op)
+u32 __kprobes aarch64_insn_gen_hint(enum aarch64_insn_hint_cr_op op)
 {
 	return aarch64_insn_get_hint_value() | op;
 }
@@ -1280,6 +1289,19 @@ u32 aarch64_insn_gen_logical_shifted_reg(enum aarch64_insn_register dst,
 	insn = aarch64_insn_encode_register(AARCH64_INSN_REGTYPE_RM, insn, reg);
 
 	return aarch64_insn_encode_immediate(AARCH64_INSN_IMM_6, insn, shift);
+}
+
+/*
+ * MOV (register) is architecturally an alias of ORR (shifted register) where
+ * MOV <*d>, <*m> is equivalent to ORR <*d>, <*ZR>, <*m>
+ */
+u32 aarch64_insn_gen_move_reg(enum aarch64_insn_register dst,
+			      enum aarch64_insn_register src,
+			      enum aarch64_insn_variant variant)
+{
+	return aarch64_insn_gen_logical_shifted_reg(dst, AARCH64_INSN_REG_ZR,
+						    src, 0, variant,
+						    AARCH64_INSN_LOGIC_ORR);
 }
 
 u32 aarch64_insn_gen_adr(unsigned long pc, unsigned long addr,

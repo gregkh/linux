@@ -4,8 +4,16 @@
 #include <sched.h>
 #include <sys/socket.h>
 #include <test_progs.h>
-#include "libbpf_internal.h"
+#include "test_perf_buffer.skel.h"
+#include "bpf/libbpf_internal.h"
 
+static int duration;
+
+/* AddressSanitizer sometimes crashes due to data dereference below, due to
+ * this being mmap()'ed memory. Disable instrumentation with
+ * no_sanitize_address attribute
+ */
+__attribute__((no_sanitize_address))
 static void on_sample(void *ctx, int cpu, void *data, __u32 size)
 {
 	int cpu_data = *(int *)data, duration = 0;
@@ -18,18 +26,31 @@ static void on_sample(void *ctx, int cpu, void *data, __u32 size)
 	CPU_SET(cpu, cpu_seen);
 }
 
+int trigger_on_cpu(int cpu)
+{
+	cpu_set_t cpu_set;
+	int err;
+
+	CPU_ZERO(&cpu_set);
+	CPU_SET(cpu, &cpu_set);
+
+	err = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set), &cpu_set);
+	if (err && CHECK(err, "set_affinity", "cpu #%d, err %d\n", cpu, err))
+		return err;
+
+	usleep(1);
+
+	return 0;
+}
+
 void test_perf_buffer(void)
 {
-	int err, prog_fd, on_len, nr_on_cpus = 0,  nr_cpus, i, duration = 0;
-	const char *prog_name = "kprobe/sys_nanosleep";
-	const char *file = "./test_perf_buffer.o";
+	int err, on_len, nr_on_cpus = 0, nr_cpus, i;
 	struct perf_buffer_opts pb_opts = {};
-	struct bpf_map *perf_buf_map;
-	cpu_set_t cpu_set, cpu_seen;
-	struct bpf_program *prog;
-	struct bpf_object *obj;
+	struct test_perf_buffer *skel;
+	cpu_set_t cpu_seen;
 	struct perf_buffer *pb;
-	struct bpf_link *link;
+	int last_fd = -1, fd;
 	bool *online;
 
 	nr_cpus = libbpf_num_possible_cpus();
@@ -46,33 +67,24 @@ void test_perf_buffer(void)
 			nr_on_cpus++;
 
 	/* load program */
-	err = bpf_prog_load(file, BPF_PROG_TYPE_KPROBE, &obj, &prog_fd);
-	if (CHECK(err, "obj_load", "err %d errno %d\n", err, errno)) {
-		obj = NULL;
-		goto out_close;
-	}
-
-	prog = bpf_object__find_program_by_title(obj, prog_name);
-	if (CHECK(!prog, "find_probe", "prog '%s' not found\n", prog_name))
+	skel = test_perf_buffer__open_and_load();
+	if (CHECK(!skel, "skel_load", "skeleton open/load failed\n"))
 		goto out_close;
 
-	/* load map */
-	perf_buf_map = bpf_object__find_map_by_name(obj, "perf_buf_map");
-	if (CHECK(!perf_buf_map, "find_perf_buf_map", "not found\n"))
-		goto out_close;
-
-	/* attach kprobe */
-	link = bpf_program__attach_kprobe(prog, false /* retprobe */,
-					  SYS_NANOSLEEP_KPROBE_NAME);
-	if (CHECK(IS_ERR(link), "attach_kprobe", "err %ld\n", PTR_ERR(link)))
+	/* attach probe */
+	err = test_perf_buffer__attach(skel);
+	if (CHECK(err, "attach_kprobe", "err %d\n", err))
 		goto out_close;
 
 	/* set up perf buffer */
 	pb_opts.sample_cb = on_sample;
 	pb_opts.ctx = &cpu_seen;
-	pb = perf_buffer__new(bpf_map__fd(perf_buf_map), 1, &pb_opts);
+	pb = perf_buffer__new(bpf_map__fd(skel->maps.perf_buf_map), 1, &pb_opts);
 	if (CHECK(IS_ERR(pb), "perf_buf__new", "err %ld\n", PTR_ERR(pb)))
-		goto out_detach;
+		goto out_close;
+
+	CHECK(perf_buffer__epoll_fd(pb) < 0, "epoll_fd",
+	      "bad fd: %d\n", perf_buffer__epoll_fd(pb));
 
 	/* trigger kprobe on every CPU */
 	CPU_ZERO(&cpu_seen);
@@ -82,16 +94,8 @@ void test_perf_buffer(void)
 			continue;
 		}
 
-		CPU_ZERO(&cpu_set);
-		CPU_SET(i, &cpu_set);
-
-		err = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set),
-					     &cpu_set);
-		if (err && CHECK(err, "set_affinity", "cpu #%d, err %d\n",
-				 i, err))
-			goto out_detach;
-
-		usleep(1);
+		if (trigger_on_cpu(i))
+			goto out_close;
 	}
 
 	/* read perf buffer */
@@ -103,11 +107,37 @@ void test_perf_buffer(void)
 		  "expect %d, seen %d\n", nr_on_cpus, CPU_COUNT(&cpu_seen)))
 		goto out_free_pb;
 
+	if (CHECK(perf_buffer__buffer_cnt(pb) != nr_cpus, "buf_cnt",
+		  "got %zu, expected %d\n", perf_buffer__buffer_cnt(pb), nr_cpus))
+		goto out_close;
+
+	for (i = 0; i < nr_cpus; i++) {
+		if (i >= on_len || !online[i])
+			continue;
+
+		fd = perf_buffer__buffer_fd(pb, i);
+		CHECK(fd < 0 || last_fd == fd, "fd_check", "last fd %d == fd %d\n", last_fd, fd);
+		last_fd = fd;
+
+		err = perf_buffer__consume_buffer(pb, i);
+		if (CHECK(err, "drain_buf", "cpu %d, err %d\n", i, err))
+			goto out_close;
+
+		CPU_CLR(i, &cpu_seen);
+		if (trigger_on_cpu(i))
+			goto out_close;
+
+		err = perf_buffer__consume_buffer(pb, i);
+		if (CHECK(err, "consume_buf", "cpu %d, err %d\n", i, err))
+			goto out_close;
+
+		if (CHECK(!CPU_ISSET(i, &cpu_seen), "cpu_seen", "cpu %d not seen\n", i))
+			goto out_close;
+	}
+
 out_free_pb:
 	perf_buffer__free(pb);
-out_detach:
-	bpf_link__destroy(link);
 out_close:
-	bpf_object__close(obj);
+	test_perf_buffer__destroy(skel);
 	free(online);
 }

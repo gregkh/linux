@@ -1572,11 +1572,11 @@ static int inetdev_event(struct notifier_block *this, unsigned long event,
 			}
 		}
 		ip_mc_up(in_dev);
-		/* fall through */
+		fallthrough;
 	case NETDEV_CHANGEADDR:
 		if (!IN_DEV_ARP_NOTIFY(in_dev))
 			break;
-		/* fall through */
+		fallthrough;
 	case NETDEV_NOTIFY_PEERS:
 		/* Send gratuitous ARP to notify of link change */
 		inetdev_send_gratuitous_arp(dev, in_dev);
@@ -1594,7 +1594,7 @@ static int inetdev_event(struct notifier_block *this, unsigned long event,
 		if (inetdev_valid_mtu(dev->mtu))
 			break;
 		/* disable IP when MTU is not enough */
-		/* fall through */
+		fallthrough;
 	case NETDEV_UNREGISTER:
 		inetdev_destroy(in_dev);
 		break;
@@ -2367,8 +2367,7 @@ static int devinet_conf_ifindex(struct net *net, struct ipv4_devconf *cnf)
 }
 
 static int devinet_conf_proc(struct ctl_table *ctl, int write,
-			     void __user *buffer,
-			     size_t *lenp, loff_t *ppos)
+			     void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int old_value = *(int *)ctl->data;
 	int ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
@@ -2420,8 +2419,7 @@ static int devinet_conf_proc(struct ctl_table *ctl, int write,
 }
 
 static int devinet_sysctl_forward(struct ctl_table *ctl, int write,
-				  void __user *buffer,
-				  size_t *lenp, loff_t *ppos)
+				  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int *valp = ctl->data;
 	int val = *valp;
@@ -2464,8 +2462,7 @@ static int devinet_sysctl_forward(struct ctl_table *ctl, int write,
 }
 
 static int ipv4_doint_and_flush(struct ctl_table *ctl, int write,
-				void __user *buffer,
-				size_t *lenp, loff_t *ppos)
+				void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int *valp = ctl->data;
 	int val = *valp;
@@ -2670,11 +2667,24 @@ static __net_init int devinet_init_net(struct net *net)
 	tbl[0].extra2 = net;
 #endif
 
-	if ((!IS_ENABLED(CONFIG_SYSCTL) ||
-	     sysctl_devconf_inherit_init_net != 2) &&
-	    !net_eq(net, &init_net)) {
-		memcpy(all, init_net.ipv4.devconf_all, sizeof(ipv4_devconf));
-		memcpy(dflt, init_net.ipv4.devconf_dflt, sizeof(ipv4_devconf_dflt));
+	if (!net_eq(net, &init_net)) {
+		if (IS_ENABLED(CONFIG_SYSCTL) &&
+		    sysctl_devconf_inherit_init_net == 3) {
+			/* copy from the current netns */
+			memcpy(all, current->nsproxy->net_ns->ipv4.devconf_all,
+			       sizeof(ipv4_devconf));
+			memcpy(dflt,
+			       current->nsproxy->net_ns->ipv4.devconf_dflt,
+			       sizeof(ipv4_devconf_dflt));
+		} else if (!IS_ENABLED(CONFIG_SYSCTL) ||
+			   sysctl_devconf_inherit_init_net != 2) {
+			/* inherit == 0 or 1: copy from init_net */
+			memcpy(all, init_net.ipv4.devconf_all,
+			       sizeof(ipv4_devconf));
+			memcpy(dflt, init_net.ipv4.devconf_dflt,
+			       sizeof(ipv4_devconf_dflt));
+		}
+		/* else inherit == 2: use compiled values */
 	}
 
 #ifdef CONFIG_SYSCTL

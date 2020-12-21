@@ -174,7 +174,7 @@ static ssize_t mtdchar_read(struct file *file, char __user *buf, size_t count,
 			break;
 		case MTD_FILE_MODE_RAW:
 		{
-			struct mtd_oob_ops ops;
+			struct mtd_oob_ops ops = {};
 
 			ops.mode = MTD_OPS_RAW;
 			ops.datbuf = kbuf;
@@ -268,7 +268,7 @@ static ssize_t mtdchar_write(struct file *file, const char __user *buf, size_t c
 
 		case MTD_FILE_MODE_RAW:
 		{
-			struct mtd_oob_ops ops;
+			struct mtd_oob_ops ops = {};
 
 			ops.mode = MTD_OPS_RAW;
 			ops.datbuf = kbuf;
@@ -349,15 +349,16 @@ static int mtdchar_writeoob(struct file *file, struct mtd_info *mtd,
 	uint64_t start, uint32_t length, void __user *ptr,
 	uint32_t __user *retp)
 {
+	struct mtd_info *master  = mtd_get_master(mtd);
 	struct mtd_file_info *mfi = file->private_data;
-	struct mtd_oob_ops ops;
+	struct mtd_oob_ops ops = {};
 	uint32_t retlen;
 	int ret = 0;
 
 	if (length > 4096)
 		return -EINVAL;
 
-	if (!mtd->_write_oob)
+	if (!master->_write_oob)
 		return -EOPNOTSUPP;
 
 	ops.ooblen = length;
@@ -391,7 +392,7 @@ static int mtdchar_readoob(struct file *file, struct mtd_info *mtd,
 	uint32_t __user *retp)
 {
 	struct mtd_file_info *mfi = file->private_data;
-	struct mtd_oob_ops ops;
+	struct mtd_oob_ops ops = {};
 	int ret = 0;
 
 	if (length > 4096)
@@ -583,8 +584,9 @@ static int mtdchar_blkpg_ioctl(struct mtd_info *mtd,
 static int mtdchar_write_ioctl(struct mtd_info *mtd,
 		struct mtd_write_req __user *argp)
 {
+	struct mtd_info *master = mtd_get_master(mtd);
 	struct mtd_write_req req;
-	struct mtd_oob_ops ops;
+	struct mtd_oob_ops ops = {};
 	const void __user *usr_data, *usr_oob;
 	int ret;
 
@@ -594,9 +596,8 @@ static int mtdchar_write_ioctl(struct mtd_info *mtd,
 	usr_data = (const void __user *)(uintptr_t)req.usr_data;
 	usr_oob = (const void __user *)(uintptr_t)req.usr_oob;
 
-	if (!mtd->_write_oob)
+	if (!master->_write_oob)
 		return -EOPNOTSUPP;
-
 	ops.mode = req.mode;
 	ops.len = (size_t)req.len;
 	ops.ooblen = (size_t)req.ooblen;
@@ -632,6 +633,7 @@ static int mtdchar_ioctl(struct file *file, u_int cmd, u_long arg)
 {
 	struct mtd_file_info *mfi = file->private_data;
 	struct mtd_info *mtd = mfi->mtd;
+	struct mtd_info *master = mtd_get_master(mtd);
 	void __user *argp = (void __user *)arg;
 	int ret = 0;
 	struct mtd_info_user info;
@@ -860,7 +862,7 @@ static int mtdchar_ioctl(struct file *file, u_int cmd, u_long arg)
 	{
 		struct nand_oobinfo oi;
 
-		if (!mtd->ooblayout)
+		if (!master->ooblayout)
 			return -EOPNOTSUPP;
 
 		ret = get_oobinfo(mtd, &oi);
@@ -954,7 +956,7 @@ static int mtdchar_ioctl(struct file *file, u_int cmd, u_long arg)
 	{
 		struct nand_ecclayout_user *usrlay;
 
-		if (!mtd->ooblayout)
+		if (!master->ooblayout)
 			return -EOPNOTSUPP;
 
 		usrlay = kmalloc(sizeof(*usrlay), GFP_KERNEL);

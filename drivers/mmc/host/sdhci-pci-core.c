@@ -259,12 +259,8 @@ static int ricoh_probe(struct sdhci_pci_chip *chip)
 static int ricoh_mmc_probe_slot(struct sdhci_pci_slot *slot)
 {
 	slot->host->caps =
-		((0x21 << SDHCI_TIMEOUT_CLK_SHIFT)
-			& SDHCI_TIMEOUT_CLK_MASK) |
-
-		((0x21 << SDHCI_CLOCK_BASE_SHIFT)
-			& SDHCI_CLOCK_BASE_MASK) |
-
+		FIELD_PREP(SDHCI_TIMEOUT_CLK_MASK, 0x21) |
+		FIELD_PREP(SDHCI_CLOCK_BASE_MASK, 0x21) |
 		SDHCI_TIMEOUT_CLK_UNIT |
 		SDHCI_CAN_VDD_330 |
 		SDHCI_CAN_DO_HISPD |
@@ -1921,6 +1917,7 @@ static const struct pci_device_id pci_ids[] = {
 	SDHCI_PCI_DEVICE(SYNOPSYS, DWC_MSHC, snps),
 	SDHCI_PCI_DEVICE(GLI, 9750, gl9750),
 	SDHCI_PCI_DEVICE(GLI, 9755, gl9755),
+	SDHCI_PCI_DEVICE(GLI, 9763E, gl9763e),
 	SDHCI_PCI_DEVICE_CLASS(AMD, SYSTEM_SDHCI, PCI_CLASS_MASK, amd),
 	/* Generic SD host controller */
 	{PCI_DEVICE_CLASS(SYSTEM_SDHCI, PCI_CLASS_MASK)},
@@ -2166,12 +2163,12 @@ static struct sdhci_pci_slot *sdhci_pci_probe_slot(
 
 	if (slot->cd_idx >= 0) {
 		ret = mmc_gpiod_request_cd(host->mmc, "cd", slot->cd_idx,
-					   slot->cd_override_level, 0, NULL);
+					   slot->cd_override_level, 0);
 		if (ret && ret != -EPROBE_DEFER)
 			ret = mmc_gpiod_request_cd(host->mmc, NULL,
 						   slot->cd_idx,
 						   slot->cd_override_level,
-						   0, NULL);
+						   0);
 		if (ret == -EPROBE_DEFER)
 			goto remove;
 

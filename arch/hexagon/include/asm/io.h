@@ -27,7 +27,7 @@
 extern int remap_area_pages(unsigned long start, unsigned long phys_addr,
 				unsigned long end, unsigned long flags);
 
-extern void __iounmap(const volatile void __iomem *addr);
+extern void iounmap(const volatile void __iomem *addr);
 
 /* Defined in lib/io.c, needed for smc91x driver. */
 extern void __raw_readsw(const void __iomem *addr, void *data, int wordlen);
@@ -172,14 +172,8 @@ static inline void writel(u32 data, volatile void __iomem *addr)
 #define writel_relaxed __raw_writel
 
 void __iomem *ioremap(unsigned long phys_addr, unsigned long size);
-#define ioremap_nocache ioremap
 #define ioremap_uc(X, Y) ioremap((X), (Y))
 
-
-static inline void iounmap(volatile void __iomem *addr)
-{
-	__iounmap(addr);
-}
 
 #define __raw_writel writel
 

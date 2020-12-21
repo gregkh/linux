@@ -1187,7 +1187,6 @@ csio_lns_online(struct csio_lnode *ln, enum csio_ln_ev evt)
 		break;
 
 	case CSIO_LNE_LINK_DOWN:
-		/* Fall through */
 	case CSIO_LNE_DOWN_LINK:
 		csio_set_state(&ln->sm, csio_lns_uninit);
 		if (csio_is_phys_ln(ln)) {
@@ -1992,7 +1991,7 @@ static int
 csio_ln_init(struct csio_lnode *ln)
 {
 	int rv = -EINVAL;
-	struct csio_lnode *rln, *pln;
+	struct csio_lnode *pln;
 	struct csio_hw *hw = csio_lnode_to_hw(ln);
 
 	csio_init_state(&ln->sm, csio_lns_uninit);
@@ -2022,7 +2021,6 @@ csio_ln_init(struct csio_lnode *ln)
 		 * THe rest is common for non-root physical and NPIV lnodes.
 		 * Just get references to all other modules
 		 */
-		rln = csio_root_lnode(ln);
 
 		if (csio_is_npiv_ln(ln)) {
 			/* NPIV */
@@ -2069,10 +2067,9 @@ csio_ln_exit(struct csio_lnode *ln)
 	ln->fcfinfo = NULL;
 }
 
-/**
+/*
  * csio_lnode_init - Initialize the members of an lnode.
  * @ln:		lnode
- *
  */
 int
 csio_lnode_init(struct csio_lnode *ln, struct csio_hw *hw,

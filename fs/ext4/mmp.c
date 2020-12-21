@@ -85,15 +85,11 @@ static int read_mmp_block(struct super_block *sb, struct buffer_head **bh,
 		}
 	}
 
-	get_bh(*bh);
 	lock_buffer(*bh);
-	(*bh)->b_end_io = end_buffer_read_sync;
-	submit_bh(REQ_OP_READ, REQ_META | REQ_PRIO, *bh);
-	wait_on_buffer(*bh);
-	if (!buffer_uptodate(*bh)) {
-		ret = -EIO;
+	ret = ext4_read_bh(*bh, REQ_META | REQ_PRIO, NULL);
+	if (ret)
 		goto warn_exit;
-	}
+
 	mmp = (struct mmp_struct *)((*bh)->b_data);
 	if (le32_to_cpu(mmp->mmp_magic) != EXT4_MMP_MAGIC) {
 		ret = -EFSCORRUPTED;
@@ -174,8 +170,10 @@ static int kmmpd(void *data)
 		 * (s_mmp_update_interval * 60) seconds.
 		 */
 		if (retval) {
-			if ((failed_writes % 60) == 0)
-				ext4_error(sb, "Error writing to MMP block");
+			if ((failed_writes % 60) == 0) {
+				ext4_error_err(sb, -retval,
+					       "Error writing to MMP block");
+			}
 			failed_writes++;
 		}
 
@@ -206,8 +204,9 @@ static int kmmpd(void *data)
 
 			retval = read_mmp_block(sb, &bh_check, mmp_block);
 			if (retval) {
-				ext4_error(sb, "error reading MMP data: %d",
-					   retval);
+				ext4_error_err(sb, -retval,
+					       "error reading MMP data: %d",
+					       retval);
 				goto exit_thread;
 			}
 
@@ -219,7 +218,7 @@ static int kmmpd(void *data)
 					     "Error while updating MMP info. "
 					     "The filesystem seems to have been"
 					     " multiply mounted.");
-				ext4_error(sb, "abort");
+				ext4_error_err(sb, EBUSY, "abort");
 				put_bh(bh_check);
 				retval = -EBUSY;
 				goto exit_thread;

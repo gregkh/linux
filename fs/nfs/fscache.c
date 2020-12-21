@@ -118,8 +118,6 @@ void nfs_fscache_get_super_cookie(struct super_block *sb, const char *uniq, int 
 
 	nfss->fscache_key = NULL;
 	nfss->fscache = NULL;
-	if (!(nfss->options & NFS_OPTION_FSCACHE))
-		return;
 	if (!uniq) {
 		uniq = "";
 		ulen = 1;
@@ -130,7 +128,7 @@ void nfs_fscache_get_super_cookie(struct super_block *sb, const char *uniq, int 
 		return;
 
 	key->nfs_client = nfss->nfs_client;
-	key->key.super.s_flags = sb->s_flags & NFS_MS_MASK;
+	key->key.super.s_flags = sb->s_flags & NFS_SB_MASK;
 	key->key.nfs_server.flags = nfss->flags;
 	key->key.nfs_server.rsize = nfss->rsize;
 	key->key.nfs_server.wsize = nfss->wsize;

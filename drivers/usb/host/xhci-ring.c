@@ -280,6 +280,9 @@ void xhci_ring_cmd_db(struct xhci_hcd *xhci)
 		return;
 
 	xhci_dbg(xhci, "// Ding dong!\n");
+
+	trace_xhci_ring_host_doorbell(0, DB_VALUE_HOST);
+
 	writel(DB_VALUE_HOST, &xhci->dba->doorbell[0]);
 	/* Flush PCI posted writes */
 	readl(&xhci->dba->doorbell[0]);
@@ -401,6 +404,9 @@ void xhci_ring_ep_doorbell(struct xhci_hcd *xhci,
 	if ((ep_state & EP_STOP_CMD_PENDING) || (ep_state & SET_DEQ_PENDING) ||
 	    (ep_state & EP_HALTED) || (ep_state & EP_CLEARING_TT))
 		return;
+
+	trace_xhci_ring_ep_doorbell(slot_id, DB_VALUE(ep_index, stream_id));
+
 	writel(DB_VALUE(ep_index, stream_id), db_addr);
 	/* The CPU has better things to do at this point than wait for a
 	 * write-posting flush.  It'll get there soon enough.
@@ -669,10 +675,8 @@ static void xhci_giveback_urb_in_irq(struct xhci_hcd *xhci,
 	}
 	xhci_urb_free_priv(urb_priv);
 	usb_hcd_unlink_urb_from_ep(hcd, urb);
-	spin_unlock(&xhci->lock);
 	trace_xhci_urb_giveback(urb);
 	usb_hcd_giveback_urb(hcd, urb, status);
-	spin_lock(&xhci->lock);
 }
 
 static void xhci_unmap_td_bounce_buffer(struct xhci_hcd *xhci,
@@ -969,6 +973,7 @@ void xhci_stop_endpoint_command_watchdog(struct timer_list *t)
 	struct xhci_virt_ep *ep = from_timer(ep, t, stop_cmd_timer);
 	struct xhci_hcd *xhci = ep->xhci;
 	unsigned long flags;
+	u32 usbsts;
 
 	spin_lock_irqsave(&xhci->lock, flags);
 
@@ -979,8 +984,11 @@ void xhci_stop_endpoint_command_watchdog(struct timer_list *t)
 		xhci_dbg(xhci, "Stop EP timer raced with cmd completion, exit");
 		return;
 	}
+	usbsts = readl(&xhci->op_regs->status);
 
 	xhci_warn(xhci, "xHCI host not responding to stop endpoint command.\n");
+	xhci_warn(xhci, "USBSTS:%s\n", xhci_decode_usbsts(usbsts));
+
 	ep->ep_state &= ~EP_STOP_CMD_PENDING;
 
 	xhci_halt(xhci);
@@ -2095,7 +2103,7 @@ static int process_ctrl_td(struct xhci_hcd *xhci, struct xhci_td *td,
 			break;
 		xhci_dbg(xhci, "TRB error %u, halted endpoint index = %u\n",
 			 trb_comp_code, ep_index);
-		/* else fall through */
+		fallthrough;
 	case COMP_STALL_ERROR:
 		/* Did we transfer part of the data (middle) phase? */
 		if (trb_type == TRB_DATA || trb_type == TRB_NORMAL)
@@ -2435,6 +2443,10 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 		status = -EPIPE;
 		break;
 	case COMP_SPLIT_TRANSACTION_ERROR:
+		xhci_dbg(xhci, "Split transaction error for slot %u ep %u\n",
+			 slot_id, ep_index);
+		status = -EPROTO;
+		break;
 	case COMP_USB_TRANSACTION_ERROR:
 		xhci_dbg(xhci, "Transfer error for slot %u ep %u on endpoint\n",
 			 slot_id, ep_index);
@@ -3724,6 +3736,24 @@ static int xhci_get_isoc_frame_id(struct xhci_hcd *xhci,
 	return start_frame;
 }
 
+/* Check if we should generate event interrupt for a TD in an isoc URB */
+static bool trb_block_event_intr(struct xhci_hcd *xhci, int num_tds, int i)
+{
+	if (xhci->hci_version < 0x100)
+		return false;
+	/* always generate an event interrupt for the last TD */
+	if (i == num_tds - 1)
+		return false;
+	/*
+	 * If AVOID_BEI is set the host handles full event rings poorly,
+	 * generate an event at least every 8th TD to clear the event ring
+	 */
+	if (i && xhci->quirks & XHCI_AVOID_BEI)
+		return !!(i % 8);
+
+	return true;
+}
+
 /* This is for isoc transfer */
 static int xhci_queue_isoc_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 		struct urb *urb, int slot_id, unsigned int ep_index)
@@ -3831,10 +3861,7 @@ static int xhci_queue_isoc_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 				more_trbs_coming = false;
 				td->last_trb = ep_ring->enqueue;
 				field |= TRB_IOC;
-				/* set BEI, except for the last TD */
-				if (xhci->hci_version >= 0x100 &&
-				    !(xhci->quirks & XHCI_AVOID_BEI) &&
-				    i < num_tds - 1)
+				if (trb_block_event_intr(xhci, num_tds, i))
 					field |= TRB_BEI;
 			}
 			/* Calculate TRB length */

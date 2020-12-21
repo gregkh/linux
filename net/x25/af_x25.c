@@ -431,7 +431,7 @@ void x25_destroy_socket_from_timer(struct sock *sk)
  */
 
 static int x25_setsockopt(struct socket *sock, int level, int optname,
-			  char __user *optval, unsigned int optlen)
+			  sockptr_t optval, unsigned int optlen)
 {
 	int opt;
 	struct sock *sk = sock->sk;
@@ -445,7 +445,7 @@ static int x25_setsockopt(struct socket *sock, int level, int optname,
 		goto out;
 
 	rc = -EFAULT;
-	if (get_user(opt, (int __user *)optval))
+	if (copy_from_sockptr(&opt, optval, sizeof(int)))
 		goto out;
 
 	if (opt)
@@ -659,6 +659,12 @@ static int x25_release(struct socket *sock)
 			sock_set_flag(sk, SOCK_DEAD);
 			sock_set_flag(sk, SOCK_DESTROY);
 			break;
+
+		case X25_STATE_5:
+			x25_write_internal(sk, X25_CLEAR_REQUEST);
+			x25_disconnect(sk, 0, 0, 0);
+			__x25_destroy_socket(sk);
+			goto out;
 	}
 
 	sock_orphan(sk);
@@ -897,7 +903,7 @@ static int x25_accept(struct socket *sock, struct socket *newsock, int flags,
 	/* Now attach up the new socket */
 	skb->sk = NULL;
 	kfree_skb(skb);
-	sk->sk_ack_backlog--;
+	sk_acceptq_removed(sk);
 	newsock->state = SS_CONNECTED;
 	rc = 0;
 out2:
@@ -1061,6 +1067,8 @@ int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
 	if (test_bit(X25_ACCPT_APPRV_FLAG, &makex25->flags)) {
 		x25_write_internal(make, X25_CALL_ACCEPTED);
 		makex25->state = X25_STATE_3;
+	} else {
+		makex25->state = X25_STATE_5;
 	}
 
 	/*
@@ -1069,7 +1077,7 @@ int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
 	skb_copy_from_linear_data(skb, makex25->calluserdata.cuddata, skb->len);
 	makex25->calluserdata.cudlength = skb->len;
 
-	sk->sk_ack_backlog++;
+	sk_acceptq_added(sk);
 
 	x25_insert_socket(make);
 

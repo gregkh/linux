@@ -42,7 +42,6 @@
 #include <soc/fsl/qe/ucc.h>
 #include <soc/fsl/qe/ucc_fast.h>
 #include <asm/machdep.h>
-#include <net/sch_generic.h>
 
 #include "ucc_geth.h"
 
@@ -1349,7 +1348,7 @@ static int adjust_enet_interface(struct ucc_geth_private *ugeth)
 		switch (ugeth->max_speed) {
 		case SPEED_10:
 			upsmr |= UCC_GETH_UPSMR_R10M;
-			/* FALLTHROUGH */
+			fallthrough;
 		case SPEED_100:
 			if (ugeth->phy_interface != PHY_INTERFACE_MODE_RTBI)
 				upsmr |= UCC_GETH_UPSMR_RMM;
@@ -1359,7 +1358,7 @@ static int adjust_enet_interface(struct ucc_geth_private *ugeth)
 	    (ugeth->phy_interface == PHY_INTERFACE_MODE_RTBI)) {
 		upsmr |= UCC_GETH_UPSMR_TBIM;
 	}
-	if ((ugeth->phy_interface == PHY_INTERFACE_MODE_SGMII))
+	if (ugeth->phy_interface == PHY_INTERFACE_MODE_SGMII)
 		upsmr |= UCC_GETH_UPSMR_SGMM;
 
 	out_be32(&uf_regs->upsmr, upsmr);
@@ -3546,7 +3545,7 @@ static void ucc_geth_timeout_work(struct work_struct *work)
  * ucc_geth_timeout gets called when a packet has not been
  * transmitted after a set amount of time.
  */
-static void ucc_geth_timeout(struct net_device *dev)
+static void ucc_geth_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct ucc_geth_private *ugeth = netdev_priv(dev);
 
@@ -3991,5 +3990,4 @@ module_exit(ucc_geth_exit);
 
 MODULE_AUTHOR("Freescale Semiconductor, Inc");
 MODULE_DESCRIPTION(DRV_DESC);
-MODULE_VERSION(DRV_VERSION);
 MODULE_LICENSE("GPL");

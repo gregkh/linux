@@ -711,7 +711,7 @@ static void process_txdone_queue (struct fs_dev *dev, struct queue *q)
 
 		switch (STATUS_CODE (qe)) {
 		case 0x01: /* This is for AAL0 where we put the chip in streaming mode */
-			/* Fall through */
+			fallthrough;
 		case 0x02:
 			/* Process a real txdone entry. */
 			tmp = qe->p0;
@@ -1074,7 +1074,7 @@ static int fs_open(struct atm_vcc *atm_vcc)
 					RC_FLAGS_BFPS_BFP * bfp |
 					RC_FLAGS_RXBM_PSB, 0, 0);
 			break;
-		};
+		}
 		if (IS_FS50 (dev)) {
 			submit_command (dev, &dev->hp_txq, 
 					QE_CMD_REG_WR | QE_CMD_IMM_INQ,
@@ -1278,8 +1278,6 @@ static const struct atmdev_ops ops = {
 	.send =         fs_send,
 	.owner =        THIS_MODULE,
 	/* ioctl:          fs_ioctl, */
-	/* getsockopt:     fs_getsockopt, */
-	/* setsockopt:     fs_setsockopt, */
 	/* change_qos:     fs_change_qos, */
 
 	/* For now implement these internally here... */  

@@ -210,6 +210,20 @@ struct sta_info *sta_info_get_bss(struct ieee80211_sub_if_data *sdata,
 	return NULL;
 }
 
+struct sta_info *sta_info_get_by_addrs(struct ieee80211_local *local,
+				       const u8 *sta_addr, const u8 *vif_addr)
+{
+	struct rhlist_head *tmp;
+	struct sta_info *sta;
+
+	for_each_sta_info(local, sta_addr, sta, tmp) {
+		if (ether_addr_equal(vif_addr, sta->sdata->vif.addr))
+			return sta;
+	}
+
+	return NULL;
+}
+
 struct sta_info *sta_info_get_by_idx(struct ieee80211_sub_if_data *sdata,
 				     int idx)
 {
@@ -415,6 +429,9 @@ struct sta_info *sta_info_alloc(struct ieee80211_sub_if_data *sdata,
 		skb_queue_head_init(&sta->ps_tx_buf[i]);
 		skb_queue_head_init(&sta->tx_filtered[i]);
 		sta->airtime[i].deficit = sta->airtime_weight;
+		atomic_set(&sta->airtime[i].aql_tx_pending, 0);
+		sta->airtime[i].aql_limit_low = local->aql_txq_limit_low[i];
+		sta->airtime[i].aql_limit_high = local->aql_txq_limit_high[i];
 	}
 
 	for (i = 0; i < IEEE80211_NUM_TIDS; i++)
@@ -1352,20 +1369,6 @@ void ieee80211_sta_ps_deliver_wakeup(struct sta_info *sta)
 
 	atomic_dec(&ps->num_sta_ps);
 
-	/* This station just woke up and isn't aware of our SMPS state */
-	if (!ieee80211_vif_is_mesh(&sdata->vif) &&
-	    !ieee80211_smps_is_restrictive(sta->known_smps_mode,
-					   sdata->smps_mode) &&
-	    sta->known_smps_mode != sdata->bss->req_smps &&
-	    sta_info_tx_streams(sta) != 1) {
-		ht_dbg(sdata,
-		       "%pM just woke up and MIMO capable - update SMPS\n",
-		       sta->sta.addr);
-		ieee80211_send_smps_action(sdata, sdata->bss->req_smps,
-					   sta->sta.addr,
-					   sdata->vif.bss_conf.bssid);
-	}
-
 	local->total_ps_buffered -= buffered;
 
 	sta_info_recalc_tim(sta);
@@ -1464,7 +1467,7 @@ static void ieee80211_send_null_response(struct sta_info *sta, int tid,
 	}
 
 	info->band = chanctx_conf->def.chan->band;
-	ieee80211_xmit(sdata, sta, skb, 0);
+	ieee80211_xmit(sdata, sta, skb);
 	rcu_read_unlock();
 }
 
@@ -1911,6 +1914,42 @@ void ieee80211_sta_register_airtime(struct ieee80211_sta *pubsta, u8 tid,
 }
 EXPORT_SYMBOL(ieee80211_sta_register_airtime);
 
+void ieee80211_sta_update_pending_airtime(struct ieee80211_local *local,
+					  struct sta_info *sta, u8 ac,
+					  u16 tx_airtime, bool tx_completed)
+{
+	int tx_pending;
+
+	if (!wiphy_ext_feature_isset(local->hw.wiphy, NL80211_EXT_FEATURE_AQL))
+		return;
+
+	if (!tx_completed) {
+		if (sta)
+			atomic_add(tx_airtime,
+				   &sta->airtime[ac].aql_tx_pending);
+
+		atomic_add(tx_airtime, &local->aql_total_pending_airtime);
+		return;
+	}
+
+	if (sta) {
+		tx_pending = atomic_sub_return(tx_airtime,
+					       &sta->airtime[ac].aql_tx_pending);
+		if (tx_pending < 0)
+			atomic_cmpxchg(&sta->airtime[ac].aql_tx_pending,
+				       tx_pending, 0);
+	}
+
+	tx_pending = atomic_sub_return(tx_airtime,
+				       &local->aql_total_pending_airtime);
+	if (WARN_ONCE(tx_pending < 0,
+		      "Device %s AC %d pending airtime underflow: %u, %u",
+		      wiphy_name(local->hw.wiphy), ac, tx_pending,
+		      tx_airtime))
+		atomic_cmpxchg(&local->aql_total_pending_airtime,
+			       tx_pending, 0);
+}
+
 int sta_info_move_state(struct sta_info *sta,
 			enum ieee80211_sta_state new_state)
 {
@@ -2131,19 +2170,41 @@ static int sta_set_rate_info_rx(struct sta_info *sta, struct rate_info *rinfo)
 	return 0;
 }
 
+static inline u64 sta_get_tidstats_msdu(struct ieee80211_sta_rx_stats *rxstats,
+					int tid)
+{
+	unsigned int start;
+	u64 value;
+
+	do {
+		start = u64_stats_fetch_begin(&rxstats->syncp);
+		value = rxstats->msdu[tid];
+	} while (u64_stats_fetch_retry(&rxstats->syncp, start));
+
+	return value;
+}
+
 static void sta_set_tidstats(struct sta_info *sta,
 			     struct cfg80211_tid_stats *tidstats,
 			     int tid)
 {
 	struct ieee80211_local *local = sta->local;
+	int cpu;
 
 	if (!(tidstats->filled & BIT(NL80211_TID_STATS_RX_MSDU))) {
-		unsigned int start;
+		if (!ieee80211_hw_check(&local->hw, USES_RSS))
+			tidstats->rx_msdu +=
+				sta_get_tidstats_msdu(&sta->rx_stats, tid);
 
-		do {
-			start = u64_stats_fetch_begin(&sta->rx_stats.syncp);
-			tidstats->rx_msdu = sta->rx_stats.msdu[tid];
-		} while (u64_stats_fetch_retry(&sta->rx_stats.syncp, start));
+		if (sta->pcpu_rx_stats) {
+			for_each_possible_cpu(cpu) {
+				struct ieee80211_sta_rx_stats *cpurxs;
+
+				cpurxs = per_cpu_ptr(sta->pcpu_rx_stats, cpu);
+				tidstats->rx_msdu +=
+					sta_get_tidstats_msdu(cpurxs, tid);
+			}
+		}
 
 		tidstats->filled |= BIT(NL80211_TID_STATS_RX_MSDU);
 	}
@@ -2247,7 +2308,8 @@ void sta_set_sinfo(struct sta_info *sta, struct station_info *sinfo,
 
 	if (!(sinfo->filled & (BIT_ULL(NL80211_STA_INFO_RX_BYTES64) |
 			       BIT_ULL(NL80211_STA_INFO_RX_BYTES)))) {
-		sinfo->rx_bytes += sta_get_stats_bytes(&sta->rx_stats);
+		if (!ieee80211_hw_check(&local->hw, USES_RSS))
+			sinfo->rx_bytes += sta_get_stats_bytes(&sta->rx_stats);
 
 		if (sta->pcpu_rx_stats) {
 			for_each_possible_cpu(cpu) {
@@ -2378,7 +2440,8 @@ void sta_set_sinfo(struct sta_info *sta, struct station_info *sinfo,
 				 BIT_ULL(NL80211_STA_INFO_LOCAL_PM) |
 				 BIT_ULL(NL80211_STA_INFO_PEER_PM) |
 				 BIT_ULL(NL80211_STA_INFO_NONPEER_PM) |
-				 BIT_ULL(NL80211_STA_INFO_CONNECTED_TO_GATE);
+				 BIT_ULL(NL80211_STA_INFO_CONNECTED_TO_GATE) |
+				 BIT_ULL(NL80211_STA_INFO_CONNECTED_TO_AS);
 
 		sinfo->llid = sta->mesh->llid;
 		sinfo->plid = sta->mesh->plid;
@@ -2391,6 +2454,7 @@ void sta_set_sinfo(struct sta_info *sta, struct station_info *sinfo,
 		sinfo->peer_pm = sta->mesh->peer_pm;
 		sinfo->nonpeer_pm = sta->mesh->nonpeer_pm;
 		sinfo->connected_to_gate = sta->mesh->connected_to_gate;
+		sinfo->connected_to_as = sta->mesh->connected_to_as;
 #endif
 	}
 

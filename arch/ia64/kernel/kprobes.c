@@ -17,8 +17,8 @@
 #include <linux/preempt.h>
 #include <linux/extable.h>
 #include <linux/kdebug.h>
+#include <linux/pgtable.h>
 
-#include <asm/pgtable.h>
 #include <asm/sections.h>
 #include <asm/exception.h>
 
@@ -768,7 +768,7 @@ static int __kprobes pre_kprobes_handler(struct die_args *args)
 		return 1;
 	}
 
-#if !defined(CONFIG_PREEMPT)
+#if !defined(CONFIG_PREEMPTION)
 	if (p->ainsn.inst_flag == INST_FLAG_BOOSTABLE && !p->post_handler) {
 		/* Boost up -- we can execute copied instructions directly */
 		ia64_psr(regs)->ri = p->ainsn.slot;

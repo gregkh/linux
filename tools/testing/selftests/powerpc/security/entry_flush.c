@@ -15,32 +15,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "utils.h"
-
-#define CACHELINE_SIZE 128
-
-struct perf_event_read {
-	__u64 nr;
-	__u64 l1d_misses;
-};
-
-static inline __u64 load(void *addr)
-{
-	__u64 tmp;
-
-	asm volatile("ld %0,0(%1)" : "=r"(tmp) : "b"(addr));
-
-	return tmp;
-}
-
-static void syscall_loop(char *p, unsigned long iterations,
-		  unsigned long zero_size)
-{
-	for (unsigned long i = 0; i < iterations; i++) {
-		for (unsigned long j = 0; j < zero_size; j += CACHELINE_SIZE)
-			load(p + j);
-		getppid();
-	}
-}
+#include "flush_utils.h"
 
 int entry_flush_test(void)
 {
@@ -120,12 +95,13 @@ again:
 		       repetitions * l1d_misses_expected / 2,
 		       repetitions - passes, repetitions);
 		rc = 1;
-	} else
+	} else {
 		printf("PASS (L1D misses with entry_flush=%d: %llu %c %lu) [%d/%d pass]\n",
 		       entry_flush, l1d_misses_total, entry_flush ? '>' : '<',
 		       entry_flush ? repetitions * l1d_misses_expected :
 		       repetitions * l1d_misses_expected / 2,
 		       passes, repetitions);
+	}
 
 	if (entry_flush == entry_flush_orig) {
 		entry_flush = !entry_flush_orig;

@@ -81,7 +81,7 @@ static int bnxt_unregister_dev(struct bnxt_en_dev *edev, int ulp_id)
 		edev->en_ops->bnxt_free_msix(edev, ulp_id);
 
 	if (ulp->max_async_event_id)
-		bnxt_hwrm_func_rgtr_async_events(bp, NULL, 0);
+		bnxt_hwrm_func_drv_rgtr(bp, NULL, 0, true);
 
 	RCU_INIT_POINTER(ulp->ulp_ops, NULL);
 	synchronize_rcu();
@@ -104,7 +104,13 @@ static void bnxt_fill_msix_vecs(struct bnxt *bp, struct bnxt_msix_entry *ent)
 	for (i = 0; i < num_msix; i++) {
 		ent[i].vector = bp->irq_tbl[idx + i].vector;
 		ent[i].ring_idx = idx + i;
-		ent[i].db_offset = (idx + i) * 0x80;
+		if (bp->flags & BNXT_FLAG_CHIP_P5) {
+			ent[i].db_offset = DB_PF_OFFSET_P5;
+			if (BNXT_VF(bp))
+				ent[i].db_offset = DB_VF_OFFSET_P5;
+		} else {
+			ent[i].db_offset = (idx + i) * 0x80;
+		}
 	}
 }
 
@@ -186,7 +192,7 @@ static int bnxt_free_msix_vecs(struct bnxt_en_dev *edev, int ulp_id)
 
 	edev->ulp_tbl[ulp_id].msix_requested = 0;
 	edev->flags &= ~BNXT_EN_FLAG_MSIX_REQUESTED;
-	if (netif_running(dev)) {
+	if (netif_running(dev) && !(edev->flags & BNXT_EN_FLAG_ULP_STOPPED)) {
 		bnxt_close_nic(bp, true, false);
 		bnxt_open_nic(bp, true, false);
 	}
@@ -270,6 +276,7 @@ void bnxt_ulp_stop(struct bnxt *bp)
 	if (!edev)
 		return;
 
+	edev->flags |= BNXT_EN_FLAG_ULP_STOPPED;
 	for (i = 0; i < BNXT_MAX_ULP; i++) {
 		struct bnxt_ulp *ulp = &edev->ulp_tbl[i];
 
@@ -280,13 +287,18 @@ void bnxt_ulp_stop(struct bnxt *bp)
 	}
 }
 
-void bnxt_ulp_start(struct bnxt *bp)
+void bnxt_ulp_start(struct bnxt *bp, int err)
 {
 	struct bnxt_en_dev *edev = bp->edev;
 	struct bnxt_ulp_ops *ops;
 	int i;
 
 	if (!edev)
+		return;
+
+	edev->flags &= ~BNXT_EN_FLAG_ULP_STOPPED;
+
+	if (err)
 		return;
 
 	for (i = 0; i < BNXT_MAX_ULP; i++) {
@@ -439,7 +451,7 @@ static int bnxt_register_async_events(struct bnxt_en_dev *edev, int ulp_id,
 	/* Make sure bnxt_ulp_async_events() sees this order */
 	smp_wmb();
 	ulp->max_async_event_id = max_id;
-	bnxt_hwrm_func_rgtr_async_events(bp, events_bmap, max_id + 1);
+	bnxt_hwrm_func_drv_rgtr(bp, events_bmap, max_id + 1, true);
 	return 0;
 }
 
@@ -469,6 +481,8 @@ struct bnxt_en_dev *bnxt_ulp_probe(struct net_device *dev)
 			edev->flags |= BNXT_EN_FLAG_ROCEV2_CAP;
 		edev->net = dev;
 		edev->pdev = bp->pdev;
+		edev->l2_db_size = bp->db_size;
+		edev->l2_db_size_nc = bp->db_size;
 		bp->edev = edev;
 	}
 	return bp->edev;

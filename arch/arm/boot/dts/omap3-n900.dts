@@ -19,7 +19,11 @@
  * but it is not widely used and to prevent kernel crash rather AES is disabled.
  * There is also no runtime detection code if AES is disabled in L3 firewall...
  */
-&aes {
+&aes1_target {
+	status = "disabled";
+};
+
+&aes2_target {
 	status = "disabled";
 };
 
@@ -488,6 +492,11 @@
 	regulator-name = "VINTDIG";
 	/* fixed to 1500000 */
 	regulator-always-on;
+};
+
+/* First two dma channels are reserved on secure omap3 */
+&sdma {
+	dma-channel-mask = <0xfffffffc>;
 };
 
 &twl {
@@ -1035,6 +1044,11 @@
 	};
 };
 
+/* RNG not directly accessible on n900, see omap3-rom-rng instead */
+&rng_target {
+	status = "disabled";
+};
+
 &usb_otg_hs {
 	interface-type = <0>;
 	usb-phy = <&usb2_phy>;
@@ -1069,7 +1083,7 @@
 };
 
 &dss {
-	status = "ok";
+	status = "okay";
 
 	pinctrl-names = "default";
 	pinctrl-0 = <&dss_sdi_pins>;
@@ -1092,7 +1106,7 @@
 };
 
 &venc {
-	status = "ok";
+	status = "okay";
 
 	vdda-supply = <&vdac>;
 
@@ -1105,7 +1119,7 @@
 };
 
 &mcbsp2 {
-	status = "ok";
+	status = "okay";
 };
 
 &ssi_port1 {

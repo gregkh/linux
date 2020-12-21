@@ -61,6 +61,7 @@ enum {
 	ec_schedule = 0,
 	ec_call_function_single,
 	ec_stop_cpu,
+	ec_mcck_pending,
 };
 
 enum {
@@ -145,7 +146,7 @@ static int pcpu_sigp_retry(struct pcpu *pcpu, u8 order, u32 parm)
 
 static inline int pcpu_stopped(struct pcpu *pcpu)
 {
-	u32 uninitialized_var(status);
+	u32 status;
 
 	if (__pcpu_sigp(pcpu->address, SIGP_SENSE,
 			0, &status) != SIGP_CC_STATUS_STORED)
@@ -403,6 +404,11 @@ int smp_find_processor_id(u16 address)
 	return -1;
 }
 
+void schedule_mcck_handler(void)
+{
+	pcpu_ec_call(pcpu_devices + smp_processor_id(), ec_mcck_pending);
+}
+
 bool notrace arch_vcpu_is_preempted(int cpu)
 {
 	if (test_cpu_flag_of(CIF_ENABLED_WAIT, cpu))
@@ -415,14 +421,11 @@ EXPORT_SYMBOL(arch_vcpu_is_preempted);
 
 void notrace smp_yield_cpu(int cpu)
 {
-	if (MACHINE_HAS_DIAG9C) {
-		diag_stat_inc_norecursion(DIAG_STAT_X09C);
-		asm volatile("diag %0,0,0x9c"
-			     : : "d" (pcpu_devices[cpu].address));
-	} else if (MACHINE_HAS_DIAG44 && !smp_cpu_mtid) {
-		diag_stat_inc_norecursion(DIAG_STAT_X044);
-		asm volatile("diag 0,0,0x44");
-	}
+	if (!MACHINE_HAS_DIAG9C)
+		return;
+	diag_stat_inc_norecursion(DIAG_STAT_X09C);
+	asm volatile("diag %0,0,0x9c"
+		     : : "d" (pcpu_devices[cpu].address));
 }
 
 /*
@@ -500,6 +503,8 @@ static void smp_handle_ext_call(void)
 		scheduler_ipi();
 	if (test_bit(ec_call_function_single, &bits))
 		generic_smp_call_function_single_interrupt();
+	if (test_bit(ec_mcck_pending, &bits))
+		s390_handle_mcck();
 }
 
 static void do_ext_call_interrupt(struct ext_code ext_code,
@@ -601,14 +606,14 @@ int smp_store_status(int cpu)
 /*
  * Collect CPU state of the previous, crashed system.
  * There are four cases:
- * 1) standard zfcp dump
- *    condition: OLDMEM_BASE == NULL && ipl_info.type == IPL_TYPE_FCP_DUMP
+ * 1) standard zfcp/nvme dump
+ *    condition: OLDMEM_BASE == NULL && is_ipl_type_dump() == true
  *    The state for all CPUs except the boot CPU needs to be collected
  *    with sigp stop-and-store-status. The boot CPU state is located in
  *    the absolute lowcore of the memory stored in the HSA. The zcore code
  *    will copy the boot CPU state from the HSA.
- * 2) stand-alone kdump for SCSI (zfcp dump with swapped memory)
- *    condition: OLDMEM_BASE != NULL && ipl_info.type == IPL_TYPE_FCP_DUMP
+ * 2) stand-alone kdump for SCSI/NVMe (zfcp/nvme dump with swapped memory)
+ *    condition: OLDMEM_BASE != NULL && is_ipl_type_dump() == true
  *    The state for all CPUs except the boot CPU needs to be collected
  *    with sigp stop-and-store-status. The firmware or the boot-loader
  *    stored the registers of the boot CPU in the absolute lowcore in the
@@ -655,7 +660,7 @@ void __init smp_save_dump_cpus(void)
 	unsigned long page;
 	bool is_boot_cpu;
 
-	if (!(OLDMEM_BASE || ipl_info.type == IPL_TYPE_FCP_DUMP))
+	if (!(OLDMEM_BASE || is_ipl_type_dump()))
 		/* No previous system present, normal boot. */
 		return;
 	/* Allocate a page as dumping area for the store status sigps */
@@ -681,7 +686,7 @@ void __init smp_save_dump_cpus(void)
 			/* Get the vector registers */
 			smp_save_cpu_vxrs(sa, addr, is_boot_cpu, page);
 		/*
-		 * For a zfcp dump OLDMEM_BASE == NULL and the registers
+		 * For a zfcp/nvme dump OLDMEM_BASE == NULL and the registers
 		 * of the boot CPU are stored in the HSA. To retrieve
 		 * these registers an SCLP request is required which is
 		 * done by drivers/s390/char/zcore.c:init_cpu_info()
@@ -704,6 +709,11 @@ void smp_cpu_set_polarization(int cpu, int val)
 int smp_cpu_get_polarization(int cpu)
 {
 	return pcpu_devices[cpu].polarization;
+}
+
+int smp_cpu_get_cpu_address(int cpu)
+{
+	return pcpu_devices[cpu].address;
 }
 
 static void __ref smp_get_core_info(struct sclp_core_info *info, int early)
@@ -857,12 +867,13 @@ static void smp_init_secondary(void)
 	init_cpu_timer();
 	vtime_init();
 	pfault_init();
-	notify_cpu_starting(smp_processor_id());
+	notify_cpu_starting(cpu);
 	if (topology_cpu_dedicated(cpu))
 		set_cpu_flag(CIF_DEDICATED_CPU);
 	else
 		clear_cpu_flag(CIF_DEDICATED_CPU);
-	set_cpu_online(smp_processor_id(), true);
+	set_cpu_online(cpu, true);
+	update_cpu_masks();
 	inc_irq_stat(CPU_RST);
 	local_irq_enable();
 	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
@@ -934,6 +945,7 @@ int __cpu_disable(void)
 	/* Handle possible pending IPIs */
 	smp_handle_ext_call();
 	set_cpu_online(smp_processor_id(), false);
+	update_cpu_masks();
 	/* Disable pseudo page faults on this cpu. */
 	pfault_fini();
 	/* Disable interrupt sources via control register. */
@@ -999,10 +1011,6 @@ void __init smp_prepare_boot_cpu(void)
 	pcpu->lowcore = (struct lowcore *)(unsigned long) store_prefix();
 	S390_lowcore.percpu_offset = __per_cpu_offset[0];
 	smp_cpu_set_polarization(0, POLARIZATION_UNKNOWN);
-}
-
-void __init smp_cpus_done(unsigned int max_cpus)
-{
 }
 
 void __init smp_setup_processor_id(void)
@@ -1134,6 +1142,7 @@ static int smp_cpu_online(unsigned int cpu)
 
 	return sysfs_create_group(&s->kobj, &cpu_online_attr_group);
 }
+
 static int smp_cpu_pre_down(unsigned int cpu)
 {
 	struct device *s = &per_cpu(cpu_device, cpu)->dev;

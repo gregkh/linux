@@ -346,7 +346,7 @@ static bool malidp_check_pages_threshold(struct malidp_plane_state *ms,
 		if (cma_obj->sgt)
 			sgt = cma_obj->sgt;
 		else
-			sgt = obj->dev->driver->gem_prime_get_sg_table(obj);
+			sgt = obj->funcs->get_sg_table(obj);
 
 		if (!sgt)
 			return false;
@@ -512,7 +512,7 @@ static int malidp_de_plane_check(struct drm_plane *plane,
 	int i, ret;
 	unsigned int block_w, block_h;
 
-	if (!state->crtc || !state->fb)
+	if (!state->crtc || WARN_ON(!state->fb))
 		return 0;
 
 	fb = state->fb;

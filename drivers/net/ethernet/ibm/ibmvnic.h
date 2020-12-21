@@ -875,6 +875,7 @@ struct ibmvnic_sub_crq_queue {
 	struct ibmvnic_adapter *adapter;
 	atomic_t used;
 	char name[32];
+	u64 handle;
 };
 
 struct ibmvnic_long_term_buff {
@@ -1026,6 +1027,8 @@ struct ibmvnic_adapter {
 	int init_done_rc;
 
 	struct completion fw_done;
+	/* Used for serialization of device commands */
+	struct mutex fw_lock;
 	int fw_done_rc;
 
 	struct completion reset_done;
@@ -1072,6 +1075,7 @@ struct ibmvnic_adapter {
 	u32 num_active_rx_napi;
 	u32 num_active_tx_scrqs;
 	u32 num_active_tx_pools;
+	u32 cur_rx_buf_sz;
 
 	struct tasklet_struct tasklet;
 	enum vnic_state state;
@@ -1082,10 +1086,16 @@ struct ibmvnic_adapter {
 	struct delayed_work ibmvnic_delayed_reset;
 	unsigned long resetting;
 	bool napi_enabled, from_passive_init;
+	bool login_pending;
+	/* last device reset time */
+	unsigned long last_reset_time;
 
 	bool failover_pending;
 	bool force_reset_recovery;
 
 	struct ibmvnic_tunables desired;
 	struct ibmvnic_tunables fallback;
+
+	/* Used for serializatin of state field */
+	spinlock_t state_lock;
 };

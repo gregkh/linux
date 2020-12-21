@@ -8,7 +8,7 @@
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
  * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2018 - 2019 Intel Corporation
+ * Copyright(c) 2018 - 2020 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -31,7 +31,7 @@
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
  * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2018 - 2019 Intel Corporation
+ * Copyright(c) 2018 - 2020 Intel Corporation
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -341,8 +341,11 @@ static u32 iwl_mvm_get_tx_rate(struct iwl_mvm *mvm,
 		rate_idx = rate_lowest_index(
 				&mvm->nvm_data->bands[info->band], sta);
 
-	/* For 5 GHZ band, remap mac80211 rate indices into driver indices */
-	if (info->band == NL80211_BAND_5GHZ)
+	/*
+	 * For non 2 GHZ band, remap mac80211 rate
+	 * indices into driver indices
+	 */
+	if (info->band != NL80211_BAND_2GHZ)
 		rate_idx += IWL_FIRST_OFDM_RATE;
 
 	/* For 2.4 GHZ band, check that there is no need to remap */
@@ -542,7 +545,7 @@ iwl_mvm_set_tx_params(struct iwl_mvm *mvm, struct sk_buff *skb,
 		}
 
 		if (mvm->trans->trans_cfg->device_family >=
-		    IWL_DEVICE_FAMILY_22560) {
+		    IWL_DEVICE_FAMILY_AX210) {
 			struct iwl_tx_cmd_gen3 *cmd = (void *)dev_cmd->payload;
 
 			cmd->offload_assist |= cpu_to_le32(offload_assist);
@@ -790,11 +793,7 @@ unsigned int iwl_mvm_max_amsdu_size(struct iwl_mvm *mvm,
 	enum nl80211_band band = mvmsta->vif->bss_conf.chandef.chan->band;
 	u8 ac = tid_to_mac80211_ac[tid];
 	unsigned int txf;
-	int lmac = IWL_LMAC_24G_INDEX;
-
-	if (iwl_mvm_is_cdb_supported(mvm) &&
-	    band == NL80211_BAND_5GHZ)
-		lmac = IWL_LMAC_5G_INDEX;
+	int lmac = iwl_mvm_get_lmac_id(mvm->fw, band);
 
 	/* For HE redirect to trigger based fifos */
 	if (sta->he_cap.has_he && !WARN_ON(!iwl_mvm_has_new_tx_api(mvm)))
@@ -839,10 +838,7 @@ iwl_mvm_tx_tso_segment(struct sk_buff *skb, unsigned int num_subframes,
 	else if (next)
 		consume_skb(skb);
 
-	while (next) {
-		tmp = next;
-		next = tmp->next;
-
+	skb_list_walk_safe(next, tmp, next) {
 		memcpy(tmp->cb, cb, sizeof(tmp->cb));
 		/*
 		 * Compute the length of all the data added for the A-MSDU.
@@ -872,9 +868,7 @@ iwl_mvm_tx_tso_segment(struct sk_buff *skb, unsigned int num_subframes,
 			skb_shinfo(tmp)->gso_size = 0;
 		}
 
-		tmp->prev = NULL;
-		tmp->next = NULL;
-
+		skb_mark_not_on_list(tmp);
 		__skb_queue_tail(mpdus_skb, tmp);
 		i++;
 	}
@@ -922,11 +916,8 @@ static int iwl_mvm_tx_tso(struct iwl_mvm *mvm, struct sk_buff *skb,
 	 * No need to lock amsdu_in_ampdu_allowed since it can't be modified
 	 * during an BA session.
 	 */
-	if (info->flags & IEEE80211_TX_CTL_AMPDU &&
-	    !mvmsta->tid_data[tid].amsdu_in_ampdu_allowed)
-		return iwl_mvm_tx_tso_segment(skb, 1, netdev_flags, mpdus_skb);
-
-	if (iwl_mvm_vif_low_latency(iwl_mvm_vif_from_mac80211(mvmsta->vif)) ||
+	if ((info->flags & IEEE80211_TX_CTL_AMPDU &&
+	     !mvmsta->tid_data[tid].amsdu_in_ampdu_allowed) ||
 	    !(mvmsta->amsdu_enabled & BIT(tid)))
 		return iwl_mvm_tx_tso_segment(skb, 1, netdev_flags, mpdus_skb);
 
@@ -1376,7 +1367,7 @@ void iwl_mvm_hwrate_to_tx_rate(u32 rate_n_flags,
 	}
 }
 
-/**
+/*
  * translate ucode response to mac80211 tx status control values
  */
 static void iwl_mvm_hwrate_to_tx_status(u32 rate_n_flags,
@@ -1418,7 +1409,7 @@ static void iwl_mvm_tx_status_check_trigger(struct iwl_mvm *mvm,
 	}
 }
 
-/**
+/*
  * iwl_mvm_get_scd_ssn - returns the SSN of the SCD
  * @tx_resp: the Tx response from the fw (agg or non-agg)
  *
@@ -1773,13 +1764,13 @@ static void iwl_mvm_tx_reclaim(struct iwl_mvm *mvm, int sta_id, int tid,
 			       struct ieee80211_tx_info *ba_info, u32 rate)
 {
 	struct sk_buff_head reclaimed_skbs;
-	struct iwl_mvm_tid_data *tid_data;
+	struct iwl_mvm_tid_data *tid_data = NULL;
 	struct ieee80211_sta *sta;
-	struct iwl_mvm_sta *mvmsta;
+	struct iwl_mvm_sta *mvmsta = NULL;
 	struct sk_buff *skb;
 	int freed;
 
-	if (WARN_ONCE(sta_id >= IWL_MVM_STATION_COUNT ||
+	if (WARN_ONCE(sta_id >= mvm->fw->ucode_capa.num_stations ||
 		      tid > IWL_MAX_TID_COUNT,
 		      "sta_id %d tid %d", sta_id, tid))
 		return;
@@ -1789,18 +1780,7 @@ static void iwl_mvm_tx_reclaim(struct iwl_mvm *mvm, int sta_id, int tid,
 	sta = rcu_dereference(mvm->fw_id_to_mac_id[sta_id]);
 
 	/* Reclaiming frames for a station that has been deleted ? */
-	if (WARN_ON_ONCE(IS_ERR_OR_NULL(sta))) {
-		rcu_read_unlock();
-		return;
-	}
-
-	mvmsta = iwl_mvm_sta_from_mac80211(sta);
-	tid_data = &mvmsta->tid_data[tid];
-
-	if (tid_data->txq_id != txq) {
-		IWL_ERR(mvm,
-			"invalid BA notification: Q %d, tid %d\n",
-			tid_data->txq_id, tid);
+	if (WARN_ON_ONCE(!sta)) {
 		rcu_read_unlock();
 		return;
 	}
@@ -1813,6 +1793,41 @@ static void iwl_mvm_tx_reclaim(struct iwl_mvm *mvm, int sta_id, int tid,
 	 * transmitted ... if not, it's too late anyway).
 	 */
 	iwl_trans_reclaim(mvm->trans, txq, index, &reclaimed_skbs);
+
+	skb_queue_walk(&reclaimed_skbs, skb) {
+		struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+
+		iwl_trans_free_tx_cmd(mvm->trans, info->driver_data[1]);
+
+		memset(&info->status, 0, sizeof(info->status));
+		/* Packet was transmitted successfully, failures come as single
+		 * frames because before failing a frame the firmware transmits
+		 * it without aggregation at least once.
+		 */
+		info->flags |= IEEE80211_TX_STAT_ACK;
+	}
+
+	/*
+	 * It's possible to get a BA response after invalidating the rcu (rcu is
+	 * invalidated in order to prevent new Tx from being sent, but there may
+	 * be some frames already in-flight).
+	 * In this case we just want to reclaim, and could skip all the
+	 * sta-dependent stuff since it's in the middle of being removed
+	 * anyways.
+	 */
+	if (IS_ERR(sta))
+		goto out;
+
+	mvmsta = iwl_mvm_sta_from_mac80211(sta);
+	tid_data = &mvmsta->tid_data[tid];
+
+	if (tid_data->txq_id != txq) {
+		IWL_ERR(mvm,
+			"invalid BA notification: Q %d, tid %d\n",
+			tid_data->txq_id, tid);
+		rcu_read_unlock();
+		return;
+	}
 
 	spin_lock_bh(&mvmsta->lock);
 
@@ -1836,15 +1851,6 @@ static void iwl_mvm_tx_reclaim(struct iwl_mvm *mvm, int sta_id, int tid,
 			freed++;
 		else
 			WARN_ON_ONCE(tid != IWL_MAX_TID_COUNT);
-
-		iwl_trans_free_tx_cmd(mvm->trans, info->driver_data[1]);
-
-		memset(&info->status, 0, sizeof(info->status));
-		/* Packet was transmitted successfully, failures come as single
-		 * frames because before failing a frame the firmware transmits
-		 * it without aggregation at least once.
-		 */
-		info->flags |= IEEE80211_TX_STAT_ACK;
 
 		/* this is the first skb we deliver in this batch */
 		/* put the rate scaling data there */
@@ -1922,8 +1928,14 @@ void iwl_mvm_rx_ba_notif(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb)
 		rcu_read_lock();
 
 		mvmsta = iwl_mvm_sta_from_staid_rcu(mvm, sta_id);
-		if (!mvmsta)
-			goto out_unlock;
+		/*
+		 * It's possible to get a BA response after invalidating the rcu
+		 * (rcu is invalidated in order to prevent new Tx from being
+		 * sent, but there may be some frames already in-flight).
+		 * In this case we just want to reclaim, and could skip all the
+		 * sta-dependent stuff since it's in the middle of being removed
+		 * anyways.
+		 */
 
 		/* Free per TID */
 		for (i = 0; i < le16_to_cpu(ba_res->tfd_cnt); i++) {
@@ -1934,7 +1946,9 @@ void iwl_mvm_rx_ba_notif(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb)
 			if (tid == IWL_MGMT_TID)
 				tid = IWL_MAX_TID_COUNT;
 
-			mvmsta->tid_data[i].lq_color = lq_color;
+			if (mvmsta)
+				mvmsta->tid_data[i].lq_color = lq_color;
+
 			iwl_mvm_tx_reclaim(mvm, sta_id, tid,
 					   (int)(le16_to_cpu(ba_tfd->q_num)),
 					   le16_to_cpu(ba_tfd->tfd_index),
@@ -1942,9 +1956,9 @@ void iwl_mvm_rx_ba_notif(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb)
 					   le32_to_cpu(ba_res->tx_rate));
 		}
 
-		iwl_mvm_tx_airtime(mvm, mvmsta,
-				   le32_to_cpu(ba_res->wireless_time));
-out_unlock:
+		if (mvmsta)
+			iwl_mvm_tx_airtime(mvm, mvmsta,
+					   le32_to_cpu(ba_res->wireless_time));
 		rcu_read_unlock();
 out:
 		IWL_DEBUG_TX_REPLY(mvm,
@@ -2041,7 +2055,7 @@ int iwl_mvm_flush_sta_tids(struct iwl_mvm *mvm, u32 sta_id,
 	return ret;
 }
 
-int iwl_mvm_flush_sta(struct iwl_mvm *mvm, void *sta, bool internal, u32 flags)
+int iwl_mvm_flush_sta(struct iwl_mvm *mvm, void *sta, bool internal)
 {
 	struct iwl_mvm_int_sta *int_sta = sta;
 	struct iwl_mvm_sta *mvm_sta = sta;
@@ -2050,12 +2064,10 @@ int iwl_mvm_flush_sta(struct iwl_mvm *mvm, void *sta, bool internal, u32 flags)
 		     offsetof(struct iwl_mvm_sta, sta_id));
 
 	if (iwl_mvm_has_new_tx_api(mvm))
-		return iwl_mvm_flush_sta_tids(mvm, mvm_sta->sta_id,
-					      0xff | BIT(IWL_MGMT_TID), flags);
+		return iwl_mvm_flush_sta_tids(mvm, mvm_sta->sta_id, 0xffff, 0);
 
 	if (internal)
-		return iwl_mvm_flush_tx_path(mvm, int_sta->tfd_queue_msk,
-					     flags);
+		return iwl_mvm_flush_tx_path(mvm, int_sta->tfd_queue_msk, 0);
 
-	return iwl_mvm_flush_tx_path(mvm, mvm_sta->tfd_queue_msk, flags);
+	return iwl_mvm_flush_tx_path(mvm, mvm_sta->tfd_queue_msk, 0);
 }

@@ -233,7 +233,6 @@ static int hisi_l3c_pmu_init_data(struct platform_device *pdev,
 				  struct hisi_pmu *l3c_pmu)
 {
 	unsigned long long id;
-	struct resource *res;
 	acpi_status status;
 
 	status = acpi_evaluate_integer(ACPI_HANDLE(&pdev->dev),
@@ -259,8 +258,7 @@ static int hisi_l3c_pmu_init_data(struct platform_device *pdev,
 		return -EINVAL;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	l3c_pmu->base = devm_ioremap_resource(&pdev->dev, res);
+	l3c_pmu->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(l3c_pmu->base)) {
 		dev_err(&pdev->dev, "ioremap failed for l3c_pmu resource\n");
 		return PTR_ERR(l3c_pmu->base);
@@ -399,8 +397,9 @@ static int hisi_l3c_pmu_probe(struct platform_device *pdev)
 	ret = perf_pmu_register(&l3c_pmu->pmu, name, -1);
 	if (ret) {
 		dev_err(l3c_pmu->dev, "L3C PMU register failed!\n");
-		cpuhp_state_remove_instance(CPUHP_AP_PERF_ARM_HISI_L3_ONLINE,
-					    &l3c_pmu->node);
+		cpuhp_state_remove_instance_nocalls(
+			CPUHP_AP_PERF_ARM_HISI_L3_ONLINE, &l3c_pmu->node);
+		irq_set_affinity_hint(l3c_pmu->irq, NULL);
 	}
 
 	return ret;
@@ -411,8 +410,9 @@ static int hisi_l3c_pmu_remove(struct platform_device *pdev)
 	struct hisi_pmu *l3c_pmu = platform_get_drvdata(pdev);
 
 	perf_pmu_unregister(&l3c_pmu->pmu);
-	cpuhp_state_remove_instance(CPUHP_AP_PERF_ARM_HISI_L3_ONLINE,
-				    &l3c_pmu->node);
+	cpuhp_state_remove_instance_nocalls(CPUHP_AP_PERF_ARM_HISI_L3_ONLINE,
+					    &l3c_pmu->node);
+	irq_set_affinity_hint(l3c_pmu->irq, NULL);
 
 	return 0;
 }

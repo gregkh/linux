@@ -392,6 +392,7 @@ static int qedi_conn_bind(struct iscsi_cls_session *cls_session,
 
 	qedi_ep->conn = qedi_conn;
 	qedi_conn->ep = qedi_ep;
+	qedi_conn->iscsi_ep = ep;
 	qedi_conn->iscsi_conn_id = qedi_ep->iscsi_cid;
 	qedi_conn->fw_cid = qedi_ep->fw_cid;
 	qedi_conn->cmd_cleanup_req = 0;
@@ -782,6 +783,9 @@ static int qedi_task_xmit(struct iscsi_task *task)
 	struct qedi_cmd *cmd = task->dd_data;
 	struct scsi_cmnd *sc = task->sc;
 
+	if (test_bit(QEDI_IN_SHUTDOWN, &qedi_conn->qedi->flags))
+		return -ENODEV;
+
 	cmd->state = 0;
 	cmd->task = NULL;
 	cmd->use_slowpath = false;
@@ -832,6 +836,11 @@ qedi_ep_connect(struct Scsi_Host *shost, struct sockaddr *dst_addr,
 		return ERR_PTR(ret);
 	}
 
+	if (atomic_read(&qedi->link_state) != QEDI_LINK_UP) {
+		QEDI_WARN(&qedi->dbg_ctx, "qedi link down\n");
+		return ERR_PTR(-ENXIO);
+	}
+
 	ep = iscsi_create_endpoint(sizeof(struct qedi_endpoint));
 	if (!ep) {
 		QEDI_ERR(&qedi->dbg_ctx, "endpoint create fail\n");
@@ -864,12 +873,6 @@ qedi_ep_connect(struct Scsi_Host *shost, struct sockaddr *dst_addr,
 			  qedi_ep->dst_addr, qedi_ep->dst_port);
 	} else {
 		QEDI_ERR(&qedi->dbg_ctx, "Invalid endpoint\n");
-	}
-
-	if (atomic_read(&qedi->link_state) != QEDI_LINK_UP) {
-		QEDI_WARN(&qedi->dbg_ctx, "qedi link down\n");
-		ret = -ENXIO;
-		goto ep_conn_exit;
 	}
 
 	ret = qedi_alloc_sq(qedi, qedi_ep);
@@ -1068,6 +1071,11 @@ static void qedi_ep_disconnect(struct iscsi_endpoint *ep)
 		wait_delay += qedi->pf_params.iscsi_pf_params.two_msl_timer;
 
 	qedi_ep->state = EP_STATE_DISCONN_START;
+
+	if (test_bit(QEDI_IN_SHUTDOWN, &qedi->flags) ||
+	    test_bit(QEDI_IN_RECOVERY, &qedi->flags))
+		goto ep_release_conn;
+
 	ret = qedi_ops->destroy_conn(qedi->cdev, qedi_ep->handle, abrt_conn);
 	if (ret) {
 		QEDI_WARN(&qedi->dbg_ctx,
@@ -1545,7 +1553,7 @@ static const struct {
 	},
 };
 
-char *qedi_get_iscsi_error(enum iscsi_error_types err_code)
+static char *qedi_get_iscsi_error(enum iscsi_error_types err_code)
 {
 	int i;
 	char *msg = NULL;
@@ -1604,6 +1612,20 @@ void qedi_process_iscsi_error(struct qedi_endpoint *ep,
 
 	if (need_recovery)
 		qedi_start_conn_recovery(qedi_conn->qedi, qedi_conn);
+}
+
+void qedi_clear_session_ctx(struct iscsi_cls_session *cls_sess)
+{
+	struct iscsi_session *session = cls_sess->dd_data;
+	struct iscsi_conn *conn = session->leadconn;
+	struct qedi_conn *qedi_conn = conn->dd_data;
+
+	if (iscsi_is_session_online(cls_sess))
+		qedi_ep_disconnect(qedi_conn->iscsi_ep);
+
+	qedi_conn_destroy(qedi_conn->cls_conn);
+
+	qedi_session_destroy(cls_sess);
 }
 
 void qedi_process_tcp_error(struct qedi_endpoint *ep,

@@ -528,7 +528,7 @@ ax25_cb *ax25_create_cb(void)
  */
 
 static int ax25_setsockopt(struct socket *sock, int level, int optname,
-	char __user *optval, unsigned int optlen)
+		sockptr_t optval, unsigned int optlen)
 {
 	struct sock *sk = sock->sk;
 	ax25_cb *ax25;
@@ -543,7 +543,7 @@ static int ax25_setsockopt(struct socket *sock, int level, int optname,
 	if (optlen < sizeof(unsigned int))
 		return -EINVAL;
 
-	if (get_user(opt, (unsigned int __user *)optval))
+	if (copy_from_sockptr(&opt, optval, sizeof(unsigned int)))
 		return -EFAULT;
 
 	lock_sock(sk);
@@ -640,7 +640,7 @@ static int ax25_setsockopt(struct socket *sock, int level, int optname,
 
 		memset(devname, 0, sizeof(devname));
 
-		if (copy_from_user(devname, optval, optlen)) {
+		if (copy_from_sockptr(devname, optval, optlen)) {
 			res = -EFAULT;
 			break;
 		}
@@ -810,7 +810,7 @@ static int ax25_create(struct net *net, struct socket *sock, int protocol,
 	struct sock *sk;
 	ax25_cb *ax25;
 
-	if (protocol < 0 || protocol > SK_PROTOCOL_MAX)
+	if (protocol < 0 || protocol > U8_MAX)
 		return -EINVAL;
 
 	if (!net_eq(net, &init_net))
@@ -1389,7 +1389,7 @@ static int ax25_accept(struct socket *sock, struct socket *newsock, int flags,
 
 	/* Now attach up the new socket */
 	kfree_skb(skb);
-	sk->sk_ack_backlog--;
+	sk_acceptq_removed(sk);
 	newsock->state = SS_CONNECTED;
 
 out:

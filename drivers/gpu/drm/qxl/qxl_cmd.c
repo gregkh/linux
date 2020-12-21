@@ -36,7 +36,7 @@ static int qxl_reap_surface_id(struct qxl_device *qdev, int max_to_reap);
 
 struct ring {
 	struct qxl_ring_header      header;
-	uint8_t                     elements[0];
+	uint8_t                     elements[];
 };
 
 struct qxl_ring {
@@ -377,7 +377,7 @@ void qxl_io_destroy_primary(struct qxl_device *qdev)
 {
 	wait_for_io_cmd(qdev, 0, QXL_IO_DESTROY_PRIMARY_ASYNC);
 	qdev->primary_bo->is_primary = false;
-	drm_gem_object_put_unlocked(&qdev->primary_bo->tbo.base);
+	drm_gem_object_put(&qdev->primary_bo->tbo.base);
 	qdev->primary_bo = NULL;
 }
 
@@ -588,7 +588,7 @@ static int qxl_reap_surf(struct qxl_device *qdev, struct qxl_bo *surf, bool stal
 {
 	int ret;
 
-	ret = qxl_bo_reserve(surf, false);
+	ret = qxl_bo_reserve(surf);
 	if (ret)
 		return ret;
 

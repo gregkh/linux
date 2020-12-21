@@ -144,8 +144,7 @@ static int oxnas_nand_probe(struct platform_device *pdev)
 		if (err)
 			goto err_cleanup_nand;
 
-		oxnas->chips[oxnas->nchips] = chip;
-		++oxnas->nchips;
+		oxnas->chips[oxnas->nchips++] = chip;
 	}
 
 	/* Exit if no chips found */
@@ -182,7 +181,8 @@ static int oxnas_nand_remove(struct platform_device *pdev)
 
 	for (i = 0; i < oxnas->nchips; i++) {
 		chip = oxnas->chips[i];
-		nand_release(chip);
+		WARN_ON(mtd_device_unregister(nand_to_mtd(chip)));
+		nand_cleanup(chip);
 	}
 
 	clk_disable_unprepare(oxnas->clk);

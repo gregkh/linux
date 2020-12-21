@@ -32,12 +32,25 @@
 #include <asm/fadump-internal.h>
 #include <asm/setup.h>
 
+/*
+ * The CPU who acquired the lock to trigger the fadump crash should
+ * wait for other CPUs to enter.
+ *
+ * The timeout is in milliseconds.
+ */
+#define CRASH_TIMEOUT		500
+
 static struct fw_dump fw_dump;
 
 static void __init fadump_reserve_crash_area(u64 base);
 
+struct kobject *fadump_kobj;
+
 #ifndef CONFIG_PRESERVE_FA_DUMP
+
+static atomic_t cpus_in_fadump;
 static DEFINE_MUTEX(fadump_mutex);
+
 struct fadump_mrange_info crash_mrange_info = { "crash", NULL, 0, 0, 0, false };
 
 #define RESERVED_RNGS_SZ	16384 /* 16K - 128 entries */
@@ -178,13 +191,13 @@ int is_fadump_active(void)
  */
 static bool is_fadump_mem_area_contiguous(u64 d_start, u64 d_end)
 {
-	struct memblock_region *reg;
+	phys_addr_t reg_start, reg_end;
 	bool ret = false;
-	u64 start, end;
+	u64 i, start, end;
 
-	for_each_memblock(memory, reg) {
-		start = max_t(u64, d_start, reg->base);
-		end = min_t(u64, d_end, (reg->base + reg->size));
+	for_each_mem_range(i, &reg_start, &reg_end) {
+		start = max_t(u64, d_start, reg_start);
+		end = min_t(u64, d_end, reg_end);
 		if (d_start < end) {
 			/* Memory hole from d_start to start */
 			if (start > d_start)
@@ -409,34 +422,34 @@ static int __init add_boot_mem_regions(unsigned long mstart,
 
 static int __init fadump_get_boot_mem_regions(void)
 {
-	unsigned long base, size, cur_size, hole_size, last_end;
+	unsigned long size, cur_size, hole_size, last_end;
 	unsigned long mem_size = fw_dump.boot_memory_size;
-	struct memblock_region *reg;
+	phys_addr_t reg_start, reg_end;
 	int ret = 1;
+	u64 i;
 
 	fw_dump.boot_mem_regs_cnt = 0;
 
 	last_end = 0;
 	hole_size = 0;
 	cur_size = 0;
-	for_each_memblock(memory, reg) {
-		base = reg->base;
-		size = reg->size;
-		hole_size += (base - last_end);
+	for_each_mem_range(i, &reg_start, &reg_end) {
+		size = reg_end - reg_start;
+		hole_size += (reg_start - last_end);
 
 		if ((cur_size + size) >= mem_size) {
 			size = (mem_size - cur_size);
-			ret = add_boot_mem_regions(base, size);
+			ret = add_boot_mem_regions(reg_start, size);
 			break;
 		}
 
 		mem_size -= size;
 		cur_size += size;
-		ret = add_boot_mem_regions(base, size);
+		ret = add_boot_mem_regions(reg_start, size);
 		if (!ret)
 			break;
 
-		last_end = base + size;
+		last_end = reg_end;
 	}
 	fw_dump.boot_mem_top = PAGE_ALIGN(fw_dump.boot_memory_size + hole_size);
 
@@ -666,8 +679,11 @@ early_param("fadump_reserve_mem", early_fadump_reserve_mem);
 
 void crash_fadump(struct pt_regs *regs, const char *str)
 {
+	unsigned int msecs;
 	struct fadump_crash_info_header *fdh = NULL;
 	int old_cpu, this_cpu;
+	/* Do not include first CPU */
+	unsigned int ncpus = num_online_cpus() - 1;
 
 	if (!should_fadump_crash())
 		return;
@@ -683,6 +699,8 @@ void crash_fadump(struct pt_regs *regs, const char *str)
 	old_cpu = cmpxchg(&crashing_cpu, -1, this_cpu);
 
 	if (old_cpu != -1) {
+		atomic_inc(&cpus_in_fadump);
+
 		/*
 		 * We can't loop here indefinitely. Wait as long as fadump
 		 * is in force. If we race with fadump un-registration this
@@ -706,6 +724,16 @@ void crash_fadump(struct pt_regs *regs, const char *str)
 
 	fdh->online_mask = *cpu_online_mask;
 
+	/*
+	 * If we came in via system reset, wait a while for the secondary
+	 * CPUs to enter.
+	 */
+	if (TRAP(&(fdh->regs)) == 0x100) {
+		msecs = CRASH_TIMEOUT;
+		while ((atomic_read(&cpus_in_fadump) < ncpus) && (--msecs > 0))
+			mdelay(1);
+	}
+
 	fw_dump.ops->fadump_trigger(fdh, str);
 }
 
@@ -726,10 +754,8 @@ u32 *fadump_regs_to_elf_notes(u32 *buf, struct pt_regs *regs)
 
 void fadump_update_elfcore_header(char *bufp)
 {
-	struct elfhdr *elf;
 	struct elf_phdr *phdr;
 
-	elf = (struct elfhdr *)bufp;
 	bufp += sizeof(struct elfhdr);
 
 	/* First note is a place holder for cpu notes info. */
@@ -957,9 +983,8 @@ static int fadump_init_elfcore_header(char *bufp)
  */
 static int fadump_setup_crash_memory_ranges(void)
 {
-	struct memblock_region *reg;
-	u64 start, end;
-	int i, ret;
+	u64 i, start, end;
+	int ret;
 
 	pr_debug("Setup crash memory ranges.\n");
 	crash_mrange_info.mem_range_cnt = 0;
@@ -977,10 +1002,7 @@ static int fadump_setup_crash_memory_ranges(void)
 			return ret;
 	}
 
-	for_each_memblock(memory, reg) {
-		start = (u64)reg->base;
-		end = start + (u64)reg->size;
-
+	for_each_mem_range(i, &start, &end) {
 		/*
 		 * skip the memory chunk that is already added
 		 * (0 through boot_memory_top).
@@ -1214,14 +1236,17 @@ static void fadump_free_reserved_memory(unsigned long start_pfn,
  */
 static void fadump_release_reserved_area(u64 start, u64 end)
 {
+	unsigned long reg_spfn, reg_epfn;
 	u64 tstart, tend, spfn, epfn;
-	struct memblock_region *reg;
+	int i;
 
 	spfn = PHYS_PFN(start);
 	epfn = PHYS_PFN(end);
-	for_each_memblock(memory, reg) {
-		tstart = max_t(u64, spfn, memblock_region_memory_base_pfn(reg));
-		tend   = min_t(u64, epfn, memblock_region_memory_end_pfn(reg));
+
+	for_each_mem_pfn_range(i, MAX_NUMNODES, &reg_spfn, &reg_epfn, NULL) {
+		tstart = max_t(u64, spfn, reg_spfn);
+		tend   = min_t(u64, epfn, reg_epfn);
+
 		if (tstart < tend) {
 			fadump_free_reserved_memory(tstart, tend);
 
@@ -1394,9 +1419,9 @@ static void fadump_invalidate_release_mem(void)
 	fw_dump.ops->fadump_init_mem_struct(&fw_dump);
 }
 
-static ssize_t fadump_release_memory_store(struct kobject *kobj,
-					struct kobj_attribute *attr,
-					const char *buf, size_t count)
+static ssize_t release_mem_store(struct kobject *kobj,
+				 struct kobj_attribute *attr,
+				 const char *buf, size_t count)
 {
 	int input = -1;
 
@@ -1421,23 +1446,40 @@ static ssize_t fadump_release_memory_store(struct kobject *kobj,
 	return count;
 }
 
-static ssize_t fadump_enabled_show(struct kobject *kobj,
-					struct kobj_attribute *attr,
-					char *buf)
+/* Release the reserved memory and disable the FADump */
+static void unregister_fadump(void)
+{
+	fadump_cleanup();
+	fadump_release_memory(fw_dump.reserve_dump_area_start,
+			      fw_dump.reserve_dump_area_size);
+	fw_dump.fadump_enabled = 0;
+	kobject_put(fadump_kobj);
+}
+
+static ssize_t enabled_show(struct kobject *kobj,
+			    struct kobj_attribute *attr,
+			    char *buf)
 {
 	return sprintf(buf, "%d\n", fw_dump.fadump_enabled);
 }
 
-static ssize_t fadump_register_show(struct kobject *kobj,
-					struct kobj_attribute *attr,
-					char *buf)
+static ssize_t mem_reserved_show(struct kobject *kobj,
+				 struct kobj_attribute *attr,
+				 char *buf)
+{
+	return sprintf(buf, "%ld\n", fw_dump.reserve_dump_area_size);
+}
+
+static ssize_t registered_show(struct kobject *kobj,
+			       struct kobj_attribute *attr,
+			       char *buf)
 {
 	return sprintf(buf, "%d\n", fw_dump.dump_registered);
 }
 
-static ssize_t fadump_register_store(struct kobject *kobj,
-					struct kobj_attribute *attr,
-					const char *buf, size_t count)
+static ssize_t registered_store(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count)
 {
 	int ret = 0;
 	int input = -1;
@@ -1489,45 +1531,82 @@ static int fadump_region_show(struct seq_file *m, void *private)
 	return 0;
 }
 
-static struct kobj_attribute fadump_release_attr = __ATTR(fadump_release_mem,
-						0200, NULL,
-						fadump_release_memory_store);
-static struct kobj_attribute fadump_attr = __ATTR(fadump_enabled,
-						0444, fadump_enabled_show,
-						NULL);
-static struct kobj_attribute fadump_register_attr = __ATTR(fadump_registered,
-						0644, fadump_register_show,
-						fadump_register_store);
+static struct kobj_attribute release_attr = __ATTR_WO(release_mem);
+static struct kobj_attribute enable_attr = __ATTR_RO(enabled);
+static struct kobj_attribute register_attr = __ATTR_RW(registered);
+static struct kobj_attribute mem_reserved_attr = __ATTR_RO(mem_reserved);
+
+static struct attribute *fadump_attrs[] = {
+	&enable_attr.attr,
+	&register_attr.attr,
+	&mem_reserved_attr.attr,
+	NULL,
+};
+
+ATTRIBUTE_GROUPS(fadump);
 
 DEFINE_SHOW_ATTRIBUTE(fadump_region);
 
 static void fadump_init_files(void)
 {
-	struct dentry *debugfs_file;
 	int rc = 0;
 
-	rc = sysfs_create_file(kernel_kobj, &fadump_attr.attr);
-	if (rc)
-		printk(KERN_ERR "fadump: unable to create sysfs file"
-			" fadump_enabled (%d)\n", rc);
+	fadump_kobj = kobject_create_and_add("fadump", kernel_kobj);
+	if (!fadump_kobj) {
+		pr_err("failed to create fadump kobject\n");
+		return;
+	}
 
-	rc = sysfs_create_file(kernel_kobj, &fadump_register_attr.attr);
-	if (rc)
-		printk(KERN_ERR "fadump: unable to create sysfs file"
-			" fadump_registered (%d)\n", rc);
-
-	debugfs_file = debugfs_create_file("fadump_region", 0444,
-					powerpc_debugfs_root, NULL,
-					&fadump_region_fops);
-	if (!debugfs_file)
-		printk(KERN_ERR "fadump: unable to create debugfs file"
-				" fadump_region\n");
+	debugfs_create_file("fadump_region", 0444, powerpc_debugfs_root, NULL,
+			    &fadump_region_fops);
 
 	if (fw_dump.dump_active) {
-		rc = sysfs_create_file(kernel_kobj, &fadump_release_attr.attr);
+		rc = sysfs_create_file(fadump_kobj, &release_attr.attr);
 		if (rc)
-			printk(KERN_ERR "fadump: unable to create sysfs file"
-				" fadump_release_mem (%d)\n", rc);
+			pr_err("unable to create release_mem sysfs file (%d)\n",
+			       rc);
+	}
+
+	rc = sysfs_create_groups(fadump_kobj, fadump_groups);
+	if (rc) {
+		pr_err("sysfs group creation failed (%d), unregistering FADump",
+		       rc);
+		unregister_fadump();
+		return;
+	}
+
+	/*
+	 * The FADump sysfs are moved from kernel_kobj to fadump_kobj need to
+	 * create symlink at old location to maintain backward compatibility.
+	 *
+	 *      - fadump_enabled -> fadump/enabled
+	 *      - fadump_registered -> fadump/registered
+	 *      - fadump_release_mem -> fadump/release_mem
+	 */
+	rc = compat_only_sysfs_link_entry_to_kobj(kernel_kobj, fadump_kobj,
+						  "enabled", "fadump_enabled");
+	if (rc) {
+		pr_err("unable to create fadump_enabled symlink (%d)", rc);
+		return;
+	}
+
+	rc = compat_only_sysfs_link_entry_to_kobj(kernel_kobj, fadump_kobj,
+						  "registered",
+						  "fadump_registered");
+	if (rc) {
+		pr_err("unable to create fadump_registered symlink (%d)", rc);
+		sysfs_remove_link(kernel_kobj, "fadump_enabled");
+		return;
+	}
+
+	if (fw_dump.dump_active) {
+		rc = compat_only_sysfs_link_entry_to_kobj(kernel_kobj,
+							  fadump_kobj,
+							  "release_mem",
+							  "fadump_release_mem");
+		if (rc)
+			pr_err("unable to create fadump_release_mem symlink (%d)",
+			       rc);
 	}
 	return;
 }
@@ -1537,16 +1616,15 @@ static void fadump_init_files(void)
  */
 int __init setup_fadump(void)
 {
-	if (!fw_dump.fadump_enabled)
+	if (!fw_dump.fadump_supported)
 		return 0;
 
-	if (!fw_dump.fadump_supported) {
-		printk(KERN_ERR "Firmware-assisted dump is not supported on"
-			" this hardware\n");
-		return 0;
-	}
-
+	fadump_init_files();
 	fadump_show_config();
+
+	if (!fw_dump.fadump_enabled)
+		return 1;
+
 	/*
 	 * If dump data is available then see if it is valid and prepare for
 	 * saving it to the disk.
@@ -1562,8 +1640,6 @@ int __init setup_fadump(void)
 	/* Initialize the kernel dump memory structure for FAD registration. */
 	else if (fw_dump.reserve_dump_area_size)
 		fw_dump.ops->fadump_init_mem_struct(&fw_dump);
-
-	fadump_init_files();
 
 	return 1;
 }
@@ -1605,12 +1681,10 @@ int __init fadump_reserve_mem(void)
 /* Preserve everything above the base address */
 static void __init fadump_reserve_crash_area(u64 base)
 {
-	struct memblock_region *reg;
-	u64 mstart, msize;
+	u64 i, mstart, mend, msize;
 
-	for_each_memblock(memory, reg) {
-		mstart = reg->base;
-		msize  = reg->size;
+	for_each_mem_range(i, &mstart, &mend) {
+		msize  = mend - mstart;
 
 		if ((mstart + msize) < base)
 			continue;

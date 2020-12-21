@@ -418,8 +418,8 @@ static int cdns_transfer_one(struct spi_master *master,
 	xspi->rx_bytes = transfer->len;
 
 	cdns_spi_setup_transfer(spi, transfer);
-
 	cdns_spi_fill_tx_fifo(xspi);
+	spi_transfer_delay_exec(transfer);
 
 	cdns_spi_write(xspi, CDNS_SPI_IER, CDNS_SPI_IXR_DEFAULT);
 	return transfer->len;
@@ -556,7 +556,7 @@ static int cdns_spi_probe(struct platform_device *pdev)
 	master->unprepare_transfer_hardware = cdns_unprepare_transfer_hardware;
 	master->set_cs = cdns_spi_chipselect;
 	master->auto_runtime_pm = true;
-	master->mode_bits = SPI_CPOL | SPI_CPHA;
+	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
 
 	/* Set to default valid value */
 	master->max_speed_hz = clk_get_rate(xspi->ref_clk) / 4;

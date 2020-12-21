@@ -207,7 +207,8 @@ static struct netlbl_unlhsh_iface *netlbl_unlhsh_search_iface(int ifindex)
 
 	bkt = netlbl_unlhsh_hash(ifindex);
 	bkt_list = &netlbl_unlhsh_rcu_deref(netlbl_unlhsh)->tbl[bkt];
-	list_for_each_entry_rcu(iter, bkt_list, list)
+	list_for_each_entry_rcu(iter, bkt_list, list,
+				lockdep_is_held(&netlbl_unlhsh_lock))
 		if (iter->valid && iter->ifindex == ifindex)
 			return iter;
 
@@ -1307,7 +1308,7 @@ unlabel_staticlistdef_return:
  * NetLabel Generic NETLINK Command Definitions
  */
 
-static const struct genl_ops netlbl_unlabel_genl_ops[] = {
+static const struct genl_small_ops netlbl_unlabel_genl_ops[] = {
 	{
 	.cmd = NLBL_UNLABEL_C_STATICADD,
 	.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
@@ -1373,8 +1374,8 @@ static struct genl_family netlbl_unlabel_gnl_family __ro_after_init = {
 	.maxattr = NLBL_UNLABEL_A_MAX,
 	.policy = netlbl_unlabel_genl_policy,
 	.module = THIS_MODULE,
-	.ops = netlbl_unlabel_genl_ops,
-	.n_ops = ARRAY_SIZE(netlbl_unlabel_genl_ops),
+	.small_ops = netlbl_unlabel_genl_ops,
+	.n_small_ops = ARRAY_SIZE(netlbl_unlabel_genl_ops),
 };
 
 /*

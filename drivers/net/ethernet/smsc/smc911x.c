@@ -712,7 +712,7 @@ static void smc911x_phy_detect(struct net_device *dev)
 					/* Found an external PHY */
 					break;
 			}
-			/* Else, fall through */
+			fallthrough;
 		default:
 			/* Internal media only */
 			SMC_GET_PHY_ID1(lp, 1, id1);
@@ -1245,7 +1245,7 @@ static void smc911x_poll_controller(struct net_device *dev)
 #endif
 
 /* Our watchdog timed out. Called by the networking layer */
-static void smc911x_timeout(struct net_device *dev)
+static void smc911x_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct smc911x_local *lp = netdev_priv(dev);
 	int status, mask;

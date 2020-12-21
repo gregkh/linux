@@ -175,6 +175,19 @@ static inline void advance_sg_buffer(struct scsi_cmnd *cmd)
 	}
 }
 
+static inline void set_resid_from_SCp(struct scsi_cmnd *cmd)
+{
+	int resid = cmd->SCp.this_residual;
+	struct scatterlist *s = cmd->SCp.buffer;
+
+	if (s)
+		while (!sg_is_last(s)) {
+			s = sg_next(s);
+			resid += s->length;
+		}
+	scsi_set_resid(cmd, resid);
+}
+
 /**
  * NCR5380_poll_politely2 - wait for two chip register values
  * @hostdata: host private data
@@ -1383,7 +1396,7 @@ static void do_reset(struct Scsi_Host *instance)
  * MESSAGE OUT phase and sending an ABORT message.
  * @instance: relevant scsi host instance
  *
- * Returns 0 on success, -1 on failure.
+ * Returns 0 on success, negative error code on failure.
  */
 
 static int do_abort(struct Scsi_Host *instance)
@@ -1408,7 +1421,7 @@ static int do_abort(struct Scsi_Host *instance)
 
 	rc = NCR5380_poll_politely(hostdata, STATUS_REG, SR_REQ, SR_REQ, 10 * HZ);
 	if (rc < 0)
-		goto timeout;
+		goto out;
 
 	tmp = NCR5380_read(STATUS_REG) & PHASE_MASK;
 
@@ -1419,7 +1432,7 @@ static int do_abort(struct Scsi_Host *instance)
 		              ICR_BASE | ICR_ASSERT_ATN | ICR_ASSERT_ACK);
 		rc = NCR5380_poll_politely(hostdata, STATUS_REG, SR_REQ, 0, 3 * HZ);
 		if (rc < 0)
-			goto timeout;
+			goto out;
 		NCR5380_write(INITIATOR_COMMAND_REG, ICR_BASE | ICR_ASSERT_ATN);
 	}
 
@@ -1428,17 +1441,17 @@ static int do_abort(struct Scsi_Host *instance)
 	len = 1;
 	phase = PHASE_MSGOUT;
 	NCR5380_transfer_pio(instance, &phase, &len, &msgptr);
+	if (len)
+		rc = -ENXIO;
 
 	/*
 	 * If we got here, and the command completed successfully,
 	 * we're about to go into bus free state.
 	 */
 
-	return len ? -1 : 0;
-
-timeout:
+out:
 	NCR5380_write(INITIATOR_COMMAND_REG, ICR_BASE);
-	return -1;
+	return rc;
 }
 
 /*
@@ -1807,6 +1820,8 @@ static void NCR5380_information_transfer(struct Scsi_Host *instance)
 					cmd->result |= cmd->SCp.Status;
 					cmd->result |= cmd->SCp.Message << 8;
 
+					set_resid_from_SCp(cmd);
+
 					if (cmd->cmnd[0] == REQUEST_SENSE)
 						complete_cmd(instance, cmd);
 					else {
@@ -1928,7 +1943,7 @@ static void NCR5380_information_transfer(struct Scsi_Host *instance)
 						return;
 
 					/* Reject message */
-					/* Fall through */
+					fallthrough;
 				default:
 					/*
 					 * If we get something weird that we aren't expecting,
@@ -2268,7 +2283,7 @@ static int NCR5380_abort(struct scsi_cmnd *cmd)
 		dsprintk(NDEBUG_ABORT, instance, "abort: cmd %p is connected\n", cmd);
 		hostdata->connected = NULL;
 		hostdata->dma_len = 0;
-		if (do_abort(instance)) {
+		if (do_abort(instance) < 0) {
 			set_host_byte(cmd, DID_ERROR);
 			complete_cmd(instance, cmd);
 			result = FAILED;

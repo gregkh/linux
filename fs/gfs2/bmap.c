@@ -56,7 +56,6 @@ static int gfs2_unstuffer_page(struct gfs2_inode *ip, struct buffer_head *dibh,
 			       u64 block, struct page *page)
 {
 	struct inode *inode = &ip->i_inode;
-	struct buffer_head *bh;
 	int release = 0;
 
 	if (!page || page->index) {
@@ -80,20 +79,21 @@ static int gfs2_unstuffer_page(struct gfs2_inode *ip, struct buffer_head *dibh,
 		SetPageUptodate(page);
 	}
 
-	if (!page_has_buffers(page))
-		create_empty_buffers(page, BIT(inode->i_blkbits),
-				     BIT(BH_Uptodate));
+	if (gfs2_is_jdata(ip)) {
+		struct buffer_head *bh;
 
-	bh = page_buffers(page);
+		if (!page_has_buffers(page))
+			create_empty_buffers(page, BIT(inode->i_blkbits),
+					     BIT(BH_Uptodate));
 
-	if (!buffer_mapped(bh))
-		map_bh(bh, inode->i_sb, block);
+		bh = page_buffers(page);
+		if (!buffer_mapped(bh))
+			map_bh(bh, inode->i_sb, block);
 
-	set_buffer_uptodate(bh);
-	if (gfs2_is_jdata(ip))
+		set_buffer_uptodate(bh);
 		gfs2_trans_add_data(ip->i_gl, bh);
-	else {
-		mark_buffer_dirty(bh);
+	} else {
+		set_page_dirty(page);
 		gfs2_ordered_add_inode(ip);
 	}
 
@@ -746,7 +746,7 @@ static int gfs2_iomap_alloc(struct inode *inode, struct iomap *iomap,
 			}
 			if (n == 0)
 				break;
-		/* fall through - To branching from existing tree */
+			fallthrough;	/* To branching from existing tree */
 		case ALLOC_GROW_DEPTH:
 			if (i > 1 && i < mp->mp_fheight)
 				gfs2_trans_add_meta(ip->i_gl, mp->mp_bh[i-1]);
@@ -757,7 +757,7 @@ static int gfs2_iomap_alloc(struct inode *inode, struct iomap *iomap,
 				state = ALLOC_DATA;
 			if (n == 0)
 				break;
-		/* fall through - To tree complete, adding data blocks */
+			fallthrough;	/* To tree complete, adding data blocks */
 		case ALLOC_DATA:
 			BUG_ON(n > dblks);
 			BUG_ON(mp->mp_bh[end_of_metadata] == NULL);
@@ -1151,13 +1151,15 @@ static inline bool gfs2_iomap_need_write_lock(unsigned flags)
 }
 
 static int gfs2_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
-			    unsigned flags, struct iomap *iomap)
+			    unsigned flags, struct iomap *iomap,
+			    struct iomap *srcmap)
 {
 	struct gfs2_inode *ip = GFS2_I(inode);
 	struct metapath mp = { .mp_aheight = 1, };
 	int ret;
 
-	iomap->flags |= IOMAP_F_BUFFER_HEAD;
+	if (gfs2_is_jdata(ip))
+		iomap->flags |= IOMAP_F_BUFFER_HEAD;
 
 	trace_gfs2_iomap_start(ip, pos, length, flags);
 	if (gfs2_iomap_need_write_lock(flags)) {
@@ -1290,6 +1292,7 @@ int gfs2_block_map(struct inode *inode, sector_t lblock,
 	loff_t length = bh_map->b_size;
 	struct metapath mp = { .mp_aheight = 1, };
 	struct iomap iomap = { };
+	int flags = create ? IOMAP_WRITE : 0;
 	int ret;
 
 	clear_buffer_mapped(bh_map);
@@ -1297,15 +1300,10 @@ int gfs2_block_map(struct inode *inode, sector_t lblock,
 	clear_buffer_boundary(bh_map);
 	trace_gfs2_bmap(ip, bh_map, lblock, create, 1);
 
-	if (create) {
-		ret = gfs2_iomap_get(inode, pos, length, IOMAP_WRITE, &iomap, &mp);
-		if (!ret && iomap.type == IOMAP_HOLE)
-			ret = gfs2_iomap_alloc(inode, &iomap, &mp);
-		release_metapath(&mp);
-	} else {
-		ret = gfs2_iomap_get(inode, pos, length, 0, &iomap, &mp);
-		release_metapath(&mp);
-	}
+	ret = gfs2_iomap_get(inode, pos, length, flags, &iomap, &mp);
+	if (create && !ret && iomap.type == IOMAP_HOLE)
+		ret = gfs2_iomap_alloc(inode, &iomap, &mp);
+	release_metapath(&mp);
 	if (ret)
 		goto out;
 
@@ -1767,7 +1765,7 @@ static int punch_hole(struct gfs2_inode *ip, u64 offset, u64 length)
 	u64 lblock = (offset + (1 << bsize_shift) - 1) >> bsize_shift;
 	__u16 start_list[GFS2_MAX_META_HEIGHT];
 	__u16 __end_list[GFS2_MAX_META_HEIGHT], *end_list = NULL;
-	unsigned int start_aligned, uninitialized_var(end_aligned);
+	unsigned int start_aligned, end_aligned;
 	unsigned int strip_h = ip->i_height - 1;
 	u32 btotal = 0;
 	int ret, state;
@@ -2191,7 +2189,7 @@ int gfs2_setattr_size(struct inode *inode, u64 newsize)
 
 	inode_dio_wait(inode);
 
-	ret = gfs2_rsqa_alloc(ip);
+	ret = gfs2_qa_get(ip);
 	if (ret)
 		goto out;
 
@@ -2202,7 +2200,8 @@ int gfs2_setattr_size(struct inode *inode, u64 newsize)
 
 	ret = do_shrink(inode, newsize);
 out:
-	gfs2_rsqa_delete(ip, NULL);
+	gfs2_rs_delete(ip, NULL);
+	gfs2_qa_put(ip);
 	return ret;
 }
 
@@ -2231,7 +2230,7 @@ void gfs2_free_journal_extents(struct gfs2_jdesc *jd)
 	struct gfs2_journal_extent *jext;
 
 	while(!list_empty(&jd->extent_list)) {
-		jext = list_entry(jd->extent_list.next, struct gfs2_journal_extent, list);
+		jext = list_first_entry(&jd->extent_list, struct gfs2_journal_extent, list);
 		list_del(&jext->list);
 		kfree(jext);
 	}
@@ -2252,7 +2251,7 @@ static int gfs2_add_jextent(struct gfs2_jdesc *jd, u64 lblock, u64 dblock, u64 b
 	struct gfs2_journal_extent *jext;
 
 	if (!list_empty(&jd->extent_list)) {
-		jext = list_entry(jd->extent_list.prev, struct gfs2_journal_extent, list);
+		jext = list_last_entry(&jd->extent_list, struct gfs2_journal_extent, list);
 		if ((jext->dblock + jext->blocks) == dblock) {
 			jext->blocks += blocks;
 			return 0;
@@ -2516,3 +2515,26 @@ out:
 		gfs2_trans_end(sdp);
 	return error;
 }
+
+static int gfs2_map_blocks(struct iomap_writepage_ctx *wpc, struct inode *inode,
+		loff_t offset)
+{
+	struct metapath mp = { .mp_aheight = 1, };
+	int ret;
+
+	if (WARN_ON_ONCE(gfs2_is_stuffed(GFS2_I(inode))))
+		return -EIO;
+
+	if (offset >= wpc->iomap.offset &&
+	    offset < wpc->iomap.offset + wpc->iomap.length)
+		return 0;
+
+	memset(&wpc->iomap, 0, sizeof(wpc->iomap));
+	ret = gfs2_iomap_get(inode, offset, INT_MAX, 0, &wpc->iomap, &mp);
+	release_metapath(&mp);
+	return ret;
+}
+
+const struct iomap_writeback_ops gfs2_writeback_ops = {
+	.map_blocks		= gfs2_map_blocks,
+};

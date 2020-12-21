@@ -3,7 +3,7 @@
  *
  * Module Name: evevent - Fixed Event handling and dispatch
  *
- * Copyright (C) 2000 - 2019, Intel Corp.
+ * Copyright (C) 2000 - 2020, Intel Corp.
  *
  *****************************************************************************/
 
@@ -130,7 +130,7 @@ static acpi_status acpi_ev_fixed_event_initialize(void)
 
 	/*
 	 * Initialize the structure that keeps track of fixed event handlers and
-	 * enable the fixed events.
+	 * disable all of the fixed events.
 	 */
 	for (i = 0; i < ACPI_NUM_FIXED_EVENTS; i++) {
 		acpi_gbl_fixed_event_handlers[i].handler = NULL;

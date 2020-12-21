@@ -181,9 +181,12 @@ EXPORT_SYMBOL_GPL(bsg_job_get);
 void bsg_job_done(struct bsg_job *job, int result,
 		  unsigned int reply_payload_rcv_len)
 {
+	struct request *rq = blk_mq_rq_from_pdu(job);
+
 	job->result = result;
 	job->reply_payload_rcv_len = reply_payload_rcv_len;
-	blk_mq_complete_request(blk_mq_rq_from_pdu(job));
+	if (likely(!blk_should_fake_timeout(rq->q)))
+		blk_mq_complete_request(rq);
 }
 EXPORT_SYMBOL_GPL(bsg_job_done);
 
@@ -204,7 +207,7 @@ static int bsg_map_buffer(struct bsg_buffer *buf, struct request *req)
 
 	BUG_ON(!req->nr_phys_segments);
 
-	buf->sg_list = kzalloc(sz, GFP_KERNEL);
+	buf->sg_list = kmalloc(sz, GFP_KERNEL);
 	if (!buf->sg_list)
 		return -ENOMEM;
 	sg_init_table(buf->sg_list, req->nr_phys_segments);
@@ -375,7 +378,7 @@ struct request_queue *bsg_setup_queue(struct device *dev, const char *name,
 	bset->timeout_fn = timeout;
 
 	set = &bset->tag_set;
-	set->ops = &bsg_mq_ops,
+	set->ops = &bsg_mq_ops;
 	set->nr_hw_queues = 1;
 	set->queue_depth = 128;
 	set->numa_node = NUMA_NO_NODE;

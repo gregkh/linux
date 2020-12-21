@@ -22,6 +22,7 @@ static const struct hdac_bus_ops default_ops = {
 /**
  * snd_hdac_bus_init - initialize a HD-audio bas bus
  * @bus: the pointer to bus object
+ * @dev: device pointer
  * @ops: bus verb operators
  *
  * Returns 0 if successful, or a negative error code.
@@ -43,7 +44,20 @@ int snd_hdac_bus_init(struct hdac_bus *bus, struct device *dev,
 	mutex_init(&bus->cmd_mutex);
 	mutex_init(&bus->lock);
 	INIT_LIST_HEAD(&bus->hlink_list);
+	init_waitqueue_head(&bus->rirb_wq);
 	bus->irq = -1;
+
+	/*
+	 * Default value of '8' is as per the HD audio specification (Rev 1.0a).
+	 * Following relation is used to derive STRIPE control value.
+	 *  For sample rate <= 48K:
+	 *   { ((num_channels * bits_per_sample) / number of SDOs) >= 8 }
+	 *  For sample rate > 48K:
+	 *   { ((num_channels * bits_per_sample * rate/48000) /
+	 *	number of SDOs) >= 8 }
+	 */
+	bus->sdo_limit = 8;
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_hdac_bus_init);
@@ -63,6 +77,7 @@ EXPORT_SYMBOL_GPL(snd_hdac_bus_exit);
 /**
  * snd_hdac_bus_exec_verb - execute a HD-audio verb on the given bus
  * @bus: bus object
+ * @addr: the HDAC device address
  * @cmd: HD-audio encoded verb
  * @res: pointer to store the response, NULL if performing asynchronously
  *
@@ -78,11 +93,11 @@ int snd_hdac_bus_exec_verb(struct hdac_bus *bus, unsigned int addr,
 	mutex_unlock(&bus->cmd_mutex);
 	return err;
 }
-EXPORT_SYMBOL_GPL(snd_hdac_bus_exec_verb);
 
 /**
  * snd_hdac_bus_exec_verb_unlocked - unlocked version
  * @bus: bus object
+ * @addr: the HDAC device address
  * @cmd: HD-audio encoded verb
  * @res: pointer to store the response, NULL if performing asynchronously
  *
@@ -146,7 +161,6 @@ void snd_hdac_bus_queue_event(struct hdac_bus *bus, u32 res, u32 res_ex)
 
 	schedule_work(&bus->unsol_work);
 }
-EXPORT_SYMBOL_GPL(snd_hdac_bus_queue_event);
 
 /*
  * process queued unsolicited events

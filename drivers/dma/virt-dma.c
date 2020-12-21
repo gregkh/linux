@@ -80,9 +80,9 @@ EXPORT_SYMBOL_GPL(vchan_find_desc);
  * This tasklet handles the completion of a DMA descriptor by
  * calling its callback and freeing it.
  */
-static void vchan_complete(unsigned long arg)
+static void vchan_complete(struct tasklet_struct *t)
 {
-	struct virt_dma_chan *vc = (struct virt_dma_chan *)arg;
+	struct virt_dma_chan *vc = from_tasklet(vc, t, task);
 	struct virt_dma_desc *vd, *_vd;
 	struct dmaengine_desc_callback cb;
 	LIST_HEAD(head);
@@ -114,13 +114,8 @@ void vchan_dma_desc_free_list(struct virt_dma_chan *vc, struct list_head *head)
 	struct virt_dma_desc *vd, *_vd;
 
 	list_for_each_entry_safe(vd, _vd, head, node) {
-		if (dmaengine_desc_test_reuse(&vd->tx)) {
-			list_move_tail(&vd->node, &vc->desc_allocated);
-		} else {
-			dev_dbg(vc->chan.device->dev, "txd %p: freeing\n", vd);
-			list_del(&vd->node);
-			vc->desc_free(vd);
-		}
+		list_del(&vd->node);
+		vchan_vdesc_fini(vd);
 	}
 }
 EXPORT_SYMBOL_GPL(vchan_dma_desc_free_list);
@@ -134,8 +129,9 @@ void vchan_init(struct virt_dma_chan *vc, struct dma_device *dmadev)
 	INIT_LIST_HEAD(&vc->desc_submitted);
 	INIT_LIST_HEAD(&vc->desc_issued);
 	INIT_LIST_HEAD(&vc->desc_completed);
+	INIT_LIST_HEAD(&vc->desc_terminated);
 
-	tasklet_init(&vc->task, vchan_complete, (unsigned long)vc);
+	tasklet_setup(&vc->task, vchan_complete);
 
 	vc->chan.device = dmadev;
 	list_add_tail(&vc->chan.device_node, &dmadev->channels);

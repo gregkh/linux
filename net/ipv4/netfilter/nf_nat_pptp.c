@@ -3,7 +3,7 @@
  * nf_nat_pptp.c
  *
  * NAT support for PPTP (Point to Point Tunneling Protocol).
- * PPTP is a a protocol for creating virtual private networks.
+ * PPTP is a protocol for creating virtual private networks.
  * It is a specification defined by Microsoft and some vendors
  * working with Microsoft.  PPTP is built on top of a modified
  * version of the Internet Generic Routing Encapsulation Protocol.
@@ -167,7 +167,7 @@ pptp_outbound_pkt(struct sk_buff *skb,
 	default:
 		pr_debug("unknown outbound packet 0x%04x:%s\n", msg,
 			 pptp_msg_name(msg));
-		/* fall through */
+		fallthrough;
 	case PPTP_SET_LINK_INFO:
 		/* only need to NAT in case PAC is behind NAT box */
 	case PPTP_START_SESSION_REQUEST:
@@ -268,7 +268,7 @@ pptp_inbound_pkt(struct sk_buff *skb,
 		break;
 	default:
 		pr_debug("unknown inbound packet %s\n", pptp_msg_name(msg));
-		/* fall through */
+		fallthrough;
 	case PPTP_START_SESSION_REQUEST:
 	case PPTP_START_SESSION_REPLY:
 	case PPTP_STOP_SESSION_REQUEST:

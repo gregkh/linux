@@ -10,8 +10,9 @@
 		     + __GNUC_MINOR__ * 100	\
 		     + __GNUC_PATCHLEVEL__)
 
-#if GCC_VERSION < 40600
-# error Sorry, your compiler is too old - please upgrade it.
+/* https://gcc.gnu.org/bugzilla/show_bug.cgi?id=58145 */
+#if GCC_VERSION < 40900
+# error Sorry, your version of GCC is too old - please use 4.9 or newer.
 #endif
 
 /*
@@ -38,12 +39,6 @@
 	__asm__ ("" : "=r"(__ptr) : "0"(ptr));				\
 	(typeof(ptr)) (__ptr + (off));					\
 })
-
-/*
- * A trick to suppress uninitialized variable warning without generating any
- * code
- */
-#define uninitialized_var(x) x = x
 
 #ifdef CONFIG_RETPOLINE
 #define __noretpoline __attribute__((__indirect_branch__("keep")))
@@ -107,9 +102,7 @@
 #if defined(CONFIG_ARCH_USE_BUILTIN_BSWAP) && !defined(__CHECKER__)
 #define __HAVE_BUILTIN_BSWAP32__
 #define __HAVE_BUILTIN_BSWAP64__
-#if GCC_VERSION >= 40800
 #define __HAVE_BUILTIN_BSWAP16__
-#endif
 #endif /* CONFIG_ARCH_USE_BUILTIN_BSWAP && !__CHECKER__ */
 
 #if GCC_VERSION >= 70000
@@ -124,6 +117,18 @@
 #define __no_sanitize_address __attribute__((no_sanitize_address))
 #else
 #define __no_sanitize_address
+#endif
+
+#if defined(__SANITIZE_THREAD__) && __has_attribute(__no_sanitize_thread__)
+#define __no_sanitize_thread __attribute__((no_sanitize_thread))
+#else
+#define __no_sanitize_thread
+#endif
+
+#if __has_attribute(__no_sanitize_undefined__)
+#define __no_sanitize_undefined __attribute__((no_sanitize_undefined))
+#else
+#define __no_sanitize_undefined
 #endif
 
 #if GCC_VERSION >= 50100

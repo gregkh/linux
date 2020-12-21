@@ -26,8 +26,6 @@ static DEFINE_MUTEX(acpi_wakeup_handler_mutex);
  * suspend/resume and isn't really required as this is called in S-state. At
  * that time, there is no device hotplug
  **/
-#define _COMPONENT		ACPI_SYSTEM_COMPONENT
-ACPI_MODULE_NAME("wakeup_devices")
 
 /**
  * acpi_enable_wakeup_devices - Enable wake-up device GPEs.
@@ -39,16 +37,14 @@ ACPI_MODULE_NAME("wakeup_devices")
  */
 void acpi_enable_wakeup_devices(u8 sleep_state)
 {
-	struct list_head *node, *next;
+	struct acpi_device *dev, *tmp;
 
-	list_for_each_safe(node, next, &acpi_wakeup_device_list) {
-		struct acpi_device *dev =
-			container_of(node, struct acpi_device, wakeup_list);
-
+	list_for_each_entry_safe(dev, tmp, &acpi_wakeup_device_list,
+				 wakeup_list) {
 		if (!dev->wakeup.flags.valid
 		    || sleep_state > (u32) dev->wakeup.sleep_state
 		    || !(device_may_wakeup(&dev->dev)
-		        || dev->wakeup.prepare_count))
+			 || dev->wakeup.prepare_count))
 			continue;
 
 		if (device_may_wakeup(&dev->dev))
@@ -66,16 +62,14 @@ void acpi_enable_wakeup_devices(u8 sleep_state)
  */
 void acpi_disable_wakeup_devices(u8 sleep_state)
 {
-	struct list_head *node, *next;
+	struct acpi_device *dev, *tmp;
 
-	list_for_each_safe(node, next, &acpi_wakeup_device_list) {
-		struct acpi_device *dev =
-			container_of(node, struct acpi_device, wakeup_list);
-
+	list_for_each_entry_safe(dev, tmp, &acpi_wakeup_device_list,
+				 wakeup_list) {
 		if (!dev->wakeup.flags.valid
 		    || sleep_state > (u32) dev->wakeup.sleep_state
 		    || !(device_may_wakeup(&dev->dev)
-		        || dev->wakeup.prepare_count))
+			 || dev->wakeup.prepare_count))
 			continue;
 
 		acpi_set_gpe_wake_mask(dev->wakeup.gpe_device, dev->wakeup.gpe_number,
@@ -88,13 +82,11 @@ void acpi_disable_wakeup_devices(u8 sleep_state)
 
 int __init acpi_wakeup_device_init(void)
 {
-	struct list_head *node, *next;
+	struct acpi_device *dev, *tmp;
 
 	mutex_lock(&acpi_device_lock);
-	list_for_each_safe(node, next, &acpi_wakeup_device_list) {
-		struct acpi_device *dev = container_of(node,
-						       struct acpi_device,
-						       wakeup_list);
+	list_for_each_entry_safe(dev, tmp, &acpi_wakeup_device_list,
+				 wakeup_list) {
 		if (device_can_wakeup(&dev->dev)) {
 			/* Button GPEs are supposed to be always enabled. */
 			acpi_enable_gpe(dev->wakeup.gpe_device,

@@ -76,10 +76,9 @@ err:
 	return -EMSGSIZE;
 }
 
-static int hns_roce_fill_res_cq_entry(struct sk_buff *msg,
-				      struct rdma_restrack_entry *res)
+int hns_roce_fill_res_cq_entry(struct sk_buff *msg,
+			       struct ib_cq *ib_cq)
 {
-	struct ib_cq *ib_cq = container_of(res, struct ib_cq, res);
 	struct hns_roce_dev *hr_dev = to_hr_dev(ib_cq->device);
 	struct hns_roce_cq *hr_cq = to_hr_cq(ib_cq);
 	struct hns_roce_v2_cq_context *context;
@@ -95,7 +94,7 @@ static int hns_roce_fill_res_cq_entry(struct sk_buff *msg,
 
 	ret = hr_dev->dfx->query_cqc_info(hr_dev, hr_cq->cqn, (int *)context);
 	if (ret)
-		return -EINVAL;
+		goto err;
 
 	table_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_DRIVER);
 	if (!table_attr) {
@@ -118,13 +117,4 @@ err_cancel_table:
 err:
 	kfree(context);
 	return ret;
-}
-
-int hns_roce_fill_res_entry(struct sk_buff *msg,
-			    struct rdma_restrack_entry *res)
-{
-	if (res->type == RDMA_RESTRACK_CQ)
-		return hns_roce_fill_res_cq_entry(msg, res);
-
-	return 0;
 }

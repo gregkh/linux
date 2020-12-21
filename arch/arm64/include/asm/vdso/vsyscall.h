@@ -22,13 +22,6 @@ struct vdso_data *__arm64_get_k_vdso_data(void)
 #define __arch_get_k_vdso_data __arm64_get_k_vdso_data
 
 static __always_inline
-int __arm64_get_clock_mode(struct timekeeper *tk)
-{
-	return tk->tkr_mono.clock->archdata.clock_mode;
-}
-#define __arch_get_clock_mode __arm64_get_clock_mode
-
-static __always_inline
 void __arm64_update_vsyscall(struct vdso_data *vdata, struct timekeeper *tk)
 {
 	vdata[CS_HRES_COARSE].mask	= VDSO_PRECISION_MASK;

@@ -550,8 +550,8 @@ static int skl_tplg_unload_pipe_modules(struct skl_dev *skl,
 	 struct skl_pipe *pipe)
 {
 	int ret = 0;
-	struct skl_pipe_module *w_module = NULL;
-	struct skl_module_cfg *mconfig = NULL;
+	struct skl_pipe_module *w_module;
+	struct skl_module_cfg *mconfig;
 
 	list_for_each_entry(w_module, &pipe->w_list, node) {
 		guid_t *uuid_mod;
@@ -1893,7 +1893,7 @@ static int skl_tplg_be_set_src_pipe_params(struct snd_soc_dai *dai,
 static int skl_tplg_be_set_sink_pipe_params(struct snd_soc_dai *dai,
 	struct snd_soc_dapm_widget *w, struct skl_pipe_params *params)
 {
-	struct snd_soc_dapm_path *p = NULL;
+	struct snd_soc_dapm_path *p;
 	int ret = -EIO;
 
 	snd_soc_dapm_widget_for_each_sink_path(w, p) {
@@ -2102,7 +2102,7 @@ static int skl_tplg_get_uuid(struct device *dev, guid_t *guid,
 	      struct snd_soc_tplg_vendor_uuid_elem *uuid_tkn)
 {
 	if (uuid_tkn->token == SKL_TKN_UUID) {
-		guid_copy(guid, (guid_t *)&uuid_tkn->uuid);
+		import_guid(guid, uuid_tkn->uuid);
 		return 0;
 	}
 
@@ -2876,7 +2876,7 @@ static int skl_tplg_get_pvt_data(struct snd_soc_tplg_dapm_widget *tplg_w,
 				struct skl_module_cfg *mconfig)
 {
 	struct snd_soc_tplg_vendor_array *array;
-	int num_blocks, block_size = 0, block_type, off = 0;
+	int num_blocks, block_size, block_type, off = 0;
 	char *data;
 	int ret;
 
@@ -3498,8 +3498,8 @@ static int skl_tplg_get_manifest_tkn(struct device *dev,
 				dev_err(dev, "Too many UUID tokens\n");
 				return -EINVAL;
 			}
-			guid_copy(&skl->modules[uuid_index++]->uuid,
-				  (guid_t *)&array->uuid->uuid);
+			import_guid(&skl->modules[uuid_index++]->uuid,
+				    array->uuid->uuid);
 
 			tuple_size += sizeof(*array->uuid);
 			continue;
@@ -3773,9 +3773,8 @@ void skl_tplg_exit(struct snd_soc_component *component, struct hdac_bus *bus)
 	struct skl_dev *skl = bus_to_skl(bus);
 	struct skl_pipeline *ppl, *tmp;
 
-	if (!list_empty(&skl->ppl_list))
-		list_for_each_entry_safe(ppl, tmp, &skl->ppl_list, node)
-			list_del(&ppl->node);
+	list_for_each_entry_safe(ppl, tmp, &skl->ppl_list, node)
+		list_del(&ppl->node);
 
 	/* clean up topology */
 	snd_soc_tplg_component_remove(component, SND_SOC_TPLG_INDEX_ALL);

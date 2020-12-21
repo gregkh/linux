@@ -44,6 +44,7 @@
 #include <rdma/ib_mad.h>
 #include <rdma/restrack.h>
 #include "mad_priv.h"
+#include "restrack.h"
 
 /* Total number of ports combined across all struct ib_devices's */
 #define RDMA_MAX_PORTS 8192
@@ -321,7 +322,7 @@ static inline struct ib_qp *_ib_create_qp(struct ib_device *dev,
 					  struct ib_pd *pd,
 					  struct ib_qp_init_attr *attr,
 					  struct ib_udata *udata,
-					  struct ib_uobject *uobj)
+					  struct ib_uqp_object *uobj)
 {
 	enum ib_qp_type qp_type = attr->qp_type;
 	struct ib_qp *qp;
@@ -340,7 +341,6 @@ static inline struct ib_qp *_ib_create_qp(struct ib_device *dev,
 	qp->real_qp = qp;
 
 	qp->qp_type = attr->qp_type;
-	qp->qp_context = attr->qp_context;
 	qp->rwq_ind_tbl = attr->rwq_ind_tbl;
 	qp->send_cq = attr->send_cq;
 	qp->recv_cq = attr->recv_cq;
@@ -353,6 +353,7 @@ static inline struct ib_qp *_ib_create_qp(struct ib_device *dev,
 	INIT_LIST_HEAD(&qp->rdma_mrs);
 	INIT_LIST_HEAD(&qp->sig_mrs);
 
+	rdma_restrack_new(&qp->res, RDMA_RESTRACK_QP);
 	/*
 	 * We don't track XRC QPs for now, because they don't have PD
 	 * and more importantly they are created internaly by driver,
@@ -360,14 +361,9 @@ static inline struct ib_qp *_ib_create_qp(struct ib_device *dev,
 	 */
 	is_xrc = qp_type == IB_QPT_XRC_INI || qp_type == IB_QPT_XRC_TGT;
 	if ((qp_type < IB_QPT_MAX && !is_xrc) || qp_type == IB_QPT_DRIVER) {
-		qp->res.type = RDMA_RESTRACK_QP;
-		if (uobj)
-			rdma_restrack_uadd(&qp->res);
-		else
-			rdma_restrack_kadd(&qp->res);
-	} else
-		qp->res.valid = false;
-
+		rdma_restrack_parent_name(&qp->res, &pd->res);
+		rdma_restrack_add(&qp->res);
+	}
 	return qp;
 }
 
@@ -404,4 +400,18 @@ int ib_device_set_netns_put(struct sk_buff *skb,
 
 int rdma_nl_net_init(struct rdma_dev_net *rnet);
 void rdma_nl_net_exit(struct rdma_dev_net *rnet);
+
+struct rdma_umap_priv {
+	struct vm_area_struct *vma;
+	struct list_head list;
+	struct rdma_user_mmap_entry *entry;
+};
+
+void rdma_umap_priv_init(struct rdma_umap_priv *priv,
+			 struct vm_area_struct *vma,
+			 struct rdma_user_mmap_entry *entry);
+
+void ib_cq_pool_init(struct ib_device *dev);
+void ib_cq_pool_destroy(struct ib_device *dev);
+
 #endif /* _CORE_PRIV_H */

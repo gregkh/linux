@@ -11,6 +11,7 @@
 #include <linux/io.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
+#include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/phy.h>
 #include <linux/platform_device.h>
@@ -557,10 +558,7 @@ static int hns_nic_poll_rx_skb(struct hns_nic_ring_data *ring_data,
 	va = (unsigned char *)desc_cb->buf + desc_cb->page_offset;
 
 	/* prefetch first cache line of first page */
-	prefetch(va);
-#if L1_CACHE_BYTES < 128
-	prefetch(va + L1_CACHE_BYTES);
-#endif
+	net_prefetch(va);
 
 	skb = *out_skb = napi_alloc_skb(&ring_data->napi,
 					HNS_RX_HEAD_SIZE);
@@ -699,7 +697,7 @@ static void hns_nic_rx_up_pro(struct hns_nic_ring_data *ring_data,
 	struct net_device *ndev = ring_data->napi.dev;
 
 	skb->protocol = eth_type_trans(skb, ndev);
-	(void)napi_gro_receive(&ring_data->napi, skb);
+	napi_gro_receive(&ring_data->napi, skb);
 }
 
 static int hns_desc_unused(struct hnae_ring *ring)
@@ -754,6 +752,8 @@ static void hns_update_rx_rate(struct hnae_ring *ring)
 
 /**
  * smooth_alg - smoothing algrithm for adjusting coalesce parameter
+ * @new_param: new value
+ * @old_param: old value
  **/
 static u32 smooth_alg(u32 new_param, u32 old_param)
 {
@@ -1293,6 +1293,7 @@ static int hns_nic_init_irq(struct hns_nic_priv *priv)
 
 		rd->ring->ring_name[RCB_RING_NAME_LEN - 1] = '\0';
 
+		irq_set_status_flags(rd->ring->irq, IRQ_NOAUTOEN);
 		ret = request_irq(rd->ring->irq,
 				  hns_irq_handle, 0, rd->ring->ring_name, rd);
 		if (ret) {
@@ -1300,7 +1301,6 @@ static int hns_nic_init_irq(struct hns_nic_priv *priv)
 				   rd->ring->irq);
 			goto out_free_irq;
 		}
-		disable_irq(rd->ring->irq);
 
 		cpu = hns_nic_init_affinity_mask(h->q_num, i,
 						 rd->ring, &rd->mask);
@@ -1483,7 +1483,7 @@ static int hns_nic_net_stop(struct net_device *ndev)
 
 static void hns_tx_timeout_reset(struct hns_nic_priv *priv);
 #define HNS_TX_TIMEO_LIMIT (40 * HZ)
-static void hns_nic_net_timeout(struct net_device *ndev)
+static void hns_nic_net_timeout(struct net_device *ndev, unsigned int txqueue)
 {
 	struct hns_nic_priv *priv = netdev_priv(ndev);
 
@@ -1495,20 +1495,6 @@ static void hns_nic_net_timeout(struct net_device *ndev)
 		ndev->watchdog_timeo = HNS_NIC_TX_TIMEOUT;
 		hns_tx_timeout_reset(priv);
 	}
-}
-
-static int hns_nic_do_ioctl(struct net_device *netdev, struct ifreq *ifr,
-			    int cmd)
-{
-	struct phy_device *phy_dev = netdev->phydev;
-
-	if (!netif_running(netdev))
-		return -EINVAL;
-
-	if (!phy_dev)
-		return -ENOTSUPP;
-
-	return phy_mii_ioctl(phy_dev, ifr, cmd);
 }
 
 static netdev_tx_t hns_nic_net_xmit(struct sk_buff *skb,
@@ -1845,9 +1831,8 @@ static int hns_nic_uc_unsync(struct net_device *netdev,
 }
 
 /**
- * nic_set_multicast_list - set mutl mac address
- * @netdev: net device
- * @p: mac address
+ * hns_set_multicast_list - set mutl mac address
+ * @ndev: net device
  *
  * return void
  */
@@ -1958,7 +1943,7 @@ static const struct net_device_ops hns_nic_netdev_ops = {
 	.ndo_tx_timeout = hns_nic_net_timeout,
 	.ndo_set_mac_address = hns_nic_net_set_mac_address,
 	.ndo_change_mtu = hns_nic_change_mtu,
-	.ndo_do_ioctl = hns_nic_do_ioctl,
+	.ndo_do_ioctl = phy_do_ioctl_running,
 	.ndo_set_features = hns_nic_set_features,
 	.ndo_fix_features = hns_nic_fix_features,
 	.ndo_get_stats64 = hns_nic_get_stats64,

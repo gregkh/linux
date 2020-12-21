@@ -421,8 +421,8 @@ static void mlx4_en_handle_err_cqe(struct mlx4_en_priv *priv, struct mlx4_err_cq
 	queue_work(mdev->workqueue, &priv->restart_task);
 }
 
-bool mlx4_en_process_tx_cq(struct net_device *dev,
-			   struct mlx4_en_cq *cq, int napi_budget)
+int mlx4_en_process_tx_cq(struct net_device *dev,
+			  struct mlx4_en_cq *cq, int napi_budget)
 {
 	struct mlx4_en_priv *priv = netdev_priv(dev);
 	struct mlx4_cq *mcq = &cq->mcq;
@@ -444,7 +444,7 @@ bool mlx4_en_process_tx_cq(struct net_device *dev,
 	u32 ring_cons;
 
 	if (unlikely(!priv->port_up))
-		return true;
+		return 0;
 
 	netdev_txq_bql_complete_prefetchw(ring->tx_queue);
 
@@ -518,7 +518,7 @@ bool mlx4_en_process_tx_cq(struct net_device *dev,
 	WRITE_ONCE(ring->cons, ring_cons + txbbs_skipped);
 
 	if (cq->type == TX_XDP)
-		return done < budget;
+		return done;
 
 	netdev_tx_completed_queue(ring->tx_queue, packets, bytes);
 
@@ -530,7 +530,7 @@ bool mlx4_en_process_tx_cq(struct net_device *dev,
 		ring->wake_queue++;
 	}
 
-	return done < budget;
+	return done;
 }
 
 void mlx4_en_tx_irq(struct mlx4_cq *mcq)
@@ -550,14 +550,14 @@ int mlx4_en_poll_tx_cq(struct napi_struct *napi, int budget)
 	struct mlx4_en_cq *cq = container_of(napi, struct mlx4_en_cq, napi);
 	struct net_device *dev = cq->dev;
 	struct mlx4_en_priv *priv = netdev_priv(dev);
-	bool clean_complete;
+	int work_done;
 
-	clean_complete = mlx4_en_process_tx_cq(dev, cq, budget);
-	if (!clean_complete)
+	work_done = mlx4_en_process_tx_cq(dev, cq, budget);
+	if (work_done >= budget)
 		return budget;
 
-	napi_complete(napi);
-	mlx4_en_arm_cq(priv, cq);
+	if (napi_complete_done(napi, work_done))
+		mlx4_en_arm_cq(priv, cq);
 
 	return 0;
 }
@@ -868,6 +868,7 @@ netdev_tx_t mlx4_en_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct mlx4_en_tx_desc *tx_desc;
 	struct mlx4_wqe_data_seg *data;
 	struct mlx4_en_tx_info *tx_info;
+	u32 __maybe_unused ring_cons;
 	int tx_ind;
 	int nr_txbb;
 	int desc_size;
@@ -881,7 +882,6 @@ netdev_tx_t mlx4_en_xmit(struct sk_buff *skb, struct net_device *dev)
 	bool stop_queue;
 	bool inline_ok;
 	u8 data_offset;
-	u32 ring_cons;
 	bool bf_ok;
 
 	tx_ind = skb_get_queue_mapping(skb);
@@ -1101,7 +1101,6 @@ netdev_tx_t mlx4_en_xmit(struct sk_buff *skb, struct net_device *dev)
 		 */
 		smp_rmb();
 
-		ring_cons = READ_ONCE(ring->cons);
 		if (unlikely(!mlx4_en_is_tx_ring_full(ring))) {
 			netif_tx_wake_queue(ring->tx_queue);
 			ring->wake_queue++;

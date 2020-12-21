@@ -89,7 +89,7 @@ static void appledisplay_complete(struct urb *urb)
 		dev_err(dev,
 			"OVERFLOW with data length %d, actual length is %d\n",
 			ACD_URB_BUFFER_LEN, pdata->urb->actual_length);
-		/* fall through */
+		fallthrough;
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
@@ -305,8 +305,7 @@ error:
 		if (pdata->urb) {
 			usb_kill_urb(pdata->urb);
 			cancel_delayed_work_sync(&pdata->work);
-			if (pdata->urbdata)
-				usb_free_coherent(pdata->udev, ACD_URB_BUFFER_LEN,
+			usb_free_coherent(pdata->udev, ACD_URB_BUFFER_LEN,
 					pdata->urbdata, pdata->urb->transfer_dma);
 			usb_free_urb(pdata->urb);
 		}
@@ -343,20 +342,8 @@ static struct usb_driver appledisplay_driver = {
 	.disconnect	= appledisplay_disconnect,
 	.id_table	= appledisplay_table,
 };
-
-static int __init appledisplay_init(void)
-{
-	return usb_register(&appledisplay_driver);
-}
-
-static void __exit appledisplay_exit(void)
-{
-	usb_deregister(&appledisplay_driver);
-}
+module_usb_driver(appledisplay_driver);
 
 MODULE_AUTHOR("Michael Hanselmann");
 MODULE_DESCRIPTION("Apple Cinema Display driver");
 MODULE_LICENSE("GPL");
-
-module_init(appledisplay_init);
-module_exit(appledisplay_exit);

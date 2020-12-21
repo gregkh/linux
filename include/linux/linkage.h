@@ -36,8 +36,8 @@
 		  __stringify(name))
 #endif
 
-#define __page_aligned_data	__section(.data..page_aligned) __aligned(PAGE_SIZE)
-#define __page_aligned_bss	__section(.bss..page_aligned) __aligned(PAGE_SIZE)
+#define __page_aligned_data	__section(".data..page_aligned") __aligned(PAGE_SIZE)
+#define __page_aligned_bss	__section(".bss..page_aligned") __aligned(PAGE_SIZE)
 
 /*
  * For assembly routines.
@@ -105,6 +105,7 @@
 
 /* === DEPRECATED annotations === */
 
+#ifndef CONFIG_ARCH_USE_SYM_ANNOTATIONS
 #ifndef GLOBAL
 /* deprecated, use SYM_DATA*, SYM_ENTRY, or similar */
 #define GLOBAL(name) \
@@ -117,8 +118,10 @@
 #define ENTRY(name) \
 	SYM_FUNC_START(name)
 #endif
+#endif /* CONFIG_ARCH_USE_SYM_ANNOTATIONS */
 #endif /* LINKER_SCRIPT */
 
+#ifndef CONFIG_ARCH_USE_SYM_ANNOTATIONS
 #ifndef WEAK
 /* deprecated, use SYM_FUNC_START_WEAK* */
 #define WEAK(name)	   \
@@ -140,6 +143,7 @@
 #define ENDPROC(name) \
 	SYM_FUNC_END(name)
 #endif
+#endif /* CONFIG_ARCH_USE_SYM_ANNOTATIONS */
 
 /* === generic annotations === */
 

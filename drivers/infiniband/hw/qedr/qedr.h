@@ -103,7 +103,6 @@ struct qedr_device_attr {
 	u64	max_mr_size;
 	u32	max_cqe;
 	u32	max_mw;
-	u32	max_fmr;
 	u32	max_mr_mw_fmr_pbl;
 	u64	max_mr_mw_fmr_size;
 	u32	max_pd;
@@ -231,14 +230,17 @@ struct qedr_ucontext {
 	struct qedr_dev *dev;
 	struct qedr_pd *pd;
 	void __iomem *dpi_addr;
+	struct rdma_user_mmap_entry *db_mmap_entry;
 	u64 dpi_phys_addr;
 	u32 dpi_size;
 	u16 dpi;
+	bool db_rec;
+	u8 edpm_mode;
+};
 
-	struct list_head mm_head;
-
-	/* Lock to protect mm list */
-	struct mutex mm_list_lock;
+union db_prod32 {
+	struct rdma_pwm_val16_data data;
+	u32 raw;
 };
 
 union db_prod64 {
@@ -266,6 +268,13 @@ struct qedr_userq {
 	struct qedr_pbl *pbl_tbl;
 	u64 buf_addr;
 	size_t buf_len;
+
+	/* doorbell recovery */
+	void __iomem *db_addr;
+	struct qedr_user_db_rec *db_rec_data;
+	struct rdma_user_mmap_entry *db_mmap_entry;
+	void __iomem *db_rec_db2_addr;
+	union db_prod32 db_rec_db2_data;
 };
 
 struct qedr_cq {
@@ -301,17 +310,9 @@ struct qedr_pd {
 	struct qedr_ucontext *uctx;
 };
 
-struct qedr_mm {
-	struct {
-		u64 phy_addr;
-		unsigned long len;
-	} key;
-	struct list_head entry;
-};
-
-union db_prod32 {
-	struct rdma_pwm_val16_data data;
-	u32 raw;
+struct qedr_xrcd {
+	struct ib_xrcd ibxrcd;
+	u16 xrcd_id;
 };
 
 struct qedr_qp_hwq_info {
@@ -365,6 +366,7 @@ struct qedr_srq {
 	struct ib_umem *prod_umem;
 	u16 srq_id;
 	u32 srq_limit;
+	bool is_xrc;
 	/* lock to protect srq recv post */
 	spinlock_t lock;
 };
@@ -491,6 +493,18 @@ struct qedr_mr {
 	u32 npages;
 };
 
+struct qedr_user_mmap_entry {
+	struct rdma_user_mmap_entry rdma_entry;
+	struct qedr_dev *dev;
+	union {
+		u64 io_address;
+		void *address;
+	};
+	size_t length;
+	u16 dpi;
+	u8 mmap_flag;
+};
+
 #define SET_FIELD2(value, name, flag) ((value) |= ((flag) << (name ## _SHIFT)))
 
 #define QEDR_RESP_IMM	(RDMA_CQE_RESPONDER_IMM_FLG_MASK << \
@@ -565,6 +579,11 @@ static inline struct qedr_pd *get_qedr_pd(struct ib_pd *ibpd)
 	return container_of(ibpd, struct qedr_pd, ibpd);
 }
 
+static inline struct qedr_xrcd *get_qedr_xrcd(struct ib_xrcd *ibxrcd)
+{
+	return container_of(ibxrcd, struct qedr_xrcd, ibxrcd);
+}
+
 static inline struct qedr_cq *get_qedr_cq(struct ib_cq *ibcq)
 {
 	return container_of(ibcq, struct qedr_cq, ibcq);
@@ -588,5 +607,34 @@ static inline struct qedr_mr *get_qedr_mr(struct ib_mr *ibmr)
 static inline struct qedr_srq *get_qedr_srq(struct ib_srq *ibsrq)
 {
 	return container_of(ibsrq, struct qedr_srq, ibsrq);
+}
+
+static inline bool qedr_qp_has_srq(struct qedr_qp *qp)
+{
+	return qp->srq;
+}
+
+static inline bool qedr_qp_has_sq(struct qedr_qp *qp)
+{
+	if (qp->qp_type == IB_QPT_GSI || qp->qp_type == IB_QPT_XRC_TGT)
+		return 0;
+
+	return 1;
+}
+
+static inline bool qedr_qp_has_rq(struct qedr_qp *qp)
+{
+	if (qp->qp_type == IB_QPT_GSI || qp->qp_type == IB_QPT_XRC_INI ||
+	    qp->qp_type == IB_QPT_XRC_TGT || qedr_qp_has_srq(qp))
+		return 0;
+
+	return 1;
+}
+
+static inline struct qedr_user_mmap_entry *
+get_qedr_mmap_entry(struct rdma_user_mmap_entry *rdma_entry)
+{
+	return container_of(rdma_entry, struct qedr_user_mmap_entry,
+			    rdma_entry);
 }
 #endif

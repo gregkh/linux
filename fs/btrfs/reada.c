@@ -227,7 +227,7 @@ static struct reada_zone *reada_find_zone(struct btrfs_device *dev, u64 logical,
 	struct btrfs_fs_info *fs_info = dev->fs_info;
 	int ret;
 	struct reada_zone *zone;
-	struct btrfs_block_group_cache *cache = NULL;
+	struct btrfs_block_group *cache = NULL;
 	u64 start;
 	u64 end;
 	int i;
@@ -248,8 +248,8 @@ static struct reada_zone *reada_find_zone(struct btrfs_device *dev, u64 logical,
 	if (!cache)
 		return NULL;
 
-	start = cache->key.objectid;
-	end = start + cache->key.offset - 1;
+	start = cache->start;
+	end = start + cache->length - 1;
 	btrfs_put_block_group(cache);
 
 	zone = kzalloc(sizeof(*zone), GFP_KERNEL);
@@ -772,31 +772,39 @@ static void reada_start_machine_worker(struct btrfs_work *work)
 	kfree(rmw);
 }
 
-static void __reada_start_machine(struct btrfs_fs_info *fs_info)
+/* Try to start up to 10k READA requests for a group of devices */
+static int reada_start_for_fsdevs(struct btrfs_fs_devices *fs_devices)
 {
-	struct btrfs_device *device;
-	struct btrfs_fs_devices *fs_devices = fs_info->fs_devices;
 	u64 enqueued;
 	u64 total = 0;
-	int i;
+	struct btrfs_device *device;
 
-again:
 	do {
 		enqueued = 0;
-		mutex_lock(&fs_devices->device_list_mutex);
 		list_for_each_entry(device, &fs_devices->devices, dev_list) {
 			if (atomic_read(&device->reada_in_flight) <
 			    MAX_IN_FLIGHT)
 				enqueued += reada_start_machine_dev(device);
 		}
-		mutex_unlock(&fs_devices->device_list_mutex);
 		total += enqueued;
 	} while (enqueued && total < 10000);
-	if (fs_devices->seed) {
-		fs_devices = fs_devices->seed;
-		goto again;
-	}
 
+	return total;
+}
+
+static void __reada_start_machine(struct btrfs_fs_info *fs_info)
+{
+	struct btrfs_fs_devices *fs_devices = fs_info->fs_devices, *seed_devs;
+	int i;
+	u64 enqueued = 0;
+
+	mutex_lock(&fs_devices->device_list_mutex);
+
+	enqueued += reada_start_for_fsdevs(fs_devices);
+	list_for_each_entry(seed_devs, &fs_devices->seed_list, seed_list)
+		enqueued += reada_start_for_fsdevs(seed_devs);
+
+	mutex_unlock(&fs_devices->device_list_mutex);
 	if (enqueued == 0)
 		return;
 

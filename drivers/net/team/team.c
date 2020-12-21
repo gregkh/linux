@@ -1647,6 +1647,7 @@ static int team_init(struct net_device *dev)
 
 	lockdep_register_key(&team->team_lock_key);
 	__mutex_init(&team->lock, "team->team_lock_key", &team->team_lock_key);
+	netdev_lockdep_set_classes(dev);
 
 	return 0;
 
@@ -2795,7 +2796,7 @@ static int team_nl_cmd_port_list_get(struct sk_buff *skb,
 	return err;
 }
 
-static const struct genl_ops team_nl_ops[] = {
+static const struct genl_small_ops team_nl_ops[] = {
 	{
 		.cmd = TEAM_CMD_NOOP,
 		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
@@ -2832,8 +2833,8 @@ static struct genl_family team_nl_family __ro_after_init = {
 	.policy = team_nl_policy,
 	.netnsok	= true,
 	.module		= THIS_MODULE,
-	.ops		= team_nl_ops,
-	.n_ops		= ARRAY_SIZE(team_nl_ops),
+	.small_ops	= team_nl_ops,
+	.n_small_ops	= ARRAY_SIZE(team_nl_ops),
 	.mcgrps		= team_nl_mcgrps,
 	.n_mcgrps	= ARRAY_SIZE(team_nl_mcgrps),
 };

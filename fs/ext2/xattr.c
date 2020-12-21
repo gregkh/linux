@@ -437,6 +437,9 @@ ext2_xattr_set(struct inode *inode, int name_index, const char *name,
 	name_len = strlen(name);
 	if (name_len > 255 || value_len > sb->s_blocksize)
 		return -ERANGE;
+	error = dquot_initialize(inode);
+	if (error)
+		return error;
 	down_write(&EXT2_I(inode)->xattr_sem);
 	if (EXT2_I(inode)->i_file_acl) {
 		/* The inode already has an extended attribute block. */
@@ -588,7 +591,6 @@ bad_block:
 			/* Remove the old value. */
 			memmove(first_val + size, first_val, val - first_val);
 			memset(first_val, 0, size);
-			here->e_value_offs = 0;
 			min_offs += size;
 
 			/* Adjust all value offsets. */
@@ -600,6 +602,8 @@ bad_block:
 						cpu_to_le16(o + size);
 				last = EXT2_XATTR_NEXT(last);
 			}
+
+			here->e_value_offs = 0;
 		}
 		if (value == NULL) {
 			/* Remove the old name. */
@@ -791,7 +795,15 @@ ext2_xattr_delete_inode(struct inode *inode)
 	struct buffer_head *bh = NULL;
 	struct ext2_sb_info *sbi = EXT2_SB(inode->i_sb);
 
-	down_write(&EXT2_I(inode)->xattr_sem);
+	/*
+	 * We are the only ones holding inode reference. The xattr_sem should
+	 * better be unlocked! We could as well just not acquire xattr_sem at
+	 * all but this makes the code more futureproof. OTOH we need trylock
+	 * here to avoid false-positive warning from lockdep about reclaim
+	 * circular dependency.
+	 */
+	if (WARN_ON_ONCE(!down_write_trylock(&EXT2_I(inode)->xattr_sem)))
+		return;
 	if (!EXT2_I(inode)->i_file_acl)
 		goto cleanup;
 

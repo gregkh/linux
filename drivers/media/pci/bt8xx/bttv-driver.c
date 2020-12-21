@@ -2332,7 +2332,7 @@ static int bttv_try_fmt_vid_cap(struct file *file, void *priv,
 			field = V4L2_FIELD_SEQ_TB;
 			break;
 		}
-		/* fall through */
+		fallthrough;
 	default: /* FIELD_ANY case */
 		height2 = btv->crop[!!fh->do_crop].rect.height >> 1;
 		field = (f->fmt.pix.height > height2)
@@ -2964,7 +2964,7 @@ static int bttv_open(struct file *file)
 
 	dprintk("open dev=%s\n", video_device_node_name(vdev));
 
-	if (vdev->vfl_type == VFL_TYPE_GRABBER) {
+	if (vdev->vfl_type == VFL_TYPE_VIDEO) {
 		type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	} else if (vdev->vfl_type == VFL_TYPE_VBI) {
 		type = V4L2_BUF_TYPE_VBI_CAPTURE;
@@ -3905,7 +3905,7 @@ static int bttv_register_video(struct bttv *btv)
 	if (no_overlay <= 0)
 		btv->video_dev.device_caps |= V4L2_CAP_VIDEO_OVERLAY;
 
-	if (video_register_device(&btv->video_dev, VFL_TYPE_GRABBER,
+	if (video_register_device(&btv->video_dev, VFL_TYPE_VIDEO,
 				  video_nr[btv->c.nr]) < 0)
 		goto err;
 	pr_info("%d: registered device %s\n",

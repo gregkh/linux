@@ -67,9 +67,7 @@ static int kgdb_break_asap;
 
 struct debuggerinfo_struct kgdb_info[NR_CPUS];
 
-/**
- * kgdb_connected - Is a host GDB connected to us?
- */
+/* kgdb_connected - Is a host GDB connected to us? */
 int				kgdb_connected;
 EXPORT_SYMBOL_GPL(kgdb_connected);
 
@@ -82,7 +80,7 @@ static int			exception_level;
 struct kgdb_io		*dbg_io_ops;
 static DEFINE_SPINLOCK(kgdb_registration_lock);
 
-/* Action for the reboot notifiter, a global allow kdb to change it */
+/* Action for the reboot notifier, a global allow kdb to change it */
 static int kgdbreboot;
 /* kgdb console driver is loaded */
 static int kgdb_con_registered;
@@ -157,31 +155,37 @@ early_param("nokgdbroundup", opt_nokgdbroundup);
 
 /*
  * Weak aliases for breakpoint management,
- * can be overriden by architectures when needed:
+ * can be overridden by architectures when needed:
  */
 int __weak kgdb_arch_set_breakpoint(struct kgdb_bkpt *bpt)
 {
 	int err;
 
-	err = probe_kernel_read(bpt->saved_instr, (char *)bpt->bpt_addr,
+	err = copy_from_kernel_nofault(bpt->saved_instr, (char *)bpt->bpt_addr,
 				BREAK_INSTR_SIZE);
 	if (err)
 		return err;
-	err = probe_kernel_write((char *)bpt->bpt_addr,
+	err = copy_to_kernel_nofault((char *)bpt->bpt_addr,
 				 arch_kgdb_ops.gdb_bpt_instr, BREAK_INSTR_SIZE);
 	return err;
 }
+NOKPROBE_SYMBOL(kgdb_arch_set_breakpoint);
 
 int __weak kgdb_arch_remove_breakpoint(struct kgdb_bkpt *bpt)
 {
-	return probe_kernel_write((char *)bpt->bpt_addr,
+	return copy_to_kernel_nofault((char *)bpt->bpt_addr,
 				  (char *)bpt->saved_instr, BREAK_INSTR_SIZE);
 }
+NOKPROBE_SYMBOL(kgdb_arch_remove_breakpoint);
 
 int __weak kgdb_validate_break_address(unsigned long addr)
 {
 	struct kgdb_bkpt tmp;
 	int err;
+
+	if (kgdb_within_blocklist(addr))
+		return -EINVAL;
+
 	/* Validate setting the breakpoint and then removing it.  If the
 	 * remove fails, the kernel needs to emit a bad message because we
 	 * are deep trouble not being able to put things back the way we
@@ -202,6 +206,7 @@ unsigned long __weak kgdb_arch_pc(int exception, struct pt_regs *regs)
 {
 	return instruction_pointer(regs);
 }
+NOKPROBE_SYMBOL(kgdb_arch_pc);
 
 int __weak kgdb_arch_init(void)
 {
@@ -212,6 +217,7 @@ int __weak kgdb_skipexception(int exception, struct pt_regs *regs)
 {
 	return 0;
 }
+NOKPROBE_SYMBOL(kgdb_skipexception);
 
 #ifdef CONFIG_SMP
 
@@ -233,6 +239,7 @@ void __weak kgdb_call_nmi_hook(void *ignored)
 	 */
 	kgdb_nmicallback(raw_smp_processor_id(), get_irq_regs());
 }
+NOKPROBE_SYMBOL(kgdb_call_nmi_hook);
 
 void __weak kgdb_roundup_cpus(void)
 {
@@ -266,6 +273,7 @@ void __weak kgdb_roundup_cpus(void)
 			kgdb_info[cpu].rounding_up = false;
 	}
 }
+NOKPROBE_SYMBOL(kgdb_roundup_cpus);
 
 #endif
 
@@ -292,6 +300,7 @@ static void kgdb_flush_swbreak_addr(unsigned long addr)
 	/* Force flush instruction cache if it was outside the mm */
 	flush_icache_range(addr, addr + BREAK_INSTR_SIZE);
 }
+NOKPROBE_SYMBOL(kgdb_flush_swbreak_addr);
 
 /*
  * SW breakpoint management:
@@ -319,6 +328,7 @@ int dbg_activate_sw_breakpoints(void)
 	}
 	return ret;
 }
+NOKPROBE_SYMBOL(dbg_activate_sw_breakpoints);
 
 int dbg_set_sw_break(unsigned long addr)
 {
@@ -382,6 +392,7 @@ int dbg_deactivate_sw_breakpoints(void)
 	}
 	return ret;
 }
+NOKPROBE_SYMBOL(dbg_deactivate_sw_breakpoints);
 
 int dbg_remove_sw_break(unsigned long addr)
 {
@@ -404,6 +415,18 @@ int kgdb_isremovedbreak(unsigned long addr)
 	for (i = 0; i < KGDB_MAX_BREAKPOINTS; i++) {
 		if ((kgdb_break[i].state == BP_REMOVED) &&
 					(kgdb_break[i].bpt_addr == addr))
+			return 1;
+	}
+	return 0;
+}
+
+int kgdb_has_hit_break(unsigned long addr)
+{
+	int i;
+
+	for (i = 0; i < KGDB_MAX_BREAKPOINTS; i++) {
+		if (kgdb_break[i].state == BP_ACTIVE &&
+		    kgdb_break[i].bpt_addr == addr)
 			return 1;
 	}
 	return 0;
@@ -433,6 +456,37 @@ setundefined:
 	return 0;
 }
 
+#ifdef CONFIG_KGDB_KDB
+void kdb_dump_stack_on_cpu(int cpu)
+{
+	if (cpu == raw_smp_processor_id() || !IS_ENABLED(CONFIG_SMP)) {
+		dump_stack();
+		return;
+	}
+
+	if (!(kgdb_info[cpu].exception_state & DCPU_IS_SLAVE)) {
+		kdb_printf("ERROR: Task on cpu %d didn't stop in the debugger\n",
+			   cpu);
+		return;
+	}
+
+	/*
+	 * In general, architectures don't support dumping the stack of a
+	 * "running" process that's not the current one.  From the point of
+	 * view of the Linux, kernel processes that are looping in the kgdb
+	 * slave loop are still "running".  There's also no API (that actually
+	 * works across all architectures) that can do a stack crawl based
+	 * on registers passed as a parameter.
+	 *
+	 * Solve this conundrum by asking slave CPUs to do the backtrace
+	 * themselves.
+	 */
+	kgdb_info[cpu].exception_state |= DCPU_WANT_BT;
+	while (kgdb_info[cpu].exception_state & DCPU_WANT_BT)
+		cpu_relax();
+}
+#endif
+
 /*
  * Return true if there is a valid kgdb I/O module.  Also if no
  * debugger is attached a message can be printed to the console about
@@ -460,6 +514,7 @@ static int kgdb_io_ready(int print_wait)
 	}
 	return 1;
 }
+NOKPROBE_SYMBOL(kgdb_io_ready);
 
 static int kgdb_reenter_check(struct kgdb_state *ks)
 {
@@ -507,6 +562,7 @@ static int kgdb_reenter_check(struct kgdb_state *ks)
 
 	return 1;
 }
+NOKPROBE_SYMBOL(kgdb_reenter_check);
 
 static void dbg_touch_watchdogs(void)
 {
@@ -514,6 +570,7 @@ static void dbg_touch_watchdogs(void)
 	clocksource_touch_watchdog();
 	rcu_cpu_stall_reset();
 }
+NOKPROBE_SYMBOL(dbg_touch_watchdogs);
 
 static int kgdb_cpu_enter(struct kgdb_state *ks, struct pt_regs *regs,
 		int exception_state)
@@ -574,6 +631,9 @@ cpu_loop:
 				atomic_xchg(&kgdb_active, cpu);
 				break;
 			}
+		} else if (kgdb_info[cpu].exception_state & DCPU_WANT_BT) {
+			dump_stack();
+			kgdb_info[cpu].exception_state &= ~DCPU_WANT_BT;
 		} else if (kgdb_info[cpu].exception_state & DCPU_IS_SLAVE) {
 			if (!raw_spin_is_locked(&dbg_slave_lock))
 				goto return_normal;
@@ -700,6 +760,8 @@ cpu_master_loop:
 		}
 	}
 
+	dbg_activate_sw_breakpoints();
+
 	/* Call the I/O driver's post_exception routine */
 	if (dbg_io_ops->post_exception)
 		dbg_io_ops->post_exception();
@@ -742,6 +804,7 @@ kgdb_restore:
 
 	return kgdb_info[cpu].ret_state;
 }
+NOKPROBE_SYMBOL(kgdb_cpu_enter);
 
 /*
  * kgdb_handle_exception() - main entry point from a kernel exception
@@ -786,6 +849,7 @@ out:
 		arch_kgdb_ops.enable_nmi(1);
 	return ret;
 }
+NOKPROBE_SYMBOL(kgdb_handle_exception);
 
 /*
  * GDB places a breakpoint at this function to know dynamically loaded objects.
@@ -820,6 +884,7 @@ int kgdb_nmicallback(int cpu, void *regs)
 #endif
 	return 1;
 }
+NOKPROBE_SYMBOL(kgdb_nmicallback);
 
 int kgdb_nmicallin(int cpu, int trapnr, void *regs, int err_code,
 							atomic_t *send_ready)
@@ -845,6 +910,7 @@ int kgdb_nmicallin(int cpu, int trapnr, void *regs, int err_code,
 #endif
 	return 1;
 }
+NOKPROBE_SYMBOL(kgdb_nmicallin);
 
 static void kgdb_console_write(struct console *co, const char *s,
    unsigned count)
@@ -901,7 +967,7 @@ static void sysrq_handle_dbg(int key)
 	kgdb_breakpoint();
 }
 
-static struct sysrq_key_op sysrq_dbg_op = {
+static const struct sysrq_key_op sysrq_dbg_op = {
 	.handler	= sysrq_handle_dbg,
 	.help_msg	= "debug(g)",
 	.action_msg	= "DEBUG",
@@ -927,6 +993,14 @@ void kgdb_panic(const char *msg)
 	kgdb_breakpoint();
 }
 
+static void kgdb_initial_breakpoint(void)
+{
+	kgdb_break_asap = 0;
+
+	pr_crit("Waiting for connection from remote gdb...\n");
+	kgdb_breakpoint();
+}
+
 void __weak kgdb_arch_late(void)
 {
 }
@@ -937,6 +1011,9 @@ void __init dbg_late_init(void)
 	if (kgdb_io_module_registered)
 		kgdb_arch_late();
 	kdb_init(KDB_INIT_FULL);
+
+	if (kgdb_io_module_registered && kgdb_break_asap)
+		kgdb_initial_breakpoint();
 }
 
 static int
@@ -1019,7 +1096,7 @@ static void kgdb_tasklet_bpt(unsigned long ing)
 	atomic_set(&kgdb_break_tasklet_var, 0);
 }
 
-static DECLARE_TASKLET(kgdb_tasklet_breakpoint, kgdb_tasklet_bpt, 0);
+static DECLARE_TASKLET_OLD(kgdb_tasklet_breakpoint, kgdb_tasklet_bpt);
 
 void kgdb_schedule_breakpoint(void)
 {
@@ -1032,14 +1109,6 @@ void kgdb_schedule_breakpoint(void)
 }
 EXPORT_SYMBOL_GPL(kgdb_schedule_breakpoint);
 
-static void kgdb_initial_breakpoint(void)
-{
-	kgdb_break_asap = 0;
-
-	pr_crit("Waiting for connection from remote gdb...\n");
-	kgdb_breakpoint();
-}
-
 /**
  *	kgdb_register_io_module - register KGDB IO module
  *	@new_dbg_io_ops: the io ops vector
@@ -1048,15 +1117,22 @@ static void kgdb_initial_breakpoint(void)
  */
 int kgdb_register_io_module(struct kgdb_io *new_dbg_io_ops)
 {
+	struct kgdb_io *old_dbg_io_ops;
 	int err;
 
 	spin_lock(&kgdb_registration_lock);
 
-	if (dbg_io_ops) {
-		spin_unlock(&kgdb_registration_lock);
+	old_dbg_io_ops = dbg_io_ops;
+	if (old_dbg_io_ops) {
+		if (!old_dbg_io_ops->deinit) {
+			spin_unlock(&kgdb_registration_lock);
 
-		pr_err("Another I/O driver is already registered with KGDB\n");
-		return -EBUSY;
+			pr_err("KGDB I/O driver %s can't replace %s.\n",
+				new_dbg_io_ops->name, old_dbg_io_ops->name);
+			return -EBUSY;
+		}
+		pr_info("Replacing I/O driver %s with %s\n",
+			old_dbg_io_ops->name, new_dbg_io_ops->name);
 	}
 
 	if (new_dbg_io_ops->init) {
@@ -1071,12 +1147,18 @@ int kgdb_register_io_module(struct kgdb_io *new_dbg_io_ops)
 
 	spin_unlock(&kgdb_registration_lock);
 
+	if (old_dbg_io_ops) {
+		old_dbg_io_ops->deinit();
+		return 0;
+	}
+
 	pr_info("Registered I/O driver %s\n", new_dbg_io_ops->name);
 
 	/* Arm KGDB now. */
 	kgdb_register_callbacks();
 
-	if (kgdb_break_asap)
+	if (kgdb_break_asap &&
+	    (!dbg_is_early || IS_ENABLED(CONFIG_ARCH_HAS_EARLY_DEBUG)))
 		kgdb_initial_breakpoint();
 
 	return 0;
@@ -1105,6 +1187,9 @@ void kgdb_unregister_io_module(struct kgdb_io *old_dbg_io_ops)
 	dbg_io_ops = NULL;
 
 	spin_unlock(&kgdb_registration_lock);
+
+	if (old_dbg_io_ops->deinit)
+		old_dbg_io_ops->deinit();
 
 	pr_info("Unregistered I/O driver %s, debugger disabled\n",
 		old_dbg_io_ops->name);
@@ -1146,7 +1231,8 @@ static int __init opt_kgdb_wait(char *str)
 	kgdb_break_asap = 1;
 
 	kdb_init(KDB_INIT_EARLY);
-	if (kgdb_io_module_registered)
+	if (kgdb_io_module_registered &&
+	    IS_ENABLED(CONFIG_ARCH_HAS_EARLY_DEBUG))
 		kgdb_initial_breakpoint();
 
 	return 0;

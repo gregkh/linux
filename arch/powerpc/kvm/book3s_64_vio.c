@@ -27,7 +27,6 @@
 #include <asm/hvcall.h>
 #include <asm/synch.h>
 #include <asm/ppc-opcode.h>
-#include <asm/kvm_host.h>
 #include <asm/udbg.h>
 #include <asm/iommu.h>
 #include <asm/tce.h>
@@ -262,10 +261,11 @@ static int kvm_spapr_tce_release(struct inode *inode, struct file *filp)
 		}
 	}
 
+	account_locked_vm(kvm->mm,
+		kvmppc_stt_pages(kvmppc_tce_pages(stt->size)), false);
+
 	kvm_put_kvm(stt->kvm);
 
-	account_locked_vm(current->mm,
-		kvmppc_stt_pages(kvmppc_tce_pages(stt->size)), false);
 	call_rcu(&stt->rcu, release_spapr_tce_table);
 
 	return 0;
@@ -281,15 +281,16 @@ long kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
 {
 	struct kvmppc_spapr_tce_table *stt = NULL;
 	struct kvmppc_spapr_tce_table *siter;
+	struct mm_struct *mm = kvm->mm;
 	unsigned long npages, size = args->size;
-	int ret = -ENOMEM;
+	int ret;
 
 	if (!args->size || args->page_shift < 12 || args->page_shift > 34 ||
 		(args->offset + args->size > (ULLONG_MAX >> args->page_shift)))
 		return -EINVAL;
 
 	npages = kvmppc_tce_pages(size);
-	ret = account_locked_vm(current->mm, kvmppc_stt_pages(npages), true);
+	ret = account_locked_vm(mm, kvmppc_stt_pages(npages), true);
 	if (ret)
 		return ret;
 
@@ -326,7 +327,7 @@ long kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
 	if (ret >= 0)
 		list_add_rcu(&stt->list, &kvm->arch.spapr_tce_tables);
 	else
-		kvm_put_kvm(kvm);
+		kvm_put_kvm_no_destroy(kvm);
 
 	mutex_unlock(&kvm->lock);
 
@@ -335,7 +336,7 @@ long kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
 
 	kfree(stt);
  fail_acct:
-	account_locked_vm(current->mm, kvmppc_stt_pages(npages), false);
+	account_locked_vm(mm, kvmppc_stt_pages(npages), false);
 	return ret;
 }
 
@@ -488,7 +489,7 @@ static long kvmppc_tce_iommu_unmap(struct kvm *kvm,
 	return ret;
 }
 
-long kvmppc_tce_iommu_do_map(struct kvm *kvm, struct iommu_table *tbl,
+static long kvmppc_tce_iommu_do_map(struct kvm *kvm, struct iommu_table *tbl,
 		unsigned long entry, unsigned long ua,
 		enum dma_data_direction dir)
 {

@@ -430,9 +430,6 @@ static int bt_bmc_probe(struct platform_device *pdev)
 	struct device *dev;
 	int rc;
 
-	if (!pdev || !pdev->dev.of_node)
-		return -ENODEV;
-
 	dev = &pdev->dev;
 	dev_info(dev, "Found bt bmc device\n");
 
@@ -444,15 +441,13 @@ static int bt_bmc_probe(struct platform_device *pdev)
 
 	bt_bmc->map = syscon_node_to_regmap(pdev->dev.parent->of_node);
 	if (IS_ERR(bt_bmc->map)) {
-		struct resource *res;
 		void __iomem *base;
 
 		/*
 		 * Assume it's not the MFD-based devicetree description, in
 		 * which case generate a regmap ourselves
 		 */
-		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-		base = devm_ioremap_resource(&pdev->dev, res);
+		base = devm_platform_ioremap_resource(pdev, 0);
 		if (IS_ERR(base))
 			return PTR_ERR(base);
 
@@ -468,9 +463,9 @@ static int bt_bmc_probe(struct platform_device *pdev)
 	init_waitqueue_head(&bt_bmc->queue);
 
 	bt_bmc->miscdev.minor	= MISC_DYNAMIC_MINOR,
-		bt_bmc->miscdev.name	= DEVICE_NAME,
-		bt_bmc->miscdev.fops	= &bt_bmc_fops,
-		bt_bmc->miscdev.parent = dev;
+	bt_bmc->miscdev.name	= DEVICE_NAME,
+	bt_bmc->miscdev.fops	= &bt_bmc_fops,
+	bt_bmc->miscdev.parent = dev;
 	rc = misc_register(&bt_bmc->miscdev);
 	if (rc) {
 		dev_err(dev, "Unable to register misc device\n");

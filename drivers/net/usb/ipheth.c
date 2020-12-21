@@ -358,7 +358,7 @@ static int ipheth_close(struct net_device *net)
 	return 0;
 }
 
-static int ipheth_tx(struct sk_buff *skb, struct net_device *net)
+static netdev_tx_t ipheth_tx(struct sk_buff *skb, struct net_device *net)
 {
 	struct ipheth_device *dev = netdev_priv(net);
 	struct usb_device *udev = dev->udev;
@@ -400,7 +400,7 @@ static int ipheth_tx(struct sk_buff *skb, struct net_device *net)
 	return NETDEV_TX_OK;
 }
 
-static void ipheth_tx_timeout(struct net_device *net)
+static void ipheth_tx_timeout(struct net_device *net, unsigned int txqueue)
 {
 	struct ipheth_device *dev = netdev_priv(net);
 

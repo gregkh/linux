@@ -48,14 +48,12 @@ struct f815xxa_data {
 	int idx;
 };
 
-#define PCI_NUM_BAR_RESOURCES	6
-
 struct serial_private {
 	struct pci_dev		*dev;
 	unsigned int		nr;
 	struct pci_serial_quirk	*quirk;
 	const struct pciserial_board *board;
-	int			line[0];
+	int			line[];
 };
 
 static const struct pci_device_id pci_use_msi[] = {
@@ -89,7 +87,7 @@ setup_port(struct serial_private *priv, struct uart_8250_port *port,
 {
 	struct pci_dev *dev = priv->dev;
 
-	if (bar >= PCI_NUM_BAR_RESOURCES)
+	if (bar >= PCI_STD_NUM_BARS)
 		return -EINVAL;
 
 	if (pci_resource_flags(dev, bar) & IORESOURCE_MEM) {
@@ -277,7 +275,7 @@ static int pci_plx9050_init(struct pci_dev *dev)
 	/*
 	 * enable/disable interrupts
 	 */
-	p = ioremap_nocache(pci_resource_start(dev, 0), 0x80);
+	p = ioremap(pci_resource_start(dev, 0), 0x80);
 	if (p == NULL)
 		return -ENOMEM;
 	writel(irq_config, p + 0x4c);
@@ -301,7 +299,7 @@ static void pci_plx9050_exit(struct pci_dev *dev)
 	/*
 	 * disable interrupts
 	 */
-	p = ioremap_nocache(pci_resource_start(dev, 0), 0x80);
+	p = ioremap(pci_resource_start(dev, 0), 0x80);
 	if (p != NULL) {
 		writel(0, p + 0x4c);
 
@@ -477,7 +475,7 @@ static int pci_siig10x_init(struct pci_dev *dev)
 		break;
 	}
 
-	p = ioremap_nocache(pci_resource_start(dev, 0), 0x80);
+	p = ioremap(pci_resource_start(dev, 0), 0x80);
 	if (p == NULL)
 		return -ENOMEM;
 
@@ -633,7 +631,7 @@ pci_timedia_setup(struct serial_private *priv,
 		break;
 	case 3:
 		offset = board->uart_offset;
-		/* FALLTHROUGH */
+		fallthrough;
 	case 4: /* BAR 2 */
 	case 5: /* BAR 3 */
 	case 6: /* BAR 4 */
@@ -1778,6 +1776,39 @@ pci_wch_ch38x_setup(struct serial_private *priv,
 	return pci_default_setup(priv, board, port, idx);
 }
 
+
+#define CH384_XINT_ENABLE_REG   0xEB
+#define CH384_XINT_ENABLE_BIT   0x02
+
+static int pci_wch_ch38x_init(struct pci_dev *dev)
+{
+	int max_port;
+	unsigned long iobase;
+
+
+	switch (dev->device) {
+	case 0x3853: /* 8 ports */
+		max_port = 8;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	iobase = pci_resource_start(dev, 0);
+	outb(CH384_XINT_ENABLE_BIT, iobase + CH384_XINT_ENABLE_REG);
+
+	return max_port;
+}
+
+static void pci_wch_ch38x_exit(struct pci_dev *dev)
+{
+	unsigned long iobase;
+
+	iobase = pci_resource_start(dev, 0);
+	outb(0x0, iobase + CH384_XINT_ENABLE_REG);
+}
+
+
 static int
 pci_sunix_setup(struct serial_private *priv,
 		const struct pciserial_board *board,
@@ -1869,6 +1900,7 @@ pci_moxa_setup(struct serial_private *priv,
 #define PCIE_VENDOR_ID_WCH		0x1c00
 #define PCIE_DEVICE_ID_WCH_CH382_2S1P	0x3250
 #define PCIE_DEVICE_ID_WCH_CH384_4S	0x3470
+#define PCIE_DEVICE_ID_WCH_CH384_8S	0x3853
 #define PCIE_DEVICE_ID_WCH_CH382_2S	0x3253
 
 #define PCI_VENDOR_ID_ACCESIO			0x494f
@@ -2644,6 +2676,16 @@ static struct pci_serial_quirk pci_serial_quirks[] __refdata = {
 		.subdevice      = PCI_ANY_ID,
 		.setup          = pci_wch_ch38x_setup,
 	},
+	/* WCH CH384 8S card (16850 clone) */
+	{
+		.vendor         = PCIE_VENDOR_ID_WCH,
+		.device         = PCIE_DEVICE_ID_WCH_CH384_8S,
+		.subvendor      = PCI_ANY_ID,
+		.subdevice      = PCI_ANY_ID,
+		.init           = pci_wch_ch38x_init,
+		.exit		= pci_wch_ch38x_exit,
+		.setup          = pci_wch_ch38x_setup,
+	},
 	/*
 	 * ASIX devices with FIFO bug
 	 */
@@ -2751,15 +2793,6 @@ static struct pci_serial_quirk *find_quirk(struct pci_dev *dev)
 		    quirk_id_matches(quirk->subdevice, dev->subsystem_device))
 			break;
 	return quirk;
-}
-
-static inline int get_pci_irq(struct pci_dev *dev,
-				const struct pciserial_board *board)
-{
-	if (board->flags & FL_NOIRQ)
-		return 0;
-	else
-		return dev->irq;
 }
 
 /*
@@ -2915,6 +2948,7 @@ enum pci_board_num_t {
 	pbn_fintek_F81512A,
 	pbn_wch382_2,
 	pbn_wch384_4,
+	pbn_wch384_8,
 	pbn_pericom_PI7C9X7951,
 	pbn_pericom_PI7C9X7952,
 	pbn_pericom_PI7C9X7954,
@@ -3652,6 +3686,13 @@ static struct pciserial_board pci_boards[] = {
 		.uart_offset    = 8,
 		.first_offset   = 0xC0,
 	},
+	[pbn_wch384_8] = {
+		.flags		= FL_BASE0,
+		.num_ports	= 8,
+		.base_baud      = 115200,
+		.uart_offset    = 8,
+		.first_offset   = 0x00,
+	},
 	/*
 	 * Pericom PI7C9X795[1248] Uno/Dual/Quad/Octal UART
 	 */
@@ -3797,7 +3838,7 @@ serial_pci_guess_board(struct pci_dev *dev, struct pciserial_board *board)
 		return -ENODEV;
 
 	num_iomem = num_port = 0;
-	for (i = 0; i < PCI_NUM_BAR_RESOURCES; i++) {
+	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
 		if (pci_resource_flags(dev, i) & IORESOURCE_IO) {
 			num_port++;
 			if (first_port == -1)
@@ -3825,7 +3866,7 @@ serial_pci_guess_board(struct pci_dev *dev, struct pciserial_board *board)
 	 */
 	first_port = -1;
 	num_port = 0;
-	for (i = 0; i < PCI_NUM_BAR_RESOURCES; i++) {
+	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
 		if (pci_resource_flags(dev, i) & IORESOURCE_IO &&
 		    pci_resource_len(dev, i) == 8 &&
 		    (first_port == -1 || (first_port + num_port) == i)) {
@@ -5568,6 +5609,9 @@ static const struct pci_device_id serial_pci_tbl[] = {
 		PCI_ANY_ID, PCI_ANY_ID,
 		0, 0, pbn_wch384_4 },
 
+	{	PCIE_VENDOR_ID_WCH, PCIE_DEVICE_ID_WCH_CH384_8S,
+		PCI_ANY_ID, PCI_ANY_ID,
+		0, 0, pbn_wch384_8 },
 	/*
 	 * Realtek RealManage
 	 */

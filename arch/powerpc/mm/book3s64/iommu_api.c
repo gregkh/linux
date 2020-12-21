@@ -96,14 +96,14 @@ static long mm_iommu_do_alloc(struct mm_struct *mm, unsigned long ua,
 		goto unlock_exit;
 	}
 
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	chunk = (1UL << (PAGE_SHIFT + MAX_ORDER - 1)) /
 			sizeof(struct vm_area_struct *);
 	chunk = min(chunk, entries);
 	for (entry = 0; entry < entries; entry += chunk) {
 		unsigned long n = min(entries - entry, chunk);
 
-		ret = get_user_pages(ua + (entry << PAGE_SHIFT), n,
+		ret = pin_user_pages(ua + (entry << PAGE_SHIFT), n,
 				FOLL_WRITE | FOLL_LONGTERM,
 				mem->hpages + entry, NULL);
 		if (ret == n) {
@@ -114,7 +114,7 @@ static long mm_iommu_do_alloc(struct mm_struct *mm, unsigned long ua,
 			pinned += ret;
 		break;
 	}
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	if (pinned != entries) {
 		if (!ret)
 			ret = -EFAULT;
@@ -170,9 +170,8 @@ good_exit:
 	return 0;
 
 free_exit:
-	/* free the reference taken */
-	for (i = 0; i < pinned; i++)
-		put_page(mem->hpages[i]);
+	/* free the references taken */
+	unpin_user_pages(mem->hpages, pinned);
 
 	vfree(mem->hpas);
 	kfree(mem);
@@ -218,7 +217,8 @@ static void mm_iommu_unpin(struct mm_iommu_table_group_mem_t *mem)
 		if (mem->hpas[i] & MM_IOMMU_TABLE_GROUP_PAGE_DIRTY)
 			SetPageDirty(page);
 
-		put_page(page);
+		unpin_user_page(page);
+
 		mem->hpas[i] = 0;
 	}
 }

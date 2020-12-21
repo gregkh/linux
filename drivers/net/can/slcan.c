@@ -153,7 +153,7 @@ static void slc_bump(struct slcan *sl)
 	switch (*cmd) {
 	case 'r':
 		cf.can_id = CAN_RTR_FLAG;
-		/* fallthrough */
+		fallthrough;
 	case 't':
 		/* store dlc ASCII value and terminate SFF CAN ID string */
 		cf.can_dlc = sl->rbuff[SLC_CMD_LEN + SLC_SFF_ID_LEN];
@@ -163,7 +163,7 @@ static void slc_bump(struct slcan *sl)
 		break;
 	case 'R':
 		cf.can_id = CAN_RTR_FLAG;
-		/* fallthrough */
+		fallthrough;
 	case 'T':
 		cf.can_id |= CAN_EFF_FLAG;
 		/* store dlc ASCII value and terminate EFF CAN ID string */
@@ -346,11 +346,8 @@ static void slcan_write_wakeup(struct tty_struct *tty)
 
 	rcu_read_lock();
 	sl = rcu_dereference(tty->disc_data);
-	if (!sl)
-		goto out;
-
-	schedule_work(&sl->tx_work);
-out:
+	if (sl)
+		schedule_work(&sl->tx_work);
 	rcu_read_unlock();
 }
 

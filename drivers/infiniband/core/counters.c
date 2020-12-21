@@ -8,7 +8,7 @@
 #include "core_priv.h"
 #include "restrack.h"
 
-#define ALL_AUTO_MODE_MASKS (RDMA_COUNTER_MASK_QP_TYPE)
+#define ALL_AUTO_MODE_MASKS (RDMA_COUNTER_MASK_QP_TYPE | RDMA_COUNTER_MASK_PID)
 
 static int __counter_set_mode(struct rdma_counter_mode *curr,
 			      enum rdma_nl_counter_mode new_mode,
@@ -80,8 +80,9 @@ static struct rdma_counter *rdma_counter_alloc(struct ib_device *dev, u8 port,
 
 	counter->device    = dev;
 	counter->port      = port;
-	counter->res.type  = RDMA_RESTRACK_COUNTER;
-	counter->stats     = dev->ops.counter_alloc_stats(counter);
+
+	rdma_restrack_new(&counter->res, RDMA_RESTRACK_COUNTER);
+	counter->stats = dev->ops.counter_alloc_stats(counter);
 	if (!counter->stats)
 		goto err_stats;
 
@@ -107,6 +108,7 @@ err_mode:
 	mutex_unlock(&port_counter->lock);
 	kfree(counter->stats);
 err_stats:
+	rdma_restrack_put(&counter->res);
 	kfree(counter);
 	return NULL;
 }
@@ -149,15 +151,12 @@ static bool auto_mode_match(struct ib_qp *qp, struct rdma_counter *counter,
 	struct auto_mode_param *param = &counter->mode.param;
 	bool match = true;
 
-	if (!rdma_is_visible_in_pid_ns(&qp->res))
-		return false;
-
-	/* Ensure that counter belongs to the right PID */
-	if (task_pid_nr(counter->res.task) != task_pid_nr(qp->res.task))
-		return false;
-
 	if (auto_mask & RDMA_COUNTER_MASK_QP_TYPE)
 		match &= (param->qp_type == qp->qp_type);
+
+	if (auto_mask & RDMA_COUNTER_MASK_PID)
+		match &= (task_pid_nr(counter->res.task) ==
+			  task_pid_nr(qp->res.task));
 
 	return match;
 }
@@ -231,9 +230,6 @@ static struct rdma_counter *rdma_get_counter_auto_mode(struct ib_qp *qp,
 	rt = &dev->res[RDMA_RESTRACK_COUNTER];
 	xa_lock(&rt->xa);
 	xa_for_each(&rt->xa, id, res) {
-		if (!rdma_is_visible_in_pid_ns(res))
-			continue;
-
 		counter = container_of(res, struct rdma_counter, res);
 		if ((counter->device != qp->device) || (counter->port != port))
 			goto next;
@@ -254,13 +250,8 @@ next:
 static void rdma_counter_res_add(struct rdma_counter *counter,
 				 struct ib_qp *qp)
 {
-	if (rdma_is_kernel_res(&qp->res)) {
-		rdma_restrack_set_task(&counter->res, qp->res.kern_name);
-		rdma_restrack_kadd(&counter->res);
-	} else {
-		rdma_restrack_attach_task(&counter->res, qp->res.task);
-		rdma_restrack_uadd(&counter->res);
-	}
+	rdma_restrack_parent_name(&counter->res, &qp->res);
+	rdma_restrack_add(&counter->res);
 }
 
 static void counter_release(struct kref *kref)
@@ -417,9 +408,6 @@ static struct ib_qp *rdma_counter_get_qp(struct ib_device *dev, u32 qp_num)
 	if (IS_ERR(res))
 		return NULL;
 
-	if (!rdma_is_visible_in_pid_ns(res))
-		goto err;
-
 	qp = container_of(res, struct ib_qp, res);
 	if (qp->qp_type == IB_QPT_RAW_PACKET && !capable(CAP_NET_RAW))
 		goto err;
@@ -449,11 +437,6 @@ static struct rdma_counter *rdma_get_counter_by_id(struct ib_device *dev,
 	res = rdma_restrack_get_byid(dev, RDMA_RESTRACK_COUNTER, counter_id);
 	if (IS_ERR(res))
 		return NULL;
-
-	if (!rdma_is_visible_in_pid_ns(res)) {
-		rdma_restrack_put(res);
-		return NULL;
-	}
 
 	counter = container_of(res, struct rdma_counter, res);
 	kref_get(&counter->kref);

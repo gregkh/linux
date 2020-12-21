@@ -21,9 +21,9 @@ int bind_evtchn_to_irqhandler(evtchn_port_t evtchn,
 			      unsigned long irqflags, const char *devname,
 			      void *dev_id);
 int bind_evtchn_to_irqhandler_lateeoi(evtchn_port_t evtchn,
-				      irq_handler_t handler,
-				      unsigned long irqflags, const char *devname,
-				      void *dev_id);
+			      irq_handler_t handler,
+			      unsigned long irqflags, const char *devname,
+			      void *dev_id);
 int bind_virq_to_irq(unsigned int virq, unsigned int cpu, bool percpu);
 int bind_virq_to_irqhandler(unsigned int virq, unsigned int cpu,
 			    irq_handler_t handler,
@@ -35,16 +35,8 @@ int bind_ipi_to_irqhandler(enum ipi_vector ipi,
 			   unsigned long irqflags,
 			   const char *devname,
 			   void *dev_id);
-int bind_interdomain_evtchn_to_irq(unsigned int remote_domain,
-				   evtchn_port_t remote_port);
 int bind_interdomain_evtchn_to_irq_lateeoi(unsigned int remote_domain,
 					   evtchn_port_t remote_port);
-int bind_interdomain_evtchn_to_irqhandler(unsigned int remote_domain,
-					  evtchn_port_t remote_port,
-					  irq_handler_t handler,
-					  unsigned long irqflags,
-					  const char *devname,
-					  void *dev_id);
 int bind_interdomain_evtchn_to_irqhandler_lateeoi(unsigned int remote_domain,
 						  evtchn_port_t remote_port,
 						  irq_handler_t handler,
@@ -75,15 +67,15 @@ int xen_set_irq_priority(unsigned irq, unsigned priority);
 /*
  * Allow extra references to event channels exposed to userspace by evtchn
  */
-int evtchn_make_refcounted(unsigned int evtchn);
-int evtchn_get(unsigned int evtchn);
-void evtchn_put(unsigned int evtchn);
+int evtchn_make_refcounted(evtchn_port_t evtchn);
+int evtchn_get(evtchn_port_t evtchn);
+void evtchn_put(evtchn_port_t evtchn);
 
 void xen_send_IPI_one(unsigned int cpu, enum ipi_vector vector);
-void rebind_evtchn_irq(int evtchn, int irq);
+void rebind_evtchn_irq(evtchn_port_t evtchn, int irq);
 int xen_set_affinity_evtchn(struct irq_desc *desc, unsigned int tcpu);
 
-static inline void notify_remote_via_evtchn(int port)
+static inline void notify_remote_via_evtchn(evtchn_port_t port)
 {
 	struct evtchn_send send = { .port = port };
 	(void)HYPERVISOR_event_channel_op(EVTCHNOP_send, &send);
@@ -107,17 +99,10 @@ void xen_poll_irq(int irq);
 void xen_poll_irq_timeout(int irq, u64 timeout);
 
 /* Determine the IRQ which is bound to an event channel */
-unsigned irq_from_evtchn(unsigned int evtchn);
+unsigned int irq_from_evtchn(evtchn_port_t evtchn);
 int irq_from_virq(unsigned int cpu, unsigned int virq);
-unsigned int evtchn_from_irq(unsigned irq);
+evtchn_port_t evtchn_from_irq(unsigned irq);
 
-#ifdef CONFIG_XEN_PVHVM
-/* Xen HVM evtchn vector callback */
-void xen_hvm_callback_vector(void);
-#ifdef CONFIG_TRACING
-#define trace_xen_hvm_callback_vector xen_hvm_callback_vector
-#endif
-#endif
 int xen_set_callback_via(uint64_t via);
 void xen_evtchn_do_upcall(struct pt_regs *regs);
 void xen_hvm_evtchn_do_upcall(void);

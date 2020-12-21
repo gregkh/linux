@@ -34,10 +34,13 @@ static inline bool is_sier_available(void) { return false; }
 	do {							\
 		(regs)->result = 0;				\
 		(regs)->nip = __ip;				\
-		(regs)->gpr[1] = current_stack_pointer();	\
+		(regs)->gpr[1] = current_stack_frame();		\
 		asm volatile("mfmsr %0" : "=r" ((regs)->msr));	\
 	} while (0)
 
 /* To support perf_regs sier update */
 extern bool is_sier_available(void);
+/* To define perf extended regs mask value */
+extern u64 PERF_REG_EXTENDED_MASK;
+#define PERF_REG_EXTENDED_MASK	PERF_REG_EXTENDED_MASK
 #endif

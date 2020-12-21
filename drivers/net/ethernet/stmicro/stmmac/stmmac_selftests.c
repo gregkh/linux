@@ -14,6 +14,7 @@
 #include <linux/phy.h>
 #include <linux/udp.h>
 #include <net/pkt_cls.h>
+#include <net/pkt_sched.h>
 #include <net/tcp.h>
 #include <net/udp.h>
 #include <net/tc_act/tc_gact.h>
@@ -50,6 +51,7 @@ struct stmmac_packet_attrs {
 	u8 id;
 	int sarc;
 	u16 queue_mapping;
+	u64 timestamp;
 };
 
 static u8 stmmac_test_next_id;
@@ -208,6 +210,9 @@ static struct sk_buff *stmmac_test_get_udp_skb(struct stmmac_priv *priv,
 	skb->pkt_type = PACKET_HOST;
 	skb->dev = priv->dev;
 
+	if (attr->timestamp)
+		skb->tstamp = ns_to_ktime(attr->timestamp);
+
 	return skb;
 }
 
@@ -341,8 +346,7 @@ static int __stmmac_test_loopback(struct stmmac_priv *priv,
 		goto cleanup;
 	}
 
-	skb_set_queue_mapping(skb, attr->queue_mapping);
-	ret = dev_queue_xmit(skb);
+	ret = dev_direct_xmit(skb, attr->queue_mapping);
 	if (ret)
 		goto cleanup;
 
@@ -376,7 +380,7 @@ static int stmmac_test_phy_loopback(struct stmmac_priv *priv)
 	int ret;
 
 	if (!priv->dev->phydev)
-		return -EBUSY;
+		return -EOPNOTSUPP;
 
 	ret = phy_loopback(priv->dev->phydev, true);
 	if (ret)
@@ -792,7 +796,7 @@ static int stmmac_test_flowctrl(struct stmmac_priv *priv)
 		u32 tail;
 
 		tail = priv->rx_queue[i].dma_rx_phy +
-			(DMA_RX_SIZE * sizeof(struct dma_desc));
+			(priv->dma_rx_size * sizeof(struct dma_desc));
 
 		stmmac_set_rx_tail_ptr(priv, priv->ioaddr, tail, i);
 		stmmac_start_rx(priv, priv->ioaddr, i);
@@ -887,15 +891,12 @@ out:
 	return 0;
 }
 
-static int stmmac_test_vlanfilt(struct stmmac_priv *priv)
+static int __stmmac_test_vlanfilt(struct stmmac_priv *priv)
 {
 	struct stmmac_packet_attrs attr = { };
 	struct stmmac_test_priv *tpriv;
 	struct sk_buff *skb = NULL;
 	int ret = 0, i;
-
-	if (!priv->dma_cap.vlhash)
-		return -EOPNOTSUPP;
 
 	tpriv = kzalloc(sizeof(*tpriv), GFP_KERNEL);
 	if (!tpriv)
@@ -935,8 +936,7 @@ static int stmmac_test_vlanfilt(struct stmmac_priv *priv)
 			goto vlan_del;
 		}
 
-		skb_set_queue_mapping(skb, 0);
-		ret = dev_queue_xmit(skb);
+		ret = dev_direct_xmit(skb, 0);
 		if (ret)
 			goto vlan_del;
 
@@ -962,15 +962,34 @@ cleanup:
 	return ret;
 }
 
-static int stmmac_test_dvlanfilt(struct stmmac_priv *priv)
+static int stmmac_test_vlanfilt(struct stmmac_priv *priv)
+{
+	if (!priv->dma_cap.vlhash)
+		return -EOPNOTSUPP;
+
+	return __stmmac_test_vlanfilt(priv);
+}
+
+static int stmmac_test_vlanfilt_perfect(struct stmmac_priv *priv)
+{
+	int ret, prev_cap = priv->dma_cap.vlhash;
+
+	if (!(priv->dev->features & NETIF_F_HW_VLAN_CTAG_FILTER))
+		return -EOPNOTSUPP;
+
+	priv->dma_cap.vlhash = 0;
+	ret = __stmmac_test_vlanfilt(priv);
+	priv->dma_cap.vlhash = prev_cap;
+
+	return ret;
+}
+
+static int __stmmac_test_dvlanfilt(struct stmmac_priv *priv)
 {
 	struct stmmac_packet_attrs attr = { };
 	struct stmmac_test_priv *tpriv;
 	struct sk_buff *skb = NULL;
 	int ret = 0, i;
-
-	if (!priv->dma_cap.vlhash)
-		return -EOPNOTSUPP;
 
 	tpriv = kzalloc(sizeof(*tpriv), GFP_KERNEL);
 	if (!tpriv)
@@ -1011,8 +1030,7 @@ static int stmmac_test_dvlanfilt(struct stmmac_priv *priv)
 			goto vlan_del;
 		}
 
-		skb_set_queue_mapping(skb, 0);
-		ret = dev_queue_xmit(skb);
+		ret = dev_direct_xmit(skb, 0);
 		if (ret)
 			goto vlan_del;
 
@@ -1038,6 +1056,28 @@ cleanup:
 	return ret;
 }
 
+static int stmmac_test_dvlanfilt(struct stmmac_priv *priv)
+{
+	if (!priv->dma_cap.vlhash)
+		return -EOPNOTSUPP;
+
+	return __stmmac_test_dvlanfilt(priv);
+}
+
+static int stmmac_test_dvlanfilt_perfect(struct stmmac_priv *priv)
+{
+	int ret, prev_cap = priv->dma_cap.vlhash;
+
+	if (!(priv->dev->features & NETIF_F_HW_VLAN_STAG_FILTER))
+		return -EOPNOTSUPP;
+
+	priv->dma_cap.vlhash = 0;
+	ret = __stmmac_test_dvlanfilt(priv);
+	priv->dma_cap.vlhash = prev_cap;
+
+	return ret;
+}
+
 #ifdef CONFIG_NET_CLS_ACT
 static int stmmac_test_rxp(struct stmmac_priv *priv)
 {
@@ -1054,7 +1094,7 @@ static int stmmac_test_rxp(struct stmmac_priv *priv)
 	if (!priv->dma_cap.frpsel)
 		return -EOPNOTSUPP;
 
-	sel = kzalloc(sizeof(*sel) + nk * sizeof(struct tc_u32_key), GFP_KERNEL);
+	sel = kzalloc(struct_size(sel, keys, nk), GFP_KERNEL);
 	if (!sel)
 		return -ENOMEM;
 
@@ -1260,8 +1300,7 @@ static int stmmac_test_vlanoff_common(struct stmmac_priv *priv, bool svlan)
 	__vlan_hwaccel_put_tag(skb, htons(proto), tpriv->vlan_id);
 	skb->protocol = htons(proto);
 
-	skb_set_queue_mapping(skb, 0);
-	ret = dev_queue_xmit(skb);
+	ret = dev_direct_xmit(skb, 0);
 	if (ret)
 		goto vlan_del;
 
@@ -1348,6 +1387,7 @@ static int __stmmac_test_l3filt(struct stmmac_priv *priv, u32 dst, u32 src,
 	cls->rule = rule;
 
 	rule->action.entries[0].id = FLOW_ACTION_DROP;
+	rule->action.entries[0].hw_stats = FLOW_ACTION_HW_STATS_ANY;
 	rule->action.num_entries = 1;
 
 	attr.dst = priv->dev->dev_addr;
@@ -1476,6 +1516,7 @@ static int __stmmac_test_l4filt(struct stmmac_priv *priv, u32 dst, u32 src,
 	cls->rule = rule;
 
 	rule->action.entries[0].id = FLOW_ACTION_DROP;
+	rule->action.entries[0].hw_stats = FLOW_ACTION_HW_STATS_ANY;
 	rule->action.num_entries = 1;
 
 	attr.dst = priv->dev->dev_addr;
@@ -1621,8 +1662,7 @@ static int stmmac_test_arpoffload(struct stmmac_priv *priv)
 	if (ret)
 		goto cleanup;
 
-	skb_set_queue_mapping(skb, 0);
-	ret = dev_queue_xmit(skb);
+	ret = dev_direct_xmit(skb, 0);
 	if (ret)
 		goto cleanup_promisc;
 
@@ -1710,6 +1750,68 @@ static int stmmac_test_sph(struct stmmac_priv *priv)
 	return 0;
 }
 
+static int stmmac_test_tbs(struct stmmac_priv *priv)
+{
+#define STMMAC_TBS_LT_OFFSET		(500 * 1000 * 1000) /* 500 ms*/
+	struct stmmac_packet_attrs attr = { };
+	struct tc_etf_qopt_offload qopt;
+	u64 start_time, curr_time = 0;
+	unsigned long flags;
+	int ret, i;
+
+	if (!priv->hwts_tx_en)
+		return -EOPNOTSUPP;
+
+	/* Find first TBS enabled Queue, if any */
+	for (i = 0; i < priv->plat->tx_queues_to_use; i++)
+		if (priv->tx_queue[i].tbs & STMMAC_TBS_AVAIL)
+			break;
+
+	if (i >= priv->plat->tx_queues_to_use)
+		return -EOPNOTSUPP;
+
+	qopt.enable = true;
+	qopt.queue = i;
+
+	ret = stmmac_tc_setup_etf(priv, priv, &qopt);
+	if (ret)
+		return ret;
+
+	spin_lock_irqsave(&priv->ptp_lock, flags);
+	stmmac_get_systime(priv, priv->ptpaddr, &curr_time);
+	spin_unlock_irqrestore(&priv->ptp_lock, flags);
+
+	if (!curr_time) {
+		ret = -EOPNOTSUPP;
+		goto fail_disable;
+	}
+
+	start_time = curr_time;
+	curr_time += STMMAC_TBS_LT_OFFSET;
+
+	attr.dst = priv->dev->dev_addr;
+	attr.timestamp = curr_time;
+	attr.timeout = nsecs_to_jiffies(2 * STMMAC_TBS_LT_OFFSET);
+	attr.queue_mapping = i;
+
+	ret = __stmmac_test_loopback(priv, &attr);
+	if (ret)
+		goto fail_disable;
+
+	/* Check if expected time has elapsed */
+	spin_lock_irqsave(&priv->ptp_lock, flags);
+	stmmac_get_systime(priv, priv->ptpaddr, &curr_time);
+	spin_unlock_irqrestore(&priv->ptp_lock, flags);
+
+	if ((curr_time - start_time) < STMMAC_TBS_LT_OFFSET)
+		ret = -EINVAL;
+
+fail_disable:
+	qopt.enable = false;
+	stmmac_tc_setup_etf(priv, priv, &qopt);
+	return ret;
+}
+
 #define STMMAC_LOOPBACK_NONE	0
 #define STMMAC_LOOPBACK_MAC	1
 #define STMMAC_LOOPBACK_PHY	2
@@ -1720,121 +1822,133 @@ static const struct stmmac_test {
 	int (*fn)(struct stmmac_priv *priv);
 } stmmac_selftests[] = {
 	{
-		.name = "MAC Loopback         ",
+		.name = "MAC Loopback               ",
 		.lb = STMMAC_LOOPBACK_MAC,
 		.fn = stmmac_test_mac_loopback,
 	}, {
-		.name = "PHY Loopback         ",
+		.name = "PHY Loopback               ",
 		.lb = STMMAC_LOOPBACK_NONE, /* Test will handle it */
 		.fn = stmmac_test_phy_loopback,
 	}, {
-		.name = "MMC Counters         ",
+		.name = "MMC Counters               ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_mmc,
 	}, {
-		.name = "EEE                  ",
+		.name = "EEE                        ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_eee,
 	}, {
-		.name = "Hash Filter MC       ",
+		.name = "Hash Filter MC             ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_hfilt,
 	}, {
-		.name = "Perfect Filter UC    ",
+		.name = "Perfect Filter UC          ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_pfilt,
 	}, {
-		.name = "MC Filter            ",
+		.name = "MC Filter                  ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_mcfilt,
 	}, {
-		.name = "UC Filter            ",
+		.name = "UC Filter                  ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_ucfilt,
 	}, {
-		.name = "Flow Control         ",
+		.name = "Flow Control               ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_flowctrl,
 	}, {
-		.name = "RSS                  ",
+		.name = "RSS                        ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_rss,
 	}, {
-		.name = "VLAN Filtering       ",
+		.name = "VLAN Filtering             ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_vlanfilt,
 	}, {
-		.name = "Double VLAN Filtering",
+		.name = "VLAN Filtering (perf)      ",
+		.lb = STMMAC_LOOPBACK_PHY,
+		.fn = stmmac_test_vlanfilt_perfect,
+	}, {
+		.name = "Double VLAN Filter         ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_dvlanfilt,
 	}, {
-		.name = "Flexible RX Parser   ",
+		.name = "Double VLAN Filter (perf)  ",
+		.lb = STMMAC_LOOPBACK_PHY,
+		.fn = stmmac_test_dvlanfilt_perfect,
+	}, {
+		.name = "Flexible RX Parser         ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_rxp,
 	}, {
-		.name = "SA Insertion (desc)  ",
+		.name = "SA Insertion (desc)        ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_desc_sai,
 	}, {
-		.name = "SA Replacement (desc)",
+		.name = "SA Replacement (desc)      ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_desc_sar,
 	}, {
-		.name = "SA Insertion (reg)  ",
+		.name = "SA Insertion (reg)         ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_reg_sai,
 	}, {
-		.name = "SA Replacement (reg)",
+		.name = "SA Replacement (reg)       ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_reg_sar,
 	}, {
-		.name = "VLAN TX Insertion   ",
+		.name = "VLAN TX Insertion          ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_vlanoff,
 	}, {
-		.name = "SVLAN TX Insertion  ",
+		.name = "SVLAN TX Insertion         ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_svlanoff,
 	}, {
-		.name = "L3 DA Filtering     ",
+		.name = "L3 DA Filtering            ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_l3filt_da,
 	}, {
-		.name = "L3 SA Filtering     ",
+		.name = "L3 SA Filtering            ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_l3filt_sa,
 	}, {
-		.name = "L4 DA TCP Filtering ",
+		.name = "L4 DA TCP Filtering        ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_l4filt_da_tcp,
 	}, {
-		.name = "L4 SA TCP Filtering ",
+		.name = "L4 SA TCP Filtering        ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_l4filt_sa_tcp,
 	}, {
-		.name = "L4 DA UDP Filtering ",
+		.name = "L4 DA UDP Filtering        ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_l4filt_da_udp,
 	}, {
-		.name = "L4 SA UDP Filtering ",
+		.name = "L4 SA UDP Filtering        ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_l4filt_sa_udp,
 	}, {
-		.name = "ARP Offload         ",
+		.name = "ARP Offload                ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_arpoffload,
 	}, {
-		.name = "Jumbo Frame         ",
+		.name = "Jumbo Frame                ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_jumbo,
 	}, {
-		.name = "Multichannel Jumbo  ",
+		.name = "Multichannel Jumbo         ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_mjumbo,
 	}, {
-		.name = "Split Header        ",
+		.name = "Split Header               ",
 		.lb = STMMAC_LOOPBACK_PHY,
 		.fn = stmmac_test_sph,
+	}, {
+		.name = "TBS (ETF Scheduler)        ",
+		.lb = STMMAC_LOOPBACK_PHY,
+		.fn = stmmac_test_tbs,
 	},
 };
 
@@ -1843,7 +1957,6 @@ void stmmac_selftest_run(struct net_device *dev,
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
 	int count = stmmac_selftest_get_count(priv);
-	int carrier = netif_carrier_ok(dev);
 	int i, ret;
 
 	memset(buf, 0, sizeof(*buf) * count);
@@ -1853,14 +1966,11 @@ void stmmac_selftest_run(struct net_device *dev,
 		netdev_err(priv->dev, "Only offline tests are supported\n");
 		etest->flags |= ETH_TEST_FL_FAILED;
 		return;
-	} else if (!carrier) {
+	} else if (!netif_carrier_ok(dev)) {
 		netdev_err(priv->dev, "You need valid Link to execute tests\n");
 		etest->flags |= ETH_TEST_FL_FAILED;
 		return;
 	}
-
-	/* We don't want extra traffic */
-	netif_carrier_off(dev);
 
 	/* Wait for queues drain */
 	msleep(200);
@@ -1875,7 +1985,7 @@ void stmmac_selftest_run(struct net_device *dev,
 				ret = phy_loopback(dev->phydev, true);
 			if (!ret)
 				break;
-			/* Fallthrough */
+			fallthrough;
 		case STMMAC_LOOPBACK_MAC:
 			ret = stmmac_set_mac_loopback(priv, priv->ioaddr, true);
 			break;
@@ -1908,7 +2018,7 @@ void stmmac_selftest_run(struct net_device *dev,
 				ret = phy_loopback(dev->phydev, false);
 			if (!ret)
 				break;
-			/* Fallthrough */
+			fallthrough;
 		case STMMAC_LOOPBACK_MAC:
 			stmmac_set_mac_loopback(priv, priv->ioaddr, false);
 			break;
@@ -1916,10 +2026,6 @@ void stmmac_selftest_run(struct net_device *dev,
 			break;
 		}
 	}
-
-	/* Restart everything */
-	if (carrier)
-		netif_carrier_on(dev);
 }
 
 void stmmac_selftest_get_strings(struct stmmac_priv *priv, u8 *data)

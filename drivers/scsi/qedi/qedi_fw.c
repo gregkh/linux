@@ -360,7 +360,6 @@ static void qedi_put_rq_bdq_buf(struct qedi_ctx *qedi,
 				struct iscsi_cqe_unsolicited *cqe,
 				int count)
 {
-	u16 tmp;
 	u16 idx = 0;
 	struct scsi_bd *pbl;
 
@@ -389,10 +388,10 @@ static void qedi_put_rq_bdq_buf(struct qedi_ctx *qedi,
 	qedi->bdq_prod_idx += count;
 
 	writew(qedi->bdq_prod_idx, qedi->bdq_primary_prod);
-	tmp = readw(qedi->bdq_primary_prod);
+	readw(qedi->bdq_primary_prod);
 
 	writew(qedi->bdq_prod_idx, qedi->bdq_secondary_prod);
-	tmp = readw(qedi->bdq_secondary_prod);
+	readw(qedi->bdq_secondary_prod);
 }
 
 static void qedi_unsol_pdu_adjust_bdq(struct qedi_ctx *qedi,
@@ -1268,7 +1267,8 @@ int qedi_cleanup_all_io(struct qedi_ctx *qedi, struct qedi_conn *qedi_conn,
 	rval  = wait_event_interruptible_timeout(qedi_conn->wait_queue,
 						 ((qedi_conn->cmd_cleanup_req ==
 						 qedi_conn->cmd_cleanup_cmpl) ||
-						 qedi_conn->ep),
+						 test_bit(QEDI_IN_RECOVERY,
+							  &qedi->flags)),
 						 5 * HZ);
 	if (rval) {
 		QEDI_INFO(&qedi->dbg_ctx, QEDI_LOG_SCSI_TM,
@@ -1293,7 +1293,9 @@ int qedi_cleanup_all_io(struct qedi_ctx *qedi, struct qedi_conn *qedi_conn,
 	/* Enable IOs for all other sessions except current.*/
 	if (!wait_event_interruptible_timeout(qedi_conn->wait_queue,
 					      (qedi_conn->cmd_cleanup_req ==
-					       qedi_conn->cmd_cleanup_cmpl),
+					       qedi_conn->cmd_cleanup_cmpl) ||
+					       test_bit(QEDI_IN_RECOVERY,
+							&qedi->flags),
 					      5 * HZ)) {
 		iscsi_host_for_each_session(qedi->shost,
 					    qedi_mark_device_available);

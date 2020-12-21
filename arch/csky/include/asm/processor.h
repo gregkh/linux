@@ -41,8 +41,7 @@ extern struct cpuinfo_csky cpu_data[];
 #define TASK_UNMAPPED_BASE      (TASK_SIZE / 3)
 
 struct thread_struct {
-	unsigned long  ksp;       /* kernel stack pointer */
-	unsigned long  sr;        /* saved status register */
+	unsigned long  sp;        /* kernel stack pointer */
 	unsigned long  trap_no;   /* saved status register */
 
 	/* FPU regs */
@@ -50,8 +49,7 @@ struct thread_struct {
 };
 
 #define INIT_THREAD  { \
-	.ksp = sizeof(init_stack) + (unsigned long) &init_stack, \
-	.sr = DEFAULT_PSR_VALUE, \
+	.sp = sizeof(init_stack) + (unsigned long) &init_stack, \
 }
 
 /*
@@ -83,12 +81,6 @@ static inline void release_thread(struct task_struct *dead_task)
 #define prepare_to_copy(tsk)    do { } while (0)
 
 extern int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
-
-#define copy_segments(tsk, mm)		do { } while (0)
-#define release_segments(mm)		do { } while (0)
-#define forget_segments()		do { } while (0)
-
-extern unsigned long thread_saved_pc(struct task_struct *tsk);
 
 unsigned long get_wchan(struct task_struct *p);
 

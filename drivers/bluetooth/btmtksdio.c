@@ -51,12 +51,13 @@ static const struct btmtksdio_data mt7668_data = {
 };
 
 static const struct sdio_device_id btmtksdio_table[] = {
-	{SDIO_DEVICE(SDIO_VENDOR_ID_MEDIATEK, 0x7663),
+	{SDIO_DEVICE(SDIO_VENDOR_ID_MEDIATEK, SDIO_DEVICE_ID_MEDIATEK_MT7663),
 	 .driver_data = (kernel_ulong_t)&mt7663_data },
-	{SDIO_DEVICE(SDIO_VENDOR_ID_MEDIATEK, 0x7668),
+	{SDIO_DEVICE(SDIO_VENDOR_ID_MEDIATEK, SDIO_DEVICE_ID_MEDIATEK_MT7668),
 	 .driver_data = (kernel_ulong_t)&mt7668_data },
 	{ }	/* Terminating entry */
 };
+MODULE_DEVICE_TABLE(sdio, btmtksdio_table);
 
 #define MTK_REG_CHLPCR		0x4	/* W1S */
 #define C_INT_EN_SET		BIT(0)
@@ -495,7 +496,7 @@ static void btmtksdio_interrupt(struct sdio_func *func)
 	sdio_claim_host(bdev->func);
 
 	/* Disable interrupt */
-	sdio_writel(func, C_INT_EN_CLR, MTK_REG_CHLPCR, 0);
+	sdio_writel(func, C_INT_EN_CLR, MTK_REG_CHLPCR, NULL);
 
 	int_status = sdio_readl(func, MTK_REG_CHISR, NULL);
 
@@ -529,7 +530,7 @@ static void btmtksdio_interrupt(struct sdio_func *func)
 	}
 
 	/* Enable interrupt */
-	sdio_writel(func, C_INT_EN_SET, MTK_REG_CHLPCR, 0);
+	sdio_writel(func, C_INT_EN_SET, MTK_REG_CHLPCR, NULL);
 
 	pm_runtime_mark_last_busy(bdev->dev);
 	pm_runtime_put_autosuspend(bdev->dev);

@@ -319,7 +319,7 @@ static struct ubi_wl_entry *find_wl_entry(struct ubi_device *ubi,
 					  struct rb_root *root, int diff)
 {
 	struct rb_node *p;
-	struct ubi_wl_entry *e, *prev_e = NULL;
+	struct ubi_wl_entry *e;
 	int max;
 
 	e = rb_entry(rb_first(root), struct ubi_wl_entry, u.rb);
@@ -334,7 +334,6 @@ static struct ubi_wl_entry *find_wl_entry(struct ubi_device *ubi,
 			p = p->rb_left;
 		else {
 			p = p->rb_right;
-			prev_e = e;
 			e = e1;
 		}
 	}
@@ -688,18 +687,25 @@ static int wear_leveling_worker(struct ubi_device *ubi, struct ubi_work *wrk,
 	}
 
 #ifdef CONFIG_MTD_UBI_FASTMAP
+	e1 = find_anchor_wl_entry(&ubi->used);
+	if (e1 && ubi->fm_next_anchor &&
+	    (ubi->fm_next_anchor->ec - e1->ec >= UBI_WL_THRESHOLD)) {
+		ubi->fm_do_produce_anchor = 1;
+		/* fm_next_anchor is no longer considered a good anchor
+		 * candidate.
+		 * NULL assignment also prevents multiple wear level checks
+		 * of this PEB.
+		 */
+		wl_tree_add(ubi->fm_next_anchor, &ubi->free);
+		ubi->fm_next_anchor = NULL;
+		ubi->free_count++;
+	}
+
 	if (ubi->fm_do_produce_anchor) {
-		e1 = find_anchor_wl_entry(&ubi->used);
 		if (!e1)
 			goto out_cancel;
 		e2 = get_peb_for_wl(ubi);
 		if (!e2)
-			goto out_cancel;
-
-		/*
-		 * Anchor move within the anchor area is useless.
-		 */
-		if (e2->pnum < UBI_FM_MAX_START)
 			goto out_cancel;
 
 		self_check_in_wl_tree(ubi, e1, &ubi->used);
@@ -1080,8 +1086,12 @@ static int __erase_worker(struct ubi_device *ubi, struct ubi_work *wl_wrk)
 	if (!err) {
 		spin_lock(&ubi->wl_lock);
 
-		if (!ubi->fm_anchor && e->pnum < UBI_FM_MAX_START) {
-			ubi->fm_anchor = e;
+		if (!ubi->fm_disabled && !ubi->fm_next_anchor &&
+		    e->pnum < UBI_FM_MAX_START) {
+			/* Abort anchor production, if needed it will be
+			 * enabled again in the wear leveling started below.
+			 */
+			ubi->fm_next_anchor = e;
 			ubi->fm_do_produce_anchor = 0;
 		} else {
 			wl_tree_add(e, &ubi->free);
@@ -1889,7 +1899,8 @@ int ubi_wl_init(struct ubi_device *ubi, struct ubi_attach_info *ai)
 		goto out_free;
 
 #ifdef CONFIG_MTD_UBI_FASTMAP
-	ubi_ensure_anchor_pebs(ubi);
+	if (!ubi->ro_mode && !ubi->fm_disabled)
+		ubi_ensure_anchor_pebs(ubi);
 #endif
 	return 0;
 

@@ -4,7 +4,7 @@
  *
  * Copyright (C) 2004-2008 International Business Machines Corp.
  *   Author(s): Michael A. Halcrow <mhalcrow@us.ibm.com>
- *		Tyler Hicks <tyhicks@ou.edu>
+ *		Tyler Hicks <code@tyhicks.com>
  */
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -175,7 +175,7 @@ int ecryptfs_exorcise_daemon(struct ecryptfs_daemon *daemon)
 	}
 	hlist_del(&daemon->euid_chain);
 	mutex_unlock(&daemon->mux);
-	kzfree(daemon);
+	kfree_sensitive(daemon);
 out:
 	return rc;
 }

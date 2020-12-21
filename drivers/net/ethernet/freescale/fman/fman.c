@@ -639,6 +639,9 @@ static void set_port_liodn(struct fman *fman, u8 port_id,
 {
 	u32 tmp;
 
+	iowrite32be(liodn_ofst, &fman->bmi_regs->fmbm_spliodn[port_id - 1]);
+	if (!IS_ENABLED(CONFIG_FSL_PAMU))
+		return;
 	/* set LIODN base for this port */
 	tmp = ioread32be(&fman->dma_regs->fmdmplr[port_id / 2]);
 	if (port_id % 2) {
@@ -649,7 +652,6 @@ static void set_port_liodn(struct fman *fman, u8 port_id,
 		tmp |= liodn_base << DMA_LIODN_SHIFT;
 	}
 	iowrite32be(tmp, &fman->dma_regs->fmdmplr[port_id / 2]);
-	iowrite32be(liodn_ofst, &fman->bmi_regs->fmbm_spliodn[port_id - 1]);
 }
 
 static void enable_rams_ecc(struct fman_fpm_regs __iomem *fpm_rg)
@@ -1946,6 +1948,8 @@ static int fman_init(struct fman *fman)
 
 		fman->liodn_offset[i] =
 			ioread32be(&fman->bmi_regs->fmbm_spliodn[i - 1]);
+		if (!IS_ENABLED(CONFIG_FSL_PAMU))
+			continue;
 		liodn_base = ioread32be(&fman->dma_regs->fmdmplr[i / 2]);
 		if (i % 2) {
 			/* FMDM_PLR LSB holds LIODN base for odd ports */
@@ -2059,11 +2063,11 @@ static int fman_set_exception(struct fman *fman,
 /**
  * fman_register_intr
  * @fman:	A Pointer to FMan device
- * @mod:	Calling module
+ * @module:	Calling module
  * @mod_id:	Module id (if more than 1 exists, '0' if not)
  * @intr_type:	Interrupt type (error/normal) selection.
- * @f_isr:	The interrupt service routine.
- * @h_src_arg:	Argument to be passed to f_isr.
+ * @isr_cb:	The interrupt service routine.
+ * @src_arg:	Argument to be passed to isr_cb.
  *
  * Used to register an event handler to be processed by FMan
  *
@@ -2087,7 +2091,7 @@ EXPORT_SYMBOL(fman_register_intr);
 /**
  * fman_unregister_intr
  * @fman:	A Pointer to FMan device
- * @mod:	Calling module
+ * @module:	Calling module
  * @mod_id:	Module id (if more than 1 exists, '0' if not)
  * @intr_type:	Interrupt type (error/normal) selection.
  *
@@ -2338,8 +2342,8 @@ EXPORT_SYMBOL(fman_get_bmi_max_fifo_size);
 
 /**
  * fman_get_revision
- * @fman		- Pointer to the FMan module
- * @rev_info		- A structure of revision information parameters.
+ * @fman:		- Pointer to the FMan module
+ * @rev_info:		- A structure of revision information parameters.
  *
  * Returns the FM revision
  *
@@ -2504,7 +2508,7 @@ EXPORT_SYMBOL(fman_get_rx_extra_headroom);
 
 /**
  * fman_bind
- * @dev:	FMan OF device pointer
+ * @fm_dev:	FMan OF device pointer
  *
  * Bind to a specific FMan device.
  *

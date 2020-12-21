@@ -45,6 +45,7 @@
 #define SDHCI_TEGRA_CAP_OVERRIDES_DQS_TRIM_SHIFT	8
 
 #define SDHCI_TEGRA_VENDOR_MISC_CTRL			0x120
+#define SDHCI_MISC_CTRL_ERASE_TIMEOUT_LIMIT		BIT(0)
 #define SDHCI_MISC_CTRL_ENABLE_SDR104			0x8
 #define SDHCI_MISC_CTRL_ENABLE_SDR50			0x10
 #define SDHCI_MISC_CTRL_ENABLE_SDHCI_SPEC_300		0x20
@@ -95,7 +96,16 @@
 #define NVQUIRK_ENABLE_SDR50				BIT(3)
 #define NVQUIRK_ENABLE_SDR104				BIT(4)
 #define NVQUIRK_ENABLE_DDR50				BIT(5)
+/*
+ * HAS_PADCALIB NVQUIRK is for SoC's supporting auto calibration of pads
+ * drive strength.
+ */
 #define NVQUIRK_HAS_PADCALIB				BIT(6)
+/*
+ * NEEDS_PAD_CONTROL NVQUIRK is for SoC's having separate 3V3 and 1V8 pads.
+ * 3V3/1V8 pad selection happens through pinctrl state selection depending
+ * on the signaling mode.
+ */
 #define NVQUIRK_NEEDS_PAD_CONTROL			BIT(7)
 #define NVQUIRK_DIS_CARD_CLK_CONFIG_TAP			BIT(8)
 #define NVQUIRK_CQHCI_DCMD_R1B_CMD_TIMING		BIT(9)
@@ -611,6 +621,39 @@ static void tegra_sdhci_parse_pad_autocal_dt(struct sdhci_host *host)
 		autocal->pull_down_1v8 = 0;
 
 	err = device_property_read_u32(host->mmc->parent,
+			"nvidia,pad-autocal-pull-up-offset-sdr104",
+			&autocal->pull_up_sdr104);
+	if (err)
+		autocal->pull_up_sdr104 = autocal->pull_up_1v8;
+
+	err = device_property_read_u32(host->mmc->parent,
+			"nvidia,pad-autocal-pull-down-offset-sdr104",
+			&autocal->pull_down_sdr104);
+	if (err)
+		autocal->pull_down_sdr104 = autocal->pull_down_1v8;
+
+	err = device_property_read_u32(host->mmc->parent,
+			"nvidia,pad-autocal-pull-up-offset-hs400",
+			&autocal->pull_up_hs400);
+	if (err)
+		autocal->pull_up_hs400 = autocal->pull_up_1v8;
+
+	err = device_property_read_u32(host->mmc->parent,
+			"nvidia,pad-autocal-pull-down-offset-hs400",
+			&autocal->pull_down_hs400);
+	if (err)
+		autocal->pull_down_hs400 = autocal->pull_down_1v8;
+
+	/*
+	 * Different fail-safe drive strength values based on the signaling
+	 * voltage are applicable for SoCs supporting 3V3 and 1V8 pad controls.
+	 * So, avoid reading below device tree properties for SoCs that don't
+	 * have NVQUIRK_NEEDS_PAD_CONTROL.
+	 */
+	if (!(tegra_host->soc_data->nvquirks & NVQUIRK_NEEDS_PAD_CONTROL))
+		return;
+
+	err = device_property_read_u32(host->mmc->parent,
 			"nvidia,pad-autocal-pull-up-offset-3v3-timeout",
 			&autocal->pull_up_3v3_timeout);
 	if (err) {
@@ -653,30 +696,6 @@ static void tegra_sdhci_parse_pad_autocal_dt(struct sdhci_host *host)
 				mmc_hostname(host->mmc));
 		autocal->pull_down_1v8_timeout = 0;
 	}
-
-	err = device_property_read_u32(host->mmc->parent,
-			"nvidia,pad-autocal-pull-up-offset-sdr104",
-			&autocal->pull_up_sdr104);
-	if (err)
-		autocal->pull_up_sdr104 = autocal->pull_up_1v8;
-
-	err = device_property_read_u32(host->mmc->parent,
-			"nvidia,pad-autocal-pull-down-offset-sdr104",
-			&autocal->pull_down_sdr104);
-	if (err)
-		autocal->pull_down_sdr104 = autocal->pull_down_1v8;
-
-	err = device_property_read_u32(host->mmc->parent,
-			"nvidia,pad-autocal-pull-up-offset-hs400",
-			&autocal->pull_up_hs400);
-	if (err)
-		autocal->pull_up_hs400 = autocal->pull_up_1v8;
-
-	err = device_property_read_u32(host->mmc->parent,
-			"nvidia,pad-autocal-pull-down-offset-hs400",
-			&autocal->pull_down_hs400);
-	if (err)
-		autocal->pull_down_hs400 = autocal->pull_down_1v8;
 }
 
 static void tegra_sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
@@ -1234,6 +1253,34 @@ static u32 sdhci_tegra_cqhci_irq(struct sdhci_host *host, u32 intmask)
 	return 0;
 }
 
+static void tegra_sdhci_set_timeout(struct sdhci_host *host,
+				    struct mmc_command *cmd)
+{
+	u32 val;
+
+	/*
+	 * HW busy detection timeout is based on programmed data timeout
+	 * counter and maximum supported timeout is 11s which may not be
+	 * enough for long operations like cache flush, sleep awake, erase.
+	 *
+	 * ERASE_TIMEOUT_LIMIT bit of VENDOR_MISC_CTRL register allows
+	 * host controller to wait for busy state until the card is busy
+	 * without HW timeout.
+	 *
+	 * So, use infinite busy wait mode for operations that may take
+	 * more than maximum HW busy timeout of 11s otherwise use finite
+	 * busy wait mode.
+	 */
+	val = sdhci_readl(host, SDHCI_TEGRA_VENDOR_MISC_CTRL);
+	if (cmd && cmd->busy_timeout >= 11 * HZ)
+		val |= SDHCI_MISC_CTRL_ERASE_TIMEOUT_LIMIT;
+	else
+		val &= ~SDHCI_MISC_CTRL_ERASE_TIMEOUT_LIMIT;
+	sdhci_writel(host, val, SDHCI_TEGRA_VENDOR_MISC_CTRL);
+
+	__sdhci_set_timeout(host, cmd);
+}
+
 static const struct cqhci_host_ops sdhci_tegra_cqhci_ops = {
 	.write_l    = tegra_cqhci_writel,
 	.enable	= sdhci_tegra_cqe_enable,
@@ -1373,6 +1420,7 @@ static const struct sdhci_ops tegra210_sdhci_ops = {
 	.set_uhs_signaling = tegra_sdhci_set_uhs_signaling,
 	.voltage_switch = tegra_sdhci_voltage_switch,
 	.get_max_clock = tegra_sdhci_get_max_clock,
+	.set_timeout = tegra_sdhci_set_timeout,
 };
 
 static const struct sdhci_pltfm_data sdhci_tegra210_pdata = {
@@ -1410,6 +1458,7 @@ static const struct sdhci_ops tegra186_sdhci_ops = {
 	.voltage_switch = tegra_sdhci_voltage_switch,
 	.get_max_clock = tegra_sdhci_get_max_clock,
 	.irq = sdhci_tegra_cqhci_irq,
+	.set_timeout = tegra_sdhci_set_timeout,
 };
 
 static const struct sdhci_pltfm_data sdhci_tegra186_pdata = {
@@ -1560,8 +1609,8 @@ static int sdhci_tegra_probe(struct platform_device *pdev)
 	if (tegra_host->soc_data->nvquirks & NVQUIRK_ENABLE_DDR50)
 		host->mmc->caps |= MMC_CAP_1_8V_DDR;
 
-	/* R1B responses is required to properly manage HW busy detection. */
-	host->mmc->caps |= MMC_CAP_NEED_RSP_BUSY;
+	/* HW busy detection is supported, but R1B responses are required. */
+	host->mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY | MMC_CAP_NEED_RSP_BUSY;
 
 	tegra_sdhci_parse_dt(host);
 
@@ -1611,11 +1660,8 @@ static int sdhci_tegra_probe(struct platform_device *pdev)
 
 	clk = devm_clk_get(mmc_dev(host->mmc), NULL);
 	if (IS_ERR(clk)) {
-		rc = PTR_ERR(clk);
-
-		if (rc != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "failed to get clock: %d\n", rc);
-
+		rc = dev_err_probe(&pdev->dev, PTR_ERR(clk),
+				   "failed to get clock\n");
 		goto err_clk_get;
 	}
 	clk_prepare_enable(clk);
@@ -1736,6 +1782,7 @@ static SIMPLE_DEV_PM_OPS(sdhci_tegra_dev_pm_ops, sdhci_tegra_suspend,
 static struct platform_driver sdhci_tegra_driver = {
 	.driver		= {
 		.name	= "sdhci-tegra",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = sdhci_tegra_dt_match,
 		.pm	= &sdhci_tegra_dev_pm_ops,
 	},

@@ -5,7 +5,8 @@
  * Copyright (c) 2007 Freescale Semiconductor, Inc.
  * Copyright (c) 2009 MontaVista Software, Inc.
  * Copyright (c) 2010 Pengutronix e.K.
- *   Author: Wolfram Sang <w.sang@pengutronix.de>
+ * Copyright 2020 NXP
+ *   Author: Wolfram Sang <kernel@pengutronix.de>
  */
 
 #ifndef _DRIVERS_MMC_SDHCI_ESDHC_H
@@ -31,6 +32,7 @@
 
 /* Present State Register */
 #define ESDHC_PRSSTAT			0x24
+#define ESDHC_CLOCK_GATE_OFF		0x00000080
 #define ESDHC_CLOCK_STABLE		0x00000008
 
 /* Protocol Control Register */
@@ -87,6 +89,7 @@
 /* DLL Config 0 Register */
 #define ESDHC_DLLCFG0			0x160
 #define ESDHC_DLL_ENABLE		0x80000000
+#define ESDHC_DLL_RESET			0x40000000
 #define ESDHC_DLL_FREQ_SEL		0x08000000
 
 /* DLL Config 1 Register */

@@ -87,6 +87,23 @@ static int tcf_mpls_act(struct sk_buff *skb, const struct tc_action *a,
 				  skb->dev && skb->dev->type == ARPHRD_ETHER))
 			goto drop;
 		break;
+	case TCA_MPLS_ACT_MAC_PUSH:
+		if (skb_vlan_tag_present(skb)) {
+			if (__vlan_insert_inner_tag(skb, skb->vlan_proto,
+						    skb_vlan_tag_get(skb),
+						    ETH_HLEN) < 0)
+				goto drop;
+
+			skb->protocol = skb->vlan_proto;
+			__vlan_hwaccel_clear_tag(skb);
+		}
+
+		new_lse = tcf_mpls_get_lse(NULL, p, mac_len ||
+					   !eth_p_mpls(skb->protocol));
+
+		if (skb_mpls_push(skb, new_lse, p->tcfm_proto, 0, false))
+			goto drop;
+		break;
 	case TCA_MPLS_ACT_MODIFY:
 		if (!pskb_may_pull(skb,
 				   skb_network_offset(skb) + MPLS_HLEN))
@@ -125,7 +142,6 @@ static int valid_label(const struct nlattr *attr,
 }
 
 static const struct nla_policy mpls_policy[TCA_MPLS_MAX + 1] = {
-	[TCA_MPLS_UNSPEC]	= { .strict_start_type = TCA_MPLS_UNSPEC + 1 },
 	[TCA_MPLS_PARMS]	= NLA_POLICY_EXACT_LEN(sizeof(struct tc_mpls)),
 	[TCA_MPLS_PROTO]	= { .type = NLA_U16 },
 	[TCA_MPLS_LABEL]	= NLA_POLICY_VALIDATE_FN(NLA_U32, valid_label),
@@ -137,7 +153,8 @@ static const struct nla_policy mpls_policy[TCA_MPLS_MAX + 1] = {
 static int tcf_mpls_init(struct net *net, struct nlattr *nla,
 			 struct nlattr *est, struct tc_action **a,
 			 int ovr, int bind, bool rtnl_held,
-			 struct tcf_proto *tp, struct netlink_ext_ack *extack)
+			 struct tcf_proto *tp, u32 flags,
+			 struct netlink_ext_ack *extack)
 {
 	struct tc_action_net *tn = net_generic(net, mpls_net_id);
 	struct nlattr *tb[TCA_MPLS_MAX + 1];
@@ -191,6 +208,7 @@ static int tcf_mpls_init(struct net *net, struct nlattr *nla,
 		}
 		break;
 	case TCA_MPLS_ACT_PUSH:
+	case TCA_MPLS_ACT_MAC_PUSH:
 		if (!tb[TCA_MPLS_LABEL]) {
 			NL_SET_ERR_MSG_MOD(extack, "Label is required for MPLS push");
 			return -EINVAL;
@@ -230,7 +248,7 @@ static int tcf_mpls_init(struct net *net, struct nlattr *nla,
 
 	if (!exists) {
 		ret = tcf_idr_create(tn, index, est, a,
-				     &act_mpls_ops, bind, true);
+				     &act_mpls_ops, bind, true, 0);
 		if (ret) {
 			tcf_idr_cleanup(tn, index);
 			return ret;
@@ -268,7 +286,7 @@ static int tcf_mpls_init(struct net *net, struct nlattr *nla,
 
 	spin_lock_bh(&m->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(*a, parm->action, goto_ch);
-	rcu_swap_protected(m->mpls_p, p, lockdep_is_held(&m->tcf_lock));
+	p = rcu_replace_pointer(m->mpls_p, p, lockdep_is_held(&m->tcf_lock));
 	spin_unlock_bh(&m->tcf_lock);
 
 	if (goto_ch)

@@ -14,7 +14,6 @@
 #include <drm/drm_utils.h>
 
 #include "panfrost_device.h"
-#include "panfrost_devfreq.h"
 #include "panfrost_gem.h"
 #include "panfrost_mmu.h"
 #include "panfrost_job.h"
@@ -99,7 +98,7 @@ static int panfrost_ioctl_create_bo(struct drm_device *dev, void *data,
 
 	mapping = panfrost_gem_mapping_get(bo, priv);
 	if (!mapping) {
-		drm_gem_object_put_unlocked(&bo->base.base);
+		drm_gem_object_put(&bo->base.base);
 		return -EINVAL;
 	}
 
@@ -317,7 +316,7 @@ panfrost_ioctl_wait_bo(struct drm_device *dev, void *data,
 	if (!ret)
 		ret = timeout ? -ETIMEDOUT : -EBUSY;
 
-	drm_gem_object_put_unlocked(gem_obj);
+	drm_gem_object_put(gem_obj);
 
 	return ret;
 }
@@ -351,7 +350,7 @@ static int panfrost_ioctl_mmap_bo(struct drm_device *dev, void *data,
 		args->offset = drm_vma_node_offset_addr(&gem_obj->vma_node);
 
 out:
-	drm_gem_object_put_unlocked(gem_obj);
+	drm_gem_object_put(gem_obj);
 	return ret;
 }
 
@@ -372,7 +371,7 @@ static int panfrost_ioctl_get_bo_offset(struct drm_device *dev, void *data,
 	bo = to_panfrost_bo(gem_obj);
 
 	mapping = panfrost_gem_mapping_get(bo, priv);
-	drm_gem_object_put_unlocked(gem_obj);
+	drm_gem_object_put(gem_obj);
 
 	if (!mapping)
 		return -EINVAL;
@@ -438,7 +437,7 @@ out_unlock_mappings:
 	mutex_unlock(&bo->mappings.lock);
 	mutex_unlock(&pfdev->shrinker_lock);
 
-	drm_gem_object_put_unlocked(gem_obj);
+	drm_gem_object_put(gem_obj);
 	return ret;
 }
 
@@ -527,15 +526,11 @@ panfrost_postclose(struct drm_device *dev, struct drm_file *file)
 	kfree(panfrost_priv);
 }
 
-/* DRM_AUTH is required on SUBMIT for now, while all clients share a single
- * address space.  Note that render nodes would be able to submit jobs that
- * could access BOs from clients authenticated with the master node.
- */
 static const struct drm_ioctl_desc panfrost_drm_driver_ioctls[] = {
 #define PANFROST_IOCTL(n, func, flags) \
 	DRM_IOCTL_DEF_DRV(PANFROST_##n, panfrost_ioctl_##func, flags)
 
-	PANFROST_IOCTL(SUBMIT,		submit,		DRM_RENDER_ALLOW | DRM_AUTH),
+	PANFROST_IOCTL(SUBMIT,		submit,		DRM_RENDER_ALLOW),
 	PANFROST_IOCTL(WAIT_BO,		wait_bo,	DRM_RENDER_ALLOW),
 	PANFROST_IOCTL(CREATE_BO,	create_bo,	DRM_RENDER_ALLOW),
 	PANFROST_IOCTL(MMAP_BO,		mmap_bo,	DRM_RENDER_ALLOW),
@@ -546,7 +541,7 @@ static const struct drm_ioctl_desc panfrost_drm_driver_ioctls[] = {
 	PANFROST_IOCTL(MADVISE,		madvise,	DRM_RENDER_ALLOW),
 };
 
-DEFINE_DRM_GEM_SHMEM_FOPS(panfrost_drm_driver_fops);
+DEFINE_DRM_GEM_FOPS(panfrost_drm_driver_fops);
 
 /*
  * Panfrost driver version:
@@ -588,6 +583,10 @@ static int panfrost_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, pfdev);
 
+	pfdev->comp = of_device_get_match_data(&pdev->dev);
+	if (!pfdev->comp)
+		return -ENODEV;
+
 	/* Allocate and initialze the DRM device. */
 	ddev = drm_dev_alloc(&panfrost_drm_driver, &pdev->dev);
 	if (IS_ERR(ddev))
@@ -606,13 +605,6 @@ static int panfrost_probe(struct platform_device *pdev)
 		goto err_out0;
 	}
 
-	err = panfrost_devfreq_init(pfdev);
-	if (err) {
-		if (err != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "Fatal error during devfreq init\n");
-		goto err_out1;
-	}
-
 	pm_runtime_set_active(pfdev->dev);
 	pm_runtime_mark_last_busy(pfdev->dev);
 	pm_runtime_enable(pfdev->dev);
@@ -625,17 +617,16 @@ static int panfrost_probe(struct platform_device *pdev)
 	 */
 	err = drm_dev_register(ddev, 0);
 	if (err < 0)
-		goto err_out2;
+		goto err_out1;
 
 	panfrost_gem_shrinker_init(ddev);
 
 	return 0;
 
-err_out2:
-	pm_runtime_disable(pfdev->dev);
-	panfrost_devfreq_fini(pfdev);
 err_out1:
+	pm_runtime_disable(pfdev->dev);
 	panfrost_device_fini(pfdev);
+	pm_runtime_set_suspended(pfdev->dev);
 err_out0:
 	drm_dev_put(ddev);
 	return err;
@@ -650,25 +641,44 @@ static int panfrost_remove(struct platform_device *pdev)
 	panfrost_gem_shrinker_cleanup(ddev);
 
 	pm_runtime_get_sync(pfdev->dev);
-	panfrost_devfreq_fini(pfdev);
-	panfrost_device_fini(pfdev);
-	pm_runtime_put_sync_suspend(pfdev->dev);
 	pm_runtime_disable(pfdev->dev);
+	panfrost_device_fini(pfdev);
+	pm_runtime_set_suspended(pfdev->dev);
 
 	drm_dev_put(ddev);
 	return 0;
 }
 
+static const char * const default_supplies[] = { "mali" };
+static const struct panfrost_compatible default_data = {
+	.num_supplies = ARRAY_SIZE(default_supplies),
+	.supply_names = default_supplies,
+	.num_pm_domains = 1, /* optional */
+	.pm_domain_names = NULL,
+};
+
+static const struct panfrost_compatible amlogic_data = {
+	.num_supplies = ARRAY_SIZE(default_supplies),
+	.supply_names = default_supplies,
+	.vendor_quirk = panfrost_gpu_amlogic_quirk,
+};
+
 static const struct of_device_id dt_match[] = {
-	{ .compatible = "arm,mali-t604" },
-	{ .compatible = "arm,mali-t624" },
-	{ .compatible = "arm,mali-t628" },
-	{ .compatible = "arm,mali-t720" },
-	{ .compatible = "arm,mali-t760" },
-	{ .compatible = "arm,mali-t820" },
-	{ .compatible = "arm,mali-t830" },
-	{ .compatible = "arm,mali-t860" },
-	{ .compatible = "arm,mali-t880" },
+	/* Set first to probe before the generic compatibles */
+	{ .compatible = "amlogic,meson-gxm-mali",
+	  .data = &amlogic_data, },
+	{ .compatible = "amlogic,meson-g12a-mali",
+	  .data = &amlogic_data, },
+	{ .compatible = "arm,mali-t604", .data = &default_data, },
+	{ .compatible = "arm,mali-t624", .data = &default_data, },
+	{ .compatible = "arm,mali-t628", .data = &default_data, },
+	{ .compatible = "arm,mali-t720", .data = &default_data, },
+	{ .compatible = "arm,mali-t760", .data = &default_data, },
+	{ .compatible = "arm,mali-t820", .data = &default_data, },
+	{ .compatible = "arm,mali-t830", .data = &default_data, },
+	{ .compatible = "arm,mali-t860", .data = &default_data, },
+	{ .compatible = "arm,mali-t880", .data = &default_data, },
+	{ .compatible = "arm,mali-bifrost", .data = &default_data, },
 	{}
 };
 MODULE_DEVICE_TABLE(of, dt_match);

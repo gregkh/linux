@@ -2,7 +2,7 @@
 /* Copyright (c) 2017 Facebook
  */
 #include <uapi/linux/bpf.h>
-#include "bpf_helpers.h"
+#include <bpf/bpf_helpers.h>
 
 struct syscalls_enter_open_args {
 	unsigned long long unused;
@@ -18,19 +18,19 @@ struct syscalls_exit_open_args {
 	long ret;
 };
 
-struct bpf_map_def SEC("maps") enter_open_map = {
-	.type = BPF_MAP_TYPE_ARRAY,
-	.key_size = sizeof(u32),
-	.value_size = sizeof(u32),
-	.max_entries = 1,
-};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, u32);
+	__type(value, u32);
+	__uint(max_entries, 1);
+} enter_open_map SEC(".maps");
 
-struct bpf_map_def SEC("maps") exit_open_map = {
-	.type = BPF_MAP_TYPE_ARRAY,
-	.key_size = sizeof(u32),
-	.value_size = sizeof(u32),
-	.max_entries = 1,
-};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, u32);
+	__type(value, u32);
+	__uint(max_entries, 1);
+} exit_open_map SEC(".maps");
 
 static __always_inline void count(void *map)
 {

@@ -10,7 +10,6 @@
 #include <fcntl.h>
 #include <link.h>
 #include <sched.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -140,6 +139,26 @@ bool is_ppc64le(void)
 	return strcmp(uts.machine, "ppc64le") == 0;
 }
 
+int read_sysfs_file(char *fpath, char *result, size_t result_size)
+{
+	char path[PATH_MAX] = "/sys/";
+	int rc = -1, fd;
+
+	strncat(path, fpath, PATH_MAX - strlen(path) - 1);
+
+	if ((fd = open(path, O_RDONLY)) < 0)
+		return rc;
+
+	rc = read(fd, result, result_size);
+
+	close(fd);
+
+	if (rc < 0)
+		return rc;
+
+	return 0;
+}
+
 int read_debugfs_file(char *debugfs_file, int *result)
 {
 	int rc = -1, fd;
@@ -253,36 +272,32 @@ int perf_event_reset(int fd)
 	return 0;
 }
 
-static void sigill_handler(int signr, siginfo_t *info, void *unused)
+int using_hash_mmu(bool *using_hash)
 {
-	static int warned = 0;
-	ucontext_t *ctx = (ucontext_t *)unused;
-	unsigned long *pc = &UCONTEXT_NIA(ctx);
+	char line[128];
+	FILE *f;
+	int rc;
 
-	/* mtspr 3,RS to check for move to DSCR below */
-	if ((*((unsigned int *)*pc) & 0xfc1fffff) == 0x7c0303a6) {
-		if (!warned++)
-			printf("WARNING: Skipping over dscr setup. Consider running 'ppc64_cpu --dscr=1' manually.\n");
-		*pc += 4;
-	} else {
-		printf("SIGILL at %p\n", pc);
-		abort();
-	}
-}
+	f = fopen("/proc/cpuinfo", "r");
+	FAIL_IF(!f);
 
-void set_dscr(unsigned long val)
-{
-	static int init = 0;
-	struct sigaction sa;
+	rc = 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (!strcmp(line, "MMU		: Hash\n") ||
+		    !strcmp(line, "platform	: Cell\n") ||
+		    !strcmp(line, "platform	: PowerMac\n")) {
+			*using_hash = true;
+			goto out;
+		}
 
-	if (!init) {
-		memset(&sa, 0, sizeof(sa));
-		sa.sa_sigaction = sigill_handler;
-		sa.sa_flags = SA_SIGINFO;
-		if (sigaction(SIGILL, &sa, NULL))
-			perror("sigill_handler");
-		init = 1;
+		if (strcmp(line, "MMU		: Radix\n") == 0) {
+			*using_hash = false;
+			goto out;
+		}
 	}
 
-	asm volatile("mtspr %1,%0" : : "r" (val), "i" (SPRN_DSCR));
+	rc = -1;
+out:
+	fclose(f);
+	return rc;
 }

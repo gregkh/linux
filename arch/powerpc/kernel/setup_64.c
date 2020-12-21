@@ -30,13 +30,13 @@
 #include <linux/lockdep.h>
 #include <linux/memory.h>
 #include <linux/nmi.h>
+#include <linux/pgtable.h>
 
 #include <asm/debugfs.h>
 #include <asm/io.h>
 #include <asm/kdump.h>
 #include <asm/prom.h>
 #include <asm/processor.h>
-#include <asm/pgtable.h>
 #include <asm/smp.h>
 #include <asm/elf.h>
 #include <asm/machdep.h>
@@ -65,14 +65,10 @@
 #include <asm/hw_irq.h>
 #include <asm/feature-fixups.h>
 #include <asm/kup.h>
+#include <asm/early_ioremap.h>
+#include <asm/pgalloc.h>
 
 #include "setup.h"
-
-#ifdef DEBUG
-#define DBG(fmt...) udbg_printf(fmt)
-#else
-#define DBG(fmt...)
-#endif
 
 int spinning_secondaries;
 u64 ppc64_pft_size;
@@ -201,7 +197,10 @@ static void __init configure_exceptions(void)
 	/* Under a PAPR hypervisor, we need hypercalls */
 	if (firmware_has_feature(FW_FEATURE_SET_MODE)) {
 		/* Enable AIL if possible */
-		pseries_enable_reloc_on_exc();
+		if (!pseries_enable_reloc_on_exc()) {
+			init_task.thread.fscr &= ~FSCR_SCV;
+			cur_cpu_spec->cpu_user_features2 &= ~PPC_FEATURE2_SCV;
+		}
 
 		/*
 		 * Tell the hypervisor that we want our exceptions to
@@ -323,7 +322,7 @@ void __init __nostackprotector early_setup(unsigned long dt_ptr)
 	/* Enable early debugging if any specified (see udbg.h) */
 	udbg_early_init();
 
- 	DBG(" -> early_setup(), dt_ptr: 0x%lx\n", dt_ptr);
+	udbg_printf(" -> %s(), dt_ptr: 0x%lx\n", __func__, dt_ptr);
 
 	/*
 	 * Do early initialization using the flattened device
@@ -356,6 +355,8 @@ void __init __nostackprotector early_setup(unsigned long dt_ptr)
 	apply_feature_fixups();
 	setup_feature_keys();
 
+	early_ioremap_setup();
+
 	/* Initialize the hash table or TLB handling */
 	early_init_mmu();
 
@@ -380,11 +381,11 @@ void __init __nostackprotector early_setup(unsigned long dt_ptr)
 	 */
 	this_cpu_enable_ftrace();
 
-	DBG(" <- early_setup()\n");
+	udbg_printf(" <- %s()\n", __func__);
 
 #ifdef CONFIG_PPC_EARLY_DEBUG_BOOTX
 	/*
-	 * This needs to be done *last* (after the above DBG() even)
+	 * This needs to be done *last* (after the above udbg_printf() even)
 	 *
 	 * Right after we return from this function, we turn on the MMU
 	 * which means the real-mode access trick that btext does will
@@ -454,8 +455,6 @@ void smp_release_cpus(void)
 	if (!use_spinloop())
 		return;
 
-	DBG(" -> smp_release_cpus()\n");
-
 	/* All secondary cpus are spinning on a common spinloop, release them
 	 * all now so they can start to spin on their individual paca
 	 * spinloops. For non SMP kernels, the secondary cpus never get out
@@ -474,9 +473,7 @@ void smp_release_cpus(void)
 			break;
 		udelay(1);
 	}
-	DBG("spinning_secondaries = %d\n", spinning_secondaries);
-
-	DBG(" <- smp_release_cpus()\n");
+	pr_debug("spinning_secondaries = %d\n", spinning_secondaries);
 }
 #endif /* CONFIG_SMP || CONFIG_KEXEC_CORE */
 
@@ -571,8 +568,6 @@ void __init initialize_cache_info(void)
 	struct device_node *cpu = NULL, *l2, *l3 = NULL;
 	u32 pvr;
 
-	DBG(" -> initialize_cache_info()\n");
-
 	/*
 	 * All shipping POWER8 machines have a firmware bug that
 	 * puts incorrect information in the device-tree. This will
@@ -596,10 +591,10 @@ void __init initialize_cache_info(void)
 	 */
 	if (cpu) {
 		if (!parse_cache_info(cpu, false, &ppc64_caches.l1d))
-			DBG("Argh, can't find dcache properties !\n");
+			pr_warn("Argh, can't find dcache properties !\n");
 
 		if (!parse_cache_info(cpu, true, &ppc64_caches.l1i))
-			DBG("Argh, can't find icache properties !\n");
+			pr_warn("Argh, can't find icache properties !\n");
 
 		/*
 		 * Try to find the L2 and L3 if any. Assume they are
@@ -624,8 +619,6 @@ void __init initialize_cache_info(void)
 
 	cur_cpu_spec->dcache_bsize = dcache_bsize;
 	cur_cpu_spec->icache_bsize = icache_bsize;
-
-	DBG(" <- initialize_cache_info()\n");
 }
 
 /*
@@ -664,7 +657,7 @@ static void *__init alloc_stack(unsigned long limit, int cpu)
 
 	BUILD_BUG_ON(STACK_INT_FRAME_SIZE % 16);
 
-	ptr = memblock_alloc_try_nid(THREAD_SIZE, THREAD_SIZE,
+	ptr = memblock_alloc_try_nid(THREAD_SIZE, THREAD_ALIGN,
 				     MEMBLOCK_LOW_LIMIT, limit,
 				     early_cpu_to_node(cpu));
 	if (!ptr)
@@ -722,7 +715,7 @@ void __init exc_lvl_early_init(void)
  */
 void __init emergency_stack_init(void)
 {
-	u64 limit;
+	u64 limit, mce_limit;
 	unsigned int i;
 
 	/*
@@ -739,7 +732,16 @@ void __init emergency_stack_init(void)
 	 * initialized in kernel/irq.c. These are initialized here in order
 	 * to have emergency stacks available as early as possible.
 	 */
-	limit = min(ppc64_bolted_size(), ppc64_rma_size);
+	limit = mce_limit = min(ppc64_bolted_size(), ppc64_rma_size);
+
+	/*
+	 * Machine check on pseries calls rtas, but can't use the static
+	 * rtas_args due to a machine check hitting while the lock is held.
+	 * rtas args have to be under 4GB, so the machine check stack is
+	 * limited to 4GB so args can be put on stack.
+	 */
+	if (firmware_has_feature(FW_FEATURE_LPAR) && mce_limit > SZ_4G)
+		mce_limit = SZ_4G;
 
 	for_each_possible_cpu(i) {
 		paca_ptrs[i]->emergency_sp = alloc_stack(limit, i) + THREAD_SIZE;
@@ -749,23 +751,52 @@ void __init emergency_stack_init(void)
 		paca_ptrs[i]->nmi_emergency_sp = alloc_stack(limit, i) + THREAD_SIZE;
 
 		/* emergency stack for machine check exception handling. */
-		paca_ptrs[i]->mc_emergency_sp = alloc_stack(limit, i) + THREAD_SIZE;
+		paca_ptrs[i]->mc_emergency_sp = alloc_stack(mce_limit, i) + THREAD_SIZE;
 #endif
 	}
 }
 
 #ifdef CONFIG_SMP
-#define PCPU_DYN_SIZE		()
-
-static void * __init pcpu_fc_alloc(unsigned int cpu, size_t size, size_t align)
+/**
+ * pcpu_alloc_bootmem - NUMA friendly alloc_bootmem wrapper for percpu
+ * @cpu: cpu to allocate for
+ * @size: size allocation in bytes
+ * @align: alignment
+ *
+ * Allocate @size bytes aligned at @align for cpu @cpu.  This wrapper
+ * does the right thing for NUMA regardless of the current
+ * configuration.
+ *
+ * RETURNS:
+ * Pointer to the allocated area on success, NULL on failure.
+ */
+static void * __init pcpu_alloc_bootmem(unsigned int cpu, size_t size,
+					size_t align)
 {
-	return memblock_alloc_try_nid(size, align, __pa(MAX_DMA_ADDRESS),
-				      MEMBLOCK_ALLOC_ACCESSIBLE,
-				      early_cpu_to_node(cpu));
+	const unsigned long goal = __pa(MAX_DMA_ADDRESS);
+#ifdef CONFIG_NEED_MULTIPLE_NODES
+	int node = early_cpu_to_node(cpu);
+	void *ptr;
 
+	if (!node_online(node) || !NODE_DATA(node)) {
+		ptr = memblock_alloc_from(size, align, goal);
+		pr_info("cpu %d has no node %d or node-local memory\n",
+			cpu, node);
+		pr_debug("per cpu data for cpu%d %lu bytes at %016lx\n",
+			 cpu, size, __pa(ptr));
+	} else {
+		ptr = memblock_alloc_try_nid(size, align, goal,
+					     MEMBLOCK_ALLOC_ACCESSIBLE, node);
+		pr_debug("per cpu data for cpu%d %lu bytes on node%d at "
+			 "%016lx\n", cpu, size, node, __pa(ptr));
+	}
+	return ptr;
+#else
+	return memblock_alloc_from(size, align, goal);
+#endif
 }
 
-static void __init pcpu_fc_free(void *ptr, size_t size)
+static void __init pcpu_free_bootmem(void *ptr, size_t size)
 {
 	memblock_free(__pa(ptr), size);
 }
@@ -781,13 +812,58 @@ static int pcpu_cpu_distance(unsigned int from, unsigned int to)
 unsigned long __per_cpu_offset[NR_CPUS] __read_mostly;
 EXPORT_SYMBOL(__per_cpu_offset);
 
+static void __init pcpu_populate_pte(unsigned long addr)
+{
+	pgd_t *pgd = pgd_offset_k(addr);
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+
+	p4d = p4d_offset(pgd, addr);
+	if (p4d_none(*p4d)) {
+		pud_t *new;
+
+		new = memblock_alloc(PUD_TABLE_SIZE, PUD_TABLE_SIZE);
+		if (!new)
+			goto err_alloc;
+		p4d_populate(&init_mm, p4d, new);
+	}
+
+	pud = pud_offset(p4d, addr);
+	if (pud_none(*pud)) {
+		pmd_t *new;
+
+		new = memblock_alloc(PMD_TABLE_SIZE, PMD_TABLE_SIZE);
+		if (!new)
+			goto err_alloc;
+		pud_populate(&init_mm, pud, new);
+	}
+
+	pmd = pmd_offset(pud, addr);
+	if (!pmd_present(*pmd)) {
+		pte_t *new;
+
+		new = memblock_alloc(PTE_TABLE_SIZE, PTE_TABLE_SIZE);
+		if (!new)
+			goto err_alloc;
+		pmd_populate_kernel(&init_mm, pmd, new);
+	}
+
+	return;
+
+err_alloc:
+	panic("%s: Failed to allocate %lu bytes align=%lx from=%lx\n",
+	      __func__, PAGE_SIZE, PAGE_SIZE, PAGE_SIZE);
+}
+
+
 void __init setup_per_cpu_areas(void)
 {
 	const size_t dyn_size = PERCPU_MODULE_RESERVE + PERCPU_DYNAMIC_RESERVE;
 	size_t atom_size;
 	unsigned long delta;
 	unsigned int cpu;
-	int rc;
+	int rc = -EINVAL;
 
 	/*
 	 * Linear mapping is one of 4K, 1M and 16M.  For 4K, no need
@@ -799,8 +875,18 @@ void __init setup_per_cpu_areas(void)
 	else
 		atom_size = 1 << 20;
 
-	rc = pcpu_embed_first_chunk(0, dyn_size, atom_size, pcpu_cpu_distance,
-				    pcpu_fc_alloc, pcpu_fc_free);
+	if (pcpu_chosen_fc != PCPU_FC_PAGE) {
+		rc = pcpu_embed_first_chunk(0, dyn_size, atom_size, pcpu_cpu_distance,
+					    pcpu_alloc_bootmem, pcpu_free_bootmem);
+		if (rc)
+			pr_warn("PERCPU: %s allocator failed (%d), "
+				"falling back to page size\n",
+				pcpu_fc_names[pcpu_chosen_fc], rc);
+	}
+
+	if (rc < 0)
+		rc = pcpu_page_first_chunk(0, pcpu_alloc_bootmem, pcpu_free_bootmem,
+					   pcpu_populate_pte);
 	if (rc < 0)
 		panic("cannot initialize percpu area (err=%d)", rc);
 

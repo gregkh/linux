@@ -6,7 +6,7 @@
  */
 
 #include "goyaP.h"
-#include "include/goya/asic_reg/goya_regs.h"
+#include "../include/goya/asic_reg/goya_regs.h"
 
 /*
  * goya_set_block_as_protected - set the given block as protected
@@ -683,7 +683,6 @@ static void goya_init_tpc_protection_bits(struct hl_device *hdev)
 	mask = 1 << ((mmTPC0_CFG_SEMAPHORE & 0x7F) >> 2);
 	mask |= 1 << ((mmTPC0_CFG_VFLAGS & 0x7F) >> 2);
 	mask |= 1 << ((mmTPC0_CFG_SFLAGS & 0x7F) >> 2);
-	mask |= 1 << ((mmTPC0_CFG_LFSR_POLYNOM & 0x7F) >> 2);
 	mask |= 1 << ((mmTPC0_CFG_STATUS & 0x7F) >> 2);
 
 	WREG32(pb_addr + word_offset, ~mask);

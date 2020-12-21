@@ -81,6 +81,11 @@ struct ioatdma_device {
 	u32 msixpba;
 };
 
+#define IOAT_MAX_ORDER 16
+#define IOAT_MAX_DESCS (1 << IOAT_MAX_ORDER)
+#define IOAT_CHUNK_SIZE (SZ_512K)
+#define IOAT_DESCS_PER_CHUNK (IOAT_CHUNK_SIZE / IOAT_DESC_SZ)
+
 struct ioat_descs {
 	void *virt;
 	dma_addr_t hw;
@@ -126,7 +131,7 @@ struct ioatdma_chan {
 	u16 produce;
 	struct ioat_ring_ent **ring;
 	spinlock_t prep_lock;
-	struct ioat_descs descs[2];
+	struct ioat_descs descs[IOAT_MAX_DESCS / IOAT_DESCS_PER_CHUNK];
 	int desc_chunks;
 	int intr_coalesce;
 	int prev_intr_coalesce;
@@ -299,9 +304,6 @@ static inline bool is_ioat_bug(unsigned long err)
 	return !!err;
 }
 
-#define IOAT_MAX_ORDER 16
-#define IOAT_MAX_DESCS 65536
-#define IOAT_DESCS_PER_2M 32768
 
 static inline u32 ioat_ring_size(struct ioatdma_chan *ioat_chan)
 {
@@ -391,7 +393,7 @@ int ioat_reset_hw(struct ioatdma_chan *ioat_chan);
 enum dma_status
 ioat_tx_status(struct dma_chan *c, dma_cookie_t cookie,
 		struct dma_tx_state *txstate);
-void ioat_cleanup_event(unsigned long data);
+void ioat_cleanup_event(struct tasklet_struct *t);
 void ioat_timer_event(struct timer_list *t);
 int ioat_check_space_lock(struct ioatdma_chan *ioat_chan, int num_descs);
 void ioat_issue_pending(struct dma_chan *chan);

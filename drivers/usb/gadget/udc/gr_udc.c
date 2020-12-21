@@ -8,7 +8,7 @@
  * GRLIB VHDL IP core library.
  *
  * Full documentation of the GRUSBDC core can be found here:
- * http://www.gaisler.com/products/grlib/grip.pdf
+ * https://www.gaisler.com/products/grlib/grip.pdf
  *
  * Contributors:
  * - Andreas Larsson <andreas@gaisler.com>
@@ -29,6 +29,7 @@
 #include <linux/list.h>
 #include <linux/interrupt.h>
 #include <linux/device.h>
+#include <linux/usb.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 #include <linux/dma-mapping.h>
@@ -47,7 +48,6 @@
 #define	DRIVER_DESC	"Aeroflex Gaisler GRUSBDC USB Peripheral Controller"
 
 static const char driver_name[] = DRIVER_NAME;
-static const char driver_desc[] = DRIVER_DESC;
 
 #define gr_read32(x) (ioread32be((x)))
 #define gr_write32(x, v) (iowrite32be((v), (x)))
@@ -208,7 +208,7 @@ static void gr_dfs_create(struct gr_udc *dev)
 {
 	const char *name = "gr_udc_state";
 
-	dev->dfs_root = debugfs_create_dir(dev_name(dev->dev), NULL);
+	dev->dfs_root = debugfs_create_dir(dev_name(dev->dev), usb_debug_root);
 	debugfs_create_file(name, 0444, dev->dfs_root, dev, &gr_dfs_fops);
 }
 
@@ -912,9 +912,9 @@ static int gr_device_request(struct gr_udc *dev, u8 type, u8 request,
 			return gr_ep0_respond_empty(dev);
 
 		case USB_DEVICE_TEST_MODE:
-			/* The hardware does not support TEST_FORCE_EN */
+			/* The hardware does not support USB_TEST_FORCE_ENABLE */
 			test = index >> 8;
-			if (test >= TEST_J && test <= TEST_PACKET) {
+			if (test >= USB_TEST_J && test <= USB_TEST_PACKET) {
 				dev->test_mode = test;
 				return gr_ep0_respond(dev, NULL, 0,
 						      gr_ep0_testmode_complete);
@@ -2121,7 +2121,6 @@ static int gr_request_irq(struct gr_udc *dev, int irq)
 static int gr_probe(struct platform_device *pdev)
 {
 	struct gr_udc *dev;
-	struct resource *res;
 	struct gr_regs __iomem *regs;
 	int retval;
 	u32 status;
@@ -2131,8 +2130,7 @@ static int gr_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	dev->dev = &pdev->dev;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	regs = devm_ioremap_resource(dev->dev, res);
+	regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(regs))
 		return PTR_ERR(regs);
 

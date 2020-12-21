@@ -236,23 +236,6 @@ bool sbitmap_any_bit_set(const struct sbitmap *sb)
 }
 EXPORT_SYMBOL_GPL(sbitmap_any_bit_set);
 
-bool sbitmap_any_bit_clear(const struct sbitmap *sb)
-{
-	unsigned int i;
-
-	for (i = 0; i < sb->map_nr; i++) {
-		const struct sbitmap_word *word = &sb->map[i];
-		unsigned long mask = word->word & ~word->cleared;
-		unsigned long ret;
-
-		ret = find_first_zero_bit(&mask, word->depth);
-		if (ret < word->depth)
-			return true;
-	}
-	return false;
-}
-EXPORT_SYMBOL_GPL(sbitmap_any_bit_clear);
-
 static unsigned int __sbitmap_weight(const struct sbitmap *sb, bool set)
 {
 	unsigned int i, weight = 0;
@@ -309,7 +292,10 @@ void sbitmap_bitmap_show(struct sbitmap *sb, struct seq_file *m)
 
 	for (i = 0; i < sb->map_nr; i++) {
 		unsigned long word = READ_ONCE(sb->map[i].word);
+		unsigned long cleared = READ_ONCE(sb->map[i].cleared);
 		unsigned int word_bits = READ_ONCE(sb->map[i].depth);
+
+		word &= ~cleared;
 
 		while (word_bits > 0) {
 			unsigned int bits = min(8 - byte_bits, word_bits);

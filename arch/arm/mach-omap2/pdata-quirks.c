@@ -10,7 +10,6 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/of_platform.h>
-#include <linux/ti_wilink_st.h>
 #include <linux/wl12xx.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
@@ -24,6 +23,7 @@
 #include <linux/platform_data/ti-sysc.h>
 #include <linux/platform_data/wkup_m3.h>
 #include <linux/platform_data/asoc-ti-mcbsp.h>
+#include <linux/platform_data/ti-prm.h>
 
 #include "clockdomain.h"
 #include "common.h"
@@ -32,7 +32,6 @@
 #include "omap_device.h"
 #include "omap-secure.h"
 #include "soc.h"
-#include "hsmmc.h"
 
 static struct omap_hsmmc_platform_data __maybe_unused mmc_pdata[2];
 
@@ -156,53 +155,6 @@ static void __init omap3_sbc_t3530_legacy_init(void)
 	omap3_sbc_t3x_usb_hub_init(167, "sb-t35 usb hub");
 }
 
-static struct ti_st_plat_data wilink_pdata = {
-	.nshutdown_gpio = 137,
-	.dev_name = "/dev/ttyO1",
-	.flow_cntrl = 1,
-	.baud_rate = 300000,
-};
-
-static struct platform_device wl18xx_device = {
-	.name	= "kim",
-	.id	= -1,
-	.dev	= {
-		.platform_data = &wilink_pdata,
-	}
-};
-
-static struct ti_st_plat_data wilink7_pdata = {
-	.nshutdown_gpio = 162,
-	.dev_name = "/dev/ttyO1",
-	.flow_cntrl = 1,
-	.baud_rate = 3000000,
-};
-
-static struct platform_device wl128x_device = {
-	.name	= "kim",
-	.id	= -1,
-	.dev	= {
-		.platform_data = &wilink7_pdata,
-	}
-};
-
-static struct platform_device btwilink_device = {
-	.name	= "btwilink",
-	.id	= -1,
-};
-
-static void __init omap3_igep0020_rev_f_legacy_init(void)
-{
-	platform_device_register(&wl18xx_device);
-	platform_device_register(&btwilink_device);
-}
-
-static void __init omap3_igep0030_rev_g_legacy_init(void)
-{
-	platform_device_register(&wl18xx_device);
-	platform_device_register(&btwilink_device);
-}
-
 static void __init omap3_evm_legacy_init(void)
 {
 	hsmmc2_internal_input_clk();
@@ -285,7 +237,7 @@ static void __init nokia_n900_legacy_init(void)
 	mmc_pdata[0].name = "external";
 	mmc_pdata[1].name = "internal";
 
-	if (omap_type() == OMAP2_DEVICE_TYPE_SEC) {
+	if (omap_type() != OMAP2_DEVICE_TYPE_GP) {
 		if (IS_ENABLED(CONFIG_ARM_ERRATA_430973)) {
 			pr_info("RX-51: Enabling ARM errata 430973 workaround\n");
 			/* set IBE to 1 */
@@ -305,8 +257,6 @@ static void __init omap3_tao3530_legacy_init(void)
 static void __init omap3_logicpd_torpedo_init(void)
 {
 	omap3_gpio126_127_129();
-	platform_device_register(&wl128x_device);
-	platform_device_register(&btwilink_device);
 }
 
 /* omap3pandora legacy devices */
@@ -447,10 +397,16 @@ static int ti_sysc_shutdown_module(struct device *dev,
 	return omap_hwmod_shutdown(cookie->data);
 }
 
+static bool ti_sysc_soc_type_gp(void)
+{
+	return omap_type() == OMAP2_DEVICE_TYPE_GP;
+}
+
 static struct of_dev_auxdata omap_auxdata_lookup[];
 
 static struct ti_sysc_platform_data ti_sysc_pdata = {
 	.auxdata = omap_auxdata_lookup,
+	.soc_type_gp = ti_sysc_soc_type_gp,
 	.init_clockdomain = ti_sysc_clkdm_init,
 	.clkdm_deny_idle = ti_sysc_clkdm_deny_idle,
 	.clkdm_allow_idle = ti_sysc_clkdm_allow_idle,
@@ -467,6 +423,12 @@ void omap_pcs_legacy_init(int irq, void (*rearm)(void))
 	pcs_pdata.irq = irq;
 	pcs_pdata.rearm = rearm;
 }
+
+static struct ti_prm_platform_data ti_prm_pdata = {
+	.clkdm_deny_idle = clkdm_deny_idle,
+	.clkdm_allow_idle = clkdm_allow_idle,
+	.clkdm_lookup = clkdm_lookup,
+};
 
 /*
  * GPIOs for TWL are initialized by the I2C bus and need custom
@@ -572,6 +534,8 @@ static struct of_dev_auxdata omap_auxdata_lookup[] = {
 	/* Common auxdata */
 	OF_DEV_AUXDATA("ti,sysc", 0, NULL, &ti_sysc_pdata),
 	OF_DEV_AUXDATA("pinctrl-single", 0, NULL, &pcs_pdata),
+	OF_DEV_AUXDATA("ti,omap-prm-inst", 0, NULL, &ti_prm_pdata),
+	OF_DEV_AUXDATA("ti,omap-sdma", 0, NULL, &dma_plat_info),
 	{ /* sentinel */ },
 };
 
@@ -587,8 +551,6 @@ static struct pdata_init pdata_quirks[] __initdata = {
 	{ "nokia,omap3-n900", nokia_n900_legacy_init, },
 	{ "nokia,omap3-n9", hsmmc2_internal_input_clk, },
 	{ "nokia,omap3-n950", hsmmc2_internal_input_clk, },
-	{ "isee,omap3-igep0020-rev-f", omap3_igep0020_rev_f_legacy_init, },
-	{ "isee,omap3-igep0030-rev-g", omap3_igep0030_rev_g_legacy_init, },
 	{ "logicpd,dm3730-torpedo-devkit", omap3_logicpd_torpedo_init, },
 	{ "ti,omap3-evm-37xx", omap3_evm_legacy_init, },
 	{ "ti,am3517-evm", am3517_evm_legacy_init, },

@@ -685,7 +685,7 @@ static inline int sanity_check(SLMP_INFO *info,
 	return 0;
 }
 
-/**
+/*
  * line discipline callback wrappers
  *
  * The wrappers maintain line discipline references
@@ -1520,14 +1520,14 @@ static int set_break(struct tty_struct *tty, int break_state)
 #if SYNCLINK_GENERIC_HDLC
 
 /**
- * called by generic HDLC layer when protocol selected (PPP, frame relay, etc.)
- * set encoding and frame check sequence (FCS) options
+ * hdlcdev_attach - called by generic HDLC layer when protocol selected (PPP, frame relay, etc.)
+ * @dev:      pointer to network device structure
+ * @encoding: serial encoding setting
+ * @parity:   FCS setting
  *
- * dev       pointer to network device structure
- * encoding  serial encoding setting
- * parity    FCS setting
+ * Set encoding and frame check sequence (FCS) options.
  *
- * returns 0 if success, otherwise error code
+ * Return: 0 if success, otherwise error code
  */
 static int hdlcdev_attach(struct net_device *dev, unsigned short encoding,
 			  unsigned short parity)
@@ -1569,10 +1569,9 @@ static int hdlcdev_attach(struct net_device *dev, unsigned short encoding,
 }
 
 /**
- * called by generic HDLC layer to send frame
- *
- * skb  socket buffer containing HDLC frame
- * dev  pointer to network device structure
+ * hdlcdev_xmit - called by generic HDLC layer to send frame
+ * @skb: socket buffer containing HDLC frame
+ * @dev: pointer to network device structure
  */
 static netdev_tx_t hdlcdev_xmit(struct sk_buff *skb,
 				      struct net_device *dev)
@@ -1610,12 +1609,12 @@ static netdev_tx_t hdlcdev_xmit(struct sk_buff *skb,
 }
 
 /**
- * called by network layer when interface enabled
- * claim resources and initialize hardware
+ * hdlcdev_open - called by network layer when interface enabled
+ * @dev: pointer to network device structure
  *
- * dev  pointer to network device structure
+ * Claim resources and initialize hardware.
  *
- * returns 0 if success, otherwise error code
+ * Return: 0 if success, otherwise error code
  */
 static int hdlcdev_open(struct net_device *dev)
 {
@@ -1669,12 +1668,12 @@ static int hdlcdev_open(struct net_device *dev)
 }
 
 /**
- * called by network layer when interface is disabled
- * shutdown hardware and release resources
+ * hdlcdev_close - called by network layer when interface is disabled
+ * @dev: pointer to network device structure
  *
- * dev  pointer to network device structure
+ * Shutdown hardware and release resources.
  *
- * returns 0 if success, otherwise error code
+ * Return: 0 if success, otherwise error code
  */
 static int hdlcdev_close(struct net_device *dev)
 {
@@ -1699,13 +1698,12 @@ static int hdlcdev_close(struct net_device *dev)
 }
 
 /**
- * called by network layer to process IOCTL call to network device
+ * hdlcdev_ioctl - called by network layer to process IOCTL call to network device
+ * @dev: pointer to network device structure
+ * @ifr: pointer to network interface request structure
+ * @cmd: IOCTL command code
  *
- * dev  pointer to network device structure
- * ifr  pointer to network interface request structure
- * cmd  IOCTL command code
- *
- * returns 0 if success, otherwise error code
+ * Return: 0 if success, otherwise error code
  */
 static int hdlcdev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
@@ -1803,11 +1801,10 @@ static int hdlcdev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 }
 
 /**
- * called by network layer when transmit timeout is detected
- *
- * dev  pointer to network device structure
+ * hdlcdev_tx_timeout - called by network layer when transmit timeout is detected
+ * @dev: pointer to network device structure
  */
-static void hdlcdev_tx_timeout(struct net_device *dev)
+static void hdlcdev_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	SLMP_INFO *info = dev_to_port(dev);
 	unsigned long flags;
@@ -1826,10 +1823,10 @@ static void hdlcdev_tx_timeout(struct net_device *dev)
 }
 
 /**
- * called by device driver when transmit completes
- * reenable network layer transmit if stopped
+ * hdlcdev_tx_done - called by device driver when transmit completes
+ * @info: pointer to device instance information
  *
- * info  pointer to device instance information
+ * Reenable network layer transmit if stopped.
  */
 static void hdlcdev_tx_done(SLMP_INFO *info)
 {
@@ -1838,12 +1835,12 @@ static void hdlcdev_tx_done(SLMP_INFO *info)
 }
 
 /**
- * called by device driver when frame received
- * pass frame to network layer
+ * hdlcdev_rx - called by device driver when frame received
+ * @info: pointer to device instance information
+ * @buf:  pointer to buffer contianing frame data
+ * @size: count of data bytes in buf
  *
- * info  pointer to device instance information
- * buf   pointer to buffer contianing frame data
- * size  count of data bytes in buf
+ * Pass frame to network layer.
  */
 static void hdlcdev_rx(SLMP_INFO *info, char *buf, int size)
 {
@@ -1879,12 +1876,12 @@ static const struct net_device_ops hdlcdev_ops = {
 };
 
 /**
- * called by device driver when adding device instance
- * do generic HDLC initialization
+ * hdlcdev_init - called by device driver when adding device instance
+ * @info: pointer to device instance information
  *
- * info  pointer to device instance information
+ * Do generic HDLC initialization.
  *
- * returns 0 if success, otherwise error code
+ * Return: 0 if success, otherwise error code
  */
 static int hdlcdev_init(SLMP_INFO *info)
 {
@@ -1928,10 +1925,10 @@ static int hdlcdev_init(SLMP_INFO *info)
 }
 
 /**
- * called by device driver when removing device instance
- * do generic HDLC cleanup
+ * hdlcdev_exit - called by device driver when removing device instance
+ * @info: pointer to device instance information
  *
- * info  pointer to device instance information
+ * Do generic HDLC cleanup.
  */
 static void hdlcdev_exit(SLMP_INFO *info)
 {
@@ -3559,7 +3556,7 @@ static int claim_resources(SLMP_INFO *info)
 	else
 		info->sca_statctrl_requested = true;
 
-	info->memory_base = ioremap_nocache(info->phys_memory_base,
+	info->memory_base = ioremap(info->phys_memory_base,
 								SCA_MEM_SIZE);
 	if (!info->memory_base) {
 		printk( "%s(%d):%s Can't map shared memory, MemAddr=%08X\n",
@@ -3568,7 +3565,7 @@ static int claim_resources(SLMP_INFO *info)
 		goto errout;
 	}
 
-	info->lcr_base = ioremap_nocache(info->phys_lcr_base, PAGE_SIZE);
+	info->lcr_base = ioremap(info->phys_lcr_base, PAGE_SIZE);
 	if (!info->lcr_base) {
 		printk( "%s(%d):%s Can't map LCR memory, MemAddr=%08X\n",
 			__FILE__,__LINE__,info->device_name, info->phys_lcr_base );
@@ -3577,7 +3574,7 @@ static int claim_resources(SLMP_INFO *info)
 	}
 	info->lcr_base += info->lcr_offset;
 
-	info->sca_base = ioremap_nocache(info->phys_sca_base, PAGE_SIZE);
+	info->sca_base = ioremap(info->phys_sca_base, PAGE_SIZE);
 	if (!info->sca_base) {
 		printk( "%s(%d):%s Can't map SCA memory, MemAddr=%08X\n",
 			__FILE__,__LINE__,info->device_name, info->phys_sca_base );
@@ -3586,7 +3583,7 @@ static int claim_resources(SLMP_INFO *info)
 	}
 	info->sca_base += info->sca_offset;
 
-	info->statctrl_base = ioremap_nocache(info->phys_statctrl_base,
+	info->statctrl_base = ioremap(info->phys_statctrl_base,
 								PAGE_SIZE);
 	if (!info->statctrl_base) {
 		printk( "%s(%d):%s Can't map SCA Status/Control memory, MemAddr=%08X\n",

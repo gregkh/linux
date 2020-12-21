@@ -26,6 +26,8 @@
 #define AUTOCOMMIT_BLOCKS_SSD		65536
 #define AUTOCOMMIT_BLOCKS_PMEM		64
 #define AUTOCOMMIT_MSEC			1000
+#define MAX_AGE_DIV			16
+#define MAX_AGE_UNSPECIFIED		-1UL
 
 #define BITMAP_GRANULARITY	65536
 #if BITMAP_GRANULARITY < PAGE_SIZE
@@ -47,7 +49,7 @@ do {								\
 #define pmem_assign(dest, src)	((dest) = (src))
 #endif
 
-#if defined(__HAVE_ARCH_MEMCPY_MCSAFE) && defined(DM_WRITECACHE_HAS_PMEM)
+#if IS_ENABLED(CONFIG_ARCH_HAS_COPY_MC) && defined(DM_WRITECACHE_HAS_PMEM)
 #define DM_WRITECACHE_HANDLE_HARDWARE_ERRORS
 #endif
 
@@ -88,6 +90,7 @@ struct wc_entry {
 		:47
 #endif
 	;
+	unsigned long age;
 #ifdef DM_WRITECACHE_HANDLE_HARDWARE_ERRORS
 	uint64_t original_sector;
 	uint64_t seq_count;
@@ -119,6 +122,7 @@ struct dm_writecache {
 	size_t writeback_size;
 	size_t freelist_high_watermark;
 	size_t freelist_low_watermark;
+	unsigned long max_age;
 
 	unsigned uncommitted_blocks;
 	unsigned autocommit_blocks;
@@ -129,6 +133,8 @@ struct dm_writecache {
 	unsigned long autocommit_jiffies;
 	struct timer_list autocommit_timer;
 	struct wait_queue_head freelist_wait;
+
+	struct timer_list max_age_timer;
 
 	atomic_t bio_in_progress[2];
 	struct wait_queue_head bio_in_progress_wait[2];
@@ -160,6 +166,7 @@ struct dm_writecache {
 	bool autocommit_time_set:1;
 	bool writeback_fua_set:1;
 	bool flush_on_suspend:1;
+	bool cleaner:1;
 
 	unsigned writeback_all;
 	struct workqueue_struct *writeback_wq;
@@ -228,10 +235,6 @@ static int persistent_memory_claim(struct dm_writecache *wc)
 
 	wc->memory_vmapped = false;
 
-	if (!wc->ssd_dev->dax_dev) {
-		r = -EOPNOTSUPP;
-		goto err1;
-	}
 	s = wc->memory_map_size;
 	p = s >> PAGE_SHIFT;
 	if (!p) {
@@ -512,10 +515,38 @@ static void ssd_commit_flushed(struct dm_writecache *wc, bool wait_for_ios)
 	memset(wc->dirty_bitmap, 0, wc->dirty_bitmap_size);
 }
 
+static void ssd_commit_superblock(struct dm_writecache *wc)
+{
+	int r;
+	struct dm_io_region region;
+	struct dm_io_request req;
+
+	region.bdev = wc->ssd_dev->bdev;
+	region.sector = 0;
+	region.count = PAGE_SIZE;
+
+	if (unlikely(region.sector + region.count > wc->metadata_sectors))
+		region.count = wc->metadata_sectors - region.sector;
+
+	region.sector += wc->start_sector;
+
+	req.bi_op = REQ_OP_WRITE;
+	req.bi_op_flags = REQ_SYNC | REQ_FUA;
+	req.mem.type = DM_IO_VMA;
+	req.mem.ptr.vma = (char *)wc->memory_map;
+	req.client = wc->dm_io;
+	req.notify.fn = NULL;
+	req.notify.context = NULL;
+
+	r = dm_io(&req, 1, &region, NULL);
+	if (unlikely(r))
+		writecache_error(wc, r, "error writing superblock");
+}
+
 static void writecache_commit_flushed(struct dm_writecache *wc, bool wait_for_ios)
 {
 	if (WC_MODE_PMEM(wc))
-		wmb();
+		pmem_wmb();
 	else
 		ssd_commit_flushed(wc, wait_for_ios);
 }
@@ -606,6 +637,7 @@ static void writecache_insert_entry(struct dm_writecache *wc, struct wc_entry *i
 	rb_link_node(&ins->rb_node, parent, node);
 	rb_insert_color(&ins->rb_node, &wc->tree);
 	list_add(&ins->lru, &wc->lru);
+	ins->age = jiffies;
 }
 
 static void writecache_unlink(struct dm_writecache *wc, struct wc_entry *e)
@@ -641,7 +673,17 @@ static inline void writecache_verify_watermark(struct dm_writecache *wc)
 		queue_work(wc->writeback_wq, &wc->writeback_work);
 }
 
-static struct wc_entry *writecache_pop_from_freelist(struct dm_writecache *wc)
+static void writecache_max_age_timer(struct timer_list *t)
+{
+	struct dm_writecache *wc = from_timer(wc, t, max_age_timer);
+
+	if (!dm_suspended(wc->ti) && !writecache_has_error(wc)) {
+		queue_work(wc->writeback_wq, &wc->writeback_work);
+		mod_timer(&wc->max_age_timer, jiffies + wc->max_age / MAX_AGE_DIV);
+	}
+}
+
+static struct wc_entry *writecache_pop_from_freelist(struct dm_writecache *wc, sector_t expected_sector)
 {
 	struct wc_entry *e;
 
@@ -650,6 +692,8 @@ static struct wc_entry *writecache_pop_from_freelist(struct dm_writecache *wc)
 		if (unlikely(!wc->current_free))
 			return NULL;
 		e = wc->current_free;
+		if (expected_sector != (sector_t)-1 && unlikely(cache_sector(wc, e) != expected_sector))
+			return NULL;
 		next = rb_next(&e->rb_node);
 		rb_erase(&e->rb_node, &wc->freetree);
 		if (unlikely(!next))
@@ -659,6 +703,8 @@ static struct wc_entry *writecache_pop_from_freelist(struct dm_writecache *wc)
 		if (unlikely(list_empty(&wc->freelist)))
 			return NULL;
 		e = container_of(wc->freelist.next, struct wc_entry, lru);
+		if (expected_sector != (sector_t)-1 && unlikely(cache_sector(wc, e) != expected_sector))
+			return NULL;
 		list_del(&e->lru);
 	}
 	wc->freelist_size--;
@@ -747,8 +793,10 @@ static void writecache_flush(struct dm_writecache *wc)
 
 	wc->seq_count++;
 	pmem_assign(sb(wc)->seq_count, cpu_to_le64(wc->seq_count));
-	writecache_flush_region(wc, &sb(wc)->seq_count, sizeof sb(wc)->seq_count);
-	writecache_commit_flushed(wc, false);
+	if (WC_MODE_PMEM(wc))
+		writecache_commit_flushed(wc, false);
+	else
+		ssd_commit_superblock(wc);
 
 	wc->overwrote_committed = false;
 
@@ -811,8 +859,10 @@ static void writecache_discard(struct dm_writecache *wc, sector_t start, sector_
 
 		if (likely(!e->write_in_progress)) {
 			if (!discarded_something) {
-				writecache_wait_for_ios(wc, READ);
-				writecache_wait_for_ios(wc, WRITE);
+				if (!WC_MODE_PMEM(wc)) {
+					writecache_wait_for_ios(wc, READ);
+					writecache_wait_for_ios(wc, WRITE);
+				}
 				discarded_something = true;
 			}
 			if (!writecache_entry_is_committed(wc, e))
@@ -845,6 +895,7 @@ static void writecache_suspend(struct dm_target *ti)
 	bool flush_on_suspend;
 
 	del_timer_sync(&wc->autocommit_timer);
+	del_timer_sync(&wc->max_age_timer);
 
 	wc_lock(wc);
 	writecache_flush(wc);
@@ -941,7 +992,8 @@ static void writecache_resume(struct dm_target *ti)
 	}
 	wc->freelist_size = 0;
 
-	r = memcpy_mcsafe(&sb_seq_count, &sb(wc)->seq_count, sizeof(uint64_t));
+	r = copy_mc_to_kernel(&sb_seq_count, &sb(wc)->seq_count,
+			      sizeof(uint64_t));
 	if (r) {
 		writecache_error(wc, r, "hardware memory error when reading superblock: %d", r);
 		sb_seq_count = cpu_to_le64(0);
@@ -957,7 +1009,8 @@ static void writecache_resume(struct dm_target *ti)
 			e->seq_count = -1;
 			continue;
 		}
-		r = memcpy_mcsafe(&wme, memory_entry(wc, e), sizeof(struct wc_memory_entry));
+		r = copy_mc_to_kernel(&wme, memory_entry(wc, e),
+				      sizeof(struct wc_memory_entry));
 		if (r) {
 			writecache_error(wc, r, "hardware memory error when reading metadata entry %lu: %d",
 					 (unsigned long)b, r);
@@ -1011,6 +1064,9 @@ erase_this:
 
 	writecache_verify_watermark(wc);
 
+	if (wc->max_age != MAX_AGE_UNSPECIFIED)
+		mod_timer(&wc->max_age_timer, jiffies + wc->max_age / MAX_AGE_DIV);
+
 	wc_unlock(wc);
 }
 
@@ -1059,6 +1115,28 @@ static int process_flush_on_suspend_mesg(unsigned argc, char **argv, struct dm_w
 	return 0;
 }
 
+static void activate_cleaner(struct dm_writecache *wc)
+{
+	wc->flush_on_suspend = true;
+	wc->cleaner = true;
+	wc->freelist_high_watermark = wc->n_blocks;
+	wc->freelist_low_watermark = wc->n_blocks;
+}
+
+static int process_cleaner_mesg(unsigned argc, char **argv, struct dm_writecache *wc)
+{
+	if (argc != 1)
+		return -EINVAL;
+
+	wc_lock(wc);
+	activate_cleaner(wc);
+	if (!dm_suspended(wc->ti))
+		writecache_verify_watermark(wc);
+	wc_unlock(wc);
+
+	return 0;
+}
+
 static int writecache_message(struct dm_target *ti, unsigned argc, char **argv,
 			      char *result, unsigned maxlen)
 {
@@ -1069,10 +1147,48 @@ static int writecache_message(struct dm_target *ti, unsigned argc, char **argv,
 		r = process_flush_mesg(argc, argv, wc);
 	else if (!strcasecmp(argv[0], "flush_on_suspend"))
 		r = process_flush_on_suspend_mesg(argc, argv, wc);
+	else if (!strcasecmp(argv[0], "cleaner"))
+		r = process_cleaner_mesg(argc, argv, wc);
 	else
 		DMERR("unrecognised message received: %s", argv[0]);
 
 	return r;
+}
+
+static void memcpy_flushcache_optimized(void *dest, void *source, size_t size)
+{
+	/*
+	 * clflushopt performs better with block size 1024, 2048, 4096
+	 * non-temporal stores perform better with block size 512
+	 *
+	 * block size   512             1024            2048            4096
+	 * movnti       496 MB/s        642 MB/s        725 MB/s        744 MB/s
+	 * clflushopt   373 MB/s        688 MB/s        1.1 GB/s        1.2 GB/s
+	 *
+	 * We see that movnti performs better for 512-byte blocks, and
+	 * clflushopt performs better for 1024-byte and larger blocks. So, we
+	 * prefer clflushopt for sizes >= 768.
+	 *
+	 * NOTE: this happens to be the case now (with dm-writecache's single
+	 * threaded model) but re-evaluate this once memcpy_flushcache() is
+	 * enabled to use movdir64b which might invalidate this performance
+	 * advantage seen with cache-allocating-writes plus flushing.
+	 */
+#ifdef CONFIG_X86
+	if (static_cpu_has(X86_FEATURE_CLFLUSHOPT) &&
+	    likely(boot_cpu_data.x86_clflush_size == 64) &&
+	    likely(size >= 768)) {
+		do {
+			memcpy((void *)dest, (void *)source, 64);
+			clflushopt((void *)dest);
+			dest += 64;
+			source += 64;
+			size -= 64;
+		} while (size >= 64);
+		return;
+	}
+#endif
+	memcpy_flushcache(dest, source, size);
 }
 
 static void bio_copy_block(struct dm_writecache *wc, struct bio *bio, void *data)
@@ -1092,7 +1208,7 @@ static void bio_copy_block(struct dm_writecache *wc, struct bio *bio, void *data
 
 		if (rw == READ) {
 			int r;
-			r = memcpy_mcsafe(buf, data, size);
+			r = copy_mc_to_kernel(buf, data, size);
 			flush_dcache_page(bio_page(bio));
 			if (unlikely(r)) {
 				writecache_error(wc, r, "hardware memory error when reading data: %d", r);
@@ -1100,7 +1216,7 @@ static void bio_copy_block(struct dm_writecache *wc, struct bio *bio, void *data
 			}
 		} else {
 			flush_dcache_page(bio_page(bio));
-			memcpy_flushcache(data, buf, size);
+			memcpy_flushcache_optimized(data, buf, size);
 		}
 
 		bvec_kunmap_irq(buf, &flags);
@@ -1138,7 +1254,7 @@ static int writecache_flush_thread(void *data)
 					   bio_end_sector(bio));
 			wc_unlock(wc);
 			bio_set_dev(bio, wc->dev->bdev);
-			generic_make_request(bio);
+			submit_bio_noacct(bio);
 		} else {
 			writecache_flush(wc);
 			wc_unlock(wc);
@@ -1232,6 +1348,7 @@ read_next_block:
 		}
 	} else {
 		do {
+			bool found_entry = false;
 			if (writecache_has_error(wc))
 				goto unlock_error;
 			e = writecache_find_entry(wc, bio->bi_iter.bi_sector, 0);
@@ -1242,9 +1359,25 @@ read_next_block:
 					wc->overwrote_committed = true;
 					goto bio_copy;
 				}
+				found_entry = true;
+			} else {
+				if (unlikely(wc->cleaner))
+					goto direct_write;
 			}
-			e = writecache_pop_from_freelist(wc);
+			e = writecache_pop_from_freelist(wc, (sector_t)-1);
 			if (unlikely(!e)) {
+				if (!found_entry) {
+direct_write:
+					e = writecache_find_entry(wc, bio->bi_iter.bi_sector, WFE_RETURN_FOLLOWING);
+					if (e) {
+						sector_t next_boundary = read_original_sector(wc, e) - bio->bi_iter.bi_sector;
+						BUG_ON(!next_boundary);
+						if (next_boundary < bio->bi_iter.bi_size >> SECTOR_SHIFT) {
+							dm_accept_partial_bio(bio, next_boundary);
+						}
+					}
+					goto unlock_remap_origin;
+				}
 				writecache_wait_on_freelist(wc);
 				continue;
 			}
@@ -1255,9 +1388,26 @@ bio_copy:
 			if (WC_MODE_PMEM(wc)) {
 				bio_copy_block(wc, bio, memory_data(wc, e));
 			} else {
-				dm_accept_partial_bio(bio, wc->block_size >> SECTOR_SHIFT);
+				unsigned bio_size = wc->block_size;
+				sector_t start_cache_sec = cache_sector(wc, e);
+				sector_t current_cache_sec = start_cache_sec + (bio_size >> SECTOR_SHIFT);
+
+				while (bio_size < bio->bi_iter.bi_size) {
+					struct wc_entry *f = writecache_pop_from_freelist(wc, current_cache_sec);
+					if (!f)
+						break;
+					write_original_sector_seq_count(wc, f, bio->bi_iter.bi_sector +
+									(bio_size >> SECTOR_SHIFT), wc->seq_count);
+					writecache_insert_entry(wc, f);
+					wc->uncommitted_blocks++;
+					bio_size += wc->block_size;
+					current_cache_sec += wc->block_size >> SECTOR_SHIFT;
+				}
+
 				bio_set_dev(bio, wc->ssd_dev->bdev);
-				bio->bi_iter.bi_sector = cache_sector(wc, e);
+				bio->bi_iter.bi_sector = start_cache_sec;
+				dm_accept_partial_bio(bio, bio_size >> SECTOR_SHIFT);
+
 				if (unlikely(wc->uncommitted_blocks >= wc->autocommit_blocks)) {
 					wc->uncommitted_blocks = 0;
 					queue_work(wc->writeback_wq, &wc->flush_work);
@@ -1640,7 +1790,9 @@ restart:
 	wbl.size = 0;
 	while (!list_empty(&wc->lru) &&
 	       (wc->writeback_all ||
-		wc->freelist_size + wc->writeback_size <= wc->freelist_low_watermark)) {
+		wc->freelist_size + wc->writeback_size <= wc->freelist_low_watermark ||
+		(jiffies - container_of(wc->lru.prev, struct wc_entry, lru)->age >=
+		 wc->max_age - wc->max_age / MAX_AGE_DIV))) {
 
 		n_walked++;
 		if (unlikely(n_walked > WRITEBACK_LATENCY) &&
@@ -1905,9 +2057,11 @@ static int writecache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	wc->ti = ti;
 
 	mutex_init(&wc->lock);
+	wc->max_age = MAX_AGE_UNSPECIFIED;
 	writecache_poison_lists(wc);
 	init_waitqueue_head(&wc->freelist_wait);
 	timer_setup(&wc->autocommit_timer, writecache_autocommit_timer, 0);
+	timer_setup(&wc->max_age_timer, writecache_max_age_timer, 0);
 
 	for (i = 0; i < 2; i++) {
 		atomic_set(&wc->bio_in_progress[i], 0);
@@ -2087,6 +2241,16 @@ static int writecache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 				goto invalid_optional;
 			wc->autocommit_jiffies = msecs_to_jiffies(autocommit_msecs);
 			wc->autocommit_time_set = true;
+		} else if (!strcasecmp(string, "max_age") && opt_params >= 1) {
+			unsigned max_age_msecs;
+			string = dm_shift_arg(&as), opt_params--;
+			if (sscanf(string, "%u%c", &max_age_msecs, &dummy) != 1)
+				goto invalid_optional;
+			if (max_age_msecs > 86400000)
+				goto invalid_optional;
+			wc->max_age = msecs_to_jiffies(max_age_msecs);
+		} else if (!strcasecmp(string, "cleaner")) {
+			wc->cleaner = true;
 		} else if (!strcasecmp(string, "fua")) {
 			if (WC_MODE_PMEM(wc)) {
 				wc->writeback_fua = true;
@@ -2187,7 +2351,7 @@ invalid_optional:
 		}
 	}
 
-	r = memcpy_mcsafe(&s, sb(wc), sizeof(struct wc_memory_superblock));
+	r = copy_mc_to_kernel(&s, sb(wc), sizeof(struct wc_memory_superblock));
 	if (r) {
 		ti->error = "Hardware memory error when reading superblock";
 		goto bad;
@@ -2198,7 +2362,8 @@ invalid_optional:
 			ti->error = "Unable to initialize device";
 			goto bad;
 		}
-		r = memcpy_mcsafe(&s, sb(wc), sizeof(struct wc_memory_superblock));
+		r = copy_mc_to_kernel(&s, sb(wc),
+				      sizeof(struct wc_memory_superblock));
 		if (r) {
 			ti->error = "Hardware memory error when reading superblock";
 			goto bad;
@@ -2258,6 +2423,9 @@ overflow:
 	do_div(x, 100);
 	wc->freelist_low_watermark = x;
 
+	if (wc->cleaner)
+		activate_cleaner(wc);
+
 	r = writecache_alloc_entries(wc);
 	if (r) {
 		ti->error = "Cannot allocate memory";
@@ -2301,9 +2469,9 @@ static void writecache_status(struct dm_target *ti, status_type_t type,
 		extra_args = 0;
 		if (wc->start_sector)
 			extra_args += 2;
-		if (wc->high_wm_percent_set)
+		if (wc->high_wm_percent_set && !wc->cleaner)
 			extra_args += 2;
-		if (wc->low_wm_percent_set)
+		if (wc->low_wm_percent_set && !wc->cleaner)
 			extra_args += 2;
 		if (wc->max_writeback_jobs_set)
 			extra_args += 2;
@@ -2311,19 +2479,23 @@ static void writecache_status(struct dm_target *ti, status_type_t type,
 			extra_args += 2;
 		if (wc->autocommit_time_set)
 			extra_args += 2;
+		if (wc->max_age != MAX_AGE_UNSPECIFIED)
+			extra_args += 2;
+		if (wc->cleaner)
+			extra_args++;
 		if (wc->writeback_fua_set)
 			extra_args++;
 
 		DMEMIT("%u", extra_args);
 		if (wc->start_sector)
 			DMEMIT(" start_sector %llu", (unsigned long long)wc->start_sector);
-		if (wc->high_wm_percent_set) {
+		if (wc->high_wm_percent_set && !wc->cleaner) {
 			x = (uint64_t)wc->freelist_high_watermark * 100;
 			x += wc->n_blocks / 2;
 			do_div(x, (size_t)wc->n_blocks);
 			DMEMIT(" high_watermark %u", 100 - (unsigned)x);
 		}
-		if (wc->low_wm_percent_set) {
+		if (wc->low_wm_percent_set && !wc->cleaner) {
 			x = (uint64_t)wc->freelist_low_watermark * 100;
 			x += wc->n_blocks / 2;
 			do_div(x, (size_t)wc->n_blocks);
@@ -2335,6 +2507,10 @@ static void writecache_status(struct dm_target *ti, status_type_t type,
 			DMEMIT(" autocommit_blocks %u", wc->autocommit_blocks);
 		if (wc->autocommit_time_set)
 			DMEMIT(" autocommit_time %u", jiffies_to_msecs(wc->autocommit_jiffies));
+		if (wc->max_age != MAX_AGE_UNSPECIFIED)
+			DMEMIT(" max_age %u", jiffies_to_msecs(wc->max_age));
+		if (wc->cleaner)
+			DMEMIT(" cleaner");
 		if (wc->writeback_fua_set)
 			DMEMIT(" %sfua", wc->writeback_fua ? "" : "no");
 		break;
@@ -2343,7 +2519,7 @@ static void writecache_status(struct dm_target *ti, status_type_t type,
 
 static struct target_type writecache_target = {
 	.name			= "writecache",
-	.version		= {1, 1, 1},
+	.version		= {1, 3, 0},
 	.module			= THIS_MODULE,
 	.ctr			= writecache_ctr,
 	.dtr			= writecache_dtr,

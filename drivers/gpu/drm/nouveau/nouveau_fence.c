@@ -87,7 +87,7 @@ nouveau_local_fence(struct dma_fence *fence, struct nouveau_drm *drm)
 }
 
 void
-nouveau_fence_context_del(struct nouveau_fence_chan *fctx)
+nouveau_fence_context_kill(struct nouveau_fence_chan *fctx, int error)
 {
 	struct nouveau_fence *fence;
 
@@ -95,12 +95,20 @@ nouveau_fence_context_del(struct nouveau_fence_chan *fctx)
 	while (!list_empty(&fctx->pending)) {
 		fence = list_entry(fctx->pending.next, typeof(*fence), head);
 
+		if (error)
+			dma_fence_set_error(&fence->base, error);
+
 		if (nouveau_fence_signal(fence))
 			nvif_notify_put(&fctx->notify);
 	}
 	spin_unlock_irq(&fctx->lock);
+}
 
-	nvif_notify_fini(&fctx->notify);
+void
+nouveau_fence_context_del(struct nouveau_fence_chan *fctx)
+{
+	nouveau_fence_context_kill(fctx, 0);
+	nvif_notify_dtor(&fctx->notify);
 	fctx->dead = 1;
 
 	/*
@@ -187,7 +195,8 @@ nouveau_fence_context_new(struct nouveau_channel *chan, struct nouveau_fence_cha
 	if (!priv->uevent)
 		return;
 
-	ret = nvif_notify_init(&chan->user, nouveau_fence_wait_uevent_handler,
+	ret = nvif_notify_ctor(&chan->user, "fenceNonStallIntr",
+			       nouveau_fence_wait_uevent_handler,
 			       false, NV826E_V0_NTFY_NON_STALL_INTERRUPT,
 			       &(struct nvif_notify_uevent_req) { },
 			       sizeof(struct nvif_notify_uevent_req),

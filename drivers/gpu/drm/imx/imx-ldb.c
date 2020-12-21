@@ -20,11 +20,13 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_of.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_simple_kms_helper.h>
 
 #include "imx-drm.h"
 
@@ -60,7 +62,6 @@ struct imx_ldb_channel {
 	struct i2c_adapter *ddc;
 	int chno;
 	void *edid;
-	int edid_len;
 	struct drm_display_mode mode;
 	int mode_valid;
 	u32 bus_format;
@@ -126,7 +127,7 @@ static int imx_ldb_connector_get_modes(struct drm_connector *connector)
 	struct imx_ldb_channel *imx_ldb_ch = con_to_imx_ldb_ch(connector);
 	int num_modes;
 
-	num_modes = drm_panel_get_modes(imx_ldb_ch->panel);
+	num_modes = drm_panel_get_modes(imx_ldb_ch->panel, connector);
 	if (num_modes > 0)
 		return num_modes;
 
@@ -152,14 +153,6 @@ static int imx_ldb_connector_get_modes(struct drm_connector *connector)
 	}
 
 	return num_modes;
-}
-
-static struct drm_encoder *imx_ldb_connector_best_encoder(
-		struct drm_connector *connector)
-{
-	struct imx_ldb_channel *imx_ldb_ch = con_to_imx_ldb_ch(connector);
-
-	return &imx_ldb_ch->encoder;
 }
 
 static void imx_ldb_set_clock(struct imx_ldb *ldb, int mux, int chno,
@@ -390,11 +383,6 @@ static const struct drm_connector_funcs imx_ldb_connector_funcs = {
 
 static const struct drm_connector_helper_funcs imx_ldb_connector_helper_funcs = {
 	.get_modes = imx_ldb_connector_get_modes,
-	.best_encoder = imx_ldb_connector_best_encoder,
-};
-
-static const struct drm_encoder_funcs imx_ldb_encoder_funcs = {
-	.destroy = imx_drm_encoder_destroy,
 };
 
 static const struct drm_encoder_helper_funcs imx_ldb_encoder_helper_funcs = {
@@ -441,12 +429,11 @@ static int imx_ldb_register(struct drm_device *drm,
 	}
 
 	drm_encoder_helper_add(encoder, &imx_ldb_encoder_helper_funcs);
-	drm_encoder_init(drm, encoder, &imx_ldb_encoder_funcs,
-			 DRM_MODE_ENCODER_LVDS, NULL);
+	drm_simple_encoder_init(drm, encoder, DRM_MODE_ENCODER_LVDS);
 
 	if (imx_ldb_ch->bridge) {
 		ret = drm_bridge_attach(&imx_ldb_ch->encoder,
-					imx_ldb_ch->bridge, NULL);
+					imx_ldb_ch->bridge, NULL, 0);
 		if (ret) {
 			DRM_ERROR("Failed to initialize bridge with drm\n");
 			return ret;
@@ -467,20 +454,8 @@ static int imx_ldb_register(struct drm_device *drm,
 		drm_connector_attach_encoder(&imx_ldb_ch->connector, encoder);
 	}
 
-	if (imx_ldb_ch->panel) {
-		ret = drm_panel_attach(imx_ldb_ch->panel,
-				       &imx_ldb_ch->connector);
-		if (ret)
-			return ret;
-	}
-
 	return 0;
 }
-
-enum {
-	LVDS_BIT_MAP_SPWG,
-	LVDS_BIT_MAP_JEIDA
-};
 
 struct imx_ldb_bit_mapping {
 	u32 bus_format;
@@ -560,15 +535,14 @@ static int imx_ldb_panel_ddc(struct device *dev,
 	}
 
 	if (!channel->ddc) {
+		int edid_len;
+
 		/* if no DDC available, fallback to hardcoded EDID */
 		dev_dbg(dev, "no ddc available\n");
 
-		edidp = of_get_property(child, "edid",
-					&channel->edid_len);
+		edidp = of_get_property(child, "edid", &edid_len);
 		if (edidp) {
-			channel->edid = kmemdup(edidp,
-						channel->edid_len,
-						GFP_KERNEL);
+			channel->edid = kmemdup(edidp, edid_len, GFP_KERNEL);
 		} else if (!channel->panel) {
 			/* fallback to display-timings node */
 			ret = of_get_drm_display_mode(child,
@@ -718,9 +692,6 @@ static void imx_ldb_unbind(struct device *dev, struct device *master,
 
 	for (i = 0; i < 2; i++) {
 		struct imx_ldb_channel *channel = &imx_ldb->channel[i];
-
-		if (channel->panel)
-			drm_panel_detach(channel->panel);
 
 		kfree(channel->edid);
 		i2c_put_adapter(channel->ddc);

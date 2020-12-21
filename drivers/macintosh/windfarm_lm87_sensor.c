@@ -124,8 +124,8 @@ static int wf_lm87_probe(struct i2c_client *client,
 		}
 	}
 	if (!name) {
-		pr_warning("wf_lm87: Unsupported sensor %pOF\n",
-			   client->dev.of_node);
+		pr_warn("wf_lm87: Unsupported sensor %pOF\n",
+			client->dev.of_node);
 		return -ENODEV;
 	}
 
@@ -148,8 +148,6 @@ static int wf_lm87_probe(struct i2c_client *client,
 static int wf_lm87_remove(struct i2c_client *client)
 {
 	struct wf_lm87_sensor *lm = i2c_get_clientdata(client);
-
-	DBG("wf_lm87: i2c detatch called for %s\n", lm->sens.name);
 
 	/* Mark client detached */
 	lm->i2c = NULL;

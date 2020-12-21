@@ -817,7 +817,7 @@ static int siw_qp_sq_proc_tx(struct siw_qp *qp, struct siw_wqe *wqe)
 			}
 		} else {
 			wqe->bytes = wqe->sqe.sge[0].length;
-			if (!qp->kernel_verbs) {
+			if (!rdma_is_kernel_res(&qp->base_qp.res)) {
 				if (wqe->bytes > SIW_MAX_INLINE) {
 					rv = -EINVAL;
 					goto tx_error;
@@ -1042,7 +1042,7 @@ next_wqe:
 		case SIW_OP_SEND_REMOTE_INV:
 		case SIW_OP_WRITE:
 			siw_wqe_put_mem(wqe, tx_type);
-			/* Fall through */
+			fallthrough;
 
 		case SIW_OP_INVAL_STAG:
 		case SIW_OP_REG_MR:
@@ -1128,7 +1128,7 @@ next_wqe:
 		case SIW_OP_READ:
 		case SIW_OP_READ_LOCAL_INV:
 			siw_wqe_put_mem(wqe, tx_type);
-			/* Fall through */
+			fallthrough;
 
 		case SIW_OP_INVAL_STAG:
 		case SIW_OP_REG_MR:

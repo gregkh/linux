@@ -125,11 +125,14 @@ goku_ep_enable(struct usb_ep *_ep, const struct usb_endpoint_descriptor *desc)
 	max = get_unaligned_le16(&desc->wMaxPacketSize);
 	switch (max) {
 	case 64:
-		mode++; /* fall through */
+		mode++;
+		fallthrough;
 	case 32:
-		mode++; /* fall through */
+		mode++;
+		fallthrough;
 	case 16:
-		mode++; /* fall through */
+		mode++;
+		fallthrough;
 	case 8:
 		mode <<= 3;
 		break;
@@ -1783,7 +1786,7 @@ static int goku_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 	dev->got_region = 1;
 
-	base = ioremap_nocache(resource, len);
+	base = ioremap(resource, len);
 	if (base == NULL) {
 		DBG(dev, "can't map memory\n");
 		retval = -EFAULT;
@@ -1844,7 +1847,7 @@ static const struct pci_device_id pci_ids[] = { {
 MODULE_DEVICE_TABLE (pci, pci_ids);
 
 static struct pci_driver goku_pci_driver = {
-	.name =		(char *) driver_name,
+	.name =		driver_name,
 	.id_table =	pci_ids,
 
 	.probe =	goku_probe,

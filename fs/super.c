@@ -361,7 +361,7 @@ EXPORT_SYMBOL(deactivate_locked_super);
  */
 void deactivate_super(struct super_block *s)
 {
-        if (!atomic_add_unless(&s->s_active, -1, 1)) {
+	if (!atomic_add_unless(&s->s_active, -1, 1)) {
 		down_write(&s->s_umount);
 		deactivate_locked_super(s);
 	}
@@ -1256,6 +1256,8 @@ static int set_bdev_super(struct super_block *s, void *data)
 	s->s_dev = s->s_bdev->bd_dev;
 	s->s_bdi = bdi_get(s->s_bdev->bd_bdi);
 
+	if (blk_queue_stable_writes(s->s_bdev->bd_disk->queue))
+		s->s_iflags |= SB_I_STABLE_WRITES;
 	return 0;
 }
 
@@ -1598,11 +1600,9 @@ int super_setup_bdi_name(struct super_block *sb, char *fmt, ...)
 	int err;
 	va_list args;
 
-	bdi = bdi_alloc(GFP_KERNEL);
+	bdi = bdi_alloc(NUMA_NO_NODE);
 	if (!bdi)
 		return -ENOMEM;
-
-	bdi->name = sb->s_type->name;
 
 	va_start(args, fmt);
 	err = bdi_register_va(bdi, fmt, args);
@@ -1630,30 +1630,6 @@ int super_setup_bdi(struct super_block *sb)
 				    atomic_long_inc_return(&bdi_seq));
 }
 EXPORT_SYMBOL(super_setup_bdi);
-
-/*
- * This is an internal function, please use sb_end_{write,pagefault,intwrite}
- * instead.
- */
-void __sb_end_write(struct super_block *sb, int level)
-{
-	percpu_up_read(sb->s_writers.rw_sem + level-1);
-}
-EXPORT_SYMBOL(__sb_end_write);
-
-/*
- * This is an internal function, please use sb_start_{write,pagefault,intwrite}
- * instead.
- */
-int __sb_start_write(struct super_block *sb, int level, bool wait)
-{
-	if (!wait)
-		return percpu_down_read_trylock(sb->s_writers.rw_sem + level-1);
-
-	percpu_down_read(sb->s_writers.rw_sem + level-1);
-	return 1;
-}
-EXPORT_SYMBOL(__sb_start_write);
 
 /**
  * sb_wait_write - wait until all writers to given file system finish

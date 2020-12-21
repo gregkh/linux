@@ -234,7 +234,6 @@ static int hisi_hha_pmu_init_data(struct platform_device *pdev,
 				  struct hisi_pmu *hha_pmu)
 {
 	unsigned long long id;
-	struct resource *res;
 	acpi_status status;
 
 	status = acpi_evaluate_integer(ACPI_HANDLE(&pdev->dev),
@@ -256,8 +255,7 @@ static int hisi_hha_pmu_init_data(struct platform_device *pdev,
 	/* HHA PMUs only share the same SCCL */
 	hha_pmu->ccl_id = -1;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	hha_pmu->base = devm_ioremap_resource(&pdev->dev, res);
+	hha_pmu->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(hha_pmu->base)) {
 		dev_err(&pdev->dev, "ioremap failed for hha_pmu resource\n");
 		return PTR_ERR(hha_pmu->base);
@@ -409,8 +407,9 @@ static int hisi_hha_pmu_probe(struct platform_device *pdev)
 	ret = perf_pmu_register(&hha_pmu->pmu, name, -1);
 	if (ret) {
 		dev_err(hha_pmu->dev, "HHA PMU register failed!\n");
-		cpuhp_state_remove_instance(CPUHP_AP_PERF_ARM_HISI_HHA_ONLINE,
-					    &hha_pmu->node);
+		cpuhp_state_remove_instance_nocalls(
+			CPUHP_AP_PERF_ARM_HISI_HHA_ONLINE, &hha_pmu->node);
+		irq_set_affinity_hint(hha_pmu->irq, NULL);
 	}
 
 	return ret;
@@ -421,8 +420,9 @@ static int hisi_hha_pmu_remove(struct platform_device *pdev)
 	struct hisi_pmu *hha_pmu = platform_get_drvdata(pdev);
 
 	perf_pmu_unregister(&hha_pmu->pmu);
-	cpuhp_state_remove_instance(CPUHP_AP_PERF_ARM_HISI_HHA_ONLINE,
-				    &hha_pmu->node);
+	cpuhp_state_remove_instance_nocalls(CPUHP_AP_PERF_ARM_HISI_HHA_ONLINE,
+					    &hha_pmu->node);
+	irq_set_affinity_hint(hha_pmu->irq, NULL);
 
 	return 0;
 }

@@ -58,8 +58,11 @@
 
 #include "ll_temac.h"
 
-#define TX_BD_NUM   64
-#define RX_BD_NUM   128
+/* Descriptors defines for Tx and Rx DMA */
+#define TX_BD_NUM_DEFAULT		64
+#define RX_BD_NUM_DEFAULT		1024
+#define TX_BD_NUM_MAX			4096
+#define RX_BD_NUM_MAX			4096
 
 /* ---------------------------------------------------------------------
  * Low level register access functions
@@ -103,7 +106,7 @@ static bool hard_acs_rdy_or_timeout(struct temac_local *lp, ktime_t timeout)
  */
 #define HARD_ACS_RDY_POLL_NS (20 * NSEC_PER_MSEC)
 
-/**
+/*
  * temac_indirect_busywait - Wait for current indirect register access
  * to complete.
  */
@@ -118,7 +121,7 @@ int temac_indirect_busywait(struct temac_local *lp)
 		return 0;
 }
 
-/**
+/*
  * temac_indirect_in32 - Indirect register read access.  This function
  * must be called without lp->indirect_lock being held.
  */
@@ -133,7 +136,7 @@ u32 temac_indirect_in32(struct temac_local *lp, int reg)
 	return val;
 }
 
-/**
+/*
  * temac_indirect_in32_locked - Indirect register read access.  This
  * function must be called with lp->indirect_lock being held.  Use
  * this together with spin_lock_irqsave/spin_lock_irqrestore to avoid
@@ -161,7 +164,7 @@ u32 temac_indirect_in32_locked(struct temac_local *lp, int reg)
 	return temac_ior(lp, XTE_LSW0_OFFSET);
 }
 
-/**
+/*
  * temac_indirect_out32 - Indirect register write access.  This function
  * must be called without lp->indirect_lock being held.
  */
@@ -174,7 +177,7 @@ void temac_indirect_out32(struct temac_local *lp, int reg, u32 value)
 	spin_unlock_irqrestore(lp->indirect_lock, flags);
 }
 
-/**
+/*
  * temac_indirect_out32_locked - Indirect register write access.  This
  * function must be called with lp->indirect_lock being held.  Use
  * this together with spin_lock_irqsave/spin_lock_irqrestore to avoid
@@ -199,7 +202,7 @@ void temac_indirect_out32_locked(struct temac_local *lp, int reg, u32 value)
 	WARN_ON(temac_indirect_busywait(lp));
 }
 
-/**
+/*
  * temac_dma_in32_* - Memory mapped DMA read, these function expects a
  * register input that is based on DCR word addresses which are then
  * converted to memory mapped byte addresses.  To be assigned to
@@ -215,7 +218,7 @@ static u32 temac_dma_in32_le(struct temac_local *lp, int reg)
 	return ioread32(lp->sdma_regs + (reg << 2));
 }
 
-/**
+/*
  * temac_dma_out32_* - Memory mapped DMA read, these function expects
  * a register input that is based on DCR word addresses which are then
  * converted to memory mapped byte addresses.  To be assigned to
@@ -237,7 +240,7 @@ static void temac_dma_out32_le(struct temac_local *lp, int reg, u32 value)
  */
 #ifdef CONFIG_PPC_DCR
 
-/**
+/*
  * temac_dma_dcr_in32 - DCR based DMA read
  */
 static u32 temac_dma_dcr_in(struct temac_local *lp, int reg)
@@ -245,7 +248,7 @@ static u32 temac_dma_dcr_in(struct temac_local *lp, int reg)
 	return dcr_read(lp->sdma_dcrs, reg);
 }
 
-/**
+/*
  * temac_dma_dcr_out32 - DCR based DMA write
  */
 static void temac_dma_dcr_out(struct temac_local *lp, int reg, u32 value)
@@ -253,7 +256,7 @@ static void temac_dma_dcr_out(struct temac_local *lp, int reg, u32 value)
 	dcr_write(lp->sdma_dcrs, reg, value);
 }
 
-/**
+/*
  * temac_dcr_setup - If the DMA is DCR based, then setup the address and
  * I/O  functions
  */
@@ -290,7 +293,7 @@ static int temac_dcr_setup(struct temac_local *lp, struct platform_device *op,
 
 #endif
 
-/**
+/*
  * temac_dma_bd_release - Release buffer descriptor rings
  */
 static void temac_dma_bd_release(struct net_device *ndev)
@@ -301,7 +304,7 @@ static void temac_dma_bd_release(struct net_device *ndev)
 	/* Reset Local Link (DMA) */
 	lp->dma_out(lp, DMA_CONTROL_REG, DMA_CONTROL_RST);
 
-	for (i = 0; i < RX_BD_NUM; i++) {
+	for (i = 0; i < lp->rx_bd_num; i++) {
 		if (!lp->rx_skb[i])
 			break;
 		else {
@@ -312,15 +315,15 @@ static void temac_dma_bd_release(struct net_device *ndev)
 	}
 	if (lp->rx_bd_v)
 		dma_free_coherent(ndev->dev.parent,
-				sizeof(*lp->rx_bd_v) * RX_BD_NUM,
-				lp->rx_bd_v, lp->rx_bd_p);
+				  sizeof(*lp->rx_bd_v) * lp->rx_bd_num,
+				  lp->rx_bd_v, lp->rx_bd_p);
 	if (lp->tx_bd_v)
 		dma_free_coherent(ndev->dev.parent,
-				sizeof(*lp->tx_bd_v) * TX_BD_NUM,
-				lp->tx_bd_v, lp->tx_bd_p);
+				  sizeof(*lp->tx_bd_v) * lp->tx_bd_num,
+				  lp->tx_bd_v, lp->tx_bd_p);
 }
 
-/**
+/*
  * temac_dma_bd_init - Setup buffer descriptor rings
  */
 static int temac_dma_bd_init(struct net_device *ndev)
@@ -330,33 +333,33 @@ static int temac_dma_bd_init(struct net_device *ndev)
 	dma_addr_t skb_dma_addr;
 	int i;
 
-	lp->rx_skb = devm_kcalloc(&ndev->dev, RX_BD_NUM, sizeof(*lp->rx_skb),
-				  GFP_KERNEL);
+	lp->rx_skb = devm_kcalloc(&ndev->dev, lp->rx_bd_num,
+				  sizeof(*lp->rx_skb), GFP_KERNEL);
 	if (!lp->rx_skb)
 		goto out;
 
 	/* allocate the tx and rx ring buffer descriptors. */
 	/* returns a virtual address and a physical address. */
 	lp->tx_bd_v = dma_alloc_coherent(ndev->dev.parent,
-					 sizeof(*lp->tx_bd_v) * TX_BD_NUM,
+					 sizeof(*lp->tx_bd_v) * lp->tx_bd_num,
 					 &lp->tx_bd_p, GFP_KERNEL);
 	if (!lp->tx_bd_v)
 		goto out;
 
 	lp->rx_bd_v = dma_alloc_coherent(ndev->dev.parent,
-					 sizeof(*lp->rx_bd_v) * RX_BD_NUM,
+					 sizeof(*lp->rx_bd_v) * lp->rx_bd_num,
 					 &lp->rx_bd_p, GFP_KERNEL);
 	if (!lp->rx_bd_v)
 		goto out;
 
-	for (i = 0; i < TX_BD_NUM; i++) {
+	for (i = 0; i < lp->tx_bd_num; i++) {
 		lp->tx_bd_v[i].next = cpu_to_be32(lp->tx_bd_p
-				+ sizeof(*lp->tx_bd_v) * ((i + 1) % TX_BD_NUM));
+			+ sizeof(*lp->tx_bd_v) * ((i + 1) % lp->tx_bd_num));
 	}
 
-	for (i = 0; i < RX_BD_NUM; i++) {
+	for (i = 0; i < lp->rx_bd_num; i++) {
 		lp->rx_bd_v[i].next = cpu_to_be32(lp->rx_bd_p
-				+ sizeof(*lp->rx_bd_v) * ((i + 1) % RX_BD_NUM));
+			+ sizeof(*lp->rx_bd_v) * ((i + 1) % lp->rx_bd_num));
 
 		skb = netdev_alloc_skb_ip_align(ndev,
 						XTE_MAX_JUMBO_FRAME_SIZE);
@@ -376,21 +379,22 @@ static int temac_dma_bd_init(struct net_device *ndev)
 	}
 
 	/* Configure DMA channel (irq setup) */
-	lp->dma_out(lp, TX_CHNL_CTRL, lp->tx_chnl_ctrl |
+	lp->dma_out(lp, TX_CHNL_CTRL,
+		    lp->coalesce_delay_tx << 24 | lp->coalesce_count_tx << 16 |
 		    0x00000400 | // Use 1 Bit Wide Counters. Currently Not Used!
 		    CHNL_CTRL_IRQ_EN | CHNL_CTRL_IRQ_ERR_EN |
 		    CHNL_CTRL_IRQ_DLY_EN | CHNL_CTRL_IRQ_COAL_EN);
-	lp->dma_out(lp, RX_CHNL_CTRL, lp->rx_chnl_ctrl |
+	lp->dma_out(lp, RX_CHNL_CTRL,
+		    lp->coalesce_delay_rx << 24 | lp->coalesce_count_rx << 16 |
 		    CHNL_CTRL_IRQ_IOE |
 		    CHNL_CTRL_IRQ_EN | CHNL_CTRL_IRQ_ERR_EN |
 		    CHNL_CTRL_IRQ_DLY_EN | CHNL_CTRL_IRQ_COAL_EN);
 
 	/* Init descriptor indexes */
 	lp->tx_bd_ci = 0;
-	lp->tx_bd_next = 0;
 	lp->tx_bd_tail = 0;
 	lp->rx_bd_ci = 0;
-	lp->rx_bd_tail = RX_BD_NUM - 1;
+	lp->rx_bd_tail = lp->rx_bd_num - 1;
 
 	/* Enable RX DMA transfers */
 	wmb();
@@ -589,7 +593,7 @@ static struct temac_option {
 	{}
 };
 
-/**
+/*
  * temac_setoptions
  */
 static u32 temac_setoptions(struct net_device *ndev, u32 options)
@@ -785,7 +789,7 @@ static void temac_start_xmit_done(struct net_device *ndev)
 		ndev->stats.tx_bytes += be32_to_cpu(cur_p->len);
 
 		lp->tx_bd_ci++;
-		if (lp->tx_bd_ci >= TX_BD_NUM)
+		if (lp->tx_bd_ci >= lp->tx_bd_num)
 			lp->tx_bd_ci = 0;
 
 		cur_p = &lp->tx_bd_v[lp->tx_bd_ci];
@@ -811,7 +815,7 @@ static inline int temac_check_tx_bd_space(struct temac_local *lp, int num_frag)
 			return NETDEV_TX_BUSY;
 
 		tail++;
-		if (tail >= TX_BD_NUM)
+		if (tail >= lp->tx_bd_num)
 			tail = 0;
 
 		cur_p = &lp->tx_bd_v[tail];
@@ -826,14 +830,13 @@ temac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct temac_local *lp = netdev_priv(ndev);
 	struct cdmac_bd *cur_p;
-	dma_addr_t start_p, tail_p, skb_dma_addr;
+	dma_addr_t tail_p, skb_dma_addr;
 	int ii;
 	unsigned long num_frag;
 	skb_frag_t *frag;
 
 	num_frag = skb_shinfo(skb)->nr_frags;
 	frag = &skb_shinfo(skb)->frags[0];
-	start_p = lp->tx_bd_p + sizeof(*lp->tx_bd_v) * lp->tx_bd_tail;
 	cur_p = &lp->tx_bd_v[lp->tx_bd_tail];
 
 	if (temac_check_tx_bd_space(lp, num_frag + 1)) {
@@ -876,7 +879,7 @@ temac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	ptr_to_txbd((void *)skb, cur_p);
 
 	for (ii = 0; ii < num_frag; ii++) {
-		if (++lp->tx_bd_tail >= TX_BD_NUM)
+		if (++lp->tx_bd_tail >= lp->tx_bd_num)
 			lp->tx_bd_tail = 0;
 
 		cur_p = &lp->tx_bd_v[lp->tx_bd_tail];
@@ -886,7 +889,7 @@ temac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 					      DMA_TO_DEVICE);
 		if (dma_mapping_error(ndev->dev.parent, skb_dma_addr)) {
 			if (--lp->tx_bd_tail < 0)
-				lp->tx_bd_tail = TX_BD_NUM - 1;
+				lp->tx_bd_tail = lp->tx_bd_num - 1;
 			cur_p = &lp->tx_bd_v[lp->tx_bd_tail];
 			while (--ii >= 0) {
 				--frag;
@@ -895,7 +898,7 @@ temac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 						 skb_frag_size(frag),
 						 DMA_TO_DEVICE);
 				if (--lp->tx_bd_tail < 0)
-					lp->tx_bd_tail = TX_BD_NUM - 1;
+					lp->tx_bd_tail = lp->tx_bd_num - 1;
 				cur_p = &lp->tx_bd_v[lp->tx_bd_tail];
 			}
 			dma_unmap_single(ndev->dev.parent,
@@ -914,7 +917,7 @@ temac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 
 	tail_p = lp->tx_bd_p + sizeof(*lp->tx_bd_v) * lp->tx_bd_tail;
 	lp->tx_bd_tail++;
-	if (lp->tx_bd_tail >= TX_BD_NUM)
+	if (lp->tx_bd_tail >= lp->tx_bd_num)
 		lp->tx_bd_tail = 0;
 
 	skb_tx_timestamp(skb);
@@ -934,7 +937,7 @@ static int ll_temac_recv_buffers_available(struct temac_local *lp)
 		return 0;
 	available = 1 + lp->rx_bd_tail - lp->rx_bd_ci;
 	if (available <= 0)
-		available += RX_BD_NUM;
+		available += lp->rx_bd_num;
 	return available;
 }
 
@@ -1003,7 +1006,7 @@ static void ll_temac_recv(struct net_device *ndev)
 		ndev->stats.rx_bytes += length;
 
 		rx_bd = lp->rx_bd_ci;
-		if (++lp->rx_bd_ci >= RX_BD_NUM)
+		if (++lp->rx_bd_ci >= lp->rx_bd_num)
 			lp->rx_bd_ci = 0;
 	} while (rx_bd != lp->rx_bd_tail);
 
@@ -1034,7 +1037,7 @@ static void ll_temac_recv(struct net_device *ndev)
 		dma_addr_t skb_dma_addr;
 
 		rx_bd = lp->rx_bd_tail + 1;
-		if (rx_bd >= RX_BD_NUM)
+		if (rx_bd >= lp->rx_bd_num)
 			rx_bd = 0;
 		bd = &lp->rx_bd_v[rx_bd];
 
@@ -1208,17 +1211,6 @@ temac_poll_controller(struct net_device *ndev)
 }
 #endif
 
-static int temac_ioctl(struct net_device *ndev, struct ifreq *rq, int cmd)
-{
-	if (!netif_running(ndev))
-		return -EINVAL;
-
-	if (!ndev->phydev)
-		return -EINVAL;
-
-	return phy_mii_ioctl(ndev->phydev, rq, cmd);
-}
-
 static const struct net_device_ops temac_netdev_ops = {
 	.ndo_open = temac_open,
 	.ndo_stop = temac_stop,
@@ -1226,7 +1218,7 @@ static const struct net_device_ops temac_netdev_ops = {
 	.ndo_set_rx_mode = temac_set_multicast_list,
 	.ndo_set_mac_address = temac_set_mac_address,
 	.ndo_validate_addr = eth_validate_addr,
-	.ndo_do_ioctl = temac_ioctl,
+	.ndo_do_ioctl = phy_do_ioctl_running,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller = temac_poll_controller,
 #endif
@@ -1261,13 +1253,96 @@ static const struct attribute_group temac_attr_group = {
 	.attrs = temac_device_attrs,
 };
 
-/* ethtool support */
+/* ---------------------------------------------------------------------
+ * ethtool support
+ */
+
+static void ll_temac_ethtools_get_ringparam(struct net_device *ndev,
+					    struct ethtool_ringparam *ering)
+{
+	struct temac_local *lp = netdev_priv(ndev);
+
+	ering->rx_max_pending = RX_BD_NUM_MAX;
+	ering->rx_mini_max_pending = 0;
+	ering->rx_jumbo_max_pending = 0;
+	ering->tx_max_pending = TX_BD_NUM_MAX;
+	ering->rx_pending = lp->rx_bd_num;
+	ering->rx_mini_pending = 0;
+	ering->rx_jumbo_pending = 0;
+	ering->tx_pending = lp->tx_bd_num;
+}
+
+static int ll_temac_ethtools_set_ringparam(struct net_device *ndev,
+					   struct ethtool_ringparam *ering)
+{
+	struct temac_local *lp = netdev_priv(ndev);
+
+	if (ering->rx_pending > RX_BD_NUM_MAX ||
+	    ering->rx_mini_pending ||
+	    ering->rx_jumbo_pending ||
+	    ering->rx_pending > TX_BD_NUM_MAX)
+		return -EINVAL;
+
+	if (netif_running(ndev))
+		return -EBUSY;
+
+	lp->rx_bd_num = ering->rx_pending;
+	lp->tx_bd_num = ering->tx_pending;
+	return 0;
+}
+
+static int ll_temac_ethtools_get_coalesce(struct net_device *ndev,
+					  struct ethtool_coalesce *ec)
+{
+	struct temac_local *lp = netdev_priv(ndev);
+
+	ec->rx_max_coalesced_frames = lp->coalesce_count_rx;
+	ec->tx_max_coalesced_frames = lp->coalesce_count_tx;
+	ec->rx_coalesce_usecs = (lp->coalesce_delay_rx * 512) / 100;
+	ec->tx_coalesce_usecs = (lp->coalesce_delay_tx * 512) / 100;
+	return 0;
+}
+
+static int ll_temac_ethtools_set_coalesce(struct net_device *ndev,
+					  struct ethtool_coalesce *ec)
+{
+	struct temac_local *lp = netdev_priv(ndev);
+
+	if (netif_running(ndev)) {
+		netdev_err(ndev,
+			   "Please stop netif before applying configuration\n");
+		return -EFAULT;
+	}
+
+	if (ec->rx_max_coalesced_frames)
+		lp->coalesce_count_rx = ec->rx_max_coalesced_frames;
+	if (ec->tx_max_coalesced_frames)
+		lp->coalesce_count_tx = ec->tx_max_coalesced_frames;
+	/* With typical LocalLink clock speed of 200 MHz and
+	 * C_PRESCALAR=1023, each delay count corresponds to 5.12 us.
+	 */
+	if (ec->rx_coalesce_usecs)
+		lp->coalesce_delay_rx =
+			min(255U, (ec->rx_coalesce_usecs * 100) / 512);
+	if (ec->tx_coalesce_usecs)
+		lp->coalesce_delay_tx =
+			min(255U, (ec->tx_coalesce_usecs * 100) / 512);
+
+	return 0;
+}
+
 static const struct ethtool_ops temac_ethtool_ops = {
+	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
+				     ETHTOOL_COALESCE_MAX_FRAMES,
 	.nway_reset = phy_ethtool_nway_reset,
 	.get_link = ethtool_op_get_link,
 	.get_ts_info = ethtool_op_get_ts_info,
 	.get_link_ksettings = phy_ethtool_get_link_ksettings,
 	.set_link_ksettings = phy_ethtool_set_link_ksettings,
+	.get_ringparam	= ll_temac_ethtools_get_ringparam,
+	.set_ringparam	= ll_temac_ethtools_set_ringparam,
+	.get_coalesce	= ll_temac_ethtools_get_coalesce,
+	.set_coalesce	= ll_temac_ethtools_set_coalesce,
 };
 
 static int temac_probe(struct platform_device *pdev)
@@ -1276,7 +1351,6 @@ static int temac_probe(struct platform_device *pdev)
 	struct device_node *temac_np = dev_of_node(&pdev->dev), *dma_np;
 	struct temac_local *lp;
 	struct net_device *ndev;
-	struct resource *res;
 	const void *addr;
 	__be32 *p;
 	bool little_endian;
@@ -1311,6 +1385,8 @@ static int temac_probe(struct platform_device *pdev)
 	lp->ndev = ndev;
 	lp->dev = &pdev->dev;
 	lp->options = XTE_OPTION_DEFAULTS;
+	lp->rx_bd_num = RX_BD_NUM_DEFAULT;
+	lp->tx_bd_num = TX_BD_NUM_DEFAULT;
 	spin_lock_init(&lp->rx_lock);
 	INIT_DELAYED_WORK(&lp->restart_work, ll_temac_restart_work_func);
 
@@ -1330,12 +1406,10 @@ static int temac_probe(struct platform_device *pdev)
 	}
 
 	/* map device registers */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	lp->regs = devm_ioremap_nocache(&pdev->dev, res->start,
-					resource_size(res));
+	lp->regs = devm_platform_ioremap_resource_byname(pdev, 0);
 	if (IS_ERR(lp->regs)) {
 		dev_err(&pdev->dev, "could not map TEMAC registers\n");
-		return PTR_ERR(lp->regs);
+		return -ENOMEM;
 	}
 
 	/* Select register access functions with the specified
@@ -1375,6 +1449,14 @@ static int temac_probe(struct platform_device *pdev)
 		/* Can checksum TCP/UDP over IPv4. */
 		ndev->features |= NETIF_F_IP_CSUM;
 
+	/* Defaults for IRQ delay/coalescing setup.  These are
+	 * configuration values, so does not belong in device-tree.
+	 */
+	lp->coalesce_delay_tx = 0x10;
+	lp->coalesce_count_tx = 0x22;
+	lp->coalesce_delay_rx = 0xff;
+	lp->coalesce_count_rx = 0x07;
+
 	/* Setup LocalLink DMA */
 	if (temac_np) {
 		/* Find the DMA node, map the DMA registers, and
@@ -1413,14 +1495,6 @@ static int temac_probe(struct platform_device *pdev)
 		lp->rx_irq = irq_of_parse_and_map(dma_np, 0);
 		lp->tx_irq = irq_of_parse_and_map(dma_np, 1);
 
-		/* Use defaults for IRQ delay/coalescing setup.  These
-		 * are configuration values, so does not belong in
-		 * device-tree.
-		 */
-		lp->tx_chnl_ctrl = 0x10220000;
-		lp->rx_chnl_ctrl = 0xff070000;
-		lp->coalesce_count_rx = 0x07;
-
 		/* Finished with the DMA node; drop the reference */
 		of_node_put(dma_np);
 	} else if (pdata) {
@@ -1444,18 +1518,13 @@ static int temac_probe(struct platform_device *pdev)
 		lp->tx_irq = platform_get_irq(pdev, 1);
 
 		/* IRQ delay/coalescing setup */
-		if (pdata->tx_irq_timeout || pdata->tx_irq_count)
-			lp->tx_chnl_ctrl = (pdata->tx_irq_timeout << 24) |
-				(pdata->tx_irq_count << 16);
-		else
-			lp->tx_chnl_ctrl = 0x10220000;
+		if (pdata->tx_irq_timeout || pdata->tx_irq_count) {
+			lp->coalesce_delay_tx = pdata->tx_irq_timeout;
+			lp->coalesce_count_tx = pdata->tx_irq_count;
+		}
 		if (pdata->rx_irq_timeout || pdata->rx_irq_count) {
-			lp->rx_chnl_ctrl = (pdata->rx_irq_timeout << 24) |
-				(pdata->rx_irq_count << 16);
+			lp->coalesce_delay_rx = pdata->rx_irq_timeout;
 			lp->coalesce_count_rx = pdata->rx_irq_count;
-		} else {
-			lp->rx_chnl_ctrl = 0xff070000;
-			lp->coalesce_count_rx = 0x07;
 		}
 	}
 

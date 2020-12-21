@@ -36,7 +36,6 @@
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/vport.h>
 #include <linux/mlx5/eq.h>
-#include <linux/mlx5/cmd.h>
 #ifdef CONFIG_RFS_ACCEL
 #include <linux/cpu_rmap.h>
 #endif
@@ -102,12 +101,11 @@ struct mlx5_eq_table {
 
 static int mlx5_cmd_destroy_eq(struct mlx5_core_dev *dev, u8 eqn)
 {
-	u32 out[MLX5_ST_SZ_DW(destroy_eq_out)] = {0};
-	u32 in[MLX5_ST_SZ_DW(destroy_eq_in)]   = {0};
+	u32 in[MLX5_ST_SZ_DW(destroy_eq_in)] = {};
 
 	MLX5_SET(destroy_eq_in, in, opcode, MLX5_CMD_OP_DESTROY_EQ);
 	MLX5_SET(destroy_eq_in, in, eq_number, eqn);
-	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+	return mlx5_cmd_exec_in(dev, destroy_eq, in);
 }
 
 /* caller must eventually call mlx5_cq_put on the returned cq */
@@ -156,7 +154,8 @@ static int mlx5_eq_comp_int(struct notifier_block *nb,
 			cq->comp(cq, eqe);
 			mlx5_cq_put(cq);
 		} else {
-			mlx5_core_warn(eq->dev, "Completion event for bogus CQ 0x%x\n", cqn);
+			dev_dbg_ratelimited(eq->dev->device,
+					    "Completion event for bogus CQ 0x%x\n", cqn);
 		}
 
 		++eq->cons_index;
@@ -695,8 +694,10 @@ static void destroy_async_eqs(struct mlx5_core_dev *dev)
 
 	cleanup_async_eq(dev, &table->pages_eq, "pages");
 	cleanup_async_eq(dev, &table->async_eq, "async");
+	mlx5_cmd_allowed_opcode(dev, MLX5_CMD_OP_DESTROY_EQ);
 	mlx5_cmd_use_polling(dev);
 	cleanup_async_eq(dev, &table->cmd_eq, "cmd");
+	mlx5_cmd_allowed_opcode(dev, CMD_ALLOWED_OPCODE_ALL);
 	mlx5_eq_notifier_unregister(dev, &table->cq_err_nb);
 }
 
@@ -827,8 +828,7 @@ static int create_comp_eqs(struct mlx5_core_dev *dev)
 		INIT_LIST_HEAD(&eq->tasklet_ctx.list);
 		INIT_LIST_HEAD(&eq->tasklet_ctx.process_list);
 		spin_lock_init(&eq->tasklet_ctx.lock);
-		tasklet_init(&eq->tasklet_ctx.task, mlx5_cq_tasklet_cb,
-			     (unsigned long)&eq->tasklet_ctx);
+		tasklet_setup(&eq->tasklet_ctx.task, mlx5_cq_tasklet_cb);
 
 		eq->irq_nb.notifier_call = mlx5_eq_comp_int;
 		param = (struct mlx5_eq_param) {

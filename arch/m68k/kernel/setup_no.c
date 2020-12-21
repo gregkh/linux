@@ -38,7 +38,6 @@
 #include <asm/bootinfo.h>
 #include <asm/irq.h>
 #include <asm/machdep.h>
-#include <asm/pgtable.h>
 #include <asm/sections.h>
 
 unsigned long memory_start;
@@ -146,10 +145,6 @@ void __init setup_arch(char **cmdline_p)
 	*cmdline_p = &command_line[0];
 	memcpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
 	boot_command_line[COMMAND_LINE_SIZE-1] = 0;
-
-#if defined(CONFIG_FRAMEBUFFER_CONSOLE) && defined(CONFIG_DUMMY_CONSOLE)
-	conswitchp = &dummy_con;
-#endif
 
 	/*
 	 * Give all the memory to the bootmap allocator, tell it to put the

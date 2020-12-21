@@ -71,7 +71,7 @@ struct ucode {
 	char version[VERSION_LEN - 1];
 	__be32 code_size;
 	u8 raz[12];
-	u64 code[0];
+	u64 code[];
 };
 
 /**
@@ -346,7 +346,7 @@ static void nitrox_pf_sw_cleanup(struct nitrox_device *ndev)
 }
 
 /**
- * nitrox_bist_check - Check NITORX BIST registers status
+ * nitrox_bist_check - Check NITROX BIST registers status
  * @ndev: NITROX device
  */
 static int nitrox_bist_check(struct nitrox_device *ndev)
@@ -451,6 +451,7 @@ static int nitrox_probe(struct pci_dev *pdev,
 	err = pci_request_mem_regions(pdev, nitrox_driver_name);
 	if (err) {
 		pci_disable_device(pdev);
+		dev_err(&pdev->dev, "Failed to request mem regions!\n");
 		return err;
 	}
 	pci_set_master(pdev);

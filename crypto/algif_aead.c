@@ -120,7 +120,7 @@ static int _aead_recvmsg(struct socket *sock, struct msghdr *msg,
 
 	/*
 	 * Make sure sufficient data is present -- note, the same check is
-	 * is also present in sendmsg/sendpage. The checks in sendpage/sendmsg
+	 * also present in sendmsg/sendpage. The checks in sendpage/sendmsg
 	 * shall provide an information to the data sender that something is
 	 * wrong, but they are irrelevant to maintain the kernel integrity.
 	 * We need this check here too in case user space decides to not honor
@@ -362,11 +362,9 @@ static struct proto_ops algif_aead_ops = {
 	.ioctl		=	sock_no_ioctl,
 	.listen		=	sock_no_listen,
 	.shutdown	=	sock_no_shutdown,
-	.getsockopt	=	sock_no_getsockopt,
 	.mmap		=	sock_no_mmap,
 	.bind		=	sock_no_bind,
 	.accept		=	sock_no_accept,
-	.setsockopt	=	sock_no_setsockopt,
 
 	.release	=	af_alg_release,
 	.sendmsg	=	aead_sendmsg,
@@ -455,11 +453,9 @@ static struct proto_ops algif_aead_ops_nokey = {
 	.ioctl		=	sock_no_ioctl,
 	.listen		=	sock_no_listen,
 	.shutdown	=	sock_no_shutdown,
-	.getsockopt	=	sock_no_getsockopt,
 	.mmap		=	sock_no_mmap,
 	.bind		=	sock_no_bind,
 	.accept		=	sock_no_accept,
-	.setsockopt	=	sock_no_setsockopt,
 
 	.release	=	af_alg_release,
 	.sendmsg	=	aead_sendmsg_nokey,
