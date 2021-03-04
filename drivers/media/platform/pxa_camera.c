@@ -1256,7 +1256,7 @@ static void pxa_camera_setup_cicr(struct pxa_camera_dev *pcdev,
 		 * transformation. Note that UYVY is the only format that
 		 * should be used if pxa framebuffer Overlay2 is used.
 		 */
-		/* fall through */
+		fallthrough;
 	case V4L2_PIX_FMT_UYVY:
 	case V4L2_PIX_FMT_VYUY:
 	case V4L2_PIX_FMT_YUYV:
@@ -1386,6 +1386,9 @@ static int pxac_vb2_prepare(struct vb2_buffer *vb)
 	struct pxa_camera_dev *pcdev = vb2_get_drv_priv(vb->vb2_queue);
 	struct pxa_buffer *buf = vb2_to_pxa_buffer(vb);
 	int ret = 0;
+#ifdef DEBUG
+	int i;
+#endif
 
 	switch (pcdev->channels) {
 	case 1:
@@ -1667,7 +1670,7 @@ static int pxa_camera_get_formats(struct v4l2_device *v4l2_dev,
 				"Providing format %s using code %d\n",
 				pxa_camera_formats[0].name, code.code);
 		}
-	/* fall through */
+		fallthrough;
 	case MEDIA_BUS_FMT_VYUY8_2X8:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
 	case MEDIA_BUS_FMT_YVYU8_2X8:

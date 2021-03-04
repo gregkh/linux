@@ -520,12 +520,13 @@ fastrpc_map_dma_buf(struct dma_buf_attachment *attachment,
 {
 	struct fastrpc_dma_buf_attachment *a = attachment->priv;
 	struct sg_table *table;
+	int ret;
 
 	table = &a->sgt;
 
-	if (!dma_map_sgtable(attachment->dev, table, dir, 0))
-		return ERR_PTR(-ENOMEM);
-
+	ret = dma_map_sgtable(attachment->dev, table, dir, 0);
+	if (ret)
+		table = ERR_PTR(ret);
 	return table;
 }
 
@@ -586,11 +587,13 @@ static void fastrpc_dma_buf_detatch(struct dma_buf *dmabuf,
 	kfree(a);
 }
 
-static void *fastrpc_vmap(struct dma_buf *dmabuf)
+static int fastrpc_vmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
 {
 	struct fastrpc_buf *buf = dmabuf->priv;
 
-	return buf->virt;
+	dma_buf_map_set_vaddr(map, buf->virt);
+
+	return 0;
 }
 
 static int fastrpc_mmap(struct dma_buf *dmabuf,

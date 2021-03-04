@@ -182,10 +182,6 @@ static struct buffer_head *__ext4_read_dirblock(struct inode *inode,
 	return bh;
 }
 
-#ifndef assert
-#define assert(test) J_ASSERT(test)
-#endif
-
 #ifdef DX_DEBUG
 #define dxtrace(command) command
 #else
@@ -643,13 +639,7 @@ static struct stats dx_show_leaf(struct inode *dir,
 
 				name  = de->name;
 				len = de->name_len;
-				if (IS_ENCRYPTED(dir))
-					res = fscrypt_get_encryption_info(dir);
-				if (res) {
-					printk(KERN_WARNING "Error setting up"
-					       " fname crypto: %d\n", res);
-				}
-				if (!fscrypt_has_encryption_key(dir)) {
+				if (!IS_ENCRYPTED(dir)) {
 					/* Directory is not encrypted */
 					ext4fs_dirhash(dir, de->name,
 						de->name_len, &h);
@@ -849,7 +839,7 @@ dx_probe(struct ext4_filename *fname, struct inode *dir,
 					break;
 				}
 			}
-			assert (at == p - 1);
+			ASSERT(at == p - 1);
 		}
 
 		at = p - 1;
@@ -1010,7 +1000,7 @@ static int htree_dirblock_to_tree(struct file *dir_file,
 					   EXT4_DIR_REC_LEN(0));
 	/* Check if the directory is encrypted */
 	if (IS_ENCRYPTED(dir)) {
-		err = fscrypt_get_encryption_info(dir);
+		err = fscrypt_prepare_readdir(dir);
 		if (err < 0) {
 			brelse(bh);
 			return err;
@@ -1265,8 +1255,8 @@ static void dx_insert_block(struct dx_frame *frame, u32 hash, ext4_lblk_t block)
 	struct dx_entry *old = frame->at, *new = old + 1;
 	int count = dx_get_count(entries);
 
-	assert(count < dx_get_limit(entries));
-	assert(old < entries + count);
+	ASSERT(count < dx_get_limit(entries));
+	ASSERT(old < entries + count);
 	memmove(new + 1, new, (char *)(entries + count) - (char *)(new));
 	dx_set_hash(new, hash);
 	dx_set_block(new, block);
@@ -1614,6 +1604,7 @@ static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 	struct buffer_head *bh;
 
 	err = ext4_fname_prepare_lookup(dir, dentry, &fname);
+	generic_set_encrypted_ci_d_ops(dentry);
 	if (err == -ENOENT)
 		return NULL;
 	if (err)
@@ -2410,11 +2401,10 @@ again:
 						   (frame - 1)->bh);
 			if (err)
 				goto journal_error;
-			if (restart) {
-				err = ext4_handle_dirty_dx_node(handle, dir,
-							   frame->bh);
+			err = ext4_handle_dirty_dx_node(handle, dir,
+							frame->bh);
+			if (err)
 				goto journal_error;
-			}
 		} else {
 			struct dx_root *dxroot;
 			memcpy((char *) entries2, (char *) entries,
@@ -2964,7 +2954,7 @@ int ext4_orphan_add(handle_t *handle, struct inode *inode)
 	 * hold i_mutex, or the inode can not be referenced from outside,
 	 * so i_nlink should not be bumped due to race
 	 */
-	J_ASSERT((S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode) ||
+	ASSERT((S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode) ||
 		  S_ISLNK(inode->i_mode)) || inode->i_nlink == 0);
 
 	BUFFER_TRACE(sbi->s_sbh, "get_write_access");
@@ -2985,14 +2975,17 @@ int ext4_orphan_add(handle_t *handle, struct inode *inode)
 	    (le32_to_cpu(sbi->s_es->s_inodes_count))) {
 		/* Insert this inode at the head of the on-disk orphan list */
 		NEXT_ORPHAN(inode) = le32_to_cpu(sbi->s_es->s_last_orphan);
+		lock_buffer(sbi->s_sbh);
 		sbi->s_es->s_last_orphan = cpu_to_le32(inode->i_ino);
+		ext4_superblock_csum_set(sb);
+		unlock_buffer(sbi->s_sbh);
 		dirty = true;
 	}
 	list_add(&EXT4_I(inode)->i_orphan, &sbi->s_orphan);
 	mutex_unlock(&sbi->s_orphan_lock);
 
 	if (dirty) {
-		err = ext4_handle_dirty_super(handle, sb);
+		err = ext4_handle_dirty_metadata(handle, NULL, sbi->s_sbh);
 		rc = ext4_mark_iloc_dirty(handle, inode, &iloc);
 		if (!err)
 			err = rc;
@@ -3068,9 +3061,12 @@ int ext4_orphan_del(handle_t *handle, struct inode *inode)
 			mutex_unlock(&sbi->s_orphan_lock);
 			goto out_brelse;
 		}
+		lock_buffer(sbi->s_sbh);
 		sbi->s_es->s_last_orphan = cpu_to_le32(ino_next);
+		ext4_superblock_csum_set(inode->i_sb);
+		unlock_buffer(sbi->s_sbh);
 		mutex_unlock(&sbi->s_orphan_lock);
-		err = ext4_handle_dirty_super(handle, inode->i_sb);
+		err = ext4_handle_dirty_metadata(handle, NULL, sbi->s_sbh);
 	} else {
 		struct ext4_iloc iloc2;
 		struct inode *i_prev =

@@ -2216,7 +2216,11 @@ hdmi_port_clock_valid(struct intel_hdmi *hdmi,
 					  has_hdmi_sink))
 		return MODE_CLOCK_HIGH;
 
-	/* BXT DPLL can't generate 223-240 MHz */
+	/* GLK DPLL can't generate 446-480 MHz */
+	if (IS_GEMINILAKE(dev_priv) && clock > 446666 && clock < 480000)
+		return MODE_CLOCK_RANGE;
+
+	/* BXT/GLK DPLL can't generate 223-240 MHz */
 	if (IS_GEN9_LP(dev_priv) && clock > 223333 && clock < 240000)
 		return MODE_CLOCK_RANGE;
 
@@ -2274,7 +2278,7 @@ intel_hdmi_mode_valid(struct drm_connector *connector,
 	if (status != MODE_OK)
 		return status;
 
-	return intel_mode_valid_max_plane_size(dev_priv, mode);
+	return intel_mode_valid_max_plane_size(dev_priv, mode, false);
 }
 
 bool intel_hdmi_deep_color_possible(const struct intel_crtc_state *crtc_state,
@@ -2775,8 +2779,9 @@ static void vlv_hdmi_pre_enable(struct intel_atomic_state *state,
 	vlv_phy_pre_encoder_enable(encoder, pipe_config);
 
 	/* HDMI 1.0V-2dB */
-	vlv_set_phy_signal_level(encoder, 0x2b245f5f, 0x00002000, 0x5578b83a,
-				 0x2b247878);
+	vlv_set_phy_signal_level(encoder, pipe_config,
+				 0x2b245f5f, 0x00002000,
+				 0x5578b83a, 0x2b247878);
 
 	dig_port->set_infoframes(encoder,
 			      pipe_config->has_infoframe,
@@ -2853,7 +2858,7 @@ static void chv_hdmi_pre_enable(struct intel_atomic_state *state,
 
 	/* FIXME: Program the support xxx V-dB */
 	/* Use 800mV-0dB */
-	chv_set_phy_signal_level(encoder, 128, 102, false);
+	chv_set_phy_signal_level(encoder, pipe_config, 128, 102, false);
 
 	dig_port->set_infoframes(encoder,
 			      pipe_config->has_infoframe,
@@ -3139,6 +3144,11 @@ static u8 rkl_port_to_ddc_pin(struct drm_i915_private *dev_priv, enum port port)
 	return GMBUS_PIN_1_BXT + phy;
 }
 
+static u8 dg1_port_to_ddc_pin(struct drm_i915_private *dev_priv, enum port port)
+{
+	return intel_port_to_phy(dev_priv, port) + 1;
+}
+
 static u8 g4x_port_to_ddc_pin(struct drm_i915_private *dev_priv,
 			      enum port port)
 {
@@ -3176,7 +3186,9 @@ static u8 intel_hdmi_ddc_pin(struct intel_encoder *encoder)
 		return ddc_pin;
 	}
 
-	if (IS_ROCKETLAKE(dev_priv))
+	if (INTEL_PCH_TYPE(dev_priv) >= PCH_DG1)
+		ddc_pin = dg1_port_to_ddc_pin(dev_priv, port);
+	else if (IS_ROCKETLAKE(dev_priv))
 		ddc_pin = rkl_port_to_ddc_pin(dev_priv, port);
 	else if (HAS_PCH_MCC(dev_priv))
 		ddc_pin = mcc_port_to_ddc_pin(dev_priv, port);
@@ -3214,7 +3226,7 @@ void intel_infoframe_init(struct intel_digital_port *dig_port)
 		dig_port->set_infoframes = g4x_set_infoframes;
 		dig_port->infoframes_enabled = g4x_infoframes_enabled;
 	} else if (HAS_DDI(dev_priv)) {
-		if (dig_port->lspcon.active) {
+		if (intel_bios_is_lspcon_present(dev_priv, dig_port->base.port)) {
 			dig_port->write_infoframe = lspcon_write_infoframe;
 			dig_port->read_infoframe = lspcon_read_infoframe;
 			dig_port->set_infoframes = lspcon_set_infoframes;

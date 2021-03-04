@@ -29,6 +29,7 @@ enum vc4_hdmi_field {
 	HDMI_CEC_CPU_MASK_SET,
 	HDMI_CEC_CPU_MASK_STATUS,
 	HDMI_CEC_CPU_STATUS,
+	HDMI_CEC_CPU_SET,
 
 	/*
 	 * Transmit data, first byte is low byte of the 32-bit reg.
@@ -142,7 +143,7 @@ struct vc4_hdmi_register {
 #define VC5_RAM_REG(reg, offset)	_VC4_REG(VC5_RAM, reg, offset)
 #define VC5_RM_REG(reg, offset)		_VC4_REG(VC5_RM, reg, offset)
 
-static const struct vc4_hdmi_register vc4_hdmi_fields[] = {
+static const struct vc4_hdmi_register __maybe_unused vc4_hdmi_fields[] = {
 	VC4_HD_REG(HDMI_M_CTL, 0x000c),
 	VC4_HD_REG(HDMI_MAI_CTL, 0x0014),
 	VC4_HD_REG(HDMI_MAI_THR, 0x0018),
@@ -196,14 +197,15 @@ static const struct vc4_hdmi_register vc4_hdmi_fields[] = {
 	VC4_HDMI_REG(HDMI_TX_PHY_RESET_CTL, 0x02c0),
 	VC4_HDMI_REG(HDMI_TX_PHY_CTL_0, 0x02c4),
 	VC4_HDMI_REG(HDMI_CEC_CPU_STATUS, 0x0340),
+	VC4_HDMI_REG(HDMI_CEC_CPU_SET, 0x0344),
 	VC4_HDMI_REG(HDMI_CEC_CPU_CLEAR, 0x0348),
 	VC4_HDMI_REG(HDMI_CEC_CPU_MASK_STATUS, 0x034c),
-	VC4_HDMI_REG(HDMI_CEC_CPU_MASK_SET, 0x034c),
+	VC4_HDMI_REG(HDMI_CEC_CPU_MASK_SET, 0x0350),
 	VC4_HDMI_REG(HDMI_CEC_CPU_MASK_CLEAR, 0x0354),
 	VC4_HDMI_REG(HDMI_RAM_PACKET_START, 0x0400),
 };
 
-static const struct vc4_hdmi_register vc5_hdmi_hdmi0_fields[] = {
+static const struct vc4_hdmi_register __maybe_unused vc5_hdmi_hdmi0_fields[] = {
 	VC4_HD_REG(HDMI_DVP_CTL, 0x0000),
 	VC4_HD_REG(HDMI_MAI_CTL, 0x0010),
 	VC4_HD_REG(HDMI_MAI_THR, 0x0014),
@@ -279,7 +281,7 @@ static const struct vc4_hdmi_register vc5_hdmi_hdmi0_fields[] = {
 	VC5_CSC_REG(HDMI_CSC_34_33, 0x018),
 };
 
-static const struct vc4_hdmi_register vc5_hdmi_hdmi1_fields[] = {
+static const struct vc4_hdmi_register __maybe_unused vc5_hdmi_hdmi1_fields[] = {
 	VC4_HD_REG(HDMI_DVP_CTL, 0x0000),
 	VC4_HD_REG(HDMI_MAI_CTL, 0x0030),
 	VC4_HD_REG(HDMI_MAI_THR, 0x0034),

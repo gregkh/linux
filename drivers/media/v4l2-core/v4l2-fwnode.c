@@ -416,19 +416,7 @@ static int __v4l2_fwnode_endpoint_parse(struct fwnode_handle *fwnode,
 	enum v4l2_mbus_type mbus_type;
 	int rval;
 
-	if (vep->bus_type == V4L2_MBUS_UNKNOWN) {
-		/* Zero fields from bus union to until the end */
-		memset(&vep->bus, 0,
-		       sizeof(*vep) - offsetof(typeof(*vep), bus));
-	}
-
 	pr_debug("===== begin parsing endpoint %pfw\n", fwnode);
-
-	/*
-	 * Zero the fwnode graph endpoint memory in case we don't end up parsing
-	 * the endpoint.
-	 */
-	memset(&vep->base, 0, sizeof(vep->base));
 
 	fwnode_property_read_u32(fwnode, "bus-type", &bus_type);
 	pr_debug("fwnode video bus type %s (%u), mbus type %s (%u)\n",
@@ -922,20 +910,6 @@ v4l2_async_notifier_parse_fwnode_endpoints(struct device *dev,
 						     false, parse_endpoint);
 }
 EXPORT_SYMBOL_GPL(v4l2_async_notifier_parse_fwnode_endpoints);
-
-int
-v4l2_async_notifier_parse_fwnode_endpoints_by_port(struct device *dev,
-						   struct v4l2_async_notifier *notifier,
-						   size_t asd_struct_size,
-						   unsigned int port,
-						   parse_endpoint_func parse_endpoint)
-{
-	return __v4l2_async_notifier_parse_fwnode_ep(dev, notifier,
-						     asd_struct_size,
-						     port, true,
-						     parse_endpoint);
-}
-EXPORT_SYMBOL_GPL(v4l2_async_notifier_parse_fwnode_endpoints_by_port);
 
 /*
  * v4l2_fwnode_reference_parse - parse references for async sub-devices

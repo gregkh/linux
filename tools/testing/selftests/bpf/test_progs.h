@@ -66,6 +66,7 @@ struct test_env {
 	enum verbosity verbosity;
 
 	bool jit_enabled;
+	bool has_testmod;
 	bool get_test_cnt;
 	bool list_test_names;
 
@@ -141,6 +142,17 @@ extern int test__join_cgroup(const char *path);
 	___ok;								\
 })
 
+#define ASSERT_NEQ(actual, expected, name) ({				\
+	static int duration = 0;					\
+	typeof(actual) ___act = (actual);				\
+	typeof(expected) ___exp = (expected);				\
+	bool ___ok = ___act != ___exp;					\
+	CHECK(!___ok, (name),						\
+	      "unexpected %s: actual %lld == expected %lld\n",		\
+	      (name), (long long)(___act), (long long)(___exp));	\
+	___ok;								\
+})
+
 #define ASSERT_STREQ(actual, expected, name) ({				\
 	static int duration = 0;					\
 	const char *___act = actual;					\
@@ -207,6 +219,7 @@ int bpf_find_map(const char *test, struct bpf_object *obj, const char *name);
 int compare_map_keys(int map1_fd, int map2_fd);
 int compare_stack_ips(int smap_fd, int amap_fd, int stack_trace_len);
 int extract_build_id(char *build_id, size_t size);
+int kern_sync_rcu(void);
 
 #ifdef __x86_64__
 #define SYS_NANOSLEEP_KPROBE_NAME "__x64_sys_nanosleep"

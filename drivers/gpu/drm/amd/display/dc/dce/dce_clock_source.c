@@ -871,6 +871,20 @@ static bool dce110_program_pix_clk(
 	bp_pc_params.flags.SET_EXTERNAL_REF_DIV_SRC =
 					pll_settings->use_external_clk;
 
+	switch (pix_clk_params->color_depth) {
+	case COLOR_DEPTH_101010:
+		bp_pc_params.color_depth = TRANSMITTER_COLOR_DEPTH_30;
+		break;
+	case COLOR_DEPTH_121212:
+		bp_pc_params.color_depth = TRANSMITTER_COLOR_DEPTH_36;
+		break;
+	case COLOR_DEPTH_161616:
+		bp_pc_params.color_depth = TRANSMITTER_COLOR_DEPTH_48;
+		break;
+	default:
+		break;
+	}
+
 	if (clk_src->bios->funcs->set_pixel_clock(
 			clk_src->bios, &bp_pc_params) != BP_RESULT_OK)
 		return false;
@@ -1004,7 +1018,7 @@ static bool get_pixel_clk_frequency_100hz(
 	return false;
 }
 
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 /* this table is use to find *1.001 and /1.001 pixel rates from non-precise pixel rate */
 const struct pixel_rate_range_table_entry video_optimized_pixel_rates[] = {
 	// /1.001 rates
@@ -1073,7 +1087,7 @@ static const struct clock_source_funcs dcn20_clk_src_funcs = {
 	.get_pixel_clk_frequency_100hz = get_pixel_clk_frequency_100hz
 };
 
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 static bool dcn3_program_pix_clk(
 		struct clock_source *clock_source,
 		struct pixel_clk_params *pix_clk_params,
@@ -1538,8 +1552,26 @@ bool dcn20_clk_src_construct(
 	return ret;
 }
 
-#if defined(CONFIG_DRM_AMD_DC_DCN3_0)
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 bool dcn3_clk_src_construct(
+	struct dce110_clk_src *clk_src,
+	struct dc_context *ctx,
+	struct dc_bios *bios,
+	enum clock_source_id id,
+	const struct dce110_clk_src_regs *regs,
+	const struct dce110_clk_src_shift *cs_shift,
+	const struct dce110_clk_src_mask *cs_mask)
+{
+	bool ret = dce112_clk_src_construct(clk_src, ctx, bios, id, regs, cs_shift, cs_mask);
+
+	clk_src->base.funcs = &dcn3_clk_src_funcs;
+
+	return ret;
+}
+#endif
+
+#if defined(CONFIG_DRM_AMD_DC_DCN)
+bool dcn301_clk_src_construct(
 	struct dce110_clk_src *clk_src,
 	struct dc_context *ctx,
 	struct dc_bios *bios,

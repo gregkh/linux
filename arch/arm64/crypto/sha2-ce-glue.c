@@ -10,7 +10,7 @@
 #include <asm/unaligned.h>
 #include <crypto/internal/hash.h>
 #include <crypto/internal/simd.h>
-#include <crypto/sha.h>
+#include <crypto/sha2.h>
 #include <crypto/sha256_base.h>
 #include <linux/cpufeature.h>
 #include <linux/crypto.h>
@@ -19,6 +19,8 @@
 MODULE_DESCRIPTION("SHA-224/SHA-256 secure hash using ARMv8 Crypto Extensions");
 MODULE_AUTHOR("Ard Biesheuvel <ard.biesheuvel@linaro.org>");
 MODULE_LICENSE("GPL v2");
+MODULE_ALIAS_CRYPTO("sha224");
+MODULE_ALIAS_CRYPTO("sha256");
 
 struct sha256_ce_state {
 	struct sha256_state	sst;

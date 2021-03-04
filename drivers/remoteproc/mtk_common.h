@@ -47,6 +47,7 @@
 
 #define MT8192_CORE0_SW_RSTN_CLR	0x10000
 #define MT8192_CORE0_SW_RSTN_SET	0x10004
+#define MT8192_CORE0_WDT_IRQ		0x10030
 #define MT8192_CORE0_WDT_CFG		0x10034
 
 #define SCP_FW_VER_LEN			32
@@ -78,6 +79,8 @@ struct mtk_scp_of_data {
 
 	u32 host_to_scp_reg;
 	u32 host_to_scp_int_bit;
+
+	size_t ipi_buf_offset;
 };
 
 struct mtk_scp {
@@ -99,7 +102,7 @@ struct mtk_scp {
 	bool ipi_id_ack[SCP_IPI_MAX];
 	wait_queue_head_t ack_wq;
 
-	void __iomem *cpu_addr;
+	void *cpu_addr;
 	dma_addr_t dma_addr;
 	size_t dram_size;
 

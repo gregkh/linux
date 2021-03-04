@@ -1136,7 +1136,7 @@ static int k8_early_channel_count(struct amd64_pvt *pvt)
 /* On F10h and later ErrAddr is MC4_ADDR[47:1] */
 static u64 get_error_address(struct amd64_pvt *pvt, struct mce *m)
 {
-	u16 mce_nid = amd_get_nb_id(m->extcpu);
+	u16 mce_nid = topology_die_id(m->extcpu);
 	struct mem_ctl_info *mci;
 	u8 start_bit = 1;
 	u8 end_bit   = 47;
@@ -2464,14 +2464,11 @@ static int map_err_sym_to_channel(int err_sym, int sym_size)
 		case 0x20:
 		case 0x21:
 			return 0;
-			break;
 		case 0x22:
 		case 0x23:
 			return 1;
-			break;
 		default:
 			return err_sym >> 4;
-			break;
 		}
 	/* x8 symbols */
 	else
@@ -2481,17 +2478,12 @@ static int map_err_sym_to_channel(int err_sym, int sym_size)
 			WARN(1, KERN_ERR "Invalid error symbol: 0x%x\n",
 					  err_sym);
 			return -1;
-			break;
-
 		case 0x11:
 			return 0;
-			break;
 		case 0x12:
 			return 1;
-			break;
 		default:
 			return err_sym >> 3;
-			break;
 		}
 	return -1;
 }
@@ -3055,7 +3047,7 @@ static void get_cpus_on_this_dct_cpumask(struct cpumask *mask, u16 nid)
 	int cpu;
 
 	for_each_online_cpu(cpu)
-		if (amd_get_nb_id(cpu) == nid)
+		if (topology_die_id(cpu) == nid)
 			cpumask_set_cpu(cpu, mask);
 }
 

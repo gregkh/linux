@@ -41,6 +41,11 @@
 #include <asm/ppc-opcode.h>
 #include <asm/export.h>
 #include <asm/feature-fixups.h>
+#ifdef CONFIG_PPC_BOOK3S
+#include <asm/exception-64s.h>
+#else
+#include <asm/exception-64e.h>
+#endif
 
 /* The physical memory is laid out such that the secondary processor
  * spin code sits at 0x0000...0x00ff. On server, the vectors follow
@@ -829,7 +834,7 @@ __secondary_start:
 
 	mtspr	SPRN_SRR0,r3
 	mtspr	SPRN_SRR1,r4
-	RFI
+	RFI_TO_KERNEL
 	b	.	/* prevent speculative execution */
 
 /* 
@@ -865,8 +870,7 @@ enable_64b_mode:
 	oris	r11,r11,0x8000		/* CM bit set, we'll set ICM later */
 	mtmsr	r11
 #else /* CONFIG_PPC_BOOK3E */
-	li	r12,(MSR_64BIT | MSR_ISF)@highest
-	sldi	r12,r12,48
+	LOAD_REG_IMMEDIATE(r12, MSR_64BIT)
 	or	r11,r11,r12
 	mtmsrd	r11
 	isync
@@ -966,7 +970,7 @@ start_here_multiplatform:
 	ld	r4,PACAKMSR(r13)
 	mtspr	SPRN_SRR0,r3
 	mtspr	SPRN_SRR1,r4
-	RFI
+	RFI_TO_KERNEL
 	b	.	/* prevent speculative execution */
 
 	/* This is where all platforms converge execution */

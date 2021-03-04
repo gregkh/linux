@@ -34,7 +34,6 @@
 #include "print-tree.h"
 #include "volumes.h"
 #include "locking.h"
-#include "inode-map.h"
 #include "backref.h"
 #include "rcu-string.h"
 #include "send.h"
@@ -193,6 +192,15 @@ static int check_fsflags(unsigned int old_flags, unsigned int flags)
 	return 0;
 }
 
+static int check_fsflags_compatible(struct btrfs_fs_info *fs_info,
+				    unsigned int flags)
+{
+	if (btrfs_is_zoned(fs_info) && (flags & FS_NOCOW_FL))
+		return -EPERM;
+
+	return 0;
+}
+
 static int btrfs_ioctl_setflags(struct file *file, void __user *arg)
 {
 	struct inode *inode = file_inode(file);
@@ -227,6 +235,10 @@ static int btrfs_ioctl_setflags(struct file *file, void __user *arg)
 		goto out_unlock;
 
 	ret = check_fsflags(old_fsflags, fsflags);
+	if (ret)
+		goto out_unlock;
+
+	ret = check_fsflags_compatible(fs_info, fsflags);
 	if (ret)
 		goto out_unlock;
 
@@ -336,7 +348,7 @@ static int btrfs_ioctl_setflags(struct file *file, void __user *arg)
 	btrfs_sync_inode_flags_to_i_flags(inode);
 	inode_inc_iversion(inode);
 	inode->i_ctime = current_time(inode);
-	ret = btrfs_update_inode(trans, root, inode);
+	ret = btrfs_update_inode(trans, root, BTRFS_I(inode));
 
  out_end_trans:
 	btrfs_end_transaction(trans);
@@ -479,7 +491,7 @@ static int btrfs_ioctl_fssetxattr(struct file *file, void __user *arg)
 	btrfs_sync_inode_flags_to_i_flags(inode);
 	inode_inc_iversion(inode);
 	inode->i_ctime = current_time(inode);
-	ret = btrfs_update_inode(trans, root, inode);
+	ret = btrfs_update_inode(trans, root, BTRFS_I(inode));
 
 	btrfs_end_transaction(trans);
 
@@ -733,7 +745,7 @@ static noinline int create_subvol(struct inode *dir,
 	}
 
 	btrfs_i_size_write(BTRFS_I(dir), dir->i_size + namelen * 2);
-	ret = btrfs_update_inode(trans, root, dir);
+	ret = btrfs_update_inode(trans, root, BTRFS_I(dir));
 	if (ret) {
 		btrfs_abort_transaction(trans, ret);
 		goto fail;
@@ -1717,7 +1729,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		btrfs_info(fs_info, "resizing devid %llu", devid);
 	}
 
-	device = btrfs_find_device(fs_info->fs_devices, devid, NULL, NULL, true);
+	device = btrfs_find_device(fs_info->fs_devices, devid, NULL, NULL);
 	if (!device) {
 		btrfs_info(fs_info, "resizer unable to find device %llu",
 			   devid);
@@ -3360,7 +3372,7 @@ static long btrfs_ioctl_dev_info(struct btrfs_fs_info *fs_info,
 
 	rcu_read_lock();
 	dev = btrfs_find_device(fs_info->fs_devices, di_args->devid, s_uuid,
-				NULL, true);
+				NULL);
 
 	if (!dev) {
 		ret = -ENODEV;
@@ -3432,7 +3444,6 @@ static long btrfs_ioctl_default_subvol(struct file *file, void __user *argp)
 		ret = -ENOMEM;
 		goto out_free;
 	}
-	path->leave_spinning = 1;
 
 	trans = btrfs_start_transaction(root, 1);
 	if (IS_ERR(trans)) {

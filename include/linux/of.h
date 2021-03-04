@@ -108,7 +108,7 @@ static inline void of_node_init(struct device_node *node)
 #if defined(CONFIG_OF_KOBJ)
 	kobject_init(&node->kobj, &of_node_ktype);
 #endif
-	node->fwnode.ops = &of_fwnode_ops;
+	fwnode_init(&node->fwnode, &of_fwnode_ops);
 }
 
 #if defined(CONFIG_OF_KOBJ)
@@ -558,6 +558,8 @@ int of_map_id(struct device_node *np, u32 id,
 	       const char *map_name, const char *map_mask_name,
 	       struct device_node **target, u32 *id_out);
 
+phys_addr_t of_dma_get_max_cpu_address(struct device_node *np);
+
 #else /* CONFIG_OF */
 
 static inline void of_core_init(void)
@@ -993,6 +995,11 @@ static inline int of_map_id(struct device_node *np, u32 id,
 			     struct device_node **target, u32 *id_out)
 {
 	return -EINVAL;
+}
+
+static inline phys_addr_t of_dma_get_max_cpu_address(struct device_node *np)
+{
+	return PHYS_ADDR_MAX;
 }
 
 #define of_match_ptr(_ptr)	NULL

@@ -1087,7 +1087,7 @@ static inline u64 sp_to_dp(u32 fprs)
 
 	preempt_disable();
 	enable_kernel_fp();
-	asm ("lfs%U1%X1 0,%1; stfd%U0%X0 0,%0" : "=m" (fprd) : "m" (fprs)
+	asm ("lfs%U1%X1 0,%1; stfd%U0%X0 0,%0" : "=m"UPD_CONSTR (fprd) : "m"UPD_CONSTR (fprs)
 	     : "fr0");
 	preempt_enable();
 	return fprd;
@@ -1099,7 +1099,7 @@ static inline u32 dp_to_sp(u64 fprd)
 
 	preempt_disable();
 	enable_kernel_fp();
-	asm ("lfd%U1%X1 0,%1; stfs%U0%X0 0,%0" : "=m" (fprs) : "m" (fprd)
+	asm ("lfd%U1%X1 0,%1; stfs%U0%X0 0,%0" : "=m"UPD_CONSTR (fprs) : "m"UPD_CONSTR (fprd)
 	     : "fr0");
 	preempt_enable();
 	return fprs;
@@ -1518,7 +1518,7 @@ int kvmppc_handle_vmx_load(struct kvm_vcpu *vcpu,
 	return emulated;
 }
 
-int kvmppc_get_vmx_dword(struct kvm_vcpu *vcpu, int index, u64 *val)
+static int kvmppc_get_vmx_dword(struct kvm_vcpu *vcpu, int index, u64 *val)
 {
 	union kvmppc_one_reg reg;
 	int vmx_offset = 0;
@@ -1536,7 +1536,7 @@ int kvmppc_get_vmx_dword(struct kvm_vcpu *vcpu, int index, u64 *val)
 	return result;
 }
 
-int kvmppc_get_vmx_word(struct kvm_vcpu *vcpu, int index, u64 *val)
+static int kvmppc_get_vmx_word(struct kvm_vcpu *vcpu, int index, u64 *val)
 {
 	union kvmppc_one_reg reg;
 	int vmx_offset = 0;
@@ -1554,7 +1554,7 @@ int kvmppc_get_vmx_word(struct kvm_vcpu *vcpu, int index, u64 *val)
 	return result;
 }
 
-int kvmppc_get_vmx_hword(struct kvm_vcpu *vcpu, int index, u64 *val)
+static int kvmppc_get_vmx_hword(struct kvm_vcpu *vcpu, int index, u64 *val)
 {
 	union kvmppc_one_reg reg;
 	int vmx_offset = 0;
@@ -1572,7 +1572,7 @@ int kvmppc_get_vmx_hword(struct kvm_vcpu *vcpu, int index, u64 *val)
 	return result;
 }
 
-int kvmppc_get_vmx_byte(struct kvm_vcpu *vcpu, int index, u64 *val)
+static int kvmppc_get_vmx_byte(struct kvm_vcpu *vcpu, int index, u64 *val)
 {
 	union kvmppc_one_reg reg;
 	int vmx_offset = 0;

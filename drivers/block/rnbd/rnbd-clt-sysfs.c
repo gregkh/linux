@@ -37,7 +37,6 @@ enum {
 };
 
 static const unsigned int rnbd_opt_mandatory[] = {
-	RNBD_OPT_PATH,
 	RNBD_OPT_DEV_PATH,
 	RNBD_OPT_SESSNAME,
 };
@@ -452,9 +451,11 @@ static int rnbd_clt_add_dev_kobj(struct rnbd_clt_dev *dev)
 
 	ret = kobject_init_and_add(&dev->kobj, &rnbd_dev_ktype, gd_kobj, "%s",
 				   "rnbd");
-	if (ret)
+	if (ret) {
 		rnbd_clt_err(dev, "Failed to create device sysfs dir, err: %d\n",
 			      ret);
+		kobject_put(&dev->kobj);
+	}
 
 	return ret;
 }
@@ -479,6 +480,10 @@ static int rnbd_clt_get_path_name(struct rnbd_clt_dev *dev, char *buf,
 		s[0] = '!';
 
 	ret = snprintf(buf, len, "%s", pathname);
+	if (ret >= len)
+		return -ENAMETOOLONG;
+
+	ret = snprintf(buf, len, "%s@%s", buf, dev->sess->sessname);
 	if (ret >= len)
 		return -ENAMETOOLONG;
 

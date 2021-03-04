@@ -2302,7 +2302,8 @@ drm_dp_mst_port_add_connector(struct drm_dp_mst_branch *mstb,
 	}
 
 	if (port->pdt != DP_PEER_DEVICE_NONE &&
-	    drm_dp_mst_is_end_device(port->pdt, port->mcs)) {
+	    drm_dp_mst_is_end_device(port->pdt, port->mcs) &&
+	    port->port_num >= DP_MST_LOGICAL_PORT_0) {
 		port->cached_edid = drm_get_edid(port->connector,
 						 &port->aux.ddc);
 		drm_connector_set_tile_property(port->connector);
@@ -3260,7 +3261,7 @@ int drm_dp_send_query_stream_enc_status(struct drm_dp_mst_topology_mgr *mgr,
 {
 	struct drm_dp_sideband_msg_tx *txmsg;
 	u8 nonce[7];
-	int len, ret;
+	int ret;
 
 	txmsg = kzalloc(sizeof(*txmsg), GFP_KERNEL);
 	if (!txmsg)
@@ -3281,7 +3282,7 @@ int drm_dp_send_query_stream_enc_status(struct drm_dp_mst_topology_mgr *mgr,
 	 */
 	txmsg->dst = mgr->mst_primary;
 
-	len = build_query_stream_enc_status(txmsg, port->vcpi.vcpi, nonce);
+	build_query_stream_enc_status(txmsg, port->vcpi.vcpi, nonce);
 
 	drm_dp_queue_down_tx(mgr, txmsg);
 

@@ -20,7 +20,7 @@
 #include <linux/fs.h>
 #include <linux/ima.h>
 #include <crypto/hash.h>
-#include <crypto/sha.h>
+#include <crypto/sha2.h>
 #include <linux/elf.h>
 #include <linux/elfcore.h>
 #include <linux/kernel.h>
@@ -165,6 +165,11 @@ void kimage_file_post_load_cleanup(struct kimage *image)
 
 	vfree(pi->sechdrs);
 	pi->sechdrs = NULL;
+
+#ifdef CONFIG_IMA_KEXEC
+	vfree(image->ima_buffer);
+	image->ima_buffer = NULL;
+#endif /* CONFIG_IMA_KEXEC */
 
 	/* See if architecture has anything to cleanup post load */
 	arch_kimage_file_post_load_cleanup(image);

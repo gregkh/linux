@@ -30,14 +30,12 @@ bnxt_dl_flash_update(struct devlink *dl,
 		return -EPERM;
 	}
 
-	devlink_flash_update_begin_notify(dl);
 	devlink_flash_update_status_notify(dl, "Preparing to flash", NULL, 0, 0);
-	rc = bnxt_flash_package_from_file(bp->dev, params->file_name, 0);
+	rc = bnxt_flash_package_from_fw_obj(bp->dev, params->fw, 0);
 	if (!rc)
 		devlink_flash_update_status_notify(dl, "Flashing done", NULL, 0, 0);
 	else
 		devlink_flash_update_status_notify(dl, "Flashing failed", NULL, 0, 0);
-	devlink_flash_update_end_notify(dl);
 	return rc;
 }
 
@@ -474,8 +472,8 @@ static int bnxt_dl_info_get(struct devlink *dl, struct devlink_info_req *req,
 	if (BNXT_PF(bp) && !bnxt_hwrm_get_nvm_cfg_ver(bp, &nvm_cfg_ver)) {
 		u32 ver = nvm_cfg_ver.vu32;
 
-		sprintf(buf, "%X.%X.%X", (ver >> 16) & 0xF, (ver >> 8) & 0xF,
-			ver & 0xF);
+		sprintf(buf, "%d.%d.%d", (ver >> 16) & 0xf, (ver >> 8) & 0xf,
+			ver & 0xf);
 		rc = bnxt_dl_info_put(bp, req, BNXT_VERSION_STORED,
 				      DEVLINK_INFO_VERSION_GENERIC_FW_PSID,
 				      buf);

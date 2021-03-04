@@ -4027,7 +4027,6 @@ qla24xx_report_id_acquisition(scsi_qla_host_t *vha,
 
 			set_bit(N2N_LOGIN_NEEDED, &vha->dpc_flags);
 			return;
-			break;
 		case TOPO_FL:
 			ha->current_topology = ISP_CFG_FL;
 			break;
@@ -4277,7 +4276,8 @@ qla2x00_dump_ram(scsi_qla_host_t *vha, dma_addr_t req_dma, uint32_t addr,
 	if (MSW(addr) || IS_FWI2_CAPABLE(vha->hw)) {
 		mcp->mb[0] = MBC_DUMP_RISC_RAM_EXTENDED;
 		mcp->mb[8] = MSW(addr);
-		mcp->out_mb = MBX_8|MBX_0;
+		mcp->mb[10] = 0;
+		mcp->out_mb = MBX_10|MBX_8|MBX_0;
 	} else {
 		mcp->mb[0] = MBC_DUMP_RISC_RAM;
 		mcp->out_mb = MBX_0;

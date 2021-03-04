@@ -384,6 +384,7 @@ static const struct ib_device_ops rvt_dev_ops = {
 	.create_cq = rvt_create_cq,
 	.create_qp = rvt_create_qp,
 	.create_srq = rvt_create_srq,
+	.create_user_ah = rvt_create_ah,
 	.dealloc_pd = rvt_dealloc_pd,
 	.dealloc_ucontext = rvt_dealloc_ucontext,
 	.dereg_mr = rvt_dereg_mr,
@@ -588,36 +589,11 @@ int rvt_register_device(struct rvt_dev_info *rdi)
 	 * exactly which functions rdmavt supports, nor do they know the ABI
 	 * version, so we do all of this sort of stuff here.
 	 */
-	rdi->ibdev.uverbs_cmd_mask =
-		(1ull << IB_USER_VERBS_CMD_GET_CONTEXT)         |
-		(1ull << IB_USER_VERBS_CMD_QUERY_DEVICE)        |
-		(1ull << IB_USER_VERBS_CMD_QUERY_PORT)          |
-		(1ull << IB_USER_VERBS_CMD_ALLOC_PD)            |
-		(1ull << IB_USER_VERBS_CMD_DEALLOC_PD)          |
-		(1ull << IB_USER_VERBS_CMD_CREATE_AH)           |
-		(1ull << IB_USER_VERBS_CMD_MODIFY_AH)           |
-		(1ull << IB_USER_VERBS_CMD_QUERY_AH)            |
-		(1ull << IB_USER_VERBS_CMD_DESTROY_AH)          |
-		(1ull << IB_USER_VERBS_CMD_REG_MR)              |
-		(1ull << IB_USER_VERBS_CMD_DEREG_MR)            |
-		(1ull << IB_USER_VERBS_CMD_CREATE_COMP_CHANNEL) |
-		(1ull << IB_USER_VERBS_CMD_CREATE_CQ)           |
-		(1ull << IB_USER_VERBS_CMD_RESIZE_CQ)           |
-		(1ull << IB_USER_VERBS_CMD_DESTROY_CQ)          |
+	rdi->ibdev.uverbs_cmd_mask |=
 		(1ull << IB_USER_VERBS_CMD_POLL_CQ)             |
 		(1ull << IB_USER_VERBS_CMD_REQ_NOTIFY_CQ)       |
-		(1ull << IB_USER_VERBS_CMD_CREATE_QP)           |
-		(1ull << IB_USER_VERBS_CMD_QUERY_QP)            |
-		(1ull << IB_USER_VERBS_CMD_MODIFY_QP)           |
-		(1ull << IB_USER_VERBS_CMD_DESTROY_QP)          |
 		(1ull << IB_USER_VERBS_CMD_POST_SEND)           |
 		(1ull << IB_USER_VERBS_CMD_POST_RECV)           |
-		(1ull << IB_USER_VERBS_CMD_ATTACH_MCAST)        |
-		(1ull << IB_USER_VERBS_CMD_DETACH_MCAST)        |
-		(1ull << IB_USER_VERBS_CMD_CREATE_SRQ)          |
-		(1ull << IB_USER_VERBS_CMD_MODIFY_SRQ)          |
-		(1ull << IB_USER_VERBS_CMD_QUERY_SRQ)           |
-		(1ull << IB_USER_VERBS_CMD_DESTROY_SRQ)         |
 		(1ull << IB_USER_VERBS_CMD_POST_SRQ_RECV);
 	rdi->ibdev.node_type = RDMA_NODE_IB_CA;
 	if (!rdi->ibdev.num_comp_vectors)

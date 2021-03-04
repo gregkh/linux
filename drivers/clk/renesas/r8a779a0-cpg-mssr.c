@@ -69,7 +69,6 @@ enum clk_ids {
 	CLK_PLL5_DIV2,
 	CLK_PLL5_DIV4,
 	CLK_S1,
-	CLK_S2,
 	CLK_S3,
 	CLK_SDSRC,
 	CLK_RPCSRC,
@@ -137,7 +136,7 @@ static const struct cpg_core_clk r8a779a0_core_clks[] __initconst = {
 	DEF_FIXED("icu",	R8A779A0_CLK_ICU,	CLK_PLL5_DIV4,	2, 1),
 	DEF_FIXED("icud2",	R8A779A0_CLK_ICUD2,	CLK_PLL5_DIV4,	4, 1),
 	DEF_FIXED("vcbus",	R8A779A0_CLK_VCBUS,	CLK_PLL5_DIV4,	1, 1),
-	DEF_FIXED("cbfusa",	R8A779A0_CLK_CBFUSA,	CLK_MAIN,	2, 1),
+	DEF_FIXED("cbfusa",	R8A779A0_CLK_CBFUSA,	CLK_EXTAL,	2, 1),
 
 	DEF_DIV6P1("mso",	R8A779A0_CLK_MSO,	CLK_PLL5_DIV4,	0x87c),
 	DEF_DIV6P1("canfd",	R8A779A0_CLK_CANFD,	CLK_PLL5_DIV4,	0x878),
@@ -148,10 +147,46 @@ static const struct cpg_core_clk r8a779a0_core_clks[] __initconst = {
 };
 
 static const struct mssr_mod_clk r8a779a0_mod_clks[] __initconst = {
+	DEF_MOD("csi40",	331,	R8A779A0_CLK_CSI0),
+	DEF_MOD("csi41",	400,	R8A779A0_CLK_CSI0),
+	DEF_MOD("csi42",	401,	R8A779A0_CLK_CSI0),
+	DEF_MOD("csi43",	402,	R8A779A0_CLK_CSI0),
 	DEF_MOD("scif0",	702,	R8A779A0_CLK_S1D8),
 	DEF_MOD("scif1",	703,	R8A779A0_CLK_S1D8),
 	DEF_MOD("scif3",	704,	R8A779A0_CLK_S1D8),
 	DEF_MOD("scif4",	705,	R8A779A0_CLK_S1D8),
+	DEF_MOD("vin00",	730,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin01",	731,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin02",	800,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin03",	801,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin04",	802,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin05",	803,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin06",	804,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin07",	805,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin10",	806,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin11",	807,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin12",	808,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin13",	809,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin14",	810,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin15",	811,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin16",	812,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin17",	813,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin20",	814,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin21",	815,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin22",	816,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin23",	817,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin24",	818,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin25",	819,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin26",	820,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin27",	821,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin30",	822,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin31",	823,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin32",	824,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin33",	825,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin34",	826,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin35",	827,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin36",	828,	R8A779A0_CLK_S1D1),
+	DEF_MOD("vin37",	829,	R8A779A0_CLK_S1D1),
 };
 
 static spinlock_t cpg_lock;
@@ -160,7 +195,7 @@ static const struct rcar_r8a779a0_cpg_pll_config *cpg_pll_config __initdata;
 static unsigned int cpg_clk_extalr __initdata;
 static u32 cpg_mode __initdata;
 
-struct clk * __init rcar_r8a779a0_cpg_clk_register(struct device *dev,
+static struct clk * __init rcar_r8a779a0_cpg_clk_register(struct device *dev,
 	const struct cpg_core_clk *core, const struct cpg_mssr_info *info,
 	struct clk **clks, void __iomem *base,
 	struct raw_notifier_head *notifiers)

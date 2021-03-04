@@ -10,7 +10,7 @@
 #include <asm/unaligned.h>
 #include <crypto/internal/hash.h>
 #include <crypto/internal/simd.h>
-#include <crypto/sha.h>
+#include <crypto/sha1.h>
 #include <crypto/sha1_base.h>
 #include <linux/cpufeature.h>
 #include <linux/crypto.h>
@@ -19,6 +19,7 @@
 MODULE_DESCRIPTION("SHA1 secure hash using ARMv8 Crypto Extensions");
 MODULE_AUTHOR("Ard Biesheuvel <ard.biesheuvel@linaro.org>");
 MODULE_LICENSE("GPL v2");
+MODULE_ALIAS_CRYPTO("sha1");
 
 struct sha1_ce_state {
 	struct sha1_state	sst;

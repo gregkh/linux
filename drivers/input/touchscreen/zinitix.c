@@ -190,7 +190,7 @@ static int zinitix_write_cmd(struct i2c_client *client, u16 reg)
 	return 0;
 }
 
-static bool zinitix_init_touch(struct bt541_ts_data *bt541)
+static int zinitix_init_touch(struct bt541_ts_data *bt541)
 {
 	struct i2c_client *client = bt541->client;
 	int i;
@@ -532,7 +532,7 @@ static int __maybe_unused zinitix_suspend(struct device *dev)
 
 	mutex_lock(&bt541->input_dev->mutex);
 
-	if (bt541->input_dev->users)
+	if (input_device_enabled(bt541->input_dev))
 		zinitix_stop(bt541);
 
 	mutex_unlock(&bt541->input_dev->mutex);
@@ -548,7 +548,7 @@ static int __maybe_unused zinitix_resume(struct device *dev)
 
 	mutex_lock(&bt541->input_dev->mutex);
 
-	if (bt541->input_dev->users)
+	if (input_device_enabled(bt541->input_dev))
 		ret = zinitix_start(bt541);
 
 	mutex_unlock(&bt541->input_dev->mutex);

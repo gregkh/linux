@@ -181,9 +181,11 @@ static int gpmi_init(struct gpmi_nand_data *this)
 
 	/*
 	 * Decouple the chip select from dma channel. We use dma0 for all
-	 * the chips.
+	 * the chips, force all NAND RDY_BUSY inputs to be sourced from
+	 * RDY_BUSY0.
 	 */
-	writel(BM_GPMI_CTRL1_DECOUPLE_CS, r->gpmi_regs + HW_GPMI_CTRL1_SET);
+	writel(BM_GPMI_CTRL1_DECOUPLE_CS | BM_GPMI_CTRL1_GANGED_RDYBUSY,
+	       r->gpmi_regs + HW_GPMI_CTRL1_SET);
 
 err_out:
 	pm_runtime_mark_last_busy(this->dev);
@@ -2477,43 +2479,25 @@ err_out:
 }
 
 static const struct of_device_id gpmi_nand_id_table[] = {
-	{
-		.compatible = "fsl,imx23-gpmi-nand",
-		.data = &gpmi_devdata_imx23,
-	}, {
-		.compatible = "fsl,imx28-gpmi-nand",
-		.data = &gpmi_devdata_imx28,
-	}, {
-		.compatible = "fsl,imx6q-gpmi-nand",
-		.data = &gpmi_devdata_imx6q,
-	}, {
-		.compatible = "fsl,imx6sx-gpmi-nand",
-		.data = &gpmi_devdata_imx6sx,
-	}, {
-		.compatible = "fsl,imx7d-gpmi-nand",
-		.data = &gpmi_devdata_imx7d,
-	}, {}
+	{ .compatible = "fsl,imx23-gpmi-nand", .data = &gpmi_devdata_imx23, },
+	{ .compatible = "fsl,imx28-gpmi-nand", .data = &gpmi_devdata_imx28, },
+	{ .compatible = "fsl,imx6q-gpmi-nand", .data = &gpmi_devdata_imx6q, },
+	{ .compatible = "fsl,imx6sx-gpmi-nand", .data = &gpmi_devdata_imx6sx, },
+	{ .compatible = "fsl,imx7d-gpmi-nand", .data = &gpmi_devdata_imx7d,},
+	{}
 };
 MODULE_DEVICE_TABLE(of, gpmi_nand_id_table);
 
 static int gpmi_nand_probe(struct platform_device *pdev)
 {
 	struct gpmi_nand_data *this;
-	const struct of_device_id *of_id;
 	int ret;
 
 	this = devm_kzalloc(&pdev->dev, sizeof(*this), GFP_KERNEL);
 	if (!this)
 		return -ENOMEM;
 
-	of_id = of_match_device(gpmi_nand_id_table, &pdev->dev);
-	if (of_id) {
-		this->devdata = of_id->data;
-	} else {
-		dev_err(&pdev->dev, "Failed to find the right device id.\n");
-		return -ENODEV;
-	}
-
+	this->devdata = of_device_get_match_data(&pdev->dev);
 	platform_set_drvdata(pdev, this);
 	this->pdev  = pdev;
 	this->dev   = &pdev->dev;

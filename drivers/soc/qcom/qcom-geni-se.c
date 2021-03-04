@@ -82,10 +82,11 @@
 #define NUM_AHB_CLKS 2
 
 /**
- * @struct geni_wrapper - Data structure to represent the QUP Wrapper Core
+ * struct geni_wrapper - Data structure to represent the QUP Wrapper Core
  * @dev:		Device pointer of the QUP wrapper core
  * @base:		Base address of this instance of QUP wrapper core
  * @ahb_clks:		Handle to the primary & secondary AHB clocks
+ * @to_core:		Core ICC path
  */
 struct geni_wrapper {
 	struct device *dev;
@@ -237,7 +238,7 @@ static void geni_se_irq_clear(struct geni_se *se)
  * geni_se_init() - Initialize the GENI serial engine
  * @se:		Pointer to the concerned serial engine.
  * @rx_wm:	Receive watermark, in units of FIFO words.
- * @rx_rfr_wm:	Ready-for-receive watermark, in units of FIFO words.
+ * @rx_rfr:	Ready-for-receive watermark, in units of FIFO words.
  *
  * This function is used to initialize the GENI serial engine, configure
  * receive watermark and ready-for-receive watermarks.
@@ -266,49 +267,63 @@ EXPORT_SYMBOL(geni_se_init);
 static void geni_se_select_fifo_mode(struct geni_se *se)
 {
 	u32 proto = geni_se_read_proto(se);
-	u32 val;
+	u32 val, val_old;
 
 	geni_se_irq_clear(se);
 
-	val = readl_relaxed(se->base + SE_GENI_M_IRQ_EN);
+	/*
+	 * The RX path for the UART is asynchronous and so needs more
+	 * complex logic for enabling / disabling its interrupts.
+	 *
+	 * Specific notes:
+	 * - The done and TX-related interrupts are managed manually.
+	 * - We don't RX from the main sequencer (we use the secondary) so
+	 *   we don't need the RX-related interrupts enabled in the main
+	 *   sequencer for UART.
+	 */
 	if (proto != GENI_SE_UART) {
+		val_old = val = readl_relaxed(se->base + SE_GENI_M_IRQ_EN);
 		val |= M_CMD_DONE_EN | M_TX_FIFO_WATERMARK_EN;
 		val |= M_RX_FIFO_WATERMARK_EN | M_RX_FIFO_LAST_EN;
-	}
-	writel_relaxed(val, se->base + SE_GENI_M_IRQ_EN);
+		if (val != val_old)
+			writel_relaxed(val, se->base + SE_GENI_M_IRQ_EN);
 
-	val = readl_relaxed(se->base + SE_GENI_S_IRQ_EN);
-	if (proto != GENI_SE_UART)
+		val_old = val = readl_relaxed(se->base + SE_GENI_S_IRQ_EN);
 		val |= S_CMD_DONE_EN;
-	writel_relaxed(val, se->base + SE_GENI_S_IRQ_EN);
+		if (val != val_old)
+			writel_relaxed(val, se->base + SE_GENI_S_IRQ_EN);
+	}
 
-	val = readl_relaxed(se->base + SE_GENI_DMA_MODE_EN);
+	val_old = val = readl_relaxed(se->base + SE_GENI_DMA_MODE_EN);
 	val &= ~GENI_DMA_MODE_EN;
-	writel_relaxed(val, se->base + SE_GENI_DMA_MODE_EN);
+	if (val != val_old)
+		writel_relaxed(val, se->base + SE_GENI_DMA_MODE_EN);
 }
 
 static void geni_se_select_dma_mode(struct geni_se *se)
 {
 	u32 proto = geni_se_read_proto(se);
-	u32 val;
+	u32 val, val_old;
 
 	geni_se_irq_clear(se);
 
-	val = readl_relaxed(se->base + SE_GENI_M_IRQ_EN);
 	if (proto != GENI_SE_UART) {
+		val_old = val = readl_relaxed(se->base + SE_GENI_M_IRQ_EN);
 		val &= ~(M_CMD_DONE_EN | M_TX_FIFO_WATERMARK_EN);
 		val &= ~(M_RX_FIFO_WATERMARK_EN | M_RX_FIFO_LAST_EN);
-	}
-	writel_relaxed(val, se->base + SE_GENI_M_IRQ_EN);
+		if (val != val_old)
+			writel_relaxed(val, se->base + SE_GENI_M_IRQ_EN);
 
-	val = readl_relaxed(se->base + SE_GENI_S_IRQ_EN);
-	if (proto != GENI_SE_UART)
+		val_old = val = readl_relaxed(se->base + SE_GENI_S_IRQ_EN);
 		val &= ~S_CMD_DONE_EN;
-	writel_relaxed(val, se->base + SE_GENI_S_IRQ_EN);
+		if (val != val_old)
+			writel_relaxed(val, se->base + SE_GENI_S_IRQ_EN);
+	}
 
-	val = readl_relaxed(se->base + SE_GENI_DMA_MODE_EN);
+	val_old = val = readl_relaxed(se->base + SE_GENI_DMA_MODE_EN);
 	val |= GENI_DMA_MODE_EN;
-	writel_relaxed(val, se->base + SE_GENI_DMA_MODE_EN);
+	if (val != val_old)
+		writel_relaxed(val, se->base + SE_GENI_DMA_MODE_EN);
 }
 
 /**
@@ -718,7 +733,7 @@ void geni_se_tx_dma_unprep(struct geni_se *se, dma_addr_t iova, size_t len)
 {
 	struct geni_wrapper *wrapper = se->wrapper;
 
-	if (iova && !dma_mapping_error(wrapper->dev, iova))
+	if (!dma_mapping_error(wrapper->dev, iova))
 		dma_unmap_single(wrapper->dev, iova, len, DMA_TO_DEVICE);
 }
 EXPORT_SYMBOL(geni_se_tx_dma_unprep);
@@ -735,7 +750,7 @@ void geni_se_rx_dma_unprep(struct geni_se *se, dma_addr_t iova, size_t len)
 {
 	struct geni_wrapper *wrapper = se->wrapper;
 
-	if (iova && !dma_mapping_error(wrapper->dev, iova))
+	if (!dma_mapping_error(wrapper->dev, iova))
 		dma_unmap_single(wrapper->dev, iova, len, DMA_FROM_DEVICE);
 }
 EXPORT_SYMBOL(geni_se_rx_dma_unprep);

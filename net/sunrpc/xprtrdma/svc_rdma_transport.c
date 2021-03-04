@@ -80,7 +80,7 @@ static const struct svc_xprt_ops svc_rdma_ops = {
 	.xpo_create = svc_rdma_create,
 	.xpo_recvfrom = svc_rdma_recvfrom,
 	.xpo_sendto = svc_rdma_sendto,
-	.xpo_read_payload = svc_rdma_read_payload,
+	.xpo_result_payload = svc_rdma_result_payload,
 	.xpo_release_rqst = svc_rdma_release_rqst,
 	.xpo_detach = svc_rdma_detach,
 	.xpo_free = svc_rdma_free,
@@ -475,9 +475,6 @@ static struct svc_xprt *svc_rdma_accept(struct svc_xprt *xprt)
 	if (!svc_rdma_post_recvs(newxprt))
 		goto errout;
 
-	/* Swap out the handler */
-	newxprt->sc_cm_id->event_handler = svc_rdma_cma_handler;
-
 	/* Construct RDMA-CM private message */
 	pmsg.cp_magic = rpcrdma_cmp_magic;
 	pmsg.cp_version = RPCRDMA_CMP_VERSION;
@@ -498,7 +495,10 @@ static struct svc_xprt *svc_rdma_accept(struct svc_xprt *xprt)
 	}
 	conn_param.private_data = &pmsg;
 	conn_param.private_data_len = sizeof(pmsg);
+	rdma_lock_handler(newxprt->sc_cm_id);
+	newxprt->sc_cm_id->event_handler = svc_rdma_cma_handler;
 	ret = rdma_accept(newxprt->sc_cm_id, &conn_param);
+	rdma_unlock_handler(newxprt->sc_cm_id);
 	if (ret) {
 		trace_svcrdma_accept_err(newxprt, ret);
 		goto errout;

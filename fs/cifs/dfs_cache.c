@@ -18,6 +18,7 @@
 #include "cifs_debug.h"
 #include "cifs_unicode.h"
 #include "smb2glob.h"
+#include "fs_context.h"
 
 #include "dfs_cache.h"
 
@@ -36,11 +37,12 @@ struct cache_dfs_tgt {
 struct cache_entry {
 	struct hlist_node hlist;
 	const char *path;
-	int ttl;
-	int srvtype;
-	int flags;
+	int hdr_flags; /* RESP_GET_DFS_REFERRAL.ReferralHeaderFlags */
+	int ttl; /* DFS_REREFERRAL_V3.TimeToLive */
+	int srvtype; /* DFS_REREFERRAL_V3.ServerType */
+	int ref_flags; /* DFS_REREFERRAL_V3.ReferralEntryFlags */
 	struct timespec64 etime;
-	int path_consumed;
+	int path_consumed; /* RESP_GET_DFS_REFERRAL.PathConsumed */
 	int numtgts;
 	struct list_head tlist;
 	struct cache_dfs_tgt *tgthint;
@@ -48,8 +50,8 @@ struct cache_entry {
 
 struct vol_info {
 	char *fullpath;
-	spinlock_t smb_vol_lock;
-	struct smb_vol smb_vol;
+	spinlock_t ctx_lock;
+	struct smb3_fs_context ctx;
 	char *mntdata;
 	struct list_head list;
 	struct list_head rlist;
@@ -165,14 +167,11 @@ static int dfscache_proc_show(struct seq_file *m, void *v)
 				continue;
 
 			seq_printf(m,
-				   "cache entry: path=%s,type=%s,ttl=%d,etime=%ld,"
-				   "interlink=%s,path_consumed=%d,expired=%s\n",
-				   ce->path,
-				   ce->srvtype == DFS_TYPE_ROOT ? "root" : "link",
-				   ce->ttl, ce->etime.tv_nsec,
-				   IS_INTERLINK_SET(ce->flags) ? "yes" : "no",
-				   ce->path_consumed,
-				   cache_entry_expired(ce) ? "yes" : "no");
+				   "cache entry: path=%s,type=%s,ttl=%d,etime=%ld,hdr_flags=0x%x,ref_flags=0x%x,interlink=%s,path_consumed=%d,expired=%s\n",
+				   ce->path, ce->srvtype == DFS_TYPE_ROOT ? "root" : "link",
+				   ce->ttl, ce->etime.tv_nsec, ce->ref_flags, ce->hdr_flags,
+				   IS_INTERLINK_SET(ce->hdr_flags) ? "yes" : "no",
+				   ce->path_consumed, cache_entry_expired(ce) ? "yes" : "no");
 
 			list_for_each_entry(t, &ce->tlist, list) {
 				seq_printf(m, "  %s%s\n",
@@ -235,11 +234,12 @@ static inline void dump_tgts(const struct cache_entry *ce)
 
 static inline void dump_ce(const struct cache_entry *ce)
 {
-	cifs_dbg(FYI, "cache entry: path=%s,type=%s,ttl=%d,etime=%ld,interlink=%s,path_consumed=%d,expired=%s\n",
+	cifs_dbg(FYI, "cache entry: path=%s,type=%s,ttl=%d,etime=%ld,hdr_flags=0x%x,ref_flags=0x%x,interlink=%s,path_consumed=%d,expired=%s\n",
 		 ce->path,
 		 ce->srvtype == DFS_TYPE_ROOT ? "root" : "link", ce->ttl,
 		 ce->etime.tv_nsec,
-		 IS_INTERLINK_SET(ce->flags) ? "yes" : "no",
+		 ce->hdr_flags, ce->ref_flags,
+		 IS_INTERLINK_SET(ce->hdr_flags) ? "yes" : "no",
 		 ce->path_consumed,
 		 cache_entry_expired(ce) ? "yes" : "no");
 	dump_tgts(ce);
@@ -380,7 +380,8 @@ static int copy_ref_data(const struct dfs_info3_param *refs, int numrefs,
 	ce->ttl = refs[0].ttl;
 	ce->etime = get_expire_time(ce->ttl);
 	ce->srvtype = refs[0].server_type;
-	ce->flags = refs[0].ref_flag;
+	ce->hdr_flags = refs[0].flags;
+	ce->ref_flags = refs[0].ref_flag;
 	ce->path_consumed = refs[0].path_consumed;
 
 	for (i = 0; i < numrefs; i++) {
@@ -586,7 +587,7 @@ static void __vol_release(struct vol_info *vi)
 {
 	kfree(vi->fullpath);
 	kfree(vi->mntdata);
-	cifs_cleanup_volume_info_contents(&vi->smb_vol);
+	smb3_cleanup_fs_context_contents(&vi->ctx);
 	kfree(vi);
 }
 
@@ -798,7 +799,8 @@ static int setup_referral(const char *path, struct cache_entry *ce,
 	ref->path_consumed = ce->path_consumed;
 	ref->ttl = ce->ttl;
 	ref->server_type = ce->srvtype;
-	ref->ref_flag = ce->flags;
+	ref->ref_flag = ce->ref_flags;
+	ref->flags = ce->hdr_flags;
 
 	return 0;
 
@@ -1140,80 +1142,22 @@ out_unlock:
 	return rc;
 }
 
-static int dup_vol(struct smb_vol *vol, struct smb_vol *new)
-{
-	memcpy(new, vol, sizeof(*new));
-
-	if (vol->username) {
-		new->username = kstrndup(vol->username, strlen(vol->username),
-					 GFP_KERNEL);
-		if (!new->username)
-			return -ENOMEM;
-	}
-	if (vol->password) {
-		new->password = kstrndup(vol->password, strlen(vol->password),
-					 GFP_KERNEL);
-		if (!new->password)
-			goto err_free_username;
-	}
-	if (vol->UNC) {
-		cifs_dbg(FYI, "%s: vol->UNC: %s\n", __func__, vol->UNC);
-		new->UNC = kstrndup(vol->UNC, strlen(vol->UNC), GFP_KERNEL);
-		if (!new->UNC)
-			goto err_free_password;
-	}
-	if (vol->domainname) {
-		new->domainname = kstrndup(vol->domainname,
-					   strlen(vol->domainname), GFP_KERNEL);
-		if (!new->domainname)
-			goto err_free_unc;
-	}
-	if (vol->iocharset) {
-		new->iocharset = kstrndup(vol->iocharset,
-					  strlen(vol->iocharset), GFP_KERNEL);
-		if (!new->iocharset)
-			goto err_free_domainname;
-	}
-	if (vol->prepath) {
-		cifs_dbg(FYI, "%s: vol->prepath: %s\n", __func__, vol->prepath);
-		new->prepath = kstrndup(vol->prepath, strlen(vol->prepath),
-					GFP_KERNEL);
-		if (!new->prepath)
-			goto err_free_iocharset;
-	}
-
-	return 0;
-
-err_free_iocharset:
-	kfree(new->iocharset);
-err_free_domainname:
-	kfree(new->domainname);
-err_free_unc:
-	kfree(new->UNC);
-err_free_password:
-	kfree_sensitive(new->password);
-err_free_username:
-	kfree(new->username);
-	kfree(new);
-	return -ENOMEM;
-}
-
 /**
- * dfs_cache_add_vol - add a cifs volume during mount() that will be handled by
+ * dfs_cache_add_vol - add a cifs context during mount() that will be handled by
  * DFS cache refresh worker.
  *
  * @mntdata: mount data.
- * @vol: cifs volume.
+ * @ctx: cifs context.
  * @fullpath: origin full path.
  *
- * Return zero if volume was set up correctly, otherwise non-zero.
+ * Return zero if context was set up correctly, otherwise non-zero.
  */
-int dfs_cache_add_vol(char *mntdata, struct smb_vol *vol, const char *fullpath)
+int dfs_cache_add_vol(char *mntdata, struct smb3_fs_context *ctx, const char *fullpath)
 {
 	int rc;
 	struct vol_info *vi;
 
-	if (!vol || !fullpath || !mntdata)
+	if (!ctx || !fullpath || !mntdata)
 		return -EINVAL;
 
 	cifs_dbg(FYI, "%s: fullpath: %s\n", __func__, fullpath);
@@ -1228,12 +1172,12 @@ int dfs_cache_add_vol(char *mntdata, struct smb_vol *vol, const char *fullpath)
 		goto err_free_vi;
 	}
 
-	rc = dup_vol(vol, &vi->smb_vol);
+	rc = smb3_fs_context_dup(&vi->ctx, ctx);
 	if (rc)
 		goto err_free_fullpath;
 
 	vi->mntdata = mntdata;
-	spin_lock_init(&vi->smb_vol_lock);
+	spin_lock_init(&vi->ctx_lock);
 	kref_init(&vi->refcnt);
 
 	spin_lock(&vol_list_lock);
@@ -1289,10 +1233,10 @@ int dfs_cache_update_vol(const char *fullpath, struct TCP_Server_Info *server)
 	spin_unlock(&vol_list_lock);
 
 	cifs_dbg(FYI, "%s: updating volume info\n", __func__);
-	spin_lock(&vi->smb_vol_lock);
-	memcpy(&vi->smb_vol.dstaddr, &server->dstaddr,
-	       sizeof(vi->smb_vol.dstaddr));
-	spin_unlock(&vi->smb_vol_lock);
+	spin_lock(&vi->ctx_lock);
+	memcpy(&vi->ctx.dstaddr, &server->dstaddr,
+	       sizeof(vi->ctx.dstaddr));
+	spin_unlock(&vi->ctx_lock);
 
 	kref_put(&vi->refcnt, vol_release);
 
@@ -1446,11 +1390,11 @@ static inline void put_tcp_server(struct TCP_Server_Info *server)
 	cifs_put_tcp_session(server, 0);
 }
 
-static struct TCP_Server_Info *get_tcp_server(struct smb_vol *vol)
+static struct TCP_Server_Info *get_tcp_server(struct smb3_fs_context *ctx)
 {
 	struct TCP_Server_Info *server;
 
-	server = cifs_find_tcp_session(vol);
+	server = cifs_find_tcp_session(ctx);
 	if (IS_ERR_OR_NULL(server))
 		return NULL;
 
@@ -1477,7 +1421,7 @@ static struct cifs_ses *find_root_ses(struct vol_info *vi,
 	char *mdata = NULL, *devname = NULL;
 	struct TCP_Server_Info *server;
 	struct cifs_ses *ses;
-	struct smb_vol vol = {NULL};
+	struct smb3_fs_context ctx = {NULL};
 
 	rpath = get_dfs_root(path);
 	if (IS_ERR(rpath))
@@ -1511,26 +1455,26 @@ static struct cifs_ses *find_root_ses(struct vol_info *vi,
 		goto out;
 	}
 
-	rc = cifs_setup_volume_info(&vol, mdata, devname, false);
-	kfree(devname);
+	rc = cifs_setup_volume_info(&ctx, NULL, devname);
 
 	if (rc) {
 		ses = ERR_PTR(rc);
 		goto out;
 	}
 
-	server = get_tcp_server(&vol);
+	server = get_tcp_server(&ctx);
 	if (!server) {
 		ses = ERR_PTR(-EHOSTDOWN);
 		goto out;
 	}
 
-	ses = cifs_get_smb_ses(server, &vol);
+	ses = cifs_get_smb_ses(server, &ctx);
 
 out:
-	cifs_cleanup_volume_info_contents(&vol);
+	smb3_cleanup_fs_context_contents(&ctx);
 	kfree(mdata);
 	kfree(rpath);
+	kfree(devname);
 
 	return ses;
 }
@@ -1620,7 +1564,7 @@ static void refresh_cache_worker(struct work_struct *work)
 	 */
 	spin_lock(&vol_list_lock);
 	list_for_each_entry(vi, &vol_list, list) {
-		server = get_tcp_server(&vi->smb_vol);
+		server = get_tcp_server(&vi->ctx);
 		if (!server)
 			continue;
 
@@ -1632,9 +1576,9 @@ static void refresh_cache_worker(struct work_struct *work)
 
 	/* Walk through all TCONs and refresh any expired cache entry */
 	list_for_each_entry_safe(vi, nvi, &vols, rlist) {
-		spin_lock(&vi->smb_vol_lock);
-		server = get_tcp_server(&vi->smb_vol);
-		spin_unlock(&vi->smb_vol_lock);
+		spin_lock(&vi->ctx_lock);
+		server = get_tcp_server(&vi->ctx);
+		spin_unlock(&vi->ctx_lock);
 
 		if (!server)
 			goto next_vol;

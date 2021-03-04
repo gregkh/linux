@@ -1561,12 +1561,11 @@ static int bfd2elf_binding(asymbol *symbol)
 int dso__load_bfd_symbols(struct dso *dso, const char *debugfile)
 {
 	int err = -1;
-	long symbols_size, symbols_count;
+	long symbols_size, symbols_count, i;
 	asection *section;
 	asymbol **symbols, *sym;
 	struct symbol *symbol;
 	bfd *abfd;
-	u_int i;
 	u64 start, len;
 
 	abfd = bfd_openr(dso->long_name, NULL);
@@ -1867,8 +1866,10 @@ int dso__load(struct dso *dso, struct map *map)
 		if (nsexit)
 			nsinfo__mountns_enter(dso->nsinfo, &nsc);
 
-		if (bfdrc == 0)
+		if (bfdrc == 0) {
+			ret = 0;
 			break;
+		}
 
 		if (!is_reg || sirc < 0)
 			continue;
@@ -2189,6 +2190,8 @@ static int dso__load_kernel_sym(struct dso *dso, struct map *map)
 	int err;
 	const char *kallsyms_filename = NULL;
 	char *kallsyms_allocated_filename = NULL;
+	char *filename = NULL;
+
 	/*
 	 * Step 1: if the user specified a kallsyms or vmlinux filename, use
 	 * it and only it, reporting errors to the user if it cannot be used.
@@ -2211,6 +2214,20 @@ static int dso__load_kernel_sym(struct dso *dso, struct map *map)
 
 	if (!symbol_conf.ignore_vmlinux && symbol_conf.vmlinux_name != NULL) {
 		return dso__load_vmlinux(dso, map, symbol_conf.vmlinux_name, false);
+	}
+
+	/*
+	 * Before checking on common vmlinux locations, check if it's
+	 * stored as standard build id binary (not kallsyms) under
+	 * .debug cache.
+	 */
+	if (!symbol_conf.ignore_vmlinux_buildid)
+		filename = __dso__build_id_filename(dso, NULL, 0, false, false);
+	if (filename != NULL) {
+		err = dso__load_vmlinux(dso, map, filename, true);
+		if (err > 0)
+			return err;
+		free(filename);
 	}
 
 	if (!symbol_conf.ignore_vmlinux && vmlinux_path != NULL) {

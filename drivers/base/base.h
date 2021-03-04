@@ -119,6 +119,11 @@ static inline int hypervisor_init(void) { return 0; }
 extern int platform_bus_init(void);
 extern void cpu_dev_init(void);
 extern void container_dev_init(void);
+#ifdef CONFIG_AUXILIARY_BUS
+extern void auxiliary_bus_init(void);
+#else
+static inline void auxiliary_bus_init(void) { }
+#endif
 
 struct kobject *virtual_device_parent(struct device *dev);
 
@@ -133,7 +138,6 @@ extern void device_release_driver_internal(struct device *dev,
 					   struct device *parent);
 
 extern void driver_detach(struct device_driver *drv);
-extern int driver_probe_device(struct device_driver *drv, struct device *dev);
 extern void driver_deferred_probe_del(struct device *dev);
 extern void device_set_deferred_probe_reason(const struct device *dev,
 					     struct va_format *vaf);

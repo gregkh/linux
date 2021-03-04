@@ -839,8 +839,8 @@ struct buffer_head *ext4_getblk(handle_t *handle, struct inode *inode,
 	int create = map_flags & EXT4_GET_BLOCKS_CREATE;
 	int err;
 
-	J_ASSERT((EXT4_SB(inode->i_sb)->s_mount_state & EXT4_FC_REPLAY)
-		 || handle != NULL || create == 0);
+	ASSERT((EXT4_SB(inode->i_sb)->s_mount_state & EXT4_FC_REPLAY)
+		    || handle != NULL || create == 0);
 
 	map.m_lblk = block;
 	map.m_len = 1;
@@ -855,9 +855,9 @@ struct buffer_head *ext4_getblk(handle_t *handle, struct inode *inode,
 	if (unlikely(!bh))
 		return ERR_PTR(-ENOMEM);
 	if (map.m_flags & EXT4_MAP_NEW) {
-		J_ASSERT(create != 0);
-		J_ASSERT((EXT4_SB(inode->i_sb)->s_mount_state & EXT4_FC_REPLAY)
-			 || (handle != NULL));
+		ASSERT(create != 0);
+		ASSERT((EXT4_SB(inode->i_sb)->s_mount_state & EXT4_FC_REPLAY)
+			    || (handle != NULL));
 
 		/*
 		 * Now that we do not always journal data, we should
@@ -2064,7 +2064,7 @@ static int ext4_writepage(struct page *page,
 		unlock_page(page);
 		return -ENOMEM;
 	}
-	ret = ext4_bio_write_page(&io_submit, page, len, wbc, keep_towrite);
+	ret = ext4_bio_write_page(&io_submit, page, len, keep_towrite);
 	ext4_io_submit(&io_submit);
 	/* Drop io_end reference we got from init */
 	ext4_put_io_end_defer(io_submit.io_end);
@@ -2098,7 +2098,7 @@ static int mpage_submit_page(struct mpage_da_data *mpd, struct page *page)
 		len = size & ~PAGE_MASK;
 	else
 		len = PAGE_SIZE;
-	err = ext4_bio_write_page(&mpd->io_submit, page, len, mpd->wbc, false);
+	err = ext4_bio_write_page(&mpd->io_submit, page, len, false);
 	if (!err)
 		mpd->wbc->nr_to_write--;
 	mpd->first_page++;
@@ -4619,7 +4619,7 @@ struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
 	    (ino > le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count))) {
 		if (flags & EXT4_IGET_HANDLE)
 			return ERR_PTR(-ESTALE);
-		__ext4_error(sb, function, line, EFSCORRUPTED, 0,
+		__ext4_error(sb, function, line, false, EFSCORRUPTED, 0,
 			     "inode #%lu: comm %s: iget: illegal inode #",
 			     ino, current->comm);
 		return ERR_PTR(-EFSCORRUPTED);
@@ -5150,9 +5150,13 @@ static int ext4_do_update_inode(handle_t *handle,
 		err = ext4_journal_get_write_access(handle, EXT4_SB(sb)->s_sbh);
 		if (err)
 			goto out_brelse;
+		lock_buffer(EXT4_SB(sb)->s_sbh);
 		ext4_set_feature_large_file(sb);
+		ext4_superblock_csum_set(sb);
+		unlock_buffer(EXT4_SB(sb)->s_sbh);
 		ext4_handle_sync(handle);
-		err = ext4_handle_dirty_super(handle, sb);
+		err = ext4_handle_dirty_metadata(handle, NULL,
+						 EXT4_SB(sb)->s_sbh);
 	}
 	ext4_update_inode_fsync_trans(handle, inode, need_datasync);
 out_brelse:

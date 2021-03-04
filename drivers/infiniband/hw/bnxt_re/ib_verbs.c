@@ -1271,10 +1271,12 @@ static int bnxt_re_init_qp_attr(struct bnxt_re_qp *qp, struct bnxt_re_pd *pd,
 	}
 	qplqp->mtu = ib_mtu_enum_to_int(iboe_get_mtu(rdev->netdev->mtu));
 	qplqp->dpi = &rdev->dpi_privileged; /* Doorbell page */
-	if (init_attr->create_flags)
+	if (init_attr->create_flags) {
 		ibdev_dbg(&rdev->ibdev,
 			  "QP create flags 0x%x not supported",
 			  init_attr->create_flags);
+		return -EOPNOTSUPP;
+	}
 
 	/* Setup CQs */
 	if (init_attr->send_cq) {
@@ -1828,6 +1830,9 @@ int bnxt_re_modify_qp(struct ib_qp *ib_qp, struct ib_qp_attr *qp_attr,
 	int rc, entries;
 	unsigned int flags;
 	u8 nw_type;
+
+	if (qp_attr_mask & ~IB_QP_ATTR_STANDARD_BITS)
+		return -EOPNOTSUPP;
 
 	qp->qplib_qp.modify_flags = 0;
 	if (qp_attr_mask & IB_QP_STATE) {
@@ -2827,6 +2832,9 @@ int bnxt_re_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 	int cqe = attr->cqe;
 	struct bnxt_qplib_nq *nq = NULL;
 	unsigned int nq_alloc_cnt;
+
+	if (attr->flags)
+		return -EOPNOTSUPP;
 
 	/* Validate CQ fields */
 	if (cqe < 1 || cqe > dev_attr->max_cq_wqes) {

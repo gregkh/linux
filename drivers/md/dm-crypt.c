@@ -1090,16 +1090,16 @@ static const struct crypt_iv_operations crypt_iv_tcw_ops = {
 	.post	   = crypt_iv_tcw_post
 };
 
-static struct crypt_iv_operations crypt_iv_random_ops = {
+static const struct crypt_iv_operations crypt_iv_random_ops = {
 	.generator = crypt_iv_random_gen
 };
 
-static struct crypt_iv_operations crypt_iv_eboiv_ops = {
+static const struct crypt_iv_operations crypt_iv_eboiv_ops = {
 	.ctr	   = crypt_iv_eboiv_ctr,
 	.generator = crypt_iv_eboiv_gen
 };
 
-static struct crypt_iv_operations crypt_iv_elephant_ops = {
+static const struct crypt_iv_operations crypt_iv_elephant_ops = {
 	.ctr	   = crypt_iv_elephant_ctr,
 	.dtr	   = crypt_iv_elephant_dtr,
 	.init	   = crypt_iv_elephant_init,
@@ -3324,6 +3324,7 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	wake_up_process(cc->write_thread);
 
 	ti->num_flush_bios = 1;
+	ti->limit_swap_bios = true;
 
 	return 0;
 

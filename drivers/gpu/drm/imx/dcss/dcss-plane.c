@@ -103,8 +103,7 @@ static bool dcss_plane_can_rotate(const struct drm_format_info *format,
 				  bool mod_present, u64 modifier,
 				  unsigned int rotation)
 {
-	bool linear_format = !mod_present ||
-			     (mod_present && modifier == DRM_FORMAT_MOD_LINEAR);
+	bool linear_format = !mod_present || modifier == DRM_FORMAT_MOD_LINEAR;
 	u32 supported_rotation = DRM_MODE_ROTATE_0;
 
 	if (!format->is_yuv && linear_format)
@@ -258,7 +257,8 @@ static bool dcss_plane_needs_setup(struct drm_plane_state *state,
 	       state->src_h  != old_state->src_h  ||
 	       fb->format->format != old_fb->format->format ||
 	       fb->modifier  != old_fb->modifier ||
-	       state->rotation != old_state->rotation;
+	       state->rotation != old_state->rotation ||
+	       state->scaling_filter != old_state->scaling_filter;
 }
 
 static void dcss_plane_atomic_update(struct drm_plane *plane,
@@ -268,7 +268,6 @@ static void dcss_plane_atomic_update(struct drm_plane *plane,
 	struct dcss_plane *dcss_plane = to_dcss_plane(plane);
 	struct dcss_dev *dcss = plane->dev->dev_private;
 	struct drm_framebuffer *fb = state->fb;
-	u32 pixel_format;
 	struct drm_crtc_state *crtc_state;
 	bool modifiers_present;
 	u32 src_w, src_h, dst_w, dst_h;
@@ -279,7 +278,6 @@ static void dcss_plane_atomic_update(struct drm_plane *plane,
 	if (!fb || !state->crtc || !state->visible)
 		return;
 
-	pixel_format = state->fb->format->format;
 	crtc_state = state->crtc->state;
 	modifiers_present = !!(fb->flags & DRM_MODE_FB_MODIFIERS);
 
@@ -315,6 +313,9 @@ static void dcss_plane_atomic_update(struct drm_plane *plane,
 
 	is_rotation_90_or_270 = state->rotation & (DRM_MODE_ROTATE_90 |
 						   DRM_MODE_ROTATE_270);
+
+	dcss_scaler_set_filter(dcss->scaler, dcss_plane->ch_num,
+			       state->scaling_filter);
 
 	dcss_scaler_setup(dcss->scaler, dcss_plane->ch_num,
 			  state->fb->format,
@@ -396,6 +397,10 @@ struct dcss_plane *dcss_plane_init(struct drm_device *drm,
 	ret = drm_plane_create_zpos_immutable_property(&dcss_plane->base, zpos);
 	if (ret)
 		return ERR_PTR(ret);
+
+	drm_plane_create_scaling_filter_property(&dcss_plane->base,
+					BIT(DRM_SCALING_FILTER_DEFAULT) |
+					BIT(DRM_SCALING_FILTER_NEAREST_NEIGHBOR));
 
 	drm_plane_create_rotation_property(&dcss_plane->base,
 					   DRM_MODE_ROTATE_0,

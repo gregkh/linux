@@ -7,6 +7,8 @@
 #include "tdp_mmu.h"
 #include "spte.h"
 
+#include <trace/events/kvm.h>
+
 #ifdef CONFIG_X86_64
 static bool __read_mostly tdp_mmu_enabled = false;
 module_param_named(tdp_mmu, tdp_mmu_enabled, bool, 0644);
@@ -149,6 +151,8 @@ static struct kvm_mmu_page *alloc_tdp_mmu_page(struct kvm_vcpu *vcpu, gfn_t gfn,
 	sp->gfn = gfn;
 	sp->tdp_mmu_page = true;
 
+	trace_kvm_mmu_get_page(sp, true);
+
 	return sp;
 }
 
@@ -226,7 +230,7 @@ static void handle_changed_spte_dirty_log(struct kvm *kvm, int as_id, gfn_t gfn,
 	if ((!is_writable_pte(old_spte) || pfn_changed) &&
 	    is_writable_pte(new_spte)) {
 		slot = __gfn_to_memslot(__kvm_memslots(kvm, as_id), gfn);
-		mark_page_dirty_in_slot(slot, gfn);
+		mark_page_dirty_in_slot(kvm, slot, gfn);
 	}
 }
 
@@ -285,6 +289,8 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 	if (old_spte == new_spte)
 		return;
 
+	trace_kvm_tdp_mmu_spte_changed(as_id, gfn, level, old_spte, new_spte);
+
 	/*
 	 * The only times a SPTE should be changed from a non-present to
 	 * non-present state is when an MMIO entry is installed/modified/
@@ -318,6 +324,8 @@ static void __handle_changed_spte(struct kvm *kvm, int as_id, gfn_t gfn,
 	if (was_present && !was_leaf && (pfn_changed || !is_present)) {
 		pt = spte_to_child_pt(old_spte, level);
 		sp = sptep_to_sp(pt);
+
+		trace_kvm_mmu_prepare_zap_page(sp);
 
 		list_del(&sp->link);
 
@@ -512,11 +520,13 @@ static int tdp_mmu_map_handle_target_level(struct kvm_vcpu *vcpu, int write,
 	if (unlikely(is_noslot_pfn(pfn))) {
 		new_spte = make_mmio_spte(vcpu, iter->gfn, ACC_ALL);
 		trace_mark_mmio_spte(iter->sptep, iter->gfn, new_spte);
-	} else
+	} else {
 		make_spte_ret = make_spte(vcpu, ACC_ALL, iter->level, iter->gfn,
 					 pfn, iter->old_spte, prefault, true,
 					 map_writable, !shadow_accessed_mask,
 					 &new_spte);
+		trace_kvm_mmu_set_spte(iter->level, iter->gfn, iter->sptep);
+	}
 
 	if (new_spte == iter->old_spte)
 		ret = RET_PF_SPURIOUS;
@@ -722,6 +732,8 @@ static int age_gfn_range(struct kvm *kvm, struct kvm_memory_slot *slot,
 
 		tdp_mmu_set_spte_no_acc_track(kvm, &iter, new_spte);
 		young = 1;
+
+		trace_kvm_age_page(iter.gfn, iter.level, slot, young);
 	}
 
 	return young;
@@ -1055,7 +1067,8 @@ static void zap_collapsible_spte_range(struct kvm *kvm,
 
 		pfn = spte_to_pfn(iter.old_spte);
 		if (kvm_is_reserved_pfn(pfn) ||
-		    !PageTransCompoundMap(pfn_to_page(pfn)))
+		    (!PageCompound(pfn_to_page(pfn)) &&
+		     !kvm_is_zone_device_pfn(pfn)))
 			continue;
 
 		tdp_mmu_set_spte(kvm, &iter, 0);
@@ -1152,7 +1165,7 @@ int kvm_tdp_mmu_get_walk(struct kvm_vcpu *vcpu, u64 addr, u64 *sptes,
 
 	tdp_mmu_for_each_pte(iter, mmu, gfn, gfn + 1) {
 		leaf = iter.level;
-		sptes[leaf - 1] = iter.old_spte;
+		sptes[leaf] = iter.old_spte;
 	}
 
 	return leaf;

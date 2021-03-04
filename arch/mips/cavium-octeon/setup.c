@@ -973,8 +973,6 @@ void __init plat_mem_setup(void)
 	uint64_t crashk_end;
 #ifndef CONFIG_CRASH_DUMP
 	int64_t memory;
-	uint64_t kernel_start;
-	uint64_t kernel_size;
 #endif
 
 	total = 0;
@@ -1078,13 +1076,6 @@ void __init plat_mem_setup(void)
 		}
 	}
 	cvmx_bootmem_unlock();
-	/* Add the memory region for the kernel. */
-	kernel_start = (unsigned long) _text;
-	kernel_size = _end - _text;
-
-	/* Adjust for physical offset. */
-	kernel_start &= ~0xffffffff80000000ULL;
-	memblock_add(kernel_start, kernel_size);
 #endif /* CONFIG_CRASH_DUMP */
 
 #ifdef CONFIG_CAVIUM_RESERVE32
@@ -1158,12 +1149,15 @@ void __init device_tree_init(void)
 	bool do_prune;
 	bool fill_mac;
 
-	if (fw_passed_dtb) {
-		fdt = (void *)fw_passed_dtb;
+#ifdef CONFIG_MIPS_ELF_APPENDED_DTB
+	if (!fdt_check_header(&__appended_dtb)) {
+		fdt = &__appended_dtb;
 		do_prune = false;
 		fill_mac = true;
 		pr_info("Using appended Device Tree.\n");
-	} else if (octeon_bootinfo->minor_version >= 3 && octeon_bootinfo->fdt_addr) {
+	} else
+#endif
+	if (octeon_bootinfo->minor_version >= 3 && octeon_bootinfo->fdt_addr) {
 		fdt = phys_to_virt(octeon_bootinfo->fdt_addr);
 		if (fdt_check_header(fdt))
 			panic("Corrupt Device Tree passed to kernel.");

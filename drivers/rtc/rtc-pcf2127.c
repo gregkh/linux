@@ -609,7 +609,7 @@ static int pcf2127_probe(struct device *dev, struct regmap *regmap,
 			.size = 512,
 		};
 
-		ret = rtc_nvmem_register(pcf2127->rtc, &nvmem_cfg);
+		ret = devm_rtc_nvmem_register(pcf2127->rtc, &nvmem_cfg);
 	}
 
 	/*
@@ -683,7 +683,7 @@ static int pcf2127_probe(struct device *dev, struct regmap *regmap,
 		return ret;
 	}
 
-	return rtc_register_device(pcf2127->rtc);
+	return devm_rtc_register_device(pcf2127->rtc);
 }
 
 #ifdef CONFIG_OF

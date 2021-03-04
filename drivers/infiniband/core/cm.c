@@ -1251,7 +1251,8 @@ out:
 EXPORT_SYMBOL(ib_cm_listen);
 
 /**
- * Create a new listening ib_cm_id and listen on the given service ID.
+ * ib_cm_insert_listen - Create a new listening ib_cm_id and listen on
+ *			 the given service ID.
  *
  * If there's an existing ID listening on that same device and service ID,
  * return it.
@@ -1765,7 +1766,7 @@ static u16 cm_get_bth_pkey(struct cm_work *work)
 }
 
 /**
- * Convert OPA SGID to IB SGID
+ * cm_opa_to_ib_sgid - Convert OPA SGID to IB SGID
  * ULPs (such as IPoIB) do not understand OPA GIDs and will
  * reject them as the local_gid will not match the sgid. Therefore,
  * change the pathrec's SGID to an IB SGID.
@@ -4273,8 +4274,8 @@ static ssize_t cm_show_counter(struct kobject *obj, struct attribute *attr,
 	group = container_of(obj, struct cm_counter_group, obj);
 	cm_attr = container_of(attr, struct cm_counter_attribute, attr);
 
-	return sprintf(buf, "%ld\n",
-		       atomic_long_read(&group->counter[cm_attr->index]));
+	return sysfs_emit(buf, "%ld\n",
+			  atomic_long_read(&group->counter[cm_attr->index]));
 }
 
 static const struct sysfs_ops cm_counter_ops = {
@@ -4332,7 +4333,7 @@ static int cm_add_one(struct ib_device *ib_device)
 	unsigned long flags;
 	int ret;
 	int count = 0;
-	u8 i;
+	unsigned int i;
 
 	cm_dev = kzalloc(struct_size(cm_dev, port, ib_device->phys_port_cnt),
 			 GFP_KERNEL);
@@ -4344,7 +4345,7 @@ static int cm_add_one(struct ib_device *ib_device)
 	cm_dev->going_down = 0;
 
 	set_bit(IB_MGMT_METHOD_SEND, reg_req.method_mask);
-	for (i = 1; i <= ib_device->phys_port_cnt; i++) {
+	rdma_for_each_port (ib_device, i) {
 		if (!rdma_cap_ib_cm(ib_device, i))
 			continue;
 
@@ -4430,7 +4431,7 @@ static void cm_remove_one(struct ib_device *ib_device, void *client_data)
 		.clr_port_cap_mask = IB_PORT_CM_SUP
 	};
 	unsigned long flags;
-	int i;
+	unsigned int i;
 
 	write_lock_irqsave(&cm.device_lock, flags);
 	list_del(&cm_dev->list);
@@ -4440,7 +4441,7 @@ static void cm_remove_one(struct ib_device *ib_device, void *client_data)
 	cm_dev->going_down = 1;
 	spin_unlock_irq(&cm.lock);
 
-	for (i = 1; i <= ib_device->phys_port_cnt; i++) {
+	rdma_for_each_port (ib_device, i) {
 		if (!rdma_cap_ib_cm(ib_device, i))
 			continue;
 

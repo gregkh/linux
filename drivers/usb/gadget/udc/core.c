@@ -659,8 +659,7 @@ EXPORT_SYMBOL_GPL(usb_gadget_vbus_disconnect);
  *
  * Enables the D+ (or potentially D-) pullup.  The host will start
  * enumerating this gadget when the pullup is active and a VBUS session
- * is active (the link is powered).  This pullup is always enabled unless
- * usb_gadget_disconnect() has been used to disable it.
+ * is active (the link is powered).
  *
  * Returns zero on success, else negative errno.
  */
@@ -896,8 +895,6 @@ EXPORT_SYMBOL_GPL(usb_gadget_unmap_request);
  * usb_gadget_giveback_request - give the request back to the gadget layer
  * @ep: the endpoint to be used with with the request
  * @req: the request being given back
- *
- * Context: in_interrupt()
  *
  * This is called by device controller drivers in order to return the
  * completed request back to the gadget layer.

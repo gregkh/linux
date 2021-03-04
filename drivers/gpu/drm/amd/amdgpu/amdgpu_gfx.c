@@ -808,3 +808,34 @@ failed_undo:
 failed_kiq_write:
 	dev_err(adev->dev, "failed to write reg:%x\n", reg);
 }
+
+int amdgpu_gfx_get_num_kcq(struct amdgpu_device *adev)
+{
+	if (amdgpu_num_kcq == -1) {
+		return 8;
+	} else if (amdgpu_num_kcq > 8 || amdgpu_num_kcq < 0) {
+		dev_warn(adev->dev, "set kernel compute queue number to 8 due to invalid parameter provided by user\n");
+		return 8;
+	}
+	return amdgpu_num_kcq;
+}
+
+/* amdgpu_gfx_state_change_set - Handle gfx power state change set
+ * @adev: amdgpu_device pointer
+ * @state: gfx power state(1 -sGpuChangeState_D0Entry and 2 -sGpuChangeState_D3Entry)
+ *
+ */
+
+void amdgpu_gfx_state_change_set(struct amdgpu_device *adev, enum gfx_change_state state)
+{
+	if (is_support_sw_smu(adev)) {
+		smu_gfx_state_change_set(&adev->smu, state);
+	} else {
+		mutex_lock(&adev->pm.mutex);
+		if (adev->powerplay.pp_funcs &&
+		    adev->powerplay.pp_funcs->gfx_state_change_set)
+			((adev)->powerplay.pp_funcs->gfx_state_change_set(
+				(adev)->powerplay.pp_handle, state));
+		mutex_unlock(&adev->pm.mutex);
+	}
+}

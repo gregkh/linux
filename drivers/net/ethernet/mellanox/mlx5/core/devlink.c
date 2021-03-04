@@ -13,17 +13,8 @@ static int mlx5_devlink_flash_update(struct devlink *devlink,
 				     struct netlink_ext_ack *extack)
 {
 	struct mlx5_core_dev *dev = devlink_priv(devlink);
-	const struct firmware *fw;
-	int err;
 
-	err = request_firmware_direct(&fw, params->file_name, &dev->pdev->dev);
-	if (err)
-		return err;
-
-	err = mlx5_firmware_flash(dev, fw, extack);
-	release_firmware(fw);
-
-	return err;
+	return mlx5_firmware_flash(dev, params->fw, extack);
 }
 
 static u8 mlx5_fw_ver_major(u32 version)
@@ -52,7 +43,7 @@ mlx5_devlink_info_get(struct devlink *devlink, struct devlink_info_req *req,
 	u32 running_fw, stored_fw;
 	int err;
 
-	err = devlink_info_driver_name_put(req, DRIVER_NAME);
+	err = devlink_info_driver_name_put(req, KBUILD_MODNAME);
 	if (err)
 		return err;
 
@@ -136,6 +127,11 @@ static int mlx5_devlink_reload_down(struct devlink *devlink, bool netns_change,
 				    struct netlink_ext_ack *extack)
 {
 	struct mlx5_core_dev *dev = devlink_priv(devlink);
+
+	if (mlx5_lag_is_active(dev)) {
+		NL_SET_ERR_MSG_MOD(extack, "reload is unsupported in Lag mode\n");
+		return -EOPNOTSUPP;
+	}
 
 	switch (action) {
 	case DEVLINK_RELOAD_ACTION_DRIVER_REINIT:
@@ -221,7 +217,7 @@ static int mlx5_devlink_fs_mode_validate(struct devlink *devlink, u32 id,
 		u8 eswitch_mode;
 		bool smfs_cap;
 
-		eswitch_mode = mlx5_eswitch_mode(dev->priv.eswitch);
+		eswitch_mode = mlx5_eswitch_mode(dev);
 		smfs_cap = mlx5_fs_dr_is_supported(dev);
 
 		if (!smfs_cap) {
@@ -280,6 +276,10 @@ static int mlx5_devlink_enable_roce_validate(struct devlink *devlink, u32 id,
 
 	if (new_state && !MLX5_CAP_GEN(dev, roce)) {
 		NL_SET_ERR_MSG_MOD(extack, "Device doesn't support RoCE");
+		return -EOPNOTSUPP;
+	}
+	if (mlx5_core_is_mp_slave(dev) || mlx5_lag_is_active(dev)) {
+		NL_SET_ERR_MSG_MOD(extack, "Multi port slave/Lag device can't configure RoCE");
 		return -EOPNOTSUPP;
 	}
 

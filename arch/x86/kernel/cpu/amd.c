@@ -23,7 +23,6 @@
 
 #ifdef CONFIG_X86_64
 # include <asm/mmconfig.h>
-# include <asm/set_memory.h>
 #endif
 
 #include "cpu.h"
@@ -424,12 +423,6 @@ clear_ppin:
 	clear_cpu_cap(c, X86_FEATURE_AMD_PPIN);
 }
 
-u16 amd_get_nb_id(int cpu)
-{
-	return per_cpu(cpu_llc_id, cpu);
-}
-EXPORT_SYMBOL_GPL(amd_get_nb_id);
-
 u32 amd_get_nodes_per_socket(void)
 {
 	return nodes_per_socket;
@@ -515,26 +508,6 @@ static void early_init_amd_mc(struct cpuinfo_x86 *c)
 
 static void bsp_init_amd(struct cpuinfo_x86 *c)
 {
-
-#ifdef CONFIG_X86_64
-	if (c->x86 >= 0xf) {
-		unsigned long long tseg;
-
-		/*
-		 * Split up direct mapping around the TSEG SMM area.
-		 * Don't do it for gbpages because there seems very little
-		 * benefit in doing so.
-		 */
-		if (!rdmsrl_safe(MSR_K8_TSEG_ADDR, &tseg)) {
-			unsigned long pfn = tseg >> PAGE_SHIFT;
-
-			pr_debug("tseg: %010llx\n", tseg);
-			if (pfn_range_is_mapped(pfn, pfn + 1))
-				set_memory_4k((unsigned long)__va(tseg), 1);
-		}
-	}
-#endif
-
 	if (cpu_has(c, X86_FEATURE_CONSTANT_TSC)) {
 
 		if (c->x86 > 0x10 ||

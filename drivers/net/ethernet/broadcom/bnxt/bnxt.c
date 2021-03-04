@@ -2884,7 +2884,7 @@ static int bnxt_alloc_rx_rings(struct bnxt *bp)
 		if (rc)
 			return rc;
 
-		rc = xdp_rxq_info_reg(&rxr->xdp_rxq, bp->dev, i);
+		rc = xdp_rxq_info_reg(&rxr->xdp_rxq, bp->dev, i, 0);
 		if (rc < 0)
 			return rc;
 
@@ -8856,9 +8856,10 @@ void bnxt_tx_disable(struct bnxt *bp)
 			txr->dev_state = BNXT_DEV_STATE_CLOSING;
 		}
 	}
+	/* Drop carrier first to prevent TX timeout */
+	netif_carrier_off(bp->dev);
 	/* Stop all TX queues */
 	netif_tx_disable(bp->dev);
-	netif_carrier_off(bp->dev);
 }
 
 void bnxt_tx_enable(struct bnxt *bp)

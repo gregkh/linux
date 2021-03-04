@@ -14,6 +14,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/pfn.h>
@@ -33,6 +34,7 @@ struct ipu3_cio2_fmt {
 	u32 mbus_code;
 	u32 fourcc;
 	u8 mipicode;
+	u8 bpp;
 };
 
 /*
@@ -46,18 +48,22 @@ static const struct ipu3_cio2_fmt formats[] = {
 		.mbus_code	= MEDIA_BUS_FMT_SGRBG10_1X10,
 		.fourcc		= V4L2_PIX_FMT_IPU3_SGRBG10,
 		.mipicode	= 0x2b,
+		.bpp		= 10,
 	}, {
 		.mbus_code	= MEDIA_BUS_FMT_SGBRG10_1X10,
 		.fourcc		= V4L2_PIX_FMT_IPU3_SGBRG10,
 		.mipicode	= 0x2b,
+		.bpp		= 10,
 	}, {
 		.mbus_code	= MEDIA_BUS_FMT_SBGGR10_1X10,
 		.fourcc		= V4L2_PIX_FMT_IPU3_SBGGR10,
 		.mipicode	= 0x2b,
+		.bpp		= 10,
 	}, {
 		.mbus_code	= MEDIA_BUS_FMT_SRGGB10_1X10,
 		.fourcc		= V4L2_PIX_FMT_IPU3_SRGGB10,
 		.mipicode	= 0x2b,
+		.bpp		= 10,
 	},
 };
 
@@ -189,9 +195,8 @@ static void cio2_fbpt_entry_init_buf(struct cio2_device *cio2,
 	 * 4095 (PAGE_SIZE - 1) means every single byte in the last page
 	 * is available for DMA transfer.
 	 */
-	entry[1].second_entry.last_page_available_bytes =
-			(remaining & ~PAGE_MASK) ?
-				(remaining & ~PAGE_MASK) - 1 : PAGE_SIZE - 1;
+	remaining = offset_in_page(remaining) ?: PAGE_SIZE;
+	entry[1].second_entry.last_page_available_bytes = remaining - 1;
 	/* Fill FBPT */
 	remaining = length;
 	i = 0;
@@ -286,37 +291,22 @@ static s32 cio2_rx_timing(s32 a, s32 b, s64 freq, int def)
 	return r;
 };
 
-/* Calculate the the delay value for termination enable of clock lane HS Rx */
+/* Calculate the delay value for termination enable of clock lane HS Rx */
 static int cio2_csi2_calc_timing(struct cio2_device *cio2, struct cio2_queue *q,
-				 struct cio2_csi2_timing *timing)
+				 struct cio2_csi2_timing *timing,
+				 unsigned int bpp, unsigned int lanes)
 {
 	struct device *dev = &cio2->pci_dev->dev;
-	struct v4l2_querymenu qm = { .id = V4L2_CID_LINK_FREQ };
-	struct v4l2_ctrl *link_freq;
 	s64 freq;
-	int r;
 
 	if (!q->sensor)
 		return -ENODEV;
 
-	link_freq = v4l2_ctrl_find(q->sensor->ctrl_handler, V4L2_CID_LINK_FREQ);
-	if (!link_freq) {
-		dev_err(dev, "failed to find LINK_FREQ\n");
-		return -EPIPE;
+	freq = v4l2_get_link_freq(q->sensor->ctrl_handler, bpp, lanes);
+	if (freq < 0) {
+		dev_err(dev, "error %lld, invalid link_freq\n", freq);
+		return freq;
 	}
-
-	qm.index = v4l2_ctrl_g_ctrl(link_freq);
-	r = v4l2_querymenu(q->sensor->ctrl_handler, &qm);
-	if (r) {
-		dev_err(dev, "failed to get menu item\n");
-		return r;
-	}
-
-	if (!qm.value) {
-		dev_err(dev, "error invalid link_freq\n");
-		return -EINVAL;
-	}
-	freq = qm.value;
 
 	timing->clk_termen = cio2_rx_timing(CIO2_CSIRX_DLY_CNT_TERMEN_CLANE_A,
 					    CIO2_CSIRX_DLY_CNT_TERMEN_CLANE_B,
@@ -364,7 +354,7 @@ static int cio2_hw_init(struct cio2_device *cio2, struct cio2_queue *q)
 
 	lanes = q->csi2.lanes;
 
-	r = cio2_csi2_calc_timing(cio2, q, &timing);
+	r = cio2_csi2_calc_timing(cio2, q, &timing, fmt->bpp, lanes);
 	if (r)
 		return r;
 
@@ -561,7 +551,9 @@ static void cio2_buffer_done(struct cio2_device *cio2, unsigned int dma_chan)
 
 		b = q->bufs[q->bufs_first];
 		if (b) {
-			unsigned int bytes = entry[1].second_entry.num_of_bytes;
+			unsigned int received = entry[1].second_entry.num_of_bytes;
+			unsigned long payload =
+				vb2_get_plane_payload(&b->vbb.vb2_buf, 0);
 
 			q->bufs[q->bufs_first] = NULL;
 			atomic_dec(&q->bufs_queued);
@@ -571,10 +563,10 @@ static void cio2_buffer_done(struct cio2_device *cio2, unsigned int dma_chan)
 			b->vbb.vb2_buf.timestamp = ns;
 			b->vbb.field = V4L2_FIELD_NONE;
 			b->vbb.sequence = atomic_read(&q->frame_sequence);
-			if (b->vbb.vb2_buf.planes[0].length != bytes)
-				dev_warn(dev, "buffer length is %d received %d\n",
-					 b->vbb.vb2_buf.planes[0].length,
-					 bytes);
+			if (payload != received)
+				dev_warn(dev,
+					 "payload length is %lu, received %u\n",
+					 payload, received);
 			vb2_buffer_done(&b->vbb.vb2_buf, VB2_BUF_STATE_DONE);
 		}
 		atomic_inc(&q->frame_sequence);
@@ -1095,8 +1087,8 @@ static int cio2_v4l2_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	/* Only supports up to 4224x3136 */
 	if (mpix->width > CIO2_IMAGE_MAX_WIDTH)
 		mpix->width = CIO2_IMAGE_MAX_WIDTH;
-	if (mpix->height > CIO2_IMAGE_MAX_LENGTH)
-		mpix->height = CIO2_IMAGE_MAX_LENGTH;
+	if (mpix->height > CIO2_IMAGE_MAX_HEIGHT)
+		mpix->height = CIO2_IMAGE_MAX_HEIGHT;
 
 	mpix->num_planes = 1;
 	mpix->pixelformat = fmt->fourcc;
@@ -1277,15 +1269,14 @@ static int cio2_subdev_set_fmt(struct v4l2_subdev *sd,
 	fmt->format.code = formats[0].mbus_code;
 
 	for (i = 0; i < ARRAY_SIZE(formats); i++) {
-		if (formats[i].mbus_code == fmt->format.code) {
+		if (formats[i].mbus_code == mbus_code) {
 			fmt->format.code = mbus_code;
 			break;
 		}
 	}
 
-	fmt->format.width = min_t(u32, fmt->format.width, CIO2_IMAGE_MAX_WIDTH);
-	fmt->format.height = min_t(u32, fmt->format.height,
-				   CIO2_IMAGE_MAX_LENGTH);
+	fmt->format.width = min(fmt->format.width, CIO2_IMAGE_MAX_WIDTH);
+	fmt->format.height = min(fmt->format.height, CIO2_IMAGE_MAX_HEIGHT);
 	fmt->format.field = V4L2_FIELD_NONE;
 
 	mutex_lock(&q->subdev_lock);

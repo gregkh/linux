@@ -225,8 +225,6 @@ NOKPROBE_SYMBOL(kgdb_skipexception);
  * Default (weak) implementation for kgdb_roundup_cpus
  */
 
-static DEFINE_PER_CPU(call_single_data_t, kgdb_roundup_csd);
-
 void __weak kgdb_call_nmi_hook(void *ignored)
 {
 	/*
@@ -240,6 +238,9 @@ void __weak kgdb_call_nmi_hook(void *ignored)
 	kgdb_nmicallback(raw_smp_processor_id(), get_irq_regs());
 }
 NOKPROBE_SYMBOL(kgdb_call_nmi_hook);
+
+static DEFINE_PER_CPU(call_single_data_t, kgdb_roundup_csd) =
+	CSD_INIT(kgdb_call_nmi_hook, NULL);
 
 void __weak kgdb_roundup_cpus(void)
 {
@@ -267,7 +268,6 @@ void __weak kgdb_roundup_cpus(void)
 			continue;
 		kgdb_info[cpu].rounding_up = true;
 
-		csd->func = kgdb_call_nmi_hook;
 		ret = smp_call_function_single_async(cpu, csd);
 		if (ret)
 			kgdb_info[cpu].rounding_up = false;
@@ -454,6 +454,17 @@ setundefined:
 		arch_kgdb_ops.remove_all_hw_break();
 
 	return 0;
+}
+
+void kgdb_free_init_mem(void)
+{
+	int i;
+
+	/* Clear init memory breakpoints. */
+	for (i = 0; i < KGDB_MAX_BREAKPOINTS; i++) {
+		if (init_section_contains((void *)kgdb_break[i].bpt_addr, 0))
+			kgdb_break[i].state = BP_UNDEFINED;
+	}
 }
 
 #ifdef CONFIG_KGDB_KDB

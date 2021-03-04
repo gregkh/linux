@@ -1386,8 +1386,9 @@ static int change_speed(struct tty_struct *tty, struct usb_serial_port *port)
 	index_value = get_ftdi_divisor(tty, port);
 	value = (u16)index_value;
 	index = (u16)(index_value >> 16);
-	if ((priv->chip_type == FT2232C) || (priv->chip_type == FT2232H) ||
-		(priv->chip_type == FT4232H) || (priv->chip_type == FT232H)) {
+	if (priv->chip_type == FT2232C || priv->chip_type == FT2232H ||
+			priv->chip_type == FT4232H || priv->chip_type == FT232H ||
+			priv->chip_type == FTX) {
 		/* Probably the BM type needs the MSB of the encoded fractional
 		 * divider also moved like for the chips above. Any infos? */
 		index = (u16)((index << 8) | priv->interface);
@@ -1841,9 +1842,6 @@ static int ftdi_gpio_request(struct gpio_chip *gc, unsigned int offset)
 	struct ftdi_private *priv = usb_get_serial_port_data(port);
 	int result;
 
-	if (priv->gpio_altfunc & BIT(offset))
-		return -ENODEV;
-
 	mutex_lock(&priv->gpio_lock);
 	if (!priv->gpio_used) {
 		/* Set default pin states, as we cannot get them from device */
@@ -2000,6 +1998,25 @@ static int ftdi_gpio_direction_output(struct gpio_chip *gc, unsigned int gpio,
 	mutex_unlock(&priv->gpio_lock);
 
 	return result;
+}
+
+static int ftdi_gpio_init_valid_mask(struct gpio_chip *gc,
+				     unsigned long *valid_mask,
+				     unsigned int ngpios)
+{
+	struct usb_serial_port *port = gpiochip_get_data(gc);
+	struct ftdi_private *priv = usb_get_serial_port_data(port);
+	unsigned long map = priv->gpio_altfunc;
+
+	bitmap_complement(valid_mask, &map, ngpios);
+
+	if (bitmap_empty(valid_mask, ngpios))
+		dev_dbg(&port->dev, "no CBUS pin configured for GPIO\n");
+	else
+		dev_dbg(&port->dev, "CBUS%*pbl configured for GPIO\n", ngpios,
+			valid_mask);
+
+	return 0;
 }
 
 static int ftdi_read_eeprom(struct usb_serial *serial, void *dst, u16 addr,
@@ -2173,6 +2190,7 @@ static int ftdi_gpio_init(struct usb_serial_port *port)
 	priv->gc.get_direction = ftdi_gpio_direction_get;
 	priv->gc.direction_input = ftdi_gpio_direction_input;
 	priv->gc.direction_output = ftdi_gpio_direction_output;
+	priv->gc.init_valid_mask = ftdi_gpio_init_valid_mask;
 	priv->gc.get = ftdi_gpio_get;
 	priv->gc.set = ftdi_gpio_set;
 	priv->gc.get_multiple = ftdi_gpio_get_multiple;

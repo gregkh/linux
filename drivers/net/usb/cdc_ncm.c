@@ -793,7 +793,7 @@ static const struct net_device_ops cdc_ncm_netdev_ops = {
 	.ndo_start_xmit	     = usbnet_start_xmit,
 	.ndo_tx_timeout	     = usbnet_tx_timeout,
 	.ndo_set_rx_mode     = usbnet_set_rx_mode,
-	.ndo_get_stats64     = usbnet_get_stats64,
+	.ndo_get_stats64     = dev_get_tstats64,
 	.ndo_change_mtu	     = cdc_ncm_change_mtu,
 	.ndo_set_mac_address = eth_mac_addr,
 	.ndo_validate_addr   = eth_validate_addr,
@@ -1320,7 +1320,7 @@ cdc_ncm_fill_tx_frame(struct usbnet *dev, struct sk_buff *skb, __le32 sign)
 			break;
 		}
 
-		/* calculate frame number withing this NDP */
+		/* calculate frame number within this NDP */
 		if (ctx->is_ndp16) {
 			ndplen = le16_to_cpu(ndp.ndp16->wLength);
 			index = (ndplen - sizeof(struct usb_cdc_ncm_ndp16)) / sizeof(struct usb_cdc_ncm_dpe16) - 1;
@@ -1827,6 +1827,15 @@ cdc_ncm_speed_change(struct usbnet *dev,
 	uint32_t rx_speed = le32_to_cpu(data->DLBitRRate);
 	uint32_t tx_speed = le32_to_cpu(data->ULBitRate);
 
+	/* if the speed hasn't changed, don't report it.
+	 * RTL8156 shipped before 2021 sends notification about every 32ms.
+	 */
+	if (dev->rx_speed == rx_speed && dev->tx_speed == tx_speed)
+		return;
+
+	dev->rx_speed = rx_speed;
+	dev->tx_speed = tx_speed;
+
 	/*
 	 * Currently the USB-NET API does not support reporting the actual
 	 * device speed. Do print it instead.
@@ -1867,7 +1876,8 @@ static void cdc_ncm_status(struct usbnet *dev, struct urb *urb)
 		 * USB_CDC_NOTIFY_NETWORK_CONNECTION notification shall be
 		 * sent by device after USB_CDC_NOTIFY_SPEED_CHANGE.
 		 */
-		usbnet_link_change(dev, !!event->wValue, 0);
+		if (netif_carrier_ok(dev->net) != !!event->wValue)
+			usbnet_link_change(dev, !!event->wValue, 0);
 		break;
 
 	case USB_CDC_NOTIFY_SPEED_CHANGE:

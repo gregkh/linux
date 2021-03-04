@@ -767,6 +767,9 @@ static void scsi_io_completion_action(struct scsi_cmnd *cmd, int result)
 				case 0x24: /* depopulation in progress */
 					action = ACTION_DELAYED_RETRY;
 					break;
+				case 0x0a: /* ALUA state transition */
+					blk_stat = BLK_STS_AGAIN;
+					fallthrough;
 				default:
 					action = ACTION_FAIL;
 					break;
@@ -1458,7 +1461,7 @@ static void scsi_softirq_done(struct request *rq)
 }
 
 /**
- * scsi_dispatch_command - Dispatch a command to the low-level driver.
+ * scsi_dispatch_cmd - Dispatch a command to the low-level driver.
  * @cmd: command block we are dispatching.
  *
  * Return: nonzero return request was rejected and device's queue needs to be
@@ -1708,6 +1711,11 @@ out_put_budget:
 	case BLK_STS_ZONE_RESOURCE:
 		if (scsi_device_blocked(sdev))
 			ret = BLK_STS_DEV_RESOURCE;
+		break;
+	case BLK_STS_AGAIN:
+		scsi_req(req)->result = DID_BUS_BUSY << 16;
+		if (req->rq_flags & RQF_DONTPREP)
+			scsi_mq_uninit_cmd(cmd);
 		break;
 	default:
 		if (unlikely(!scsi_device_online(sdev)))
@@ -2337,7 +2345,7 @@ scsi_device_set_state(struct scsi_device *sdev, enum scsi_device_state state)
 EXPORT_SYMBOL(scsi_device_set_state);
 
 /**
- * 	sdev_evt_emit - emit a single SCSI device uevent
+ *	scsi_evt_emit - emit a single SCSI device uevent
  *	@sdev: associated SCSI device
  *	@evt: event to emit
  *
@@ -2385,7 +2393,7 @@ static void scsi_evt_emit(struct scsi_device *sdev, struct scsi_event *evt)
 }
 
 /**
- * 	sdev_evt_thread - send a uevent for each scsi event
+ *	scsi_evt_thread - send a uevent for each scsi event
  *	@work: work struct for scsi_device
  *
  *	Dispatch queued events to their associated scsi_device kobjects
@@ -3057,12 +3065,13 @@ int scsi_vpd_lun_id(struct scsi_device *sdev, char *id, size_t id_len)
 	}
 
 	memset(id, 0, id_len);
-	d = vpd_pg83->data + 4;
-	while (d < vpd_pg83->data + vpd_pg83->len) {
+	for (d = vpd_pg83->data + 4;
+	     d < vpd_pg83->data + vpd_pg83->len;
+	     d += d[3] + 4) {
 		u8 prio = designator_prio(d);
 
 		if (prio == 0 || cur_id_prio > prio)
-			goto next_desig;
+			continue;
 
 		switch (d[1] & 0xf) {
 		case 0x1:
@@ -3142,8 +3151,6 @@ int scsi_vpd_lun_id(struct scsi_device *sdev, char *id, size_t id_len)
 		default:
 			break;
 		}
-next_desig:
-		d += d[3] + 4;
 	}
 	rcu_read_unlock();
 

@@ -315,7 +315,7 @@ static ssize_t resolution_show(struct device *device,
 static ssize_t resolution_store(struct device *device,
 	struct device_attribute *attr, const char *buf, size_t size);
 
-static ssize_t eeprom_store(struct device *device,
+static ssize_t eeprom_cmd_store(struct device *device,
 	struct device_attribute *attr, const char *buf, size_t size);
 
 static ssize_t alarms_store(struct device *device,
@@ -350,7 +350,7 @@ static DEVICE_ATTR_RO(w1_seq);
 static DEVICE_ATTR_RO(temperature);
 static DEVICE_ATTR_RO(ext_power);
 static DEVICE_ATTR_RW(resolution);
-static DEVICE_ATTR_WO(eeprom);
+static DEVICE_ATTR_WO(eeprom_cmd);
 static DEVICE_ATTR_RW(alarms);
 static DEVICE_ATTR_RW(conv_time);
 static DEVICE_ATTR_RW(features);
@@ -386,7 +386,7 @@ static struct attribute *w1_therm_attrs[] = {
 	&dev_attr_temperature.attr,
 	&dev_attr_ext_power.attr,
 	&dev_attr_resolution.attr,
-	&dev_attr_eeprom.attr,
+	&dev_attr_eeprom_cmd.attr,
 	&dev_attr_alarms.attr,
 	&dev_attr_conv_time.attr,
 	&dev_attr_features.attr,
@@ -397,7 +397,7 @@ static struct attribute *w1_ds18s20_attrs[] = {
 	&dev_attr_w1_slave.attr,
 	&dev_attr_temperature.attr,
 	&dev_attr_ext_power.attr,
-	&dev_attr_eeprom.attr,
+	&dev_attr_eeprom_cmd.attr,
 	&dev_attr_alarms.attr,
 	&dev_attr_conv_time.attr,
 	&dev_attr_features.attr,
@@ -410,7 +410,7 @@ static struct attribute *w1_ds28ea00_attrs[] = {
 	&dev_attr_temperature.attr,
 	&dev_attr_ext_power.attr,
 	&dev_attr_resolution.attr,
-	&dev_attr_eeprom.attr,
+	&dev_attr_eeprom_cmd.attr,
 	&dev_attr_alarms.attr,
 	&dev_attr_conv_time.attr,
 	&dev_attr_features.attr,
@@ -667,27 +667,23 @@ static inline int w1_DS18B20_get_resolution(struct w1_slave *sl)
  */
 static inline int w1_DS18B20_convert_temp(u8 rom[9])
 {
-	int t;
-	u32 bv;
+	u16 bv;
+	s16 t;
+
+	/* Signed 16-bit value to unsigned, cpu order */
+	bv = le16_to_cpup((__le16 *)rom);
 
 	/* Config register bit R2 = 1 - GX20MH01 in 13 or 14 bit resolution mode */
 	if (rom[4] & 0x80) {
-		/* Signed 16-bit value to unsigned, cpu order */
-		bv = le16_to_cpup((__le16 *)rom);
-
 		/* Insert two temperature bits from config register */
 		/* Avoid arithmetic shift of signed value */
 		bv = (bv << 2) | (rom[4] & 3);
-
-		t = (int) sign_extend32(bv, 17); /* Degrees, lowest bit is 2^-6 */
-		return (t*1000)/64;  /* Millidegrees */
+		t = (s16) bv;	/* Degrees, lowest bit is 2^-6 */
+		return (int)t * 1000 / 64;	/* Sign-extend to int; millidegrees */
 	}
-
-	t = (int)le16_to_cpup((__le16 *)rom);
-	return t*1000/16;
+	t = (s16)bv;	/* Degrees, lowest bit is 2^-4 */
+	return (int)t * 1000 / 16;	/* Sign-extend to int; millidegrees */
 }
-
-
 
 /**
  * w1_DS18S20_convert_temp() - temperature computation for DS18S20
@@ -1740,7 +1736,7 @@ static ssize_t resolution_store(struct device *device,
 	return size;
 }
 
-static ssize_t eeprom_store(struct device *device,
+static ssize_t eeprom_cmd_store(struct device *device,
 	struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct w1_slave *sl = dev_to_w1_slave(device);

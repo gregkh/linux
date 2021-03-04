@@ -1202,6 +1202,20 @@ static void hci_cc_le_set_adv_set_random_addr(struct hci_dev *hdev,
 	hci_dev_unlock(hdev);
 }
 
+static void hci_cc_le_read_transmit_power(struct hci_dev *hdev,
+					  struct sk_buff *skb)
+{
+	struct hci_rp_le_read_transmit_power *rp = (void *)skb->data;
+
+	BT_DBG("%s status 0x%2.2x", hdev->name, rp->status);
+
+	if (rp->status)
+		return;
+
+	hdev->min_le_tx_power = rp->min_le_tx_power;
+	hdev->max_le_tx_power = rp->max_le_tx_power;
+}
+
 static void hci_cc_le_set_adv_enable(struct hci_dev *hdev, struct sk_buff *skb)
 {
 	__u8 *sent, status = *((__u8 *) skb->data);
@@ -1752,6 +1766,7 @@ static void hci_cc_set_ext_adv_param(struct hci_dev *hdev, struct sk_buff *skb)
 	}
 	/* Update adv data as tx power is known now */
 	hci_req_update_adv_data(hdev, hdev->cur_adv_instance);
+
 	hci_dev_unlock(hdev);
 }
 
@@ -3581,6 +3596,10 @@ static void hci_cmd_complete_evt(struct hci_dev *hdev, struct sk_buff *skb,
 		hci_cc_le_set_adv_set_random_addr(hdev, skb);
 		break;
 
+	case HCI_OP_LE_READ_TRANSMIT_POWER:
+		hci_cc_le_read_transmit_power(hdev, skb);
+		break;
+
 	default:
 		BT_DBG("%s opcode 0x%4.4x", hdev->name, *opcode);
 		break;
@@ -4936,20 +4955,15 @@ static void hci_phy_link_complete_evt(struct hci_dev *hdev,
 	hci_dev_lock(hdev);
 
 	hcon = hci_conn_hash_lookup_handle(hdev, ev->phy_handle);
-	if (!hcon) {
-		hci_dev_unlock(hdev);
-		return;
-	}
+	if (!hcon)
+		goto unlock;
 
-	if (!hcon->amp_mgr) {
-		hci_dev_unlock(hdev);
-		return;
-	}
+	if (!hcon->amp_mgr)
+		goto unlock;
 
 	if (ev->status) {
 		hci_conn_del(hcon);
-		hci_dev_unlock(hdev);
-		return;
+		goto unlock;
 	}
 
 	bredr_hcon = hcon->amp_mgr->l2cap_conn->hcon;
@@ -4966,6 +4980,7 @@ static void hci_phy_link_complete_evt(struct hci_dev *hdev,
 
 	amp_physical_cfm(bredr_hcon, hcon);
 
+unlock:
 	hci_dev_unlock(hdev);
 }
 

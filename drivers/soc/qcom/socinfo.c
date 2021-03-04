@@ -218,13 +218,19 @@ static const struct soc_id soc_id[] = {
 	{ 251, "MSM8992" },
 	{ 253, "APQ8094" },
 	{ 291, "APQ8096" },
+	{ 293, "MSM8953" },
+	{ 304, "APQ8053" },
 	{ 305, "MSM8996SG" },
 	{ 310, "MSM8996AU" },
 	{ 311, "APQ8096AU" },
 	{ 312, "APQ8096SG" },
 	{ 318, "SDM630" },
 	{ 321, "SDM845" },
+	{ 338, "SDM450" },
 	{ 341, "SDA845" },
+	{ 349, "SDM632" },
+	{ 350, "SDA632" },
+	{ 351, "SDA450" },
 	{ 356, "SM8250" },
 	{ 402, "IPQ6018" },
 	{ 425, "SC7180" },
@@ -280,7 +286,7 @@ static int qcom_show_pmic_model(struct seq_file *seq, void *p)
 	if (model < 0)
 		return -EINVAL;
 
-	if (model <= ARRAY_SIZE(pmic_models) && pmic_models[model])
+	if (model < ARRAY_SIZE(pmic_models) && pmic_models[model])
 		seq_printf(seq, "%s\n", pmic_models[model]);
 	else
 		seq_printf(seq, "unknown (%d)\n", model);

@@ -72,6 +72,7 @@ struct rtrs_clt_con {
 	struct rtrs_iu		*rsp_ius;
 	u32			queue_size;
 	unsigned int		cpu;
+	struct mutex		con_mutex;
 	atomic_t		io_cnt;
 	int			cm_err;
 };
@@ -142,6 +143,7 @@ struct rtrs_clt_sess {
 	int			max_send_sge;
 	u32			flags;
 	struct kobject		kobj;
+	u8			for_new_clt;
 	struct rtrs_clt_stats	*stats;
 	/* cache hca_port and hca_name to display in sysfs */
 	u8			hca_port;

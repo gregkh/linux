@@ -225,8 +225,8 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
 		if (!s)
 			continue;
 
-		/* Clear the KASAN shadow of the stack. */
-		kasan_unpoison_shadow(s->addr, THREAD_SIZE);
+		/* Mark stack accessible for KASAN. */
+		kasan_unpoison_range(s->addr, THREAD_SIZE);
 
 		/* Clear stale pointers from reused stack. */
 		memset(s->addr, 0, THREAD_SIZE);
@@ -385,7 +385,7 @@ static void account_kernel_stack(struct task_struct *tsk, int account)
 		mod_lruvec_page_state(vm->pages[0], NR_KERNEL_STACK_KB,
 				      account * (THREAD_SIZE / 1024));
 	else
-		mod_lruvec_slab_state(stack, NR_KERNEL_STACK_KB,
+		mod_lruvec_kmem_state(stack, NR_KERNEL_STACK_KB,
 				      account * (THREAD_SIZE / 1024));
 }
 
@@ -404,9 +404,10 @@ static int memcg_charge_kernel_stack(struct task_struct *tsk)
 
 		for (i = 0; i < THREAD_SIZE / PAGE_SIZE; i++) {
 			/*
-			 * If memcg_kmem_charge_page() fails, page->mem_cgroup
-			 * pointer is NULL, and memcg_kmem_uncharge_page() in
-			 * free_thread_stack() will ignore this page.
+			 * If memcg_kmem_charge_page() fails, page's
+			 * memory cgroup pointer is NULL, and
+			 * memcg_kmem_uncharge_page() in free_thread_stack()
+			 * will ignore this page.
 			 */
 			ret = memcg_kmem_charge_page(vm->pages[i], GFP_KERNEL,
 						     0);
@@ -818,9 +819,8 @@ void __init fork_init(void)
 	init_task.signal->rlim[RLIMIT_SIGPENDING] =
 		init_task.signal->rlim[RLIMIT_NPROC];
 
-	for (i = 0; i < UCOUNT_COUNTS; i++) {
+	for (i = 0; i < UCOUNT_COUNTS; i++)
 		init_user_ns.ucount_max[i] = max_threads/2;
-	}
 
 #ifdef CONFIG_VMAP_STACK
 	cpuhp_setup_state(CPUHP_BP_PREPARE_DYN, "fork:vm_stack_cache",
@@ -906,6 +906,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	clear_user_return_notifier(tsk);
 	clear_tsk_need_resched(tsk);
 	set_task_stack_end_magic(tsk);
+	clear_syscall_work_syscall_user_dispatch(tsk);
 
 #ifdef CONFIG_STACKPROTECTOR
 	tsk->stack_canary = get_random_canary();
@@ -930,6 +931,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	account_kernel_stack(tsk, 1);
 
 	kcov_task_init(tsk);
+	kmap_local_fork(tsk);
 
 #ifdef CONFIG_FAULT_INJECTION
 	tsk->fail_nth = 0;
@@ -1626,7 +1628,7 @@ static void copy_seccomp(struct task_struct *p)
 	 * to manually enable the seccomp thread flag here.
 	 */
 	if (p->seccomp.mode != SECCOMP_MODE_DISABLED)
-		set_tsk_thread_flag(p, TIF_SECCOMP);
+		set_task_syscall_work(p, SECCOMP);
 #endif
 }
 
@@ -1651,9 +1653,8 @@ static inline void init_task_pid_links(struct task_struct *task)
 {
 	enum pid_type type;
 
-	for (type = PIDTYPE_PID; type < PIDTYPE_MAX; ++type) {
+	for (type = PIDTYPE_PID; type < PIDTYPE_MAX; ++type)
 		INIT_HLIST_NODE(&task->pid_links[type]);
-	}
 }
 
 static inline void
@@ -2159,9 +2160,9 @@ static __latent_entropy struct task_struct *copy_process(
 	 * child regardless of CLONE_PTRACE.
 	 */
 	user_disable_single_step(p);
-	clear_tsk_thread_flag(p, TIF_SYSCALL_TRACE);
-#ifdef TIF_SYSCALL_EMU
-	clear_tsk_thread_flag(p, TIF_SYSCALL_EMU);
+	clear_task_syscall_work(p, SYSCALL_TRACE);
+#if defined(CONFIG_GENERIC_ENTRY) || defined(TIF_SYSCALL_EMU)
+	clear_task_syscall_work(p, SYSCALL_EMU);
 #endif
 	clear_tsk_latency_tracing(p);
 
@@ -2182,6 +2183,10 @@ static __latent_entropy struct task_struct *copy_process(
 	p->pdeath_signal = 0;
 	INIT_LIST_HEAD(&p->thread_group);
 	p->task_works = NULL;
+
+#ifdef CONFIG_KRETPROBES
+	p->kretprobe_instances.first = NULL;
+#endif
 
 	/*
 	 * Ensure that the cgroup subsystem policies allow the new process to be
@@ -3024,21 +3029,21 @@ SYSCALL_DEFINE1(unshare, unsigned long, unshare_flags)
  *	the exec layer of the kernel.
  */
 
-int unshare_files(struct files_struct **displaced)
+int unshare_files(void)
 {
 	struct task_struct *task = current;
-	struct files_struct *copy = NULL;
+	struct files_struct *old, *copy = NULL;
 	int error;
 
 	error = unshare_fd(CLONE_FILES, NR_OPEN_MAX, &copy);
-	if (error || !copy) {
-		*displaced = NULL;
+	if (error || !copy)
 		return error;
-	}
-	*displaced = task->files;
+
+	old = task->files;
 	task_lock(task);
 	task->files = copy;
 	task_unlock(task);
+	put_files_struct(old);
 	return 0;
 }
 

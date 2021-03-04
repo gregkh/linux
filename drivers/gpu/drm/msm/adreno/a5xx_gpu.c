@@ -36,7 +36,7 @@ void a5xx_flush(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
 		OUT_RING(ring, upper_32_bits(shadowptr(a5xx_gpu, ring)));
 	}
 
-	spin_lock_irqsave(&ring->lock, flags);
+	spin_lock_irqsave(&ring->preempt_lock, flags);
 
 	/* Copy the shadow to the actual register */
 	ring->cur = ring->next;
@@ -44,7 +44,7 @@ void a5xx_flush(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
 	/* Make sure to wrap wptr if we need to */
 	wptr = get_wptr(ring);
 
-	spin_unlock_irqrestore(&ring->lock, flags);
+	spin_unlock_irqrestore(&ring->preempt_lock, flags);
 
 	/* Make sure everything is posted before making a decision */
 	mb();
@@ -426,7 +426,7 @@ static int a5xx_preempt_start(struct msm_gpu *gpu)
 static void a5xx_ucode_check_version(struct a5xx_gpu *a5xx_gpu,
 		struct drm_gem_object *obj)
 {
-	u32 *buf = msm_gem_get_vaddr_active(obj);
+	u32 *buf = msm_gem_get_vaddr(obj);
 
 	if (IS_ERR(buf))
 		return;
@@ -1056,7 +1056,6 @@ static void a5xx_gpmu_err_irq(struct msm_gpu *gpu)
 static void a5xx_fault_detect_irq(struct msm_gpu *gpu)
 {
 	struct drm_device *dev = gpu->dev;
-	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_ringbuffer *ring = gpu->funcs->active_ring(gpu);
 
 	DRM_DEV_ERROR(dev->dev, "gpu fault ring %d fence %x status %8.8X rb %4.4x/%4.4x ib1 %16.16llX/%4.4x ib2 %16.16llX/%4.4x\n",
@@ -1072,7 +1071,7 @@ static void a5xx_fault_detect_irq(struct msm_gpu *gpu)
 	/* Turn off the hangcheck timer to keep it from bothering us */
 	del_timer(&gpu->hangcheck_timer);
 
-	queue_work(priv->wq, &gpu->recover_work);
+	kthread_queue_work(gpu->worker, &gpu->recover_work);
 }
 
 #define RBBM_ERROR_MASK \

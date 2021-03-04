@@ -1139,8 +1139,7 @@ static void sunxi_pinctrl_irq_handler(struct irq_desc *desc)
 		if (irq == pctl->irq[bank])
 			break;
 
-	if (bank == pctl->desc->irq_banks)
-		return;
+	WARN_ON(bank == pctl->desc->irq_banks);
 
 	chained_irq_enter(chip, desc);
 

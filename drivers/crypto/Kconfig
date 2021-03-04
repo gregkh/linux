@@ -650,7 +650,7 @@ choice
 	default CRYPTO_DEV_QCE_ENABLE_ALL
 	depends on CRYPTO_DEV_QCE
 	help
-	  This option allows to choose whether to build support for all algorihtms
+	  This option allows to choose whether to build support for all algorithms
 	  (default), hashes-only, or skciphers-only.
 
 	  The QCE engine does not appear to scale as well as the CPU to handle
@@ -901,5 +901,7 @@ config CRYPTO_DEV_SA2UL
 	  K3 devices include a security accelerator engine that may be
 	  used for crypto offload.  Select this if you want to use hardware
 	  acceleration for cryptographic algorithms on these devices.
+
+source "drivers/crypto/keembay/Kconfig"
 
 endif # CRYPTO_HW

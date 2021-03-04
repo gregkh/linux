@@ -1894,7 +1894,7 @@ static void ath10k_wmi_tx_beacons_iter(void *data, u8 *mac,
 static void ath10k_wmi_tx_beacons_nowait(struct ath10k *ar)
 {
 	ieee80211_iterate_active_interfaces_atomic(ar->hw,
-						   IEEE80211_IFACE_ITER_NORMAL,
+						   ATH10K_ITER_NORMAL_FLAGS,
 						   ath10k_wmi_tx_beacons_iter,
 						   NULL);
 }
@@ -1937,7 +1937,7 @@ int ath10k_wmi_cmd_send(struct ath10k *ar, struct sk_buff *skb, u32 cmd_id)
 	if (ret == -EAGAIN) {
 		ath10k_warn(ar, "wmi command %d timeout, restarting hardware\n",
 			    cmd_id);
-		queue_work(ar->workqueue, &ar->restart_work);
+		ath10k_core_start_recovery(ar);
 	}
 
 	return ret;
