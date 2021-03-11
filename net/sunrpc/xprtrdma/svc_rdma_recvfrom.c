@@ -273,6 +273,7 @@ static bool svc_rdma_refresh_recvs(struct svcxprt_rdma *rdma,
 		ctxt->rc_temp = temp;
 		ctxt->rc_recv_wr.next = recv_chain;
 		recv_chain = &ctxt->rc_recv_wr;
+		rdma->sc_pending_recvs++;
 	}
 	if (!recv_chain)
 		return false;
@@ -290,6 +291,8 @@ err_free:
 		bad_wr = bad_wr->next;
 		svc_rdma_recv_ctxt_put(rdma, ctxt);
 	}
+	/* Since we're destroying the xprt, no need to reset
+	 * sc_pending_recvs. */
 	return false;
 }
 
@@ -318,6 +321,8 @@ static void svc_rdma_wc_receive(struct ib_cq *cq, struct ib_wc *wc)
 	struct ib_cqe *cqe = wc->wr_cqe;
 	struct svc_rdma_recv_ctxt *ctxt;
 
+	rdma->sc_pending_recvs--;
+
 	/* WARNING: Only wc->wr_cqe and wc->status are reliable */
 	ctxt = container_of(cqe, struct svc_rdma_recv_ctxt, rc_cqe);
 
@@ -334,8 +339,9 @@ static void svc_rdma_wc_receive(struct ib_cq *cq, struct ib_wc *wc)
 	 * to reduce the likelihood of replayed requests once the
 	 * client reconnects.
 	 */
-	if (!svc_rdma_refresh_recvs(rdma, 1, false))
-		goto flushed;
+	if (rdma->sc_pending_recvs < rdma->sc_max_requests)
+		if (!svc_rdma_refresh_recvs(rdma, rdma->sc_recv_batch, false))
+			goto flushed;
 
 	/* All wc fields are now known to be valid */
 	ctxt->rc_byte_len = wc->byte_len;
