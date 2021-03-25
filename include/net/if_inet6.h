@@ -119,7 +119,7 @@ struct ip6_sf_list {
 struct ifmcaddr6 {
 	struct in6_addr		mca_addr;
 	struct inet6_dev	*idev;
-	struct ifmcaddr6	*next;
+	struct ifmcaddr6	__rcu *next;
 	struct ip6_sf_list	__rcu *mca_sources;
 	struct ip6_sf_list	__rcu *mca_tomb;
 	unsigned int		mca_sfmode;
@@ -132,6 +132,7 @@ struct ifmcaddr6 {
 	spinlock_t		mca_lock;
 	unsigned long		mca_cstamp;
 	unsigned long		mca_tstamp;
+	struct rcu_head		rcu;
 };
 
 /* Anycast stuff */
@@ -170,8 +171,8 @@ struct inet6_dev {
 
 	struct list_head	addr_list;
 
-	struct ifmcaddr6	*mc_list;
-	struct ifmcaddr6	*mc_tomb;
+	struct ifmcaddr6	__rcu *mc_list;
+	struct ifmcaddr6	__rcu *mc_tomb;
 
 	unsigned char		mc_qrv;		/* Query Robustness Variable */
 	unsigned char		mc_gq_running;
