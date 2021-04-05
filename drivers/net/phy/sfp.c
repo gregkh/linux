@@ -2497,6 +2497,9 @@ static int sfp_probe(struct platform_device *pdev)
 	 * since the network interface will not be up.
 	 */
 	sfp->state = sfp_get_state(sfp) | SFP_F_TX_DISABLE;
+	/* Siklu workaround: missing Tx disable pull-up. Force disable. */
+	if ((sfp->state & SFP_F_PRESENT) && sfp->gpio[GPIO_TX_DISABLE])
+		gpiod_direction_output(sfp->gpio[GPIO_TX_DISABLE], 1);
 
 	if (sfp->gpio[GPIO_RATE_SELECT] &&
 	    gpiod_get_value_cansleep(sfp->gpio[GPIO_RATE_SELECT]))
