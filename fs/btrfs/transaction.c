@@ -2045,7 +2045,7 @@ static inline int btrfs_start_delalloc_flush(struct btrfs_trans_handle *trans)
 		list_for_each_entry(pending, head, list) {
 			int ret;
 
-			ret = btrfs_start_delalloc_snapshot(pending->root);
+			ret = btrfs_start_delalloc_snapshot(pending->root, false);
 			if (ret)
 				return ret;
 		}
