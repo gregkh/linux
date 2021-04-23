@@ -473,7 +473,7 @@ struct regulator_dev {
 	unsigned int is_switch:1;
 
 	/* time when this regulator was disabled last time */
-	unsigned long last_off_jiffy;
+	ktime_t last_off;
 };
 
 struct regulator_dev *
