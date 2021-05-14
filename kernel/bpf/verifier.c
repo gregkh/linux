@@ -228,6 +228,12 @@ static void bpf_map_key_store(struct bpf_insn_aux_data *aux, u64 state)
 			     (poisoned ? BPF_MAP_KEY_POISON : 0ULL);
 }
 
+static bool bpf_pseudo_call(const struct bpf_insn *insn)
+{
+	return insn->code == (BPF_JMP | BPF_CALL) &&
+	       insn->src_reg == BPF_PSEUDO_CALL;
+}
+
 struct bpf_call_arg_meta {
 	struct bpf_map *map_ptr;
 	bool raw_mode;
@@ -496,6 +502,13 @@ static bool is_ptr_cast_function(enum bpf_func_id func_id)
 		func_id == BPF_FUNC_skc_to_udp6_sock ||
 		func_id == BPF_FUNC_skc_to_tcp_timewait_sock ||
 		func_id == BPF_FUNC_skc_to_tcp_request_sock;
+}
+
+static bool is_cmpxchg_insn(const struct bpf_insn *insn)
+{
+	return BPF_CLASS(insn->code) == BPF_STX &&
+	       BPF_MODE(insn->code) == BPF_ATOMIC &&
+	       insn->imm == BPF_CMPXCHG;
 }
 
 /* string representation of 'enum bpf_reg_type' */
@@ -1073,6 +1086,51 @@ static void mark_reg_known_zero(struct bpf_verifier_env *env,
 	__mark_reg_known_zero(regs + regno);
 }
 
+static void mark_ptr_not_null_reg(struct bpf_reg_state *reg)
+{
+	switch (reg->type) {
+	case PTR_TO_MAP_VALUE_OR_NULL: {
+		const struct bpf_map *map = reg->map_ptr;
+
+		if (map->inner_map_meta) {
+			reg->type = CONST_PTR_TO_MAP;
+			reg->map_ptr = map->inner_map_meta;
+		} else if (map->map_type == BPF_MAP_TYPE_XSKMAP) {
+			reg->type = PTR_TO_XDP_SOCK;
+		} else if (map->map_type == BPF_MAP_TYPE_SOCKMAP ||
+			   map->map_type == BPF_MAP_TYPE_SOCKHASH) {
+			reg->type = PTR_TO_SOCKET;
+		} else {
+			reg->type = PTR_TO_MAP_VALUE;
+		}
+		break;
+	}
+	case PTR_TO_SOCKET_OR_NULL:
+		reg->type = PTR_TO_SOCKET;
+		break;
+	case PTR_TO_SOCK_COMMON_OR_NULL:
+		reg->type = PTR_TO_SOCK_COMMON;
+		break;
+	case PTR_TO_TCP_SOCK_OR_NULL:
+		reg->type = PTR_TO_TCP_SOCK;
+		break;
+	case PTR_TO_BTF_ID_OR_NULL:
+		reg->type = PTR_TO_BTF_ID;
+		break;
+	case PTR_TO_MEM_OR_NULL:
+		reg->type = PTR_TO_MEM;
+		break;
+	case PTR_TO_RDONLY_BUF_OR_NULL:
+		reg->type = PTR_TO_RDONLY_BUF;
+		break;
+	case PTR_TO_RDWR_BUF_OR_NULL:
+		reg->type = PTR_TO_RDWR_BUF;
+		break;
+	default:
+		WARN_ONCE(1, "unknown nullable register type");
+	}
+}
+
 static bool reg_is_pkt_pointer(const struct bpf_reg_state *reg)
 {
 	return type_is_pkt_pointer(reg->type);
@@ -1484,9 +1542,7 @@ static int check_subprogs(struct bpf_verifier_env *env)
 
 	/* determine subprog starts. The end is one before the next starts */
 	for (i = 0; i < insn_cnt; i++) {
-		if (insn[i].code != (BPF_JMP | BPF_CALL))
-			continue;
-		if (insn[i].src_reg != BPF_PSEUDO_CALL)
+		if (!bpf_pseudo_call(insn + i))
 			continue;
 		if (!env->bpf_capable) {
 			verbose(env,
@@ -1652,7 +1708,11 @@ static bool is_reg64(struct bpf_verifier_env *env, struct bpf_insn *insn,
 	}
 
 	if (class == BPF_STX) {
-		if (reg->type != SCALAR_VALUE)
+		/* BPF_STX (including atomic variants) has multiple source
+		 * operands, one of which is a ptr. Check whether the caller is
+		 * asking about it.
+		 */
+		if (t == SRC_OP && reg->type != SCALAR_VALUE)
 			return true;
 		return BPF_SIZE(code) == BPF_DW;
 	}
@@ -1684,22 +1744,38 @@ static bool is_reg64(struct bpf_verifier_env *env, struct bpf_insn *insn,
 	return true;
 }
 
-/* Return TRUE if INSN doesn't have explicit value define. */
-static bool insn_no_def(struct bpf_insn *insn)
+/* Return the regno defined by the insn, or -1. */
+static int insn_def_regno(const struct bpf_insn *insn)
 {
-	u8 class = BPF_CLASS(insn->code);
-
-	return (class == BPF_JMP || class == BPF_JMP32 ||
-		class == BPF_STX || class == BPF_ST);
+	switch (BPF_CLASS(insn->code)) {
+	case BPF_JMP:
+	case BPF_JMP32:
+	case BPF_ST:
+		return -1;
+	case BPF_STX:
+		if (BPF_MODE(insn->code) == BPF_ATOMIC &&
+		    (insn->imm & BPF_FETCH)) {
+			if (insn->imm == BPF_CMPXCHG)
+				return BPF_REG_0;
+			else
+				return insn->src_reg;
+		} else {
+			return -1;
+		}
+	default:
+		return insn->dst_reg;
+	}
 }
 
 /* Return TRUE if INSN has defined any 32-bit value explicitly. */
 static bool insn_has_def32(struct bpf_verifier_env *env, struct bpf_insn *insn)
 {
-	if (insn_no_def(insn))
+	int dst_reg = insn_def_regno(insn);
+
+	if (dst_reg == -1)
 		return false;
 
-	return !is_reg64(env, insn, insn->dst_reg, NULL, DST_OP);
+	return !is_reg64(env, insn, dst_reg, NULL, DST_OP);
 }
 
 static void mark_insn_zext(struct bpf_verifier_env *env,
@@ -3327,9 +3403,7 @@ process_func:
 continue_func:
 	subprog_end = subprog[idx + 1].start;
 	for (; i < subprog_end; i++) {
-		if (insn[i].code != (BPF_JMP | BPF_CALL))
-			continue;
-		if (insn[i].src_reg != BPF_PSEUDO_CALL)
+		if (!bpf_pseudo_call(insn + i))
 			continue;
 		/* remember insn and function to return to */
 		ret_insn[frame] = i + 1;
@@ -3944,13 +4018,30 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 	return err;
 }
 
-static int check_xadd(struct bpf_verifier_env *env, int insn_idx, struct bpf_insn *insn)
+static int check_atomic(struct bpf_verifier_env *env, int insn_idx, struct bpf_insn *insn)
 {
+	int load_reg;
 	int err;
 
-	if ((BPF_SIZE(insn->code) != BPF_W && BPF_SIZE(insn->code) != BPF_DW) ||
-	    insn->imm != 0) {
-		verbose(env, "BPF_XADD uses reserved fields\n");
+	switch (insn->imm) {
+	case BPF_ADD:
+	case BPF_ADD | BPF_FETCH:
+	case BPF_AND:
+	case BPF_AND | BPF_FETCH:
+	case BPF_OR:
+	case BPF_OR | BPF_FETCH:
+	case BPF_XOR:
+	case BPF_XOR | BPF_FETCH:
+	case BPF_XCHG:
+	case BPF_CMPXCHG:
+		break;
+	default:
+		verbose(env, "BPF_ATOMIC uses invalid atomic opcode %02x\n", insn->imm);
+		return -EINVAL;
+	}
+
+	if (BPF_SIZE(insn->code) != BPF_W && BPF_SIZE(insn->code) != BPF_DW) {
+		verbose(env, "invalid atomic operand size\n");
 		return -EINVAL;
 	}
 
@@ -3964,6 +4055,13 @@ static int check_xadd(struct bpf_verifier_env *env, int insn_idx, struct bpf_ins
 	if (err)
 		return err;
 
+	if (insn->imm == BPF_CMPXCHG) {
+		/* Check comparison of R0 with memory location */
+		err = check_reg_arg(env, BPF_REG_0, SRC_OP);
+		if (err)
+			return err;
+	}
+
 	if (is_pointer_value(env, insn->src_reg)) {
 		verbose(env, "R%d leaks addr into mem\n", insn->src_reg);
 		return -EACCES;
@@ -3973,21 +4071,42 @@ static int check_xadd(struct bpf_verifier_env *env, int insn_idx, struct bpf_ins
 	    is_pkt_reg(env, insn->dst_reg) ||
 	    is_flow_key_reg(env, insn->dst_reg) ||
 	    is_sk_reg(env, insn->dst_reg)) {
-		verbose(env, "BPF_XADD stores into R%d %s is not allowed\n",
+		verbose(env, "BPF_ATOMIC stores into R%d %s is not allowed\n",
 			insn->dst_reg,
 			reg_type_str[reg_state(env, insn->dst_reg)->type]);
 		return -EACCES;
 	}
 
-	/* check whether atomic_add can read the memory */
+	if (insn->imm & BPF_FETCH) {
+		if (insn->imm == BPF_CMPXCHG)
+			load_reg = BPF_REG_0;
+		else
+			load_reg = insn->src_reg;
+
+		/* check and record load of old value */
+		err = check_reg_arg(env, load_reg, DST_OP);
+		if (err)
+			return err;
+	} else {
+		/* This instruction accesses a memory location but doesn't
+		 * actually load it into a register.
+		 */
+		load_reg = -1;
+	}
+
+	/* check whether we can read the memory */
 	err = check_mem_access(env, insn_idx, insn->dst_reg, insn->off,
-			       BPF_SIZE(insn->code), BPF_READ, -1, true);
+			       BPF_SIZE(insn->code), BPF_READ, load_reg, true);
 	if (err)
 		return err;
 
-	/* check whether atomic_add can write into the same memory */
-	return check_mem_access(env, insn_idx, insn->dst_reg, insn->off,
-				BPF_SIZE(insn->code), BPF_WRITE, -1, true);
+	/* check whether we can write into the same memory */
+	err = check_mem_access(env, insn_idx, insn->dst_reg, insn->off,
+			       BPF_SIZE(insn->code), BPF_WRITE, -1, true);
+	if (err)
+		return err;
+
+	return 0;
 }
 
 /* When register 'regno' is used to read the stack (either directly or through
@@ -4176,6 +4295,29 @@ static int check_helper_mem_access(struct bpf_verifier_env *env, int regno,
 			reg_type_str[PTR_TO_STACK]);
 		return -EACCES;
 	}
+}
+
+int check_mem_reg(struct bpf_verifier_env *env, struct bpf_reg_state *reg,
+		   u32 regno, u32 mem_size)
+{
+	if (register_is_null(reg))
+		return 0;
+
+	if (reg_type_may_be_null(reg->type)) {
+		/* Assuming that the register contains a value check if the memory
+		 * access is safe. Temporarily save and restore the register's state as
+		 * the conversion shouldn't be visible to a caller.
+		 */
+		const struct bpf_reg_state saved_reg = *reg;
+		int rv;
+
+		mark_ptr_not_null_reg(reg);
+		rv = check_helper_mem_access(env, regno, mem_size, true, NULL);
+		*reg = saved_reg;
+		return rv;
+	}
+
+	return check_helper_mem_access(env, regno, mem_size, true, NULL);
 }
 
 /* Implementation details:
@@ -4649,7 +4791,7 @@ skip_type_check:
 			err = mark_chain_precision(env, regno);
 	} else if (arg_type_is_alloc_size(arg_type)) {
 		if (!tnum_is_const(reg->var_off)) {
-			verbose(env, "R%d unbounded size, use 'var &= const' or 'if (var < const)'\n",
+			verbose(env, "R%d is not a known constant'\n",
 				regno);
 			return -EACCES;
 		}
@@ -6682,7 +6824,7 @@ static void scalar32_min_max_rsh(struct bpf_reg_state *dst_reg,
 	 * 3) the signed bounds cross zero, so they tell us nothing
 	 *    about the result
 	 * If the value in dst_reg is known nonnegative, then again the
-	 * unsigned bounts capture the signed bounds.
+	 * unsigned bounds capture the signed bounds.
 	 * Thus, in all cases it suffices to blow away our signed bounds
 	 * and rely on inferring new ones from the unsigned bounds and
 	 * var_off of the result.
@@ -6713,7 +6855,7 @@ static void scalar_min_max_rsh(struct bpf_reg_state *dst_reg,
 	 * 3) the signed bounds cross zero, so they tell us nothing
 	 *    about the result
 	 * If the value in dst_reg is known nonnegative, then again the
-	 * unsigned bounts capture the signed bounds.
+	 * unsigned bounds capture the signed bounds.
 	 * Thus, in all cases it suffices to blow away our signed bounds
 	 * and rely on inferring new ones from the unsigned bounds and
 	 * var_off of the result.
@@ -7778,43 +7920,19 @@ static void mark_ptr_or_null_reg(struct bpf_func_state *state,
 		}
 		if (is_null) {
 			reg->type = SCALAR_VALUE;
-		} else if (reg->type == PTR_TO_MAP_VALUE_OR_NULL) {
-			const struct bpf_map *map = reg->map_ptr;
-
-			if (map->inner_map_meta) {
-				reg->type = CONST_PTR_TO_MAP;
-				reg->map_ptr = map->inner_map_meta;
-			} else if (map->map_type == BPF_MAP_TYPE_XSKMAP) {
-				reg->type = PTR_TO_XDP_SOCK;
-			} else if (map->map_type == BPF_MAP_TYPE_SOCKMAP ||
-				   map->map_type == BPF_MAP_TYPE_SOCKHASH) {
-				reg->type = PTR_TO_SOCKET;
-			} else {
-				reg->type = PTR_TO_MAP_VALUE;
-			}
-		} else if (reg->type == PTR_TO_SOCKET_OR_NULL) {
-			reg->type = PTR_TO_SOCKET;
-		} else if (reg->type == PTR_TO_SOCK_COMMON_OR_NULL) {
-			reg->type = PTR_TO_SOCK_COMMON;
-		} else if (reg->type == PTR_TO_TCP_SOCK_OR_NULL) {
-			reg->type = PTR_TO_TCP_SOCK;
-		} else if (reg->type == PTR_TO_BTF_ID_OR_NULL) {
-			reg->type = PTR_TO_BTF_ID;
-		} else if (reg->type == PTR_TO_MEM_OR_NULL) {
-			reg->type = PTR_TO_MEM;
-		} else if (reg->type == PTR_TO_RDONLY_BUF_OR_NULL) {
-			reg->type = PTR_TO_RDONLY_BUF;
-		} else if (reg->type == PTR_TO_RDWR_BUF_OR_NULL) {
-			reg->type = PTR_TO_RDWR_BUF;
-		}
-		if (is_null) {
 			/* We don't need id and ref_obj_id from this point
 			 * onwards anymore, thus we should better reset it,
 			 * so that state pruning has chances to take effect.
 			 */
 			reg->id = 0;
 			reg->ref_obj_id = 0;
-		} else if (!reg_may_point_to_spin_lock(reg)) {
+
+			return;
+		}
+
+		mark_ptr_not_null_reg(reg);
+
+		if (!reg_may_point_to_spin_lock(reg)) {
 			/* For not-NULL ptr, reg->ref_obj_id will be reset
 			 * in release_reg_references().
 			 *
@@ -8397,6 +8515,9 @@ static int check_return_code(struct bpf_verifier_env *env)
 		    env->prog->expected_attach_type == BPF_CGROUP_INET4_GETSOCKNAME ||
 		    env->prog->expected_attach_type == BPF_CGROUP_INET6_GETSOCKNAME)
 			range = tnum_range(1, 1);
+		if (env->prog->expected_attach_type == BPF_CGROUP_INET4_BIND ||
+		    env->prog->expected_attach_type == BPF_CGROUP_INET6_BIND)
+			range = tnum_range(0, 3);
 		break;
 	case BPF_PROG_TYPE_CGROUP_SKB:
 		if (env->prog->expected_attach_type == BPF_CGROUP_INET_EGRESS) {
@@ -9986,12 +10107,17 @@ static int do_check(struct bpf_verifier_env *env)
 		} else if (class == BPF_STX) {
 			enum bpf_reg_type *prev_dst_type, dst_reg_type;
 
-			if (BPF_MODE(insn->code) == BPF_XADD) {
-				err = check_xadd(env, env->insn_idx, insn);
+			if (BPF_MODE(insn->code) == BPF_ATOMIC) {
+				err = check_atomic(env, env->insn_idx, insn);
 				if (err)
 					return err;
 				env->insn_idx++;
 				continue;
+			}
+
+			if (BPF_MODE(insn->code) != BPF_MEM || insn->imm != 0) {
+				verbose(env, "BPF_STX uses reserved fields\n");
+				return -EINVAL;
 			}
 
 			/* check src1 operand */
@@ -10165,6 +10291,36 @@ process_bpf_exit:
 	return 0;
 }
 
+static int find_btf_percpu_datasec(struct btf *btf)
+{
+	const struct btf_type *t;
+	const char *tname;
+	int i, n;
+
+	/*
+	 * Both vmlinux and module each have their own ".data..percpu"
+	 * DATASECs in BTF. So for module's case, we need to skip vmlinux BTF
+	 * types to look at only module's own BTF types.
+	 */
+	n = btf_nr_types(btf);
+	if (btf_is_module(btf))
+		i = btf_nr_types(btf_vmlinux);
+	else
+		i = 1;
+
+	for(; i < n; i++) {
+		t = btf_type_by_id(btf, i);
+		if (BTF_INFO_KIND(t->info) != BTF_KIND_DATASEC)
+			continue;
+
+		tname = btf_name_by_offset(btf, t->name_off);
+		if (!strcmp(tname, ".data..percpu"))
+			return i;
+	}
+
+	return -ENOENT;
+}
+
 /* replace pseudo btf_id with kernel symbol address */
 static int check_pseudo_btf_id(struct bpf_verifier_env *env,
 			       struct bpf_insn *insn,
@@ -10172,48 +10328,57 @@ static int check_pseudo_btf_id(struct bpf_verifier_env *env,
 {
 	const struct btf_var_secinfo *vsi;
 	const struct btf_type *datasec;
+	struct btf_mod_pair *btf_mod;
 	const struct btf_type *t;
 	const char *sym_name;
 	bool percpu = false;
 	u32 type, id = insn->imm;
+	struct btf *btf;
 	s32 datasec_id;
 	u64 addr;
-	int i;
+	int i, btf_fd, err;
 
-	if (!btf_vmlinux) {
-		verbose(env, "kernel is missing BTF, make sure CONFIG_DEBUG_INFO_BTF=y is specified in Kconfig.\n");
-		return -EINVAL;
+	btf_fd = insn[1].imm;
+	if (btf_fd) {
+		btf = btf_get_by_fd(btf_fd);
+		if (IS_ERR(btf)) {
+			verbose(env, "invalid module BTF object FD specified.\n");
+			return -EINVAL;
+		}
+	} else {
+		if (!btf_vmlinux) {
+			verbose(env, "kernel is missing BTF, make sure CONFIG_DEBUG_INFO_BTF=y is specified in Kconfig.\n");
+			return -EINVAL;
+		}
+		btf = btf_vmlinux;
+		btf_get(btf);
 	}
 
-	if (insn[1].imm != 0) {
-		verbose(env, "reserved field (insn[1].imm) is used in pseudo_btf_id ldimm64 insn.\n");
-		return -EINVAL;
-	}
-
-	t = btf_type_by_id(btf_vmlinux, id);
+	t = btf_type_by_id(btf, id);
 	if (!t) {
 		verbose(env, "ldimm64 insn specifies invalid btf_id %d.\n", id);
-		return -ENOENT;
+		err = -ENOENT;
+		goto err_put;
 	}
 
 	if (!btf_type_is_var(t)) {
-		verbose(env, "pseudo btf_id %d in ldimm64 isn't KIND_VAR.\n",
-			id);
-		return -EINVAL;
+		verbose(env, "pseudo btf_id %d in ldimm64 isn't KIND_VAR.\n", id);
+		err = -EINVAL;
+		goto err_put;
 	}
 
-	sym_name = btf_name_by_offset(btf_vmlinux, t->name_off);
+	sym_name = btf_name_by_offset(btf, t->name_off);
 	addr = kallsyms_lookup_name(sym_name);
 	if (!addr) {
 		verbose(env, "ldimm64 failed to find the address for kernel symbol '%s'.\n",
 			sym_name);
-		return -ENOENT;
+		err = -ENOENT;
+		goto err_put;
 	}
 
-	datasec_id = btf_find_by_name_kind(btf_vmlinux, ".data..percpu",
-					   BTF_KIND_DATASEC);
+	datasec_id = find_btf_percpu_datasec(btf);
 	if (datasec_id > 0) {
-		datasec = btf_type_by_id(btf_vmlinux, datasec_id);
+		datasec = btf_type_by_id(btf, datasec_id);
 		for_each_vsi(i, datasec, vsi) {
 			if (vsi->type == id) {
 				percpu = true;
@@ -10226,10 +10391,10 @@ static int check_pseudo_btf_id(struct bpf_verifier_env *env,
 	insn[1].imm = addr >> 32;
 
 	type = t->type;
-	t = btf_type_skip_modifiers(btf_vmlinux, type, NULL);
+	t = btf_type_skip_modifiers(btf, type, NULL);
 	if (percpu) {
 		aux->btf_var.reg_type = PTR_TO_PERCPU_BTF_ID;
-		aux->btf_var.btf = btf_vmlinux;
+		aux->btf_var.btf = btf;
 		aux->btf_var.btf_id = type;
 	} else if (!btf_type_is_struct(t)) {
 		const struct btf_type *ret;
@@ -10237,21 +10402,54 @@ static int check_pseudo_btf_id(struct bpf_verifier_env *env,
 		u32 tsize;
 
 		/* resolve the type size of ksym. */
-		ret = btf_resolve_size(btf_vmlinux, t, &tsize);
+		ret = btf_resolve_size(btf, t, &tsize);
 		if (IS_ERR(ret)) {
-			tname = btf_name_by_offset(btf_vmlinux, t->name_off);
+			tname = btf_name_by_offset(btf, t->name_off);
 			verbose(env, "ldimm64 unable to resolve the size of type '%s': %ld\n",
 				tname, PTR_ERR(ret));
-			return -EINVAL;
+			err = -EINVAL;
+			goto err_put;
 		}
 		aux->btf_var.reg_type = PTR_TO_MEM;
 		aux->btf_var.mem_size = tsize;
 	} else {
 		aux->btf_var.reg_type = PTR_TO_BTF_ID;
-		aux->btf_var.btf = btf_vmlinux;
+		aux->btf_var.btf = btf;
 		aux->btf_var.btf_id = type;
 	}
+
+	/* check whether we recorded this BTF (and maybe module) already */
+	for (i = 0; i < env->used_btf_cnt; i++) {
+		if (env->used_btfs[i].btf == btf) {
+			btf_put(btf);
+			return 0;
+		}
+	}
+
+	if (env->used_btf_cnt >= MAX_USED_BTFS) {
+		err = -E2BIG;
+		goto err_put;
+	}
+
+	btf_mod = &env->used_btfs[env->used_btf_cnt];
+	btf_mod->btf = btf;
+	btf_mod->module = NULL;
+
+	/* if we reference variables from kernel module, bump its refcount */
+	if (btf_is_module(btf)) {
+		btf_mod->module = btf_try_get_module(btf);
+		if (!btf_mod->module) {
+			err = -ENXIO;
+			goto err_put;
+		}
+	}
+
+	env->used_btf_cnt++;
+
 	return 0;
+err_put:
+	btf_put(btf);
+	return err;
 }
 
 static int check_map_prealloc(struct bpf_map *map)
@@ -10353,15 +10551,22 @@ static int check_map_prog_compatibility(struct bpf_verifier_env *env,
 		case BPF_MAP_TYPE_HASH:
 		case BPF_MAP_TYPE_LRU_HASH:
 		case BPF_MAP_TYPE_ARRAY:
+		case BPF_MAP_TYPE_PERCPU_HASH:
+		case BPF_MAP_TYPE_PERCPU_ARRAY:
+		case BPF_MAP_TYPE_LRU_PERCPU_HASH:
+		case BPF_MAP_TYPE_ARRAY_OF_MAPS:
+		case BPF_MAP_TYPE_HASH_OF_MAPS:
 			if (!is_preallocated_map(map)) {
 				verbose(env,
-					"Sleepable programs can only use preallocated hash maps\n");
+					"Sleepable programs can only use preallocated maps\n");
 				return -EINVAL;
 			}
 			break;
+		case BPF_MAP_TYPE_RINGBUF:
+			break;
 		default:
 			verbose(env,
-				"Sleepable programs can only use array and hash maps\n");
+				"Sleepable programs can only use array, hash, and ringbuf maps\n");
 			return -EINVAL;
 		}
 
@@ -10395,13 +10600,6 @@ static int resolve_pseudo_ldimm64(struct bpf_verifier_env *env)
 		if (BPF_CLASS(insn->code) == BPF_LDX &&
 		    (BPF_MODE(insn->code) != BPF_MEM || insn->imm != 0)) {
 			verbose(env, "BPF_LDX uses reserved fields\n");
-			return -EINVAL;
-		}
-
-		if (BPF_CLASS(insn->code) == BPF_STX &&
-		    ((BPF_MODE(insn->code) != BPF_MEM &&
-		      BPF_MODE(insn->code) != BPF_XADD) || insn->imm != 0)) {
-			verbose(env, "BPF_STX uses reserved fields\n");
 			return -EINVAL;
 		}
 
@@ -10546,6 +10744,13 @@ static void release_maps(struct bpf_verifier_env *env)
 {
 	__bpf_free_used_maps(env->prog->aux, env->used_maps,
 			     env->used_map_cnt);
+}
+
+/* drop refcnt of maps used by the rejected program */
+static void release_btfs(struct bpf_verifier_env *env)
+{
+	__bpf_free_used_btfs(env->prog->aux, env->used_btfs,
+			     env->used_btf_cnt);
 }
 
 /* convert pseudo BPF_LD_IMM64 into generic BPF_LD_IMM64 */
@@ -10919,8 +11124,10 @@ static int opt_subreg_zext_lo32_rnd_hi32(struct bpf_verifier_env *env,
 	for (i = 0; i < len; i++) {
 		int adj_idx = i + delta;
 		struct bpf_insn insn;
+		int load_reg;
 
 		insn = insns[adj_idx];
+		load_reg = insn_def_regno(&insn);
 		if (!aux[adj_idx].zext_dst) {
 			u8 code, class;
 			u32 imm_rnd;
@@ -10930,14 +11137,14 @@ static int opt_subreg_zext_lo32_rnd_hi32(struct bpf_verifier_env *env,
 
 			code = insn.code;
 			class = BPF_CLASS(code);
-			if (insn_no_def(&insn))
+			if (load_reg == -1)
 				continue;
 
 			/* NOTE: arg "reg" (the fourth one) is only used for
-			 *       BPF_STX which has been ruled out in above
-			 *       check, it is safe to pass NULL here.
+			 *       BPF_STX + SRC_OP, so it is safe to pass NULL
+			 *       here.
 			 */
-			if (is_reg64(env, &insn, insn.dst_reg, NULL, DST_OP)) {
+			if (is_reg64(env, &insn, load_reg, NULL, DST_OP)) {
 				if (class == BPF_LD &&
 				    BPF_MODE(code) == BPF_IMM)
 					i++;
@@ -10952,18 +11159,33 @@ static int opt_subreg_zext_lo32_rnd_hi32(struct bpf_verifier_env *env,
 			imm_rnd = get_random_int();
 			rnd_hi32_patch[0] = insn;
 			rnd_hi32_patch[1].imm = imm_rnd;
-			rnd_hi32_patch[3].dst_reg = insn.dst_reg;
+			rnd_hi32_patch[3].dst_reg = load_reg;
 			patch = rnd_hi32_patch;
 			patch_len = 4;
 			goto apply_patch_buffer;
 		}
 
-		if (!bpf_jit_needs_zext())
+		/* Add in an zero-extend instruction if a) the JIT has requested
+		 * it or b) it's a CMPXCHG.
+		 *
+		 * The latter is because: BPF_CMPXCHG always loads a value into
+		 * R0, therefore always zero-extends. However some archs'
+		 * equivalent instruction only does this load when the
+		 * comparison is successful. This detail of CMPXCHG is
+		 * orthogonal to the general zero-extension behaviour of the
+		 * CPU, so it's treated independently of bpf_jit_needs_zext.
+		 */
+		if (!bpf_jit_needs_zext() && !is_cmpxchg_insn(&insn))
 			continue;
 
+		if (WARN_ON(load_reg == -1)) {
+			verbose(env, "verifier bug. zext_dst is set, but no reg is defined\n");
+			return -EFAULT;
+		}
+
 		zext_patch[0] = insn;
-		zext_patch[1].dst_reg = insn.dst_reg;
-		zext_patch[1].src_reg = insn.dst_reg;
+		zext_patch[1].dst_reg = load_reg;
+		zext_patch[1].src_reg = load_reg;
 		patch = zext_patch;
 		patch_len = 2;
 apply_patch_buffer:
@@ -11179,8 +11401,7 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 		return 0;
 
 	for (i = 0, insn = prog->insnsi; i < prog->len; i++, insn++) {
-		if (insn->code != (BPF_JMP | BPF_CALL) ||
-		    insn->src_reg != BPF_PSEUDO_CALL)
+		if (!bpf_pseudo_call(insn))
 			continue;
 		/* Upon error here we cannot fall back to interpreter but
 		 * need a hard reject of the program. Thus -EFAULT is
@@ -11221,7 +11442,7 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 		/* BPF_PROG_RUN doesn't call subprogs directly,
 		 * hence main prog stats include the runtime of subprogs.
 		 * subprogs don't have IDs and not reachable via prog_get_next_id
-		 * func[i]->aux->stats will never be accessed and stays NULL
+		 * func[i]->stats will never be accessed and stays NULL
 		 */
 		func[i] = bpf_prog_alloc_no_stats(bpf_prog_size(len), GFP_USER);
 		if (!func[i])
@@ -11309,8 +11530,7 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 	for (i = 0; i < env->subprog_cnt; i++) {
 		insn = func[i]->insnsi;
 		for (j = 0; j < func[i]->len; j++, insn++) {
-			if (insn->code != (BPF_JMP | BPF_CALL) ||
-			    insn->src_reg != BPF_PSEUDO_CALL)
+			if (!bpf_pseudo_call(insn))
 				continue;
 			subprog = insn->off;
 			insn->imm = BPF_CAST_CALL(func[subprog]->bpf_func) -
@@ -11355,8 +11575,7 @@ static int jit_subprogs(struct bpf_verifier_env *env)
 	 * later look the same as if they were interpreted only.
 	 */
 	for (i = 0, insn = prog->insnsi; i < prog->len; i++, insn++) {
-		if (insn->code != (BPF_JMP | BPF_CALL) ||
-		    insn->src_reg != BPF_PSEUDO_CALL)
+		if (!bpf_pseudo_call(insn))
 			continue;
 		insn->off = env->insn_aux_data[i].call_imm;
 		subprog = find_subprog(env, i + insn->off + 1);
@@ -11385,8 +11604,7 @@ out_undo_insn:
 	/* cleanup main prog to be interpreted */
 	prog->jit_requested = 0;
 	for (i = 0, insn = prog->insnsi; i < prog->len; i++, insn++) {
-		if (insn->code != (BPF_JMP | BPF_CALL) ||
-		    insn->src_reg != BPF_PSEUDO_CALL)
+		if (!bpf_pseudo_call(insn))
 			continue;
 		insn->off = 0;
 		insn->imm = env->insn_aux_data[i].call_imm;
@@ -11421,8 +11639,7 @@ static int fixup_call_args(struct bpf_verifier_env *env)
 		return -EINVAL;
 	}
 	for (i = 0; i < prog->len; i++, insn++) {
-		if (insn->code != (BPF_JMP | BPF_CALL) ||
-		    insn->src_reg != BPF_PSEUDO_CALL)
+		if (!bpf_pseudo_call(insn))
 			continue;
 		depth = get_callee_stack_depth(env, insn, i);
 		if (depth < 0)
@@ -11888,6 +12105,13 @@ static int do_check_common(struct bpf_verifier_env *env, int subprog)
 				mark_reg_known_zero(env, regs, i);
 			else if (regs[i].type == SCALAR_VALUE)
 				mark_reg_unknown(env, regs, i);
+			else if (regs[i].type == PTR_TO_MEM_OR_NULL) {
+				const u32 mem_size = regs[i].mem_size;
+
+				mark_reg_known_zero(env, regs, i);
+				regs[i].mem_size = mem_size;
+				regs[i].id = ++env->id_gen;
+			}
 		}
 	} else {
 		/* 1st arg to a function */
@@ -12567,7 +12791,10 @@ skip_full_check:
 		goto err_release_maps;
 	}
 
-	if (ret == 0 && env->used_map_cnt) {
+	if (ret)
+		goto err_release_maps;
+
+	if (env->used_map_cnt) {
 		/* if program passed verifier, update used_maps in bpf_prog_info */
 		env->prog->aux->used_maps = kmalloc_array(env->used_map_cnt,
 							  sizeof(env->used_maps[0]),
@@ -12581,15 +12808,29 @@ skip_full_check:
 		memcpy(env->prog->aux->used_maps, env->used_maps,
 		       sizeof(env->used_maps[0]) * env->used_map_cnt);
 		env->prog->aux->used_map_cnt = env->used_map_cnt;
+	}
+	if (env->used_btf_cnt) {
+		/* if program passed verifier, update used_btfs in bpf_prog_aux */
+		env->prog->aux->used_btfs = kmalloc_array(env->used_btf_cnt,
+							  sizeof(env->used_btfs[0]),
+							  GFP_KERNEL);
+		if (!env->prog->aux->used_btfs) {
+			ret = -ENOMEM;
+			goto err_release_maps;
+		}
 
+		memcpy(env->prog->aux->used_btfs, env->used_btfs,
+		       sizeof(env->used_btfs[0]) * env->used_btf_cnt);
+		env->prog->aux->used_btf_cnt = env->used_btf_cnt;
+	}
+	if (env->used_map_cnt || env->used_btf_cnt) {
 		/* program is valid. Convert pseudo bpf_ld_imm64 into generic
 		 * bpf_ld_imm64 instructions
 		 */
 		convert_pseudo_ld_imm64(env);
 	}
 
-	if (ret == 0)
-		adjust_btf_func(env);
+	adjust_btf_func(env);
 
 err_release_maps:
 	if (!env->prog->aux->used_maps)
@@ -12597,6 +12838,8 @@ err_release_maps:
 		 * them now. Otherwise free_used_maps() will release them.
 		 */
 		release_maps(env);
+	if (!env->prog->aux->used_btfs)
+		release_btfs(env);
 
 	/* extension progs temporarily inherit the attach_type of their targets
 	   for verification purposes, so set it back to zero before returning

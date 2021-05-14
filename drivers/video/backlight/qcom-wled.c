@@ -1705,7 +1705,7 @@ static int wled_probe(struct platform_device *pdev)
 
 static int wled_remove(struct platform_device *pdev)
 {
-	struct wled *wled = dev_get_drvdata(&pdev->dev);
+	struct wled *wled = platform_get_drvdata(pdev);
 
 	mutex_destroy(&wled->lock);
 	cancel_delayed_work_sync(&wled->ovp_work);

@@ -213,7 +213,7 @@ static int btrfs_ioctl_setflags(struct file *file, void __user *arg)
 	const char *comp = NULL;
 	u32 binode_flags;
 
-	if (!inode_owner_or_capable(inode))
+	if (!inode_owner_or_capable(&init_user_ns, inode))
 		return -EPERM;
 
 	if (btrfs_root_readonly(root))
@@ -226,7 +226,7 @@ static int btrfs_ioctl_setflags(struct file *file, void __user *arg)
 	if (ret)
 		return ret;
 
-	inode_lock(inode);
+	btrfs_inode_lock(inode, 0);
 	fsflags = btrfs_mask_fsflags_for_type(inode, fsflags);
 	old_fsflags = btrfs_inode_flags_to_fsflags(binode->flags);
 
@@ -353,7 +353,7 @@ static int btrfs_ioctl_setflags(struct file *file, void __user *arg)
  out_end_trans:
 	btrfs_end_transaction(trans);
  out_unlock:
-	inode_unlock(inode);
+	btrfs_inode_unlock(inode, 0);
 	mnt_drop_write_file(file);
 	return ret;
 }
@@ -429,7 +429,7 @@ static int btrfs_ioctl_fssetxattr(struct file *file, void __user *arg)
 	unsigned old_i_flags;
 	int ret = 0;
 
-	if (!inode_owner_or_capable(inode))
+	if (!inode_owner_or_capable(&init_user_ns, inode))
 		return -EPERM;
 
 	if (btrfs_root_readonly(root))
@@ -449,7 +449,7 @@ static int btrfs_ioctl_fssetxattr(struct file *file, void __user *arg)
 	if (ret)
 		return ret;
 
-	inode_lock(inode);
+	btrfs_inode_lock(inode, 0);
 
 	old_flags = binode->flags;
 	old_i_flags = inode->i_flags;
@@ -501,7 +501,7 @@ out_unlock:
 		inode->i_flags = old_i_flags;
 	}
 
-	inode_unlock(inode);
+	btrfs_inode_unlock(inode, 0);
 	mnt_drop_write_file(file);
 
 	return ret;
@@ -526,6 +526,14 @@ static noinline int btrfs_ioctl_fitrim(struct btrfs_fs_info *fs_info,
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
+
+	/*
+	 * btrfs_trim_block_group() depends on space cache, which is not
+	 * available in zoned filesystem. So, disallow fitrim on a zoned
+	 * filesystem for now.
+	 */
+	if (btrfs_is_zoned(fs_info))
+		return -EOPNOTSUPP;
 
 	/*
 	 * If the fs is mounted with nologreplay, which requires it to be
@@ -606,14 +614,13 @@ static noinline int create_subvol(struct inode *dir,
 	int err;
 	dev_t anon_dev = 0;
 	u64 objectid;
-	u64 new_dirid = BTRFS_FIRST_FREE_OBJECTID;
 	u64 index = 0;
 
 	root_item = kzalloc(sizeof(*root_item), GFP_KERNEL);
 	if (!root_item)
 		return -ENOMEM;
 
-	ret = btrfs_find_free_objectid(fs_info->tree_root, &objectid);
+	ret = btrfs_get_free_objectid(fs_info->tree_root, &objectid);
 	if (ret)
 		goto fail_free;
 
@@ -691,7 +698,7 @@ static noinline int create_subvol(struct inode *dir,
 
 	btrfs_tree_unlock(leaf);
 
-	btrfs_set_root_dirid(root_item, new_dirid);
+	btrfs_set_root_dirid(root_item, BTRFS_FIRST_FREE_OBJECTID);
 
 	key.objectid = objectid;
 	key.offset = 0;
@@ -728,17 +735,13 @@ static noinline int create_subvol(struct inode *dir,
 
 	btrfs_record_root_in_trans(trans, new_root);
 
-	ret = btrfs_create_subvol_root(trans, new_root, root, new_dirid);
+	ret = btrfs_create_subvol_root(trans, new_root, root);
 	btrfs_put_root(new_root);
 	if (ret) {
 		/* We potentially lose an unused inode item here */
 		btrfs_abort_transaction(trans, ret);
 		goto fail;
 	}
-
-	mutex_lock(&new_root->objectid_mutex);
-	new_root->highest_objectid = new_dirid;
-	mutex_unlock(&new_root->objectid_mutex);
 
 	/*
 	 * insert the directory item
@@ -934,13 +937,14 @@ static int btrfs_may_delete(struct inode *dir, struct dentry *victim, int isdir)
 	BUG_ON(d_inode(victim->d_parent) != dir);
 	audit_inode_child(dir, victim, AUDIT_TYPE_CHILD_DELETE);
 
-	error = inode_permission(dir, MAY_WRITE | MAY_EXEC);
+	error = inode_permission(&init_user_ns, dir, MAY_WRITE | MAY_EXEC);
 	if (error)
 		return error;
 	if (IS_APPEND(dir))
 		return -EPERM;
-	if (check_sticky(dir, d_inode(victim)) || IS_APPEND(d_inode(victim)) ||
-	    IS_IMMUTABLE(d_inode(victim)) || IS_SWAPFILE(d_inode(victim)))
+	if (check_sticky(&init_user_ns, dir, d_inode(victim)) ||
+	    IS_APPEND(d_inode(victim)) || IS_IMMUTABLE(d_inode(victim)) ||
+	    IS_SWAPFILE(d_inode(victim)))
 		return -EPERM;
 	if (isdir) {
 		if (!d_is_dir(victim))
@@ -963,7 +967,7 @@ static inline int btrfs_may_create(struct inode *dir, struct dentry *child)
 		return -EEXIST;
 	if (IS_DEADDIR(dir))
 		return -ENOENT;
-	return inode_permission(dir, MAY_WRITE | MAY_EXEC);
+	return inode_permission(&init_user_ns, dir, MAY_WRITE | MAY_EXEC);
 }
 
 /*
@@ -1022,7 +1026,7 @@ out_up_read:
 out_dput:
 	dput(dentry);
 out_unlock:
-	inode_unlock(dir);
+	btrfs_inode_unlock(dir, 0);
 	return error;
 }
 
@@ -1331,6 +1335,13 @@ again:
 		if (!page)
 			break;
 
+		ret = set_page_extent_mapped(page);
+		if (ret < 0) {
+			unlock_page(page);
+			put_page(page);
+			break;
+		}
+
 		page_start = page_offset(page);
 		page_end = page_start + PAGE_SIZE - 1;
 		while (1) {
@@ -1452,7 +1463,6 @@ again:
 	for (i = 0; i < i_done; i++) {
 		clear_page_dirty_for_io(pages[i]);
 		ClearPageChecked(pages[i]);
-		set_page_extent_mapped(pages[i]);
 		set_page_dirty(pages[i]);
 		unlock_page(pages[i]);
 		put_page(pages[i]);
@@ -1614,7 +1624,7 @@ int btrfs_defrag_file(struct inode *inode, struct file *file,
 			ra_index += cluster;
 		}
 
-		inode_lock(inode);
+		btrfs_inode_lock(inode, 0);
 		if (IS_SWAPFILE(inode)) {
 			ret = -ETXTBSY;
 		} else {
@@ -1623,13 +1633,13 @@ int btrfs_defrag_file(struct inode *inode, struct file *file,
 			ret = cluster_pages_for_defrag(inode, pages, i, cluster);
 		}
 		if (ret < 0) {
-			inode_unlock(inode);
+			btrfs_inode_unlock(inode, 0);
 			goto out_ra;
 		}
 
 		defrag_count += ret;
 		balance_dirty_pages_ratelimited(inode->i_mapping);
-		inode_unlock(inode);
+		btrfs_inode_unlock(inode, 0);
 
 		if (newer_than) {
 			if (newer_off == (u64)-1)
@@ -1677,9 +1687,9 @@ int btrfs_defrag_file(struct inode *inode, struct file *file,
 
 out_ra:
 	if (do_compress) {
-		inode_lock(inode);
+		btrfs_inode_lock(inode, 0);
 		BTRFS_I(inode)->defrag_compress = BTRFS_COMPRESS_NONE;
-		inode_unlock(inode);
+		btrfs_inode_unlock(inode, 0);
 	}
 	if (!file)
 		kfree(ra);
@@ -1874,7 +1884,7 @@ static noinline int __btrfs_ioctl_snap_create(struct file *file,
 			btrfs_info(BTRFS_I(file_inode(file))->root->fs_info,
 				   "Snapshot src from another FS");
 			ret = -EXDEV;
-		} else if (!inode_owner_or_capable(src_inode)) {
+		} else if (!inode_owner_or_capable(&init_user_ns, src_inode)) {
 			/*
 			 * Subvolume creation is not restricted, but snapshots
 			 * are limited to own subvolumes only
@@ -2011,7 +2021,7 @@ static noinline int btrfs_ioctl_subvol_setflags(struct file *file,
 	u64 flags;
 	int ret = 0;
 
-	if (!inode_owner_or_capable(inode))
+	if (!inode_owner_or_capable(&init_user_ns, inode))
 		return -EPERM;
 
 	ret = mnt_want_write_file(file);
@@ -2567,7 +2577,8 @@ static int btrfs_search_path_in_tree_user(struct inode *inode,
 				ret = PTR_ERR(temp_inode);
 				goto out_put;
 			}
-			ret = inode_permission(temp_inode, MAY_READ | MAY_EXEC);
+			ret = inode_permission(&init_user_ns, temp_inode,
+					       MAY_READ | MAY_EXEC);
 			iput(temp_inode);
 			if (ret) {
 				ret = -EACCES;
@@ -3097,7 +3108,8 @@ static noinline int btrfs_ioctl_snap_destroy(struct file *file,
 		if (root == dest)
 			goto out_dput;
 
-		err = inode_permission(inode, MAY_WRITE | MAY_EXEC);
+		err = inode_permission(&init_user_ns, inode,
+				       MAY_WRITE | MAY_EXEC);
 		if (err)
 			goto out_dput;
 	}
@@ -3112,9 +3124,9 @@ static noinline int btrfs_ioctl_snap_destroy(struct file *file,
 		goto out_dput;
 	}
 
-	inode_lock(inode);
+	btrfs_inode_lock(inode, 0);
 	err = btrfs_delete_subvolume(dir, dentry);
-	inode_unlock(inode);
+	btrfs_inode_unlock(inode, 0);
 	if (!err) {
 		fsnotify_rmdir(dir, dentry);
 		d_delete(dentry);
@@ -3123,7 +3135,7 @@ static noinline int btrfs_ioctl_snap_destroy(struct file *file,
 out_dput:
 	dput(dentry);
 out_unlock_dir:
-	inode_unlock(dir);
+	btrfs_inode_unlock(dir, 0);
 free_subvol_name:
 	kfree(subvol_name_ptr);
 free_parent:
@@ -3168,7 +3180,7 @@ static int btrfs_ioctl_defrag(struct file *file, void __user *argp)
 		 * running and allows defrag on files open in read-only mode.
 		 */
 		if (!capable(CAP_SYS_ADMIN) &&
-		    inode_permission(inode, MAY_WRITE)) {
+		    inode_permission(&init_user_ns, inode, MAY_WRITE)) {
 			ret = -EPERM;
 			goto out;
 		}
@@ -4480,7 +4492,7 @@ static long _btrfs_ioctl_set_received_subvol(struct file *file,
 	int ret = 0;
 	int received_uuid_changed;
 
-	if (!inode_owner_or_capable(inode))
+	if (!inode_owner_or_capable(&init_user_ns, inode))
 		return -EPERM;
 
 	ret = mnt_want_write_file(file);
@@ -4980,7 +4992,7 @@ long btrfs_ioctl(struct file *file, unsigned int
 	case BTRFS_IOC_SYNC: {
 		int ret;
 
-		ret = btrfs_start_delalloc_roots(fs_info, U64_MAX, false);
+		ret = btrfs_start_delalloc_roots(fs_info, LONG_MAX, false);
 		if (ret)
 			return ret;
 		ret = btrfs_sync_fs(inode->i_sb, 1);

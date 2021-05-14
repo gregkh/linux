@@ -59,7 +59,7 @@
 #include <trace/events/ext4.h>
 
 static struct ext4_lazy_init *ext4_li_info;
-static struct mutex ext4_li_mtx;
+static DEFINE_MUTEX(ext4_li_mtx);
 static struct ratelimit_state ext4_mount_msg_ratelimit;
 
 static int ext4_load_journal(struct super_block *, struct ext4_super_block *,
@@ -5721,7 +5721,7 @@ static int ext4_sync_fs(struct super_block *sb, int wait)
 		needs_barrier = true;
 	if (needs_barrier) {
 		int err;
-		err = blkdev_issue_flush(sb->s_bdev, GFP_KERNEL);
+		err = blkdev_issue_flush(sb->s_bdev);
 		if (!ret)
 			ret = err;
 	}
@@ -6666,7 +6666,7 @@ static struct file_system_type ext4_fs_type = {
 	.name		= "ext4",
 	.mount		= ext4_mount,
 	.kill_sb	= kill_block_super,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_ALLOW_IDMAP,
 };
 MODULE_ALIAS_FS("ext4");
 
@@ -6679,7 +6679,6 @@ static int __init ext4_init_fs(void)
 
 	ratelimit_state_init(&ext4_mount_msg_ratelimit, 30 * HZ, 64);
 	ext4_li_info = NULL;
-	mutex_init(&ext4_li_mtx);
 
 	/* Build-time check for flags consistency */
 	ext4_check_flag_values();

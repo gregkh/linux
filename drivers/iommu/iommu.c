@@ -1980,6 +1980,16 @@ out_unlock:
 }
 EXPORT_SYMBOL_GPL(iommu_attach_device);
 
+int iommu_deferred_attach(struct device *dev, struct iommu_domain *domain)
+{
+	const struct iommu_ops *ops = domain->ops;
+
+	if (ops->is_attach_deferred && ops->is_attach_deferred(domain, dev))
+		return __iommu_attach_device(domain, dev);
+
+	return 0;
+}
+
 /*
  * Check flags and other user provided data for valid combinations. We also
  * make sure no reserved fields or unused flags are set. This is to ensure
@@ -2443,7 +2453,7 @@ static int _iommu_map(struct iommu_domain *domain, unsigned long iova,
 
 	ret = __iommu_map(domain, iova, paddr, size, prot, gfp);
 	if (ret == 0 && ops->iotlb_sync_map)
-		ops->iotlb_sync_map(domain);
+		ops->iotlb_sync_map(domain, iova, size);
 
 	return ret;
 }
@@ -2575,7 +2585,7 @@ static size_t __iommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 	}
 
 	if (ops->iotlb_sync_map)
-		ops->iotlb_sync_map(domain);
+		ops->iotlb_sync_map(domain, iova, mapped);
 	return mapped;
 
 out_err:
@@ -2599,7 +2609,6 @@ size_t iommu_map_sg_atomic(struct iommu_domain *domain, unsigned long iova,
 {
 	return __iommu_map_sg(domain, iova, sg, nents, prot, GFP_ATOMIC);
 }
-EXPORT_SYMBOL_GPL(iommu_map_sg_atomic);
 
 int iommu_domain_window_enable(struct iommu_domain *domain, u32 wnd_nr,
 			       phys_addr_t paddr, u64 size, int prot)
@@ -2611,15 +2620,6 @@ int iommu_domain_window_enable(struct iommu_domain *domain, u32 wnd_nr,
 						 prot);
 }
 EXPORT_SYMBOL_GPL(iommu_domain_window_enable);
-
-void iommu_domain_window_disable(struct iommu_domain *domain, u32 wnd_nr)
-{
-	if (unlikely(domain->ops->domain_window_disable == NULL))
-		return;
-
-	return domain->ops->domain_window_disable(domain, wnd_nr);
-}
-EXPORT_SYMBOL_GPL(iommu_domain_window_disable);
 
 /**
  * report_iommu_fault() - report about an IOMMU fault to the IOMMU framework
@@ -2876,17 +2876,6 @@ EXPORT_SYMBOL_GPL(iommu_fwspec_add_ids);
 /*
  * Per device IOMMU features.
  */
-bool iommu_dev_has_feature(struct device *dev, enum iommu_dev_features feat)
-{
-	const struct iommu_ops *ops = dev->bus->iommu_ops;
-
-	if (ops && ops->dev_has_feat)
-		return ops->dev_has_feat(dev, feat);
-
-	return false;
-}
-EXPORT_SYMBOL_GPL(iommu_dev_has_feature);
-
 int iommu_dev_enable_feature(struct device *dev, enum iommu_dev_features feat)
 {
 	if (dev->iommu && dev->iommu->iommu_dev) {

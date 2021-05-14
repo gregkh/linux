@@ -2834,7 +2834,7 @@ static int snd_djm_controls_info(struct snd_kcontrol *kctl,
 	if (!name)
 		return -EINVAL;
 
-	strlcpy(info->value.enumerated.name, name, sizeof(info->value.enumerated.name));
+	strscpy(info->value.enumerated.name, name, sizeof(info->value.enumerated.name));
 	info->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
 	info->count = 1;
 	info->value.enumerated.items = noptions;

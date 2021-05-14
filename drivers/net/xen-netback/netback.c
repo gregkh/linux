@@ -557,8 +557,8 @@ check_frags:
 	}
 
 	if (skb_has_frag_list(skb) && !first_shinfo) {
-		first_shinfo = skb_shinfo(skb);
-		shinfo = skb_shinfo(skb_shinfo(skb)->frag_list);
+		first_shinfo = shinfo;
+		shinfo = skb_shinfo(shinfo->frag_list);
 		nr_frags = shinfo->nr_frags;
 
 		goto check_frags;
@@ -1091,7 +1091,7 @@ static int xenvif_handle_frag_list(struct xenvif_queue *queue, struct sk_buff *s
 	uarg = skb_shinfo(skb)->destructor_arg;
 	/* increase inflight counter to offset decrement in callback */
 	atomic_inc(&queue->inflight_packets);
-	uarg->callback(uarg, true);
+	uarg->callback(NULL, uarg, true);
 	skb_shinfo(skb)->destructor_arg = NULL;
 
 	/* Fill the skb with the new (local) frags. */
@@ -1228,7 +1228,8 @@ static int xenvif_tx_submit(struct xenvif_queue *queue)
 	return work_done;
 }
 
-void xenvif_zerocopy_callback(struct ubuf_info *ubuf, bool zerocopy_success)
+void xenvif_zerocopy_callback(struct sk_buff *skb, struct ubuf_info *ubuf,
+			      bool zerocopy_success)
 {
 	unsigned long flags;
 	pending_ring_idx_t index;

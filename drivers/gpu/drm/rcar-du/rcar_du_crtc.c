@@ -1138,7 +1138,6 @@ static const struct drm_crtc_funcs crtc_funcs_gen3 = {
 	.set_crc_source = rcar_du_crtc_set_crc_source,
 	.verify_crc_source = rcar_du_crtc_verify_crc_source,
 	.get_crc_sources = rcar_du_crtc_get_crc_sources,
-	.gamma_set = drm_atomic_helper_legacy_gamma_set,
 };
 
 /* -----------------------------------------------------------------------------
@@ -1251,7 +1250,7 @@ int rcar_du_crtc_create(struct rcar_du_group *rgrp, unsigned int swindex,
 	else
 		primary = &rgrp->planes[swindex % 2].plane;
 
-	ret = drm_crtc_init_with_planes(rcdu->ddev, crtc, primary, NULL,
+	ret = drm_crtc_init_with_planes(&rcdu->ddev, crtc, primary, NULL,
 					rcdu->info->gen <= 2 ?
 					&crtc_funcs_gen2 : &crtc_funcs_gen3,
 					NULL);

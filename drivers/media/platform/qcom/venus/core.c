@@ -7,6 +7,7 @@
 #include <linux/interconnect.h>
 #include <linux/ioctl.h>
 #include <linux/delay.h>
+#include <linux/devcoredump.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
@@ -21,6 +22,33 @@
 #include "core.h"
 #include "firmware.h"
 #include "pm_helpers.h"
+
+static void venus_coredump(struct venus_core *core)
+{
+	struct device *dev;
+	phys_addr_t mem_phys;
+	size_t mem_size;
+	void *mem_va;
+	void *data;
+
+	dev = core->dev;
+	mem_phys = core->fw.mem_phys;
+	mem_size = core->fw.mem_size;
+
+	mem_va = memremap(mem_phys, mem_size, MEMREMAP_WC);
+	if (!mem_va)
+		return;
+
+	data = vmalloc(mem_size);
+	if (!data) {
+		memunmap(mem_va);
+		return;
+	}
+
+	memcpy(data, mem_va, mem_size);
+	memunmap(mem_va);
+	dev_coredumpv(dev, data, mem_size, GFP_KERNEL);
+}
 
 static void venus_event_notify(struct venus_core *core, u32 event)
 {
@@ -66,6 +94,8 @@ static void venus_sys_error_handler(struct work_struct *work)
 		msleep(10);
 
 	venus_shutdown(core);
+
+	venus_coredump(core);
 
 	pm_runtime_put_sync(core->dev);
 
@@ -188,7 +218,6 @@ static int venus_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	core->dev = dev;
-	platform_set_drvdata(pdev, core);
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	core->base = devm_ioremap_resource(dev, r);
@@ -218,7 +247,7 @@ static int venus_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	if (core->pm_ops->core_get) {
-		ret = core->pm_ops->core_get(dev);
+		ret = core->pm_ops->core_get(core);
 		if (ret)
 			return ret;
 	}
@@ -242,6 +271,12 @@ static int venus_probe(struct platform_device *pdev)
 	ret = hfi_create(core, &venus_core_ops);
 	if (ret)
 		goto err_core_put;
+
+	ret = v4l2_device_register(dev, &core->v4l2_dev);
+	if (ret)
+		goto err_core_deinit;
+
+	platform_set_drvdata(pdev, core);
 
 	pm_runtime_enable(dev);
 
@@ -277,10 +312,6 @@ static int venus_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_venus_shutdown;
 
-	ret = v4l2_device_register(dev, &core->v4l2_dev);
-	if (ret)
-		goto err_core_deinit;
-
 	ret = pm_runtime_put_sync(dev);
 	if (ret) {
 		pm_runtime_get_noresume(dev);
@@ -293,8 +324,6 @@ static int venus_probe(struct platform_device *pdev)
 
 err_dev_unregister:
 	v4l2_device_unregister(&core->v4l2_dev);
-err_core_deinit:
-	hfi_core_deinit(core, false);
 err_venus_shutdown:
 	venus_shutdown(core);
 err_runtime_disable:
@@ -302,9 +331,11 @@ err_runtime_disable:
 	pm_runtime_set_suspended(dev);
 	pm_runtime_disable(dev);
 	hfi_destroy(core);
+err_core_deinit:
+	hfi_core_deinit(core, false);
 err_core_put:
 	if (core->pm_ops->core_put)
-		core->pm_ops->core_put(dev);
+		core->pm_ops->core_put(core);
 	return ret;
 }
 
@@ -330,11 +361,14 @@ static int venus_remove(struct platform_device *pdev)
 	pm_runtime_disable(dev);
 
 	if (pm_ops->core_put)
-		pm_ops->core_put(dev);
+		pm_ops->core_put(core);
+
+	v4l2_device_unregister(&core->v4l2_dev);
 
 	hfi_destroy(core);
 
 	v4l2_device_unregister(&core->v4l2_dev);
+
 	mutex_destroy(&core->pm_lock);
 	mutex_destroy(&core->lock);
 	venus_dbgfs_deinit(core);
@@ -363,7 +397,7 @@ static __maybe_unused int venus_runtime_suspend(struct device *dev)
 		return ret;
 
 	if (pm_ops->core_power) {
-		ret = pm_ops->core_power(dev, POWER_OFF);
+		ret = pm_ops->core_power(core, POWER_OFF);
 		if (ret)
 			return ret;
 	}
@@ -381,7 +415,7 @@ static __maybe_unused int venus_runtime_suspend(struct device *dev)
 err_video_path:
 	icc_set_bw(core->cpucfg_path, kbps_to_icc(1000), 0);
 err_cpucfg_path:
-	pm_ops->core_power(dev, POWER_ON);
+	pm_ops->core_power(core, POWER_ON);
 
 	return ret;
 }
@@ -401,7 +435,7 @@ static __maybe_unused int venus_runtime_resume(struct device *dev)
 		return ret;
 
 	if (pm_ops->core_power) {
-		ret = pm_ops->core_power(dev, POWER_ON);
+		ret = pm_ops->core_power(core, POWER_ON);
 		if (ret)
 			return ret;
 	}
@@ -485,17 +519,6 @@ static const struct freq_tbl sdm845_freq_table[] = {
 	{  244800, 100000000 },	/* 1920x1080@30 */
 };
 
-static const struct codec_freq_data sdm845_codec_freq_data[] =  {
-	{ V4L2_PIX_FMT_H264, VIDC_SESSION_TYPE_ENC, 675, 10 },
-	{ V4L2_PIX_FMT_HEVC, VIDC_SESSION_TYPE_ENC, 675, 10 },
-	{ V4L2_PIX_FMT_VP8, VIDC_SESSION_TYPE_ENC, 675, 10 },
-	{ V4L2_PIX_FMT_MPEG2, VIDC_SESSION_TYPE_DEC, 200, 10 },
-	{ V4L2_PIX_FMT_H264, VIDC_SESSION_TYPE_DEC, 200, 10 },
-	{ V4L2_PIX_FMT_HEVC, VIDC_SESSION_TYPE_DEC, 200, 10 },
-	{ V4L2_PIX_FMT_VP8, VIDC_SESSION_TYPE_DEC, 200, 10 },
-	{ V4L2_PIX_FMT_VP9, VIDC_SESSION_TYPE_DEC, 200, 10 },
-};
-
 static const struct bw_tbl sdm845_bw_table_enc[] = {
 	{ 1944000, 1612000, 0, 2416000, 0 },	/* 3840x2160@60 */
 	{  972000,  951000, 0, 1434000, 0 },	/* 3840x2160@30 */
@@ -517,8 +540,6 @@ static const struct venus_resources sdm845_res = {
 	.bw_tbl_enc_size = ARRAY_SIZE(sdm845_bw_table_enc),
 	.bw_tbl_dec = sdm845_bw_table_dec,
 	.bw_tbl_dec_size = ARRAY_SIZE(sdm845_bw_table_dec),
-	.codec_freq_data = sdm845_codec_freq_data,
-	.codec_freq_data_size = ARRAY_SIZE(sdm845_codec_freq_data),
 	.clks = {"core", "iface", "bus" },
 	.clks_num = 3,
 	.vcodec0_clks = { "core", "bus" },
@@ -540,8 +561,6 @@ static const struct venus_resources sdm845_res_v2 = {
 	.bw_tbl_enc_size = ARRAY_SIZE(sdm845_bw_table_enc),
 	.bw_tbl_dec = sdm845_bw_table_dec,
 	.bw_tbl_dec_size = ARRAY_SIZE(sdm845_bw_table_dec),
-	.codec_freq_data = sdm845_codec_freq_data,
-	.codec_freq_data_size = ARRAY_SIZE(sdm845_codec_freq_data),
 	.clks = {"core", "iface", "bus" },
 	.clks_num = 3,
 	.vcodec0_clks = { "vcodec0_core", "vcodec0_bus" },
@@ -591,8 +610,6 @@ static const struct venus_resources sc7180_res = {
 	.bw_tbl_enc_size = ARRAY_SIZE(sc7180_bw_table_enc),
 	.bw_tbl_dec = sc7180_bw_table_dec,
 	.bw_tbl_dec_size = ARRAY_SIZE(sc7180_bw_table_dec),
-	.codec_freq_data = sdm845_codec_freq_data,
-	.codec_freq_data_size = ARRAY_SIZE(sdm845_codec_freq_data),
 	.clks = {"core", "iface", "bus" },
 	.clks_num = 3,
 	.vcodec0_clks = { "vcodec0_core", "vcodec0_bus" },

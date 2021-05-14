@@ -540,6 +540,28 @@ void tty_wakeup(struct tty_struct *tty)
 EXPORT_SYMBOL_GPL(tty_wakeup);
 
 /**
+ *	tty_release_redirect	-	Release a redirect on a pty if present
+ *	@tty: tty device
+ *
+ *	This is available to the pty code so if the master closes, if the
+ *	slave is a redirect it can release the redirect.
+ */
+struct file *tty_release_redirect(struct tty_struct *tty)
+{
+	struct file *f = NULL;
+
+	spin_lock(&redirect_lock);
+	if (redirect && file_tty(redirect) == tty) {
+		f = redirect;
+		redirect = NULL;
+	}
+	spin_unlock(&redirect_lock);
+
+	return f;
+}
+EXPORT_SYMBOL_GPL(tty_release_redirect);
+
+/**
  *	__tty_hangup		-	actual handler for hangup events
  *	@tty: tty device
  *	@exit_session: if non-zero, signal all foreground group processes
@@ -565,7 +587,7 @@ EXPORT_SYMBOL_GPL(tty_wakeup);
 static void __tty_hangup(struct tty_struct *tty, int exit_session)
 {
 	struct file *cons_filp = NULL;
-	struct file *filp, *f = NULL;
+	struct file *filp, *f;
 	struct tty_file_private *priv;
 	int    closecount = 0, n;
 	int refs;
@@ -573,13 +595,7 @@ static void __tty_hangup(struct tty_struct *tty, int exit_session)
 	if (!tty)
 		return;
 
-
-	spin_lock(&redirect_lock);
-	if (redirect && file_tty(redirect) == tty) {
-		f = redirect;
-		redirect = NULL;
-	}
-	spin_unlock(&redirect_lock);
+	f = tty_release_redirect(tty);
 
 	tty_lock(tty);
 
@@ -1955,22 +1971,7 @@ static struct tty_driver *tty_lookup_driver(dev_t device, struct file *filp,
 	return driver;
 }
 
-/**
- *	tty_kopen	-	open a tty device for kernel
- *	@device: dev_t of device to open
- *
- *	Opens tty exclusively for kernel. Performs the driver lookup,
- *	makes sure it's not already opened and performs the first-time
- *	tty initialization.
- *
- *	Returns the locked initialized &tty_struct
- *
- *	Claims the global tty_mutex to serialize:
- *	  - concurrent first-time tty initialization
- *	  - concurrent tty driver removal w/ lookup
- *	  - concurrent tty removal from driver table
- */
-struct tty_struct *tty_kopen(dev_t device)
+static struct tty_struct *tty_kopen(dev_t device, int shared)
 {
 	struct tty_struct *tty;
 	struct tty_driver *driver;
@@ -1985,7 +1986,7 @@ struct tty_struct *tty_kopen(dev_t device)
 
 	/* check whether we're reopening an existing tty */
 	tty = tty_driver_lookup_tty(driver, NULL, index);
-	if (IS_ERR(tty))
+	if (IS_ERR(tty) || shared)
 		goto out;
 
 	if (tty) {
@@ -2003,7 +2004,42 @@ out:
 	tty_driver_kref_put(driver);
 	return tty;
 }
-EXPORT_SYMBOL_GPL(tty_kopen);
+
+/**
+ *	tty_kopen_exclusive	-	open a tty device for kernel
+ *	@device: dev_t of device to open
+ *
+ *	Opens tty exclusively for kernel. Performs the driver lookup,
+ *	makes sure it's not already opened and performs the first-time
+ *	tty initialization.
+ *
+ *	Returns the locked initialized &tty_struct
+ *
+ *	Claims the global tty_mutex to serialize:
+ *	  - concurrent first-time tty initialization
+ *	  - concurrent tty driver removal w/ lookup
+ *	  - concurrent tty removal from driver table
+ */
+struct tty_struct *tty_kopen_exclusive(dev_t device)
+{
+	return tty_kopen(device, 0);
+}
+EXPORT_SYMBOL_GPL(tty_kopen_exclusive);
+
+/**
+ *	tty_kopen_shared	-	open a tty device for shared in-kernel use
+ *	@device: dev_t of device to open
+ *
+ *	Opens an already existing tty for in-kernel use. Compared to
+ *	tty_kopen_exclusive() above it doesn't ensure to be the only user.
+ *
+ *	Locking is identical to tty_kopen() above.
+ */
+struct tty_struct *tty_kopen_shared(dev_t device)
+{
+	return tty_kopen(device, 1);
+}
+EXPORT_SYMBOL_GPL(tty_kopen_shared);
 
 /**
  *	tty_open_by_driver	-	open a tty device
@@ -2554,15 +2590,36 @@ static int tty_tiocmset(struct tty_struct *tty, unsigned int cmd,
 	return tty->ops->tiocmset(tty, set, clear);
 }
 
+/**
+ *	tty_get_icount		-	get tty statistics
+ *	@tty: tty device
+ *	@icount: output parameter
+ *
+ *	Gets a copy of the tty's icount statistics.
+ *
+ *	Locking: none (up to the driver)
+ */
+int tty_get_icount(struct tty_struct *tty,
+		   struct serial_icounter_struct *icount)
+{
+	memset(icount, 0, sizeof(*icount));
+
+	if (tty->ops->get_icount)
+		return tty->ops->get_icount(tty, icount);
+	else
+		return -ENOTTY;
+}
+EXPORT_SYMBOL_GPL(tty_get_icount);
+
 static int tty_tiocgicount(struct tty_struct *tty, void __user *arg)
 {
-	int retval = -EINVAL;
 	struct serial_icounter_struct icount;
-	memset(&icount, 0, sizeof(icount));
-	if (tty->ops->get_icount)
-		retval = tty->ops->get_icount(tty, &icount);
+	int retval;
+
+	retval = tty_get_icount(tty, &icount);
 	if (retval != 0)
 		return retval;
+
 	if (copy_to_user(arg, &icount, sizeof(icount)))
 		return -EFAULT;
 	return 0;

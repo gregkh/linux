@@ -1291,6 +1291,7 @@ register_lock_class(struct lockdep_map *lock, unsigned int subclass, int force)
 	class->name_version = count_matching_names(class);
 	class->wait_type_inner = lock->wait_type_inner;
 	class->wait_type_outer = lock->wait_type_outer;
+	class->lock_type = lock->lock_type;
 	/*
 	 * We use RCU's safe list-add method to make
 	 * parallel walking of the hash-list safe:
@@ -1672,6 +1673,7 @@ static inline struct lock_list *__bfs_next(struct lock_list *lock, int offset)
 static enum bfs_result __bfs(struct lock_list *source_entry,
 			     void *data,
 			     bool (*match)(struct lock_list *entry, void *data),
+			     bool (*skip)(struct lock_list *entry, void *data),
 			     struct lock_list **target_entry,
 			     int offset)
 {
@@ -1732,7 +1734,12 @@ static enum bfs_result __bfs(struct lock_list *source_entry,
 		/*
 		 * Step 3: we haven't visited this and there is a strong
 		 *         dependency path to this, so check with @match.
+		 *         If @skip is provide and returns true, we skip this
+		 *         lock (and any path this lock is in).
 		 */
+		if (skip && skip(lock, data))
+			continue;
+
 		if (match(lock, data)) {
 			*target_entry = lock;
 			return BFS_RMATCH;
@@ -1775,9 +1782,10 @@ static inline enum bfs_result
 __bfs_forwards(struct lock_list *src_entry,
 	       void *data,
 	       bool (*match)(struct lock_list *entry, void *data),
+	       bool (*skip)(struct lock_list *entry, void *data),
 	       struct lock_list **target_entry)
 {
-	return __bfs(src_entry, data, match, target_entry,
+	return __bfs(src_entry, data, match, skip, target_entry,
 		     offsetof(struct lock_class, locks_after));
 
 }
@@ -1786,9 +1794,10 @@ static inline enum bfs_result
 __bfs_backwards(struct lock_list *src_entry,
 		void *data,
 		bool (*match)(struct lock_list *entry, void *data),
+	       bool (*skip)(struct lock_list *entry, void *data),
 		struct lock_list **target_entry)
 {
-	return __bfs(src_entry, data, match, target_entry,
+	return __bfs(src_entry, data, match, skip, target_entry,
 		     offsetof(struct lock_class, locks_before));
 
 }
@@ -2019,7 +2028,7 @@ static unsigned long __lockdep_count_forward_deps(struct lock_list *this)
 	unsigned long  count = 0;
 	struct lock_list *target_entry;
 
-	__bfs_forwards(this, (void *)&count, noop_count, &target_entry);
+	__bfs_forwards(this, (void *)&count, noop_count, NULL, &target_entry);
 
 	return count;
 }
@@ -2044,7 +2053,7 @@ static unsigned long __lockdep_count_backward_deps(struct lock_list *this)
 	unsigned long  count = 0;
 	struct lock_list *target_entry;
 
-	__bfs_backwards(this, (void *)&count, noop_count, &target_entry);
+	__bfs_backwards(this, (void *)&count, noop_count, NULL, &target_entry);
 
 	return count;
 }
@@ -2072,11 +2081,12 @@ unsigned long lockdep_count_backward_deps(struct lock_class *class)
 static noinline enum bfs_result
 check_path(struct held_lock *target, struct lock_list *src_entry,
 	   bool (*match)(struct lock_list *entry, void *data),
+	   bool (*skip)(struct lock_list *entry, void *data),
 	   struct lock_list **target_entry)
 {
 	enum bfs_result ret;
 
-	ret = __bfs_forwards(src_entry, target, match, target_entry);
+	ret = __bfs_forwards(src_entry, target, match, skip, target_entry);
 
 	if (unlikely(bfs_error(ret)))
 		print_bfs_bug(ret);
@@ -2103,7 +2113,7 @@ check_noncircular(struct held_lock *src, struct held_lock *target,
 
 	debug_atomic_inc(nr_cyclic_checks);
 
-	ret = check_path(target, &src_entry, hlock_conflict, &target_entry);
+	ret = check_path(target, &src_entry, hlock_conflict, NULL, &target_entry);
 
 	if (unlikely(ret == BFS_RMATCH)) {
 		if (!*trace) {
@@ -2120,46 +2130,6 @@ check_noncircular(struct held_lock *src, struct held_lock *target,
 
 	return ret;
 }
-
-#ifdef CONFIG_LOCKDEP_SMALL
-/*
- * Check that the dependency graph starting at <src> can lead to
- * <target> or not. If it can, <src> -> <target> dependency is already
- * in the graph.
- *
- * Return BFS_RMATCH if it does, or BFS_RMATCH if it does not, return BFS_E* if
- * any error appears in the bfs search.
- */
-static noinline enum bfs_result
-check_redundant(struct held_lock *src, struct held_lock *target)
-{
-	enum bfs_result ret;
-	struct lock_list *target_entry;
-	struct lock_list src_entry;
-
-	bfs_init_root(&src_entry, src);
-	/*
-	 * Special setup for check_redundant().
-	 *
-	 * To report redundant, we need to find a strong dependency path that
-	 * is equal to or stronger than <src> -> <target>. So if <src> is E,
-	 * we need to let __bfs() only search for a path starting at a -(E*)->,
-	 * we achieve this by setting the initial node's ->only_xr to true in
-	 * that case. And if <prev> is S, we set initial ->only_xr to false
-	 * because both -(S*)-> (equal) and -(E*)-> (stronger) are redundant.
-	 */
-	src_entry.only_xr = src->read == 0;
-
-	debug_atomic_inc(nr_redundant_checks);
-
-	ret = check_path(target, &src_entry, hlock_equal, &target_entry);
-
-	if (ret == BFS_RMATCH)
-		debug_atomic_inc(nr_redundant);
-
-	return ret;
-}
-#endif
 
 #ifdef CONFIG_TRACE_IRQFLAGS
 
@@ -2231,6 +2201,44 @@ static inline bool usage_match(struct lock_list *entry, void *mask)
 		return !!((entry->class->usage_mask & LOCKF_IRQ) & *(unsigned long *)mask);
 }
 
+static inline bool usage_skip(struct lock_list *entry, void *mask)
+{
+	/*
+	 * Skip local_lock() for irq inversion detection.
+	 *
+	 * For !RT, local_lock() is not a real lock, so it won't carry any
+	 * dependency.
+	 *
+	 * For RT, an irq inversion happens when we have lock A and B, and on
+	 * some CPU we can have:
+	 *
+	 *	lock(A);
+	 *	<interrupted>
+	 *	  lock(B);
+	 *
+	 * where lock(B) cannot sleep, and we have a dependency B -> ... -> A.
+	 *
+	 * Now we prove local_lock() cannot exist in that dependency. First we
+	 * have the observation for any lock chain L1 -> ... -> Ln, for any
+	 * 1 <= i <= n, Li.inner_wait_type <= L1.inner_wait_type, otherwise
+	 * wait context check will complain. And since B is not a sleep lock,
+	 * therefore B.inner_wait_type >= 2, and since the inner_wait_type of
+	 * local_lock() is 3, which is greater than 2, therefore there is no
+	 * way the local_lock() exists in the dependency B -> ... -> A.
+	 *
+	 * As a result, we will skip local_lock(), when we search for irq
+	 * inversion bugs.
+	 */
+	if (entry->class->lock_type == LD_LOCK_PERCPU) {
+		if (DEBUG_LOCKS_WARN_ON(entry->class->wait_type_inner < LD_WAIT_CONFIG))
+			return false;
+
+		return true;
+	}
+
+	return false;
+}
+
 /*
  * Find a node in the forwards-direction dependency sub-graph starting
  * at @root->class that matches @bit.
@@ -2246,7 +2254,7 @@ find_usage_forwards(struct lock_list *root, unsigned long usage_mask,
 
 	debug_atomic_inc(nr_find_usage_forwards_checks);
 
-	result = __bfs_forwards(root, &usage_mask, usage_match, target_entry);
+	result = __bfs_forwards(root, &usage_mask, usage_match, usage_skip, target_entry);
 
 	return result;
 }
@@ -2263,7 +2271,7 @@ find_usage_backwards(struct lock_list *root, unsigned long usage_mask,
 
 	debug_atomic_inc(nr_find_usage_backwards_checks);
 
-	result = __bfs_backwards(root, &usage_mask, usage_match, target_entry);
+	result = __bfs_backwards(root, &usage_mask, usage_match, usage_skip, target_entry);
 
 	return result;
 }
@@ -2628,7 +2636,7 @@ static int check_irq_usage(struct task_struct *curr, struct held_lock *prev,
 	 */
 	bfs_init_rootb(&this, prev);
 
-	ret = __bfs_backwards(&this, &usage_mask, usage_accumulate, NULL);
+	ret = __bfs_backwards(&this, &usage_mask, usage_accumulate, usage_skip, NULL);
 	if (bfs_error(ret)) {
 		print_bfs_bug(ret);
 		return 0;
@@ -2695,7 +2703,67 @@ static inline int check_irq_usage(struct task_struct *curr,
 {
 	return 1;
 }
+
+static inline bool usage_skip(struct lock_list *entry, void *mask)
+{
+	return false;
+}
+
 #endif /* CONFIG_TRACE_IRQFLAGS */
+
+#ifdef CONFIG_LOCKDEP_SMALL
+/*
+ * Check that the dependency graph starting at <src> can lead to
+ * <target> or not. If it can, <src> -> <target> dependency is already
+ * in the graph.
+ *
+ * Return BFS_RMATCH if it does, or BFS_RMATCH if it does not, return BFS_E* if
+ * any error appears in the bfs search.
+ */
+static noinline enum bfs_result
+check_redundant(struct held_lock *src, struct held_lock *target)
+{
+	enum bfs_result ret;
+	struct lock_list *target_entry;
+	struct lock_list src_entry;
+
+	bfs_init_root(&src_entry, src);
+	/*
+	 * Special setup for check_redundant().
+	 *
+	 * To report redundant, we need to find a strong dependency path that
+	 * is equal to or stronger than <src> -> <target>. So if <src> is E,
+	 * we need to let __bfs() only search for a path starting at a -(E*)->,
+	 * we achieve this by setting the initial node's ->only_xr to true in
+	 * that case. And if <prev> is S, we set initial ->only_xr to false
+	 * because both -(S*)-> (equal) and -(E*)-> (stronger) are redundant.
+	 */
+	src_entry.only_xr = src->read == 0;
+
+	debug_atomic_inc(nr_redundant_checks);
+
+	/*
+	 * Note: we skip local_lock() for redundant check, because as the
+	 * comment in usage_skip(), A -> local_lock() -> B and A -> B are not
+	 * the same.
+	 */
+	ret = check_path(target, &src_entry, hlock_equal, usage_skip, &target_entry);
+
+	if (ret == BFS_RMATCH)
+		debug_atomic_inc(nr_redundant);
+
+	return ret;
+}
+
+#else
+
+static inline enum bfs_result
+check_redundant(struct held_lock *src, struct held_lock *target)
+{
+	return BFS_RNOMATCH;
+}
+
+#endif
 
 static void inc_chains(int irq_context)
 {
@@ -2917,7 +2985,6 @@ check_prev_add(struct task_struct *curr, struct held_lock *prev,
 		}
 	}
 
-#ifdef CONFIG_LOCKDEP_SMALL
 	/*
 	 * Is the <prev> -> <next> link redundant?
 	 */
@@ -2926,7 +2993,6 @@ check_prev_add(struct task_struct *curr, struct held_lock *prev,
 		return 0;
 	else if (ret == BFS_RMATCH)
 		return 2;
-#endif
 
 	if (!*trace) {
 		*trace = save_trace();
@@ -4505,9 +4571,9 @@ print_lock_invalid_wait_context(struct task_struct *curr,
  */
 static int check_wait_context(struct task_struct *curr, struct held_lock *next)
 {
-	short next_inner = hlock_class(next)->wait_type_inner;
-	short next_outer = hlock_class(next)->wait_type_outer;
-	short curr_inner;
+	u8 next_inner = hlock_class(next)->wait_type_inner;
+	u8 next_outer = hlock_class(next)->wait_type_outer;
+	u8 curr_inner;
 	int depth;
 
 	if (!curr->lockdep_depth || !next_inner || next->trylock)
@@ -4530,7 +4596,7 @@ static int check_wait_context(struct task_struct *curr, struct held_lock *next)
 
 	for (; depth < curr->lockdep_depth; depth++) {
 		struct held_lock *prev = curr->held_locks + depth;
-		short prev_inner = hlock_class(prev)->wait_type_inner;
+		u8 prev_inner = hlock_class(prev)->wait_type_inner;
 
 		if (prev_inner) {
 			/*
@@ -4579,9 +4645,9 @@ static inline int check_wait_context(struct task_struct *curr,
 /*
  * Initialize a lock instance's lock-class mapping info:
  */
-void lockdep_init_map_waits(struct lockdep_map *lock, const char *name,
+void lockdep_init_map_type(struct lockdep_map *lock, const char *name,
 			    struct lock_class_key *key, int subclass,
-			    short inner, short outer)
+			    u8 inner, u8 outer, u8 lock_type)
 {
 	int i;
 
@@ -4604,6 +4670,7 @@ void lockdep_init_map_waits(struct lockdep_map *lock, const char *name,
 
 	lock->wait_type_outer = outer;
 	lock->wait_type_inner = inner;
+	lock->lock_type = lock_type;
 
 	/*
 	 * No key, no joy, we need to hash something.
@@ -4638,7 +4705,7 @@ void lockdep_init_map_waits(struct lockdep_map *lock, const char *name,
 		raw_local_irq_restore(flags);
 	}
 }
-EXPORT_SYMBOL_GPL(lockdep_init_map_waits);
+EXPORT_SYMBOL_GPL(lockdep_init_map_type);
 
 struct lock_class_key __lockdep_no_validate__;
 EXPORT_SYMBOL_GPL(__lockdep_no_validate__);

@@ -2880,6 +2880,7 @@ pnfs_do_write(struct nfs_pageio_descriptor *desc,
 	switch (trypnfs) {
 	case PNFS_NOT_ATTEMPTED:
 		pnfs_write_through_mds(desc, hdr);
+		break;
 	case PNFS_ATTEMPTED:
 		break;
 	case PNFS_TRY_AGAIN:
@@ -3024,6 +3025,7 @@ pnfs_do_read(struct nfs_pageio_descriptor *desc, struct nfs_pgio_header *hdr)
 	switch (trypnfs) {
 	case PNFS_NOT_ATTEMPTED:
 		pnfs_read_through_mds(desc, hdr);
+		break;
 	case PNFS_ATTEMPTED:
 		break;
 	case PNFS_TRY_AGAIN:

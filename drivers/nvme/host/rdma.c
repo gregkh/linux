@@ -801,7 +801,7 @@ static struct blk_mq_tag_set *nvme_rdma_alloc_tagset(struct nvme_ctrl *nctrl,
 		memset(set, 0, sizeof(*set));
 		set->ops = &nvme_rdma_admin_mq_ops;
 		set->queue_depth = NVME_AQ_MQ_TAG_DEPTH;
-		set->reserved_tags = 2; /* connect + keep-alive */
+		set->reserved_tags = NVMF_RESERVED_TAGS;
 		set->numa_node = nctrl->numa_node;
 		set->cmd_size = sizeof(struct nvme_rdma_request) +
 				NVME_RDMA_DATA_SGL_SIZE;
@@ -814,7 +814,7 @@ static struct blk_mq_tag_set *nvme_rdma_alloc_tagset(struct nvme_ctrl *nctrl,
 		memset(set, 0, sizeof(*set));
 		set->ops = &nvme_rdma_mq_ops;
 		set->queue_depth = nctrl->sqsize + 1;
-		set->reserved_tags = 1; /* fabric connect */
+		set->reserved_tags = NVMF_RESERVED_TAGS;
 		set->numa_node = nctrl->numa_node;
 		set->flags = BLK_MQ_F_SHOULD_MERGE;
 		set->cmd_size = sizeof(struct nvme_rdma_request) +
@@ -1028,11 +1028,7 @@ static void nvme_rdma_teardown_admin_queue(struct nvme_rdma_ctrl *ctrl,
 	blk_mq_quiesce_queue(ctrl->ctrl.admin_q);
 	blk_sync_queue(ctrl->ctrl.admin_q);
 	nvme_rdma_stop_queue(&ctrl->queues[0]);
-	if (ctrl->ctrl.admin_tagset) {
-		blk_mq_tagset_busy_iter(ctrl->ctrl.admin_tagset,
-			nvme_cancel_request, &ctrl->ctrl);
-		blk_mq_tagset_wait_completed_request(ctrl->ctrl.admin_tagset);
-	}
+	nvme_cancel_admin_tagset(&ctrl->ctrl);
 	if (remove)
 		blk_mq_unquiesce_queue(ctrl->ctrl.admin_q);
 	nvme_rdma_destroy_admin_queue(ctrl, remove);
@@ -1046,11 +1042,7 @@ static void nvme_rdma_teardown_io_queues(struct nvme_rdma_ctrl *ctrl,
 		nvme_stop_queues(&ctrl->ctrl);
 		nvme_sync_io_queues(&ctrl->ctrl);
 		nvme_rdma_stop_io_queues(ctrl);
-		if (ctrl->ctrl.tagset) {
-			blk_mq_tagset_busy_iter(ctrl->ctrl.tagset,
-				nvme_cancel_request, &ctrl->ctrl);
-			blk_mq_tagset_wait_completed_request(ctrl->ctrl.tagset);
-		}
+		nvme_cancel_tagset(&ctrl->ctrl);
 		if (remove)
 			nvme_start_queues(&ctrl->ctrl);
 		nvme_rdma_destroy_io_queues(ctrl, remove);
@@ -1485,7 +1477,7 @@ static int nvme_rdma_map_sg_pi(struct nvme_rdma_queue *queue,
 	if (unlikely(nr))
 		goto mr_put;
 
-	nvme_rdma_set_sig_attrs(blk_get_integrity(bio->bi_disk), c,
+	nvme_rdma_set_sig_attrs(blk_get_integrity(bio->bi_bdev->bd_disk), c,
 				req->mr->sig_attrs, ns->pi_type);
 	nvme_rdma_set_prot_checks(c, &req->mr->sig_attrs->check_mask);
 
@@ -2109,7 +2101,9 @@ static blk_status_t nvme_rdma_queue_rq(struct blk_mq_hw_ctx *hctx,
 err_unmap:
 	nvme_rdma_unmap_data(queue, rq);
 err:
-	if (err == -ENOMEM || err == -EAGAIN)
+	if (err == -EIO)
+		ret = nvme_host_path_error(rq);
+	else if (err == -ENOMEM || err == -EAGAIN)
 		ret = BLK_STS_RESOURCE;
 	else
 		ret = BLK_STS_IOERR;

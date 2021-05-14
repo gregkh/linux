@@ -242,7 +242,7 @@ cifs_reconnect(struct TCP_Server_Info *server)
 	server->max_read = 0;
 
 	cifs_dbg(FYI, "Mark tcp session as need reconnect\n");
-	trace_smb3_reconnect(server->CurrentMid, server->hostname);
+	trace_smb3_reconnect(server->CurrentMid, server->conn_id, server->hostname);
 
 	/* before reconnecting the tcp session, mark the smb session (uid)
 		and the tid bad so they are not used until reconnected */
@@ -580,6 +580,23 @@ cifs_read_from_socket(struct TCP_Server_Info *server, char *buf,
 	return cifs_readv_from_socket(server, &smb_msg);
 }
 
+ssize_t
+cifs_discard_from_socket(struct TCP_Server_Info *server, size_t to_read)
+{
+	struct msghdr smb_msg;
+
+	/*
+	 *  iov_iter_discard already sets smb_msg.type and count and iov_offset
+	 *  and cifs_readv_from_socket sets msg_control and msg_controllen
+	 *  so little to initialize in struct msghdr
+	 */
+	smb_msg.msg_name = NULL;
+	smb_msg.msg_namelen = 0;
+	iov_iter_discard(&smb_msg.msg_iter, READ, to_read);
+
+	return cifs_readv_from_socket(server, &smb_msg);
+}
+
 int
 cifs_read_page_from_socket(struct TCP_Server_Info *server, struct page *page,
 	unsigned int page_offset, unsigned int to_read)
@@ -740,7 +757,7 @@ static void clean_demultiplex_info(struct TCP_Server_Info *server)
 		spin_lock(&GlobalMid_Lock);
 		list_for_each_safe(tmp, tmp2, &server->pending_mid_q) {
 			mid_entry = list_entry(tmp, struct mid_q_entry, qhead);
-			cifs_dbg(FYI, "Clearing mid 0x%llx\n", mid_entry->mid);
+			cifs_dbg(FYI, "Clearing mid %llu\n", mid_entry->mid);
 			kref_get(&mid_entry->refcount);
 			mid_entry->mid_state = MID_SHUTDOWN;
 			list_move(&mid_entry->qhead, &dispose_list);
@@ -751,7 +768,7 @@ static void clean_demultiplex_info(struct TCP_Server_Info *server)
 		/* now walk dispose list and issue callbacks */
 		list_for_each_safe(tmp, tmp2, &dispose_list) {
 			mid_entry = list_entry(tmp, struct mid_q_entry, qhead);
-			cifs_dbg(FYI, "Callback mid 0x%llx\n", mid_entry->mid);
+			cifs_dbg(FYI, "Callback mid %llu\n", mid_entry->mid);
 			list_del_init(&mid_entry->qhead);
 			mid_entry->callback(mid_entry);
 			cifs_mid_q_entry_release(mid_entry);
@@ -862,7 +879,7 @@ static void
 smb2_add_credits_from_hdr(char *buffer, struct TCP_Server_Info *server)
 {
 	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buffer;
-	int scredits = server->credits;
+	int scredits, in_flight;
 
 	/*
 	 * SMB1 does not use credits.
@@ -873,12 +890,14 @@ smb2_add_credits_from_hdr(char *buffer, struct TCP_Server_Info *server)
 	if (shdr->CreditRequest) {
 		spin_lock(&server->req_lock);
 		server->credits += le16_to_cpu(shdr->CreditRequest);
+		scredits = server->credits;
+		in_flight = server->in_flight;
 		spin_unlock(&server->req_lock);
 		wake_up(&server->request_q);
 
 		trace_smb3_add_credits(server->CurrentMid,
-				server->hostname, scredits,
-				le16_to_cpu(shdr->CreditRequest));
+				server->conn_id, server->hostname, scredits,
+				le16_to_cpu(shdr->CreditRequest), in_flight);
 		cifs_server_dbg(FYI, "%s: added %u credits total=%d\n",
 				__func__, le16_to_cpu(shdr->CreditRequest),
 				scredits);
@@ -1008,6 +1027,10 @@ next_pdu:
 		for (i = 0; i < num_mids; i++) {
 			if (mids[i] != NULL) {
 				mids[i]->resp_buf_size = server->pdu_size;
+
+				if (bufs[i] && server->ops->is_network_name_deleted)
+					server->ops->is_network_name_deleted(bufs[i],
+									server);
 
 				if (!mids[i]->multiRsp || mids[i]->multiEnd)
 					mids[i]->callback(mids[i]);
@@ -1333,6 +1356,7 @@ cifs_get_tcp_session(struct smb3_fs_context *ctx)
 		goto out_err_crypto_release;
 	}
 
+	tcp_ses->conn_id = atomic_inc_return(&tcpSesNextId);
 	tcp_ses->noblockcnt = ctx->rootfs;
 	tcp_ses->noblocksnd = ctx->noblocksnd || ctx->rootfs;
 	tcp_ses->noautotune = ctx->noautotune;
@@ -1859,9 +1883,9 @@ cifs_get_smb_ses(struct TCP_Server_Info *server, struct smb3_fs_context *ctx)
 	/* new SMB session uses our server ref */
 	ses->server = server;
 	if (server->dstaddr.ss_family == AF_INET6)
-		sprintf(ses->serverName, "%pI6", &addr6->sin6_addr);
+		sprintf(ses->ip_addr, "%pI6", &addr6->sin6_addr);
 	else
-		sprintf(ses->serverName, "%pI4", &addr->sin_addr);
+		sprintf(ses->ip_addr, "%pI4", &addr->sin_addr);
 
 	if (ctx->username) {
 		ses->user_name = kstrdup(ctx->username, GFP_KERNEL);
@@ -2290,7 +2314,9 @@ compare_mount_options(struct super_block *sb, struct cifs_mnt_data *mnt_data)
 	if (strcmp(old->local_nls->charset, new->local_nls->charset))
 		return 0;
 
-	if (old->ctx->actimeo != new->ctx->actimeo)
+	if (old->ctx->acregmax != new->ctx->acregmax)
+		return 0;
+	if (old->ctx->acdirmax != new->ctx->acdirmax)
 		return 0;
 
 	return 1;
@@ -2927,7 +2953,7 @@ static int mount_setup_tlink(struct cifs_sb_info *cifs_sb, struct cifs_ses *ses,
 #ifdef CONFIG_CIFS_DFS_UPCALL
 /*
  * cifs_build_path_to_root returns full path to root when we do not have an
- * exiting connection (tcon)
+ * existing connection (tcon)
  */
 static char *
 build_unc_path_to_root(const struct smb3_fs_context *ctx,

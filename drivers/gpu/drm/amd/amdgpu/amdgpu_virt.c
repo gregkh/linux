@@ -575,8 +575,8 @@ void amdgpu_virt_fini_data_exchange(struct amdgpu_device *adev)
 {
 	if (adev->virt.vf2pf_update_interval_ms != 0) {
 		DRM_INFO("clean up the vf2pf work item\n");
-		flush_delayed_work(&adev->virt.vf2pf_work);
 		cancel_delayed_work_sync(&adev->virt.vf2pf_work);
+		adev->virt.vf2pf_update_interval_ms = 0;
 	}
 }
 

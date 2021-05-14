@@ -81,7 +81,10 @@ static int copy_inline_to_page(struct btrfs_inode *inode,
 		goto out_unlock;
 	}
 
-	set_page_extent_mapped(page);
+	ret = set_page_extent_mapped(page);
+	if (ret < 0)
+		goto out_unlock;
+
 	clear_extent_bit(&inode->io_tree, file_offset, range_end,
 			 EXTENT_DELALLOC | EXTENT_DO_ACCOUNTING | EXTENT_DEFRAG,
 			 0, 0, NULL);
@@ -103,12 +106,8 @@ static int copy_inline_to_page(struct btrfs_inode *inode,
 	set_bit(BTRFS_INODE_NO_DELALLOC_FLUSH, &inode->runtime_flags);
 
 	if (comp_type == BTRFS_COMPRESS_NONE) {
-		char *map;
-
-		map = kmap(page);
-		memcpy(map, data_start, datal);
+		memcpy_to_page(page, 0, data_start, datal);
 		flush_dcache_page(page);
-		kunmap(page);
 	} else {
 		ret = btrfs_decompress(comp_type, data_start, page, 0,
 				       inline_size, datal);
@@ -834,7 +833,7 @@ loff_t btrfs_remap_file_range(struct file *src_file, loff_t off,
 		return -EINVAL;
 
 	if (same_inode)
-		inode_lock(src_inode);
+		btrfs_inode_lock(src_inode, 0);
 	else
 		lock_two_nondirectories(src_inode, dst_inode);
 
@@ -850,7 +849,7 @@ loff_t btrfs_remap_file_range(struct file *src_file, loff_t off,
 
 out_unlock:
 	if (same_inode)
-		inode_unlock(src_inode);
+		btrfs_inode_unlock(src_inode, 0);
 	else
 		unlock_two_nondirectories(src_inode, dst_inode);
 

@@ -1607,12 +1607,8 @@ static struct sk_buff *tun_build_skb(struct tun_struct *tun,
 		struct xdp_buff xdp;
 		u32 act;
 
-		xdp.data_hard_start = buf;
-		xdp.data = buf + pad;
-		xdp_set_data_meta_invalid(&xdp);
-		xdp.data_end = xdp.data + len;
-		xdp.rxq = &tfile->xdp_rxq;
-		xdp.frame_sz = buflen;
+		xdp_init_buff(&xdp, buflen, &tfile->xdp_rxq);
+		xdp_prepare_buff(&xdp, buf, pad, len, false);
 
 		act = bpf_prog_run_xdp(xdp_prog, &xdp);
 		if (act == XDP_REDIRECT || act == XDP_TX) {
@@ -1822,12 +1818,10 @@ drop:
 
 	/* copy skb_ubuf_info for callback when skb has no error */
 	if (zerocopy) {
-		skb_shinfo(skb)->destructor_arg = msg_control;
-		skb_shinfo(skb)->tx_flags |= SKBTX_DEV_ZEROCOPY;
-		skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
+		skb_zcopy_init(skb, msg_control);
 	} else if (msg_control) {
 		struct ubuf_info *uarg = msg_control;
-		uarg->callback(uarg, false);
+		uarg->callback(NULL, uarg, false);
 	}
 
 	skb_reset_network_header(skb);
@@ -2352,9 +2346,9 @@ static int tun_xdp_one(struct tun_struct *tun,
 			skb_xdp = true;
 			goto build;
 		}
+
+		xdp_init_buff(xdp, buflen, &tfile->xdp_rxq);
 		xdp_set_data_meta_invalid(xdp);
-		xdp->rxq = &tfile->xdp_rxq;
-		xdp->frame_sz = buflen;
 
 		act = bpf_prog_run_xdp(xdp_prog, xdp);
 		err = tun_xdp_act(tun, xdp_prog, xdp, act);
@@ -2749,7 +2743,7 @@ static int tun_set_iff(struct net *net, struct file *file, struct ifreq *ifr)
 		err = register_netdevice(tun->dev);
 		if (err < 0)
 			goto err_detach;
-		/* free_netdev() won't check refcnt, to aovid race
+		/* free_netdev() won't check refcnt, to avoid race
 		 * with dev_put() we need publish tun after registration.
 		 */
 		rcu_assign_pointer(tfile->tun, tun);

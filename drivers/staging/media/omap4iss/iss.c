@@ -1351,4 +1351,3 @@ module_platform_driver(iss_driver);
 MODULE_DESCRIPTION("TI OMAP4 ISS driver");
 MODULE_AUTHOR("Sergio Aguirre <sergio.a.aguirre@gmail.com>");
 MODULE_LICENSE("GPL");
-MODULE_VERSION(ISS_VIDEO_DRIVER_VERSION);

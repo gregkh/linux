@@ -225,8 +225,8 @@ static int send_pcc_cmd(int pcc_ss_id, u16 cmd)
 {
 	int ret = -EIO, i;
 	struct cppc_pcc_data *pcc_ss_data = pcc_data[pcc_ss_id];
-	struct acpi_pcct_shared_memory *generic_comm_base =
-		(struct acpi_pcct_shared_memory *)pcc_ss_data->pcc_comm_addr;
+	struct acpi_pcct_shared_memory __iomem *generic_comm_base =
+		pcc_ss_data->pcc_comm_addr;
 	unsigned int time_delta;
 
 	/*
@@ -926,7 +926,7 @@ int __weak cpc_write_ffh(int cpunum, struct cpc_reg *reg, u64 val)
 static int cpc_read(int cpu, struct cpc_register_resource *reg_res, u64 *val)
 {
 	int ret_val = 0;
-	void __iomem *vaddr = 0;
+	void __iomem *vaddr = NULL;
 	int pcc_ss_id = per_cpu(cpu_pcc_subspace_idx, cpu);
 	struct cpc_reg *reg = &reg_res->cpc_entry.reg;
 
@@ -971,7 +971,7 @@ static int cpc_read(int cpu, struct cpc_register_resource *reg_res, u64 *val)
 static int cpc_write(int cpu, struct cpc_register_resource *reg_res, u64 val)
 {
 	int ret_val = 0;
-	void __iomem *vaddr = 0;
+	void __iomem *vaddr = NULL;
 	int pcc_ss_id = per_cpu(cpu_pcc_subspace_idx, cpu);
 	struct cpc_reg *reg = &reg_res->cpc_entry.reg;
 

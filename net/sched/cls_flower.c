@@ -296,9 +296,11 @@ static u16 fl_ct_info_to_flower_map[] = {
 	[IP_CT_RELATED] =		TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
 					TCA_FLOWER_KEY_CT_FLAGS_RELATED,
 	[IP_CT_ESTABLISHED_REPLY] =	TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
-					TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED,
+					TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED |
+					TCA_FLOWER_KEY_CT_FLAGS_REPLY,
 	[IP_CT_RELATED_REPLY] =		TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
-					TCA_FLOWER_KEY_CT_FLAGS_RELATED,
+					TCA_FLOWER_KEY_CT_FLAGS_RELATED |
+					TCA_FLOWER_KEY_CT_FLAGS_REPLY,
 	[IP_CT_NEW] =			TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
 					TCA_FLOWER_KEY_CT_FLAGS_NEW,
 };
@@ -307,6 +309,7 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		       struct tcf_result *res)
 {
 	struct cls_fl_head *head = rcu_dereference_bh(tp->root);
+	bool post_ct = qdisc_skb_cb(skb)->post_ct;
 	struct fl_flow_key skb_key;
 	struct fl_flow_mask *mask;
 	struct cls_fl_filter *f;
@@ -323,7 +326,8 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		skb_flow_dissect_tunnel_info(skb, &mask->dissector, &skb_key);
 		skb_flow_dissect_ct(skb, &mask->dissector, &skb_key,
 				    fl_ct_info_to_flower_map,
-				    ARRAY_SIZE(fl_ct_info_to_flower_map));
+				    ARRAY_SIZE(fl_ct_info_to_flower_map),
+				    post_ct);
 		skb_flow_dissect_hash(skb, &mask->dissector, &skb_key);
 		skb_flow_dissect(skb, &mask->dissector, &skb_key, 0);
 
@@ -1410,6 +1414,21 @@ static int fl_validate_ct_state(u16 state, struct nlattr *tb,
 	    state & TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED) {
 		NL_SET_ERR_MSG_ATTR(extack, tb,
 				    "new and est are mutually exclusive");
+		return -EINVAL;
+	}
+
+	if (state & TCA_FLOWER_KEY_CT_FLAGS_INVALID &&
+	    state & ~(TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
+		      TCA_FLOWER_KEY_CT_FLAGS_INVALID)) {
+		NL_SET_ERR_MSG_ATTR(extack, tb,
+				    "when inv is set, only trk may be set");
+		return -EINVAL;
+	}
+
+	if (state & TCA_FLOWER_KEY_CT_FLAGS_NEW &&
+	    state & TCA_FLOWER_KEY_CT_FLAGS_REPLY) {
+		NL_SET_ERR_MSG_ATTR(extack, tb,
+				    "new and rpl are mutually exclusive");
 		return -EINVAL;
 	}
 

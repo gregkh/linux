@@ -1059,6 +1059,11 @@ retry:
 			goto out_state;
 		}
 
+		/*
+		 * FIXME: This always uses gamma_lut. Some HW have only
+		 * degamma_lut, in which case we should reset gamma_lut and set
+		 * degamma_lut. See drm_crtc_legacy_gamma_set().
+		 */
 		replaced  = drm_property_replace_blob(&crtc_state->degamma_lut,
 						      NULL);
 		replaced |= drm_property_replace_blob(&crtc_state->ctm, NULL);
@@ -2491,6 +2496,11 @@ void drm_fbdev_generic_setup(struct drm_device *dev,
 		return;
 	}
 
+	/*
+	 * FIXME: This mixes up depth with bpp, which results in a glorious
+	 * mess, resulting in some drivers picking wrong fbdev defaults and
+	 * others wrong preferred_depth defaults.
+	 */
 	if (!preferred_bpp)
 		preferred_bpp = dev->mode_config.preferred_depth;
 	if (!preferred_bpp)
@@ -2504,24 +2514,3 @@ void drm_fbdev_generic_setup(struct drm_device *dev,
 	drm_client_register(&fb_helper->client);
 }
 EXPORT_SYMBOL(drm_fbdev_generic_setup);
-
-/* The Kconfig DRM_KMS_HELPER selects FRAMEBUFFER_CONSOLE (if !EXPERT)
- * but the module doesn't depend on any fb console symbols.  At least
- * attempt to load fbcon to avoid leaving the system without a usable console.
- */
-int __init drm_fb_helper_modinit(void)
-{
-#if defined(CONFIG_FRAMEBUFFER_CONSOLE_MODULE) && !defined(CONFIG_EXPERT)
-	const char name[] = "fbcon";
-	struct module *fbcon;
-
-	mutex_lock(&module_mutex);
-	fbcon = find_module(name);
-	mutex_unlock(&module_mutex);
-
-	if (!fbcon)
-		request_module_nowait(name);
-#endif
-	return 0;
-}
-EXPORT_SYMBOL(drm_fb_helper_modinit);

@@ -233,8 +233,7 @@ int btrfs_alloc_stripe_hash_table(struct btrfs_fs_info *info)
 	}
 
 	x = cmpxchg(&info->stripe_hash_table, NULL, table);
-	if (x)
-		kvfree(x);
+	kvfree(x);
 	return 0;
 }
 
@@ -250,8 +249,6 @@ int btrfs_alloc_stripe_hash_table(struct btrfs_fs_info *info)
 static void cache_rbio_pages(struct btrfs_raid_bio *rbio)
 {
 	int i;
-	char *s;
-	char *d;
 	int ret;
 
 	ret = alloc_rbio_pages(rbio);
@@ -262,13 +259,7 @@ static void cache_rbio_pages(struct btrfs_raid_bio *rbio)
 		if (!rbio->bio_pages[i])
 			continue;
 
-		s = kmap(rbio->bio_pages[i]);
-		d = kmap(rbio->stripe_pages[i]);
-
-		copy_page(d, s);
-
-		kunmap(rbio->bio_pages[i]);
-		kunmap(rbio->stripe_pages[i]);
+		copy_highpage(rbio->stripe_pages[i], rbio->bio_pages[i]);
 		SetPageUptodate(rbio->stripe_pages[i]);
 	}
 	set_bit(RBIO_CACHE_READY_BIT, &rbio->flags);
@@ -1105,8 +1096,7 @@ static int rbio_add_io_page(struct btrfs_raid_bio *rbio,
 		 * devices or if they are not contiguous
 		 */
 		if (last_end == disk_start && !last->bi_status &&
-		    last->bi_disk == stripe->dev->bdev->bd_disk &&
-		    last->bi_partno == stripe->dev->bdev->bd_partno) {
+		    last->bi_bdev == stripe->dev->bdev) {
 			ret = bio_add_page(last, page, PAGE_SIZE, 0);
 			if (ret == PAGE_SIZE)
 				return 0;
@@ -1357,9 +1347,7 @@ static int find_bio_stripe(struct btrfs_raid_bio *rbio,
 	for (i = 0; i < rbio->bbio->num_stripes; i++) {
 		stripe = &rbio->bbio->stripes[i];
 		if (in_range(physical, stripe->physical, rbio->stripe_len) &&
-		    stripe->dev->bdev &&
-		    bio->bi_disk == stripe->dev->bdev->bd_disk &&
-		    bio->bi_partno == stripe->dev->bdev->bd_partno) {
+		    stripe->dev->bdev && bio->bi_bdev == stripe->dev->bdev) {
 			return i;
 		}
 	}

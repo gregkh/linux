@@ -13,6 +13,7 @@
 #include <linux/time.h>
 #include <linux/ctype.h>
 #include <linux/pm.h>
+#include <linux/debugfs.h>
 #include <linux/completion.h>
 #include <linux/interrupt.h>
 
@@ -162,6 +163,9 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 {
 	struct snd_card *card;
 	int err;
+#ifdef CONFIG_SND_DEBUG
+	char name[8];
+#endif
 
 	if (snd_BUG_ON(!card_ret))
 		return -EINVAL;
@@ -175,7 +179,7 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 	if (extra_size > 0)
 		card->private_data = (char *)card + sizeof(struct snd_card);
 	if (xid)
-		strlcpy(card->id, xid, sizeof(card->id));
+		strscpy(card->id, xid, sizeof(card->id));
 	err = 0;
 	mutex_lock(&snd_card_mutex);
 	if (idx < 0) /* first check the matching module-name slot */
@@ -245,6 +249,12 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 		dev_err(parent, "unable to create card info\n");
 		goto __error_ctl;
 	}
+
+#ifdef CONFIG_SND_DEBUG
+	sprintf(name, "card%d", idx);
+	card->debugfs_root = debugfs_create_dir(name, sound_debugfs_root);
+#endif
+
 	*card_ret = card;
 	return 0;
 
@@ -479,6 +489,10 @@ static int snd_card_do_free(struct snd_card *card)
 		dev_warn(card->dev, "unable to free card info\n");
 		/* Not fatal error */
 	}
+#ifdef CONFIG_SND_DEBUG
+	debugfs_remove(card->debugfs_root);
+	card->debugfs_root = NULL;
+#endif
 	if (card->release_completion)
 		complete(card->release_completion);
 	kfree(card);
@@ -528,6 +542,7 @@ int snd_card_free(struct snd_card *card)
 		return ret;
 	/* wait, until all devices are ready for the free operation */
 	wait_for_completion(&released);
+
 	return 0;
 }
 EXPORT_SYMBOL(snd_card_free);
@@ -625,7 +640,7 @@ static void snd_card_set_id_no_lock(struct snd_card *card, const char *src,
 	/* last resort... */
 	dev_err(card->dev, "unable to set card id (%s)\n", id);
 	if (card->proc_root->name)
-		strlcpy(card->id, card->proc_root->name, sizeof(card->id));
+		strscpy(card->id, card->proc_root->name, sizeof(card->id));
 }
 
 /**

@@ -978,7 +978,7 @@ static void writecache_resume(struct dm_target *ti)
 
 	wc_lock(wc);
 
-	wc->data_device_sectors = i_size_read(wc->dev->bdev->bd_inode) >> SECTOR_SHIFT;
+	wc->data_device_sectors = bdev_nr_sectors(wc->dev->bdev);
 
 	if (WC_MODE_PMEM(wc)) {
 		persistent_memory_invalidate_cache(wc->memory_map, wc->memory_map_size);
@@ -1892,10 +1892,10 @@ restart:
 			list_add(&g->lru, &wbl.list);
 			wbl.size++;
 			g->write_in_progress = true;
-			g->wc_list_contiguous = BIO_MAX_PAGES;
+			g->wc_list_contiguous = BIO_MAX_VECS;
 			f = g;
 			e->wc_list_contiguous++;
-			if (unlikely(e->wc_list_contiguous == BIO_MAX_PAGES)) {
+			if (unlikely(e->wc_list_contiguous == BIO_MAX_VECS)) {
 				if (unlikely(wc->writeback_all)) {
 					next_node = rb_next(&f->rb_node);
 					if (likely(next_node))
@@ -2030,8 +2030,7 @@ static void writecache_dtr(struct dm_target *ti)
 	if (wc->ssd_dev)
 		dm_put_device(ti, wc->ssd_dev);
 
-	if (wc->entries)
-		vfree(wc->entries);
+	vfree(wc->entries);
 
 	if (wc->memory_map) {
 		if (WC_MODE_PMEM(wc))
@@ -2046,8 +2045,7 @@ static void writecache_dtr(struct dm_target *ti)
 	if (wc->dm_io)
 		dm_io_client_destroy(wc->dm_io);
 
-	if (wc->dirty_bitmap)
-		vfree(wc->dirty_bitmap);
+	vfree(wc->dirty_bitmap);
 
 	kfree(wc);
 }

@@ -35,6 +35,7 @@ enum {
 	BYT_RT5640_DMIC2_MAP,
 	BYT_RT5640_IN1_MAP,
 	BYT_RT5640_IN3_MAP,
+	BYT_RT5640_NO_INTERNAL_MIC_MAP,
 };
 
 enum {
@@ -116,6 +117,9 @@ static void log_quirks(struct device *dev)
 		break;
 	case BYT_RT5640_IN3_MAP:
 		dev_info(dev, "quirk IN3_MAP enabled\n");
+		break;
+	case BYT_RT5640_NO_INTERNAL_MIC_MAP:
+		dev_info(dev, "quirk NO_INTERNAL_MIC_MAP enabled\n");
 		break;
 	default:
 		dev_err(dev, "quirk map 0x%x is not supported, microphone input will not work\n", map);
@@ -639,6 +643,15 @@ static const struct dmi_system_id byt_rt5640_quirk_table[] = {
 					BYT_RT5640_SSP0_AIF1 |
 					BYT_RT5640_MCLK_EN),
 	},
+	{	/* Mele PCG03 Mini PC */
+		.matches = {
+			DMI_EXACT_MATCH(DMI_BOARD_VENDOR, "Mini PC"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "Mini PC"),
+		},
+		.driver_data = (void *)(BYT_RT5640_NO_INTERNAL_MIC_MAP |
+					BYT_RT5640_NO_SPEAKERS |
+					BYT_RT5640_SSP0_AIF1),
+	},
 	{	/* MPMAN Converter 9, similar hw as the I.T.Works TW891 2-in-1 */
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "MPMAN"),
@@ -913,8 +926,8 @@ static int byt_rt5640_init(struct snd_soc_pcm_runtime *runtime)
 	struct snd_soc_card *card = runtime->card;
 	struct byt_rt5640_private *priv = snd_soc_card_get_drvdata(card);
 	struct snd_soc_component *component = asoc_rtd_to_codec(runtime, 0)->component;
-	const struct snd_soc_dapm_route *custom_map;
-	int num_routes;
+	const struct snd_soc_dapm_route *custom_map = NULL;
+	int num_routes = 0;
 	int ret;
 
 	card->dapm.idle_bias_off = true;
@@ -949,13 +962,14 @@ static int byt_rt5640_init(struct snd_soc_pcm_runtime *runtime)
 		custom_map = byt_rt5640_intmic_in3_map;
 		num_routes = ARRAY_SIZE(byt_rt5640_intmic_in3_map);
 		break;
+	case BYT_RT5640_DMIC1_MAP:
+		custom_map = byt_rt5640_intmic_dmic1_map;
+		num_routes = ARRAY_SIZE(byt_rt5640_intmic_dmic1_map);
+		break;
 	case BYT_RT5640_DMIC2_MAP:
 		custom_map = byt_rt5640_intmic_dmic2_map;
 		num_routes = ARRAY_SIZE(byt_rt5640_intmic_dmic2_map);
 		break;
-	default:
-		custom_map = byt_rt5640_intmic_dmic1_map;
-		num_routes = ARRAY_SIZE(byt_rt5640_intmic_dmic1_map);
 	}
 
 	ret = snd_soc_dapm_add_routes(&card->dapm, custom_map, num_routes);
@@ -1227,7 +1241,7 @@ struct acpi_chan_package {   /* ACPICA seems to require 64 bit integers */
 static int snd_byt_rt5640_mc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	static const char * const map_name[] = { "dmic1", "dmic2", "in1", "in3" };
+	static const char * const map_name[] = { "dmic1", "dmic2", "in1", "in3", "none" };
 	__maybe_unused const char *spk_type;
 	const struct dmi_system_id *dmi_id;
 	struct byt_rt5640_private *priv;

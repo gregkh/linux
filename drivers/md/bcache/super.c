@@ -965,7 +965,7 @@ static int bcache_device_init(struct bcache_device *d, unsigned int block_size,
 	q->limits.max_hw_sectors	= UINT_MAX;
 	q->limits.max_sectors		= UINT_MAX;
 	q->limits.max_segment_size	= UINT_MAX;
-	q->limits.max_segments		= BIO_MAX_PAGES;
+	q->limits.max_segments		= BIO_MAX_VECS;
 	blk_queue_max_discard_sectors(q, UINT_MAX);
 	q->limits.discard_granularity	= 512;
 	q->limits.io_min		= block_size;
@@ -1940,7 +1940,7 @@ struct cache_set *bch_cache_set_alloc(struct cache_sb *sb)
 		goto err;
 
 	if (bioset_init(&c->bio_split, 4, offsetof(struct bbio, bio),
-			BIOSET_NEED_BVECS|BIOSET_NEED_RESCUER))
+			BIOSET_NEED_RESCUER))
 		goto err;
 
 	c->uuids = alloc_meta_bucket_pages(GFP_KERNEL, sb);
@@ -2518,7 +2518,7 @@ out:
 	module_put(THIS_MODULE);
 }
 
-static void register_device_aync(struct async_reg_args *args)
+static void register_device_async(struct async_reg_args *args)
 {
 	if (SB_IS_BDEV(args->sb))
 		INIT_DELAYED_WORK(&args->reg_work, register_bdev_worker);
@@ -2612,7 +2612,7 @@ static ssize_t register_bcache(struct kobject *k, struct kobj_attribute *attr,
 		args->sb	= sb;
 		args->sb_disk	= sb_disk;
 		args->bdev	= bdev;
-		register_device_aync(args);
+		register_device_async(args);
 		/* No wait and returns to user space */
 		goto async_done;
 	}

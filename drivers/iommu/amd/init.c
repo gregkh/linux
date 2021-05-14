@@ -148,6 +148,8 @@ struct ivmd_header {
 bool amd_iommu_dump;
 bool amd_iommu_irq_remap __read_mostly;
 
+enum io_pgtable_fmt amd_iommu_pgtable = AMD_IOMMU_V1;
+
 int amd_iommu_guest_ir = AMD_IOMMU_GUEST_IR_VAPIC;
 static int amd_iommu_xt_mode = IRQ_REMAP_XAPIC_MODE;
 
@@ -1951,7 +1953,7 @@ static void print_iommu_info(void)
 		struct pci_dev *pdev = iommu->dev;
 		int i;
 
-		pci_info(pdev, "Found IOMMU cap 0x%hx\n", iommu->cap_ptr);
+		pci_info(pdev, "Found IOMMU cap 0x%x\n", iommu->cap_ptr);
 
 		if (iommu->cap & (1 << IOMMU_CAP_EFR)) {
 			pci_info(pdev, "Extended features (%#llx):",
@@ -1979,7 +1981,7 @@ static void print_iommu_info(void)
 static int __init amd_iommu_init_pci(void)
 {
 	struct amd_iommu *iommu;
-	int ret = 0;
+	int ret;
 
 	for_each_iommu(iommu) {
 		ret = iommu_init_pci(iommu);
@@ -2710,8 +2712,8 @@ static void __init ivinfo_init(void *ivrs)
 static int __init early_amd_iommu_init(void)
 {
 	struct acpi_table_header *ivrs_base;
+	int i, remap_cache_sz, ret;
 	acpi_status status;
-	int i, remap_cache_sz, ret = 0;
 
 	if (!amd_iommu_detected)
 		return -ENODEV;
@@ -2844,7 +2846,6 @@ static int __init early_amd_iommu_init(void)
 out:
 	/* Don't leak any ACPI memory */
 	acpi_put_table(ivrs_base);
-	ivrs_base = NULL;
 
 	return ret;
 }

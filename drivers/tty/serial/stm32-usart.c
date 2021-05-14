@@ -3,7 +3,8 @@
  * Copyright (C) Maxime Coquelin 2015
  * Copyright (C) STMicroelectronics SA 2017
  * Authors:  Maxime Coquelin <mcoquelin.stm32@gmail.com>
- *	     Gerald Baeza <gerald.baeza@st.com>
+ *	     Gerald Baeza <gerald.baeza@foss.st.com>
+ *	     Erwan Le Ray <erwan.leray@foss.st.com>
  *
  * Inspired by st-asc.c from STMicroelectronics (c)
  */
@@ -689,8 +690,9 @@ static void stm32_usart_shutdown(struct uart_port *port)
 					 isr, (isr & USART_SR_TC),
 					 10, 100000);
 
+	/* Send the TC error message only when ISR_TC is not set */
 	if (ret)
-		dev_err(port->dev, "transmission complete not set\n");
+		dev_err(port->dev, "Transmission is not complete\n");
 
 	/* flush RX & TX FIFO */
 	if (ofs->rqr != UNDEF_REG)
@@ -999,16 +1001,21 @@ static const struct uart_ops stm32_uart_ops = {
 	.verify_port	= stm32_usart_verify_port,
 };
 
+static void stm32_usart_deinit_port(struct stm32_port *stm32port)
+{
+	clk_disable_unprepare(stm32port->clk);
+}
+
 static int stm32_usart_init_port(struct stm32_port *stm32port,
 				 struct platform_device *pdev)
 {
 	struct uart_port *port = &stm32port->port;
 	struct resource *res;
-	int ret;
+	int ret, irq;
 
-	ret = platform_get_irq(pdev, 0);
-	if (ret <= 0)
-		return ret ? : -ENODEV;
+	irq = platform_get_irq(pdev, 0);
+	if (irq <= 0)
+		return irq ? : -ENODEV;
 
 	port->iotype	= UPIO_MEM;
 	port->flags	= UPF_BOOT_AUTOCONF;
@@ -1016,7 +1023,7 @@ static int stm32_usart_init_port(struct stm32_port *stm32port,
 	port->dev	= &pdev->dev;
 	port->fifosize	= stm32port->info->cfg.fifosize;
 	port->has_sysrq = IS_ENABLED(CONFIG_SERIAL_STM32_CONSOLE);
-	port->irq = ret;
+	port->irq = irq;
 	port->rs485_config = stm32_usart_config_rs485;
 
 	ret = stm32_usart_init_rs485(port, pdev);
@@ -1060,7 +1067,10 @@ static int stm32_usart_init_port(struct stm32_port *stm32port,
 		goto err_clk;
 	}
 
-	/* Both CTS/RTS gpios and "st,hw-flow-ctrl" should not be specified */
+	/*
+	 * Both CTS/RTS gpios and "st,hw-flow-ctrl" (deprecated) or "uart-has-rtscts"
+	 * properties should not be specified.
+	 */
 	if (stm32port->hw_flow_control) {
 		if (mctrl_gpio_to_gpiod(stm32port->gpios, UART_GPIO_CTS) ||
 		    mctrl_gpio_to_gpiod(stm32port->gpios, UART_GPIO_RTS)) {
@@ -1327,7 +1337,7 @@ err_nowup:
 		device_init_wakeup(&pdev->dev, false);
 
 err_uninit:
-	clk_disable_unprepare(stm32port->clk);
+	stm32_usart_deinit_port(stm32port);
 
 	return ret;
 }
@@ -1377,7 +1387,7 @@ static int stm32_usart_serial_remove(struct platform_device *pdev)
 		device_init_wakeup(&pdev->dev, false);
 	}
 
-	clk_disable_unprepare(stm32_port->clk);
+	stm32_usart_deinit_port(stm32_port);
 
 	return 0;
 }

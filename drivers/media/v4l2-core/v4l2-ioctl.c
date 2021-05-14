@@ -518,9 +518,9 @@ static void v4l_print_create_buffers(const void *arg, bool write_only)
 {
 	const struct v4l2_create_buffers *p = arg;
 
-	pr_cont("index=%d, count=%d, memory=%s, ",
-			p->index, p->count,
-			prt_names(p->memory, v4l2_memory_names));
+	pr_cont("index=%d, count=%d, memory=%s, capabilities=0x%08x, ",
+		p->index, p->count, prt_names(p->memory, v4l2_memory_names),
+		p->capabilities);
 	v4l_print_format(&p->format, write_only);
 }
 
@@ -3300,7 +3300,7 @@ video_usercopy(struct file *file, unsigned int orig_cmd, unsigned long arg,
 			parg = sbuf;
 		} else {
 			/* too big to allocate from stack */
-			mbuf = kvmalloc(ioc_size, GFP_KERNEL);
+			mbuf = kmalloc(ioc_size, GFP_KERNEL);
 			if (NULL == mbuf)
 				return -ENOMEM;
 			parg = mbuf;
@@ -3377,7 +3377,7 @@ out_array_args:
 		err = -EFAULT;
 out:
 	kvfree(array_buf);
-	kvfree(mbuf);
+	kfree(mbuf);
 	return err;
 }
 
