@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 config STAGING_BOARD
 	bool "Staging Board Support"
-	depends on OF_ADDRESS && OF_IRQ && CLKDEV_LOOKUP
+	depends on OF_ADDRESS && OF_IRQ && HAVE_CLK
 	help
 	  Select to enable per-board staging support code.
 
