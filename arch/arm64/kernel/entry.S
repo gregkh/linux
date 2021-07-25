@@ -249,7 +249,29 @@ alternative_else_nop_endif
 	check_mte_async_tcf x22, x23
 	apply_ssbd 1, x22, x23
 
-	ptrauth_keys_install_kernel tsk, x20, x22, x23
+#ifdef CONFIG_ARM64_PTR_AUTH
+alternative_if ARM64_HAS_ADDRESS_AUTH
+	/*
+	 * Enable IA for in-kernel PAC if the task had it disabled. Although
+	 * this could be implemented with an unconditional MRS which would avoid
+	 * a load, this was measured to be slower on Cortex-A75 and Cortex-A76.
+	 *
+	 * Install the kernel IA key only if IA was enabled in the task. If IA
+	 * was disabled on kernel exit then we would have left the kernel IA
+	 * installed so there is no need to install it again.
+	 */
+	ldr	x0, [tsk, THREAD_SCTLR_USER]
+	tbz	x0, SCTLR_ELx_ENIA_SHIFT, 1f
+	__ptrauth_keys_install_kernel_nosync tsk, x20, x22, x23
+	b	2f
+1:
+	mrs	x0, sctlr_el1
+	orr	x0, x0, SCTLR_ELx_ENIA
+	msr	sctlr_el1, x0
+2:
+	isb
+alternative_else_nop_endif
+#endif
 
 	mte_set_kernel_gcr x22, x23
 
@@ -355,8 +377,26 @@ alternative_else_nop_endif
 3:
 	scs_save tsk, x0
 
-	/* No kernel C function calls after this as user keys are set. */
-	ptrauth_keys_install_user tsk, x0, x1, x2
+#ifdef CONFIG_ARM64_PTR_AUTH
+alternative_if ARM64_HAS_ADDRESS_AUTH
+	/*
+	 * IA was enabled for in-kernel PAC. Disable it now if needed, or
+	 * alternatively install the user's IA. All other per-task keys and
+	 * SCTLR bits were updated on task switch.
+	 *
+	 * No kernel C function calls after this.
+	 */
+	ldr	x0, [tsk, THREAD_SCTLR_USER]
+	tbz	x0, SCTLR_ELx_ENIA_SHIFT, 1f
+	__ptrauth_keys_install_user tsk, x0, x1, x2
+	b	2f
+1:
+	mrs	x0, sctlr_el1
+	bic	x0, x0, SCTLR_ELx_ENIA
+	msr	sctlr_el1, x0
+2:
+alternative_else_nop_endif
+#endif
 
 	mte_set_user_gcr tsk, x0, x1
 
@@ -503,20 +543,6 @@ tsk	.req	x28		// current thread_info
 	irq_stack_exit
 	.endm
 
-#ifdef CONFIG_ARM64_PSEUDO_NMI
-	/*
-	 * Set res to 0 if irqs were unmasked in interrupted context.
-	 * Otherwise set res to non-0 value.
-	 */
-	.macro	test_irqs_unmasked res:req, pmr:req
-alternative_if ARM64_HAS_IRQ_PRIO_MASKING
-	sub	\res, \pmr, #GIC_PRIO_IRQON
-alternative_else
-	mov	\res, xzr
-alternative_endif
-	.endm
-#endif
-
 	.macro	gic_prio_kentry_setup, tmp:req
 #ifdef CONFIG_ARM64_PSEUDO_NMI
 	alternative_if ARM64_HAS_IRQ_PRIO_MASKING
@@ -527,7 +553,7 @@ alternative_endif
 	.endm
 
 	.macro el1_interrupt_handler, handler:req
-	enable_da_f
+	enable_da
 
 	mov	x0, sp
 	bl	enter_el1_irq_or_nmi
@@ -538,8 +564,10 @@ alternative_endif
 	ldr	x24, [tsk, #TSK_TI_PREEMPT]	// get preempt count
 alternative_if ARM64_HAS_IRQ_PRIO_MASKING
 	/*
-	 * DA_F were cleared at start of handling. If anything is set in DAIF,
-	 * we come back from an NMI, so skip preemption
+	 * DA were cleared at start of handling, and IF are cleared by
+	 * the GIC irqchip driver using gic_arch_enable_irqs() for
+	 * normal IRQs. If anything is set, it means we come back from
+	 * an NMI instead of a normal IRQ, so skip preemption
 	 */
 	mrs	x0, daif
 	orr	x24, x24, x0
@@ -555,7 +583,7 @@ alternative_else_nop_endif
 
 	.macro el0_interrupt_handler, handler:req
 	user_exit_irqoff
-	enable_da_f
+	enable_da
 
 	tbz	x22, #55, 1f
 	bl	do_el0_irq_bp_hardening
@@ -579,18 +607,18 @@ SYM_CODE_START(vectors)
 
 	kernel_ventry	1, sync				// Synchronous EL1h
 	kernel_ventry	1, irq				// IRQ EL1h
-	kernel_ventry	1, fiq_invalid			// FIQ EL1h
+	kernel_ventry	1, fiq				// FIQ EL1h
 	kernel_ventry	1, error			// Error EL1h
 
 	kernel_ventry	0, sync				// Synchronous 64-bit EL0
 	kernel_ventry	0, irq				// IRQ 64-bit EL0
-	kernel_ventry	0, fiq_invalid			// FIQ 64-bit EL0
+	kernel_ventry	0, fiq				// FIQ 64-bit EL0
 	kernel_ventry	0, error			// Error 64-bit EL0
 
 #ifdef CONFIG_COMPAT
 	kernel_ventry	0, sync_compat, 32		// Synchronous 32-bit EL0
 	kernel_ventry	0, irq_compat, 32		// IRQ 32-bit EL0
-	kernel_ventry	0, fiq_invalid_compat, 32	// FIQ 32-bit EL0
+	kernel_ventry	0, fiq_compat, 32		// FIQ 32-bit EL0
 	kernel_ventry	0, error_compat, 32		// Error 32-bit EL0
 #else
 	kernel_ventry	0, sync_invalid, 32		// Synchronous 32-bit EL0
@@ -656,12 +684,6 @@ SYM_CODE_START_LOCAL(el0_error_invalid)
 	inv_entry 0, BAD_ERROR
 SYM_CODE_END(el0_error_invalid)
 
-#ifdef CONFIG_COMPAT
-SYM_CODE_START_LOCAL(el0_fiq_invalid_compat)
-	inv_entry 0, BAD_FIQ, 32
-SYM_CODE_END(el0_fiq_invalid_compat)
-#endif
-
 SYM_CODE_START_LOCAL(el1_sync_invalid)
 	inv_entry 1, BAD_SYNC
 SYM_CODE_END(el1_sync_invalid)
@@ -696,6 +718,12 @@ SYM_CODE_START_LOCAL_NOALIGN(el1_irq)
 	kernel_exit 1
 SYM_CODE_END(el1_irq)
 
+SYM_CODE_START_LOCAL_NOALIGN(el1_fiq)
+	kernel_entry 1
+	el1_interrupt_handler handle_arch_fiq
+	kernel_exit 1
+SYM_CODE_END(el1_fiq)
+
 /*
  * EL0 mode handlers.
  */
@@ -722,6 +750,11 @@ SYM_CODE_START_LOCAL_NOALIGN(el0_irq_compat)
 	b	el0_irq_naked
 SYM_CODE_END(el0_irq_compat)
 
+SYM_CODE_START_LOCAL_NOALIGN(el0_fiq_compat)
+	kernel_entry 0, 32
+	b	el0_fiq_naked
+SYM_CODE_END(el0_fiq_compat)
+
 SYM_CODE_START_LOCAL_NOALIGN(el0_error_compat)
 	kernel_entry 0, 32
 	b	el0_error_naked
@@ -735,6 +768,13 @@ el0_irq_naked:
 	el0_interrupt_handler handle_arch_irq
 	b	ret_to_user
 SYM_CODE_END(el0_irq)
+
+SYM_CODE_START_LOCAL_NOALIGN(el0_fiq)
+	kernel_entry 0
+el0_fiq_naked:
+	el0_interrupt_handler handle_arch_fiq
+	b	ret_to_user
+SYM_CODE_END(el0_fiq)
 
 SYM_CODE_START_LOCAL(el1_error)
 	kernel_entry 1
@@ -754,7 +794,7 @@ el0_error_naked:
 	mov	x0, sp
 	mov	x1, x25
 	bl	do_serror
-	enable_da_f
+	enable_da
 	b	ret_to_user
 SYM_CODE_END(el0_error)
 

@@ -4157,7 +4157,8 @@ static noinline int copy_items(struct btrfs_trans_handle *trans,
 	return ret;
 }
 
-static int extent_cmp(void *priv, struct list_head *a, struct list_head *b)
+static int extent_cmp(void *priv, const struct list_head *a,
+		      const struct list_head *b)
 {
 	struct extent_map *em1, *em2;
 
@@ -6300,8 +6301,13 @@ again:
 		}
 
 		wc.replay_dest->log_root = log;
-		btrfs_record_root_in_trans(trans, wc.replay_dest);
-		ret = walk_log_tree(trans, log, &wc);
+		ret = btrfs_record_root_in_trans(trans, wc.replay_dest);
+		if (ret)
+			/* The loop needs to continue due to the root refs */
+			btrfs_handle_fs_error(fs_info, ret,
+				"failed to record the log root in transaction");
+		else
+			ret = walk_log_tree(trans, log, &wc);
 
 		if (!ret && wc.stage == LOG_WALK_REPLAY_ALL) {
 			ret = fixup_inode_link_counts(trans, wc.replay_dest,

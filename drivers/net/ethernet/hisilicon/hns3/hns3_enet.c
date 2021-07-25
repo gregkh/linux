@@ -210,7 +210,6 @@ void hns3_set_vector_coalesce_rl(struct hns3_enet_tqp_vector *tqp_vector,
 	 * Rl defines rate of interrupts i.e. number of interrupts-per-second
 	 * GL and RL(Rate Limiter) are 2 ways to acheive interrupt coalescing
 	 */
-
 	if (rl_reg > 0 && !tqp_vector->tx_group.coal.adapt_enable &&
 	    !tqp_vector->rx_group.coal.adapt_enable)
 		/* According to the hardware, the range of rl_reg is
@@ -690,7 +689,7 @@ void hns3_enable_vlan_filter(struct net_device *netdev, bool enable)
 }
 
 static int hns3_set_tso(struct sk_buff *skb, u32 *paylen_fdop_ol4cs,
-			u16 *mss, u32 *type_cs_vlan_tso)
+			u16 *mss, u32 *type_cs_vlan_tso, u32 *send_bytes)
 {
 	u32 l4_offset, hdr_len;
 	union l3_hdr_info l3;
@@ -745,6 +744,8 @@ static int hns3_set_tso(struct sk_buff *skb, u32 *paylen_fdop_ol4cs,
 		csum_replace_by_diff(&l4.tcp->check,
 				     (__force __wsum)htonl(l4_paylen));
 	}
+
+	*send_bytes = (skb_shinfo(skb)->gso_segs - 1) * hdr_len + skb->len;
 
 	/* find the txbd field values */
 	*paylen_fdop_ol4cs = skb->len - hdr_len;
@@ -877,7 +878,6 @@ static void hns3_set_outer_l2l3l4(struct sk_buff *skb, u8 ol4_proto,
 			hns3_set_field(*ol_type_vlan_len_msec,
 				       HNS3_TXD_OL3T_S,
 				       HNS3_OL3T_IPV4_NO_CSUM);
-
 	} else if (skb->protocol == htons(ETH_P_IPV6)) {
 		hns3_set_field(*ol_type_vlan_len_msec, HNS3_TXD_OL3T_S,
 			       HNS3_OL3T_IPV6);
@@ -1070,7 +1070,8 @@ static bool hns3_check_hw_tx_csum(struct sk_buff *skb)
 }
 
 static int hns3_fill_skb_desc(struct hns3_enet_ring *ring,
-			      struct sk_buff *skb, struct hns3_desc *desc)
+			      struct sk_buff *skb, struct hns3_desc *desc,
+			      struct hns3_desc_cb *desc_cb)
 {
 	u32 ol_type_vlan_len_msec = 0;
 	u32 paylen_ol4cs = skb->len;
@@ -1098,6 +1099,8 @@ static int hns3_fill_skb_desc(struct hns3_enet_ring *ring,
 		hns3_set_field(ol_type_vlan_len_msec, HNS3_TXD_OVLAN_B,
 			       1);
 	}
+
+	desc_cb->send_bytes = skb->len;
 
 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
 		u8 ol4_proto, il4_proto;
@@ -1134,7 +1137,7 @@ static int hns3_fill_skb_desc(struct hns3_enet_ring *ring,
 		}
 
 		ret = hns3_set_tso(skb, &paylen_ol4cs, &mss_hw_csum,
-				   &type_cs_vlan_tso);
+				   &type_cs_vlan_tso, &desc_cb->send_bytes);
 		if (unlikely(ret < 0)) {
 			u64_stats_update_begin(&ring->syncp);
 			ring->stats.tx_tso_err++;
@@ -1286,7 +1289,6 @@ static unsigned int hns3_tx_bd_num(struct sk_buff *skb, unsigned int *bd_size,
 		return UINT_MAX;
 
 	bd_num = hns3_skb_bd_num(skb, bd_size, bd_num);
-
 	if (!skb_has_frag_list(skb) || bd_num > HNS3_MAX_TSO_BD_NUM)
 		return bd_num;
 
@@ -1548,6 +1550,7 @@ netdev_tx_t hns3_nic_net_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct hns3_nic_priv *priv = netdev_priv(netdev);
 	struct hns3_enet_ring *ring = &priv->ring[skb->queue_mapping];
+	struct hns3_desc_cb *desc_cb = &ring->desc_cb[ring->next_to_use];
 	struct netdev_queue *dev_queue;
 	int pre_ntu, next_to_use_head;
 	bool doorbell;
@@ -1556,6 +1559,11 @@ netdev_tx_t hns3_nic_net_xmit(struct sk_buff *skb, struct net_device *netdev)
 	/* Hardware can only handle short frames above 32 bytes */
 	if (skb_put_padto(skb, HNS3_MIN_TX_LEN)) {
 		hns3_tx_doorbell(ring, 0, !netdev_xmit_more());
+
+		u64_stats_update_begin(&ring->syncp);
+		ring->stats.sw_err_cnt++;
+		u64_stats_update_end(&ring->syncp);
+
 		return NETDEV_TX_OK;
 	}
 
@@ -1575,7 +1583,8 @@ netdev_tx_t hns3_nic_net_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	next_to_use_head = ring->next_to_use;
 
-	ret = hns3_fill_skb_desc(ring, skb, &ring->desc[ring->next_to_use]);
+	ret = hns3_fill_skb_desc(ring, skb, &ring->desc[ring->next_to_use],
+				 desc_cb);
 	if (unlikely(ret < 0))
 		goto fill_err;
 
@@ -1595,7 +1604,7 @@ netdev_tx_t hns3_nic_net_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	/* Complete translate all packets */
 	dev_queue = netdev_get_tx_queue(netdev, ring->queue_index);
-	doorbell = __netdev_tx_sent_queue(dev_queue, skb->len,
+	doorbell = __netdev_tx_sent_queue(dev_queue, desc_cb->send_bytes,
 					  netdev_xmit_more());
 	hns3_tx_doorbell(ring, ret, doorbell);
 
@@ -2348,6 +2357,32 @@ static void hns3_shutdown(struct pci_dev *pdev)
 		pci_set_power_state(pdev, PCI_D3hot);
 }
 
+static int __maybe_unused hns3_suspend(struct device *dev)
+{
+	struct hnae3_ae_dev *ae_dev = dev_get_drvdata(dev);
+
+	if (ae_dev && hns3_is_phys_func(ae_dev->pdev)) {
+		dev_info(dev, "Begin to suspend.\n");
+		if (ae_dev->ops && ae_dev->ops->reset_prepare)
+			ae_dev->ops->reset_prepare(ae_dev, HNAE3_FUNC_RESET);
+	}
+
+	return 0;
+}
+
+static int __maybe_unused hns3_resume(struct device *dev)
+{
+	struct hnae3_ae_dev *ae_dev = dev_get_drvdata(dev);
+
+	if (ae_dev && hns3_is_phys_func(ae_dev->pdev)) {
+		dev_info(dev, "Begin to resume.\n");
+		if (ae_dev->ops && ae_dev->ops->reset_done)
+			ae_dev->ops->reset_done(ae_dev);
+	}
+
+	return 0;
+}
+
 static pci_ers_result_t hns3_error_detected(struct pci_dev *pdev,
 					    pci_channel_state_t state)
 {
@@ -2406,8 +2441,8 @@ static void hns3_reset_prepare(struct pci_dev *pdev)
 	struct hnae3_ae_dev *ae_dev = pci_get_drvdata(pdev);
 
 	dev_info(&pdev->dev, "FLR prepare\n");
-	if (ae_dev && ae_dev->ops && ae_dev->ops->flr_prepare)
-		ae_dev->ops->flr_prepare(ae_dev);
+	if (ae_dev && ae_dev->ops && ae_dev->ops->reset_prepare)
+		ae_dev->ops->reset_prepare(ae_dev, HNAE3_FLR_RESET);
 }
 
 static void hns3_reset_done(struct pci_dev *pdev)
@@ -2415,8 +2450,8 @@ static void hns3_reset_done(struct pci_dev *pdev)
 	struct hnae3_ae_dev *ae_dev = pci_get_drvdata(pdev);
 
 	dev_info(&pdev->dev, "FLR done\n");
-	if (ae_dev && ae_dev->ops && ae_dev->ops->flr_done)
-		ae_dev->ops->flr_done(ae_dev);
+	if (ae_dev && ae_dev->ops && ae_dev->ops->reset_done)
+		ae_dev->ops->reset_done(ae_dev);
 }
 
 static const struct pci_error_handlers hns3_err_handler = {
@@ -2426,12 +2461,15 @@ static const struct pci_error_handlers hns3_err_handler = {
 	.reset_done	= hns3_reset_done,
 };
 
+static SIMPLE_DEV_PM_OPS(hns3_pm_ops, hns3_suspend, hns3_resume);
+
 static struct pci_driver hns3_driver = {
 	.name     = hns3_driver_name,
 	.id_table = hns3_pci_tbl,
 	.probe    = hns3_probe,
 	.remove   = hns3_remove,
 	.shutdown = hns3_shutdown,
+	.driver.pm  = &hns3_pm_ops,
 	.sriov_configure = hns3_pci_sriov_configure,
 	.err_handler    = &hns3_err_handler,
 };
@@ -2716,8 +2754,12 @@ static bool hns3_nic_reclaim_desc(struct hns3_enet_ring *ring,
 			break;
 
 		desc_cb = &ring->desc_cb[ntc];
-		(*pkts) += (desc_cb->type == DESC_TYPE_SKB);
-		(*bytes) += desc_cb->length;
+
+		if (desc_cb->type == DESC_TYPE_SKB) {
+			(*pkts)++;
+			(*bytes) += desc_cb->send_bytes;
+		}
+
 		/* desc_cb will be cleaned, after hnae3_free_buffer_detach */
 		hns3_free_buffer_detach(ring, ntc, budget);
 
@@ -2990,7 +3032,6 @@ static void hns3_rx_checksum(struct hns3_enet_ring *ring, struct sk_buff *skb,
 					  HNS3_RXD_L3ID_S);
 		l4_type = hnae3_get_field(l234info, HNS3_RXD_L4ID_M,
 					  HNS3_RXD_L4ID_S);
-
 		/* Can checksum ipv4 or ipv6 + UDP/TCP/SCTP packets */
 		if ((l3_type == HNS3_L3_TYPE_IPV4 ||
 		     l3_type == HNS3_L3_TYPE_IPV6) &&
@@ -3320,7 +3361,6 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 
 	if (!skb) {
 		bd_base_info = le32_to_cpu(desc->rx.bd_base_info);
-
 		/* Check valid BD */
 		if (unlikely(!(bd_base_info & BIT(HNS3_RXD_VLD_B))))
 			return -ENXIO;
@@ -3582,7 +3622,6 @@ static int hns3_nic_common_poll(struct napi_struct *napi, int budget)
 	hns3_for_each_ring(ring, tqp_vector->rx_group) {
 		int rx_cleaned = hns3_clean_rx_ring(ring, rx_budget,
 						    hns3_rx_skb);
-
 		if (rx_cleaned >= rx_budget)
 			clean_complete = false;
 
@@ -4078,7 +4117,6 @@ static void hns3_init_ring_hw(struct hns3_enet_ring *ring)
 			       hns3_buf_size2type(ring->buf_size));
 		hns3_write_dev(q, HNS3_RING_RX_RING_BD_NUM_REG,
 			       ring->desc_num / 8 - 1);
-
 	} else {
 		hns3_write_dev(q, HNS3_RING_TX_RING_BASEADDR_L_REG,
 			       (u32)dma);
@@ -4195,14 +4233,6 @@ static void hns3_uninit_phy(struct net_device *netdev)
 
 	if (h->ae_algo->ops->mac_disconnect_phy)
 		h->ae_algo->ops->mac_disconnect_phy(h);
-}
-
-static void hns3_del_all_fd_rules(struct net_device *netdev, bool clear_list)
-{
-	struct hnae3_handle *h = hns3_get_handle(netdev);
-
-	if (h->ae_algo->ops->del_all_fd_entries)
-		h->ae_algo->ops->del_all_fd_entries(h, clear_list);
 }
 
 static int hns3_client_start(struct hnae3_handle *handle)
@@ -4393,8 +4423,6 @@ static void hns3_client_uninit(struct hnae3_handle *handle, bool reset)
 
 	hns3_nic_uninit_irq(priv);
 
-	hns3_del_all_fd_rules(netdev, true);
-
 	hns3_clear_all_ring(handle, true);
 
 	hns3_nic_uninit_vector_data(priv);
@@ -4528,11 +4556,11 @@ int hns3_nic_reset_all_ring(struct hnae3_handle *h)
 	int i, j;
 	int ret;
 
-	for (i = 0; i < h->kinfo.num_tqps; i++) {
-		ret = h->ae_algo->ops->reset_queue(h, i);
-		if (ret)
-			return ret;
+	ret = h->ae_algo->ops->reset_queue(h);
+	if (ret)
+		return ret;
 
+	for (i = 0; i < h->kinfo.num_tqps; i++) {
 		hns3_init_ring_hw(&priv->ring[i]);
 
 		/* We need to clear tx ring here because self test will

@@ -462,13 +462,12 @@ static void load_pasid(struct mm_struct *mm, u32 pasid)
 /* Caller must hold pasid_mutex, mm reference */
 static int
 intel_svm_bind_mm(struct device *dev, unsigned int flags,
-		  struct svm_dev_ops *ops,
 		  struct mm_struct *mm, struct intel_svm_dev **sd)
 {
 	struct intel_iommu *iommu = device_to_iommu(dev, NULL, NULL);
+	struct intel_svm *svm = NULL, *t;
 	struct device_domain_info *info;
 	struct intel_svm_dev *sdev;
-	struct intel_svm *svm = NULL;
 	unsigned long iflags;
 	int pasid_max;
 	int ret;
@@ -494,34 +493,26 @@ intel_svm_bind_mm(struct device *dev, unsigned int flags,
 		}
 	}
 
-	if (!(flags & SVM_FLAG_PRIVATE_PASID)) {
-		struct intel_svm *t;
+	list_for_each_entry(t, &global_svm_list, list) {
+		if (t->mm != mm)
+			continue;
 
-		list_for_each_entry(t, &global_svm_list, list) {
-			if (t->mm != mm || (t->flags & SVM_FLAG_PRIVATE_PASID))
-				continue;
-
-			svm = t;
-			if (svm->pasid >= pasid_max) {
-				dev_warn(dev,
-					 "Limited PASID width. Cannot use existing PASID %d\n",
-					 svm->pasid);
-				ret = -ENOSPC;
-				goto out;
-			}
-
-			/* Find the matching device in svm list */
-			for_each_svm_dev(sdev, svm, dev) {
-				if (sdev->ops != ops) {
-					ret = -EBUSY;
-					goto out;
-				}
-				sdev->users++;
-				goto success;
-			}
-
-			break;
+		svm = t;
+		if (svm->pasid >= pasid_max) {
+			dev_warn(dev,
+				 "Limited PASID width. Cannot use existing PASID %d\n",
+				 svm->pasid);
+			ret = -ENOSPC;
+			goto out;
 		}
+
+		/* Find the matching device in svm list */
+		for_each_svm_dev(sdev, svm, dev) {
+			sdev->users++;
+			goto success;
+		}
+
+		break;
 	}
 
 	sdev = kzalloc(sizeof(*sdev), GFP_KERNEL);
@@ -550,7 +541,6 @@ intel_svm_bind_mm(struct device *dev, unsigned int flags,
 
 	/* Finish the setup now we know we're keeping it */
 	sdev->users = 1;
-	sdev->ops = ops;
 	init_rcu_head(&sdev->rcu);
 
 	if (!svm) {
@@ -895,6 +885,7 @@ static irqreturn_t prq_event_thread(int irq, void *d)
 	struct intel_iommu *iommu = d;
 	struct intel_svm *svm = NULL;
 	int head, tail, handled = 0;
+	unsigned int flags = 0;
 
 	/* Clear PPR bit before reading head/tail registers, to
 	 * ensure that we get a new interrupt if needed. */
@@ -992,9 +983,11 @@ static irqreturn_t prq_event_thread(int irq, void *d)
 		if (access_error(vma, req))
 			goto invalid;
 
-		ret = handle_mm_fault(vma, address,
-				      req->wr_req ? FAULT_FLAG_WRITE : 0,
-				      NULL);
+		flags = FAULT_FLAG_USER | FAULT_FLAG_REMOTE;
+		if (req->wr_req)
+			flags |= FAULT_FLAG_WRITE;
+
+		ret = handle_mm_fault(vma, address, flags, NULL);
 		if (ret & VM_FAULT_ERROR)
 			goto invalid;
 
@@ -1003,13 +996,6 @@ invalid:
 		mmap_read_unlock(svm->mm);
 		mmput(svm->mm);
 bad_req:
-		WARN_ON(!sdev);
-		if (sdev && sdev->ops && sdev->ops->fault_cb) {
-			int rwxp = (req->rd_req << 3) | (req->wr_req << 2) |
-				(req->exe_req << 1) | (req->pm_req);
-			sdev->ops->fault_cb(sdev->dev, req->pasid, req->addr,
-					    req->priv_data, rwxp, result);
-		}
 		/* We get here in the error case where the PASID lookup failed,
 		   and these can be NULL. Do not use them below this point! */
 		sdev = NULL;
@@ -1084,7 +1070,7 @@ intel_svm_bind(struct device *dev, struct mm_struct *mm, void *drvdata)
 	if (drvdata)
 		flags = *(unsigned int *)drvdata;
 	mutex_lock(&pasid_mutex);
-	ret = intel_svm_bind_mm(dev, flags, NULL, mm, &sdev);
+	ret = intel_svm_bind_mm(dev, flags, mm, &sdev);
 	if (ret)
 		sva = ERR_PTR(ret);
 	else if (sdev)

@@ -268,11 +268,10 @@ static int max17040_get_of_data(struct max17040_chip *chip)
 	rcomp_len = device_property_count_u8(dev, "maxim,rcomp");
 	chip->rcomp = MAX17040_RCOMP_DEFAULT;
 	if (rcomp_len == data->rcomp_bytes) {
-		device_property_read_u8_array(dev, "maxim,rcomp",
-					      rcomp, rcomp_len);
-		chip->rcomp = rcomp_len == 2 ?
-			rcomp[0] << 8 | rcomp[1] :
-			rcomp[0] << 8;
+		if (!device_property_read_u8_array(dev, "maxim,rcomp",
+						   rcomp, rcomp_len))
+			chip->rcomp = rcomp_len == 2 ? rcomp[0] << 8 | rcomp[1] :
+				      rcomp[0] << 8;
 	} else if (rcomp_len > 0) {
 		dev_err(dev, "maxim,rcomp has incorrect length\n");
 		return -EINVAL;
@@ -362,12 +361,10 @@ static irqreturn_t max17040_thread_handler(int id, void *dev)
 static int max17040_enable_alert_irq(struct max17040_chip *chip)
 {
 	struct i2c_client *client = chip->client;
-	unsigned int flags;
 	int ret;
 
-	flags = IRQF_TRIGGER_FALLING | IRQF_ONESHOT;
 	ret = devm_request_threaded_irq(&client->dev, client->irq, NULL,
-					max17040_thread_handler, flags,
+					max17040_thread_handler, IRQF_ONESHOT,
 					chip->battery->desc->name, chip);
 
 	return ret;
@@ -487,8 +484,7 @@ static int max17040_probe(struct i2c_client *client,
 		ret = max17040_get_of_data(chip);
 		if (ret)
 			return ret;
-		chip_id = (enum chip_id) (uintptr_t)
-			of_device_get_match_data(&client->dev);
+		chip_id = (uintptr_t)of_device_get_match_data(&client->dev);
 	}
 	chip->data = max17040_family[chip_id];
 

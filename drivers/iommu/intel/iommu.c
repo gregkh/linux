@@ -4114,35 +4114,6 @@ static struct notifier_block intel_iommu_memory_nb = {
 	.priority = 0
 };
 
-static void free_all_cpu_cached_iovas(unsigned int cpu)
-{
-	int i;
-
-	for (i = 0; i < g_num_of_iommus; i++) {
-		struct intel_iommu *iommu = g_iommus[i];
-		struct dmar_domain *domain;
-		int did;
-
-		if (!iommu)
-			continue;
-
-		for (did = 0; did < cap_ndoms(iommu->cap); did++) {
-			domain = get_iommu_domain(iommu, (u16)did);
-
-			if (!domain || domain->domain.type != IOMMU_DOMAIN_DMA)
-				continue;
-
-			iommu_dma_free_cpu_cached_iovas(cpu, &domain->domain);
-		}
-	}
-}
-
-static int intel_iommu_cpu_dead(unsigned int cpu)
-{
-	free_all_cpu_cached_iovas(cpu);
-	return 0;
-}
-
 static void intel_disable_iommus(void)
 {
 	struct intel_iommu *iommu = NULL;
@@ -4426,19 +4397,28 @@ int __init intel_iommu_init(void)
 
 	down_read(&dmar_global_lock);
 	for_each_active_iommu(iommu, drhd) {
+		/*
+		 * The flush queue implementation does not perform
+		 * page-selective invalidations that are required for efficient
+		 * TLB flushes in virtual environments.  The benefit of batching
+		 * is likely to be much lower than the overhead of synchronizing
+		 * the virtual and physical IOMMU page-tables.
+		 */
+		if (!intel_iommu_strict && cap_caching_mode(iommu->cap)) {
+			pr_warn("IOMMU batching is disabled due to virtualization");
+			intel_iommu_strict = 1;
+		}
 		iommu_device_sysfs_add(&iommu->iommu, NULL,
 				       intel_iommu_groups,
 				       "%s", iommu->name);
-		iommu_device_set_ops(&iommu->iommu, &intel_iommu_ops);
-		iommu_device_register(&iommu->iommu);
+		iommu_device_register(&iommu->iommu, &intel_iommu_ops, NULL);
 	}
 	up_read(&dmar_global_lock);
 
+	iommu_set_dma_strict(intel_iommu_strict);
 	bus_set_iommu(&pci_bus_type, &intel_iommu_ops);
 	if (si_domain && !hw_pass_through)
 		register_memory_notifier(&intel_iommu_memory_nb);
-	cpuhp_setup_state(CPUHP_IOMMU_INTEL_DEAD, "iommu/intel:dead", NULL,
-			  intel_iommu_cpu_dead);
 
 	down_read(&dmar_global_lock);
 	if (probe_acpi_namespace_devices())
@@ -5394,6 +5374,8 @@ static int siov_find_pci_dvsec(struct pci_dev *pdev)
 static bool
 intel_iommu_dev_has_feat(struct device *dev, enum iommu_dev_features feat)
 {
+	struct device_domain_info *info = get_domain_info(dev);
+
 	if (feat == IOMMU_DEV_FEAT_AUX) {
 		int ret;
 
@@ -5408,13 +5390,13 @@ intel_iommu_dev_has_feat(struct device *dev, enum iommu_dev_features feat)
 		return !!siov_find_pci_dvsec(to_pci_dev(dev));
 	}
 
-	if (feat == IOMMU_DEV_FEAT_SVA) {
-		struct device_domain_info *info = get_domain_info(dev);
+	if (feat == IOMMU_DEV_FEAT_IOPF)
+		return info && info->pri_supported;
 
+	if (feat == IOMMU_DEV_FEAT_SVA)
 		return info && (info->iommu->flags & VTD_FLAG_SVM_CAPABLE) &&
 			info->pasid_supported && info->pri_supported &&
 			info->ats_supported;
-	}
 
 	return false;
 }
@@ -5425,10 +5407,16 @@ intel_iommu_dev_enable_feat(struct device *dev, enum iommu_dev_features feat)
 	if (feat == IOMMU_DEV_FEAT_AUX)
 		return intel_iommu_enable_auxd(dev);
 
+	if (feat == IOMMU_DEV_FEAT_IOPF)
+		return intel_iommu_dev_has_feat(dev, feat) ? 0 : -ENODEV;
+
 	if (feat == IOMMU_DEV_FEAT_SVA) {
 		struct device_domain_info *info = get_domain_info(dev);
 
 		if (!info)
+			return -EINVAL;
+
+		if (!info->pasid_enabled || !info->pri_enabled || !info->ats_enabled)
 			return -EINVAL;
 
 		if (info->iommu->flags & VTD_FLAG_SVM_CAPABLE)
@@ -5474,85 +5462,21 @@ static bool intel_iommu_is_attach_deferred(struct iommu_domain *domain,
 }
 
 static int
-intel_iommu_domain_set_attr(struct iommu_domain *domain,
-			    enum iommu_attr attr, void *data)
+intel_iommu_enable_nesting(struct iommu_domain *domain)
 {
 	struct dmar_domain *dmar_domain = to_dmar_domain(domain);
 	unsigned long flags;
-	int ret = 0;
+	int ret = -ENODEV;
 
-	if (domain->type != IOMMU_DOMAIN_UNMANAGED)
-		return -EINVAL;
-
-	switch (attr) {
-	case DOMAIN_ATTR_NESTING:
-		spin_lock_irqsave(&device_domain_lock, flags);
-		if (nested_mode_support() &&
-		    list_empty(&dmar_domain->devices)) {
-			dmar_domain->flags |= DOMAIN_FLAG_NESTING_MODE;
-			dmar_domain->flags &= ~DOMAIN_FLAG_USE_FIRST_LEVEL;
-		} else {
-			ret = -ENODEV;
-		}
-		spin_unlock_irqrestore(&device_domain_lock, flags);
-		break;
-	default:
-		ret = -EINVAL;
-		break;
+	spin_lock_irqsave(&device_domain_lock, flags);
+	if (nested_mode_support() && list_empty(&dmar_domain->devices)) {
+		dmar_domain->flags |= DOMAIN_FLAG_NESTING_MODE;
+		dmar_domain->flags &= ~DOMAIN_FLAG_USE_FIRST_LEVEL;
+		ret = 0;
 	}
+	spin_unlock_irqrestore(&device_domain_lock, flags);
 
 	return ret;
-}
-
-static bool domain_use_flush_queue(void)
-{
-	struct dmar_drhd_unit *drhd;
-	struct intel_iommu *iommu;
-	bool r = true;
-
-	if (intel_iommu_strict)
-		return false;
-
-	/*
-	 * The flush queue implementation does not perform page-selective
-	 * invalidations that are required for efficient TLB flushes in virtual
-	 * environments. The benefit of batching is likely to be much lower than
-	 * the overhead of synchronizing the virtual and physical IOMMU
-	 * page-tables.
-	 */
-	rcu_read_lock();
-	for_each_active_iommu(iommu, drhd) {
-		if (!cap_caching_mode(iommu->cap))
-			continue;
-
-		pr_warn_once("IOMMU batching is disabled due to virtualization");
-		r = false;
-		break;
-	}
-	rcu_read_unlock();
-
-	return r;
-}
-
-static int
-intel_iommu_domain_get_attr(struct iommu_domain *domain,
-			    enum iommu_attr attr, void *data)
-{
-	switch (domain->type) {
-	case IOMMU_DOMAIN_UNMANAGED:
-		return -ENODEV;
-	case IOMMU_DOMAIN_DMA:
-		switch (attr) {
-		case DOMAIN_ATTR_DMA_USE_FLUSH_QUEUE:
-			*(int *)data = domain_use_flush_queue();
-			return 0;
-		default:
-			return -ENODEV;
-		}
-		break;
-	default:
-		return -EINVAL;
-	}
 }
 
 /*
@@ -5627,8 +5551,7 @@ const struct iommu_ops intel_iommu_ops = {
 	.capable		= intel_iommu_capable,
 	.domain_alloc		= intel_iommu_domain_alloc,
 	.domain_free		= intel_iommu_domain_free,
-	.domain_get_attr        = intel_iommu_domain_get_attr,
-	.domain_set_attr	= intel_iommu_domain_set_attr,
+	.enable_nesting		= intel_iommu_enable_nesting,
 	.attach_dev		= intel_iommu_attach_device,
 	.detach_dev		= intel_iommu_detach_device,
 	.aux_attach_dev		= intel_iommu_aux_attach_device,

@@ -1711,7 +1711,7 @@ static void nfs_drop_nlink(struct inode *inode)
 	NFS_I(inode)->attr_gencount = nfs_inc_attr_generation_counter();
 	nfs_set_cache_invalid(
 		inode, NFS_INO_INVALID_CHANGE | NFS_INO_INVALID_CTIME |
-			       NFS_INO_INVALID_OTHER | NFS_INO_REVAL_FORCED);
+			       NFS_INO_INVALID_NLINK);
 	spin_unlock(&inode->i_lock);
 }
 
@@ -2948,7 +2948,7 @@ static int nfs_execute_ok(struct inode *inode, int mask)
 
 	if (S_ISDIR(inode->i_mode))
 		return 0;
-	if (nfs_check_cache_invalid(inode, NFS_INO_INVALID_OTHER)) {
+	if (nfs_check_cache_invalid(inode, NFS_INO_INVALID_MODE)) {
 		if (mask & MAY_NOT_BLOCK)
 			return -ECHILD;
 		ret = __nfs_revalidate_inode(server, inode);
@@ -3006,16 +3006,10 @@ out_notsup:
 	if (mask & MAY_NOT_BLOCK)
 		return -ECHILD;
 
-	res = nfs_revalidate_inode(NFS_SERVER(inode), inode);
+	res = nfs_revalidate_inode(inode, NFS_INO_INVALID_MODE |
+						  NFS_INO_INVALID_OTHER);
 	if (res == 0)
 		res = generic_permission(&init_user_ns, inode, mask);
 	goto out;
 }
 EXPORT_SYMBOL_GPL(nfs_permission);
-
-/*
- * Local variables:
- *  version-control: t
- *  kept-new-versions: 5
- * End:
- */

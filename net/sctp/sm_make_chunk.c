@@ -858,11 +858,7 @@ struct sctp_chunk *sctp_make_shutdown(const struct sctp_association *asoc,
 	struct sctp_chunk *retval;
 	__u32 ctsn;
 
-	if (chunk && chunk->asoc)
-		ctsn = sctp_tsnmap_get_ctsn(&chunk->asoc->peer.tsn_map);
-	else
-		ctsn = sctp_tsnmap_get_ctsn(&asoc->peer.tsn_map);
-
+	ctsn = sctp_tsnmap_get_ctsn(&asoc->peer.tsn_map);
 	shut.cum_tsn_ack = htonl(ctsn);
 
 	retval = sctp_make_control(asoc, SCTP_CID_SHUTDOWN, 0,
@@ -3219,7 +3215,7 @@ bool sctp_verify_asconf(const struct sctp_association *asoc,
 				return false;
 			break;
 		default:
-			/* This is unkown to us, reject! */
+			/* This is unknown to us, reject! */
 			return false;
 		}
 	}

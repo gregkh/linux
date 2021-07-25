@@ -271,6 +271,9 @@ static struct ip_tunnel *ipip6_tunnel_locate(struct net *net,
 	if (ipip6_tunnel_create(dev) < 0)
 		goto failed_free;
 
+	if (!parms->name[0])
+		strcpy(parms->name, dev->name);
+
 	return nt;
 
 failed_free:
@@ -323,7 +326,7 @@ static int ipip6_tunnel_get_prl(struct net_device *dev, struct ifreq *ifr)
 
 	rcu_read_lock();
 
-	ca = t->prl_count < cmax ? t->prl_count : cmax;
+	ca = min(t->prl_count, cmax);
 
 	if (!kp) {
 		/* We don't try hard to allocate much memory for

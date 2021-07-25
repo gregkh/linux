@@ -126,11 +126,6 @@ static inline struct uld_ctx *ULD_CTX(struct chcr_context *ctx)
 	return container_of(ctx->dev, struct uld_ctx, dev);
 }
 
-static inline int is_ofld_imm(const struct sk_buff *skb)
-{
-	return (skb->len <= SGE_MAX_WR_LEN);
-}
-
 static inline void chcr_init_hctx_per_wr(struct chcr_ahash_req_ctx *reqctx)
 {
 	memset(&reqctx->hctx_wr, 0, sizeof(struct chcr_hctx_per_wr));
@@ -798,10 +793,7 @@ static inline void create_wreq(struct chcr_context *ctx,
 
 /**
  *	create_cipher_wr - form the WR for cipher operations
- *	@req: cipher req.
- *	@ctx: crypto driver context of the request.
- *	@qid: ingress qid where response of this WR should be received.
- *	@op_type:	encryption or decryption
+ *	@wrparam: Container for create_cipher_wr()'s parameters
  */
 static struct sk_buff *create_cipher_wr(struct cipher_wr_param *wrparam)
 {
@@ -1562,7 +1554,8 @@ static inline void chcr_free_shash(struct crypto_shash *base_hash)
 
 /**
  *	create_hash_wr - Create hash work request
- *	@req - Cipher req base
+ *	@req: Cipher req base
+ *	@param: Container for create_hash_wr()'s parameters
  */
 static struct sk_buff *create_hash_wr(struct ahash_request *req,
 				      struct hash_wr_param *param)

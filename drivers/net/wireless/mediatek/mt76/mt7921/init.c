@@ -58,12 +58,14 @@ mt7921_regd_notifier(struct wiphy *wiphy,
 {
 	struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
 	struct mt7921_dev *dev = mt7921_hw_dev(hw);
+	struct mt7921_phy *phy = mt7921_hw_phy(hw);
 
 	memcpy(dev->mt76.alpha2, request->alpha2, sizeof(dev->mt76.alpha2));
 	dev->mt76.region = request->dfs_region;
 
 	mt7921_mutex_acquire(dev);
 	mt76_connac_mcu_set_channel_domain(hw->priv);
+	mt76_connac_mcu_set_rate_txpower(phy->mt76);
 	mt7921_mutex_release(dev);
 }
 
@@ -71,11 +73,15 @@ static void
 mt7921_init_wiphy(struct ieee80211_hw *hw)
 {
 	struct mt7921_phy *phy = mt7921_hw_phy(hw);
+	struct mt7921_dev *dev = phy->dev;
 	struct wiphy *wiphy = hw->wiphy;
 
 	hw->queues = 4;
 	hw->max_rx_aggregation_subframes = 64;
 	hw->max_tx_aggregation_subframes = 128;
+
+	hw->radiotap_timestamp.units_pos =
+		IEEE80211_RADIOTAP_TIMESTAMP_UNIT_US;
 
 	phy->slottime = 9;
 
@@ -87,7 +93,7 @@ mt7921_init_wiphy(struct ieee80211_hw *hw)
 	wiphy->max_scan_ie_len = MT76_CONNAC_SCAN_IE_LEN;
 	wiphy->max_scan_ssids = 4;
 	wiphy->max_sched_scan_plan_interval =
-		MT76_CONNAC_MAX_SCHED_SCAN_INTERVAL;
+		MT76_CONNAC_MAX_TIME_SCHED_SCAN_INTERVAL;
 	wiphy->max_sched_scan_ie_len = IEEE80211_MAX_DATA_LEN;
 	wiphy->max_sched_scan_ssids = MT76_CONNAC_MAX_SCHED_SCAN_SSID;
 	wiphy->max_match_sets = MT76_CONNAC_MAX_SCAN_MATCH;
@@ -95,6 +101,7 @@ mt7921_init_wiphy(struct ieee80211_hw *hw)
 	wiphy->flags |= WIPHY_FLAG_HAS_CHANNEL_SWITCH;
 	wiphy->reg_notifier = mt7921_regd_notifier;
 
+	wiphy->features |= NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR;
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_SET_SCAN_DWELL);
 
 	ieee80211_hw_set(hw, SINGLE_SCAN_ON_ALL_BANDS);
@@ -103,6 +110,9 @@ mt7921_init_wiphy(struct ieee80211_hw *hw)
 	ieee80211_hw_set(hw, WANT_MONITOR_VIF);
 	ieee80211_hw_set(hw, SUPPORTS_PS);
 	ieee80211_hw_set(hw, SUPPORTS_DYNAMIC_PS);
+
+	if (dev->pm.enable)
+		ieee80211_hw_set(hw, CONNECTION_MONITOR);
 
 	hw->max_tx_fragments = 4;
 }
@@ -142,22 +152,9 @@ void mt7921_mac_init(struct mt7921_dev *dev)
 	mt76_connac_mcu_set_rts_thresh(&dev->mt76, 0x92b, 0);
 }
 
-static void mt7921_init_work(struct work_struct *work)
-{
-	struct mt7921_dev *dev = container_of(work, struct mt7921_dev,
-				 init_work);
-
-	mt7921_mcu_set_eeprom(dev);
-	mt7921_mac_init(dev);
-}
-
 static int mt7921_init_hardware(struct mt7921_dev *dev)
 {
 	int ret, idx;
-
-	INIT_WORK(&dev->init_work, mt7921_init_work);
-	spin_lock_init(&dev->token_lock);
-	idr_init(&dev->token);
 
 	ret = mt7921_dma_init(dev);
 	if (ret)
@@ -178,6 +175,10 @@ static int mt7921_init_hardware(struct mt7921_dev *dev)
 	if (ret < 0)
 		return ret;
 
+	ret = mt7921_mcu_set_eeprom(dev);
+	if (ret)
+		return ret;
+
 	/* Beacon and mgmt frames should occupy wcid 0 */
 	idx = mt76_wcid_alloc(dev->mt76.wcid_mask, MT7921_WTBL_STA - 1);
 	if (idx)
@@ -187,6 +188,8 @@ static int mt7921_init_hardware(struct mt7921_dev *dev)
 	dev->mt76.global_wcid.hw_key_idx = -1;
 	dev->mt76.global_wcid.tx_info |= MT_WCID_TX_INFO_SET;
 	rcu_assign_pointer(dev->mt76.wcid[idx], &dev->mt76.global_wcid);
+
+	mt7921_mac_init(dev);
 
 	return 0;
 }
@@ -199,10 +202,13 @@ int mt7921_register_device(struct mt7921_dev *dev)
 	dev->phy.dev = dev;
 	dev->phy.mt76 = &dev->mt76.phy;
 	dev->mt76.phy.priv = &dev->phy;
+	dev->mt76.tx_worker.fn = mt7921_tx_worker;
 
 	INIT_DELAYED_WORK(&dev->pm.ps_work, mt7921_pm_power_save_work);
 	INIT_WORK(&dev->pm.wake_work, mt7921_pm_wake_work);
-	init_completion(&dev->pm.wake_cmpl);
+	spin_lock_init(&dev->pm.wake.lock);
+	mutex_init(&dev->pm.mutex);
+	init_waitqueue_head(&dev->pm.wait);
 	spin_lock_init(&dev->pm.txq_lock);
 	set_bit(MT76_STATE_PM, &dev->mphy.state);
 	INIT_LIST_HEAD(&dev->phy.stats_list);
@@ -216,12 +222,15 @@ int mt7921_register_device(struct mt7921_dev *dev)
 
 	INIT_WORK(&dev->reset_work, mt7921_mac_reset_work);
 
+	dev->pm.idle_timeout = MT7921_PM_TIMEOUT;
+	dev->pm.stats.last_wake_event = jiffies;
+	dev->pm.stats.last_doze_event = jiffies;
+
 	ret = mt7921_init_hardware(dev);
 	if (ret)
 		return ret;
 
 	mt7921_init_wiphy(hw);
-	dev->pm.idle_timeout = MT7921_PM_TIMEOUT;
 	dev->mphy.sband_2g.sband.ht_cap.cap |=
 			IEEE80211_HT_CAP_LDPC_CODING |
 			IEEE80211_HT_CAP_MAX_AMSDU;
@@ -231,9 +240,6 @@ int mt7921_register_device(struct mt7921_dev *dev)
 	dev->mphy.sband_5g.sband.vht_cap.cap |=
 			IEEE80211_VHT_CAP_MAX_MPDU_LENGTH_7991 |
 			IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK;
-	dev->mphy.sband_5g.sband.vht_cap.cap |=
-			IEEE80211_VHT_CAP_SHORT_GI_160 |
-			IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ;
 	dev->mphy.hw->wiphy->available_antennas_rx = dev->mphy.chainmask;
 	dev->mphy.hw->wiphy->available_antennas_tx = dev->mphy.chainmask;
 
@@ -245,18 +251,15 @@ int mt7921_register_device(struct mt7921_dev *dev)
 	if (ret)
 		return ret;
 
-	ieee80211_queue_work(mt76_hw(dev), &dev->init_work);
-
 	return mt7921_init_debugfs(dev);
 }
 
 void mt7921_unregister_device(struct mt7921_dev *dev)
 {
 	mt76_unregister_device(&dev->mt76);
-	mt7921_mcu_exit(dev);
-	mt7921_dma_cleanup(dev);
-
 	mt7921_tx_token_put(dev);
+	mt7921_dma_cleanup(dev);
+	mt7921_mcu_exit(dev);
 
 	tasklet_disable(&dev->irq_tasklet);
 	mt76_free_device(&dev->mt76);

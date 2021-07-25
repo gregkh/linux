@@ -261,11 +261,13 @@ static int mt7615_mac_fill_rx(struct mt7615_dev *dev, struct sk_buff *skb)
 	u32 rxd0 = le32_to_cpu(rxd[0]);
 	u32 rxd1 = le32_to_cpu(rxd[1]);
 	u32 rxd2 = le32_to_cpu(rxd[2]);
-	__le32 rxd12 = rxd[12];
-	bool unicast, remove_pad, insert_ccmp_hdr = false;
+	u32 csum_mask = MT_RXD0_NORMAL_IP_SUM | MT_RXD0_NORMAL_UDP_TCP_SUM;
+	bool unicast, hdr_trans, remove_pad, insert_ccmp_hdr = false;
 	int phy_idx;
 	int i, idx;
-	u8 chfreq;
+	u8 chfreq, amsdu_info, qos_ctl = 0;
+	u16 seq_ctrl = 0;
+	__le16 fc = 0;
 
 	memset(status, 0, sizeof(*status));
 
@@ -281,8 +283,12 @@ static int mt7615_mac_fill_rx(struct mt7615_dev *dev, struct sk_buff *skb)
 	else
 		phy_idx = -1;
 
+	if (rxd2 & MT_RXD2_NORMAL_AMSDU_ERR)
+		return -EINVAL;
+
 	unicast = (rxd1 & MT_RXD1_NORMAL_ADDR_TYPE) == MT_RXD1_NORMAL_U2M;
 	idx = FIELD_GET(MT_RXD2_NORMAL_WLAN_IDX, rxd2);
+	hdr_trans = rxd1 & MT_RXD1_NORMAL_HDR_TRANS;
 	status->wcid = mt7615_rx_get_wcid(dev, idx, unicast);
 
 	if (status->wcid) {
@@ -294,6 +300,9 @@ static int mt7615_mac_fill_rx(struct mt7615_dev *dev, struct sk_buff *skb)
 			list_add_tail(&msta->poll_list, &dev->sta_poll_list);
 		spin_unlock_bh(&dev->sta_poll_lock);
 	}
+
+	if ((rxd0 & csum_mask) == csum_mask)
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
 
 	if (rxd2 & MT_RXD2_NORMAL_FCS_ERR)
 		status->flag |= RX_FLAG_FAILED_FCS_CRC;
@@ -315,6 +324,13 @@ static int mt7615_mac_fill_rx(struct mt7615_dev *dev, struct sk_buff *skb)
 
 	rxd += 4;
 	if (rxd0 & MT_RXD0_NORMAL_GROUP_4) {
+		u32 v0 = le32_to_cpu(rxd[0]);
+		u32 v2 = le32_to_cpu(rxd[2]);
+
+		fc = cpu_to_le16(FIELD_GET(MT_RXD4_FRAME_CONTROL, v0));
+		qos_ctl = FIELD_GET(MT_RXD6_QOS_CTL, v2);
+		seq_ctrl = FIELD_GET(MT_RXD6_SEQ_CTRL, v2);
+
 		rxd += 4;
 		if ((u8 *)rxd - skb->data >= skb->len)
 			return -EINVAL;
@@ -352,6 +368,23 @@ static int mt7615_mac_fill_rx(struct mt7615_dev *dev, struct sk_buff *skb)
 	}
 
 	if (rxd0 & MT_RXD0_NORMAL_GROUP_2) {
+		status->timestamp = le32_to_cpu(rxd[0]);
+		status->flag |= RX_FLAG_MACTIME_START;
+
+		if (!(rxd2 & (MT_RXD2_NORMAL_NON_AMPDU_SUB |
+			      MT_RXD2_NORMAL_NON_AMPDU))) {
+			status->flag |= RX_FLAG_AMPDU_DETAILS;
+
+			/* all subframes of an A-MPDU have the same timestamp */
+			if (phy->rx_ampdu_ts != status->timestamp) {
+				if (!++phy->ampdu_ref)
+					phy->ampdu_ref++;
+			}
+			phy->rx_ampdu_ts = status->timestamp;
+
+			status->ampdu_ref = phy->ampdu_ref;
+		}
+
 		rxd += 2;
 		if ((u8 *)rxd - skb->data >= skb->len)
 			return -EINVAL;
@@ -394,20 +427,6 @@ static int mt7615_mac_fill_rx(struct mt7615_dev *dev, struct sk_buff *skb)
 
 	if (!sband->channels)
 		return -EINVAL;
-
-	if (!(rxd2 & (MT_RXD2_NORMAL_NON_AMPDU_SUB |
-		      MT_RXD2_NORMAL_NON_AMPDU))) {
-		status->flag |= RX_FLAG_AMPDU_DETAILS;
-
-		/* all subframes of an A-MPDU have the same timestamp */
-		if (phy->rx_ampdu_ts != rxd12) {
-			if (!++phy->ampdu_ref)
-				phy->ampdu_ref++;
-		}
-		phy->rx_ampdu_ts = rxd12;
-
-		status->ampdu_ref = phy->ampdu_ref;
-	}
 
 	if (rxd0 & MT_RXD0_NORMAL_GROUP_3) {
 		u32 rxdg0 = le32_to_cpu(rxd[0]);
@@ -486,20 +505,42 @@ static int mt7615_mac_fill_rx(struct mt7615_dev *dev, struct sk_buff *skb)
 
 	skb_pull(skb, (u8 *)rxd - skb->data + 2 * remove_pad);
 
-	if (insert_ccmp_hdr) {
+	amsdu_info = FIELD_GET(MT_RXD1_NORMAL_PAYLOAD_FORMAT, rxd1);
+	status->amsdu = !!amsdu_info;
+	if (status->amsdu) {
+		status->first_amsdu = amsdu_info == MT_RXD1_FIRST_AMSDU_FRAME;
+		status->last_amsdu = amsdu_info == MT_RXD1_LAST_AMSDU_FRAME;
+		if (!hdr_trans) {
+			memmove(skb->data + 2, skb->data,
+				ieee80211_get_hdrlen_from_skb(skb));
+			skb_pull(skb, 2);
+		}
+	}
+
+	if (insert_ccmp_hdr && !hdr_trans) {
 		u8 key_id = FIELD_GET(MT_RXD1_NORMAL_KEY_ID, rxd1);
 
 		mt76_insert_ccmp_hdr(skb, key_id);
 	}
 
-	hdr = (struct ieee80211_hdr *)skb->data;
-	if (!status->wcid || !ieee80211_is_data_qos(hdr->frame_control))
+	if (!hdr_trans) {
+		hdr = (struct ieee80211_hdr *)skb->data;
+		fc = hdr->frame_control;
+		if (ieee80211_is_data_qos(fc)) {
+			seq_ctrl = le16_to_cpu(hdr->seq_ctrl);
+			qos_ctl = *ieee80211_get_qos_ctl(hdr);
+		}
+	} else {
+		status->flag |= RX_FLAG_8023;
+	}
+
+	if (!status->wcid || !ieee80211_is_data_qos(fc))
 		return 0;
 
 	status->aggr = unicast &&
-		       !ieee80211_is_qos_nullfunc(hdr->frame_control);
-	status->tid = *ieee80211_get_qos_ctl(hdr) & IEEE80211_QOS_CTL_TID_MASK;
-	status->seqno = IEEE80211_SEQ_TO_SN(le16_to_cpu(hdr->seq_ctrl));
+		       !ieee80211_is_qos_nullfunc(fc);
+	status->qos_ctl = qos_ctl;
+	status->seqno = IEEE80211_SEQ_TO_SN(seq_ctrl);
 
 	return 0;
 }
@@ -1462,11 +1503,7 @@ mt7615_mac_tx_free_token(struct mt7615_dev *dev, u16 token)
 	u8 wcid;
 
 	trace_mac_tx_free(dev, token);
-
-	spin_lock_bh(&dev->token_lock);
-	txwi = idr_remove(&dev->token, token);
-	spin_unlock_bh(&dev->token_lock);
-
+	txwi = mt76_token_put(mdev, token);
 	if (!txwi)
 		return;
 
@@ -1511,14 +1548,10 @@ static void mt7615_mac_tx_free(struct mt7615_dev *dev, struct sk_buff *skb)
 
 	dev_kfree_skb(skb);
 
-	if (test_bit(MT76_STATE_PM, &dev->phy.mt76->state))
-		return;
-
 	rcu_read_lock();
 	mt7615_mac_sta_poll(dev);
 	rcu_read_unlock();
 
-	mt76_connac_power_save_sched(&dev->mphy, &dev->pm);
 	mt76_worker_schedule(&dev->mt76.tx_worker);
 }
 
@@ -1910,13 +1943,20 @@ void mt7615_pm_wake_work(struct work_struct *work)
 						pm.wake_work);
 	mphy = dev->phy.mt76;
 
-	if (!mt7615_mcu_set_drv_ctrl(dev))
+	if (!mt7615_mcu_set_drv_ctrl(dev)) {
+		int i;
+
+		mt76_for_each_q_rx(&dev->mt76, i)
+			napi_schedule(&dev->mt76.napi[i]);
 		mt76_connac_pm_dequeue_skbs(mphy, &dev->pm);
-	else
-		dev_err(mphy->dev->dev, "failed to wake device\n");
+		mt76_queue_tx_cleanup(dev, dev->mt76.q_mcu[MT_MCUQ_WM], false);
+		if (test_bit(MT76_STATE_RUNNING, &mphy->state))
+			ieee80211_queue_delayed_work(mphy->hw, &mphy->mac_work,
+						     MT7615_WATCHDOG_TIME);
+	}
 
 	ieee80211_wake_queues(mphy->hw);
-	complete_all(&dev->pm.wake_cmpl);
+	wake_up(&dev->pm.wait);
 }
 
 void mt7615_pm_power_save_work(struct work_struct *work)
@@ -1969,83 +2009,13 @@ void mt7615_mac_work(struct work_struct *work)
 				     MT7615_WATCHDOG_TIME);
 }
 
-static bool
-mt7615_wait_reset_state(struct mt7615_dev *dev, u32 state)
-{
-	bool ret;
-
-	ret = wait_event_timeout(dev->reset_wait,
-				 (READ_ONCE(dev->reset_state) & state),
-				 MT7615_RESET_TIMEOUT);
-	WARN(!ret, "Timeout waiting for MCU reset state %x\n", state);
-	return ret;
-}
-
-static void
-mt7615_update_vif_beacon(void *priv, u8 *mac, struct ieee80211_vif *vif)
-{
-	struct ieee80211_hw *hw = priv;
-	struct mt7615_dev *dev = mt7615_hw_dev(hw);
-
-	switch (vif->type) {
-	case NL80211_IFTYPE_MESH_POINT:
-	case NL80211_IFTYPE_ADHOC:
-	case NL80211_IFTYPE_AP:
-		mt7615_mcu_add_beacon(dev, hw, vif,
-				      vif->bss_conf.enable_beacon);
-		break;
-	default:
-		break;
-	}
-}
-
-static void
-mt7615_update_beacons(struct mt7615_dev *dev)
-{
-	ieee80211_iterate_active_interfaces(dev->mt76.hw,
-		IEEE80211_IFACE_ITER_RESUME_ALL,
-		mt7615_update_vif_beacon, dev->mt76.hw);
-
-	if (!dev->mt76.phy2)
-		return;
-
-	ieee80211_iterate_active_interfaces(dev->mt76.phy2->hw,
-		IEEE80211_IFACE_ITER_RESUME_ALL,
-		mt7615_update_vif_beacon, dev->mt76.phy2->hw);
-}
-
-void mt7615_dma_reset(struct mt7615_dev *dev)
-{
-	int i;
-
-	mt76_clear(dev, MT_WPDMA_GLO_CFG,
-		   MT_WPDMA_GLO_CFG_RX_DMA_EN | MT_WPDMA_GLO_CFG_TX_DMA_EN |
-		   MT_WPDMA_GLO_CFG_TX_WRITEBACK_DONE);
-
-	usleep_range(1000, 2000);
-
-	for (i = 0; i < __MT_TXQ_MAX; i++)
-		mt76_queue_tx_cleanup(dev, dev->mphy.q_tx[i], true);
-
-	for (i = 0; i < __MT_MCUQ_MAX; i++)
-		mt76_queue_tx_cleanup(dev, dev->mt76.q_mcu[i], true);
-
-	mt76_for_each_q_rx(&dev->mt76, i)
-		mt76_queue_rx_reset(dev, i);
-
-	mt76_set(dev, MT_WPDMA_GLO_CFG,
-		 MT_WPDMA_GLO_CFG_RX_DMA_EN | MT_WPDMA_GLO_CFG_TX_DMA_EN |
-		 MT_WPDMA_GLO_CFG_TX_WRITEBACK_DONE);
-}
-EXPORT_SYMBOL_GPL(mt7615_dma_reset);
-
 void mt7615_tx_token_put(struct mt7615_dev *dev)
 {
 	struct mt76_txwi_cache *txwi;
 	int id;
 
-	spin_lock_bh(&dev->token_lock);
-	idr_for_each_entry(&dev->token, txwi, id) {
+	spin_lock_bh(&dev->mt76.token_lock);
+	idr_for_each_entry(&dev->mt76.token, txwi, id) {
 		mt7615_txp_skb_unmap(&dev->mt76, txwi);
 		if (txwi->skb) {
 			struct ieee80211_hw *hw;
@@ -2055,98 +2025,10 @@ void mt7615_tx_token_put(struct mt7615_dev *dev)
 		}
 		mt76_put_txwi(&dev->mt76, txwi);
 	}
-	spin_unlock_bh(&dev->token_lock);
-	idr_destroy(&dev->token);
+	spin_unlock_bh(&dev->mt76.token_lock);
+	idr_destroy(&dev->mt76.token);
 }
 EXPORT_SYMBOL_GPL(mt7615_tx_token_put);
-
-void mt7615_mac_reset_work(struct work_struct *work)
-{
-	struct mt7615_phy *phy2;
-	struct mt76_phy *ext_phy;
-	struct mt7615_dev *dev;
-
-	dev = container_of(work, struct mt7615_dev, reset_work);
-	ext_phy = dev->mt76.phy2;
-	phy2 = ext_phy ? ext_phy->priv : NULL;
-
-	if (!(READ_ONCE(dev->reset_state) & MT_MCU_CMD_STOP_PDMA))
-		return;
-
-	ieee80211_stop_queues(mt76_hw(dev));
-	if (ext_phy)
-		ieee80211_stop_queues(ext_phy->hw);
-
-	set_bit(MT76_RESET, &dev->mphy.state);
-	set_bit(MT76_MCU_RESET, &dev->mphy.state);
-	wake_up(&dev->mt76.mcu.wait);
-	cancel_delayed_work_sync(&dev->mphy.mac_work);
-	del_timer_sync(&dev->phy.roc_timer);
-	cancel_work_sync(&dev->phy.roc_work);
-	if (phy2) {
-		cancel_delayed_work_sync(&phy2->mt76->mac_work);
-		del_timer_sync(&phy2->roc_timer);
-		cancel_work_sync(&phy2->roc_work);
-	}
-
-	/* lock/unlock all queues to ensure that no tx is pending */
-	mt76_txq_schedule_all(&dev->mphy);
-	if (ext_phy)
-		mt76_txq_schedule_all(ext_phy);
-
-	mt76_worker_disable(&dev->mt76.tx_worker);
-	napi_disable(&dev->mt76.napi[0]);
-	napi_disable(&dev->mt76.napi[1]);
-	napi_disable(&dev->mt76.tx_napi);
-
-	mt7615_mutex_acquire(dev);
-
-	mt76_wr(dev, MT_MCU_INT_EVENT, MT_MCU_INT_EVENT_PDMA_STOPPED);
-
-	mt7615_tx_token_put(dev);
-	idr_init(&dev->token);
-
-	if (mt7615_wait_reset_state(dev, MT_MCU_CMD_RESET_DONE)) {
-		mt7615_dma_reset(dev);
-
-		mt76_wr(dev, MT_WPDMA_MEM_RNG_ERR, 0);
-
-		mt76_wr(dev, MT_MCU_INT_EVENT, MT_MCU_INT_EVENT_PDMA_INIT);
-		mt7615_wait_reset_state(dev, MT_MCU_CMD_RECOVERY_DONE);
-	}
-
-	clear_bit(MT76_MCU_RESET, &dev->mphy.state);
-	clear_bit(MT76_RESET, &dev->mphy.state);
-
-	mt76_worker_enable(&dev->mt76.tx_worker);
-	napi_enable(&dev->mt76.tx_napi);
-	napi_schedule(&dev->mt76.tx_napi);
-
-	napi_enable(&dev->mt76.napi[0]);
-	napi_schedule(&dev->mt76.napi[0]);
-
-	napi_enable(&dev->mt76.napi[1]);
-	napi_schedule(&dev->mt76.napi[1]);
-
-	ieee80211_wake_queues(mt76_hw(dev));
-	if (ext_phy)
-		ieee80211_wake_queues(ext_phy->hw);
-
-	mt76_wr(dev, MT_MCU_INT_EVENT, MT_MCU_INT_EVENT_RESET_DONE);
-	mt7615_wait_reset_state(dev, MT_MCU_CMD_NORMAL_STATE);
-
-	mt7615_update_beacons(dev);
-
-	mt7615_mutex_release(dev);
-
-	ieee80211_queue_delayed_work(mt76_hw(dev), &dev->mphy.mac_work,
-				     MT7615_WATCHDOG_TIME);
-	if (phy2)
-		ieee80211_queue_delayed_work(ext_phy->hw,
-					     &phy2->mt76->mac_work,
-					     MT7615_WATCHDOG_TIME);
-
-}
 
 static void mt7615_dfs_stop_radar_detector(struct mt7615_phy *phy)
 {

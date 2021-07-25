@@ -81,9 +81,21 @@ struct inode *ceph_get_snapdir(struct inode *parent)
 	struct inode *inode = ceph_get_inode(parent->i_sb, vino);
 	struct ceph_inode_info *ci = ceph_inode(inode);
 
-	BUG_ON(!S_ISDIR(parent->i_mode));
 	if (IS_ERR(inode))
 		return inode;
+
+	if (!S_ISDIR(parent->i_mode)) {
+		pr_warn_once("bad snapdir parent type (mode=0%o)\n",
+			     parent->i_mode);
+		return ERR_PTR(-ENOTDIR);
+	}
+
+	if (!(inode->i_state & I_NEW) && !S_ISDIR(inode->i_mode)) {
+		pr_warn_once("bad snapdir inode type (mode=0%o)\n",
+			     inode->i_mode);
+		return ERR_PTR(-ENOTDIR);
+	}
+
 	inode->i_mode = parent->i_mode;
 	inode->i_uid = parent->i_uid;
 	inode->i_gid = parent->i_gid;
@@ -620,10 +632,11 @@ int ceph_fill_file_size(struct inode *inode, int issued,
 {
 	struct ceph_inode_info *ci = ceph_inode(inode);
 	int queue_trunc = 0;
+	loff_t isize = i_size_read(inode);
 
 	if (ceph_seq_cmp(truncate_seq, ci->i_truncate_seq) > 0 ||
-	    (truncate_seq == ci->i_truncate_seq && size > inode->i_size)) {
-		dout("size %lld -> %llu\n", inode->i_size, size);
+	    (truncate_seq == ci->i_truncate_seq && size > isize)) {
+		dout("size %lld -> %llu\n", isize, size);
 		if (size > 0 && S_ISDIR(inode->i_mode)) {
 			pr_err("fill_file_size non-zero size for directory\n");
 			size = 0;
@@ -761,12 +774,33 @@ int ceph_fill_inode(struct inode *inode, struct page *locked_page,
 	bool queue_trunc = false;
 	bool new_version = false;
 	bool fill_inline = false;
+	umode_t mode = le32_to_cpu(info->mode);
+	dev_t rdev = le32_to_cpu(info->rdev);
 
 	lockdep_assert_held(&mdsc->snap_rwsem);
 
 	dout("%s %p ino %llx.%llx v %llu had %llu\n", __func__,
 	     inode, ceph_vinop(inode), le64_to_cpu(info->version),
 	     ci->i_version);
+
+	/* Once I_NEW is cleared, we can't change type or dev numbers */
+	if (inode->i_state & I_NEW) {
+		inode->i_mode = mode;
+	} else {
+		if (inode_wrong_type(inode, mode)) {
+			pr_warn_once("inode type changed! (ino %llx.%llx is 0%o, mds says 0%o)\n",
+				     ceph_vinop(inode), inode->i_mode, mode);
+			return -ESTALE;
+		}
+
+		if ((S_ISCHR(mode) || S_ISBLK(mode)) && inode->i_rdev != rdev) {
+			pr_warn_once("dev inode rdev changed! (ino %llx.%llx is %u:%u, mds says %u:%u)\n",
+				     ceph_vinop(inode), MAJOR(inode->i_rdev),
+				     MINOR(inode->i_rdev), MAJOR(rdev),
+				     MINOR(rdev));
+			return -ESTALE;
+		}
+	}
 
 	info_caps = le32_to_cpu(info->cap.caps);
 
@@ -821,8 +855,6 @@ int ceph_fill_inode(struct inode *inode, struct page *locked_page,
 	issued |= __ceph_caps_dirty(ci);
 	new_issued = ~issued & info_caps;
 
-	/* update inode */
-	inode->i_rdev = le32_to_cpu(info->rdev);
 	/* directories have fl_stripe_unit set to zero */
 	if (le32_to_cpu(info->layout.fl_stripe_unit))
 		inode->i_blkbits =
@@ -834,7 +866,7 @@ int ceph_fill_inode(struct inode *inode, struct page *locked_page,
 
 	if ((new_version || (new_issued & CEPH_CAP_AUTH_SHARED)) &&
 	    (issued & CEPH_CAP_AUTH_EXCL) == 0) {
-		inode->i_mode = le32_to_cpu(info->mode);
+		inode->i_mode = mode;
 		inode->i_uid = make_kuid(&init_user_ns, le32_to_cpu(info->uid));
 		inode->i_gid = make_kgid(&init_user_ns, le32_to_cpu(info->gid));
 		dout("%p mode 0%o uid.gid %d.%d\n", inode, inode->i_mode,
@@ -900,6 +932,7 @@ int ceph_fill_inode(struct inode *inode, struct page *locked_page,
 			ci->i_rfiles = le64_to_cpu(info->rfiles);
 			ci->i_rsubdirs = le64_to_cpu(info->rsubdirs);
 			ci->i_dir_pin = iinfo->dir_pin;
+			ci->i_rsnaps = iinfo->rsnaps;
 			ceph_decode_timespec64(&ci->i_rctime, &info->rctime);
 		}
 	}
@@ -932,7 +965,7 @@ int ceph_fill_inode(struct inode *inode, struct page *locked_page,
 	case S_IFCHR:
 	case S_IFSOCK:
 		inode->i_blkbits = PAGE_SHIFT;
-		init_special_inode(inode, inode->i_mode, inode->i_rdev);
+		init_special_inode(inode, inode->i_mode, rdev);
 		inode->i_op = &ceph_file_iops;
 		break;
 	case S_IFREG:
@@ -1793,7 +1826,7 @@ bool ceph_inode_set_size(struct inode *inode, loff_t size)
 	bool ret;
 
 	spin_lock(&ci->i_ceph_lock);
-	dout("set_size %p %llu -> %llu\n", inode, inode->i_size, size);
+	dout("set_size %p %llu -> %llu\n", inode, i_size_read(inode), size);
 	i_size_write(inode, size);
 	inode->i_blocks = calc_inode_blocks(size);
 
@@ -2100,20 +2133,19 @@ int __ceph_setattr(struct inode *inode, struct iattr *attr)
 		}
 	}
 	if (ia_valid & ATTR_SIZE) {
-		dout("setattr %p size %lld -> %lld\n", inode,
-		     inode->i_size, attr->ia_size);
-		if ((issued & CEPH_CAP_FILE_EXCL) &&
-		    attr->ia_size > inode->i_size) {
+		loff_t isize = i_size_read(inode);
+
+		dout("setattr %p size %lld -> %lld\n", inode, isize, attr->ia_size);
+		if ((issued & CEPH_CAP_FILE_EXCL) && attr->ia_size > isize) {
 			i_size_write(inode, attr->ia_size);
 			inode->i_blocks = calc_inode_blocks(attr->ia_size);
 			ci->i_reported_size = attr->ia_size;
 			dirtied |= CEPH_CAP_FILE_EXCL;
 			ia_valid |= ATTR_MTIME;
 		} else if ((issued & CEPH_CAP_FILE_SHARED) == 0 ||
-			   attr->ia_size != inode->i_size) {
+			   attr->ia_size != isize) {
 			req->r_args.setattr.size = cpu_to_le64(attr->ia_size);
-			req->r_args.setattr.old_size =
-				cpu_to_le64(inode->i_size);
+			req->r_args.setattr.old_size = cpu_to_le64(isize);
 			mask |= CEPH_SETATTR_SIZE;
 			release |= CEPH_CAP_FILE_SHARED | CEPH_CAP_FILE_EXCL |
 				   CEPH_CAP_FILE_RD | CEPH_CAP_FILE_WR;
@@ -2223,7 +2255,7 @@ int ceph_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
 		return err;
 
 	if ((attr->ia_valid & ATTR_SIZE) &&
-	    attr->ia_size > max(inode->i_size, fsc->max_file_size))
+	    attr->ia_size > max(i_size_read(inode), fsc->max_file_size))
 		return -EFBIG;
 
 	if ((attr->ia_valid & ATTR_SIZE) &&

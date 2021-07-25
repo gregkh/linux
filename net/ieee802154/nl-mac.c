@@ -1186,7 +1186,7 @@ static int llsec_iter_devkeys(struct llsec_dump_data *data)
 {
 	struct ieee802154_llsec_device *dpos;
 	struct ieee802154_llsec_device_key *kpos;
-	int rc = 0, idx = 0, idx2;
+	int idx = 0, idx2;
 
 	list_for_each_entry(dpos, &data->table->devices, list) {
 		if (idx++ < data->s_idx)
@@ -1202,7 +1202,7 @@ static int llsec_iter_devkeys(struct llsec_dump_data *data)
 						      data->nlmsg_seq,
 						      dpos->hwaddr, kpos,
 						      data->dev)) {
-				return rc = -EMSGSIZE;
+				return -EMSGSIZE;
 			}
 
 			data->s_idx2++;
@@ -1211,7 +1211,7 @@ static int llsec_iter_devkeys(struct llsec_dump_data *data)
 		data->s_idx++;
 	}
 
-	return rc;
+	return 0;
 }
 
 int ieee802154_llsec_dump_devkeys(struct sk_buff *skb,

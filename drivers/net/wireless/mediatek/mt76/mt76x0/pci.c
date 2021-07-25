@@ -290,9 +290,9 @@ static int mt76x0e_resume(struct pci_dev *pdev)
 #endif /* CONFIG_PM */
 
 static const struct pci_device_id mt76x0e_device_table[] = {
-	{ PCI_DEVICE(0x14c3, 0x7610) },
-	{ PCI_DEVICE(0x14c3, 0x7630) },
-	{ PCI_DEVICE(0x14c3, 0x7650) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x7610) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x7630) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_MEDIATEK, 0x7650) },
 	{ },
 };
 

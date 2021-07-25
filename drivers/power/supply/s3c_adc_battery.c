@@ -1,13 +1,8 @@
-/*
- *	iPAQ h1930/h1940/rx1950 battery controller driver
- *	Copyright (c) Vasily Khoruzhick
- *	Based on h1940_battery.c by Arnaud Patard
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file COPYING in the main directory of this archive for
- * more details.
- *
- */
+// SPDX-License-Identifier: GPL-2.0
+//
+// iPAQ h1930/h1940/rx1950 battery controller driver
+// Copyright (c) Vasily Khoruzhick
+// Based on h1940_battery.c by Arnaud Patard
 
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
@@ -407,8 +402,6 @@ static int s3c_adc_bat_remove(struct platform_device *pdev)
 static int s3c_adc_bat_suspend(struct platform_device *pdev,
 	pm_message_t state)
 {
-	struct s3c_adc_bat_pdata *pdata = pdev->dev.platform_data;
-
 	if (main_bat.charge_finished) {
 		if (device_may_wakeup(&pdev->dev))
 			enable_irq_wake(
@@ -424,8 +417,6 @@ static int s3c_adc_bat_suspend(struct platform_device *pdev,
 
 static int s3c_adc_bat_resume(struct platform_device *pdev)
 {
-	struct s3c_adc_bat_pdata *pdata = pdev->dev.platform_data;
-
 	if (main_bat.charge_finished) {
 		if (device_may_wakeup(&pdev->dev))
 			disable_irq_wake(

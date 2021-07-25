@@ -947,6 +947,16 @@ static int ovl_lower_dir(const char *name, struct path *path,
 		pr_warn("fs on '%s' does not support file handles, falling back to index=off,nfs_export=off.\n",
 			name);
 	}
+	/*
+	 * Decoding origin file handle is required for persistent st_ino.
+	 * Without persistent st_ino, xino=auto falls back to xino=off.
+	 */
+	if (ofs->config.xino == OVL_XINO_AUTO &&
+	    ofs->config.upperdir && !fh_type) {
+		ofs->config.xino = OVL_XINO_OFF;
+		pr_warn("fs on '%s' does not support file handles, falling back to xino=off.\n",
+			name);
+	}
 
 	/* Check if lower fs has 32bit inode numbers */
 	if (fh_type != FILEID_INO32_GEN)
@@ -1044,9 +1054,6 @@ ovl_posix_acl_xattr_set(const struct xattr_handler *handler,
 	}
 
 	err = ovl_xattr_set(dentry, inode, handler->name, value, size, flags);
-	if (!err)
-		ovl_copyattr(ovl_inode_real(inode), inode);
-
 	return err;
 
 out_acl_release:
@@ -1187,8 +1194,8 @@ static int ovl_get_upper(struct super_block *sb, struct ovl_fs *ofs,
 	if (err)
 		goto out;
 
-	/* Upper fs should not be r/o */
-	if (sb_rdonly(upperpath->mnt->mnt_sb)) {
+	/* Upperdir path should not be r/o */
+	if (__mnt_is_readonly(upperpath->mnt)) {
 		pr_err("upper fs is r/o, try multi-lower layers mount\n");
 		err = -EINVAL;
 		goto out;
@@ -1403,9 +1410,19 @@ static int ovl_make_workdir(struct super_block *sb, struct ovl_fs *ofs,
 	err = ovl_do_setxattr(ofs, ofs->workdir, OVL_XATTR_OPAQUE, "0", 1);
 	if (err) {
 		ofs->noxattr = true;
-		ofs->config.index = false;
-		ofs->config.metacopy = false;
-		pr_warn("upper fs does not support xattr, falling back to index=off and metacopy=off.\n");
+		if (ofs->config.index || ofs->config.metacopy) {
+			ofs->config.index = false;
+			ofs->config.metacopy = false;
+			pr_warn("upper fs does not support xattr, falling back to index=off,metacopy=off.\n");
+		}
+		/*
+		 * xattr support is required for persistent st_ino.
+		 * Without persistent st_ino, xino=auto falls back to xino=off.
+		 */
+		if (ofs->config.xino == OVL_XINO_AUTO) {
+			ofs->config.xino = OVL_XINO_OFF;
+			pr_warn("upper fs does not support xattr, falling back to xino=off.\n");
+		}
 		err = 0;
 	} else {
 		ovl_do_removexattr(ofs, ofs->workdir, OVL_XATTR_OPAQUE);
@@ -1582,7 +1599,8 @@ static bool ovl_lower_uuid_ok(struct ovl_fs *ofs, const uuid_t *uuid)
 	 * user opted-in to one of the new features that require following the
 	 * lower inode of non-dir upper.
 	 */
-	if (!ofs->config.index && !ofs->config.metacopy && !ofs->config.xino &&
+	if (!ofs->config.index && !ofs->config.metacopy &&
+	    ofs->config.xino != OVL_XINO_ON &&
 	    uuid_is_null(uuid))
 		return false;
 
@@ -1611,6 +1629,7 @@ static int ovl_get_fsid(struct ovl_fs *ofs, const struct path *path)
 	dev_t dev;
 	int err;
 	bool bad_uuid = false;
+	bool warn = false;
 
 	for (i = 0; i < ofs->numfs; i++) {
 		if (ofs->fs[i].sb == sb)
@@ -1619,13 +1638,20 @@ static int ovl_get_fsid(struct ovl_fs *ofs, const struct path *path)
 
 	if (!ovl_lower_uuid_ok(ofs, &sb->s_uuid)) {
 		bad_uuid = true;
+		if (ofs->config.xino == OVL_XINO_AUTO) {
+			ofs->config.xino = OVL_XINO_OFF;
+			warn = true;
+		}
 		if (ofs->config.index || ofs->config.nfs_export) {
 			ofs->config.index = false;
 			ofs->config.nfs_export = false;
-			pr_warn("%s uuid detected in lower fs '%pd2', falling back to index=off,nfs_export=off.\n",
+			warn = true;
+		}
+		if (warn) {
+			pr_warn("%s uuid detected in lower fs '%pd2', falling back to xino=%s,index=off,nfs_export=off.\n",
 				uuid_is_null(&sb->s_uuid) ? "null" :
 							    "conflicting",
-				path->dentry);
+				path->dentry, ovl_xino_str[ofs->config.xino]);
 		}
 	}
 
@@ -1956,6 +1982,7 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 	if (!ofs)
 		goto out;
 
+	err = -ENOMEM;
 	ofs->creator_cred = cred = prepare_creds();
 	if (!cred)
 		goto out_err;
@@ -1984,6 +2011,7 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 	if (!splitlower)
 		goto out_err;
 
+	err = -EINVAL;
 	numlower = ovl_split_lowerdirs(splitlower);
 	if (numlower > OVL_MAX_STACK) {
 		pr_err("too many lower directories, limit is %d\n",
@@ -1991,6 +2019,7 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 		goto out_err;
 	}
 
+	err = -ENOMEM;
 	layers = kcalloc(numlower + 1, sizeof(struct ovl_layer), GFP_KERNEL);
 	if (!layers)
 		goto out_err;
@@ -2017,6 +2046,7 @@ static int ovl_fill_super(struct super_block *sb, void *data, int silent)
 	if (ofs->config.upperdir) {
 		struct super_block *upper_sb;
 
+		err = -EINVAL;
 		if (!ofs->config.workdir) {
 			pr_err("missing 'workdir'\n");
 			goto out_err;

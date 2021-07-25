@@ -401,7 +401,6 @@ int dw_pcie_host_init(struct pcie_port *pp)
 	dw_pcie_iatu_detect(pci);
 
 	dw_pcie_setup_rc(pp);
-	dw_pcie_msi_init(pp);
 
 	if (!dw_pcie_link_up(pci) && pci->ops && pci->ops->start_link) {
 		ret = pci->ops->start_link(pci);
@@ -551,6 +550,8 @@ void dw_pcie_setup_rc(struct pcie_port *pp)
 					    ~0);
 		}
 	}
+
+	dw_pcie_msi_init(pp);
 
 	/* Setup RC BARs */
 	dw_pcie_writel_dbi(pci, PCI_BASE_ADDRESS_0, 0x00000004);

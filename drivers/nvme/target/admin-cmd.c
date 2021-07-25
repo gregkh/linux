@@ -513,7 +513,7 @@ static void nvmet_execute_identify_ns(struct nvmet_req *req)
 	default:
 		id->nuse = id->nsze;
 		break;
-        }
+	}
 
 	if (req->ns->bdev)
 		nvmet_bdev_set_limits(req->ns->bdev, id);
@@ -946,7 +946,7 @@ u16 nvmet_parse_admin_cmd(struct nvmet_req *req)
 	if (nvmet_req_subsys(req)->type == NVME_NQN_DISC)
 		return nvmet_parse_discovery_cmd(req);
 
-	ret = nvmet_check_ctrl_status(req, cmd);
+	ret = nvmet_check_ctrl_status(req);
 	if (unlikely(ret))
 		return ret;
 
@@ -975,10 +975,7 @@ u16 nvmet_parse_admin_cmd(struct nvmet_req *req)
 	case nvme_admin_keep_alive:
 		req->execute = nvmet_execute_keep_alive;
 		return 0;
+	default:
+		return nvmet_report_invalid_opcode(req);
 	}
-
-	pr_debug("unhandled cmd %d on qid %d\n", cmd->common.opcode,
-	       req->sq->qid);
-	req->error_loc = offsetof(struct nvme_common_command, opcode);
-	return NVME_SC_INVALID_OPCODE | NVME_SC_DNR;
 }

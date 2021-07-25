@@ -87,7 +87,6 @@ static inline void wq_list_del(struct io_wq_work_list *list,
 
 struct io_wq_work {
 	struct io_wq_work_node list;
-	const struct cred *creds;
 	unsigned flags;
 };
 
@@ -116,12 +115,13 @@ static inline void io_wq_put_hash(struct io_wq_hash *hash)
 
 struct io_wq_data {
 	struct io_wq_hash *hash;
+	struct task_struct *task;
 	io_wq_work_fn *do_work;
 	free_work_fn *free_work;
 };
 
 struct io_wq *io_wq_create(unsigned bounded, struct io_wq_data *data);
-void io_wq_put(struct io_wq *wq);
+void io_wq_exit_start(struct io_wq *wq);
 void io_wq_put_and_exit(struct io_wq *wq);
 
 void io_wq_enqueue(struct io_wq *wq, struct io_wq_work *work);

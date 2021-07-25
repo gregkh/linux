@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 Advanced Micro Devices, Inc.
+ * Copyright (C) 2015-2020 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -66,6 +66,7 @@ struct dc_plane_state;
 struct common_irq_params {
 	struct amdgpu_device *adev;
 	enum dc_irq_source irq_src;
+	atomic64_t previous_timestamp;
 };
 
 /**
@@ -130,6 +131,16 @@ struct amdgpu_dm_backlight_caps {
 	 * @aux_support: Describes if the display supports AUX backlight.
 	 */
 	bool aux_support;
+};
+
+/**
+ * struct dal_allocation - Tracks mapped FB memory for SMU communication
+ */
+struct dal_allocation {
+	struct list_head list;
+	struct amdgpu_bo *bo;
+	void *cpu_ptr;
+	u64 gpu_addr;
 };
 
 /**
@@ -245,12 +256,12 @@ struct amdgpu_display_manager {
 	 */
 	struct mutex audio_lock;
 
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 	/**
-	 * @vblank_work_lock:
+	 * @vblank_lock:
 	 *
 	 * Guards access to deferred vblank work state.
 	 */
-#if defined(CONFIG_DRM_AMD_DC_DCN)
 	spinlock_t vblank_lock;
 #endif
 
@@ -312,6 +323,15 @@ struct amdgpu_display_manager {
 	vblank_params[DC_IRQ_SOURCE_VBLANK6 - DC_IRQ_SOURCE_VBLANK1 + 1];
 
 	/**
+	 * @vline0_params:
+	 *
+	 * OTG vertical interrupt0 IRQ parameters, passed to registered
+	 * handlers when triggered.
+	 */
+	struct common_irq_params
+	vline0_params[DC_IRQ_SOURCE_DC6_VLINE0 - DC_IRQ_SOURCE_DC1_VLINE0 + 1];
+
+	/**
 	 * @vupdate_params:
 	 *
 	 * Vertical update IRQ parameters, passed to registered handlers when
@@ -319,6 +339,15 @@ struct amdgpu_display_manager {
 	 */
 	struct common_irq_params
 	vupdate_params[DC_IRQ_SOURCE_VUPDATE6 - DC_IRQ_SOURCE_VUPDATE1 + 1];
+
+	/**
+	 * @dmub_trace_params:
+	 *
+	 * DMUB trace event IRQ parameters, passed to registered handlers when
+	 * triggered.
+	 */
+	struct common_irq_params
+	dmub_trace_params[1];
 
 	spinlock_t irq_handler_list_table_lock;
 
@@ -333,6 +362,11 @@ struct amdgpu_display_manager {
 #endif
 
 #if defined(CONFIG_DRM_AMD_DC_DCN)
+	/**
+	 * @vblank_workqueue:
+	 *
+	 * amdgpu workqueue during vblank
+	 */
 	struct vblank_workqueue *vblank_workqueue;
 #endif
 
@@ -351,12 +385,23 @@ struct amdgpu_display_manager {
 	 */
 	const struct gpu_info_soc_bounding_box_v1_0 *soc_bounding_box;
 
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 	/**
 	 * @active_vblank_irq_count:
 	 *
 	 * number of currently active vblank irqs
 	 */
 	uint32_t active_vblank_irq_count;
+#endif
+
+#if defined(CONFIG_DRM_AMD_SECURE_DISPLAY)
+	/**
+	 * @crc_rd_wrk:
+	 *
+	 * Work to be executed in a separate thread to communicate with PSP.
+	 */
+	struct crc_rd_work *crc_rd_wrk;
+#endif
 
 	/**
 	 * @mst_encoders:
@@ -365,6 +410,14 @@ struct amdgpu_display_manager {
 	 */
 	struct amdgpu_encoder mst_encoders[AMDGPU_DM_MAX_CRTC];
 	bool force_timing_sync;
+	bool disable_hpd_irq;
+	bool dmcub_trace_event_en;
+	/**
+	 * @da_list:
+	 *
+	 * DAL fb memory allocation list, for communication with SMU.
+	 */
+	struct list_head da_list;
 };
 
 enum dsc_clock_force_state {
@@ -428,6 +481,8 @@ struct amdgpu_dm_connector {
 #endif
 	bool force_yuv420_output;
 	struct dsc_preferred_settings dsc_settings;
+	/* Cached display modes */
+	struct drm_display_mode freesync_vid_base;
 };
 
 #define to_amdgpu_dm_connector(x) container_of(x, struct amdgpu_dm_connector, base)
@@ -450,7 +505,6 @@ struct dm_crtc_state {
 	int active_planes;
 
 	int crc_skip_count;
-	enum amdgpu_dm_pipe_crc_source crc_src;
 
 	bool freesync_timing_changed;
 	bool freesync_vrr_info_changed;
@@ -488,6 +542,14 @@ struct dm_connector_state {
 	int vcpi_slots;
 	uint64_t pbn;
 };
+
+struct amdgpu_hdmi_vsdb_info {
+	unsigned int amd_vsdb_version;		/* VSDB version, should be used to determine which VSIF to send */
+	bool freesync_supported;		/* FreeSync Supported */
+	unsigned int min_refresh_rate_hz;	/* FreeSync Minimum Refresh Rate in Hz */
+	unsigned int max_refresh_rate_hz;	/* FreeSync Maximum Refresh Rate in Hz */
+};
+
 
 #define to_dm_connector_state(x)\
 	container_of((x), struct dm_connector_state, base)

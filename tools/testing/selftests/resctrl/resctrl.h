@@ -23,6 +23,7 @@
 #include <sys/eventfd.h>
 #include <asm/unistd.h>
 #include <linux/perf_event.h>
+#include "../kselftest.h"
 
 #define MB			(1024 * 1024)
 #define RESCTRL_PATH		"/sys/fs/resctrl"
@@ -68,11 +69,10 @@ struct resctrl_val_param {
 
 #define MBM_STR			"mbm"
 #define MBA_STR			"mba"
-#define CQM_STR			"cqm"
+#define CMT_STR			"cmt"
 #define CAT_STR			"cat"
 
 extern pid_t bm_pid, ppid;
-extern int tests_run;
 
 extern char llc_occup_path[1024];
 extern bool is_amd;
@@ -107,10 +107,14 @@ void ctrlc_handler(int signum, siginfo_t *info, void *ptr);
 int cat_val(struct resctrl_val_param *param);
 void cat_test_cleanup(void);
 int cat_perf_miss_val(int cpu_no, int no_of_bits, char *cache_type);
-int cqm_resctrl_val(int cpu_no, int n, char **benchmark_cmd);
+int cmt_resctrl_val(int cpu_no, int n, char **benchmark_cmd);
 unsigned int count_bits(unsigned long n);
-void cqm_test_cleanup(void);
+void cmt_test_cleanup(void);
 int get_core_sibling(int cpu_no);
 int measure_cache_vals(struct resctrl_val_param *param, int bm_pid);
+int show_cache_info(unsigned long sum_llc_val, int no_of_bits,
+		    unsigned long cache_span, unsigned long max_diff,
+		    unsigned long max_diff_percent, unsigned long num_of_runs,
+		    bool platform, bool cmt);
 
 #endif /* RESCTRL_H */

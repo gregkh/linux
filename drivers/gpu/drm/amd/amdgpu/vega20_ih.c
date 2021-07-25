@@ -35,6 +35,9 @@
 
 #define MAX_REARM_RETRY 10
 
+#define mmIH_CHICKEN_ALDEBARAN			0x18d
+#define mmIH_CHICKEN_ALDEBARAN_BASE_IDX		0
+
 static void vega20_ih_set_interrupt_funcs(struct amdgpu_device *adev);
 
 /**
@@ -261,10 +264,10 @@ static void vega20_ih_reroute_ih(struct amdgpu_device *adev)
 {
 	uint32_t tmp;
 
-	/* vega20 ih reroute will go through psp
-	 * this function is only used for arcturus
+	/* vega20 ih reroute will go through psp this
+	 * function is used for newer asics starting arcturus
 	 */
-	if (adev->asic_type == CHIP_ARCTURUS) {
+	if (adev->asic_type >= CHIP_ARCTURUS) {
 		/* Reroute to IH ring 1 for VMC */
 		WREG32_SOC15(OSSSYS, 0, mmIH_CLIENT_CFG_INDEX, 0x12);
 		tmp = RREG32_SOC15(OSSSYS, 0, mmIH_CLIENT_CFG_DATA);
@@ -313,6 +316,18 @@ static int vega20_ih_irq_init(struct amdgpu_device *adev)
 						   MC_SPACE_GPA_ENABLE, 1);
 		}
 		WREG32_SOC15(OSSSYS, 0, mmIH_CHICKEN, ih_chicken);
+	}
+
+	/* psp firmware won't program IH_CHICKEN for aldebaran
+	 * driver needs to program it properly according to
+	 * MC_SPACE type in IH_RB_CNTL */
+	if (adev->asic_type == CHIP_ALDEBARAN) {
+		ih_chicken = RREG32_SOC15(OSSSYS, 0, mmIH_CHICKEN_ALDEBARAN);
+		if (adev->irq.ih.use_bus_addr) {
+			ih_chicken = REG_SET_FIELD(ih_chicken, IH_CHICKEN,
+						   MC_SPACE_GPA_ENABLE, 1);
+		}
+		WREG32_SOC15(OSSSYS, 0, mmIH_CHICKEN_ALDEBARAN, ih_chicken);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(ih); i++) {

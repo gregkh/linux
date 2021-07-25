@@ -347,7 +347,7 @@ static void kvm_guest_cpu_init(void)
 
 		wrmsrl(MSR_KVM_ASYNC_PF_EN, pa);
 		__this_cpu_write(apf_reason.enabled, 1);
-		pr_info("KVM setup async PF for cpu %d\n", smp_processor_id());
+		pr_info("setup async PF for cpu %d\n", smp_processor_id());
 	}
 
 	if (kvm_para_has_feature(KVM_FEATURE_PV_EOI)) {
@@ -373,7 +373,7 @@ static void kvm_pv_disable_apf(void)
 	wrmsrl(MSR_KVM_ASYNC_PF_EN, 0);
 	__this_cpu_write(apf_reason.enabled, 0);
 
-	pr_info("Unregister pv shared memory for cpu %d\n", smp_processor_id());
+	pr_info("disable async PF for cpu %d\n", smp_processor_id());
 }
 
 static void kvm_disable_steal_time(void)
@@ -383,31 +383,6 @@ static void kvm_disable_steal_time(void)
 
 	wrmsr(MSR_KVM_STEAL_TIME, 0, 0);
 }
-
-static void kvm_pv_guest_cpu_reboot(void *unused)
-{
-	/*
-	 * We disable PV EOI before we load a new kernel by kexec,
-	 * since MSR_KVM_PV_EOI_EN stores a pointer into old kernel's memory.
-	 * New kernel can re-enable when it boots.
-	 */
-	if (kvm_para_has_feature(KVM_FEATURE_PV_EOI))
-		wrmsrl(MSR_KVM_PV_EOI_EN, 0);
-	kvm_pv_disable_apf();
-	kvm_disable_steal_time();
-}
-
-static int kvm_pv_reboot_notify(struct notifier_block *nb,
-				unsigned long code, void *unused)
-{
-	if (code == SYS_RESTART)
-		on_each_cpu(kvm_pv_guest_cpu_reboot, NULL, 1);
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block kvm_pv_reboot_nb = {
-	.notifier_call = kvm_pv_reboot_notify,
-};
 
 static u64 kvm_steal_clock(int cpu)
 {
@@ -453,15 +428,6 @@ static void __init sev_map_percpu_data(void)
 	}
 }
 
-static bool pv_tlb_flush_supported(void)
-{
-	return (kvm_para_has_feature(KVM_FEATURE_PV_TLB_FLUSH) &&
-		!kvm_para_has_hint(KVM_HINTS_REALTIME) &&
-		kvm_para_has_feature(KVM_FEATURE_STEAL_TIME));
-}
-
-static DEFINE_PER_CPU(cpumask_var_t, __pv_cpu_mask);
-
 static void kvm_guest_cpu_offline(bool shutdown)
 {
 	kvm_disable_steal_time();
@@ -484,6 +450,15 @@ static int kvm_cpu_online(unsigned int cpu)
 }
 
 #ifdef CONFIG_SMP
+
+static DEFINE_PER_CPU(cpumask_var_t, __pv_cpu_mask);
+
+static bool pv_tlb_flush_supported(void)
+{
+	return (kvm_para_has_feature(KVM_FEATURE_PV_TLB_FLUSH) &&
+		!kvm_para_has_hint(KVM_HINTS_REALTIME) &&
+		kvm_para_has_feature(KVM_FEATURE_STEAL_TIME));
+}
 
 static bool pv_ipi_supported(void)
 {
@@ -597,6 +572,54 @@ static void kvm_smp_send_call_func_ipi(const struct cpumask *mask)
 	}
 }
 
+static void kvm_flush_tlb_multi(const struct cpumask *cpumask,
+			const struct flush_tlb_info *info)
+{
+	u8 state;
+	int cpu;
+	struct kvm_steal_time *src;
+	struct cpumask *flushmask = this_cpu_cpumask_var_ptr(__pv_cpu_mask);
+
+	cpumask_copy(flushmask, cpumask);
+	/*
+	 * We have to call flush only on online vCPUs. And
+	 * queue flush_on_enter for pre-empted vCPUs
+	 */
+	for_each_cpu(cpu, flushmask) {
+		/*
+		 * The local vCPU is never preempted, so we do not explicitly
+		 * skip check for local vCPU - it will never be cleared from
+		 * flushmask.
+		 */
+		src = &per_cpu(steal_time, cpu);
+		state = READ_ONCE(src->preempted);
+		if ((state & KVM_VCPU_PREEMPTED)) {
+			if (try_cmpxchg(&src->preempted, &state,
+					state | KVM_VCPU_FLUSH_TLB))
+				__cpumask_clear_cpu(cpu, flushmask);
+		}
+	}
+
+	native_flush_tlb_multi(flushmask, info);
+}
+
+static __init int kvm_alloc_cpumask(void)
+{
+	int cpu;
+
+	if (!kvm_para_available() || nopv)
+		return 0;
+
+	if (pv_tlb_flush_supported() || pv_ipi_supported())
+		for_each_possible_cpu(cpu) {
+			zalloc_cpumask_var_node(per_cpu_ptr(&__pv_cpu_mask, cpu),
+				GFP_KERNEL, cpu_to_node(cpu));
+		}
+
+	return 0;
+}
+arch_initcall(kvm_alloc_cpumask);
+
 static void __init kvm_smp_prepare_boot_cpu(void)
 {
 	/*
@@ -639,6 +662,23 @@ static struct syscore_ops kvm_syscore_ops = {
 	.resume		= kvm_resume,
 };
 
+static void kvm_pv_guest_cpu_reboot(void *unused)
+{
+	kvm_guest_cpu_offline(true);
+}
+
+static int kvm_pv_reboot_notify(struct notifier_block *nb,
+				unsigned long code, void *unused)
+{
+	if (code == SYS_RESTART)
+		on_each_cpu(kvm_pv_guest_cpu_reboot, NULL, 1);
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block kvm_pv_reboot_nb = {
+	.notifier_call = kvm_pv_reboot_notify,
+};
+
 /*
  * After a PV feature is registered, the host will keep writing to the
  * registered memory location. If the guest happens to shutdown, this memory
@@ -653,32 +693,6 @@ static void kvm_crash_shutdown(struct pt_regs *regs)
 }
 #endif
 
-static void kvm_flush_tlb_others(const struct cpumask *cpumask,
-			const struct flush_tlb_info *info)
-{
-	u8 state;
-	int cpu;
-	struct kvm_steal_time *src;
-	struct cpumask *flushmask = this_cpu_cpumask_var_ptr(__pv_cpu_mask);
-
-	cpumask_copy(flushmask, cpumask);
-	/*
-	 * We have to call flush only on online vCPUs. And
-	 * queue flush_on_enter for pre-empted vCPUs
-	 */
-	for_each_cpu(cpu, flushmask) {
-		src = &per_cpu(steal_time, cpu);
-		state = READ_ONCE(src->preempted);
-		if ((state & KVM_VCPU_PREEMPTED)) {
-			if (try_cmpxchg(&src->preempted, &state,
-					state | KVM_VCPU_FLUSH_TLB))
-				__cpumask_clear_cpu(cpu, flushmask);
-		}
-	}
-
-	native_flush_tlb_others(flushmask, info);
-}
-
 static void __init kvm_guest_init(void)
 {
 	int i;
@@ -690,13 +704,7 @@ static void __init kvm_guest_init(void)
 
 	if (kvm_para_has_feature(KVM_FEATURE_STEAL_TIME)) {
 		has_steal_clock = 1;
-		pv_ops.time.steal_clock = kvm_steal_clock;
-	}
-
-	if (pv_tlb_flush_supported()) {
-		pv_ops.mmu.flush_tlb_others = kvm_flush_tlb_others;
-		pv_ops.mmu.tlb_remove_table = tlb_remove_table;
-		pr_info("KVM setup pv remote TLB flush\n");
+		static_call_update(pv_steal_clock, kvm_steal_clock);
 	}
 
 	if (kvm_para_has_feature(KVM_FEATURE_PV_EOI))
@@ -708,6 +716,12 @@ static void __init kvm_guest_init(void)
 	}
 
 #ifdef CONFIG_SMP
+	if (pv_tlb_flush_supported()) {
+		pv_ops.mmu.flush_tlb_multi = kvm_flush_tlb_multi;
+		pv_ops.mmu.tlb_remove_table = tlb_remove_table;
+		pr_info("KVM setup pv remote TLB flush\n");
+	}
+
 	smp_ops.smp_prepare_boot_cpu = kvm_smp_prepare_boot_cpu;
 	if (pv_sched_yield_supported()) {
 		smp_ops.send_call_func_ipi = kvm_smp_send_call_func_ipi;
@@ -780,7 +794,7 @@ static uint32_t __init kvm_detect(void)
 
 static void __init kvm_apic_init(void)
 {
-#if defined(CONFIG_SMP)
+#ifdef CONFIG_SMP
 	if (pv_ipi_supported())
 		kvm_setup_pv_ipi();
 #endif
@@ -839,32 +853,6 @@ static __init int activate_jump_labels(void)
 	return 0;
 }
 arch_initcall(activate_jump_labels);
-
-static __init int kvm_alloc_cpumask(void)
-{
-	int cpu;
-	bool alloc = false;
-
-	if (!kvm_para_available() || nopv)
-		return 0;
-
-	if (pv_tlb_flush_supported())
-		alloc = true;
-
-#if defined(CONFIG_SMP)
-	if (pv_ipi_supported())
-		alloc = true;
-#endif
-
-	if (alloc)
-		for_each_possible_cpu(cpu) {
-			zalloc_cpumask_var_node(per_cpu_ptr(&__pv_cpu_mask, cpu),
-				GFP_KERNEL, cpu_to_node(cpu));
-		}
-
-	return 0;
-}
-arch_initcall(kvm_alloc_cpumask);
 
 #ifdef CONFIG_PARAVIRT_SPINLOCKS
 

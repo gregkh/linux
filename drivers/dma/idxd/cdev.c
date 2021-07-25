@@ -45,7 +45,7 @@ static void idxd_cdev_dev_release(struct device *dev)
 	struct idxd_cdev_context *cdev_ctx;
 	struct idxd_wq *wq = idxd_cdev->wq;
 
-	cdev_ctx = &ictx[wq->idxd->type];
+	cdev_ctx = &ictx[wq->idxd->data->type];
 	ida_simple_remove(&cdev_ctx->minor_ida, idxd_cdev->minor);
 	kfree(idxd_cdev);
 }
@@ -240,7 +240,7 @@ static const struct file_operations idxd_cdev_fops = {
 
 int idxd_cdev_get_major(struct idxd_device *idxd)
 {
-	return MAJOR(ictx[idxd->type].devt);
+	return MAJOR(ictx[idxd->data->type].devt);
 }
 
 int idxd_wq_add_cdev(struct idxd_wq *wq)
@@ -259,7 +259,7 @@ int idxd_wq_add_cdev(struct idxd_wq *wq)
 	idxd_cdev->wq = wq;
 	cdev = &idxd_cdev->cdev;
 	dev = &idxd_cdev->dev;
-	cdev_ctx = &ictx[wq->idxd->type];
+	cdev_ctx = &ictx[wq->idxd->data->type];
 	minor = ida_simple_get(&cdev_ctx->minor_ida, 0, MINORMASK, GFP_KERNEL);
 	if (minor < 0) {
 		kfree(idxd_cdev);
@@ -269,12 +269,11 @@ int idxd_wq_add_cdev(struct idxd_wq *wq)
 
 	device_initialize(dev);
 	dev->parent = &wq->conf_dev;
-	dev->bus = idxd_get_bus_type(idxd);
+	dev->bus = &dsa_bus_type;
 	dev->type = &idxd_cdev_device_type;
 	dev->devt = MKDEV(MAJOR(cdev_ctx->devt), minor);
 
-	rc = dev_set_name(dev, "%s/wq%u.%u", idxd_get_dev_name(idxd),
-			  idxd->id, wq->id);
+	rc = dev_set_name(dev, "%s/wq%u.%u", idxd->data->name_prefix, idxd->id, wq->id);
 	if (rc < 0)
 		goto err;
 
@@ -299,7 +298,7 @@ void idxd_wq_del_cdev(struct idxd_wq *wq)
 	struct idxd_cdev *idxd_cdev;
 	struct idxd_cdev_context *cdev_ctx;
 
-	cdev_ctx = &ictx[wq->idxd->type];
+	cdev_ctx = &ictx[wq->idxd->data->type];
 	idxd_cdev = wq->idxd_cdev;
 	wq->idxd_cdev = NULL;
 	cdev_device_del(&idxd_cdev->cdev, &idxd_cdev->dev);
