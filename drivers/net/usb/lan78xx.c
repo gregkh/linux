@@ -379,7 +379,6 @@ struct lan78xx_net {
 	struct sk_buff_head	rxq;
 	struct sk_buff_head	txq;
 	struct sk_buff_head	done;
-	struct sk_buff_head	rxq_pause;
 	struct sk_buff_head	txq_pend;
 
 	struct tasklet_struct	bh;
@@ -2990,8 +2989,6 @@ static int lan78xx_stop(struct net_device *net)
 
 	usb_kill_urb(dev->urb_intr);
 
-	skb_queue_purge(&dev->rxq_pause);
-
 	/* deferred work (task, timer, softirq) must also stop.
 	 * can't flush_scheduled_work() until we drop rtnl (later),
 	 * else workers could deadlock; so make workers a NOP.
@@ -3290,11 +3287,6 @@ static void lan78xx_rx_vlan_offload(struct lan78xx_net *dev,
 static void lan78xx_skb_return(struct lan78xx_net *dev, struct sk_buff *skb)
 {
 	int status;
-
-	if (test_bit(EVENT_RX_PAUSED, &dev->flags)) {
-		skb_queue_tail(&dev->rxq_pause, skb);
-		return;
-	}
 
 	dev->net->stats.rx_packets++;
 	dev->net->stats.rx_bytes += skb->len;
@@ -3955,7 +3947,6 @@ static int lan78xx_probe(struct usb_interface *intf,
 	skb_queue_head_init(&dev->rxq);
 	skb_queue_head_init(&dev->txq);
 	skb_queue_head_init(&dev->done);
-	skb_queue_head_init(&dev->rxq_pause);
 	skb_queue_head_init(&dev->txq_pend);
 	mutex_init(&dev->phy_mutex);
 	mutex_init(&dev->dev_mutex);
