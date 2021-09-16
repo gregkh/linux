@@ -1779,6 +1779,8 @@ static void mac80211_hwsim_tx_frame(struct ieee80211_hw *hw,
 	if (_pid || hwsim_virtio_enabled)
 		return mac80211_hwsim_tx_frame_nl(hw, skb, _pid, chan);
 
+	data->tx_pkts++;
+	data->tx_bytes += skb->len;
 	mac80211_hwsim_tx_frame_no_nl(hw, skb, chan);
 	dev_kfree_skb(skb);
 }
@@ -3821,11 +3823,6 @@ static int hwsim_new_radio_nl(struct sk_buff *msg, struct genl_info *info)
 
 	if (param.channels < 1) {
 		GENL_SET_ERR_MSG(info, "must have at least one channel");
-		return -EINVAL;
-	}
-
-	if (param.channels > CFG80211_MAX_NUM_DIFFERENT_CHANNELS) {
-		GENL_SET_ERR_MSG(info, "too many channels specified");
 		return -EINVAL;
 	}
 

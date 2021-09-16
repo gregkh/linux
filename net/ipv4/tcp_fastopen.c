@@ -543,7 +543,7 @@ bool tcp_fastopen_active_should_disable(struct sock *sk)
 	/* Paired with smp_mb__before_atomic() in tcp_fastopen_active_disable() */
 	smp_rmb();
 
-	/* Limit timout to max: 2^6 * initial timeout */
+	/* Limit timeout to max: 2^6 * initial timeout */
 	multiplier = 1 << min(tfo_da_times - 1, 6);
 
 	/* Paired with the WRITE_ONCE() in tcp_fastopen_active_disable(). */

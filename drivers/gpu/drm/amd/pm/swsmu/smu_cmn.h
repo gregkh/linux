@@ -27,7 +27,8 @@
 
 #if defined(SWSMU_CODE_LAYER_L2) || defined(SWSMU_CODE_LAYER_L3) || defined(SWSMU_CODE_LAYER_L4)
 int smu_cmn_send_msg_without_waiting(struct smu_context *smu,
-				     uint16_t msg, uint32_t param);
+				     uint16_t msg_index,
+				     uint32_t param);
 int smu_cmn_send_smc_msg_with_param(struct smu_context *smu,
 				    enum smu_message_type msg,
 				    uint32_t param,
@@ -60,6 +61,10 @@ int smu_cmn_get_enabled_32_bits_mask(struct smu_context *smu,
 					uint32_t *feature_mask,
 					uint32_t num);
 
+uint64_t smu_cmn_get_indep_throttler_status(
+					const unsigned long dep_status,
+					const uint8_t *throttler_map);
+
 int smu_cmn_feature_update_enable_state(struct smu_context *smu,
 					uint64_t feature_mask,
 					bool enabled);
@@ -75,6 +80,7 @@ int smu_cmn_set_pp_feature_mask(struct smu_context *smu,
 				uint64_t new_mask);
 
 int smu_cmn_disable_all_features_with_exception(struct smu_context *smu,
+						bool no_hw_disablement,
 						enum smu_feature_mask mask);
 
 int smu_cmn_get_smc_version(struct smu_context *smu,

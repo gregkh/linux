@@ -300,19 +300,12 @@ static int tegra_pwm_probe(struct platform_device *pdev)
 static int tegra_pwm_remove(struct platform_device *pdev)
 {
 	struct tegra_pwm_chip *pc = platform_get_drvdata(pdev);
-	int err;
 
-	if (WARN_ON(!pc))
-		return -ENODEV;
-
-	err = clk_prepare_enable(pc->clk);
-	if (err < 0)
-		return err;
+	pwmchip_remove(&pc->chip);
 
 	reset_control_assert(pc->rst);
-	clk_disable_unprepare(pc->clk);
 
-	return pwmchip_remove(&pc->chip);
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

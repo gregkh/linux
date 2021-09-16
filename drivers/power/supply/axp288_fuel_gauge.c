@@ -142,9 +142,7 @@ static int fuel_gauge_reg_readb(struct axp288_fg_info *info, int reg)
 
 	for (i = 0; i < NR_RETRY_CNT; i++) {
 		ret = regmap_read(info->regmap, reg, &val);
-		if (ret == -EBUSY)
-			continue;
-		else
+		if (ret != -EBUSY)
 			break;
 	}
 
@@ -676,7 +674,7 @@ intr_failed:
  * detection reports one despite it not being there.
  * Please keep this listed sorted alphabetically.
  */
-static const struct dmi_system_id axp288_fuel_gauge_blacklist[] = {
+static const struct dmi_system_id axp288_no_battery_list[] = {
 	{
 		/* ACEPC T8 Cherry Trail Z8350 mini PC */
 		.matches = {
@@ -764,7 +762,7 @@ static int axp288_fuel_gauge_probe(struct platform_device *pdev)
 	};
 	unsigned int val;
 
-	if (dmi_check_system(axp288_fuel_gauge_blacklist))
+	if (dmi_check_system(axp288_no_battery_list))
 		return -ENODEV;
 
 	/*

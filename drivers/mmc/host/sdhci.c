@@ -2685,7 +2685,7 @@ void sdhci_abort_tuning(struct sdhci_host *host, u32 opcode)
 
 	sdhci_end_tuning(host);
 
-	mmc_abort_tuning(host->mmc, opcode);
+	mmc_send_abort_tuning(host->mmc, opcode);
 }
 EXPORT_SYMBOL_GPL(sdhci_abort_tuning);
 
@@ -4077,9 +4077,13 @@ static void sdhci_allocate_bounce_buffer(struct sdhci_host *host)
 					   bounce_size,
 					   DMA_BIDIRECTIONAL);
 	ret = dma_mapping_error(mmc_dev(mmc), host->bounce_addr);
-	if (ret)
+	if (ret) {
+		devm_kfree(mmc_dev(mmc), host->bounce_buffer);
+		host->bounce_buffer = NULL;
 		/* Again fall back to max_segs == 1 */
 		return;
+	}
+
 	host->bounce_buffer_size = bounce_size;
 
 	/* Lie about this since we're bouncing */

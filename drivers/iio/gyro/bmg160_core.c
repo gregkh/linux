@@ -1106,8 +1106,7 @@ int bmg160_core_probe(struct device *dev, struct regmap *regmap, int irq,
 	if (ret)
 		return ret;
 
-	ret = iio_read_mount_matrix(dev, "mount-matrix",
-				&data->orientation);
+	ret = iio_read_mount_matrix(dev, &data->orientation);
 	if (ret)
 		return ret;
 
@@ -1141,14 +1140,14 @@ int bmg160_core_probe(struct device *dev, struct regmap *regmap, int irq,
 		data->dready_trig = devm_iio_trigger_alloc(dev,
 							   "%s-dev%d",
 							   indio_dev->name,
-							   indio_dev->id);
+							   iio_device_id(indio_dev));
 		if (!data->dready_trig)
 			return -ENOMEM;
 
 		data->motion_trig = devm_iio_trigger_alloc(dev,
 							  "%s-any-motion-dev%d",
 							  indio_dev->name,
-							  indio_dev->id);
+							  iio_device_id(indio_dev));
 		if (!data->motion_trig)
 			return -ENOMEM;
 

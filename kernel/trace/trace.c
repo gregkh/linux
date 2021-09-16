@@ -39,6 +39,7 @@
 #include <linux/slab.h>
 #include <linux/ctype.h>
 #include <linux/init.h>
+#include <linux/panic_notifier.h>
 #include <linux/poll.h>
 #include <linux/nmi.h>
 #include <linux/fs.h>
@@ -86,6 +87,7 @@ void __init disable_tracing_selftest(const char *reason)
 /* Pipe tracepoints to printk */
 struct trace_iterator *tracepoint_print_iter;
 int tracepoint_printk;
+static bool tracepoint_printk_stop_on_boot __initdata;
 static DEFINE_STATIC_KEY_FALSE(tracepoint_printk_key);
 
 /* For tracers that don't implement custom flags */
@@ -196,12 +198,12 @@ __setup("ftrace=", set_cmdline_ftrace);
 
 static int __init set_ftrace_dump_on_oops(char *str)
 {
-	if (*str++ != '=' || !*str) {
+	if (*str++ != '=' || !*str || !strcmp("1", str)) {
 		ftrace_dump_on_oops = DUMP_ALL;
 		return 1;
 	}
 
-	if (!strcmp("orig_cpu", str)) {
+	if (!strcmp("orig_cpu", str) || !strcmp("2", str)) {
 		ftrace_dump_on_oops = DUMP_ORIG;
                 return 1;
         }
@@ -255,6 +257,13 @@ static int __init set_tracepoint_printk(char *str)
 	return 1;
 }
 __setup("tp_printk", set_tracepoint_printk);
+
+static int __init set_tracepoint_printk_stop(char *str)
+{
+	tracepoint_printk_stop_on_boot = true;
+	return 1;
+}
+__setup("tp_printk_stop_on_boot", set_tracepoint_printk_stop);
 
 unsigned long long ns2usecs(u64 nsec)
 {
@@ -1682,8 +1691,7 @@ static ssize_t trace_seq_to_buffer(struct trace_seq *s, void *buf, size_t cnt)
 unsigned long __read_mostly	tracing_thresh;
 static const struct file_operations tracing_max_lat_fops;
 
-#if (defined(CONFIG_TRACER_MAX_TRACE) || defined(CONFIG_HWLAT_TRACER)) && \
-	defined(CONFIG_FSNOTIFY)
+#ifdef LATENCY_FS_NOTIFY
 
 static struct workqueue_struct *fsnotify_wq;
 
@@ -2753,9 +2761,45 @@ trace_event_buffer_lock_reserve(struct trace_buffer **current_rb,
 	if (!tr->no_filter_buffering_ref &&
 	    (trace_file->flags & (EVENT_FILE_FL_SOFT_DISABLED | EVENT_FILE_FL_FILTERED)) &&
 	    (entry = this_cpu_read(trace_buffered_event))) {
-		/* Try to use the per cpu buffer first */
+		/*
+		 * Filtering is on, so try to use the per cpu buffer first.
+		 * This buffer will simulate a ring_buffer_event,
+		 * where the type_len is zero and the array[0] will
+		 * hold the full length.
+		 * (see include/linux/ring-buffer.h for details on
+		 *  how the ring_buffer_event is structured).
+		 *
+		 * Using a temp buffer during filtering and copying it
+		 * on a matched filter is quicker than writing directly
+		 * into the ring buffer and then discarding it when
+		 * it doesn't match. That is because the discard
+		 * requires several atomic operations to get right.
+		 * Copying on match and doing nothing on a failed match
+		 * is still quicker than no copy on match, but having
+		 * to discard out of the ring buffer on a failed match.
+		 */
+		int max_len = PAGE_SIZE - struct_size(entry, array, 1);
+
 		val = this_cpu_inc_return(trace_buffered_event_cnt);
-		if ((len < (PAGE_SIZE - sizeof(*entry) - sizeof(entry->array[0]))) && val == 1) {
+
+		/*
+		 * Preemption is disabled, but interrupts and NMIs
+		 * can still come in now. If that happens after
+		 * the above increment, then it will have to go
+		 * back to the old method of allocating the event
+		 * on the ring buffer, and if the filter fails, it
+		 * will have to call ring_buffer_discard_commit()
+		 * to remove it.
+		 *
+		 * Need to also check the unlikely case that the
+		 * length is bigger than the temp buffer size.
+		 * If that happens, then the reserve is pretty much
+		 * guaranteed to fail, as the ring buffer currently
+		 * only allows events less than a page. But that may
+		 * change in the future, so let the ring buffer reserve
+		 * handle the failure in that case.
+		 */
+		if (val == 1 && likely(len <= max_len)) {
 			trace_event_setup(entry, type, trace_ctx);
 			entry->array[0] = len;
 			return entry;
@@ -6169,7 +6213,7 @@ static int __tracing_resize_ring_buffer(struct trace_array *tr,
 ssize_t tracing_resize_ring_buffer(struct trace_array *tr,
 				  unsigned long size, int cpu_id)
 {
-	int ret = size;
+	int ret;
 
 	mutex_lock(&trace_types_lock);
 
@@ -7562,6 +7606,91 @@ static const struct file_operations snapshot_raw_fops = {
 };
 
 #endif /* CONFIG_TRACER_SNAPSHOT */
+
+/*
+ * trace_min_max_write - Write a u64 value to a trace_min_max_param struct
+ * @filp: The active open file structure
+ * @ubuf: The userspace provided buffer to read value into
+ * @cnt: The maximum number of bytes to read
+ * @ppos: The current "file" position
+ *
+ * This function implements the write interface for a struct trace_min_max_param.
+ * The filp->private_data must point to a trace_min_max_param structure that
+ * defines where to write the value, the min and the max acceptable values,
+ * and a lock to protect the write.
+ */
+static ssize_t
+trace_min_max_write(struct file *filp, const char __user *ubuf, size_t cnt, loff_t *ppos)
+{
+	struct trace_min_max_param *param = filp->private_data;
+	u64 val;
+	int err;
+
+	if (!param)
+		return -EFAULT;
+
+	err = kstrtoull_from_user(ubuf, cnt, 10, &val);
+	if (err)
+		return err;
+
+	if (param->lock)
+		mutex_lock(param->lock);
+
+	if (param->min && val < *param->min)
+		err = -EINVAL;
+
+	if (param->max && val > *param->max)
+		err = -EINVAL;
+
+	if (!err)
+		*param->val = val;
+
+	if (param->lock)
+		mutex_unlock(param->lock);
+
+	if (err)
+		return err;
+
+	return cnt;
+}
+
+/*
+ * trace_min_max_read - Read a u64 value from a trace_min_max_param struct
+ * @filp: The active open file structure
+ * @ubuf: The userspace provided buffer to read value into
+ * @cnt: The maximum number of bytes to read
+ * @ppos: The current "file" position
+ *
+ * This function implements the read interface for a struct trace_min_max_param.
+ * The filp->private_data must point to a trace_min_max_param struct with valid
+ * data.
+ */
+static ssize_t
+trace_min_max_read(struct file *filp, char __user *ubuf, size_t cnt, loff_t *ppos)
+{
+	struct trace_min_max_param *param = filp->private_data;
+	char buf[U64_STR_SIZE];
+	int len;
+	u64 val;
+
+	if (!param)
+		return -EFAULT;
+
+	val = *param->val;
+
+	if (cnt > sizeof(buf))
+		cnt = sizeof(buf);
+
+	len = snprintf(buf, sizeof(buf), "%llu\n", val);
+
+	return simple_read_from_buffer(ubuf, cnt, ppos, buf, len);
+}
+
+const struct file_operations trace_min_max_fops = {
+	.open		= tracing_open_generic,
+	.read		= trace_min_max_read,
+	.write		= trace_min_max_write,
+};
 
 #define TRACING_LOG_ERRS_MAX	8
 #define TRACING_LOG_LOC_MAX	128
@@ -9568,6 +9697,8 @@ static __init int tracer_init_tracefs(void)
 	return 0;
 }
 
+fs_initcall(tracer_init_tracefs);
+
 static int trace_panic_handler(struct notifier_block *this,
 			       unsigned long event, void *unused)
 {
@@ -9988,7 +10119,7 @@ void __init trace_init(void)
 	trace_event_init();
 }
 
-__init static int clear_boot_tracer(void)
+__init static void clear_boot_tracer(void)
 {
 	/*
 	 * The default tracer at boot buffer is an init section.
@@ -9998,26 +10129,21 @@ __init static int clear_boot_tracer(void)
 	 * about to be freed.
 	 */
 	if (!default_bootup_tracer)
-		return 0;
+		return;
 
 	printk(KERN_INFO "ftrace bootup tracer '%s' not registered.\n",
 	       default_bootup_tracer);
 	default_bootup_tracer = NULL;
-
-	return 0;
 }
 
-fs_initcall(tracer_init_tracefs);
-late_initcall_sync(clear_boot_tracer);
-
 #ifdef CONFIG_HAVE_UNSTABLE_SCHED_CLOCK
-__init static int tracing_set_default_clock(void)
+__init static void tracing_set_default_clock(void)
 {
 	/* sched_clock_stable() is determined in late_initcall */
 	if (!trace_boot_clock && !sched_clock_stable()) {
 		if (security_locked_down(LOCKDOWN_TRACEFS)) {
 			pr_warn("Can not set tracing clock due to lockdown\n");
-			return -EPERM;
+			return;
 		}
 
 		printk(KERN_WARNING
@@ -10027,8 +10153,21 @@ __init static int tracing_set_default_clock(void)
 		       "on the kernel command line\n");
 		tracing_set_clock(&global_trace, "global");
 	}
+}
+#else
+static inline void tracing_set_default_clock(void) { }
+#endif
 
+__init static int late_trace_init(void)
+{
+	if (tracepoint_printk && tracepoint_printk_stop_on_boot) {
+		static_key_disable(&tracepoint_printk_key.key);
+		tracepoint_printk = 0;
+	}
+
+	tracing_set_default_clock();
+	clear_boot_tracer();
 	return 0;
 }
-late_initcall_sync(tracing_set_default_clock);
-#endif
+
+late_initcall_sync(late_trace_init);

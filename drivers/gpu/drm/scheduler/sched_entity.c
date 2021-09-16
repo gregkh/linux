@@ -193,7 +193,7 @@ long drm_sched_entity_flush(struct drm_sched_entity *entity, long timeout)
 EXPORT_SYMBOL(drm_sched_entity_flush);
 
 /**
- * drm_sched_entity_kill_jobs - helper for drm_sched_entity_kill_jobs
+ * drm_sched_entity_kill_jobs_cb - helper for drm_sched_entity_kill_jobs
  *
  * @f: signaled fence
  * @cb: our callback structure
@@ -256,7 +256,7 @@ static void drm_sched_entity_kill_jobs(struct drm_sched_entity *entity)
 }
 
 /**
- * drm_sched_entity_cleanup - Destroy a context entity
+ * drm_sched_entity_fini - Destroy a context entity
  *
  * @entity: scheduler entity
  *
@@ -301,7 +301,7 @@ void drm_sched_entity_fini(struct drm_sched_entity *entity)
 EXPORT_SYMBOL(drm_sched_entity_fini);
 
 /**
- * drm_sched_entity_fini - Destroy a context entity
+ * drm_sched_entity_destroy - Destroy a context entity
  *
  * @entity: scheduler entity
  *

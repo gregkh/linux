@@ -485,11 +485,11 @@ static ssize_t msi_mode_show(struct device *dev, struct device_attribute *attr,
 		return retval;
 
 	entry = irq_get_msi_desc(irq);
-	if (entry)
-		return sprintf(buf, "%s\n",
-				entry->msi_attrib.is_msix ? "msix" : "msi");
+	if (!entry)
+		return -ENODEV;
 
-	return -ENODEV;
+	return sysfs_emit(buf, "%s\n",
+			  entry->msi_attrib.is_msix ? "msix" : "msi");
 }
 
 static int populate_msi_sysfs(struct pci_dev *pdev)
@@ -775,6 +775,9 @@ static void msix_mask_all(void __iomem *base, int tsize)
 {
 	u32 ctrl = PCI_MSIX_ENTRY_CTRL_MASKBIT;
 	int i;
+
+	if (pci_msi_ignore_mask)
+		return;
 
 	for (i = 0; i < tsize; i++, base += PCI_MSIX_ENTRY_SIZE)
 		writel(ctrl, base + PCI_MSIX_ENTRY_VECTOR_CTRL);

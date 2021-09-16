@@ -1422,8 +1422,8 @@ static int mlx5_vdpa_set_vq_state(struct vdpa_device *vdev, u16 idx,
 		return -EINVAL;
 	}
 
-	mvq->used_idx = state->avail_index;
-	mvq->avail_idx = state->avail_index;
+	mvq->used_idx = state->split.avail_index;
+	mvq->avail_idx = state->split.avail_index;
 	return 0;
 }
 
@@ -1444,7 +1444,7 @@ static int mlx5_vdpa_get_vq_state(struct vdpa_device *vdev, u16 idx, struct vdpa
 		 * Since both values should be identical, we take the value of
 		 * used_idx which is reported correctly.
 		 */
-		state->avail_index = mvq->used_idx;
+		state->split.avail_index = mvq->used_idx;
 		return 0;
 	}
 
@@ -1453,7 +1453,7 @@ static int mlx5_vdpa_get_vq_state(struct vdpa_device *vdev, u16 idx, struct vdpa
 		mlx5_vdpa_warn(mvdev, "failed to query virtqueue\n");
 		return err;
 	}
-	state->avail_index = attr.used_index;
+	state->split.avail_index = attr.used_index;
 	return 0;
 }
 
@@ -1789,6 +1789,10 @@ static void mlx5_vdpa_set_status(struct vdpa_device *vdev, u8 status)
 		ndev->mvdev.status = 0;
 		ndev->mvdev.mlx_features = 0;
 		++mvdev->generation;
+		if (MLX5_CAP_GEN(mvdev->mdev, umem_uid_0)) {
+			if (mlx5_vdpa_create_mr(mvdev, NULL))
+				mlx5_vdpa_warn(mvdev, "create MR failed\n");
+		}
 		return;
 	}
 
@@ -1869,6 +1873,7 @@ static void mlx5_vdpa_free(struct vdpa_device *vdev)
 	ndev = to_mlx5_vdpa_ndev(mvdev);
 
 	free_resources(ndev);
+	mlx5_vdpa_destroy_mr(mvdev);
 	if (!is_zero_ether_addr(ndev->config.mac)) {
 		pfmdev = pci_get_drvdata(pci_physfn(mvdev->mdev->pdev));
 		mlx5_mpfs_del_mac(pfmdev, ndev->config.mac);
@@ -1879,8 +1884,22 @@ static void mlx5_vdpa_free(struct vdpa_device *vdev)
 
 static struct vdpa_notification_area mlx5_get_vq_notification(struct vdpa_device *vdev, u16 idx)
 {
+	struct mlx5_vdpa_dev *mvdev = to_mvdev(vdev);
 	struct vdpa_notification_area ret = {};
+	struct mlx5_vdpa_net *ndev;
+	phys_addr_t addr;
 
+	/* If SF BAR size is smaller than PAGE_SIZE, do not use direct
+	 * notification to avoid the risk of mapping pages that contain BAR of more
+	 * than one SF
+	 */
+	if (MLX5_CAP_GEN(mvdev->mdev, log_min_sf_size) + 12 < PAGE_SHIFT)
+		return ret;
+
+	ndev = to_mlx5_vdpa_ndev(mvdev);
+	addr = (phys_addr_t)ndev->mvdev.res.phys_kick_addr;
+	ret.addr = addr;
+	ret.size = PAGE_SIZE;
 	return ret;
 }
 
@@ -2051,9 +2070,15 @@ static int mlx5_vdpa_dev_add(struct vdpa_mgmt_dev *v_mdev, const char *name)
 	if (err)
 		goto err_mpfs;
 
+	if (MLX5_CAP_GEN(mvdev->mdev, umem_uid_0)) {
+		err = mlx5_vdpa_create_mr(mvdev, NULL);
+		if (err)
+			goto err_res;
+	}
+
 	err = alloc_resources(ndev);
 	if (err)
-		goto err_res;
+		goto err_mr;
 
 	mvdev->vdev.mdev = &mgtdev->mgtdev;
 	err = _vdpa_register_device(&mvdev->vdev, 2 * mlx5_vdpa_max_qps(max_vqs));
@@ -2065,6 +2090,8 @@ static int mlx5_vdpa_dev_add(struct vdpa_mgmt_dev *v_mdev, const char *name)
 
 err_reg:
 	free_resources(ndev);
+err_mr:
+	mlx5_vdpa_destroy_mr(mvdev);
 err_res:
 	mlx5_vdpa_free_resources(&ndev->mvdev);
 err_mpfs:

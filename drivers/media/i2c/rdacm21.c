@@ -282,7 +282,7 @@ static int rdacm21_s_stream(struct v4l2_subdev *sd, int enable)
 }
 
 static int rdacm21_enum_mbus_code(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->pad || code->index > 0)
@@ -294,7 +294,7 @@ static int rdacm21_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int rdacm21_get_fmt(struct v4l2_subdev *sd,
-			   struct v4l2_subdev_pad_config *cfg,
+			   struct v4l2_subdev_state *sd_state,
 			   struct v4l2_subdev_format *format)
 {
 	struct v4l2_mbus_framefmt *mf = &format->format;
@@ -474,10 +474,7 @@ static int rdacm21_initialize(struct rdacm21_device *dev)
 {
 	int ret;
 
-	/* Verify communication with the MAX9271: ping to wakeup. */
-	dev->serializer.client->addr = MAX9271_DEFAULT_ADDR;
-	i2c_smbus_read_byte(dev->serializer.client);
-	usleep_range(3000, 5000);
+	max9271_wake_up(&dev->serializer);
 
 	/* Enable reverse channel and disable the serial link. */
 	ret = max9271_set_serial_link(&dev->serializer, false);
@@ -496,7 +493,10 @@ static int rdacm21_initialize(struct rdacm21_device *dev)
 	if (ret)
 		return ret;
 
-	/* Enable GPIO1 and hold OV490 in reset during max9271 configuration. */
+	/*
+	 * Enable GPIO1 and hold OV490 in reset during max9271 configuration.
+	 * The reset signal has to be asserted for at least 250 useconds.
+	 */
 	ret = max9271_enable_gpios(&dev->serializer, MAX9271_GPIO1OUT);
 	if (ret)
 		return ret;
@@ -504,6 +504,7 @@ static int rdacm21_initialize(struct rdacm21_device *dev)
 	ret = max9271_clear_gpios(&dev->serializer, MAX9271_GPIO1OUT);
 	if (ret)
 		return ret;
+	usleep_range(250, 500);
 
 	ret = max9271_configure_gmsl_link(&dev->serializer);
 	if (ret)

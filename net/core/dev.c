@@ -131,6 +131,7 @@
 #include <trace/events/napi.h>
 #include <trace/events/net.h>
 #include <trace/events/skb.h>
+#include <trace/events/qdisc.h>
 #include <linux/inetdevice.h>
 #include <linux/cpu_rmap.h>
 #include <linux/static_key.h>
@@ -148,6 +149,7 @@
 #include <net/devlink.h>
 #include <linux/pm_runtime.h>
 #include <linux/prandom.h>
+#include <linux/once_lite.h>
 
 #include "net-sysfs.h"
 
@@ -3487,13 +3489,16 @@ EXPORT_SYMBOL(__skb_gso_segment);
 
 /* Take action when hardware reception checksum errors are detected. */
 #ifdef CONFIG_BUG
+static void do_netdev_rx_csum_fault(struct net_device *dev, struct sk_buff *skb)
+{
+	pr_err("%s: hw csum failure\n", dev ? dev->name : "<unknown>");
+	skb_dump(KERN_ERR, skb, true);
+	dump_stack();
+}
+
 void netdev_rx_csum_fault(struct net_device *dev, struct sk_buff *skb)
 {
-	if (net_ratelimit()) {
-		pr_err("%s: hw csum failure\n", dev ? dev->name : "<unknown>");
-		skb_dump(KERN_ERR, skb, true);
-		dump_stack();
-	}
+	DO_ONCE_LITE(do_netdev_rx_csum_fault, dev, skb);
 }
 EXPORT_SYMBOL(netdev_rx_csum_fault);
 #endif
@@ -3840,6 +3845,18 @@ static void qdisc_pkt_len_init(struct sk_buff *skb)
 	}
 }
 
+static int dev_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *q,
+			     struct sk_buff **to_free,
+			     struct netdev_queue *txq)
+{
+	int rc;
+
+	rc = q->enqueue(skb, q, to_free) & NET_XMIT_MASK;
+	if (rc == NET_XMIT_SUCCESS)
+		trace_qdisc_enqueue(q, txq, skb);
+	return rc;
+}
+
 static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 				 struct net_device *dev,
 				 struct netdev_queue *txq)
@@ -3852,10 +3869,32 @@ static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 	qdisc_calculate_pkt_len(skb, q);
 
 	if (q->flags & TCQ_F_NOLOCK) {
-		rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
-		if (likely(!netif_xmit_frozen_or_stopped(txq)))
-			qdisc_run(q);
+		if (q->flags & TCQ_F_CAN_BYPASS && nolock_qdisc_is_empty(q) &&
+		    qdisc_run_begin(q)) {
+			/* Retest nolock_qdisc_is_empty() within the protection
+			 * of q->seqlock to protect from racing with requeuing.
+			 */
+			if (unlikely(!nolock_qdisc_is_empty(q))) {
+				rc = dev_qdisc_enqueue(skb, q, &to_free, txq);
+				__qdisc_run(q);
+				qdisc_run_end(q);
 
+				goto no_lock_out;
+			}
+
+			qdisc_bstats_cpu_update(q, skb);
+			if (sch_direct_xmit(skb, q, dev, txq, NULL, true) &&
+			    !nolock_qdisc_is_empty(q))
+				__qdisc_run(q);
+
+			qdisc_run_end(q);
+			return NET_XMIT_SUCCESS;
+		}
+
+		rc = dev_qdisc_enqueue(skb, q, &to_free, txq);
+		qdisc_run(q);
+
+no_lock_out:
 		if (unlikely(to_free))
 			kfree_skb_list(to_free);
 		return rc;
@@ -3896,7 +3935,7 @@ static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 		qdisc_run_end(q);
 		rc = NET_XMIT_SUCCESS;
 	} else {
-		rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
+		rc = dev_qdisc_enqueue(skb, q, &to_free, txq);
 		if (qdisc_run_begin(q)) {
 			if (unlikely(contended)) {
 				spin_unlock(&q->busylock);
@@ -4363,7 +4402,7 @@ static inline void ____napi_schedule(struct softnet_data *sd,
 			 * makes sure to proceed with napi polling
 			 * if the thread is explicitly woken from here.
 			 */
-			if (READ_ONCE(thread->state) != TASK_INTERRUPTIBLE)
+			if (READ_ONCE(thread->__state) != TASK_INTERRUPTIBLE)
 				set_bit(NAPI_STATE_SCHED_THREADED, &napi->state);
 			wake_up_process(thread);
 			return;
@@ -5277,9 +5316,9 @@ another_round:
 	if (static_branch_unlikely(&generic_xdp_needed_key)) {
 		int ret2;
 
-		preempt_disable();
+		migrate_disable();
 		ret2 = do_xdp_generic(rcu_dereference(skb->dev->xdp_prog), skb);
-		preempt_enable();
+		migrate_enable();
 
 		if (ret2 != XDP_PASS) {
 			ret = NET_RX_DROP;

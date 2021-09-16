@@ -26,6 +26,8 @@
 #define _CIF_MCCK_GUEST		BIT(CIF_MCCK_GUEST)
 #define _CIF_DEDICATED_CPU	BIT(CIF_DEDICATED_CPU)
 
+#define RESTART_FLAG_CTLREGS	_AC(1 << 0, U)
+
 #ifndef __ASSEMBLY__
 
 #include <linux/cpumask.h>
@@ -129,7 +131,7 @@ struct thread_struct {
 	struct runtime_instr_cb *ri_cb;
 	struct gs_cb *gs_cb;			/* Current guarded storage cb */
 	struct gs_cb *gs_bc_cb;			/* Broadcast guarded storage cb */
-	unsigned char trap_tdb[256];		/* Transaction abort diagnose block */
+	struct pgm_tdb trap_tdb;		/* Transaction abort diagnose block */
 	/*
 	 * Warning: 'fpu' is dynamically-sized. It *MUST* be at
 	 * the end.

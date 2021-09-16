@@ -52,7 +52,7 @@
 */
 
 static int htb_hysteresis __read_mostly = 0; /* whether to use mode hysteresis for speedup */
-#define HTB_VER 0x30011		/* major must be matched with number suplied by TC as version */
+#define HTB_VER 0x30011		/* major must be matched with number supplied by TC as version */
 
 #if HTB_VER >> 16 != TC_HTB_PROTOVER
 #error "Mismatched sch_htb.c and pkt_sch.h"
@@ -274,6 +274,9 @@ static struct htb_class *htb_classify(struct sk_buff *skb, struct Qdisc *sch,
 
 /**
  * htb_add_to_id_tree - adds class to the round robin list
+ * @root: the root of the tree
+ * @cl: the class to add
+ * @prio: the give prio in class
  *
  * Routine adds class to the list (actually tree) sorted by classid.
  * Make sure that class is not already on such list for given prio.
@@ -299,6 +302,9 @@ static void htb_add_to_id_tree(struct rb_root *root,
 
 /**
  * htb_add_to_wait_tree - adds class to the event queue with delay
+ * @q: the priority event queue
+ * @cl: the class to add
+ * @delay: delay in microseconds
  *
  * The class is added to priority event queue to indicate that class will
  * change its mode in cl->pq_key microseconds. Make sure that class is not
@@ -332,6 +338,7 @@ static void htb_add_to_wait_tree(struct htb_sched *q,
 
 /**
  * htb_next_rb_node - finds next node in binary tree
+ * @n: the current node in binary tree
  *
  * When we are past last key we return NULL.
  * Average complexity is 2 steps per call.
@@ -343,6 +350,9 @@ static inline void htb_next_rb_node(struct rb_node **n)
 
 /**
  * htb_add_class_to_row - add class to its row
+ * @q: the priority event queue
+ * @cl: the class to add
+ * @mask: the given priorities in class in bitmap
  *
  * The class is added to row at priorities marked in mask.
  * It does nothing if mask == 0.
@@ -372,6 +382,9 @@ static void htb_safe_rb_erase(struct rb_node *rb, struct rb_root *root)
 
 /**
  * htb_remove_class_from_row - removes class from its row
+ * @q: the priority event queue
+ * @cl: the class to add
+ * @mask: the given priorities in class in bitmap
  *
  * The class is removed from row at priorities marked in mask.
  * It does nothing if mask == 0.
@@ -399,6 +412,8 @@ static inline void htb_remove_class_from_row(struct htb_sched *q,
 
 /**
  * htb_activate_prios - creates active classe's feed chain
+ * @q: the priority event queue
+ * @cl: the class to activate
  *
  * The class is connected to ancestors and/or appropriate rows
  * for priorities it is participating on. cl->cmode must be new
@@ -434,6 +449,8 @@ static void htb_activate_prios(struct htb_sched *q, struct htb_class *cl)
 
 /**
  * htb_deactivate_prios - remove class from feed chain
+ * @q: the priority event queue
+ * @cl: the class to deactivate
  *
  * cl->cmode must represent old mode (before deactivation). It does
  * nothing if cl->prio_activity == 0. Class is removed from all feed
@@ -494,6 +511,8 @@ static inline s64 htb_hiwater(const struct htb_class *cl)
 
 /**
  * htb_class_mode - computes and returns current class mode
+ * @cl: the target class
+ * @diff: diff time in microseconds
  *
  * It computes cl's mode at time cl->t_c+diff and returns it. If mode
  * is not HTB_CAN_SEND then cl->pq_key is updated to time difference
@@ -522,9 +541,12 @@ htb_class_mode(struct htb_class *cl, s64 *diff)
 
 /**
  * htb_change_class_mode - changes classe's mode
+ * @q: the priority event queue
+ * @cl: the target class
+ * @diff: diff time in microseconds
  *
  * This should be the only way how to change classe's mode under normal
- * cirsumstances. Routine will update feed lists linkage, change mode
+ * circumstances. Routine will update feed lists linkage, change mode
  * and add class to the wait event queue if appropriate. New mode should
  * be different from old one and cl->pq_key has to be valid if changing
  * to mode other than HTB_CAN_SEND (see htb_add_to_wait_tree).
@@ -554,6 +576,8 @@ htb_change_class_mode(struct htb_sched *q, struct htb_class *cl, s64 *diff)
 
 /**
  * htb_activate - inserts leaf cl into appropriate active feeds
+ * @q: the priority event queue
+ * @cl: the target class
  *
  * Routine learns (new) priority of leaf and activates feed chain
  * for the prio. It can be called on already active leaf safely.
@@ -571,6 +595,8 @@ static inline void htb_activate(struct htb_sched *q, struct htb_class *cl)
 
 /**
  * htb_deactivate - remove leaf cl from active feeds
+ * @q: the priority event queue
+ * @cl: the target class
  *
  * Make sure that leaf is active. In the other words it can't be called
  * with non-active leaf. It also removes class from the drop list.
@@ -650,6 +676,10 @@ static inline void htb_accnt_ctokens(struct htb_class *cl, int bytes, s64 diff)
 
 /**
  * htb_charge_class - charges amount "bytes" to leaf and ancestors
+ * @q: the priority event queue
+ * @cl: the class to start iterate
+ * @level: the minimum level to account
+ * @skb: the socket buffer
  *
  * Routine assumes that packet "bytes" long was dequeued from leaf cl
  * borrowing from "level". It accounts bytes to ceil leaky bucket for
@@ -699,6 +729,9 @@ static void htb_charge_class(struct htb_sched *q, struct htb_class *cl,
 
 /**
  * htb_do_events - make mode changes to classes at the level
+ * @q: the priority event queue
+ * @level: which wait_pq in 'q->hlevel'
+ * @start: start jiffies
  *
  * Scans event queue for pending events and applies them. Returns time of
  * next pending event (0 for no event in pq, q->now for too many events).
@@ -767,6 +800,8 @@ static struct rb_node *htb_id_find_next_upper(int prio, struct rb_node *n,
 
 /**
  * htb_lookup_leaf - returns next leaf class in DRR order
+ * @hprio: the current one
+ * @prio: which prio in class
  *
  * Find leaf where current feed pointers points to.
  */

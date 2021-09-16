@@ -353,9 +353,11 @@ enum elv_merge elv_merge(struct request_queue *q, struct request **req,
  * we can append 'rq' to an existing request, so we can throw 'rq' away
  * afterwards.
  *
- * Returns true if we merged, false otherwise
+ * Returns true if we merged, false otherwise. 'free' will contain all
+ * requests that need to be freed.
  */
-bool elv_attempt_insert_merge(struct request_queue *q, struct request *rq)
+bool elv_attempt_insert_merge(struct request_queue *q, struct request *rq,
+			      struct list_head *free)
 {
 	struct request *__rq;
 	bool ret;
@@ -366,8 +368,10 @@ bool elv_attempt_insert_merge(struct request_queue *q, struct request *rq)
 	/*
 	 * First try one-hit cache.
 	 */
-	if (q->last_merge && blk_attempt_req_merge(q, q->last_merge, rq))
+	if (q->last_merge && blk_attempt_req_merge(q, q->last_merge, rq)) {
+		list_add(&rq->queuelist, free);
 		return true;
+	}
 
 	if (blk_queue_noxmerges(q))
 		return false;
@@ -381,6 +385,7 @@ bool elv_attempt_insert_merge(struct request_queue *q, struct request *rq)
 		if (!__rq || !blk_attempt_req_merge(q, __rq, rq))
 			break;
 
+		list_add(&rq->queuelist, free);
 		/* The merged request could be merged with others, try again */
 		ret = true;
 		rq = __rq;
@@ -525,6 +530,10 @@ void elv_unregister_queue(struct request_queue *q)
 
 int elv_register(struct elevator_type *e)
 {
+	/* insert_requests and dispatch_request are mandatory */
+	if (WARN_ON_ONCE(!e->ops.insert_requests || !e->ops.dispatch_request))
+		return -EINVAL;
+
 	/* create icq_cache if requested */
 	if (e->icq_size) {
 		if (WARN_ON(e->icq_size < sizeof(struct io_cq)) ||
@@ -696,7 +705,7 @@ void elevator_init_mq(struct request_queue *q)
 		elevator_put(e);
 	}
 }
-
+EXPORT_SYMBOL_GPL(elevator_init_mq); /* only for dm-rq */
 
 /*
  * switch to new_e io scheduler. be careful not to introduce deadlocks -

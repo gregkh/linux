@@ -3286,7 +3286,7 @@ static int live_preempt_user(void *arg)
 		if (!intel_engine_has_preemption(engine))
 			continue;
 
-		if (IS_GEN(gt->i915, 8) && engine->class != RENDER_CLASS)
+		if (GRAPHICS_VER(gt->i915) == 8 && engine->class != RENDER_CLASS)
 			continue; /* we need per-context GPR */
 
 		if (igt_live_test_begin(&t, gt->i915, __func__, engine->name)) {
@@ -4310,7 +4310,7 @@ static int live_virtual_preserved(void *arg)
 		return 0;
 
 	/* As we use CS_GPR we cannot run before they existed on all engines. */
-	if (INTEL_GEN(gt->i915) < 9)
+	if (GRAPHICS_VER(gt->i915) < 9)
 		return 0;
 
 	for (class = 0; class <= MAX_ENGINE_CLASS; class++) {
@@ -4725,7 +4725,7 @@ int intel_execlists_live_selftests(struct drm_i915_private *i915)
 		SUBTEST(live_virtual_reset),
 	};
 
-	if (!HAS_EXECLISTS(i915))
+	if (i915->gt.submission_method != INTEL_SUBMISSION_ELSP)
 		return 0;
 
 	if (intel_gt_is_wedged(&i915->gt))

@@ -399,43 +399,6 @@ mt7921_mcu_tx_rate_parse(struct mt76_phy *mphy,
 }
 
 static void
-mt7921_mcu_tx_rate_report(struct mt7921_dev *dev, struct sk_buff *skb,
-			  u16 wlan_idx)
-{
-	struct mt7921_mcu_wlan_info_event *wtbl_info;
-	struct mt76_phy *mphy = &dev->mphy;
-	struct mt7921_sta_stats *stats;
-	struct rate_info rate = {};
-	struct mt7921_sta *msta;
-	struct mt76_wcid *wcid;
-	u8 idx;
-
-	if (wlan_idx >= MT76_N_WCIDS)
-		return;
-
-	wtbl_info = (struct mt7921_mcu_wlan_info_event *)skb->data;
-	idx = wtbl_info->rate_info.rate_idx;
-	if (idx >= ARRAY_SIZE(wtbl_info->rate_info.rate))
-		return;
-
-	rcu_read_lock();
-
-	wcid = rcu_dereference(dev->mt76.wcid[wlan_idx]);
-	if (!wcid)
-		goto out;
-
-	msta = container_of(wcid, struct mt7921_sta, wcid);
-	stats = &msta->stats;
-
-	/* current rate */
-	mt7921_mcu_tx_rate_parse(mphy, &wtbl_info->peer_cap, &rate,
-				 le16_to_cpu(wtbl_info->rate_info.rate[idx]));
-	stats->tx_rate = rate;
-out:
-	rcu_read_unlock();
-}
-
-static void
 mt7921_mcu_scan_event(struct mt7921_dev *dev, struct sk_buff *skb)
 {
 	struct mt76_phy *mphy = &dev->mt76.phy;
@@ -535,6 +498,49 @@ mt7921_mcu_low_power_event(struct mt7921_dev *dev, struct sk_buff *skb)
 }
 
 static void
+mt7921_mcu_tx_done_event(struct mt7921_dev *dev, struct sk_buff *skb)
+{
+	struct mt7921_mcu_tx_done_event *event;
+	struct mt7921_sta *msta;
+	struct mt7921_phy *mphy = &dev->phy;
+	struct mt7921_mcu_peer_cap peer;
+	struct ieee80211_sta *sta;
+	LIST_HEAD(list);
+
+	skb_pull(skb, sizeof(struct mt7921_mcu_rxd));
+	event = (struct mt7921_mcu_tx_done_event *)skb->data;
+
+	spin_lock_bh(&dev->sta_poll_lock);
+	list_splice_init(&mphy->stats_list, &list);
+
+	while (!list_empty(&list)) {
+		msta = list_first_entry(&list, struct mt7921_sta, stats_list);
+		list_del_init(&msta->stats_list);
+
+		if (msta->wcid.idx != event->wlan_idx)
+			continue;
+
+		spin_unlock_bh(&dev->sta_poll_lock);
+
+		sta = wcid_to_sta(&msta->wcid);
+
+		/* peer config based on IEEE SPEC */
+		memset(&peer, 0x0, sizeof(peer));
+		peer.bw = event->bw;
+		peer.g2 = !!(sta->ht_cap.cap & IEEE80211_HT_CAP_SGI_20);
+		peer.g4 = !!(sta->ht_cap.cap & IEEE80211_HT_CAP_SGI_40);
+		peer.g8 = !!(sta->vht_cap.cap & IEEE80211_VHT_CAP_SHORT_GI_80);
+		peer.g16 = !!(sta->vht_cap.cap & IEEE80211_VHT_CAP_SHORT_GI_160);
+		mt7921_mcu_tx_rate_parse(mphy->mt76, &peer,
+					 &msta->stats.tx_rate, event->tx_rate);
+
+		spin_lock_bh(&dev->sta_poll_lock);
+		break;
+	}
+	spin_unlock_bh(&dev->sta_poll_lock);
+}
+
+static void
 mt7921_mcu_rx_unsolicited_event(struct mt7921_dev *dev, struct sk_buff *skb)
 {
 	struct mt7921_mcu_rxd *rxd = (struct mt7921_mcu_rxd *)skb->data;
@@ -560,6 +566,9 @@ mt7921_mcu_rx_unsolicited_event(struct mt7921_dev *dev, struct sk_buff *skb)
 	case MCU_EVENT_LP_INFO:
 		mt7921_mcu_low_power_event(dev, skb);
 		break;
+	case MCU_EVENT_TX_DONE:
+		mt7921_mcu_tx_done_event(dev, skb);
+		break;
 	default:
 		break;
 	}
@@ -580,6 +589,7 @@ void mt7921_mcu_rx_event(struct mt7921_dev *dev, struct sk_buff *skb)
 	    rxd->eid == MCU_EVENT_SCHED_SCAN_DONE ||
 	    rxd->eid == MCU_EVENT_BSS_ABSENCE ||
 	    rxd->eid == MCU_EVENT_SCAN_DONE ||
+	    rxd->eid == MCU_EVENT_TX_DONE ||
 	    rxd->eid == MCU_EVENT_DBG_MSG ||
 	    rxd->eid == MCU_EVENT_COREDUMP ||
 	    rxd->eid == MCU_EVENT_LP_INFO ||
@@ -946,8 +956,6 @@ fw_loaded:
 	dev->mt76.hw->wiphy->wowlan = &mt76_connac_wowlan_support;
 #endif /* CONFIG_PM */
 
-	clear_bit(MT76_STATE_PM, &dev->mphy.state);
-
 	dev_err(dev->mt76.dev, "Firmware init done\n");
 
 	return 0;
@@ -981,7 +989,7 @@ int mt7921_run_firmware(struct mt7921_dev *dev)
 	set_bit(MT76_STATE_MCU_RUNNING, &dev->mphy.state);
 	mt7921_mcu_fw_log_2_host(dev, 1);
 
-	return 0;
+	return mt76_connac_mcu_get_nic_capability(&dev->mphy);
 }
 
 int mt7921_mcu_init(struct mt7921_dev *dev)
@@ -1148,26 +1156,6 @@ int mt7921_mcu_get_eeprom(struct mt7921_dev *dev, u32 offset)
 	return 0;
 }
 
-u32 mt7921_get_wtbl_info(struct mt7921_dev *dev, u32 wlan_idx)
-{
-	struct mt7921_mcu_wlan_info wtbl_info = {
-		.wlan_idx = cpu_to_le32(wlan_idx),
-	};
-	struct sk_buff *skb;
-	int ret;
-
-	ret = mt76_mcu_send_and_get_msg(&dev->mt76, MCU_CMD_GET_WTBL,
-					&wtbl_info, sizeof(wtbl_info), true,
-					&skb);
-	if (ret)
-		return ret;
-
-	mt7921_mcu_tx_rate_report(dev, skb, wlan_idx);
-	dev_kfree_skb(skb);
-
-	return 0;
-}
-
 int mt7921_mcu_uni_bss_ps(struct mt7921_dev *dev, struct ieee80211_vif *vif)
 {
 	struct mt7921_vif *mvif = (struct mt7921_vif *)vif->drv_priv;
@@ -1280,8 +1268,9 @@ int mt7921_mcu_set_bss_pm(struct mt7921_dev *dev, struct ieee80211_vif *vif,
 				 sizeof(req), false);
 }
 
-int mt7921_mcu_sta_add(struct mt7921_dev *dev, struct ieee80211_sta *sta,
-		       struct ieee80211_vif *vif, bool enable)
+int mt7921_mcu_sta_update(struct mt7921_dev *dev, struct ieee80211_sta *sta,
+			  struct ieee80211_vif *vif, bool enable,
+			  enum mt76_sta_info_state state)
 {
 	struct mt7921_vif *mvif = (struct mt7921_vif *)vif->drv_priv;
 	int rssi = -ewma_rssi_read(&mvif->rssi);
@@ -1290,6 +1279,7 @@ int mt7921_mcu_sta_add(struct mt7921_dev *dev, struct ieee80211_sta *sta,
 		.vif = vif,
 		.enable = enable,
 		.cmd = MCU_UNI_CMD_STA_REC_UPDATE,
+		.state = state,
 		.offload_fw = true,
 		.rcpi = to_rcpi(rssi),
 	};
@@ -1297,8 +1287,9 @@ int mt7921_mcu_sta_add(struct mt7921_dev *dev, struct ieee80211_sta *sta,
 
 	msta = sta ? (struct mt7921_sta *)sta->drv_priv : NULL;
 	info.wcid = msta ? &msta->wcid : &mvif->sta.wcid;
+	info.newly = msta ? state != MT76_STA_INFO_STATE_ASSOC : true;
 
-	return mt76_connac_mcu_add_sta_cmd(&dev->mphy, &info);
+	return mt76_connac_mcu_sta_cmd(&dev->mphy, &info);
 }
 
 int __mt7921_mcu_drv_pmctrl(struct mt7921_dev *dev)

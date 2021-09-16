@@ -1698,7 +1698,6 @@ static void sa_aead_dma_in_callback(void *data)
 	size_t pl, ml;
 	int i;
 	int err = 0;
-	u16 auth_len;
 	u32 *mdptr;
 
 	sa_sync_from_device(rxd);
@@ -1711,13 +1710,10 @@ static void sa_aead_dma_in_callback(void *data)
 	for (i = 0; i < (authsize / 4); i++)
 		mdptr[i + 4] = swab32(mdptr[i + 4]);
 
-	auth_len = req->assoclen + req->cryptlen;
-
 	if (rxd->enc) {
 		scatterwalk_map_and_copy(&mdptr[4], req->dst, start, authsize,
 					 1);
 	} else {
-		auth_len -= authsize;
 		start -= authsize;
 		scatterwalk_map_and_copy(auth_tag, req->src, start, authsize,
 					 0);
@@ -2390,7 +2386,6 @@ static int sa_ul_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *node = dev->of_node;
-	struct resource *res;
 	static void __iomem *saul_base;
 	struct sa_crypto_data *dev_data;
 	int ret;
@@ -2403,9 +2398,14 @@ static int sa_ul_probe(struct platform_device *pdev)
 	if (!dev_data->match_data)
 		return -ENODEV;
 
+	saul_base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(saul_base))
+		return PTR_ERR(saul_base);
+
 	sa_k3_dev = dev;
 	dev_data->dev = dev;
 	dev_data->pdev = pdev;
+	dev_data->base = saul_base;
 	platform_set_drvdata(pdev, dev_data);
 	dev_set_drvdata(sa_k3_dev, dev_data);
 
@@ -2424,10 +2424,6 @@ static int sa_ul_probe(struct platform_device *pdev)
 		goto destroy_dma_pool;
 
 	spin_lock_init(&dev_data->scid_lock);
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	saul_base = devm_ioremap_resource(dev, res);
-
-	dev_data->base = saul_base;
 
 	if (!dev_data->match_data->skip_engine_control) {
 		u32 val = SA_EEC_ENCSS_EN | SA_EEC_AUTHSS_EN | SA_EEC_CTXCACH_EN |
@@ -2466,6 +2462,8 @@ destroy_dma_pool:
 static int sa_ul_remove(struct platform_device *pdev)
 {
 	struct sa_crypto_data *dev_data = platform_get_drvdata(pdev);
+
+	of_platform_depopulate(&pdev->dev);
 
 	sa_unregister_algos(&pdev->dev);
 

@@ -12,15 +12,38 @@
 
 / {
 	aliases {
+		i2c0 = &i2c2;
+		i2c1 = &i2c1;
+		i2c2 = &i2c3;
 		mmc0 = &usdhc2;
 		mmc1 = &usdhc3;
 		mmc2 = &usdhc4;
 		mmc3 = &usdhc1;
+		rtc0 = &rtc_i2c;
+		rtc1 = &snvs_rtc;
+		serial0 = &uart1;
+		serial1 = &uart5;
+		serial2 = &uart4;
+		serial3 = &uart2;
+		serial4 = &uart3;
 	};
 
 	memory@10000000 {
 		device_type = "memory";
 		reg = <0x10000000 0x40000000>;
+	};
+
+	reg_eth_vio: regulator-eth-vio {
+		compatible = "regulator-fixed";
+		gpio = <&gpio1 7 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&pinctrl_enet_vio>;
+		pinctrl-names = "default";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-name = "eth_vio";
+		vin-supply = <&sw2_reg>;
 	};
 
 	reg_usb_otg_vbus: regulator-usb-otg-vbus {
@@ -213,7 +236,7 @@
 		pagesize = <16>;
 	};
 
-	rtc@56 {
+	rtc_i2c: rtc@56 {
 		compatible = "microcrystal,rv3029";
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_rtc_hw300>;
@@ -270,6 +293,11 @@
 			MX6QDL_PAD_GPIO_16__ENET_REF_CLK	0x4001b0a8
 			MX6QDL_PAD_EIM_WAIT__GPIO5_IO00		0x000b0
 			MX6QDL_PAD_KEY_ROW4__GPIO4_IO15		0x000b1
+		>;
+	};
+
+	pinctrl_enet_vio: enet-vio-grp {
+		fsl,pins = <
 			MX6QDL_PAD_GPIO_7__GPIO1_IO07		0x120b0
 		>;
 	};

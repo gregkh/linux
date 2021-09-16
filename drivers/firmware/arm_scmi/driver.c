@@ -242,7 +242,6 @@ static struct scmi_xfer *scmi_xfer_get(const struct scmi_handle *handle,
 
 	xfer = &minfo->xfer_block[xfer_id];
 	xfer->hdr.seq = xfer_id;
-	reinit_completion(&xfer->done);
 	xfer->transfer_id = atomic_inc_return(&transfer_last_id);
 
 	return xfer;
@@ -434,11 +433,12 @@ static int do_xfer(const struct scmi_protocol_handle *ph,
 	struct scmi_chan_info *cinfo;
 
 	/*
-	 * Re-instate protocol id here from protocol handle so that cannot be
+	 * Initialise protocol id now from protocol handle to avoid it being
 	 * overridden by mistake (or malice) by the protocol code mangling with
-	 * the scmi_xfer structure.
+	 * the scmi_xfer structure prior to this.
 	 */
 	xfer->hdr.protocol_id = pi->proto->id;
+	reinit_completion(&xfer->done);
 
 	cinfo = idr_find(&info->tx_idr, xfer->hdr.protocol_id);
 	if (unlikely(!cinfo))
@@ -510,10 +510,7 @@ static int do_xfer_with_response(const struct scmi_protocol_handle *ph,
 				 struct scmi_xfer *xfer)
 {
 	int ret, timeout = msecs_to_jiffies(SCMI_MAX_RESPONSE_TIMEOUT);
-	const struct scmi_protocol_instance *pi = ph_to_pi(ph);
 	DECLARE_COMPLETION_ONSTACK(async_response);
-
-	xfer->hdr.protocol_id = pi->proto->id;
 
 	xfer->async_done = &async_response;
 
@@ -570,7 +567,6 @@ static int xfer_get_init(const struct scmi_protocol_handle *ph,
 	xfer->tx.len = tx_size;
 	xfer->rx.len = rx_size ? : info->desc->max_msg_size;
 	xfer->hdr.id = msg_id;
-	xfer->hdr.protocol_id = pi->proto->id;
 	xfer->hdr.poll_completion = false;
 
 	*p = xfer;
@@ -1143,6 +1139,8 @@ scmi_txrx_setup(struct scmi_info *info, struct device *dev, int prot_id)
  * @proto_id and @name: if device was still not existent it is created as a
  * child of the specified SCMI instance @info and its transport properly
  * initialized as usual.
+ *
+ * Return: A properly initialized scmi device, NULL otherwise.
  */
 static inline struct scmi_device *
 scmi_get_protocol_device(struct device_node *np, struct scmi_info *info,

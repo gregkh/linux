@@ -211,6 +211,9 @@ int otx2_set_mac_address(struct net_device *netdev, void *p)
 		if (netif_running(netdev) &&
 		    pfvf->flags & OTX2_FLAG_RX_VLAN_SUPPORT)
 			otx2_install_rxvlan_offload_flow(pfvf);
+		/* update dmac address in ntuple and DMAC filter list */
+		if (pfvf->flags & OTX2_FLAG_DMACFLTR_SUPPORT)
+			otx2_dmacflt_update_pfmac_flow(pfvf);
 	} else {
 		return -EPERM;
 	}

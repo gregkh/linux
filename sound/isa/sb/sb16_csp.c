@@ -112,10 +112,12 @@ int snd_sb_csp_new(struct snd_sb *chip, int device, struct snd_hwdep ** rhwdep)
 	if (csp_detect(chip, &version))
 		return -ENODEV;
 
-	if ((err = snd_hwdep_new(chip->card, "SB16-CSP", device, &hw)) < 0)
+	err = snd_hwdep_new(chip->card, "SB16-CSP", device, &hw);
+	if (err < 0)
 		return err;
 
-	if ((p = kzalloc(sizeof(*p), GFP_KERNEL)) == NULL) {
+	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	if (!p) {
 		snd_device_free(chip->card, hw);
 		return -ENOMEM;
 	}
@@ -1038,6 +1040,7 @@ static const struct snd_kcontrol_new snd_sb_qsound_space = {
 static int snd_sb_qsound_build(struct snd_sb_csp * p)
 {
 	struct snd_card *card;
+	struct snd_kcontrol *kctl;
 	int err;
 
 	if (snd_BUG_ON(!p))
@@ -1049,14 +1052,16 @@ static int snd_sb_qsound_build(struct snd_sb_csp * p)
 
 	spin_lock_init(&p->q_lock);
 
-	if ((err = snd_ctl_add(card, p->qsound_switch = snd_ctl_new1(&snd_sb_qsound_switch, p))) < 0) {
-		p->qsound_switch = NULL;
+	kctl = snd_ctl_new1(&snd_sb_qsound_switch, p);
+	err = snd_ctl_add(card, kctl);
+	if (err < 0)
 		goto __error;
-	}
-	if ((err = snd_ctl_add(card, p->qsound_space = snd_ctl_new1(&snd_sb_qsound_space, p))) < 0) {
-		p->qsound_space = NULL;
+	p->qsound_switch = kctl;
+	kctl = snd_ctl_new1(&snd_sb_qsound_space, p);
+	err = snd_ctl_add(card, kctl);
+	if (err < 0)
 		goto __error;
-	}
+	p->qsound_space = kctl;
 
 	return 0;
 

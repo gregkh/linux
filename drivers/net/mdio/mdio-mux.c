@@ -195,7 +195,6 @@ int mdio_mux_init(struct device *dev,
 	}
 
 	dev_err(dev, "Error: No acceptable child buses found\n");
-	devm_kfree(dev, pb);
 
 err_loop:
 	mdio_mux_uninit_children(pb);

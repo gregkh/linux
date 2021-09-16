@@ -477,13 +477,10 @@ static void vfio_pci_disable(struct vfio_pci_device *vdev)
 	 * We can not use the "try" reset interface here, which will
 	 * overwrite the previously restored configuration information.
 	 */
-	if (vdev->reset_works && pci_cfg_access_trylock(pdev)) {
-		if (device_trylock(&pdev->dev)) {
-			if (!__pci_reset_function_locked(pdev))
-				vdev->needs_reset = false;
-			device_unlock(&pdev->dev);
-		}
-		pci_cfg_access_unlock(pdev);
+	if (vdev->reset_works && pci_dev_trylock(pdev)) {
+		if (!__pci_reset_function_locked(pdev))
+			vdev->needs_reset = false;
+		pci_dev_unlock(pdev);
 	}
 
 	pci_restore_state(pdev);
@@ -558,8 +555,6 @@ static void vfio_pci_release(struct vfio_device *core_vdev)
 	}
 
 	mutex_unlock(&vdev->reflck->lock);
-
-	module_put(THIS_MODULE);
 }
 
 static int vfio_pci_open(struct vfio_device *core_vdev)
@@ -567,9 +562,6 @@ static int vfio_pci_open(struct vfio_device *core_vdev)
 	struct vfio_pci_device *vdev =
 		container_of(core_vdev, struct vfio_pci_device, vdev);
 	int ret = 0;
-
-	if (!try_module_get(THIS_MODULE))
-		return -ENODEV;
 
 	mutex_lock(&vdev->reflck->lock);
 
@@ -584,8 +576,6 @@ static int vfio_pci_open(struct vfio_device *core_vdev)
 	vdev->refcnt++;
 error:
 	mutex_unlock(&vdev->reflck->lock);
-	if (ret)
-		module_put(THIS_MODULE);
 	return ret;
 }
 

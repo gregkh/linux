@@ -4273,7 +4273,7 @@ void tcp_reset(struct sock *sk, struct sk_buff *skb)
 	tcp_done(sk);
 
 	if (!sock_flag(sk, SOCK_DEAD))
-		sk->sk_error_report(sk);
+		sk_error_report(sk);
 }
 
 /*
@@ -5900,6 +5900,7 @@ step5:
 	return;
 
 csum_error:
+	trace_tcp_bad_csum(skb);
 	TCP_INC_STATS(sock_net(sk), TCP_MIB_CSUMERRORS);
 	TCP_INC_STATS(sock_net(sk), TCP_MIB_INERRS);
 

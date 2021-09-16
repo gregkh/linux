@@ -81,7 +81,7 @@ static int sb_write_pointer(struct block_device *bdev, struct blk_zone *zones,
 	 *   *: Special case, no superblock is written
 	 *   0: Use write pointer of zones[0]
 	 *   1: Use write pointer of zones[1]
-	 *   C: Compare super blcoks from zones[0] and zones[1], use the latest
+	 *   C: Compare super blocks from zones[0] and zones[1], use the latest
 	 *      one determined by generation
 	 *   x: Invalid state
 	 */
@@ -433,7 +433,7 @@ int btrfs_get_dev_zone_info(struct btrfs_device *device)
 		}
 
 		/*
-		 * If zones[0] is conventional, always use the beggining of the
+		 * If zones[0] is conventional, always use the beginning of the
 		 * zone to record superblock. No need to validate in that case.
 		 */
 		if (zone_info->sb_zones[BTRFS_NR_SB_LOG_ZONES * i].type ==
@@ -1349,8 +1349,7 @@ void btrfs_record_physical_zoned(struct inode *inode, u64 file_offset,
 		return;
 
 	ordered->physical = physical;
-	ordered->disk = bio->bi_bdev->bd_disk;
-	ordered->partno = bio->bi_bdev->bd_partno;
+	ordered->bdev = bio->bi_bdev;
 
 	btrfs_put_ordered_extent(ordered);
 }
@@ -1362,18 +1361,16 @@ void btrfs_rewrite_logical_zoned(struct btrfs_ordered_extent *ordered)
 	struct extent_map_tree *em_tree;
 	struct extent_map *em;
 	struct btrfs_ordered_sum *sum;
-	struct block_device *bdev;
 	u64 orig_logical = ordered->disk_bytenr;
 	u64 *logical = NULL;
 	int nr, stripe_len;
 
 	/* Zoned devices should not have partitions. So, we can assume it is 0 */
-	ASSERT(ordered->partno == 0);
-	bdev = bdgrab(ordered->disk->part0);
-	if (WARN_ON(!bdev))
+	ASSERT(!bdev_is_partition(ordered->bdev));
+	if (WARN_ON(!ordered->bdev))
 		return;
 
-	if (WARN_ON(btrfs_rmap_block(fs_info, orig_logical, bdev,
+	if (WARN_ON(btrfs_rmap_block(fs_info, orig_logical, ordered->bdev,
 				     ordered->physical, &logical, &nr,
 				     &stripe_len)))
 		goto out;
@@ -1402,7 +1399,6 @@ void btrfs_rewrite_logical_zoned(struct btrfs_ordered_extent *ordered)
 
 out:
 	kfree(logical);
-	bdput(bdev);
 }
 
 bool btrfs_check_meta_write_pointer(struct btrfs_fs_info *fs_info,
@@ -1532,4 +1528,25 @@ int btrfs_sync_zone_write_pointer(struct btrfs_device *tgt_dev, u64 logical,
 
 	length = wp - physical_pos;
 	return btrfs_zoned_issue_zeroout(tgt_dev, physical_pos, length);
+}
+
+struct btrfs_device *btrfs_zoned_get_device(struct btrfs_fs_info *fs_info,
+					    u64 logical, u64 length)
+{
+	struct btrfs_device *device;
+	struct extent_map *em;
+	struct map_lookup *map;
+
+	em = btrfs_get_chunk_map(fs_info, logical, length);
+	if (IS_ERR(em))
+		return ERR_CAST(em);
+
+	map = em->map_lookup;
+	/* We only support single profile for now */
+	ASSERT(map->num_stripes == 1);
+	device = map->stripes[0].dev;
+
+	free_extent_map(em);
+
+	return device;
 }

@@ -442,7 +442,7 @@ endif ## SND_SOC_SOF_GEMINILAKE
 if SND_SOC_INTEL_SKYLAKE_HDAUDIO_CODEC || SND_SOC_SOF_HDA_AUDIO_CODEC
 
 config SND_SOC_INTEL_SKL_HDA_DSP_GENERIC_MACH
-	tristate "SKL/KBL/BXT/APL with HDA Codecs"
+	tristate "Skylake+ with HDA Codecs"
 	depends on SND_HDA_CODEC_HDMI
 	depends on GPIOLIB
 	select SND_SOC_HDAC_HDMI
@@ -450,8 +450,9 @@ config SND_SOC_INTEL_SKL_HDA_DSP_GENERIC_MACH
 	select SND_SOC_DMIC
 	# SND_SOC_HDAC_HDA is already selected
 	help
-	  This adds support for ASoC machine driver for Intel platforms
-	  SKL/KBL/BXT/APL with iDisp, HDA audio codecs.
+	  This adds support for ASoC machine driver for Intel Skylake+
+	  platforms with display (HDMI/DP) and HDA audio codecs, and
+	  Smart Sound Technology (SST) integrated audio DSP.
 	  Say Y or m if you have such a device. This is a recommended option.
 	  If unsure select "N".
 
@@ -476,6 +477,23 @@ config SND_SOC_INTEL_SOF_RT5682_MACH
 	help
 	   This adds support for ASoC machine driver for SOF platforms
 	   with rt5682 codec.
+	   Say Y if you have such a device.
+	   If unsure select "N".
+
+config SND_SOC_INTEL_SOF_CS42L42_MACH
+	tristate "SOF with cs42l42 codec in I2S Mode"
+	depends on I2C && ACPI
+	depends on ((SND_HDA_CODEC_HDMI && SND_SOC_SOF_HDA_AUDIO_CODEC) &&\
+		    (MFD_INTEL_LPSS || COMPILE_TEST))
+	select SND_SOC_CS42L42
+	select SND_SOC_MAX98357A
+	select SND_SOC_DMIC
+	select SND_SOC_HDAC_HDMI
+	select SND_SOC_INTEL_HDA_DSP_COMMON
+	select SND_SOC_INTEL_SOF_MAXIM_COMMON
+	help
+	   This adds support for ASoC machine driver for SOF platforms
+	   with cs42l42 codec.
 	   Say Y if you have such a device.
 	   If unsure select "N".
 
@@ -590,6 +608,5 @@ config SND_SOC_INTEL_SOUNDWIRE_SOF_MACH
 	  If unsure select "N".
 
 endif
-
 
 endif ## SND_SOC_INTEL_MACH

@@ -713,7 +713,7 @@ int cgroupstats_build(struct cgroupstats *stats, struct dentry *dentry)
 
 	css_task_iter_start(&cgrp->self, 0, &it);
 	while ((tsk = css_task_iter_next(&it))) {
-		switch (tsk->state) {
+		switch (READ_ONCE(tsk->__state)) {
 		case TASK_RUNNING:
 			stats->nr_running++;
 			break;
@@ -911,15 +911,11 @@ int cgroup1_parse_param(struct fs_context *fc, struct fs_parameter *param)
 
 	opt = fs_parse(fc, cgroup1_fs_parameters, param, &result);
 	if (opt == -ENOPARAM) {
-		if (strcmp(param->key, "source") == 0) {
-			if (param->type != fs_value_is_string)
-				return invalf(fc, "Non-string source");
-			if (fc->source)
-				return invalf(fc, "Multiple sources not supported");
-			fc->source = param->string;
-			param->string = NULL;
-			return 0;
-		}
+		int ret;
+
+		ret = vfs_parse_fs_param_source(fc, param);
+		if (ret != -ENOPARAM)
+			return ret;
 		for_each_subsys(ss, i) {
 			if (strcmp(param->key, ss->legacy_name))
 				continue;

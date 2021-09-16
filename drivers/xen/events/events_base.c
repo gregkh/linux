@@ -1017,7 +1017,7 @@ static void __unbind_from_irq(unsigned int irq)
 int xen_bind_pirq_gsi_to_irq(unsigned gsi,
 			     unsigned pirq, int shareable, char *name)
 {
-	int irq = -1;
+	int irq;
 	struct physdev_irq irq_op;
 	int ret;
 

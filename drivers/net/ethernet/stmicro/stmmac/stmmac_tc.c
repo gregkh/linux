@@ -573,10 +573,8 @@ static int tc_add_flow(struct stmmac_priv *priv,
 
 	for (i = 0; i < ARRAY_SIZE(tc_flow_parsers); i++) {
 		ret = tc_flow_parsers[i].fn(priv, cls, entry);
-		if (!ret) {
+		if (!ret)
 			entry->in_use = true;
-			continue;
-		}
 	}
 
 	if (!entry->in_use)
@@ -713,12 +711,35 @@ static int tc_setup_cls(struct stmmac_priv *priv,
 	return ret;
 }
 
+struct timespec64 stmmac_calc_tas_basetime(ktime_t old_base_time,
+					   ktime_t current_time,
+					   u64 cycle_time)
+{
+	struct timespec64 time;
+
+	if (ktime_after(old_base_time, current_time)) {
+		time = ktime_to_timespec64(old_base_time);
+	} else {
+		s64 n;
+		ktime_t base_time;
+
+		n = div64_s64(ktime_sub_ns(current_time, old_base_time),
+			      cycle_time);
+		base_time = ktime_add_ns(old_base_time,
+					 (n + 1) * cycle_time);
+
+		time = ktime_to_timespec64(base_time);
+	}
+
+	return time;
+}
+
 static int tc_setup_taprio(struct stmmac_priv *priv,
 			   struct tc_taprio_qopt_offload *qopt)
 {
 	u32 size, wid = priv->dma_cap.estwid, dep = priv->dma_cap.estdep;
 	struct plat_stmmacenet_data *plat = priv->plat;
-	struct timespec64 time, current_time;
+	struct timespec64 time, current_time, qopt_time;
 	ktime_t current_time_ns;
 	bool fpe = false;
 	int i, ret = 0;
@@ -821,22 +842,15 @@ static int tc_setup_taprio(struct stmmac_priv *priv,
 	/* Adjust for real system time */
 	priv->ptp_clock_ops.gettime64(&priv->ptp_clock_ops, &current_time);
 	current_time_ns = timespec64_to_ktime(current_time);
-	if (ktime_after(qopt->base_time, current_time_ns)) {
-		time = ktime_to_timespec64(qopt->base_time);
-	} else {
-		ktime_t base_time;
-		s64 n;
-
-		n = div64_s64(ktime_sub_ns(current_time_ns, qopt->base_time),
-			      qopt->cycle_time);
-		base_time = ktime_add_ns(qopt->base_time,
-					 (n + 1) * qopt->cycle_time);
-
-		time = ktime_to_timespec64(base_time);
-	}
+	time = stmmac_calc_tas_basetime(qopt->base_time, current_time_ns,
+					qopt->cycle_time);
 
 	priv->plat->est->btr[0] = (u32)time.tv_nsec;
 	priv->plat->est->btr[1] = (u32)time.tv_sec;
+
+	qopt_time = ktime_to_timespec64(qopt->base_time);
+	priv->plat->est->btr_reserve[0] = (u32)qopt_time.tv_nsec;
+	priv->plat->est->btr_reserve[1] = (u32)qopt_time.tv_sec;
 
 	ctr = qopt->cycle_time;
 	priv->plat->est->ctr[0] = do_div(ctr, NSEC_PER_SEC);

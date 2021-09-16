@@ -1639,10 +1639,10 @@ static int ntty_write(struct tty_struct *tty, const unsigned char *buffer,
  * If the port is unplugged report lots of room and let the bits
  * dribble away so we don't block anything.
  */
-static int ntty_write_room(struct tty_struct *tty)
+static unsigned int ntty_write_room(struct tty_struct *tty)
 {
 	struct port *port = tty->driver_data;
-	int room = 4096;
+	unsigned int room = 4096;
 	const struct nozomi *dc = get_dc_by_tty(tty);
 
 	if (dc)
@@ -1779,20 +1779,15 @@ static void ntty_throttle(struct tty_struct *tty)
 }
 
 /* Returns number of chars in buffer, called by tty layer */
-static s32 ntty_chars_in_buffer(struct tty_struct *tty)
+static unsigned int ntty_chars_in_buffer(struct tty_struct *tty)
 {
 	struct port *port = tty->driver_data;
 	struct nozomi *dc = get_dc_by_tty(tty);
-	s32 rval = 0;
 
-	if (unlikely(!dc || !port)) {
-		goto exit_in_buffer;
-	}
+	if (unlikely(!dc || !port))
+		return 0;
 
-	rval = kfifo_len(&port->fifo_ul);
-
-exit_in_buffer:
-	return rval;
+	return kfifo_len(&port->fifo_ul);
 }
 
 static const struct tty_port_operations noz_tty_port_ops = {

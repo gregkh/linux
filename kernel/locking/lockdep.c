@@ -760,7 +760,7 @@ static void lockdep_print_held_locks(struct task_struct *p)
 	 * It's not reliable to print a task's held locks if it's not sleeping
 	 * and it's not the current task.
 	 */
-	if (p->state == TASK_RUNNING && p != current)
+	if (p != current && task_is_running(p))
 		return;
 	for (i = 0; i < depth; i++) {
 		printk(" #%d: ", i);
@@ -2552,9 +2552,6 @@ print_bad_irq_dependency(struct task_struct *curr,
 	lockdep_print_held_locks(curr);
 
 	pr_warn("\nthe dependencies between %s-irq-safe lock and the holding lock:\n", irqclass);
-	prev_root->trace = save_trace();
-	if (!prev_root->trace)
-		return;
 	print_shortest_lock_dependencies_backwards(backwards_entry, prev_root);
 
 	pr_warn("\nthe dependencies between the lock to be acquired");
@@ -2834,7 +2831,7 @@ static inline bool usage_skip(struct lock_list *entry, void *mask)
  * <target> or not. If it can, <src> -> <target> dependency is already
  * in the graph.
  *
- * Return BFS_RMATCH if it does, or BFS_RMATCH if it does not, return BFS_E* if
+ * Return BFS_RMATCH if it does, or BFS_RNOMATCH if it does not, return BFS_E* if
  * any error appears in the bfs search.
  */
 static noinline enum bfs_result
@@ -6509,6 +6506,7 @@ asmlinkage __visible void lockdep_sys_exit(void)
 void lockdep_rcu_suspicious(const char *file, const int line, const char *s)
 {
 	struct task_struct *curr = current;
+	int dl = READ_ONCE(debug_locks);
 
 	/* Note: the following can be executed concurrently, so be careful. */
 	pr_warn("\n");
@@ -6518,11 +6516,12 @@ void lockdep_rcu_suspicious(const char *file, const int line, const char *s)
 	pr_warn("-----------------------------\n");
 	pr_warn("%s:%d %s!\n", file, line, s);
 	pr_warn("\nother info that might help us debug this:\n\n");
-	pr_warn("\n%srcu_scheduler_active = %d, debug_locks = %d\n",
+	pr_warn("\n%srcu_scheduler_active = %d, debug_locks = %d\n%s",
 	       !rcu_lockdep_current_cpu_online()
 			? "RCU used illegally from offline CPU!\n"
 			: "",
-	       rcu_scheduler_active, debug_locks);
+	       rcu_scheduler_active, dl,
+	       dl ? "" : "Possible false positive due to lockdep disabling via debug_locks = 0\n");
 
 	/*
 	 * If a CPU is in the RCU-free window in idle (ie: in the section

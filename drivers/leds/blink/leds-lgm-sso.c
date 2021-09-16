@@ -7,7 +7,8 @@
 
 #include <linux/bitfield.h>
 #include <linux/clk.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
+#include <linux/gpio/driver.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/leds.h>
@@ -258,7 +259,7 @@ static void sso_led_brightness_set(struct led_classdev *led_cdev,
 				   1 << desc->pin);
 	}
 
-	if (!desc->hw_trig && led->gpiod)
+	if (!desc->hw_trig)
 		gpiod_set_value(led->gpiod, val);
 }
 
@@ -422,7 +423,7 @@ static void sso_gpio_free(struct gpio_chip *chip, unsigned int offset)
 
 static int sso_gpio_get_dir(struct gpio_chip *chip, unsigned int offset)
 {
-	return GPIOF_DIR_OUT;
+	return GPIO_LINE_DIRECTION_OUT;
 }
 
 static int
@@ -875,7 +876,7 @@ static struct platform_driver intel_sso_led_driver = {
 	.remove		= intel_sso_led_remove,
 	.driver		= {
 			.name = "lgm-ssoled",
-			.of_match_table = of_match_ptr(of_sso_led_match),
+			.of_match_table = of_sso_led_match,
 	},
 };
 

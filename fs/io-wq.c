@@ -9,8 +9,6 @@
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/sched/signal.h>
-#include <linux/mm.h>
-#include <linux/sched/mm.h>
 #include <linux/percpu.h>
 #include <linux/slab.h>
 #include <linux/rculist_nulls.h>
@@ -100,13 +98,14 @@ struct io_wqe {
 
 	struct io_wq *wq;
 	struct io_wq_work *hash_tail[IO_WQ_NR_HASH_BUCKETS];
+
+	cpumask_var_t cpu_mask;
 };
 
 /*
  * Per io_wq state
   */
 struct io_wq {
-	struct io_wqe **wqes;
 	unsigned long state;
 
 	free_work_fn *free_work;
@@ -114,14 +113,14 @@ struct io_wq {
 
 	struct io_wq_hash *hash;
 
-	refcount_t refs;
-
 	atomic_t worker_refs;
 	struct completion worker_done;
 
 	struct hlist_node cpuhp_node;
 
 	struct task_struct *task;
+
+	struct io_wqe *wqes[];
 };
 
 static enum cpuhp_state io_wq_online;
@@ -624,17 +623,13 @@ loop:
 		if (ret)
 			continue;
 		/* timed out, exit unless we're the fixed worker */
-		if (test_bit(IO_WQ_BIT_EXIT, &wq->state) ||
-		    !(worker->flags & IO_WORKER_F_FIXED))
+		if (!(worker->flags & IO_WORKER_F_FIXED))
 			break;
 	}
 
 	if (test_bit(IO_WQ_BIT_EXIT, &wq->state)) {
 		raw_spin_lock_irq(&wqe->lock);
-		if (!wq_list_empty(&wqe->work_list))
-			io_worker_handle_work(worker);
-		else
-			raw_spin_unlock_irq(&wqe->lock);
+		io_worker_handle_work(worker);
 	}
 
 	io_worker_exit(worker);
@@ -712,7 +707,7 @@ fail:
 
 	tsk->pf_io_worker = worker;
 	worker->task = tsk;
-	set_cpus_allowed_ptr(tsk, cpumask_of_node(wqe->node));
+	set_cpus_allowed_ptr(tsk, wqe->cpu_mask);
 	tsk->flags |= PF_NO_SETAFFINITY;
 
 	raw_spin_lock_irq(&wqe->lock);
@@ -972,7 +967,7 @@ static int io_wqe_hash_wake(struct wait_queue_entry *wait, unsigned mode,
 
 struct io_wq *io_wq_create(unsigned bounded, struct io_wq_data *data)
 {
-	int ret = -ENOMEM, node;
+	int ret, node;
 	struct io_wq *wq;
 
 	if (WARN_ON_ONCE(!data->free_work || !data->do_work))
@@ -980,17 +975,12 @@ struct io_wq *io_wq_create(unsigned bounded, struct io_wq_data *data)
 	if (WARN_ON_ONCE(!bounded))
 		return ERR_PTR(-EINVAL);
 
-	wq = kzalloc(sizeof(*wq), GFP_KERNEL);
+	wq = kzalloc(struct_size(wq, wqes, nr_node_ids), GFP_KERNEL);
 	if (!wq)
 		return ERR_PTR(-ENOMEM);
-
-	wq->wqes = kcalloc(nr_node_ids, sizeof(struct io_wqe *), GFP_KERNEL);
-	if (!wq->wqes)
-		goto err_wq;
-
 	ret = cpuhp_state_add_instance_nocalls(io_wq_online, &wq->cpuhp_node);
 	if (ret)
-		goto err_wqes;
+		goto err_wq;
 
 	refcount_inc(&data->hash->refs);
 	wq->hash = data->hash;
@@ -1007,6 +997,9 @@ struct io_wq *io_wq_create(unsigned bounded, struct io_wq_data *data)
 		wqe = kzalloc_node(sizeof(struct io_wqe), GFP_KERNEL, alloc_node);
 		if (!wqe)
 			goto err;
+		if (!alloc_cpumask_var(&wqe->cpu_mask, GFP_KERNEL))
+			goto err;
+		cpumask_copy(wqe->cpu_mask, cpumask_of_node(node));
 		wq->wqes[node] = wqe;
 		wqe->node = alloc_node;
 		wqe->acct[IO_WQ_ACCT_BOUND].index = IO_WQ_ACCT_BOUND;
@@ -1026,17 +1019,18 @@ struct io_wq *io_wq_create(unsigned bounded, struct io_wq_data *data)
 	}
 
 	wq->task = get_task_struct(data->task);
-	refcount_set(&wq->refs, 1);
 	atomic_set(&wq->worker_refs, 1);
 	init_completion(&wq->worker_done);
 	return wq;
 err:
 	io_wq_put_hash(data->hash);
 	cpuhp_state_remove_instance_nocalls(io_wq_online, &wq->cpuhp_node);
-	for_each_node(node)
+	for_each_node(node) {
+		if (!wq->wqes[node])
+			continue;
+		free_cpumask_var(wq->wqes[node]->cpu_mask);
 		kfree(wq->wqes[node]);
-err_wqes:
-	kfree(wq->wqes);
+	}
 err_wq:
 	kfree(wq);
 	return ERR_PTR(ret);
@@ -1107,10 +1101,10 @@ static void io_wq_destroy(struct io_wq *wq)
 			.cancel_all	= true,
 		};
 		io_wqe_cancel_pending_work(wqe, &match);
+		free_cpumask_var(wqe->cpu_mask);
 		kfree(wqe);
 	}
 	io_wq_put_hash(wq->hash);
-	kfree(wq->wqes);
 	kfree(wq);
 }
 
@@ -1119,25 +1113,67 @@ void io_wq_put_and_exit(struct io_wq *wq)
 	WARN_ON_ONCE(!test_bit(IO_WQ_BIT_EXIT, &wq->state));
 
 	io_wq_exit_workers(wq);
-	if (refcount_dec_and_test(&wq->refs))
-		io_wq_destroy(wq);
+	io_wq_destroy(wq);
 }
+
+struct online_data {
+	unsigned int cpu;
+	bool online;
+};
 
 static bool io_wq_worker_affinity(struct io_worker *worker, void *data)
 {
-	set_cpus_allowed_ptr(worker->task, cpumask_of_node(worker->wqe->node));
+	struct online_data *od = data;
 
+	if (od->online)
+		cpumask_set_cpu(od->cpu, worker->wqe->cpu_mask);
+	else
+		cpumask_clear_cpu(od->cpu, worker->wqe->cpu_mask);
 	return false;
+}
+
+static int __io_wq_cpu_online(struct io_wq *wq, unsigned int cpu, bool online)
+{
+	struct online_data od = {
+		.cpu = cpu,
+		.online = online
+	};
+	int i;
+
+	rcu_read_lock();
+	for_each_node(i)
+		io_wq_for_each_worker(wq->wqes[i], io_wq_worker_affinity, &od);
+	rcu_read_unlock();
+	return 0;
 }
 
 static int io_wq_cpu_online(unsigned int cpu, struct hlist_node *node)
 {
 	struct io_wq *wq = hlist_entry_safe(node, struct io_wq, cpuhp_node);
+
+	return __io_wq_cpu_online(wq, cpu, true);
+}
+
+static int io_wq_cpu_offline(unsigned int cpu, struct hlist_node *node)
+{
+	struct io_wq *wq = hlist_entry_safe(node, struct io_wq, cpuhp_node);
+
+	return __io_wq_cpu_online(wq, cpu, false);
+}
+
+int io_wq_cpu_affinity(struct io_wq *wq, cpumask_var_t mask)
+{
 	int i;
 
 	rcu_read_lock();
-	for_each_node(i)
-		io_wq_for_each_worker(wq->wqes[i], io_wq_worker_affinity, NULL);
+	for_each_node(i) {
+		struct io_wqe *wqe = wq->wqes[i];
+
+		if (mask)
+			cpumask_copy(wqe->cpu_mask, mask);
+		else
+			cpumask_copy(wqe->cpu_mask, cpumask_of_node(i));
+	}
 	rcu_read_unlock();
 	return 0;
 }
@@ -1147,7 +1183,7 @@ static __init int io_wq_init(void)
 	int ret;
 
 	ret = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN, "io-wq/online",
-					io_wq_cpu_online, NULL);
+					io_wq_cpu_online, io_wq_cpu_offline);
 	if (ret < 0)
 		return ret;
 	io_wq_online = ret;

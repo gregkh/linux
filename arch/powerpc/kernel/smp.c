@@ -1058,7 +1058,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 			zalloc_cpumask_var_node(&per_cpu(cpu_coregroup_map, cpu),
 						GFP_KERNEL, cpu_to_node(cpu));
 
-#ifdef CONFIG_NEED_MULTIPLE_NODES
+#ifdef CONFIG_NUMA
 		/*
 		 * numa_node_id() works after this.
 		 */
@@ -1551,6 +1551,10 @@ out:
 void start_secondary(void *unused)
 {
 	unsigned int cpu = raw_smp_processor_id();
+
+	/* PPC64 calls setup_kup() in early_setup_secondary() */
+	if (IS_ENABLED(CONFIG_PPC32))
+		setup_kup();
 
 	mmgrab(&init_mm);
 	current->active_mm = &init_mm;

@@ -1226,7 +1226,7 @@ mt7603_mac_add_txs_skb(struct mt7603_dev *dev, struct mt7603_sta *sta, int pid,
 		struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 
 		if (!mt7603_fill_txs(dev, sta, info, txs_data)) {
-			ieee80211_tx_info_clear_status(info);
+			info->status.rates[0].count = 0;
 			info->status.rates[0].idx = -1;
 		}
 
@@ -1597,12 +1597,12 @@ trigger:
 	return true;
 }
 
-void mt7603_update_channel(struct mt76_dev *mdev)
+void mt7603_update_channel(struct mt76_phy *mphy)
 {
-	struct mt7603_dev *dev = container_of(mdev, struct mt7603_dev, mt76);
+	struct mt7603_dev *dev = container_of(mphy->dev, struct mt7603_dev, mt76);
 	struct mt76_channel_state *state;
 
-	state = mdev->phy.chan_state;
+	state = mphy->chan_state;
 	state->cc_busy += mt76_rr(dev, MT_MIB_STAT_CCA);
 }
 
@@ -1819,7 +1819,7 @@ void mt7603_mac_work(struct work_struct *work)
 	mutex_lock(&dev->mt76.mutex);
 
 	dev->mphy.mac_work_count++;
-	mt76_update_survey(&dev->mt76);
+	mt76_update_survey(&dev->mphy);
 	mt7603_edcca_check(dev);
 
 	for (i = 0, idx = 0; i < 2; i++) {

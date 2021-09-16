@@ -59,7 +59,6 @@
 #include "config.h"
 
 #define NEEDED_RMEM (4*1024*1024)
-#define CONN_HASH_SIZE 32
 
 /* Number of messages to send before rescheduling */
 #define MAX_SEND_MSG_COUNT 25
@@ -119,8 +118,22 @@ struct writequeue_entry {
 	int len;
 	int end;
 	int users;
-	int idx; /* get()/commit() idx exchange */
+	bool dirty;
 	struct connection *con;
+	struct list_head msgs;
+	struct kref ref;
+};
+
+struct dlm_msg {
+	struct writequeue_entry *entry;
+	struct dlm_msg *orig_msg;
+	bool retransmit;
+	void *ppc;
+	int len;
+	int idx; /* new()/commit() idx exchange */
+
+	struct list_head list;
+	struct kref ref;
 };
 
 struct dlm_node_addr {
@@ -162,14 +175,6 @@ static void sctp_connect_to_sock(struct connection *con);
 static void tcp_connect_to_sock(struct connection *con);
 static void dlm_tcp_shutdown(struct connection *con);
 
-/* This is deliberately very simple because most clusters have simple
-   sequential nodeids, so we should be able to go straight to a connection
-   struct in the array */
-static inline int nodeid_hash(int nodeid)
-{
-	return nodeid & (CONN_HASH_SIZE-1);
-}
-
 static struct connection *__find_con(int nodeid, int r)
 {
 	struct connection *con;
@@ -203,12 +208,18 @@ static int dlm_con_init(struct connection *con, int nodeid)
 	INIT_WORK(&con->rwork, process_recv_sockets);
 	init_waitqueue_head(&con->shutdown_wait);
 
-	if (dlm_config.ci_protocol == 0) {
+	switch (dlm_config.ci_protocol) {
+	case DLM_PROTO_TCP:
 		con->connect_action = tcp_connect_to_sock;
 		con->shutdown_action = dlm_tcp_shutdown;
 		con->eof_condition = tcp_eof_condition;
-	} else {
+		break;
+	case DLM_PROTO_SCTP:
 		con->connect_action = sctp_connect_to_sock;
+		break;
+	default:
+		kfree(con->rx_buf);
+		return -EINVAL;
 	}
 
 	return 0;
@@ -466,6 +477,9 @@ static void lowcomms_data_ready(struct sock *sk)
 
 static void lowcomms_listen_data_ready(struct sock *sk)
 {
+	if (!dlm_allow_conn)
+		return;
+
 	queue_work(recv_workqueue, &listen_con.rwork);
 }
 
@@ -696,6 +710,42 @@ static void make_sockaddr(struct sockaddr_storage *saddr, uint16_t port,
 	memset((char *)saddr + *addr_len, 0, sizeof(struct sockaddr_storage) - *addr_len);
 }
 
+static void dlm_page_release(struct kref *kref)
+{
+	struct writequeue_entry *e = container_of(kref, struct writequeue_entry,
+						  ref);
+
+	__free_page(e->page);
+	kfree(e);
+}
+
+static void dlm_msg_release(struct kref *kref)
+{
+	struct dlm_msg *msg = container_of(kref, struct dlm_msg, ref);
+
+	kref_put(&msg->entry->ref, dlm_page_release);
+	kfree(msg);
+}
+
+static void free_entry(struct writequeue_entry *e)
+{
+	struct dlm_msg *msg, *tmp;
+
+	list_for_each_entry_safe(msg, tmp, &e->msgs, list) {
+		if (msg->orig_msg) {
+			msg->orig_msg->retransmit = false;
+			kref_put(&msg->orig_msg->ref, dlm_msg_release);
+		}
+
+		list_del(&msg->list);
+		kref_put(&msg->ref, dlm_msg_release);
+	}
+
+	list_del(&e->list);
+	atomic_dec(&e->con->writequeue_cnt);
+	kref_put(&e->ref, dlm_page_release);
+}
+
 static void dlm_close_sock(struct socket **sock)
 {
 	if (*sock) {
@@ -710,6 +760,7 @@ static void close_connection(struct connection *con, bool and_other,
 			     bool tx, bool rx)
 {
 	bool closing = test_and_set_bit(CF_CLOSING, &con->flags);
+	struct writequeue_entry *e;
 
 	if (tx && !closing && cancel_work_sync(&con->swork)) {
 		log_print("canceled swork for node %d", con->nodeid);
@@ -727,6 +778,26 @@ static void close_connection(struct connection *con, bool and_other,
 		/* Will only re-enter once. */
 		close_connection(con->othercon, false, tx, rx);
 	}
+
+	/* if we send a writequeue entry only a half way, we drop the
+	 * whole entry because reconnection and that we not start of the
+	 * middle of a msg which will confuse the other end.
+	 *
+	 * we can always drop messages because retransmits, but what we
+	 * cannot allow is to transmit half messages which may be processed
+	 * at the other side.
+	 *
+	 * our policy is to start on a clean state when disconnects, we don't
+	 * know what's send/received on transport layer in this case.
+	 */
+	spin_lock(&con->writequeue_lock);
+	if (!list_empty(&con->writequeue)) {
+		e = list_first_entry(&con->writequeue, struct writequeue_entry,
+				     list);
+		if (e->dirty)
+			free_entry(e);
+	}
+	spin_unlock(&con->writequeue_lock);
 
 	con->rx_leftover = 0;
 	con->retries = 0;
@@ -907,10 +978,6 @@ static int accept_from_sock(struct listen_connection *con)
 	struct connection *addcon;
 	unsigned int mark;
 
-	if (!dlm_allow_conn) {
-		return -1;
-	}
-
 	if (!con->sock)
 		return -ENOTCONN;
 
@@ -977,6 +1044,7 @@ static int accept_from_sock(struct listen_connection *con)
 			}
 
 			lockdep_set_subclass(&othercon->sock_mutex, 1);
+			set_bit(CF_IS_OTHERCON, &othercon->flags);
 			newcon->othercon = othercon;
 			othercon->sendcon = newcon;
 		} else {
@@ -1021,12 +1089,6 @@ accept_err:
 	return result;
 }
 
-static void free_entry(struct writequeue_entry *e)
-{
-	__free_page(e->page);
-	kfree(e);
-}
-
 /*
  * writequeue_entry_complete - try to delete and free write queue entry
  * @e: write queue entry to try to delete
@@ -1038,12 +1100,11 @@ static void writequeue_entry_complete(struct writequeue_entry *e, int completed)
 {
 	e->offset += completed;
 	e->len -= completed;
+	/* signal that page was half way transmitted */
+	e->dirty = true;
 
-	if (e->len == 0 && e->users == 0) {
-		list_del(&e->list);
-		atomic_dec(&e->con->writequeue_cnt);
+	if (e->len == 0 && e->users == 0)
 		free_entry(e);
-	}
 }
 
 /*
@@ -1120,7 +1181,7 @@ static void sctp_connect_to_sock(struct connection *con)
 
 	make_sockaddr(&daddr, dlm_config.ci_tcp_port, &addr_len);
 
-	log_print("connecting to %d", con->nodeid);
+	log_print_ratelimited("connecting to %d", con->nodeid);
 
 	/* Turn off Nagle's algorithm */
 	sctp_sock_set_nodelay(sock->sk);
@@ -1216,7 +1277,7 @@ static void tcp_connect_to_sock(struct connection *con)
 
 	make_sockaddr(&saddr, dlm_config.ci_tcp_port, &addr_len);
 
-	log_print("connecting to %d", con->nodeid);
+	log_print_ratelimited("connecting to %d", con->nodeid);
 
 	/* Turn off Nagle's algorithm */
 	tcp_sock_set_nodelay(sock->sk);
@@ -1409,12 +1470,16 @@ static struct writequeue_entry *new_writequeue_entry(struct connection *con,
 
 	entry->con = con;
 	entry->users = 1;
+	kref_init(&entry->ref);
+	INIT_LIST_HEAD(&entry->msgs);
 
 	return entry;
 }
 
 static struct writequeue_entry *new_wq_entry(struct connection *con, int len,
-					     gfp_t allocation, char **ppc)
+					     gfp_t allocation, char **ppc,
+					     void (*cb)(struct dlm_mhandle *mh),
+					     struct dlm_mhandle *mh)
 {
 	struct writequeue_entry *e;
 
@@ -1422,7 +1487,12 @@ static struct writequeue_entry *new_wq_entry(struct connection *con, int len,
 	if (!list_empty(&con->writequeue)) {
 		e = list_last_entry(&con->writequeue, struct writequeue_entry, list);
 		if (DLM_WQ_REMAIN_BYTES(e) >= len) {
+			kref_get(&e->ref);
+
 			*ppc = page_address(e->page) + e->end;
+			if (cb)
+				cb(mh);
+
 			e->end += len;
 			e->users++;
 			spin_unlock(&con->writequeue_lock);
@@ -1436,26 +1506,59 @@ static struct writequeue_entry *new_wq_entry(struct connection *con, int len,
 	if (!e)
 		return NULL;
 
+	kref_get(&e->ref);
 	*ppc = page_address(e->page);
 	e->end += len;
 	atomic_inc(&con->writequeue_cnt);
 
 	spin_lock(&con->writequeue_lock);
+	if (cb)
+		cb(mh);
+
 	list_add_tail(&e->list, &con->writequeue);
 	spin_unlock(&con->writequeue_lock);
 
 	return e;
 };
 
-void *dlm_lowcomms_get_buffer(int nodeid, int len, gfp_t allocation, char **ppc)
+static struct dlm_msg *dlm_lowcomms_new_msg_con(struct connection *con, int len,
+						gfp_t allocation, char **ppc,
+						void (*cb)(struct dlm_mhandle *mh),
+						struct dlm_mhandle *mh)
 {
 	struct writequeue_entry *e;
+	struct dlm_msg *msg;
+
+	msg = kzalloc(sizeof(*msg), allocation);
+	if (!msg)
+		return NULL;
+
+	kref_init(&msg->ref);
+
+	e = new_wq_entry(con, len, allocation, ppc, cb, mh);
+	if (!e) {
+		kfree(msg);
+		return NULL;
+	}
+
+	msg->ppc = *ppc;
+	msg->len = len;
+	msg->entry = e;
+
+	return msg;
+}
+
+struct dlm_msg *dlm_lowcomms_new_msg(int nodeid, int len, gfp_t allocation,
+				     char **ppc, void (*cb)(struct dlm_mhandle *mh),
+				     struct dlm_mhandle *mh)
+{
 	struct connection *con;
+	struct dlm_msg *msg;
 	int idx;
 
-	if (len > DEFAULT_BUFFER_SIZE ||
+	if (len > DLM_MAX_SOCKET_BUFSIZE ||
 	    len < sizeof(struct dlm_header)) {
-		BUILD_BUG_ON(PAGE_SIZE < DEFAULT_BUFFER_SIZE);
+		BUILD_BUG_ON(PAGE_SIZE < DLM_MAX_SOCKET_BUFSIZE);
 		log_print("failed to allocate a buffer of size %d", len);
 		WARN_ON(1);
 		return NULL;
@@ -1468,25 +1571,27 @@ void *dlm_lowcomms_get_buffer(int nodeid, int len, gfp_t allocation, char **ppc)
 		return NULL;
 	}
 
-	e = new_wq_entry(con, len, allocation, ppc);
-	if (!e) {
+	msg = dlm_lowcomms_new_msg_con(con, len, allocation, ppc, cb, mh);
+	if (!msg) {
 		srcu_read_unlock(&connections_srcu, idx);
 		return NULL;
 	}
 
 	/* we assume if successful commit must called */
-	e->idx = idx;
-
-	return e;
+	msg->idx = idx;
+	return msg;
 }
 
-void dlm_lowcomms_commit_buffer(void *mh)
+static void _dlm_lowcomms_commit_msg(struct dlm_msg *msg)
 {
-	struct writequeue_entry *e = (struct writequeue_entry *)mh;
+	struct writequeue_entry *e = msg->entry;
 	struct connection *con = e->con;
 	int users;
 
 	spin_lock(&con->writequeue_lock);
+	kref_get(&msg->ref);
+	list_add(&msg->list, &e->msgs);
+
 	users = --e->users;
 	if (users)
 		goto out;
@@ -1495,13 +1600,47 @@ void dlm_lowcomms_commit_buffer(void *mh)
 	spin_unlock(&con->writequeue_lock);
 
 	queue_work(send_workqueue, &con->swork);
-	srcu_read_unlock(&connections_srcu, e->idx);
 	return;
 
 out:
 	spin_unlock(&con->writequeue_lock);
-	srcu_read_unlock(&connections_srcu, e->idx);
 	return;
+}
+
+void dlm_lowcomms_commit_msg(struct dlm_msg *msg)
+{
+	_dlm_lowcomms_commit_msg(msg);
+	srcu_read_unlock(&connections_srcu, msg->idx);
+}
+
+void dlm_lowcomms_put_msg(struct dlm_msg *msg)
+{
+	kref_put(&msg->ref, dlm_msg_release);
+}
+
+/* does not held connections_srcu, usage workqueue only */
+int dlm_lowcomms_resend_msg(struct dlm_msg *msg)
+{
+	struct dlm_msg *msg_resend;
+	char *ppc;
+
+	if (msg->retransmit)
+		return 1;
+
+	msg_resend = dlm_lowcomms_new_msg_con(msg->entry->con, msg->len,
+					      GFP_ATOMIC, &ppc, NULL, NULL);
+	if (!msg_resend)
+		return -ENOMEM;
+
+	msg->retransmit = true;
+	kref_get(&msg->ref);
+	msg_resend->orig_msg = msg;
+
+	memcpy(ppc, msg->ppc, msg->len);
+	_dlm_lowcomms_commit_msg(msg_resend);
+	dlm_lowcomms_put_msg(msg_resend);
+
+	return 0;
 }
 
 /* Send a message */
@@ -1589,7 +1728,6 @@ static void clean_one_writequeue(struct connection *con)
 
 	spin_lock(&con->writequeue_lock);
 	list_for_each_entry_safe(e, safe, &con->writequeue, list) {
-		list_del(&e->list);
 		free_entry(e);
 	}
 	spin_unlock(&con->writequeue_lock);
@@ -1650,10 +1788,14 @@ static void process_send_sockets(struct work_struct *work)
 {
 	struct connection *con = container_of(work, struct connection, swork);
 
+	WARN_ON(test_bit(CF_IS_OTHERCON, &con->flags));
+
 	clear_bit(CF_WRITE_PENDING, &con->flags);
 
-	if (test_and_clear_bit(CF_RECONNECT, &con->flags))
+	if (test_and_clear_bit(CF_RECONNECT, &con->flags)) {
 		close_connection(con, false, false, true);
+		dlm_midcomms_unack_msg_resend(con->nodeid);
+	}
 
 	if (con->sock == NULL) { /* not mutex protected so check it inside too */
 		if (test_and_clear_bit(CF_DELAY_CONNECT, &con->flags))
@@ -1679,15 +1821,13 @@ static void work_stop(void)
 
 static int work_start(void)
 {
-	recv_workqueue = alloc_workqueue("dlm_recv",
-					 WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
+	recv_workqueue = alloc_ordered_workqueue("dlm_recv", WQ_MEM_RECLAIM);
 	if (!recv_workqueue) {
 		log_print("can't start dlm_recv");
 		return -ENOMEM;
 	}
 
-	send_workqueue = alloc_workqueue("dlm_send",
-					 WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
+	send_workqueue = alloc_ordered_workqueue("dlm_send", WQ_MEM_RECLAIM);
 	if (!send_workqueue) {
 		log_print("can't start dlm_send");
 		destroy_workqueue(recv_workqueue);
@@ -1834,10 +1974,19 @@ int dlm_lowcomms_start(void)
 	dlm_allow_conn = 1;
 
 	/* Start listening */
-	if (dlm_config.ci_protocol == 0)
+	switch (dlm_config.ci_protocol) {
+	case DLM_PROTO_TCP:
 		error = tcp_listen_for_all();
-	else
+		break;
+	case DLM_PROTO_SCTP:
 		error = sctp_listen_for_all(&listen_con);
+		break;
+	default:
+		log_print("Invalid protocol identifier %d set",
+			  dlm_config.ci_protocol);
+		error = -EINVAL;
+		break;
+	}
 	if (error)
 		goto fail_unlisten;
 

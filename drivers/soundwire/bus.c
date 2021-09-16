@@ -394,13 +394,13 @@ sdw_nread_no_pm(struct sdw_slave *slave, u32 addr, size_t count, u8 *val)
 }
 
 static int
-sdw_nwrite_no_pm(struct sdw_slave *slave, u32 addr, size_t count, u8 *val)
+sdw_nwrite_no_pm(struct sdw_slave *slave, u32 addr, size_t count, const u8 *val)
 {
 	struct sdw_msg msg;
 	int ret;
 
 	ret = sdw_fill_msg(&msg, slave, addr, count,
-			   slave->dev_num, SDW_MSG_FLAG_WRITE, val);
+			   slave->dev_num, SDW_MSG_FLAG_WRITE, (u8 *)val);
 	if (ret < 0)
 		return ret;
 
@@ -492,7 +492,7 @@ int sdw_read_no_pm(struct sdw_slave *slave, u32 addr)
 }
 EXPORT_SYMBOL(sdw_read_no_pm);
 
-static int sdw_update_no_pm(struct sdw_slave *slave, u32 addr, u8 mask, u8 val)
+int sdw_update_no_pm(struct sdw_slave *slave, u32 addr, u8 mask, u8 val)
 {
 	int tmp;
 
@@ -503,6 +503,21 @@ static int sdw_update_no_pm(struct sdw_slave *slave, u32 addr, u8 mask, u8 val)
 	tmp = (tmp & ~mask) | val;
 	return sdw_write_no_pm(slave, addr, tmp);
 }
+EXPORT_SYMBOL(sdw_update_no_pm);
+
+/* Read-Modify-Write Slave register */
+int sdw_update(struct sdw_slave *slave, u32 addr, u8 mask, u8 val)
+{
+	int tmp;
+
+	tmp = sdw_read(slave, addr);
+	if (tmp < 0)
+		return tmp;
+
+	tmp = (tmp & ~mask) | val;
+	return sdw_write(slave, addr, tmp);
+}
+EXPORT_SYMBOL(sdw_update);
 
 /**
  * sdw_nread() - Read "n" contiguous SDW Slave registers
@@ -535,9 +550,9 @@ EXPORT_SYMBOL(sdw_nread);
  * @slave: SDW Slave
  * @addr: Register address
  * @count: length
- * @val: Buffer for values to be read
+ * @val: Buffer for values to be written
  */
-int sdw_nwrite(struct sdw_slave *slave, u32 addr, size_t count, u8 *val)
+int sdw_nwrite(struct sdw_slave *slave, u32 addr, size_t count, const u8 *val)
 {
 	int ret;
 
@@ -886,7 +901,7 @@ static int sdw_bus_wait_for_clk_prep_deprep(struct sdw_bus *bus, u16 dev_num)
 		}
 		val &= SDW_SCP_STAT_CLK_STP_NF;
 		if (!val) {
-			dev_dbg(bus->dev, "clock stop prep/de-prep done slave:%d",
+			dev_dbg(bus->dev, "clock stop prep/de-prep done slave:%d\n",
 				dev_num);
 			return 0;
 		}
@@ -895,7 +910,7 @@ static int sdw_bus_wait_for_clk_prep_deprep(struct sdw_bus *bus, u16 dev_num)
 		retry--;
 	} while (retry);
 
-	dev_err(bus->dev, "clock stop prep/de-prep failed slave:%d",
+	dev_err(bus->dev, "clock stop prep/de-prep failed slave:%d\n",
 		dev_num);
 
 	return -ETIMEDOUT;

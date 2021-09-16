@@ -34,8 +34,6 @@
 #include "r8169.h"
 #include "r8169_firmware.h"
 
-#define MODULENAME "r8169"
-
 #define FIRMWARE_8168D_1	"rtl_nic/rtl8168d-1.fw"
 #define FIRMWARE_8168D_2	"rtl_nic/rtl8168d-2.fw"
 #define FIRMWARE_8168E_1	"rtl_nic/rtl8168e-1.fw"
@@ -1454,7 +1452,7 @@ static void rtl8169_get_drvinfo(struct net_device *dev,
 	struct rtl8169_private *tp = netdev_priv(dev);
 	struct rtl_fw *rtl_fw = tp->rtl_fw;
 
-	strlcpy(info->driver, MODULENAME, sizeof(info->driver));
+	strlcpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
 	strlcpy(info->bus_info, pci_name(tp->pci_dev), sizeof(info->bus_info));
 	BUILD_BUG_ON(sizeof(info->fw_version) < sizeof(rtl_fw->version));
 	if (rtl_fw)
@@ -3491,6 +3489,7 @@ static void rtl_hw_start_8402(struct rtl8169_private *tp)
 	rtl_eri_write(tp, 0x1b0, ERIAR_MASK_0011, 0x0000);
 
 	rtl_pcie_state_l2l3_disable(tp);
+	rtl_hw_aspm_clkreq_enable(tp, true);
 }
 
 static void rtl_hw_start_8106(struct rtl8169_private *tp)
@@ -3503,6 +3502,9 @@ static void rtl_hw_start_8106(struct rtl8169_private *tp)
 	RTL_W32(tp, MISC, (RTL_R32(tp, MISC) | DISABLE_LAN_EN) & ~EARLY_TALLY_EN);
 	RTL_W8(tp, MCU, RTL_R8(tp, MCU) | EN_NDP | EN_OOB_RESET);
 	RTL_W8(tp, DLLPR, RTL_R8(tp, DLLPR) & ~PFM_EN);
+
+	/* The default value is 0x13. Change it to 0x2f */
+	rtl_csi_access_enable(tp, 0x2f);
 
 	rtl_eri_write(tp, 0x1d0, ERIAR_MASK_0011, 0x0000);
 
@@ -4117,6 +4119,7 @@ static unsigned int rtl_quirk_packet_padto(struct rtl8169_private *tp,
 	case RTL_GIGA_MAC_VER_61:
 	case RTL_GIGA_MAC_VER_63:
 		padto = max_t(unsigned int, padto, ETH_ZLEN);
+		break;
 	default:
 		break;
 	}
@@ -5306,7 +5309,7 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return -ENODEV;
 	}
 
-	rc = pcim_iomap_regions(pdev, BIT(region), MODULENAME);
+	rc = pcim_iomap_regions(pdev, BIT(region), KBUILD_MODNAME);
 	if (rc < 0) {
 		dev_err(&pdev->dev, "cannot remap MMIO, aborting\n");
 		return rc;
@@ -5441,7 +5444,7 @@ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 }
 
 static struct pci_driver rtl8169_pci_driver = {
-	.name		= MODULENAME,
+	.name		= KBUILD_MODNAME,
 	.id_table	= rtl8169_pci_tbl,
 	.probe		= rtl_init_one,
 	.remove		= rtl_remove_one,

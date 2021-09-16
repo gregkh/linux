@@ -7,9 +7,10 @@
 #include <linux/err.h>
 #include <linux/leds.h>
 #include <linux/leds-ti-lmu-common.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 
 #include <linux/mfd/ti-lmu.h>
 #include <linux/mfd/ti-lmu-register.h>

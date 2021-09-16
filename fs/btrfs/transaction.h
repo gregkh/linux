@@ -115,8 +115,6 @@ struct btrfs_transaction {
 
 #define TRANS_EXTWRITERS	(__TRANS_START | __TRANS_ATTACH)
 
-#define BTRFS_SEND_TRANS_STUB	((void *)1)
-
 struct btrfs_trans_handle {
 	u64 transid;
 	u64 bytes_reserved;
@@ -219,8 +217,7 @@ void btrfs_add_dead_root(struct btrfs_root *root);
 int btrfs_defrag_root(struct btrfs_root *root);
 int btrfs_clean_one_deleted_snapshot(struct btrfs_root *root);
 int btrfs_commit_transaction(struct btrfs_trans_handle *trans);
-int btrfs_commit_transaction_async(struct btrfs_trans_handle *trans,
-				   int wait_for_unblock);
+int btrfs_commit_transaction_async(struct btrfs_trans_handle *trans);
 int btrfs_end_transaction_throttle(struct btrfs_trans_handle *trans);
 bool btrfs_should_end_transaction(struct btrfs_trans_handle *trans);
 void btrfs_throttle(struct btrfs_fs_info *fs_info);

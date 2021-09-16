@@ -25,10 +25,15 @@
 
 #define WDT_TH_INT_MASK		BIT(8)
 #define WDT_TO_INT_MASK		BIT(9)
-#define WDT_ISR_CLEAR		0x8200ff18
+#define WDT_INT_CLEAR_SMC	0x8200ff18
+
 #define WDT_UNLOCK		0xf1d0dead
+#define WDT_DISABLE		0x0
+#define WDT_ENABLE		0x1
+
 #define WDT_LOAD_MAX		U32_MAX
 #define WDT_LOAD_MIN		1
+
 #define WDT_TIMEOUT		5
 #define WDT_PRETIMEOUT		4
 
@@ -84,7 +89,7 @@ static int keembay_wdt_start(struct watchdog_device *wdog)
 {
 	struct keembay_wdt *wdt = watchdog_get_drvdata(wdog);
 
-	keembay_wdt_writel(wdt, TIM_WDOG_EN, 1);
+	keembay_wdt_writel(wdt, TIM_WDOG_EN, WDT_ENABLE);
 
 	return 0;
 }
@@ -93,7 +98,7 @@ static int keembay_wdt_stop(struct watchdog_device *wdog)
 {
 	struct keembay_wdt *wdt = watchdog_get_drvdata(wdog);
 
-	keembay_wdt_writel(wdt, TIM_WDOG_EN, 0);
+	keembay_wdt_writel(wdt, TIM_WDOG_EN, WDT_DISABLE);
 
 	return 0;
 }
@@ -141,8 +146,8 @@ static irqreturn_t keembay_wdt_to_isr(int irq, void *dev_id)
 	struct keembay_wdt *wdt = dev_id;
 	struct arm_smccc_res res;
 
-	arm_smccc_smc(WDT_ISR_CLEAR, WDT_TO_INT_MASK, 0, 0, 0, 0, 0, 0, &res);
-	dev_crit(wdt->wdd.parent, "Intel Keem Bay non-sec wdt timeout.\n");
+	arm_smccc_smc(WDT_INT_CLEAR_SMC, WDT_TO_INT_MASK, 0, 0, 0, 0, 0, 0, &res);
+	dev_crit(wdt->wdd.parent, "Intel Keem Bay non-secure wdt timeout.\n");
 	emergency_restart();
 
 	return IRQ_HANDLED;
@@ -155,8 +160,8 @@ static irqreturn_t keembay_wdt_th_isr(int irq, void *dev_id)
 
 	keembay_wdt_set_pretimeout(&wdt->wdd, 0x0);
 
-	arm_smccc_smc(WDT_ISR_CLEAR, WDT_TH_INT_MASK, 0, 0, 0, 0, 0, 0, &res);
-	dev_crit(wdt->wdd.parent, "Intel Keem Bay non-sec wdt pre-timeout.\n");
+	arm_smccc_smc(WDT_INT_CLEAR_SMC, WDT_TH_INT_MASK, 0, 0, 0, 0, 0, 0, &res);
+	dev_crit(wdt->wdd.parent, "Intel Keem Bay non-secure wdt pre-timeout.\n");
 	watchdog_notify_pretimeout(&wdt->wdd);
 
 	return IRQ_HANDLED;
@@ -276,8 +281,8 @@ static const struct of_device_id keembay_wdt_match[] = {
 MODULE_DEVICE_TABLE(of, keembay_wdt_match);
 
 static struct platform_driver keembay_wdt_driver = {
-	.probe		= keembay_wdt_probe,
-	.driver		= {
+	.probe	= keembay_wdt_probe,
+	.driver	= {
 		.name		= "keembay_wdt",
 		.of_match_table	= keembay_wdt_match,
 		.pm		= &keembay_wdt_pm_ops,

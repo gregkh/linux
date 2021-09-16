@@ -776,7 +776,7 @@ struct  cs42l42_private {
 	struct regulator_bulk_data supplies[CS42L42_NUM_SUPPLIES];
 	struct gpio_desc *reset_gpio;
 	struct completion pdn_done;
-	struct snd_soc_jack jack;
+	struct snd_soc_jack *jack;
 	int pll_config;
 	int bclk;
 	u32 sclk;
@@ -792,6 +792,7 @@ struct  cs42l42_private {
 	u8 bias_thresholds[CS42L42_NUM_BIASES];
 	u8 hs_bias_ramp_rate;
 	u8 hs_bias_ramp_time;
+	u8 hs_bias_sense_en;
 	u8 stream_use;
 };
 
