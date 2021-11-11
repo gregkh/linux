@@ -197,7 +197,7 @@ static int codegen_datasecs(struct bpf_object *obj, const char *obj_name)
 	struct btf_dump *d;
 	int i, err = 0;
 
-	d = btf_dump__new(btf, NULL, NULL, codegen_btf_dump_printf);
+	d = btf_dump__new(btf, codegen_btf_dump_printf, NULL, NULL);
 	if (IS_ERR(d))
 		return PTR_ERR(d);
 
