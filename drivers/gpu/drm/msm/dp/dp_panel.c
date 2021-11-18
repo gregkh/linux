@@ -141,7 +141,6 @@ static int dp_panel_update_modes(struct drm_connector *connector,
 			return rc;
 		}
 		rc = drm_add_edid_modes(connector, edid);
-		DRM_DEBUG_DP("%s -", __func__);
 		return rc;
 	}
 
@@ -167,12 +166,18 @@ int dp_panel_read_sink_caps(struct dp_panel *dp_panel,
 	panel = container_of(dp_panel, struct dp_panel_private, dp_panel);
 
 	rc = dp_panel_read_dpcd(dp_panel);
-	bw_code = drm_dp_link_rate_to_bw_code(dp_panel->link_info.rate);
-	if (rc || !is_link_rate_valid(bw_code) ||
-			!is_lane_count_valid(dp_panel->link_info.num_lanes) ||
-			(bw_code > dp_panel->max_bw_code)) {
+	if (rc) {
 		DRM_ERROR("read dpcd failed %d\n", rc);
 		return rc;
+	}
+
+	bw_code = drm_dp_link_rate_to_bw_code(dp_panel->link_info.rate);
+	if (!is_link_rate_valid(bw_code) ||
+			!is_lane_count_valid(dp_panel->link_info.num_lanes) ||
+			(bw_code > dp_panel->max_bw_code)) {
+		DRM_ERROR("Illegal link rate=%d lane=%d\n", dp_panel->link_info.rate,
+				dp_panel->link_info.num_lanes);
+		return -EINVAL;
 	}
 
 	if (dp_panel->dfp_present) {
@@ -196,6 +201,11 @@ int dp_panel_read_sink_caps(struct dp_panel *dp_panel,
 					      &panel->aux->ddc);
 	if (!dp_panel->edid) {
 		DRM_ERROR("panel edid read failed\n");
+		/* check edid read fail is due to unplug */
+		if (!dp_catalog_link_is_connected(panel->catalog)) {
+			rc = -ETIMEDOUT;
+			goto end;
+		}
 
 		/* fail safe edid */
 		mutex_lock(&connector->dev->mode_config.mutex);
@@ -345,7 +355,6 @@ void dp_panel_dump_regs(struct dp_panel *dp_panel)
 
 int dp_panel_timing_cfg(struct dp_panel *dp_panel)
 {
-	int rc = 0;
 	u32 data, total_ver, total_hor;
 	struct dp_catalog *catalog;
 	struct dp_panel_private *panel;
@@ -398,12 +407,11 @@ int dp_panel_timing_cfg(struct dp_panel *dp_panel)
 	dp_catalog_panel_timing_cfg(catalog);
 	panel->panel_on = true;
 
-	return rc;
+	return 0;
 }
 
 int dp_panel_init_panel_info(struct dp_panel *dp_panel)
 {
-	int rc = 0;
 	struct drm_display_mode *drm_mode;
 
 	drm_mode = &dp_panel->dp_mode.drm_mode;
@@ -430,7 +438,7 @@ int dp_panel_init_panel_info(struct dp_panel *dp_panel)
 					min_t(u32, dp_panel->dp_mode.bpp, 30));
 	DRM_DEBUG_DP("updated bpp = %d\n", dp_panel->dp_mode.bpp);
 
-	return rc;
+	return 0;
 }
 
 struct dp_panel *dp_panel_get(struct dp_panel_in *in)

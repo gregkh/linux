@@ -98,14 +98,16 @@ void pm8001_tag_init(struct pm8001_hba_info *pm8001_ha)
 		pm8001_tag_free(pm8001_ha, i);
 }
 
- /**
-  * pm8001_mem_alloc - allocate memory for pm8001.
-  * @pdev: pci device.
-  * @virt_addr: the allocated virtual address
-  * @pphys_addr_hi: the physical address high byte address.
-  * @pphys_addr_lo: the physical address low byte address.
-  * @mem_size: memory size.
-  */
+/**
+ * pm8001_mem_alloc - allocate memory for pm8001.
+ * @pdev: pci device.
+ * @virt_addr: the allocated virtual address
+ * @pphys_addr: DMA address for this device
+ * @pphys_addr_hi: the physical address high byte address.
+ * @pphys_addr_lo: the physical address low byte address.
+ * @mem_size: memory size.
+ * @align: requested byte alignment
+ */
 int pm8001_mem_alloc(struct pci_dev *pdev, void **virt_addr,
 	dma_addr_t *pphys_addr, u32 *pphys_addr_hi,
 	u32 *pphys_addr_lo, u32 mem_size, u32 align)
@@ -118,10 +120,8 @@ int pm8001_mem_alloc(struct pci_dev *pdev, void **virt_addr,
 		align_offset = (dma_addr_t)align - 1;
 	mem_virt_alloc = dma_alloc_coherent(&pdev->dev, mem_size + align,
 					    &mem_dma_handle, GFP_KERNEL);
-	if (!mem_virt_alloc) {
-		pr_err("pm80xx: memory allocation error\n");
-		return -1;
-	}
+	if (!mem_virt_alloc)
+		return -ENOMEM;
 	*pphys_addr = mem_dma_handle;
 	phys_align = (*pphys_addr + align_offset) & ~align_offset;
 	*virt_addr = (void *)mem_virt_alloc + phys_align - *pphys_addr;
@@ -208,7 +208,7 @@ int pm8001_phy_control(struct asd_sas_phy *sas_phy, enum phy_func func,
 				PHY_STATE_LINK_UP_SPCV) {
 				sas_phy_disconnected(&phy->sas_phy);
 				sas_notify_phy_event(&phy->sas_phy,
-					PHYE_LOSS_OF_SIGNAL);
+					PHYE_LOSS_OF_SIGNAL, GFP_KERNEL);
 				phy->phy_attached = 0;
 			}
 		} else {
@@ -216,7 +216,7 @@ int pm8001_phy_control(struct asd_sas_phy *sas_phy, enum phy_func func,
 				PHY_STATE_LINK_UP_SPC) {
 				sas_phy_disconnected(&phy->sas_phy);
 				sas_notify_phy_event(&phy->sas_phy,
-					PHYE_LOSS_OF_SIGNAL);
+					PHYE_LOSS_OF_SIGNAL, GFP_KERNEL);
 				phy->phy_attached = 0;
 			}
 		}
@@ -341,7 +341,7 @@ static int pm8001_task_prep_ssp_tm(struct pm8001_hba_info *pm8001_ha,
 }
 
 /**
-  * pm8001_task_prep_ssp - the dispatcher function,prepare ssp data for ssp task
+  * pm8001_task_prep_ssp - the dispatcher function, prepare ssp data for ssp task
   * @pm8001_ha: our hba card information
   * @ccb: the ccb which attached to ssp task
   */
@@ -556,10 +556,10 @@ void pm8001_ccb_task_free(struct pm8001_hba_info *pm8001_ha,
 	pm8001_tag_free(pm8001_ha, ccb_idx);
 }
 
- /**
-  * pm8001_alloc_dev - find a empty pm8001_device
-  * @pm8001_ha: our hba card information
-  */
+/**
+ * pm8001_alloc_dev - find a empty pm8001_device
+ * @pm8001_ha: our hba card information
+ */
 static struct pm8001_device *pm8001_alloc_dev(struct pm8001_hba_info *pm8001_ha)
 {
 	u32 dev;
@@ -595,7 +595,7 @@ struct pm8001_device *pm8001_find_dev(struct pm8001_hba_info *pm8001_ha,
 	return NULL;
 }
 
-static void pm8001_free_dev(struct pm8001_device *pm8001_dev)
+void pm8001_free_dev(struct pm8001_device *pm8001_dev)
 {
 	u32 id = pm8001_dev->id;
 	memset(pm8001_dev, 0, sizeof(*pm8001_dev));
@@ -711,7 +711,7 @@ static void pm8001_tmf_timedout(struct timer_list *t)
   * @parameter: ssp task parameter.
   *
   * when errors or exception happened, we may want to do something, for example
-  * abort the issued task which result in this execption, it is done by calling
+  * abort the issued task which result in this exception, it is done by calling
   * this function, note it is also with the task execute interface.
   */
 static int pm8001_exec_internal_tmf_task(struct domain_device *dev,
@@ -747,7 +747,7 @@ static int pm8001_exec_internal_tmf_task(struct domain_device *dev,
 		if (pm8001_ha->chip_id != chip_8001) {
 			pm8001_dev->setds_completion = &completion_setstate;
 			PM8001_CHIP_DISP->set_dev_state_req(pm8001_ha,
-				pm8001_dev, 0x01);
+				pm8001_dev, DS_OPERATIONAL);
 			wait_for_completion(&completion_setstate);
 		}
 		res = -TMF_RESP_FUNC_FAILED;
@@ -759,7 +759,7 @@ static int pm8001_exec_internal_tmf_task(struct domain_device *dev,
 		}
 
 		if (task->task_status.resp == SAS_TASK_COMPLETE &&
-			task->task_status.stat == SAM_STAT_GOOD) {
+			task->task_status.stat == SAS_SAM_STAT_GOOD) {
 			res = TMF_RESP_FUNC_COMPLETE;
 			break;
 		}
@@ -841,7 +841,7 @@ pm8001_exec_internal_task_abort(struct pm8001_hba_info *pm8001_ha,
 		}
 
 		if (task->task_status.resp == SAS_TASK_COMPLETE &&
-			task->task_status.stat == SAM_STAT_GOOD) {
+			task->task_status.stat == SAS_SAM_STAT_GOOD) {
 			res = TMF_RESP_FUNC_COMPLETE;
 			break;
 
@@ -880,8 +880,8 @@ static void pm8001_dev_gone_notify(struct domain_device *dev)
 			   pm8001_dev->device_id, pm8001_dev->dev_type);
 		if (atomic_read(&pm8001_dev->running_req)) {
 			spin_unlock_irqrestore(&pm8001_ha->lock, flags);
-			pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev ,
-				dev, 1, 0);
+			pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev,
+							dev, 1, 0);
 			while (atomic_read(&pm8001_dev->running_req))
 				msleep(20);
 			spin_lock_irqsave(&pm8001_ha->lock, flags);
@@ -907,7 +907,7 @@ static int pm8001_issue_ssp_tmf(struct domain_device *dev,
 	if (!(dev->tproto & SAS_PROTOCOL_SSP))
 		return TMF_RESP_FUNC_ESUPP;
 
-	strncpy((u8 *)&ssp_task.LUN, lun, 8);
+	memcpy((u8 *)&ssp_task.LUN, lun, 8);
 	return pm8001_exec_internal_tmf_task(dev, &ssp_task, sizeof(ssp_task),
 		tmf);
 }
@@ -984,10 +984,12 @@ void pm8001_open_reject_retry(
 }
 
 /**
-  * Standard mandates link reset for ATA  (type 0) and hard reset for
-  * SSP (type 1) , only for RECOVERY
-  * @dev: the device structure for the device to reset.
-  */
+ * pm8001_I_T_nexus_reset() - reset the initiator/target connection
+ * @dev: the device structure for the device to reset.
+ *
+ * Standard mandates link reset for ATA (type 0) and hard reset for
+ * SSP (type 1), only for RECOVERY
+ */
 int pm8001_I_T_nexus_reset(struct domain_device *dev)
 {
 	int rc = TMF_RESP_FUNC_FAILED;
@@ -1016,8 +1018,8 @@ int pm8001_I_T_nexus_reset(struct domain_device *dev)
 			goto out;
 		}
 		msleep(2000);
-		rc = pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev ,
-			dev, 1, 0);
+		rc = pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev,
+						     dev, 1, 0);
 		if (rc) {
 			pm8001_dbg(pm8001_ha, EH, "task abort failed %x\n"
 				   "with rc %d\n", pm8001_dev->device_id, rc);
@@ -1062,8 +1064,8 @@ int pm8001_I_T_nexus_event_handler(struct domain_device *dev)
 			goto out;
 		}
 		/* send internal ssp/sata/smp abort command to FW */
-		rc = pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev ,
-							dev, 1, 0);
+		rc = pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev,
+						     dev, 1, 0);
 		msleep(100);
 
 		/* deregister the target device */
@@ -1078,8 +1080,8 @@ int pm8001_I_T_nexus_event_handler(struct domain_device *dev)
 		wait_for_completion(&completion_setstate);
 	} else {
 		/* send internal ssp/sata/smp abort command to FW */
-		rc = pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev ,
-							dev, 1, 0);
+		rc = pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev,
+						     dev, 1, 0);
 		msleep(100);
 
 		/* deregister the target device */
@@ -1107,13 +1109,13 @@ int pm8001_lu_reset(struct domain_device *dev, u8 *lun)
 	DECLARE_COMPLETION_ONSTACK(completion_setstate);
 	if (dev_is_sata(dev)) {
 		struct sas_phy *phy = sas_get_local_phy(dev);
-		rc = pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev ,
-			dev, 1, 0);
+		rc = pm8001_exec_internal_task_abort(pm8001_ha, pm8001_dev,
+						     dev, 1, 0);
 		rc = sas_phy_reset(phy, 1);
 		sas_put_local_phy(phy);
 		pm8001_dev->setds_completion = &completion_setstate;
 		rc = PM8001_CHIP_DISP->set_dev_state_req(pm8001_ha,
-			pm8001_dev, 0x01);
+			pm8001_dev, DS_OPERATIONAL);
 		wait_for_completion(&completion_setstate);
 	} else {
 		tmf_task.tmf = TMF_LU_RESET;
@@ -1183,15 +1185,24 @@ int pm8001_abort_task(struct sas_task *task)
 	int rc = TMF_RESP_FUNC_FAILED, ret;
 	u32 phy_id;
 	struct sas_task_slow slow_task;
+
 	if (unlikely(!task || !task->lldd_task || !task->dev))
 		return TMF_RESP_FUNC_FAILED;
+
 	dev = task->dev;
 	pm8001_dev = dev->lldd_dev;
 	pm8001_ha = pm8001_find_ha_by_dev(dev);
 	phy_id = pm8001_dev->attached_phy;
+
+	if (PM8001_CHIP_DISP->fatal_errors(pm8001_ha)) {
+		// If the controller is seeing fatal errors
+		// abort task will not get a response from the controller
+		return TMF_RESP_FUNC_FAILED;
+	}
+
 	ret = pm8001_find_tag(task, &tag);
 	if (ret == 0) {
-		pm8001_printk("no tag for task:%p\n", task);
+		pm8001_info(pm8001_ha, "no tag for task:%p\n", task);
 		return TMF_RESP_FUNC_FAILED;
 	}
 	spin_lock_irqsave(&task->task_state_lock, flags);
@@ -1223,7 +1234,7 @@ int pm8001_abort_task(struct sas_task *task)
 			/* 1. Set Device state as Recovery */
 			pm8001_dev->setds_completion = &completion;
 			PM8001_CHIP_DISP->set_dev_state_req(pm8001_ha,
-				pm8001_dev, 0x03);
+				pm8001_dev, DS_IN_RECOVERY);
 			wait_for_completion(&completion);
 
 			/* 2. Send Phy Control Hard Reset */
@@ -1294,7 +1305,7 @@ int pm8001_abort_task(struct sas_task *task)
 			reinit_completion(&completion);
 			pm8001_dev->setds_completion = &completion;
 			PM8001_CHIP_DISP->set_dev_state_req(pm8001_ha,
-				pm8001_dev, 0x01);
+				pm8001_dev, DS_OPERATIONAL);
 			wait_for_completion(&completion);
 		} else {
 			rc = pm8001_exec_internal_task_abort(pm8001_ha,
@@ -1313,7 +1324,7 @@ out:
 		task->slow_task = NULL;
 	spin_unlock_irqrestore(&task->task_state_lock, flags);
 	if (rc != TMF_RESP_FUNC_COMPLETE)
-		pm8001_printk("rc= %d\n", rc);
+		pm8001_info(pm8001_ha, "rc= %d\n", rc);
 	return rc;
 }
 
@@ -1344,4 +1355,3 @@ int pm8001_clear_task_set(struct domain_device *dev, u8 *lun)
 	tmf_task.tmf = TMF_CLEAR_TASK_SET;
 	return pm8001_issue_ssp_tmf(dev, lun, &tmf_task);
 }
-

@@ -7,6 +7,7 @@
 #include "delalloc-space.h"
 #include "reflink.h"
 #include "transaction.h"
+#include "subpage.h"
 
 #define BTRFS_MAX_DEDUPE_LEN	SZ_16M
 
@@ -31,10 +32,10 @@ static int clone_finish_inode_update(struct btrfs_trans_handle *trans,
 		endoff = destoff + olen;
 	if (endoff > inode->i_size) {
 		i_size_write(inode, endoff);
-		btrfs_inode_safe_disk_i_size_write(inode, 0);
+		btrfs_inode_safe_disk_i_size_write(BTRFS_I(inode), 0);
 	}
 
-	ret = btrfs_update_inode(trans, root, inode);
+	ret = btrfs_update_inode(trans, root, BTRFS_I(inode));
 	if (ret) {
 		btrfs_abort_transaction(trans, ret);
 		btrfs_end_transaction(trans);
@@ -52,7 +53,8 @@ static int copy_inline_to_page(struct btrfs_inode *inode,
 			       const u64 datal,
 			       const u8 comp_type)
 {
-	const u64 block_size = btrfs_inode_sectorsize(inode);
+	struct btrfs_fs_info *fs_info = inode->root->fs_info;
+	const u32 block_size = fs_info->sectorsize;
 	const u64 range_end = file_offset + block_size - 1;
 	const size_t inline_size = size - btrfs_file_extent_calc_inline_size(0);
 	char *data_start = inline_data + btrfs_file_extent_calc_inline_size(0);
@@ -81,7 +83,10 @@ static int copy_inline_to_page(struct btrfs_inode *inode,
 		goto out_unlock;
 	}
 
-	set_page_extent_mapped(page);
+	ret = set_page_extent_mapped(page);
+	if (ret < 0)
+		goto out_unlock;
+
 	clear_extent_bit(&inode->io_tree, file_offset, range_end,
 			 EXTENT_DELALLOC | EXTENT_DO_ACCOUNTING | EXTENT_DEFRAG,
 			 0, 0, NULL);
@@ -103,14 +108,12 @@ static int copy_inline_to_page(struct btrfs_inode *inode,
 	set_bit(BTRFS_INODE_NO_DELALLOC_FLUSH, &inode->runtime_flags);
 
 	if (comp_type == BTRFS_COMPRESS_NONE) {
-		char *map;
-
-		map = kmap(page);
-		memcpy(map, data_start, datal);
+		memcpy_to_page(page, offset_in_page(file_offset), data_start,
+			       datal);
 		flush_dcache_page(page);
-		kunmap(page);
 	} else {
-		ret = btrfs_decompress(comp_type, data_start, page, 0,
+		ret = btrfs_decompress(comp_type, data_start, page,
+				       offset_in_page(file_offset),
 				       inline_size, datal);
 		if (ret)
 			goto out_unlock;
@@ -130,17 +133,13 @@ static int copy_inline_to_page(struct btrfs_inode *inode,
 	 * So what's in the range [500, 4095] corresponds to zeroes.
 	 */
 	if (datal < block_size) {
-		char *map;
-
-		map = kmap(page);
-		memset(map + datal, 0, block_size - datal);
+		memzero_page(page, datal, block_size - datal);
 		flush_dcache_page(page);
-		kunmap(page);
 	}
 
-	SetPageUptodate(page);
+	btrfs_page_set_uptodate(fs_info, page, file_offset, block_size);
 	ClearPageChecked(page);
-	set_page_dirty(page);
+	btrfs_page_set_dirty(fs_info, page, file_offset, block_size);
 out_unlock:
 	if (page) {
 		unlock_page(page);
@@ -176,6 +175,7 @@ static int clone_copy_inline_extent(struct inode *dst,
 	const u64 aligned_end = ALIGN(new_key->offset + datal,
 				      fs_info->sectorsize);
 	struct btrfs_trans_handle *trans = NULL;
+	struct btrfs_drop_extents_args drop_args = { 0 };
 	int ret;
 	struct btrfs_key key;
 
@@ -261,7 +261,11 @@ copy_inline_extent:
 		trans = NULL;
 		goto out;
 	}
-	ret = btrfs_drop_extents(trans, root, dst, drop_start, aligned_end, 1);
+	drop_args.path = path;
+	drop_args.start = drop_start;
+	drop_args.end = aligned_end;
+	drop_args.drop_cache = true;
+	ret = btrfs_drop_extents(trans, root, BTRFS_I(dst), &drop_args);
 	if (ret)
 		goto out;
 	ret = btrfs_insert_empty_item(trans, root, path, new_key, size);
@@ -272,7 +276,7 @@ copy_inline_extent:
 			    btrfs_item_ptr_offset(path->nodes[0],
 						  path->slots[0]),
 			    size);
-	inode_add_bytes(dst, datal);
+	btrfs_update_inode_bytes(BTRFS_I(dst), datal, drop_args.bytes_found);
 	set_bit(BTRFS_INODE_NEEDS_FULL_SYNC, &BTRFS_I(dst)->runtime_flags);
 	ret = btrfs_inode_set_file_extent_range(BTRFS_I(dst), 0, aligned_end);
 out:
@@ -371,7 +375,6 @@ static int btrfs_clone(struct inode *src, struct inode *inode,
 		u64 drop_start;
 
 		/* Note the key will change type as we walk through the tree */
-		path->leave_spinning = 1;
 		ret = btrfs_search_slot(NULL, BTRFS_I(src)->root, &key, path,
 				0, 0);
 		if (ret < 0)
@@ -441,7 +444,6 @@ process_slot:
 				   size);
 
 		btrfs_release_path(path);
-		path->leave_spinning = 0;
 
 		memcpy(&new_key, &key, sizeof(new_key));
 		new_key.objectid = btrfs_ino(BTRFS_I(inode));
@@ -487,9 +489,9 @@ process_slot:
 			clone_info.file_offset = new_key.offset;
 			clone_info.extent_buf = buf;
 			clone_info.is_new_extent = false;
-			ret = btrfs_replace_file_extents(inode, path, drop_start,
-					new_key.offset + datal - 1, &clone_info,
-					&trans);
+			ret = btrfs_replace_file_extents(BTRFS_I(inode), path,
+					drop_start, new_key.offset + datal - 1,
+					&clone_info, &trans);
 			if (ret)
 				goto out;
 		} else if (type == BTRFS_FILE_EXTENT_INLINE) {
@@ -557,7 +559,6 @@ process_slot:
 		 * mixing buffered and direct IO writes against this file.
 		 */
 		btrfs_release_path(path);
-		path->leave_spinning = 0;
 
 		/*
 		 * When using NO_HOLES and we are cloning a range that covers
@@ -577,8 +578,8 @@ process_slot:
 			set_bit(BTRFS_INODE_NEEDS_FULL_SYNC,
 				&BTRFS_I(inode)->runtime_flags);
 
-		ret = btrfs_replace_file_extents(inode, path, last_dest_end,
-				destoff + len - 1, NULL, &trans);
+		ret = btrfs_replace_file_extents(BTRFS_I(inode), path,
+				last_dest_end, destoff + len - 1, NULL, &trans);
 		if (ret)
 			goto out;
 
@@ -612,6 +613,20 @@ static void btrfs_double_extent_lock(struct inode *inode1, u64 loff1,
 	}
 	lock_extent(&BTRFS_I(inode1)->io_tree, loff1, loff1 + len - 1);
 	lock_extent(&BTRFS_I(inode2)->io_tree, loff2, loff2 + len - 1);
+}
+
+static void btrfs_double_mmap_lock(struct inode *inode1, struct inode *inode2)
+{
+	if (inode1 < inode2)
+		swap(inode1, inode2);
+	down_write(&BTRFS_I(inode1)->i_mmap_lock);
+	down_write_nested(&BTRFS_I(inode2)->i_mmap_lock, SINGLE_DEPTH_NESTING);
+}
+
+static void btrfs_double_mmap_unlock(struct inode *inode1, struct inode *inode2)
+{
+	up_write(&BTRFS_I(inode1)->i_mmap_lock);
+	up_write(&BTRFS_I(inode2)->i_mmap_lock);
 }
 
 static int btrfs_extent_same_range(struct inode *src, u64 loff, u64 len,
@@ -696,7 +711,7 @@ static noinline int btrfs_clone_files(struct file *file, struct file *file_src,
 	if (destoff > inode->i_size) {
 		const u64 wb_start = ALIGN_DOWN(inode->i_size, bs);
 
-		ret = btrfs_cont_expand(inode, inode->i_size, destoff);
+		ret = btrfs_cont_expand(BTRFS_I(inode), inode->i_size, destoff);
 		if (ret)
 			return ret;
 		/*
@@ -830,6 +845,16 @@ static int btrfs_remap_file_range_prep(struct file *file_in, loff_t pos_in,
 					    len, remap_flags);
 }
 
+static bool file_sync_write(const struct file *file)
+{
+	if (file->f_flags & (__O_SYNC | O_DSYNC))
+		return true;
+	if (IS_SYNC(file_inode(file)))
+		return true;
+
+	return false;
+}
+
 loff_t btrfs_remap_file_range(struct file *src_file, loff_t off,
 		struct file *dst_file, loff_t destoff, loff_t len,
 		unsigned int remap_flags)
@@ -842,10 +867,12 @@ loff_t btrfs_remap_file_range(struct file *src_file, loff_t off,
 	if (remap_flags & ~(REMAP_FILE_DEDUP | REMAP_FILE_ADVISORY))
 		return -EINVAL;
 
-	if (same_inode)
-		inode_lock(src_inode);
-	else
+	if (same_inode) {
+		btrfs_inode_lock(src_inode, BTRFS_ILOCK_MMAP);
+	} else {
 		lock_two_nondirectories(src_inode, dst_inode);
+		btrfs_double_mmap_lock(src_inode, dst_inode);
+	}
 
 	ret = btrfs_remap_file_range_prep(src_file, off, dst_file, destoff,
 					  &len, remap_flags);
@@ -858,10 +885,27 @@ loff_t btrfs_remap_file_range(struct file *src_file, loff_t off,
 		ret = btrfs_clone_files(dst_file, src_file, off, len, destoff);
 
 out_unlock:
-	if (same_inode)
-		inode_unlock(src_inode);
-	else
+	if (same_inode) {
+		btrfs_inode_unlock(src_inode, BTRFS_ILOCK_MMAP);
+	} else {
+		btrfs_double_mmap_unlock(src_inode, dst_inode);
 		unlock_two_nondirectories(src_inode, dst_inode);
+	}
+
+	/*
+	 * If either the source or the destination file was opened with O_SYNC,
+	 * O_DSYNC or has the S_SYNC attribute, fsync both the destination and
+	 * source files/ranges, so that after a successful return (0) followed
+	 * by a power failure results in the reflinked data to be readable from
+	 * both files/ranges.
+	 */
+	if (ret == 0 && len > 0 &&
+	    (file_sync_write(src_file) || file_sync_write(dst_file))) {
+		ret = btrfs_sync_file(src_file, off, off + len - 1, 0);
+		if (ret == 0)
+			ret = btrfs_sync_file(dst_file, destoff,
+					      destoff + len - 1, 0);
+	}
 
 	return ret < 0 ? ret : len;
 }

@@ -9,7 +9,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/slab.h>
+#include <linux/mod_devicetable.h>
 #include <linux/spi/spi.h>
 #include <linux/iio/iio.h>
 
@@ -40,6 +40,10 @@ static const struct of_device_id st_magn_of_match[] = {
 	{
 		.compatible = "st,lsm9ds1-magn",
 		.data = LSM9DS1_MAGN_DEV_NAME,
+	},
+	{
+		.compatible = "st,iis2mdc",
+		.data = IIS2MDC_MAGN_DEV_NAME,
 	},
 	{}
 };
@@ -104,6 +108,7 @@ static const struct spi_device_id st_magn_id_table[] = {
 	{ LSM303AGR_MAGN_DEV_NAME },
 	{ LIS2MDL_MAGN_DEV_NAME },
 	{ LSM9DS1_MAGN_DEV_NAME },
+	{ IIS2MDC_MAGN_DEV_NAME },
 	{},
 };
 MODULE_DEVICE_TABLE(spi, st_magn_id_table);

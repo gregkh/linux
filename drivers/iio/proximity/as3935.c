@@ -408,14 +408,14 @@ static int as3935_probe(struct spi_device *spi)
 	indio_dev->info = &as3935_info;
 
 	trig = devm_iio_trigger_alloc(dev, "%s-dev%d",
-				      indio_dev->name, indio_dev->id);
+				      indio_dev->name,
+				      iio_device_id(indio_dev));
 
 	if (!trig)
 		return -ENOMEM;
 
 	st->trig = trig;
 	st->noise_tripped = jiffies - HZ;
-	trig->dev.parent = indio_dev->dev.parent;
 	iio_trigger_set_drvdata(trig, indio_dev);
 	trig->ops = &iio_interrupt_trigger_ops;
 

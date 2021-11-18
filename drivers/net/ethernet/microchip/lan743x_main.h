@@ -616,7 +616,8 @@ struct lan743x_intr {
 	int			number_of_vectors;
 	bool			using_vectors;
 
-	int			software_isr_flag;
+	bool			software_isr_flag;
+	wait_queue_head_t	software_isr_wq;
 };
 
 #define LAN743X_MAX_FRAME_SIZE			(9 * 1024)
@@ -698,12 +699,13 @@ struct lan743x_rx {
 	struct napi_struct napi;
 
 	u32		frame_count;
+
+	struct sk_buff *skb_head, *skb_tail;
 };
 
 struct lan743x_adapter {
 	struct net_device       *netdev;
 	struct mii_bus		*mdiobus;
-	phy_interface_t		phy_mode;
 	int                     msg_enable;
 #ifdef CONFIG_PM
 	u32			wolopts;
@@ -831,8 +833,7 @@ struct lan743x_rx_buffer_info {
 #define LAN743X_RX_RING_SIZE        (65)
 
 #define RX_PROCESS_RESULT_NOTHING_TO_DO     (0)
-#define RX_PROCESS_RESULT_PACKET_RECEIVED   (1)
-#define RX_PROCESS_RESULT_PACKET_DROPPED    (2)
+#define RX_PROCESS_RESULT_BUFFER_RECEIVED   (1)
 
 u32 lan743x_csr_read(struct lan743x_adapter *adapter, int offset);
 void lan743x_csr_write(struct lan743x_adapter *adapter, int offset, u32 data);

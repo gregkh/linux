@@ -3,9 +3,9 @@
 #define USBUSX2Y_H
 #include "../usbaudio.h"
 #include "../midi.h"
-#include "usbus428ctldefs.h" 
+#include "usbus428ctldefs.h"
 
-#define NRURBS	        2	
+#define NRURBS	        2
 
 
 #define URBS_ASYNC_SEQ 10
@@ -30,7 +30,7 @@ struct usx2ydev {
 	struct urb		*in04_urb;
 	void			*in04_buf;
 	char			in04_last[24];
-	unsigned		in04_int_calls;
+	unsigned int		in04_int_calls;
 	struct snd_usx2y_urb_seq	*us04;
 	wait_queue_head_t	in04_wait_queue;
 	struct snd_usx2y_async_seq	as04;
@@ -46,7 +46,6 @@ struct usx2ydev {
 	struct snd_usx2y_substream	* volatile  prepare_subs;
 	wait_queue_head_t	prepare_wait_queue;
 	struct list_head	midi_list;
-	struct list_head	pcm_list;
 	int			pcm_devs;
 };
 
@@ -55,7 +54,7 @@ struct snd_usx2y_substream {
 	struct usx2ydev	*usx2y;
 	struct snd_pcm_substream *pcm_substream;
 
-	int			endpoint;		
+	int			endpoint;
 	unsigned int		maxpacksize;		/* max packet size in bytes */
 
 	atomic_t		state;

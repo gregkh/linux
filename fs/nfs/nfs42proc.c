@@ -269,6 +269,33 @@ out:
 	return status;
 }
 
+/**
+ * nfs42_copy_dest_done - perform inode cache updates after clone/copy offload
+ * @inode: pointer to destination inode
+ * @pos: destination offset
+ * @len: copy length
+ *
+ * Punch a hole in the inode page cache, so that the NFS client will
+ * know to retrieve new data.
+ * Update the file size if necessary, and then mark the inode as having
+ * invalid cached values for change attribute, ctime, mtime and space used.
+ */
+static void nfs42_copy_dest_done(struct inode *inode, loff_t pos, loff_t len)
+{
+	loff_t newsize = pos + len;
+	loff_t end = newsize - 1;
+
+	truncate_pagecache_range(inode, pos, end);
+	spin_lock(&inode->i_lock);
+	if (newsize > i_size_read(inode))
+		i_size_write(inode, newsize);
+	nfs_set_cache_invalid(inode, NFS_INO_INVALID_CHANGE |
+					     NFS_INO_INVALID_CTIME |
+					     NFS_INO_INVALID_MTIME |
+					     NFS_INO_INVALID_BLOCKS);
+	spin_unlock(&inode->i_lock);
+}
+
 static ssize_t _nfs42_proc_copy(struct file *src,
 				struct nfs_lock_context *src_lock,
 				struct file *dst,
@@ -362,17 +389,8 @@ static ssize_t _nfs42_proc_copy(struct file *src,
 			goto out;
 	}
 
-	truncate_pagecache_range(dst_inode, pos_dst,
-				 pos_dst + res->write_res.count);
-	spin_lock(&dst_inode->i_lock);
-	NFS_I(dst_inode)->cache_validity |= (NFS_INO_REVAL_PAGECACHE |
-			NFS_INO_REVAL_FORCED | NFS_INO_INVALID_SIZE |
-			NFS_INO_INVALID_ATTR | NFS_INO_INVALID_DATA);
-	spin_unlock(&dst_inode->i_lock);
-	spin_lock(&src_inode->i_lock);
-	NFS_I(src_inode)->cache_validity |= (NFS_INO_REVAL_PAGECACHE |
-			NFS_INO_REVAL_FORCED | NFS_INO_INVALID_ATIME);
-	spin_unlock(&src_inode->i_lock);
+	nfs42_copy_dest_done(dst_inode, pos_dst, res->write_res.count);
+	nfs_invalidate_atime(src_inode);
 	status = res->write_res.count;
 out:
 	if (args->sync)
@@ -1053,8 +1071,10 @@ static int _nfs42_proc_clone(struct rpc_message *msg, struct file *src_f,
 
 	status = nfs4_call_sync(server->client, server, msg,
 				&args.seq_args, &res.seq_res, 0);
-	if (status == 0)
+	if (status == 0) {
+		nfs42_copy_dest_done(dst_inode, dst_offset, count);
 		status = nfs_post_op_update_inode(dst_inode, res.dst_fattr);
+	}
 
 	kfree(res.dst_fattr);
 	return status;
@@ -1184,14 +1204,12 @@ static int _nfs42_proc_setxattr(struct inode *inode, const char *name,
 }
 
 static ssize_t _nfs42_proc_getxattr(struct inode *inode, const char *name,
-				void *buf, size_t buflen)
+				void *buf, size_t buflen, struct page **pages,
+				size_t plen)
 {
 	struct nfs_server *server = NFS_SERVER(inode);
-	struct page *pages[NFS4XATTR_MAXPAGES] = {};
 	struct nfs42_getxattrargs arg = {
 		.fh		= NFS_FH(inode),
-		.xattr_pages	= pages,
-		.xattr_len	= buflen,
 		.xattr_name	= name,
 	};
 	struct nfs42_getxattrres res;
@@ -1200,7 +1218,10 @@ static ssize_t _nfs42_proc_getxattr(struct inode *inode, const char *name,
 		.rpc_argp	= &arg,
 		.rpc_resp	= &res,
 	};
-	int ret, np;
+	ssize_t ret;
+
+	arg.xattr_len = plen;
+	arg.xattr_pages = pages;
 
 	ret = nfs4_call_sync(server->client, server, &msg, &arg.seq_args,
 	    &res.seq_res, 0);
@@ -1224,10 +1245,6 @@ static ssize_t _nfs42_proc_getxattr(struct inode *inode, const char *name,
 			return -ERANGE;
 		_copy_from_pages(buf, pages, 0, res.xattr_len);
 	}
-
-	np = DIV_ROUND_UP(res.xattr_len, PAGE_SIZE);
-	while (--np >= 0)
-		__free_page(pages[np]);
 
 	return res.xattr_len;
 }
@@ -1303,15 +1320,44 @@ ssize_t nfs42_proc_getxattr(struct inode *inode, const char *name,
 			      void *buf, size_t buflen)
 {
 	struct nfs4_exception exception = { };
-	ssize_t err;
+	ssize_t err, np, i;
+	struct page **pages;
 
+	np = nfs_page_array_len(0, buflen ?: XATTR_SIZE_MAX);
+	pages = kmalloc_array(np, sizeof(*pages), GFP_KERNEL);
+	if (!pages)
+		return -ENOMEM;
+
+	for (i = 0; i < np; i++) {
+		pages[i] = alloc_page(GFP_KERNEL);
+		if (!pages[i]) {
+			np = i + 1;
+			err = -ENOMEM;
+			goto out;
+		}
+	}
+
+	/*
+	 * The GETXATTR op has no length field in the call, and the
+	 * xattr data is at the end of the reply.
+	 *
+	 * There is no downside in using the page-aligned length. It will
+	 * allow receiving and caching xattrs that are too large for the
+	 * caller but still fit in the page-rounded value.
+	 */
 	do {
-		err = _nfs42_proc_getxattr(inode, name, buf, buflen);
+		err = _nfs42_proc_getxattr(inode, name, buf, buflen,
+			pages, np * PAGE_SIZE);
 		if (err >= 0)
 			break;
 		err = nfs4_handle_exception(NFS_SERVER(inode), err,
 				&exception);
 	} while (exception.retry);
+
+out:
+	while (--np >= 0)
+		__free_page(pages[np]);
+	kfree(pages);
 
 	return err;
 }

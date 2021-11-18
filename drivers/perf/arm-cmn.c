@@ -31,7 +31,7 @@
 #define CMN_CI_CHILD_COUNT		GENMASK_ULL(15, 0)
 #define CMN_CI_CHILD_PTR_OFFSET		GENMASK_ULL(31, 16)
 
-#define CMN_CHILD_NODE_ADDR		GENMASK(27,0)
+#define CMN_CHILD_NODE_ADDR		GENMASK(27, 0)
 #define CMN_CHILD_NODE_EXTERNAL		BIT(31)
 
 #define CMN_ADDR_NODE_PTR		GENMASK(27, 14)
@@ -348,19 +348,19 @@ static ssize_t arm_cmn_event_show(struct device *dev,
 	eattr = container_of(attr, typeof(*eattr), attr);
 
 	if (eattr->type == CMN_TYPE_DTC)
-		return snprintf(buf, PAGE_SIZE, "type=0x%x\n", eattr->type);
+		return sysfs_emit(buf, "type=0x%x\n", eattr->type);
 
 	if (eattr->type == CMN_TYPE_WP)
-		return snprintf(buf, PAGE_SIZE,
-				"type=0x%x,eventid=0x%x,wp_dev_sel=?,wp_chn_sel=?,wp_grp=?,wp_val=?,wp_mask=?\n",
-				eattr->type, eattr->eventid);
+		return sysfs_emit(buf,
+				  "type=0x%x,eventid=0x%x,wp_dev_sel=?,wp_chn_sel=?,wp_grp=?,wp_val=?,wp_mask=?\n",
+				  eattr->type, eattr->eventid);
 
 	if (arm_cmn_is_occup_event(eattr->type, eattr->eventid))
-		return snprintf(buf, PAGE_SIZE, "type=0x%x,eventid=0x%x,occupid=0x%x\n",
-				eattr->type, eattr->eventid, eattr->occupid);
+		return sysfs_emit(buf, "type=0x%x,eventid=0x%x,occupid=0x%x\n",
+				  eattr->type, eattr->eventid, eattr->occupid);
 
-	return snprintf(buf, PAGE_SIZE, "type=0x%x,eventid=0x%x\n",
-			eattr->type, eattr->eventid);
+	return sysfs_emit(buf, "type=0x%x,eventid=0x%x\n", eattr->type,
+			  eattr->eventid);
 }
 
 static umode_t arm_cmn_event_attr_is_visible(struct kobject *kobj,
@@ -560,12 +560,12 @@ static ssize_t arm_cmn_format_show(struct device *dev,
 	int lo = __ffs(fmt->field), hi = __fls(fmt->field);
 
 	if (lo == hi)
-		return snprintf(buf, PAGE_SIZE, "config:%d\n", lo);
+		return sysfs_emit(buf, "config:%d\n", lo);
 
 	if (!fmt->config)
-		return snprintf(buf, PAGE_SIZE, "config:%d-%d\n", lo, hi);
+		return sysfs_emit(buf, "config:%d-%d\n", lo, hi);
 
-	return snprintf(buf, PAGE_SIZE, "config%d:%d-%d\n", fmt->config, lo, hi);
+	return sysfs_emit(buf, "config%d:%d-%d\n", fmt->config, lo, hi);
 }
 
 #define _CMN_FORMAT_ATTR(_name, _cfg, _fld)				\
@@ -616,7 +616,7 @@ static struct attribute *arm_cmn_cpumask_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group arm_cmn_cpumask_attr_group = {
+static const struct attribute_group arm_cmn_cpumask_attr_group = {
 	.attrs = arm_cmn_cpumask_attrs,
 };
 
@@ -1162,7 +1162,7 @@ static int arm_cmn_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 
 	perf_pmu_migrate_context(&cmn->pmu, cpu, target);
 	for (i = 0; i < cmn->num_dtcs; i++)
-		irq_set_affinity_hint(cmn->dtc[i].irq, cpumask_of(target));
+		irq_set_affinity(cmn->dtc[i].irq, cpumask_of(target));
 	cmn->cpu = target;
 	return 0;
 }
@@ -1222,7 +1222,7 @@ static int arm_cmn_init_irqs(struct arm_cmn *cmn)
 		if (err)
 			return err;
 
-		err = irq_set_affinity_hint(irq, cpumask_of(cmn->cpu));
+		err = irq_set_affinity(irq, cpumask_of(cmn->cpu));
 		if (err)
 			return err;
 	next:
@@ -1568,16 +1568,11 @@ static int arm_cmn_probe(struct platform_device *pdev)
 static int arm_cmn_remove(struct platform_device *pdev)
 {
 	struct arm_cmn *cmn = platform_get_drvdata(pdev);
-	int i;
 
 	writel_relaxed(0, cmn->dtc[0].base + CMN_DT_DTC_CTL);
 
 	perf_pmu_unregister(&cmn->pmu);
 	cpuhp_state_remove_instance(arm_cmn_hp_state, &cmn->cpuhp_node);
-
-	for (i = 0; i < cmn->num_dtcs; i++)
-		irq_set_affinity_hint(cmn->dtc[i].irq, NULL);
-
 	return 0;
 }
 

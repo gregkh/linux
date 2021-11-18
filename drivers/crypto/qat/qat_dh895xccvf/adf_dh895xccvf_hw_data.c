@@ -3,6 +3,7 @@
 #include <adf_accel_devices.h>
 #include <adf_pf2vf_msg.h>
 #include <adf_common_drv.h>
+#include <adf_gen2_hw_data.h>
 #include "adf_dh895xccvf_hw_data.h"
 
 static struct adf_hw_device_class dh895xcciov_class = {
@@ -11,12 +12,12 @@ static struct adf_hw_device_class dh895xcciov_class = {
 	.instances = 0
 };
 
-static u32 get_accel_mask(u32 fuse)
+static u32 get_accel_mask(struct adf_hw_device_data *self)
 {
 	return ADF_DH895XCCIOV_ACCELERATORS_MASK;
 }
 
-static u32 get_ae_mask(u32 fuse)
+static u32 get_ae_mask(struct adf_hw_device_data *self)
 {
 	return ADF_DH895XCCIOV_ACCELENGINES_MASK;
 }
@@ -51,11 +52,6 @@ static u32 get_pf2vf_offset(u32 i)
 	return ADF_DH895XCCIOV_PF2VF_OFFSET;
 }
 
-static u32 get_vintmsk_offset(u32 i)
-{
-	return ADF_DH895XCCIOV_VINTMSK_OFFSET;
-}
-
 static int adf_vf_int_noop(struct adf_accel_dev *accel_dev)
 {
 	return 0;
@@ -69,6 +65,7 @@ void adf_init_hw_data_dh895xcciov(struct adf_hw_device_data *hw_data)
 {
 	hw_data->dev_class = &dh895xcciov_class;
 	hw_data->num_banks = ADF_DH895XCCIOV_ETR_MAX_BANKS;
+	hw_data->num_rings_per_bank = ADF_ETR_MAX_RINGS_PER_BANK;
 	hw_data->num_accel = ADF_DH895XCCIOV_MAX_ACCELERATORS;
 	hw_data->num_logical_accel = 1;
 	hw_data->num_engines = ADF_DH895XCCIOV_MAX_ACCELENGINES;
@@ -90,13 +87,13 @@ void adf_init_hw_data_dh895xcciov(struct adf_hw_device_data *hw_data)
 	hw_data->get_etr_bar_id = get_etr_bar_id;
 	hw_data->get_misc_bar_id = get_misc_bar_id;
 	hw_data->get_pf2vf_offset = get_pf2vf_offset;
-	hw_data->get_vintmsk_offset = get_vintmsk_offset;
 	hw_data->get_sku = get_sku;
 	hw_data->enable_ints = adf_vf_void_noop;
-	hw_data->enable_vf2pf_comms = adf_enable_vf2pf_comms;
-	hw_data->min_iov_compat_ver = ADF_PFVF_COMPATIBILITY_VERSION;
+	hw_data->enable_pfvf_comms = adf_enable_vf2pf_comms;
+	hw_data->min_iov_compat_ver = ADF_PFVF_COMPAT_THIS_VERSION;
 	hw_data->dev_class->instances++;
 	adf_devmgr_update_class_index(hw_data);
+	adf_gen2_init_hw_csr_ops(&hw_data->csr_ops);
 }
 
 void adf_clean_hw_data_dh895xcciov(struct adf_hw_device_data *hw_data)

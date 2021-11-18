@@ -135,11 +135,12 @@ static void parse_extended(struct parsed_partitions *state,
 	Sector sect;
 	unsigned char *data;
 	sector_t this_sector, this_size;
-	sector_t sector_size = bdev_logical_block_size(state->bdev) / 512;
+	sector_t sector_size;
 	int loopct = 0;		/* number of links followed
 				   without finding a data partition */
 	int i;
 
+	sector_size = queue_logical_block_size(state->disk->queue) / 512;
 	this_sector = first_sector;
 	this_size = first_size;
 
@@ -579,7 +580,7 @@ static struct {
 
 int msdos_partition(struct parsed_partitions *state)
 {
-	sector_t sector_size = bdev_logical_block_size(state->bdev) / 512;
+	sector_t sector_size;
 	Sector sect;
 	unsigned char *data;
 	struct msdos_partition *p;
@@ -587,6 +588,7 @@ int msdos_partition(struct parsed_partitions *state)
 	int slot;
 	u32 disksig;
 
+	sector_size = queue_logical_block_size(state->disk->queue) / 512;
 	data = read_part_sector(state, 0, &sect);
 	if (!data)
 		return -1;
@@ -620,7 +622,7 @@ int msdos_partition(struct parsed_partitions *state)
 	for (slot = 1; slot <= 4; slot++, p++) {
 		if (p->boot_ind != 0 && p->boot_ind != 0x80) {
 			/*
-			 * Even without a valid boot inidicator value
+			 * Even without a valid boot indicator value
 			 * its still possible this is valid FAT filesystem
 			 * without a partition table.
 			 */

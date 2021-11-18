@@ -446,7 +446,7 @@ void isst_ctdp_display_information(int cpu, FILE *outf, int tdp_level,
 		if (ctdp_level->mem_freq) {
 			snprintf(header, sizeof(header), "mem-frequency(MHz)");
 			snprintf(value, sizeof(value), "%d",
-				 ctdp_level->mem_freq * DISP_FREQ_MULTIPLIER);
+				 ctdp_level->mem_freq);
 			format_and_print(outf, level + 2, header, value);
 		}
 
@@ -770,4 +770,22 @@ void isst_display_error_info_message(int error, char *msg, int arg_valid, int ar
 	format_and_print(outf, 1, NULL, NULL);
 	if (!start)
 		format_and_print(outf, 0, NULL, NULL);
+}
+
+void isst_trl_display_information(int cpu, FILE *outf, unsigned long long trl)
+{
+	char header[256];
+	char value[256];
+	int level;
+
+	level = print_package_info(cpu, outf);
+
+	snprintf(header, sizeof(header), "get-trl");
+	format_and_print(outf, level + 1, header, NULL);
+
+	snprintf(header, sizeof(header), "trl");
+	snprintf(value, sizeof(value), "0x%llx", trl);
+	format_and_print(outf, level + 2, header, value);
+
+	format_and_print(outf, level, NULL, NULL);
 }

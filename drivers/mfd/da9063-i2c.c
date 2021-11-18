@@ -448,7 +448,7 @@ static int da9063_i2c_probe(struct i2c_client *i2c,
 					DA9063_TWOWIRE_TO);
 		if (ret < 0) {
 			dev_err(da9063->dev, "Failed to set Two-Wire Bus Mode.\n");
-			return -EIO;
+			return ret;
 		}
 	}
 
@@ -465,7 +465,7 @@ MODULE_DEVICE_TABLE(i2c, da9063_i2c_id);
 static struct i2c_driver da9063_i2c_driver = {
 	.driver = {
 		.name = "da9063",
-		.of_match_table = of_match_ptr(da9063_dt_ids),
+		.of_match_table = da9063_dt_ids,
 	},
 	.probe    = da9063_i2c_probe,
 	.id_table = da9063_i2c_id,

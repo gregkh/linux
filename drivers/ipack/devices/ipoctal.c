@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/**
- * ipoctal.c
- *
+/*
  * driver for the GE IP-OCTAL boards
  *
  * Copyright (C) 2009-2012 CERN (www.cern.ch)
@@ -361,10 +359,10 @@ static int ipoctal_inst_slot(struct ipoctal *ipoctal, unsigned int bus_nr,
 	/* Register the TTY device */
 
 	/* Each IP-OCTAL channel is a TTY port */
-	tty = alloc_tty_driver(NR_CHANNELS);
-
-	if (!tty)
-		return -ENOMEM;
+	tty = tty_alloc_driver(NR_CHANNELS, TTY_DRIVER_REAL_RAW |
+			TTY_DRIVER_DYNAMIC_DEV);
+	if (IS_ERR(tty))
+		return PTR_ERR(tty);
 
 	/* Fill struct tty_driver with ipoctal data */
 	tty->owner = THIS_MODULE;
@@ -379,7 +377,6 @@ static int ipoctal_inst_slot(struct ipoctal *ipoctal, unsigned int bus_nr,
 	tty->minor_start = 0;
 	tty->type = TTY_DRIVER_TYPE_SERIAL;
 	tty->subtype = SERIAL_TYPE_NORMAL;
-	tty->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
 	tty->init_termios = tty_std_termios;
 	tty->init_termios.c_cflag = B9600 | CS8 | CREAD | HUPCL | CLOCAL;
 	tty->init_termios.c_ispeed = 9600;
@@ -434,7 +431,7 @@ static int ipoctal_inst_slot(struct ipoctal *ipoctal, unsigned int bus_nr,
 err_free_name:
 	kfree(tty->name);
 err_put_driver:
-	put_tty_driver(tty);
+	tty_driver_kref_put(tty);
 
 	return res;
 }
@@ -485,14 +482,14 @@ static int ipoctal_write_tty(struct tty_struct *tty,
 	return char_copied;
 }
 
-static int ipoctal_write_room(struct tty_struct *tty)
+static unsigned int ipoctal_write_room(struct tty_struct *tty)
 {
 	struct ipoctal_channel *channel = tty->driver_data;
 
 	return PAGE_SIZE - channel->nb_bytes;
 }
 
-static int ipoctal_chars_in_buffer(struct tty_struct *tty)
+static unsigned int ipoctal_chars_in_buffer(struct tty_struct *tty)
 {
 	struct ipoctal_channel *channel = tty->driver_data;
 
@@ -569,7 +566,6 @@ static void ipoctal_set_termios(struct tty_struct *tty,
 		break;
 	default:
 		return;
-		break;
 	}
 
 	baud = tty_get_baud_rate(tty);
@@ -731,7 +727,7 @@ static void __ipoctal_remove(struct ipoctal *ipoctal)
 
 	tty_unregister_driver(ipoctal->tty_drv);
 	kfree(ipoctal->tty_drv->name);
-	put_tty_driver(ipoctal->tty_drv);
+	tty_driver_kref_put(ipoctal->tty_drv);
 	kfree(ipoctal);
 }
 

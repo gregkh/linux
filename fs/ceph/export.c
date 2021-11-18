@@ -258,9 +258,10 @@ static struct dentry *__snapfh_to_dentry(struct super_block *sb,
 			ihold(inode);
 		} else {
 			/* mds does not support lookup snapped inode */
-			err = -EOPNOTSUPP;
-			inode = NULL;
+			inode = ERR_PTR(-EOPNOTSUPP);
 		}
+	} else {
+		inode = ERR_PTR(-ESTALE);
 	}
 	ceph_mdsc_put_request(req);
 
@@ -271,8 +272,8 @@ static struct dentry *__snapfh_to_dentry(struct super_block *sb,
 		dout("snapfh_to_dentry %llx.%llx parent %llx hash %x err=%d",
 		      vino.ino, vino.snap, sfh->parent_ino, sfh->hash, err);
 	}
-	if (!inode)
-		return ERR_PTR(-ESTALE);
+	if (IS_ERR(inode))
+		return ERR_CAST(inode);
 	/* see comments in ceph_get_parent() */
 	return unlinked ? d_obtain_root(inode) : d_obtain_alias(inode);
 }
@@ -541,6 +542,7 @@ static int ceph_get_name(struct dentry *parent, char *name,
 	ihold(inode);
 	req->r_ino2 = ceph_vino(d_inode(parent));
 	req->r_parent = d_inode(parent);
+	ihold(req->r_parent);
 	set_bit(CEPH_MDS_R_PARENT_LOCKED, &req->r_req_flags);
 	req->r_num_caps = 2;
 	err = ceph_mdsc_do_request(mdsc, NULL, req);

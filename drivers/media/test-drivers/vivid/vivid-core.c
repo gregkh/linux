@@ -547,11 +547,13 @@ static int vivid_s_fmt_cap_mplane(struct file *file, void *priv,
 	return vidioc_s_fmt_vid_cap_mplane(file, priv, f);
 }
 
-static bool vivid_is_in_use(struct video_device *vdev)
+static bool vivid_is_in_use(bool valid, struct video_device *vdev)
 {
 	unsigned long flags;
 	bool res;
 
+	if (!valid)
+		return false;
 	spin_lock_irqsave(&vdev->fh_lock, flags);
 	res = !list_empty(&vdev->fh_list);
 	spin_unlock_irqrestore(&vdev->fh_lock, flags);
@@ -560,18 +562,44 @@ static bool vivid_is_in_use(struct video_device *vdev)
 
 static bool vivid_is_last_user(struct vivid_dev *dev)
 {
-	unsigned uses = vivid_is_in_use(&dev->vid_cap_dev) +
-			vivid_is_in_use(&dev->vid_out_dev) +
-			vivid_is_in_use(&dev->vbi_cap_dev) +
-			vivid_is_in_use(&dev->vbi_out_dev) +
-			vivid_is_in_use(&dev->sdr_cap_dev) +
-			vivid_is_in_use(&dev->radio_rx_dev) +
-			vivid_is_in_use(&dev->radio_tx_dev) +
-			vivid_is_in_use(&dev->meta_cap_dev) +
-			vivid_is_in_use(&dev->meta_out_dev) +
-			vivid_is_in_use(&dev->touch_cap_dev);
+	unsigned int uses =
+		vivid_is_in_use(dev->has_vid_cap, &dev->vid_cap_dev) +
+		vivid_is_in_use(dev->has_vid_out, &dev->vid_out_dev) +
+		vivid_is_in_use(dev->has_vbi_cap, &dev->vbi_cap_dev) +
+		vivid_is_in_use(dev->has_vbi_out, &dev->vbi_out_dev) +
+		vivid_is_in_use(dev->has_radio_rx, &dev->radio_rx_dev) +
+		vivid_is_in_use(dev->has_radio_tx, &dev->radio_tx_dev) +
+		vivid_is_in_use(dev->has_sdr_cap, &dev->sdr_cap_dev) +
+		vivid_is_in_use(dev->has_meta_cap, &dev->meta_cap_dev) +
+		vivid_is_in_use(dev->has_meta_out, &dev->meta_out_dev) +
+		vivid_is_in_use(dev->has_touch_cap, &dev->touch_cap_dev);
 
 	return uses == 1;
+}
+
+static void vivid_reconnect(struct vivid_dev *dev)
+{
+	if (dev->has_vid_cap)
+		set_bit(V4L2_FL_REGISTERED, &dev->vid_cap_dev.flags);
+	if (dev->has_vid_out)
+		set_bit(V4L2_FL_REGISTERED, &dev->vid_out_dev.flags);
+	if (dev->has_vbi_cap)
+		set_bit(V4L2_FL_REGISTERED, &dev->vbi_cap_dev.flags);
+	if (dev->has_vbi_out)
+		set_bit(V4L2_FL_REGISTERED, &dev->vbi_out_dev.flags);
+	if (dev->has_radio_rx)
+		set_bit(V4L2_FL_REGISTERED, &dev->radio_rx_dev.flags);
+	if (dev->has_radio_tx)
+		set_bit(V4L2_FL_REGISTERED, &dev->radio_tx_dev.flags);
+	if (dev->has_sdr_cap)
+		set_bit(V4L2_FL_REGISTERED, &dev->sdr_cap_dev.flags);
+	if (dev->has_meta_cap)
+		set_bit(V4L2_FL_REGISTERED, &dev->meta_cap_dev.flags);
+	if (dev->has_meta_out)
+		set_bit(V4L2_FL_REGISTERED, &dev->meta_out_dev.flags);
+	if (dev->has_touch_cap)
+		set_bit(V4L2_FL_REGISTERED, &dev->touch_cap_dev.flags);
+	dev->disconnect_error = false;
 }
 
 static int vivid_fop_release(struct file *file)
@@ -581,23 +609,15 @@ static int vivid_fop_release(struct file *file)
 
 	mutex_lock(&dev->mutex);
 	if (!no_error_inj && v4l2_fh_is_singular_file(file) &&
-	    !video_is_registered(vdev) && vivid_is_last_user(dev)) {
+	    dev->disconnect_error && !video_is_registered(vdev) &&
+	    vivid_is_last_user(dev)) {
 		/*
 		 * I am the last user of this driver, and a disconnect
 		 * was forced (since this video_device is unregistered),
 		 * so re-register all video_device's again.
 		 */
 		v4l2_info(&dev->v4l2_dev, "reconnect\n");
-		set_bit(V4L2_FL_REGISTERED, &dev->vid_cap_dev.flags);
-		set_bit(V4L2_FL_REGISTERED, &dev->vid_out_dev.flags);
-		set_bit(V4L2_FL_REGISTERED, &dev->vbi_cap_dev.flags);
-		set_bit(V4L2_FL_REGISTERED, &dev->vbi_out_dev.flags);
-		set_bit(V4L2_FL_REGISTERED, &dev->sdr_cap_dev.flags);
-		set_bit(V4L2_FL_REGISTERED, &dev->radio_rx_dev.flags);
-		set_bit(V4L2_FL_REGISTERED, &dev->radio_tx_dev.flags);
-		set_bit(V4L2_FL_REGISTERED, &dev->meta_cap_dev.flags);
-		set_bit(V4L2_FL_REGISTERED, &dev->meta_out_dev.flags);
-		set_bit(V4L2_FL_REGISTERED, &dev->touch_cap_dev.flags);
+		vivid_reconnect(dev);
 	}
 	mutex_unlock(&dev->mutex);
 	if (file->private_data == dev->overlay_cap_owner)
@@ -635,6 +655,46 @@ static const struct v4l2_file_operations vivid_radio_fops = {
 	.poll		= vivid_radio_poll,
 	.unlocked_ioctl = video_ioctl2,
 };
+
+static int vidioc_reqbufs(struct file *file, void *priv,
+			  struct v4l2_requestbuffers *p)
+{
+	struct video_device *vdev = video_devdata(file);
+	int r;
+
+	/*
+	 * Sliced and raw VBI capture share the same queue so we must
+	 * change the type.
+	 */
+	if (p->type == V4L2_BUF_TYPE_SLICED_VBI_CAPTURE ||
+	    p->type == V4L2_BUF_TYPE_VBI_CAPTURE) {
+		r = vb2_queue_change_type(vdev->queue, p->type);
+		if (r)
+			return r;
+	}
+
+	return vb2_ioctl_reqbufs(file, priv, p);
+}
+
+static int vidioc_create_bufs(struct file *file, void *priv,
+			      struct v4l2_create_buffers *p)
+{
+	struct video_device *vdev = video_devdata(file);
+	int r;
+
+	/*
+	 * Sliced and raw VBI capture share the same queue so we must
+	 * change the type.
+	 */
+	if (p->format.type == V4L2_BUF_TYPE_SLICED_VBI_CAPTURE ||
+	    p->format.type == V4L2_BUF_TYPE_VBI_CAPTURE) {
+		r = vb2_queue_change_type(vdev->queue, p->format.type);
+		if (r)
+			return r;
+	}
+
+	return vb2_ioctl_create_bufs(file, priv, p);
+}
 
 static const struct v4l2_ioctl_ops vivid_ioctl_ops = {
 	.vidioc_querycap		= vidioc_querycap,
@@ -697,8 +757,8 @@ static const struct v4l2_ioctl_ops vivid_ioctl_ops = {
 	.vidioc_g_fbuf			= vidioc_g_fbuf,
 	.vidioc_s_fbuf			= vidioc_s_fbuf,
 
-	.vidioc_reqbufs			= vb2_ioctl_reqbufs,
-	.vidioc_create_bufs		= vb2_ioctl_create_bufs,
+	.vidioc_reqbufs			= vidioc_reqbufs,
+	.vidioc_create_bufs		= vidioc_create_bufs,
 	.vidioc_prepare_buf		= vb2_ioctl_prepare_buf,
 	.vidioc_querybuf		= vb2_ioctl_querybuf,
 	.vidioc_qbuf			= vb2_ioctl_qbuf,
@@ -1968,6 +2028,8 @@ static int vivid_remove(struct platform_device *pdev)
 		if (!dev)
 			continue;
 
+		if (dev->disconnect_error)
+			vivid_reconnect(dev);
 #ifdef CONFIG_MEDIA_CONTROLLER
 		media_device_unregister(&dev->mdev);
 #endif

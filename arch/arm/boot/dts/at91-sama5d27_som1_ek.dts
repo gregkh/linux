@@ -142,7 +142,6 @@
 
 				input@0 {
 					reg = <0>;
-					atmel,wakeup-type = "low";
 				};
 			};
 
@@ -224,8 +223,10 @@
 			adc: adc@fc030000 {
 				vddana-supply = <&vddana>;
 				vref-supply = <&advref>;
+				pinctrl-names = "default";
+				pinctrl-0 = <&pinctrl_mikrobus1_an &pinctrl_mikrobus2_an>;
 
-				status = "disabled";
+				status = "okay";
 			};
 
 			pinctrl@fc038000 {

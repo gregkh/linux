@@ -1,15 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * VFIO ZPCI devices support
  *
  * Copyright (C) IBM Corp. 2020.  All rights reserved.
  *	Author(s): Pierre Morel <pmorel@linux.ibm.com>
  *                 Matthew Rosato <mjrosato@linux.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 #include <linux/io.h>
 #include <linux/pci.h>
@@ -19,13 +14,12 @@
 #include <asm/pci_clp.h>
 #include <asm/pci_io.h>
 
-#include "vfio_pci_private.h"
+#include <linux/vfio_pci_core.h>
 
 /*
  * Add the Base PCI Function information to the device info region.
  */
-static int zpci_base_cap(struct zpci_dev *zdev, struct vfio_pci_device *vdev,
-			 struct vfio_info_cap *caps)
+static int zpci_base_cap(struct zpci_dev *zdev, struct vfio_info_cap *caps)
 {
 	struct vfio_device_info_cap_zpci_base cap = {
 		.header.id = VFIO_DEVICE_INFO_CAP_ZPCI_BASE,
@@ -45,8 +39,7 @@ static int zpci_base_cap(struct zpci_dev *zdev, struct vfio_pci_device *vdev,
 /*
  * Add the Base PCI Function Group information to the device info region.
  */
-static int zpci_group_cap(struct zpci_dev *zdev, struct vfio_pci_device *vdev,
-			  struct vfio_info_cap *caps)
+static int zpci_group_cap(struct zpci_dev *zdev, struct vfio_info_cap *caps)
 {
 	struct vfio_device_info_cap_zpci_group cap = {
 		.header.id = VFIO_DEVICE_INFO_CAP_ZPCI_GROUP,
@@ -66,8 +59,7 @@ static int zpci_group_cap(struct zpci_dev *zdev, struct vfio_pci_device *vdev,
 /*
  * Add the device utility string to the device info region.
  */
-static int zpci_util_cap(struct zpci_dev *zdev, struct vfio_pci_device *vdev,
-			 struct vfio_info_cap *caps)
+static int zpci_util_cap(struct zpci_dev *zdev, struct vfio_info_cap *caps)
 {
 	struct vfio_device_info_cap_zpci_util *cap;
 	int cap_size = sizeof(*cap) + CLP_UTIL_STR_LEN;
@@ -92,8 +84,7 @@ static int zpci_util_cap(struct zpci_dev *zdev, struct vfio_pci_device *vdev,
 /*
  * Add the function path string to the device info region.
  */
-static int zpci_pfip_cap(struct zpci_dev *zdev, struct vfio_pci_device *vdev,
-			 struct vfio_info_cap *caps)
+static int zpci_pfip_cap(struct zpci_dev *zdev, struct vfio_info_cap *caps)
 {
 	struct vfio_device_info_cap_zpci_pfip *cap;
 	int cap_size = sizeof(*cap) + CLP_PFIP_NR_SEGMENTS;
@@ -118,7 +109,7 @@ static int zpci_pfip_cap(struct zpci_dev *zdev, struct vfio_pci_device *vdev,
 /*
  * Add all supported capabilities to the VFIO_DEVICE_GET_INFO capability chain.
  */
-int vfio_pci_info_zdev_add_caps(struct vfio_pci_device *vdev,
+int vfio_pci_info_zdev_add_caps(struct vfio_pci_core_device *vdev,
 				struct vfio_info_cap *caps)
 {
 	struct zpci_dev *zdev = to_zpci(vdev->pdev);
@@ -127,21 +118,21 @@ int vfio_pci_info_zdev_add_caps(struct vfio_pci_device *vdev,
 	if (!zdev)
 		return -ENODEV;
 
-	ret = zpci_base_cap(zdev, vdev, caps);
+	ret = zpci_base_cap(zdev, caps);
 	if (ret)
 		return ret;
 
-	ret = zpci_group_cap(zdev, vdev, caps);
+	ret = zpci_group_cap(zdev, caps);
 	if (ret)
 		return ret;
 
 	if (zdev->util_str_avail) {
-		ret = zpci_util_cap(zdev, vdev, caps);
+		ret = zpci_util_cap(zdev, caps);
 		if (ret)
 			return ret;
 	}
 
-	ret = zpci_pfip_cap(zdev, vdev, caps);
+	ret = zpci_pfip_cap(zdev, caps);
 
 	return ret;
 }

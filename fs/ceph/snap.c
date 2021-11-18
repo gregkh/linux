@@ -474,7 +474,7 @@ static bool has_new_snaps(struct ceph_snap_context *o,
  * Caller must hold snap_rwsem for read (i.e., the realm topology won't
  * change).
  */
-void ceph_queue_cap_snap(struct ceph_inode_info *ci)
+static void ceph_queue_cap_snap(struct ceph_inode_info *ci)
 {
 	struct inode *inode = &ci->vfs_inode;
 	struct ceph_cap_snap *capsnap;
@@ -622,7 +622,7 @@ int __ceph_finish_cap_snap(struct ceph_inode_info *ci,
 	struct ceph_mds_client *mdsc = ceph_sb_to_mdsc(inode->i_sb);
 
 	BUG_ON(capsnap->writing);
-	capsnap->size = inode->i_size;
+	capsnap->size = i_size_read(inode);
 	capsnap->mtime = inode->i_mtime;
 	capsnap->atime = inode->i_atime;
 	capsnap->ctime = inode->i_ctime;
@@ -637,6 +637,16 @@ int __ceph_finish_cap_snap(struct ceph_inode_info *ci,
 		     capsnap->context, capsnap->context->seq,
 		     ceph_cap_string(capsnap->dirty), capsnap->size,
 		     capsnap->dirty_pages);
+		return 0;
+	}
+
+	/* Fb cap still in use, delay it */
+	if (ci->i_wb_ref) {
+		dout("finish_cap_snap %p cap_snap %p snapc %p %llu %s s=%llu "
+		     "used WRBUFFER, delaying\n", inode, capsnap,
+		     capsnap->context, capsnap->context->seq,
+		     ceph_cap_string(capsnap->dirty), capsnap->size);
+		capsnap->writing = 1;
 		return 0;
 	}
 
@@ -670,15 +680,13 @@ static void queue_realm_cap_snaps(struct ceph_snap_realm *realm)
 		if (!inode)
 			continue;
 		spin_unlock(&realm->inodes_with_caps_lock);
-		/* avoid calling iput_final() while holding
-		 * mdsc->snap_rwsem or in mds dispatch threads */
-		ceph_async_iput(lastinode);
+		iput(lastinode);
 		lastinode = inode;
 		ceph_queue_cap_snap(ci);
 		spin_lock(&realm->inodes_with_caps_lock);
 	}
 	spin_unlock(&realm->inodes_with_caps_lock);
-	ceph_async_iput(lastinode);
+	iput(lastinode);
 
 	dout("queue_realm_cap_snaps %p %llx done\n", realm, realm->ino);
 }
@@ -800,7 +808,7 @@ more:
 	return 0;
 
 bad:
-	err = -EINVAL;
+	err = -EIO;
 fail:
 	if (realm && !IS_ERR(realm))
 		ceph_put_snap_realm(mdsc, realm);
@@ -832,20 +840,52 @@ static void flush_snaps(struct ceph_mds_client *mdsc)
 		ihold(inode);
 		spin_unlock(&mdsc->snap_flush_lock);
 		ceph_flush_snaps(ci, &session);
-		/* avoid calling iput_final() while holding
-		 * session->s_mutex or in mds dispatch threads */
-		ceph_async_iput(inode);
+		iput(inode);
 		spin_lock(&mdsc->snap_flush_lock);
 	}
 	spin_unlock(&mdsc->snap_flush_lock);
 
-	if (session) {
-		mutex_unlock(&session->s_mutex);
-		ceph_put_mds_session(session);
-	}
+	ceph_put_mds_session(session);
 	dout("flush_snaps done\n");
 }
 
+/**
+ * ceph_change_snap_realm - change the snap_realm for an inode
+ * @inode: inode to move to new snap realm
+ * @realm: new realm to move inode into (may be NULL)
+ *
+ * Detach an inode from its old snaprealm (if any) and attach it to
+ * the new snaprealm (if any). The old snap realm reference held by
+ * the inode is put. If realm is non-NULL, then the caller's reference
+ * to it is taken over by the inode.
+ */
+void ceph_change_snap_realm(struct inode *inode, struct ceph_snap_realm *realm)
+{
+	struct ceph_inode_info *ci = ceph_inode(inode);
+	struct ceph_mds_client *mdsc = ceph_inode_to_client(inode)->mdsc;
+	struct ceph_snap_realm *oldrealm = ci->i_snap_realm;
+
+	lockdep_assert_held(&ci->i_ceph_lock);
+
+	if (oldrealm) {
+		spin_lock(&oldrealm->inodes_with_caps_lock);
+		list_del_init(&ci->i_snap_realm_item);
+		if (oldrealm->ino == ci->i_vino.ino)
+			oldrealm->inode = NULL;
+		spin_unlock(&oldrealm->inodes_with_caps_lock);
+		ceph_put_snap_realm(mdsc, oldrealm);
+	}
+
+	ci->i_snap_realm = realm;
+
+	if (realm) {
+		spin_lock(&realm->inodes_with_caps_lock);
+		list_add(&ci->i_snap_realm_item, &realm->inodes_with_caps);
+		if (realm->ino == ci->i_vino.ino)
+			realm->inode = inode;
+		spin_unlock(&realm->inodes_with_caps_lock);
+	}
+}
 
 /*
  * Handle a snap notification from the MDS.
@@ -932,7 +972,6 @@ void ceph_handle_snap(struct ceph_mds_client *mdsc,
 			};
 			struct inode *inode = ceph_find_inode(sb, vino);
 			struct ceph_inode_info *ci;
-			struct ceph_snap_realm *oldrealm;
 
 			if (!inode)
 				continue;
@@ -957,35 +996,16 @@ void ceph_handle_snap(struct ceph_mds_client *mdsc,
 			}
 			dout(" will move %p to split realm %llx %p\n",
 			     inode, realm->ino, realm);
-			/*
-			 * Move the inode to the new realm
-			 */
-			oldrealm = ci->i_snap_realm;
-			spin_lock(&oldrealm->inodes_with_caps_lock);
-			list_del_init(&ci->i_snap_realm_item);
-			spin_unlock(&oldrealm->inodes_with_caps_lock);
-
-			spin_lock(&realm->inodes_with_caps_lock);
-			list_add(&ci->i_snap_realm_item,
-				 &realm->inodes_with_caps);
-			ci->i_snap_realm = realm;
-			if (realm->ino == ci->i_vino.ino)
-                                realm->inode = inode;
-			spin_unlock(&realm->inodes_with_caps_lock);
-
-			spin_unlock(&ci->i_ceph_lock);
 
 			ceph_get_snap_realm(mdsc, realm);
-			ceph_put_snap_realm(mdsc, oldrealm);
-
-			/* avoid calling iput_final() while holding
-			 * mdsc->snap_rwsem or mds in dispatch threads */
-			ceph_async_iput(inode);
+			ceph_change_snap_realm(inode, realm);
+			spin_unlock(&ci->i_ceph_lock);
+			iput(inode);
 			continue;
 
 skip_inode:
 			spin_unlock(&ci->i_ceph_lock);
-			ceph_async_iput(inode);
+			iput(inode);
 		}
 
 		/* we may have taken some of the old realm's children. */

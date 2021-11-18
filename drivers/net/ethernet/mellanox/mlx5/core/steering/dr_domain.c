@@ -62,6 +62,12 @@ static int dr_domain_init_resources(struct mlx5dr_domain *dmn)
 {
 	int ret;
 
+	dmn->ste_ctx = mlx5dr_ste_get_ctx(dmn->info.caps.sw_format_ver);
+	if (!dmn->ste_ctx) {
+		mlx5dr_err(dmn, "SW Steering on this device is unsupported\n");
+		return -EOPNOTSUPP;
+	}
+
 	ret = mlx5_core_alloc_pd(dmn->mdev, &dmn->pdn);
 	if (ret) {
 		mlx5dr_err(dmn, "Couldn't allocate PD, ret: %d", ret);
@@ -239,7 +245,7 @@ static int dr_domain_caps_init(struct mlx5_core_dev *mdev,
 			return -ENOTSUPP;
 
 		dmn->info.supp_sw_steering = true;
-		dmn->info.rx.ste_type = MLX5DR_STE_TYPE_RX;
+		dmn->info.rx.type = DR_DOMAIN_NIC_TYPE_RX;
 		dmn->info.rx.default_icm_addr = dmn->info.caps.nic_rx_drop_address;
 		dmn->info.rx.drop_icm_addr = dmn->info.caps.nic_rx_drop_address;
 		break;
@@ -248,7 +254,7 @@ static int dr_domain_caps_init(struct mlx5_core_dev *mdev,
 			return -ENOTSUPP;
 
 		dmn->info.supp_sw_steering = true;
-		dmn->info.tx.ste_type = MLX5DR_STE_TYPE_TX;
+		dmn->info.tx.type = DR_DOMAIN_NIC_TYPE_TX;
 		dmn->info.tx.default_icm_addr = dmn->info.caps.nic_tx_allow_address;
 		dmn->info.tx.drop_icm_addr = dmn->info.caps.nic_tx_drop_address;
 		break;
@@ -259,8 +265,8 @@ static int dr_domain_caps_init(struct mlx5_core_dev *mdev,
 		if (!DR_DOMAIN_SW_STEERING_SUPPORTED(dmn, fdb))
 			return -ENOTSUPP;
 
-		dmn->info.rx.ste_type = MLX5DR_STE_TYPE_RX;
-		dmn->info.tx.ste_type = MLX5DR_STE_TYPE_TX;
+		dmn->info.rx.type = DR_DOMAIN_NIC_TYPE_RX;
+		dmn->info.tx.type = DR_DOMAIN_NIC_TYPE_TX;
 		vport_cap = mlx5dr_get_vport_cap(&dmn->info.caps, 0);
 		if (!vport_cap) {
 			mlx5dr_err(dmn, "Failed to get esw manager vport\n");

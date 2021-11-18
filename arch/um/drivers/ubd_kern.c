@@ -125,9 +125,7 @@ static const struct block_device_operations ubd_blops = {
 };
 
 /* Protected by ubd_lock */
-static int fake_major = UBD_MAJOR;
 static struct gendisk *ubd_gendisk[MAX_DEV];
-static struct gendisk *fake_gendisk[MAX_DEV];
 
 #ifdef CONFIG_BLK_DEV_UBD_SYNC
 #define OPEN_FLAGS ((struct openflags) { .r = 1, .w = 1, .s = 1, .c = 0, \
@@ -155,6 +153,7 @@ struct ubd {
 	/* name (and fd, below) of the file opened for writing, either the
 	 * backing or the cow file. */
 	char *file;
+	char *serial;
 	int count;
 	int fd;
 	__u64 size;
@@ -180,6 +179,7 @@ struct ubd {
 
 #define DEFAULT_UBD { \
 	.file = 		NULL, \
+	.serial =		NULL, \
 	.count =		0, \
 	.fd =			-1, \
 	.size =			-1, \
@@ -195,54 +195,19 @@ struct ubd {
 /* Protected by ubd_lock */
 static struct ubd ubd_devs[MAX_DEV] = { [0 ... MAX_DEV - 1] = DEFAULT_UBD };
 
-/* Only changed by fake_ide_setup which is a setup */
-static int fake_ide = 0;
-static struct proc_dir_entry *proc_ide_root = NULL;
-static struct proc_dir_entry *proc_ide = NULL;
-
 static blk_status_t ubd_queue_rq(struct blk_mq_hw_ctx *hctx,
 				 const struct blk_mq_queue_data *bd);
 
-static void make_proc_ide(void)
-{
-	proc_ide_root = proc_mkdir("ide", NULL);
-	proc_ide = proc_mkdir("ide0", proc_ide_root);
-}
-
-static int fake_ide_media_proc_show(struct seq_file *m, void *v)
-{
-	seq_puts(m, "disk\n");
-	return 0;
-}
-
-static void make_ide_entries(const char *dev_name)
-{
-	struct proc_dir_entry *dir, *ent;
-	char name[64];
-
-	if(proc_ide_root == NULL) make_proc_ide();
-
-	dir = proc_mkdir(dev_name, proc_ide);
-	if(!dir) return;
-
-	ent = proc_create_single("media", S_IRUGO, dir,
-			fake_ide_media_proc_show);
-	if(!ent) return;
-	snprintf(name, sizeof(name), "ide0/%s", dev_name);
-	proc_symlink(dev_name, proc_ide_root, name);
-}
-
 static int fake_ide_setup(char *str)
 {
-	fake_ide = 1;
+	pr_warn("The fake_ide option has been removed\n");
 	return 1;
 }
-
 __setup("fake_ide", fake_ide_setup);
 
 __uml_help(fake_ide_setup,
 "fake_ide\n"
-"    Create ide0 entries that map onto ubd devices.\n\n"
+"    Obsolete stub.\n\n"
 );
 
 static int parse_unit(char **ptr)
@@ -272,42 +237,20 @@ static int ubd_setup_common(char *str, int *index_out, char **error_out)
 {
 	struct ubd *ubd_dev;
 	struct openflags flags = global_openflags;
-	char *backing_file;
+	char *file, *backing_file, *serial;
 	int n, err = 0, i;
 
 	if(index_out) *index_out = -1;
 	n = *str;
 	if(n == '='){
-		char *end;
-		int major;
-
 		str++;
 		if(!strcmp(str, "sync")){
 			global_openflags = of_sync(global_openflags);
 			return err;
 		}
 
-		err = -EINVAL;
-		major = simple_strtoul(str, &end, 0);
-		if((*end != '\0') || (end == str)){
-			*error_out = "Didn't parse major number";
-			return err;
-		}
-
-		mutex_lock(&ubd_lock);
-		if (fake_major != UBD_MAJOR) {
-			*error_out = "Can't assign a fake major twice";
-			goto out1;
-		}
-
-		fake_major = major;
-
-		printk(KERN_INFO "Setting extra ubd major number to %d\n",
-		       major);
-		err = 0;
-	out1:
-		mutex_unlock(&ubd_lock);
-		return err;
+		pr_warn("fake major not supported any more\n");
+		return 0;
 	}
 
 	n = parse_unit(&str);
@@ -368,24 +311,27 @@ static int ubd_setup_common(char *str, int *index_out, char **error_out)
 	goto out;
 
 break_loop:
-	backing_file = strchr(str, ',');
+	file = strsep(&str, ",:");
+	if (*file == '\0')
+		file = NULL;
 
-	if (backing_file == NULL)
-		backing_file = strchr(str, ':');
+	backing_file = strsep(&str, ",:");
+	if (backing_file && *backing_file == '\0')
+		backing_file = NULL;
 
-	if(backing_file != NULL){
-		if(ubd_dev->no_cow){
-			*error_out = "Can't specify both 'd' and a cow file";
-			goto out;
-		}
-		else {
-			*backing_file = '\0';
-			backing_file++;
-		}
+	serial = strsep(&str, ",:");
+	if (serial && *serial == '\0')
+		serial = NULL;
+
+	if (backing_file && ubd_dev->no_cow) {
+		*error_out = "Can't specify both 'd' and a cow file";
+		goto out;
 	}
+
 	err = 0;
-	ubd_dev->file = str;
+	ubd_dev->file = file;
 	ubd_dev->cow.file = backing_file;
+	ubd_dev->serial = serial;
 	ubd_dev->boot_openflags = flags;
 out:
 	mutex_unlock(&ubd_lock);
@@ -406,7 +352,7 @@ static int ubd_setup(char *str)
 
 __setup("ubd", ubd_setup);
 __uml_help(ubd_setup,
-"ubd<n><flags>=<filename>[(:|,)<filename2>]\n"
+"ubd<n><flags>=<filename>[(:|,)<filename2>][(:|,)<serial>]\n"
 "    This is used to associate a device with a file in the underlying\n"
 "    filesystem. When specifying two filenames, the first one is the\n"
 "    COW name and the second is the backing file name. As separator you can\n"
@@ -429,6 +375,12 @@ __uml_help(ubd_setup,
 "    UMLs and file locking will be turned off - this is appropriate for a\n"
 "    cluster filesystem and inappropriate at almost all other times.\n\n"
 "    't' will disable trim/discard support on the device (enabled by default).\n\n"
+"    An optional device serial number can be exposed using the serial parameter\n"
+"    on the cmdline which is exposed as a sysfs entry. This is particularly\n"
+"    useful when a unique number should be given to the device. Note when\n"
+"    specifying a label, the filename2 must be also presented. It can be\n"
+"    an empty string, in which case the backing file is not used:\n"
+"       ubd0=File,,Serial\n"
 );
 
 static int udb_setup(char *str)
@@ -863,46 +815,64 @@ static void ubd_device_release(struct device *dev)
 {
 	struct ubd *ubd_dev = dev_get_drvdata(dev);
 
-	blk_cleanup_queue(ubd_dev->queue);
 	blk_mq_free_tag_set(&ubd_dev->tag_set);
 	*ubd_dev = ((struct ubd) DEFAULT_UBD);
 }
 
-static int ubd_disk_register(int major, u64 size, int unit,
-			     struct gendisk **disk_out)
+static ssize_t serial_show(struct device *dev,
+			   struct device_attribute *attr, char *buf)
 {
-	struct device *parent = NULL;
-	struct gendisk *disk;
+	struct gendisk *disk = dev_to_disk(dev);
+	struct ubd *ubd_dev = disk->private_data;
 
-	disk = alloc_disk(1 << UBD_SHIFT);
-	if(disk == NULL)
-		return -ENOMEM;
+	if (!ubd_dev)
+		return 0;
 
+	return sprintf(buf, "%s", ubd_dev->serial);
+}
+
+static DEVICE_ATTR_RO(serial);
+
+static struct attribute *ubd_attrs[] = {
+	&dev_attr_serial.attr,
+	NULL,
+};
+
+static umode_t ubd_attrs_are_visible(struct kobject *kobj,
+				     struct attribute *a, int n)
+{
+	return a->mode;
+}
+
+static const struct attribute_group ubd_attr_group = {
+	.attrs = ubd_attrs,
+	.is_visible = ubd_attrs_are_visible,
+};
+
+static const struct attribute_group *ubd_attr_groups[] = {
+	&ubd_attr_group,
+	NULL,
+};
+
+static void ubd_disk_register(int major, u64 size, int unit,
+			      struct gendisk *disk)
+{
 	disk->major = major;
 	disk->first_minor = unit << UBD_SHIFT;
+	disk->minors = 1 << UBD_SHIFT;
 	disk->fops = &ubd_blops;
 	set_capacity(disk, size / 512);
-	if (major == UBD_MAJOR)
-		sprintf(disk->disk_name, "ubd%c", 'a' + unit);
-	else
-		sprintf(disk->disk_name, "ubd_fake%d", unit);
+	sprintf(disk->disk_name, "ubd%c", 'a' + unit);
 
-	/* sysfs register (not for ide fake devices) */
-	if (major == UBD_MAJOR) {
-		ubd_devs[unit].pdev.id   = unit;
-		ubd_devs[unit].pdev.name = DRIVER_NAME;
-		ubd_devs[unit].pdev.dev.release = ubd_device_release;
-		dev_set_drvdata(&ubd_devs[unit].pdev.dev, &ubd_devs[unit]);
-		platform_device_register(&ubd_devs[unit].pdev);
-		parent = &ubd_devs[unit].pdev.dev;
-	}
+	ubd_devs[unit].pdev.id   = unit;
+	ubd_devs[unit].pdev.name = DRIVER_NAME;
+	ubd_devs[unit].pdev.dev.release = ubd_device_release;
+	dev_set_drvdata(&ubd_devs[unit].pdev.dev, &ubd_devs[unit]);
+	platform_device_register(&ubd_devs[unit].pdev);
 
 	disk->private_data = &ubd_devs[unit];
 	disk->queue = ubd_devs[unit].queue;
-	device_add_disk(parent, disk, NULL);
-
-	*disk_out = disk;
-	return 0;
+	device_add_disk(&ubd_devs[unit].pdev.dev, disk, ubd_attr_groups);
 }
 
 #define ROUND_BLOCK(n) ((n + (SECTOR_SIZE - 1)) & (-SECTOR_SIZE))
@@ -914,6 +884,7 @@ static const struct blk_mq_ops ubd_mq_ops = {
 static int ubd_add(int n, char **error_out)
 {
 	struct ubd *ubd_dev = &ubd_devs[n];
+	struct gendisk *disk;
 	int err = 0;
 
 	if(ubd_dev->file == NULL)
@@ -938,43 +909,24 @@ static int ubd_add(int n, char **error_out)
 	if (err)
 		goto out;
 
-	ubd_dev->queue = blk_mq_init_queue(&ubd_dev->tag_set);
-	if (IS_ERR(ubd_dev->queue)) {
-		err = PTR_ERR(ubd_dev->queue);
+	disk = blk_mq_alloc_disk(&ubd_dev->tag_set, ubd_dev);
+	if (IS_ERR(disk)) {
+		err = PTR_ERR(disk);
 		goto out_cleanup_tags;
 	}
+	ubd_dev->queue = disk->queue;
 
-	ubd_dev->queue->queuedata = ubd_dev;
 	blk_queue_write_cache(ubd_dev->queue, true, false);
-
 	blk_queue_max_segments(ubd_dev->queue, MAX_SG);
 	blk_queue_segment_boundary(ubd_dev->queue, PAGE_SIZE - 1);
-	err = ubd_disk_register(UBD_MAJOR, ubd_dev->size, n, &ubd_gendisk[n]);
-	if(err){
-		*error_out = "Failed to register device";
-		goto out_cleanup_tags;
-	}
-
-	if (fake_major != UBD_MAJOR)
-		ubd_disk_register(fake_major, ubd_dev->size, n,
-				  &fake_gendisk[n]);
-
-	/*
-	 * Perhaps this should also be under the "if (fake_major)" above
-	 * using the fake_disk->disk_name
-	 */
-	if (fake_ide)
-		make_ide_entries(ubd_gendisk[n]->disk_name);
-
-	err = 0;
-out:
-	return err;
+	ubd_disk_register(UBD_MAJOR, ubd_dev->size, n, disk);
+	ubd_gendisk[n] = disk;
+	return 0;
 
 out_cleanup_tags:
 	blk_mq_free_tag_set(&ubd_dev->tag_set);
-	if (!(IS_ERR(ubd_dev->queue)))
-		blk_cleanup_queue(ubd_dev->queue);
-	goto out;
+out:
+	return err;
 }
 
 static int ubd_config(char *str, char **error_out)
@@ -1077,13 +1029,7 @@ static int ubd_remove(int n, char **error_out)
 	ubd_gendisk[n] = NULL;
 	if(disk != NULL){
 		del_gendisk(disk);
-		put_disk(disk);
-	}
-
-	if(fake_gendisk[n] != NULL){
-		del_gendisk(fake_gendisk[n]);
-		put_disk(fake_gendisk[n]);
-		fake_gendisk[n] = NULL;
+		blk_cleanup_disk(disk);
 	}
 
 	err = 0;
@@ -1142,14 +1088,6 @@ static int __init ubd_init(void)
 	if (register_blkdev(UBD_MAJOR, "ubd"))
 		return -1;
 
-	if (fake_major != UBD_MAJOR) {
-		char name[sizeof("ubd_nnn\0")];
-
-		snprintf(name, sizeof(name), "ubd_%d", fake_major);
-		if (register_blkdev(fake_major, "ubd"))
-			return -1;
-	}
-
 	irq_req_buffer = kmalloc_array(UBD_REQ_BUFFER_SIZE,
 				       sizeof(struct io_thread_req *),
 				       GFP_KERNEL
@@ -1196,8 +1134,7 @@ static int __init ubd_driver_init(void){
 		 * enough. So use anyway the io thread. */
 	}
 	stack = alloc_stack(0, 0);
-	io_pid = start_io_thread(stack + PAGE_SIZE - sizeof(void *),
-				 &thread_fd);
+	io_pid = start_io_thread(stack + PAGE_SIZE, &thread_fd);
 	if(io_pid < 0){
 		printk(KERN_ERR
 		       "ubd : Failed to start I/O thread (errno = %d) - "
@@ -1207,7 +1144,7 @@ static int __init ubd_driver_init(void){
 	}
 	err = um_request_irq(UBD_IRQ, thread_fd, IRQ_READ, ubd_intr,
 			     0, "ubd", ubd_devs);
-	if(err != 0)
+	if(err < 0)
 		printk(KERN_ERR "um_request_irq failed - errno = %d\n", -err);
 	return 0;
 }
@@ -1331,8 +1268,7 @@ static void ubd_map_req(struct ubd *dev, struct io_thread_req *io_req,
 		rq_for_each_segment(bvec, req, iter) {
 			BUG_ON(i >= io_req->desc_cnt);
 
-			io_req->io_desc[i].buffer =
-				page_address(bvec.bv_page) + bvec.bv_offset;
+			io_req->io_desc[i].buffer = bvec_virt(&bvec);
 			io_req->io_desc[i].length = bvec.bv_len;
 			i++;
 		}

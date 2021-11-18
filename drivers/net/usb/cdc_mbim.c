@@ -98,7 +98,7 @@ static const struct net_device_ops cdc_mbim_netdev_ops = {
 	.ndo_stop             = usbnet_stop,
 	.ndo_start_xmit       = usbnet_start_xmit,
 	.ndo_tx_timeout       = usbnet_tx_timeout,
-	.ndo_get_stats64      = usbnet_get_stats64,
+	.ndo_get_stats64      = dev_get_tstats64,
 	.ndo_change_mtu       = cdc_ncm_change_mtu,
 	.ndo_set_mac_address  = eth_mac_addr,
 	.ndo_validate_addr    = eth_validate_addr,
@@ -168,6 +168,7 @@ static int cdc_mbim_bind(struct usbnet *dev, struct usb_interface *intf)
 		subdriver = usb_cdc_wdm_register(ctx->control,
 						 &dev->status->desc,
 						 le16_to_cpu(ctx->mbim_desc->wMaxControlMessage),
+						 WWAN_PORT_MBIM,
 						 cdc_mbim_wdm_manage_power);
 	if (IS_ERR(subdriver)) {
 		ret = PTR_ERR(subdriver);
@@ -300,8 +301,8 @@ error:
 	return NULL;
 }
 
-/* Some devices are known to send Neigbor Solicitation messages and
- * require Neigbor Advertisement replies.  The IPv6 core will not
+/* Some devices are known to send Neighbor Solicitation messages and
+ * require Neighbor Advertisement replies.  The IPv6 core will not
  * respond since IFF_NOARP is set, so we must handle them ourselves.
  */
 static void do_neigh_solicit(struct usbnet *dev, u8 *buf, u16 tci)
@@ -588,7 +589,7 @@ static const struct driver_info cdc_mbim_info_zlp = {
  *
  * Note: The current implementation of this feature restricts each NTB
  * to a single NDP, implying that multiplexed sessions cannot share an
- * NTB. This might affect performace for multiplexed sessions.
+ * NTB. This might affect performance for multiplexed sessions.
  */
 static const struct driver_info cdc_mbim_info_ndp_to_end = {
 	.description = "CDC MBIM",

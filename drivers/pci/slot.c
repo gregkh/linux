@@ -39,19 +39,19 @@ static const struct sysfs_ops pci_slot_sysfs_ops = {
 static ssize_t address_read_file(struct pci_slot *slot, char *buf)
 {
 	if (slot->number == 0xff)
-		return sprintf(buf, "%04x:%02x\n",
-				pci_domain_nr(slot->bus),
-				slot->bus->number);
-	else
-		return sprintf(buf, "%04x:%02x:%02x\n",
-				pci_domain_nr(slot->bus),
-				slot->bus->number,
-				slot->number);
+		return sysfs_emit(buf, "%04x:%02x\n",
+				  pci_domain_nr(slot->bus),
+				  slot->bus->number);
+
+	return sysfs_emit(buf, "%04x:%02x:%02x\n",
+			  pci_domain_nr(slot->bus),
+			  slot->bus->number,
+			  slot->number);
 }
 
 static ssize_t bus_speed_read(enum pci_bus_speed speed, char *buf)
 {
-	return sprintf(buf, "%s\n", pci_speed_string(speed));
+	return sysfs_emit(buf, "%s\n", pci_speed_string(speed));
 }
 
 static ssize_t max_speed_read_file(struct pci_slot *slot, char *buf)
@@ -323,7 +323,7 @@ EXPORT_SYMBOL_GPL(pci_destroy_slot);
 #if defined(CONFIG_HOTPLUG_PCI) || defined(CONFIG_HOTPLUG_PCI_MODULE)
 #include <linux/pci_hotplug.h>
 /**
- * pci_hp_create_link - create symbolic link to the hotplug driver module.
+ * pci_hp_create_module_link - create symbolic link to hotplug driver module
  * @pci_slot: struct pci_slot
  *
  * Helper function for pci_hotplug_core.c to create symbolic link to
@@ -349,7 +349,8 @@ void pci_hp_create_module_link(struct pci_slot *pci_slot)
 EXPORT_SYMBOL_GPL(pci_hp_create_module_link);
 
 /**
- * pci_hp_remove_link - remove symbolic link to the hotplug driver module.
+ * pci_hp_remove_module_link - remove symbolic link to the hotplug driver
+ * 	module.
  * @pci_slot: struct pci_slot
  *
  * Helper function for pci_hotplug_core.c to remove symbolic link to

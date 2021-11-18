@@ -142,7 +142,7 @@ static int rcar_usb2_clock_sel_probe(struct platform_device *pdev)
 	struct device_node *np = dev->of_node;
 	struct usb2_clock_sel_priv *priv;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -158,7 +158,7 @@ static int rcar_usb2_clock_sel_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	priv->rsts = devm_reset_control_array_get(dev, true, false);
+	priv->rsts = devm_reset_control_array_get_shared(dev);
 	if (IS_ERR(priv->rsts))
 		return PTR_ERR(priv->rsts);
 
@@ -185,9 +185,6 @@ static int rcar_usb2_clock_sel_probe(struct platform_device *pdev)
 
 	init.name = "rcar_usb2_clock_sel";
 	init.ops = &usb2_clock_sel_clock_ops;
-	init.flags = 0;
-	init.parent_names = NULL;
-	init.num_parents = 0;
 	priv->hw.init = &init;
 
 	ret = devm_clk_hw_register(dev, &priv->hw);

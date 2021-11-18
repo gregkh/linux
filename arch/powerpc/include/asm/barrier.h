@@ -40,7 +40,7 @@
 #define wmb()  __asm__ __volatile__ ("sync" : : : "memory")
 
 /* The sub-arch has lwsync */
-#if defined(__powerpc64__) || defined(CONFIG_PPC_E500MC)
+#if defined(CONFIG_PPC64) || defined(CONFIG_PPC_E500MC)
 #    define SMPWMB      LWSYNC
 #else
 #    define SMPWMB      eieio
@@ -81,22 +81,6 @@ do {									\
 	__smp_lwsync();							\
 	___p1;								\
 })
-
-#ifdef CONFIG_PPC64
-#define smp_cond_load_relaxed(ptr, cond_expr) ({		\
-	typeof(ptr) __PTR = (ptr);				\
-	__unqual_scalar_typeof(*ptr) VAL;			\
-	VAL = READ_ONCE(*__PTR);				\
-	if (unlikely(!(cond_expr))) {				\
-		spin_begin();					\
-		do {						\
-			VAL = READ_ONCE(*__PTR);		\
-		} while (!(cond_expr));				\
-		spin_end();					\
-	}							\
-	(typeof(*ptr))VAL;					\
-})
-#endif
 
 #ifdef CONFIG_PPC_BOOK3S_64
 #define NOSPEC_BARRIER_SLOT   nop

@@ -380,7 +380,7 @@ static int inject_build_id(struct bench_data *data, u64 *max_rss)
 		}
 	}
 
-	/* tihs makes the child to finish */
+	/* this makes the child to finish */
 	close(data->input_pipe[1]);
 
 	wait4(data->pid, &status, 0, &rusage);

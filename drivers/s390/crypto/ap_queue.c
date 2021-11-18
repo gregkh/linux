@@ -20,7 +20,7 @@ static void __ap_flush_queue(struct ap_queue *aq);
 
 /**
  * ap_queue_enable_irq(): Enable interrupt support on this AP queue.
- * @qid: The AP queue number
+ * @aq: The AP queue
  * @ind: the notification indicator byte
  *
  * Enables interruption on AP queue via ap_aqic(). Based on the return
@@ -101,7 +101,7 @@ int ap_recv(ap_qid_t qid, unsigned long long *psmid, void *msg, size_t length)
 
 	if (msg == NULL)
 		return -EINVAL;
-	status = ap_dqap(qid, psmid, msg, length);
+	status = ap_dqap(qid, psmid, msg, length, NULL, NULL);
 	switch (status.response_code) {
 	case AP_RESPONSE_NORMAL:
 		return 0;
@@ -136,9 +136,24 @@ static struct ap_queue_status ap_sm_recv(struct ap_queue *aq)
 	struct ap_queue_status status;
 	struct ap_message *ap_msg;
 	bool found = false;
+	size_t reslen;
+	unsigned long resgr0 = 0;
+	int parts = 0;
 
-	status = ap_dqap(aq->qid, &aq->reply->psmid,
-			 aq->reply->msg, aq->reply->len);
+	/*
+	 * DQAP loop until response code and resgr0 indicate that
+	 * the msg is totally received. As we use the very same buffer
+	 * the msg is overwritten with each invocation. That's intended
+	 * and the receiver of the msg is informed with a msg rc code
+	 * of EMSGSIZE in such a case.
+	 */
+	do {
+		status = ap_dqap(aq->qid, &aq->reply->psmid,
+				 aq->reply->msg, aq->reply->bufsize,
+				 &reslen, &resgr0);
+		parts++;
+	} while (status.response_code == 0xFF && resgr0 != 0);
+
 	switch (status.response_code) {
 	case AP_RESPONSE_NORMAL:
 		aq->queue_count = max_t(int, 0, aq->queue_count - 1);
@@ -152,7 +167,12 @@ static struct ap_queue_status ap_sm_recv(struct ap_queue *aq)
 				continue;
 			list_del_init(&ap_msg->list);
 			aq->pendingq_count--;
-			ap_msg->receive(aq, ap_msg, aq->reply);
+			if (parts > 1) {
+				ap_msg->rc = -EMSGSIZE;
+				ap_msg->receive(aq, ap_msg, NULL);
+			} else {
+				ap_msg->receive(aq, ap_msg, aq->reply);
+			}
 			found = true;
 			break;
 		}
@@ -293,7 +313,7 @@ static enum ap_sm_wait ap_sm_read_write(struct ap_queue *aq)
 
 /**
  * ap_sm_reset(): Reset an AP queue.
- * @qid: The AP queue number
+ * @aq: The AP queue
  *
  * Submit the Reset command to an AP queue.
  */

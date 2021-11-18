@@ -307,11 +307,10 @@ static int pcf2123_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 static irqreturn_t pcf2123_rtc_irq(int irq, void *dev)
 {
 	struct pcf2123_data *pcf2123 = dev_get_drvdata(dev);
-	struct mutex *lock = &pcf2123->rtc->ops_lock;
 	unsigned int val = 0;
 	int ret = IRQ_NONE;
 
-	mutex_lock(lock);
+	rtc_lock(pcf2123->rtc);
 	regmap_read(pcf2123->map, PCF2123_REG_CTRL2, &val);
 
 	/* Alarm? */
@@ -324,7 +323,7 @@ static irqreturn_t pcf2123_rtc_irq(int irq, void *dev)
 		rtc_update_irq(pcf2123->rtc, 1, RTC_IRQF | RTC_AF);
 	}
 
-	mutex_unlock(lock);
+	rtc_unlock(pcf2123->rtc);
 
 	return ret;
 }
@@ -434,7 +433,7 @@ static int pcf2123_probe(struct spi_device *spi)
 	rtc->range_max = RTC_TIMESTAMP_END_2099;
 	rtc->set_start_time = true;
 
-	ret = rtc_register_device(rtc);
+	ret = devm_rtc_register_device(rtc);
 	if (ret)
 		return ret;
 
@@ -452,12 +451,21 @@ static const struct of_device_id pcf2123_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, pcf2123_dt_ids);
 #endif
 
+static const struct spi_device_id pcf2123_spi_ids[] = {
+	{ .name = "pcf2123", },
+	{ .name = "rv2123", },
+	{ .name = "rtc-pcf2123", },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(spi, pcf2123_spi_ids);
+
 static struct spi_driver pcf2123_driver = {
 	.driver	= {
 			.name	= "rtc-pcf2123",
 			.of_match_table = of_match_ptr(pcf2123_dt_ids),
 	},
 	.probe	= pcf2123_probe,
+	.id_table = pcf2123_spi_ids,
 };
 
 module_spi_driver(pcf2123_driver);

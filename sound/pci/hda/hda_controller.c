@@ -670,16 +670,6 @@ static int azx_pcm_open(struct snd_pcm_substream *substream)
 	return err;
 }
 
-static int azx_pcm_mmap(struct snd_pcm_substream *substream,
-			struct vm_area_struct *area)
-{
-	struct azx_pcm *apcm = snd_pcm_substream_chip(substream);
-	struct azx *chip = apcm->chip;
-	if (chip->ops->pcm_mmap_prepare)
-		chip->ops->pcm_mmap_prepare(substream, area);
-	return snd_pcm_lib_default_mmap(substream, area);
-}
-
 static const struct snd_pcm_ops azx_pcm_ops = {
 	.open = azx_pcm_open,
 	.close = azx_pcm_close,
@@ -689,7 +679,6 @@ static const struct snd_pcm_ops azx_pcm_ops = {
 	.trigger = azx_pcm_trigger,
 	.pointer = azx_pcm_pointer,
 	.get_time_info =  azx_get_time_info,
-	.mmap = azx_pcm_mmap,
 };
 
 static void azx_pcm_free(struct snd_pcm *pcm)
@@ -729,7 +718,7 @@ int snd_hda_attach_pcm_stream(struct hda_bus *_bus, struct hda_codec *codec,
 			  &pcm);
 	if (err < 0)
 		return err;
-	strlcpy(pcm->name, cpcm->name, sizeof(pcm->name));
+	strscpy(pcm->name, cpcm->name, sizeof(pcm->name));
 	apcm = kzalloc(sizeof(*apcm), GFP_KERNEL);
 	if (apcm == NULL) {
 		snd_device_free(chip->card, pcm);
@@ -754,7 +743,7 @@ int snd_hda_attach_pcm_stream(struct hda_bus *_bus, struct hda_codec *codec,
 	if (size > MAX_PREALLOC_SIZE)
 		size = MAX_PREALLOC_SIZE;
 	if (chip->uc_buffer)
-		type = SNDRV_DMA_TYPE_DEV_UC_SG;
+		type = SNDRV_DMA_TYPE_DEV_WC_SG;
 	snd_pcm_set_managed_buffer_all(pcm, type, chip->card->dev,
 				       size, MAX_PREALLOC_SIZE);
 	return 0;

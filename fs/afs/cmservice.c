@@ -311,6 +311,8 @@ static int afs_deliver_cb_callback(struct afs_call *call)
 			return ret;
 
 		call->unmarshall++;
+		fallthrough;
+
 	case 5:
 		break;
 	}
@@ -407,6 +409,7 @@ static int afs_deliver_cb_init_call_back_state3(struct afs_call *call)
 			r->node[loop] = ntohl(b[loop + 5]);
 
 		call->unmarshall++;
+		fallthrough;
 
 	case 2:
 		break;
@@ -519,6 +522,7 @@ static int afs_deliver_cb_probe_uuid(struct afs_call *call)
 			r->node[loop] = ntohl(b[loop + 5]);
 
 		call->unmarshall++;
+		fallthrough;
 
 	case 2:
 		break;
@@ -652,6 +656,7 @@ static int afs_deliver_yfs_cb_callback(struct afs_call *call)
 
 		afs_extract_to_tmp(call);
 		call->unmarshall++;
+		fallthrough;
 
 	case 3:
 		break;

@@ -39,15 +39,15 @@ enum E_IN84 {
 
 
 struct us428_ctls {
-	unsigned char   fader[9];
-	unsigned char 	transport;
-	unsigned char 	modifier;
-	unsigned char 	filters_elect;
-	unsigned char 	select;
-	unsigned char   mute;
-	unsigned char   unknown;
-	unsigned char   wswitch;	     
-	unsigned char   wheel[5];
+	unsigned char	fader[9];
+	unsigned char	transport;
+	unsigned char	modifier;
+	unsigned char	filters_elect;
+	unsigned char	select;
+	unsigned char	mute;
+	unsigned char	unknown;
+	unsigned char	wswitch;
+	unsigned char	wheel[5];
 };
 
 struct us428_set_byte {
@@ -89,3 +89,5 @@ struct us428ctls_sharedmem {
 	struct us428_p4out	p4out[N_US428_P4OUT_BUFS];
 	int			p4out_last, p4out_sent;
 };
+
+#define US428_SHAREDMEM_PAGES	PAGE_ALIGN(sizeof(struct us428ctls_sharedmem))

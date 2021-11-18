@@ -227,13 +227,15 @@ static void qla_nvme_abort_work(struct work_struct *work)
 	srb_t *sp = priv->sp;
 	fc_port_t *fcport = sp->fcport;
 	struct qla_hw_data *ha = fcport->vha->hw;
-	int rval;
+	int rval, abts_done_called = 1;
+	bool io_wait_for_abort_done;
+	uint32_t handle;
 
 	ql_dbg(ql_dbg_io, fcport->vha, 0xffff,
-	       "%s called for sp=%p, hndl=%x on fcport=%p deleted=%d\n",
-	       __func__, sp, sp->handle, fcport, fcport->deleted);
+	       "%s called for sp=%p, hndl=%x on fcport=%p desc=%p deleted=%d\n",
+	       __func__, sp, sp->handle, fcport, sp->u.iocb_cmd.u.nvme.desc, fcport->deleted);
 
-	if (!ha->flags.fw_started && fcport->deleted)
+	if (!ha->flags.fw_started || fcport->deleted == QLA_SESS_DELETED)
 		goto out;
 
 	if (ha->flags.host_shutting_down) {
@@ -244,13 +246,36 @@ static void qla_nvme_abort_work(struct work_struct *work)
 		goto out;
 	}
 
+	/*
+	 * sp may not be valid after abort_command if return code is either
+	 * SUCCESS or ERR_FROM_FW codes, so cache the value here.
+	 */
+	io_wait_for_abort_done = ql2xabts_wait_nvme &&
+					QLA_ABTS_WAIT_ENABLED(sp);
+	handle = sp->handle;
+
 	rval = ha->isp_ops->abort_command(sp);
 
 	ql_dbg(ql_dbg_io, fcport->vha, 0x212b,
 	    "%s: %s command for sp=%p, handle=%x on fcport=%p rval=%x\n",
 	    __func__, (rval != QLA_SUCCESS) ? "Failed to abort" : "Aborted",
-	    sp, sp->handle, fcport, rval);
+	    sp, handle, fcport, rval);
 
+	/*
+	 * If async tmf is enabled, the abort callback is called only on
+	 * return codes QLA_SUCCESS and QLA_ERR_FROM_FW.
+	 */
+	if (ql2xasynctmfenable &&
+	    rval != QLA_SUCCESS && rval != QLA_ERR_FROM_FW)
+		abts_done_called = 0;
+
+	/*
+	 * Returned before decreasing kref so that I/O requests
+	 * are waited until ABTS complete. This kref is decreased
+	 * at qla24xx_abort_sp_done function.
+	 */
+	if (abts_done_called && io_wait_for_abort_done)
+		return;
 out:
 	/* kref_get was done before work was schedule. */
 	kref_put(&sp->cmd_kref, sp->put_fn);
@@ -290,8 +315,7 @@ static int qla_nvme_ls_req(struct nvme_fc_local_port *lport,
 	struct qla_hw_data *ha;
 	srb_t           *sp;
 
-
-	if (!fcport || (fcport && fcport->deleted))
+	if (!fcport || fcport->deleted)
 		return rval;
 
 	vha = fcport->vha;
@@ -398,8 +422,13 @@ static inline int qla2x00_start_nvme_mq(srb_t *sp)
 	}
 	req_cnt = qla24xx_calc_iocbs(vha, tot_dsds);
 	if (req->cnt < (req_cnt + 2)) {
-		cnt = IS_SHADOW_REG_CAPABLE(ha) ? *req->out_ptr :
-		    rd_reg_dword_relaxed(req->req_q_out);
+		if (IS_SHADOW_REG_CAPABLE(ha)) {
+			cnt = *req->out_ptr;
+		} else {
+			cnt = rd_reg_dword_relaxed(req->req_q_out);
+			if (qla2x00_check_reg16_for_disconnect(vha, cnt))
+				goto queuing_error;
+		}
 
 		if (req->ring_index < cnt)
 			req->cnt = cnt - req->ring_index;
@@ -458,6 +487,10 @@ static inline int qla2x00_start_nvme_mq(srb_t *sp)
 	} else if (fd->io_dir == 0) {
 		cmd_pkt->control_flags = 0;
 	}
+
+	if (sp->fcport->edif.enable && fd->io_dir != 0)
+		cmd_pkt->control_flags |= cpu_to_le16(CF_EN_EDIF);
+
 	/* Set BIT_13 of control flags for Async event */
 	if (vha->flags.nvme2_enabled &&
 	    cmd->sqe.common.opcode == nvme_admin_async_event) {
@@ -531,11 +564,16 @@ static inline int qla2x00_start_nvme_mq(srb_t *sp)
 		req->ring_ptr++;
 	}
 
+	/* ignore nvme async cmd due to long timeout */
+	if (!nvme->u.nvme.aen_op)
+		sp->qpair->cmd_cnt++;
+
 	/* Set chip new ring index. */
 	wrt_reg_dword(req->req_q_in, req->ring_index);
 
 queuing_error:
 	spin_unlock_irqrestore(&qpair->qp_lock, flags);
+
 	return rval;
 }
 
@@ -560,19 +598,15 @@ static int qla_nvme_post_cmd(struct nvme_fc_local_port *lport,
 
 	fcport = qla_rport->fcport;
 
-	if (!qpair || !fcport)
-		return -ENODEV;
-
-	if (!qpair->fw_started || fcport->deleted)
+	if (unlikely(!qpair || !fcport || fcport->deleted))
 		return -EBUSY;
-
-	vha = fcport->vha;
 
 	if (!(fcport->nvme_flag & NVME_FLAG_REGISTERED))
 		return -ENODEV;
 
-	if (test_bit(ABORT_ISP_ACTIVE, &vha->dpc_flags) ||
-	    (qpair && !qpair->fw_started) || fcport->deleted)
+	vha = fcport->vha;
+
+	if (test_bit(ABORT_ISP_ACTIVE, &vha->dpc_flags))
 		return -EBUSY;
 
 	/*
@@ -601,6 +635,7 @@ static int qla_nvme_post_cmd(struct nvme_fc_local_port *lport,
 	sp->put_fn = qla_nvme_release_fcp_cmd_kref;
 	sp->qpair = qpair;
 	sp->vha = vha;
+	sp->cmd_sp = sp;
 	nvme = &sp->u.iocb_cmd;
 	nvme->u.nvme.desc = fd;
 
@@ -668,7 +703,7 @@ void qla_nvme_unregister_remote_port(struct fc_port *fcport)
 	if (!IS_ENABLED(CONFIG_NVME_FC))
 		return;
 
-	ql_log(ql_log_warn, NULL, 0x2112,
+	ql_log(ql_log_warn, fcport->vha, 0x2112,
 	    "%s: unregister remoteport on %p %8phN\n",
 	    __func__, fcport, fcport->port_name);
 
@@ -744,4 +779,86 @@ int qla_nvme_register_hba(struct scsi_qla_host *vha)
 	}
 
 	return ret;
+}
+
+void qla_nvme_abort_set_option(struct abort_entry_24xx *abt, srb_t *orig_sp)
+{
+	struct qla_hw_data *ha;
+
+	if (!(ql2xabts_wait_nvme && QLA_ABTS_WAIT_ENABLED(orig_sp)))
+		return;
+
+	ha = orig_sp->fcport->vha->hw;
+
+	WARN_ON_ONCE(abt->options & cpu_to_le16(BIT_0));
+	/* Use Driver Specified Retry Count */
+	abt->options |= cpu_to_le16(AOF_ABTS_RTY_CNT);
+	abt->drv.abts_rty_cnt = cpu_to_le16(2);
+	/* Use specified response timeout */
+	abt->options |= cpu_to_le16(AOF_RSP_TIMEOUT);
+	/* set it to 2 * r_a_tov in secs */
+	abt->drv.rsp_timeout = cpu_to_le16(2 * (ha->r_a_tov / 10));
+}
+
+void qla_nvme_abort_process_comp_status(struct abort_entry_24xx *abt, srb_t *orig_sp)
+{
+	u16	comp_status;
+	struct scsi_qla_host *vha;
+
+	if (!(ql2xabts_wait_nvme && QLA_ABTS_WAIT_ENABLED(orig_sp)))
+		return;
+
+	vha = orig_sp->fcport->vha;
+
+	comp_status = le16_to_cpu(abt->comp_status);
+	switch (comp_status) {
+	case CS_RESET:		/* reset event aborted */
+	case CS_ABORTED:	/* IOCB was cleaned */
+	/* N_Port handle is not currently logged in */
+	case CS_TIMEOUT:
+	/* N_Port handle was logged out while waiting for ABTS to complete */
+	case CS_PORT_UNAVAILABLE:
+	/* Firmware found that the port name changed */
+	case CS_PORT_LOGGED_OUT:
+	/* BA_RJT was received for the ABTS */
+	case CS_PORT_CONFIG_CHG:
+		ql_dbg(ql_dbg_async, vha, 0xf09d,
+		       "Abort I/O IOCB completed with error, comp_status=%x\n",
+		comp_status);
+		break;
+
+	/* BA_RJT was received for the ABTS */
+	case CS_REJECT_RECEIVED:
+		ql_dbg(ql_dbg_async, vha, 0xf09e,
+		       "BA_RJT was received for the ABTS rjt_vendorUnique = %u",
+			abt->fw.ba_rjt_vendorUnique);
+		ql_dbg(ql_dbg_async + ql_dbg_mbx, vha, 0xf09e,
+		       "ba_rjt_reasonCodeExpl = %u, ba_rjt_reasonCode = %u\n",
+		       abt->fw.ba_rjt_reasonCodeExpl, abt->fw.ba_rjt_reasonCode);
+		break;
+
+	case CS_COMPLETE:
+		ql_dbg(ql_dbg_async + ql_dbg_verbose, vha, 0xf09f,
+		       "IOCB request is completed successfully comp_status=%x\n",
+		comp_status);
+		break;
+
+	case CS_IOCB_ERROR:
+		ql_dbg(ql_dbg_async, vha, 0xf0a0,
+		       "IOCB request is failed, comp_status=%x\n", comp_status);
+		break;
+
+	default:
+		ql_dbg(ql_dbg_async, vha, 0xf0a1,
+		       "Invalid Abort IO IOCB Completion Status %x\n",
+		comp_status);
+		break;
+	}
+}
+
+inline void qla_wait_nvme_release_cmd_kref(srb_t *orig_sp)
+{
+	if (!(ql2xabts_wait_nvme && QLA_ABTS_WAIT_ENABLED(orig_sp)))
+		return;
+	kref_put(&orig_sp->cmd_kref, orig_sp->put_fn);
 }

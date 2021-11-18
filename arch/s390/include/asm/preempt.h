@@ -123,9 +123,9 @@ static inline bool should_resched(int preempt_offset)
 #define init_idle_preempt_count(p, cpu)	do { } while (0)
 
 #ifdef CONFIG_PREEMPTION
-extern asmlinkage void preempt_schedule(void);
+extern void preempt_schedule(void);
 #define __preempt_schedule() preempt_schedule()
-extern asmlinkage void preempt_schedule_notrace(void);
+extern void preempt_schedule_notrace(void);
 #define __preempt_schedule_notrace() preempt_schedule_notrace()
 #endif /* CONFIG_PREEMPTION */
 

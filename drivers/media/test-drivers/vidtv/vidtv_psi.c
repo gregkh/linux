@@ -19,7 +19,6 @@
 #include <linux/ratelimit.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/string.h>
 #include <linux/time.h>
 #include <linux/types.h>
 
@@ -506,10 +505,9 @@ struct vidtv_psi_desc *vidtv_psi_desc_clone(struct vidtv_psi_desc *desc)
 
 		case REGISTRATION_DESCRIPTOR:
 		default:
-			curr = kzalloc(sizeof(*desc) + desc->length, GFP_KERNEL);
+			curr = kmemdup(desc, sizeof(*desc) + desc->length, GFP_KERNEL);
 			if (!curr)
 				return NULL;
-			memcpy(curr, desc, sizeof(*desc) + desc->length);
 		}
 
 		if (!curr)

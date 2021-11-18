@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
  * Device Tree file for CZ.NIC Turris Mox Board
- * 2019 by Marek Behun <marek.behun@nic.cz>
+ * 2019 by Marek Behún <kabel@kernel.org>
  */
 
 /dts-v1/;
@@ -104,6 +104,7 @@
 		mod-def0-gpio = <&moxtet_sfp 2 GPIO_ACTIVE_LOW>;
 		tx-disable-gpio = <&moxtet_sfp 4 GPIO_ACTIVE_HIGH>;
 		rate-select0-gpio = <&moxtet_sfp 5 GPIO_ACTIVE_HIGH>;
+		maximum-power-milliwatt = <3000>;
 
 		/* enabled by U-Boot if SFP module is present */
 		status = "disabled";

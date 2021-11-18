@@ -3,12 +3,12 @@
  * Copyright (C) 2011, 2012 Cavium, Inc.
  */
 
-#include <linux/platform_device.h>
-#include <linux/mdio-mux.h>
-#include <linux/of_mdio.h>
 #include <linux/device.h>
+#include <linux/mdio-mux.h>
 #include <linux/module.h>
+#include <linux/of_mdio.h>
 #include <linux/phy.h>
+#include <linux/platform_device.h>
 
 #define DRV_DESCRIPTION "MDIO bus multiplexer driver"
 
@@ -195,7 +195,6 @@ int mdio_mux_init(struct device *dev,
 	}
 
 	dev_err(dev, "Error: No acceptable child buses found\n");
-	devm_kfree(dev, pb);
 
 err_loop:
 	mdio_mux_uninit_children(pb);

@@ -47,9 +47,6 @@ SECTIONS
 	PROVIDE (_etext = .);
 	PROVIDE (etext = .);
 
-	.eh_frame_hdr	: { *(.eh_frame_hdr) }		:text	:eh_frame_hdr
-	.eh_frame	: { KEEP (*(.eh_frame)) }	:text
-
 	.dynamic	: { *(.dynamic) }		:text	:dynamic
 
 	.rodata		: { *(.rodata*) }		:text
@@ -60,6 +57,7 @@ SECTIONS
 	/DISCARD/	: {
 		*(.data .data.* .gnu.linkonce.d.* .sdata*)
 		*(.bss .sbss .dynbss .dynsbss)
+		*(.eh_frame .eh_frame_hdr)
 	}
 }
 
@@ -72,7 +70,6 @@ PHDRS
 	text		PT_LOAD		FLAGS(5) FILEHDR PHDRS; /* PF_R|PF_X */
 	dynamic		PT_DYNAMIC	FLAGS(4);		/* PF_R */
 	note		PT_NOTE		FLAGS(4);		/* PF_R */
-	eh_frame_hdr	PT_GNU_EH_FRAME;
 }
 
 /*

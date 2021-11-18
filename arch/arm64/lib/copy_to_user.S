@@ -24,7 +24,7 @@
 	.endm
 
 	.macro strb1 reg, ptr, val
-	uao_user_alternative 9998f, strb, sttrb, \reg, \ptr, \val
+	user_ldst 9998f, sttrb, \reg, \ptr, \val
 	.endm
 
 	.macro ldrh1 reg, ptr, val
@@ -32,7 +32,7 @@
 	.endm
 
 	.macro strh1 reg, ptr, val
-	uao_user_alternative 9997f, strh, sttrh, \reg, \ptr, \val
+	user_ldst 9997f, sttrh, \reg, \ptr, \val
 	.endm
 
 	.macro ldr1 reg, ptr, val
@@ -40,7 +40,7 @@
 	.endm
 
 	.macro str1 reg, ptr, val
-	uao_user_alternative 9997f, str, sttr, \reg, \ptr, \val
+	user_ldst 9997f, sttr, \reg, \ptr, \val
 	.endm
 
 	.macro ldp1 reg1, reg2, ptr, val
@@ -48,7 +48,7 @@
 	.endm
 
 	.macro stp1 reg1, reg2, ptr, val
-	uao_stp 9997f, \reg1, \reg2, \ptr, \val
+	user_stp 9997f, \reg1, \reg2, \ptr, \val
 	.endm
 
 end	.req	x5

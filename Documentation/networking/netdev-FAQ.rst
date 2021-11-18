@@ -6,9 +6,9 @@
 netdev FAQ
 ==========
 
-Q: What is netdev?
-------------------
-A: It is a mailing list for all network-related Linux stuff.  This
+What is netdev?
+---------------
+It is a mailing list for all network-related Linux stuff.  This
 includes anything found under net/ (i.e. core code like IPv6) and
 drivers/net (i.e. hardware specific drivers) in the Linux source tree.
 
@@ -25,9 +25,9 @@ Aside from subsystems like that mentioned above, all network-related
 Linux development (i.e. RFC, review, comments, etc.) takes place on
 netdev.
 
-Q: How do the changes posted to netdev make their way into Linux?
------------------------------------------------------------------
-A: There are always two trees (git repositories) in play.  Both are
+How do the changes posted to netdev make their way into Linux?
+--------------------------------------------------------------
+There are always two trees (git repositories) in play.  Both are
 driven by David Miller, the main network maintainer.  There is the
 ``net`` tree, and the ``net-next`` tree.  As you can probably guess from
 the names, the ``net`` tree is for fixes to existing code already in the
@@ -37,9 +37,9 @@ for the future release.  You can find the trees here:
 - https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git
 - https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git
 
-Q: How often do changes from these trees make it to the mainline Linus tree?
-----------------------------------------------------------------------------
-A: To understand this, you need to know a bit of background information on
+How often do changes from these trees make it to the mainline Linus tree?
+-------------------------------------------------------------------------
+To understand this, you need to know a bit of background information on
 the cadence of Linux development.  Each new release starts off with a
 two week "merge window" where the main maintainers feed their new stuff
 to Linus for merging into the mainline tree.  After the two weeks, the
@@ -81,7 +81,8 @@ focus for ``net`` is on stabilization and bug fixes.
 
 Finally, the vX.Y gets released, and the whole cycle starts over.
 
-Q: So where are we now in this cycle?
+So where are we now in this cycle?
+----------------------------------
 
 Load the mainline (Linus) page here:
 
@@ -91,9 +92,9 @@ and note the top of the "tags" section.  If it is rc1, it is early in
 the dev cycle.  If it was tagged rc7 a week ago, then a release is
 probably imminent.
 
-Q: How do I indicate which tree (net vs. net-next) my patch should be in?
--------------------------------------------------------------------------
-A: Firstly, think whether you have a bug fix or new "next-like" content.
+How do I indicate which tree (net vs. net-next) my patch should be in?
+----------------------------------------------------------------------
+Firstly, think whether you have a bug fix or new "next-like" content.
 Then once decided, assuming that you use git, use the prefix flag, i.e.
 ::
 
@@ -105,46 +106,43 @@ in the above is just the subject text of the outgoing e-mail, and you
 can manually change it yourself with whatever MUA you are comfortable
 with.
 
-Q: I sent a patch and I'm wondering what happened to it?
---------------------------------------------------------
-Q: How can I tell whether it got merged?
-A: Start by looking at the main patchworks queue for netdev:
+I sent a patch and I'm wondering what happened to it - how can I tell whether it got merged?
+--------------------------------------------------------------------------------------------
+Start by looking at the main patchworks queue for netdev:
 
   https://patchwork.kernel.org/project/netdevbpf/list/
 
 The "State" field will tell you exactly where things are at with your
 patch.
 
-Q: The above only says "Under Review".  How can I find out more?
-----------------------------------------------------------------
-A: Generally speaking, the patches get triaged quickly (in less than
+The above only says "Under Review".  How can I find out more?
+-------------------------------------------------------------
+Generally speaking, the patches get triaged quickly (in less than
 48h).  So be patient.  Asking the maintainer for status updates on your
 patch is a good way to ensure your patch is ignored or pushed to the
 bottom of the priority list.
 
-Q: I submitted multiple versions of the patch series
-----------------------------------------------------
-Q: should I directly update patchwork for the previous versions of these
-patch series?
-A: No, please don't interfere with the patch status on patchwork, leave
+I submitted multiple versions of the patch series. Should I directly update patchwork for the previous versions of these patch series?
+--------------------------------------------------------------------------------------------------------------------------------------
+No, please don't interfere with the patch status on patchwork, leave
 it to the maintainer to figure out what is the most recent and current
 version that should be applied. If there is any doubt, the maintainer
 will reply and ask what should be done.
 
-Q: I made changes to only a few patches in a patch series should I resend only those changed?
----------------------------------------------------------------------------------------------
-A: No, please resend the entire patch series and make sure you do number your
+I made changes to only a few patches in a patch series should I resend only those changed?
+------------------------------------------------------------------------------------------
+No, please resend the entire patch series and make sure you do number your
 patches such that it is clear this is the latest and greatest set of patches
 that can be applied.
 
-Q: I submitted multiple versions of a patch series and it looks like a version other than the last one has been accepted, what should I do?
--------------------------------------------------------------------------------------------------------------------------------------------
-A: There is no revert possible, once it is pushed out, it stays like that.
+I submitted multiple versions of a patch series and it looks like a version other than the last one has been accepted, what should I do?
+----------------------------------------------------------------------------------------------------------------------------------------
+There is no revert possible, once it is pushed out, it stays like that.
 Please send incremental versions on top of what has been merged in order to fix
 the patches the way they would look like if your latest patch series was to be
 merged.
 
-Q: Are there special rules regarding stable submissions on netdev?
+Are there special rules regarding stable submissions on netdev?
 ---------------------------------------------------------------
 While it used to be the case that netdev submissions were not supposed
 to carry explicit ``CC: stable@vger.kernel.org`` tags that is no longer
@@ -152,9 +150,9 @@ the case today. Please follow the standard stable rules in
 :ref:`Documentation/process/stable-kernel-rules.rst <stable_kernel_rules>`,
 and make sure you include appropriate Fixes tags!
 
-Q: Is the comment style convention different for the networking content?
-------------------------------------------------------------------------
-A: Yes, in a largely trivial way.  Instead of this::
+Is the comment style convention different for the networking content?
+---------------------------------------------------------------------
+Yes, in a largely trivial way.  Instead of this::
 
   /*
    * foobar blah blah blah
@@ -167,32 +165,30 @@ it is requested that you make it look like this::
    * another line of text
    */
 
-Q: I am working in existing code that has the former comment style and not the latter.
---------------------------------------------------------------------------------------
-Q: Should I submit new code in the former style or the latter?
-A: Make it the latter style, so that eventually all code in the domain
+I am working in existing code that has the former comment style and not the latter. Should I submit new code in the former style or the latter?
+-----------------------------------------------------------------------------------------------------------------------------------------------
+Make it the latter style, so that eventually all code in the domain
 of netdev is of this format.
 
-Q: I found a bug that might have possible security implications or similar.
----------------------------------------------------------------------------
-Q: Should I mail the main netdev maintainer off-list?**
-A: No. The current netdev maintainer has consistently requested that
+I found a bug that might have possible security implications or similar. Should I mail the main netdev maintainer off-list?
+---------------------------------------------------------------------------------------------------------------------------
+No. The current netdev maintainer has consistently requested that
 people use the mailing lists and not reach out directly.  If you aren't
 OK with that, then perhaps consider mailing security@kernel.org or
 reading about http://oss-security.openwall.org/wiki/mailing-lists/distros
 as possible alternative mechanisms.
 
-Q: What level of testing is expected before I submit my change?
----------------------------------------------------------------
-A: If your changes are against ``net-next``, the expectation is that you
+What level of testing is expected before I submit my change?
+------------------------------------------------------------
+If your changes are against ``net-next``, the expectation is that you
 have tested by layering your changes on top of ``net-next``.  Ideally
 you will have done run-time testing specific to your change, but at a
 minimum, your changes should survive an ``allyesconfig`` and an
 ``allmodconfig`` build without new warnings or failures.
 
-Q: How do I post corresponding changes to user space components?
-----------------------------------------------------------------
-A: User space code exercising kernel features should be posted
+How do I post corresponding changes to user space components?
+-------------------------------------------------------------
+User space code exercising kernel features should be posted
 alongside kernel patches. This gives reviewers a chance to see
 how any new interface is used and how well it works.
 
@@ -216,9 +212,42 @@ to the mailing list, e.g.::
 Posting as one thread is discouraged because it confuses patchwork
 (as of patchwork 2.2.2).
 
-Q: Any other tips to help ensure my net/net-next patch gets OK'd?
------------------------------------------------------------------
-A: Attention to detail.  Re-read your own work as if you were the
+Can I reproduce the checks from patchwork on my local machine?
+--------------------------------------------------------------
+
+Checks in patchwork are mostly simple wrappers around existing kernel
+scripts, the sources are available at:
+
+https://github.com/kuba-moo/nipa/tree/master/tests
+
+Running all the builds and checks locally is a pain, can I post my patches and have the patchwork bot validate them?
+--------------------------------------------------------------------------------------------------------------------
+
+No, you must ensure that your patches are ready by testing them locally
+before posting to the mailing list. The patchwork build bot instance
+gets overloaded very easily and netdev@vger really doesn't need more
+traffic if we can help it.
+
+netdevsim is great, can I extend it for my out-of-tree tests?
+-------------------------------------------------------------
+
+No, `netdevsim` is a test vehicle solely for upstream tests.
+(Please add your tests under tools/testing/selftests/.)
+
+We also give no guarantees that `netdevsim` won't change in the future
+in a way which would break what would normally be considered uAPI.
+
+Is netdevsim considered a "user" of an API?
+-------------------------------------------
+
+Linux kernel has a long standing rule that no API should be added unless
+it has a real, in-tree user. Mock-ups and tests based on `netdevsim` are
+strongly encouraged when adding new APIs, but `netdevsim` in itself
+is **not** considered a use case/user.
+
+Any other tips to help ensure my net/net-next patch gets OK'd?
+--------------------------------------------------------------
+Attention to detail.  Re-read your own work as if you were the
 reviewer.  You can start with using ``checkpatch.pl``, perhaps even with
 the ``--strict`` flag.  But do not be mindlessly robotic in doing so.
 If your change is a bug fix, make sure your commit log indicates the

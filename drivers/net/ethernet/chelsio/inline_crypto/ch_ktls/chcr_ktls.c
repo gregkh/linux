@@ -9,6 +9,7 @@
 #include <linux/ip.h>
 #include <net/ipv6.h>
 #include <linux/netdevice.h>
+#include <crypto/aes.h>
 #include "chcr_ktls.h"
 
 static LIST_HEAD(uld_ctx_list);
@@ -32,7 +33,6 @@ static int chcr_get_nfrags_to_send(struct sk_buff *skb, u32 start, u32 len)
 
 	if (unlikely(start < skb_linear_data_len)) {
 		frag_size = min(len, skb_linear_data_len - start);
-		start = 0;
 	} else {
 		start -= skb_linear_data_len;
 
@@ -75,7 +75,7 @@ static int chcr_ktls_save_keys(struct chcr_ktls_info *tx_info,
 	unsigned char ghash_h[TLS_CIPHER_AES_GCM_256_TAG_SIZE];
 	struct tls12_crypto_info_aes_gcm_128 *info_128_gcm;
 	struct ktls_key_ctx *kctx = &tx_info->key_ctx;
-	struct crypto_cipher *cipher;
+	struct crypto_aes_ctx aes_ctx;
 	unsigned char *key, *salt;
 
 	switch (crypto_info->cipher_type) {
@@ -136,18 +136,14 @@ static int chcr_ktls_save_keys(struct chcr_ktls_info *tx_info,
 	/* Calculate the H = CIPH(K, 0 repeated 16 times).
 	 * It will go in key context
 	 */
-	cipher = crypto_alloc_cipher("aes", 0, 0);
-	if (IS_ERR(cipher)) {
-		ret = -ENOMEM;
-		goto out;
-	}
 
-	ret = crypto_cipher_setkey(cipher, key, keylen);
+	ret = aes_expandkey(&aes_ctx, key, keylen);
 	if (ret)
-		goto out1;
+		goto out;
 
 	memset(ghash_h, 0, ghash_size);
-	crypto_cipher_encrypt_one(cipher, ghash_h, ghash_h);
+	aes_encrypt(&aes_ctx, ghash_h, ghash_h);
+	memzero_explicit(&aes_ctx, sizeof(aes_ctx));
 
 	/* fill the Key context */
 	if (direction == TLS_OFFLOAD_CTX_DIR_TX) {
@@ -156,7 +152,7 @@ static int chcr_ktls_save_keys(struct chcr_ktls_info *tx_info,
 						 key_ctx_size >> 4);
 	} else {
 		ret = -EINVAL;
-		goto out1;
+		goto out;
 	}
 
 	memcpy(kctx->salt, salt, tx_info->salt_size);
@@ -164,8 +160,6 @@ static int chcr_ktls_save_keys(struct chcr_ktls_info *tx_info,
 	memcpy(kctx->key + keylen, ghash_h, ghash_size);
 	tx_info->key_ctx_len = key_ctx_size;
 
-out1:
-	crypto_free_cipher(cipher);
 out:
 	return ret;
 }
@@ -911,10 +905,10 @@ static int chcr_ktls_xmit_tcb_cpls(struct chcr_ktls_info *tx_info,
 	}
 	/* update receive window */
 	if (first_wr || tx_info->prev_win != tcp_win) {
-		pos = chcr_write_cpl_set_tcb_ulp(tx_info, q, tx_info->tid, pos,
-						 TCB_RCV_WND_W,
-						 TCB_RCV_WND_V(TCB_RCV_WND_M),
-						 TCB_RCV_WND_V(tcp_win), 0);
+		chcr_write_cpl_set_tcb_ulp(tx_info, q, tx_info->tid, pos,
+					   TCB_RCV_WND_W,
+					   TCB_RCV_WND_V(TCB_RCV_WND_M),
+					   TCB_RCV_WND_V(tcp_win), 0);
 		tx_info->prev_win = tcp_win;
 		cpl++;
 	}
@@ -949,7 +943,7 @@ chcr_ktls_get_tx_flits(u32 nr_frags, unsigned int key_ctx_len)
 }
 
 /*
- * chcr_ktls_check_tcp_options: To check if there is any TCP option availbale
+ * chcr_ktls_check_tcp_options: To check if there is any TCP option available
  * other than timestamp.
  * @skb - skb contains partial record..
  * return: 1 / 0
@@ -1134,7 +1128,7 @@ static int chcr_ktls_xmit_wr_complete(struct sk_buff *skb,
 	}
 
 	if (unlikely(credits < ETHTXQ_STOP_THRES)) {
-		/* Credits are below the threshold vaues, stop the queue after
+		/* Credits are below the threshold values, stop the queue after
 		 * injecting the Work Request for this packet.
 		 */
 		chcr_eth_txq_stop(q);
@@ -1523,7 +1517,6 @@ static int chcr_ktls_tx_plaintxt(struct chcr_ktls_info *tx_info,
 	wr->op_to_compl = htonl(FW_WR_OP_V(FW_ULPTX_WR));
 	wr->flowid_len16 = htonl(wr_mid | FW_WR_LEN16_V(len16));
 	wr->cookie = 0;
-	pos += sizeof(*wr);
 	/* ULP_TXPKT */
 	ulptx = (struct ulp_txpkt *)(wr + 1);
 	ulptx->cmd_dest = htonl(ULPTX_CMD_V(ULP_TX_PKT) |
@@ -1978,7 +1971,7 @@ static int chcr_ktls_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	/* TCP segments can be in received either complete or partial.
 	 * chcr_end_part_handler will handle cases if complete record or end
-	 * part of the record is received. Incase of partial end part of record,
+	 * part of the record is received. In case of partial end part of record,
 	 * we will send the complete record again.
 	 */
 

@@ -11,6 +11,7 @@
 #include "transaction.h"
 #include "qgroup.h"
 #include "space-info.h"
+#include "tree-mod-log.h"
 
 struct kmem_cache *btrfs_delayed_ref_head_cachep;
 struct kmem_cache *btrfs_delayed_tree_ref_cachep;
@@ -69,9 +70,10 @@ int btrfs_should_throttle_delayed_refs(struct btrfs_trans_handle *trans)
 }
 
 /**
- * btrfs_delayed_refs_rsv_release - release a ref head's reservation.
- * @fs_info - the fs_info for our fs.
- * @nr - the number of items to drop.
+ * Release a ref head's reservation
+ *
+ * @fs_info:  the filesystem
+ * @nr:       number of items to drop
  *
  * This drops the delayed ref head's count from the delayed refs rsv and frees
  * any excess reservation we had.
@@ -114,10 +116,11 @@ void btrfs_update_delayed_refs_rsv(struct btrfs_trans_handle *trans)
 }
 
 /**
- * btrfs_migrate_to_delayed_refs_rsv - transfer bytes to our delayed refs rsv.
- * @fs_info - the fs info for our fs.
- * @src - the source block rsv to transfer from.
- * @num_bytes - the number of bytes to transfer.
+ * Transfer bytes to our delayed refs rsv
+ *
+ * @fs_info:   the filesystem
+ * @src:       source block rsv to transfer from
+ * @num_bytes: number of bytes to transfer
  *
  * This transfers up to the num_bytes amount from the src rsv to the
  * delayed_refs_rsv.  Any extra bytes are returned to the space info.
@@ -162,9 +165,10 @@ void btrfs_migrate_to_delayed_refs_rsv(struct btrfs_fs_info *fs_info,
 }
 
 /**
- * btrfs_delayed_refs_rsv_refill - refill based on our delayed refs usage.
- * @fs_info - the fs_info for our fs.
- * @flush - control how we can flush for this reservation.
+ * Refill based on our delayed refs usage
+ *
+ * @fs_info: the filesystem
+ * @flush:   control how we can flush for this reservation.
  *
  * This will refill the delayed block_rsv up to 1 items size worth of space and
  * will return -ENOSPC if we can't make the reservation.
@@ -491,16 +495,7 @@ void btrfs_merge_delayed_refs(struct btrfs_trans_handle *trans,
 	if (head->is_data)
 		return;
 
-	read_lock(&fs_info->tree_mod_log_lock);
-	if (!list_empty(&fs_info->tree_mod_seq_list)) {
-		struct seq_list *elem;
-
-		elem = list_first_entry(&fs_info->tree_mod_seq_list,
-					struct seq_list, list);
-		seq = elem->seq;
-	}
-	read_unlock(&fs_info->tree_mod_log_lock);
-
+	seq = btrfs_tree_mod_log_lowest_seq(fs_info);
 again:
 	for (node = rb_first_cached(&head->ref_tree); node;
 	     node = rb_next(node)) {
@@ -514,23 +509,16 @@ again:
 
 int btrfs_check_delayed_seq(struct btrfs_fs_info *fs_info, u64 seq)
 {
-	struct seq_list *elem;
 	int ret = 0;
+	u64 min_seq = btrfs_tree_mod_log_lowest_seq(fs_info);
 
-	read_lock(&fs_info->tree_mod_log_lock);
-	if (!list_empty(&fs_info->tree_mod_seq_list)) {
-		elem = list_first_entry(&fs_info->tree_mod_seq_list,
-					struct seq_list, list);
-		if (seq >= elem->seq) {
-			btrfs_debug(fs_info,
-				"holding back delayed_ref %#x.%x, lowest is %#x.%x",
-				(u32)(seq >> 32), (u32)seq,
-				(u32)(elem->seq >> 32), (u32)elem->seq);
-			ret = 1;
-		}
+	if (min_seq != 0 && seq >= min_seq) {
+		btrfs_debug(fs_info,
+			    "holding back delayed_ref %llu, lowest is %llu",
+			    seq, min_seq);
+		ret = 1;
 	}
 
-	read_unlock(&fs_info->tree_mod_log_lock);
 	return ret;
 }
 
@@ -653,7 +641,6 @@ static noinline void update_existing_head_ref(struct btrfs_trans_handle *trans,
 	struct btrfs_delayed_ref_root *delayed_refs =
 		&trans->transaction->delayed_refs;
 	struct btrfs_fs_info *fs_info = trans->fs_info;
-	u64 flags = btrfs_ref_head_to_space_flags(existing);
 	int old_ref_mod;
 
 	BUG_ON(existing->is_data != update->is_data);
@@ -722,26 +709,6 @@ static noinline void update_existing_head_ref(struct btrfs_trans_handle *trans,
 			trans->delayed_ref_updates += csum_leaves;
 		}
 	}
-
-	/*
-	 * This handles the following conditions:
-	 *
-	 * 1. We had a ref mod of 0 or more and went negative, indicating that
-	 *    we may be freeing space, so add our space to the
-	 *    total_bytes_pinned counter.
-	 * 2. We were negative and went to 0 or positive, so no longer can say
-	 *    that the space would be pinned, decrement our counter from the
-	 *    total_bytes_pinned counter.
-	 * 3. We are now at 0 and have ->must_insert_reserved set, which means
-	 *    this was a new allocation and then we dropped it, and thus must
-	 *    add our space to the total_bytes_pinned counter.
-	 */
-	if (existing->total_ref_mod < 0 && old_ref_mod >= 0)
-		btrfs_mod_total_bytes_pinned(fs_info, flags, existing->num_bytes);
-	else if (existing->total_ref_mod >= 0 && old_ref_mod < 0)
-		btrfs_mod_total_bytes_pinned(fs_info, flags, -existing->num_bytes);
-	else if (existing->total_ref_mod == 0 && existing->must_insert_reserved)
-		btrfs_mod_total_bytes_pinned(fs_info, flags, existing->num_bytes);
 
 	spin_unlock(&existing->lock);
 }
@@ -847,17 +814,12 @@ add_delayed_ref_head(struct btrfs_trans_handle *trans,
 		kmem_cache_free(btrfs_delayed_ref_head_cachep, head_ref);
 		head_ref = existing;
 	} else {
-		u64 flags = btrfs_ref_head_to_space_flags(head_ref);
-
 		if (head_ref->is_data && head_ref->ref_mod < 0) {
 			delayed_refs->pending_csums += head_ref->num_bytes;
 			trans->delayed_ref_updates +=
 				btrfs_csum_bytes_to_leaves(trans->fs_info,
 							   head_ref->num_bytes);
 		}
-		if (head_ref->ref_mod < 0)
-			btrfs_mod_total_bytes_pinned(trans->fs_info, flags,
-						     head_ref->num_bytes);
 		delayed_refs->num_heads++;
 		delayed_refs->num_heads_ready++;
 		atomic_inc(&delayed_refs->num_entries);
@@ -1012,7 +974,7 @@ int btrfs_add_delayed_tree_ref(struct btrfs_trans_handle *trans,
 		kmem_cache_free(btrfs_delayed_tree_ref_cachep, ref);
 
 	if (qrecord_inserted)
-		btrfs_qgroup_trace_extent_post(fs_info, record);
+		btrfs_qgroup_trace_extent_post(trans, record);
 
 	return 0;
 }
@@ -1107,7 +1069,7 @@ int btrfs_add_delayed_data_ref(struct btrfs_trans_handle *trans,
 
 
 	if (qrecord_inserted)
-		return btrfs_qgroup_trace_extent_post(fs_info, record);
+		return btrfs_qgroup_trace_extent_post(trans, record);
 	return 0;
 }
 

@@ -8,6 +8,7 @@
 #include <linux/iio/buffer.h>
 #include <linux/iio/iio.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
 #include "hid-sensor-trigger.h"
@@ -23,6 +24,10 @@ struct hid_humidity_state {
 	int scale_post_decml;
 	int scale_precision;
 	int value_offset;
+};
+
+static const u32 humidity_sensitivity_addresses[] = {
+	HID_USAGE_SENSOR_ATMOSPHERIC_HUMIDITY,
 };
 
 /* Channel definitions */
@@ -176,14 +181,6 @@ static int humidity_parse_report(struct platform_device *pdev,
 						&st->scale_pre_decml,
 						&st->scale_post_decml);
 
-	/* Set Sensitivity field ids, when there is no individual modifier */
-	if (st->common_attributes.sensitivity.index < 0)
-		sensor_hub_input_get_attribute_info(hsdev,
-			HID_FEATURE_REPORT, usage_id,
-			HID_USAGE_SENSOR_DATA_MOD_CHANGE_SENSITIVITY_ABS |
-			HID_USAGE_SENSOR_ATMOSPHERIC_HUMIDITY,
-			&st->common_attributes.sensitivity);
-
 	return ret;
 }
 
@@ -212,7 +209,9 @@ static int hid_humidity_probe(struct platform_device *pdev)
 
 	ret = hid_sensor_parse_common_attributes(hsdev,
 					HID_USAGE_SENSOR_HUMIDITY,
-					&humid_st->common_attributes);
+					&humid_st->common_attributes,
+					humidity_sensitivity_addresses,
+					ARRAY_SIZE(humidity_sensitivity_addresses));
 	if (ret)
 		return ret;
 
@@ -297,3 +296,4 @@ module_platform_driver(hid_humidity_platform_driver);
 MODULE_DESCRIPTION("HID Environmental humidity sensor");
 MODULE_AUTHOR("Song Hongyan <hongyan.song@intel.com>");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS(IIO_HID);

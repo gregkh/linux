@@ -128,7 +128,6 @@ struct mvebu_uart {
 	struct uart_port *port;
 	struct clk *clk;
 	int irq[UART_IRQ_COUNT];
-	unsigned char __iomem *nb;
 	struct mvebu_uart_driver_data *data;
 #if defined(CONFIG_PM)
 	struct mvebu_uart_pm_regs pm_regs;
@@ -621,7 +620,7 @@ static void mvebu_uart_putc(struct uart_port *port, int c)
 
 static void mvebu_uart_putc_early_write(struct console *con,
 					const char *s,
-					unsigned n)
+					unsigned int n)
 {
 	struct earlycon_device *dev = con->data;
 

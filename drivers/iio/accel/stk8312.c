@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/**
+/*
  * Sensortek STK8312 3-Axis Accelerometer
  *
  * Copyright (c) 2015, Intel Corporation.
@@ -7,7 +7,6 @@
  * IIO driver for STK8312; 7-bit I2C address: 0x3D.
  */
 
-#include <linux/acpi.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -556,13 +555,12 @@ static int stk8312_probe(struct i2c_client *client,
 		data->dready_trig = devm_iio_trigger_alloc(&client->dev,
 							   "%s-dev%d",
 							   indio_dev->name,
-							   indio_dev->id);
+							   iio_device_id(indio_dev));
 		if (!data->dready_trig) {
 			ret = -ENOMEM;
 			goto err_power_off;
 		}
 
-		data->dready_trig->dev.parent = &client->dev;
 		data->dready_trig->ops = &stk8312_trigger_ops;
 		iio_trigger_set_drvdata(data->dready_trig, indio_dev);
 		ret = iio_trigger_register(data->dready_trig);
@@ -640,23 +638,17 @@ static SIMPLE_DEV_PM_OPS(stk8312_pm_ops, stk8312_suspend, stk8312_resume);
 #endif
 
 static const struct i2c_device_id stk8312_i2c_id[] = {
-	{"STK8312", 0},
+	/* Deprecated in favour of lowercase form */
+	{ "STK8312", 0 },
+	{ "stk8312", 0 },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, stk8312_i2c_id);
-
-static const struct acpi_device_id stk8312_acpi_id[] = {
-	{"STK8312", 0},
-	{}
-};
-
-MODULE_DEVICE_TABLE(acpi, stk8312_acpi_id);
 
 static struct i2c_driver stk8312_driver = {
 	.driver = {
 		.name = STK8312_DRIVER_NAME,
 		.pm = STK8312_PM_OPS,
-		.acpi_match_table = ACPI_PTR(stk8312_acpi_id),
 	},
 	.probe =            stk8312_probe,
 	.remove =           stk8312_remove,

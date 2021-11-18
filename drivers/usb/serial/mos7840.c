@@ -728,17 +728,14 @@ err:
  *	this function is called by the tty driver when it wants to know how many
  *	bytes of data we currently have outstanding in the port (data that has
  *	been written, but hasn't made it out the port yet)
- *	If successful, we return the number of bytes left to be written in the
- *	system,
- *	Otherwise we return zero.
  *****************************************************************************/
 
-static int mos7840_chars_in_buffer(struct tty_struct *tty)
+static unsigned int mos7840_chars_in_buffer(struct tty_struct *tty)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct moschip_port *mos7840_port = usb_get_serial_port_data(port);
 	int i;
-	int chars = 0;
+	unsigned int chars = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mos7840_port->pool_lock, flags);
@@ -749,7 +746,7 @@ static int mos7840_chars_in_buffer(struct tty_struct *tty)
 		}
 	}
 	spin_unlock_irqrestore(&mos7840_port->pool_lock, flags);
-	dev_dbg(&port->dev, "%s - returns %d\n", __func__, chars);
+	dev_dbg(&port->dev, "%s - returns %u\n", __func__, chars);
 	return chars;
 
 }
@@ -812,16 +809,14 @@ static void mos7840_break(struct tty_struct *tty, int break_state)
  * mos7840_write_room
  *	this function is called by the tty driver when it wants to know how many
  *	bytes of data we can accept for a specific port.
- *	If successful, we return the amount of room that we have for this port
- *	Otherwise we return a negative error number.
  *****************************************************************************/
 
-static int mos7840_write_room(struct tty_struct *tty)
+static unsigned int mos7840_write_room(struct tty_struct *tty)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct moschip_port *mos7840_port = usb_get_serial_port_data(port);
 	int i;
-	int room = 0;
+	unsigned int room = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mos7840_port->pool_lock, flags);
@@ -832,7 +827,7 @@ static int mos7840_write_room(struct tty_struct *tty)
 	spin_unlock_irqrestore(&mos7840_port->pool_lock, flags);
 
 	room = (room == 0) ? 0 : room - URB_TRANSFER_BUFFER_SIZE + 1;
-	dev_dbg(&mos7840_port->port->dev, "%s - returns %d\n", __func__, room);
+	dev_dbg(&mos7840_port->port->dev, "%s - returns %u\n", __func__, room);
 	return room;
 
 }
@@ -1382,28 +1377,6 @@ static int mos7840_get_lsr_info(struct tty_struct *tty,
 }
 
 /*****************************************************************************
- * mos7840_get_serial_info
- *      function to get information about serial port
- *****************************************************************************/
-
-static int mos7840_get_serial_info(struct tty_struct *tty,
-				   struct serial_struct *ss)
-{
-	struct usb_serial_port *port = tty->driver_data;
-	struct moschip_port *mos7840_port = usb_get_serial_port_data(port);
-
-	ss->type = PORT_16550A;
-	ss->line = mos7840_port->port->minor;
-	ss->port = mos7840_port->port->port_number;
-	ss->irq = 0;
-	ss->xmit_fifo_size = NUM_URBS * URB_TRANSFER_BUFFER_SIZE;
-	ss->baud_base = 9600;
-	ss->close_delay = 5 * HZ;
-	ss->closing_wait = 30 * HZ;
-	return 0;
-}
-
-/*****************************************************************************
  * SerialIoctl
  *	this function handles any ioctl calls to the driver
  *****************************************************************************/
@@ -1743,7 +1716,7 @@ error:
 	return status;
 }
 
-static int mos7840_port_remove(struct usb_serial_port *port)
+static void mos7840_port_remove(struct usb_serial_port *port)
 {
 	struct moschip_port *mos7840_port = usb_get_serial_port_data(port);
 
@@ -1760,8 +1733,6 @@ static int mos7840_port_remove(struct usb_serial_port *port)
 	}
 
 	kfree(mos7840_port);
-
-	return 0;
 }
 
 static struct usb_serial_driver moschip7840_4port_device = {
@@ -1783,7 +1754,6 @@ static struct usb_serial_driver moschip7840_4port_device = {
 	.probe = mos7840_probe,
 	.attach = mos7840_attach,
 	.ioctl = mos7840_ioctl,
-	.get_serial = mos7840_get_serial_info,
 	.set_termios = mos7840_set_termios,
 	.break_ctl = mos7840_break,
 	.tiocmget = mos7840_tiocmget,

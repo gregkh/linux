@@ -70,10 +70,9 @@ struct ksz_device {
 	int cpu_ports;			/* port bitmap can be cpu port */
 	int phy_port_cnt;
 	int port_cnt;
-	int reg_mib_cnt;
+	u8 reg_mib_cnt;
 	int mib_cnt;
-	int mib_port_cnt;
-	int last_port;			/* ports after that not used */
+	const struct mib_names *mib_names;
 	phy_interface_t compat_interface;
 	u32 regs_size;
 	bool phy_errata_9477;
@@ -145,7 +144,7 @@ int ksz_switch_register(struct ksz_device *dev,
 			const struct ksz_dev_ops *ops);
 void ksz_switch_remove(struct ksz_device *dev);
 
-int ksz8795_switch_register(struct ksz_device *dev);
+int ksz8_switch_register(struct ksz_device *dev);
 int ksz9477_switch_register(struct ksz_device *dev);
 
 void ksz_update_port_member(struct ksz_device *dev, int port);
@@ -164,14 +163,10 @@ int ksz_port_bridge_join(struct dsa_switch *ds, int port,
 void ksz_port_bridge_leave(struct dsa_switch *ds, int port,
 			   struct net_device *br);
 void ksz_port_fast_age(struct dsa_switch *ds, int port);
-int ksz_port_vlan_prepare(struct dsa_switch *ds, int port,
-			  const struct switchdev_obj_port_vlan *vlan);
 int ksz_port_fdb_dump(struct dsa_switch *ds, int port, dsa_fdb_dump_cb_t *cb,
 		      void *data);
-int ksz_port_mdb_prepare(struct dsa_switch *ds, int port,
-			 const struct switchdev_obj_port_mdb *mdb);
-void ksz_port_mdb_add(struct dsa_switch *ds, int port,
-		      const struct switchdev_obj_port_mdb *mdb);
+int ksz_port_mdb_add(struct dsa_switch *ds, int port,
+		     const struct switchdev_obj_port_mdb *mdb);
 int ksz_port_mdb_del(struct dsa_switch *ds, int port,
 		     const struct switchdev_obj_port_mdb *mdb);
 int ksz_enable_port(struct dsa_switch *ds, int port, struct phy_device *phy);

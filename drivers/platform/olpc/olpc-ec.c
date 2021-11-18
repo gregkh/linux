@@ -37,7 +37,6 @@ struct olpc_ec_priv {
 	struct mutex cmd_lock;
 
 	/* DCON regulator */
-	struct regulator_dev *dcon_rdev;
 	bool dcon_enabled;
 
 	/* Pending EC commands */
@@ -387,24 +386,26 @@ static int dcon_regulator_is_enabled(struct regulator_dev *rdev)
 	return ec->dcon_enabled ? 1 : 0;
 }
 
-static struct regulator_ops dcon_regulator_ops = {
+static const struct regulator_ops dcon_regulator_ops = {
 	.enable		= dcon_regulator_enable,
 	.disable	= dcon_regulator_disable,
 	.is_enabled	= dcon_regulator_is_enabled,
 };
 
 static const struct regulator_desc dcon_desc = {
-	.name	= "dcon",
-	.id	= 0,
-	.ops	= &dcon_regulator_ops,
-	.type	= REGULATOR_VOLTAGE,
-	.owner	= THIS_MODULE,
+	.name		= "dcon",
+	.id		= 0,
+	.ops		= &dcon_regulator_ops,
+	.type		= REGULATOR_VOLTAGE,
+	.owner		= THIS_MODULE,
+	.enable_time	= 25000,
 };
 
 static int olpc_ec_probe(struct platform_device *pdev)
 {
 	struct olpc_ec_priv *ec;
 	struct regulator_config config = { };
+	struct regulator_dev *regulator;
 	int err;
 
 	if (!ec_driver)
@@ -432,11 +433,10 @@ static int olpc_ec_probe(struct platform_device *pdev)
 	config.dev = pdev->dev.parent;
 	config.driver_data = ec;
 	ec->dcon_enabled = true;
-	ec->dcon_rdev = devm_regulator_register(&pdev->dev, &dcon_desc,
-								&config);
-	if (IS_ERR(ec->dcon_rdev)) {
+	regulator = devm_regulator_register(&pdev->dev, &dcon_desc, &config);
+	if (IS_ERR(regulator)) {
 		dev_err(&pdev->dev, "failed to register DCON regulator\n");
-		err = PTR_ERR(ec->dcon_rdev);
+		err = PTR_ERR(regulator);
 		goto error;
 	}
 
