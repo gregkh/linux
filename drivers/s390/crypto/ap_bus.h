@@ -151,7 +151,6 @@ void ap_driver_unregister(struct ap_driver *);
 
 struct ap_device {
 	struct device device;
-	struct ap_driver *drv;		/* Pointer to AP device driver. */
 	int device_type;		/* AP device type. */
 };
 
@@ -159,7 +158,6 @@ struct ap_device {
 
 struct ap_card {
 	struct ap_device ap_dev;
-	void *private;			/* ap driver private pointer. */
 	int raw_hwtype;			/* AP raw hardware type. */
 	unsigned int functions;		/* AP device function bitfield. */
 	int queue_depth;		/* AP queue depth.*/
@@ -176,7 +174,6 @@ struct ap_queue {
 	struct hlist_node hnode;	/* Node for the ap_queues hashtable */
 	struct ap_card *card;		/* Ptr to assoc. AP card. */
 	spinlock_t lock;		/* Per device lock. */
-	void *private;			/* ap driver private pointer. */
 	enum ap_dev_state dev_state;	/* queue device state */
 	bool config;			/* configured state */
 	ap_qid_t qid;			/* AP queue id. */

@@ -559,6 +559,7 @@ static int mbochs_probe(struct mdev_device *mdev)
 	dev_set_drvdata(&mdev->dev, mdev_state);
 	return 0;
 err_mem:
+	vfio_uninit_group_dev(&mdev_state->vdev);
 	kfree(mdev_state->pages);
 	kfree(mdev_state->vconfig);
 	kfree(mdev_state);
@@ -572,6 +573,7 @@ static void mbochs_remove(struct mdev_device *mdev)
 	struct mdev_state *mdev_state = dev_get_drvdata(&mdev->dev);
 
 	vfio_unregister_group_dev(&mdev_state->vdev);
+	vfio_uninit_group_dev(&mdev_state->vdev);
 	atomic_add(mdev_state->type->mbytes, &mbochs_avail_mbytes);
 	kfree(mdev_state->pages);
 	kfree(mdev_state->vconfig);
@@ -1276,15 +1278,7 @@ static long mbochs_ioctl(struct vfio_device *vdev, unsigned int cmd,
 	return -ENOTTY;
 }
 
-static int mbochs_open(struct vfio_device *vdev)
-{
-	if (!try_module_get(THIS_MODULE))
-		return -ENODEV;
-
-	return 0;
-}
-
-static void mbochs_close(struct vfio_device *vdev)
+static void mbochs_close_device(struct vfio_device *vdev)
 {
 	struct mdev_state *mdev_state =
 		container_of(vdev, struct mdev_state, vdev);
@@ -1304,7 +1298,6 @@ static void mbochs_close(struct vfio_device *vdev)
 	mbochs_put_pages(mdev_state);
 
 	mutex_unlock(&mdev_state->ops_lock);
-	module_put(THIS_MODULE);
 }
 
 static ssize_t
@@ -1403,8 +1396,7 @@ static struct attribute_group *mdev_type_groups[] = {
 };
 
 static const struct vfio_device_ops mbochs_dev_ops = {
-	.open = mbochs_open,
-	.release = mbochs_close,
+	.close_device = mbochs_close_device,
 	.read = mbochs_read,
 	.write = mbochs_write,
 	.ioctl = mbochs_ioctl,

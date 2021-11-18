@@ -77,21 +77,46 @@
 	};
 
 	soc {
-		bus@50000000 {
-			flash@0 {
+		bus@c4000000 {
+			flash@0,0 {
 				compatible = "intel,ixp4xx-flash", "cfi-flash";
 				bank-width = <2>;
+				/* Enable writes on the expansion bus */
+				intel,ixp4xx-eb-write-enable = <1>;
 				/*
 				 * 32 MB of Flash in 0x20000 byte blocks
-				 * mapped in at CS0.
+				 * mapped in at CS0 and CS1
 				 */
-				reg = <0x00000000 0x2000000>;
+				reg = <0 0x00000000 0x2000000>;
 
 				partitions {
 					compatible = "redboot-fis";
 					/* Eraseblock at 0x1fe0000 */
 					fis-index-block = <0xff>;
 				};
+			};
+			ide@3,0 {
+				compatible = "intel,ixp4xx-compact-flash";
+				/*
+				 * Set up expansion bus config to a really slow timing.
+				 * The CF driver will dynamically reconfigure these timings
+				 * depending on selected PIO mode (0-4).
+				 */
+				intel,ixp4xx-eb-t1 = <3>; // 3 cycles extra address phase
+				intel,ixp4xx-eb-t2 = <3>; // 3 cycles extra setup phase
+				intel,ixp4xx-eb-t3 = <15>; // 15 cycles extra strobe phase
+				intel,ixp4xx-eb-t4 = <3>; // 3 cycles extra hold phase
+				intel,ixp4xx-eb-t5 = <15>; // 15 cycles extra recovery phase
+				intel,ixp4xx-eb-cycle-type = <0>; // Intel cycle type
+				intel,ixp4xx-eb-byte-access-on-halfword = <1>;
+				intel,ixp4xx-eb-mux-address-and-data = <0>;
+				intel,ixp4xx-eb-ahb-split-transfers = <0>;
+				intel,ixp4xx-eb-write-enable = <1>;
+				intel,ixp4xx-eb-byte-access = <1>;
+				/* First register set is CMD second is CTL */
+				reg = <3 0xe00000 0x40000>, <3 0xe40000 0x40000>;
+				interrupt-parent = <&gpio0>;
+				interrupts = <12 IRQ_TYPE_EDGE_RISING>;
 			};
 		};
 

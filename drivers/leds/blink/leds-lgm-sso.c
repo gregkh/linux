@@ -611,9 +611,6 @@ static void sso_led_shutdown(struct sso_led *led)
 	if (led->desc.hw_trig)
 		regmap_update_bits(priv->mmap, SSO_CON3, BIT(led->desc.pin), 0);
 
-	if (led->gpiod)
-		devm_gpiod_put(priv->dev, led->gpiod);
-
 	led->priv = NULL;
 }
 
@@ -624,7 +621,6 @@ __sso_led_dt_parse(struct sso_led_priv *priv, struct fwnode_handle *fw_ssoled)
 	struct device *dev = priv->dev;
 	struct sso_led_desc *desc;
 	struct sso_led *led;
-	struct list_head *p;
 	const char *tmp;
 	u32 prop;
 	int ret;
@@ -714,10 +710,8 @@ __sso_led_dt_parse(struct sso_led_priv *priv, struct fwnode_handle *fw_ssoled)
 __dt_err:
 	fwnode_handle_put(fwnode_child);
 	/* unregister leds */
-	list_for_each(p, &priv->led_list) {
-		led = list_entry(p, struct sso_led, list);
+	list_for_each_entry(led, &priv->led_list, list)
 		sso_led_shutdown(led);
-	}
 
 	return ret;
 }
@@ -848,14 +842,12 @@ static int intel_sso_led_probe(struct platform_device *pdev)
 static int intel_sso_led_remove(struct platform_device *pdev)
 {
 	struct sso_led_priv *priv;
-	struct list_head *pos, *n;
-	struct sso_led *led;
+	struct sso_led *led, *n;
 
 	priv = platform_get_drvdata(pdev);
 
-	list_for_each_safe(pos, n, &priv->led_list) {
-		list_del(pos);
-		led = list_entry(pos, struct sso_led, list);
+	list_for_each_entry_safe(led, n, &priv->led_list, list) {
+		list_del(&led->list);
 		sso_led_shutdown(led);
 	}
 

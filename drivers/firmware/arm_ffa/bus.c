@@ -49,13 +49,11 @@ static int ffa_device_probe(struct device *dev)
 	return ffa_drv->probe(ffa_dev);
 }
 
-static int ffa_device_remove(struct device *dev)
+static void ffa_device_remove(struct device *dev)
 {
 	struct ffa_driver *ffa_drv = to_ffa_driver(dev->driver);
 
 	ffa_drv->remove(to_ffa_dev(dev));
-
-	return 0;
 }
 
 static int ffa_device_uevent(struct device *dev, struct kobj_uevent_env *env)

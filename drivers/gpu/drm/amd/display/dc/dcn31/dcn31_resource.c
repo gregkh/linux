@@ -1308,7 +1308,6 @@ static struct dce_hwseq *dcn31_hwseq_create(
 		hws->regs = &hwseq_reg;
 		hws->shifts = &hwseq_shift;
 		hws->masks = &hwseq_mask;
-		hws->wa.early_riommu_invalidation = true;
 	}
 	return hws;
 }

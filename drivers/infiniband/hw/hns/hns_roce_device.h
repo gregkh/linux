@@ -521,7 +521,7 @@ struct hns_roce_cq_table {
 };
 
 struct hns_roce_srq_table {
-	struct hns_roce_bitmap		bitmap;
+	struct hns_roce_ida		srq_ida;
 	struct xarray			xa;
 	struct hns_roce_hem_table	table;
 };
@@ -970,7 +970,7 @@ struct hns_roce_dev {
 	struct hns_roce_cmdq	cmd;
 	struct hns_roce_ida pd_ida;
 	struct hns_roce_ida xrcd_ida;
-	struct hns_roce_uar_table uar_table;
+	struct hns_roce_ida uar_ida;
 	struct hns_roce_mr_table  mr_table;
 	struct hns_roce_cq_table  cq_table;
 	struct hns_roce_srq_table srq_table;
@@ -1125,10 +1125,8 @@ static inline u8 get_tclass(const struct ib_global_route *grh)
 	       grh->traffic_class >> DSCP_SHIFT : grh->traffic_class;
 }
 
-int hns_roce_init_uar_table(struct hns_roce_dev *dev);
+void hns_roce_init_uar_table(struct hns_roce_dev *dev);
 int hns_roce_uar_alloc(struct hns_roce_dev *dev, struct hns_roce_uar *uar);
-void hns_roce_uar_free(struct hns_roce_dev *dev, struct hns_roce_uar *uar);
-void hns_roce_cleanup_uar_table(struct hns_roce_dev *dev);
 
 int hns_roce_cmd_init(struct hns_roce_dev *hr_dev);
 void hns_roce_cmd_cleanup(struct hns_roce_dev *hr_dev);
@@ -1154,19 +1152,13 @@ void hns_roce_init_pd_table(struct hns_roce_dev *hr_dev);
 void hns_roce_init_mr_table(struct hns_roce_dev *hr_dev);
 void hns_roce_init_cq_table(struct hns_roce_dev *hr_dev);
 int hns_roce_init_qp_table(struct hns_roce_dev *hr_dev);
-int hns_roce_init_srq_table(struct hns_roce_dev *hr_dev);
+void hns_roce_init_srq_table(struct hns_roce_dev *hr_dev);
 void hns_roce_init_xrcd_table(struct hns_roce_dev *hr_dev);
 
 void hns_roce_cleanup_eq_table(struct hns_roce_dev *hr_dev);
 void hns_roce_cleanup_cq_table(struct hns_roce_dev *hr_dev);
 void hns_roce_cleanup_qp_table(struct hns_roce_dev *hr_dev);
-void hns_roce_cleanup_srq_table(struct hns_roce_dev *hr_dev);
 
-int hns_roce_bitmap_alloc(struct hns_roce_bitmap *bitmap, unsigned long *obj);
-void hns_roce_bitmap_free(struct hns_roce_bitmap *bitmap, unsigned long obj);
-int hns_roce_bitmap_init(struct hns_roce_bitmap *bitmap, u32 num, u32 mask,
-			 u32 reserved_bot, u32 resetrved_top);
-void hns_roce_bitmap_cleanup(struct hns_roce_bitmap *bitmap);
 void hns_roce_cleanup_bitmap(struct hns_roce_dev *hr_dev);
 
 int hns_roce_create_ah(struct ib_ah *ah, struct rdma_ah_init_attr *init_attr,
@@ -1223,9 +1215,8 @@ int hns_roce_destroy_srq(struct ib_srq *ibsrq, struct ib_udata *udata);
 int hns_roce_alloc_xrcd(struct ib_xrcd *ib_xrcd, struct ib_udata *udata);
 int hns_roce_dealloc_xrcd(struct ib_xrcd *ib_xrcd, struct ib_udata *udata);
 
-struct ib_qp *hns_roce_create_qp(struct ib_pd *ib_pd,
-				 struct ib_qp_init_attr *init_attr,
-				 struct ib_udata *udata);
+int hns_roce_create_qp(struct ib_qp *ib_qp, struct ib_qp_init_attr *init_attr,
+		       struct ib_udata *udata);
 int hns_roce_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 		       int attr_mask, struct ib_udata *udata);
 void init_flush_work(struct hns_roce_dev *hr_dev, struct hns_roce_qp *hr_qp);

@@ -1184,7 +1184,11 @@ svm_range_map_to_gpu(struct amdgpu_device *adev, struct amdgpu_vm *vm,
 	for (i = offset; i < offset + npages; i++) {
 		last_domain = dma_addr[i] & SVM_RANGE_VRAM_DOMAIN;
 		dma_addr[i] &= ~SVM_RANGE_VRAM_DOMAIN;
-		if ((prange->start + i) < prange->last &&
+
+		/* Collect all pages in the same address range and memory domain
+		 * that can be mapped with a single call to update mapping.
+		 */
+		if (i < offset + npages - 1 &&
 		    last_domain == (dma_addr[i + 1] & SVM_RANGE_VRAM_DOMAIN))
 			continue;
 
@@ -2443,9 +2447,29 @@ svm_range_count_fault(struct amdgpu_device *adev, struct kfd_process *p,
 		WRITE_ONCE(pdd->faults, pdd->faults + 1);
 }
 
+static bool
+svm_fault_allowed(struct mm_struct *mm, uint64_t addr, bool write_fault)
+{
+	unsigned long requested = VM_READ;
+	struct vm_area_struct *vma;
+
+	if (write_fault)
+		requested |= VM_WRITE;
+
+	vma = find_vma(mm, addr << PAGE_SHIFT);
+	if (!vma || (addr << PAGE_SHIFT) < vma->vm_start) {
+		pr_debug("address 0x%llx VMA is removed\n", addr);
+		return true;
+	}
+
+	pr_debug("requested 0x%lx, vma permission flags 0x%lx\n", requested,
+		vma->vm_flags);
+	return (vma->vm_flags & requested) == requested;
+}
+
 int
 svm_range_restore_pages(struct amdgpu_device *adev, unsigned int pasid,
-			uint64_t addr)
+			uint64_t addr, bool write_fault)
 {
 	struct mm_struct *mm = NULL;
 	struct svm_range_list *svms;
@@ -2525,6 +2549,13 @@ retry_write_locked:
 	if (timestamp < AMDGPU_SVM_RANGE_RETRY_FAULT_PENDING) {
 		pr_debug("svms 0x%p [0x%lx %lx] already restored\n",
 			 svms, prange->start, prange->last);
+		goto out_unlock_range;
+	}
+
+	if (!svm_fault_allowed(mm, addr, write_fault)) {
+		pr_debug("fault addr 0x%llx no %s permission\n", addr,
+			write_fault ? "write" : "read");
+		r = -EPERM;
 		goto out_unlock_range;
 	}
 
@@ -2719,22 +2750,26 @@ svm_range_add(struct kfd_process *p, uint64_t start, uint64_t size,
 	return 0;
 }
 
-/* svm_range_best_prefetch_location - decide the best prefetch location
+/**
+ * svm_range_best_prefetch_location - decide the best prefetch location
  * @prange: svm range structure
  *
  * For xnack off:
- * If range map to single GPU, the best acutal location is prefetch loc, which
+ * If range map to single GPU, the best prefetch location is prefetch_loc, which
  * can be CPU or GPU.
  *
- * If range map to multiple GPUs, only if mGPU connection on xgmi same hive,
- * the best actual location could be prefetch_loc GPU. If mGPU connection on
- * PCIe, the best actual location is always CPU, because GPU cannot access vram
- * of other GPUs, assuming PCIe small bar (large bar support is not upstream).
+ * If range is ACCESS or ACCESS_IN_PLACE by mGPUs, only if mGPU connection on
+ * XGMI same hive, the best prefetch location is prefetch_loc GPU, othervise
+ * the best prefetch location is always CPU, because GPU can not have coherent
+ * mapping VRAM of other GPUs even with large-BAR PCIe connection.
  *
  * For xnack on:
- * The best actual location is prefetch location. If mGPU connection on xgmi
- * same hive, range map to multiple GPUs. Otherwise, the range only map to
- * actual location GPU. Other GPU access vm fault will trigger migration.
+ * If range is not ACCESS_IN_PLACE by mGPUs, the best prefetch location is
+ * prefetch_loc, other GPU access will generate vm fault and trigger migration.
+ *
+ * If range is ACCESS_IN_PLACE by mGPUs, only if mGPU connection on XGMI same
+ * hive, the best prefetch location is prefetch_loc GPU, otherwise the best
+ * prefetch location is always CPU.
  *
  * Context: Process context
  *
@@ -2754,11 +2789,6 @@ svm_range_best_prefetch_location(struct svm_range *prange)
 
 	p = container_of(prange->svms, struct kfd_process, svms);
 
-	/* xnack on */
-	if (p->xnack_enabled)
-		goto out;
-
-	/* xnack off */
 	if (!best_loc || best_loc == KFD_IOCTL_SVM_LOCATION_UNDEFINED)
 		goto out;
 
@@ -2768,8 +2798,12 @@ svm_range_best_prefetch_location(struct svm_range *prange)
 		best_loc = 0;
 		goto out;
 	}
-	bitmap_or(bitmap, prange->bitmap_access, prange->bitmap_aip,
-		  MAX_GPU_INSTANCE);
+
+	if (p->xnack_enabled)
+		bitmap_copy(bitmap, prange->bitmap_aip, MAX_GPU_INSTANCE);
+	else
+		bitmap_or(bitmap, prange->bitmap_access, prange->bitmap_aip,
+			  MAX_GPU_INSTANCE);
 
 	for_each_set_bit(gpuidx, bitmap, MAX_GPU_INSTANCE) {
 		pdd = kfd_process_device_from_gpuidx(p, gpuidx);
@@ -3063,7 +3097,8 @@ svm_range_get_attr(struct kfd_process *p, uint64_t start, uint64_t size,
 	struct svm_range *prange;
 	uint32_t prefetch_loc = KFD_IOCTL_SVM_LOCATION_UNDEFINED;
 	uint32_t location = KFD_IOCTL_SVM_LOCATION_UNDEFINED;
-	uint32_t flags = 0xffffffff;
+	uint32_t flags_and = 0xffffffff;
+	uint32_t flags_or = 0;
 	int gpuidx;
 	uint32_t i;
 
@@ -3098,12 +3133,12 @@ svm_range_get_attr(struct kfd_process *p, uint64_t start, uint64_t size,
 			get_accessible = true;
 			break;
 		case KFD_IOCTL_SVM_ATTR_SET_FLAGS:
+		case KFD_IOCTL_SVM_ATTR_CLR_FLAGS:
 			get_flags = true;
 			break;
 		case KFD_IOCTL_SVM_ATTR_GRANULARITY:
 			get_granularity = true;
 			break;
-		case KFD_IOCTL_SVM_ATTR_CLR_FLAGS:
 		case KFD_IOCTL_SVM_ATTR_ACCESS_IN_PLACE:
 		case KFD_IOCTL_SVM_ATTR_NO_ACCESS:
 			fallthrough;
@@ -3121,7 +3156,8 @@ svm_range_get_attr(struct kfd_process *p, uint64_t start, uint64_t size,
 	if (!node) {
 		pr_debug("range attrs not found return default values\n");
 		svm_range_set_default_attributes(&location, &prefetch_loc,
-						 &granularity, &flags);
+						 &granularity, &flags_and);
+		flags_or = flags_and;
 		if (p->xnack_enabled)
 			bitmap_copy(bitmap_access, svms->bitmap_supported,
 				    MAX_GPU_INSTANCE);
@@ -3167,8 +3203,10 @@ svm_range_get_attr(struct kfd_process *p, uint64_t start, uint64_t size,
 			bitmap_and(bitmap_aip, bitmap_aip,
 				   prange->bitmap_aip, MAX_GPU_INSTANCE);
 		}
-		if (get_flags)
-			flags &= prange->flags;
+		if (get_flags) {
+			flags_and &= prange->flags;
+			flags_or |= prange->flags;
+		}
 
 		if (get_granularity && prange->granularity < granularity)
 			granularity = prange->granularity;
@@ -3202,7 +3240,10 @@ fill_values:
 				attrs[i].type = KFD_IOCTL_SVM_ATTR_NO_ACCESS;
 			break;
 		case KFD_IOCTL_SVM_ATTR_SET_FLAGS:
-			attrs[i].value = flags;
+			attrs[i].value = flags_and;
+			break;
+		case KFD_IOCTL_SVM_ATTR_CLR_FLAGS:
+			attrs[i].value = ~flags_or;
 			break;
 		case KFD_IOCTL_SVM_ATTR_GRANULARITY:
 			attrs[i].value = (uint32_t)granularity;

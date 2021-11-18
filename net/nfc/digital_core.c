@@ -737,7 +737,7 @@ exit:
 	return rc;
 }
 
-static struct nfc_ops digital_nfc_ops = {
+static const struct nfc_ops digital_nfc_ops = {
 	.dev_up = digital_dev_up,
 	.dev_down = digital_dev_down,
 	.start_poll = digital_start_poll,
@@ -750,7 +750,7 @@ static struct nfc_ops digital_nfc_ops = {
 	.im_transceive = digital_in_send,
 };
 
-struct nfc_digital_dev *nfc_digital_allocate_device(struct nfc_digital_ops *ops,
+struct nfc_digital_dev *nfc_digital_allocate_device(const struct nfc_digital_ops *ops,
 					    __u32 supported_protocols,
 					    __u32 driver_capabilities,
 					    int tx_headroom, int tx_tailroom)

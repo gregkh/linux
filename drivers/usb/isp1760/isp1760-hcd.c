@@ -730,12 +730,15 @@ static int isp1760_hc_setup(struct usb_hcd *hcd)
 
 	isp1760_hcd_write(hcd, HC_SCRATCH, pattern);
 
-	/* Change bus pattern */
-	scratch = isp1760_hcd_read(hcd, HC_CHIP_ID_HIGH);
-	dev_err(hcd->self.controller, "Scratch test 0x%08x\n", scratch);
+	/*
+	 * we do not care about the read value here we just want to
+	 * change bus pattern.
+	 */
+	isp1760_hcd_read(hcd, HC_CHIP_ID_HIGH);
 	scratch = isp1760_hcd_read(hcd, HC_SCRATCH);
 	if (scratch != pattern) {
-		dev_err(hcd->self.controller, "Scratch test failed. 0x%08x\n", scratch);
+		dev_err(hcd->self.controller, "Scratch test failed. 0x%08x\n",
+			scratch);
 		return -ENODEV;
 	}
 
@@ -1852,7 +1855,7 @@ static void packetize_urb(struct usb_hcd *hcd,
 				packet_type = OUT_PID;
 			else
 				packet_type = IN_PID;
-		} else if (usb_pipebulk(urb->pipe)
+		} else if (usb_pipebulk(urb->pipe) && maxpacketsize
 				&& (urb->transfer_flags & URB_ZERO_PACKET)
 				&& !(urb->transfer_buffer_length %
 							maxpacketsize)) {
@@ -1917,7 +1920,6 @@ static int isp1760_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
 	if (list_empty(&new_qtds))
 		return -ENOMEM;
 
-	retval = 0;
 	spin_lock_irqsave(&priv->lock, spinflags);
 
 	if (!test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags)) {
@@ -1973,16 +1975,20 @@ static void kill_transfer(struct usb_hcd *hcd, struct urb *urb,
 	/* We need to forcefully reclaim the slot since some transfers never
 	   return, e.g. interrupt transfers and NAKed bulk transfers. */
 	if (usb_pipecontrol(urb->pipe) || usb_pipebulk(urb->pipe)) {
-		skip_map = isp1760_hcd_read(hcd, HC_ATL_PTD_SKIPMAP);
-		skip_map |= (1 << qh->slot);
-		isp1760_hcd_write(hcd, HC_ATL_PTD_SKIPMAP, skip_map);
-		ndelay(100);
+		if (qh->slot != -1) {
+			skip_map = isp1760_hcd_read(hcd, HC_ATL_PTD_SKIPMAP);
+			skip_map |= (1 << qh->slot);
+			isp1760_hcd_write(hcd, HC_ATL_PTD_SKIPMAP, skip_map);
+			ndelay(100);
+		}
 		priv->atl_slots[qh->slot].qh = NULL;
 		priv->atl_slots[qh->slot].qtd = NULL;
 	} else {
-		skip_map = isp1760_hcd_read(hcd, HC_INT_PTD_SKIPMAP);
-		skip_map |= (1 << qh->slot);
-		isp1760_hcd_write(hcd, HC_INT_PTD_SKIPMAP, skip_map);
+		if (qh->slot != -1) {
+			skip_map = isp1760_hcd_read(hcd, HC_INT_PTD_SKIPMAP);
+			skip_map |= (1 << qh->slot);
+			isp1760_hcd_write(hcd, HC_INT_PTD_SKIPMAP, skip_map);
+		}
 		priv->int_slots[qh->slot].qh = NULL;
 		priv->int_slots[qh->slot].qtd = NULL;
 	}
@@ -2529,17 +2535,23 @@ int __init isp1760_init_kmem_once(void)
 			SLAB_MEM_SPREAD, NULL);
 
 	if (!qtd_cachep)
-		return -ENOMEM;
+		goto destroy_urb_listitem;
 
 	qh_cachep = kmem_cache_create("isp1760_qh", sizeof(struct isp1760_qh),
 			0, SLAB_TEMPORARY | SLAB_MEM_SPREAD, NULL);
 
-	if (!qh_cachep) {
-		kmem_cache_destroy(qtd_cachep);
-		return -ENOMEM;
-	}
+	if (!qh_cachep)
+		goto destroy_qtd;
 
 	return 0;
+
+destroy_qtd:
+	kmem_cache_destroy(qtd_cachep);
+
+destroy_urb_listitem:
+	kmem_cache_destroy(urb_listitem_cachep);
+
+	return -ENOMEM;
 }
 
 void isp1760_deinit_kmem_cache(void)

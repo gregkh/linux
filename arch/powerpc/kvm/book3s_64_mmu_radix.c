@@ -44,6 +44,9 @@ unsigned long __kvmhv_copy_tofrom_guest_radix(int lpid, int pid,
 					  (to != NULL) ? __pa(to): 0,
 					  (from != NULL) ? __pa(from): 0, n);
 
+	if (eaddr & (0xFFFUL << 52))
+		return ret;
+
 	quadrant = 1;
 	if (!pid)
 		quadrant = 2;
@@ -83,7 +86,6 @@ unsigned long __kvmhv_copy_tofrom_guest_radix(int lpid, int pid,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(__kvmhv_copy_tofrom_guest_radix);
 
 static long kvmhv_copy_tofrom_guest_radix(struct kvm_vcpu *vcpu, gva_t eaddr,
 					  void *to, void *from, unsigned long n)
@@ -119,14 +121,12 @@ long kvmhv_copy_from_guest_radix(struct kvm_vcpu *vcpu, gva_t eaddr, void *to,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(kvmhv_copy_from_guest_radix);
 
 long kvmhv_copy_to_guest_radix(struct kvm_vcpu *vcpu, gva_t eaddr, void *from,
 			       unsigned long n)
 {
 	return kvmhv_copy_tofrom_guest_radix(vcpu, eaddr, NULL, from, n);
 }
-EXPORT_SYMBOL_GPL(kvmhv_copy_to_guest_radix);
 
 int kvmppc_mmu_walk_radix_tree(struct kvm_vcpu *vcpu, gva_t eaddr,
 			       struct kvmppc_pte *gpte, u64 root,

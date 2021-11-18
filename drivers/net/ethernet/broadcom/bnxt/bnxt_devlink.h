@@ -27,8 +27,8 @@ static inline struct bnxt *bnxt_get_bp_from_dl(struct devlink *dl)
 #define NVM_OFF_ENABLE_SRIOV		401
 #define NVM_OFF_NVM_CFG_VER		602
 
-#define BNXT_NVM_CFG_VER_BITS		24
-#define BNXT_NVM_CFG_VER_BYTES		4
+#define BNXT_NVM_CFG_VER_BITS		8
+#define BNXT_NVM_CFG_VER_BYTES		1
 
 #define BNXT_MSIX_VEC_MAX	512
 #define BNXT_MSIX_VEC_MIN_MAX	128

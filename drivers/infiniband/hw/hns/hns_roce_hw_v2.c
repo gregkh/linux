@@ -1248,8 +1248,7 @@ static void hns_roce_cmq_setup_basic_desc(struct hns_roce_cmq_desc *desc,
 {
 	memset((void *)desc, 0, sizeof(struct hns_roce_cmq_desc));
 	desc->opcode = cpu_to_le16(opcode);
-	desc->flag =
-		cpu_to_le16(HNS_ROCE_CMD_FLAG_NO_INTR | HNS_ROCE_CMD_FLAG_IN);
+	desc->flag = cpu_to_le16(HNS_ROCE_CMD_FLAG_IN);
 	if (is_read)
 		desc->flag |= cpu_to_le16(HNS_ROCE_CMD_FLAG_WR);
 	else
@@ -1288,16 +1287,11 @@ static int __hns_roce_cmq_send(struct hns_roce_dev *hr_dev,
 	/* Write to hardware */
 	roce_write(hr_dev, ROCEE_TX_CMQ_PI_REG, csq->head);
 
-	/* If the command is sync, wait for the firmware to write back,
-	 * if multi descriptors to be sent, use the first one to check
-	 */
-	if (le16_to_cpu(desc->flag) & HNS_ROCE_CMD_FLAG_NO_INTR) {
-		do {
-			if (hns_roce_cmq_csq_done(hr_dev))
-				break;
-			udelay(1);
-		} while (++timeout < priv->cmq.tx_timeout);
-	}
+	do {
+		if (hns_roce_cmq_csq_done(hr_dev))
+			break;
+		udelay(1);
+	} while (++timeout < priv->cmq.tx_timeout);
 
 	if (hns_roce_cmq_csq_done(hr_dev)) {
 		for (ret = 0, i = 0; i < num; i++) {
@@ -1761,8 +1755,7 @@ static int __hns_roce_set_vf_switch_param(struct hns_roce_dev *hr_dev,
 	if (ret)
 		return ret;
 
-	desc.flag =
-		cpu_to_le16(HNS_ROCE_CMD_FLAG_NO_INTR | HNS_ROCE_CMD_FLAG_IN);
+	desc.flag = cpu_to_le16(HNS_ROCE_CMD_FLAG_IN);
 	desc.flag &= cpu_to_le16(~HNS_ROCE_CMD_FLAG_WR);
 	roce_set_bit(swt->cfg, VF_SWITCH_DATA_CFG_ALW_LPBK_S, 1);
 	roce_set_bit(swt->cfg, VF_SWITCH_DATA_CFG_ALW_LCL_LPBK_S, 0);
@@ -4150,8 +4143,6 @@ static void modify_qp_init_to_init(struct ib_qp *ibqp,
 				   struct hns_roce_v2_qp_context *context,
 				   struct hns_roce_v2_qp_context *qpc_mask)
 {
-	struct hns_roce_qp *hr_qp = to_hr_qp(ibqp);
-
 	/*
 	 * In v2 engine, software pass context and context mask to hardware
 	 * when modifying qp. If software need modify some fields in context,
@@ -4175,11 +4166,6 @@ static void modify_qp_init_to_init(struct ib_qp *ibqp,
 		hr_reg_clear(qpc_mask, QPC_SRQ_EN);
 		hr_reg_write(context, QPC_SRQN, to_hr_srq(ibqp->srq)->srqn);
 		hr_reg_clear(qpc_mask, QPC_SRQN);
-	}
-
-	if (attr_mask & IB_QP_DEST_QPN) {
-		hr_reg_write(context, QPC_DQPN, hr_qp->qpn);
-		hr_reg_clear(qpc_mask, QPC_DQPN);
 	}
 }
 
@@ -5235,7 +5221,6 @@ static int hns_roce_v2_destroy_qp_common(struct hns_roce_dev *hr_dev,
 
 		if (send_cq && send_cq != recv_cq)
 			__hns_roce_v2_cq_clean(send_cq, hr_qp->qpn, NULL);
-
 	}
 
 	hns_roce_qp_remove(hr_dev, hr_qp);
@@ -6129,35 +6114,32 @@ static int hns_roce_v2_init_eq_table(struct hns_roce_dev *hr_dev)
 
 		ret = hns_roce_v2_create_eq(hr_dev, eq, eq_cmd);
 		if (ret) {
-			dev_err(dev, "eq create failed.\n");
+			dev_err(dev, "failed to create eq.\n");
 			goto err_create_eq_fail;
 		}
+	}
+
+	hr_dev->irq_workq = alloc_ordered_workqueue("hns_roce_irq_workq", 0);
+	if (!hr_dev->irq_workq) {
+		dev_err(dev, "failed to create irq workqueue.\n");
+		ret = -ENOMEM;
+		goto err_create_eq_fail;
+	}
+
+	ret = __hns_roce_request_irq(hr_dev, irq_num, comp_num, aeq_num,
+				     other_num);
+	if (ret) {
+		dev_err(dev, "failed to request irq.\n");
+		goto err_request_irq_fail;
 	}
 
 	/* enable irq */
 	hns_roce_v2_int_mask_enable(hr_dev, eq_num, EQ_ENABLE);
 
-	ret = __hns_roce_request_irq(hr_dev, irq_num, comp_num,
-				     aeq_num, other_num);
-	if (ret) {
-		dev_err(dev, "Request irq failed.\n");
-		goto err_request_irq_fail;
-	}
-
-	hr_dev->irq_workq = alloc_ordered_workqueue("hns_roce_irq_workq", 0);
-	if (!hr_dev->irq_workq) {
-		dev_err(dev, "Create irq workqueue failed!\n");
-		ret = -ENOMEM;
-		goto err_create_wq_fail;
-	}
-
 	return 0;
 
-err_create_wq_fail:
-	__hns_roce_free_irq(hr_dev);
-
 err_request_irq_fail:
-	hns_roce_v2_int_mask_enable(hr_dev, eq_num, EQ_DISABLE);
+	destroy_workqueue(hr_dev->irq_workq);
 
 err_create_eq_fail:
 	for (i -= 1; i >= 0; i--)
@@ -6377,7 +6359,6 @@ static int hns_roce_hw_v2_init_instance(struct hnae3_handle *handle)
 	}
 
 	handle->rinfo.instance_state = HNS_ROCE_STATE_INITED;
-
 
 	return 0;
 

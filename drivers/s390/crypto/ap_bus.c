@@ -213,7 +213,6 @@ static inline int ap_fetch_qci_info(struct ap_config_info *info)
  * ap_init_qci_info(): Allocate and query qci config info.
  * Does also update the static variables ap_max_domain_id
  * and ap_max_adapter_id if this info is available.
-
  */
 static void __init ap_init_qci_info(void)
 {
@@ -439,6 +438,7 @@ static enum hrtimer_restart ap_poll_timeout(struct hrtimer *unused)
 /**
  * ap_interrupt_handler() - Schedule ap_tasklet on interrupt
  * @airq: pointer to adapter interrupt descriptor
+ * @floating: ignored
  */
 static void ap_interrupt_handler(struct airq_struct *airq, bool floating)
 {
@@ -694,7 +694,7 @@ static int __ap_calc_helper(struct device *dev, void *arg)
 
 	if (is_queue_dev(dev)) {
 		pctrs->apqns++;
-		if ((to_ap_dev(dev))->drv)
+		if (dev->driver)
 			pctrs->bound++;
 	}
 
@@ -874,7 +874,6 @@ static int ap_device_probe(struct device *dev)
 			 to_ap_queue(dev)->qid);
 	spin_unlock_bh(&ap_queues_lock);
 
-	ap_dev->drv = ap_drv;
 	rc = ap_drv->probe ? ap_drv->probe(ap_dev) : -ENODEV;
 
 	if (rc) {
@@ -882,7 +881,6 @@ static int ap_device_probe(struct device *dev)
 		if (is_queue_dev(dev))
 			hash_del(&to_ap_queue(dev)->hnode);
 		spin_unlock_bh(&ap_queues_lock);
-		ap_dev->drv = NULL;
 	} else
 		ap_check_bindings_complete();
 
@@ -892,10 +890,10 @@ out:
 	return rc;
 }
 
-static int ap_device_remove(struct device *dev)
+static void ap_device_remove(struct device *dev)
 {
 	struct ap_device *ap_dev = to_ap_dev(dev);
-	struct ap_driver *ap_drv = ap_dev->drv;
+	struct ap_driver *ap_drv = to_ap_drv(dev->driver);
 
 	/* prepare ap queue device removal */
 	if (is_queue_dev(dev))
@@ -914,11 +912,8 @@ static int ap_device_remove(struct device *dev)
 	if (is_queue_dev(dev))
 		hash_del(&to_ap_queue(dev)->hnode);
 	spin_unlock_bh(&ap_queues_lock);
-	ap_dev->drv = NULL;
 
 	put_device(dev);
-
-	return 0;
 }
 
 struct ap_queue *ap_get_qdev(ap_qid_t qid)
@@ -1791,6 +1786,7 @@ static inline void ap_scan_adapter(int ap)
 /**
  * ap_scan_bus(): Scan the AP bus for new devices
  * Runs periodically, workqueue timer (ap_config_time)
+ * @unused: Unused pointer.
  */
 static void ap_scan_bus(struct work_struct *unused)
 {

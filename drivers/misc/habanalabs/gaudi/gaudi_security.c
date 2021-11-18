@@ -9584,6 +9584,7 @@ static void gaudi_init_tpc_protection_bits(struct hl_device *hdev)
 	mask |= 1U << ((mmTPC0_CFG_CFG_BASE_ADDRESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC0_CFG_CFG_SUBTRACT_VALUE & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC0_CFG_TPC_STALL & 0x7F) >> 2);
+	mask |= 1U << ((mmTPC0_CFG_ICACHE_BASE_ADDERESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC0_CFG_RD_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC0_CFG_WR_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC0_CFG_MSS_CONFIG & 0x7F) >> 2);
@@ -10038,6 +10039,7 @@ static void gaudi_init_tpc_protection_bits(struct hl_device *hdev)
 	mask |= 1U << ((mmTPC1_CFG_CFG_BASE_ADDRESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC1_CFG_CFG_SUBTRACT_VALUE & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC1_CFG_TPC_STALL & 0x7F) >> 2);
+	mask |= 1U << ((mmTPC1_CFG_ICACHE_BASE_ADDERESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC1_CFG_RD_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC1_CFG_WR_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC1_CFG_MSS_CONFIG & 0x7F) >> 2);
@@ -10491,6 +10493,7 @@ static void gaudi_init_tpc_protection_bits(struct hl_device *hdev)
 	mask |= 1U << ((mmTPC2_CFG_CFG_BASE_ADDRESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC2_CFG_CFG_SUBTRACT_VALUE & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC2_CFG_TPC_STALL & 0x7F) >> 2);
+	mask |= 1U << ((mmTPC2_CFG_ICACHE_BASE_ADDERESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC2_CFG_RD_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC2_CFG_WR_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC2_CFG_MSS_CONFIG & 0x7F) >> 2);
@@ -10944,6 +10947,7 @@ static void gaudi_init_tpc_protection_bits(struct hl_device *hdev)
 	mask |= 1U << ((mmTPC3_CFG_CFG_BASE_ADDRESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC3_CFG_CFG_SUBTRACT_VALUE & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC3_CFG_TPC_STALL & 0x7F) >> 2);
+	mask |= 1U << ((mmTPC3_CFG_ICACHE_BASE_ADDERESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC3_CFG_RD_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC3_CFG_WR_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC3_CFG_MSS_CONFIG & 0x7F) >> 2);
@@ -11397,6 +11401,7 @@ static void gaudi_init_tpc_protection_bits(struct hl_device *hdev)
 	mask |= 1U << ((mmTPC4_CFG_CFG_BASE_ADDRESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC4_CFG_CFG_SUBTRACT_VALUE & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC4_CFG_TPC_STALL & 0x7F) >> 2);
+	mask |= 1U << ((mmTPC4_CFG_ICACHE_BASE_ADDERESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC4_CFG_RD_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC4_CFG_WR_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC4_CFG_MSS_CONFIG & 0x7F) >> 2);
@@ -11850,6 +11855,7 @@ static void gaudi_init_tpc_protection_bits(struct hl_device *hdev)
 	mask |= 1U << ((mmTPC5_CFG_CFG_BASE_ADDRESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC5_CFG_CFG_SUBTRACT_VALUE & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC5_CFG_TPC_STALL & 0x7F) >> 2);
+	mask |= 1U << ((mmTPC5_CFG_ICACHE_BASE_ADDERESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC5_CFG_RD_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC5_CFG_WR_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC5_CFG_MSS_CONFIG & 0x7F) >> 2);
@@ -12305,6 +12311,7 @@ static void gaudi_init_tpc_protection_bits(struct hl_device *hdev)
 	mask |= 1U << ((mmTPC6_CFG_CFG_BASE_ADDRESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC6_CFG_CFG_SUBTRACT_VALUE & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC6_CFG_TPC_STALL & 0x7F) >> 2);
+	mask |= 1U << ((mmTPC6_CFG_ICACHE_BASE_ADDERESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC6_CFG_RD_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC6_CFG_WR_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC6_CFG_MSS_CONFIG & 0x7F) >> 2);
@@ -12760,6 +12767,7 @@ static void gaudi_init_tpc_protection_bits(struct hl_device *hdev)
 	mask |= 1U << ((mmTPC7_CFG_CFG_BASE_ADDRESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC7_CFG_CFG_SUBTRACT_VALUE & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC7_CFG_TPC_STALL & 0x7F) >> 2);
+	mask |= 1U << ((mmTPC7_CFG_ICACHE_BASE_ADDERESS_HIGH & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC7_CFG_RD_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC7_CFG_WR_RATE_LIMIT & 0x7F) >> 2);
 	mask |= 1U << ((mmTPC7_CFG_MSS_CONFIG & 0x7F) >> 2);

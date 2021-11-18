@@ -3177,8 +3177,12 @@ void dcn10_update_dchub(struct dce_hwseq *hws, struct dchub_init_data *dh_data)
 static bool dcn10_can_pipe_disable_cursor(struct pipe_ctx *pipe_ctx)
 {
 	struct pipe_ctx *test_pipe;
-	const struct rect *r1 = &pipe_ctx->plane_res.scl_data.recout, *r2;
+	const struct scaler_data *scl_data = &pipe_ctx->plane_res.scl_data;
+	const struct rect *r1 = &scl_data->recout, *r2;
 	int r1_r = r1->x + r1->width, r1_b = r1->y + r1->height, r2_r, r2_b;
+	int cur_layer = pipe_ctx->plane_state->layer_index;
+	bool upper_pipe_exists = false;
+	struct fixed31_32 one = dc_fixpt_from_int(1);
 
 	/**
 	 * Disable the cursor if there's another pipe above this with a
@@ -3196,7 +3200,16 @@ static bool dcn10_can_pipe_disable_cursor(struct pipe_ctx *pipe_ctx)
 
 		if (r1->x >= r2->x && r1->y >= r2->y && r1_r <= r2_r && r1_b <= r2_b)
 			return true;
+
+		if (test_pipe->plane_state->layer_index < cur_layer)
+			upper_pipe_exists = true;
 	}
+
+	// if plane scaled, assume an upper plane can handle cursor if it exists.
+	if (upper_pipe_exists &&
+			(scl_data->ratios.horz.value != one.value ||
+			scl_data->ratios.vert.value != one.value))
+		return true;
 
 	return false;
 }

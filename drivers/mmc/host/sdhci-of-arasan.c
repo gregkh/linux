@@ -906,6 +906,10 @@ static int arasan_zynqmp_execute_tuning(struct mmc_host *mmc, u32 opcode)
 							   NODE_SD_1;
 	int err;
 
+	/* ZynqMP SD controller does not perform auto tuning in DDR50 mode */
+	if (mmc->ios.timing == MMC_TIMING_UHS_DDR50)
+		return 0;
+
 	arasan_zynqmp_dll_reset(host, device_id);
 
 	err = sdhci_execute_tuning(mmc, opcode);
@@ -980,7 +984,7 @@ static void sdhci_arasan_update_baseclkfreq(struct sdhci_host *host)
 	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
 	const struct sdhci_arasan_soc_ctl_map *soc_ctl_map =
 		sdhci_arasan->soc_ctl_map;
-	u32 mhz = DIV_ROUND_CLOSEST(clk_get_rate(pltfm_host->clk), 1000000);
+	u32 mhz = DIV_ROUND_CLOSEST_ULL(clk_get_rate(pltfm_host->clk), 1000000);
 
 	/* Having a map is optional */
 	if (!soc_ctl_map)
@@ -1014,14 +1018,16 @@ static void arasan_dt_read_clk_phase(struct device *dev,
 {
 	struct device_node *np = dev->of_node;
 
-	int clk_phase[2] = {0};
+	u32 clk_phase[2] = {0};
+	int ret;
 
 	/*
 	 * Read Tap Delay values from DT, if the DT does not contain the
 	 * Tap Values then use the pre-defined values.
 	 */
-	if (of_property_read_variable_u32_array(np, prop, &clk_phase[0],
-						2, 0)) {
+	ret = of_property_read_variable_u32_array(np, prop, &clk_phase[0],
+						  2, 0);
+	if (ret < 0) {
 		dev_dbg(dev, "Using predefined clock phase for %s = %d %d\n",
 			prop, clk_data->clk_phase_in[timing],
 			clk_data->clk_phase_out[timing]);
@@ -1638,6 +1644,7 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 			arasan_zynqmp_execute_tuning;
 
 		sdhci_arasan->quirks |= SDHCI_ARASAN_QUIRK_CLOCK_25_BROKEN;
+		host->quirks |= SDHCI_QUIRK_MULTIBLOCK_READ_ACMD12;
 	}
 
 	arasan_dt_parse_clk_phases(dev, &sdhci_arasan->clk_data);

@@ -423,6 +423,7 @@ static void imx7_csi_configure(struct imx7_csi *csi)
 	struct v4l2_pix_format *out_pix = &vdev->fmt;
 	int width = out_pix->width;
 	u32 stride = 0;
+	u32 cr3 = BIT_FRMCNT_RST;
 	u32 cr1, cr18;
 
 	cr18 = imx7_csi_reg_read(csi, CSI_CSICR18);
@@ -466,6 +467,7 @@ static void imx7_csi_configure(struct imx7_csi *csi)
 		case MEDIA_BUS_FMT_SGBRG10_1X10:
 		case MEDIA_BUS_FMT_SGRBG10_1X10:
 		case MEDIA_BUS_FMT_SRGGB10_1X10:
+			cr3 |= BIT_TWO_8BIT_SENSOR;
 			cr18 |= BIT_MIPI_DATA_FORMAT_RAW10;
 			break;
 		case MEDIA_BUS_FMT_Y12_1X12:
@@ -473,6 +475,7 @@ static void imx7_csi_configure(struct imx7_csi *csi)
 		case MEDIA_BUS_FMT_SGBRG12_1X12:
 		case MEDIA_BUS_FMT_SGRBG12_1X12:
 		case MEDIA_BUS_FMT_SRGGB12_1X12:
+			cr3 |= BIT_TWO_8BIT_SENSOR;
 			cr18 |= BIT_MIPI_DATA_FORMAT_RAW12;
 			break;
 		case MEDIA_BUS_FMT_Y14_1X14:
@@ -480,6 +483,7 @@ static void imx7_csi_configure(struct imx7_csi *csi)
 		case MEDIA_BUS_FMT_SGBRG14_1X14:
 		case MEDIA_BUS_FMT_SGRBG14_1X14:
 		case MEDIA_BUS_FMT_SRGGB14_1X14:
+			cr3 |= BIT_TWO_8BIT_SENSOR;
 			cr18 |= BIT_MIPI_DATA_FORMAT_RAW14;
 			break;
 		/*
@@ -493,26 +497,11 @@ static void imx7_csi_configure(struct imx7_csi *csi)
 			cr18 |= BIT_MIPI_DATA_FORMAT_YUV422_8B;
 			break;
 		}
-
-		switch (out_pix->pixelformat) {
-		case V4L2_PIX_FMT_Y10:
-		case V4L2_PIX_FMT_Y12:
-		case V4L2_PIX_FMT_SBGGR8:
-		case V4L2_PIX_FMT_SGBRG8:
-		case V4L2_PIX_FMT_SGRBG8:
-		case V4L2_PIX_FMT_SRGGB8:
-		case V4L2_PIX_FMT_SBGGR16:
-		case V4L2_PIX_FMT_SGBRG16:
-		case V4L2_PIX_FMT_SGRBG16:
-		case V4L2_PIX_FMT_SRGGB16:
-			cr1 |= BIT_PIXEL_BIT;
-			break;
-		}
 	}
 
 	imx7_csi_reg_write(csi, cr1, CSI_CSICR1);
 	imx7_csi_reg_write(csi, BIT_DMA_BURST_TYPE_RFF_INCR16, CSI_CSICR2);
-	imx7_csi_reg_write(csi, BIT_FRMCNT_RST, CSI_CSICR3);
+	imx7_csi_reg_write(csi, cr3, CSI_CSICR3);
 	imx7_csi_reg_write(csi, cr18, CSI_CSICR18);
 
 	imx7_csi_reg_write(csi, (width * out_pix->height) >> 2, CSI_CSIRXCNT);

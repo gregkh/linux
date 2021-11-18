@@ -11,7 +11,6 @@
 #include <linux/pci.h>
 #include <linux/kref.h>
 #include <linux/blk-mq.h>
-#include <linux/lightnvm.h>
 #include <linux/sed-opal.h>
 #include <linux/fault-inject.h>
 #include <linux/rcupdate.h>
@@ -47,11 +46,6 @@ extern unsigned int admin_timeout;
 extern struct workqueue_struct *nvme_wq;
 extern struct workqueue_struct *nvme_reset_wq;
 extern struct workqueue_struct *nvme_delete_wq;
-
-enum {
-	NVME_NS_LBA		= 0,
-	NVME_NS_LIGHTNVM	= 1,
-};
 
 /*
  * List of workarounds for devices that required behavior not specified in
@@ -91,11 +85,6 @@ enum nvme_quirks {
 	 * The deepest sleep state should not be used.
 	 */
 	NVME_QUIRK_NO_DEEPEST_PS		= (1 << 5),
-
-	/*
-	 * Supports the LighNVM command set if indicated in vs[1].
-	 */
-	NVME_QUIRK_LIGHTNVM			= (1 << 6),
 
 	/*
 	 * Set MEDIUM priority on SQ creation
@@ -456,7 +445,6 @@ struct nvme_ns {
 	u32 ana_grpid;
 #endif
 	struct list_head siblings;
-	struct nvm_dev *ndev;
 	struct kref kref;
 	struct nvme_ns_head *head;
 
@@ -474,6 +462,7 @@ struct nvme_ns {
 #define NVME_NS_DEAD     	1
 #define NVME_NS_ANA_PENDING	2
 #define NVME_NS_FORCE_RO	3
+#define NVME_NS_READY		4
 
 	struct cdev		cdev;
 	struct device		cdev_device;
@@ -766,6 +755,7 @@ void nvme_mpath_init_ctrl(struct nvme_ctrl *ctrl);
 void nvme_mpath_uninit(struct nvme_ctrl *ctrl);
 void nvme_mpath_stop(struct nvme_ctrl *ctrl);
 bool nvme_mpath_clear_current_path(struct nvme_ns *ns);
+void nvme_mpath_revalidate_paths(struct nvme_ns *ns);
 void nvme_mpath_clear_ctrl_paths(struct nvme_ctrl *ctrl);
 void nvme_mpath_shutdown_disk(struct nvme_ns_head *head);
 
@@ -812,6 +802,9 @@ static inline void nvme_mpath_remove_disk(struct nvme_ns_head *head)
 static inline bool nvme_mpath_clear_current_path(struct nvme_ns *ns)
 {
 	return false;
+}
+static inline void nvme_mpath_revalidate_paths(struct nvme_ns *ns)
+{
 }
 static inline void nvme_mpath_clear_ctrl_paths(struct nvme_ctrl *ctrl)
 {
@@ -874,26 +867,6 @@ static inline int nvme_update_zone_info(struct nvme_ns *ns, unsigned lbaf)
 }
 #endif
 
-#ifdef CONFIG_NVM
-int nvme_nvm_register(struct nvme_ns *ns, char *disk_name, int node);
-void nvme_nvm_unregister(struct nvme_ns *ns);
-extern const struct attribute_group nvme_nvm_attr_group;
-int nvme_nvm_ioctl(struct nvme_ns *ns, unsigned int cmd, void __user *argp);
-#else
-static inline int nvme_nvm_register(struct nvme_ns *ns, char *disk_name,
-				    int node)
-{
-	return 0;
-}
-
-static inline void nvme_nvm_unregister(struct nvme_ns *ns) {};
-static inline int nvme_nvm_ioctl(struct nvme_ns *ns, unsigned int cmd,
-		void __user *argp)
-{
-	return -ENOTTY;
-}
-#endif /* CONFIG_NVM */
-
 static inline struct nvme_ns *nvme_get_ns_from_dev(struct device *dev)
 {
 	return dev_to_disk(dev)->private_data;
@@ -924,5 +897,10 @@ int nvme_execute_passthru_rq(struct request *rq);
 struct nvme_ctrl *nvme_ctrl_from_file(struct file *file);
 struct nvme_ns *nvme_find_get_ns(struct nvme_ctrl *ctrl, unsigned nsid);
 void nvme_put_ns(struct nvme_ns *ns);
+
+static inline bool nvme_multi_css(struct nvme_ctrl *ctrl)
+{
+	return (ctrl->ctrl_config & NVME_CC_CSS_MASK) == NVME_CC_CSS_CSI;
+}
 
 #endif /* _NVME_H */

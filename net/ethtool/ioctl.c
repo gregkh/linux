@@ -24,6 +24,7 @@
 #include <linux/rtnetlink.h>
 #include <linux/sched/signal.h>
 #include <linux/net.h>
+#include <linux/pm_runtime.h>
 #include <net/devlink.h>
 #include <net/xdp_sock_drv.h>
 #include <net/flow_offload.h>
@@ -1618,12 +1619,14 @@ static noinline_for_stack int ethtool_get_coalesce(struct net_device *dev,
 						   void __user *useraddr)
 {
 	struct ethtool_coalesce coalesce = { .cmd = ETHTOOL_GCOALESCE };
+	struct kernel_ethtool_coalesce kernel_coalesce = {};
 	int ret;
 
 	if (!dev->ethtool_ops->get_coalesce)
 		return -EOPNOTSUPP;
 
-	ret = dev->ethtool_ops->get_coalesce(dev, &coalesce);
+	ret = dev->ethtool_ops->get_coalesce(dev, &coalesce, &kernel_coalesce,
+					     NULL);
 	if (ret)
 		return ret;
 
@@ -1690,11 +1693,17 @@ ethtool_set_coalesce_supported(struct net_device *dev,
 static noinline_for_stack int ethtool_set_coalesce(struct net_device *dev,
 						   void __user *useraddr)
 {
+	struct kernel_ethtool_coalesce kernel_coalesce = {};
 	struct ethtool_coalesce coalesce;
 	int ret;
 
-	if (!dev->ethtool_ops->set_coalesce)
+	if (!dev->ethtool_ops->set_coalesce && !dev->ethtool_ops->get_coalesce)
 		return -EOPNOTSUPP;
+
+	ret = dev->ethtool_ops->get_coalesce(dev, &coalesce, &kernel_coalesce,
+					     NULL);
+	if (ret)
+		return ret;
 
 	if (copy_from_user(&coalesce, useraddr, sizeof(coalesce)))
 		return -EFAULT;
@@ -1702,7 +1711,8 @@ static noinline_for_stack int ethtool_set_coalesce(struct net_device *dev,
 	if (!ethtool_set_coalesce_supported(dev, &coalesce))
 		return -EOPNOTSUPP;
 
-	ret = dev->ethtool_ops->set_coalesce(dev, &coalesce);
+	ret = dev->ethtool_ops->set_coalesce(dev, &coalesce, &kernel_coalesce,
+					     NULL);
 	if (!ret)
 		ethtool_notify(dev, ETHTOOL_MSG_COALESCE_NTF, NULL);
 	return ret;
@@ -2685,15 +2695,14 @@ static int ethtool_set_fecparam(struct net_device *dev, void __user *useraddr)
 
 /* The main entry point in this file.  Called from net/core/dev_ioctl.c */
 
-int dev_ethtool(struct net *net, struct ifreq *ifr)
+int dev_ethtool(struct net *net, struct ifreq *ifr, void __user *useraddr)
 {
 	struct net_device *dev = __dev_get_by_name(net, ifr->ifr_name);
-	void __user *useraddr = ifr->ifr_data;
 	u32 ethcmd, sub_cmd;
 	int rc;
 	netdev_features_t old_features;
 
-	if (!dev || !netif_device_present(dev))
+	if (!dev)
 		return -ENODEV;
 
 	if (copy_from_user(&ethcmd, useraddr, sizeof(ethcmd)))
@@ -2749,10 +2758,18 @@ int dev_ethtool(struct net *net, struct ifreq *ifr)
 			return -EPERM;
 	}
 
+	if (dev->dev.parent)
+		pm_runtime_get_sync(dev->dev.parent);
+
+	if (!netif_device_present(dev)) {
+		rc = -ENODEV;
+		goto out;
+	}
+
 	if (dev->ethtool_ops->begin) {
 		rc = dev->ethtool_ops->begin(dev);
-		if (rc  < 0)
-			return rc;
+		if (rc < 0)
+			goto out;
 	}
 	old_features = dev->features;
 
@@ -2971,6 +2988,9 @@ int dev_ethtool(struct net *net, struct ifreq *ifr)
 
 	if (old_features != dev->features)
 		netdev_features_change(dev);
+out:
+	if (dev->dev.parent)
+		pm_runtime_put(dev->dev.parent);
 
 	return rc;
 }

@@ -553,6 +553,7 @@ static int rcar_du_remove(struct platform_device *pdev)
 	struct drm_device *ddev = &rcdu->ddev;
 
 	drm_dev_unregister(ddev);
+	drm_atomic_helper_shutdown(ddev);
 
 	drm_kms_helper_poll_fini(ddev);
 
@@ -597,8 +598,6 @@ static int rcar_du_probe(struct platform_device *pdev)
 				"failed to initialize DRM/KMS (%d)\n", ret);
 		goto error;
 	}
-
-	rcdu->ddev.irq_enabled = 1;
 
 	/*
 	 * Register the DRM device with the core and the connectors with

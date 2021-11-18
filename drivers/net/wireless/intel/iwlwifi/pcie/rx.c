@@ -1656,7 +1656,7 @@ static void iwl_pcie_irq_handle_error(struct iwl_trans *trans)
 
 	/* The STATUS_FW_ERROR bit is set in this function. This must happen
 	 * before we wake up the command caller, to ensure a proper cleanup. */
-	iwl_trans_fw_error(trans);
+	iwl_trans_fw_error(trans, false);
 
 	clear_bit(STATUS_SYNC_HCMD_ACTIVE, &trans->status);
 	wake_up(&trans->wait_command_queue);
@@ -2228,7 +2228,13 @@ irqreturn_t iwl_pcie_irq_msix_handler(int irq, void *dev_id)
 			"Microcode SW error detected. Restarting 0x%X.\n",
 			inta_fh);
 		isr_stats->sw++;
-		iwl_pcie_irq_handle_error(trans);
+		/* during FW reset flow report errors from there */
+		if (trans_pcie->fw_reset_state == FW_RESET_REQUESTED) {
+			trans_pcie->fw_reset_state = FW_RESET_ERROR;
+			wake_up(&trans_pcie->fw_reset_waitq);
+		} else {
+			iwl_pcie_irq_handle_error(trans);
+		}
 	}
 
 	/* After checking FH register check HW register */
@@ -2296,7 +2302,7 @@ irqreturn_t iwl_pcie_irq_msix_handler(int irq, void *dev_id)
 
 	if (inta_hw & MSIX_HW_INT_CAUSES_REG_RESET_DONE) {
 		IWL_DEBUG_ISR(trans, "Reset flow completed\n");
-		trans_pcie->fw_reset_done = true;
+		trans_pcie->fw_reset_state = FW_RESET_OK;
 		wake_up(&trans_pcie->fw_reset_waitq);
 	}
 

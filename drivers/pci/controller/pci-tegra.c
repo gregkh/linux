@@ -372,11 +372,6 @@ struct tegra_pcie_port {
 	struct gpio_desc *reset_gpio;
 };
 
-struct tegra_pcie_bus {
-	struct list_head list;
-	unsigned int nr;
-};
-
 static inline void afi_writel(struct tegra_pcie *pcie, u32 value,
 			      unsigned long offset)
 {
@@ -764,7 +759,7 @@ static int tegra_pcie_map_irq(const struct pci_dev *pdev, u8 slot, u8 pin)
 
 static irqreturn_t tegra_pcie_isr(int irq, void *arg)
 {
-	const char *err_msg[] = {
+	static const char * const err_msg[] = {
 		"Unknown",
 		"AXI slave error",
 		"AXI decode error",
@@ -1553,12 +1548,10 @@ static void tegra_pcie_msi_irq(struct irq_desc *desc)
 		while (reg) {
 			unsigned int offset = find_first_bit(&reg, 32);
 			unsigned int index = i * 32 + offset;
-			unsigned int irq;
+			int ret;
 
-			irq = irq_find_mapping(msi->domain->parent, index);
-			if (irq) {
-				generic_handle_irq(irq);
-			} else {
+			ret = generic_handle_domain_irq(msi->domain->parent, index);
+			if (ret) {
 				/*
 				 * that's weird who triggered this?
 				 * just clear it
@@ -2551,7 +2544,7 @@ static void *tegra_pcie_ports_seq_start(struct seq_file *s, loff_t *pos)
 	if (list_empty(&pcie->ports))
 		return NULL;
 
-	seq_printf(s, "Index  Status\n");
+	seq_puts(s, "Index  Status\n");
 
 	return seq_list_start(&pcie->ports, *pos);
 }
@@ -2588,16 +2581,16 @@ static int tegra_pcie_ports_seq_show(struct seq_file *s, void *v)
 	seq_printf(s, "%2u     ", port->index);
 
 	if (up)
-		seq_printf(s, "up");
+		seq_puts(s, "up");
 
 	if (active) {
 		if (up)
-			seq_printf(s, ", ");
+			seq_puts(s, ", ");
 
-		seq_printf(s, "active");
+		seq_puts(s, "active");
 	}
 
-	seq_printf(s, "\n");
+	seq_puts(s, "\n");
 	return 0;
 }
 
