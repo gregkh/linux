@@ -64,6 +64,15 @@ static int parse_qcomsmem_part(struct mtd_info *mtd,
 	struct mtd_partition *parts;
 	int ret, i, numparts;
 	char *name, *c;
+	uint32_t block_size = mtd->erasesize;
+
+	/*
+	 * We have no access to true hardware block size when 4K sectors
+	 * support is enabled. Use 64K as this is the most common size.
+	 */
+	if (IS_ENABLED(CONFIG_MTD_SPI_NOR_USE_4K_SECTORS)
+			&& mtd->type == MTD_NORFLASH)
+		block_size = 64 * 1024;
 
 	pr_debug("Parsing partition table info from SMEM\n");
 	ptable = qcom_smem_get(SMEM_APPS, SMEM_AARM_PARTITION_TABLE, &len);
@@ -129,9 +138,9 @@ static int parse_qcomsmem_part(struct mtd_info *mtd,
 			*c = tolower(*c);
 
 		parts[i].name = name;
-		parts[i].offset = le32_to_cpu(pentry->offset) * mtd->erasesize;
+		parts[i].offset = le32_to_cpu(pentry->offset) * block_size;
 		parts[i].mask_flags = pentry->attr;
-		parts[i].size = le32_to_cpu(pentry->length) * mtd->erasesize;
+		parts[i].size = le32_to_cpu(pentry->length) * block_size;
 		pr_debug("%d: %s offs=0x%08x size=0x%08x attr:0x%08x\n",
 			 i, pentry->name, le32_to_cpu(pentry->offset),
 			 le32_to_cpu(pentry->length), pentry->attr);
