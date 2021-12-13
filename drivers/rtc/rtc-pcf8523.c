@@ -321,6 +321,9 @@ static int pcf8523_rtc_ioctl(struct device *dev, unsigned int cmd,
 		if (value & PCF8523_CONTROL3_BLF)
 			flags |= RTC_VL_BACKUP_LOW;
 
+		if (value & PCF8523_CONTROL3_BSF)
+			flags |= RTC_VL_BACKUP_SWITCH;
+
 		ret = regmap_read(pcf8523->regmap, PCF8523_REG_SECONDS, &value);
 		if (ret < 0)
 			return ret;
@@ -329,6 +332,15 @@ static int pcf8523_rtc_ioctl(struct device *dev, unsigned int cmd,
 			flags |= RTC_VL_DATA_INVALID;
 
 		return put_user(flags, (unsigned int __user *)arg);
+
+	case RTC_VL_CLR:
+		ret = regmap_read(pcf8523->regmap, PCF8523_REG_CONTROL3, &value);
+		if (ret < 0)
+			return ret;
+
+		value &= ~PCF8523_CONTROL3_BSF;
+
+		return regmap_write(pcf8523->regmap, PCF8523_REG_CONTROL3, value);
 
 	default:
 		return -ENOIOCTLCMD;
