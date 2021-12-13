@@ -21,6 +21,7 @@
 #define REG_CONTROL3_PM_DSM (1 << 5) /* direct switching mode */
 #define REG_CONTROL3_PM_MASK 0xe0
 #define REG_CONTROL3_BLF (1 << 2) /* battery low bit, read-only */
+#define REG_CONTROL3_BSF (1 << 3)
 
 #define REG_SECONDS  0x03
 #define REG_SECONDS_OS (1 << 7)
@@ -87,7 +88,7 @@ static int pcf8523_voltage_low(struct i2c_client *client)
 	if (err < 0)
 		return err;
 
-	return !!(value & REG_CONTROL3_BLF);
+	return value;
 }
 
 static int pcf8523_load_capacitance(struct i2c_client *client)
@@ -186,7 +187,7 @@ static int pcf8523_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	err = pcf8523_voltage_low(client);
 	if (err < 0) {
 		return err;
-	} else if (err > 0) {
+	} else if (err & REG_CONTROL3_BLF) {
 		dev_err(dev, "low voltage detected, time is unreliable\n");
 		return -EINVAL;
 	}
@@ -275,6 +276,8 @@ static int pcf8523_rtc_ioctl(struct device *dev, unsigned int cmd,
 			     unsigned long arg)
 {
 	struct i2c_client *client = to_i2c_client(dev);
+	unsigned int flags = 0;
+	u8 value;
 	int ret;
 
 	switch (cmd) {
@@ -282,10 +285,23 @@ static int pcf8523_rtc_ioctl(struct device *dev, unsigned int cmd,
 		ret = pcf8523_voltage_low(client);
 		if (ret < 0)
 			return ret;
-		if (ret)
-			ret = RTC_VL_BACKUP_LOW;
 
-		return put_user(ret, (unsigned int __user *)arg);
+		if (ret & REG_CONTROL3_BLF)
+			flags |= RTC_VL_BACKUP_LOW;
+
+		if (ret & REG_CONTROL3_BSF)
+			flags |= RTC_VL_BACKUP_SWITCH;
+
+		return put_user(flags, (unsigned int __user *)arg);
+
+	case RTC_VL_CLR:
+		ret = pcf8523_read(client, REG_CONTROL3, &value);
+		if (ret < 0)
+			return ret;
+
+		value &= ~REG_CONTROL3_BSF;
+
+		return pcf8523_write(client, REG_CONTROL3, value);
 
 	default:
 		return -ENOIOCTLCMD;
