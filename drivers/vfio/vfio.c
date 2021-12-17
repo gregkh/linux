@@ -745,7 +745,7 @@ static struct vfio_group *vfio_group_find_or_alloc(struct device *dev)
 
 	iommu_group = iommu_group_get(dev);
 #ifdef CONFIG_VFIO_NOIOMMU
-	if (!iommu_group && noiommu && !iommu_present(dev->bus)) {
+	if (!iommu_group && noiommu && !iommu_present(dev)) {
 		/*
 		 * With noiommu enabled, create an IOMMU group for devices that
 		 * don't already have one and don't have an iommu_ops on their

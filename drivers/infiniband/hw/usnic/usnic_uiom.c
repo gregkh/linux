@@ -439,7 +439,7 @@ void usnic_uiom_reg_release(struct usnic_uiom_reg *uiomr)
 	__usnic_uiom_release_tail(uiomr);
 }
 
-struct usnic_uiom_pd *usnic_uiom_alloc_pd(void)
+struct usnic_uiom_pd *usnic_uiom_alloc_pd(struct device *dev)
 {
 	struct usnic_uiom_pd *pd;
 	void *domain;
@@ -448,7 +448,7 @@ struct usnic_uiom_pd *usnic_uiom_alloc_pd(void)
 	if (!pd)
 		return ERR_PTR(-ENOMEM);
 
-	pd->domain = domain = iommu_domain_alloc(&pci_bus_type);
+	pd->domain = domain = iommu_domain_alloc(dev);
 	if (!domain) {
 		usnic_err("Failed to allocate IOMMU domain");
 		kfree(pd);
@@ -483,7 +483,7 @@ int usnic_uiom_attach_dev_to_pd(struct usnic_uiom_pd *pd, struct device *dev)
 	if (err)
 		goto out_free_dev;
 
-	if (!iommu_capable(dev->bus, IOMMU_CAP_CACHE_COHERENCY)) {
+	if (!iommu_capable(dev, IOMMU_CAP_CACHE_COHERENCY)) {
 		usnic_err("IOMMU of %s does not support cache coherency\n",
 				dev_name(dev));
 		err = -EINVAL;
@@ -555,14 +555,4 @@ out:
 void usnic_uiom_free_dev_list(struct device **devs)
 {
 	kfree(devs);
-}
-
-int usnic_uiom_init(char *drv_name)
-{
-	if (!iommu_present(&pci_bus_type)) {
-		usnic_err("IOMMU required but not present or enabled.  USNIC QPs will not function w/o enabling IOMMU\n");
-		return -EPERM;
-	}
-
-	return 0;
 }

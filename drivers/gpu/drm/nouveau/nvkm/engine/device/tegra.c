@@ -123,8 +123,8 @@ nvkm_device_tegra_probe_iommu(struct nvkm_device_tegra *tdev)
 
 	mutex_init(&tdev->iommu.mutex);
 
-	if (iommu_present(&platform_bus_type)) {
-		tdev->iommu.domain = iommu_domain_alloc(&platform_bus_type);
+	if (iommu_present(dev)) {
+		tdev->iommu.domain = iommu_domain_alloc(dev);
 		if (!tdev->iommu.domain)
 			goto error;
 

@@ -259,7 +259,7 @@ static struct iommu_domain *host1x_iommu_attach(struct host1x *host)
 		if (err < 0)
 			goto put_group;
 
-		host->domain = iommu_domain_alloc(&platform_bus_type);
+		host->domain = iommu_domain_alloc(host->dev);
 		if (!host->domain) {
 			err = -ENOMEM;
 			goto put_cache;

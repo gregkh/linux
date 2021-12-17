@@ -78,7 +78,7 @@ int tegra_vde_iommu_init(struct tegra_vde *vde)
 		arm_iommu_release_mapping(mapping);
 	}
 #endif
-	vde->domain = iommu_domain_alloc(&platform_bus_type);
+	vde->domain = iommu_domain_alloc(dev);
 	if (!vde->domain) {
 		err = -ENOMEM;
 		goto put_group;

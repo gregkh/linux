@@ -312,7 +312,7 @@ static u32 malidp_get_pgsize_bitmap(struct malidp_plane *mp)
 {
 	u32 pgsize_bitmap = 0;
 
-	if (iommu_present(&platform_bus_type)) {
+	if (iommu_present(mp->base.dev->dev)) {
 		struct iommu_domain *mmu_dom =
 			iommu_get_domain_for_dev(mp->base.dev->dev);
 

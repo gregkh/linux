@@ -1751,7 +1751,7 @@ static void snd_emu10k1_detect_iommu(struct snd_emu10k1 *emu)
 
 	emu->iommu_workaround = false;
 
-	if (!iommu_present(emu->card->dev->bus))
+	if (!iommu_present(emu->card->dev))
 		return;
 
 	domain = iommu_get_domain_for_dev(emu->card->dev);

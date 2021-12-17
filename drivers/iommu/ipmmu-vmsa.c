@@ -795,7 +795,7 @@ static int ipmmu_init_arm_mapping(struct device *dev)
 	if (!mmu->mapping) {
 		struct dma_iommu_mapping *mapping;
 
-		mapping = arm_iommu_create_mapping(&platform_bus_type,
+		mapping = arm_iommu_create_mapping(dev,
 						   SZ_1G, SZ_2G);
 		if (IS_ERR(mapping)) {
 			dev_err(mmu->dev, "failed to create ARM IOMMU mapping\n");
@@ -1084,7 +1084,7 @@ static int ipmmu_probe(struct platform_device *pdev)
 			return ret;
 
 #if defined(CONFIG_IOMMU_DMA)
-		if (!iommu_present(&platform_bus_type))
+		if (!iommu_present(&pdev->dev))
 			bus_set_iommu(&platform_bus_type, &ipmmu_ops);
 #endif
 	}
@@ -1181,7 +1181,7 @@ static int __init ipmmu_init(void)
 		return ret;
 
 #if defined(CONFIG_ARM) && !defined(CONFIG_IOMMU_DMA)
-	if (!iommu_present(&platform_bus_type))
+	if (!iommu_present(np->fwnode.dev))
 		bus_set_iommu(&platform_bus_type, &ipmmu_ops);
 #endif
 

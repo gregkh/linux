@@ -140,7 +140,7 @@ static void efx_init_rx_recycle_ring(struct efx_rx_queue *rx_queue)
 #ifdef CONFIG_PPC64
 	bufs_in_recycle_ring = EFX_RECYCLE_RING_SIZE_IOMMU;
 #else
-	if (iommu_present(&pci_bus_type))
+	if (iommu_present(&efx->pci_dev->dev))
 		bufs_in_recycle_ring = EFX_RECYCLE_RING_SIZE_IOMMU;
 	else
 		bufs_in_recycle_ring = EFX_RECYCLE_RING_SIZE_NOIOMMU;

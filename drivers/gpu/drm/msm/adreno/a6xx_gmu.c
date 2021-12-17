@@ -1189,7 +1189,7 @@ static int a6xx_gmu_memory_probe(struct a6xx_gmu *gmu)
 	struct iommu_domain *domain;
 	struct msm_mmu *mmu;
 
-	domain = iommu_domain_alloc(&platform_bus_type);
+	domain = iommu_domain_alloc(gmu->dev);
 	if (!domain)
 		return -ENODEV;
 

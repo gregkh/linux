@@ -101,6 +101,12 @@ static inline bool iommu_is_dma_domain(struct iommu_domain *domain)
 	return domain->type & __IOMMU_DOMAIN_DMA_API;
 }
 
+struct group_device {
+	struct list_head list;
+	struct device *dev;
+	char *name;
+};
+
 enum iommu_cap {
 	IOMMU_CAP_CACHE_COHERENCY,	/* IOMMU can enforce cache coherent DMA
 					   transactions */
@@ -411,9 +417,9 @@ static inline void iommu_iotlb_gather_init(struct iommu_iotlb_gather *gather)
 
 extern int bus_set_iommu(struct bus_type *bus, const struct iommu_ops *ops);
 extern int bus_iommu_probe(struct bus_type *bus);
-extern bool iommu_present(struct bus_type *bus);
-extern bool iommu_capable(struct bus_type *bus, enum iommu_cap cap);
-extern struct iommu_domain *iommu_domain_alloc(struct bus_type *bus);
+extern bool iommu_present(struct device *dev);
+extern bool iommu_capable(struct device *dev, enum iommu_cap cap);
+extern struct iommu_domain *iommu_domain_alloc(struct device *dev);
 extern struct iommu_group *iommu_group_get_by_id(int id);
 extern void iommu_domain_free(struct iommu_domain *domain);
 extern int iommu_attach_device(struct iommu_domain *domain,
@@ -478,6 +484,7 @@ extern int iommu_group_add_device(struct iommu_group *group,
 extern void iommu_group_remove_device(struct device *dev);
 extern int iommu_group_for_each_dev(struct iommu_group *group, void *data,
 				    int (*fn)(struct device *, void *));
+extern struct group_device *iommu_group_get_dev(struct iommu_group *group);
 extern struct iommu_group *iommu_group_get(struct device *dev);
 extern struct iommu_group *iommu_group_ref_get(struct iommu_group *group);
 extern void iommu_group_put(struct iommu_group *group);
@@ -685,22 +692,23 @@ u32 iommu_sva_get_pasid(struct iommu_sva *handle);
 
 struct iommu_ops {};
 struct iommu_group {};
+struct group_device {};
 struct iommu_fwspec {};
 struct iommu_device {};
 struct iommu_fault_param {};
 struct iommu_iotlb_gather {};
 
-static inline bool iommu_present(struct bus_type *bus)
+static inline bool iommu_present(struct device *dev)
 {
 	return false;
 }
 
-static inline bool iommu_capable(struct bus_type *bus, enum iommu_cap cap)
+static inline bool iommu_capable(struct device *dev, enum iommu_cap cap)
 {
 	return false;
 }
 
-static inline struct iommu_domain *iommu_domain_alloc(struct bus_type *bus)
+static inline struct iommu_domain *iommu_domain_alloc(struct device *dev)
 {
 	return NULL;
 }
@@ -866,6 +874,11 @@ static inline int iommu_group_for_each_dev(struct iommu_group *group,
 					   int (*fn)(struct device *, void *))
 {
 	return -ENODEV;
+}
+
+static inline struct group_device *iommu_group_get_dev(struct iommu_group *group)
+{
+	return NULL;
 }
 
 static inline struct iommu_group *iommu_group_get(struct device *dev)

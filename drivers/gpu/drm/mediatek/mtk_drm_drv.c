@@ -210,7 +210,7 @@ static int mtk_drm_kms_init(struct drm_device *drm)
 	struct device *dma_dev;
 	int ret;
 
-	if (!iommu_present(&platform_bus_type))
+	if (!iommu_present(drm->dev))
 		return -EPROBE_DEFER;
 
 	pdev = of_find_device_by_node(private->mutex_node);

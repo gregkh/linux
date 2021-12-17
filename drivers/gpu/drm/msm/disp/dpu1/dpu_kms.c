@@ -915,7 +915,7 @@ static int _dpu_kms_mmu_init(struct dpu_kms *dpu_kms)
 	struct msm_gem_address_space *aspace;
 	struct msm_mmu *mmu;
 
-	domain = iommu_domain_alloc(&platform_bus_type);
+	domain = iommu_domain_alloc(dpu_kms->dev->dev);
 	if (!domain)
 		return 0;
 

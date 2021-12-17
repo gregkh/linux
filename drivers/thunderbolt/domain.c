@@ -263,7 +263,7 @@ static ssize_t iommu_dma_protection_show(struct device *dev,
 	 * enabled and ACPI DMAR table has DMAR_PLATFORM_OPT_IN set.
 	 */
 	return sprintf(buf, "%d\n",
-		       iommu_present(&pci_bus_type) && dmar_platform_optin());
+		       iommu_present(dev) && dmar_platform_optin());
 }
 static DEVICE_ATTR_RO(iommu_dma_protection);
 

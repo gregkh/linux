@@ -775,7 +775,7 @@ int amd_iommu_init_device(struct pci_dev *pdev, int pasids)
 	if (dev_state->states == NULL)
 		goto out_free_dev_state;
 
-	dev_state->domain = iommu_domain_alloc(&pci_bus_type);
+	dev_state->domain = iommu_domain_alloc(&pdev->dev);
 	if (dev_state->domain == NULL)
 		goto out_free_states;
 

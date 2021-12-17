@@ -6191,7 +6191,7 @@ static int gaudi_debugfs_read32(struct hl_device *hdev, u64 addr,
 		if (hbm_bar_addr == U64_MAX)
 			rc = -EIO;
 	} else if (addr >= HOST_PHYS_BASE && addr < host_phys_end &&
-			user_address && !iommu_present(&pci_bus_type)) {
+			user_address && !iommu_present(&&hdev->pdev->dev)) {
 		*val = *(u32 *) phys_to_virt(addr - HOST_PHYS_BASE);
 	} else {
 		rc = -EFAULT;
@@ -6242,7 +6242,7 @@ static int gaudi_debugfs_write32(struct hl_device *hdev, u64 addr,
 		if (hbm_bar_addr == U64_MAX)
 			rc = -EIO;
 	} else if (addr >= HOST_PHYS_BASE && addr < host_phys_end &&
-			user_address && !iommu_present(&pci_bus_type)) {
+			user_address && !iommu_present(&&hdev->pdev->dev)) {
 		*(u32 *) phys_to_virt(addr - HOST_PHYS_BASE) = val;
 	} else {
 		rc = -EFAULT;
@@ -6297,7 +6297,7 @@ static int gaudi_debugfs_read64(struct hl_device *hdev, u64 addr,
 		if (hbm_bar_addr == U64_MAX)
 			rc = -EIO;
 	} else if (addr >= HOST_PHYS_BASE && addr < host_phys_end &&
-			user_address && !iommu_present(&pci_bus_type)) {
+			user_address && !iommu_present(&&hdev->pdev->dev)) {
 		*val = *(u64 *) phys_to_virt(addr - HOST_PHYS_BASE);
 	} else {
 		rc = -EFAULT;
@@ -6351,7 +6351,7 @@ static int gaudi_debugfs_write64(struct hl_device *hdev, u64 addr,
 		if (hbm_bar_addr == U64_MAX)
 			rc = -EIO;
 	} else if (addr >= HOST_PHYS_BASE && addr < host_phys_end &&
-			user_address && !iommu_present(&pci_bus_type)) {
+			user_address && !iommu_present(&&hdev->pdev->dev)) {
 		*(u64 *) phys_to_virt(addr - HOST_PHYS_BASE) = val;
 	} else {
 		rc = -EFAULT;

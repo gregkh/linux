@@ -4218,7 +4218,7 @@ static int goya_debugfs_read32(struct hl_device *hdev, u64 addr,
 			rc = -EIO;
 
 	} else if (addr >= HOST_PHYS_BASE && addr < host_phys_end &&
-			user_address && !iommu_present(&pci_bus_type)) {
+			user_address && !iommu_present(&hdev->pdev->dev)) {
 		*val = *(u32 *) phys_to_virt(addr - HOST_PHYS_BASE);
 
 	} else {
@@ -4278,7 +4278,7 @@ static int goya_debugfs_write32(struct hl_device *hdev, u64 addr,
 			rc = -EIO;
 
 	} else if (addr >= HOST_PHYS_BASE && addr < host_phys_end &&
-			user_address && !iommu_present(&pci_bus_type)) {
+			user_address && !iommu_present(&hdev->pdev->dev)) {
 		*(u32 *) phys_to_virt(addr - HOST_PHYS_BASE) = val;
 
 	} else {
@@ -4327,7 +4327,7 @@ static int goya_debugfs_read64(struct hl_device *hdev, u64 addr,
 			rc = -EIO;
 
 	} else if (addr >= HOST_PHYS_BASE && addr < host_phys_end &&
-			user_address && !iommu_present(&pci_bus_type)) {
+			user_address && !iommu_present(&hdev->pdev->dev)) {
 		*val = *(u64 *) phys_to_virt(addr - HOST_PHYS_BASE);
 
 	} else {
@@ -4374,7 +4374,7 @@ static int goya_debugfs_write64(struct hl_device *hdev, u64 addr,
 			rc = -EIO;
 
 	} else if (addr >= HOST_PHYS_BASE && addr < host_phys_end &&
-			user_address && !iommu_present(&pci_bus_type)) {
+			user_address && !iommu_present(&hdev->pdev->dev)) {
 		*(u64 *) phys_to_virt(addr - HOST_PHYS_BASE) = val;
 
 	} else {

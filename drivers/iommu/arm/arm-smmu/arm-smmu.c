@@ -2025,31 +2025,23 @@ static int arm_smmu_bus_init(struct iommu_ops *ops)
 	int err;
 
 	/* Oh, for a proper bus abstraction */
-	if (!iommu_present(&platform_bus_type)) {
-		err = bus_set_iommu(&platform_bus_type, ops);
-		if (err)
-			return err;
-	}
+	err = bus_set_iommu(&platform_bus_type, ops);
+	if (err)
+		return err;
 #ifdef CONFIG_ARM_AMBA
-	if (!iommu_present(&amba_bustype)) {
-		err = bus_set_iommu(&amba_bustype, ops);
-		if (err)
-			goto err_reset_platform_ops;
-	}
+	err = bus_set_iommu(&amba_bustype, ops);
+	if (err)
+		goto err_reset_platform_ops;
 #endif
 #ifdef CONFIG_PCI
-	if (!iommu_present(&pci_bus_type)) {
-		err = bus_set_iommu(&pci_bus_type, ops);
-		if (err)
-			goto err_reset_amba_ops;
-	}
+	err = bus_set_iommu(&pci_bus_type, ops);
+	if (err)
+		goto err_reset_amba_ops;
 #endif
 #ifdef CONFIG_FSL_MC_BUS
-	if (!iommu_present(&fsl_mc_bus_type)) {
-		err = bus_set_iommu(&fsl_mc_bus_type, ops);
-		if (err)
-			goto err_reset_pci_ops;
-	}
+	err = bus_set_iommu(&fsl_mc_bus_type, ops);
+	if (err)
+		goto err_reset_pci_ops;
 #endif
 	return 0;
 

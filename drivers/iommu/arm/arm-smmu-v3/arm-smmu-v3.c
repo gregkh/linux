@@ -1348,6 +1348,7 @@ static void arm_smmu_write_strtab_ent(struct arm_smmu_master *master, u32 sid,
 			FIELD_PREP(STRTAB_STE_0_CFG, STRTAB_STE_0_CFG_S1_TRANS) |
 			FIELD_PREP(STRTAB_STE_0_S1CDMAX, s1_cfg->s1cdmax) |
 			FIELD_PREP(STRTAB_STE_0_S1FMT, s1_cfg->s1fmt);
+		dst[1] |= cpu_to_le64(FIELD_PREP(GENMASK_ULL(57, 56), 0x2));
 	}
 
 	if (s2_cfg) {
@@ -3725,24 +3726,19 @@ static int arm_smmu_set_bus_ops(struct iommu_ops *ops)
 	int err;
 
 #ifdef CONFIG_PCI
-	if (pci_bus_type.iommu_ops != ops) {
-		err = bus_set_iommu(&pci_bus_type, ops);
-		if (err)
-			return err;
-	}
+	err = bus_set_iommu(&pci_bus_type, ops);
+	if (err)
+		return err;
 #endif
 #ifdef CONFIG_ARM_AMBA
-	if (amba_bustype.iommu_ops != ops) {
-		err = bus_set_iommu(&amba_bustype, ops);
-		if (err)
-			goto err_reset_pci_ops;
-	}
+	err = bus_set_iommu(&amba_bustype, ops);
+	if (err)
+		goto err_reset_pci_ops;
 #endif
-	if (platform_bus_type.iommu_ops != ops) {
-		err = bus_set_iommu(&platform_bus_type, ops);
-		if (err)
-			goto err_reset_amba_ops;
-	}
+
+	err = bus_set_iommu(&platform_bus_type, ops);
+	if (err)
+		goto err_reset_amba_ops;
 
 	return 0;
 

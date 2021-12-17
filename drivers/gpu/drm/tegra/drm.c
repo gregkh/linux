@@ -1125,8 +1125,8 @@ static int host1x_drm_probe(struct host1x_device *dev)
 		goto put;
 	}
 
-	if (host1x_drm_wants_iommu(dev) && iommu_present(&platform_bus_type)) {
-		tegra->domain = iommu_domain_alloc(&platform_bus_type);
+	if (host1x_drm_wants_iommu(dev) && iommu_present(&dev->dev)) {
+		tegra->domain = iommu_domain_alloc(&dev->dev);
 		if (!tegra->domain) {
 			err = -ENOMEM;
 			goto free;

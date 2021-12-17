@@ -109,7 +109,7 @@ static int rproc_enable_iommu(struct rproc *rproc)
 		return 0;
 	}
 
-	domain = iommu_domain_alloc(dev->bus);
+	domain = iommu_domain_alloc(dev);
 	if (!domain) {
 		dev_err(dev, "can't alloc iommu domain\n");
 		return -ENOMEM;

@@ -48,6 +48,7 @@ struct rockchip_drm_private {
 	struct iommu_domain *domain;
 	struct mutex mm_lock;
 	struct drm_mm mm;
+	struct device *point_to_iommu_master;
 };
 
 int rockchip_drm_dma_attach_device(struct drm_device *drm_dev,

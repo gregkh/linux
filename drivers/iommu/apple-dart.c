@@ -825,18 +825,14 @@ static int apple_dart_set_bus_ops(const struct iommu_ops *ops)
 {
 	int ret;
 
-	if (!iommu_present(&platform_bus_type)) {
-		ret = bus_set_iommu(&platform_bus_type, ops);
-		if (ret)
-			return ret;
-	}
+	ret = bus_set_iommu(&platform_bus_type, ops);
+	if (ret)
+		return ret;
 #ifdef CONFIG_PCI
-	if (!iommu_present(&pci_bus_type)) {
-		ret = bus_set_iommu(&pci_bus_type, ops);
-		if (ret) {
-			bus_set_iommu(&platform_bus_type, NULL);
-			return ret;
-		}
+	ret = bus_set_iommu(&pci_bus_type, ops);
+	if (ret) {
+		bus_set_iommu(&platform_bus_type, NULL);
+		return ret;
 	}
 #endif
 	return 0;

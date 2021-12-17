@@ -1338,7 +1338,7 @@ static struct mdp5_cfg_platform *mdp5_get_config(struct platform_device *dev)
 {
 	static struct mdp5_cfg_platform config = {};
 
-	config.iommu = iommu_domain_alloc(&platform_bus_type);
+	config.iommu = iommu_domain_alloc(&dev->dev);
 
 	return &config;
 }

@@ -1660,7 +1660,7 @@ a6xx_create_address_space(struct msm_gpu *gpu, struct platform_device *pdev)
 	struct msm_gem_address_space *aspace;
 	u64 start, size;
 
-	iommu = iommu_domain_alloc(&platform_bus_type);
+	iommu = iommu_domain_alloc(&pdev->dev);
 	if (!iommu)
 		return NULL;
 

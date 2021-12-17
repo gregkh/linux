@@ -2165,6 +2165,7 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 	struct iommu_domain_geometry *geo;
 	LIST_HEAD(iova_copy);
 	LIST_HEAD(group_resv_regions);
+	struct group_device *device;
 	int ret = -EINVAL;
 
 	mutex_lock(&iommu->lock);
@@ -2203,7 +2204,8 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 		goto out_free_group;
 
 	ret = -EIO;
-	domain->domain = iommu_domain_alloc(bus);
+	device = iommu_group_get_dev(iommu_group);
+	domain->domain = iommu_domain_alloc(device->dev);
 	if (!domain->domain)
 		goto out_free_domain;
 
@@ -2258,7 +2260,7 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 	list_add(&group->next, &domain->group_list);
 
 	msi_remap = irq_domain_check_msi_remap() ||
-		    iommu_capable(bus, IOMMU_CAP_INTR_REMAP);
+		    iommu_capable(device->dev, IOMMU_CAP_INTR_REMAP);
 
 	if (!allow_unsafe_interrupts && !msi_remap) {
 		pr_warn("%s: No interrupt remapping support.  Use the module param \"allow_unsafe_interrupts\" to enable VFIO IOMMU support on this platform\n",
@@ -2267,7 +2269,7 @@ static int vfio_iommu_type1_attach_group(void *iommu_data,
 		goto out_detach;
 	}
 
-	if (iommu_capable(bus, IOMMU_CAP_CACHE_COHERENCY))
+	if (iommu_capable(device->dev, IOMMU_CAP_CACHE_COHERENCY))
 		domain->prot |= IOMMU_CACHE;
 
 	/*

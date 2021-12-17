@@ -15,6 +15,7 @@
 #include <linux/component.h>
 #include <linux/console.h>
 #include <linux/iommu.h>
+#include <linux/of_platform.h>
 
 #include <drm/drm_aperture.h>
 #include <drm/drm_drv.h>
@@ -37,6 +38,7 @@
 
 static bool is_support_iommu = true;
 static const struct drm_driver rockchip_drm_driver;
+static struct device *g_vopl;
 
 /*
  * Attach a (component) device to the shared drm dma mapping from master drm
@@ -82,7 +84,8 @@ static int rockchip_drm_init_iommu(struct drm_device *drm_dev)
 	if (!is_support_iommu)
 		return 0;
 
-	private->domain = iommu_domain_alloc(&platform_bus_type);
+	private->point_to_iommu_master = g_vopl;
+	private->domain = iommu_domain_alloc(private->point_to_iommu_master);
 	if (!private->domain)
 		return -ENOMEM;
 
@@ -357,6 +360,7 @@ static int rockchip_drm_platform_of_probe(struct device *dev)
 	struct device_node *port;
 	bool found = false;
 	int i;
+	struct platform_device *pd;
 
 	if (!np)
 		return -ENODEV;
@@ -386,6 +390,11 @@ static int rockchip_drm_platform_of_probe(struct device *dev)
 		}
 
 		found = true;
+
+		if (!g_vopl) {
+			pd = of_find_device_by_node(port->parent);
+			g_vopl = &pd->dev;
+		}
 
 		of_node_put(iommu);
 		of_node_put(port);

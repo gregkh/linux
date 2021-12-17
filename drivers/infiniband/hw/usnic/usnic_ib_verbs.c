@@ -444,7 +444,7 @@ int usnic_ib_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 	struct usnic_ib_pd *pd = to_upd(ibpd);
 	void *umem_pd;
 
-	umem_pd = pd->umem_pd = usnic_uiom_alloc_pd();
+	umem_pd = pd->umem_pd = usnic_uiom_alloc_pd(&ibpd->device->dev);
 	if (IS_ERR_OR_NULL(umem_pd)) {
 		return umem_pd ? PTR_ERR(umem_pd) : -ENOMEM;
 	}

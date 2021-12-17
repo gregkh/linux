@@ -889,11 +889,9 @@ static int mtk_iommu_probe(struct platform_device *pdev)
 	spin_lock_init(&data->tlb_lock);
 	list_add_tail(&data->list, &m4ulist);
 
-	if (!iommu_present(&platform_bus_type)) {
-		ret = bus_set_iommu(&platform_bus_type, &mtk_iommu_ops);
-		if (ret)
-			goto out_list_del;
-	}
+	ret = bus_set_iommu(&platform_bus_type, &mtk_iommu_ops);
+	if (ret)
+		goto out_list_del;
 
 	ret = component_master_add_with_match(dev, &mtk_iommu_com_ops, match);
 	if (ret)
@@ -921,8 +919,7 @@ static int mtk_iommu_remove(struct platform_device *pdev)
 	iommu_device_sysfs_remove(&data->iommu);
 	iommu_device_unregister(&data->iommu);
 
-	if (iommu_present(&platform_bus_type))
-		bus_set_iommu(&platform_bus_type, NULL);
+	bus_set_iommu(&platform_bus_type, NULL);
 
 	clk_disable_unprepare(data->bclk);
 	device_link_remove(data->smicomm_dev, &pdev->dev);
