@@ -60,6 +60,7 @@
 #include "devlink.h"
 #include "fw_reset.h"
 #include "lib/mlx5.h"
+#include "lib/tout.h"
 #include "fpga/core.h"
 #include "fpga/ipsec.h"
 #include "accel/ipsec.h"
@@ -178,11 +179,6 @@ static struct mlx5_profile profile[] = {
 	},
 };
 
-#define FW_INIT_TIMEOUT_MILI		2000
-#define FW_INIT_WAIT_MS			2
-#define FW_PRE_INIT_TIMEOUT_MILI	120000
-#define FW_INIT_WARN_MESSAGE_INTERVAL	20000
-
 static int fw_initializing(struct mlx5_core_dev *dev)
 {
 	return ioread32be(&dev->iseg->initializing) >> 31;
@@ -195,8 +191,6 @@ static int wait_fw_init(struct mlx5_core_dev *dev, u32 max_wait_mili,
 	unsigned long end = jiffies + msecs_to_jiffies(max_wait_mili);
 	int err = 0;
 
-	BUILD_BUG_ON(FW_PRE_INIT_TIMEOUT_MILI < FW_INIT_WARN_MESSAGE_INTERVAL);
-
 	while (fw_initializing(dev)) {
 		if (time_after(jiffies, end)) {
 			err = -EBUSY;
@@ -207,7 +201,7 @@ static int wait_fw_init(struct mlx5_core_dev *dev, u32 max_wait_mili,
 				       jiffies_to_msecs(end - warn) / 1000);
 			warn = jiffies + msecs_to_jiffies(warn_time_mili);
 		}
-		msleep(FW_INIT_WAIT_MS);
+		msleep(mlx5_tout_ms(dev, FW_PRE_INIT_WAIT));
 	}
 
 	return err;
@@ -568,7 +562,30 @@ static int handle_hca_cap(struct mlx5_core_dev *dev, void *set_ctx)
 		MLX5_SET(cmd_hca_cap, set_hca_cap, num_total_dynamic_vf_msix,
 			 MLX5_CAP_GEN_MAX(dev, num_total_dynamic_vf_msix));
 
+	if (MLX5_CAP_GEN(dev, roce_rw_supported))
+		MLX5_SET(cmd_hca_cap, set_hca_cap, roce, mlx5_is_roce_init_enabled(dev));
+
 	return set_caps(dev, set_ctx, MLX5_SET_HCA_CAP_OP_MOD_GENERAL_DEVICE);
+}
+
+/* Cached MLX5_CAP_GEN(dev, roce) can be out of sync this early in the
+ * boot process.
+ * In case RoCE cap is writable in FW and user/devlink requested to change the
+ * cap, we are yet to query the final state of the above cap.
+ * Hence, the need for this function.
+ *
+ * Returns
+ * True:
+ * 1) RoCE cap is read only in FW and already disabled
+ * OR:
+ * 2) RoCE cap is writable in FW and user/devlink requested it off.
+ *
+ * In any other case, return False.
+ */
+static bool is_roce_fw_disabled(struct mlx5_core_dev *dev)
+{
+	return (MLX5_CAP_GEN(dev, roce_rw_supported) && !mlx5_is_roce_init_enabled(dev)) ||
+		(!MLX5_CAP_GEN(dev, roce_rw_supported) && !MLX5_CAP_GEN(dev, roce));
 }
 
 static int handle_hca_cap_roce(struct mlx5_core_dev *dev, void *set_ctx)
@@ -576,7 +593,7 @@ static int handle_hca_cap_roce(struct mlx5_core_dev *dev, void *set_ctx)
 	void *set_hca_cap;
 	int err;
 
-	if (!MLX5_CAP_GEN(dev, roce))
+	if (is_roce_fw_disabled(dev))
 		return 0;
 
 	err = mlx5_core_get_caps(dev, MLX5_CAP_ROCE);
@@ -979,12 +996,15 @@ static int mlx5_function_setup(struct mlx5_core_dev *dev, bool boot)
 	if (mlx5_core_is_pf(dev))
 		pcie_print_link_status(dev->pdev);
 
+	mlx5_tout_set_def_val(dev);
+
 	/* wait for firmware to accept initialization segments configurations
 	 */
-	err = wait_fw_init(dev, FW_PRE_INIT_TIMEOUT_MILI, FW_INIT_WARN_MESSAGE_INTERVAL);
+	err = wait_fw_init(dev, mlx5_tout_ms(dev, FW_PRE_INIT_TIMEOUT),
+			   mlx5_tout_ms(dev, FW_PRE_INIT_WARN_MESSAGE_INTERVAL));
 	if (err) {
-		mlx5_core_err(dev, "Firmware over %d MS in pre-initializing state, aborting\n",
-			      FW_PRE_INIT_TIMEOUT_MILI);
+		mlx5_core_err(dev, "Firmware over %llu MS in pre-initializing state, aborting\n",
+			      mlx5_tout_ms(dev, FW_PRE_INIT_TIMEOUT));
 		return err;
 	}
 
@@ -994,10 +1014,12 @@ static int mlx5_function_setup(struct mlx5_core_dev *dev, bool boot)
 		return err;
 	}
 
-	err = wait_fw_init(dev, FW_INIT_TIMEOUT_MILI, 0);
+	mlx5_tout_query_iseg(dev);
+
+	err = wait_fw_init(dev, mlx5_tout_ms(dev, FW_INIT), 0);
 	if (err) {
-		mlx5_core_err(dev, "Firmware over %d MS in initializing state, aborting\n",
-			      FW_INIT_TIMEOUT_MILI);
+		mlx5_core_err(dev, "Firmware over %llu MS in initializing state, aborting\n",
+			      mlx5_tout_ms(dev, FW_INIT));
 		goto err_cmd_cleanup;
 	}
 
@@ -1019,6 +1041,12 @@ static int mlx5_function_setup(struct mlx5_core_dev *dev, bool boot)
 	if (err) {
 		mlx5_core_err(dev, "failed to allocate boot pages\n");
 		goto err_disable_hca;
+	}
+
+	err = mlx5_tout_query_dtor(dev);
+	if (err) {
+		mlx5_core_err(dev, "failed to read dtor\n");
+		goto reclaim_boot_pages;
 	}
 
 	err = set_hca_ctrl(dev);
@@ -1047,18 +1075,16 @@ static int mlx5_function_setup(struct mlx5_core_dev *dev, bool boot)
 
 	mlx5_set_driver_version(dev);
 
-	mlx5_start_health_poll(dev);
-
 	err = mlx5_query_hca_caps(dev);
 	if (err) {
 		mlx5_core_err(dev, "query hca failed\n");
-		goto stop_health;
+		goto reclaim_boot_pages;
 	}
+
+	mlx5_start_health_poll(dev);
 
 	return 0;
 
-stop_health:
-	mlx5_stop_health_poll(dev, boot);
 reclaim_boot_pages:
 	mlx5_reclaim_startup_pages(dev);
 err_disable_hca:
@@ -1116,8 +1142,9 @@ static int mlx5_load(struct mlx5_core_dev *dev)
 
 	err = mlx5_fw_tracer_init(dev->tracer);
 	if (err) {
-		mlx5_core_err(dev, "Failed to init FW tracer\n");
-		goto err_fw_tracer;
+		mlx5_core_err(dev, "Failed to init FW tracer %d\n", err);
+		mlx5_fw_tracer_destroy(dev->tracer);
+		dev->tracer = NULL;
 	}
 
 	mlx5_fw_reset_events_start(dev);
@@ -1125,8 +1152,9 @@ static int mlx5_load(struct mlx5_core_dev *dev)
 
 	err = mlx5_rsc_dump_init(dev);
 	if (err) {
-		mlx5_core_err(dev, "Failed to init Resource dump\n");
-		goto err_rsc_dump;
+		mlx5_core_err(dev, "Failed to init Resource dump %d\n", err);
+		mlx5_rsc_dump_destroy(dev);
+		dev->rsc_dump = NULL;
 	}
 
 	err = mlx5_fpga_device_start(dev);
@@ -1196,11 +1224,9 @@ err_tls_start:
 	mlx5_fpga_device_stop(dev);
 err_fpga_start:
 	mlx5_rsc_dump_cleanup(dev);
-err_rsc_dump:
 	mlx5_hv_vhca_cleanup(dev->hv_vhca);
 	mlx5_fw_reset_events_stop(dev);
 	mlx5_fw_tracer_cleanup(dev->tracer);
-err_fw_tracer:
 	mlx5_eq_table_destroy(dev);
 err_eq_table:
 	mlx5_irq_table_destroy(dev);
@@ -1385,6 +1411,8 @@ static const int types[] = {
 	MLX5_CAP_TLS,
 	MLX5_CAP_VDPA_EMULATION,
 	MLX5_CAP_IPSEC,
+	MLX5_CAP_PORT_SELECTION,
+	MLX5_CAP_DEV_SHAMPO,
 };
 
 static void mlx5_hca_caps_free(struct mlx5_core_dev *dev)
@@ -1443,6 +1471,12 @@ int mlx5_mdev_init(struct mlx5_core_dev *dev, int profile_idx)
 					    mlx5_debugfs_root);
 	INIT_LIST_HEAD(&priv->traps);
 
+	err = mlx5_tout_init(dev);
+	if (err) {
+		mlx5_core_err(dev, "Failed initializing timeouts, aborting\n");
+		goto err_timeout_init;
+	}
+
 	err = mlx5_health_init(dev);
 	if (err)
 		goto err_health_init;
@@ -1468,6 +1502,8 @@ err_adev_init:
 err_pagealloc_init:
 	mlx5_health_cleanup(dev);
 err_health_init:
+	mlx5_tout_cleanup(dev);
+err_timeout_init:
 	debugfs_remove(dev->priv.dbg_root);
 	mutex_destroy(&priv->pgdir_mutex);
 	mutex_destroy(&priv->alloc_mutex);
@@ -1485,6 +1521,7 @@ void mlx5_mdev_uninit(struct mlx5_core_dev *dev)
 	mlx5_adev_cleanup(dev);
 	mlx5_pagealloc_cleanup(dev);
 	mlx5_health_cleanup(dev);
+	mlx5_tout_cleanup(dev);
 	debugfs_remove_recursive(dev->priv.dbg_root);
 	mutex_destroy(&priv->pgdir_mutex);
 	mutex_destroy(&priv->alloc_mutex);
@@ -1542,8 +1579,6 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	pci_save_state(pdev);
 	devlink_register(devlink);
-	if (!mlx5_core_is_mp_slave(dev))
-		devlink_reload_enable(devlink);
 	return 0;
 
 err_init_one:
@@ -1563,7 +1598,6 @@ static void remove_one(struct pci_dev *pdev)
 	struct mlx5_core_dev *dev  = pci_get_drvdata(pdev);
 	struct devlink *devlink = priv_to_devlink(dev);
 
-	devlink_reload_disable(devlink);
 	devlink_unregister(devlink);
 	mlx5_crdump_disable(dev);
 	mlx5_drain_health_wq(dev);

@@ -5,82 +5,51 @@
 #include "adf_common_drv.h"
 #include "adf_pf2vf_msg.h"
 
-#define ADF_DH895XCC_EP_OFFSET	0x3A000
-#define ADF_DH895XCC_ERRMSK3	(ADF_DH895XCC_EP_OFFSET + 0x1C)
-#define ADF_DH895XCC_ERRMSK3_VF2PF_L_MASK(vf_mask) ((vf_mask & 0xFFFF) << 9)
-#define ADF_DH895XCC_ERRMSK5	(ADF_DH895XCC_EP_OFFSET + 0xDC)
-#define ADF_DH895XCC_ERRMSK5_VF2PF_U_MASK(vf_mask) (vf_mask >> 16)
-
-static void __adf_enable_vf2pf_interrupts(struct adf_accel_dev *accel_dev,
-					  u32 vf_mask)
-{
-	struct adf_hw_device_data *hw_data = accel_dev->hw_device;
-	struct adf_bar *pmisc =
-			&GET_BARS(accel_dev)[hw_data->get_misc_bar_id(hw_data)];
-	void __iomem *pmisc_addr = pmisc->virt_addr;
-	u32 reg;
-
-	/* Enable VF2PF Messaging Ints - VFs 1 through 16 per vf_mask[15:0] */
-	if (vf_mask & 0xFFFF) {
-		reg = ADF_CSR_RD(pmisc_addr, ADF_DH895XCC_ERRMSK3);
-		reg &= ~ADF_DH895XCC_ERRMSK3_VF2PF_L_MASK(vf_mask);
-		ADF_CSR_WR(pmisc_addr, ADF_DH895XCC_ERRMSK3, reg);
-	}
-
-	/* Enable VF2PF Messaging Ints - VFs 17 through 32 per vf_mask[31:16] */
-	if (vf_mask >> 16) {
-		reg = ADF_CSR_RD(pmisc_addr, ADF_DH895XCC_ERRMSK5);
-		reg &= ~ADF_DH895XCC_ERRMSK5_VF2PF_U_MASK(vf_mask);
-		ADF_CSR_WR(pmisc_addr, ADF_DH895XCC_ERRMSK5, reg);
-	}
-}
+#define ADF_PFVF_MSG_COLLISION_DETECT_DELAY	10
+#define ADF_PFVF_MSG_ACK_DELAY			2
+#define ADF_PFVF_MSG_ACK_MAX_RETRY		100
+#define ADF_PFVF_MSG_RETRY_DELAY		5
+#define ADF_PFVF_MSG_MAX_RETRIES		3
+#define ADF_PFVF_MSG_RESP_TIMEOUT	(ADF_PFVF_MSG_ACK_DELAY * \
+					 ADF_PFVF_MSG_ACK_MAX_RETRY + \
+					 ADF_PFVF_MSG_COLLISION_DETECT_DELAY)
 
 void adf_enable_vf2pf_interrupts(struct adf_accel_dev *accel_dev, u32 vf_mask)
 {
+	struct adf_hw_device_data *hw_data = accel_dev->hw_device;
+	u32 misc_bar_id = hw_data->get_misc_bar_id(hw_data);
+	struct adf_bar *pmisc = &GET_BARS(accel_dev)[misc_bar_id];
+	void __iomem *pmisc_addr = pmisc->virt_addr;
 	unsigned long flags;
 
 	spin_lock_irqsave(&accel_dev->pf.vf2pf_ints_lock, flags);
-	__adf_enable_vf2pf_interrupts(accel_dev, vf_mask);
+	hw_data->enable_vf2pf_interrupts(pmisc_addr, vf_mask);
 	spin_unlock_irqrestore(&accel_dev->pf.vf2pf_ints_lock, flags);
-}
-
-static void __adf_disable_vf2pf_interrupts(struct adf_accel_dev *accel_dev,
-					   u32 vf_mask)
-{
-	struct adf_hw_device_data *hw_data = accel_dev->hw_device;
-	struct adf_bar *pmisc =
-			&GET_BARS(accel_dev)[hw_data->get_misc_bar_id(hw_data)];
-	void __iomem *pmisc_addr = pmisc->virt_addr;
-	u32 reg;
-
-	/* Disable VF2PF interrupts for VFs 1 through 16 per vf_mask[15:0] */
-	if (vf_mask & 0xFFFF) {
-		reg = ADF_CSR_RD(pmisc_addr, ADF_DH895XCC_ERRMSK3) |
-			ADF_DH895XCC_ERRMSK3_VF2PF_L_MASK(vf_mask);
-		ADF_CSR_WR(pmisc_addr, ADF_DH895XCC_ERRMSK3, reg);
-	}
-
-	/* Disable VF2PF interrupts for VFs 17 through 32 per vf_mask[31:16] */
-	if (vf_mask >> 16) {
-		reg = ADF_CSR_RD(pmisc_addr, ADF_DH895XCC_ERRMSK5) |
-			ADF_DH895XCC_ERRMSK5_VF2PF_U_MASK(vf_mask);
-		ADF_CSR_WR(pmisc_addr, ADF_DH895XCC_ERRMSK5, reg);
-	}
 }
 
 void adf_disable_vf2pf_interrupts(struct adf_accel_dev *accel_dev, u32 vf_mask)
 {
+	struct adf_hw_device_data *hw_data = accel_dev->hw_device;
+	u32 misc_bar_id = hw_data->get_misc_bar_id(hw_data);
+	struct adf_bar *pmisc = &GET_BARS(accel_dev)[misc_bar_id];
+	void __iomem *pmisc_addr = pmisc->virt_addr;
 	unsigned long flags;
 
 	spin_lock_irqsave(&accel_dev->pf.vf2pf_ints_lock, flags);
-	__adf_disable_vf2pf_interrupts(accel_dev, vf_mask);
+	hw_data->disable_vf2pf_interrupts(pmisc_addr, vf_mask);
 	spin_unlock_irqrestore(&accel_dev->pf.vf2pf_ints_lock, flags);
 }
 
-void adf_disable_vf2pf_interrupts_irq(struct adf_accel_dev *accel_dev, u32 vf_mask)
+void adf_disable_vf2pf_interrupts_irq(struct adf_accel_dev *accel_dev,
+				      u32 vf_mask)
 {
+	struct adf_hw_device_data *hw_data = accel_dev->hw_device;
+	u32 misc_bar_id = hw_data->get_misc_bar_id(hw_data);
+	struct adf_bar *pmisc = &GET_BARS(accel_dev)[misc_bar_id];
+	void __iomem *pmisc_addr = pmisc->virt_addr;
+
 	spin_lock(&accel_dev->pf.vf2pf_ints_lock);
-	__adf_disable_vf2pf_interrupts(accel_dev, vf_mask);
+	hw_data->disable_vf2pf_interrupts(pmisc_addr, vf_mask);
 	spin_unlock(&accel_dev->pf.vf2pf_ints_lock);
 }
 
@@ -134,9 +103,9 @@ static int __adf_iov_putmsg(struct adf_accel_dev *accel_dev, u32 msg, u8 vf_nr)
 
 	/* Wait for confirmation from remote func it received the message */
 	do {
-		msleep(ADF_IOV_MSG_ACK_DELAY);
+		msleep(ADF_PFVF_MSG_ACK_DELAY);
 		val = ADF_CSR_RD(pmisc_bar_addr, pf2vf_offset);
-	} while ((val & int_bit) && (count++ < ADF_IOV_MSG_ACK_MAX_RETRY));
+	} while ((val & int_bit) && (count++ < ADF_PFVF_MSG_ACK_MAX_RETRY));
 
 	if (val & int_bit) {
 		dev_dbg(&GET_DEV(accel_dev), "ACK not received from remote\n");
@@ -169,7 +138,7 @@ out:
  *
  * Return: 0 on success, error code otherwise.
  */
-int adf_iov_putmsg(struct adf_accel_dev *accel_dev, u32 msg, u8 vf_nr)
+static int adf_iov_putmsg(struct adf_accel_dev *accel_dev, u32 msg, u8 vf_nr)
 {
 	u32 count = 0;
 	int ret;
@@ -177,10 +146,75 @@ int adf_iov_putmsg(struct adf_accel_dev *accel_dev, u32 msg, u8 vf_nr)
 	do {
 		ret = __adf_iov_putmsg(accel_dev, msg, vf_nr);
 		if (ret)
-			msleep(ADF_IOV_MSG_RETRY_DELAY);
-	} while (ret && (count++ < ADF_IOV_MSG_MAX_RETRIES));
+			msleep(ADF_PFVF_MSG_RETRY_DELAY);
+	} while (ret && (count++ < ADF_PFVF_MSG_MAX_RETRIES));
 
 	return ret;
+}
+
+/**
+ * adf_send_pf2vf_msg() - send PF to VF message
+ * @accel_dev:	Pointer to acceleration device
+ * @vf_nr:	VF number to which the message will be sent
+ * @msg:	Message to send
+ *
+ * This function allows the PF to send a message to a specific VF.
+ *
+ * Return: 0 on success, error code otherwise.
+ */
+static int adf_send_pf2vf_msg(struct adf_accel_dev *accel_dev, u8 vf_nr, u32 msg)
+{
+	return adf_iov_putmsg(accel_dev, msg, vf_nr);
+}
+
+/**
+ * adf_send_vf2pf_msg() - send VF to PF message
+ * @accel_dev:	Pointer to acceleration device
+ * @msg:	Message to send
+ *
+ * This function allows the VF to send a message to the PF.
+ *
+ * Return: 0 on success, error code otherwise.
+ */
+int adf_send_vf2pf_msg(struct adf_accel_dev *accel_dev, u32 msg)
+{
+	return adf_iov_putmsg(accel_dev, msg, 0);
+}
+
+/**
+ * adf_send_vf2pf_req() - send VF2PF request message
+ * @accel_dev:	Pointer to acceleration device.
+ * @msg:	Request message to send
+ *
+ * This function sends a message that requires a response from the VF to the PF
+ * and waits for a reply.
+ *
+ * Return: 0 on success, error code otherwise.
+ */
+static int adf_send_vf2pf_req(struct adf_accel_dev *accel_dev, u32 msg)
+{
+	unsigned long timeout = msecs_to_jiffies(ADF_PFVF_MSG_RESP_TIMEOUT);
+	int ret;
+
+	reinit_completion(&accel_dev->vf.iov_msg_completion);
+
+	/* Send request from VF to PF */
+	ret = adf_send_vf2pf_msg(accel_dev, msg);
+	if (ret) {
+		dev_err(&GET_DEV(accel_dev),
+			"Failed to send request msg to PF\n");
+		return ret;
+	}
+
+	/* Wait for response */
+	if (!wait_for_completion_timeout(&accel_dev->vf.iov_msg_completion,
+					 timeout)) {
+		dev_err(&GET_DEV(accel_dev),
+			"PFVF request/response message timeout expired\n");
+		return -EIO;
+	}
+
+	return 0;
 }
 
 void adf_vf2pf_req_hndl(struct adf_accel_vf_info *vf_info)
@@ -279,7 +313,7 @@ void adf_vf2pf_req_hndl(struct adf_accel_vf_info *vf_info)
 		goto err;
 	}
 
-	if (resp && adf_iov_putmsg(accel_dev, resp, vf_nr))
+	if (resp && adf_send_pf2vf_msg(accel_dev, vf_nr, resp))
 		dev_err(&GET_DEV(accel_dev), "Failed to send response to VF\n");
 
 out:
@@ -300,7 +334,7 @@ void adf_pf2vf_notify_restarting(struct adf_accel_dev *accel_dev)
 	int i, num_vfs = pci_num_vf(accel_to_pci_dev(accel_dev));
 
 	for (i = 0, vf = accel_dev->pf.vf_info; i < num_vfs; i++, vf++) {
-		if (vf->init && adf_iov_putmsg(accel_dev, msg, i))
+		if (vf->init && adf_send_pf2vf_msg(accel_dev, i, msg))
 			dev_err(&GET_DEV(accel_dev),
 				"Failed to send restarting msg to VF%d\n", i);
 	}
@@ -308,7 +342,6 @@ void adf_pf2vf_notify_restarting(struct adf_accel_dev *accel_dev)
 
 static int adf_vf2pf_request_version(struct adf_accel_dev *accel_dev)
 {
-	unsigned long timeout = msecs_to_jiffies(ADF_IOV_MSG_RESP_TIMEOUT);
 	struct adf_hw_device_data *hw_data = accel_dev->hw_device;
 	u32 msg = 0;
 	int ret;
@@ -318,22 +351,11 @@ static int adf_vf2pf_request_version(struct adf_accel_dev *accel_dev)
 	msg |= ADF_PFVF_COMPAT_THIS_VERSION << ADF_VF2PF_COMPAT_VER_REQ_SHIFT;
 	BUILD_BUG_ON(ADF_PFVF_COMPAT_THIS_VERSION > 255);
 
-	reinit_completion(&accel_dev->vf.iov_msg_completion);
-
-	/* Send request from VF to PF */
-	ret = adf_iov_putmsg(accel_dev, msg, 0);
+	ret = adf_send_vf2pf_req(accel_dev, msg);
 	if (ret) {
 		dev_err(&GET_DEV(accel_dev),
 			"Failed to send Compatibility Version Request.\n");
 		return ret;
-	}
-
-	/* Wait for response */
-	if (!wait_for_completion_timeout(&accel_dev->vf.iov_msg_completion,
-					 timeout)) {
-		dev_err(&GET_DEV(accel_dev),
-			"IOV request/response message timeout expired\n");
-		return -EIO;
 	}
 
 	/* Response from PF received, check compatibility */
@@ -374,3 +396,21 @@ int adf_enable_vf2pf_comms(struct adf_accel_dev *accel_dev)
 	return adf_vf2pf_request_version(accel_dev);
 }
 EXPORT_SYMBOL_GPL(adf_enable_vf2pf_comms);
+
+/**
+ * adf_enable_pf2vf_comms() - Function enables communication from pf to vf
+ *
+ * @accel_dev: Pointer to acceleration device virtual function.
+ *
+ * This function carries out the necessary steps to setup and start the PFVF
+ * communication channel, if any.
+ *
+ * Return: 0 on success, error code otherwise.
+ */
+int adf_enable_pf2vf_comms(struct adf_accel_dev *accel_dev)
+{
+	spin_lock_init(&accel_dev->pf.vf2pf_ints_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(adf_enable_pf2vf_comms);

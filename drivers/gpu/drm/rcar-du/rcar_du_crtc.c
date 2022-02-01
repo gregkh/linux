@@ -262,12 +262,13 @@ static void rcar_du_crtc_set_display_timing(struct rcar_du_crtc *rcrtc)
 		rcar_du_group_write(rcrtc->group, DPLLCR, dpllcr);
 
 		escr = ESCR_DCLKSEL_DCLKIN | div;
-	} else if (rcdu->info->lvds_clk_mask & BIT(rcrtc->index)) {
+	} else if (rcdu->info->lvds_clk_mask & BIT(rcrtc->index) ||
+		   rcdu->info->dsi_clk_mask & BIT(rcrtc->index)) {
 		/*
-		 * Use the LVDS PLL output as the dot clock when outputting to
-		 * the LVDS encoder on an SoC that supports this clock routing
-		 * option. We use the clock directly in that case, without any
-		 * additional divider.
+		 * Use the external LVDS or DSI PLL output as the dot clock when
+		 * outputting to the LVDS or DSI encoder on an SoC that supports
+		 * this clock routing option. We use the clock directly in that
+		 * case, without any additional divider.
 		 */
 		escr = ESCR_DCLKSEL_DCLKIN;
 	} else {
@@ -1218,7 +1219,7 @@ int rcar_du_crtc_create(struct rcar_du_group *rgrp, unsigned int swindex,
 	int ret;
 
 	/* Get the CRTC clock and the optional external clock. */
-	if (rcar_du_has(rcdu, RCAR_DU_FEATURE_CRTC_IRQ_CLOCK)) {
+	if (rcar_du_has(rcdu, RCAR_DU_FEATURE_CRTC_CLOCK)) {
 		sprintf(clk_name, "du.%u", hwindex);
 		name = clk_name;
 	} else {
@@ -1255,7 +1256,10 @@ int rcar_du_crtc_create(struct rcar_du_group *rgrp, unsigned int swindex,
 	rcrtc->group = rgrp;
 	rcrtc->mmio_offset = mmio_offsets[hwindex];
 	rcrtc->index = hwindex;
-	rcrtc->dsysr = (rcrtc->index % 2 ? 0 : DSYSR_DRES) | DSYSR_TVM_TVSYNC;
+	rcrtc->dsysr = rcrtc->index % 2 ? 0 : DSYSR_DRES;
+
+	if (rcar_du_has(rcdu, RCAR_DU_FEATURE_TVM_SYNC))
+		rcrtc->dsysr |= DSYSR_TVM_TVSYNC;
 
 	if (rcar_du_has(rcdu, RCAR_DU_FEATURE_VSP1_SOURCE))
 		primary = &rcrtc->vsp->planes[rcrtc->vsp_pipe].plane;
@@ -1281,7 +1285,7 @@ int rcar_du_crtc_create(struct rcar_du_group *rgrp, unsigned int swindex,
 	drm_crtc_helper_add(crtc, &crtc_helper_funcs);
 
 	/* Register the interrupt handler. */
-	if (rcar_du_has(rcdu, RCAR_DU_FEATURE_CRTC_IRQ_CLOCK)) {
+	if (rcar_du_has(rcdu, RCAR_DU_FEATURE_CRTC_IRQ)) {
 		/* The IRQ's are associated with the CRTC (sw)index. */
 		irq = platform_get_irq(pdev, swindex);
 		irqflags = 0;

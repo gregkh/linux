@@ -32,6 +32,7 @@
 #include <asm/cpu_device_id.h>
 #include <asm/cpufeature.h>
 #include <asm/intel-family.h>
+#include "../drivers/thermal/intel/thermal_interrupt.h"
 
 #define INTEL_PSTATE_SAMPLING_INTERVAL	(10 * NSEC_PER_MSEC)
 
@@ -219,6 +220,7 @@ struct global_params {
  * @sched_flags:	Store scheduler flags for possible cross CPU update
  * @hwp_boost_min:	Last HWP boosted min performance
  * @suspended:		Whether or not the driver has been suspended.
+ * @hwp_notify_work:	workqueue for HWP notifications.
  *
  * This structure stores per CPU instance data for all CPUs.
  */
@@ -257,6 +259,7 @@ struct cpudata {
 	unsigned int sched_flags;
 	u32 hwp_boost_min;
 	bool suspended;
+	struct delayed_work hwp_notify_work;
 };
 
 static struct cpudata **all_cpu_data;
@@ -335,6 +338,8 @@ static void intel_pstste_sched_itmt_work_fn(struct work_struct *work)
 
 static DECLARE_WORK(sched_itmt_work, intel_pstste_sched_itmt_work_fn);
 
+#define CPPC_MAX_PERF	U8_MAX
+
 static void intel_pstate_set_itmt_prio(int cpu)
 {
 	struct cppc_perf_caps cppc_perf;
@@ -344,6 +349,14 @@ static void intel_pstate_set_itmt_prio(int cpu)
 	ret = cppc_get_perf_caps(cpu, &cppc_perf);
 	if (ret)
 		return;
+
+	/*
+	 * On some systems with overclocking enabled, CPPC.highest_perf is hardcoded to 0xff.
+	 * In this case we can't use CPPC.highest_perf to enable ITMT.
+	 * In this case we can look at MSR_HWP_CAPABILITIES bits [8:0] to decide.
+	 */
+	if (cppc_perf.highest_perf == CPPC_MAX_PERF)
+		cppc_perf.highest_perf = HWP_HIGHEST_PERF(READ_ONCE(all_cpu_data[cpu]->hwp_cap_cached));
 
 	/*
 	 * The priorities can be set regardless of whether or not
@@ -986,10 +999,14 @@ skip_epp:
 	wrmsrl_on_cpu(cpu, MSR_HWP_REQUEST, value);
 }
 
+static void intel_pstate_disable_hwp_interrupt(struct cpudata *cpudata);
+
 static void intel_pstate_hwp_offline(struct cpudata *cpu)
 {
 	u64 value = READ_ONCE(cpu->hwp_req_cached);
 	int min_perf;
+
+	intel_pstate_disable_hwp_interrupt(cpu);
 
 	if (boot_cpu_has(X86_FEATURE_HWP_EPP)) {
 		/*
@@ -1067,6 +1084,9 @@ static int intel_pstate_suspend(struct cpufreq_policy *policy)
 
 	cpu->suspended = true;
 
+	/* disable HWP interrupt and cancel any pending work */
+	intel_pstate_disable_hwp_interrupt(cpu);
+
 	return 0;
 }
 
@@ -1104,19 +1124,22 @@ static void intel_pstate_update_policies(void)
 		cpufreq_update_policy(cpu);
 }
 
+static void __intel_pstate_update_max_freq(struct cpudata *cpudata,
+					   struct cpufreq_policy *policy)
+{
+	policy->cpuinfo.max_freq = global.turbo_disabled_mf ?
+			cpudata->pstate.max_freq : cpudata->pstate.turbo_freq;
+	refresh_frequency_limits(policy);
+}
+
 static void intel_pstate_update_max_freq(unsigned int cpu)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_acquire(cpu);
-	struct cpudata *cpudata;
 
 	if (!policy)
 		return;
 
-	cpudata = all_cpu_data[cpu];
-	policy->cpuinfo.max_freq = global.turbo_disabled_mf ?
-			cpudata->pstate.max_freq : cpudata->pstate.turbo_freq;
-
-	refresh_frequency_limits(policy);
+	__intel_pstate_update_max_freq(all_cpu_data[cpu], policy);
 
 	cpufreq_cpu_release(policy);
 }
@@ -1560,15 +1583,116 @@ static void intel_pstate_sysfs_hide_hwp_dynamic_boost(void)
 
 /************************** sysfs end ************************/
 
+static void intel_pstate_notify_work(struct work_struct *work)
+{
+	struct cpudata *cpudata =
+		container_of(to_delayed_work(work), struct cpudata, hwp_notify_work);
+	struct cpufreq_policy *policy = cpufreq_cpu_acquire(cpudata->cpu);
+
+	if (policy) {
+		intel_pstate_get_hwp_cap(cpudata);
+		__intel_pstate_update_max_freq(cpudata, policy);
+
+		cpufreq_cpu_release(policy);
+	}
+
+	wrmsrl_on_cpu(cpudata->cpu, MSR_HWP_STATUS, 0);
+}
+
+static DEFINE_SPINLOCK(hwp_notify_lock);
+static cpumask_t hwp_intr_enable_mask;
+
+void notify_hwp_interrupt(void)
+{
+	unsigned int this_cpu = smp_processor_id();
+	struct cpudata *cpudata;
+	unsigned long flags;
+	u64 value;
+
+	if (!READ_ONCE(hwp_active) || !boot_cpu_has(X86_FEATURE_HWP_NOTIFY))
+		return;
+
+	rdmsrl_safe(MSR_HWP_STATUS, &value);
+	if (!(value & 0x01))
+		return;
+
+	spin_lock_irqsave(&hwp_notify_lock, flags);
+
+	if (!cpumask_test_cpu(this_cpu, &hwp_intr_enable_mask))
+		goto ack_intr;
+
+	/*
+	 * Currently we never free all_cpu_data. And we can't reach here
+	 * without this allocated. But for safety for future changes, added
+	 * check.
+	 */
+	if (unlikely(!READ_ONCE(all_cpu_data)))
+		goto ack_intr;
+
+	/*
+	 * The free is done during cleanup, when cpufreq registry is failed.
+	 * We wouldn't be here if it fails on init or switch status. But for
+	 * future changes, added check.
+	 */
+	cpudata = READ_ONCE(all_cpu_data[this_cpu]);
+	if (unlikely(!cpudata))
+		goto ack_intr;
+
+	schedule_delayed_work(&cpudata->hwp_notify_work, msecs_to_jiffies(10));
+
+	spin_unlock_irqrestore(&hwp_notify_lock, flags);
+
+	return;
+
+ack_intr:
+	wrmsrl_safe(MSR_HWP_STATUS, 0);
+	spin_unlock_irqrestore(&hwp_notify_lock, flags);
+}
+
+static void intel_pstate_disable_hwp_interrupt(struct cpudata *cpudata)
+{
+	unsigned long flags;
+
+	if (!boot_cpu_has(X86_FEATURE_HWP_NOTIFY))
+		return;
+
+	/* wrmsrl_on_cpu has to be outside spinlock as this can result in IPC */
+	wrmsrl_on_cpu(cpudata->cpu, MSR_HWP_INTERRUPT, 0x00);
+
+	spin_lock_irqsave(&hwp_notify_lock, flags);
+	if (cpumask_test_and_clear_cpu(cpudata->cpu, &hwp_intr_enable_mask))
+		cancel_delayed_work(&cpudata->hwp_notify_work);
+	spin_unlock_irqrestore(&hwp_notify_lock, flags);
+}
+
+static void intel_pstate_enable_hwp_interrupt(struct cpudata *cpudata)
+{
+	/* Enable HWP notification interrupt for guaranteed performance change */
+	if (boot_cpu_has(X86_FEATURE_HWP_NOTIFY)) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&hwp_notify_lock, flags);
+		INIT_DELAYED_WORK(&cpudata->hwp_notify_work, intel_pstate_notify_work);
+		cpumask_set_cpu(cpudata->cpu, &hwp_intr_enable_mask);
+		spin_unlock_irqrestore(&hwp_notify_lock, flags);
+
+		/* wrmsrl_on_cpu has to be outside spinlock as this can result in IPC */
+		wrmsrl_on_cpu(cpudata->cpu, MSR_HWP_INTERRUPT, 0x01);
+		wrmsrl_on_cpu(cpudata->cpu, MSR_HWP_STATUS, 0);
+	}
+}
+
 static void intel_pstate_hwp_enable(struct cpudata *cpudata)
 {
-	/* First disable HWP notification interrupt as we don't process them */
+	/* First disable HWP notification interrupt till we activate again */
 	if (boot_cpu_has(X86_FEATURE_HWP_NOTIFY))
 		wrmsrl_on_cpu(cpudata->cpu, MSR_HWP_INTERRUPT, 0x00);
 
 	wrmsrl_on_cpu(cpudata->cpu, MSR_PM_ENABLE, 0x1);
 	if (cpudata->epp_default == -EINVAL)
 		cpudata->epp_default = intel_pstate_get_epp(cpudata, 0);
+
+	intel_pstate_enable_hwp_interrupt(cpudata);
 }
 
 static int atom_get_min_pstate(void)
@@ -2281,7 +2405,7 @@ static int intel_pstate_init_cpu(unsigned int cpunum)
 		if (!cpu)
 			return -ENOMEM;
 
-		all_cpu_data[cpunum] = cpu;
+		WRITE_ONCE(all_cpu_data[cpunum], cpu);
 
 		cpu->cpu = cpunum;
 
@@ -2965,8 +3089,10 @@ static void intel_pstate_driver_cleanup(void)
 			if (intel_pstate_driver == &intel_pstate)
 				intel_pstate_clear_update_util_hook(cpu);
 
+			spin_lock(&hwp_notify_lock);
 			kfree(all_cpu_data[cpu]);
-			all_cpu_data[cpu] = NULL;
+			WRITE_ONCE(all_cpu_data[cpu], NULL);
+			spin_unlock(&hwp_notify_lock);
 		}
 	}
 	cpus_read_unlock();
@@ -3235,6 +3361,7 @@ static bool intel_pstate_hwp_is_enabled(void)
 
 static int __init intel_pstate_init(void)
 {
+	static struct cpudata **_all_cpu_data;
 	const struct x86_cpu_id *id;
 	int rc;
 
@@ -3260,7 +3387,7 @@ static int __init intel_pstate_init(void)
 		 * deal with it.
 		 */
 		if ((!no_hwp && boot_cpu_has(X86_FEATURE_HWP_EPP)) || hwp_forced) {
-			hwp_active++;
+			WRITE_ONCE(hwp_active, 1);
 			hwp_mode_bdw = id->driver_data;
 			intel_pstate.attr = hwp_cpufreq_attrs;
 			intel_cpufreq.attr = hwp_cpufreq_attrs;
@@ -3311,9 +3438,11 @@ hwp_cpu_matched:
 
 	pr_info("Intel P-state driver initializing\n");
 
-	all_cpu_data = vzalloc(array_size(sizeof(void *), num_possible_cpus()));
-	if (!all_cpu_data)
+	_all_cpu_data = vzalloc(array_size(sizeof(void *), num_possible_cpus()));
+	if (!_all_cpu_data)
 		return -ENOMEM;
+
+	WRITE_ONCE(all_cpu_data, _all_cpu_data);
 
 	intel_pstate_request_control_from_smm();
 

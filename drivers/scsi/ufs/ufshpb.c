@@ -331,7 +331,7 @@ ufshpb_set_hpb_read_to_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp,
 	cdb[0] = UFSHPB_READ;
 
 	if (hba->dev_quirks & UFS_DEVICE_QUIRK_SWAP_L2P_ENTRY_FOR_HPB_READ)
-		ppn_tmp = swab64(ppn);
+		ppn_tmp = (__force __be64)swab64((__force u64)ppn);
 
 	/* ppn value is stored as big-endian in the host memory */
 	memcpy(&cdb[6], &ppn_tmp, sizeof(__be64));
@@ -447,7 +447,7 @@ static struct ufshpb_req *ufshpb_get_req(struct ufshpb_lu *hpb,
 		return NULL;
 
 retry:
-	req = blk_get_request(hpb->sdev_ufs_lu->request_queue, dir,
+	req = blk_mq_alloc_request(hpb->sdev_ufs_lu->request_queue, dir,
 			      BLK_MQ_REQ_NOWAIT);
 
 	if (!atomic && (PTR_ERR(req) == -EWOULDBLOCK) && (--retries > 0)) {
@@ -471,7 +471,7 @@ free_rq:
 
 static void ufshpb_put_req(struct ufshpb_lu *hpb, struct ufshpb_req *rq)
 {
-	blk_put_request(rq->req);
+	blk_mq_free_request(rq->req);
 	kmem_cache_free(hpb->map_req_cache, rq);
 }
 

@@ -24,8 +24,8 @@
 
 #include <bpf/bpf.h>
 #include <bpf/btf.h>
+#include <bpf/hashmap.h>
 #include <bpf/libbpf.h>
-#include <bpf/bpf_gen_internal.h>
 #include <bpf/skel_internal.h>
 
 #include "cfg.h"
@@ -84,6 +84,8 @@ static const char * const attach_type_strings[] = {
 	[BPF_FLOW_DISSECTOR] = "flow_dissector",
 	[__MAX_BPF_ATTACH_TYPE] = NULL,
 };
+
+static struct hashmap *prog_table;
 
 static enum bpf_attach_type parse_attach_type(const char *str)
 {
@@ -417,19 +419,18 @@ static void print_prog_json(struct bpf_prog_info *info, int fd)
 	if (info->btf_id)
 		jsonw_int_field(json_wtr, "btf_id", info->btf_id);
 
-	if (!hash_empty(prog_table.table)) {
-		struct pinned_obj *obj;
+	if (!hashmap__empty(prog_table)) {
+		struct hashmap_entry *entry;
 
 		jsonw_name(json_wtr, "pinned");
 		jsonw_start_array(json_wtr);
-		hash_for_each_possible(prog_table.table, obj, hash, info->id) {
-			if (obj->id == info->id)
-				jsonw_string(json_wtr, obj->path);
-		}
+		hashmap__for_each_key_entry(prog_table, entry,
+					    u32_as_hash_field(info->id))
+			jsonw_string(json_wtr, entry->value);
 		jsonw_end_array(json_wtr);
 	}
 
-	emit_obj_refs_json(&refs_table, info->id, json_wtr);
+	emit_obj_refs_json(refs_table, info->id, json_wtr);
 
 	show_prog_metadata(fd, info->nr_map_ids);
 
@@ -489,19 +490,18 @@ static void print_prog_plain(struct bpf_prog_info *info, int fd)
 	if (info->nr_map_ids)
 		show_prog_maps(fd, info->nr_map_ids);
 
-	if (!hash_empty(prog_table.table)) {
-		struct pinned_obj *obj;
+	if (!hashmap__empty(prog_table)) {
+		struct hashmap_entry *entry;
 
-		hash_for_each_possible(prog_table.table, obj, hash, info->id) {
-			if (obj->id == info->id)
-				printf("\n\tpinned %s", obj->path);
-		}
+		hashmap__for_each_key_entry(prog_table, entry,
+					    u32_as_hash_field(info->id))
+			printf("\n\tpinned %s", (char *)entry->value);
 	}
 
 	if (info->btf_id)
 		printf("\n\tbtf_id %d", info->btf_id);
 
-	emit_obj_refs_plain(&refs_table, info->id, "\n\tpids ");
+	emit_obj_refs_plain(refs_table, info->id, "\n\tpids ");
 
 	printf("\n");
 
@@ -568,8 +568,15 @@ static int do_show(int argc, char **argv)
 	int err;
 	int fd;
 
-	if (show_pinned)
-		build_pinned_obj_table(&prog_table, BPF_OBJ_PROG);
+	if (show_pinned) {
+		prog_table = hashmap__new(hash_fn_for_key_as_id,
+					  equal_fn_for_key_as_id, NULL);
+		if (!prog_table) {
+			p_err("failed to create hashmap for pinned paths");
+			return -1;
+		}
+		build_pinned_obj_table(prog_table, BPF_OBJ_PROG);
+	}
 	build_obj_refs_table(&refs_table, BPF_OBJ_PROG);
 
 	if (argc == 2)
@@ -612,7 +619,10 @@ static int do_show(int argc, char **argv)
 	if (json_output)
 		jsonw_end_array(json_wtr);
 
-	delete_obj_refs_table(&refs_table);
+	delete_obj_refs_table(refs_table);
+
+	if (show_pinned)
+		delete_pinned_obj_table(prog_table);
 
 	return err;
 }
@@ -1606,7 +1616,7 @@ static int load_with_options(int argc, char **argv, bool first_prog_only)
 		goto err_close_obj;
 
 	if (first_prog_only) {
-		prog = bpf_program__next(NULL, obj);
+		prog = bpf_object__next_program(obj, NULL);
 		if (!prog) {
 			p_err("object file doesn't contain any bpf program");
 			goto err_close_obj;

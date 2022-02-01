@@ -78,12 +78,10 @@ static int parse_write_buffer_into_params(char *wr_buf, uint32_t wr_buf_size,
 
 	wr_buf_ptr = wr_buf;
 
-	r = copy_from_user(wr_buf_ptr, buf, wr_buf_size);
-
-		/* r is bytes not be copied */
-	if (r >= wr_buf_size) {
-		DRM_DEBUG_DRIVER("user data not be read\n");
-		return -EINVAL;
+	/* r is bytes not be copied */
+	if (copy_from_user(wr_buf_ptr, buf, wr_buf_size)) {
+		DRM_DEBUG_DRIVER("user data could not be read successfully\n");
+		return -EFAULT;
 	}
 
 	/* check number of parameters. isspace could not differ space and \n */
@@ -294,6 +292,9 @@ static ssize_t dp_link_settings_write(struct file *f, const char __user *buf,
 	case LINK_RATE_RBR2:
 	case LINK_RATE_HIGH2:
 	case LINK_RATE_HIGH3:
+#if defined(CONFIG_DRM_AMD_DC_DCN)
+	case LINK_RATE_UHBR10:
+#endif
 		break;
 	default:
 		valid_input = false;
@@ -379,9 +380,9 @@ static ssize_t dp_phy_settings_read(struct file *f, char __user *buf,
 		return -EINVAL;
 
 	snprintf(rd_buf, rd_buf_size, "  %d  %d  %d\n",
-			link->cur_lane_setting.VOLTAGE_SWING,
-			link->cur_lane_setting.PRE_EMPHASIS,
-			link->cur_lane_setting.POST_CURSOR2);
+			link->cur_lane_setting[0].VOLTAGE_SWING,
+			link->cur_lane_setting[0].PRE_EMPHASIS,
+			link->cur_lane_setting[0].POST_CURSOR2);
 
 	while (size) {
 		if (*pos >= rd_buf_size)
@@ -733,7 +734,7 @@ static ssize_t dp_phy_test_pattern_debugfs_write(struct file *f, const char __us
 	}
 
 	for (i = 0; i < (unsigned int)(link_training_settings.link_settings.lane_count); i++)
-		link_training_settings.lane_settings[i] = link->cur_lane_setting;
+		link_training_settings.lane_settings[i] = link->cur_lane_setting[i];
 
 	dc_link_set_test_pattern(
 		link,

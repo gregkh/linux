@@ -1703,7 +1703,7 @@ int intel_hdmi_hdcp2_read_msg(struct intel_digital_port *dig_port,
 		drm_dbg_kms(&i915->drm,
 			    "msg_sz(%zd) is more than exp size(%zu)\n",
 			    ret, size);
-		return -1;
+		return -EINVAL;
 	}
 
 	offset = HDCP_2_2_HDMI_REG_RD_MSG_OFFSET;
@@ -2209,7 +2209,7 @@ int intel_hdmi_compute_config(struct intel_encoder *encoder,
 		return ret;
 
 	if (pipe_config->output_format == INTEL_OUTPUT_FORMAT_YCBCR420) {
-		ret = intel_pch_panel_fitting(pipe_config, conn_state);
+		ret = intel_panel_fitting(pipe_config, conn_state);
 		if (ret)
 			return ret;
 	}

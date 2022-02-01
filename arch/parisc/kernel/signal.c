@@ -291,9 +291,9 @@ setup_rt_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs,
 	   SIGRESTARTBLOCK_TRAMP+X. */
 	err |= __put_user(in_syscall ? INSN_LDI_R25_1 : INSN_LDI_R25_0,
 			&frame->tramp[SIGRESTARTBLOCK_TRAMP+0]);
-	err |= __put_user(INSN_LDI_R20,
+	err |= __put_user(INSN_LDI_R20, 
 			&frame->tramp[SIGRESTARTBLOCK_TRAMP+1]);
-	err |= __put_user(INSN_BLE_SR2_R0,
+	err |= __put_user(INSN_BLE_SR2_R0, 
 			&frame->tramp[SIGRESTARTBLOCK_TRAMP+2]);
 	err |= __put_user(INSN_NOP, &frame->tramp[SIGRESTARTBLOCK_TRAMP+3]);
 

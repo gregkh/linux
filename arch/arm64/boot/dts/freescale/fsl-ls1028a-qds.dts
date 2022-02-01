@@ -324,7 +324,7 @@
 
 &enetc_port1 {
 	phy-handle = <&qds_phy1>;
-	phy-connection-type = "rgmii-id";
+	phy-mode = "rgmii-id";
 	status = "okay";
 };
 
@@ -337,5 +337,13 @@
 };
 
 &sata {
+	status = "okay";
+};
+
+&usb0 {
+	status = "okay";
+};
+
+&usb1 {
 	status = "okay";
 };

@@ -267,7 +267,8 @@ static void wcn36xx_smd_set_sta_ht_params(struct ieee80211_sta *sta,
 
 		sta_params->max_ampdu_size = sta->ht_cap.ampdu_factor;
 		sta_params->max_ampdu_density = sta->ht_cap.ampdu_density;
-		sta_params->max_amsdu_size = is_cap_supported(caps,
+		/* max_amsdu_size: 1 : 3839 bytes, 0 : 7935 bytes (max) */
+		sta_params->max_amsdu_size = !is_cap_supported(caps,
 			IEEE80211_HT_CAP_MAX_AMSDU);
 		sta_params->sgi_20Mhz = is_cap_supported(caps,
 			IEEE80211_HT_CAP_SGI_20);
@@ -2269,6 +2270,59 @@ out:
 	return ret;
 }
 
+int wcn36xx_smd_enter_imps(struct wcn36xx *wcn)
+{
+	struct wcn36xx_hal_enter_imps_req_msg msg_body;
+	int ret;
+
+	mutex_lock(&wcn->hal_mutex);
+	INIT_HAL_MSG(msg_body, WCN36XX_HAL_ENTER_IMPS_REQ);
+
+	PREPARE_HAL_BUF(wcn->hal_buf, msg_body);
+
+	ret = wcn36xx_smd_send_and_wait(wcn, msg_body.header.len);
+	if (ret) {
+		wcn36xx_err("Sending hal_enter_imps failed\n");
+		goto out;
+	}
+	ret = wcn36xx_smd_rsp_status_check(wcn->hal_buf, wcn->hal_rsp_len);
+	if (ret) {
+		wcn36xx_err("hal_enter_imps response failed err=%d\n", ret);
+		goto out;
+	}
+
+	wcn36xx_dbg(WCN36XX_DBG_HAL, "Entered idle mode\n");
+out:
+	mutex_unlock(&wcn->hal_mutex);
+	return ret;
+}
+
+int wcn36xx_smd_exit_imps(struct wcn36xx *wcn)
+{
+	struct wcn36xx_hal_exit_imps_req_msg msg_body;
+	int ret;
+
+	mutex_lock(&wcn->hal_mutex);
+	INIT_HAL_MSG(msg_body, WCN36XX_HAL_EXIT_IMPS_REQ);
+
+	PREPARE_HAL_BUF(wcn->hal_buf, msg_body);
+
+	ret = wcn36xx_smd_send_and_wait(wcn, msg_body.header.len);
+	if (ret) {
+		wcn36xx_err("Sending hal_exit_imps failed\n");
+		goto out;
+	}
+	ret = wcn36xx_smd_rsp_status_check(wcn->hal_buf, wcn->hal_rsp_len);
+	if (ret) {
+		wcn36xx_err("hal_exit_imps response failed err=%d\n", ret);
+		goto out;
+	}
+	wcn36xx_dbg(WCN36XX_DBG_HAL, "Exited idle mode\n");
+out:
+	mutex_unlock(&wcn->hal_mutex);
+	return ret;
+}
+
 int wcn36xx_smd_set_power_params(struct wcn36xx *wcn, bool ignore_dtim)
 {
 	struct wcn36xx_hal_set_power_params_req_msg msg_body;
@@ -2426,8 +2480,11 @@ int wcn36xx_smd_feature_caps_exchange(struct wcn36xx *wcn)
 	INIT_HAL_MSG(msg_body, WCN36XX_HAL_FEATURE_CAPS_EXCHANGE_REQ);
 
 	set_feat_caps(msg_body.feat_caps, STA_POWERSAVE);
-	if (wcn->rf_id == RF_IRIS_WCN3680)
+	if (wcn->rf_id == RF_IRIS_WCN3680) {
 		set_feat_caps(msg_body.feat_caps, DOT11AC);
+		set_feat_caps(msg_body.feat_caps, WLAN_CH144);
+		set_feat_caps(msg_body.feat_caps, ANTENNA_DIVERSITY_SELECTION);
+	}
 
 	PREPARE_HAL_BUF(wcn->hal_buf, msg_body);
 
@@ -3167,6 +3224,8 @@ int wcn36xx_smd_rsp_process(struct rpmsg_device *rpdev,
 	case WCN36XX_HAL_GTK_OFFLOAD_RSP:
 	case WCN36XX_HAL_GTK_OFFLOAD_GETINFO_RSP:
 	case WCN36XX_HAL_HOST_RESUME_RSP:
+	case WCN36XX_HAL_ENTER_IMPS_RSP:
+	case WCN36XX_HAL_EXIT_IMPS_RSP:
 	case WCN36XX_HAL_UPDATE_CHANNEL_LIST_RSP:
 		memcpy(wcn->hal_buf, buf, len);
 		wcn->hal_rsp_len = len;

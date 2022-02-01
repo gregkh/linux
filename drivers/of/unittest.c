@@ -1138,6 +1138,12 @@ static void __init of_unittest_parse_interrupts_extended(void)
 			passed &= (args.args[1] == 14);
 			break;
 		case 6:
+			/*
+			 * Tests child node that is missing property
+			 * #address-cells.  See the comments in
+			 * drivers/of/unittest-data/tests-interrupts.dtsi
+			 * nodes intmap1 and interrupts-extended0
+			 */
 			passed &= !rc;
 			passed &= (args.args_count == 1);
 			passed &= (args.args[0] == 15);
@@ -3103,6 +3109,8 @@ static __init void of_unittest_overlay_high_level(void)
 			if (!strcmp(np->full_name, base_child->full_name)) {
 				unittest(0, "illegal node name in overlay_base %pOFn",
 					 np);
+				of_node_put(np);
+				of_node_put(base_child);
 				return;
 			}
 		}

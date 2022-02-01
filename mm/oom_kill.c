@@ -641,6 +641,8 @@ done:
 
 static int oom_reaper(void *unused)
 {
+	set_freezable();
+
 	while (true) {
 		struct task_struct *tsk = NULL;
 
@@ -787,9 +789,9 @@ static inline bool __task_will_free_mem(struct task_struct *task)
 	struct signal_struct *sig = task->signal;
 
 	/*
-	 * A coredumping process may sleep for an extended period in exit_mm(),
-	 * so the oom killer cannot assume that the process will promptly exit
-	 * and release memory.
+	 * A coredumping process may sleep for an extended period in
+	 * coredump_task_exit(), so the oom killer cannot assume that
+	 * the process will promptly exit and release memory.
 	 */
 	if (sig->flags & SIGNAL_GROUP_COREDUMP)
 		return false;
@@ -1148,21 +1150,14 @@ SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
 	struct task_struct *p;
 	unsigned int f_flags;
 	bool reap = false;
-	struct pid *pid;
 	long ret = 0;
 
 	if (flags)
 		return -EINVAL;
 
-	pid = pidfd_get_pid(pidfd, &f_flags);
-	if (IS_ERR(pid))
-		return PTR_ERR(pid);
-
-	task = get_pid_task(pid, PIDTYPE_TGID);
-	if (!task) {
-		ret = -ESRCH;
-		goto put_pid;
-	}
+	task = pidfd_get_task(pidfd, &f_flags);
+	if (IS_ERR(task))
+		return PTR_ERR(task);
 
 	/*
 	 * Make sure to choose a thread which still has a reference to mm
@@ -1202,8 +1197,6 @@ drop_mm:
 		mmput(mm);
 put_task:
 	put_task_struct(task);
-put_pid:
-	put_pid(pid);
 	return ret;
 #else
 	return -ENOSYS;

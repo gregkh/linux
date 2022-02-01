@@ -219,7 +219,7 @@ void mlx5i_uninit_underlay_qp(struct mlx5e_priv *priv)
 
 int mlx5i_create_underlay_qp(struct mlx5e_priv *priv)
 {
-	unsigned char *dev_addr = priv->netdev->dev_addr;
+	const unsigned char *dev_addr = priv->netdev->dev_addr;
 	u32 out[MLX5_ST_SZ_DW(create_qp_out)] = {};
 	u32 in[MLX5_ST_SZ_DW(create_qp_in)] = {};
 	struct mlx5i_priv *ipriv = priv->ppriv;
@@ -336,6 +336,8 @@ static int mlx5i_create_flow_steering(struct mlx5e_priv *priv)
 		goto err_destroy_arfs_tables;
 	}
 
+	mlx5e_ethtool_init_steering(priv);
+
 	return 0;
 
 err_destroy_arfs_tables:
@@ -348,6 +350,7 @@ static void mlx5i_destroy_flow_steering(struct mlx5e_priv *priv)
 {
 	mlx5e_destroy_ttc_table(priv);
 	mlx5e_arfs_destroy_tables(priv);
+	mlx5e_ethtool_cleanup_steering(priv);
 }
 
 static int mlx5i_init_rx(struct mlx5e_priv *priv)
@@ -471,11 +474,13 @@ int mlx5i_dev_init(struct net_device *dev)
 {
 	struct mlx5e_priv    *priv   = mlx5i_epriv(dev);
 	struct mlx5i_priv    *ipriv  = priv->ppriv;
+	u8 addr_mod[3];
 
 	/* Set dev address using underlay QP */
-	dev->dev_addr[1] = (ipriv->qpn >> 16) & 0xff;
-	dev->dev_addr[2] = (ipriv->qpn >>  8) & 0xff;
-	dev->dev_addr[3] = (ipriv->qpn) & 0xff;
+	addr_mod[0] = (ipriv->qpn >> 16) & 0xff;
+	addr_mod[1] = (ipriv->qpn >>  8) & 0xff;
+	addr_mod[2] = (ipriv->qpn) & 0xff;
+	dev_addr_mod(dev, 1, addr_mod, sizeof(addr_mod));
 
 	/* Add QPN to net-device mapping to HT */
 	mlx5i_pkey_add_qpn(dev, ipriv->qpn);

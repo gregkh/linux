@@ -1949,8 +1949,7 @@ static void at_xdmac_axi_config(struct platform_device *pdev)
 	}
 }
 
-#ifdef CONFIG_PM
-static int atmel_xdmac_prepare(struct device *dev)
+static int __maybe_unused atmel_xdmac_prepare(struct device *dev)
 {
 	struct at_xdmac		*atxdmac = dev_get_drvdata(dev);
 	struct dma_chan		*chan, *_chan;
@@ -1964,12 +1963,8 @@ static int atmel_xdmac_prepare(struct device *dev)
 	}
 	return 0;
 }
-#else
-#	define atmel_xdmac_prepare NULL
-#endif
 
-#ifdef CONFIG_PM_SLEEP
-static int atmel_xdmac_suspend(struct device *dev)
+static int __maybe_unused atmel_xdmac_suspend(struct device *dev)
 {
 	struct at_xdmac		*atxdmac = dev_get_drvdata(dev);
 	struct dma_chan		*chan, *_chan;
@@ -1993,7 +1988,7 @@ static int atmel_xdmac_suspend(struct device *dev)
 	return 0;
 }
 
-static int atmel_xdmac_resume(struct device *dev)
+static int __maybe_unused atmel_xdmac_resume(struct device *dev)
 {
 	struct at_xdmac		*atxdmac = dev_get_drvdata(dev);
 	struct at_xdmac_chan	*atchan;
@@ -2031,7 +2026,6 @@ static int atmel_xdmac_resume(struct device *dev)
 	}
 	return 0;
 }
-#endif /* CONFIG_PM_SLEEP */
 
 static int at_xdmac_probe(struct platform_device *pdev)
 {
@@ -2212,7 +2206,7 @@ static int at_xdmac_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct dev_pm_ops atmel_xdmac_dev_pm_ops = {
+static const struct dev_pm_ops __maybe_unused atmel_xdmac_dev_pm_ops = {
 	.prepare	= atmel_xdmac_prepare,
 	SET_LATE_SYSTEM_SLEEP_PM_OPS(atmel_xdmac_suspend, atmel_xdmac_resume)
 };
@@ -2236,7 +2230,7 @@ static struct platform_driver at_xdmac_driver = {
 	.driver = {
 		.name		= "at_xdmac",
 		.of_match_table	= of_match_ptr(atmel_xdmac_dt_ids),
-		.pm		= &atmel_xdmac_dev_pm_ops,
+		.pm		= pm_ptr(&atmel_xdmac_dev_pm_ops),
 	}
 };
 

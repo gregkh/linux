@@ -1428,6 +1428,7 @@ enum {
 
 struct rt5682_priv {
 	struct snd_soc_component *component;
+	struct device *i2c_dev;
 	struct rt5682_platform_data pdata;
 	struct regmap *regmap;
 	struct regmap *sdw_regmap;
@@ -1462,6 +1463,7 @@ struct rt5682_priv {
 
 	int jack_type;
 	int irq_work_delay_time;
+	struct mutex jdet_mutex;
 };
 
 extern const char *rt5682_supply_names[RT5682_NUM_SUPPLIES];
@@ -1481,6 +1483,8 @@ int rt5682_register_component(struct device *dev);
 void rt5682_calibrate(struct rt5682_priv *rt5682);
 void rt5682_reset(struct rt5682_priv *rt5682);
 int rt5682_parse_dt(struct rt5682_priv *rt5682, struct device *dev);
+
+int rt5682_register_dai_clks(struct rt5682_priv *rt5682);
 
 #define RT5682_REG_NUM 318
 extern const struct reg_default rt5682_reg[RT5682_REG_NUM];

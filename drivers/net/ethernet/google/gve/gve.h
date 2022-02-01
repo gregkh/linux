@@ -142,6 +142,19 @@ struct gve_index_list {
 	s16 tail;
 };
 
+/* A single received packet split across multiple buffers may be
+ * reconstructed using the information in this structure.
+ */
+struct gve_rx_ctx {
+	/* head and tail of skb chain for the current packet or NULL if none */
+	struct sk_buff *skb_head;
+	struct sk_buff *skb_tail;
+	u16 total_expected_size;
+	u8 expected_frag_cnt;
+	u8 curr_frag_cnt;
+	u8 reuse_frags;
+};
+
 /* Contains datapath state used to represent an RX queue. */
 struct gve_rx_ring {
 	struct gve_priv *gve;
@@ -153,6 +166,7 @@ struct gve_rx_ring {
 
 			/* threshold for posting new buffs and descs */
 			u32 db_threshold;
+			u16 packet_buffer_size;
 		};
 
 		/* DQO fields. */
@@ -200,15 +214,16 @@ struct gve_rx_ring {
 	u64 rx_skb_alloc_fail; /* free-running count of skb alloc fails */
 	u64 rx_buf_alloc_fail; /* free-running count of buffer alloc fails */
 	u64 rx_desc_err_dropped_pkt; /* free-running count of packets dropped by descriptor error */
+	u64 rx_cont_packet_cnt; /* free-running multi-fragment packets received */
+	u64 rx_frag_flip_cnt; /* free-running count of rx segments where page_flip was used */
+	u64 rx_frag_copy_cnt; /* free-running count of rx segments copied into skb linear portion */
 	u32 q_num; /* queue index */
 	u32 ntfy_id; /* notification block index */
 	struct gve_queue_resources *q_resources; /* head and tail pointer idx */
 	dma_addr_t q_resources_bus; /* dma address for the queue resources */
 	struct u64_stats_sync statss; /* sync stats for 32bit archs */
 
-	/* head and tail of skb chain for the current packet or NULL if none */
-	struct sk_buff *skb_head;
-	struct sk_buff *skb_tail;
+	struct gve_rx_ctx ctx; /* Info for packet currently being processed in this ring. */
 };
 
 /* A TX desc ring entry */
@@ -341,8 +356,8 @@ struct gve_tx_ring {
 	union {
 		/* GQI fields */
 		struct {
-			/* NIC tail pointer */
-			__be32 last_nic_done;
+			/* Spinlock for when cleanup in progress */
+			spinlock_t clean_lock;
 		};
 
 		/* DQO fields. */
@@ -823,15 +838,15 @@ netdev_tx_t gve_tx(struct sk_buff *skb, struct net_device *dev);
 bool gve_tx_poll(struct gve_notify_block *block, int budget);
 int gve_tx_alloc_rings(struct gve_priv *priv);
 void gve_tx_free_rings_gqi(struct gve_priv *priv);
-__be32 gve_tx_load_event_counter(struct gve_priv *priv,
-				 struct gve_tx_ring *tx);
+u32 gve_tx_load_event_counter(struct gve_priv *priv,
+			      struct gve_tx_ring *tx);
+bool gve_tx_clean_pending(struct gve_priv *priv, struct gve_tx_ring *tx);
 /* rx handling */
 void gve_rx_write_doorbell(struct gve_priv *priv, struct gve_rx_ring *rx);
-bool gve_rx_poll(struct gve_notify_block *block, int budget);
+int gve_rx_poll(struct gve_notify_block *block, int budget);
+bool gve_rx_work_pending(struct gve_rx_ring *rx);
 int gve_rx_alloc_rings(struct gve_priv *priv);
 void gve_rx_free_rings_gqi(struct gve_priv *priv);
-bool gve_clean_rx_done(struct gve_rx_ring *rx, int budget,
-		       netdev_features_t feat);
 /* Reset */
 void gve_schedule_reset(struct gve_priv *priv);
 int gve_reset(struct gve_priv *priv, bool attempt_teardown);
