@@ -217,6 +217,20 @@ static inline void kvm_s390_set_user_cpu_state_ctrl(struct kvm *kvm)
 	kvm->arch.user_cpu_state_ctrl = 1;
 }
 
+/* get the end gfn of the last (highest gfn) memslot */
+static inline unsigned long kvm_s390_get_gfn_end(struct kvm_memslots *slots)
+{
+	struct rb_node *node;
+	struct kvm_memory_slot *ms;
+
+	if (WARN_ON(kvm_memslots_empty(slots)))
+		return 0;
+
+	node = rb_last(&slots->gfn_tree);
+	ms = container_of(node, struct kvm_memory_slot, gfn_node[slots->node_idx]);
+	return ms->base_gfn + ms->npages;
+}
+
 /* implemented in pv.c */
 int kvm_s390_pv_destroy_cpu(struct kvm_vcpu *vcpu, u16 *rc, u16 *rrc);
 int kvm_s390_pv_create_cpu(struct kvm_vcpu *vcpu, u16 *rc, u16 *rrc);
@@ -335,8 +349,8 @@ int kvm_s390_handle_sigp(struct kvm_vcpu *vcpu);
 int kvm_s390_handle_sigp_pei(struct kvm_vcpu *vcpu);
 
 /* implemented in kvm-s390.c */
-void kvm_s390_set_tod_clock(struct kvm *kvm,
-			    const struct kvm_s390_vm_tod_clock *gtod);
+void kvm_s390_set_tod_clock(struct kvm *kvm, const struct kvm_s390_vm_tod_clock *gtod);
+int kvm_s390_try_set_tod_clock(struct kvm *kvm, const struct kvm_s390_vm_tod_clock *gtod);
 long kvm_arch_fault_in_page(struct kvm_vcpu *vcpu, gpa_t gpa, int writable);
 int kvm_s390_store_status_unloaded(struct kvm_vcpu *vcpu, unsigned long addr);
 int kvm_s390_vcpu_store_status(struct kvm_vcpu *vcpu, unsigned long addr);
@@ -357,7 +371,7 @@ int kvm_s390_handle_diag(struct kvm_vcpu *vcpu);
 
 static inline void kvm_s390_vcpu_block_all(struct kvm *kvm)
 {
-	int i;
+	unsigned long i;
 	struct kvm_vcpu *vcpu;
 
 	WARN_ON(!mutex_is_locked(&kvm->lock));
@@ -367,7 +381,7 @@ static inline void kvm_s390_vcpu_block_all(struct kvm *kvm)
 
 static inline void kvm_s390_vcpu_unblock_all(struct kvm *kvm)
 {
-	int i;
+	unsigned long i;
 	struct kvm_vcpu *vcpu;
 
 	kvm_for_each_vcpu(i, vcpu, kvm)

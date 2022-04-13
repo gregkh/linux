@@ -28,9 +28,6 @@
 #define VDEC_IRQ_CLR	0x10
 #define VDEC_IRQ_CFG_REG	0xa4
 
-module_param(mtk_v4l2_dbg_level, int, 0644);
-module_param(mtk_vcodec_dbg, bool, 0644);
-
 /* Wake up context wait_queue */
 static void wake_up_ctx(struct mtk_vcodec_ctx *ctx)
 {
@@ -392,7 +389,6 @@ static int mtk_vcodec_dec_remove(struct platform_device *pdev)
 {
 	struct mtk_vcodec_dev *dev = platform_get_drvdata(pdev);
 
-	flush_workqueue(dev->decode_workqueue);
 	destroy_workqueue(dev->decode_workqueue);
 
 	if (media_devnode_is_registered(dev->mdev_dec.devnode)) {

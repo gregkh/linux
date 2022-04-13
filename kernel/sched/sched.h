@@ -1111,8 +1111,10 @@ struct rq {
 	unsigned int		core_task_seq;
 	unsigned int		core_pick_seq;
 	unsigned long		core_cookie;
-	unsigned char		core_forceidle;
+	unsigned int		core_forceidle_count;
 	unsigned int		core_forceidle_seq;
+	unsigned int		core_forceidle_occupation;
+	u64			core_forceidle_start;
 #endif
 };
 
@@ -1245,15 +1247,13 @@ static inline bool sched_group_cookie_match(struct rq *rq,
 	return false;
 }
 
-extern void queue_core_balance(struct rq *rq);
-
 static inline bool sched_core_enqueued(struct task_struct *p)
 {
 	return !RB_EMPTY_NODE(&p->core_node);
 }
 
 extern void sched_core_enqueue(struct rq *rq, struct task_struct *p);
-extern void sched_core_dequeue(struct rq *rq, struct task_struct *p);
+extern void sched_core_dequeue(struct rq *rq, struct task_struct *p, int flags);
 
 extern void sched_core_get(void);
 extern void sched_core_put(void);
@@ -1278,10 +1278,6 @@ static inline raw_spinlock_t *rq_lockp(struct rq *rq)
 static inline raw_spinlock_t *__rq_lockp(struct rq *rq)
 {
 	return &rq->__lock;
-}
-
-static inline void queue_core_balance(struct rq *rq)
-{
 }
 
 static inline bool sched_cpu_cookie_match(struct rq *rq, struct task_struct *p)
@@ -1853,6 +1849,32 @@ static inline void flush_smp_call_function_from_idle(void) { }
 
 #include "stats.h"
 #include "autogroup.h"
+
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_SCHEDSTATS)
+
+extern void __sched_core_account_forceidle(struct rq *rq);
+
+static inline void sched_core_account_forceidle(struct rq *rq)
+{
+	if (schedstat_enabled())
+		__sched_core_account_forceidle(rq);
+}
+
+extern void __sched_core_tick(struct rq *rq);
+
+static inline void sched_core_tick(struct rq *rq)
+{
+	if (sched_core_enabled(rq) && schedstat_enabled())
+		__sched_core_tick(rq);
+}
+
+#else
+
+static inline void sched_core_account_forceidle(struct rq *rq) {}
+
+static inline void sched_core_tick(struct rq *rq) {}
+
+#endif /* CONFIG_SCHED_CORE && CONFIG_SCHEDSTATS */
 
 #ifdef CONFIG_CGROUP_SCHED
 
@@ -2813,6 +2835,103 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags)
 static inline void cpufreq_update_util(struct rq *rq, unsigned int flags) {}
 #endif /* CONFIG_CPU_FREQ */
 
+#ifdef arch_scale_freq_capacity
+# ifndef arch_scale_freq_invariant
+#  define arch_scale_freq_invariant()	true
+# endif
+#else
+# define arch_scale_freq_invariant()	false
+#endif
+
+#ifdef CONFIG_SMP
+static inline unsigned long capacity_orig_of(int cpu)
+{
+	return cpu_rq(cpu)->cpu_capacity_orig;
+}
+
+/**
+ * enum cpu_util_type - CPU utilization type
+ * @FREQUENCY_UTIL:	Utilization used to select frequency
+ * @ENERGY_UTIL:	Utilization used during energy calculation
+ *
+ * The utilization signals of all scheduling classes (CFS/RT/DL) and IRQ time
+ * need to be aggregated differently depending on the usage made of them. This
+ * enum is used within effective_cpu_util() to differentiate the types of
+ * utilization expected by the callers, and adjust the aggregation accordingly.
+ */
+enum cpu_util_type {
+	FREQUENCY_UTIL,
+	ENERGY_UTIL,
+};
+
+unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
+				 unsigned long max, enum cpu_util_type type,
+				 struct task_struct *p);
+
+static inline unsigned long cpu_bw_dl(struct rq *rq)
+{
+	return (rq->dl.running_bw * SCHED_CAPACITY_SCALE) >> BW_SHIFT;
+}
+
+static inline unsigned long cpu_util_dl(struct rq *rq)
+{
+	return READ_ONCE(rq->avg_dl.util_avg);
+}
+
+/**
+ * cpu_util_cfs() - Estimates the amount of CPU capacity used by CFS tasks.
+ * @cpu: the CPU to get the utilization for.
+ *
+ * The unit of the return value must be the same as the one of CPU capacity
+ * so that CPU utilization can be compared with CPU capacity.
+ *
+ * CPU utilization is the sum of running time of runnable tasks plus the
+ * recent utilization of currently non-runnable tasks on that CPU.
+ * It represents the amount of CPU capacity currently used by CFS tasks in
+ * the range [0..max CPU capacity] with max CPU capacity being the CPU
+ * capacity at f_max.
+ *
+ * The estimated CPU utilization is defined as the maximum between CPU
+ * utilization and sum of the estimated utilization of the currently
+ * runnable tasks on that CPU. It preserves a utilization "snapshot" of
+ * previously-executed tasks, which helps better deduce how busy a CPU will
+ * be when a long-sleeping task wakes up. The contribution to CPU utilization
+ * of such a task would be significantly decayed at this point of time.
+ *
+ * CPU utilization can be higher than the current CPU capacity
+ * (f_curr/f_max * max CPU capacity) or even the max CPU capacity because
+ * of rounding errors as well as task migrations or wakeups of new tasks.
+ * CPU utilization has to be capped to fit into the [0..max CPU capacity]
+ * range. Otherwise a group of CPUs (CPU0 util = 121% + CPU1 util = 80%)
+ * could be seen as over-utilized even though CPU1 has 20% of spare CPU
+ * capacity. CPU utilization is allowed to overshoot current CPU capacity
+ * though since this is useful for predicting the CPU capacity required
+ * after task migrations (scheduler-driven DVFS).
+ *
+ * Return: (Estimated) utilization for the specified CPU.
+ */
+static inline unsigned long cpu_util_cfs(int cpu)
+{
+	struct cfs_rq *cfs_rq;
+	unsigned long util;
+
+	cfs_rq = &cpu_rq(cpu)->cfs;
+	util = READ_ONCE(cfs_rq->avg.util_avg);
+
+	if (sched_feat(UTIL_EST)) {
+		util = max_t(unsigned long, util,
+			     READ_ONCE(cfs_rq->avg.util_est.enqueued));
+	}
+
+	return min(util, capacity_orig_of(cpu));
+}
+
+static inline unsigned long cpu_util_rt(struct rq *rq)
+{
+	return READ_ONCE(rq->avg_rt.util_avg);
+}
+#endif
+
 #ifdef CONFIG_UCLAMP_TASK
 unsigned long uclamp_eff_value(struct task_struct *p, enum uclamp_id clamp_id);
 
@@ -2869,6 +2988,21 @@ out:
 	return clamp(util, min_util, max_util);
 }
 
+/* Is the rq being capped/throttled by uclamp_max? */
+static inline bool uclamp_rq_is_capped(struct rq *rq)
+{
+	unsigned long rq_util;
+	unsigned long max_util;
+
+	if (!static_branch_likely(&sched_uclamp_used))
+		return false;
+
+	rq_util = cpu_util_cfs(cpu_of(rq)) + cpu_util_rt(rq);
+	max_util = READ_ONCE(rq->uclamp[UCLAMP_MAX].value);
+
+	return max_util != SCHED_CAPACITY_SCALE && rq_util >= max_util;
+}
+
 /*
  * When uclamp is compiled in, the aggregation at rq level is 'turned off'
  * by default in the fast path and only gets turned on once userspace performs
@@ -2889,72 +3023,13 @@ unsigned long uclamp_rq_util_with(struct rq *rq, unsigned long util,
 	return util;
 }
 
+static inline bool uclamp_rq_is_capped(struct rq *rq) { return false; }
+
 static inline bool uclamp_is_used(void)
 {
 	return false;
 }
 #endif /* CONFIG_UCLAMP_TASK */
-
-#ifdef arch_scale_freq_capacity
-# ifndef arch_scale_freq_invariant
-#  define arch_scale_freq_invariant()	true
-# endif
-#else
-# define arch_scale_freq_invariant()	false
-#endif
-
-#ifdef CONFIG_SMP
-static inline unsigned long capacity_orig_of(int cpu)
-{
-	return cpu_rq(cpu)->cpu_capacity_orig;
-}
-
-/**
- * enum cpu_util_type - CPU utilization type
- * @FREQUENCY_UTIL:	Utilization used to select frequency
- * @ENERGY_UTIL:	Utilization used during energy calculation
- *
- * The utilization signals of all scheduling classes (CFS/RT/DL) and IRQ time
- * need to be aggregated differently depending on the usage made of them. This
- * enum is used within effective_cpu_util() to differentiate the types of
- * utilization expected by the callers, and adjust the aggregation accordingly.
- */
-enum cpu_util_type {
-	FREQUENCY_UTIL,
-	ENERGY_UTIL,
-};
-
-unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
-				 unsigned long max, enum cpu_util_type type,
-				 struct task_struct *p);
-
-static inline unsigned long cpu_bw_dl(struct rq *rq)
-{
-	return (rq->dl.running_bw * SCHED_CAPACITY_SCALE) >> BW_SHIFT;
-}
-
-static inline unsigned long cpu_util_dl(struct rq *rq)
-{
-	return READ_ONCE(rq->avg_dl.util_avg);
-}
-
-static inline unsigned long cpu_util_cfs(struct rq *rq)
-{
-	unsigned long util = READ_ONCE(rq->cfs.avg.util_avg);
-
-	if (sched_feat(UTIL_EST)) {
-		util = max_t(unsigned long, util,
-			     READ_ONCE(rq->cfs.avg.util_est.enqueued));
-	}
-
-	return util;
-}
-
-static inline unsigned long cpu_util_rt(struct rq *rq)
-{
-	return READ_ONCE(rq->avg_rt.util_avg);
-}
-#endif
 
 #ifdef CONFIG_HAVE_SCHED_AVG_IRQ
 static inline unsigned long cpu_util_irq(struct rq *rq)

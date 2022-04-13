@@ -74,7 +74,6 @@ struct snd_sof_control {
 	u32 readback_offset; /* offset to mmapped data if used */
 	struct sof_ipc_ctrl_data *control_data;
 	u32 size;	/* cdata size */
-	enum sof_ipc_ctrl_cmd cmd;
 	u32 *volume_table; /* volume table computed from tlv data*/
 
 	struct list_head list;	/* list in sdev control list */
@@ -184,8 +183,6 @@ void snd_sof_control_notify(struct snd_sof_dev *sdev,
 int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file);
 int snd_sof_complete_pipeline(struct snd_sof_dev *sdev,
 			      struct snd_sof_widget *swidget);
-int sof_pipeline_core_enable(struct snd_sof_dev *sdev,
-			     const struct snd_sof_widget *swidget);
 
 /*
  * Stream IPC
@@ -241,11 +238,7 @@ static inline void snd_sof_compr_init_elapsed_work(struct work_struct *work) { }
 /*
  * Mixer IPC
  */
-int snd_sof_ipc_set_get_comp_data(struct snd_sof_control *scontrol,
-				  u32 ipc_cmd,
-				  enum sof_ipc_ctrl_type ctrl_type,
-				  enum sof_ipc_ctrl_cmd ctrl_cmd,
-				  bool send);
+int snd_sof_ipc_set_get_comp_data(struct snd_sof_control *scontrol, bool set);
 
 /* DAI link fixup */
 int sof_pcm_dai_link_fixup(struct snd_soc_pcm_runtime *rtd, struct snd_pcm_hw_params *params);
@@ -269,4 +262,6 @@ int sof_widget_list_setup(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm, in
 int sof_widget_list_free(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm, int dir);
 int sof_pcm_dsp_pcm_free(struct snd_pcm_substream *substream, struct snd_sof_dev *sdev,
 			 struct snd_sof_pcm *spcm);
+int sof_pcm_stream_free(struct snd_sof_dev *sdev, struct snd_pcm_substream *substream,
+			struct snd_sof_pcm *spcm, int dir, bool free_widget_list);
 #endif

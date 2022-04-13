@@ -56,6 +56,9 @@ static bool is_fru_eeprom_supported(struct amdgpu_device *adev)
 			return true;
 		else
 			return false;
+	case CHIP_ALDEBARAN:
+		/* All Aldebaran SKUs have the FRU */
+		return true;
 	default:
 		return false;
 	}
@@ -88,7 +91,7 @@ static int amdgpu_fru_read_eeprom(struct amdgpu_device *adev, uint32_t addrptr,
 
 int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 {
-	unsigned char buff[34];
+	unsigned char buff[AMDGPU_PRODUCT_NAME_LEN];
 	u32 addrptr;
 	int size, len;
 
@@ -131,15 +134,12 @@ int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 	}
 
 	len = size;
-	/* Product name should only be 32 characters. Any more,
-	 * and something could be wrong. Cap it at 32 to be safe
-	 */
-	if (len >= sizeof(adev->product_name)) {
-		DRM_WARN("FRU Product Number is larger than 32 characters. This is likely a mistake");
-		len = sizeof(adev->product_name) - 1;
+	if (len >= AMDGPU_PRODUCT_NAME_LEN) {
+		DRM_WARN("FRU Product Name is larger than %d characters. This is likely a mistake",
+				AMDGPU_PRODUCT_NAME_LEN);
+		len = AMDGPU_PRODUCT_NAME_LEN - 1;
 	}
-	/* Start at 2 due to buff using fields 0 and 1 for the address */
-	memcpy(adev->product_name, &buff[2], len);
+	memcpy(adev->product_name, buff, len);
 	adev->product_name[len] = '\0';
 
 	addrptr += size + 1;
@@ -157,7 +157,7 @@ int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 		DRM_WARN("FRU Product Number is larger than 16 characters. This is likely a mistake");
 		len = sizeof(adev->product_number) - 1;
 	}
-	memcpy(adev->product_number, &buff[2], len);
+	memcpy(adev->product_number, buff, len);
 	adev->product_number[len] = '\0';
 
 	addrptr += size + 1;
@@ -184,7 +184,7 @@ int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 		DRM_WARN("FRU Serial Number is larger than 16 characters. This is likely a mistake");
 		len = sizeof(adev->serial) - 1;
 	}
-	memcpy(adev->serial, &buff[2], len);
+	memcpy(adev->serial, buff, len);
 	adev->serial[len] = '\0';
 
 	return 0;

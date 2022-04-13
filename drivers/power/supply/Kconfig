@@ -351,14 +351,14 @@ config AXP20X_POWER
 
 config AXP288_CHARGER
 	tristate "X-Powers AXP288 Charger"
-	depends on MFD_AXP20X && EXTCON_AXP288 && IOSF_MBI
+	depends on MFD_AXP20X && EXTCON_AXP288 && IOSF_MBI && ACPI
 	help
 	  Say yes here to have support X-Power AXP288 power management IC (PMIC)
 	  integrated charger.
 
 config AXP288_FUEL_GAUGE
 	tristate "X-Powers AXP288 Fuel Gauge"
-	depends on MFD_AXP20X && IIO && IOSF_MBI
+	depends on MFD_AXP20X && IIO && IOSF_MBI && ACPI
 	help
 	  Say yes here to have support for X-Power power management IC (PMIC)
 	  Fuel Gauge. The device provides battery statistics and status
@@ -556,6 +556,18 @@ config CHARGER_MAX77693
 	depends on MFD_MAX77693
 	help
 	  Say Y to enable support for the Maxim MAX77693 battery charger.
+
+config CHARGER_MAX77976
+	tristate "Maxim MAX77976 battery charger driver"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  The Maxim MAX77976 is a 19 Vin, 5.5A 1-Cell Li+ Battery Charger
+	  USB OTG support. It has an I2C interface for configuration.
+
+	  Say Y to enable support for the Maxim MAX77976 battery charger.
+	  This driver can also be built as a module. If so, the module will be
+	  called max77976_charger.
 
 config CHARGER_MAX8997
 	tristate "Maxim MAX8997/MAX8966 PMIC battery charger driver"

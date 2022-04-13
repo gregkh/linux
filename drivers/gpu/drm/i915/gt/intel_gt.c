@@ -3,6 +3,8 @@
  * Copyright © 2019 Intel Corporation
  */
 
+#include <drm/intel-gtt.h>
+
 #include "intel_gt_debugfs.h"
 
 #include "gem/i915_gem_lmem.h"
@@ -23,11 +25,8 @@
 #include "shmem_utils.h"
 #include "pxp/intel_pxp.h"
 
-void intel_gt_init_early(struct intel_gt *gt, struct drm_i915_private *i915)
+void __intel_gt_init_early(struct intel_gt *gt, struct drm_i915_private *i915)
 {
-	gt->i915 = i915;
-	gt->uncore = &i915->uncore;
-
 	spin_lock_init(&gt->irq_lock);
 
 	mutex_init(&gt->tlb_invalidate_lock);
@@ -46,6 +45,12 @@ void intel_gt_init_early(struct intel_gt *gt, struct drm_i915_private *i915)
 
 	intel_uc_init_early(&gt->uc);
 	intel_rps_init_early(&gt->rps);
+}
+
+void intel_gt_init_early(struct intel_gt *gt, struct drm_i915_private *i915)
+{
+	gt->i915 = i915;
+	gt->uncore = &i915->uncore;
 }
 
 int intel_gt_probe_lmem(struct intel_gt *gt)
@@ -1006,6 +1011,12 @@ void intel_gt_invalidate_tlbs(struct intel_gt *gt)
 					    engine->name, timeout_ms);
 	}
 
+	/*
+	 * Use delayed put since a) we mostly expect a flurry of TLB
+	 * invalidations so it is good to avoid paying the forcewake cost and
+	 * b) it works around a bug in Icelake which cannot cope with too rapid
+	 * transitions.
+	 */
 	intel_uncore_forcewake_put_delayed(uncore, FORCEWAKE_ALL);
 	mutex_unlock(&gt->tlb_invalidate_lock);
 }

@@ -137,11 +137,20 @@ void host1x_syncpt_restore(struct host1x *host)
 	struct host1x_syncpt *sp_base = host->syncpt;
 	unsigned int i;
 
-	for (i = 0; i < host1x_syncpt_nb_pts(host); i++)
+	for (i = 0; i < host1x_syncpt_nb_pts(host); i++) {
+		/*
+		 * Unassign syncpt from channels for purposes of Tegra186
+		 * syncpoint protection. This prevents any channel from
+		 * accessing it until it is reassigned.
+		 */
+		host1x_hw_syncpt_assign_to_channel(host, sp_base + i, NULL);
 		host1x_hw_syncpt_restore(host, sp_base + i);
+	}
 
 	for (i = 0; i < host1x_syncpt_nb_bases(host); i++)
 		host1x_hw_syncpt_restore_wait_base(host, sp_base + i);
+
+	host1x_hw_syncpt_enable_protection(host);
 
 	wmb();
 }
@@ -335,13 +344,6 @@ int host1x_syncpt_init(struct host1x *host)
 	for (i = 0; i < host->info->nb_pts; i++) {
 		syncpt[i].id = i;
 		syncpt[i].host = host;
-
-		/*
-		 * Unassign syncpt from channels for purposes of Tegra186
-		 * syncpoint protection. This prevents any channel from
-		 * accessing it until it is reassigned.
-		 */
-		host1x_hw_syncpt_assign_to_channel(host, &syncpt[i], NULL);
 	}
 
 	for (i = 0; i < host->info->nb_bases; i++)
@@ -350,9 +352,6 @@ int host1x_syncpt_init(struct host1x *host)
 	mutex_init(&host->syncpt_mutex);
 	host->syncpt = syncpt;
 	host->bases = bases;
-
-	host1x_syncpt_restore(host);
-	host1x_hw_syncpt_enable_protection(host);
 
 	/* Allocate sync point to use for clearing waits for expired fences */
 	host->nop_sp = host1x_syncpt_alloc(host, 0, "reserved-nop");

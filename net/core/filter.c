@@ -301,7 +301,7 @@ static u32 convert_skb_access(int skb_field, int dst_reg, int src_reg,
 		break;
 
 	case SKF_AD_PKTTYPE:
-		*insn++ = BPF_LDX_MEM(BPF_B, dst_reg, src_reg, PKT_TYPE_OFFSET());
+		*insn++ = BPF_LDX_MEM(BPF_B, dst_reg, src_reg, PKT_TYPE_OFFSET);
 		*insn++ = BPF_ALU32_IMM(BPF_AND, dst_reg, PKT_TYPE_MAX);
 #ifdef __BIG_ENDIAN_BITFIELD
 		*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg, 5);
@@ -323,7 +323,7 @@ static u32 convert_skb_access(int skb_field, int dst_reg, int src_reg,
 				      offsetof(struct sk_buff, vlan_tci));
 		break;
 	case SKF_AD_VLAN_TAG_PRESENT:
-		*insn++ = BPF_LDX_MEM(BPF_B, dst_reg, src_reg, PKT_VLAN_PRESENT_OFFSET());
+		*insn++ = BPF_LDX_MEM(BPF_B, dst_reg, src_reg, PKT_VLAN_PRESENT_OFFSET);
 		if (PKT_VLAN_PRESENT_BIT)
 			*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg, PKT_VLAN_PRESENT_BIT);
 		if (PKT_VLAN_PRESENT_BIT < 7)
@@ -1242,10 +1242,9 @@ static struct bpf_prog *bpf_migrate_filter(struct bpf_prog *fp)
 	int err, new_len, old_len = fp->len;
 	bool seen_ld_abs = false;
 
-	/* We are free to overwrite insns et al right here as it
-	 * won't be used at this point in time anymore internally
-	 * after the migration to the internal BPF instruction
-	 * representation.
+	/* We are free to overwrite insns et al right here as it won't be used at
+	 * this point in time anymore internally after the migration to the eBPF
+	 * instruction representation.
 	 */
 	BUILD_BUG_ON(sizeof(struct sock_filter) !=
 		     sizeof(struct bpf_insn));
@@ -1336,8 +1335,8 @@ static struct bpf_prog *bpf_prepare_filter(struct bpf_prog *fp,
 	 */
 	bpf_jit_compile(fp);
 
-	/* JIT compiler couldn't process this filter, so do the
-	 * internal BPF translation for the optimized interpreter.
+	/* JIT compiler couldn't process this filter, so do the eBPF translation
+	 * for the optimized interpreter.
 	 */
 	if (!fp->jited)
 		fp = bpf_migrate_filter(fp);
@@ -3961,10 +3960,35 @@ u32 xdp_master_redirect(struct xdp_buff *xdp)
 }
 EXPORT_SYMBOL_GPL(xdp_master_redirect);
 
-int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp,
-		    struct bpf_prog *xdp_prog)
+static inline int __xdp_do_redirect_xsk(struct bpf_redirect_info *ri,
+					struct net_device *dev,
+					struct xdp_buff *xdp,
+					struct bpf_prog *xdp_prog)
 {
-	struct bpf_redirect_info *ri = this_cpu_ptr(&bpf_redirect_info);
+	enum bpf_map_type map_type = ri->map_type;
+	void *fwd = ri->tgt_value;
+	u32 map_id = ri->map_id;
+	int err;
+
+	ri->map_id = 0; /* Valid map id idr range: [1,INT_MAX[ */
+	ri->map_type = BPF_MAP_TYPE_UNSPEC;
+
+	err = __xsk_map_redirect(fwd, xdp);
+	if (unlikely(err))
+		goto err;
+
+	_trace_xdp_redirect_map(dev, xdp_prog, fwd, map_type, map_id, ri->tgt_index);
+	return 0;
+err:
+	_trace_xdp_redirect_map_err(dev, xdp_prog, fwd, map_type, map_id, ri->tgt_index, err);
+	return err;
+}
+
+static __always_inline int __xdp_do_redirect_frame(struct bpf_redirect_info *ri,
+						   struct net_device *dev,
+						   struct xdp_frame *xdpf,
+						   struct bpf_prog *xdp_prog)
+{
 	enum bpf_map_type map_type = ri->map_type;
 	void *fwd = ri->tgt_value;
 	u32 map_id = ri->map_id;
@@ -3974,6 +3998,11 @@ int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp,
 	ri->map_id = 0; /* Valid map id idr range: [1,INT_MAX[ */
 	ri->map_type = BPF_MAP_TYPE_UNSPEC;
 
+	if (unlikely(!xdpf)) {
+		err = -EOVERFLOW;
+		goto err;
+	}
+
 	switch (map_type) {
 	case BPF_MAP_TYPE_DEVMAP:
 		fallthrough;
@@ -3981,17 +4010,14 @@ int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp,
 		map = READ_ONCE(ri->map);
 		if (unlikely(map)) {
 			WRITE_ONCE(ri->map, NULL);
-			err = dev_map_enqueue_multi(xdp, dev, map,
+			err = dev_map_enqueue_multi(xdpf, dev, map,
 						    ri->flags & BPF_F_EXCLUDE_INGRESS);
 		} else {
-			err = dev_map_enqueue(fwd, xdp, dev);
+			err = dev_map_enqueue(fwd, xdpf, dev);
 		}
 		break;
 	case BPF_MAP_TYPE_CPUMAP:
-		err = cpu_map_enqueue(fwd, xdp, dev);
-		break;
-	case BPF_MAP_TYPE_XSKMAP:
-		err = __xsk_map_redirect(fwd, xdp);
+		err = cpu_map_enqueue(fwd, xdpf, dev);
 		break;
 	case BPF_MAP_TYPE_UNSPEC:
 		if (map_id == INT_MAX) {
@@ -4000,7 +4026,7 @@ int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp,
 				err = -EINVAL;
 				break;
 			}
-			err = dev_xdp_enqueue(fwd, xdp, dev);
+			err = dev_xdp_enqueue(fwd, xdpf, dev);
 			break;
 		}
 		fallthrough;
@@ -4017,7 +4043,33 @@ err:
 	_trace_xdp_redirect_map_err(dev, xdp_prog, fwd, map_type, map_id, ri->tgt_index, err);
 	return err;
 }
+
+int xdp_do_redirect(struct net_device *dev, struct xdp_buff *xdp,
+		    struct bpf_prog *xdp_prog)
+{
+	struct bpf_redirect_info *ri = this_cpu_ptr(&bpf_redirect_info);
+	enum bpf_map_type map_type = ri->map_type;
+
+	if (map_type == BPF_MAP_TYPE_XSKMAP)
+		return __xdp_do_redirect_xsk(ri, dev, xdp, xdp_prog);
+
+	return __xdp_do_redirect_frame(ri, dev, xdp_convert_buff_to_frame(xdp),
+				       xdp_prog);
+}
 EXPORT_SYMBOL_GPL(xdp_do_redirect);
+
+int xdp_do_redirect_frame(struct net_device *dev, struct xdp_buff *xdp,
+			  struct xdp_frame *xdpf, struct bpf_prog *xdp_prog)
+{
+	struct bpf_redirect_info *ri = this_cpu_ptr(&bpf_redirect_info);
+	enum bpf_map_type map_type = ri->map_type;
+
+	if (map_type == BPF_MAP_TYPE_XSKMAP)
+		return __xdp_do_redirect_xsk(ri, dev, xdp, xdp_prog);
+
+	return __xdp_do_redirect_frame(ri, dev, xdpf, xdp_prog);
+}
+EXPORT_SYMBOL_GPL(xdp_do_redirect_frame);
 
 static int xdp_do_generic_redirect_map(struct net_device *dev,
 				       struct sk_buff *skb,
@@ -4973,6 +5025,12 @@ static int _bpf_getsockopt(struct sock *sk, int level, int optname,
 			goto err_clear;
 
 		switch (optname) {
+		case SO_RCVBUF:
+			*((int *)optval) = sk->sk_rcvbuf;
+			break;
+		case SO_SNDBUF:
+			*((int *)optval) = sk->sk_sndbuf;
+			break;
 		case SO_MARK:
 			*((int *)optval) = sk->sk_mark;
 			break;
@@ -8051,7 +8109,7 @@ static int bpf_unclone_prologue(struct bpf_insn *insn_buf, bool direct_write,
 	 * (Fast-path, otherwise approximation that we might be
 	 *  a clone, do the rest in helper.)
 	 */
-	*insn++ = BPF_LDX_MEM(BPF_B, BPF_REG_6, BPF_REG_1, CLONED_OFFSET());
+	*insn++ = BPF_LDX_MEM(BPF_B, BPF_REG_6, BPF_REG_1, CLONED_OFFSET);
 	*insn++ = BPF_ALU32_IMM(BPF_AND, BPF_REG_6, CLONED_MASK);
 	*insn++ = BPF_JMP_IMM(BPF_JEQ, BPF_REG_6, 0, 7);
 
@@ -8203,13 +8261,13 @@ static bool xdp_is_valid_access(int off, int size,
 	return __is_valid_xdp_access(off, size);
 }
 
-void bpf_warn_invalid_xdp_action(u32 act)
+void bpf_warn_invalid_xdp_action(struct net_device *dev, struct bpf_prog *prog, u32 act)
 {
 	const u32 act_max = XDP_REDIRECT;
 
-	pr_warn_once("%s XDP return value %u, expect packet loss!\n",
+	pr_warn_once("%s XDP return value %u on prog %s (id %d) dev %s, expect packet loss!\n",
 		     act > act_max ? "Illegal" : "Driver unsupported",
-		     act);
+		     act, prog->aux->name, prog->aux->id, dev ? dev->name : "N/A");
 }
 EXPORT_SYMBOL_GPL(bpf_warn_invalid_xdp_action);
 
@@ -8639,7 +8697,7 @@ static u32 bpf_convert_ctx_access(enum bpf_access_type type,
 	case offsetof(struct __sk_buff, pkt_type):
 		*target_size = 1;
 		*insn++ = BPF_LDX_MEM(BPF_B, si->dst_reg, si->src_reg,
-				      PKT_TYPE_OFFSET());
+				      PKT_TYPE_OFFSET);
 		*insn++ = BPF_ALU32_IMM(BPF_AND, si->dst_reg, PKT_TYPE_MAX);
 #ifdef __BIG_ENDIAN_BITFIELD
 		*insn++ = BPF_ALU32_IMM(BPF_RSH, si->dst_reg, 5);
@@ -8664,7 +8722,7 @@ static u32 bpf_convert_ctx_access(enum bpf_access_type type,
 	case offsetof(struct __sk_buff, vlan_present):
 		*target_size = 1;
 		*insn++ = BPF_LDX_MEM(BPF_B, si->dst_reg, si->src_reg,
-				      PKT_VLAN_PRESENT_OFFSET());
+				      PKT_VLAN_PRESENT_OFFSET);
 		if (PKT_VLAN_PRESENT_BIT)
 			*insn++ = BPF_ALU32_IMM(BPF_RSH, si->dst_reg, PKT_VLAN_PRESENT_BIT);
 		if (PKT_VLAN_PRESENT_BIT < 7)
@@ -10563,11 +10621,23 @@ static bool sk_lookup_is_valid_access(int off, int size,
 	case bpf_ctx_range(struct bpf_sk_lookup, local_ip4):
 	case bpf_ctx_range_till(struct bpf_sk_lookup, remote_ip6[0], remote_ip6[3]):
 	case bpf_ctx_range_till(struct bpf_sk_lookup, local_ip6[0], local_ip6[3]):
-	case offsetof(struct bpf_sk_lookup, remote_port) ...
-	     offsetof(struct bpf_sk_lookup, local_ip4) - 1:
 	case bpf_ctx_range(struct bpf_sk_lookup, local_port):
+	case bpf_ctx_range(struct bpf_sk_lookup, ingress_ifindex):
 		bpf_ctx_record_field_size(info, sizeof(__u32));
 		return bpf_ctx_narrow_access_ok(off, size, sizeof(__u32));
+
+	case bpf_ctx_range(struct bpf_sk_lookup, remote_port):
+		/* Allow 4-byte access to 2-byte field for backward compatibility */
+		if (size == sizeof(__u32))
+			return true;
+		bpf_ctx_record_field_size(info, sizeof(__be16));
+		return bpf_ctx_narrow_access_ok(off, size, sizeof(__be16));
+
+	case offsetofend(struct bpf_sk_lookup, remote_port) ...
+	     offsetof(struct bpf_sk_lookup, local_ip4) - 1:
+		/* Allow access to zero padding for backward compatibility */
+		bpf_ctx_record_field_size(info, sizeof(__u16));
+		return bpf_ctx_narrow_access_ok(off, size, sizeof(__u16));
 
 	default:
 		return false;
@@ -10650,10 +10720,21 @@ static u32 sk_lookup_convert_ctx_access(enum bpf_access_type type,
 						     sport, 2, target_size));
 		break;
 
+	case offsetofend(struct bpf_sk_lookup, remote_port):
+		*target_size = 2;
+		*insn++ = BPF_MOV32_IMM(si->dst_reg, 0);
+		break;
+
 	case offsetof(struct bpf_sk_lookup, local_port):
 		*insn++ = BPF_LDX_MEM(BPF_H, si->dst_reg, si->src_reg,
 				      bpf_target_off(struct bpf_sk_lookup_kern,
 						     dport, 2, target_size));
+		break;
+
+	case offsetof(struct bpf_sk_lookup, ingress_ifindex):
+		*insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
+				      bpf_target_off(struct bpf_sk_lookup_kern,
+						     ingress_ifindex, 4, target_size));
 		break;
 	}
 
@@ -10679,14 +10760,10 @@ void bpf_prog_change_xdp(struct bpf_prog *prev_prog, struct bpf_prog *prog)
 	bpf_dispatcher_change_prog(BPF_DISPATCHER_PTR(xdp), prev_prog, prog);
 }
 
-#ifdef CONFIG_DEBUG_INFO_BTF
-BTF_ID_LIST_GLOBAL(btf_sock_ids)
+BTF_ID_LIST_GLOBAL(btf_sock_ids, MAX_BTF_SOCK_TYPE)
 #define BTF_SOCK_TYPE(name, type) BTF_ID(struct, type)
 BTF_SOCK_TYPE_xxx
 #undef BTF_SOCK_TYPE
-#else
-u32 btf_sock_ids[MAX_BTF_SOCK_TYPE];
-#endif
 
 BPF_CALL_1(bpf_skc_to_tcp6_sock, struct sock *, sk)
 {

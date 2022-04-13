@@ -220,16 +220,22 @@ static int mlx5e_rep_get_sset_count(struct net_device *dev, int sset)
 	}
 }
 
-static void mlx5e_rep_get_ringparam(struct net_device *dev,
-				struct ethtool_ringparam *param)
+static void
+mlx5e_rep_get_ringparam(struct net_device *dev,
+			struct ethtool_ringparam *param,
+			struct kernel_ethtool_ringparam *kernel_param,
+			struct netlink_ext_ack *extack)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
 
 	mlx5e_ethtool_get_ringparam(priv, param);
 }
 
-static int mlx5e_rep_set_ringparam(struct net_device *dev,
-			       struct ethtool_ringparam *param)
+static int
+mlx5e_rep_set_ringparam(struct net_device *dev,
+			struct ethtool_ringparam *param,
+			struct kernel_ethtool_ringparam *kernel_param,
+			struct netlink_ext_ack *extack)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
 
@@ -259,7 +265,7 @@ static int mlx5e_rep_get_coalesce(struct net_device *netdev,
 {
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 
-	return mlx5e_ethtool_get_coalesce(priv, coal);
+	return mlx5e_ethtool_get_coalesce(priv, coal, kernel_coal);
 }
 
 static int mlx5e_rep_set_coalesce(struct net_device *netdev,
@@ -269,7 +275,7 @@ static int mlx5e_rep_set_coalesce(struct net_device *netdev,
 {
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 
-	return mlx5e_ethtool_set_coalesce(priv, coal);
+	return mlx5e_ethtool_set_coalesce(priv, coal, kernel_coal, extack);
 }
 
 static u32 mlx5e_rep_get_rxfh_key_size(struct net_device *netdev)
@@ -584,6 +590,12 @@ bool mlx5e_eswitch_uplink_rep(const struct net_device *netdev)
 bool mlx5e_eswitch_vf_rep(const struct net_device *netdev)
 {
 	return netdev->netdev_ops == &mlx5e_netdev_ops_rep;
+}
+
+static int mlx5e_rep_max_nch_limit(struct mlx5_core_dev *mdev)
+{
+	return (1 << MLX5_CAP_GEN(mdev, log_max_tir)) /
+		mlx5_eswitch_get_total_vports(mdev);
 }
 
 static void mlx5e_build_rep_params(struct net_device *netdev)
@@ -1110,7 +1122,7 @@ static const struct mlx5e_profile mlx5e_rep_profile = {
 	.rq_groups		= MLX5E_NUM_RQ_GROUPS(REGULAR),
 	.stats_grps		= mlx5e_rep_stats_grps,
 	.stats_grps_num		= mlx5e_rep_stats_grps_num,
-	.rx_ptp_support		= false,
+	.max_nch_limit		= mlx5e_rep_max_nch_limit,
 };
 
 static const struct mlx5e_profile mlx5e_uplink_rep_profile = {
@@ -1131,7 +1143,6 @@ static const struct mlx5e_profile mlx5e_uplink_rep_profile = {
 	.rq_groups		= MLX5E_NUM_RQ_GROUPS(XSK),
 	.stats_grps		= mlx5e_ul_rep_stats_grps,
 	.stats_grps_num		= mlx5e_ul_rep_stats_grps_num,
-	.rx_ptp_support		= false,
 };
 
 /* e-Switch vport representors */
@@ -1182,14 +1193,10 @@ mlx5e_vport_vf_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 	struct devlink_port *dl_port;
 	struct net_device *netdev;
 	struct mlx5e_priv *priv;
-	unsigned int txqs, rxqs;
-	int nch, err;
+	int err;
 
 	profile = &mlx5e_rep_profile;
-	nch = mlx5e_get_max_num_channels(dev);
-	txqs = nch * profile->max_tc;
-	rxqs = nch * profile->rq_groups;
-	netdev = mlx5e_create_netdev(dev, profile, txqs, rxqs);
+	netdev = mlx5e_create_netdev(dev, profile);
 	if (!netdev) {
 		mlx5_core_warn(dev,
 			       "Failed to create representor netdev for vport %d\n",

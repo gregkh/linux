@@ -14,29 +14,12 @@
 
 static int sof_kcontrol_setup(struct snd_sof_dev *sdev, struct snd_sof_control *scontrol)
 {
-	int ipc_cmd, ctrl_type;
 	int ret;
 
 	/* reset readback offset for scontrol */
 	scontrol->readback_offset = 0;
 
-	/* notify DSP of kcontrol values */
-	switch (scontrol->cmd) {
-	case SOF_CTRL_CMD_VOLUME:
-	case SOF_CTRL_CMD_ENUM:
-	case SOF_CTRL_CMD_SWITCH:
-		ipc_cmd = SOF_IPC_COMP_SET_VALUE;
-		ctrl_type = SOF_CTRL_TYPE_VALUE_CHAN_SET;
-		break;
-	case SOF_CTRL_CMD_BINARY:
-		ipc_cmd = SOF_IPC_COMP_SET_DATA;
-		ctrl_type = SOF_CTRL_TYPE_DATA_SET;
-		break;
-	default:
-		return 0;
-	}
-
-	ret = snd_sof_ipc_set_get_comp_data(scontrol, ipc_cmd, ctrl_type, scontrol->cmd, true);
+	ret = snd_sof_ipc_set_get_comp_data(scontrol, true);
 	if (ret < 0)
 		dev_err(sdev->dev, "error: failed kcontrol value set for widget: %d\n",
 			scontrol->comp_id);
@@ -57,7 +40,7 @@ static int sof_dai_config_setup(struct snd_sof_dev *sdev, struct snd_sof_dai *da
 	}
 
 	/* set NONE flag to clear all previous settings */
-	config->flags = FIELD_PREP(SOF_DAI_CONFIG_FLAGS_MASK, SOF_DAI_CONFIG_FLAGS_NONE);
+	config->flags = SOF_DAI_CONFIG_FLAGS_NONE;
 
 	ret = sof_ipc_tx_message(sdev->ipc, config->hdr.cmd, config, config->hdr.size,
 				 &reply, sizeof(reply));
@@ -76,12 +59,26 @@ static int sof_widget_kcontrol_setup(struct snd_sof_dev *sdev, struct snd_sof_wi
 	/* set up all controls for the widget */
 	list_for_each_entry(scontrol, &sdev->kcontrol_list, list)
 		if (scontrol->comp_id == swidget->comp_id) {
+			/* set kcontrol data in DSP */
 			ret = sof_kcontrol_setup(sdev, scontrol);
 			if (ret < 0) {
 				dev_err(sdev->dev, "error: fail to set up kcontrols for widget %s\n",
 					swidget->widget->name);
 				return ret;
 			}
+
+			/*
+			 * Read back the data from the DSP for static widgets. This is particularly
+			 * useful for binary kcontrols associated with static pipeline widgets to
+			 * initialize the data size to match that in the DSP.
+			 */
+			if (swidget->dynamic_pipeline_widget)
+				continue;
+
+			ret = snd_sof_ipc_set_get_comp_data(scontrol, false);
+			if (ret < 0)
+				dev_warn(sdev->dev, "Failed kcontrol get for control in widget %s\n",
+					 swidget->widget->name);
 		}
 
 	return 0;
@@ -106,7 +103,7 @@ int sof_widget_free(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 		.id = swidget->comp_id,
 	};
 	struct sof_ipc_reply reply;
-	int ret;
+	int ret, ret1, core;
 
 	if (!swidget->private)
 		return 0;
@@ -115,10 +112,17 @@ int sof_widget_free(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 	if (--swidget->use_count)
 		return 0;
 
+	core = swidget->core;
+
 	switch (swidget->id) {
 	case snd_soc_dapm_scheduler:
+	{
+		const struct sof_ipc_pipe_new *pipeline = swidget->private;
+
+		core = pipeline->core;
 		ipc_free.hdr.cmd |= SOF_IPC_TPLG_PIPE_FREE;
 		break;
+	}
 	case snd_soc_dapm_buffer:
 		ipc_free.hdr.cmd |= SOF_IPC_TPLG_BUFFER_FREE;
 		break;
@@ -135,20 +139,32 @@ int sof_widget_free(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 		break;
 	}
 
+	/* continue to disable core even if IPC fails */
 	ret = sof_ipc_tx_message(sdev->ipc, ipc_free.hdr.cmd, &ipc_free, sizeof(ipc_free),
 				 &reply, sizeof(reply));
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(sdev->dev, "error: failed to free widget %s\n", swidget->widget->name);
-		swidget->use_count++;
-		return ret;
+
+	/*
+	 * disable widget core. continue to route setup status and complete flag
+	 * even if this fails and return the appropriate error
+	 */
+	ret1 = snd_sof_dsp_core_put(sdev, core);
+	if (ret1 < 0) {
+		dev_err(sdev->dev, "error: failed to disable target core: %d for widget %s\n",
+			core, swidget->widget->name);
+		if (!ret)
+			ret = ret1;
 	}
 
 	/* reset route setup status for all routes that contain this widget */
 	sof_reset_route_setup_status(sdev, swidget);
 	swidget->complete = 0;
-	dev_dbg(sdev->dev, "widget %s freed\n", swidget->widget->name);
 
-	return 0;
+	if (!ret)
+		dev_dbg(sdev->dev, "widget %s freed\n", swidget->widget->name);
+
+	return ret;
 }
 EXPORT_SYMBOL(sof_widget_free);
 
@@ -161,6 +177,7 @@ int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 	struct snd_sof_dai *dai;
 	size_t ipc_size;
 	int ret;
+	int core;
 
 	/* skip if there is no private data */
 	if (!swidget->private)
@@ -170,10 +187,18 @@ int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 	if (++swidget->use_count > 1)
 		return 0;
 
-	ret = sof_pipeline_core_enable(sdev, swidget);
+	/* set core ID */
+	core = swidget->core;
+	if (swidget->id == snd_soc_dapm_scheduler) {
+		pipeline = swidget->private;
+		core = pipeline->core;
+	}
+
+	/* enable widget core */
+	ret = snd_sof_dsp_core_get(sdev, core);
 	if (ret < 0) {
-		dev_err(sdev->dev, "error: failed to enable target core: %d for widget %s\n",
-			ret, swidget->widget->name);
+		dev_err(sdev->dev, "error: failed to enable target core for widget %s\n",
+			swidget->widget->name);
 		goto use_count_dec;
 	}
 
@@ -182,8 +207,10 @@ int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 	case snd_soc_dapm_dai_out:
 		ipc_size = sizeof(struct sof_ipc_comp_dai) + sizeof(struct sof_ipc_comp_ext);
 		comp = kzalloc(ipc_size, GFP_KERNEL);
-		if (!comp)
-			return -ENOMEM;
+		if (!comp) {
+			ret = -ENOMEM;
+			goto core_put;
+		}
 
 		dai = swidget->private;
 		dai->configured = false;
@@ -198,13 +225,18 @@ int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 		if (ret < 0) {
 			dev_err(sdev->dev, "error: failed to load widget %s\n",
 				swidget->widget->name);
-			goto use_count_dec;
+			goto core_put;
 		}
 
 		ret = sof_dai_config_setup(sdev, dai);
 		if (ret < 0) {
 			dev_err(sdev->dev, "error: failed to load dai config for DAI %s\n",
 				swidget->widget->name);
+
+			/*
+			 * widget use_count and core ref_count will both be decremented by
+			 * sof_widget_free()
+			 */
 			sof_widget_free(sdev, swidget);
 			return ret;
 		}
@@ -222,7 +254,7 @@ int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 	}
 	if (ret < 0) {
 		dev_err(sdev->dev, "error: failed to load widget %s\n", swidget->widget->name);
-		goto use_count_dec;
+		goto core_put;
 	}
 
 	/* restore kcontrols for widget */
@@ -230,6 +262,10 @@ int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 	if (ret < 0) {
 		dev_err(sdev->dev, "error: failed to restore kcontrols for widget %s\n",
 			swidget->widget->name);
+		/*
+		 * widget use_count and core ref_count will both be decremented by
+		 * sof_widget_free()
+		 */
 		sof_widget_free(sdev, swidget);
 		return ret;
 	}
@@ -238,6 +274,8 @@ int sof_widget_setup(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget)
 
 	return 0;
 
+core_put:
+	snd_sof_dsp_core_put(sdev, core);
 use_count_dec:
 	swidget->use_count--;
 	return ret;
@@ -687,6 +725,31 @@ int sof_set_up_pipelines(struct snd_sof_dev *sdev, bool verify)
 	return 0;
 }
 
+int sof_pcm_stream_free(struct snd_sof_dev *sdev, struct snd_pcm_substream *substream,
+			struct snd_sof_pcm *spcm, int dir, bool free_widget_list)
+{
+	int ret;
+
+	/* Send PCM_FREE IPC to reset pipeline */
+	ret = sof_pcm_dsp_pcm_free(substream, sdev, spcm);
+	if (ret < 0)
+		return ret;
+
+	/* stop the DMA */
+	ret = snd_sof_pcm_platform_hw_free(sdev, substream);
+	if (ret < 0)
+		return ret;
+
+	/* free widget list */
+	if (free_widget_list) {
+		ret = sof_widget_list_free(sdev, spcm, dir);
+		if (ret < 0)
+			dev_err(sdev->dev, "failed to free widgets during suspend\n");
+	}
+
+	return ret;
+}
+
 /*
  * Free the PCM, its associated widgets and set the prepared flag to false for all PCMs that
  * did not get suspended(ex: paused streams) so the widgets can be set up again during resume.
@@ -710,15 +773,9 @@ static int sof_tear_down_left_over_pipelines(struct snd_sof_dev *sdev)
 				continue;
 
 			if (spcm->stream[dir].list) {
-				ret = sof_pcm_dsp_pcm_free(substream, sdev, spcm);
+				ret = sof_pcm_stream_free(sdev, substream, spcm, dir, true);
 				if (ret < 0)
 					return ret;
-
-				ret = sof_widget_list_free(sdev, spcm, dir);
-				if (ret < 0) {
-					dev_err(sdev->dev, "failed to free widgets during suspend\n");
-					return ret;
-				}
 			}
 		}
 
@@ -970,9 +1027,10 @@ int sof_machine_check(struct snd_sof_dev *sdev)
 	if (!IS_ENABLED(CONFIG_SND_SOC_SOF_FORCE_NOCODEC_MODE)) {
 
 		/* find machine */
-		snd_sof_machine_select(sdev);
-		if (sof_pdata->machine) {
-			snd_sof_set_mach_params(sof_pdata->machine, sdev);
+		mach = snd_sof_machine_select(sdev);
+		if (mach) {
+			sof_pdata->machine = mach;
+			snd_sof_set_mach_params(mach, sdev);
 			return 0;
 		}
 
@@ -994,7 +1052,7 @@ int sof_machine_check(struct snd_sof_dev *sdev)
 	sof_pdata->tplg_filename = desc->nocodec_tplg_filename;
 
 	sof_pdata->machine = mach;
-	snd_sof_set_mach_params(sof_pdata->machine, sdev);
+	snd_sof_set_mach_params(mach, sdev);
 
 	return 0;
 }

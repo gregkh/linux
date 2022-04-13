@@ -2093,8 +2093,6 @@ static void gsm1_receive(struct gsm_mux *gsm, unsigned char c)
 /**
  *	gsm_error		-	handle tty error
  *	@gsm: ldisc data
- *	@data: byte received (may be invalid)
- *	@flag: error received
  *
  *	Handle an error in the receipt of data for a frame. Currently we just
  *	go back to hunting for a SOF.
@@ -2102,8 +2100,7 @@ static void gsm1_receive(struct gsm_mux *gsm, unsigned char c)
  *	FIXME: better diagnostics ?
  */
 
-static void gsm_error(struct gsm_mux *gsm,
-				unsigned char data, unsigned char flag)
+static void gsm_error(struct gsm_mux *gsm)
 {
 	gsm->state = GSM_SEARCH;
 	gsm->io_error++;
@@ -2523,7 +2520,7 @@ static void gsmld_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 		case TTY_BREAK:
 		case TTY_PARITY:
 		case TTY_FRAME:
-			gsm_error(gsm, *cp, flags);
+			gsm_error(gsm);
 			break;
 		default:
 			WARN_ONCE(1, "%s: unknown flag %d\n",
@@ -2709,8 +2706,8 @@ static __poll_t gsmld_poll(struct tty_struct *tty, struct file *file,
 	return mask;
 }
 
-static int gsmld_ioctl(struct tty_struct *tty, struct file *file,
-		       unsigned int cmd, unsigned long arg)
+static int gsmld_ioctl(struct tty_struct *tty, unsigned int cmd,
+		       unsigned long arg)
 {
 	struct gsm_config c;
 	struct gsm_mux *gsm = tty->disc_data;

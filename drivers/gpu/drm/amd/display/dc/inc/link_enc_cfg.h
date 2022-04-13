@@ -36,8 +36,13 @@
  * Initialise link encoder resource tracking.
  */
 void link_enc_cfg_init(
-		struct dc *dc,
+		const struct dc *dc,
 		struct dc_state *state);
+
+/*
+ * Copies a link encoder assignment from another state.
+ */
+void link_enc_cfg_copy(const struct dc_state *src_ctx, struct dc_state *dst_ctx);
 
 /*
  * Algorithm for assigning available DIG link encoders to streams.

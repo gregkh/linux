@@ -674,7 +674,8 @@ static int hellcreek_bridge_flags(struct dsa_switch *ds, int port,
 }
 
 static int hellcreek_port_bridge_join(struct dsa_switch *ds, int port,
-				      struct net_device *br)
+				      struct dsa_bridge bridge,
+				      bool *tx_fwd_offload)
 {
 	struct hellcreek *hellcreek = ds->priv;
 
@@ -691,7 +692,7 @@ static int hellcreek_port_bridge_join(struct dsa_switch *ds, int port,
 }
 
 static void hellcreek_port_bridge_leave(struct dsa_switch *ds, int port,
-					struct net_device *br)
+					struct dsa_bridge bridge)
 {
 	struct hellcreek *hellcreek = ds->priv;
 
@@ -1457,14 +1458,19 @@ static void hellcreek_teardown(struct dsa_switch *ds)
 	dsa_devlink_resources_unregister(ds);
 }
 
-static void hellcreek_phylink_validate(struct dsa_switch *ds, int port,
-				       unsigned long *supported,
-				       struct phylink_link_state *state)
+static void hellcreek_phylink_get_caps(struct dsa_switch *ds, int port,
+				       struct phylink_config *config)
 {
-	__ETHTOOL_DECLARE_LINK_MODE_MASK(mask) = { 0, };
 	struct hellcreek *hellcreek = ds->priv;
 
-	dev_dbg(hellcreek->dev, "Phylink validate for port %d\n", port);
+	__set_bit(PHY_INTERFACE_MODE_MII, config->supported_interfaces);
+	__set_bit(PHY_INTERFACE_MODE_RGMII, config->supported_interfaces);
+
+	/* Include GMII - the hardware does not support this interface
+	 * mode, but it's the default interface mode for phylib, so we
+	 * need it for compatibility with existing DT.
+	 */
+	__set_bit(PHY_INTERFACE_MODE_GMII, config->supported_interfaces);
 
 	/* The MAC settings are a hardware configuration option and cannot be
 	 * changed at run time or by strapping. Therefore the attached PHYs
@@ -1472,12 +1478,9 @@ static void hellcreek_phylink_validate(struct dsa_switch *ds, int port,
 	 * by the hardware.
 	 */
 	if (hellcreek->pdata->is_100_mbits)
-		phylink_set(mask, 100baseT_Full);
+		config->mac_capabilities = MAC_100FD;
 	else
-		phylink_set(mask, 1000baseT_Full);
-
-	linkmode_and(supported, supported, mask);
-	linkmode_and(state->advertising, state->advertising, mask);
+		config->mac_capabilities = MAC_1000FD;
 }
 
 static int
@@ -1828,7 +1831,7 @@ static const struct dsa_switch_ops hellcreek_ds_ops = {
 	.get_strings	       = hellcreek_get_strings,
 	.get_tag_protocol      = hellcreek_get_tag_protocol,
 	.get_ts_info	       = hellcreek_get_ts_info,
-	.phylink_validate      = hellcreek_phylink_validate,
+	.phylink_get_caps      = hellcreek_phylink_get_caps,
 	.port_bridge_flags     = hellcreek_bridge_flags,
 	.port_bridge_join      = hellcreek_port_bridge_join,
 	.port_bridge_leave     = hellcreek_port_bridge_leave,

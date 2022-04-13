@@ -518,7 +518,7 @@ static struct psp_gfx_cmd_resp *acquire_psp_cmd_buf(struct psp_context *psp)
 	return cmd;
 }
 
-void release_psp_cmd_buf(struct psp_context *psp)
+static void release_psp_cmd_buf(struct psp_context *psp)
 {
 	mutex_unlock(&psp->mutex);
 }
@@ -2454,6 +2454,18 @@ skip_memalloc:
 	if (ret) {
 		DRM_ERROR("PSP load RL failed!\n");
 		return ret;
+	}
+
+	if (amdgpu_sriov_vf(adev) && amdgpu_in_reset(adev)) {
+		if (adev->gmc.xgmi.num_physical_nodes > 1) {
+			ret = psp_xgmi_initialize(psp, false, true);
+			/* Warning the XGMI seesion initialize failure
+			* Instead of stop driver initialization
+			*/
+			if (ret)
+				dev_err(psp->adev->dev,
+					"XGMI: Failed to initialize XGMI session\n");
+		}
 	}
 
 	if (psp->ta_fw) {

@@ -17,6 +17,7 @@
 #include <asm/firmware.h>
 #include <asm/ptrace.h>
 #include <asm/code-patching.h>
+#include <asm/hw_irq.h>
 #include <asm/interrupt.h>
 
 #ifdef CONFIG_PPC64
@@ -775,6 +776,34 @@ static void pmao_restore_workaround(bool ebb)
 	mtspr(SPRN_PMC6, pmcs[5]);
 }
 
+/*
+ * If the perf subsystem wants performance monitor interrupts as soon as
+ * possible (e.g., to sample the instruction address and stack chain),
+ * this should return true. The IRQ masking code can then enable MSR[EE]
+ * in some places (e.g., interrupt handlers) that allows PMI interrupts
+ * through to improve accuracy of profiles, at the cost of some performance.
+ *
+ * The PMU counters can be enabled by other means (e.g., sysfs raw SPR
+ * access), but in that case there is no need for prompt PMI handling.
+ *
+ * This currently returns true if any perf counter is being used. It
+ * could possibly return false if only events are being counted rather than
+ * samples being taken, but for now this is good enough.
+ */
+bool power_pmu_wants_prompt_pmi(void)
+{
+	struct cpu_hw_events *cpuhw;
+
+	/*
+	 * This could simply test local_paca->pmcregs_in_use if that were not
+	 * under ifdef KVM.
+	 */
+	if (!ppmu)
+		return false;
+
+	cpuhw = this_cpu_ptr(&cpu_hw_events);
+	return cpuhw->n_events;
+}
 #endif /* CONFIG_PPC64 */
 
 static void perf_event_interrupt(struct pt_regs *regs);
@@ -2459,7 +2488,7 @@ static int power_pmu_prepare_cpu(unsigned int cpu)
 	return 0;
 }
 
-int register_power_pmu(struct power_pmu *pmu)
+int __init register_power_pmu(struct power_pmu *pmu)
 {
 	if (ppmu)
 		return -EBUSY;		/* something's already registered */
@@ -2486,8 +2515,24 @@ int register_power_pmu(struct power_pmu *pmu)
 }
 
 #ifdef CONFIG_PPC64
+static bool pmu_override = false;
+static unsigned long pmu_override_val;
+static void do_pmu_override(void *data)
+{
+	ppc_set_pmu_inuse(1);
+	if (pmu_override_val)
+		mtspr(SPRN_MMCR1, pmu_override_val);
+	mtspr(SPRN_MMCR0, mfspr(SPRN_MMCR0) & ~MMCR0_FC);
+}
+
 static int __init init_ppc64_pmu(void)
 {
+	if (cpu_has_feature(CPU_FTR_HVMODE) && pmu_override) {
+		pr_warn("disabling perf due to pmu_override= command line option.\n");
+		on_each_cpu(do_pmu_override, NULL, 1);
+		return 0;
+	}
+
 	/* run through all the pmu drivers one at a time */
 	if (!init_power5_pmu())
 		return 0;
@@ -2509,4 +2554,23 @@ static int __init init_ppc64_pmu(void)
 		return init_generic_compat_pmu();
 }
 early_initcall(init_ppc64_pmu);
+
+static int __init pmu_setup(char *str)
+{
+	unsigned long val;
+
+	if (!early_cpu_has_feature(CPU_FTR_HVMODE))
+		return 0;
+
+	pmu_override = true;
+
+	if (kstrtoul(str, 0, &val))
+		val = 0;
+
+	pmu_override_val = val;
+
+	return 1;
+}
+__setup("pmu_override=", pmu_setup);
+
 #endif

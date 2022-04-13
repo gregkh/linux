@@ -42,6 +42,7 @@
  #include "pm8001_hwi.h"
  #include "pm8001_chips.h"
  #include "pm8001_ctl.h"
+ #include "pm80xx_tracepoints.h"
 
 /**
  * read_main_config_table - read the configure table and save it.
@@ -1324,6 +1325,10 @@ int pm8001_mpi_build_cmd(struct pm8001_hba_info *pm8001_ha,
 	unsigned long flags;
 	int q_index = circularQ - pm8001_ha->inbnd_q_tbl;
 	int rv;
+	u32 htag = le32_to_cpu(*(__le32 *)payload);
+
+	trace_pm80xx_mpi_build_cmd(pm8001_ha->id, opCode, htag, q_index,
+		circularQ->producer_idx, le32_to_cpu(circularQ->consumer_index));
 
 	if (WARN_ON(q_index >= pm8001_ha->max_q_num))
 		return -EINVAL;
@@ -1517,7 +1522,6 @@ void pm8001_work_fn(struct work_struct *work)
 	case IO_XFER_ERROR_BREAK:
 	{	/* This one stashes the sas_task instead */
 		struct sas_task *t = (struct sas_task *)pm8001_dev;
-		u32 tag;
 		struct pm8001_ccb_info *ccb;
 		struct pm8001_hba_info *pm8001_ha = pw->pm8001_ha;
 		unsigned long flags, flags1;
@@ -1539,8 +1543,8 @@ void pm8001_work_fn(struct work_struct *work)
 		/* Search for a possible ccb that matches the task */
 		for (i = 0; ccb = NULL, i < PM8001_MAX_CCB; i++) {
 			ccb = &pm8001_ha->ccb_info[i];
-			tag = ccb->ccb_tag;
-			if ((tag != 0xFFFFFFFF) && (ccb->task == t))
+			if ((ccb->ccb_tag != PM8001_INVALID_TAG) &&
+			    (ccb->task == t))
 				break;
 		}
 		if (!ccb) {
@@ -1562,11 +1566,11 @@ void pm8001_work_fn(struct work_struct *work)
 			spin_unlock_irqrestore(&t->task_state_lock, flags1);
 			pm8001_dbg(pm8001_ha, FAIL, "task 0x%p done with event 0x%x resp 0x%x stat 0x%x but aborted by upper layer!\n",
 				   t, pw->handler, ts->resp, ts->stat);
-			pm8001_ccb_task_free(pm8001_ha, t, ccb, tag);
+			pm8001_ccb_task_free(pm8001_ha, t, ccb, ccb->ccb_tag);
 			spin_unlock_irqrestore(&pm8001_ha->lock, flags);
 		} else {
 			spin_unlock_irqrestore(&t->task_state_lock, flags1);
-			pm8001_ccb_task_free(pm8001_ha, t, ccb, tag);
+			pm8001_ccb_task_free(pm8001_ha, t, ccb, ccb->ccb_tag);
 			mb();/* in order to force CPU ordering */
 			spin_unlock_irqrestore(&pm8001_ha->lock, flags);
 			t->task_done(t);
@@ -1575,7 +1579,6 @@ void pm8001_work_fn(struct work_struct *work)
 	case IO_XFER_OPEN_RETRY_TIMEOUT:
 	{	/* This one stashes the sas_task instead */
 		struct sas_task *t = (struct sas_task *)pm8001_dev;
-		u32 tag;
 		struct pm8001_ccb_info *ccb;
 		struct pm8001_hba_info *pm8001_ha = pw->pm8001_ha;
 		unsigned long flags, flags1;
@@ -1609,8 +1612,8 @@ void pm8001_work_fn(struct work_struct *work)
 		/* Search for a possible ccb that matches the task */
 		for (i = 0; ccb = NULL, i < PM8001_MAX_CCB; i++) {
 			ccb = &pm8001_ha->ccb_info[i];
-			tag = ccb->ccb_tag;
-			if ((tag != 0xFFFFFFFF) && (ccb->task == t))
+			if ((ccb->ccb_tag != PM8001_INVALID_TAG) &&
+			    (ccb->task == t))
 				break;
 		}
 		if (!ccb) {
@@ -1681,19 +1684,13 @@ void pm8001_work_fn(struct work_struct *work)
 		struct task_status_struct *ts;
 		struct sas_task *task;
 		int i;
-		u32 tag, device_id;
+		u32 device_id;
 
 		for (i = 0; ccb = NULL, i < PM8001_MAX_CCB; i++) {
 			ccb = &pm8001_ha->ccb_info[i];
 			task = ccb->task;
 			ts = &task->task_status;
-			tag = ccb->ccb_tag;
-			/* check if tag is NULL */
-			if (!tag) {
-				pm8001_dbg(pm8001_ha, FAIL,
-					"tag Null\n");
-				continue;
-			}
+
 			if (task != NULL) {
 				dev = task->dev;
 				if (!dev) {
@@ -1702,10 +1699,11 @@ void pm8001_work_fn(struct work_struct *work)
 					continue;
 				}
 				/*complete sas task and update to top layer */
-				pm8001_ccb_task_free(pm8001_ha, task, ccb, tag);
+				pm8001_ccb_task_free(pm8001_ha, task, ccb,
+						     ccb->ccb_tag);
 				ts->resp = SAS_TASK_COMPLETE;
 				task->task_done(task);
-			} else if (tag != 0xFFFFFFFF) {
+			} else if (ccb->ccb_tag != PM8001_INVALID_TAG) {
 				/* complete the internal commands/non-sas task */
 				pm8001_dev = ccb->device;
 				if (pm8001_dev->dcompletion) {
@@ -1713,7 +1711,7 @@ void pm8001_work_fn(struct work_struct *work)
 					pm8001_dev->dcompletion = NULL;
 				}
 				complete(pm8001_ha->nvmd_completion);
-				pm8001_tag_free(pm8001_ha, tag);
+				pm8001_tag_free(pm8001_ha, ccb->ccb_tag);
 			}
 		}
 		/* Deregister all the device ids  */
@@ -2311,21 +2309,12 @@ mpi_sata_completion(struct pm8001_hba_info *pm8001_ha, void *piomb)
 
 	psataPayload = (struct sata_completion_resp *)(piomb + 4);
 	status = le32_to_cpu(psataPayload->status);
+	param = le32_to_cpu(psataPayload->param);
 	tag = le32_to_cpu(psataPayload->tag);
 
-	if (!tag) {
-		pm8001_dbg(pm8001_ha, FAIL, "tag null\n");
-		return;
-	}
 	ccb = &pm8001_ha->ccb_info[tag];
-	param = le32_to_cpu(psataPayload->param);
-	if (ccb) {
-		t = ccb->task;
-		pm8001_dev = ccb->device;
-	} else {
-		pm8001_dbg(pm8001_ha, FAIL, "ccb null\n");
-		return;
-	}
+	t = ccb->task;
+	pm8001_dev = ccb->device;
 
 	if (t) {
 		if (t->dev && (t->dev->lldd_dev))
@@ -2342,10 +2331,6 @@ mpi_sata_completion(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	}
 
 	ts = &t->task_status;
-	if (!ts) {
-		pm8001_dbg(pm8001_ha, FAIL, "ts null\n");
-		return;
-	}
 
 	if (status)
 		pm8001_dbg(pm8001_ha, IOERR,
@@ -2702,14 +2687,6 @@ static void mpi_sata_event(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	u32 port_id = le32_to_cpu(psataPayload->port_id);
 	u32 dev_id = le32_to_cpu(psataPayload->device_id);
 
-	ccb = &pm8001_ha->ccb_info[tag];
-
-	if (ccb) {
-		t = ccb->task;
-		pm8001_dev = ccb->device;
-	} else {
-		pm8001_dbg(pm8001_ha, FAIL, "No CCB !!!. returning\n");
-	}
 	if (event)
 		pm8001_dbg(pm8001_ha, FAIL, "SATA EVENT 0x%x\n", event);
 
@@ -3070,7 +3047,7 @@ void pm8001_mpi_set_dev_state_resp(struct pm8001_hba_info *pm8001_ha,
 		   device_id, pds, nds, status);
 	complete(pm8001_dev->setds_completion);
 	ccb->task = NULL;
-	ccb->ccb_tag = 0xFFFFFFFF;
+	ccb->ccb_tag = PM8001_INVALID_TAG;
 	pm8001_tag_free(pm8001_ha, tag);
 }
 
@@ -3088,7 +3065,7 @@ void pm8001_mpi_set_nvmd_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 				dlen_status);
 	}
 	ccb->task = NULL;
-	ccb->ccb_tag = 0xFFFFFFFF;
+	ccb->ccb_tag = PM8001_INVALID_TAG;
 	pm8001_tag_free(pm8001_ha, tag);
 }
 
@@ -3115,7 +3092,7 @@ pm8001_mpi_get_nvmd_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 		 * freed by requesting path anywhere.
 		 */
 		ccb->task = NULL;
-		ccb->ccb_tag = 0xFFFFFFFF;
+		ccb->ccb_tag = PM8001_INVALID_TAG;
 		pm8001_tag_free(pm8001_ha, tag);
 		return;
 	}
@@ -3161,7 +3138,7 @@ pm8001_mpi_get_nvmd_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	complete(pm8001_ha->nvmd_completion);
 	pm8001_dbg(pm8001_ha, MSG, "Get nvmd data complete!\n");
 	ccb->task = NULL;
-	ccb->ccb_tag = 0xFFFFFFFF;
+	ccb->ccb_tag = PM8001_INVALID_TAG;
 	pm8001_tag_free(pm8001_ha, tag);
 }
 
@@ -3574,7 +3551,7 @@ int pm8001_mpi_reg_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	}
 	complete(pm8001_dev->dcompletion);
 	ccb->task = NULL;
-	ccb->ccb_tag = 0xFFFFFFFF;
+	ccb->ccb_tag = PM8001_INVALID_TAG;
 	pm8001_tag_free(pm8001_ha, htag);
 	return 0;
 }
@@ -3646,7 +3623,7 @@ int pm8001_mpi_fw_flash_update_resp(struct pm8001_hba_info *pm8001_ha,
 	}
 	kfree(ccb->fw_control_context);
 	ccb->task = NULL;
-	ccb->ccb_tag = 0xFFFFFFFF;
+	ccb->ccb_tag = PM8001_INVALID_TAG;
 	pm8001_tag_free(pm8001_ha, tag);
 	complete(pm8001_ha->nvmd_completion);
 	return 0;
@@ -3682,10 +3659,6 @@ int pm8001_mpi_task_abort_resp(struct pm8001_hba_info *pm8001_ha, void *piomb)
 
 	status = le32_to_cpu(pPayload->status);
 	tag = le32_to_cpu(pPayload->tag);
-	if (!tag) {
-		pm8001_dbg(pm8001_ha, FAIL, " TAG NULL. RETURNING !!!\n");
-		return -1;
-	}
 
 	scp = le32_to_cpu(pPayload->scp);
 	ccb = &pm8001_ha->ccb_info[tag];

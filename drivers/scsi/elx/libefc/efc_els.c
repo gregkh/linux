@@ -67,7 +67,7 @@ efc_els_io_alloc_size(struct efc_node *node, u32 reqlen, u32 rsplen)
 	/* now allocate DMA for request and response */
 	els->io.req.size = reqlen;
 	els->io.req.virt = dma_alloc_coherent(&efc->pci->dev, els->io.req.size,
-					      &els->io.req.phys, GFP_DMA);
+					      &els->io.req.phys, GFP_KERNEL);
 	if (!els->io.req.virt) {
 		mempool_free(els, efc->els_io_pool);
 		return NULL;
@@ -75,7 +75,7 @@ efc_els_io_alloc_size(struct efc_node *node, u32 reqlen, u32 rsplen)
 
 	els->io.rsp.size = rsplen;
 	els->io.rsp.virt = dma_alloc_coherent(&efc->pci->dev, els->io.rsp.size,
-					      &els->io.rsp.phys, GFP_DMA);
+					      &els->io.rsp.phys, GFP_KERNEL);
 	if (!els->io.rsp.virt) {
 		dma_free_coherent(&efc->pci->dev, els->io.req.size,
 				  els->io.req.virt, els->io.req.phys);

@@ -52,6 +52,28 @@ static inline void wq_list_add_after(struct io_wq_work_node *node,
 		list->last = node;
 }
 
+/**
+ * wq_list_merge - merge the second list to the first one.
+ * @list0: the first list
+ * @list1: the second list
+ * Return the first node after mergence.
+ */
+static inline struct io_wq_work_node *wq_list_merge(struct io_wq_work_list *list0,
+						    struct io_wq_work_list *list1)
+{
+	struct io_wq_work_node *ret;
+
+	if (!list0->first) {
+		ret = list1->first;
+	} else {
+		ret = list0->first;
+		list0->last->next = list1->first;
+	}
+	INIT_WQ_LIST(list0);
+	INIT_WQ_LIST(list1);
+	return ret;
+}
+
 static inline void wq_list_add_tail(struct io_wq_work_node *node,
 				    struct io_wq_work_list *list)
 {
@@ -133,6 +155,7 @@ struct io_wq_work_node *wq_stack_extract(struct io_wq_work_node *stack)
 struct io_wq_work {
 	struct io_wq_work_node list;
 	unsigned flags;
+	int fd;
 };
 
 static inline struct io_wq_work *wq_next_work(struct io_wq_work *work)
@@ -200,6 +223,6 @@ static inline void io_wq_worker_running(struct task_struct *tsk)
 static inline bool io_wq_current_is_worker(void)
 {
 	return in_task() && (current->flags & PF_IO_WORKER) &&
-		current->pf_io_worker;
+		current->worker_private;
 }
 #endif

@@ -1154,7 +1154,7 @@ static int calculate_alloc_pointer(struct btrfs_block_group *cache,
 				   u64 *offset_ret)
 {
 	struct btrfs_fs_info *fs_info = cache->fs_info;
-	struct btrfs_root *root = fs_info->extent_root;
+	struct btrfs_root *root;
 	struct btrfs_path *path;
 	struct btrfs_key key;
 	struct btrfs_key found_key;
@@ -1169,6 +1169,7 @@ static int calculate_alloc_pointer(struct btrfs_block_group *cache,
 	key.type = 0;
 	key.offset = 0;
 
+	root = btrfs_extent_root(fs_info, key.objectid);
 	ret = btrfs_search_slot(NULL, root, &key, path, 0, 0);
 	/* We should not find the exact match */
 	if (!ret)
@@ -1636,29 +1637,19 @@ bool btrfs_check_meta_write_pointer(struct btrfs_fs_info *fs_info,
 	if (!btrfs_is_zoned(fs_info))
 		return true;
 
-	cache = *cache_ret;
+	cache = btrfs_lookup_block_group(fs_info, eb->start);
+	if (!cache)
+		return true;
 
-	if (cache && (eb->start < cache->start ||
-		      cache->start + cache->length <= eb->start)) {
+	if (cache->meta_write_pointer != eb->start) {
 		btrfs_put_block_group(cache);
 		cache = NULL;
-		*cache_ret = NULL;
+		ret = false;
+	} else {
+		cache->meta_write_pointer = eb->start + eb->len;
 	}
 
-	if (!cache)
-		cache = btrfs_lookup_block_group(fs_info, eb->start);
-
-	if (cache) {
-		if (cache->meta_write_pointer != eb->start) {
-			btrfs_put_block_group(cache);
-			cache = NULL;
-			ret = false;
-		} else {
-			cache->meta_write_pointer = eb->start + eb->len;
-		}
-
-		*cache_ret = cache;
-	}
+	*cache_ret = cache;
 
 	return ret;
 }

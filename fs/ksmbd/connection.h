@@ -72,12 +72,7 @@ struct ksmbd_conn {
 	int				connection_type;
 	struct ksmbd_stats		stats;
 	char				ClientGUID[SMB2_CLIENT_GUID_SIZE];
-	union {
-		/* pending trans request table */
-		struct trans_state	*recent_trans;
-		/* Used by ntlmssp */
-		char			*ntlmssp_cryptkey;
-	};
+	struct ntlmssp_auth		ntlmssp;
 
 	spinlock_t			llist_lock;
 	struct list_head		lock_list;
@@ -122,6 +117,7 @@ struct ksmbd_conn_ops {
 struct ksmbd_transport_ops {
 	int (*prepare)(struct ksmbd_transport *t);
 	void (*disconnect)(struct ksmbd_transport *t);
+	void (*shutdown)(struct ksmbd_transport *t);
 	int (*read)(struct ksmbd_transport *t, char *buf, unsigned int size);
 	int (*writev)(struct ksmbd_transport *t, struct kvec *iovs, int niov,
 		      int size, bool need_invalidate_rkey,

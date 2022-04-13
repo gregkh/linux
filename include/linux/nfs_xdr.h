@@ -1194,6 +1194,8 @@ struct nfs4_server_caps_res {
 	u32				has_links;
 	u32				has_symlinks;
 	u32				fh_expire_type;
+	u32				case_insensitive;
+	u32				case_preserving;
 };
 
 #define NFS4_PATHNAME_MAXCOMPONENTS 512
@@ -1737,7 +1739,7 @@ struct nfs_rpc_ops {
 			    struct nfs_fh *, struct nfs_fattr *);
 	int	(*lookupp) (struct inode *, struct nfs_fh *,
 			    struct nfs_fattr *);
-	int	(*access)  (struct inode *, struct nfs_access_entry *);
+	int	(*access)  (struct inode *, struct nfs_access_entry *, const struct cred *);
 	int	(*readlink)(struct inode *, struct page *, unsigned int,
 			    unsigned int);
 	int	(*create)  (struct inode *, struct dentry *,

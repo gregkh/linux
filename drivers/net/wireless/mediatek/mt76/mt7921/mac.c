@@ -218,10 +218,9 @@ mt7921_mac_decode_he_radiotap_ru(struct mt76_rx_status *status,
 }
 
 static void
-mt7921_mac_decode_he_mu_radiotap(struct sk_buff *skb,
-				 struct mt76_rx_status *status,
-				 __le32 *rxv)
+mt7921_mac_decode_he_mu_radiotap(struct sk_buff *skb, __le32 *rxv)
 {
+	struct mt76_rx_status *status = (struct mt76_rx_status *)skb->cb;
 	static const struct ieee80211_radiotap_he_mu mu_known = {
 		.flags1 = HE_BITS(MU_FLAGS1_SIG_B_MCS_KNOWN) |
 			  HE_BITS(MU_FLAGS1_SIG_B_DCM_KNOWN) |
@@ -232,6 +231,8 @@ mt7921_mac_decode_he_mu_radiotap(struct sk_buff *skb,
 			  HE_BITS(MU_FLAGS2_PUNC_FROM_SIG_A_BW_KNOWN),
 	};
 	struct ieee80211_radiotap_he_mu *he_mu;
+
+	status->flag |= RX_FLAG_RADIOTAP_HE_MU;
 
 	he_mu = skb_push(skb, sizeof(mu_known));
 	memcpy(he_mu, &mu_known, sizeof(mu_known));
@@ -263,10 +264,9 @@ mt7921_mac_decode_he_mu_radiotap(struct sk_buff *skb,
 }
 
 static void
-mt7921_mac_decode_he_radiotap(struct sk_buff *skb,
-			      struct mt76_rx_status *status,
-			      __le32 *rxv, u32 phy)
+mt7921_mac_decode_he_radiotap(struct sk_buff *skb, __le32 *rxv, u32 mode)
 {
+	struct mt76_rx_status *status = (struct mt76_rx_status *)skb->cb;
 	static const struct ieee80211_radiotap_he known = {
 		.data1 = HE_BITS(DATA1_DATA_MCS_KNOWN) |
 			 HE_BITS(DATA1_DATA_DCM_KNOWN) |
@@ -284,6 +284,8 @@ mt7921_mac_decode_he_radiotap(struct sk_buff *skb,
 	struct ieee80211_radiotap_he *he = NULL;
 	u32 ltf_size = le32_get_bits(rxv[2], MT_CRXV_HE_LTF_SIZE) + 1;
 
+	status->flag |= RX_FLAG_RADIOTAP_HE;
+
 	he = skb_push(skb, sizeof(known));
 	memcpy(he, &known, sizeof(known));
 
@@ -298,7 +300,7 @@ mt7921_mac_decode_he_radiotap(struct sk_buff *skb,
 	he->data6 = HE_PREP(DATA6_TXOP, TXOP_DUR, rxv[14]) |
 		    HE_PREP(DATA6_DOPPLER, DOPPLER, rxv[14]);
 
-	switch (phy) {
+	switch (mode) {
 	case MT_PHY_TYPE_HE_SU:
 		he->data1 |= HE_BITS(DATA1_FORMAT_SU) |
 			     HE_BITS(DATA1_UL_DL_KNOWN) |
@@ -322,6 +324,7 @@ mt7921_mac_decode_he_radiotap(struct sk_buff *skb,
 		he->data4 |= HE_PREP(DATA4_MU_STA_ID, MU_AID, rxv[7]);
 
 		mt7921_mac_decode_he_radiotap_ru(status, he, rxv);
+		mt7921_mac_decode_he_mu_radiotap(skb, rxv);
 		break;
 	case MT_PHY_TYPE_HE_TB:
 		he->data1 |= HE_BITS(DATA1_FORMAT_TRIG) |
@@ -395,6 +398,86 @@ mt7921_mac_assoc_rssi(struct mt7921_dev *dev, struct sk_buff *skb)
 		mt7921_mac_rssi_iter, skb);
 }
 
+/* The HW does not translate the mac header to 802.3 for mesh point */
+static int mt7921_reverse_frag0_hdr_trans(struct sk_buff *skb, u16 hdr_gap)
+{
+	struct mt76_rx_status *status = (struct mt76_rx_status *)skb->cb;
+	struct ethhdr *eth_hdr = (struct ethhdr *)(skb->data + hdr_gap);
+	struct mt7921_sta *msta = (struct mt7921_sta *)status->wcid;
+	__le32 *rxd = (__le32 *)skb->data;
+	struct ieee80211_sta *sta;
+	struct ieee80211_vif *vif;
+	struct ieee80211_hdr hdr;
+	u16 frame_control;
+
+	if (FIELD_GET(MT_RXD3_NORMAL_ADDR_TYPE, le32_to_cpu(rxd[3])) !=
+	    MT_RXD3_NORMAL_U2M)
+		return -EINVAL;
+
+	if (!(le32_to_cpu(rxd[1]) & MT_RXD1_NORMAL_GROUP_4))
+		return -EINVAL;
+
+	if (!msta || !msta->vif)
+		return -EINVAL;
+
+	sta = container_of((void *)msta, struct ieee80211_sta, drv_priv);
+	vif = container_of((void *)msta->vif, struct ieee80211_vif, drv_priv);
+
+	/* store the info from RXD and ethhdr to avoid being overridden */
+	frame_control = le32_get_bits(rxd[6], MT_RXD6_FRAME_CONTROL);
+	hdr.frame_control = cpu_to_le16(frame_control);
+	hdr.seq_ctrl = cpu_to_le16(le32_get_bits(rxd[8], MT_RXD8_SEQ_CTRL));
+	hdr.duration_id = 0;
+
+	ether_addr_copy(hdr.addr1, vif->addr);
+	ether_addr_copy(hdr.addr2, sta->addr);
+	switch (frame_control & (IEEE80211_FCTL_TODS |
+				 IEEE80211_FCTL_FROMDS)) {
+	case 0:
+		ether_addr_copy(hdr.addr3, vif->bss_conf.bssid);
+		break;
+	case IEEE80211_FCTL_FROMDS:
+		ether_addr_copy(hdr.addr3, eth_hdr->h_source);
+		break;
+	case IEEE80211_FCTL_TODS:
+		ether_addr_copy(hdr.addr3, eth_hdr->h_dest);
+		break;
+	case IEEE80211_FCTL_TODS | IEEE80211_FCTL_FROMDS:
+		ether_addr_copy(hdr.addr3, eth_hdr->h_dest);
+		ether_addr_copy(hdr.addr4, eth_hdr->h_source);
+		break;
+	default:
+		break;
+	}
+
+	skb_pull(skb, hdr_gap + sizeof(struct ethhdr) - 2);
+	if (eth_hdr->h_proto == cpu_to_be16(ETH_P_AARP) ||
+	    eth_hdr->h_proto == cpu_to_be16(ETH_P_IPX))
+		ether_addr_copy(skb_push(skb, ETH_ALEN), bridge_tunnel_header);
+	else if (be16_to_cpu(eth_hdr->h_proto) >= ETH_P_802_3_MIN)
+		ether_addr_copy(skb_push(skb, ETH_ALEN), rfc1042_header);
+	else
+		skb_pull(skb, 2);
+
+	if (ieee80211_has_order(hdr.frame_control))
+		memcpy(skb_push(skb, IEEE80211_HT_CTL_LEN), &rxd[9],
+		       IEEE80211_HT_CTL_LEN);
+	if (ieee80211_is_data_qos(hdr.frame_control)) {
+		__le16 qos_ctrl;
+
+		qos_ctrl = cpu_to_le16(le32_get_bits(rxd[8], MT_RXD8_QOS_CTL));
+		memcpy(skb_push(skb, IEEE80211_QOS_CTL_LEN), &qos_ctrl,
+		       IEEE80211_QOS_CTL_LEN);
+	}
+
+	if (ieee80211_has_a4(hdr.frame_control))
+		memcpy(skb_push(skb, sizeof(hdr)), &hdr, sizeof(hdr));
+	else
+		memcpy(skb_push(skb, sizeof(hdr) - 6), &hdr, sizeof(hdr) - 6);
+
+	return 0;
+}
+
 static int
 mt7921_mac_fill_rx(struct mt7921_dev *dev, struct sk_buff *skb)
 {
@@ -402,11 +485,11 @@ mt7921_mac_fill_rx(struct mt7921_dev *dev, struct sk_buff *skb)
 	struct mt76_rx_status *status = (struct mt76_rx_status *)skb->cb;
 	bool hdr_trans, unicast, insert_ccmp_hdr = false;
 	u8 chfreq, qos_ctl = 0, remove_pad, amsdu_info;
+	u16 hdr_gap;
 	__le32 *rxv = NULL, *rxd = (__le32 *)skb->data;
 	struct mt76_phy *mphy = &dev->mt76.phy;
 	struct mt7921_phy *phy = &dev->phy;
 	struct ieee80211_supported_band *sband;
-	struct ieee80211_hdr *hdr;
 	u32 rxd0 = le32_to_cpu(rxd[0]);
 	u32 rxd1 = le32_to_cpu(rxd[1]);
 	u32 rxd2 = le32_to_cpu(rxd[2]);
@@ -619,15 +702,12 @@ mt7921_mac_fill_rx(struct mt7921_dev *dev, struct sk_buff *skb)
 				return -EINVAL;
 			break;
 		case MT_PHY_TYPE_HE_MU:
-			status->flag |= RX_FLAG_RADIOTAP_HE_MU;
-			fallthrough;
 		case MT_PHY_TYPE_HE_SU:
 		case MT_PHY_TYPE_HE_EXT_SU:
 		case MT_PHY_TYPE_HE_TB:
 			status->nss =
 				FIELD_GET(MT_PRXV_NSTS, v0) + 1;
 			status->encoding = RX_ENC_HE;
-			status->flag |= RX_FLAG_RADIOTAP_HE;
 			i &= GENMASK(3, 0);
 
 			if (gi <= NL80211_RATE_INFO_HE_GI_3_2)
@@ -675,14 +755,21 @@ mt7921_mac_fill_rx(struct mt7921_dev *dev, struct sk_buff *skb)
 		}
 	}
 
-	skb_pull(skb, (u8 *)rxd - skb->data + 2 * remove_pad);
-
 	amsdu_info = FIELD_GET(MT_RXD4_NORMAL_PAYLOAD_FORMAT, rxd4);
 	status->amsdu = !!amsdu_info;
 	if (status->amsdu) {
 		status->first_amsdu = amsdu_info == MT_RXD4_FIRST_AMSDU_FRAME;
 		status->last_amsdu = amsdu_info == MT_RXD4_LAST_AMSDU_FRAME;
-		if (!hdr_trans) {
+	}
+
+	hdr_gap = (u8 *)rxd - skb->data + 2 * remove_pad;
+	if (hdr_trans && ieee80211_has_morefrags(fc)) {
+		if (mt7921_reverse_frag0_hdr_trans(skb, hdr_gap))
+			return -EINVAL;
+		hdr_trans = false;
+	} else {
+		skb_pull(skb, hdr_gap);
+		if (!hdr_trans && status->amsdu) {
 			memmove(skb->data + 2, skb->data,
 				ieee80211_get_hdrlen_from_skb(skb));
 			skb_pull(skb, 2);
@@ -690,6 +777,8 @@ mt7921_mac_fill_rx(struct mt7921_dev *dev, struct sk_buff *skb)
 	}
 
 	if (!hdr_trans) {
+		struct ieee80211_hdr *hdr;
+
 		if (insert_ccmp_hdr) {
 			u8 key_id = FIELD_GET(MT_RXD1_NORMAL_KEY_ID, rxd1);
 
@@ -703,19 +792,13 @@ mt7921_mac_fill_rx(struct mt7921_dev *dev, struct sk_buff *skb)
 			qos_ctl = *ieee80211_get_qos_ctl(hdr);
 		}
 	} else {
-		status->flag &= ~(RX_FLAG_RADIOTAP_HE |
-				  RX_FLAG_RADIOTAP_HE_MU);
 		status->flag |= RX_FLAG_8023;
 	}
 
 	mt7921_mac_assoc_rssi(dev, skb);
 
-	if (rxv && status->flag & RX_FLAG_RADIOTAP_HE) {
-		mt7921_mac_decode_he_radiotap(skb, status, rxv, mode);
-
-		if (status->flag & RX_FLAG_RADIOTAP_HE_MU)
-			mt7921_mac_decode_he_mu_radiotap(skb, status, rxv);
-	}
+	if (rxv && mode >= MT_PHY_TYPE_HE_SU && !(status->flag & RX_FLAG_8023))
+		mt7921_mac_decode_he_radiotap(skb, rxv, mode);
 
 	if (!status->wcid || !ieee80211_is_data_qos(fc))
 		return 0;
@@ -1326,6 +1409,7 @@ void mt7921_mac_reset_work(struct work_struct *work)
 	}
 
 	dev->hw_full_reset = false;
+	pm->suspended = false;
 	ieee80211_wake_queues(hw);
 	ieee80211_iterate_active_interfaces(hw,
 					    IEEE80211_IFACE_ITER_RESUME_ALL,

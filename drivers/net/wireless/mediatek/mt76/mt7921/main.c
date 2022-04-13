@@ -128,11 +128,23 @@ mt7921_init_he_caps(struct mt7921_phy *phy, enum nl80211_band band,
 				IEEE80211_HE_PHY_CAP9_RX_1024_QAM_LESS_THAN_242_TONE_RU |
 				IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_COMP_SIGB |
 				IEEE80211_HE_PHY_CAP9_RX_FULL_BW_SU_USING_MU_WITH_NON_COMP_SIGB;
+
+			if (is_mt7922(phy->mt76->dev)) {
+				he_cap_elem->phy_cap_info[0] |=
+					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G;
+				he_cap_elem->phy_cap_info[8] |=
+					IEEE80211_HE_PHY_CAP8_20MHZ_IN_160MHZ_HE_PPDU |
+					IEEE80211_HE_PHY_CAP8_80MHZ_IN_160MHZ_HE_PPDU;
+			}
 			break;
 		}
 
 		he_mcs->rx_mcs_80 = cpu_to_le16(mcs_map);
 		he_mcs->tx_mcs_80 = cpu_to_le16(mcs_map);
+		if (is_mt7922(phy->mt76->dev)) {
+			he_mcs->rx_mcs_160 = cpu_to_le16(mcs_map);
+			he_mcs->tx_mcs_160 = cpu_to_le16(mcs_map);
+		}
 
 		memset(he_cap->ppe_thres, 0, sizeof(he_cap->ppe_thres));
 		if (he_cap_elem->phy_cap_info[6] &
@@ -140,7 +152,8 @@ mt7921_init_he_caps(struct mt7921_phy *phy, enum nl80211_band band,
 			mt7921_gen_ppe_thresh(he_cap->ppe_thres, nss);
 		} else {
 			he_cap_elem->phy_cap_info[9] |=
-				IEEE80211_HE_PHY_CAP9_NOMIMAL_PKT_PADDING_16US;
+				u8_encode_bits(IEEE80211_HE_PHY_CAP9_NOMINAL_PKT_PADDING_16US,
+					       IEEE80211_HE_PHY_CAP9_NOMINAL_PKT_PADDING_MASK);
 		}
 
 		if (band == NL80211_BAND_6GHZ) {
@@ -457,7 +470,7 @@ static int mt7921_config(struct ieee80211_hw *hw, u32 changed)
 {
 	struct mt7921_dev *dev = mt7921_hw_dev(hw);
 	struct mt7921_phy *phy = mt7921_hw_phy(hw);
-	int ret;
+	int ret = 0;
 
 	if (changed & IEEE80211_CONF_CHANGE_CHANNEL) {
 		ieee80211_stop_queues(hw);
@@ -469,8 +482,11 @@ static int mt7921_config(struct ieee80211_hw *hw, u32 changed)
 
 	mt7921_mutex_acquire(dev);
 
-	if (changed & IEEE80211_CONF_CHANGE_POWER)
-		mt76_connac_mcu_set_rate_txpower(phy->mt76);
+	if (changed & IEEE80211_CONF_CHANGE_POWER) {
+		ret = mt76_connac_mcu_set_rate_txpower(phy->mt76);
+		if (ret)
+			goto out;
+	}
 
 	if (changed & IEEE80211_CONF_CHANGE_MONITOR) {
 		bool enabled = !!(hw->conf.flags & IEEE80211_CONF_MONITOR);
@@ -485,9 +501,10 @@ static int mt7921_config(struct ieee80211_hw *hw, u32 changed)
 		mt76_wr(dev, MT_WF_RFCR(0), phy->rxfilter);
 	}
 
+out:
 	mt7921_mutex_release(dev);
 
-	return 0;
+	return ret;
 }
 
 static int
@@ -1323,35 +1340,17 @@ static void mt7921_sta_set_decap_offload(struct ieee80211_hw *hw,
 static int mt7921_set_sar_specs(struct ieee80211_hw *hw,
 				const struct cfg80211_sar_specs *sar)
 {
-	const struct cfg80211_sar_capa *capa = hw->wiphy->sar_capa;
 	struct mt7921_dev *dev = mt7921_hw_dev(hw);
-	struct mt76_freq_range_power *data, *frp;
 	struct mt76_phy *mphy = hw->priv;
 	int err;
-	u32 i;
-
-	if (sar->type != NL80211_SAR_TYPE_POWER || !sar->num_sub_specs)
-		return -EINVAL;
 
 	mt7921_mutex_acquire(dev);
-
-	data = mphy->frp;
-
-	for (i = 0; i < sar->num_sub_specs; i++) {
-		u32 index = sar->sub_specs[i].freq_range_index;
-		/* SAR specifies power limitaton in 0.25dbm */
-		s32 power = sar->sub_specs[i].power >> 1;
-
-		if (power > 127 || power < -127)
-			power = 127;
-
-		frp = &data[index];
-		frp->range = &capa->freq_ranges[index];
-		frp->power = power;
-	}
+	err = mt76_init_sar_power(hw, sar);
+	if (err)
+		goto out;
 
 	err = mt76_connac_mcu_set_rate_txpower(mphy);
-
+out:
 	mt7921_mutex_release(dev);
 
 	return err;

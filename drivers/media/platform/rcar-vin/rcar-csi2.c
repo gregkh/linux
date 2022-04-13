@@ -544,6 +544,10 @@ static int rcsi2_set_phypll(struct rcar_csi2 *priv, unsigned int mbps)
 	const struct rcsi2_mbps_reg *hsfreq;
 	const struct rcsi2_mbps_reg *hsfreq_prev = NULL;
 
+	if (mbps < priv->info->hsfreqrange->mbps)
+		dev_warn(priv->dev, "%u Mbps less than min PHY speed %u Mbps",
+			 mbps, priv->info->hsfreqrange->mbps);
+
 	for (hsfreq = priv->info->hsfreqrange; hsfreq->mbps != 0; hsfreq++) {
 		if (hsfreq->mbps >= mbps)
 			break;
@@ -1512,6 +1516,7 @@ static struct platform_driver rcar_csi2_pdrv = {
 	.probe	= rcsi2_probe,
 	.driver	= {
 		.name	= "rcar-csi2",
+		.suppress_bind_attrs = true,
 		.of_match_table	= rcar_csi2_of_table,
 	},
 };

@@ -842,7 +842,10 @@ static const struct pinmux_ops sunxi_pmx_ops = {
 static int sunxi_pinctrl_gpio_direction_input(struct gpio_chip *chip,
 					unsigned offset)
 {
-	return pinctrl_gpio_direction_input(chip->base + offset);
+	struct sunxi_pinctrl *pctl = gpiochip_get_data(chip);
+
+	return sunxi_pmx_gpio_set_direction(pctl->pctl_dev, NULL,
+					    chip->base + offset, true);
 }
 
 static int sunxi_pinctrl_gpio_get(struct gpio_chip *chip, unsigned offset)
@@ -892,8 +895,11 @@ static void sunxi_pinctrl_gpio_set(struct gpio_chip *chip,
 static int sunxi_pinctrl_gpio_direction_output(struct gpio_chip *chip,
 					unsigned offset, int value)
 {
+	struct sunxi_pinctrl *pctl = gpiochip_get_data(chip);
+
 	sunxi_pinctrl_gpio_set(chip, offset, value);
-	return pinctrl_gpio_direction_output(chip->base + offset);
+	return sunxi_pmx_gpio_set_direction(pctl->pctl_dev, NULL,
+					    chip->base + offset, false);
 }
 
 static int sunxi_pinctrl_gpio_of_xlate(struct gpio_chip *gc,

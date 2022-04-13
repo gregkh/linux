@@ -390,6 +390,8 @@ static inline bool bpf_verifier_log_full(const struct bpf_verifier_log *log)
 #define BPF_LOG_LEVEL	(BPF_LOG_LEVEL1 | BPF_LOG_LEVEL2)
 #define BPF_LOG_MASK	(BPF_LOG_LEVEL | BPF_LOG_STATS)
 #define BPF_LOG_KERNEL	(BPF_LOG_MASK + 1) /* kernel internal flag */
+#define BPF_LOG_MIN_ALIGNMENT 8U
+#define BPF_LOG_ALIGNMENT 40U
 
 static inline bool bpf_verifier_log_needed(const struct bpf_verifier_log *log)
 {
@@ -476,6 +478,14 @@ struct bpf_verifier_env {
 	/* longest register parentage chain walked for liveness marking */
 	u32 longest_mark_read_walk;
 	bpfptr_t fd_array;
+
+	/* bit mask to keep track of whether a register has been accessed
+	 * since the last time the function state was printed
+	 */
+	u32 scratched_regs;
+	/* Same as scratched_regs but for stack slots */
+	u64 scratched_stack_slots;
+	u32 prev_log_len, prev_insn_print_len;
 	/* buffer used in reg_type_str() to generate reg_type string */
 	char type_str_buf[TYPE_STR_BUF_LEN];
 };
@@ -509,8 +519,8 @@ bpf_prog_offload_replace_insn(struct bpf_verifier_env *env, u32 off,
 void
 bpf_prog_offload_remove_insns(struct bpf_verifier_env *env, u32 off, u32 cnt);
 
-int check_ctx_reg(struct bpf_verifier_env *env,
-		  const struct bpf_reg_state *reg, int regno);
+int check_ptr_off_reg(struct bpf_verifier_env *env,
+		      const struct bpf_reg_state *reg, int regno);
 int check_mem_reg(struct bpf_verifier_env *env, struct bpf_reg_state *reg,
 		   u32 regno, u32 mem_size);
 

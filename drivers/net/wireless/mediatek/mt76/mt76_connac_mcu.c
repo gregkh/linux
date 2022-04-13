@@ -13,8 +13,8 @@ int mt76_connac_mcu_start_firmware(struct mt76_dev *dev, u32 addr, u32 option)
 		.addr = cpu_to_le32(addr),
 	};
 
-	return mt76_mcu_send_msg(dev, MCU_CMD_FW_START_REQ, &req, sizeof(req),
-				 true);
+	return mt76_mcu_send_msg(dev, MCU_CMD(FW_START_REQ), &req,
+				 sizeof(req), true);
 }
 EXPORT_SYMBOL_GPL(mt76_connac_mcu_start_firmware);
 
@@ -27,8 +27,8 @@ int mt76_connac_mcu_patch_sem_ctrl(struct mt76_dev *dev, bool get)
 		.op = cpu_to_le32(op),
 	};
 
-	return mt76_mcu_send_msg(dev, MCU_CMD_PATCH_SEM_CONTROL, &req,
-				 sizeof(req), true);
+	return mt76_mcu_send_msg(dev, MCU_CMD(PATCH_SEM_CONTROL),
+				 &req, sizeof(req), true);
 }
 EXPORT_SYMBOL_GPL(mt76_connac_mcu_patch_sem_ctrl);
 
@@ -41,8 +41,8 @@ int mt76_connac_mcu_start_patch(struct mt76_dev *dev)
 		.check_crc = 0,
 	};
 
-	return mt76_mcu_send_msg(dev, MCU_CMD_PATCH_FINISH_REQ, &req,
-				 sizeof(req), true);
+	return mt76_mcu_send_msg(dev, MCU_CMD(PATCH_FINISH_REQ),
+				 &req, sizeof(req), true);
 }
 EXPORT_SYMBOL_GPL(mt76_connac_mcu_start_patch);
 
@@ -64,9 +64,9 @@ int mt76_connac_mcu_init_download(struct mt76_dev *dev, u32 addr, u32 len,
 
 	if (is_mt7921(dev) &&
 	    (req.addr == cpu_to_le32(MCU_PATCH_ADDRESS) || addr == 0x900000))
-		cmd = MCU_CMD_PATCH_START_REQ;
+		cmd = MCU_CMD(PATCH_START_REQ);
 	else
-		cmd = MCU_CMD_TARGET_ADDRESS_LEN_REQ;
+		cmd = MCU_CMD(TARGET_ADDRESS_LEN_REQ);
 
 	return mt76_mcu_send_msg(dev, cmd, &req, sizeof(req), true);
 }
@@ -258,11 +258,8 @@ mt76_connac_mcu_add_nested_tlv(struct sk_buff *skb, int tag, int len,
 	ntlv = le16_to_cpu(ntlv_hdr->tlv_num);
 	ntlv_hdr->tlv_num = cpu_to_le16(ntlv + 1);
 
-	if (sta_hdr) {
-		u16 size = le16_to_cpu(sta_hdr->len);
-
-		sta_hdr->len = cpu_to_le16(size + len);
-	}
+	if (sta_hdr)
+		le16_add_cpu(&sta_hdr->len, len);
 
 	return ptlv;
 }
@@ -1192,12 +1189,8 @@ mt76_connac_get_phy_mode(struct mt76_phy *phy, struct ieee80211_vif *vif,
 		if (vht_cap->vht_supported)
 			mode |= PHY_MODE_AC;
 
-		if (he_cap && he_cap->has_he) {
-			if (band == NL80211_BAND_6GHZ)
-				mode |= PHY_MODE_AX_6G;
-			else
-				mode |= PHY_MODE_AX_5G;
-		}
+		if (he_cap && he_cap->has_he && band == NL80211_BAND_5GHZ)
+			mode |= PHY_MODE_AX_5G;
 	}
 
 	return mode;
@@ -1320,7 +1313,7 @@ int mt76_connac_mcu_uni_add_bss(struct mt76_phy *phy,
 	idx = mvif->omac_idx > EXT_BSSID_START ? HW_BSSID_0 : mvif->omac_idx;
 	basic_req.basic.hw_bss_idx = idx;
 	if (band == NL80211_BAND_6GHZ)
-		basic_req.basic.phymode_ext = BIT(0);
+		basic_req.basic.phymode_ext = PHY_MODE_AX_6G;
 
 	basic_phy = mt76_connac_get_phy_mode_v2(phy, vif, band, NULL);
 	basic_req.basic.nonht_basic_phy = cpu_to_le16(basic_phy);
@@ -1889,30 +1882,6 @@ mt76_connac_mcu_build_sku(struct mt76_dev *dev, s8 *sku,
 	}
 }
 
-static s8 mt76_connac_get_sar_power(struct mt76_phy *phy,
-				    struct ieee80211_channel *chan,
-				    s8 target_power)
-{
-	const struct cfg80211_sar_capa *capa = phy->hw->wiphy->sar_capa;
-	struct mt76_freq_range_power *frp = phy->frp;
-	int freq, i;
-
-	if (!capa || !frp)
-		return target_power;
-
-	freq = ieee80211_channel_to_frequency(chan->hw_value, chan->band);
-	for (i = 0 ; i < capa->num_freq_ranges; i++) {
-		if (frp[i].range &&
-		    freq >= frp[i].range->start_freq &&
-		    freq < frp[i].range->end_freq) {
-			target_power = min_t(s8, frp[i].power, target_power);
-			break;
-		}
-	}
-
-	return target_power;
-}
-
 static s8 mt76_connac_get_ch_power(struct mt76_phy *phy,
 				   struct ieee80211_channel *chan,
 				   s8 target_power)
@@ -2057,8 +2026,7 @@ mt76_connac_mcu_rate_txpower_band(struct mt76_phy *phy,
 
 			reg_power = mt76_connac_get_ch_power(phy, &chan,
 							     tx_power);
-			sar_power = mt76_connac_get_sar_power(phy, &chan,
-							      reg_power);
+			sar_power = mt76_get_sar_power(phy, &chan, reg_power);
 
 			mt76_get_rate_power_limits(phy, &chan, &limits,
 						   sar_power);

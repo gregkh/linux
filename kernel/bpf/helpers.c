@@ -2,6 +2,8 @@
 /* Copyright (c) 2011-2014 PLUMgrid, http://plumgrid.com
  */
 #include <linux/bpf.h>
+#include <linux/btf.h>
+#include <linux/bpf-cgroup.h>
 #include <linux/rcupdate.h>
 #include <linux/random.h>
 #include <linux/smp.h>
@@ -565,6 +567,20 @@ const struct bpf_func_proto bpf_strtoul_proto = {
 };
 #endif
 
+BPF_CALL_3(bpf_strncmp, const char *, s1, u32, s1_sz, const char *, s2)
+{
+	return strncmp(s1, s2, s1_sz);
+}
+
+const struct bpf_func_proto bpf_strncmp_proto = {
+	.func		= bpf_strncmp,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_MEM,
+	.arg2_type	= ARG_CONST_SIZE,
+	.arg3_type	= ARG_PTR_TO_CONST_STR,
+};
+
 BPF_CALL_4(bpf_get_ns_current_pid_tgid, u64, dev, u64, ino,
 	   struct bpf_pidns_info *, nsdata, u32, size)
 {
@@ -1060,6 +1076,7 @@ static enum hrtimer_restart bpf_timer_cb(struct hrtimer *hrtimer)
 	void *key;
 	u32 idx;
 
+	BTF_TYPE_EMIT(struct bpf_timer);
 	callback_fn = rcu_dereference_check(t->callback_fn, rcu_read_lock_bh_held());
 	if (!callback_fn)
 		goto out;
@@ -1376,6 +1393,10 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 		return &bpf_ringbuf_query_proto;
 	case BPF_FUNC_for_each_map_elem:
 		return &bpf_for_each_map_elem_proto;
+	case BPF_FUNC_loop:
+		return &bpf_loop_proto;
+	case BPF_FUNC_strncmp:
+		return &bpf_strncmp_proto;
 	default:
 		break;
 	}

@@ -2102,6 +2102,8 @@ static int rtw8822c_mac_init(struct rtw_dev *rtwdev)
 		     BIT_RXPSF_CONT_ERRCHKEN);
 	value16 = BIT_SET_RXPSF_ERRTHR(value16, 0x07);
 	rtw_write16(rtwdev, REG_RXPSF_CTRL, value16);
+	rtw_write8_set(rtwdev, REG_SND_PTCL_CTRL,
+		       BIT_DIS_CHK_VHTSIGB_CRC);
 
 	/* Interrupt migration configuration */
 	rtw_write32(rtwdev, REG_INT_MIG, WLAN_MAC_INT_MIG_CFG);
@@ -2533,6 +2535,7 @@ static void query_phy_status_page0(struct rtw_dev *rtwdev, u8 *phy_status,
 	s8 rx_power[RTW_RF_PATH_MAX];
 	s8 min_rx_power = -120;
 	u8 rssi;
+	u8 channel;
 	int path;
 
 	rx_power[RF_PATH_A] = GET_PHY_STAT_P0_PWDB_A(phy_status);
@@ -2552,6 +2555,11 @@ static void query_phy_status_page0(struct rtw_dev *rtwdev, u8 *phy_status,
 
 	rx_power[RF_PATH_A] -= 110;
 	rx_power[RF_PATH_B] -= 110;
+
+	channel = GET_PHY_STAT_P0_CHANNEL(phy_status);
+	if (channel == 0)
+		channel = rtwdev->hal.current_channel;
+	rtw_set_rx_freq_band(pkt_stat, channel);
 
 	pkt_stat->rx_power[RF_PATH_A] = rx_power[RF_PATH_A];
 	pkt_stat->rx_power[RF_PATH_B] = rx_power[RF_PATH_B];
@@ -2578,6 +2586,7 @@ static void query_phy_status_page1(struct rtw_dev *rtwdev, u8 *phy_status,
 	u8 evm_dbm = 0;
 	u8 rssi;
 	int path;
+	u8 channel;
 
 	if (pkt_stat->rate > DESC_RATE11M && pkt_stat->rate < DESC_RATEMCS0)
 		rxsc = GET_PHY_STAT_P1_L_RXSC(phy_status);
@@ -2590,6 +2599,9 @@ static void query_phy_status_page1(struct rtw_dev *rtwdev, u8 *phy_status,
 		bw = RTW_CHANNEL_WIDTH_80;
 	else
 		bw = RTW_CHANNEL_WIDTH_20;
+
+	channel = GET_PHY_STAT_P1_CHANNEL(phy_status);
+	rtw_set_rx_freq_band(pkt_stat, channel);
 
 	pkt_stat->rx_power[RF_PATH_A] = GET_PHY_STAT_P1_PWDB_A(phy_status) - 110;
 	pkt_stat->rx_power[RF_PATH_B] = GET_PHY_STAT_P1_PWDB_B(phy_status) - 110;
@@ -2786,7 +2798,7 @@ static int rtw8822c_set_antenna(struct rtw_dev *rtwdev,
 	case BB_PATH_AB:
 		break;
 	default:
-		rtw_info(rtwdev, "unsupported tx path 0x%x\n", antenna_tx);
+		rtw_warn(rtwdev, "unsupported tx path 0x%x\n", antenna_tx);
 		return -EINVAL;
 	}
 
@@ -2796,7 +2808,7 @@ static int rtw8822c_set_antenna(struct rtw_dev *rtwdev,
 	case BB_PATH_AB:
 		break;
 	default:
-		rtw_info(rtwdev, "unsupported rx path 0x%x\n", antenna_rx);
+		rtw_warn(rtwdev, "unsupported rx path 0x%x\n", antenna_rx);
 		return -EINVAL;
 	}
 

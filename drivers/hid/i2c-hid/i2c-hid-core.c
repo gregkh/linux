@@ -522,9 +522,12 @@ static void i2c_hid_get_input(struct i2c_hid *ihid)
 
 	i2c_hid_dbg(ihid, "input: %*ph\n", ret_size, ihid->inbuf);
 
-	if (test_bit(I2C_HID_STARTED, &ihid->flags))
+	if (test_bit(I2C_HID_STARTED, &ihid->flags)) {
+		pm_wakeup_event(&ihid->client->dev, 0);
+
 		hid_input_report(ihid->hid, HID_INPUT_REPORT, ihid->inbuf + 2,
 				ret_size - 2, 1);
+	}
 
 	return;
 }
@@ -1081,11 +1084,9 @@ static int i2c_hid_core_suspend(struct device *dev)
 	int ret;
 	int wake_status;
 
-	if (hid->driver && hid->driver->suspend) {
-		ret = hid->driver->suspend(hid, PMSG_SUSPEND);
-		if (ret < 0)
-			return ret;
-	}
+	ret = hid_driver_suspend(hid, PMSG_SUSPEND);
+	if (ret < 0)
+		return ret;
 
 	/* Save some power */
 	i2c_hid_set_power(client, I2C_HID_PWR_SLEEP);
@@ -1143,12 +1144,7 @@ static int i2c_hid_core_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	if (hid->driver && hid->driver->reset_resume) {
-		ret = hid->driver->reset_resume(hid);
-		return ret;
-	}
-
-	return 0;
+	return hid_driver_reset_resume(hid);
 }
 #endif
 

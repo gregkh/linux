@@ -10,6 +10,7 @@
 #include <linux/iommu.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 
 #include <drm/drm_aperture.h>
 #include <drm/drm_atomic.h>
@@ -120,6 +121,7 @@ static int tegra_drm_open(struct drm_device *drm, struct drm_file *filp)
 static void tegra_drm_context_free(struct tegra_drm_context *context)
 {
 	context->client->ops->close_channel(context);
+	pm_runtime_put(context->client->base.dev);
 	kfree(context);
 }
 
@@ -431,13 +433,20 @@ static int tegra_client_open(struct tegra_drm_file *fpriv,
 {
 	int err;
 
-	err = client->ops->open_channel(client, context);
-	if (err < 0)
+	err = pm_runtime_resume_and_get(client->base.dev);
+	if (err)
 		return err;
+
+	err = client->ops->open_channel(client, context);
+	if (err < 0) {
+		pm_runtime_put(client->base.dev);
+		return err;
+	}
 
 	err = idr_alloc(&fpriv->legacy_contexts, context, 1, 0, GFP_KERNEL);
 	if (err < 0) {
 		client->ops->close_channel(context);
+		pm_runtime_put(client->base.dev);
 		return err;
 	}
 
@@ -1359,15 +1368,18 @@ static const struct of_device_id host1x_drm_subdevs[] = {
 	{ .compatible = "nvidia,tegra210-sor", },
 	{ .compatible = "nvidia,tegra210-sor1", },
 	{ .compatible = "nvidia,tegra210-vic", },
+	{ .compatible = "nvidia,tegra210-nvdec", },
 	{ .compatible = "nvidia,tegra186-display", },
 	{ .compatible = "nvidia,tegra186-dc", },
 	{ .compatible = "nvidia,tegra186-sor", },
 	{ .compatible = "nvidia,tegra186-sor1", },
 	{ .compatible = "nvidia,tegra186-vic", },
+	{ .compatible = "nvidia,tegra186-nvdec", },
 	{ .compatible = "nvidia,tegra194-display", },
 	{ .compatible = "nvidia,tegra194-dc", },
 	{ .compatible = "nvidia,tegra194-sor", },
 	{ .compatible = "nvidia,tegra194-vic", },
+	{ .compatible = "nvidia,tegra194-nvdec", },
 	{ /* sentinel */ }
 };
 
@@ -1391,6 +1403,7 @@ static struct platform_driver * const drivers[] = {
 	&tegra_gr2d_driver,
 	&tegra_gr3d_driver,
 	&tegra_vic_driver,
+	&tegra_nvdec_driver,
 };
 
 static int __init host1x_drm_init(void)

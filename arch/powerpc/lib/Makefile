@@ -22,7 +22,9 @@ endif
 CFLAGS_code-patching.o += $(DISABLE_LATENT_ENTROPY_PLUGIN)
 CFLAGS_feature-fixups.o += $(DISABLE_LATENT_ENTROPY_PLUGIN)
 
-obj-y += alloc.o code-patching.o feature-fixups.o pmem.o test_code-patching.o
+obj-y += alloc.o code-patching.o feature-fixups.o pmem.o
+
+obj-$(CONFIG_CODE_PATCHING_SELFTEST) += test-code-patching.o
 
 ifndef CONFIG_KASAN
 obj-y	+=	string.o memcmp_$(BITS).o

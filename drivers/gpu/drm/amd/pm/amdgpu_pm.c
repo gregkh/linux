@@ -82,6 +82,16 @@ static const struct hwmon_temp_label {
 	{PP_TEMP_MEM, "mem"},
 };
 
+const char * const amdgpu_pp_profile_name[] = {
+	"BOOTUP_DEFAULT",
+	"3D_FULL_SCREEN",
+	"POWER_SAVING",
+	"VIDEO",
+	"VR",
+	"COMPUTE",
+	"CUSTOM"
+};
+
 /**
  * DOC: power_dpm_state
  *
@@ -2080,7 +2090,8 @@ static int default_attr_update(struct amdgpu_device *adev, struct amdgpu_device_
 	} else if (DEVICE_ATTR_IS(unique_id)) {
 		if (asic_type != CHIP_VEGA10 &&
 		    asic_type != CHIP_VEGA20 &&
-		    asic_type != CHIP_ARCTURUS)
+		    asic_type != CHIP_ARCTURUS &&
+		    asic_type != CHIP_ALDEBARAN)
 			*states = ATTR_STATE_UNSUPPORTED;
 	} else if (DEVICE_ATTR_IS(pp_features)) {
 		if (adev->flags & AMD_IS_APU || asic_type < CHIP_VEGA10)
@@ -3764,5 +3775,7 @@ void amdgpu_debugfs_pm_init(struct amdgpu_device *adev)
 					 adev,
 					 &amdgpu_debugfs_pm_prv_buffer_fops,
 					 adev->pm.smu_prv_buffer_size);
+
+	amdgpu_smu_stb_debug_fs_init(adev);
 #endif
 }

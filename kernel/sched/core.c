@@ -145,7 +145,7 @@ static inline bool __sched_core_less(struct task_struct *a, struct task_struct *
 		return false;
 
 	/* flip prio, so high prio is leftmost */
-	if (prio_less(b, a, task_rq(a)->core->core_forceidle))
+	if (prio_less(b, a, !!task_rq(a)->core->core_forceidle_count))
 		return true;
 
 	return false;
@@ -182,15 +182,23 @@ void sched_core_enqueue(struct rq *rq, struct task_struct *p)
 	rb_add(&p->core_node, &rq->core_tree, rb_sched_core_less);
 }
 
-void sched_core_dequeue(struct rq *rq, struct task_struct *p)
+void sched_core_dequeue(struct rq *rq, struct task_struct *p, int flags)
 {
 	rq->core->core_task_seq++;
 
-	if (!sched_core_enqueued(p))
-		return;
+	if (sched_core_enqueued(p)) {
+		rb_erase(&p->core_node, &rq->core_tree);
+		RB_CLEAR_NODE(&p->core_node);
+	}
 
-	rb_erase(&p->core_node, &rq->core_tree);
-	RB_CLEAR_NODE(&p->core_node);
+	/*
+	 * Migrating the last task off the cpu, with the cpu in forced idle
+	 * state. Reschedule to create an accounting edge for forced idle,
+	 * and re-examine whether the core is still in forced idle state.
+	 */
+	if (!(flags & DEQUEUE_SAVE) && rq->nr_running == 1 &&
+	    rq->core->core_forceidle_count && rq->curr == rq->idle)
+		resched_curr(rq);
 }
 
 /*
@@ -281,6 +289,8 @@ static void __sched_core_flip(bool enabled)
 		for_each_cpu(t, smt_mask)
 			cpu_rq(t)->core_enabled = enabled;
 
+		cpu_rq(cpu)->core->core_forceidle_start = 0;
+
 		sched_core_unlock(cpu, &flags);
 
 		cpumask_andnot(&sched_core_mask, &sched_core_mask, smt_mask);
@@ -365,7 +375,8 @@ void sched_core_put(void)
 #else /* !CONFIG_SCHED_CORE */
 
 static inline void sched_core_enqueue(struct rq *rq, struct task_struct *p) { }
-static inline void sched_core_dequeue(struct rq *rq, struct task_struct *p) { }
+static inline void
+sched_core_dequeue(struct rq *rq, struct task_struct *p, int flags) { }
 
 #endif /* CONFIG_SCHED_CORE */
 
@@ -2006,7 +2017,7 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	if (sched_core_enabled(rq))
-		sched_core_dequeue(rq, p);
+		sched_core_dequeue(rq, p, flags);
 
 	if (!(flags & DEQUEUE_NOCLOCK))
 		update_rq_clock(rq);
@@ -2173,6 +2184,9 @@ void migrate_enable(void)
 		p->migration_disabled--;
 		return;
 	}
+
+	if (WARN_ON_ONCE(!p->migration_disabled))
+		return;
 
 	/*
 	 * Ensure stop_task runs either before or after this, and that
@@ -5254,6 +5268,7 @@ void scheduler_tick(void)
 	if (sched_feat(LATENCY_WARN))
 		resched_latency = cpu_resched_latency(rq);
 	calc_global_load_tick(rq);
+	sched_core_tick(rq);
 
 	rq_unlock(rq, &rf);
 
@@ -5660,12 +5675,15 @@ static inline struct task_struct *pick_task(struct rq *rq)
 
 extern void task_vruntime_update(struct rq *rq, struct task_struct *p, bool in_fi);
 
+static void queue_core_balance(struct rq *rq);
+
 static struct task_struct *
 pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
 	struct task_struct *next, *p, *max = NULL;
 	const struct cpumask *smt_mask;
 	bool fi_before = false;
+	bool core_clock_updated = (rq == rq->core);
 	unsigned long cookie;
 	int i, cpu, occ = 0;
 	struct rq *rq_i;
@@ -5708,7 +5726,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		}
 
 		rq->core_pick = NULL;
-		return next;
+		goto out;
 	}
 
 	put_prev_task_balance(rq, prev, rf);
@@ -5718,10 +5736,18 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 	/* reset state */
 	rq->core->core_cookie = 0UL;
-	if (rq->core->core_forceidle) {
+	if (rq->core->core_forceidle_count) {
+		if (!core_clock_updated) {
+			update_rq_clock(rq->core);
+			core_clock_updated = true;
+		}
+		sched_core_account_forceidle(rq);
+		/* reset after accounting force idle */
+		rq->core->core_forceidle_start = 0;
+		rq->core->core_forceidle_count = 0;
+		rq->core->core_forceidle_occupation = 0;
 		need_sync = true;
 		fi_before = true;
-		rq->core->core_forceidle = false;
 	}
 
 	/*
@@ -5750,7 +5776,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 			 */
 			WARN_ON_ONCE(fi_before);
 			task_vruntime_update(rq, next, false);
-			goto done;
+			goto out_set_next;
 		}
 	}
 
@@ -5763,7 +5789,12 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	for_each_cpu_wrap(i, smt_mask, cpu) {
 		rq_i = cpu_rq(i);
 
-		if (i != cpu)
+		/*
+		 * Current cpu always has its clock updated on entrance to
+		 * pick_next_task(). If the current cpu is not the core,
+		 * the core may also have been updated above.
+		 */
+		if (i != cpu && (rq_i != rq->core || !core_clock_updated))
 			update_rq_clock(rq_i);
 
 		p = rq_i->core_pick = pick_task(rq_i);
@@ -5793,13 +5824,18 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 		if (p == rq_i->idle) {
 			if (rq_i->nr_running) {
-				rq->core->core_forceidle = true;
+				rq->core->core_forceidle_count++;
 				if (!fi_before)
 					rq->core->core_forceidle_seq++;
 			}
 		} else {
 			occ++;
 		}
+	}
+
+	if (schedstat_enabled() && rq->core->core_forceidle_count) {
+		rq->core->core_forceidle_start = rq_clock(rq->core);
+		rq->core->core_forceidle_occupation = occ;
 	}
 
 	rq->core->core_pick_seq = rq->core->core_task_seq;
@@ -5838,8 +5874,8 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		 *  1            0       1
 		 *  1            1       0
 		 */
-		if (!(fi_before && rq->core->core_forceidle))
-			task_vruntime_update(rq_i, rq_i->core_pick, rq->core->core_forceidle);
+		if (!(fi_before && rq->core->core_forceidle_count))
+			task_vruntime_update(rq_i, rq_i->core_pick, !!rq->core->core_forceidle_count);
 
 		rq_i->core_pick->core_occupation = occ;
 
@@ -5859,8 +5895,12 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		resched_curr(rq_i);
 	}
 
-done:
+out_set_next:
 	set_next_task(rq, next);
+out:
+	if (rq->core->core_forceidle_count && next == rq->idle)
+		queue_core_balance(rq);
+
 	return next;
 }
 
@@ -5955,7 +5995,7 @@ static void sched_core_balance(struct rq *rq)
 
 static DEFINE_PER_CPU(struct callback_head, core_balance_head);
 
-void queue_core_balance(struct rq *rq)
+static void queue_core_balance(struct rq *rq)
 {
 	if (!sched_core_enabled(rq))
 		return;
@@ -6043,11 +6083,19 @@ static void sched_core_cpu_deactivate(unsigned int cpu)
 		goto unlock;
 
 	/* copy the shared state to the new leader */
-	core_rq->core_task_seq      = rq->core_task_seq;
-	core_rq->core_pick_seq      = rq->core_pick_seq;
-	core_rq->core_cookie        = rq->core_cookie;
-	core_rq->core_forceidle     = rq->core_forceidle;
-	core_rq->core_forceidle_seq = rq->core_forceidle_seq;
+	core_rq->core_task_seq             = rq->core_task_seq;
+	core_rq->core_pick_seq             = rq->core_pick_seq;
+	core_rq->core_cookie               = rq->core_cookie;
+	core_rq->core_forceidle_count      = rq->core_forceidle_count;
+	core_rq->core_forceidle_seq        = rq->core_forceidle_seq;
+	core_rq->core_forceidle_occupation = rq->core_forceidle_occupation;
+
+	/*
+	 * Accounting edge for forced idle is handled in pick_next_task().
+	 * Don't need another one here, since the hotplug thread shouldn't
+	 * have a cookie.
+	 */
+	core_rq->core_forceidle_start = 0;
 
 	/* install new leader */
 	for_each_cpu(t, smt_mask) {
@@ -7136,7 +7184,7 @@ unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
 
 unsigned long sched_cpu_util(int cpu, unsigned long max)
 {
-	return effective_cpu_util(cpu, cpu_util_cfs(cpu_rq(cpu)), max,
+	return effective_cpu_util(cpu, cpu_util_cfs(cpu), max,
 				  ENERGY_UTIL, NULL);
 }
 #endif /* CONFIG_SMP */
@@ -8524,7 +8572,7 @@ void sched_show_task(struct task_struct *p)
 	rcu_read_unlock();
 	pr_cont(" stack:%5lu pid:%5d ppid:%6d flags:0x%08lx\n",
 		free, task_pid_nr(p), ppid,
-		(unsigned long)task_thread_info(p)->flags);
+		read_task_thread_flags(p));
 
 	print_worker_info(KERN_INFO, p);
 	print_stop_info(KERN_INFO, p);
@@ -8602,14 +8650,6 @@ void __init init_idle(struct task_struct *idle, int cpu)
 	unsigned long flags;
 
 	__sched_fork(0, idle);
-
-	/*
-	 * The idle task doesn't need the kthread struct to function, but it
-	 * is dressed up as a per-CPU kthread and thus needs to play the part
-	 * if we want to avoid special-casing it in code that deals with per-CPU
-	 * kthreads.
-	 */
-	set_kthread_struct(idle);
 
 	raw_spin_lock_irqsave(&idle->pi_lock, flags);
 	raw_spin_rq_lock(rq);
@@ -9413,7 +9453,9 @@ void __init sched_init(void)
 		rq->core_pick = NULL;
 		rq->core_enabled = 0;
 		rq->core_tree = RB_ROOT;
-		rq->core_forceidle = false;
+		rq->core_forceidle_count = 0;
+		rq->core_forceidle_occupation = 0;
+		rq->core_forceidle_start = 0;
 
 		rq->core_cookie = 0UL;
 #endif
@@ -9426,6 +9468,14 @@ void __init sched_init(void)
 	 */
 	mmgrab(&init_mm);
 	enter_lazy_tlb(&init_mm, current);
+
+	/*
+	 * The idle task doesn't need the kthread struct to function, but it
+	 * is dressed up as a per-CPU kthread and thus needs to play the part
+	 * if we want to avoid special-casing it in code that deals with per-CPU
+	 * kthreads.
+	 */
+	WARN_ON(!set_kthread_struct(current));
 
 	/*
 	 * Make us the idle thread. Technically, schedule() should not be

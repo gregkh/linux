@@ -31,7 +31,6 @@
 #include "amdgpu_drv.h"
 
 #include <drm/drm_pciids.h>
-#include <linux/console.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/vga_switcheroo.h>
@@ -315,9 +314,12 @@ module_param_named(dpm, amdgpu_dpm, int, 0444);
 
 /**
  * DOC: fw_load_type (int)
- * Set different firmware loading type for debugging (0 = direct, 1 = SMU, 2 = PSP). The default is -1 (auto).
+ * Set different firmware loading type for debugging, if supported.
+ * Set to 0 to force direct loading if supported by the ASIC.  Set
+ * to -1 to select the default loading mode for the ASIC, as defined
+ * by the driver.  The default is -1 (auto).
  */
-MODULE_PARM_DESC(fw_load_type, "firmware loading type (0 = direct, 1 = SMU, 2 = PSP, -1 = auto)");
+MODULE_PARM_DESC(fw_load_type, "firmware loading type (0 = force direct if supported, -1 = auto)");
 module_param_named(fw_load_type, amdgpu_fw_load_type, int, 0444);
 
 /**
@@ -2009,11 +2011,6 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
 			return -ENODEV;
 	}
 
-	if (flags == CHIP_IP_DISCOVERY) {
-		DRM_INFO("Unsupported asic.  Remove me when IP discovery init is in place.\n");
-		return -ENODEV;
-	}
-
 	if (amdgpu_aspm == -1 && !pcie_aspm_enabled(pdev))
 		amdgpu_aspm = 0;
 
@@ -2113,6 +2110,19 @@ retry_init:
 		goto retry_init;
 	} else if (ret) {
 		goto err_pci;
+	}
+
+	/*
+	 * 1. don't init fbdev on hw without DCE
+	 * 2. don't init fbdev if there are no connectors
+	 */
+	if (adev->mode_info.mode_config_initialized &&
+	    !list_empty(&adev_to_drm(adev)->mode_config.connector_list)) {
+		/* select 8 bpp console on low vram cards */
+		if (adev->gmc.real_vram_size <= (32*1024*1024))
+			drm_fbdev_generic_setup(adev_to_drm(adev), 8);
+		else
+			drm_fbdev_generic_setup(adev_to_drm(adev), 32);
 	}
 
 	ret = amdgpu_debugfs_init(adev);
@@ -2270,9 +2280,9 @@ static int amdgpu_pmops_suspend(struct device *dev)
 
 	if (amdgpu_acpi_is_s0ix_active(adev))
 		adev->in_s0ix = true;
-	adev->in_s3 = true;
+	else
+		adev->in_s3 = true;
 	r = amdgpu_device_suspend(drm_dev, true);
-	adev->in_s3 = false;
 	if (r)
 		return r;
 	if (!adev->in_s0ix)
@@ -2293,6 +2303,8 @@ static int amdgpu_pmops_resume(struct device *dev)
 	r = amdgpu_device_resume(drm_dev, true);
 	if (amdgpu_acpi_is_s0ix_active(adev))
 		adev->in_s0ix = false;
+	else
+		adev->in_s3 = false;
 	return r;
 }
 
@@ -2654,10 +2666,8 @@ static int __init amdgpu_init(void)
 {
 	int r;
 
-	if (vgacon_text_force()) {
-		DRM_ERROR("VGACON disables amdgpu kernel modesetting.\n");
+	if (drm_firmware_drivers_only())
 		return -EINVAL;
-	}
 
 	r = amdgpu_sync_init();
 	if (r)

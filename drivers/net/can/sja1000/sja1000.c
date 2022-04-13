@@ -372,15 +372,16 @@ static void sja1000_rx(struct net_device *dev)
 	} else {
 		for (i = 0; i < cf->len; i++)
 			cf->data[i] = priv->read_reg(priv, dreg++);
+
+		stats->rx_bytes += cf->len;
 	}
+	stats->rx_packets++;
 
 	cf->can_id = id;
 
 	/* release receive buffer */
 	sja1000_write_cmdreg(priv, CMD_RRB);
 
-	stats->rx_packets++;
-	stats->rx_bytes += cf->len;
 	netif_rx(skb);
 
 	can_led_event(dev, CAN_LED_EVENT_RX);
@@ -526,10 +527,8 @@ irqreturn_t sja1000_interrupt(int irq, void *dev_id)
 				can_free_echo_skb(dev, 0, NULL);
 			} else {
 				/* transmission complete */
-				stats->tx_bytes +=
-					priv->read_reg(priv, SJA1000_FI) & 0xf;
+				stats->tx_bytes += can_get_echo_skb(dev, 0, NULL);
 				stats->tx_packets++;
-				can_get_echo_skb(dev, 0, NULL);
 			}
 			netif_wake_queue(dev);
 			can_led_event(dev, CAN_LED_EVENT_TX);

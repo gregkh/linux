@@ -46,8 +46,7 @@ static unsigned long kvm_psci_vcpu_suspend(struct kvm_vcpu *vcpu)
 	 * specification (ARM DEN 0022A). This means all suspend states
 	 * for KVM will preserve the register state.
 	 */
-	kvm_vcpu_block(vcpu);
-	kvm_clear_request(KVM_REQ_UNHALT, vcpu);
+	kvm_vcpu_wfi(vcpu);
 
 	return PSCI_RET_SUCCESS;
 }
@@ -109,7 +108,7 @@ static unsigned long kvm_psci_vcpu_on(struct kvm_vcpu *source_vcpu)
 
 	/*
 	 * Make sure the reset request is observed if the change to
-	 * power_state is observed.
+	 * power_off is observed.
 	 */
 	smp_wmb();
 
@@ -121,8 +120,8 @@ static unsigned long kvm_psci_vcpu_on(struct kvm_vcpu *source_vcpu)
 
 static unsigned long kvm_psci_vcpu_affinity_info(struct kvm_vcpu *vcpu)
 {
-	int i, matching_cpus = 0;
-	unsigned long mpidr;
+	int matching_cpus = 0;
+	unsigned long i, mpidr;
 	unsigned long target_affinity;
 	unsigned long target_affinity_mask;
 	unsigned long lowest_affinity_level;
@@ -164,7 +163,7 @@ static unsigned long kvm_psci_vcpu_affinity_info(struct kvm_vcpu *vcpu)
 
 static void kvm_prepare_system_event(struct kvm_vcpu *vcpu, u32 type)
 {
-	int i;
+	unsigned long i;
 	struct kvm_vcpu *tmp;
 
 	/*

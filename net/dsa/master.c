@@ -272,9 +272,9 @@ static void dsa_master_set_promiscuity(struct net_device *dev, int inc)
 	if ((dev->priv_flags & IFF_UNICAST_FLT) && !ops->promisc_on_master)
 		return;
 
-	rtnl_lock();
+	ASSERT_RTNL();
+
 	dev_set_promiscuity(dev, inc);
-	rtnl_unlock();
 }
 
 static ssize_t tagging_show(struct device *d, struct device_attribute *attr,
@@ -335,19 +335,17 @@ static const struct attribute_group dsa_group = {
 	.attrs	= dsa_slave_attrs,
 };
 
+static struct lock_class_key dsa_master_addr_list_lock_key;
+
 static void dsa_master_reset_mtu(struct net_device *dev)
 {
 	int err;
 
-	rtnl_lock();
 	err = dev_set_mtu(dev, ETH_DATA_LEN);
 	if (err)
 		netdev_dbg(dev,
 			   "Unable to reset MTU to exclude DSA overheads\n");
-	rtnl_unlock();
 }
-
-static struct lock_class_key dsa_master_addr_list_lock_key;
 
 int dsa_master_setup(struct net_device *dev, struct dsa_port *cpu_dp)
 {
@@ -366,9 +364,11 @@ int dsa_master_setup(struct net_device *dev, struct dsa_port *cpu_dp)
 			   "Failed to create a device link to DSA switch %s\n",
 			   dev_name(ds->dev));
 
-	rtnl_lock();
+	/* The switch driver may not implement ->port_change_mtu(), case in
+	 * which dsa_slave_change_mtu() will not update the master MTU either,
+	 * so we need to do that here.
+	 */
 	ret = dev_set_mtu(dev, mtu);
-	rtnl_unlock();
 	if (ret)
 		netdev_warn(dev, "error %d setting MTU to %d to include DSA overhead\n",
 			    ret, mtu);

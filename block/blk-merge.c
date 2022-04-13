@@ -8,11 +8,13 @@
 #include <linux/blkdev.h>
 #include <linux/blk-integrity.h>
 #include <linux/scatterlist.h>
+#include <linux/part_stat.h>
 #include <linux/blk-cgroup.h>
 
 #include <trace/events/block.h>
 
 #include "blk.h"
+#include "blk-mq-sched.h"
 #include "blk-rq-qos.h"
 #include "blk-throttle.h"
 
@@ -780,8 +782,7 @@ static struct request *attempt_merge(struct request_queue *q,
 	if (req_op(req) != req_op(next))
 		return NULL;
 
-	if (rq_data_dir(req) != rq_data_dir(next)
-	    || req->rq_disk != next->rq_disk)
+	if (rq_data_dir(req) != rq_data_dir(next))
 		return NULL;
 
 	if (req_op(req) == REQ_OP_WRITE_SAME &&
@@ -906,10 +907,6 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 
 	/* different data direction or already started, don't merge */
 	if (bio_data_dir(bio) != rq_data_dir(rq))
-		return false;
-
-	/* must be same device */
-	if (rq->rq_disk != bio->bi_bdev->bd_disk)
 		return false;
 
 	/* don't merge across cgroup boundaries */
@@ -1076,7 +1073,6 @@ static enum bio_merge_status blk_attempt_bio_merge(struct request_queue *q,
  * @q: request_queue new bio is being queued at
  * @bio: new bio being queued
  * @nr_segs: number of segments in @bio
- * @same_queue_rq: output value, will be true if there's an existing request
  * from the passed in @q already in the plug list
  *
  * Determine whether @bio being queued on @q can be merged with the previous
@@ -1093,7 +1089,7 @@ static enum bio_merge_status blk_attempt_bio_merge(struct request_queue *q,
  * Caller must ensure !blk_queue_nomerges(q) beforehand.
  */
 bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
-		unsigned int nr_segs, bool *same_queue_rq)
+		unsigned int nr_segs)
 {
 	struct blk_plug *plug;
 	struct request *rq;
@@ -1104,7 +1100,6 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 
 	rq_list_for_each(&plug->mq_list, rq) {
 		if (rq->q == q) {
-			*same_queue_rq = true;
 			if (blk_attempt_bio_merge(q, rq, bio, nr_segs, false) ==
 			    BIO_MERGE_OK)
 				return true;

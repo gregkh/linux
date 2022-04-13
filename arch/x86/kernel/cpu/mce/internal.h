@@ -170,7 +170,10 @@ struct mce_vendor_flags {
 	/* SandyBridge IFU quirk */
 	snb_ifu_quirk		: 1,
 
-	__reserved_0		: 57;
+	/* Skylake, Cascade Lake, Cooper Lake REP;MOVS* quirk */
+	skx_repmov_quirk	: 1,
+
+	__reserved_0		: 56;
 };
 
 extern struct mce_vendor_flags mce_flags;
@@ -206,5 +209,7 @@ static inline void enable_p5_mce(void) {}
 static inline void pentium_machine_check(struct pt_regs *regs) {}
 static inline void winchip_machine_check(struct pt_regs *regs) {}
 #endif
+
+noinstr u64 mce_rdmsrl(u32 msr);
 
 #endif /* __X86_MCE_INTERNAL_H__ */

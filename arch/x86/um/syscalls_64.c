@@ -10,6 +10,7 @@
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
 #include <asm/prctl.h> /* XXX This should get the constants from libc */
+#include <registers.h>
 #include <os.h>
 #include <registers.h>
 
@@ -87,4 +88,14 @@ void arch_switch_to(struct task_struct *to)
 		return;
 
 	arch_prctl(to, ARCH_SET_FS, (void __user *) to->thread.arch.fs);
+}
+
+SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
+		unsigned long, prot, unsigned long, flags,
+		unsigned long, fd, unsigned long, off)
+{
+	if (off & ~PAGE_MASK)
+		return -EINVAL;
+
+	return ksys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
 }

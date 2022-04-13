@@ -343,7 +343,7 @@ static void cec_data_completed(struct cec_data *data)
 	 * Without that we would be referring to a closed filehandle.
 	 */
 	if (data->fh)
-		list_del(&data->xfer_list);
+		list_del_init(&data->xfer_list);
 
 	if (data->blocking) {
 		/*
@@ -899,6 +899,8 @@ int cec_transmit_msg_fh(struct cec_adapter *adap, struct cec_msg *msg,
 
 	if (fh)
 		list_add_tail(&data->xfer_list, &fh->xfer_list);
+	else
+		INIT_LIST_HEAD(&data->xfer_list);
 
 	list_add_tail(&data->list, &adap->transmit_queue);
 	adap->transmit_queue_sz++;
@@ -924,6 +926,10 @@ int cec_transmit_msg_fh(struct cec_adapter *adap, struct cec_msg *msg,
 
 	/* The transmit completed (possibly with an error) */
 	*msg = data->msg;
+	if (WARN_ON(!list_empty(&data->list)))
+		list_del(&data->list);
+	if (WARN_ON(!list_empty(&data->xfer_list)))
+		list_del(&data->xfer_list);
 	kfree(data);
 	return 0;
 }

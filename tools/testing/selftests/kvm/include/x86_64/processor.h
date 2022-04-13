@@ -10,8 +10,10 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <syscall.h>
 
 #include <asm/msr-index.h>
+#include <asm/prctl.h>
 
 #include "../kvm_util.h"
 
@@ -91,6 +93,21 @@ struct desc_ptr {
 	uint16_t size;
 	uint64_t address;
 } __attribute__((packed));
+
+struct kvm_x86_state {
+	struct kvm_xsave *xsave;
+	struct kvm_vcpu_events events;
+	struct kvm_mp_state mp_state;
+	struct kvm_regs regs;
+	struct kvm_xcrs xcrs;
+	struct kvm_sregs sregs;
+	struct kvm_debugregs debugregs;
+	union {
+		struct kvm_nested_state nested;
+		char nested_[16384];
+	};
+	struct kvm_msrs msrs;
+};
 
 static inline uint64_t get_desc64_base(const struct desc64 *desc)
 {
@@ -347,11 +364,29 @@ static inline unsigned long get_xmm(int n)
 }
 
 bool is_intel_cpu(void);
+bool is_amd_cpu(void);
 
-struct kvm_x86_state;
+static inline unsigned int x86_family(unsigned int eax)
+{
+	unsigned int x86;
+
+	x86 = (eax >> 8) & 0xf;
+
+	if (x86 == 0xf)
+		x86 += (eax >> 20) & 0xff;
+
+	return x86;
+}
+
+static inline unsigned int x86_model(unsigned int eax)
+{
+	return ((eax >> 12) & 0xf0) | ((eax >> 4) & 0x0f);
+}
+
 struct kvm_x86_state *vcpu_save_state(struct kvm_vm *vm, uint32_t vcpuid);
 void vcpu_load_state(struct kvm_vm *vm, uint32_t vcpuid,
 		     struct kvm_x86_state *state);
+void kvm_x86_state_cleanup(struct kvm_x86_state *state);
 
 struct kvm_msr_list *kvm_get_msr_index_list(void);
 uint64_t kvm_get_feature_msr(uint64_t msr_index);
@@ -423,6 +458,7 @@ uint64_t kvm_hypercall(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2,
 struct kvm_cpuid2 *kvm_get_supported_hv_cpuid(void);
 void vcpu_set_hv_cpuid(struct kvm_vm *vm, uint32_t vcpuid);
 struct kvm_cpuid2 *vcpu_get_supported_hv_cpuid(struct kvm_vm *vm, uint32_t vcpuid);
+void vm_xsave_req_perm(int bit);
 
 enum x86_page_size {
 	X86_PAGE_SIZE_4K = 0,
@@ -450,4 +486,11 @@ void __virt_pg_map(struct kvm_vm *vm, uint64_t vaddr, uint64_t paddr,
 /* VMX_EPT_VPID_CAP bits */
 #define VMX_EPT_VPID_CAP_AD_BITS       (1ULL << 21)
 
+#define XSTATE_XTILE_CFG_BIT		17
+#define XSTATE_XTILE_DATA_BIT		18
+
+#define XSTATE_XTILE_CFG_MASK		(1ULL << XSTATE_XTILE_CFG_BIT)
+#define XSTATE_XTILE_DATA_MASK		(1ULL << XSTATE_XTILE_DATA_BIT)
+#define XFEATURE_XTILE_MASK		(XSTATE_XTILE_CFG_MASK | \
+					XSTATE_XTILE_DATA_MASK)
 #endif /* SELFTEST_KVM_PROCESSOR_H */

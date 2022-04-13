@@ -492,23 +492,22 @@ const struct atomisp_format_bridge atomisp_output_fmts[] = {
 		.mbus_code = MEDIA_BUS_FMT_BGR565_2X8_LE,
 		.sh_fmt = IA_CSS_FRAME_FORMAT_RGB565,
 		.description = "16 RGB 5-6-5"
+#if 0
 	}, {
 		.pixelformat = V4L2_PIX_FMT_JPEG,
 		.depth = 8,
 		.mbus_code = MEDIA_BUS_FMT_JPEG_1X8,
 		.sh_fmt = IA_CSS_FRAME_FORMAT_BINARY_8,
 		.description = "JPEG"
-	},
-#if 0
-	{
+	}, {
 		/* This is a custom format being used by M10MO to send the RAW data */
 		.pixelformat = V4L2_PIX_FMT_CUSTOM_M10MO_RAW,
 		.depth = 8,
 		.mbus_code = V4L2_MBUS_FMT_CUSTOM_M10MO_RAW,
 		.sh_fmt = IA_CSS_FRAME_FORMAT_BINARY_8,
 		.description = "Custom RAW for M10MO"
-	},
 #endif
+	},
 };
 
 const struct atomisp_format_bridge *
@@ -767,6 +766,57 @@ error:
 	return ret;
 }
 
+static int atomisp_enum_framesizes(struct file *file, void *priv,
+				   struct v4l2_frmsizeenum *fsize)
+{
+	struct video_device *vdev = video_devdata(file);
+	struct atomisp_device *isp = video_get_drvdata(vdev);
+	struct atomisp_sub_device *asd = atomisp_to_video_pipe(vdev)->asd;
+	struct v4l2_subdev_frame_size_enum fse = {
+		.index = fsize->index,
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
+	int ret;
+
+	ret = v4l2_subdev_call(isp->inputs[asd->input_curr].camera,
+			       pad, enum_frame_size, NULL, &fse);
+	if (ret)
+		return ret;
+
+	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+	fsize->discrete.width = fse.max_width - pad_w;
+	fsize->discrete.height = fse.max_height - pad_h;
+
+	return 0;
+}
+
+static int atomisp_enum_frameintervals(struct file *file, void *priv,
+				       struct v4l2_frmivalenum *fival)
+{
+	struct video_device *vdev = video_devdata(file);
+	struct atomisp_device *isp = video_get_drvdata(vdev);
+	struct atomisp_sub_device *asd = atomisp_to_video_pipe(vdev)->asd;
+	struct v4l2_subdev_frame_interval_enum fie = {
+		.code	= atomisp_in_fmt_conv[0].code,
+		.index = fival->index,
+		.width = fival->width,
+		.height = fival->height,
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
+	int ret;
+
+	ret = v4l2_subdev_call(isp->inputs[asd->input_curr].camera,
+			       pad, enum_frame_interval, NULL,
+			       &fie);
+	if (ret)
+		return ret;
+
+	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
+	fival->discrete = fie.interval;
+
+	return ret;
+}
+
 static int atomisp_enum_fmt_cap(struct file *file, void *fh,
 				struct v4l2_fmtdesc *f)
 {
@@ -776,6 +826,7 @@ static int atomisp_enum_fmt_cap(struct file *file, void *fh,
 	struct v4l2_subdev_mbus_code_enum code = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
 	};
+	const struct atomisp_format_bridge *format;
 	struct v4l2_subdev *camera;
 	unsigned int i, fi = 0;
 	int rval;
@@ -807,15 +858,15 @@ static int atomisp_enum_fmt_cap(struct file *file, void *fh,
 		return rval;
 
 	for (i = 0; i < ARRAY_SIZE(atomisp_output_fmts); i++) {
-		const struct atomisp_format_bridge *format =
-			    &atomisp_output_fmts[i];
+		format = &atomisp_output_fmts[i];
 
 		/*
 		 * Is the atomisp-supported format is valid for the
 		 * sensor (configuration)? If not, skip it.
+		 *
+		 * FIXME: fix the pipeline to allow sensor format too.
 		 */
-		if (format->sh_fmt == IA_CSS_FRAME_FORMAT_RAW
-		    && format->mbus_code != code.code)
+		if (format->sh_fmt == IA_CSS_FRAME_FORMAT_RAW)
 			continue;
 
 		/* Found a match. Now let's pick f->index'th one. */
@@ -829,24 +880,8 @@ static int atomisp_enum_fmt_cap(struct file *file, void *fh,
 		f->pixelformat = format->pixelformat;
 		return 0;
 	}
-	dev_err(isp->dev, "%s(): format for code %x not found.\n",
-		__func__, code.code);
 
 	return -EINVAL;
-}
-
-static int atomisp_g_fmt_cap(struct file *file, void *fh,
-			     struct v4l2_format *f)
-{
-	struct video_device *vdev = video_devdata(file);
-	struct atomisp_device *isp = video_get_drvdata(vdev);
-
-	int ret;
-
-	rt_mutex_lock(&isp->mutex);
-	ret = atomisp_get_fmt(vdev, f);
-	rt_mutex_unlock(&isp->mutex);
-	return ret;
 }
 
 static int atomisp_g_fmt_file(struct file *file, void *fh,
@@ -945,6 +980,30 @@ static int atomisp_try_fmt_cap(struct file *file, void *fh,
 		return ret;
 
 	return atomisp_adjust_fmt(f);
+}
+
+static int atomisp_g_fmt_cap(struct file *file, void *fh,
+			     struct v4l2_format *f)
+{
+	struct video_device *vdev = video_devdata(file);
+	struct atomisp_device *isp = video_get_drvdata(vdev);
+	struct atomisp_video_pipe *pipe;
+
+	rt_mutex_lock(&isp->mutex);
+	pipe = atomisp_to_video_pipe(vdev);
+	rt_mutex_unlock(&isp->mutex);
+
+	f->fmt.pix = pipe->pix;
+
+	/* If s_fmt was issued, just return whatever is was previouly set */
+	if (f->fmt.pix.sizeimage)
+		return 0;
+
+	f->fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+	f->fmt.pix.width = 10000;
+	f->fmt.pix.height = 10000;
+
+	return atomisp_try_fmt_cap(file, fh, f);
 }
 
 static int atomisp_s_fmt_cap(struct file *file, void *fh,
@@ -1399,25 +1458,8 @@ done:
 	    pipe->capq.streaming &&
 	    !asd->enable_raw_buffer_lock->val &&
 	    asd->params.offline_parm.num_captures == 1) {
-		if (!IS_ISP2401) {
 			asd->pending_capture_request++;
 			dev_dbg(isp->dev, "Add one pending capture request.\n");
-		} else {
-			if (asd->re_trigger_capture) {
-				ret = atomisp_css_offline_capture_configure(asd,
-					asd->params.offline_parm.num_captures,
-					asd->params.offline_parm.skip_frames,
-					asd->params.offline_parm.offset);
-				asd->re_trigger_capture = false;
-				dev_dbg(isp->dev, "%s Trigger capture again ret=%d\n",
-					__func__, ret);
-
-			} else {
-				asd->pending_capture_request++;
-				asd->re_trigger_capture = false;
-				dev_dbg(isp->dev, "Add one pending capture request.\n");
-			}
-		}
 	}
 	rt_mutex_unlock(&isp->mutex);
 
@@ -1810,8 +1852,6 @@ static int atomisp_streamon(struct file *file, void *fh,
 
 	/* Reset pending capture request count. */
 	asd->pending_capture_request = 0;
-	if (IS_ISP2401)
-		asd->re_trigger_capture = false;
 
 	if ((atomisp_subdev_streaming_count(asd) > sensor_start_stream) &&
 	    (!isp->inputs[asd->input_curr].camera_caps->multi_stream_ctrl)) {
@@ -3207,6 +3247,8 @@ const struct v4l2_ioctl_ops atomisp_ioctl_ops = {
 	.vidioc_g_ctrl = atomisp_g_ctrl,
 	.vidioc_s_ext_ctrls = atomisp_s_ext_ctrls,
 	.vidioc_g_ext_ctrls = atomisp_g_ext_ctrls,
+	.vidioc_enum_framesizes   = atomisp_enum_framesizes,
+	.vidioc_enum_frameintervals = atomisp_enum_frameintervals,
 	.vidioc_enum_fmt_vid_cap = atomisp_enum_fmt_cap,
 	.vidioc_try_fmt_vid_cap = atomisp_try_fmt_cap,
 	.vidioc_g_fmt_vid_cap = atomisp_g_fmt_cap,

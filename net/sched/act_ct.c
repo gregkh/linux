@@ -32,6 +32,7 @@
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <net/netfilter/nf_conntrack_acct.h>
 #include <net/netfilter/ipv6/nf_defrag_ipv6.h>
+#include <net/netfilter/nf_conntrack_act_ct.h>
 #include <uapi/linux/netfilter/nf_nat.h>
 
 static struct workqueue_struct *act_ct_wq;
@@ -54,6 +55,12 @@ static const struct rhashtable_params zones_params = {
 	.key_offset = offsetof(struct tcf_ct_flow_table, zone),
 	.key_len = sizeof_field(struct tcf_ct_flow_table, zone),
 	.automatic_shrinking = true,
+};
+
+static struct nf_ct_ext_type act_ct_extend __read_mostly = {
+	.len		= sizeof(struct nf_conn_act_ct_ext),
+	.align		= __alignof__(struct nf_conn_act_ct_ext),
+	.id		= NF_CT_EXT_ACT_CT,
 };
 
 static struct flow_action_entry *
@@ -354,10 +361,18 @@ static void tcf_ct_flow_table_put(struct tcf_ct_params *params)
 	}
 }
 
+static void tcf_ct_flow_tc_ifidx(struct flow_offload *entry,
+				 struct nf_conn_act_ct_ext *act_ct_ext, u8 dir)
+{
+	entry->tuplehash[dir].tuple.xmit_type = FLOW_OFFLOAD_XMIT_TC;
+	entry->tuplehash[dir].tuple.tc.iifidx = act_ct_ext->ifindex[dir];
+}
+
 static void tcf_ct_flow_table_add(struct tcf_ct_flow_table *ct_ft,
 				  struct nf_conn *ct,
 				  bool tcp)
 {
+	struct nf_conn_act_ct_ext *act_ct_ext;
 	struct flow_offload *entry;
 	int err;
 
@@ -373,6 +388,12 @@ static void tcf_ct_flow_table_add(struct tcf_ct_flow_table *ct_ft,
 	if (tcp) {
 		ct->proto.tcp.seen[0].flags |= IP_CT_TCP_FLAG_BE_LIBERAL;
 		ct->proto.tcp.seen[1].flags |= IP_CT_TCP_FLAG_BE_LIBERAL;
+	}
+
+	act_ct_ext = nf_conn_act_ct_ext_find(ct);
+	if (act_ct_ext) {
+		tcf_ct_flow_tc_ifidx(entry, act_ct_ext, FLOW_OFFLOAD_DIR_ORIGINAL);
+		tcf_ct_flow_tc_ifidx(entry, act_ct_ext, FLOW_OFFLOAD_DIR_REPLY);
 	}
 
 	err = flow_offload_add(&ct_ft->nf_ft, entry);
@@ -393,7 +414,8 @@ static void tcf_ct_flow_table_process_conn(struct tcf_ct_flow_table *ct_ft,
 {
 	bool tcp = false;
 
-	if (ctinfo != IP_CT_ESTABLISHED && ctinfo != IP_CT_ESTABLISHED_REPLY)
+	if ((ctinfo != IP_CT_ESTABLISHED && ctinfo != IP_CT_ESTABLISHED_REPLY) ||
+	    !test_bit(IPS_ASSURED_BIT, &ct->status))
 		return;
 
 	switch (nf_ct_protonum(ct)) {
@@ -1030,6 +1052,7 @@ do_nat:
 	if (!ct)
 		goto out_push;
 	nf_ct_deliver_cached_events(ct);
+	nf_conn_act_ct_ext_fill(skb, ct, ctinfo);
 
 	err = tcf_ct_act_nat(skb, ct, ctinfo, p->ct_action, &p->range, commit);
 	if (err != NF_ACCEPT)
@@ -1038,6 +1061,9 @@ do_nat:
 	if (commit) {
 		tcf_ct_act_set_mark(ct, p->mark, p->mark_mask);
 		tcf_ct_act_set_labels(ct, p->labels, p->labels_mask);
+
+		if (!nf_ct_is_confirmed(ct))
+			nf_conn_act_ct_ext_add(ct);
 
 		/* This will take care of sending queued events
 		 * even if the connection is already confirmed.
@@ -1232,7 +1258,6 @@ static int tcf_ct_fill_params(struct net *net,
 		return -ENOMEM;
 	}
 	__set_bit(IPS_CONFIRMED_BIT, &tmpl->status);
-	nf_conntrack_get(&tmpl->ct_general);
 	p->tmpl = tmpl;
 
 	return 0;
@@ -1497,6 +1522,26 @@ static void tcf_stats_update(struct tc_action *a, u64 bytes, u64 packets,
 	c->tcf_tm.lastuse = max_t(u64, c->tcf_tm.lastuse, lastuse);
 }
 
+static int tcf_ct_offload_act_setup(struct tc_action *act, void *entry_data,
+				    u32 *index_inc, bool bind)
+{
+	if (bind) {
+		struct flow_action_entry *entry = entry_data;
+
+		entry->id = FLOW_ACTION_CT;
+		entry->ct.action = tcf_ct_action(act);
+		entry->ct.zone = tcf_ct_zone(act);
+		entry->ct.flow_table = tcf_ct_ft(act);
+		*index_inc = 1;
+	} else {
+		struct flow_offload_action *fl_action = entry_data;
+
+		fl_action->id = FLOW_ACTION_CT;
+	}
+
+	return 0;
+}
+
 static struct tc_action_ops act_ct_ops = {
 	.kind		=	"ct",
 	.id		=	TCA_ID_CT,
@@ -1508,6 +1553,7 @@ static struct tc_action_ops act_ct_ops = {
 	.walk		=	tcf_ct_walker,
 	.lookup		=	tcf_ct_search,
 	.stats_update	=	tcf_stats_update,
+	.offload_act_setup =	tcf_ct_offload_act_setup,
 	.size		=	sizeof(struct tcf_ct),
 };
 
@@ -1565,10 +1611,16 @@ static int __init ct_init_module(void)
 	if (err)
 		goto err_register;
 
+	err = nf_ct_extend_register(&act_ct_extend);
+	if (err)
+		goto err_register_extend;
+
 	static_branch_inc(&tcf_frag_xmit_count);
 
 	return 0;
 
+err_register_extend:
+	tcf_unregister_action(&act_ct_ops, &ct_net_ops);
 err_register:
 	tcf_ct_flow_tables_uninit();
 err_tbl_init:
@@ -1579,6 +1631,7 @@ err_tbl_init:
 static void __exit ct_cleanup_module(void)
 {
 	static_branch_dec(&tcf_frag_xmit_count);
+	nf_ct_extend_unregister(&act_ct_extend);
 	tcf_unregister_action(&act_ct_ops, &ct_net_ops);
 	tcf_ct_flow_tables_uninit();
 	destroy_workqueue(act_ct_wq);

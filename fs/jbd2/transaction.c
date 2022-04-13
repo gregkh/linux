@@ -449,7 +449,7 @@ repeat:
 	}
 
 	/* OK, account for the buffers that this operation expects to
-	 * use and add the handle to the running transaction. 
+	 * use and add the handle to the running transaction.
 	 */
 	update_t_max_wait(transaction, ts);
 	handle->h_transaction = transaction;
@@ -836,35 +836,25 @@ int jbd2_journal_restart(handle_t *handle, int nblocks)
 }
 EXPORT_SYMBOL(jbd2_journal_restart);
 
-/**
- * jbd2_journal_lock_updates () - establish a transaction barrier.
- * @journal:  Journal to establish a barrier on.
- *
- * This locks out any further updates from being started, and blocks
- * until all existing updates have completed, returning only once the
- * journal is in a quiescent state with no updates running.
- *
- * The journal lock should not be held on entry.
+/*
+ * Waits for any outstanding t_updates to finish.
+ * This is called with write j_state_lock held.
  */
-void jbd2_journal_lock_updates(journal_t *journal)
+void jbd2_journal_wait_updates(journal_t *journal)
 {
 	DEFINE_WAIT(wait);
 
-	jbd2_might_wait_for_commit(journal);
-
-	write_lock(&journal->j_state_lock);
-	++journal->j_barrier_count;
-
-	/* Wait until there are no reserved handles */
-	if (atomic_read(&journal->j_reserved_credits)) {
-		write_unlock(&journal->j_state_lock);
-		wait_event(journal->j_wait_reserved,
-			   atomic_read(&journal->j_reserved_credits) == 0);
-		write_lock(&journal->j_state_lock);
-	}
-
-	/* Wait until there are no running updates */
 	while (1) {
+		/*
+		 * Note that the running transaction can get freed under us if
+		 * this transaction is getting committed in
+		 * jbd2_journal_commit_transaction() ->
+		 * jbd2_journal_free_transaction(). This can only happen when we
+		 * release j_state_lock -> schedule() -> acquire j_state_lock.
+		 * Hence we should everytime retrieve new j_running_transaction
+		 * value (after j_state_lock release acquire cycle), else it may
+		 * lead to use-after-free of old freed transaction.
+		 */
 		transaction_t *transaction = journal->j_running_transaction;
 
 		if (!transaction)
@@ -884,6 +874,36 @@ void jbd2_journal_lock_updates(journal_t *journal)
 		finish_wait(&journal->j_wait_updates, &wait);
 		write_lock(&journal->j_state_lock);
 	}
+}
+
+/**
+ * jbd2_journal_lock_updates () - establish a transaction barrier.
+ * @journal:  Journal to establish a barrier on.
+ *
+ * This locks out any further updates from being started, and blocks
+ * until all existing updates have completed, returning only once the
+ * journal is in a quiescent state with no updates running.
+ *
+ * The journal lock should not be held on entry.
+ */
+void jbd2_journal_lock_updates(journal_t *journal)
+{
+	jbd2_might_wait_for_commit(journal);
+
+	write_lock(&journal->j_state_lock);
+	++journal->j_barrier_count;
+
+	/* Wait until there are no reserved handles */
+	if (atomic_read(&journal->j_reserved_credits)) {
+		write_unlock(&journal->j_state_lock);
+		wait_event(journal->j_wait_reserved,
+			   atomic_read(&journal->j_reserved_credits) == 0);
+		write_lock(&journal->j_state_lock);
+	}
+
+	/* Wait until there are no running t_updates */
+	jbd2_journal_wait_updates(journal);
+
 	write_unlock(&journal->j_state_lock);
 
 	/*

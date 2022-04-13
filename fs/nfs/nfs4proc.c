@@ -108,10 +108,6 @@ static int nfs41_test_stateid(struct nfs_server *, nfs4_stateid *,
 static int nfs41_free_stateid(struct nfs_server *, const nfs4_stateid *,
 		const struct cred *, bool);
 #endif
-static void nfs4_bitmask_set(__u32 bitmask[NFS4_BITMASK_SZ],
-			     const __u32 *src, struct inode *inode,
-			     struct nfs_server *server,
-			     struct nfs4_label *label);
 
 #ifdef CONFIG_NFS_V4_SECURITY_LABEL
 static inline struct nfs4_label *
@@ -2652,9 +2648,8 @@ static int nfs4_opendata_access(const struct cred *cred,
 	} else if ((fmode & FMODE_READ) && !opendata->file_created)
 		mask = NFS4_ACCESS_READ;
 
-	cache.cred = cred;
 	nfs_access_set_mask(&cache, opendata->o_res.access_result);
-	nfs_access_add_cache(state->inode, &cache);
+	nfs_access_add_cache(state->inode, &cache, cred);
 
 	flags = NFS4_ACCESS_READ | NFS4_ACCESS_EXECUTE | NFS4_ACCESS_LOOKUP;
 	if ((mask & ~cache.mask & flags) == 0)
@@ -3669,7 +3664,7 @@ static void nfs4_close_prepare(struct rpc_task *task, void *data)
 		if (!nfs4_have_delegation(inode, FMODE_READ)) {
 			nfs4_bitmask_set(calldata->arg.bitmask_store,
 					 server->cache_consistency_bitmask,
-					 inode, server, NULL);
+					 inode, 0);
 			calldata->arg.bitmask = calldata->arg.bitmask_store;
 		} else
 			calldata->arg.bitmask = NULL;
@@ -3840,7 +3835,9 @@ static int _nfs4_server_capabilities(struct nfs_server *server, struct nfs_fh *f
 		     FATTR4_WORD0_FH_EXPIRE_TYPE |
 		     FATTR4_WORD0_LINK_SUPPORT |
 		     FATTR4_WORD0_SYMLINK_SUPPORT |
-		     FATTR4_WORD0_ACLSUPPORT;
+		     FATTR4_WORD0_ACLSUPPORT |
+		     FATTR4_WORD0_CASE_INSENSITIVE |
+		     FATTR4_WORD0_CASE_PRESERVING;
 	if (minorversion)
 		bitmask[2] = FATTR4_WORD2_SUPPATTR_EXCLCREAT;
 
@@ -3869,6 +3866,10 @@ static int _nfs4_server_capabilities(struct nfs_server *server, struct nfs_fh *f
 			server->caps |= NFS_CAP_HARDLINKS;
 		if (res.has_symlinks != 0)
 			server->caps |= NFS_CAP_SYMLINKS;
+		if (res.case_insensitive)
+			server->caps |= NFS_CAP_CASE_INSENSITIVE;
+		if (res.case_preserving)
+			server->caps |= NFS_CAP_CASE_PRESERVING;
 #ifdef CONFIG_NFS_V4_SECURITY_LABEL
 		if (res.attr_bitmask[2] & FATTR4_WORD2_SECURITY_LABEL)
 			server->caps |= NFS_CAP_SECURITY_LABEL;
@@ -3933,6 +3934,56 @@ int nfs4_server_capabilities(struct nfs_server *server, struct nfs_fh *fhandle)
 	return err;
 }
 
+static void test_fs_location_for_trunking(struct nfs4_fs_location *location,
+					  struct nfs_client *clp,
+					  struct nfs_server *server)
+{
+	int i;
+
+	for (i = 0; i < location->nservers; i++) {
+		struct nfs4_string *srv_loc = &location->servers[i];
+		struct sockaddr addr;
+		size_t addrlen;
+		struct xprt_create xprt_args = {
+			.ident = 0,
+			.net = clp->cl_net,
+		};
+		struct nfs4_add_xprt_data xprtdata = {
+			.clp = clp,
+		};
+		struct rpc_add_xprt_test rpcdata = {
+			.add_xprt_test = clp->cl_mvops->session_trunk,
+			.data = &xprtdata,
+		};
+		char *servername = NULL;
+
+		if (!srv_loc->len)
+			continue;
+
+		addrlen = nfs_parse_server_name(srv_loc->data, srv_loc->len,
+						&addr, sizeof(addr),
+						clp->cl_net, server->port);
+		if (!addrlen)
+			return;
+		xprt_args.dstaddr = &addr;
+		xprt_args.addrlen = addrlen;
+		servername = kmalloc(srv_loc->len + 1, GFP_KERNEL);
+		if (!servername)
+			return;
+		memcpy(servername, srv_loc->data, srv_loc->len);
+		servername[srv_loc->len] = '\0';
+		xprt_args.servername = servername;
+
+		xprtdata.cred = nfs4_get_clid_cred(clp);
+		rpc_clnt_add_xprt(clp->cl_rpcclient, &xprt_args,
+				  rpc_clnt_setup_test_and_add_xprt,
+				  &rpcdata);
+		if (xprtdata.cred)
+			put_cred(xprtdata.cred);
+		kfree(servername);
+	}
+}
+
 static int _nfs4_discover_trunking(struct nfs_server *server,
 				   struct nfs_fh *fhandle)
 {
@@ -3942,7 +3993,7 @@ static int _nfs4_discover_trunking(struct nfs_server *server,
 	struct nfs_client *clp = server->nfs_client;
 	const struct nfs4_state_maintenance_ops *ops =
 		clp->cl_mvops->state_renewal_ops;
-	int status = -ENOMEM;
+	int status = -ENOMEM, i;
 
 	cred = ops->get_state_renewal_cred(clp);
 	if (cred == NULL) {
@@ -3960,6 +4011,10 @@ static int _nfs4_discover_trunking(struct nfs_server *server,
 					 cred);
 	if (status)
 		goto out;
+
+	for (i = 0; i < locations->nlocations; i++)
+		test_fs_location_for_trunking(&locations->locations[i], clp,
+					      server);
 out:
 	if (page)
 		__free_page(page);
@@ -4496,7 +4551,8 @@ static int nfs4_proc_lookupp(struct inode *inode, struct nfs_fh *fhandle,
 	return err;
 }
 
-static int _nfs4_proc_access(struct inode *inode, struct nfs_access_entry *entry)
+static int _nfs4_proc_access(struct inode *inode, struct nfs_access_entry *entry,
+			     const struct cred *cred)
 {
 	struct nfs_server *server = NFS_SERVER(inode);
 	struct nfs4_accessargs args = {
@@ -4510,7 +4566,7 @@ static int _nfs4_proc_access(struct inode *inode, struct nfs_access_entry *entry
 		.rpc_proc = &nfs4_procedures[NFSPROC4_CLNT_ACCESS],
 		.rpc_argp = &args,
 		.rpc_resp = &res,
-		.rpc_cred = entry->cred,
+		.rpc_cred = cred,
 	};
 	int status = 0;
 
@@ -4530,14 +4586,15 @@ static int _nfs4_proc_access(struct inode *inode, struct nfs_access_entry *entry
 	return status;
 }
 
-static int nfs4_proc_access(struct inode *inode, struct nfs_access_entry *entry)
+static int nfs4_proc_access(struct inode *inode, struct nfs_access_entry *entry,
+			    const struct cred *cred)
 {
 	struct nfs4_exception exception = {
 		.interruptible = true,
 	};
 	int err;
 	do {
-		err = _nfs4_proc_access(inode, entry);
+		err = _nfs4_proc_access(inode, entry, cred);
 		trace_nfs4_access(inode, err);
 		err = nfs4_handle_exception(NFS_SERVER(inode), err,
 				&exception);
@@ -4718,8 +4775,10 @@ static void nfs4_proc_unlink_setup(struct rpc_message *msg,
 
 	nfs_fattr_init(res->dir_attr);
 
-	if (inode)
+	if (inode) {
 		nfs4_inode_return_delegation(inode);
+		nfs_d_prune_case_insensitive_aliases(inode);
+	}
 }
 
 static void nfs4_proc_unlink_rpc_prepare(struct rpc_task *task, struct nfs_unlinkdata *data)
@@ -4785,6 +4844,7 @@ static int nfs4_proc_rename_done(struct rpc_task *task, struct inode *old_dir,
 		return 0;
 
 	if (task->tk_status == 0) {
+		nfs_d_prune_case_insensitive_aliases(d_inode(data->old_dentry));
 		if (new_dir != old_dir) {
 			/* Note: If we moved a directory, nlink will change */
 			nfs4_update_changeattr(old_dir, &res->old_cinfo,
@@ -5477,14 +5537,14 @@ bool nfs4_write_need_cache_consistency_data(struct nfs_pgio_header *hdr)
 	return nfs4_have_delegation(hdr->inode, FMODE_READ) == 0;
 }
 
-static void nfs4_bitmask_set(__u32 bitmask[NFS4_BITMASK_SZ], const __u32 *src,
-			     struct inode *inode, struct nfs_server *server,
-			     struct nfs4_label *label)
+void nfs4_bitmask_set(__u32 bitmask[], const __u32 src[],
+		      struct inode *inode, unsigned long cache_validity)
 {
-	unsigned long cache_validity = READ_ONCE(NFS_I(inode)->cache_validity);
+	struct nfs_server *server = NFS_SERVER(inode);
 	unsigned int i;
 
 	memcpy(bitmask, src, sizeof(*bitmask) * NFS4_BITMASK_SZ);
+	cache_validity |= READ_ONCE(NFS_I(inode)->cache_validity);
 
 	if (cache_validity & NFS_INO_INVALID_CHANGE)
 		bitmask[0] |= FATTR4_WORD0_CHANGE;
@@ -5496,8 +5556,6 @@ static void nfs4_bitmask_set(__u32 bitmask[NFS4_BITMASK_SZ], const __u32 *src,
 		bitmask[1] |= FATTR4_WORD1_OWNER | FATTR4_WORD1_OWNER_GROUP;
 	if (cache_validity & NFS_INO_INVALID_NLINK)
 		bitmask[1] |= FATTR4_WORD1_NUMLINKS;
-	if (label && label->len && cache_validity & NFS_INO_INVALID_LABEL)
-		bitmask[2] |= FATTR4_WORD2_SECURITY_LABEL;
 	if (cache_validity & NFS_INO_INVALID_CTIME)
 		bitmask[1] |= FATTR4_WORD1_TIME_METADATA;
 	if (cache_validity & NFS_INO_INVALID_MTIME)
@@ -5524,7 +5582,7 @@ static void nfs4_proc_write_setup(struct nfs_pgio_header *hdr,
 	} else {
 		nfs4_bitmask_set(hdr->args.bitmask_store,
 				 server->cache_consistency_bitmask,
-				 hdr->inode, server, NULL);
+				 hdr->inode, NFS_INO_INVALID_BLOCKS);
 		hdr->args.bitmask = hdr->args.bitmask_store;
 	}
 
@@ -6562,8 +6620,7 @@ static int _nfs4_proc_delegreturn(struct inode *inode, const struct cred *cred, 
 	data->args.fhandle = &data->fh;
 	data->args.stateid = &data->stateid;
 	nfs4_bitmask_set(data->args.bitmask_store,
-			 server->cache_consistency_bitmask, inode, server,
-			 NULL);
+			 server->cache_consistency_bitmask, inode, 0);
 	data->args.bitmask = data->args.bitmask_store;
 	nfs_copy_fh(&data->fh, NFS_FH(inode));
 	nfs4_stateid_copy(&data->stateid, stateid);
@@ -7974,7 +8031,8 @@ static int _nfs41_proc_get_locations(struct nfs_server *server,
 
 /**
  * nfs4_proc_get_locations - discover locations for a migrated FSID
- * @inode: inode on FSID that is migrating
+ * @server: pointer to nfs_server to process
+ * @fhandle: pointer to the kernel NFS client file handle
  * @locations: result of query
  * @page: buffer
  * @cred: credential to use for this operation

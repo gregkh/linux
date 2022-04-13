@@ -277,7 +277,7 @@
 		(RTL8365MB_PORT_ISOLATION_REG_BASE + (_physport))
 #define   RTL8365MB_PORT_ISOLATION_MASK			0x07FF
 
-/* MSTP port state registers - indexed by tree instancrSTI (tree ine */
+/* MSTP port state registers - indexed by tree instance */
 #define RTL8365MB_MSTI_CTRL_BASE			0x0A00
 #define RTL8365MB_MSTI_CTRL_REG(_msti, _physport) \
 		(RTL8365MB_MSTI_CTRL_BASE + ((_msti) << 1) + ((_physport) >> 3))
@@ -900,7 +900,8 @@ static bool rtl8365mb_phy_mode_supported(struct dsa_switch *ds, int port,
 {
 	if (dsa_is_user_port(ds, port) &&
 	    (interface == PHY_INTERFACE_MODE_NA ||
-	     interface == PHY_INTERFACE_MODE_INTERNAL))
+	     interface == PHY_INTERFACE_MODE_INTERNAL ||
+	     interface == PHY_INTERFACE_MODE_GMII))
 		/* Internal PHY */
 		return true;
 	else if (dsa_is_cpu_port(ds, port) &&

@@ -1350,8 +1350,12 @@ static void azx_free(struct azx *chip)
 	if (hda->freed)
 		return;
 
-	if (azx_has_pm_runtime(chip) && chip->running)
+	if (azx_has_pm_runtime(chip) && chip->running) {
 		pm_runtime_get_noresume(&pci->dev);
+		pm_runtime_forbid(&pci->dev);
+		pm_runtime_dont_use_autosuspend(&pci->dev);
+	}
+
 	chip->running = 0;
 
 	azx_del_card_list(chip);
@@ -1937,6 +1941,7 @@ static int azx_first_init(struct azx *chip)
 		dma_bits = 32;
 	if (dma_set_mask_and_coherent(&pci->dev, DMA_BIT_MASK(dma_bits)))
 		dma_set_mask_and_coherent(&pci->dev, DMA_BIT_MASK(32));
+	dma_set_max_seg_size(&pci->dev, UINT_MAX);
 
 	/* read number of streams from GCAP register instead of using
 	 * hardcoded value
@@ -2494,8 +2499,13 @@ static const struct pci_device_id azx_ids[] = {
 	/* Alderlake-P */
 	{ PCI_DEVICE(0x8086, 0x51c8),
 	  .driver_data = AZX_DRIVER_SKL | AZX_DCAPS_INTEL_SKYLAKE},
+	{ PCI_DEVICE(0x8086, 0x51cd),
+	  .driver_data = AZX_DRIVER_SKL | AZX_DCAPS_INTEL_SKYLAKE},
 	/* Alderlake-M */
 	{ PCI_DEVICE(0x8086, 0x51cc),
+	  .driver_data = AZX_DRIVER_SKL | AZX_DCAPS_INTEL_SKYLAKE},
+	/* Alderlake-N */
+	{ PCI_DEVICE(0x8086, 0x54c8),
 	  .driver_data = AZX_DRIVER_SKL | AZX_DCAPS_INTEL_SKYLAKE},
 	/* Elkhart Lake */
 	{ PCI_DEVICE(0x8086, 0x4b55),

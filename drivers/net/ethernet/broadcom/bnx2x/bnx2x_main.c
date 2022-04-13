@@ -13037,19 +13037,6 @@ static const struct net_device_ops bnx2x_netdev_ops = {
 	.ndo_features_check	= bnx2x_features_check,
 };
 
-static int bnx2x_set_coherency_mask(struct bnx2x *bp)
-{
-	struct device *dev = &bp->pdev->dev;
-
-	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64)) != 0 &&
-	    dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32)) != 0) {
-		dev_err(dev, "System does not support DMA, aborting\n");
-		return -EIO;
-	}
-
-	return 0;
-}
-
 static void bnx2x_disable_pcie_error_reporting(struct bnx2x *bp)
 {
 	if (bp->flags & AER_ENABLED) {
@@ -13127,9 +13114,11 @@ static int bnx2x_init_dev(struct bnx2x *bp, struct pci_dev *pdev,
 		goto err_out_release;
 	}
 
-	rc = bnx2x_set_coherency_mask(bp);
-	if (rc)
+	rc = dma_set_mask_and_coherent(&bp->pdev->dev, DMA_BIT_MASK(64));
+	if (rc) {
+		dev_err(&bp->pdev->dev, "System does not support DMA, aborting\n");
 		goto err_out_release;
+	}
 
 	dev->mem_start = pci_resource_start(pdev, 0);
 	dev->base_addr = dev->mem_start;
@@ -15378,11 +15367,6 @@ static int bnx2x_hwtstamp_ioctl(struct bnx2x *bp, struct ifreq *ifr)
 
 	DP(BNX2X_MSG_PTP, "Requested tx_type: %d, requested rx_filters = %d\n",
 	   config.tx_type, config.rx_filter);
-
-	if (config.flags) {
-		BNX2X_ERR("config.flags is reserved for future use\n");
-		return -EINVAL;
-	}
 
 	bp->hwtstamp_ioctl_called = true;
 	bp->tx_type = config.tx_type;

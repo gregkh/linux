@@ -496,52 +496,50 @@ struct lpfc_cgn_info {
 	__le32   cgn_alarm_hr[24];
 	__le32   cgn_alarm_day[LPFC_MAX_CGN_DAYS];
 
-	/* Start of congestion statistics */
-	uint8_t  cgn_stat_npm;		/* Notifications per minute */
+	struct_group(cgn_stat,
+		uint8_t  cgn_stat_npm;		/* Notifications per minute */
 
-	/* Start Time */
-	uint8_t  cgn_stat_month;
-	uint8_t  cgn_stat_day;
-	uint8_t  cgn_stat_year;
-	uint8_t  cgn_stat_hour;
-	uint8_t  cgn_stat_minute;
-	uint8_t  cgn_pad2[2];
+		/* Start Time */
+		uint8_t  cgn_stat_month;
+		uint8_t  cgn_stat_day;
+		uint8_t  cgn_stat_year;
+		uint8_t  cgn_stat_hour;
+		uint8_t  cgn_stat_minute;
+		uint8_t  cgn_pad2[2];
 
-	__le32   cgn_notification;
-	__le32   cgn_peer_notification;
-	__le32   link_integ_notification;
-	__le32   delivery_notification;
+		__le32   cgn_notification;
+		__le32   cgn_peer_notification;
+		__le32   link_integ_notification;
+		__le32   delivery_notification;
 
-	uint8_t  cgn_stat_cgn_month; /* Last congestion notification FPIN */
-	uint8_t  cgn_stat_cgn_day;
-	uint8_t  cgn_stat_cgn_year;
-	uint8_t  cgn_stat_cgn_hour;
-	uint8_t  cgn_stat_cgn_min;
-	uint8_t  cgn_stat_cgn_sec;
+		uint8_t  cgn_stat_cgn_month; /* Last congestion notification FPIN */
+		uint8_t  cgn_stat_cgn_day;
+		uint8_t  cgn_stat_cgn_year;
+		uint8_t  cgn_stat_cgn_hour;
+		uint8_t  cgn_stat_cgn_min;
+		uint8_t  cgn_stat_cgn_sec;
 
-	uint8_t  cgn_stat_peer_month; /* Last peer congestion FPIN */
-	uint8_t  cgn_stat_peer_day;
-	uint8_t  cgn_stat_peer_year;
-	uint8_t  cgn_stat_peer_hour;
-	uint8_t  cgn_stat_peer_min;
-	uint8_t  cgn_stat_peer_sec;
+		uint8_t  cgn_stat_peer_month; /* Last peer congestion FPIN */
+		uint8_t  cgn_stat_peer_day;
+		uint8_t  cgn_stat_peer_year;
+		uint8_t  cgn_stat_peer_hour;
+		uint8_t  cgn_stat_peer_min;
+		uint8_t  cgn_stat_peer_sec;
 
-	uint8_t  cgn_stat_lnk_month; /* Last link integrity FPIN */
-	uint8_t  cgn_stat_lnk_day;
-	uint8_t  cgn_stat_lnk_year;
-	uint8_t  cgn_stat_lnk_hour;
-	uint8_t  cgn_stat_lnk_min;
-	uint8_t  cgn_stat_lnk_sec;
+		uint8_t  cgn_stat_lnk_month; /* Last link integrity FPIN */
+		uint8_t  cgn_stat_lnk_day;
+		uint8_t  cgn_stat_lnk_year;
+		uint8_t  cgn_stat_lnk_hour;
+		uint8_t  cgn_stat_lnk_min;
+		uint8_t  cgn_stat_lnk_sec;
 
-	uint8_t  cgn_stat_del_month; /* Last delivery notification FPIN */
-	uint8_t  cgn_stat_del_day;
-	uint8_t  cgn_stat_del_year;
-	uint8_t  cgn_stat_del_hour;
-	uint8_t  cgn_stat_del_min;
-	uint8_t  cgn_stat_del_sec;
-#define LPFC_CGN_STAT_SIZE	48
-#define LPFC_CGN_DATA_SIZE	(sizeof(struct lpfc_cgn_info) -  \
-				LPFC_CGN_STAT_SIZE - sizeof(uint32_t))
+		uint8_t  cgn_stat_del_month; /* Last delivery notification FPIN */
+		uint8_t  cgn_stat_del_day;
+		uint8_t  cgn_stat_del_year;
+		uint8_t  cgn_stat_del_hour;
+		uint8_t  cgn_stat_del_min;
+		uint8_t  cgn_stat_del_sec;
+	);
 
 	__le32   cgn_info_crc;
 #define LPFC_CGN_CRC32_MAGIC_NUMBER	0x1EDC6F41
@@ -669,8 +667,6 @@ struct lpfc_vport {
 
 	struct timer_list els_tmofunc;
 	struct timer_list delayed_disc_tmo;
-
-	int unreg_vpi_cmpl;
 
 	uint8_t load_flag;
 #define FC_LOADING		0x1	/* HBA in process of loading drvr */
@@ -1031,7 +1027,7 @@ struct lpfc_hba {
 					 */
 #define HBA_PCI_ERR		0x80000 /* The PCI slot is offline */
 #define HBA_FLOGI_ISSUED	0x100000 /* FLOGI was issued */
-#define HBA_CGN_RSVD1		0x200000 /* Reserved CGN flag */
+#define HBA_SHORT_CMF		0x200000 /* shorter CMF timer routine */
 #define HBA_CGN_DAY_WRAP	0x400000 /* HBA Congestion info day wraps */
 #define HBA_DEFER_FLOGI		0x800000 /* Defer FLOGI till read_sparm cmpl */
 #define HBA_SETUP		0x1000000 /* Signifies HBA setup is completed */
@@ -1612,6 +1608,7 @@ struct lpfc_hba {
 #define LPFC_MAX_RXMONITOR_ENTRY	800
 #define LPFC_MAX_RXMONITOR_DUMP		32
 struct rxtable_entry {
+	uint64_t cmf_bytes;	/* Total no of read bytes for CMF_SYNC_WQE */
 	uint64_t total_bytes;   /* Total no of read bytes requested */
 	uint64_t rcv_bytes;     /* Total no of read bytes completed */
 	uint64_t avg_io_size;

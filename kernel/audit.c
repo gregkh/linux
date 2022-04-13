@@ -1468,7 +1468,7 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 			if (err)
 				return err;
 		}
-		sig_data = kmalloc(sizeof(*sig_data) + len, GFP_KERNEL);
+		sig_data = kmalloc(struct_size(sig_data, ctx, len), GFP_KERNEL);
 		if (!sig_data) {
 			if (audit_sig_sid)
 				security_release_secctx(ctx, len);
@@ -1481,7 +1481,7 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 			security_release_secctx(ctx, len);
 		}
 		audit_send_reply(skb, seq, AUDIT_SIGNAL_INFO, 0, 0,
-				 sig_data, sizeof(*sig_data) + len);
+				 sig_data, struct_size(sig_data, ctx, len));
 		kfree(sig_data);
 		break;
 	case AUDIT_TTY_GET: {
@@ -2171,7 +2171,7 @@ int audit_log_task_context(struct audit_buffer *ab)
 	int error;
 	u32 sid;
 
-	security_task_getsecid_subj(current, &sid);
+	security_current_getsecid_subj(&sid);
 	if (!sid)
 		return 0;
 
@@ -2392,7 +2392,7 @@ int audit_signal_info(int sig, struct task_struct *t)
 			audit_sig_uid = auid;
 		else
 			audit_sig_uid = uid;
-		security_task_getsecid_subj(current, &audit_sig_sid);
+		security_current_getsecid_subj(&audit_sig_sid);
 	}
 
 	return audit_signal_info_syscall(t);

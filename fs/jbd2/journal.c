@@ -757,6 +757,7 @@ int jbd2_fc_begin_commit(journal_t *journal, tid_t tid)
 	}
 	journal->j_flags |= JBD2_FAST_COMMIT_ONGOING;
 	write_unlock(&journal->j_state_lock);
+	jbd2_journal_lock_updates(journal);
 
 	return 0;
 }
@@ -768,6 +769,7 @@ EXPORT_SYMBOL(jbd2_fc_begin_commit);
  */
 static int __jbd2_fc_end_commit(journal_t *journal, tid_t tid, bool fallback)
 {
+	jbd2_journal_unlock_updates(journal);
 	if (journal->j_fc_cleanup_callback)
 		journal->j_fc_cleanup_callback(journal, 0, tid);
 	write_lock(&journal->j_state_lock);
@@ -1210,7 +1212,7 @@ static const struct seq_operations jbd2_seq_info_ops = {
 
 static int jbd2_seq_info_open(struct inode *inode, struct file *file)
 {
-	journal_t *journal = PDE_DATA(inode);
+	journal_t *journal = pde_data(inode);
 	struct jbd2_stats_proc_session *s;
 	int rc, size;
 
@@ -1285,6 +1287,8 @@ static int jbd2_min_tag_size(void)
 
 /**
  * jbd2_journal_shrink_scan()
+ * @shrink: shrinker to work on
+ * @sc: reclaim request to process
  *
  * Scan the checkpointed buffer on the checkpoint list and release the
  * journal_head.
@@ -1310,6 +1314,8 @@ static unsigned long jbd2_journal_shrink_scan(struct shrinker *shrink,
 
 /**
  * jbd2_journal_shrink_count()
+ * @shrink: shrinker to work on
+ * @sc: reclaim request to process
  *
  * Count the number of checkpoint buffers on the checkpoint list.
  */

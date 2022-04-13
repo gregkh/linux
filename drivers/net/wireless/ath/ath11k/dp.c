@@ -239,6 +239,7 @@ int ath11k_dp_srng_setup(struct ath11k_base *ab, struct dp_srng *ring,
 		/* Allocate the reo dst and tx completion rings from cacheable memory */
 		switch (type) {
 		case HAL_REO_DST:
+		case HAL_WBM2SW_RELEASE:
 			cached = true;
 			break;
 		default:
@@ -770,13 +771,12 @@ int ath11k_dp_service_srng(struct ath11k_base *ab,
 	const struct ath11k_hw_hal_params *hal_params;
 	int grp_id = irq_grp->grp_id;
 	int work_done = 0;
-	int i = 0, j;
+	int i, j;
 	int tot_work_done = 0;
 
-	while (ab->hw_params.ring_mask->tx[grp_id] >> i) {
-		if (ab->hw_params.ring_mask->tx[grp_id] & BIT(i))
-			ath11k_dp_tx_completion_handler(ab, i);
-		i++;
+	if (ab->hw_params.ring_mask->tx[grp_id]) {
+		i = __fls(ab->hw_params.ring_mask->tx[grp_id]);
+		ath11k_dp_tx_completion_handler(ab, i);
 	}
 
 	if (ab->hw_params.ring_mask->rx_err[grp_id]) {
@@ -1051,6 +1051,7 @@ int ath11k_dp_alloc(struct ath11k_base *ab)
 
 	INIT_LIST_HEAD(&dp->reo_cmd_list);
 	INIT_LIST_HEAD(&dp->reo_cmd_cache_flush_list);
+	INIT_LIST_HEAD(&dp->dp_full_mon_mpdu_list);
 	spin_lock_init(&dp->reo_cmd_lock);
 
 	dp->reo_cmd_cache_flush_count = 0;

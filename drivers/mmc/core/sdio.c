@@ -708,6 +708,7 @@ try_again:
 	 */
 	if (host->ops->init_card)
 		host->ops->init_card(host, card);
+	mmc_fixup_device(card, sdio_card_init_methods);
 
 	card->ocr = ocr_card;
 

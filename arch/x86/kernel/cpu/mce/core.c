@@ -99,7 +99,6 @@ struct mca_config mca_cfg __read_mostly = {
 
 static DEFINE_PER_CPU(struct mce, mces_seen);
 static unsigned long mce_need_notify;
-static int cpu_missing;
 
 /*
  * MCA banks polled by the period polling timer for corrected events.
@@ -128,7 +127,7 @@ static struct irq_work mce_irq_work;
 BLOCKING_NOTIFIER_HEAD(x86_mce_decoder_chain);
 
 /* Do initial initialization of a struct mce */
-noinstr void mce_setup(struct mce *m)
+void mce_setup(struct mce *m)
 {
 	memset(m, 0, sizeof(struct mce));
 	m->cpu = m->extcpu = smp_processor_id();
@@ -320,8 +319,6 @@ static noinstr void mce_panic(const char *msg, struct mce *final, char *exp)
 		if (!apei_err)
 			apei_err = apei_write_mce(final);
 	}
-	if (cpu_missing)
-		pr_emerg(HW_ERR "Some CPUs didn't answer in synchronization\n");
 	if (exp)
 		pr_emerg(HW_ERR "Machine check: %s\n", exp);
 	if (!fake_panic) {
@@ -374,7 +371,7 @@ void ex_handler_msr_mce(struct pt_regs *regs, bool wrmsr)
 }
 
 /* MSR access wrappers used for error injection */
-static noinstr u64 mce_rdmsrl(u32 msr)
+noinstr u64 mce_rdmsrl(u32 msr)
 {
 	DECLARE_ARGS(val, low, high);
 
@@ -442,9 +439,15 @@ static noinstr void mce_wrmsrl(u32 msr, u64 v)
  * check into our "mce" struct so that we can use it later to assess
  * the severity of the problem as we read per-bank specific details.
  */
-static inline void mce_gather_info(struct mce *m, struct pt_regs *regs)
+static noinstr void mce_gather_info(struct mce *m, struct pt_regs *regs)
 {
+	/*
+	 * Enable instrumentation around mce_setup() which calls external
+	 * facilities.
+	 */
+	instrumentation_begin();
 	mce_setup(m);
+	instrumentation_end();
 
 	m->mcgstatus = mce_rdmsrl(MSR_IA32_MCG_STATUS);
 	if (regs) {
@@ -832,6 +835,59 @@ static void quirk_sandybridge_ifu(int bank, struct mce *m, struct pt_regs *regs)
 }
 
 /*
+ * Disable fast string copy and return from the MCE handler upon the first SRAR
+ * MCE on bank 1 due to a CPU erratum on Intel Skylake/Cascade Lake/Cooper Lake
+ * CPUs.
+ * The fast string copy instructions ("REP; MOVS*") could consume an
+ * uncorrectable memory error in the cache line _right after_ the desired region
+ * to copy and raise an MCE with RIP pointing to the instruction _after_ the
+ * "REP; MOVS*".
+ * This mitigation addresses the issue completely with the caveat of performance
+ * degradation on the CPU affected. This is still better than the OS crashing on
+ * MCEs raised on an irrelevant process due to "REP; MOVS*" accesses from a
+ * kernel context (e.g., copy_page).
+ *
+ * Returns true when fast string copy on CPU has been disabled.
+ */
+static noinstr bool quirk_skylake_repmov(void)
+{
+	u64 mcgstatus   = mce_rdmsrl(MSR_IA32_MCG_STATUS);
+	u64 misc_enable = mce_rdmsrl(MSR_IA32_MISC_ENABLE);
+	u64 mc1_status;
+
+	/*
+	 * Apply the quirk only to local machine checks, i.e., no broadcast
+	 * sync is needed.
+	 */
+	if (!(mcgstatus & MCG_STATUS_LMCES) ||
+	    !(misc_enable & MSR_IA32_MISC_ENABLE_FAST_STRING))
+		return false;
+
+	mc1_status = mce_rdmsrl(MSR_IA32_MCx_STATUS(1));
+
+	/* Check for a software-recoverable data fetch error. */
+	if ((mc1_status &
+	     (MCI_STATUS_VAL | MCI_STATUS_OVER | MCI_STATUS_UC | MCI_STATUS_EN |
+	      MCI_STATUS_ADDRV | MCI_STATUS_MISCV | MCI_STATUS_PCC |
+	      MCI_STATUS_AR | MCI_STATUS_S)) ==
+	     (MCI_STATUS_VAL |                   MCI_STATUS_UC | MCI_STATUS_EN |
+	      MCI_STATUS_ADDRV | MCI_STATUS_MISCV |
+	      MCI_STATUS_AR | MCI_STATUS_S)) {
+		misc_enable &= ~MSR_IA32_MISC_ENABLE_FAST_STRING;
+		mce_wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+		mce_wrmsrl(MSR_IA32_MCx_STATUS(1), 0);
+
+		instrumentation_begin();
+		pr_err_once("Erratum detected, disable fast string copy instructions.\n");
+		instrumentation_end();
+
+		return true;
+	}
+
+	return false;
+}
+
+/*
  * Do a quick check if any of the events requires a panic.
  * This decides if we keep the events around or clear them.
  */
@@ -880,8 +936,13 @@ static cpumask_t mce_missing_cpus = CPU_MASK_ALL;
 /*
  * Check if a timeout waiting for other CPUs happened.
  */
-static int mce_timed_out(u64 *t, const char *msg)
+static noinstr int mce_timed_out(u64 *t, const char *msg)
 {
+	int ret = 0;
+
+	/* Enable instrumentation around calls to external facilities */
+	instrumentation_begin();
+
 	/*
 	 * The others already did panic for some reason.
 	 * Bail out like in a timeout.
@@ -900,13 +961,17 @@ static int mce_timed_out(u64 *t, const char *msg)
 					 cpumask_pr_args(&mce_missing_cpus));
 			mce_panic(msg, NULL, NULL);
 		}
-		cpu_missing = 1;
-		return 1;
+		ret = 1;
+		goto out;
 	}
 	*t -= SPINUNIT;
+
 out:
 	touch_nmi_watchdog();
-	return 0;
+
+	instrumentation_end();
+
+	return ret;
 }
 
 /*
@@ -995,14 +1060,13 @@ static atomic_t global_nwo;
  * in the entry order.
  * TBD double check parallel CPU hotunplug
  */
-static int mce_start(int *no_way_out)
+static noinstr int mce_start(int *no_way_out)
 {
-	int order;
-	int cpus = num_online_cpus();
 	u64 timeout = (u64)mca_cfg.monarch_timeout * NSEC_PER_USEC;
+	int order, ret = -1;
 
 	if (!timeout)
-		return -1;
+		return ret;
 
 	atomic_add(*no_way_out, &global_nwo);
 	/*
@@ -1012,14 +1076,17 @@ static int mce_start(int *no_way_out)
 	order = atomic_inc_return(&mce_callin);
 	cpumask_clear_cpu(smp_processor_id(), &mce_missing_cpus);
 
+	/* Enable instrumentation around calls to external facilities */
+	instrumentation_begin();
+
 	/*
 	 * Wait for everyone.
 	 */
-	while (atomic_read(&mce_callin) != cpus) {
+	while (atomic_read(&mce_callin) != num_online_cpus()) {
 		if (mce_timed_out(&timeout,
 				  "Timeout: Not all CPUs entered broadcast exception handler")) {
 			atomic_set(&global_nwo, 0);
-			return -1;
+			goto out;
 		}
 		ndelay(SPINUNIT);
 	}
@@ -1045,7 +1112,7 @@ static int mce_start(int *no_way_out)
 			if (mce_timed_out(&timeout,
 					  "Timeout: Subject CPUs unable to finish machine check processing")) {
 				atomic_set(&global_nwo, 0);
-				return -1;
+				goto out;
 			}
 			ndelay(SPINUNIT);
 		}
@@ -1056,7 +1123,12 @@ static int mce_start(int *no_way_out)
 	 */
 	*no_way_out = atomic_read(&global_nwo);
 
-	return order;
+	ret = order;
+
+out:
+	instrumentation_end();
+
+	return ret;
 }
 
 /*
@@ -1082,14 +1154,11 @@ static noinstr int mce_end(int order)
 	atomic_inc(&mce_executing);
 
 	if (order == 1) {
-		/* CHECKME: Can this race with a parallel hotplug? */
-		int cpus = num_online_cpus();
-
 		/*
 		 * Monarch: Wait for everyone to go through their scanning
 		 * loops.
 		 */
-		while (atomic_read(&mce_executing) <= cpus) {
+		while (atomic_read(&mce_executing) <= num_online_cpus()) {
 			if (mce_timed_out(&timeout,
 					  "Timeout: Monarch CPU unable to finish machine check processing"))
 				goto reset;
@@ -1182,13 +1251,14 @@ static noinstr bool mce_check_crashing_cpu(void)
 	return false;
 }
 
-static void __mc_scan_banks(struct mce *m, struct pt_regs *regs, struct mce *final,
-			    unsigned long *toclear, unsigned long *valid_banks,
-			    int no_way_out, int *worst)
+static __always_inline int
+__mc_scan_banks(struct mce *m, struct pt_regs *regs, struct mce *final,
+		unsigned long *toclear, unsigned long *valid_banks, int no_way_out,
+		int *worst)
 {
 	struct mce_bank *mce_banks = this_cpu_ptr(mce_banks_array);
 	struct mca_config *cfg = &mca_cfg;
-	int severity, i;
+	int severity, i, taint = 0;
 
 	for (i = 0; i < this_cpu_read(mce_num_banks); i++) {
 		__clear_bit(i, toclear);
@@ -1215,7 +1285,7 @@ static void __mc_scan_banks(struct mce *m, struct pt_regs *regs, struct mce *fin
 			continue;
 
 		/* Set taint even when machine check was not enabled. */
-		add_taint(TAINT_MACHINE_CHECK, LOCKDEP_NOW_UNRELIABLE);
+		taint++;
 
 		severity = mce_severity(m, regs, cfg->tolerant, NULL, true);
 
@@ -1238,7 +1308,13 @@ static void __mc_scan_banks(struct mce *m, struct pt_regs *regs, struct mce *fin
 		/* assuming valid severity level != 0 */
 		m->severity = severity;
 
+		/*
+		 * Enable instrumentation around the mce_log() call which is
+		 * done in #MC context, where instrumentation is disabled.
+		 */
+		instrumentation_begin();
 		mce_log(m);
+		instrumentation_end();
 
 		if (severity > *worst) {
 			*final = *m;
@@ -1248,6 +1324,8 @@ static void __mc_scan_banks(struct mce *m, struct pt_regs *regs, struct mce *fin
 
 	/* mce_clear_state will clear *final, save locally for use later */
 	*m = *final;
+
+	return taint;
 }
 
 static void kill_me_now(struct callback_head *ch)
@@ -1337,11 +1415,11 @@ static noinstr void unexpected_machine_check(struct pt_regs *regs)
 }
 
 /*
- * The actual machine check handler. This only handles real
- * exceptions when something got corrupted coming in through int 18.
+ * The actual machine check handler. This only handles real exceptions when
+ * something got corrupted coming in through int 18.
  *
- * This is executed in NMI context not subject to normal locking rules. This
- * implies that most kernel services cannot be safely used. Don't even
+ * This is executed in #MC context not subject to normal locking rules.
+ * This implies that most kernel services cannot be safely used. Don't even
  * think about putting a printk in there!
  *
  * On Intel systems this is entered on all CPUs in parallel through
@@ -1353,12 +1431,20 @@ static noinstr void unexpected_machine_check(struct pt_regs *regs)
  * issues: if the machine check was due to a failure of the memory
  * backing the user stack, tracing that reads the user stack will cause
  * potentially infinite recursion.
+ *
+ * Currently, the #MC handler calls out to a number of external facilities
+ * and, therefore, allows instrumentation around them. The optimal thing to
+ * have would be to do the absolutely minimal work required in #MC context
+ * and have instrumentation disabled only around that. Further processing can
+ * then happen in process context where instrumentation is allowed. Achieving
+ * that requires careful auditing and modifications. Until then, the code
+ * allows instrumentation temporarily, where required. *
  */
 noinstr void do_machine_check(struct pt_regs *regs)
 {
-	int worst = 0, order, no_way_out, kill_current_task, lmce;
-	DECLARE_BITMAP(valid_banks, MAX_NR_BANKS);
-	DECLARE_BITMAP(toclear, MAX_NR_BANKS);
+	int worst = 0, order, no_way_out, kill_current_task, lmce, taint = 0;
+	DECLARE_BITMAP(valid_banks, MAX_NR_BANKS) = { 0 };
+	DECLARE_BITMAP(toclear, MAX_NR_BANKS) = { 0 };
 	struct mca_config *cfg = &mca_cfg;
 	struct mce m, *final;
 	char *msg = NULL;
@@ -1369,6 +1455,9 @@ noinstr void do_machine_check(struct pt_regs *regs)
 		return winchip_machine_check(regs);
 	else if (unlikely(!mca_cfg.initialized))
 		return unexpected_machine_check(regs);
+
+	if (mce_flags.skx_repmov_quirk && quirk_skylake_repmov())
+		goto clear;
 
 	/*
 	 * Establish sequential order between the CPUs entering the machine
@@ -1402,7 +1491,6 @@ noinstr void do_machine_check(struct pt_regs *regs)
 	final = this_cpu_ptr(&mces_seen);
 	*final = m;
 
-	memset(valid_banks, 0, sizeof(valid_banks));
 	no_way_out = mce_no_way_out(&m, &msg, valid_banks, regs);
 
 	barrier();
@@ -1436,7 +1524,7 @@ noinstr void do_machine_check(struct pt_regs *regs)
 		order = mce_start(&no_way_out);
 	}
 
-	__mc_scan_banks(&m, regs, final, toclear, valid_banks, no_way_out, &worst);
+	taint = __mc_scan_banks(&m, regs, final, toclear, valid_banks, no_way_out, &worst);
 
 	if (!no_way_out)
 		mce_clear_state(toclear);
@@ -1468,16 +1556,18 @@ noinstr void do_machine_check(struct pt_regs *regs)
 		}
 	}
 
-	if (worst != MCE_AR_SEVERITY && !kill_current_task)
-		goto out;
-
 	/*
-	 * Enable instrumentation around the external facilities like
-	 * task_work_add() (via queue_task_work()), fixup_exception() etc.
-	 * For now, that is. Fixing this properly would need a lot more involved
-	 * reorganization.
+	 * Enable instrumentation around the external facilities like task_work_add()
+	 * (via queue_task_work()), fixup_exception() etc. For now, that is. Fixing this
+	 * properly would need a lot more involved reorganization.
 	 */
 	instrumentation_begin();
+
+	if (taint)
+		add_taint(TAINT_MACHINE_CHECK, LOCKDEP_NOW_UNRELIABLE);
+
+	if (worst != MCE_AR_SEVERITY && !kill_current_task)
+		goto out;
 
 	/* Fault was in user mode and we need to take some action */
 	if ((m.cs & 3) == 3) {
@@ -1508,9 +1598,10 @@ noinstr void do_machine_check(struct pt_regs *regs)
 			queue_task_work(&m, msg, kill_me_never);
 	}
 
+out:
 	instrumentation_end();
 
-out:
+clear:
 	mce_wrmsrl(MSR_IA32_MCG_STATUS, 0);
 }
 EXPORT_SYMBOL_GPL(do_machine_check);
@@ -1824,6 +1915,13 @@ static int __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
 
 		if (c->x86 == 6 && c->x86_model == 45)
 			mce_flags.snb_ifu_quirk = 1;
+
+		/*
+		 * Skylake, Cascacde Lake and Cooper Lake require a quirk on
+		 * rep movs.
+		 */
+		if (c->x86 == 6 && c->x86_model == INTEL_FAM6_SKYLAKE_X)
+			mce_flags.skx_repmov_quirk = 1;
 	}
 
 	if (c->x86_vendor == X86_VENDOR_ZHAOXIN) {
@@ -2730,7 +2828,6 @@ struct dentry *mce_get_debugfs_dir(void)
 
 static void mce_reset(void)
 {
-	cpu_missing = 0;
 	atomic_set(&mce_fake_panicked, 0);
 	atomic_set(&mce_executing, 0);
 	atomic_set(&mce_callin, 0);

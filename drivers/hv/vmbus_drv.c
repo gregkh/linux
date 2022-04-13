@@ -33,6 +33,7 @@
 #include <linux/random.h>
 #include <linux/kernel.h>
 #include <linux/syscore_ops.h>
+#include <linux/dma-map-ops.h>
 #include <clocksource/hyperv_timer.h>
 #include "hyperv_vmbus.h"
 
@@ -1381,7 +1382,7 @@ static void vmbus_isr(void)
 			tasklet_schedule(&hv_cpu->msg_dpc);
 	}
 
-	add_interrupt_randomness(vmbus_interrupt, 0);
+	add_interrupt_randomness(vmbus_interrupt);
 }
 
 static irqreturn_t vmbus_percpu_isr(int irq, void *dev_id)
@@ -2095,6 +2096,10 @@ int vmbus_device_register(struct hv_device *child_device_obj)
 	child_device_obj->device.bus = &hv_bus;
 	child_device_obj->device.parent = &hv_acpi_dev->dev;
 	child_device_obj->device.release = vmbus_device_release;
+
+	child_device_obj->device.dma_parms = &child_device_obj->dma_parms;
+	child_device_obj->device.dma_mask = &child_device_obj->dma_mask;
+	dma_set_mask(&child_device_obj->device, DMA_BIT_MASK(64));
 
 	/*
 	 * Register with the LDM. This will kick off the driver/device

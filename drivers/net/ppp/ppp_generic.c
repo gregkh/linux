@@ -175,6 +175,7 @@ struct channel {
 	spinlock_t	downl;		/* protects `chan', file.xq dequeue */
 	struct ppp	*ppp;		/* ppp unit we're connected to */
 	struct net	*chan_net;	/* the net channel belongs to */
+	netns_tracker	ns_tracker;
 	struct list_head clist;		/* link in list of channels per unit */
 	rwlock_t	upl;		/* protects `ppp' and 'bridge' */
 	struct channel __rcu *bridge;	/* "bridged" ppp channel */
@@ -2884,7 +2885,7 @@ int ppp_register_net_channel(struct net *net, struct ppp_channel *chan)
 
 	pch->ppp = NULL;
 	pch->chan = chan;
-	pch->chan_net = get_net(net);
+	pch->chan_net = get_net_track(net, &pch->ns_tracker, GFP_KERNEL);
 	chan->ppp = pch;
 	init_ppp_file(&pch->file, CHANNEL);
 	pch->file.hdrlen = chan->hdrlen;
@@ -3524,7 +3525,7 @@ ppp_disconnect_channel(struct channel *pch)
  */
 static void ppp_destroy_channel(struct channel *pch)
 {
-	put_net(pch->chan_net);
+	put_net_track(pch->chan_net, &pch->ns_tracker);
 	pch->chan_net = NULL;
 
 	atomic_dec(&channel_count);
