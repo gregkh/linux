@@ -6275,6 +6275,8 @@ static int mvpp2_mac_prepare(struct phylink_config *config, unsigned int mode,
 	if (ret == 0)
 		phylink_set_pcs(port->phylink, &port->phylink_pcs);
 
+	mdelay(10);
+
 	return ret;
 }
 
