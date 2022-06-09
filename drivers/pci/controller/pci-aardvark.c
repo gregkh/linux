@@ -528,7 +528,7 @@ static void advk_pcie_setup_hw(struct advk_pcie *pcie)
 	 */
 	reg = advk_readl(pcie, PCIE_CORE_DEV_REV_REG);
 	reg &= ~0xffffff00;
-	reg |= (PCI_CLASS_BRIDGE_PCI << 8) << 8;
+	reg |= PCI_CLASS_BRIDGE_PCI_NORMAL << 8;
 	advk_writel(pcie, reg, PCIE_CORE_DEV_REV_REG);
 
 	/* Disable Root Bridge I/O space, memory space and bus mastering */
@@ -944,7 +944,7 @@ advk_pci_bridge_emul_pcie_conf_write(struct pci_bridge_emul *bridge,
 	}
 }
 
-static struct pci_bridge_emul_ops advk_pci_bridge_emul_ops = {
+static const struct pci_bridge_emul_ops advk_pci_bridge_emul_ops = {
 	.read_base = advk_pci_bridge_emul_base_conf_read,
 	.write_base = advk_pci_bridge_emul_base_conf_write,
 	.read_pcie = advk_pci_bridge_emul_pcie_conf_read,
@@ -1625,9 +1625,7 @@ static int advk_pcie_enable_phy(struct advk_pcie *pcie)
 	}
 
 	ret = phy_power_on(pcie->phy);
-	if (ret == -EOPNOTSUPP) {
-		dev_warn(&pcie->pdev->dev, "PHY unsupported by firmware\n");
-	} else if (ret) {
+	if (ret) {
 		phy_exit(pcie->phy);
 		return ret;
 	}

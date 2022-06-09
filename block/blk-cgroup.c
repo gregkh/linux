@@ -23,15 +23,14 @@
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
 #include <linux/slab.h>
-#include <linux/genhd.h>
 #include <linux/delay.h>
 #include <linux/atomic.h>
 #include <linux/ctype.h>
-#include <linux/blk-cgroup.h>
-#include <linux/tracehook.h>
+#include <linux/resume_user_mode.h>
 #include <linux/psi.h>
 #include <linux/part_stat.h>
 #include "blk.h"
+#include "blk-cgroup.h"
 #include "blk-ioprio.h"
 #include "blk-throttle.h"
 
@@ -66,6 +65,23 @@ static bool blkcg_policy_enabled(struct request_queue *q,
 	return pol && test_bit(pol->plid, q->blkcg_pols);
 }
 
+static void blkg_free_workfn(struct work_struct *work)
+{
+	struct blkcg_gq *blkg = container_of(work, struct blkcg_gq,
+					     free_work);
+	int i;
+
+	for (i = 0; i < BLKCG_MAX_POLS; i++)
+		if (blkg->pd[i])
+			blkcg_policy[i]->pd_free_fn(blkg->pd[i]);
+
+	if (blkg->q)
+		blk_put_queue(blkg->q);
+	free_percpu(blkg->iostat_cpu);
+	percpu_ref_exit(&blkg->refcnt);
+	kfree(blkg);
+}
+
 /**
  * blkg_free - free a blkg
  * @blkg: blkg to free
@@ -74,18 +90,15 @@ static bool blkcg_policy_enabled(struct request_queue *q,
  */
 static void blkg_free(struct blkcg_gq *blkg)
 {
-	int i;
-
 	if (!blkg)
 		return;
 
-	for (i = 0; i < BLKCG_MAX_POLS; i++)
-		if (blkg->pd[i])
-			blkcg_policy[i]->pd_free_fn(blkg->pd[i]);
-
-	free_percpu(blkg->iostat_cpu);
-	percpu_ref_exit(&blkg->refcnt);
-	kfree(blkg);
+	/*
+	 * Both ->pd_free_fn() and request queue's release handler may
+	 * sleep, so free us by scheduling one work func
+	 */
+	INIT_WORK(&blkg->free_work, blkg_free_workfn);
+	schedule_work(&blkg->free_work);
 }
 
 static void __blkg_release(struct rcu_head *rcu)
@@ -166,6 +179,9 @@ static struct blkcg_gq *blkg_alloc(struct blkcg *blkcg, struct request_queue *q,
 
 	blkg->iostat_cpu = alloc_percpu_gfp(struct blkg_iostat_set, gfp_mask);
 	if (!blkg->iostat_cpu)
+		goto err_free;
+
+	if (!blk_get_queue(q))
 		goto err_free;
 
 	blkg->q = q;
@@ -889,7 +905,6 @@ static void blkcg_print_one_stat(struct blkcg_gq *blkg, struct seq_file *s)
 {
 	struct blkg_iostat_set *bis = &blkg->iostat;
 	u64 rbytes, wbytes, rios, wios, dbytes, dios;
-	bool has_stats = false;
 	const char *dname;
 	unsigned seq;
 	int i;
@@ -915,14 +930,12 @@ static void blkcg_print_one_stat(struct blkcg_gq *blkg, struct seq_file *s)
 	} while (u64_stats_fetch_retry(&bis->sync, seq));
 
 	if (rbytes || wbytes || rios || wios) {
-		has_stats = true;
 		seq_printf(s, "rbytes=%llu wbytes=%llu rios=%llu wios=%llu dbytes=%llu dios=%llu",
 			rbytes, wbytes, rios, wios,
 			dbytes, dios);
 	}
 
 	if (blkcg_debug_stats && atomic_read(&blkg->use_delay)) {
-		has_stats = true;
 		seq_printf(s, " use_delay=%d delay_nsec=%llu",
 			atomic_read(&blkg->use_delay),
 			atomic64_read(&blkg->delay_nsec));
@@ -934,12 +947,10 @@ static void blkcg_print_one_stat(struct blkcg_gq *blkg, struct seq_file *s)
 		if (!blkg->pd[i] || !pol->pd_stat_fn)
 			continue;
 
-		if (pol->pd_stat_fn(blkg->pd[i], s))
-			has_stats = true;
+		pol->pd_stat_fn(blkg->pd[i], s);
 	}
 
-	if (has_stats)
-		seq_printf(s, "\n");
+	seq_puts(s, "\n");
 }
 
 static int blkcg_print_stat(struct seq_file *sf, void *v)
@@ -1175,6 +1186,8 @@ int blkcg_init_queue(struct request_queue *q)
 	struct blkcg_gq *new_blkg, *blkg;
 	bool preloaded;
 	int ret;
+
+	INIT_LIST_HEAD(&q->blkg_list);
 
 	new_blkg = blkg_alloc(&blkcg_root, q, GFP_KERNEL);
 	if (!new_blkg)

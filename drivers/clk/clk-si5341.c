@@ -655,7 +655,7 @@ static unsigned long si5341_synth_clk_recalc_rate(struct clk_hw *hw,
 	f = synth->data->freq_vco;
 	f *= n_den >> 4;
 
-	/* Now we need to to 64-bit division: f/n_num */
+	/* Now we need to do 64-bit division: f/n_num */
 	/* And compensate for the 4 bits we dropped */
 	f = div64_u64(f, (n_num >> 4));
 
@@ -1470,7 +1470,7 @@ static ssize_t input_present_show(struct device *dev,
 	if (res < 0)
 		return res;
 	res = !(status & SI5341_STATUS_LOSREF);
-	return snprintf(buf, PAGE_SIZE, "%d\n", res);
+	return sysfs_emit(buf, "%d\n", res);
 }
 static DEVICE_ATTR_RO(input_present);
 
@@ -1485,7 +1485,7 @@ static ssize_t input_present_sticky_show(struct device *dev,
 	if (res < 0)
 		return res;
 	res = !(status & SI5341_STATUS_LOSREF);
-	return snprintf(buf, PAGE_SIZE, "%d\n", res);
+	return sysfs_emit(buf, "%d\n", res);
 }
 static DEVICE_ATTR_RO(input_present_sticky);
 
@@ -1500,7 +1500,7 @@ static ssize_t pll_locked_show(struct device *dev,
 	if (res < 0)
 		return res;
 	res = !(status & SI5341_STATUS_LOL);
-	return snprintf(buf, PAGE_SIZE, "%d\n", res);
+	return sysfs_emit(buf, "%d\n", res);
 }
 static DEVICE_ATTR_RO(pll_locked);
 
@@ -1515,7 +1515,7 @@ static ssize_t pll_locked_sticky_show(struct device *dev,
 	if (res < 0)
 		return res;
 	res = !(status & SI5341_STATUS_LOL);
-	return snprintf(buf, PAGE_SIZE, "%d\n", res);
+	return sysfs_emit(buf, "%d\n", res);
 }
 static DEVICE_ATTR_RO(pll_locked_sticky);
 

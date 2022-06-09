@@ -376,8 +376,8 @@ extern struct nfs_client *nfs_init_client(struct nfs_client *clp,
 			   const struct nfs_client_initdata *);
 
 /* dir.c */
-extern void nfs_advise_use_readdirplus(struct inode *dir);
-extern void nfs_force_use_readdirplus(struct inode *dir);
+extern void nfs_readdir_record_entry_cache_hit(struct inode *dir);
+extern void nfs_readdir_record_entry_cache_miss(struct inode *dir);
 extern unsigned long nfs_access_cache_count(struct shrinker *shrink,
 					    struct shrink_control *sc);
 extern unsigned long nfs_access_cache_scan(struct shrinker *shrink,
@@ -397,6 +397,20 @@ int nfs_mknod(struct user_namespace *, struct inode *, struct dentry *, umode_t,
 	      dev_t);
 int nfs_rename(struct user_namespace *, struct inode *, struct dentry *,
 	       struct inode *, struct dentry *, unsigned int);
+
+#ifdef CONFIG_NFS_V4_2
+static inline __u32 nfs_access_xattr_mask(const struct nfs_server *server)
+{
+	if (!(server->caps & NFS_CAP_XATTR))
+		return 0;
+	return NFS4_ACCESS_XAREAD | NFS4_ACCESS_XAWRITE | NFS4_ACCESS_XALIST;
+}
+#else
+static inline __u32 nfs_access_xattr_mask(const struct nfs_server *server)
+{
+	return 0;
+}
+#endif
 
 /* file.c */
 int nfs_file_fsync(struct file *file, loff_t start, loff_t end, int datasync);

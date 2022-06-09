@@ -2,7 +2,7 @@
 /*
  * Driver for Broadcom MPI3 Storage Controllers
  *
- * Copyright (C) 2017-2021 Broadcom Inc.
+ * Copyright (C) 2017-2022 Broadcom Inc.
  *  (mailto: mpi3mr-linuxdrv.pdl@broadcom.com)
  *
  */
@@ -53,8 +53,8 @@ extern spinlock_t mrioc_list_lock;
 extern struct list_head mrioc_list;
 extern int prot_mask;
 
-#define MPI3MR_DRIVER_VERSION	"8.0.0.61.0"
-#define MPI3MR_DRIVER_RELDATE	"20-December-2021"
+#define MPI3MR_DRIVER_VERSION	"8.0.0.68.0"
+#define MPI3MR_DRIVER_RELDATE	"10-February-2022"
 
 #define MPI3MR_DRIVER_NAME	"mpi3mr"
 #define MPI3MR_DRIVER_LICENSE	"GPL"
@@ -882,7 +882,7 @@ struct mpi3mr_fwevt {
 	bool pending_at_sml;
 	bool discard;
 	struct kref ref_count;
-	char event_data[0] __aligned(4);
+	char event_data[] __aligned(4);
 };
 
 

@@ -158,6 +158,8 @@
 #define AX_EEPROM_MAGIC		0xdeadbeef
 #define AX_EEPROM_LEN		0x200
 
+#define AX_EMBD_PHY_ADDR	0x10
+
 /* This structure cannot exceed sizeof(unsigned long [5]) AKA 20 bytes */
 struct asix_data {
 	u8 multi_filter[AX_MCAST_FILTER_SIZE];
@@ -177,14 +179,16 @@ struct asix_rx_fixup_info {
 struct asix_common_private {
 	void (*resume)(struct usbnet *dev);
 	void (*suspend)(struct usbnet *dev);
+	int (*reset)(struct usbnet *dev, int in_pm);
 	u16 presvd_phy_advertise;
 	u16 presvd_phy_bmcr;
 	struct asix_rx_fixup_info rx_fixup_info;
 	struct mii_bus *mdio;
 	struct phy_device *phydev;
+	struct phy_device *phydev_int;
 	u16 phy_addr;
-	char phy_name[20];
 	bool embd_phy;
+	u8 chipcode;
 };
 
 extern const struct driver_info ax88172a_info;

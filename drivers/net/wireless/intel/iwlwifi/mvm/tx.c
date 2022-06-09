@@ -350,7 +350,7 @@ static u32 iwl_mvm_get_tx_rate(struct iwl_mvm *mvm,
 	is_cck = (rate_idx >= IWL_FIRST_CCK_RATE) && (rate_idx <= IWL_LAST_CCK_RATE);
 
 	/* Set CCK or OFDM flag */
-	if (iwl_fw_lookup_cmd_ver(mvm->fw, LONG_GROUP, TX_CMD, 0) > 8) {
+	if (iwl_fw_lookup_cmd_ver(mvm->fw, TX_CMD, 0) > 8) {
 		if (!is_cck)
 			rate_flags |= RATE_MCS_LEGACY_OFDM_MSK;
 		else
@@ -653,7 +653,8 @@ static void iwl_mvm_probe_resp_set_noa(struct iwl_mvm *mvm,
 	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data;
 	int base_len = (u8 *)mgmt->u.probe_resp.variable - (u8 *)mgmt;
 	struct iwl_probe_resp_data *resp_data;
-	u8 *ie, *pos;
+	const u8 *ie;
+	u8 *pos;
 	u8 match[] = {
 		(WLAN_OUI_WFA >> 16) & 0xff,
 		(WLAN_OUI_WFA >> 8) & 0xff,
@@ -670,10 +671,10 @@ static void iwl_mvm_probe_resp_set_noa(struct iwl_mvm *mvm,
 	if (!resp_data->notif.noa_active)
 		goto out;
 
-	ie = (u8 *)cfg80211_find_ie_match(WLAN_EID_VENDOR_SPECIFIC,
-					  mgmt->u.probe_resp.variable,
-					  skb->len - base_len,
-					  match, 4, 2);
+	ie = cfg80211_find_ie_match(WLAN_EID_VENDOR_SPECIFIC,
+				    mgmt->u.probe_resp.variable,
+				    skb->len - base_len,
+				    match, 4, 2);
 	if (!ie) {
 		IWL_DEBUG_TX(mvm, "probe resp doesn't have P2P IE\n");
 		goto out;
@@ -1601,8 +1602,6 @@ static void iwl_mvm_rx_tx_cmd_single(struct iwl_mvm *mvm,
 			seq_ctl = le16_to_cpu(hdr->seq_ctrl);
 
 		if (unlikely(!seq_ctl)) {
-			struct ieee80211_hdr *hdr = (void *)skb->data;
-
 			/*
 			 * If it is an NDP, we can't update next_reclaim since
 			 * its sequence control is 0. Note that for that same

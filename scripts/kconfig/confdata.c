@@ -658,13 +658,6 @@ static char *escape_string_value(const char *in)
 	return out;
 }
 
-/*
- * Kconfig configuration printer
- *
- * This printer is used when generating the resulting configuration after
- * kconfig invocation and `defconfig' files. Unset symbol might be omitted by
- * passing a non-NULL argument to the printer.
- */
 enum output_n { OUTPUT_N, OUTPUT_N_AS_UNSET, OUTPUT_N_NONE };
 
 static void __print_symbol(FILE *fp, struct symbol *sym, enum output_n output_n,
@@ -903,19 +896,20 @@ next:
 			menu = menu->list;
 			continue;
 		}
-		if (menu->next)
+
+end_check:
+		if (!menu->sym && menu_is_visible(menu) && menu != &rootmenu &&
+		    menu->prompt->type == P_MENU) {
+			fprintf(out, "# end of %s\n", menu_get_prompt(menu));
+			need_newline = true;
+		}
+
+		if (menu->next) {
 			menu = menu->next;
-		else while ((menu = menu->parent)) {
-			if (!menu->sym && menu_is_visible(menu) &&
-			    menu != &rootmenu) {
-				str = menu_get_prompt(menu);
-				fprintf(out, "# end of %s\n", str);
-				need_newline = true;
-			}
-			if (menu->next) {
-				menu = menu->next;
-				break;
-			}
+		} else {
+			menu = menu->parent;
+			if (menu)
+				goto end_check;
 		}
 	}
 	fclose(out);

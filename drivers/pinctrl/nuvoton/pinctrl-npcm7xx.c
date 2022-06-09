@@ -216,7 +216,7 @@ static void npcmgpio_irq_handler(struct irq_desc *desc)
 	struct gpio_chip *gc;
 	struct irq_chip *chip;
 	struct npcm7xx_gpio *bank;
-	u32 sts, en, bit;
+	unsigned long sts, en, bit;
 
 	gc = irq_desc_get_handler_data(desc);
 	bank = gpiochip_get_data(gc);
@@ -225,11 +225,11 @@ static void npcmgpio_irq_handler(struct irq_desc *desc)
 	chained_irq_enter(chip, desc);
 	sts = ioread32(bank->base + NPCM7XX_GP_N_EVST);
 	en  = ioread32(bank->base + NPCM7XX_GP_N_EVEN);
-	dev_dbg(bank->gc.parent, "==> got irq sts %.8x %.8x\n", sts,
+	dev_dbg(bank->gc.parent, "==> got irq sts %.8lx %.8lx\n", sts,
 		en);
 
 	sts &= en;
-	for_each_set_bit(bit, (const void *)&sts, NPCM7XX_GPIO_PER_BANK)
+	for_each_set_bit(bit, &sts, NPCM7XX_GPIO_PER_BANK)
 		generic_handle_domain_irq(gc->irq.domain, bit);
 	chained_irq_exit(chip, desc);
 }
@@ -894,7 +894,7 @@ static struct npcm7xx_func npcm7xx_funcs[] = {
 };
 
 #define NPCM7XX_PINCFG(a, b, c, d, e, f, g, h, i, j, k) \
-	[a] { .fn0 = fn_ ## b, .reg0 = NPCM7XX_GCR_ ## c, .bit0 = d, \
+	[a] = { .fn0 = fn_ ## b, .reg0 = NPCM7XX_GCR_ ## c, .bit0 = d, \
 			.fn1 = fn_ ## e, .reg1 = NPCM7XX_GCR_ ## f, .bit1 = g, \
 			.fn2 = fn_ ## h, .reg2 = NPCM7XX_GCR_ ## i, .bit2 = j, \
 			.flag = k }

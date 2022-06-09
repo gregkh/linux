@@ -79,6 +79,8 @@ struct inet6_ifaddr {
 
 	bool			tokenized;
 
+	u8			ifa_proto;
+
 	struct rcu_head		rcu;
 	struct in6_addr		peer_addr;
 };

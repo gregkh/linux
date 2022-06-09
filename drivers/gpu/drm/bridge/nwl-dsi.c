@@ -66,7 +66,6 @@ struct nwl_dsi_transfer {
 struct nwl_dsi {
 	struct drm_bridge bridge;
 	struct mipi_dsi_host dsi_host;
-	struct drm_bridge *panel_bridge;
 	struct device *dev;
 	struct phy *phy;
 	union phy_configure_opts phy_cfg;
@@ -333,17 +332,13 @@ static int nwl_dsi_config_dpi(struct nwl_dsi *dsi)
 
 static int nwl_dsi_init_interrupts(struct nwl_dsi *dsi)
 {
-	u32 irq_enable;
-
-	nwl_dsi_write(dsi, NWL_DSI_IRQ_MASK, 0xffffffff);
-	nwl_dsi_write(dsi, NWL_DSI_IRQ_MASK2, 0x7);
-
-	irq_enable = ~(u32)(NWL_DSI_TX_PKT_DONE_MASK |
-			    NWL_DSI_RX_PKT_HDR_RCVD_MASK |
-			    NWL_DSI_TX_FIFO_OVFLW_MASK |
-			    NWL_DSI_HS_TX_TIMEOUT_MASK);
+	u32 irq_enable = ~(u32)(NWL_DSI_TX_PKT_DONE_MASK |
+				NWL_DSI_RX_PKT_HDR_RCVD_MASK |
+				NWL_DSI_TX_FIFO_OVFLW_MASK |
+				NWL_DSI_HS_TX_TIMEOUT_MASK);
 
 	nwl_dsi_write(dsi, NWL_DSI_IRQ_MASK, irq_enable);
+	nwl_dsi_write(dsi, NWL_DSI_IRQ_MASK2, 0x7);
 
 	return nwl_dsi_clear_error(dsi);
 }
@@ -928,13 +923,11 @@ static int nwl_dsi_bridge_attach(struct drm_bridge *bridge,
 		if (IS_ERR(panel_bridge))
 			return PTR_ERR(panel_bridge);
 	}
-	dsi->panel_bridge = panel_bridge;
 
-	if (!dsi->panel_bridge)
+	if (!panel_bridge)
 		return -EPROBE_DEFER;
 
-	return drm_bridge_attach(bridge->encoder, dsi->panel_bridge, bridge,
-				 flags);
+	return drm_bridge_attach(bridge->encoder, panel_bridge, bridge, flags);
 }
 
 static void nwl_dsi_bridge_detach(struct drm_bridge *bridge)

@@ -182,6 +182,10 @@ static bool __dead_end_function(struct objtool_file *file, struct symbol *func,
 		"kunit_try_catch_throw",
 		"xen_start_kernel",
 		"cpu_bringup_and_idle",
+		"do_group_exit",
+		"stop_this_cpu",
+		"__invalid_creds",
+               "cpu_startup_entry",
 	};
 
 	if (!func)
@@ -381,6 +385,7 @@ static int decode_instructions(struct objtool_file *file)
 			memset(insn, 0, sizeof(*insn));
 			INIT_LIST_HEAD(&insn->alts);
 			INIT_LIST_HEAD(&insn->stack_ops);
+			INIT_LIST_HEAD(&insn->call_node);
 
 			insn->sec = sec;
 			insn->offset = offset;
@@ -392,6 +397,14 @@ static int decode_instructions(struct objtool_file *file)
 						      &insn->stack_ops);
 			if (ret)
 				goto err;
+
+			/*
+			 * By default, "ud2" is a dead end unless otherwise
+			 * annotated, because GCC 7 inserts it for certain
+			 * divide-by-zero cases.
+			 */
+			if (insn->type == INSN_BUG)
+				insn->dead_end = true;
 
 			hash_add(file->insn_hash, &insn->hash, sec_offset_hash(sec, insn->offset));
 			list_add_tail(&insn->list, &file->insn_list);
@@ -408,8 +421,17 @@ static int decode_instructions(struct objtool_file *file)
 				return -1;
 			}
 
-			sym_for_each_insn(file, func, insn)
+			sym_for_each_insn(file, func, insn) {
 				insn->func = func;
+				if (insn->type == INSN_ENDBR && list_empty(&insn->call_node)) {
+					if (insn->offset == insn->func->offset) {
+						list_add_tail(&insn->call_node, &file->endbr_list);
+						file->nr_endbr++;
+					} else {
+						file->nr_endbr_int++;
+					}
+				}
+			}
 		}
 	}
 
@@ -520,14 +542,6 @@ static int add_dead_ends(struct objtool_file *file)
 	struct section *sec;
 	struct reloc *reloc;
 	struct instruction *insn;
-
-	/*
-	 * By default, "ud2" is a dead end unless otherwise annotated, because
-	 * GCC 7 inserts it for certain divide-by-zero cases.
-	 */
-	for_each_insn(file, insn)
-		if (insn->type == INSN_BUG)
-			insn->dead_end = true;
 
 	/*
 	 * Check for manually annotated dead ends.
@@ -723,6 +737,58 @@ static int create_retpoline_sites_sections(struct objtool_file *file)
 					  R_X86_64_PC32,
 					  insn->sec, insn->offset)) {
 			WARN("elf_add_reloc_to_insn: .retpoline_sites");
+			return -1;
+		}
+
+		idx++;
+	}
+
+	return 0;
+}
+
+static int create_ibt_endbr_seal_sections(struct objtool_file *file)
+{
+	struct instruction *insn;
+	struct section *sec;
+	int idx;
+
+	sec = find_section_by_name(file->elf, ".ibt_endbr_seal");
+	if (sec) {
+		WARN("file already has .ibt_endbr_seal, skipping");
+		return 0;
+	}
+
+	idx = 0;
+	list_for_each_entry(insn, &file->endbr_list, call_node)
+		idx++;
+
+	if (stats) {
+		printf("ibt: ENDBR at function start: %d\n", file->nr_endbr);
+		printf("ibt: ENDBR inside functions:  %d\n", file->nr_endbr_int);
+		printf("ibt: superfluous ENDBR:       %d\n", idx);
+	}
+
+	if (!idx)
+		return 0;
+
+	sec = elf_create_section(file->elf, ".ibt_endbr_seal", 0,
+				 sizeof(int), idx);
+	if (!sec) {
+		WARN("elf_create_section: .ibt_endbr_seal");
+		return -1;
+	}
+
+	idx = 0;
+	list_for_each_entry(insn, &file->endbr_list, call_node) {
+
+		int *site = (int *)sec->data->d_buf + idx;
+		*site = 0;
+
+		if (elf_add_reloc_to_insn(file->elf, sec,
+					  idx * sizeof(int),
+					  R_X86_64_PC32,
+					  insn->sec, insn->offset)) {
+			WARN("elf_add_reloc_to_insn: .ibt_endbr_seal");
 			return -1;
 		}
 
@@ -1123,6 +1189,9 @@ static void annotate_call_site(struct objtool_file *file,
 		list_add_tail(&insn->call_node, &file->mcount_loc_list);
 		return;
 	}
+
+	if (!sibling && dead_end_function(file, sym))
+		insn->dead_end = true;
 }
 
 static void add_call_dest(struct objtool_file *file, struct instruction *insn,
@@ -1177,17 +1246,46 @@ static void add_retpoline_call(struct objtool_file *file, struct instruction *in
 
 	annotate_call_site(file, insn, false);
 }
+
+static bool same_function(struct instruction *insn1, struct instruction *insn2)
+{
+	return insn1->func->pfunc == insn2->func->pfunc;
+}
+
+static bool is_first_func_insn(struct objtool_file *file, struct instruction *insn)
+{
+	if (insn->offset == insn->func->offset)
+		return true;
+
+	if (ibt) {
+		struct instruction *prev = prev_insn_same_sym(file, insn);
+
+		if (prev && prev->type == INSN_ENDBR &&
+		    insn->offset == insn->func->offset + prev->len)
+			return true;
+	}
+
+	return false;
+}
+
 /*
  * Find the destination instructions for all jumps.
  */
 static int add_jump_destinations(struct objtool_file *file)
 {
-	struct instruction *insn;
+	struct instruction *insn, *jump_dest;
 	struct reloc *reloc;
 	struct section *dest_sec;
 	unsigned long dest_off;
 
 	for_each_insn(file, insn) {
+		if (insn->jump_dest) {
+			/*
+			 * handle_group_alt() may have previously set
+			 * 'jump_dest' for some alternatives.
+			 */
+			continue;
+		}
 		if (!is_static_jump(insn))
 			continue;
 
@@ -1202,7 +1300,10 @@ static int add_jump_destinations(struct objtool_file *file)
 			add_retpoline_call(file, insn);
 			continue;
 		} else if (insn->func) {
-			/* internal or external sibling call (with reloc) */
+			/*
+			 * External sibling call or internal sibling call with
+			 * STT_FUNC reloc.
+			 */
 			add_call_dest(file, insn, reloc->sym, true);
 			continue;
 		} else if (reloc->sym->sec->idx) {
@@ -1214,17 +1315,8 @@ static int add_jump_destinations(struct objtool_file *file)
 			continue;
 		}
 
-		insn->jump_dest = find_insn(file, dest_sec, dest_off);
-		if (!insn->jump_dest) {
-
-			/*
-			 * This is a special case where an alt instruction
-			 * jumps past the end of the section.  These are
-			 * handled later in handle_group_alt().
-			 */
-			if (!strcmp(insn->sec->name, ".altinstr_replacement"))
-				continue;
-
+		jump_dest = find_insn(file, dest_sec, dest_off);
+		if (!jump_dest) {
 			WARN_FUNC("can't find jump dest instruction at %s+0x%lx",
 				  insn->sec, insn->offset, dest_sec->name,
 				  dest_off);
@@ -1234,8 +1326,8 @@ static int add_jump_destinations(struct objtool_file *file)
 		/*
 		 * Cross-function jump.
 		 */
-		if (insn->func && insn->jump_dest->func &&
-		    insn->func != insn->jump_dest->func) {
+		if (insn->func && jump_dest->func &&
+		    insn->func != jump_dest->func) {
 
 			/*
 			 * For GCC 8+, create parent/child links for any cold
@@ -1253,16 +1345,22 @@ static int add_jump_destinations(struct objtool_file *file)
 			 * subfunction is through a jump table.
 			 */
 			if (!strstr(insn->func->name, ".cold") &&
-			    strstr(insn->jump_dest->func->name, ".cold")) {
-				insn->func->cfunc = insn->jump_dest->func;
-				insn->jump_dest->func->pfunc = insn->func;
+			    strstr(jump_dest->func->name, ".cold")) {
+				insn->func->cfunc = jump_dest->func;
+				jump_dest->func->pfunc = insn->func;
 
-			} else if (insn->jump_dest->func->pfunc != insn->func->pfunc &&
-				   insn->jump_dest->offset == insn->jump_dest->func->offset) {
-				/* internal sibling call (without reloc) */
-				add_call_dest(file, insn, insn->jump_dest->func, true);
+			} else if (!same_function(insn, jump_dest) &&
+				   is_first_func_insn(file, jump_dest)) {
+				/*
+				 * Internal sibling call without reloc or with
+				 * STT_SECTION reloc.
+				 */
+				add_call_dest(file, insn, jump_dest->func, true);
+				continue;
 			}
 		}
+
+		insn->jump_dest = jump_dest;
 	}
 
 	return 0;
@@ -1451,13 +1549,13 @@ static int handle_group_alt(struct objtool_file *file,
 			continue;
 
 		dest_off = arch_jump_destination(insn);
-		if (dest_off == special_alt->new_off + special_alt->new_len)
+		if (dest_off == special_alt->new_off + special_alt->new_len) {
 			insn->jump_dest = next_insn_same_sec(file, last_orig_insn);
-
-		if (!insn->jump_dest) {
-			WARN_FUNC("can't find alternative jump destination",
-				  insn->sec, insn->offset);
-			return -1;
+			if (!insn->jump_dest) {
+				WARN_FUNC("can't find alternative jump destination",
+					  insn->sec, insn->offset);
+				return -1;
+			}
 		}
 	}
 
@@ -1848,6 +1946,16 @@ static int read_unwind_hints(struct objtool_file *file)
 
 		insn->hint = true;
 
+		if (ibt && hint->type == UNWIND_HINT_TYPE_REGS_PARTIAL) {
+			struct symbol *sym = find_symbol_by_offset(insn->sec, insn->offset);
+
+			if (sym && sym->bind == STB_GLOBAL &&
+			    insn->type != INSN_ENDBR && !insn->noendbr) {
+				WARN_FUNC("UNWIND_HINT_IRET_REGS without ENDBR",
+					  insn->sec, insn->offset);
+			}
+		}
+
 		if (hint->type == UNWIND_HINT_TYPE_FUNC) {
 			insn->cfi = &func_cfi;
 			continue;
@@ -1867,6 +1975,32 @@ static int read_unwind_hints(struct objtool_file *file)
 		cfi.end = hint->end;
 
 		insn->cfi = cfi_hash_find_or_add(&cfi);
+	}
+
+	return 0;
+}
+
+static int read_noendbr_hints(struct objtool_file *file)
+{
+	struct section *sec;
+	struct instruction *insn;
+	struct reloc *reloc;
+
+	sec = find_section_by_name(file->elf, ".rela.discard.noendbr");
+	if (!sec)
+		return 0;
+
+	list_for_each_entry(reloc, &sec->reloc_list, list) {
+		insn = find_insn(file, reloc->sym->sec, reloc->sym->offset + reloc->addend);
+		if (!insn) {
+			WARN("bad .discard.noendbr entry");
+			return -1;
+		}
+
+		if (insn->type == INSN_ENDBR)
+			WARN_FUNC("ANNOTATE_NOENDBR on ENDBR", insn->sec, insn->offset);
+
+		insn->noendbr = 1;
 	}
 
 	return 0;
@@ -2098,14 +2232,17 @@ static int decode_sections(struct objtool_file *file)
 	if (ret)
 		return ret;
 
-	ret = add_dead_ends(file);
-	if (ret)
-		return ret;
-
 	add_ignores(file);
 	add_uaccess_safe(file);
 
 	ret = add_ignore_alternatives(file);
+	if (ret)
+		return ret;
+
+	/*
+	 * Must be before read_unwind_hints() since that needs insn->noendbr.
+	 */
+	ret = read_noendbr_hints(file);
 	if (ret)
 		return ret;
 
@@ -2117,14 +2254,14 @@ static int decode_sections(struct objtool_file *file)
 		return ret;
 
 	/*
-	 * Must be before add_special_section_alts() as that depends on
-	 * jump_dest being set.
+	 * Must be before add_jump_destinations(), which depends on 'func'
+	 * being set for alternatives, to enable proper sibling call detection.
 	 */
-	ret = add_jump_destinations(file);
+	ret = add_special_section_alts(file);
 	if (ret)
 		return ret;
 
-	ret = add_special_section_alts(file);
+	ret = add_jump_destinations(file);
 	if (ret)
 		return ret;
 
@@ -2137,6 +2274,14 @@ static int decode_sections(struct objtool_file *file)
 		return ret;
 
 	ret = add_call_destinations(file);
+	if (ret)
+		return ret;
+
+	/*
+	 * Must be after add_call_destinations() such that it can override
+	 * dead_end_function() marks.
+	 */
+	ret = add_dead_ends(file);
 	if (ret)
 		return ret;
 
@@ -3038,6 +3183,114 @@ static struct instruction *next_insn_to_validate(struct objtool_file *file,
 	return next_insn_same_sec(file, insn);
 }
 
+static struct instruction *
+validate_ibt_reloc(struct objtool_file *file, struct reloc *reloc)
+{
+	struct instruction *dest;
+	struct section *sec;
+	unsigned long off;
+
+	sec = reloc->sym->sec;
+	off = reloc->sym->offset;
+
+	if ((reloc->sec->base->sh.sh_flags & SHF_EXECINSTR) &&
+	    (reloc->type == R_X86_64_PC32 || reloc->type == R_X86_64_PLT32))
+		off += arch_dest_reloc_offset(reloc->addend);
+	else
+		off += reloc->addend;
+
+	dest = find_insn(file, sec, off);
+	if (!dest)
+		return NULL;
+
+	if (dest->type == INSN_ENDBR) {
+		if (!list_empty(&dest->call_node))
+			list_del_init(&dest->call_node);
+
+		return NULL;
+	}
+
+	if (reloc->sym->static_call_tramp)
+		return NULL;
+
+	return dest;
+}
+
+static void warn_noendbr(const char *msg, struct section *sec, unsigned long offset,
+			 struct instruction *dest)
+{
+	WARN_FUNC("%srelocation to !ENDBR: %s", sec, offset, msg,
+		  offstr(dest->sec, dest->offset));
+}
+
+static void validate_ibt_dest(struct objtool_file *file, struct instruction *insn,
+			      struct instruction *dest)
+{
+	if (dest->func && dest->func == insn->func) {
+		/*
+		 * Anything from->to self is either _THIS_IP_ or IRET-to-self.
+		 *
+		 * There is no sane way to annotate _THIS_IP_ since the compiler treats the
+		 * relocation as a constant and is happy to fold in offsets, skewing any
+		 * annotation we do, leading to vast amounts of false-positives.
+		 *
+		 * There's also compiler generated _THIS_IP_ through KCOV and
+		 * such which we have no hope of annotating.
+		 *
+		 * As such, blanket accept self-references without issue.
+		 */
+		return;
+	}
+
+	if (dest->noendbr)
+		return;
+
+	warn_noendbr("", insn->sec, insn->offset, dest);
+}
+
+static void validate_ibt_insn(struct objtool_file *file, struct instruction *insn)
+{
+	struct instruction *dest;
+	struct reloc *reloc;
+
+	switch (insn->type) {
+	case INSN_CALL:
+	case INSN_CALL_DYNAMIC:
+	case INSN_JUMP_CONDITIONAL:
+	case INSN_JUMP_UNCONDITIONAL:
+	case INSN_JUMP_DYNAMIC:
+	case INSN_JUMP_DYNAMIC_CONDITIONAL:
+	case INSN_RETURN:
+		/*
+		 * We're looking for code references setting up indirect code
+		 * flow. As such, ignore direct code flow and the actual
+		 * dynamic branches.
+		 */
+		return;
+
+	case INSN_NOP:
+		/*
+		 * handle_group_alt() will create INSN_NOP instruction that
+		 * don't belong to any section, ignore all NOP since they won't
+		 * carry a (useful) relocation anyway.
+		 */
+		return;
+
+	default:
+		break;
+	}
+
+	for (reloc = insn_reloc(file, insn);
+	     reloc;
+	     reloc = find_reloc_by_dest_range(file->elf, insn->sec,
+					      reloc->offset + 1,
+					      (insn->offset + insn->len) - (reloc->offset + 1))) {
+		dest = validate_ibt_reloc(file, reloc);
+		if (dest)
+			validate_ibt_dest(file, insn, dest);
+	}
+}
+
 /*
  * Follow the branch starting at the given instruction, and recursively follow
  * any other branches (jumps).  Meanwhile, track the frame pointer state at
@@ -3058,7 +3311,7 @@ static int validate_branch(struct objtool_file *file, struct symbol *func,
 	while (1) {
 		next_insn = next_insn_to_validate(file, insn);
 
-		if (file->c_file && func && insn->func && func != insn->func->pfunc) {
+		if (func && insn->func && func != insn->func->pfunc) {
 			WARN("%s() falls through to next function %s()",
 			     func->name, insn->func->name);
 			return 1;
@@ -3127,9 +3380,8 @@ static int validate_branch(struct objtool_file *file, struct symbol *func,
 		switch (insn->type) {
 
 		case INSN_RETURN:
-			if (next_insn && next_insn->type == INSN_TRAP) {
-				next_insn->ignore = true;
-			} else if (sls && !insn->retpoline_safe) {
+			if (sls && !insn->retpoline_safe &&
+			    next_insn && next_insn->type != INSN_TRAP) {
 				WARN_FUNC("missing int3 after ret",
 					  insn->sec, insn->offset);
 			}
@@ -3148,7 +3400,7 @@ static int validate_branch(struct objtool_file *file, struct symbol *func,
 				return 1;
 			}
 
-			if (dead_end_function(file, insn->call_dest))
+			if (insn->dead_end)
 				return 0;
 
 			break;
@@ -3176,9 +3428,8 @@ static int validate_branch(struct objtool_file *file, struct symbol *func,
 			break;
 
 		case INSN_JUMP_DYNAMIC:
-			if (next_insn && next_insn->type == INSN_TRAP) {
-				next_insn->ignore = true;
-			} else if (sls && !insn->retpoline_safe) {
+			if (sls && !insn->retpoline_safe &&
+			    next_insn && next_insn->type != INSN_TRAP) {
 				WARN_FUNC("missing int3 after indirect jump",
 					  insn->sec, insn->offset);
 			}
@@ -3248,6 +3499,9 @@ static int validate_branch(struct objtool_file *file, struct symbol *func,
 		default:
 			break;
 		}
+
+		if (ibt)
+			validate_ibt_insn(file, insn);
 
 		if (insn->dead_end)
 			return 0;
@@ -3349,7 +3603,7 @@ static bool ignore_unreachable_insn(struct objtool_file *file, struct instructio
 	int i;
 	struct instruction *prev_insn;
 
-	if (insn->ignore || insn->type == INSN_NOP)
+	if (insn->ignore || insn->type == INSN_NOP || insn->type == INSN_TRAP)
 		return true;
 
 	/*
@@ -3359,6 +3613,49 @@ static bool ignore_unreachable_insn(struct objtool_file *file, struct instructio
 	if (!strcmp(insn->sec->name, ".altinstr_replacement") ||
 	    !strcmp(insn->sec->name, ".altinstr_aux"))
 		return true;
+
+	/*
+	 * Whole archive runs might encounder dead code from weak symbols.
+	 * This is where the linker will have dropped the weak symbol in
+	 * favour of a regular symbol, but leaves the code in place.
+	 *
+	 * In this case we'll find a piece of code (whole function) that is not
+	 * covered by a !section symbol. Ignore them.
+	 */
+	if (!insn->func && lto) {
+		int size = find_symbol_hole_containing(insn->sec, insn->offset);
+		unsigned long end = insn->offset + size;
+
+		if (!size) /* not a hole */
+			return false;
+
+		if (size < 0) /* hole until the end */
+			return true;
+
+		sec_for_each_insn_continue(file, insn) {
+			/*
+			 * If we reach a visited instruction at or before the
+			 * end of the hole, ignore the unreachable.
+			 */
+			if (insn->visited)
+				return true;
+
+			if (insn->offset >= end)
+				break;
+
+			/*
+			 * If this hole jumps to a .cold function, mark it ignore too.
+			 */
+			if (insn->jump_dest && insn->jump_dest->func &&
+			    strstr(insn->jump_dest->func->name, ".cold")) {
+				struct instruction *dest = insn->jump_dest;
+				func_for_each_insn(file, dest->func, dest)
+					dest->ignore = true;
+			}
+		}
+
+		return false;
+	}
 
 	if (!insn->func)
 		return false;
@@ -3491,6 +3788,50 @@ static int validate_functions(struct objtool_file *file)
 	return warnings;
 }
 
+static int validate_ibt(struct objtool_file *file)
+{
+	struct section *sec;
+	struct reloc *reloc;
+
+	for_each_sec(file, sec) {
+		bool is_data;
+
+		/* already done in validate_branch() */
+		if (sec->sh.sh_flags & SHF_EXECINSTR)
+			continue;
+
+		if (!sec->reloc)
+			continue;
+
+		if (!strncmp(sec->name, ".orc", 4))
+			continue;
+
+		if (!strncmp(sec->name, ".discard", 8))
+			continue;
+
+		if (!strncmp(sec->name, ".debug", 6))
+			continue;
+
+		if (!strcmp(sec->name, "_error_injection_whitelist"))
+			continue;
+
+		if (!strcmp(sec->name, "_kprobe_blacklist"))
+			continue;
+
+		is_data = strstr(sec->name, ".data") || strstr(sec->name, ".rodata");
+
+		list_for_each_entry(reloc, &sec->reloc->reloc_list, list) {
+			struct instruction *dest;
+
+			dest = validate_ibt_reloc(file, reloc);
+			if (is_data && dest && !dest->noendbr)
+				warn_noendbr("data ", sec, reloc->offset, dest);
+		}
+	}
+
+	return 0;
+}
+
 static int validate_reachable_instructions(struct objtool_file *file)
 {
 	struct instruction *insn;
@@ -3513,6 +3854,16 @@ int check(struct objtool_file *file)
 {
 	int ret, warnings = 0;
 
+	if (lto && !(vmlinux || module)) {
+		fprintf(stderr, "--lto requires: --vmlinux or --module\n");
+		return 1;
+	}
+
+	if (ibt && !lto) {
+		fprintf(stderr, "--ibt requires: --lto\n");
+		return 1;
+	}
+
 	arch_initial_func_cfi_state(&initial_func_cfi);
 	init_cfi_state(&init_cfi);
 	init_cfi_state(&func_cfi);
@@ -3533,7 +3884,7 @@ int check(struct objtool_file *file)
 	if (list_empty(&file->insn_list))
 		goto out;
 
-	if (vmlinux && !validate_dup) {
+	if (vmlinux && !lto) {
 		ret = validate_vmlinux_functions(file);
 		if (ret < 0)
 			goto out;
@@ -3559,6 +3910,13 @@ int check(struct objtool_file *file)
 		goto out;
 	warnings += ret;
 
+	if (ibt) {
+		ret = validate_ibt(file);
+		if (ret < 0)
+			goto out;
+		warnings += ret;
+	}
+
 	if (!warnings) {
 		ret = validate_reachable_instructions(file);
 		if (ret < 0)
@@ -3580,6 +3938,13 @@ int check(struct objtool_file *file)
 
 	if (mcount) {
 		ret = create_mcount_loc_sections(file);
+		if (ret < 0)
+			goto out;
+		warnings += ret;
+	}
+
+	if (ibt) {
+		ret = create_ibt_endbr_seal_sections(file);
 		if (ret < 0)
 			goto out;
 		warnings += ret;

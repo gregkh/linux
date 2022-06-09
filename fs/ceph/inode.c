@@ -453,11 +453,14 @@ struct inode *ceph_alloc_inode(struct super_block *sb)
 	struct ceph_inode_info *ci;
 	int i;
 
-	ci = kmem_cache_alloc(ceph_inode_cachep, GFP_NOFS);
+	ci = alloc_inode_sb(sb, ceph_inode_cachep, GFP_NOFS);
 	if (!ci)
 		return NULL;
 
 	dout("alloc_inode %p\n", &ci->vfs_inode);
+
+	/* Set parameters for the netfs library */
+	netfs_i_context_init(&ci->vfs_inode, &ceph_netfs_ops);
 
 	spin_lock_init(&ci->i_ceph_lock);
 
@@ -544,9 +547,6 @@ struct inode *ceph_alloc_inode(struct super_block *sb)
 	INIT_WORK(&ci->i_work, ceph_inode_work);
 	ci->i_work_mask = 0;
 	memset(&ci->i_btime, '\0', sizeof(ci->i_btime));
-
-	ceph_fscache_inode_init(ci);
-
 	return &ci->vfs_inode;
 }
 
@@ -1207,7 +1207,7 @@ out_unlock:
 
 /*
  * splice a dentry to an inode.
- * caller must hold directory i_mutex for this to be safe.
+ * caller must hold directory i_rwsem for this to be safe.
  */
 static int splice_dentry(struct dentry **pdn, struct inode *in)
 {
@@ -1604,7 +1604,7 @@ static int fill_readdir_cache(struct inode *dir, struct dentry *dn,
 			return idx == 0 ? -ENOMEM : 0;
 		}
 		/* reading/filling the cache are serialized by
-		 * i_mutex, no need to use page lock */
+		 * i_rwsem, no need to use page lock */
 		unlock_page(ctl->page);
 		ctl->dentries = kmap(ctl->page);
 		if (idx == 0)
@@ -2304,6 +2304,57 @@ int __ceph_do_getattr(struct inode *inode, struct page *locked_page,
 	}
 	ceph_mdsc_put_request(req);
 	dout("do_getattr result=%d\n", err);
+	return err;
+}
+
+int ceph_do_getvxattr(struct inode *inode, const char *name, void *value,
+		      size_t size)
+{
+	struct ceph_fs_client *fsc = ceph_sb_to_client(inode->i_sb);
+	struct ceph_mds_client *mdsc = fsc->mdsc;
+	struct ceph_mds_request *req;
+	int mode = USE_AUTH_MDS;
+	int err;
+	char *xattr_value;
+	size_t xattr_value_len;
+
+	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_GETVXATTR, mode);
+	if (IS_ERR(req)) {
+		err = -ENOMEM;
+		goto out;
+	}
+
+	req->r_path2 = kstrdup(name, GFP_NOFS);
+	if (!req->r_path2) {
+		err = -ENOMEM;
+		goto put;
+	}
+
+	ihold(inode);
+	req->r_inode = inode;
+	err = ceph_mdsc_do_request(mdsc, NULL, req);
+	if (err < 0)
+		goto put;
+
+	xattr_value = req->r_reply_info.xattr_info.xattr_value;
+	xattr_value_len = req->r_reply_info.xattr_info.xattr_value_len;
+
+	dout("do_getvxattr xattr_value_len:%zu, size:%zu\n", xattr_value_len, size);
+
+	err = (int)xattr_value_len;
+	if (size == 0)
+		goto put;
+
+	if (xattr_value_len > size) {
+		err = -ERANGE;
+		goto put;
+	}
+
+	memcpy(value, xattr_value, xattr_value_len);
+put:
+	ceph_mdsc_put_request(req);
+out:
+	dout("do_getvxattr result=%d\n", err);
 	return err;
 }
 

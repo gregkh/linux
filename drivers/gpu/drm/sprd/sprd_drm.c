@@ -43,7 +43,6 @@ static void sprd_drm_mode_config_init(struct drm_device *drm)
 	drm->mode_config.min_height = 0;
 	drm->mode_config.max_width = 8192;
 	drm->mode_config.max_height = 8192;
-	drm->mode_config.allow_fb_modifiers = true;
 
 	drm->mode_config.funcs = &sprd_drm_mode_config_funcs;
 	drm->mode_config.helper_private = &sprd_drm_mode_config_helper;
@@ -134,14 +133,9 @@ static const struct component_master_ops drm_component_ops = {
 	.unbind = sprd_drm_unbind,
 };
 
-static int compare_of(struct device *dev, void *data)
-{
-	return dev->of_node == data;
-}
-
 static int sprd_drm_probe(struct platform_device *pdev)
 {
-	return drm_of_component_probe(&pdev->dev, compare_of, &drm_component_ops);
+	return drm_of_component_probe(&pdev->dev, component_compare_of, &drm_component_ops);
 }
 
 static int sprd_drm_remove(struct platform_device *pdev)
@@ -186,6 +180,9 @@ static struct platform_driver *sprd_drm_drivers[]  = {
 
 static int __init sprd_drm_init(void)
 {
+	if (drm_firmware_drivers_only())
+		return -ENODEV;
+
 	return platform_register_drivers(sprd_drm_drivers,
 					ARRAY_SIZE(sprd_drm_drivers));
 }

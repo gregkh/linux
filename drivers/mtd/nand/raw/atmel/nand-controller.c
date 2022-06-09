@@ -1938,7 +1938,7 @@ static const struct atmel_smc_nand_ebi_csa_cfg sam9x60_ebi_csa = {
 	.nfd0_on_d16 = AT91_SFR_CCFG_NFD0_ON_D16,
 };
 
-static const struct of_device_id atmel_ebi_csa_regmap_of_ids[] = {
+static const struct of_device_id __maybe_unused atmel_ebi_csa_regmap_of_ids[] = {
 	{
 		.compatible = "atmel,at91sam9260-matrix",
 		.data = &at91sam9260_ebi_csa,
@@ -2656,7 +2656,7 @@ static SIMPLE_DEV_PM_OPS(atmel_nand_controller_pm_ops, NULL,
 static struct platform_driver atmel_nand_controller_driver = {
 	.driver = {
 		.name = "atmel-nand-controller",
-		.of_match_table = of_match_ptr(atmel_nand_controller_of_ids),
+		.of_match_table = atmel_nand_controller_of_ids,
 		.pm = &atmel_nand_controller_pm_ops,
 	},
 	.probe = atmel_nand_controller_probe,

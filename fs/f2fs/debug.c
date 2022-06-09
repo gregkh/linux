@@ -476,12 +476,14 @@ static int stat_show(struct seq_file *s, void *v)
 				si->node_segs, si->bg_node_segs);
 		seq_printf(s, "  - Reclaimed segs : Normal (%d), Idle CB (%d), "
 				"Idle Greedy (%d), Idle AT (%d), "
-				"Urgent High (%d), Urgent Low (%d)\n",
+				"Urgent High (%d), Urgent Mid (%d), "
+				"Urgent Low (%d)\n",
 				si->sbi->gc_reclaimed_segs[GC_NORMAL],
 				si->sbi->gc_reclaimed_segs[GC_IDLE_CB],
 				si->sbi->gc_reclaimed_segs[GC_IDLE_GREEDY],
 				si->sbi->gc_reclaimed_segs[GC_IDLE_AT],
 				si->sbi->gc_reclaimed_segs[GC_URGENT_HIGH],
+				si->sbi->gc_reclaimed_segs[GC_URGENT_MID],
 				si->sbi->gc_reclaimed_segs[GC_URGENT_LOW]);
 		seq_printf(s, "Try to move %d blocks (BG: %d)\n", si->tot_blks,
 				si->bg_data_blks + si->bg_node_blks);
@@ -534,6 +536,9 @@ static int stat_show(struct seq_file *s, void *v)
 			   si->ndirty_meta, si->meta_pages);
 		seq_printf(s, "  - imeta: %4d\n",
 			   si->ndirty_imeta);
+		seq_printf(s, "  - fsync mark: %4lld\n",
+			   percpu_counter_sum_positive(
+					&si->sbi->rf_node_block_count));
 		seq_printf(s, "  - NATs: %9d/%9d\n  - SITs: %9d/%9d\n",
 			   si->dirty_nats, si->nats, si->dirty_sits, si->sits);
 		seq_printf(s, "  - free_nids: %9d/%9d\n  - alloc_nids: %9d\n",

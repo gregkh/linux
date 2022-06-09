@@ -69,10 +69,11 @@
 /*
  * Local functions
  */
-static void	 xprt_init(struct rpc_xprt *xprt, struct net *net);
+static void	xprt_init(struct rpc_xprt *xprt, struct net *net);
 static __be32	xprt_alloc_xid(struct rpc_xprt *xprt);
-static void	 xprt_destroy(struct rpc_xprt *xprt);
-static void	 xprt_request_init(struct rpc_task *task);
+static void	xprt_destroy(struct rpc_xprt *xprt);
+static void	xprt_request_init(struct rpc_task *task);
+static int	xprt_request_prepare(struct rpc_rqst *req);
 
 static DEFINE_SPINLOCK(xprt_list_lock);
 static LIST_HEAD(xprt_list);
@@ -1138,16 +1139,19 @@ xprt_request_need_enqueue_receive(struct rpc_task *task, struct rpc_rqst *req)
  * @task: RPC task
  *
  */
-void
+int
 xprt_request_enqueue_receive(struct rpc_task *task)
 {
 	struct rpc_rqst *req = task->tk_rqstp;
 	struct rpc_xprt *xprt = req->rq_xprt;
+	int ret;
 
 	if (!xprt_request_need_enqueue_receive(task, req))
-		return;
+		return 0;
 
-	xprt_request_prepare(task->tk_rqstp);
+	ret = xprt_request_prepare(task->tk_rqstp);
+	if (ret)
+		return ret;
 	spin_lock(&xprt->queue_lock);
 
 	/* Update the softirq receive buffer */
@@ -1161,6 +1165,7 @@ xprt_request_enqueue_receive(struct rpc_task *task)
 
 	/* Turn off autodisconnect */
 	del_singleshot_timer_sync(&xprt->timer);
+	return 0;
 }
 
 /**
@@ -1447,14 +1452,16 @@ xprt_request_dequeue_xprt(struct rpc_task *task)
  *
  * Calls into the transport layer to do whatever is needed to prepare
  * the request for transmission or receive.
+ * Returns error, or zero.
  */
-void
+static int
 xprt_request_prepare(struct rpc_rqst *req)
 {
 	struct rpc_xprt *xprt = req->rq_xprt;
 
 	if (xprt->ops->prepare_request)
-		xprt->ops->prepare_request(req);
+		return xprt->ops->prepare_request(req);
+	return 0;
 }
 
 /**
@@ -1674,15 +1681,12 @@ out:
 static struct rpc_rqst *xprt_dynamic_alloc_slot(struct rpc_xprt *xprt)
 {
 	struct rpc_rqst *req = ERR_PTR(-EAGAIN);
-	gfp_t gfp_mask = GFP_KERNEL;
 
 	if (xprt->num_reqs >= xprt->max_reqs)
 		goto out;
 	++xprt->num_reqs;
 	spin_unlock(&xprt->reserve_lock);
-	if (current->flags & PF_WQ_WORKER)
-		gfp_mask |= __GFP_NORETRY | __GFP_NOWARN;
-	req = kzalloc(sizeof(*req), gfp_mask);
+	req = kzalloc(sizeof(*req), rpc_task_gfp_mask());
 	spin_lock(&xprt->reserve_lock);
 	if (req != NULL)
 		goto out;
@@ -1825,7 +1829,7 @@ EXPORT_SYMBOL_GPL(xprt_alloc);
 
 void xprt_free(struct rpc_xprt *xprt)
 {
-	put_net(xprt->xprt_net);
+	put_net_track(xprt->xprt_net, &xprt->ns_tracker);
 	xprt_free_all_slots(xprt);
 	xprt_free_id(xprt);
 	rpc_sysfs_xprt_destroy(xprt);
@@ -2017,7 +2021,7 @@ static void xprt_init(struct rpc_xprt *xprt, struct net *net)
 
 	xprt_init_xid(xprt);
 
-	xprt->xprt_net = get_net(net);
+	xprt->xprt_net = get_net_track(net, &xprt->ns_tracker, GFP_KERNEL);
 }
 
 /**

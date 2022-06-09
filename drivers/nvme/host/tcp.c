@@ -1756,7 +1756,7 @@ static void nvme_tcp_stop_io_queues(struct nvme_ctrl *ctrl)
 
 static int nvme_tcp_start_io_queues(struct nvme_ctrl *ctrl)
 {
-	int i, ret = 0;
+	int i, ret;
 
 	for (i = 1; i < ctrl->queue_count; i++) {
 		ret = nvme_tcp_start_queue(ctrl, i);
@@ -1796,8 +1796,7 @@ static int __nvme_tcp_alloc_io_queues(struct nvme_ctrl *ctrl)
 	int i, ret;
 
 	for (i = 1; i < ctrl->queue_count; i++) {
-		ret = nvme_tcp_alloc_queue(ctrl, i,
-				ctrl->sqsize + 1);
+		ret = nvme_tcp_alloc_queue(ctrl, i, ctrl->sqsize + 1);
 		if (ret)
 			goto out_free_queues;
 	}
@@ -1907,11 +1906,9 @@ static int nvme_tcp_configure_io_queues(struct nvme_ctrl *ctrl, bool new)
 			goto out_free_io_queues;
 		}
 
-		ctrl->connect_q = blk_mq_init_queue(ctrl->tagset);
-		if (IS_ERR(ctrl->connect_q)) {
-			ret = PTR_ERR(ctrl->connect_q);
+		ret = nvme_ctrl_init_connect_q(ctrl);
+		if (ret)
 			goto out_free_tag_set;
-		}
 	}
 
 	ret = nvme_tcp_start_io_queues(ctrl);

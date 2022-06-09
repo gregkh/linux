@@ -117,7 +117,7 @@ struct csi_state {
 	struct v4l2_async_notifier notifier;
 	struct v4l2_subdev *src_sd;
 
-	struct v4l2_fwnode_bus_mipi_csi2 bus;
+	struct v4l2_mbus_config_mipi_csi2 bus;
 
 	struct mutex lock; /* Protect csi2_fmt, format_mbus, state, hs_settle */
 	const struct csi2_pix_format *csi2_fmt;
@@ -200,12 +200,13 @@ static const struct csi2_pix_format imx8mq_mipi_csi_formats[] = {
 	}, {
 		.code = MEDIA_BUS_FMT_SRGGB14_1X14,
 		.width = 14,
-	}, {
+	},
 	/* YUV formats */
-		.code = MEDIA_BUS_FMT_YUYV8_2X8,
+	{
+		.code = MEDIA_BUS_FMT_YUYV8_1X16,
 		.width = 16,
 	}, {
-		.code = MEDIA_BUS_FMT_YUYV8_1X16,
+		.code = MEDIA_BUS_FMT_UYVY8_1X16,
 		.width = 16,
 	}
 };
@@ -693,11 +694,10 @@ err_parse:
  * Suspend/resume
  */
 
-static int imx8mq_mipi_csi_pm_suspend(struct device *dev)
+static void imx8mq_mipi_csi_pm_suspend(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct csi_state *state = mipi_sd_to_csi2_state(sd);
-	int ret = 0;
 
 	mutex_lock(&state->lock);
 
@@ -708,8 +708,6 @@ static int imx8mq_mipi_csi_pm_suspend(struct device *dev)
 	}
 
 	mutex_unlock(&state->lock);
-
-	return ret ? -EAGAIN : 0;
 }
 
 static int imx8mq_mipi_csi_pm_resume(struct device *dev)
@@ -742,15 +740,12 @@ static int __maybe_unused imx8mq_mipi_csi_suspend(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct csi_state *state = mipi_sd_to_csi2_state(sd);
-	int ret;
 
-	ret = imx8mq_mipi_csi_pm_suspend(dev);
-	if (ret)
-		return ret;
+	imx8mq_mipi_csi_pm_suspend(dev);
 
 	state->state |= ST_SUSPENDED;
 
-	return ret;
+	return 0;
 }
 
 static int __maybe_unused imx8mq_mipi_csi_resume(struct device *dev)
@@ -770,9 +765,7 @@ static int __maybe_unused imx8mq_mipi_csi_runtime_suspend(struct device *dev)
 	struct csi_state *state = mipi_sd_to_csi2_state(sd);
 	int ret;
 
-	ret = imx8mq_mipi_csi_pm_suspend(dev);
-	if (ret)
-		return ret;
+	imx8mq_mipi_csi_pm_suspend(dev);
 
 	ret = icc_set_bw(state->icc_path, 0, 0);
 	if (ret)

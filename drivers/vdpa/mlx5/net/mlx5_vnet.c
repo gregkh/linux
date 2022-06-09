@@ -1454,7 +1454,7 @@ static virtio_net_ctrl_ack handle_ctrl_mac(struct mlx5_vdpa_dev *mvdev, u8 cmd)
 	virtio_net_ctrl_ack status = VIRTIO_NET_ERR;
 	struct mlx5_core_dev *pfmdev;
 	size_t read;
-	u8 mac[ETH_ALEN];
+	u8 mac[ETH_ALEN], mac_back[ETH_ALEN];
 
 	pfmdev = pci_get_drvdata(pci_physfn(mvdev->mdev->pdev));
 	switch (cmd) {
@@ -1467,6 +1467,9 @@ static virtio_net_ctrl_ack handle_ctrl_mac(struct mlx5_vdpa_dev *mvdev, u8 cmd)
 			status = VIRTIO_NET_OK;
 			break;
 		}
+
+		if (is_zero_ether_addr(mac))
+			break;
 
 		if (!is_zero_ether_addr(ndev->config.mac)) {
 			if (mlx5_mpfs_del_mac(pfmdev, ndev->config.mac)) {
@@ -1482,7 +1485,47 @@ static virtio_net_ctrl_ack handle_ctrl_mac(struct mlx5_vdpa_dev *mvdev, u8 cmd)
 			break;
 		}
 
+		/* backup the original mac address so that if failed to add the forward rules
+		 * we could restore it
+		 */
+		memcpy(mac_back, ndev->config.mac, ETH_ALEN);
+
 		memcpy(ndev->config.mac, mac, ETH_ALEN);
+
+		/* Need recreate the flow table entry, so that the packet could forward back
+		 */
+		remove_fwd_to_tir(ndev);
+
+		if (add_fwd_to_tir(ndev)) {
+			mlx5_vdpa_warn(mvdev, "failed to insert forward rules, try to restore\n");
+
+			/* Although it hardly run here, we still need double check */
+			if (is_zero_ether_addr(mac_back)) {
+				mlx5_vdpa_warn(mvdev, "restore mac failed: Original MAC is zero\n");
+				break;
+			}
+
+			/* Try to restore original mac address to MFPS table, and try to restore
+			 * the forward rule entry.
+			 */
+			if (mlx5_mpfs_del_mac(pfmdev, ndev->config.mac)) {
+				mlx5_vdpa_warn(mvdev, "restore mac failed: delete MAC %pM from MPFS table failed\n",
+					       ndev->config.mac);
+			}
+
+			if (mlx5_mpfs_add_mac(pfmdev, mac_back)) {
+				mlx5_vdpa_warn(mvdev, "restore mac failed: insert old MAC %pM into MPFS table failed\n",
+					       mac_back);
+			}
+
+			memcpy(ndev->config.mac, mac_back, ETH_ALEN);
+
+			if (add_fwd_to_tir(ndev))
+				mlx5_vdpa_warn(mvdev, "restore forward rules failed: insert forward rules failed\n");
+
+			break;
+		}
+
 		status = VIRTIO_NET_OK;
 		break;
 
@@ -1594,11 +1637,17 @@ static void mlx5_cvq_kick_handler(struct work_struct *work)
 	mvdev = wqent->mvdev;
 	ndev = to_mlx5_vdpa_ndev(mvdev);
 	cvq = &mvdev->cvq;
+
+	mutex_lock(&ndev->reslock);
+
+	if (!(mvdev->status & VIRTIO_CONFIG_S_DRIVER_OK))
+		goto out;
+
 	if (!(ndev->mvdev.actual_features & BIT_ULL(VIRTIO_NET_F_CTRL_VQ)))
-		return;
+		goto out;
 
 	if (!cvq->ready)
-		return;
+		goto out;
 
 	while (true) {
 		err = vringh_getdesc_iotlb(&cvq->vring, &cvq->riov, &cvq->wiov, &cvq->head,
@@ -1636,6 +1685,9 @@ static void mlx5_cvq_kick_handler(struct work_struct *work)
 		queue_work(mvdev->wq, &wqent->work);
 		break;
 	}
+
+out:
+	mutex_unlock(&ndev->reslock);
 }
 
 static void mlx5_vdpa_kick_vq(struct vdpa_device *vdev, u16 idx)
@@ -2112,7 +2164,7 @@ static int mlx5_vdpa_change_map(struct mlx5_vdpa_dev *mvdev, struct vhost_iotlb 
 		goto err_mr;
 
 	if (!(mvdev->status & VIRTIO_CONFIG_S_DRIVER_OK))
-		return 0;
+		goto err_mr;
 
 	restore_channels_info(ndev);
 	err = setup_driver(mvdev);
@@ -2127,12 +2179,14 @@ err_mr:
 	return err;
 }
 
+/* reslock must be held for this function */
 static int setup_driver(struct mlx5_vdpa_dev *mvdev)
 {
 	struct mlx5_vdpa_net *ndev = to_mlx5_vdpa_ndev(mvdev);
 	int err;
 
-	mutex_lock(&ndev->reslock);
+	WARN_ON(!mutex_is_locked(&ndev->reslock));
+
 	if (ndev->setup) {
 		mlx5_vdpa_warn(mvdev, "setup driver called for already setup driver\n");
 		err = 0;
@@ -2162,7 +2216,6 @@ static int setup_driver(struct mlx5_vdpa_dev *mvdev)
 		goto err_fwd;
 	}
 	ndev->setup = true;
-	mutex_unlock(&ndev->reslock);
 
 	return 0;
 
@@ -2173,23 +2226,23 @@ err_tir:
 err_rqt:
 	teardown_virtqueues(ndev);
 out:
-	mutex_unlock(&ndev->reslock);
 	return err;
 }
 
+/* reslock must be held for this function */
 static void teardown_driver(struct mlx5_vdpa_net *ndev)
 {
-	mutex_lock(&ndev->reslock);
+
+	WARN_ON(!mutex_is_locked(&ndev->reslock));
+
 	if (!ndev->setup)
-		goto out;
+		return;
 
 	remove_fwd_to_tir(ndev);
 	destroy_tir(ndev);
 	destroy_rqt(ndev);
 	teardown_virtqueues(ndev);
 	ndev->setup = false;
-out:
-	mutex_unlock(&ndev->reslock);
 }
 
 static void clear_vqs_ready(struct mlx5_vdpa_net *ndev)
@@ -2210,6 +2263,8 @@ static void mlx5_vdpa_set_status(struct vdpa_device *vdev, u8 status)
 
 	print_status(mvdev, status, true);
 
+	mutex_lock(&ndev->reslock);
+
 	if ((status ^ ndev->mvdev.status) & VIRTIO_CONFIG_S_DRIVER_OK) {
 		if (status & VIRTIO_CONFIG_S_DRIVER_OK) {
 			err = setup_driver(mvdev);
@@ -2219,16 +2274,19 @@ static void mlx5_vdpa_set_status(struct vdpa_device *vdev, u8 status)
 			}
 		} else {
 			mlx5_vdpa_warn(mvdev, "did not expect DRIVER_OK to be cleared\n");
-			return;
+			goto err_clear;
 		}
 	}
 
 	ndev->mvdev.status = status;
+	mutex_unlock(&ndev->reslock);
 	return;
 
 err_setup:
 	mlx5_vdpa_destroy_mr(&ndev->mvdev);
 	ndev->mvdev.status |= VIRTIO_CONFIG_S_FAILED;
+err_clear:
+	mutex_unlock(&ndev->reslock);
 }
 
 static int mlx5_vdpa_reset(struct vdpa_device *vdev)
@@ -2238,6 +2296,8 @@ static int mlx5_vdpa_reset(struct vdpa_device *vdev)
 
 	print_status(mvdev, 0, true);
 	mlx5_vdpa_info(mvdev, "performing device reset\n");
+
+	mutex_lock(&ndev->reslock);
 	teardown_driver(ndev);
 	clear_vqs_ready(ndev);
 	mlx5_vdpa_destroy_mr(&ndev->mvdev);
@@ -2250,6 +2310,7 @@ static int mlx5_vdpa_reset(struct vdpa_device *vdev)
 		if (mlx5_vdpa_create_mr(mvdev, NULL))
 			mlx5_vdpa_warn(mvdev, "create MR failed\n");
 	}
+	mutex_unlock(&ndev->reslock);
 
 	return 0;
 }
@@ -2285,19 +2346,24 @@ static u32 mlx5_vdpa_get_generation(struct vdpa_device *vdev)
 static int mlx5_vdpa_set_map(struct vdpa_device *vdev, struct vhost_iotlb *iotlb)
 {
 	struct mlx5_vdpa_dev *mvdev = to_mvdev(vdev);
+	struct mlx5_vdpa_net *ndev = to_mlx5_vdpa_ndev(mvdev);
 	bool change_map;
 	int err;
+
+	mutex_lock(&ndev->reslock);
 
 	err = mlx5_vdpa_handle_set_map(mvdev, iotlb, &change_map);
 	if (err) {
 		mlx5_vdpa_warn(mvdev, "set map failed(%d)\n", err);
-		return err;
+		goto err;
 	}
 
 	if (change_map)
-		return mlx5_vdpa_change_map(mvdev, iotlb);
+		err = mlx5_vdpa_change_map(mvdev, iotlb);
 
-	return 0;
+err:
+	mutex_unlock(&ndev->reslock);
+	return err;
 }
 
 static void mlx5_vdpa_free(struct vdpa_device *vdev)
@@ -2540,6 +2606,28 @@ static int event_handler(struct notifier_block *nb, unsigned long event, void *p
 	return ret;
 }
 
+static int config_func_mtu(struct mlx5_core_dev *mdev, u16 mtu)
+{
+	int inlen = MLX5_ST_SZ_BYTES(modify_nic_vport_context_in);
+	void *in;
+	int err;
+
+	in = kvzalloc(inlen, GFP_KERNEL);
+	if (!in)
+		return -ENOMEM;
+
+	MLX5_SET(modify_nic_vport_context_in, in, field_select.mtu, 1);
+	MLX5_SET(modify_nic_vport_context_in, in, nic_vport_context.mtu,
+		 mtu + MLX5V_ETH_HARD_MTU);
+	MLX5_SET(modify_nic_vport_context_in, in, opcode,
+		 MLX5_CMD_OP_MODIFY_NIC_VPORT_CONTEXT);
+
+	err = mlx5_cmd_exec_in(mdev, modify_nic_vport_context, in);
+
+	kvfree(in);
+	return err;
+}
+
 static int mlx5_vdpa_dev_add(struct vdpa_mgmt_dev *v_mdev, const char *name,
 			     const struct vdpa_dev_set_config *add_config)
 {
@@ -2600,6 +2688,13 @@ static int mlx5_vdpa_dev_add(struct vdpa_mgmt_dev *v_mdev, const char *name,
 	init_mvqs(ndev);
 	mutex_init(&ndev->reslock);
 	config = &ndev->config;
+
+	if (add_config->mask & BIT_ULL(VDPA_ATTR_DEV_NET_CFG_MTU)) {
+		err = config_func_mtu(mdev, add_config->net.mtu);
+		if (err)
+			goto err_mtu;
+	}
+
 	err = query_mtu(mdev, &mtu);
 	if (err)
 		goto err_mtu;
@@ -2722,7 +2817,8 @@ static int mlx5v_probe(struct auxiliary_device *adev,
 	mgtdev->mgtdev.device = mdev->device;
 	mgtdev->mgtdev.id_table = id_table;
 	mgtdev->mgtdev.config_attr_mask = BIT_ULL(VDPA_ATTR_DEV_NET_CFG_MACADDR) |
-					  BIT_ULL(VDPA_ATTR_DEV_NET_CFG_MAX_VQP);
+					  BIT_ULL(VDPA_ATTR_DEV_NET_CFG_MAX_VQP) |
+					  BIT_ULL(VDPA_ATTR_DEV_NET_CFG_MTU);
 	mgtdev->mgtdev.max_supported_vqs =
 		MLX5_CAP_DEV_VDPA_EMULATION(mdev, max_num_virtio_queues) + 1;
 	mgtdev->mgtdev.supported_features = get_supported_features(mdev);

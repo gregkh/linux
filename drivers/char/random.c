@@ -36,7 +36,7 @@
 #include <linux/poll.h>
 #include <linux/init.h>
 #include <linux/fs.h>
-#include <linux/genhd.h>
+#include <linux/blkdev.h>
 #include <linux/interrupt.h>
 #include <linux/mm.h>
 #include <linux/nodemask.h>
@@ -52,7 +52,6 @@
 #include <linux/uuid.h>
 #include <linux/uaccess.h>
 #include <linux/siphash.h>
-#include <linux/uio.h>
 #include <crypto/chacha.h>
 #include <crypto/blake2s.h>
 #include <asm/processor.h>
@@ -749,6 +748,7 @@ static void __cold _credit_init_bits(size_t bits)
  *	void add_device_randomness(const void *buf, size_t len);
  *	void add_hwgenerator_randomness(const void *buf, size_t len, size_t entropy);
  *	void add_bootloader_randomness(const void *buf, size_t len);
+ *	void add_vmfork_randomness(const void *unique_vm_id, size_t len);
  *	void add_interrupt_randomness(int irq);
  *	void add_input_randomness(unsigned int type, unsigned int code, unsigned int value);
  *	void add_disk_randomness(struct gendisk *disk);
@@ -768,6 +768,10 @@ static void __cold _credit_init_bits(size_t bits)
  * add_bootloader_randomness() is called by bootloader drivers, such as EFI
  * and device tree, and credits its input depending on whether or not the
  * configuration option CONFIG_RANDOM_TRUST_BOOTLOADER is set.
+ *
+ * add_vmfork_randomness() adds a unique (but not necessarily secret) ID
+ * representing the current instance of a VM to the pool, without crediting,
+ * and then force-reseeds the crng so that it takes effect immediately.
  *
  * add_interrupt_randomness() uses the interrupt timing as random
  * inputs to the entropy pool. Using the cycle counters and the irq source
@@ -893,6 +897,40 @@ void __cold add_bootloader_randomness(const void *buf, size_t len)
 		credit_init_bits(len * 8);
 }
 EXPORT_SYMBOL_GPL(add_bootloader_randomness);
+
+#if IS_ENABLED(CONFIG_VMGENID)
+static BLOCKING_NOTIFIER_HEAD(vmfork_chain);
+
+/*
+ * Handle a new unique VM ID, which is unique, not secret, so we
+ * don't credit it, but we do immediately force a reseed after so
+ * that it's used by the crng posthaste.
+ */
+void __cold add_vmfork_randomness(const void *unique_vm_id, size_t len)
+{
+	add_device_randomness(unique_vm_id, len);
+	if (crng_ready()) {
+		crng_reseed();
+		pr_notice("crng reseeded due to virtual machine fork\n");
+	}
+	blocking_notifier_call_chain(&vmfork_chain, 0, NULL);
+}
+#if IS_MODULE(CONFIG_VMGENID)
+EXPORT_SYMBOL_GPL(add_vmfork_randomness);
+#endif
+
+int __cold register_random_vmfork_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&vmfork_chain, nb);
+}
+EXPORT_SYMBOL_GPL(register_random_vmfork_notifier);
+
+int __cold unregister_random_vmfork_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&vmfork_chain, nb);
+}
+EXPORT_SYMBOL_GPL(unregister_random_vmfork_notifier);
+#endif
 
 struct fast_pool {
 	struct work_struct mix;
@@ -1281,6 +1319,13 @@ static ssize_t random_write_iter(struct kiocb *kiocb, struct iov_iter *iter)
 static ssize_t urandom_read_iter(struct kiocb *kiocb, struct iov_iter *iter)
 {
 	static int maxwarn = 10;
+
+	/*
+	 * Opportunistically attempt to initialize the RNG on platforms that
+	 * have fast cycle counters, but don't (for now) require it to succeed.
+	 */
+	if (!crng_ready())
+		try_to_generate_entropy();
 
 	if (!crng_ready()) {
 		if (!ratelimit_disable && maxwarn <= 0)

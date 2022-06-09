@@ -2016,6 +2016,7 @@
 					compatible = "qcom,fastrpc";
 					qcom,glink-channels = "fastrpcglink-apps-dsp";
 					label = "sdsp";
+					qcom,non-secure-domain;
 					#address-cells = <1>;
 					#size-cells = <0>;
 
@@ -2085,6 +2086,7 @@
 					compatible = "qcom,fastrpc";
 					qcom,glink-channels = "fastrpcglink-apps-dsp";
 					label = "cdsp";
+					qcom,non-secure-domain;
 					#address-cells = <1>;
 					#size-cells = <0>;
 
@@ -2387,6 +2389,7 @@
 					compatible = "qcom,fastrpc";
 					qcom,glink-channels = "fastrpcglink-apps-dsp";
 					label = "adsp";
+					qcom,non-secure-domain;
 					#address-cells = <1>;
 					#size-cells = <0>;
 
@@ -3011,7 +3014,7 @@
 			};
 		};
 
-		gpu-thermal-top {
+		gpu-top-thermal {
 			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 
@@ -3026,7 +3029,7 @@
 			};
 		};
 
-		gpu-thermal-bottom {
+		gpu-bottom-thermal {
 			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 
@@ -3116,7 +3119,7 @@
 			};
 		};
 
-		modem1-thermal-top {
+		modem1-top-thermal {
 			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 
@@ -3131,7 +3134,7 @@
 			};
 		};
 
-		modem2-thermal-top {
+		modem2-top-thermal {
 			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 
@@ -3146,7 +3149,7 @@
 			};
 		};
 
-		modem3-thermal-top {
+		modem3-top-thermal {
 			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 
@@ -3161,7 +3164,7 @@
 			};
 		};
 
-		modem4-thermal-top {
+		modem4-top-thermal {
 			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 
@@ -3176,7 +3179,7 @@
 			};
 		};
 
-		camera-thermal-top {
+		camera-top-thermal {
 			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 
@@ -3191,7 +3194,7 @@
 			};
 		};
 
-		cam-thermal-bottom {
+		cam-bottom-thermal {
 			polling-delay-passive = <250>;
 			polling-delay = <1000>;
 

@@ -24,7 +24,7 @@
  * callee: the original lr needs to be restored when leaving mcount, and no
  * registers should be clobbered.
  *
- * When using dynamic ftrace, we patch out the mcount call by a "pop {lr}"
+ * When using dynamic ftrace, we patch out the mcount call by a "add sp, #4"
  * instead of the __gnu_mcount_nc call (see arch/arm/kernel/ftrace.c).
  */
 
@@ -35,23 +35,20 @@
 
 .macro __mcount suffix
 	mcount_enter
-	ldr	r0, =ftrace_trace_function
-	ldr	r2, [r0]
-	adr	r0, .Lftrace_stub
+	ldr_va	r2, ftrace_trace_function
+	badr	r0, .Lftrace_stub
 	cmp	r0, r2
 	bne	1f
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
-	ldr     r1, =ftrace_graph_return
-	ldr     r2, [r1]
-	cmp     r0, r2
-	bne     ftrace_graph_caller\suffix
+	ldr_va	r2, ftrace_graph_return
+	cmp	r0, r2
+	bne	ftrace_graph_caller\suffix
 
-	ldr     r1, =ftrace_graph_entry
-	ldr     r2, [r1]
-	ldr     r0, =ftrace_graph_entry_stub
-	cmp     r0, r2
-	bne     ftrace_graph_caller\suffix
+	ldr_va	r2, ftrace_graph_entry
+	mov_l	r0, ftrace_graph_entry_stub
+	cmp	r0, r2
+	bne	ftrace_graph_caller\suffix
 #endif
 
 	mcount_exit
@@ -87,8 +84,7 @@
 
 	mov	r3, sp				@ struct pt_regs*
 
-	ldr r2, =function_trace_op
-	ldr r2, [r2]				@ pointer to the current
+	ldr_va	r2, function_trace_op		@ pointer to the current
 						@ function tracing op
 
 	ldr	r1, [sp, #S_LR]			@ lr of instrumented func
@@ -104,7 +100,8 @@ ftrace_regs_call:
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	.globl ftrace_graph_regs_call
 ftrace_graph_regs_call:
-	mov	r0, r0
+ARM(	mov	r0, r0	)
+THUMB(	nop.w		)
 #endif
 
 	@ pop saved regs
@@ -116,13 +113,18 @@ ftrace_graph_regs_call:
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 .macro __ftrace_graph_regs_caller
 
-	sub     r0, fp, #4              @ lr of instrumented routine (parent)
+#ifdef CONFIG_UNWINDER_FRAME_POINTER
+	sub	r0, fp, #4		@ lr of instrumented routine (parent)
+#else
+	add	r0, sp, #S_LR
+#endif
 
 	@ called from __ftrace_regs_caller
-	ldr     r1, [sp, #S_PC]		@ instrumented routine (func)
+	ldr	r1, [sp, #S_PC]		@ instrumented routine (func)
 	mcount_adjust_addr	r1, r1
 
-	mov	r2, fp			@ frame pointer
+	mov	r2, fpreg		@ frame pointer
+	add	r3, sp, #PT_REGS_SIZE
 	bl	prepare_ftrace_return
 
 	@ pop registers saved in ftrace_regs_caller
@@ -141,8 +143,7 @@ ftrace_graph_regs_call:
 	mcount_adjust_addr	r0, lr		@ instrumented function
 
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
-	ldr r2, =function_trace_op
-	ldr r2, [r2]				@ pointer to the current
+	ldr_va	r2, function_trace_op		@ pointer to the current
 						@ function tracing op
 	mov r3, #0				@ regs is NULL
 #endif
@@ -154,14 +155,19 @@ ftrace_call\suffix:
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	.globl ftrace_graph_call\suffix
 ftrace_graph_call\suffix:
-	mov	r0, r0
+ARM(	mov	r0, r0	)
+THUMB(	nop.w		)
 #endif
 
 	mcount_exit
 .endm
 
 .macro __ftrace_graph_caller
+#ifdef CONFIG_UNWINDER_FRAME_POINTER
 	sub	r0, fp, #4		@ &lr of instrumented routine (&parent)
+#else
+	add	r0, sp, #20
+#endif
 #ifdef CONFIG_DYNAMIC_FTRACE
 	@ called from __ftrace_caller, saved in mcount_enter
 	ldr	r1, [sp, #16]		@ instrumented routine (func)
@@ -170,7 +176,8 @@ ftrace_graph_call\suffix:
 	@ called from __mcount, untouched in lr
 	mcount_adjust_addr	r1, lr	@ instrumented routine (func)
 #endif
-	mov	r2, fp			@ frame pointer
+	mov	r2, fpreg		@ frame pointer
+	add	r3, sp, #24
 	bl	prepare_ftrace_return
 	mcount_exit
 .endm
@@ -249,17 +256,33 @@ ENDPROC(ftrace_graph_regs_caller)
 .purgem mcount_exit
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
-	.globl return_to_handler
-return_to_handler:
+ENTRY(return_to_handler)
 	stmdb	sp!, {r0-r3}
-	mov	r0, fp			@ frame pointer
+	add	r0, sp, #16		@ sp at exit of instrumented routine
 	bl	ftrace_return_to_handler
 	mov	lr, r0			@ r0 has real ret addr
 	ldmia	sp!, {r0-r3}
 	ret	lr
+ENDPROC(return_to_handler)
 #endif
 
 ENTRY(ftrace_stub)
 .Lftrace_stub:
 	ret	lr
 ENDPROC(ftrace_stub)
+
+#ifdef CONFIG_DYNAMIC_FTRACE
+
+	__INIT
+
+	.macro	init_tramp, dst:req
+ENTRY(\dst\()_from_init)
+	ldr	pc, =\dst
+ENDPROC(\dst\()_from_init)
+	.endm
+
+	init_tramp	ftrace_caller
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
+	init_tramp	ftrace_regs_caller
+#endif
+#endif

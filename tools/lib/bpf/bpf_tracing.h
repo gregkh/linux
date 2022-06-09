@@ -76,6 +76,9 @@
 #define __PT_RC_REG ax
 #define __PT_SP_REG sp
 #define __PT_IP_REG ip
+/* syscall uses r10 for PARM4 */
+#define PT_REGS_PARM4_SYSCALL(x) ((x)->r10)
+#define PT_REGS_PARM4_CORE_SYSCALL(x) BPF_CORE_READ(x, r10)
 
 #else
 
@@ -105,6 +108,9 @@
 #define __PT_RC_REG rax
 #define __PT_SP_REG rsp
 #define __PT_IP_REG rip
+/* syscall uses r10 for PARM4 */
+#define PT_REGS_PARM4_SYSCALL(x) ((x)->r10)
+#define PT_REGS_PARM4_CORE_SYSCALL(x) BPF_CORE_READ(x, r10)
 
 #endif /* __i386__ */
 
@@ -224,6 +230,8 @@ struct pt_regs___arm64 {
 #define __PT_RC_REG a5
 #define __PT_SP_REG sp
 #define __PT_IP_REG pc
+/* riscv does not select ARCH_HAS_SYSCALL_WRAPPER. */
+#define PT_REGS_SYSCALL_REGS(ctx) ctx
 
 #endif
 
@@ -277,6 +285,26 @@ struct pt_regs;
 
 #endif
 
+#ifndef PT_REGS_PARM1_SYSCALL
+#define PT_REGS_PARM1_SYSCALL(x) PT_REGS_PARM1(x)
+#endif
+#define PT_REGS_PARM2_SYSCALL(x) PT_REGS_PARM2(x)
+#define PT_REGS_PARM3_SYSCALL(x) PT_REGS_PARM3(x)
+#ifndef PT_REGS_PARM4_SYSCALL
+#define PT_REGS_PARM4_SYSCALL(x) PT_REGS_PARM4(x)
+#endif
+#define PT_REGS_PARM5_SYSCALL(x) PT_REGS_PARM5(x)
+
+#ifndef PT_REGS_PARM1_CORE_SYSCALL
+#define PT_REGS_PARM1_CORE_SYSCALL(x) PT_REGS_PARM1_CORE(x)
+#endif
+#define PT_REGS_PARM2_CORE_SYSCALL(x) PT_REGS_PARM2_CORE(x)
+#define PT_REGS_PARM3_CORE_SYSCALL(x) PT_REGS_PARM3_CORE(x)
+#ifndef PT_REGS_PARM4_CORE_SYSCALL
+#define PT_REGS_PARM4_CORE_SYSCALL(x) PT_REGS_PARM4_CORE(x)
+#endif
+#define PT_REGS_PARM5_CORE_SYSCALL(x) PT_REGS_PARM5_CORE(x)
+
 #else /* defined(bpf_target_defined) */
 
 #define PT_REGS_PARM1(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
@@ -304,7 +332,29 @@ struct pt_regs;
 #define BPF_KPROBE_READ_RET_IP(ip, ctx) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
 #define BPF_KRETPROBE_READ_RET_IP(ip, ctx) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
 
+#define PT_REGS_PARM1_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+#define PT_REGS_PARM2_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+#define PT_REGS_PARM3_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+#define PT_REGS_PARM4_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+#define PT_REGS_PARM5_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+
+#define PT_REGS_PARM1_CORE_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+#define PT_REGS_PARM2_CORE_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+#define PT_REGS_PARM3_CORE_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+#define PT_REGS_PARM4_CORE_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+#define PT_REGS_PARM5_CORE_SYSCALL(x) ({ _Pragma(__BPF_TARGET_MISSING); 0l; })
+
 #endif /* defined(bpf_target_defined) */
+
+/*
+ * When invoked from a syscall handler kprobe, returns a pointer to a
+ * struct pt_regs containing syscall arguments and suitable for passing to
+ * PT_REGS_PARMn_SYSCALL() and PT_REGS_PARMn_CORE_SYSCALL().
+ */
+#ifndef PT_REGS_SYSCALL_REGS
+/* By default, assume that the arch selects ARCH_HAS_SYSCALL_WRAPPER. */
+#define PT_REGS_SYSCALL_REGS(ctx) ((struct pt_regs *)PT_REGS_PARM1(ctx))
+#endif
 
 #ifndef ___bpf_concat
 #define ___bpf_concat(a, b) a ## b
@@ -419,5 +469,40 @@ typeof(name(0)) name(struct pt_regs *ctx)				    \
 	_Pragma("GCC diagnostic pop")					    \
 }									    \
 static __always_inline typeof(name(0)) ____##name(struct pt_regs *ctx, ##args)
+
+#define ___bpf_syscall_args0()           ctx
+#define ___bpf_syscall_args1(x)          ___bpf_syscall_args0(), (void *)PT_REGS_PARM1_CORE_SYSCALL(regs)
+#define ___bpf_syscall_args2(x, args...) ___bpf_syscall_args1(args), (void *)PT_REGS_PARM2_CORE_SYSCALL(regs)
+#define ___bpf_syscall_args3(x, args...) ___bpf_syscall_args2(args), (void *)PT_REGS_PARM3_CORE_SYSCALL(regs)
+#define ___bpf_syscall_args4(x, args...) ___bpf_syscall_args3(args), (void *)PT_REGS_PARM4_CORE_SYSCALL(regs)
+#define ___bpf_syscall_args5(x, args...) ___bpf_syscall_args4(args), (void *)PT_REGS_PARM5_CORE_SYSCALL(regs)
+#define ___bpf_syscall_args(args...)     ___bpf_apply(___bpf_syscall_args, ___bpf_narg(args))(args)
+
+/*
+ * BPF_KPROBE_SYSCALL is a variant of BPF_KPROBE, which is intended for
+ * tracing syscall functions, like __x64_sys_close. It hides the underlying
+ * platform-specific low-level way of getting syscall input arguments from
+ * struct pt_regs, and provides a familiar typed and named function arguments
+ * syntax and semantics of accessing syscall input parameters.
+ *
+ * Original struct pt_regs* context is preserved as 'ctx' argument. This might
+ * be necessary when using BPF helpers like bpf_perf_event_output().
+ *
+ * This macro relies on BPF CO-RE support.
+ */
+#define BPF_KPROBE_SYSCALL(name, args...)				    \
+name(struct pt_regs *ctx);						    \
+static __attribute__((always_inline)) typeof(name(0))			    \
+____##name(struct pt_regs *ctx, ##args);				    \
+typeof(name(0)) name(struct pt_regs *ctx)				    \
+{									    \
+	struct pt_regs *regs = PT_REGS_SYSCALL_REGS(ctx);		    \
+	_Pragma("GCC diagnostic push")					    \
+	_Pragma("GCC diagnostic ignored \"-Wint-conversion\"")		    \
+	return ____##name(___bpf_syscall_args(args));			    \
+	_Pragma("GCC diagnostic pop")					    \
+}									    \
+static __attribute__((always_inline)) typeof(name(0))			    \
+____##name(struct pt_regs *ctx, ##args)
 
 #endif

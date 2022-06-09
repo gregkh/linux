@@ -2865,6 +2865,11 @@ static void ath11k_recalculate_mgmt_rate(struct ath11k *ar,
 	if (ret)
 		ath11k_warn(ar->ab, "failed to set mgmt tx rate %d\n", ret);
 
+	/* For WCN6855, firmware will clear this param when vdev starts, hence
+	 * cache it here so that we can reconfigure it once vdev starts.
+	 */
+	ar->hw_rate_code = hw_rate_code;
+
 	vdev_param = WMI_VDEV_PARAM_BEACON_RATE;
 	ret = ath11k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id, vdev_param,
 					    hw_rate_code);
@@ -6344,6 +6349,10 @@ static int ath11k_mac_op_add_interface(struct ieee80211_hw *hw,
 		}
 	}
 
+	ret = ath11k_debugfs_add_interface(arvif);
+	if (ret)
+		goto err_peer_del;
+
 	mutex_unlock(&ar->conf_mutex);
 
 	return 0;
@@ -6378,6 +6387,7 @@ err_vdev_del:
 	spin_unlock_bh(&ar->data_lock);
 
 err:
+	ath11k_debugfs_remove_interface(arvif);
 	mutex_unlock(&ar->conf_mutex);
 
 	return ret;
@@ -6475,6 +6485,8 @@ err_vdev_del:
 
 	/* Recalc txpower for remaining vdev */
 	ath11k_mac_txpower_recalc(ar);
+
+	ath11k_debugfs_remove_interface(arvif);
 
 	/* TODO: recal traffic pause state based on the available vdevs */
 
@@ -6613,12 +6625,13 @@ static void ath11k_mac_op_remove_chanctx(struct ieee80211_hw *hw,
 
 static int
 ath11k_mac_vdev_start_restart(struct ath11k_vif *arvif,
-			      const struct cfg80211_chan_def *chandef,
+			      struct ieee80211_chanctx_conf *ctx,
 			      bool restart)
 {
 	struct ath11k *ar = arvif->ar;
 	struct ath11k_base *ab = ar->ab;
 	struct wmi_vdev_start_req_arg arg = {};
+	const struct cfg80211_chan_def *chandef = &ctx->def;
 	int he_support = arvif->vif->bss_conf.he_support;
 	int ret = 0;
 
@@ -6653,8 +6666,7 @@ ath11k_mac_vdev_start_restart(struct ath11k_vif *arvif,
 		arg.channel.chan_radar =
 			!!(chandef->chan->flags & IEEE80211_CHAN_RADAR);
 
-		arg.channel.freq2_radar =
-			!!(chandef->chan->flags & IEEE80211_CHAN_RADAR);
+		arg.channel.freq2_radar = ctx->radar_enabled;
 
 		arg.channel.passive = arg.channel.chan_radar;
 
@@ -6764,15 +6776,15 @@ err:
 }
 
 static int ath11k_mac_vdev_start(struct ath11k_vif *arvif,
-				 const struct cfg80211_chan_def *chandef)
+				 struct ieee80211_chanctx_conf *ctx)
 {
-	return ath11k_mac_vdev_start_restart(arvif, chandef, false);
+	return ath11k_mac_vdev_start_restart(arvif, ctx, false);
 }
 
 static int ath11k_mac_vdev_restart(struct ath11k_vif *arvif,
-				   const struct cfg80211_chan_def *chandef)
+				   struct ieee80211_chanctx_conf *ctx)
 {
-	return ath11k_mac_vdev_start_restart(arvif, chandef, true);
+	return ath11k_mac_vdev_start_restart(arvif, ctx, true);
 }
 
 struct ath11k_mac_change_chanctx_arg {
@@ -6839,13 +6851,33 @@ ath11k_mac_update_vif_chan(struct ath11k *ar,
 		if (WARN_ON(!arvif->is_started))
 			continue;
 
-		if (WARN_ON(!arvif->is_up))
-			continue;
+		/* change_chanctx can be called even before vdev_up from
+		 * ieee80211_start_ap->ieee80211_vif_use_channel->
+		 * ieee80211_recalc_radar_chanctx.
+		 *
+		 * Firmware expect vdev_restart only if vdev is up.
+		 * If vdev is down then it expect vdev_stop->vdev_start.
+		 */
+		if (arvif->is_up) {
+			ret = ath11k_mac_vdev_restart(arvif, vifs[i].new_ctx);
+			if (ret) {
+				ath11k_warn(ab, "failed to restart vdev %d: %d\n",
+					    arvif->vdev_id, ret);
+				continue;
+			}
+		} else {
+			ret = ath11k_mac_vdev_stop(arvif);
+			if (ret) {
+				ath11k_warn(ab, "failed to stop vdev %d: %d\n",
+					    arvif->vdev_id, ret);
+				continue;
+			}
 
-		ret = ath11k_mac_vdev_restart(arvif, &vifs[i].new_ctx->def);
-		if (ret) {
-			ath11k_warn(ab, "failed to restart vdev %d: %d\n",
-				    arvif->vdev_id, ret);
+			ret = ath11k_mac_vdev_start(arvif, vifs[i].new_ctx);
+			if (ret)
+				ath11k_warn(ab, "failed to start vdev %d: %d\n",
+					    arvif->vdev_id, ret);
+
 			continue;
 		}
 
@@ -6930,7 +6962,8 @@ static void ath11k_mac_op_change_chanctx(struct ieee80211_hw *hw,
 	if (WARN_ON(changed & IEEE80211_CHANCTX_CHANGE_CHANNEL))
 		goto unlock;
 
-	if (changed & IEEE80211_CHANCTX_CHANGE_WIDTH)
+	if (changed & IEEE80211_CHANCTX_CHANGE_WIDTH ||
+	    changed & IEEE80211_CHANCTX_CHANGE_RADAR)
 		ath11k_mac_update_active_vif_chan(ar, ctx);
 
 	/* TODO: Recalc radar detection */
@@ -6950,12 +6983,25 @@ static int ath11k_start_vdev_delay(struct ieee80211_hw *hw,
 	if (WARN_ON(arvif->is_started))
 		return -EBUSY;
 
-	ret = ath11k_mac_vdev_start(arvif, &arvif->chanctx.def);
+	ret = ath11k_mac_vdev_start(arvif, &arvif->chanctx);
 	if (ret) {
 		ath11k_warn(ab, "failed to start vdev %i addr %pM on freq %d: %d\n",
 			    arvif->vdev_id, vif->addr,
 			    arvif->chanctx.def.chan->center_freq, ret);
 		return ret;
+	}
+
+	/* Reconfigure hardware rate code since it is cleared by firmware.
+	 */
+	if (ar->hw_rate_code > 0) {
+		u32 vdev_param = WMI_VDEV_PARAM_MGMT_RATE;
+
+		ret = ath11k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id, vdev_param,
+						    ar->hw_rate_code);
+		if (ret) {
+			ath11k_warn(ar->ab, "failed to set mgmt tx rate %d\n", ret);
+			return ret;
+		}
 	}
 
 	if (arvif->vdev_type == WMI_VDEV_TYPE_MONITOR) {
@@ -7031,7 +7077,7 @@ ath11k_mac_op_assign_vif_chanctx(struct ieee80211_hw *hw,
 		goto out;
 	}
 
-	ret = ath11k_mac_vdev_start(arvif, &ctx->def);
+	ret = ath11k_mac_vdev_start(arvif, ctx);
 	if (ret) {
 		ath11k_warn(ab, "failed to start vdev %i addr %pM on freq %d: %d\n",
 			    arvif->vdev_id, vif->addr,
@@ -8430,7 +8476,7 @@ static int __ath11k_mac_register(struct ath11k *ar)
 	ar->hw->queues = ATH11K_HW_MAX_QUEUES;
 	ar->hw->wiphy->tx_queue_len = ATH11K_QUEUE_LEN;
 	ar->hw->offchannel_tx_hw_queue = ATH11K_HW_MAX_QUEUES - 1;
-	ar->hw->max_rx_aggregation_subframes = IEEE80211_MAX_AMPDU_BUF;
+	ar->hw->max_rx_aggregation_subframes = IEEE80211_MAX_AMPDU_BUF_HE;
 
 	ar->hw->vif_data_size = sizeof(struct ath11k_vif);
 	ar->hw->sta_data_size = sizeof(struct ath11k_sta);

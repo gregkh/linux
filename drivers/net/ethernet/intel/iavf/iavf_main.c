@@ -90,7 +90,7 @@ int iavf_status_to_errno(enum iavf_status status)
 	case IAVF_ERR_UNKNOWN_PHY:
 	case IAVF_ERR_LINK_SETUP:
 	case IAVF_ERR_ADAPTER_STOPPED:
-	case IAVF_ERR_MASTER_REQUESTS_PENDING:
+	case IAVF_ERR_PRIMARY_REQUESTS_PENDING:
 	case IAVF_ERR_AUTONEG_NOT_COMPLETE:
 	case IAVF_ERR_RESET_FAILED:
 	case IAVF_ERR_BAD_PTR:
@@ -984,6 +984,7 @@ struct iavf_mac_filter *iavf_add_filter(struct iavf_adapter *adapter,
 		list_add_tail(&f->list, &adapter->mac_filter_list);
 		f->add = true;
 		f->is_new_mac = true;
+		f->is_primary = false;
 		adapter->aq_required |= IAVF_FLAG_AQ_ADD_MAC_FILTER;
 	} else {
 		f->remove = false;
@@ -1017,16 +1018,21 @@ static int iavf_set_mac(struct net_device *netdev, void *p)
 	f = iavf_find_filter(adapter, hw->mac.addr);
 	if (f) {
 		f->remove = true;
+		f->is_primary = true;
 		adapter->aq_required |= IAVF_FLAG_AQ_DEL_MAC_FILTER;
 	}
 
 	f = iavf_add_filter(adapter, addr->sa_data);
+	if (f) {
+		f->is_primary = true;
+		ether_addr_copy(hw->mac.addr, addr->sa_data);
+	}
 
 	spin_unlock_bh(&adapter->mac_vlan_list_lock);
 
-	if (f) {
-		ether_addr_copy(hw->mac.addr, addr->sa_data);
-	}
+	/* schedule the watchdog task to immediately process the request */
+	if (f)
+		queue_work(iavf_wq, &adapter->watchdog_task.work);
 
 	return (f == NULL) ? -ENOMEM : 0;
 }
@@ -1625,7 +1631,6 @@ static void iavf_fill_rss_lut(struct iavf_adapter *adapter)
 static int iavf_init_rss(struct iavf_adapter *adapter)
 {
 	struct iavf_hw *hw = &adapter->hw;
-	int ret;
 
 	if (!RSS_PF(adapter)) {
 		/* Enable PCTYPES for RSS, TCP/UDP with IPv4/IPv6 */
@@ -1641,9 +1646,8 @@ static int iavf_init_rss(struct iavf_adapter *adapter)
 
 	iavf_fill_rss_lut(adapter);
 	netdev_rss_key_fill((void *)adapter->rss_key, adapter->rss_key_size);
-	ret = iavf_config_rss(adapter);
 
-	return ret;
+	return iavf_config_rss(adapter);
 }
 
 /**
@@ -2299,26 +2303,18 @@ static void iavf_init_get_resources(struct iavf_adapter *adapter)
 	}
 
 	err = iavf_parse_vf_resource_msg(adapter);
-	if (err)
-		goto err_alloc;
-
-	err = iavf_send_vf_offload_vlan_v2_msg(adapter);
-	if (err == -EOPNOTSUPP) {
-		/* underlying PF doesn't support VIRTCHNL_VF_OFFLOAD_VLAN_V2, so
-		 * go directly to finishing initialization
-		 */
-		iavf_change_state(adapter, __IAVF_INIT_CONFIG_ADAPTER);
-		return;
-	} else if (err) {
-		dev_err(&pdev->dev, "Unable to send offload vlan v2 request (%d)\n",
+	if (err) {
+		dev_err(&pdev->dev, "Failed to parse VF resource message from PF (%d)\n",
 			err);
 		goto err_alloc;
 	}
-
-	/* underlying PF supports VIRTCHNL_VF_OFFLOAD_VLAN_V2, so update the
-	 * state accordingly
+	/* Some features require additional messages to negotiate extended
+	 * capabilities. These are processed in sequence by the
+	 * __IAVF_INIT_EXTENDED_CAPS driver state.
 	 */
-	iavf_change_state(adapter, __IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS);
+	adapter->extended_caps = IAVF_EXTENDED_CAPS;
+
+	iavf_change_state(adapter, __IAVF_INIT_EXTENDED_CAPS);
 	return;
 
 err_alloc:
@@ -2329,32 +2325,90 @@ err:
 }
 
 /**
- * iavf_init_get_offload_vlan_v2_caps - part of driver startup
+ * iavf_init_send_offload_vlan_v2_caps - part of initializing VLAN V2 caps
  * @adapter: board private structure
  *
- * Function processes __IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS driver state if the
- * VF negotiates VIRTCHNL_VF_OFFLOAD_VLAN_V2. If VIRTCHNL_VF_OFFLOAD_VLAN_V2 is
- * not negotiated, then this state will never be entered.
- **/
-static void iavf_init_get_offload_vlan_v2_caps(struct iavf_adapter *adapter)
+ * Function processes send of the extended VLAN V2 capability message to the
+ * PF. Must clear IAVF_EXTENDED_CAP_RECV_VLAN_V2 if the message is not sent,
+ * e.g. due to PF not negotiating VIRTCHNL_VF_OFFLOAD_VLAN_V2.
+ */
+static void iavf_init_send_offload_vlan_v2_caps(struct iavf_adapter *adapter)
 {
 	int ret;
 
-	WARN_ON(adapter->state != __IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS);
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_VLAN_V2));
+
+	ret = iavf_send_vf_offload_vlan_v2_msg(adapter);
+	if (ret && ret == -EOPNOTSUPP) {
+		/* PF does not support VIRTCHNL_VF_OFFLOAD_V2. In this case,
+		 * we did not send the capability exchange message and do not
+		 * expect a response.
+		 */
+		adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_VLAN_V2;
+	}
+
+	/* We sent the message, so move on to the next step */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_SEND_VLAN_V2;
+}
+
+/**
+ * iavf_init_recv_offload_vlan_v2_caps - part of initializing VLAN V2 caps
+ * @adapter: board private structure
+ *
+ * Function processes receipt of the extended VLAN V2 capability message from
+ * the PF.
+ **/
+static void iavf_init_recv_offload_vlan_v2_caps(struct iavf_adapter *adapter)
+{
+	int ret;
+
+	WARN_ON(!(adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_VLAN_V2));
 
 	memset(&adapter->vlan_v2_caps, 0, sizeof(adapter->vlan_v2_caps));
 
 	ret = iavf_get_vf_vlan_v2_caps(adapter);
-	if (ret) {
-		if (ret == IAVF_ERR_ADMIN_QUEUE_NO_WORK)
-			iavf_send_vf_offload_vlan_v2_msg(adapter);
+	if (ret)
 		goto err;
-	}
 
-	iavf_change_state(adapter, __IAVF_INIT_CONFIG_ADAPTER);
+	/* We've processed receipt of the VLAN V2 caps message */
+	adapter->extended_caps &= ~IAVF_EXTENDED_CAP_RECV_VLAN_V2;
 	return;
 err:
+	/* We didn't receive a reply. Make sure we try sending again when
+	 * __IAVF_INIT_FAILED attempts to recover.
+	 */
+	adapter->extended_caps |= IAVF_EXTENDED_CAP_SEND_VLAN_V2;
 	iavf_change_state(adapter, __IAVF_INIT_FAILED);
+}
+
+/**
+ * iavf_init_process_extended_caps - Part of driver startup
+ * @adapter: board private structure
+ *
+ * Function processes __IAVF_INIT_EXTENDED_CAPS driver state. This state
+ * handles negotiating capabilities for features which require an additional
+ * message.
+ *
+ * Once all extended capabilities exchanges are finished, the driver will
+ * transition into __IAVF_INIT_CONFIG_ADAPTER.
+ */
+static void iavf_init_process_extended_caps(struct iavf_adapter *adapter)
+{
+	WARN_ON(adapter->state != __IAVF_INIT_EXTENDED_CAPS);
+
+	/* Process capability exchange for VLAN V2 */
+	if (adapter->extended_caps & IAVF_EXTENDED_CAP_SEND_VLAN_V2) {
+		iavf_init_send_offload_vlan_v2_caps(adapter);
+		return;
+	} else if (adapter->extended_caps & IAVF_EXTENDED_CAP_RECV_VLAN_V2) {
+		iavf_init_recv_offload_vlan_v2_caps(adapter);
+		return;
+	}
+
+	/* When we reach here, no further extended capabilities exchanges are
+	 * necessary, so we finally transition into __IAVF_INIT_CONFIG_ADAPTER
+	 */
+	iavf_change_state(adapter, __IAVF_INIT_CONFIG_ADAPTER);
 }
 
 /**
@@ -2521,8 +2575,8 @@ static void iavf_watchdog_task(struct work_struct *work)
 		queue_delayed_work(iavf_wq, &adapter->watchdog_task,
 				   msecs_to_jiffies(1));
 		return;
-	case __IAVF_INIT_GET_OFFLOAD_VLAN_V2_CAPS:
-		iavf_init_get_offload_vlan_v2_caps(adapter);
+	case __IAVF_INIT_EXTENDED_CAPS:
+		iavf_init_process_extended_caps(adapter);
 		mutex_unlock(&adapter->crit_lock);
 		queue_delayed_work(iavf_wq, &adapter->watchdog_task,
 				   msecs_to_jiffies(1));
@@ -4543,12 +4597,9 @@ static int iavf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (err) {
-		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
-		if (err) {
-			dev_err(&pdev->dev,
-				"DMA configuration failed: 0x%x\n", err);
-			goto err_dma;
-		}
+		dev_err(&pdev->dev,
+			"DMA configuration failed: 0x%x\n", err);
+		goto err_dma;
 	}
 
 	err = pci_request_regions(pdev, iavf_driver_name);
@@ -4877,8 +4928,6 @@ static struct pci_driver iavf_driver = {
  **/
 static int __init iavf_init_module(void)
 {
-	int ret;
-
 	pr_info("iavf: %s\n", iavf_driver_string);
 
 	pr_info("%s\n", iavf_copyright);
@@ -4889,8 +4938,7 @@ static int __init iavf_init_module(void)
 		pr_err("%s: Failed to create workqueue\n", iavf_driver_name);
 		return -ENOMEM;
 	}
-	ret = pci_register_driver(&iavf_driver);
-	return ret;
+	return pci_register_driver(&iavf_driver);
 }
 
 module_init(iavf_init_module);

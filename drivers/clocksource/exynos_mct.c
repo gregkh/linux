@@ -60,25 +60,16 @@
 #define MCT_CLKEVENTS_RATING		350
 #endif
 
+/* There are four Global timers starting with 0 offset */
+#define MCT_G0_IRQ	0
+/* Local timers count starts after global timer count */
+#define MCT_L0_IRQ	4
+/* Max number of IRQ as per DT binding document */
+#define MCT_NR_IRQS	20
+
 enum {
 	MCT_INT_SPI,
 	MCT_INT_PPI
-};
-
-enum {
-	MCT_G0_IRQ,
-	MCT_G1_IRQ,
-	MCT_G2_IRQ,
-	MCT_G3_IRQ,
-	MCT_L0_IRQ,
-	MCT_L1_IRQ,
-	MCT_L2_IRQ,
-	MCT_L3_IRQ,
-	MCT_L4_IRQ,
-	MCT_L5_IRQ,
-	MCT_L6_IRQ,
-	MCT_L7_IRQ,
-	MCT_NR_IRQS,
 };
 
 static void __iomem *reg_base;
@@ -89,7 +80,11 @@ static int mct_irqs[MCT_NR_IRQS];
 struct mct_clock_event_device {
 	struct clock_event_device evt;
 	unsigned long base;
-	char name[10];
+	/**
+	 *  The length of the name must be adjusted if number of
+	 *  local timer interrupts grow over two digits
+	 */
+	char name[11];
 };
 
 static void exynos4_mct_write(unsigned int value, unsigned long offset)

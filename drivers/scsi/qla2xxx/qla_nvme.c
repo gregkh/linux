@@ -732,7 +732,7 @@ static struct nvme_fc_port_template qla_nvme_fc_transport = {
 	.fcp_io		= qla_nvme_post_cmd,
 	.fcp_abort	= qla_nvme_fcp_abort,
 	.map_queues	= qla_nvme_map_queues,
-	.max_hw_queues  = 8,
+	.max_hw_queues  = DEF_NVME_HW_QUEUES,
 	.max_sgl_segments = 1024,
 	.max_dif_sgl_segments = 64,
 	.dma_boundary = 0xFFFFFFFF,
@@ -799,24 +799,51 @@ int qla_nvme_register_hba(struct scsi_qla_host *vha)
 	ha = vha->hw;
 	tmpl = &qla_nvme_fc_transport;
 
-	WARN_ON(vha->nvme_local_port);
+	if (ql2xnvme_queues < MIN_NVME_HW_QUEUES) {
+		ql_log(ql_log_warn, vha, 0xfffd,
+		    "ql2xnvme_queues=%d is lower than minimum queues: %d. Resetting ql2xnvme_queues to:%d\n",
+		    ql2xnvme_queues, MIN_NVME_HW_QUEUES, DEF_NVME_HW_QUEUES);
+		ql2xnvme_queues = DEF_NVME_HW_QUEUES;
+	} else if (ql2xnvme_queues > (ha->max_qpairs - 1)) {
+		ql_log(ql_log_warn, vha, 0xfffd,
+		       "ql2xnvme_queues=%d is greater than available IRQs: %d. Resetting ql2xnvme_queues to: %d\n",
+		       ql2xnvme_queues, (ha->max_qpairs - 1),
+		       (ha->max_qpairs - 1));
+		ql2xnvme_queues = ((ha->max_qpairs - 1));
+	}
 
 	qla_nvme_fc_transport.max_hw_queues =
-	    min((uint8_t)(qla_nvme_fc_transport.max_hw_queues),
-		(uint8_t)(ha->max_qpairs ? ha->max_qpairs : 1));
+	    min((uint8_t)(ql2xnvme_queues),
+		(uint8_t)((ha->max_qpairs - 1) ? (ha->max_qpairs - 1) : 1));
+
+	ql_log(ql_log_info, vha, 0xfffb,
+	       "Number of NVME queues used for this port: %d\n",
+	    qla_nvme_fc_transport.max_hw_queues);
 
 	pinfo.node_name = wwn_to_u64(vha->node_name);
 	pinfo.port_name = wwn_to_u64(vha->port_name);
 	pinfo.port_role = FC_PORT_ROLE_NVME_INITIATOR;
 	pinfo.port_id = vha->d_id.b24;
 
-	ql_log(ql_log_info, vha, 0xffff,
-	    "register_localport: host-traddr=nn-0x%llx:pn-0x%llx on portID:%x\n",
-	    pinfo.node_name, pinfo.port_name, pinfo.port_id);
-	qla_nvme_fc_transport.dma_boundary = vha->host->dma_boundary;
+	mutex_lock(&ha->vport_lock);
+	/*
+	 * Check again for nvme_local_port to see if any other thread raced
+	 * with this one and finished registration.
+	 */
+	if (!vha->nvme_local_port) {
+		ql_log(ql_log_info, vha, 0xffff,
+		    "register_localport: host-traddr=nn-0x%llx:pn-0x%llx on portID:%x\n",
+		    pinfo.node_name, pinfo.port_name, pinfo.port_id);
+		qla_nvme_fc_transport.dma_boundary = vha->host->dma_boundary;
 
-	ret = nvme_fc_register_localport(&pinfo, tmpl,
-	    get_device(&ha->pdev->dev), &vha->nvme_local_port);
+		ret = nvme_fc_register_localport(&pinfo, tmpl,
+						 get_device(&ha->pdev->dev),
+						 &vha->nvme_local_port);
+		mutex_unlock(&ha->vport_lock);
+	} else {
+		mutex_unlock(&ha->vport_lock);
+		return 0;
+	}
 	if (ret) {
 		ql_log(ql_log_warn, vha, 0xffff,
 		    "register_localport failed: ret=%x\n", ret);

@@ -105,6 +105,7 @@ static void mt7921e_unregister_device(struct mt7921_dev *dev)
 	int i;
 	struct mt76_connac_pm *pm = &dev->pm;
 
+	cancel_work_sync(&dev->init_work);
 	mt76_unregister_device(&dev->mt76);
 	mt76_for_each_q_rx(&dev->mt76, i)
 		napi_disable(&dev->mt76.napi[i]);
@@ -237,6 +238,7 @@ static int mt7921_pci_probe(struct pci_dev *pdev,
 		.token_size = MT7921_TOKEN_SIZE,
 		.tx_prepare_skb = mt7921e_tx_prepare_skb,
 		.tx_complete_skb = mt7921e_tx_complete_skb,
+		.rx_check = mt7921e_rx_check,
 		.rx_skb = mt7921e_queue_rx_skb,
 		.rx_poll_complete = mt7921_rx_poll_complete,
 		.sta_ps = mt7921_sta_ps,

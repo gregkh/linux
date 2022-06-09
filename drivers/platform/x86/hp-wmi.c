@@ -57,6 +57,14 @@ static const char * const omen_thermal_profile_boards[] = {
 	"8917", "8918", "8949", "894A", "89EB"
 };
 
+/* DMI Board names of Omen laptops that are specifically set to be thermal
+ * profile version 0 by the Omen Command Center app, regardless of what
+ * the get system design information WMI call returns
+ */
+static const char *const omen_thermal_profile_force_v0_boards[] = {
+	"8607", "8746", "8747", "8749", "874A", "8748"
+};
+
 enum hp_wmi_radio {
 	HPWMI_WIFI	= 0x0,
 	HPWMI_BLUETOOTH	= 0x1,
@@ -82,12 +90,17 @@ enum hp_wmi_event_ids {
 	HPWMI_BATTERY_CHARGE_PERIOD	= 0x10,
 };
 
+/*
+ * struct bios_args buffer is dynamically allocated.  New WMI command types
+ * were introduced that exceeds 128-byte data size.  Changes to handle
+ * the data size allocation scheme were kept in hp_wmi_perform_qurey function.
+ */
 struct bios_args {
 	u32 signature;
 	u32 command;
 	u32 commandtype;
 	u32 datasize;
-	u8 data[128];
+	u8 data[];
 };
 
 enum hp_wmi_commandtype {
@@ -112,6 +125,7 @@ enum hp_wmi_gm_commandtype {
 	HPWMI_SET_PERFORMANCE_MODE = 0x1A,
 	HPWMI_FAN_SPEED_MAX_GET_QUERY = 0x26,
 	HPWMI_FAN_SPEED_MAX_SET_QUERY = 0x27,
+	HPWMI_GET_SYSTEM_DESIGN_DATA = 0x28,
 };
 
 enum hp_wmi_command {
@@ -146,10 +160,16 @@ enum hp_wireless2_bits {
 	HPWMI_POWER_FW_OR_HW	= HPWMI_POWER_BIOS | HPWMI_POWER_HARD,
 };
 
-enum hp_thermal_profile_omen {
-	HP_OMEN_THERMAL_PROFILE_DEFAULT     = 0x00,
-	HP_OMEN_THERMAL_PROFILE_PERFORMANCE = 0x01,
-	HP_OMEN_THERMAL_PROFILE_COOL        = 0x02,
+enum hp_thermal_profile_omen_v0 {
+	HP_OMEN_V0_THERMAL_PROFILE_DEFAULT     = 0x00,
+	HP_OMEN_V0_THERMAL_PROFILE_PERFORMANCE = 0x01,
+	HP_OMEN_V0_THERMAL_PROFILE_COOL        = 0x02,
+};
+
+enum hp_thermal_profile_omen_v1 {
+	HP_OMEN_V1_THERMAL_PROFILE_DEFAULT	= 0x30,
+	HP_OMEN_V1_THERMAL_PROFILE_PERFORMANCE	= 0x31,
+	HP_OMEN_V1_THERMAL_PROFILE_COOL		= 0x50,
 };
 
 enum hp_thermal_profile {
@@ -266,37 +286,43 @@ static inline int encode_outsize_for_pvsz(int outsize)
 static int hp_wmi_perform_query(int query, enum hp_wmi_command command,
 				void *buffer, int insize, int outsize)
 {
-	int mid;
+	struct acpi_buffer input, output = { ACPI_ALLOCATE_BUFFER, NULL };
 	struct bios_return *bios_return;
-	int actual_outsize;
-	union acpi_object *obj;
-	struct bios_args args = {
-		.signature = 0x55434553,
-		.command = command,
-		.commandtype = query,
-		.datasize = insize,
-		.data = { 0 },
-	};
-	struct acpi_buffer input = { sizeof(struct bios_args), &args };
-	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
-	int ret = 0;
+	union acpi_object *obj = NULL;
+	struct bios_args *args = NULL;
+	int mid, actual_outsize, ret;
+	size_t bios_args_size;
 
 	mid = encode_outsize_for_pvsz(outsize);
 	if (WARN_ON(mid < 0))
 		return mid;
 
-	if (WARN_ON(insize > sizeof(args.data)))
-		return -EINVAL;
-	memcpy(&args.data[0], buffer, insize);
+	bios_args_size = struct_size(args, data, insize);
+	args = kmalloc(bios_args_size, GFP_KERNEL);
+	if (!args)
+		return -ENOMEM;
 
-	wmi_evaluate_method(HPWMI_BIOS_GUID, 0, mid, &input, &output);
+	input.length = bios_args_size;
+	input.pointer = args;
+
+	args->signature = 0x55434553;
+	args->command = command;
+	args->commandtype = query;
+	args->datasize = insize;
+	memcpy(args->data, buffer, flex_array_size(args, data, insize));
+
+	ret = wmi_evaluate_method(HPWMI_BIOS_GUID, 0, mid, &input, &output);
+	if (ret)
+		goto out_free;
 
 	obj = output.pointer;
-
-	if (!obj)
-		return -EINVAL;
+	if (!obj) {
+		ret = -EINVAL;
+		goto out_free;
+	}
 
 	if (obj->type != ACPI_TYPE_BUFFER) {
+		pr_warn("query 0x%x returned an invalid object 0x%x\n", query, ret);
 		ret = -EINVAL;
 		goto out_free;
 	}
@@ -321,6 +347,7 @@ static int hp_wmi_perform_query(int query, enum hp_wmi_command command,
 
 out_free:
 	kfree(obj);
+	kfree(args);
 	return ret;
 }
 
@@ -347,7 +374,7 @@ static int hp_wmi_read_int(int query)
 	int val = 0, ret;
 
 	ret = hp_wmi_perform_query(query, HPWMI_READ, &val,
-				   sizeof(val), sizeof(val));
+				   0, sizeof(val));
 
 	if (ret)
 		return ret < 0 ? ret : -EINVAL;
@@ -395,9 +422,6 @@ static int omen_thermal_profile_set(int mode)
 	char buffer[2] = {0, mode};
 	int ret;
 
-	if (mode < 0 || mode > 2)
-		return -EINVAL;
-
 	ret = hp_wmi_perform_query(HPWMI_SET_PERFORMANCE_MODE, HPWMI_GM,
 				   &buffer, sizeof(buffer), 0);
 
@@ -417,6 +441,30 @@ static bool is_omen_thermal_profile(void)
 	return match_string(omen_thermal_profile_boards,
 			    ARRAY_SIZE(omen_thermal_profile_boards),
 			    board_name) >= 0;
+}
+
+static int omen_get_thermal_policy_version(void)
+{
+	unsigned char buffer[8] = { 0 };
+	int ret;
+
+	const char *board_name = dmi_get_system_info(DMI_BOARD_NAME);
+
+	if (board_name) {
+		int matches = match_string(omen_thermal_profile_force_v0_boards,
+			ARRAY_SIZE(omen_thermal_profile_force_v0_boards),
+			board_name);
+		if (matches >= 0)
+			return 0;
+	}
+
+	ret = hp_wmi_perform_query(HPWMI_GET_SYSTEM_DESIGN_DATA, HPWMI_GM,
+				   &buffer, sizeof(buffer), sizeof(buffer));
+
+	if (ret)
+		return ret < 0 ? ret : -EINVAL;
+
+	return buffer[3];
 }
 
 static int omen_thermal_profile_get(void)
@@ -1041,13 +1089,16 @@ static int platform_profile_omen_get(struct platform_profile_handler *pprof,
 		return tp;
 
 	switch (tp) {
-	case HP_OMEN_THERMAL_PROFILE_PERFORMANCE:
+	case HP_OMEN_V0_THERMAL_PROFILE_PERFORMANCE:
+	case HP_OMEN_V1_THERMAL_PROFILE_PERFORMANCE:
 		*profile = PLATFORM_PROFILE_PERFORMANCE;
 		break;
-	case HP_OMEN_THERMAL_PROFILE_DEFAULT:
+	case HP_OMEN_V0_THERMAL_PROFILE_DEFAULT:
+	case HP_OMEN_V1_THERMAL_PROFILE_DEFAULT:
 		*profile = PLATFORM_PROFILE_BALANCED;
 		break;
-	case HP_OMEN_THERMAL_PROFILE_COOL:
+	case HP_OMEN_V0_THERMAL_PROFILE_COOL:
+	case HP_OMEN_V1_THERMAL_PROFILE_COOL:
 		*profile = PLATFORM_PROFILE_COOL;
 		break;
 	default:
@@ -1060,17 +1111,31 @@ static int platform_profile_omen_get(struct platform_profile_handler *pprof,
 static int platform_profile_omen_set(struct platform_profile_handler *pprof,
 				     enum platform_profile_option profile)
 {
-	int err, tp;
+	int err, tp, tp_version;
+
+	tp_version = omen_get_thermal_policy_version();
+
+	if (tp_version < 0 || tp_version > 1)
+		return -EOPNOTSUPP;
 
 	switch (profile) {
 	case PLATFORM_PROFILE_PERFORMANCE:
-		tp = HP_OMEN_THERMAL_PROFILE_PERFORMANCE;
+		if (tp_version == 0)
+			tp = HP_OMEN_V0_THERMAL_PROFILE_PERFORMANCE;
+		else
+			tp = HP_OMEN_V1_THERMAL_PROFILE_PERFORMANCE;
 		break;
 	case PLATFORM_PROFILE_BALANCED:
-		tp = HP_OMEN_THERMAL_PROFILE_DEFAULT;
+		if (tp_version == 0)
+			tp = HP_OMEN_V0_THERMAL_PROFILE_DEFAULT;
+		else
+			tp = HP_OMEN_V1_THERMAL_PROFILE_DEFAULT;
 		break;
 	case PLATFORM_PROFILE_COOL:
-		tp = HP_OMEN_THERMAL_PROFILE_COOL;
+		if (tp_version == 0)
+			tp = HP_OMEN_V0_THERMAL_PROFILE_COOL;
+		else
+			tp = HP_OMEN_V1_THERMAL_PROFILE_COOL;
 		break;
 	default:
 		return -EOPNOTSUPP;

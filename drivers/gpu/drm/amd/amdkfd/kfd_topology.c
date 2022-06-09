@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
 /*
- * Copyright 2014 Advanced Micro Devices, Inc.
+ * Copyright 2014-2022 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -1101,15 +1102,12 @@ static uint32_t kfd_generate_gpu_id(struct kfd_dev *gpu)
 	uint32_t buf[7];
 	uint64_t local_mem_size;
 	int i;
-	struct kfd_local_mem_info local_mem_info;
 
 	if (!gpu)
 		return 0;
 
-	amdgpu_amdkfd_get_local_mem_info(gpu->adev, &local_mem_info);
-
-	local_mem_size = local_mem_info.local_mem_size_private +
-			local_mem_info.local_mem_size_public;
+	local_mem_size = gpu->local_mem_info.local_mem_size_private +
+			gpu->local_mem_info.local_mem_size_public;
 
 	buf[0] = gpu->pdev->devfn;
 	buf[1] = gpu->pdev->subsystem_vendor |
@@ -1441,9 +1439,9 @@ int kfd_topology_add_device(struct kfd_dev *gpu)
 	}
 
 	/*
-	* Overwrite ATS capability according to needs_iommu_device to fix
-	* potential missing corresponding bit in CRAT of BIOS.
-	*/
+	 * Overwrite ATS capability according to needs_iommu_device to fix
+	 * potential missing corresponding bit in CRAT of BIOS.
+	 */
 	if (dev->gpu->use_iommu_v2)
 		dev->node_props.capability |= HSA_CAP_ATS_PRESENT;
 	else

@@ -171,7 +171,7 @@ struct uart_port {
 	 * assigned from the serial_struct flags in uart_set_info()
 	 * [for bit definitions in the UPF_CHANGE_MASK]
 	 *
-	 * Bits [0..UPF_LAST_USER] are userspace defined/visible/changeable
+	 * Bits [0..ASYNCB_LAST_USER] are userspace defined/visible/changeable
 	 * The remaining bits are serial-core specific and not modifiable by
 	 * userspace.
 	 */
@@ -399,7 +399,7 @@ int uart_set_options(struct uart_port *port, struct console *co, int baud,
 struct tty_driver *uart_console_device(struct console *co, int *index);
 void uart_console_write(struct uart_port *port, const char *s,
 			unsigned int count,
-			void (*putchar)(struct uart_port *, int));
+			void (*putchar)(struct uart_port *, unsigned char));
 
 /*
  * Port/driver registration/removal

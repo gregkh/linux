@@ -2,7 +2,7 @@
 /*
  * Driver for Broadcom MPI3 Storage Controllers
  *
- * Copyright (C) 2017-2021 Broadcom Inc.
+ * Copyright (C) 2017-2022 Broadcom Inc.
  *  (mailto: mpi3mr-linuxdrv.pdl@broadcom.com)
  *
  */
@@ -1583,6 +1583,9 @@ static void mpi3mr_dev_rmhs_complete_iou(struct mpi3mr_ioc *mrioc,
 	u16 cmd_idx = drv_cmd->host_tag - MPI3MR_HOSTTAG_DEVRMCMD_MIN;
 	struct delayed_dev_rmhs_node *delayed_dev_rmhs = NULL;
 
+	if (drv_cmd->state & MPI3MR_CMD_RESET)
+		goto clear_drv_cmd;
+
 	ioc_info(mrioc,
 	    "%s :dev_rmhs_iouctrl_complete:handle(0x%04x), ioc_status(0x%04x), loginfo(0x%08x)\n",
 	    __func__, drv_cmd->dev_handle, drv_cmd->ioc_status,
@@ -1623,6 +1626,8 @@ static void mpi3mr_dev_rmhs_complete_iou(struct mpi3mr_ioc *mrioc,
 		kfree(delayed_dev_rmhs);
 		return;
 	}
+
+clear_drv_cmd:
 	drv_cmd->state = MPI3MR_CMD_NOTUSED;
 	drv_cmd->callback = NULL;
 	drv_cmd->retry_count = 0;
@@ -1648,6 +1653,9 @@ static void mpi3mr_dev_rmhs_complete_tm(struct mpi3mr_ioc *mrioc,
 	u16 cmd_idx = drv_cmd->host_tag - MPI3MR_HOSTTAG_DEVRMCMD_MIN;
 	struct mpi3_scsi_task_mgmt_reply *tm_reply = NULL;
 	int retval;
+
+	if (drv_cmd->state & MPI3MR_CMD_RESET)
+		goto clear_drv_cmd;
 
 	if (drv_cmd->state & MPI3MR_CMD_REPLY_VALID)
 		tm_reply = (struct mpi3_scsi_task_mgmt_reply *)drv_cmd->reply;
@@ -1677,11 +1685,11 @@ static void mpi3mr_dev_rmhs_complete_tm(struct mpi3mr_ioc *mrioc,
 	if (retval) {
 		pr_err(IOCNAME "Issue DevRmHsTMIOUCTL: Admin post failed\n",
 		    mrioc->name);
-		goto out_failed;
+		goto clear_drv_cmd;
 	}
 
 	return;
-out_failed:
+clear_drv_cmd:
 	drv_cmd->state = MPI3MR_CMD_NOTUSED;
 	drv_cmd->callback = NULL;
 	drv_cmd->dev_handle = MPI3MR_INVALID_DEV_HANDLE;
@@ -1796,6 +1804,9 @@ static void mpi3mr_complete_evt_ack(struct mpi3mr_ioc *mrioc,
 	u16 cmd_idx = drv_cmd->host_tag - MPI3MR_HOSTTAG_EVTACKCMD_MIN;
 	struct delayed_evt_ack_node *delayed_evtack = NULL;
 
+	if (drv_cmd->state & MPI3MR_CMD_RESET)
+		goto clear_drv_cmd;
+
 	if (drv_cmd->ioc_status != MPI3_IOCSTATUS_SUCCESS) {
 		dprint_event_th(mrioc,
 		    "immediate event ack failed with ioc_status(0x%04x) log_info(0x%08x)\n",
@@ -1813,6 +1824,7 @@ static void mpi3mr_complete_evt_ack(struct mpi3mr_ioc *mrioc,
 		kfree(delayed_evtack);
 		return;
 	}
+clear_drv_cmd:
 	drv_cmd->state = MPI3MR_CMD_NOTUSED;
 	drv_cmd->callback = NULL;
 	clear_bit(cmd_idx, mrioc->evtack_cmds_bitmap);
@@ -2186,30 +2198,6 @@ static void mpi3mr_energypackchg_evt_th(struct mpi3mr_ioc *mrioc,
 }
 
 /**
- * mpi3mr_tempthreshold_evt_th - Temp threshold event tophalf
- * @mrioc: Adapter instance reference
- * @event_reply: event data
- *
- * Displays temperature threshold event details and fault code
- * if any is hit due to temperature exceeding threshold.
- *
- * Return: Nothing
- */
-static void mpi3mr_tempthreshold_evt_th(struct mpi3mr_ioc *mrioc,
-	struct mpi3_event_notification_reply *event_reply)
-{
-	struct mpi3_event_data_temp_threshold *evtdata =
-	    (struct mpi3_event_data_temp_threshold *)event_reply->event_data;
-
-	ioc_err(mrioc, "Temperature threshold levels %s%s%s exceeded for sensor: %d !!! Current temperature in Celsius: %d\n",
-	    (le16_to_cpu(evtdata->status) & 0x1) ? "Warning " : " ",
-	    (le16_to_cpu(evtdata->status) & 0x2) ? "Critical " : " ",
-	    (le16_to_cpu(evtdata->status) & 0x4) ? "Fatal " : " ", evtdata->sensor_num,
-	    le16_to_cpu(evtdata->current_temperature));
-	mpi3mr_print_fault_info(mrioc);
-}
-
-/**
  * mpi3mr_cablemgmt_evt_th - Cable management event tophalf
  * @mrioc: Adapter instance reference
  * @event_reply: event data
@@ -2317,11 +2305,6 @@ void mpi3mr_os_handle_events(struct mpi3mr_ioc *mrioc,
 	case MPI3_EVENT_ENERGY_PACK_CHANGE:
 	{
 		mpi3mr_energypackchg_evt_th(mrioc, event_reply);
-		break;
-	}
-	case MPI3_EVENT_TEMP_THRESHOLD:
-	{
-		mpi3mr_tempthreshold_evt_th(mrioc, event_reply);
 		break;
 	}
 	case MPI3_EVENT_CABLE_MGMT:
@@ -3454,7 +3437,7 @@ static int mpi3mr_eh_target_reset(struct scsi_cmnd *scmd)
 	if (stgt_priv_data->pend_count) {
 		sdev_printk(KERN_INFO, scmd->device,
 		    "%s: target has %d pending commands, target reset is failed\n",
-		    mrioc->name, sdev_priv_data->pend_count);
+		    mrioc->name, stgt_priv_data->pend_count);
 		goto out;
 	}
 
@@ -4325,7 +4308,7 @@ mpi3mr_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	snprintf(mrioc->fwevt_worker_name, sizeof(mrioc->fwevt_worker_name),
 	    "%s%d_fwevt_wrkr", mrioc->driver_name, mrioc->id);
 	mrioc->fwevt_worker_thread = alloc_ordered_workqueue(
-	    mrioc->fwevt_worker_name, WQ_MEM_RECLAIM);
+	    mrioc->fwevt_worker_name, 0);
 	if (!mrioc->fwevt_worker_thread) {
 		ioc_err(mrioc, "failure at %s:%d/%s()!\n",
 		    __FILE__, __LINE__, __func__);
@@ -4504,8 +4487,8 @@ static int mpi3mr_suspend(struct pci_dev *pdev, pm_message_t state)
 	ioc_info(mrioc, "pdev=0x%p, slot=%s, entering operating state [D%d]\n",
 	    pdev, pci_name(pdev), device_state);
 	pci_save_state(pdev);
-	pci_set_power_state(pdev, device_state);
 	mpi3mr_cleanup_resources(mrioc);
+	pci_set_power_state(pdev, device_state);
 
 	return 0;
 }

@@ -1257,7 +1257,11 @@ irqreturn_t mei_me_irq_thread_handler(int irq, void *dev_id)
 	/* check if ME wants a reset */
 	if (!mei_hw_is_ready(dev) && dev->dev_state != MEI_DEV_RESETTING) {
 		dev_warn(dev->dev, "FW not ready: resetting.\n");
-		schedule_work(&dev->reset_work);
+		if (dev->dev_state == MEI_DEV_POWERING_DOWN ||
+		    dev->dev_state == MEI_DEV_POWER_DOWN)
+			mei_cl_all_disconnect(dev);
+		else if (dev->dev_state != MEI_DEV_DISABLED)
+			schedule_work(&dev->reset_work);
 		goto end;
 	}
 
@@ -1289,12 +1293,14 @@ irqreturn_t mei_me_irq_thread_handler(int irq, void *dev_id)
 		if (rets == -ENODATA)
 			break;
 
-		if (rets &&
-		    (dev->dev_state != MEI_DEV_RESETTING &&
-		     dev->dev_state != MEI_DEV_POWER_DOWN)) {
-			dev_err(dev->dev, "mei_irq_read_handler ret = %d.\n",
-						rets);
-			schedule_work(&dev->reset_work);
+		if (rets) {
+			dev_err(dev->dev, "mei_irq_read_handler ret = %d, state = %d.\n",
+				rets, dev->dev_state);
+			if (dev->dev_state != MEI_DEV_RESETTING &&
+			    dev->dev_state != MEI_DEV_DISABLED &&
+			    dev->dev_state != MEI_DEV_POWERING_DOWN &&
+			    dev->dev_state != MEI_DEV_POWER_DOWN)
+				schedule_work(&dev->reset_work);
 			goto end;
 		}
 	}

@@ -110,6 +110,7 @@ void xhci_quiesce(struct xhci_hcd *xhci)
 int xhci_halt(struct xhci_hcd *xhci)
 {
 	int ret;
+
 	xhci_dbg_trace(xhci, trace_xhci_dbg_init, "// Halt the HC");
 	xhci_quiesce(xhci);
 
@@ -119,8 +120,10 @@ int xhci_halt(struct xhci_hcd *xhci)
 		xhci_warn(xhci, "Host halt failed, %d\n", ret);
 		return ret;
 	}
+
 	xhci->xhc_state |= XHCI_STATE_HALTED;
 	xhci->cmd_ring_state = CMD_RING_STATE_STOPPED;
+
 	return ret;
 }
 
@@ -322,7 +325,7 @@ static int xhci_setup_msi(struct xhci_hcd *xhci)
  */
 static int xhci_setup_msix(struct xhci_hcd *xhci)
 {
-	int i, ret = 0;
+	int i, ret;
 	struct usb_hcd *hcd = xhci_to_hcd(xhci);
 	struct pci_dev *pdev = to_pci_dev(hcd->self.controller);
 
@@ -576,7 +579,7 @@ static int xhci_all_ports_seen_u0(struct xhci_hcd *xhci)
 static int xhci_init(struct usb_hcd *hcd)
 {
 	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
-	int retval = 0;
+	int retval;
 
 	xhci_dbg_trace(xhci, trace_xhci_dbg_init, "xhci_init");
 	spin_lock_init(&xhci->lock);
@@ -693,7 +696,9 @@ int xhci_run(struct usb_hcd *hcd)
 	xhci_dbg_trace(xhci, trace_xhci_dbg_init,
 			"Finished xhci_run for USB2 roothub");
 
-	xhci_dbc_init(xhci);
+	set_bit(HCD_FLAG_DEFER_RH_REGISTER, &hcd->flags);
+
+	xhci_create_dbc_dev(xhci);
 
 	xhci_debugfs_init(xhci);
 
@@ -723,7 +728,7 @@ static void xhci_stop(struct usb_hcd *hcd)
 		return;
 	}
 
-	xhci_dbc_exit(xhci);
+	xhci_remove_dbc_dev(xhci);
 
 	spin_lock_irq(&xhci->lock);
 	xhci->xhc_state |= XHCI_STATE_HALTED;
@@ -3169,8 +3174,6 @@ rescan:
 
 	ep_index = xhci_get_endpoint_index(&host_ep->desc);
 	ep = &vdev->eps[ep_index];
-	if (!ep)
-		goto done;
 
 	/* wait for hub_tt_work to finish clearing hub TT */
 	if (ep->ep_state & EP_CLEARING_TT) {
@@ -3228,8 +3231,6 @@ static void xhci_endpoint_reset(struct usb_hcd *hcd,
 		return;
 	ep_index = xhci_get_endpoint_index(&host_ep->desc);
 	ep = &vdev->eps[ep_index];
-	if (!ep)
-		return;
 
 	/* Bail out if toggle is already being cleared by a endpoint reset */
 	spin_lock_irqsave(&xhci->lock, flags);
@@ -3987,7 +3988,7 @@ int xhci_disable_slot(struct xhci_hcd *xhci, u32 slot_id)
 	struct xhci_command *command;
 	unsigned long flags;
 	u32 state;
-	int ret = 0;
+	int ret;
 
 	command = xhci_alloc_command(xhci, true, GFP_KERNEL);
 	if (!command)
@@ -4023,7 +4024,7 @@ int xhci_disable_slot(struct xhci_hcd *xhci, u32 slot_id)
 
 	xhci_free_command(xhci, command);
 
-	return ret;
+	return 0;
 }
 
 /*
@@ -4363,6 +4364,10 @@ static int __maybe_unused xhci_change_max_exit_latency(struct xhci_hcd *xhci,
 	unsigned long flags;
 	int ret;
 
+	command = xhci_alloc_command_with_ctx(xhci, true, GFP_KERNEL);
+	if (!command)
+		return -ENOMEM;
+
 	spin_lock_irqsave(&xhci->lock, flags);
 
 	virt_dev = xhci->devs[udev->slot_id];
@@ -4379,10 +4384,10 @@ static int __maybe_unused xhci_change_max_exit_latency(struct xhci_hcd *xhci,
 	}
 
 	/* Attempt to issue an Evaluate Context command to change the MEL. */
-	command = xhci->lpm_command;
 	ctrl_ctx = xhci_get_input_control_ctx(command->in_ctx);
 	if (!ctrl_ctx) {
 		spin_unlock_irqrestore(&xhci->lock, flags);
+		xhci_free_command(xhci, command);
 		xhci_warn(xhci, "%s: Could not get input context, bad type.\n",
 				__func__);
 		return -ENOMEM;
@@ -4409,6 +4414,9 @@ static int __maybe_unused xhci_change_max_exit_latency(struct xhci_hcd *xhci,
 		virt_dev->current_mel = max_exit_latency;
 		spin_unlock_irqrestore(&xhci->lock, flags);
 	}
+
+	xhci_free_command(xhci, command);
+
 	return ret;
 }
 
@@ -4529,18 +4537,8 @@ static int xhci_set_usb2_hardware_lpm(struct usb_hcd *hcd,
 			exit_latency = xhci_besl_encoding[hird];
 			spin_unlock_irqrestore(&xhci->lock, flags);
 
-			/* USB 3.0 code dedicate one xhci->lpm_command->in_ctx
-			 * input context for link powermanagement evaluate
-			 * context commands. It is protected by hcd->bandwidth
-			 * mutex and is shared by all devices. We need to set
-			 * the max ext latency in USB 2 BESL LPM as well, so
-			 * use the same mutex and xhci_change_max_exit_latency()
-			 */
-			mutex_lock(hcd->bandwidth_mutex);
 			ret = xhci_change_max_exit_latency(xhci, udev,
 							   exit_latency);
-			mutex_unlock(hcd->bandwidth_mutex);
-
 			if (ret < 0)
 				return ret;
 			spin_lock_irqsave(&xhci->lock, flags);
@@ -4568,9 +4566,7 @@ static int xhci_set_usb2_hardware_lpm(struct usb_hcd *hcd,
 		readl(pm_addr);
 		if (udev->usb2_hw_lpm_besl_capable) {
 			spin_unlock_irqrestore(&xhci->lock, flags);
-			mutex_lock(hcd->bandwidth_mutex);
 			xhci_change_max_exit_latency(xhci, udev, 0);
-			mutex_unlock(hcd->bandwidth_mutex);
 			readl_poll_timeout(ports[port_num]->addr, pm_val,
 					   (pm_val & PORT_PLS_MASK) == XDEV_U0,
 					   100, 10000);
@@ -5299,8 +5295,7 @@ int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks)
 	xhci->hcs_params1 = readl(&xhci->cap_regs->hcs_params1);
 	xhci->hcs_params2 = readl(&xhci->cap_regs->hcs_params2);
 	xhci->hcs_params3 = readl(&xhci->cap_regs->hcs_params3);
-	xhci->hcc_params = readl(&xhci->cap_regs->hc_capbase);
-	xhci->hci_version = HC_VERSION(xhci->hcc_params);
+	xhci->hci_version = HC_VERSION(readl(&xhci->cap_regs->hc_capbase));
 	xhci->hcc_params = readl(&xhci->cap_regs->hcc_params);
 	if (xhci->hci_version > 0x100)
 		xhci->hcc_params2 = readl(&xhci->cap_regs->hcc_params2);
@@ -5514,6 +5509,7 @@ static int __init xhci_hcd_init(void)
 		return -ENODEV;
 
 	xhci_debugfs_create_root();
+	xhci_dbc_init();
 
 	return 0;
 }
@@ -5525,6 +5521,7 @@ static int __init xhci_hcd_init(void)
 static void __exit xhci_hcd_fini(void)
 {
 	xhci_debugfs_remove_root();
+	xhci_dbc_exit();
 }
 
 module_init(xhci_hcd_init);

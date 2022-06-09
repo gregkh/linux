@@ -1675,6 +1675,9 @@ static void serial8250_start_tx(struct uart_port *port)
 	struct uart_8250_port *up = up_to_u8250p(port);
 	struct uart_8250_em485 *em485 = up->em485;
 
+	if (!port->x_char && uart_circ_empty(&port->state->xmit))
+		return;
+
 	serial8250_rpm_get_tx(up);
 
 	if (em485 &&
@@ -2600,21 +2603,7 @@ static unsigned char serial8250_compute_lcr(struct uart_8250_port *up,
 {
 	unsigned char cval;
 
-	switch (c_cflag & CSIZE) {
-	case CS5:
-		cval = UART_LCR_WLEN5;
-		break;
-	case CS6:
-		cval = UART_LCR_WLEN6;
-		break;
-	case CS7:
-		cval = UART_LCR_WLEN7;
-		break;
-	default:
-	case CS8:
-		cval = UART_LCR_WLEN8;
-		break;
-	}
+	cval = UART_LCR_WLEN(tty_get_char_size(c_cflag));
 
 	if (c_cflag & CSTOPB)
 		cval |= UART_LCR_STOP;
@@ -3314,7 +3303,7 @@ EXPORT_SYMBOL_GPL(serial8250_set_defaults);
 
 #ifdef CONFIG_SERIAL_8250_CONSOLE
 
-static void serial8250_console_putchar(struct uart_port *port, int ch)
+static void serial8250_console_putchar(struct uart_port *port, unsigned char ch)
 {
 	struct uart_8250_port *up = up_to_u8250p(port);
 

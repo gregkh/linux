@@ -73,7 +73,7 @@ EXPORT_SYMBOL(memstart_addr);
  * In this scheme a comparatively quicker boot is observed.
  *
  * If ZONE_DMA configs are defined, crash kernel memory reservation
- * is delayed until DMA zone memory range size initilazation performed in
+ * is delayed until DMA zone memory range size initialization performed in
  * zone_sizes_init().  The defer is necessary to steer clear of DMA zone
  * memory range to avoid overlap allocation.  So crash kernel memory boundaries
  * are not known when mapping all bank memory ranges, which otherwise means
@@ -81,7 +81,7 @@ EXPORT_SYMBOL(memstart_addr);
  * so page-granularity mappings are created for the entire memory range.
  * Hence a slightly slower boot is observed.
  *
- * Note: Page-granularity mapppings are necessary for crash kernel memory
+ * Note: Page-granularity mappings are necessary for crash kernel memory
  * range for shrinking its size via /sys/kernel/kexec_crash_size interface.
  */
 #if IS_ENABLED(CONFIG_ZONE_DMA) || IS_ENABLED(CONFIG_ZONE_DMA32)
@@ -90,7 +90,6 @@ phys_addr_t __ro_after_init arm64_dma_phys_limit;
 phys_addr_t __ro_after_init arm64_dma_phys_limit = PHYS_MASK + 1;
 #endif
 
-#ifdef CONFIG_KEXEC_CORE
 /*
  * reserve_crashkernel() - reserves memory for crash kernel
  *
@@ -103,6 +102,9 @@ static void __init reserve_crashkernel(void)
 	unsigned long long crash_base, crash_size;
 	unsigned long long crash_max = arm64_dma_phys_limit;
 	int ret;
+
+	if (!IS_ENABLED(CONFIG_KEXEC_CORE))
+		return;
 
 	ret = parse_crashkernel(boot_command_line, memblock_phys_mem_size(),
 				&crash_size, &crash_base);
@@ -136,11 +138,6 @@ static void __init reserve_crashkernel(void)
 	crashk_res.start = crash_base;
 	crashk_res.end = crash_base + crash_size - 1;
 }
-#else
-static void __init reserve_crashkernel(void)
-{
-}
-#endif /* CONFIG_KEXEC_CORE */
 
 /*
  * Return the maximum physical address for a zone accessible by the given bits

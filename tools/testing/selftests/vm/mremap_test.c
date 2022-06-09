@@ -119,59 +119,6 @@ static unsigned long long get_mmap_min_addr(void)
 }
 
 /*
- * Returns false if the requested remap region overlaps with an
- * existing mapping (e.g text, stack) else returns true.
- */
-static bool is_remap_region_valid(void *addr, unsigned long long size)
-{
-	void *remap_addr = NULL;
-	bool ret = true;
-
-	/* Use MAP_FIXED_NOREPLACE flag to ensure region is not mapped */
-	remap_addr = mmap(addr, size, PROT_READ | PROT_WRITE,
-					 MAP_FIXED_NOREPLACE | MAP_ANONYMOUS | MAP_SHARED,
-					 -1, 0);
-
-	if (remap_addr == MAP_FAILED) {
-		if (errno == EEXIST)
-			ret = false;
-	} else {
-		munmap(remap_addr, size);
-	}
-
-	return ret;
-}
-
-/* Returns mmap_min_addr sysctl tunable from procfs */
-static unsigned long long get_mmap_min_addr(void)
-{
-	FILE *fp;
-	int n_matched;
-	static unsigned long long addr;
-
-	if (addr)
-		return addr;
-
-	fp = fopen("/proc/sys/vm/mmap_min_addr", "r");
-	if (fp == NULL) {
-		ksft_print_msg("Failed to open /proc/sys/vm/mmap_min_addr: %s\n",
-			strerror(errno));
-		exit(KSFT_SKIP);
-	}
-
-	n_matched = fscanf(fp, "%llu", &addr);
-	if (n_matched != 1) {
-		ksft_print_msg("Failed to read /proc/sys/vm/mmap_min_addr: %s\n",
-			strerror(errno));
-		fclose(fp);
-		exit(KSFT_SKIP);
-	}
-
-	fclose(fp);
-	return addr;
-}
-
-/*
  * Returns the start address of the mapping on success, else returns
  * NULL on failure.
  */
@@ -321,7 +268,7 @@ static void run_mremap_test_case(struct test test_case, int *failures,
 
 	if (remap_time < 0) {
 		if (test_case.expect_failure)
-			ksft_test_result_pass("%s\n\tExpected mremap failure\n",
+			ksft_test_result_xfail("%s\n\tExpected mremap failure\n",
 					      test_case.name);
 		else {
 			ksft_test_result_fail("%s\n", test_case.name);

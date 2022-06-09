@@ -2671,25 +2671,28 @@ struct event_arg {
 /*
  * Fibre channel port/lun states.
  */
-#define FCS_UNCONFIGURED	1
-#define FCS_DEVICE_DEAD		2
-#define FCS_DEVICE_LOST		3
-#define FCS_ONLINE		4
+enum {
+	FCS_UNKNOWN,
+	FCS_UNCONFIGURED,
+	FCS_DEVICE_DEAD,
+	FCS_DEVICE_LOST,
+	FCS_ONLINE,
+};
 
 extern const char *const port_state_str[5];
 
-static const char * const port_dstate_str[] = {
-	"DELETED",
-	"GNN_ID",
-	"GNL",
-	"LOGIN_PEND",
-	"LOGIN_FAILED",
-	"GPDB",
-	"UPD_FCPORT",
-	"LOGIN_COMPLETE",
-	"ADISC",
-	"DELETE_PEND",
-	"LOGIN_AUTH_PEND",
+static const char *const port_dstate_str[] = {
+	[DSC_DELETED]		= "DELETED",
+	[DSC_GNN_ID]		= "GNN_ID",
+	[DSC_GNL]		= "GNL",
+	[DSC_LOGIN_PEND]	= "LOGIN_PEND",
+	[DSC_LOGIN_FAILED]	= "LOGIN_FAILED",
+	[DSC_GPDB]		= "GPDB",
+	[DSC_UPD_FCPORT]	= "UPD_FCPORT",
+	[DSC_LOGIN_COMPLETE]	= "LOGIN_COMPLETE",
+	[DSC_ADISC]		= "ADISC",
+	[DSC_DELETE_PEND]	= "DELETE_PEND",
+	[DSC_LOGIN_AUTH_PEND]	= "LOGIN_AUTH_PEND",
 };
 
 /*
@@ -4918,7 +4921,6 @@ typedef struct scsi_qla_host {
 
 	/* list of commands waiting on workqueue */
 	struct list_head	qla_cmd_list;
-	struct list_head	qla_sess_op_cmd_list;
 	struct list_head	unknown_atio_list;
 	spinlock_t		cmd_list_lock;
 	struct delayed_work	unknown_atio_work;
@@ -5203,8 +5205,6 @@ struct secure_flash_update_block_pk {
 
 #define	QLA_DSDS_PER_IOCB	37
 
-#define CMD_SP(Cmnd)		((Cmnd)->SCp.ptr)
-
 #define QLA_SG_ALL	1024
 
 enum nexus_wait_type {
@@ -5422,7 +5422,7 @@ struct ql_vnd_stat_entry {
 struct ql_vnd_stats {
 	u64 entry_count; /* Num of entries */
 	u64 rservd;
-	struct ql_vnd_stat_entry entry[0]; /* Place holder of entries */
+	struct ql_vnd_stat_entry entry[]; /* Place holder of entries */
 } __packed;
 
 struct ql_vnd_host_stats_resp {

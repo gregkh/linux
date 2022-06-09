@@ -2,86 +2,98 @@
 /*
  * Scheduler internal types and methods:
  */
-#include <linux/sched.h>
+#ifndef _KERNEL_SCHED_SCHED_H
+#define _KERNEL_SCHED_SCHED_H
 
+#include <linux/sched/affinity.h>
 #include <linux/sched/autogroup.h>
-#include <linux/sched/clock.h>
-#include <linux/sched/coredump.h>
 #include <linux/sched/cpufreq.h>
-#include <linux/sched/cputime.h>
 #include <linux/sched/deadline.h>
-#include <linux/sched/debug.h>
-#include <linux/sched/hotplug.h>
-#include <linux/sched/idle.h>
-#include <linux/sched/init.h>
-#include <linux/sched/isolation.h>
-#include <linux/sched/jobctl.h>
+#include <linux/sched.h>
 #include <linux/sched/loadavg.h>
 #include <linux/sched/mm.h>
-#include <linux/sched/nohz.h>
-#include <linux/sched/numa_balancing.h>
-#include <linux/sched/prio.h>
-#include <linux/sched/rt.h>
+#include <linux/sched/rseq_api.h>
 #include <linux/sched/signal.h>
 #include <linux/sched/smt.h>
 #include <linux/sched/stat.h>
 #include <linux/sched/sysctl.h>
+#include <linux/sched/task_flags.h>
 #include <linux/sched/task.h>
-#include <linux/sched/task_stack.h>
 #include <linux/sched/topology.h>
-#include <linux/sched/user.h>
-#include <linux/sched/wake_q.h>
-#include <linux/sched/xacct.h>
 
-#include <uapi/linux/sched/types.h>
-
-#include <linux/binfmts.h>
-#include <linux/bitops.h>
-#include <linux/compat.h>
-#include <linux/context_tracking.h>
+#include <linux/atomic.h>
+#include <linux/bitmap.h>
+#include <linux/bug.h>
+#include <linux/capability.h>
+#include <linux/cgroup_api.h>
+#include <linux/cgroup.h>
 #include <linux/cpufreq.h>
-#include <linux/cpuidle.h>
-#include <linux/cpuset.h>
+#include <linux/cpumask_api.h>
 #include <linux/ctype.h>
-#include <linux/debugfs.h>
-#include <linux/delayacct.h>
-#include <linux/energy_model.h>
-#include <linux/init_task.h>
-#include <linux/kprobes.h>
+#include <linux/file.h>
+#include <linux/fs_api.h>
+#include <linux/hrtimer_api.h>
+#include <linux/interrupt.h>
+#include <linux/irq_work.h>
+#include <linux/jiffies.h>
+#include <linux/kref_api.h>
 #include <linux/kthread.h>
-#include <linux/membarrier.h>
-#include <linux/migrate.h>
-#include <linux/mmu_context.h>
-#include <linux/nmi.h>
+#include <linux/ktime_api.h>
+#include <linux/lockdep_api.h>
+#include <linux/lockdep.h>
+#include <linux/minmax.h>
+#include <linux/mm.h>
+#include <linux/module.h>
+#include <linux/mutex_api.h>
+#include <linux/plist.h>
+#include <linux/poll.h>
 #include <linux/proc_fs.h>
-#include <linux/prefetch.h>
 #include <linux/profile.h>
 #include <linux/psi.h>
-#include <linux/ratelimit.h>
-#include <linux/rcupdate_wait.h>
-#include <linux/security.h>
+#include <linux/rcupdate.h>
+#include <linux/seq_file.h>
+#include <linux/seqlock.h>
+#include <linux/softirq.h>
+#include <linux/spinlock_api.h>
+#include <linux/static_key.h>
 #include <linux/stop_machine.h>
-#include <linux/suspend.h>
-#include <linux/swait.h>
+#include <linux/syscalls_api.h>
 #include <linux/syscalls.h>
-#include <linux/task_work.h>
-#include <linux/tsacct_kern.h>
+#include <linux/tick.h>
+#include <linux/topology.h>
+#include <linux/types.h>
+#include <linux/u64_stats_sync_api.h>
+#include <linux/uaccess.h>
+#include <linux/wait_api.h>
+#include <linux/wait_bit.h>
+#include <linux/workqueue_api.h>
 
-#include <asm/tlb.h>
+#include <trace/events/power.h>
+#include <trace/events/sched.h>
+
+#include "../workqueue_internal.h"
+
+#ifdef CONFIG_CGROUP_SCHED
+#include <linux/cgroup.h>
+#include <linux/psi.h>
+#endif
+
+#ifdef CONFIG_SCHED_DEBUG
+# include <linux/static_key.h>
+#endif
 
 #ifdef CONFIG_PARAVIRT
 # include <asm/paravirt.h>
+# include <asm/paravirt_api_clock.h>
 #endif
 
 #include "cpupri.h"
 #include "cpudeadline.h"
 
-#include <trace/events/sched.h>
-
 #ifdef CONFIG_SCHED_DEBUG
-# define SCHED_WARN_ON(x)	WARN_ONCE(x, #x)
+# define SCHED_WARN_ON(x)      WARN_ONCE(x, #x)
 #else
-# define SCHED_WARN_ON(x)	({ (void)(x), 0; })
+# define SCHED_WARN_ON(x)      ({ (void)(x), 0; })
 #endif
 
 struct rq;
@@ -301,29 +313,6 @@ struct dl_bw {
 	u64			total_bw;
 };
 
-static inline void __dl_update(struct dl_bw *dl_b, s64 bw);
-
-static inline
-void __dl_sub(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
-{
-	dl_b->total_bw -= tsk_bw;
-	__dl_update(dl_b, (s32)tsk_bw / cpus);
-}
-
-static inline
-void __dl_add(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
-{
-	dl_b->total_bw += tsk_bw;
-	__dl_update(dl_b, -((s32)tsk_bw / cpus));
-}
-
-static inline bool __dl_overflow(struct dl_bw *dl_b, unsigned long cap,
-				 u64 old_bw, u64 new_bw)
-{
-	return dl_b->bw != -1 &&
-	       cap_scale(dl_b->bw, cap) < dl_b->total_bw - old_bw + new_bw;
-}
-
 /*
  * Verify the fitness of task @p to run on @cpu taking into account the
  * CPU original capacity and the runtime/deadline ratio of the task.
@@ -347,14 +336,10 @@ extern void __setparam_dl(struct task_struct *p, const struct sched_attr *attr);
 extern void __getparam_dl(struct task_struct *p, struct sched_attr *attr);
 extern bool __checkparam_dl(const struct sched_attr *attr);
 extern bool dl_param_changed(struct task_struct *p, const struct sched_attr *attr);
-extern int  dl_task_can_attach(struct task_struct *p, const struct cpumask *cs_cpus_allowed);
 extern int  dl_cpuset_cpumask_can_shrink(const struct cpumask *cur, const struct cpumask *trial);
-extern bool dl_cpu_busy(unsigned int cpu);
+extern int  dl_cpu_busy(int cpu, struct task_struct *p);
 
 #ifdef CONFIG_CGROUP_SCHED
-
-#include <linux/cgroup.h>
-#include <linux/psi.h>
 
 struct cfs_rq;
 struct rt_rq;
@@ -1656,12 +1641,14 @@ enum numa_topology_type {
 extern enum numa_topology_type sched_numa_topology_type;
 extern int sched_max_numa_distance;
 extern bool find_numa_distance(int distance);
-extern void sched_init_numa(void);
+extern void sched_init_numa(int offline_node);
+extern void sched_update_numa(int cpu, bool online);
 extern void sched_domains_numa_masks_set(unsigned int cpu);
 extern void sched_domains_numa_masks_clear(unsigned int cpu);
 extern int sched_numa_find_closest(const struct cpumask *cpus, int cpu);
 #else
-static inline void sched_init_numa(void) { }
+static inline void sched_init_numa(int offline_node) { }
+static inline void sched_update_numa(int cpu, bool online) { }
 static inline void sched_domains_numa_masks_set(unsigned int cpu) { }
 static inline void sched_domains_numa_masks_clear(unsigned int cpu) { }
 static inline int sched_numa_find_closest(const struct cpumask *cpus, int cpu)
@@ -1848,7 +1835,6 @@ static inline void flush_smp_call_function_from_idle(void) { }
 #endif
 
 #include "stats.h"
-#include "autogroup.h"
 
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_SCHEDSTATS)
 
@@ -1944,7 +1930,6 @@ static inline void __set_task_cpu(struct task_struct *p, unsigned int cpu)
  * Tunables that become constants when CONFIG_SCHED_DEBUG is off:
  */
 #ifdef CONFIG_SCHED_DEBUG
-# include <linux/static_key.h>
 # define const_debug __read_mostly
 #else
 # define const_debug const
@@ -2325,7 +2310,6 @@ extern void resched_cpu(int cpu);
 extern struct rt_bandwidth def_rt_bandwidth;
 extern void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime);
 
-extern struct dl_bandwidth def_dl_bandwidth;
 extern void init_dl_bandwidth(struct dl_bandwidth *dl_b, u64 period, u64 runtime);
 extern void init_dl_task_timer(struct sched_dl_entity *dl_se);
 extern void init_dl_inactive_task_timer(struct sched_dl_entity *dl_se);
@@ -2761,32 +2745,6 @@ extern void nohz_run_idle_balance(int cpu);
 static inline void nohz_run_idle_balance(int cpu) { }
 #endif
 
-#ifdef CONFIG_SMP
-static inline
-void __dl_update(struct dl_bw *dl_b, s64 bw)
-{
-	struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
-	int i;
-
-	RCU_LOCKDEP_WARN(!rcu_read_lock_sched_held(),
-			 "sched RCU must be held");
-	for_each_cpu_and(i, rd->span, cpu_active_mask) {
-		struct rq *rq = cpu_rq(i);
-
-		rq->dl.extra_bw += bw;
-	}
-}
-#else
-static inline
-void __dl_update(struct dl_bw *dl_b, s64 bw)
-{
-	struct dl_rq *dl = container_of(dl_b, struct dl_rq, dl_bw);
-
-	dl->extra_bw += bw;
-}
-#endif
-
-
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
 struct irqtime {
 	u64			total;
@@ -3149,3 +3107,4 @@ extern int sched_dynamic_mode(const char *str);
 extern void sched_dynamic_update(int mode);
 #endif
 
+#endif /* _KERNEL_SCHED_SCHED_H */

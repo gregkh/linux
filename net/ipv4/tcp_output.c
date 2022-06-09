@@ -1254,7 +1254,7 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 	tp = tcp_sk(sk);
 	prior_wstamp = tp->tcp_wstamp_ns;
 	tp->tcp_wstamp_ns = max(tp->tcp_wstamp_ns, tp->tcp_clock_cache);
-	skb->skb_mstamp_ns = tp->tcp_wstamp_ns;
+	skb_set_delivery_time(skb, tp->tcp_wstamp_ns, true);
 	if (clone_it) {
 		oskb = skb;
 
@@ -1590,7 +1590,7 @@ int tcp_fragment(struct sock *sk, enum tcp_queue tcp_queue,
 
 	skb_split(skb, buff, len);
 
-	buff->tstamp = skb->tstamp;
+	skb_set_delivery_time(buff, skb->tstamp, true);
 	tcp_fragment_tstamp(skb, buff);
 
 	old_factor = tcp_skb_pcount(skb);
@@ -1952,25 +1952,34 @@ static bool tcp_nagle_check(bool partial, const struct tcp_sock *tp,
 }
 
 /* Return how many segs we'd like on a TSO packet,
- * to send one TSO packet per ms
+ * depending on current pacing rate, and how close the peer is.
+ *
+ * Rationale is:
+ * - For close peers, we rather send bigger packets to reduce
+ *   cpu costs, because occasional losses will be repaired fast.
+ * - For long distance/rtt flows, we would like to get ACK clocking
+ *   with 1 ACK per ms.
+ *
+ * Use min_rtt to help adapt TSO burst size, with smaller min_rtt resulting
+ * in bigger TSO bursts. We we cut the RTT-based allowance in half
+ * for every 2^9 usec (aka 512 us) of RTT, so that the RTT-based allowance
+ * is below 1500 bytes after 6 * ~500 usec = 3ms.
  */
 static u32 tcp_tso_autosize(const struct sock *sk, unsigned int mss_now,
 			    int min_tso_segs)
 {
-	u32 bytes, segs;
+	unsigned long bytes;
+	u32 r;
 
-	bytes = min_t(unsigned long,
-		      sk->sk_pacing_rate >> READ_ONCE(sk->sk_pacing_shift),
-		      sk->sk_gso_max_size - 1 - MAX_TCP_HEADER);
+	bytes = sk->sk_pacing_rate >> READ_ONCE(sk->sk_pacing_shift);
 
-	/* Goal is to send at least one packet per ms,
-	 * not one big TSO packet every 100 ms.
-	 * This preserves ACK clocking and is consistent
-	 * with tcp_tso_should_defer() heuristic.
-	 */
-	segs = max_t(u32, bytes / mss_now, min_tso_segs);
+	r = tcp_min_rtt(tcp_sk(sk)) >> sock_net(sk)->ipv4.sysctl_tcp_tso_rtt_log;
+	if (r < BITS_PER_TYPE(sk->sk_gso_max_size))
+		bytes += sk->sk_gso_max_size >> r;
 
-	return segs;
+	bytes = min_t(unsigned long, bytes, sk->sk_gso_max_size);
+
+	return max_t(u32, bytes / mss_now, min_tso_segs);
 }
 
 /* Return the number of segments we want in the skb we are transmitting.
@@ -2617,7 +2626,8 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 		if (unlikely(tp->repair) && tp->repair_queue == TCP_SEND_QUEUE) {
 			/* "skb_mstamp_ns" is used as a start point for the retransmit timer */
-			skb->skb_mstamp_ns = tp->tcp_wstamp_ns = tp->tcp_clock_cache;
+			tp->tcp_wstamp_ns = tp->tcp_clock_cache;
+			skb_set_delivery_time(skb, tp->tcp_wstamp_ns, true);
 			list_move_tail(&skb->tcp_tsorted_anchor, &tp->tsorted_sent_queue);
 			tcp_init_tso_segs(skb, mss_now);
 			goto repair; /* Skip network transmission */
@@ -3542,11 +3552,12 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 	now = tcp_clock_ns();
 #ifdef CONFIG_SYN_COOKIES
 	if (unlikely(synack_type == TCP_SYNACK_COOKIE && ireq->tstamp_ok))
-		skb->skb_mstamp_ns = cookie_init_timestamp(req, now);
+		skb_set_delivery_time(skb, cookie_init_timestamp(req, now),
+				      true);
 	else
 #endif
 	{
-		skb->skb_mstamp_ns = now;
+		skb_set_delivery_time(skb, now, true);
 		if (!tcp_rsk(req)->snt_synack) /* Timestamp first SYNACK */
 			tcp_rsk(req)->snt_synack = tcp_skb_timestamp_us(skb);
 	}
@@ -3595,7 +3606,7 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 	bpf_skops_write_hdr_opt((struct sock *)sk, skb, req, syn_skb,
 				synack_type, &opts);
 
-	skb->skb_mstamp_ns = now;
+	skb_set_delivery_time(skb, now, true);
 	tcp_add_tx_delay(skb, tp);
 
 	return skb;
@@ -3775,7 +3786,7 @@ static int tcp_send_syn_data(struct sock *sk, struct sk_buff *syn)
 
 	err = tcp_transmit_skb(sk, syn_data, 1, sk->sk_allocation);
 
-	syn->skb_mstamp_ns = syn_data->skb_mstamp_ns;
+	skb_set_delivery_time(syn, syn_data->skb_mstamp_ns, true);
 
 	/* Now full SYN+DATA was cloned and sent (or not),
 	 * remove the SYN from the original skb (syn_data)
@@ -4096,7 +4107,9 @@ int tcp_rtx_synack(const struct sock *sk, struct request_sock *req)
 	struct flowi fl;
 	int res;
 
-	tcp_rsk(req)->txhash = net_tx_rndhash();
+	/* Paired with WRITE_ONCE() in sock_setsockopt() */
+	if (READ_ONCE(sk->sk_txrehash) == SOCK_TXREHASH_ENABLED)
+		tcp_rsk(req)->txhash = net_tx_rndhash();
 	res = af_ops->send_synack(sk, NULL, &fl, req, NULL, TCP_SYNACK_NORMAL,
 				  NULL);
 	if (!res) {

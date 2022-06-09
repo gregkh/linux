@@ -28,6 +28,15 @@ static inline void add_latent_entropy(void)
 static inline void add_latent_entropy(void) { }
 #endif
 
+#if IS_ENABLED(CONFIG_VMGENID)
+void add_vmfork_randomness(const void *unique_vm_id, size_t len);
+int register_random_vmfork_notifier(struct notifier_block *nb);
+int unregister_random_vmfork_notifier(struct notifier_block *nb);
+#else
+static inline int register_random_vmfork_notifier(struct notifier_block *nb) { return 0; }
+static inline int unregister_random_vmfork_notifier(struct notifier_block *nb) { return 0; }
+#endif
+
 void get_random_bytes(void *buf, size_t len);
 size_t __must_check get_random_bytes_arch(void *buf, size_t len);
 u32 get_random_u32(void);
