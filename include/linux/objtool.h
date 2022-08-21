@@ -43,7 +43,9 @@ struct unwind_hint {
 #define UNWIND_HINT_TYPE_SAVE		5
 #define UNWIND_HINT_TYPE_RESTORE	6
 
-#ifdef CONFIG_STACK_VALIDATION
+#ifdef CONFIG_OBJTOOL
+
+#include <asm/asm.h>
 
 #ifndef __ASSEMBLY__
 
@@ -142,7 +144,7 @@ struct unwind_hint {
 
 .macro STACK_FRAME_NON_STANDARD func:req
 	.pushsection .discard.func_stack_frame_non_standard, "aw"
-		.long \func - .
+	_ASM_PTR \func
 	.popsection
 .endm
 
@@ -168,7 +170,7 @@ struct unwind_hint {
 
 #endif /* __ASSEMBLY__ */
 
-#else /* !CONFIG_STACK_VALIDATION */
+#else /* !CONFIG_OBJTOOL */
 
 #ifndef __ASSEMBLY__
 
@@ -190,6 +192,6 @@ struct unwind_hint {
 .endm
 #endif
 
-#endif /* CONFIG_STACK_VALIDATION */
+#endif /* CONFIG_OBJTOOL */
 
 #endif /* _LINUX_OBJTOOL_H */

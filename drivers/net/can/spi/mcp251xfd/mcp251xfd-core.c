@@ -38,6 +38,12 @@ static const struct mcp251xfd_devtype_data mcp251xfd_devtype_data_mcp2518fd = {
 	.model = MCP251XFD_MODEL_MCP2518FD,
 };
 
+static const struct mcp251xfd_devtype_data mcp251xfd_devtype_data_mcp251863 = {
+	.quirks = MCP251XFD_QUIRK_CRC_REG | MCP251XFD_QUIRK_CRC_RX |
+		MCP251XFD_QUIRK_CRC_TX | MCP251XFD_QUIRK_ECC,
+	.model = MCP251XFD_MODEL_MCP251863,
+};
+
 /* Autodetect model, start with CRC enabled. */
 static const struct mcp251xfd_devtype_data mcp251xfd_devtype_data_mcp251xfd = {
 	.quirks = MCP251XFD_QUIRK_CRC_REG | MCP251XFD_QUIRK_CRC_RX |
@@ -76,6 +82,8 @@ static const char *__mcp251xfd_get_model_str(enum mcp251xfd_model model)
 		return "MCP2517FD";
 	case MCP251XFD_MODEL_MCP2518FD:
 		return "MCP2518FD";
+	case MCP251XFD_MODEL_MCP251863:
+		return "MCP251863";
 	case MCP251XFD_MODEL_MCP251XFD:
 		return "MCP251xFD";
 	}
@@ -917,7 +925,7 @@ static int mcp251xfd_handle_rxovif(struct mcp251xfd_priv *priv)
 	cf->can_id |= CAN_ERR_CRTL;
 	cf->data[1] = CAN_ERR_CRTL_RX_OVERFLOW;
 
-	err = can_rx_offload_queue_sorted(&priv->offload, skb, timestamp);
+	err = can_rx_offload_queue_timestamp(&priv->offload, skb, timestamp);
 	if (err)
 		stats->rx_fifo_errors++;
 
@@ -1022,7 +1030,7 @@ static int mcp251xfd_handle_ivmif(struct mcp251xfd_priv *priv)
 		return 0;
 
 	mcp251xfd_skb_set_timestamp(priv, skb, timestamp);
-	err = can_rx_offload_queue_sorted(&priv->offload, skb, timestamp);
+	err = can_rx_offload_queue_timestamp(&priv->offload, skb, timestamp);
 	if (err)
 		stats->rx_fifo_errors++;
 
@@ -1095,7 +1103,7 @@ static int mcp251xfd_handle_cerrif(struct mcp251xfd_priv *priv)
 		cf->data[7] = bec.rxerr;
 	}
 
-	err = can_rx_offload_queue_sorted(&priv->offload, skb, timestamp);
+	err = can_rx_offload_queue_timestamp(&priv->offload, skb, timestamp);
 	if (err)
 		stats->rx_fifo_errors++;
 
@@ -1260,7 +1268,8 @@ mcp251xfd_handle_eccif_recover(struct mcp251xfd_priv *priv, u8 nr)
 	 * - for mcp2518fd: offset not 0 or 1
 	 */
 	if (chip_tx_tail != tx_tail ||
-	    !(offset == 0 || (offset == 1 && mcp251xfd_is_2518(priv)))) {
+	    !(offset == 0 || (offset == 1 && (mcp251xfd_is_2518FD(priv) ||
+					      mcp251xfd_is_251863(priv))))) {
 		netdev_err(priv->ndev,
 			   "ECC Error information inconsistent (addr=0x%04x, nr=%d, tx_tail=0x%08x(%d), chip_tx_tail=%d, offset=%d).\n",
 			   addr, nr, tx_ring->tail, tx_tail, chip_tx_tail,
@@ -1681,8 +1690,8 @@ static int mcp251xfd_register_chip_detect(struct mcp251xfd_priv *priv)
 	u32 osc;
 	int err;
 
-	/* The OSC_LPMEN is only supported on MCP2518FD, so use it to
-	 * autodetect the model.
+	/* The OSC_LPMEN is only supported on MCP2518FD and MCP251863,
+	 * so use it to autodetect the model.
 	 */
 	err = regmap_update_bits(priv->map_reg, MCP251XFD_REG_OSC,
 				 MCP251XFD_REG_OSC_LPMEN,
@@ -1694,12 +1703,20 @@ static int mcp251xfd_register_chip_detect(struct mcp251xfd_priv *priv)
 	if (err)
 		return err;
 
-	if (osc & MCP251XFD_REG_OSC_LPMEN)
-		devtype_data = &mcp251xfd_devtype_data_mcp2518fd;
-	else
+	if (osc & MCP251XFD_REG_OSC_LPMEN) {
+		/* We cannot distinguish between MCP2518FD and
+		 * MCP251863. If firmware specifies MCP251863, keep
+		 * it, otherwise set to MCP2518FD.
+		 */
+		if (mcp251xfd_is_251863(priv))
+			devtype_data = &mcp251xfd_devtype_data_mcp251863;
+		else
+			devtype_data = &mcp251xfd_devtype_data_mcp2518fd;
+	} else {
 		devtype_data = &mcp251xfd_devtype_data_mcp2517fd;
+	}
 
-	if (!mcp251xfd_is_251X(priv) &&
+	if (!mcp251xfd_is_251XFD(priv) &&
 	    priv->devtype_data.model != devtype_data->model) {
 		netdev_info(ndev,
 			    "Detected %s, but firmware specifies a %s. Fixing up.\n",
@@ -1932,6 +1949,9 @@ static const struct of_device_id mcp251xfd_of_match[] = {
 		.compatible = "microchip,mcp2518fd",
 		.data = &mcp251xfd_devtype_data_mcp2518fd,
 	}, {
+		.compatible = "microchip,mcp251863",
+		.data = &mcp251xfd_devtype_data_mcp251863,
+	}, {
 		.compatible = "microchip,mcp251xfd",
 		.data = &mcp251xfd_devtype_data_mcp251xfd,
 	}, {
@@ -1947,6 +1967,9 @@ static const struct spi_device_id mcp251xfd_id_table[] = {
 	}, {
 		.name = "mcp2518fd",
 		.driver_data = (kernel_ulong_t)&mcp251xfd_devtype_data_mcp2518fd,
+	}, {
+		.name = "mcp251863",
+		.driver_data = (kernel_ulong_t)&mcp251xfd_devtype_data_mcp251863,
 	}, {
 		.name = "mcp251xfd",
 		.driver_data = (kernel_ulong_t)&mcp251xfd_devtype_data_mcp251xfd,

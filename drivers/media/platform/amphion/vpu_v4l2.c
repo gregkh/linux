@@ -73,10 +73,10 @@ void vpu_v4l2_set_error(struct vpu_inst *inst)
 	if (inst->fh.m2m_ctx) {
 		src_q = v4l2_m2m_get_src_vq(inst->fh.m2m_ctx);
 		dst_q = v4l2_m2m_get_dst_vq(inst->fh.m2m_ctx);
-		if (src_q)
-			src_q->error = 1;
-		if (dst_q)
-			dst_q->error = 1;
+		src_q->error = 1;
+		dst_q->error = 1;
+		wake_up(&src_q->done_wq);
+		wake_up(&dst_q->done_wq);
 	}
 	vpu_inst_unlock(inst);
 }
@@ -398,6 +398,10 @@ static int vpu_vb2_queue_setup(struct vb2_queue *vq,
 		return 0;
 	}
 
+	if (V4L2_TYPE_IS_OUTPUT(vq->type))
+		*buf_count = max_t(unsigned int, *buf_count, inst->min_buffer_out);
+	else
+		*buf_count = max_t(unsigned int, *buf_count, inst->min_buffer_cap);
 	*plane_count = cur_fmt->num_planes;
 	for (i = 0; i < cur_fmt->num_planes; i++)
 		psize[i] = cur_fmt->sizeimage[i];

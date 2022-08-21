@@ -533,14 +533,16 @@ static struct sk_buff *geneve_gro_receive(struct sock *sk,
 		}
 	}
 
+	skb_gro_pull(skb, gh_len);
+	skb_gro_postpull_rcsum(skb, gh, gh_len);
 	type = gh->proto_type;
+	if (likely(type == htons(ETH_P_TEB)))
+		return call_gro_receive(eth_gro_receive, head, skb);
 
 	ptype = gro_find_receive_by_type(type);
 	if (!ptype)
 		goto out;
 
-	skb_gro_pull(skb, gh_len);
-	skb_gro_postpull_rcsum(skb, gh, gh_len);
 	pp = call_gro_receive(ptype->callbacks.gro_receive, head, skb);
 	flush = 0;
 
@@ -562,6 +564,10 @@ static int geneve_gro_complete(struct sock *sk, struct sk_buff *skb,
 	gh = (struct genevehdr *)(skb->data + nhoff);
 	gh_len = geneve_hlen(gh);
 	type = gh->proto_type;
+
+	/* since skb->encapsulation is set, eth_gro_complete() sets the inner mac header */
+	if (likely(type == htons(ETH_P_TEB)))
+		return eth_gro_complete(skb, nhoff + gh_len);
 
 	ptype = gro_find_complete_by_type(type);
 	if (ptype)
@@ -809,6 +815,7 @@ static struct rtable *geneve_get_v4_rt(struct sk_buff *skb,
 	fl4->saddr = info->key.u.ipv4.src;
 	fl4->fl4_dport = dport;
 	fl4->fl4_sport = sport;
+	fl4->flowi4_flags = info->key.flow_flags;
 
 	tos = info->key.tos;
 	if ((tos == 1) && !geneve->cfg.collect_md) {

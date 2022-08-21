@@ -152,7 +152,7 @@ lpfc_els_chk_latt(struct lpfc_vport *vport)
  * Buffer Descriptor Entries (BDEs), allocates buffers for both command
  * payload and response payload (if expected). The reference count on the
  * ndlp is incremented by 1 and the reference to the ndlp is put into
- * context1 of the IOCB data structure for this IOCB to hold the ndlp
+ * ndlp of the IOCB data structure for this IOCB to hold the ndlp
  * reference for the command's callback function to access later.
  *
  * Return code
@@ -279,8 +279,8 @@ lpfc_prep_els_iocb(struct lpfc_vport *vport, u8 expect_rsp,
 		bpl->type_size |= cpu_to_le32(ULP_BDE64_TYPE_BDE_64);
 	}
 
-	elsiocb->context2 = pcmd;
-	elsiocb->context3 = pbuflist;
+	elsiocb->cmd_dmabuf = pcmd;
+	elsiocb->bpl_dmabuf = pbuflist;
 	elsiocb->retry = retry;
 	elsiocb->vport = vport;
 	elsiocb->drvrTimeout = (phba->fc_ratov << 1) + LPFC_DRVR_TIMEOUT;
@@ -345,7 +345,6 @@ lpfc_issue_fabric_reglogin(struct lpfc_vport *vport)
 {
 	struct lpfc_hba  *phba = vport->phba;
 	LPFC_MBOXQ_t *mbox;
-	struct lpfc_dmabuf *mp;
 	struct lpfc_nodelist *ndlp;
 	struct serv_parm *sp;
 	int rc;
@@ -395,7 +394,7 @@ lpfc_issue_fabric_reglogin(struct lpfc_vport *vport)
 	mbox->ctx_ndlp = lpfc_nlp_get(ndlp);
 	if (!mbox->ctx_ndlp) {
 		err = 6;
-		goto fail_no_ndlp;
+		goto fail_free_mbox;
 	}
 
 	rc = lpfc_sli_issue_mbox(phba, mbox, MBX_NOWAIT);
@@ -411,13 +410,8 @@ fail_issue_reg_login:
 	 * for the failed mbox command.
 	 */
 	lpfc_nlp_put(ndlp);
-fail_no_ndlp:
-	mp = (struct lpfc_dmabuf *)mbox->ctx_buf;
-	lpfc_mbuf_free(phba, mp->virt, mp->phys);
-	kfree(mp);
 fail_free_mbox:
-	mempool_free(mbox, phba->mbox_mem_pool);
-
+	lpfc_mbox_rsrc_cleanup(phba, mbox, MBOX_THD_UNLOCKED);
 fail:
 	lpfc_vport_set_state(vport, FC_VPORT_FAILED);
 	lpfc_printf_vlog(vport, KERN_ERR, LOG_TRACE_EVENT,
@@ -465,45 +459,37 @@ lpfc_issue_reg_vfi(struct lpfc_vport *vport)
 
 	/* Supply CSP's only if we are fabric connect or pt-to-pt connect */
 	if ((vport->fc_flag & FC_FABRIC) || (vport->fc_flag & FC_PT2PT)) {
-		dmabuf = kzalloc(sizeof(struct lpfc_dmabuf), GFP_KERNEL);
-		if (!dmabuf) {
+		rc = lpfc_mbox_rsrc_prep(phba, mboxq);
+		if (rc) {
 			rc = -ENOMEM;
-			goto fail;
+			goto fail_mbox;
 		}
-		dmabuf->virt = lpfc_mbuf_alloc(phba, MEM_PRI, &dmabuf->phys);
-		if (!dmabuf->virt) {
-			rc = -ENOMEM;
-			goto fail;
-		}
+		dmabuf = mboxq->ctx_buf;
 		memcpy(dmabuf->virt, &phba->fc_fabparam,
 		       sizeof(struct serv_parm));
 	}
 
 	vport->port_state = LPFC_FABRIC_CFG_LINK;
-	if (dmabuf)
+	if (dmabuf) {
 		lpfc_reg_vfi(mboxq, vport, dmabuf->phys);
-	else
+		/* lpfc_reg_vfi memsets the mailbox.  Restore the ctx_buf. */
+		mboxq->ctx_buf = dmabuf;
+	} else {
 		lpfc_reg_vfi(mboxq, vport, 0);
+	}
 
 	mboxq->mbox_cmpl = lpfc_mbx_cmpl_reg_vfi;
 	mboxq->vport = vport;
-	mboxq->ctx_buf = dmabuf;
 	rc = lpfc_sli_issue_mbox(phba, mboxq, MBX_NOWAIT);
 	if (rc == MBX_NOT_FINISHED) {
 		rc = -ENXIO;
-		goto fail;
+		goto fail_mbox;
 	}
 	return 0;
 
+fail_mbox:
+	lpfc_mbox_rsrc_cleanup(phba, mboxq, MBOX_THD_UNLOCKED);
 fail:
-	if (mboxq)
-		mempool_free(mboxq, phba->mbox_mem_pool);
-	if (dmabuf) {
-		if (dmabuf->virt)
-			lpfc_mbuf_free(phba, dmabuf->virt, dmabuf->phys);
-		kfree(dmabuf);
-	}
-
 	lpfc_vport_set_state(vport, FC_VPORT_FAILED);
 	lpfc_printf_vlog(vport, KERN_ERR, LOG_TRACE_EVENT,
 			 "0289 Issue Register VFI failed: Err %d\n", rc);
@@ -959,9 +945,9 @@ lpfc_cmpl_els_flogi(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 {
 	struct lpfc_vport *vport = cmdiocb->vport;
 	struct Scsi_Host  *shost = lpfc_shost_from_vport(vport);
-	struct lpfc_nodelist *ndlp = cmdiocb->context1;
+	struct lpfc_nodelist *ndlp = cmdiocb->ndlp;
 	IOCB_t *irsp;
-	struct lpfc_dmabuf *pcmd = cmdiocb->context2, *prsp;
+	struct lpfc_dmabuf *pcmd = cmdiocb->cmd_dmabuf, *prsp;
 	struct serv_parm *sp;
 	uint16_t fcf_index;
 	int rc;
@@ -1119,7 +1105,8 @@ stop_rr_fcf_flogi:
 			 sp->cmn.priority_tagging, kref_read(&ndlp->kref));
 
 	if (sp->cmn.priority_tagging)
-		vport->vmid_flag |= LPFC_VMID_ISSUE_QFPA;
+		vport->phba->pport->vmid_flag |= (LPFC_VMID_ISSUE_QFPA |
+						  LPFC_VMID_TYPE_PRIO);
 
 	if (vport->port_state == LPFC_FLOGI) {
 		/*
@@ -1232,7 +1219,7 @@ lpfc_cmpl_els_link_down(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	uint32_t cmd;
 	u32 ulp_status, ulp_word4;
 
-	pcmd = (uint32_t *)(((struct lpfc_dmabuf *)cmdiocb->context2)->virt);
+	pcmd = (uint32_t *)cmdiocb->cmd_dmabuf->virt;
 	cmd = *pcmd;
 
 	ulp_status = get_job_ulpstatus(phba, rspiocb);
@@ -1265,7 +1252,7 @@ lpfc_cmpl_els_link_down(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
  * out FLOGI ELS command with one outstanding fabric IOCB at a time.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the FLOGI ELS command.
  *
  * Return code
@@ -1295,7 +1282,7 @@ lpfc_issue_els_flogi(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 		return 1;
 
 	wqe = &elsiocb->wqe;
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	icmd = &elsiocb->iocb;
 
 	/* For FLOGI request, remainder of payload is service parameters */
@@ -1372,8 +1359,8 @@ lpfc_issue_els_flogi(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 		"Issue FLOGI:     opt:x%x",
 		phba->sli3_options, 0, 0);
 
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -1477,7 +1464,7 @@ lpfc_els_abort_flogi(struct lpfc_hba *phba)
 	list_for_each_entry_safe(iocb, next_iocb, &pring->txcmplq, list) {
 		ulp_command = get_job_cmnd(phba, iocb);
 		if (ulp_command == CMD_ELS_REQUEST64_CR) {
-			ndlp = (struct lpfc_nodelist *)(iocb->context1);
+			ndlp = iocb->ndlp;
 			if (ndlp && ndlp->nlp_DID == Fabric_DID) {
 				if ((phba->pport->fc_flag & FC_PT2PT) &&
 				    !(phba->pport->fc_flag & FC_PT2PT_PLOGI))
@@ -1534,6 +1521,8 @@ lpfc_initial_flogi(struct lpfc_vport *vport)
 		lpfc_enqueue_node(vport, ndlp);
 	}
 
+	/* Reset the Fabric flag, topology change may have happened */
+	vport->fc_flag &= ~FC_FABRIC;
 	if (lpfc_issue_els_flogi(vport, ndlp, 0)) {
 		/* A node reference should be retained while registered with a
 		 * transport or dev-loss-evt work is pending.
@@ -1919,14 +1908,14 @@ lpfc_cmpl_els_rrq(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 		  struct lpfc_iocbq *rspiocb)
 {
 	struct lpfc_vport *vport = cmdiocb->vport;
-	struct lpfc_nodelist *ndlp = cmdiocb->context1;
+	struct lpfc_nodelist *ndlp = cmdiocb->ndlp;
 	struct lpfc_node_rrq *rrq;
 	u32 ulp_status = get_job_ulpstatus(phba, rspiocb);
 	u32 ulp_word4 = get_job_word4(phba, rspiocb);
 
 	/* we pass cmdiocb to state machine which needs rspiocb as well */
 	rrq = cmdiocb->context_un.rrq;
-	cmdiocb->context_un.rsp_iocb = rspiocb;
+	cmdiocb->rsp_iocb = rspiocb;
 
 	lpfc_debugfs_disc_trc(vport, LPFC_DISC_TRC_ELS_CMD,
 		"RRQ cmpl:      status:x%x/x%x did:x%x",
@@ -1995,7 +1984,7 @@ lpfc_cmpl_els_plogi(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	bool release_node = false;
 
 	/* we pass cmdiocb to state machine which needs rspiocb as well */
-	cmdiocb->context_un.rsp_iocb = rspiocb;
+	cmdiocb->rsp_iocb = rspiocb;
 
 	ulp_status = get_job_ulpstatus(phba, rspiocb);
 	ulp_word4 = get_job_word4(phba, rspiocb);
@@ -2098,8 +2087,7 @@ lpfc_cmpl_els_plogi(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 						NLP_EVT_DEVICE_RM);
 	} else {
 		/* Good status, call state machine */
-		prsp = list_entry(((struct lpfc_dmabuf *)
-				   cmdiocb->context2)->list.next,
+		prsp = list_entry(cmdiocb->cmd_dmabuf->list.next,
 				  struct lpfc_dmabuf, list);
 		ndlp = lpfc_plogi_confirm_nport(phba, prsp->virt, ndlp);
 
@@ -2144,7 +2132,7 @@ out:
 
 out_freeiocb:
 	/* Release the reference on the original I/O request. */
-	free_ndlp = (struct lpfc_nodelist *)cmdiocb->context1;
+	free_ndlp = cmdiocb->ndlp;
 
 	lpfc_els_free_iocb(phba, cmdiocb);
 	lpfc_nlp_put(free_ndlp);
@@ -2164,7 +2152,7 @@ out_freeiocb:
  * the lpfc_sli_issue_iocb() routine to send out PLOGI ELS command.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding
- * the ndlp and the reference to ndlp will be stored into the context1 field
+ * the ndlp and the reference to ndlp will be stored into the ndlp field
  * of the IOCB for the completion callback function to the PLOGI ELS command.
  *
  * Return code
@@ -2215,7 +2203,7 @@ lpfc_issue_els_plogi(struct lpfc_vport *vport, uint32_t did, uint8_t retry)
 	ndlp->nlp_flag &= ~NLP_FCP_PRLI_RJT;
 	spin_unlock_irq(&ndlp->lock);
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	/* For PLOGI request, remainder of payload is service parameters */
 	*((uint32_t *) (pcmd)) = ELS_CMD_PLOGI;
@@ -2267,8 +2255,8 @@ lpfc_issue_els_plogi(struct lpfc_vport *vport, uint32_t did, uint8_t retry)
 	lpfc_debugfs_disc_trc(vport, LPFC_DISC_TRC_ELS_CMD,
 			      "Issue PLOGI:     did:x%x refcnt %d",
 			      did, kref_read(&ndlp->kref), 0);
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -2309,9 +2297,9 @@ lpfc_cmpl_els_prli(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	bool release_node = false;
 
 	/* we pass cmdiocb to state machine which needs rspiocb as well */
-	cmdiocb->context_un.rsp_iocb = rspiocb;
+	cmdiocb->rsp_iocb = rspiocb;
 
-	ndlp = (struct lpfc_nodelist *) cmdiocb->context1;
+	ndlp = cmdiocb->ndlp;
 
 	ulp_status = get_job_ulpstatus(phba, rspiocb);
 	ulp_word4 = get_job_word4(phba, rspiocb);
@@ -2424,7 +2412,7 @@ out:
  * routine lpfc_sli_issue_iocb() to send out PRLI command.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the PRLI ELS command.
  *
  * Return code
@@ -2498,7 +2486,7 @@ lpfc_issue_els_prli(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 	if (!elsiocb)
 		return 1;
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	/* For PRLI request, remainder of payload is service parameters */
 	memset(pcmd, 0, cmdsize);
@@ -2572,33 +2560,32 @@ lpfc_issue_els_prli(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 
 	phba->fc_stat.elsXmitPRLI++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_prli;
-	spin_lock_irq(&ndlp->lock);
-	ndlp->nlp_flag |= NLP_PRLI_SND;
-
-	/* The vport counters are used for lpfc_scan_finished, but
-	 * the ndlp is used to track outstanding PRLIs for different
-	 * FC4 types.
-	 */
-	vport->fc_prli_sent++;
-	ndlp->fc4_prli_sent++;
-	spin_unlock_irq(&ndlp->lock);
 
 	lpfc_debugfs_disc_trc(vport, LPFC_DISC_TRC_ELS_CMD,
 			      "Issue PRLI:  did:x%x refcnt %d",
 			      ndlp->nlp_DID, kref_read(&ndlp->kref), 0);
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
-		goto err;
+		return 1;
 	}
 
 	rc = lpfc_sli_issue_iocb(phba, LPFC_ELS_RING, elsiocb, 0);
 	if (rc == IOCB_ERROR) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		lpfc_nlp_put(ndlp);
-		goto err;
+		return 1;
 	}
 
+	/* The vport counters are used for lpfc_scan_finished, but
+	 * the ndlp is used to track outstanding PRLIs for different
+	 * FC4 types.
+	 */
+	spin_lock_irq(&ndlp->lock);
+	ndlp->nlp_flag |= NLP_PRLI_SND;
+	vport->fc_prli_sent++;
+	ndlp->fc4_prli_sent++;
+	spin_unlock_irq(&ndlp->lock);
 
 	/* The driver supports 2 FC4 types.  Make sure
 	 * a PRLI is issued for all types before exiting.
@@ -2608,12 +2595,6 @@ lpfc_issue_els_prli(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 		goto send_next_prli;
 	else
 		return 0;
-
-err:
-	spin_lock_irq(&ndlp->lock);
-	ndlp->nlp_flag &= ~NLP_PRLI_SND;
-	spin_unlock_irq(&ndlp->lock);
-	return 1;
 }
 
 /**
@@ -2769,9 +2750,9 @@ lpfc_cmpl_els_adisc(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	bool release_node = false;
 
 	/* we pass cmdiocb to state machine which needs rspiocb as well */
-	cmdiocb->context_un.rsp_iocb = rspiocb;
+	cmdiocb->rsp_iocb = rspiocb;
 
-	ndlp = (struct lpfc_nodelist *) cmdiocb->context1;
+	ndlp = cmdiocb->ndlp;
 
 	ulp_status = get_job_ulpstatus(phba, rspiocb);
 	ulp_word4 = get_job_word4(phba, rspiocb);
@@ -2870,7 +2851,7 @@ out:
  * to issue the ADISC ELS command.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the ADISC ELS command.
  *
  * Return code
@@ -2894,7 +2875,7 @@ lpfc_issue_els_adisc(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 	if (!elsiocb)
 		return 1;
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	/* For ADISC request, remainder of payload is service parameters */
 	*((uint32_t *) (pcmd)) = ELS_CMD_ADISC;
@@ -2912,8 +2893,8 @@ lpfc_issue_els_adisc(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 	spin_lock_irq(&ndlp->lock);
 	ndlp->nlp_flag |= NLP_ADISC_SND;
 	spin_unlock_irq(&ndlp->lock);
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		goto err;
 	}
@@ -2953,7 +2934,7 @@ static void
 lpfc_cmpl_els_logo(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 		   struct lpfc_iocbq *rspiocb)
 {
-	struct lpfc_nodelist *ndlp = (struct lpfc_nodelist *) cmdiocb->context1;
+	struct lpfc_nodelist *ndlp = cmdiocb->ndlp;
 	struct lpfc_vport *vport = ndlp->vport;
 	IOCB_t *irsp;
 	unsigned long flags;
@@ -2964,7 +2945,7 @@ lpfc_cmpl_els_logo(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	u32 tmo;
 
 	/* we pass cmdiocb to state machine which needs rspiocb as well */
-	cmdiocb->context_un.rsp_iocb = rspiocb;
+	cmdiocb->rsp_iocb = rspiocb;
 
 	ulp_status = get_job_ulpstatus(phba, rspiocb);
 	ulp_word4 = get_job_word4(phba, rspiocb);
@@ -3103,7 +3084,7 @@ out_rsrc_free:
  * lpfc_sli_issue_iocb() routine to send out the LOGO ELS command.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the LOGO ELS command.
  *
  * Callers of this routine are expected to unregister the RPI first
@@ -3135,7 +3116,7 @@ lpfc_issue_els_logo(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 	if (!elsiocb)
 		return 1;
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	*((uint32_t *) (pcmd)) = ELS_CMD_LOGO;
 	pcmd += sizeof(uint32_t);
 
@@ -3150,8 +3131,8 @@ lpfc_issue_els_logo(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 	ndlp->nlp_flag |= NLP_LOGO_SND;
 	ndlp->nlp_flag &= ~NLP_ISSUE_LOGO;
 	spin_unlock_irq(&ndlp->lock);
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		goto err;
 	}
@@ -3229,7 +3210,7 @@ lpfc_cmpl_els_cmd(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	/* Check to see if link went down during discovery */
 	lpfc_els_chk_latt(vport);
 
-	free_ndlp = (struct lpfc_nodelist *)cmdiocb->context1;
+	free_ndlp = cmdiocb->ndlp;
 
 	lpfc_els_free_iocb(phba, cmdiocb);
 	lpfc_nlp_put(free_ndlp);
@@ -3256,7 +3237,6 @@ lpfc_reg_fab_ctrl_node(struct lpfc_vport *vport, struct lpfc_nodelist *fc_ndlp)
 	struct lpfc_hba *phba = vport->phba;
 	struct lpfc_nodelist *ns_ndlp;
 	LPFC_MBOXQ_t *mbox;
-	struct lpfc_dmabuf *mp;
 
 	if (fc_ndlp->nlp_flag & NLP_RPI_REGISTERED)
 		return rc;
@@ -3293,7 +3273,7 @@ lpfc_reg_fab_ctrl_node(struct lpfc_vport *vport, struct lpfc_nodelist *fc_ndlp)
 	mbox->ctx_ndlp = lpfc_nlp_get(fc_ndlp);
 	if (!mbox->ctx_ndlp) {
 		rc = -ENOMEM;
-		goto out_mem;
+		goto out;
 	}
 
 	mbox->vport = vport;
@@ -3301,21 +3281,15 @@ lpfc_reg_fab_ctrl_node(struct lpfc_vport *vport, struct lpfc_nodelist *fc_ndlp)
 	if (rc == MBX_NOT_FINISHED) {
 		rc = -ENODEV;
 		lpfc_nlp_put(fc_ndlp);
-		goto out_mem;
+		goto out;
 	}
 	/* Success path. Exit. */
 	lpfc_nlp_set_state(vport, fc_ndlp,
 			   NLP_STE_REG_LOGIN_ISSUE);
 	return 0;
 
- out_mem:
-	fc_ndlp->nlp_flag &= ~NLP_REG_LOGIN_SEND;
-	mp = (struct lpfc_dmabuf *)mbox->ctx_buf;
-	lpfc_mbuf_free(phba, mp->virt, mp->phys);
-	kfree(mp);
-
  out:
-	mempool_free(mbox, phba->mbox_mem_pool);
+	lpfc_mbox_rsrc_cleanup(phba, mbox, MBOX_THD_UNLOCKED);
 	lpfc_printf_vlog(vport, KERN_ERR, LOG_NODE,
 			 "0938 %s: failed to format reg_login "
 			 "Data: x%x x%x x%x x%x\n", __func__,
@@ -3345,7 +3319,7 @@ lpfc_cmpl_els_disc_cmd(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	struct lpfc_dmabuf *pcmd, *prsp;
 	u32 *pdata;
 	u32 cmd;
-	struct lpfc_nodelist *ndlp = cmdiocb->context1;
+	struct lpfc_nodelist *ndlp = cmdiocb->ndlp;
 	u32 ulp_status, ulp_word4, tmo, did, iotag;
 
 	ulp_status = get_job_ulpstatus(phba, rspiocb);
@@ -3370,7 +3344,7 @@ lpfc_cmpl_els_disc_cmd(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 			 "0217 ELS cmd tag x%x completes Data: x%x x%x x%x x%x\n",
 			 iotag, ulp_status, ulp_word4, tmo, cmdiocb->retry);
 
-	pcmd = (struct lpfc_dmabuf *)cmdiocb->context2;
+	pcmd = cmdiocb->cmd_dmabuf;
 	if (!pcmd)
 		goto out;
 
@@ -3393,7 +3367,6 @@ lpfc_cmpl_els_disc_cmd(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 				lpfc_issue_els_edc(vport, cmdiocb->retry);
 				break;
 			case ELS_CMD_RDF:
-				cmdiocb->context1 = NULL; /* save ndlp refcnt */
 				lpfc_issue_els_rdf(vport, cmdiocb->retry);
 				break;
 			}
@@ -3461,7 +3434,7 @@ out:
  * routine is invoked to send the SCR IOCB.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the SCR ELS command.
  *
  * Return code
@@ -3503,7 +3476,7 @@ lpfc_issue_els_scr(struct lpfc_vport *vport, uint8_t retry)
 			return 1;
 		}
 	}
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	*((uint32_t *) (pcmd)) = ELS_CMD_SCR;
 	pcmd += sizeof(uint32_t);
@@ -3518,8 +3491,8 @@ lpfc_issue_els_scr(struct lpfc_vport *vport, uint8_t retry)
 
 	phba->fc_stat.elsXmitSCR++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_disc_cmd;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -3550,7 +3523,7 @@ lpfc_issue_els_scr(struct lpfc_vport *vport, uint8_t retry)
  *  replay the RSCN to registered recipients.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the RSCN ELS command.
  *
  * Return code
@@ -3600,7 +3573,7 @@ lpfc_issue_els_rscn(struct lpfc_vport *vport, uint8_t retry)
 	if (!elsiocb)
 		return 1;
 
-	event = ((struct lpfc_dmabuf *)elsiocb->context2)->virt;
+	event = elsiocb->cmd_dmabuf->virt;
 
 	event->rscn.rscn_cmd = ELS_RSCN;
 	event->rscn.rscn_page_len = sizeof(struct fc_els_rscn_page);
@@ -3615,8 +3588,8 @@ lpfc_issue_els_rscn(struct lpfc_vport *vport, uint8_t retry)
 
 	phba->fc_stat.elsXmitRSCN++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_cmd;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -3649,7 +3622,7 @@ lpfc_issue_els_rscn(struct lpfc_vport *vport, uint8_t retry)
  * lpfc_sli_issue_iocb() routine is invoked to send the FARPR ELS command.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the FARPR ELS command.
  *
  * Return code
@@ -3684,7 +3657,7 @@ lpfc_issue_els_farpr(struct lpfc_vport *vport, uint32_t nportid, uint8_t retry)
 	if (!elsiocb)
 		return 1;
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	*((uint32_t *) (pcmd)) = ELS_CMD_FARPR;
 	pcmd += sizeof(uint32_t);
@@ -3714,8 +3687,8 @@ lpfc_issue_els_farpr(struct lpfc_vport *vport, uint32_t nportid, uint8_t retry)
 
 	phba->fc_stat.elsXmitFARPR++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_cmd;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -3746,7 +3719,7 @@ lpfc_issue_els_farpr(struct lpfc_vport *vport, uint32_t nportid, uint8_t retry)
  * for diagnostic functions.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the RDF ELS command.
  *
  * Return code
@@ -3783,8 +3756,7 @@ lpfc_issue_els_rdf(struct lpfc_vport *vport, uint8_t retry)
 		return -ENOMEM;
 
 	/* Configure the payload for the supported FPIN events. */
-	prdf = (struct lpfc_els_rdf_req *)
-		(((struct lpfc_dmabuf *)elsiocb->context2)->virt);
+	prdf = (struct lpfc_els_rdf_req *)elsiocb->cmd_dmabuf->virt;
 	memset(prdf, 0, cmdsize);
 	prdf->rdf.fpin_cmd = ELS_RDF;
 	prdf->rdf.desc_len = cpu_to_be32(sizeof(struct lpfc_els_rdf_req) -
@@ -3805,8 +3777,8 @@ lpfc_issue_els_rdf(struct lpfc_vport *vport, uint8_t retry)
 
 	phba->cgn_fpin_frequency = LPFC_FPIN_INIT_FREQ;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_disc_cmd;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return -EIO;
 	}
@@ -3974,7 +3946,7 @@ lpfc_cmpl_els_edc(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	struct lpfc_nodelist *ndlp;
 	u32 ulp_status, ulp_word4, tmo, did, iotag;
 
-	ndlp = cmdiocb->context1;
+	ndlp = cmdiocb->ndlp;
 
 	ulp_status = get_job_ulpstatus(phba, rspiocb);
 	ulp_word4 = get_job_word4(phba, rspiocb);
@@ -3998,7 +3970,7 @@ lpfc_cmpl_els_edc(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 			"4201 EDC cmd tag x%x completes Data: x%x x%x x%x\n",
 			iotag, ulp_status, ulp_word4, tmo);
 
-	pcmd = (struct lpfc_dmabuf *)cmdiocb->context2;
+	pcmd = cmdiocb->cmd_dmabuf;
 	if (!pcmd)
 		goto out;
 
@@ -4247,7 +4219,7 @@ lpfc_issue_els_edc(struct lpfc_vport *vport, uint8_t retry)
 		goto try_rdf;
 
 	/* Configure the payload for the supported Diagnostics capabilities. */
-	pcmd = (u8 *)(((struct lpfc_dmabuf *)elsiocb->context2)->virt);
+	pcmd = (u8 *)elsiocb->cmd_dmabuf->virt;
 	memset(pcmd, 0, cmdsize);
 	edc_req = (struct lpfc_els_edc_req *)pcmd;
 	edc_req->edc.desc_len = cpu_to_be32(cgn_desc_size);
@@ -4259,15 +4231,15 @@ lpfc_issue_els_edc(struct lpfc_vport *vport, uint8_t retry)
 
 	phba->cgn_sig_freq = lpfc_fabric_cgn_frequency;
 
-	lpfc_printf_vlog(vport, KERN_INFO, LOG_CGN_MGMT,
+	lpfc_printf_vlog(vport, KERN_INFO, LOG_ELS | LOG_CGN_MGMT,
 			 "4623 Xmit EDC to remote "
 			 "NPORT x%x reg_sig x%x reg_fpin:x%x\n",
 			 ndlp->nlp_DID, phba->cgn_reg_signal,
 			 phba->cgn_reg_fpin);
 
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_disc_cmd;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return -EIO;
 	}
@@ -4545,8 +4517,8 @@ lpfc_els_retry(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 {
 	struct lpfc_vport *vport = cmdiocb->vport;
 	union lpfc_wqe128 *irsp = &rspiocb->wqe;
-	struct lpfc_nodelist *ndlp = (struct lpfc_nodelist *) cmdiocb->context1;
-	struct lpfc_dmabuf *pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
+	struct lpfc_nodelist *ndlp = cmdiocb->ndlp;
+	struct lpfc_dmabuf *pcmd = cmdiocb->cmd_dmabuf;
 	uint32_t *elscmd;
 	struct ls_rjt stat;
 	int retry = 0, maxretry = lpfc_max_els_tries, delay = 0;
@@ -4558,7 +4530,7 @@ lpfc_els_retry(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	u32 ulp_word4 = get_job_word4(phba, rspiocb);
 
 
-	/* Note: context2 may be 0 for internal driver abort
+	/* Note: cmd_dmabuf may be 0 for internal driver abort
 	 * of delays ELS command.
 	 */
 
@@ -5069,10 +5041,10 @@ lpfc_els_free_bpl(struct lpfc_hba *phba, struct lpfc_dmabuf *buf_ptr)
  * command IOCB data structure contains the reference to various associated
  * resources, these fields must be set to NULL if the associated reference
  * not present:
- *   context1 - reference to ndlp
- *   context2 - reference to cmd
- *   context2->next - reference to rsp
- *   context3 - reference to bpl
+ *   cmd_dmabuf - reference to cmd.
+ *   cmd_dmabuf->next - reference to rsp
+ *   rsp_dmabuf - unused
+ *   bpl_dmabuf - reference to bpl
  *
  * It first properly decrements the reference count held on ndlp for the
  * IOCB completion callback function. If LPFC_DELAY_MEM_FREE flag is not
@@ -5092,19 +5064,19 @@ lpfc_els_free_iocb(struct lpfc_hba *phba, struct lpfc_iocbq *elsiocb)
 {
 	struct lpfc_dmabuf *buf_ptr, *buf_ptr1;
 
-	/* The I/O iocb is complete.  Clear the context1 data. */
-	elsiocb->context1 = NULL;
+	/* The I/O iocb is complete.  Clear the node and first dmbuf */
+	elsiocb->ndlp = NULL;
 
-	/* context2  = cmd,  context2->next = rsp, context3 = bpl */
-	if (elsiocb->context2) {
+	/* cmd_dmabuf = cmd,  cmd_dmabuf->next = rsp, bpl_dmabuf = bpl */
+	if (elsiocb->cmd_dmabuf) {
 		if (elsiocb->cmd_flag & LPFC_DELAY_MEM_FREE) {
 			/* Firmware could still be in progress of DMAing
 			 * payload, so don't free data buffer till after
 			 * a hbeat.
 			 */
 			elsiocb->cmd_flag &= ~LPFC_DELAY_MEM_FREE;
-			buf_ptr = elsiocb->context2;
-			elsiocb->context2 = NULL;
+			buf_ptr = elsiocb->cmd_dmabuf;
+			elsiocb->cmd_dmabuf = NULL;
 			if (buf_ptr) {
 				buf_ptr1 = NULL;
 				spin_lock_irq(&phba->hbalock);
@@ -5123,16 +5095,16 @@ lpfc_els_free_iocb(struct lpfc_hba *phba, struct lpfc_iocbq *elsiocb)
 				spin_unlock_irq(&phba->hbalock);
 			}
 		} else {
-			buf_ptr1 = (struct lpfc_dmabuf *) elsiocb->context2;
+			buf_ptr1 = elsiocb->cmd_dmabuf;
 			lpfc_els_free_data(phba, buf_ptr1);
-			elsiocb->context2 = NULL;
+			elsiocb->cmd_dmabuf = NULL;
 		}
 	}
 
-	if (elsiocb->context3) {
-		buf_ptr = (struct lpfc_dmabuf *) elsiocb->context3;
+	if (elsiocb->bpl_dmabuf) {
+		buf_ptr = elsiocb->bpl_dmabuf;
 		lpfc_els_free_bpl(phba, buf_ptr);
-		elsiocb->context3 = NULL;
+		elsiocb->bpl_dmabuf = NULL;
 	}
 	lpfc_sli_release_iocbq(phba, elsiocb);
 	return 0;
@@ -5148,7 +5120,7 @@ lpfc_els_free_iocb(struct lpfc_hba *phba, struct lpfc_iocbq *elsiocb)
  * Accept (ACC) Response ELS command. This routine is invoked to indicate
  * the completion of the LOGO process. It invokes the lpfc_nlp_not_used() to
  * release the ndlp if it has the last reference remaining (reference count
- * is 1). If succeeded (meaning ndlp released), it sets the IOCB context1
+ * is 1). If succeeded (meaning ndlp released), it sets the iocb ndlp
  * field to NULL to inform the following lpfc_els_free_iocb() routine no
  * ndlp reference count needs to be decremented. Otherwise, the ndlp
  * reference use-count shall be decremented by the lpfc_els_free_iocb()
@@ -5159,7 +5131,7 @@ static void
 lpfc_cmpl_els_logo_acc(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 		       struct lpfc_iocbq *rspiocb)
 {
-	struct lpfc_nodelist *ndlp = (struct lpfc_nodelist *) cmdiocb->context1;
+	struct lpfc_nodelist *ndlp = cmdiocb->ndlp;
 	struct lpfc_vport *vport = cmdiocb->vport;
 	u32 ulp_status, ulp_word4;
 
@@ -5205,7 +5177,7 @@ lpfc_cmpl_els_logo_acc(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 			/* Indicate the node has already released, should
 			 * not reference to it from within lpfc_els_free_iocb.
 			 */
-			cmdiocb->context1 = NULL;
+			cmdiocb->ndlp = NULL;
 		}
 	}
  out:
@@ -5233,13 +5205,9 @@ lpfc_cmpl_els_logo_acc(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 void
 lpfc_mbx_cmpl_dflt_rpi(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 {
-	struct lpfc_dmabuf *mp = (struct lpfc_dmabuf *)(pmb->ctx_buf);
-	struct lpfc_nodelist *ndlp = (struct lpfc_nodelist *)pmb->ctx_ndlp;
+	struct lpfc_nodelist *ndlp = pmb->ctx_ndlp;
 	u32 mbx_flag = pmb->mbox_flag;
 	u32 mbx_cmd = pmb->u.mb.mbxCommand;
-
-	pmb->ctx_buf = NULL;
-	pmb->ctx_ndlp = NULL;
 
 	if (ndlp) {
 		lpfc_printf_vlog(ndlp->vport, KERN_INFO, LOG_NODE,
@@ -5263,10 +5231,7 @@ lpfc_mbx_cmpl_dflt_rpi(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 		lpfc_drop_node(ndlp->vport, ndlp);
 	}
 
-	lpfc_mbuf_free(phba, mp->virt, mp->phys);
-	kfree(mp);
-	mempool_free(pmb, phba->mbox_mem_pool);
-	return;
+	lpfc_mbox_rsrc_cleanup(phba, pmb, MBOX_THD_UNLOCKED);
 }
 
 /**
@@ -5286,12 +5251,11 @@ static void
 lpfc_cmpl_els_rsp(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 		  struct lpfc_iocbq *rspiocb)
 {
-	struct lpfc_nodelist *ndlp = (struct lpfc_nodelist *) cmdiocb->context1;
+	struct lpfc_nodelist *ndlp = cmdiocb->ndlp;
 	struct lpfc_vport *vport = ndlp ? ndlp->vport : NULL;
 	struct Scsi_Host  *shost = vport ? lpfc_shost_from_vport(vport) : NULL;
 	IOCB_t  *irsp;
 	LPFC_MBOXQ_t *mbox = NULL;
-	struct lpfc_dmabuf *mp = NULL;
 	u32 ulp_status, ulp_word4, tmo, did, iotag;
 
 	if (!vport) {
@@ -5317,14 +5281,8 @@ lpfc_cmpl_els_rsp(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 
 	/* Check to see if link went down during discovery */
 	if (!ndlp || lpfc_els_chk_latt(vport)) {
-		if (mbox) {
-			mp = (struct lpfc_dmabuf *)mbox->ctx_buf;
-			if (mp) {
-				lpfc_mbuf_free(phba, mp->virt, mp->phys);
-				kfree(mp);
-			}
-			mempool_free(mbox, phba->mbox_mem_pool);
-		}
+		if (mbox)
+			lpfc_mbox_rsrc_cleanup(phba, mbox, MBOX_THD_UNLOCKED);
 		goto out;
 	}
 
@@ -5355,14 +5313,7 @@ lpfc_cmpl_els_rsp(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 							 ndlp->nlp_state,
 							 ndlp->nlp_rpi,
 							 ndlp->nlp_flag);
-					mp = mbox->ctx_buf;
-					if (mp) {
-						lpfc_mbuf_free(phba, mp->virt,
-							       mp->phys);
-						kfree(mp);
-					}
-					mempool_free(mbox, phba->mbox_mem_pool);
-					goto out;
+					goto out_free_mbox;
 				}
 			}
 
@@ -5371,7 +5322,7 @@ lpfc_cmpl_els_rsp(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 			 */
 			mbox->ctx_ndlp = lpfc_nlp_get(ndlp);
 			if (!mbox->ctx_ndlp)
-				goto out;
+				goto out_free_mbox;
 
 			mbox->vport = vport;
 			if (ndlp->nlp_flag & NLP_RM_DFLT_RPI) {
@@ -5403,12 +5354,8 @@ lpfc_cmpl_els_rsp(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 				ndlp->nlp_DID, ndlp->nlp_flag, ndlp->nlp_state,
 				ndlp->nlp_rpi);
 		}
-		mp = (struct lpfc_dmabuf *)mbox->ctx_buf;
-		if (mp) {
-			lpfc_mbuf_free(phba, mp->virt, mp->phys);
-			kfree(mp);
-		}
-		mempool_free(mbox, phba->mbox_mem_pool);
+out_free_mbox:
+		lpfc_mbox_rsrc_cleanup(phba, mbox, MBOX_THD_UNLOCKED);
 	}
 out:
 	if (ndlp && shost) {
@@ -5460,7 +5407,7 @@ out:
  * mailbox command to the HBA later when callback is invoked.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the corresponding
  * response ELS IOCB command.
  *
@@ -5517,7 +5464,7 @@ lpfc_els_rsp_acc(struct lpfc_vport *vport, uint32_t flag,
 				oldcmd->unsli3.rcvsli3.ox_id;
 		}
 
-		pcmd = (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+		pcmd = elsiocb->cmd_dmabuf->virt;
 		*((uint32_t *) (pcmd)) = ELS_CMD_ACC;
 		pcmd += sizeof(uint32_t);
 
@@ -5552,7 +5499,7 @@ lpfc_els_rsp_acc(struct lpfc_vport *vport, uint32_t flag,
 				oldcmd->unsli3.rcvsli3.ox_id;
 		}
 
-		pcmd = (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+		pcmd = (u8 *)elsiocb->cmd_dmabuf->virt;
 
 		if (mbox)
 			elsiocb->context_un.mbox = mbox;
@@ -5630,9 +5577,9 @@ lpfc_els_rsp_acc(struct lpfc_vport *vport, uint32_t flag,
 				oldcmd->unsli3.rcvsli3.ox_id;
 		}
 
-		pcmd = (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+		pcmd = (u8 *) elsiocb->cmd_dmabuf->virt;
 
-		memcpy(pcmd, ((struct lpfc_dmabuf *) oldiocb->context2)->virt,
+		memcpy(pcmd, oldiocb->cmd_dmabuf->virt,
 		       sizeof(uint32_t) + sizeof(PRLO));
 		*((uint32_t *) (pcmd)) = ELS_CMD_PRLO_ACC;
 		els_pkt_ptr = (ELS_PKT *) pcmd;
@@ -5668,7 +5615,7 @@ lpfc_els_rsp_acc(struct lpfc_vport *vport, uint32_t flag,
 				oldcmd->unsli3.rcvsli3.ox_id;
 		}
 
-		pcmd = (((struct lpfc_dmabuf *)elsiocb->context2)->virt);
+		pcmd = (u8 *)elsiocb->cmd_dmabuf->virt;
 		rdf_resp = (struct fc_els_rdf_resp *)pcmd;
 		memset(rdf_resp, 0, sizeof(*rdf_resp));
 		rdf_resp->acc_hdr.la_cmd = ELS_LS_ACC;
@@ -5696,8 +5643,8 @@ lpfc_els_rsp_acc(struct lpfc_vport *vport, uint32_t flag,
 	}
 
 	phba->fc_stat.elsXmitACC++;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -5734,7 +5681,7 @@ lpfc_els_rsp_acc(struct lpfc_vport *vport, uint32_t flag,
  * to issue to the HBA later.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the reject response
  * ELS IOCB command.
  *
@@ -5775,7 +5722,7 @@ lpfc_els_rsp_reject(struct lpfc_vport *vport, uint32_t rejectError,
 		icmd->unsli3.rcvsli3.ox_id = oldcmd->unsli3.rcvsli3.ox_id;
 	}
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	*((uint32_t *) (pcmd)) = ELS_CMD_LS_RJT;
 	pcmd += sizeof(uint32_t);
@@ -5798,8 +5745,8 @@ lpfc_els_rsp_reject(struct lpfc_vport *vport, uint32_t rejectError,
 
 	phba->fc_stat.elsXmitLSRJT++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -5871,8 +5818,7 @@ lpfc_issue_els_edc_rsp(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 		icmd->unsli3.rcvsli3.ox_id = cmd->unsli3.rcvsli3.ox_id;
 	}
 
-	pcmd = (((struct lpfc_dmabuf *)elsiocb->context2)->virt);
-
+	pcmd = elsiocb->cmd_dmabuf->virt;
 	memset(pcmd, 0, cmdsize);
 
 	edc_rsp = (struct lpfc_els_edc_rsp *)pcmd;
@@ -5892,8 +5838,8 @@ lpfc_issue_els_edc_rsp(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
 
 	phba->fc_stat.elsXmitACC++;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -5928,7 +5874,7 @@ lpfc_issue_els_edc_rsp(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
  * and invokes the lpfc_sli_issue_iocb() routine to send out the command.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the ADISC Accept response
  * ELS IOCB command.
  *
@@ -5981,7 +5927,7 @@ lpfc_els_rsp_adisc_acc(struct lpfc_vport *vport, struct lpfc_iocbq *oldiocb,
 			 elsiocb->iotag, ulp_context,
 			 ndlp->nlp_DID, ndlp->nlp_flag, ndlp->nlp_state,
 			 ndlp->nlp_rpi);
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	*((uint32_t *) (pcmd)) = ELS_CMD_ACC;
 	pcmd += sizeof(uint32_t);
@@ -5998,8 +5944,8 @@ lpfc_els_rsp_adisc_acc(struct lpfc_vport *vport, struct lpfc_iocbq *oldiocb,
 
 	phba->fc_stat.elsXmitACC++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -6025,7 +5971,7 @@ lpfc_els_rsp_adisc_acc(struct lpfc_vport *vport, struct lpfc_iocbq *oldiocb,
  * and invokes the lpfc_sli_issue_iocb() routine to send out the command.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the PRLI Accept response
  * ELS IOCB command.
  *
@@ -6055,7 +6001,7 @@ lpfc_els_rsp_prli_acc(struct lpfc_vport *vport, struct lpfc_iocbq *oldiocb,
 	/* Need the incoming PRLI payload to determine if the ACC is for an
 	 * FC4 or NVME PRLI type.  The PRLI type is at word 1.
 	 */
-	req_buf = (struct lpfc_dmabuf *)oldiocb->context2;
+	req_buf = oldiocb->cmd_dmabuf;
 	req_payload = (((uint32_t *)req_buf->virt) + 1);
 
 	/* PRLI type payload is at byte 3 for FCP or NVME. */
@@ -6103,7 +6049,7 @@ lpfc_els_rsp_prli_acc(struct lpfc_vport *vport, struct lpfc_iocbq *oldiocb,
 			 elsiocb->iotag, ulp_context,
 			 ndlp->nlp_DID, ndlp->nlp_flag, ndlp->nlp_state,
 			 ndlp->nlp_rpi);
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	memset(pcmd, 0, cmdsize);
 
 	*((uint32_t *)(pcmd)) = elsrspcmd;
@@ -6176,8 +6122,8 @@ lpfc_els_rsp_prli_acc(struct lpfc_vport *vport, struct lpfc_iocbq *oldiocb,
 
 	phba->fc_stat.elsXmitACC++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
-	elsiocb->context1 =  lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp =  lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -6205,7 +6151,7 @@ lpfc_els_rsp_prli_acc(struct lpfc_vport *vport, struct lpfc_iocbq *oldiocb,
  * issue the response.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function.
  *
  * Return code
@@ -6256,7 +6202,7 @@ lpfc_els_rsp_rnid_acc(struct lpfc_vport *vport, uint8_t format,
 	lpfc_printf_vlog(vport, KERN_INFO, LOG_ELS,
 			 "0132 Xmit RNID ACC response tag x%x xri x%x\n",
 			 elsiocb->iotag, ulp_context);
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	*((uint32_t *) (pcmd)) = ELS_CMD_ACC;
 	pcmd += sizeof(uint32_t);
 
@@ -6290,8 +6236,8 @@ lpfc_els_rsp_rnid_acc(struct lpfc_vport *vport, uint8_t format,
 
 	phba->fc_stat.elsXmitACC++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -6326,7 +6272,7 @@ lpfc_els_clear_rrq(struct lpfc_vport *vport,
 	struct lpfc_node_rrq *prrq;
 
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) iocb->context2)->virt);
+	pcmd = (uint8_t *)iocb->cmd_dmabuf->virt;
 	pcmd += sizeof(uint32_t);
 	rrq = (struct RRQ *)pcmd;
 	rrq->rrq_exchg = be32_to_cpu(rrq->rrq_exchg);
@@ -6413,7 +6359,7 @@ lpfc_els_rsp_echo_acc(struct lpfc_vport *vport, uint8_t *data,
 	lpfc_printf_vlog(vport, KERN_INFO, LOG_ELS,
 			 "2876 Xmit ECHO ACC response tag x%x xri x%x\n",
 			 elsiocb->iotag, ulp_context);
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	*((uint32_t *) (pcmd)) = ELS_CMD_ACC;
 	pcmd += sizeof(uint32_t);
 	memcpy(pcmd, data, cmdsize - sizeof(uint32_t));
@@ -6424,8 +6370,8 @@ lpfc_els_rsp_echo_acc(struct lpfc_vport *vport, uint8_t *data,
 
 	phba->fc_stat.elsXmitACC++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
-	elsiocb->context1 =  lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp =  lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -7049,9 +6995,8 @@ lpfc_els_rdp_cmpl(struct lpfc_hba *phba, struct lpfc_rdp_context *rdp_context,
 			elsiocb->iotag, ulp_context,
 			ndlp->nlp_DID, ndlp->nlp_flag, ndlp->nlp_state,
 			ndlp->nlp_rpi);
-	rdp_res = (struct fc_rdp_res_frame *)
-		(((struct lpfc_dmabuf *) elsiocb->context2)->virt);
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	rdp_res = (struct fc_rdp_res_frame *)elsiocb->cmd_dmabuf->virt;
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	memset(pcmd, 0, sizeof(struct fc_rdp_res_frame));
 	*((uint32_t *) (pcmd)) = ELS_CMD_ACC;
 
@@ -7102,15 +7047,14 @@ lpfc_els_rdp_cmpl(struct lpfc_hba *phba, struct lpfc_rdp_context *rdp_context,
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
 
 	/* Now that we know the true size of the payload, update the BPL */
-	bpl = (struct ulp_bde64 *)
-		(((struct lpfc_dmabuf *)(elsiocb->context3))->virt);
+	bpl = (struct ulp_bde64 *)elsiocb->bpl_dmabuf->virt;
 	bpl->tus.f.bdeSize = len;
 	bpl->tus.f.bdeFlags = 0;
 	bpl->tus.w = le32_to_cpu(bpl->tus.w);
 
 	phba->fc_stat.elsXmitACC++;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		goto free_rdp_context;
 	}
@@ -7144,7 +7088,7 @@ error:
 		icmd->unsli3.rcvsli3.ox_id = rdp_context->ox_id;
 	}
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	*((uint32_t *) (pcmd)) = ELS_CMD_LS_RJT;
 	stat = (struct ls_rjt *)(pcmd + sizeof(uint32_t));
@@ -7152,8 +7096,8 @@ error:
 
 	phba->fc_stat.elsXmitLSRJT++;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		goto free_rdp_context;
 	}
@@ -7176,7 +7120,6 @@ static int
 lpfc_get_rdp_info(struct lpfc_hba *phba, struct lpfc_rdp_context *rdp_context)
 {
 	LPFC_MBOXQ_t *mbox = NULL;
-	struct lpfc_dmabuf *mp;
 	int rc;
 
 	mbox = mempool_alloc(phba->mbox_mem_pool, GFP_KERNEL);
@@ -7187,21 +7130,19 @@ lpfc_get_rdp_info(struct lpfc_hba *phba, struct lpfc_rdp_context *rdp_context)
 	}
 
 	if (lpfc_sli4_dump_page_a0(phba, mbox))
-		goto prep_mbox_fail;
+		goto rdp_fail;
 	mbox->vport = rdp_context->ndlp->vport;
 	mbox->mbox_cmpl = lpfc_mbx_cmpl_rdp_page_a0;
 	mbox->ctx_ndlp = (struct lpfc_rdp_context *)rdp_context;
 	rc = lpfc_sli_issue_mbox(phba, mbox, MBX_NOWAIT);
 	if (rc == MBX_NOT_FINISHED) {
-		mp = (struct lpfc_dmabuf *)mbox->ctx_buf;
-		lpfc_mbuf_free(phba, mp->virt, mp->phys);
-		goto issue_mbox_fail;
+		lpfc_mbox_rsrc_cleanup(phba, mbox, MBOX_THD_UNLOCKED);
+		return 1;
 	}
 
 	return 0;
 
-prep_mbox_fail:
-issue_mbox_fail:
+rdp_fail:
 	mempool_free(mbox, phba->mbox_mem_pool);
 	return 1;
 }
@@ -7249,7 +7190,7 @@ lpfc_els_rcv_rdp(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 		goto error;
 	}
 
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
+	pcmd = cmdiocb->cmd_dmabuf;
 	rdp_req = (struct fc_rdp_req_frame *) pcmd->virt;
 
 	lpfc_printf_vlog(vport, KERN_INFO, LOG_ELS,
@@ -7361,8 +7302,7 @@ lpfc_els_lcb_rsp(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 	if (!elsiocb)
 		goto free_lcb_context;
 
-	lcb_res = (struct fc_lcb_res_frame *)
-		(((struct lpfc_dmabuf *)elsiocb->context2)->virt);
+	lcb_res = (struct fc_lcb_res_frame *)elsiocb->cmd_dmabuf->virt;
 
 	memset(lcb_res, 0, sizeof(struct fc_lcb_res_frame));
 
@@ -7377,7 +7317,7 @@ lpfc_els_lcb_rsp(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 		icmd->unsli3.rcvsli3.ox_id = lcb_context->ox_id;
 	}
 
-	pcmd = (uint8_t *)(((struct lpfc_dmabuf *)elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	*((uint32_t *)(pcmd)) = ELS_CMD_ACC;
 	lcb_res->lcb_sub_command = lcb_context->sub_command;
 	lcb_res->lcb_type = lcb_context->type;
@@ -7387,8 +7327,8 @@ lpfc_els_lcb_rsp(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
 	phba->fc_stat.elsXmitACC++;
 
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		goto out;
 	}
@@ -7422,7 +7362,7 @@ error:
 		icmd->unsli3.rcvsli3.ox_id = lcb_context->ox_id;
 	}
 
-	pcmd = (uint8_t *)(((struct lpfc_dmabuf *)elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	*((uint32_t *)(pcmd)) = ELS_CMD_LS_RJT;
 	stat = (struct ls_rjt *)(pcmd + sizeof(uint32_t));
@@ -7433,8 +7373,8 @@ error:
 
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
 	phba->fc_stat.elsXmitLSRJT++;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		goto free_lcb_context;
 	}
@@ -7546,7 +7486,7 @@ lpfc_els_rcv_lcb(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	u8 state, rjt_err = 0;
 	struct ls_rjt stat;
 
-	pcmd = (struct lpfc_dmabuf *)cmdiocb->context2;
+	pcmd = cmdiocb->cmd_dmabuf;
 	lp = (uint8_t *)pcmd->virt;
 	beacon = (struct fc_lcb_request_frame *)pcmd->virt;
 
@@ -7743,10 +7683,10 @@ return_did_out:
 static int
 lpfc_rscn_recovery_check(struct lpfc_vport *vport)
 {
-	struct lpfc_nodelist *ndlp = NULL;
+	struct lpfc_nodelist *ndlp = NULL, *n;
 
 	/* Move all affected nodes by pending RSCNs to NPR state. */
-	list_for_each_entry(ndlp, &vport->fc_nodes, nlp_listp) {
+	list_for_each_entry_safe(ndlp, n, &vport->fc_nodes, nlp_listp) {
 		if ((ndlp->nlp_state == NLP_STE_UNUSED_NODE) ||
 		    !lpfc_rscn_payload_check(vport, ndlp->nlp_DID))
 			continue;
@@ -7792,7 +7732,7 @@ lpfc_send_rscn_event(struct lpfc_vport *vport,
 	uint32_t payload_len;
 	struct lpfc_rscn_event_header *rscn_event_data;
 
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
+	pcmd = cmdiocb->cmd_dmabuf;
 	payload_ptr = (uint32_t *) pcmd->virt;
 	payload_len = be32_to_cpu(*payload_ptr & ~ELS_CMD_MASK);
 
@@ -7852,7 +7792,7 @@ lpfc_els_rcv_rscn(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	int rscn_id = 0, hba_id = 0;
 	int i, tmo;
 
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
+	pcmd = cmdiocb->cmd_dmabuf;
 	lp = (uint32_t *) pcmd->virt;
 
 	payload_len = be32_to_cpu(*lp++ & ~ELS_CMD_MASK);
@@ -7954,7 +7894,7 @@ lpfc_els_rcv_rscn(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	/* Get the array count after successfully have the token */
 	rscn_cnt = vport->fc_rscn_id_cnt;
 	/* If we are already processing an RSCN, save the received
-	 * RSCN payload buffer, cmdiocb->context2 to process later.
+	 * RSCN payload buffer, cmdiocb->cmd_dmabuf to process later.
 	 */
 	if (vport->fc_flag & (FC_RSCN_MODE | FC_NDISC_ACTIVE)) {
 		lpfc_debugfs_disc_trc(vport, LPFC_DISC_TRC_ELS_UNSOL,
@@ -7987,10 +7927,10 @@ lpfc_els_rcv_rscn(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 			} else {
 				vport->fc_rscn_id_list[rscn_cnt] = pcmd;
 				vport->fc_rscn_id_cnt++;
-				/* If we zero, cmdiocb->context2, the calling
+				/* If we zero, cmdiocb->cmd_dmabuf, the calling
 				 * routine will not try to free it.
 				 */
-				cmdiocb->context2 = NULL;
+				cmdiocb->cmd_dmabuf = NULL;
 			}
 			/* Deferred RSCN */
 			lpfc_printf_vlog(vport, KERN_INFO, LOG_DISCOVERY,
@@ -8027,10 +7967,10 @@ lpfc_els_rcv_rscn(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	/* Indicate we are done walking fc_rscn_id_list on this vport */
 	vport->fc_rscn_flush = 0;
 	/*
-	 * If we zero, cmdiocb->context2, the calling routine will
+	 * If we zero, cmdiocb->cmd_dmabuf, the calling routine will
 	 * not try to free it.
 	 */
-	cmdiocb->context2 = NULL;
+	cmdiocb->cmd_dmabuf = NULL;
 	lpfc_set_disctmo(vport);
 	/* Send back ACC */
 	lpfc_els_rsp_acc(vport, ELS_CMD_ACC, cmdiocb, ndlp, NULL);
@@ -8154,7 +8094,7 @@ lpfc_els_rcv_flogi(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 {
 	struct Scsi_Host *shost = lpfc_shost_from_vport(vport);
 	struct lpfc_hba  *phba = vport->phba;
-	struct lpfc_dmabuf *pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
+	struct lpfc_dmabuf *pcmd = cmdiocb->cmd_dmabuf;
 	uint32_t *lp = (uint32_t *) pcmd->virt;
 	union lpfc_wqe128 *wqe = &cmdiocb->wqe;
 	struct serv_parm *sp;
@@ -8330,7 +8270,7 @@ lpfc_els_rcv_rnid(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	RNID *rn;
 	struct ls_rjt stat;
 
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
+	pcmd = cmdiocb->cmd_dmabuf;
 	lp = (uint32_t *) pcmd->virt;
 
 	lp++;
@@ -8371,7 +8311,7 @@ lpfc_els_rcv_echo(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 {
 	uint8_t *pcmd;
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) cmdiocb->context2)->virt);
+	pcmd = (uint8_t *)cmdiocb->cmd_dmabuf->virt;
 
 	/* skip over first word of echo command to find echo data */
 	pcmd += sizeof(uint32_t);
@@ -8447,7 +8387,7 @@ lpfc_els_rcv_rrq(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
  * response to the RLS.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the RLS Accept Response
  * ELS IOCB command.
  *
@@ -8470,7 +8410,7 @@ lpfc_els_rsp_rls_acc(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 
 	mb = &pmb->u.mb;
 
-	ndlp = (struct lpfc_nodelist *)pmb->ctx_ndlp;
+	ndlp = pmb->ctx_ndlp;
 	rxid = (uint16_t)((unsigned long)(pmb->ctx_buf) & 0xffff);
 	oxid = (uint16_t)(((unsigned long)(pmb->ctx_buf) >> 16) & 0xffff);
 	pmb->ctx_buf = NULL;
@@ -8506,7 +8446,7 @@ lpfc_els_rsp_rls_acc(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 		icmd->unsli3.rcvsli3.ox_id = oxid;
 	}
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	*((uint32_t *) (pcmd)) = ELS_CMD_ACC;
 	pcmd += sizeof(uint32_t); /* Skip past command */
 	rls_rsp = (struct RLS_RSP *)pcmd;
@@ -8527,8 +8467,8 @@ lpfc_els_rsp_rls_acc(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 			 ndlp->nlp_rpi);
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
 	phba->fc_stat.elsXmitACC++;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return;
 	}
@@ -8619,7 +8559,7 @@ reject_out:
  * Value (RTV) unsolicited IOCB event.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the RTV Accept Response
  * ELS IOCB command.
  *
@@ -8654,7 +8594,7 @@ lpfc_els_rcv_rtv(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	if (!elsiocb)
 		return 1;
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	*((uint32_t *) (pcmd)) = ELS_CMD_ACC;
 	pcmd += sizeof(uint32_t); /* Skip past command */
 
@@ -8692,8 +8632,8 @@ lpfc_els_rcv_rtv(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 			rtv_rsp->ratov, rtv_rsp->edtov, rtv_rsp->qtov);
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
 	phba->fc_stat.elsXmitACC++;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 0;
 	}
@@ -8749,7 +8689,7 @@ lpfc_issue_els_rrq(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 	if (!elsiocb)
 		return 1;
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 
 	/* For RRQ request, remainder of payload is Exchange IDs */
 	*((uint32_t *) (pcmd)) = ELS_CMD_RRQ;
@@ -8769,17 +8709,19 @@ lpfc_issue_els_rrq(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 	elsiocb->context_un.rrq = rrq;
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rrq;
 
-	lpfc_nlp_get(ndlp);
-	elsiocb->context1 = ndlp;
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp)
+		goto io_err;
 
 	ret = lpfc_sli_issue_iocb(phba, LPFC_ELS_RING, elsiocb, 0);
-	if (ret == IOCB_ERROR)
+	if (ret == IOCB_ERROR) {
+		lpfc_nlp_put(ndlp);
 		goto io_err;
+	}
 	return 0;
 
  io_err:
 	lpfc_els_free_iocb(phba, elsiocb);
-	lpfc_nlp_put(ndlp);
 	return 1;
 }
 
@@ -8821,7 +8763,7 @@ lpfc_send_rrq(struct lpfc_hba *phba, struct lpfc_node_rrq *rrq)
  * It is to be called by the lpfc_els_rcv_rpl() routine to accept the RPL.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the RPL Accept Response
  * ELS command.
  *
@@ -8862,7 +8804,7 @@ lpfc_els_rsp_rpl_acc(struct lpfc_vport *vport, uint16_t cmdsize,
 		icmd->unsli3.rcvsli3.ox_id = get_job_rcvoxid(phba, oldiocb);
 	}
 
-	pcmd = (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = elsiocb->cmd_dmabuf->virt;
 	*((uint32_t *) (pcmd)) = ELS_CMD_ACC;
 	pcmd += sizeof(uint16_t);
 	*((uint16_t *)(pcmd)) = be16_to_cpu(cmdsize);
@@ -8886,8 +8828,8 @@ lpfc_els_rsp_rpl_acc(struct lpfc_vport *vport, uint16_t cmdsize,
 			 ndlp->nlp_rpi);
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_rsp;
 	phba->fc_stat.elsXmitACC++;
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		return 1;
 	}
@@ -8942,7 +8884,7 @@ lpfc_els_rcv_rpl(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 		return 0;
 	}
 
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
+	pcmd = cmdiocb->cmd_dmabuf;
 	lp = (uint32_t *) pcmd->virt;
 	rpl = (RPL *) (lp + 1);
 	maxsize = be32_to_cpu(rpl->maxsize);
@@ -8994,7 +8936,7 @@ lpfc_els_rcv_farp(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	uint32_t cnt, did;
 
 	did = get_job_els_rsp64_did(vport->phba, cmdiocb);
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
+	pcmd = cmdiocb->cmd_dmabuf;
 	lp = (uint32_t *) pcmd->virt;
 
 	lp++;
@@ -9064,8 +9006,8 @@ lpfc_els_rcv_farpr(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	uint32_t did;
 
 	did = get_job_els_rsp64_did(vport->phba, cmdiocb);
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-	lp = (uint32_t *) pcmd->virt;
+	pcmd = cmdiocb->cmd_dmabuf;
+	lp = (uint32_t *)pcmd->virt;
 
 	lp++;
 	/* FARP-RSP received from DID <did> */
@@ -9105,7 +9047,7 @@ lpfc_els_rcv_fan(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	FAN *fp;
 
 	lpfc_printf_vlog(vport, KERN_INFO, LOG_ELS, "0265 FAN received\n");
-	lp = (uint32_t *)((struct lpfc_dmabuf *)cmdiocb->context2)->virt;
+	lp = (uint32_t *)cmdiocb->cmd_dmabuf->virt;
 	fp = (FAN *) ++lp;
 	/* FAN received; Fan does not have a reply sequence */
 	if ((vport == phba->pport) &&
@@ -9154,7 +9096,7 @@ lpfc_els_rcv_edc(struct lpfc_vport *vport, struct lpfc_iocbq *cmdiocb,
 	int desc_cnt = 0, bytes_remain;
 	bool rcv_cap_desc = false;
 
-	payload = ((struct lpfc_dmabuf *)cmdiocb->context2)->virt;
+	payload = cmdiocb->cmd_dmabuf->virt;
 
 	edc_req = (struct fc_els_edc *)payload;
 	bytes_remain = be32_to_cpu(edc_req->desc_len);
@@ -9339,7 +9281,7 @@ lpfc_els_timeout_handler(struct lpfc_vport *vport)
 		if (piocb->vport != vport)
 			continue;
 
-		pcmd = (struct lpfc_dmabuf *) piocb->context2;
+		pcmd = piocb->cmd_dmabuf;
 		if (pcmd)
 			els_command = *(uint32_t *) (pcmd->virt);
 
@@ -9594,7 +9536,7 @@ lpfc_send_els_failure_event(struct lpfc_hba *phba,
 	uint32_t *pcmd;
 	u32 ulp_status, ulp_word4;
 
-	ndlp = cmdiocbp->context1;
+	ndlp = cmdiocbp->ndlp;
 	if (!ndlp)
 		return;
 
@@ -9608,8 +9550,7 @@ lpfc_send_els_failure_event(struct lpfc_hba *phba,
 			sizeof(struct lpfc_name));
 		memcpy(lsrjt_event.header.wwnn, &ndlp->nlp_nodename,
 			sizeof(struct lpfc_name));
-		pcmd = (uint32_t *) (((struct lpfc_dmabuf *)
-			cmdiocbp->context2)->virt);
+		pcmd = (uint32_t *)cmdiocbp->cmd_dmabuf->virt;
 		lsrjt_event.command = (pcmd != NULL) ? *pcmd : 0;
 		stat.un.ls_rjt_error_be = cpu_to_be32(ulp_word4);
 		lsrjt_event.reason_code = stat.un.b.lsRjtRsnCode;
@@ -10145,12 +10086,12 @@ lpfc_els_unsol_buffer(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	struct lpfc_wcqe_complete *wcqe_cmpl = NULL;
 	LPFC_MBOXQ_t *mbox;
 
-	if (!vport || !(elsiocb->context2))
+	if (!vport || !elsiocb->cmd_dmabuf)
 		goto dropit;
 
 	newnode = 0;
 	wcqe_cmpl = &elsiocb->wcqe_cmpl;
-	payload = ((struct lpfc_dmabuf *)elsiocb->context2)->virt;
+	payload = elsiocb->cmd_dmabuf->virt;
 	if (phba->sli_rev == LPFC_SLI_REV4)
 		payload_len = wcqe_cmpl->total_data_placed;
 	else
@@ -10211,8 +10152,8 @@ lpfc_els_unsol_buffer(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	}
 	spin_unlock_irq(&ndlp->lock);
 
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1)
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp)
 		goto dropit;
 	elsiocb->vport = vport;
 
@@ -10568,8 +10509,8 @@ lsrjt:
 	}
 
 	/* Release the reference on this elsiocb, not the ndlp. */
-	lpfc_nlp_put(elsiocb->context1);
-	elsiocb->context1 = NULL;
+	lpfc_nlp_put(elsiocb->ndlp);
+	elsiocb->ndlp = NULL;
 
 	/* Special case.  Driver received an unsolicited command that
 	 * unsupportable given the driver's current state.  Reset the
@@ -10623,13 +10564,13 @@ lpfc_els_unsol_event(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	u32 ulp_command, status, parameter, bde_count = 0;
 	IOCB_t *icmd;
 	struct lpfc_wcqe_complete *wcqe_cmpl = NULL;
-	struct lpfc_dmabuf *bdeBuf1 = elsiocb->context2;
-	struct lpfc_dmabuf *bdeBuf2 = elsiocb->context3;
+	struct lpfc_dmabuf *bdeBuf1 = elsiocb->cmd_dmabuf;
+	struct lpfc_dmabuf *bdeBuf2 = elsiocb->bpl_dmabuf;
 	dma_addr_t paddr;
 
-	elsiocb->context1 = NULL;
-	elsiocb->context2 = NULL;
-	elsiocb->context3 = NULL;
+	elsiocb->cmd_dmabuf = NULL;
+	elsiocb->rsp_dmabuf = NULL;
+	elsiocb->bpl_dmabuf = NULL;
 
 	wcqe_cmpl = &elsiocb->wcqe_cmpl;
 	ulp_command = get_job_cmnd(phba, elsiocb);
@@ -10673,38 +10614,39 @@ lpfc_els_unsol_event(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 
 	/* Account for SLI2 or SLI3 and later unsolicited buffering */
 	if (phba->sli3_options & LPFC_SLI3_HBQ_ENABLED) {
-		elsiocb->context2 = bdeBuf1;
+		elsiocb->cmd_dmabuf = bdeBuf1;
 		if (bde_count == 2)
-			elsiocb->context3 = bdeBuf2;
+			elsiocb->bpl_dmabuf = bdeBuf2;
 	} else {
 		icmd = &elsiocb->iocb;
 		paddr = getPaddr(icmd->un.cont64[0].addrHigh,
 				 icmd->un.cont64[0].addrLow);
-		elsiocb->context2 = lpfc_sli_ringpostbuf_get(phba, pring,
-							     paddr);
+		elsiocb->cmd_dmabuf = lpfc_sli_ringpostbuf_get(phba, pring,
+							       paddr);
 		if (bde_count == 2) {
 			paddr = getPaddr(icmd->un.cont64[1].addrHigh,
 					 icmd->un.cont64[1].addrLow);
-			elsiocb->context3 = lpfc_sli_ringpostbuf_get(phba,
-								       pring,
-								       paddr);
+			elsiocb->bpl_dmabuf = lpfc_sli_ringpostbuf_get(phba,
+									pring,
+									paddr);
 		}
 	}
 
 	lpfc_els_unsol_buffer(phba, pring, vport, elsiocb);
 	/*
 	 * The different unsolicited event handlers would tell us
-	 * if they are done with "mp" by setting context2 to NULL.
+	 * if they are done with "mp" by setting cmd_dmabuf to NULL.
 	 */
-	if (elsiocb->context2) {
-		lpfc_in_buf_free(phba, (struct lpfc_dmabuf *)elsiocb->context2);
-		elsiocb->context2 = NULL;
+	if (elsiocb->cmd_dmabuf) {
+		lpfc_in_buf_free(phba, elsiocb->cmd_dmabuf);
+		elsiocb->cmd_dmabuf = NULL;
 	}
 
-	if (elsiocb->context3) {
-		lpfc_in_buf_free(phba, elsiocb->context3);
-		elsiocb->context3 = NULL;
+	if (elsiocb->bpl_dmabuf) {
+		lpfc_in_buf_free(phba, elsiocb->bpl_dmabuf);
+		elsiocb->bpl_dmabuf = NULL;
 	}
+
 }
 
 static void
@@ -10815,7 +10757,7 @@ lpfc_cmpl_reg_new_vport(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 {
 	struct lpfc_vport *vport = pmb->vport;
 	struct Scsi_Host  *shost = lpfc_shost_from_vport(vport);
-	struct lpfc_nodelist *ndlp = (struct lpfc_nodelist *)pmb->ctx_ndlp;
+	struct lpfc_nodelist *ndlp = pmb->ctx_ndlp;
 	MAILBOX_t *mb = &pmb->u.mb;
 	int rc;
 
@@ -11080,11 +11022,11 @@ lpfc_cmpl_els_fdisc(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 {
 	struct lpfc_vport *vport = cmdiocb->vport;
 	struct Scsi_Host  *shost = lpfc_shost_from_vport(vport);
-	struct lpfc_nodelist *ndlp = (struct lpfc_nodelist *) cmdiocb->context1;
+	struct lpfc_nodelist *ndlp = cmdiocb->ndlp;
 	struct lpfc_nodelist *np;
 	struct lpfc_nodelist *next_np;
 	struct lpfc_iocbq *piocb;
-	struct lpfc_dmabuf *pcmd = cmdiocb->context2, *prsp;
+	struct lpfc_dmabuf *pcmd = cmdiocb->cmd_dmabuf, *prsp;
 	struct serv_parm *sp;
 	uint8_t fabric_param_changed;
 	u32 ulp_status, ulp_word4;
@@ -11222,7 +11164,7 @@ out:
  * IOCB will be sent off HBA at any given time.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the FDISC ELS command.
  *
  * Return code
@@ -11267,7 +11209,7 @@ lpfc_issue_els_fdisc(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 		icmd->ulpCt_l = 0;
 	}
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	*((uint32_t *) (pcmd)) = ELS_CMD_FDISC;
 	pcmd += sizeof(uint32_t); /* CSP Word 1 */
 	memcpy(pcmd, &vport->phba->pport->fc_sparam, sizeof(struct serv_parm));
@@ -11299,8 +11241,8 @@ lpfc_issue_els_fdisc(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp,
 		"Issue FDISC:     did:x%x",
 		did, 0, 0);
 
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1)
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp)
 		goto err_out;
 
 	rc = lpfc_issue_fabric_iocb(phba, elsiocb);
@@ -11344,7 +11286,7 @@ lpfc_cmpl_els_npiv_logo(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	struct Scsi_Host *shost = lpfc_shost_from_vport(vport);
 	u32 ulp_status, ulp_word4, did, tmo;
 
-	ndlp = (struct lpfc_nodelist *)cmdiocb->context1;
+	ndlp = cmdiocb->ndlp;
 
 	ulp_status = get_job_ulpstatus(phba, rspiocb);
 	ulp_word4 = get_job_word4(phba, rspiocb);
@@ -11402,7 +11344,7 @@ lpfc_cmpl_els_npiv_logo(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
  * This routine issues a LOGO ELS command to an @ndlp off a @vport.
  *
  * Note that the ndlp reference count will be incremented by 1 for holding the
- * ndlp and the reference to ndlp will be stored into the context1 field of
+ * ndlp and the reference to ndlp will be stored into the ndlp field of
  * the IOCB for the completion callback function to the LOGO ELS command.
  *
  * Return codes
@@ -11424,7 +11366,7 @@ lpfc_issue_els_npiv_logo(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp)
 	if (!elsiocb)
 		return 1;
 
-	pcmd = (uint8_t *) (((struct lpfc_dmabuf *) elsiocb->context2)->virt);
+	pcmd = (uint8_t *)elsiocb->cmd_dmabuf->virt;
 	*((uint32_t *) (pcmd)) = ELS_CMD_LOGO;
 	pcmd += sizeof(uint32_t);
 
@@ -11441,8 +11383,8 @@ lpfc_issue_els_npiv_logo(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp)
 	spin_lock_irq(&ndlp->lock);
 	ndlp->nlp_flag |= NLP_LOGO_SND;
 	spin_unlock_irq(&ndlp->lock);
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(phba, elsiocb);
 		goto err;
 	}
@@ -12001,12 +11943,12 @@ lpfc_cmpl_els_qfpa(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	struct lpfc_dmabuf *prsp = NULL;
 	struct lpfc_vmid_priority_range *vmid_range = NULL;
 	u32 *data;
-	struct lpfc_dmabuf *dmabuf = cmdiocb->context2;
+	struct lpfc_dmabuf *dmabuf = cmdiocb->cmd_dmabuf;
 	u32 ulp_status = get_job_ulpstatus(phba, rspiocb);
 	u32 ulp_word4 = get_job_word4(phba, rspiocb);
 	u8 *pcmd, max_desc;
 	u32 len, i;
-	struct lpfc_nodelist *ndlp = (struct lpfc_nodelist *)cmdiocb->context1;
+	struct lpfc_nodelist *ndlp = cmdiocb->ndlp;
 
 	prsp = list_get_first(&dmabuf->list, struct lpfc_dmabuf, list);
 	if (!prsp)
@@ -12102,15 +12044,15 @@ int lpfc_issue_els_qfpa(struct lpfc_vport *vport)
 	if (!elsiocb)
 		return -ENOMEM;
 
-	pcmd = (u8 *)(((struct lpfc_dmabuf *)elsiocb->context2)->virt);
+	pcmd = (u8 *)elsiocb->cmd_dmabuf->virt;
 
 	*((u32 *)(pcmd)) = ELS_CMD_QFPA;
 	pcmd += 4;
 
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_qfpa;
 
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(vport->phba, elsiocb);
 		return -ENXIO;
 	}
@@ -12157,7 +12099,7 @@ lpfc_vmid_uvem(struct lpfc_vport *vport,
 	vmid_context->nlp = ndlp;
 	vmid_context->instantiated = instantiated;
 	elsiocb->vmid_tag.vmid_context = vmid_context;
-	pcmd = (u8 *)(((struct lpfc_dmabuf *)elsiocb->context2)->virt);
+	pcmd = (u8 *)elsiocb->cmd_dmabuf->virt;
 
 	if (uuid_is_null((uuid_t *)vport->lpfc_vmid_host_uuid))
 		memcpy(vport->lpfc_vmid_host_uuid, vmid->host_vmid,
@@ -12192,8 +12134,8 @@ lpfc_vmid_uvem(struct lpfc_vport *vport,
 
 	elsiocb->cmd_cmpl = lpfc_cmpl_els_uvem;
 
-	elsiocb->context1 = lpfc_nlp_get(ndlp);
-	if (!elsiocb->context1) {
+	elsiocb->ndlp = lpfc_nlp_get(ndlp);
+	if (!elsiocb->ndlp) {
 		lpfc_els_free_iocb(vport->phba, elsiocb);
 		goto out;
 	}
@@ -12219,12 +12161,12 @@ lpfc_cmpl_els_uvem(struct lpfc_hba *phba, struct lpfc_iocbq *icmdiocb,
 	struct lpfc_dmabuf *prsp = NULL;
 	struct lpfc_vmid_context *vmid_context =
 	    icmdiocb->vmid_tag.vmid_context;
-	struct lpfc_nodelist *ndlp = icmdiocb->context1;
+	struct lpfc_nodelist *ndlp = icmdiocb->ndlp;
 	u8 *pcmd;
 	u32 *data;
 	u32 ulp_status = get_job_ulpstatus(phba, rspiocb);
 	u32 ulp_word4 = get_job_word4(phba, rspiocb);
-	struct lpfc_dmabuf *dmabuf = icmdiocb->context2;
+	struct lpfc_dmabuf *dmabuf = icmdiocb->cmd_dmabuf;
 	struct lpfc_vmid *vmid;
 
 	vmid = vmid_context->vmp;

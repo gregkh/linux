@@ -14,8 +14,9 @@
 #include <linux/memblock.h>
 #include <linux/libfdt.h>
 #include <linux/crash_core.h>
+#include <linux/of.h>
+#include <linux/of_fdt.h>
 #include <asm/cacheflush.h>
-#include <asm/prom.h>
 #include <asm/kdump.h>
 #include <mm/mmu_decl.h>
 #include <generated/utsrelease.h>

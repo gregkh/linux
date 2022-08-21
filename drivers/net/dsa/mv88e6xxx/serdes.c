@@ -53,6 +53,14 @@ static int mv88e6xxx_serdes_pcs_get_state(struct mv88e6xxx_chip *chip,
 					  u16 bmsr, u16 lpa, u16 status,
 					  struct phylink_link_state *state)
 {
+	state->link = false;
+
+	/* If the BMSR reports that the link had failed, report this to
+	 * phylink.
+	 */
+	if (!(bmsr & BMSR_LSTATUS))
+		return 0;
+
 	state->link = !!(status & MV88E6390_SGMII_PHY_STATUS_LINK);
 	state->an_complete = !!(bmsr & BMSR_ANEGCOMPLETE);
 
@@ -191,7 +199,7 @@ int mv88e6352_serdes_pcs_get_state(struct mv88e6xxx_chip *chip, int port,
 
 	err = mv88e6352_serdes_read(chip, MII_BMSR, &bmsr);
 	if (err) {
-		dev_err(chip->dev, "can't read Serdes BMSR: %d\n", err);
+		dev_err(chip->dev, "can't read Serdes PHY BMSR: %d\n", err);
 		return err;
 	}
 

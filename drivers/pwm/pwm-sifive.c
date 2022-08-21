@@ -135,10 +135,9 @@ static int pwm_sifive_enable(struct pwm_chip *chip, bool enable)
 			dev_err(ddata->chip.dev, "Enable clk failed\n");
 			return ret;
 		}
-	}
-
-	if (!enable)
+	} else {
 		clk_disable(ddata->clk);
+	}
 
 	return 0;
 }

@@ -657,6 +657,8 @@ static int coda_try_fmt_vid_cap(struct file *file, void *priv,
 	const struct coda_q_data *q_data_src;
 	const struct coda_codec *codec;
 	struct vb2_queue *src_vq;
+	int hscale = 0;
+	int vscale = 0;
 	int ret;
 	bool use_vdoa;
 
@@ -673,8 +675,13 @@ static int coda_try_fmt_vid_cap(struct file *file, void *priv,
 	 */
 	src_vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, V4L2_BUF_TYPE_VIDEO_OUTPUT);
 	if (vb2_is_streaming(src_vq)) {
-		f->fmt.pix.width = q_data_src->width;
-		f->fmt.pix.height = q_data_src->height;
+		if (q_data_src->fourcc == V4L2_PIX_FMT_JPEG &&
+		    ctx->dev->devtype->product == CODA_960) {
+			hscale = coda_jpeg_scale(q_data_src->width, f->fmt.pix.width);
+			vscale = coda_jpeg_scale(q_data_src->height, f->fmt.pix.height);
+		}
+		f->fmt.pix.width = q_data_src->width >> hscale;
+		f->fmt.pix.height = q_data_src->height >> vscale;
 
 		if (q_data_src->fourcc == V4L2_PIX_FMT_JPEG) {
 			if (ctx->params.jpeg_chroma_subsampling ==
@@ -704,8 +711,8 @@ static int coda_try_fmt_vid_cap(struct file *file, void *priv,
 
 	/* The decoders always write complete macroblocks or MCUs */
 	if (ctx->inst_type == CODA_INST_DECODER) {
-		f->fmt.pix.bytesperline = round_up(f->fmt.pix.width, 16);
-		f->fmt.pix.height = round_up(f->fmt.pix.height, 16);
+		f->fmt.pix.bytesperline = round_up(f->fmt.pix.width, 16 >> hscale);
+		f->fmt.pix.height = round_up(f->fmt.pix.height, 16 >> vscale);
 		if (codec->src_fourcc == V4L2_PIX_FMT_JPEG &&
 		    f->fmt.pix.pixelformat == V4L2_PIX_FMT_YUV422P) {
 			f->fmt.pix.sizeimage = f->fmt.pix.bytesperline *
@@ -850,17 +857,26 @@ static int coda_s_fmt_vid_cap(struct file *file, void *priv,
 	struct coda_q_data *q_data_src;
 	const struct coda_codec *codec;
 	struct v4l2_rect r;
+	int hscale = 0;
+	int vscale = 0;
 	int ret;
+
+	q_data_src = get_q_data(ctx, V4L2_BUF_TYPE_VIDEO_OUTPUT);
+
+	if (q_data_src->fourcc == V4L2_PIX_FMT_JPEG &&
+	    ctx->dev->devtype->product == CODA_960) {
+		hscale = coda_jpeg_scale(q_data_src->width, f->fmt.pix.width);
+		vscale = coda_jpeg_scale(q_data_src->height, f->fmt.pix.height);
+	}
 
 	ret = coda_try_fmt_vid_cap(file, priv, f);
 	if (ret)
 		return ret;
 
-	q_data_src = get_q_data(ctx, V4L2_BUF_TYPE_VIDEO_OUTPUT);
 	r.left = 0;
 	r.top = 0;
-	r.width = q_data_src->width;
-	r.height = q_data_src->height;
+	r.width = q_data_src->width >> hscale;
+	r.height = q_data_src->height >> vscale;
 
 	ret = coda_s_fmt(ctx, f, &r);
 	if (ret)
@@ -1091,17 +1107,6 @@ static int coda_s_selection(struct file *file, void *fh,
 	}
 }
 
-static int coda_try_encoder_cmd(struct file *file, void *fh,
-				struct v4l2_encoder_cmd *ec)
-{
-	struct coda_ctx *ctx = fh_to_ctx(fh);
-
-	if (ctx->inst_type != CODA_INST_ENCODER)
-		return -ENOTTY;
-
-	return v4l2_m2m_ioctl_try_encoder_cmd(file, fh, ec);
-}
-
 static void coda_wake_up_capture_queue(struct coda_ctx *ctx)
 {
 	struct vb2_queue *dst_vq;
@@ -1120,7 +1125,7 @@ static int coda_encoder_cmd(struct file *file, void *fh,
 	struct vb2_v4l2_buffer *buf;
 	int ret;
 
-	ret = coda_try_encoder_cmd(file, fh, ec);
+	ret = v4l2_m2m_ioctl_try_encoder_cmd(file, fh, ec);
 	if (ret < 0)
 		return ret;
 
@@ -1147,17 +1152,6 @@ static int coda_encoder_cmd(struct file *file, void *fh,
 	mutex_unlock(&ctx->wakeup_mutex);
 
 	return 0;
-}
-
-static int coda_try_decoder_cmd(struct file *file, void *fh,
-				struct v4l2_decoder_cmd *dc)
-{
-	struct coda_ctx *ctx = fh_to_ctx(fh);
-
-	if (ctx->inst_type != CODA_INST_DECODER)
-		return -ENOTTY;
-
-	return v4l2_m2m_ioctl_try_decoder_cmd(file, fh, dc);
 }
 
 static bool coda_mark_last_meta(struct coda_ctx *ctx)
@@ -1216,7 +1210,7 @@ static int coda_decoder_cmd(struct file *file, void *fh,
 	bool wakeup;
 	int ret;
 
-	ret = coda_try_decoder_cmd(file, fh, dc);
+	ret = v4l2_m2m_ioctl_try_decoder_cmd(file, fh, dc);
 	if (ret < 0)
 		return ret;
 
@@ -1290,9 +1284,6 @@ static int coda_enum_framesizes(struct file *file, void *fh,
 	struct coda_ctx *ctx = fh_to_ctx(fh);
 	struct coda_q_data *q_data_dst;
 	const struct coda_codec *codec;
-
-	if (ctx->inst_type != CODA_INST_ENCODER)
-		return -ENOTTY;
 
 	if (fsize->index)
 		return -EINVAL;
@@ -1506,9 +1497,9 @@ static const struct v4l2_ioctl_ops coda_ioctl_ops = {
 	.vidioc_g_selection	= coda_g_selection,
 	.vidioc_s_selection	= coda_s_selection,
 
-	.vidioc_try_encoder_cmd	= coda_try_encoder_cmd,
+	.vidioc_try_encoder_cmd	= v4l2_m2m_ioctl_try_encoder_cmd,
 	.vidioc_encoder_cmd	= coda_encoder_cmd,
-	.vidioc_try_decoder_cmd	= coda_try_decoder_cmd,
+	.vidioc_try_decoder_cmd	= v4l2_m2m_ioctl_try_decoder_cmd,
 	.vidioc_decoder_cmd	= coda_decoder_cmd,
 
 	.vidioc_g_parm		= coda_g_parm,
@@ -1543,12 +1534,8 @@ static void coda_pic_run_work(struct work_struct *work)
 	mutex_lock(&dev->coda_mutex);
 
 	ret = ctx->ops->prepare_run(ctx);
-	if (ret < 0 && ctx->inst_type == CODA_INST_DECODER) {
-		mutex_unlock(&dev->coda_mutex);
-		mutex_unlock(&ctx->buffer_mutex);
-		/* job_finish scheduled by prepare_decode */
-		return;
-	}
+	if (ret < 0 && ctx->inst_type == CODA_INST_DECODER)
+		goto out;
 
 	if (!wait_for_completion_timeout(&ctx->completion,
 					 msecs_to_jiffies(1000))) {
@@ -1570,6 +1557,7 @@ static void coda_pic_run_work(struct work_struct *work)
 	    ctx->ops->seq_end_work)
 		queue_work(dev->workqueue, &ctx->seq_end_work);
 
+out:
 	mutex_unlock(&dev->coda_mutex);
 	mutex_unlock(&ctx->buffer_mutex);
 
@@ -1673,13 +1661,18 @@ static void set_default_params(struct coda_ctx *ctx)
 	csize = coda_estimate_sizeimage(ctx, usize, max_w, max_h);
 
 	ctx->params.codec_mode = ctx->codec->mode;
-	if (ctx->cvd->src_formats[0] == V4L2_PIX_FMT_JPEG)
-		ctx->colorspace = V4L2_COLORSPACE_JPEG;
-	else
+	if (ctx->cvd->src_formats[0] == V4L2_PIX_FMT_JPEG ||
+	    ctx->cvd->dst_formats[0] == V4L2_PIX_FMT_JPEG) {
+		ctx->colorspace = V4L2_COLORSPACE_SRGB;
+		ctx->xfer_func = V4L2_XFER_FUNC_SRGB;
+		ctx->ycbcr_enc = V4L2_YCBCR_ENC_601;
+		ctx->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+	} else {
 		ctx->colorspace = V4L2_COLORSPACE_REC709;
-	ctx->xfer_func = V4L2_XFER_FUNC_DEFAULT;
-	ctx->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
-	ctx->quantization = V4L2_QUANTIZATION_DEFAULT;
+		ctx->xfer_func = V4L2_XFER_FUNC_DEFAULT;
+		ctx->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+		ctx->quantization = V4L2_QUANTIZATION_DEFAULT;
+	}
 	ctx->params.framerate = 30;
 
 	/* Default formats for output and input queues */
@@ -2019,13 +2012,13 @@ static int coda_start_streaming(struct vb2_queue *q, unsigned int count)
 		 */
 		if (q_data_src->fourcc == V4L2_PIX_FMT_JPEG) {
 			buf = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
-			ret = coda_jpeg_decode_header(ctx, &buf->vb2_buf);
-			if (ret < 0) {
-				v4l2_err(v4l2_dev,
-					 "failed to decode JPEG header: %d\n",
-					 ret);
-				goto err;
-			}
+			coda_jpeg_decode_header(ctx, &buf->vb2_buf);
+			/*
+			 * We have to start streaming even if the first buffer
+			 * does not contain a valid JPEG image. The error will
+			 * be caught during device run and will be signalled
+			 * via the capture buffer error flag.
+			 */
 
 			q_data_dst = get_q_data(ctx, V4L2_BUF_TYPE_VIDEO_CAPTURE);
 			q_data_dst->width = round_up(q_data_src->width, 16);
@@ -2911,6 +2904,23 @@ static int coda_register_device(struct coda_dev *dev, int i)
 	v4l2_disable_ioctl(vfd, VIDIOC_CROPCAP);
 	v4l2_disable_ioctl(vfd, VIDIOC_G_CROP);
 	v4l2_disable_ioctl(vfd, VIDIOC_S_CROP);
+
+	if (dev->devtype->vdevs[i]->type == CODA_INST_ENCODER) {
+		v4l2_disable_ioctl(vfd, VIDIOC_DECODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_TRY_DECODER_CMD);
+		if (dev->devtype->vdevs[i]->dst_formats[0] == V4L2_PIX_FMT_JPEG) {
+			v4l2_disable_ioctl(vfd, VIDIOC_ENUM_FRAMEINTERVALS);
+			v4l2_disable_ioctl(vfd, VIDIOC_G_PARM);
+			v4l2_disable_ioctl(vfd, VIDIOC_S_PARM);
+		}
+	} else {
+		v4l2_disable_ioctl(vfd, VIDIOC_ENCODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_TRY_ENCODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_ENUM_FRAMESIZES);
+		v4l2_disable_ioctl(vfd, VIDIOC_ENUM_FRAMEINTERVALS);
+		v4l2_disable_ioctl(vfd, VIDIOC_G_PARM);
+		v4l2_disable_ioctl(vfd, VIDIOC_S_PARM);
+	}
 
 	ret = video_register_device(vfd, VFL_TYPE_VIDEO, 0);
 	if (!ret)

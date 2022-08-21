@@ -22,6 +22,7 @@
 #include <sys/utsname.h>
 #include <sys/sendfile.h>
 #include <sys/sysmacros.h>
+#include <sys/random.h>
 #include <linux/random.h>
 #include <linux/version.h>
 
@@ -59,6 +60,8 @@ static void seed_rng(void)
 {
 	int bits = 256, fd;
 
+	if (!getrandom(NULL, 0, GRND_NONBLOCK))
+		return;
 	pretty_message("[+] Fake seeding RNG...");
 	fd = open("/dev/random", O_WRONLY);
 	if (fd < 0)

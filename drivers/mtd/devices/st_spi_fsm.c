@@ -2128,7 +2128,11 @@ static int stfsm_remove(struct platform_device *pdev)
 {
 	struct stfsm *fsm = platform_get_drvdata(pdev);
 
-	return mtd_device_unregister(&fsm->mtd);
+	WARN_ON(mtd_device_unregister(&fsm->mtd));
+
+	clk_disable_unprepare(fsm->clk);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

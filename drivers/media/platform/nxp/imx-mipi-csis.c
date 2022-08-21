@@ -243,12 +243,6 @@
 #define MIPI_CSI2_DATA_TYPE_RAW14		0x2d
 #define MIPI_CSI2_DATA_TYPE_USER(x)		(0x30 + (x))
 
-enum {
-	ST_POWERED	= 1,
-	ST_STREAMING	= 2,
-	ST_SUSPENDED	= 4,
-};
-
 struct mipi_csis_event {
 	bool debug;
 	u32 mask;
@@ -328,10 +322,9 @@ struct mipi_csis_device {
 	u32 hs_settle;
 	u32 clk_settle;
 
-	struct mutex lock;	/* Protect csis_fmt, format_mbus and state */
+	struct mutex lock;	/* Protect csis_fmt and format_mbus */
 	const struct csis_pix_format *csis_fmt;
 	struct v4l2_mbus_framefmt format_mbus[CSIS_PADS_NUM];
-	u32 state;
 
 	spinlock_t slock;	/* Protect events */
 	struct mipi_csis_event events[MIPI_CSIS_NUM_EVENTS];
@@ -470,6 +463,34 @@ static const struct csis_pix_format mipi_csis_formats[] = {
 		.output = MEDIA_BUS_FMT_SRGGB14_1X14,
 		.data_type = MIPI_CSI2_DATA_TYPE_RAW14,
 		.width = 14,
+	},
+	/* JPEG */
+	{
+		.code = MEDIA_BUS_FMT_JPEG_1X8,
+		.output = MEDIA_BUS_FMT_JPEG_1X8,
+		/*
+		 * Map JPEG_1X8 to the RAW8 datatype.
+		 *
+		 * The CSI-2 specification suggests in Annex A "JPEG8 Data
+		 * Format (informative)" to transmit JPEG data using one of the
+		 * Data Types aimed to represent arbitrary data, such as the
+		 * "User Defined Data Type 1" (0x30).
+		 *
+		 * However, when configured with a User Defined Data Type, the
+		 * CSIS outputs data in quad pixel mode regardless of the mode
+		 * selected in the MIPI_CSIS_ISP_CONFIG_CH register. Neither of
+		 * the IP cores connected to the CSIS in i.MX SoCs (CSI bridge
+		 * or ISI) support quad pixel mode, so this will never work in
+		 * practice.
+		 *
+		 * Some sensors (such as the OV5640) send JPEG data using the
+		 * RAW8 data type. This is usable and works, so map the JPEG
+		 * format to RAW8. If the CSIS ends up being integrated in an
+		 * SoC that can support quad pixel mode, this will have to be
+		 * revisited.
+		 */
+		.data_type = MIPI_CSI2_DATA_TYPE_RAW8,
+		.width = 8,
 	}
 };
 
@@ -852,12 +873,17 @@ static int mipi_csis_dump_regs(struct mipi_csis_device *csis)
 	unsigned int i;
 	u32 cfg;
 
+	if (!pm_runtime_get_if_in_use(csis->dev))
+		return 0;
+
 	dev_info(csis->dev, "--- REGISTERS ---\n");
 
 	for (i = 0; i < ARRAY_SIZE(registers); i++) {
 		cfg = mipi_csis_read(csis, registers[i].offset);
 		dev_info(csis->dev, "%14s: 0x%08x\n", registers[i].name, cfg);
 	}
+
+	pm_runtime_put(csis->dev);
 
 	return 0;
 }
@@ -906,55 +932,49 @@ static int mipi_csis_s_stream(struct v4l2_subdev *sd, int enable)
 	struct mipi_csis_device *csis = sd_to_mipi_csis_device(sd);
 	int ret;
 
-	if (enable) {
-		ret = mipi_csis_calculate_params(csis);
-		if (ret < 0)
-			return ret;
+	if (!enable) {
+		mutex_lock(&csis->lock);
 
-		mipi_csis_clear_counters(csis);
+		v4l2_subdev_call(csis->src_sd, video, s_stream, 0);
 
-		ret = pm_runtime_resume_and_get(csis->dev);
-		if (ret < 0)
-			return ret;
+		mipi_csis_stop_stream(csis);
+		if (csis->debug.enable)
+			mipi_csis_log_counters(csis, true);
 
-		ret = v4l2_subdev_call(csis->src_sd, core, s_power, 1);
-		if (ret < 0 && ret != -ENOIOCTLCMD)
-			goto done;
+		mutex_unlock(&csis->lock);
+
+		pm_runtime_put(csis->dev);
+
+		return 0;
 	}
+
+	ret = mipi_csis_calculate_params(csis);
+	if (ret < 0)
+		return ret;
+
+	mipi_csis_clear_counters(csis);
+
+	ret = pm_runtime_resume_and_get(csis->dev);
+	if (ret < 0)
+		return ret;
 
 	mutex_lock(&csis->lock);
 
-	if (enable) {
-		if (csis->state & ST_SUSPENDED) {
-			ret = -EBUSY;
-			goto unlock;
-		}
+	mipi_csis_start_stream(csis);
+	ret = v4l2_subdev_call(csis->src_sd, video, s_stream, 1);
+	if (ret < 0)
+		goto error;
 
-		mipi_csis_start_stream(csis);
-		ret = v4l2_subdev_call(csis->src_sd, video, s_stream, 1);
-		if (ret < 0)
-			goto unlock;
+	mipi_csis_log_counters(csis, true);
 
-		mipi_csis_log_counters(csis, true);
-
-		csis->state |= ST_STREAMING;
-	} else {
-		v4l2_subdev_call(csis->src_sd, video, s_stream, 0);
-		ret = v4l2_subdev_call(csis->src_sd, core, s_power, 0);
-		if (ret == -ENOIOCTLCMD)
-			ret = 0;
-		mipi_csis_stop_stream(csis);
-		csis->state &= ~ST_STREAMING;
-		if (csis->debug.enable)
-			mipi_csis_log_counters(csis, true);
-	}
-
-unlock:
 	mutex_unlock(&csis->lock);
 
-done:
-	if (!enable || ret < 0)
-		pm_runtime_put(csis->dev);
+	return 0;
+
+error:
+	mipi_csis_stop_stream(csis);
+	mutex_unlock(&csis->lock);
+	pm_runtime_put(csis->dev);
 
 	return ret;
 }
@@ -1139,11 +1159,9 @@ static int mipi_csis_log_status(struct v4l2_subdev *sd)
 {
 	struct mipi_csis_device *csis = sd_to_mipi_csis_device(sd);
 
-	mutex_lock(&csis->lock);
 	mipi_csis_log_counters(csis, true);
-	if (csis->debug.enable && (csis->state & ST_POWERED))
+	if (csis->debug.enable)
 		mipi_csis_dump_regs(csis);
-	mutex_unlock(&csis->lock);
 
 	return 0;
 }
@@ -1294,83 +1312,49 @@ err_parse:
  * Suspend/resume
  */
 
-static int mipi_csis_pm_suspend(struct device *dev, bool runtime)
-{
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
-	struct mipi_csis_device *csis = sd_to_mipi_csis_device(sd);
-	int ret = 0;
-
-	mutex_lock(&csis->lock);
-	if (csis->state & ST_POWERED) {
-		mipi_csis_stop_stream(csis);
-		ret = mipi_csis_phy_disable(csis);
-		if (ret)
-			goto unlock;
-		mipi_csis_clk_disable(csis);
-		csis->state &= ~ST_POWERED;
-		if (!runtime)
-			csis->state |= ST_SUSPENDED;
-	}
-
-unlock:
-	mutex_unlock(&csis->lock);
-
-	return ret ? -EAGAIN : 0;
-}
-
-static int mipi_csis_pm_resume(struct device *dev, bool runtime)
-{
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
-	struct mipi_csis_device *csis = sd_to_mipi_csis_device(sd);
-	int ret = 0;
-
-	mutex_lock(&csis->lock);
-	if (!runtime && !(csis->state & ST_SUSPENDED))
-		goto unlock;
-
-	if (!(csis->state & ST_POWERED)) {
-		ret = mipi_csis_phy_enable(csis);
-		if (ret)
-			goto unlock;
-
-		csis->state |= ST_POWERED;
-		mipi_csis_clk_enable(csis);
-	}
-	if (csis->state & ST_STREAMING)
-		mipi_csis_start_stream(csis);
-
-	csis->state &= ~ST_SUSPENDED;
-
-unlock:
-	mutex_unlock(&csis->lock);
-
-	return ret ? -EAGAIN : 0;
-}
-
-static int __maybe_unused mipi_csis_suspend(struct device *dev)
-{
-	return mipi_csis_pm_suspend(dev, false);
-}
-
-static int __maybe_unused mipi_csis_resume(struct device *dev)
-{
-	return mipi_csis_pm_resume(dev, false);
-}
-
 static int __maybe_unused mipi_csis_runtime_suspend(struct device *dev)
 {
-	return mipi_csis_pm_suspend(dev, true);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct mipi_csis_device *csis = sd_to_mipi_csis_device(sd);
+	int ret = 0;
+
+	mutex_lock(&csis->lock);
+
+	ret = mipi_csis_phy_disable(csis);
+	if (ret)
+		goto unlock;
+
+	mipi_csis_clk_disable(csis);
+
+unlock:
+	mutex_unlock(&csis->lock);
+
+	return ret ? -EAGAIN : 0;
 }
 
 static int __maybe_unused mipi_csis_runtime_resume(struct device *dev)
 {
-	return mipi_csis_pm_resume(dev, true);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct mipi_csis_device *csis = sd_to_mipi_csis_device(sd);
+	int ret = 0;
+
+	mutex_lock(&csis->lock);
+
+	ret = mipi_csis_phy_enable(csis);
+	if (ret)
+		goto unlock;
+
+	mipi_csis_clk_enable(csis);
+
+unlock:
+	mutex_unlock(&csis->lock);
+
+	return ret ? -EAGAIN : 0;
 }
 
 static const struct dev_pm_ops mipi_csis_pm_ops = {
 	SET_RUNTIME_PM_OPS(mipi_csis_runtime_suspend, mipi_csis_runtime_resume,
 			   NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(mipi_csis_suspend, mipi_csis_resume)
 };
 
 /* -----------------------------------------------------------------------------
@@ -1495,7 +1479,7 @@ static int mipi_csis_probe(struct platform_device *pdev)
 	/* Enable runtime PM. */
 	pm_runtime_enable(dev);
 	if (!pm_runtime_enabled(dev)) {
-		ret = mipi_csis_pm_resume(dev, true);
+		ret = mipi_csis_runtime_resume(dev);
 		if (ret < 0)
 			goto unregister_all;
 	}
@@ -1530,7 +1514,7 @@ static int mipi_csis_remove(struct platform_device *pdev)
 	v4l2_async_unregister_subdev(&csis->sd);
 
 	pm_runtime_disable(&pdev->dev);
-	mipi_csis_pm_suspend(&pdev->dev, true);
+	mipi_csis_runtime_suspend(&pdev->dev);
 	mipi_csis_clk_disable(csis);
 	media_entity_cleanup(&csis->sd.entity);
 	mutex_destroy(&csis->lock);

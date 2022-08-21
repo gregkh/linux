@@ -740,3 +740,6 @@ config PLDMFW
 
 config ASN1_ENCODER
        tristate
+
+config POLYNOMIAL
+       tristate

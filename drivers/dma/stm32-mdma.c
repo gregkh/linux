@@ -72,6 +72,7 @@
 #define STM32_MDMA_CCR_WEX		BIT(14)
 #define STM32_MDMA_CCR_HEX		BIT(13)
 #define STM32_MDMA_CCR_BEX		BIT(12)
+#define STM32_MDMA_CCR_SM		BIT(8)
 #define STM32_MDMA_CCR_PL_MASK		GENMASK(7, 6)
 #define STM32_MDMA_CCR_PL(n)		FIELD_PREP(STM32_MDMA_CCR_PL_MASK, (n))
 #define STM32_MDMA_CCR_TCIE		BIT(5)
@@ -247,6 +248,7 @@ struct stm32_mdma_device {
 	u32 nr_channels;
 	u32 nr_requests;
 	u32 nr_ahb_addr_masks;
+	u32 chan_reserved;
 	struct stm32_mdma_chan chan[STM32_MDMA_MAX_CHANNELS];
 	u32 ahb_addr_masks[];
 };
@@ -1343,9 +1345,12 @@ static irqreturn_t stm32_mdma_irq_handler(int irq, void *devid)
 
 	if (!(status & ien)) {
 		spin_unlock(&chan->vchan.lock);
-		dev_warn(chan2dev(chan),
-			 "spurious it (status=0x%04x, ien=0x%04x)\n",
-			 status, ien);
+		if (chan->busy)
+			dev_warn(chan2dev(chan),
+				 "spurious it (status=0x%04x, ien=0x%04x)\n", status, ien);
+		else
+			dev_dbg(chan2dev(chan),
+				"spurious it (status=0x%04x, ien=0x%04x)\n", status, ien);
 		return IRQ_NONE;
 	}
 
@@ -1445,10 +1450,23 @@ static void stm32_mdma_free_chan_resources(struct dma_chan *c)
 	chan->desc_pool = NULL;
 }
 
+static bool stm32_mdma_filter_fn(struct dma_chan *c, void *fn_param)
+{
+	struct stm32_mdma_chan *chan = to_stm32_mdma_chan(c);
+	struct stm32_mdma_device *dmadev = stm32_mdma_get_dev(chan);
+
+	/* Check if chan is marked Secure */
+	if (dmadev->chan_reserved & BIT(chan->id))
+		return false;
+
+	return true;
+}
+
 static struct dma_chan *stm32_mdma_of_xlate(struct of_phandle_args *dma_spec,
 					    struct of_dma *ofdma)
 {
 	struct stm32_mdma_device *dmadev = ofdma->of_dma_data;
+	dma_cap_mask_t mask = dmadev->ddev.cap_mask;
 	struct stm32_mdma_chan *chan;
 	struct dma_chan *c;
 	struct stm32_mdma_chan_config config;
@@ -1474,7 +1492,7 @@ static struct dma_chan *stm32_mdma_of_xlate(struct of_phandle_args *dma_spec,
 		return NULL;
 	}
 
-	c = dma_get_any_slave_channel(&dmadev->ddev);
+	c = __dma_request_channel(&mask, stm32_mdma_filter_fn, &config, ofdma->of_node);
 	if (!c) {
 		dev_err(mdma2dev(dmadev), "No more channels available\n");
 		return NULL;
@@ -1604,6 +1622,10 @@ static int stm32_mdma_probe(struct platform_device *pdev)
 	for (i = 0; i < dmadev->nr_channels; i++) {
 		chan = &dmadev->chan[i];
 		chan->id = i;
+
+		if (stm32_mdma_read(dmadev, STM32_MDMA_CCR(i)) & STM32_MDMA_CCR_SM)
+			dmadev->chan_reserved |= BIT(i);
+
 		chan->vchan.desc_free = stm32_mdma_desc_free;
 		vchan_init(&chan->vchan, dd);
 	}

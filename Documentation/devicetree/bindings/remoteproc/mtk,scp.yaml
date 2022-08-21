@@ -44,6 +44,19 @@ properties:
   clock-names:
     const: main
 
+  interrupts:
+    maxItems: 1
+
+  firmware-name:
+    $ref: /schemas/types.yaml#/definitions/string
+    description:
+      If present, name (or relative path) of the file within the
+      firmware search path containing the firmware image used when
+      initializing SCP.
+
+  memory-region:
+    maxItems: 1
+
 required:
   - compatible
   - reg

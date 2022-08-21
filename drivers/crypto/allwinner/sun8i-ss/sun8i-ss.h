@@ -82,6 +82,8 @@
 #define PRNG_DATA_SIZE (160 / 8)
 #define PRNG_SEED_SIZE DIV_ROUND_UP(175, 8)
 
+#define MAX_PAD_SIZE 4096
+
 /*
  * struct ss_clock - Describe clocks used by sun8i-ss
  * @name:       Name of clock needed by this variant
@@ -237,6 +239,10 @@ struct sun8i_ss_hash_tfm_ctx {
 	struct crypto_engine_ctx enginectx;
 	struct crypto_ahash *fallback_tfm;
 	struct sun8i_ss_dev *ss;
+	u8 *ipad;
+	u8 *opad;
+	u8 key[SHA256_BLOCK_SIZE];
+	int keylen;
 };
 
 /*
@@ -277,11 +283,14 @@ struct sun8i_ss_alg_template {
 		struct rng_alg rng;
 		struct ahash_alg hash;
 	} alg;
-#ifdef CONFIG_CRYPTO_DEV_SUN8I_SS_DEBUG
 	unsigned long stat_req;
 	unsigned long stat_fb;
 	unsigned long stat_bytes;
-#endif
+	unsigned long stat_fb_len;
+	unsigned long stat_fb_sglen;
+	unsigned long stat_fb_align;
+	unsigned long stat_fb_sgnum;
+	char fbname[CRYPTO_MAX_ALG_NAME];
 };
 
 int sun8i_ss_enqueue(struct crypto_async_request *areq, u32 type);
@@ -314,3 +323,5 @@ int sun8i_ss_hash_update(struct ahash_request *areq);
 int sun8i_ss_hash_finup(struct ahash_request *areq);
 int sun8i_ss_hash_digest(struct ahash_request *areq);
 int sun8i_ss_hash_run(struct crypto_engine *engine, void *breq);
+int sun8i_ss_hmac_setkey(struct crypto_ahash *ahash, const u8 *key,
+			 unsigned int keylen);

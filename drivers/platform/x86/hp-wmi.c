@@ -611,6 +611,7 @@ static int hp_wmi_rfkill2_refresh(void)
 	for (i = 0; i < rfkill2_count; i++) {
 		int num = rfkill2[i].num;
 		struct bios_rfkill2_device_state *devstate;
+
 		devstate = &state.device[num];
 
 		if (num >= state.count ||
@@ -631,6 +632,7 @@ static ssize_t display_show(struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
 	int value = hp_wmi_read_int(HPWMI_DISPLAY_QUERY);
+
 	if (value < 0)
 		return value;
 	return sprintf(buf, "%d\n", value);
@@ -640,6 +642,7 @@ static ssize_t hddtemp_show(struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
 	int value = hp_wmi_read_int(HPWMI_HDDTEMP_QUERY);
+
 	if (value < 0)
 		return value;
 	return sprintf(buf, "%d\n", value);
@@ -649,6 +652,7 @@ static ssize_t als_show(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
 	int value = hp_wmi_read_int(HPWMI_ALS_QUERY);
+
 	if (value < 0)
 		return value;
 	return sprintf(buf, "%d\n", value);
@@ -658,6 +662,7 @@ static ssize_t dock_show(struct device *dev, struct device_attribute *attr,
 			 char *buf)
 {
 	int value = hp_wmi_get_dock_state();
+
 	if (value < 0)
 		return value;
 	return sprintf(buf, "%d\n", value);
@@ -667,6 +672,7 @@ static ssize_t tablet_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
 	int value = hp_wmi_get_tablet_mode();
+
 	if (value < 0)
 		return value;
 	return sprintf(buf, "%d\n", value);
@@ -677,6 +683,7 @@ static ssize_t postcode_show(struct device *dev, struct device_attribute *attr,
 {
 	/* Get the POST error code of previous boot failure. */
 	int value = hp_wmi_read_int(HPWMI_POSTCODEERROR_QUERY);
+
 	if (value < 0)
 		return value;
 	return sprintf(buf, "0x%x\n", value);
@@ -1021,6 +1028,7 @@ static int __init hp_wmi_rfkill2_setup(struct platform_device *device)
 		struct rfkill *rfkill;
 		enum rfkill_type type;
 		char *name;
+
 		switch (state.device[i].radio_type) {
 		case HPWMI_WIFI:
 			type = RFKILL_TYPE_WLAN;

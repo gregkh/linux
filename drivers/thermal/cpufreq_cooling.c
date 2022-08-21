@@ -21,6 +21,7 @@
 #include <linux/pm_qos.h>
 #include <linux/slab.h>
 #include <linux/thermal.h>
+#include <linux/units.h>
 
 #include <trace/events/thermal.h>
 
@@ -101,6 +102,7 @@ static unsigned long get_level(struct cpufreq_cooling_device *cpufreq_cdev,
 static u32 cpu_freq_to_power(struct cpufreq_cooling_device *cpufreq_cdev,
 			     u32 freq)
 {
+	unsigned long power_mw;
 	int i;
 
 	for (i = cpufreq_cdev->max_level - 1; i >= 0; i--) {
@@ -108,16 +110,23 @@ static u32 cpu_freq_to_power(struct cpufreq_cooling_device *cpufreq_cdev,
 			break;
 	}
 
-	return cpufreq_cdev->em->table[i + 1].power;
+	power_mw = cpufreq_cdev->em->table[i + 1].power;
+	power_mw /= MICROWATT_PER_MILLIWATT;
+
+	return power_mw;
 }
 
 static u32 cpu_power_to_freq(struct cpufreq_cooling_device *cpufreq_cdev,
 			     u32 power)
 {
+	unsigned long em_power_mw;
 	int i;
 
 	for (i = cpufreq_cdev->max_level; i > 0; i--) {
-		if (power >= cpufreq_cdev->em->table[i].power)
+		/* Convert EM power to milli-Watts to make safe comparison */
+		em_power_mw = cpufreq_cdev->em->table[i].power;
+		em_power_mw /= MICROWATT_PER_MILLIWATT;
+		if (power >= em_power_mw)
 			break;
 	}
 
@@ -328,7 +337,7 @@ static inline bool em_is_sane(struct cpufreq_cooling_device *cpufreq_cdev,
 	struct cpufreq_policy *policy;
 	unsigned int nr_levels;
 
-	if (!em)
+	if (!em || em_is_artificial(em))
 		return false;
 
 	policy = cpufreq_cdev->policy;

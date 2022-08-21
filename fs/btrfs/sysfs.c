@@ -394,11 +394,9 @@ static ssize_t supported_sectorsizes_show(struct kobject *kobj,
 {
 	ssize_t ret = 0;
 
-	/* 4K sector size is also supported with 64K page size */
-	if (PAGE_SIZE == SZ_64K)
+	/* An artificial limit to only support 4K and PAGE_SIZE */
+	if (PAGE_SIZE > SZ_4K)
 		ret += sysfs_emit_at(buf, ret, "%u ", SZ_4K);
-
-	/* Only sectorsize == PAGE_SIZE is now supported */
 	ret += sysfs_emit_at(buf, ret, "%lu\n", PAGE_SIZE);
 
 	return ret;
@@ -746,7 +744,7 @@ static ssize_t btrfs_sinfo_bg_reclaim_threshold_store(struct kobject *kobj,
 	if (ret)
 		return ret;
 
-	if (thresh != 0 && (thresh <= 50 || thresh > 100))
+	if (thresh < 0 || thresh > 100)
 		return -EINVAL;
 
 	WRITE_ONCE(space_info->bg_reclaim_threshold, thresh);

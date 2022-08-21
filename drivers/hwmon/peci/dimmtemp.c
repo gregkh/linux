@@ -4,6 +4,7 @@
 #include <linux/auxiliary_bus.h>
 #include <linux/bitfield.h>
 #include <linux/bitops.h>
+#include <linux/devm-helpers.h>
 #include <linux/hwmon.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
@@ -299,18 +300,10 @@ static int create_dimm_temp_label(struct peci_dimmtemp *priv, int chan)
 	return 0;
 }
 
-static const u32 peci_dimmtemp_temp_channel_config[] = {
-	[0 ... DIMM_NUMS_MAX - 1] = HWMON_T_LABEL | HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_CRIT,
-	0
-};
-
-static const struct hwmon_channel_info peci_dimmtemp_temp_channel = {
-	.type = hwmon_temp,
-	.config = peci_dimmtemp_temp_channel_config,
-};
-
 static const struct hwmon_channel_info *peci_dimmtemp_temp_info[] = {
-	&peci_dimmtemp_temp_channel,
+	HWMON_CHANNEL_INFO(temp,
+			   [0 ... DIMM_NUMS_MAX - 1] = HWMON_T_LABEL |
+				HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_CRIT),
 	NULL
 };
 
@@ -378,13 +371,6 @@ static void create_dimm_temp_info_delayed(struct work_struct *work)
 		dev_err(priv->dev, "Failed to populate DIMM temp info\n");
 }
 
-static void remove_delayed_work(void *_priv)
-{
-	struct peci_dimmtemp *priv = _priv;
-
-	cancel_delayed_work_sync(&priv->detect_work);
-}
-
 static int peci_dimmtemp_probe(struct auxiliary_device *adev, const struct auxiliary_device_id *id)
 {
 	struct device *dev = &adev->dev;
@@ -415,9 +401,8 @@ static int peci_dimmtemp_probe(struct auxiliary_device *adev, const struct auxil
 			 "Unexpected PECI revision %#x, some features may be unavailable\n",
 			 peci_dev->info.peci_revision);
 
-	INIT_DELAYED_WORK(&priv->detect_work, create_dimm_temp_info_delayed);
-
-	ret = devm_add_action_or_reset(priv->dev, remove_delayed_work, priv);
+	ret = devm_delayed_work_autocancel(priv->dev, &priv->detect_work,
+					   create_dimm_temp_info_delayed);
 	if (ret)
 		return ret;
 
