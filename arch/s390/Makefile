@@ -35,8 +35,8 @@ KBUILD_CFLAGS_DECOMPRESSOR += $(if $(CONFIG_DEBUG_INFO),-g)
 KBUILD_CFLAGS_DECOMPRESSOR += $(if $(CONFIG_DEBUG_INFO_DWARF4), $(call cc-option, -gdwarf-4,))
 
 ifdef CONFIG_CC_IS_GCC
-	ifeq ($(call cc-ifversion, -ge, 1200, y), y)
-		ifeq ($(call cc-ifversion, -lt, 1300, y), y)
+	ifeq ($(call gcc-min-version, 120000), y)
+		ifneq ($(call gcc-min-version, 130000), y)
 			KBUILD_CFLAGS += $(call cc-disable-warning, array-bounds)
 			KBUILD_CFLAGS_DECOMPRESSOR += $(call cc-disable-warning, array-bounds)
 		endif

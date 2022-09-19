@@ -855,7 +855,9 @@ DEBUG_CFLAGS	:=
 # Workaround for GCC versions < 5.0
 # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61801
 ifdef CONFIG_CC_IS_GCC
-DEBUG_CFLAGS	+= $(call cc-ifversion, -lt, 0500, $(call cc-option, -fno-var-tracking-assignments))
+ifneq ($(call gcc-min-version, 50000),y)
+DEBUG_CFLAGS	+= $(call cc-option, -fno-var-tracking-assignments)
+endif
 endif
 
 ifdef CONFIG_DEBUG_INFO

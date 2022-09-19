@@ -168,7 +168,9 @@ endif
 # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=44199
 # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=52828
 ifndef CONFIG_CC_IS_CLANG
-CC_FLAGS_FTRACE	+= $(call cc-ifversion, -lt, 0409, -mno-sched-epilog)
+ifneq ($(call gcc-min-version, 40900),y)
+CC_FLAGS_FTRACE	+= -mno-sched-epilog
+endif
 endif
 endif
 
