@@ -21,7 +21,7 @@ CFLAGS_$(AMDDALPATH)/dc/dcn302/dcn302_resource.o := -mhard-float -maltivec
 endif
 
 ifdef CONFIG_CC_IS_GCC
-ifeq ($(call cc-ifversion, -lt, 0701, y), y)
+ifneq ($(call gcc-min-version, 70100), y)
 IS_OLD_GCC = 1
 endif
 CFLAGS_$(AMDDALPATH)/dc/dcn302/dcn302_resource.o += -mhard-float
