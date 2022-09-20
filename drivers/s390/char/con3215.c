@@ -159,7 +159,7 @@ static void raw3215_mk_read_req(struct raw3215_info *raw)
 	ccw->cmd_code = 0x0A; /* read inquiry */
 	ccw->flags = 0x20;    /* ignore incorrect length */
 	ccw->count = 160;
-	ccw->cda = (__u32) __pa(raw->inbuf);
+	ccw->cda = (__u32)__pa(raw->inbuf);
 }
 
 /*
@@ -218,8 +218,7 @@ static void raw3215_mk_write_req(struct raw3215_info *raw)
 			ccw[-1].flags |= 0x40; /* use command chaining */
 		ccw->cmd_code = 0x01; /* write, auto carrier return */
 		ccw->flags = 0x20;    /* ignore incorrect length ind.  */
-		ccw->cda =
-			(__u32) __pa(raw->buffer + ix);
+		ccw->cda = (__u32)__pa(raw->buffer + ix);
 		count = len;
 		if (ix + count > RAW3215_BUFFER_SIZE)
 			count = RAW3215_BUFFER_SIZE - ix;
@@ -642,7 +641,7 @@ static void raw3215_free_info(struct raw3215_info *raw)
 	kfree(raw);
 }
 
-static int raw3215_probe (struct ccw_device *cdev)
+static int raw3215_probe(struct ccw_device *cdev)
 {
 	struct raw3215_info *raw;
 	int line;
@@ -675,7 +674,7 @@ static int raw3215_probe (struct ccw_device *cdev)
 	return 0;
 }
 
-static void raw3215_remove (struct ccw_device *cdev)
+static void raw3215_remove(struct ccw_device *cdev)
 {
 	struct raw3215_info *raw;
 	unsigned int line;
@@ -694,7 +693,7 @@ static void raw3215_remove (struct ccw_device *cdev)
 	}
 }
 
-static int raw3215_set_online (struct ccw_device *cdev)
+static int raw3215_set_online(struct ccw_device *cdev)
 {
 	struct raw3215_info *raw;
 
@@ -705,7 +704,7 @@ static int raw3215_set_online (struct ccw_device *cdev)
 	return raw3215_startup(raw);
 }
 
-static int raw3215_set_offline (struct ccw_device *cdev)
+static int raw3215_set_offline(struct ccw_device *cdev)
 {
 	struct raw3215_info *raw;
 
@@ -940,7 +939,7 @@ static unsigned int tty3215_write_room(struct tty_struct *tty)
 /*
  * String write routine for 3215 ttys
  */
-static int tty3215_write(struct tty_struct * tty,
+static int tty3215_write(struct tty_struct *tty,
 			 const unsigned char *buf, int count)
 {
 	struct raw3215_info *raw = tty->driver_data;
@@ -1000,7 +999,7 @@ static void tty3215_flush_buffer(struct tty_struct *tty)
 /*
  * Disable reading from a 3215 tty
  */
-static void tty3215_throttle(struct tty_struct * tty)
+static void tty3215_throttle(struct tty_struct *tty)
 {
 	struct raw3215_info *raw = tty->driver_data;
 
@@ -1010,7 +1009,7 @@ static void tty3215_throttle(struct tty_struct * tty)
 /*
  * Enable reading from a 3215 tty
  */
-static void tty3215_unthrottle(struct tty_struct * tty)
+static void tty3215_unthrottle(struct tty_struct *tty)
 {
 	struct raw3215_info *raw = tty->driver_data;
 	unsigned long flags;
