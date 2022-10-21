@@ -655,6 +655,7 @@ static const char *const irdma_cqp_cmd_names[IRDMA_MAX_CQP_OPS] = {
 };
 
 static const struct irdma_cqp_err_info irdma_noncrit_err_list[] = {
+	{0xffff, 0x8002, "Invalid State"},
 	{0xffff, 0x8006, "Flush No Wqe Pending"},
 	{0xffff, 0x8007, "Modify QP Bad Close"},
 	{0xffff, 0x8009, "LLP Closed"},
@@ -2477,6 +2478,9 @@ void irdma_ib_qp_event(struct irdma_qp *iwqp, enum irdma_qp_event_type event)
 		break;
 	case IRDMA_QP_EVENT_ACCESS_ERR:
 		ibevent.event = IB_EVENT_QP_ACCESS_ERR;
+		break;
+	case IRDMA_QP_EVENT_REQ_ERR:
+		ibevent.event = IB_EVENT_QP_REQ_ERR;
 		break;
 	}
 	ibevent.device = iwqp->ibqp.device;

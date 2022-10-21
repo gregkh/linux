@@ -1402,8 +1402,7 @@ static int alloc_permits(struct rtrs_clt_sess *clt)
 	unsigned int chunk_bits;
 	int err, i;
 
-	clt->permits_map = kcalloc(BITS_TO_LONGS(clt->queue_depth),
-				   sizeof(long), GFP_KERNEL);
+	clt->permits_map = bitmap_zalloc(clt->queue_depth, GFP_KERNEL);
 	if (!clt->permits_map) {
 		err = -ENOMEM;
 		goto out_err;
@@ -1425,7 +1424,7 @@ static int alloc_permits(struct rtrs_clt_sess *clt)
 	return 0;
 
 err_map:
-	kfree(clt->permits_map);
+	bitmap_free(clt->permits_map);
 	clt->permits_map = NULL;
 out_err:
 	return err;
@@ -1433,13 +1432,11 @@ out_err:
 
 static void free_permits(struct rtrs_clt_sess *clt)
 {
-	if (clt->permits_map) {
-		size_t sz = clt->queue_depth;
-
+	if (clt->permits_map)
 		wait_event(clt->permits_wait,
-			   find_first_bit(clt->permits_map, sz) >= sz);
-	}
-	kfree(clt->permits_map);
+			   bitmap_empty(clt->permits_map, clt->queue_depth));
+
+	bitmap_free(clt->permits_map);
 	clt->permits_map = NULL;
 	kfree(clt->permits);
 	clt->permits = NULL;

@@ -101,29 +101,6 @@ bool set_capacity_and_notify(struct gendisk *disk, sector_t size)
 }
 EXPORT_SYMBOL_GPL(set_capacity_and_notify);
 
-/*
- * Format the device name of the indicated block device into the supplied buffer
- * and return a pointer to that same buffer for convenience.
- *
- * Note: do not use this in new code, use the %pg specifier to sprintf and
- * printk insted.
- */
-const char *bdevname(struct block_device *bdev, char *buf)
-{
-	struct gendisk *hd = bdev->bd_disk;
-	int partno = bdev->bd_partno;
-
-	if (!partno)
-		snprintf(buf, BDEVNAME_SIZE, "%s", hd->disk_name);
-	else if (isdigit(hd->disk_name[strlen(hd->disk_name)-1]))
-		snprintf(buf, BDEVNAME_SIZE, "%sp%d", hd->disk_name, partno);
-	else
-		snprintf(buf, BDEVNAME_SIZE, "%s%d", hd->disk_name, partno);
-
-	return buf;
-}
-EXPORT_SYMBOL(bdevname);
-
 static void part_stat_read_all(struct block_device *part,
 		struct disk_stats *stat)
 {
@@ -1135,6 +1112,9 @@ static struct attribute_group disk_attr_group = {
 
 static const struct attribute_group *disk_attr_groups[] = {
 	&disk_attr_group,
+#ifdef CONFIG_BLK_DEV_IO_TRACE
+	&blk_trace_attr_group,
+#endif
 	NULL
 };
 
@@ -1172,9 +1152,11 @@ static void disk_release(struct device *dev)
 		blk_mq_exit_queue(disk->queue);
 
 	blkcg_exit_queue(disk->queue);
+	bioset_exit(&disk->bio_split);
 
 	disk_release_events(disk);
 	kfree(disk->random);
+	disk_free_zone_bitmaps(disk);
 	xa_destroy(&disk->part_tbl);
 
 	disk->queue->disk = NULL;
@@ -1362,9 +1344,12 @@ struct gendisk *__alloc_disk_node(struct request_queue *q, int node_id,
 	if (!disk)
 		return NULL;
 
+	if (bioset_init(&disk->bio_split, BIO_POOL_SIZE, 0, 0))
+		goto out_free_disk;
+
 	disk->bdi = bdi_alloc(node_id);
 	if (!disk->bdi)
-		goto out_free_disk;
+		goto out_free_bioset;
 
 	/* bdev_alloc() might need the queue, set before the first call */
 	disk->queue = q;
@@ -1402,6 +1387,8 @@ out_destroy_part_tbl:
 	iput(disk->part0->bd_inode);
 out_free_bdi:
 	bdi_put(disk->bdi);
+out_free_bioset:
+	bioset_exit(&disk->bio_split);
 out_free_disk:
 	kfree(disk);
 	return NULL;
@@ -1445,21 +1432,6 @@ void put_disk(struct gendisk *disk)
 		put_device(disk_to_dev(disk));
 }
 EXPORT_SYMBOL(put_disk);
-
-/**
- * blk_cleanup_disk - shutdown a gendisk allocated by blk_alloc_disk
- * @disk: gendisk to shutdown
- *
- * Mark the queue hanging off @disk DYING, drain all pending requests, then mark
- * the queue DEAD, destroy and put it and the gendisk structure.
- *
- * Context: can sleep
- */
-void blk_cleanup_disk(struct gendisk *disk)
-{
-	put_disk(disk);
-}
-EXPORT_SYMBOL(blk_cleanup_disk);
 
 static void set_disk_ro_uevent(struct gendisk *gd, int ro)
 {

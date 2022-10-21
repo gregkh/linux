@@ -68,7 +68,7 @@ static struct sock *raw_sock_get(struct net *net, const struct inet_diag_req_v2 
 	rcu_read_lock();
 	for (slot = 0; slot < RAW_HTABLE_SIZE; slot++) {
 		hlist = &hashinfo->ht[slot];
-		hlist_nulls_for_each_entry(sk, hnode, hlist, sk_nulls_node) {
+		sk_nulls_for_each(sk, hnode, hlist) {
 			if (raw_lookup(net, sk, r)) {
 				/*
 				 * Grab it and keep until we fill
@@ -156,12 +156,12 @@ static void raw_diag_dump(struct sk_buff *skb, struct netlink_callback *cb,
 	s_slot = cb->args[0];
 	num = s_num = cb->args[1];
 
-	read_lock(&hashinfo->lock);
+	rcu_read_lock();
 	for (slot = s_slot; slot < RAW_HTABLE_SIZE; s_num = 0, slot++) {
 		num = 0;
 
 		hlist = &hashinfo->ht[slot];
-		hlist_nulls_for_each_entry(sk, hnode, hlist, sk_nulls_node) {
+		sk_nulls_for_each(sk, hnode, hlist) {
 			struct inet_sock *inet = inet_sk(sk);
 
 			if (!net_eq(sock_net(sk), net))
@@ -184,7 +184,7 @@ next:
 	}
 
 out_unlock:
-	read_unlock(&hashinfo->lock);
+	rcu_read_unlock();
 
 	cb->args[0] = slot;
 	cb->args[1] = num;

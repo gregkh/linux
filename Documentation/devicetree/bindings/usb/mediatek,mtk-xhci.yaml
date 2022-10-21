@@ -31,6 +31,7 @@ properties:
           - mediatek,mt8173-xhci
           - mediatek,mt8183-xhci
           - mediatek,mt8186-xhci
+          - mediatek,mt8188-xhci
           - mediatek,mt8192-xhci
           - mediatek,mt8195-xhci
       - const: mediatek,mtk-xhci
@@ -113,6 +114,9 @@ properties:
 
   vbus-supply:
     description: Regulator of USB VBUS5v
+
+  resets:
+    maxItems: 1
 
   usb3-lpm-capable: true
 

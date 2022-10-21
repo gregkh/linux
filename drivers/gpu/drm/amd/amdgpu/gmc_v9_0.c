@@ -1103,10 +1103,13 @@ static void gmc_v9_0_get_vm_pde(struct amdgpu_device *adev, int level,
 			*flags |= AMDGPU_PDE_BFS(0x9);
 
 	} else if (level == AMDGPU_VM_PDB0) {
-		if (*flags & AMDGPU_PDE_PTE)
+		if (*flags & AMDGPU_PDE_PTE) {
 			*flags &= ~AMDGPU_PDE_PTE;
-		else
+			if (!(*flags & AMDGPU_PTE_VALID))
+				*addr |= 1 << PAGE_SHIFT;
+		} else {
 			*flags |= AMDGPU_PTE_TF;
+		}
 	}
 }
 
@@ -1625,12 +1628,15 @@ static int gmc_v9_0_sw_init(void *handle)
 			amdgpu_vm_adjust_size(adev, 256 * 1024, 9, 3, 47);
 		else
 			amdgpu_vm_adjust_size(adev, 256 * 1024, 9, 3, 48);
+		if (adev->ip_versions[GC_HWIP][0] == IP_VERSION(9, 4, 2))
+			adev->gmc.translate_further = adev->vm_manager.num_level > 1;
 		break;
 	case IP_VERSION(9, 4, 1):
 		adev->num_vmhubs = 3;
 
 		/* Keep the vm size same with Vega20 */
 		amdgpu_vm_adjust_size(adev, 256 * 1024, 9, 3, 48);
+		adev->gmc.translate_further = adev->vm_manager.num_level > 1;
 		break;
 	default:
 		break;

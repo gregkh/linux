@@ -687,12 +687,9 @@ static int rtw_wx_set_mode(struct net_device *dev, struct iw_request_info *a,
 	enum ndis_802_11_network_infra networkType;
 	int ret = 0;
 
-
-
-	if (_FAIL == rtw_pwr_wakeup(padapter)) {
-		ret = -EPERM;
+	ret = rtw_pwr_wakeup(padapter);
+	if (ret)
 		goto exit;
-	}
 
 	if (!padapter->hw_init_completed) {
 		ret = -EPERM;
@@ -931,12 +928,9 @@ static int rtw_wx_set_wap(struct net_device *dev,
 	struct	wlan_network	*pnetwork = NULL;
 	enum ndis_802_11_auth_mode	authmode;
 
-
-
-	if (_FAIL == rtw_pwr_wakeup(padapter)) {
-		ret = -1;
+	ret = rtw_pwr_wakeup(padapter);
+	if (ret)
 		goto exit;
-	}
 
 	if (!padapter->bup) {
 		ret = -1;
@@ -1049,10 +1043,9 @@ static int rtw_wx_set_scan(struct net_device *dev, struct iw_request_info *a,
 	struct ndis_802_11_ssid ssid[RTW_SSID_SCAN_AMOUNT];
 	struct wifidirect_info *pwdinfo = &padapter->wdinfo;
 
-	if (_FAIL == rtw_pwr_wakeup(padapter)) {
-		ret = -1;
+	ret = rtw_pwr_wakeup(padapter);
+	if (ret)
 		goto exit;
-	}
 
 	if (padapter->bDriverStopped) {
 		ret = -1;
@@ -1252,10 +1245,9 @@ static int rtw_wx_set_essid(struct net_device *dev,
 
 	uint ret = 0, len;
 
-	if (_FAIL == rtw_pwr_wakeup(padapter)) {
-		ret = -1;
+	ret = rtw_pwr_wakeup(padapter);
+	if (ret)
 		goto exit;
-	}
 
 	if (!padapter->bup) {
 		ret = -1;
@@ -1593,7 +1585,7 @@ static int rtw_wx_set_enc(struct net_device *dev,
 	if (erq->length > 0) {
 		wep.KeyLength = erq->length <= 5 ? 5 : 13;
 
-		wep.Length = wep.KeyLength + FIELD_OFFSET(struct ndis_802_11_wep, KeyMaterial);
+		wep.Length = wep.KeyLength + offsetof(struct ndis_802_11_wep, KeyMaterial);
 	} else {
 		wep.KeyLength = 0;
 
@@ -3221,6 +3213,14 @@ static void rtw_set_dynamic_functions(struct adapter *adapter, u8 dm_func)
 	}
 }
 
+static void rtw_set_dm_func_flag(struct adapter *adapter, u32 odm_flag)
+{
+	struct hal_data_8188e *haldata = &adapter->haldata;
+	struct odm_dm_struct *odmpriv = &haldata->odmpriv;
+
+	odmpriv->SupportAbility = odm_flag;
+}
+
 static int rtw_dbg_port(struct net_device *dev,
 			       struct iw_request_info *info,
 			       union iwreq_data *wrqu, char *extra)
@@ -3459,7 +3459,7 @@ static int rtw_dbg_port(struct net_device *dev,
 		case 0x06:
 			{
 				u32 ODMFlag = (u32)(0x0f & arg);
-				SetHwReg8188EU(padapter, HW_VAR_DM_FLAG, (u8 *)(&ODMFlag));
+				rtw_set_dm_func_flag(padapter, ODMFlag);
 			}
 			break;
 		case 0x07:

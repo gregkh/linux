@@ -15,8 +15,7 @@ static int next_opcode(struct rxe_qp *qp, struct rxe_send_wqe *wqe,
 		       u32 opcode);
 
 static inline void retry_first_write_send(struct rxe_qp *qp,
-					  struct rxe_send_wqe *wqe,
-					  unsigned int mask, int npsn)
+					  struct rxe_send_wqe *wqe, int npsn)
 {
 	int i;
 
@@ -83,7 +82,7 @@ static void req_retry(struct rxe_qp *qp)
 			if (mask & WR_WRITE_OR_SEND_MASK) {
 				npsn = (qp->comp.psn - wqe->first_psn) &
 					BTH_PSN_MASK;
-				retry_first_write_send(qp, wqe, mask, npsn);
+				retry_first_write_send(qp, wqe, npsn);
 			}
 
 			if (mask & WR_READ_MASK) {
@@ -165,14 +164,34 @@ static struct rxe_send_wqe *req_next_wqe(struct rxe_qp *qp)
 		     (wqe->state != wqe_state_processing)))
 		return NULL;
 
-	if (unlikely((wqe->wr.send_flags & IB_SEND_FENCE) &&
-						     (index != cons))) {
-		qp->req.wait_fence = 1;
-		return NULL;
-	}
-
 	wqe->mask = wr_opcode_mask(wqe->wr.opcode, qp);
 	return wqe;
+}
+
+/**
+ * rxe_wqe_is_fenced - check if next wqe is fenced
+ * @qp: the queue pair
+ * @wqe: the next wqe
+ *
+ * Returns: 1 if wqe needs to wait
+ *	    0 if wqe is ready to go
+ */
+static int rxe_wqe_is_fenced(struct rxe_qp *qp, struct rxe_send_wqe *wqe)
+{
+	/* Local invalidate fence (LIF) see IBA 10.6.5.1
+	 * Requires ALL previous operations on the send queue
+	 * are complete. Make mandatory for the rxe driver.
+	 */
+	if (wqe->wr.opcode == IB_WR_LOCAL_INV)
+		return qp->req.wqe_index != queue_get_consumer(qp->sq.queue,
+						QUEUE_TYPE_FROM_CLIENT);
+
+	/* Fence see IBA 10.8.3.3
+	 * Requires that all previous read and atomic operations
+	 * are complete.
+	 */
+	return (wqe->wr.send_flags & IB_SEND_FENCE) &&
+		atomic_read(&qp->req.rd_atomic) != qp->attr.max_rd_atomic;
 }
 
 static int next_opcode_rc(struct rxe_qp *qp, u32 opcode, int fits)
@@ -605,6 +624,7 @@ int rxe_requester(void *arg)
 	u32 payload;
 	int mtu;
 	int opcode;
+	int err;
 	int ret;
 	struct rxe_send_wqe rollback_wqe;
 	u32 rollback_psn;
@@ -615,9 +635,19 @@ int rxe_requester(void *arg)
 	if (!rxe_get(qp))
 		return -EAGAIN;
 
-next_wqe:
-	if (unlikely(!qp->valid || qp->req.state == QP_STATE_ERROR))
+	if (unlikely(!qp->valid))
 		goto exit;
+
+	if (unlikely(qp->req.state == QP_STATE_ERROR)) {
+		wqe = req_next_wqe(qp);
+		if (wqe)
+			/*
+			 * Generate an error completion for error qp state
+			 */
+			goto err;
+		else
+			goto exit;
+	}
 
 	if (unlikely(qp->req.state == QP_STATE_RESET)) {
 		qp->req.wqe_index = queue_get_consumer(q,
@@ -630,7 +660,7 @@ next_wqe:
 		goto exit;
 	}
 
-	/* we come here if the retransmot timer has fired
+	/* we come here if the retransmit timer has fired
 	 * or if the rnr timer has fired. If the retransmit
 	 * timer fires while we are processing an RNR NAK wait
 	 * until the rnr timer has fired before starting the
@@ -645,12 +675,17 @@ next_wqe:
 	if (unlikely(!wqe))
 		goto exit;
 
+	if (rxe_wqe_is_fenced(qp, wqe)) {
+		qp->req.wait_fence = 1;
+		goto exit;
+	}
+
 	if (wqe->mask & WR_LOCAL_OP_MASK) {
-		ret = rxe_do_local_ops(qp, wqe);
-		if (unlikely(ret))
+		err = rxe_do_local_ops(qp, wqe);
+		if (unlikely(err))
 			goto err;
 		else
-			goto next_wqe;
+			goto done;
 	}
 
 	if (unlikely(qp_type(qp) == IB_QPT_RC &&
@@ -698,9 +733,8 @@ next_wqe:
 						       qp->req.wqe_index);
 			wqe->state = wqe_state_done;
 			wqe->status = IB_WC_SUCCESS;
-			__rxe_do_task(&qp->comp.task);
-			rxe_put(qp);
-			return 0;
+			rxe_run_task(&qp->comp.task, 0);
+			goto done;
 		}
 		payload = mtu;
 	}
@@ -716,25 +750,29 @@ next_wqe:
 	if (unlikely(!av)) {
 		pr_err("qp#%d Failed no address vector\n", qp_num(qp));
 		wqe->status = IB_WC_LOC_QP_OP_ERR;
-		goto err_drop_ah;
+		goto err;
 	}
 
 	skb = init_req_packet(qp, av, wqe, opcode, payload, &pkt);
 	if (unlikely(!skb)) {
 		pr_err("qp#%d Failed allocating skb\n", qp_num(qp));
 		wqe->status = IB_WC_LOC_QP_OP_ERR;
-		goto err_drop_ah;
+		if (ah)
+			rxe_put(ah);
+		goto err;
 	}
 
-	ret = finish_packet(qp, av, wqe, &pkt, skb, payload);
-	if (unlikely(ret)) {
+	err = finish_packet(qp, av, wqe, &pkt, skb, payload);
+	if (unlikely(err)) {
 		pr_debug("qp#%d Error during finish packet\n", qp_num(qp));
-		if (ret == -EFAULT)
+		if (err == -EFAULT)
 			wqe->status = IB_WC_LOC_PROT_ERR;
 		else
 			wqe->status = IB_WC_LOC_QP_OP_ERR;
 		kfree_skb(skb);
-		goto err_drop_ah;
+		if (ah)
+			rxe_put(ah);
+		goto err;
 	}
 
 	if (ah)
@@ -749,13 +787,14 @@ next_wqe:
 	save_state(wqe, qp, &rollback_wqe, &rollback_psn);
 	update_wqe_state(qp, wqe, &pkt);
 	update_wqe_psn(qp, wqe, &pkt, payload);
-	ret = rxe_xmit_packet(qp, &pkt, skb);
-	if (ret) {
+
+	err = rxe_xmit_packet(qp, &pkt, skb);
+	if (err) {
 		qp->need_req_skb = 1;
 
 		rollback_state(wqe, qp, &rollback_wqe, rollback_psn);
 
-		if (ret == -EAGAIN) {
+		if (err == -EAGAIN) {
 			rxe_run_task(&qp->req.task, 1);
 			goto exit;
 		}
@@ -766,16 +805,23 @@ next_wqe:
 
 	update_state(qp, &pkt);
 
-	goto next_wqe;
-
-err_drop_ah:
-	if (ah)
-		rxe_put(ah);
+	/* A non-zero return value will cause rxe_do_task to
+	 * exit its loop and end the tasklet. A zero return
+	 * will continue looping and return to rxe_requester
+	 */
+done:
+	ret = 0;
+	goto out;
 err:
+	/* update wqe_index for each wqe completion */
+	qp->req.wqe_index = queue_next_index(qp->sq.queue, qp->req.wqe_index);
 	wqe->state = wqe_state_error;
-	__rxe_do_task(&qp->comp.task);
-
+	qp->req.state = QP_STATE_ERROR;
+	rxe_run_task(&qp->comp.task, 0);
 exit:
+	ret = -EAGAIN;
+out:
 	rxe_put(qp);
-	return -EAGAIN;
+
+	return ret;
 }

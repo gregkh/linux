@@ -1214,7 +1214,7 @@ enum wmi_tlv_tag {
 	WMI_TAG_NS_OFFLOAD_TUPLE,
 	WMI_TAG_FTM_INTG_CMD,
 	WMI_TAG_STA_KEEPALIVE_CMD,
-	WMI_TAG_STA_KEEPALVE_ARP_RESPONSE,
+	WMI_TAG_STA_KEEPALIVE_ARP_RESPONSE,
 	WMI_TAG_P2P_SET_VENDOR_IE_DATA_CMD,
 	WMI_TAG_AP_PS_PEER_CMD,
 	WMI_TAG_PEER_RATE_RETRY_SCHED_CMD,
@@ -5327,31 +5327,6 @@ struct target_resource_config {
 	u32 twt_ap_pdev_count;
 	u32 twt_ap_sta_count;
 };
-
-enum wmi_sys_cap_info_flags {
-	WMI_SYS_CAP_INFO_RXTX_LED	= BIT(0),
-	WMI_SYS_CAP_INFO_RFKILL	= BIT(1),
-};
-
-#define WMI_RFKILL_CFG_GPIO_PIN_NUM		GENMASK(5, 0)
-#define WMI_RFKILL_CFG_RADIO_LEVEL		BIT(6)
-#define WMI_RFKILL_CFG_PIN_AS_GPIO		GENMASK(10, 7)
-
-enum wmi_rfkill_enable_radio {
-	WMI_RFKILL_ENABLE_RADIO_ON	= 0,
-	WMI_RFKILL_ENABLE_RADIO_OFF	= 1,
-};
-
-enum wmi_rfkill_radio_state {
-	WMI_RFKILL_RADIO_STATE_OFF	= 1,
-	WMI_RFKILL_RADIO_STATE_ON	= 2,
-};
-
-struct wmi_rfkill_state_change_ev {
-	u32 gpio_pin_num;
-	u32 int_type;
-	u32 radio_state;
-} __packed;
 
 enum wmi_debug_log_param {
 	WMI_DEBUG_LOG_PARAM_LOG_LEVEL = 0x1,

@@ -62,6 +62,7 @@ struct nsim_fib_data {
 	bool fail_route_offload;
 	bool fail_res_nexthop_group_replace;
 	bool fail_nexthop_bucket_replace;
+	bool fail_route_delete;
 };
 
 struct nsim_fib_rt_key {
@@ -915,6 +916,10 @@ static int nsim_fib4_prepare_event(struct fib_notifier_info *info,
 		}
 		break;
 	case FIB_EVENT_ENTRY_DEL:
+		if (data->fail_route_delete) {
+			NL_SET_ERR_MSG_MOD(extack, "Failed to process route deletion");
+			return -EINVAL;
+		}
 		nsim_fib_account(&data->ipv4.fib, false);
 		break;
 	}
@@ -953,6 +958,11 @@ static int nsim_fib6_prepare_event(struct fib_notifier_info *info,
 		}
 		break;
 	case FIB_EVENT_ENTRY_DEL:
+		if (data->fail_route_delete) {
+			err = -EINVAL;
+			NL_SET_ERR_MSG_MOD(extack, "Failed to process route deletion");
+			goto err_fib6_event_fini;
+		}
 		nsim_fib_account(&data->ipv6.fib, false);
 		break;
 	}
@@ -1457,7 +1467,7 @@ static void nsim_fib_set_max_all(struct nsim_fib_data *data,
 		int err;
 		u64 val;
 
-		err = devlink_resource_size_get(devlink, res_ids[i], &val);
+		err = devl_resource_size_get(devlink, res_ids[i], &val);
 		if (err)
 			val = (u64) -1;
 		nsim_fib_set_max(data, res_ids[i], val);
@@ -1526,6 +1536,10 @@ nsim_fib_debugfs_init(struct nsim_fib_data *data, struct nsim_dev *nsim_dev)
 
 	debugfs_create_file("nexthop_bucket_activity", 0200, data->ddir,
 			    data, &nsim_nexthop_bucket_activity_fops);
+
+	data->fail_route_delete = false;
+	debugfs_create_bool("fail_route_delete", 0600, data->ddir,
+			    &data->fail_route_delete);
 	return 0;
 }
 
@@ -1585,26 +1599,26 @@ struct nsim_fib_data *nsim_fib_create(struct devlink *devlink,
 		goto err_nexthop_nb_unregister;
 	}
 
-	devlink_resource_occ_get_register(devlink,
-					  NSIM_RESOURCE_IPV4_FIB,
-					  nsim_fib_ipv4_resource_occ_get,
-					  data);
-	devlink_resource_occ_get_register(devlink,
-					  NSIM_RESOURCE_IPV4_FIB_RULES,
-					  nsim_fib_ipv4_rules_res_occ_get,
-					  data);
-	devlink_resource_occ_get_register(devlink,
-					  NSIM_RESOURCE_IPV6_FIB,
-					  nsim_fib_ipv6_resource_occ_get,
-					  data);
-	devlink_resource_occ_get_register(devlink,
-					  NSIM_RESOURCE_IPV6_FIB_RULES,
-					  nsim_fib_ipv6_rules_res_occ_get,
-					  data);
-	devlink_resource_occ_get_register(devlink,
-					  NSIM_RESOURCE_NEXTHOPS,
-					  nsim_fib_nexthops_res_occ_get,
-					  data);
+	devl_resource_occ_get_register(devlink,
+				       NSIM_RESOURCE_IPV4_FIB,
+				       nsim_fib_ipv4_resource_occ_get,
+				       data);
+	devl_resource_occ_get_register(devlink,
+				       NSIM_RESOURCE_IPV4_FIB_RULES,
+				       nsim_fib_ipv4_rules_res_occ_get,
+				       data);
+	devl_resource_occ_get_register(devlink,
+				       NSIM_RESOURCE_IPV6_FIB,
+				       nsim_fib_ipv6_resource_occ_get,
+				       data);
+	devl_resource_occ_get_register(devlink,
+				       NSIM_RESOURCE_IPV6_FIB_RULES,
+				       nsim_fib_ipv6_rules_res_occ_get,
+				       data);
+	devl_resource_occ_get_register(devlink,
+				       NSIM_RESOURCE_NEXTHOPS,
+				       nsim_fib_nexthops_res_occ_get,
+				       data);
 	return data;
 
 err_nexthop_nb_unregister:
@@ -1628,16 +1642,16 @@ err_data_free:
 
 void nsim_fib_destroy(struct devlink *devlink, struct nsim_fib_data *data)
 {
-	devlink_resource_occ_get_unregister(devlink,
-					    NSIM_RESOURCE_NEXTHOPS);
-	devlink_resource_occ_get_unregister(devlink,
-					    NSIM_RESOURCE_IPV6_FIB_RULES);
-	devlink_resource_occ_get_unregister(devlink,
-					    NSIM_RESOURCE_IPV6_FIB);
-	devlink_resource_occ_get_unregister(devlink,
-					    NSIM_RESOURCE_IPV4_FIB_RULES);
-	devlink_resource_occ_get_unregister(devlink,
-					    NSIM_RESOURCE_IPV4_FIB);
+	devl_resource_occ_get_unregister(devlink,
+					 NSIM_RESOURCE_NEXTHOPS);
+	devl_resource_occ_get_unregister(devlink,
+					 NSIM_RESOURCE_IPV6_FIB_RULES);
+	devl_resource_occ_get_unregister(devlink,
+					 NSIM_RESOURCE_IPV6_FIB);
+	devl_resource_occ_get_unregister(devlink,
+					 NSIM_RESOURCE_IPV4_FIB_RULES);
+	devl_resource_occ_get_unregister(devlink,
+					 NSIM_RESOURCE_IPV4_FIB);
 	unregister_fib_notifier(devlink_net(devlink), &data->fib_nb);
 	unregister_nexthop_notifier(devlink_net(devlink), &data->nexthop_nb);
 	cancel_work_sync(&data->fib_flush_work);

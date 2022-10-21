@@ -19,9 +19,13 @@
 #include <linux/mutex.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
+#include <linux/slab.h>
+
+#include <asm/unaligned.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/buffer.h>
+#include <linux/iio/events.h>
 #include <linux/iio/trigger.h>
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/triggered_buffer.h>
@@ -63,6 +67,12 @@ struct bma400_sample_freq {
 	int uhz;
 };
 
+enum bma400_activity {
+	BMA400_STILL,
+	BMA400_WALKING,
+	BMA400_RUNNING,
+};
+
 struct bma400_data {
 	struct device *dev;
 	struct regmap *regmap;
@@ -74,6 +84,10 @@ struct bma400_data {
 	int oversampling_ratio;
 	int scale;
 	struct iio_trigger *trig;
+	int steps_enabled;
+	bool step_event_en;
+	bool activity_event_en;
+	unsigned int generic_event_en;
 	/* Correct time stamp alignment */
 	struct {
 		__le16 buff[3];
@@ -81,6 +95,7 @@ struct bma400_data {
 		s64 ts __aligned(8);
 	} buffer __aligned(IIO_DMA_MINALIGN);
 	__le16 status;
+	__be16 duration;
 };
 
 static bool bma400_is_writable_reg(struct device *dev, unsigned int reg)
@@ -172,6 +187,37 @@ static const struct iio_chan_spec_ext_info bma400_ext_info[] = {
 	{ }
 };
 
+static const struct iio_event_spec bma400_step_detect_event = {
+	.type = IIO_EV_TYPE_CHANGE,
+	.dir = IIO_EV_DIR_NONE,
+	.mask_separate = BIT(IIO_EV_INFO_ENABLE),
+};
+
+static const struct iio_event_spec bma400_activity_event = {
+	.type = IIO_EV_TYPE_CHANGE,
+	.dir = IIO_EV_DIR_NONE,
+	.mask_shared_by_type = BIT(IIO_EV_INFO_ENABLE),
+};
+
+static const struct iio_event_spec bma400_accel_event[] = {
+	{
+		.type = IIO_EV_TYPE_MAG,
+		.dir = IIO_EV_DIR_FALLING,
+		.mask_shared_by_type = BIT(IIO_EV_INFO_VALUE) |
+				       BIT(IIO_EV_INFO_PERIOD) |
+				       BIT(IIO_EV_INFO_HYSTERESIS) |
+				       BIT(IIO_EV_INFO_ENABLE),
+	},
+	{
+		.type = IIO_EV_TYPE_MAG,
+		.dir = IIO_EV_DIR_RISING,
+		.mask_shared_by_type = BIT(IIO_EV_INFO_VALUE) |
+				       BIT(IIO_EV_INFO_PERIOD) |
+				       BIT(IIO_EV_INFO_HYSTERESIS) |
+				       BIT(IIO_EV_INFO_ENABLE),
+	},
+};
+
 #define BMA400_ACC_CHANNEL(_index, _axis) { \
 	.type = IIO_ACCEL, \
 	.modified = 1, \
@@ -191,6 +237,18 @@ static const struct iio_chan_spec_ext_info bma400_ext_info[] = {
 		.storagebits = 16,	\
 		.endianness = IIO_LE,	\
 	},				\
+	.event_spec = bma400_accel_event,			\
+	.num_event_specs = ARRAY_SIZE(bma400_accel_event)	\
+}
+
+#define BMA400_ACTIVITY_CHANNEL(_chan2) {	\
+	.type = IIO_ACTIVITY,			\
+	.modified = 1,				\
+	.channel2 = _chan2,			\
+	.info_mask_separate = BIT(IIO_CHAN_INFO_PROCESSED),	\
+	.scan_index = -1, /* No buffer support */		\
+	.event_spec = &bma400_activity_event,			\
+	.num_event_specs = 1,					\
 }
 
 static const struct iio_chan_spec bma400_channels[] = {
@@ -209,6 +267,17 @@ static const struct iio_chan_spec bma400_channels[] = {
 			.endianness = IIO_LE,
 		},
 	},
+	{
+		.type = IIO_STEPS,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_PROCESSED) |
+				      BIT(IIO_CHAN_INFO_ENABLE),
+		.scan_index = -1, /* No buffer support */
+		.event_spec = &bma400_step_detect_event,
+		.num_event_specs = 1,
+	},
+	BMA400_ACTIVITY_CHANNEL(IIO_MOD_STILL),
+	BMA400_ACTIVITY_CHANNEL(IIO_MOD_WALKING),
+	BMA400_ACTIVITY_CHANNEL(IIO_MOD_RUNNING),
 	IIO_CHAN_SOFT_TIMESTAMP(4),
 };
 
@@ -577,6 +646,40 @@ static int bma400_set_power_mode(struct bma400_data *data,
 	return 0;
 }
 
+static int bma400_enable_steps(struct bma400_data *data, int val)
+{
+	int ret;
+
+	if (data->steps_enabled == val)
+		return 0;
+
+	ret = regmap_update_bits(data->regmap, BMA400_INT_CONFIG1_REG,
+				 BMA400_STEP_INT_MSK,
+				 FIELD_PREP(BMA400_STEP_INT_MSK, val ? 1 : 0));
+	if (ret)
+		return ret;
+	data->steps_enabled = val;
+	return ret;
+}
+
+static int bma400_get_steps_reg(struct bma400_data *data, int *val)
+{
+	u8 *steps_raw;
+	int ret;
+
+	steps_raw = kmalloc(BMA400_STEP_RAW_LEN, GFP_KERNEL);
+	if (!steps_raw)
+		return -ENOMEM;
+
+	ret = regmap_bulk_read(data->regmap, BMA400_STEP_CNT0_REG,
+			       steps_raw, BMA400_STEP_RAW_LEN);
+	if (ret)
+		return ret;
+	*val = get_unaligned_le24(steps_raw);
+	kfree(steps_raw);
+	return IIO_VAL_INT;
+}
+
 static void bma400_init_tables(void)
 {
 	int raw;
@@ -613,6 +716,20 @@ static void bma400_power_disable(void *data_ptr)
 	if (ret)
 		dev_warn(data->dev, "Failed to put device into sleep mode (%pe)\n",
 			 ERR_PTR(ret));
+}
+
+static enum iio_modifier bma400_act_to_mod(enum bma400_activity activity)
+{
+	switch (activity) {
+	case BMA400_STILL:
+		return IIO_MOD_STILL;
+	case BMA400_WALKING:
+		return IIO_MOD_WALKING;
+	case BMA400_RUNNING:
+		return IIO_MOD_RUNNING;
+	default:
+		return IIO_NO_MOD;
+	}
 }
 
 static int bma400_init(struct bma400_data *data)
@@ -712,14 +829,37 @@ static int bma400_read_raw(struct iio_dev *indio_dev,
 			   int *val2, long mask)
 {
 	struct bma400_data *data = iio_priv(indio_dev);
+	unsigned int activity;
 	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_PROCESSED:
-		mutex_lock(&data->mutex);
-		ret = bma400_get_temp_reg(data, val, val2);
-		mutex_unlock(&data->mutex);
-		return ret;
+		switch (chan->type) {
+		case IIO_TEMP:
+			mutex_lock(&data->mutex);
+			ret = bma400_get_temp_reg(data, val, val2);
+			mutex_unlock(&data->mutex);
+			return ret;
+		case IIO_STEPS:
+			return bma400_get_steps_reg(data, val);
+		case IIO_ACTIVITY:
+			ret = regmap_read(data->regmap, BMA400_STEP_STAT_REG,
+					  &activity);
+			if (ret)
+				return ret;
+			/*
+			 * The device does not support confidence value levels,
+			 * so we will always have 100% for current activity and
+			 * 0% for the others.
+			 */
+			if (chan->channel2 == bma400_act_to_mod(activity))
+				*val = 100;
+			else
+				*val = 0;
+			return IIO_VAL_INT;
+		default:
+			return -EINVAL;
+		}
 	case IIO_CHAN_INFO_RAW:
 		mutex_lock(&data->mutex);
 		ret = bma400_get_accel_reg(data, chan, val);
@@ -759,6 +899,9 @@ static int bma400_read_raw(struct iio_dev *indio_dev,
 			return -EINVAL;
 
 		*val = data->oversampling_ratio;
+		return IIO_VAL_INT;
+	case IIO_CHAN_INFO_ENABLE:
+		*val = data->steps_enabled;
 		return IIO_VAL_INT;
 	default:
 		return -EINVAL;
@@ -825,6 +968,11 @@ static int bma400_write_raw(struct iio_dev *indio_dev,
 		ret = bma400_set_accel_oversampling_ratio(data, val);
 		mutex_unlock(&data->mutex);
 		return ret;
+	case IIO_CHAN_INFO_ENABLE:
+		mutex_lock(&data->mutex);
+		ret = bma400_enable_steps(data, val);
+		mutex_unlock(&data->mutex);
+		return ret;
 	default:
 		return -EINVAL;
 	}
@@ -841,6 +989,265 @@ static int bma400_write_raw_get_fmt(struct iio_dev *indio_dev,
 		return IIO_VAL_INT_PLUS_MICRO;
 	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
 		return IIO_VAL_INT;
+	case IIO_CHAN_INFO_ENABLE:
+		return IIO_VAL_INT;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int bma400_read_event_config(struct iio_dev *indio_dev,
+				    const struct iio_chan_spec *chan,
+				    enum iio_event_type type,
+				    enum iio_event_direction dir)
+{
+	struct bma400_data *data = iio_priv(indio_dev);
+
+	switch (chan->type) {
+	case IIO_ACCEL:
+		switch (dir) {
+		case IIO_EV_DIR_RISING:
+			return FIELD_GET(BMA400_INT_GEN1_MSK,
+					 data->generic_event_en);
+		case IIO_EV_DIR_FALLING:
+			return FIELD_GET(BMA400_INT_GEN2_MSK,
+					 data->generic_event_en);
+		default:
+			return -EINVAL;
+		}
+	case IIO_STEPS:
+		return data->step_event_en;
+	case IIO_ACTIVITY:
+		return data->activity_event_en;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int bma400_steps_event_enable(struct bma400_data *data, int state)
+{
+	int ret;
+
+	ret = bma400_enable_steps(data, 1);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(data->regmap, BMA400_INT12_MAP_REG,
+				 BMA400_STEP_INT_MSK,
+				 FIELD_PREP(BMA400_STEP_INT_MSK,
+					    state));
+	if (ret)
+		return ret;
+	data->step_event_en = state;
+	return 0;
+}
+
+static int bma400_activity_event_en(struct bma400_data *data,
+				    enum iio_event_direction dir,
+				    int state)
+{
+	int ret, reg, msk, value, field_value;
+
+	switch (dir) {
+	case IIO_EV_DIR_RISING:
+		reg = BMA400_GEN1INT_CONFIG0;
+		msk = BMA400_INT_GEN1_MSK;
+		value = 2;
+		set_mask_bits(&field_value, BMA400_INT_GEN1_MSK,
+			      FIELD_PREP(BMA400_INT_GEN1_MSK, state));
+		break;
+	case IIO_EV_DIR_FALLING:
+		reg = BMA400_GEN2INT_CONFIG0;
+		msk = BMA400_INT_GEN2_MSK;
+		value = 0;
+		set_mask_bits(&field_value, BMA400_INT_GEN2_MSK,
+			      FIELD_PREP(BMA400_INT_GEN2_MSK, state));
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	/* Enabling all axis for interrupt evaluation */
+	ret = regmap_write(data->regmap, reg, 0xF8);
+	if (ret)
+		return ret;
+
+	/* OR combination of all axis for interrupt evaluation */
+	ret = regmap_write(data->regmap, reg + BMA400_GEN_CONFIG1_OFF, value);
+	if (ret)
+		return ret;
+
+	/* Initial value to avoid interrupts while enabling*/
+	ret = regmap_write(data->regmap, reg + BMA400_GEN_CONFIG2_OFF, 0x0A);
+	if (ret)
+		return ret;
+
+	/* Initial duration value to avoid interrupts while enabling*/
+	ret = regmap_write(data->regmap, reg + BMA400_GEN_CONFIG31_OFF, 0x0F);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(data->regmap, BMA400_INT1_MAP_REG, msk,
+				 field_value);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(data->regmap, BMA400_INT_CONFIG0_REG, msk,
+				 field_value);
+	if (ret)
+		return ret;
+
+	set_mask_bits(&data->generic_event_en, msk, field_value);
+	return 0;
+}
+
+static int bma400_write_event_config(struct iio_dev *indio_dev,
+				     const struct iio_chan_spec *chan,
+				     enum iio_event_type type,
+				     enum iio_event_direction dir, int state)
+{
+	struct bma400_data *data = iio_priv(indio_dev);
+	int ret;
+
+	switch (chan->type) {
+	case IIO_ACCEL:
+		mutex_lock(&data->mutex);
+		ret = bma400_activity_event_en(data, dir, state);
+		mutex_unlock(&data->mutex);
+		return ret;
+	case IIO_STEPS:
+		mutex_lock(&data->mutex);
+		ret = bma400_steps_event_enable(data, state);
+		mutex_unlock(&data->mutex);
+		return ret;
+	case IIO_ACTIVITY:
+		mutex_lock(&data->mutex);
+		if (!data->step_event_en) {
+			ret = bma400_steps_event_enable(data, true);
+			if (ret) {
+				mutex_unlock(&data->mutex);
+				return ret;
+			}
+		}
+		data->activity_event_en = state;
+		mutex_unlock(&data->mutex);
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int get_gen_config_reg(enum iio_event_direction dir)
+{
+	switch (dir) {
+	case IIO_EV_DIR_FALLING:
+		return BMA400_GEN2INT_CONFIG0;
+	case IIO_EV_DIR_RISING:
+		return BMA400_GEN1INT_CONFIG0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int bma400_read_event_value(struct iio_dev *indio_dev,
+				   const struct iio_chan_spec *chan,
+				   enum iio_event_type type,
+				   enum iio_event_direction dir,
+				   enum iio_event_info info,
+				   int *val, int *val2)
+{
+	struct bma400_data *data = iio_priv(indio_dev);
+	int ret, reg;
+
+	switch (chan->type) {
+	case IIO_ACCEL:
+		reg = get_gen_config_reg(dir);
+		if (reg < 0)
+			return -EINVAL;
+
+		*val2 = 0;
+		switch (info) {
+		case IIO_EV_INFO_VALUE:
+			ret = regmap_read(data->regmap,
+					  reg + BMA400_GEN_CONFIG2_OFF,
+					  val);
+			if (ret)
+				return ret;
+			return IIO_VAL_INT;
+		case IIO_EV_INFO_PERIOD:
+			mutex_lock(&data->mutex);
+			ret = regmap_bulk_read(data->regmap,
+					       reg + BMA400_GEN_CONFIG3_OFF,
+					       &data->duration,
+					       sizeof(data->duration));
+			if (ret) {
+				mutex_unlock(&data->mutex);
+				return ret;
+			}
+			*val = be16_to_cpu(data->duration);
+			mutex_unlock(&data->mutex);
+			return IIO_VAL_INT;
+		case IIO_EV_INFO_HYSTERESIS:
+			ret = regmap_read(data->regmap, reg, val);
+			if (ret)
+				return ret;
+			*val = FIELD_GET(BMA400_GEN_HYST_MSK, *val);
+			return IIO_VAL_INT;
+		default:
+			return -EINVAL;
+		}
+	default:
+		return -EINVAL;
+	}
+}
+
+static int bma400_write_event_value(struct iio_dev *indio_dev,
+				    const struct iio_chan_spec *chan,
+				    enum iio_event_type type,
+				    enum iio_event_direction dir,
+				    enum iio_event_info info,
+				    int val, int val2)
+{
+	struct bma400_data *data = iio_priv(indio_dev);
+	int reg, ret;
+
+	switch (chan->type) {
+	case IIO_ACCEL:
+		reg = get_gen_config_reg(dir);
+		if (reg < 0)
+			return -EINVAL;
+
+		switch (info) {
+		case IIO_EV_INFO_VALUE:
+			if (val < 1 || val > 255)
+				return -EINVAL;
+
+			return regmap_write(data->regmap,
+					    reg + BMA400_GEN_CONFIG2_OFF,
+					    val);
+		case IIO_EV_INFO_PERIOD:
+			if (val < 1 || val > 65535)
+				return -EINVAL;
+
+			mutex_lock(&data->mutex);
+			put_unaligned_be16(val, &data->duration);
+			ret = regmap_bulk_write(data->regmap,
+						reg + BMA400_GEN_CONFIG3_OFF,
+						&data->duration,
+						sizeof(data->duration));
+			mutex_unlock(&data->mutex);
+			return ret;
+		case IIO_EV_INFO_HYSTERESIS:
+			if (val < 0 || val > 3)
+				return -EINVAL;
+
+			return regmap_update_bits(data->regmap, reg,
+						  BMA400_GEN_HYST_MSK,
+						  FIELD_PREP(BMA400_GEN_HYST_MSK,
+							     val));
+		default:
+			return -EINVAL;
+		}
 	default:
 		return -EINVAL;
 	}
@@ -876,6 +1283,10 @@ static const struct iio_info bma400_info = {
 	.read_avail        = bma400_read_avail,
 	.write_raw         = bma400_write_raw,
 	.write_raw_get_fmt = bma400_write_raw_get_fmt,
+	.read_event_config = bma400_read_event_config,
+	.write_event_config = bma400_write_event_config,
+	.write_event_value = bma400_write_event_value,
+	.read_event_value = bma400_read_event_value,
 };
 
 static const struct iio_trigger_ops bma400_trigger_ops = {
@@ -923,6 +1334,8 @@ static irqreturn_t bma400_interrupt(int irq, void *private)
 {
 	struct iio_dev *indio_dev = private;
 	struct bma400_data *data = iio_priv(indio_dev);
+	s64 timestamp = iio_get_time_ns(indio_dev);
+	unsigned int act, ev_dir = IIO_EV_DIR_NONE;
 	int ret;
 
 	/* Lock to protect the data->status */
@@ -937,11 +1350,50 @@ static irqreturn_t bma400_interrupt(int irq, void *private)
 	if (ret || !data->status)
 		goto unlock_err;
 
+	if (FIELD_GET(BMA400_INT_GEN1_MSK, le16_to_cpu(data->status)))
+		ev_dir = IIO_EV_DIR_RISING;
+
+	if (FIELD_GET(BMA400_INT_GEN2_MSK, le16_to_cpu(data->status)))
+		ev_dir = IIO_EV_DIR_FALLING;
+
+	if (ev_dir != IIO_EV_DIR_NONE) {
+		iio_push_event(indio_dev,
+			       IIO_MOD_EVENT_CODE(IIO_ACCEL, 0,
+						  IIO_MOD_X_OR_Y_OR_Z,
+						  IIO_EV_TYPE_MAG, ev_dir),
+			       timestamp);
+	}
+
+	if (FIELD_GET(BMA400_STEP_STAT_MASK, le16_to_cpu(data->status))) {
+		iio_push_event(indio_dev,
+			       IIO_MOD_EVENT_CODE(IIO_STEPS, 0, IIO_NO_MOD,
+						  IIO_EV_TYPE_CHANGE,
+						  IIO_EV_DIR_NONE),
+			       timestamp);
+
+		if (data->activity_event_en) {
+			ret = regmap_read(data->regmap, BMA400_STEP_STAT_REG,
+					  &act);
+			if (ret)
+				goto unlock_err;
+
+			iio_push_event(indio_dev,
+				       IIO_MOD_EVENT_CODE(IIO_ACTIVITY, 0,
+							  bma400_act_to_mod(act),
+							  IIO_EV_TYPE_CHANGE,
+							  IIO_EV_DIR_NONE),
+				       timestamp);
+		}
+	}
+
 	if (FIELD_GET(BMA400_INT_DRDY_MSK, le16_to_cpu(data->status))) {
 		mutex_unlock(&data->mutex);
 		iio_trigger_poll_chained(data->trig);
 		return IRQ_HANDLED;
 	}
+
+	mutex_unlock(&data->mutex);
+	return IRQ_HANDLED;
 
 unlock_err:
 	mutex_unlock(&data->mutex);

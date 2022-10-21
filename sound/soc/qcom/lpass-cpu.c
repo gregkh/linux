@@ -472,6 +472,7 @@ static int asoc_qcom_of_xlate_dai_name(struct snd_soc_component *component,
 static const struct snd_soc_component_driver lpass_cpu_comp_driver = {
 	.name = "lpass-cpu",
 	.of_xlate_dai_name = asoc_qcom_of_xlate_dai_name,
+	.legacy_dai_naming = 1,
 };
 
 static bool lpass_cpu_regmap_writeable(struct device *dev, unsigned int reg)
@@ -1102,6 +1103,11 @@ int asoc_qcom_lpass_cpu_platform_probe(struct platform_device *pdev)
 	match = of_match_device(dev->driver->of_match_table, dev);
 	if (!match || !match->data)
 		return -EINVAL;
+
+	if (of_device_is_compatible(dev->of_node, "qcom,lpass-cpu-apq8016")) {
+		dev_warn(dev, "%s compatible is deprecated\n",
+			 match->compatible);
+	}
 
 	drvdata->variant = (struct lpass_variant *)match->data;
 	variant = drvdata->variant;

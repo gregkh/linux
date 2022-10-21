@@ -42,7 +42,6 @@
 #include "atomisp_ioctl.h"
 #include "atomisp-regs.h"
 #include "atomisp_tables.h"
-#include "atomisp_acc.h"
 #include "atomisp_compat.h"
 #include "atomisp_subdev.h"
 #include "atomisp_dfs_tables.h"
@@ -539,7 +538,7 @@ irqreturn_t atomisp_isr(int irq, void *dev)
 
 	clear_irq_reg(isp);
 
-	if (!atomisp_streaming_count(isp) && !atomisp_is_acc_enabled(isp))
+	if (!atomisp_streaming_count(isp))
 		goto out_nowake;
 
 	for (i = 0; i < isp->num_of_streams; i++) {
@@ -1317,33 +1316,10 @@ static void __atomisp_css_recover(struct atomisp_device *isp, bool isp_timeout)
 
 	for (i = 0; i < isp->num_of_streams; i++) {
 		struct atomisp_sub_device *asd = &isp->asd[i];
-		struct ia_css_pipeline *acc_pipeline;
-		struct ia_css_pipe *acc_pipe = NULL;
 
 		if (asd->streaming != ATOMISP_DEVICE_STREAMING_ENABLED &&
 		    !asd->stream_prepared)
 			continue;
-
-		/*
-		* AtomISP::waitStageUpdate is blocked when WDT happens.
-		* By calling acc_done() for all loaded fw_handles,
-		* HAL will be unblocked.
-		*/
-		acc_pipe = asd->stream_env[i].pipes[IA_CSS_PIPE_ID_ACC];
-		if (acc_pipe) {
-			acc_pipeline = ia_css_pipe_get_pipeline(acc_pipe);
-			if (acc_pipeline) {
-				struct ia_css_pipeline_stage *stage;
-
-				for (stage = acc_pipeline->stages; stage;
-				     stage = stage->next) {
-					const struct ia_css_fw_info *fw;
-
-					fw = stage->firmware;
-					atomisp_acc_done(asd, fw->handle);
-				}
-			}
-		}
 
 		depth_cnt++;
 
@@ -1364,8 +1340,6 @@ static void __atomisp_css_recover(struct atomisp_device *isp, bool isp_timeout)
 		if (ret)
 			dev_warn(isp->dev,
 				 "can't stop streaming on sensor!\n");
-
-		atomisp_acc_unload_extensions(asd);
 
 		atomisp_clear_css_buffer_counters(asd);
 
@@ -1878,7 +1852,7 @@ irqreturn_t atomisp_isr_thread(int irq, void *isp_ptr)
 
 	spin_lock_irqsave(&isp->lock, flags);
 
-	if (!atomisp_streaming_count(isp) && !atomisp_is_acc_enabled(isp)) {
+	if (!atomisp_streaming_count(isp)) {
 		spin_unlock_irqrestore(&isp->lock, flags);
 		return IRQ_HANDLED;
 	}
@@ -1929,9 +1903,6 @@ out:
 		    && isp->sw_contex.file_input)
 			v4l2_subdev_call(isp->inputs[asd->input_curr].camera,
 					 video, s_stream, 1);
-		/* FIXME! FIX ACC implementation */
-		if (asd->acc.pipeline && css_pipe_done[asd->index])
-			atomisp_css_acc_done(asd);
 	}
 	dev_dbg(isp->dev, "<%s\n", __func__);
 
@@ -6519,7 +6490,7 @@ int atomisp_set_raw_buffer_bitmap(struct atomisp_sub_device *asd, int exp_id)
 		ret = atomisp_css_exp_id_unlock(asd, exp_id);
 		if (ret) {
 			dev_err(asd->isp->dev,
-				"%s exp_id is wrapping back to %d but force unlock failed,, err %d.\n",
+				"%s exp_id is wrapping back to %d but force unlock failed, err %d.\n",
 				__func__, exp_id, ret);
 			return ret;
 		}

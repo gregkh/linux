@@ -46,6 +46,36 @@ static inline unsigned int inner_tcp_hdrlen(const struct sk_buff *skb)
 	return inner_tcp_hdr(skb)->doff * 4;
 }
 
+/**
+ * skb_tcp_all_headers - Returns size of all headers for a TCP packet
+ * @skb: buffer
+ *
+ * Used in TX path, for a packet known to be a TCP one.
+ *
+ * if (skb_is_gso(skb)) {
+ *         int hlen = skb_tcp_all_headers(skb);
+ *         ...
+ */
+static inline int skb_tcp_all_headers(const struct sk_buff *skb)
+{
+	return skb_transport_offset(skb) + tcp_hdrlen(skb);
+}
+
+/**
+ * skb_inner_tcp_all_headers - Returns size of all headers for an encap TCP packet
+ * @skb: buffer
+ *
+ * Used in TX path, for a packet known to be a TCP one.
+ *
+ * if (skb_is_gso(skb) && skb->encapsulation) {
+ *         int hlen = skb_inner_tcp_all_headers(skb);
+ *         ...
+ */
+static inline int skb_inner_tcp_all_headers(const struct sk_buff *skb)
+{
+	return skb_inner_transport_offset(skb) + inner_tcp_hdrlen(skb);
+}
+
 static inline unsigned int tcp_optlen(const struct sk_buff *skb)
 {
 	return (tcp_hdr(skb)->doff - 5) * 4;
@@ -265,7 +295,7 @@ struct tcp_sock {
 	u32	packets_out;	/* Packets which are "in flight"	*/
 	u32	retrans_out;	/* Retransmitted packets out		*/
 	u32	max_packets_out;  /* max packets_out in last window */
-	u32	max_packets_seq;  /* right edge of max_packets_out flight */
+	u32	cwnd_usage_seq;  /* right edge of cwnd usage tracking flight */
 
 	u16	urg_data;	/* Saved octet of OOB data and control flags */
 	u8	ecn_flags;	/* ECN status bits.			*/

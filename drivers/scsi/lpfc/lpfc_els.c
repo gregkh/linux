@@ -1790,18 +1790,20 @@ lpfc_plogi_confirm_nport(struct lpfc_hba *phba, uint32_t *prsp,
 
 	/* Move this back to NPR state */
 	if (memcmp(&ndlp->nlp_portname, name, sizeof(struct lpfc_name)) == 0) {
-		/* The new_ndlp is replacing ndlp totally, so we need
-		 * to put ndlp on UNUSED list and try to free it.
+		/* The ndlp doesn't have a portname yet, but does have an
+		 * NPort ID.  The new_ndlp portname matches the Rport's
+		 * portname.  Reinstantiate the new_ndlp and reset the ndlp.
 		 */
 		lpfc_printf_vlog(vport, KERN_INFO, LOG_ELS,
 			 "3179 PLOGI confirm NEW: %x %x\n",
 			 new_ndlp->nlp_DID, keepDID);
 
 		/* Two ndlps cannot have the same did on the nodelist.
-		 * Note: for this case, ndlp has a NULL WWPN so setting
-		 * the nlp_fc4_type isn't required.
+		 * The KeepDID and keep_nlp_fc4_type need to be swapped
+		 * because ndlp is inflight with no WWPN.
 		 */
 		ndlp->nlp_DID = keepDID;
+		ndlp->nlp_fc4_type = keep_nlp_fc4_type;
 		lpfc_nlp_set_state(vport, ndlp, keep_nlp_state);
 		if (phba->sli_rev == LPFC_SLI_REV4 &&
 		    active_rrqs_xri_bitmap)
@@ -1816,9 +1818,8 @@ lpfc_plogi_confirm_nport(struct lpfc_hba *phba, uint32_t *prsp,
 
 		lpfc_unreg_rpi(vport, ndlp);
 
-		/* Two ndlps cannot have the same did and the fc4
-		 * type must be transferred because the ndlp is in
-		 * flight.
+		/* The ndlp and new_ndlp both have WWPNs but are swapping
+		 * NPort Ids and attributes.
 		 */
 		ndlp->nlp_DID = keepDID;
 		ndlp->nlp_fc4_type = keep_nlp_fc4_type;
@@ -4569,15 +4570,6 @@ lpfc_els_retry(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 	case IOSTAT_LOCAL_REJECT:
 		switch ((ulp_word4 & IOERR_PARAM_MASK)) {
 		case IOERR_LOOP_OPEN_FAILURE:
-			if (cmd == ELS_CMD_FLOGI) {
-				if (PCI_DEVICE_ID_HORNET ==
-					phba->pcidev->device) {
-					phba->fc_topology = LPFC_TOPOLOGY_LOOP;
-					phba->pport->fc_myDID = 0;
-					phba->alpa_map[0] = 0;
-					phba->alpa_map[1] = 0;
-				}
-			}
 			if (cmd == ELS_CMD_PLOGI && cmdiocb->retry == 0)
 				delay = 1000;
 			retry = 1;

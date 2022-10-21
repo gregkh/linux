@@ -455,7 +455,7 @@
 			reg = <0x045f0000 0x7000>;
 		};
 
-		sdhc_1: sdhci@4744000 {
+		sdhc_1: mmc@4744000 {
 			compatible = "qcom,sm6125-sdhci", "qcom,sdhci-msm-v5";
 			reg = <0x04744000 0x1000>, <0x04745000 0x1000>;
 			reg-names = "hc", "core";
@@ -471,12 +471,15 @@
 
 			power-domains = <&rpmpd SM6125_VDDCX>;
 
+			qcom,dll-config = <0x000f642c>;
+			qcom,ddr-config = <0x80040873>;
+
 			bus-width = <8>;
 			non-removable;
 			status = "disabled";
 		};
 
-		sdhc_2: sdhci@4784000 {
+		sdhc_2: mmc@4784000 {
 			compatible = "qcom,sm6125-sdhci", "qcom,sdhci-msm-v5";
 			reg = <0x04784000 0x1000>;
 			reg-names = "hc";
@@ -495,6 +498,9 @@
 			pinctrl-names = "default", "sleep";
 
 			power-domains = <&rpmpd SM6125_VDDCX>;
+
+			qcom,dll-config = <0x0007642c>;
+			qcom,ddr-config = <0x80040873>;
 
 			bus-width = <4>;
 			status = "disabled";

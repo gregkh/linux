@@ -6,6 +6,7 @@
  */
 
 /* This file must be included after sc7180-trogdor.dtsi */
+#include <arm/cros-ec-keyboard.dtsi>
 
 &ap_sar_sensor {
 	semtech,cs0-ground;
@@ -54,8 +55,6 @@ ap_ts_pen_1v8: &i2c4 {
 };
 
 &pm6150_adc {
-	status = "disabled";
-
 	/delete-node/ charger-thermistor@4f;
 };
 

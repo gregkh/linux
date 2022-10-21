@@ -825,10 +825,9 @@ static int mlxreg_lc_probe(struct platform_device *pdev)
 
 	mutex_init(&mlxreg_lc->lock);
 	/* Set event notification callback. */
-	if (data->notifier) {
-		data->notifier->user_handler = mlxreg_lc_event_handler;
-		data->notifier->handle = mlxreg_lc;
-	}
+	data->notifier->user_handler = mlxreg_lc_event_handler;
+	data->notifier->handle = mlxreg_lc;
+
 	data->hpdev.adapter = i2c_get_adapter(data->hpdev.nr);
 	if (!data->hpdev.adapter) {
 		dev_err(&pdev->dev, "Failed to get adapter for bus %d\n",
@@ -888,16 +887,14 @@ static int mlxreg_lc_probe(struct platform_device *pdev)
 	if (err)
 		goto mlxreg_lc_config_init_fail;
 
-	return err;
+	return 0;
 
 mlxreg_lc_config_init_fail:
 regcache_sync_fail:
 regmap_write_fail:
 devm_regmap_init_i2c_fail:
-	if (data->hpdev.client) {
-		i2c_unregister_device(data->hpdev.client);
-		data->hpdev.client = NULL;
-	}
+	i2c_unregister_device(data->hpdev.client);
+	data->hpdev.client = NULL;
 i2c_new_device_fail:
 	i2c_put_adapter(data->hpdev.adapter);
 	data->hpdev.adapter = NULL;

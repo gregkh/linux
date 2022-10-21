@@ -18,6 +18,8 @@
 #include <uapi/linux/io_uring.h>
 
 #include "io-wq.h"
+#include "slist.h"
+#include "io_uring.h"
 
 #define WORKER_IDLE_TIMEOUT	(5 * HZ)
 
@@ -518,23 +520,11 @@ static struct io_wq_work *io_get_next_work(struct io_wqe_acct *acct,
 	return NULL;
 }
 
-static bool io_flush_signals(void)
-{
-	if (unlikely(test_thread_flag(TIF_NOTIFY_SIGNAL))) {
-		__set_current_state(TASK_RUNNING);
-		clear_notify_signal();
-		if (task_work_pending(current))
-			task_work_run();
-		return true;
-	}
-	return false;
-}
-
 static void io_assign_current_work(struct io_worker *worker,
 				   struct io_wq_work *work)
 {
 	if (work) {
-		io_flush_signals();
+		io_run_task_work();
 		cond_resched();
 	}
 
@@ -634,8 +624,6 @@ static int io_wqe_worker(void *data)
 	snprintf(buf, sizeof(buf), "iou-wrk-%d", wq->task->pid);
 	set_task_comm(current, buf);
 
-	audit_alloc_kernel(current);
-
 	while (!test_bit(IO_WQ_BIT_EXIT, &wq->state)) {
 		long ret;
 
@@ -654,7 +642,7 @@ static int io_wqe_worker(void *data)
 		last_timeout = false;
 		__io_worker_idle(wqe, worker);
 		raw_spin_unlock(&wqe->lock);
-		if (io_flush_signals())
+		if (io_run_task_work())
 			continue;
 		ret = schedule_timeout(WORKER_IDLE_TIMEOUT);
 		if (signal_pending(current)) {
@@ -670,7 +658,6 @@ static int io_wqe_worker(void *data)
 	if (test_bit(IO_WQ_BIT_EXIT, &wq->state))
 		io_worker_handle_work(worker);
 
-	audit_free(current);
 	io_worker_exit(worker);
 	return 0;
 }

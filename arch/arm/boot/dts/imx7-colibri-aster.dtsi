@@ -1,98 +1,79 @@
-// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 /*
- * Copyright 2017-2020 Toradex AG
- *
+ * Copyright 2017-2022 Toradex
  */
 
-/ {
-	reg_3v3: regulator-3v3 {
-		compatible = "regulator-fixed";
-		regulator-name = "3.3V";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-	};
-
-	reg_5v0: regulator-5v0 {
-		compatible = "regulator-fixed";
-		regulator-name = "5V";
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-	};
-
-	reg_usbh_vbus: regulator-usbh-vbus {
-		compatible = "regulator-fixed";
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_usbh_reg>;
-		regulator-name = "VCC_USB[1-4]";
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		gpio = <&gpio4 7 GPIO_ACTIVE_LOW>;
-		vin-supply = <&reg_5v0>;
-	};
-};
-
+/* Colibri AD0 to AD3 */
 &adc1 {
 	status = "okay";
 };
 
-/*
- * ADC2 is not available on the Aster board and
- * conflicts with AD7879 resistive touchscreen.
- */
-&adc2 {
-	status = "disabled";
+/* Colibri SSP */
+&ecspi3 {
+	cs-gpios = <
+		&gpio4 11 GPIO_ACTIVE_LOW /* SODIMM 86 / regular SSPFRM as UNO_SPI_CS or  */
+		&gpio4 23 GPIO_ACTIVE_LOW /* SODIMM 65 / already muxed pinctrl_gpio2 as SPI_CE0_N */
+		&gpio4 22 GPIO_ACTIVE_LOW /* SODIMM 85 / already muxed pinctrl_gpio2 as SPI_CE1_N */
+	>;
+	status = "okay";
 };
 
+/* Colibri Fast Ethernet */
 &fec1 {
 	status = "okay";
 };
 
+/* Colibri I2C: I2C3_SDA/SCL on SODIMM 194/196 */
 &i2c4 {
 	status = "okay";
-
-	/* M41T0M6 real time clock on carrier board */
-	rtc: rtc@68 {
-		compatible = "st,m41t0";
-		reg = <0x68>;
-	};
 };
 
+/* Colibri PWM<A> */
 &pwm1 {
 	status = "okay";
 };
 
+/* Colibri PWM<B> */
 &pwm2 {
 	status = "okay";
 };
 
+/* Colibri PWM<C> */
 &pwm3 {
 	status = "okay";
 };
 
+/* Colibri PWM<D> */
 &pwm4 {
 	status = "okay";
 };
 
+/* M41T0M6 real time clock */
+&rtc {
+	status = "okay";
+};
+
+/* Colibri UART_A */
 &uart1 {
 	status = "okay";
 };
 
+/* Colibri UART_B */
 &uart2 {
 	status = "okay";
 };
 
+/* Colibri UART_C */
 &uart3 {
 	status = "okay";
 };
 
+/* Colibri USBC */
 &usbotg1 {
 	status = "okay";
 };
 
+/* Colibri MMC/SD */
 &usdhc1 {
-	keep-power-in-suspend;
-	no-1-8-v;
-	wakeup-source;
-	vmmc-supply = <&reg_3v3>;
 	status = "okay";
 };

@@ -245,6 +245,12 @@ static ssize_t device_type_show(struct device *dev,
 	case ASIC_GAUDI_SEC:
 		str = "GAUDI SEC";
 		break;
+	case ASIC_GAUDI2:
+		str = "GAUDI2";
+		break;
+	case ASIC_GAUDI2_SEC:
+		str = "GAUDI2 SEC";
+		break;
 	default:
 		dev_err(hdev->dev, "Unrecognized ASIC type %d\n",
 				hdev->asic_type);
@@ -285,7 +291,7 @@ static ssize_t soft_reset_cnt_show(struct device *dev,
 {
 	struct hl_device *hdev = dev_get_drvdata(dev);
 
-	return sprintf(buf, "%d\n", hdev->reset_info.soft_reset_cnt);
+	return sprintf(buf, "%d\n", hdev->reset_info.compute_reset_cnt);
 }
 
 static ssize_t hard_reset_cnt_show(struct device *dev,

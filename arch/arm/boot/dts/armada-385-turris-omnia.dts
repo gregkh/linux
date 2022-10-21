@@ -191,15 +191,13 @@
 				reg = <0x2b>;
 				#address-cells = <1>;
 				#size-cells = <0>;
+				status = "okay";
 
 				/*
 				 * LEDs are controlled by MCU (STM32F0) at
 				 * address 0x2b.
 				 *
-				 * The driver does not support HW control mode
-				 * for the LEDs yet. Disable the LEDs for now.
-				 *
-				 * Also LED functions are not stable yet:
+				 * LED functions are not stable yet:
 				 * - there are 3 LEDs connected via MCU to PCIe
 				 *   ports. One of these ports supports mSATA.
 				 *   There is no mSATA nor PCIe function.
@@ -210,7 +208,6 @@
 				 *   B. Again there is no such function defined.
 				 *   For now we use LED_FUNCTION_INDICATOR
 				 */
-				status = "disabled";
 
 				multi-led@0 {
 					reg = <0x0>;
@@ -397,7 +394,8 @@
 	phy1: ethernet-phy@1 {
 		compatible = "ethernet-phy-ieee802.3-c22";
 		reg = <1>;
-		marvell,reg-init = <3 18 0 0x4985>;
+		marvell,reg-init = <3 18 0 0x4985>,
+				   <3 16 0xfff0 0x0001>;
 
 		/* irq is connected to &pcawan pin 7 */
 	};
@@ -478,7 +476,7 @@
 		marvell,function = "spi0";
 	};
 
-	spi0cs1_pins: spi0cs1-pins {
+	spi0cs2_pins: spi0cs2-pins {
 		marvell,pins = "mpp26";
 		marvell,function = "spi0";
 	};
@@ -513,7 +511,7 @@
 		};
 	};
 
-	/* MISO, MOSI, SCLK and CS1 are routed to pin header CN11 */
+	/* MISO, MOSI, SCLK and CS2 are routed to pin header CN11 */
 };
 
 &uart0 {

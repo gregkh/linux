@@ -95,10 +95,10 @@ int raw_hash_sk(struct sock *sk)
 
 	hlist = &h->ht[inet_sk(sk)->inet_num & (RAW_HTABLE_SIZE - 1)];
 
-	write_lock_bh(&h->lock);
-	hlist_nulls_add_head_rcu(&sk->sk_nulls_node, hlist);
+	spin_lock(&h->lock);
+	__sk_nulls_add_node_rcu(sk, hlist);
 	sock_set_flag(sk, SOCK_RCU_FREE);
-	write_unlock_bh(&h->lock);
+	spin_unlock(&h->lock);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 
 	return 0;
@@ -109,10 +109,10 @@ void raw_unhash_sk(struct sock *sk)
 {
 	struct raw_hashinfo *h = sk->sk_prot->h.raw_hash;
 
-	write_lock_bh(&h->lock);
+	spin_lock(&h->lock);
 	if (__sk_nulls_del_node_init_rcu(sk))
 		sock_prot_inuse_add(sock_net(sk), sk->sk_prot, -1);
-	write_unlock_bh(&h->lock);
+	spin_unlock(&h->lock);
 }
 EXPORT_SYMBOL_GPL(raw_unhash_sk);
 
@@ -172,7 +172,7 @@ static int raw_v4_input(struct sk_buff *skb, const struct iphdr *iph, int hash)
 
 	hlist = &raw_v4_hashinfo.ht[hash];
 	rcu_read_lock();
-	hlist_nulls_for_each_entry(sk, hnode, hlist, sk_nulls_node) {
+	sk_nulls_for_each(sk, hnode, hlist) {
 		if (!raw_v4_match(net, sk, iph->protocol,
 				  iph->saddr, iph->daddr, dif, sdif))
 			continue;
@@ -275,7 +275,7 @@ void raw_icmp_error(struct sk_buff *skb, int protocol, u32 info)
 	hlist = &raw_v4_hashinfo.ht[hash];
 
 	rcu_read_lock();
-	hlist_nulls_for_each_entry(sk, hnode, hlist, sk_nulls_node) {
+	sk_nulls_for_each(sk, hnode, hlist) {
 		iph = (const struct iphdr *)skb->data;
 		if (!raw_v4_match(net, sk, iph->protocol,
 				  iph->daddr, iph->saddr, dif, sdif))
@@ -954,7 +954,7 @@ static struct sock *raw_get_first(struct seq_file *seq, int bucket)
 	for (state->bucket = bucket; state->bucket < RAW_HTABLE_SIZE;
 			++state->bucket) {
 		hlist = &h->ht[state->bucket];
-		hlist_nulls_for_each_entry(sk, hnode, hlist, sk_nulls_node) {
+		sk_nulls_for_each(sk, hnode, hlist) {
 			if (sock_net(sk) == seq_file_net(seq))
 				return sk;
 		}
