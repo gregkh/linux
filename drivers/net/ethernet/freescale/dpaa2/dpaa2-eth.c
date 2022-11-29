@@ -4466,9 +4466,8 @@ static int dpaa2_eth_connect_mac(struct dpaa2_eth_priv *priv)
 	err = dpaa2_mac_open(mac);
 	if (err)
 		goto err_free_mac;
-	priv->mac = mac;
 
-	if (dpaa2_eth_is_type_phy(priv)) {
+	if (dpaa2_mac_is_type_phy(mac)) {
 		err = dpaa2_mac_connect(mac);
 		if (err && err != -EPROBE_DEFER)
 			netdev_err(priv->net_dev, "Error connecting to the MAC endpoint: %pe",
@@ -4477,11 +4476,12 @@ static int dpaa2_eth_connect_mac(struct dpaa2_eth_priv *priv)
 			goto err_close_mac;
 	}
 
+	priv->mac = mac;
+
 	return 0;
 
 err_close_mac:
 	dpaa2_mac_close(mac);
-	priv->mac = NULL;
 err_free_mac:
 	kfree(mac);
 out_put_device:
@@ -4491,15 +4491,18 @@ out_put_device:
 
 static void dpaa2_eth_disconnect_mac(struct dpaa2_eth_priv *priv)
 {
-	if (dpaa2_eth_is_type_phy(priv))
-		dpaa2_mac_disconnect(priv->mac);
+	struct dpaa2_mac *mac = priv->mac;
 
-	if (!dpaa2_eth_has_mac(priv))
+	priv->mac = NULL;
+
+	if (!mac)
 		return;
 
-	dpaa2_mac_close(priv->mac);
-	kfree(priv->mac);
-	priv->mac = NULL;
+	if (dpaa2_mac_is_type_phy(mac))
+		dpaa2_mac_disconnect(mac);
+
+	dpaa2_mac_close(mac);
+	kfree(mac);
 }
 
 static irqreturn_t dpni_irq0_handler_thread(int irq_num, void *arg)
