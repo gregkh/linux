@@ -80,6 +80,8 @@
 #define MVEBU_COMPHY_TX_SLEW_RATE(n)		(0x974 + (n) * 0x1000)
 #define     MVEBU_COMPHY_TX_SLEW_RATE_EMPH(n)	((n) << 5)
 #define     MVEBU_COMPHY_TX_SLEW_RATE_SLC(n)	((n) << 10)
+#define MVEBU_COMPHY_TX_EMP_AMP(n)		(0x978 + (n) * 0x1000)
+#define     MVEBU_COMPHY_TX_EMPH_AMP_FORCE		BIT(8)
 #define MVEBU_COMPHY_DTL_CTRL(n)		(0x984 + (n) * 0x1000)
 #define     MVEBU_COMPHY_DTL_CTRL_DTL_FLOOP_EN	BIT(2)
 #define MVEBU_COMPHY_FRAME_DETECT0(n)		(0xa14 + (n) * 0x1000)
@@ -266,6 +268,7 @@ struct mvebu_comphy_lane {
 	enum phy_mode mode;
 	int submode;
 	int port;
+	bool enable_emp_quirk;
 };
 
 static int mvebu_comphy_smc(unsigned long function, unsigned long phys,
@@ -714,6 +717,22 @@ static int mvebu_comphy_set_mode_10gbaser(struct phy *phy)
 	return mvebu_comphy_init_plls(lane);
 }
 
+/**
+ * Workaround for an HW eratta on the 260C BB. In some cases,
+ * some SFP+ transivers that are connected to another 260C won't
+ * be able to raise a link and get into an endless up/down loop.
+ * Writing this magic values works around this issue somehow. 
+ */
+static int mvebu_comphy_power_on_emp_workaround(struct phy *phy) {
+	struct mvebu_comphy_lane *lane = phy_get_drvdata(phy);
+	struct mvebu_comphy_priv *priv = lane->priv;
+	u32 val;
+	val = readl(priv->base + MVEBU_COMPHY_TX_EMP_AMP(lane->id));
+	val |= MVEBU_COMPHY_TX_EMPH_AMP_FORCE;
+	writel(val, priv->base + MVEBU_COMPHY_TX_EMP_AMP(lane->id));
+	return 0;
+}
+
 static int mvebu_comphy_power_on_legacy(struct phy *phy)
 {
 	struct mvebu_comphy_lane *lane = phy_get_drvdata(phy);
@@ -825,7 +844,7 @@ static int mvebu_comphy_power_on(struct phy *phy)
 	ret = mvebu_comphy_smc(COMPHY_SIP_POWER_ON, priv->cp_phys, lane->id,
 			       fw_param);
 	if (!ret)
-		return ret;
+		goto out;
 
 	if (ret == -EOPNOTSUPP)
 		dev_err(priv->dev,
@@ -837,7 +856,18 @@ static int mvebu_comphy_power_on(struct phy *phy)
 
 try_legacy:
 	/* Fallback to Linux's implementation */
-	return mvebu_comphy_power_on_legacy(phy);
+	ret = mvebu_comphy_power_on_legacy(phy);
+
+out:
+	if (!ret 
+		&& lane->mode == PHY_MODE_ETHERNET 
+		&& lane->submode == PHY_INTERFACE_MODE_10GBASER 
+		&& lane->enable_emp_quirk) {
+		dev_warn(priv->dev, "Performing emphesis workaround on PHY %d", lane->id);
+		ret = mvebu_comphy_power_on_emp_workaround(phy);
+	}
+
+	return ret;
 }
 
 static int mvebu_comphy_set_mode(struct phy *phy,
@@ -1028,6 +1058,12 @@ static int mvebu_comphy_probe(struct platform_device *pdev)
 		struct mvebu_comphy_lane *lane;
 		struct phy *phy;
 		u32 val;
+		bool enable_emp_quirk = false;
+
+		ret = of_property_read_u32(child, "enable-emp-quirk", &val);
+		if (ret >= 0 && val) {
+			enable_emp_quirk = true;
+		} 
 
 		ret = of_property_read_u32(child, "reg", &val);
 		if (ret < 0) {
@@ -1060,6 +1096,7 @@ static int mvebu_comphy_probe(struct platform_device *pdev)
 		lane->submode = PHY_INTERFACE_MODE_NA;
 		lane->id = val;
 		lane->port = -1;
+		lane->enable_emp_quirk = enable_emp_quirk;
 		phy_set_drvdata(phy, lane);
 
 		/*
