@@ -12,6 +12,7 @@
 from __future__ import annotations
 import re
 import sys
+import textwrap
 
 from enum import Enum, auto
 from typing import Iterable, Iterator, List, Optional, Tuple
@@ -217,12 +218,12 @@ class LineStream:
 
 # Parsing helper methods:
 
-KTAP_START = re.compile(r'KTAP version ([0-9]+)$')
-TAP_START = re.compile(r'TAP version ([0-9]+)$')
-KTAP_END = re.compile('(List of all partitions:|'
+KTAP_START = re.compile(r'\s*KTAP version ([0-9]+)$')
+TAP_START = re.compile(r'\s*TAP version ([0-9]+)$')
+KTAP_END = re.compile(r'\s*(List of all partitions:|'
 	'Kernel panic - not syncing: VFS:|reboot: System halted)')
 
-def extract_tap_lines(kernel_output: Iterable[str], lstrip=True) -> LineStream:
+def extract_tap_lines(kernel_output: Iterable[str]) -> LineStream:
 	"""Extracts KTAP lines from the kernel output."""
 	def isolate_ktap_output(kernel_output: Iterable[str]) \
 			-> Iterator[Tuple[int, str]]:
@@ -248,11 +249,8 @@ def extract_tap_lines(kernel_output: Iterable[str], lstrip=True) -> LineStream:
 				# stop extracting KTAP lines
 				break
 			elif started:
-				# remove the prefix and optionally any leading
-				# whitespace. Our parsing logic relies on this.
+				# remove the prefix, if any.
 				line = line[prefix_len:]
-				if lstrip:
-					line = line.lstrip()
 				yield line_num, line
 	return LineStream(lines=isolate_ktap_output(kernel_output))
 
@@ -307,7 +305,7 @@ def parse_ktap_header(lines: LineStream, test: Test) -> bool:
 	lines.pop()
 	return True
 
-TEST_HEADER = re.compile(r'^# Subtest: (.*)$')
+TEST_HEADER = re.compile(r'^\s*# Subtest: (.*)$')
 
 def parse_test_header(lines: LineStream, test: Test) -> bool:
 	"""
@@ -331,7 +329,7 @@ def parse_test_header(lines: LineStream, test: Test) -> bool:
 	lines.pop()
 	return True
 
-TEST_PLAN = re.compile(r'1\.\.([0-9]+)')
+TEST_PLAN = re.compile(r'^\s*1\.\.([0-9]+)')
 
 def parse_test_plan(lines: LineStream, test: Test) -> bool:
 	"""
@@ -359,9 +357,9 @@ def parse_test_plan(lines: LineStream, test: Test) -> bool:
 	lines.pop()
 	return True
 
-TEST_RESULT = re.compile(r'^(ok|not ok) ([0-9]+) (- )?([^#]*)( # .*)?$')
+TEST_RESULT = re.compile(r'^\s*(ok|not ok) ([0-9]+) (- )?([^#]*)( # .*)?$')
 
-TEST_RESULT_SKIP = re.compile(r'^(ok|not ok) ([0-9]+) (- )?(.*) # SKIP(.*)$')
+TEST_RESULT_SKIP = re.compile(r'^\s*(ok|not ok) ([0-9]+) (- )?(.*) # SKIP(.*)$')
 
 def peek_test_name_match(lines: LineStream, test: Test) -> bool:
 	"""
@@ -520,8 +518,9 @@ def print_test_header(test: Test) -> None:
 
 def print_log(log: Iterable[str]) -> None:
 	"""Prints all strings in saved log for test in yellow."""
-	for m in log:
-		stdout.print_with_timestamp(stdout.yellow(m))
+	formatted = textwrap.dedent('\n'.join(log))
+	for line in formatted.splitlines():
+		stdout.print_with_timestamp(stdout.yellow(line))
 
 def format_test_result(test: Test) -> str:
 	"""
