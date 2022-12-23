@@ -715,7 +715,7 @@ enum vchiq_status vchiq_shutdown(struct vchiq_instance *instance)
 	struct vchiq_state *state = instance->state;
 
 	if (mutex_lock_killable(&state->mutex))
-		return VCHIQ_RETRY;
+		return -EAGAIN;
 
 	/* Remove all services */
 	vchiq_shutdown_internal(state, instance);
@@ -743,7 +743,7 @@ enum vchiq_status vchiq_connect(struct vchiq_instance *instance)
 
 	if (mutex_lock_killable(&state->mutex)) {
 		vchiq_log_trace(vchiq_core_log_level, "%s: call to mutex_lock failed", __func__);
-		status = VCHIQ_RETRY;
+		status = -EAGAIN;
 		goto failed;
 	}
 	status = vchiq_connect_internal(state, instance);
@@ -846,11 +846,11 @@ vchiq_bulk_transmit(struct vchiq_instance *instance, unsigned int handle, const 
 		}
 
 		/*
-		 * vchiq_*_bulk_transfer() may return VCHIQ_RETRY, so we need
+		 * vchiq_*_bulk_transfer() may return -EAGAIN, so we need
 		 * to implement a retry mechanism since this function is
 		 * supposed to block until queued
 		 */
-		if (status != VCHIQ_RETRY)
+		if (status != -EAGAIN)
 			break;
 
 		msleep(1);
@@ -883,11 +883,11 @@ enum vchiq_status vchiq_bulk_receive(struct vchiq_instance *instance, unsigned i
 		}
 
 		/*
-		 * vchiq_*_bulk_transfer() may return VCHIQ_RETRY, so we need
+		 * vchiq_*_bulk_transfer() may return -EAGAIN, so we need
 		 * to implement a retry mechanism since this function is
 		 * supposed to block until queued
 		 */
-		if (status != VCHIQ_RETRY)
+		if (status != -EAGAIN)
 			break;
 
 		msleep(1);
@@ -948,7 +948,7 @@ vchiq_blocking_bulk_transfer(struct vchiq_instance *instance, unsigned int handl
 	status = vchiq_bulk_transfer(instance, handle, data, NULL, size,
 				     &waiter->bulk_waiter,
 				     VCHIQ_BULK_MODE_BLOCKING, dir);
-	if ((status != VCHIQ_RETRY) || fatal_signal_pending(current) || !waiter->bulk_waiter.bulk) {
+	if ((status != -EAGAIN) || fatal_signal_pending(current) || !waiter->bulk_waiter.bulk) {
 		struct vchiq_bulk *bulk = waiter->bulk_waiter.bulk;
 
 		if (bulk) {
@@ -988,7 +988,7 @@ add_completion(struct vchiq_instance *instance, enum vchiq_reason reason,
 		DEBUG_COUNT(COMPLETION_QUEUE_FULL_COUNT);
 		if (wait_for_completion_interruptible(&instance->remove_event)) {
 			vchiq_log_info(vchiq_arm_log_level, "service_callback interrupted");
-			return VCHIQ_RETRY;
+			return -EAGAIN;
 		} else if (instance->closing) {
 			vchiq_log_info(vchiq_arm_log_level, "service_callback closing");
 			return 0;
@@ -1109,7 +1109,7 @@ service_callback(struct vchiq_instance *instance, enum vchiq_reason reason,
 				vchiq_log_info(vchiq_arm_log_level, "%s interrupted", __func__);
 				DEBUG_TRACE(SERVICE_CALLBACK_LINE);
 				vchiq_service_put(service);
-				return VCHIQ_RETRY;
+				return -EAGAIN;
 			} else if (instance->closing) {
 				vchiq_log_info(vchiq_arm_log_level, "%s closing", __func__);
 				DEBUG_TRACE(SERVICE_CALLBACK_LINE);
