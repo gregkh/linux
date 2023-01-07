@@ -1225,7 +1225,7 @@ static int cxl_region_attach(struct cxl_region *cxlr,
 		struct cxl_endpoint_decoder *cxled_target;
 		struct cxl_memdev *cxlmd_target;
 
-		cxled_target = p->targets[pos];
+		cxled_target = p->targets[i];
 		if (!cxled_target)
 			continue;
 
@@ -1921,6 +1921,9 @@ static int cxl_region_probe(struct device *dev)
 	 * CXL_CONFIG_COMMIT is also responsible for releasing the driver.
 	 */
 	up_read(&cxl_region_rwsem);
+
+	if (rc)
+		return rc;
 
 	switch (cxlr->mode) {
 	case CXL_DECODER_PMEM:
