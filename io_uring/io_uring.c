@@ -597,8 +597,10 @@ static inline void __io_cq_unlock_post_flush(struct io_ring_ctx *ctx)
 	io_commit_cqring(ctx);
 	spin_unlock(&ctx->completion_lock);
 	io_commit_cqring_flush(ctx);
-	if (!(ctx->flags & IORING_SETUP_DEFER_TASKRUN))
+	if (!(ctx->flags & IORING_SETUP_DEFER_TASKRUN)) {
+		smp_mb();
 		__io_cqring_wake(ctx);
+	}
 }
 
 void io_cq_unlock_post(struct io_ring_ctx *ctx)
