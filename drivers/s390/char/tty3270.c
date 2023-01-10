@@ -38,7 +38,6 @@
 
 static struct tty_driver *tty3270_driver;
 static int tty3270_max_index;
-static struct tty3270 *condev;
 static struct raw3270_fn tty3270_fn;
 
 struct tty3270_cell {
@@ -1910,6 +1909,9 @@ static void __exit tty3270_exit(void)
 }
 
 #if IS_ENABLED(CONFIG_TN3270_CONSOLE)
+
+static struct tty3270 *condev;
+
 static void
 con3270_write(struct console *co, const char *str, unsigned int count)
 {
