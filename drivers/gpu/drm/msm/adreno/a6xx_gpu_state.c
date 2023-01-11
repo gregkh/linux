@@ -813,6 +813,9 @@ static struct msm_gpu_state_bo *a6xx_snapshot_gmu_bo(
 {
 	struct msm_gpu_state_bo *snapshot;
 
+	if (!bo->size)
+		return NULL;
+
 	snapshot = state_kcalloc(a6xx_state, 1, sizeof(*snapshot));
 	if (!snapshot)
 		return NULL;
@@ -1043,8 +1046,10 @@ static void a6xx_gpu_state_destroy(struct kref *kref)
 	if (a6xx_state->gmu_debug)
 		kvfree(a6xx_state->gmu_debug->data);
 
-	list_for_each_entry_safe(obj, tmp, &a6xx_state->objs, node)
+	list_for_each_entry_safe(obj, tmp, &a6xx_state->objs, node) {
+		list_del(&obj->node);
 		kvfree(obj);
+	}
 
 	adreno_gpu_state_destroy(state);
 	kfree(a6xx_state);

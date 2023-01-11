@@ -393,6 +393,11 @@ static int __maybe_unused ps8640_resume(struct device *dev)
 	gpiod_set_value(ps_bridge->gpio_reset, 1);
 	usleep_range(2000, 2500);
 	gpiod_set_value(ps_bridge->gpio_reset, 0);
+	/* Double reset for T4 and T5 */
+	msleep(50);
+	gpiod_set_value(ps_bridge->gpio_reset, 1);
+	msleep(50);
+	gpiod_set_value(ps_bridge->gpio_reset, 0);
 
 	/* We just reset things, so we need a delay after the first HPD */
 	ps_bridge->need_post_hpd_delay = true;

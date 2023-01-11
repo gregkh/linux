@@ -36,24 +36,6 @@ struct guc_log_section {
 	const char *name;
 };
 
-static s32 scale_log_param(struct intel_guc_log *log, const struct guc_log_section *section,
-			   s32 param)
-{
-	/* -1 means default */
-	if (param < 0)
-		return section->default_val;
-
-	/* Check for 32-bit overflow */
-	if (param >= SZ_4K) {
-		drm_err(&guc_to_gt(log_to_guc(log))->i915->drm, "Size too large for GuC %s log: %dMB!",
-			section->name, param);
-		return section->default_val;
-	}
-
-	/* Param units are 1MB */
-	return param * SZ_1M;
-}
-
 static void _guc_log_init_sizes(struct intel_guc_log *log)
 {
 	struct intel_guc *guc = log_to_guc(log);
@@ -78,19 +60,13 @@ static void _guc_log_init_sizes(struct intel_guc_log *log)
 			"capture",
 		}
 	};
-	s32 params[GUC_LOG_SECTIONS_LIMIT] = {
-		i915->params.guc_log_size_crash,
-		i915->params.guc_log_size_debug,
-		i915->params.guc_log_size_capture,
-	};
 	int i;
 
 	for (i = 0; i < GUC_LOG_SECTIONS_LIMIT; i++)
-		log->sizes[i].bytes = scale_log_param(log, sections + i, params[i]);
+		log->sizes[i].bytes = sections[i].default_val;
 
 	/* If debug size > 1MB then bump default crash size to keep the same units */
 	if (log->sizes[GUC_LOG_SECTIONS_DEBUG].bytes >= SZ_1M &&
-	    (i915->params.guc_log_size_crash == -1) &&
 	    GUC_LOG_DEFAULT_CRASH_BUFFER_SIZE < SZ_1M)
 		log->sizes[GUC_LOG_SECTIONS_CRASH].bytes = SZ_1M;
 
@@ -906,8 +882,9 @@ int intel_guc_log_dump(struct intel_guc_log *log, struct drm_printer *p,
 	struct intel_guc *guc = log_to_guc(log);
 	struct intel_uc *uc = container_of(guc, struct intel_uc, guc);
 	struct drm_i915_gem_object *obj = NULL;
-	u32 *map;
-	int i = 0;
+	void *map;
+	u32 *page;
+	int i, j;
 
 	if (!intel_guc_is_supported(guc))
 		return -ENODEV;
@@ -920,21 +897,34 @@ int intel_guc_log_dump(struct intel_guc_log *log, struct drm_printer *p,
 	if (!obj)
 		return 0;
 
+	page = (u32 *)__get_free_page(GFP_KERNEL);
+	if (!page)
+		return -ENOMEM;
+
+	intel_guc_dump_time_info(guc, p);
+
 	map = i915_gem_object_pin_map_unlocked(obj, I915_MAP_WC);
 	if (IS_ERR(map)) {
 		DRM_DEBUG("Failed to pin object\n");
 		drm_puts(p, "(log data unaccessible)\n");
+		free_page((unsigned long)page);
 		return PTR_ERR(map);
 	}
 
-	for (i = 0; i < obj->base.size / sizeof(u32); i += 4)
-		drm_printf(p, "0x%08x 0x%08x 0x%08x 0x%08x\n",
-			   *(map + i), *(map + i + 1),
-			   *(map + i + 2), *(map + i + 3));
+	for (i = 0; i < obj->base.size; i += PAGE_SIZE) {
+		if (!i915_memcpy_from_wc(page, map + i, PAGE_SIZE))
+			memcpy(page, map + i, PAGE_SIZE);
+
+		for (j = 0; j < PAGE_SIZE / sizeof(u32); j += 4)
+			drm_printf(p, "0x%08x 0x%08x 0x%08x 0x%08x\n",
+				   *(page + j + 0), *(page + j + 1),
+				   *(page + j + 2), *(page + j + 3));
+	}
 
 	drm_puts(p, "\n");
 
 	i915_gem_object_unpin_map(obj);
+	free_page((unsigned long)page);
 
 	return 0;
 }

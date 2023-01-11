@@ -596,14 +596,14 @@ mt76_connac_mcu_sta_amsdu_tlv(struct sk_buff *skb, struct ieee80211_sta *sta,
 	    vif->type != NL80211_IFTYPE_STATION)
 		return;
 
-	if (!sta->max_amsdu_len)
+	if (!sta->deflink.agg.max_amsdu_len)
 		return;
 
 	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_HW_AMSDU, sizeof(*amsdu));
 	amsdu = (struct sta_rec_amsdu *)tlv;
 	amsdu->max_amsdu_num = 8;
 	amsdu->amsdu_en = true;
-	amsdu->max_mpdu_size = sta->max_amsdu_len >=
+	amsdu->max_mpdu_size = sta->deflink.agg.max_amsdu_len >=
 			       IEEE80211_MAX_MPDU_LEN_VHT_7991;
 
 	wcid->amsdu = true;
@@ -898,7 +898,7 @@ void mt76_connac_mcu_wtbl_smps_tlv(struct sk_buff *skb,
 	tlv = mt76_connac_mcu_add_nested_tlv(skb, WTBL_SMPS, sizeof(*smps),
 					     wtbl_tlv, sta_wtbl);
 	smps = (struct wtbl_smps *)tlv;
-	smps->smps = (sta->smps_mode == IEEE80211_SMPS_DYNAMIC);
+	smps->smps = (sta->deflink.smps_mode == IEEE80211_SMPS_DYNAMIC);
 }
 EXPORT_SYMBOL_GPL(mt76_connac_mcu_wtbl_smps_tlv);
 
@@ -2650,7 +2650,7 @@ int mt76_connac_mcu_add_key(struct mt76_dev *dev, struct ieee80211_vif *vif,
 }
 EXPORT_SYMBOL_GPL(mt76_connac_mcu_add_key);
 
-/* SIFS 20us + 512 byte beacon tranmitted by 1Mbps (3906us) */
+/* SIFS 20us + 512 byte beacon transmitted by 1Mbps (3906us) */
 #define BCN_TX_ESTIMATE_TIME (4096 + 20)
 void mt76_connac_mcu_bss_ext_tlv(struct sk_buff *skb, struct mt76_vif *mvif)
 {
@@ -2834,6 +2834,9 @@ mt76_connac_mcu_send_ram_firmware(struct mt76_dev *dev,
 		len = le32_to_cpu(region->len);
 		addr = le32_to_cpu(region->addr);
 
+		if (region->feature_set & FW_FEATURE_NON_DL)
+			goto next;
+
 		if (region->feature_set & FW_FEATURE_OVERRIDE_ADDR)
 			override = addr;
 
@@ -2850,6 +2853,7 @@ mt76_connac_mcu_send_ram_firmware(struct mt76_dev *dev,
 			return err;
 		}
 
+next:
 		offset += len;
 	}
 

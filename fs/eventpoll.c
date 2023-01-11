@@ -1067,7 +1067,7 @@ static inline bool list_add_tail_lockless(struct list_head *new,
 	 * added to the list from another CPU: the winner observes
 	 * new->next == new.
 	 */
-	if (cmpxchg(&new->next, new, head) != new)
+	if (!try_cmpxchg(&new->next, &new, head))
 		return false;
 
 	/*

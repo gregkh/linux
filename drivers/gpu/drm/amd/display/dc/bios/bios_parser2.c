@@ -24,6 +24,7 @@
  */
 
 #include "dm_services.h"
+#include "core_types.h"
 
 #include "ObjectID.h"
 #include "atomfirmware.h"
@@ -44,37 +45,11 @@
 
 #include "bios_parser_common.h"
 
-/* Temporarily add in defines until ObjectID.h patch is updated in a few days */
-#ifndef GENERIC_OBJECT_ID_BRACKET_LAYOUT
-#define GENERIC_OBJECT_ID_BRACKET_LAYOUT          0x05
-#endif /* GENERIC_OBJECT_ID_BRACKET_LAYOUT */
-
-#ifndef GENERICOBJECT_BRACKET_LAYOUT_ENUM_ID1
-#define GENERICOBJECT_BRACKET_LAYOUT_ENUM_ID1	\
-	(GRAPH_OBJECT_TYPE_GENERIC << OBJECT_TYPE_SHIFT |\
-	GRAPH_OBJECT_ENUM_ID1 << ENUM_ID_SHIFT |\
-	GENERIC_OBJECT_ID_BRACKET_LAYOUT << OBJECT_ID_SHIFT)
-#endif /* GENERICOBJECT_BRACKET_LAYOUT_ENUM_ID1 */
-
-#ifndef GENERICOBJECT_BRACKET_LAYOUT_ENUM_ID2
-#define GENERICOBJECT_BRACKET_LAYOUT_ENUM_ID2	\
-	(GRAPH_OBJECT_TYPE_GENERIC << OBJECT_TYPE_SHIFT |\
-	GRAPH_OBJECT_ENUM_ID2 << ENUM_ID_SHIFT |\
-	GENERIC_OBJECT_ID_BRACKET_LAYOUT << OBJECT_ID_SHIFT)
-#endif /* GENERICOBJECT_BRACKET_LAYOUT_ENUM_ID2 */
-
 #define DC_LOGGER \
 	bp->base.ctx->logger
 
 #define LAST_RECORD_TYPE 0xff
 #define SMU9_SYSPLL0_ID  0
-
-struct i2c_id_config_access {
-	uint8_t bfI2C_LineMux:4;
-	uint8_t bfHW_EngineID:3;
-	uint8_t bfHW_Capable:1;
-	uint8_t ucAccess;
-};
 
 static enum bp_result get_gpio_i2c_info(struct bios_parser *bp,
 	struct atom_i2c_record *record,
@@ -866,6 +841,8 @@ static enum bp_result get_ss_info_v4_1(
 				disp_cntl_tbl->dvi_ss_rate_10hz * 10;
 		if (disp_cntl_tbl->dvi_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_DVI ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	case AS_SIGNAL_TYPE_HDMI:
 		ss_info->spread_spectrum_percentage =
@@ -874,6 +851,8 @@ static enum bp_result get_ss_info_v4_1(
 				disp_cntl_tbl->hdmi_ss_rate_10hz * 10;
 		if (disp_cntl_tbl->hdmi_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_HDMI ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	/* TODO LVDS not support anymore? */
 	case AS_SIGNAL_TYPE_DISPLAY_PORT:
@@ -883,6 +862,8 @@ static enum bp_result get_ss_info_v4_1(
 				disp_cntl_tbl->dp_ss_rate_10hz * 10;
 		if (disp_cntl_tbl->dp_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_DISPLAY_PORT ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	case AS_SIGNAL_TYPE_GPU_PLL:
 		/* atom_firmware: DAL only get data from dce_info table.
@@ -896,13 +877,15 @@ static enum bp_result get_ss_info_v4_1(
 				      DATA_TABLES(smu_info));
 		if (!smu_info)
 			return BP_RESULT_BADBIOSTABLE;
-
+		DC_LOG_BIOS("gpuclk_ss_percentage (unit of 0.001 percent): %d\n", smu_info->gpuclk_ss_percentage);
 		ss_info->spread_spectrum_percentage =
 				smu_info->waflclk_ss_percentage;
 		ss_info->spread_spectrum_range =
 				smu_info->gpuclk_ss_rate_10hz * 10;
 		if (smu_info->waflclk_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_XGMI ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	default:
 		result = BP_RESULT_UNSUPPORTED;
@@ -939,6 +922,7 @@ static enum bp_result get_ss_info_v4_2(
 	if (!smu_info)
 		return BP_RESULT_BADBIOSTABLE;
 
+	DC_LOG_BIOS("gpuclk_ss_percentage (unit of 0.001 percent): %d\n", smu_info->gpuclk_ss_percentage);
 	ss_info->type.STEP_AND_DELAY_INFO = false;
 	ss_info->spread_percentage_divider = 1000;
 	/* BIOS no longer uses target clock.  Always enable for now */
@@ -952,6 +936,8 @@ static enum bp_result get_ss_info_v4_2(
 				disp_cntl_tbl->dvi_ss_rate_10hz * 10;
 		if (disp_cntl_tbl->dvi_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_DVI ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	case AS_SIGNAL_TYPE_HDMI:
 		ss_info->spread_spectrum_percentage =
@@ -960,6 +946,8 @@ static enum bp_result get_ss_info_v4_2(
 				disp_cntl_tbl->hdmi_ss_rate_10hz * 10;
 		if (disp_cntl_tbl->hdmi_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_HDMI ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	/* TODO LVDS not support anymore? */
 	case AS_SIGNAL_TYPE_DISPLAY_PORT:
@@ -969,6 +957,8 @@ static enum bp_result get_ss_info_v4_2(
 				smu_info->gpuclk_ss_rate_10hz * 10;
 		if (smu_info->gpuclk_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_DISPLAY_PORT ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	case AS_SIGNAL_TYPE_GPU_PLL:
 		/* atom_firmware: DAL only get data from dce_info table.
@@ -1017,6 +1007,8 @@ static enum bp_result get_ss_info_v4_5(
 				disp_cntl_tbl->dvi_ss_rate_10hz * 10;
 		if (disp_cntl_tbl->dvi_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_DVI ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	case AS_SIGNAL_TYPE_HDMI:
 		ss_info->spread_spectrum_percentage =
@@ -1025,6 +1017,8 @@ static enum bp_result get_ss_info_v4_5(
 				disp_cntl_tbl->hdmi_ss_rate_10hz * 10;
 		if (disp_cntl_tbl->hdmi_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_HDMI ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	case AS_SIGNAL_TYPE_DISPLAY_PORT:
 		ss_info->spread_spectrum_percentage =
@@ -1033,6 +1027,8 @@ static enum bp_result get_ss_info_v4_5(
 				disp_cntl_tbl->dp_ss_rate_10hz * 10;
 		if (disp_cntl_tbl->dp_ss_mode & ATOM_SS_CENTRE_SPREAD_MODE)
 			ss_info->type.CENTER_MODE = true;
+
+		DC_LOG_BIOS("AS_SIGNAL_TYPE_DISPLAY_PORT ss_percentage: %d\n", ss_info->spread_spectrum_percentage);
 		break;
 	case AS_SIGNAL_TYPE_GPU_PLL:
 		/* atom_smu_info_v4_0 does not have fields for SS for SMU Display PLL anymore.
@@ -1370,7 +1366,7 @@ static enum bp_result bios_parser_get_lttpr_interop(
 	default:
 		break;
 	}
-
+	DC_LOG_BIOS("DCE_INFO_CAPS_VBIOS_LTTPR_TRANSPARENT_ENABLE: %d tbl_revision.major = %d tbl_revision.minor = %d\n", *dce_caps, tbl_revision.major, tbl_revision.minor);
 	return result;
 }
 
@@ -1386,6 +1382,7 @@ static enum bp_result bios_parser_get_lttpr_caps(
 	if (!DATA_TABLES(dce_info))
 		return BP_RESULT_UNSUPPORTED;
 
+	*dce_caps  = 0;
 	header = GET_IMAGE(struct atom_common_table_header,
 						DATA_TABLES(dce_info));
 	get_atom_data_table_revision(header, &tbl_revision);
@@ -1419,7 +1416,11 @@ static enum bp_result bios_parser_get_lttpr_caps(
 	default:
 		break;
 	}
-
+	DC_LOG_BIOS("DCE_INFO_CAPS_LTTPR_SUPPORT_ENABLE: %d tbl_revision.major = %d tbl_revision.minor = %d\n", *dce_caps, tbl_revision.major, tbl_revision.minor);
+	if (dcb->ctx->dc->config.force_bios_enable_lttpr && *dce_caps == 0) {
+		*dce_caps = 1;
+		DC_LOG_BIOS("DCE_INFO_CAPS_VBIOS_LTTPR_TRANSPARENT_ENABLE: forced enabled");
+	}
 	return result;
 }
 
@@ -1857,7 +1858,7 @@ static enum bp_result get_firmware_info_v3_2(
 		/* Vega12 */
 		smu_info_v3_2 = GET_IMAGE(struct atom_smu_info_v3_2,
 							DATA_TABLES(smu_info));
-
+		DC_LOG_BIOS("gpuclk_ss_percentage (unit of 0.001 percent): %d\n", smu_info_v3_2->gpuclk_ss_percentage);
 		if (!smu_info_v3_2)
 			return BP_RESULT_BADBIOSTABLE;
 
@@ -1866,7 +1867,7 @@ static enum bp_result get_firmware_info_v3_2(
 		/* Vega20 */
 		smu_info_v3_3 = GET_IMAGE(struct atom_smu_info_v3_3,
 							DATA_TABLES(smu_info));
-
+		DC_LOG_BIOS("gpuclk_ss_percentage (unit of 0.001 percent): %d\n", smu_info_v3_3->gpuclk_ss_percentage);
 		if (!smu_info_v3_3)
 			return BP_RESULT_BADBIOSTABLE;
 
@@ -2008,7 +2009,7 @@ static enum bp_result get_firmware_info_v3_4(
 
 			if (!smu_info_v3_5)
 				return BP_RESULT_BADBIOSTABLE;
-
+			DC_LOG_BIOS("gpuclk_ss_percentage (unit of 0.001 percent): %d\n", smu_info_v3_5->gpuclk_ss_percentage);
 			info->default_engine_clk = smu_info_v3_5->bootup_dcefclk_10khz * 10;
 			break;
 
@@ -2434,6 +2435,7 @@ static enum bp_result get_integrated_info_v11(
 	info_v11 = GET_IMAGE(struct atom_integrated_system_info_v1_11,
 					DATA_TABLES(integratedsysteminfo));
 
+	DC_LOG_BIOS("gpuclk_ss_percentage (unit of 0.001 percent): %d\n", info_v11->gpuclk_ss_percentage);
 	if (info_v11 == NULL)
 		return BP_RESULT_BADBIOSTABLE;
 
@@ -2648,6 +2650,7 @@ static enum bp_result get_integrated_info_v2_1(
 
 	info_v2_1 = GET_IMAGE(struct atom_integrated_system_info_v2_1,
 					DATA_TABLES(integratedsysteminfo));
+	DC_LOG_BIOS("gpuclk_ss_percentage (unit of 0.001 percent): %d\n", info_v2_1->gpuclk_ss_percentage);
 
 	if (info_v2_1 == NULL)
 		return BP_RESULT_BADBIOSTABLE;
@@ -2809,6 +2812,8 @@ static enum bp_result get_integrated_info_v2_2(
 	info_v2_2 = GET_IMAGE(struct atom_integrated_system_info_v2_2,
 					DATA_TABLES(integratedsysteminfo));
 
+	DC_LOG_BIOS("gpuclk_ss_percentage (unit of 0.001 percent): %d\n", info_v2_2->gpuclk_ss_percentage);
+
 	if (info_v2_2 == NULL)
 		return BP_RESULT_BADBIOSTABLE;
 
@@ -2960,6 +2965,27 @@ static enum bp_result construct_integrated_info(
 		default:
 			return result;
 		}
+		if (result == BP_RESULT_OK) {
+
+			DC_LOG_BIOS("edp1:\n"
+						"\tedp_pwr_on_off_delay = %d\n"
+						"\tedp_pwr_on_vary_bl_to_blon = %d\n"
+						"\tedp_pwr_down_bloff_to_vary_bloff = %d\n"
+						"\tedp_bootup_bl_level = %d\n",
+						info->edp1_info.edp_pwr_on_off_delay,
+						info->edp1_info.edp_pwr_on_vary_bl_to_blon,
+						info->edp1_info.edp_pwr_down_bloff_to_vary_bloff,
+						info->edp1_info.edp_bootup_bl_level);
+			DC_LOG_BIOS("edp2:\n"
+						"\tedp_pwr_on_off_delayv = %d\n"
+						"\tedp_pwr_on_vary_bl_to_blon = %d\n"
+						"\tedp_pwr_down_bloff_to_vary_bloff = %d\n"
+						"\tedp_bootup_bl_level = %d\n",
+						info->edp2_info.edp_pwr_on_off_delay,
+						info->edp2_info.edp_pwr_on_vary_bl_to_blon,
+						info->edp2_info.edp_pwr_down_bloff_to_vary_bloff,
+						info->edp2_info.edp_bootup_bl_level);
+		}
 	}
 
 	if (result != BP_RESULT_OK)
@@ -2985,13 +3011,22 @@ static enum bp_result construct_integrated_info(
 						info->ext_disp_conn_info.path[i].ext_encoder_obj_id.id,
 						info->ext_disp_conn_info.path[i].caps
 						);
+			if (info->ext_disp_conn_info.path[i].caps & EXT_DISPLAY_PATH_CAPS__DP_FIXED_VS_EN)
+				DC_LOG_BIOS("BIOS EXT_DISPLAY_PATH_CAPS__DP_FIXED_VS_EN on path %d\n", i);
+			else if (bp->base.ctx->dc->config.force_bios_fixed_vs) {
+				info->ext_disp_conn_info.path[i].caps |= EXT_DISPLAY_PATH_CAPS__DP_FIXED_VS_EN;
+				DC_LOG_BIOS("driver forced EXT_DISPLAY_PATH_CAPS__DP_FIXED_VS_EN on path %d\n", i);
+			}
 		}
-
 		// Log the Checksum and Voltage Swing
 		DC_LOG_BIOS("Integrated info table CHECKSUM: %d\n"
 					"Integrated info table FIX_DP_VOLTAGE_SWING: %d\n",
 					info->ext_disp_conn_info.checksum,
 					info->ext_disp_conn_info.fixdpvoltageswing);
+		if (bp->base.ctx->dc->config.force_bios_fixed_vs && info->ext_disp_conn_info.fixdpvoltageswing == 0) {
+			info->ext_disp_conn_info.fixdpvoltageswing = bp->base.ctx->dc->config.force_bios_fixed_vs & 0xF;
+			DC_LOG_BIOS("driver forced fixdpvoltageswing = %d\n", info->ext_disp_conn_info.fixdpvoltageswing);
+		}
 	}
 	/* Sort voltage table from low to high*/
 	for (i = 1; i < NUMBER_OF_DISP_CLK_VOLTAGE; ++i) {
@@ -3347,6 +3382,7 @@ static enum bp_result bios_get_board_layout_info(
 	struct bios_parser *bp;
 
 	static enum bp_result record_result;
+	unsigned int max_slots;
 
 	const unsigned int slot_index_to_vbios_id[MAX_BOARD_SLOTS] = {
 		GENERICOBJECT_BRACKET_LAYOUT_ENUM_ID1,
@@ -3363,8 +3399,14 @@ static enum bp_result bios_get_board_layout_info(
 	}
 
 	board_layout_info->num_of_slots = 0;
+	max_slots = MAX_BOARD_SLOTS;
 
-	for (i = 0; i < MAX_BOARD_SLOTS; ++i) {
+	// Assume single slot on v1_5
+	if (bp->object_info_tbl.revision.minor == 5) {
+		max_slots = 1;
+	}
+
+	for (i = 0; i < max_slots; ++i) {
 		record_result = get_bracket_layout_record(dcb,
 			slot_index_to_vbios_id[i],
 			&board_layout_info->slots[i]);

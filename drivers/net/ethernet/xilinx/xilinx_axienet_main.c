@@ -597,7 +597,7 @@ static int axienet_device_reset(struct net_device *ndev)
 	lp->options &= (~XAE_OPTION_JUMBO);
 
 	if ((ndev->mtu > XAE_MTU) &&
-		(ndev->mtu <= XAE_JUMBO_MTU)) {
+	    (ndev->mtu <= XAE_JUMBO_MTU)) {
 		lp->max_frm_size = ndev->mtu + VLAN_ETH_HLEN +
 					XAE_TRL_SIZE;
 
@@ -645,7 +645,7 @@ static int axienet_device_reset(struct net_device *ndev)
  * @nr_bds:	Max number of descriptors to clean up
  * @force:	Whether to clean descriptors even if not complete
  * @sizep:	Pointer to a u32 filled with the total sum of all bytes
- * 		in all cleaned-up descriptors. Ignored if NULL.
+ *		in all cleaned-up descriptors. Ignored if NULL.
  * @budget:	NAPI budget (use 0 when not called from NAPI poll)
  *
  * Would either be called after a successful transmit operation, or after
@@ -1343,8 +1343,8 @@ static const struct net_device_ops axienet_netdev_ops = {
 static void axienet_ethtools_get_drvinfo(struct net_device *ndev,
 					 struct ethtool_drvinfo *ed)
 {
-	strlcpy(ed->driver, DRIVER_NAME, sizeof(ed->driver));
-	strlcpy(ed->version, DRIVER_VERSION, sizeof(ed->version));
+	strscpy(ed->driver, DRIVER_NAME, sizeof(ed->driver));
+	strscpy(ed->version, DRIVER_VERSION, sizeof(ed->version));
 }
 
 /**
@@ -1375,7 +1375,7 @@ static int axienet_ethtools_get_regs_len(struct net_device *ndev)
 static void axienet_ethtools_get_regs(struct net_device *ndev,
 				      struct ethtool_regs *regs, void *ret)
 {
-	u32 *data = (u32 *) ret;
+	u32 *data = (u32 *)ret;
 	size_t len = sizeof(u32) * AXIENET_REGS_N;
 	struct axienet_local *lp = netdev_priv(ndev);
 
@@ -1879,8 +1879,8 @@ static int axienet_probe(struct platform_device *pdev)
 	u64_stats_init(&lp->rx_stat_sync);
 	u64_stats_init(&lp->tx_stat_sync);
 
-	netif_napi_add(ndev, &lp->napi_rx, axienet_rx_poll, NAPI_POLL_WEIGHT);
-	netif_napi_add(ndev, &lp->napi_tx, axienet_tx_poll, NAPI_POLL_WEIGHT);
+	netif_napi_add(ndev, &lp->napi_rx, axienet_rx_poll);
+	netif_napi_add(ndev, &lp->napi_tx, axienet_tx_poll);
 
 	lp->axi_clk = devm_clk_get_optional(&pdev->dev, "s_axi_lite_clk");
 	if (!lp->axi_clk) {

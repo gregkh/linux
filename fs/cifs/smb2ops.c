@@ -551,7 +551,8 @@ parse_server_interfaces(struct network_interface_info_ioctl_rsp *buf,
 		/* avoid spamming logs every 10 minutes, so log only in mount */
 		if ((ses->chan_max > 1) && in_mount)
 			cifs_dbg(VFS,
-				 "empty network interface list returned by server %s\n",
+				 "multichannel not available\n"
+				 "Empty network interface list returned by server %s\n",
 				 ses->server->hostname);
 		rc = -EINVAL;
 		goto out;
@@ -801,7 +802,7 @@ smb2_is_path_accessible(const unsigned int xid, struct cifs_tcon *tcon,
 
 	rc = open_cached_dir(xid, tcon, full_path, cifs_sb, true, &cfid);
 	if (!rc) {
-		if (cfid->is_valid) {
+		if (cfid->has_lease) {
 			close_cached_dir(cfid);
 			return 0;
 		}
@@ -1337,7 +1338,7 @@ SMB2_request_res_key(const unsigned int xid, struct cifs_tcon *tcon,
 			CIFSMaxBufSize, (char **)&res_key, &ret_data_len);
 
 	if (rc == -EOPNOTSUPP) {
-		pr_warn_once("Server share %s does not support copy range\n", tcon->treeName);
+		pr_warn_once("Server share %s does not support copy range\n", tcon->tree_name);
 		goto req_res_key_exit;
 	} else if (rc) {
 		cifs_tcon_dbg(VFS, "refcpy ioctl error %d getting resume key\n", rc);
@@ -2022,9 +2023,10 @@ smb3_enum_snapshots(const unsigned int xid, struct cifs_tcon *tcon,
 
 static int
 smb3_notify(const unsigned int xid, struct file *pfile,
-	    void __user *ioc_buf)
+	    void __user *ioc_buf, bool return_changes)
 {
-	struct smb3_notify notify;
+	struct smb3_notify_info notify;
+	struct smb3_notify_info __user *pnotify_buf;
 	struct dentry *dentry = pfile->f_path.dentry;
 	struct inode *inode = file_inode(pfile);
 	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
@@ -2032,10 +2034,12 @@ smb3_notify(const unsigned int xid, struct file *pfile,
 	struct cifs_fid fid;
 	struct cifs_tcon *tcon;
 	const unsigned char *path;
+	char *returned_ioctl_info = NULL;
 	void *page = alloc_dentry_path();
 	__le16 *utf16_path = NULL;
 	u8 oplock = SMB2_OPLOCK_LEVEL_NONE;
 	int rc = 0;
+	__u32 ret_len = 0;
 
 	path = build_path_from_dentry(dentry, page);
 	if (IS_ERR(path)) {
@@ -2049,9 +2053,17 @@ smb3_notify(const unsigned int xid, struct file *pfile,
 		goto notify_exit;
 	}
 
-	if (copy_from_user(&notify, ioc_buf, sizeof(struct smb3_notify))) {
-		rc = -EFAULT;
-		goto notify_exit;
+	if (return_changes) {
+		if (copy_from_user(&notify, ioc_buf, sizeof(struct smb3_notify_info))) {
+			rc = -EFAULT;
+			goto notify_exit;
+		}
+	} else {
+		if (copy_from_user(&notify, ioc_buf, sizeof(struct smb3_notify))) {
+			rc = -EFAULT;
+			goto notify_exit;
+		}
+		notify.data_len = 0;
 	}
 
 	tcon = cifs_sb_master_tcon(cifs_sb);
@@ -2068,12 +2080,22 @@ smb3_notify(const unsigned int xid, struct file *pfile,
 		goto notify_exit;
 
 	rc = SMB2_change_notify(xid, tcon, fid.persistent_fid, fid.volatile_fid,
-				notify.watch_tree, notify.completion_filter);
+				notify.watch_tree, notify.completion_filter,
+				notify.data_len, &returned_ioctl_info, &ret_len);
 
 	SMB2_close(xid, tcon, fid.persistent_fid, fid.volatile_fid);
 
 	cifs_dbg(FYI, "change notify for path %s rc %d\n", path, rc);
-
+	if (return_changes && (ret_len > 0) && (notify.data_len > 0)) {
+		if (ret_len > notify.data_len)
+			ret_len = notify.data_len;
+		pnotify_buf = (struct smb3_notify_info __user *)ioc_buf;
+		if (copy_to_user(pnotify_buf->notify_data, returned_ioctl_info, ret_len))
+			rc = -EFAULT;
+		else if (copy_to_user(&pnotify_buf->data_len, &ret_len, sizeof(ret_len)))
+			rc = -EFAULT;
+	}
+	kfree(returned_ioctl_info);
 notify_exit:
 	free_dentry_path(page);
 	kfree(utf16_path);
@@ -2303,7 +2325,7 @@ smb2_is_network_name_deleted(char *buf, struct TCP_Server_Info *server)
 				spin_unlock(&tcon->tc_lock);
 				spin_unlock(&cifs_tcp_ses_lock);
 				pr_warn_once("Server share %s deleted.\n",
-					     tcon->treeName);
+					     tcon->tree_name);
 				return;
 			}
 		}
@@ -2512,7 +2534,7 @@ smb2_query_info_compound(const unsigned int xid, struct cifs_tcon *tcon,
 		if (rc == -EREMCHG) {
 			tcon->need_reconnect = true;
 			pr_warn_once("server share %s deleted\n",
-				     tcon->treeName);
+				     tcon->tree_name);
 		}
 		goto qic_exit;
 	}
@@ -4263,21 +4285,23 @@ static void *smb2_get_aead_req(struct crypto_aead *tfm, const struct smb_rqst *r
 static int
 smb2_get_enc_key(struct TCP_Server_Info *server, __u64 ses_id, int enc, u8 *key)
 {
+	struct TCP_Server_Info *pserver;
 	struct cifs_ses *ses;
 	u8 *ses_enc_key;
 
+	/* If server is a channel, select the primary channel */
+	pserver = CIFS_SERVER_IS_CHAN(server) ? server->primary_server : server;
+
 	spin_lock(&cifs_tcp_ses_lock);
-	list_for_each_entry(server, &cifs_tcp_ses_list, tcp_ses_list) {
-		list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
-			if (ses->Suid == ses_id) {
-				spin_lock(&ses->ses_lock);
-				ses_enc_key = enc ? ses->smb3encryptionkey :
-					ses->smb3decryptionkey;
-				memcpy(key, ses_enc_key, SMB3_ENC_DEC_KEY_SIZE);
-				spin_unlock(&ses->ses_lock);
-				spin_unlock(&cifs_tcp_ses_lock);
-				return 0;
-			}
+	list_for_each_entry(ses, &pserver->smb_ses_list, smb_ses_list) {
+		if (ses->Suid == ses_id) {
+			spin_lock(&ses->ses_lock);
+			ses_enc_key = enc ? ses->smb3encryptionkey :
+				ses->smb3decryptionkey;
+			memcpy(key, ses_enc_key, SMB3_ENC_DEC_KEY_SIZE);
+			spin_unlock(&ses->ses_lock);
+			spin_unlock(&cifs_tcp_ses_lock);
+			return 0;
 		}
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
@@ -4322,8 +4346,7 @@ crypt_message(struct TCP_Server_Info *server, int num_rqst,
 		return rc;
 	}
 
-	tfm = enc ? server->secmech.ccmaesencrypt :
-						server->secmech.ccmaesdecrypt;
+	tfm = enc ? server->secmech.enc : server->secmech.dec;
 
 	if ((server->cipher_type == SMB2_ENCRYPTION_AES256_CCM) ||
 		(server->cipher_type == SMB2_ENCRYPTION_AES256_GCM))

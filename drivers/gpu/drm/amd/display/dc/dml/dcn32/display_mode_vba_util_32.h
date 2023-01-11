@@ -228,6 +228,7 @@ void dml32_CalculateODMMode(
 		double DISPCLKDPPCLKDSCCLKDownSpreading,
 		double DISPCLKRampingMargin,
 		double DISPCLKDPPCLKVCOSpeed,
+		unsigned int NumberOfDSCSlices,
 
 		/* Output */
 		bool *TotalAvailablePipesSupport,
@@ -326,7 +327,8 @@ unsigned int dml32_DSCDelayRequirement(bool DSCEnabled,
 		enum output_format_class  OutputFormat,
 		enum output_encoder_class Output,
 		double PixelClock,
-		double PixelClockBackEnd);
+		double PixelClockBackEnd,
+		double dsc_delay_factor_wa);
 
 void dml32_CalculateSurfaceSizeInMall(
 		unsigned int NumberOfActiveSurfaces,
@@ -741,6 +743,7 @@ bool dml32_CalculatePrefetchSchedule(
 		unsigned int SwathHeightY,
 		unsigned int SwathHeightC,
 		double TWait,
+		double TPreReq,
 		/* Output */
 		double   *DSTXAfterScaler,
 		double   *DSTYAfterScaler,

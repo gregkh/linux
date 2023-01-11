@@ -157,8 +157,6 @@ static struct dentry *nbd_dbg_dir;
 
 #define nbd_name(nbd) ((nbd)->disk->disk_name)
 
-#define NBD_MAGIC 0x68797548
-
 #define NBD_DEF_BLKSIZE_BITS 10
 
 static unsigned int nbds_max = 16;
@@ -2324,6 +2322,7 @@ static struct genl_family nbd_genl_family __ro_after_init = {
 	.module		= THIS_MODULE,
 	.small_ops	= nbd_connect_genl_ops,
 	.n_small_ops	= ARRAY_SIZE(nbd_connect_genl_ops),
+	.resv_start_op	= NBD_CMD_STATUS + 1,
 	.maxattr	= NBD_ATTR_MAX,
 	.policy = nbd_attr_policy,
 	.mcgrps		= nbd_mcast_grps,

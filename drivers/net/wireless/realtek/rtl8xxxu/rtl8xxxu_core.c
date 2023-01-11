@@ -4767,9 +4767,8 @@ static u32 rtl8xxxu_80211_to_rtl_queue(u32 queue)
 	return rtlqueue;
 }
 
-static u32 rtl8xxxu_queue_select(struct ieee80211_hw *hw, struct sk_buff *skb)
+static u32 rtl8xxxu_queue_select(struct ieee80211_hdr *hdr, struct sk_buff *skb)
 {
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
 	u32 queue;
 
 	if (ieee80211_is_mgmt(hdr->frame_control))
@@ -5119,7 +5118,7 @@ static void rtl8xxxu_tx(struct ieee80211_hw *hw,
 	if (control && control->sta)
 		sta = control->sta;
 
-	queue = rtl8xxxu_queue_select(hw, skb);
+	queue = rtl8xxxu_queue_select(hdr, skb);
 
 	tx_desc = skb_push(skb, tx_desc_size);
 
@@ -6719,7 +6718,6 @@ static int rtl8xxxu_probe(struct usb_interface *interface,
 	hw = ieee80211_alloc_hw(sizeof(struct rtl8xxxu_priv), &rtl8xxxu_ops);
 	if (!hw) {
 		ret = -ENOMEM;
-		priv = NULL;
 		goto err_put_dev;
 	}
 
@@ -6830,11 +6828,9 @@ static int rtl8xxxu_probe(struct usb_interface *interface,
 err_set_intfdata:
 	usb_set_intfdata(interface, NULL);
 
-	if (priv) {
-		kfree(priv->fw_data);
-		mutex_destroy(&priv->usb_buf_mutex);
-		mutex_destroy(&priv->h2c_mutex);
-	}
+	kfree(priv->fw_data);
+	mutex_destroy(&priv->usb_buf_mutex);
+	mutex_destroy(&priv->h2c_mutex);
 
 	ieee80211_free_hw(hw);
 err_put_dev:

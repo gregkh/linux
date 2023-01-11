@@ -947,7 +947,7 @@ static void cifs_set_fattr_ino(int xid, struct cifs_tcon *tcon, struct super_blo
 		} else {
 			/* make an ino by hashing the UNC */
 			fattr->cf_flags |= CIFS_FATTR_FAKE_ROOT_INO;
-			fattr->cf_uniqueid = simple_hashstr(tcon->treeName);
+			fattr->cf_uniqueid = simple_hashstr(tcon->tree_name);
 		}
 	}
 }
@@ -2296,13 +2296,13 @@ cifs_dentry_needs_reval(struct dentry *dentry)
 		return true;
 
 	if (!open_cached_dir_by_dentry(tcon, dentry->d_parent, &cfid)) {
-		mutex_lock(&cfid->fid_mutex);
+		spin_lock(&cfid->fid_lock);
 		if (cfid->time && cifs_i->time > cfid->time) {
-			mutex_unlock(&cfid->fid_mutex);
+			spin_unlock(&cfid->fid_lock);
 			close_cached_dir(cfid);
 			return false;
 		}
-		mutex_unlock(&cfid->fid_mutex);
+		spin_unlock(&cfid->fid_lock);
 		close_cached_dir(cfid);
 	}
 	/*
@@ -2358,7 +2358,7 @@ cifs_invalidate_mapping(struct inode *inode)
 static int
 cifs_wait_bit_killable(struct wait_bit_key *key, int mode)
 {
-	freezable_schedule_unsafe();
+	schedule();
 	if (signal_pending_state(mode, current))
 		return -ERESTARTSYS;
 	return 0;
@@ -2376,7 +2376,7 @@ cifs_revalidate_mapping(struct inode *inode)
 		return 0;
 
 	rc = wait_on_bit_lock_action(flags, CIFS_INO_LOCK, cifs_wait_bit_killable,
-				     TASK_KILLABLE);
+				     TASK_KILLABLE|TASK_FREEZABLE_UNSAFE);
 	if (rc)
 		return rc;
 

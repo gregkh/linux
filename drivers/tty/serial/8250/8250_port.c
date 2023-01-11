@@ -754,6 +754,14 @@ static void serial8250_set_sleep(struct uart_8250_port *p, int sleep)
 	serial8250_rpm_put(p);
 }
 
+static void serial8250_clear_IER(struct uart_8250_port *up)
+{
+	if (up->capabilities & UART_CAP_UUE)
+		serial_out(up, UART_IER, UART_IER_UUE);
+	else
+		serial_out(up, UART_IER, 0);
+}
+
 #ifdef CONFIG_SERIAL_8250_RSA
 /*
  * Attempts to turn on the RSA FIFO.  Returns zero on failure.
@@ -1136,7 +1144,7 @@ static void autoconfig_16550a(struct uart_8250_port *up)
 	 * internal UARTs.
 	 * We're going to explicitly set the UUE bit to 0 before
 	 * trying to write and read a 1 just to make sure it's not
-	 * already a 1 and maybe locked there before we even start start.
+	 * already a 1 and maybe locked there before we even start.
 	 */
 	iersave = serial_in(up, UART_IER);
 	serial_out(up, UART_IER, iersave & ~UART_IER_UUE);
@@ -1332,10 +1340,7 @@ static void autoconfig(struct uart_8250_port *up)
 	serial8250_out_MCR(up, save_mcr);
 	serial8250_clear_fifos(up);
 	serial_in(up, UART_RX);
-	if (up->capabilities & UART_CAP_UUE)
-		serial_out(up, UART_IER, UART_IER_UUE);
-	else
-		serial_out(up, UART_IER, 0);
+	serial8250_clear_IER(up);
 
 out_unlock:
 	spin_unlock_irqrestore(&port->lock, flags);
@@ -2151,10 +2156,7 @@ static void serial8250_put_poll_char(struct uart_port *port,
 	 *	First save the IER then disable the interrupts
 	 */
 	ier = serial_port_in(port, UART_IER);
-	if (up->capabilities & UART_CAP_UUE)
-		serial_port_out(port, UART_IER, UART_IER_UUE);
-	else
-		serial_port_out(port, UART_IER, 0);
+	serial8250_clear_IER(up);
 
 	wait_for_xmitr(up, UART_LSR_BOTH_EMPTY);
 	/*
@@ -2662,7 +2664,7 @@ static void serial8250_set_divisor(struct uart_port *port, unsigned int baud,
 
 static unsigned int serial8250_get_baud_rate(struct uart_port *port,
 					     struct ktermios *termios,
-					     struct ktermios *old)
+					     const struct ktermios *old)
 {
 	unsigned int tolerance = port->uartclk / 100;
 	unsigned int min;
@@ -2748,7 +2750,7 @@ EXPORT_SYMBOL_GPL(serial8250_update_uartclk);
 
 void
 serial8250_do_set_termios(struct uart_port *port, struct ktermios *termios,
-			  struct ktermios *old)
+		          const struct ktermios *old)
 {
 	struct uart_8250_port *up = up_to_u8250p(port);
 	unsigned char cval;
@@ -2886,7 +2888,7 @@ EXPORT_SYMBOL(serial8250_do_set_termios);
 
 static void
 serial8250_set_termios(struct uart_port *port, struct ktermios *termios,
-		       struct ktermios *old)
+		       const struct ktermios *old)
 {
 	if (port->set_termios)
 		port->set_termios(port, termios, old);
@@ -3396,11 +3398,7 @@ void serial8250_console_write(struct uart_8250_port *up, const char *s,
 	 *	First save the IER then disable the interrupts
 	 */
 	ier = serial_port_in(port, UART_IER);
-
-	if (up->capabilities & UART_CAP_UUE)
-		serial_port_out(port, UART_IER, UART_IER_UUE);
-	else
-		serial_port_out(port, UART_IER, 0);
+	serial8250_clear_IER(up);
 
 	/* check scratch reg to see if port powered off during system sleep */
 	if (up->canary && (up->canary != serial_port_in(port, UART_SCR))) {

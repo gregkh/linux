@@ -67,7 +67,7 @@ static void print_noise(struct perf_stat_config *config,
 		return;
 
 	ps = evsel->stats;
-	print_noise_pct(config, stddev_stats(&ps->res_stats[0]), avg);
+	print_noise_pct(config, stddev_stats(&ps->res_stats), avg);
 }
 
 static void print_cgroup(struct perf_stat_config *config, struct evsel *evsel)
@@ -168,7 +168,7 @@ static void aggr_printout(struct perf_stat_config *config,
 					id.socket,
 					id.die,
 					id.core);
-			} else if (id.core > -1) {
+			} else if (id.cpu.cpu > -1) {
 				fprintf(config->output, "\"cpu\" : \"%d\", ",
 					id.cpu.cpu);
 			}
@@ -179,7 +179,7 @@ static void aggr_printout(struct perf_stat_config *config,
 					id.die,
 					config->csv_output ? 0 : -3,
 					id.core, config->csv_sep);
-			} else if (id.core > -1) {
+			} else if (id.cpu.cpu > -1) {
 				fprintf(config->output, "CPU%*d%s",
 					config->csv_output ? 0 : -7,
 					id.cpu.cpu, config->csv_sep);
@@ -189,14 +189,14 @@ static void aggr_printout(struct perf_stat_config *config,
 	case AGGR_THREAD:
 		if (config->json_output) {
 			fprintf(config->output, "\"thread\" : \"%s-%d\", ",
-				perf_thread_map__comm(evsel->core.threads, id.thread),
-				perf_thread_map__pid(evsel->core.threads, id.thread));
+				perf_thread_map__comm(evsel->core.threads, id.thread_idx),
+				perf_thread_map__pid(evsel->core.threads, id.thread_idx));
 		} else {
 			fprintf(config->output, "%*s-%*d%s",
 				config->csv_output ? 0 : 16,
-				perf_thread_map__comm(evsel->core.threads, id.thread),
+				perf_thread_map__comm(evsel->core.threads, id.thread_idx),
 				config->csv_output ? 0 : -8,
-				perf_thread_map__pid(evsel->core.threads, id.thread),
+				perf_thread_map__pid(evsel->core.threads, id.thread_idx),
 				config->csv_sep);
 		}
 		break;
@@ -442,7 +442,7 @@ static void print_metric_header(struct perf_stat_config *config,
 		fprintf(os->fh, "%*s ", config->metric_only_len, unit);
 }
 
-static int first_shadow_cpu_map_idx(struct perf_stat_config *config,
+static int first_shadow_map_idx(struct perf_stat_config *config,
 				struct evsel *evsel, const struct aggr_cpu_id *id)
 {
 	struct perf_cpu_map *cpus = evsel__cpus(evsel);
@@ -451,6 +451,9 @@ static int first_shadow_cpu_map_idx(struct perf_stat_config *config,
 
 	if (config->aggr_mode == AGGR_NONE)
 		return perf_cpu_map__idx(cpus, id->cpu);
+
+	if (config->aggr_mode == AGGR_THREAD)
+		return id->thread_idx;
 
 	if (!config->aggr_get_id)
 		return 0;
@@ -646,7 +649,7 @@ static void printout(struct perf_stat_config *config, struct aggr_cpu_id id, int
 	}
 
 	perf_stat__print_shadow_stats(config, counter, uval,
-				first_shadow_cpu_map_idx(config, counter, &id),
+				first_shadow_map_idx(config, counter, &id),
 				&out, &config->metric_events, st);
 	if (!config->csv_output && !config->metric_only && !config->json_output) {
 		print_noise(config, counter, noise);
@@ -676,7 +679,7 @@ static void aggr_update_shadow(struct perf_stat_config *config,
 				val += perf_counts(counter->counts, idx, 0)->val;
 			}
 			perf_stat__update_shadow_stats(counter, val,
-					first_shadow_cpu_map_idx(config, counter, &id),
+					first_shadow_map_idx(config, counter, &id),
 					&rt_stat);
 		}
 	}
@@ -701,7 +704,7 @@ static void uniquify_event_name(struct evsel *counter)
 			counter->name = new_name;
 		}
 	} else {
-		if (perf_pmu__has_hybrid()) {
+		if (evsel__is_hybrid(counter)) {
 			ret = asprintf(&new_name, "%s/%s/",
 				       counter->pmu_name, counter->name);
 		} else {
@@ -741,26 +744,14 @@ static void collect_all_aliases(struct perf_stat_config *config, struct evsel *c
 	}
 }
 
-static bool is_uncore(struct evsel *evsel)
-{
-	struct perf_pmu *pmu = evsel__find_pmu(evsel);
-
-	return pmu && pmu->is_uncore;
-}
-
-static bool hybrid_uniquify(struct evsel *evsel)
-{
-	return perf_pmu__has_hybrid() && !is_uncore(evsel);
-}
-
 static bool hybrid_merge(struct evsel *counter, struct perf_stat_config *config,
 			 bool check)
 {
-	if (hybrid_uniquify(counter)) {
+	if (evsel__is_hybrid(counter)) {
 		if (check)
-			return config && config->hybrid_merge;
+			return config->hybrid_merge;
 		else
-			return config && !config->hybrid_merge;
+			return !config->hybrid_merge;
 	}
 
 	return false;
@@ -943,7 +934,7 @@ static struct perf_aggr_thread_value *sort_aggr_thread(
 
 		buf[i].counter = counter;
 		buf[i].id = aggr_cpu_id__empty();
-		buf[i].id.thread = thread;
+		buf[i].id.thread_idx = thread;
 		buf[i].uval = uval;
 		buf[i].val = val;
 		buf[i].run = run;
@@ -979,14 +970,9 @@ static void print_aggr_thread(struct perf_stat_config *config,
 			fprintf(output, "%s", prefix);
 
 		id = buf[thread].id;
-		if (config->stats)
-			printout(config, id, 0, buf[thread].counter, buf[thread].uval,
-				 prefix, buf[thread].run, buf[thread].ena, 1.0,
-				 &config->stats[id.thread]);
-		else
-			printout(config, id, 0, buf[thread].counter, buf[thread].uval,
-				 prefix, buf[thread].run, buf[thread].ena, 1.0,
-				 &rt_stat);
+		printout(config, id, 0, buf[thread].counter, buf[thread].uval,
+			 prefix, buf[thread].run, buf[thread].ena, 1.0,
+			 &rt_stat);
 		fputc('\n', output);
 	}
 
@@ -1144,10 +1130,15 @@ static void print_metric_headers(struct perf_stat_config *config,
 				 struct evlist *evlist,
 				 const char *prefix, bool no_indent)
 {
-	struct perf_stat_output_ctx out;
 	struct evsel *counter;
 	struct outstate os = {
 		.fh = config->output
+	};
+	struct perf_stat_output_ctx out = {
+		.ctx = &os,
+		.print_metric = print_metric_header,
+		.new_line = new_line_metric,
+		.force_header = true,
 	};
 	bool first = true;
 
@@ -1172,13 +1163,11 @@ static void print_metric_headers(struct perf_stat_config *config,
 	/* Print metrics headers only */
 	evlist__for_each_entry(evlist, counter) {
 		os.evsel = counter;
-		out.ctx = &os;
-		out.print_metric = print_metric_header;
+
 		if (!first && config->json_output)
 			fprintf(config->output, ", ");
 		first = false;
-		out.new_line = new_line_metric;
-		out.force_header = true;
+
 		perf_stat__print_shadow_stats(config, counter, 0,
 					      0,
 					      &out,

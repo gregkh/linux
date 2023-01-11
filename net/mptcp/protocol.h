@@ -285,7 +285,9 @@ struct mptcp_sock {
 	u8		mpc_endpoint_id;
 	u8		recvmsg_inq:1,
 			cork:1,
-			nodelay:1;
+			nodelay:1,
+			is_sendmsg:1;
+	int		connect_flags;
 	struct work_struct work;
 	struct sk_buff  *ooo_last_skb;
 	struct rb_root  out_of_order_queue;
@@ -314,6 +316,8 @@ struct mptcp_sock {
 
 #define mptcp_for_each_subflow(__msk, __subflow)			\
 	list_for_each_entry(__subflow, &((__msk)->conn_list), node)
+#define mptcp_for_each_subflow_safe(__msk, __subflow, __tmp)			\
+	list_for_each_entry_safe(__subflow, __tmp, &((__msk)->conn_list), node)
 
 static inline void msk_owned_by_me(const struct mptcp_sock *msk)
 {

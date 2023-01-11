@@ -200,10 +200,10 @@ static void tb_discover_tunnels(struct tb *tb)
 	}
 }
 
-static int tb_port_configure_xdomain(struct tb_port *port)
+static int tb_port_configure_xdomain(struct tb_port *port, struct tb_xdomain *xd)
 {
 	if (tb_switch_is_usb4(port->sw))
-		return usb4_port_configure_xdomain(port);
+		return usb4_port_configure_xdomain(port, xd);
 	return tb_lc_configure_xdomain(port);
 }
 
@@ -238,7 +238,7 @@ static void tb_scan_xdomain(struct tb_port *port)
 			      NULL);
 	if (xd) {
 		tb_port_at(route, sw)->xdomain = xd;
-		tb_port_configure_xdomain(port);
+		tb_port_configure_xdomain(port, xd);
 		tb_xdomain_add(xd);
 	}
 }
@@ -1442,8 +1442,11 @@ static int tb_start(struct tb *tb)
 	 * ICM firmware upgrade needs running firmware and in native
 	 * mode that is not available so disable firmware upgrade of the
 	 * root switch.
+	 *
+	 * However, USB4 routers support NVM firmware upgrade if they
+	 * implement the necessary router operations.
 	 */
-	tb->root_switch->no_nvm_upgrade = true;
+	tb->root_switch->no_nvm_upgrade = !tb_switch_is_usb4(tb->root_switch);
 	/* All USB4 routers support runtime PM */
 	tb->root_switch->rpm = tb_switch_is_usb4(tb->root_switch);
 
@@ -1544,7 +1547,7 @@ static void tb_restore_children(struct tb_switch *sw)
 
 			tb_restore_children(port->remote->sw);
 		} else if (port->xdomain) {
-			tb_port_configure_xdomain(port);
+			tb_port_configure_xdomain(port, port->xdomain);
 		}
 	}
 }

@@ -79,6 +79,7 @@
 #define ASUS_WMI_DEVID_THERMAL_CTRL	0x00110011
 #define ASUS_WMI_DEVID_FAN_CTRL		0x00110012 /* deprecated */
 #define ASUS_WMI_DEVID_CPU_FAN_CTRL	0x00110013
+#define ASUS_WMI_DEVID_GPU_FAN_CTRL	0x00110014
 #define ASUS_WMI_DEVID_CPU_FAN_CURVE	0x00110024
 #define ASUS_WMI_DEVID_GPU_FAN_CURVE	0x00110025
 
@@ -99,6 +100,15 @@
 
 /* dgpu on/off */
 #define ASUS_WMI_DEVID_DGPU		0x00090020
+
+/* gpu mux switch, 0 = dGPU, 1 = Optimus */
+#define ASUS_WMI_DEVID_GPU_MUX		0x00090016
+
+/* TUF laptop RGB modes/colours */
+#define ASUS_WMI_DEVID_TUF_RGB_MODE	0x00100056
+
+/* TUF laptop RGB power/state */
+#define ASUS_WMI_DEVID_TUF_RGB_STATE	0x00100057
 
 /* DSTS masks */
 #define ASUS_WMI_DSTS_STATUS_BIT	0x00000001

@@ -49,7 +49,7 @@ static struct lock_class_key port_lock_key;
 #define RS485_MAX_RTS_DELAY	100 /* msecs */
 
 static void uart_change_speed(struct tty_struct *tty, struct uart_state *state,
-					struct ktermios *old_termios);
+			      const struct ktermios *old_termios);
 static void uart_wait_until_sent(struct tty_struct *tty, int timeout);
 static void uart_change_pm(struct uart_state *state,
 			   enum uart_pm_state pm_state);
@@ -375,7 +375,7 @@ EXPORT_SYMBOL(uart_update_timeout);
  */
 unsigned int
 uart_get_baud_rate(struct uart_port *port, struct ktermios *termios,
-		   struct ktermios *old, unsigned int min, unsigned int max)
+		   const struct ktermios *old, unsigned int min, unsigned int max)
 {
 	unsigned int try;
 	unsigned int baud;
@@ -487,7 +487,7 @@ EXPORT_SYMBOL(uart_get_divisor);
 
 /* Caller holds port mutex */
 static void uart_change_speed(struct tty_struct *tty, struct uart_state *state,
-					struct ktermios *old_termios)
+			      const struct ktermios *old_termios)
 {
 	struct uart_port *uport = uart_port_check(state);
 	struct ktermios *termios;
@@ -1618,7 +1618,7 @@ static void uart_set_ldisc(struct tty_struct *tty)
 }
 
 static void uart_set_termios(struct tty_struct *tty,
-						struct ktermios *old_termios)
+			     const struct ktermios *old_termios)
 {
 	struct uart_state *state = tty->driver_data;
 	struct uart_port *uport;
@@ -2501,7 +2501,7 @@ uart_report_port(struct uart_driver *drv, struct uart_port *port)
 			 "MMIO 0x%llx", (unsigned long long)port->mapbase);
 		break;
 	default:
-		strlcpy(address, "*unknown*", sizeof(address));
+		strscpy(address, "*unknown*", sizeof(address));
 		break;
 	}
 

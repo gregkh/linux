@@ -2,7 +2,6 @@
 
 #include <linux/aperture.h>
 #include <linux/device.h>
-#include <linux/fb.h> /* for old fbdev helpers */
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
@@ -11,6 +10,8 @@
 #include <linux/sysfb.h>
 #include <linux/types.h>
 #include <linux/vgaarb.h>
+
+#include <video/vga.h>
 
 /**
  * DOC: overview
@@ -284,11 +285,6 @@ static void aperture_detach_devices(resource_size_t base, resource_size_t size)
 int aperture_remove_conflicting_devices(resource_size_t base, resource_size_t size,
 					bool primary, const char *name)
 {
-#if IS_REACHABLE(CONFIG_FB)
-	struct apertures_struct *a;
-	int ret;
-#endif
-
 	/*
 	 * If a driver asked to unregister a platform device registered by
 	 * sysfb, then can be assumed that this is a driver for a display
@@ -300,22 +296,15 @@ int aperture_remove_conflicting_devices(resource_size_t base, resource_size_t si
 	 */
 	sysfb_disable();
 
-#if IS_REACHABLE(CONFIG_FB)
-	a = alloc_apertures(1);
-	if (!a)
-		return -ENOMEM;
-
-	a->ranges[0].base = base;
-	a->ranges[0].size = size;
-
-	ret = remove_conflicting_framebuffers(a, name, primary);
-	kfree(a);
-
-	if (ret)
-		return ret;
-#endif
-
 	aperture_detach_devices(base, size);
+
+	/*
+	 * If this is the primary adapter, there could be a VGA device
+	 * that consumes the VGA framebuffer I/O range. Remove this device
+	 * as well.
+	 */
+	if (primary)
+		aperture_detach_devices(VGA_FB_PHYS_BASE, VGA_FB_PHYS_SIZE);
 
 	return 0;
 }
@@ -353,17 +342,6 @@ int aperture_remove_conflicting_pci_devices(struct pci_dev *pdev, const char *na
 		if (ret)
 			return ret;
 	}
-
-	/*
-	 * If a driver asked to unregister a platform device registered by
-	 * sysfb, then can be assumed that this is a driver for a display
-	 * that is set up by the system firmware and has a generic driver.
-	 *
-	 * Drivers for devices that don't have a generic driver will never
-	 * ask for this, so let's assume that a real driver for the display
-	 * was already probed and prevent sysfb to register devices later.
-	 */
-	sysfb_disable();
 
 	/*
 	 * WARNING: Apparently we must kick fbdev drivers before vgacon,

@@ -190,7 +190,7 @@ struct ib_mr *hns_roce_get_dma_mr(struct ib_pd *pd, int acc)
 	int ret;
 
 	mr = kzalloc(sizeof(*mr), GFP_KERNEL);
-	if (mr == NULL)
+	if (!mr)
 		return  ERR_PTR(-ENOMEM);
 
 	mr->type = MR_TYPE_DMA;
@@ -585,7 +585,7 @@ static int mtr_map_region(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 	while (offset < end && npage < max_count) {
 		count = 0;
 		mtts = hns_roce_hem_list_find_mtt(hr_dev, &mtr->hem_list,
-						  offset, &count, NULL);
+						  offset, &count);
 		if (!mtts)
 			return -ENOBUFS;
 
@@ -834,7 +834,7 @@ int hns_roce_mtr_find(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 		mtt_count = 0;
 		mtts = hns_roce_hem_list_find_mtt(hr_dev, &mtr->hem_list,
 						  start_index + total,
-						  &mtt_count, NULL);
+						  &mtt_count);
 		if (!mtts || !mtt_count)
 			goto done;
 

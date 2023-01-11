@@ -977,12 +977,27 @@ static int drms_uA_update(struct regulator_dev *rdev)
 			rdev_err(rdev, "failed to set load %d: %pe\n",
 				 current_uA, ERR_PTR(err));
 	} else {
+		/*
+		 * Unfortunately in some cases the constraints->valid_ops has
+		 * REGULATOR_CHANGE_DRMS but there are no valid modes listed.
+		 * That's not really legit but we won't consider it a fatal
+		 * error here. We'll treat it as if REGULATOR_CHANGE_DRMS
+		 * wasn't set.
+		 */
+		if (!rdev->constraints->valid_modes_mask) {
+			rdev_dbg(rdev, "Can change modes; but no valid mode\n");
+			return 0;
+		}
+
 		/* get output voltage */
 		output_uV = regulator_get_voltage_rdev(rdev);
-		if (output_uV <= 0) {
-			rdev_err(rdev, "invalid output voltage found\n");
-			return -EINVAL;
-		}
+
+		/*
+		 * Don't return an error; if regulator driver cares about
+		 * output_uV then it's up to the driver to validate.
+		 */
+		if (output_uV <= 0)
+			rdev_dbg(rdev, "invalid output voltage found\n");
 
 		/* get input voltage */
 		input_uV = 0;
@@ -990,10 +1005,13 @@ static int drms_uA_update(struct regulator_dev *rdev)
 			input_uV = regulator_get_voltage_rdev(rdev->supply->rdev);
 		if (input_uV <= 0)
 			input_uV = rdev->constraints->input_uV;
-		if (input_uV <= 0) {
-			rdev_err(rdev, "invalid input voltage found\n");
-			return -EINVAL;
-		}
+
+		/*
+		 * Don't return an error; if regulator driver cares about
+		 * input_uV then it's up to the driver to validate.
+		 */
+		if (input_uV <= 0)
+			rdev_dbg(rdev, "invalid input voltage found\n");
 
 		/* now get the optimum mode for our new total regulator load */
 		mode = rdev->desc->ops->get_optimum_mode(rdev, input_uV,
@@ -3510,10 +3528,8 @@ static int _regulator_set_voltage_time(struct regulator_dev *rdev,
 		 (new_uV < old_uV))
 		return rdev->constraints->settling_time_down;
 
-	if (ramp_delay == 0) {
-		rdev_dbg(rdev, "ramp_delay not set\n");
+	if (ramp_delay == 0)
 		return 0;
-	}
 
 	return DIV_ROUND_UP(abs(new_uV - old_uV), ramp_delay);
 }
@@ -5408,6 +5424,7 @@ regulator_register(struct device *dev,
 	bool dangling_cfg_gpiod = false;
 	bool dangling_of_gpiod = false;
 	int ret, i;
+	bool resolved_early = false;
 
 	if (cfg == NULL)
 		return ERR_PTR(-EINVAL);
@@ -5510,24 +5527,10 @@ regulator_register(struct device *dev,
 	BLOCKING_INIT_NOTIFIER_HEAD(&rdev->notifier);
 	INIT_DELAYED_WORK(&rdev->disable_work, regulator_disable_work);
 
-	/* preform any regulator specific init */
-	if (init_data && init_data->regulator_init) {
-		ret = init_data->regulator_init(rdev->reg_data);
-		if (ret < 0)
-			goto clean;
-	}
-
-	if (config->ena_gpiod) {
-		ret = regulator_ena_gpio_request(rdev, config);
-		if (ret != 0) {
-			rdev_err(rdev, "Failed to request enable GPIO: %pe\n",
-				 ERR_PTR(ret));
-			goto clean;
-		}
-		/* The regulator core took over the GPIO descriptor */
-		dangling_cfg_gpiod = false;
-		dangling_of_gpiod = false;
-	}
+	if (init_data && init_data->supply_regulator)
+		rdev->supply_name = init_data->supply_regulator;
+	else if (regulator_desc->supply_name)
+		rdev->supply_name = regulator_desc->supply_name;
 
 	/* register with sysfs */
 	rdev->dev.class = &regulator_class;
@@ -5549,13 +5552,38 @@ regulator_register(struct device *dev,
 		goto wash;
 	}
 
-	if (init_data && init_data->supply_regulator)
-		rdev->supply_name = init_data->supply_regulator;
-	else if (regulator_desc->supply_name)
-		rdev->supply_name = regulator_desc->supply_name;
+	if ((rdev->supply_name && !rdev->supply) &&
+		(rdev->constraints->always_on ||
+		 rdev->constraints->boot_on)) {
+		ret = regulator_resolve_supply(rdev);
+		if (ret)
+			rdev_dbg(rdev, "unable to resolve supply early: %pe\n",
+					 ERR_PTR(ret));
+
+		resolved_early = true;
+	}
+
+	/* perform any regulator specific init */
+	if (init_data && init_data->regulator_init) {
+		ret = init_data->regulator_init(rdev->reg_data);
+		if (ret < 0)
+			goto wash;
+	}
+
+	if (config->ena_gpiod) {
+		ret = regulator_ena_gpio_request(rdev, config);
+		if (ret != 0) {
+			rdev_err(rdev, "Failed to request enable GPIO: %pe\n",
+				 ERR_PTR(ret));
+			goto wash;
+		}
+		/* The regulator core took over the GPIO descriptor */
+		dangling_cfg_gpiod = false;
+		dangling_of_gpiod = false;
+	}
 
 	ret = set_machine_constraints(rdev);
-	if (ret == -EPROBE_DEFER) {
+	if (ret == -EPROBE_DEFER && !resolved_early) {
 		/* Regulator might be in bypass mode and so needs its supply
 		 * to set the constraints
 		 */

@@ -4,6 +4,7 @@
 #include <linux/errno.h>
 #include <linux/lockdep.h>
 #include <linux/io_uring_types.h>
+#include <uapi/linux/eventpoll.h>
 #include "io-wq.h"
 #include "slist.h"
 #include "filetable.h"
@@ -26,7 +27,9 @@ enum {
 
 struct io_uring_cqe *__io_get_cqe(struct io_ring_ctx *ctx, bool overflow);
 bool io_req_cqe_overflow(struct io_kiocb *req);
-int io_run_task_work_sig(void);
+int io_run_task_work_sig(struct io_ring_ctx *ctx);
+int __io_run_local_work(struct io_ring_ctx *ctx, bool *locked);
+int io_run_local_work(struct io_ring_ctx *ctx);
 void io_req_complete_failed(struct io_kiocb *req, s32 res);
 void __io_req_complete(struct io_kiocb *req, unsigned issue_flags);
 void io_req_complete_post(struct io_kiocb *req);
@@ -201,15 +204,28 @@ static inline void io_commit_cqring(struct io_ring_ctx *ctx)
 	smp_store_release(&ctx->rings->cq.tail, ctx->cached_cq_tail);
 }
 
-static inline void io_cqring_wake(struct io_ring_ctx *ctx)
+/* requires smb_mb() prior, see wq_has_sleeper() */
+static inline void __io_cqring_wake(struct io_ring_ctx *ctx)
 {
 	/*
-	 * wake_up_all() may seem excessive, but io_wake_function() and
-	 * io_should_wake() handle the termination of the loop and only
-	 * wake as many waiters as we need to.
+	 * Trigger waitqueue handler on all waiters on our waitqueue. This
+	 * won't necessarily wake up all the tasks, io_should_wake() will make
+	 * that decision.
+	 *
+	 * Pass in EPOLLIN|EPOLL_URING_WAKE as the poll wakeup key. The latter
+	 * set in the mask so that if we recurse back into our own poll
+	 * waitqueue handlers, we know we have a dependency between eventfd or
+	 * epoll and should terminate multishot poll at that point.
 	 */
-	if (wq_has_sleeper(&ctx->cq_wait))
-		wake_up_all(&ctx->cq_wait);
+	if (waitqueue_active(&ctx->cq_wait))
+		__wake_up(&ctx->cq_wait, TASK_NORMAL, 0,
+				poll_to_key(EPOLL_URING_WAKE | EPOLLIN));
+}
+
+static inline void io_cqring_wake(struct io_ring_ctx *ctx)
+{
+	smp_mb();
+	__io_cqring_wake(ctx);
 }
 
 static inline bool io_sqring_full(struct io_ring_ctx *ctx)
@@ -227,7 +243,7 @@ static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
 	return smp_load_acquire(&rings->sq.tail) - ctx->cached_sq_head;
 }
 
-static inline bool io_run_task_work(void)
+static inline int io_run_task_work(void)
 {
 	/*
 	 * Always check-and-clear the task_work notification signal. With how
@@ -242,7 +258,49 @@ static inline bool io_run_task_work(void)
 		return 1;
 	}
 
-	return false;
+	return 0;
+}
+
+static inline bool io_task_work_pending(struct io_ring_ctx *ctx)
+{
+	return test_thread_flag(TIF_NOTIFY_SIGNAL) ||
+		!wq_list_empty(&ctx->work_llist);
+}
+
+static inline int io_run_task_work_ctx(struct io_ring_ctx *ctx)
+{
+	int ret = 0;
+	int ret2;
+
+	if (ctx->flags & IORING_SETUP_DEFER_TASKRUN)
+		ret = io_run_local_work(ctx);
+
+	/* want to run this after in case more is added */
+	ret2 = io_run_task_work();
+
+	/* Try propagate error in favour of if tasks were run,
+	 * but still make sure to run them if requested
+	 */
+	if (ret >= 0)
+		ret += ret2;
+
+	return ret;
+}
+
+static inline int io_run_local_work_locked(struct io_ring_ctx *ctx)
+{
+	bool locked;
+	int ret;
+
+	if (llist_empty(&ctx->work_llist))
+		return 0;
+
+	locked = true;
+	ret = __io_run_local_work(ctx, &locked);
+	/* shouldn't happen! */
+	if (WARN_ON_ONCE(!locked))
+		mutex_lock(&ctx->uring_lock);
+	return ret;
 }
 
 static inline void io_tw_lock(struct io_ring_ctx *ctx, bool *locked)
@@ -310,6 +368,12 @@ static inline struct io_kiocb *io_alloc_req(struct io_ring_ctx *ctx)
 
 	node = wq_stack_extract(&ctx->submit_state.free_list);
 	return container_of(node, struct io_kiocb, comp_list);
+}
+
+static inline bool io_allowed_run_tw(struct io_ring_ctx *ctx)
+{
+	return likely(!(ctx->flags & IORING_SETUP_DEFER_TASKRUN) ||
+		      ctx->submitter_task == current);
 }
 
 #endif

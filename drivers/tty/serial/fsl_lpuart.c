@@ -1258,17 +1258,12 @@ static inline int lpuart_start_rx_dma(struct lpuart_port *sport)
 	struct dma_slave_config dma_rx_sconfig = {};
 	struct circ_buf *ring = &sport->rx_ring;
 	int ret, nent;
-	int bits, baud;
 	struct tty_port *port = &sport->port.state->port;
 	struct tty_struct *tty = port->tty;
 	struct ktermios *termios = &tty->termios;
 	struct dma_chan *chan = sport->dma_rx_chan;
-
-	baud = tty_get_baud_rate(tty);
-
-	bits = (termios->c_cflag & CSIZE) == CS7 ? 9 : 10;
-	if (termios->c_cflag & PARENB)
-		bits++;
+	unsigned int bits = tty_get_frame_size(termios->c_cflag);
+	unsigned int baud = tty_get_baud_rate(tty);
 
 	/*
 	 * Calculate length of one DMA buffer size to keep latency below
@@ -1809,7 +1804,7 @@ static void lpuart32_shutdown(struct uart_port *port)
 
 static void
 lpuart_set_termios(struct uart_port *port, struct ktermios *termios,
-		   struct ktermios *old)
+		   const struct ktermios *old)
 {
 	struct lpuart_port *sport = container_of(port, struct lpuart_port, port);
 	unsigned long flags;
@@ -2049,7 +2044,7 @@ static void lpuart32_serial_setbrg(struct lpuart_port *sport,
 
 static void
 lpuart32_set_termios(struct uart_port *port, struct ktermios *termios,
-		   struct ktermios *old)
+		     const struct ktermios *old)
 {
 	struct lpuart_port *sport = container_of(port, struct lpuart_port, port);
 	unsigned long flags;
@@ -2822,7 +2817,7 @@ static int __maybe_unused lpuart_suspend(struct device *dev)
 		 * EDMA driver during suspend will forcefully release any
 		 * non-idle DMA channels. If port wakeup is enabled or if port
 		 * is console port or 'no_console_suspend' is set the Rx DMA
-		 * cannot resume as as expected, hence gracefully release the
+		 * cannot resume as expected, hence gracefully release the
 		 * Rx DMA path before suspend and start Rx DMA path on resume.
 		 */
 		if (irq_wake) {

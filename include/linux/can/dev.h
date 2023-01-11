@@ -147,6 +147,11 @@ static inline u32 can_get_static_ctrlmode(struct can_priv *priv)
 	return priv->ctrlmode & ~priv->ctrlmode_supported;
 }
 
+static inline bool can_is_canxl_dev_mtu(unsigned int mtu)
+{
+	return (mtu >= CANXL_MIN_MTU && mtu <= CANXL_MAX_MTU);
+}
+
 /* drop skb if it does not contain a valid CAN frame for sending */
 static inline bool can_dev_dropped_skb(struct net_device *dev, struct sk_buff *skb)
 {

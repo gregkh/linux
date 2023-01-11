@@ -87,29 +87,6 @@
 #define PEH_AXUSER_CFG			0x401001
 #define PEH_AXUSER_CFG_ENABLE		0xffffffff
 
-#define QM_AXI_RRESP			BIT(0)
-#define QM_AXI_BRESP			BIT(1)
-#define QM_ECC_MBIT			BIT(2)
-#define QM_ECC_1BIT			BIT(3)
-#define QM_ACC_GET_TASK_TIMEOUT		BIT(4)
-#define QM_ACC_DO_TASK_TIMEOUT		BIT(5)
-#define QM_ACC_WB_NOT_READY_TIMEOUT	BIT(6)
-#define QM_SQ_CQ_VF_INVALID		BIT(7)
-#define QM_CQ_VF_INVALID		BIT(8)
-#define QM_SQ_VF_INVALID		BIT(9)
-#define QM_DB_TIMEOUT			BIT(10)
-#define QM_OF_FIFO_OF			BIT(11)
-#define QM_DB_RANDOM_INVALID		BIT(12)
-#define QM_MAILBOX_TIMEOUT		BIT(13)
-#define QM_FLR_TIMEOUT			BIT(14)
-
-#define QM_BASE_NFE	(QM_AXI_RRESP | QM_AXI_BRESP | QM_ECC_MBIT | \
-			 QM_ACC_GET_TASK_TIMEOUT | QM_DB_TIMEOUT | \
-			 QM_OF_FIFO_OF | QM_DB_RANDOM_INVALID | \
-			 QM_MAILBOX_TIMEOUT | QM_FLR_TIMEOUT)
-#define QM_BASE_CE			QM_ECC_1BIT
-
-#define QM_Q_DEPTH			1024
 #define QM_MIN_QNUM                     2
 #define HISI_ACC_SGL_SGE_NR_MAX		255
 #define QM_SHAPER_CFG			0x100164
@@ -241,7 +218,10 @@ struct hisi_qm_err_info {
 	char *acpi_rst;
 	u32 msi_wr_port;
 	u32 ecc_2bits_mask;
-	u32 dev_ce_mask;
+	u32 qm_shutdown_mask;
+	u32 dev_shutdown_mask;
+	u32 qm_reset_mask;
+	u32 dev_reset_mask;
 	u32 ce;
 	u32 nfe;
 	u32 fe;
@@ -310,6 +290,8 @@ struct hisi_qm {
 	u32 max_qp_num;
 	u32 vfs_num;
 	u32 db_interval;
+	u16 eq_depth;
+	u16 aeq_depth;
 	struct list_head list;
 	struct hisi_qm_list *qm_list;
 
@@ -375,6 +357,8 @@ struct hisi_qp_ops {
 
 struct hisi_qp {
 	u32 qp_id;
+	u16 sq_depth;
+	u16 cq_depth;
 	u8 alg_type;
 	u8 req_type;
 

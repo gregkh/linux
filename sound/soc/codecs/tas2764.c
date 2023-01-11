@@ -31,6 +31,7 @@ struct tas2764_priv {
 	struct gpio_desc *sdz_gpio;
 	struct regmap *regmap;
 	struct device *dev;
+	int irq;
 	
 	int v_sense_slot;
 	int i_sense_slot;
@@ -38,6 +39,57 @@ struct tas2764_priv {
 	bool dac_powered;
 	bool unmuted;
 };
+
+static const char *tas2764_int_ltch0_msgs[8] = {
+	"fault: over temperature", /* INT_LTCH0 & BIT(0) */
+	"fault: over current",
+	"fault: bad TDM clock",
+	"limiter active",
+	"fault: PVDD below limiter inflection point",
+	"fault: limiter max attenuation",
+	"fault: BOP infinite hold",
+	"fault: BOP mute", /* INT_LTCH0 & BIT(7) */
+};
+
+static const unsigned int tas2764_int_readout_regs[6] = {
+	TAS2764_INT_LTCH0,
+	TAS2764_INT_LTCH1,
+	TAS2764_INT_LTCH1_0,
+	TAS2764_INT_LTCH2,
+	TAS2764_INT_LTCH3,
+	TAS2764_INT_LTCH4,
+};
+
+static irqreturn_t tas2764_irq(int irq, void *data)
+{
+	struct tas2764_priv *tas2764 = data;
+	u8 latched[6] = {0, 0, 0, 0, 0, 0};
+	int ret = IRQ_NONE;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(latched); i++)
+		latched[i] = snd_soc_component_read(tas2764->component,
+						    tas2764_int_readout_regs[i]);
+
+	for (i = 0; i < 8; i++) {
+		if (latched[0] & BIT(i)) {
+			dev_crit_ratelimited(tas2764->dev, "%s\n",
+					     tas2764_int_ltch0_msgs[i]);
+			ret = IRQ_HANDLED;
+		}
+	}
+
+	if (latched[0]) {
+		dev_err_ratelimited(tas2764->dev, "other context to the fault: %02x,%02x,%02x,%02x,%02x",
+				    latched[1], latched[2], latched[3], latched[4], latched[5]);
+		snd_soc_component_update_bits(tas2764->component,
+					      TAS2764_INT_CLK_CFG,
+					      TAS2764_INT_CLK_CFG_IRQZ_CLR,
+					      TAS2764_INT_CLK_CFG_IRQZ_CLR);
+	}
+
+	return ret;
+}
 
 static void tas2764_reset(struct tas2764_priv *tas2764)
 {
@@ -490,6 +542,34 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 
 	tas2764_reset(tas2764);
 
+	if (tas2764->irq) {
+		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK0, 0xff);
+		if (ret < 0)
+			return ret;
+
+		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK1, 0xff);
+		if (ret < 0)
+			return ret;
+
+		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK2, 0xff);
+		if (ret < 0)
+			return ret;
+
+		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK3, 0xff);
+		if (ret < 0)
+			return ret;
+
+		ret = snd_soc_component_write(tas2764->component, TAS2764_INT_MASK4, 0xff);
+		if (ret < 0)
+			return ret;
+
+		ret = devm_request_threaded_irq(tas2764->dev, tas2764->irq, NULL, tas2764_irq,
+						IRQF_ONESHOT | IRQF_SHARED | IRQF_TRIGGER_LOW,
+						"tas2764", tas2764);
+		if (ret)
+			dev_warn(tas2764->dev, "failed to request IRQ: %d\n", ret);
+	}
+
 	ret = snd_soc_component_update_bits(tas2764->component, TAS2764_TDM_CFG5,
 					    TAS2764_TDM_CFG5_VSNS_ENABLE, 0);
 	if (ret < 0)
@@ -506,11 +586,21 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 static DECLARE_TLV_DB_SCALE(tas2764_digital_tlv, 1100, 50, 0);
 static DECLARE_TLV_DB_SCALE(tas2764_playback_volume, -10050, 50, 1);
 
+static const char * const tas2764_hpf_texts[] = {
+	"Disabled", "2 Hz", "50 Hz", "100 Hz", "200 Hz",
+	"400 Hz", "800 Hz"
+};
+
+static SOC_ENUM_SINGLE_DECL(
+	tas2764_hpf_enum, TAS2764_DC_BLK0,
+	TAS2764_DC_BLK0_HPF_FREQ_PB_SHIFT, tas2764_hpf_texts);
+
 static const struct snd_kcontrol_new tas2764_snd_controls[] = {
 	SOC_SINGLE_TLV("Speaker Volume", TAS2764_DVC, 0,
 		       TAS2764_DVC_MAX, 1, tas2764_playback_volume),
 	SOC_SINGLE_TLV("Amp Gain Volume", TAS2764_CHNL_0, 1, 0x14, 0,
 		       tas2764_digital_tlv),
+	SOC_ENUM("HPF Corner Frequency", tas2764_hpf_enum),
 };
 
 static const struct snd_soc_component_driver soc_component_driver_tas2764 = {
@@ -552,9 +642,21 @@ static const struct regmap_range_cfg tas2764_regmap_ranges[] = {
 	},
 };
 
+static bool tas2764_volatile_register(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case TAS2764_INT_LTCH0 ... TAS2764_INT_LTCH4:
+	case TAS2764_INT_CLK_CFG:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static const struct regmap_config tas2764_i2c_regmap = {
 	.reg_bits = 8,
 	.val_bits = 8,
+	.volatile_reg = tas2764_volatile_register,
 	.reg_defaults = tas2764_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(tas2764_reg_defaults),
 	.cache_type = REGCACHE_RBTREE,
@@ -608,6 +710,7 @@ static int tas2764_i2c_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	tas2764->dev = &client->dev;
+	tas2764->irq = client->irq;
 	i2c_set_clientdata(client, tas2764);
 	dev_set_drvdata(&client->dev, tas2764);
 

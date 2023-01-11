@@ -191,6 +191,7 @@ static bool			append_file;
 static bool			interval_count;
 static const char		*output_name;
 static int			output_fd;
+static char			*metrics;
 
 struct perf_stat {
 	bool			 record;
@@ -291,13 +292,8 @@ static inline void diff_timespec(struct timespec *r, struct timespec *a,
 
 static void perf_stat__reset_stats(void)
 {
-	int i;
-
 	evlist__reset_stats(evsel_list);
 	perf_stat__reset_shadow_stats();
-
-	for (i = 0; i < stat_config.stats_num; i++)
-		perf_stat__reset_shadow_per_stat(&stat_config.stats[i]);
 }
 
 static int process_synthesized_event(struct perf_tool *tool __maybe_unused,
@@ -488,46 +484,6 @@ static void read_counters(struct timespec *rs)
 	}
 }
 
-static int runtime_stat_new(struct perf_stat_config *config, int nthreads)
-{
-	int i;
-
-	config->stats = calloc(nthreads, sizeof(struct runtime_stat));
-	if (!config->stats)
-		return -1;
-
-	config->stats_num = nthreads;
-
-	for (i = 0; i < nthreads; i++)
-		runtime_stat__init(&config->stats[i]);
-
-	return 0;
-}
-
-static void runtime_stat_delete(struct perf_stat_config *config)
-{
-	int i;
-
-	if (!config->stats)
-		return;
-
-	for (i = 0; i < config->stats_num; i++)
-		runtime_stat__exit(&config->stats[i]);
-
-	zfree(&config->stats);
-}
-
-static void runtime_stat_reset(struct perf_stat_config *config)
-{
-	int i;
-
-	if (!config->stats)
-		return;
-
-	for (i = 0; i < config->stats_num; i++)
-		perf_stat__reset_shadow_per_stat(&config->stats[i]);
-}
-
 static void process_interval(void)
 {
 	struct timespec ts, rs;
@@ -536,7 +492,6 @@ static void process_interval(void)
 	diff_timespec(&rs, &ts, &ref_time);
 
 	perf_stat__reset_shadow_per_stat(&rt_stat);
-	runtime_stat_reset(&stat_config);
 	read_counters(&rs);
 
 	if (STAT_RECORD) {
@@ -649,9 +604,7 @@ static void process_evlist(struct evlist *evlist, unsigned int interval)
 	if (evlist__ctlfd_process(evlist, &cmd) > 0) {
 		switch (cmd) {
 		case EVLIST_CTL_CMD_ENABLE:
-			if (interval)
-				process_interval();
-			break;
+			__fallthrough;
 		case EVLIST_CTL_CMD_DISABLE:
 			if (interval)
 				process_interval();
@@ -889,8 +842,6 @@ try_again:
 		evlist__for_each_cpu(evlist_cpu_itr, evsel_list, affinity) {
 			counter = evlist_cpu_itr.evsel;
 
-			if (!counter->reset_group && !counter->errored)
-				continue;
 			if (!counter->reset_group)
 				continue;
 try_again_reset:
@@ -1018,7 +969,6 @@ try_again_reset:
 
 		evlist__copy_prev_raw_counts(evsel_list);
 		evlist__reset_prev_raw_counts(evsel_list);
-		runtime_stat_reset(&stat_config);
 		perf_stat__reset_shadow_per_stat(&rt_stat);
 	} else {
 		update_stats(&walltime_nsecs_stats, t1 - t0);
@@ -1074,7 +1024,7 @@ static void print_counters(struct timespec *ts, int argc, const char **argv)
 	/* Do not print anything if we record to the pipe. */
 	if (STAT_RECORD && perf_stat.data.is_pipe)
 		return;
-	if (stat_config.quiet)
+	if (quiet)
 		return;
 
 	evlist__print_counters(evsel_list, &stat_config, &target, ts, argc, argv);
@@ -1149,14 +1099,23 @@ static int enable_metric_only(const struct option *opt __maybe_unused,
 	return 0;
 }
 
-static int parse_metric_groups(const struct option *opt,
+static int append_metric_groups(const struct option *opt __maybe_unused,
 			       const char *str,
 			       int unset __maybe_unused)
 {
-	return metricgroup__parse_groups(opt, str,
-					 stat_config.metric_no_group,
-					 stat_config.metric_no_merge,
-					 &stat_config.metric_events);
+	if (metrics) {
+		char *tmp;
+
+		if (asprintf(&tmp, "%s,%s", metrics, str) < 0)
+			return -ENOMEM;
+		free(metrics);
+		metrics = tmp;
+	} else {
+		metrics = strdup(str);
+		if (!metrics)
+			return -ENOMEM;
+	}
+	return 0;
 }
 
 static int parse_control_option(const struct option *opt,
@@ -1300,7 +1259,7 @@ static struct option stat_options[] = {
 			"measure SMI cost"),
 	OPT_CALLBACK('M', "metrics", &evsel_list, "metric/metric group list",
 		     "monitor specified metrics or metric groups (separated by ,)",
-		     parse_metric_groups),
+		     append_metric_groups),
 	OPT_BOOLEAN_FLAG(0, "all-kernel", &stat_config.all_kernel,
 			 "Configure all used events to run in kernel space.",
 			 PARSE_OPT_EXCLUSIVE),
@@ -1315,8 +1274,8 @@ static struct option stat_options[] = {
 		       "print summary for interval mode"),
 	OPT_BOOLEAN(0, "no-csv-summary", &stat_config.no_csv_summary,
 		       "don't print 'summary' for CSV summary output"),
-	OPT_BOOLEAN(0, "quiet", &stat_config.quiet,
-			"don't print output (useful with record)"),
+	OPT_BOOLEAN(0, "quiet", &quiet,
+			"don't print any output, messages or warnings (useful with record)"),
 	OPT_CALLBACK(0, "cputype", &evsel_list, "hybrid cpu type",
 		     "Only enable events on applying cpu with this type "
 		     "for hybrid platform (e.g. core or atom)",
@@ -1793,11 +1752,11 @@ static int add_default_attributes(void)
 		 * on an architecture test for such a metric name.
 		 */
 		if (metricgroup__has_metric("transaction")) {
-			struct option opt = { .value = &evsel_list };
-
-			return metricgroup__parse_groups(&opt, "transaction",
+			return metricgroup__parse_groups(evsel_list, "transaction",
 							 stat_config.metric_no_group,
-							stat_config.metric_no_merge,
+							 stat_config.metric_no_merge,
+							 stat_config.user_requested_cpu_list,
+							 stat_config.system_wide,
 							 &stat_config.metric_events);
 		}
 
@@ -2184,6 +2143,8 @@ static int __cmd_report(int argc, const char **argv)
 			input_name = "perf.data";
 	}
 
+	perf_stat__init_shadow_stats();
+
 	perf_stat.data.path = input_name;
 	perf_stat.data.mode = PERF_DATA_MODE_READ;
 
@@ -2263,8 +2224,6 @@ int cmd_stat(int argc, const char **argv)
 	argc = parse_options_subcommand(argc, argv, stat_options, stat_subcommands,
 					(const char **) stat_usage,
 					PARSE_OPT_STOP_AT_NON_OPTION);
-	perf_stat__collect_metric_expr(evsel_list);
-	perf_stat__init_shadow_stats();
 
 	if (stat_config.csv_sep) {
 		stat_config.csv_output = true;
@@ -2319,7 +2278,7 @@ int cmd_stat(int argc, const char **argv)
 		goto out;
 	}
 
-	if (!output && !stat_config.quiet) {
+	if (!output && !quiet) {
 		struct timespec tm;
 		mode = append_file ? "a" : "w";
 
@@ -2431,6 +2390,34 @@ int cmd_stat(int argc, const char **argv)
 			target.system_wide = true;
 	}
 
+	if ((stat_config.aggr_mode == AGGR_THREAD) && (target.system_wide))
+		target.per_thread = true;
+
+	stat_config.system_wide = target.system_wide;
+	if (target.cpu_list) {
+		stat_config.user_requested_cpu_list = strdup(target.cpu_list);
+		if (!stat_config.user_requested_cpu_list) {
+			status = -ENOMEM;
+			goto out;
+		}
+	}
+
+	/*
+	 * Metric parsing needs to be delayed as metrics may optimize events
+	 * knowing the target is system-wide.
+	 */
+	if (metrics) {
+		metricgroup__parse_groups(evsel_list, metrics,
+					stat_config.metric_no_group,
+					stat_config.metric_no_merge,
+					stat_config.user_requested_cpu_list,
+					stat_config.system_wide,
+					&stat_config.metric_events);
+		zfree(&metrics);
+	}
+	perf_stat__collect_metric_expr(evsel_list);
+	perf_stat__init_shadow_stats();
+
 	if (add_default_attributes())
 		goto out;
 
@@ -2449,9 +2436,6 @@ int cmd_stat(int argc, const char **argv)
 			goto out;
 		}
 	}
-
-	if ((stat_config.aggr_mode == AGGR_THREAD) && (target.system_wide))
-		target.per_thread = true;
 
 	if (evlist__fix_hybrid_cpus(evsel_list, target.cpu_list)) {
 		pr_err("failed to use cpu list %s\n", target.cpu_list);
@@ -2480,12 +2464,6 @@ int cmd_stat(int argc, const char **argv)
 	 */
 	if (stat_config.aggr_mode == AGGR_THREAD) {
 		thread_map__read_comms(evsel_list->core.threads);
-		if (target.system_wide) {
-			if (runtime_stat_new(&stat_config,
-				perf_thread_map__nr(evsel_list->core.threads))) {
-				goto out;
-			}
-		}
 	}
 
 	if (stat_config.aggr_mode == AGGR_NODE)
@@ -2618,6 +2596,7 @@ out:
 		iostat_release(evsel_list);
 
 	zfree(&stat_config.walltime_run);
+	zfree(&stat_config.user_requested_cpu_list);
 
 	if (smi_cost && smi_reset)
 		sysfs__write_int(FREEZE_ON_SMI_PATH, 0);
@@ -2625,7 +2604,6 @@ out:
 	evlist__delete(evsel_list);
 
 	metricgroup__rblist_exit(&stat_config.metric_events);
-	runtime_stat_delete(&stat_config);
 	evlist__close_control(stat_config.ctl_fd, stat_config.ctl_fd_ack, &stat_config.ctl_fd_close);
 
 	return status;

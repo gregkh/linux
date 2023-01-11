@@ -547,7 +547,7 @@ static int kvaser_usb_hydra_send_simple_cmd(struct kvaser_usb *dev,
 	struct kvaser_cmd *cmd;
 	int err;
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd), GFP_KERNEL);
+	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -586,7 +586,7 @@ kvaser_usb_hydra_send_simple_cmd_async(struct kvaser_usb_net_priv *priv,
 	struct kvaser_usb *dev = priv->dev;
 	int err;
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd), GFP_ATOMIC);
+	cmd = kzalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -707,7 +707,7 @@ static int kvaser_usb_hydra_map_channel(struct kvaser_usb *dev, u16 transid,
 	struct kvaser_cmd *cmd;
 	int err;
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd), GFP_KERNEL);
+	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -748,7 +748,7 @@ static int kvaser_usb_hydra_get_single_capability(struct kvaser_usb *dev,
 	int err;
 	int i;
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd), GFP_KERNEL);
+	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -1444,7 +1444,7 @@ kvaser_usb_hydra_frame_to_cmd_ext(const struct kvaser_usb_net_priv *priv,
 	u32 kcan_id;
 	u32 kcan_header;
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd_ext), GFP_ATOMIC);
+	cmd = kzalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return NULL;
 
@@ -1518,7 +1518,7 @@ kvaser_usb_hydra_frame_to_cmd_std(const struct kvaser_usb_net_priv *priv,
 	u32 flags;
 	u32 id;
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd), GFP_ATOMIC);
+	cmd = kzalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return NULL;
 
@@ -1626,7 +1626,7 @@ static int kvaser_usb_hydra_set_bittiming(const struct net_device *netdev,
 	struct kvaser_usb *dev = priv->dev;
 	int err;
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd), GFP_KERNEL);
+	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -1654,7 +1654,7 @@ static int kvaser_usb_hydra_set_data_bittiming(const struct net_device *netdev,
 	struct kvaser_usb *dev = priv->dev;
 	int err;
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd), GFP_KERNEL);
+	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -1808,7 +1808,7 @@ static int kvaser_usb_hydra_get_software_details(struct kvaser_usb *dev)
 	u32 flags;
 	struct kvaser_usb_dev_card_data *card_data = &dev->card_data;
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd), GFP_KERNEL);
+	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -1948,7 +1948,7 @@ static int kvaser_usb_hydra_set_opt_mode(const struct kvaser_usb_net_priv *priv)
 		return -EINVAL;
 	}
 
-	cmd = kcalloc(1, sizeof(struct kvaser_cmd), GFP_KERNEL);
+	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
 

@@ -965,7 +965,7 @@ static void audit_reset_context(struct audit_context *ctx)
 	if (!ctx)
 		return;
 
-	/* if ctx is non-null, reset the "ctx->state" regardless */
+	/* if ctx is non-null, reset the "ctx->context" regardless */
 	ctx->context = AUDIT_CTX_UNUSED;
 	if (ctx->dummy)
 		return;
@@ -1002,7 +1002,7 @@ static void audit_reset_context(struct audit_context *ctx)
 	kfree(ctx->sockaddr);
 	ctx->sockaddr = NULL;
 	ctx->sockaddr_len = 0;
-	ctx->pid = ctx->ppid = 0;
+	ctx->ppid = 0;
 	ctx->uid = ctx->euid = ctx->suid = ctx->fsuid = KUIDT_INIT(0);
 	ctx->gid = ctx->egid = ctx->sgid = ctx->fsgid = KGIDT_INIT(0);
 	ctx->personality = 0;
@@ -1833,7 +1833,7 @@ void __audit_free(struct task_struct *tsk)
 
 	/* We are called either by do_exit() or the fork() error handling code;
 	 * in the former case tsk == current and in the latter tsk is a
-	 * random task_struct that doesn't doesn't have any meaningful data we
+	 * random task_struct that doesn't have any meaningful data we
 	 * need to log via audit_log_exit().
 	 */
 	if (tsk == current && !context->dummy) {

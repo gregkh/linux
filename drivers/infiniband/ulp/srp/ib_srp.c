@@ -699,7 +699,7 @@ static void srp_free_ch_ib(struct srp_target_port *target,
 
 static void srp_path_rec_completion(int status,
 				    struct sa_path_rec *pathrec,
-				    void *ch_ptr)
+				    int num_paths, void *ch_ptr)
 {
 	struct srp_rdma_ch *ch = ch_ptr;
 	struct srp_target_port *target = ch->target;
@@ -2989,7 +2989,7 @@ static ssize_t local_ib_port_show(struct device *dev,
 {
 	struct srp_target_port *target = host_to_target(class_to_shost(dev));
 
-	return sysfs_emit(buf, "%d\n", target->srp_host->port);
+	return sysfs_emit(buf, "%u\n", target->srp_host->port);
 }
 
 static DEVICE_ATTR_RO(local_ib_port);
@@ -3177,11 +3177,16 @@ static void srp_release_dev(struct device *dev)
 	struct srp_host *host =
 		container_of(dev, struct srp_host, dev);
 
-	complete(&host->released);
+	kfree(host);
 }
+
+static struct attribute *srp_class_attrs[];
+
+ATTRIBUTE_GROUPS(srp_class);
 
 static struct class srp_class = {
 	.name    = "infiniband_srp",
+	.dev_groups = srp_class_groups,
 	.dev_release = srp_release_dev
 };
 
@@ -3950,12 +3955,19 @@ static ssize_t port_show(struct device *dev, struct device_attribute *attr,
 {
 	struct srp_host *host = container_of(dev, struct srp_host, dev);
 
-	return sysfs_emit(buf, "%d\n", host->port);
+	return sysfs_emit(buf, "%u\n", host->port);
 }
 
 static DEVICE_ATTR_RO(port);
 
-static struct srp_host *srp_add_port(struct srp_device *device, u8 port)
+static struct attribute *srp_class_attrs[] = {
+	&dev_attr_add_target.attr,
+	&dev_attr_ibdev.attr,
+	&dev_attr_port.attr,
+	NULL
+};
+
+static struct srp_host *srp_add_port(struct srp_device *device, u32 port)
 {
 	struct srp_host *host;
 
@@ -3965,33 +3977,24 @@ static struct srp_host *srp_add_port(struct srp_device *device, u8 port)
 
 	INIT_LIST_HEAD(&host->target_list);
 	spin_lock_init(&host->target_lock);
-	init_completion(&host->released);
 	mutex_init(&host->add_target_mutex);
 	host->srp_dev = device;
 	host->port = port;
 
+	device_initialize(&host->dev);
 	host->dev.class = &srp_class;
 	host->dev.parent = device->dev->dev.parent;
-	dev_set_name(&host->dev, "srp-%s-%d", dev_name(&device->dev->dev),
-		     port);
-
-	if (device_register(&host->dev))
-		goto free_host;
-	if (device_create_file(&host->dev, &dev_attr_add_target))
-		goto err_class;
-	if (device_create_file(&host->dev, &dev_attr_ibdev))
-		goto err_class;
-	if (device_create_file(&host->dev, &dev_attr_port))
-		goto err_class;
+	if (dev_set_name(&host->dev, "srp-%s-%u", dev_name(&device->dev->dev),
+			 port))
+		goto put_host;
+	if (device_add(&host->dev))
+		goto put_host;
 
 	return host;
 
-err_class:
-	device_unregister(&host->dev);
-
-free_host:
-	kfree(host);
-
+put_host:
+	device_del(&host->dev);
+	put_device(&host->dev);
 	return NULL;
 }
 
@@ -4003,7 +4006,7 @@ static void srp_rename_dev(struct ib_device *device, void *client_data)
 	list_for_each_entry_safe(host, tmp_host, &srp_dev->dev_list, list) {
 		char name[IB_DEVICE_NAME_MAX + 8];
 
-		snprintf(name, sizeof(name), "srp-%s-%d",
+		snprintf(name, sizeof(name), "srp-%s-%u",
 			 dev_name(&device->dev), host->port);
 		device_rename(&host->dev, name);
 	}
@@ -4015,7 +4018,7 @@ static int srp_add_one(struct ib_device *device)
 	struct ib_device_attr *attr = &device->attrs;
 	struct srp_host *host;
 	int mr_page_shift;
-	unsigned int p;
+	u32 p;
 	u64 max_pages_per_mr;
 	unsigned int flags = 0;
 
@@ -4097,12 +4100,11 @@ static void srp_remove_one(struct ib_device *device, void *client_data)
 	srp_dev = client_data;
 
 	list_for_each_entry_safe(host, tmp_host, &srp_dev->dev_list, list) {
-		device_unregister(&host->dev);
 		/*
-		 * Wait for the sysfs entry to go away, so that no new
-		 * target ports can be created.
+		 * Remove the add_target sysfs entry so that no new target ports
+		 * can be created.
 		 */
-		wait_for_completion(&host->released);
+		device_del(&host->dev);
 
 		/*
 		 * Remove all target ports.
@@ -4120,7 +4122,7 @@ static void srp_remove_one(struct ib_device *device, void *client_data)
 		 */
 		flush_workqueue(srp_remove_wq);
 
-		kfree(host);
+		put_device(&host->dev);
 	}
 
 	ib_dealloc_pd(srp_dev->pd);

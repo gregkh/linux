@@ -151,7 +151,7 @@ struct hdmi_spec {
 	 */
 	int dev_num;
 	struct snd_array pins; /* struct hdmi_spec_per_pin */
-	struct hdmi_pcm pcm_rec[16];
+	struct hdmi_pcm pcm_rec[8];
 	struct mutex pcm_lock;
 	struct mutex bind_lock; /* for audio component binding */
 	/* pcm_bitmap means which pcms have been assigned to pins*/
@@ -231,7 +231,7 @@ struct dp_audio_infoframe {
 union audio_infoframe {
 	struct hdmi_audio_infoframe hdmi;
 	struct dp_audio_infoframe dp;
-	u8 bytes[0];
+	DECLARE_FLEX_ARRAY(u8, bytes);
 };
 
 /*
@@ -495,7 +495,8 @@ static void print_eld_info(struct snd_info_entry *entry,
 	struct hdmi_spec_per_pin *per_pin = entry->private_data;
 
 	mutex_lock(&per_pin->lock);
-	snd_hdmi_print_eld_info(&per_pin->sink_eld, buffer);
+	snd_hdmi_print_eld_info(&per_pin->sink_eld, buffer, per_pin->pin_nid,
+				per_pin->dev_id, per_pin->cvt_nid);
 	mutex_unlock(&per_pin->lock);
 }
 
@@ -1425,10 +1426,9 @@ static void hdmi_pcm_setup_pin(struct hdmi_spec *spec,
 	int mux_idx;
 	bool non_pcm;
 
-	if (per_pin->pcm_idx >= 0 && per_pin->pcm_idx < spec->pcm_used)
-		pcm = get_pcm_rec(spec, per_pin->pcm_idx);
-	else
+	if (per_pin->pcm_idx < 0 || per_pin->pcm_idx >= spec->pcm_used)
 		return;
+	pcm = get_pcm_rec(spec, per_pin->pcm_idx);
 	if (!pcm->pcm)
 		return;
 	if (!test_bit(per_pin->pcm_idx, &spec->pcm_in_use))
@@ -2305,8 +2305,8 @@ static int generic_hdmi_build_pcms(struct hda_codec *codec)
 		pstr = &info->stream[SNDRV_PCM_STREAM_PLAYBACK];
 		pstr->substreams = 1;
 		pstr->ops = generic_ops;
-		/* pcm number is less than 16 */
-		if (spec->pcm_used >= 16)
+		/* pcm number is less than pcm_rec array size */
+		if (spec->pcm_used >= ARRAY_SIZE(spec->pcm_rec))
 			break;
 		/* other pstr fields are set in open */
 	}

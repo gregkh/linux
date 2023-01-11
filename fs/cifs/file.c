@@ -489,7 +489,7 @@ void _cifsFileInfo_put(struct cifsFileInfo *cifs_file,
 	struct cifsInodeInfo *cifsi = CIFS_I(inode);
 	struct super_block *sb = inode->i_sb;
 	struct cifs_sb_info *cifs_sb = CIFS_SB(sb);
-	struct cifs_fid fid;
+	struct cifs_fid fid = {};
 	struct cifs_pending_open open;
 	bool oplock_break_cancelled;
 
@@ -571,7 +571,7 @@ int cifs_open(struct inode *inode, struct file *file)
 	void *page;
 	const char *full_path;
 	bool posix_open_ok = false;
-	struct cifs_fid fid;
+	struct cifs_fid fid = {};
 	struct cifs_pending_open open;
 	struct cifs_open_info_data data = {};
 
@@ -2434,12 +2434,16 @@ cifs_writev_complete(struct work_struct *work)
 struct cifs_writedata *
 cifs_writedata_alloc(unsigned int nr_pages, work_func_t complete)
 {
+	struct cifs_writedata *writedata = NULL;
 	struct page **pages =
 		kcalloc(nr_pages, sizeof(struct page *), GFP_NOFS);
-	if (pages)
-		return cifs_writedata_direct_alloc(pages, complete);
+	if (pages) {
+		writedata = cifs_writedata_direct_alloc(pages, complete);
+		if (!writedata)
+			kvfree(pages);
+	}
 
-	return NULL;
+	return writedata;
 }
 
 struct cifs_writedata *
@@ -3299,6 +3303,9 @@ cifs_write_from_iter(loff_t offset, size_t len, struct iov_iter *from,
 					     cifs_uncached_writev_complete);
 			if (!wdata) {
 				rc = -ENOMEM;
+				for (i = 0; i < nr_pages; i++)
+					put_page(pagevec[i]);
+				kvfree(pagevec);
 				add_credits_and_wake_if(server, credits, 0);
 				break;
 			}

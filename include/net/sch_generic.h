@@ -326,11 +326,6 @@ struct tcf_result {
 		};
 		const struct tcf_proto *goto_tp;
 
-		/* used in the skb_tc_reinsert function */
-		struct {
-			bool		ingress;
-			struct gnet_stats_queue *qstats;
-		};
 	};
 };
 
@@ -682,6 +677,9 @@ qdisc_offload_graft_helper(struct net_device *dev, struct Qdisc *sch,
 {
 }
 #endif
+void qdisc_offload_query_caps(struct net_device *dev,
+			      enum tc_setup_type type,
+			      void *caps, size_t caps_len);
 struct Qdisc *qdisc_alloc(struct netdev_queue *dev_queue,
 			  const struct Qdisc_ops *ops,
 			  struct netlink_ext_ack *extack);
@@ -938,13 +936,6 @@ static inline void qdisc_purge_queue(struct Qdisc *sch)
 	qdisc_qstats_qlen_backlog(sch, &qlen, &backlog);
 	qdisc_reset(sch);
 	qdisc_tree_reduce_backlog(sch, qlen, backlog);
-}
-
-static inline void qdisc_skb_head_init(struct qdisc_skb_head *qh)
-{
-	qh->head = NULL;
-	qh->tail = NULL;
-	qh->qlen = 0;
 }
 
 static inline void __qdisc_enqueue_tail(struct sk_buff *skb,

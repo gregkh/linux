@@ -1489,7 +1489,7 @@ EXPORT_SYMBOL_GPL(xhci_get_endpoint_index);
 /* The reverse operation to xhci_get_endpoint_index. Calculate the USB endpoint
  * address from the XHCI endpoint index.
  */
-unsigned int xhci_get_endpoint_address(unsigned int ep_index)
+static unsigned int xhci_get_endpoint_address(unsigned int ep_index)
 {
 	unsigned int number = DIV_ROUND_UP(ep_index, 2);
 	unsigned int direction = ep_index % 2 ? USB_DIR_OUT : USB_DIR_IN;
@@ -4102,7 +4102,8 @@ int xhci_alloc_dev(struct usb_hcd *hcd, struct usb_device *udev)
 	slot_id = command->slot_id;
 
 	if (!slot_id || command->status != COMP_SUCCESS) {
-		xhci_err(xhci, "Error while assigning device slot ID\n");
+		xhci_err(xhci, "Error while assigning device slot ID: %s\n",
+			 xhci_trb_comp_code_string(command->status));
 		xhci_err(xhci, "Max number of devices this xHCI host supports is %u.\n",
 				HCS_MAX_SLOTS(
 					readl(&xhci->cap_regs->hcs_params1)));

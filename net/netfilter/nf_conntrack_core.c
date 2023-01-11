@@ -2516,6 +2516,7 @@ static int kill_all(struct nf_conn *i, void *data)
 
 void nf_conntrack_cleanup_start(void)
 {
+	cleanup_nf_conntrack_bpf();
 	conntrack_gc_work.exiting = true;
 }
 
@@ -2810,10 +2811,6 @@ err_expect:
 	return ret;
 }
 
-#if (IS_BUILTIN(CONFIG_NF_CONNTRACK) && IS_ENABLED(CONFIG_DEBUG_INFO_BTF)) || \
-    (IS_MODULE(CONFIG_NF_CONNTRACK) && IS_ENABLED(CONFIG_DEBUG_INFO_BTF_MODULES) || \
-    IS_ENABLED(CONFIG_NF_CT_NETLINK))
-
 /* ctnetlink code shared by both ctnetlink and nf_conntrack_bpf */
 
 int __nf_ct_change_timeout(struct nf_conn *ct, u64 timeout)
@@ -2869,5 +2866,3 @@ int nf_ct_change_status_common(struct nf_conn *ct, unsigned int status)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(nf_ct_change_status_common);
-
-#endif

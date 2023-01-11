@@ -116,22 +116,6 @@ bool bpf_prog_has_trampoline(const struct bpf_prog *prog)
 		(ptype == BPF_PROG_TYPE_LSM && eatype == BPF_LSM_MAC);
 }
 
-void *bpf_jit_alloc_exec_page(void)
-{
-	void *image;
-
-	image = bpf_jit_alloc_exec(PAGE_SIZE);
-	if (!image)
-		return NULL;
-
-	set_vm_flush_reset_perms(image);
-	/* Keep image as writeable. The alternative is to keep flipping ro/rw
-	 * every time new program is attached or detached.
-	 */
-	set_memory_x((long)image, 1);
-	return image;
-}
-
 void bpf_image_ksym_add(void *data, struct bpf_ksym *ksym)
 {
 	ksym->start = (unsigned long) data;
@@ -404,9 +388,10 @@ static struct bpf_tramp_image *bpf_tramp_image_alloc(u64 key, u32 idx)
 		goto out_free_im;
 
 	err = -ENOMEM;
-	im->image = image = bpf_jit_alloc_exec_page();
+	im->image = image = bpf_jit_alloc_exec(PAGE_SIZE);
 	if (!image)
 		goto out_uncharge;
+	set_vm_flush_reset_perms(image);
 
 	err = percpu_ref_init(&im->pcref, __bpf_tramp_image_release, 0, GFP_KERNEL);
 	if (err)
@@ -482,6 +467,9 @@ again:
 					  tr->func.addr);
 	if (err < 0)
 		goto out;
+
+	set_memory_ro((long)im->image, 1);
+	set_memory_x((long)im->image, 1);
 
 	WARN_ON(tr->cur_image && tr->selector == 0);
 	WARN_ON(!tr->cur_image && tr->selector);
@@ -974,6 +962,29 @@ void notrace __bpf_prog_exit_sleepable(struct bpf_prog *prog, u64 start,
 	this_cpu_dec(*(prog->active));
 	migrate_enable();
 	rcu_read_unlock_trace();
+}
+
+u64 notrace __bpf_prog_enter_struct_ops(struct bpf_prog *prog,
+					struct bpf_tramp_run_ctx *run_ctx)
+	__acquires(RCU)
+{
+	rcu_read_lock();
+	migrate_disable();
+
+	run_ctx->saved_run_ctx = bpf_set_run_ctx(&run_ctx->run_ctx);
+
+	return bpf_prog_start_time();
+}
+
+void notrace __bpf_prog_exit_struct_ops(struct bpf_prog *prog, u64 start,
+					struct bpf_tramp_run_ctx *run_ctx)
+	__releases(RCU)
+{
+	bpf_reset_run_ctx(run_ctx->saved_run_ctx);
+
+	update_prog_stats(prog, start);
+	migrate_enable();
+	rcu_read_unlock();
 }
 
 void notrace __bpf_tramp_enter(struct bpf_tramp_image *tr)

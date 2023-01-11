@@ -1839,6 +1839,7 @@ static struct pci_driver i801_driver = {
 	.shutdown	= i801_shutdown,
 	.driver		= {
 		.pm	= &i801_pm_ops,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 

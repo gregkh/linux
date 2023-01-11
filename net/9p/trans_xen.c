@@ -255,6 +255,7 @@ static irqreturn_t xen_9pfs_front_event_handler(int irq, void *r)
 static struct p9_trans_module p9_xen_trans = {
 	.name = "xen",
 	.maxsize = 1 << (XEN_9PFS_RING_ORDER + XEN_PAGE_SHIFT - 2),
+	.pooled_rbuffers = false,
 	.def = 1,
 	.create = p9_xen_create,
 	.close = p9_xen_close,
@@ -519,7 +520,7 @@ static struct xenbus_driver xen_9pfs_front_driver = {
 	.otherend_changed = xen_9pfs_front_changed,
 };
 
-static int p9_trans_xen_init(void)
+static int __init p9_trans_xen_init(void)
 {
 	int rc;
 
@@ -538,7 +539,7 @@ static int p9_trans_xen_init(void)
 module_init(p9_trans_xen_init);
 MODULE_ALIAS_9P("xen");
 
-static void p9_trans_xen_exit(void)
+static void __exit p9_trans_xen_exit(void)
 {
 	v9fs_unregister_trans(&p9_xen_trans);
 	return xenbus_unregister_driver(&xen_9pfs_front_driver);

@@ -1612,7 +1612,7 @@ static int jbd2_write_superblock(journal_t *journal, blk_opf_t write_flags)
 {
 	struct buffer_head *bh = journal->j_sb_buffer;
 	journal_superblock_t *sb = journal->j_superblock;
-	int ret;
+	int ret = 0;
 
 	/* Buffer got discarded which means block device got invalidated */
 	if (!buffer_mapped(bh)) {
@@ -1642,7 +1642,7 @@ static int jbd2_write_superblock(journal_t *journal, blk_opf_t write_flags)
 		sb->s_checksum = jbd2_superblock_csum(journal, sb);
 	get_bh(bh);
 	bh->b_end_io = end_buffer_write_sync;
-	ret = submit_bh(REQ_OP_WRITE | write_flags, bh);
+	submit_bh(REQ_OP_WRITE | write_flags, bh);
 	wait_on_buffer(bh);
 	if (buffer_write_io_error(bh)) {
 		clear_buffer_write_io_error(bh);
@@ -1650,9 +1650,8 @@ static int jbd2_write_superblock(journal_t *journal, blk_opf_t write_flags)
 		ret = -EIO;
 	}
 	if (ret) {
-		printk(KERN_ERR "JBD2: Error %d detected when updating "
-		       "journal superblock for %s.\n", ret,
-		       journal->j_devname);
+		printk(KERN_ERR "JBD2: I/O error when updating journal superblock for %s.\n",
+				journal->j_devname);
 		if (!is_journal_aborted(journal))
 			jbd2_journal_abort(journal, ret);
 	}
@@ -1899,19 +1898,16 @@ static int journal_get_superblock(journal_t *journal)
 {
 	struct buffer_head *bh;
 	journal_superblock_t *sb;
-	int err = -EIO;
+	int err;
 
 	bh = journal->j_sb_buffer;
 
 	J_ASSERT(bh != NULL);
-	if (!buffer_uptodate(bh)) {
-		ll_rw_block(REQ_OP_READ, 1, &bh);
-		wait_on_buffer(bh);
-		if (!buffer_uptodate(bh)) {
-			printk(KERN_ERR
-				"JBD2: IO error reading journal superblock\n");
-			goto out;
-		}
+	err = bh_read(bh, 0);
+	if (err < 0) {
+		printk(KERN_ERR
+			"JBD2: IO error reading journal superblock\n");
+		goto out;
 	}
 
 	if (buffer_verified(bh))

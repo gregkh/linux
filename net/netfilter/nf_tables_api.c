@@ -742,7 +742,7 @@ __printf(2, 3) int nft_request_module(struct net *net, const char *fmt,
 		return -ENOMEM;
 
 	req->done = false;
-	strlcpy(req->module, module_name, MODULE_NAME_LEN);
+	strscpy(req->module, module_name, MODULE_NAME_LEN);
 	list_add_tail(&req->list, &nft_net->module_list);
 
 	return -EAGAIN;
@@ -1534,10 +1534,10 @@ static int nft_dump_stats(struct sk_buff *skb, struct nft_stats __percpu *stats)
 	for_each_possible_cpu(cpu) {
 		cpu_stats = per_cpu_ptr(stats, cpu);
 		do {
-			seq = u64_stats_fetch_begin(&cpu_stats->syncp);
+			seq = u64_stats_fetch_begin_irq(&cpu_stats->syncp);
 			pkts = cpu_stats->pkts;
 			bytes = cpu_stats->bytes;
-		} while (u64_stats_fetch_retry(&cpu_stats->syncp, seq));
+		} while (u64_stats_fetch_retry_irq(&cpu_stats->syncp, seq));
 		total.pkts += pkts;
 		total.bytes += bytes;
 	}

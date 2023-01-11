@@ -37,13 +37,14 @@
 #include "intel_display_types.h"
 #include "intel_drrs.h"
 #include "intel_panel.h"
+#include "intel_quirks.h"
 
 bool intel_panel_use_ssc(struct drm_i915_private *i915)
 {
 	if (i915->params.panel_use_ssc >= 0)
 		return i915->params.panel_use_ssc != 0;
-	return i915->vbt.lvds_use_ssc
-		&& !(i915->quirks & QUIRK_LVDS_SSC_DISABLE);
+	return i915->display.vbt.lvds_use_ssc &&
+		!intel_has_quirk(i915, QUIRK_LVDS_SSC_DISABLE);
 }
 
 const struct drm_display_mode *
@@ -108,6 +109,21 @@ intel_panel_downclock_mode(struct intel_connector *connector,
 			max_vrefresh = vrefresh;
 			best_mode = fixed_mode;
 		}
+	}
+
+	return best_mode;
+}
+
+const struct drm_display_mode *
+intel_panel_highest_mode(struct intel_connector *connector,
+			 const struct drm_display_mode *adjusted_mode)
+{
+	const struct drm_display_mode *fixed_mode, *best_mode = adjusted_mode;
+
+	/* pick the fixed_mode that has the highest clock */
+	list_for_each_entry(fixed_mode, &connector->panel.fixed_modes, head) {
+		if (fixed_mode->clock > best_mode->clock)
+			best_mode = fixed_mode;
 	}
 
 	return best_mode;

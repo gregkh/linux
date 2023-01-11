@@ -157,6 +157,31 @@ find_substream_format(struct snd_usb_substream *subs,
 			   true, subs);
 }
 
+bool snd_usb_pcm_has_fixed_rate(struct snd_usb_substream *subs)
+{
+	const struct audioformat *fp;
+	struct snd_usb_audio *chip = subs->stream->chip;
+	int rate = -1;
+
+	if (!(chip->quirk_flags & QUIRK_FLAG_FIXED_RATE))
+		return false;
+	list_for_each_entry(fp, &subs->fmt_list, list) {
+		if (fp->rates & SNDRV_PCM_RATE_CONTINUOUS)
+			return false;
+		if (fp->nr_rates < 1)
+			continue;
+		if (fp->nr_rates > 1)
+			return false;
+		if (rate < 0) {
+			rate = fp->rate_table[0];
+			continue;
+		}
+		if (rate != fp->rate_table[0])
+			return false;
+	}
+	return true;
+}
+
 static int init_pitch_v1(struct snd_usb_audio *chip, int ep)
 {
 	struct usb_device *dev = chip->dev;
@@ -433,35 +458,6 @@ static void close_endpoints(struct snd_usb_audio *chip,
 	}
 }
 
-static int configure_endpoints(struct snd_usb_audio *chip,
-			       struct snd_usb_substream *subs)
-{
-	int err;
-
-	if (subs->data_endpoint->need_setup) {
-		/* stop any running stream beforehand */
-		if (stop_endpoints(subs, false))
-			sync_pending_stops(subs);
-		if (subs->sync_endpoint) {
-			err = snd_usb_endpoint_configure(chip, subs->sync_endpoint);
-			if (err < 0)
-				return err;
-		}
-		err = snd_usb_endpoint_configure(chip, subs->data_endpoint);
-		if (err < 0)
-			return err;
-		snd_usb_set_format_quirk(subs, subs->cur_audiofmt);
-	} else {
-		if (subs->sync_endpoint) {
-			err = snd_usb_endpoint_configure(chip, subs->sync_endpoint);
-			if (err < 0)
-				return err;
-		}
-	}
-
-	return 0;
-}
-
 /*
  * hw_params callback
  *
@@ -479,12 +475,14 @@ static int snd_usb_hw_params(struct snd_pcm_substream *substream,
 	struct snd_usb_audio *chip = subs->stream->chip;
 	const struct audioformat *fmt;
 	const struct audioformat *sync_fmt;
+	bool fixed_rate, sync_fixed_rate;
 	int ret;
 
 	ret = snd_media_start_pipeline(subs);
 	if (ret)
 		return ret;
 
+	fixed_rate = snd_usb_pcm_has_fixed_rate(subs);
 	fmt = find_substream_format(subs, hw_params);
 	if (!fmt) {
 		usb_audio_dbg(chip,
@@ -498,7 +496,8 @@ static int snd_usb_hw_params(struct snd_pcm_substream *substream,
 	if (fmt->implicit_fb) {
 		sync_fmt = snd_usb_find_implicit_fb_sync_format(chip, fmt,
 								hw_params,
-								!substream->stream);
+								!substream->stream,
+								&sync_fixed_rate);
 		if (!sync_fmt) {
 			usb_audio_dbg(chip,
 				      "cannot find sync format: ep=0x%x, iface=%d:%d, format=%s, rate=%d, channels=%d\n",
@@ -511,6 +510,7 @@ static int snd_usb_hw_params(struct snd_pcm_substream *substream,
 		}
 	} else {
 		sync_fmt = fmt;
+		sync_fixed_rate = fixed_rate;
 	}
 
 	ret = snd_usb_lock_shutdown(chip);
@@ -528,7 +528,7 @@ static int snd_usb_hw_params(struct snd_pcm_substream *substream,
 		close_endpoints(chip, subs);
 	}
 
-	subs->data_endpoint = snd_usb_endpoint_open(chip, fmt, hw_params, false);
+	subs->data_endpoint = snd_usb_endpoint_open(chip, fmt, hw_params, false, fixed_rate);
 	if (!subs->data_endpoint) {
 		ret = -EINVAL;
 		goto unlock;
@@ -537,7 +537,8 @@ static int snd_usb_hw_params(struct snd_pcm_substream *substream,
 	if (fmt->sync_ep) {
 		subs->sync_endpoint = snd_usb_endpoint_open(chip, sync_fmt,
 							    hw_params,
-							    fmt == sync_fmt);
+							    fmt == sync_fmt,
+							    sync_fixed_rate);
 		if (!subs->sync_endpoint) {
 			ret = -EINVAL;
 			goto unlock;
@@ -551,7 +552,16 @@ static int snd_usb_hw_params(struct snd_pcm_substream *substream,
 	subs->cur_audiofmt = fmt;
 	mutex_unlock(&chip->mutex);
 
-	ret = configure_endpoints(chip, subs);
+	if (!subs->data_endpoint->need_setup)
+		goto unlock;
+
+	if (subs->sync_endpoint) {
+		ret = snd_usb_endpoint_set_params(chip, subs->sync_endpoint);
+		if (ret < 0)
+			goto unlock;
+	}
+
+	ret = snd_usb_endpoint_set_params(chip, subs->data_endpoint);
 
  unlock:
 	if (ret < 0)
@@ -624,6 +634,7 @@ static int snd_usb_pcm_prepare(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_usb_substream *subs = runtime->private_data;
 	struct snd_usb_audio *chip = subs->stream->chip;
+	int retry = 0;
 	int ret;
 
 	ret = snd_usb_lock_shutdown(chip);
@@ -634,9 +645,19 @@ static int snd_usb_pcm_prepare(struct snd_pcm_substream *substream)
 		goto unlock;
 	}
 
-	ret = configure_endpoints(chip, subs);
+ again:
+	if (subs->sync_endpoint) {
+		ret = snd_usb_endpoint_prepare(chip, subs->sync_endpoint);
+		if (ret < 0)
+			goto unlock;
+	}
+
+	ret = snd_usb_endpoint_prepare(chip, subs->data_endpoint);
 	if (ret < 0)
 		goto unlock;
+	else if (ret > 0)
+		snd_usb_set_format_quirk(subs, subs->cur_audiofmt);
+	ret = 0;
 
 	/* reset the pointer */
 	subs->buffer_bytes = frames_to_bytes(runtime, runtime->buffer_size);
@@ -649,9 +670,16 @@ static int snd_usb_pcm_prepare(struct snd_pcm_substream *substream)
 
 	subs->lowlatency_playback = lowlatency_playback_available(runtime, subs);
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
-	    !subs->lowlatency_playback)
+	    !subs->lowlatency_playback) {
 		ret = start_endpoints(subs);
-
+		/* if XRUN happens at starting streams (possibly with implicit
+		 * fb case), restart again, but only try once.
+		 */
+		if (ret == -EPIPE && !retry++) {
+			sync_pending_stops(subs);
+			goto again;
+		}
+	}
  unlock:
 	snd_usb_unlock_shutdown(chip);
 	return ret;
@@ -1406,7 +1434,7 @@ static int prepare_playback_urb(struct snd_usb_substream *subs,
 	transfer_done = subs->transfer_done;
 
 	if (subs->lowlatency_playback &&
-	    runtime->status->state != SNDRV_PCM_STATE_DRAINING) {
+	    runtime->state != SNDRV_PCM_STATE_DRAINING) {
 		unsigned int hwptr = subs->hwptr_done / stride;
 
 		/* calculate the byte offset-in-buffer of the appl_ptr */
@@ -1594,7 +1622,7 @@ static int snd_usb_substream_playback_trigger(struct snd_pcm_substream *substrea
 		return 0;
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_STOP:
-		stop_endpoints(subs, substream->runtime->status->state == SNDRV_PCM_STATE_DRAINING);
+		stop_endpoints(subs, substream->runtime->state == SNDRV_PCM_STATE_DRAINING);
 		snd_usb_endpoint_set_callback(subs->data_endpoint,
 					      NULL, NULL, NULL);
 		subs->running = 0;

@@ -464,7 +464,7 @@ net_dm_hw_trap_summary_probe(void *ignore, const struct devlink *devlink,
 		goto out;
 
 	hw_entry = &hw_entries->entries[hw_entries->num_entries];
-	strlcpy(hw_entry->trap_name, metadata->trap_name,
+	strscpy(hw_entry->trap_name, metadata->trap_name,
 		NET_DM_MAX_HW_TRAP_NAME_LEN - 1);
 	hw_entry->count = 1;
 	hw_entries->num_entries++;
@@ -1432,9 +1432,9 @@ static void net_dm_stats_read(struct net_dm_stats *stats)
 		u64 dropped;
 
 		do {
-			start = u64_stats_fetch_begin(&cpu_stats->syncp);
+			start = u64_stats_fetch_begin_irq(&cpu_stats->syncp);
 			dropped = u64_stats_read(&cpu_stats->dropped);
-		} while (u64_stats_fetch_retry(&cpu_stats->syncp, start));
+		} while (u64_stats_fetch_retry_irq(&cpu_stats->syncp, start));
 
 		u64_stats_add(&stats->dropped, dropped);
 	}
@@ -1476,9 +1476,9 @@ static void net_dm_hw_stats_read(struct net_dm_stats *stats)
 		u64 dropped;
 
 		do {
-			start = u64_stats_fetch_begin(&cpu_stats->syncp);
+			start = u64_stats_fetch_begin_irq(&cpu_stats->syncp);
 			dropped = u64_stats_read(&cpu_stats->dropped);
-		} while (u64_stats_fetch_retry(&cpu_stats->syncp, start));
+		} while (u64_stats_fetch_retry_irq(&cpu_stats->syncp, start));
 
 		u64_stats_add(&stats->dropped, dropped);
 	}
@@ -1645,6 +1645,7 @@ static struct genl_family net_drop_monitor_family __ro_after_init = {
 	.module		= THIS_MODULE,
 	.small_ops	= dropmon_ops,
 	.n_small_ops	= ARRAY_SIZE(dropmon_ops),
+	.resv_start_op	= NET_DM_CMD_STATS_GET + 1,
 	.mcgrps		= dropmon_mcgrps,
 	.n_mcgrps	= ARRAY_SIZE(dropmon_mcgrps),
 };

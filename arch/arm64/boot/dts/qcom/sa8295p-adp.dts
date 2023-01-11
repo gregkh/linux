@@ -195,9 +195,10 @@
 		#size-cells = <0>;
 
 		pm8450a_gpios: gpio@c000 {
-			compatible = "qcom,pm8150-gpio";
+			compatible = "qcom,pm8150-gpio", "qcom,spmi-gpio";
 			reg = <0xc000>;
 			gpio-controller;
+			gpio-ranges = <&pm8450a_gpios 0 0 10>;
 			#gpio-cells = <2>;
 			interrupt-controller;
 			#interrupt-cells = <2>;
@@ -211,9 +212,10 @@
 		#size-cells = <0>;
 
 		pm8450c_gpios: gpio@c000 {
-			compatible = "qcom,pm8150-gpio";
+			compatible = "qcom,pm8150-gpio", "qcom,spmi-gpio";
 			reg = <0xc000>;
 			gpio-controller;
+			gpio-ranges = <&pm8450c_gpios 0 0 10>;
 			#gpio-cells = <2>;
 			interrupt-controller;
 			#interrupt-cells = <2>;
@@ -227,9 +229,10 @@
 		#size-cells = <0>;
 
 		pm8450e_gpios: gpio@c000 {
-			compatible = "qcom,pm8150-gpio";
+			compatible = "qcom,pm8150-gpio", "qcom,spmi-gpio";
 			reg = <0xc000>;
 			gpio-controller;
+			gpio-ranges = <&pm8450e_gpios 0 0 10>;
 			#gpio-cells = <2>;
 			interrupt-controller;
 			#interrupt-cells = <2>;
@@ -243,9 +246,10 @@
 		#size-cells = <0>;
 
 		pm8450g_gpios: gpio@c000 {
-			compatible = "qcom,pm8150-gpio";
+			compatible = "qcom,pm8150-gpio", "qcom,spmi-gpio";
 			reg = <0xc000>;
 			gpio-controller;
+			gpio-ranges = <&pm8450g_gpios 0 0 10>;
 			#gpio-cells = <2>;
 			interrupt-controller;
 			#interrupt-cells = <2>;

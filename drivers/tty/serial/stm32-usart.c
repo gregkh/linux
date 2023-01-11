@@ -37,7 +37,7 @@
 
 
 /* Register offsets */
-static struct stm32_usart_info stm32f4_info = {
+static struct stm32_usart_info __maybe_unused stm32f4_info = {
 	.ofs = {
 		.isr	= 0x00,
 		.rdr	= 0x04,
@@ -58,7 +58,7 @@ static struct stm32_usart_info stm32f4_info = {
 	}
 };
 
-static struct stm32_usart_info stm32f7_info = {
+static struct stm32_usart_info __maybe_unused stm32f7_info = {
 	.ofs = {
 		.cr1	= 0x00,
 		.cr2	= 0x04,
@@ -80,7 +80,7 @@ static struct stm32_usart_info stm32f7_info = {
 	}
 };
 
-static struct stm32_usart_info stm32h7_info = {
+static struct stm32_usart_info __maybe_unused stm32h7_info = {
 	.ofs = {
 		.cr1	= 0x00,
 		.cr2	= 0x04,
@@ -1095,7 +1095,7 @@ static void stm32_usart_shutdown(struct uart_port *port)
 
 static void stm32_usart_set_termios(struct uart_port *port,
 				    struct ktermios *termios,
-				    struct ktermios *old)
+				    const struct ktermios *old)
 {
 	struct stm32_port *stm32_port = to_stm32_port(port);
 	const struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;

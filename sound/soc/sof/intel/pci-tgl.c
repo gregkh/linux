@@ -259,8 +259,6 @@ static const struct pci_device_id sof_pci_ids[] = {
 		.driver_data = (unsigned long)&rpls_desc},
 	{ PCI_DEVICE(0x8086, 0x51c8), /* ADL-P */
 		.driver_data = (unsigned long)&adl_desc},
-	{ PCI_DEVICE(0x8086, 0x51cd), /* ADL-P */
-		.driver_data = (unsigned long)&adl_desc},
 	{ PCI_DEVICE(0x8086, 0x51c9), /* ADL-PS */
 		.driver_data = (unsigned long)&adl_desc},
 	{ PCI_DEVICE(0x8086, 0x51ca), /* RPL-P */
@@ -269,6 +267,12 @@ static const struct pci_device_id sof_pci_ids[] = {
 		.driver_data = (unsigned long)&rpl_desc},
 	{ PCI_DEVICE(0x8086, 0x51cc), /* ADL-M */
 		.driver_data = (unsigned long)&adl_desc},
+	{ PCI_DEVICE(0x8086, 0x51cd), /* ADL-P */
+		.driver_data = (unsigned long)&adl_desc},
+	{ PCI_DEVICE(0x8086, 0x51ce), /* RPL-M */
+		.driver_data = (unsigned long)&rpl_desc},
+	{ PCI_DEVICE(0x8086, 0x51cf), /* RPL-PX */
+		.driver_data = (unsigned long)&rpl_desc},
 	{ PCI_DEVICE(0x8086, 0x54c8), /* ADL-N */
 		.driver_data = (unsigned long)&adl_n_desc},
 	{ 0, }

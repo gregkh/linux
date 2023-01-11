@@ -229,6 +229,12 @@ __releases(&EXT4_SB(inode->i_sb)->s_fc_lock)
 	finish_wait(wq, &wait.wq_entry);
 }
 
+static bool ext4_fc_disabled(struct super_block *sb)
+{
+	return (!test_opt2(sb, JOURNAL_FAST_COMMIT) ||
+		(EXT4_SB(sb)->s_mount_state & EXT4_FC_REPLAY));
+}
+
 /*
  * Inform Ext4's fast about start of an inode update
  *
@@ -240,8 +246,7 @@ void ext4_fc_start_update(struct inode *inode)
 {
 	struct ext4_inode_info *ei = EXT4_I(inode);
 
-	if (!test_opt2(inode->i_sb, JOURNAL_FAST_COMMIT) ||
-	    (EXT4_SB(inode->i_sb)->s_mount_state & EXT4_FC_REPLAY))
+	if (ext4_fc_disabled(inode->i_sb))
 		return;
 
 restart:
@@ -265,8 +270,7 @@ void ext4_fc_stop_update(struct inode *inode)
 {
 	struct ext4_inode_info *ei = EXT4_I(inode);
 
-	if (!test_opt2(inode->i_sb, JOURNAL_FAST_COMMIT) ||
-	    (EXT4_SB(inode->i_sb)->s_mount_state & EXT4_FC_REPLAY))
+	if (ext4_fc_disabled(inode->i_sb))
 		return;
 
 	if (atomic_dec_and_test(&ei->i_fc_updates))
@@ -283,8 +287,7 @@ void ext4_fc_del(struct inode *inode)
 	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 	struct ext4_fc_dentry_update *fc_dentry;
 
-	if (!test_opt2(inode->i_sb, JOURNAL_FAST_COMMIT) ||
-	    (EXT4_SB(inode->i_sb)->s_mount_state & EXT4_FC_REPLAY))
+	if (ext4_fc_disabled(inode->i_sb))
 		return;
 
 restart:
@@ -337,8 +340,7 @@ void ext4_fc_mark_ineligible(struct super_block *sb, int reason, handle_t *handl
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	tid_t tid;
 
-	if (!test_opt2(sb, JOURNAL_FAST_COMMIT) ||
-	    (EXT4_SB(sb)->s_mount_state & EXT4_FC_REPLAY))
+	if (ext4_fc_disabled(sb))
 		return;
 
 	ext4_set_mount_flag(sb, EXT4_MF_FC_INELIGIBLE);
@@ -502,10 +504,8 @@ void __ext4_fc_track_unlink(handle_t *handle,
 void ext4_fc_track_unlink(handle_t *handle, struct dentry *dentry)
 {
 	struct inode *inode = d_inode(dentry);
-	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 
-	if (!test_opt2(inode->i_sb, JOURNAL_FAST_COMMIT) ||
-	    (sbi->s_mount_state & EXT4_FC_REPLAY))
+	if (ext4_fc_disabled(inode->i_sb))
 		return;
 
 	if (ext4_test_mount_flag(inode->i_sb, EXT4_MF_FC_INELIGIBLE))
@@ -531,10 +531,8 @@ void __ext4_fc_track_link(handle_t *handle,
 void ext4_fc_track_link(handle_t *handle, struct dentry *dentry)
 {
 	struct inode *inode = d_inode(dentry);
-	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 
-	if (!test_opt2(inode->i_sb, JOURNAL_FAST_COMMIT) ||
-	    (sbi->s_mount_state & EXT4_FC_REPLAY))
+	if (ext4_fc_disabled(inode->i_sb))
 		return;
 
 	if (ext4_test_mount_flag(inode->i_sb, EXT4_MF_FC_INELIGIBLE))
@@ -560,10 +558,8 @@ void __ext4_fc_track_create(handle_t *handle, struct inode *inode,
 void ext4_fc_track_create(handle_t *handle, struct dentry *dentry)
 {
 	struct inode *inode = d_inode(dentry);
-	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 
-	if (!test_opt2(inode->i_sb, JOURNAL_FAST_COMMIT) ||
-	    (sbi->s_mount_state & EXT4_FC_REPLAY))
+	if (ext4_fc_disabled(inode->i_sb))
 		return;
 
 	if (ext4_test_mount_flag(inode->i_sb, EXT4_MF_FC_INELIGIBLE))
@@ -585,10 +581,12 @@ static int __track_inode(struct inode *inode, void *arg, bool update)
 
 void ext4_fc_track_inode(handle_t *handle, struct inode *inode)
 {
-	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 	int ret;
 
 	if (S_ISDIR(inode->i_mode))
+		return;
+
+	if (ext4_fc_disabled(inode->i_sb))
 		return;
 
 	if (ext4_should_journal_data(inode)) {
@@ -596,10 +594,6 @@ void ext4_fc_track_inode(handle_t *handle, struct inode *inode)
 					EXT4_FC_REASON_INODE_JOURNAL_DATA, handle);
 		return;
 	}
-
-	if (!test_opt2(inode->i_sb, JOURNAL_FAST_COMMIT) ||
-	    (sbi->s_mount_state & EXT4_FC_REPLAY))
-		return;
 
 	if (ext4_test_mount_flag(inode->i_sb, EXT4_MF_FC_INELIGIBLE))
 		return;
@@ -643,15 +637,13 @@ static int __track_range(struct inode *inode, void *arg, bool update)
 void ext4_fc_track_range(handle_t *handle, struct inode *inode, ext4_lblk_t start,
 			 ext4_lblk_t end)
 {
-	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 	struct __track_range_args args;
 	int ret;
 
 	if (S_ISDIR(inode->i_mode))
 		return;
 
-	if (!test_opt2(inode->i_sb, JOURNAL_FAST_COMMIT) ||
-	    (sbi->s_mount_state & EXT4_FC_REPLAY))
+	if (ext4_fc_disabled(inode->i_sb))
 		return;
 
 	if (ext4_test_mount_flag(inode->i_sb, EXT4_MF_FC_INELIGIBLE))
@@ -1546,6 +1538,7 @@ static int ext4_fc_replay_inode(struct super_block *sb, struct ext4_fc_tl *tl,
 	struct ext4_iloc iloc;
 	int inode_len, ino, ret, tag = tl->fc_tag;
 	struct ext4_extent_header *eh;
+	size_t off_gen = offsetof(struct ext4_inode, i_generation);
 
 	memcpy(&fc_inode, val, sizeof(fc_inode));
 
@@ -1573,8 +1566,8 @@ static int ext4_fc_replay_inode(struct super_block *sb, struct ext4_fc_tl *tl,
 	raw_inode = ext4_raw_inode(&iloc);
 
 	memcpy(raw_inode, raw_fc_inode, offsetof(struct ext4_inode, i_block));
-	memcpy(&raw_inode->i_generation, &raw_fc_inode->i_generation,
-		inode_len - offsetof(struct ext4_inode, i_generation));
+	memcpy((u8 *)raw_inode + off_gen, (u8 *)raw_fc_inode + off_gen,
+	       inode_len - off_gen);
 	if (le32_to_cpu(raw_inode->i_flags) & EXT4_EXTENTS_FL) {
 		eh = (struct ext4_extent_header *)(&raw_inode->i_block[0]);
 		if (eh->eh_magic != EXT4_EXT_MAGIC) {
@@ -1801,8 +1794,7 @@ static int ext4_fc_replay_add_range(struct super_block *sb,
 			ret = ext4_ext_insert_extent(
 				NULL, inode, &path, &newex, 0);
 			up_write((&EXT4_I(inode)->i_data_sem));
-			ext4_ext_drop_refs(path);
-			kfree(path);
+			ext4_free_ext_path(path);
 			if (ret)
 				goto out;
 			goto next;
@@ -1957,8 +1949,7 @@ static void ext4_fc_set_bitmaps_and_counters(struct super_block *sb)
 					for (j = 0; j < path->p_depth; j++)
 						ext4_mb_mark_bb(inode->i_sb,
 							path[j].p_block, 1, 1);
-					ext4_ext_drop_refs(path);
-					kfree(path);
+					ext4_free_ext_path(path);
 				}
 				cur += ret;
 				ext4_mb_mark_bb(inode->i_sb, map.m_pblk,

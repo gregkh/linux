@@ -602,11 +602,6 @@ static void unicode_ssetup_strings(char **pbcc_area, struct cifs_ses *ses,
 	/* BB FIXME add check that strings total less
 	than 335 or will need to send them as arrays */
 
-	/* unicode strings, must be word aligned before the call */
-/*	if ((long) bcc_ptr % 2)	{
-		*bcc_ptr = 0;
-		bcc_ptr++;
-	} */
 	/* copy user */
 	if (ses->user_name == NULL) {
 		/* null user mount */
@@ -1327,7 +1322,7 @@ sess_auth_ntlmv2(struct sess_data *sess_data)
 	}
 
 	if (ses->capabilities & CAP_UNICODE) {
-		if (sess_data->iov[0].iov_len % 2) {
+		if (!IS_ALIGNED(sess_data->iov[0].iov_len, 2)) {
 			*bcc_ptr = 0;
 			bcc_ptr++;
 		}
@@ -1367,7 +1362,7 @@ sess_auth_ntlmv2(struct sess_data *sess_data)
 		/* no string area to decode, do nothing */
 	} else if (smb_buf->Flags2 & SMBFLG2_UNICODE) {
 		/* unicode string area must be word-aligned */
-		if (((unsigned long) bcc_ptr - (unsigned long) smb_buf) % 2) {
+		if (!IS_ALIGNED((unsigned long)bcc_ptr - (unsigned long)smb_buf, 2)) {
 			++bcc_ptr;
 			--bytes_remaining;
 		}
@@ -1451,8 +1446,7 @@ sess_auth_kerberos(struct sess_data *sess_data)
 
 	if (ses->capabilities & CAP_UNICODE) {
 		/* unicode strings must be word aligned */
-		if ((sess_data->iov[0].iov_len
-			+ sess_data->iov[1].iov_len) % 2) {
+		if (!IS_ALIGNED(sess_data->iov[0].iov_len + sess_data->iov[1].iov_len, 2)) {
 			*bcc_ptr = 0;
 			bcc_ptr++;
 		}
@@ -1503,7 +1497,7 @@ sess_auth_kerberos(struct sess_data *sess_data)
 		/* no string area to decode, do nothing */
 	} else if (smb_buf->Flags2 & SMBFLG2_UNICODE) {
 		/* unicode string area must be word-aligned */
-		if (((unsigned long) bcc_ptr - (unsigned long) smb_buf) % 2) {
+		if (!IS_ALIGNED((unsigned long)bcc_ptr - (unsigned long)smb_buf, 2)) {
 			++bcc_ptr;
 			--bytes_remaining;
 		}
@@ -1555,7 +1549,7 @@ _sess_auth_rawntlmssp_assemble_req(struct sess_data *sess_data)
 
 	bcc_ptr = sess_data->iov[2].iov_base;
 	/* unicode strings must be word aligned */
-	if ((sess_data->iov[0].iov_len + sess_data->iov[1].iov_len) % 2) {
+	if (!IS_ALIGNED(sess_data->iov[0].iov_len + sess_data->iov[1].iov_len, 2)) {
 		*bcc_ptr = 0;
 		bcc_ptr++;
 	}
@@ -1756,7 +1750,7 @@ sess_auth_rawntlmssp_authenticate(struct sess_data *sess_data)
 		/* no string area to decode, do nothing */
 	} else if (smb_buf->Flags2 & SMBFLG2_UNICODE) {
 		/* unicode string area must be word-aligned */
-		if (((unsigned long) bcc_ptr - (unsigned long) smb_buf) % 2) {
+		if (!IS_ALIGNED((unsigned long)bcc_ptr - (unsigned long)smb_buf, 2)) {
 			++bcc_ptr;
 			--bytes_remaining;
 		}

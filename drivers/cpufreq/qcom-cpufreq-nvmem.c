@@ -64,7 +64,7 @@ static struct platform_device *cpufreq_dt_pdev, *cpufreq_pdev;
 
 static void get_krait_bin_format_a(struct device *cpu_dev,
 					  int *speed, int *pvs, int *pvs_ver,
-					  struct nvmem_cell *pvs_nvmem, u8 *buf)
+					  u8 *buf)
 {
 	u32 pte_efuse;
 
@@ -95,7 +95,7 @@ static void get_krait_bin_format_a(struct device *cpu_dev,
 
 static void get_krait_bin_format_b(struct device *cpu_dev,
 					  int *speed, int *pvs, int *pvs_ver,
-					  struct nvmem_cell *pvs_nvmem, u8 *buf)
+					  u8 *buf)
 {
 	u32 pte_efuse, redundant_sel;
 
@@ -223,11 +223,11 @@ static int qcom_cpufreq_krait_name_version(struct device *cpu_dev,
 	switch (len) {
 	case 4:
 		get_krait_bin_format_a(cpu_dev, &speed, &pvs, &pvs_ver,
-				       speedbin_nvmem, speedbin);
+				       speedbin);
 		break;
 	case 8:
 		get_krait_bin_format_b(cpu_dev, &speed, &pvs, &pvs_ver,
-				       speedbin_nvmem, speedbin);
+				       speedbin);
 		break;
 	default:
 		dev_err(cpu_dev, "Unable to read nvmem data. Defaulting to 0!\n");
@@ -299,11 +299,8 @@ static int qcom_cpufreq_probe(struct platform_device *pdev)
 	if (drv->data->get_version) {
 		speedbin_nvmem = of_nvmem_cell_get(np, NULL);
 		if (IS_ERR(speedbin_nvmem)) {
-			if (PTR_ERR(speedbin_nvmem) != -EPROBE_DEFER)
-				dev_err(cpu_dev,
-					"Could not get nvmem cell: %ld\n",
-					PTR_ERR(speedbin_nvmem));
-			ret = PTR_ERR(speedbin_nvmem);
+			ret = dev_err_probe(cpu_dev, PTR_ERR(speedbin_nvmem),
+					    "Could not get nvmem cell\n");
 			goto free_drv;
 		}
 

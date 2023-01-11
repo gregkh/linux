@@ -14,6 +14,7 @@
 #include "dp_tx.h"
 #include "debugfs_htt_stats.h"
 #include "peer.h"
+#include "hif.h"
 
 static const char *htt_bp_umac_ring[HTT_SW_UMAC_RING_IDX_MAX] = {
 	"REO2SW1_RING",
@@ -913,6 +914,63 @@ static const struct file_operations fops_fw_dbglog = {
 	.llseek = default_llseek,
 };
 
+static int ath11k_open_sram_dump(struct inode *inode, struct file *file)
+{
+	struct ath11k_base *ab = inode->i_private;
+	u8 *buf;
+	u32 start, end;
+	int ret;
+
+	start = ab->hw_params.sram_dump.start;
+	end = ab->hw_params.sram_dump.end;
+
+	buf = vmalloc(end - start + 1);
+	if (!buf)
+		return -ENOMEM;
+
+	ret = ath11k_hif_read(ab, buf, start, end);
+	if (ret) {
+		ath11k_warn(ab, "failed to dump sram: %d\n", ret);
+		vfree(buf);
+		return ret;
+	}
+
+	file->private_data = buf;
+	return 0;
+}
+
+static ssize_t ath11k_read_sram_dump(struct file *file,
+				     char __user *user_buf,
+				     size_t count, loff_t *ppos)
+{
+	struct ath11k_base *ab = file->f_inode->i_private;
+	const char *buf = file->private_data;
+	int len;
+	u32 start, end;
+
+	start = ab->hw_params.sram_dump.start;
+	end = ab->hw_params.sram_dump.end;
+	len = end - start + 1;
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
+static int ath11k_release_sram_dump(struct inode *inode, struct file *file)
+{
+	vfree(file->private_data);
+	file->private_data = NULL;
+
+	return 0;
+}
+
+static const struct file_operations fops_sram_dump = {
+	.open = ath11k_open_sram_dump,
+	.read = ath11k_read_sram_dump,
+	.release = ath11k_release_sram_dump,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
 int ath11k_debugfs_pdev_create(struct ath11k_base *ab)
 {
 	if (test_bit(ATH11K_FLAG_REGISTERED, &ab->dev_flags))
@@ -927,6 +985,10 @@ int ath11k_debugfs_pdev_create(struct ath11k_base *ab)
 
 	debugfs_create_file("soc_dp_stats", 0600, ab->debugfs_soc, ab,
 			    &fops_soc_dp_stats);
+
+	if (ab->hw_params.sram_dump.start != 0)
+		debugfs_create_file("sram", 0400, ab->debugfs_soc, ab,
+				    &fops_sram_dump);
 
 	return 0;
 }
@@ -1307,6 +1369,193 @@ static const struct file_operations fops_dbr_debug = {
 	.llseek = default_llseek,
 };
 
+static ssize_t ath11k_write_ps_timekeeper_enable(struct file *file,
+						 const char __user *user_buf,
+						 size_t count, loff_t *ppos)
+{
+	struct ath11k *ar = file->private_data;
+	ssize_t ret;
+	u8 ps_timekeeper_enable;
+
+	if (kstrtou8_from_user(user_buf, count, 0, &ps_timekeeper_enable))
+		return -EINVAL;
+
+	mutex_lock(&ar->conf_mutex);
+
+	if (ar->state != ATH11K_STATE_ON) {
+		ret = -ENETDOWN;
+		goto exit;
+	}
+
+	if (!ar->ps_state_enable) {
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	ar->ps_timekeeper_enable = !!ps_timekeeper_enable;
+	ret = count;
+exit:
+	mutex_unlock(&ar->conf_mutex);
+
+	return ret;
+}
+
+static ssize_t ath11k_read_ps_timekeeper_enable(struct file *file,
+						char __user *user_buf,
+						size_t count, loff_t *ppos)
+{
+	struct ath11k *ar = file->private_data;
+	char buf[32];
+	int len;
+
+	mutex_lock(&ar->conf_mutex);
+	len = scnprintf(buf, sizeof(buf), "%d\n", ar->ps_timekeeper_enable);
+	mutex_unlock(&ar->conf_mutex);
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
+static const struct file_operations fops_ps_timekeeper_enable = {
+	.read = ath11k_read_ps_timekeeper_enable,
+	.write = ath11k_write_ps_timekeeper_enable,
+	.open = simple_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
+static void ath11k_reset_peer_ps_duration(void *data,
+					  struct ieee80211_sta *sta)
+{
+	struct ath11k *ar = data;
+	struct ath11k_sta *arsta = (struct ath11k_sta *)sta->drv_priv;
+
+	spin_lock_bh(&ar->data_lock);
+	arsta->ps_total_duration = 0;
+	spin_unlock_bh(&ar->data_lock);
+}
+
+static ssize_t ath11k_write_reset_ps_duration(struct file *file,
+					      const  char __user *user_buf,
+					      size_t count, loff_t *ppos)
+{
+	struct ath11k *ar = file->private_data;
+	int ret;
+	u8 reset_ps_duration;
+
+	if (kstrtou8_from_user(user_buf, count, 0, &reset_ps_duration))
+		return -EINVAL;
+
+	mutex_lock(&ar->conf_mutex);
+
+	if (ar->state != ATH11K_STATE_ON) {
+		ret = -ENETDOWN;
+		goto exit;
+	}
+
+	if (!ar->ps_state_enable) {
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	ieee80211_iterate_stations_atomic(ar->hw,
+					  ath11k_reset_peer_ps_duration,
+					  ar);
+
+	ret = count;
+exit:
+	mutex_unlock(&ar->conf_mutex);
+	return ret;
+}
+
+static const struct file_operations fops_reset_ps_duration = {
+	.write = ath11k_write_reset_ps_duration,
+	.open = simple_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
+static void ath11k_peer_ps_state_disable(void *data,
+					 struct ieee80211_sta *sta)
+{
+	struct ath11k *ar = data;
+	struct ath11k_sta *arsta = (struct ath11k_sta *)sta->drv_priv;
+
+	spin_lock_bh(&ar->data_lock);
+	arsta->peer_ps_state = WMI_PEER_PS_STATE_DISABLED;
+	arsta->ps_start_time = 0;
+	arsta->ps_total_duration = 0;
+	spin_unlock_bh(&ar->data_lock);
+}
+
+static ssize_t ath11k_write_ps_state_enable(struct file *file,
+					    const char __user *user_buf,
+					    size_t count, loff_t *ppos)
+{
+	struct ath11k *ar = file->private_data;
+	struct ath11k_pdev *pdev = ar->pdev;
+	int ret;
+	u32 param;
+	u8 ps_state_enable;
+
+	if (kstrtou8_from_user(user_buf, count, 0, &ps_state_enable))
+		return -EINVAL;
+
+	mutex_lock(&ar->conf_mutex);
+
+	ps_state_enable = !!ps_state_enable;
+
+	if (ar->ps_state_enable == ps_state_enable) {
+		ret = count;
+		goto exit;
+	}
+
+	param = WMI_PDEV_PEER_STA_PS_STATECHG_ENABLE;
+	ret = ath11k_wmi_pdev_set_param(ar, param, ps_state_enable, pdev->pdev_id);
+	if (ret) {
+		ath11k_warn(ar->ab, "failed to enable ps_state_enable: %d\n",
+			    ret);
+		goto exit;
+	}
+	ar->ps_state_enable = ps_state_enable;
+
+	if (!ar->ps_state_enable) {
+		ar->ps_timekeeper_enable = false;
+		ieee80211_iterate_stations_atomic(ar->hw,
+						  ath11k_peer_ps_state_disable,
+						  ar);
+	}
+
+	ret = count;
+
+exit:
+	mutex_unlock(&ar->conf_mutex);
+
+	return ret;
+}
+
+static ssize_t ath11k_read_ps_state_enable(struct file *file,
+					   char __user *user_buf,
+					   size_t count, loff_t *ppos)
+{
+	struct ath11k *ar = file->private_data;
+	char buf[32];
+	int len;
+
+	mutex_lock(&ar->conf_mutex);
+	len = scnprintf(buf, sizeof(buf), "%d\n", ar->ps_state_enable);
+	mutex_unlock(&ar->conf_mutex);
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
+static const struct file_operations fops_ps_state_enable = {
+	.read = ath11k_read_ps_state_enable,
+	.write = ath11k_write_ps_state_enable,
+	.open = simple_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
 int ath11k_debugfs_register(struct ath11k *ar)
 {
 	struct ath11k_base *ab = ar->ab;
@@ -1353,6 +1602,20 @@ int ath11k_debugfs_register(struct ath11k *ar)
 		debugfs_create_file("enable_dbr_debug", 0200, ar->debug.debugfs_pdev,
 				    ar, &fops_dbr_debug);
 
+	debugfs_create_file("ps_state_enable", 0600, ar->debug.debugfs_pdev, ar,
+			    &fops_ps_state_enable);
+
+	if (test_bit(WMI_TLV_SERVICE_PEER_POWER_SAVE_DURATION_SUPPORT,
+		     ar->ab->wmi_ab.svc_map)) {
+		debugfs_create_file("ps_timekeeper_enable", 0600,
+				    ar->debug.debugfs_pdev, ar,
+				    &fops_ps_timekeeper_enable);
+
+		debugfs_create_file("reset_ps_duration", 0200,
+				    ar->debug.debugfs_pdev, ar,
+				    &fops_reset_ps_duration);
+	}
+
 	return 0;
 }
 
@@ -1381,11 +1644,13 @@ static ssize_t ath11k_write_twt_add_dialog(struct file *file,
 {
 	struct ath11k_vif *arvif = file->private_data;
 	struct wmi_twt_add_dialog_params params = { 0 };
+	struct wmi_twt_enable_params twt_params = {0};
+	struct ath11k *ar = arvif->ar;
 	u8 buf[128] = {0};
 	int ret;
 
-	if (arvif->ar->twt_enabled == 0) {
-		ath11k_err(arvif->ar->ab, "twt support is not enabled\n");
+	if (ar->twt_enabled == 0) {
+		ath11k_err(ar->ab, "twt support is not enabled\n");
 		return -EOPNOTSUPP;
 	}
 
@@ -1415,13 +1680,38 @@ static ssize_t ath11k_write_twt_add_dialog(struct file *file,
 	if (ret != 16)
 		return -EINVAL;
 
+	/* In the case of station vif, TWT is entirely handled by
+	 * the firmware based on the input parameters in the TWT enable
+	 * WMI command that is sent to the target during assoc.
+	 * For manually testing the TWT feature, we need to first disable
+	 * TWT and send enable command again with TWT input parameter
+	 * sta_cong_timer_ms set to 0.
+	 */
+	if (arvif->vif->type == NL80211_IFTYPE_STATION) {
+		ath11k_wmi_send_twt_disable_cmd(ar, ar->pdev->pdev_id);
+
+		ath11k_wmi_fill_default_twt_params(&twt_params);
+		twt_params.sta_cong_timer_ms = 0;
+
+		ath11k_wmi_send_twt_enable_cmd(ar, ar->pdev->pdev_id, &twt_params);
+	}
+
 	params.vdev_id = arvif->vdev_id;
 
 	ret = ath11k_wmi_send_twt_add_dialog_cmd(arvif->ar, &params);
 	if (ret)
-		return ret;
+		goto err_twt_add_dialog;
 
 	return count;
+
+err_twt_add_dialog:
+	if (arvif->vif->type == NL80211_IFTYPE_STATION) {
+		ath11k_wmi_send_twt_disable_cmd(ar, ar->pdev->pdev_id);
+		ath11k_wmi_fill_default_twt_params(&twt_params);
+		ath11k_wmi_send_twt_enable_cmd(ar, ar->pdev->pdev_id, &twt_params);
+	}
+
+	return ret;
 }
 
 static ssize_t ath11k_write_twt_del_dialog(struct file *file,
@@ -1430,11 +1720,13 @@ static ssize_t ath11k_write_twt_del_dialog(struct file *file,
 {
 	struct ath11k_vif *arvif = file->private_data;
 	struct wmi_twt_del_dialog_params params = { 0 };
+	struct wmi_twt_enable_params twt_params = {0};
+	struct ath11k *ar = arvif->ar;
 	u8 buf[64] = {0};
 	int ret;
 
-	if (arvif->ar->twt_enabled == 0) {
-		ath11k_err(arvif->ar->ab, "twt support is not enabled\n");
+	if (ar->twt_enabled == 0) {
+		ath11k_err(ar->ab, "twt support is not enabled\n");
 		return -EOPNOTSUPP;
 	}
 
@@ -1459,6 +1751,12 @@ static ssize_t ath11k_write_twt_del_dialog(struct file *file,
 	ret = ath11k_wmi_send_twt_del_dialog_cmd(arvif->ar, &params);
 	if (ret)
 		return ret;
+
+	if (arvif->vif->type == NL80211_IFTYPE_STATION) {
+		ath11k_wmi_send_twt_disable_cmd(ar, ar->pdev->pdev_id);
+		ath11k_wmi_fill_default_twt_params(&twt_params);
+		ath11k_wmi_send_twt_enable_cmd(ar, ar->pdev->pdev_id, &twt_params);
+	}
 
 	return count;
 }
@@ -1563,36 +1861,35 @@ static const struct file_operations ath11k_fops_twt_resume_dialog = {
 	.open = simple_open
 };
 
-int ath11k_debugfs_add_interface(struct ath11k_vif *arvif)
+void ath11k_debugfs_add_interface(struct ath11k_vif *arvif)
 {
-	if (arvif->vif->type == NL80211_IFTYPE_AP && !arvif->debugfs_twt) {
-		arvif->debugfs_twt = debugfs_create_dir("twt",
-							arvif->vif->debugfs_dir);
-		if (!arvif->debugfs_twt || IS_ERR(arvif->debugfs_twt)) {
-			ath11k_warn(arvif->ar->ab,
-				    "failed to create directory %p\n",
-				    arvif->debugfs_twt);
-			arvif->debugfs_twt = NULL;
-			return -1;
-		}
+	struct ath11k_base *ab = arvif->ar->ab;
 
-		debugfs_create_file("add_dialog", 0200, arvif->debugfs_twt,
-				    arvif, &ath11k_fops_twt_add_dialog);
+	if (arvif->vif->type != NL80211_IFTYPE_AP &&
+	    !(arvif->vif->type == NL80211_IFTYPE_STATION &&
+	      test_bit(WMI_TLV_SERVICE_STA_TWT, ab->wmi_ab.svc_map)))
+		return;
 
-		debugfs_create_file("del_dialog", 0200, arvif->debugfs_twt,
-				    arvif, &ath11k_fops_twt_del_dialog);
+	arvif->debugfs_twt = debugfs_create_dir("twt",
+						arvif->vif->debugfs_dir);
+	debugfs_create_file("add_dialog", 0200, arvif->debugfs_twt,
+			    arvif, &ath11k_fops_twt_add_dialog);
 
-		debugfs_create_file("pause_dialog", 0200, arvif->debugfs_twt,
-				    arvif, &ath11k_fops_twt_pause_dialog);
+	debugfs_create_file("del_dialog", 0200, arvif->debugfs_twt,
+			    arvif, &ath11k_fops_twt_del_dialog);
 
-		debugfs_create_file("resume_dialog", 0200, arvif->debugfs_twt,
-				    arvif, &ath11k_fops_twt_resume_dialog);
-	}
-	return 0;
+	debugfs_create_file("pause_dialog", 0200, arvif->debugfs_twt,
+			    arvif, &ath11k_fops_twt_pause_dialog);
+
+	debugfs_create_file("resume_dialog", 0200, arvif->debugfs_twt,
+			    arvif, &ath11k_fops_twt_resume_dialog);
 }
 
 void ath11k_debugfs_remove_interface(struct ath11k_vif *arvif)
 {
+	if (!arvif->debugfs_twt)
+		return;
+
 	debugfs_remove_recursive(arvif->debugfs_twt);
 	arvif->debugfs_twt = NULL;
 }
