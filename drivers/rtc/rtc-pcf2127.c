@@ -656,13 +656,25 @@ static int pcf2127_probe(struct device *dev, struct regmap *regmap,
 	pcf2127->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
 	pcf2127->rtc->range_max = RTC_TIMESTAMP_END_2099;
 	pcf2127->rtc->set_start_time = true; /* Sets actual start to 1970 */
-	pcf2127->rtc->uie_unsupported = 1;
+	set_bit(RTC_FEATURE_ALARM_RES_2S, pcf2127->rtc->features);
+	clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, pcf2127->rtc->features);
 	clear_bit(RTC_FEATURE_ALARM, pcf2127->rtc->features);
 
 	if (alarm_irq > 0) {
+		unsigned long flags;
+
+		/*
+		 * If flags = 0, devm_request_threaded_irq() will use IRQ flags
+		 * obtained from device tree.
+		 */
+		if (dev_fwnode(dev))
+			flags = 0;
+		else
+			flags = IRQF_TRIGGER_LOW;
+
 		ret = devm_request_threaded_irq(dev, alarm_irq, NULL,
 						pcf2127_rtc_irq,
-						IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+						flags | IRQF_ONESHOT,
 						dev_name(dev), dev);
 		if (ret) {
 			dev_err(dev, "failed to request alarm irq\n");
@@ -749,7 +761,7 @@ static int pcf2127_probe(struct device *dev, struct regmap *regmap,
 
 	/*
 	 * Enable timestamp function and store timestamp of first trigger
-	 * event until TSF1 and TFS2 interrupt flags are cleared.
+	 * event until TSF1 and TSF2 interrupt flags are cleared.
 	 */
 	ret = regmap_update_bits(pcf2127->regmap, PCF2127_REG_TS_CTRL,
 				 PCF2127_BIT_TS_CTRL_TSOFF |
@@ -873,9 +885,17 @@ static const struct regmap_bus pcf2127_i2c_regmap = {
 
 static struct i2c_driver pcf2127_i2c_driver;
 
-static int pcf2127_i2c_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static const struct i2c_device_id pcf2127_i2c_id[] = {
+	{ "pcf2127", 1 },
+	{ "pcf2129", 0 },
+	{ "pca2129", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, pcf2127_i2c_id);
+
+static int pcf2127_i2c_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_match_id(pcf2127_i2c_id, client);
 	struct regmap *regmap;
 	static const struct regmap_config config = {
 		.reg_bits = 8,
@@ -898,20 +918,12 @@ static int pcf2127_i2c_probe(struct i2c_client *client,
 			     pcf2127_i2c_driver.driver.name, id->driver_data);
 }
 
-static const struct i2c_device_id pcf2127_i2c_id[] = {
-	{ "pcf2127", 1 },
-	{ "pcf2129", 0 },
-	{ "pca2129", 0 },
-	{ }
-};
-MODULE_DEVICE_TABLE(i2c, pcf2127_i2c_id);
-
 static struct i2c_driver pcf2127_i2c_driver = {
 	.driver		= {
 		.name	= "rtc-pcf2127-i2c",
 		.of_match_table = of_match_ptr(pcf2127_of_match),
 	},
-	.probe		= pcf2127_i2c_probe,
+	.probe_new	= pcf2127_i2c_probe,
 	.id_table	= pcf2127_i2c_id,
 };
 

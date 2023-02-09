@@ -105,7 +105,7 @@ struct ads131e08_state {
 		s64 ts __aligned(8);
 	} tmp_buf;
 
-	u8 tx_buf[3] ____cacheline_aligned;
+	u8 tx_buf[3] __aligned(IIO_DMA_MINALIGN);
 	/*
 	 * Add extra one padding byte to be able to access the last channel
 	 * value using u32 pointer
@@ -797,13 +797,6 @@ static void ads131e08_regulator_disable(void *data)
 	regulator_disable(st->vref_reg);
 }
 
-static void ads131e08_clk_disable(void *data)
-{
-	struct ads131e08_state *st = data;
-
-	clk_disable_unprepare(st->adc_clk);
-}
-
 static int ads131e08_probe(struct spi_device *spi)
 {
 	const struct ads131e08_info *info;
@@ -896,20 +889,10 @@ static int ads131e08_probe(struct spi_device *spi)
 		st->vref_reg = NULL;
 	}
 
-	st->adc_clk = devm_clk_get(&spi->dev, "adc-clk");
+	st->adc_clk = devm_clk_get_enabled(&spi->dev, "adc-clk");
 	if (IS_ERR(st->adc_clk))
 		return dev_err_probe(&spi->dev, PTR_ERR(st->adc_clk),
 				     "failed to get the ADC clock\n");
-
-	ret = clk_prepare_enable(st->adc_clk);
-	if (ret) {
-		dev_err(&spi->dev, "failed to prepare/enable the ADC clock\n");
-		return ret;
-	}
-
-	ret = devm_add_action_or_reset(&spi->dev, ads131e08_clk_disable, st);
-	if (ret)
-		return ret;
 
 	adc_clk_hz = clk_get_rate(st->adc_clk);
 	if (!adc_clk_hz) {

@@ -35,41 +35,25 @@
 
 #include <linux/bitops.h>
 
-#define HNS_ROCE_VF_QPC_BT_NUM			256
-#define HNS_ROCE_VF_SCCC_BT_NUM			64
-#define HNS_ROCE_VF_SRQC_BT_NUM			64
-#define HNS_ROCE_VF_CQC_BT_NUM			64
-#define HNS_ROCE_VF_MPT_BT_NUM			64
-#define HNS_ROCE_VF_SMAC_NUM			32
-#define HNS_ROCE_VF_SL_NUM			8
-#define HNS_ROCE_VF_GMV_BT_NUM			256
-
 #define HNS_ROCE_V2_MAX_QP_NUM			0x1000
-#define HNS_ROCE_V2_MAX_QPC_TIMER_NUM		0x200
 #define HNS_ROCE_V2_MAX_WQE_NUM			0x8000
-#define	HNS_ROCE_V2_MAX_SRQ			0x100000
 #define HNS_ROCE_V2_MAX_SRQ_WR			0x8000
 #define HNS_ROCE_V2_MAX_SRQ_SGE			64
 #define HNS_ROCE_V2_MAX_CQ_NUM			0x100000
+#define HNS_ROCE_V2_MAX_QPC_TIMER_BT_NUM	0x100
 #define HNS_ROCE_V2_MAX_CQC_TIMER_BT_NUM	0x100
 #define HNS_ROCE_V2_MAX_SRQ_NUM			0x100000
 #define HNS_ROCE_V2_MAX_CQE_NUM			0x400000
-#define HNS_ROCE_V2_MAX_SRQWQE_NUM		0x8000
 #define HNS_ROCE_V2_MAX_RQ_SGE_NUM		64
 #define HNS_ROCE_V2_MAX_SQ_SGE_NUM		64
-#define HNS_ROCE_V2_MAX_EXTEND_SGE_NUM		0x200000
 #define HNS_ROCE_V2_MAX_SQ_INLINE		0x20
 #define HNS_ROCE_V3_MAX_SQ_INLINE		0x400
 #define HNS_ROCE_V2_MAX_RC_INL_INN_SZ		32
 #define HNS_ROCE_V2_UAR_NUM			256
 #define HNS_ROCE_V2_PHY_UAR_NUM			1
-#define HNS_ROCE_V2_MAX_IRQ_NUM			65
-#define HNS_ROCE_V2_COMP_VEC_NUM		63
 #define HNS_ROCE_V2_AEQE_VEC_NUM		1
 #define HNS_ROCE_V2_ABNORMAL_VEC_NUM		1
 #define HNS_ROCE_V2_MAX_MTPT_NUM		0x100000
-#define HNS_ROCE_V2_MAX_MTT_SEGS		0x1000000
-#define HNS_ROCE_V2_MAX_CQE_SEGS		0x1000000
 #define HNS_ROCE_V2_MAX_SRQWQE_SEGS		0x1000000
 #define HNS_ROCE_V2_MAX_IDX_SEGS		0x1000000
 #define HNS_ROCE_V2_MAX_PD_NUM			0x1000000
@@ -79,9 +63,7 @@
 #define HNS_ROCE_V2_MAX_QP_DEST_RDMA		128
 #define HNS_ROCE_V2_MAX_SQ_DESC_SZ		64
 #define HNS_ROCE_V2_MAX_RQ_DESC_SZ		16
-#define HNS_ROCE_V2_MAX_SRQ_DESC_SZ		64
 #define HNS_ROCE_V2_IRRL_ENTRY_SZ		64
-#define HNS_ROCE_V2_TRRL_ENTRY_SZ		48
 #define HNS_ROCE_V2_EXT_ATOMIC_TRRL_ENTRY_SZ	100
 #define HNS_ROCE_V2_CQC_ENTRY_SZ		64
 #define HNS_ROCE_V2_SRQC_ENTRY_SZ		64
@@ -103,7 +85,6 @@
 #define HNS_ROCE_INVALID_LKEY			0x0
 #define HNS_ROCE_INVALID_SGE_LENGTH		0x80000000
 #define HNS_ROCE_CMQ_TX_TIMEOUT			30000
-#define HNS_ROCE_V2_UC_RC_SGE_NUM_IN_WQE	2
 #define HNS_ROCE_V2_RSV_QPS			8
 
 #define HNS_ROCE_V2_HW_RST_TIMEOUT		1000
@@ -117,11 +98,13 @@
 #define HNS_ROCE_CQE_HOP_NUM			1
 #define HNS_ROCE_SRQWQE_HOP_NUM			1
 #define HNS_ROCE_PBL_HOP_NUM			2
-#define HNS_ROCE_EQE_HOP_NUM			2
 #define HNS_ROCE_IDX_HOP_NUM			1
 #define HNS_ROCE_SQWQE_HOP_NUM			2
 #define HNS_ROCE_EXT_SGE_HOP_NUM		1
 #define HNS_ROCE_RQWQE_HOP_NUM			2
+
+#define HNS_ROCE_V2_EQE_HOP_NUM			2
+#define HNS_ROCE_V3_EQE_HOP_NUM			1
 
 #define HNS_ROCE_BA_PG_SZ_SUPPORTED_256K	6
 #define HNS_ROCE_BA_PG_SZ_SUPPORTED_16K		2
@@ -152,6 +135,18 @@ enum {
 
 #define CMD_CSQ_DESC_NUM		1024
 #define CMD_CRQ_DESC_NUM		1024
+
+/* Free mr used parameters */
+#define HNS_ROCE_FREE_MR_USED_CQE_NUM		128
+#define HNS_ROCE_FREE_MR_USED_QP_NUM		0x8
+#define HNS_ROCE_FREE_MR_USED_PSN		0x0808
+#define HNS_ROCE_FREE_MR_USED_QP_RETRY_CNT	0x7
+#define HNS_ROCE_FREE_MR_USED_QP_TIMEOUT	0x12
+#define HNS_ROCE_FREE_MR_USED_SQWQE_NUM		128
+#define HNS_ROCE_FREE_MR_USED_SQSGE_NUM		0x2
+#define HNS_ROCE_FREE_MR_USED_RQWQE_NUM		128
+#define HNS_ROCE_FREE_MR_USED_RQSGE_NUM		0x2
+#define HNS_ROCE_V2_FREE_MR_TIMEOUT		4500
 
 enum {
 	NO_ARMED = 0x0,
@@ -251,6 +246,7 @@ enum hns_roce_opcode_type {
 	HNS_ROCE_OPC_CFG_GMV_TBL			= 0x850f,
 	HNS_ROCE_OPC_CFG_GMV_BT				= 0x8510,
 	HNS_ROCE_OPC_EXT_CFG				= 0x8512,
+	HNS_ROCE_QUERY_RAM_ECC				= 0x8513,
 	HNS_SWITCH_PARAMETER_CFG			= 0x1033,
 };
 
@@ -308,33 +304,6 @@ struct hns_roce_v2_cq_context {
 
 #define HNS_ROCE_V2_CQ_DEFAULT_BURST_NUM 0x0
 #define HNS_ROCE_V2_CQ_DEFAULT_INTERVAL	0x0
-
-#define	V2_CQC_BYTE_4_ARM_ST_S 6
-#define V2_CQC_BYTE_4_ARM_ST_M GENMASK(7, 6)
-
-#define	V2_CQC_BYTE_4_CEQN_S 15
-#define V2_CQC_BYTE_4_CEQN_M GENMASK(23, 15)
-
-#define	V2_CQC_BYTE_8_CQN_S 0
-#define V2_CQC_BYTE_8_CQN_M GENMASK(23, 0)
-
-#define	V2_CQC_BYTE_16_CQE_HOP_NUM_S 30
-#define V2_CQC_BYTE_16_CQE_HOP_NUM_M GENMASK(31, 30)
-
-#define	V2_CQC_BYTE_28_CQ_PRODUCER_IDX_S 0
-#define V2_CQC_BYTE_28_CQ_PRODUCER_IDX_M GENMASK(23, 0)
-
-#define	V2_CQC_BYTE_32_CQ_CONSUMER_IDX_S 0
-#define V2_CQC_BYTE_32_CQ_CONSUMER_IDX_M GENMASK(23, 0)
-
-#define	V2_CQC_BYTE_52_CQE_CNT_S 0
-#define	V2_CQC_BYTE_52_CQE_CNT_M GENMASK(23, 0)
-
-#define	V2_CQC_BYTE_56_CQ_MAX_CNT_S 0
-#define V2_CQC_BYTE_56_CQ_MAX_CNT_M GENMASK(15, 0)
-
-#define	V2_CQC_BYTE_56_CQ_PERIOD_S 16
-#define V2_CQC_BYTE_56_CQ_PERIOD_M GENMASK(31, 16)
 
 #define CQC_FIELD_LOC(h, l) FIELD_LOC(struct hns_roce_v2_cq_context, h, l)
 
@@ -438,6 +407,7 @@ enum hns_roce_v2_qp_state {
 struct hns_roce_v2_qp_context_ex {
 	__le32 data[64];
 };
+
 struct hns_roce_v2_qp_context {
 	__le32 byte_4_sqpn_tst;
 	__le32 wqe_sge_ba;
@@ -790,7 +760,8 @@ struct hns_roce_v2_mpt_entry {
 #define MPT_INNER_PA_VLD MPT_FIELD_LOC(71, 71)
 #define MPT_MW_BIND_QPN MPT_FIELD_LOC(95, 72)
 #define MPT_BOUND_LKEY MPT_FIELD_LOC(127, 96)
-#define MPT_LEN MPT_FIELD_LOC(191, 128)
+#define MPT_LEN_L MPT_FIELD_LOC(159, 128)
+#define MPT_LEN_H MPT_FIELD_LOC(191, 160)
 #define MPT_LKEY MPT_FIELD_LOC(223, 192)
 #define MPT_VA MPT_FIELD_LOC(287, 224)
 #define MPT_PBL_SIZE MPT_FIELD_LOC(319, 288)
@@ -998,7 +969,10 @@ struct hns_roce_func_clear {
 	__le32 rsv[4];
 };
 
-#define FUNC_CLEAR_RST_FUN_DONE_S 0
+#define FUNC_CLEAR_FIELD_LOC(h, l) FIELD_LOC(struct hns_roce_func_clear, h, l)
+
+#define FUNC_CLEAR_RST_FUN_DONE FUNC_CLEAR_FIELD_LOC(32, 32)
+
 /* Each physical function manages up to 248 virtual functions, it takes up to
  * 100ms for each function to execute clear. If an abnormal reset occurs, it is
  * executed twice at most, so it takes up to 249 * 2 * 100ms.
@@ -1136,6 +1110,11 @@ enum {
 #define CFG_GMV_BT_BA_H CMQ_REQ_FIELD_LOC(51, 32)
 #define CFG_GMV_BT_IDX CMQ_REQ_FIELD_LOC(95, 64)
 
+/* Fields of HNS_ROCE_QUERY_RAM_ECC */
+#define QUERY_RAM_ECC_1BIT_ERR CMQ_REQ_FIELD_LOC(31, 0)
+#define QUERY_RAM_ECC_RES_TYPE CMQ_REQ_FIELD_LOC(63, 32)
+#define QUERY_RAM_ECC_TAG CMQ_REQ_FIELD_LOC(95, 64)
+
 struct hns_roce_cfg_sgid_tb {
 	__le32	table_idx_rsv;
 	__le32	vf_sgid_l;
@@ -1196,7 +1175,7 @@ struct hns_roce_query_pf_caps_a {
 	__le16 max_sq_sg;
 	__le16 max_sq_inline;
 	__le16 max_rq_sg;
-	__le32 max_extend_sg;
+	__le32 rsv0;
 	__le16 num_qpc_timer;
 	__le16 num_cqc_timer;
 	__le16 max_srq_sges;
@@ -1204,7 +1183,7 @@ struct hns_roce_query_pf_caps_a {
 	u8 num_other_vectors;
 	u8 max_sq_desc_sz;
 	u8 max_rq_desc_sz;
-	u8 max_srq_desc_sz;
+	u8 rsv1;
 	u8 cqe_sz;
 };
 
@@ -1239,29 +1218,17 @@ struct hns_roce_query_pf_caps_c {
 	__le16 rq_depth;
 };
 
-#define V2_QUERY_PF_CAPS_C_NUM_PDS_S 0
-#define V2_QUERY_PF_CAPS_C_NUM_PDS_M GENMASK(19, 0)
+#define PF_CAPS_C_FIELD_LOC(h, l) \
+	FIELD_LOC(struct hns_roce_query_pf_caps_c, h, l)
 
-#define V2_QUERY_PF_CAPS_C_CAP_FLAGS_S 20
-#define V2_QUERY_PF_CAPS_C_CAP_FLAGS_M GENMASK(31, 20)
-
-#define V2_QUERY_PF_CAPS_C_NUM_CQS_S 0
-#define V2_QUERY_PF_CAPS_C_NUM_CQS_M GENMASK(19, 0)
-
-#define V2_QUERY_PF_CAPS_C_MAX_GID_S 20
-#define V2_QUERY_PF_CAPS_C_MAX_GID_M GENMASK(28, 20)
-
-#define V2_QUERY_PF_CAPS_C_CQ_DEPTH_S 0
-#define V2_QUERY_PF_CAPS_C_CQ_DEPTH_M GENMASK(22, 0)
-
-#define V2_QUERY_PF_CAPS_C_NUM_MRWS_S 0
-#define V2_QUERY_PF_CAPS_C_NUM_MRWS_M GENMASK(19, 0)
-
-#define V2_QUERY_PF_CAPS_C_NUM_QPS_S 0
-#define V2_QUERY_PF_CAPS_C_NUM_QPS_M GENMASK(19, 0)
-
-#define V2_QUERY_PF_CAPS_C_MAX_ORD_S 20
-#define V2_QUERY_PF_CAPS_C_MAX_ORD_M GENMASK(27, 20)
+#define PF_CAPS_C_NUM_PDS PF_CAPS_C_FIELD_LOC(19, 0)
+#define PF_CAPS_C_CAP_FLAGS PF_CAPS_C_FIELD_LOC(31, 20)
+#define PF_CAPS_C_NUM_CQS PF_CAPS_C_FIELD_LOC(51, 32)
+#define PF_CAPS_C_MAX_GID PF_CAPS_C_FIELD_LOC(60, 52)
+#define PF_CAPS_C_CQ_DEPTH PF_CAPS_C_FIELD_LOC(86, 64)
+#define PF_CAPS_C_NUM_MRWS PF_CAPS_C_FIELD_LOC(115, 96)
+#define PF_CAPS_C_NUM_QPS PF_CAPS_C_FIELD_LOC(147, 128)
+#define PF_CAPS_C_MAX_ORD PF_CAPS_C_FIELD_LOC(155, 148)
 
 struct hns_roce_query_pf_caps_d {
 	__le32 wq_hop_num_max_srqs;
@@ -1272,20 +1239,26 @@ struct hns_roce_query_pf_caps_d {
 	__le32 num_uars_rsv_pds;
 	__le32 rsv_uars_rsv_qps;
 };
-#define V2_QUERY_PF_CAPS_D_NUM_SRQS_S 0
-#define V2_QUERY_PF_CAPS_D_NUM_SRQS_M GENMASK(19, 0)
 
-#define V2_QUERY_PF_CAPS_D_RQWQE_HOP_NUM_S 20
-#define V2_QUERY_PF_CAPS_D_RQWQE_HOP_NUM_M GENMASK(21, 20)
+#define PF_CAPS_D_FIELD_LOC(h, l) \
+	FIELD_LOC(struct hns_roce_query_pf_caps_d, h, l)
 
-#define V2_QUERY_PF_CAPS_D_EX_SGE_HOP_NUM_S 22
-#define V2_QUERY_PF_CAPS_D_EX_SGE_HOP_NUM_M GENMASK(23, 22)
+#define PF_CAPS_D_NUM_SRQS PF_CAPS_D_FIELD_LOC(19, 0)
+#define PF_CAPS_D_RQWQE_HOP_NUM PF_CAPS_D_FIELD_LOC(21, 20)
+#define PF_CAPS_D_EX_SGE_HOP_NUM PF_CAPS_D_FIELD_LOC(23, 22)
+#define PF_CAPS_D_SQWQE_HOP_NUM PF_CAPS_D_FIELD_LOC(25, 24)
+#define PF_CAPS_D_CONG_TYPE PF_CAPS_D_FIELD_LOC(29, 26)
+#define PF_CAPS_D_CEQ_DEPTH PF_CAPS_D_FIELD_LOC(85, 64)
+#define PF_CAPS_D_NUM_CEQS PF_CAPS_D_FIELD_LOC(95, 86)
+#define PF_CAPS_D_AEQ_DEPTH PF_CAPS_D_FIELD_LOC(117, 96)
+#define PF_CAPS_D_AEQ_ARM_ST PF_CAPS_D_FIELD_LOC(119, 118)
+#define PF_CAPS_D_CEQ_ARM_ST PF_CAPS_D_FIELD_LOC(121, 120)
+#define PF_CAPS_D_RSV_PDS PF_CAPS_D_FIELD_LOC(147, 128)
+#define PF_CAPS_D_NUM_UARS PF_CAPS_D_FIELD_LOC(155, 148)
+#define PF_CAPS_D_RSV_QPS PF_CAPS_D_FIELD_LOC(179, 160)
+#define PF_CAPS_D_RSV_UARS PF_CAPS_D_FIELD_LOC(187, 180)
 
-#define V2_QUERY_PF_CAPS_D_SQWQE_HOP_NUM_S 24
-#define V2_QUERY_PF_CAPS_D_SQWQE_HOP_NUM_M GENMASK(25, 24)
-
-#define V2_QUERY_PF_CAPS_D_CONG_TYPE_S 26
-#define V2_QUERY_PF_CAPS_D_CONG_TYPE_M GENMASK(29, 26)
+#define HNS_ROCE_CAP_FLAGS_EX_SHIFT 12
 
 struct hns_roce_congestion_algorithm {
 	u8 alg_sel;
@@ -1293,33 +1266,6 @@ struct hns_roce_congestion_algorithm {
 	u8 dip_vld;
 	u8 wnd_mode_sel;
 };
-
-#define V2_QUERY_PF_CAPS_D_CEQ_DEPTH_S 0
-#define V2_QUERY_PF_CAPS_D_CEQ_DEPTH_M GENMASK(21, 0)
-
-#define V2_QUERY_PF_CAPS_D_NUM_CEQS_S 22
-#define V2_QUERY_PF_CAPS_D_NUM_CEQS_M GENMASK(31, 22)
-
-#define V2_QUERY_PF_CAPS_D_AEQ_DEPTH_S 0
-#define V2_QUERY_PF_CAPS_D_AEQ_DEPTH_M GENMASK(21, 0)
-
-#define V2_QUERY_PF_CAPS_D_AEQ_ARM_ST_S 22
-#define V2_QUERY_PF_CAPS_D_AEQ_ARM_ST_M GENMASK(23, 22)
-
-#define V2_QUERY_PF_CAPS_D_CEQ_ARM_ST_S 24
-#define V2_QUERY_PF_CAPS_D_CEQ_ARM_ST_M GENMASK(25, 24)
-
-#define V2_QUERY_PF_CAPS_D_RSV_PDS_S 0
-#define V2_QUERY_PF_CAPS_D_RSV_PDS_M GENMASK(19, 0)
-
-#define V2_QUERY_PF_CAPS_D_NUM_UARS_S 20
-#define V2_QUERY_PF_CAPS_D_NUM_UARS_M GENMASK(27, 20)
-
-#define V2_QUERY_PF_CAPS_D_RSV_QPS_S 0
-#define V2_QUERY_PF_CAPS_D_RSV_QPS_M GENMASK(19, 0)
-
-#define V2_QUERY_PF_CAPS_D_RSV_UARS_S 20
-#define V2_QUERY_PF_CAPS_D_RSV_UARS_M GENMASK(27, 20)
 
 struct hns_roce_query_pf_caps_e {
 	__le32 chunk_size_shift_rsv_mrws;
@@ -1332,20 +1278,14 @@ struct hns_roce_query_pf_caps_e {
 	__le16 aeq_period;
 };
 
-#define V2_QUERY_PF_CAPS_E_RSV_MRWS_S 0
-#define V2_QUERY_PF_CAPS_E_RSV_MRWS_M GENMASK(19, 0)
+#define PF_CAPS_E_FIELD_LOC(h, l) \
+	FIELD_LOC(struct hns_roce_query_pf_caps_e, h, l)
 
-#define V2_QUERY_PF_CAPS_E_CHUNK_SIZE_SHIFT_S 20
-#define V2_QUERY_PF_CAPS_E_CHUNK_SIZE_SHIFT_M GENMASK(31, 20)
-
-#define V2_QUERY_PF_CAPS_E_RSV_CQS_S 0
-#define V2_QUERY_PF_CAPS_E_RSV_CQS_M GENMASK(19, 0)
-
-#define V2_QUERY_PF_CAPS_E_RSV_SRQS_S 0
-#define V2_QUERY_PF_CAPS_E_RSV_SRQS_M GENMASK(19, 0)
-
-#define V2_QUERY_PF_CAPS_E_RSV_LKEYS_S 0
-#define V2_QUERY_PF_CAPS_E_RSV_LKEYS_M GENMASK(19, 0)
+#define PF_CAPS_E_RSV_MRWS PF_CAPS_E_FIELD_LOC(19, 0)
+#define PF_CAPS_E_CHUNK_SIZE_SHIFT PF_CAPS_E_FIELD_LOC(31, 20)
+#define PF_CAPS_E_RSV_CQS PF_CAPS_E_FIELD_LOC(51, 32)
+#define PF_CAPS_E_RSV_SRQS PF_CAPS_E_FIELD_LOC(83, 64)
+#define PF_CAPS_E_RSV_LKEYS PF_CAPS_E_FIELD_LOC(115, 96)
 
 struct hns_roce_cmq_req {
 	__le32 data[6];
@@ -1391,16 +1331,30 @@ struct hns_roce_link_table {
 #define HNS_ROCE_EXT_LLM_ENTRY(addr, id) (((id) << (64 - 12)) | ((addr) >> 12))
 #define HNS_ROCE_EXT_LLM_MIN_PAGES(que_num) ((que_num) * 4 + 2)
 
+struct hns_roce_v2_free_mr {
+	struct hns_roce_qp *rsv_qp[HNS_ROCE_FREE_MR_USED_QP_NUM];
+	struct hns_roce_cq *rsv_cq;
+	struct hns_roce_pd *rsv_pd;
+	struct mutex mutex;
+};
+
 struct hns_roce_v2_priv {
 	struct hnae3_handle *handle;
 	struct hns_roce_v2_cmq cmq;
 	struct hns_roce_link_table ext_llm;
+	struct hns_roce_v2_free_mr free_mr;
 };
 
 struct hns_roce_dip {
 	u8 dgid[GID_LEN_V2];
 	u32 dip_idx;
-	struct list_head node;	/* all dips are on a list */
+	struct list_head node; /* all dips are on a list */
+};
+
+struct fmea_ram_ecc {
+	u32	is_ecc_err;
+	u32	res_type;
+	u32	index;
 };
 
 /* only for RNR timeout issue of HIP08 */
@@ -1438,14 +1392,10 @@ struct hns_roce_dip {
 #define HNS_ROCE_EQ_INIT_CONS_IDX		0
 #define HNS_ROCE_EQ_INIT_NXT_EQE_BA		0
 
-#define HNS_ROCE_V2_CEQ_CEQE_OWNER_S		31
-#define HNS_ROCE_V2_AEQ_AEQE_OWNER_S		31
-
 #define HNS_ROCE_V2_COMP_EQE_NUM		0x1000
 #define HNS_ROCE_V2_ASYNC_EQE_NUM		0x1000
 
 #define HNS_ROCE_V2_VF_INT_ST_AEQ_OVERFLOW_S	0
-#define HNS_ROCE_V2_VF_INT_ST_RAS_INT_S		1
 
 #define HNS_ROCE_EQ_DB_CMD_AEQ			0x0
 #define HNS_ROCE_EQ_DB_CMD_AEQ_ARMED		0x1
@@ -1497,18 +1447,6 @@ struct hns_roce_eq_context {
 #define EQC_NEX_EQE_BA_H EQC_FIELD_LOC(339, 320)
 #define EQC_EQE_SIZE EQC_FIELD_LOC(341, 340)
 
-#define HNS_ROCE_V2_CEQE_COMP_CQN_S 0
-#define HNS_ROCE_V2_CEQE_COMP_CQN_M GENMASK(23, 0)
-
-#define HNS_ROCE_V2_AEQE_EVENT_TYPE_S 0
-#define HNS_ROCE_V2_AEQE_EVENT_TYPE_M GENMASK(7, 0)
-
-#define HNS_ROCE_V2_AEQE_SUB_TYPE_S 8
-#define HNS_ROCE_V2_AEQE_SUB_TYPE_M GENMASK(15, 8)
-
-#define HNS_ROCE_V2_AEQE_EVENT_QUEUE_NUM_S 0
-#define HNS_ROCE_V2_AEQE_EVENT_QUEUE_NUM_M GENMASK(23, 0)
-
 #define MAX_SERVICE_LEVEL 0x7
 
 struct hns_roce_wqe_atomic_seg {
@@ -1526,8 +1464,7 @@ struct hns_roce_sccc_clr_done {
 	__le32 rsv[5];
 };
 
-int hns_roce_v2_query_cqc_info(struct hns_roce_dev *hr_dev, u32 cqn,
-			       int *buffer);
+int hns_roce_v2_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata);
 
 static inline void hns_roce_write64(struct hns_roce_dev *hr_dev, __le32 val[2],
 				    void __iomem *dest)

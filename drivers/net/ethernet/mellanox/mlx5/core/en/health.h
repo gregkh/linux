@@ -34,7 +34,6 @@ void mlx5e_reporter_icosq_suspend_recovery(struct mlx5e_channel *c);
 void mlx5e_reporter_icosq_resume_recovery(struct mlx5e_channel *c);
 
 #define MLX5E_REPORTER_PER_Q_MAX_LEN 256
-#define MLX5E_REPORTER_FLUSH_TIMEOUT_MSEC 2000
 
 struct mlx5e_err_ctx {
 	int (*recover)(void *ctx);

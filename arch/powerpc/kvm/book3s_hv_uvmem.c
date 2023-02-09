@@ -91,6 +91,7 @@
 #include <linux/kvm_host.h>
 #include <linux/ksm.h>
 #include <linux/of.h>
+#include <linux/memremap.h>
 #include <asm/ultravisor.h>
 #include <asm/mman.h>
 #include <asm/kvm_ppc.h>
@@ -119,7 +120,7 @@ static DEFINE_SPINLOCK(kvmppc_uvmem_bitmap_lock);
  *	content is un-encrypted.
  *
  * (c) Normal - The GFN is a normal. The GFN is associated with
- *	a normal VM. The contents of the GFN is accesible to
+ *	a normal VM. The contents of the GFN is accessible to
  *	the Hypervisor. Its content is never encrypted.
  *
  * States of a VM.
@@ -461,7 +462,7 @@ unsigned long kvmppc_h_svm_init_start(struct kvm *kvm)
 	struct kvm_memslots *slots;
 	struct kvm_memory_slot *memslot, *m;
 	int ret = H_SUCCESS;
-	int srcu_idx;
+	int srcu_idx, bkt;
 
 	kvm->arch.secure_guest = KVMPPC_SECURE_INIT_START;
 
@@ -480,7 +481,7 @@ unsigned long kvmppc_h_svm_init_start(struct kvm *kvm)
 
 	/* register the memslot */
 	slots = kvm_memslots(kvm);
-	kvm_for_each_memslot(memslot, slots) {
+	kvm_for_each_memslot(memslot, bkt, slots) {
 		ret = __kvmppc_uvmem_memslot_create(kvm, memslot);
 		if (ret)
 			break;
@@ -488,7 +489,7 @@ unsigned long kvmppc_h_svm_init_start(struct kvm *kvm)
 
 	if (ret) {
 		slots = kvm_memslots(kvm);
-		kvm_for_each_memslot(m, slots) {
+		kvm_for_each_memslot(m, bkt, slots) {
 			if (m == memslot)
 				break;
 			__kvmppc_uvmem_memslot_delete(kvm, memslot);
@@ -507,10 +508,10 @@ unsigned long kvmppc_h_svm_init_start(struct kvm *kvm)
 static int __kvmppc_svm_page_out(struct vm_area_struct *vma,
 		unsigned long start,
 		unsigned long end, unsigned long page_shift,
-		struct kvm *kvm, unsigned long gpa)
+		struct kvm *kvm, unsigned long gpa, struct page *fault_page)
 {
 	unsigned long src_pfn, dst_pfn = 0;
-	struct migrate_vma mig;
+	struct migrate_vma mig = { 0 };
 	struct page *dpage, *spage;
 	struct kvmppc_uvmem_page_pvt *pvt;
 	unsigned long pfn;
@@ -524,6 +525,7 @@ static int __kvmppc_svm_page_out(struct vm_area_struct *vma,
 	mig.dst = &dst_pfn;
 	mig.pgmap_owner = &kvmppc_uvmem_pgmap;
 	mig.flags = MIGRATE_VMA_SELECT_DEVICE_PRIVATE;
+	mig.fault_page = fault_page;
 
 	/* The requested page is already paged-out, nothing to do */
 	if (!kvmppc_gfn_is_uvmem_pfn(gpa >> page_shift, kvm, NULL))
@@ -562,7 +564,7 @@ static int __kvmppc_svm_page_out(struct vm_area_struct *vma,
 				  gpa, 0, page_shift);
 
 	if (ret == U_SUCCESS)
-		*mig.dst = migrate_pfn(pfn) | MIGRATE_PFN_LOCKED;
+		*mig.dst = migrate_pfn(pfn);
 	else {
 		unlock_page(dpage);
 		__free_page(dpage);
@@ -579,12 +581,14 @@ out_finalize:
 static inline int kvmppc_svm_page_out(struct vm_area_struct *vma,
 				      unsigned long start, unsigned long end,
 				      unsigned long page_shift,
-				      struct kvm *kvm, unsigned long gpa)
+				      struct kvm *kvm, unsigned long gpa,
+				      struct page *fault_page)
 {
 	int ret;
 
 	mutex_lock(&kvm->arch.uvmem_lock);
-	ret = __kvmppc_svm_page_out(vma, start, end, page_shift, kvm, gpa);
+	ret = __kvmppc_svm_page_out(vma, start, end, page_shift, kvm, gpa,
+				fault_page);
 	mutex_unlock(&kvm->arch.uvmem_lock);
 
 	return ret;
@@ -633,7 +637,7 @@ void kvmppc_uvmem_drop_pages(const struct kvm_memory_slot *slot,
 			pvt->remove_gfn = true;
 
 			if (__kvmppc_svm_page_out(vma, addr, addr + PAGE_SIZE,
-						  PAGE_SHIFT, kvm, pvt->gpa))
+						  PAGE_SHIFT, kvm, pvt->gpa, NULL))
 				pr_err("Can't page out gpa:0x%lx addr:0x%lx\n",
 				       pvt->gpa, addr);
 		} else {
@@ -649,7 +653,7 @@ void kvmppc_uvmem_drop_pages(const struct kvm_memory_slot *slot,
 
 unsigned long kvmppc_h_svm_init_abort(struct kvm *kvm)
 {
-	int srcu_idx;
+	int srcu_idx, bkt;
 	struct kvm_memory_slot *memslot;
 
 	/*
@@ -664,7 +668,7 @@ unsigned long kvmppc_h_svm_init_abort(struct kvm *kvm)
 
 	srcu_idx = srcu_read_lock(&kvm->srcu);
 
-	kvm_for_each_memslot(memslot, kvm_memslots(kvm))
+	kvm_for_each_memslot(memslot, bkt, kvm_memslots(kvm))
 		kvmppc_uvmem_drop_pages(memslot, kvm, false);
 
 	srcu_read_unlock(&kvm->srcu, srcu_idx);
@@ -714,8 +718,7 @@ static struct page *kvmppc_uvmem_get_page(unsigned long gpa, struct kvm *kvm)
 
 	dpage = pfn_to_page(uvmem_pfn);
 	dpage->zone_device_data = pvt;
-	get_page(dpage);
-	lock_page(dpage);
+	zone_device_page_init(dpage);
 	return dpage;
 out_clear:
 	spin_lock(&kvmppc_uvmem_bitmap_lock);
@@ -736,7 +739,7 @@ static int kvmppc_svm_page_in(struct vm_area_struct *vma,
 		bool pagein)
 {
 	unsigned long src_pfn, dst_pfn = 0;
-	struct migrate_vma mig;
+	struct migrate_vma mig = { 0 };
 	struct page *spage;
 	unsigned long pfn;
 	struct page *dpage;
@@ -776,7 +779,7 @@ static int kvmppc_svm_page_in(struct vm_area_struct *vma,
 		}
 	}
 
-	*mig.dst = migrate_pfn(page_to_pfn(dpage)) | MIGRATE_PFN_LOCKED;
+	*mig.dst = migrate_pfn(page_to_pfn(dpage));
 	migrate_vma_pages(&mig);
 out_finalize:
 	migrate_vma_finalize(&mig);
@@ -823,7 +826,7 @@ unsigned long kvmppc_h_svm_init_done(struct kvm *kvm)
 {
 	struct kvm_memslots *slots;
 	struct kvm_memory_slot *memslot;
-	int srcu_idx;
+	int srcu_idx, bkt;
 	long ret = H_SUCCESS;
 
 	if (!(kvm->arch.secure_guest & KVMPPC_SECURE_INIT_START))
@@ -832,7 +835,7 @@ unsigned long kvmppc_h_svm_init_done(struct kvm *kvm)
 	/* migrate any unmoved normal pfn to device pfns*/
 	srcu_idx = srcu_read_lock(&kvm->srcu);
 	slots = kvm_memslots(kvm);
-	kvm_for_each_memslot(memslot, slots) {
+	kvm_for_each_memslot(memslot, bkt, slots) {
 		ret = kvmppc_uv_migrate_mem_slot(kvm, memslot);
 		if (ret) {
 			/*
@@ -994,7 +997,7 @@ static vm_fault_t kvmppc_uvmem_migrate_to_ram(struct vm_fault *vmf)
 
 	if (kvmppc_svm_page_out(vmf->vma, vmf->address,
 				vmf->address + PAGE_SIZE, PAGE_SHIFT,
-				pvt->kvm, pvt->gpa))
+				pvt->kvm, pvt->gpa, vmf->page))
 		return VM_FAULT_SIGBUS;
 	else
 		return 0;
@@ -1065,7 +1068,7 @@ kvmppc_h_svm_page_out(struct kvm *kvm, unsigned long gpa,
 	if (!vma || vma->vm_start > start || vma->vm_end < end)
 		goto out;
 
-	if (!kvmppc_svm_page_out(vma, start, end, page_shift, kvm, gpa))
+	if (!kvmppc_svm_page_out(vma, start, end, page_shift, kvm, gpa, NULL))
 		ret = H_SUCCESS;
 out:
 	mmap_read_unlock(kvm->mm);

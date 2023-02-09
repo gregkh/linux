@@ -400,7 +400,7 @@ static struct kmem_cache *ntfs_inode_cachep;
 
 static struct inode *ntfs_alloc_inode(struct super_block *sb)
 {
-	struct ntfs_inode *ni = kmem_cache_alloc(ntfs_inode_cachep, GFP_NOFS);
+	struct ntfs_inode *ni = alloc_inode_sb(sb, ntfs_inode_cachep, GFP_NOFS);
 
 	if (!ni)
 		return NULL;
@@ -871,6 +871,13 @@ static int ntfs_init_from_boot(struct super_block *sb, u32 sector_size,
 	sb->s_maxbytes = 0xFFFFFFFFull << sbi->cluster_bits;
 #endif
 
+	/*
+	 * Compute the MFT zone at two steps.
+	 * It would be nice if we are able to allocate 1/8 of
+	 * total clusters for MFT but not more then 512 MB.
+	 */
+	sbi->zone_max = min_t(CLST, 0x20000000 >> sbi->cluster_bits, clusters >> 3);
+
 	err = 0;
 
 out:
@@ -887,7 +894,6 @@ static int ntfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	int err;
 	struct ntfs_sb_info *sbi = sb->s_fs_info;
 	struct block_device *bdev = sb->s_bdev;
-	struct request_queue *rq;
 	struct inode *inode;
 	struct ntfs_inode *ni;
 	size_t i, tt;
@@ -919,16 +925,15 @@ static int ntfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		goto out;
 	}
 
-	rq = bdev_get_queue(bdev);
-	if (blk_queue_discard(rq) && rq->limits.discard_granularity) {
-		sbi->discard_granularity = rq->limits.discard_granularity;
+	if (bdev_max_discard_sectors(bdev) && bdev_discard_granularity(bdev)) {
+		sbi->discard_granularity = bdev_discard_granularity(bdev);
 		sbi->discard_granularity_mask_inv =
 			~(u64)(sbi->discard_granularity - 1);
 	}
 
 	/* Parse boot. */
-	err = ntfs_init_from_boot(sb, rq ? queue_logical_block_size(rq) : 512,
-				  bdev->bd_inode->i_size);
+	err = ntfs_init_from_boot(sb, bdev_logical_block_size(bdev),
+				  bdev_nr_bytes(bdev));
 	if (err)
 		goto out;
 
@@ -1341,7 +1346,7 @@ int ntfs_discard(struct ntfs_sb_info *sbi, CLST lcn, CLST len)
 		return 0;
 
 	err = blkdev_issue_discard(sb->s_bdev, start >> 9, (end - start) >> 9,
-				   GFP_NOFS, 0);
+				   GFP_NOFS);
 
 	if (err == -EOPNOTSUPP)
 		sbi->flags |= NTFS_FLAGS_NODISCARD;
@@ -1382,7 +1387,7 @@ static const struct fs_context_operations ntfs_context_ops = {
 /*
  * ntfs_init_fs_context - Initialize spi and opts
  *
- * This will called when mount/remount. We will first initiliaze
+ * This will called when mount/remount. We will first initialize
  * options so that if remount we can use just that.
  */
 static int ntfs_init_fs_context(struct fs_context *fc)

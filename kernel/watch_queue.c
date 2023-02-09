@@ -4,7 +4,7 @@
  * Copyright (C) 2020 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
  *
- * See Documentation/watch_queue.rst
+ * See Documentation/core-api/watch_queue.rst
  */
 
 #define pr_fmt(fmt) "watchq: " fmt
@@ -245,7 +245,6 @@ long watch_queue_set_size(struct pipe_inode_info *pipe, unsigned int nr_notes)
 	struct page **pages;
 	unsigned long *bitmap;
 	unsigned long user_bufs;
-	unsigned int bmsize;
 	int ret, i, nr_pages;
 
 	if (!wqueue)
@@ -285,13 +284,11 @@ long watch_queue_set_size(struct pipe_inode_info *pipe, unsigned int nr_notes)
 		pages[i]->index = i * WATCH_QUEUE_NOTES_PER_PAGE;
 	}
 
-	bmsize = (nr_notes + BITS_PER_LONG - 1) / BITS_PER_LONG;
-	bmsize *= sizeof(unsigned long);
-	bitmap = kmalloc(bmsize, GFP_KERNEL);
+	bitmap = bitmap_alloc(nr_notes, GFP_KERNEL);
 	if (!bitmap)
 		goto error_p;
 
-	memset(bitmap, 0xff, bmsize);
+	bitmap_fill(bitmap, nr_notes);
 	wqueue->notes = pages;
 	wqueue->notes_bitmap = bitmap;
 	wqueue->nr_pages = nr_pages;

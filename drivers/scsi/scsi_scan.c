@@ -97,7 +97,7 @@ MODULE_PARM_DESC(max_luns,
 #define SCSI_SCAN_TYPE_DEFAULT "sync"
 #endif
 
-char scsi_scan_type[7] = SCSI_SCAN_TYPE_DEFAULT;
+static char scsi_scan_type[7] = SCSI_SCAN_TYPE_DEFAULT;
 
 module_param_string(scan, scsi_scan_type, sizeof(scsi_scan_type),
 		    S_IRUGO|S_IWUSR);
@@ -121,6 +121,22 @@ struct async_scan_data {
 	struct Scsi_Host *shost;
 	struct completion prev_finished;
 };
+
+/*
+ * scsi_enable_async_suspend - Enable async suspend and resume
+ */
+void scsi_enable_async_suspend(struct device *dev)
+{
+	/*
+	 * If a user has disabled async probing a likely reason is due to a
+	 * storage enclosure that does not inject staggered spin-ups. For
+	 * safety, make resume synchronous as well in that case.
+	 */
+	if (strncmp(scsi_scan_type, "async", 5) != 0)
+		return;
+	/* Enable asynchronous suspend and resume. */
+	device_enable_async_suspend(dev);
+}
 
 /**
  * scsi_complete_async_scans - Wait for asynchronous scans to complete
@@ -324,10 +340,10 @@ static struct scsi_device *scsi_alloc_sdev(struct scsi_target *starget,
 		kfree(sdev);
 		goto out;
 	}
+	kref_get(&sdev->host->tagset_refcnt);
 	sdev->request_queue = q;
 	q->queuedata = sdev;
 	__scsi_init_queue(sdev->host, q);
-	blk_queue_flag_set(QUEUE_FLAG_SCSI_PASSTHROUGH, q);
 	WARN_ON_ONCE(!blk_get_queue(q));
 
 	depth = sdev->host->cmd_per_lun ?: 1;
@@ -497,6 +513,7 @@ static struct scsi_target *scsi_alloc_target(struct device *parent,
 	dev_set_name(dev, "target%d:%d:%d", shost->host_no, channel, id);
 	dev->bus = &scsi_bus_type;
 	dev->type = &scsi_target_type;
+	scsi_enable_async_suspend(dev);
 	starget->id = id;
 	starget->channel = channel;
 	starget->can_queue = 0;
@@ -717,7 +734,17 @@ static int scsi_probe_lun(struct scsi_device *sdev, unsigned char *inq_result,
 		if (pass == 1) {
 			if (BLIST_INQUIRY_36 & *bflags)
 				next_inquiry_len = 36;
-			else if (sdev->inquiry_len)
+			/*
+			 * LLD specified a maximum sdev->inquiry_len
+			 * but device claims it has more data. Capping
+			 * the length only makes sense for legacy
+			 * devices. If a device supports SPC-4 (2014)
+			 * or newer, assume that it is safe to ask for
+			 * as much as the device says it supports.
+			 */
+			else if (sdev->inquiry_len &&
+				 response_len > sdev->inquiry_len &&
+				 (inq_result[2] & 0x7) < 6) /* SPC-4 */
 				next_inquiry_len = sdev->inquiry_len;
 			else
 				next_inquiry_len = response_len;
@@ -1950,61 +1977,4 @@ void scsi_forget_host(struct Scsi_Host *shost)
 	}
 	spin_unlock_irqrestore(shost->host_lock, flags);
 }
-
-/**
- * scsi_get_host_dev - Create a scsi_device that points to the host adapter itself
- * @shost: Host that needs a scsi_device
- *
- * Lock status: None assumed.
- *
- * Returns:     The scsi_device or NULL
- *
- * Notes:
- *	Attach a single scsi_device to the Scsi_Host - this should
- *	be made to look like a "pseudo-device" that points to the
- *	HA itself.
- *
- *	Note - this device is not accessible from any high-level
- *	drivers (including generics), which is probably not
- *	optimal.  We can add hooks later to attach.
- */
-struct scsi_device *scsi_get_host_dev(struct Scsi_Host *shost)
-{
-	struct scsi_device *sdev = NULL;
-	struct scsi_target *starget;
-
-	mutex_lock(&shost->scan_mutex);
-	if (!scsi_host_scan_allowed(shost))
-		goto out;
-	starget = scsi_alloc_target(&shost->shost_gendev, 0, shost->this_id);
-	if (!starget)
-		goto out;
-
-	sdev = scsi_alloc_sdev(starget, 0, NULL);
-	if (sdev)
-		sdev->borken = 0;
-	else
-		scsi_target_reap(starget);
-	put_device(&starget->dev);
- out:
-	mutex_unlock(&shost->scan_mutex);
-	return sdev;
-}
-EXPORT_SYMBOL(scsi_get_host_dev);
-
-/**
- * scsi_free_host_dev - Free a scsi_device that points to the host adapter itself
- * @sdev: Host device to be freed
- *
- * Lock status: None assumed.
- *
- * Returns:     Nothing
- */
-void scsi_free_host_dev(struct scsi_device *sdev)
-{
-	BUG_ON(sdev->id != sdev->host->this_id);
-
-	__scsi_remove_device(sdev);
-}
-EXPORT_SYMBOL(scsi_free_host_dev);
 

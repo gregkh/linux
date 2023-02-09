@@ -2963,7 +2963,6 @@ static int dsp_allocate_ports_format(struct hda_codec *codec,
 			const unsigned short fmt,
 			unsigned int *port_map)
 {
-	int status;
 	unsigned int num_chans;
 
 	unsigned int sample_rate_div = ((get_hdafmt_rate(fmt) >> 0) & 3) + 1;
@@ -2977,9 +2976,7 @@ static int dsp_allocate_ports_format(struct hda_codec *codec,
 
 	num_chans = get_hdafmt_chs(fmt) + 1;
 
-	status = dsp_allocate_ports(codec, num_chans, rate_multi, port_map);
-
-	return status;
+	return dsp_allocate_ports(codec, num_chans, rate_multi, port_map);
 }
 
 /*

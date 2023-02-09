@@ -297,7 +297,7 @@ static int switchtec_ntb_mw_set_trans(struct ntb_dev *ntb, int pidx, int widx,
 		 * (see CMA_CONFIG_ALIGNMENT)
 		 */
 		dev_err(&sndev->stdev->dev,
-			"ERROR: Memory window address is not aligned to it's size!\n");
+			"ERROR: Memory window address is not aligned to its size!\n");
 		return -EINVAL;
 	}
 
@@ -419,8 +419,10 @@ static void switchtec_ntb_part_link_speed(struct switchtec_ntb *sndev,
 					  enum ntb_width *width)
 {
 	struct switchtec_dev *stdev = sndev->stdev;
-	u32 pff =
-		ioread32(&stdev->mmio_part_cfg_all[partition].vep_pff_inst_id);
+	struct part_cfg_regs __iomem *part_cfg =
+		&stdev->mmio_part_cfg_all[partition];
+
+	u32 pff = ioread32(&part_cfg->vep_pff_inst_id) & 0xFF;
 	u32 linksta = ioread32(&stdev->mmio_pff_csr[pff].pci_cap_region[13]);
 
 	if (speed)
@@ -858,6 +860,7 @@ static int switchtec_ntb_init_sndev(struct switchtec_ntb *sndev)
 	tpart_vec |= ioread32(&sndev->mmio_ntb->ntp_info[self].target_part_low);
 
 	part_map = ioread64(&sndev->mmio_ntb->ep_map);
+	tpart_vec &= part_map;
 	part_map &= ~(1 << sndev->self_partition);
 
 	if (!tpart_vec) {
@@ -952,7 +955,7 @@ static int config_req_id_table(struct switchtec_ntb *sndev,
 	u32 error;
 	u32 proxy_id;
 
-	if (ioread32(&mmio_ctrl->req_id_table_size) < count) {
+	if (ioread16(&mmio_ctrl->req_id_table_size) < count) {
 		dev_err(&sndev->stdev->dev,
 			"Not enough requester IDs available.\n");
 		return -EFAULT;
@@ -963,9 +966,6 @@ static int config_req_id_table(struct switchtec_ntb *sndev,
 				   NTB_CTRL_PART_STATUS_LOCKED);
 	if (rc)
 		return rc;
-
-	iowrite32(NTB_PART_CTRL_ID_PROT_DIS,
-		  &mmio_ctrl->partition_ctrl);
 
 	for (i = 0; i < count; i++) {
 		iowrite32(req_ids[i] << 16 | NTB_CTRL_REQ_ID_EN,
@@ -1088,7 +1088,7 @@ static int crosslink_enum_partition(struct switchtec_ntb *sndev,
 {
 	struct part_cfg_regs __iomem *part_cfg =
 		&sndev->stdev->mmio_part_cfg_all[sndev->peer_partition];
-	u32 pff = ioread32(&part_cfg->vep_pff_inst_id);
+	u32 pff = ioread32(&part_cfg->vep_pff_inst_id) & 0xFF;
 	struct pff_csr_regs __iomem *mmio_pff =
 		&sndev->stdev->mmio_pff_csr[pff];
 	const u64 bar_space = 0x1000000000LL;

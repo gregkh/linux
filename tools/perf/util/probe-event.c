@@ -29,6 +29,7 @@
 #include "color.h"
 #include "map.h"
 #include "maps.h"
+#include "mutex.h"
 #include "symbol.h"
 #include <api/fs/fs.h>
 #include "trace-event.h"	/* For __maybe_unused */
@@ -180,8 +181,10 @@ struct map *get_target_map(const char *target, struct nsinfo *nsi, bool user)
 
 		map = dso__new_map(target);
 		if (map && map->dso) {
+			mutex_lock(&map->dso->lock);
 			nsinfo__put(map->dso->nsinfo);
 			map->dso->nsinfo = nsinfo__get(nsi);
+			mutex_unlock(&map->dso->lock);
 		}
 		return map;
 	} else {
@@ -332,7 +335,7 @@ static int kernel_get_module_dso(const char *module, struct dso **pdso)
 		char module_name[128];
 
 		snprintf(module_name, sizeof(module_name), "[%s]", module);
-		map = maps__find_by_name(&host_machine->kmaps, module_name);
+		map = maps__find_by_name(machine__kernel_maps(host_machine), module_name);
 		if (map) {
 			dso = map->dso;
 			goto found;
@@ -1349,7 +1352,7 @@ int parse_line_range_desc(const char *arg, struct line_range *lr)
 				/*
 				 * Adjust the number of lines here.
 				 * If the number of lines == 1, the
-				 * the end of line should be equal to
+				 * end of line should be equal to
 				 * the start of line.
 				 */
 				lr->end--;

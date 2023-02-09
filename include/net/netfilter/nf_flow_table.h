@@ -98,6 +98,7 @@ enum flow_offload_xmit_type {
 	FLOW_OFFLOAD_XMIT_NEIGH,
 	FLOW_OFFLOAD_XMIT_XFRM,
 	FLOW_OFFLOAD_XMIT_DIRECT,
+	FLOW_OFFLOAD_XMIT_TC,
 };
 
 #define NF_FLOW_TABLE_ENCAP_MAX		2
@@ -129,7 +130,7 @@ struct flow_offload_tuple {
 	struct { }			__hash;
 
 	u8				dir:2,
-					xmit_type:2,
+					xmit_type:3,
 					encap_num:2,
 					in_vlan_ingress:2;
 	u16				mtu;
@@ -144,6 +145,9 @@ struct flow_offload_tuple {
 			u8		h_source[ETH_ALEN];
 			u8		h_dest[ETH_ALEN];
 		} out;
+		struct {
+			u32		iifidx;
+		} tc;
 	};
 };
 
@@ -333,5 +337,26 @@ static inline __be16 nf_flow_pppoe_proto(const struct sk_buff *skb)
 
 	return 0;
 }
+
+#define NF_FLOW_TABLE_STAT_INC(net, count) __this_cpu_inc((net)->ft.stat->count)
+#define NF_FLOW_TABLE_STAT_DEC(net, count) __this_cpu_dec((net)->ft.stat->count)
+#define NF_FLOW_TABLE_STAT_INC_ATOMIC(net, count)	\
+	this_cpu_inc((net)->ft.stat->count)
+#define NF_FLOW_TABLE_STAT_DEC_ATOMIC(net, count)	\
+	this_cpu_dec((net)->ft.stat->count)
+
+#ifdef CONFIG_NF_FLOW_TABLE_PROCFS
+int nf_flow_table_init_proc(struct net *net);
+void nf_flow_table_fini_proc(struct net *net);
+#else
+static inline int nf_flow_table_init_proc(struct net *net)
+{
+	return 0;
+}
+
+static inline void nf_flow_table_fini_proc(struct net *net)
+{
+}
+#endif /* CONFIG_NF_FLOW_TABLE_PROCFS */
 
 #endif /* _NF_FLOW_TABLE_H */

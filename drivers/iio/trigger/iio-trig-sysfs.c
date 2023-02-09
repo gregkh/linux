@@ -124,9 +124,6 @@ static const struct attribute_group *iio_sysfs_trigger_attr_groups[] = {
 	NULL
 };
 
-static const struct iio_trigger_ops iio_sysfs_trigger_ops = {
-};
-
 static int iio_sysfs_trigger_probe(int id)
 {
 	struct iio_sysfs_trig *t;
@@ -156,7 +153,6 @@ static int iio_sysfs_trigger_probe(int id)
 	}
 
 	t->trig->dev.groups = iio_sysfs_trigger_attr_groups;
-	t->trig->ops = &iio_sysfs_trigger_ops;
 	iio_trigger_set_drvdata(t->trig, t);
 
 	t->work = IRQ_WORK_INIT_HARD(iio_sysfs_trigger_work);
@@ -180,16 +176,15 @@ out1:
 
 static int iio_sysfs_trigger_remove(int id)
 {
-	bool foundit = false;
-	struct iio_sysfs_trig *t;
+	struct iio_sysfs_trig *t = NULL, *iter;
 
 	mutex_lock(&iio_sysfs_trig_list_mut);
-	list_for_each_entry(t, &iio_sysfs_trig_list, l)
-		if (id == t->id) {
-			foundit = true;
+	list_for_each_entry(iter, &iio_sysfs_trig_list, l)
+		if (id == iter->id) {
+			t = iter;
 			break;
 		}
-	if (!foundit) {
+	if (!t) {
 		mutex_unlock(&iio_sysfs_trig_list_mut);
 		return -EINVAL;
 	}

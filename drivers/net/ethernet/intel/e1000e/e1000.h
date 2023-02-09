@@ -21,6 +21,7 @@
 #include <linux/ptp_classify.h>
 #include <linux/mii.h>
 #include <linux/mdio.h>
+#include <linux/mutex.h>
 #include <linux/pm_qos.h>
 #include "hw.h"
 
@@ -328,7 +329,7 @@ struct e1000_adapter {
 	struct ptp_clock *ptp_clock;
 	struct ptp_clock_info ptp_clock_info;
 	struct pm_qos_request pm_qos_req;
-	s32 ptp_delta;
+	long ptp_delta;
 
 	u16 eee_advert;
 };

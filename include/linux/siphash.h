@@ -1,6 +1,5 @@
-/* Copyright (C) 2016 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
- *
- * This file is provided under a dual BSD/GPLv2 license.
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause) */
+/* Copyright (C) 2016-2022 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
  *
  * SipHash: a fast short-input PRF
  * https://131002.net/siphash/
@@ -20,6 +19,8 @@
 typedef struct {
 	u64 key[2];
 } siphash_key_t;
+
+#define siphash_aligned_key_t siphash_key_t __aligned(16)
 
 static inline bool siphash_key_is_zero(const siphash_key_t *key)
 {

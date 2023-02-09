@@ -174,8 +174,8 @@ static int raw_hash(struct sock *sk)
 {
 	write_lock_bh(&raw_lock);
 	sk_add_node(sk, &raw_head);
-	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 	write_unlock_bh(&raw_lock);
+	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 
 	return 0;
 }
@@ -313,13 +313,13 @@ out:
 }
 
 static int raw_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-		       int noblock, int flags, int *addr_len)
+		       int flags, int *addr_len)
 {
 	size_t copied = 0;
 	int err = -EOPNOTSUPP;
 	struct sk_buff *skb;
 
-	skb = skb_recv_datagram(sk, flags, noblock, &err);
+	skb = skb_recv_datagram(sk, flags, &err);
 	if (!skb)
 		goto out;
 
@@ -333,7 +333,7 @@ static int raw_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	if (err)
 		goto done;
 
-	sock_recv_ts_and_drops(msg, sk, skb);
+	sock_recv_cmsgs(msg, sk, skb);
 
 	if (flags & MSG_TRUNC)
 		copied = skb->len;
@@ -458,8 +458,8 @@ static int dgram_hash(struct sock *sk)
 {
 	write_lock_bh(&dgram_lock);
 	sk_add_node(sk, &dgram_head);
-	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 	write_unlock_bh(&dgram_lock);
+	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 
 	return 0;
 }
@@ -705,7 +705,7 @@ out:
 }
 
 static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-			 int noblock, int flags, int *addr_len)
+			 int flags, int *addr_len)
 {
 	size_t copied = 0;
 	int err = -EOPNOTSUPP;
@@ -713,7 +713,7 @@ static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	struct dgram_sock *ro = dgram_sk(sk);
 	DECLARE_SOCKADDR(struct sockaddr_ieee802154 *, saddr, msg->msg_name);
 
-	skb = skb_recv_datagram(sk, flags, noblock, &err);
+	skb = skb_recv_datagram(sk, flags, &err);
 	if (!skb)
 		goto out;
 
@@ -728,7 +728,7 @@ static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	if (err)
 		goto done;
 
-	sock_recv_ts_and_drops(msg, sk, skb);
+	sock_recv_cmsgs(msg, sk, skb);
 
 	if (saddr) {
 		/* Clear the implicit padding in struct sockaddr_ieee802154

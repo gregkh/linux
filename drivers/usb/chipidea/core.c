@@ -53,6 +53,7 @@ static const u8 ci_regs_nolpm[] = {
 	[OP_USBCMD]		= 0x00U,
 	[OP_USBSTS]		= 0x04U,
 	[OP_USBINTR]		= 0x08U,
+	[OP_FRINDEX]		= 0x0CU,
 	[OP_DEVICEADDR]		= 0x14U,
 	[OP_ENDPTLISTADDR]	= 0x18U,
 	[OP_TTCTRL]		= 0x1CU,
@@ -78,6 +79,7 @@ static const u8 ci_regs_lpm[] = {
 	[OP_USBCMD]		= 0x00U,
 	[OP_USBSTS]		= 0x04U,
 	[OP_USBINTR]		= 0x08U,
+	[OP_FRINDEX]		= 0x0CU,
 	[OP_DEVICEADDR]		= 0x14U,
 	[OP_ENDPTLISTADDR]	= 0x18U,
 	[OP_TTCTRL]		= 0x1CU,
@@ -864,6 +866,7 @@ struct platform_device *ci_hdrc_add_device(struct device *dev,
 	}
 
 	pdev->dev.parent = dev;
+	device_set_of_node_from_dev(&pdev->dev, dev);
 
 	ret = platform_device_add_resources(pdev, res, nres);
 	if (ret)

@@ -279,7 +279,7 @@ static const char *intel_get_group_name(struct pinctrl_dev *pctldev,
 {
 	struct intel_pinctrl *pctrl = pinctrl_dev_get_drvdata(pctldev);
 
-	return pctrl->soc->groups[group].name;
+	return pctrl->soc->groups[group].grp.name;
 }
 
 static int intel_get_group_pins(struct pinctrl_dev *pctldev, unsigned int group,
@@ -287,8 +287,8 @@ static int intel_get_group_pins(struct pinctrl_dev *pctldev, unsigned int group,
 {
 	struct intel_pinctrl *pctrl = pinctrl_dev_get_drvdata(pctldev);
 
-	*pins = pctrl->soc->groups[group].pins;
-	*npins = pctrl->soc->groups[group].npins;
+	*pins = pctrl->soc->groups[group].grp.pins;
+	*npins = pctrl->soc->groups[group].grp.npins;
 	return 0;
 }
 
@@ -391,19 +391,19 @@ static int intel_pinmux_set_mux(struct pinctrl_dev *pctldev,
 	 * All pins in the groups needs to be accessible and writable
 	 * before we can enable the mux for this group.
 	 */
-	for (i = 0; i < grp->npins; i++) {
-		if (!intel_pad_usable(pctrl, grp->pins[i])) {
+	for (i = 0; i < grp->grp.npins; i++) {
+		if (!intel_pad_usable(pctrl, grp->grp.pins[i])) {
 			raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 			return -EBUSY;
 		}
 	}
 
 	/* Now enable the mux setting for each pin in the group */
-	for (i = 0; i < grp->npins; i++) {
+	for (i = 0; i < grp->grp.npins; i++) {
 		void __iomem *padcfg0;
 		u32 value;
 
-		padcfg0 = intel_get_padcfg(pctrl, grp->pins[i], PADCFG0);
+		padcfg0 = intel_get_padcfg(pctrl, grp->grp.pins[i], PADCFG0);
 		value = readl(padcfg0);
 
 		value &= ~PADCFG0_PMODE_MASK;
@@ -863,6 +863,9 @@ static const struct pinctrl_desc intel_pinctrl_desc = {
  * When coming through gpiolib irqchip, the GPIO offset is not
  * automatically translated to pinctrl pin number. This function can be
  * used to find out the corresponding pinctrl pin.
+ *
+ * Return: a pin number and pointers to the community and pad group, which
+ * the pin belongs to, or negative error code if translation can't be done.
  */
 static int intel_gpio_to_pin(struct intel_pinctrl *pctrl, unsigned int offset,
 			     const struct intel_community **community,
@@ -904,6 +907,8 @@ static int intel_gpio_to_pin(struct intel_pinctrl *pctrl, unsigned int offset,
  * @pin: pin number
  *
  * Translate the pin number of pinctrl to GPIO offset
+ *
+ * Return: a GPIO offset, or negative error code if translation can't be done.
  */
 static __maybe_unused int intel_pin_to_gpio(struct intel_pinctrl *pctrl, int pin)
 {
@@ -1044,15 +1049,14 @@ static void intel_gpio_irq_ack(struct irq_data *d)
 	}
 }
 
-static void intel_gpio_irq_mask_unmask(struct irq_data *d, bool mask)
+static void intel_gpio_irq_mask_unmask(struct gpio_chip *gc, irq_hw_number_t hwirq, bool mask)
 {
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct intel_pinctrl *pctrl = gpiochip_get_data(gc);
 	const struct intel_community *community;
 	const struct intel_padgroup *padgrp;
 	int pin;
 
-	pin = intel_gpio_to_pin(pctrl, irqd_to_hwirq(d), &community, &padgrp);
+	pin = intel_gpio_to_pin(pctrl, hwirq, &community, &padgrp);
 	if (pin >= 0) {
 		unsigned int gpp, gpp_offset;
 		unsigned long flags;
@@ -1082,12 +1086,20 @@ static void intel_gpio_irq_mask_unmask(struct irq_data *d, bool mask)
 
 static void intel_gpio_irq_mask(struct irq_data *d)
 {
-	intel_gpio_irq_mask_unmask(d, true);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	irq_hw_number_t hwirq = irqd_to_hwirq(d);
+
+	intel_gpio_irq_mask_unmask(gc, hwirq, true);
+	gpiochip_disable_irq(gc, hwirq);
 }
 
 static void intel_gpio_irq_unmask(struct irq_data *d)
 {
-	intel_gpio_irq_mask_unmask(d, false);
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	irq_hw_number_t hwirq = irqd_to_hwirq(d);
+
+	gpiochip_enable_irq(gc, hwirq);
+	intel_gpio_irq_mask_unmask(gc, hwirq, false);
 }
 
 static int intel_gpio_irq_type(struct irq_data *d, unsigned int type)
@@ -1161,6 +1173,17 @@ static int intel_gpio_irq_wake(struct irq_data *d, unsigned int on)
 	dev_dbg(pctrl->dev, "%sable wake for pin %u\n", on ? "en" : "dis", pin);
 	return 0;
 }
+
+static const struct irq_chip intel_gpio_irq_chip = {
+	.name = "intel-gpio",
+	.irq_ack = intel_gpio_irq_ack,
+	.irq_mask = intel_gpio_irq_mask,
+	.irq_unmask = intel_gpio_irq_unmask,
+	.irq_set_type = intel_gpio_irq_type,
+	.irq_set_wake = intel_gpio_irq_wake,
+	.flags = IRQCHIP_MASK_ON_SUSPEND | IRQCHIP_IMMUTABLE,
+	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+};
 
 static int intel_gpio_community_irq_handler(struct intel_pinctrl *pctrl,
 					    const struct intel_community *community)
@@ -1324,15 +1347,6 @@ static int intel_gpio_probe(struct intel_pinctrl *pctrl, int irq)
 	pctrl->chip.add_pin_ranges = intel_gpio_add_pin_ranges;
 	pctrl->irq = irq;
 
-	/* Setup IRQ chip */
-	pctrl->irqchip.name = dev_name(pctrl->dev);
-	pctrl->irqchip.irq_ack = intel_gpio_irq_ack;
-	pctrl->irqchip.irq_mask = intel_gpio_irq_mask;
-	pctrl->irqchip.irq_unmask = intel_gpio_irq_unmask;
-	pctrl->irqchip.irq_set_type = intel_gpio_irq_type;
-	pctrl->irqchip.irq_set_wake = intel_gpio_irq_wake;
-	pctrl->irqchip.flags = IRQCHIP_MASK_ON_SUSPEND;
-
 	/*
 	 * On some platforms several GPIO controllers share the same interrupt
 	 * line.
@@ -1345,8 +1359,9 @@ static int intel_gpio_probe(struct intel_pinctrl *pctrl, int irq)
 		return ret;
 	}
 
+	/* Setup IRQ chip */
 	girq = &pctrl->chip.irq;
-	girq->chip = &pctrl->irqchip;
+	gpio_irq_chip_set_chip(girq, &intel_gpio_irq_chip);
 	/* This will let us handle the IRQ in the driver */
 	girq->parent_handler = NULL;
 	girq->num_parents = 0;

@@ -9,6 +9,7 @@
 #include <linux/errno.h>
 #include <linux/errqueue.h>
 #include <linux/file.h>
+#include <linux/filter.h>
 #include <linux/in.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -1087,7 +1088,6 @@ out_error:
 static int kcm_recvmsg(struct socket *sock, struct msghdr *msg,
 		       size_t len, int flags)
 {
-	int noblock = flags & MSG_DONTWAIT;
 	struct sock *sk = sock->sk;
 	struct kcm_sock *kcm = kcm_sk(sk);
 	int err = 0;
@@ -1095,7 +1095,7 @@ static int kcm_recvmsg(struct socket *sock, struct msghdr *msg,
 	int copied = 0;
 	struct sk_buff *skb;
 
-	skb = skb_recv_datagram(sk, flags, noblock, &err);
+	skb = skb_recv_datagram(sk, flags, &err);
 	if (!skb)
 		goto out;
 
@@ -1138,7 +1138,6 @@ static ssize_t kcm_splice_read(struct socket *sock, loff_t *ppos,
 			       struct pipe_inode_info *pipe, size_t len,
 			       unsigned int flags)
 {
-	int noblock = flags & MSG_DONTWAIT;
 	struct sock *sk = sock->sk;
 	struct kcm_sock *kcm = kcm_sk(sk);
 	struct strp_msg *stm;
@@ -1148,7 +1147,7 @@ static ssize_t kcm_splice_read(struct socket *sock, loff_t *ppos,
 
 	/* Only support splice for SOCKSEQPACKET */
 
-	skb = skb_recv_datagram(sk, flags, noblock, &err);
+	skb = skb_recv_datagram(sk, flags, &err);
 	if (!skb)
 		goto err_out;
 

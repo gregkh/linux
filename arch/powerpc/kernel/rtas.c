@@ -23,10 +23,12 @@
 #include <linux/memblock.h>
 #include <linux/slab.h>
 #include <linux/reboot.h>
+#include <linux/security.h>
 #include <linux/syscalls.h>
+#include <linux/of.h>
+#include <linux/of_fdt.h>
 
 #include <asm/interrupt.h>
-#include <asm/prom.h>
 #include <asm/rtas.h>
 #include <asm/hvcall.h>
 #include <asm/machdep.h>
@@ -56,6 +58,10 @@ static inline void do_enter_rtas(unsigned long args)
 	 */
 	msr = mfmsr();
 	BUG_ON(!(msr & MSR_RI));
+
+	BUG_ON(!irqs_disabled());
+
+	hard_irq_disable(); /* Ensure MSR[EE] is disabled on PPC64 */
 
 	enter_rtas(args);
 
@@ -458,6 +464,9 @@ void rtas_call_unlocked(struct rtas_args *args, int token, int nargs, int nret, 
 	va_end(list);
 }
 
+static int ibm_open_errinjct_token;
+static int ibm_errinjct_token;
+
 int rtas_call(int token, int nargs, int nret, int *outputs, ...)
 {
 	va_list list;
@@ -469,6 +478,21 @@ int rtas_call(int token, int nargs, int nret, int *outputs, ...)
 
 	if (!rtas.entry || token == RTAS_UNKNOWN_SERVICE)
 		return -1;
+
+	if (token == ibm_open_errinjct_token || token == ibm_errinjct_token) {
+		/*
+		 * It would be nicer to not discard the error value
+		 * from security_locked_down(), but callers expect an
+		 * RTAS status, not an errno.
+		 */
+		if (security_locked_down(LOCKDOWN_RTAS_ERROR_INJECTION))
+			return -1;
+	}
+
+	if ((mfmsr() & (MSR_IR|MSR_DR)) != (MSR_IR|MSR_DR)) {
+		WARN_ON_ONCE(1);
+		return -1;
+	}
 
 	s = lock_rtas();
 
@@ -500,8 +524,25 @@ int rtas_call(int token, int nargs, int nret, int *outputs, ...)
 }
 EXPORT_SYMBOL(rtas_call);
 
-/* For RTAS_BUSY (-2), delay for 1 millisecond.  For an extended busy status
- * code of 990n, perform the hinted delay of 10^n (last digit) milliseconds.
+/**
+ * rtas_busy_delay_time() - From an RTAS status value, calculate the
+ *                          suggested delay time in milliseconds.
+ *
+ * @status: a value returned from rtas_call() or similar APIs which return
+ *          the status of a RTAS function call.
+ *
+ * Context: Any context.
+ *
+ * Return:
+ * * 100000 - If @status is 9905.
+ * * 10000  - If @status is 9904.
+ * * 1000   - If @status is 9903.
+ * * 100    - If @status is 9902.
+ * * 10     - If @status is 9901.
+ * * 1      - If @status is either 9900 or -2. This is "wrong" for -2, but
+ *            some callers depend on this behavior, and the worst outcome
+ *            is that they will delay for longer than necessary.
+ * * 0      - If @status is not a busy or extended delay value.
  */
 unsigned int rtas_busy_delay_time(int status)
 {
@@ -521,17 +562,77 @@ unsigned int rtas_busy_delay_time(int status)
 }
 EXPORT_SYMBOL(rtas_busy_delay_time);
 
-/* For an RTAS busy status code, perform the hinted delay. */
-unsigned int rtas_busy_delay(int status)
+/**
+ * rtas_busy_delay() - helper for RTAS busy and extended delay statuses
+ *
+ * @status: a value returned from rtas_call() or similar APIs which return
+ *          the status of a RTAS function call.
+ *
+ * Context: Process context. May sleep or schedule.
+ *
+ * Return:
+ * * true  - @status is RTAS_BUSY or an extended delay hint. The
+ *           caller may assume that the CPU has been yielded if necessary,
+ *           and that an appropriate delay for @status has elapsed.
+ *           Generally the caller should reattempt the RTAS call which
+ *           yielded @status.
+ *
+ * * false - @status is not @RTAS_BUSY nor an extended delay hint. The
+ *           caller is responsible for handling @status.
+ */
+bool rtas_busy_delay(int status)
 {
 	unsigned int ms;
+	bool ret;
 
-	might_sleep();
-	ms = rtas_busy_delay_time(status);
-	if (ms && need_resched())
-		msleep(ms);
+	switch (status) {
+	case RTAS_EXTENDED_DELAY_MIN...RTAS_EXTENDED_DELAY_MAX:
+		ret = true;
+		ms = rtas_busy_delay_time(status);
+		/*
+		 * The extended delay hint can be as high as 100 seconds.
+		 * Surely any function returning such a status is either
+		 * buggy or isn't going to be significantly slowed by us
+		 * polling at 1HZ. Clamp the sleep time to one second.
+		 */
+		ms = clamp(ms, 1U, 1000U);
+		/*
+		 * The delay hint is an order-of-magnitude suggestion, not
+		 * a minimum. It is fine, possibly even advantageous, for
+		 * us to pause for less time than hinted. For small values,
+		 * use usleep_range() to ensure we don't sleep much longer
+		 * than actually needed.
+		 *
+		 * See Documentation/timers/timers-howto.rst for
+		 * explanation of the threshold used here. In effect we use
+		 * usleep_range() for 9900 and 9901, msleep() for
+		 * 9902-9905.
+		 */
+		if (ms <= 20)
+			usleep_range(ms * 100, ms * 1000);
+		else
+			msleep(ms);
+		break;
+	case RTAS_BUSY:
+		ret = true;
+		/*
+		 * We should call again immediately if there's no other
+		 * work to do.
+		 */
+		cond_resched();
+		break;
+	default:
+		ret = false;
+		/*
+		 * Not a busy or extended delay status; the caller should
+		 * handle @status itself. Ensure we warn on misuses in
+		 * atomic context regardless.
+		 */
+		might_sleep();
+		break;
+	}
 
-	return ms;
+	return ret;
 }
 EXPORT_SYMBOL(rtas_busy_delay);
 
@@ -822,13 +923,13 @@ void rtas_os_term(char *str)
 /**
  * rtas_activate_firmware() - Activate a new version of firmware.
  *
+ * Context: This function may sleep.
+ *
  * Activate a new version of partition firmware. The OS must call this
  * after resuming from a partition hibernation or migration in order
  * to maintain the ability to perform live firmware updates. It's not
  * catastrophic for this method to be absent or to fail; just log the
  * condition in that case.
- *
- * Context: This function may sleep.
  */
 void rtas_activate_firmware(void)
 {
@@ -850,14 +951,15 @@ void rtas_activate_firmware(void)
 }
 
 /**
- * Find a specific pseries error log in an RTAS extended event log.
+ * get_pseries_errorlog() - Find a specific pseries error log in an RTAS
+ *                          extended event log.
  * @log: RTAS error/event log
  * @section_id: two character section identifier
  *
- * Returns a pointer to the specified errorlog or NULL if not found.
+ * Return: A pointer to the specified errorlog or NULL if not found.
  */
-struct pseries_errorlog *get_pseries_errorlog(struct rtas_error_log *log,
-					      uint16_t section_id)
+noinstr struct pseries_errorlog *get_pseries_errorlog(struct rtas_error_log *log,
+						      uint16_t section_id)
 {
 	struct rtas_ext_event_log_v6 *ext_log =
 		(struct rtas_ext_event_log_v6 *)log->buffer;
@@ -1090,6 +1192,14 @@ SYSCALL_DEFINE1(rtas, struct rtas_args __user *, uargs)
 	if (block_rtas_call(token, nargs, &args))
 		return -EINVAL;
 
+	if (token == ibm_open_errinjct_token || token == ibm_errinjct_token) {
+		int err;
+
+		err = security_locked_down(LOCKDOWN_RTAS_ERROR_INJECTION);
+		if (err)
+			return err;
+	}
+
 	/* Need to handle ibm,suspend_me call specially */
 	if (token == rtas_token("ibm,suspend-me")) {
 
@@ -1195,7 +1305,8 @@ void __init rtas_initialize(void)
 #ifdef CONFIG_RTAS_ERROR_LOGGING
 	rtas_last_error_token = rtas_token("rtas-last-error");
 #endif
-
+	ibm_open_errinjct_token = rtas_token("ibm,open-errinjct");
+	ibm_errinjct_token = rtas_token("ibm,errinjct");
 	rtas_syscall_filter_init();
 }
 

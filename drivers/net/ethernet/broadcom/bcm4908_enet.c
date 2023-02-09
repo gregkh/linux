@@ -170,7 +170,7 @@ static int bcm4908_dma_alloc_buf_descs(struct bcm4908_enet *enet,
 		goto err_free_buf_descs;
 	}
 
-	ring->slots = kzalloc(ring->length * sizeof(*ring->slots), GFP_KERNEL);
+	ring->slots = kcalloc(ring->length, sizeof(*ring->slots), GFP_KERNEL);
 	if (!ring->slots)
 		goto err_free_buf_descs;
 
@@ -507,7 +507,7 @@ static int bcm4908_enet_stop(struct net_device *netdev)
 	return 0;
 }
 
-static int bcm4908_enet_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+static netdev_tx_t bcm4908_enet_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct bcm4908_enet *enet = netdev_priv(netdev);
 	struct bcm4908_enet_dma_ring *ring = &enet->tx_ring;
@@ -719,25 +719,30 @@ static int bcm4908_enet_probe(struct platform_device *pdev)
 		return err;
 
 	SET_NETDEV_DEV(netdev, &pdev->dev);
-	err = of_get_mac_address(dev->of_node, netdev->dev_addr);
+	err = of_get_ethdev_address(dev->of_node, netdev);
+	if (err == -EPROBE_DEFER)
+		goto err_dma_free;
 	if (err)
 		eth_hw_addr_random(netdev);
 	netdev->netdev_ops = &bcm4908_enet_netdev_ops;
 	netdev->min_mtu = ETH_ZLEN;
 	netdev->mtu = ETH_DATA_LEN;
 	netdev->max_mtu = ENET_MTU_MAX;
-	netif_tx_napi_add(netdev, &enet->tx_ring.napi, bcm4908_enet_poll_tx, NAPI_POLL_WEIGHT);
-	netif_napi_add(netdev, &enet->rx_ring.napi, bcm4908_enet_poll_rx, NAPI_POLL_WEIGHT);
+	netif_napi_add_tx(netdev, &enet->tx_ring.napi, bcm4908_enet_poll_tx);
+	netif_napi_add(netdev, &enet->rx_ring.napi, bcm4908_enet_poll_rx);
 
 	err = register_netdev(netdev);
-	if (err) {
-		bcm4908_enet_dma_free(enet);
-		return err;
-	}
+	if (err)
+		goto err_dma_free;
 
 	platform_set_drvdata(pdev, enet);
 
 	return 0;
+
+err_dma_free:
+	bcm4908_enet_dma_free(enet);
+
+	return err;
 }
 
 static int bcm4908_enet_remove(struct platform_device *pdev)

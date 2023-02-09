@@ -440,6 +440,8 @@ static int cm32181_probe(struct i2c_client *client)
 	if (!indio_dev)
 		return -ENOMEM;
 
+	i2c_set_clientdata(client, indio_dev);
+
 	/*
 	 * Some ACPI systems list 2 I2C resources for the CM3218 sensor, the
 	 * SMBus Alert Response Address (ARA, 0x0c) and the actual I2C address.
@@ -486,6 +488,26 @@ static int cm32181_probe(struct i2c_client *client)
 	return 0;
 }
 
+static int cm32181_suspend(struct device *dev)
+{
+	struct cm32181_chip *cm32181 = iio_priv(dev_get_drvdata(dev));
+	struct i2c_client *client = cm32181->client;
+
+	return i2c_smbus_write_word_data(client, CM32181_REG_ADDR_CMD,
+					 CM32181_CMD_ALS_DISABLE);
+}
+
+static int cm32181_resume(struct device *dev)
+{
+	struct cm32181_chip *cm32181 = iio_priv(dev_get_drvdata(dev));
+	struct i2c_client *client = cm32181->client;
+
+	return i2c_smbus_write_word_data(client, CM32181_REG_ADDR_CMD,
+					 cm32181->conf_regs[CM32181_REG_ADDR_CMD]);
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(cm32181_pm_ops, cm32181_suspend, cm32181_resume);
+
 static const struct of_device_id cm32181_of_match[] = {
 	{ .compatible = "capella,cm3218" },
 	{ .compatible = "capella,cm32181" },
@@ -506,6 +528,7 @@ static struct i2c_driver cm32181_driver = {
 		.name	= "cm32181",
 		.acpi_match_table = ACPI_PTR(cm32181_acpi_match),
 		.of_match_table = cm32181_of_match,
+		.pm = pm_sleep_ptr(&cm32181_pm_ops),
 	},
 	.probe_new	= cm32181_probe,
 };

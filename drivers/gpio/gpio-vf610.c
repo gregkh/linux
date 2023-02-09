@@ -19,6 +19,7 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
+#include <linux/pinctrl/consumer.h>
 
 #define VF610_GPIO_PER_PORT		32
 
@@ -302,7 +303,6 @@ static int vf610_gpio_probe(struct platform_device *pdev)
 	}
 
 	gc = &port->gc;
-	gc->of_node = np;
 	gc->parent = dev;
 	gc->label = "vf610-gpio";
 	gc->ngpio = VF610_GPIO_PER_PORT;

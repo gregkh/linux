@@ -10,6 +10,7 @@
 
 #include "net_driver.h"
 #include <linux/module.h>
+#include <linux/filter.h>
 #include "efx_channels.h"
 #include "efx.h"
 #include "efx_common.h"
@@ -45,63 +46,52 @@ module_param(irq_adapt_high_thresh, uint, 0644);
 MODULE_PARM_DESC(irq_adapt_high_thresh,
 		 "Threshold score for increasing IRQ moderation");
 
-/* This is the weight assigned to each of the (per-channel) virtual
- * NAPI devices.
- */
-static int napi_weight = 64;
-
-/***************
- * Housekeeping
- ***************/
-
-int efx_channel_dummy_op_int(struct efx_channel *channel)
-{
-	return 0;
-}
-
-void efx_channel_dummy_op_void(struct efx_channel *channel)
-{
-}
-
-static const struct efx_channel_type efx_default_channel_type = {
-	.pre_probe		= efx_channel_dummy_op_int,
-	.post_remove		= efx_channel_dummy_op_void,
-	.get_name		= efx_get_channel_name,
-	.copy			= efx_copy_channel,
-	.want_txqs		= efx_default_channel_want_txqs,
-	.keep_eventq		= false,
-	.want_pio		= true,
-};
+static const struct efx_channel_type efx_default_channel_type;
 
 /*************
  * INTERRUPTS
  *************/
 
-static unsigned int efx_wanted_parallelism(struct efx_nic *efx)
+static unsigned int count_online_cores(struct efx_nic *efx, bool local_node)
 {
-	cpumask_var_t thread_mask;
+	cpumask_var_t filter_mask;
 	unsigned int count;
 	int cpu;
+
+	if (unlikely(!zalloc_cpumask_var(&filter_mask, GFP_KERNEL))) {
+		netif_warn(efx, probe, efx->net_dev,
+			   "RSS disabled due to allocation failure\n");
+		return 1;
+	}
+
+	cpumask_copy(filter_mask, cpu_online_mask);
+	if (local_node)
+		cpumask_and(filter_mask, filter_mask,
+			    cpumask_of_pcibus(efx->pci_dev->bus));
+
+	count = 0;
+	for_each_cpu(cpu, filter_mask) {
+		++count;
+		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
+	}
+
+	free_cpumask_var(filter_mask);
+
+	return count;
+}
+
+static unsigned int efx_wanted_parallelism(struct efx_nic *efx)
+{
+	unsigned int count;
 
 	if (rss_cpus) {
 		count = rss_cpus;
 	} else {
-		if (unlikely(!zalloc_cpumask_var(&thread_mask, GFP_KERNEL))) {
-			netif_warn(efx, probe, efx->net_dev,
-				   "RSS disabled due to allocation failure\n");
-			return 1;
-		}
+		count = count_online_cores(efx, true);
 
-		count = 0;
-		for_each_online_cpu(cpu) {
-			if (!cpumask_test_cpu(cpu, thread_mask)) {
-				++count;
-				cpumask_or(thread_mask, thread_mask,
-					   topology_sibling_cpumask(cpu));
-			}
-		}
-
-		free_cpumask_var(thread_mask);
+		/* If no online CPUs in local node, fallback to any online CPUs */
+		if (count == 0)
+			count = count_online_cores(efx, false);
 	}
 
 	if (count > EFX_MAX_RX_QUEUES) {
@@ -370,12 +360,19 @@ int efx_probe_interrupts(struct efx_nic *efx)
 #if defined(CONFIG_SMP)
 void efx_set_interrupt_affinity(struct efx_nic *efx)
 {
+	const struct cpumask *numa_mask = cpumask_of_pcibus(efx->pci_dev->bus);
 	struct efx_channel *channel;
 	unsigned int cpu;
 
+	/* If no online CPUs in local node, fallback to any online CPU */
+	if (cpumask_first_and(cpu_online_mask, numa_mask) >= nr_cpu_ids)
+		numa_mask = cpu_online_mask;
+
+	cpu = -1;
 	efx_for_each_channel(channel, efx) {
-		cpu = cpumask_local_spread(channel->channel,
-					   pcibus_to_node(efx->pci_dev->bus));
+		cpu = cpumask_next_and(cpu, cpu_online_mask, numa_mask);
+		if (cpu >= nr_cpu_ids)
+			cpu = cpumask_first_and(cpu_online_mask, numa_mask);
 		irq_set_affinity_hint(channel->irq, cpumask_of(cpu));
 	}
 }
@@ -675,7 +672,8 @@ fail:
 	return rc;
 }
 
-void efx_get_channel_name(struct efx_channel *channel, char *buf, size_t len)
+static void efx_get_channel_name(struct efx_channel *channel, char *buf,
+				 size_t len)
 {
 	struct efx_nic *efx = channel->efx;
 	const char *type;
@@ -984,7 +982,7 @@ int efx_set_channels(struct efx_nic *efx)
 	return netif_set_real_num_rx_queues(efx->net_dev, efx->n_rx_channels);
 }
 
-bool efx_default_channel_want_txqs(struct efx_channel *channel)
+static bool efx_default_channel_want_txqs(struct efx_channel *channel)
 {
 	return channel->channel - channel->efx->tx_channel_offset <
 		channel->efx->n_tx_channels;
@@ -1315,8 +1313,7 @@ void efx_init_napi_channel(struct efx_channel *channel)
 	struct efx_nic *efx = channel->efx;
 
 	channel->napi_dev = efx->net_dev;
-	netif_napi_add(channel->napi_dev, &channel->napi_str,
-		       efx_poll, napi_weight);
+	netif_napi_add(channel->napi_dev, &channel->napi_str, efx_poll);
 }
 
 void efx_init_napi(struct efx_nic *efx)
@@ -1342,3 +1339,26 @@ void efx_fini_napi(struct efx_nic *efx)
 	efx_for_each_channel(channel, efx)
 		efx_fini_napi_channel(channel);
 }
+
+/***************
+ * Housekeeping
+ ***************/
+
+static int efx_channel_dummy_op_int(struct efx_channel *channel)
+{
+	return 0;
+}
+
+void efx_channel_dummy_op_void(struct efx_channel *channel)
+{
+}
+
+static const struct efx_channel_type efx_default_channel_type = {
+	.pre_probe		= efx_channel_dummy_op_int,
+	.post_remove		= efx_channel_dummy_op_void,
+	.get_name		= efx_get_channel_name,
+	.copy			= efx_copy_channel,
+	.want_txqs		= efx_default_channel_want_txqs,
+	.keep_eventq		= false,
+	.want_pio		= true,
+};

@@ -41,7 +41,7 @@ OPTIONS
 
 -q::
 --quiet::
-	Do not show any message.  (Suppress -v)
+	Do not show any warnings or messages.  (Suppress -v)
 
 -n::
 --show-nr-samples::
@@ -146,6 +146,11 @@ include::itrace.txt[]
 	in the scope of the function (local) or the whole data (global).
 	The period/hits keywords set the base the percentage is computed
 	on - the samples period or the number of samples (hits).
+
+--percent-limit::
+	Do not show functions which have an overhead under that percent on
+	stdio or stdio2 (Default: 0).  Note that this is about selection of
+	functions to display, not about lines within the function.
 
 SEE ALSO
 --------

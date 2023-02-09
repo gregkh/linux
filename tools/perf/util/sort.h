@@ -34,7 +34,6 @@ extern struct sort_entry sort_dso_to;
 extern struct sort_entry sort_sym_from;
 extern struct sort_entry sort_sym_to;
 extern struct sort_entry sort_srcline;
-extern enum sort_type sort__first_dimension;
 extern const char default_mem_sort_order[];
 
 struct res_sample {
@@ -235,7 +234,9 @@ enum sort_type {
 	SORT_CODE_PAGE_SIZE,
 	SORT_LOCAL_INS_LAT,
 	SORT_GLOBAL_INS_LAT,
-	SORT_PIPELINE_STAGE_CYC,
+	SORT_LOCAL_PIPELINE_STAGE_CYC,
+	SORT_GLOBAL_PIPELINE_STAGE_CYC,
+	SORT_ADDR,
 
 	/* branch stack specific sort keys */
 	__SORT_BRANCH_STACK,
@@ -250,6 +251,8 @@ enum sort_type {
 	SORT_SRCLINE_FROM,
 	SORT_SRCLINE_TO,
 	SORT_SYM_IPC,
+	SORT_ADDR_FROM,
+	SORT_ADDR_TO,
 
 	/* memory mode specific sort keys */
 	__SORT_MEMORY_MODE,
@@ -292,7 +295,6 @@ struct block_hist {
 };
 
 extern struct sort_entry sort_thread;
-extern struct list_head hist_entry__sort_list;
 
 struct evlist;
 struct tep_handle;

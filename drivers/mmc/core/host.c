@@ -565,7 +565,7 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	spin_lock_init(&host->lock);
 	init_waitqueue_head(&host->wq);
 	INIT_DELAYED_WORK(&host->detect, mmc_rescan);
-	INIT_DELAYED_WORK(&host->sdio_irq_work, sdio_irq_work);
+	INIT_WORK(&host->sdio_irq_work, sdio_irq_work);
 	timer_setup(&host->retune_timer, mmc_retune_timer, 0);
 
 	/*
@@ -590,9 +590,18 @@ EXPORT_SYMBOL(mmc_alloc_host);
 
 static int mmc_validate_host_caps(struct mmc_host *host)
 {
-	if (host->caps & MMC_CAP_SDIO_IRQ && !host->ops->enable_sdio_irq) {
-		dev_warn(host->parent, "missing ->enable_sdio_irq() ops\n");
+	struct device *dev = host->parent;
+	u32 caps = host->caps, caps2 = host->caps2;
+
+	if (caps & MMC_CAP_SDIO_IRQ && !host->ops->enable_sdio_irq) {
+		dev_warn(dev, "missing ->enable_sdio_irq() ops\n");
 		return -EINVAL;
+	}
+
+	if (caps2 & (MMC_CAP2_HS400_ES | MMC_CAP2_HS400) &&
+	    !(caps & MMC_CAP_8_BIT_DATA) && !(caps2 & MMC_CAP2_NO_MMC)) {
+		dev_warn(dev, "drop HS400 support since no 8-bit bus\n");
+		host->caps2 = caps2 & ~MMC_CAP2_HS400_ES & ~MMC_CAP2_HS400;
 	}
 
 	return 0;

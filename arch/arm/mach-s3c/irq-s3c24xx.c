@@ -26,7 +26,7 @@
 #include <asm/exception.h>
 #include <asm/mach/irq.h>
 
-#include <mach/irqs.h>
+#include "irqs.h"
 #include "regs-irq.h"
 #include "regs-gpio.h"
 
@@ -354,7 +354,7 @@ static inline int s3c24xx_handle_intc(struct s3c_irq_intc *intc,
 	if (!(pnd & (1 << offset)))
 		offset =  __ffs(pnd);
 
-	handle_domain_irq(intc->domain, intc_offset + offset, regs);
+	generic_handle_domain_irq(intc->domain, intc_offset + offset);
 	return true;
 }
 

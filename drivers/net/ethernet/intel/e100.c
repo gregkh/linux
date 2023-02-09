@@ -1430,7 +1430,6 @@ static int e100_phy_check_without_mii(struct nic *nic)
 #define MII_NSC_CONG		MII_RESV1
 #define NSC_CONG_ENABLE		0x0100
 #define NSC_CONG_TXREADY	0x0400
-#define ADVERTISE_FC_SUPPORTED	0x0400
 static int e100_phy_init(struct nic *nic)
 {
 	struct net_device *netdev = nic->netdev;
@@ -2256,7 +2255,7 @@ static int e100_set_mac_address(struct net_device *netdev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
+	eth_hw_addr_set(netdev, addr->sa_data);
 	e100_exec_cb(nic, NULL, e100_setup_iaaddr);
 
 	return 0;
@@ -2429,8 +2428,8 @@ static void e100_get_drvinfo(struct net_device *netdev,
 	struct ethtool_drvinfo *info)
 {
 	struct nic *nic = netdev_priv(netdev);
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->bus_info, pci_name(nic->pdev),
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(nic->pdev),
 		sizeof(info->bus_info));
 }
 
@@ -2554,7 +2553,9 @@ static int e100_set_eeprom(struct net_device *netdev,
 }
 
 static void e100_get_ringparam(struct net_device *netdev,
-	struct ethtool_ringparam *ring)
+			       struct ethtool_ringparam *ring,
+			       struct kernel_ethtool_ringparam *kernel_ring,
+			       struct netlink_ext_ack *extack)
 {
 	struct nic *nic = netdev_priv(netdev);
 	struct param_range *rfds = &nic->params.rfds;
@@ -2567,7 +2568,9 @@ static void e100_get_ringparam(struct net_device *netdev,
 }
 
 static int e100_set_ringparam(struct net_device *netdev,
-	struct ethtool_ringparam *ring)
+			      struct ethtool_ringparam *ring,
+			      struct kernel_ethtool_ringparam *kernel_ring,
+			      struct netlink_ext_ack *extack)
 {
 	struct nic *nic = netdev_priv(netdev);
 	struct param_range *rfds = &nic->params.rfds;
@@ -2841,7 +2844,7 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
 
 	nic = netdev_priv(netdev);
-	netif_napi_add(netdev, &nic->napi, e100_poll, E100_NAPI_WEIGHT);
+	netif_napi_add_weight(netdev, &nic->napi, e100_poll, E100_NAPI_WEIGHT);
 	nic->netdev = netdev;
 	nic->pdev = pdev;
 	nic->msg_enable = (1 << debug) - 1;
@@ -2918,7 +2921,7 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	e100_phy_init(nic);
 
-	memcpy(netdev->dev_addr, nic->eeprom, ETH_ALEN);
+	eth_hw_addr_set(netdev, (u8 *)nic->eeprom);
 	if (!is_valid_ether_addr(netdev->dev_addr)) {
 		if (!eeprom_bad_csum_allow) {
 			netif_err(nic, probe, nic->netdev, "Invalid MAC address from EEPROM, aborting\n");

@@ -33,7 +33,9 @@
 #define PCIE_CORE_DEV_ID_REG					0x0
 #define PCIE_CORE_CMD_STATUS_REG				0x4
 #define PCIE_CORE_DEV_REV_REG					0x8
+#define PCIE_CORE_SSDEV_ID_REG					0x2c
 #define PCIE_CORE_PCIEXP_CAP					0xc0
+#define PCIE_CORE_PCIERR_CAP					0x100
 #define PCIE_CORE_ERR_CAPCTL_REG				0x118
 #define     PCIE_CORE_ERR_CAPCTL_ECRC_CHK_TX			BIT(5)
 #define     PCIE_CORE_ERR_CAPCTL_ECRC_CHK_TX_EN			BIT(6)
@@ -529,7 +531,7 @@ static void advk_pcie_setup_hw(struct advk_pcie *pcie)
 	 */
 	reg = advk_readl(pcie, PCIE_CORE_DEV_REV_REG);
 	reg &= ~0xffffff00;
-	reg |= (PCI_CLASS_BRIDGE_PCI << 8) << 8;
+	reg |= PCI_CLASS_BRIDGE_PCI_NORMAL << 8;
 	advk_writel(pcie, reg, PCIE_CORE_DEV_REV_REG);
 
 	/* Disable Root Bridge I/O space, memory space and bus mastering */
@@ -942,11 +944,89 @@ advk_pci_bridge_emul_pcie_conf_write(struct pci_bridge_emul *bridge,
 	}
 }
 
-static struct pci_bridge_emul_ops advk_pci_bridge_emul_ops = {
+static pci_bridge_emul_read_status_t
+advk_pci_bridge_emul_ext_conf_read(struct pci_bridge_emul *bridge,
+				   int reg, u32 *value)
+{
+	struct advk_pcie *pcie = bridge->data;
+
+	switch (reg) {
+	case 0:
+		*value = advk_readl(pcie, PCIE_CORE_PCIERR_CAP + reg);
+
+		/*
+		 * PCI_EXT_CAP_NEXT bits are set to offset 0x150, but Armada
+		 * 3700 Functional Specification does not document registers
+		 * at those addresses.
+		 *
+		 * Thus we clear PCI_EXT_CAP_NEXT bits to make Advanced Error
+		 * Reporting Capability header the last Extended Capability.
+		 * If we obtain documentation for those registers in the
+		 * future, this can be changed.
+		 */
+		*value &= 0x000fffff;
+		return PCI_BRIDGE_EMUL_HANDLED;
+
+	case PCI_ERR_UNCOR_STATUS:
+	case PCI_ERR_UNCOR_MASK:
+	case PCI_ERR_UNCOR_SEVER:
+	case PCI_ERR_COR_STATUS:
+	case PCI_ERR_COR_MASK:
+	case PCI_ERR_CAP:
+	case PCI_ERR_HEADER_LOG + 0:
+	case PCI_ERR_HEADER_LOG + 4:
+	case PCI_ERR_HEADER_LOG + 8:
+	case PCI_ERR_HEADER_LOG + 12:
+	case PCI_ERR_ROOT_COMMAND:
+	case PCI_ERR_ROOT_STATUS:
+	case PCI_ERR_ROOT_ERR_SRC:
+		*value = advk_readl(pcie, PCIE_CORE_PCIERR_CAP + reg);
+		return PCI_BRIDGE_EMUL_HANDLED;
+
+	default:
+		return PCI_BRIDGE_EMUL_NOT_HANDLED;
+	}
+}
+
+static void
+advk_pci_bridge_emul_ext_conf_write(struct pci_bridge_emul *bridge,
+				    int reg, u32 old, u32 new, u32 mask)
+{
+	struct advk_pcie *pcie = bridge->data;
+
+	switch (reg) {
+	/* These are W1C registers, so clear other bits */
+	case PCI_ERR_UNCOR_STATUS:
+	case PCI_ERR_COR_STATUS:
+	case PCI_ERR_ROOT_STATUS:
+		new &= mask;
+		fallthrough;
+
+	case PCI_ERR_UNCOR_MASK:
+	case PCI_ERR_UNCOR_SEVER:
+	case PCI_ERR_COR_MASK:
+	case PCI_ERR_CAP:
+	case PCI_ERR_HEADER_LOG + 0:
+	case PCI_ERR_HEADER_LOG + 4:
+	case PCI_ERR_HEADER_LOG + 8:
+	case PCI_ERR_HEADER_LOG + 12:
+	case PCI_ERR_ROOT_COMMAND:
+	case PCI_ERR_ROOT_ERR_SRC:
+		advk_writel(pcie, new, PCIE_CORE_PCIERR_CAP + reg);
+		break;
+
+	default:
+		break;
+	}
+}
+
+static const struct pci_bridge_emul_ops advk_pci_bridge_emul_ops = {
 	.read_base = advk_pci_bridge_emul_base_conf_read,
 	.write_base = advk_pci_bridge_emul_base_conf_write,
 	.read_pcie = advk_pci_bridge_emul_pcie_conf_read,
 	.write_pcie = advk_pci_bridge_emul_pcie_conf_write,
+	.read_ext = advk_pci_bridge_emul_ext_conf_read,
+	.write_ext = advk_pci_bridge_emul_ext_conf_write,
 };
 
 /*
@@ -998,7 +1078,10 @@ static int advk_sw_pci_bridge_init(struct advk_pcie *pcie)
 	/* Indicates supports for Completion Retry Status */
 	bridge->pcie_conf.rootcap = cpu_to_le16(PCI_EXP_RTCAP_CRSVIS);
 
+	bridge->subsystem_vendor_id = advk_readl(pcie, PCIE_CORE_SSDEV_ID_REG) & 0xffff;
+	bridge->subsystem_id = advk_readl(pcie, PCIE_CORE_SSDEV_ID_REG) >> 16;
 	bridge->has_pcie = true;
+	bridge->pcie_start = PCIE_CORE_PCIEXP_CAP;
 	bridge->data = pcie;
 	bridge->ops = &advk_pci_bridge_emul_ops;
 
@@ -1063,10 +1146,8 @@ static int advk_pcie_rd_conf(struct pci_bus *bus, u32 devfn,
 	u32 reg;
 	int ret;
 
-	if (!advk_pcie_valid_device(pcie, bus, devfn)) {
-		*val = 0xffffffff;
+	if (!advk_pcie_valid_device(pcie, bus, devfn))
 		return PCIBIOS_DEVICE_NOT_FOUND;
-	}
 
 	if (pci_is_root_bus(bus))
 		return pci_bridge_emul_conf_read(&pcie->bridge, where,
@@ -1642,9 +1723,7 @@ static int advk_pcie_enable_phy(struct advk_pcie *pcie)
 	}
 
 	ret = phy_power_on(pcie->phy);
-	if (ret == -EOPNOTSUPP) {
-		dev_warn(&pcie->pdev->dev, "PHY unsupported by firmware\n");
-	} else if (ret) {
+	if (ret) {
 		phy_exit(pcie->phy);
 		return ret;
 	}

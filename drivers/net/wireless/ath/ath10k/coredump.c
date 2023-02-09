@@ -531,7 +531,7 @@ static const struct ath10k_mem_section qca6174_hw30_sdio_register_sections[] = {
 
 	{0x40000, 0x400A4},
 
-	/* SI register is skiped here.
+	/* SI register is skipped here.
 	 * Because it will cause bus hang
 	 *
 	 * {0x50000, 0x50018},
@@ -1522,7 +1522,7 @@ static struct ath10k_dump_file_data *ath10k_coredump_build(struct ath10k *ar)
 	mutex_lock(&ar->dump_mutex);
 
 	dump_data = (struct ath10k_dump_file_data *)(buf);
-	strlcpy(dump_data->df_magic, "ATH10K-FW-DUMP",
+	strscpy(dump_data->df_magic, "ATH10K-FW-DUMP",
 		sizeof(dump_data->df_magic));
 	dump_data->len = cpu_to_le32(len);
 
@@ -1543,11 +1543,11 @@ static struct ath10k_dump_file_data *ath10k_coredump_build(struct ath10k *ar)
 	dump_data->vht_cap_info = cpu_to_le32(ar->vht_cap_info);
 	dump_data->num_rf_chains = cpu_to_le32(ar->num_rf_chains);
 
-	strlcpy(dump_data->fw_ver, ar->hw->wiphy->fw_version,
+	strscpy(dump_data->fw_ver, ar->hw->wiphy->fw_version,
 		sizeof(dump_data->fw_ver));
 
 	dump_data->kernel_ver_code = 0;
-	strlcpy(dump_data->kernel_ver, init_utsname()->release,
+	strscpy(dump_data->kernel_ver, init_utsname()->release,
 		sizeof(dump_data->kernel_ver));
 
 	dump_data->tv_sec = cpu_to_le64(crash_data->timestamp.tv_sec);

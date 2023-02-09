@@ -104,6 +104,16 @@ struct gpio_array {
 };
 
 struct gpio_desc *gpiochip_get_desc(struct gpio_chip *gc, unsigned int hwnum);
+
+#define for_each_gpio_desc(gc, desc)					\
+	for (unsigned int __i = 0;					\
+	     __i < gc->ngpio && (desc = gpiochip_get_desc(gc, __i));	\
+	     __i++)							\
+
+#define for_each_gpio_desc_with_flag(gc, desc, flag)			\
+	for_each_gpio_desc(gc, desc)					\
+		if (!test_bit(flag, &desc->flags)) {} else
+
 int gpiod_get_array_value_complex(bool raw, bool can_sleep,
 				  unsigned int array_size,
 				  struct gpio_desc **desc_array,
@@ -156,6 +166,7 @@ struct gpio_desc {
 #define FLAG_EDGE_RISING     16	/* GPIO CDEV detects rising edge events */
 #define FLAG_EDGE_FALLING    17	/* GPIO CDEV detects falling edge events */
 #define FLAG_EVENT_CLOCK_REALTIME	18 /* GPIO CDEV reports REALTIME timestamps in events */
+#define FLAG_EVENT_CLOCK_HTE		19 /* GPIO CDEV reports hardware timestamps in events */
 
 	/* Connection label */
 	const char		*label;

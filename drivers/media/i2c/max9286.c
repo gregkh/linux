@@ -609,19 +609,18 @@ static int max9286_v4l2_notifier_register(struct max9286_priv *priv)
 	if (!priv->nsources)
 		return 0;
 
-	v4l2_async_notifier_init(&priv->notifier);
+	v4l2_async_nf_init(&priv->notifier);
 
 	for_each_source(priv, source) {
 		unsigned int i = to_index(priv, source);
 		struct max9286_asd *mas;
 
-		mas = v4l2_async_notifier_add_fwnode_subdev(&priv->notifier,
-							    source->fwnode,
-							    struct max9286_asd);
+		mas = v4l2_async_nf_add_fwnode(&priv->notifier, source->fwnode,
+					       struct max9286_asd);
 		if (IS_ERR(mas)) {
 			dev_err(dev, "Failed to add subdev for source %u: %ld",
 				i, PTR_ERR(mas));
-			v4l2_async_notifier_cleanup(&priv->notifier);
+			v4l2_async_nf_cleanup(&priv->notifier);
 			return PTR_ERR(mas);
 		}
 
@@ -630,10 +629,10 @@ static int max9286_v4l2_notifier_register(struct max9286_priv *priv)
 
 	priv->notifier.ops = &max9286_notify_ops;
 
-	ret = v4l2_async_subdev_notifier_register(&priv->sd, &priv->notifier);
+	ret = v4l2_async_subdev_nf_register(&priv->sd, &priv->notifier);
 	if (ret) {
 		dev_err(dev, "Failed to register subdev_notifier");
-		v4l2_async_notifier_cleanup(&priv->notifier);
+		v4l2_async_nf_cleanup(&priv->notifier);
 		return ret;
 	}
 
@@ -645,8 +644,8 @@ static void max9286_v4l2_notifier_unregister(struct max9286_priv *priv)
 	if (!priv->nsources)
 		return;
 
-	v4l2_async_notifier_unregister(&priv->notifier);
-	v4l2_async_notifier_cleanup(&priv->notifier);
+	v4l2_async_nf_unregister(&priv->notifier);
+	v4l2_async_nf_cleanup(&priv->notifier);
 }
 
 static int max9286_s_stream(struct v4l2_subdev *sd, int enable)
@@ -850,6 +849,10 @@ static const struct v4l2_subdev_internal_ops max9286_subdev_internal_ops = {
 	.open = max9286_open,
 };
 
+static const struct media_entity_operations max9286_media_ops = {
+	.link_validate = v4l2_subdev_link_validate
+};
+
 static int max9286_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	switch (ctrl->id) {
@@ -899,6 +902,7 @@ static int max9286_v4l2_register(struct max9286_priv *priv)
 		goto err_async;
 
 	priv->sd.entity.function = MEDIA_ENT_F_VID_IF_BRIDGE;
+	priv->sd.entity.ops = &max9286_media_ops;
 
 	priv->pads[MAX9286_SRC_PAD].flags = MEDIA_PAD_FL_SOURCE;
 	for (i = 0; i < MAX9286_SRC_PAD; i++)
@@ -1066,7 +1070,6 @@ static int max9286_register_gpio(struct max9286_priv *priv)
 	gpio->label = dev_name(dev);
 	gpio->parent = dev;
 	gpio->owner = THIS_MODULE;
-	gpio->of_node = dev->of_node;
 	gpio->ngpio = 2;
 	gpio->base = -1;
 	gpio->set = max9286_gpiochip_set;
@@ -1375,7 +1378,7 @@ err_powerdown:
 	return ret;
 }
 
-static int max9286_remove(struct i2c_client *client)
+static void max9286_remove(struct i2c_client *client)
 {
 	struct max9286_priv *priv = sd_to_max9286(i2c_get_clientdata(client));
 
@@ -1388,8 +1391,6 @@ static int max9286_remove(struct i2c_client *client)
 	gpiod_set_value_cansleep(priv->gpiod_pwdn, 0);
 
 	max9286_cleanup_dt(priv);
-
-	return 0;
 }
 
 static const struct of_device_id max9286_dt_ids[] = {

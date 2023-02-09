@@ -18,21 +18,32 @@
 struct exception_table_entry
 {
 	int insn, fixup;
+	short type, data;
 };
 
 #define ARCH_HAS_RELATIVE_EXTABLE
 
+#define swap_ex_entry_fixup(a, b, tmp, delta)		\
+do {							\
+	(a)->fixup = (b)->fixup + (delta);		\
+	(b)->fixup = (tmp).fixup - (delta);		\
+	(a)->type = (b)->type;				\
+	(b)->type = (tmp).type;				\
+	(a)->data = (b)->data;				\
+	(b)->data = (tmp).data;				\
+} while (0)
+
 #ifdef CONFIG_BPF_JIT
-int arm64_bpf_fixup_exception(const struct exception_table_entry *ex,
-			      struct pt_regs *regs);
+bool ex_handler_bpf(const struct exception_table_entry *ex,
+		    struct pt_regs *regs);
 #else /* !CONFIG_BPF_JIT */
 static inline
-int arm64_bpf_fixup_exception(const struct exception_table_entry *ex,
-			      struct pt_regs *regs)
+bool ex_handler_bpf(const struct exception_table_entry *ex,
+		    struct pt_regs *regs)
 {
-	return 0;
+	return false;
 }
 #endif /* !CONFIG_BPF_JIT */
 
-extern int fixup_exception(struct pt_regs *regs);
+bool fixup_exception(struct pt_regs *regs);
 #endif

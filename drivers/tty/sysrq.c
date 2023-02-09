@@ -279,6 +279,8 @@ static const struct sysrq_key_op sysrq_showallcpus_op = {
 	.action_msg	= "Show backtrace of all active CPUs",
 	.enable_mask	= SYSRQ_ENABLE_DUMP,
 };
+#else
+#define sysrq_showallcpus_op (*(const struct sysrq_key_op *)NULL)
 #endif
 
 static void sysrq_handle_showregs(int key)
@@ -301,7 +303,7 @@ static const struct sysrq_key_op sysrq_showregs_op = {
 static void sysrq_handle_showstate(int key)
 {
 	show_state();
-	show_workqueue_state();
+	show_all_workqueues();
 }
 static const struct sysrq_key_op sysrq_showstate_op = {
 	.handler	= sysrq_handle_showstate,
@@ -410,6 +412,7 @@ static const struct sysrq_key_op sysrq_moom_op = {
 	.enable_mask	= SYSRQ_ENABLE_SIGNAL,
 };
 
+#ifdef CONFIG_BLOCK
 static void sysrq_handle_thaw(int key)
 {
 	emergency_thaw_all();
@@ -420,6 +423,9 @@ static const struct sysrq_key_op sysrq_thaw_op = {
 	.action_msg	= "Emergency Thaw of all frozen filesystems",
 	.enable_mask	= SYSRQ_ENABLE_SIGNAL,
 };
+#else
+#define sysrq_thaw_op (*(const struct sysrq_key_op *)NULL)
+#endif
 
 static void sysrq_handle_kill(int key)
 {
@@ -473,17 +479,9 @@ static const struct sysrq_key_op *sysrq_key_table[62] = {
 	NULL,				/* g */
 	NULL,				/* h - reserved for help */
 	&sysrq_kill_op,			/* i */
-#ifdef CONFIG_BLOCK
 	&sysrq_thaw_op,			/* j */
-#else
-	NULL,				/* j */
-#endif
 	&sysrq_SAK_op,			/* k */
-#ifdef CONFIG_SMP
 	&sysrq_showallcpus_op,		/* l */
-#else
-	NULL,				/* l */
-#endif
 	&sysrq_showmem_op,		/* m */
 	&sysrq_unrt_op,			/* n */
 	/* o: This will often be registered as 'Off' at init time */
@@ -848,6 +846,8 @@ static bool sysrq_handle_keypress(struct sysrq_state *sysrq,
 			sysrq->shift = KEY_RESERVED;
 		else if (value != 2)
 			sysrq->shift = code;
+		if (sysrq->active)
+			sysrq->shift_use = sysrq->shift;
 		break;
 
 	case KEY_SYSRQ:

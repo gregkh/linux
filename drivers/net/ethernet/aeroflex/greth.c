@@ -1026,7 +1026,7 @@ static int greth_set_mac_add(struct net_device *dev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
+	eth_hw_addr_set(dev, addr->sa_data);
 	GRETH_REGSAVE(regs->esa_msb, dev->dev_addr[0] << 8 | dev->dev_addr[1]);
 	GRETH_REGSAVE(regs->esa_lsb, dev->dev_addr[2] << 24 | dev->dev_addr[3] << 16 |
 		      dev->dev_addr[4] << 8 | dev->dev_addr[5]);
@@ -1113,9 +1113,9 @@ static void greth_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *in
 {
 	struct greth_private *greth = netdev_priv(dev);
 
-	strlcpy(info->driver, dev_driver_string(greth->dev),
+	strscpy(info->driver, dev_driver_string(greth->dev),
 		sizeof(info->driver));
-	strlcpy(info->bus_info, greth->dev->bus->name, sizeof(info->bus_info));
+	strscpy(info->bus_info, greth->dev->bus->name, sizeof(info->bus_info));
 }
 
 static void greth_get_regs(struct net_device *dev, struct ethtool_regs *regs, void *p)
@@ -1347,6 +1347,7 @@ static int greth_of_probe(struct platform_device *ofdev)
 	int i;
 	int err;
 	int tmp;
+	u8 addr[ETH_ALEN];
 	unsigned long timeout;
 
 	dev = alloc_etherdev(sizeof(struct greth_private));
@@ -1450,8 +1451,6 @@ static int greth_of_probe(struct platform_device *ofdev)
 			break;
 	}
 	if (i == 6) {
-		u8 addr[ETH_ALEN];
-
 		err = of_get_mac_address(ofdev->dev.of_node, addr);
 		if (!err) {
 			for (i = 0; i < 6; i++)
@@ -1465,7 +1464,8 @@ static int greth_of_probe(struct platform_device *ofdev)
 	}
 
 	for (i = 0; i < 6; i++)
-		dev->dev_addr[i] = macaddr[i];
+		addr[i] = macaddr[i];
+	eth_hw_addr_set(dev, addr);
 
 	macaddr[5]++;
 
@@ -1508,7 +1508,7 @@ static int greth_of_probe(struct platform_device *ofdev)
 	}
 
 	/* setup NAPI */
-	netif_napi_add(dev, &greth->napi, greth_poll, 64);
+	netif_napi_add(dev, &greth->napi, greth_poll);
 
 	return 0;
 

@@ -961,7 +961,21 @@ static int m88e1111_config_init(struct phy_device *phydev)
 	if (err < 0)
 		return err;
 
-	return genphy_soft_reset(phydev);
+	err = genphy_soft_reset(phydev);
+	if (err < 0)
+		return err;
+
+	if (phydev->interface == PHY_INTERFACE_MODE_SGMII) {
+		/* If the HWCFG_MODE was changed from another mode (such as
+		 * 1000BaseX) to SGMII, the state of the support bits may have
+		 * also changed now that the PHY has been reset.
+		 * Update the PHY abilities accordingly.
+		 */
+		err = genphy_read_abilities(phydev);
+		linkmode_or(phydev->advertising, phydev->advertising,
+			    phydev->supported);
+	}
+	return err;
 }
 
 static int m88e1111_get_downshift(struct phy_device *phydev, u8 *data)
@@ -1177,7 +1191,44 @@ static int m88e1318_config_init(struct phy_device *phydev)
 
 static int m88e1510_config_init(struct phy_device *phydev)
 {
+	static const struct {
+		u16 reg17, reg16;
+	} errata_vals[] = {
+		{ 0x214b, 0x2144 },
+		{ 0x0c28, 0x2146 },
+		{ 0xb233, 0x214d },
+		{ 0xcc0c, 0x2159 },
+	};
 	int err;
+	int i;
+
+	/* As per Marvell Release Notes - Alaska 88E1510/88E1518/88E1512/
+	 * 88E1514 Rev A0, Errata Section 5.1:
+	 * If EEE is intended to be used, the following register writes
+	 * must be done once after every hardware reset.
+	 */
+	err = marvell_set_page(phydev, 0x00FF);
+	if (err < 0)
+		return err;
+
+	for (i = 0; i < ARRAY_SIZE(errata_vals); ++i) {
+		err = phy_write(phydev, 17, errata_vals[i].reg17);
+		if (err)
+			return err;
+		err = phy_write(phydev, 16, errata_vals[i].reg16);
+		if (err)
+			return err;
+	}
+
+	err = marvell_set_page(phydev, 0x00FB);
+	if (err < 0)
+		return err;
+	err = phy_write(phydev, 07, 0xC00D);
+	if (err < 0)
+		return err;
+	err = marvell_set_page(phydev, MII_MARVELL_COPPER_PAGE);
+	if (err < 0)
+		return err;
 
 	/* SGMII-to-Copper mode initialization */
 	if (phydev->interface == PHY_INTERFACE_MODE_SGMII) {
@@ -1228,20 +1279,12 @@ static int m88e1118_config_aneg(struct phy_device *phydev)
 
 static int m88e1118_config_init(struct phy_device *phydev)
 {
+	u16 leds;
 	int err;
 
-	/* Change address */
-	err = marvell_set_page(phydev, MII_MARVELL_MSCR_PAGE);
-	if (err < 0)
-		return err;
-
 	/* Enable 1000 Mbit */
-	err = phy_write(phydev, 0x15, 0x1070);
-	if (err < 0)
-		return err;
-
-	/* Change address */
-	err = marvell_set_page(phydev, MII_MARVELL_LED_PAGE);
+	err = phy_write_paged(phydev, MII_MARVELL_MSCR_PAGE,
+			      MII_88E1121_PHY_MSCR_REG, 0x1070);
 	if (err < 0)
 		return err;
 
@@ -1253,9 +1296,11 @@ static int m88e1118_config_init(struct phy_device *phydev)
 
 	/* Adjust LED Control */
 	if (phydev->dev_flags & MARVELL_PHY_M1118_DNS323_LEDS)
-		err = phy_write(phydev, 0x10, 0x1100);
+		leds = 0x1100;
 	else
-		err = phy_write(phydev, 0x10, 0x021e);
+		leds = 0x021e;
+
+	err = phy_write_paged(phydev, MII_MARVELL_LED_PAGE, 0x10, leds);
 	if (err < 0)
 		return err;
 
@@ -1263,7 +1308,7 @@ static int m88e1118_config_init(struct phy_device *phydev)
 	if (err < 0)
 		return err;
 
-	/* Reset address */
+	/* Reset page register */
 	err = marvell_set_page(phydev, MII_MARVELL_COPPER_PAGE);
 	if (err < 0)
 		return err;
@@ -1907,7 +1952,7 @@ static void marvell_get_strings(struct phy_device *phydev, u8 *data)
 	int i;
 
 	for (i = 0; i < count; i++) {
-		strlcpy(data + i * ETH_GSTRING_LEN,
+		strscpy(data + i * ETH_GSTRING_LEN,
 			marvell_hw_stats[i].string, ETH_GSTRING_LEN);
 	}
 }
@@ -1946,15 +1991,9 @@ static int m88e1510_loopback(struct phy_device *phydev, bool enable)
 	int err;
 
 	if (enable) {
-		u16 bmcr_ctl = 0, mscr2_ctl = 0;
+		u16 bmcr_ctl, mscr2_ctl = 0;
 
-		if (phydev->speed == SPEED_1000)
-			bmcr_ctl = BMCR_SPEED1000;
-		else if (phydev->speed == SPEED_100)
-			bmcr_ctl = BMCR_SPEED100;
-
-		if (phydev->duplex == DUPLEX_FULL)
-			bmcr_ctl |= BMCR_FULLDPLX;
+		bmcr_ctl = mii_bmcr_encode_fixed(phydev->speed, phydev->duplex);
 
 		err = phy_write(phydev, MII_BMCR, bmcr_ctl);
 		if (err < 0)
@@ -2808,6 +2847,7 @@ static int marvell_probe(struct phy_device *phydev)
 
 static int m88e1510_sfp_insert(void *upstream, const struct sfp_eeprom_id *id)
 {
+	DECLARE_PHY_INTERFACE_MASK(interfaces);
 	struct phy_device *phydev = upstream;
 	phy_interface_t interface;
 	struct device *dev;
@@ -2819,7 +2859,7 @@ static int m88e1510_sfp_insert(void *upstream, const struct sfp_eeprom_id *id)
 
 	dev = &phydev->mdio.dev;
 
-	sfp_parse_support(phydev->sfp_bus, id, supported);
+	sfp_parse_support(phydev->sfp_bus, id, supported, interfaces);
 	interface = sfp_select_interface(phydev->sfp_bus, supported);
 
 	dev_info(dev, "%s SFP module inserted\n", phy_modes(interface));

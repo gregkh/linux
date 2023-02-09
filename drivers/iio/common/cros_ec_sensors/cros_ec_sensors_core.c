@@ -29,12 +29,6 @@
  */
 #define CROS_EC_FIFO_SIZE (2048 * 2 / 3)
 
-static char *cros_ec_loc[] = {
-	[MOTIONSENSE_LOC_BASE] = "base",
-	[MOTIONSENSE_LOC_LID] = "lid",
-	[MOTIONSENSE_LOC_MAX] = "unknown",
-};
-
 static int cros_ec_get_host_cmd_version_mask(struct cros_ec_device *ec_dev,
 					     u16 cmd_offset, u16 cmd, u32 *mask)
 {
@@ -284,6 +278,8 @@ int cros_ec_sensors_core_init(struct platform_device *pdev,
 	indio_dev->name = pdev->name;
 
 	if (physical_device) {
+		enum motionsensor_location loc;
+
 		state->param.cmd = MOTIONSENSE_CMD_INFO;
 		state->param.info.sensor_num = sensor_platform->sensor_num;
 		ret = cros_ec_motion_send_host_cmd(state, 0);
@@ -292,7 +288,13 @@ int cros_ec_sensors_core_init(struct platform_device *pdev,
 			return ret;
 		}
 		state->type = state->resp->info.type;
-		state->loc = state->resp->info.location;
+		loc = state->resp->info.location;
+		if (loc == MOTIONSENSE_LOC_BASE)
+			indio_dev->label = "accel-base";
+		else if (loc == MOTIONSENSE_LOC_LID)
+			indio_dev->label = "accel-display";
+		else if (loc == MOTIONSENSE_LOC_CAMERA)
+			indio_dev->label = "accel-camera";
 
 		/* Set sign vector, only used for backward compatibility. */
 		memset(state->sign, 1, CROS_EC_SENSOR_MAX_AXIS);
@@ -330,8 +332,7 @@ int cros_ec_sensors_core_init(struct platform_device *pdev,
 			 * We can not use trigger here, as events are generated
 			 * as soon as sample_frequency is set.
 			 */
-			ret = devm_iio_kfifo_buffer_setup_ext(dev, indio_dev,
-							      INDIO_BUFFER_SOFTWARE, NULL,
+			ret = devm_iio_kfifo_buffer_setup_ext(dev, indio_dev, NULL,
 							      cros_ec_sensor_fifo_attributes);
 			if (ret)
 				return ret;
@@ -439,7 +440,7 @@ static ssize_t cros_ec_sensors_calibrate(struct iio_dev *indio_dev,
 	int ret, i;
 	bool calibrate;
 
-	ret = strtobool(buf, &calibrate);
+	ret = kstrtobool(buf, &calibrate);
 	if (ret < 0)
 		return ret;
 	if (!calibrate)
@@ -469,15 +470,6 @@ static ssize_t cros_ec_sensors_id(struct iio_dev *indio_dev,
 	return snprintf(buf, PAGE_SIZE, "%d\n", st->param.info.sensor_num);
 }
 
-static ssize_t cros_ec_sensors_loc(struct iio_dev *indio_dev,
-		uintptr_t private, const struct iio_chan_spec *chan,
-		char *buf)
-{
-	struct cros_ec_sensors_core_state *st = iio_priv(indio_dev);
-
-	return snprintf(buf, PAGE_SIZE, "%s\n", cros_ec_loc[st->loc]);
-}
-
 const struct iio_chan_spec_ext_info cros_ec_sensors_ext_info[] = {
 	{
 		.name = "calibrate",
@@ -488,11 +480,6 @@ const struct iio_chan_spec_ext_info cros_ec_sensors_ext_info[] = {
 		.name = "id",
 		.shared = IIO_SHARED_BY_ALL,
 		.read = cros_ec_sensors_id
-	},
-	{
-		.name = "location",
-		.shared = IIO_SHARED_BY_ALL,
-		.read = cros_ec_sensors_loc
 	},
 	{ },
 };
@@ -857,8 +844,7 @@ EXPORT_SYMBOL_GPL(cros_ec_sensors_core_write);
 
 static int __maybe_unused cros_ec_sensors_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
+	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct cros_ec_sensors_core_state *st = iio_priv(indio_dev);
 	int ret = 0;
 

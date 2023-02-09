@@ -217,7 +217,6 @@ static struct aa_perms compute_mnt_perms(struct aa_dfa *dfa,
 		.allow = dfa_user_allow(dfa, state),
 		.audit = dfa_user_audit(dfa, state),
 		.quiet = dfa_user_quiet(dfa, state),
-		.xindex = dfa_user_xindex(dfa, state),
 	};
 
 	return perms;
@@ -304,7 +303,7 @@ static int path_flags(struct aa_profile *profile, const struct path *path)
  * @profile: the confining profile
  * @mntpath: for the mntpnt (NOT NULL)
  * @buffer: buffer to be used to lookup mntpath
- * @devnme: string for the devname/src_name (MAY BE NULL OR ERRPTR)
+ * @devname: string for the devname/src_name (MAY BE NULL OR ERRPTR)
  * @type: string for the dev type (MAYBE NULL)
  * @flags: mount flags to match
  * @data: fs mount data (MAYBE NULL)
@@ -359,7 +358,7 @@ audit:
 /**
  * match_mnt - handle path matching for mount
  * @profile: the confining profile
- * @mntpath: for the mntpnt (NOT NULL)
+ * @path: for the mntpnt (NOT NULL)
  * @buffer: buffer to be used to lookup mntpath
  * @devpath: path devname/src_name (MAYBE NULL)
  * @devbuffer: buffer to be used to lookup devname/src_name

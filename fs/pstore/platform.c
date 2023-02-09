@@ -219,7 +219,7 @@ static int zbufsize_842(size_t size)
 #if IS_ENABLED(CONFIG_PSTORE_ZSTD_COMPRESS)
 static int zbufsize_zstd(size_t size)
 {
-	return ZSTD_compressBound(size);
+	return zstd_compress_bound(size);
 }
 #endif
 
@@ -769,6 +769,7 @@ void pstore_get_backend_records(struct pstore_info *psi,
 		if (rc) {
 			/* pstore_mkfile() did not take record, so free it. */
 			kfree(record->buf);
+			kfree(record->priv);
 			kfree(record);
 			if (rc != -EEXIST || !quiet)
 				failed++;

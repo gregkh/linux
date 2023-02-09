@@ -133,7 +133,7 @@ static inline unsigned long idx_to_kaddr(struct xenvif_queue *queue,
 
 /* Find the containing VIF's structure from a pointer in pending_tx_info array
  */
-static inline struct xenvif_queue *ubuf_to_queue(const struct ubuf_info *ubuf)
+static inline struct xenvif_queue *ubuf_to_queue(const struct ubuf_info_msgzc *ubuf)
 {
 	u16 pending_idx = ubuf->desc;
 	struct pending_tx_info *temp =
@@ -900,7 +900,7 @@ static void xenvif_tx_build_gops(struct xenvif_queue *queue,
 			break;
 		}
 
-		work_to_do = RING_HAS_UNCONSUMED_REQUESTS(&queue->tx);
+		work_to_do = XEN_RING_NR_UNCONSUMED_REQUESTS(&queue->tx);
 		if (!work_to_do)
 			break;
 
@@ -1224,9 +1224,7 @@ static int xenvif_tx_submit(struct xenvif_queue *queue)
 			}
 
 			mss = skb_shinfo(skb)->gso_size;
-			hdrlen = skb_transport_header(skb) -
-				skb_mac_header(skb) +
-				tcp_hdrlen(skb);
+			hdrlen = skb_tcp_all_headers(skb);
 
 			skb_shinfo(skb)->gso_segs =
 				DIV_ROUND_UP(skb->len - hdrlen, mss);
@@ -1253,11 +1251,12 @@ static int xenvif_tx_submit(struct xenvif_queue *queue)
 	return work_done;
 }
 
-void xenvif_zerocopy_callback(struct sk_buff *skb, struct ubuf_info *ubuf,
+void xenvif_zerocopy_callback(struct sk_buff *skb, struct ubuf_info *ubuf_base,
 			      bool zerocopy_success)
 {
 	unsigned long flags;
 	pending_ring_idx_t index;
+	struct ubuf_info_msgzc *ubuf = uarg_to_msgzc(ubuf_base);
 	struct xenvif_queue *queue = ubuf_to_queue(ubuf);
 
 	/* This is the only place where we grab this lock, to protect callbacks
@@ -1266,7 +1265,7 @@ void xenvif_zerocopy_callback(struct sk_buff *skb, struct ubuf_info *ubuf,
 	spin_lock_irqsave(&queue->callback_lock, flags);
 	do {
 		u16 pending_idx = ubuf->desc;
-		ubuf = (struct ubuf_info *) ubuf->ctx;
+		ubuf = (struct ubuf_info_msgzc *) ubuf->ctx;
 		BUG_ON(queue->dealloc_prod - queue->dealloc_cons >=
 			MAX_PENDING_REQS);
 		index = pending_index(queue->dealloc_prod);
@@ -1499,7 +1498,7 @@ int xenvif_map_frontend_data_rings(struct xenvif_queue *queue,
 	struct xen_netif_tx_sring *txs;
 	struct xen_netif_rx_sring *rxs;
 	RING_IDX rsp_prod, req_prod;
-	int err = -ENOMEM;
+	int err;
 
 	err = xenbus_map_ring_valloc(xenvif_to_xenbus_device(queue->vif),
 				     &tx_ring_ref, 1, &addr);

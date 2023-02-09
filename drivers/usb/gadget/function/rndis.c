@@ -869,7 +869,7 @@ EXPORT_SYMBOL_GPL(rndis_msg_parser);
 
 static inline int rndis_get_nr(void)
 {
-	return ida_simple_get(&rndis_ida, 0, 0, GFP_KERNEL);
+	return ida_simple_get(&rndis_ida, 0, 1000, GFP_KERNEL);
 }
 
 static inline void rndis_put_nr(int nr)
@@ -1105,7 +1105,7 @@ static int rndis_proc_show(struct seq_file *m, void *v)
 			 "used      : %s\n"
 			 "state     : %s\n"
 			 "medium    : 0x%08X\n"
-			 "speed     : %d\n"
+			 "speed     : %u\n"
 			 "cable     : %s\n"
 			 "vendor ID : 0x%08X\n"
 			 "vendor    : %s\n",
@@ -1129,7 +1129,7 @@ static int rndis_proc_show(struct seq_file *m, void *v)
 static ssize_t rndis_proc_write(struct file *file, const char __user *buffer,
 				size_t count, loff_t *ppos)
 {
-	rndis_params *p = PDE_DATA(file_inode(file));
+	rndis_params *p = pde_data(file_inode(file));
 	u32 speed = 0;
 	int i, fl_speed = 0;
 
@@ -1173,7 +1173,7 @@ static ssize_t rndis_proc_write(struct file *file, const char __user *buffer,
 
 static int rndis_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, rndis_proc_show, PDE_DATA(inode));
+	return single_open(file, rndis_proc_show, pde_data(inode));
 }
 
 static const struct proc_ops rndis_proc_ops = {

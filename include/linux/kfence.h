@@ -17,6 +17,8 @@
 #include <linux/atomic.h>
 #include <linux/static_key.h>
 
+extern unsigned long kfence_sample_interval;
+
 /*
  * We allocate an even number of pages, as it simplifies calculations to map
  * address to metadata indices; effectively, the very first page serves as an
@@ -215,7 +217,7 @@ struct kmem_obj_info;
  *
  * Copies information to @kpp for KFENCE objects.
  */
-bool __kfence_obj_info(struct kmem_obj_info *kpp, void *object, struct page *page);
+bool __kfence_obj_info(struct kmem_obj_info *kpp, void *object, struct slab *slab);
 #endif
 
 #else /* CONFIG_KFENCE */
@@ -237,7 +239,7 @@ static inline bool __must_check kfence_handle_page_fault(unsigned long addr, boo
 
 #ifdef CONFIG_PRINTK
 struct kmem_obj_info;
-static inline bool __kfence_obj_info(struct kmem_obj_info *kpp, void *object, struct page *page)
+static inline bool __kfence_obj_info(struct kmem_obj_info *kpp, void *object, struct slab *slab)
 {
 	return false;
 }

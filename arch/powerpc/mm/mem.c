@@ -17,17 +17,19 @@
 #include <linux/suspend.h>
 #include <linux/dma-direct.h>
 
+#include <asm/swiotlb.h>
 #include <asm/machdep.h>
 #include <asm/rtas.h>
 #include <asm/kasan.h>
 #include <asm/svm.h>
 #include <asm/mmzone.h>
 #include <asm/ftrace.h>
+#include <asm/code-patching.h>
+#include <asm/setup.h>
 
 #include <mm/mmu_decl.h>
 
 unsigned long long memory_limit;
-bool init_mem_is_free;
 
 unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
 EXPORT_SYMBOL(empty_zero_page);
@@ -53,6 +55,7 @@ int memory_add_physaddr_to_nid(u64 start)
 {
 	return hot_add_scn_to_nid(start);
 }
+EXPORT_SYMBOL_GPL(memory_add_physaddr_to_nid);
 #endif
 
 int __weak create_section_mapping(unsigned long start, unsigned long end,
@@ -281,10 +284,7 @@ void __init mem_init(void)
 	 * back to to-down.
 	 */
 	memblock_set_bottom_up(true);
-	if (is_secure_guest())
-		svm_swiotlb_init();
-	else
-		swiotlb_init(0);
+	swiotlb_init(ppc_swiotlb_enable, ppc_swiotlb_flags);
 #endif
 
 	high_memory = (void *) __va(max_low_pfn * PAGE_SIZE);
@@ -302,13 +302,13 @@ void __init mem_init(void)
 		for (pfn = highmem_mapnr; pfn < max_mapnr; ++pfn) {
 			phys_addr_t paddr = (phys_addr_t)pfn << PAGE_SHIFT;
 			struct page *page = pfn_to_page(pfn);
-			if (!memblock_is_reserved(paddr))
+			if (memblock_is_memory(paddr) && !memblock_is_reserved(paddr))
 				free_highmem_page(page);
 		}
 	}
 #endif /* CONFIG_HIGHMEM */
 
-#if defined(CONFIG_PPC_FSL_BOOK3E) && !defined(CONFIG_SMP)
+#if defined(CONFIG_PPC_E500) && !defined(CONFIG_SMP)
 	/*
 	 * If smp is enabled, next_tlbcam_idx is initialized in the cpu up
 	 * functions.... do it here for the non-smp case.
@@ -344,7 +344,7 @@ void free_initmem(void)
 {
 	ppc_md.progress = ppc_printk_progress;
 	mark_initmem_nx();
-	init_mem_is_free = true;
+	static_branch_enable(&init_mem_is_free);
 	free_initmem_default(POISON_FREE_INITMEM);
 	ftrace_free_init_tramp();
 }

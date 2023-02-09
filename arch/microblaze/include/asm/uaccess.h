@@ -15,37 +15,7 @@
 #include <linux/pgtable.h>
 #include <asm/extable.h>
 #include <linux/string.h>
-
-/*
- * On Microblaze the fs value is actually the top of the corresponding
- * address space.
- *
- * The fs value determines whether argument validity checking should be
- * performed or not. If get_fs() == USER_DS, checking is performed, with
- * get_fs() == KERNEL_DS, checking is bypassed.
- *
- * For historical reasons, these macros are grossly misnamed.
- *
- * For non-MMU arch like Microblaze, KERNEL_DS and USER_DS is equal.
- */
-# define MAKE_MM_SEG(s)       ((mm_segment_t) { (s) })
-
-#  define KERNEL_DS	MAKE_MM_SEG(0xFFFFFFFF)
-#  define USER_DS	MAKE_MM_SEG(TASK_SIZE - 1)
-
-# define get_fs()	(current_thread_info()->addr_limit)
-# define set_fs(val)	(current_thread_info()->addr_limit = (val))
-# define user_addr_max() get_fs().seg
-
-# define uaccess_kernel()	(get_fs().seg == KERNEL_DS.seg)
-
-static inline int __access_ok(unsigned long addr, unsigned long size)
-{
-	unsigned long limit = user_addr_max();
-
-	return (size <= limit) && (addr <= (limit - size));
-}
-#define access_ok(addr, size) __access_ok((unsigned long)addr, size)
+#include <asm-generic/access_ok.h>
 
 # define __FIXUP_SECTION	".section .fixup,\"ax\"\n"
 # define __EX_TABLE_SECTION	".section __ex_table,\"a\"\n"

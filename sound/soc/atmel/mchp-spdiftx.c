@@ -340,12 +340,10 @@ static int mchp_spdiftx_trigger(struct snd_pcm_substream *substream, int cmd,
 
 	ret = regmap_write(dev->regmap, SPDIFTX_MR, mr);
 	spin_unlock(&ctrl->lock);
-	if (ret) {
+	if (ret)
 		dev_err(dev->dev, "unable to disable TX: %d\n", ret);
-		return ret;
-	}
 
-	return 0;
+	return ret;
 }
 
 static int mchp_spdiftx_hw_params(struct snd_pcm_substream *substream,
@@ -752,7 +750,8 @@ static struct snd_soc_dai_driver mchp_spdiftx_dai = {
 };
 
 static const struct snd_soc_component_driver mchp_spdiftx_component = {
-	.name		= "mchp-spdiftx",
+	.name			= "mchp-spdiftx",
+	.legacy_dai_naming	= 1,
 };
 
 static const struct of_device_id mchp_spdiftx_dt_ids[] = {
@@ -761,8 +760,8 @@ static const struct of_device_id mchp_spdiftx_dt_ids[] = {
 	},
 	{ /* sentinel */ }
 };
-
 MODULE_DEVICE_TABLE(of, mchp_spdiftx_dt_ids);
+
 static int mchp_spdiftx_probe(struct platform_device *pdev)
 {
 	struct mchp_spdiftx_dev *dev;
@@ -839,12 +838,10 @@ static int mchp_spdiftx_probe(struct platform_device *pdev)
 	err = devm_snd_soc_register_component(&pdev->dev,
 					      &mchp_spdiftx_component,
 					      &mchp_spdiftx_dai, 1);
-	if (err) {
+	if (err)
 		dev_err(&pdev->dev, "failed to register component: %d\n", err);
-		return err;
-	}
 
-	return 0;
+	return err;
 }
 
 static struct platform_driver mchp_spdiftx_driver = {

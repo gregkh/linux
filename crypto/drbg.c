@@ -100,6 +100,7 @@
 #include <crypto/drbg.h>
 #include <crypto/internal/cipher.h>
 #include <linux/kernel.h>
+#include <linux/jiffies.h>
 
 /***************************************************************
  * Backend cipher definitions available to DRBG
@@ -1044,6 +1045,7 @@ static inline int __drbg_seed(struct drbg_state *drbg, struct list_head *seed,
 		return ret;
 
 	drbg->seeded = new_seed_state;
+	drbg->last_seed_time = jiffies;
 	/* 10.1.1.2 / 10.1.1.3 step 5 */
 	drbg->reseed_ctr = 1;
 
@@ -1112,6 +1114,26 @@ out:
 	return ret;
 }
 
+static bool drbg_nopr_reseed_interval_elapsed(struct drbg_state *drbg)
+{
+	unsigned long next_reseed;
+
+	/* Don't ever reseed from get_random_bytes() in test mode. */
+	if (list_empty(&drbg->test_data.list))
+		return false;
+
+	/*
+	 * Obtain fresh entropy for the nopr DRBGs after 300s have
+	 * elapsed in order to still achieve sort of partial
+	 * prediction resistance over the time domain at least. Note
+	 * that the period of 300s has been chosen to match the
+	 * CRNG_RESEED_INTERVAL of the get_random_bytes()' chacha
+	 * rngs.
+	 */
+	next_reseed = drbg->last_seed_time + 300 * HZ;
+	return time_after(jiffies, next_reseed);
+}
+
 /*
  * Seeding or reseeding of the DRBG
  *
@@ -1171,11 +1193,14 @@ static int drbg_seed(struct drbg_state *drbg, struct drbg_string *pers,
 			pr_devel("DRBG: (re)seeding with %u bytes of entropy\n",
 				 entropylen);
 		} else {
-			/* Get seed from Jitter RNG */
+			/*
+			 * Get seed from Jitter RNG, failures are
+			 * fatal only in FIPS mode.
+			 */
 			ret = crypto_rng_get_bytes(drbg->jent,
 						   entropy + entropylen,
 						   entropylen);
-			if (ret) {
+			if (fips_enabled && ret) {
 				pr_devel("DRBG: jent failed with %d\n", ret);
 
 				/*
@@ -1413,7 +1438,8 @@ static int drbg_generate(struct drbg_state *drbg,
 		/* 9.3.1 step 7.4 */
 		addtl = NULL;
 	} else if (rng_is_initialized() &&
-		   drbg->seeded == DRBG_SEED_STATE_PARTIAL) {
+		   (drbg->seeded == DRBG_SEED_STATE_PARTIAL ||
+		    drbg_nopr_reseed_interval_elapsed(drbg))) {
 		len = drbg_seed_from_random(drbg);
 		if (len)
 			goto err;
@@ -1516,6 +1542,14 @@ static int drbg_prepare_hrng(struct drbg_state *drbg)
 		return 0;
 
 	drbg->jent = crypto_alloc_rng("jitterentropy_rng", 0, 0);
+	if (IS_ERR(drbg->jent)) {
+		const int err = PTR_ERR(drbg->jent);
+
+		drbg->jent = NULL;
+		if (fips_enabled || err != -ENOENT)
+			return err;
+		pr_info("DRBG: Continuing without Jitter RNG\n");
+	}
 
 	return 0;
 }
@@ -1561,6 +1595,7 @@ static int drbg_instantiate(struct drbg_state *drbg, struct drbg_string *pers,
 		drbg->core = &drbg_cores[coreref];
 		drbg->pr = pr;
 		drbg->seeded = DRBG_SEED_STATE_UNSEEDED;
+		drbg->last_seed_time = 0;
 		drbg->reseed_threshold = drbg_max_requests(drbg);
 
 		ret = drbg_alloc_state(drbg);
@@ -1570,14 +1605,6 @@ static int drbg_instantiate(struct drbg_state *drbg, struct drbg_string *pers,
 		ret = drbg_prepare_hrng(drbg);
 		if (ret)
 			goto free_everything;
-
-		if (IS_ERR(drbg->jent)) {
-			ret = PTR_ERR(drbg->jent);
-			drbg->jent = NULL;
-			if (fips_enabled || ret != -ENOENT)
-				goto free_everything;
-			pr_info("DRBG: Continuing without Jitter RNG\n");
-		}
 
 		reseed = false;
 	}
@@ -1676,7 +1703,7 @@ static int drbg_init_hash_kernel(struct drbg_state *drbg)
 
 static int drbg_fini_hash_kernel(struct drbg_state *drbg)
 {
-	struct sdesc *sdesc = (struct sdesc *)drbg->priv_data;
+	struct sdesc *sdesc = drbg->priv_data;
 	if (sdesc) {
 		crypto_free_shash(sdesc->shash.tfm);
 		kfree_sensitive(sdesc);
@@ -1688,7 +1715,7 @@ static int drbg_fini_hash_kernel(struct drbg_state *drbg)
 static void drbg_kcapi_hmacsetkey(struct drbg_state *drbg,
 				  const unsigned char *key)
 {
-	struct sdesc *sdesc = (struct sdesc *)drbg->priv_data;
+	struct sdesc *sdesc = drbg->priv_data;
 
 	crypto_shash_setkey(sdesc->shash.tfm, key, drbg_statelen(drbg));
 }
@@ -1696,7 +1723,7 @@ static void drbg_kcapi_hmacsetkey(struct drbg_state *drbg,
 static int drbg_kcapi_hash(struct drbg_state *drbg, unsigned char *outval,
 			   const struct list_head *in)
 {
-	struct sdesc *sdesc = (struct sdesc *)drbg->priv_data;
+	struct sdesc *sdesc = drbg->priv_data;
 	struct drbg_string *input = NULL;
 
 	crypto_shash_init(&sdesc->shash);
@@ -1791,8 +1818,7 @@ static int drbg_init_sym_kernel(struct drbg_state *drbg)
 static void drbg_kcapi_symsetkey(struct drbg_state *drbg,
 				 const unsigned char *key)
 {
-	struct crypto_cipher *tfm =
-		(struct crypto_cipher *)drbg->priv_data;
+	struct crypto_cipher *tfm = drbg->priv_data;
 
 	crypto_cipher_setkey(tfm, key, (drbg_keylen(drbg)));
 }
@@ -1800,8 +1826,7 @@ static void drbg_kcapi_symsetkey(struct drbg_state *drbg,
 static int drbg_kcapi_sym(struct drbg_state *drbg, unsigned char *outval,
 			  const struct drbg_string *in)
 {
-	struct crypto_cipher *tfm =
-		(struct crypto_cipher *)drbg->priv_data;
+	struct crypto_cipher *tfm = drbg->priv_data;
 
 	/* there is only component in *in */
 	BUG_ON(in->len < drbg_blocklen(drbg));
@@ -1980,7 +2005,7 @@ static inline int __init drbg_healthcheck_sanity(void)
 #define OUTBUFLEN 16
 	unsigned char buf[OUTBUFLEN];
 	struct drbg_state *drbg = NULL;
-	int ret = -EFAULT;
+	int ret;
 	int rc = -EFAULT;
 	bool pr = false;
 	int coreref = 0;

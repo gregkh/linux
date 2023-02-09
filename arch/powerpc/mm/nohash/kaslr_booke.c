@@ -14,8 +14,9 @@
 #include <linux/memblock.h>
 #include <linux/libfdt.h>
 #include <linux/crash_core.h>
+#include <linux/of.h>
+#include <linux/of_fdt.h>
 #include <asm/cacheflush.h>
-#include <asm/prom.h>
 #include <asm/kdump.h>
 #include <mm/mmu_decl.h>
 #include <generated/utsrelease.h>
@@ -39,9 +40,7 @@ struct regions __initdata regions;
 
 static __init void kaslr_get_cmdline(void *fdt)
 {
-	int node = fdt_path_offset(fdt, "/chosen");
-
-	early_init_dt_scan_chosen(node, "chosen", 1, boot_command_line);
+	early_init_dt_scan_chosen(boot_command_line);
 }
 
 static unsigned long __init rotate_xor(unsigned long hash, const void *area,
@@ -310,10 +309,10 @@ static unsigned long __init kaslr_choose_location(void *dt_ptr, phys_addr_t size
 		pr_warn("KASLR: No safe seed for randomizing the kernel base.\n");
 
 	ram = min_t(phys_addr_t, __max_low_memory, size);
-	ram = map_mem_in_cams(ram, CONFIG_LOWMEM_CAM_NUM, true);
+	ram = map_mem_in_cams(ram, CONFIG_LOWMEM_CAM_NUM, true, true);
 	linear_sz = min_t(unsigned long, ram, SZ_512M);
 
-	/* If the linear size is smaller than 64M, do not randmize */
+	/* If the linear size is smaller than 64M, do not randomize */
 	if (linear_sz < SZ_64M)
 		return 0;
 

@@ -20,38 +20,48 @@
 / {
 	model = "Xiaomi Mi 4C";
 	compatible = "xiaomi,libra", "qcom,msm8992";
+	chassis-type = "handset";
+
 	/* required for bootloader to select correct board */
-	qcom,msm-id = <251 0 252 0>;
+	qcom,msm-id = <251 0>, <252 0>;
 	qcom,pmic-id = <65545 65546 0 0>;
 	qcom,board-id = <12 0>;
 
 	/* This enables graphical output via bootloader-enabled display */
 	chosen {
-		bootargs = "earlycon=tty0 console=tty0";
+		bootargs = "earlycon=tty0 console=tty0 maxcpus=1";
 
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
 
-		framebuffer0: framebuffer@3404000 {
-			status= "okay";
+		framebuffer0: framebuffer@3400000 {
 			compatible = "simple-framebuffer";
-			reg = <0 0x3404000 0 (1080 * 1920 * 3)>;
+			reg = <0 0x3400000 0 (1080 * 1920 * 3)>;
 			width = <1080>;
 			height = <1920>;
 			stride = <(1080 * 3)>;
 			format = "r8g8b8";
+			/*
+			 * That's a lot of clocks, but it's necessary due
+			 * to unused clk cleanup & no panel driver yet..
+			 */
+			clocks = <&mmcc MDSS_AHB_CLK>,
+				 <&mmcc MDSS_AXI_CLK>,
+				 <&mmcc MDSS_VSYNC_CLK>,
+				 <&mmcc MDSS_MDP_CLK>,
+				 <&mmcc MDSS_BYTE0_CLK>,
+				 <&mmcc MDSS_PCLK0_CLK>,
+				 <&mmcc MDSS_ESC0_CLK>;
+			power-domains = <&mmcc MDSS_GDSC>;
 		};
 	};
 
-	gpio_keys {
+	gpio-keys {
 		compatible = "gpio-keys";
-		input-name = "gpio-keys";
-		#address-cells = <1>;
-		#size-cells = <0>;
 		autorepeat;
 
-		button@0 {
+		button {
 			label = "Volume Up";
 			gpios = <&pm8994_gpios 3 GPIO_ACTIVE_LOW>;
 			linux,input-type = <1>;

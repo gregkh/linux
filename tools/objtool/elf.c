@@ -83,6 +83,31 @@ static int symbol_by_offset(const void *key, const struct rb_node *node)
 	return 0;
 }
 
+struct symbol_hole {
+	unsigned long key;
+	const struct symbol *sym;
+};
+
+/*
+ * Find !section symbol where @offset is after it.
+ */
+static int symbol_hole_by_offset(const void *key, const struct rb_node *node)
+{
+	const struct symbol *s = rb_entry(node, struct symbol, node);
+	struct symbol_hole *sh = (void *)key;
+
+	if (sh->key < s->offset)
+		return -1;
+
+	if (sh->key >= s->offset + s->len) {
+		if (s->type != STT_SECTION)
+			sh->sym = s;
+		return 1;
+	}
+
+	return 0;
+}
+
 struct section *find_section_by_name(const struct elf *elf, const char *name)
 {
 	struct section *sec;
@@ -160,6 +185,41 @@ struct symbol *find_symbol_containing(const struct section *sec, unsigned long o
 	}
 
 	return NULL;
+}
+
+/*
+ * Returns size of hole starting at @offset.
+ */
+int find_symbol_hole_containing(const struct section *sec, unsigned long offset)
+{
+	struct symbol_hole hole = {
+		.key = offset,
+		.sym = NULL,
+	};
+	struct rb_node *n;
+	struct symbol *s;
+
+	/*
+	 * Find the rightmost symbol for which @offset is after it.
+	 */
+	n = rb_find(&hole, &sec->symbol_tree, symbol_hole_by_offset);
+
+	/* found a symbol that contains @offset */
+	if (n)
+		return 0; /* not a hole */
+
+	/* didn't find a symbol for which @offset is after it */
+	if (!hole.sym)
+		return 0; /* not a hole */
+
+	/* @offset >= sym->offset + sym->len, find symbol after it */
+	n = rb_next(&hole.sym->node);
+	if (!n)
+		return -1; /* until end of address space */
+
+	/* hole until start of next symbol */
+	s = rb_entry(n, struct symbol, node);
+	return s->offset - offset;
 }
 
 struct symbol *find_func_containing(struct section *sec, unsigned long offset)
@@ -295,7 +355,7 @@ static int read_sections(struct elf *elf)
 		elf_hash_add(section_name, &sec->name_hash, str_hash(sec->name));
 	}
 
-	if (stats) {
+	if (opts.stats) {
 		printf("nr_sections: %lu\n", (unsigned long)sections_nr);
 		printf("section_bits: %d\n", elf->section_bits);
 	}
@@ -314,10 +374,14 @@ static void elf_add_symbol(struct elf *elf, struct symbol *sym)
 	struct list_head *entry;
 	struct rb_node *pnode;
 
+	INIT_LIST_HEAD(&sym->pv_target);
 	sym->alias = sym;
 
 	sym->type = GELF_ST_TYPE(sym->sym.st_info);
 	sym->bind = GELF_ST_BIND(sym->sym.st_info);
+
+	if (sym->type == STT_FILE)
+		elf->num_files++;
 
 	sym->offset = sym->sym.st_value;
 	sym->len = sym->sym.st_size;
@@ -415,7 +479,7 @@ static int read_symbols(struct elf *elf)
 		elf_add_symbol(elf, sym);
 	}
 
-	if (stats) {
+	if (opts.stats) {
 		printf("nr_symbols: %lu\n", (unsigned long)symbols_nr);
 		printf("symbol_bits: %d\n", elf->symbol_bits);
 	}
@@ -847,7 +911,7 @@ static int read_relocs(struct elf *elf)
 		tot_reloc += nr_reloc;
 	}
 
-	if (stats) {
+	if (opts.stats) {
 		printf("max_reloc: %lu\n", max_reloc);
 		printf("tot_reloc: %lu\n", tot_reloc);
 		printf("reloc_bits: %d\n", elf->reloc_bits);
@@ -1225,6 +1289,9 @@ int elf_write(struct elf *elf)
 {
 	struct section *sec;
 	Elf_Scn *s;
+
+	if (opts.dryrun)
+		return 0;
 
 	/* Update changed relocation sections and section headers: */
 	list_for_each_entry(sec, &elf->sections, list) {

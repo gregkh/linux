@@ -159,12 +159,11 @@ mshw0011_notify(struct mshw0011_data *cdata, u8 arg1, u8 arg2,
 		unsigned int *ret_value)
 {
 	union acpi_object *obj;
-	struct acpi_device *adev;
 	acpi_handle handle;
 	unsigned int i;
 
 	handle = ACPI_HANDLE(&cdata->adp1->dev);
-	if (!handle || acpi_bus_get_device(handle, &adev))
+	if (!handle)
 		return -ENODEV;
 
 	obj = acpi_evaluate_dsm_typed(handle, &mshw0011_guid, arg1, arg2, NULL,
@@ -520,7 +519,7 @@ static int mshw0011_probe(struct i2c_client *client)
 	i2c_set_clientdata(client, data);
 
 	memset(&board_info, 0, sizeof(board_info));
-	strlcpy(board_info.type, "MSHW0011-bat0", I2C_NAME_SIZE);
+	strscpy(board_info.type, "MSHW0011-bat0", I2C_NAME_SIZE);
 
 	bat0 = i2c_acpi_new_device(dev, 1, &board_info);
 	if (IS_ERR(bat0))
@@ -555,7 +554,7 @@ out_err:
 	return error;
 }
 
-static int mshw0011_remove(struct i2c_client *client)
+static void mshw0011_remove(struct i2c_client *client)
 {
 	struct mshw0011_data *cdata = i2c_get_clientdata(client);
 
@@ -565,8 +564,6 @@ static int mshw0011_remove(struct i2c_client *client)
 		kthread_stop(cdata->poll_task);
 
 	i2c_unregister_device(cdata->bat0);
-
-	return 0;
 }
 
 static const struct acpi_device_id mshw0011_acpi_match[] = {

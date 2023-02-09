@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * sufile.c - NILFS segment usage file.
+ * NILFS segment usage file.
  *
  * Copyright (C) 2006-2008 Nippon Telegraph and Telephone Corporation.
  *
@@ -1108,7 +1108,7 @@ int nilfs_sufile_trim_fs(struct inode *sufile, struct fstrim_range *range)
 				ret = blkdev_issue_discard(nilfs->ns_bdev,
 						start * sects_per_block,
 						nblocks * sects_per_block,
-						GFP_NOFS, 0);
+						GFP_NOFS);
 				if (ret < 0) {
 					put_bh(su_bh);
 					goto out_sem;
@@ -1142,7 +1142,7 @@ int nilfs_sufile_trim_fs(struct inode *sufile, struct fstrim_range *range)
 			ret = blkdev_issue_discard(nilfs->ns_bdev,
 					start * sects_per_block,
 					nblocks * sects_per_block,
-					GFP_NOFS, 0);
+					GFP_NOFS);
 			if (!ret)
 				ndiscarded += nblocks;
 		}

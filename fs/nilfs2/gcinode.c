@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * gcinode.c - dummy inodes to buffer blocks for garbage collection
+ * Dummy inodes to buffer blocks for garbage collection
  *
  * Copyright (C) 2005-2008 Nippon Telegraph and Telephone Corporation.
  *
@@ -92,7 +92,7 @@ int nilfs_gccache_submit_read_data(struct inode *inode, sector_t blkoff,
 	bh->b_blocknr = pbn;
 	bh->b_end_io = end_buffer_read_sync;
 	get_bh(bh);
-	submit_bh(REQ_OP_READ, 0, bh);
+	submit_bh(REQ_OP_READ, bh);
 	if (vbn)
 		bh->b_blocknr = vbn;
  out:
@@ -129,9 +129,8 @@ int nilfs_gccache_submit_read_node(struct inode *inode, sector_t pbn,
 	struct inode *btnc_inode = NILFS_I(inode)->i_assoc_inode;
 	int ret;
 
-	ret = nilfs_btnode_submit_block(btnc_inode->i_mapping,
-					vbn ? : pbn, pbn, REQ_OP_READ, 0,
-					out_bh, &pbn);
+	ret = nilfs_btnode_submit_block(btnc_inode->i_mapping, vbn ? : pbn, pbn,
+					REQ_OP_READ, out_bh, &pbn);
 	if (ret == -EEXIST) /* internal code (cache hit) */
 		ret = 0;
 	return ret;

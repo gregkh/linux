@@ -184,9 +184,6 @@ static void owl_uart_send_chars(struct uart_port *port)
 	struct circ_buf *xmit = &port->state->xmit;
 	unsigned int ch;
 
-	if (uart_tx_stopped(port))
-		return;
-
 	if (port->x_char) {
 		while (!(owl_uart_read(port, OWL_UART_STAT) & OWL_UART_STAT_TFFU))
 			cpu_relax();
@@ -195,13 +192,16 @@ static void owl_uart_send_chars(struct uart_port *port)
 		port->x_char = 0;
 	}
 
+	if (uart_tx_stopped(port))
+		return;
+
 	while (!(owl_uart_read(port, OWL_UART_STAT) & OWL_UART_STAT_TFFU)) {
 		if (uart_circ_empty(xmit))
 			break;
 
 		ch = xmit->buf[xmit->tail];
 		owl_uart_write(port, ch, OWL_UART_TXDAT);
-		xmit->tail = (xmit->tail + 1) & (SERIAL_XMIT_SIZE - 1);
+		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
 		port->icount.tx++;
 	}
 
@@ -328,7 +328,7 @@ static void owl_uart_change_baudrate(struct owl_uart_port *owl_port,
 
 static void owl_uart_set_termios(struct uart_port *port,
 				 struct ktermios *termios,
-				 struct ktermios *old)
+				 const struct ktermios *old)
 {
 	struct owl_uart_port *owl_port = to_owl_uart_port(port);
 	unsigned int baud;
@@ -516,7 +516,7 @@ static const struct uart_ops owl_uart_ops = {
 
 #ifdef CONFIG_SERIAL_OWL_CONSOLE
 
-static void owl_console_putchar(struct uart_port *port, int ch)
+static void owl_console_putchar(struct uart_port *port, unsigned char ch)
 {
 	if (!port->membase)
 		return;

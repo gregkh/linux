@@ -10,6 +10,7 @@
 #include <linux/bpf_trace.h>
 #include <net/udp_tunnel.h>
 #include <linux/ip.h>
+#include <net/gro.h>
 #include <net/ipv6.h>
 #include <net/tcp.h>
 #include <linux/if_ether.h>
@@ -259,11 +260,9 @@ static int map_frag_to_bd(struct qede_tx_queue *txq,
 static u16 qede_get_skb_hlen(struct sk_buff *skb, bool is_encap_pkt)
 {
 	if (is_encap_pkt)
-		return (skb_inner_transport_header(skb) +
-			inner_tcp_hdrlen(skb) - skb->data);
-	else
-		return (skb_transport_header(skb) +
-			tcp_hdrlen(skb) - skb->data);
+		return skb_inner_tcp_all_headers(skb);
+
+	return skb_tcp_all_headers(skb);
 }
 
 /* +2 for 1st BD for headers and 2nd BD for headlen (if required) */
@@ -1155,7 +1154,7 @@ static bool qede_rx_xdp(struct qede_dev *edev,
 		qede_rx_bd_ring_consume(rxq);
 		break;
 	default:
-		bpf_warn_invalid_xdp_action(act);
+		bpf_warn_invalid_xdp_action(edev->ndev, prog, act);
 		fallthrough;
 	case XDP_ABORTED:
 		trace_xdp_exception(edev->ndev, prog, act);

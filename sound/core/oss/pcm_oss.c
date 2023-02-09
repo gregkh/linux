@@ -842,6 +842,17 @@ static void unlock_params(struct snd_pcm_runtime *runtime)
 	mutex_unlock(&runtime->oss.params_lock);
 }
 
+static void snd_pcm_oss_release_buffers(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+
+	kvfree(runtime->oss.buffer);
+	runtime->oss.buffer = NULL;
+#ifdef CONFIG_SND_PCM_OSS_PLUGINS
+	snd_pcm_oss_plugin_clear(substream);
+#endif
+}
+
 /* call with params_lock held */
 static int snd_pcm_oss_change_params_locked(struct snd_pcm_substream *substream)
 {
@@ -972,12 +983,10 @@ static int snd_pcm_oss_change_params_locked(struct snd_pcm_substream *substream)
 	snd_pcm_oss_plugin_clear(substream);
 	if (!direct) {
 		/* add necessary plugins */
-		snd_pcm_oss_plugin_clear(substream);
 		err = snd_pcm_plug_format_plugins(substream, params, sparams);
 		if (err < 0) {
 			pcm_dbg(substream->pcm,
 				"snd_pcm_plug_format_plugins failed: %i\n", err);
-			snd_pcm_oss_plugin_clear(substream);
 			goto failure;
 		}
 		if (runtime->oss.plugin_first) {
@@ -986,7 +995,6 @@ static int snd_pcm_oss_change_params_locked(struct snd_pcm_substream *substream)
 			if (err < 0) {
 				pcm_dbg(substream->pcm,
 					"snd_pcm_plugin_build_io failed: %i\n", err);
-				snd_pcm_oss_plugin_clear(substream);
 				goto failure;
 			}
 			if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
@@ -994,10 +1002,8 @@ static int snd_pcm_oss_change_params_locked(struct snd_pcm_substream *substream)
 			} else {
 				err = snd_pcm_plugin_insert(plugin);
 			}
-			if (err < 0) {
-				snd_pcm_oss_plugin_clear(substream);
+			if (err < 0)
 				goto failure;
-			}
 		}
 	}
 #endif
@@ -1086,6 +1092,8 @@ static int snd_pcm_oss_change_params_locked(struct snd_pcm_substream *substream)
 
 	err = 0;
 failure:
+	if (err)
+		snd_pcm_oss_release_buffers(substream);
 	kfree(sw_params);
 	kfree(params);
 	kfree(sparams);
@@ -1229,12 +1237,12 @@ snd_pcm_sframes_t snd_pcm_oss_write3(struct snd_pcm_substream *substream, const 
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int ret;
 	while (1) {
-		if (runtime->status->state == SNDRV_PCM_STATE_XRUN ||
-		    runtime->status->state == SNDRV_PCM_STATE_SUSPENDED) {
+		if (runtime->state == SNDRV_PCM_STATE_XRUN ||
+		    runtime->state == SNDRV_PCM_STATE_SUSPENDED) {
 #ifdef OSS_DEBUG
 			pcm_dbg(substream->pcm,
 				"pcm_oss: write: recovering from %s\n",
-				runtime->status->state == SNDRV_PCM_STATE_XRUN ?
+				runtime->state == SNDRV_PCM_STATE_XRUN ?
 				"XRUN" : "SUSPEND");
 #endif
 			ret = snd_pcm_oss_prepare(substream);
@@ -1249,7 +1257,7 @@ snd_pcm_sframes_t snd_pcm_oss_write3(struct snd_pcm_substream *substream, const 
 			break;
 		/* test, if we can't store new data, because the stream */
 		/* has not been started */
-		if (runtime->status->state == SNDRV_PCM_STATE_PREPARED)
+		if (runtime->state == SNDRV_PCM_STATE_PREPARED)
 			return -EAGAIN;
 	}
 	return ret;
@@ -1261,18 +1269,18 @@ snd_pcm_sframes_t snd_pcm_oss_read3(struct snd_pcm_substream *substream, char *p
 	snd_pcm_sframes_t delay;
 	int ret;
 	while (1) {
-		if (runtime->status->state == SNDRV_PCM_STATE_XRUN ||
-		    runtime->status->state == SNDRV_PCM_STATE_SUSPENDED) {
+		if (runtime->state == SNDRV_PCM_STATE_XRUN ||
+		    runtime->state == SNDRV_PCM_STATE_SUSPENDED) {
 #ifdef OSS_DEBUG
 			pcm_dbg(substream->pcm,
 				"pcm_oss: read: recovering from %s\n",
-				runtime->status->state == SNDRV_PCM_STATE_XRUN ?
+				runtime->state == SNDRV_PCM_STATE_XRUN ?
 				"XRUN" : "SUSPEND");
 #endif
 			ret = snd_pcm_kernel_ioctl(substream, SNDRV_PCM_IOCTL_DRAIN, NULL);
 			if (ret < 0)
 				break;
-		} else if (runtime->status->state == SNDRV_PCM_STATE_SETUP) {
+		} else if (runtime->state == SNDRV_PCM_STATE_SETUP) {
 			ret = snd_pcm_oss_prepare(substream);
 			if (ret < 0)
 				break;
@@ -1285,7 +1293,7 @@ snd_pcm_sframes_t snd_pcm_oss_read3(struct snd_pcm_substream *substream, char *p
 					 frames, in_kernel);
 		mutex_lock(&runtime->oss.params_lock);
 		if (ret == -EPIPE) {
-			if (runtime->status->state == SNDRV_PCM_STATE_DRAINING) {
+			if (runtime->state == SNDRV_PCM_STATE_DRAINING) {
 				ret = snd_pcm_kernel_ioctl(substream, SNDRV_PCM_IOCTL_DROP, NULL);
 				if (ret < 0)
 					break;
@@ -1304,12 +1312,12 @@ snd_pcm_sframes_t snd_pcm_oss_writev3(struct snd_pcm_substream *substream, void 
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int ret;
 	while (1) {
-		if (runtime->status->state == SNDRV_PCM_STATE_XRUN ||
-		    runtime->status->state == SNDRV_PCM_STATE_SUSPENDED) {
+		if (runtime->state == SNDRV_PCM_STATE_XRUN ||
+		    runtime->state == SNDRV_PCM_STATE_SUSPENDED) {
 #ifdef OSS_DEBUG
 			pcm_dbg(substream->pcm,
 				"pcm_oss: writev: recovering from %s\n",
-				runtime->status->state == SNDRV_PCM_STATE_XRUN ?
+				runtime->state == SNDRV_PCM_STATE_XRUN ?
 				"XRUN" : "SUSPEND");
 #endif
 			ret = snd_pcm_oss_prepare(substream);
@@ -1322,7 +1330,7 @@ snd_pcm_sframes_t snd_pcm_oss_writev3(struct snd_pcm_substream *substream, void 
 
 		/* test, if we can't store new data, because the stream */
 		/* has not been started */
-		if (runtime->status->state == SNDRV_PCM_STATE_PREPARED)
+		if (runtime->state == SNDRV_PCM_STATE_PREPARED)
 			return -EAGAIN;
 	}
 	return ret;
@@ -1333,18 +1341,18 @@ snd_pcm_sframes_t snd_pcm_oss_readv3(struct snd_pcm_substream *substream, void *
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int ret;
 	while (1) {
-		if (runtime->status->state == SNDRV_PCM_STATE_XRUN ||
-		    runtime->status->state == SNDRV_PCM_STATE_SUSPENDED) {
+		if (runtime->state == SNDRV_PCM_STATE_XRUN ||
+		    runtime->state == SNDRV_PCM_STATE_SUSPENDED) {
 #ifdef OSS_DEBUG
 			pcm_dbg(substream->pcm,
 				"pcm_oss: readv: recovering from %s\n",
-				runtime->status->state == SNDRV_PCM_STATE_XRUN ?
+				runtime->state == SNDRV_PCM_STATE_XRUN ?
 				"XRUN" : "SUSPEND");
 #endif
 			ret = snd_pcm_kernel_ioctl(substream, SNDRV_PCM_IOCTL_DRAIN, NULL);
 			if (ret < 0)
 				break;
-		} else if (runtime->status->state == SNDRV_PCM_STATE_SETUP) {
+		} else if (runtime->state == SNDRV_PCM_STATE_SETUP) {
 			ret = snd_pcm_oss_prepare(substream);
 			if (ret < 0)
 				break;
@@ -1627,7 +1635,7 @@ static int snd_pcm_oss_sync1(struct snd_pcm_substream *substream, size_t size)
 		result = 0;
 		set_current_state(TASK_INTERRUPTIBLE);
 		snd_pcm_stream_lock_irq(substream);
-		state = runtime->status->state;
+		state = runtime->state;
 		snd_pcm_stream_unlock_irq(substream);
 		if (state != SNDRV_PCM_STATE_RUNNING) {
 			set_current_state(TASK_RUNNING);
@@ -2355,13 +2363,7 @@ static void snd_pcm_oss_look_for_setup(struct snd_pcm *pcm, int stream,
 
 static void snd_pcm_oss_release_substream(struct snd_pcm_substream *substream)
 {
-	struct snd_pcm_runtime *runtime;
-	runtime = substream->runtime;
-	kvfree(runtime->oss.buffer);
-	runtime->oss.buffer = NULL;
-#ifdef CONFIG_SND_PCM_OSS_PLUGINS
-	snd_pcm_oss_plugin_clear(substream);
-#endif
+	snd_pcm_oss_release_buffers(substream);
 	substream->oss.oss = 0;
 }
 
@@ -2852,8 +2854,8 @@ static __poll_t snd_pcm_oss_poll(struct file *file, poll_table * wait)
 		struct snd_pcm_runtime *runtime = psubstream->runtime;
 		poll_wait(file, &runtime->sleep, wait);
 		snd_pcm_stream_lock_irq(psubstream);
-		if (runtime->status->state != SNDRV_PCM_STATE_DRAINING &&
-		    (runtime->status->state != SNDRV_PCM_STATE_RUNNING ||
+		if (runtime->state != SNDRV_PCM_STATE_DRAINING &&
+		    (runtime->state != SNDRV_PCM_STATE_RUNNING ||
 		     snd_pcm_oss_playback_ready(psubstream)))
 			mask |= EPOLLOUT | EPOLLWRNORM;
 		snd_pcm_stream_unlock_irq(psubstream);
@@ -2863,7 +2865,7 @@ static __poll_t snd_pcm_oss_poll(struct file *file, poll_table * wait)
 		snd_pcm_state_t ostate;
 		poll_wait(file, &runtime->sleep, wait);
 		snd_pcm_stream_lock_irq(csubstream);
-		ostate = runtime->status->state;
+		ostate = runtime->state;
 		if (ostate != SNDRV_PCM_STATE_RUNNING ||
 		    snd_pcm_oss_capture_ready(csubstream))
 			mask |= EPOLLIN | EPOLLRDNORM;

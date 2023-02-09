@@ -912,7 +912,7 @@ static int wdm_wwan_port_tx(struct wwan_port *port, struct sk_buff *skb)
 	return rv;
 }
 
-static struct wwan_port_ops wdm_wwan_port_ops = {
+static const struct wwan_port_ops wdm_wwan_port_ops = {
 	.start = wdm_wwan_port_start,
 	.stop = wdm_wwan_port_stop,
 	.tx = wdm_wwan_port_tx,
@@ -958,7 +958,7 @@ static void wdm_wwan_rx(struct wdm_device *desc, int length)
 	if (!skb)
 		return;
 
-	memcpy(skb_put(skb, length), desc->inbuf, length);
+	skb_put_data(skb, desc->inbuf, length);
 	wwan_port_rx(port, skb);
 
 	/* inbuf has been copied, it is safe to check for outstanding data */

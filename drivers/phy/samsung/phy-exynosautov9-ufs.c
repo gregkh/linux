@@ -10,6 +10,7 @@
 #define EXYNOSAUTOV9_EMBEDDED_COMBO_PHY_CTRL		0x728
 #define EXYNOSAUTOV9_EMBEDDED_COMBO_PHY_CTRL_MASK	0x1
 #define EXYNOSAUTOV9_EMBEDDED_COMBO_PHY_CTRL_EN		BIT(0)
+#define EXYNOSAUTOV9_EMBEDDED_COMBO_PHY_CDR_LOCK_STATUS	0x5e
 
 #define PHY_TRSV_REG_CFG_AUTOV9(o, v, d) \
 	PHY_TRSV_REG_CFG_OFFSET(o, v, d, 0x50)
@@ -56,12 +57,18 @@ static const struct samsung_ufs_phy_cfg *exynosautov9_ufs_phy_cfgs[CFG_TAG_MAX] 
 	[CFG_PRE_PWR_HS]	= exynosautov9_pre_pwr_hs_cfg,
 };
 
+static const char * const exynosautov9_ufs_phy_clks[] = {
+	"ref_clk",
+};
+
 const struct samsung_ufs_phy_drvdata exynosautov9_ufs_phy = {
-	.cfg = exynosautov9_ufs_phy_cfgs,
+	.cfgs = exynosautov9_ufs_phy_cfgs,
 	.isol = {
 		.offset = EXYNOSAUTOV9_EMBEDDED_COMBO_PHY_CTRL,
 		.mask = EXYNOSAUTOV9_EMBEDDED_COMBO_PHY_CTRL_MASK,
 		.en = EXYNOSAUTOV9_EMBEDDED_COMBO_PHY_CTRL_EN,
 	},
-	.has_symbol_clk = 0,
+	.clk_list = exynosautov9_ufs_phy_clks,
+	.num_clks = ARRAY_SIZE(exynosautov9_ufs_phy_clks),
+	.cdr_lock_status_offset = EXYNOSAUTOV9_EMBEDDED_COMBO_PHY_CDR_LOCK_STATUS,
 };

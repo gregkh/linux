@@ -275,7 +275,7 @@ static int skl_pcm_prepare(struct snd_pcm_substream *substream,
 	 * calls prepare another time, reset the FW pipe to clean state
 	 */
 	if (mconfig &&
-		(substream->runtime->status->state == SNDRV_PCM_STATE_XRUN ||
+		(substream->runtime->state == SNDRV_PCM_STATE_XRUN ||
 		 mconfig->pipe->state == SKL_PIPE_CREATED ||
 		 mconfig->pipe->state == SKL_PIPE_PAUSED)) {
 
@@ -317,6 +317,7 @@ static int skl_pcm_hw_params(struct snd_pcm_substream *substream,
 	dev_dbg(dai->dev, "dma_id=%d\n", dma_id);
 
 	p_params.s_fmt = snd_pcm_format_width(params_format(params));
+	p_params.s_cont = snd_pcm_format_physical_width(params_format(params));
 	p_params.ch = params_channels(params);
 	p_params.s_freq = params_rate(params);
 	p_params.host_dma_id = dma_id;
@@ -405,6 +406,7 @@ static int skl_be_hw_params(struct snd_pcm_substream *substream,
 	struct skl_pipe_params p_params = {0};
 
 	p_params.s_fmt = snd_pcm_format_width(params_format(params));
+	p_params.s_cont = snd_pcm_format_physical_width(params_format(params));
 	p_params.ch = params_channels(params);
 	p_params.s_freq = params_rate(params);
 	p_params.stream = substream->stream;
@@ -566,6 +568,7 @@ static int skl_link_hw_params(struct snd_pcm_substream *substream,
 	snd_soc_dai_set_stream(codec_dai, hdac_stream(link_dev), substream->stream);
 
 	p_params.s_fmt = snd_pcm_format_width(params_format(params));
+	p_params.s_cont = snd_pcm_format_physical_width(params_format(params));
 	p_params.ch = params_channels(params);
 	p_params.s_freq = params_rate(params);
 	p_params.stream = substream->stream;
@@ -590,7 +593,7 @@ static int skl_link_pcm_prepare(struct snd_pcm_substream *substream,
 	/* In case of XRUN recovery, reset the FW pipe to clean state */
 	mconfig = skl_tplg_be_get_cpr_module(dai, substream->stream);
 	if (mconfig && !mconfig->pipe->passthru &&
-		(substream->runtime->status->state == SNDRV_PCM_STATE_XRUN))
+		(substream->runtime->state == SNDRV_PCM_STATE_XRUN))
 		skl_reset_pipe(skl, mconfig->pipe);
 
 	return 0;
@@ -1377,7 +1380,10 @@ static int skl_platform_soc_probe(struct snd_soc_component *component)
 	const struct skl_dsp_ops *ops;
 	int ret;
 
-	pm_runtime_get_sync(component->dev);
+	ret = pm_runtime_resume_and_get(component->dev);
+	if (ret < 0 && ret != -EACCES)
+		return ret;
+
 	if (bus->ppcap) {
 		skl->component = component;
 

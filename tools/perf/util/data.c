@@ -3,6 +3,7 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/zalloc.h>
+#include <linux/err.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -48,12 +49,16 @@ int perf_data__create_dir(struct perf_data *data, int nr)
 		struct perf_data_file *file = &files[i];
 
 		ret = asprintf(&file->path, "%s/data.%d", data->path, i);
-		if (ret < 0)
+		if (ret < 0) {
+			ret = -ENOMEM;
 			goto out_err;
+		}
 
 		ret = open(file->path, O_RDWR|O_CREAT|O_TRUNC, S_IRUSR|S_IWUSR);
-		if (ret < 0)
+		if (ret < 0) {
+			ret = -errno;
 			goto out_err;
+		}
 
 		file->fd = ret;
 	}
@@ -477,6 +482,25 @@ int perf_data__make_kcore_dir(struct perf_data *data, char *buf, size_t buf_sz)
 	return mkdir(buf, S_IRWXU);
 }
 
+bool has_kcore_dir(const char *path)
+{
+	struct dirent *d = ERR_PTR(-EINVAL);
+	const char *name = "kcore_dir";
+	DIR *dir = opendir(path);
+	size_t n = strlen(name);
+	bool result = false;
+
+	if (dir) {
+		while (d && !result) {
+			d = readdir(dir);
+			result = d ? strncmp(d->d_name, name, n) : false;
+		}
+		closedir(dir);
+	}
+
+	return result;
+}
+
 char *perf_data__kallsyms_name(struct perf_data *data)
 {
 	char *kallsyms_name;
@@ -486,6 +510,25 @@ char *perf_data__kallsyms_name(struct perf_data *data)
 		return NULL;
 
 	if (asprintf(&kallsyms_name, "%s/kcore_dir/kallsyms", data->path) < 0)
+		return NULL;
+
+	if (stat(kallsyms_name, &st)) {
+		free(kallsyms_name);
+		return NULL;
+	}
+
+	return kallsyms_name;
+}
+
+char *perf_data__guest_kallsyms_name(struct perf_data *data, pid_t machine_pid)
+{
+	char *kallsyms_name;
+	struct stat st;
+
+	if (!data->is_dir)
+		return NULL;
+
+	if (asprintf(&kallsyms_name, "%s/kcore_dir__%d/kallsyms", data->path, machine_pid) < 0)
 		return NULL;
 
 	if (stat(kallsyms_name, &st)) {

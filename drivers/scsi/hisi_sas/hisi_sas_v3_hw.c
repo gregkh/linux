@@ -3,6 +3,7 @@
  * Copyright (c) 2017 Hisilicon Limited.
  */
 
+#include <linux/sched/clock.h>
 #include "hisi_sas.h"
 #define DRV_NAME "hisi_sas_v3_hw"
 
@@ -405,6 +406,8 @@
 #define CMPLT_HDR_ERROR_PHASE_MSK   (0xff << CMPLT_HDR_ERROR_PHASE_OFF)
 #define CMPLT_HDR_RSPNS_XFRD_OFF	10
 #define CMPLT_HDR_RSPNS_XFRD_MSK	(0x1 << CMPLT_HDR_RSPNS_XFRD_OFF)
+#define CMPLT_HDR_RSPNS_GOOD_OFF	11
+#define CMPLT_HDR_RSPNS_GOOD_MSK	(0x1 << CMPLT_HDR_RSPNS_GOOD_OFF)
 #define CMPLT_HDR_ERX_OFF		12
 #define CMPLT_HDR_ERX_MSK		(0x1 << CMPLT_HDR_ERX_OFF)
 #define CMPLT_HDR_ABORT_STAT_OFF	13
@@ -477,6 +480,9 @@ struct hisi_sas_err_record_v3 {
 
 #define RX_DATA_LEN_UNDERFLOW_OFF	6
 #define RX_DATA_LEN_UNDERFLOW_MSK	(1 << RX_DATA_LEN_UNDERFLOW_OFF)
+
+#define RX_FIS_STATUS_ERR_OFF		0
+#define RX_FIS_STATUS_ERR_MSK		(1 << RX_FIS_STATUS_ERR_OFF)
 
 #define HISI_SAS_COMMAND_ENTRIES_V3_HW 4096
 #define HISI_SAS_MSI_COUNT_V3_HW 32
@@ -1218,7 +1224,7 @@ static void prep_ssp_v3_hw(struct hisi_hba *hisi_hba,
 	struct hisi_sas_port *port = slot->port;
 	struct sas_ssp_task *ssp_task = &task->ssp_task;
 	struct scsi_cmnd *scsi_cmnd = ssp_task->cmd;
-	struct hisi_sas_tmf_task *tmf = slot->tmf;
+	struct sas_tmf_task *tmf = slot->tmf;
 	int has_data = 0, priority = !!tmf;
 	unsigned char prot_op;
 	u8 *buf_cmd;
@@ -1449,28 +1455,28 @@ static void prep_ata_v3_hw(struct hisi_hba *hisi_hba,
 }
 
 static void prep_abort_v3_hw(struct hisi_hba *hisi_hba,
-		struct hisi_sas_slot *slot,
-		int device_id, int abort_flag, int tag_to_abort)
+			     struct hisi_sas_slot *slot)
 {
 	struct sas_task *task = slot->task;
+	struct sas_internal_abort_task *abort = &task->abort_task;
 	struct domain_device *dev = task->dev;
 	struct hisi_sas_cmd_hdr *hdr = slot->cmd_hdr;
 	struct hisi_sas_port *port = slot->port;
+	struct hisi_sas_device *sas_dev = dev->lldd_dev;
+	bool sata = dev_is_sata(dev);
 
 	/* dw0 */
-	hdr->dw0 = cpu_to_le32((5U << CMD_HDR_CMD_OFF) | /*abort*/
+	hdr->dw0 = cpu_to_le32((5U << CMD_HDR_CMD_OFF) | /* abort */
 			       (port->id << CMD_HDR_PORT_OFF) |
-				   (dev_is_sata(dev)
-					<< CMD_HDR_ABORT_DEVICE_TYPE_OFF) |
-					(abort_flag
-					 << CMD_HDR_ABORT_FLAG_OFF));
+				(sata << CMD_HDR_ABORT_DEVICE_TYPE_OFF) |
+				(abort->type << CMD_HDR_ABORT_FLAG_OFF));
 
 	/* dw1 */
-	hdr->dw1 = cpu_to_le32(device_id
+	hdr->dw1 = cpu_to_le32(sas_dev->device_id
 			<< CMD_HDR_DEV_ID_OFF);
 
 	/* dw7 */
-	hdr->dw7 = cpu_to_le32(tag_to_abort << CMD_HDR_ABORT_IPTT_OFF);
+	hdr->dw7 = cpu_to_le32(abort->tag << CMD_HDR_ABORT_IPTT_OFF);
 	hdr->transfer_tags = cpu_to_le32(slot->idx);
 }
 
@@ -1482,9 +1488,7 @@ static irqreturn_t phy_up_v3_hw(int phy_no, struct hisi_hba *hisi_hba)
 	struct hisi_sas_phy *phy = &hisi_hba->phy[phy_no];
 	struct asd_sas_phy *sas_phy = &phy->sas_phy;
 	struct device *dev = hisi_hba->dev;
-	unsigned long flags;
 
-	del_timer(&phy->timer);
 	hisi_sas_phy_write32(hisi_hba, phy_no, PHYCTRL_PHY_ENA_MSK, 1);
 
 	port_id = hisi_sas_read32(hisi_hba, PHY_PORT_NUM_MA);
@@ -1561,16 +1565,27 @@ static irqreturn_t phy_up_v3_hw(int phy_no, struct hisi_hba *hisi_hba)
 	}
 
 	phy->port_id = port_id;
-	phy->phy_attached = 1;
-	hisi_sas_notify_phy_event(phy, HISI_PHYE_PHY_UP);
+
+	/*
+	 * Call pm_runtime_get_noresume() which pairs with
+	 * hisi_sas_phyup_pm_work() -> pm_runtime_put_sync().
+	 * For failure call pm_runtime_put() as we are in a hardirq context.
+	 */
+	pm_runtime_get_noresume(dev);
+	res = hisi_sas_notify_phy_event(phy, HISI_PHYE_PHY_UP_PM);
+	if (!res)
+		pm_runtime_put(dev);
+
 	res = IRQ_HANDLED;
-	spin_lock_irqsave(&phy->lock, flags);
-	if (phy->reset_completion) {
-		phy->in_reset = 0;
-		complete(phy->reset_completion);
-	}
-	spin_unlock_irqrestore(&phy->lock, flags);
+
+	spin_lock(&phy->lock);
+	/* Delete timer and set phy_attached atomically */
+	del_timer(&phy->timer);
+	phy->phy_attached = 1;
+	spin_unlock(&phy->lock);
 end:
+	if (phy->reset_completion)
+		complete(phy->reset_completion);
 	hisi_sas_phy_write32(hisi_hba, phy_no, CHL_INT0,
 			     CHL_INT0_SL_PHY_ENABLE_MSK);
 	hisi_sas_phy_write32(hisi_hba, phy_no, PHYCTRL_PHY_ENA_MSK, 0);
@@ -1611,15 +1626,12 @@ static irqreturn_t phy_down_v3_hw(int phy_no, struct hisi_hba *hisi_hba)
 static irqreturn_t phy_bcast_v3_hw(int phy_no, struct hisi_hba *hisi_hba)
 {
 	struct hisi_sas_phy *phy = &hisi_hba->phy[phy_no];
-	struct asd_sas_phy *sas_phy = &phy->sas_phy;
 	u32 bcast_status;
 
 	hisi_sas_phy_write32(hisi_hba, phy_no, SL_RX_BCAST_CHK_MSK, 1);
 	bcast_status = hisi_sas_phy_read32(hisi_hba, phy_no, RX_PRIMS_STATUS);
-	if ((bcast_status & RX_BCAST_CHG_MSK) &&
-	    !test_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags))
-		sas_notify_port_event(sas_phy, PORTE_BROADCAST_RCVD,
-				      GFP_ATOMIC);
+	if (bcast_status & RX_BCAST_CHG_MSK)
+		hisi_sas_phy_bcast(phy);
 	hisi_sas_phy_write32(hisi_hba, phy_no, CHL_INT0,
 			     CHL_INT0_SL_RX_BCST_ACK_MSK);
 	hisi_sas_phy_write32(hisi_hba, phy_no, SL_RX_BCAST_CHK_MSK, 0);
@@ -2136,7 +2148,7 @@ static irqreturn_t fatal_axi_int_v3_hw(int irq_no, void *p)
 	return IRQ_HANDLED;
 }
 
-static void
+static bool
 slot_err_v3_hw(struct hisi_hba *hisi_hba, struct sas_task *task,
 	       struct hisi_sas_slot *slot)
 {
@@ -2149,11 +2161,21 @@ slot_err_v3_hw(struct hisi_hba *hisi_hba, struct sas_task *task,
 			hisi_sas_status_buf_addr_mem(slot);
 	u32 dma_rx_err_type = le32_to_cpu(record->dma_rx_err_type);
 	u32 trans_tx_fail_type = le32_to_cpu(record->trans_tx_fail_type);
+	u16 sipc_rx_err_type = le16_to_cpu(record->sipc_rx_err_type);
 	u32 dw3 = le32_to_cpu(complete_hdr->dw3);
 
 	switch (task->task_proto) {
 	case SAS_PROTOCOL_SSP:
 		if (dma_rx_err_type & RX_DATA_LEN_UNDERFLOW_MSK) {
+			/*
+			 * If returned response frame is incorrect because of data underflow,
+			 * but I/O information has been written to the host memory, we examine
+			 * response IU.
+			 */
+			if (!(complete_hdr->dw0 & CMPLT_HDR_RSPNS_GOOD_MSK) &&
+				(complete_hdr->dw0 & CMPLT_HDR_RSPNS_XFRD_MSK))
+				return false;
+
 			ts->residual = trans_tx_fail_type;
 			ts->stat = SAS_DATA_UNDERRUN;
 		} else if (dw3 & CMPLT_HDR_IO_IN_TARGET_MSK) {
@@ -2167,7 +2189,10 @@ slot_err_v3_hw(struct hisi_hba *hisi_hba, struct sas_task *task,
 	case SAS_PROTOCOL_SATA:
 	case SAS_PROTOCOL_STP:
 	case SAS_PROTOCOL_SATA | SAS_PROTOCOL_STP:
-		if (dma_rx_err_type & RX_DATA_LEN_UNDERFLOW_MSK) {
+		if ((complete_hdr->dw0 & CMPLT_HDR_RSPNS_XFRD_MSK) &&
+		    (sipc_rx_err_type & RX_FIS_STATUS_ERR_MSK)) {
+			ts->stat = SAS_PROTO_RESPONSE;
+		} else if (dma_rx_err_type & RX_DATA_LEN_UNDERFLOW_MSK) {
 			ts->residual = trans_tx_fail_type;
 			ts->stat = SAS_DATA_UNDERRUN;
 		} else if (dw3 & CMPLT_HDR_IO_IN_TARGET_MSK) {
@@ -2185,6 +2210,7 @@ slot_err_v3_hw(struct hisi_hba *hisi_hba, struct sas_task *task,
 	default:
 		break;
 	}
+	return true;
 }
 
 static void slot_complete_v3_hw(struct hisi_hba *hisi_hba,
@@ -2213,8 +2239,7 @@ static void slot_complete_v3_hw(struct hisi_hba *hisi_hba,
 	sas_dev = device->lldd_dev;
 
 	spin_lock_irqsave(&task->task_state_lock, flags);
-	task->task_state_flags &=
-		~(SAS_TASK_STATE_PENDING | SAS_TASK_AT_INITIATOR);
+	task->task_state_flags &= ~SAS_TASK_STATE_PENDING;
 	spin_unlock_irqrestore(&task->task_state_lock, flags);
 
 	memset(ts, 0, sizeof(*ts));
@@ -2259,19 +2284,20 @@ static void slot_complete_v3_hw(struct hisi_hba *hisi_hba,
 	if ((dw0 & CMPLT_HDR_CMPLT_MSK) == 0x3) {
 		u32 *error_info = hisi_sas_status_buf_addr_mem(slot);
 
-		slot_err_v3_hw(hisi_hba, task, slot);
-		if (ts->stat != SAS_DATA_UNDERRUN)
-			dev_info(dev, "erroneous completion iptt=%d task=%pK dev id=%d addr=%016llx CQ hdr: 0x%x 0x%x 0x%x 0x%x Error info: 0x%x 0x%x 0x%x 0x%x\n",
-				 slot->idx, task, sas_dev->device_id,
-				 SAS_ADDR(device->sas_addr),
-				 dw0, dw1, complete_hdr->act, dw3,
-				 error_info[0], error_info[1],
-				 error_info[2], error_info[3]);
-		if (unlikely(slot->abort)) {
-			sas_task_abort(task);
-			return;
+		if (slot_err_v3_hw(hisi_hba, task, slot)) {
+			if (ts->stat != SAS_DATA_UNDERRUN)
+				dev_info(dev, "erroneous completion iptt=%d task=%pK dev id=%d addr=%016llx CQ hdr: 0x%x 0x%x 0x%x 0x%x Error info: 0x%x 0x%x 0x%x 0x%x\n",
+					slot->idx, task, sas_dev->device_id,
+					SAS_ADDR(device->sas_addr),
+					dw0, dw1, complete_hdr->act, dw3,
+					error_info[0], error_info[1],
+					error_info[2], error_info[3]);
+			if (unlikely(slot->abort)) {
+				sas_task_abort(task);
+				return;
+			}
+			goto out;
 		}
-		goto out;
 	}
 
 	switch (task->task_proto) {
@@ -2289,8 +2315,6 @@ static void slot_complete_v3_hw(struct hisi_hba *hisi_hba,
 
 		ts->stat = SAS_SAM_STAT_GOOD;
 
-		dma_unmap_sg(dev, &task->smp_task.smp_req, 1,
-			     DMA_TO_DEVICE);
 		memcpy(to + sg_resp->offset,
 			hisi_sas_status_buf_addr_mem(slot) +
 		       sizeof(struct hisi_sas_err_record),
@@ -2756,16 +2780,12 @@ static DEVICE_ATTR_RW(intr_coal_count_v3_hw);
 static int slave_configure_v3_hw(struct scsi_device *sdev)
 {
 	struct Scsi_Host *shost = dev_to_shost(&sdev->sdev_gendev);
-	struct domain_device *ddev = sdev_to_domain_dev(sdev);
 	struct hisi_hba *hisi_hba = shost_priv(shost);
+	int ret = hisi_sas_slave_configure(sdev);
 	struct device *dev = hisi_hba->dev;
-	int ret = sas_slave_configure(sdev);
-	unsigned int max_sectors;
 
 	if (ret)
 		return ret;
-	if (!dev_is_sata(ddev))
-		sas_change_queue_depth(sdev, 64);
 
 	if (sdev->type == TYPE_ENCLOSURE)
 		return 0;
@@ -2778,22 +2798,18 @@ static int slave_configure_v3_hw(struct scsi_device *sdev)
 		}
 	}
 
-	/* Set according to IOMMU IOVA caching limit */
-	max_sectors = min_t(size_t, queue_max_hw_sectors(sdev->request_queue),
-			    (PAGE_SIZE * 32) >> SECTOR_SHIFT);
-
-	blk_queue_max_hw_sectors(sdev->request_queue, max_sectors);
-
 	return 0;
 }
 
-static struct device_attribute *host_attrs_v3_hw[] = {
-	&dev_attr_phy_event_threshold,
-	&dev_attr_intr_conv_v3_hw,
-	&dev_attr_intr_coal_ticks_v3_hw,
-	&dev_attr_intr_coal_count_v3_hw,
+static struct attribute *host_v3_hw_attrs[] = {
+	&dev_attr_phy_event_threshold.attr,
+	&dev_attr_intr_conv_v3_hw.attr,
+	&dev_attr_intr_coal_ticks_v3_hw.attr,
+	&dev_attr_intr_coal_count_v3_hw.attr,
 	NULL
 };
+
+ATTRIBUTE_GROUPS(host_v3_hw);
 
 #define HISI_SAS_DEBUGFS_REG(x) {#x, x}
 
@@ -3145,13 +3161,12 @@ static int debugfs_set_bist_v3_hw(struct hisi_hba *hisi_hba, bool enable)
 	return 0;
 }
 
-static int hisi_sas_map_queues(struct Scsi_Host *shost)
+static void hisi_sas_map_queues(struct Scsi_Host *shost)
 {
 	struct hisi_hba *hisi_hba = shost_priv(shost);
 	struct blk_mq_queue_map *qmap = &shost->tag_set.map[HCTX_TYPE_DEFAULT];
 
-	return blk_mq_pci_map_queues(qmap, hisi_hba->pci_dev,
-				     BASE_VECTORS_V3_HW);
+	blk_mq_pci_map_queues(qmap, hisi_hba->pci_dev, BASE_VECTORS_V3_HW);
 }
 
 static struct scsi_host_template sht_v3_hw = {
@@ -3173,13 +3188,13 @@ static struct scsi_host_template sht_v3_hw = {
 	.max_sectors		= SCSI_DEFAULT_MAX_SECTORS,
 	.eh_device_reset_handler = sas_eh_device_reset_handler,
 	.eh_target_reset_handler = sas_eh_target_reset_handler,
-	.slave_alloc		= sas_slave_alloc,
+	.slave_alloc		= hisi_sas_slave_alloc,
 	.target_destroy		= sas_target_destroy,
 	.ioctl			= sas_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl		= sas_ioctl,
 #endif
-	.shost_attrs		= host_attrs_v3_hw,
+	.shost_groups		= host_v3_hw_groups,
 	.tag_alloc_policy	= BLK_TAG_ALLOC_RR,
 	.host_reset             = hisi_sas_host_reset,
 	.host_tagset		= 1,
@@ -3704,7 +3719,6 @@ static void debugfs_snapshot_regs_v3_hw(struct hisi_hba *hisi_hba)
 
 	do_div(timestamp, NSEC_PER_MSEC);
 	hisi_hba->debugfs_timestamp[debugfs_dump_index] = timestamp;
-	hisi_hba->debugfs_dump_index++;
 
 	debugfs_snapshot_prepare_v3_hw(hisi_hba);
 
@@ -3720,6 +3734,7 @@ static void debugfs_snapshot_regs_v3_hw(struct hisi_hba *hisi_hba)
 	debugfs_create_files_v3_hw(hisi_hba);
 
 	debugfs_snapshot_restore_v3_hw(hisi_hba);
+	hisi_hba->debugfs_dump_index++;
 }
 
 static ssize_t debugfs_trigger_dump_v3_hw_write(struct file *file,
@@ -4753,8 +4768,6 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_out;
 
 	rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
-	if (rc)
-		rc = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 	if (rc) {
 		dev_err(dev, "No usable DMA addressing method\n");
 		rc = -ENODEV;
@@ -4775,7 +4788,7 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!hisi_hba->regs) {
 		dev_err(dev, "cannot map register\n");
 		rc = -ENOMEM;
-		goto err_out_ha;
+		goto err_out_free_host;
 	}
 
 	phy_nr = port_nr = hisi_hba->n_phy;
@@ -4784,7 +4797,7 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	arr_port = devm_kcalloc(dev, port_nr, sizeof(void *), GFP_KERNEL);
 	if (!arr_phy || !arr_port) {
 		rc = -ENOMEM;
-		goto err_out_ha;
+		goto err_out_free_host;
 	}
 
 	sha->sas_phy = arr_phy;
@@ -4825,22 +4838,24 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	rc = interrupt_preinit_v3_hw(hisi_hba);
 	if (rc)
-		goto err_out_debugfs;
-	dev_err(dev, "%d hw queues\n", shost->nr_hw_queues);
+		goto err_out_undo_debugfs;
+
 	rc = scsi_add_host(shost, dev);
 	if (rc)
-		goto err_out_debugfs;
+		goto err_out_undo_debugfs;
 
 	rc = sas_register_ha(sha);
 	if (rc)
-		goto err_out_register_ha;
+		goto err_out_remove_host;
 
 	rc = hisi_sas_v3_init(hisi_hba);
 	if (rc)
-		goto err_out_hw_init;
+		goto err_out_unregister_ha;
 
 	scsi_scan_host(shost);
 
+	pm_runtime_set_autosuspend_delay(dev, 5000);
+	pm_runtime_use_autosuspend(dev);
 	/*
 	 * For the situation that there are ATA disks connected with SAS
 	 * controller, it additionally creates ata_port which will affect the
@@ -4854,13 +4869,13 @@ hisi_sas_v3_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	return 0;
 
-err_out_hw_init:
+err_out_unregister_ha:
 	sas_unregister_ha(sha);
-err_out_register_ha:
+err_out_remove_host:
 	scsi_remove_host(shost);
-err_out_debugfs:
+err_out_undo_debugfs:
 	debugfs_exit_v3_hw(hisi_hba);
-err_out_ha:
+err_out_free_host:
 	hisi_sas_free(hisi_hba);
 	scsi_host_put(shost);
 err_out:
@@ -4891,8 +4906,7 @@ static void hisi_sas_v3_remove(struct pci_dev *pdev)
 	struct Scsi_Host *shost = sha->core.shost;
 
 	pm_runtime_get_noresume(dev);
-	if (timer_pending(&hisi_hba->timer))
-		del_timer(&hisi_hba->timer);
+	del_timer_sync(&hisi_hba->timer);
 
 	sas_unregister_ha(sha);
 	flush_workqueue(hisi_hba->wq);
@@ -4912,7 +4926,8 @@ static void hisi_sas_reset_prepare_v3_hw(struct pci_dev *pdev)
 	int rc;
 
 	dev_info(dev, "FLR prepare\n");
-	set_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags);
+	down(&hisi_hba->sem);
+	set_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags);
 	hisi_sas_controller_reset_prepare(hisi_hba);
 
 	rc = disable_host_v3_hw(hisi_hba);
@@ -4958,8 +4973,10 @@ static int _suspend_v3_hw(struct device *device)
 		return -ENODEV;
 	}
 
-	if (test_and_set_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags))
+	if (test_and_set_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags))
 		return -1;
+
+	dev_warn(dev, "entering suspend state\n");
 
 	scsi_block_requests(shost);
 	set_bit(HISI_SAS_REJECT_CMD_BIT, &hisi_hba->flags);
@@ -4969,18 +4986,18 @@ static int _suspend_v3_hw(struct device *device)
 	if (rc) {
 		dev_err(dev, "PM suspend: disable host failed rc=%d\n", rc);
 		clear_bit(HISI_SAS_REJECT_CMD_BIT, &hisi_hba->flags);
-		clear_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags);
+		clear_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags);
 		scsi_unblock_requests(shost);
 		return rc;
 	}
 
 	hisi_sas_init_mem(hisi_hba);
 
-	dev_warn(dev, "entering suspend state\n");
-
 	hisi_sas_release_tasks(hisi_hba);
 
 	sas_suspend_ha(sha);
+
+	dev_warn(dev, "end of suspending controller\n");
 	return 0;
 }
 
@@ -5007,8 +5024,18 @@ static int _resume_v3_hw(struct device *device)
 		return rc;
 	}
 	phys_init_v3_hw(hisi_hba);
-	sas_resume_ha(sha);
-	clear_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags);
+
+	/*
+	 * If a directly-attached disk is removed during suspend, a deadlock
+	 * may occur, as the PHYE_RESUME_TIMEOUT processing will require the
+	 * hisi_hba->device to be active, which can only happen when resume
+	 * completes. So don't wait for the HA event workqueue to drain upon
+	 * resume.
+	 */
+	sas_resume_ha_no_sync(sha);
+	clear_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags);
+
+	dev_warn(dev, "end of resuming controller\n");
 
 	return 0;
 }

@@ -42,7 +42,6 @@
 #include <xen/balloon.h>
 
 #define XENVIF_QUEUE_LENGTH 32
-#define XENVIF_NAPI_WEIGHT  64
 
 /* Number of bytes allowed on the internal guest Rx queue. */
 #define XENVIF_RX_QUEUE_BYTES (XEN_NETIF_RX_RING_SIZE/2 * PAGE_SIZE)
@@ -482,6 +481,9 @@ static const struct net_device_ops xenvif_netdev_ops = {
 struct xenvif *xenvif_alloc(struct device *parent, domid_t domid,
 			    unsigned int handle)
 {
+	static const u8 dummy_addr[ETH_ALEN] = {
+		0xfe, 0xff, 0xff, 0xff, 0xff, 0xff,
+	};
 	int err;
 	struct net_device *dev;
 	struct xenvif *vif;
@@ -539,8 +541,7 @@ struct xenvif *xenvif_alloc(struct device *parent, domid_t domid,
 	 * stolen by an Ethernet bridge for STP purposes.
 	 * (FE:FF:FF:FF:FF:FF)
 	 */
-	eth_broadcast_addr(dev->dev_addr);
-	dev->dev_addr[0] &= ~0x01;
+	eth_hw_addr_set(dev, dummy_addr);
 
 	netif_carrier_off(dev);
 
@@ -592,8 +593,8 @@ int xenvif_init_queue(struct xenvif_queue *queue)
 	}
 
 	for (i = 0; i < MAX_PENDING_REQS; i++) {
-		queue->pending_tx_info[i].callback_struct = (struct ubuf_info)
-			{ .callback = xenvif_zerocopy_callback,
+		queue->pending_tx_info[i].callback_struct = (struct ubuf_info_msgzc)
+			{ { .callback = xenvif_zerocopy_callback },
 			  { { .ctx = NULL,
 			      .desc = i } } };
 		queue->grant_tx_handle[i] = NETBACK_INVALID_HANDLE;
@@ -724,8 +725,7 @@ int xenvif_connect_data(struct xenvif_queue *queue,
 	init_waitqueue_head(&queue->dealloc_wq);
 	atomic_set(&queue->inflight_packets, 0);
 
-	netif_napi_add(queue->vif->dev, &queue->napi, xenvif_poll,
-			XENVIF_NAPI_WEIGHT);
+	netif_napi_add(queue->vif->dev, &queue->napi, xenvif_poll);
 
 	queue->stalled = true;
 

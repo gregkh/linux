@@ -607,7 +607,7 @@ static int alx_set_mac_address(struct net_device *netdev, void *data)
 	if (netdev->addr_assign_type & NET_ADDR_RANDOM)
 		netdev->addr_assign_type ^= NET_ADDR_RANDOM;
 
-	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
+	eth_hw_addr_set(netdev, addr->sa_data);
 	memcpy(hw->mac_addr, addr->sa_data, netdev->addr_len);
 	alx_set_macaddr(hw, hw->mac_addr);
 
@@ -752,7 +752,7 @@ static int alx_alloc_napis(struct alx_priv *alx)
 			goto err_out;
 
 		np->alx = alx;
-		netif_napi_add(alx->dev, &np->napi, alx_poll, 64);
+		netif_napi_add(alx->dev, &np->napi, alx_poll);
 		alx->qnapi[i] = np;
 	}
 
@@ -1835,7 +1835,7 @@ static int alx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	memcpy(hw->mac_addr, hw->perm_addr, ETH_ALEN);
-	memcpy(netdev->dev_addr, hw->mac_addr, ETH_ALEN);
+	eth_hw_addr_set(netdev, hw->mac_addr);
 	memcpy(netdev->perm_addr, hw->perm_addr, ETH_ALEN);
 
 	hw->mdio.prtad = 0;

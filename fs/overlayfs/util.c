@@ -194,6 +194,20 @@ enum ovl_path_type ovl_path_real(struct dentry *dentry, struct path *path)
 	return type;
 }
 
+enum ovl_path_type ovl_path_realdata(struct dentry *dentry, struct path *path)
+{
+	enum ovl_path_type type = ovl_path_type(dentry);
+
+	WARN_ON_ONCE(d_is_dir(dentry));
+
+	if (!OVL_TYPE_UPPER(type) || OVL_TYPE_MERGE(type))
+		ovl_path_lowerdata(dentry, path);
+	else
+		ovl_path_upper(dentry, path);
+
+	return type;
+}
+
 struct dentry *ovl_dentry_upper(struct dentry *dentry)
 {
 	return ovl_upperdentry_dereference(OVL_I(d_inode(dentry)));
@@ -476,9 +490,10 @@ bool ovl_is_whiteout(struct dentry *dentry)
 	return inode && IS_WHITEOUT(inode);
 }
 
-struct file *ovl_path_open(struct path *path, int flags)
+struct file *ovl_path_open(const struct path *path, int flags)
 {
 	struct inode *inode = d_inode(path->dentry);
+	struct user_namespace *real_mnt_userns = mnt_user_ns(path->mnt);
 	int err, acc_mode;
 
 	if (flags & ~(O_ACCMODE | O_LARGEFILE))
@@ -495,12 +510,12 @@ struct file *ovl_path_open(struct path *path, int flags)
 		BUG();
 	}
 
-	err = inode_permission(&init_user_ns, inode, acc_mode | MAY_OPEN);
+	err = inode_permission(real_mnt_userns, inode, acc_mode | MAY_OPEN);
 	if (err)
 		return ERR_PTR(err);
 
 	/* O_NOATIME is an optimization, don't fail if not permitted */
-	if (inode_owner_or_capable(&init_user_ns, inode))
+	if (inode_owner_or_capable(real_mnt_userns, inode))
 		flags |= O_NOATIME;
 
 	return dentry_open(path, flags, current_cred());
@@ -563,11 +578,11 @@ void ovl_copy_up_end(struct dentry *dentry)
 	ovl_inode_unlock(d_inode(dentry));
 }
 
-bool ovl_check_origin_xattr(struct ovl_fs *ofs, struct dentry *dentry)
+bool ovl_path_check_origin_xattr(struct ovl_fs *ofs, const struct path *path)
 {
 	int res;
 
-	res = ovl_do_getxattr(ofs, dentry, OVL_XATTR_ORIGIN, NULL, 0);
+	res = ovl_path_getxattr(ofs, path, OVL_XATTR_ORIGIN, NULL, 0);
 
 	/* Zero size value means "copied up but origin unknown" */
 	if (res >= 0)
@@ -576,16 +591,16 @@ bool ovl_check_origin_xattr(struct ovl_fs *ofs, struct dentry *dentry)
 	return false;
 }
 
-bool ovl_check_dir_xattr(struct super_block *sb, struct dentry *dentry,
-			 enum ovl_xattr ox)
+bool ovl_path_check_dir_xattr(struct ovl_fs *ofs, const struct path *path,
+			       enum ovl_xattr ox)
 {
 	int res;
 	char val;
 
-	if (!d_is_dir(dentry))
+	if (!d_is_dir(path->dentry))
 		return false;
 
-	res = ovl_do_getxattr(OVL_FS(sb), dentry, ox, &val, 1);
+	res = ovl_path_getxattr(ofs, path, ox, &val, 1);
 	if (res == 1 && val == 'y')
 		return true;
 
@@ -625,7 +640,7 @@ int ovl_check_setxattr(struct ovl_fs *ofs, struct dentry *upperdentry,
 	if (ofs->noxattr)
 		return xerr;
 
-	err = ovl_do_setxattr(ofs, upperdentry, ox, value, size);
+	err = ovl_setxattr(ofs, upperdentry, ox, value, size);
 
 	if (err == -EOPNOTSUPP) {
 		pr_warn("cannot set %s xattr on upper\n", ovl_xattr(ofs, ox));
@@ -665,8 +680,8 @@ void ovl_check_protattr(struct inode *inode, struct dentry *upper)
 	char buf[OVL_PROTATTR_MAX+1];
 	int res, n;
 
-	res = ovl_do_getxattr(ofs, upper, OVL_XATTR_PROTATTR, buf,
-			      OVL_PROTATTR_MAX);
+	res = ovl_getxattr_upper(ofs, upper, OVL_XATTR_PROTATTR, buf,
+				 OVL_PROTATTR_MAX);
 	if (res < 0)
 		return;
 
@@ -721,7 +736,7 @@ int ovl_set_protattr(struct inode *inode, struct dentry *upper,
 		err = ovl_check_setxattr(ofs, upper, OVL_XATTR_PROTATTR,
 					 buf, len, -EPERM);
 	} else if (inode->i_flags & OVL_PROT_I_FLAGS_MASK) {
-		err = ovl_do_removexattr(ofs, upper, OVL_XATTR_PROTATTR);
+		err = ovl_removexattr(ofs, upper, OVL_XATTR_PROTATTR);
 		if (err == -EOPNOTSUPP || err == -ENODATA)
 			err = 0;
 	}
@@ -837,7 +852,7 @@ static void ovl_cleanup_index(struct dentry *dentry)
 	}
 
 	inode_lock_nested(dir, I_MUTEX_PARENT);
-	index = lookup_one_len(name.name, indexdir, name.len);
+	index = ovl_lookup_upper(ofs, name.name, indexdir, name.len);
 	err = PTR_ERR(index);
 	if (IS_ERR(index)) {
 		index = NULL;
@@ -847,7 +862,7 @@ static void ovl_cleanup_index(struct dentry *dentry)
 					       dir, index);
 	} else {
 		/* Cleanup orphan index entries */
-		err = ovl_cleanup(dir, index);
+		err = ovl_cleanup(ofs, dir, index);
 	}
 
 	inode_unlock(dir);
@@ -956,15 +971,15 @@ err:
 }
 
 /* err < 0, 0 if no metacopy xattr, 1 if metacopy xattr found */
-int ovl_check_metacopy_xattr(struct ovl_fs *ofs, struct dentry *dentry)
+int ovl_check_metacopy_xattr(struct ovl_fs *ofs, const struct path *path)
 {
 	int res;
 
 	/* Only regular files can have metacopy xattr */
-	if (!S_ISREG(d_inode(dentry)->i_mode))
+	if (!S_ISREG(d_inode(path->dentry)->i_mode))
 		return 0;
 
-	res = ovl_do_getxattr(ofs, dentry, OVL_XATTR_METACOPY, NULL, 0);
+	res = ovl_path_getxattr(ofs, path, OVL_XATTR_METACOPY, NULL, 0);
 	if (res < 0) {
 		if (res == -ENODATA || res == -EOPNOTSUPP)
 			return 0;
@@ -1000,13 +1015,12 @@ bool ovl_is_metacopy_dentry(struct dentry *dentry)
 	return (oe->numlower > 1);
 }
 
-char *ovl_get_redirect_xattr(struct ovl_fs *ofs, struct dentry *dentry,
-			     int padding)
+char *ovl_get_redirect_xattr(struct ovl_fs *ofs, const struct path *path, int padding)
 {
 	int res;
 	char *s, *next, *buf = NULL;
 
-	res = ovl_do_getxattr(ofs, dentry, OVL_XATTR_REDIRECT, NULL, 0);
+	res = ovl_path_getxattr(ofs, path, OVL_XATTR_REDIRECT, NULL, 0);
 	if (res == -ENODATA || res == -EOPNOTSUPP)
 		return NULL;
 	if (res < 0)
@@ -1018,7 +1032,7 @@ char *ovl_get_redirect_xattr(struct ovl_fs *ofs, struct dentry *dentry,
 	if (!buf)
 		return ERR_PTR(-ENOMEM);
 
-	res = ovl_do_getxattr(ofs, dentry, OVL_XATTR_REDIRECT, buf, res);
+	res = ovl_path_getxattr(ofs, path, OVL_XATTR_REDIRECT, buf, res);
 	if (res < 0)
 		goto fail;
 	if (res == 0)

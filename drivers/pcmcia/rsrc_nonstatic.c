@@ -394,7 +394,7 @@ static int do_validate_mem(struct pcmcia_socket *s,
  * do_mem_probe() checks a memory region for use by the PCMCIA subsystem.
  * To do so, the area is split up into sensible parts, and then passed
  * into the @validate() function. Only if @validate() and @fallback() fail,
- * the area is marked as unavaibale for use by the PCMCIA subsystem. The
+ * the area is marked as unavailable for use by the PCMCIA subsystem. The
  * function returns the size of the usable memory area.
  */
 static int do_mem_probe(struct pcmcia_socket *s, u_long base, u_long num,
@@ -1082,7 +1082,7 @@ static ssize_t show_io_db(struct device *dev,
 	for (p = data->io_db.next; p != &data->io_db; p = p->next) {
 		if (ret > (PAGE_SIZE - 10))
 			continue;
-		ret += scnprintf(&buf[ret], (PAGE_SIZE - ret - 1),
+		ret += sysfs_emit_at(buf, ret,
 				"0x%08lx - 0x%08lx\n",
 				((unsigned long) p->base),
 				((unsigned long) p->base + p->num - 1));
@@ -1139,7 +1139,7 @@ static ssize_t show_mem_db(struct device *dev,
 	     p = p->next) {
 		if (ret > (PAGE_SIZE - 10))
 			continue;
-		ret += scnprintf(&buf[ret], (PAGE_SIZE - ret - 1),
+		ret += sysfs_emit_at(buf, ret,
 				"0x%08lx - 0x%08lx\n",
 				((unsigned long) p->base),
 				((unsigned long) p->base + p->num - 1));
@@ -1148,7 +1148,7 @@ static ssize_t show_mem_db(struct device *dev,
 	for (p = data->mem_db.next; p != &data->mem_db; p = p->next) {
 		if (ret > (PAGE_SIZE - 10))
 			continue;
-		ret += scnprintf(&buf[ret], (PAGE_SIZE - ret - 1),
+		ret += sysfs_emit_at(buf, ret,
 				"0x%08lx - 0x%08lx\n",
 				((unsigned long) p->base),
 				((unsigned long) p->base + p->num - 1));

@@ -79,7 +79,7 @@ static int gdm_lte_rx(struct sk_buff *skb, struct nic *nic, int nic_type)
 	int ret, len;
 
 	len = skb->len + ETH_HLEN;
-	ret = netif_rx_ni(skb);
+	ret = netif_rx(skb);
 	if (ret == NET_RX_DROP) {
 		nic->stats.rx_dropped++;
 	} else {
@@ -195,7 +195,6 @@ static __sum16 icmp6_checksum(struct ipv6hdr *ipv6, u16 *ptr, int len)
 	pseudo_header.ph.ph_len = be16_to_cpu(ipv6->payload_len);
 	pseudo_header.ph.ph_nxt = ipv6->nexthdr;
 
-	w = (u16 *)&pseudo_header;
 	for (i = 0; i < ARRAY_SIZE(pseudo_header.pa); i++) {
 		pa = pseudo_header.pa[i];
 		sum = csum_add(sum, csum_unfold((__force __sum16)pa));
@@ -868,6 +867,7 @@ int register_lte_device(struct phy_dev *phy_dev,
 	struct nic *nic;
 	struct net_device *net;
 	char pdn_dev_name[16];
+	u8 addr[ETH_ALEN];
 	int ret = 0;
 	u8 index;
 
@@ -894,11 +894,12 @@ int register_lte_device(struct phy_dev *phy_dev,
 		nic->phy_dev = phy_dev;
 		nic->nic_id = index;
 
-		form_mac_address(net->dev_addr,
+		form_mac_address(addr,
 				 nic->src_mac_addr,
 				 nic->dest_mac_addr,
 				 mac_address,
 				 index);
+		eth_hw_addr_set(net, addr);
 
 		SET_NETDEV_DEV(net, dev);
 		SET_NETDEV_DEVTYPE(net, &wwan_type);

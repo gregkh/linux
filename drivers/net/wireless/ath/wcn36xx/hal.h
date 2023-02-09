@@ -1961,7 +1961,7 @@ struct wcn36xx_hal_config_bss_params {
 
 	/* HAL should update the existing BSS entry, if this flag is set.
 	 * UMAC will set this flag in case of reassoc, where we want to
-	 * resue the the old BSSID and still return success 0 = Add, 1 =
+	 * resue the old BSSID and still return success 0 = Add, 1 =
 	 * Update */
 	u8 action;
 
@@ -2098,7 +2098,7 @@ struct wcn36xx_hal_config_bss_params_v1 {
 
 	/* HAL should update the existing BSS entry, if this flag is set.
 	 * UMAC will set this flag in case of reassoc, where we want to
-	 * resue the the old BSSID and still return success 0 = Add, 1 =
+	 * resue the old BSSID and still return success 0 = Add, 1 =
 	 * Update */
 	u8 action;
 
@@ -2626,7 +2626,12 @@ enum tx_rate_info {
 	HAL_TX_RATE_SGI = 0x8,
 
 	/* Rate with Long guard interval */
-	HAL_TX_RATE_LGI = 0x10
+	HAL_TX_RATE_LGI = 0x10,
+
+	/* VHT rates */
+	HAL_TX_RATE_VHT20  = 0x20,
+	HAL_TX_RATE_VHT40  = 0x40,
+	HAL_TX_RATE_VHT80  = 0x80,
 };
 
 struct ani_global_class_a_stats_info {
@@ -2672,7 +2677,7 @@ struct ani_global_security_stats {
 	 * management information base (MIB) object is enabled */
 	u32 rx_wep_unencrypted_frm_cnt;
 
-	/* The number of received MSDU packets that that the 802.11 station
+	/* The number of received MSDU packets that the 802.11 station
 	 * discarded because of MIC failures */
 	u32 rx_mic_fail_cnt;
 
@@ -3416,11 +3421,11 @@ struct tl_hal_flush_ac_rsp_msg {
 
 struct wcn36xx_hal_enter_imps_req_msg {
 	struct wcn36xx_hal_msg_header header;
-};
+} __packed;
 
-struct wcn36xx_hal_exit_imps_req {
+struct wcn36xx_hal_exit_imps_req_msg {
 	struct wcn36xx_hal_msg_header header;
-};
+} __packed;
 
 struct wcn36xx_hal_enter_bmps_req_msg {
 	struct wcn36xx_hal_msg_header header;
@@ -3459,9 +3464,6 @@ struct wcn36xx_hal_missed_beacon_ind_msg {
 
 /* Beacon Filtering data structures */
 
-/* The above structure would be followed by multiple of below mentioned
- * structure
- */
 struct beacon_filter_ie {
 	u8 element_id;
 	u8 check_ie_presence;
@@ -3469,7 +3471,27 @@ struct beacon_filter_ie {
 	u8 value;
 	u8 bitmask;
 	u8 ref;
-};
+} __packed;
+
+#define WCN36XX_FILTER_CAPABILITY_MASK		0x73cf
+#define WCN36XX_FILTER_IE_DS_CHANNEL_MASK	0x00
+#define WCN36XX_FILTER_IE_ERP_FILTER_MASK	0xF8
+#define WCN36XX_FILTER_IE_EDCA_FILTER_MASK	0xF0
+#define WCN36XX_FILTER_IE_QOS_FILTER_MASK	0xF0
+#define WCN36XX_FILTER_IE_CHANNEL_SWITCH_MASK	0x00
+#define WCN36XX_FILTER_IE_HT_BYTE0_FILTER_MASK	0x00
+#define WCN36XX_FILTER_IE_HT_BYTE1_FILTER_MASK	0xF8
+#define WCN36XX_FILTER_IE_HT_BYTE2_FILTER_MASK	0xEB
+#define WCN36XX_FILTER_IE_HT_BYTE5_FILTER_MASK	0xFD
+#define WCN36XX_FILTER_IE_PWR_CONSTRAINT_MASK	0x00
+#define WCN36XX_FILTER_IE_OPMODE_NOTIF_MASK	0x00
+#define WCN36XX_FILTER_IE_VHTOP_CHWIDTH_MASK	0xFC
+#define WCN36XX_FILTER_IE_RSN_MASK		0x00
+#define WCN36XX_FILTER_IE_VENDOR_MASK		0x00
+
+/* The above structure would be followed by multiple of below mentioned
+ * structure
+ */
 
 struct wcn36xx_hal_add_bcn_filter_req_msg {
 	struct wcn36xx_hal_msg_header header;
@@ -3480,14 +3502,14 @@ struct wcn36xx_hal_add_bcn_filter_req_msg {
 	u16 ie_num;
 	u8 bss_index;
 	u8 reserved;
-};
+} __packed;
 
 struct wcn36xx_hal_rem_bcn_filter_req {
 	struct wcn36xx_hal_msg_header header;
 
 	u8 ie_Count;
 	u8 rem_ie_id[1];
-};
+} __packed;
 
 #define WCN36XX_HAL_IPV4_ARP_REPLY_OFFLOAD                  0
 #define WCN36XX_HAL_IPV6_NEIGHBOR_DISCOVERY_OFFLOAD         1
@@ -4120,7 +4142,7 @@ struct wcn36xx_hal_dump_cmd_rsp_msg {
 	/* Length of the responce message */
 	u32 rsp_length;
 
-	/* FIXME: Currently considering the the responce will be less than
+	/* FIXME: Currently considering the responce will be less than
 	 * 100bytes */
 	u8 rsp_buffer[DUMPCMD_RSP_BUFFER];
 } __packed;
@@ -4735,74 +4757,6 @@ struct wcn36xx_hal_set_power_params_resp {
 	/* status of the request */
 	u32 status;
 } __packed;
-
-/* Capability bitmap exchange definitions and macros starts */
-
-enum place_holder_in_cap_bitmap {
-	MCC = 0,
-	P2P = 1,
-	DOT11AC = 2,
-	SLM_SESSIONIZATION = 3,
-	DOT11AC_OPMODE = 4,
-	SAP32STA = 5,
-	TDLS = 6,
-	P2P_GO_NOA_DECOUPLE_INIT_SCAN = 7,
-	WLANACTIVE_OFFLOAD = 8,
-	BEACON_OFFLOAD = 9,
-	SCAN_OFFLOAD = 10,
-	ROAM_OFFLOAD = 11,
-	BCN_MISS_OFFLOAD = 12,
-	STA_POWERSAVE = 13,
-	STA_ADVANCED_PWRSAVE = 14,
-	AP_UAPSD = 15,
-	AP_DFS = 16,
-	BLOCKACK = 17,
-	PHY_ERR = 18,
-	BCN_FILTER = 19,
-	RTT = 20,
-	RATECTRL = 21,
-	WOW = 22,
-	WLAN_ROAM_SCAN_OFFLOAD = 23,
-	SPECULATIVE_PS_POLL = 24,
-	SCAN_SCH = 25,
-	IBSS_HEARTBEAT_OFFLOAD = 26,
-	WLAN_SCAN_OFFLOAD = 27,
-	WLAN_PERIODIC_TX_PTRN = 28,
-	ADVANCE_TDLS = 29,
-	BATCH_SCAN = 30,
-	FW_IN_TX_PATH = 31,
-	EXTENDED_NSOFFLOAD_SLOT = 32,
-	CH_SWITCH_V1 = 33,
-	HT40_OBSS_SCAN = 34,
-	UPDATE_CHANNEL_LIST = 35,
-	WLAN_MCADDR_FLT = 36,
-	WLAN_CH144 = 37,
-	NAN = 38,
-	TDLS_SCAN_COEXISTENCE = 39,
-	LINK_LAYER_STATS_MEAS = 40,
-	MU_MIMO = 41,
-	EXTENDED_SCAN = 42,
-	DYNAMIC_WMM_PS = 43,
-	MAC_SPOOFED_SCAN = 44,
-	BMU_ERROR_GENERIC_RECOVERY = 45,
-	DISA = 46,
-	FW_STATS = 47,
-	WPS_PRBRSP_TMPL = 48,
-	BCN_IE_FLT_DELTA = 49,
-	TDLS_OFF_CHANNEL = 51,
-	RTT3 = 52,
-	MGMT_FRAME_LOGGING = 53,
-	ENHANCED_TXBD_COMPLETION = 54,
-	LOGGING_ENHANCEMENT = 55,
-	EXT_SCAN_ENHANCED = 56,
-	MEMORY_DUMP_SUPPORTED = 57,
-	PER_PKT_STATS_SUPPORTED = 58,
-	EXT_LL_STAT = 60,
-	WIFI_CONFIG = 61,
-	ANTENNA_DIVERSITY_SELECTION = 62,
-
-	MAX_FEATURE_SUPPORTED = 128,
-};
 
 #define WCN36XX_HAL_CAPS_SIZE 4
 

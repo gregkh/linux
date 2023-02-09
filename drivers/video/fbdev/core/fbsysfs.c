@@ -99,9 +99,11 @@ static int activate(struct fb_info *fb_info, struct fb_var_screeninfo *var)
 
 	var->activate |= FB_ACTIVATE_FORCE;
 	console_lock();
+	lock_fb_info(fb_info);
 	err = fb_set_var(fb_info, var);
 	if (!err)
 		fbcon_update_vcs(fb_info, var->activate & FB_ACTIVATE_ALL);
+	unlock_fb_info(fb_info);
 	console_unlock();
 	if (err)
 		return err;
@@ -238,7 +240,7 @@ static ssize_t show_bpp(struct device *device, struct device_attribute *attr,
 			char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return snprintf(buf, PAGE_SIZE, "%d\n", fb_info->var.bits_per_pixel);
+	return sysfs_emit(buf, "%d\n", fb_info->var.bits_per_pixel);
 }
 
 static ssize_t store_rotate(struct device *device,
@@ -265,7 +267,7 @@ static ssize_t show_rotate(struct device *device,
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", fb_info->var.rotate);
+	return sysfs_emit(buf, "%d\n", fb_info->var.rotate);
 }
 
 static ssize_t store_virtual(struct device *device,
@@ -293,7 +295,7 @@ static ssize_t show_virtual(struct device *device,
 			    struct device_attribute *attr, char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return snprintf(buf, PAGE_SIZE, "%d,%d\n", fb_info->var.xres_virtual,
+	return sysfs_emit(buf, "%d,%d\n", fb_info->var.xres_virtual,
 			fb_info->var.yres_virtual);
 }
 
@@ -301,7 +303,7 @@ static ssize_t show_stride(struct device *device,
 			   struct device_attribute *attr, char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return snprintf(buf, PAGE_SIZE, "%d\n", fb_info->fix.line_length);
+	return sysfs_emit(buf, "%d\n", fb_info->fix.line_length);
 }
 
 static ssize_t store_blank(struct device *device,
@@ -389,7 +391,7 @@ static ssize_t show_pan(struct device *device,
 			struct device_attribute *attr, char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return snprintf(buf, PAGE_SIZE, "%d,%d\n", fb_info->var.xoffset,
+	return sysfs_emit(buf, "%d,%d\n", fb_info->var.xoffset,
 			fb_info->var.yoffset);
 }
 
@@ -398,7 +400,7 @@ static ssize_t show_name(struct device *device,
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
 
-	return snprintf(buf, PAGE_SIZE, "%s\n", fb_info->fix.id);
+	return sysfs_emit(buf, "%s\n", fb_info->fix.id);
 }
 
 static ssize_t store_fbstate(struct device *device,
@@ -426,7 +428,7 @@ static ssize_t show_fbstate(struct device *device,
 			    struct device_attribute *attr, char *buf)
 {
 	struct fb_info *fb_info = dev_get_drvdata(device);
-	return snprintf(buf, PAGE_SIZE, "%d\n", fb_info->state);
+	return sysfs_emit(buf, "%d\n", fb_info->state);
 }
 
 #if IS_ENABLED(CONFIG_FB_BACKLIGHT)

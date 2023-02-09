@@ -141,7 +141,7 @@ static uint64_t btree_csum_set(struct btree *b, struct bset *i)
 	uint64_t crc = b->key.ptr[0];
 	void *data = (void *) i + 8, *end = bset_bkey_last(i);
 
-	crc = bch_crc64_update(crc, data, end - data);
+	crc = crc64_be(crc, data, end - data);
 	return crc ^ 0xffffffffffffffffULL;
 }
 
@@ -812,7 +812,7 @@ int bch_btree_cache_alloc(struct cache_set *c)
 	c->shrink.seeks = 4;
 	c->shrink.batch = c->btree_pages * 2;
 
-	if (register_shrinker(&c->shrink))
+	if (register_shrinker(&c->shrink, "md-bcache:%pU", c->set_uuid))
 		pr_warn("bcache: %s: could not register shrinker\n",
 				__func__);
 

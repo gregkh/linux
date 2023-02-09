@@ -553,7 +553,6 @@ static const struct snd_soc_component_driver soc_component_cs4265 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config cs4265_regmap = {
@@ -568,8 +567,7 @@ static const struct regmap_config cs4265_regmap = {
 	.cache_type = REGCACHE_RBTREE,
 };
 
-static int cs4265_i2c_probe(struct i2c_client *i2c_client,
-			     const struct i2c_device_id *id)
+static int cs4265_i2c_probe(struct i2c_client *i2c_client)
 {
 	struct cs4265_private *cs4265;
 	int ret;
@@ -610,8 +608,8 @@ static int cs4265_i2c_probe(struct i2c_client *i2c_client,
 	if (devid != CS4265_CHIP_ID_VAL) {
 		ret = -ENODEV;
 		dev_err(&i2c_client->dev,
-			"CS4265 Device ID (%X). Expected %X\n",
-			devid, CS4265_CHIP_ID);
+			"CS4265 Part Number ID: 0x%x Expected: 0x%x\n",
+			devid >> 4, CS4265_CHIP_ID_VAL >> 4);
 		return ret;
 	}
 	dev_info(&i2c_client->dev,
@@ -623,6 +621,14 @@ static int cs4265_i2c_probe(struct i2c_client *i2c_client,
 	return devm_snd_soc_register_component(&i2c_client->dev,
 			&soc_component_cs4265, cs4265_dai,
 			ARRAY_SIZE(cs4265_dai));
+}
+
+static void cs4265_i2c_remove(struct i2c_client *i2c)
+{
+	struct cs4265_private *cs4265 = i2c_get_clientdata(i2c);
+
+	if (cs4265->reset_gpio)
+		gpiod_set_value_cansleep(cs4265->reset_gpio, 0);
 }
 
 static const struct of_device_id cs4265_of_match[] = {
@@ -643,7 +649,8 @@ static struct i2c_driver cs4265_i2c_driver = {
 		.of_match_table = cs4265_of_match,
 	},
 	.id_table = cs4265_id,
-	.probe =    cs4265_i2c_probe,
+	.probe_new = cs4265_i2c_probe,
+	.remove =   cs4265_i2c_remove,
 };
 
 module_i2c_driver(cs4265_i2c_driver);

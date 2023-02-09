@@ -463,7 +463,7 @@ int tipc_enable_l2_media(struct net *net, struct tipc_bearer *b,
 	b->bcast_addr.media_id = b->media->type_id;
 	b->bcast_addr.broadcast = TIPC_BROADCAST_SUPPORT;
 	b->mtu = dev->mtu;
-	b->media->raw2addr(b, &b->addr, (char *)dev->dev_addr);
+	b->media->raw2addr(b, &b->addr, (const char *)dev->dev_addr);
 	rcu_assign_pointer(dev->tipc_ptr, b);
 	return 0;
 }
@@ -704,7 +704,7 @@ static int tipc_l2_device_event(struct notifier_block *nb, unsigned long evt,
 		break;
 	case NETDEV_CHANGEADDR:
 		b->media->raw2addr(b, &b->addr,
-				   (char *)dev->dev_addr);
+				   (const char *)dev->dev_addr);
 		tipc_reset_bearer(net, b);
 		break;
 	case NETDEV_UNREGISTER:
@@ -769,7 +769,7 @@ void tipc_clone_to_loopback(struct net *net, struct sk_buff_head *pkts)
 		skb->pkt_type = PACKET_HOST;
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 		skb->protocol = eth_type_trans(skb, dev);
-		netif_rx_ni(skb);
+		netif_rx(skb);
 	}
 }
 
@@ -788,7 +788,7 @@ int tipc_attach_loopback(struct net *net)
 	if (!dev)
 		return -ENODEV;
 
-	dev_hold(dev);
+	netdev_hold(dev, &tn->loopback_pt.dev_tracker, GFP_KERNEL);
 	tn->loopback_pt.dev = dev;
 	tn->loopback_pt.type = htons(ETH_P_TIPC);
 	tn->loopback_pt.func = tipc_loopback_rcv_pkt;
@@ -801,7 +801,7 @@ void tipc_detach_loopback(struct net *net)
 	struct tipc_net *tn = tipc_net(net);
 
 	dev_remove_pack(&tn->loopback_pt);
-	dev_put(net->loopback_dev);
+	netdev_put(net->loopback_dev, &tn->loopback_pt.dev_tracker);
 }
 
 /* Caller should hold rtnl_lock to protect the bearer */

@@ -19,16 +19,16 @@ int rxe_cq_chk_attr(struct rxe_dev *rxe, struct rxe_cq *cq,
 	}
 
 	if (cqe > rxe->attr.max_cqe) {
-		pr_warn("cqe(%d) > max_cqe(%d)\n",
-			cqe, rxe->attr.max_cqe);
+		pr_debug("cqe(%d) > max_cqe(%d)\n",
+				cqe, rxe->attr.max_cqe);
 		goto err1;
 	}
 
 	if (cq) {
 		count = queue_count(cq->queue, QUEUE_TYPE_TO_CLIENT);
 		if (cqe < count) {
-			pr_warn("cqe(%d) < current # elements in queue (%d)",
-				cqe, count);
+			pr_debug("cqe(%d) < current # elements in queue (%d)",
+					cqe, count);
 			goto err1;
 		}
 	}
@@ -77,8 +77,7 @@ int rxe_cq_from_init(struct rxe_dev *rxe, struct rxe_cq *cq, int cqe,
 		return err;
 	}
 
-	if (uresp)
-		cq->is_user = 1;
+	cq->is_user = uresp;
 
 	cq->is_dying = false;
 
@@ -107,9 +106,9 @@ int rxe_cq_resize_queue(struct rxe_cq *cq, int cqe,
 int rxe_cq_post(struct rxe_cq *cq, struct rxe_cqe *cqe, int solicited)
 {
 	struct ib_event ev;
-	unsigned long flags;
 	int full;
 	void *addr;
+	unsigned long flags;
 
 	spin_lock_irqsave(&cq->cq_lock, flags);
 
@@ -151,9 +150,9 @@ void rxe_cq_disable(struct rxe_cq *cq)
 	spin_unlock_irqrestore(&cq->cq_lock, flags);
 }
 
-void rxe_cq_cleanup(struct rxe_pool_entry *arg)
+void rxe_cq_cleanup(struct rxe_pool_elem *elem)
 {
-	struct rxe_cq *cq = container_of(arg, typeof(*cq), pelem);
+	struct rxe_cq *cq = container_of(elem, typeof(*cq), elem);
 
 	if (cq->queue)
 		rxe_queue_cleanup(cq->queue);

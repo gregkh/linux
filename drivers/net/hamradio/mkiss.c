@@ -346,7 +346,7 @@ static int ax_set_mac_address(struct net_device *dev, void *addr)
 
 	netif_tx_lock_bh(dev);
 	netif_addr_lock(dev);
-	memcpy(dev->dev_addr, &sa->sax25_call, AX25_ADDR_LEN);
+	__dev_addr_set(dev, &sa->sax25_call, AX25_ADDR_LEN);
 	netif_addr_unlock(dev);
 	netif_tx_unlock_bh(dev);
 
@@ -649,7 +649,7 @@ static void ax_setup(struct net_device *dev)
 
 
 	memcpy(dev->broadcast, &ax25_bcast, AX25_ADDR_LEN);
-	memcpy(dev->dev_addr,  &ax25_defaddr,  AX25_ADDR_LEN);
+	dev_addr_set(dev, (u8 *)&ax25_defaddr);
 
 	dev->flags      = IFF_BROADCAST | IFF_MULTICAST;
 }
@@ -806,8 +806,8 @@ static void mkiss_close(struct tty_struct *tty)
 }
 
 /* Perform I/O control on an active ax25 channel. */
-static int mkiss_ioctl(struct tty_struct *tty, struct file *file,
-	unsigned int cmd, unsigned long arg)
+static int mkiss_ioctl(struct tty_struct *tty, unsigned int cmd,
+		unsigned long arg)
 {
 	struct mkiss *ax = mkiss_get(tty);
 	struct net_device *dev;
@@ -853,7 +853,7 @@ static int mkiss_ioctl(struct tty_struct *tty, struct file *file,
 		}
 
 		netif_tx_lock_bh(dev);
-		memcpy(dev->dev_addr, addr, AX25_ADDR_LEN);
+		__dev_addr_set(dev, addr, AX25_ADDR_LEN);
 		netif_tx_unlock_bh(dev);
 
 		err = 0;

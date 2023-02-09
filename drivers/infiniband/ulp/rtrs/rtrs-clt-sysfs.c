@@ -50,7 +50,8 @@ static ssize_t max_reconnect_attempts_show(struct device *dev,
 					   struct device_attribute *attr,
 					   char *page)
 {
-	struct rtrs_clt *clt = container_of(dev, struct rtrs_clt, dev);
+	struct rtrs_clt_sess *clt = container_of(dev, struct rtrs_clt_sess,
+						 dev);
 
 	return sysfs_emit(page, "%d\n",
 			  rtrs_clt_get_max_reconnect_attempts(clt));
@@ -63,7 +64,8 @@ static ssize_t max_reconnect_attempts_store(struct device *dev,
 {
 	int value;
 	int ret;
-	struct rtrs_clt *clt  = container_of(dev, struct rtrs_clt, dev);
+	struct rtrs_clt_sess *clt  = container_of(dev, struct rtrs_clt_sess,
+						  dev);
 
 	ret = kstrtoint(buf, 10, &value);
 	if (ret) {
@@ -90,9 +92,9 @@ static ssize_t mpath_policy_show(struct device *dev,
 				 struct device_attribute *attr,
 				 char *page)
 {
-	struct rtrs_clt *clt;
+	struct rtrs_clt_sess *clt;
 
-	clt = container_of(dev, struct rtrs_clt, dev);
+	clt = container_of(dev, struct rtrs_clt_sess, dev);
 
 	switch (clt->mp_policy) {
 	case MP_POLICY_RR:
@@ -114,12 +116,12 @@ static ssize_t mpath_policy_store(struct device *dev,
 				  const char *buf,
 				  size_t count)
 {
-	struct rtrs_clt *clt;
+	struct rtrs_clt_sess *clt;
 	int value;
 	int ret;
 	size_t len = 0;
 
-	clt = container_of(dev, struct rtrs_clt, dev);
+	clt = container_of(dev, struct rtrs_clt_sess, dev);
 
 	ret = kstrtoint(buf, 10, &value);
 	if (!ret && (value == MP_POLICY_RR ||
@@ -154,8 +156,7 @@ static DEVICE_ATTR_RW(mpath_policy);
 static ssize_t add_path_show(struct device *dev,
 			     struct device_attribute *attr, char *page)
 {
-	return sysfs_emit(
-		page,
+	return sysfs_emit(page,
 		"Usage: echo [<source addr>@]<destination addr> > %s\n\n*addr ::= [ ip:<ipv4|ipv6> | gid:<gid> ]\n",
 		attr->attr.name);
 }
@@ -169,12 +170,12 @@ static ssize_t add_path_store(struct device *dev,
 		.src = &srcaddr,
 		.dst = &dstaddr
 	};
-	struct rtrs_clt *clt;
+	struct rtrs_clt_sess *clt;
 	const char *nl;
 	size_t len;
 	int err;
 
-	clt = container_of(dev, struct rtrs_clt, dev);
+	clt = container_of(dev, struct rtrs_clt_sess, dev);
 
 	nl = strchr(buf, '\n');
 	if (nl)
@@ -296,8 +297,12 @@ static struct kobj_attribute rtrs_clt_remove_path_attr =
 	__ATTR(remove_path, 0644, rtrs_clt_remove_path_show,
 	       rtrs_clt_remove_path_store);
 
-STAT_ATTR(struct rtrs_clt_stats, cpu_migration,
-	  rtrs_clt_stats_migration_cnt_to_str,
+STAT_ATTR(struct rtrs_clt_stats, cpu_migration_from,
+	  rtrs_clt_stats_migration_from_cnt_to_str,
+	  rtrs_clt_reset_cpu_migr_stats);
+
+STAT_ATTR(struct rtrs_clt_stats, cpu_migration_to,
+	  rtrs_clt_stats_migration_to_cnt_to_str,
 	  rtrs_clt_reset_cpu_migr_stats);
 
 STAT_ATTR(struct rtrs_clt_stats, reconnects,
@@ -313,7 +318,8 @@ STAT_ATTR(struct rtrs_clt_stats, reset_all,
 	  rtrs_clt_reset_all_stats);
 
 static struct attribute *rtrs_clt_stats_attrs[] = {
-	&cpu_migration_attr.attr,
+	&cpu_migration_from_attr.attr,
+	&cpu_migration_to_attr.attr,
 	&reconnects_attr.attr,
 	&rdma_attr.attr,
 	&reset_all_attr.attr,
@@ -420,7 +426,7 @@ static const struct attribute_group rtrs_clt_path_attr_group = {
 
 int rtrs_clt_create_path_files(struct rtrs_clt_path *clt_path)
 {
-	struct rtrs_clt *clt = clt_path->clt;
+	struct rtrs_clt_sess *clt = clt_path->clt;
 	char str[NAME_MAX];
 	int err;
 	struct rtrs_addr path = {
@@ -492,12 +498,12 @@ static const struct attribute_group rtrs_clt_attr_group = {
 	.attrs = rtrs_clt_attrs,
 };
 
-int rtrs_clt_create_sysfs_root_files(struct rtrs_clt *clt)
+int rtrs_clt_create_sysfs_root_files(struct rtrs_clt_sess *clt)
 {
 	return sysfs_create_group(&clt->dev.kobj, &rtrs_clt_attr_group);
 }
 
-void rtrs_clt_destroy_sysfs_root(struct rtrs_clt *clt)
+void rtrs_clt_destroy_sysfs_root(struct rtrs_clt_sess *clt)
 {
 	sysfs_remove_group(&clt->dev.kobj, &rtrs_clt_attr_group);
 

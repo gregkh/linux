@@ -39,6 +39,7 @@
 #define KVASER_USB_QUIRK_HAS_SILENT_MODE	BIT(0)
 #define KVASER_USB_QUIRK_HAS_TXRX_ERRORS	BIT(1)
 #define KVASER_USB_QUIRK_IGNORE_CLK_FREQ	BIT(2)
+#define KVASER_USB_QUIRK_HAS_HARDWARE_TIMESTAMP	BIT(3)
 
 /* Device capabilities */
 #define KVASER_USB_CAP_BERR_CAP			0x01
@@ -73,7 +74,6 @@ struct kvaser_usb_dev_card_data {
 struct kvaser_usb_tx_urb_context {
 	struct kvaser_usb_net_priv *priv;
 	u32 echo_index;
-	int dlc;
 };
 
 struct kvaser_usb_busparams {
@@ -182,8 +182,8 @@ struct kvaser_usb_dev_ops {
 	void (*dev_read_bulk_callback)(struct kvaser_usb *dev, void *buf,
 				       int len);
 	void *(*dev_frame_to_cmd)(const struct kvaser_usb_net_priv *priv,
-				  const struct sk_buff *skb, int *frame_len,
-				  int *cmd_len, u16 transid);
+				  const struct sk_buff *skb, int *cmd_len,
+				  u16 transid);
 };
 
 struct kvaser_usb_driver_info {

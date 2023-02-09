@@ -325,8 +325,9 @@ static int nixge_hw_dma_bd_init(struct net_device *ndev)
 					 + sizeof(*priv->rx_bd_v) *
 					 ((i + 1) % RX_BD_NUM));
 
-		skb = netdev_alloc_skb_ip_align(ndev,
-						NIXGE_MAX_JUMBO_FRAME_SIZE);
+		skb = __netdev_alloc_skb_ip_align(ndev,
+						  NIXGE_MAX_JUMBO_FRAME_SIZE,
+						  GFP_KERNEL);
 		if (!skb)
 			goto out;
 
@@ -991,8 +992,8 @@ static const struct net_device_ops nixge_netdev_ops = {
 static void nixge_ethtools_get_drvinfo(struct net_device *ndev,
 				       struct ethtool_drvinfo *ed)
 {
-	strlcpy(ed->driver, "nixge", sizeof(ed->driver));
-	strlcpy(ed->bus_info, "platform", sizeof(ed->bus_info));
+	strscpy(ed->driver, "nixge", sizeof(ed->driver));
+	strscpy(ed->bus_info, "platform", sizeof(ed->bus_info));
 }
 
 static int
@@ -1211,7 +1212,7 @@ static void *nixge_get_nvmem_address(struct device *dev)
 
 	cell = nvmem_cell_get(dev, "address");
 	if (IS_ERR(cell))
-		return NULL;
+		return cell;
 
 	mac = nvmem_cell_read(cell, &cell_size);
 	nvmem_cell_put(cell);
@@ -1284,8 +1285,8 @@ static int nixge_probe(struct platform_device *pdev)
 	ndev->max_mtu = NIXGE_JUMBO_MTU;
 
 	mac_addr = nixge_get_nvmem_address(&pdev->dev);
-	if (mac_addr && is_valid_ether_addr(mac_addr)) {
-		ether_addr_copy(ndev->dev_addr, mac_addr);
+	if (!IS_ERR(mac_addr) && is_valid_ether_addr(mac_addr)) {
+		eth_hw_addr_set(ndev, mac_addr);
 		kfree(mac_addr);
 	} else {
 		eth_hw_addr_random(ndev);
@@ -1295,7 +1296,7 @@ static int nixge_probe(struct platform_device *pdev)
 	priv->ndev = ndev;
 	priv->dev = &pdev->dev;
 
-	netif_napi_add(ndev, &priv->napi, nixge_poll, NAPI_POLL_WEIGHT);
+	netif_napi_add(ndev, &priv->napi, nixge_poll);
 	err = nixge_of_get_resources(pdev);
 	if (err)
 		goto free_netdev;

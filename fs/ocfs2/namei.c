@@ -197,6 +197,7 @@ static struct inode *ocfs2_get_init_inode(struct inode *dir, umode_t mode)
 	 * callers. */
 	if (S_ISDIR(mode))
 		set_nlink(inode, 2);
+	mode = mode_strip_sgid(&init_user_ns, dir, mode);
 	inode_init_owner(&init_user_ns, inode, dir, mode);
 	status = dquot_initialize(inode);
 	if (status)
@@ -481,7 +482,7 @@ leave:
 		ocfs2_free_alloc_context(meta_ac);
 
 	/*
-	 * We should call iput after the i_mutex of the bitmap been
+	 * We should call iput after the i_rwsem of the bitmap been
 	 * unlocked in ocfs2_free_alloc_context, or the
 	 * ocfs2_delete_inode will mutex_lock again.
 	 */

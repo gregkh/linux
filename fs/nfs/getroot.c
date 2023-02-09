@@ -91,7 +91,7 @@ int nfs_get_root(struct super_block *s, struct fs_context *fc)
 		goto out_fattr;
 	}
 
-	inode = nfs_fhget(s, ctx->mntfh, fsinfo.fattr, NULL);
+	inode = nfs_fhget(s, ctx->mntfh, fsinfo.fattr);
 	if (IS_ERR(inode)) {
 		dprintk("nfs_get_root: get root inode failed\n");
 		error = PTR_ERR(inode);
@@ -148,7 +148,7 @@ int nfs_get_root(struct super_block *s, struct fs_context *fc)
 		!(kflags_out & SECURITY_LSM_NATIVE_LABELS))
 		server->caps &= ~NFS_CAP_SECURITY_LABEL;
 
-	nfs_setsecurity(inode, fsinfo.fattr, fsinfo.fattr->label);
+	nfs_setsecurity(inode, fsinfo.fattr);
 	error = 0;
 
 out_fattr:

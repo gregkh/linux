@@ -638,7 +638,7 @@ static int hinic_set_mac_addr(struct net_device *netdev, void *addr)
 
 	err = change_mac_addr(netdev, new_mac);
 	if (!err)
-		memcpy(netdev->dev_addr, new_mac, ETH_ALEN);
+		eth_hw_addr_set(netdev, new_mac);
 
 	return err;
 }
@@ -960,8 +960,6 @@ static void hinic_refresh_nic_cfg(struct hinic_dev *nic_dev)
  * @in_size: input size
  * @buf_out: output buffer
  * @out_size: returned output size
- *
- * Return 0 - Success, negative - Failure
  **/
 static void link_status_event_handler(void *handle, void *buf_in, u16 in_size,
 				      void *buf_out, u16 *out_size)
@@ -1154,6 +1152,7 @@ static int nic_dev_init(struct pci_dev *pdev)
 	struct net_device *netdev;
 	struct hinic_hwdev *hwdev;
 	struct devlink *devlink;
+	u8 addr[ETH_ALEN];
 	int err, num_qps;
 
 	devlink = hinic_devlink_alloc(&pdev->dev);
@@ -1225,11 +1224,12 @@ static int nic_dev_init(struct pci_dev *pdev)
 
 	pci_set_drvdata(pdev, netdev);
 
-	err = hinic_port_get_mac(nic_dev, netdev->dev_addr);
+	err = hinic_port_get_mac(nic_dev, addr);
 	if (err) {
 		dev_err(&pdev->dev, "Failed to get mac address\n");
 		goto err_get_mac;
 	}
+	eth_hw_addr_set(netdev, addr);
 
 	if (!is_valid_ether_addr(netdev->dev_addr)) {
 		if (!HINIC_IS_VF(nic_dev->hwdev->hwif)) {
@@ -1345,10 +1345,8 @@ static int hinic_probe(struct pci_dev *pdev,
 {
 	int err = pci_enable_device(pdev);
 
-	if (err) {
-		dev_err(&pdev->dev, "Failed to enable PCI device\n");
-		return err;
-	}
+	if (err)
+		return dev_err_probe(&pdev->dev, err, "Failed to enable PCI device\n");
 
 	err = pci_request_regions(pdev, HINIC_DRV_NAME);
 	if (err) {
@@ -1360,12 +1358,8 @@ static int hinic_probe(struct pci_dev *pdev,
 
 	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (err) {
-		dev_warn(&pdev->dev, "Couldn't set 64-bit DMA mask\n");
-		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
-		if (err) {
-			dev_err(&pdev->dev, "Failed to set DMA mask\n");
-			goto err_dma_mask;
-		}
+		dev_err(&pdev->dev, "Failed to set DMA mask\n");
+		goto err_dma_mask;
 	}
 
 	err = nic_dev_init(pdev);
@@ -1385,8 +1379,6 @@ err_pci_regions:
 	pci_disable_device(pdev);
 	return err;
 }
-
-#define HINIC_WAIT_SRIOV_CFG_TIMEOUT	15000
 
 static void wait_sriov_cfg_complete(struct hinic_dev *nic_dev)
 {

@@ -742,8 +742,7 @@ pxad_alloc_desc(struct pxad_chan *chan, unsigned int nb_hw_desc)
 	dma_addr_t dma;
 	int i;
 
-	sw_desc = kzalloc(sizeof(*sw_desc) +
-			  nb_hw_desc * sizeof(struct pxad_desc_hw *),
+	sw_desc = kzalloc(struct_size(sw_desc, hw_desc, nb_hw_desc),
 			  GFP_NOWAIT);
 	if (!sw_desc)
 		return NULL;
@@ -1366,10 +1365,17 @@ static int pxad_probe(struct platform_device *op)
 
 	of_id = of_match_device(pxad_dt_ids, &op->dev);
 	if (of_id) {
-		of_property_read_u32(op->dev.of_node, "#dma-channels",
-				     &dma_channels);
-		ret = of_property_read_u32(op->dev.of_node, "#dma-requests",
+		/* Parse new and deprecated dma-channels properties */
+		if (of_property_read_u32(op->dev.of_node, "dma-channels",
+					 &dma_channels))
+			of_property_read_u32(op->dev.of_node, "#dma-channels",
+					     &dma_channels);
+		/* Parse new and deprecated dma-requests properties */
+		ret = of_property_read_u32(op->dev.of_node, "dma-requests",
 					   &nb_requestors);
+		if (ret)
+			ret = of_property_read_u32(op->dev.of_node, "#dma-requests",
+						   &nb_requestors);
 		if (ret) {
 			dev_warn(pdev->slave.dev,
 				 "#dma-requests set to default 32 as missing in OF: %d",

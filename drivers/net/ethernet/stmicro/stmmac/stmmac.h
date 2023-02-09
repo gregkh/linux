@@ -10,7 +10,6 @@
 #define __STMMAC_H__
 
 #define STMMAC_RESOURCE_NAME   "stmmaceth"
-#define DRV_MODULE_VERSION	"Jan_2016"
 
 #include <linux/clk.h>
 #include <linux/hrtimer.h>
@@ -23,6 +22,7 @@
 #include <linux/net_tstamp.h>
 #include <linux/reset.h>
 #include <net/page_pool.h>
+#include <uapi/linux/bpf.h>
 
 struct stmmac_resources {
 	void __iomem *addr;
@@ -175,14 +175,29 @@ struct stmmac_flow_entry {
 /* Rx Frame Steering */
 enum stmmac_rfs_type {
 	STMMAC_RFS_T_VLAN,
+	STMMAC_RFS_T_LLDP,
+	STMMAC_RFS_T_1588,
 	STMMAC_RFS_T_MAX,
 };
 
 struct stmmac_rfs_entry {
 	unsigned long cookie;
+	u16 etype;
 	int in_use;
 	int type;
 	int tc;
+};
+
+struct stmmac_dma_conf {
+	unsigned int dma_buf_sz;
+
+	/* RX Queue */
+	struct stmmac_rx_queue rx_queue[MTL_MAX_RX_QUEUES];
+	unsigned int dma_rx_size;
+
+	/* TX Queue */
+	struct stmmac_tx_queue tx_queue[MTL_MAX_TX_QUEUES];
+	unsigned int dma_tx_size;
 };
 
 struct stmmac_priv {
@@ -191,7 +206,6 @@ struct stmmac_priv {
 	u32 tx_coal_timer[MTL_MAX_TX_QUEUES];
 	u32 rx_coal_frames[MTL_MAX_TX_QUEUES];
 
-	int tx_coalesce;
 	int hwts_tx_en;
 	bool tx_path_in_lpi_mode;
 	bool tso;
@@ -199,7 +213,6 @@ struct stmmac_priv {
 	int sph_cap;
 	u32 sarc_type;
 
-	unsigned int dma_buf_sz;
 	unsigned int rx_copybreak;
 	u32 rx_riwt[MTL_MAX_TX_QUEUES];
 	int hwts_rx_en;
@@ -211,13 +224,7 @@ struct stmmac_priv {
 	int (*hwif_quirks)(struct stmmac_priv *priv);
 	struct mutex lock;
 
-	/* RX Queue */
-	struct stmmac_rx_queue rx_queue[MTL_MAX_RX_QUEUES];
-	unsigned int dma_rx_size;
-
-	/* TX Queue */
-	struct stmmac_tx_queue tx_queue[MTL_MAX_TX_QUEUES];
-	unsigned int dma_tx_size;
+	struct stmmac_dma_conf dma_conf;
 
 	/* Generic channel for NAPI */
 	struct stmmac_channel channel[STMMAC_CH_MAX];
@@ -226,7 +233,6 @@ struct stmmac_priv {
 	unsigned int flow_ctrl;
 	unsigned int pause;
 	struct mii_bus *mii;
-	int mii_irq[PHY_MAX_ADDR];
 
 	struct phylink_config phylink_config;
 	struct phylink *phylink;
@@ -262,9 +268,10 @@ struct stmmac_priv {
 	u32 adv_ts;
 	int use_riwt;
 	int irq_wake;
-	spinlock_t ptp_lock;
+	rwlock_t ptp_lock;
 	/* Protects auxiliary snapshot registers from concurrent access. */
 	struct mutex aux_ts_lock;
+	wait_queue_head_t tstamp_busy_wait;
 
 	void __iomem *mmcaddr;
 	void __iomem *ptpaddr;

@@ -115,10 +115,29 @@ static int gdsc_poll_status(struct gdsc *sc, enum gdsc_status status)
 	return -ETIMEDOUT;
 }
 
+static int gdsc_update_collapse_bit(struct gdsc *sc, bool val)
+{
+	u32 reg, mask;
+	int ret;
+
+	if (sc->collapse_mask) {
+		reg = sc->collapse_ctrl;
+		mask = sc->collapse_mask;
+	} else {
+		reg = sc->gdscr;
+		mask = SW_COLLAPSE_MASK;
+	}
+
+	ret = regmap_update_bits(sc->regmap, reg, mask, val ? mask : 0);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
 static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status)
 {
 	int ret;
-	u32 val = (status == GDSC_ON) ? 0 : SW_COLLAPSE_MASK;
 
 	if (status == GDSC_ON && sc->rsupply) {
 		ret = regulator_enable(sc->rsupply);
@@ -126,9 +145,7 @@ static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status)
 			return ret;
 	}
 
-	ret = regmap_update_bits(sc->regmap, sc->gdscr, SW_COLLAPSE_MASK, val);
-	if (ret)
-		return ret;
+	ret = gdsc_update_collapse_bit(sc, status == GDSC_OFF);
 
 	/* If disabling votable gdscs, don't poll on status */
 	if ((sc->flags & VOTABLE) && status == GDSC_OFF) {
@@ -324,6 +341,16 @@ static int gdsc_disable(struct generic_pm_domain *domain)
 	if (sc->pwrsts & PWRSTS_OFF)
 		gdsc_clear_mem_on(sc);
 
+	/*
+	 * If the GDSC supports only a Retention state, apart from ON,
+	 * leave it in ON state.
+	 * There is no SW control to transition the GDSC into
+	 * Retention state. This happens in HW when the parent
+	 * domain goes down to a Low power state
+	 */
+	if (sc->pwrsts == PWRSTS_RET_ON)
+		return 0;
+
 	ret = gdsc_toggle_logic(sc, GDSC_OFF);
 	if (ret)
 		return ret;
@@ -386,17 +413,16 @@ static int gdsc_init(struct gdsc *sc)
 		 * If a Votable GDSC is ON, make sure we have a Vote.
 		 */
 		if (sc->flags & VOTABLE) {
-			ret = regmap_update_bits(sc->regmap, sc->gdscr,
-						 SW_COLLAPSE_MASK, val);
+			ret = gdsc_update_collapse_bit(sc, false);
 			if (ret)
-				return ret;
+				goto err_disable_supply;
 		}
 
 		/* Turn on HW trigger mode if supported */
 		if (sc->flags & HW_CTRL) {
 			ret = gdsc_hwctrl(sc, true);
 			if (ret < 0)
-				return ret;
+				goto err_disable_supply;
 		}
 
 		/*
@@ -423,9 +449,18 @@ static int gdsc_init(struct gdsc *sc)
 		sc->pd.power_off = gdsc_disable;
 	if (!sc->pd.power_on)
 		sc->pd.power_on = gdsc_enable;
-	pm_genpd_init(&sc->pd, NULL, !on);
+
+	ret = pm_genpd_init(&sc->pd, NULL, !on);
+	if (ret)
+		goto err_disable_supply;
 
 	return 0;
+
+err_disable_supply:
+	if (on && sc->rsupply)
+		regulator_disable(sc->rsupply);
+
+	return ret;
 }
 
 int gdsc_register(struct gdsc_desc *desc,
@@ -473,6 +508,8 @@ int gdsc_register(struct gdsc_desc *desc,
 			continue;
 		if (scs[i]->parent)
 			pm_genpd_add_subdomain(scs[i]->parent, &scs[i]->pd);
+		else if (!IS_ERR_OR_NULL(dev->pm_domain))
+			pm_genpd_add_subdomain(pd_to_genpd(dev->pm_domain), &scs[i]->pd);
 	}
 
 	return of_genpd_add_provider_onecell(dev->of_node, data);
@@ -491,6 +528,8 @@ void gdsc_unregister(struct gdsc_desc *desc)
 			continue;
 		if (scs[i]->parent)
 			pm_genpd_remove_subdomain(scs[i]->parent, &scs[i]->pd);
+		else if (!IS_ERR_OR_NULL(dev->pm_domain))
+			pm_genpd_remove_subdomain(pd_to_genpd(dev->pm_domain), &scs[i]->pd);
 	}
 	of_genpd_del_provider(dev->of_node);
 }

@@ -31,7 +31,6 @@
  * We need to define the tracepoints somewhere, and tlb.c
  * is only compiled when SMP=y.
  */
-#define CREATE_TRACE_POINTS
 #include <trace/events/tlb.h>
 
 #include "mm_internal.h"
@@ -628,7 +627,7 @@ static void __init memory_map_top_down(unsigned long map_start,
 	 */
 	addr = memblock_phys_alloc_range(PMD_SIZE, PMD_SIZE, map_start,
 					 map_end);
-	memblock_free(addr, PMD_SIZE);
+	memblock_phys_free(addr, PMD_SIZE);
 	real_end = addr + PMD_SIZE;
 
 	/* step_size need to be small so pgt_buf from BRK could cover it */
@@ -724,6 +723,11 @@ static void __init memory_map_bottom_up(unsigned long map_start,
 static void __init init_trampoline(void)
 {
 #ifdef CONFIG_X86_64
+	/*
+	 * The code below will alias kernel page-tables in the user-range of the
+	 * address space, including the Global bit. So global TLB entries will
+	 * be created when using the trampoline page-table.
+	 */
 	if (!kaslr_memory_enabled())
 		trampoline_pgd_entry = init_top_pgt[pgd_index(__PAGE_OFFSET)];
 	else
@@ -852,7 +856,7 @@ int devmem_is_allowed(unsigned long pagenr)
 
 	/*
 	 * This must follow RAM test, since System RAM is considered a
-	 * restricted resource under CONFIG_STRICT_IOMEM.
+	 * restricted resource under CONFIG_STRICT_DEVMEM.
 	 */
 	if (iomem_is_exclusive(pagenr << PAGE_SHIFT)) {
 		/* Low 1MB bypasses iomem restrictions. */
@@ -1050,7 +1054,7 @@ void update_cache_mode_entry(unsigned entry, enum page_cache_mode cache)
 }
 
 #ifdef CONFIG_SWAP
-unsigned long max_swapfile_size(void)
+unsigned long arch_max_swapfile_size(void)
 {
 	unsigned long pages;
 

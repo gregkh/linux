@@ -13,6 +13,7 @@
 
 #include <linux/completion.h>
 #include <linux/device.h>
+#include <linux/ethtool.h>
 #include <linux/gfp.h>
 #include <linux/if.h>
 #include <linux/kernel.h>
@@ -89,7 +90,7 @@
 #define USB_HYBRID_PRO_CANLIN_PRODUCT_ID	278
 
 static const struct kvaser_usb_driver_info kvaser_usb_driver_info_hydra = {
-	.quirks = 0,
+	.quirks = KVASER_USB_QUIRK_HAS_HARDWARE_TIMESTAMP,
 	.ops = &kvaser_usb_hydra_dev_ops,
 };
 
@@ -240,12 +241,10 @@ MODULE_DEVICE_TABLE(usb, kvaser_usb_table);
 
 int kvaser_usb_send_cmd(const struct kvaser_usb *dev, void *cmd, int len)
 {
-	int actual_len; /* Not used */
-
 	return usb_bulk_msg(dev->udev,
 			    usb_sndbulkpipe(dev->udev,
 					    dev->bulk_out->bEndpointAddress),
-			    cmd, len, &actual_len, KVASER_USB_TIMEOUT);
+			    cmd, len, NULL, KVASER_USB_TIMEOUT);
 }
 
 int kvaser_usb_recv_cmd(const struct kvaser_usb *dev, void *cmd, int len,
@@ -314,8 +313,6 @@ int kvaser_usb_can_rx_over_error(struct net_device *netdev)
 	cf->can_id |= CAN_ERR_CRTL;
 	cf->data[1] = CAN_ERR_CRTL_RX_OVERFLOW;
 
-	stats->rx_packets++;
-	stats->rx_bytes += cf->len;
 	netif_rx(skb);
 
 	return 0;
@@ -656,7 +653,7 @@ static netdev_tx_t kvaser_usb_start_xmit(struct sk_buff *skb,
 	unsigned int i;
 	unsigned long flags;
 
-	if (can_dropped_invalid_skb(netdev, skb))
+	if (can_dev_dropped_skb(netdev, skb))
 		return NETDEV_TX_OK;
 
 	urb = usb_alloc_urb(0, GFP_ATOMIC);
@@ -689,8 +686,7 @@ static netdev_tx_t kvaser_usb_start_xmit(struct sk_buff *skb,
 		goto freeurb;
 	}
 
-	buf = ops->dev_frame_to_cmd(priv, skb, &context->dlc, &cmd_len,
-				    context->echo_index);
+	buf = ops->dev_frame_to_cmd(priv, skb, &cmd_len, context->echo_index);
 	if (!buf) {
 		stats->tx_dropped++;
 		dev_kfree_skb(skb);
@@ -751,6 +747,22 @@ static const struct net_device_ops kvaser_usb_netdev_ops = {
 	.ndo_stop = kvaser_usb_close,
 	.ndo_start_xmit = kvaser_usb_start_xmit,
 	.ndo_change_mtu = can_change_mtu,
+};
+
+static const struct net_device_ops kvaser_usb_netdev_ops_hwts = {
+	.ndo_open = kvaser_usb_open,
+	.ndo_stop = kvaser_usb_close,
+	.ndo_eth_ioctl = can_eth_ioctl_hwts,
+	.ndo_start_xmit = kvaser_usb_start_xmit,
+	.ndo_change_mtu = can_change_mtu,
+};
+
+static const struct ethtool_ops kvaser_usb_ethtool_ops = {
+	.get_ts_info = ethtool_op_get_ts_info,
+};
+
+static const struct ethtool_ops kvaser_usb_ethtool_ops_hwts = {
+	.get_ts_info = can_ethtool_op_get_ts_info_hwts,
 };
 
 static void kvaser_usb_remove_interfaces(struct kvaser_usb *dev)
@@ -836,7 +848,13 @@ static int kvaser_usb_init_one(struct kvaser_usb *dev, int channel)
 	netdev->flags |= IFF_ECHO;
 
 	netdev->netdev_ops = &kvaser_usb_netdev_ops;
-
+	if (driver_info->quirks & KVASER_USB_QUIRK_HAS_HARDWARE_TIMESTAMP) {
+		netdev->netdev_ops = &kvaser_usb_netdev_ops_hwts;
+		netdev->ethtool_ops = &kvaser_usb_ethtool_ops_hwts;
+	} else {
+		netdev->netdev_ops = &kvaser_usb_netdev_ops;
+		netdev->ethtool_ops = &kvaser_usb_ethtool_ops;
+	}
 	SET_NETDEV_DEV(netdev, &dev->intf->dev);
 	netdev->dev_id = channel;
 
@@ -972,7 +990,7 @@ static void kvaser_usb_disconnect(struct usb_interface *intf)
 }
 
 static struct usb_driver kvaser_usb_driver = {
-	.name = "kvaser_usb",
+	.name = KBUILD_MODNAME,
 	.probe = kvaser_usb_probe,
 	.disconnect = kvaser_usb_disconnect,
 	.id_table = kvaser_usb_table,

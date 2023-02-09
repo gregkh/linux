@@ -3,6 +3,7 @@
  * PA-RISC KGDB support
  *
  * Copyright (c) 2019 Sven Schnelle <svens@stackframe.org>
+ * Copyright (c) 2022 Helge Deller <deller@gmx.de>
  *
  */
 

@@ -44,11 +44,6 @@
 
 static const struct vm_operations_struct nfs_file_vm_ops;
 
-/* Hack for future NFS swap support */
-#ifndef IS_SWAPFILE
-# define IS_SWAPFILE(inode)	(0)
-#endif
-
 int nfs_check_flags(int flags)
 {
 	if ((flags & (O_APPEND | O_DIRECT)) == (O_APPEND | O_DIRECT))
@@ -74,6 +69,8 @@ nfs_file_open(struct inode *inode, struct file *filp)
 		return res;
 
 	res = nfs_open(inode, filp);
+	if (res == 0)
+		filp->f_mode |= FMODE_CAN_ODIRECT;
 	return res;
 }
 
@@ -84,6 +81,7 @@ nfs_file_release(struct inode *inode, struct file *filp)
 
 	nfs_inc_stats(inode, NFSIOS_VFSRELEASE);
 	nfs_file_clear_open_context(filp);
+	nfs_fscache_release_file(inode, filp);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(nfs_file_release);
@@ -315,7 +313,7 @@ static bool nfs_want_read_modify_write(struct file *file, struct page *page,
  * increment the page use counts until he is done with the page.
  */
 static int nfs_write_begin(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned flags,
+			loff_t pos, unsigned len,
 			struct page **pagep, void **fsdata)
 {
 	int ret;
@@ -327,7 +325,7 @@ static int nfs_write_begin(struct file *file, struct address_space *mapping,
 		file, mapping->host->i_ino, len, (long long) pos);
 
 start:
-	page = grab_cache_page_write_begin(mapping, index, flags);
+	page = grab_cache_page_write_begin(mapping, index);
 	if (!page)
 		return -ENOMEM;
 	*pagep = page;
@@ -339,7 +337,7 @@ start:
 	} else if (!once_thru &&
 		   nfs_want_read_modify_write(file, page, pos, len)) {
 		once_thru = 1;
-		ret = nfs_readpage(file, page);
+		ret = nfs_read_folio(file, page_folio(page));
 		put_page(page);
 		if (!ret)
 			goto start;
@@ -400,49 +398,45 @@ static int nfs_write_end(struct file *file, struct address_space *mapping,
  * - Called if either PG_private or PG_fscache is set on the page
  * - Caller holds page lock
  */
-static void nfs_invalidate_page(struct page *page, unsigned int offset,
-				unsigned int length)
+static void nfs_invalidate_folio(struct folio *folio, size_t offset,
+				size_t length)
 {
-	dfprintk(PAGECACHE, "NFS: invalidate_page(%p, %u, %u)\n",
-		 page, offset, length);
+	dfprintk(PAGECACHE, "NFS: invalidate_folio(%lu, %zu, %zu)\n",
+		 folio->index, offset, length);
 
-	if (offset != 0 || length < PAGE_SIZE)
+	if (offset != 0 || length < folio_size(folio))
 		return;
 	/* Cancel any unstarted writes on this page */
-	nfs_wb_page_cancel(page_file_mapping(page)->host, page);
-
-	nfs_fscache_invalidate_page(page, page->mapping->host);
+	nfs_wb_folio_cancel(folio->mapping->host, folio);
+	folio_wait_fscache(folio);
 }
 
 /*
- * Attempt to release the private state associated with a page
- * - Called if either PG_private or PG_fscache is set on the page
- * - Caller holds page lock
- * - Return true (may release page) or false (may not)
+ * Attempt to release the private state associated with a folio
+ * - Called if either private or fscache flags are set on the folio
+ * - Caller holds folio lock
+ * - Return true (may release folio) or false (may not)
  */
-static int nfs_release_page(struct page *page, gfp_t gfp)
+static bool nfs_release_folio(struct folio *folio, gfp_t gfp)
 {
-	dfprintk(PAGECACHE, "NFS: release_page(%p)\n", page);
+	dfprintk(PAGECACHE, "NFS: release_folio(%p)\n", folio);
 
-	/* If PagePrivate() is set, then the page is not freeable */
-	if (PagePrivate(page))
-		return 0;
-	return nfs_fscache_release_page(page, gfp);
+	/* If the private flag is set, then the folio is not freeable */
+	if (folio_test_private(folio))
+		return false;
+	return nfs_fscache_release_folio(folio, gfp);
 }
 
-static void nfs_check_dirty_writeback(struct page *page,
+static void nfs_check_dirty_writeback(struct folio *folio,
 				bool *dirty, bool *writeback)
 {
 	struct nfs_inode *nfsi;
-	struct address_space *mapping = page_file_mapping(page);
-
-	if (!mapping || PageSwapCache(page))
-		return;
+	struct address_space *mapping = folio->mapping;
 
 	/*
-	 * Check if an unstable page is currently being committed and
-	 * if so, have the VM treat it as if the page is under writeback
-	 * so it will not block due to pages that will shortly be freeable.
+	 * Check if an unstable folio is currently being committed and
+	 * if so, have the VM treat it as if the folio is under writeback
+	 * so it will not block due to folios that will shortly be freeable.
 	 */
 	nfsi = NFS_I(mapping->host);
 	if (atomic_read(&nfsi->commit_info.rpcs_out)) {
@@ -451,11 +445,11 @@ static void nfs_check_dirty_writeback(struct page *page,
 	}
 
 	/*
-	 * If PagePrivate() is set, then the page is not freeable and as the
-	 * inode is not being committed, it's not going to be cleaned in the
-	 * near future so treat it as dirty
+	 * If the private flag is set, then the folio is not freeable
+	 * and as the inode is not being committed, it's not going to
+	 * be cleaned in the near future so treat it as dirty
 	 */
-	if (PagePrivate(page))
+	if (folio_test_private(folio))
 		*dirty = true;
 }
 
@@ -467,16 +461,15 @@ static void nfs_check_dirty_writeback(struct page *page,
  * - Caller holds page lock
  * - Return 0 if successful, -error otherwise
  */
-static int nfs_launder_page(struct page *page)
+static int nfs_launder_folio(struct folio *folio)
 {
-	struct inode *inode = page_file_mapping(page)->host;
-	struct nfs_inode *nfsi = NFS_I(inode);
+	struct inode *inode = folio->mapping->host;
 
-	dfprintk(PAGECACHE, "NFS: launder_page(%ld, %llu)\n",
-		inode->i_ino, (long long)page_offset(page));
+	dfprintk(PAGECACHE, "NFS: launder_folio(%ld, %llu)\n",
+		inode->i_ino, folio_pos(folio));
 
-	nfs_fscache_wait_on_page_write(nfsi, page);
-	return nfs_wb_page(inode, page);
+	folio_wait_fscache(folio);
+	return nfs_wb_page(inode, &folio->page);
 }
 
 static int nfs_swap_activate(struct swap_info_struct *sis, struct file *file,
@@ -484,8 +477,10 @@ static int nfs_swap_activate(struct swap_info_struct *sis, struct file *file,
 {
 	unsigned long blocks;
 	long long isize;
-	struct rpc_clnt *clnt = NFS_CLIENT(file->f_mapping->host);
-	struct inode *inode = file->f_mapping->host;
+	int ret;
+	struct inode *inode = file_inode(file);
+	struct rpc_clnt *clnt = NFS_CLIENT(inode);
+	struct nfs_client *cl = NFS_SERVER(inode)->nfs_client;
 
 	spin_lock(&inode->i_lock);
 	blocks = inode->i_blocks;
@@ -496,37 +491,52 @@ static int nfs_swap_activate(struct swap_info_struct *sis, struct file *file,
 		return -EINVAL;
 	}
 
+	ret = rpc_clnt_swap_activate(clnt);
+	if (ret)
+		return ret;
+	ret = add_swap_extent(sis, 0, sis->max, 0);
+	if (ret < 0) {
+		rpc_clnt_swap_deactivate(clnt);
+		return ret;
+	}
+
 	*span = sis->pages;
 
-	return rpc_clnt_swap_activate(clnt);
+	if (cl->rpc_ops->enable_swap)
+		cl->rpc_ops->enable_swap(inode);
+
+	sis->flags |= SWP_FS_OPS;
+	return ret;
 }
 
 static void nfs_swap_deactivate(struct file *file)
 {
-	struct rpc_clnt *clnt = NFS_CLIENT(file->f_mapping->host);
+	struct inode *inode = file_inode(file);
+	struct rpc_clnt *clnt = NFS_CLIENT(inode);
+	struct nfs_client *cl = NFS_SERVER(inode)->nfs_client;
 
 	rpc_clnt_swap_deactivate(clnt);
+	if (cl->rpc_ops->disable_swap)
+		cl->rpc_ops->disable_swap(file_inode(file));
 }
 
 const struct address_space_operations nfs_file_aops = {
-	.readpage = nfs_readpage,
-	.readpages = nfs_readpages,
-	.set_page_dirty = __set_page_dirty_nobuffers,
+	.read_folio = nfs_read_folio,
+	.readahead = nfs_readahead,
+	.dirty_folio = filemap_dirty_folio,
 	.writepage = nfs_writepage,
 	.writepages = nfs_writepages,
 	.write_begin = nfs_write_begin,
 	.write_end = nfs_write_end,
-	.invalidatepage = nfs_invalidate_page,
-	.releasepage = nfs_release_page,
-	.direct_IO = nfs_direct_IO,
-#ifdef CONFIG_MIGRATION
-	.migratepage = nfs_migrate_page,
-#endif
-	.launder_page = nfs_launder_page,
+	.invalidate_folio = nfs_invalidate_folio,
+	.release_folio = nfs_release_folio,
+	.migrate_folio = nfs_migrate_folio,
+	.launder_folio = nfs_launder_folio,
 	.is_dirty_writeback = nfs_check_dirty_writeback,
 	.error_remove_page = generic_error_remove_page,
 	.swap_activate = nfs_swap_activate,
 	.swap_deactivate = nfs_swap_deactivate,
+	.swap_rw = nfs_swap_rw,
 };
 
 /*
@@ -550,10 +560,15 @@ static vm_fault_t nfs_vm_page_mkwrite(struct vm_fault *vmf)
 	sb_start_pagefault(inode->i_sb);
 
 	/* make sure the cache has finished storing the page */
-	nfs_fscache_wait_on_page_write(NFS_I(inode), page);
+	if (PageFsCache(page) &&
+	    wait_on_page_fscache_killable(vmf->page) < 0) {
+		ret = VM_FAULT_RETRY;
+		goto out;
+	}
 
 	wait_on_bit_action(&NFS_I(inode)->flags, NFS_INO_INVALIDATING,
-			nfs_wait_bit_killable, TASK_KILLABLE);
+			   nfs_wait_bit_killable,
+			   TASK_KILLABLE|TASK_FREEZABLE_UNSAFE);
 
 	lock_page(page);
 	mapping = page_file_mapping(page);
@@ -622,7 +637,7 @@ ssize_t nfs_file_write(struct kiocb *iocb, struct iov_iter *from)
 	result = generic_write_checks(iocb, from);
 	if (result > 0) {
 		current->backing_dev_info = inode_to_bdi(inode);
-		result = generic_perform_write(file, from, iocb->ki_pos);
+		result = generic_perform_write(iocb, from);
 		current->backing_dev_info = NULL;
 	}
 	nfs_end_io_write(inode);
@@ -641,11 +656,9 @@ ssize_t nfs_file_write(struct kiocb *iocb, struct iov_iter *from)
 			goto out;
 	}
 	if (mntflags & NFS_MOUNT_WRITE_WAIT) {
-		result = filemap_fdatawait_range(file->f_mapping,
-						 iocb->ki_pos - written,
-						 iocb->ki_pos - 1);
-		if (result < 0)
-			goto out;
+		filemap_fdatawait_range(file->f_mapping,
+					iocb->ki_pos - written,
+					iocb->ki_pos - 1);
 	}
 	result = generic_write_sync(iocb, written);
 	if (result < 0)
@@ -831,15 +844,6 @@ int nfs_flock(struct file *filp, int cmd, struct file_lock *fl)
 
 	if (!(fl->fl_flags & FL_FLOCK))
 		return -ENOLCK;
-
-	/*
-	 * The NFSv4 protocol doesn't support LOCK_MAND, which is not part of
-	 * any standard. In principle we might be able to support LOCK_MAND
-	 * on NFSv2/3 since NLMv3/4 support DOS share modes, but for now the
-	 * NFS code is not set up for it.
-	 */
-	if (fl->fl_type & LOCK_MAND)
-		return -EINVAL;
 
 	if (NFS_SERVER(inode)->flags & NFS_MOUNT_LOCAL_FLOCK)
 		is_local = 1;

@@ -702,7 +702,7 @@ __be32 nfs4_callback_offload(void *data, void *dummy,
 	struct nfs4_copy_state *copy, *tmp_copy;
 	bool found = false;
 
-	copy = kzalloc(sizeof(struct nfs4_copy_state), GFP_NOFS);
+	copy = kzalloc(sizeof(struct nfs4_copy_state), GFP_KERNEL);
 	if (!copy)
 		return htonl(NFS4ERR_SERVERFAULT);
 
@@ -731,6 +731,9 @@ out:
 		kfree(copy);
 	spin_unlock(&cps->clp->cl_lock);
 
+	trace_nfs4_cb_offload(&args->coa_fh, &args->coa_stateid,
+			args->wr_count, args->error,
+			args->wr_writeverf.committed);
 	return 0;
 }
 #endif /* CONFIG_NFS_V4_2 */

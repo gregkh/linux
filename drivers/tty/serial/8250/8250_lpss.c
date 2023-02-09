@@ -70,7 +70,7 @@ static inline struct lpss8250 *to_lpss8250(struct dw8250_port_data *data)
 }
 
 static void byt_set_termios(struct uart_port *p, struct ktermios *termios,
-			    struct ktermios *old)
+			    const struct ktermios *old)
 {
 	unsigned int baud = tty_termios_baud_rate(termios);
 	struct lpss8250 *lpss = to_lpss8250(p->private_data);
@@ -100,11 +100,7 @@ static void byt_set_termios(struct uart_port *p, struct ktermios *termios,
 	reg |= BYT_PRV_CLK_EN | BYT_PRV_CLK_UPDATE;
 	writel(reg, p->membase + BYT_PRV_CLK);
 
-	p->status &= ~UPSTAT_AUTOCTS;
-	if (termios->c_cflag & CRTSCTS)
-		p->status |= UPSTAT_AUTOCTS;
-
-	serial8250_do_set_termios(p, termios, old);
+	dw8250_do_set_termios(p, termios, old);
 }
 
 static unsigned int byt_get_mctrl(struct uart_port *port)
@@ -179,6 +175,8 @@ static int ehl_serial_setup(struct lpss8250 *lpss, struct uart_port *port)
 	up->dma = dma;
 
 	lpss->dma_maxburst = 16;
+
+	port->set_termios = dw8250_do_set_termios;
 
 	return 0;
 }
@@ -341,7 +339,7 @@ static int lpss8250_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	uart.port.irq = pci_irq_vector(pdev, 0);
 	uart.port.private_data = &lpss->data;
 	uart.port.type = PORT_16550A;
-	uart.port.iotype = UPIO_MEM;
+	uart.port.iotype = UPIO_MEM32;
 	uart.port.regshift = 2;
 	uart.port.uartclk = lpss->board->base_baud * 16;
 	uart.port.flags = UPF_SHARE_IRQ | UPF_FIXED_PORT | UPF_FIXED_TYPE;

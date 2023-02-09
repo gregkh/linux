@@ -1170,7 +1170,6 @@ static int mcde_dsi_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct mcde_dsi *d;
 	struct mipi_dsi_host *host;
-	struct resource *res;
 	u32 dsi_id;
 	int ret;
 
@@ -1188,8 +1187,7 @@ static int mcde_dsi_probe(struct platform_device *pdev)
 		return PTR_ERR(d->prcmu);
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	d->regs = devm_ioremap_resource(dev, res);
+	d->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(d->regs))
 		return PTR_ERR(d->regs);
 

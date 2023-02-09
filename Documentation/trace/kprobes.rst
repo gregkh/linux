@@ -131,8 +131,7 @@ For example, if the function is non-recursive and is called with a
 spinlock held, maxactive = 1 should be enough.  If the function is
 non-recursive and can never relinquish the CPU (e.g., via a semaphore
 or preemption), NR_CPUS should be enough.  If maxactive <= 0, it is
-set to a default value.  If CONFIG_PREEMPT is enabled, the default
-is max(10, 2*NR_CPUS).  Otherwise, the default is NR_CPUS.
+set to a default value: max(10, 2*NR_CPUS).
 
 It's not a disaster if you set maxactive too low; you'll just miss
 some probes.  In the kretprobe struct, the nmissed field is set to
@@ -328,8 +327,8 @@ Configuring Kprobes
 ===================
 
 When configuring the kernel using make menuconfig/xconfig/oldconfig,
-ensure that CONFIG_KPROBES is set to "y". Under "General setup", look
-for "Kprobes".
+ensure that CONFIG_KPROBES is set to "y", look for "Kprobes" under
+"General architecture-dependent options".
 
 So that you can load and unload Kprobes-based instrumentation modules,
 make sure "Loadable module support" (CONFIG_MODULES) and "Module
@@ -784,6 +783,6 @@ References
 
 For additional information on Kprobes, refer to the following URLs:
 
-- https://www.ibm.com/developerworks/library/l-kprobes/index.html
+- https://lwn.net/Articles/132196/
 - https://www.kernel.org/doc/ols/2006/ols2006v2-pages-109-124.pdf
 

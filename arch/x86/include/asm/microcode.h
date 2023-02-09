@@ -33,9 +33,6 @@ enum ucode_state {
 };
 
 struct microcode_ops {
-	enum ucode_state (*request_microcode_user) (int cpu,
-				const void __user *buf, size_t size);
-
 	enum ucode_state (*request_microcode_fw) (int cpu, struct device *,
 						  bool refresh_fw);
 
@@ -131,7 +128,6 @@ static inline unsigned int x86_cpuid_family(void)
 extern void __init load_ucode_bsp(void);
 extern void load_ucode_ap(void);
 void reload_early_microcode(void);
-extern bool get_builtin_firmware(struct cpio_data *cd, const char *name);
 extern bool initrd_gone;
 void microcode_bsp_resume(void);
 #else
@@ -139,8 +135,6 @@ static inline void __init load_ucode_bsp(void)			{ }
 static inline void load_ucode_ap(void)				{ }
 static inline void reload_early_microcode(void)			{ }
 static inline void microcode_bsp_resume(void)			{ }
-static inline bool
-get_builtin_firmware(struct cpio_data *cd, const char *name)	{ return false; }
 #endif
 
 #endif /* _ASM_X86_MICROCODE_H */

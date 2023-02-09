@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GPIO driver for Marvell SoCs
  *
@@ -6,10 +7,6 @@
  * Thomas Petazzoni <thomas.petazzoni@free-electrons.com>
  * Andrew Lunn <andrew@lunn.ch>
  * Sebastian Hesselbarth <sebastian.hesselbarth@gmail.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  *
  * This driver is a fairly straightforward GPIO driver for the
  * complete family of Marvell EBU SoC platforms (Orion, Dove,
@@ -1176,7 +1173,6 @@ static int mvebu_gpio_probe(struct platform_device *pdev)
 	mvchip->chip.base = id * MVEBU_MAX_GPIO_PER_BANK;
 	mvchip->chip.ngpio = ngpios;
 	mvchip->chip.can_sleep = false;
-	mvchip->chip.of_node = np;
 	mvchip->chip.dbg_show = mvebu_gpio_dbg_show;
 
 	if (soc_variant == MVEBU_GPIO_SOC_VARIANT_A8K)

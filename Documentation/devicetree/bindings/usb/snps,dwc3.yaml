@@ -36,6 +36,9 @@ properties:
         - const: synopsys,dwc3
           deprecated: true
 
+  reg:
+    maxItems: 1
+
   interrupts:
     description:
       It's either a single common DWC3 interrupt (dwc_usb3) or individual
@@ -65,6 +68,11 @@ properties:
         - enum: [bus_early, ref, suspend]
         - true
 
+  dma-coherent: true
+
+  iommus:
+    maxItems: 1
+
   usb-phy:
     minItems: 1
     items:
@@ -73,15 +81,15 @@ properties:
 
   phys:
     minItems: 1
-    items:
-      - description: USB2/HS PHY
-      - description: USB3/SS PHY
+    maxItems: 2
 
   phy-names:
     minItems: 1
+    maxItems: 2
     items:
-      - const: usb2-phy
-      - const: usb3-phy
+      enum:
+        - usb2-phy
+        - usb3-phy
 
   resets:
     minItems: 1
@@ -226,6 +234,18 @@ properties:
       avoid -EPROTO errors with usbhid on some devices (Hikey 970).
     type: boolean
 
+  snps,gfladj-refclk-lpm-sel-quirk:
+    description:
+      When set, run the SOF/ITP counter based on ref_clk.
+    type: boolean
+
+  snps,resume-hs-terminations:
+    description:
+      Fix the issue of HS terminations CRC error on resume by enabling this
+      quirk. When set, all the termsel, xcvrsel, opmode becomes 0 during end
+      of resume. This option is to support certain legacy ULPI PHYs.
+    type: boolean
+
   snps,is-utmi-l1-suspend:
     description:
       True when DWC3 asserts output signal utmi_l1_suspend_n, false when
@@ -251,6 +271,17 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     minimum: 0
     maximum: 0x3f
+
+  snps,ref-clock-period-ns:
+    description:
+      Value for REFCLKPER field of GUCTL register for reference clock period in
+      nanoseconds, when the hardware set default does not match the actual
+      clock.
+
+      This binding is deprecated. Instead, provide an appropriate reference clock.
+    minimum: 8
+    maximum: 62
+    deprecated: true
 
   snps,rx-thr-num-pkt-prd:
     description:
@@ -317,6 +348,17 @@ properties:
     uniqueItems: true
     items:
       enum: [1, 4, 8, 16, 32, 64, 128, 256]
+
+  port:
+    $ref: /schemas/graph.yaml#/properties/port
+    description:
+      This port is used with the 'usb-role-switch' property  to connect the
+      dwc3 to type C connector.
+
+  wakeup-source:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Enable USB remote wakeup.
 
 unevaluatedProperties: false
 

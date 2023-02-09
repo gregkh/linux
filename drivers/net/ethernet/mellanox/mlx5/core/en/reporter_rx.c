@@ -6,6 +6,7 @@
 #include "txrx.h"
 #include "devlink.h"
 #include "ptp.h"
+#include "lib/tout.h"
 
 static int mlx5e_query_rq_state(struct mlx5_core_dev *dev, u32 rqn, u8 *state)
 {
@@ -32,8 +33,10 @@ out:
 
 static int mlx5e_wait_for_icosq_flush(struct mlx5e_icosq *icosq)
 {
-	unsigned long exp_time = jiffies +
-				 msecs_to_jiffies(MLX5E_REPORTER_FLUSH_TIMEOUT_MSEC);
+	struct mlx5_core_dev *dev = icosq->channel->mdev;
+	unsigned long exp_time;
+
+	exp_time = jiffies + msecs_to_jiffies(mlx5_tout_ms(dev, FLUSH_ON_ERROR));
 
 	while (time_before(jiffies, exp_time)) {
 		if (icosq->cc == icosq->pc)
@@ -120,6 +123,8 @@ static int mlx5e_rx_reporter_err_icosq_cqe_recover(void *ctx)
 		xskrq->stats->recover++;
 	}
 
+	mlx5e_trigger_napi_icosq(icosq->channel);
+
 	mutex_unlock(&icosq->channel->icosq_recovery_lock);
 
 	return 0;
@@ -129,44 +134,24 @@ out:
 	return err;
 }
 
-static int mlx5e_rq_to_ready(struct mlx5e_rq *rq, int curr_state)
-{
-	struct net_device *dev = rq->netdev;
-	int err;
-
-	err = mlx5e_modify_rq_state(rq, curr_state, MLX5_RQC_STATE_RST);
-	if (err) {
-		netdev_err(dev, "Failed to move rq 0x%x to reset\n", rq->rqn);
-		return err;
-	}
-	err = mlx5e_modify_rq_state(rq, MLX5_RQC_STATE_RST, MLX5_RQC_STATE_RDY);
-	if (err) {
-		netdev_err(dev, "Failed to move rq 0x%x to ready\n", rq->rqn);
-		return err;
-	}
-
-	return 0;
-}
-
 static int mlx5e_rx_reporter_err_rq_cqe_recover(void *ctx)
 {
 	struct mlx5e_rq *rq = ctx;
 	int err;
 
 	mlx5e_deactivate_rq(rq);
-	mlx5e_free_rx_descs(rq);
-
-	err = mlx5e_rq_to_ready(rq, MLX5_RQC_STATE_ERR);
-	if (err)
-		goto out;
-
+	err = mlx5e_flush_rq(rq, MLX5_RQC_STATE_ERR);
 	clear_bit(MLX5E_RQ_STATE_RECOVERING, &rq->state);
+	if (err)
+		return err;
+
 	mlx5e_activate_rq(rq);
 	rq->stats->recover++;
+	if (rq->channel)
+		mlx5e_trigger_napi_icosq(rq->channel);
+	else
+		mlx5e_trigger_napi_sched(rq->cq.napi);
 	return 0;
-out:
-	clear_bit(MLX5E_RQ_STATE_RECOVERING, &rq->state);
-	return err;
 }
 
 static int mlx5e_rx_reporter_timeout_recover(void *ctx)
@@ -474,7 +459,11 @@ static int mlx5e_rx_reporter_diagnose(struct devlink_health_reporter *reporter,
 		goto unlock;
 
 	for (i = 0; i < priv->channels.num; i++) {
-		struct mlx5e_rq *rq = &priv->channels.c[i]->rq;
+		struct mlx5e_channel *c = priv->channels.c[i];
+		struct mlx5e_rq *rq;
+
+		rq = test_bit(MLX5E_CHANNEL_STATE_XSK, c->state) ?
+			&c->xskrq : &c->rq;
 
 		err = mlx5e_rx_reporter_build_diagnose_output(rq, fmsg);
 		if (err)

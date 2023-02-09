@@ -92,7 +92,7 @@ static int qcom_mhi_qrtr_probe(struct mhi_device *mhi_dev,
 		return rc;
 
 	/* start channels */
-	rc = mhi_prepare_for_transfer(mhi_dev);
+	rc = mhi_prepare_for_transfer_autoqueue(mhi_dev);
 	if (rc) {
 		qrtr_endpoint_unregister(&qdev->ep);
 		return rc;

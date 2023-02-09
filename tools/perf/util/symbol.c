@@ -291,7 +291,7 @@ struct symbol *symbol__new(u64 start, u64 len, u8 binding, u8 type, const char *
 	if (symbol_conf.priv_size) {
 		if (symbol_conf.init_annotation) {
 			struct annotation *notes = (void *)sym;
-			pthread_mutex_init(&notes->lock, NULL);
+			annotation__init(notes);
 		}
 		sym = ((void *)sym) + symbol_conf.priv_size;
 	}
@@ -311,6 +311,13 @@ struct symbol *symbol__new(u64 start, u64 len, u8 binding, u8 type, const char *
 
 void symbol__delete(struct symbol *sym)
 {
+	if (symbol_conf.priv_size) {
+		if (symbol_conf.init_annotation) {
+			struct annotation *notes = symbol__annotation(sym);
+
+			annotation__exit(notes);
+		}
+	}
 	free(((void *)sym) - symbol_conf.priv_size);
 }
 
@@ -717,6 +724,10 @@ static int map__process_kallsym_symbol(void *arg, const char *name,
 	struct rb_root_cached *root = &dso->symbols;
 
 	if (!symbol_type__filter(type))
+		return 0;
+
+	/* Ignore local symbols for ARM modules */
+	if (name[0] == '$')
 		return 0;
 
 	/*
@@ -1741,8 +1752,8 @@ static int dso__find_perf_map(char *filebuf, size_t bufsz,
 
 	nsi = *nsip;
 
-	if (nsi->need_setns) {
-		snprintf(filebuf, bufsz, "/tmp/perf-%d.map", nsi->nstgid);
+	if (nsinfo__need_setns(nsi)) {
+		snprintf(filebuf, bufsz, "/tmp/perf-%d.map", nsinfo__nstgid(nsi));
 		nsinfo__mountns_enter(nsi, &nsc);
 		rc = access(filebuf, R_OK);
 		nsinfo__mountns_exit(&nsc);
@@ -1754,8 +1765,8 @@ static int dso__find_perf_map(char *filebuf, size_t bufsz,
 	if (nnsi) {
 		nsinfo__put(nsi);
 
-		nnsi->need_setns = false;
-		snprintf(filebuf, bufsz, "/tmp/perf-%d.map", nnsi->tgid);
+		nsinfo__clear_need_setns(nnsi);
+		snprintf(filebuf, bufsz, "/tmp/perf-%d.map", nsinfo__tgid(nnsi));
 		*nsip = nnsi;
 		rc = 0;
 	}
@@ -1780,6 +1791,7 @@ int dso__load(struct dso *dso, struct map *map)
 	char newmapname[PATH_MAX];
 	const char *map_path = dso->long_name;
 
+	mutex_lock(&dso->lock);
 	perfmap = strncmp(dso->name, "/tmp/perf-", 10) == 0;
 	if (perfmap) {
 		if (dso->nsinfo && (dso__find_perf_map(newmapname,
@@ -1789,7 +1801,6 @@ int dso__load(struct dso *dso, struct map *map)
 	}
 
 	nsinfo__mountns_enter(dso->nsinfo, &nsc);
-	pthread_mutex_lock(&dso->lock);
 
 	/* check again under the dso->lock */
 	if (dso__loaded(dso)) {
@@ -1870,6 +1881,16 @@ int dso__load(struct dso *dso, struct map *map)
 			nsinfo__mountns_exit(&nsc);
 
 		is_reg = is_regular_file(name);
+		if (!is_reg && errno == ENOENT && dso->nsinfo) {
+			char *new_name = filename_with_chroot(dso->nsinfo->pid,
+							      name);
+			if (new_name) {
+				is_reg = is_regular_file(new_name);
+				strlcpy(name, new_name, PATH_MAX);
+				free(new_name);
+			}
+		}
+
 #ifdef HAVE_LIBBFD_SUPPORT
 		if (is_reg)
 			bfdrc = dso__load_bfd_symbols(dso, name);
@@ -1943,7 +1964,7 @@ out_free:
 		ret = 0;
 out:
 	dso__set_loaded(dso);
-	pthread_mutex_unlock(&dso->lock);
+	mutex_unlock(&dso->lock);
 	nsinfo__mountns_exit(&nsc);
 
 	return ret;
@@ -2279,11 +2300,13 @@ do_kallsyms:
 static int dso__load_guest_kernel_sym(struct dso *dso, struct map *map)
 {
 	int err;
-	const char *kallsyms_filename = NULL;
+	const char *kallsyms_filename;
 	struct machine *machine = map__kmaps(map)->machine;
 	char path[PATH_MAX];
 
-	if (machine__is_default_guest(machine)) {
+	if (machine->kallsyms_filename) {
+		kallsyms_filename = machine->kallsyms_filename;
+	} else if (machine__is_default_guest(machine)) {
 		/*
 		 * if the user specified a vmlinux filename, use it and only
 		 * it, reporting errors to the user if it cannot be used.
@@ -2646,4 +2669,26 @@ struct mem_info *mem_info__new(void)
 	if (mi)
 		refcount_set(&mi->refcnt, 1);
 	return mi;
+}
+
+/*
+ * Checks that user supplied symbol kernel files are accessible because
+ * the default mechanism for accessing elf files fails silently. i.e. if
+ * debug syms for a build ID aren't found perf carries on normally. When
+ * they are user supplied we should assume that the user doesn't want to
+ * silently fail.
+ */
+int symbol__validate_sym_arguments(void)
+{
+	if (symbol_conf.vmlinux_name &&
+	    access(symbol_conf.vmlinux_name, R_OK)) {
+		pr_err("Invalid file: %s\n", symbol_conf.vmlinux_name);
+		return -EINVAL;
+	}
+	if (symbol_conf.kallsyms_name &&
+	    access(symbol_conf.kallsyms_name, R_OK)) {
+		pr_err("Invalid file: %s\n", symbol_conf.kallsyms_name);
+		return -EINVAL;
+	}
+	return 0;
 }

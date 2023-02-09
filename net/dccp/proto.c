@@ -238,17 +238,6 @@ void dccp_destroy_sock(struct sock *sk)
 
 EXPORT_SYMBOL_GPL(dccp_destroy_sock);
 
-static inline int dccp_listen_start(struct sock *sk, int backlog)
-{
-	struct dccp_sock *dp = dccp_sk(sk);
-
-	dp->dccps_role = DCCP_ROLE_LISTEN;
-	/* do not start to listen if feature negotiation setup fails */
-	if (dccp_feat_finalise_settings(dp))
-		return -EPROTO;
-	return inet_csk_listen_start(sk, backlog);
-}
-
 static inline int dccp_need_reset(int state)
 {
 	return state != DCCP_CLOSED && state != DCCP_LISTEN &&
@@ -290,8 +279,7 @@ int dccp_disconnect(struct sock *sk, int flags)
 
 	inet->inet_dport = 0;
 
-	if (!(sk->sk_userlocks & SOCK_BINDADDR_LOCK))
-		inet_reset_saddr(sk);
+	inet_bhash2_reset_saddr(sk);
 
 	sk->sk_shutdown = 0;
 	sock_reset_flag(sk, SOCK_DONE);
@@ -802,8 +790,8 @@ out_discard:
 
 EXPORT_SYMBOL_GPL(dccp_sendmsg);
 
-int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
-		 int flags, int *addr_len)
+int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags,
+		 int *addr_len)
 {
 	const struct dccp_hdr *dh;
 	long timeo;
@@ -815,7 +803,7 @@ int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 		goto out;
 	}
 
-	timeo = sock_rcvtimeo(sk, nonblock);
+	timeo = sock_rcvtimeo(sk, flags & MSG_DONTWAIT);
 
 	do {
 		struct sk_buff *skb = skb_peek(&sk->sk_receive_queue);
@@ -931,11 +919,17 @@ int inet_dccp_listen(struct socket *sock, int backlog)
 	 * we can only allow the backlog to be adjusted.
 	 */
 	if (old_state != DCCP_LISTEN) {
-		/*
-		 * FIXME: here it probably should be sk->sk_prot->listen_start
-		 * see tcp_listen_start
-		 */
-		err = dccp_listen_start(sk, backlog);
+		struct dccp_sock *dp = dccp_sk(sk);
+
+		dp->dccps_role = DCCP_ROLE_LISTEN;
+
+		/* do not start to listen if feature negotiation setup fails */
+		if (dccp_feat_finalise_settings(dp)) {
+			err = -EPROTO;
+			goto out;
+		}
+
+		err = inet_csk_listen_start(sk);
 		if (err)
 			goto out;
 	}
@@ -1115,7 +1109,6 @@ static int __init dccp_init(void)
 
 	BUILD_BUG_ON(sizeof(struct dccp_skb_cb) >
 		     sizeof_field(struct sk_buff, cb));
-	inet_hashinfo_init(&dccp_hashinfo);
 	rc = inet_hashinfo2_init_mod(&dccp_hashinfo);
 	if (rc)
 		goto out_fail;
@@ -1126,6 +1119,12 @@ static int __init dccp_init(void)
 				  SLAB_HWCACHE_ALIGN | SLAB_ACCOUNT, NULL);
 	if (!dccp_hashinfo.bind_bucket_cachep)
 		goto out_free_hashinfo2;
+	dccp_hashinfo.bind2_bucket_cachep =
+		kmem_cache_create("dccp_bind2_bucket",
+				  sizeof(struct inet_bind2_bucket), 0,
+				  SLAB_HWCACHE_ALIGN | SLAB_ACCOUNT, NULL);
+	if (!dccp_hashinfo.bind2_bucket_cachep)
+		goto out_free_bind_bucket_cachep;
 
 	/*
 	 * Size and allocate the main established and bind bucket
@@ -1156,7 +1155,7 @@ static int __init dccp_init(void)
 
 	if (!dccp_hashinfo.ehash) {
 		DCCP_CRIT("Failed to allocate DCCP established hash table");
-		goto out_free_bind_bucket_cachep;
+		goto out_free_bind2_bucket_cachep;
 	}
 
 	for (i = 0; i <= dccp_hashinfo.ehash_mask; i++)
@@ -1182,14 +1181,26 @@ static int __init dccp_init(void)
 		goto out_free_dccp_locks;
 	}
 
+	dccp_hashinfo.bhash2 = (struct inet_bind_hashbucket *)
+		__get_free_pages(GFP_ATOMIC | __GFP_NOWARN, bhash_order);
+
+	if (!dccp_hashinfo.bhash2) {
+		DCCP_CRIT("Failed to allocate DCCP bind2 hash table");
+		goto out_free_dccp_bhash;
+	}
+
 	for (i = 0; i < dccp_hashinfo.bhash_size; i++) {
 		spin_lock_init(&dccp_hashinfo.bhash[i].lock);
 		INIT_HLIST_HEAD(&dccp_hashinfo.bhash[i].chain);
+		spin_lock_init(&dccp_hashinfo.bhash2[i].lock);
+		INIT_HLIST_HEAD(&dccp_hashinfo.bhash2[i].chain);
 	}
+
+	dccp_hashinfo.pernet = false;
 
 	rc = dccp_mib_init();
 	if (rc)
-		goto out_free_dccp_bhash;
+		goto out_free_dccp_bhash2;
 
 	rc = dccp_ackvec_init();
 	if (rc)
@@ -1213,30 +1224,38 @@ out_ackvec_exit:
 	dccp_ackvec_exit();
 out_free_dccp_mib:
 	dccp_mib_exit();
+out_free_dccp_bhash2:
+	free_pages((unsigned long)dccp_hashinfo.bhash2, bhash_order);
 out_free_dccp_bhash:
 	free_pages((unsigned long)dccp_hashinfo.bhash, bhash_order);
 out_free_dccp_locks:
 	inet_ehash_locks_free(&dccp_hashinfo);
 out_free_dccp_ehash:
 	free_pages((unsigned long)dccp_hashinfo.ehash, ehash_order);
+out_free_bind2_bucket_cachep:
+	kmem_cache_destroy(dccp_hashinfo.bind2_bucket_cachep);
 out_free_bind_bucket_cachep:
 	kmem_cache_destroy(dccp_hashinfo.bind_bucket_cachep);
 out_free_hashinfo2:
 	inet_hashinfo2_free_mod(&dccp_hashinfo);
 out_fail:
 	dccp_hashinfo.bhash = NULL;
+	dccp_hashinfo.bhash2 = NULL;
 	dccp_hashinfo.ehash = NULL;
 	dccp_hashinfo.bind_bucket_cachep = NULL;
+	dccp_hashinfo.bind2_bucket_cachep = NULL;
 	return rc;
 }
 
 static void __exit dccp_fini(void)
 {
+	int bhash_order = get_order(dccp_hashinfo.bhash_size *
+				    sizeof(struct inet_bind_hashbucket));
+
 	ccid_cleanup_builtins();
 	dccp_mib_exit();
-	free_pages((unsigned long)dccp_hashinfo.bhash,
-		   get_order(dccp_hashinfo.bhash_size *
-			     sizeof(struct inet_bind_hashbucket)));
+	free_pages((unsigned long)dccp_hashinfo.bhash, bhash_order);
+	free_pages((unsigned long)dccp_hashinfo.bhash2, bhash_order);
 	free_pages((unsigned long)dccp_hashinfo.ehash,
 		   get_order((dccp_hashinfo.ehash_mask + 1) *
 			     sizeof(struct inet_ehash_bucket)));

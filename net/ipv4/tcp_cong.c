@@ -16,6 +16,7 @@
 #include <linux/gfp.h>
 #include <linux/jhash.h>
 #include <net/tcp.h>
+#include <trace/events/tcp.h>
 
 static DEFINE_SPINLOCK(tcp_cong_list_lock);
 static LIST_HEAD(tcp_cong_list);
@@ -31,6 +32,17 @@ struct tcp_congestion_ops *tcp_ca_find(const char *name)
 	}
 
 	return NULL;
+}
+
+void tcp_set_ca_state(struct sock *sk, const u8 ca_state)
+{
+	struct inet_connection_sock *icsk = inet_csk(sk);
+
+	trace_tcp_cong_state_set(sk, ca_state);
+
+	if (icsk->icsk_ca_ops->set_state)
+		icsk->icsk_ca_ops->set_state(sk, ca_state);
+	icsk->icsk_ca_state = ca_state;
 }
 
 /* Must be called with rcu lock held */
@@ -135,7 +147,6 @@ u32 tcp_ca_get_key_by_name(struct net *net, const char *name, bool *ecn_ca)
 
 	return key;
 }
-EXPORT_SYMBOL_GPL(tcp_ca_get_key_by_name);
 
 char *tcp_ca_get_name_by_key(u32 key, char *buffer)
 {
@@ -151,7 +162,6 @@ char *tcp_ca_get_name_by_key(u32 key, char *buffer)
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(tcp_ca_get_name_by_key);
 
 /* Assign choice of congestion control. */
 void tcp_assign_congestion_control(struct sock *sk)

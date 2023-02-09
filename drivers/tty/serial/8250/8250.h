@@ -85,6 +85,7 @@ struct serial8250_config {
 #define UART_CAP_MINI	BIT(17)	/* Mini UART on BCM283X family lacks:
 					 * STOP PARITY EPAR SPAR WLEN5 WLEN6
 					 */
+#define UART_CAP_NOTEMT	BIT(18)	/* UART without interrupt on TEMT available */
 
 #define UART_BUG_QUOT	BIT(0)	/* UART has buggy quot LSB */
 #define UART_BUG_TXEN	BIT(1)	/* UART has buggy TX IIR status */
@@ -120,6 +121,26 @@ static inline int serial_in(struct uart_8250_port *up, int offset)
 static inline void serial_out(struct uart_8250_port *up, int offset, int value)
 {
 	up->port.serial_out(&up->port, offset, value);
+}
+
+/**
+ *	serial_lsr_in - Read LSR register and preserve flags across reads
+ *	@up:	uart 8250 port
+ *
+ *	Read LSR register and handle saving non-preserved flags across reads.
+ *	The flags that are not preserved across reads are stored into
+ *	up->lsr_saved_flags.
+ *
+ *	Returns LSR value or'ed with the preserved flags (if any).
+ */
+static inline u16 serial_lsr_in(struct uart_8250_port *up)
+{
+	u16 lsr = up->lsr_saved_flags;
+
+	lsr |= serial_in(up, UART_LSR);
+	up->lsr_saved_flags = lsr & up->lsr_save_mask;
+
+	return lsr;
 }
 
 /*
@@ -182,10 +203,12 @@ void serial8250_rpm_put(struct uart_8250_port *p);
 void serial8250_rpm_get_tx(struct uart_8250_port *p);
 void serial8250_rpm_put_tx(struct uart_8250_port *p);
 
-int serial8250_em485_config(struct uart_port *port, struct serial_rs485 *rs485);
+int serial8250_em485_config(struct uart_port *port, struct ktermios *termios,
+			    struct serial_rs485 *rs485);
 void serial8250_em485_start_tx(struct uart_8250_port *p);
 void serial8250_em485_stop_tx(struct uart_8250_port *p);
 void serial8250_em485_destroy(struct uart_8250_port *p);
+extern struct serial_rs485 serial8250_em485_supported;
 
 /* MCR <-> TIOCM conversion */
 static inline int serial8250_TIOCM_to_MCR(int tiocm)
@@ -265,16 +288,8 @@ static inline int serial8250_in_MCR(struct uart_8250_port *up)
 	return mctrl;
 }
 
-#if defined(__alpha__) && !defined(CONFIG_PCI)
-/*
- * Digital did something really horribly wrong with the OUT1 and OUT2
- * lines on at least some ALPHA's.  The failure mode is that if either
- * is cleared, the machine locks up with endless interrupts.
- */
-#define ALPHA_KLUDGE_MCR  (UART_MCR_OUT2 | UART_MCR_OUT1)
-#else
-#define ALPHA_KLUDGE_MCR 0
-#endif
+bool alpha_jensen(void);
+void alpha_jensen_set_mctrl(struct uart_port *port, unsigned int mctrl);
 
 #ifdef CONFIG_SERIAL_8250_PNP
 int serial8250_pnp_init(void);
@@ -291,6 +306,7 @@ static inline int fintek_8250_probe(struct uart_8250_port *uart) { return 0; }
 #endif
 
 #ifdef CONFIG_ARCH_OMAP1
+#include <linux/soc/ti/omap1-soc.h>
 static inline int is_omap1_8250(struct uart_8250_port *pt)
 {
 	int res;

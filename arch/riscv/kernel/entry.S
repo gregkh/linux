@@ -111,12 +111,12 @@ _save_context:
 	call __trace_hardirqs_off
 #endif
 
-#ifdef CONFIG_CONTEXT_TRACKING
-	/* If previous state is in user mode, call context_tracking_user_exit. */
+#ifdef CONFIG_CONTEXT_TRACKING_USER
+	/* If previous state is in user mode, call user_exit_callable(). */
 	li   a0, SR_PP
 	and a0, s1, a0
 	bnez a0, skip_context_tracking
-	call context_tracking_user_exit
+	call user_exit_callable
 skip_context_tracking:
 #endif
 
@@ -130,8 +130,7 @@ skip_context_tracking:
 
 	/* Handle interrupts */
 	move a0, sp /* pt_regs */
-	la a1, handle_arch_irq
-	REG_L a1, (a1)
+	la a1, generic_handle_arch_irq
 	jr a1
 1:
 	/*
@@ -177,7 +176,7 @@ handle_syscall:
 	 */
 	csrs CSR_STATUS, SR_IE
 #endif
-#if defined(CONFIG_TRACE_IRQFLAGS) || defined(CONFIG_CONTEXT_TRACKING)
+#if defined(CONFIG_TRACE_IRQFLAGS) || defined(CONFIG_CONTEXT_TRACKING_USER)
 	/* Recover a0 - a7 for system calls */
 	REG_L a0, PT_A0(sp)
 	REG_L a1, PT_A1(sp)
@@ -208,13 +207,27 @@ check_syscall_nr:
 	 * Syscall number held in a7.
 	 * If syscall number is above allowed value, redirect to ni_syscall.
 	 */
-	bgeu a7, t0, 1f
+	bgeu a7, t0, 3f
+#ifdef CONFIG_COMPAT
+	REG_L s0, PT_STATUS(sp)
+	srli s0, s0, SR_UXL_SHIFT
+	andi s0, s0, (SR_UXL >> SR_UXL_SHIFT)
+	li t0, (SR_UXL_32 >> SR_UXL_SHIFT)
+	sub t0, s0, t0
+	bnez t0, 1f
+
+	/* Call compat_syscall */
+	la s0, compat_sys_call_table
+	j 2f
+1:
+#endif
 	/* Call syscall */
 	la s0, sys_call_table
+2:
 	slli t0, a7, RISCV_LGPTR
 	add s0, s0, t0
 	REG_L s0, 0(s0)
-1:
+3:
 	jalr s0
 
 ret_from_syscall:
@@ -226,6 +239,10 @@ ret_from_syscall:
 	 * (If it was configured with SECCOMP_RET_ERRNO/TRACE)
 	 */
 ret_from_syscall_rejected:
+#ifdef CONFIG_DEBUG_RSEQ
+	move a0, sp
+	call rseq_syscall
+#endif
 	/* Trace syscalls, but only if requested by the user. */
 	REG_L t0, TASK_TI_FLAGS(tp)
 	andi t0, t0, _TIF_SYSCALL_WORK
@@ -246,14 +263,13 @@ ret_from_exception:
 #endif
 	bnez s0, resume_kernel
 
-resume_userspace:
 	/* Interrupts must be disabled here so flags are checked atomically */
 	REG_L s0, TASK_TI_FLAGS(tp) /* current_thread_info->flags */
 	andi s1, s0, _TIF_WORK_MASK
-	bnez s1, work_pending
-
-#ifdef CONFIG_CONTEXT_TRACKING
-	call context_tracking_user_enter
+	bnez s1, resume_userspace_slow
+resume_userspace:
+#ifdef CONFIG_CONTEXT_TRACKING_USER
+	call user_enter_callable
 #endif
 
 	/* Save unwound kernel stack pointer in thread_info */
@@ -351,19 +367,12 @@ resume_kernel:
 	j restore_all
 #endif
 
-work_pending:
+resume_userspace_slow:
 	/* Enter slow path for supplementary processing */
-	la ra, ret_from_exception
-	andi s1, s0, _TIF_NEED_RESCHED
-	bnez s1, work_resched
-work_notifysig:
-	/* Handle pending signals and notify-resume requests */
-	csrs CSR_STATUS, SR_IE /* Enable interrupts for do_notify_resume() */
 	move a0, sp /* pt_regs */
 	move a1, s0 /* current_thread_info->flags */
-	tail do_notify_resume
-work_resched:
-	tail schedule
+	call do_work_pending
+	j resume_userspace
 
 /* Slow paths for ptrace. */
 handle_syscall_trace_enter:
@@ -557,11 +566,6 @@ ENTRY(__switch_to)
 	REG_L s9,  TASK_THREAD_S9_RA(a4)
 	REG_L s10, TASK_THREAD_S10_RA(a4)
 	REG_L s11, TASK_THREAD_S11_RA(a4)
-	/* Swap the CPU entry around. */
-	lw a3, TASK_TI_CPU(a0)
-	lw a4, TASK_TI_CPU(a1)
-	sw a3, TASK_TI_CPU(a1)
-	sw a4, TASK_TI_CPU(a0)
 	/* The offset of thread_info in task_struct is zero. */
 	move tp, a1
 	ret

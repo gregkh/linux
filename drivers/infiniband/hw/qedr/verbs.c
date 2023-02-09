@@ -134,7 +134,8 @@ int qedr_query_device(struct ib_device *ibdev,
 	attr->max_qp_wr = max_t(u32, qattr->max_sqe, qattr->max_rqe);
 	attr->device_cap_flags = IB_DEVICE_CURR_QP_STATE_MOD |
 	    IB_DEVICE_RC_RNR_NAK_GEN |
-	    IB_DEVICE_LOCAL_DMA_LKEY | IB_DEVICE_MEM_MGT_EXTENSIONS;
+	    IB_DEVICE_MEM_MGT_EXTENSIONS;
+	attr->kernel_cap_flags = IBK_LOCAL_DMA_LKEY;
 
 	if (!rdma_protocol_iwarp(&dev->ibdev, 1))
 		attr->device_cap_flags |= IB_DEVICE_XRC;
@@ -1050,16 +1051,6 @@ err1:
 	}
 err0:
 	return -EINVAL;
-}
-
-int qedr_resize_cq(struct ib_cq *ibcq, int new_cnt, struct ib_udata *udata)
-{
-	struct qedr_dev *dev = get_qedr_dev(ibcq->device);
-	struct qedr_cq *cq = get_qedr_cq(ibcq);
-
-	DP_ERR(dev, "cq %p RESIZE NOT SUPPORTED\n", cq);
-
-	return 0;
 }
 
 #define QEDR_DESTROY_CQ_MAX_ITERATIONS		(10)

@@ -770,9 +770,12 @@ enum rtl8152_flags {
 	RX_EPROTO,
 };
 
+#define DEVICE_ID_LENOVO_USB_C_TRAVEL_HUB		0x721e
 #define DEVICE_ID_THINKPAD_ONELINK_PLUS_DOCK		0x3054
 #define DEVICE_ID_THINKPAD_THUNDERBOLT3_DOCK_GEN2	0x3082
+#define DEVICE_ID_THINKPAD_USB_C_DONGLE			0x720c
 #define DEVICE_ID_THINKPAD_USB_C_DOCK_GEN2		0xa387
+#define DEVICE_ID_THINKPAD_USB_C_DOCK_GEN3		0x3062
 
 struct tally_counter {
 	__le64	tx_packets;
@@ -1572,7 +1575,7 @@ static int __rtl8152_set_mac_address(struct net_device *netdev, void *p,
 
 	mutex_lock(&tp->control);
 
-	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
+	eth_hw_addr_set(netdev, addr->sa_data);
 
 	ocp_write_byte(tp, MCU_TYPE_PLA, PLA_CRWECR, CRWECR_CONFIG);
 	pla_ocp_write(tp, PLA_IDR, BYTE_EN_SIX_BYTES, 8, addr->sa_data);
@@ -1720,7 +1723,7 @@ static int set_ethernet_addr(struct r8152 *tp, bool in_resume)
 		return ret;
 
 	if (tp->version == RTL_VER_01)
-		ether_addr_copy(dev->dev_addr, sa.sa_data);
+		eth_hw_addr_set(dev, sa.sa_data);
 	else
 		ret = __rtl8152_set_mac_address(dev, &sa, in_resume);
 
@@ -2157,7 +2160,7 @@ static inline void rtl_rx_vlan_tag(struct rx_desc *desc, struct sk_buff *skb)
 }
 
 static int r8152_tx_csum(struct r8152 *tp, struct tx_desc *desc,
-			 struct sk_buff *skb, u32 len, u32 transport_offset)
+			 struct sk_buff *skb, u32 len)
 {
 	u32 mss = skb_shinfo(skb)->gso_size;
 	u32 opts1, opts2 = 0;
@@ -2168,6 +2171,8 @@ static int r8152_tx_csum(struct r8152 *tp, struct tx_desc *desc,
 	opts1 = len | TX_FS | TX_LS;
 
 	if (mss) {
+		u32 transport_offset = (u32)skb_transport_offset(skb);
+
 		if (transport_offset > GTTCPHO_MAX) {
 			netif_warn(tp, tx_err, tp->netdev,
 				   "Invalid transport offset 0x%x for TSO\n",
@@ -2198,6 +2203,7 @@ static int r8152_tx_csum(struct r8152 *tp, struct tx_desc *desc,
 		opts1 |= transport_offset << GTTCPHO_SHIFT;
 		opts2 |= min(mss, MSS_MAX) << MSS_SHIFT;
 	} else if (skb->ip_summed == CHECKSUM_PARTIAL) {
+		u32 transport_offset = (u32)skb_transport_offset(skb);
 		u8 ip_protocol;
 
 		if (transport_offset > TCPHO_MAX) {
@@ -2261,7 +2267,6 @@ static int r8152_tx_agg_fill(struct r8152 *tp, struct tx_agg *agg)
 		struct tx_desc *tx_desc;
 		struct sk_buff *skb;
 		unsigned int len;
-		u32 offset;
 
 		skb = __skb_dequeue(&skb_head);
 		if (!skb)
@@ -2277,9 +2282,7 @@ static int r8152_tx_agg_fill(struct r8152 *tp, struct tx_agg *agg)
 		tx_data = tx_agg_align(tx_data);
 		tx_desc = (struct tx_desc *)tx_data;
 
-		offset = (u32)skb_transport_offset(skb);
-
-		if (r8152_tx_csum(tp, tx_desc, skb, skb->len, offset)) {
+		if (r8152_tx_csum(tp, tx_desc, skb, skb->len)) {
 			r8152_csum_workaround(tp, skb, &skb_head);
 			continue;
 		}
@@ -2727,22 +2730,26 @@ static void _rtl8152_set_rx_mode(struct net_device *netdev)
 		ocp_data |= RCR_AM | RCR_AAP;
 		mc_filter[1] = 0xffffffff;
 		mc_filter[0] = 0xffffffff;
-	} else if ((netdev_mc_count(netdev) > multicast_filter_limit) ||
-		   (netdev->flags & IFF_ALLMULTI)) {
+	} else if ((netdev->flags & IFF_MULTICAST &&
+				netdev_mc_count(netdev) > multicast_filter_limit) ||
+			   (netdev->flags & IFF_ALLMULTI)) {
 		/* Too many to filter perfectly -- accept all multicasts. */
 		ocp_data |= RCR_AM;
 		mc_filter[1] = 0xffffffff;
 		mc_filter[0] = 0xffffffff;
 	} else {
-		struct netdev_hw_addr *ha;
-
 		mc_filter[1] = 0;
 		mc_filter[0] = 0;
-		netdev_for_each_mc_addr(ha, netdev) {
-			int bit_nr = ether_crc(ETH_ALEN, ha->addr) >> 26;
 
-			mc_filter[bit_nr >> 5] |= 1 << (bit_nr & 31);
-			ocp_data |= RCR_AM;
+		if (netdev->flags & IFF_MULTICAST) {
+			struct netdev_hw_addr *ha;
+
+			netdev_for_each_mc_addr(ha, netdev) {
+				int bit_nr = ether_crc(ETH_ALEN, ha->addr) >> 26;
+
+				mc_filter[bit_nr >> 5] |= 1 << (bit_nr & 31);
+				ocp_data |= RCR_AM;
+			}
 		}
 	}
 
@@ -2760,9 +2767,9 @@ rtl8152_features_check(struct sk_buff *skb, struct net_device *dev,
 {
 	u32 mss = skb_shinfo(skb)->gso_size;
 	int max_offset = mss ? GTTCPHO_MAX : TCPHO_MAX;
-	int offset = skb_transport_offset(skb);
 
-	if ((mss || skb->ip_summed == CHECKSUM_PARTIAL) && offset > max_offset)
+	if ((mss || skb->ip_summed == CHECKSUM_PARTIAL) &&
+	    skb_transport_offset(skb) > max_offset)
 		features &= ~(NETIF_F_CSUM_MASK | NETIF_F_GSO_MASK);
 	else if ((skb->len + sizeof(struct tx_desc)) > agg_buf_sz)
 		features &= ~NETIF_F_GSO_MASK;
@@ -8602,11 +8609,11 @@ static void rtl8152_get_drvinfo(struct net_device *netdev,
 {
 	struct r8152 *tp = netdev_priv(netdev);
 
-	strlcpy(info->driver, MODULENAME, sizeof(info->driver));
-	strlcpy(info->version, DRIVER_VERSION, sizeof(info->version));
+	strscpy(info->driver, MODULENAME, sizeof(info->driver));
+	strscpy(info->version, DRIVER_VERSION, sizeof(info->version));
 	usb_make_path(tp->udev, info->bus_info, sizeof(info->bus_info));
 	if (!IS_ERR_OR_NULL(tp->rtl_fw.fw))
-		strlcpy(info->fw_version, tp->rtl_fw.version,
+		strscpy(info->fw_version, tp->rtl_fw.version,
 			sizeof(info->fw_version));
 }
 
@@ -9030,7 +9037,9 @@ static int rtl8152_set_tunable(struct net_device *netdev,
 }
 
 static void rtl8152_get_ringparam(struct net_device *netdev,
-				  struct ethtool_ringparam *ring)
+				  struct ethtool_ringparam *ring,
+				  struct kernel_ethtool_ringparam *kernel_ring,
+				  struct netlink_ext_ack *extack)
 {
 	struct r8152 *tp = netdev_priv(netdev);
 
@@ -9039,7 +9048,9 @@ static void rtl8152_get_ringparam(struct net_device *netdev,
 }
 
 static int rtl8152_set_ringparam(struct net_device *netdev,
-				 struct ethtool_ringparam *ring)
+				 struct ethtool_ringparam *ring,
+				 struct kernel_ethtool_ringparam *kernel_ring,
+				 struct netlink_ext_ack *extack)
 {
 	struct r8152 *tp = netdev_priv(netdev);
 
@@ -9570,6 +9581,31 @@ u8 rtl8152_get_version(struct usb_interface *intf)
 }
 EXPORT_SYMBOL_GPL(rtl8152_get_version);
 
+static bool rtl8152_supports_lenovo_macpassthru(struct usb_device *udev)
+{
+	int parent_vendor_id = le16_to_cpu(udev->parent->descriptor.idVendor);
+	int product_id = le16_to_cpu(udev->descriptor.idProduct);
+	int vendor_id = le16_to_cpu(udev->descriptor.idVendor);
+
+	if (vendor_id == VENDOR_ID_LENOVO) {
+		switch (product_id) {
+		case DEVICE_ID_LENOVO_USB_C_TRAVEL_HUB:
+		case DEVICE_ID_THINKPAD_ONELINK_PLUS_DOCK:
+		case DEVICE_ID_THINKPAD_THUNDERBOLT3_DOCK_GEN2:
+		case DEVICE_ID_THINKPAD_USB_C_DOCK_GEN2:
+		case DEVICE_ID_THINKPAD_USB_C_DOCK_GEN3:
+		case DEVICE_ID_THINKPAD_USB_C_DONGLE:
+			return 1;
+		}
+	} else if (vendor_id == VENDOR_ID_REALTEK && parent_vendor_id == VENDOR_ID_LENOVO) {
+		switch (product_id) {
+		case 0x8153:
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static int rtl8152_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
@@ -9650,14 +9686,7 @@ static int rtl8152_probe(struct usb_interface *intf,
 		netdev->hw_features &= ~NETIF_F_RXCSUM;
 	}
 
-	if (le16_to_cpu(udev->descriptor.idVendor) == VENDOR_ID_LENOVO) {
-		switch (le16_to_cpu(udev->descriptor.idProduct)) {
-		case DEVICE_ID_THINKPAD_ONELINK_PLUS_DOCK:
-		case DEVICE_ID_THINKPAD_THUNDERBOLT3_DOCK_GEN2:
-		case DEVICE_ID_THINKPAD_USB_C_DOCK_GEN2:
-			tp->lenovo_macpassthru = 1;
-		}
-	}
+	tp->lenovo_macpassthru = rtl8152_supports_lenovo_macpassthru(udev);
 
 	if (le16_to_cpu(udev->descriptor.bcdDevice) == 0x3011 && udev->serial &&
 	    (!strcmp(udev->serial, "000001000000") ||
@@ -9667,7 +9696,7 @@ static int rtl8152_probe(struct usb_interface *intf,
 	}
 
 	netdev->ethtool_ops = &ops;
-	netif_set_gso_max_size(netdev, RTL_LIMITED_TSO_SIZE);
+	netif_set_tso_max_size(netdev, RTL_LIMITED_TSO_SIZE);
 
 	/* MTU range: 68 - 1500 or 9194 */
 	netdev->min_mtu = ETH_MIN_MTU;
@@ -9741,10 +9770,8 @@ static int rtl8152_probe(struct usb_interface *intf,
 
 	usb_set_intfdata(intf, tp);
 
-	if (tp->support_2500full)
-		netif_napi_add(netdev, &tp->napi, r8152_poll, 256);
-	else
-		netif_napi_add(netdev, &tp->napi, r8152_poll, 64);
+	netif_napi_add_weight(netdev, &tp->napi, r8152_poll,
+			      tp->support_2500full ? 256 : 64);
 
 	ret = register_netdev(netdev);
 	if (ret != 0) {

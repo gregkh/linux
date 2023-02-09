@@ -206,9 +206,8 @@ static void dnv_exit(struct mid8250 *mid)
 
 /*****************************************************************************/
 
-static void mid8250_set_termios(struct uart_port *p,
-				struct ktermios *termios,
-				struct ktermios *old)
+static void mid8250_set_termios(struct uart_port *p, struct ktermios *termios,
+				const struct ktermios *old)
 {
 	unsigned int baud = tty_termios_baud_rate(termios);
 	struct mid8250 *mid = p->private_data;
@@ -322,11 +321,9 @@ static int mid8250_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!uart.port.membase)
 		return -ENOMEM;
 
-	if (mid->board->setup) {
-		ret = mid->board->setup(mid, &uart.port);
-		if (ret)
-			return ret;
-	}
+	ret = mid->board->setup(mid, &uart.port);
+	if (ret)
+		return ret;
 
 	ret = mid8250_dma_setup(mid, &uart);
 	if (ret)
@@ -379,16 +376,14 @@ static const struct mid8250_board dnv_board = {
 	.exit = dnv_exit,
 };
 
-#define MID_DEVICE(id, board) { PCI_VDEVICE(INTEL, id), (kernel_ulong_t)&board }
-
 static const struct pci_device_id pci_ids[] = {
-	MID_DEVICE(PCI_DEVICE_ID_INTEL_PNW_UART1, pnw_board),
-	MID_DEVICE(PCI_DEVICE_ID_INTEL_PNW_UART2, pnw_board),
-	MID_DEVICE(PCI_DEVICE_ID_INTEL_PNW_UART3, pnw_board),
-	MID_DEVICE(PCI_DEVICE_ID_INTEL_TNG_UART, tng_board),
-	MID_DEVICE(PCI_DEVICE_ID_INTEL_CDF_UART, dnv_board),
-	MID_DEVICE(PCI_DEVICE_ID_INTEL_DNV_UART, dnv_board),
-	{ },
+	{ PCI_DEVICE_DATA(INTEL, PNW_UART1, &pnw_board) },
+	{ PCI_DEVICE_DATA(INTEL, PNW_UART2, &pnw_board) },
+	{ PCI_DEVICE_DATA(INTEL, PNW_UART3, &pnw_board) },
+	{ PCI_DEVICE_DATA(INTEL, TNG_UART, &tng_board) },
+	{ PCI_DEVICE_DATA(INTEL, CDF_UART, &dnv_board) },
+	{ PCI_DEVICE_DATA(INTEL, DNV_UART, &dnv_board) },
+	{ }
 };
 MODULE_DEVICE_TABLE(pci, pci_ids);
 

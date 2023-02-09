@@ -697,7 +697,7 @@ qla2x00_execute_fw(scsi_qla_host_t *vha, uint32_t risc_addr)
 	mbx_cmd_t *mcp = &mc;
 	u8 semaphore = 0;
 #define EXE_FW_FORCE_SEMAPHORE BIT_7
-	u8 retry = 3;
+	u8 retry = 5;
 
 	ql_dbg(ql_dbg_mbx + ql_dbg_verbose, vha, 0x1025,
 	    "Entered %s.\n", __func__);
@@ -775,6 +775,12 @@ again:
 			goto again;
 		}
 
+		if (retry) {
+			retry--;
+			ql_dbg(ql_dbg_async, vha, 0x509d,
+			    "Exe FW retry: mb[0]=%x retry[%d]\n", mcp->mb[0], retry);
+			goto again;
+		}
 		ql_dbg(ql_dbg_mbx, vha, 0x1026,
 		    "Failed=%x mb[0]=%x.\n", rval, mcp->mb[0]);
 		vha->hw_err_cnt++;
@@ -3247,7 +3253,7 @@ qla24xx_abort_command(srb_t *sp)
 	fc_port_t	*fcport = sp->fcport;
 	struct scsi_qla_host *vha = fcport->vha;
 	struct qla_hw_data *ha = vha->hw;
-	struct req_que *req = vha->req;
+	struct req_que *req;
 	struct qla_qpair *qpair = sp->qpair;
 
 	ql_dbg(ql_dbg_mbx + ql_dbg_verbose, vha, 0x108c,
@@ -6470,6 +6476,54 @@ qla26xx_dport_diagnostics(scsi_qla_host_t *vha,
 	return rval;
 }
 
+int
+qla26xx_dport_diagnostics_v2(scsi_qla_host_t *vha,
+			     struct qla_dport_diag_v2 *dd,  mbx_cmd_t *mcp)
+{
+	int rval;
+	dma_addr_t dd_dma;
+	uint size = sizeof(dd->buf);
+	uint16_t options = dd->options;
+
+	ql_dbg(ql_dbg_mbx + ql_dbg_verbose, vha, 0x119f,
+	       "Entered %s.\n", __func__);
+
+	dd_dma = dma_map_single(&vha->hw->pdev->dev,
+				dd->buf, size, DMA_FROM_DEVICE);
+	if (dma_mapping_error(&vha->hw->pdev->dev, dd_dma)) {
+		ql_log(ql_log_warn, vha, 0x1194,
+		       "Failed to map dma buffer.\n");
+		return QLA_MEMORY_ALLOC_FAILED;
+	}
+
+	memset(dd->buf, 0, size);
+
+	mcp->mb[0] = MBC_DPORT_DIAGNOSTICS;
+	mcp->mb[1] = options;
+	mcp->mb[2] = MSW(LSD(dd_dma));
+	mcp->mb[3] = LSW(LSD(dd_dma));
+	mcp->mb[6] = MSW(MSD(dd_dma));
+	mcp->mb[7] = LSW(MSD(dd_dma));
+	mcp->mb[8] = size;
+	mcp->out_mb = MBX_8 | MBX_7 | MBX_6 | MBX_3 | MBX_2 | MBX_1 | MBX_0;
+	mcp->in_mb = MBX_3 | MBX_2 | MBX_1 | MBX_0;
+	mcp->buf_size = size;
+	mcp->flags = MBX_DMA_IN;
+	mcp->tov = MBX_TOV_SECONDS * 4;
+	rval = qla2x00_mailbox_command(vha, mcp);
+
+	if (rval != QLA_SUCCESS) {
+		ql_dbg(ql_dbg_mbx, vha, 0x1195, "Failed=%x.\n", rval);
+	} else {
+		ql_dbg(ql_dbg_mbx + ql_dbg_verbose, vha, 0x1196,
+		       "Done %s.\n", __func__);
+	}
+
+	dma_unmap_single(&vha->hw->pdev->dev, dd_dma, size, DMA_FROM_DEVICE);
+
+	return rval;
+}
+
 static void qla2x00_async_mb_sp_done(srb_t *sp, int res)
 {
 	sp->u.iocb_cmd.u.mbx.rc = res;
@@ -7020,4 +7074,37 @@ void qla_no_op_mb(struct scsi_qla_host *vha)
 		ql_dbg(ql_dbg_async, vha, 0x7071,
 			"Failed %s %x\n", __func__, rval);
 	}
+}
+
+int qla_mailbox_passthru(scsi_qla_host_t *vha,
+			 uint16_t *mbx_in, uint16_t *mbx_out)
+{
+	mbx_cmd_t mc;
+	mbx_cmd_t *mcp = &mc;
+	int rval = -EINVAL;
+
+	memset(&mc, 0, sizeof(mc));
+	/* Receiving all 32 register's contents */
+	memcpy(&mcp->mb, (char *)mbx_in, (32 * sizeof(uint16_t)));
+
+	mcp->out_mb = 0xFFFFFFFF;
+	mcp->in_mb = 0xFFFFFFFF;
+
+	mcp->tov = MBX_TOV_SECONDS;
+	mcp->flags = 0;
+	mcp->bufp = NULL;
+
+	rval = qla2x00_mailbox_command(vha, mcp);
+
+	if (rval != QLA_SUCCESS) {
+		ql_dbg(ql_dbg_mbx, vha, 0xf0a2,
+			"Failed=%x mb[0]=%x.\n", rval, mcp->mb[0]);
+	} else {
+		ql_dbg(ql_dbg_mbx + ql_dbg_verbose, vha, 0xf0a3, "Done %s.\n",
+		       __func__);
+		/* passing all 32 register's contents */
+		memcpy(mbx_out, &mcp->mb, 32 * sizeof(uint16_t));
+	}
+
+	return rval;
 }

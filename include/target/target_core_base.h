@@ -665,9 +665,9 @@ struct se_dev_entry {
 	/* Used for PR SPEC_I_PT=1 and REGISTER_AND_MOVE */
 	struct kref		pr_kref;
 	struct completion	pr_comp;
-	struct se_lun_acl __rcu	*se_lun_acl;
+	struct se_lun_acl	*se_lun_acl;
 	spinlock_t		ua_lock;
-	struct se_lun __rcu	*se_lun;
+	struct se_lun		*se_lun;
 #define DEF_PR_REG_ACTIVE		1
 	unsigned long		deve_flags;
 	struct list_head	alua_port_list;
@@ -749,7 +749,7 @@ struct se_lun {
 
 	/* ALUA target port group linkage */
 	struct list_head	lun_tg_pt_gp_link;
-	struct t10_alua_tg_pt_gp *lun_tg_pt_gp;
+	struct t10_alua_tg_pt_gp __rcu *lun_tg_pt_gp;
 	spinlock_t		lun_tg_pt_gp_lock;
 
 	struct se_portal_group	*lun_tpg;
@@ -902,6 +902,7 @@ struct se_portal_group {
 	 * Negative values can be used by fabric drivers for internal use TPGs.
 	 */
 	int			proto_id;
+	bool			enabled;
 	/* Used for PR SPEC_I_PT=1 and REGISTER_AND_MOVE */
 	atomic_t		tpg_pr_ref_count;
 	/* Spinlock for adding/removing ACLed Nodes */

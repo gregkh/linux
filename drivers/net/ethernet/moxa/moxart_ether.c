@@ -29,12 +29,12 @@
 
 #include "moxart_ether.h"
 
-static inline void moxart_desc_write(u32 data, u32 *desc)
+static inline void moxart_desc_write(u32 data, __le32 *desc)
 {
 	*desc = cpu_to_le32(data);
 }
 
-static inline u32 moxart_desc_read(u32 *desc)
+static inline u32 moxart_desc_read(__le32 *desc)
 {
 	return le32_to_cpu(*desc);
 }
@@ -62,10 +62,7 @@ static int moxart_set_mac_address(struct net_device *ndev, void *addr)
 {
 	struct sockaddr *address = addr;
 
-	if (!is_valid_ether_addr(address->sa_data))
-		return -EADDRNOTAVAIL;
-
-	memcpy(ndev->dev_addr, address->sa_data, ndev->addr_len);
+	eth_hw_addr_set(ndev, address->sa_data);
 	moxart_update_mac_address(ndev);
 
 	return 0;
@@ -166,9 +163,6 @@ static void moxart_mac_setup_desc_ring(struct net_device *ndev)
 static int moxart_mac_open(struct net_device *ndev)
 {
 	struct moxart_mac_priv_t *priv = netdev_priv(ndev);
-
-	if (!is_valid_ether_addr(ndev->dev_addr))
-		return -EADDRNOTAVAIL;
 
 	napi_enable(&priv->napi);
 
@@ -489,6 +483,13 @@ static int moxart_mac_probe(struct platform_device *pdev)
 	}
 	ndev->base_addr = res->start;
 
+	ret = platform_get_ethdev_address(p_dev, ndev);
+	if (ret == -EPROBE_DEFER)
+		goto init_fail;
+	if (ret)
+		eth_hw_addr_random(ndev);
+	moxart_update_mac_address(ndev);
+
 	spin_lock_init(&priv->txlock);
 
 	priv->tx_buf_size = TX_BUF_SIZE;
@@ -511,14 +512,14 @@ static int moxart_mac_probe(struct platform_device *pdev)
 	}
 
 	priv->tx_buf_base = kmalloc_array(priv->tx_buf_size, TX_DESC_NUM,
-					  GFP_ATOMIC);
+					  GFP_KERNEL);
 	if (!priv->tx_buf_base) {
 		ret = -ENOMEM;
 		goto init_fail;
 	}
 
 	priv->rx_buf_base = kmalloc_array(priv->rx_buf_size, RX_DESC_NUM,
-					  GFP_ATOMIC);
+					  GFP_KERNEL);
 	if (!priv->rx_buf_base) {
 		ret = -ENOMEM;
 		goto init_fail;
@@ -534,7 +535,7 @@ static int moxart_mac_probe(struct platform_device *pdev)
 	}
 
 	ndev->netdev_ops = &moxart_netdev_ops;
-	netif_napi_add(ndev, &priv->napi, moxart_rx_poll, RX_DESC_NUM);
+	netif_napi_add_weight(ndev, &priv->napi, moxart_rx_poll, RX_DESC_NUM);
 	ndev->priv_flags |= IFF_UNICAST_FLT;
 	ndev->irq = irq;
 

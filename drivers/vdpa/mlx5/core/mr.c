@@ -88,7 +88,7 @@ static int create_direct_mr(struct mlx5_vdpa_dev *mvdev, struct mlx5_vdpa_direct
 
 static void destroy_direct_mr(struct mlx5_vdpa_dev *mvdev, struct mlx5_vdpa_direct_mr *mr)
 {
-	mlx5_vdpa_destroy_mkey(mvdev, &mr->mr);
+	mlx5_vdpa_destroy_mkey(mvdev, mr->mr);
 }
 
 static u64 map_start(struct vhost_iotlb_map *map, struct mlx5_vdpa_direct_mr *mr)
@@ -162,7 +162,7 @@ again:
 		}
 
 		if (preve == dmr->start) {
-			klm->key = cpu_to_be32(dmr->mr.key);
+			klm->key = cpu_to_be32(dmr->mr);
 			klm->bcount = cpu_to_be32(klm_bcount(dmr->end - dmr->start));
 			preve = dmr->end;
 		} else {
@@ -217,7 +217,7 @@ static int create_indirect_key(struct mlx5_vdpa_dev *mvdev, struct mlx5_vdpa_mr 
 
 static void destroy_indirect_key(struct mlx5_vdpa_dev *mvdev, struct mlx5_vdpa_mr *mkey)
 {
-	mlx5_vdpa_destroy_mkey(mvdev, &mkey->mkey);
+	mlx5_vdpa_destroy_mkey(mvdev, mkey->mkey);
 }
 
 static int map_direct_mr(struct mlx5_vdpa_dev *mvdev, struct mlx5_vdpa_direct_mr *mr,
@@ -449,7 +449,7 @@ static int create_dma_mr(struct mlx5_vdpa_dev *mvdev, struct mlx5_vdpa_mr *mr)
 
 static void destroy_dma_mr(struct mlx5_vdpa_dev *mvdev, struct mlx5_vdpa_mr *mr)
 {
-	mlx5_vdpa_destroy_mkey(mvdev, &mr->mkey);
+	mlx5_vdpa_destroy_mkey(mvdev, mr->mkey);
 }
 
 static int dup_iotlb(struct mlx5_vdpa_dev *mvdev, struct vhost_iotlb *src)
@@ -511,7 +511,8 @@ out:
 	mutex_unlock(&mr->mkey_mtx);
 }
 
-static int _mlx5_vdpa_create_mr(struct mlx5_vdpa_dev *mvdev, struct vhost_iotlb *iotlb)
+static int _mlx5_vdpa_create_mr(struct mlx5_vdpa_dev *mvdev,
+				struct vhost_iotlb *iotlb, unsigned int asid)
 {
 	struct mlx5_vdpa_mr *mr = &mvdev->mr;
 	int err;
@@ -519,42 +520,49 @@ static int _mlx5_vdpa_create_mr(struct mlx5_vdpa_dev *mvdev, struct vhost_iotlb 
 	if (mr->initialized)
 		return 0;
 
-	if (iotlb)
-		err = create_user_mr(mvdev, iotlb);
-	else
-		err = create_dma_mr(mvdev, mr);
+	if (mvdev->group2asid[MLX5_VDPA_DATAVQ_GROUP] == asid) {
+		if (iotlb)
+			err = create_user_mr(mvdev, iotlb);
+		else
+			err = create_dma_mr(mvdev, mr);
 
-	if (err)
-		return err;
+		if (err)
+			return err;
+	}
 
-	err = dup_iotlb(mvdev, iotlb);
-	if (err)
-		goto out_err;
+	if (mvdev->group2asid[MLX5_VDPA_CVQ_GROUP] == asid) {
+		err = dup_iotlb(mvdev, iotlb);
+		if (err)
+			goto out_err;
+	}
 
 	mr->initialized = true;
 	return 0;
 
 out_err:
-	if (iotlb)
-		destroy_user_mr(mvdev, mr);
-	else
-		destroy_dma_mr(mvdev, mr);
+	if (mvdev->group2asid[MLX5_VDPA_DATAVQ_GROUP] == asid) {
+		if (iotlb)
+			destroy_user_mr(mvdev, mr);
+		else
+			destroy_dma_mr(mvdev, mr);
+	}
 
 	return err;
 }
 
-int mlx5_vdpa_create_mr(struct mlx5_vdpa_dev *mvdev, struct vhost_iotlb *iotlb)
+int mlx5_vdpa_create_mr(struct mlx5_vdpa_dev *mvdev, struct vhost_iotlb *iotlb,
+			unsigned int asid)
 {
 	int err;
 
 	mutex_lock(&mvdev->mr.mkey_mtx);
-	err = _mlx5_vdpa_create_mr(mvdev, iotlb);
+	err = _mlx5_vdpa_create_mr(mvdev, iotlb, asid);
 	mutex_unlock(&mvdev->mr.mkey_mtx);
 	return err;
 }
 
 int mlx5_vdpa_handle_set_map(struct mlx5_vdpa_dev *mvdev, struct vhost_iotlb *iotlb,
-			     bool *change_map)
+			     bool *change_map, unsigned int asid)
 {
 	struct mlx5_vdpa_mr *mr = &mvdev->mr;
 	int err = 0;
@@ -566,7 +574,7 @@ int mlx5_vdpa_handle_set_map(struct mlx5_vdpa_dev *mvdev, struct vhost_iotlb *io
 		*change_map = true;
 	}
 	if (!*change_map)
-		err = _mlx5_vdpa_create_mr(mvdev, iotlb);
+		err = _mlx5_vdpa_create_mr(mvdev, iotlb, asid);
 	mutex_unlock(&mr->mkey_mtx);
 
 	return err;

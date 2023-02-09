@@ -397,7 +397,7 @@
 	.fixup_map_array_48b = { 1 },
 	.result = ACCEPT,
 	.result_unpriv = REJECT,
-	.errstr_unpriv = "R0 invalid mem access 'inv'",
+	.errstr_unpriv = "R0 invalid mem access 'scalar'",
 	.retval = 0,
 },
 {
@@ -1074,11 +1074,11 @@
 	},
 	.fixup_map_array_48b = { 3 },
 	.result = REJECT,
-	.errstr = "R0 invalid mem access 'inv'",
+	.errstr = "R0 invalid mem access 'scalar'",
 	.errstr_unpriv = "R0 pointer -= pointer prohibited",
 },
 {
-	"map access: trying to leak tained dst reg",
+	"map access: trying to leak tainted dst reg",
 	.insns = {
 	BPF_MOV64_IMM(BPF_REG_0, 0),
 	BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),

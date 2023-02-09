@@ -209,10 +209,16 @@
 #define ADV7511_REG_CEC_TX_ENABLE	0x11
 #define ADV7511_REG_CEC_TX_RETRY	0x12
 #define ADV7511_REG_CEC_TX_LOW_DRV_CNT	0x14
-#define ADV7511_REG_CEC_RX_FRAME_HDR	0x15
-#define ADV7511_REG_CEC_RX_FRAME_DATA0	0x16
-#define ADV7511_REG_CEC_RX_FRAME_LEN	0x25
-#define ADV7511_REG_CEC_RX_ENABLE	0x26
+#define ADV7511_REG_CEC_RX1_FRAME_HDR	0x15
+#define ADV7511_REG_CEC_RX1_FRAME_DATA0	0x16
+#define ADV7511_REG_CEC_RX1_FRAME_LEN	0x25
+#define ADV7511_REG_CEC_RX_STATUS	0x26
+#define ADV7511_REG_CEC_RX2_FRAME_HDR	0x27
+#define ADV7511_REG_CEC_RX2_FRAME_DATA0	0x28
+#define ADV7511_REG_CEC_RX2_FRAME_LEN	0x37
+#define ADV7511_REG_CEC_RX3_FRAME_HDR	0x38
+#define ADV7511_REG_CEC_RX3_FRAME_DATA0	0x39
+#define ADV7511_REG_CEC_RX3_FRAME_LEN	0x48
 #define ADV7511_REG_CEC_RX_BUFFERS	0x4a
 #define ADV7511_REG_CEC_LOG_ADDR_MASK	0x4b
 #define ADV7511_REG_CEC_LOG_ADDR_0_1	0x4c
@@ -335,6 +341,7 @@ struct adv7511 {
 
 	struct regmap *regmap;
 	struct regmap *regmap_cec;
+	unsigned int reg_cec_offset;
 	enum drm_connector_status status;
 	bool powered;
 
@@ -400,7 +407,6 @@ enum drm_mode_status adv7533_mode_valid(struct adv7511 *adv,
 int adv7533_patch_registers(struct adv7511 *adv);
 int adv7533_patch_cec_registers(struct adv7511 *adv);
 int adv7533_attach_dsi(struct adv7511 *adv);
-void adv7533_detach_dsi(struct adv7511 *adv);
 int adv7533_parse_dt(struct device_node *np, struct adv7511 *adv);
 
 #ifdef CONFIG_DRM_I2C_ADV7511_AUDIO

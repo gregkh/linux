@@ -108,8 +108,8 @@ static int cht_codec_init(struct snd_soc_pcm_runtime *runtime)
 	 */
 	jack_type = SND_JACK_HEADSET | SND_JACK_BTN_0 | SND_JACK_BTN_1 |
 		SND_JACK_BTN_2 | SND_JACK_BTN_3;
-	ret = snd_soc_card_jack_new(runtime->card, "Headset", jack_type, jack,
-		cht_bsw_jack_pins, ARRAY_SIZE(cht_bsw_jack_pins));
+	ret = snd_soc_card_jack_new_pins(runtime->card, "Headset", jack_type,
+		jack, cht_bsw_jack_pins, ARRAY_SIZE(cht_bsw_jack_pins));
 	if (ret) {
 		dev_err(runtime->dev,
 			"Headset Jack creation failed %d\n", ret);
@@ -214,7 +214,7 @@ static struct snd_soc_dai_link cht_dailink[] = {
 		.id = 0,
 		.no_pcm = 1,
 		.dai_fmt = SND_SOC_DAIFMT_DSP_B | SND_SOC_DAIFMT_IB_NF
-			| SND_SOC_DAIFMT_CBS_CFS,
+			| SND_SOC_DAIFMT_CBC_CFC,
 		.init = cht_codec_init,
 		.be_hw_params_fixup = cht_codec_fixup,
 		.dpcm_playback = 1,
@@ -277,6 +277,8 @@ static int snd_cht_mc_probe(struct platform_device *pdev)
 		snd_soc_card_cht.name = CARD_NAME;
 		snd_soc_card_cht.driver_name = DRIVER_NAME;
 	}
+
+	snd_soc_card_cht.components = nau8824_components();
 
 	/* set pm ops */
 	if (sof_parent)

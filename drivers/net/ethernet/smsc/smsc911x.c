@@ -1505,7 +1505,7 @@ static int smsc911x_soft_reset(struct smsc911x_data *pdata)
 
 /* Sets the device MAC address to dev_addr, called with mac_lock held */
 static void
-smsc911x_set_hw_mac_address(struct smsc911x_data *pdata, u8 dev_addr[6])
+smsc911x_set_hw_mac_address(struct smsc911x_data *pdata, const u8 dev_addr[6])
 {
 	u32 mac_high16 = (dev_addr[5] << 8) | dev_addr[4];
 	u32 mac_low32 = (dev_addr[3] << 24) | (dev_addr[2] << 16) |
@@ -1941,7 +1941,7 @@ static int smsc911x_set_mac_address(struct net_device *dev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(dev->dev_addr, addr->sa_data, ETH_ALEN);
+	eth_hw_addr_set(dev, addr->sa_data);
 
 	spin_lock_irq(&pdata->mac_lock);
 	smsc911x_set_hw_mac_address(pdata, dev->dev_addr);
@@ -1955,9 +1955,9 @@ static int smsc911x_set_mac_address(struct net_device *dev, void *p)
 static void smsc911x_ethtool_getdrvinfo(struct net_device *dev,
 					struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, SMSC_CHIPNAME, sizeof(info->driver));
-	strlcpy(info->version, SMSC_DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, dev_name(dev->dev.parent),
+	strscpy(info->driver, SMSC_CHIPNAME, sizeof(info->driver));
+	strscpy(info->version, SMSC_DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, dev_name(dev->dev.parent),
 		sizeof(info->bus_info));
 }
 
@@ -2164,13 +2164,15 @@ static void smsc911x_read_mac_address(struct net_device *dev)
 	struct smsc911x_data *pdata = netdev_priv(dev);
 	u32 mac_high16 = smsc911x_mac_read(pdata, ADDRH);
 	u32 mac_low32 = smsc911x_mac_read(pdata, ADDRL);
+	u8 addr[ETH_ALEN];
 
-	dev->dev_addr[0] = (u8)(mac_low32);
-	dev->dev_addr[1] = (u8)(mac_low32 >> 8);
-	dev->dev_addr[2] = (u8)(mac_low32 >> 16);
-	dev->dev_addr[3] = (u8)(mac_low32 >> 24);
-	dev->dev_addr[4] = (u8)(mac_high16);
-	dev->dev_addr[5] = (u8)(mac_high16 >> 8);
+	addr[0] = (u8)(mac_low32);
+	addr[1] = (u8)(mac_low32 >> 8);
+	addr[2] = (u8)(mac_low32 >> 16);
+	addr[3] = (u8)(mac_low32 >> 24);
+	addr[4] = (u8)(mac_high16);
+	addr[5] = (u8)(mac_high16 >> 8);
+	eth_hw_addr_set(dev, addr);
 }
 
 /* Initializing private device structures, only called from probe */
@@ -2304,7 +2306,8 @@ static int smsc911x_init(struct net_device *dev)
 		return -ENODEV;
 
 	dev->flags |= IFF_MULTICAST;
-	netif_napi_add(dev, &pdata->napi, smsc911x_poll, SMSC_NAPI_WEIGHT);
+	netif_napi_add_weight(dev, &pdata->napi, smsc911x_poll,
+			      SMSC_NAPI_WEIGHT);
 	dev->netdev_ops = &smsc911x_netdev_ops;
 	dev->ethtool_ops = &smsc911x_ethtool_ops;
 
@@ -2377,7 +2380,7 @@ static int smsc911x_probe_config(struct smsc911x_platform_config *config,
 		phy_interface = PHY_INTERFACE_MODE_NA;
 	config->phy_interface = phy_interface;
 
-	device_get_mac_address(dev, config->mac, ETH_ALEN);
+	device_get_mac_address(dev, config->mac);
 
 	err = device_property_read_u32(dev, "reg-io-width", &width);
 	if (err == -ENXIO)
@@ -2527,7 +2530,7 @@ static int smsc911x_drv_probe(struct platform_device *pdev)
 		SMSC_TRACE(pdata, probe,
 			   "MAC Address is specified by configuration");
 	} else if (is_valid_ether_addr(pdata->config.mac)) {
-		memcpy(dev->dev_addr, pdata->config.mac, ETH_ALEN);
+		eth_hw_addr_set(dev, pdata->config.mac);
 		SMSC_TRACE(pdata, probe,
 			   "MAC Address specified by platform data");
 	} else {

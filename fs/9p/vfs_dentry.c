@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- *  linux/fs/9p/vfs_dentry.c
- *
  * This file contians vfs dentry ops for the 9P2000 protocol.
  *
  *  Copyright (C) 2004 by Eric Van Hensbergen <ericvh@gmail.com>
@@ -56,7 +54,7 @@ static void v9fs_dentry_release(struct dentry *dentry)
 	p9_debug(P9_DEBUG_VFS, " dentry: %pd (%p)\n",
 		 dentry, dentry);
 	hlist_for_each_safe(p, n, (struct hlist_head *)&dentry->d_fsdata)
-		p9_client_clunk(hlist_entry(p, struct p9_fid, dlist));
+		p9_fid_put(hlist_entry(p, struct p9_fid, dlist));
 	dentry->d_fsdata = NULL;
 }
 
@@ -87,7 +85,7 @@ static int v9fs_lookup_revalidate(struct dentry *dentry, unsigned int flags)
 			retval = v9fs_refresh_inode_dotl(fid, inode);
 		else
 			retval = v9fs_refresh_inode(fid, inode);
-		p9_client_clunk(fid);
+		p9_fid_put(fid);
 
 		if (retval == -ENOENT)
 			return 0;

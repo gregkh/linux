@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- *  linux/fs/9p/v9fs.c
- *
  *  This file contains functions assisting in mapping VFS to 9P2000
  *
  *  Copyright (C) 2004-2008 by Eric Van Hensbergen <ericvh@gmail.com>
@@ -166,7 +164,7 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 	substring_t args[MAX_OPT_ARGS];
 	char *p;
 	int option = 0;
-	char *s, *e;
+	char *s;
 	int ret = 0;
 
 	/* setup defaults */
@@ -323,12 +321,13 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 				v9ses->flags |= V9FS_ACCESS_CLIENT;
 			} else {
 				uid_t uid;
+
 				v9ses->flags |= V9FS_ACCESS_SINGLE;
-				uid = simple_strtoul(s, &e, 10);
-				if (*e != '\0') {
-					ret = -EINVAL;
-					pr_info("Unknown access argument %s\n",
-						s);
+				r = kstrtouint(s, 10, &uid);
+				if (r) {
+					ret = r;
+					pr_info("Unknown access argument %s: %d\n",
+						s, r);
 					kfree(s);
 					continue;
 				}
@@ -470,7 +469,11 @@ struct p9_fid *v9fs_session_init(struct v9fs_session_info *v9ses,
 
 #ifdef CONFIG_9P_FSCACHE
 	/* register the session for caching */
-	v9fs_cache_session_get_cookie(v9ses);
+	if (v9ses->cache == CACHE_LOOSE || v9ses->cache == CACHE_FSCACHE) {
+		rc = v9fs_cache_session_get_cookie(v9ses, dev_name);
+		if (rc < 0)
+			goto err_clnt;
+	}
 #endif
 	spin_lock(&v9fs_sessionlist_lock);
 	list_add(&v9ses->slist, &v9fs_sessionlist);
@@ -503,8 +506,7 @@ void v9fs_session_close(struct v9fs_session_info *v9ses)
 	}
 
 #ifdef CONFIG_9P_FSCACHE
-	if (v9ses->fscache)
-		v9fs_cache_session_put_cookie(v9ses);
+	fscache_relinquish_volume(v9fs_session_cache(v9ses), NULL, false);
 	kfree(v9ses->cachetag);
 #endif
 	kfree(v9ses->uname);
@@ -522,7 +524,8 @@ void v9fs_session_close(struct v9fs_session_info *v9ses)
  * mark transport as disconnected and cancel all pending requests.
  */
 
-void v9fs_session_cancel(struct v9fs_session_info *v9ses) {
+void v9fs_session_cancel(struct v9fs_session_info *v9ses)
+{
 	p9_debug(P9_DEBUG_ERROR, "cancel session %p\n", v9ses);
 	p9_client_disconnect(v9ses->clnt);
 }
@@ -620,11 +623,9 @@ static void v9fs_sysfs_cleanup(void)
 static void v9fs_inode_init_once(void *foo)
 {
 	struct v9fs_inode *v9inode = (struct v9fs_inode *)foo;
-#ifdef CONFIG_9P_FSCACHE
-	v9inode->fscache = NULL;
-#endif
+
 	memset(&v9inode->qid, 0, sizeof(v9inode->qid));
-	inode_init_once(&v9inode->vfs_inode);
+	inode_init_once(&v9inode->netfs.inode);
 }
 
 /**
@@ -665,20 +666,12 @@ static int v9fs_cache_register(void)
 	ret = v9fs_init_inode_cache();
 	if (ret < 0)
 		return ret;
-#ifdef CONFIG_9P_FSCACHE
-	ret = fscache_register_netfs(&v9fs_cache_netfs);
-	if (ret < 0)
-		v9fs_destroy_inode_cache();
-#endif
 	return ret;
 }
 
 static void v9fs_cache_unregister(void)
 {
 	v9fs_destroy_inode_cache();
-#ifdef CONFIG_9P_FSCACHE
-	fscache_unregister_netfs(&v9fs_cache_netfs);
-#endif
 }
 
 /**

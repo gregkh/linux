@@ -53,8 +53,11 @@
 struct thread_info {
 	int		preempt_count;		/* 0 => preemptable,
 						   <0 => BUG */
+#ifdef CONFIG_SMP
+	unsigned int	cpu;
+#endif
 	unsigned long	local_flags;		/* private flags for thread */
-#ifdef CONFIG_LIVEPATCH
+#ifdef CONFIG_LIVEPATCH_64
 	unsigned long *livepatch_sp;
 #endif
 #if defined(CONFIG_VIRT_CPU_ACCOUNTING_NATIVE) && defined(CONFIG_PPC32)

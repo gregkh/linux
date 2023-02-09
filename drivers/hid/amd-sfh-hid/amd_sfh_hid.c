@@ -2,14 +2,17 @@
 /*
  * AMD MP2 Sensors transport driver
  *
+ * Copyright 2020-2021 Advanced Micro Devices, Inc.
  * Authors: Nehal Bakulchandra Shah <Nehal-bakulchandra.shah@amd.com>
  *	    Sandeep Singh <sandeep.singh@amd.com>
+ *	    Basavaraj Natikar <Basavaraj.Natikar@amd.com>
  */
 #include <linux/hid.h>
 #include <linux/wait.h>
 #include <linux/sched.h>
 
 #include "amd_sfh_hid.h"
+#include "amd_sfh_pcie.h"
 
 #define AMD_SFH_RESPONSE_TIMEOUT	1500
 
@@ -122,6 +125,8 @@ static struct hid_ll_driver amdtp_hid_ll_driver = {
 
 int amdtp_hid_probe(u32 cur_hid_dev, struct amdtp_cl_data *cli_data)
 {
+	struct amd_mp2_dev *mp2 = container_of(cli_data->in_data, struct amd_mp2_dev, in_data);
+	struct device *dev = &mp2->pdev->dev;
 	struct hid_device *hid;
 	struct amdtp_hid_data *hid_data;
 	int rc;
@@ -143,6 +148,8 @@ int amdtp_hid_probe(u32 cur_hid_dev, struct amdtp_cl_data *cli_data)
 
 	hid->driver_data = hid_data;
 	cli_data->hid_sensor_hubs[cur_hid_dev] = hid;
+	strscpy(hid->phys, dev->driver ? dev->driver->name : dev_name(dev),
+		sizeof(hid->phys));
 	hid->bus = BUS_AMD_SFH;
 	hid->vendor = AMD_SFH_HID_VENDOR;
 	hid->product = AMD_SFH_HID_PRODUCT;

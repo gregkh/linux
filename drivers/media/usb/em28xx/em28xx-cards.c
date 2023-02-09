@@ -8,16 +8,6 @@
 //		      Mauro Carvalho Chehab <mchehab@kernel.org>
 //		      Sascha Sommer <saschasommer@freenet.de>
 // Copyright (C) 2012 Frank Schäfer <fschaefer.oss@googlemail.com>
-//
-// This program is free software; you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation; either version 2 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
 
 #include "em28xx.h"
 
@@ -2508,12 +2498,17 @@ const struct em28xx_board em28xx_boards[] = {
 		.def_i2c_bus   = 1,
 		.i2c_speed     = EM28XX_I2C_CLK_WAIT_ENABLE |
 				 EM28XX_I2C_FREQ_400_KHZ,
-		.tuner_type    = TUNER_ABSENT,
+		.tuner_type    = TUNER_SI2157,
 		.tuner_gpio    = hauppauge_dualhd_dvb,
 		.has_dvb       = 1,
 		.has_dual_ts   = 1,
 		.ir_codes      = RC_MAP_HAUPPAUGE,
 		.leds          = hauppauge_dualhd_leds,
+		.input         = { {
+			.type     = EM28XX_VMUX_COMPOSITE,
+			.vmux     = TVP5150_COMPOSITE1,
+			.amux     = EM28XX_AMUX_LINE_IN,
+		} },
 	},
 	/*
 	 * 2040:026d Hauppauge WinTV-dualHD (model 01595 - ATSC/QAM) Isoc.

@@ -40,6 +40,8 @@
 #include <linux/spi/spi_gpio.h>
 #include <linux/spi/tdo24m.h>
 
+#include <linux/soc/pxa/cpu.h>
+
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/setup.h>
@@ -51,7 +53,7 @@
 #include <linux/platform_data/mmc-pxamci.h>
 #include <linux/platform_data/usb-ohci-pxa27x.h>
 #include <linux/platform_data/mtd-nand-pxa3xx.h>
-#include <mach/audio.h>
+#include <linux/platform_data/asoc-pxa.h>
 #include <linux/platform_data/usb-pxa3xx-ulpi.h>
 
 #include <asm/mach/map.h>

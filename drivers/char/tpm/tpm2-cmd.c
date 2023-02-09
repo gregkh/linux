@@ -752,8 +752,24 @@ int tpm2_auto_startup(struct tpm_chip *chip)
 	}
 
 	rc = tpm2_get_cc_attrs_tbl(chip);
+	if (rc == TPM2_RC_FAILURE || (rc < 0 && rc != -ENOMEM)) {
+		dev_info(&chip->dev,
+			 "TPM in field failure mode, requires firmware upgrade\n");
+		chip->flags |= TPM_CHIP_FLAG_FIRMWARE_UPGRADE;
+		rc = 0;
+	}
 
 out:
+	/*
+	 * Infineon TPM in field upgrade mode will return no data for the number
+	 * of supported commands.
+	 */
+	if (rc == TPM2_RC_UPGRADE || rc == -ENODATA) {
+		dev_info(&chip->dev, "TPM in field upgrade mode, requires firmware upgrade\n");
+		chip->flags |= TPM_CHIP_FLAG_FIRMWARE_UPGRADE;
+		rc = 0;
+	}
+
 	if (rc > 0)
 		rc = -ENODEV;
 	return rc;

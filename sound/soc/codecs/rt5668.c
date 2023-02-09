@@ -2173,7 +2173,7 @@ static int rt5668_set_component_pll(struct snd_soc_component *component,
 
 	ret = rl6231_pll_calc(freq_in, freq_out, &pll_code);
 	if (ret < 0) {
-		dev_err(component->dev, "Unsupport input clock %d\n", freq_in);
+		dev_err(component->dev, "Unsupported input clock %d\n", freq_in);
 		return ret;
 	}
 
@@ -2362,7 +2362,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt5668 = {
 	.set_jack = rt5668_set_jack_detect,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt5668_regmap = {
@@ -2453,8 +2452,7 @@ static void rt5668_calibrate(struct rt5668_priv *rt5668)
 
 }
 
-static int rt5668_i2c_probe(struct i2c_client *i2c,
-		    const struct i2c_device_id *id)
+static int rt5668_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt5668_platform_data *pdata = dev_get_platdata(&i2c->dev);
 	struct rt5668_priv *rt5668;
@@ -2620,7 +2618,7 @@ static struct i2c_driver rt5668_i2c_driver = {
 		.of_match_table = of_match_ptr(rt5668_of_match),
 		.acpi_match_table = ACPI_PTR(rt5668_acpi_match),
 	},
-	.probe = rt5668_i2c_probe,
+	.probe_new = rt5668_i2c_probe,
 	.shutdown = rt5668_i2c_shutdown,
 	.id_table = rt5668_i2c_id,
 };

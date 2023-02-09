@@ -31,6 +31,7 @@ int ip6_route_me_harder(struct net *net, struct sock *sk_partial, struct sk_buff
 	int strict = (ipv6_addr_type(&iph->daddr) &
 		      (IPV6_ADDR_MULTICAST | IPV6_ADDR_LINKLOCAL));
 	struct flowi6 fl6 = {
+		.flowi6_l3mdev = l3mdev_master_ifindex(dev),
 		.flowi6_mark = skb->mark,
 		.flowi6_uid = sock_net_uid(net, sk),
 		.daddr = iph->daddr,
@@ -42,8 +43,6 @@ int ip6_route_me_harder(struct net *net, struct sock *sk_partial, struct sk_buff
 		fl6.flowi6_oif = sk->sk_bound_dev_if;
 	else if (strict)
 		fl6.flowi6_oif = dev->ifindex;
-	else
-		fl6.flowi6_oif = l3mdev_master_ifindex(dev);
 
 	fib6_rules_early_flow_dissect(net, skb, &fl6, &flkeys);
 	dst = ip6_route_output(net, sk, &fl6);
@@ -127,6 +126,7 @@ int br_ip6_fragment(struct net *net, struct sock *sk, struct sk_buff *skb,
 				  struct sk_buff *))
 {
 	int frag_max_size = BR_INPUT_SKB_CB(skb)->frag_max_size;
+	bool mono_delivery_time = skb->mono_delivery_time;
 	ktime_t tstamp = skb->tstamp;
 	struct ip6_frag_state state;
 	u8 *prevhdr, nexthdr = 0;
@@ -192,7 +192,7 @@ int br_ip6_fragment(struct net *net, struct sock *sk, struct sk_buff *skb,
 			if (iter.frag)
 				ip6_fraglist_prepare(skb, &iter);
 
-			skb->tstamp = tstamp;
+			skb_set_delivery_time(skb, tstamp, mono_delivery_time);
 			err = output(net, sk, data, skb);
 			if (err || !iter.frag)
 				break;
@@ -225,7 +225,7 @@ slow_path:
 			goto blackhole;
 		}
 
-		skb2->tstamp = tstamp;
+		skb_set_delivery_time(skb2, tstamp, mono_delivery_time);
 		err = output(net, sk, data, skb2);
 		if (err)
 			goto blackhole;

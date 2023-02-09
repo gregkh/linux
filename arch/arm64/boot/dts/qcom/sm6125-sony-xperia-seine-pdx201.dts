@@ -17,6 +17,7 @@
 
 	model = "Sony Xperia 10 II";
 	compatible = "sony,pdx201", "qcom,sm6125";
+	chassis-type = "handset";
 
 	chosen {
 		#address-cells = <2>;
@@ -41,12 +42,9 @@
 	gpio-keys {
 		status = "okay";
 		compatible = "gpio-keys";
-		input-name = "gpio-keys";
-		#address-cells = <1>;
-		#size-cells = <0>;
 		autorepeat;
 
-		vol-dn {
+		key-vol-dn {
 			label = "Volume Down";
 			gpios = <&tlmm 47 GPIO_ACTIVE_LOW>;
 			linux,input-type = <1>;
@@ -89,7 +87,7 @@
 };
 
 &sdc2_off_state {
-	sd-cd {
+	sd-cd-pins {
 		pins = "gpio98";
 		drive-strength = <2>;
 		bias-disable;
@@ -97,7 +95,7 @@
 };
 
 &sdc2_on_state {
-	sd-cd {
+	sd-cd-pins {
 		pins = "gpio98";
 		drive-strength = <2>;
 		bias-pull-up;

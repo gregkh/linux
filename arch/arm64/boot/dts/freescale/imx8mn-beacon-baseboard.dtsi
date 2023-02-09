@@ -126,7 +126,6 @@
 		compatible = "wlf,wm8962";
 		reg = <0x1a>;
 		clocks = <&clk IMX8MN_CLK_SAI3_ROOT>;
-		clock-names = "xclk";
 		DCVDD-supply = <&reg_audio>;
 		DBVDD-supply = <&reg_audio>;
 		AVDD-supply = <&reg_audio>;
@@ -147,7 +146,7 @@
 };
 
 &easrc {
-	fsl,asrc-rate  = <48000>;
+	fsl,asrc-rate = <48000>;
 	status = "okay";
 };
 
@@ -183,7 +182,7 @@
 &usbotg1 {
 	vbus-supply = <&reg_usb_otg_vbus>;
 	disable-over-current;
-	dr_mode="otg";
+	dr_mode = "otg";
 	status = "okay";
 };
 

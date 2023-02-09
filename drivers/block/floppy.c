@@ -2257,7 +2257,7 @@ static int do_format(int drive, struct format_descr *tmp_format_req)
 static void floppy_end_request(struct request *req, blk_status_t error)
 {
 	unsigned int nr_sectors = current_count_sectors;
-	unsigned int drive = (unsigned long)req->rq_disk->private_data;
+	unsigned int drive = (unsigned long)req->q->disk->private_data;
 
 	/* current_count_sectors can be zero if transfer failed */
 	if (error)
@@ -2483,11 +2483,9 @@ static void copy_buffer(int ssize, int max_sector, int max_sector_2)
 		}
 
 		if (CT(raw_cmd->cmd[COMMAND]) == FD_READ)
-			memcpy_to_page(bv.bv_page, bv.bv_offset, dma_buffer,
-				       size);
+			memcpy_to_bvec(&bv, dma_buffer);
 		else
-			memcpy_from_page(dma_buffer, bv.bv_page, bv.bv_offset,
-					 size);
+			memcpy_from_bvec(dma_buffer, &bv);
 
 		remaining -= size;
 		dma_buffer += size;
@@ -2548,7 +2546,7 @@ static int make_raw_rw_request(void)
 	if (WARN(max_buffer_sectors == 0, "VFS: Block I/O scheduled on unopened device\n"))
 		return 0;
 
-	set_fdc((long)current_req->rq_disk->private_data);
+	set_fdc((long)current_req->q->disk->private_data);
 
 	raw_cmd = &default_raw_cmd;
 	raw_cmd->flags = FD_RAW_SPIN | FD_RAW_NEED_DISK | FD_RAW_NEED_SEEK;
@@ -2791,7 +2789,7 @@ do_request:
 			return;
 		}
 	}
-	drive = (long)current_req->rq_disk->private_data;
+	drive = (long)current_req->q->disk->private_data;
 	set_fdc(drive);
 	reschedule_timeout(current_drive, "redo fd request");
 
@@ -2861,7 +2859,7 @@ static blk_status_t floppy_queue_rq(struct blk_mq_hw_ctx *hctx,
 	if (WARN(atomic_read(&usage_count) == 0,
 		 "warning: usage count=0, current_req=%p sect=%ld flags=%llx\n",
 		 current_req, (long)blk_rq_pos(current_req),
-		 (unsigned long long) current_req->cmd_flags))
+		 (__force unsigned long long) current_req->cmd_flags))
 		return BLK_STS_IOERR;
 
 	if (test_and_set_bit(0, &fdc_busy)) {
@@ -4148,15 +4146,13 @@ static int __floppy_read_block_0(struct block_device *bdev, int drive)
 
 	cbdata.drive = drive;
 
-	bio_init(&bio, &bio_vec, 1);
-	bio_set_dev(&bio, bdev);
+	bio_init(&bio, bdev, &bio_vec, 1, REQ_OP_READ);
 	bio_add_page(&bio, page, block_size(bdev), 0);
 
 	bio.bi_iter.bi_sector = 0;
 	bio.bi_flags |= (1 << BIO_QUIET);
 	bio.bi_private = &cbdata;
 	bio.bi_end_io = floppy_rb0_cb;
-	bio_set_op_attrs(&bio, REQ_OP_READ, 0);
 
 	init_completion(&cbdata.complete);
 
@@ -4524,6 +4520,7 @@ static int floppy_alloc_disk(unsigned int drive, unsigned int type)
 	disk->first_minor = TOMINOR(drive) | (type << 2);
 	disk->minors = 1;
 	disk->fops = &floppy_fops;
+	disk->flags |= GENHD_FL_NO_PART;
 	disk->events = DISK_EVENT_MEDIA_CHANGE;
 	if (type)
 		sprintf(disk->disk_name, "fd%d_type%d", drive, type);
@@ -4549,10 +4546,19 @@ static void floppy_probe(dev_t dev)
 		return;
 
 	mutex_lock(&floppy_probe_lock);
-	if (!disks[drive][type]) {
-		if (floppy_alloc_disk(drive, type) == 0)
-			add_disk(disks[drive][type]);
-	}
+	if (disks[drive][type])
+		goto out;
+	if (floppy_alloc_disk(drive, type))
+		goto out;
+	if (add_disk(disks[drive][type]))
+		goto cleanup_disk;
+out:
+	mutex_unlock(&floppy_probe_lock);
+	return;
+
+cleanup_disk:
+	put_disk(disks[drive][type]);
+	disks[drive][type] = NULL;
 	mutex_unlock(&floppy_probe_lock);
 }
 
@@ -4720,8 +4726,10 @@ static int __init do_floppy_init(void)
 
 		registered[drive] = true;
 
-		device_add_disk(&floppy_device[drive].dev, disks[drive][0],
-				NULL);
+		err = device_add_disk(&floppy_device[drive].dev,
+				      disks[drive][0], NULL);
+		if (err)
+			goto out_remove_drives;
 	}
 
 	return 0;
@@ -4747,7 +4755,7 @@ out_put_disk:
 		if (!disks[drive][0])
 			break;
 		del_timer_sync(&motor_off_timer[drive]);
-		blk_cleanup_disk(disks[drive][0]);
+		put_disk(disks[drive][0]);
 		blk_mq_free_tag_set(&tag_sets[drive]);
 	}
 	return err;
@@ -4979,26 +4987,9 @@ static void __exit floppy_module_exit(void)
 		}
 		for (i = 0; i < ARRAY_SIZE(floppy_type); i++) {
 			if (disks[drive][i])
-				blk_cleanup_queue(disks[drive][i]->queue);
-		}
-		blk_mq_free_tag_set(&tag_sets[drive]);
-
-		/*
-		 * These disks have not called add_disk().  Don't put down
-		 * queue reference in put_disk().
-		 */
-		if (!(allowed_drive_mask & (1 << drive)) ||
-		    fdc_state[FDC(drive)].version == FDC_NONE) {
-			for (i = 0; i < ARRAY_SIZE(floppy_type); i++) {
-				if (disks[drive][i])
-					disks[drive][i]->queue = NULL;
-			}
-		}
-
-		for (i = 0; i < ARRAY_SIZE(floppy_type); i++) {
-			if (disks[drive][i])
 				put_disk(disks[drive][i]);
 		}
+		blk_mq_free_tag_set(&tag_sets[drive]);
 	}
 
 	cancel_delayed_work_sync(&fd_timeout);

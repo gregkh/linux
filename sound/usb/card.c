@@ -643,6 +643,7 @@ static int snd_usb_audio_create(struct usb_interface *intf,
 	INIT_LIST_HEAD(&chip->pcm_list);
 	INIT_LIST_HEAD(&chip->ep_list);
 	INIT_LIST_HEAD(&chip->iface_ref_list);
+	INIT_LIST_HEAD(&chip->clock_ref_list);
 	INIT_LIST_HEAD(&chip->midi_list);
 	INIT_LIST_HEAD(&chip->mixer_list);
 
@@ -1024,8 +1025,6 @@ void snd_usb_unlock_shutdown(struct snd_usb_audio *chip)
 		wake_up(&chip->shutdown_wait);
 }
 
-#ifdef CONFIG_PM
-
 int snd_usb_autoresume(struct snd_usb_audio *chip)
 {
 	int i, err;
@@ -1137,11 +1136,6 @@ err_out:
 	atomic_dec(&chip->active); /* allow autopm after this point */
 	return err;
 }
-#else
-#define usb_audio_suspend	NULL
-#define usb_audio_resume	NULL
-#define usb_audio_resume	NULL
-#endif		/* CONFIG_PM */
 
 static const struct usb_device_id usb_audio_ids [] = {
 #include "quirks-table.h"

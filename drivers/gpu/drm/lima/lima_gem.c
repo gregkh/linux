@@ -2,6 +2,7 @@
 /* Copyright 2017-2019 Qiang Yu <yuq825@gmail.com> */
 
 #include <linux/mm.h>
+#include <linux/iosys-map.h>
 #include <linux/sync_file.h>
 #include <linux/pagemap.h>
 #include <linux/shmem_fs.h>
@@ -182,7 +183,7 @@ static int lima_gem_pin(struct drm_gem_object *obj)
 	return drm_gem_shmem_pin(&bo->base);
 }
 
-static int lima_gem_vmap(struct drm_gem_object *obj, struct dma_buf_map *map)
+static int lima_gem_vmap(struct drm_gem_object *obj, struct iosys_map *map)
 {
 	struct lima_bo *bo = to_lima_bo(obj);
 
@@ -213,6 +214,7 @@ static const struct drm_gem_object_funcs lima_gem_funcs = {
 	.vmap = lima_gem_vmap,
 	.vunmap = drm_gem_shmem_object_vunmap,
 	.mmap = lima_gem_mmap,
+	.vm_ops = &drm_gem_shmem_vm_ops,
 };
 
 struct drm_gem_object *lima_gem_create_object(struct drm_device *dev, size_t size)
@@ -221,7 +223,7 @@ struct drm_gem_object *lima_gem_create_object(struct drm_device *dev, size_t siz
 
 	bo = kzalloc(sizeof(*bo), GFP_KERNEL);
 	if (!bo)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	mutex_init(&bo->lock);
 	INIT_LIST_HEAD(&bo->va);
@@ -255,19 +257,19 @@ int lima_gem_get_info(struct drm_file *file, u32 handle, u32 *va, u64 *offset)
 static int lima_gem_sync_bo(struct lima_sched_task *task, struct lima_bo *bo,
 			    bool write, bool explicit)
 {
-	int err = 0;
+	int err;
 
-	if (!write) {
-		err = dma_resv_reserve_shared(lima_bo_resv(bo), 1);
-		if (err)
-			return err;
-	}
+	err = dma_resv_reserve_fences(lima_bo_resv(bo), 1);
+	if (err)
+		return err;
 
 	/* explicit sync use user passed dep fence */
 	if (explicit)
 		return 0;
 
-	return drm_gem_fence_array_add_implicit(&task->deps, &bo->base.base, write);
+	return drm_sched_job_add_implicit_dependencies(&task->base,
+						       &bo->base.base,
+						       write);
 }
 
 static int lima_gem_add_deps(struct drm_file *file, struct lima_submit *submit)
@@ -285,7 +287,7 @@ static int lima_gem_add_deps(struct drm_file *file, struct lima_submit *submit)
 		if (err)
 			return err;
 
-		err = drm_gem_fence_array_add(&submit->task->deps, fence);
+		err = drm_sched_job_add_dependency(&submit->task->base, fence);
 		if (err) {
 			dma_fence_put(fence);
 			return err;
@@ -359,14 +361,12 @@ int lima_gem_submit(struct drm_file *file, struct lima_submit *submit)
 			goto err_out2;
 	}
 
-	fence = lima_sched_context_queue_task(
-		submit->ctx->context + submit->pipe, submit->task);
+	fence = lima_sched_context_queue_task(submit->task);
 
 	for (i = 0; i < submit->nr_bos; i++) {
-		if (submit->bos[i].flags & LIMA_SUBMIT_BO_WRITE)
-			dma_resv_add_excl_fence(lima_bo_resv(bos[i]), fence);
-		else
-			dma_resv_add_shared_fence(lima_bo_resv(bos[i]), fence);
+		dma_resv_add_fence(lima_bo_resv(bos[i]), fence,
+				   submit->bos[i].flags & LIMA_SUBMIT_BO_WRITE ?
+				   DMA_RESV_USAGE_WRITE : DMA_RESV_USAGE_READ);
 	}
 
 	drm_gem_unlock_reservations((struct drm_gem_object **)bos,

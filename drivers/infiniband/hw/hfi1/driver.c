@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
 /*
  * Copyright(c) 2015-2020 Intel Corporation.
+ * Copyright(c) 2021 Cornelis Networks.
  */
 
 #include <linux/spinlock.h>
@@ -28,12 +29,6 @@
 #undef pr_fmt
 #define pr_fmt(fmt) DRIVER_NAME ": " fmt
 
-/*
- * The size has to be longer than this string, so we can append
- * board/chip information to it in the initialization code.
- */
-const char ib_hfi1_version[] = HFI1_DRIVER_VERSION "\n";
-
 DEFINE_MUTEX(hfi1_mutex);	/* general driver use */
 
 unsigned int hfi1_max_mtu = HFI1_DEFAULT_MAX_MTU;
@@ -56,7 +51,7 @@ module_param_cb(cap_mask, &cap_ops, &hfi1_cap_mask, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(cap_mask, "Bit mask of enabled/disabled HW features");
 
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_DESCRIPTION("Intel Omni-Path Architecture driver");
+MODULE_DESCRIPTION("Cornelis Omni-Path Express driver");
 
 /*
  * MAX_PKT_RCV is the max # if packets processed per receive interrupt.

@@ -38,7 +38,7 @@
 #define BITMAP_GRANULARITY	PAGE_SIZE
 #endif
 
-#if IS_ENABLED(CONFIG_ARCH_HAS_PMEM_API) && IS_ENABLED(CONFIG_DAX_DRIVER)
+#if IS_ENABLED(CONFIG_ARCH_HAS_PMEM_API) && IS_ENABLED(CONFIG_FS_DAX)
 #define DM_WRITECACHE_HAS_PMEM
 #endif
 
@@ -286,7 +286,8 @@ static int persistent_memory_claim(struct dm_writecache *wc)
 
 	id = dax_read_lock();
 
-	da = dax_direct_access(wc->ssd_dev->dax_dev, offset, p, &wc->memory_map, &pfn);
+	da = dax_direct_access(wc->ssd_dev->dax_dev, offset, p, DAX_ACCESS,
+			&wc->memory_map, &pfn);
 	if (da < 0) {
 		wc->memory_map = NULL;
 		r = da;
@@ -308,8 +309,8 @@ static int persistent_memory_claim(struct dm_writecache *wc)
 		i = 0;
 		do {
 			long daa;
-			daa = dax_direct_access(wc->ssd_dev->dax_dev, offset + i, p - i,
-						NULL, &pfn);
+			daa = dax_direct_access(wc->ssd_dev->dax_dev, offset + i,
+					p - i, DAX_ACCESS, NULL, &pfn);
 			if (daa <= 0) {
 				r = daa ? daa : -EINVAL;
 				goto err3;
@@ -522,8 +523,7 @@ static void ssd_commit_flushed(struct dm_writecache *wc, bool wait_for_ios)
 
 		region.sector += wc->start_sector;
 		atomic_inc(&endio.count);
-		req.bi_op = REQ_OP_WRITE;
-		req.bi_op_flags = REQ_SYNC;
+		req.bi_opf = REQ_OP_WRITE | REQ_SYNC;
 		req.mem.type = DM_IO_VMA;
 		req.mem.ptr.vma = (char *)wc->memory_map + (size_t)i * BITMAP_GRANULARITY;
 		req.client = wc->dm_io;
@@ -561,8 +561,7 @@ static void ssd_commit_superblock(struct dm_writecache *wc)
 
 	region.sector += wc->start_sector;
 
-	req.bi_op = REQ_OP_WRITE;
-	req.bi_op_flags = REQ_SYNC | REQ_FUA;
+	req.bi_opf = REQ_OP_WRITE | REQ_SYNC | REQ_FUA;
 	req.mem.type = DM_IO_VMA;
 	req.mem.ptr.vma = (char *)wc->memory_map;
 	req.client = wc->dm_io;
@@ -591,8 +590,7 @@ static void writecache_disk_flush(struct dm_writecache *wc, struct dm_dev *dev)
 	region.bdev = dev->bdev;
 	region.sector = 0;
 	region.count = 0;
-	req.bi_op = REQ_OP_WRITE;
-	req.bi_op_flags = REQ_PREFLUSH;
+	req.bi_opf = REQ_OP_WRITE | REQ_PREFLUSH;
 	req.mem.type = DM_IO_KMEM;
 	req.mem.ptr.addr = NULL;
 	req.client = wc->dm_io;
@@ -980,8 +978,7 @@ static int writecache_read_metadata(struct dm_writecache *wc, sector_t n_sectors
 	region.bdev = wc->ssd_dev->bdev;
 	region.sector = wc->start_sector;
 	region.count = n_sectors;
-	req.bi_op = REQ_OP_READ;
-	req.bi_op_flags = REQ_SYNC;
+	req.bi_opf = REQ_OP_READ | REQ_SYNC;
 	req.mem.type = DM_IO_VMA;
 	req.mem.ptr.vma = (char *)wc->memory_map;
 	req.client = wc->dm_io;
@@ -1597,7 +1594,8 @@ done:
 
 	default:
 		BUG();
-		return -1;
+		wc_unlock(wc);
+		return DM_MAPIO_KILL;
 	}
 }
 
@@ -1828,11 +1826,11 @@ static void __writecache_writeback_pmem(struct dm_writecache *wc, struct writeba
 
 		max_pages = e->wc_list_contiguous;
 
-		bio = bio_alloc_bioset(GFP_NOIO, max_pages, &wc->bio_set);
+		bio = bio_alloc_bioset(wc->dev->bdev, max_pages, REQ_OP_WRITE,
+				       GFP_NOIO, &wc->bio_set);
 		wb = container_of(bio, struct writeback_struct, bio);
 		wb->wc = wc;
 		bio->bi_end_io = writecache_writeback_endio;
-		bio_set_dev(bio, wc->dev->bdev);
 		bio->bi_iter.bi_sector = read_original_sector(wc, e);
 		if (max_pages <= WB_LIST_INLINE ||
 		    unlikely(!(wb->wc_list = kmalloc_array(max_pages, sizeof(struct wc_entry *),
@@ -1859,7 +1857,8 @@ static void __writecache_writeback_pmem(struct dm_writecache *wc, struct writeba
 			wb->wc_list[wb->wc_list_n++] = f;
 			e = f;
 		}
-		bio_set_op_attrs(bio, REQ_OP_WRITE, WC_MODE_FUA(wc) * REQ_FUA);
+		if (WC_MODE_FUA(wc))
+			bio->bi_opf |= REQ_FUA;
 		if (writecache_has_error(wc)) {
 			bio->bi_status = BLK_STS_IOERR;
 			bio_endio(bio);
@@ -2271,14 +2270,13 @@ static int writecache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 
 	raw_spin_lock_init(&wc->endio_list_lock);
 	INIT_LIST_HEAD(&wc->endio_list);
-	wc->endio_thread = kthread_create(writecache_endio_thread, wc, "writecache_endio");
+	wc->endio_thread = kthread_run(writecache_endio_thread, wc, "writecache_endio");
 	if (IS_ERR(wc->endio_thread)) {
 		r = PTR_ERR(wc->endio_thread);
 		wc->endio_thread = NULL;
 		ti->error = "Couldn't spawn endio thread";
 		goto bad;
 	}
-	wake_up_process(wc->endio_thread);
 
 	/*
 	 * Parse the mode (pmem or ssd)
@@ -2348,7 +2346,7 @@ static int writecache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 		ti->error = "Cache data device lookup failed";
 		goto bad;
 	}
-	wc->memory_map_size = i_size_read(wc->ssd_dev->bdev->bd_inode);
+	wc->memory_map_size = bdev_nr_bytes(wc->ssd_dev->bdev);
 
 	/*
 	 * Parse the cache block size
@@ -2500,14 +2498,13 @@ invalid_optional:
 		wc->memory_map_size -= (uint64_t)wc->start_sector << SECTOR_SHIFT;
 
 		bio_list_init(&wc->flush_list);
-		wc->flush_thread = kthread_create(writecache_flush_thread, wc, "dm_writecache_flush");
+		wc->flush_thread = kthread_run(writecache_flush_thread, wc, "dm_writecache_flush");
 		if (IS_ERR(wc->flush_thread)) {
 			r = PTR_ERR(wc->flush_thread);
 			wc->flush_thread = NULL;
 			ti->error = "Couldn't spawn flush thread";
 			goto bad;
 		}
-		wake_up_process(wc->flush_thread);
 
 		r = calculate_memory_size(wc->memory_map_size, wc->block_size,
 					  &n_blocks, &n_metadata_blocks);

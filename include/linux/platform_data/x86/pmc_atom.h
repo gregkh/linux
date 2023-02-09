@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Intel Atom SOC Power Management Controller Header File
- * Copyright (c) 2014, Intel Corporation.
+ * Intel Atom SoC Power Management Controller Header File
+ * Copyright (c) 2014-2015,2022 Intel Corporation.
  */
 
 #ifndef PMC_ATOM_H
@@ -49,7 +49,7 @@
 #define	PMC_S0I2_TMR		0x88
 #define	PMC_S0I3_TMR		0x8C
 #define	PMC_S0_TMR		0x90
-/* Sleep state counter is in units of of 32us */
+/* Sleep state counter is in units of 32us */
 #define	PMC_TMR_SHIFT		5
 
 /* Power status of power islands */
@@ -146,6 +146,5 @@
 #define	SLEEP_ENABLE		BIT(13)
 
 extern int pmc_atom_read(int offset, u32 *value);
-extern int pmc_atom_write(int offset, u32 value);
 
 #endif /* PMC_ATOM_H */

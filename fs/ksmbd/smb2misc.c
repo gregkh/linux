@@ -6,7 +6,6 @@
 
 #include "glob.h"
 #include "nterr.h"
-#include "smb2pdu.h"
 #include "smb_common.h"
 #include "smbstatus.h"
 #include "mgmt/user_session.h"
@@ -136,7 +135,7 @@ static int smb2_get_data_area_len(unsigned int *off, unsigned int *len,
 		    ((struct smb2_write_req *)hdr)->Length) {
 			*off = max_t(unsigned int,
 				     le16_to_cpu(((struct smb2_write_req *)hdr)->DataOffset),
-				     offsetof(struct smb2_write_req, Buffer) - 4);
+				     offsetof(struct smb2_write_req, Buffer));
 			*len = le32_to_cpu(((struct smb2_write_req *)hdr)->Length);
 			break;
 		}
@@ -351,16 +350,11 @@ static int smb2_validate_credit_charge(struct ksmbd_conn *conn,
 
 int ksmbd_smb2_check_message(struct ksmbd_work *work)
 {
-	struct smb2_pdu *pdu = work->request_buf;
+	struct smb2_pdu *pdu = ksmbd_req_buf_next(work);
 	struct smb2_hdr *hdr = &pdu->hdr;
 	int command;
 	__u32 clc_len;  /* calculated length */
-	__u32 len = get_rfc1002_len(pdu);
-
-	if (work->next_smb2_rcv_hdr_off) {
-		pdu = ksmbd_req_buf_next(work);
-		hdr = &pdu->hdr;
-	}
+	__u32 len = get_rfc1002_len(work->request_buf);
 
 	if (le32_to_cpu(hdr->NextCommand) > 0)
 		len = le32_to_cpu(hdr->NextCommand);

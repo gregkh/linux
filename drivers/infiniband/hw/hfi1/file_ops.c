@@ -965,7 +965,7 @@ static int allocate_ctxt(struct hfi1_filedata *fd, struct hfi1_devdata *dd,
 	uctxt->userversion = uinfo->userversion;
 	uctxt->flags = hfi1_cap_mask; /* save current flag state */
 	init_waitqueue_head(&uctxt->wait);
-	strlcpy(uctxt->comm, current->comm, sizeof(uctxt->comm));
+	strscpy(uctxt->comm, current->comm, sizeof(uctxt->comm));
 	memcpy(uctxt->uuid, uinfo->uuid, sizeof(uctxt->uuid));
 	uctxt->jkey = generate_jkey(current_uid());
 	hfi1_stats.sps_ctxts++;
@@ -1224,7 +1224,7 @@ static int get_base_info(struct hfi1_filedata *fd, unsigned long arg, u32 len)
 
 	memset(&binfo, 0, sizeof(binfo));
 	binfo.hw_version = dd->revision;
-	binfo.sw_version = HFI1_KERN_SWVERSION;
+	binfo.sw_version = HFI1_USER_SWVERSION;
 	binfo.bthqp = RVT_KDETH_QP_PREFIX;
 	binfo.jkey = uctxt->jkey;
 	/*

@@ -7,10 +7,10 @@
 #include <linux/kernel.h>
 #include <linux/stacktrace.h>
 #include <linux/perf_event.h>
-#include <linux/irq_work.h>
 #include <linux/btf_ids.h>
 #include <linux/buildid.h>
 #include "percpu_freelist.h"
+#include "mmap_unlock_work.h"
 
 #define STACK_CREATE_FLAG_MASK					\
 	(BPF_F_NUMA_NODE | BPF_F_RDONLY | BPF_F_WRONLY |	\
@@ -30,25 +30,6 @@ struct bpf_stack_map {
 	u32 n_buckets;
 	struct stack_map_bucket *buckets[];
 };
-
-/* irq_work to run up_read() for build_id lookup in nmi context */
-struct stack_map_irq_work {
-	struct irq_work irq_work;
-	struct mm_struct *mm;
-};
-
-static void do_up_read(struct irq_work *entry)
-{
-	struct stack_map_irq_work *work;
-
-	if (WARN_ON_ONCE(IS_ENABLED(CONFIG_PREEMPT_RT)))
-		return;
-
-	work = container_of(entry, struct stack_map_irq_work, irq_work);
-	mmap_read_unlock_non_owner(work->mm);
-}
-
-static DEFINE_PER_CPU(struct stack_map_irq_work, up_read_work);
 
 static inline bool stack_map_use_build_id(struct bpf_map *map)
 {
@@ -124,7 +105,6 @@ static struct bpf_map *stack_map_alloc(union bpf_attr *attr)
 		return ERR_PTR(-ENOMEM);
 
 	bpf_map_init_from_attr(&smap->map, attr);
-	smap->map.value_size = value_size;
 	smap->n_buckets = n_buckets;
 
 	err = get_callchain_buffers(sysctl_perf_event_max_stack);
@@ -148,35 +128,14 @@ static void stack_map_get_build_id_offset(struct bpf_stack_build_id *id_offs,
 					  u64 *ips, u32 trace_nr, bool user)
 {
 	int i;
-	struct vm_area_struct *vma;
-	bool irq_work_busy = false;
-	struct stack_map_irq_work *work = NULL;
+	struct mmap_unlock_irq_work *work = NULL;
+	bool irq_work_busy = bpf_mmap_unlock_get_irq_work(&work);
+	struct vm_area_struct *vma, *prev_vma = NULL;
+	const char *prev_build_id;
 
-	if (irqs_disabled()) {
-		if (!IS_ENABLED(CONFIG_PREEMPT_RT)) {
-			work = this_cpu_ptr(&up_read_work);
-			if (irq_work_is_busy(&work->irq_work)) {
-				/* cannot queue more up_read, fallback */
-				irq_work_busy = true;
-			}
-		} else {
-			/*
-			 * PREEMPT_RT does not allow to trylock mmap sem in
-			 * interrupt disabled context. Force the fallback code.
-			 */
-			irq_work_busy = true;
-		}
-	}
-
-	/*
-	 * We cannot do up_read() when the irq is disabled, because of
-	 * risk to deadlock with rq_lock. To do build_id lookup when the
-	 * irqs are disabled, we need to run up_read() in irq_work. We use
-	 * a percpu variable to do the irq_work. If the irq_work is
-	 * already used by another lookup, we fall back to report ips.
-	 *
-	 * Same fallback is used for kernel stack (!user) on a stackmap
-	 * with build_id.
+	/* If the irq_work is in use, fall back to report ips. Same
+	 * fallback is used for kernel stack (!user) on a stackmap with
+	 * build_id.
 	 */
 	if (!user || !current || !current->mm || irq_work_busy ||
 	    !mmap_read_trylock(current->mm)) {
@@ -190,6 +149,12 @@ static void stack_map_get_build_id_offset(struct bpf_stack_build_id *id_offs,
 	}
 
 	for (i = 0; i < trace_nr; i++) {
+		if (range_in_vma(prev_vma, ips[i], ips[i])) {
+			vma = prev_vma;
+			memcpy(id_offs[i].build_id, prev_build_id,
+			       BUILD_ID_SIZE_MAX);
+			goto build_id_valid;
+		}
 		vma = find_vma(current->mm, ips[i]);
 		if (!vma || build_id_parse(vma, id_offs[i].build_id, NULL)) {
 			/* per entry fall back to ips */
@@ -198,23 +163,14 @@ static void stack_map_get_build_id_offset(struct bpf_stack_build_id *id_offs,
 			memset(id_offs[i].build_id, 0, BUILD_ID_SIZE_MAX);
 			continue;
 		}
+build_id_valid:
 		id_offs[i].offset = (vma->vm_pgoff << PAGE_SHIFT) + ips[i]
 			- vma->vm_start;
 		id_offs[i].status = BPF_STACK_BUILD_ID_VALID;
+		prev_vma = vma;
+		prev_build_id = id_offs[i].build_id;
 	}
-
-	if (!work) {
-		mmap_read_unlock(current->mm);
-	} else {
-		work->mm = current->mm;
-
-		/* The lock will be released once we're out of interrupt
-		 * context. Tell lockdep that we've released it now so
-		 * it doesn't complain that we forgot to release it.
-		 */
-		rwsem_release(&current->mm->mmap_lock.dep_map, _RET_IP_);
-		irq_work_queue(&work->irq_work);
-	}
+	bpf_mmap_unlock_mm(work, current->mm);
 }
 
 static struct perf_callchain_entry *
@@ -382,7 +338,7 @@ BPF_CALL_3(bpf_get_stackid_pe, struct bpf_perf_event_data_kern *, ctx,
 	int ret;
 
 	/* perf_sample_data doesn't have callchain, use bpf_get_stackid */
-	if (!(event->attr.sample_type & __PERF_SAMPLE_CALLCHAIN_EARLY))
+	if (!(event->attr.sample_type & PERF_SAMPLE_CALLCHAIN))
 		return bpf_get_stackid((unsigned long)(ctx->regs),
 				       (unsigned long) map, flags, 0, 0);
 
@@ -534,7 +490,7 @@ const struct bpf_func_proto bpf_get_task_stack_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_BTF_ID,
-	.arg1_btf_id	= &btf_task_struct_ids[0],
+	.arg1_btf_id	= &btf_tracing_ids[BTF_TRACING_TYPE_TASK],
 	.arg2_type	= ARG_PTR_TO_UNINIT_MEM,
 	.arg3_type	= ARG_CONST_SIZE_OR_ZERO,
 	.arg4_type	= ARG_ANYTHING,
@@ -550,7 +506,7 @@ BPF_CALL_4(bpf_get_stack_pe, struct bpf_perf_event_data_kern *, ctx,
 	int err = -EINVAL;
 	__u64 nr_kernel;
 
-	if (!(event->attr.sample_type & __PERF_SAMPLE_CALLCHAIN_EARLY))
+	if (!(event->attr.sample_type & PERF_SAMPLE_CALLCHAIN))
 		return __bpf_get_stack(regs, NULL, NULL, buf, size, flags);
 
 	if (unlikely(flags & ~(BPF_F_SKIP_FIELD_MASK | BPF_F_USER_STACK |
@@ -698,7 +654,7 @@ static void stack_map_free(struct bpf_map *map)
 	put_callchain_buffers();
 }
 
-static int stack_trace_map_btf_id;
+BTF_ID_LIST_SINGLE(stack_trace_map_btf_ids, struct, bpf_stack_map)
 const struct bpf_map_ops stack_trace_map_ops = {
 	.map_meta_equal = bpf_map_meta_equal,
 	.map_alloc = stack_map_alloc,
@@ -708,19 +664,5 @@ const struct bpf_map_ops stack_trace_map_ops = {
 	.map_update_elem = stack_map_update_elem,
 	.map_delete_elem = stack_map_delete_elem,
 	.map_check_btf = map_check_no_btf,
-	.map_btf_name = "bpf_stack_map",
-	.map_btf_id = &stack_trace_map_btf_id,
+	.map_btf_id = &stack_trace_map_btf_ids[0],
 };
-
-static int __init stack_map_init(void)
-{
-	int cpu;
-	struct stack_map_irq_work *work;
-
-	for_each_possible_cpu(cpu) {
-		work = per_cpu_ptr(&up_read_work, cpu);
-		init_irq_work(&work->irq_work, do_up_read);
-	}
-	return 0;
-}
-subsys_initcall(stack_map_init);

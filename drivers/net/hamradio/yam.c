@@ -626,7 +626,7 @@ static void yam_arbitrate(struct net_device *dev)
 	yp->slotcnt = yp->slot / 10;
 
 	/* is random > persist ? */
-	if ((prandom_u32() % 256) > yp->pers)
+	if (get_random_u8() > yp->pers)
 		return;
 
 	yam_start_tx(dev, yp);
@@ -1061,7 +1061,7 @@ static int yam_set_mac_address(struct net_device *dev, void *addr)
 	struct sockaddr *sa = (struct sockaddr *) addr;
 
 	/* addr is an AX.25 shifted ASCII mac address */
-	memcpy(dev->dev_addr, sa->sa_data, dev->addr_len);
+	dev_addr_set(dev, sa->sa_data);
 	return 0;
 }
 
@@ -1105,7 +1105,7 @@ static void yam_setup(struct net_device *dev)
 	dev->mtu = AX25_MTU;
 	dev->addr_len = AX25_ADDR_LEN;
 	memcpy(dev->broadcast, &ax25_bcast, AX25_ADDR_LEN);
-	memcpy(dev->dev_addr, &ax25_defaddr, AX25_ADDR_LEN);
+	dev_addr_set(dev, (u8 *)&ax25_defaddr);
 }
 
 static int __init yam_init_driver(void)

@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- *  linux/fs/9p/vfs_super.c
- *
- * This file contians superblock ops for 9P2000. It is intended that
- * you mount this file system on directories.
  *
  *  Copyright (C) 2004 by Eric Van Hensbergen <ericvh@gmail.com>
  *  Copyright (C) 2002 by Ron Minnich <rminnich@lanl.gov>
@@ -24,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/magic.h>
+#include <linux/fscache.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 
@@ -83,6 +80,9 @@ v9fs_fill_super(struct super_block *sb, struct v9fs_session_info *v9ses,
 	if (!v9ses->cache) {
 		sb->s_bdi->ra_pages = 0;
 		sb->s_bdi->io_pages = 0;
+	} else {
+		sb->s_bdi->ra_pages = v9ses->maxdata >> PAGE_SHIFT;
+		sb->s_bdi->io_pages = v9ses->maxdata >> PAGE_SHIFT;
 	}
 
 	sb->s_flags |= SB_ACTIVE | SB_DIRSYNC;
@@ -184,13 +184,13 @@ static struct dentry *v9fs_mount(struct file_system_type *fs_type, int flags,
 	retval = v9fs_get_acl(inode, fid);
 	if (retval)
 		goto release_sb;
-	v9fs_fid_add(root, fid);
+	v9fs_fid_add(root, &fid);
 
 	p9_debug(P9_DEBUG_VFS, " simple set mount, return 0\n");
 	return dget(sb->s_root);
 
 clunk_fid:
-	p9_client_clunk(fid);
+	p9_fid_put(fid);
 	v9fs_session_close(v9ses);
 free_session:
 	kfree(v9ses);
@@ -203,7 +203,7 @@ release_sb:
 	 * attached the fid to dentry so it won't get clunked
 	 * automatically.
 	 */
-	p9_client_clunk(fid);
+	p9_fid_put(fid);
 	deactivate_locked_super(sb);
 	return ERR_PTR(retval);
 }
@@ -270,7 +270,7 @@ static int v9fs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	}
 	res = simple_statfs(dentry, buf);
 done:
-	p9_client_clunk(fid);
+	p9_fid_put(fid);
 	return res;
 }
 
@@ -310,6 +310,7 @@ static int v9fs_write_inode(struct inode *inode,
 		__mark_inode_dirty(inode, I_DIRTY_DATASYNC);
 		return ret;
 	}
+	fscache_unpin_writeback(wbc, v9fs_inode_cookie(v9inode));
 	return 0;
 }
 
@@ -333,6 +334,7 @@ static int v9fs_write_inode_dotl(struct inode *inode,
 		__mark_inode_dirty(inode, I_DIRTY_DATASYNC);
 		return ret;
 	}
+	fscache_unpin_writeback(wbc, v9fs_inode_cookie(v9inode));
 	return 0;
 }
 

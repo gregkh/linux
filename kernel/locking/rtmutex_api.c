@@ -21,12 +21,13 @@ int max_lock_depth = 1024;
  */
 static __always_inline int __rt_mutex_lock_common(struct rt_mutex *lock,
 						  unsigned int state,
+						  struct lockdep_map *nest_lock,
 						  unsigned int subclass)
 {
 	int ret;
 
 	might_sleep();
-	mutex_acquire(&lock->dep_map, subclass, 0, _RET_IP_);
+	mutex_acquire_nest(&lock->dep_map, subclass, 0, nest_lock, _RET_IP_);
 	ret = __rt_mutex_lock(&lock->rtmutex, state);
 	if (ret)
 		mutex_release(&lock->dep_map, _RET_IP_);
@@ -48,9 +49,15 @@ EXPORT_SYMBOL(rt_mutex_base_init);
  */
 void __sched rt_mutex_lock_nested(struct rt_mutex *lock, unsigned int subclass)
 {
-	__rt_mutex_lock_common(lock, TASK_UNINTERRUPTIBLE, subclass);
+	__rt_mutex_lock_common(lock, TASK_UNINTERRUPTIBLE, NULL, subclass);
 }
 EXPORT_SYMBOL_GPL(rt_mutex_lock_nested);
+
+void __sched _rt_mutex_lock_nest_lock(struct rt_mutex *lock, struct lockdep_map *nest_lock)
+{
+	__rt_mutex_lock_common(lock, TASK_UNINTERRUPTIBLE, nest_lock, 0);
+}
+EXPORT_SYMBOL_GPL(_rt_mutex_lock_nest_lock);
 
 #else /* !CONFIG_DEBUG_LOCK_ALLOC */
 
@@ -61,7 +68,7 @@ EXPORT_SYMBOL_GPL(rt_mutex_lock_nested);
  */
 void __sched rt_mutex_lock(struct rt_mutex *lock)
 {
-	__rt_mutex_lock_common(lock, TASK_UNINTERRUPTIBLE, 0);
+	__rt_mutex_lock_common(lock, TASK_UNINTERRUPTIBLE, NULL, 0);
 }
 EXPORT_SYMBOL_GPL(rt_mutex_lock);
 #endif
@@ -77,9 +84,24 @@ EXPORT_SYMBOL_GPL(rt_mutex_lock);
  */
 int __sched rt_mutex_lock_interruptible(struct rt_mutex *lock)
 {
-	return __rt_mutex_lock_common(lock, TASK_INTERRUPTIBLE, 0);
+	return __rt_mutex_lock_common(lock, TASK_INTERRUPTIBLE, NULL, 0);
 }
 EXPORT_SYMBOL_GPL(rt_mutex_lock_interruptible);
+
+/**
+ * rt_mutex_lock_killable - lock a rt_mutex killable
+ *
+ * @lock:		the rt_mutex to be locked
+ *
+ * Returns:
+ *  0		on success
+ * -EINTR	when interrupted by a signal
+ */
+int __sched rt_mutex_lock_killable(struct rt_mutex *lock)
+{
+	return __rt_mutex_lock_common(lock, TASK_KILLABLE, NULL, 0);
+}
+EXPORT_SYMBOL_GPL(rt_mutex_lock_killable);
 
 /**
  * rt_mutex_trylock - try to lock a rt_mutex
@@ -245,7 +267,7 @@ void __sched rt_mutex_init_proxy_locked(struct rt_mutex_base *lock,
 void __sched rt_mutex_proxy_unlock(struct rt_mutex_base *lock)
 {
 	debug_rt_mutex_proxy_unlock(lock);
-	rt_mutex_set_owner(lock, NULL);
+	rt_mutex_clear_owner(lock);
 }
 
 /**
@@ -360,7 +382,7 @@ int __sched rt_mutex_wait_proxy_lock(struct rt_mutex_base *lock,
 	 * try_to_take_rt_mutex() sets the waiter bit unconditionally. We might
 	 * have to fix that up.
 	 */
-	fixup_rt_mutex_waiters(lock);
+	fixup_rt_mutex_waiters(lock, true);
 	raw_spin_unlock_irq(&lock->wait_lock);
 
 	return ret;
@@ -416,7 +438,7 @@ bool __sched rt_mutex_cleanup_proxy_lock(struct rt_mutex_base *lock,
 	 * try_to_take_rt_mutex() sets the waiter bit unconditionally. We might
 	 * have to fix that up.
 	 */
-	fixup_rt_mutex_waiters(lock);
+	fixup_rt_mutex_waiters(lock, false);
 
 	raw_spin_unlock_irq(&lock->wait_lock);
 

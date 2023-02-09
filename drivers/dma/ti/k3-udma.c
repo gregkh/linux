@@ -263,6 +263,7 @@ struct udma_chan_config {
 	enum udma_tp_level channel_tpl; /* Channel Throughput Level */
 
 	u32 tr_trigger_type;
+	unsigned long tx_flags;
 
 	/* PKDMA mapped channel */
 	int mapped_channel_id;
@@ -1056,9 +1057,14 @@ static bool udma_is_desc_really_done(struct udma_chan *uc, struct udma_desc *d)
 {
 	u32 peer_bcnt, bcnt;
 
-	/* Only TX towards PDMA is affected */
+	/*
+	 * Only TX towards PDMA is affected.
+	 * If DMA_PREP_INTERRUPT is not set by consumer then skip the transfer
+	 * completion calculation, consumer must ensure that there is no stale
+	 * data in DMA fabric in this case.
+	 */
 	if (uc->config.ep_type == PSIL_EP_NATIVE ||
-	    uc->config.dir != DMA_MEM_TO_DEV)
+	    uc->config.dir != DMA_MEM_TO_DEV || !(uc->config.tx_flags & DMA_PREP_INTERRUPT))
 		return true;
 
 	peer_bcnt = udma_tchanrt_read(uc, UDMA_CHAN_RT_PEER_BCNT_REG);
@@ -2324,8 +2330,7 @@ static int udma_alloc_chan_resources(struct dma_chan *chan)
 
 	/* Event from UDMA (TR events) only needed for slave TR mode channels */
 	if (is_slave_direction(uc->config.dir) && !uc->config.pkt_mode) {
-		uc->irq_num_udma = ti_sci_inta_msi_get_virq(ud->dev,
-							    irq_udma_idx);
+		uc->irq_num_udma = msi_get_virq(ud->dev, irq_udma_idx);
 		if (uc->irq_num_udma <= 0) {
 			dev_err(ud->dev, "Failed to get udma irq (index: %u)\n",
 				irq_udma_idx);
@@ -2497,7 +2502,7 @@ static int bcdma_alloc_chan_resources(struct dma_chan *chan)
 		uc->psil_paired = true;
 	}
 
-	uc->irq_num_ring = ti_sci_inta_msi_get_virq(ud->dev, irq_ring_idx);
+	uc->irq_num_ring = msi_get_virq(ud->dev, irq_ring_idx);
 	if (uc->irq_num_ring <= 0) {
 		dev_err(ud->dev, "Failed to get ring irq (index: %u)\n",
 			irq_ring_idx);
@@ -2514,8 +2519,7 @@ static int bcdma_alloc_chan_resources(struct dma_chan *chan)
 
 	/* Event from BCDMA (TR events) only needed for slave channels */
 	if (is_slave_direction(uc->config.dir)) {
-		uc->irq_num_udma = ti_sci_inta_msi_get_virq(ud->dev,
-							    irq_udma_idx);
+		uc->irq_num_udma = msi_get_virq(ud->dev, irq_udma_idx);
 		if (uc->irq_num_udma <= 0) {
 			dev_err(ud->dev, "Failed to get bcdma irq (index: %u)\n",
 				irq_udma_idx);
@@ -2683,7 +2687,7 @@ static int pktdma_alloc_chan_resources(struct dma_chan *chan)
 
 	uc->psil_paired = true;
 
-	uc->irq_num_ring = ti_sci_inta_msi_get_virq(ud->dev, irq_ring_idx);
+	uc->irq_num_ring = msi_get_virq(ud->dev, irq_ring_idx);
 	if (uc->irq_num_ring <= 0) {
 		dev_err(ud->dev, "Failed to get ring irq (index: %u)\n",
 			irq_ring_idx);
@@ -3420,6 +3424,8 @@ udma_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 
 	if (!burst)
 		burst = 1;
+
+	uc->config.tx_flags = tx_flags;
 
 	if (uc->config.pkt_mode)
 		d = udma_prep_slave_sg_pkt(uc, sgl, sglen, dir, tx_flags,
@@ -4386,6 +4392,8 @@ static const struct soc_device_attribute k3_soc_devices[] = {
 	{ .family = "J721E", .data = &j721e_soc_data },
 	{ .family = "J7200", .data = &j7200_soc_data },
 	{ .family = "AM64X", .data = &am64_soc_data },
+	{ .family = "J721S2", .data = &j721e_soc_data},
+	{ .family = "AM62X", .data = &am64_soc_data },
 	{ /* sentinel */ }
 };
 
@@ -4544,45 +4552,60 @@ static int udma_setup_resources(struct udma_dev *ud)
 	rm_res = tisci_rm->rm_ranges[RM_RANGE_TCHAN];
 	if (IS_ERR(rm_res)) {
 		bitmap_zero(ud->tchan_map, ud->tchan_cnt);
+		irq_res.sets = 1;
 	} else {
 		bitmap_fill(ud->tchan_map, ud->tchan_cnt);
 		for (i = 0; i < rm_res->sets; i++)
 			udma_mark_resource_ranges(ud, ud->tchan_map,
 						  &rm_res->desc[i], "tchan");
+		irq_res.sets = rm_res->sets;
 	}
-	irq_res.sets = rm_res->sets;
 
 	/* rchan and matching default flow ranges */
 	rm_res = tisci_rm->rm_ranges[RM_RANGE_RCHAN];
 	if (IS_ERR(rm_res)) {
 		bitmap_zero(ud->rchan_map, ud->rchan_cnt);
+		irq_res.sets++;
 	} else {
 		bitmap_fill(ud->rchan_map, ud->rchan_cnt);
 		for (i = 0; i < rm_res->sets; i++)
 			udma_mark_resource_ranges(ud, ud->rchan_map,
 						  &rm_res->desc[i], "rchan");
+		irq_res.sets += rm_res->sets;
 	}
 
-	irq_res.sets += rm_res->sets;
 	irq_res.desc = kcalloc(irq_res.sets, sizeof(*irq_res.desc), GFP_KERNEL);
+	if (!irq_res.desc)
+		return -ENOMEM;
 	rm_res = tisci_rm->rm_ranges[RM_RANGE_TCHAN];
-	for (i = 0; i < rm_res->sets; i++) {
-		irq_res.desc[i].start = rm_res->desc[i].start;
-		irq_res.desc[i].num = rm_res->desc[i].num;
-		irq_res.desc[i].start_sec = rm_res->desc[i].start_sec;
-		irq_res.desc[i].num_sec = rm_res->desc[i].num_sec;
+	if (IS_ERR(rm_res)) {
+		irq_res.desc[0].start = 0;
+		irq_res.desc[0].num = ud->tchan_cnt;
+		i = 1;
+	} else {
+		for (i = 0; i < rm_res->sets; i++) {
+			irq_res.desc[i].start = rm_res->desc[i].start;
+			irq_res.desc[i].num = rm_res->desc[i].num;
+			irq_res.desc[i].start_sec = rm_res->desc[i].start_sec;
+			irq_res.desc[i].num_sec = rm_res->desc[i].num_sec;
+		}
 	}
 	rm_res = tisci_rm->rm_ranges[RM_RANGE_RCHAN];
-	for (j = 0; j < rm_res->sets; j++, i++) {
-		if (rm_res->desc[j].num) {
-			irq_res.desc[i].start = rm_res->desc[j].start +
-					ud->soc_data->oes.udma_rchan;
-			irq_res.desc[i].num = rm_res->desc[j].num;
-		}
-		if (rm_res->desc[j].num_sec) {
-			irq_res.desc[i].start_sec = rm_res->desc[j].start_sec +
-					ud->soc_data->oes.udma_rchan;
-			irq_res.desc[i].num_sec = rm_res->desc[j].num_sec;
+	if (IS_ERR(rm_res)) {
+		irq_res.desc[i].start = 0;
+		irq_res.desc[i].num = ud->rchan_cnt;
+	} else {
+		for (j = 0; j < rm_res->sets; j++, i++) {
+			if (rm_res->desc[j].num) {
+				irq_res.desc[i].start = rm_res->desc[j].start +
+						ud->soc_data->oes.udma_rchan;
+				irq_res.desc[i].num = rm_res->desc[j].num;
+			}
+			if (rm_res->desc[j].num_sec) {
+				irq_res.desc[i].start_sec = rm_res->desc[j].start_sec +
+						ud->soc_data->oes.udma_rchan;
+				irq_res.desc[i].num_sec = rm_res->desc[j].num_sec;
+			}
 		}
 	}
 	ret = ti_sci_inta_msi_domain_alloc_irqs(ud->dev, &irq_res);
@@ -4700,14 +4723,15 @@ static int bcdma_setup_resources(struct udma_dev *ud)
 		rm_res = tisci_rm->rm_ranges[RM_RANGE_BCHAN];
 		if (IS_ERR(rm_res)) {
 			bitmap_zero(ud->bchan_map, ud->bchan_cnt);
+			irq_res.sets++;
 		} else {
 			bitmap_fill(ud->bchan_map, ud->bchan_cnt);
 			for (i = 0; i < rm_res->sets; i++)
 				udma_mark_resource_ranges(ud, ud->bchan_map,
 							  &rm_res->desc[i],
 							  "bchan");
+			irq_res.sets += rm_res->sets;
 		}
-		irq_res.sets += rm_res->sets;
 	}
 
 	/* tchan ranges */
@@ -4715,14 +4739,15 @@ static int bcdma_setup_resources(struct udma_dev *ud)
 		rm_res = tisci_rm->rm_ranges[RM_RANGE_TCHAN];
 		if (IS_ERR(rm_res)) {
 			bitmap_zero(ud->tchan_map, ud->tchan_cnt);
+			irq_res.sets += 2;
 		} else {
 			bitmap_fill(ud->tchan_map, ud->tchan_cnt);
 			for (i = 0; i < rm_res->sets; i++)
 				udma_mark_resource_ranges(ud, ud->tchan_map,
 							  &rm_res->desc[i],
 							  "tchan");
+			irq_res.sets += rm_res->sets * 2;
 		}
-		irq_res.sets += rm_res->sets * 2;
 	}
 
 	/* rchan ranges */
@@ -4730,47 +4755,72 @@ static int bcdma_setup_resources(struct udma_dev *ud)
 		rm_res = tisci_rm->rm_ranges[RM_RANGE_RCHAN];
 		if (IS_ERR(rm_res)) {
 			bitmap_zero(ud->rchan_map, ud->rchan_cnt);
+			irq_res.sets += 2;
 		} else {
 			bitmap_fill(ud->rchan_map, ud->rchan_cnt);
 			for (i = 0; i < rm_res->sets; i++)
 				udma_mark_resource_ranges(ud, ud->rchan_map,
 							  &rm_res->desc[i],
 							  "rchan");
+			irq_res.sets += rm_res->sets * 2;
 		}
-		irq_res.sets += rm_res->sets * 2;
 	}
 
 	irq_res.desc = kcalloc(irq_res.sets, sizeof(*irq_res.desc), GFP_KERNEL);
+	if (!irq_res.desc)
+		return -ENOMEM;
 	if (ud->bchan_cnt) {
 		rm_res = tisci_rm->rm_ranges[RM_RANGE_BCHAN];
-		for (i = 0; i < rm_res->sets; i++) {
-			irq_res.desc[i].start = rm_res->desc[i].start +
-						oes->bcdma_bchan_ring;
-			irq_res.desc[i].num = rm_res->desc[i].num;
+		if (IS_ERR(rm_res)) {
+			irq_res.desc[0].start = oes->bcdma_bchan_ring;
+			irq_res.desc[0].num = ud->bchan_cnt;
+			i = 1;
+		} else {
+			for (i = 0; i < rm_res->sets; i++) {
+				irq_res.desc[i].start = rm_res->desc[i].start +
+							oes->bcdma_bchan_ring;
+				irq_res.desc[i].num = rm_res->desc[i].num;
+			}
 		}
 	}
 	if (ud->tchan_cnt) {
 		rm_res = tisci_rm->rm_ranges[RM_RANGE_TCHAN];
-		for (j = 0; j < rm_res->sets; j++, i += 2) {
-			irq_res.desc[i].start = rm_res->desc[j].start +
-						oes->bcdma_tchan_data;
-			irq_res.desc[i].num = rm_res->desc[j].num;
+		if (IS_ERR(rm_res)) {
+			irq_res.desc[i].start = oes->bcdma_tchan_data;
+			irq_res.desc[i].num = ud->tchan_cnt;
+			irq_res.desc[i + 1].start = oes->bcdma_tchan_ring;
+			irq_res.desc[i + 1].num = ud->tchan_cnt;
+			i += 2;
+		} else {
+			for (j = 0; j < rm_res->sets; j++, i += 2) {
+				irq_res.desc[i].start = rm_res->desc[j].start +
+							oes->bcdma_tchan_data;
+				irq_res.desc[i].num = rm_res->desc[j].num;
 
-			irq_res.desc[i + 1].start = rm_res->desc[j].start +
-						oes->bcdma_tchan_ring;
-			irq_res.desc[i + 1].num = rm_res->desc[j].num;
+				irq_res.desc[i + 1].start = rm_res->desc[j].start +
+							oes->bcdma_tchan_ring;
+				irq_res.desc[i + 1].num = rm_res->desc[j].num;
+			}
 		}
 	}
 	if (ud->rchan_cnt) {
 		rm_res = tisci_rm->rm_ranges[RM_RANGE_RCHAN];
-		for (j = 0; j < rm_res->sets; j++, i += 2) {
-			irq_res.desc[i].start = rm_res->desc[j].start +
-						oes->bcdma_rchan_data;
-			irq_res.desc[i].num = rm_res->desc[j].num;
+		if (IS_ERR(rm_res)) {
+			irq_res.desc[i].start = oes->bcdma_rchan_data;
+			irq_res.desc[i].num = ud->rchan_cnt;
+			irq_res.desc[i + 1].start = oes->bcdma_rchan_ring;
+			irq_res.desc[i + 1].num = ud->rchan_cnt;
+			i += 2;
+		} else {
+			for (j = 0; j < rm_res->sets; j++, i += 2) {
+				irq_res.desc[i].start = rm_res->desc[j].start +
+							oes->bcdma_rchan_data;
+				irq_res.desc[i].num = rm_res->desc[j].num;
 
-			irq_res.desc[i + 1].start = rm_res->desc[j].start +
-						oes->bcdma_rchan_ring;
-			irq_res.desc[i + 1].num = rm_res->desc[j].num;
+				irq_res.desc[i + 1].start = rm_res->desc[j].start +
+							oes->bcdma_rchan_ring;
+				irq_res.desc[i + 1].num = rm_res->desc[j].num;
+			}
 		}
 	}
 
@@ -4868,39 +4918,54 @@ static int pktdma_setup_resources(struct udma_dev *ud)
 	if (IS_ERR(rm_res)) {
 		/* all rflows are assigned exclusively to Linux */
 		bitmap_zero(ud->rflow_in_use, ud->rflow_cnt);
+		irq_res.sets = 1;
 	} else {
 		bitmap_fill(ud->rflow_in_use, ud->rflow_cnt);
 		for (i = 0; i < rm_res->sets; i++)
 			udma_mark_resource_ranges(ud, ud->rflow_in_use,
 						  &rm_res->desc[i], "rflow");
+		irq_res.sets = rm_res->sets;
 	}
-	irq_res.sets = rm_res->sets;
 
 	/* tflow ranges */
 	rm_res = tisci_rm->rm_ranges[RM_RANGE_TFLOW];
 	if (IS_ERR(rm_res)) {
 		/* all tflows are assigned exclusively to Linux */
 		bitmap_zero(ud->tflow_map, ud->tflow_cnt);
+		irq_res.sets++;
 	} else {
 		bitmap_fill(ud->tflow_map, ud->tflow_cnt);
 		for (i = 0; i < rm_res->sets; i++)
 			udma_mark_resource_ranges(ud, ud->tflow_map,
 						  &rm_res->desc[i], "tflow");
+		irq_res.sets += rm_res->sets;
 	}
-	irq_res.sets += rm_res->sets;
 
 	irq_res.desc = kcalloc(irq_res.sets, sizeof(*irq_res.desc), GFP_KERNEL);
+	if (!irq_res.desc)
+		return -ENOMEM;
 	rm_res = tisci_rm->rm_ranges[RM_RANGE_TFLOW];
-	for (i = 0; i < rm_res->sets; i++) {
-		irq_res.desc[i].start = rm_res->desc[i].start +
-					oes->pktdma_tchan_flow;
-		irq_res.desc[i].num = rm_res->desc[i].num;
+	if (IS_ERR(rm_res)) {
+		irq_res.desc[0].start = oes->pktdma_tchan_flow;
+		irq_res.desc[0].num = ud->tflow_cnt;
+		i = 1;
+	} else {
+		for (i = 0; i < rm_res->sets; i++) {
+			irq_res.desc[i].start = rm_res->desc[i].start +
+						oes->pktdma_tchan_flow;
+			irq_res.desc[i].num = rm_res->desc[i].num;
+		}
 	}
 	rm_res = tisci_rm->rm_ranges[RM_RANGE_RFLOW];
-	for (j = 0; j < rm_res->sets; j++, i++) {
-		irq_res.desc[i].start = rm_res->desc[j].start +
-					oes->pktdma_rchan_flow;
-		irq_res.desc[i].num = rm_res->desc[j].num;
+	if (IS_ERR(rm_res)) {
+		irq_res.desc[i].start = oes->pktdma_rchan_flow;
+		irq_res.desc[i].num = ud->rflow_cnt;
+	} else {
+		for (j = 0; j < rm_res->sets; j++, i++) {
+			irq_res.desc[i].start = rm_res->desc[j].start +
+						oes->pktdma_rchan_flow;
+			irq_res.desc[i].num = rm_res->desc[j].num;
+		}
 	}
 	ret = ti_sci_inta_msi_domain_alloc_irqs(ud->dev, &irq_res);
 	kfree(irq_res.desc);
@@ -5289,9 +5354,9 @@ static int udma_probe(struct platform_device *pdev)
 	if (IS_ERR(ud->ringacc))
 		return PTR_ERR(ud->ringacc);
 
-	dev->msi_domain = of_msi_get_domain(dev, dev->of_node,
+	dev->msi.domain = of_msi_get_domain(dev, dev->of_node,
 					    DOMAIN_BUS_TI_SCI_INTA_MSI);
-	if (!dev->msi_domain) {
+	if (!dev->msi.domain) {
 		dev_err(dev, "Failed to get MSI domain\n");
 		return -EPROBE_DEFER;
 	}

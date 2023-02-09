@@ -1271,7 +1271,7 @@ struct bnx2x_fw_stats_data {
 	struct per_port_stats		port;
 	struct per_pf_stats		pf;
 	struct fcoe_statistics_params	fcoe;
-	struct per_queue_stats		queue_stats[1];
+	struct per_queue_stats		queue_stats[];
 };
 
 /* Public slow path states */
@@ -2002,7 +2002,7 @@ int bnx2x_idle_chk(struct bnx2x *bp);
  * operation has been successfully scheduled and a negative - if a requested
  * operations has failed.
  */
-int bnx2x_set_mac_one(struct bnx2x *bp, u8 *mac,
+int bnx2x_set_mac_one(struct bnx2x *bp, const u8 *mac,
 		      struct bnx2x_vlan_mac_obj *obj, bool set,
 		      int mac_type, unsigned long *ramrod_flags);
 

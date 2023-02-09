@@ -55,6 +55,8 @@
 #define BTPROTO_CMTP	5
 #define BTPROTO_HIDP	6
 #define BTPROTO_AVDTP	7
+#define BTPROTO_ISO	8
+#define BTPROTO_LAST	BTPROTO_ISO
 
 #define SOL_HCI		0
 #define SOL_L2CAP	6
@@ -149,9 +151,76 @@ struct bt_voice {
 #define BT_MODE_LE_FLOWCTL	0x03
 #define BT_MODE_EXT_FLOWCTL	0x04
 
-#define BT_PKT_STATUS          16
+#define BT_PKT_STATUS           16
 
 #define BT_SCM_PKT_STATUS	0x03
+
+#define BT_ISO_QOS		17
+
+#define BT_ISO_QOS_CIG_UNSET	0xff
+#define BT_ISO_QOS_CIS_UNSET	0xff
+
+#define BT_ISO_QOS_BIG_UNSET	0xff
+#define BT_ISO_QOS_BIS_UNSET	0xff
+
+struct bt_iso_io_qos {
+	__u32 interval;
+	__u16 latency;
+	__u16 sdu;
+	__u8  phy;
+	__u8  rtn;
+};
+
+struct bt_iso_qos {
+	union {
+		__u8  cig;
+		__u8  big;
+	};
+	union {
+		__u8  cis;
+		__u8  bis;
+	};
+	union {
+		__u8  sca;
+		__u8  sync_interval;
+	};
+	__u8  packing;
+	__u8  framing;
+	struct bt_iso_io_qos in;
+	struct bt_iso_io_qos out;
+};
+
+#define BT_ISO_PHY_1M		0x01
+#define BT_ISO_PHY_2M		0x02
+#define BT_ISO_PHY_CODED	0x04
+#define BT_ISO_PHY_ANY		(BT_ISO_PHY_1M | BT_ISO_PHY_2M | \
+				 BT_ISO_PHY_CODED)
+
+#define BT_CODEC	19
+
+struct	bt_codec_caps {
+	__u8	len;
+	__u8	data[];
+} __packed;
+
+struct bt_codec {
+	__u8	id;
+	__u16	cid;
+	__u16	vid;
+	__u8	data_path;
+	__u8	num_caps;
+} __packed;
+
+struct bt_codecs {
+	__u8		num_codecs;
+	struct bt_codec	codecs[];
+} __packed;
+
+#define BT_CODEC_CVSD		0x02
+#define BT_CODEC_TRANSPARENT	0x03
+#define BT_CODEC_MSBC		0x05
+
+#define BT_ISO_BASE		20
 
 __printf(1, 2)
 void bt_info(const char *fmt, ...);
@@ -321,7 +390,7 @@ int  bt_sock_stream_recvmsg(struct socket *sock, struct msghdr *msg,
 __poll_t bt_sock_poll(struct file *file, struct socket *sock, poll_table *wait);
 int  bt_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);
 int  bt_sock_wait_state(struct sock *sk, int state, unsigned long timeo);
-int  bt_sock_wait_ready(struct sock *sk, unsigned long flags);
+int  bt_sock_wait_ready(struct sock *sk, unsigned int msg_flags);
 
 void bt_accept_enqueue(struct sock *parent, struct sock *sk, bool bh);
 void bt_accept_unlink(struct sock *sk);
@@ -358,6 +427,7 @@ typedef void (*hci_req_complete_skb_t)(struct hci_dev *hdev, u8 status,
 #define HCI_REQ_SKB	BIT(1)
 
 struct hci_ctrl {
+	struct sock *sk;
 	u16 opcode;
 	u8 req_flags;
 	u8 req_event;
@@ -365,6 +435,11 @@ struct hci_ctrl {
 		hci_req_complete_t req_complete;
 		hci_req_complete_skb_t req_complete_skb;
 	};
+};
+
+struct mgmt_ctrl {
+	struct hci_dev *hdev;
+	u16 opcode;
 };
 
 struct bt_skb_cb {
@@ -376,6 +451,7 @@ struct bt_skb_cb {
 		struct l2cap_ctrl l2cap;
 		struct sco_ctrl sco;
 		struct hci_ctrl hci;
+		struct mgmt_ctrl mgmt;
 	};
 };
 #define bt_cb(skb) ((struct bt_skb_cb *)((skb)->cb))
@@ -383,6 +459,8 @@ struct bt_skb_cb {
 #define hci_skb_pkt_type(skb) bt_cb((skb))->pkt_type
 #define hci_skb_expect(skb) bt_cb((skb))->expect
 #define hci_skb_opcode(skb) bt_cb((skb))->hci.opcode
+#define hci_skb_event(skb) bt_cb((skb))->hci.req_event
+#define hci_skb_sk(skb) bt_cb((skb))->hci.sk
 
 static inline struct sk_buff *bt_skb_alloc(unsigned int len, gfp_t how)
 {
@@ -461,7 +539,7 @@ static inline struct sk_buff *bt_skb_sendmmsg(struct sock *sk,
 	struct sk_buff *skb, **frag;
 
 	skb = bt_skb_sendmsg(sk, msg, len, mtu, headroom, tailroom);
-	if (IS_ERR_OR_NULL(skb))
+	if (IS_ERR(skb))
 		return skb;
 
 	len -= skb->len;
@@ -488,6 +566,7 @@ static inline struct sk_buff *bt_skb_sendmmsg(struct sock *sk,
 }
 
 int bt_to_errno(u16 code);
+__u8 bt_status(int err);
 
 void hci_sock_set_flag(struct sock *sk, int nr);
 void hci_sock_clear_flag(struct sock *sk, int nr);
@@ -525,8 +604,30 @@ static inline void sco_exit(void)
 }
 #endif
 
+#if IS_ENABLED(CONFIG_BT_LE)
+int iso_init(void);
+int iso_exit(void);
+bool iso_enabled(void);
+#else
+static inline int iso_init(void)
+{
+	return 0;
+}
+
+static inline int iso_exit(void)
+{
+	return 0;
+}
+
+static inline bool iso_enabled(void)
+{
+	return false;
+}
+#endif
+
 int mgmt_init(void);
 void mgmt_exit(void);
+void mgmt_cleanup(struct sock *sk);
 
 void bt_sock_reclassify_lock(struct sock *sk, int proto);
 

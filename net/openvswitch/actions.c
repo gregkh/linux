@@ -1033,7 +1033,7 @@ static int sample(struct datapath *dp, struct sk_buff *skb,
 	actions = nla_next(sample_arg, &rem);
 
 	if ((arg->probability != U32_MAX) &&
-	    (!arg->probability || prandom_u32() > arg->probability)) {
+	    (!arg->probability || get_random_u32() > arg->probability)) {
 		if (last)
 			consume_skb(skb);
 		return 0;
@@ -1545,8 +1545,8 @@ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
 				pr_warn("%s: deferred action limit reached, drop sample action\n",
 					ovs_dp_name(dp));
 			} else {  /* Recirc action */
-				pr_warn("%s: deferred action limit reached, drop recirc action\n",
-					ovs_dp_name(dp));
+				pr_warn("%s: deferred action limit reached, drop recirc action (recirc_id=%#x)\n",
+					ovs_dp_name(dp), recirc_id);
 			}
 		}
 	}

@@ -346,7 +346,8 @@ static int gfs2_lock_fs_check_clean(struct gfs2_sbd *sdp)
 	}
 
 	error = gfs2_glock_nq_init(sdp->sd_freeze_gl, LM_ST_EXCLUSIVE,
-				   LM_FLAG_NOEXP, &sdp->sd_freeze_gh);
+				   LM_FLAG_NOEXP | GL_NOPID,
+				   &sdp->sd_freeze_gh);
 	if (error)
 		goto out;
 
@@ -1197,7 +1198,7 @@ static bool gfs2_upgrade_iopen_glock(struct inode *inode)
 		gfs2_glock_dq(gh);
 		return false;
 	}
-	return true;
+	return gfs2_glock_holder_ready(gh) == 0;
 }
 
 /**
@@ -1245,11 +1246,9 @@ static enum dinode_demise evict_should_delete(struct inode *inode,
 	if (ret)
 		return SHOULD_NOT_DELETE_DINODE;
 
-	if (test_bit(GIF_INVALID, &ip->i_flags)) {
-		ret = gfs2_inode_refresh(ip);
-		if (ret)
-			return SHOULD_NOT_DELETE_DINODE;
-	}
+	ret = gfs2_instantiate(gh);
+	if (ret)
+		return SHOULD_NOT_DELETE_DINODE;
 
 	/*
 	 * The inode may have been recreated in the meantime.
@@ -1428,7 +1427,7 @@ static struct inode *gfs2_alloc_inode(struct super_block *sb)
 {
 	struct gfs2_inode *ip;
 
-	ip = kmem_cache_alloc(gfs2_inode_cachep, GFP_KERNEL);
+	ip = alloc_inode_sb(sb, gfs2_inode_cachep, GFP_KERNEL);
 	if (!ip)
 		return NULL;
 	ip->i_flags = 0;

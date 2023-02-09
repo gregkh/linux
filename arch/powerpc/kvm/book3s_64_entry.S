@@ -124,7 +124,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_HAS_PPR)
 
 /*
  * "Skip" interrupts are part of a trick KVM uses a with hash guests to load
- * the faulting instruction in guest memory from the the hypervisor without
+ * the faulting instruction in guest memory from the hypervisor without
  * walking page tables.
  *
  * When the guest takes a fault that requires the hypervisor to load the
@@ -315,7 +315,7 @@ kvmppc_p9_exit_interrupt:
 	reg = reg + 1
 	.endr
 
-	ld	r2,PACATOC(r13)
+	LOAD_PACA_TOC()
 
 	mflr	r4
 	std	r4,VCPU_LR(r3)
@@ -374,11 +374,16 @@ END_MMU_FTR_SECTION_IFCLR(MMU_FTR_TYPE_RADIX)
 BEGIN_FTR_SECTION
 	mtspr	SPRN_DAWRX1,r10
 END_FTR_SECTION_IFSET(CPU_FTR_DAWR1)
-	mtspr	SPRN_PID,r10
 
 	/*
-	 * Switch to host MMU mode
+	 * Switch to host MMU mode (don't have the real host PID but we aren't
+	 * going back to userspace).
 	 */
+	hwsync
+	isync
+
+	mtspr	SPRN_PID,r10
+
 	ld	r10, HSTATE_KVM_VCPU(r13)
 	ld	r10, VCPU_KVM(r10)
 	lwz	r10, KVM_HOST_LPID(r10)
@@ -388,6 +393,8 @@ END_FTR_SECTION_IFSET(CPU_FTR_DAWR1)
 	ld	r10, VCPU_KVM(r10)
 	ld	r10, KVM_HOST_LPCR(r10)
 	mtspr	SPRN_LPCR,r10
+
+	isync
 
 	/*
 	 * Set GUEST_MODE_NONE so the handler won't branch to KVM, and clear

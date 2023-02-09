@@ -12,6 +12,7 @@
  * (http://davesdomain.org.uk/viafb/)
  */
 
+#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -320,6 +321,9 @@ static int vt8623fb_release(struct fb_info *info, int user)
 static int vt8623fb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 {
 	int rv, mem, step;
+
+	if (!var->pixclock)
+		return -EINVAL;
 
 	/* Find appropriate format */
 	rv = svga_match_format (vt8623fb_formats, var, NULL);
@@ -668,6 +672,10 @@ static int vt8623_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		dev_info(&(dev->dev), "ignoring secondary device\n");
 		return -ENODEV;
 	}
+
+	rc = aperture_remove_conflicting_pci_devices(dev, "vt8623fb");
+	if (rc)
+		return rc;
 
 	/* Allocate and fill driver data structure */
 	info = framebuffer_alloc(sizeof(struct vt8623fb_info), &(dev->dev));

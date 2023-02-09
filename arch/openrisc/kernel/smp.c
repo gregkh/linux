@@ -65,11 +65,7 @@ void __init smp_init_cpus(void)
 	u32 cpu_id;
 
 	for_each_of_cpu_node(cpu) {
-		if (of_property_read_u32(cpu, "reg", &cpu_id)) {
-			pr_warn("%s missing reg property", cpu->full_name);
-			continue;
-		}
-
+		cpu_id = of_get_cpu_hwid(cpu, 0);
 		if (cpu_id < NR_CPUS)
 			set_cpu_possible(cpu_id, true);
 	}
@@ -199,12 +195,6 @@ static void stop_this_cpu(void *dummy)
 void smp_send_stop(void)
 {
 	smp_call_function(stop_this_cpu, NULL, 0);
-}
-
-/* not supported, yet */
-int setup_profiling_timer(unsigned int multiplier)
-{
-	return -EINVAL;
 }
 
 void __init set_smp_cross_call(void (*fn)(const struct cpumask *, unsigned int))

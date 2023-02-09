@@ -59,6 +59,8 @@ static struct pt_cap_desc {
 	PT_CAP(mtc,			0, CPUID_EBX, BIT(3)),
 	PT_CAP(ptwrite,			0, CPUID_EBX, BIT(4)),
 	PT_CAP(power_event_trace,	0, CPUID_EBX, BIT(5)),
+	PT_CAP(event_trace,		0, CPUID_EBX, BIT(7)),
+	PT_CAP(tnt_disable,		0, CPUID_EBX, BIT(8)),
 	PT_CAP(topa_output,		0, CPUID_ECX, BIT(0)),
 	PT_CAP(topa_multiple_entries,	0, CPUID_ECX, BIT(1)),
 	PT_CAP(single_range_output,	0, CPUID_ECX, BIT(2)),
@@ -110,6 +112,8 @@ PMU_FORMAT_ATTR(tsc,		"config:10"	);
 PMU_FORMAT_ATTR(noretcomp,	"config:11"	);
 PMU_FORMAT_ATTR(ptw,		"config:12"	);
 PMU_FORMAT_ATTR(branch,		"config:13"	);
+PMU_FORMAT_ATTR(event,		"config:31"	);
+PMU_FORMAT_ATTR(notnt,		"config:55"	);
 PMU_FORMAT_ATTR(mtc_period,	"config:14-17"	);
 PMU_FORMAT_ATTR(cyc_thresh,	"config:19-22"	);
 PMU_FORMAT_ATTR(psb_period,	"config:24-27"	);
@@ -118,6 +122,8 @@ static struct attribute *pt_formats_attr[] = {
 	&format_attr_pt.attr,
 	&format_attr_cyc.attr,
 	&format_attr_pwr_evt.attr,
+	&format_attr_event.attr,
+	&format_attr_notnt.attr,
 	&format_attr_fup_on_ptw.attr,
 	&format_attr_mtc.attr,
 	&format_attr_tsc.attr,
@@ -298,6 +304,8 @@ fail:
 			RTIT_CTL_CYC_PSB	| \
 			RTIT_CTL_MTC		| \
 			RTIT_CTL_PWR_EVT_EN	| \
+			RTIT_CTL_EVENT_EN	| \
+			RTIT_CTL_NOTNT		| \
 			RTIT_CTL_FUP_ON_PTW	| \
 			RTIT_CTL_PTW_EN)
 
@@ -350,6 +358,14 @@ static bool pt_event_valid(struct perf_event *event)
 
 	if (config & RTIT_CTL_PWR_EVT_EN &&
 	    !intel_pt_validate_hw_cap(PT_CAP_power_event_trace))
+		return false;
+
+	if (config & RTIT_CTL_EVENT_EN &&
+	    !intel_pt_validate_hw_cap(PT_CAP_event_trace))
+		return false;
+
+	if (config & RTIT_CTL_NOTNT &&
+	    !intel_pt_validate_hw_cap(PT_CAP_tnt_disable))
 		return false;
 
 	if (config & RTIT_CTL_PTW) {
@@ -1360,20 +1376,10 @@ static void pt_addr_filters_fini(struct perf_event *event)
 }
 
 #ifdef CONFIG_X86_64
-static u64 canonical_address(u64 vaddr, u8 vaddr_bits)
-{
-	return ((s64)vaddr << (64 - vaddr_bits)) >> (64 - vaddr_bits);
-}
-
-static u64 is_canonical_address(u64 vaddr, u8 vaddr_bits)
-{
-	return canonical_address(vaddr, vaddr_bits) == vaddr;
-}
-
 /* Clamp to a canonical address greater-than-or-equal-to the address given */
 static u64 clamp_to_ge_canonical_addr(u64 vaddr, u8 vaddr_bits)
 {
-	return is_canonical_address(vaddr, vaddr_bits) ?
+	return __is_canonical_address(vaddr, vaddr_bits) ?
 	       vaddr :
 	       -BIT_ULL(vaddr_bits - 1);
 }
@@ -1381,7 +1387,7 @@ static u64 clamp_to_ge_canonical_addr(u64 vaddr, u8 vaddr_bits)
 /* Clamp to a canonical address less-than-or-equal-to the address given */
 static u64 clamp_to_le_canonical_addr(u64 vaddr, u8 vaddr_bits)
 {
-	return is_canonical_address(vaddr, vaddr_bits) ?
+	return __is_canonical_address(vaddr, vaddr_bits) ?
 	       vaddr :
 	       BIT_ULL(vaddr_bits - 1) - 1;
 }

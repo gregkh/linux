@@ -109,8 +109,8 @@ void ionic_bus_unmap_dbpage(struct ionic *ionic, void __iomem *page)
 
 static void ionic_vf_dealloc_locked(struct ionic *ionic)
 {
+	struct ionic_vf_setattr_cmd vfc = { .attr = IONIC_VF_ATTR_STATSADDR };
 	struct ionic_vf *v;
-	dma_addr_t dma = 0;
 	int i;
 
 	if (!ionic->vfs)
@@ -120,9 +120,8 @@ static void ionic_vf_dealloc_locked(struct ionic *ionic)
 		v = &ionic->vfs[i];
 
 		if (v->stats_pa) {
-			(void)ionic_set_vf_config(ionic, i,
-						  IONIC_VF_ATTR_STATSADDR,
-						  (u8 *)&dma);
+			vfc.stats_pa = 0;
+			(void)ionic_set_vf_config(ionic, i, &vfc);
 			dma_unmap_single(ionic->dev, v->stats_pa,
 					 sizeof(v->stats), DMA_FROM_DEVICE);
 			v->stats_pa = 0;
@@ -143,6 +142,7 @@ static void ionic_vf_dealloc(struct ionic *ionic)
 
 static int ionic_vf_alloc(struct ionic *ionic, int num_vfs)
 {
+	struct ionic_vf_setattr_cmd vfc = { .attr = IONIC_VF_ATTR_STATSADDR };
 	struct ionic_vf *v;
 	int err = 0;
 	int i;
@@ -166,9 +166,10 @@ static int ionic_vf_alloc(struct ionic *ionic, int num_vfs)
 		}
 
 		ionic->num_vfs++;
+
 		/* ignore failures from older FW, we just won't get stats */
-		(void)ionic_set_vf_config(ionic, i, IONIC_VF_ATTR_STATSADDR,
-					  (u8 *)&v->stats_pa);
+		vfc.stats_pa = cpu_to_le64(v->stats_pa);
+		(void)ionic_set_vf_config(ionic, i, &vfc);
 	}
 
 out:
@@ -319,16 +320,16 @@ static int ionic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 			dev_err(dev, "Cannot enable existing VFs: %d\n", err);
 	}
 
-	err = ionic_lif_register(ionic->lif);
-	if (err) {
-		dev_err(dev, "Cannot register LIF: %d, aborting\n", err);
-		goto err_out_deinit_lifs;
-	}
-
 	err = ionic_devlink_register(ionic);
 	if (err) {
 		dev_err(dev, "Cannot register devlink: %d\n", err);
-		goto err_out_deregister_lifs;
+		goto err_out_deinit_lifs;
+	}
+
+	err = ionic_lif_register(ionic->lif);
+	if (err) {
+		dev_err(dev, "Cannot register LIF: %d, aborting\n", err);
+		goto err_out_deregister_devlink;
 	}
 
 	mod_timer(&ionic->watchdog_timer,
@@ -336,8 +337,8 @@ static int ionic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	return 0;
 
-err_out_deregister_lifs:
-	ionic_lif_unregister(ionic->lif);
+err_out_deregister_devlink:
+	ionic_devlink_unregister(ionic);
 err_out_deinit_lifs:
 	ionic_vf_dealloc(ionic);
 	ionic_lif_deinit(ionic->lif);
@@ -379,8 +380,8 @@ static void ionic_remove(struct pci_dev *pdev)
 	del_timer_sync(&ionic->watchdog_timer);
 
 	if (ionic->lif) {
-		ionic_devlink_unregister(ionic);
 		ionic_lif_unregister(ionic->lif);
+		ionic_devlink_unregister(ionic);
 		ionic_lif_deinit(ionic->lif);
 		ionic_lif_free(ionic->lif);
 		ionic->lif = NULL;

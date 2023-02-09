@@ -357,7 +357,7 @@ static void set_ethernet_addr(pegasus_t *pegasus)
 			goto err;
 	}
 
-	memcpy(pegasus->net->dev_addr, node_id, sizeof(node_id));
+	eth_hw_addr_set(pegasus->net, node_id);
 
 	return;
 err:
@@ -894,7 +894,7 @@ static void pegasus_get_drvinfo(struct net_device *dev,
 {
 	pegasus_t *pegasus = netdev_priv(dev);
 
-	strlcpy(info->driver, driver_name, sizeof(info->driver));
+	strscpy(info->driver, driver_name, sizeof(info->driver));
 	usb_make_path(pegasus->usb, info->bus_info, sizeof(info->bus_info));
 }
 

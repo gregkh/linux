@@ -307,9 +307,8 @@ static void gfs2_metapath_ra(struct gfs2_glock *gl, __be64 *start, __be64 *end)
 		if (trylock_buffer(rabh)) {
 			if (!buffer_uptodate(rabh)) {
 				rabh->b_end_io = end_buffer_read_sync;
-				submit_bh(REQ_OP_READ,
-					  REQ_RAHEAD | REQ_META | REQ_PRIO,
-					  rabh);
+				submit_bh(REQ_OP_READ | REQ_RAHEAD | REQ_META |
+					  REQ_PRIO, rabh);
 				continue;
 			}
 			unlock_buffer(rabh);
@@ -603,9 +602,9 @@ out:
 	return ret;
 }
 
-static inline __be64 *gfs2_indirect_init(struct metapath *mp,
-					 struct gfs2_glock *gl, unsigned int i,
-					 unsigned offset, u64 bn)
+static inline void gfs2_indirect_init(struct metapath *mp,
+				      struct gfs2_glock *gl, unsigned int i,
+				      unsigned offset, u64 bn)
 {
 	__be64 *ptr = (__be64 *)(mp->mp_bh[i - 1]->b_data +
 		       ((i > 1) ? sizeof(struct gfs2_meta_header) :
@@ -618,7 +617,6 @@ static inline __be64 *gfs2_indirect_init(struct metapath *mp,
 	gfs2_buffer_clear_tail(mp->mp_bh[i], sizeof(struct gfs2_meta_header));
 	ptr += offset;
 	*ptr = cpu_to_be64(bn);
-	return ptr;
 }
 
 enum alloc_state {

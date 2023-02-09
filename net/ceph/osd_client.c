@@ -1479,7 +1479,7 @@ static bool target_should_be_paused(struct ceph_osd_client *osdc,
 
 static int pick_random_replica(const struct ceph_osds *acting)
 {
-	int i = prandom_u32() % acting->size;
+	int i = prandom_u32_max(acting->size);
 
 	dout("%s picked osd%d, primary osd%d\n", __func__,
 	     acting->osds[i], acting->primary);
@@ -2364,7 +2364,11 @@ again:
 		if (ceph_test_opt(osdc->client, ABORT_ON_FULL)) {
 			err = -ENOSPC;
 		} else {
-			pr_warn_ratelimited("FULL or reached pool quota\n");
+			if (ceph_osdmap_flag(osdc, CEPH_OSDMAP_FULL))
+				pr_warn_ratelimited("cluster is full (osdmap FULL)\n");
+			else
+				pr_warn_ratelimited("pool %lld is full or reached quota\n",
+						    req->r_t.base_oloc.pool);
 			req->r_t.paused = true;
 			maybe_request_map(osdc);
 		}
@@ -4574,21 +4578,23 @@ bad:
 /*
  * Register request, send initial attempt.
  */
-int ceph_osdc_start_request(struct ceph_osd_client *osdc,
-			    struct ceph_osd_request *req,
-			    bool nofail)
+void ceph_osdc_start_request(struct ceph_osd_client *osdc,
+			     struct ceph_osd_request *req)
 {
 	down_read(&osdc->lock);
 	submit_request(req, false);
 	up_read(&osdc->lock);
-
-	return 0;
 }
 EXPORT_SYMBOL(ceph_osdc_start_request);
 
 /*
- * Unregister a registered request.  The request is not completed:
- * ->r_result isn't set and __complete_request() isn't called.
+ * Unregister request.  If @req was registered, it isn't completed:
+ * r_result isn't set and __complete_request() isn't invoked.
+ *
+ * If @req wasn't registered, this call may have raced with
+ * handle_reply(), in which case r_result would already be set and
+ * __complete_request() would be getting invoked, possibly even
+ * concurrently with this call.
  */
 void ceph_osdc_cancel_request(struct ceph_osd_request *req)
 {
@@ -4747,7 +4753,7 @@ int ceph_osdc_unwatch(struct ceph_osd_client *osdc,
 	if (ret)
 		goto out_put_req;
 
-	ceph_osdc_start_request(osdc, req, false);
+	ceph_osdc_start_request(osdc, req);
 	linger_cancel(lreq);
 	linger_put(lreq);
 	ret = wait_request_timeout(req, opts->mount_timeout);
@@ -4818,7 +4824,7 @@ int ceph_osdc_notify_ack(struct ceph_osd_client *osdc,
 	if (ret)
 		goto out_put_req;
 
-	ceph_osdc_start_request(osdc, req, false);
+	ceph_osdc_start_request(osdc, req);
 	ret = ceph_osdc_wait_request(osdc, req);
 
 out_put_req:
@@ -5034,7 +5040,7 @@ int ceph_osdc_list_watchers(struct ceph_osd_client *osdc,
 	if (ret)
 		goto out_put_req;
 
-	ceph_osdc_start_request(osdc, req, false);
+	ceph_osdc_start_request(osdc, req);
 	ret = ceph_osdc_wait_request(osdc, req);
 	if (ret >= 0) {
 		void *p = page_address(pages[0]);
@@ -5111,7 +5117,7 @@ int ceph_osdc_call(struct ceph_osd_client *osdc,
 	if (ret)
 		goto out_put_req;
 
-	ceph_osdc_start_request(osdc, req, false);
+	ceph_osdc_start_request(osdc, req);
 	ret = ceph_osdc_wait_request(osdc, req);
 	if (ret >= 0) {
 		ret = req->r_ops[0].rval;
@@ -5246,14 +5252,14 @@ void ceph_osdc_stop(struct ceph_osd_client *osdc)
 	ceph_msgpool_destroy(&osdc->msgpool_op_reply);
 }
 
-static int osd_req_op_copy_from_init(struct ceph_osd_request *req,
-				     u64 src_snapid, u64 src_version,
-				     struct ceph_object_id *src_oid,
-				     struct ceph_object_locator *src_oloc,
-				     u32 src_fadvise_flags,
-				     u32 dst_fadvise_flags,
-				     u32 truncate_seq, u64 truncate_size,
-				     u8 copy_from_flags)
+int osd_req_op_copy_from_init(struct ceph_osd_request *req,
+			      u64 src_snapid, u64 src_version,
+			      struct ceph_object_id *src_oid,
+			      struct ceph_object_locator *src_oloc,
+			      u32 src_fadvise_flags,
+			      u32 dst_fadvise_flags,
+			      u32 truncate_seq, u64 truncate_size,
+			      u8 copy_from_flags)
 {
 	struct ceph_osd_req_op *op;
 	struct page **pages;
@@ -5282,49 +5288,7 @@ static int osd_req_op_copy_from_init(struct ceph_osd_request *req,
 				 op->indata_len, 0, false, true);
 	return 0;
 }
-
-int ceph_osdc_copy_from(struct ceph_osd_client *osdc,
-			u64 src_snapid, u64 src_version,
-			struct ceph_object_id *src_oid,
-			struct ceph_object_locator *src_oloc,
-			u32 src_fadvise_flags,
-			struct ceph_object_id *dst_oid,
-			struct ceph_object_locator *dst_oloc,
-			u32 dst_fadvise_flags,
-			u32 truncate_seq, u64 truncate_size,
-			u8 copy_from_flags)
-{
-	struct ceph_osd_request *req;
-	int ret;
-
-	req = ceph_osdc_alloc_request(osdc, NULL, 1, false, GFP_KERNEL);
-	if (!req)
-		return -ENOMEM;
-
-	req->r_flags = CEPH_OSD_FLAG_WRITE;
-
-	ceph_oloc_copy(&req->r_t.base_oloc, dst_oloc);
-	ceph_oid_copy(&req->r_t.base_oid, dst_oid);
-
-	ret = osd_req_op_copy_from_init(req, src_snapid, src_version, src_oid,
-					src_oloc, src_fadvise_flags,
-					dst_fadvise_flags, truncate_seq,
-					truncate_size, copy_from_flags);
-	if (ret)
-		goto out;
-
-	ret = ceph_osdc_alloc_messages(req, GFP_KERNEL);
-	if (ret)
-		goto out;
-
-	ceph_osdc_start_request(osdc, req, false);
-	ret = ceph_osdc_wait_request(osdc, req);
-
-out:
-	ceph_osdc_put_request(req);
-	return ret;
-}
-EXPORT_SYMBOL(ceph_osdc_copy_from);
+EXPORT_SYMBOL(osd_req_op_copy_from_init);
 
 int __init ceph_osdc_setup(void)
 {

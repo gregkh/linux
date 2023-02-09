@@ -208,7 +208,7 @@ static int smp_85xx_start_cpu(int cpu)
 	 * The bootpage and highmem can be accessed via ioremap(), but
 	 * we need to directly access the spinloop if its in lowmem.
 	 */
-	ioremappable = *cpu_rel_addr > virt_to_phys(high_memory);
+	ioremappable = *cpu_rel_addr > virt_to_phys(high_memory - 1);
 
 	/* Map the spin table */
 	if (ioremappable)
@@ -366,7 +366,7 @@ struct smp_ops_t smp_85xx_ops = {
 #ifdef CONFIG_PPC32
 atomic_t kexec_down_cpus = ATOMIC_INIT(0);
 
-void mpc85xx_smp_kexec_cpu_down(int crash_shutdown, int secondary)
+static void mpc85xx_smp_kexec_cpu_down(int crash_shutdown, int secondary)
 {
 	local_irq_disable();
 
@@ -384,7 +384,7 @@ static void mpc85xx_smp_kexec_down(void *arg)
 		ppc_md.kexec_cpu_down(0,1);
 }
 #else
-void mpc85xx_smp_kexec_cpu_down(int crash_shutdown, int secondary)
+static void mpc85xx_smp_kexec_cpu_down(int crash_shutdown, int secondary)
 {
 	int cpu = smp_processor_id();
 	int sibling = cpu_last_thread_sibling(cpu);

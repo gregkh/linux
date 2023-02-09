@@ -1112,7 +1112,7 @@ static int ov5648_pad_configure(struct ov5648_sensor *sensor)
 
 static int ov5648_mipi_configure(struct ov5648_sensor *sensor)
 {
-	struct v4l2_fwnode_bus_mipi_csi2 *bus_mipi_csi2 =
+	struct v4l2_mbus_config_mipi_csi2 *bus_mipi_csi2 =
 		&sensor->endpoint.bus.mipi_csi2;
 	unsigned int lanes_count = bus_mipi_csi2->num_data_lanes;
 	int ret;
@@ -1692,7 +1692,7 @@ static int ov5648_state_mipi_configure(struct ov5648_sensor *sensor,
 				       u32 mbus_code)
 {
 	struct ov5648_ctrls *ctrls = &sensor->ctrls;
-	struct v4l2_fwnode_bus_mipi_csi2 *bus_mipi_csi2 =
+	struct v4l2_mbus_config_mipi_csi2 *bus_mipi_csi2 =
 		&sensor->endpoint.bus.mipi_csi2;
 	unsigned long mipi_clk_rate;
 	unsigned int bits_per_sample;
@@ -2587,7 +2587,7 @@ error_endpoint:
 	return ret;
 }
 
-static int ov5648_remove(struct i2c_client *client)
+static void ov5648_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
 	struct ov5648_sensor *sensor = ov5648_subdev_sensor(subdev);
@@ -2597,8 +2597,7 @@ static int ov5648_remove(struct i2c_client *client)
 	v4l2_ctrl_handler_free(&sensor->ctrls.handler);
 	mutex_destroy(&sensor->mutex);
 	media_entity_cleanup(&subdev->entity);
-
-	return 0;
+	v4l2_fwnode_endpoint_free(&sensor->endpoint);
 }
 
 static const struct dev_pm_ops ov5648_pm_ops = {

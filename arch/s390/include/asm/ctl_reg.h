@@ -12,6 +12,8 @@
 
 #define CR0_CLOCK_COMPARATOR_SIGN	BIT(63 - 10)
 #define CR0_LOW_ADDRESS_PROTECTION	BIT(63 - 35)
+#define CR0_FETCH_PROTECTION_OVERRIDE	BIT(63 - 38)
+#define CR0_STORAGE_PROTECTION_OVERRIDE	BIT(63 - 39)
 #define CR0_EMERGENCY_SIGNAL_SUBMASK	BIT(63 - 49)
 #define CR0_EXTERNAL_CALL_SUBMASK	BIT(63 - 50)
 #define CR0_CLOCK_COMPARATOR_SUBMASK	BIT(63 - 52)
@@ -91,7 +93,10 @@ union ctlreg0 {
 		unsigned long tcx  : 1;	/* Transactional-Execution control */
 		unsigned long pifo : 1;	/* Transactional-Execution Program-
 					   Interruption-Filtering Override */
-		unsigned long	   : 22;
+		unsigned long	   : 3;
+		unsigned long ccc  : 1; /* Cryptography counter control */
+		unsigned long pec  : 1; /* PAI extension control */
+		unsigned long	   : 17;
 		unsigned long	   : 3;
 		unsigned long lap  : 1; /* Low-address-protection control */
 		unsigned long	   : 4;

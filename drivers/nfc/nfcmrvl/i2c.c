@@ -112,8 +112,10 @@ static int nfcmrvl_i2c_nci_send(struct nfcmrvl_private *priv,
 	struct nfcmrvl_i2c_drv_data *drv_data = priv->drv_data;
 	int ret;
 
-	if (test_bit(NFCMRVL_PHY_ERROR, &priv->flags))
+	if (test_bit(NFCMRVL_PHY_ERROR, &priv->flags)) {
+		kfree_skb(skb);
 		return -EREMOTEIO;
+	}
 
 	ret = i2c_master_send(drv_data->i2c, skb->data, skb->len);
 
@@ -236,13 +238,11 @@ static int nfcmrvl_i2c_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int nfcmrvl_i2c_remove(struct i2c_client *client)
+static void nfcmrvl_i2c_remove(struct i2c_client *client)
 {
 	struct nfcmrvl_i2c_drv_data *drv_data = i2c_get_clientdata(client);
 
 	nfcmrvl_nci_unregister_dev(drv_data->priv);
-
-	return 0;
 }
 
 

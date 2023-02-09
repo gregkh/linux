@@ -404,9 +404,7 @@ int __net_init seg6_hmac_net_init(struct net *net)
 {
 	struct seg6_pernet_data *sdata = seg6_pernet(net);
 
-	rhashtable_init(&sdata->hmac_infos, &rht_params);
-
-	return 0;
+	return rhashtable_init(&sdata->hmac_infos, &rht_params);
 }
 
 void seg6_hmac_exit(void)

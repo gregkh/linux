@@ -309,9 +309,9 @@ nouveau_bo_init(struct nouveau_bo *nvbo, u64 size, int align, u32 domain,
 	nouveau_bo_placement_set(nvbo, domain, 0);
 	INIT_LIST_HEAD(&nvbo->io_reserve_lru);
 
-	ret = ttm_bo_init(nvbo->bo.bdev, &nvbo->bo, size, type,
-			  &nvbo->placement, align >> PAGE_SHIFT, false, sg,
-			  robj, nouveau_bo_del_ttm);
+	ret = ttm_bo_init_validate(nvbo->bo.bdev, &nvbo->bo, type,
+				   &nvbo->placement, align >> PAGE_SHIFT, false,
+				   sg, robj, nouveau_bo_del_ttm);
 	if (ret) {
 		/* ttm will call nouveau_bo_del_ttm if it fails.. */
 		return ret;
@@ -970,7 +970,14 @@ nouveau_bo_vm_cleanup(struct ttm_buffer_object *bo,
 {
 	struct nouveau_drm *drm = nouveau_bdev(bo->bdev);
 	struct drm_device *dev = drm->dev;
-	struct dma_fence *fence = dma_resv_excl_fence(bo->base.resv);
+	struct dma_fence *fence;
+	int ret;
+
+	ret = dma_resv_get_singleton(bo->base.resv, DMA_RESV_USAGE_WRITE,
+				     &fence);
+	if (ret)
+		dma_resv_wait_timeout(bo->base.resv, DMA_RESV_USAGE_WRITE,
+				      false, MAX_SCHEDULE_TIMEOUT);
 
 	nv10_bo_put_tile_region(dev, *old_tile, fence);
 	*old_tile = new_tile;
@@ -1010,7 +1017,8 @@ nouveau_bo_move(struct ttm_buffer_object *bo, bool evict,
 	}
 
 	/* Fake bo copy. */
-	if (old_reg->mem_type == TTM_PL_SYSTEM && !bo->ttm) {
+	if (!old_reg || (old_reg->mem_type == TTM_PL_SYSTEM &&
+			 !bo->ttm)) {
 		ttm_bo_move_null(bo, new_reg);
 		goto out;
 	}
@@ -1260,8 +1268,7 @@ nouveau_ttm_tt_populate(struct ttm_device *bdev,
 {
 	struct ttm_tt *ttm_dma = (void *)ttm;
 	struct nouveau_drm *drm;
-	struct device *dev;
-	bool slave = !!(ttm->page_flags & TTM_PAGE_FLAG_SG);
+	bool slave = !!(ttm->page_flags & TTM_TT_FLAG_EXTERNAL);
 
 	if (ttm_tt_is_populated(ttm))
 		return 0;
@@ -1273,7 +1280,6 @@ nouveau_ttm_tt_populate(struct ttm_device *bdev,
 	}
 
 	drm = nouveau_bdev(bdev);
-	dev = drm->dev->dev;
 
 	return ttm_pool_alloc(&drm->ttm.bdev.pool, ttm, ctx);
 }
@@ -1283,14 +1289,14 @@ nouveau_ttm_tt_unpopulate(struct ttm_device *bdev,
 			  struct ttm_tt *ttm)
 {
 	struct nouveau_drm *drm;
-	struct device *dev;
-	bool slave = !!(ttm->page_flags & TTM_PAGE_FLAG_SG);
+	bool slave = !!(ttm->page_flags & TTM_TT_FLAG_EXTERNAL);
 
 	if (slave)
 		return;
 
+	nouveau_ttm_tt_unbind(bdev, ttm);
+
 	drm = nouveau_bdev(bdev);
-	dev = drm->dev->dev;
 
 	return ttm_pool_free(&drm->ttm.bdev.pool, ttm);
 }
@@ -1302,8 +1308,6 @@ nouveau_ttm_tt_destroy(struct ttm_device *bdev,
 #if IS_ENABLED(CONFIG_AGP)
 	struct nouveau_drm *drm = nouveau_bdev(bdev);
 	if (drm->agp.bridge) {
-		ttm_agp_unbind(ttm);
-		ttm_tt_destroy_common(bdev, ttm);
 		ttm_agp_destroy(ttm);
 		return;
 	}
@@ -1316,10 +1320,11 @@ nouveau_bo_fence(struct nouveau_bo *nvbo, struct nouveau_fence *fence, bool excl
 {
 	struct dma_resv *resv = nvbo->bo.base.resv;
 
-	if (exclusive)
-		dma_resv_add_excl_fence(resv, &fence->base);
-	else if (fence)
-		dma_resv_add_shared_fence(resv, &fence->base);
+	if (!fence)
+		return;
+
+	dma_resv_add_fence(resv, &fence->base, exclusive ?
+			   DMA_RESV_USAGE_WRITE : DMA_RESV_USAGE_READ);
 }
 
 static void

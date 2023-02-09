@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * btree.c - NILFS B-tree.
+ * NILFS B-tree.
  *
  * Copyright (C) 2005-2008 Nippon Telegraph and Telephone Corporation.
  *
@@ -477,7 +477,7 @@ static int __nilfs_btree_get_block(const struct nilfs_bmap *btree, __u64 ptr,
 	sector_t submit_ptr = 0;
 	int ret;
 
-	ret = nilfs_btnode_submit_block(btnc, ptr, 0, REQ_OP_READ, 0, &bh,
+	ret = nilfs_btnode_submit_block(btnc, ptr, 0, REQ_OP_READ, &bh,
 					&submit_ptr);
 	if (ret) {
 		if (likely(ret == -EEXIST))
@@ -504,8 +504,8 @@ static int __nilfs_btree_get_block(const struct nilfs_bmap *btree, __u64 ptr,
 			ptr2 = nilfs_btree_node_get_ptr(ra->node, i, ra->ncmax);
 
 			ret = nilfs_btnode_submit_block(btnc, ptr2, 0,
-							REQ_OP_READ, REQ_RAHEAD,
-							&ra_bh, &submit_ptr);
+						REQ_OP_READ | REQ_RAHEAD,
+						&ra_bh, &submit_ptr);
 			if (likely(!ret || ret == -EEXIST))
 				brelse(ra_bh);
 			else if (ret != -EBUSY)
@@ -1677,8 +1677,7 @@ static int nilfs_btree_check_delete(struct nilfs_bmap *btree, __u64 key)
 	maxkey = nilfs_btree_node_get_key(node, nchildren - 1);
 	nextmaxkey = (nchildren > 1) ?
 		nilfs_btree_node_get_key(node, nchildren - 2) : 0;
-	if (bh != NULL)
-		brelse(bh);
+	brelse(bh);
 
 	return (maxkey == key) && (nextmaxkey < NILFS_BMAP_LARGE_LOW);
 }
@@ -1726,8 +1725,7 @@ static int nilfs_btree_gather_data(struct nilfs_bmap *btree,
 		ptrs[i] = le64_to_cpu(dptrs[i]);
 	}
 
-	if (bh != NULL)
-		brelse(bh);
+	brelse(bh);
 
 	return nitems;
 }

@@ -192,15 +192,10 @@ static bool cmdq_thread_is_in_wfe(struct cmdq_thread *thread)
 
 static void cmdq_task_exec_done(struct cmdq_task *task, int sta)
 {
-	struct cmdq_task_cb *cb = &task->pkt->async_cb;
 	struct cmdq_cb_data data;
 
 	data.sta = sta;
-	data.data = cb->data;
 	data.pkt = task->pkt;
-	if (cb->cb)
-		cb->cb(data);
-
 	mbox_chan_received_data(task->thread->chan, &data);
 
 	list_del(&task->list_entry);
@@ -448,7 +443,6 @@ done:
 static int cmdq_mbox_flush(struct mbox_chan *chan, unsigned long timeout)
 {
 	struct cmdq_thread *thread = (struct cmdq_thread *)chan->con_priv;
-	struct cmdq_task_cb *cb;
 	struct cmdq_cb_data data;
 	struct cmdq *cmdq = dev_get_drvdata(chan->mbox->dev);
 	struct cmdq_task *task, *tmp;
@@ -465,13 +459,8 @@ static int cmdq_mbox_flush(struct mbox_chan *chan, unsigned long timeout)
 
 	list_for_each_entry_safe(task, tmp, &thread->task_busy_list,
 				 list_entry) {
-		cb = &task->pkt->async_cb;
 		data.sta = -ECONNABORTED;
-		data.data = cb->data;
 		data.pkt = task->pkt;
-		if (cb->cb)
-			cb->cb(data);
-
 		mbox_chan_received_data(task->thread->chan, &data);
 		list_del(&task->list_entry);
 		kfree(task);
@@ -524,7 +513,6 @@ static struct mbox_chan *cmdq_xlate(struct mbox_controller *mbox,
 static int cmdq_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct resource *res;
 	struct cmdq *cmdq;
 	int err, i;
 	struct gce_plat *plat_data;
@@ -538,8 +526,7 @@ static int cmdq_probe(struct platform_device *pdev)
 	if (!cmdq)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	cmdq->base = devm_ioremap_resource(dev, res);
+	cmdq->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(cmdq->base))
 		return PTR_ERR(cmdq->base);
 
@@ -575,8 +562,11 @@ static int cmdq_probe(struct platform_device *pdev)
 				cmdq->clocks[alias_id].id = clk_names[alias_id];
 				cmdq->clocks[alias_id].clk = of_clk_get(node, 0);
 				if (IS_ERR(cmdq->clocks[alias_id].clk)) {
-					dev_err(dev, "failed to get gce clk: %d\n", alias_id);
-					return PTR_ERR(cmdq->clocks[alias_id].clk);
+					of_node_put(node);
+					return dev_err_probe(dev,
+							     PTR_ERR(cmdq->clocks[alias_id].clk),
+							     "failed to get gce clk: %d\n",
+							     alias_id);
 				}
 			}
 		}
@@ -584,8 +574,8 @@ static int cmdq_probe(struct platform_device *pdev)
 		cmdq->clocks[alias_id].id = clk_name;
 		cmdq->clocks[alias_id].clk = devm_clk_get(&pdev->dev, clk_name);
 		if (IS_ERR(cmdq->clocks[alias_id].clk)) {
-			dev_err(dev, "failed to get gce clk\n");
-			return PTR_ERR(cmdq->clocks[alias_id].clk);
+			return dev_err_probe(dev, PTR_ERR(cmdq->clocks[alias_id].clk),
+					     "failed to get gce clk\n");
 		}
 	}
 
@@ -666,7 +656,7 @@ static const struct gce_plat gce_plat_v5 = {
 static const struct gce_plat gce_plat_v6 = {
 	.thread_nr = 24,
 	.shift = 3,
-	.control_by_sw = false,
+	.control_by_sw = true,
 	.gce_num = 2
 };
 

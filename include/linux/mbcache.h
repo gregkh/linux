@@ -60,7 +60,6 @@ static inline void mb_cache_entry_put(struct mb_cache *cache,
 
 struct mb_cache_entry *mb_cache_entry_delete_or_get(struct mb_cache *cache,
 						    u32 key, u64 value);
-void mb_cache_entry_delete(struct mb_cache *cache, u32 key, u64 value);
 struct mb_cache_entry *mb_cache_entry_get(struct mb_cache *cache, u32 key,
 					  u64 value);
 struct mb_cache_entry *mb_cache_entry_find_first(struct mb_cache *cache,

@@ -196,7 +196,8 @@ resubmit:
 	if (ipprot) {
 		if (!ipprot->no_policy) {
 			if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) {
-				kfree_skb(skb);
+				kfree_skb_reason(skb,
+						 SKB_DROP_REASON_XFRM_POLICY);
 				return;
 			}
 			nf_reset_ct(skb);
@@ -215,7 +216,7 @@ resubmit:
 				icmp_send(skb, ICMP_DEST_UNREACH,
 					  ICMP_PROT_UNREACH, 0);
 			}
-			kfree_skb(skb);
+			kfree_skb_reason(skb, SKB_DROP_REASON_IP_NOPROTO);
 		} else {
 			__IP_INC_STATS(net, IPSTATS_MIB_INDELIVERS);
 			consume_skb(skb);
@@ -225,6 +226,7 @@ resubmit:
 
 static int ip_local_deliver_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
+	skb_clear_delivery_time(skb);
 	__skb_pull(skb, skb_network_header_len(skb));
 
 	rcu_read_lock();
@@ -461,6 +463,7 @@ static struct sk_buff *ip_rcv_core(struct sk_buff *skb, struct net *net)
 	 * that it receives, do not try to analyse it.
 	 */
 	if (skb->pkt_type == PACKET_OTHERHOST) {
+		dev_core_stats_rx_otherhost_dropped_inc(skb->dev);
 		drop_reason = SKB_DROP_REASON_OTHERHOST;
 		goto drop;
 	}

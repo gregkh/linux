@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018-2020 Linaro Ltd.
+ * Copyright (C) 2018-2022 Linaro Ltd.
  */
 
 #include <linux/types.h>
@@ -125,7 +125,7 @@ static void ipa_qmi_indication(struct ipa_qmi *ipa_qmi)
  */
 static void ipa_qmi_ready(struct ipa_qmi *ipa_qmi)
 {
-	struct ipa *ipa = container_of(ipa_qmi, struct ipa, qmi);
+	struct ipa *ipa;
 	int ret;
 
 	/* We aren't ready until the modem and microcontroller are */

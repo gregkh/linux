@@ -3,18 +3,65 @@
  * Real-Time Scheduling Class (mapped to the SCHED_FIFO and SCHED_RR
  * policies)
  */
-#include "sched.h"
-
-#include "pelt.h"
 
 int sched_rr_timeslice = RR_TIMESLICE;
-int sysctl_sched_rr_timeslice = (MSEC_PER_SEC / HZ) * RR_TIMESLICE;
 /* More than 4 hours if BW_SHIFT equals 20. */
 static const u64 max_rt_runtime = MAX_BW;
 
 static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun);
 
 struct rt_bandwidth def_rt_bandwidth;
+
+/*
+ * period over which we measure -rt task CPU usage in us.
+ * default: 1s
+ */
+unsigned int sysctl_sched_rt_period = 1000000;
+
+/*
+ * part of the period that we allow rt tasks to run in us.
+ * default: 0.95s
+ */
+int sysctl_sched_rt_runtime = 950000;
+
+#ifdef CONFIG_SYSCTL
+static int sysctl_sched_rr_timeslice = (MSEC_PER_SEC / HZ) * RR_TIMESLICE;
+static int sched_rt_handler(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos);
+static int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos);
+static struct ctl_table sched_rt_sysctls[] = {
+	{
+		.procname       = "sched_rt_period_us",
+		.data           = &sysctl_sched_rt_period,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = sched_rt_handler,
+	},
+	{
+		.procname       = "sched_rt_runtime_us",
+		.data           = &sysctl_sched_rt_runtime,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = sched_rt_handler,
+	},
+	{
+		.procname       = "sched_rr_timeslice_ms",
+		.data           = &sysctl_sched_rr_timeslice,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = sched_rr_handler,
+	},
+	{}
+};
+
+static int __init sched_rt_sysctl_init(void)
+{
+	register_sysctl_init("kernel", sched_rt_sysctls);
+	return 0;
+}
+late_initcall(sched_rt_sysctl_init);
+#endif
 
 static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 {
@@ -271,8 +318,6 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 
 #ifdef CONFIG_SMP
 
-static void pull_rt_task(struct rq *this_rq);
-
 static inline bool need_pull_rt_task(struct rq *rq, struct task_struct *prev)
 {
 	/* Try to pull RT tasks here if we lower this rq's prio */
@@ -365,8 +410,8 @@ static inline int has_pushable_tasks(struct rq *rq)
 	return !plist_head_empty(&rq->rt.pushable_tasks);
 }
 
-static DEFINE_PER_CPU(struct callback_head, rt_push_head);
-static DEFINE_PER_CPU(struct callback_head, rt_pull_head);
+static DEFINE_PER_CPU(struct balance_callback, rt_push_head);
+static DEFINE_PER_CPU(struct balance_callback, rt_pull_head);
 
 static void push_rt_tasks(struct rq *);
 static void pull_rt_task(struct rq *);
@@ -426,15 +471,6 @@ void inc_rt_migration(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 
 static inline
 void dec_rt_migration(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
-{
-}
-
-static inline bool need_pull_rt_task(struct rq *rq, struct task_struct *prev)
-{
-	return false;
-}
-
-static inline void pull_rt_task(struct rq *this_rq)
 {
 }
 
@@ -807,7 +843,7 @@ static void __disable_runtime(struct rq *rq)
 		 * We cannot be left wanting - that would mean some runtime
 		 * leaked out of the system.
 		 */
-		BUG_ON(want);
+		WARN_ON_ONCE(want);
 balanced:
 		/*
 		 * Disable all the borrow logic by pretending we have inf
@@ -1021,14 +1057,12 @@ static void update_curr_rt(struct rq *rq)
 	if (unlikely((s64)delta_exec <= 0))
 		return;
 
-	schedstat_set(curr->se.statistics.exec_max,
-		      max(curr->se.statistics.exec_max, delta_exec));
+	schedstat_set(curr->stats.exec_max,
+		      max(curr->stats.exec_max, delta_exec));
 
-	curr->se.sum_exec_runtime += delta_exec;
-	account_group_exec_runtime(curr, delta_exec);
+	trace_sched_stat_runtime(curr, delta_exec, 0);
 
-	curr->se.exec_start = now;
-	cgroup_account_cputime(curr, delta_exec);
+	update_current_exec_runtime(curr, now, delta_exec);
 
 	if (!rt_bandwidth_enabled())
 		return;
@@ -1287,6 +1321,112 @@ static void __delist_rt_entity(struct sched_rt_entity *rt_se, struct rt_prio_arr
 	rt_se->on_list = 0;
 }
 
+static inline struct sched_statistics *
+__schedstats_from_rt_se(struct sched_rt_entity *rt_se)
+{
+#ifdef CONFIG_RT_GROUP_SCHED
+	/* schedstats is not supported for rt group. */
+	if (!rt_entity_is_task(rt_se))
+		return NULL;
+#endif
+
+	return &rt_task_of(rt_se)->stats;
+}
+
+static inline void
+update_stats_wait_start_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
+{
+	struct sched_statistics *stats;
+	struct task_struct *p = NULL;
+
+	if (!schedstat_enabled())
+		return;
+
+	if (rt_entity_is_task(rt_se))
+		p = rt_task_of(rt_se);
+
+	stats = __schedstats_from_rt_se(rt_se);
+	if (!stats)
+		return;
+
+	__update_stats_wait_start(rq_of_rt_rq(rt_rq), p, stats);
+}
+
+static inline void
+update_stats_enqueue_sleeper_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
+{
+	struct sched_statistics *stats;
+	struct task_struct *p = NULL;
+
+	if (!schedstat_enabled())
+		return;
+
+	if (rt_entity_is_task(rt_se))
+		p = rt_task_of(rt_se);
+
+	stats = __schedstats_from_rt_se(rt_se);
+	if (!stats)
+		return;
+
+	__update_stats_enqueue_sleeper(rq_of_rt_rq(rt_rq), p, stats);
+}
+
+static inline void
+update_stats_enqueue_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se,
+			int flags)
+{
+	if (!schedstat_enabled())
+		return;
+
+	if (flags & ENQUEUE_WAKEUP)
+		update_stats_enqueue_sleeper_rt(rt_rq, rt_se);
+}
+
+static inline void
+update_stats_wait_end_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
+{
+	struct sched_statistics *stats;
+	struct task_struct *p = NULL;
+
+	if (!schedstat_enabled())
+		return;
+
+	if (rt_entity_is_task(rt_se))
+		p = rt_task_of(rt_se);
+
+	stats = __schedstats_from_rt_se(rt_se);
+	if (!stats)
+		return;
+
+	__update_stats_wait_end(rq_of_rt_rq(rt_rq), p, stats);
+}
+
+static inline void
+update_stats_dequeue_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se,
+			int flags)
+{
+	struct task_struct *p = NULL;
+
+	if (!schedstat_enabled())
+		return;
+
+	if (rt_entity_is_task(rt_se))
+		p = rt_task_of(rt_se);
+
+	if ((flags & DEQUEUE_SLEEP) && p) {
+		unsigned int state;
+
+		state = READ_ONCE(p->__state);
+		if (state & TASK_INTERRUPTIBLE)
+			__schedstat_set(p->stats.sleep_start,
+					rq_clock(rq_of_rt_rq(rt_rq)));
+
+		if (state & TASK_UNINTERRUPTIBLE)
+			__schedstat_set(p->stats.block_start,
+					rq_clock(rq_of_rt_rq(rt_rq)));
+	}
+}
+
 static void __enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 {
 	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
@@ -1363,6 +1503,8 @@ static void enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 {
 	struct rq *rq = rq_of_rt_se(rt_se);
 
+	update_stats_enqueue_rt(rt_rq_of_se(rt_se), rt_se, flags);
+
 	dequeue_rt_stack(rt_se, flags);
 	for_each_sched_rt_entity(rt_se)
 		__enqueue_rt_entity(rt_se, flags);
@@ -1372,6 +1514,8 @@ static void enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 {
 	struct rq *rq = rq_of_rt_se(rt_se);
+
+	update_stats_dequeue_rt(rt_rq_of_se(rt_se), rt_se, flags);
 
 	dequeue_rt_stack(rt_se, flags);
 
@@ -1394,6 +1538,9 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 
 	if (flags & ENQUEUE_WAKEUP)
 		rt_se->timeout = 0;
+
+	check_schedstat_required();
+	update_stats_wait_start_rt(rt_rq_of_se(rt_se), rt_se);
 
 	enqueue_rt_entity(rt_se, flags);
 
@@ -1595,7 +1742,12 @@ static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flag
 
 static inline void set_next_task_rt(struct rq *rq, struct task_struct *p, bool first)
 {
+	struct sched_rt_entity *rt_se = &p->rt;
+	struct rt_rq *rt_rq = &rq->rt;
+
 	p->se.exec_start = rq_clock_task(rq);
+	if (on_rt_rq(&p->rt))
+		update_stats_wait_end_rt(rt_rq, rt_se);
 
 	/* The running task is never eligible for pushing */
 	dequeue_pushable_task(rq, p);
@@ -1614,8 +1766,7 @@ static inline void set_next_task_rt(struct rq *rq, struct task_struct *p, bool f
 	rt_queue_push_tasks(rq);
 }
 
-static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
-						   struct rt_rq *rt_rq)
+static struct sched_rt_entity *pick_next_rt_entity(struct rt_rq *rt_rq)
 {
 	struct rt_prio_array *array = &rt_rq->active;
 	struct sched_rt_entity *next = NULL;
@@ -1637,7 +1788,7 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 	struct rt_rq *rt_rq  = &rq->rt;
 
 	do {
-		rt_se = pick_next_rt_entity(rq, rt_rq);
+		rt_se = pick_next_rt_entity(rt_rq);
 		BUG_ON(!rt_se);
 		rt_rq = group_rt_rq(rt_se);
 	} while (rt_rq);
@@ -1669,6 +1820,12 @@ static struct task_struct *pick_next_task_rt(struct rq *rq)
 
 static void put_prev_task_rt(struct rq *rq, struct task_struct *p)
 {
+	struct sched_rt_entity *rt_se = &p->rt;
+	struct rt_rq *rt_rq = &rq->rt;
+
+	if (on_rt_rq(&p->rt))
+		update_stats_wait_start_rt(rt_rq, rt_se);
+
 	update_curr_rt(rq);
 
 	update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
@@ -1688,7 +1845,7 @@ static void put_prev_task_rt(struct rq *rq, struct task_struct *p)
 
 static int pick_rt_task(struct rq *rq, struct task_struct *p, int cpu)
 {
-	if (!task_running(rq, p) &&
+	if (!task_on_cpu(rq, p) &&
 	    cpumask_test_cpu(cpu, &p->cpus_mask))
 		return 1;
 
@@ -1843,7 +2000,7 @@ static struct rq *find_lock_lowest_rq(struct task_struct *task, struct rq *rq)
 			 */
 			if (unlikely(task_rq(task) != rq ||
 				     !cpumask_test_cpu(lowest_rq->cpu, &task->cpus_mask) ||
-				     task_running(rq, task) ||
+				     task_on_cpu(rq, task) ||
 				     !rt_task(task) ||
 				     !task_on_rq_queued(task))) {
 
@@ -2301,7 +2458,7 @@ skip:
  */
 static void task_woken_rt(struct rq *rq, struct task_struct *p)
 {
-	bool need_to_push = !task_running(rq, p) &&
+	bool need_to_push = !task_on_cpu(rq, p) &&
 			    !test_tsk_need_resched(rq->curr) &&
 			    p->nr_cpus_allowed > 1 &&
 			    (dl_task(rq->curr) || rt_task(rq->curr)) &&
@@ -2754,6 +2911,7 @@ long sched_group_rt_period(struct task_group *tg)
 	return rt_period_us;
 }
 
+#ifdef CONFIG_SYSCTL
 static int sched_rt_global_constraints(void)
 {
 	int ret = 0;
@@ -2764,6 +2922,7 @@ static int sched_rt_global_constraints(void)
 
 	return ret;
 }
+#endif /* CONFIG_SYSCTL */
 
 int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk)
 {
@@ -2775,6 +2934,8 @@ int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk)
 }
 
 #else /* !CONFIG_RT_GROUP_SCHED */
+
+#ifdef CONFIG_SYSCTL
 static int sched_rt_global_constraints(void)
 {
 	unsigned long flags;
@@ -2792,8 +2953,10 @@ static int sched_rt_global_constraints(void)
 
 	return 0;
 }
+#endif /* CONFIG_SYSCTL */
 #endif /* CONFIG_RT_GROUP_SCHED */
 
+#ifdef CONFIG_SYSCTL
 static int sched_rt_global_validate(void)
 {
 	if (sysctl_sched_rt_period <= 0)
@@ -2818,7 +2981,7 @@ static void sched_rt_do_global(void)
 	raw_spin_unlock_irqrestore(&def_rt_bandwidth.rt_runtime_lock, flags);
 }
 
-int sched_rt_handler(struct ctl_table *table, int write, void *buffer,
+static int sched_rt_handler(struct ctl_table *table, int write, void *buffer,
 		size_t *lenp, loff_t *ppos)
 {
 	int old_period, old_runtime;
@@ -2857,7 +3020,7 @@ undo:
 	return ret;
 }
 
-int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
+static int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
 		size_t *lenp, loff_t *ppos)
 {
 	int ret;
@@ -2878,6 +3041,7 @@ int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
 
 	return ret;
 }
+#endif /* CONFIG_SYSCTL */
 
 #ifdef CONFIG_SCHED_DEBUG
 void print_rt_stats(struct seq_file *m, int cpu)

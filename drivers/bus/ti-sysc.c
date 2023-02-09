@@ -140,6 +140,7 @@ struct sysc {
 	struct ti_sysc_cookie cookie;
 	const char *name;
 	u32 revision;
+	u32 sysconfig;
 	unsigned int reserved:1;
 	unsigned int enabled:1;
 	unsigned int needs_resume:1;
@@ -156,6 +157,7 @@ struct sysc {
 
 static void sysc_parse_dts_quirks(struct sysc *ddata, struct device_node *np,
 				  bool is_child);
+static int sysc_reset(struct sysc *ddata);
 
 static void sysc_write(struct sysc *ddata, int offset, u32 value)
 {
@@ -1143,7 +1145,8 @@ set_midle:
 	best_mode = fls(ddata->cfg.midlemodes) - 1;
 	if (best_mode > SYSC_IDLE_MASK) {
 		dev_err(dev, "%s: invalid midlemode\n", __func__);
-		return -EINVAL;
+		error = -EINVAL;
+		goto save_context;
 	}
 
 	if (ddata->cfg.quirks & SYSC_QUIRK_SWSUP_MSTANDBY)
@@ -1161,13 +1164,16 @@ set_autoidle:
 		sysc_write_sysconfig(ddata, reg);
 	}
 
-	/* Flush posted write */
-	sysc_read(ddata, ddata->offsets[SYSC_SYSCONFIG]);
+	error = 0;
+
+save_context:
+	/* Save context and flush posted write */
+	ddata->sysconfig = sysc_read(ddata, ddata->offsets[SYSC_SYSCONFIG]);
 
 	if (ddata->module_enable_quirk)
 		ddata->module_enable_quirk(ddata);
 
-	return 0;
+	return error;
 }
 
 static int sysc_best_idle_mode(u32 idlemodes, u32 *best_mode)
@@ -1224,8 +1230,10 @@ static int sysc_disable_module(struct device *dev)
 set_sidle:
 	/* Set SIDLE mode */
 	idlemodes = ddata->cfg.sidlemodes;
-	if (!idlemodes || regbits->sidle_shift < 0)
-		return 0;
+	if (!idlemodes || regbits->sidle_shift < 0) {
+		ret = 0;
+		goto save_context;
+	}
 
 	if (ddata->cfg.quirks & SYSC_QUIRK_SWSUP_SIDLE) {
 		best_mode = SYSC_IDLE_FORCE;
@@ -1233,7 +1241,8 @@ set_sidle:
 		ret = sysc_best_idle_mode(idlemodes, &best_mode);
 		if (ret) {
 			dev_err(dev, "%s: invalid sidlemode\n", __func__);
-			return ret;
+			ret = -EINVAL;
+			goto save_context;
 		}
 	}
 
@@ -1244,10 +1253,13 @@ set_sidle:
 		reg |= 1 << regbits->autoidle_shift;
 	sysc_write_sysconfig(ddata, reg);
 
-	/* Flush posted write */
-	sysc_read(ddata, ddata->offsets[SYSC_SYSCONFIG]);
+	ret = 0;
 
-	return 0;
+save_context:
+	/* Save context and flush posted write */
+	ddata->sysconfig = sysc_read(ddata, ddata->offsets[SYSC_SYSCONFIG]);
+
+	return ret;
 }
 
 static int __maybe_unused sysc_runtime_suspend_legacy(struct device *dev,
@@ -1385,13 +1397,40 @@ err_allow_idle:
 	return error;
 }
 
+/*
+ * Checks if device context was lost. Assumes the sysconfig register value
+ * after lost context is different from the configured value. Only works for
+ * enabled devices.
+ *
+ * Eventually we may want to also add support to using the context lost
+ * registers that some SoCs have.
+ */
+static int sysc_check_context(struct sysc *ddata)
+{
+	u32 reg;
+
+	if (!ddata->enabled)
+		return -ENODATA;
+
+	reg = sysc_read(ddata, ddata->offsets[SYSC_SYSCONFIG]);
+	if (reg == ddata->sysconfig)
+		return 0;
+
+	return -EACCES;
+}
+
 static int sysc_reinit_module(struct sysc *ddata, bool leave_enabled)
 {
 	struct device *dev = ddata->dev;
 	int error;
 
-	/* Disable target module if it is enabled */
 	if (ddata->enabled) {
+		/* Nothing to do if enabled and context not lost */
+		error = sysc_check_context(ddata);
+		if (!error)
+			return 0;
+
+		/* Disable target module if it is enabled */
 		error = sysc_runtime_suspend(dev);
 		if (error)
 			dev_warn(dev, "reinit suspend failed: %i\n", error);
@@ -1401,6 +1440,15 @@ static int sysc_reinit_module(struct sysc *ddata, bool leave_enabled)
 	error = sysc_runtime_resume(dev);
 	if (error)
 		dev_warn(dev, "reinit resume failed: %i\n", error);
+
+	/* Some modules like am335x gpmc need reset and restore of sysconfig */
+	if (ddata->cfg.quirks & SYSC_QUIRK_RESET_ON_CTX_LOST) {
+		error = sysc_reset(ddata);
+		if (error)
+			dev_warn(dev, "reinit reset failed: %i\n", error);
+
+		sysc_write_sysconfig(ddata, ddata->sysconfig);
+	}
 
 	if (leave_enabled)
 		return error;
@@ -1491,10 +1539,6 @@ struct sysc_revision_quirk {
 
 static const struct sysc_revision_quirk sysc_revision_quirks[] = {
 	/* These drivers need to be fixed to not use pm_runtime_irq_safe() */
-	SYSC_QUIRK("gpio", 0, 0, 0x10, 0x114, 0x50600801, 0xffff00ff,
-		   SYSC_QUIRK_LEGACY_IDLE | SYSC_QUIRK_OPT_CLKS_IN_RESET),
-	SYSC_QUIRK("sham", 0, 0x100, 0x110, 0x114, 0x40000c03, 0xffffffff,
-		   SYSC_QUIRK_LEGACY_IDLE),
 	SYSC_QUIRK("uart", 0, 0x50, 0x54, 0x58, 0x00000046, 0xffffffff,
 		   SYSC_QUIRK_SWSUP_SIDLE | SYSC_QUIRK_LEGACY_IDLE),
 	SYSC_QUIRK("uart", 0, 0x50, 0x54, 0x58, 0x00000052, 0xffffffff,
@@ -1528,7 +1572,10 @@ static const struct sysc_revision_quirk sysc_revision_quirks[] = {
 		   SYSC_QUIRK_CLKDM_NOAUTO),
 	SYSC_QUIRK("dwc3", 0x488c0000, 0, 0x10, -ENODEV, 0x500a0200, 0xffffffff,
 		   SYSC_QUIRK_CLKDM_NOAUTO),
+	SYSC_QUIRK("gpio", 0, 0, 0x10, 0x114, 0x50600801, 0xffff00ff,
+		   SYSC_QUIRK_OPT_CLKS_IN_RESET),
 	SYSC_QUIRK("gpmc", 0, 0, 0x10, 0x14, 0x00000060, 0xffffffff,
+		   SYSC_QUIRK_REINIT_ON_CTX_LOST | SYSC_QUIRK_RESET_ON_CTX_LOST |
 		   SYSC_QUIRK_GPMC_DEBUG),
 	SYSC_QUIRK("hdmi", 0, 0, 0x10, -ENODEV, 0x50030200, 0xffffffff,
 		   SYSC_QUIRK_OPT_CLKS_NEEDED),
@@ -1564,7 +1611,8 @@ static const struct sysc_revision_quirk sysc_revision_quirks[] = {
 	SYSC_QUIRK("usb_host_hs", 0, 0, 0x10, -ENODEV, 0x50700101, 0xffffffff,
 		   SYSC_QUIRK_SWSUP_SIDLE | SYSC_QUIRK_SWSUP_MSTANDBY),
 	SYSC_QUIRK("usb_otg_hs", 0, 0x400, 0x404, 0x408, 0x00000050,
-		   0xffffffff, SYSC_QUIRK_SWSUP_SIDLE | SYSC_QUIRK_SWSUP_MSTANDBY),
+		   0xffffffff, SYSC_QUIRK_SWSUP_SIDLE | SYSC_QUIRK_SWSUP_MSTANDBY |
+		   SYSC_MODULE_QUIRK_OTG),
 	SYSC_QUIRK("usb_otg_hs", 0, 0, 0x10, -ENODEV, 0x4ea2080d, 0xffffffff,
 		   SYSC_QUIRK_SWSUP_SIDLE | SYSC_QUIRK_SWSUP_MSTANDBY |
 		   SYSC_QUIRK_REINIT_ON_CTX_LOST),
@@ -1632,6 +1680,7 @@ static const struct sysc_revision_quirk sysc_revision_quirks[] = {
 	SYSC_QUIRK("sdio", 0, 0, 0x10, -ENODEV, 0x40202301, 0xffff0ff0, 0),
 	SYSC_QUIRK("sdio", 0, 0x2fc, 0x110, 0x114, 0x31010000, 0xffffffff, 0),
 	SYSC_QUIRK("sdma", 0, 0, 0x2c, 0x28, 0x00010900, 0xffffffff, 0),
+	SYSC_QUIRK("sham", 0, 0x100, 0x110, 0x114, 0x40000c03, 0xffffffff, 0),
 	SYSC_QUIRK("slimbus", 0, 0, 0x10, -ENODEV, 0x40000902, 0xffffffff, 0),
 	SYSC_QUIRK("slimbus", 0, 0, 0x10, -ENODEV, 0x40002903, 0xffffffff, 0),
 	SYSC_QUIRK("smartreflex", 0, -ENODEV, 0x24, -ENODEV, 0x00000000, 0xffffffff, 0),
@@ -1923,6 +1972,22 @@ static void sysc_module_lock_quirk_rtc(struct sysc *ddata)
 	sysc_quirk_rtc(ddata, true);
 }
 
+/* OTG omap2430 glue layer up to omap4 needs OTG_FORCESTDBY configured */
+static void sysc_module_enable_quirk_otg(struct sysc *ddata)
+{
+	int offset = 0x414;	/* OTG_FORCESTDBY */
+
+	sysc_write(ddata, offset, 0);
+}
+
+static void sysc_module_disable_quirk_otg(struct sysc *ddata)
+{
+	int offset = 0x414;	/* OTG_FORCESTDBY */
+	u32 val = BIT(0);	/* ENABLEFORCE */
+
+	sysc_write(ddata, offset, val);
+}
+
 /* 36xx SGX needs a quirk for to bypass OCP IPG interrupt logic */
 static void sysc_module_enable_quirk_sgx(struct sysc *ddata)
 {
@@ -2003,6 +2068,11 @@ static void sysc_init_module_quirks(struct sysc *ddata)
 		ddata->module_lock_quirk = sysc_module_lock_quirk_rtc;
 
 		return;
+	}
+
+	if (ddata->cfg.quirks & SYSC_MODULE_QUIRK_OTG) {
+		ddata->module_enable_quirk = sysc_module_enable_quirk_otg;
+		ddata->module_disable_quirk = sysc_module_disable_quirk_otg;
 	}
 
 	if (ddata->cfg.quirks & SYSC_MODULE_QUIRK_SGX)
@@ -2979,7 +3049,7 @@ static const struct soc_device_attribute sysc_soc_match[] = {
 	SOC_FLAG("AM43*", SOC_AM4),
 	SOC_FLAG("DRA7*", SOC_DRA7),
 
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 
 /*
@@ -3000,7 +3070,7 @@ static const struct soc_device_attribute sysc_soc_feat_match[] = {
 	SOC_FLAG("OMAP3615/AM3715", DIS_IVA),
 	SOC_FLAG("OMAP3621", DIS_ISP),
 
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 
 static int sysc_add_disabled(unsigned long base)

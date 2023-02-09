@@ -358,9 +358,6 @@ qla2x00_async_login(struct scsi_qla_host *vha, fc_port_t *fcport,
 		    DBELL_ACTIVE(vha)) {
 			lio->u.logio.flags |=
 				(SRB_LOGIN_FCSP | SRB_LOGIN_SKIP_PRLI);
-			ql_dbg(ql_dbg_disc, vha, 0x2072,
-			    "Async-login: w/ FCSP %8phC hdl=%x, loopid=%x portid=%06x\n",
-			    fcport->port_name, sp->handle, fcport->loop_id, fcport->d_id.b24);
 		} else {
 			lio->u.logio.flags |= SRB_LOGIN_COND_PLOGI;
 		}
@@ -369,12 +366,14 @@ qla2x00_async_login(struct scsi_qla_host *vha, fc_port_t *fcport,
 	if (NVME_TARGET(vha->hw, fcport))
 		lio->u.logio.flags |= SRB_LOGIN_SKIP_PRLI;
 
-	ql_dbg(ql_dbg_disc, vha, 0x2072,
-	       "Async-login - %8phC hdl=%x, loopid=%x portid=%06x retries=%d.\n",
-	       fcport->port_name, sp->handle, fcport->loop_id,
-	       fcport->d_id.b24, fcport->login_retry);
-
 	rval = qla2x00_start_sp(sp);
+
+	ql_dbg(ql_dbg_disc, vha, 0x2072,
+	       "Async-login - %8phC hdl=%x, loopid=%x portid=%06x retries=%d %s.\n",
+	       fcport->port_name, sp->handle, fcport->loop_id,
+	       fcport->d_id.b24, fcport->login_retry,
+	       lio->u.logio.flags & SRB_LOGIN_FCSP ? "FCSP" : "");
+
 	if (rval != QLA_SUCCESS) {
 		fcport->flags |= FCF_LOGIN_NEEDED;
 		set_bit(RELOGIN_NEEDED, &vha->dpc_flags);
@@ -1495,7 +1494,6 @@ static int	qla_chk_secure_login(scsi_qla_host_t	*vha, fc_port_t *fcport,
 				ql_dbg(ql_dbg_disc, vha, 0x20ef,
 				    "%s %d %8phC EDIF: post DB_AUTH: AUTH needed\n",
 				    __func__, __LINE__, fcport->port_name);
-				fcport->edif.app_started = 1;
 				fcport->edif.app_sess_online = 1;
 
 				qla_edb_eventcreate(vha, VND_CMD_AUTH_STATE_NEEDED,
@@ -5310,9 +5308,6 @@ qla2x00_alloc_fcport(scsi_qla_host_t *vha, gfp_t flags)
 	INIT_LIST_HEAD(&fcport->edif.tx_sa_list);
 	INIT_LIST_HEAD(&fcport->edif.rx_sa_list);
 
-	if (vha->e_dbell.db_flags == EDB_ACTIVE)
-		fcport->edif.app_started = 1;
-
 	spin_lock_init(&fcport->edif.indx_list_lock);
 	INIT_LIST_HEAD(&fcport->edif.edif_indx_list);
 
@@ -5926,13 +5921,6 @@ qla2x00_update_fcport(scsi_qla_host_t *vha, fc_port_t *fcport)
 
 	qla2x00_dfs_create_rport(vha, fcport);
 
-	if (NVME_TARGET(vha->hw, fcport)) {
-		qla_nvme_register_remote(vha, fcport);
-		qla2x00_set_fcport_disc_state(fcport, DSC_LOGIN_COMPLETE);
-		qla2x00_set_fcport_state(fcport, FCS_ONLINE);
-		return;
-	}
-
 	qla24xx_update_fcport_fcp_prio(vha, fcport);
 
 	switch (vha->host->active_mode) {
@@ -5953,6 +5941,9 @@ qla2x00_update_fcport(scsi_qla_host_t *vha, fc_port_t *fcport)
 	default:
 		break;
 	}
+
+	if (NVME_TARGET(vha->hw, fcport))
+		qla_nvme_register_remote(vha, fcport);
 
 	qla2x00_set_fcport_state(fcport, FCS_ONLINE);
 
@@ -5986,6 +5977,10 @@ void qla_register_fcport_fn(struct work_struct *work)
 		return;
 
 	qla2x00_update_fcport(fcport->vha, fcport);
+
+	ql_dbg(ql_dbg_disc, fcport->vha, 0x911e,
+	       "%s rscn gen %d/%d next DS %d\n", __func__,
+	       rscn_gen, fcport->rscn_gen, fcport->next_disc_state);
 
 	if (rscn_gen != fcport->rscn_gen) {
 		/* RSCN(s) came in while registration */
@@ -6871,29 +6866,6 @@ __qla83xx_clear_drv_ack(scsi_qla_host_t *vha)
 	return rval;
 }
 
-static const char *
-qla83xx_dev_state_to_string(uint32_t dev_state)
-{
-	switch (dev_state) {
-	case QLA8XXX_DEV_COLD:
-		return "COLD/RE-INIT";
-	case QLA8XXX_DEV_INITIALIZING:
-		return "INITIALIZING";
-	case QLA8XXX_DEV_READY:
-		return "READY";
-	case QLA8XXX_DEV_NEED_RESET:
-		return "NEED RESET";
-	case QLA8XXX_DEV_NEED_QUIESCENT:
-		return "NEED QUIESCENT";
-	case QLA8XXX_DEV_FAILED:
-		return "FAILED";
-	case QLA8XXX_DEV_QUIESCENT:
-		return "QUIESCENT";
-	default:
-		return "Unknown";
-	}
-}
-
 /* Assumes idc-lock always held on entry */
 void
 qla83xx_idc_audit(scsi_qla_host_t *vha, int audit_type)
@@ -6947,9 +6919,8 @@ qla83xx_initiating_reset(scsi_qla_host_t *vha)
 		ql_log(ql_log_info, vha, 0xb056, "HW State: NEED RESET.\n");
 		qla83xx_idc_audit(vha, IDC_AUDIT_TIMESTAMP);
 	} else {
-		const char *state = qla83xx_dev_state_to_string(dev_state);
-
-		ql_log(ql_log_info, vha, 0xb057, "HW State: %s.\n", state);
+		ql_log(ql_log_info, vha, 0xb057, "HW State: %s.\n",
+				qdev_state(dev_state));
 
 		/* SV: XXX: Is timeout required here? */
 		/* Wait for IDC state change READY -> NEED_RESET */
@@ -7285,6 +7256,9 @@ qla2x00_abort_isp(scsi_qla_host_t *vha)
 
 	if (vha->flags.online) {
 		qla2x00_abort_isp_cleanup(vha);
+
+		vha->dport_status |= DPORT_DIAG_CHIP_RESET_IN_PROGRESS;
+		vha->dport_status &= ~DPORT_DIAG_IN_PROGRESS;
 
 		if (vha->hw->flags.port_isolated)
 			return status;
@@ -7963,6 +7937,9 @@ qla28xx_component_status(
 
 	active_regions->aux.npiv_config_2_3 =
 	    qla28xx_component_bitmask(aux, QLA28XX_AUX_IMG_NPIV_CONFIG_2_3);
+
+	active_regions->aux.nvme_params =
+	    qla28xx_component_bitmask(aux, QLA28XX_AUX_IMG_NVME_PARAMS);
 }
 
 static int
@@ -8071,11 +8048,12 @@ check_valid_image:
 	}
 
 	ql_dbg(ql_dbg_init, vha, 0x018f,
-	    "aux images active: BCFG=%u VPD/NVR=%u NPIV0/1=%u NPIV2/3=%u\n",
+	    "aux images active: BCFG=%u VPD/NVR=%u NPIV0/1=%u NPIV2/3=%u, NVME=%u\n",
 	    active_regions->aux.board_config,
 	    active_regions->aux.vpd_nvram,
 	    active_regions->aux.npiv_config_0_1,
-	    active_regions->aux.npiv_config_2_3);
+	    active_regions->aux.npiv_config_2_3,
+	    active_regions->aux.nvme_params);
 }
 
 void

@@ -13,10 +13,9 @@
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/usb/pd.h>
+#include <linux/usb/tcpci.h>
 #include <linux/usb/tcpm.h>
 #include <linux/usb/typec.h>
-
-#include "tcpci.h"
 
 #define	PD_RETRY_COUNT_DEFAULT			3
 #define	PD_RETRY_COUNT_3_0_OR_HIGHER		2
@@ -27,11 +26,6 @@
 #define	VPPS_NEW_MIN_PERCENT			95
 #define	VPPS_VALID_MIN_MV			100
 #define	VSINKDISCONNECT_PD_MIN_PERCENT		90
-
-#define tcpc_presenting_rd(reg, cc) \
-	(!(TCPC_ROLE_CTRL_DRP & (reg)) && \
-	 (((reg) & (TCPC_ROLE_CTRL_## cc ##_MASK << TCPC_ROLE_CTRL_## cc ##_SHIFT)) == \
-	  (TCPC_ROLE_CTRL_CC_RD << TCPC_ROLE_CTRL_## cc ##_SHIFT)))
 
 struct tcpci {
 	struct device *dev;
@@ -219,23 +213,6 @@ static int tcpci_start_toggling(struct tcpc_dev *tcpc,
 			    TCPC_CMD_LOOK4CONNECTION);
 }
 
-static enum typec_cc_status tcpci_to_typec_cc(unsigned int cc, bool sink)
-{
-	switch (cc) {
-	case 0x1:
-		return sink ? TYPEC_CC_RP_DEF : TYPEC_CC_RA;
-	case 0x2:
-		return sink ? TYPEC_CC_RP_1_5 : TYPEC_CC_RD;
-	case 0x3:
-		if (sink)
-			return TYPEC_CC_RP_3_0;
-		fallthrough;
-	case 0x0:
-	default:
-		return TYPEC_CC_OPEN;
-	}
-}
-
 static int tcpci_get_cc(struct tcpc_dev *tcpc,
 			enum typec_cc_status *cc1, enum typec_cc_status *cc2)
 {
@@ -284,7 +261,7 @@ static int tcpci_set_polarity(struct tcpc_dev *tcpc,
 	 * When port has drp toggling enabled, ROLE_CONTROL would only have the initial
 	 * terminations for the toggling and does not indicate the final cc
 	 * terminations when ConnectionResult is 0 i.e. drp toggling stops and
-	 * the connection is resolbed. Infer port role from TCPC_CC_STATUS based on the
+	 * the connection is resolved. Infer port role from TCPC_CC_STATUS based on the
 	 * terminations seen. The port role is then used to set the cc terminations.
 	 */
 	if (reg & TCPC_ROLE_CTRL_DRP) {
@@ -872,7 +849,7 @@ static int tcpci_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int tcpci_remove(struct i2c_client *client)
+static void tcpci_remove(struct i2c_client *client)
 {
 	struct tcpci_chip *chip = i2c_get_clientdata(client);
 	int err;
@@ -883,8 +860,6 @@ static int tcpci_remove(struct i2c_client *client)
 		dev_warn(&client->dev, "Failed to disable irqs (%pe)\n", ERR_PTR(err));
 
 	tcpci_unregister_port(chip->tcpci);
-
-	return 0;
 }
 
 static const struct i2c_device_id tcpci_id[] = {

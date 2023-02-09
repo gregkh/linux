@@ -112,7 +112,7 @@ static void opal_fadump_update_config(struct fw_dump *fadump_conf,
  * This function is called in the capture kernel to get configuration details
  * from metadata setup by the first kernel.
  */
-static void opal_fadump_get_config(struct fw_dump *fadump_conf,
+static void __init opal_fadump_get_config(struct fw_dump *fadump_conf,
 				   const struct opal_fadump_mem_struct *fdm)
 {
 	unsigned long base, size, last_end, hole_size;
@@ -206,7 +206,7 @@ static u64 opal_fadump_init_mem_struct(struct fw_dump *fadump_conf)
 	opal_fdm->region_cnt = cpu_to_be16(reg_cnt);
 
 	/*
-	 * Kernel metadata is passed to f/w and retrieved in capture kerenl.
+	 * Kernel metadata is passed to f/w and retrieved in capture kernel.
 	 * So, use it to save fadump header address instead of calculating it.
 	 */
 	opal_fdm->fadumphdr_addr = cpu_to_be64(be64_to_cpu(opal_fdm->rgn[0].dest) +
@@ -587,10 +587,10 @@ static void opal_fadump_region_show(struct fw_dump *fadump_conf,
 			   be64_to_cpu(fdm_ptr->rgn[i].size), dumped_bytes);
 	}
 
-	/* Dump is active. Show reserved area start address. */
+	/* Dump is active. Show preserved area start address. */
 	if (fadump_conf->dump_active) {
-		seq_printf(m, "\nMemory above %#016lx is reserved for saving crash dump\n",
-			   fadump_conf->reserve_dump_area_start);
+		seq_printf(m, "\nMemory above %#016llx is reserved for saving crash dump\n",
+			   fadump_conf->boot_mem_top);
 	}
 }
 

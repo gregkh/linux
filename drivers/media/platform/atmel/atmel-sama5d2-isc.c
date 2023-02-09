@@ -60,33 +60,40 @@
 static const struct isc_format sama5d2_controller_formats[] = {
 	{
 		.fourcc		= V4L2_PIX_FMT_ARGB444,
-	},
-	{
+	}, {
 		.fourcc		= V4L2_PIX_FMT_ARGB555,
-	},
-	{
+	}, {
 		.fourcc		= V4L2_PIX_FMT_RGB565,
-	},
-	{
+	}, {
 		.fourcc		= V4L2_PIX_FMT_ABGR32,
-	},
-	{
+	}, {
 		.fourcc		= V4L2_PIX_FMT_XBGR32,
-	},
-	{
+	}, {
 		.fourcc		= V4L2_PIX_FMT_YUV420,
-	},
-	{
+	}, {
 		.fourcc		= V4L2_PIX_FMT_YUYV,
-	},
-	{
+	}, {
 		.fourcc		= V4L2_PIX_FMT_YUV422P,
-	},
-	{
+	}, {
 		.fourcc		= V4L2_PIX_FMT_GREY,
-	},
-	{
+	}, {
 		.fourcc		= V4L2_PIX_FMT_Y10,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SBGGR8,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SGBRG8,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SGRBG8,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SRGGB8,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SBGGR10,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SGBRG10,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SGRBG10,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SRGGB10,
 	},
 };
 
@@ -499,13 +506,14 @@ static int atmel_isc_probe(struct platform_device *pdev)
 
 	list_for_each_entry(subdev_entity, &isc->subdev_entities, list) {
 		struct v4l2_async_subdev *asd;
+		struct fwnode_handle *fwnode =
+			of_fwnode_handle(subdev_entity->epn);
 
-		v4l2_async_notifier_init(&subdev_entity->notifier);
+		v4l2_async_nf_init(&subdev_entity->notifier);
 
-		asd = v4l2_async_notifier_add_fwnode_remote_subdev(
-					&subdev_entity->notifier,
-					of_fwnode_handle(subdev_entity->epn),
-					struct v4l2_async_subdev);
+		asd = v4l2_async_nf_add_fwnode_remote(&subdev_entity->notifier,
+						      fwnode,
+						      struct v4l2_async_subdev);
 
 		of_node_put(subdev_entity->epn);
 		subdev_entity->epn = NULL;
@@ -517,8 +525,8 @@ static int atmel_isc_probe(struct platform_device *pdev)
 
 		subdev_entity->notifier.ops = &isc_async_ops;
 
-		ret = v4l2_async_notifier_register(&isc->v4l2_dev,
-						   &subdev_entity->notifier);
+		ret = v4l2_async_nf_register(&isc->v4l2_dev,
+					     &subdev_entity->notifier);
 		if (ret) {
 			dev_err(dev, "fail to register async notifier\n");
 			goto cleanup_subdev;

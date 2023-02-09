@@ -124,10 +124,10 @@
 #include "xgbe.h"
 #include "xgbe-common.h"
 
-#define XGBE_PHY_PORT_SPEED_100		BIT(0)
-#define XGBE_PHY_PORT_SPEED_1000	BIT(1)
-#define XGBE_PHY_PORT_SPEED_2500	BIT(2)
-#define XGBE_PHY_PORT_SPEED_10000	BIT(3)
+#define XGBE_PHY_PORT_SPEED_100		BIT(1)
+#define XGBE_PHY_PORT_SPEED_1000	BIT(2)
+#define XGBE_PHY_PORT_SPEED_2500	BIT(3)
+#define XGBE_PHY_PORT_SPEED_10000	BIT(4)
 
 #define XGBE_MUTEX_RELEASE		0x80000000
 
@@ -1979,6 +1979,10 @@ static void xgbe_phy_rx_reset(struct xgbe_prv_data *pdata)
 
 static void xgbe_phy_pll_ctrl(struct xgbe_prv_data *pdata, bool enable)
 {
+	/* PLL_CTRL feature needs to be enabled for fixed PHY modes (Non-Autoneg) only */
+	if (pdata->phy.autoneg != AUTONEG_DISABLE)
+		return;
+
 	XMDIO_WRITE_BITS(pdata, MDIO_MMD_PMAPMD, MDIO_VEND2_PMA_MISC_CTRL0,
 			 XGBE_PMA_PLL_CTRL_MASK,
 			 enable ? XGBE_PMA_PLL_CTRL_ENABLE
@@ -1989,7 +1993,7 @@ static void xgbe_phy_pll_ctrl(struct xgbe_prv_data *pdata, bool enable)
 }
 
 static void xgbe_phy_perform_ratechange(struct xgbe_prv_data *pdata,
-					unsigned int cmd, unsigned int sub_cmd)
+					enum xgbe_mb_cmd cmd, enum xgbe_mb_subcmd sub_cmd)
 {
 	unsigned int s0 = 0;
 	unsigned int wait;
@@ -2029,14 +2033,16 @@ static void xgbe_phy_perform_ratechange(struct xgbe_prv_data *pdata,
 	xgbe_phy_rx_reset(pdata);
 
 reenable_pll:
-	/* Enable PLL re-initialization */
-	xgbe_phy_pll_ctrl(pdata, true);
+	/* Enable PLL re-initialization, not needed for PHY Power Off and RRC cmds */
+	if (cmd != XGBE_MB_CMD_POWER_OFF &&
+	    cmd != XGBE_MB_CMD_RRC)
+		xgbe_phy_pll_ctrl(pdata, true);
 }
 
 static void xgbe_phy_rrc(struct xgbe_prv_data *pdata)
 {
 	/* Receiver Reset Cycle */
-	xgbe_phy_perform_ratechange(pdata, 5, 0);
+	xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_RRC, XGBE_MB_SUBCMD_NONE);
 
 	netif_dbg(pdata, link, pdata->netdev, "receiver reset complete\n");
 }
@@ -2046,7 +2052,7 @@ static void xgbe_phy_power_off(struct xgbe_prv_data *pdata)
 	struct xgbe_phy_data *phy_data = pdata->phy_data;
 
 	/* Power off */
-	xgbe_phy_perform_ratechange(pdata, 0, 0);
+	xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_POWER_OFF, XGBE_MB_SUBCMD_NONE);
 
 	phy_data->cur_mode = XGBE_MODE_UNKNOWN;
 
@@ -2061,14 +2067,17 @@ static void xgbe_phy_sfi_mode(struct xgbe_prv_data *pdata)
 
 	/* 10G/SFI */
 	if (phy_data->sfp_cable != XGBE_SFP_CABLE_PASSIVE) {
-		xgbe_phy_perform_ratechange(pdata, 3, 0);
+		xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_10G_SFI, XGBE_MB_SUBCMD_ACTIVE);
 	} else {
 		if (phy_data->sfp_cable_len <= 1)
-			xgbe_phy_perform_ratechange(pdata, 3, 1);
+			xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_10G_SFI,
+						    XGBE_MB_SUBCMD_PASSIVE_1M);
 		else if (phy_data->sfp_cable_len <= 3)
-			xgbe_phy_perform_ratechange(pdata, 3, 2);
+			xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_10G_SFI,
+						    XGBE_MB_SUBCMD_PASSIVE_3M);
 		else
-			xgbe_phy_perform_ratechange(pdata, 3, 3);
+			xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_10G_SFI,
+						    XGBE_MB_SUBCMD_PASSIVE_OTHER);
 	}
 
 	phy_data->cur_mode = XGBE_MODE_SFI;
@@ -2083,7 +2092,7 @@ static void xgbe_phy_x_mode(struct xgbe_prv_data *pdata)
 	xgbe_phy_set_redrv_mode(pdata);
 
 	/* 1G/X */
-	xgbe_phy_perform_ratechange(pdata, 1, 3);
+	xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_1G, XGBE_MB_SUBCMD_1G_KX);
 
 	phy_data->cur_mode = XGBE_MODE_X;
 
@@ -2097,7 +2106,7 @@ static void xgbe_phy_sgmii_1000_mode(struct xgbe_prv_data *pdata)
 	xgbe_phy_set_redrv_mode(pdata);
 
 	/* 1G/SGMII */
-	xgbe_phy_perform_ratechange(pdata, 1, 2);
+	xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_1G, XGBE_MB_SUBCMD_1G_SGMII);
 
 	phy_data->cur_mode = XGBE_MODE_SGMII_1000;
 
@@ -2111,7 +2120,7 @@ static void xgbe_phy_sgmii_100_mode(struct xgbe_prv_data *pdata)
 	xgbe_phy_set_redrv_mode(pdata);
 
 	/* 100M/SGMII */
-	xgbe_phy_perform_ratechange(pdata, 1, 1);
+	xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_1G, XGBE_MB_SUBCMD_100MBITS);
 
 	phy_data->cur_mode = XGBE_MODE_SGMII_100;
 
@@ -2125,7 +2134,7 @@ static void xgbe_phy_kr_mode(struct xgbe_prv_data *pdata)
 	xgbe_phy_set_redrv_mode(pdata);
 
 	/* 10G/KR */
-	xgbe_phy_perform_ratechange(pdata, 4, 0);
+	xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_10G_KR, XGBE_MB_SUBCMD_NONE);
 
 	phy_data->cur_mode = XGBE_MODE_KR;
 
@@ -2139,7 +2148,7 @@ static void xgbe_phy_kx_2500_mode(struct xgbe_prv_data *pdata)
 	xgbe_phy_set_redrv_mode(pdata);
 
 	/* 2.5G/KX */
-	xgbe_phy_perform_ratechange(pdata, 2, 0);
+	xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_2_5G, XGBE_MB_SUBCMD_NONE);
 
 	phy_data->cur_mode = XGBE_MODE_KX_2500;
 
@@ -2153,7 +2162,7 @@ static void xgbe_phy_kx_1000_mode(struct xgbe_prv_data *pdata)
 	xgbe_phy_set_redrv_mode(pdata);
 
 	/* 1G/KX */
-	xgbe_phy_perform_ratechange(pdata, 1, 3);
+	xgbe_phy_perform_ratechange(pdata, XGBE_MB_CMD_SET_1G, XGBE_MB_SUBCMD_1G_KX);
 
 	phy_data->cur_mode = XGBE_MODE_KX_1000;
 
@@ -2640,7 +2649,7 @@ static int xgbe_phy_link_status(struct xgbe_prv_data *pdata, int *an_restart)
 	}
 
 	/* No link, attempt a receiver reset cycle */
-	if (phy_data->rrc_count++ > XGBE_RRC_FREQUENCY) {
+	if (pdata->vdata->enable_rrc && phy_data->rrc_count++ > XGBE_RRC_FREQUENCY) {
 		phy_data->rrc_count = 0;
 		xgbe_phy_rrc(pdata);
 	}

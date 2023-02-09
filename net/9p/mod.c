@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- *  net/9p/9p.c
- *
  *  9P entry point
  *
  *  Copyright (C) 2007 by Latchesar Ionkov <lucho@ionkov.net>
@@ -12,6 +10,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
+#include <linux/kmod.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/moduleparam.h>
@@ -84,12 +83,7 @@ void v9fs_unregister_trans(struct p9_trans_module *m)
 }
 EXPORT_SYMBOL(v9fs_unregister_trans);
 
-/**
- * v9fs_get_trans_by_name - get transport with the matching name
- * @s: string identifying transport
- *
- */
-struct p9_trans_module *v9fs_get_trans_by_name(char *s)
+static struct p9_trans_module *_p9_get_trans_by_name(const char *s)
 {
 	struct p9_trans_module *t, *found = NULL;
 
@@ -103,9 +97,35 @@ struct p9_trans_module *v9fs_get_trans_by_name(char *s)
 		}
 
 	spin_unlock(&v9fs_trans_lock);
+
+	return found;
+}
+
+/**
+ * v9fs_get_trans_by_name - get transport with the matching name
+ * @s: string identifying transport
+ *
+ */
+struct p9_trans_module *v9fs_get_trans_by_name(const char *s)
+{
+	struct p9_trans_module *found = NULL;
+
+	found = _p9_get_trans_by_name(s);
+
+#ifdef CONFIG_MODULES
+	if (!found) {
+		request_module("9p-%s", s);
+		found = _p9_get_trans_by_name(s);
+	}
+#endif
+
 	return found;
 }
 EXPORT_SYMBOL(v9fs_get_trans_by_name);
+
+static const char * const v9fs_default_transports[] = {
+	"virtio", "tcp", "fd", "unix", "xen", "rdma",
+};
 
 /**
  * v9fs_get_default_trans - get the default transport
@@ -115,6 +135,7 @@ EXPORT_SYMBOL(v9fs_get_trans_by_name);
 struct p9_trans_module *v9fs_get_default_trans(void)
 {
 	struct p9_trans_module *t, *found = NULL;
+	int i;
 
 	spin_lock(&v9fs_trans_lock);
 
@@ -132,6 +153,10 @@ struct p9_trans_module *v9fs_get_default_trans(void)
 			}
 
 	spin_unlock(&v9fs_trans_lock);
+
+	for (i = 0; !found && i < ARRAY_SIZE(v9fs_default_transports); i++)
+		found = v9fs_get_trans_by_name(v9fs_default_transports[i]);
+
 	return found;
 }
 EXPORT_SYMBOL(v9fs_get_default_trans);
@@ -161,7 +186,6 @@ static int __init init_p9(void)
 
 	p9_error_init();
 	pr_info("Installing 9P2000 support\n");
-	p9_trans_fd_init();
 
 	return ret;
 }
@@ -175,7 +199,6 @@ static void __exit exit_p9(void)
 {
 	pr_info("Unloading 9P2000 support\n");
 
-	p9_trans_fd_exit();
 	p9_client_exit();
 }
 

@@ -5,6 +5,7 @@
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/atomic.h>
+#include <linux/blk-integrity.h>
 #include <linux/ctype.h>
 #include <linux/delay.h>
 #include <linux/err.h>
@@ -414,7 +415,7 @@ static int nvmet_rdma_alloc_rsp(struct nvmet_rdma_device *ndev,
 	if (ib_dma_mapping_error(ndev->device, r->send_sge.addr))
 		goto out_free_rsp;
 
-	if (!ib_uses_virt_dma(ndev->device))
+	if (ib_dma_pci_p2p_dma_supported(ndev->device))
 		r->req.p2p_client = &ndev->device->dev;
 	r->send_sge.length = sizeof(*r->req.cqe);
 	r->send_sge.lkey = ndev->pd->local_dma_lkey;
@@ -1220,8 +1221,8 @@ nvmet_rdma_find_get_device(struct rdma_cm_id *cm_id)
 	ndev->inline_data_size = nport->inline_data_size;
 	ndev->inline_page_count = inline_page_count;
 
-	if (nport->pi_enable && !(cm_id->device->attrs.device_cap_flags &
-				  IB_DEVICE_INTEGRITY_HANDOVER)) {
+	if (nport->pi_enable && !(cm_id->device->attrs.kernel_cap_flags &
+				  IBK_INTEGRITY_HANDOVER)) {
 		pr_warn("T10-PI is not supported by device %s. Disabling it\n",
 			cm_id->device->name);
 		nport->pi_enable = false;
@@ -1355,7 +1356,7 @@ static void nvmet_rdma_free_queue(struct nvmet_rdma_queue *queue)
 				!queue->host_qid);
 	}
 	nvmet_rdma_free_rsps(queue);
-	ida_simple_remove(&nvmet_rdma_queue_ida, queue->idx);
+	ida_free(&nvmet_rdma_queue_ida, queue->idx);
 	kfree(queue);
 }
 
@@ -1458,7 +1459,7 @@ nvmet_rdma_alloc_queue(struct nvmet_rdma_device *ndev,
 	spin_lock_init(&queue->rsps_lock);
 	INIT_LIST_HEAD(&queue->queue_list);
 
-	queue->idx = ida_simple_get(&nvmet_rdma_queue_ida, 0, 0, GFP_KERNEL);
+	queue->idx = ida_alloc(&nvmet_rdma_queue_ida, GFP_KERNEL);
 	if (queue->idx < 0) {
 		ret = NVME_RDMA_CM_NO_RSC;
 		goto out_destroy_sq;
@@ -1509,7 +1510,7 @@ out_free_cmds:
 out_free_responses:
 	nvmet_rdma_free_rsps(queue);
 out_ida_remove:
-	ida_simple_remove(&nvmet_rdma_queue_ida, queue->idx);
+	ida_free(&nvmet_rdma_queue_ida, queue->idx);
 out_destroy_sq:
 	nvmet_sq_destroy(&queue->nvme_sq);
 out_free_queue:
@@ -1702,7 +1703,7 @@ static void nvmet_rdma_queue_connect_fail(struct rdma_cm_id *cm_id,
 }
 
 /**
- * nvme_rdma_device_removal() - Handle RDMA device removal
+ * nvmet_rdma_device_removal() - Handle RDMA device removal
  * @cm_id:	rdma_cm id, used for nvmet port
  * @queue:      nvmet rdma queue (cm id qp_context)
  *
@@ -1999,6 +2000,11 @@ static u8 nvmet_rdma_get_mdts(const struct nvmet_ctrl *ctrl)
 	return NVMET_RDMA_MAX_MDTS;
 }
 
+static u16 nvmet_rdma_get_max_queue_size(const struct nvmet_ctrl *ctrl)
+{
+	return NVME_RDMA_MAX_QUEUE_SIZE;
+}
+
 static const struct nvmet_fabrics_ops nvmet_rdma_ops = {
 	.owner			= THIS_MODULE,
 	.type			= NVMF_TRTYPE_RDMA,
@@ -2010,6 +2016,7 @@ static const struct nvmet_fabrics_ops nvmet_rdma_ops = {
 	.delete_ctrl		= nvmet_rdma_delete_ctrl,
 	.disc_traddr		= nvmet_rdma_disc_port_addr,
 	.get_mdts		= nvmet_rdma_get_mdts,
+	.get_max_queue_size	= nvmet_rdma_get_max_queue_size,
 };
 
 static void nvmet_rdma_remove_one(struct ib_device *ib_device, void *client_data)

@@ -99,6 +99,7 @@
 #include <net/route.h>
 #include <net/ip_fib.h>
 #include <net/inet_connection_sock.h>
+#include <net/gro.h>
 #include <net/tcp.h>
 #include <net/udp.h>
 #include <net/udplite.h>
@@ -133,13 +134,9 @@ void inet_sock_destruct(struct sock *sk)
 	struct inet_sock *inet = inet_sk(sk);
 
 	__skb_queue_purge(&sk->sk_receive_queue);
-	if (sk->sk_rx_skb_cache) {
-		__kfree_skb(sk->sk_rx_skb_cache);
-		sk->sk_rx_skb_cache = NULL;
-	}
 	__skb_queue_purge(&sk->sk_error_queue);
 
-	sk_mem_reclaim(sk);
+	sk_mem_reclaim_final(sk);
 
 	if (sk->sk_type == SOCK_STREAM && sk->sk_state != TCP_CLOSE) {
 		pr_err("Attempt to release TCP socket in state %d %p\n",
@@ -151,10 +148,10 @@ void inet_sock_destruct(struct sock *sk)
 		return;
 	}
 
-	WARN_ON(atomic_read(&sk->sk_rmem_alloc));
-	WARN_ON(refcount_read(&sk->sk_wmem_alloc));
-	WARN_ON(sk->sk_wmem_queued);
-	WARN_ON(sk->sk_forward_alloc);
+	WARN_ON_ONCE(atomic_read(&sk->sk_rmem_alloc));
+	WARN_ON_ONCE(refcount_read(&sk->sk_wmem_alloc));
+	WARN_ON_ONCE(sk->sk_wmem_queued);
+	WARN_ON_ONCE(sk_forward_alloc_get(sk));
 
 	kfree(rcu_dereference_protected(inet->inet_opt, 1));
 	dst_release(rcu_dereference_protected(sk->sk_dst_cache, 1));
@@ -228,7 +225,7 @@ int inet_listen(struct socket *sock, int backlog)
 			tcp_fastopen_init_key_once(sock_net(sk));
 		}
 
-		err = inet_csk_listen_start(sk, backlog);
+		err = inet_csk_listen_start(sk);
 		if (err)
 			goto out;
 		tcp_call_bpf(sk, BPF_SOCK_OPS_TCP_LISTEN_CB, 0, NULL);
@@ -492,11 +489,8 @@ int __inet_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len,
 	 *  is temporarily down)
 	 */
 	err = -EADDRNOTAVAIL;
-	if (!inet_can_nonlocal_bind(net, inet) &&
-	    addr->sin_addr.s_addr != htonl(INADDR_ANY) &&
-	    chk_addr_ret != RTN_LOCAL &&
-	    chk_addr_ret != RTN_MULTICAST &&
-	    chk_addr_ret != RTN_BROADCAST)
+	if (!inet_addr_valid_or_nonlocal(net, inet, addr->sin_addr.s_addr,
+	                                 chk_addr_ret))
 		goto out;
 
 	snum = ntohs(addr->sin_port);
@@ -528,15 +522,17 @@ int __inet_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len,
 	/* Make sure we are allowed to bind here. */
 	if (snum || !(inet->bind_address_no_port ||
 		      (flags & BIND_FORCE_ADDRESS_NO_PORT))) {
-		if (sk->sk_prot->get_port(sk, snum)) {
+		err = sk->sk_prot->get_port(sk, snum);
+		if (err) {
 			inet->inet_saddr = inet->inet_rcv_saddr = 0;
-			err = -EADDRINUSE;
 			goto out_release_sock;
 		}
 		if (!(flags & BIND_FROM_BPF)) {
 			err = BPF_CGROUP_RUN_PROG_INET4_POST_BIND(sk);
 			if (err) {
 				inet->inet_saddr = inet->inet_rcv_saddr = 0;
+				if (sk->sk_prot->put_port)
+					sk->sk_prot->put_port(sk);
 				goto out_release_sock;
 			}
 		}
@@ -562,22 +558,27 @@ int inet_dgram_connect(struct socket *sock, struct sockaddr *uaddr,
 		       int addr_len, int flags)
 {
 	struct sock *sk = sock->sk;
+	const struct proto *prot;
 	int err;
 
 	if (addr_len < sizeof(uaddr->sa_family))
 		return -EINVAL;
+
+	/* IPV6_ADDRFORM can change sk->sk_prot under us. */
+	prot = READ_ONCE(sk->sk_prot);
+
 	if (uaddr->sa_family == AF_UNSPEC)
-		return sk->sk_prot->disconnect(sk, flags);
+		return prot->disconnect(sk, flags);
 
 	if (BPF_CGROUP_PRE_CONNECT_ENABLED(sk)) {
-		err = sk->sk_prot->pre_connect(sk, uaddr, addr_len);
+		err = prot->pre_connect(sk, uaddr, addr_len);
 		if (err)
 			return err;
 	}
 
 	if (data_race(!inet_sk(sk)->inet_num) && inet_autobind(sk))
 		return -EAGAIN;
-	return sk->sk_prot->connect(sk, uaddr, addr_len);
+	return prot->connect(sk, uaddr, addr_len);
 }
 EXPORT_SYMBOL(inet_dgram_connect);
 
@@ -738,10 +739,11 @@ EXPORT_SYMBOL(inet_stream_connect);
 int inet_accept(struct socket *sock, struct socket *newsock, int flags,
 		bool kern)
 {
-	struct sock *sk1 = sock->sk;
+	struct sock *sk1 = sock->sk, *sk2;
 	int err = -EINVAL;
-	struct sock *sk2 = sk1->sk_prot->accept(sk1, flags, &err, kern);
 
+	/* IPV6_ADDRFORM can change sk->sk_prot under us. */
+	sk2 = READ_ONCE(sk1->sk_prot)->accept(sk1, flags, &err, kern);
 	if (!sk2)
 		goto do_err;
 
@@ -752,6 +754,8 @@ int inet_accept(struct socket *sock, struct socket *newsock, int flags,
 		  (TCPF_ESTABLISHED | TCPF_SYN_RECV |
 		  TCPF_CLOSE_WAIT | TCPF_CLOSE)));
 
+	if (test_bit(SOCK_SUPPORT_ZC, &sock->flags))
+		set_bit(SOCK_SUPPORT_ZC, &newsock->flags);
 	sock_graft(sk2, newsock);
 
 	newsock->state = SS_CONNECTED;
@@ -829,18 +833,21 @@ ssize_t inet_sendpage(struct socket *sock, struct page *page, int offset,
 		      size_t size, int flags)
 {
 	struct sock *sk = sock->sk;
+	const struct proto *prot;
 
 	if (unlikely(inet_send_prepare(sk)))
 		return -EAGAIN;
 
-	if (sk->sk_prot->sendpage)
-		return sk->sk_prot->sendpage(sk, page, offset, size, flags);
+	/* IPV6_ADDRFORM can change sk->sk_prot under us. */
+	prot = READ_ONCE(sk->sk_prot);
+	if (prot->sendpage)
+		return prot->sendpage(sk, page, offset, size, flags);
 	return sock_no_sendpage(sock, page, offset, size, flags);
 }
 EXPORT_SYMBOL(inet_sendpage);
 
 INDIRECT_CALLABLE_DECLARE(int udp_recvmsg(struct sock *, struct msghdr *,
-					  size_t, int, int, int *));
+					  size_t, int, int *));
 int inet_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		 int flags)
 {
@@ -852,8 +859,7 @@ int inet_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		sock_rps_record_flow(sk);
 
 	err = INDIRECT_CALL_2(sk->sk_prot->recvmsg, tcp_recvmsg, udp_recvmsg,
-			      sk, msg, size, flags & MSG_DONTWAIT,
-			      flags & ~MSG_DONTWAIT, &addr_len);
+			      sk, msg, size, flags, &addr_len);
 	if (err >= 0)
 		msg->msg_namelen = addr_len;
 	return err;
@@ -1045,6 +1051,7 @@ const struct proto_ops inet_stream_ops = {
 	.sendpage	   = inet_sendpage,
 	.splice_read	   = tcp_splice_read,
 	.read_sock	   = tcp_read_sock,
+	.read_skb	   = tcp_read_skb,
 	.sendmsg_locked    = tcp_sendmsg_locked,
 	.sendpage_locked   = tcp_sendpage_locked,
 	.peek_len	   = tcp_peek_len,
@@ -1072,7 +1079,7 @@ const struct proto_ops inet_dgram_ops = {
 	.setsockopt	   = sock_common_setsockopt,
 	.getsockopt	   = sock_common_getsockopt,
 	.sendmsg	   = inet_sendmsg,
-	.read_sock	   = udp_read_sock,
+	.read_skb	   = udp_read_skb,
 	.recvmsg	   = inet_recvmsg,
 	.mmap		   = sock_no_mmap,
 	.sendpage	   = inet_sendpage,
@@ -1230,6 +1237,7 @@ static int inet_sk_reselect_saddr(struct sock *sk)
 	struct rtable *rt;
 	__be32 new_saddr;
 	struct ip_options_rcu *inet_opt;
+	int err;
 
 	inet_opt = rcu_dereference_protected(inet->inet_opt,
 					     lockdep_sock_is_held(sk));
@@ -1238,25 +1246,31 @@ static int inet_sk_reselect_saddr(struct sock *sk)
 
 	/* Query new route. */
 	fl4 = &inet->cork.fl.u.ip4;
-	rt = ip_route_connect(fl4, daddr, 0, RT_CONN_FLAGS(sk),
-			      sk->sk_bound_dev_if, sk->sk_protocol,
-			      inet->inet_sport, inet->inet_dport, sk);
+	rt = ip_route_connect(fl4, daddr, 0, sk->sk_bound_dev_if,
+			      sk->sk_protocol, inet->inet_sport,
+			      inet->inet_dport, sk);
 	if (IS_ERR(rt))
 		return PTR_ERR(rt);
 
-	sk_setup_caps(sk, &rt->dst);
-
 	new_saddr = fl4->saddr;
 
-	if (new_saddr == old_saddr)
+	if (new_saddr == old_saddr) {
+		sk_setup_caps(sk, &rt->dst);
 		return 0;
+	}
+
+	err = inet_bhash2_update_saddr(sk, &new_saddr, AF_INET);
+	if (err) {
+		ip_rt_put(rt);
+		return err;
+	}
+
+	sk_setup_caps(sk, &rt->dst);
 
 	if (READ_ONCE(sock_net(sk)->ipv4.sysctl_ip_dynaddr) > 1) {
 		pr_info("%s(): shifting inet->saddr from %pI4 to %pI4\n",
 			__func__, &old_saddr, &new_saddr);
 	}
-
-	inet->inet_saddr = inet->inet_rcv_saddr = new_saddr;
 
 	/*
 	 * XXX The only one ugly spot where we need to
@@ -1452,28 +1466,24 @@ struct sk_buff *inet_gro_receive(struct list_head *head, struct sk_buff *skb)
 
 	off = skb_gro_offset(skb);
 	hlen = off + sizeof(*iph);
-	iph = skb_gro_header_fast(skb, off);
-	if (skb_gro_header_hard(skb, hlen)) {
-		iph = skb_gro_header_slow(skb, hlen, off);
-		if (unlikely(!iph))
-			goto out;
-	}
+	iph = skb_gro_header(skb, hlen, off);
+	if (unlikely(!iph))
+		goto out;
 
 	proto = iph->protocol;
 
-	rcu_read_lock();
 	ops = rcu_dereference(inet_offloads[proto]);
 	if (!ops || !ops->callbacks.gro_receive)
-		goto out_unlock;
+		goto out;
 
 	if (*(u8 *)iph != 0x45)
-		goto out_unlock;
+		goto out;
 
 	if (ip_is_fragment(iph))
-		goto out_unlock;
+		goto out;
 
 	if (unlikely(ip_fast_csum((u8 *)iph, 5)))
-		goto out_unlock;
+		goto out;
 
 	id = ntohl(*(__be32 *)&iph->id);
 	flush = (u16)((ntohl(*(__be32 *)iph) ^ skb_gro_len(skb)) | (id & ~IP_DF));
@@ -1550,9 +1560,6 @@ struct sk_buff *inet_gro_receive(struct list_head *head, struct sk_buff *skb)
 	pp = indirect_call_gro_receive(tcp4_gro_receive, udp4_gro_receive,
 				       ops->callbacks.gro_receive, head, skb);
 
-out_unlock:
-	rcu_read_unlock();
-
 out:
 	skb_gro_flush_final(skb, pp, flush);
 
@@ -1625,10 +1632,9 @@ int inet_gro_complete(struct sk_buff *skb, int nhoff)
 	csum_replace2(&iph->check, iph->tot_len, newlen);
 	iph->tot_len = newlen;
 
-	rcu_read_lock();
 	ops = rcu_dereference(inet_offloads[proto]);
 	if (WARN_ON(!ops || !ops->callbacks.gro_complete))
-		goto out_unlock;
+		goto out;
 
 	/* Only need to add sizeof(*iph) to get to the next hdr below
 	 * because any hdr with option will have been flushed in
@@ -1638,9 +1644,7 @@ int inet_gro_complete(struct sk_buff *skb, int nhoff)
 			      tcp4_gro_complete, udp4_gro_complete,
 			      skb, nhoff + sizeof(*iph));
 
-out_unlock:
-	rcu_read_unlock();
-
+out:
 	return err;
 }
 
@@ -1670,12 +1674,6 @@ int inet_ctl_sock_create(struct sock **sk, unsigned short family,
 	return rc;
 }
 EXPORT_SYMBOL_GPL(inet_ctl_sock_create);
-
-u64 snmp_get_cpu_field(void __percpu *mib, int cpu, int offt)
-{
-	return  *(((unsigned long *)per_cpu_ptr(mib, cpu)) + offt);
-}
-EXPORT_SYMBOL_GPL(snmp_get_cpu_field);
 
 unsigned long snmp_fold_field(void __percpu *mib, int offt)
 {
@@ -1936,6 +1934,8 @@ static int __init inet_init(void)
 	int rc;
 
 	sock_skb_cb_check_size(sizeof(struct inet_skb_parm));
+
+	raw_hashinfo_init(&raw_v4_hashinfo);
 
 	rc = proto_register(&tcp_prot, 1);
 	if (rc)

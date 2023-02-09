@@ -36,7 +36,7 @@
  * should be obeyed by all the functions:
  * - any write of quota structure (either to local or global file) is protected
  *   by dqio_sem or dquot->dq_lock.
- * - any modification of global quota file holds inode cluster lock, i_mutex,
+ * - any modification of global quota file holds inode cluster lock, i_rwsem,
  *   and ip_alloc_sem of the global quota file (achieved by
  *   ocfs2_lock_global_qf). It also has to hold qinfo_lock.
  * - an allocation of new blocks for local quota file is protected by
@@ -412,7 +412,7 @@ out_unlock:
 	goto out_err;
 }
 
-/* Write information to global quota file. Expects exlusive lock on quota
+/* Write information to global quota file. Expects exclusive lock on quota
  * file inode and quota info */
 static int __ocfs2_global_write_info(struct super_block *sb, int type)
 {

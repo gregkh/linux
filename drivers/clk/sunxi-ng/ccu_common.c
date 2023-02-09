@@ -9,6 +9,7 @@
 #include <linux/clk-provider.h>
 #include <linux/device.h>
 #include <linux/iopoll.h>
+#include <linux/module.h>
 #include <linux/slab.h>
 
 #include "ccu_common.h"
@@ -17,10 +18,9 @@
 
 struct sunxi_ccu {
 	const struct sunxi_ccu_desc	*desc;
+	spinlock_t			lock;
 	struct ccu_reset		reset;
 };
-
-static DEFINE_SPINLOCK(ccu_lock);
 
 void ccu_helper_wait_for_lock(struct ccu_common *common, u32 lock)
 {
@@ -37,6 +37,7 @@ void ccu_helper_wait_for_lock(struct ccu_common *common, u32 lock)
 
 	WARN_ON(readl_relaxed_poll_timeout(addr, reg, reg & lock, 100, 70000));
 }
+EXPORT_SYMBOL_NS_GPL(ccu_helper_wait_for_lock, SUNXI_CCU);
 
 /*
  * This clock notifier is called when the frequency of a PLL clock is
@@ -84,6 +85,7 @@ int ccu_pll_notifier_register(struct ccu_pll_nb *pll_nb)
 	return clk_notifier_register(pll_nb->common->hw.clk,
 				     &pll_nb->clk_nb);
 }
+EXPORT_SYMBOL_NS_GPL(ccu_pll_notifier_register, SUNXI_CCU);
 
 static int sunxi_ccu_probe(struct sunxi_ccu *ccu, struct device *dev,
 			   struct device_node *node, void __iomem *reg,
@@ -94,6 +96,8 @@ static int sunxi_ccu_probe(struct sunxi_ccu *ccu, struct device *dev,
 
 	ccu->desc = desc;
 
+	spin_lock_init(&ccu->lock);
+
 	for (i = 0; i < desc->num_ccu_clks; i++) {
 		struct ccu_common *cclk = desc->ccu_clks[i];
 
@@ -101,7 +105,7 @@ static int sunxi_ccu_probe(struct sunxi_ccu *ccu, struct device *dev,
 			continue;
 
 		cclk->base = reg;
-		cclk->lock = &ccu_lock;
+		cclk->lock = &ccu->lock;
 	}
 
 	for (i = 0; i < desc->hw_clks->num ; i++) {
@@ -133,7 +137,7 @@ static int sunxi_ccu_probe(struct sunxi_ccu *ccu, struct device *dev,
 	reset->rcdev.owner = dev ? dev->driver->owner : THIS_MODULE;
 	reset->rcdev.nr_resets = desc->num_resets;
 	reset->base = reg;
-	reset->lock = &ccu_lock;
+	reset->lock = &ccu->lock;
 	reset->reset_map = desc->resets;
 
 	ret = reset_controller_register(&reset->rcdev);
@@ -193,6 +197,7 @@ int devm_sunxi_ccu_probe(struct device *dev, void __iomem *reg,
 
 	return 0;
 }
+EXPORT_SYMBOL_NS_GPL(devm_sunxi_ccu_probe, SUNXI_CCU);
 
 void of_sunxi_ccu_probe(struct device_node *node, void __iomem *reg,
 			const struct sunxi_ccu_desc *desc)
@@ -210,3 +215,5 @@ void of_sunxi_ccu_probe(struct device_node *node, void __iomem *reg,
 		kfree(ccu);
 	}
 }
+
+MODULE_LICENSE("GPL");

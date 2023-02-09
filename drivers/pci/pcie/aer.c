@@ -57,7 +57,7 @@ struct aer_stats {
 	 * "as seen by this device". Note that this may mean that if an
 	 * end point is causing problems, the AER counters may increment
 	 * at its link partner (e.g. root port) because the errors will be
-	 * "seen" by the link partner and not the the problematic end point
+	 * "seen" by the link partner and not the problematic end point
 	 * itself (which may report all counters as 0 as it never saw any
 	 * problems).
 	 */
@@ -392,6 +392,11 @@ void pci_aer_init(struct pci_dev *dev)
 	pci_add_ext_cap_save_buffer(dev, PCI_EXT_CAP_ID_ERR, sizeof(u32) * n);
 
 	pci_aer_clear_status(dev);
+
+	if (pci_aer_available())
+		pci_enable_pcie_error_reporting(dev);
+
+	pcie_set_ecrc_checking(dev);
 }
 
 void pci_aer_exit(struct pci_dev *dev)
@@ -1227,9 +1232,6 @@ static int set_device_error_reporting(struct pci_dev *dev, void *data)
 		else
 			pci_disable_pcie_error_reporting(dev);
 	}
-
-	if (enable)
-		pcie_set_ecrc_checking(dev);
 
 	return 0;
 }

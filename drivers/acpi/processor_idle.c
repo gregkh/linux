@@ -20,7 +20,10 @@
 #include <linux/tick.h>
 #include <linux/cpuidle.h>
 #include <linux/cpu.h>
+#include <linux/minmax.h>
+#include <linux/perf_event.h>
 #include <acpi/processor.h>
+#include <linux/context_tracking.h>
 
 /*
  * Include the apic definitions for x86 to have the APIC timer related defines
@@ -36,11 +39,11 @@
 #define ACPI_IDLE_STATE_START	(IS_ENABLED(CONFIG_ARCH_HAS_CPU_RELAX) ? 1 : 0)
 
 static unsigned int max_cstate __read_mostly = ACPI_PROCESSOR_MAX_POWER;
-module_param(max_cstate, uint, 0000);
-static unsigned int nocst __read_mostly;
-module_param(nocst, uint, 0000);
-static int bm_check_disable __read_mostly;
-module_param(bm_check_disable, uint, 0000);
+module_param(max_cstate, uint, 0400);
+static bool nocst __read_mostly;
+module_param(nocst, bool, 0400);
+static bool bm_check_disable __read_mostly;
+module_param(bm_check_disable, bool, 0400);
 
 static unsigned int latency_factor __read_mostly = 2;
 module_param(latency_factor, uint, 0644);
@@ -400,13 +403,10 @@ static int acpi_cst_latency_cmp(const void *a, const void *b)
 static void acpi_cst_latency_swap(void *a, void *b, int n)
 {
 	struct acpi_processor_cx *x = a, *y = b;
-	u32 tmp;
 
 	if (!(x->valid && y->valid))
 		return;
-	tmp = x->latency;
-	x->latency = y->latency;
-	y->latency = tmp;
+	swap(x->latency, y->latency);
 }
 
 static int acpi_processor_power_verify(struct acpi_processor *pr)
@@ -563,6 +563,8 @@ static void wait_for_freeze(void)
  */
 static void __cpuidle acpi_idle_do_entry(struct acpi_processor_cx *cx)
 {
+	perf_lopwr_cb(true);
+
 	if (cx->entry_method == ACPI_CSTATE_FFH) {
 		/* Call into architectural FFH based C-state */
 		acpi_processor_ffh_cstate_enter(cx);
@@ -573,6 +575,8 @@ static void __cpuidle acpi_idle_do_entry(struct acpi_processor_cx *cx)
 		inb(cx->address);
 		wait_for_freeze();
 	}
+
+	perf_lopwr_cb(false);
 }
 
 /**
@@ -661,11 +665,11 @@ static int __cpuidle acpi_idle_enter_bm(struct cpuidle_driver *drv,
 		raw_spin_unlock(&c3_lock);
 	}
 
-	rcu_idle_enter();
+	ct_idle_enter();
 
 	acpi_idle_do_entry(cx);
 
-	rcu_idle_exit();
+	ct_idle_exit();
 
 	/* Re-enable bus master arbitration */
 	if (dis_bm) {
@@ -800,7 +804,7 @@ static int acpi_processor_setup_cstates(struct acpi_processor *pr)
 
 		state = &drv->states[count];
 		snprintf(state->name, CPUIDLE_NAME_LEN, "C%d", i);
-		strlcpy(state->desc, cx->desc, CPUIDLE_DESC_LEN);
+		strscpy(state->desc, cx->desc, CPUIDLE_DESC_LEN);
 		state->exit_latency = cx->latency;
 		state->target_residency = cx->latency * latency_factor;
 		state->enter = acpi_idle_enter;
@@ -969,7 +973,7 @@ static int acpi_processor_evaluate_lpi(acpi_handle handle,
 
 		obj = pkg_elem + 9;
 		if (obj->type == ACPI_TYPE_STRING)
-			strlcpy(lpi_state->desc, obj->string.pointer,
+			strscpy(lpi_state->desc, obj->string.pointer,
 				ACPI_CX_DESC_LEN);
 
 		lpi_state->index = state_idx;
@@ -1035,7 +1039,7 @@ static bool combine_lpi_states(struct acpi_lpi_state *local,
 	result->arch_flags = parent->arch_flags;
 	result->index = parent->index;
 
-	strlcpy(result->desc, local->desc, ACPI_CX_DESC_LEN);
+	strscpy(result->desc, local->desc, ACPI_CX_DESC_LEN);
 	strlcat(result->desc, "+", ACPI_CX_DESC_LEN);
 	strlcat(result->desc, parent->desc, ACPI_CX_DESC_LEN);
 	return true;
@@ -1129,7 +1133,10 @@ static int acpi_processor_get_lpi_info(struct acpi_processor *pr)
 
 	status = acpi_get_parent(handle, &pr_ahandle);
 	while (ACPI_SUCCESS(status)) {
-		acpi_bus_get_device(pr_ahandle, &d);
+		d = acpi_fetch_acpi_dev(pr_ahandle);
+		if (!d)
+			break;
+
 		handle = pr_ahandle;
 
 		if (strcmp(acpi_device_hid(d), ACPI_PROCESSOR_CONTAINER_HID))
@@ -1209,7 +1216,7 @@ static int acpi_processor_setup_lpi_states(struct acpi_processor *pr)
 
 		state = &drv->states[i];
 		snprintf(state->name, CPUIDLE_NAME_LEN, "LPI-%d", i);
-		strlcpy(state->desc, lpi->desc, CPUIDLE_DESC_LEN);
+		strscpy(state->desc, lpi->desc, CPUIDLE_DESC_LEN);
 		state->exit_latency = lpi->wake_latency;
 		state->target_residency = lpi->min_residency;
 		if (lpi->arch_flags)

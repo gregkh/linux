@@ -180,6 +180,11 @@ static void timestamp_interrupt(struct stmmac_priv *priv)
 	u64 ptp_time;
 	int i;
 
+	if (priv->plat->int_snapshot_en) {
+		wake_up(&priv->tstamp_busy_wait);
+		return;
+	}
+
 	tsync_int = readl(priv->ioaddr + GMAC_INT_STATUS) & GMAC_INT_TSIE;
 
 	if (!tsync_int)
@@ -197,9 +202,9 @@ static void timestamp_interrupt(struct stmmac_priv *priv)
 		       GMAC_TIMESTAMP_ATSNS_SHIFT;
 
 	for (i = 0; i < num_snapshot; i++) {
-		spin_lock_irqsave(&priv->ptp_lock, flags);
+		read_lock_irqsave(&priv->ptp_lock, flags);
 		get_ptptime(priv->ptpaddr, &ptp_time);
-		spin_unlock_irqrestore(&priv->ptp_lock, flags);
+		read_unlock_irqrestore(&priv->ptp_lock, flags);
 		event.type = PTP_CLOCK_EXTTS;
 		event.index = 0;
 		event.timestamp = ptp_time;

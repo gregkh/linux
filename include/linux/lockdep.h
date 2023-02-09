@@ -16,10 +16,6 @@
 
 struct task_struct;
 
-/* for sysctl */
-extern int prove_locking;
-extern int lock_stat;
-
 #ifdef CONFIG_LOCKDEP
 
 #include <linux/linkage.h>
@@ -294,6 +290,9 @@ extern void lock_set_class(struct lockdep_map *lock, const char *name,
 			   struct lock_class_key *key, unsigned int subclass,
 			   unsigned long ip);
 
+#define lock_set_novalidate_class(l, n, i) \
+	lock_set_class(l, n, &__lockdep_no_validate__, 0, i)
+
 static inline void lock_set_subclass(struct lockdep_map *lock,
 		unsigned int subclass, unsigned long ip)
 {
@@ -361,7 +360,8 @@ static inline void lockdep_set_selftest_task(struct task_struct *task)
 # define lock_acquire(l, s, t, r, c, n, i)	do { } while (0)
 # define lock_release(l, i)			do { } while (0)
 # define lock_downgrade(l, i)			do { } while (0)
-# define lock_set_class(l, n, k, s, i)		do { } while (0)
+# define lock_set_class(l, n, key, s, i)	do { (void)(key); } while (0)
+# define lock_set_novalidate_class(l, n, i)	do { } while (0)
 # define lock_set_subclass(l, s, i)		do { } while (0)
 # define lockdep_init()				do { } while (0)
 # define lockdep_init_map_type(lock, name, key, sub, inner, outer, type) \
@@ -484,23 +484,6 @@ do {								\
 	lock(_lock)
 
 #endif /* CONFIG_LOCK_STAT */
-
-#ifdef CONFIG_LOCKDEP
-
-/*
- * On lockdep we dont want the hand-coded irq-enable of
- * _raw_*_lock_flags() code, because lockdep assumes
- * that interrupts are not re-enabled during lock-acquire:
- */
-#define LOCK_CONTENDED_FLAGS(_lock, try, lock, lockfl, flags) \
-	LOCK_CONTENDED((_lock), (try), (lock))
-
-#else /* CONFIG_LOCKDEP */
-
-#define LOCK_CONTENDED_FLAGS(_lock, try, lock, lockfl, flags) \
-	lockfl((_lock), (flags))
-
-#endif /* CONFIG_LOCKDEP */
 
 #ifdef CONFIG_PROVE_LOCKING
 extern void print_irqtrace_events(struct task_struct *curr);

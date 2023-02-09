@@ -3715,7 +3715,7 @@ static int pfkey_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	if (flags & ~(MSG_PEEK|MSG_DONTWAIT|MSG_TRUNC|MSG_CMSG_COMPAT))
 		goto out;
 
-	skb = skb_recv_datagram(sk, flags, flags & MSG_DONTWAIT, &err);
+	skb = skb_recv_datagram(sk, flags, &err);
 	if (skb == NULL)
 		goto out;
 
@@ -3730,7 +3730,7 @@ static int pfkey_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	if (err)
 		goto out_free;
 
-	sock_recv_ts_and_drops(msg, sk, skb);
+	sock_recv_cmsgs(msg, sk, skb);
 
 	err = (flags & MSG_TRUNC) ? skb->len : copied;
 
@@ -3909,14 +3909,10 @@ static int __init ipsec_pfkey_init(void)
 	err = sock_register(&pfkey_family_ops);
 	if (err != 0)
 		goto out_unregister_pernet;
-	err = xfrm_register_km(&pfkeyv2_mgr);
-	if (err != 0)
-		goto out_sock_unregister;
+	xfrm_register_km(&pfkeyv2_mgr);
 out:
 	return err;
 
-out_sock_unregister:
-	sock_unregister(PF_KEY);
 out_unregister_pernet:
 	unregister_pernet_subsys(&pfkey_net_ops);
 out_unregister_key_proto:

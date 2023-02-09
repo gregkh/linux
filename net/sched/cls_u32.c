@@ -713,12 +713,13 @@ static const struct nla_policy u32_policy[TCA_U32_MAX + 1] = {
 static int u32_set_parms(struct net *net, struct tcf_proto *tp,
 			 unsigned long base,
 			 struct tc_u_knode *n, struct nlattr **tb,
-			 struct nlattr *est, u32 flags,
+			 struct nlattr *est, u32 flags, u32 fl_flags,
 			 struct netlink_ext_ack *extack)
 {
 	int err;
 
-	err = tcf_exts_validate(net, tp, tb, est, &n->exts, flags, extack);
+	err = tcf_exts_validate_ex(net, tp, tb, est, &n->exts, flags,
+				   fl_flags, extack);
 	if (err < 0)
 		return err;
 
@@ -899,7 +900,8 @@ static int u32_change(struct net *net, struct sk_buff *in_skb,
 			return -ENOMEM;
 
 		err = u32_set_parms(net, tp, base, new, tb,
-				    tca[TCA_RATE], flags, extack);
+				    tca[TCA_RATE], flags, new->flags,
+				    extack);
 
 		if (err) {
 			__u32_destroy_key(new);
@@ -1038,7 +1040,11 @@ static int u32_change(struct net *net, struct sk_buff *in_skb,
 	}
 #endif
 
-	memcpy(&n->sel, s, sel_size);
+	unsafe_memcpy(&n->sel, s, sel_size,
+		      /* A composite flex-array structure destination,
+		       * which was correctly sized with struct_size(),
+		       * bounds-checked against nla_len(), and allocated
+		       * above. */);
 	RCU_INIT_POINTER(n->ht_up, ht);
 	n->handle = handle;
 	n->fshift = s->hmask ? ffs(ntohl(s->hmask)) - 1 : 0;
@@ -1064,8 +1070,8 @@ static int u32_change(struct net *net, struct sk_buff *in_skb,
 	}
 #endif
 
-	err = u32_set_parms(net, tp, base, n, tb, tca[TCA_RATE], flags,
-			    extack);
+	err = u32_set_parms(net, tp, base, n, tb, tca[TCA_RATE],
+			    flags, n->flags, extack);
 	if (err == 0) {
 		struct tc_u_knode __rcu **ins;
 		struct tc_u_knode *pins;
@@ -1123,26 +1129,16 @@ static void u32_walk(struct tcf_proto *tp, struct tcf_walker *arg,
 	     ht = rtnl_dereference(ht->next)) {
 		if (ht->prio != tp->prio)
 			continue;
-		if (arg->count >= arg->skip) {
-			if (arg->fn(tp, ht, arg) < 0) {
-				arg->stop = 1;
-				return;
-			}
-		}
-		arg->count++;
+
+		if (!tc_cls_stats_dump(tp, arg, ht))
+			return;
+
 		for (h = 0; h <= ht->divisor; h++) {
 			for (n = rtnl_dereference(ht->ht[h]);
 			     n;
 			     n = rtnl_dereference(n->next)) {
-				if (arg->count < arg->skip) {
-					arg->count++;
-					continue;
-				}
-				if (arg->fn(tp, n, arg) < 0) {
-					arg->stop = 1;
+				if (!tc_cls_stats_dump(tp, arg, n))
 					return;
-				}
-				arg->count++;
 			}
 		}
 	}
@@ -1254,12 +1250,7 @@ static void u32_bind_class(void *fh, u32 classid, unsigned long cl, void *q,
 {
 	struct tc_u_knode *n = fh;
 
-	if (n && n->res.classid == classid) {
-		if (cl)
-			__tcf_bind_filter(q, &n->res, base);
-		else
-			__tcf_unbind_filter(q, &n->res);
-	}
+	tc_cls_bind_class(classid, cl, q, &n->res, base);
 }
 
 static int u32_dump(struct net *net, struct tcf_proto *tp, void *fh,

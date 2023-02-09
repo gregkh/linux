@@ -72,6 +72,18 @@ struct bpf_reg_state {
 
 		u32 mem_size; /* for PTR_TO_MEM | PTR_TO_MEM_OR_NULL */
 
+		/* For dynptr stack slots */
+		struct {
+			enum bpf_dynptr_type type;
+			/* A dynptr is 16 bytes so it takes up 2 stack slots.
+			 * We need to track which slot is the first slot
+			 * to protect against cases where the user may try to
+			 * pass in an address starting at the second slot of the
+			 * dynptr.
+			 */
+			bool first_slot;
+		} dynptr;
+
 		/* Max size from any of the above. */
 		struct {
 			unsigned long raw1;
@@ -88,6 +100,8 @@ struct bpf_reg_state {
 	 * for the purpose of tracking that it's freed.
 	 * For PTR_TO_SOCKET this is used to share which pointers retain the
 	 * same reference to the socket, to determine proper reference freeing.
+	 * For stack slots that are dynptrs, this is used to track references to
+	 * the dynptr to determine proper reference freeing.
 	 */
 	u32 id;
 	/* PTR_TO_SOCKET and PTR_TO_TCP_SOCK could be a ptr returned
@@ -174,9 +188,15 @@ enum bpf_stack_slot_type {
 	STACK_SPILL,      /* register spilled into stack */
 	STACK_MISC,	  /* BPF program wrote some data into this slot */
 	STACK_ZERO,	  /* BPF program wrote constant zero */
+	/* A dynptr is stored in this stack slot. The type of dynptr
+	 * is stored in bpf_stack_state->spilled_ptr.dynptr.type
+	 */
+	STACK_DYNPTR,
 };
 
 #define BPF_REG_SIZE 8	/* size of eBPF register in bytes */
+#define BPF_DYNPTR_SIZE		sizeof(struct bpf_dynptr_kern)
+#define BPF_DYNPTR_NR_SLOTS		(BPF_DYNPTR_SIZE / BPF_REG_SIZE)
 
 struct bpf_stack_state {
 	struct bpf_reg_state spilled_ptr;
@@ -228,6 +248,7 @@ struct bpf_func_state {
 	 */
 	u32 async_entry_cnt;
 	bool in_callback_fn;
+	struct tnum callback_ret_range;
 	bool in_async_callback_fn;
 
 	/* The following fields should be last. See copy_func_state() */
@@ -290,7 +311,7 @@ struct bpf_verifier_state {
 	 * If is_state_visited() sees a state with branches > 0 it means
 	 * there is a loop. If such state is exactly equal to the current state
 	 * it's an infinite loop. Note states_equal() checks for states
-	 * equvalency, so two states being 'states_equal' does not mean
+	 * equivalency, so two states being 'states_equal' does not mean
 	 * infinite loop. The exact comparison is provided by
 	 * states_maybe_looping() function. It's a stronger pre-check and
 	 * much faster than states_equal().
@@ -356,6 +377,14 @@ struct bpf_verifier_state_list {
 	int miss_cnt, hit_cnt;
 };
 
+struct bpf_loop_inline_state {
+	unsigned int initialized:1; /* set to true upon first entry */
+	unsigned int fit_for_inline:1; /* true if callback function is the same
+					* at each call and flags are always zero
+					*/
+	u32 callback_subprogno; /* valid when fit_for_inline is true */
+};
+
 /* Possible states for alu_state member. */
 #define BPF_ALU_SANITIZE_SRC		(1U << 0)
 #define BPF_ALU_SANITIZE_DST		(1U << 1)
@@ -385,6 +414,10 @@ struct bpf_insn_aux_data {
 				u32 mem_size;	/* mem_size for non-struct typed var */
 			};
 		} btf_var;
+		/* if instruction is a call to bpf_loop this field tracks
+		 * the state of the relevant registers to make decision about inlining
+		 */
+		struct bpf_loop_inline_state loop_inline_state;
 	};
 	u64 map_key_state; /* constant (32 bit) key tracking for maps */
 	int ctx_field_size; /* the ctx field size for load insn, maybe 0 */
@@ -422,6 +455,8 @@ static inline bool bpf_verifier_log_full(const struct bpf_verifier_log *log)
 #define BPF_LOG_LEVEL	(BPF_LOG_LEVEL1 | BPF_LOG_LEVEL2)
 #define BPF_LOG_MASK	(BPF_LOG_LEVEL | BPF_LOG_STATS)
 #define BPF_LOG_KERNEL	(BPF_LOG_MASK + 1) /* kernel internal flag */
+#define BPF_LOG_MIN_ALIGNMENT 8U
+#define BPF_LOG_ALIGNMENT 40U
 
 static inline bool bpf_verifier_log_needed(const struct bpf_verifier_log *log)
 {
@@ -508,6 +543,14 @@ struct bpf_verifier_env {
 	/* longest register parentage chain walked for liveness marking */
 	u32 longest_mark_read_walk;
 	bpfptr_t fd_array;
+
+	/* bit mask to keep track of whether a register has been accessed
+	 * since the last time the function state was printed
+	 */
+	u32 scratched_regs;
+	/* Same as scratched_regs but for stack slots */
+	u64 scratched_stack_slots;
+	u32 prev_log_len, prev_insn_print_len;
 	/* buffer used in reg_type_str() to generate reg_type string */
 	char type_str_buf[TYPE_STR_BUF_LEN];
 };
@@ -541,10 +584,20 @@ bpf_prog_offload_replace_insn(struct bpf_verifier_env *env, u32 off,
 void
 bpf_prog_offload_remove_insns(struct bpf_verifier_env *env, u32 off, u32 cnt);
 
-int check_ctx_reg(struct bpf_verifier_env *env,
-		  const struct bpf_reg_state *reg, int regno);
+int check_ptr_off_reg(struct bpf_verifier_env *env,
+		      const struct bpf_reg_state *reg, int regno);
+int check_func_arg_reg_off(struct bpf_verifier_env *env,
+			   const struct bpf_reg_state *reg, int regno,
+			   enum bpf_arg_type arg_type);
+int check_kfunc_mem_size_reg(struct bpf_verifier_env *env, struct bpf_reg_state *reg,
+			     u32 regno);
 int check_mem_reg(struct bpf_verifier_env *env, struct bpf_reg_state *reg,
 		   u32 regno, u32 mem_size);
+bool is_dynptr_reg_valid_init(struct bpf_verifier_env *env,
+			      struct bpf_reg_state *reg);
+bool is_dynptr_type_expected(struct bpf_verifier_env *env,
+			     struct bpf_reg_state *reg,
+			     enum bpf_arg_type arg_type);
 
 /* this lives here instead of in bpf.h because it needs to dereference tgt_prog */
 static inline u64 bpf_trampoline_compute_key(const struct bpf_prog *tgt_prog,
@@ -570,6 +623,9 @@ int bpf_check_attach_target(struct bpf_verifier_log *log,
 			    const struct bpf_prog *tgt_prog,
 			    u32 btf_id,
 			    struct bpf_attach_target_info *tgt_info);
+void bpf_free_kfunc_btf_tab(struct bpf_kfunc_btf_tab *tab);
+
+int mark_chain_precision(struct bpf_verifier_env *env, int regno);
 
 #define BPF_BASE_TYPE_MASK	GENMASK(BPF_BASE_TYPE_BITS - 1, 0)
 
@@ -583,6 +639,13 @@ static inline u32 base_type(u32 type)
 static inline u32 type_flag(u32 type)
 {
 	return type & ~BPF_BASE_TYPE_MASK;
+}
+
+/* only use after check_attach_btf_id() */
+static inline enum bpf_prog_type resolve_prog_type(const struct bpf_prog *prog)
+{
+	return prog->type == BPF_PROG_TYPE_EXT ?
+		prog->aux->dst_prog->type : prog->type;
 }
 
 #endif /* _LINUX_BPF_VERIFIER_H */

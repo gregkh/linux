@@ -93,7 +93,7 @@ static int elf_core_dump(struct coredump_params *cprm);
 #define ELF_CORE_EFLAGS	0
 #endif
 
-#define ELF_PAGESTART(_v) ((_v) & ~(unsigned long)(ELF_MIN_ALIGN-1))
+#define ELF_PAGESTART(_v) ((_v) & ~(int)(ELF_MIN_ALIGN-1))
 #define ELF_PAGEOFFSET(_v) ((_v) & (ELF_MIN_ALIGN-1))
 #define ELF_PAGEALIGN(_v) (((_v) + ELF_MIN_ALIGN - 1) & ~(ELF_MIN_ALIGN - 1))
 
@@ -101,8 +101,10 @@ static struct linux_binfmt elf_format = {
 	.module		= THIS_MODULE,
 	.load_binary	= load_elf_binary,
 	.load_shlib	= load_elf_library,
+#ifdef CONFIG_COREDUMP
 	.core_dump	= elf_core_dump,
 	.min_coredump	= ELF_EXEC_PAGESIZE,
+#endif
 };
 
 #define BAD_ADDR(x) (unlikely((unsigned long)(x) >= TASK_SIZE))
@@ -156,7 +158,7 @@ static int padzero(unsigned long elf_bss)
 #define STACK_ADD(sp, items) ((elf_addr_t __user *)(sp) - (items))
 #define STACK_ROUND(sp, items) \
 	(((unsigned long) (sp - items)) &~ 15UL)
-#define STACK_ALLOC(sp, len) ({ sp -= len ; sp; })
+#define STACK_ALLOC(sp, len) (sp -= len)
 #endif
 
 #ifndef ELF_BASE_PLATFORM
@@ -399,22 +401,21 @@ static unsigned long elf_map(struct file *filep, unsigned long addr,
 	return(map_addr);
 }
 
-static unsigned long total_mapping_size(const struct elf_phdr *cmds, int nr)
+static unsigned long total_mapping_size(const struct elf_phdr *phdr, int nr)
 {
-	int i, first_idx = -1, last_idx = -1;
+	elf_addr_t min_addr = -1;
+	elf_addr_t max_addr = 0;
+	bool pt_load = false;
+	int i;
 
 	for (i = 0; i < nr; i++) {
-		if (cmds[i].p_type == PT_LOAD) {
-			last_idx = i;
-			if (first_idx == -1)
-				first_idx = i;
+		if (phdr[i].p_type == PT_LOAD) {
+			min_addr = min(min_addr, ELF_PAGESTART(phdr[i].p_vaddr));
+			max_addr = max(max_addr, phdr[i].p_vaddr + phdr[i].p_memsz);
+			pt_load = true;
 		}
 	}
-	if (first_idx == -1)
-		return 0;
-
-	return cmds[last_idx].p_vaddr + cmds[last_idx].p_memsz -
-				ELF_PAGESTART(cmds[first_idx].p_vaddr);
+	return pt_load ? (max_addr - min_addr) : 0;
 }
 
 static int elf_read(struct file *file, void *buf, size_t len, loff_t pos)
@@ -823,8 +824,8 @@ static int parse_elf_properties(struct file *f, const struct elf_phdr *phdr,
 static int load_elf_binary(struct linux_binprm *bprm)
 {
 	struct file *interpreter = NULL; /* to shut gcc up */
-	unsigned long load_addr, load_bias = 0, phdr_addr = 0;
-	int load_addr_set = 0;
+	unsigned long load_bias = 0, phdr_addr = 0;
+	int first_pt_load = 1;
 	unsigned long error;
 	struct elf_phdr *elf_ppnt, *elf_phdata, *interp_elf_phdata = NULL;
 	struct elf_phdr *elf_property_phdata = NULL;
@@ -1074,20 +1075,26 @@ out_free_interp:
 
 		vaddr = elf_ppnt->p_vaddr;
 		/*
-		 * If we are loading ET_EXEC or we have already performed
-		 * the ET_DYN load_addr calculations, proceed normally.
+		 * The first time through the loop, first_pt_load is true:
+		 * layout will be calculated. Once set, use MAP_FIXED since
+		 * we know we've already safely mapped the entire region with
+		 * MAP_FIXED_NOREPLACE in the once-per-binary logic following.
 		 */
-		if (elf_ex->e_type == ET_EXEC || load_addr_set) {
+		if (!first_pt_load) {
 			elf_flags |= MAP_FIXED;
+		} else if (elf_ex->e_type == ET_EXEC) {
+			/*
+			 * This logic is run once for the first LOAD Program
+			 * Header for ET_EXEC binaries. No special handling
+			 * is needed.
+			 */
+			elf_flags |= MAP_FIXED_NOREPLACE;
 		} else if (elf_ex->e_type == ET_DYN) {
 			/*
 			 * This logic is run once for the first LOAD Program
 			 * Header for ET_DYN binaries to calculate the
 			 * randomization (load_bias) for all the LOAD
-			 * Program Headers, and to calculate the entire
-			 * size of the ELF mapping (total_size). (Note that
-			 * load_addr_set is set to true later once the
-			 * initial mapping is performed.)
+			 * Program Headers.
 			 *
 			 * There are effectively two types of ET_DYN
 			 * binaries: programs (i.e. PIE: ET_DYN with INTERP)
@@ -1108,7 +1115,7 @@ out_free_interp:
 			 * Therefore, programs are loaded offset from
 			 * ELF_ET_DYN_BASE and loaders are loaded into the
 			 * independently randomized mmap region (0 load_bias
-			 * without MAP_FIXED).
+			 * without MAP_FIXED nor MAP_FIXED_NOREPLACE).
 			 */
 			if (interpreter) {
 				load_bias = ELF_ET_DYN_BASE;
@@ -1117,7 +1124,7 @@ out_free_interp:
 				alignment = maximum_alignment(elf_phdata, elf_ex->e_phnum);
 				if (alignment)
 					load_bias &= ~(alignment - 1);
-				elf_flags |= MAP_FIXED;
+				elf_flags |= MAP_FIXED_NOREPLACE;
 			} else
 				load_bias = 0;
 
@@ -1130,6 +1137,24 @@ out_free_interp:
 			 */
 			load_bias = ELF_PAGESTART(load_bias - vaddr);
 
+			/*
+			 * Calculate the entire size of the ELF mapping
+			 * (total_size), used for the initial mapping,
+			 * due to load_addr_set which is set to true later
+			 * once the initial mapping is performed.
+			 *
+			 * Note that this is only sensible when the LOAD
+			 * segments are contiguous (or overlapping). If
+			 * used for LOADs that are far apart, this would
+			 * cause the holes between LOADs to be mapped,
+			 * running the risk of having the mapping fail,
+			 * as it would be larger than the ELF file itself.
+			 *
+			 * As a result, only ET_DYN does this, since
+			 * some ET_EXEC (e.g. ia64) may have large virtual
+			 * memory holes between LOADs.
+			 *
+			 */
 			total_size = total_mapping_size(elf_phdata,
 							elf_ex->e_phnum);
 			if (!total_size) {
@@ -1146,13 +1171,11 @@ out_free_interp:
 			goto out_free_dentry;
 		}
 
-		if (!load_addr_set) {
-			load_addr_set = 1;
-			load_addr = (elf_ppnt->p_vaddr - elf_ppnt->p_offset);
+		if (first_pt_load) {
+			first_pt_load = 0;
 			if (elf_ex->e_type == ET_DYN) {
 				load_bias += error -
 				             ELF_PAGESTART(load_bias + vaddr);
-				load_addr += load_bias;
 				reloc_func_desc = load_bias;
 			}
 		}
@@ -1585,7 +1608,7 @@ static int fill_psinfo(struct elf_prpsinfo *psinfo, struct task_struct *p,
 	SET_UID(psinfo->pr_uid, from_kuid_munged(cred->user_ns, cred->uid));
 	SET_GID(psinfo->pr_gid, from_kgid_munged(cred->user_ns, cred->gid));
 	rcu_read_unlock();
-	strncpy(psinfo->pr_fname, p->comm, sizeof(psinfo->pr_fname));
+	get_task_comm(psinfo->pr_fname, p);
 
 	return 0;
 }
@@ -1744,9 +1767,9 @@ static void do_thread_regset_writeback(struct task_struct *task,
 
 static int fill_thread_core_info(struct elf_thread_core_info *t,
 				 const struct user_regset_view *view,
-				 long signr, size_t *total)
+				 long signr, struct elf_note_info *info)
 {
-	unsigned int i;
+	unsigned int note_iter, view_iter;
 
 	/*
 	 * NT_PRSTATUS is the one special case, because the regset data
@@ -1760,17 +1783,17 @@ static int fill_thread_core_info(struct elf_thread_core_info *t,
 
 	fill_note(&t->notes[0], "CORE", NT_PRSTATUS,
 		  PRSTATUS_SIZE, &t->prstatus);
-	*total += notesize(&t->notes[0]);
+	info->size += notesize(&t->notes[0]);
 
 	do_thread_regset_writeback(t->task, &view->regsets[0]);
 
 	/*
 	 * Each other regset might generate a note too.  For each regset
-	 * that has no core_note_type or is inactive, we leave t->notes[i]
-	 * all zero and we'll know to skip writing it later.
+	 * that has no core_note_type or is inactive, skip it.
 	 */
-	for (i = 1; i < view->n; ++i) {
-		const struct user_regset *regset = &view->regsets[i];
+	note_iter = 1;
+	for (view_iter = 1; view_iter < view->n; ++view_iter) {
+		const struct user_regset *regset = &view->regsets[view_iter];
 		int note_type = regset->core_note_type;
 		bool is_fpreg = note_type == NT_PRFPREG;
 		void *data;
@@ -1786,13 +1809,17 @@ static int fill_thread_core_info(struct elf_thread_core_info *t,
 		if (ret < 0)
 			continue;
 
+		if (WARN_ON_ONCE(note_iter >= info->thread_notes))
+			break;
+
 		if (is_fpreg)
 			SET_PR_FPVALID(&t->prstatus);
 
-		fill_note(&t->notes[i], is_fpreg ? "CORE" : "LINUX",
+		fill_note(&t->notes[note_iter], is_fpreg ? "CORE" : "LINUX",
 			  note_type, ret, data);
 
-		*total += notesize(&t->notes[i]);
+		info->size += notesize(&t->notes[note_iter]);
+		note_iter++;
 	}
 
 	return 1;
@@ -1847,7 +1874,7 @@ static int fill_note_info(struct elfhdr *elf, int phdrs,
 	/*
 	 * Allocate a structure for each thread.
 	 */
-	for (ct = &dump_task->mm->core_state->dumper; ct; ct = ct->next) {
+	for (ct = &dump_task->signal->core_state->dumper; ct; ct = ct->next) {
 		t = kzalloc(offsetof(struct elf_thread_core_info,
 				     notes[info->thread_notes]),
 			    GFP_KERNEL);
@@ -1872,7 +1899,7 @@ static int fill_note_info(struct elfhdr *elf, int phdrs,
 	 * Now fill in each thread's information.
 	 */
 	for (t = info->thread; t != NULL; t = t->next)
-		if (!fill_thread_core_info(t, view, cprm->siginfo->si_signo, &info->size))
+		if (!fill_thread_core_info(t, view, cprm->siginfo->si_signo, info))
 			return 0;
 
 	/*
@@ -2037,7 +2064,7 @@ static int fill_note_info(struct elfhdr *elf, int phdrs,
 	if (!elf_note_info_init(info))
 		return 0;
 
-	for (ct = current->mm->core_state->dumper.next;
+	for (ct = current->signal->core_state->dumper.next;
 					ct; ct = ct->next) {
 		ets = kzalloc(sizeof(*ets), GFP_KERNEL);
 		if (!ets)
@@ -2182,7 +2209,7 @@ static int elf_core_dump(struct coredump_params *cprm)
 	 * The number of segs are recored into ELF header as 16bit value.
 	 * Please check DEFAULT_MAX_MAP_COUNT definition when you modify here.
 	 */
-	segs = cprm->vma_count + elf_core_extra_phdrs();
+	segs = cprm->vma_count + elf_core_extra_phdrs(cprm);
 
 	/* for notes section */
 	segs++;
@@ -2222,7 +2249,7 @@ static int elf_core_dump(struct coredump_params *cprm)
 	dataoff = offset = roundup(offset, ELF_EXEC_PAGESIZE);
 
 	offset += cprm->vma_data_size;
-	offset += elf_core_extra_data_size();
+	offset += elf_core_extra_data_size(cprm);
 	e_shoff = offset;
 
 	if (e_phnum == PN_XNUM) {
@@ -2318,3 +2345,7 @@ static void __exit exit_elf_binfmt(void)
 core_initcall(init_elf_binfmt);
 module_exit(exit_elf_binfmt);
 MODULE_LICENSE("GPL");
+
+#ifdef CONFIG_BINFMT_ELF_KUNIT_TEST
+#include "binfmt_elf_test.c"
+#endif

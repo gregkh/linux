@@ -33,7 +33,6 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
-#include <linux/pm_runtime.h>
 #include <linux/io.h>
 #ifdef CONFIG_SPARC
 #include <linux/sunserialcore.h>
@@ -278,8 +277,7 @@ static void serial8250_backup_timeout(struct timer_list *t)
 	 * the "Diva" UART used on the management processor on many HP
 	 * ia64 and parisc boxes.
 	 */
-	lsr = serial_in(up, UART_LSR);
-	up->lsr_saved_flags |= lsr & LSR_SAVE_FLAGS;
+	lsr = serial_lsr_in(up);
 	if ((iir & UART_IIR_NO_INT) && (up->ier & UART_IER_THRI) &&
 	    (!uart_circ_empty(&up->port.state->xmit) || up->port.x_char) &&
 	    (lsr & UART_LSR_THRE)) {
@@ -516,11 +514,10 @@ static void __init serial8250_isa_init_ports(void)
 
 		up->ops = &univ8250_driver_ops;
 
-		/*
-		 * ALPHA_KLUDGE_MCR needs to be killed.
-		 */
-		up->mcr_mask = ~ALPHA_KLUDGE_MCR;
-		up->mcr_force = ALPHA_KLUDGE_MCR;
+		if (IS_ENABLED(CONFIG_ALPHA_JENSEN) ||
+		    (IS_ENABLED(CONFIG_ALPHA_GENERIC) && alpha_jensen()))
+			port->set_mctrl = alpha_jensen_set_mctrl;
+
 		serial8250_set_defaults(up);
 	}
 
@@ -1020,6 +1017,7 @@ int serial8250_register_8250_port(const struct uart_8250_port *up)
 		uart->port.rs485	= up->port.rs485;
 		uart->rs485_start_tx	= up->rs485_start_tx;
 		uart->rs485_stop_tx	= up->rs485_stop_tx;
+		uart->lsr_save_mask	= up->lsr_save_mask;
 		uart->dma		= up->dma;
 
 		/* Take tx_loadsz from fifosize if it wasn't set separately */
@@ -1106,6 +1104,9 @@ int serial8250_register_8250_port(const struct uart_8250_port *up)
 
 			ret = 0;
 		}
+
+		if (!uart->lsr_save_mask)
+			uart->lsr_save_mask = LSR_SAVE_FLAGS;	/* Use default LSR mask */
 
 		/* Initialise interrupt backoff work if required */
 		if (up->overrun_backoff_time_ms > 0) {

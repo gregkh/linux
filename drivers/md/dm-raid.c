@@ -1263,7 +1263,7 @@ static int parse_raid_params(struct raid_set *rs, struct dm_arg_set *as,
 			md_rdev_init(jdev);
 			jdev->mddev = &rs->md;
 			jdev->bdev = rs->journal_dev.dev->bdev;
-			jdev->sectors = to_sector(i_size_read(jdev->bdev->bd_inode));
+			jdev->sectors = bdev_nr_sectors(jdev->bdev);
 			if (jdev->sectors < MIN_RAID456_JOURNAL_SPACE) {
 				rs->ti->error = "No space for raid4/5/6 journal";
 				return -ENOSPC;
@@ -1369,7 +1369,7 @@ static int parse_raid_params(struct raid_set *rs, struct dm_arg_set *as,
 			}
 			rs->md.bitmap_info.daemon_sleep = value;
 		} else if (!strcasecmp(key, dm_raid_arg_name_by_flag(CTR_FLAG_DATA_OFFSET))) {
-			/* Userspace passes new data_offset after having extended the the data image LV */
+			/* Userspace passes new data_offset after having extended the data image LV */
 			if (test_and_set_bit(__CTR_FLAG_DATA_OFFSET, &rs->ctr_flags)) {
 				rs->ti->error = "Only one data_offset argument pair allowed";
 				return -EINVAL;
@@ -1609,7 +1609,7 @@ static int _check_data_dev_sectors(struct raid_set *rs)
 
 	rdev_for_each(rdev, &rs->md)
 		if (!test_bit(Journal, &rdev->flags) && rdev->bdev) {
-			ds = min(ds, to_sector(i_size_read(rdev->bdev->bd_inode)));
+			ds = min(ds, bdev_nr_sectors(rdev->bdev));
 			if (ds < rs->md.dev_sectors) {
 				rs->ti->error = "Component device(s) too small";
 				return -EINVAL;
@@ -2038,7 +2038,7 @@ static int read_disk_sb(struct md_rdev *rdev, int size, bool force_reload)
 
 	rdev->sb_loaded = 0;
 
-	if (!sync_page_io(rdev, 0, size, rdev->sb_page, REQ_OP_READ, 0, true)) {
+	if (!sync_page_io(rdev, 0, size, rdev->sb_page, REQ_OP_READ, true)) {
 		DMERR("Failed to read superblock of device at position %d",
 		      rdev->raid_disk);
 		md_error(rdev->mddev, rdev);
@@ -2529,7 +2529,7 @@ static int analyse_superblocks(struct dm_target *ti, struct raid_set *rs)
 		 * of the "sync" directive.
 		 *
 		 * With reshaping capability added, we must ensure that
-		 * that the "sync" directive is disallowed during the reshape.
+		 * the "sync" directive is disallowed during the reshape.
 		 */
 		if (test_bit(__CTR_FLAG_SYNC, &rs->ctr_flags))
 			continue;
@@ -2590,7 +2590,7 @@ static int analyse_superblocks(struct dm_target *ti, struct raid_set *rs)
 
 /*
  * Adjust data_offset and new_data_offset on all disk members of @rs
- * for out of place reshaping if requested by contructor
+ * for out of place reshaping if requested by constructor
  *
  * We need free space at the beginning of each raid disk for forward
  * and at the end for backward reshapes which userspace has to provide
@@ -2664,7 +2664,7 @@ static int rs_adjust_data_offsets(struct raid_set *rs)
 	 * Make sure we got a minimum amount of free sectors per device
 	 */
 	if (rs->data_offset &&
-	    to_sector(i_size_read(rdev->bdev->bd_inode)) - rs->md.dev_sectors < MIN_FREE_RESHAPE_SPACE) {
+	    bdev_nr_sectors(rdev->bdev) - rs->md.dev_sectors < MIN_FREE_RESHAPE_SPACE) {
 		rs->ti->error = data_offset ? "No space for forward reshape" :
 					      "No space for backward reshape";
 		return -ENOSPC;
@@ -2965,13 +2965,8 @@ static void configure_discard_support(struct raid_set *rs)
 	raid456 = rs_is_raid456(rs);
 
 	for (i = 0; i < rs->raid_disks; i++) {
-		struct request_queue *q;
-
-		if (!rs->dev[i].rdev.bdev)
-			continue;
-
-		q = bdev_get_queue(rs->dev[i].rdev.bdev);
-		if (!q || !blk_queue_discard(q))
+		if (!rs->dev[i].rdev.bdev ||
+		    !bdev_max_discard_sectors(rs->dev[i].rdev.bdev))
 			return;
 
 		if (raid456) {
@@ -3102,6 +3097,7 @@ static int raid_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	INIT_WORK(&rs->md.event_work, do_table_event);
 	ti->private = rs;
 	ti->num_flush_bios = 1;
+	ti->needs_bio_set_dev = true;
 
 	/* Restore any requested new layout for conversion decision */
 	rs_config_restore(rs, &rs_layout);
@@ -3732,6 +3728,7 @@ static int raid_message(struct dm_target *ti, unsigned int argc, char **argv,
 	if (!strcasecmp(argv[0], "idle") || !strcasecmp(argv[0], "frozen")) {
 		if (mddev->sync_thread) {
 			set_bit(MD_RECOVERY_INTR, &mddev->recovery);
+			md_unregister_thread(&mddev->sync_thread);
 			md_reap_sync_thread(mddev);
 		}
 	} else if (decipher_sync_action(mddev, mddev->recovery) != st_idle)

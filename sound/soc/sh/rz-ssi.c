@@ -28,8 +28,6 @@
 /* SSI REGISTER BITS */
 #define SSICR_DWL(x)		(((x) & 0x7) << 19)
 #define SSICR_SWL(x)		(((x) & 0x7) << 16)
-#define SSICR_MST		BIT(14)
-#define SSICR_CKDV(x)		(((x) & 0xf) << 4)
 
 #define SSICR_CKS		BIT(30)
 #define SSICR_TUIEN		BIT(29)
@@ -61,9 +59,7 @@
 #define SSIFSR_RDC_MASK		0x3f
 #define SSIFSR_RDC_SHIFT	8
 
-#define SSIFSR_TDC(x)		(((x) & 0x1f) << 24)
 #define SSIFSR_TDE		BIT(16)
-#define SSIFSR_RDC(x)		(((x) & 0x1f) << 8)
 #define SSIFSR_RDF		BIT(0)
 
 #define SSIOFR_LRCONT		BIT(8)
@@ -188,26 +184,36 @@ static inline bool rz_ssi_is_dma_enabled(struct rz_ssi_priv *ssi)
 	return (ssi->playback.dma_ch && (ssi->dma_rt || ssi->capture.dma_ch));
 }
 
-static int rz_ssi_stream_is_valid(struct rz_ssi_priv *ssi,
-				  struct rz_ssi_stream *strm)
+static void rz_ssi_set_substream(struct rz_ssi_stream *strm,
+				 struct snd_pcm_substream *substream)
 {
+	struct rz_ssi_priv *ssi = strm->priv;
 	unsigned long flags;
-	int ret;
 
 	spin_lock_irqsave(&ssi->lock, flags);
-	ret = !!(strm->substream && strm->substream->runtime);
+	strm->substream = substream;
+	spin_unlock_irqrestore(&ssi->lock, flags);
+}
+
+static bool rz_ssi_stream_is_valid(struct rz_ssi_priv *ssi,
+				   struct rz_ssi_stream *strm)
+{
+	unsigned long flags;
+	bool ret;
+
+	spin_lock_irqsave(&ssi->lock, flags);
+	ret = strm->substream && strm->substream->runtime;
 	spin_unlock_irqrestore(&ssi->lock, flags);
 
 	return ret;
 }
 
-static int rz_ssi_stream_init(struct rz_ssi_priv *ssi,
-			      struct rz_ssi_stream *strm,
-			      struct snd_pcm_substream *substream)
+static void rz_ssi_stream_init(struct rz_ssi_stream *strm,
+			       struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
-	strm->substream = substream;
+	rz_ssi_set_substream(strm, substream);
 	strm->sample_width = samples_to_bytes(runtime, 1);
 	strm->dma_buffer_pos = 0;
 	strm->period_counter = 0;
@@ -219,19 +225,14 @@ static int rz_ssi_stream_init(struct rz_ssi_priv *ssi,
 
 	/* fifo init */
 	strm->fifo_sample_size = SSI_FIFO_DEPTH;
-
-	return 0;
 }
 
 static void rz_ssi_stream_quit(struct rz_ssi_priv *ssi,
 			       struct rz_ssi_stream *strm)
 {
 	struct snd_soc_dai *dai = rz_ssi_get_dai(strm->substream);
-	unsigned long flags;
 
-	spin_lock_irqsave(&ssi->lock, flags);
-	strm->substream = NULL;
-	spin_unlock_irqrestore(&ssi->lock, flags);
+	rz_ssi_set_substream(strm, NULL);
 
 	if (strm->oerr_num > 0)
 		dev_info(dai->dev, "overrun = %d\n", strm->oerr_num);
@@ -411,7 +412,6 @@ static int rz_ssi_pio_recv(struct rz_ssi_priv *ssi, struct rz_ssi_stream *strm)
 {
 	struct snd_pcm_substream *substream = strm->substream;
 	struct snd_pcm_runtime *runtime;
-	bool done = false;
 	u16 *buf;
 	int fifo_samples;
 	int frames_left;
@@ -423,7 +423,7 @@ static int rz_ssi_pio_recv(struct rz_ssi_priv *ssi, struct rz_ssi_stream *strm)
 
 	runtime = substream->runtime;
 
-	while (!done) {
+	do {
 		/* frames left in this period */
 		frames_left = runtime->period_size -
 			      (strm->buffer_pos % runtime->period_size);
@@ -447,7 +447,7 @@ static int rz_ssi_pio_recv(struct rz_ssi_priv *ssi, struct rz_ssi_stream *strm)
 			break;
 
 		/* calculate new buffer index */
-		buf = (u16 *)(runtime->dma_area);
+		buf = (u16 *)runtime->dma_area;
 		buf += strm->buffer_pos * runtime->channels;
 
 		/* Note, only supports 16-bit samples */
@@ -456,11 +456,7 @@ static int rz_ssi_pio_recv(struct rz_ssi_priv *ssi, struct rz_ssi_stream *strm)
 
 		rz_ssi_reg_mask_setl(ssi, SSIFSR, SSIFSR_RDF, 0);
 		rz_ssi_pointer_update(strm, samples / runtime->channels);
-
-		/* check if there are no more samples in the RX FIFO */
-		if (!(!frames_left && fifo_samples >= runtime->channels))
-			done = true;
-	}
+	} while (!frames_left && fifo_samples >= runtime->channels);
 
 	return 0;
 }
@@ -602,7 +598,7 @@ static int rz_ssi_dma_transfer(struct rz_ssi_priv *ssi,
 		return -EINVAL;
 
 	runtime = substream->runtime;
-	if (runtime->status->state == SNDRV_PCM_STATE_DRAINING)
+	if (runtime->state == SNDRV_PCM_STATE_DRAINING)
 		/*
 		 * Stream is ending, so do not queue up any more DMA
 		 * transfers otherwise we play partial sound clips
@@ -728,9 +724,7 @@ static int rz_ssi_dai_trigger(struct snd_pcm_substream *substream, int cmd,
 		rz_ssi_reg_mask_setl(ssi, SSIFCR, SSIFCR_SSIRST, 0);
 		udelay(5);
 
-		ret = rz_ssi_stream_init(ssi, strm, substream);
-		if (ret)
-			goto done;
+		rz_ssi_stream_init(strm, substream);
 
 		if (ssi->dma_rt) {
 			bool is_playback;
@@ -773,7 +767,7 @@ static int rz_ssi_dai_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	struct rz_ssi_priv *ssi = snd_soc_dai_get_drvdata(dai);
 
 	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_BP_FP:
 		break;
 	default:
 		dev_err(ssi->dev, "Codec should be clk and frame consumer\n");
@@ -912,10 +906,11 @@ static struct snd_soc_dai_driver rz_ssi_soc_dai[] = {
 };
 
 static const struct snd_soc_component_driver rz_ssi_soc_component = {
-	.name		= "rz-ssi",
-	.open		= rz_ssi_pcm_open,
-	.pointer	= rz_ssi_pcm_pointer,
-	.pcm_construct	= rz_ssi_pcm_new,
+	.name			= "rz-ssi",
+	.open			= rz_ssi_pcm_open,
+	.pointer		= rz_ssi_pcm_pointer,
+	.pcm_construct		= rz_ssi_pcm_new,
+	.legacy_dai_naming	= 1,
 };
 
 static int rz_ssi_probe(struct platform_device *pdev)

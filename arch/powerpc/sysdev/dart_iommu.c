@@ -25,8 +25,8 @@
 #include <linux/memblock.h>
 #include <linux/gfp.h>
 #include <linux/kmemleak.h>
+#include <linux/of_address.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/iommu.h>
 #include <asm/pci-bridge.h>
 #include <asm/machdep.h>
@@ -226,7 +226,7 @@ static void dart_free(struct iommu_table *tbl, long index, long npages)
 	dart_cache_sync(orig_dp, orig_npages);
 }
 
-static void allocate_dart(void)
+static void __init allocate_dart(void)
 {
 	unsigned long tmp;
 

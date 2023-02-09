@@ -714,7 +714,8 @@ static int cfv_probe(struct virtio_device *vdev)
 	/* Initialize NAPI poll context data */
 	vringh_kiov_init(&cfv->ctx.riov, NULL, 0);
 	cfv->ctx.head = USHRT_MAX;
-	netif_napi_add(netdev, &cfv->napi, cfv_rx_poll, CFV_DEFAULT_QUOTA);
+	netif_napi_add_weight(netdev, &cfv->napi, cfv_rx_poll,
+			      CFV_DEFAULT_QUOTA);
 
 	tasklet_setup(&cfv->tx_release_tasklet, cfv_tx_release_tasklet);
 
@@ -762,7 +763,7 @@ static void cfv_remove(struct virtio_device *vdev)
 	debugfs_remove_recursive(cfv->debugfs);
 
 	vringh_kiov_cleanup(&cfv->ctx.riov);
-	vdev->config->reset(vdev);
+	virtio_reset_device(vdev);
 	vdev->vringh_config->del_vrhs(cfv->vdev);
 	cfv->vr_rx = NULL;
 	vdev->config->del_vqs(cfv->vdev);

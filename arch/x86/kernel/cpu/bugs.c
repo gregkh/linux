@@ -23,7 +23,7 @@
 #include <asm/bugs.h>
 #include <asm/processor.h>
 #include <asm/processor-flags.h>
-#include <asm/fpu/internal.h>
+#include <asm/fpu/api.h>
 #include <asm/msr.h>
 #include <asm/vmx.h>
 #include <asm/paravirt.h>
@@ -203,21 +203,14 @@ void __init check_bugs(void)
 }
 
 /*
- * NOTE: For VMX, this function is not called in the vmexit path.
- * It uses vmx_spec_ctrl_restore_host() instead.
+ * NOTE: This function is *only* called for SVM, since Intel uses
+ * MSR_IA32_SPEC_CTRL for SSBD.
  */
 void
-x86_virt_spec_ctrl(u64 guest_spec_ctrl, u64 guest_virt_spec_ctrl, bool setguest)
+x86_virt_spec_ctrl(u64 guest_virt_spec_ctrl, bool setguest)
 {
-	u64 msrval, guestval = guest_spec_ctrl, hostval = spec_ctrl_current();
+	u64 guestval, hostval;
 	struct thread_info *ti = current_thread_info();
-
-	if (static_cpu_has(X86_FEATURE_MSR_SPEC_CTRL)) {
-		if (hostval != guestval) {
-			msrval = setguest ? guestval : hostval;
-			wrmsrl(MSR_IA32_SPEC_CTRL, msrval);
-		}
-	}
 
 	/*
 	 * If SSBD is not handled in MSR_SPEC_CTRL on AMD, update
@@ -600,6 +593,13 @@ void update_srbds_msr(void)
 	if (srbds_mitigation == SRBDS_MITIGATION_UCODE_NEEDED)
 		return;
 
+	/*
+	 * A MDS_NO CPU for which SRBDS mitigation is not needed due to TSX
+	 * being disabled and it hasn't received the SRBDS MSR microcode.
+	 */
+	if (!boot_cpu_has(X86_FEATURE_SRBDS_CTRL))
+		return;
+
 	rdmsrl(MSR_IA32_MCU_OPT_CTRL, mcu_ctrl);
 
 	switch (srbds_mitigation) {
@@ -796,7 +796,7 @@ enum retbleed_mitigation_cmd {
 	RETBLEED_CMD_IBPB,
 };
 
-const char * const retbleed_strings[] = {
+static const char * const retbleed_strings[] = {
 	[RETBLEED_MITIGATION_NONE]	= "Vulnerable",
 	[RETBLEED_MITIGATION_UNRET]	= "Mitigation: untrained return thunk",
 	[RETBLEED_MITIGATION_IBPB]	= "Mitigation: IBPB",
@@ -1124,11 +1124,11 @@ spectre_v2_user_select_mitigation(void)
 	case SPECTRE_V2_USER_CMD_FORCE:
 		mode = SPECTRE_V2_USER_STRICT;
 		break;
+	case SPECTRE_V2_USER_CMD_AUTO:
 	case SPECTRE_V2_USER_CMD_PRCTL:
 	case SPECTRE_V2_USER_CMD_PRCTL_IBPB:
 		mode = SPECTRE_V2_USER_PRCTL;
 		break;
-	case SPECTRE_V2_USER_CMD_AUTO:
 	case SPECTRE_V2_USER_CMD_SECCOMP:
 	case SPECTRE_V2_USER_CMD_SECCOMP_IBPB:
 		if (IS_ENABLED(CONFIG_SECCOMP))
@@ -1766,7 +1766,6 @@ static enum ssb_mitigation __init __ssb_select_mitigation(void)
 		return mode;
 
 	switch (cmd) {
-	case SPEC_STORE_BYPASS_CMD_AUTO:
 	case SPEC_STORE_BYPASS_CMD_SECCOMP:
 		/*
 		 * Choose prctl+seccomp as the default mode if seccomp is
@@ -1780,6 +1779,7 @@ static enum ssb_mitigation __init __ssb_select_mitigation(void)
 	case SPEC_STORE_BYPASS_CMD_ON:
 		mode = SPEC_STORE_BYPASS_DISABLE;
 		break;
+	case SPEC_STORE_BYPASS_CMD_AUTO:
 	case SPEC_STORE_BYPASS_CMD_PRCTL:
 		mode = SPEC_STORE_BYPASS_PRCTL;
 		break;

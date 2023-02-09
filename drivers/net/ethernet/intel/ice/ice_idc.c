@@ -51,21 +51,6 @@ finish:
 }
 
 /**
- * ice_find_vsi - Find the VSI from VSI ID
- * @pf: The PF pointer to search in
- * @vsi_num: The VSI ID to search for
- */
-static struct ice_vsi *ice_find_vsi(struct ice_pf *pf, u16 vsi_num)
-{
-	int i;
-
-	ice_for_each_vsi(pf, i)
-		if (pf->vsi[i] && pf->vsi[i]->vsi_num == vsi_num)
-			return  pf->vsi[i];
-	return NULL;
-}
-
-/**
  * ice_add_rdma_qset - Add Leaf Node for RDMA Qset
  * @pf: PF struct
  * @qset: Resource to be allocated
@@ -85,7 +70,7 @@ int ice_add_rdma_qset(struct ice_pf *pf, struct iidc_rdma_qset_params *qset)
 
 	dev = ice_pf_to_dev(pf);
 
-	if (!test_bit(ICE_FLAG_RDMA_ENA, pf->flags))
+	if (!ice_is_rdma_ena(pf))
 		return -EINVAL;
 
 	vsi = ice_get_main_vsi(pf);
@@ -233,6 +218,11 @@ void ice_get_qos_params(struct ice_pf *pf, struct iidc_qos_params *qos)
 
 	for (i = 0; i < IEEE_8021QAZ_MAX_TCS; i++)
 		qos->tc_info[i].rel_bw = dcbx_cfg->etscfg.tcbwtable[i];
+
+	qos->pfc_mode = dcbx_cfg->pfc_mode;
+	if (qos->pfc_mode == IIDC_DSCP_PFC_MODE)
+		for (i = 0; i < IIDC_MAX_DSCP_MAPPING; i++)
+			qos->dscp_map[i] = dcbx_cfg->dscp_map[i];
 }
 EXPORT_SYMBOL_GPL(ice_get_qos_params);
 
@@ -242,7 +232,7 @@ EXPORT_SYMBOL_GPL(ice_get_qos_params);
  */
 static int ice_reserve_rdma_qvector(struct ice_pf *pf)
 {
-	if (test_bit(ICE_FLAG_RDMA_ENA, pf->flags)) {
+	if (ice_is_rdma_ena(pf)) {
 		int index;
 
 		index = ice_get_res(pf, pf->irq_tracker, pf->num_rdma_msix,
@@ -280,7 +270,7 @@ int ice_plug_aux_dev(struct ice_pf *pf)
 	/* if this PF doesn't support a technology that requires auxiliary
 	 * devices, then gracefully exit
 	 */
-	if (!ice_is_aux_ena(pf))
+	if (!ice_is_rdma_ena(pf))
 		return 0;
 
 	iadev = kzalloc(sizeof(*iadev), GFP_KERNEL);
@@ -293,7 +283,7 @@ int ice_plug_aux_dev(struct ice_pf *pf)
 	adev->id = pf->aux_idx;
 	adev->dev.release = ice_adev_release;
 	adev->dev.parent = &pf->pdev->dev;
-	adev->name = IIDC_RDMA_ROCE_NAME;
+	adev->name = pf->rdma_mode & IIDC_RDMA_PROTOCOL_ROCEV2 ? "roce" : "iwarp";
 
 	ret = auxiliary_device_init(adev);
 	if (ret) {
@@ -347,6 +337,6 @@ int ice_init_rdma(struct ice_pf *pf)
 		dev_err(dev, "failed to reserve vectors for RDMA\n");
 		return ret;
 	}
-
+	pf->rdma_mode |= IIDC_RDMA_PROTOCOL_ROCEV2;
 	return ice_plug_aux_dev(pf);
 }

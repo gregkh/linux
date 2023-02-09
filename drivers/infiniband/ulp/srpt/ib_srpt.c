@@ -1421,7 +1421,7 @@ static int srpt_build_cmd_rsp(struct srpt_rdma_ch *ch,
 
 		srp_rsp->flags |= SRP_RSP_FLAG_SNSVALID;
 		srp_rsp->sense_data_len = cpu_to_be32(sense_data_len);
-		memcpy(srp_rsp + 1, sense_data, sense_data_len);
+		memcpy(srp_rsp->data, sense_data, sense_data_len);
 	}
 
 	return sizeof(*srp_rsp) + sense_data_len;
@@ -2218,13 +2218,13 @@ static int srpt_cm_req_recv(struct srpt_device *const sdev,
 	ch->zw_cqe.done = srpt_zerolength_write_done;
 	INIT_WORK(&ch->release_work, srpt_release_channel_work);
 	ch->sport = sport;
-	if (ib_cm_id) {
-		ch->ib_cm.cm_id = ib_cm_id;
-		ib_cm_id->context = ch;
-	} else {
+	if (rdma_cm_id) {
 		ch->using_rdma_cm = true;
 		ch->rdma_cm.cm_id = rdma_cm_id;
 		rdma_cm_id->context = ch;
+	} else {
+		ch->ib_cm.cm_id = ib_cm_id;
+		ib_cm_id->context = ch;
 	}
 	/*
 	 * ch->rq_size should be at least as large as the initiator queue
@@ -2300,7 +2300,7 @@ static int srpt_cm_req_recv(struct srpt_device *const sdev,
 		goto free_recv_ring;
 	}
 
-	strlcpy(ch->sess_name, src_addr, sizeof(ch->sess_name));
+	strscpy(ch->sess_name, src_addr, sizeof(ch->sess_name));
 	snprintf(i_port_id, sizeof(i_port_id), "0x%016llx%016llx",
 			be64_to_cpu(*(__be64 *)nexus->i_port_id),
 			be64_to_cpu(*(__be64 *)(nexus->i_port_id + 8)));
@@ -3191,7 +3191,7 @@ static int srpt_add_one(struct ib_device *device)
 	 * if this HCA is gone bad and replaced by different HCA
 	 */
 	ret = sdev->cm_id ?
-		ib_cm_listen(sdev->cm_id, cpu_to_be64(srpt_service_guid), 0) :
+		ib_cm_listen(sdev->cm_id, cpu_to_be64(srpt_service_guid)) :
 		0;
 	if (ret < 0) {
 		pr_err("ib_cm_listen() failed: %d (cm_id state = %d)\n", ret,
@@ -3733,46 +3733,16 @@ static struct configfs_attribute *srpt_da_attrs[] = {
 	NULL,
 };
 
-static ssize_t srpt_tpg_enable_show(struct config_item *item, char *page)
+static int srpt_enable_tpg(struct se_portal_group *se_tpg, bool enable)
 {
-	struct se_portal_group *se_tpg = to_tpg(item);
 	struct srpt_port *sport = srpt_tpg_to_sport(se_tpg);
-
-	return sysfs_emit(page, "%d\n", sport->enabled);
-}
-
-static ssize_t srpt_tpg_enable_store(struct config_item *item,
-		const char *page, size_t count)
-{
-	struct se_portal_group *se_tpg = to_tpg(item);
-	struct srpt_port *sport = srpt_tpg_to_sport(se_tpg);
-	unsigned long tmp;
-	int ret;
-
-	ret = kstrtoul(page, 0, &tmp);
-	if (ret < 0) {
-		pr_err("Unable to extract srpt_tpg_store_enable\n");
-		return -EINVAL;
-	}
-
-	if ((tmp != 0) && (tmp != 1)) {
-		pr_err("Illegal value for srpt_tpg_store_enable: %lu\n", tmp);
-		return -EINVAL;
-	}
 
 	mutex_lock(&sport->mutex);
-	srpt_set_enabled(sport, tmp);
+	srpt_set_enabled(sport, enable);
 	mutex_unlock(&sport->mutex);
 
-	return count;
+	return 0;
 }
-
-CONFIGFS_ATTR(srpt_tpg_, enable);
-
-static struct configfs_attribute *srpt_tpg_attrs[] = {
-	&srpt_tpg_attr_enable,
-	NULL,
-};
 
 /**
  * srpt_make_tpg - configfs callback invoked for mkdir /sys/kernel/config/target/$driver/$port/$tpg
@@ -3920,12 +3890,12 @@ static const struct target_core_fabric_ops srpt_template = {
 	.fabric_make_wwn		= srpt_make_tport,
 	.fabric_drop_wwn		= srpt_drop_tport,
 	.fabric_make_tpg		= srpt_make_tpg,
+	.fabric_enable_tpg		= srpt_enable_tpg,
 	.fabric_drop_tpg		= srpt_drop_tpg,
 	.fabric_init_nodeacl		= srpt_init_nodeacl,
 
 	.tfc_discovery_attrs		= srpt_da_attrs,
 	.tfc_wwn_attrs			= srpt_wwn_attrs,
-	.tfc_tpg_base_attrs		= srpt_tpg_attrs,
 	.tfc_tpg_attrib_attrs		= srpt_tpg_attrib_attrs,
 };
 

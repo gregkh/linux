@@ -30,19 +30,20 @@
 #include <linux/vgaarb.h>
 #include <linux/numa.h>
 #include <linux/msi.h>
+#include <linux/irqdomain.h>
 
 #include <asm/processor.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/pci-bridge.h>
 #include <asm/byteorder.h>
 #include <asm/machdep.h>
 #include <asm/ppc-pci.h>
 #include <asm/eeh.h>
+#include <asm/setup.h>
 
 #include "../../../drivers/pci/pci.h"
 
-/* hose_spinlock protects accesses to the the phb_bitmap. */
+/* hose_spinlock protects accesses to the phb_bitmap. */
 static DEFINE_SPINLOCK(hose_spinlock);
 LIST_HEAD(hose_list);
 
@@ -62,7 +63,7 @@ EXPORT_SYMBOL(isa_mem_base);
 
 static const struct dma_map_ops *pci_dma_ops;
 
-void set_pci_dma_ops(const struct dma_map_ops *dma_ops)
+void __init set_pci_dma_ops(const struct dma_map_ops *dma_ops)
 {
 	pci_dma_ops = dma_ops;
 }
@@ -134,7 +135,7 @@ struct pci_controller *pcibios_alloc_controller(struct device_node *dev)
 	list_add_tail(&phb->list_node, &hose_list);
 	spin_unlock(&hose_spinlock);
 
-	phb->dn = dev;
+	phb->dn = of_node_get(dev);
 	phb->is_dynamic = slab_is_available();
 #ifdef CONFIG_PPC64
 	if (dev) {
@@ -157,7 +158,7 @@ void pcibios_free_controller(struct pci_controller *phb)
 	/* Clear bit of phb_bitmap to allow reuse of this PHB number. */
 	if (phb->global_number < MAX_PHBS)
 		clear_bit(phb->global_number, phb_bitmap);
-
+	of_node_put(phb->dn);
 	list_del(&phb->list_node);
 	spin_unlock(&hose_spinlock);
 
@@ -1076,7 +1077,7 @@ void pcibios_bus_add_device(struct pci_dev *dev)
 		ppc_md.pcibios_bus_add_device(dev);
 }
 
-int pcibios_add_device(struct pci_dev *dev)
+int pcibios_device_add(struct pci_dev *dev)
 {
 	struct irq_domain *d;
 
@@ -1104,7 +1105,7 @@ void pcibios_fixup_bus(struct pci_bus *bus)
 	 */
 	pci_read_bridge_bases(bus);
 
-	/* Now fixup the bus bus */
+	/* Now fixup the bus */
 	pcibios_setup_bus_self(bus);
 }
 EXPORT_SYMBOL(pcibios_fixup_bus);
@@ -1705,7 +1706,7 @@ EXPORT_SYMBOL_GPL(pcibios_scan_phb);
 static void fixup_hide_host_resource_fsl(struct pci_dev *dev)
 {
 	int i, class = dev->class >> 8;
-	/* When configured as agent, programing interface = 1 */
+	/* When configured as agent, programming interface = 1 */
 	int prog_if = dev->class & 0xf;
 
 	if ((class == PCI_CLASS_PROCESSOR_POWERPC ||

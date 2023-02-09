@@ -412,7 +412,7 @@ Extended error information
   Because the default sort key above is 'hitcount', the above shows a
   the list of call_sites by increasing hitcount, so that at the bottom
   we see the functions that made the most kmalloc calls during the
-  run.  If instead we we wanted to see the top kmalloc callers in
+  run.  If instead we wanted to see the top kmalloc callers in
   terms of the number of bytes requested rather than the number of
   calls, and we wanted the top caller to appear at the top, we can use
   the 'sort' parameter, along with the 'descending' modifier::
@@ -1762,6 +1762,21 @@ makes use of the wakeup_lat variable to compute a combined latency
 using the same key and variable from yet another event::
 
   # echo 'hist:key=pid:wakeupswitch_lat=$wakeup_lat+$switchtime_lat ...' >> event3/trigger
+
+Expressions support the use of addition, subtraction, multiplication and
+division operators (+-\*/).
+
+Note if division by zero cannot be detected at parse time (i.e. the
+divisor is not a constant), the result will be -1.
+
+Numeric constants can also be used directly in an expression::
+
+  # echo 'hist:keys=next_pid:timestamp_secs=common_timestamp/1000000 ...' >> event/trigger
+
+or assigned to a variable and referenced in a subsequent expression::
+
+  # echo 'hist:keys=next_pid:us_per_sec=1000000 ...' >> event/trigger
+  # echo 'hist:keys=next_pid:timestamp_secs=common_timestamp/$us_per_sec ...' >> event/trigger
 
 2.2.2 Synthetic Events
 ----------------------

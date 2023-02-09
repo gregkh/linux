@@ -236,7 +236,7 @@ static ssize_t serial_number_show(struct device *dev,
 	struct snd_card *card = dev_to_snd_card(dev);
 	struct usb_line6_pod *pod = card->private_data;
 
-	return sprintf(buf, "%u\n", pod->serial_number);
+	return sysfs_emit(buf, "%u\n", pod->serial_number);
 }
 
 /*
@@ -248,8 +248,8 @@ static ssize_t firmware_version_show(struct device *dev,
 	struct snd_card *card = dev_to_snd_card(dev);
 	struct usb_line6_pod *pod = card->private_data;
 
-	return sprintf(buf, "%d.%02d\n", pod->firmware_version / 100,
-		       pod->firmware_version % 100);
+	return sysfs_emit(buf, "%d.%02d\n", pod->firmware_version / 100,
+			  pod->firmware_version % 100);
 }
 
 /*
@@ -261,7 +261,7 @@ static ssize_t device_id_show(struct device *dev,
 	struct snd_card *card = dev_to_snd_card(dev);
 	struct usb_line6_pod *pod = card->private_data;
 
-	return sprintf(buf, "%d\n", pod->device_id);
+	return sysfs_emit(buf, "%d\n", pod->device_id);
 }
 
 /*

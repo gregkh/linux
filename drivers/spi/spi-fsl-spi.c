@@ -111,32 +111,6 @@ static void fsl_spi_change_mode(struct spi_device *spi)
 	local_irq_restore(flags);
 }
 
-static void fsl_spi_chipselect(struct spi_device *spi, int value)
-{
-	struct mpc8xxx_spi *mpc8xxx_spi = spi_master_get_devdata(spi->master);
-	struct fsl_spi_platform_data *pdata;
-	struct spi_mpc8xxx_cs	*cs = spi->controller_state;
-
-	pdata = spi->dev.parent->parent->platform_data;
-
-	if (value == BITBANG_CS_INACTIVE) {
-		if (pdata->cs_control)
-			pdata->cs_control(spi, false);
-	}
-
-	if (value == BITBANG_CS_ACTIVE) {
-		mpc8xxx_spi->rx_shift = cs->rx_shift;
-		mpc8xxx_spi->tx_shift = cs->tx_shift;
-		mpc8xxx_spi->get_rx = cs->get_rx;
-		mpc8xxx_spi->get_tx = cs->get_tx;
-
-		fsl_spi_change_mode(spi);
-
-		if (pdata->cs_control)
-			pdata->cs_control(spi, true);
-	}
-}
-
 static void fsl_spi_qe_cpu_set_shifts(u32 *rx_shift, u32 *tx_shift,
 				      int bits_per_word, int msb_first)
 {
@@ -354,22 +328,31 @@ static int fsl_spi_bufs(struct spi_device *spi, struct spi_transfer *t,
 	return mpc8xxx_spi->count;
 }
 
-static int fsl_spi_do_one_msg(struct spi_master *master,
-			      struct spi_message *m)
+static int fsl_spi_prepare_message(struct spi_controller *ctlr,
+				   struct spi_message *m)
 {
-	struct mpc8xxx_spi *mpc8xxx_spi = spi_master_get_devdata(master);
-	struct spi_device *spi = m->spi;
-	struct spi_transfer *t, *first;
-	unsigned int cs_change;
-	const int nsecs = 50;
-	int status, last_bpw;
+	struct mpc8xxx_spi *mpc8xxx_spi = spi_controller_get_devdata(ctlr);
+	struct spi_transfer *t;
+	struct spi_transfer *first;
+
+	first = list_first_entry(&m->transfers, struct spi_transfer,
+				 transfer_list);
 
 	/*
 	 * In CPU mode, optimize large byte transfers to use larger
 	 * bits_per_word values to reduce number of interrupts taken.
+	 *
+	 * Some glitches can appear on the SPI clock when the mode changes.
+	 * Check that there is no speed change during the transfer and set it up
+	 * now to change the mode without having a chip-select asserted.
 	 */
-	if (!(mpc8xxx_spi->flags & SPI_CPM_MODE)) {
-		list_for_each_entry(t, &m->transfers, transfer_list) {
+	list_for_each_entry(t, &m->transfers, transfer_list) {
+		if (t->speed_hz != first->speed_hz) {
+			dev_err(&m->spi->dev,
+				"speed_hz cannot change during message.\n");
+			return -EINVAL;
+		}
+		if (!(mpc8xxx_spi->flags & SPI_CPM_MODE)) {
 			if (t->len < 256 || t->bits_per_word != 8)
 				continue;
 			if ((t->len & 3) == 0)
@@ -378,62 +361,30 @@ static int fsl_spi_do_one_msg(struct spi_master *master,
 				t->bits_per_word = 16;
 		}
 	}
+	return fsl_spi_setup_transfer(m->spi, first);
+}
 
-	/* Don't allow changes if CS is active */
-	cs_change = 1;
-	list_for_each_entry(t, &m->transfers, transfer_list) {
-		if (cs_change)
-			first = t;
-		cs_change = t->cs_change;
-		if (first->speed_hz != t->speed_hz) {
-			dev_err(&spi->dev,
-				"speed_hz cannot change while CS is active\n");
-			return -EINVAL;
-		}
-	}
+static int fsl_spi_transfer_one(struct spi_controller *controller,
+				struct spi_device *spi,
+				struct spi_transfer *t)
+{
+	int status;
 
-	last_bpw = -1;
-	cs_change = 1;
-	status = -EINVAL;
-	list_for_each_entry(t, &m->transfers, transfer_list) {
-		if (cs_change || last_bpw != t->bits_per_word)
-			status = fsl_spi_setup_transfer(spi, t);
-		if (status < 0)
-			break;
-		last_bpw = t->bits_per_word;
+	status = fsl_spi_setup_transfer(spi, t);
+	if (status < 0)
+		return status;
+	if (t->len)
+		status = fsl_spi_bufs(spi, t, !!t->tx_dma || !!t->rx_dma);
+	if (status > 0)
+		return -EMSGSIZE;
 
-		if (cs_change) {
-			fsl_spi_chipselect(spi, BITBANG_CS_ACTIVE);
-			ndelay(nsecs);
-		}
-		cs_change = t->cs_change;
-		if (t->len)
-			status = fsl_spi_bufs(spi, t, m->is_dma_mapped);
-		if (status) {
-			status = -EMSGSIZE;
-			break;
-		}
-		m->actual_length += t->len;
+	return status;
+}
 
-		spi_transfer_delay_exec(t);
-
-		if (cs_change) {
-			ndelay(nsecs);
-			fsl_spi_chipselect(spi, BITBANG_CS_INACTIVE);
-			ndelay(nsecs);
-		}
-	}
-
-	m->status = status;
-
-	if (status || !cs_change) {
-		ndelay(nsecs);
-		fsl_spi_chipselect(spi, BITBANG_CS_INACTIVE);
-	}
-
-	fsl_spi_setup_transfer(spi, NULL);
-	spi_finalize_current_message(master);
-	return 0;
+static int fsl_spi_unprepare_message(struct spi_controller *controller,
+				     struct spi_message *msg)
+{
+	return fsl_spi_setup_transfer(msg->spi, NULL);
 }
 
 static int fsl_spi_setup(struct spi_device *spi)
@@ -481,9 +432,6 @@ static int fsl_spi_setup(struct spi_device *spi)
 			kfree(cs);
 		return retval;
 	}
-
-	/* Initialize chipselect - might be active for SPI_CS_HIGH mode */
-	fsl_spi_chipselect(spi, BITBANG_CS_INACTIVE);
 
 	return 0;
 }
@@ -557,9 +505,7 @@ static void fsl_spi_grlib_cs_control(struct spi_device *spi, bool on)
 	u32 slvsel;
 	u16 cs = spi->chip_select;
 
-	if (spi->cs_gpiod) {
-		gpiod_set_value(spi->cs_gpiod, on);
-	} else if (cs < mpc8xxx_spi->native_chipselects) {
+	if (cs < mpc8xxx_spi->native_chipselects) {
 		slvsel = mpc8xxx_spi_read_reg(&reg_base->slvsel);
 		slvsel = on ? (slvsel | (1 << cs)) : (slvsel & ~(1 << cs));
 		mpc8xxx_spi_write_reg(&reg_base->slvsel, slvsel);
@@ -568,7 +514,6 @@ static void fsl_spi_grlib_cs_control(struct spi_device *spi, bool on)
 
 static void fsl_spi_grlib_probe(struct device *dev)
 {
-	struct fsl_spi_platform_data *pdata = dev_get_platdata(dev);
 	struct spi_master *master = dev_get_drvdata(dev);
 	struct mpc8xxx_spi *mpc8xxx_spi = spi_master_get_devdata(master);
 	struct fsl_spi_reg __iomem *reg_base = mpc8xxx_spi->reg_base;
@@ -588,7 +533,18 @@ static void fsl_spi_grlib_probe(struct device *dev)
 		mpc8xxx_spi_write_reg(&reg_base->slvsel, 0xffffffff);
 	}
 	master->num_chipselect = mpc8xxx_spi->native_chipselects;
-	pdata->cs_control = fsl_spi_grlib_cs_control;
+	master->set_cs = fsl_spi_grlib_cs_control;
+}
+
+static void fsl_spi_cs_control(struct spi_device *spi, bool on)
+{
+	struct device *dev = spi->dev.parent->parent;
+	struct fsl_spi_platform_data *pdata = dev_get_platdata(dev);
+	struct mpc8xxx_spi_probe_info *pinfo = to_of_pinfo(pdata);
+
+	if (WARN_ON_ONCE(!pinfo->immr_spi_cs))
+		return;
+	iowrite32be(on ? 0 : SPI_BOOT_SEL_BIT, pinfo->immr_spi_cs);
 }
 
 static struct spi_master *fsl_spi_probe(struct device *dev,
@@ -613,8 +569,11 @@ static struct spi_master *fsl_spi_probe(struct device *dev,
 
 	master->setup = fsl_spi_setup;
 	master->cleanup = fsl_spi_cleanup;
-	master->transfer_one_message = fsl_spi_do_one_msg;
+	master->prepare_message = fsl_spi_prepare_message;
+	master->transfer_one = fsl_spi_transfer_one;
+	master->unprepare_message = fsl_spi_unprepare_message;
 	master->use_gpio_descriptors = true;
+	master->set_cs = fsl_spi_cs_control;
 
 	mpc8xxx_spi = spi_master_get_devdata(master);
 	mpc8xxx_spi->max_bits_per_word = 32;
@@ -688,21 +647,6 @@ err:
 	return ERR_PTR(ret);
 }
 
-static void fsl_spi_cs_control(struct spi_device *spi, bool on)
-{
-	if (spi->cs_gpiod) {
-		gpiod_set_value(spi->cs_gpiod, on);
-	} else {
-		struct device *dev = spi->dev.parent->parent;
-		struct fsl_spi_platform_data *pdata = dev_get_platdata(dev);
-		struct mpc8xxx_spi_probe_info *pinfo = to_of_pinfo(pdata);
-
-		if (WARN_ON_ONCE(!pinfo->immr_spi_cs))
-			return;
-		iowrite32be(on ? 0 : SPI_BOOT_SEL_BIT, pinfo->immr_spi_cs);
-	}
-}
-
 static int of_fsl_spi_probe(struct platform_device *ofdev)
 {
 	struct device *dev = &ofdev->dev;
@@ -744,12 +688,10 @@ static int of_fsl_spi_probe(struct platform_device *ofdev)
 		ret = gpiod_count(dev, "cs");
 		if (ret < 0)
 			ret = 0;
-		if (ret == 0 && !spisel_boot) {
+		if (ret == 0 && !spisel_boot)
 			pdata->max_chipselect = 1;
-		} else {
+		else
 			pdata->max_chipselect = ret + spisel_boot;
-			pdata->cs_control = fsl_spi_cs_control;
-		}
 	}
 
 	ret = of_address_to_resource(np, 0, &mem);

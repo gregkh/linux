@@ -103,7 +103,7 @@ static ssize_t rtrs_srv_src_addr_show(struct kobject *kobj,
 	srv_path = container_of(kobj, struct rtrs_srv_path, kobj);
 	cnt = sockaddr_to_str((struct sockaddr *)&srv_path->s.dst_addr,
 			      page, PAGE_SIZE);
-	return cnt + scnprintf(page + cnt, PAGE_SIZE - cnt, "\n");
+	return cnt + sysfs_emit_at(page, cnt, "\n");
 }
 
 static struct kobj_attribute rtrs_srv_src_addr_attr =
@@ -154,7 +154,7 @@ static const struct attribute_group rtrs_srv_stats_attr_group = {
 
 static int rtrs_srv_create_once_sysfs_root_folders(struct rtrs_srv_path *srv_path)
 {
-	struct rtrs_srv *srv = srv_path->srv;
+	struct rtrs_srv_sess *srv = srv_path->srv;
 	int err = 0;
 
 	mutex_lock(&srv->paths_mutex);
@@ -199,7 +199,7 @@ unlock:
 static void
 rtrs_srv_destroy_once_sysfs_root_folders(struct rtrs_srv_path *srv_path)
 {
-	struct rtrs_srv *srv = srv_path->srv;
+	struct rtrs_srv_sess *srv = srv_path->srv;
 
 	mutex_lock(&srv->paths_mutex);
 	if (!--srv->dev_ref) {
@@ -219,6 +219,8 @@ static void rtrs_srv_path_stats_release(struct kobject *kobj)
 	struct rtrs_srv_stats *stats;
 
 	stats = container_of(kobj, struct rtrs_srv_stats, kobj_stats);
+
+	free_percpu(stats->rdma_stats);
 
 	kfree(stats);
 }
@@ -258,7 +260,7 @@ err:
 
 int rtrs_srv_create_path_files(struct rtrs_srv_path *srv_path)
 {
-	struct rtrs_srv *srv = srv_path->srv;
+	struct rtrs_srv_sess *srv = srv_path->srv;
 	struct rtrs_path *s = &srv_path->s;
 	char str[NAME_MAX];
 	int err;

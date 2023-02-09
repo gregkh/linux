@@ -18,6 +18,7 @@
 #include <linux/vdpa.h>
 #include <linux/vhost_iotlb.h>
 #include <linux/iova.h>
+#include <uapi/linux/vdpa.h>
 
 #include "vdpa_sim.h"
 
@@ -33,7 +34,7 @@ MODULE_PARM_DESC(batch_mapping, "Batched mapping 1 -Enable; 0 - Disable");
 static int max_iotlb_entries = 2048;
 module_param(max_iotlb_entries, int, 0444);
 MODULE_PARM_DESC(max_iotlb_entries,
-		 "Maximum number of iotlb entries. 0 means unlimited. (default: 2048)");
+		 "Maximum number of iotlb entries for each address space. 0 means unlimited. (default: 2048)");
 
 #define VDPASIM_QUEUE_ALIGN PAGE_SIZE
 #define VDPASIM_QUEUE_MAX 256
@@ -95,11 +96,18 @@ static void vdpasim_do_reset(struct vdpasim *vdpasim)
 {
 	int i;
 
-	for (i = 0; i < vdpasim->dev_attr.nvqs; i++)
-		vdpasim_vq_reset(vdpasim, &vdpasim->vqs[i]);
-
 	spin_lock(&vdpasim->iommu_lock);
-	vhost_iotlb_reset(vdpasim->iommu);
+
+	for (i = 0; i < vdpasim->dev_attr.nvqs; i++) {
+		vdpasim_vq_reset(vdpasim, &vdpasim->vqs[i]);
+		vringh_set_iotlb(&vdpasim->vqs[i].vring, &vdpasim->iommu[0],
+				 &vdpasim->iommu_lock);
+	}
+
+	for (i = 0; i < vdpasim->dev_attr.nas; i++)
+		vhost_iotlb_reset(&vdpasim->iommu[i]);
+
+	vdpasim->running = true;
 	spin_unlock(&vdpasim->iommu_lock);
 
 	vdpasim->features = 0;
@@ -144,7 +152,7 @@ static dma_addr_t vdpasim_map_range(struct vdpasim *vdpasim, phys_addr_t paddr,
 	dma_addr = iova_dma_addr(&vdpasim->iova, iova);
 
 	spin_lock(&vdpasim->iommu_lock);
-	ret = vhost_iotlb_add_range(vdpasim->iommu, (u64)dma_addr,
+	ret = vhost_iotlb_add_range(&vdpasim->iommu[0], (u64)dma_addr,
 				    (u64)dma_addr + size - 1, (u64)paddr, perm);
 	spin_unlock(&vdpasim->iommu_lock);
 
@@ -160,7 +168,7 @@ static void vdpasim_unmap_range(struct vdpasim *vdpasim, dma_addr_t dma_addr,
 				size_t size)
 {
 	spin_lock(&vdpasim->iommu_lock);
-	vhost_iotlb_del_range(vdpasim->iommu, (u64)dma_addr,
+	vhost_iotlb_del_range(&vdpasim->iommu[0], (u64)dma_addr,
 			      (u64)dma_addr + size - 1);
 	spin_unlock(&vdpasim->iommu_lock);
 
@@ -237,12 +245,21 @@ static const struct dma_map_ops vdpasim_dma_ops = {
 static const struct vdpa_config_ops vdpasim_config_ops;
 static const struct vdpa_config_ops vdpasim_batch_config_ops;
 
-struct vdpasim *vdpasim_create(struct vdpasim_dev_attr *dev_attr)
+struct vdpasim *vdpasim_create(struct vdpasim_dev_attr *dev_attr,
+			       const struct vdpa_dev_set_config *config)
 {
 	const struct vdpa_config_ops *ops;
 	struct vdpasim *vdpasim;
 	struct device *dev;
 	int i, ret = -ENOMEM;
+
+	if (config->mask & BIT_ULL(VDPA_ATTR_DEV_FEATURES)) {
+		if (config->device_features &
+		    ~dev_attr->supported_features)
+			return ERR_PTR(-EINVAL);
+		dev_attr->supported_features =
+			config->device_features;
+	}
 
 	if (batch_mapping)
 		ops = &vdpasim_batch_config_ops;
@@ -250,6 +267,7 @@ struct vdpasim *vdpasim_create(struct vdpasim_dev_attr *dev_attr)
 		ops = &vdpasim_config_ops;
 
 	vdpasim = vdpa_alloc_device(struct vdpasim, vdpa, NULL, ops,
+				    dev_attr->ngroups, dev_attr->nas,
 				    dev_attr->name, false);
 	if (IS_ERR(vdpasim)) {
 		ret = PTR_ERR(vdpasim);
@@ -277,16 +295,20 @@ struct vdpasim *vdpasim_create(struct vdpasim_dev_attr *dev_attr)
 	if (!vdpasim->vqs)
 		goto err_iommu;
 
-	vdpasim->iommu = vhost_iotlb_alloc(max_iotlb_entries, 0);
+	vdpasim->iommu = kmalloc_array(vdpasim->dev_attr.nas,
+				       sizeof(*vdpasim->iommu), GFP_KERNEL);
 	if (!vdpasim->iommu)
 		goto err_iommu;
+
+	for (i = 0; i < vdpasim->dev_attr.nas; i++)
+		vhost_iotlb_init(&vdpasim->iommu[i], max_iotlb_entries, 0);
 
 	vdpasim->buffer = kvmalloc(dev_attr->buffer_size, GFP_KERNEL);
 	if (!vdpasim->buffer)
 		goto err_iommu;
 
 	for (i = 0; i < dev_attr->nvqs; i++)
-		vringh_set_iotlb(&vdpasim->vqs[i].vring, vdpasim->iommu,
+		vringh_set_iotlb(&vdpasim->vqs[i].vring, &vdpasim->iommu[0],
 				 &vdpasim->iommu_lock);
 
 	ret = iova_cache_get();
@@ -401,14 +423,23 @@ static u32 vdpasim_get_vq_align(struct vdpa_device *vdpa)
 	return VDPASIM_QUEUE_ALIGN;
 }
 
-static u64 vdpasim_get_features(struct vdpa_device *vdpa)
+static u32 vdpasim_get_vq_group(struct vdpa_device *vdpa, u16 idx)
+{
+	/* RX and TX belongs to group 0, CVQ belongs to group 1 */
+	if (idx == 2)
+		return 1;
+	else
+		return 0;
+}
+
+static u64 vdpasim_get_device_features(struct vdpa_device *vdpa)
 {
 	struct vdpasim *vdpasim = vdpa_to_sim(vdpa);
 
 	return vdpasim->dev_attr.supported_features;
 }
 
-static int vdpasim_set_features(struct vdpa_device *vdpa, u64 features)
+static int vdpasim_set_driver_features(struct vdpa_device *vdpa, u64 features)
 {
 	struct vdpasim *vdpasim = vdpa_to_sim(vdpa);
 
@@ -419,6 +450,13 @@ static int vdpasim_set_features(struct vdpa_device *vdpa, u64 features)
 	vdpasim->features = features & vdpasim->dev_attr.supported_features;
 
 	return 0;
+}
+
+static u64 vdpasim_get_driver_features(struct vdpa_device *vdpa)
+{
+	struct vdpasim *vdpasim = vdpa_to_sim(vdpa);
+
+	return vdpasim->features;
 }
 
 static void vdpasim_set_config_cb(struct vdpa_device *vdpa,
@@ -477,6 +515,17 @@ static int vdpasim_reset(struct vdpa_device *vdpa)
 	return 0;
 }
 
+static int vdpasim_suspend(struct vdpa_device *vdpa)
+{
+	struct vdpasim *vdpasim = vdpa_to_sim(vdpa);
+
+	spin_lock(&vdpasim->lock);
+	vdpasim->running = false;
+	spin_unlock(&vdpasim->lock);
+
+	return 0;
+}
+
 static size_t vdpasim_get_config_size(struct vdpa_device *vdpa)
 {
 	struct vdpasim *vdpasim = vdpa_to_sim(vdpa);
@@ -529,20 +578,53 @@ static struct vdpa_iova_range vdpasim_get_iova_range(struct vdpa_device *vdpa)
 	return range;
 }
 
-static int vdpasim_set_map(struct vdpa_device *vdpa,
+static int vdpasim_set_group_asid(struct vdpa_device *vdpa, unsigned int group,
+				  unsigned int asid)
+{
+	struct vdpasim *vdpasim = vdpa_to_sim(vdpa);
+	struct vhost_iotlb *iommu;
+	int i;
+
+	if (group > vdpasim->dev_attr.ngroups)
+		return -EINVAL;
+
+	if (asid >= vdpasim->dev_attr.nas)
+		return -EINVAL;
+
+	iommu = &vdpasim->iommu[asid];
+
+	spin_lock(&vdpasim->lock);
+
+	for (i = 0; i < vdpasim->dev_attr.nvqs; i++)
+		if (vdpasim_get_vq_group(vdpa, i) == group)
+			vringh_set_iotlb(&vdpasim->vqs[i].vring, iommu,
+					 &vdpasim->iommu_lock);
+
+	spin_unlock(&vdpasim->lock);
+
+	return 0;
+}
+
+static int vdpasim_set_map(struct vdpa_device *vdpa, unsigned int asid,
 			   struct vhost_iotlb *iotlb)
 {
 	struct vdpasim *vdpasim = vdpa_to_sim(vdpa);
 	struct vhost_iotlb_map *map;
+	struct vhost_iotlb *iommu;
 	u64 start = 0ULL, last = 0ULL - 1;
 	int ret;
 
+	if (asid >= vdpasim->dev_attr.nas)
+		return -EINVAL;
+
 	spin_lock(&vdpasim->iommu_lock);
-	vhost_iotlb_reset(vdpasim->iommu);
+
+	iommu = &vdpasim->iommu[asid];
+	vhost_iotlb_reset(iommu);
 
 	for (map = vhost_iotlb_itree_first(iotlb, start, last); map;
 	     map = vhost_iotlb_itree_next(map, start, last)) {
-		ret = vhost_iotlb_add_range(vdpasim->iommu, map->start,
+		ret = vhost_iotlb_add_range(iommu, map->start,
 					    map->last, map->addr, map->perm);
 		if (ret)
 			goto err;
@@ -551,31 +633,39 @@ static int vdpasim_set_map(struct vdpa_device *vdpa,
 	return 0;
 
 err:
-	vhost_iotlb_reset(vdpasim->iommu);
+	vhost_iotlb_reset(iommu);
 	spin_unlock(&vdpasim->iommu_lock);
 	return ret;
 }
 
-static int vdpasim_dma_map(struct vdpa_device *vdpa, u64 iova, u64 size,
+static int vdpasim_dma_map(struct vdpa_device *vdpa, unsigned int asid,
+			   u64 iova, u64 size,
 			   u64 pa, u32 perm, void *opaque)
 {
 	struct vdpasim *vdpasim = vdpa_to_sim(vdpa);
 	int ret;
 
+	if (asid >= vdpasim->dev_attr.nas)
+		return -EINVAL;
+
 	spin_lock(&vdpasim->iommu_lock);
-	ret = vhost_iotlb_add_range_ctx(vdpasim->iommu, iova, iova + size - 1,
-					pa, perm, opaque);
+	ret = vhost_iotlb_add_range_ctx(&vdpasim->iommu[asid], iova,
+					iova + size - 1, pa, perm, opaque);
 	spin_unlock(&vdpasim->iommu_lock);
 
 	return ret;
 }
 
-static int vdpasim_dma_unmap(struct vdpa_device *vdpa, u64 iova, u64 size)
+static int vdpasim_dma_unmap(struct vdpa_device *vdpa, unsigned int asid,
+			     u64 iova, u64 size)
 {
 	struct vdpasim *vdpasim = vdpa_to_sim(vdpa);
 
+	if (asid >= vdpasim->dev_attr.nas)
+		return -EINVAL;
+
 	spin_lock(&vdpasim->iommu_lock);
-	vhost_iotlb_del_range(vdpasim->iommu, iova, iova + size - 1);
+	vhost_iotlb_del_range(&vdpasim->iommu[asid], iova, iova + size - 1);
 	spin_unlock(&vdpasim->iommu_lock);
 
 	return 0;
@@ -599,8 +689,9 @@ static void vdpasim_free(struct vdpa_device *vdpa)
 	}
 
 	kvfree(vdpasim->buffer);
-	if (vdpasim->iommu)
-		vhost_iotlb_free(vdpasim->iommu);
+	for (i = 0; i < vdpasim->dev_attr.nas; i++)
+		vhost_iotlb_reset(&vdpasim->iommu[i]);
+	kfree(vdpasim->iommu);
 	kfree(vdpasim->vqs);
 	kfree(vdpasim->config);
 }
@@ -615,8 +706,10 @@ static const struct vdpa_config_ops vdpasim_config_ops = {
 	.set_vq_state           = vdpasim_set_vq_state,
 	.get_vq_state           = vdpasim_get_vq_state,
 	.get_vq_align           = vdpasim_get_vq_align,
-	.get_features           = vdpasim_get_features,
-	.set_features           = vdpasim_set_features,
+	.get_vq_group           = vdpasim_get_vq_group,
+	.get_device_features    = vdpasim_get_device_features,
+	.set_driver_features    = vdpasim_set_driver_features,
+	.get_driver_features    = vdpasim_get_driver_features,
 	.set_config_cb          = vdpasim_set_config_cb,
 	.get_vq_num_max         = vdpasim_get_vq_num_max,
 	.get_device_id          = vdpasim_get_device_id,
@@ -624,11 +717,13 @@ static const struct vdpa_config_ops vdpasim_config_ops = {
 	.get_status             = vdpasim_get_status,
 	.set_status             = vdpasim_set_status,
 	.reset			= vdpasim_reset,
+	.suspend		= vdpasim_suspend,
 	.get_config_size        = vdpasim_get_config_size,
 	.get_config             = vdpasim_get_config,
 	.set_config             = vdpasim_set_config,
 	.get_generation         = vdpasim_get_generation,
 	.get_iova_range         = vdpasim_get_iova_range,
+	.set_group_asid         = vdpasim_set_group_asid,
 	.dma_map                = vdpasim_dma_map,
 	.dma_unmap              = vdpasim_dma_unmap,
 	.free                   = vdpasim_free,
@@ -644,8 +739,10 @@ static const struct vdpa_config_ops vdpasim_batch_config_ops = {
 	.set_vq_state           = vdpasim_set_vq_state,
 	.get_vq_state           = vdpasim_get_vq_state,
 	.get_vq_align           = vdpasim_get_vq_align,
-	.get_features           = vdpasim_get_features,
-	.set_features           = vdpasim_set_features,
+	.get_vq_group           = vdpasim_get_vq_group,
+	.get_device_features    = vdpasim_get_device_features,
+	.set_driver_features    = vdpasim_set_driver_features,
+	.get_driver_features    = vdpasim_get_driver_features,
 	.set_config_cb          = vdpasim_set_config_cb,
 	.get_vq_num_max         = vdpasim_get_vq_num_max,
 	.get_device_id          = vdpasim_get_device_id,
@@ -653,11 +750,13 @@ static const struct vdpa_config_ops vdpasim_batch_config_ops = {
 	.get_status             = vdpasim_get_status,
 	.set_status             = vdpasim_set_status,
 	.reset			= vdpasim_reset,
+	.suspend		= vdpasim_suspend,
 	.get_config_size        = vdpasim_get_config_size,
 	.get_config             = vdpasim_get_config,
 	.set_config             = vdpasim_set_config,
 	.get_generation         = vdpasim_get_generation,
 	.get_iova_range         = vdpasim_get_iova_range,
+	.set_group_asid         = vdpasim_set_group_asid,
 	.set_map                = vdpasim_set_map,
 	.free                   = vdpasim_free,
 };

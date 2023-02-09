@@ -117,12 +117,14 @@ static inline int xgpio_regoffset(struct xgpio_instance *chip, int ch)
 static void xgpio_read_ch(struct xgpio_instance *chip, int reg, int bit, unsigned long *a)
 {
 	void __iomem *addr = chip->regs + reg + xgpio_regoffset(chip, bit / 32);
+
 	xgpio_set_value32(a, bit, xgpio_readreg(addr));
 }
 
 static void xgpio_write_ch(struct xgpio_instance *chip, int reg, int bit, unsigned long *a)
 {
 	void __iomem *addr = chip->regs + reg + xgpio_regoffset(chip, bit / 32);
+
 	xgpio_writereg(addr, xgpio_get_value32(a, bit));
 }
 
@@ -371,8 +373,7 @@ static int __maybe_unused xgpio_resume(struct device *dev)
 
 static int __maybe_unused xgpio_runtime_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct xgpio_instance *gpio = platform_get_drvdata(pdev);
+	struct xgpio_instance *gpio = dev_get_drvdata(dev);
 
 	clk_disable(gpio->clk);
 
@@ -381,8 +382,7 @@ static int __maybe_unused xgpio_runtime_suspend(struct device *dev)
 
 static int __maybe_unused xgpio_runtime_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct xgpio_instance *gpio = platform_get_drvdata(pdev);
+	struct xgpio_instance *gpio = dev_get_drvdata(dev);
 
 	return clk_enable(gpio->clk);
 }

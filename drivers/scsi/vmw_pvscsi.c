@@ -646,7 +646,7 @@ static void pvscsi_complete_request(struct pvscsi_adapter *adapter,
 		"cmd=%p %x ctx=%p result=0x%x status=0x%x,%x\n",
 		cmd, cmd->cmnd[0], ctx, cmd->result, btstat, sdstat);
 
-	cmd->scsi_done(cmd);
+	scsi_done(cmd);
 }
 
 /*
@@ -771,7 +771,7 @@ static int pvscsi_queue_ring(struct pvscsi_adapter *adapter,
 	return 0;
 }
 
-static int pvscsi_queue_lck(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
+static int pvscsi_queue_lck(struct scsi_cmnd *cmd)
 {
 	struct Scsi_Host *host = cmd->device->host;
 	struct pvscsi_adapter *adapter = shost_priv(host);
@@ -789,7 +789,6 @@ static int pvscsi_queue_lck(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd
 		return SCSI_MLQUEUE_HOST_BUSY;
 	}
 
-	cmd->scsi_done = done;
 	op = cmd->cmnd[0];
 
 	dev_dbg(&cmd->device->sdev_gendev,
@@ -863,7 +862,7 @@ static int pvscsi_abort(struct scsi_cmnd *cmd)
 	 * Successfully aborted the command.
 	 */
 	cmd->result = (DID_ABORT << 16);
-	cmd->scsi_done(cmd);
+	scsi_done(cmd);
 
 out:
 	spin_unlock_irqrestore(&adapter->hw_lock, flags);
@@ -890,7 +889,7 @@ static void pvscsi_reset_all(struct pvscsi_adapter *adapter)
 			pvscsi_patch_sense(cmd);
 			pvscsi_release_context(adapter, ctx);
 			cmd->result = (DID_RESET << 16);
-			cmd->scsi_done(cmd);
+			scsi_done(cmd);
 		}
 	}
 }
@@ -1325,7 +1324,6 @@ static u32 pvscsi_get_max_targets(struct pvscsi_adapter *adapter)
 	 * indicate success.
 	 */
 	header = config_page;
-	memset(header, 0, sizeof *header);
 	header->hostStatus = BTSTAT_INVPARAM;
 	header->scsiStatus = SDSTAT_CHECK;
 

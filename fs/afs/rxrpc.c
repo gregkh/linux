@@ -145,14 +145,14 @@ static struct afs_call *afs_alloc_call(struct afs_net *net,
 	call->type = type;
 	call->net = net;
 	call->debug_id = atomic_inc_return(&rxrpc_debug_id);
-	atomic_set(&call->usage, 1);
+	refcount_set(&call->ref, 1);
 	INIT_WORK(&call->async_work, afs_process_async_call);
 	init_waitqueue_head(&call->waitq);
 	spin_lock_init(&call->state_lock);
 	call->iter = &call->def_iter;
 
 	o = atomic_inc_return(&net->nr_outstanding_calls);
-	trace_afs_call(call, afs_call_trace_alloc, 1, o,
+	trace_afs_call(call->debug_id, afs_call_trace_alloc, 1, o,
 		       __builtin_return_address(0));
 	return call;
 }
@@ -163,14 +163,16 @@ static struct afs_call *afs_alloc_call(struct afs_net *net,
 void afs_put_call(struct afs_call *call)
 {
 	struct afs_net *net = call->net;
-	int n = atomic_dec_return(&call->usage);
-	int o = atomic_read(&net->nr_outstanding_calls);
+	unsigned int debug_id = call->debug_id;
+	bool zero;
+	int r, o;
 
-	trace_afs_call(call, afs_call_trace_put, n, o,
+	zero = __refcount_dec_and_test(&call->ref, &r);
+	o = atomic_read(&net->nr_outstanding_calls);
+	trace_afs_call(debug_id, afs_call_trace_put, r - 1, o,
 		       __builtin_return_address(0));
 
-	ASSERTCMP(n, >=, 0);
-	if (n == 0) {
+	if (zero) {
 		ASSERT(!work_pending(&call->async_work));
 		ASSERT(call->type->name != NULL);
 
@@ -185,7 +187,7 @@ void afs_put_call(struct afs_call *call)
 		afs_put_addrlist(call->alist);
 		kfree(call->request);
 
-		trace_afs_call(call, afs_call_trace_free, 0, o,
+		trace_afs_call(call->debug_id, afs_call_trace_free, 0, o,
 			       __builtin_return_address(0));
 		kfree(call);
 
@@ -198,9 +200,11 @@ void afs_put_call(struct afs_call *call)
 static struct afs_call *afs_get_call(struct afs_call *call,
 				     enum afs_call_trace why)
 {
-	int u = atomic_inc_return(&call->usage);
+	int r;
 
-	trace_afs_call(call, why, u,
+	__refcount_inc(&call->ref, &r);
+
+	trace_afs_call(call->debug_id, why, r + 1,
 		       atomic_read(&call->net->nr_outstanding_calls),
 		       __builtin_return_address(0));
 	return call;
@@ -355,7 +359,7 @@ void afs_make_call(struct afs_addr_cursor *ac, struct afs_call *call, gfp_t gfp)
 
 	msg.msg_name		= NULL;
 	msg.msg_namelen		= 0;
-	iov_iter_kvec(&msg.msg_iter, WRITE, iov, 1, call->request_size);
+	iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, iov, 1, call->request_size);
 	msg.msg_control		= NULL;
 	msg.msg_controllen	= 0;
 	msg.msg_flags		= MSG_WAITALL | (call->write_iter ? MSG_MORE : 0);
@@ -396,7 +400,7 @@ error_do_abort:
 					RX_USER_ABORT, ret, "KSD");
 	} else {
 		len = 0;
-		iov_iter_kvec(&msg.msg_iter, READ, NULL, 0, 0);
+		iov_iter_kvec(&msg.msg_iter, ITER_DEST, NULL, 0, 0);
 		rxrpc_kernel_recv_data(call->net->socket, rxcall,
 				       &msg.msg_iter, &len, false,
 				       &call->abort_code, &call->service_id);
@@ -481,7 +485,7 @@ static void afs_deliver_to_call(struct afs_call *call)
 	       ) {
 		if (state == AFS_CALL_SV_AWAIT_ACK) {
 			len = 0;
-			iov_iter_kvec(&call->def_iter, READ, NULL, 0, 0);
+			iov_iter_kvec(&call->def_iter, ITER_DEST, NULL, 0, 0);
 			ret = rxrpc_kernel_recv_data(call->net->socket,
 						     call->rxcall, &call->def_iter,
 						     &len, false, &remote_abort,
@@ -663,14 +667,13 @@ static void afs_wake_up_async_call(struct sock *sk, struct rxrpc_call *rxcall,
 				   unsigned long call_user_ID)
 {
 	struct afs_call *call = (struct afs_call *)call_user_ID;
-	int u;
+	int r;
 
 	trace_afs_notify_call(rxcall, call);
 	call->need_attention = true;
 
-	u = atomic_fetch_add_unless(&call->usage, 1, 0);
-	if (u != 0) {
-		trace_afs_call(call, afs_call_trace_wake, u + 1,
+	if (__refcount_inc_not_zero(&call->ref, &r)) {
+		trace_afs_call(call->debug_id, afs_call_trace_wake, r + 1,
 			       atomic_read(&call->net->nr_outstanding_calls),
 			       __builtin_return_address(0));
 
@@ -819,7 +822,7 @@ void afs_send_empty_reply(struct afs_call *call)
 
 	msg.msg_name		= NULL;
 	msg.msg_namelen		= 0;
-	iov_iter_kvec(&msg.msg_iter, WRITE, NULL, 0, 0);
+	iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, NULL, 0, 0);
 	msg.msg_control		= NULL;
 	msg.msg_controllen	= 0;
 	msg.msg_flags		= 0;
@@ -859,7 +862,7 @@ void afs_send_simple_reply(struct afs_call *call, const void *buf, size_t len)
 	iov[0].iov_len		= len;
 	msg.msg_name		= NULL;
 	msg.msg_namelen		= 0;
-	iov_iter_kvec(&msg.msg_iter, WRITE, iov, 1, len);
+	iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, iov, 1, len);
 	msg.msg_control		= NULL;
 	msg.msg_controllen	= 0;
 	msg.msg_flags		= 0;

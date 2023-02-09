@@ -74,28 +74,37 @@ static void seqbuf_seek(struct seqbuf *seqbuf, ssize_t offset)
 static const char *get_filename(struct tegra_bpmp *bpmp,
 				const struct file *file, char *buf, int size)
 {
-	char root_path_buf[512];
-	const char *root_path;
-	const char *filename;
+	const char *root_path, *filename = NULL;
+	char *root_path_buf;
 	size_t root_len;
+	size_t root_path_buf_len = 512;
+
+	root_path_buf = kzalloc(root_path_buf_len, GFP_KERNEL);
+	if (!root_path_buf)
+		goto out;
 
 	root_path = dentry_path(bpmp->debugfs_mirror, root_path_buf,
-				sizeof(root_path_buf));
+				root_path_buf_len);
 	if (IS_ERR(root_path))
-		return NULL;
+		goto out;
 
 	root_len = strlen(root_path);
 
 	filename = dentry_path(file->f_path.dentry, buf, size);
-	if (IS_ERR(filename))
-		return NULL;
+	if (IS_ERR(filename)) {
+		filename = NULL;
+		goto out;
+	}
 
-	if (strlen(filename) < root_len ||
-			strncmp(filename, root_path, root_len))
-		return NULL;
+	if (strlen(filename) < root_len || strncmp(filename, root_path, root_len)) {
+		filename = NULL;
+		goto out;
+	}
 
 	filename += root_len;
 
+out:
+	kfree(root_path_buf);
 	return filename;
 }
 
@@ -368,18 +377,11 @@ static ssize_t bpmp_debug_store(struct file *file, const char __user *buf,
 	if (!filename)
 		return -ENOENT;
 
-	databuf = kmalloc(count, GFP_KERNEL);
-	if (!databuf)
-		return -ENOMEM;
-
-	if (copy_from_user(databuf, buf, count)) {
-		err = -EFAULT;
-		goto free_ret;
-	}
+	databuf = memdup_user(buf, count);
+	if (IS_ERR(databuf))
+		return PTR_ERR(databuf);
 
 	err = mrq_debug_write(bpmp, filename, databuf, count);
-
-free_ret:
 	kfree(databuf);
 
 	return err ?: count;

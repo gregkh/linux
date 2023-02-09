@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
 /* Copyright (c) 2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018-2020 Linaro Ltd.
+ * Copyright (C) 2018-2022 Linaro Ltd.
  */
 #ifndef _IPA_QMI_MSG_H_
 #define _IPA_QMI_MSG_H_
@@ -219,7 +219,7 @@ struct ipa_init_modem_driver_req {
 
 /* The response to a IPA_QMI_INIT_DRIVER request begins with a standard
  * QMI response, but contains other information as well.  Currently we
- * simply wait for the the INIT_DRIVER transaction to complete and
+ * simply wait for the INIT_DRIVER transaction to complete and
  * ignore any other data that might be returned.
  */
 struct ipa_init_modem_driver_rsp {

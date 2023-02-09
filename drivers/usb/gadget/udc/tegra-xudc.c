@@ -2,7 +2,7 @@
 /*
  * NVIDIA Tegra XUSB device mode controller
  *
- * Copyright (c) 2013-2019, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2022, NVIDIA CORPORATION.  All rights reserved.
  * Copyright (c) 2015, Google Inc.
  */
 
@@ -702,6 +702,8 @@ static void tegra_xudc_device_mode_on(struct tegra_xudc *xudc)
 
 	pm_runtime_get_sync(xudc->dev);
 
+	tegra_phy_xusb_utmi_pad_power_on(xudc->curr_utmi_phy);
+
 	err = phy_power_on(xudc->curr_utmi_phy);
 	if (err < 0)
 		dev_err(xudc->dev, "UTMI power on failed: %d\n", err);
@@ -755,6 +757,8 @@ static void tegra_xudc_device_mode_off(struct tegra_xudc *xudc)
 
 	/* Make sure interrupt handler has completed before powergating. */
 	synchronize_irq(xudc->irq);
+
+	tegra_phy_xusb_utmi_pad_power_down(xudc->curr_utmi_phy);
 
 	err = phy_power_off(xudc->curr_utmi_phy);
 	if (err < 0)
@@ -1412,18 +1416,20 @@ __tegra_xudc_ep_dequeue(struct tegra_xudc_ep *ep,
 			struct tegra_xudc_request *req)
 {
 	struct tegra_xudc *xudc = ep->xudc;
-	struct tegra_xudc_request *r;
+	struct tegra_xudc_request *r = NULL, *iter;
 	struct tegra_xudc_trb *deq_trb;
 	bool busy, kick_queue = false;
 	int ret = 0;
 
 	/* Make sure the request is actually queued to this endpoint. */
-	list_for_each_entry(r, &ep->queue, list) {
-		if (r == req)
-			break;
+	list_for_each_entry(iter, &ep->queue, list) {
+		if (iter != req)
+			continue;
+		r = iter;
+		break;
 	}
 
-	if (r != req)
+	if (!r)
 		return -EINVAL;
 
 	/* Request hasn't been queued in the transfer ring yet. */
@@ -1432,7 +1438,7 @@ __tegra_xudc_ep_dequeue(struct tegra_xudc_ep *ep,
 		return 0;
 	}
 
-	/* Halt DMA for this endpiont. */
+	/* Halt DMA for this endpoint. */
 	if (ep_ctx_read_state(ep->context) == EP_STATE_RUNNING) {
 		ep_pause(xudc, ep->index);
 		ep_wait_for_inactive(xudc, ep->index);
@@ -3421,7 +3427,7 @@ static void tegra_xudc_device_params_init(struct tegra_xudc *xudc)
 	}
 
 	/*
-	 * Compliacne suite appears to be violating polling LFPS tBurst max
+	 * Compliance suite appears to be violating polling LFPS tBurst max
 	 * of 1.4us.  Send 1.45us instead.
 	 */
 	val = xudc_readl(xudc, SSPX_CORE_CNT32);

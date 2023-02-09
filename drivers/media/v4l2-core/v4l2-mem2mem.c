@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Memory-to-memory device framework for Video for Linux 2 and videobuf.
+ * Memory-to-memory device framework for Video for Linux 2 and vb2.
  *
- * Helper functions for devices that use videobuf buffers for both their
+ * Helper functions for devices that use vb2 buffers for both their
  * source and destination.
  *
  * Copyright (c) 2009-2010 Samsung Electronics Co., Ltd.
@@ -21,7 +21,7 @@
 #include <media/v4l2-fh.h>
 #include <media/v4l2-event.h>
 
-MODULE_DESCRIPTION("Mem to mem device framework for videobuf");
+MODULE_DESCRIPTION("Mem to mem device framework for vb2");
 MODULE_AUTHOR("Pawel Osciak, <pawel@osciak.com>");
 MODULE_LICENSE("GPL");
 
@@ -68,16 +68,16 @@ static const char * const m2m_entity_name[] = {
  * struct v4l2_m2m_dev - per-device context
  * @source:		&struct media_entity pointer with the source entity
  *			Used only when the M2M device is registered via
- *			v4l2_m2m_unregister_media_controller().
+ *			v4l2_m2m_register_media_controller().
  * @source_pad:		&struct media_pad with the source pad.
  *			Used only when the M2M device is registered via
- *			v4l2_m2m_unregister_media_controller().
+ *			v4l2_m2m_register_media_controller().
  * @sink:		&struct media_entity pointer with the sink entity
  *			Used only when the M2M device is registered via
- *			v4l2_m2m_unregister_media_controller().
+ *			v4l2_m2m_register_media_controller().
  * @sink_pad:		&struct media_pad with the sink pad.
  *			Used only when the M2M device is registered via
- *			v4l2_m2m_unregister_media_controller().
+ *			v4l2_m2m_register_media_controller().
  * @proc:		&struct media_entity pointer with the M2M device itself.
  * @proc_pads:		&struct media_pad with the @proc pads.
  *			Used only when the M2M device is registered via
@@ -336,6 +336,7 @@ static void __v4l2_m2m_try_queue(struct v4l2_m2m_dev *m2m_dev,
 	if (src && dst && dst->is_held &&
 	    dst->vb2_buf.copied_timestamp &&
 	    dst->vb2_buf.timestamp != src->vb2_buf.timestamp) {
+		dprintk("Timestamp mismatch, returning held capture buffer\n");
 		dst->is_held = false;
 		v4l2_m2m_dst_buf_remove(m2m_ctx);
 		v4l2_m2m_buf_done(dst, VB2_BUF_STATE_DONE);
@@ -994,6 +995,27 @@ int v4l2_m2m_mmap(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 	return vb2_mmap(vq, vma);
 }
 EXPORT_SYMBOL(v4l2_m2m_mmap);
+
+#ifndef CONFIG_MMU
+unsigned long v4l2_m2m_get_unmapped_area(struct file *file, unsigned long addr,
+					 unsigned long len, unsigned long pgoff,
+					 unsigned long flags)
+{
+	struct v4l2_fh *fh = file->private_data;
+	unsigned long offset = pgoff << PAGE_SHIFT;
+	struct vb2_queue *vq;
+
+	if (offset < DST_QUEUE_OFF_BASE) {
+		vq = v4l2_m2m_get_src_vq(fh->m2m_ctx);
+	} else {
+		vq = v4l2_m2m_get_dst_vq(fh->m2m_ctx);
+		pgoff -= (DST_QUEUE_OFF_BASE >> PAGE_SHIFT);
+	}
+
+	return vb2_get_unmapped_area(vq, addr, len, pgoff, flags);
+}
+EXPORT_SYMBOL_GPL(v4l2_m2m_get_unmapped_area);
+#endif
 
 #if defined(CONFIG_MEDIA_CONTROLLER)
 void v4l2_m2m_unregister_media_controller(struct v4l2_m2m_dev *m2m_dev)

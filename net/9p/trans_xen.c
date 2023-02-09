@@ -1,33 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/fs/9p/trans_xen
  *
  * Xen transport layer.
  *
  * Copyright (C) 2017 by Stefano Stabellini <stefano@aporeto.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation; or, when distributed
- * separately from the Linux kernel or incorporated into other
- * software packages, subject to the following license:
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this source file (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy, modify,
- * merge, publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
  */
 
 #include <xen/events.h>
@@ -180,7 +157,7 @@ again:
 			      &masked_prod, masked_cons,
 			      XEN_9PFS_RING_SIZE(ring));
 
-	p9_req->status = REQ_STATUS_SENT;
+	WRITE_ONCE(p9_req->status, REQ_STATUS_SENT);
 	virt_wmb();			/* write ring before updating pointer */
 	prod += size;
 	ring->intf->out_prod = prod;
@@ -235,7 +212,7 @@ static void p9_xen_response(struct work_struct *work)
 			dev_warn(&priv->dev->dev,
 				 "requested packet size too big: %d for tag %d with capacity %zd\n",
 				 h.size, h.tag, req->rc.capacity);
-			req->status = REQ_STATUS_ERROR;
+			WRITE_ONCE(req->status, REQ_STATUS_ERROR);
 			goto recv_error;
 		}
 
@@ -278,6 +255,7 @@ static irqreturn_t xen_9pfs_front_event_handler(int irq, void *r)
 static struct p9_trans_module p9_xen_trans = {
 	.name = "xen",
 	.maxsize = 1 << (XEN_9PFS_RING_ORDER + XEN_PAGE_SHIFT - 2),
+	.pooled_rbuffers = false,
 	.def = 1,
 	.create = p9_xen_create,
 	.close = p9_xen_close,
@@ -311,13 +289,13 @@ static void xen_9pfs_front_free(struct xen_9pfs_front_priv *priv)
 				grant_ref_t ref;
 
 				ref = priv->rings[i].intf->ref[j];
-				gnttab_end_foreign_access(ref, 0, 0);
+				gnttab_end_foreign_access(ref, NULL);
 			}
 			free_pages_exact(priv->rings[i].data.in,
 				   1UL << (priv->rings[i].intf->ring_order +
 					   XEN_PAGE_SHIFT));
 		}
-		gnttab_end_foreign_access(priv->rings[i].ref, 0, 0);
+		gnttab_end_foreign_access(priv->rings[i].ref, NULL);
 		free_page((unsigned long)priv->rings[i].intf);
 	}
 	kfree(priv->rings);
@@ -385,10 +363,10 @@ static int xen_9pfs_front_alloc_dataring(struct xenbus_device *dev,
 out:
 	if (bytes) {
 		for (i--; i >= 0; i--)
-			gnttab_end_foreign_access(ring->intf->ref[i], 0, 0);
+			gnttab_end_foreign_access(ring->intf->ref[i], NULL);
 		free_pages_exact(bytes, 1UL << (order + XEN_PAGE_SHIFT));
 	}
-	gnttab_end_foreign_access(ring->ref, 0, 0);
+	gnttab_end_foreign_access(ring->ref, NULL);
 	free_page((unsigned long)ring->intf);
 	return ret;
 }
@@ -542,7 +520,7 @@ static struct xenbus_driver xen_9pfs_front_driver = {
 	.otherend_changed = xen_9pfs_front_changed,
 };
 
-static int p9_trans_xen_init(void)
+static int __init p9_trans_xen_init(void)
 {
 	int rc;
 
@@ -559,14 +537,16 @@ static int p9_trans_xen_init(void)
 	return rc;
 }
 module_init(p9_trans_xen_init);
+MODULE_ALIAS_9P("xen");
 
-static void p9_trans_xen_exit(void)
+static void __exit p9_trans_xen_exit(void)
 {
 	v9fs_unregister_trans(&p9_xen_trans);
 	return xenbus_unregister_driver(&xen_9pfs_front_driver);
 }
 module_exit(p9_trans_xen_exit);
 
+MODULE_ALIAS("xen:9pfs");
 MODULE_AUTHOR("Stefano Stabellini <stefano@aporeto.com>");
 MODULE_DESCRIPTION("Xen Transport for 9P");
 MODULE_LICENSE("GPL");

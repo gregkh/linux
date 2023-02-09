@@ -25,7 +25,7 @@ static void btrfs_read_root_item(struct extent_buffer *eb, int slot,
 	u32 len;
 	int need_reset = 0;
 
-	len = btrfs_item_size_nr(eb, slot);
+	len = btrfs_item_size(eb, slot);
 	read_extent_buffer(eb, item, btrfs_item_ptr_offset(eb, slot),
 			   min_t(u32, len, sizeof(*item)));
 	if (len < sizeof(*item))
@@ -39,10 +39,8 @@ static void btrfs_read_root_item(struct extent_buffer *eb, int slot,
 		need_reset = 1;
 	}
 	if (need_reset) {
-		memset(&item->generation_v2, 0,
-			sizeof(*item) - offsetof(struct btrfs_root_item,
-					generation_v2));
-
+		/* Clear all members from generation_v2 onwards. */
+		memset_startat(item, 0, generation_v2);
 		generate_random_guid(item->uuid);
 	}
 }
@@ -148,7 +146,7 @@ int btrfs_update_root(struct btrfs_trans_handle *trans, struct btrfs_root
 	l = path->nodes[0];
 	slot = path->slots[0];
 	ptr = btrfs_item_ptr_offset(l, slot);
-	old_len = btrfs_item_size_nr(l, slot);
+	old_len = btrfs_item_size(l, slot);
 
 	/*
 	 * If this is the first time we update the root item which originated
@@ -339,7 +337,6 @@ int btrfs_del_root_ref(struct btrfs_trans_handle *trans, u64 root_id,
 	struct extent_buffer *leaf;
 	struct btrfs_key key;
 	unsigned long ptr;
-	int err = 0;
 	int ret;
 
 	path = btrfs_alloc_path();
@@ -352,7 +349,6 @@ int btrfs_del_root_ref(struct btrfs_trans_handle *trans, u64 root_id,
 again:
 	ret = btrfs_search_slot(trans, tree_root, &key, path, -1, 1);
 	if (ret < 0) {
-		err = ret;
 		goto out;
 	} else if (ret == 0) {
 		leaf = path->nodes[0];
@@ -362,18 +358,18 @@ again:
 		if ((btrfs_root_ref_dirid(leaf, ref) != dirid) ||
 		    (btrfs_root_ref_name_len(leaf, ref) != name_len) ||
 		    memcmp_extent_buffer(leaf, name, ptr, name_len)) {
-			err = -ENOENT;
+			ret = -ENOENT;
 			goto out;
 		}
 		*sequence = btrfs_root_ref_sequence(leaf, ref);
 
 		ret = btrfs_del_item(trans, tree_root, path);
-		if (ret) {
-			err = ret;
+		if (ret)
 			goto out;
-		}
-	} else
-		err = -ENOENT;
+	} else {
+		ret = -ENOENT;
+		goto out;
+	}
 
 	if (key.type == BTRFS_ROOT_BACKREF_KEY) {
 		btrfs_release_path(path);
@@ -385,7 +381,7 @@ again:
 
 out:
 	btrfs_free_path(path);
-	return err;
+	return ret;
 }
 
 /*
@@ -512,7 +508,8 @@ int btrfs_subvolume_reserve_metadata(struct btrfs_root *root,
 		/* One for parent inode, two for dir entries */
 		qgroup_num_bytes = 3 * fs_info->nodesize;
 		ret = btrfs_qgroup_reserve_meta_prealloc(root,
-				qgroup_num_bytes, true);
+							 qgroup_num_bytes, true,
+							 false);
 		if (ret)
 			return ret;
 	}
@@ -520,7 +517,7 @@ int btrfs_subvolume_reserve_metadata(struct btrfs_root *root,
 	num_bytes = btrfs_calc_insert_metadata_size(fs_info, items);
 	rsv->space_info = btrfs_find_space_info(fs_info,
 					    BTRFS_BLOCK_GROUP_METADATA);
-	ret = btrfs_block_rsv_add(root, rsv, num_bytes,
+	ret = btrfs_block_rsv_add(fs_info, rsv, num_bytes,
 				  BTRFS_RESERVE_FLUSH_ALL);
 
 	if (ret == -ENOSPC && use_global_rsv)

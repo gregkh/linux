@@ -5,60 +5,6 @@
 #include "../dma.h"
 #include "mac.h"
 
-int mt7921_init_tx_queues(struct mt7921_phy *phy, int idx, int n_desc)
-{
-	int i, err;
-
-	err = mt76_init_tx_queue(phy->mt76, 0, idx, n_desc, MT_TX_RING_BASE);
-	if (err < 0)
-		return err;
-
-	for (i = 0; i <= MT_TXQ_PSD; i++)
-		phy->mt76->q_tx[i] = phy->mt76->q_tx[0];
-
-	return 0;
-}
-
-void mt7921_queue_rx_skb(struct mt76_dev *mdev, enum mt76_rxq_id q,
-			 struct sk_buff *skb)
-{
-	struct mt7921_dev *dev = container_of(mdev, struct mt7921_dev, mt76);
-	__le32 *rxd = (__le32 *)skb->data;
-	enum rx_pkt_type type;
-	u16 flag;
-
-	type = FIELD_GET(MT_RXD0_PKT_TYPE, le32_to_cpu(rxd[0]));
-	flag = FIELD_GET(MT_RXD0_PKT_FLAG, le32_to_cpu(rxd[0]));
-
-	if (type == PKT_TYPE_RX_EVENT && flag == 0x1)
-		type = PKT_TYPE_NORMAL_MCU;
-
-	switch (type) {
-	case PKT_TYPE_TXRX_NOTIFY:
-		mt7921_mac_tx_free(dev, skb);
-		break;
-	case PKT_TYPE_RX_EVENT:
-		mt7921_mcu_rx_event(dev, skb);
-		break;
-	case PKT_TYPE_NORMAL_MCU:
-	case PKT_TYPE_NORMAL:
-		if (!mt7921_mac_fill_rx(dev, skb)) {
-			mt76_rx(&dev->mt76, q, skb);
-			return;
-		}
-		fallthrough;
-	default:
-		dev_kfree_skb(skb);
-		break;
-	}
-}
-
-void mt7921_tx_cleanup(struct mt7921_dev *dev)
-{
-	mt76_queue_tx_cleanup(dev, dev->mt76.q_mcu[MT_MCUQ_WM], false);
-	mt76_queue_tx_cleanup(dev, dev->mt76.q_mcu[MT_MCUQ_WA], false);
-}
-
 static int mt7921_poll_tx(struct napi_struct *napi, int budget)
 {
 	struct mt7921_dev *dev;
@@ -71,7 +17,7 @@ static int mt7921_poll_tx(struct napi_struct *napi, int budget)
 		return 0;
 	}
 
-	mt7921_tx_cleanup(dev);
+	mt76_connac_tx_cleanup(&dev->mt76);
 	if (napi_complete(napi))
 		mt7921_irq_enable(dev, MT_INT_TX_DONE_ALL);
 	mt76_connac_pm_unref(&dev->mphy, &dev->pm);
@@ -203,7 +149,7 @@ static int mt7921_dma_reset(struct mt7921_dev *dev, bool force)
 	mt76_for_each_q_rx(&dev->mt76, i)
 		mt76_queue_reset(dev, &dev->mt76.q_rx[i]);
 
-	mt76_tx_status_check(&dev->mt76, NULL, true);
+	mt76_tx_status_check(&dev->mt76, true);
 
 	return mt7921_dma_enable(dev);
 }
@@ -290,8 +236,9 @@ int mt7921_dma_init(struct mt7921_dev *dev)
 		return ret;
 
 	/* init tx queue */
-	ret = mt7921_init_tx_queues(&dev->phy, MT7921_TXQ_BAND0,
-				    MT7921_TX_RING_SIZE);
+	ret = mt76_connac_init_tx_queues(dev->phy.mt76, MT7921_TXQ_BAND0,
+					 MT7921_TX_RING_SIZE,
+					 MT_TX_RING_BASE, 0);
 	if (ret)
 		return ret;
 
@@ -336,8 +283,8 @@ int mt7921_dma_init(struct mt7921_dev *dev)
 	if (ret < 0)
 		return ret;
 
-	netif_tx_napi_add(&dev->mt76.tx_napi_dev, &dev->mt76.tx_napi,
-			  mt7921_poll_tx, NAPI_POLL_WEIGHT);
+	netif_napi_add_tx(&dev->mt76.tx_napi_dev, &dev->mt76.tx_napi,
+			  mt7921_poll_tx);
 	napi_enable(&dev->mt76.tx_napi);
 
 	return mt7921_dma_enable(dev);

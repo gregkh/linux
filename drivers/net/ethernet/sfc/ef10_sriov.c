@@ -484,7 +484,7 @@ static int efx_ef10_vport_del_vf_mac(struct efx_nic *efx, unsigned int port_id,
 	return rc;
 }
 
-int efx_ef10_sriov_set_vf_mac(struct efx_nic *efx, int vf_i, u8 *mac)
+int efx_ef10_sriov_set_vf_mac(struct efx_nic *efx, int vf_i, const u8 *mac)
 {
 	struct efx_ef10_nic_data *nic_data = efx->nic_data;
 	struct ef10_vf *vf;
@@ -501,14 +501,11 @@ int efx_ef10_sriov_set_vf_mac(struct efx_nic *efx, int vf_i, u8 *mac)
 		efx_device_detach_sync(vf->efx);
 		efx_net_stop(vf->efx->net_dev);
 
-		down_write(&vf->efx->filter_sem);
 		vf->efx->type->filter_table_remove(vf->efx);
 
 		rc = efx_ef10_vadaptor_free(vf->efx, EVB_PORT_ID_ASSIGNED);
-		if (rc) {
-			up_write(&vf->efx->filter_sem);
+		if (rc)
 			return rc;
-		}
 	}
 
 	rc = efx_ef10_evb_port_assign(efx, EVB_PORT_ID_NULL, vf_i);
@@ -527,7 +524,7 @@ int efx_ef10_sriov_set_vf_mac(struct efx_nic *efx, int vf_i, u8 *mac)
 			goto fail;
 
 		if (vf->efx)
-			ether_addr_copy(vf->efx->net_dev->dev_addr, mac);
+			eth_hw_addr_set(vf->efx->net_dev, mac);
 	}
 
 	ether_addr_copy(vf->mac, mac);
@@ -539,12 +536,9 @@ int efx_ef10_sriov_set_vf_mac(struct efx_nic *efx, int vf_i, u8 *mac)
 	if (vf->efx) {
 		/* VF cannot use the vport_id that the PF created */
 		rc = efx_ef10_vadaptor_alloc(vf->efx, EVB_PORT_ID_ASSIGNED);
-		if (rc) {
-			up_write(&vf->efx->filter_sem);
+		if (rc)
 			return rc;
-		}
 		vf->efx->type->filter_table_probe(vf->efx);
-		up_write(&vf->efx->filter_sem);
 		efx_net_open(vf->efx->net_dev);
 		efx_device_attach_if_not_resetting(vf->efx);
 	}
@@ -580,7 +574,6 @@ int efx_ef10_sriov_set_vf_vlan(struct efx_nic *efx, int vf_i, u16 vlan,
 		efx_net_stop(vf->efx->net_dev);
 
 		mutex_lock(&vf->efx->mac_lock);
-		down_write(&vf->efx->filter_sem);
 		vf->efx->type->filter_table_remove(vf->efx);
 
 		rc = efx_ef10_vadaptor_free(vf->efx, EVB_PORT_ID_ASSIGNED);
@@ -654,7 +647,6 @@ restore_filters:
 		if (rc2)
 			goto reset_nic_up_write;
 
-		up_write(&vf->efx->filter_sem);
 		mutex_unlock(&vf->efx->mac_lock);
 
 		rc2 = efx_net_open(vf->efx->net_dev);
@@ -666,10 +658,8 @@ restore_filters:
 	return rc;
 
 reset_nic_up_write:
-	if (vf->efx) {
-		up_write(&vf->efx->filter_sem);
+	if (vf->efx)
 		mutex_unlock(&vf->efx->mac_lock);
-	}
 reset_nic:
 	if (vf->efx) {
 		netif_err(efx, drv, efx->net_dev,

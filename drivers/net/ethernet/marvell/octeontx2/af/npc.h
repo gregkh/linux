@@ -8,6 +8,16 @@
 #ifndef NPC_H
 #define NPC_H
 
+#define NPC_KEX_CHAN_MASK	0xFFFULL
+
+#define SET_KEX_LD(intf, lid, ltype, ld, cfg)	\
+	rvu_write64(rvu, blkaddr,	\
+		    NPC_AF_INTFX_LIDX_LTX_LDX_CFG(intf, lid, ltype, ld), cfg)
+
+#define SET_KEX_LDFLAGS(intf, ld, flags, cfg)	\
+	rvu_write64(rvu, blkaddr,	\
+		    NPC_AF_INTFX_LDATAX_FLAGSX_CFG(intf, ld, flags), cfg)
+
 enum NPC_LID_E {
 	NPC_LID_LA = 0,
 	NPC_LID_LB,
@@ -25,10 +35,7 @@ enum npc_kpu_la_ltype {
 	NPC_LT_LA_8023 = 1,
 	NPC_LT_LA_ETHER,
 	NPC_LT_LA_IH_NIX_ETHER,
-	NPC_LT_LA_IH_8_ETHER,
-	NPC_LT_LA_IH_4_ETHER,
-	NPC_LT_LA_IH_2_ETHER,
-	NPC_LT_LA_HIGIG2_ETHER,
+	NPC_LT_LA_HIGIG2_ETHER = 7,
 	NPC_LT_LA_IH_NIX_HIGIG2_ETHER,
 	NPC_LT_LA_CUSTOM_L2_90B_ETHER,
 	NPC_LT_LA_CPT_HDR,
@@ -201,6 +208,7 @@ enum key_fields {
 	NPC_ERRLEV,
 	NPC_ERRCODE,
 	NPC_LXMB,
+	NPC_EXACT_RESULT,
 	NPC_LA,
 	NPC_LB,
 	NPC_LC,
@@ -382,6 +390,22 @@ struct nix_rx_action {
 };
 
 /* NPC_AF_INTFX_KEX_CFG field masks */
+#define NPC_EXACT_NIBBLE_START		40
+#define NPC_EXACT_NIBBLE_END		43
+#define NPC_EXACT_NIBBLE		GENMASK_ULL(43, 40)
+
+/* NPC_EXACT_KEX_S nibble definitions for each field */
+#define NPC_EXACT_NIBBLE_HIT		BIT_ULL(40)
+#define NPC_EXACT_NIBBLE_OPC		BIT_ULL(40)
+#define NPC_EXACT_NIBBLE_WAY		BIT_ULL(40)
+#define NPC_EXACT_NIBBLE_INDEX		GENMASK_ULL(43, 41)
+
+#define NPC_EXACT_RESULT_HIT		BIT_ULL(0)
+#define NPC_EXACT_RESULT_OPC		GENMASK_ULL(2, 1)
+#define NPC_EXACT_RESULT_WAY		GENMASK_ULL(4, 3)
+#define NPC_EXACT_RESULT_IDX		GENMASK_ULL(15, 5)
+
+/* NPC_AF_INTFX_KEX_CFG field masks */
 #define NPC_PARSE_NIBBLE		GENMASK_ULL(30, 0)
 
 /* NPC_PARSE_KEX_S nibble definitions for each field */
@@ -456,7 +480,7 @@ struct npc_coalesced_kpu_prfl {
 	u8 name[NPC_NAME_LEN]; /* KPU Profile name */
 	u64 version; /* KPU firmware/profile version */
 	u8 num_prfl; /* No of NPC profiles. */
-	u16 prfl_sz[0];
+	u16 prfl_sz[];
 };
 
 struct npc_mcam_kex {
@@ -483,7 +507,7 @@ struct npc_kpu_fwdata {
 	 * struct npc_kpu_profile_cam[entries];
 	 * struct npc_kpu_profile_action[entries];
 	 */
-	u8	data[0];
+	u8	data[];
 } __packed;
 
 struct npc_lt_def {
@@ -554,7 +578,7 @@ struct npc_kpu_profile_fwdata {
 #define KPU_SIGN	0x00666f727075706b
 #define KPU_NAME_LEN	32
 /** Maximum number of custom KPU entries supported by the built-in profile. */
-#define KPU_MAX_CST_ENT	2
+#define KPU_MAX_CST_ENT	6
 	/* KPU Profle Header */
 	__le64	signature; /* "kpuprof\0" (8 bytes/ASCII characters) */
 	u8	name[KPU_NAME_LEN]; /* KPU Profile name */
@@ -573,7 +597,7 @@ struct npc_kpu_profile_fwdata {
 	 *  Custom KPU CAM and ACTION configuration entries.
 	 * struct npc_kpu_fwdata kpu[kpus];
 	 */
-	u8	data[0];
+	u8	data[];
 } __packed;
 
 struct rvu_npc_mcam_rule {
@@ -594,6 +618,8 @@ struct rvu_npc_mcam_rule {
 	u8 default_rule;
 	bool enable;
 	bool vfvlan_cfg;
+	u16 chan;
+	u16 chan_mask;
 };
 
 #endif /* NPC_H */

@@ -182,8 +182,6 @@ static int rt715_sdca_sdw_probe(struct sdw_slave *slave,
 {
 	struct regmap *mbq_regmap, *regmap;
 
-	slave->ops = &rt715_sdca_slave_ops;
-
 	/* Regmap Initialization */
 	mbq_regmap = devm_regmap_init_sdw_mbq(slave, &rt715_sdca_mbq_regmap);
 	if (IS_ERR(mbq_regmap))
@@ -246,6 +244,8 @@ static int __maybe_unused rt715_dev_resume(struct device *dev)
 					   msecs_to_jiffies(RT715_PROBE_TIMEOUT));
 	if (!time) {
 		dev_err(&slave->dev, "Enumeration not complete, timed out\n");
+		sdw_show_ping_status(slave->bus, true);
+
 		return -ETIMEDOUT;
 	}
 

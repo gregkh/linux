@@ -14,6 +14,7 @@
 #include "reg.h"
 #include "debug.h"
 #include "bf.h"
+#include "regd.h"
 
 static const s8 lna_gain_table_0[8] = {22, 8, -6, -22, -31, -40, -46, -52};
 static const s8 lna_gain_table_1[16] = {10, 6, 2, -2, -6, -10, -14, -17,
@@ -59,6 +60,9 @@ static int rtw8821c_read_efuse(struct rtw_dev *rtwdev, u8 *log_map)
 
 	for (i = 0; i < 4; i++)
 		efuse->txpwr_idx_table[i] = map->txpwr_idx_table[i];
+
+	if (rtwdev->efuse.rfe_option == 2 || rtwdev->efuse.rfe_option == 4)
+		efuse->txpwr_idx_table[0].pwr_idx_2g = map->txpwr_idx_table[1].pwr_idx_2g;
 
 	switch (rtw_hci_type(rtwdev)) {
 	case RTW_HCI_TYPE_PCIE:
@@ -121,6 +125,7 @@ static void rtw8821c_phy_bf_init(struct rtw_dev *rtwdev)
 
 static void rtw8821c_phy_set_param(struct rtw_dev *rtwdev)
 {
+	struct rtw_hal *hal = &rtwdev->hal;
 	u8 crystal_cap, val;
 
 	/* power on BB/RF domain */
@@ -155,9 +160,9 @@ static void rtw8821c_phy_set_param(struct rtw_dev *rtwdev)
 
 	/* post init after header files config */
 	rtw_write32_set(rtwdev, REG_RXPSEL, BIT_RX_PSEL_RST);
-	rtwdev->chip->ch_param[0] = rtw_read32_mask(rtwdev, REG_TXSF2, MASKDWORD);
-	rtwdev->chip->ch_param[1] = rtw_read32_mask(rtwdev, REG_TXSF6, MASKDWORD);
-	rtwdev->chip->ch_param[2] = rtw_read32_mask(rtwdev, REG_TXFILTER, MASKDWORD);
+	hal->ch_param[0] = rtw_read32_mask(rtwdev, REG_TXSF2, MASKDWORD);
+	hal->ch_param[1] = rtw_read32_mask(rtwdev, REG_TXSF6, MASKDWORD);
+	hal->ch_param[2] = rtw_read32_mask(rtwdev, REG_TXFILTER, MASKDWORD);
 
 	rtw_phy_init(rtwdev);
 	rtwdev->dm_info.cck_pd_default = rtw_read8(rtwdev, REG_CSRATIO) & 0x1f;
@@ -219,7 +224,8 @@ static int rtw8821c_mac_init(struct rtw_dev *rtwdev)
 	rtw_write8(rtwdev, REG_TCR + 1, WLAN_TX_FUNC_CFG1);
 	rtw_write8(rtwdev, REG_ACKTO_CCK, 0x40);
 	rtw_write8_set(rtwdev, REG_WMAC_TRXPTCL_CTL_H, BIT(1));
-	rtw_write8_set(rtwdev, REG_SND_PTCL_CTRL, BIT(6));
+	rtw_write8_set(rtwdev, REG_SND_PTCL_CTRL,
+		       BIT_DIS_CHK_VHTSIGB_CRC);
 	rtw_write32(rtwdev, REG_WMAC_OPTION_FUNCTION + 8, WLAN_MAC_OPT_FUNC2);
 	rtw_write8(rtwdev, REG_WMAC_OPTION_FUNCTION + 4, WLAN_MAC_OPT_NORM_FUNC1);
 
@@ -346,6 +352,7 @@ static void rtw8821c_set_channel_rxdfir(struct rtw_dev *rtwdev, u8 bw)
 static void rtw8821c_set_channel_bb(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 				    u8 primary_ch_idx)
 {
+	struct rtw_hal *hal = &rtwdev->hal;
 	u32 val32;
 
 	if (channel <= 14) {
@@ -362,11 +369,11 @@ static void rtw8821c_set_channel_bb(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 			rtw_write32_mask(rtwdev, REG_TXFILTER, MASKDWORD, 0x00003667);
 		} else {
 			rtw_write32_mask(rtwdev, REG_TXSF2, MASKDWORD,
-					 rtwdev->chip->ch_param[0]);
+					 hal->ch_param[0]);
 			rtw_write32_mask(rtwdev, REG_TXSF6, MASKLWORD,
-					 rtwdev->chip->ch_param[1] & MASKLWORD);
+					 hal->ch_param[1] & MASKLWORD);
 			rtw_write32_mask(rtwdev, REG_TXFILTER, MASKDWORD,
-					 rtwdev->chip->ch_param[2]);
+					 hal->ch_param[2]);
 		}
 	} else if (channel > 35) {
 		rtw_write32_mask(rtwdev, REG_ENTXCCK, BIT(18), 0x1);
@@ -494,7 +501,7 @@ static s8 get_cck_rx_pwr(struct rtw_dev *rtwdev, u8 lna_idx, u8 vga_idx)
 	}
 
 	if (lna_idx >= lna_gain_table_size) {
-		rtw_info(rtwdev, "incorrect lna index (%d)\n", lna_idx);
+		rtw_warn(rtwdev, "incorrect lna index (%d)\n", lna_idx);
 		return -120;
 	}
 
@@ -1007,7 +1014,7 @@ static void rtw8821c_pwrtrack_set(struct rtw_dev *rtwdev)
 	s8 pwr_idx_offset_lower;
 	u8 channel = rtwdev->hal.current_channel;
 	u8 band_width = rtwdev->hal.current_band_width;
-	u8 regd = rtwdev->regd.txpwr_regd;
+	u8 regd = rtw_regd_get(rtwdev);
 	u8 tx_rate = dm_info->tx_rate;
 	u8 max_pwr_idx = rtwdev->chip->max_power_index;
 
@@ -1872,7 +1879,7 @@ static const struct rtw_reg_domain coex_info_hw_regs_8821c[] = {
 	{0x60A, MASKBYTE0, RTW_REG_DOMAIN_MAC8},
 };
 
-struct rtw_chip_info rtw8821c_hw_spec = {
+const struct rtw_chip_info rtw8821c_hw_spec = {
 	.ops = &rtw8821c_ops,
 	.id = RTW_CHIP_TYPE_8821C,
 	.fw_name = "rtw88/rtw8821c_fw.bin",
@@ -1891,7 +1898,7 @@ struct rtw_chip_info rtw8821c_hw_spec = {
 	.max_power_index = 0x3f,
 	.csi_buf_pg_num = 0,
 	.band = RTW_BAND_2G | RTW_BAND_5G,
-	.page_size = 128,
+	.page_size = TX_PAGE_SIZE,
 	.dig_min = 0x1c,
 	.ht_supported = true,
 	.vht_supported = true,
@@ -1918,12 +1925,15 @@ struct rtw_chip_info rtw8821c_hw_spec = {
 	.iqk_threshold = 8,
 	.bfer_su_max_num = 2,
 	.bfer_mu_max_num = 1,
+	.ampdu_density = IEEE80211_HT_MPDU_DENSITY_2,
+	.max_scan_ie_len = IEEE80211_MAX_DATA_LEN,
 
 	.coex_para_ver = 0x19092746,
 	.bt_desired_ver = 0x46,
 	.scbd_support = true,
 	.new_scbd10_def = false,
 	.ble_hid_profile_support = false,
+	.wl_mimo_ps_support = false,
 	.pstdma_type = COEX_PSTDMA_FORCE_LPSOFF,
 	.bt_rssi_type = COEX_BTRSSI_RATIO,
 	.ant_isolation = 15,

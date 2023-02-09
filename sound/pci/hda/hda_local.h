@@ -135,8 +135,6 @@ int __snd_hda_add_vmaster(struct hda_codec *codec, char *name,
 #define snd_hda_add_vmaster(codec, name, tlv, followers, suffix, access) \
 	__snd_hda_add_vmaster(codec, name, tlv, followers, suffix, true, access, NULL)
 int snd_hda_codec_reset(struct hda_codec *codec);
-void snd_hda_codec_register(struct hda_codec *codec);
-void snd_hda_codec_cleanup_for_unbind(struct hda_codec *codec);
 void snd_hda_codec_disconnect_pcms(struct hda_codec *codec);
 
 #define snd_hda_regmap_sync(codec)	snd_hdac_regmap_sync(&(codec)->core)
@@ -714,7 +712,8 @@ int snd_hdmi_get_eld_ati(struct hda_codec *codec, hda_nid_t nid,
 
 #ifdef CONFIG_SND_PROC_FS
 void snd_hdmi_print_eld_info(struct hdmi_eld *eld,
-			     struct snd_info_buffer *buffer);
+			     struct snd_info_buffer *buffer,
+			     hda_nid_t pin_nid, int dev_id, hda_nid_t cvt_nid);
 void snd_hdmi_write_eld_info(struct hdmi_eld *eld,
 			     struct snd_info_buffer *buffer);
 #endif

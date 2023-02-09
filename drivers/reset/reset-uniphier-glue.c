@@ -28,6 +28,20 @@ struct uniphier_glue_reset_priv {
 	const struct uniphier_glue_reset_soc_data *data;
 };
 
+static void uniphier_clk_disable(void *_priv)
+{
+	struct uniphier_glue_reset_priv *priv = _priv;
+
+	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
+}
+
+static void uniphier_rst_assert(void *_priv)
+{
+	struct uniphier_glue_reset_priv *priv = _priv;
+
+	reset_control_bulk_assert(priv->data->nrsts, priv->rst);
+}
+
 static int uniphier_glue_reset_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -66,9 +80,17 @@ static int uniphier_glue_reset_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	ret = devm_add_action_or_reset(dev, uniphier_clk_disable, priv);
+	if (ret)
+		return ret;
+
 	ret = reset_control_bulk_deassert(priv->data->nrsts, priv->rst);
 	if (ret)
-		goto out_clk_disable;
+		return ret;
+
+	ret = devm_add_action_or_reset(dev, uniphier_rst_assert, priv);
+	if (ret)
+		return ret;
 
 	spin_lock_init(&priv->rdata.lock);
 	priv->rdata.rcdev.owner = THIS_MODULE;
@@ -79,30 +101,7 @@ static int uniphier_glue_reset_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, priv);
 
-	ret = devm_reset_controller_register(dev, &priv->rdata.rcdev);
-	if (ret)
-		goto out_rst_assert;
-
-	return 0;
-
-out_rst_assert:
-	reset_control_bulk_assert(priv->data->nrsts, priv->rst);
-
-out_clk_disable:
-	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
-
-	return ret;
-}
-
-static int uniphier_glue_reset_remove(struct platform_device *pdev)
-{
-	struct uniphier_glue_reset_priv *priv = platform_get_drvdata(pdev);
-
-	reset_control_bulk_assert(priv->data->nrsts, priv->rst);
-
-	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
-
-	return 0;
+	return devm_reset_controller_register(dev, &priv->rdata.rcdev);
 }
 
 static const char * const uniphier_pro4_clock_reset_names[] = {
@@ -149,6 +148,10 @@ static const struct of_device_id uniphier_glue_reset_match[] = {
 		.data = &uniphier_pxs2_data,
 	},
 	{
+		.compatible = "socionext,uniphier-nx1-usb3-reset",
+		.data = &uniphier_pxs2_data,
+	},
+	{
 		.compatible = "socionext,uniphier-pro4-ahci-reset",
 		.data = &uniphier_pro4_data,
 	},
@@ -166,7 +169,6 @@ MODULE_DEVICE_TABLE(of, uniphier_glue_reset_match);
 
 static struct platform_driver uniphier_glue_reset_driver = {
 	.probe = uniphier_glue_reset_probe,
-	.remove = uniphier_glue_reset_remove,
 	.driver = {
 		.name = "uniphier-glue-reset",
 		.of_match_table = uniphier_glue_reset_match,

@@ -146,8 +146,8 @@
 #define ISMT_SPGT_SPD_MASK	0xc0000000	/* SMBus Speed mask */
 #define ISMT_SPGT_SPD_80K	0x00		/* 80 kHz */
 #define ISMT_SPGT_SPD_100K	(0x1 << 30)	/* 100 kHz */
-#define ISMT_SPGT_SPD_400K	(0x2 << 30)	/* 400 kHz */
-#define ISMT_SPGT_SPD_1M	(0x3 << 30)	/* 1 MHz */
+#define ISMT_SPGT_SPD_400K	(0x2U << 30)	/* 400 kHz */
+#define ISMT_SPGT_SPD_1M	(0x3U << 30)	/* 1 MHz */
 
 
 /* MSI Control Register (MSICTL) bit definitions */
@@ -938,15 +938,10 @@ ismt_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return -ENODEV;
 	}
 
-	if ((pci_set_dma_mask(pdev, DMA_BIT_MASK(64)) != 0) ||
-	    (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)) != 0)) {
-		if ((pci_set_dma_mask(pdev, DMA_BIT_MASK(32)) != 0) ||
-		    (pci_set_consistent_dma_mask(pdev,
-						 DMA_BIT_MASK(32)) != 0)) {
-			dev_err(&pdev->dev, "pci_set_dma_mask fail %p\n",
-				pdev);
-			return -ENODEV;
-		}
+	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+	if (err) {
+		dev_err(&pdev->dev, "dma_set_mask fail\n");
+		return -ENODEV;
 	}
 
 	err = ismt_dev_init(priv);

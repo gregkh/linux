@@ -59,8 +59,9 @@ risk of them overflowing. This could lead to values wrapping around and a
 smaller allocation being made than the caller was expecting. Using those
 allocations could lead to linear overflows of heap memory and other
 misbehaviors. (One exception to this is literal values where the compiler
-can warn if they might overflow. Though using literals for arguments as
-suggested below is also harmless.)
+can warn if they might overflow. However, the preferred way in these
+cases is to refactor the code as suggested below to avoid the open-coded
+arithmetic.)
 
 For example, do not use ``count * size`` as an argument, as in::
 
@@ -137,17 +138,20 @@ be NUL terminated. This can lead to various linear read overflows and
 other misbehavior due to the missing termination. It also NUL-pads
 the destination buffer if the source contents are shorter than the
 destination buffer size, which may be a needless performance penalty
-for callers using only NUL-terminated strings. The safe replacement is
+for callers using only NUL-terminated strings.
+
+When the destination is required to be NUL-terminated, the replacement is
 strscpy(), though care must be given to any cases where the return value
 of strncpy() was used, since strscpy() does not return a pointer to the
 destination, but rather a count of non-NUL bytes copied (or negative
 errno when it truncates). Any cases still needing NUL-padding should
 instead use strscpy_pad().
 
-If a caller is using non-NUL-terminated strings, strncpy() can
-still be used, but destinations should be marked with the `__nonstring
+If a caller is using non-NUL-terminated strings, strtomem() should be
+used, and the destinations should be marked with the `__nonstring
 <https://gcc.gnu.org/onlinedocs/gcc/Common-Variable-Attributes.html>`_
-attribute to avoid future compiler warnings.
+attribute to avoid future compiler warnings. For cases still needing
+NUL-padding, strtomem_pad() can be used.
 
 strlcpy()
 ---------

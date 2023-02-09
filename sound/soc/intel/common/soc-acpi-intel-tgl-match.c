@@ -10,6 +10,11 @@
 #include <sound/soc-acpi-intel-match.h>
 #include "soc-acpi-intel-sdw-mockup-match.h"
 
+static const struct snd_soc_acpi_codecs essx_83x6 = {
+	.num_codecs = 3,
+	.codecs = { "ESSX8316", "ESSX8326", "ESSX8336"},
+};
+
 static const struct snd_soc_acpi_codecs tgl_codecs = {
 	.num_codecs = 1,
 	.codecs = {"MX98357A"}
@@ -358,30 +363,52 @@ static const struct snd_soc_acpi_codecs tgl_rt1011_amp = {
 	.codecs = {"10EC1011"}
 };
 
+static const struct snd_soc_acpi_codecs tgl_rt5682_rt5682s_hp = {
+	.num_codecs = 2,
+	.codecs = {"10EC5682", "RTL5682"},
+};
+
+static const struct snd_soc_acpi_codecs tgl_lt6911_hdmi = {
+	.num_codecs = 1,
+	.codecs = {"INTC10B0"}
+};
+
 struct snd_soc_acpi_mach snd_soc_acpi_intel_tgl_machines[] = {
 	{
-		.id = "10EC5682",
-		.drv_name = "tgl_mx98357a_rt5682",
+		.comp_ids = &tgl_rt5682_rt5682s_hp,
+		.drv_name = "tgl_mx98357_rt5682",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &tgl_codecs,
-		.sof_fw_filename = "sof-tgl.ri",
 		.sof_tplg_filename = "sof-tgl-max98357a-rt5682.tplg",
 	},
 	{
-		.id = "10EC5682",
+		.comp_ids = &tgl_rt5682_rt5682s_hp,
 		.drv_name = "tgl_mx98373_rt5682",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &tgl_max98373_amp,
-		.sof_fw_filename = "sof-tgl.ri",
 		.sof_tplg_filename = "sof-tgl-max98373-rt5682.tplg",
 	},
 	{
-		.id = "10EC5682",
+		.comp_ids = &tgl_rt5682_rt5682s_hp,
 		.drv_name = "tgl_rt1011_rt5682",
 		.machine_quirk = snd_soc_acpi_codec_list,
 		.quirk_data = &tgl_rt1011_amp,
-		.sof_fw_filename = "sof-tgl.ri",
 		.sof_tplg_filename = "sof-tgl-rt1011-rt5682.tplg",
+	},
+	{
+		.comp_ids = &essx_83x6,
+		.drv_name = "sof-essx8336",
+		.sof_tplg_filename = "sof-tgl-es8336", /* the tplg suffix is added at run time */
+		.tplg_quirk_mask = SND_SOC_ACPI_TPLG_INTEL_SSP_NUMBER |
+					SND_SOC_ACPI_TPLG_INTEL_SSP_MSB |
+					SND_SOC_ACPI_TPLG_INTEL_DMIC_NUMBER,
+	},
+	{
+		.id = "10EC1308",
+		.drv_name = "tgl_rt1308_hdmi_ssp",
+		.machine_quirk = snd_soc_acpi_codec_list,
+		.quirk_data = &tgl_lt6911_hdmi,
+		.sof_tplg_filename = "sof-tgl-rt1308-ssp2-hdmi-ssp15.tplg"
 	},
 	{},
 };
@@ -394,21 +421,18 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_tgl_sdw_machines[] = {
 		.link_mask = GENMASK(3, 0),
 		.links = sdw_mockup_headset_2amps_mic,
 		.drv_name = "sof_sdw",
-		.sof_fw_filename = "sof-tgl.ri",
 		.sof_tplg_filename = "sof-tgl-rt711-rt1308-rt715.tplg",
 	},
 	{
 		.link_mask = BIT(0) | BIT(1) | BIT(3),
 		.links = sdw_mockup_headset_1amp_mic,
 		.drv_name = "sof_sdw",
-		.sof_fw_filename = "sof-tgl.ri",
 		.sof_tplg_filename = "sof-tgl-rt711-rt1308-mono-rt715.tplg",
 	},
 	{
 		.link_mask = BIT(0) | BIT(1) | BIT(2),
 		.links = sdw_mockup_mic_headset_1amp,
 		.drv_name = "sof_sdw",
-		.sof_fw_filename = "sof-tgl.ri",
 		.sof_tplg_filename = "sof-tgl-rt715-rt711-rt1308-mono.tplg",
 	},
 	{

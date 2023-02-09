@@ -102,8 +102,11 @@ static unsigned int tb_available_credits(const struct tb_port *port,
 		 * Maximum number of DP streams possible through the
 		 * lane adapter.
 		 */
-		ndp = (credits - (usb3 + pcie + spare)) /
-		      (sw->min_dp_aux_credits + sw->min_dp_main_credits);
+		if (sw->min_dp_aux_credits + sw->min_dp_main_credits)
+			ndp = (credits - (usb3 + pcie + spare)) /
+			      (sw->min_dp_aux_credits + sw->min_dp_main_credits);
+		else
+			ndp = 0;
 	} else {
 		ndp = 0;
 	}
@@ -578,6 +581,16 @@ static int tb_dp_xchg_caps(struct tb_tunnel *tunnel)
 		 */
 		out_dp_cap = tb_dp_cap_set_rate(out_dp_cap, new_rate);
 		out_dp_cap = tb_dp_cap_set_lanes(out_dp_cap, new_lanes);
+	}
+
+	/*
+	 * Titan Ridge does not disable AUX timers when it gets
+	 * SET_CONFIG with SET_LTTPR_MODE set. This causes problems with
+	 * DP tunneling.
+	 */
+	if (tb_route(out->sw) && tb_switch_is_titan_ridge(out->sw)) {
+		out_dp_cap |= DP_COMMON_CAP_LTTPR_NS;
+		tb_port_dbg(out, "disabling LTTPR\n");
 	}
 
 	return tb_port_write(in, &out_dp_cap, TB_CFG_PORT,

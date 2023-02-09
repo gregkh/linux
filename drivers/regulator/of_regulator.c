@@ -505,7 +505,7 @@ struct regulator_init_data *regulator_of_get_init_data(struct device *dev,
 	struct device_node *child;
 	struct regulator_init_data *init_data = NULL;
 
-	child = regulator_of_get_init_node(dev, desc);
+	child = regulator_of_get_init_node(config->dev, desc);
 	if (!child)
 		return NULL;
 
@@ -676,7 +676,7 @@ clean:
 }
 
 /**
- * of_parse_coupled regulator - Get regulator_dev pointer from rdev's property
+ * of_parse_coupled_regulator() - Get regulator_dev pointer from rdev's property
  * @rdev: Pointer to regulator_dev, whose DTS is used as a source to parse
  *	  "regulator-coupled-with" property
  * @index: Index in phandles array

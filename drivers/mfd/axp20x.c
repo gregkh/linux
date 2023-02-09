@@ -619,6 +619,9 @@ static const struct mfd_cell axp20x_cells[] = {
 
 static const struct mfd_cell axp221_cells[] = {
 	{
+		.name		= "axp20x-gpio",
+		.of_compatible	= "x-powers,axp221-gpio",
+	}, {
 		.name		= "axp221-pek",
 		.num_resources	= ARRAY_SIZE(axp22x_pek_resources),
 		.resources	= axp22x_pek_resources,
@@ -645,6 +648,9 @@ static const struct mfd_cell axp221_cells[] = {
 
 static const struct mfd_cell axp223_cells[] = {
 	{
+		.name		= "axp20x-gpio",
+		.of_compatible	= "x-powers,axp221-gpio",
+	}, {
 		.name		= "axp221-pek",
 		.num_resources	= ARRAY_SIZE(axp22x_pek_resources),
 		.resources	= axp22x_pek_resources,
@@ -785,6 +791,9 @@ static const struct mfd_cell axp806_cells[] = {
 
 static const struct mfd_cell axp809_cells[] = {
 	{
+		.name		= "axp20x-gpio",
+		.of_compatible	= "x-powers,axp221-gpio",
+	}, {
 		.name		= "axp221-pek",
 		.num_resources	= ARRAY_SIZE(axp809_pek_resources),
 		.resources	= axp809_pek_resources,
@@ -833,7 +842,7 @@ static void axp20x_power_off(void)
 		     AXP20X_OFF);
 
 	/* Give capacitors etc. time to drain to avoid kernel panic msg. */
-	msleep(500);
+	mdelay(500);
 }
 
 int axp20x_match_device(struct axp20x_dev *axp20x)

@@ -470,7 +470,7 @@ static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_m32c_dev_cfg = {
 
 static const struct kvaser_usb_dev_cfg kvaser_usb_leaf_imx_dev_cfg_16mhz = {
 	.clock = {
-		.freq = 16000000,
+		.freq = 16 * MEGA /* Hz */,
 	},
 	.timestamp_freq = 1,
 	.bittiming_const = &kvaser_usb_flexc_bittiming_const,
@@ -531,15 +531,13 @@ static int kvaser_usb_leaf_verify_size(const struct kvaser_usb *dev,
 
 static void *
 kvaser_usb_leaf_frame_to_cmd(const struct kvaser_usb_net_priv *priv,
-			     const struct sk_buff *skb, int *frame_len,
-			     int *cmd_len, u16 transid)
+			     const struct sk_buff *skb, int *cmd_len,
+			     u16 transid)
 {
 	struct kvaser_usb *dev = priv->dev;
 	struct kvaser_cmd *cmd;
 	u8 *cmd_tx_can_flags = NULL;		/* GCC */
 	struct can_frame *cf = (struct can_frame *)skb->data;
-
-	*frame_len = cf->len;
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (cmd) {
@@ -907,8 +905,6 @@ static void kvaser_usb_leaf_tx_acknowledge(const struct kvaser_usb *dev,
 		if (skb) {
 			cf->can_id |= CAN_ERR_RESTARTED;
 
-			stats->rx_packets++;
-			stats->rx_bytes += cf->len;
 			netif_rx(skb);
 		} else {
 			netdev_err(priv->netdev,
@@ -921,12 +917,11 @@ static void kvaser_usb_leaf_tx_acknowledge(const struct kvaser_usb *dev,
 		priv->can.state = CAN_STATE_ERROR_ACTIVE;
 	}
 
-	stats->tx_packets++;
-	stats->tx_bytes += context->dlc;
-
 	spin_lock_irqsave(&priv->tx_contexts_lock, flags);
 
-	can_get_echo_skb(priv->netdev, context->echo_index, NULL);
+	stats->tx_packets++;
+	stats->tx_bytes += can_get_echo_skb(priv->netdev,
+					    context->echo_index, NULL);
 	context->echo_index = dev->max_tx_urbs;
 	--priv->active_tx_contexts;
 	netif_wake_queue(priv->netdev);
@@ -1127,12 +1122,11 @@ static void kvaser_usb_leaf_rx_error(const struct kvaser_usb *dev,
 	}
 
 	if (new_state != CAN_STATE_BUS_OFF) {
+		cf->can_id |= CAN_ERR_CNT;
 		cf->data[6] = es->txerr;
 		cf->data[7] = es->rxerr;
 	}
 
-	stats->rx_packets++;
-	stats->rx_bytes += cf->len;
 	netif_rx(skb);
 }
 
@@ -1359,7 +1353,8 @@ static void kvaser_usb_leaf_rx_can_msg(const struct kvaser_usb *dev,
 	}
 
 	stats->rx_packets++;
-	stats->rx_bytes += cf->len;
+	if (!(cf->can_id & CAN_RTR_FLAG))
+		stats->rx_bytes += cf->len;
 	netif_rx(skb);
 }
 

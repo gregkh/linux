@@ -508,7 +508,7 @@ static ssize_t numbatt_show(struct device *dev, struct device_attribute *attr,
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_NUM_BATTERIES]);
+	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_NUM_BATTERIES]);
 }
 
 static ssize_t lcdtype_show(struct device *dev, struct device_attribute *attr,
@@ -520,7 +520,7 @@ static ssize_t lcdtype_show(struct device *dev, struct device_attribute *attr,
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_LCD_TYPE]);
+	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_LCD_TYPE]);
 }
 
 static ssize_t mute_show(struct device *dev, struct device_attribute *attr,
@@ -532,7 +532,7 @@ static ssize_t mute_show(struct device *dev, struct device_attribute *attr,
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_MUTE]);
+	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_MUTE]);
 }
 
 static ssize_t mute_store(struct device *dev, struct device_attribute *attr,
@@ -562,7 +562,7 @@ static ssize_t sticky_key_show(struct device *dev, struct device_attribute *attr
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sticky_key);
+	return sysfs_emit(buf, "%u\n", pcc->sticky_key);
 }
 
 static ssize_t sticky_key_store(struct device *dev, struct device_attribute *attr,
@@ -604,7 +604,7 @@ static ssize_t eco_mode_show(struct device *dev, struct device_attribute *attr,
 		result = -EIO;
 		break;
 	}
-	return snprintf(buf, PAGE_SIZE, "%u\n", result);
+	return sysfs_emit(buf, "%u\n", result);
 }
 
 static ssize_t eco_mode_store(struct device *dev, struct device_attribute *attr,
@@ -663,7 +663,7 @@ static ssize_t ac_brightness_show(struct device *dev, struct device_attribute *a
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_AC_CUR_BRIGHT]);
+	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_AC_CUR_BRIGHT]);
 }
 
 static ssize_t ac_brightness_store(struct device *dev, struct device_attribute *attr,
@@ -693,7 +693,7 @@ static ssize_t dc_brightness_show(struct device *dev, struct device_attribute *a
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_DC_CUR_BRIGHT]);
+	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_DC_CUR_BRIGHT]);
 }
 
 static ssize_t dc_brightness_store(struct device *dev, struct device_attribute *attr,
@@ -723,7 +723,7 @@ static ssize_t current_brightness_show(struct device *dev, struct device_attribu
 	if (!acpi_pcc_retrieve_biosdata(pcc))
 		return -EIO;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", pcc->sinf[SINF_CUR_BRIGHT]);
+	return sysfs_emit(buf, "%u\n", pcc->sinf[SINF_CUR_BRIGHT]);
 }
 
 static ssize_t current_brightness_store(struct device *dev, struct device_attribute *attr,
@@ -748,7 +748,7 @@ static ssize_t current_brightness_store(struct device *dev, struct device_attrib
 static ssize_t cdpower_show(struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "%d\n", get_optd_power_state());
+	return sysfs_emit(buf, "%d\n", get_optd_power_state());
 }
 
 static ssize_t cdpower_store(struct device *dev, struct device_attribute *attr,
@@ -998,19 +998,23 @@ static int acpi_pcc_hotkey_add(struct acpi_device *device)
 		pr_err("Couldn't retrieve BIOS data\n");
 		goto out_input;
 	}
-	/* initialize backlight */
-	memset(&props, 0, sizeof(struct backlight_properties));
-	props.type = BACKLIGHT_PLATFORM;
-	props.max_brightness = pcc->sinf[SINF_AC_MAX_BRIGHT];
-	pcc->backlight = backlight_device_register("panasonic", NULL, pcc,
-						   &pcc_backlight_ops, &props);
-	if (IS_ERR(pcc->backlight)) {
-		result = PTR_ERR(pcc->backlight);
-		goto out_input;
-	}
 
-	/* read the initial brightness setting from the hardware */
-	pcc->backlight->props.brightness = pcc->sinf[SINF_AC_CUR_BRIGHT];
+	if (acpi_video_get_backlight_type() == acpi_backlight_vendor) {
+		/* initialize backlight */
+		memset(&props, 0, sizeof(struct backlight_properties));
+		props.type = BACKLIGHT_PLATFORM;
+		props.max_brightness = pcc->sinf[SINF_AC_MAX_BRIGHT];
+
+		pcc->backlight = backlight_device_register("panasonic", NULL, pcc,
+							   &pcc_backlight_ops, &props);
+		if (IS_ERR(pcc->backlight)) {
+			result = PTR_ERR(pcc->backlight);
+			goto out_input;
+		}
+
+		/* read the initial brightness setting from the hardware */
+		pcc->backlight->props.brightness = pcc->sinf[SINF_AC_CUR_BRIGHT];
+	}
 
 	/* Reset initial sticky key mode since the hardware register state is not consistent */
 	acpi_pcc_write_sset(pcc, SINF_STICKY_KEY, 0);
@@ -1030,7 +1034,7 @@ static int acpi_pcc_hotkey_add(struct acpi_device *device)
 	/* optical drive initialization */
 	if (ACPI_SUCCESS(check_optd_present())) {
 		pcc->platform = platform_device_register_simple("panasonic",
-			-1, NULL, 0);
+			PLATFORM_DEVID_NONE, NULL, 0);
 		if (IS_ERR(pcc->platform)) {
 			result = PTR_ERR(pcc->platform);
 			goto out_backlight;

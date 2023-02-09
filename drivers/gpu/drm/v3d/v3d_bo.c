@@ -59,6 +59,7 @@ static const struct drm_gem_object_funcs v3d_gem_funcs = {
 	.vmap = drm_gem_shmem_object_vmap,
 	.vunmap = drm_gem_shmem_object_vunmap,
 	.mmap = drm_gem_shmem_object_mmap,
+	.vm_ops = &drm_gem_shmem_vm_ops,
 };
 
 /* gem_create_object function for allocating a BO struct and doing
@@ -70,11 +71,11 @@ struct drm_gem_object *v3d_create_object(struct drm_device *dev, size_t size)
 	struct drm_gem_object *obj;
 
 	if (size == 0)
-		return NULL;
+		return ERR_PTR(-EINVAL);
 
 	bo = kzalloc(sizeof(*bo), GFP_KERNEL);
 	if (!bo)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 	obj = &bo->base.base;
 
 	obj->funcs = &v3d_gem_funcs;

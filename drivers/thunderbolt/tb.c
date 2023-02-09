@@ -144,6 +144,13 @@ static void tb_switch_discover_tunnels(struct tb_switch *sw,
 		switch (port->config.type) {
 		case TB_TYPE_DP_HDMI_IN:
 			tunnel = tb_tunnel_discover_dp(tb, port, alloc_hopids);
+			/*
+			 * In case of DP tunnel exists, change host router's
+			 * 1st children TMU mode to HiFi for CL0s to work.
+			 */
+			if (tunnel)
+				tb_switch_enable_tmu_1st_child(tb->root_switch,
+						TB_SWITCH_TMU_RATE_HIFI);
 			break;
 
 		case TB_TYPE_PCIE_DOWN:
@@ -193,16 +200,10 @@ static void tb_discover_tunnels(struct tb *tb)
 	}
 }
 
-static int tb_port_configure_xdomain(struct tb_port *port)
+static int tb_port_configure_xdomain(struct tb_port *port, struct tb_xdomain *xd)
 {
-	/*
-	 * XDomain paths currently only support single lane so we must
-	 * disable the other lane according to USB4 spec.
-	 */
-	tb_port_disable(port->dual_link_port);
-
 	if (tb_switch_is_usb4(port->sw))
-		return usb4_port_configure_xdomain(port);
+		return usb4_port_configure_xdomain(port, xd);
 	return tb_lc_configure_xdomain(port);
 }
 
@@ -237,7 +238,7 @@ static void tb_scan_xdomain(struct tb_port *port)
 			      NULL);
 	if (xd) {
 		tb_port_at(route, sw)->xdomain = xd;
-		tb_port_configure_xdomain(port);
+		tb_port_configure_xdomain(port, xd);
 		tb_xdomain_add(xd);
 	}
 }
@@ -247,7 +248,7 @@ static int tb_enable_tmu(struct tb_switch *sw)
 	int ret;
 
 	/* If it is already enabled in correct mode, don't touch it */
-	if (tb_switch_tmu_is_enabled(sw))
+	if (tb_switch_tmu_is_enabled(sw, sw->tmu.unidirectional_request))
 		return 0;
 
 	ret = tb_switch_tmu_disable(sw);
@@ -607,6 +608,7 @@ static void tb_scan_port(struct tb_port *port)
 	struct tb_cm *tcm = tb_priv(port->sw->tb);
 	struct tb_port *upstream_port;
 	struct tb_switch *sw;
+	int ret;
 
 	if (tb_is_upstream_port(port))
 		return;
@@ -626,11 +628,15 @@ static void tb_scan_port(struct tb_port *port)
 			 * Downstream switch is reachable through two ports.
 			 * Only scan on the primary port (link_nr == 0).
 			 */
+
+	if (port->usb4)
+		pm_runtime_get_sync(&port->usb4->dev);
+
 	if (tb_wait_for_port(port, false) <= 0)
-		return;
+		goto out_rpm_put;
 	if (port->remote) {
 		tb_port_dbg(port, "port already has a remote\n");
-		return;
+		goto out_rpm_put;
 	}
 
 	tb_retimer_scan(port, true);
@@ -645,12 +651,12 @@ static void tb_scan_port(struct tb_port *port)
 		 */
 		if (PTR_ERR(sw) == -EIO || PTR_ERR(sw) == -EADDRNOTAVAIL)
 			tb_scan_xdomain(port);
-		return;
+		goto out_rpm_put;
 	}
 
 	if (tb_switch_configure(sw)) {
 		tb_switch_put(sw);
-		return;
+		goto out_rpm_put;
 	}
 
 	/*
@@ -679,7 +685,7 @@ static void tb_scan_port(struct tb_port *port)
 
 	if (tb_switch_add(sw)) {
 		tb_switch_put(sw);
-		return;
+		goto out_rpm_put;
 	}
 
 	/* Link the switches using both links if available */
@@ -695,6 +701,24 @@ static void tb_scan_port(struct tb_port *port)
 	tb_switch_lane_bonding_enable(sw);
 	/* Set the link configured */
 	tb_switch_configure_link(sw);
+	/*
+	 * CL0s and CL1 are enabled and supported together.
+	 * Silently ignore CLx enabling in case CLx is not supported.
+	 */
+	ret = tb_switch_enable_clx(sw, TB_CL1);
+	if (ret && ret != -EOPNOTSUPP)
+		tb_sw_warn(sw, "failed to enable %s on upstream port\n",
+			   tb_switch_clx_name(TB_CL1));
+
+	if (tb_switch_is_clx_enabled(sw, TB_CL1))
+		/*
+		 * To support highest CLx state, we set router's TMU to
+		 * Normal-Uni mode.
+		 */
+		tb_switch_tmu_configure(sw, TB_SWITCH_TMU_RATE_NORMAL, true);
+	else
+		/* If CLx disabled, configure router's TMU to HiFi-Bidir mode*/
+		tb_switch_tmu_configure(sw, TB_SWITCH_TMU_RATE_HIFI, false);
 
 	if (tb_enable_tmu(sw))
 		tb_sw_warn(sw, "failed to enable TMU\n");
@@ -713,6 +737,12 @@ static void tb_scan_port(struct tb_port *port)
 
 	tb_add_dp_resources(sw);
 	tb_scan_switch(sw);
+
+out_rpm_put:
+	if (port->usb4) {
+		pm_runtime_mark_last_busy(&port->usb4->dev);
+		pm_runtime_put_autosuspend(&port->usb4->dev);
+	}
 }
 
 static void tb_deactivate_and_free_tunnel(struct tb_tunnel *tunnel)
@@ -992,6 +1022,12 @@ static void tb_tunnel_dp(struct tb *tb)
 
 	list_add_tail(&tunnel->list, &tcm->tunnel_list);
 	tb_reclaim_usb3_bandwidth(tb, in, out);
+	/*
+	 * In case of DP tunnel exists, change host router's 1st children
+	 * TMU mode to HiFi for CL0s to work.
+	 */
+	tb_switch_enable_tmu_1st_child(tb->root_switch, TB_SWITCH_TMU_RATE_HIFI);
+
 	return;
 
 err_free:
@@ -1090,6 +1126,8 @@ static int tb_disconnect_pci(struct tb *tb, struct tb_switch *sw)
 	if (WARN_ON(!tunnel))
 		return -ENODEV;
 
+	tb_switch_xhci_disconnect(sw);
+
 	tb_tunnel_deactivate(tunnel);
 	list_del(&tunnel->list);
 	tb_tunnel_free(tunnel);
@@ -1127,6 +1165,16 @@ static int tb_tunnel_pci(struct tb *tb, struct tb_switch *sw)
 		tb_tunnel_free(tunnel);
 		return -EIO;
 	}
+
+	/*
+	 * PCIe L1 is needed to enable CL0s for Titan Ridge so enable it
+	 * here.
+	 */
+	if (tb_switch_pcie_l1_enable(sw))
+		tb_sw_warn(sw, "failed to enable PCIe L1 for Titan Ridge\n");
+
+	if (tb_switch_xhci_connect(sw))
+		tb_sw_warn(sw, "failed to connect xHCI\n");
 
 	list_add_tail(&tunnel->list, &tcm->tunnel_list);
 	return 0;
@@ -1285,12 +1333,18 @@ static void tb_handle_hotplug(struct work_struct *work)
 			tb_port_unconfigure_xdomain(port);
 		} else if (tb_port_is_dpout(port) || tb_port_is_dpin(port)) {
 			tb_dp_resource_unavailable(tb, port);
+		} else if (!port->port) {
+			tb_sw_dbg(sw, "xHCI disconnect request\n");
+			tb_switch_xhci_disconnect(sw);
 		} else {
 			tb_port_dbg(port,
 				   "got unplug event for disconnected port, ignoring\n");
 		}
 	} else if (port->remote) {
 		tb_port_dbg(port, "got plug event for connected port, ignoring\n");
+	} else if (!port->port && sw->authorized) {
+		tb_sw_dbg(sw, "xHCI connect request\n");
+		tb_switch_xhci_connect(sw);
 	} else {
 		if (tb_port_is_null(port)) {
 			tb_port_dbg(port, "hotplug: scanning\n");
@@ -1398,8 +1452,11 @@ static int tb_start(struct tb *tb)
 	 * ICM firmware upgrade needs running firmware and in native
 	 * mode that is not available so disable firmware upgrade of the
 	 * root switch.
+	 *
+	 * However, USB4 routers support NVM firmware upgrade if they
+	 * implement the necessary router operations.
 	 */
-	tb->root_switch->no_nvm_upgrade = true;
+	tb->root_switch->no_nvm_upgrade = !tb_switch_is_usb4(tb->root_switch);
 	/* All USB4 routers support runtime PM */
 	tb->root_switch->rpm = tb_switch_is_usb4(tb->root_switch);
 
@@ -1416,6 +1473,12 @@ static int tb_start(struct tb *tb)
 		return ret;
 	}
 
+	/*
+	 * To support highest CLx state, we set host router's TMU to
+	 * Normal mode.
+	 */
+	tb_switch_tmu_configure(tb->root_switch, TB_SWITCH_TMU_RATE_NORMAL,
+				false);
 	/* Enable TMU if it is off */
 	tb_switch_tmu_enable(tb->root_switch);
 	/* Full scan to discover devices added before the driver was loaded. */
@@ -1456,10 +1519,30 @@ static int tb_suspend_noirq(struct tb *tb)
 static void tb_restore_children(struct tb_switch *sw)
 {
 	struct tb_port *port;
+	int ret;
 
 	/* No need to restore if the router is already unplugged */
 	if (sw->is_unplugged)
 		return;
+
+	/*
+	 * CL0s and CL1 are enabled and supported together.
+	 * Silently ignore CLx re-enabling in case CLx is not supported.
+	 */
+	ret = tb_switch_enable_clx(sw, TB_CL1);
+	if (ret && ret != -EOPNOTSUPP)
+		tb_sw_warn(sw, "failed to re-enable %s on upstream port\n",
+			   tb_switch_clx_name(TB_CL1));
+
+	if (tb_switch_is_clx_enabled(sw, TB_CL1))
+		/*
+		 * To support highest CLx state, we set router's TMU to
+		 * Normal-Uni mode.
+		 */
+		tb_switch_tmu_configure(sw, TB_SWITCH_TMU_RATE_NORMAL, true);
+	else
+		/* If CLx disabled, configure router's TMU to HiFi-Bidir mode*/
+		tb_switch_tmu_configure(sw, TB_SWITCH_TMU_RATE_HIFI, false);
 
 	if (tb_enable_tmu(sw))
 		tb_sw_warn(sw, "failed to restore TMU configuration\n");
@@ -1474,7 +1557,7 @@ static void tb_restore_children(struct tb_switch *sw)
 
 			tb_restore_children(port->remote->sw);
 		} else if (port->xdomain) {
-			tb_port_configure_xdomain(port);
+			tb_port_configure_xdomain(port, port->xdomain);
 		}
 	}
 }

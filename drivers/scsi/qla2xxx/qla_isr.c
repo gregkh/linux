@@ -49,11 +49,11 @@ qla27xx_process_purex_fpin(struct scsi_qla_host *vha, struct purex_item *item)
 }
 
 const char *const port_state_str[] = {
-	"Unknown",
-	"UNCONFIGURED",
-	"DEAD",
-	"LOST",
-	"ONLINE"
+	[FCS_UNKNOWN]		= "Unknown",
+	[FCS_UNCONFIGURED]	= "UNCONFIGURED",
+	[FCS_DEVICE_DEAD]	= "DEAD",
+	[FCS_DEVICE_LOST]	= "LOST",
+	[FCS_ONLINE]		= "ONLINE"
 };
 
 static void
@@ -1759,6 +1759,9 @@ global_port_update:
 		break;
 
 	case MBA_DPORT_DIAGNOSTICS:
+		if ((mb[1] & 0xF) == AEN_DONE_DIAG_TEST_WITH_NOERR ||
+		    (mb[1] & 0xF) == AEN_DONE_DIAG_TEST_WITH_ERR)
+			vha->dport_status &= ~DPORT_DIAG_IN_PROGRESS;
 		ql_dbg(ql_dbg_async, vha, 0x5052,
 		    "D-Port Diagnostics: %04x %04x %04x %04x\n",
 		    mb[0], mb[1], mb[2], mb[3]);
@@ -2231,6 +2234,10 @@ qla24xx_els_ct_entry(scsi_qla_host_t *v, struct req_que *req,
 				}
 
 			} else if (comp_status == CS_PORT_LOGGED_OUT) {
+				ql_dbg(ql_dbg_disc, vha, 0x911e,
+				       "%s %d schedule session deletion\n",
+				       __func__, __LINE__);
+
 				els->u.els_plogi.len = 0;
 				res = DID_IMM_RETRY << 16;
 				qlt_schedule_sess_for_deletion(sp->fcport);
@@ -2239,9 +2246,9 @@ qla24xx_els_ct_entry(scsi_qla_host_t *v, struct req_que *req,
 				res = DID_ERROR << 16;
 			}
 
-			if (logit) {
-				if (sp->remap.remapped &&
-				    ((u8 *)sp->remap.rsp.buf)[0] == ELS_LS_RJT) {
+			if (sp->remap.remapped &&
+			    ((u8 *)sp->remap.rsp.buf)[0] == ELS_LS_RJT) {
+				if (logit) {
 					ql_dbg(ql_dbg_user, vha, 0x503f,
 					    "%s IOCB Done LS_RJT hdl=%x comp_status=0x%x\n",
 					    type, sp->handle, comp_status);
@@ -2253,18 +2260,24 @@ qla24xx_els_ct_entry(scsi_qla_host_t *v, struct req_que *req,
 						pkt)->total_byte_count),
 					    e->s_id[0], e->s_id[2], e->s_id[1],
 					    e->d_id[2], e->d_id[1], e->d_id[0]);
-				} else {
-					ql_log(ql_log_info, vha, 0x503f,
-					    "%s IOCB Done hdl=%x comp_status=0x%x\n",
-					    type, sp->handle, comp_status);
-					ql_log(ql_log_info, vha, 0x503f,
-					    "subcode 1=0x%x subcode 2=0x%x bytes=0x%x %02x%02x%02x -> %02x%02x%02x\n",
-					    fw_status[1], fw_status[2],
-					    le32_to_cpu(((struct els_sts_entry_24xx *)
-						pkt)->total_byte_count),
-					    e->s_id[0], e->s_id[2], e->s_id[1],
-					    e->d_id[2], e->d_id[1], e->d_id[0]);
 				}
+				if (sp->fcport && sp->fcport->flags & FCF_FCSP_DEVICE &&
+				    sp->type == SRB_ELS_CMD_HST_NOLOGIN) {
+					ql_dbg(ql_dbg_edif, vha, 0x911e,
+					    "%s rcv reject. Sched delete\n", __func__);
+					qlt_schedule_sess_for_deletion(sp->fcport);
+				}
+			} else if (logit) {
+				ql_log(ql_log_info, vha, 0x503f,
+				    "%s IOCB Done hdl=%x comp_status=0x%x\n",
+				    type, sp->handle, comp_status);
+				ql_log(ql_log_info, vha, 0x503f,
+				    "subcode 1=0x%x subcode 2=0x%x bytes=0x%x %02x%02x%02x -> %02x%02x%02x\n",
+				    fw_status[1], fw_status[2],
+				    le32_to_cpu(((struct els_sts_entry_24xx *)
+				    pkt)->total_byte_count),
+				    e->s_id[0], e->s_id[2], e->s_id[1],
+				    e->d_id[2], e->d_id[1], e->d_id[0]);
 			}
 		}
 		goto els_ct_done;
@@ -3751,7 +3764,7 @@ void qla24xx_process_response_queue(struct scsi_qla_host *vha,
 	struct purex_entry_24xx *purex_entry;
 	struct purex_item *pure_item;
 	u16 rsp_in = 0, cur_ring_index;
-	int follow_inptr, is_shadow_hba;
+	int is_shadow_hba;
 
 	if (!ha->flags.fw_started)
 		return;
@@ -3761,25 +3774,18 @@ void qla24xx_process_response_queue(struct scsi_qla_host *vha,
 		qla_cpu_update(rsp->qpair, smp_processor_id());
 	}
 
-#define __update_rsp_in(_update, _is_shadow_hba, _rsp, _rsp_in)		\
+#define __update_rsp_in(_is_shadow_hba, _rsp, _rsp_in)			\
 	do {								\
-		if (_update) {						\
-			_rsp_in = _is_shadow_hba ? *(_rsp)->in_ptr :	\
+		_rsp_in = _is_shadow_hba ? *(_rsp)->in_ptr :		\
 				rd_reg_dword_relaxed((_rsp)->rsp_q_in);	\
-		}							\
 	} while (0)
 
 	is_shadow_hba = IS_SHADOW_REG_CAPABLE(ha);
-	follow_inptr = is_shadow_hba ? ql2xrspq_follow_inptr :
-				ql2xrspq_follow_inptr_legacy;
 
-	__update_rsp_in(follow_inptr, is_shadow_hba, rsp, rsp_in);
+	__update_rsp_in(is_shadow_hba, rsp, rsp_in);
 
-	while ((likely(follow_inptr &&
-		       rsp->ring_index != rsp_in &&
-		       rsp->ring_ptr->signature != RESPONSE_PROCESSED)) ||
-		       (!follow_inptr &&
-			rsp->ring_ptr->signature != RESPONSE_PROCESSED)) {
+	while (rsp->ring_index != rsp_in &&
+		       rsp->ring_ptr->signature != RESPONSE_PROCESSED) {
 		pkt = (struct sts_entry_24xx *)rsp->ring_ptr;
 		cur_ring_index = rsp->ring_index;
 
@@ -3893,8 +3899,7 @@ process_err:
 				}
 				pure_item = qla27xx_copy_fpin_pkt(vha,
 							  (void **)&pkt, &rsp);
-				__update_rsp_in(follow_inptr, is_shadow_hba,
-						rsp, rsp_in);
+				__update_rsp_in(is_shadow_hba, rsp, rsp_in);
 				if (!pure_item)
 					break;
 				qla24xx_queue_purex_item(vha, pure_item,

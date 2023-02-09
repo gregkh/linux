@@ -12,6 +12,7 @@
 #define pr_fmt(fmt) "bt1-ccu-div: " fmt
 
 #include <linux/kernel.h>
+#include <linux/platform_device.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
 #include <linux/clk-provider.h>
@@ -24,9 +25,9 @@
 #include <linux/regmap.h>
 
 #include <dt-bindings/clock/bt1-ccu.h>
-#include <dt-bindings/reset/bt1-ccu.h>
 
 #include "ccu-div.h"
+#include "ccu-rst.h"
 
 #define CCU_AXI_MAIN_BASE		0x030
 #define CCU_AXI_DDR_BASE		0x034
@@ -95,12 +96,6 @@
 		.divider = _divider				\
 	}
 
-#define CCU_DIV_RST_MAP(_rst_id, _clk_id)	\
-	{					\
-		.rst_id = _rst_id,		\
-		.clk_id = _clk_id		\
-	}
-
 struct ccu_div_info {
 	unsigned int id;
 	const char *name;
@@ -115,11 +110,6 @@ struct ccu_div_info {
 	unsigned long features;
 };
 
-struct ccu_div_rst_map {
-	unsigned int rst_id;
-	unsigned int clk_id;
-};
-
 struct ccu_div_data {
 	struct device_node *np;
 	struct regmap *sys_regs;
@@ -128,11 +118,8 @@ struct ccu_div_data {
 	const struct ccu_div_info *divs_info;
 	struct ccu_div **divs;
 
-	unsigned int rst_num;
-	const struct ccu_div_rst_map *rst_map;
-	struct reset_controller_dev rcdev;
+	struct ccu_rst *rsts;
 };
-#define to_ccu_div_data(_rcdev) container_of(_rcdev, struct ccu_div_data, rcdev)
 
 /*
  * AXI Main Interconnect (axi_main_clk) and DDR AXI-bus (axi_ddr_clk) clocks
@@ -179,20 +166,6 @@ static const struct ccu_div_info axi_info[] = {
 			 CLK_SET_RATE_GATE, CCU_DIV_RESET_DOMAIN)
 };
 
-static const struct ccu_div_rst_map axi_rst_map[] = {
-	CCU_DIV_RST_MAP(CCU_AXI_MAIN_RST, CCU_AXI_MAIN_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_DDR_RST, CCU_AXI_DDR_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_SATA_RST, CCU_AXI_SATA_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_GMAC0_RST, CCU_AXI_GMAC0_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_GMAC1_RST, CCU_AXI_GMAC1_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_XGMAC_RST, CCU_AXI_XGMAC_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_PCIE_M_RST, CCU_AXI_PCIE_M_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_PCIE_S_RST, CCU_AXI_PCIE_S_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_USB_RST, CCU_AXI_USB_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_HWA_RST, CCU_AXI_HWA_CLK),
-	CCU_DIV_RST_MAP(CCU_AXI_SRAM_RST, CCU_AXI_SRAM_CLK)
-};
-
 /*
  * APB-bus clock is marked as critical since it's a main communication bus
  * for the SoC devices registers IO-operations.
@@ -208,7 +181,7 @@ static const struct ccu_div_info sys_info[] = {
 			 CLK_SET_RATE_PARENT),
 	CCU_DIV_VAR_INFO(CCU_SYS_APB_CLK, "sys_apb_clk",
 			 "pcie_clk", CCU_SYS_APB_BASE, 5,
-			 CLK_IS_CRITICAL, CCU_DIV_RESET_DOMAIN),
+			 CLK_IS_CRITICAL, CCU_DIV_BASIC | CCU_DIV_RESET_DOMAIN),
 	CCU_DIV_GATE_INFO(CCU_SYS_GMAC0_TX_CLK, "sys_gmac0_tx_clk",
 			  "eth_clk", CCU_SYS_GMAC0_BASE, 5),
 	CCU_DIV_FIXED_INFO(CCU_SYS_GMAC0_PTP_CLK, "sys_gmac0_ptp_clk",
@@ -242,73 +215,57 @@ static const struct ccu_div_info sys_info[] = {
 			   "ref_clk", 25),
 	CCU_DIV_VAR_INFO(CCU_SYS_TIMER0_CLK, "sys_timer0_clk",
 			 "ref_clk", CCU_SYS_TIMER0_BASE, 17,
-			 CLK_SET_RATE_GATE, 0),
+			 CLK_SET_RATE_GATE, CCU_DIV_BASIC),
 	CCU_DIV_VAR_INFO(CCU_SYS_TIMER1_CLK, "sys_timer1_clk",
 			 "ref_clk", CCU_SYS_TIMER1_BASE, 17,
-			 CLK_SET_RATE_GATE, 0),
+			 CLK_SET_RATE_GATE, CCU_DIV_BASIC),
 	CCU_DIV_VAR_INFO(CCU_SYS_TIMER2_CLK, "sys_timer2_clk",
 			 "ref_clk", CCU_SYS_TIMER2_BASE, 17,
-			 CLK_SET_RATE_GATE, 0),
+			 CLK_SET_RATE_GATE, CCU_DIV_BASIC),
 	CCU_DIV_VAR_INFO(CCU_SYS_WDT_CLK, "sys_wdt_clk",
 			 "eth_clk", CCU_SYS_WDT_BASE, 17,
 			 CLK_SET_RATE_GATE, CCU_DIV_SKIP_ONE_TO_THREE)
 };
 
-static const struct ccu_div_rst_map sys_rst_map[] = {
-	CCU_DIV_RST_MAP(CCU_SYS_SATA_REF_RST, CCU_SYS_SATA_REF_CLK),
-	CCU_DIV_RST_MAP(CCU_SYS_APB_RST, CCU_SYS_APB_CLK),
-};
+static struct ccu_div_data *axi_data;
+static struct ccu_div_data *sys_data;
+
+static void ccu_div_set_data(struct ccu_div_data *data)
+{
+	struct device_node *np = data->np;
+
+	if (of_device_is_compatible(np, "baikal,bt1-ccu-axi"))
+		axi_data = data;
+	else if (of_device_is_compatible(np, "baikal,bt1-ccu-sys"))
+		sys_data = data;
+	else
+		pr_err("Invalid DT node '%s' specified\n", of_node_full_name(np));
+}
+
+static struct ccu_div_data *ccu_div_get_data(struct device_node *np)
+{
+	if (of_device_is_compatible(np, "baikal,bt1-ccu-axi"))
+		return axi_data;
+	else if (of_device_is_compatible(np, "baikal,bt1-ccu-sys"))
+		return sys_data;
+
+	pr_err("Invalid DT node '%s' specified\n", of_node_full_name(np));
+
+	return NULL;
+}
 
 static struct ccu_div *ccu_div_find_desc(struct ccu_div_data *data,
 					 unsigned int clk_id)
 {
-	struct ccu_div *div;
 	int idx;
 
 	for (idx = 0; idx < data->divs_num; ++idx) {
-		div = data->divs[idx];
-		if (div && div->id == clk_id)
-			return div;
+		if (data->divs_info[idx].id == clk_id)
+			return data->divs[idx];
 	}
 
 	return ERR_PTR(-EINVAL);
 }
-
-static int ccu_div_reset(struct reset_controller_dev *rcdev,
-			 unsigned long rst_id)
-{
-	struct ccu_div_data *data = to_ccu_div_data(rcdev);
-	const struct ccu_div_rst_map *map;
-	struct ccu_div *div;
-	int idx, ret;
-
-	for (idx = 0, map = data->rst_map; idx < data->rst_num; ++idx, ++map) {
-		if (map->rst_id == rst_id)
-			break;
-	}
-	if (idx == data->rst_num) {
-		pr_err("Invalid reset ID %lu specified\n", rst_id);
-		return -EINVAL;
-	}
-
-	div = ccu_div_find_desc(data, map->clk_id);
-	if (IS_ERR(div)) {
-		pr_err("Invalid clock ID %d in mapping\n", map->clk_id);
-		return PTR_ERR(div);
-	}
-
-	ret = ccu_div_reset_domain(div);
-	if (ret) {
-		pr_err("Reset isn't supported by divider %s\n",
-			clk_hw_get_name(ccu_div_get_clk_hw(div)));
-	}
-
-	return ret;
-}
-
-static const struct reset_control_ops ccu_div_rst_ops = {
-	.reset = ccu_div_reset,
-};
 
 static struct ccu_div_data *ccu_div_create_data(struct device_node *np)
 {
@@ -323,13 +280,9 @@ static struct ccu_div_data *ccu_div_create_data(struct device_node *np)
 	if (of_device_is_compatible(np, "baikal,bt1-ccu-axi")) {
 		data->divs_num = ARRAY_SIZE(axi_info);
 		data->divs_info = axi_info;
-		data->rst_num = ARRAY_SIZE(axi_rst_map);
-		data->rst_map = axi_rst_map;
 	} else if (of_device_is_compatible(np, "baikal,bt1-ccu-sys")) {
 		data->divs_num = ARRAY_SIZE(sys_info);
 		data->divs_info = sys_info;
-		data->rst_num = ARRAY_SIZE(sys_rst_map);
-		data->rst_map = sys_rst_map;
 	} else {
 		pr_err("Incompatible DT node '%s' specified\n",
 			of_node_full_name(np));
@@ -380,20 +333,29 @@ static struct clk_hw *ccu_div_of_clk_hw_get(struct of_phandle_args *clkspec,
 	clk_id = clkspec->args[0];
 	div = ccu_div_find_desc(data, clk_id);
 	if (IS_ERR(div)) {
-		pr_info("Invalid clock ID %d specified\n", clk_id);
+		if (div != ERR_PTR(-EPROBE_DEFER))
+			pr_info("Invalid clock ID %d specified\n", clk_id);
+
 		return ERR_CAST(div);
 	}
 
 	return ccu_div_get_clk_hw(div);
 }
 
-static int ccu_div_clk_register(struct ccu_div_data *data)
+static int ccu_div_clk_register(struct ccu_div_data *data, bool defer)
 {
 	int idx, ret;
 
 	for (idx = 0; idx < data->divs_num; ++idx) {
 		const struct ccu_div_info *info = &data->divs_info[idx];
 		struct ccu_div_init_data init = {0};
+
+		if (!!(info->features & CCU_DIV_BASIC) ^ defer) {
+			if (!data->divs[idx])
+				data->divs[idx] = ERR_PTR(-EPROBE_DEFER);
+
+			continue;
+		}
 
 		init.id = info->id;
 		init.name = info->name;
@@ -427,49 +389,104 @@ static int ccu_div_clk_register(struct ccu_div_data *data)
 		}
 	}
 
-	ret = of_clk_add_hw_provider(data->np, ccu_div_of_clk_hw_get, data);
-	if (ret) {
-		pr_err("Couldn't register dividers '%s' clock provider\n",
-			of_node_full_name(data->np));
-		goto err_hw_unregister;
-	}
-
 	return 0;
 
 err_hw_unregister:
-	for (--idx; idx >= 0; --idx)
+	for (--idx; idx >= 0; --idx) {
+		if (!!(data->divs_info[idx].features & CCU_DIV_BASIC) ^ defer)
+			continue;
+
 		ccu_div_hw_unregister(data->divs[idx]);
+	}
 
 	return ret;
 }
 
-static void ccu_div_clk_unregister(struct ccu_div_data *data)
+static void ccu_div_clk_unregister(struct ccu_div_data *data, bool defer)
 {
 	int idx;
 
-	of_clk_del_provider(data->np);
+	/* Uninstall only the clocks registered on the specfied stage */
+	for (idx = 0; idx < data->divs_num; ++idx) {
+		if (!!(data->divs_info[idx].features & CCU_DIV_BASIC) ^ defer)
+			continue;
 
-	for (idx = 0; idx < data->divs_num; ++idx)
 		ccu_div_hw_unregister(data->divs[idx]);
+	}
+}
+
+static int ccu_div_of_register(struct ccu_div_data *data)
+{
+	int ret;
+
+	ret = of_clk_add_hw_provider(data->np, ccu_div_of_clk_hw_get, data);
+	if (ret) {
+		pr_err("Couldn't register dividers '%s' clock provider\n",
+		       of_node_full_name(data->np));
+	}
+
+	return ret;
 }
 
 static int ccu_div_rst_register(struct ccu_div_data *data)
 {
-	int ret;
+	struct ccu_rst_init_data init = {0};
 
-	data->rcdev.ops = &ccu_div_rst_ops;
-	data->rcdev.of_node = data->np;
-	data->rcdev.nr_resets = data->rst_num;
+	init.sys_regs = data->sys_regs;
+	init.np = data->np;
 
-	ret = reset_controller_register(&data->rcdev);
-	if (ret)
+	data->rsts = ccu_rst_hw_register(&init);
+	if (IS_ERR(data->rsts)) {
 		pr_err("Couldn't register divider '%s' reset controller\n",
 			of_node_full_name(data->np));
+		return PTR_ERR(data->rsts);
+	}
+
+	return 0;
+}
+
+static int ccu_div_probe(struct platform_device *pdev)
+{
+	struct ccu_div_data *data;
+	int ret;
+
+	data = ccu_div_get_data(dev_of_node(&pdev->dev));
+	if (!data)
+		return -EINVAL;
+
+	ret = ccu_div_clk_register(data, false);
+	if (ret)
+		return ret;
+
+	ret = ccu_div_rst_register(data);
+	if (ret)
+		goto err_clk_unregister;
+
+	return 0;
+
+err_clk_unregister:
+	ccu_div_clk_unregister(data, false);
 
 	return ret;
 }
 
-static void ccu_div_init(struct device_node *np)
+static const struct of_device_id ccu_div_of_match[] = {
+	{ .compatible = "baikal,bt1-ccu-axi" },
+	{ .compatible = "baikal,bt1-ccu-sys" },
+	{ }
+};
+
+static struct platform_driver ccu_div_driver = {
+	.probe  = ccu_div_probe,
+	.driver = {
+		.name = "clk-ccu-div",
+		.of_match_table = ccu_div_of_match,
+		.suppress_bind_attrs = true,
+	},
+};
+builtin_platform_driver(ccu_div_driver);
+
+static __init void ccu_div_init(struct device_node *np)
 {
 	struct ccu_div_data *data;
 	int ret;
@@ -482,22 +499,23 @@ static void ccu_div_init(struct device_node *np)
 	if (ret)
 		goto err_free_data;
 
-	ret = ccu_div_clk_register(data);
+	ret = ccu_div_clk_register(data, true);
 	if (ret)
 		goto err_free_data;
 
-	ret = ccu_div_rst_register(data);
+	ret = ccu_div_of_register(data);
 	if (ret)
 		goto err_clk_unregister;
+
+	ccu_div_set_data(data);
 
 	return;
 
 err_clk_unregister:
-	ccu_div_clk_unregister(data);
+	ccu_div_clk_unregister(data, true);
 
 err_free_data:
 	ccu_div_free_data(data);
 }
-
-CLK_OF_DECLARE(ccu_axi, "baikal,bt1-ccu-axi", ccu_div_init);
-CLK_OF_DECLARE(ccu_sys, "baikal,bt1-ccu-sys", ccu_div_init);
+CLK_OF_DECLARE_DRIVER(ccu_axi, "baikal,bt1-ccu-axi", ccu_div_init);
+CLK_OF_DECLARE_DRIVER(ccu_sys, "baikal,bt1-ccu-sys", ccu_div_init);

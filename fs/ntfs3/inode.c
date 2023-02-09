@@ -517,7 +517,7 @@ struct inode *ntfs_iget5(struct super_block *sb, const struct MFT_REF *ref,
 		inode = ntfs_read_mft(inode, name, ref);
 	else if (ref->seq != ntfs_i(inode)->mi.mrec->seq) {
 		/* Inode overlaps? */
-		make_bad_inode(inode);
+		_ntfs_bad_inode(inode);
 	}
 
 	return inode;
@@ -646,12 +646,9 @@ static noinline int ntfs_get_block_vbo(struct inode *inode, u64 vbo,
 			bh->b_size = block_size;
 			off = vbo & (PAGE_SIZE - 1);
 			set_bh_page(bh, page, off);
-			ll_rw_block(REQ_OP_READ, 0, 1, &bh);
-			wait_on_buffer(bh);
-			if (!buffer_uptodate(bh)) {
-				err = -EIO;
+			err = bh_read(bh, 0);
+			if (err < 0)
 				goto out;
-			}
 			zero_user_segment(page, off + voff, off + block_size);
 		}
 	}
@@ -693,8 +690,9 @@ static sector_t ntfs_bmap(struct address_space *mapping, sector_t block)
 	return generic_block_bmap(mapping, block, ntfs_get_block_bmap);
 }
 
-static int ntfs_readpage(struct file *file, struct page *page)
+static int ntfs_read_folio(struct file *file, struct folio *folio)
 {
+	struct page *page = &folio->page;
 	int err;
 	struct address_space *mapping = page->mapping;
 	struct inode *inode = mapping->host;
@@ -718,7 +716,7 @@ static int ntfs_readpage(struct file *file, struct page *page)
 	}
 
 	/* Normal + sparse files. */
-	return mpage_readpage(page, ntfs_get_block);
+	return mpage_read_folio(folio, ntfs_get_block);
 }
 
 static void ntfs_readahead(struct readahead_control *rac)
@@ -867,12 +865,10 @@ static int ntfs_writepage(struct page *page, struct writeback_control *wbc)
 static int ntfs_writepages(struct address_space *mapping,
 			   struct writeback_control *wbc)
 {
-	struct inode *inode = mapping->host;
-	struct ntfs_inode *ni = ntfs_i(inode);
 	/* Redirect call to 'ntfs_writepage' for resident files. */
-	get_block_t *get_block = is_resident(ni) ? NULL : &ntfs_get_block;
-
-	return mpage_writepages(mapping, wbc, get_block);
+	if (is_resident(ntfs_i(mapping->host)))
+		return generic_writepages(mapping, wbc);
+	return mpage_writepages(mapping, wbc, ntfs_get_block);
 }
 
 static int ntfs_get_block_write_begin(struct inode *inode, sector_t vbn,
@@ -882,9 +878,8 @@ static int ntfs_get_block_write_begin(struct inode *inode, sector_t vbn,
 				  bh_result, create, GET_BLOCK_WRITE_BEGIN);
 }
 
-static int ntfs_write_begin(struct file *file, struct address_space *mapping,
-			    loff_t pos, u32 len, u32 flags, struct page **pagep,
-			    void **fsdata)
+int ntfs_write_begin(struct file *file, struct address_space *mapping,
+		     loff_t pos, u32 len, struct page **pagep, void **fsdata)
 {
 	int err;
 	struct inode *inode = mapping->host;
@@ -893,7 +888,7 @@ static int ntfs_write_begin(struct file *file, struct address_space *mapping,
 	*pagep = NULL;
 	if (is_resident(ni)) {
 		struct page *page = grab_cache_page_write_begin(
-			mapping, pos >> PAGE_SHIFT, flags);
+			mapping, pos >> PAGE_SHIFT);
 
 		if (!page) {
 			err = -ENOMEM;
@@ -915,7 +910,7 @@ static int ntfs_write_begin(struct file *file, struct address_space *mapping,
 			goto out;
 	}
 
-	err = block_write_begin(mapping, pos, len, flags, pagep,
+	err = block_write_begin(mapping, pos, len, pagep,
 				ntfs_get_block_write_begin);
 
 out:
@@ -925,10 +920,9 @@ out:
 /*
  * ntfs_write_end - Address_space_operations::write_end.
  */
-static int ntfs_write_end(struct file *file, struct address_space *mapping,
-			  loff_t pos, u32 len, u32 copied, struct page *page,
-			  void *fsdata)
-
+int ntfs_write_end(struct file *file, struct address_space *mapping,
+		   loff_t pos, u32 len, u32 copied, struct page *page,
+		   void *fsdata)
 {
 	struct inode *inode = mapping->host;
 	struct ntfs_inode *ni = ntfs_i(inode);
@@ -996,7 +990,7 @@ int reset_log_file(struct inode *inode)
 
 		len = pos + PAGE_SIZE > log_size ? (log_size - pos) : PAGE_SIZE;
 
-		err = block_write_begin(mapping, pos, len, 0, &page,
+		err = block_write_begin(mapping, pos, len, &page,
 					ntfs_get_block_write_begin);
 		if (err)
 			goto out;
@@ -1067,7 +1061,7 @@ int ntfs_flush_inodes(struct super_block *sb, struct inode *i1,
 	if (!ret && i2)
 		ret = writeback_inode(i2);
 	if (!ret)
-		ret = filemap_flush(sb->s_bdev->bd_inode->i_mapping);
+		ret = sync_blockdev_nowait(sb->s_bdev);
 	return ret;
 }
 
@@ -1652,7 +1646,7 @@ out4:
 	ni->mi.dirty = false;
 	discard_new_inode(inode);
 out3:
-	ntfs_mark_rec_free(sbi, ino);
+	ntfs_mark_rec_free(sbi, ino, false);
 
 out2:
 	__putname(new_de);
@@ -1675,7 +1669,6 @@ int ntfs_link_inode(struct inode *inode, struct dentry *dentry)
 	struct ntfs_inode *ni = ntfs_i(inode);
 	struct ntfs_sb_info *sbi = inode->i_sb->s_fs_info;
 	struct NTFS_DE *de;
-	struct ATTR_FILE_NAME *de_name;
 
 	/* Allocate PATH_MAX bytes. */
 	de = __getname();
@@ -1689,15 +1682,6 @@ int ntfs_link_inode(struct inode *inode, struct dentry *dentry)
 	err = fill_name_de(sbi, de, &dentry->d_name, NULL);
 	if (err)
 		goto out;
-
-	de_name = (struct ATTR_FILE_NAME *)(de + 1);
-	/* Fill duplicate info. */
-	de_name->dup.cr_time = de_name->dup.m_time = de_name->dup.c_time =
-		de_name->dup.a_time = kernel2nt(&inode->i_ctime);
-	de_name->dup.alloc_size = de_name->dup.data_size =
-		cpu_to_le64(inode->i_size);
-	de_name->dup.fa = ni->std_fa;
-	de_name->dup.ea_size = de_name->dup.reparse = 0;
 
 	err = ni_add_name(ntfs_i(d_inode(dentry->d_parent)), ni, de);
 out:
@@ -1751,9 +1735,7 @@ int ntfs_unlink_inode(struct inode *dir, const struct dentry *dentry)
 		if (inode->i_nlink)
 			mark_inode_dirty(inode);
 	} else if (!ni_remove_name_undo(dir_ni, ni, de, de2, undo_remove)) {
-		make_bad_inode(inode);
-		ntfs_inode_err(inode, "failed to undo unlink");
-		ntfs_set_state(sbi, NTFS_DIRTY_ERROR);
+		_ntfs_bad_inode(inode);
 	} else {
 		if (ni_is_dirty(dir))
 			mark_inode_dirty(dir);
@@ -1961,7 +1943,7 @@ const struct inode_operations ntfs_link_inode_operations = {
 };
 
 const struct address_space_operations ntfs_aops = {
-	.readpage	= ntfs_readpage,
+	.read_folio	= ntfs_read_folio,
 	.readahead	= ntfs_readahead,
 	.writepage	= ntfs_writepage,
 	.writepages	= ntfs_writepages,
@@ -1969,11 +1951,12 @@ const struct address_space_operations ntfs_aops = {
 	.write_end	= ntfs_write_end,
 	.direct_IO	= ntfs_direct_IO,
 	.bmap		= ntfs_bmap,
-	.set_page_dirty = __set_page_dirty_buffers,
+	.dirty_folio	= block_dirty_folio,
+	.invalidate_folio = block_invalidate_folio,
 };
 
 const struct address_space_operations ntfs_aops_cmpr = {
-	.readpage	= ntfs_readpage,
+	.read_folio	= ntfs_read_folio,
 	.readahead	= ntfs_readahead,
 };
 // clang-format on

@@ -212,8 +212,8 @@ static void SRXAFSCB_CallBack(struct work_struct *work)
 	 * to maintain cache coherency.
 	 */
 	if (call->server) {
-		trace_afs_server(call->server,
-				 atomic_read(&call->server->ref),
+		trace_afs_server(call->server->debug_id,
+				 refcount_read(&call->server->ref),
 				 atomic_read(&call->server->active),
 				 afs_server_trace_callback);
 		afs_break_callbacks(call->server, call->count, call->request);
@@ -298,7 +298,7 @@ static int afs_deliver_cb_callback(struct afs_call *call)
 		if (call->count2 != call->count && call->count2 != 0)
 			return afs_protocol_error(call, afs_eproto_cb_count);
 		call->iter = &call->def_iter;
-		iov_iter_discard(&call->def_iter, READ, call->count2 * 3 * 4);
+		iov_iter_discard(&call->def_iter, ITER_DEST, call->count2 * 3 * 4);
 		call->unmarshall++;
 
 		fallthrough;

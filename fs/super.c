@@ -31,7 +31,6 @@
 #include <linux/mutex.h>
 #include <linux/backing-dev.h>
 #include <linux/rculist_bl.h>
-#include <linux/cleancache.h>
 #include <linux/fscrypt.h>
 #include <linux/fsnotify.h>
 #include <linux/lockdep.h>
@@ -260,14 +259,13 @@ static struct super_block *alloc_super(struct file_system_type *type, int flags,
 	s->s_time_gran = 1000000000;
 	s->s_time_min = TIME64_MIN;
 	s->s_time_max = TIME64_MAX;
-	s->cleancache_poolid = CLEANCACHE_NO_POOL;
 
 	s->s_shrink.seeks = DEFAULT_SEEKS;
 	s->s_shrink.scan_objects = super_cache_scan;
 	s->s_shrink.count_objects = super_cache_count;
 	s->s_shrink.batch = 1024;
 	s->s_shrink.flags = SHRINKER_NUMA_AWARE | SHRINKER_MEMCG_AWARE;
-	if (prealloc_shrinker(&s->s_shrink))
+	if (prealloc_shrinker(&s->s_shrink, "sb-%s", type->name))
 		goto fail;
 	if (list_lru_init_memcg(&s->s_dentry_lru, &s->s_shrink))
 		goto fail;
@@ -330,7 +328,6 @@ void deactivate_locked_super(struct super_block *s)
 {
 	struct file_system_type *fs = s->s_type;
 	if (atomic_dec_and_test(&s->s_active)) {
-		cleancache_invalidate_fs(s);
 		unregister_shrinker(&s->s_shrink);
 		fs->kill_sb(s);
 
@@ -426,6 +423,35 @@ bool trylock_super(struct super_block *sb)
 }
 
 /**
+ *	retire_super	-	prevents superblock from being reused
+ *	@sb: superblock to retire
+ *
+ *	The function marks superblock to be ignored in superblock test, which
+ *	prevents it from being reused for any new mounts.  If the superblock has
+ *	a private bdi, it also unregisters it, but doesn't reduce the refcount
+ *	of the superblock to prevent potential races.  The refcount is reduced
+ *	by generic_shutdown_super().  The function can not be called
+ *	concurrently with generic_shutdown_super().  It is safe to call the
+ *	function multiple times, subsequent calls have no effect.
+ *
+ *	The marker will affect the re-use only for block-device-based
+ *	superblocks.  Other superblocks will still get marked if this function
+ *	is used, but that will not affect their reusability.
+ */
+void retire_super(struct super_block *sb)
+{
+	WARN_ON(!sb->s_bdev);
+	down_write(&sb->s_umount);
+	if (sb->s_iflags & SB_I_PERSB_BDI) {
+		bdi_unregister(sb->s_bdi);
+		sb->s_iflags &= ~SB_I_PERSB_BDI;
+	}
+	sb->s_iflags |= SB_I_RETIRED;
+	up_write(&sb->s_umount);
+}
+EXPORT_SYMBOL(retire_super);
+
+/**
  *	generic_shutdown_super	-	common helper for ->kill_sb()
  *	@sb: superblock to kill
  *
@@ -477,6 +503,8 @@ void generic_shutdown_super(struct super_block *sb)
 	spin_unlock(&sb_lock);
 	up_write(&sb->s_umount);
 	if (sb->s_bdi != &noop_backing_dev_info) {
+		if (sb->s_iflags & SB_I_PERSB_BDI)
+			bdi_unregister(sb->s_bdi);
 		bdi_put(sb->s_bdi);
 		sb->s_bdi = &noop_backing_dev_info;
 	}
@@ -1206,7 +1234,7 @@ static int set_bdev_super(struct super_block *s, void *data)
 	s->s_dev = s->s_bdev->bd_dev;
 	s->s_bdi = bdi_get(s->s_bdev->bd_disk->bdi);
 
-	if (blk_queue_stable_writes(s->s_bdev->bd_disk->queue))
+	if (bdev_stable_writes(s->s_bdev))
 		s->s_iflags |= SB_I_STABLE_WRITES;
 	return 0;
 }
@@ -1218,7 +1246,7 @@ static int set_bdev_super_fc(struct super_block *s, struct fs_context *fc)
 
 static int test_bdev_super_fc(struct super_block *s, struct fs_context *fc)
 {
-	return s->s_bdev == fc->sget_key;
+	return !(s->s_iflags & SB_I_RETIRED) && s->s_bdev == fc->sget_key;
 }
 
 /**
@@ -1290,6 +1318,8 @@ int get_tree_bdev(struct fs_context *fc,
 	} else {
 		s->s_mode = mode;
 		snprintf(s->s_id, sizeof(s->s_id), "%pg", bdev);
+		shrinker_debugfs_rename(&s->s_shrink, "sb-%s:%s",
+					fc->fs_type->name, s->s_id);
 		sb_set_blocksize(s, block_size(bdev));
 		error = fill_super(s, fc);
 		if (error) {
@@ -1309,7 +1339,7 @@ EXPORT_SYMBOL(get_tree_bdev);
 
 static int test_bdev_super(struct super_block *s, void *data)
 {
-	return (void *)s->s_bdev == data;
+	return !(s->s_iflags & SB_I_RETIRED) && (void *)s->s_bdev == data;
 }
 
 struct dentry *mount_bdev(struct file_system_type *fs_type,
@@ -1365,6 +1395,8 @@ struct dentry *mount_bdev(struct file_system_type *fs_type,
 	} else {
 		s->s_mode = mode;
 		snprintf(s->s_id, sizeof(s->s_id), "%pg", bdev);
+		shrinker_debugfs_rename(&s->s_shrink, "sb-%s:%s",
+					fs_type->name, s->s_id);
 		sb_set_blocksize(s, block_size(bdev));
 		error = fill_super(s, data, flags & SB_SILENT ? 1 : 0);
 		if (error) {
@@ -1563,6 +1595,7 @@ int super_setup_bdi_name(struct super_block *sb, char *fmt, ...)
 	}
 	WARN_ON(sb->s_bdi != &noop_backing_dev_info);
 	sb->s_bdi = bdi;
+	sb->s_iflags |= SB_I_PERSB_BDI;
 
 	return 0;
 }

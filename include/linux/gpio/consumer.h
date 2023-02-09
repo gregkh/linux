@@ -109,6 +109,8 @@ int gpiod_get_direction(struct gpio_desc *desc);
 int gpiod_direction_input(struct gpio_desc *desc);
 int gpiod_direction_output(struct gpio_desc *desc, int value);
 int gpiod_direction_output_raw(struct gpio_desc *desc, int value);
+int gpiod_enable_hw_timestamp_ns(struct gpio_desc *desc, unsigned long flags);
+int gpiod_disable_hw_timestamp_ns(struct gpio_desc *desc, unsigned long flags);
 
 /* Value get/set from non-sleeping context */
 int gpiod_get_value(const struct gpio_desc *desc);
@@ -172,10 +174,6 @@ int desc_to_gpio(const struct gpio_desc *desc);
 /* Child properties interface */
 struct fwnode_handle;
 
-struct gpio_desc *fwnode_get_named_gpiod(struct fwnode_handle *fwnode,
-					 const char *propname, int index,
-					 enum gpiod_flags dflags,
-					 const char *label);
 struct gpio_desc *fwnode_gpiod_get_index(struct fwnode_handle *fwnode,
 					 const char *con_id, int index,
 					 enum gpiod_flags flags,
@@ -350,8 +348,18 @@ static inline int gpiod_direction_output_raw(struct gpio_desc *desc, int value)
 	WARN_ON(desc);
 	return -ENOSYS;
 }
-
-
+static inline int gpiod_enable_hw_timestamp_ns(struct gpio_desc *desc,
+					       unsigned long flags)
+{
+	WARN_ON(desc);
+	return -ENOSYS;
+}
+static inline int gpiod_disable_hw_timestamp_ns(struct gpio_desc *desc,
+						unsigned long flags)
+{
+	WARN_ON(desc);
+	return -ENOSYS;
+}
 static inline int gpiod_get_value(const struct gpio_desc *desc)
 {
 	/* GPIO can never have been requested */
@@ -542,15 +550,6 @@ static inline int desc_to_gpio(const struct gpio_desc *desc)
 struct fwnode_handle;
 
 static inline
-struct gpio_desc *fwnode_get_named_gpiod(struct fwnode_handle *fwnode,
-					 const char *propname, int index,
-					 enum gpiod_flags dflags,
-					 const char *label)
-{
-	return ERR_PTR(-ENOSYS);
-}
-
-static inline
 struct gpio_desc *fwnode_gpiod_get_index(struct fwnode_handle *fwnode,
 					 const char *con_id, int index,
 					 enum gpiod_flags flags,
@@ -687,9 +686,8 @@ void acpi_dev_remove_driver_gpios(struct acpi_device *adev);
 
 int devm_acpi_dev_add_driver_gpios(struct device *dev,
 				   const struct acpi_gpio_mapping *gpios);
-void devm_acpi_dev_remove_driver_gpios(struct device *dev);
 
-struct gpio_desc *acpi_get_and_request_gpiod(char *path, int pin, char *label);
+struct gpio_desc *acpi_get_and_request_gpiod(char *path, unsigned int pin, char *label);
 
 #else  /* CONFIG_GPIOLIB && CONFIG_ACPI */
 
@@ -705,7 +703,12 @@ static inline int devm_acpi_dev_add_driver_gpios(struct device *dev,
 {
 	return -ENXIO;
 }
-static inline void devm_acpi_dev_remove_driver_gpios(struct device *dev) {}
+
+static inline struct gpio_desc *acpi_get_and_request_gpiod(char *path, unsigned int pin,
+							   char *label)
+{
+	return ERR_PTR(-ENOSYS);
+}
 
 #endif /* CONFIG_GPIOLIB && CONFIG_ACPI */
 

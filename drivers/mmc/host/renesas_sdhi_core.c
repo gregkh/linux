@@ -27,7 +27,6 @@
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/slot-gpio.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pinctrl/pinctrl-state.h>
 #include <linux/platform_device.h>
@@ -36,7 +35,6 @@
 #include <linux/reset.h>
 #include <linux/sh_dma.h>
 #include <linux/slab.h>
-#include <linux/sys_soc.h>
 
 #include "renesas_sdhi.h"
 #include "tmio_mmc.h"
@@ -124,10 +122,13 @@ static int renesas_sdhi_clk_enable(struct tmio_mmc_host *host)
 }
 
 static unsigned int renesas_sdhi_clk_update(struct tmio_mmc_host *host,
-					    unsigned int new_clock)
+					    unsigned int wanted_clock)
 {
 	struct renesas_sdhi *priv = host_to_priv(host);
+	struct clk *ref_clk = priv->clk;
 	unsigned int freq, diff, best_freq = 0, diff_min = ~0;
+	unsigned int new_clock, clkh_shift = 0;
+	unsigned int new_upper_limit;
 	int i;
 
 	/*
@@ -138,19 +139,35 @@ static unsigned int renesas_sdhi_clk_update(struct tmio_mmc_host *host,
 	if (!(host->pdata->flags & TMIO_MMC_MIN_RCAR2) || mmc_doing_tune(host->mmc))
 		return clk_get_rate(priv->clk);
 
+	if (priv->clkh) {
+		/* HS400 with 4TAP needs different clock settings */
+		bool use_4tap = priv->quirks && priv->quirks->hs400_4taps;
+		bool need_slow_clkh = host->mmc->ios.timing == MMC_TIMING_MMC_HS400;
+		clkh_shift = use_4tap && need_slow_clkh ? 1 : 2;
+		ref_clk = priv->clkh;
+	}
+
+	new_clock = wanted_clock << clkh_shift;
+
 	/*
 	 * We want the bus clock to be as close as possible to, but no
 	 * greater than, new_clock.  As we can divide by 1 << i for
 	 * any i in [0, 9] we want the input clock to be as close as
 	 * possible, but no greater than, new_clock << i.
+	 *
+	 * Add an upper limit of 1/1024 rate higher to the clock rate to fix
+	 * clk rate jumping to lower rate due to rounding error (eg: RZ/G2L has
+	 * 3 clk sources 533.333333 MHz, 400 MHz and 266.666666 MHz. The request
+	 * for 533.333333 MHz will selects a slower 400 MHz due to rounding
+	 * error (533333333 Hz / 4 * 4 = 533333332 Hz < 533333333 Hz)).
 	 */
 	for (i = min(9, ilog2(UINT_MAX / new_clock)); i >= 0; i--) {
-		freq = clk_round_rate(priv->clk, new_clock << i);
-		if (freq > (new_clock << i)) {
+		freq = clk_round_rate(ref_clk, new_clock << i);
+		new_upper_limit = (new_clock << i) + ((new_clock << i) >> 10);
+		if (freq > new_upper_limit) {
 			/* Too fast; look for a slightly slower option */
-			freq = clk_round_rate(priv->clk,
-					      (new_clock << i) / 4 * 3);
-			if (freq > (new_clock << i))
+			freq = clk_round_rate(ref_clk, (new_clock << i) / 4 * 3);
+			if (freq > new_upper_limit)
 				continue;
 		}
 
@@ -161,7 +178,10 @@ static unsigned int renesas_sdhi_clk_update(struct tmio_mmc_host *host,
 		}
 	}
 
-	clk_set_rate(priv->clk, best_freq);
+	clk_set_rate(ref_clk, best_freq);
+
+	if (priv->clkh)
+		clk_set_rate(priv->clk, best_freq >> clkh_shift);
 
 	return clk_get_rate(priv->clk);
 }
@@ -169,6 +189,7 @@ static unsigned int renesas_sdhi_clk_update(struct tmio_mmc_host *host,
 static void renesas_sdhi_set_clock(struct tmio_mmc_host *host,
 				   unsigned int new_clock)
 {
+	unsigned int clk_margin;
 	u32 clk = 0, clock;
 
 	sd_ctrl_write16(host, CTL_SD_CARD_CLK_CTL, ~CLK_CTL_SCLKEN &
@@ -182,7 +203,13 @@ static void renesas_sdhi_set_clock(struct tmio_mmc_host *host,
 	host->mmc->actual_clock = renesas_sdhi_clk_update(host, new_clock);
 	clock = host->mmc->actual_clock / 512;
 
-	for (clk = 0x80000080; new_clock >= (clock << 1); clk >>= 1)
+	/*
+	 * Add a margin of 1/1024 rate higher to the clock rate in order
+	 * to avoid clk variable setting a value of 0 due to the margin
+	 * provided for actual_clock in renesas_sdhi_clk_update().
+	 */
+	clk_margin = new_clock >> 10;
+	for (clk = 0x80000080; new_clock + clk_margin >= (clock << 1); clk >>= 1)
 		clock <<= 1;
 
 	/* 1/1 clock is option */
@@ -368,8 +395,7 @@ static void renesas_sdhi_hs400_complete(struct mmc_host *mmc)
 	sd_scc_write32(host, priv, SH_MOBILE_SDHI_SCC_DT2FF,
 		       priv->scc_tappos_hs400);
 
-	/* Gen3 can't do automatic tap correction with HS400, so disable it */
-	if (sd_ctrl_read16(host, CTL_VERSION) == SDHI_VER_GEN3_SDMMC)
+	if (priv->quirks && priv->quirks->manual_tap_correction)
 		sd_scc_write32(host, priv, SH_MOBILE_SDHI_SCC_RVSCNTL,
 			       ~SH_MOBILE_SDHI_SCC_RVSCNTL_RVSEN &
 			       sd_scc_read32(host, priv, SH_MOBILE_SDHI_SCC_RVSCNTL));
@@ -627,7 +653,7 @@ static int renesas_sdhi_select_tuning(struct tmio_mmc_host *host)
 	 * is at least SH_MOBILE_SDHI_MIN_TAP_ROW probes long then use the
 	 * center index as the tap, otherwise bail out.
 	 */
-	bitmap_for_each_set_region(bitmap, rs, re, 0, taps_size) {
+	for_each_set_bitrange(rs, re, bitmap, taps_size) {
 		if (re - rs > tap_cnt) {
 			tap_end = re;
 			tap_start = rs;
@@ -706,7 +732,7 @@ static bool renesas_sdhi_manual_correction(struct tmio_mmc_host *host, bool use_
 	sd_scc_write32(host, priv, SH_MOBILE_SDHI_SCC_RVSREQ, 0);
 
 	/* Change TAP position according to correction status */
-	if (sd_ctrl_read16(host, CTL_VERSION) == SDHI_VER_GEN3_SDMMC &&
+	if (priv->quirks && priv->quirks->manual_tap_correction &&
 	    host->mmc->ios.timing == MMC_TIMING_MMC_HS400) {
 		u32 bad_taps = priv->quirks ? priv->quirks->hs400_bad_taps : 0;
 		/*
@@ -903,11 +929,12 @@ int renesas_sdhi_probe(struct platform_device *pdev,
 	dma_priv = &priv->dma_priv;
 
 	priv->clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(priv->clk)) {
-		ret = PTR_ERR(priv->clk);
-		dev_err(&pdev->dev, "cannot get clock: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(priv->clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(priv->clk), "cannot get clock");
+
+	priv->clkh = devm_clk_get_optional(&pdev->dev, "clkh");
+	if (IS_ERR(priv->clkh))
+		return dev_err_probe(&pdev->dev, PTR_ERR(priv->clkh), "cannot get clkh");
 
 	/*
 	 * Some controllers provide a 2nd clock just to run the internal card
@@ -920,9 +947,9 @@ int renesas_sdhi_probe(struct platform_device *pdev,
 	 * to the card detect circuit. That leaves us with if separate clocks
 	 * are presented, we must treat them both as virtually 1 clock.
 	 */
-	priv->clk_cd = devm_clk_get(&pdev->dev, "cd");
+	priv->clk_cd = devm_clk_get_optional(&pdev->dev, "cd");
 	if (IS_ERR(priv->clk_cd))
-		priv->clk_cd = NULL;
+		return dev_err_probe(&pdev->dev, PTR_ERR(priv->clk_cd), "cannot get cd clock");
 
 	priv->rstc = devm_reset_control_get_optional_exclusive(&pdev->dev, NULL);
 	if (IS_ERR(priv->rstc))
@@ -950,6 +977,10 @@ int renesas_sdhi_probe(struct platform_device *pdev,
 		mmc_data->max_segs = of_data->max_segs;
 		dma_priv->dma_buswidth = of_data->dma_buswidth;
 		host->bus_shift = of_data->bus_shift;
+		/* Fallback for old DTs */
+		if (!priv->clkh && of_data->sdhi_flags & SDHI_FLAG_NEED_CLKH_FALLBACK)
+			priv->clkh = clk_get_parent(clk_get_parent(priv->clk));
+
 	}
 
 	host->write16_hook	= renesas_sdhi_write16_hook;
@@ -1046,7 +1077,7 @@ int renesas_sdhi_probe(struct platform_device *pdev,
 	    host->mmc->caps2 & (MMC_CAP2_HS200_1_8V_SDR |
 				MMC_CAP2_HS400_1_8V))) {
 		const struct renesas_sdhi_scc *taps = of_data->taps;
-		bool use_4tap = priv->quirks && priv->quirks->hs400_4taps;
+		bool use_4tap = quirks && quirks->hs400_4taps;
 		bool hit = false;
 
 		for (i = 0; i < of_data->taps_num; i++) {

@@ -5,11 +5,12 @@
 #include <linux/bitfield.h>
 #include <xen/xen.h>
 
-#include <asm/fpu/internal.h>
+#include <asm/fpu/api.h>
 #include <asm/sev.h>
 #include <asm/traps.h>
 #include <asm/kdebug.h>
 #include <asm/insn-eval.h>
+#include <asm/sgx.h>
 
 static inline unsigned long *pt_regs_nr(struct pt_regs *regs, int nr)
 {
@@ -40,10 +41,70 @@ static bool ex_handler_default(const struct exception_table_entry *e,
 	return true;
 }
 
+/*
+ * This is the *very* rare case where we do a "load_unaligned_zeropad()"
+ * and it's a page crosser into a non-existent page.
+ *
+ * This happens when we optimistically load a pathname a word-at-a-time
+ * and the name is less than the full word and the  next page is not
+ * mapped. Typically that only happens for CONFIG_DEBUG_PAGEALLOC.
+ *
+ * NOTE! The faulting address is always a 'mov mem,reg' type instruction
+ * of size 'long', and the exception fixup must always point to right
+ * after the instruction.
+ */
+static bool ex_handler_zeropad(const struct exception_table_entry *e,
+			       struct pt_regs *regs,
+			       unsigned long fault_addr)
+{
+	struct insn insn;
+	const unsigned long mask = sizeof(long) - 1;
+	unsigned long offset, addr, next_ip, len;
+	unsigned long *reg;
+
+	next_ip = ex_fixup_addr(e);
+	len = next_ip - regs->ip;
+	if (len > MAX_INSN_SIZE)
+		return false;
+
+	if (insn_decode(&insn, (void *) regs->ip, len, INSN_MODE_KERN))
+		return false;
+	if (insn.length != len)
+		return false;
+
+	if (insn.opcode.bytes[0] != 0x8b)
+		return false;
+	if (insn.opnd_bytes != sizeof(long))
+		return false;
+
+	addr = (unsigned long) insn_get_addr_ref(&insn, regs);
+	if (addr == ~0ul)
+		return false;
+
+	offset = addr & mask;
+	addr = addr & ~mask;
+	if (fault_addr != addr + sizeof(long))
+		return false;
+
+	reg = insn_get_modrm_reg_ptr(&insn, regs);
+	if (!reg)
+		return false;
+
+	*reg = *(unsigned long *)addr >> (offset * 8);
+	return ex_handler_default(e, regs);
+}
+
 static bool ex_handler_fault(const struct exception_table_entry *fixup,
 			     struct pt_regs *regs, int trapnr)
 {
 	regs->ax = trapnr;
+	return ex_handler_default(fixup, regs);
+}
+
+static bool ex_handler_sgx(const struct exception_table_entry *fixup,
+			   struct pt_regs *regs, int trapnr)
+{
+	regs->ax = trapnr | SGX_ENCLS_FAULT_FLAG;
 	return ex_handler_default(fixup, regs);
 }
 
@@ -65,7 +126,7 @@ static bool ex_handler_fprestore(const struct exception_table_entry *fixup,
 	WARN_ONCE(1, "Bad FPU state detected at %pB, reinitializing FPU registers.",
 		  (void *)instruction_pointer(regs));
 
-	__restore_fpregs_from_fpstate(&init_fpstate, xfeatures_mask_fpstate());
+	fpu_reset_from_exception_fixup();
 	return true;
 }
 
@@ -125,6 +186,13 @@ static bool ex_handler_imm_reg(const struct exception_table_entry *fixup,
 {
 	*pt_regs_nr(regs, reg) = (long)imm;
 	return ex_handler_default(fixup, regs);
+}
+
+static bool ex_handler_ucopy_len(const struct exception_table_entry *fixup,
+				  struct pt_regs *regs, int trapnr, int reg, int imm)
+{
+	regs->cx = imm * regs->cx + *pt_regs_nr(regs, reg);
+	return ex_handler_uaccess(fixup, regs, trapnr);
 }
 
 int ex_get_fixup_type(unsigned long ip)
@@ -198,6 +266,12 @@ int fixup_exception(struct pt_regs *regs, int trapnr, unsigned long error_code,
 		fallthrough;
 	case EX_TYPE_IMM_REG:
 		return ex_handler_imm_reg(e, regs, reg, imm);
+	case EX_TYPE_FAULT_SGX:
+		return ex_handler_sgx(e, regs, trapnr);
+	case EX_TYPE_UCOPY_LEN:
+		return ex_handler_ucopy_len(e, regs, trapnr, reg, imm);
+	case EX_TYPE_ZEROPAD:
+		return ex_handler_zeropad(e, regs, fault_addr);
 	}
 	BUG();
 }

@@ -145,8 +145,8 @@ static int vm_finalize_features(struct virtio_device *vdev)
 	return 0;
 }
 
-static void vm_get(struct virtio_device *vdev, unsigned offset,
-		   void *buf, unsigned len)
+static void vm_get(struct virtio_device *vdev, unsigned int offset,
+		   void *buf, unsigned int len)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 	void __iomem *base = vm_dev->base + VIRTIO_MMIO_CONFIG;
@@ -187,8 +187,8 @@ static void vm_get(struct virtio_device *vdev, unsigned offset,
 	}
 }
 
-static void vm_set(struct virtio_device *vdev, unsigned offset,
-		   const void *buf, unsigned len)
+static void vm_set(struct virtio_device *vdev, unsigned int offset,
+		   const void *buf, unsigned int len)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 	void __iomem *base = vm_dev->base + VIRTIO_MMIO_CONFIG;
@@ -254,6 +254,11 @@ static void vm_set_status(struct virtio_device *vdev, u8 status)
 	/* We should never be setting status to 0. */
 	BUG_ON(status == 0);
 
+	/*
+	 * Per memory-barriers.txt, wmb() is not needed to guarantee
+	 * that the cache coherent memory writes have completed
+	 * before writing to the MMIO region.
+	 */
 	writel(status, vm_dev->base + VIRTIO_MMIO_STATUS);
 }
 
@@ -346,7 +351,14 @@ static void vm_del_vqs(struct virtio_device *vdev)
 	free_irq(platform_get_irq(vm_dev->pdev, 0), vm_dev);
 }
 
-static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
+static void vm_synchronize_cbs(struct virtio_device *vdev)
+{
+	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+
+	synchronize_irq(platform_get_irq(vm_dev->pdev, 0));
+}
+
+static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned int index,
 				  void (*callback)(struct virtqueue *vq),
 				  const char *name, bool ctx)
 {
@@ -390,6 +402,8 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 		err = -ENOMEM;
 		goto error_new_virtqueue;
 	}
+
+	vq->num_max = num;
 
 	/* Activate the queue */
 	writel(virtqueue_get_vring_size(vq), vm_dev->base + VIRTIO_MMIO_QUEUE_NUM);
@@ -456,7 +470,7 @@ error_available:
 	return ERR_PTR(err);
 }
 
-static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
+static int vm_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		       struct virtqueue *vqs[],
 		       vq_callback_t *callbacks[],
 		       const char * const names[],
@@ -474,6 +488,9 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 			dev_name(&vdev->dev), vm_dev);
 	if (err)
 		return err;
+
+	if (of_property_read_bool(vm_dev->pdev->dev.of_node, "wakeup-source"))
+		enable_irq_wake(irq);
 
 	for (i = 0; i < nvqs; ++i) {
 		if (!names[i]) {
@@ -542,6 +559,7 @@ static const struct virtio_config_ops virtio_mmio_config_ops = {
 	.finalize_features = vm_finalize_features,
 	.bus_name	= vm_bus_name,
 	.get_shm_region = vm_get_shm_region,
+	.synchronize_cbs = vm_synchronize_cbs,
 };
 
 #ifdef CONFIG_PM_SLEEP
@@ -680,7 +698,7 @@ static int vm_cmdline_set(const char *device,
 	int err;
 	struct resource resources[2] = {};
 	char *str;
-	long long int base, size;
+	long long base, size;
 	unsigned int irq;
 	int processed, consumed = 0;
 	struct platform_device *pdev;

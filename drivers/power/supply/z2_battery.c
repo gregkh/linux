@@ -253,7 +253,7 @@ err:
 	return ret;
 }
 
-static int z2_batt_remove(struct i2c_client *client)
+static void z2_batt_remove(struct i2c_client *client)
 {
 	struct z2_charger *charger = i2c_get_clientdata(client);
 
@@ -265,8 +265,6 @@ static int z2_batt_remove(struct i2c_client *client)
 		free_irq(gpiod_to_irq(charger->charge_gpiod), charger);
 
 	kfree(charger);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

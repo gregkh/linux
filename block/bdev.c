@@ -12,6 +12,7 @@
 #include <linux/major.h>
 #include <linux/device_cgroup.h>
 #include <linux/blkdev.h>
+#include <linux/blk-integrity.h>
 #include <linux/backing-dev.h>
 #include <linux/module.h>
 #include <linux/blkpg.h>
@@ -23,9 +24,9 @@
 #include <linux/pseudo_fs.h>
 #include <linux/uio.h>
 #include <linux/namei.h>
-#include <linux/cleancache.h>
 #include <linux/part_stat.h>
 #include <linux/uaccess.h>
+#include <linux/stat.h>
 #include "../fs/internal.h"
 #include "blk.h"
 
@@ -54,12 +55,10 @@ static void bdev_write_inode(struct block_device *bdev)
 	while (inode->i_state & I_DIRTY) {
 		spin_unlock(&inode->i_lock);
 		ret = write_inode_now(inode, true);
-		if (ret) {
-			char name[BDEVNAME_SIZE];
-			pr_warn_ratelimited("VFS: Dirty inode writeback failed "
-					    "for block device %s (err=%d).\n",
-					    bdevname(bdev, name), ret);
-		}
+		if (ret)
+			pr_warn_ratelimited(
+	"VFS: Dirty inode writeback failed for block device %pg (err=%d).\n",
+				bdev, ret);
 		spin_lock(&inode->i_lock);
 	}
 	spin_unlock(&inode->i_lock);
@@ -87,10 +86,6 @@ void invalidate_bdev(struct block_device *bdev)
 		lru_add_drain_all();	/* make sure all lru add caches are flushed */
 		invalidate_mapping_pages(mapping, 0, -1);
 	}
-	/* 99% of the time, we don't need to flush the cleancache on the bdev.
-	 * But, for the strange corners, lets be cautious
-	 */
-	cleancache_invalidate_inode(mapping);
 }
 EXPORT_SYMBOL(invalidate_bdev);
 
@@ -203,6 +198,13 @@ int sync_blockdev(struct block_device *bdev)
 	return filemap_write_and_wait(bdev->bd_inode->i_mapping);
 }
 EXPORT_SYMBOL(sync_blockdev);
+
+int sync_blockdev_range(struct block_device *bdev, loff_t lstart, loff_t lend)
+{
+	return filemap_write_and_wait_range(bdev->bd_inode->i_mapping,
+			lstart, lend);
+}
+EXPORT_SYMBOL(sync_blockdev_range);
 
 /*
  * Write out and wait upon all dirty data associated with this
@@ -327,12 +329,12 @@ int bdev_read_page(struct block_device *bdev, sector_t sector,
 	if (!ops->rw_page || bdev_get_integrity(bdev))
 		return result;
 
-	result = blk_queue_enter(bdev->bd_disk->queue, 0);
+	result = blk_queue_enter(bdev_get_queue(bdev), 0);
 	if (result)
 		return result;
 	result = ops->rw_page(bdev, sector + get_start_sect(bdev), page,
 			      REQ_OP_READ);
-	blk_queue_exit(bdev->bd_disk->queue);
+	blk_queue_exit(bdev_get_queue(bdev));
 	return result;
 }
 
@@ -363,7 +365,7 @@ int bdev_write_page(struct block_device *bdev, sector_t sector,
 
 	if (!ops->rw_page || bdev_get_integrity(bdev))
 		return -EOPNOTSUPP;
-	result = blk_queue_enter(bdev->bd_disk->queue, 0);
+	result = blk_queue_enter(bdev_get_queue(bdev), 0);
 	if (result)
 		return result;
 
@@ -376,7 +378,7 @@ int bdev_write_page(struct block_device *bdev, sector_t sector,
 		clean_page_buffers(page);
 		unlock_page(page);
 	}
-	blk_queue_exit(bdev->bd_disk->queue);
+	blk_queue_exit(bdev_get_queue(bdev));
 	return result;
 }
 
@@ -389,7 +391,7 @@ static struct kmem_cache * bdev_cachep __read_mostly;
 
 static struct inode *bdev_alloc_inode(struct super_block *sb)
 {
-	struct bdev_inode *ei = kmem_cache_alloc(bdev_cachep, GFP_KERNEL);
+	struct bdev_inode *ei = alloc_inode_sb(sb, bdev_cachep, GFP_KERNEL);
 
 	if (!ei)
 		return NULL;
@@ -493,6 +495,7 @@ struct block_device *bdev_alloc(struct gendisk *disk, u8 partno)
 	spin_lock_init(&bdev->bd_size_lock);
 	bdev->bd_partno = partno;
 	bdev->bd_inode = inode;
+	bdev->bd_queue = disk->queue;
 	bdev->bd_stats = alloc_percpu(struct disk_stats);
 	if (!bdev->bd_stats) {
 		iput(inode);
@@ -663,7 +666,7 @@ static void blkdev_flush_mapping(struct block_device *bdev)
 static int blkdev_get_whole(struct block_device *bdev, fmode_t mode)
 {
 	struct gendisk *disk = bdev->bd_disk;
-	int ret = 0;
+	int ret;
 
 	if (disk->fops->open) {
 		ret = disk->fops->open(bdev, mode);
@@ -676,17 +679,17 @@ static int blkdev_get_whole(struct block_device *bdev, fmode_t mode)
 		}
 	}
 
-	if (!bdev->bd_openers)
+	if (!atomic_read(&bdev->bd_openers))
 		set_init_blocksize(bdev);
 	if (test_bit(GD_NEED_PART_SCAN, &disk->state))
 		bdev_disk_changed(disk, false);
-	bdev->bd_openers++;
-	return 0;;
+	atomic_inc(&bdev->bd_openers);
+	return 0;
 }
 
 static void blkdev_put_whole(struct block_device *bdev, fmode_t mode)
 {
-	if (!--bdev->bd_openers)
+	if (atomic_dec_and_test(&bdev->bd_openers))
 		blkdev_flush_mapping(bdev);
 	if (bdev->bd_disk->fops->release)
 		bdev->bd_disk->fops->release(bdev->bd_disk, mode);
@@ -697,7 +700,7 @@ static int blkdev_get_part(struct block_device *part, fmode_t mode)
 	struct gendisk *disk = part->bd_disk;
 	int ret;
 
-	if (part->bd_openers)
+	if (atomic_read(&part->bd_openers))
 		goto done;
 
 	ret = blkdev_get_whole(bdev_whole(part), mode);
@@ -711,7 +714,7 @@ static int blkdev_get_part(struct block_device *part, fmode_t mode)
 	disk->open_partitions++;
 	set_init_blocksize(part);
 done:
-	part->bd_openers++;
+	atomic_inc(&part->bd_openers);
 	return 0;
 
 out_blkdev_put:
@@ -723,7 +726,7 @@ static void blkdev_put_part(struct block_device *part, fmode_t mode)
 {
 	struct block_device *whole = bdev_whole(part);
 
-	if (--part->bd_openers)
+	if (!atomic_dec_and_test(&part->bd_openers))
 		return;
 	blkdev_flush_mapping(part);
 	whole->bd_disk->open_partitions--;
@@ -736,33 +739,26 @@ struct block_device *blkdev_get_no_open(dev_t dev)
 	struct inode *inode;
 
 	inode = ilookup(blockdev_superblock, dev);
-	if (!inode) {
+	if (!inode && IS_ENABLED(CONFIG_BLOCK_LEGACY_AUTOLOAD)) {
 		blk_request_module(dev);
 		inode = ilookup(blockdev_superblock, dev);
-		if (!inode)
-			return NULL;
+		if (inode)
+			pr_warn_ratelimited(
+"block device autoloading is deprecated and will be removed.\n");
 	}
+	if (!inode)
+		return NULL;
 
 	/* switch from the inode reference to a device mode one: */
 	bdev = &BDEV_I(inode)->bdev;
 	if (!kobject_get_unless_zero(&bdev->bd_device.kobj))
 		bdev = NULL;
 	iput(inode);
-
-	if (!bdev)
-		return NULL;
-	if ((bdev->bd_disk->flags & GENHD_FL_HIDDEN) ||
-	    !try_module_get(bdev->bd_disk->fops->owner)) {
-		put_device(&bdev->bd_device);
-		return NULL;
-	}
-
 	return bdev;
 }
 
 void blkdev_put_no_open(struct block_device *bdev)
 {
-	module_put(bdev->bd_disk->fops->owner);
 	put_device(&bdev->bd_device);
 }
 
@@ -818,12 +814,14 @@ struct block_device *blkdev_get_by_dev(dev_t dev, fmode_t mode, void *holder)
 	ret = -ENXIO;
 	if (!disk_live(disk))
 		goto abort_claiming;
+	if (!try_module_get(disk->fops->owner))
+		goto abort_claiming;
 	if (bdev_is_partition(bdev))
 		ret = blkdev_get_part(bdev, mode);
 	else
 		ret = blkdev_get_whole(bdev, mode);
 	if (ret)
-		goto abort_claiming;
+		goto put_module;
 	if (mode & FMODE_EXCL) {
 		bd_finish_claiming(bdev, holder);
 
@@ -835,7 +833,7 @@ struct block_device *blkdev_get_by_dev(dev_t dev, fmode_t mode, void *holder)
 		 * used in blkdev_get/put().
 		 */
 		if ((mode & FMODE_WRITE) && !bdev->bd_write_holder &&
-		    (disk->flags & GENHD_FL_BLOCK_EVENTS_ON_EXCL_WRITE)) {
+		    (disk->event_flags & DISK_EVENT_FLAG_BLOCK_ON_EXCL_WRITE)) {
 			bdev->bd_write_holder = true;
 			unblock_events = false;
 		}
@@ -845,7 +843,8 @@ struct block_device *blkdev_get_by_dev(dev_t dev, fmode_t mode, void *holder)
 	if (unblock_events)
 		disk_unblock_events(disk);
 	return bdev;
-
+put_module:
+	module_put(disk->fops->owner);
 abort_claiming:
 	if (mode & FMODE_EXCL)
 		bd_abort_claiming(bdev, holder);
@@ -906,7 +905,7 @@ void blkdev_put(struct block_device *bdev, fmode_t mode)
 	 * of the world and we want to avoid long (could be several minute)
 	 * syncs while holding the mutex.
 	 */
-	if (bdev->bd_openers == 1)
+	if (atomic_read(&bdev->bd_openers) == 1)
 		sync_blockdev(bdev);
 
 	mutex_lock(&disk->open_mutex);
@@ -954,18 +953,21 @@ void blkdev_put(struct block_device *bdev, fmode_t mode)
 		blkdev_put_whole(bdev, mode);
 	mutex_unlock(&disk->open_mutex);
 
+	module_put(disk->fops->owner);
 	blkdev_put_no_open(bdev);
 }
 EXPORT_SYMBOL(blkdev_put);
 
 /**
- * lookup_bdev  - lookup a struct block_device by name
- * @pathname:	special file representing the block device
- * @dev:	return value of the block device's dev_t
+ * lookup_bdev() - Look up a struct block_device by name.
+ * @pathname: Name of the block device in the filesystem.
+ * @dev: Pointer to the block device's dev_t, if found.
  *
- * Get a reference to the blockdevice at @pathname in the current
- * namespace if possible and return it.  Return ERR_PTR(error)
- * otherwise.
+ * Lookup the block device's dev_t at @pathname in the current
+ * namespace if possible and return it in @dev.
+ *
+ * Context: May sleep.
+ * Return: 0 if succeeded, negative errno otherwise.
  */
 int lookup_bdev(const char *pathname, dev_t *dev)
 {
@@ -1048,7 +1050,7 @@ void sync_bdevs(bool wait)
 		bdev = I_BDEV(inode);
 
 		mutex_lock(&bdev->bd_disk->open_mutex);
-		if (!bdev->bd_openers) {
+		if (!atomic_read(&bdev->bd_openers)) {
 			; /* skip */
 		} else if (wait) {
 			/*
@@ -1067,4 +1069,26 @@ void sync_bdevs(bool wait)
 	}
 	spin_unlock(&blockdev_superblock->s_inode_list_lock);
 	iput(old_inode);
+}
+
+/*
+ * Handle STATX_DIOALIGN for block devices.
+ *
+ * Note that the inode passed to this is the inode of a block device node file,
+ * not the block device's internal inode.  Therefore it is *not* valid to use
+ * I_BDEV() here; the block device has to be looked up by i_rdev instead.
+ */
+void bdev_statx_dioalign(struct inode *inode, struct kstat *stat)
+{
+	struct block_device *bdev;
+
+	bdev = blkdev_get_no_open(inode->i_rdev);
+	if (!bdev)
+		return;
+
+	stat->dio_mem_align = bdev_dma_alignment(bdev) + 1;
+	stat->dio_offset_align = bdev_logical_block_size(bdev);
+	stat->result_mask |= STATX_DIOALIGN;
+
+	blkdev_put_no_open(bdev);
 }

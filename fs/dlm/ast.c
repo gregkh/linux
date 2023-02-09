@@ -9,6 +9,8 @@
 *******************************************************************************
 ******************************************************************************/
 
+#include <trace/events/dlm.h>
+
 #include "dlm_internal.h"
 #include "lock.h"
 #include "user.h"
@@ -253,10 +255,12 @@ void dlm_callback_work(struct work_struct *work)
 		if (callbacks[i].flags & DLM_CB_SKIP) {
 			continue;
 		} else if (callbacks[i].flags & DLM_CB_BAST) {
+			trace_dlm_bast(ls, lkb, callbacks[i].mode);
 			bastfn(lkb->lkb_astparam, callbacks[i].mode);
 		} else if (callbacks[i].flags & DLM_CB_CAST) {
 			lkb->lkb_lksb->sb_status = callbacks[i].sb_status;
 			lkb->lkb_lksb->sb_flags = callbacks[i].sb_flags;
+			trace_dlm_ast(ls, lkb);
 			castfn(lkb->lkb_astparam);
 		}
 	}
@@ -284,12 +288,13 @@ void dlm_callback_stop(struct dlm_ls *ls)
 
 void dlm_callback_suspend(struct dlm_ls *ls)
 {
-	mutex_lock(&ls->ls_cb_mutex);
-	set_bit(LSFL_CB_DELAY, &ls->ls_flags);
-	mutex_unlock(&ls->ls_cb_mutex);
+	if (ls->ls_callback_wq) {
+		mutex_lock(&ls->ls_cb_mutex);
+		set_bit(LSFL_CB_DELAY, &ls->ls_flags);
+		mutex_unlock(&ls->ls_cb_mutex);
 
-	if (ls->ls_callback_wq)
 		flush_workqueue(ls->ls_callback_wq);
+	}
 }
 
 #define MAX_CB_QUEUE 25
@@ -297,12 +302,13 @@ void dlm_callback_suspend(struct dlm_ls *ls)
 void dlm_callback_resume(struct dlm_ls *ls)
 {
 	struct dlm_lkb *lkb, *safe;
-	int count = 0;
-
-	clear_bit(LSFL_CB_DELAY, &ls->ls_flags);
+	int count = 0, sum = 0;
+	bool empty;
 
 	if (!ls->ls_callback_wq)
 		return;
+
+	clear_bit(LSFL_CB_DELAY, &ls->ls_flags);
 
 more:
 	mutex_lock(&ls->ls_cb_mutex);
@@ -313,14 +319,17 @@ more:
 		if (count == MAX_CB_QUEUE)
 			break;
 	}
+	empty = list_empty(&ls->ls_cb_delay);
 	mutex_unlock(&ls->ls_cb_mutex);
 
-	if (count)
-		log_rinfo(ls, "dlm_callback_resume %d", count);
-	if (count == MAX_CB_QUEUE) {
+	sum += count;
+	if (!empty) {
 		count = 0;
 		cond_resched();
 		goto more;
 	}
+
+	if (sum)
+		log_rinfo(ls, "%s %d", __func__, sum);
 }
 
