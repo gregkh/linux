@@ -101,7 +101,7 @@ static void sas_ata_task_done(struct sas_task *task)
 
 	spin_lock_irqsave(ap->lock, flags);
 	/* check if we lost the race with libata/sas_ata_post_internal() */
-	if (unlikely(ap->pflags & ATA_PFLAG_FROZEN)) {
+	if (unlikely(ata_port_is_frozen(ap))) {
 		spin_unlock_irqrestore(ap->lock, flags);
 		if (qc->scsicmd)
 			goto qc_already_gone;
@@ -139,8 +139,8 @@ static void sas_ata_task_done(struct sas_task *task)
 				qc->flags |= ATA_QCFLAG_FAILED;
 			}
 
-			dev->sata_dev.fis[3] = 0x04; /* status err */
-			dev->sata_dev.fis[2] = ATA_ERR;
+			dev->sata_dev.fis[2] = ATA_ERR | ATA_DRDY; /* tf status */
+			dev->sata_dev.fis[3] = ATA_ABORTED; /* tf error */
 		}
 	}
 
@@ -383,7 +383,7 @@ static int sas_ata_printk(const char *level, const struct domain_device *ddev,
 	return r;
 }
 
-int sas_ata_wait_after_reset(struct domain_device *dev, unsigned long deadline)
+static int sas_ata_wait_after_reset(struct domain_device *dev, unsigned long deadline)
 {
 	struct sata_device *sata_dev = &dev->sata_dev;
 	int (*check_ready)(struct ata_link *link);
@@ -405,7 +405,6 @@ int sas_ata_wait_after_reset(struct domain_device *dev, unsigned long deadline)
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(sas_ata_wait_after_reset);
 
 static int sas_ata_hard_reset(struct ata_link *link, unsigned int *class,
 			      unsigned long deadline)
@@ -885,6 +884,24 @@ void sas_ata_wait_eh(struct domain_device *dev)
 	ap = dev->sata_dev.ap;
 	ata_port_wait_eh(ap);
 }
+
+void sas_ata_device_link_abort(struct domain_device *device, bool force_reset)
+{
+	struct ata_port *ap = device->sata_dev.ap;
+	struct ata_link *link = &ap->link;
+	unsigned long flags;
+
+	spin_lock_irqsave(ap->lock, flags);
+	device->sata_dev.fis[2] = ATA_ERR | ATA_DRDY; /* tf status */
+	device->sata_dev.fis[3] = ATA_ABORTED; /* tf error */
+
+	link->eh_info.err_mask |= AC_ERR_DEV;
+	if (force_reset)
+		link->eh_info.action |= ATA_EH_RESET;
+	ata_link_abort(link);
+	spin_unlock_irqrestore(ap->lock, flags);
+}
+EXPORT_SYMBOL_GPL(sas_ata_device_link_abort);
 
 int sas_execute_ata_cmd(struct domain_device *device, u8 *fis, int force_phy_id)
 {

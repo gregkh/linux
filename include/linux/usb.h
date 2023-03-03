@@ -258,13 +258,25 @@ struct usb_interface {
 	struct device *usb_dev;
 	struct work_struct reset_ws;	/* for resets in atomic context */
 };
-#define	to_usb_interface(d) container_of(d, struct usb_interface, dev)
+
+#define to_usb_interface(__dev)	container_of_const(__dev, struct usb_interface, dev)
 
 static inline void *usb_get_intfdata(struct usb_interface *intf)
 {
 	return dev_get_drvdata(&intf->dev);
 }
 
+/**
+ * usb_set_intfdata() - associate driver-specific data with an interface
+ * @intf: USB interface
+ * @data: driver data
+ *
+ * Drivers can use this function in their probe() callbacks to associate
+ * driver-specific data with an interface.
+ *
+ * Note that there is generally no need to clear the driver-data pointer even
+ * if some drivers do so for historical or implementation-specific reasons.
+ */
 static inline void usb_set_intfdata(struct usb_interface *intf, void *data)
 {
 	dev_set_drvdata(&intf->dev, data);
@@ -709,12 +721,22 @@ struct usb_device {
 	u16 hub_delay;
 	unsigned use_generic_driver:1;
 };
-#define	to_usb_device(d) container_of(d, struct usb_device, dev)
 
-static inline struct usb_device *interface_to_usbdev(struct usb_interface *intf)
+#define to_usb_device(__dev)	container_of_const(__dev, struct usb_device, dev)
+
+static inline struct usb_device *__intf_to_usbdev(struct usb_interface *intf)
 {
 	return to_usb_device(intf->dev.parent);
 }
+static inline const struct usb_device *__intf_to_usbdev_const(const struct usb_interface *intf)
+{
+	return to_usb_device((const struct device *)intf->dev.parent);
+}
+
+#define interface_to_usbdev(intf)					\
+	_Generic((intf),						\
+		 const struct usb_interface *: __intf_to_usbdev_const,	\
+		 struct usb_interface *: __intf_to_usbdev)(intf)
 
 extern struct usb_device *usb_get_dev(struct usb_device *dev);
 extern void usb_put_dev(struct usb_device *dev);
@@ -1275,7 +1297,7 @@ struct usb_device_driver {
  */
 struct usb_class_driver {
 	char *name;
-	char *(*devnode)(struct device *dev, umode_t *mode);
+	char *(*devnode)(const struct device *dev, umode_t *mode);
 	const struct file_operations *fops;
 	int minor_base;
 };
@@ -1832,6 +1854,7 @@ static inline int usb_get_ptm_status(struct usb_device *dev, void *data)
 
 extern int usb_string(struct usb_device *dev, int index,
 	char *buf, size_t size);
+extern char *usb_cache_string(struct usb_device *udev, int index);
 
 /* wrappers that also update important state inside usbcore */
 extern int usb_clear_halt(struct usb_device *dev, int pipe);

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 /*
    drbd.c
 
@@ -1259,7 +1259,7 @@ static int _drbd_send_bitmap(struct drbd_device *device)
 	struct bm_xfer_ctx c;
 	int err;
 
-	if (!expect(device->bitmap))
+	if (!expect(device, device->bitmap))
 		return false;
 
 	if (get_ldev(device)) {
@@ -2184,7 +2184,7 @@ void drbd_destroy_device(struct kref *kref)
 	struct drbd_resource *resource = device->resource;
 	struct drbd_peer_device *peer_device, *tmp_peer_device;
 
-	del_timer_sync(&device->request_timer);
+	timer_shutdown_sync(&device->request_timer);
 
 	/* paranoia asserts */
 	D_ASSERT(device, device->open_cnt == 0);
@@ -2250,9 +2250,9 @@ static void do_retry(struct work_struct *ws)
 		bool expected;
 
 		expected =
-			expect(atomic_read(&req->completion_ref) == 0) &&
-			expect(req->rq_state & RQ_POSTPONED) &&
-			expect((req->rq_state & RQ_LOCAL_PENDING) == 0 ||
+			expect(device, atomic_read(&req->completion_ref) == 0) &&
+			expect(device, req->rq_state & RQ_POSTPONED) &&
+			expect(device, (req->rq_state & RQ_LOCAL_PENDING) == 0 ||
 				(req->rq_state & RQ_LOCAL_ABORTED) != 0);
 
 		if (!expected)
@@ -3767,7 +3767,7 @@ _drbd_insert_fault(struct drbd_device *device, unsigned int type)
 	if (ret) {
 		drbd_fault_count++;
 
-		if (__ratelimit(&drbd_ratelimit_state))
+		if (drbd_ratelimit())
 			drbd_warn(device, "***Simulating %s failure\n",
 				_drbd_fault_str(type));
 	}

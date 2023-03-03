@@ -42,6 +42,7 @@
 #include "x86.h"
 #include "cpuid.h"
 #include "hyperv.h"
+#include "smm.h"
 
 #ifndef CONFIG_X86_64
 #define mod_64(x, y) ((x) - (y) * div64_u64(x, y))
@@ -159,7 +160,6 @@ bool kvm_can_use_hv_timer(struct kvm_vcpu *vcpu)
 	       && !(kvm_mwait_in_guest(vcpu->kvm) ||
 		    kvm_can_post_timer_interrupt(vcpu));
 }
-EXPORT_SYMBOL_GPL(kvm_can_use_hv_timer);
 
 static bool kvm_use_posted_timer_interrupt(struct kvm_vcpu *vcpu)
 {
@@ -1170,9 +1170,10 @@ static int __apic_accept_irq(struct kvm_lapic *apic, int delivery_mode,
 		break;
 
 	case APIC_DM_SMI:
-		result = 1;
-		kvm_make_request(KVM_REQ_SMI, vcpu);
-		kvm_vcpu_kick(vcpu);
+		if (!kvm_inject_smi(vcpu)) {
+			kvm_vcpu_kick(vcpu);
+			result = 1;
+		}
 		break;
 
 	case APIC_DM_NMI:
@@ -1912,7 +1913,6 @@ bool kvm_lapic_hv_timer_in_use(struct kvm_vcpu *vcpu)
 
 	return vcpu->arch.apic->lapic_timer.hv_timer_in_use;
 }
-EXPORT_SYMBOL_GPL(kvm_lapic_hv_timer_in_use);
 
 static void cancel_hv_timer(struct kvm_lapic *apic)
 {
@@ -2430,7 +2430,6 @@ void kvm_apic_update_apicv(struct kvm_vcpu *vcpu)
 		apic->isr_count = count_vectors(apic->regs + APIC_ISR);
 	}
 }
-EXPORT_SYMBOL_GPL(kvm_apic_update_apicv);
 
 void kvm_lapic_reset(struct kvm_vcpu *vcpu, bool init_event)
 {

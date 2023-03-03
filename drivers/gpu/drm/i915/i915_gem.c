@@ -1140,8 +1140,10 @@ int i915_gem_init(struct drm_i915_private *dev_priv)
 	if (ret)
 		return ret;
 
-	intel_uc_fetch_firmwares(&to_gt(dev_priv)->uc);
-	intel_wopcm_init(&dev_priv->wopcm);
+	for_each_gt(gt, dev_priv, i) {
+		intel_uc_fetch_firmwares(&gt->uc);
+		intel_wopcm_init(&gt->wopcm);
+	}
 
 	ret = i915_init_ggtt(dev_priv);
 	if (ret) {
@@ -1234,8 +1236,6 @@ void i915_gem_driver_remove(struct drm_i915_private *dev_priv)
 
 	/* Flush any outstanding unpin_work. */
 	i915_gem_drain_workqueue(dev_priv);
-
-	i915_gem_drain_freed_objects(dev_priv);
 }
 
 void i915_gem_driver_release(struct drm_i915_private *dev_priv)
@@ -1276,7 +1276,7 @@ void i915_gem_init_early(struct drm_i915_private *dev_priv)
 
 void i915_gem_cleanup_early(struct drm_i915_private *dev_priv)
 {
-	i915_gem_drain_freed_objects(dev_priv);
+	i915_gem_drain_workqueue(dev_priv);
 	GEM_BUG_ON(!llist_empty(&dev_priv->mm.free_list));
 	GEM_BUG_ON(atomic_read(&dev_priv->mm.free_count));
 	drm_WARN_ON(&dev_priv->drm, dev_priv->mm.shrink_count);
@@ -1288,7 +1288,7 @@ int i915_gem_open(struct drm_i915_private *i915, struct drm_file *file)
 	struct i915_drm_client *client;
 	int ret = -ENOMEM;
 
-	DRM_DEBUG("\n");
+	drm_dbg(&i915->drm, "\n");
 
 	file_priv = kzalloc(sizeof(*file_priv), GFP_KERNEL);
 	if (!file_priv)

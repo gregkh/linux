@@ -1663,7 +1663,7 @@ const struct inode_operations reiserfs_dir_inode_operations = {
 	.setattr = reiserfs_setattr,
 	.listxattr = reiserfs_listxattr,
 	.permission = reiserfs_permission,
-	.get_acl = reiserfs_get_acl,
+	.get_inode_acl = reiserfs_get_acl,
 	.set_acl = reiserfs_set_acl,
 	.fileattr_get = reiserfs_fileattr_get,
 	.fileattr_set = reiserfs_fileattr_set,
@@ -1687,6 +1687,6 @@ const struct inode_operations reiserfs_special_inode_operations = {
 	.setattr = reiserfs_setattr,
 	.listxattr = reiserfs_listxattr,
 	.permission = reiserfs_permission,
-	.get_acl = reiserfs_get_acl,
+	.get_inode_acl = reiserfs_get_acl,
 	.set_acl = reiserfs_set_acl,
 };

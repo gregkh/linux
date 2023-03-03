@@ -168,14 +168,6 @@ static void
 mt7921_get_status_freq_info(struct mt7921_dev *dev, struct mt76_phy *mphy,
 			    struct mt76_rx_status *status, u8 chfreq)
 {
-	if (!test_bit(MT76_HW_SCANNING, &mphy->state) &&
-	    !test_bit(MT76_HW_SCHED_SCANNING, &mphy->state) &&
-	    !test_bit(MT76_STATE_ROC, &mphy->state)) {
-		status->freq = mphy->chandef.chan->center_freq;
-		status->band = mphy->chandef.chan->band;
-		return;
-	}
-
 	if (chfreq > 180) {
 		status->band = NL80211_BAND_6GHZ;
 		chfreq = (chfreq - 181) * 4 + 1;
@@ -692,7 +684,7 @@ bool mt7921_rx_check(struct mt76_dev *mdev, void *data, int len)
 EXPORT_SYMBOL_GPL(mt7921_rx_check);
 
 void mt7921_queue_rx_skb(struct mt76_dev *mdev, enum mt76_rxq_id q,
-			 struct sk_buff *skb)
+			 struct sk_buff *skb, u32 *info)
 {
 	struct mt7921_dev *dev = container_of(mdev, struct mt7921_dev, mt76);
 	__le32 *rxd = (__le32 *)skb->data;
@@ -745,7 +737,7 @@ void mt7921_mac_reset_counters(struct mt7921_phy *phy)
 	}
 
 	dev->mt76.phy.survey_time = ktime_get_boottime();
-	memset(&dev->mt76.aggr_stats[0], 0, sizeof(dev->mt76.aggr_stats) / 2);
+	memset(phy->mt76->aggr_stats, 0, sizeof(phy->mt76->aggr_stats));
 
 	/* reset airtime counters */
 	mt76_rr(dev, MT_MIB_SDR9(0));
@@ -866,7 +858,7 @@ mt7921_vif_connect_iter(void *priv, u8 *mac,
 
 	if (vif->type == NL80211_IFTYPE_AP) {
 		mt76_connac_mcu_uni_add_bss(dev->phy.mt76, vif, &mvif->sta.wcid,
-					    true);
+					    true, NULL);
 		mt7921_mcu_sta_update(dev, NULL, vif, true,
 				      MT76_STA_INFO_STATE_NONE);
 		mt7921_mcu_uni_add_beacon_offload(dev, hw, vif, true);
@@ -990,10 +982,10 @@ void mt7921_mac_update_mib_stats(struct mt7921_phy *phy)
 		val = mt76_rr(dev, MT_TX_AGG_CNT(0, i));
 		val2 = mt76_rr(dev, MT_TX_AGG_CNT2(0, i));
 
-		dev->mt76.aggr_stats[aggr0++] += val & 0xffff;
-		dev->mt76.aggr_stats[aggr0++] += val >> 16;
-		dev->mt76.aggr_stats[aggr1++] += val2 & 0xffff;
-		dev->mt76.aggr_stats[aggr1++] += val2 >> 16;
+		phy->mt76->aggr_stats[aggr0++] += val & 0xffff;
+		phy->mt76->aggr_stats[aggr0++] += val >> 16;
+		phy->mt76->aggr_stats[aggr1++] += val2 & 0xffff;
+		phy->mt76->aggr_stats[aggr1++] += val2 >> 16;
 	}
 }
 

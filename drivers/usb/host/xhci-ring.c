@@ -896,7 +896,7 @@ done:
 }
 
 static int xhci_handle_halted_endpoint(struct xhci_hcd *xhci,
-				struct xhci_virt_ep *ep, unsigned int stream_id,
+				struct xhci_virt_ep *ep,
 				struct xhci_td *td,
 				enum xhci_ep_reset_type reset_type)
 {
@@ -1110,8 +1110,7 @@ static void xhci_handle_cmd_stop_ep(struct xhci_hcd *xhci, int slot_id,
 					td->status = -EPROTO;
 			}
 			/* reset ep, reset handler cleans up cancelled tds */
-			err = xhci_handle_halted_endpoint(xhci, ep, 0, td,
-							  reset_type);
+			err = xhci_handle_halted_endpoint(xhci, ep, td, reset_type);
 			if (err)
 				break;
 			ep->ep_state &= ~EP_STOP_CMD_PENDING;
@@ -2186,8 +2185,7 @@ static int finish_td(struct xhci_hcd *xhci, struct xhci_virt_ep *ep,
 		}
 		/* Almost same procedure as for STALL_ERROR below */
 		xhci_clear_hub_tt_buffer(xhci, td, ep);
-		xhci_handle_halted_endpoint(xhci, ep, ep_ring->stream_id, td,
-					    EP_HARD_RESET);
+		xhci_handle_halted_endpoint(xhci, ep, td, EP_HARD_RESET);
 		return 0;
 	case COMP_STALL_ERROR:
 		/*
@@ -2203,8 +2201,7 @@ static int finish_td(struct xhci_hcd *xhci, struct xhci_virt_ep *ep,
 		if (ep->ep_index != 0)
 			xhci_clear_hub_tt_buffer(xhci, td, ep);
 
-		xhci_handle_halted_endpoint(xhci, ep, ep_ring->stream_id, td,
-					    EP_HARD_RESET);
+		xhci_handle_halted_endpoint(xhci, ep, td, EP_HARD_RESET);
 
 		return 0; /* xhci_handle_halted_endpoint marked td cancelled */
 	default:
@@ -2493,8 +2490,7 @@ static int process_bulk_intr_td(struct xhci_hcd *xhci, struct xhci_virt_ep *ep,
 
 		td->status = 0;
 
-		xhci_handle_halted_endpoint(xhci, ep, ep_ring->stream_id, td,
-					    EP_SOFT_RESET);
+		xhci_handle_halted_endpoint(xhci, ep, td, EP_SOFT_RESET);
 		return 0;
 	default:
 		/* do nothing */
@@ -2571,10 +2567,10 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 			xhci_dbg(xhci, "Stream transaction error ep %u no id\n",
 				 ep_index);
 			if (ep->err_count++ > MAX_SOFT_RETRY)
-				xhci_handle_halted_endpoint(xhci, ep, 0, NULL,
+				xhci_handle_halted_endpoint(xhci, ep, NULL,
 							    EP_HARD_RESET);
 			else
-				xhci_handle_halted_endpoint(xhci, ep, 0, NULL,
+				xhci_handle_halted_endpoint(xhci, ep, NULL,
 							    EP_SOFT_RESET);
 			goto cleanup;
 		case COMP_RING_UNDERRUN:
@@ -2758,9 +2754,7 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 			if (trb_comp_code == COMP_STALL_ERROR ||
 			    xhci_requires_manual_halt_cleanup(xhci, ep_ctx,
 							      trb_comp_code)) {
-				xhci_handle_halted_endpoint(xhci, ep,
-							    ep_ring->stream_id,
-							    NULL,
+				xhci_handle_halted_endpoint(xhci, ep, NULL,
 							    EP_HARD_RESET);
 			}
 			goto cleanup;
@@ -2853,9 +2847,8 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 			if (trb_comp_code == COMP_STALL_ERROR ||
 			    xhci_requires_manual_halt_cleanup(xhci, ep_ctx,
 							      trb_comp_code))
-				xhci_handle_halted_endpoint(xhci, ep,
-							    ep_ring->stream_id,
-							    td, EP_HARD_RESET);
+				xhci_handle_halted_endpoint(xhci, ep, td,
+							    EP_HARD_RESET);
 			goto cleanup;
 		}
 
@@ -3039,6 +3032,11 @@ irqreturn_t xhci_irq(struct usb_hcd *hcd)
 
 	if (!(status & STS_EINT))
 		goto out;
+
+	if (status & STS_HCE) {
+		xhci_warn(xhci, "WARNING: Host Controller Error\n");
+		goto out;
+	}
 
 	if (status & STS_FATAL) {
 		xhci_warn(xhci, "WARNING: Host System Error\n");

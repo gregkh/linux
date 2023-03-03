@@ -82,7 +82,7 @@ static DEFINE_MUTEX(register_count_mutex);
 static DEFINE_MUTEX(video_list_lock);
 static LIST_HEAD(video_bus_head);
 static int acpi_video_bus_add(struct acpi_device *device);
-static int acpi_video_bus_remove(struct acpi_device *device);
+static void acpi_video_bus_remove(struct acpi_device *device);
 static void acpi_video_bus_notify(struct acpi_device *device, u32 event);
 static void acpi_video_bus_register_backlight_work(struct work_struct *ignored);
 static DECLARE_DELAYED_WORK(video_bus_register_backlight_work,
@@ -2063,13 +2063,13 @@ err_free_video:
 	return error;
 }
 
-static int acpi_video_bus_remove(struct acpi_device *device)
+static void acpi_video_bus_remove(struct acpi_device *device)
 {
 	struct acpi_video_bus *video = NULL;
 
 
 	if (!device || !acpi_driver_data(device))
-		return -EINVAL;
+		return;
 
 	video = acpi_driver_data(device);
 
@@ -2083,8 +2083,6 @@ static int acpi_video_bus_remove(struct acpi_device *device)
 
 	kfree(video->attached_array);
 	kfree(video);
-
-	return 0;
 }
 
 static void acpi_video_bus_register_backlight_work(struct work_struct *ignored)

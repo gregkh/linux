@@ -182,11 +182,6 @@ static void udf_write_failed(struct address_space *mapping, loff_t to)
 	}
 }
 
-static int udf_writepage(struct page *page, struct writeback_control *wbc)
-{
-	return block_write_full_page(page, udf_get_block, wbc);
-}
-
 static int udf_writepages(struct address_space *mapping,
 			struct writeback_control *wbc)
 {
@@ -239,12 +234,12 @@ const struct address_space_operations udf_aops = {
 	.invalidate_folio = block_invalidate_folio,
 	.read_folio	= udf_read_folio,
 	.readahead	= udf_readahead,
-	.writepage	= udf_writepage,
 	.writepages	= udf_writepages,
 	.write_begin	= udf_write_begin,
 	.write_end	= generic_write_end,
 	.direct_IO	= udf_direct_IO,
 	.bmap		= udf_bmap,
+	.migrate_folio	= buffer_migrate_folio,
 };
 
 /*
@@ -689,7 +684,7 @@ static sector_t inode_getblk(struct inode *inode, sector_t block,
 	struct kernel_lb_addr eloc, tmpeloc;
 	int c = 1;
 	loff_t lbcount = 0, b_off = 0;
-	udf_pblk_t newblocknum, newblock;
+	udf_pblk_t newblocknum, newblock = 0;
 	sector_t offset = 0;
 	int8_t etype;
 	struct udf_inode_info *iinfo = UDF_I(inode);
@@ -792,7 +787,6 @@ static sector_t inode_getblk(struct inode *inode, sector_t block,
 		ret = udf_do_extend_file(inode, &prev_epos, laarr, hole_len);
 		if (ret < 0) {
 			*err = ret;
-			newblock = 0;
 			goto out_free;
 		}
 		c = 0;
@@ -857,7 +851,6 @@ static sector_t inode_getblk(struct inode *inode, sector_t block,
 				goal, err);
 		if (!newblocknum) {
 			*err = -ENOSPC;
-			newblock = 0;
 			goto out_free;
 		}
 		if (isBeyondEOF)

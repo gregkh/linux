@@ -46,10 +46,10 @@ config HAVE_DYNAMIC_FTRACE_WITH_ARGS
 	bool
 	help
 	 If this is set, then arguments and stack can be found from
-	 the pt_regs passed into the function callback regs parameter
+	 the ftrace_regs passed into the function callback regs parameter
 	 by default, even without setting the REGS flag in the ftrace_ops.
-	 This allows for use of regs_get_kernel_argument() and
-	 kernel_stack_pointer().
+	 This allows for use of ftrace_regs_get_argument() and
+	 ftrace_regs_get_stack_pointer().
 
 config HAVE_DYNAMIC_FTRACE_NO_PATCHABLE
 	bool
@@ -81,6 +81,13 @@ config HAVE_OBJTOOL_MCOUNT
 	bool
 	help
 	  Arch supports objtool --mcount
+
+config HAVE_OBJTOOL_NOP_MCOUNT
+	bool
+	help
+	  Arch supports the objtool options --mcount with --mnop.
+	  An architecture can select this if it wants to enable nop'ing
+	  of ftrace locations.
 
 config HAVE_C_RECORDMCOUNT
 	bool
@@ -926,8 +933,8 @@ config RING_BUFFER_RECORD_RECURSION
 	default y
 	help
 	  The ring buffer has its own internal recursion. Although when
-	  recursion happens it wont cause harm because of the protection,
-	  but it does cause an unwanted overhead. Enabling this option will
+	  recursion happens it won't cause harm because of the protection,
+	  but it does cause unwanted overhead. Enabling this option will
 	  place where recursion was detected into the ftrace "recursed_functions"
 	  file.
 
@@ -1010,8 +1017,8 @@ config RING_BUFFER_STARTUP_TEST
 	 The test runs for 10 seconds. This will slow your boot time
 	 by at least 10 more seconds.
 
-	 At the end of the test, statics and more checks are done.
-	 It will output the stats of each per cpu buffer. What
+	 At the end of the test, statistics and more checks are done.
+	 It will output the stats of each per cpu buffer: What
 	 was written, the sizes, what was read, what was lost, and
 	 other similar details.
 

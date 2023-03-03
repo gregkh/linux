@@ -24,6 +24,7 @@
 
 #include <drm/amdgpu_drm.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_fbdev_generic.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_vblank.h>
 #include <drm/drm_managed.h>
@@ -185,6 +186,7 @@ int amdgpu_num_kcq = -1;
 int amdgpu_smartshift_bias;
 int amdgpu_use_xgmi_p2p = 1;
 int amdgpu_vcnfw_log;
+int amdgpu_sg_display = -1; /* auto */
 
 static void amdgpu_drv_delayed_reset_work_handler(struct work_struct *work);
 
@@ -230,17 +232,18 @@ module_param_named(vis_vramlimit, amdgpu_vis_vram_limit, int, 0444);
 
 /**
  * DOC: gartsize (uint)
- * Restrict the size of GART in Mib (32, 64, etc.) for testing. The default is -1 (The size depends on asic).
+ * Restrict the size of GART (for kernel use) in Mib (32, 64, etc.) for testing.
+ * The default is -1 (The size depends on asic).
  */
-MODULE_PARM_DESC(gartsize, "Size of GART to setup in megabytes (32, 64, etc., -1=auto)");
+MODULE_PARM_DESC(gartsize, "Size of kernel GART to setup in megabytes (32, 64, etc., -1=auto)");
 module_param_named(gartsize, amdgpu_gart_size, uint, 0600);
 
 /**
  * DOC: gttsize (int)
- * Restrict the size of GTT domain in MiB for testing. The default is -1 (It's VRAM size if 3GB < VRAM < 3/4 RAM,
- * otherwise 3/4 RAM size).
+ * Restrict the size of GTT domain (for userspace use) in MiB for testing.
+ * The default is -1 (Use 1/2 RAM, minimum value is 3GB).
  */
-MODULE_PARM_DESC(gttsize, "Size of the GTT domain in megabytes (-1 = auto)");
+MODULE_PARM_DESC(gttsize, "Size of the GTT userspace domain in megabytes (-1 = auto)");
 module_param_named(gttsize, amdgpu_gtt_size, int, 0600);
 
 /**
@@ -533,7 +536,7 @@ module_param_named(compute_multipipe, amdgpu_compute_multipipe, int, 0444);
  * DOC: gpu_recovery (int)
  * Set to enable GPU recovery mechanism (1 = enable, 0 = disable). The default is -1 (auto, disabled except SRIOV).
  */
-MODULE_PARM_DESC(gpu_recovery, "Enable GPU recovery mechanism, (2 = advanced tdr mode, 1 = enable, 0 = disable, -1 = auto)");
+MODULE_PARM_DESC(gpu_recovery, "Enable GPU recovery mechanism, (1 = enable, 0 = disable, -1 = auto)");
 module_param_named(gpu_recovery, amdgpu_gpu_recovery, int, 0444);
 
 /**
@@ -928,6 +931,16 @@ module_param_named(num_kcq, amdgpu_num_kcq, int, 0444);
  */
 MODULE_PARM_DESC(vcnfw_log, "Enable vcnfw log(0 = disable (default value), 1 = enable)");
 module_param_named(vcnfw_log, amdgpu_vcnfw_log, int, 0444);
+
+/**
+ * DOC: sg_display (int)
+ * Disable S/G (scatter/gather) display (i.e., display from system memory).
+ * This option is only relevant on APUs.  Set this option to 0 to disable
+ * S/G display if you experience flickering or other issues under memory
+ * pressure and report the issue.
+ */
+MODULE_PARM_DESC(sg_display, "S/G Display (-1 = auto (default), 0 = disable)");
+module_param_named(sg_display, amdgpu_sg_display, int, 0444);
 
 /**
  * DOC: smu_pptable_id (int)
@@ -1950,9 +1963,6 @@ static const struct pci_device_id pciidlist[] = {
 	{0x1002, 0x73AF, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_SIENNA_CICHLID},
 	{0x1002, 0x73BF, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_SIENNA_CICHLID},
 
-	/* Van Gogh */
-	{0x1002, 0x163F, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_VANGOGH|AMD_IS_APU},
-
 	/* Yellow Carp */
 	{0x1002, 0x164D, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_YELLOW_CARP|AMD_IS_APU},
 	{0x1002, 0x1681, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_YELLOW_CARP|AMD_IS_APU},
@@ -2501,7 +2511,7 @@ static int amdgpu_runtime_idle_check_display(struct device *dev)
 		if (ret)
 			return ret;
 
-		if (amdgpu_device_has_dc_support(adev)) {
+		if (adev->dc_enabled) {
 			struct drm_crtc *crtc;
 
 			drm_for_each_crtc(crtc, drm_dev) {
@@ -2601,6 +2611,8 @@ static int amdgpu_pmops_runtime_suspend(struct device *dev)
 	} else if (amdgpu_device_supports_baco(drm_dev)) {
 		amdgpu_device_baco_enter(drm_dev);
 	}
+
+	dev_dbg(&pdev->dev, "asic/device is runtime suspended\n");
 
 	return 0;
 }

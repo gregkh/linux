@@ -141,6 +141,10 @@ do_gc:
 			/* don't bother wait_ms by foreground gc */
 			if (!foreground)
 				wait_ms = gc_th->no_gc_sleep_time;
+		} else {
+			/* reset wait_ms to default sleep time */
+			if (wait_ms == gc_th->no_gc_sleep_time)
+				wait_ms = gc_th->min_sleep_time;
 		}
 
 		if (foreground)
@@ -152,14 +156,14 @@ do_gc:
 		/* balancing f2fs's metadata periodically */
 		f2fs_balance_fs_bg(sbi, true);
 next:
-		if (sbi->gc_mode == GC_URGENT_HIGH) {
-			spin_lock(&sbi->gc_urgent_high_lock);
-			if (sbi->gc_urgent_high_remaining) {
-				sbi->gc_urgent_high_remaining--;
-				if (!sbi->gc_urgent_high_remaining)
+		if (sbi->gc_mode != GC_NORMAL) {
+			spin_lock(&sbi->gc_remaining_trials_lock);
+			if (sbi->gc_remaining_trials) {
+				sbi->gc_remaining_trials--;
+				if (!sbi->gc_remaining_trials)
 					sbi->gc_mode = GC_NORMAL;
 			}
-			spin_unlock(&sbi->gc_urgent_high_lock);
+			spin_unlock(&sbi->gc_remaining_trials_lock);
 		}
 		sb_end_write(sbi->sb);
 
@@ -171,13 +175,10 @@ int f2fs_start_gc_thread(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_gc_kthread *gc_th;
 	dev_t dev = sbi->sb->s_bdev->bd_dev;
-	int err = 0;
 
 	gc_th = f2fs_kmalloc(sbi, sizeof(struct f2fs_gc_kthread), GFP_KERNEL);
-	if (!gc_th) {
-		err = -ENOMEM;
-		goto out;
-	}
+	if (!gc_th)
+		return -ENOMEM;
 
 	gc_th->urgent_sleep_time = DEF_GC_THREAD_URGENT_SLEEP_TIME;
 	gc_th->min_sleep_time = DEF_GC_THREAD_MIN_SLEEP_TIME;
@@ -192,12 +193,14 @@ int f2fs_start_gc_thread(struct f2fs_sb_info *sbi)
 	sbi->gc_thread->f2fs_gc_task = kthread_run(gc_thread_func, sbi,
 			"f2fs_gc-%u:%u", MAJOR(dev), MINOR(dev));
 	if (IS_ERR(gc_th->f2fs_gc_task)) {
-		err = PTR_ERR(gc_th->f2fs_gc_task);
+		int err = PTR_ERR(gc_th->f2fs_gc_task);
+
 		kfree(gc_th);
 		sbi->gc_thread = NULL;
+		return err;
 	}
-out:
-	return err;
+
+	return 0;
 }
 
 void f2fs_stop_gc_thread(struct f2fs_sb_info *sbi)
@@ -281,7 +284,7 @@ static void select_policy(struct f2fs_sb_info *sbi, int gc_type,
 
 	/* let's select beginning hot/small space first in no_heap mode*/
 	if (f2fs_need_rand_seg(sbi))
-		p->offset = prandom_u32_max(MAIN_SECS(sbi) * sbi->segs_per_sec);
+		p->offset = get_random_u32_below(MAIN_SECS(sbi) * sbi->segs_per_sec);
 	else if (test_opt(sbi, NOHEAP) &&
 		(type == CURSEG_HOT_DATA || IS_NODESEG(type)))
 		p->offset = 0;
@@ -1147,7 +1150,7 @@ static int ra_data_block(struct inode *inode, pgoff_t index)
 	struct address_space *mapping = inode->i_mapping;
 	struct dnode_of_data dn;
 	struct page *page;
-	struct extent_info ei = {0, 0, 0};
+	struct extent_info ei = {0, };
 	struct f2fs_io_info fio = {
 		.sbi = sbi,
 		.ino = inode->i_ino,
@@ -1165,7 +1168,7 @@ static int ra_data_block(struct inode *inode, pgoff_t index)
 	if (!page)
 		return -ENOMEM;
 
-	if (f2fs_lookup_extent_cache(inode, index, &ei)) {
+	if (f2fs_lookup_read_extent_cache(inode, index, &ei)) {
 		dn.data_blkaddr = ei.blk + index - ei.fofs;
 		if (unlikely(!f2fs_is_valid_blkaddr(sbi, dn.data_blkaddr,
 						DATA_GENERIC_ENHANCE_READ))) {
@@ -1569,8 +1572,8 @@ next_step:
 				continue;
 			}
 
-			data_page = f2fs_get_read_data_page(inode,
-						start_bidx, REQ_RAHEAD, true);
+			data_page = f2fs_get_read_data_page(inode, start_bidx,
+							REQ_RAHEAD, true, NULL);
 			f2fs_up_write(&F2FS_I(inode)->i_gc_rwsem[WRITE]);
 			if (IS_ERR(data_page)) {
 				iput(inode);
@@ -1905,9 +1908,7 @@ int __init f2fs_create_garbage_collection_cache(void)
 {
 	victim_entry_slab = f2fs_kmem_cache_create("f2fs_victim_entry",
 					sizeof(struct victim_entry));
-	if (!victim_entry_slab)
-		return -ENOMEM;
-	return 0;
+	return victim_entry_slab ? 0 : -ENOMEM;
 }
 
 void f2fs_destroy_garbage_collection_cache(void)

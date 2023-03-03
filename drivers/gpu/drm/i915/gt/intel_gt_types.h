@@ -20,6 +20,7 @@
 #include "intel_gsc.h"
 
 #include "i915_vma.h"
+#include "i915_perf_types.h"
 #include "intel_engine_types.h"
 #include "intel_gt_buffer_pool_types.h"
 #include "intel_hwconfig.h"
@@ -30,6 +31,7 @@
 #include "intel_migrate_types.h"
 #include "intel_wakeref.h"
 #include "pxp/intel_pxp_types.h"
+#include "intel_wopcm.h"
 
 struct drm_i915_private;
 struct i915_ggtt;
@@ -59,6 +61,9 @@ enum intel_steering_type {
 	L3BANK,
 	MSLICE,
 	LNCF,
+	GAM,
+	DSS,
+	OADDRM,
 
 	/*
 	 * On some platforms there are multiple types of MCR registers that
@@ -97,6 +102,7 @@ struct intel_gt {
 
 	struct intel_uc uc;
 	struct intel_gsc gsc;
+	struct intel_wopcm wopcm;
 
 	struct {
 		/* Serialize global tlb invalidations */
@@ -269,6 +275,8 @@ struct intel_gt {
 	/* sysfs defaults per gt */
 	struct gt_defaults defaults;
 	struct kobject *sysfs_defaults;
+
+	struct i915_perf_gt perf;
 };
 
 struct intel_gt_definition {

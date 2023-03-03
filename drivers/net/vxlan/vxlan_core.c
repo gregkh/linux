@@ -3801,7 +3801,7 @@ static int __vxlan_dev_create(struct net *net, struct net_device *dev,
 			goto errout;
 	}
 
-	err = rtnl_configure_link(dev, NULL);
+	err = rtnl_configure_link(dev, NULL, 0, NULL);
 	if (err < 0)
 		goto unlink;
 
@@ -4423,7 +4423,7 @@ struct net_device *vxlan_dev_create(struct net *net, const char *name,
 		return ERR_PTR(err);
 	}
 
-	err = rtnl_configure_link(dev, NULL);
+	err = rtnl_configure_link(dev, NULL, 0, NULL);
 	if (err < 0) {
 		LIST_HEAD(list_kill);
 

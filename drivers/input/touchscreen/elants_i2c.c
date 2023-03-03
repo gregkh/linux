@@ -36,6 +36,7 @@
 #include <linux/input/touchscreen.h>
 #include <linux/acpi.h>
 #include <linux/of.h>
+#include <linux/pm_wakeirq.h>
 #include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <linux/uuid.h>
@@ -114,7 +115,7 @@
 /* calibration timeout definition */
 #define ELAN_CALI_TIMEOUT_MSEC	12000
 
-#define ELAN_POWERON_DELAY_USEC	500
+#define ELAN_POWERON_DELAY_USEC	5000
 #define ELAN_RESET_DELAY_MSEC	20
 
 /* FW boot code version */
@@ -180,7 +181,6 @@ struct elants_data {
 	u8 cmd_resp[HEADER_SIZE];
 	struct completion cmd_done;
 
-	bool wake_irq_enabled;
 	bool keep_power_in_suspend;
 
 	/* Must be last to be used for DMA operations */
@@ -1350,11 +1350,9 @@ static int elants_i2c_power_on(struct elants_data *ts)
 	 * We need to wait a bit after powering on controller before
 	 * we are allowed to release reset GPIO.
 	 */
-	udelay(ELAN_POWERON_DELAY_USEC);
+	usleep_range(ELAN_POWERON_DELAY_USEC, ELAN_POWERON_DELAY_USEC + 100);
 
 	gpiod_set_value_cansleep(ts->reset_gpio, 0);
-	if (error)
-		return error;
 
 	msleep(ELAN_RESET_DELAY_MSEC);
 
@@ -1564,13 +1562,6 @@ static int elants_i2c_probe(struct i2c_client *client)
 		return error;
 	}
 
-	/*
-	 * Systems using device tree should set up wakeup via DTS,
-	 * the rest will configure device as wakeup source by default.
-	 */
-	if (!client->dev.of_node)
-		device_init_wakeup(&client->dev, true);
-
 	error = devm_device_add_group(&client->dev, &elants_attribute_group);
 	if (error) {
 		dev_err(&client->dev, "failed to create sysfs attributes: %d\n",
@@ -1602,7 +1593,7 @@ static int __maybe_unused elants_i2c_suspend(struct device *dev)
 		 * The device will automatically enter idle mode
 		 * that has reduced power consumption.
 		 */
-		ts->wake_irq_enabled = (enable_irq_wake(client->irq) == 0);
+		return 0;
 	} else if (ts->keep_power_in_suspend) {
 		for (retry_cnt = 0; retry_cnt < MAX_RETRIES; retry_cnt++) {
 			error = elants_i2c_send(client, set_sleep_cmd,
@@ -1631,8 +1622,6 @@ static int __maybe_unused elants_i2c_resume(struct device *dev)
 	int error;
 
 	if (device_may_wakeup(dev)) {
-		if (ts->wake_irq_enabled)
-			disable_irq_wake(client->irq);
 		elants_i2c_sw_reset(client);
 	} else if (ts->keep_power_in_suspend) {
 		for (retry_cnt = 0; retry_cnt < MAX_RETRIES; retry_cnt++) {

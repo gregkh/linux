@@ -918,6 +918,7 @@ static void dvb_frontend_get_frequency_limits(struct dvb_frontend *fe,
 
 	/* If the standard is for satellite, convert frequencies to kHz */
 	switch (c->delivery_system) {
+	case SYS_DSS:
 	case SYS_DVBS:
 	case SYS_DVBS2:
 	case SYS_TURBO:
@@ -943,6 +944,7 @@ static u32 dvb_frontend_get_stepsize(struct dvb_frontend *fe)
 	u32 step = max(fe_step, tuner_step);
 
 	switch (c->delivery_system) {
+	case SYS_DSS:
 	case SYS_DVBS:
 	case SYS_DVBS2:
 	case SYS_TURBO:
@@ -974,6 +976,7 @@ static int dvb_frontend_check_parameters(struct dvb_frontend *fe)
 
 	/* range check: symbol rate */
 	switch (c->delivery_system) {
+	case SYS_DSS:
 	case SYS_DVBS:
 	case SYS_DVBS2:
 	case SYS_TURBO:
@@ -1040,6 +1043,10 @@ static int dvb_frontend_clear_cache(struct dvb_frontend *fe)
 	c->scrambling_sequence_index = 0;/* default sequence */
 
 	switch (c->delivery_system) {
+	case SYS_DSS:
+		c->modulation = QPSK;
+		c->rolloff = ROLLOFF_20;
+		break;
 	case SYS_DVBS:
 	case SYS_DVBS2:
 	case SYS_TURBO:
@@ -1821,6 +1828,7 @@ static void prepare_tuning_algo_parameters(struct dvb_frontend *fe)
 	} else {
 		/* default values */
 		switch (c->delivery_system) {
+		case SYS_DSS:
 		case SYS_DVBS:
 		case SYS_DVBS2:
 		case SYS_ISDBS:
@@ -2288,6 +2296,9 @@ static int dtv_set_frontend(struct dvb_frontend *fe)
 	case SYS_DVBC_ANNEX_C:
 		rolloff = 113;
 		break;
+	case SYS_DSS:
+		rolloff = 120;
+		break;
 	case SYS_DVBS:
 	case SYS_TURBO:
 	case SYS_ISDBS:
@@ -2754,7 +2765,17 @@ static int dvb_frontend_open(struct inode *inode, struct file *file)
 	if (fe->exit == DVB_FE_DEVICE_REMOVED)
 		return -ENODEV;
 
-	if (adapter->mfe_shared) {
+	if (adapter->mfe_shared == 2) {
+		mutex_lock(&adapter->mfe_lock);
+		if ((file->f_flags & O_ACCMODE) != O_RDONLY) {
+			if (adapter->mfe_dvbdev &&
+			    !adapter->mfe_dvbdev->writers) {
+				mutex_unlock(&adapter->mfe_lock);
+				return -EBUSY;
+			}
+			adapter->mfe_dvbdev = dvbdev;
+		}
+	} else if (adapter->mfe_shared) {
 		mutex_lock(&adapter->mfe_lock);
 
 		if (!adapter->mfe_dvbdev)

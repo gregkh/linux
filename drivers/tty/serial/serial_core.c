@@ -2212,6 +2212,9 @@ EXPORT_SYMBOL_GPL(uart_parse_options);
  * @parity: parity character - 'n' (none), 'o' (odd), 'e' (even)
  * @bits: number of data bits
  * @flow: flow control character - 'r' (rts)
+ *
+ * Locking: Caller must hold console_list_lock in order to serialize
+ * early initialization of the serial-console lock.
  */
 int
 uart_set_options(struct uart_port *port, struct console *co,
@@ -2223,11 +2226,11 @@ uart_set_options(struct uart_port *port, struct console *co,
 	/*
 	 * Ensure that the serial-console lock is initialised early.
 	 *
-	 * Note that the console-enabled check is needed because of kgdboc,
-	 * which can end up calling uart_set_options() for an already enabled
+	 * Note that the console-registered check is needed because
+	 * kgdboc can call uart_set_options() for an already registered
 	 * console via tty_find_polling_driver() and uart_poll_init().
 	 */
-	if (!uart_console_enabled(port) && !port->console_reinit)
+	if (!uart_console_registered_locked(port) && !port->console_reinit)
 		uart_port_spin_lock_init(port);
 
 	memset(&termios, 0, sizeof(struct ktermios));
@@ -2573,7 +2576,7 @@ uart_configure_port(struct uart_driver *drv, struct uart_state *state,
 		 * successfully registered yet, try to re-register it.
 		 * It may be that the port was not available.
 		 */
-		if (port->cons && !(port->cons->flags & CON_ENABLED))
+		if (port->cons && !console_is_registered(port->cons))
 			register_console(port->cons);
 
 		/*
@@ -2619,7 +2622,9 @@ static int uart_poll_init(struct tty_driver *driver, int line, char *options)
 
 	if (!ret && options) {
 		uart_parse_options(options, &baud, &parity, &bits, &flow);
+		console_list_lock();
 		ret = uart_set_options(port, NULL, baud, parity, bits, flow);
+		console_list_unlock();
 	}
 out:
 	mutex_unlock(&tport->mutex);
@@ -2956,7 +2961,7 @@ static ssize_t console_show(struct device *dev,
 	mutex_lock(&port->mutex);
 	uport = uart_port_check(state);
 	if (uport)
-		console = uart_console_enabled(uport);
+		console = uart_console_registered(uport);
 	mutex_unlock(&port->mutex);
 
 	return sprintf(buf, "%c\n", console ? 'Y' : 'N');
@@ -2978,7 +2983,7 @@ static ssize_t console_store(struct device *dev,
 	mutex_lock(&port->mutex);
 	uport = uart_port_check(state);
 	if (uport) {
-		oldconsole = uart_console_enabled(uport);
+		oldconsole = uart_console_registered(uport);
 		if (oldconsole && !newconsole) {
 			ret = unregister_console(uport->cons);
 		} else if (!oldconsole && newconsole) {
@@ -3086,7 +3091,7 @@ int uart_add_one_port(struct uart_driver *drv, struct uart_port *uport)
 	 * If this port is in use as a console then the spinlock is already
 	 * initialised.
 	 */
-	if (!uart_console_enabled(uport))
+	if (!uart_console_registered(uport))
 		uart_port_spin_lock_init(uport);
 
 	if (uport->cons && uport->dev)

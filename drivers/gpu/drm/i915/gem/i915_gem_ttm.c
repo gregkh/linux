@@ -644,7 +644,7 @@ bool i915_ttm_resource_mappable(struct ttm_resource *res)
 	if (!i915_ttm_cpu_maps_iomem(res))
 		return true;
 
-	return bman_res->used_visible_size == bman_res->base.num_pages;
+	return bman_res->used_visible_size == PFN_UP(bman_res->base.size);
 }
 
 static int i915_ttm_io_mem_reserve(struct ttm_device *bdev, struct ttm_resource *mem)
@@ -694,6 +694,50 @@ static unsigned long i915_ttm_io_mem_pfn(struct ttm_buffer_object *bo,
 	return ((base + sg_dma_address(sg)) >> PAGE_SHIFT) + ofs;
 }
 
+static int i915_ttm_access_memory(struct ttm_buffer_object *bo,
+				  unsigned long offset, void *buf,
+				  int len, int write)
+{
+	struct drm_i915_gem_object *obj = i915_ttm_to_gem(bo);
+	resource_size_t iomap = obj->mm.region->iomap.base -
+		obj->mm.region->region.start;
+	unsigned long page = offset >> PAGE_SHIFT;
+	unsigned long bytes_left = len;
+
+	/*
+	 * TODO: For now just let it fail if the resource is non-mappable,
+	 * otherwise we need to perform the memcpy from the gpu here, without
+	 * interfering with the object (like moving the entire thing).
+	 */
+	if (!i915_ttm_resource_mappable(bo->resource))
+		return -EIO;
+
+	offset -= page << PAGE_SHIFT;
+	do {
+		unsigned long bytes = min(bytes_left, PAGE_SIZE - offset);
+		void __iomem *ptr;
+		dma_addr_t daddr;
+
+		daddr = i915_gem_object_get_dma_address(obj, page);
+		ptr = ioremap_wc(iomap + daddr + offset, bytes);
+		if (!ptr)
+			return -EIO;
+
+		if (write)
+			memcpy_toio(ptr, buf, bytes);
+		else
+			memcpy_fromio(buf, ptr, bytes);
+		iounmap(ptr);
+
+		page++;
+		buf += bytes;
+		bytes_left -= bytes;
+		offset = 0;
+	} while (bytes_left);
+
+	return len;
+}
+
 /*
  * All callbacks need to take care not to downcast a struct ttm_buffer_object
  * without checking its subclass, since it might be a TTM ghost object.
@@ -710,6 +754,7 @@ static struct ttm_device_funcs i915_ttm_bo_driver = {
 	.delete_mem_notify = i915_ttm_delete_mem_notify,
 	.io_mem_reserve = i915_ttm_io_mem_reserve,
 	.io_mem_pfn = i915_ttm_io_mem_pfn,
+	.access_memory = i915_ttm_access_memory,
 };
 
 /**
@@ -774,8 +819,7 @@ static int __i915_ttm_get_pages(struct drm_i915_gem_object *obj,
 
 		GEM_BUG_ON(obj->mm.rsgt);
 		obj->mm.rsgt = rsgt;
-		__i915_gem_object_set_pages(obj, &rsgt->table,
-					    i915_sg_dma_sizes(rsgt->table.sgl));
+		__i915_gem_object_set_pages(obj, &rsgt->table);
 	}
 
 	GEM_BUG_ON(bo->ttm && ((obj->base.size >> PAGE_SHIFT) < bo->ttm->num_pages));
@@ -990,9 +1034,6 @@ static vm_fault_t vm_fault_ttm(struct vm_fault *vmf)
 	vm_fault_t ret;
 	int idx;
 
-	if (i915_ttm_is_ghost_object(bo))
-		return VM_FAULT_SIGBUS;
-
 	/* Sanity check that we allow writing into this object */
 	if (unlikely(i915_gem_object_is_readonly(obj) &&
 		     area->vm_flags & VM_WRITE))
@@ -1026,7 +1067,8 @@ static vm_fault_t vm_fault_ttm(struct vm_fault *vmf)
 		}
 
 		if (err) {
-			drm_dbg(dev, "Unable to make resource CPU accessible\n");
+			drm_dbg(dev, "Unable to make resource CPU accessible(err = %pe)\n",
+				ERR_PTR(err));
 			dma_resv_unlock(bo->base.resv);
 			ret = VM_FAULT_SIGBUS;
 			goto out_rpm;
@@ -1056,6 +1098,8 @@ static vm_fault_t vm_fault_ttm(struct vm_fault *vmf)
 		spin_lock(&to_i915(obj->base.dev)->runtime_pm.lmem_userfault_lock);
 		list_add(&obj->userfault_link, &to_i915(obj->base.dev)->runtime_pm.lmem_userfault_list);
 		spin_unlock(&to_i915(obj->base.dev)->runtime_pm.lmem_userfault_lock);
+
+		GEM_WARN_ON(!i915_ttm_cpu_maps_iomem(bo->resource));
 	}
 
 	if (wakeref & CONFIG_DRM_I915_USERFAULT_AUTOSUSPEND)
@@ -1137,6 +1181,8 @@ static void i915_ttm_unmap_virtual(struct drm_i915_gem_object *obj)
 			obj->userfault_count = 0;
 		}
 	}
+
+	GEM_WARN_ON(obj->userfault_count);
 
 	ttm_bo_unmap_virtual(i915_gem_to_ttm(obj));
 

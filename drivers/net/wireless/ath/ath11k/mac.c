@@ -241,7 +241,10 @@ const struct htt_rx_ring_tlv_filter ath11k_mac_mon_status_filter_default = {
 #define ath11k_a_rates (ath11k_legacy_rates + 4)
 #define ath11k_a_rates_size (ARRAY_SIZE(ath11k_legacy_rates) - 4)
 
-#define ATH11K_MAC_SCAN_TIMEOUT_MSECS 200 /* in msecs */
+#define ATH11K_MAC_SCAN_CMD_EVT_OVERHEAD		200 /* in msecs */
+
+/* Overhead due to the processing of channel switch events from FW */
+#define ATH11K_SCAN_CHANNEL_SWITCH_WMI_EVT_OVERHEAD	10 /* in msecs */
 
 static const u32 ath11k_smps_map[] = {
 	[WLAN_HT_CAP_SM_PS_STATIC] = WMI_PEER_SMPS_STATIC,
@@ -3612,6 +3615,7 @@ static int ath11k_mac_op_hw_scan(struct ieee80211_hw *hw,
 	struct scan_req_params arg;
 	int ret = 0;
 	int i;
+	u32 scan_timeout;
 
 	mutex_lock(&ar->conf_mutex);
 
@@ -3681,6 +3685,26 @@ static int ath11k_mac_op_hw_scan(struct ieee80211_hw *hw,
 		ether_addr_copy(arg.mac_mask.addr, req->mac_addr_mask);
 	}
 
+	/* if duration is set, default dwell times will be overwritten */
+	if (req->duration) {
+		arg.dwell_time_active = req->duration;
+		arg.dwell_time_active_2g = req->duration;
+		arg.dwell_time_active_6g = req->duration;
+		arg.dwell_time_passive = req->duration;
+		arg.dwell_time_passive_6g = req->duration;
+		arg.burst_duration = req->duration;
+
+		scan_timeout = min_t(u32, arg.max_rest_time *
+				(arg.num_chan - 1) + (req->duration +
+				ATH11K_SCAN_CHANNEL_SWITCH_WMI_EVT_OVERHEAD) *
+				arg.num_chan, arg.max_scan_time);
+	} else {
+		scan_timeout = arg.max_scan_time;
+	}
+
+	/* Add a margin to account for event/command processing */
+	scan_timeout += ATH11K_MAC_SCAN_CMD_EVT_OVERHEAD;
+
 	ret = ath11k_start_scan(ar, &arg);
 	if (ret) {
 		ath11k_warn(ar->ab, "failed to start hw scan: %d\n", ret);
@@ -3689,10 +3713,8 @@ static int ath11k_mac_op_hw_scan(struct ieee80211_hw *hw,
 		spin_unlock_bh(&ar->data_lock);
 	}
 
-	/* Add a 200ms margin to account for event/command processing */
 	ieee80211_queue_delayed_work(ar->hw, &ar->scan.timeout,
-				     msecs_to_jiffies(arg.max_scan_time +
-						      ATH11K_MAC_SCAN_TIMEOUT_MSECS));
+				     msecs_to_jiffies(scan_timeout));
 
 exit:
 	kfree(arg.chan_list);
@@ -6211,6 +6233,40 @@ void ath11k_mac_11d_scan_stop_all(struct ath11k_base *ab)
 	}
 }
 
+static int ath11k_mac_vdev_delete(struct ath11k *ar, struct ath11k_vif *arvif)
+{
+	unsigned long time_left;
+	struct ieee80211_vif *vif = arvif->vif;
+	int ret = 0;
+
+	lockdep_assert_held(&ar->conf_mutex);
+
+	reinit_completion(&ar->vdev_delete_done);
+
+	ret = ath11k_wmi_vdev_delete(ar, arvif->vdev_id);
+	if (ret) {
+		ath11k_warn(ar->ab, "failed to delete WMI vdev %d: %d\n",
+			    arvif->vdev_id, ret);
+		return ret;
+	}
+
+	time_left = wait_for_completion_timeout(&ar->vdev_delete_done,
+						ATH11K_VDEV_DELETE_TIMEOUT_HZ);
+	if (time_left == 0) {
+		ath11k_warn(ar->ab, "Timeout in receiving vdev delete response\n");
+		return -ETIMEDOUT;
+	}
+
+	ar->ab->free_vdev_map |= 1LL << (arvif->vdev_id);
+	ar->allocated_vdev_map &= ~(1LL << arvif->vdev_id);
+	ar->num_created_vdevs--;
+
+	ath11k_dbg(ar->ab, ATH11K_DBG_MAC, "vdev %pM deleted, vdev_id %d\n",
+		   vif->addr, arvif->vdev_id);
+
+	return ret;
+}
+
 static int ath11k_mac_op_add_interface(struct ieee80211_hw *hw,
 				       struct ieee80211_vif *vif)
 {
@@ -6421,17 +6477,15 @@ static int ath11k_mac_op_add_interface(struct ieee80211_hw *hw,
 
 	ath11k_dp_vdev_tx_attach(ar, arvif);
 
+	ath11k_debugfs_add_interface(arvif);
+
 	if (vif->type != NL80211_IFTYPE_MONITOR &&
 	    test_bit(ATH11K_FLAG_MONITOR_CONF_ENABLED, &ar->monitor_flags)) {
 		ret = ath11k_mac_monitor_vdev_create(ar);
-		if (ret) {
+		if (ret)
 			ath11k_warn(ar->ab, "failed to create monitor vdev during add interface: %d",
 				    ret);
-			goto err_peer_del;
-		}
 	}
-
-	ath11k_debugfs_add_interface(arvif);
 
 	mutex_unlock(&ar->conf_mutex);
 
@@ -6448,16 +6502,12 @@ err_peer_del:
 	}
 
 err_vdev_del:
-	ath11k_wmi_vdev_delete(ar, arvif->vdev_id);
-	ar->num_created_vdevs--;
-	ar->allocated_vdev_map &= ~(1LL << arvif->vdev_id);
-	ab->free_vdev_map |= 1LL << arvif->vdev_id;
+	ath11k_mac_vdev_delete(ar, arvif);
 	spin_lock_bh(&ar->data_lock);
 	list_del(&arvif->list);
 	spin_unlock_bh(&ar->data_lock);
 
 err:
-	ath11k_debugfs_remove_interface(arvif);
 	mutex_unlock(&ar->conf_mutex);
 
 	return ret;
@@ -6480,7 +6530,6 @@ static void ath11k_mac_op_remove_interface(struct ieee80211_hw *hw,
 	struct ath11k *ar = hw->priv;
 	struct ath11k_vif *arvif = ath11k_vif_to_arvif(vif);
 	struct ath11k_base *ab = ar->ab;
-	unsigned long time_left;
 	int ret;
 	int i;
 
@@ -6501,28 +6550,12 @@ static void ath11k_mac_op_remove_interface(struct ieee80211_hw *hw,
 				    arvif->vdev_id, ret);
 	}
 
-	reinit_completion(&ar->vdev_delete_done);
-
-	ret = ath11k_wmi_vdev_delete(ar, arvif->vdev_id);
+	ret = ath11k_mac_vdev_delete(ar, arvif);
 	if (ret) {
-		ath11k_warn(ab, "failed to delete WMI vdev %d: %d\n",
+		ath11k_warn(ab, "failed to delete vdev %d: %d\n",
 			    arvif->vdev_id, ret);
 		goto err_vdev_del;
 	}
-
-	time_left = wait_for_completion_timeout(&ar->vdev_delete_done,
-						ATH11K_VDEV_DELETE_TIMEOUT_HZ);
-	if (time_left == 0) {
-		ath11k_warn(ab, "Timeout in receiving vdev delete response\n");
-		goto err_vdev_del;
-	}
-
-	ab->free_vdev_map |= 1LL << (arvif->vdev_id);
-	ar->allocated_vdev_map &= ~(1LL << arvif->vdev_id);
-	ar->num_created_vdevs--;
-
-	ath11k_dbg(ab, ATH11K_DBG_MAC, "vdev %pM deleted, vdev_id %d\n",
-		   vif->addr, arvif->vdev_id);
 
 	if (arvif->vdev_type == WMI_VDEV_TYPE_MONITOR) {
 		clear_bit(ATH11K_FLAG_MONITOR_VDEV_CREATED, &ar->monitor_flags);
@@ -7977,6 +8010,7 @@ ath11k_mac_op_reconfig_complete(struct ieee80211_hw *hw,
 	struct ath11k *ar = hw->priv;
 	struct ath11k_base *ab = ar->ab;
 	int recovery_count;
+	struct ath11k_vif *arvif;
 
 	if (reconfig_type != IEEE80211_RECONFIG_TYPE_RESTART)
 		return;
@@ -8010,6 +8044,12 @@ ath11k_mac_op_reconfig_complete(struct ieee80211_hw *hw,
 				ab->is_reset = false;
 				atomic_set(&ab->fail_cont_count, 0);
 				ath11k_dbg(ab, ATH11K_DBG_BOOT, "reset success\n");
+			}
+		}
+		if (ar->ab->hw_params.support_fw_mac_sequence) {
+			list_for_each_entry(arvif, &ar->arvifs, list) {
+				if (arvif->is_up && arvif->vdev_type == WMI_VDEV_TYPE_STA)
+					ieee80211_hw_restart_disconnect(arvif->vif);
 			}
 		}
 	}
@@ -8587,6 +8627,7 @@ err_fallback:
 
 static const struct ieee80211_ops ath11k_ops = {
 	.tx				= ath11k_mac_op_tx,
+	.wake_tx_queue			= ieee80211_handle_wake_tx_queue,
 	.start                          = ath11k_mac_op_start,
 	.stop                           = ath11k_mac_op_stop,
 	.reconfig_complete              = ath11k_mac_op_reconfig_complete,
@@ -9061,6 +9102,9 @@ static int __ath11k_mac_register(struct ath11k *ar)
 		wiphy_ext_feature_set(ar->hw->wiphy,
 				      NL80211_EXT_FEATURE_UNSOL_BCAST_PROBE_RESP);
 	}
+
+	wiphy_ext_feature_set(ar->hw->wiphy,
+			      NL80211_EXT_FEATURE_SET_SCAN_DWELL);
 
 	ath11k_reg_init(ar);
 

@@ -44,6 +44,7 @@
 #include <linux/objtool.h>
 #include <linux/vmalloc.h>
 #include <linux/pgtable.h>
+#include <linux/set_memory.h>
 
 #include <asm/text-patching.h>
 #include <asm/cacheflush.h>
@@ -52,7 +53,6 @@
 #include <asm/alternative.h>
 #include <asm/insn.h>
 #include <asm/debugreg.h>
-#include <asm/set_memory.h>
 #include <asm/ibt.h>
 
 #include "common.h"
@@ -418,18 +418,11 @@ void *alloc_insn_page(void)
 	if (!page)
 		return NULL;
 
-	set_vm_flush_reset_perms(page);
-	/*
-	 * First make the page read-only, and only then make it executable to
-	 * prevent it from being W+X in between.
-	 */
-	set_memory_ro((unsigned long)page, 1);
-
 	/*
 	 * TODO: Once additional kernel code protection mechanisms are set, ensure
 	 * that the page was not maliciously altered and it is still zeroed.
 	 */
-	set_memory_x((unsigned long)page, 1);
+	set_memory_rox((unsigned long)page, 1);
 
 	return page;
 }
@@ -610,7 +603,7 @@ static int prepare_emulation(struct kprobe *p, struct insn *insn)
 		/* 1 byte conditional jump */
 		p->ainsn.emulate_op = kprobe_emulate_jcc;
 		p->ainsn.jcc.type = opcode & 0xf;
-		p->ainsn.rel32 = *(char *)insn->immediate.bytes;
+		p->ainsn.rel32 = insn->immediate.value;
 		break;
 	case 0x0f:
 		opcode = insn->opcode.bytes[1];

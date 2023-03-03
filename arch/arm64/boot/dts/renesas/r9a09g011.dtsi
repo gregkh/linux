@@ -37,7 +37,14 @@
 			compatible = "arm,cortex-a53";
 			reg = <0>;
 			device_type = "cpu";
+			next-level-cache = <&L2_CA53>;
 			clocks = <&cpg CPG_MOD R9A09G011_CA53_CLK>;
+		};
+
+		L2_CA53: cache-controller-0 {
+			compatible = "cache";
+			cache-unified;
+			cache-level = <2>;
 		};
 	};
 
@@ -123,6 +130,11 @@
 			#power-domain-cells = <0>;
 		};
 
+		sys: system-controller@a3f03000 {
+			compatible = "renesas,r9a09g011-sys";
+			reg = <0 0xa3f03000 0 0x400>;
+		};
+
 		i2c0: i2c@a4030000 {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -158,6 +170,19 @@
 			clocks = <&cpg CPG_MOD R9A09G011_URT0_CLK>,
 				 <&cpg CPG_MOD R9A09G011_URT_PCLK>;
 			clock-names = "sclk", "pclk";
+			status = "disabled";
+		};
+
+		wdt0: watchdog@a4050000 {
+			compatible = "renesas,r9a09g011-wdt",
+				     "renesas,rzv2m-wdt";
+			reg = <0 0xa4050000 0 0x80>;
+			clocks = <&cpg CPG_MOD R9A09G011_WDT0_PCLK>,
+				 <&cpg CPG_MOD R9A09G011_WDT0_CLK>;
+			clock-names = "pclk", "oscclk";
+			interrupts = <GIC_SPI 43 IRQ_TYPE_LEVEL_HIGH>;
+			resets = <&cpg R9A09G011_WDT0_PRESETN>;
+			power-domains = <&cpg>;
 			status = "disabled";
 		};
 

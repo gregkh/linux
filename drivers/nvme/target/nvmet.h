@@ -29,6 +29,7 @@
 #define NVMET_DEFAULT_CTRL_MODEL	"Linux"
 #define NVMET_MN_MAX_SIZE		40
 #define NVMET_SN_MAX_SIZE		20
+#define NVMET_FR_MAX_SIZE		8
 
 /*
  * Supported optional AENs:
@@ -263,6 +264,8 @@ struct nvmet_subsys {
 	struct config_group	allowed_hosts_group;
 
 	char			*model_number;
+	u32			ieee_oui;
+	char			*firmware_rev;
 
 #ifdef CONFIG_NVME_TARGET_PASSTHRU
 	struct nvme_ctrl	*passthru_ctrl;

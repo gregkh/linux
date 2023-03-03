@@ -224,7 +224,7 @@ void bfqg_stats_update_io_add(struct bfq_group *bfqg, struct bfq_queue *bfqq,
 {
 	blkg_rwstat_add(&bfqg->stats.queued, opf, 1);
 	bfqg_stats_end_empty_time(&bfqg->stats);
-	if (!(bfqq == ((struct bfq_data *)bfqg->bfqd)->in_service_queue))
+	if (!(bfqq == bfqg->bfqd->in_service_queue))
 		bfqg_stats_set_start_group_wait_time(bfqg, bfqq_group(bfqq));
 }
 
@@ -316,14 +316,12 @@ struct bfq_group *bfqq_group(struct bfq_queue *bfqq)
 
 static void bfqg_get(struct bfq_group *bfqg)
 {
-	bfqg->ref++;
+	refcount_inc(&bfqg->ref);
 }
 
 static void bfqg_put(struct bfq_group *bfqg)
 {
-	bfqg->ref--;
-
-	if (bfqg->ref == 0)
+	if (refcount_dec_and_test(&bfqg->ref))
 		kfree(bfqg);
 }
 
@@ -530,7 +528,7 @@ static struct blkg_policy_data *bfq_pd_alloc(gfp_t gfp, struct request_queue *q,
 	}
 
 	/* see comments in bfq_bic_update_cgroup for why refcounting */
-	bfqg_get(bfqg);
+	refcount_set(&bfqg->ref, 1);
 	return &bfqg->pd;
 }
 
@@ -552,6 +550,7 @@ static void bfq_pd_init(struct blkg_policy_data *pd)
 				   */
 	bfqg->bfqd = bfqd;
 	bfqg->active_entities = 0;
+	bfqg->num_queues_with_pending_reqs = 0;
 	bfqg->online = true;
 	bfqg->rq_pos_tree = RB_ROOT;
 }
@@ -645,6 +644,7 @@ void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 {
 	struct bfq_entity *entity = &bfqq->entity;
 	struct bfq_group *old_parent = bfqq_group(bfqq);
+	bool has_pending_reqs = false;
 
 	/*
 	 * No point to move bfqq to the same group, which can happen when
@@ -664,6 +664,11 @@ void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	 * next possible expire or deactivate.
 	 */
 	bfqq->ref++;
+
+	if (entity->in_groups_with_pending_reqs) {
+		has_pending_reqs = true;
+		bfq_del_bfqq_in_groups_with_pending_reqs(bfqq);
+	}
 
 	/* If bfqq is empty, then bfq_bfqq_expire also invokes
 	 * bfq_del_bfqq_busy, thereby removing bfqq and its entity
@@ -692,6 +697,9 @@ void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	/* pin down bfqg and its associated blkg  */
 	bfqg_and_blkg_get(bfqg);
 
+	if (has_pending_reqs)
+		bfq_add_bfqq_in_groups_with_pending_reqs(bfqq);
+
 	if (bfq_bfqq_busy(bfqq)) {
 		if (unlikely(!bfqd->nonrot_with_queueing))
 			bfq_pos_tree_add_move(bfqd, bfqq);
@@ -714,9 +722,9 @@ void bfq_bfqq_move(struct bfq_data *bfqd, struct bfq_queue *bfqq,
  * sure that the reference to cgroup is valid across the call (see
  * comments in bfq_bic_update_cgroup on this issue)
  */
-static void *__bfq_bic_change_cgroup(struct bfq_data *bfqd,
-				     struct bfq_io_cq *bic,
-				     struct bfq_group *bfqg)
+static void __bfq_bic_change_cgroup(struct bfq_data *bfqd,
+				    struct bfq_io_cq *bic,
+				    struct bfq_group *bfqg)
 {
 	struct bfq_queue *async_bfqq = bic_to_bfqq(bic, false);
 	struct bfq_queue *sync_bfqq = bic_to_bfqq(bic, true);
@@ -766,8 +774,6 @@ static void *__bfq_bic_change_cgroup(struct bfq_data *bfqd,
 			}
 		}
 	}
-
-	return bfqg;
 }
 
 void bfq_bic_update_cgroup(struct bfq_io_cq *bic, struct bio *bio)

@@ -307,7 +307,7 @@ netdev_tx_t bond_dev_queue_xmit(struct bonding *bond, struct sk_buff *skb,
 	return dev_queue_xmit(skb);
 }
 
-bool bond_sk_check(struct bonding *bond)
+static bool bond_sk_check(struct bonding *bond)
 {
 	switch (BOND_MODE(bond)) {
 	case BOND_MODE_8023AD:
@@ -1398,13 +1398,6 @@ static netdev_features_t bond_fix_features(struct net_device *dev,
 	netdev_features_t mask;
 	struct slave *slave;
 
-#if IS_ENABLED(CONFIG_TLS_DEVICE)
-	if (bond_sk_check(bond))
-		features |= BOND_TLS_FEATURES;
-	else
-		features &= ~BOND_TLS_FEATURES;
-#endif
-
 	mask = features;
 
 	features &= ~NETIF_F_ONE_FOR_ALL;
@@ -1639,13 +1632,19 @@ static int bond_master_upper_dev_link(struct bonding *bond, struct slave *slave,
 {
 	struct netdev_lag_upper_info lag_upper_info;
 	enum netdev_lag_tx_type type;
+	int err;
 
 	type = bond_lag_tx_type(bond);
 	lag_upper_info.tx_type = type;
 	lag_upper_info.hash_type = bond_lag_hash_type(bond, type);
 
-	return netdev_master_upper_dev_link(slave->dev, bond->dev, slave,
-					    &lag_upper_info, extack);
+	err = netdev_master_upper_dev_link(slave->dev, bond->dev, slave,
+					   &lag_upper_info, extack);
+	if (err)
+		return err;
+
+	slave->dev->flags |= IFF_SLAVE;
+	return 0;
 }
 
 static void bond_upper_dev_unlink(struct bonding *bond, struct slave *slave)
@@ -1957,8 +1956,8 @@ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev,
 		}
 	}
 
-	/* set slave flag before open to prevent IPv6 addrconf */
-	slave_dev->flags |= IFF_SLAVE;
+	/* set no_addrconf flag before open to prevent IPv6 addrconf */
+	slave_dev->priv_flags |= IFF_NO_ADDRCONF;
 
 	/* open the slave since the application closed it */
 	res = dev_open(slave_dev, extack);
@@ -2261,7 +2260,7 @@ err_close:
 	dev_close(slave_dev);
 
 err_restore_mac:
-	slave_dev->flags &= ~IFF_SLAVE;
+	slave_dev->priv_flags &= ~IFF_NO_ADDRCONF;
 	if (!bond->params.fail_over_mac ||
 	    BOND_MODE(bond) != BOND_MODE_ACTIVEBACKUP) {
 		/* XXX TODO - fom follow mode needs to change master's
@@ -2452,6 +2451,8 @@ static int __bond_release_one(struct net_device *bond_dev,
 
 	/* close slave before restoring its mac address */
 	dev_close(slave_dev);
+
+	slave_dev->priv_flags &= ~IFF_NO_ADDRCONF;
 
 	if (bond->params.fail_over_mac != BOND_FOM_ACTIVE ||
 	    BOND_MODE(bond) != BOND_MODE_ACTIVEBACKUP) {
@@ -5830,10 +5831,6 @@ void bond_setup(struct net_device *bond_dev)
 	if (BOND_MODE(bond) == BOND_MODE_ACTIVEBACKUP)
 		bond_dev->features |= BOND_XFRM_FEATURES;
 #endif /* CONFIG_XFRM_OFFLOAD */
-#if IS_ENABLED(CONFIG_TLS_DEVICE)
-	if (bond_sk_check(bond))
-		bond_dev->features |= BOND_TLS_FEATURES;
-#endif
 }
 
 /* Destroy a bonding device.

@@ -540,8 +540,7 @@ static int ext4_journal_submit_inode_data_buffers(struct jbd2_inode *jinode)
 	if (ext4_should_journal_data(jinode->i_vfs_inode))
 		ret = ext4_journalled_submit_inode_data_buffers(jinode);
 	else
-		ret = jbd2_journal_submit_inode_data_buffers(jinode);
-
+		ret = ext4_normal_submit_inode_data_buffers(jinode);
 	return ret;
 }
 
@@ -1206,7 +1205,8 @@ static void ext4_put_super(struct super_block *sb)
 	ext4_unregister_sysfs(sb);
 
 	if (___ratelimit(&ext4_mount_msg_ratelimit, "EXT4-fs unmount"))
-		ext4_msg(sb, KERN_INFO, "unmounting filesystem.");
+		ext4_msg(sb, KERN_INFO, "unmounting filesystem %pU.",
+			 &sb->s_uuid);
 
 	ext4_unregister_li_request(sb);
 	ext4_quota_off_umount(sb);
@@ -1225,7 +1225,7 @@ static void ext4_put_super(struct super_block *sb)
 	}
 
 	ext4_es_unregister_shrinker(sbi);
-	del_timer_sync(&sbi->s_err_report);
+	timer_shutdown_sync(&sbi->s_err_report);
 	ext4_release_system_zone(sb);
 	ext4_mb_release(sb);
 	ext4_ext_release(sb);
@@ -3779,7 +3779,7 @@ cont_thread:
 			}
 			if (!progress) {
 				elr->lr_next_sched = jiffies +
-					prandom_u32_max(EXT4_DEF_LI_MAX_START_DELAY * HZ);
+					get_random_u32_below(EXT4_DEF_LI_MAX_START_DELAY * HZ);
 			}
 			if (time_before(elr->lr_next_sched, next_wakeup))
 				next_wakeup = elr->lr_next_sched;
@@ -3926,8 +3926,7 @@ static struct ext4_li_request *ext4_li_request_new(struct super_block *sb,
 	 * spread the inode table initialization requests
 	 * better.
 	 */
-	elr->lr_next_sched = jiffies + prandom_u32_max(
-				EXT4_DEF_LI_MAX_START_DELAY * HZ);
+	elr->lr_next_sched = jiffies + get_random_u32_below(EXT4_DEF_LI_MAX_START_DELAY * HZ);
 	return elr;
 }
 
@@ -5657,8 +5656,9 @@ static int ext4_fill_super(struct super_block *sb, struct fs_context *fc)
 		descr = "out journal";
 
 	if (___ratelimit(&ext4_mount_msg_ratelimit, "EXT4-fs mount"))
-		ext4_msg(sb, KERN_INFO, "mounted filesystem with%s. "
-			 "Quota mode: %s.", descr, ext4_quota_mode(sb));
+		ext4_msg(sb, KERN_INFO, "mounted filesystem %pU with%s. "
+			 "Quota mode: %s.", &sb->s_uuid, descr,
+			 ext4_quota_mode(sb));
 
 	/* Update the s_overhead_clusters if necessary */
 	ext4_update_overhead(sb, false);
@@ -6613,8 +6613,8 @@ static int ext4_reconfigure(struct fs_context *fc)
 	if (ret < 0)
 		return ret;
 
-	ext4_msg(sb, KERN_INFO, "re-mounted. Quota mode: %s.",
-		 ext4_quota_mode(sb));
+	ext4_msg(sb, KERN_INFO, "re-mounted %pU. Quota mode: %s.",
+		 &sb->s_uuid, ext4_quota_mode(sb));
 
 	return 0;
 }
@@ -7055,8 +7055,7 @@ static ssize_t ext4_quota_read(struct super_block *sb, int type, char *data,
 		len = i_size-off;
 	toread = len;
 	while (toread > 0) {
-		tocopy = sb->s_blocksize - offset < toread ?
-				sb->s_blocksize - offset : toread;
+		tocopy = min_t(unsigned long, sb->s_blocksize - offset, toread);
 		bh = ext4_bread(NULL, inode, blk, 0);
 		if (IS_ERR(bh))
 			return PTR_ERR(bh);

@@ -1511,8 +1511,6 @@ static int inquiry_vpd_b0(unsigned char *arr)
 	put_unaligned_be64(sdebug_write_same_length, &arr[32]);
 
 	return 0x3c; /* Mandatory page length for Logical Block Provisioning */
-
-	return sizeof(vpdb0_data);
 }
 
 /* Block device characteristics VPD page (SBC-3) */
@@ -5702,16 +5700,16 @@ static int schedule_resp(struct scsi_cmnd *cmnd, struct sdebug_dev_info *devip,
 			u64 ns = jiffies_to_nsecs(delta_jiff);
 
 			if (sdebug_random && ns < U32_MAX) {
-				ns = prandom_u32_max((u32)ns);
+				ns = get_random_u32_below((u32)ns);
 			} else if (sdebug_random) {
 				ns >>= 12;	/* scale to 4 usec precision */
 				if (ns < U32_MAX)	/* over 4 hours max */
-					ns = prandom_u32_max((u32)ns);
+					ns = get_random_u32_below((u32)ns);
 				ns <<= 12;
 			}
 			kt = ns_to_ktime(ns);
 		} else {	/* ndelay has a 4.2 second max */
-			kt = sdebug_random ? prandom_u32_max((u32)ndelay) :
+			kt = sdebug_random ? get_random_u32_below((u32)ndelay) :
 					     (u32)ndelay;
 			if (ndelay < INCLUSIVE_TIMING_MAX_NS) {
 				u64 d = ktime_get_boottime_ns() - ns_from_boot;

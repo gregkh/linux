@@ -97,10 +97,12 @@ void dcn10_lock_all_pipes(struct dc *dc,
 	bool lock)
 {
 	struct pipe_ctx *pipe_ctx;
+	struct pipe_ctx *old_pipe_ctx;
 	struct timing_generator *tg;
 	int i;
 
 	for (i = 0; i < dc->res_pool->pipe_count; i++) {
+		old_pipe_ctx = &dc->current_state->res_ctx.pipe_ctx[i];
 		pipe_ctx = &context->res_ctx.pipe_ctx[i];
 		tg = pipe_ctx->stream_res.tg;
 
@@ -110,7 +112,7 @@ void dcn10_lock_all_pipes(struct dc *dc,
 		 */
 		if (pipe_ctx->top_pipe ||
 		    !pipe_ctx->stream ||
-		    !pipe_ctx->plane_state ||
+		    (!pipe_ctx->plane_state && !old_pipe_ctx->plane_state) ||
 		    !tg->funcs->is_tg_enabled(tg))
 			continue;
 
@@ -157,7 +159,7 @@ static void dcn10_log_hubbub_state(struct dc *dc,
 		DTN_INFO_MICRO_SEC(s->pte_meta_urgent);
 		DTN_INFO_MICRO_SEC(s->sr_enter);
 		DTN_INFO_MICRO_SEC(s->sr_exit);
-		DTN_INFO_MICRO_SEC(s->dram_clk_chanage);
+		DTN_INFO_MICRO_SEC(s->dram_clk_change);
 		DTN_INFO("\n");
 	}
 
@@ -2214,6 +2216,12 @@ void dcn10_enable_vblanks_synchronization(
 		opp = grouped_pipes[i]->stream_res.opp;
 		tg = grouped_pipes[i]->stream_res.tg;
 		tg->funcs->get_otg_active_size(tg, &width, &height);
+
+		if (!tg->funcs->is_tg_enabled(tg)) {
+			DC_SYNC_INFO("Skipping timing sync on disabled OTG\n");
+			return;
+		}
+
 		if (opp->funcs->opp_program_dpg_dimensions)
 			opp->funcs->opp_program_dpg_dimensions(opp, width, 2*(height) + 1);
 	}
@@ -2276,6 +2284,12 @@ void dcn10_enable_timing_synchronization(
 		opp = grouped_pipes[i]->stream_res.opp;
 		tg = grouped_pipes[i]->stream_res.tg;
 		tg->funcs->get_otg_active_size(tg, &width, &height);
+
+		if (!tg->funcs->is_tg_enabled(tg)) {
+			DC_SYNC_INFO("Skipping timing sync on disabled OTG\n");
+			return;
+		}
+
 		if (opp->funcs->opp_program_dpg_dimensions)
 			opp->funcs->opp_program_dpg_dimensions(opp, width, 2*(height) + 1);
 	}

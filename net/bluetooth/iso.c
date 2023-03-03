@@ -270,7 +270,8 @@ static int iso_connect_bis(struct sock *sk)
 		goto unlock;
 	}
 
-	hcon = hci_connect_bis(hdev, &iso_pi(sk)->dst, iso_pi(sk)->dst_type,
+	hcon = hci_connect_bis(hdev, &iso_pi(sk)->dst,
+			       le_addr_type(iso_pi(sk)->dst_type),
 			       &iso_pi(sk)->qos, iso_pi(sk)->base_len,
 			       iso_pi(sk)->base);
 	if (IS_ERR(hcon)) {
@@ -892,12 +893,10 @@ static int iso_listen_bis(struct sock *sk)
 	if (!hdev)
 		return -EHOSTUNREACH;
 
-	hci_dev_lock(hdev);
-
-	err = hci_pa_create_sync(hdev, &iso_pi(sk)->dst, iso_pi(sk)->dst_type,
+	err = hci_pa_create_sync(hdev, &iso_pi(sk)->dst,
+				 le_addr_type(iso_pi(sk)->dst_type),
 				 iso_pi(sk)->bc_sid);
 
-	hci_dev_unlock(hdev);
 	hci_dev_put(hdev);
 
 	return err;

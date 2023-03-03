@@ -254,15 +254,17 @@ EXPORT_SYMBOL_GPL(blk_mq_quiesce_queue_nowait);
 
 /**
  * blk_mq_wait_quiesce_done() - wait until in-progress quiesce is done
- * @q: request queue.
+ * @set: tag_set to wait on
  *
  * Note: it is driver's responsibility for making sure that quiesce has
- * been started.
+ * been started on or more of the request_queues of the tag_set.  This
+ * function only waits for the quiesce on those request_queues that had
+ * the quiesce flag set using blk_mq_quiesce_queue_nowait.
  */
-void blk_mq_wait_quiesce_done(struct request_queue *q)
+void blk_mq_wait_quiesce_done(struct blk_mq_tag_set *set)
 {
-	if (blk_queue_has_srcu(q))
-		synchronize_srcu(q->srcu);
+	if (set->flags & BLK_MQ_F_BLOCKING)
+		synchronize_srcu(set->srcu);
 	else
 		synchronize_rcu();
 }
@@ -280,7 +282,9 @@ EXPORT_SYMBOL_GPL(blk_mq_wait_quiesce_done);
 void blk_mq_quiesce_queue(struct request_queue *q)
 {
 	blk_mq_quiesce_queue_nowait(q);
-	blk_mq_wait_quiesce_done(q);
+	/* nothing to wait for non-mq queues */
+	if (queue_is_mq(q))
+		blk_mq_wait_quiesce_done(q->tag_set);
 }
 EXPORT_SYMBOL_GPL(blk_mq_quiesce_queue);
 
@@ -310,6 +314,33 @@ void blk_mq_unquiesce_queue(struct request_queue *q)
 		blk_mq_run_hw_queues(q, true);
 }
 EXPORT_SYMBOL_GPL(blk_mq_unquiesce_queue);
+
+void blk_mq_quiesce_tagset(struct blk_mq_tag_set *set)
+{
+	struct request_queue *q;
+
+	mutex_lock(&set->tag_list_lock);
+	list_for_each_entry(q, &set->tag_list, tag_set_list) {
+		if (!blk_queue_skip_tagset_quiesce(q))
+			blk_mq_quiesce_queue_nowait(q);
+	}
+	blk_mq_wait_quiesce_done(set);
+	mutex_unlock(&set->tag_list_lock);
+}
+EXPORT_SYMBOL_GPL(blk_mq_quiesce_tagset);
+
+void blk_mq_unquiesce_tagset(struct blk_mq_tag_set *set)
+{
+	struct request_queue *q;
+
+	mutex_lock(&set->tag_list_lock);
+	list_for_each_entry(q, &set->tag_list, tag_set_list) {
+		if (!blk_queue_skip_tagset_quiesce(q))
+			blk_mq_unquiesce_queue(q);
+	}
+	mutex_unlock(&set->tag_list_lock);
+}
+EXPORT_SYMBOL_GPL(blk_mq_unquiesce_tagset);
 
 void blk_mq_wake_waiters(struct request_queue *q)
 {
@@ -544,25 +575,26 @@ static struct request *blk_mq_alloc_cached_request(struct request_queue *q,
 
 	if (!plug)
 		return NULL;
+
 	if (rq_list_empty(plug->cached_rq)) {
 		if (plug->nr_ios == 1)
 			return NULL;
 		rq = blk_mq_rq_cache_fill(q, plug, opf, flags);
-		if (rq)
-			goto got_it;
-		return NULL;
+		if (!rq)
+			return NULL;
+	} else {
+		rq = rq_list_peek(&plug->cached_rq);
+		if (!rq || rq->q != q)
+			return NULL;
+
+		if (blk_mq_get_hctx_type(opf) != rq->mq_hctx->type)
+			return NULL;
+		if (op_is_flush(rq->cmd_flags) != op_is_flush(opf))
+			return NULL;
+
+		plug->cached_rq = rq_list_next(rq);
 	}
-	rq = rq_list_peek(&plug->cached_rq);
-	if (!rq || rq->q != q)
-		return NULL;
 
-	if (blk_mq_get_hctx_type(opf) != rq->mq_hctx->type)
-		return NULL;
-	if (op_is_flush(rq->cmd_flags) != op_is_flush(opf))
-		return NULL;
-
-	plug->cached_rq = rq_list_next(rq);
-got_it:
 	rq->cmd_flags = opf;
 	INIT_LIST_HEAD(&rq->queuelist);
 	return rq;
@@ -1627,7 +1659,7 @@ static void blk_mq_timeout_work(struct work_struct *work)
 		 * uses srcu or rcu, wait for a synchronization point to
 		 * ensure all running submits have finished
 		 */
-		blk_mq_wait_quiesce_done(q);
+		blk_mq_wait_quiesce_done(q->tag_set);
 
 		expired.next = 0;
 		blk_mq_queue_tag_busy_iter(q, blk_mq_handle_expired, &expired);
@@ -3287,21 +3319,22 @@ static struct blk_mq_tags *blk_mq_alloc_rq_map(struct blk_mq_tag_set *set,
 	tags->rqs = kcalloc_node(nr_tags, sizeof(struct request *),
 				 GFP_NOIO | __GFP_NOWARN | __GFP_NORETRY,
 				 node);
-	if (!tags->rqs) {
-		blk_mq_free_tags(tags);
-		return NULL;
-	}
+	if (!tags->rqs)
+		goto err_free_tags;
 
 	tags->static_rqs = kcalloc_node(nr_tags, sizeof(struct request *),
 					GFP_NOIO | __GFP_NOWARN | __GFP_NORETRY,
 					node);
-	if (!tags->static_rqs) {
-		kfree(tags->rqs);
-		blk_mq_free_tags(tags);
-		return NULL;
-	}
+	if (!tags->static_rqs)
+		goto err_free_rqs;
 
 	return tags;
+
+err_free_rqs:
+	kfree(tags->rqs);
+err_free_tags:
+	blk_mq_free_tags(tags);
+	return NULL;
 }
 
 static int blk_mq_init_request(struct blk_mq_tag_set *set, struct request *rq,
@@ -4014,7 +4047,7 @@ static struct request_queue *blk_mq_init_queue_data(struct blk_mq_tag_set *set,
 	struct request_queue *q;
 	int ret;
 
-	q = blk_alloc_queue(set->numa_node, set->flags & BLK_MQ_F_BLOCKING);
+	q = blk_alloc_queue(set->numa_node);
 	if (!q)
 		return ERR_PTR(-ENOMEM);
 	q->queuedata = queuedata;
@@ -4036,8 +4069,9 @@ EXPORT_SYMBOL(blk_mq_init_queue);
  * blk_mq_destroy_queue - shutdown a request queue
  * @q: request queue to shutdown
  *
- * This shuts down a request queue allocated by blk_mq_init_queue() and drops
- * the initial reference.  All future requests will failed with -ENODEV.
+ * This shuts down a request queue allocated by blk_mq_init_queue(). All future
+ * requests will be failed with -ENODEV. The caller is responsible for dropping
+ * the reference from blk_mq_init_queue() by calling blk_put_queue().
  *
  * Context: can sleep
  */
@@ -4050,14 +4084,11 @@ void blk_mq_destroy_queue(struct request_queue *q)
 
 	blk_queue_flag_set(QUEUE_FLAG_DYING, q);
 	blk_queue_start_drain(q);
-	blk_freeze_queue(q);
+	blk_mq_freeze_queue_wait(q);
 
 	blk_sync_queue(q);
 	blk_mq_cancel_work_sync(q);
 	blk_mq_exit_queue(q);
-
-	/* @q is and will stay empty, shutdown and put */
-	blk_put_queue(q);
 }
 EXPORT_SYMBOL(blk_mq_destroy_queue);
 
@@ -4074,6 +4105,7 @@ struct gendisk *__blk_mq_alloc_disk(struct blk_mq_tag_set *set, void *queuedata,
 	disk = __alloc_disk_node(q, set->numa_node, lkclass);
 	if (!disk) {
 		blk_mq_destroy_queue(q);
+		blk_put_queue(q);
 		return ERR_PTR(-ENOMEM);
 	}
 	set_bit(GD_OWNS_QUEUE, &disk->state);
@@ -4186,9 +4218,6 @@ static void blk_mq_update_poll_flag(struct request_queue *q)
 int blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 		struct request_queue *q)
 {
-	WARN_ON_ONCE(blk_queue_has_srcu(q) !=
-			!!(set->flags & BLK_MQ_F_BLOCKING));
-
 	/* mark the queue as mq asap */
 	q->mq_ops = set->ops;
 
@@ -4364,12 +4393,12 @@ static void blk_mq_update_queue_map(struct blk_mq_tag_set *set)
 }
 
 static int blk_mq_realloc_tag_set_tags(struct blk_mq_tag_set *set,
-				  int cur_nr_hw_queues, int new_nr_hw_queues)
+				       int new_nr_hw_queues)
 {
 	struct blk_mq_tags **new_tags;
 
-	if (cur_nr_hw_queues >= new_nr_hw_queues)
-		return 0;
+	if (set->nr_hw_queues >= new_nr_hw_queues)
+		goto done;
 
 	new_tags = kcalloc_node(new_nr_hw_queues, sizeof(struct blk_mq_tags *),
 				GFP_KERNEL, set->numa_node);
@@ -4377,19 +4406,13 @@ static int blk_mq_realloc_tag_set_tags(struct blk_mq_tag_set *set,
 		return -ENOMEM;
 
 	if (set->tags)
-		memcpy(new_tags, set->tags, cur_nr_hw_queues *
+		memcpy(new_tags, set->tags, set->nr_hw_queues *
 		       sizeof(*set->tags));
 	kfree(set->tags);
 	set->tags = new_tags;
+done:
 	set->nr_hw_queues = new_nr_hw_queues;
-
 	return 0;
-}
-
-static int blk_mq_alloc_tag_set_tags(struct blk_mq_tag_set *set,
-				int new_nr_hw_queues)
-{
-	return blk_mq_realloc_tag_set_tags(set, 0, new_nr_hw_queues);
 }
 
 /*
@@ -4445,10 +4468,22 @@ int blk_mq_alloc_tag_set(struct blk_mq_tag_set *set)
 	if (set->nr_maps == 1 && set->nr_hw_queues > nr_cpu_ids)
 		set->nr_hw_queues = nr_cpu_ids;
 
-	if (blk_mq_alloc_tag_set_tags(set, set->nr_hw_queues) < 0)
-		return -ENOMEM;
+	if (set->flags & BLK_MQ_F_BLOCKING) {
+		set->srcu = kmalloc(sizeof(*set->srcu), GFP_KERNEL);
+		if (!set->srcu)
+			return -ENOMEM;
+		ret = init_srcu_struct(set->srcu);
+		if (ret)
+			goto out_free_srcu;
+	}
 
 	ret = -ENOMEM;
+	set->tags = kcalloc_node(set->nr_hw_queues,
+				 sizeof(struct blk_mq_tags *), GFP_KERNEL,
+				 set->numa_node);
+	if (!set->tags)
+		goto out_cleanup_srcu;
+
 	for (i = 0; i < set->nr_maps; i++) {
 		set->map[i].mq_map = kcalloc_node(nr_cpu_ids,
 						  sizeof(set->map[i].mq_map[0]),
@@ -4476,6 +4511,12 @@ out_free_mq_map:
 	}
 	kfree(set->tags);
 	set->tags = NULL;
+out_cleanup_srcu:
+	if (set->flags & BLK_MQ_F_BLOCKING)
+		cleanup_srcu_struct(set->srcu);
+out_free_srcu:
+	if (set->flags & BLK_MQ_F_BLOCKING)
+		kfree(set->srcu);
 	return ret;
 }
 EXPORT_SYMBOL(blk_mq_alloc_tag_set);
@@ -4515,6 +4556,10 @@ void blk_mq_free_tag_set(struct blk_mq_tag_set *set)
 
 	kfree(set->tags);
 	set->tags = NULL;
+	if (set->flags & BLK_MQ_F_BLOCKING) {
+		cleanup_srcu_struct(set->srcu);
+		kfree(set->srcu);
+	}
 }
 EXPORT_SYMBOL(blk_mq_free_tag_set);
 
@@ -4603,17 +4648,10 @@ static bool blk_mq_elv_switch_none(struct list_head *head,
 	INIT_LIST_HEAD(&qe->node);
 	qe->q = q;
 	qe->type = q->elevator->type;
+	/* keep a reference to the elevator module as we'll switch back */
+	__elevator_get(qe->type);
 	list_add(&qe->node, head);
-
-	/*
-	 * After elevator_switch, the previous elevator_queue will be
-	 * released by elevator_release. The reference of the io scheduler
-	 * module get by elevator_get will also be put. So we need to get
-	 * a reference of the io scheduler module here to prevent it to be
-	 * removed.
-	 */
-	__module_get(qe->type->elevator_owner);
-	elevator_switch(q, NULL);
+	elevator_disable(q);
 	mutex_unlock(&q->sysfs_lock);
 
 	return true;
@@ -4646,6 +4684,8 @@ static void blk_mq_elv_switch_back(struct list_head *head,
 
 	mutex_lock(&q->sysfs_lock);
 	elevator_switch(q, t);
+	/* drop the reference acquired in blk_mq_elv_switch_none */
+	elevator_put(t);
 	mutex_unlock(&q->sysfs_lock);
 }
 
@@ -4682,11 +4722,9 @@ static void __blk_mq_update_nr_hw_queues(struct blk_mq_tag_set *set,
 	}
 
 	prev_nr_hw_queues = set->nr_hw_queues;
-	if (blk_mq_realloc_tag_set_tags(set, set->nr_hw_queues, nr_hw_queues) <
-	    0)
+	if (blk_mq_realloc_tag_set_tags(set, nr_hw_queues) < 0)
 		goto reregister;
 
-	set->nr_hw_queues = nr_hw_queues;
 fallback:
 	blk_mq_update_queue_map(set);
 	list_for_each_entry(q, &set->tag_list, tag_set_list) {
@@ -4906,15 +4944,13 @@ EXPORT_SYMBOL(blk_mq_rq_cpu);
 
 void blk_mq_cancel_work_sync(struct request_queue *q)
 {
-	if (queue_is_mq(q)) {
-		struct blk_mq_hw_ctx *hctx;
-		unsigned long i;
+	struct blk_mq_hw_ctx *hctx;
+	unsigned long i;
 
-		cancel_delayed_work_sync(&q->requeue_work);
+	cancel_delayed_work_sync(&q->requeue_work);
 
-		queue_for_each_hw_ctx(q, hctx, i)
-			cancel_delayed_work_sync(&hctx->run_work);
-	}
+	queue_for_each_hw_ctx(q, hctx, i)
+		cancel_delayed_work_sync(&hctx->run_work);
 }
 
 static int __init blk_mq_init(void)

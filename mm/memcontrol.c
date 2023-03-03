@@ -661,8 +661,10 @@ static const unsigned int memcg_vm_event_stat[] = {
 	PGPGOUT,
 	PGSCAN_KSWAPD,
 	PGSCAN_DIRECT,
+	PGSCAN_KHUGEPAGED,
 	PGSTEAL_KSWAPD,
 	PGSTEAL_DIRECT,
+	PGSTEAL_KHUGEPAGED,
 	PGFAULT,
 	PGMAJFAULT,
 	PGREFILL,
@@ -1219,7 +1221,7 @@ static void invalidate_reclaim_iterators(struct mem_cgroup *dead_memcg)
 	 * cgroup root (root_mem_cgroup). So we have to handle
 	 * dead_memcg from cgroup root separately.
 	 */
-	if (last != root_mem_cgroup)
+	if (!mem_cgroup_is_root(last))
 		__invalidate_reclaim_iterators(root_mem_cgroup,
 						dead_memcg);
 }
@@ -1243,7 +1245,7 @@ int mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
 	struct mem_cgroup *iter;
 	int ret = 0;
 
-	BUG_ON(memcg == root_mem_cgroup);
+	BUG_ON(mem_cgroup_is_root(memcg));
 
 	for_each_mem_cgroup_tree(iter, memcg) {
 		struct css_task_iter it;
@@ -1272,7 +1274,7 @@ void lruvec_memcg_debug(struct lruvec *lruvec, struct folio *folio)
 	memcg = folio_memcg(folio);
 
 	if (!memcg)
-		VM_BUG_ON_FOLIO(lruvec_memcg(lruvec) != root_mem_cgroup, folio);
+		VM_BUG_ON_FOLIO(!mem_cgroup_is_root(lruvec_memcg(lruvec)), folio);
 	else
 		VM_BUG_ON_FOLIO(lruvec_memcg(lruvec) != memcg, folio);
 }
@@ -1574,10 +1576,12 @@ static void memory_stat_format(struct mem_cgroup *memcg, char *buf, int bufsize)
 	/* Accumulated memory events */
 	seq_buf_printf(&s, "pgscan %lu\n",
 		       memcg_events(memcg, PGSCAN_KSWAPD) +
-		       memcg_events(memcg, PGSCAN_DIRECT));
+		       memcg_events(memcg, PGSCAN_DIRECT) +
+		       memcg_events(memcg, PGSCAN_KHUGEPAGED));
 	seq_buf_printf(&s, "pgsteal %lu\n",
 		       memcg_events(memcg, PGSTEAL_KSWAPD) +
-		       memcg_events(memcg, PGSTEAL_DIRECT));
+		       memcg_events(memcg, PGSTEAL_DIRECT) +
+		       memcg_events(memcg, PGSTEAL_KHUGEPAGED));
 
 	for (i = 0; i < ARRAY_SIZE(memcg_vm_event_stat); i++) {
 		if (memcg_vm_event_stat[i] == PGPGIN ||
@@ -2036,7 +2040,7 @@ struct mem_cgroup *mem_cgroup_get_oom_group(struct task_struct *victim,
 	rcu_read_lock();
 
 	memcg = mem_cgroup_from_task(victim);
-	if (memcg == root_mem_cgroup)
+	if (mem_cgroup_is_root(memcg))
 		goto out;
 
 	/*
@@ -2995,7 +2999,7 @@ static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg)
 {
 	struct obj_cgroup *objcg = NULL;
 
-	for (; memcg != root_mem_cgroup; memcg = parent_mem_cgroup(memcg)) {
+	for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg)) {
 		objcg = rcu_dereference(memcg->objcg);
 		if (objcg && obj_cgroup_tryget(objcg))
 			break;
@@ -5659,15 +5663,21 @@ static struct page *mc_handle_swap_pte(struct vm_area_struct *vma,
 static struct page *mc_handle_file_pte(struct vm_area_struct *vma,
 			unsigned long addr, pte_t ptent)
 {
+	unsigned long index;
+	struct folio *folio;
+
 	if (!vma->vm_file) /* anonymous vma */
 		return NULL;
 	if (!(mc.flags & MOVE_FILE))
 		return NULL;
 
-	/* page is moved even if it's not RSS of this task(page-faulted). */
+	/* folio is moved even if it's not RSS of this task(page-faulted). */
 	/* shmem/tmpfs may report page out on swap: account for that too. */
-	return find_get_incore_page(vma->vm_file->f_mapping,
-			linear_page_index(vma, addr));
+	index = linear_page_index(vma, addr);
+	folio = filemap_get_incore_folio(vma->vm_file->f_mapping, index);
+	if (!folio)
+		return NULL;
+	return folio_file_page(folio, index);
 }
 
 /**
@@ -5752,6 +5762,12 @@ static int mem_cgroup_move_account(struct page *page,
 		}
 	}
 
+#ifdef CONFIG_SWAP
+	if (folio_test_swapcache(folio)) {
+		__mod_lruvec_state(from_vec, NR_SWAPCACHE, -nr_pages);
+		__mod_lruvec_state(to_vec, NR_SWAPCACHE, nr_pages);
+	}
+#endif
 	if (folio_test_writeback(folio)) {
 		__mod_lruvec_state(from_vec, NR_WRITEBACK, -nr_pages);
 		__mod_lruvec_state(to_vec, NR_WRITEBACK, nr_pages);
@@ -7174,7 +7190,7 @@ void mem_cgroup_sk_alloc(struct sock *sk)
 
 	rcu_read_lock();
 	memcg = mem_cgroup_from_task(current);
-	if (memcg == root_mem_cgroup)
+	if (mem_cgroup_is_root(memcg))
 		goto out;
 	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys) && !memcg->tcpmem_active)
 		goto out;
@@ -7309,7 +7325,7 @@ static struct mem_cgroup *mem_cgroup_id_get_online(struct mem_cgroup *memcg)
 		 * The root cgroup cannot be destroyed, so it's refcount must
 		 * always be >= 1.
 		 */
-		if (WARN_ON_ONCE(memcg == root_mem_cgroup)) {
+		if (WARN_ON_ONCE(mem_cgroup_is_root(memcg))) {
 			VM_BUG_ON(1);
 			break;
 		}
@@ -7473,7 +7489,7 @@ long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg)
 
 	if (mem_cgroup_disabled() || do_memsw_account())
 		return nr_swap_pages;
-	for (; memcg != root_mem_cgroup; memcg = parent_mem_cgroup(memcg))
+	for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg))
 		nr_swap_pages = min_t(long, nr_swap_pages,
 				      READ_ONCE(memcg->swap.max) -
 				      page_counter_read(&memcg->swap));
@@ -7495,7 +7511,7 @@ bool mem_cgroup_swap_full(struct folio *folio)
 	if (!memcg)
 		return false;
 
-	for (; memcg != root_mem_cgroup; memcg = parent_mem_cgroup(memcg)) {
+	for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg)) {
 		unsigned long usage = page_counter_read(&memcg->swap);
 
 		if (usage * 2 >= READ_ONCE(memcg->swap.high) ||
@@ -7659,7 +7675,7 @@ bool obj_cgroup_may_zswap(struct obj_cgroup *objcg)
 		return true;
 
 	original_memcg = get_mem_cgroup_from_objcg(objcg);
-	for (memcg = original_memcg; memcg != root_mem_cgroup;
+	for (memcg = original_memcg; !mem_cgroup_is_root(memcg);
 	     memcg = parent_mem_cgroup(memcg)) {
 		unsigned long max = READ_ONCE(memcg->zswap_max);
 		unsigned long pages;

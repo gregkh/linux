@@ -610,7 +610,6 @@ static int cdns_xspi_probe(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_OF
 static const struct of_device_id cdns_xspi_of_match[] = {
 	{
 		.compatible = "cdns,xspi-nor",
@@ -618,9 +617,6 @@ static const struct of_device_id cdns_xspi_of_match[] = {
 	{ /* end of table */}
 };
 MODULE_DEVICE_TABLE(of, cdns_xspi_of_match);
-#else
-#define cdns_xspi_of_match NULL
-#endif /* CONFIG_OF */
 
 static struct platform_driver cdns_xspi_platform_driver = {
 	.probe          = cdns_xspi_probe,

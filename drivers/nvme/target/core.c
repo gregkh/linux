@@ -10,6 +10,8 @@
 #include <linux/pci-p2pdma.h>
 #include <linux/scatterlist.h>
 
+#include <generated/utsrelease.h>
+
 #define CREATE_TRACE_POINTS
 #include "trace.h"
 
@@ -696,11 +698,10 @@ static void nvmet_update_sq_head(struct nvmet_req *req)
 	if (req->sq->size) {
 		u32 old_sqhd, new_sqhd;
 
+		old_sqhd = READ_ONCE(req->sq->sqhd);
 		do {
-			old_sqhd = req->sq->sqhd;
 			new_sqhd = (old_sqhd + 1) % req->sq->size;
-		} while (cmpxchg(&req->sq->sqhd, old_sqhd, new_sqhd) !=
-					old_sqhd);
+		} while (!try_cmpxchg(&req->sq->sqhd, &old_sqhd, new_sqhd));
 	}
 	req->cqe->sq_head = cpu_to_le16(req->sq->sqhd & 0x0000FFFF);
 }
@@ -1562,6 +1563,14 @@ struct nvmet_subsys *nvmet_subsys_alloc(const char *subsysnqn,
 		goto free_subsys;
 	}
 
+	subsys->ieee_oui = 0;
+
+	subsys->firmware_rev = kstrndup(UTS_RELEASE, NVMET_FR_MAX_SIZE, GFP_KERNEL);
+	if (!subsys->firmware_rev) {
+		ret = -ENOMEM;
+		goto free_mn;
+	}
+
 	switch (type) {
 	case NVME_NQN_NVME:
 		subsys->max_qid = NVMET_NR_QUEUES;
@@ -1573,14 +1582,14 @@ struct nvmet_subsys *nvmet_subsys_alloc(const char *subsysnqn,
 	default:
 		pr_err("%s: Unknown Subsystem type - %d\n", __func__, type);
 		ret = -EINVAL;
-		goto free_mn;
+		goto free_fr;
 	}
 	subsys->type = type;
 	subsys->subsysnqn = kstrndup(subsysnqn, NVMF_NQN_SIZE,
 			GFP_KERNEL);
 	if (!subsys->subsysnqn) {
 		ret = -ENOMEM;
-		goto free_mn;
+		goto free_fr;
 	}
 	subsys->cntlid_min = NVME_CNTLID_MIN;
 	subsys->cntlid_max = NVME_CNTLID_MAX;
@@ -1593,6 +1602,8 @@ struct nvmet_subsys *nvmet_subsys_alloc(const char *subsysnqn,
 
 	return subsys;
 
+free_fr:
+	kfree(subsys->firmware_rev);
 free_mn:
 	kfree(subsys->model_number);
 free_subsys:
@@ -1612,6 +1623,7 @@ static void nvmet_subsys_free(struct kref *ref)
 
 	kfree(subsys->subsysnqn);
 	kfree(subsys->model_number);
+	kfree(subsys->firmware_rev);
 	kfree(subsys);
 }
 

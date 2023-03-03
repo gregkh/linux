@@ -1105,6 +1105,8 @@ struct iwl_mvm {
 	unsigned long last_reset_or_resume_time_jiffies;
 
 	bool sta_remove_requires_queue_remove;
+
+	bool pldr_sync;
 };
 
 /* Extract MVM priv from op_mode and _hw */
@@ -1644,7 +1646,8 @@ int iwl_mvm_mac_ctxt_send_beacon(struct iwl_mvm *mvm,
 int iwl_mvm_mac_ctxt_send_beacon_cmd(struct iwl_mvm *mvm,
 				     struct sk_buff *beacon,
 				     void *data, int len);
-u8 iwl_mvm_mac_ctxt_get_lowest_rate(struct ieee80211_tx_info *info,
+u8 iwl_mvm_mac_ctxt_get_beacon_rate(struct iwl_mvm *mvm,
+				    struct ieee80211_tx_info *info,
 				    struct ieee80211_vif *vif);
 u16 iwl_mvm_mac_ctxt_get_beacon_flags(const struct iwl_fw *fw,
 				      u8 rate_idx);
@@ -2078,6 +2081,18 @@ void iwl_mvm_sta_add_debugfs(struct ieee80211_hw *hw,
 			     struct ieee80211_sta *sta,
 			     struct dentry *dir);
 #endif
+
+/* new MLD related APIs */
+int iwl_mvm_sec_key_add(struct iwl_mvm *mvm,
+			struct ieee80211_vif *vif,
+			struct ieee80211_sta *sta,
+			struct ieee80211_key_conf *keyconf);
+int iwl_mvm_sec_key_del(struct iwl_mvm *mvm,
+			struct ieee80211_vif *vif,
+			struct ieee80211_sta *sta,
+			struct ieee80211_key_conf *keyconf);
+void iwl_mvm_sec_key_remove_ap(struct iwl_mvm *mvm,
+			       struct ieee80211_vif *vif);
 
 int iwl_rfi_send_config_cmd(struct iwl_mvm *mvm,
 			    struct iwl_rfi_lut_entry *rfi_table);

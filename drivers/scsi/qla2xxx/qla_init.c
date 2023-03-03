@@ -5550,7 +5550,6 @@ static int
 qla2x00_configure_local_loop(scsi_qla_host_t *vha)
 {
 	int		rval, rval2;
-	int		found_devs;
 	int		found;
 	fc_port_t	*fcport, *new_fcport;
 	uint16_t	index;
@@ -5565,7 +5564,6 @@ qla2x00_configure_local_loop(scsi_qla_host_t *vha)
 	if (N2N_TOPO(ha))
 		return qla2x00_configure_n2n_loop(vha);
 
-	found_devs = 0;
 	new_fcport = NULL;
 	entries = MAX_FIBRE_DEVICES_LOOP;
 
@@ -5724,8 +5722,6 @@ qla2x00_configure_local_loop(scsi_qla_host_t *vha)
 
 		/* Base iIDMA settings on HBA port speed. */
 		fcport->fp_speed = ha->link_data_rate;
-
-		found_devs++;
 	}
 
 	list_for_each_entry(fcport, &vha->vp_fcports, list) {

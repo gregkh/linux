@@ -419,10 +419,10 @@ static void i40e_get_netdev_stats_struct_tx(struct i40e_ring *ring,
 	unsigned int start;
 
 	do {
-		start = u64_stats_fetch_begin_irq(&ring->syncp);
+		start = u64_stats_fetch_begin(&ring->syncp);
 		packets = ring->stats.packets;
 		bytes   = ring->stats.bytes;
-	} while (u64_stats_fetch_retry_irq(&ring->syncp, start));
+	} while (u64_stats_fetch_retry(&ring->syncp, start));
 
 	stats->tx_packets += packets;
 	stats->tx_bytes   += bytes;
@@ -472,10 +472,10 @@ static void i40e_get_netdev_stats_struct(struct net_device *netdev,
 		if (!ring)
 			continue;
 		do {
-			start   = u64_stats_fetch_begin_irq(&ring->syncp);
+			start   = u64_stats_fetch_begin(&ring->syncp);
 			packets = ring->stats.packets;
 			bytes   = ring->stats.bytes;
-		} while (u64_stats_fetch_retry_irq(&ring->syncp, start));
+		} while (u64_stats_fetch_retry(&ring->syncp, start));
 
 		stats->rx_packets += packets;
 		stats->rx_bytes   += bytes;
@@ -897,10 +897,10 @@ static void i40e_update_vsi_stats(struct i40e_vsi *vsi)
 			continue;
 
 		do {
-			start = u64_stats_fetch_begin_irq(&p->syncp);
+			start = u64_stats_fetch_begin(&p->syncp);
 			packets = p->stats.packets;
 			bytes = p->stats.bytes;
-		} while (u64_stats_fetch_retry_irq(&p->syncp, start));
+		} while (u64_stats_fetch_retry(&p->syncp, start));
 		tx_b += bytes;
 		tx_p += packets;
 		tx_restart += p->tx_stats.restart_queue;
@@ -915,10 +915,10 @@ static void i40e_update_vsi_stats(struct i40e_vsi *vsi)
 			continue;
 
 		do {
-			start = u64_stats_fetch_begin_irq(&p->syncp);
+			start = u64_stats_fetch_begin(&p->syncp);
 			packets = p->stats.packets;
 			bytes = p->stats.bytes;
-		} while (u64_stats_fetch_retry_irq(&p->syncp, start));
+		} while (u64_stats_fetch_retry(&p->syncp, start));
 		rx_b += bytes;
 		rx_p += packets;
 		rx_buf += p->rx_stats.alloc_buff_failed;
@@ -935,10 +935,10 @@ static void i40e_update_vsi_stats(struct i40e_vsi *vsi)
 				continue;
 
 			do {
-				start = u64_stats_fetch_begin_irq(&p->syncp);
+				start = u64_stats_fetch_begin(&p->syncp);
 				packets = p->stats.packets;
 				bytes = p->stats.bytes;
-			} while (u64_stats_fetch_retry_irq(&p->syncp, start));
+			} while (u64_stats_fetch_retry(&p->syncp, start));
 			tx_b += bytes;
 			tx_p += packets;
 			tx_restart += p->tx_stats.restart_queue;
@@ -4135,6 +4135,7 @@ static int i40e_vsi_request_irq_msix(struct i40e_vsi *vsi, char *basename)
 		}
 
 		/* register for affinity change notifications */
+		q_vector->irq_num = irq_num;
 		q_vector->affinity_notify.notify = i40e_irq_affinity_notify;
 		q_vector->affinity_notify.release = i40e_irq_affinity_release;
 		irq_set_affinity_notifier(irq_num, &q_vector->affinity_notify);
@@ -12949,6 +12950,29 @@ static void i40e_clear_rss_lut(struct i40e_vsi *vsi)
 }
 
 /**
+ * i40e_set_loopback - turn on/off loopback mode on underlying PF
+ * @vsi: ptr to VSI
+ * @ena: flag to indicate the on/off setting
+ */
+static int i40e_set_loopback(struct i40e_vsi *vsi, bool ena)
+{
+	bool if_running = netif_running(vsi->netdev) &&
+			  !test_and_set_bit(__I40E_VSI_DOWN, vsi->state);
+	int ret;
+
+	if (if_running)
+		i40e_down(vsi);
+
+	ret = i40e_aq_set_mac_loopback(&vsi->back->hw, ena, NULL);
+	if (ret)
+		netdev_err(vsi->netdev, "Failed to toggle loopback state\n");
+	if (if_running)
+		i40e_up(vsi);
+
+	return ret;
+}
+
+/**
  * i40e_set_features - set the netdev feature flags
  * @netdev: ptr to the netdev being adjusted
  * @features: the feature set that the stack is suggesting
@@ -12987,6 +13011,9 @@ static int i40e_set_features(struct net_device *netdev,
 
 	if (need_reset)
 		i40e_do_reset(pf, I40E_PF_RESET_FLAG, true);
+
+	if ((features ^ netdev->features) & NETIF_F_LOOPBACK)
+		return i40e_set_loopback(vsi, !!(features & NETIF_F_LOOPBACK));
 
 	return 0;
 }
@@ -13752,7 +13779,7 @@ static int i40e_config_netdev(struct i40e_vsi *vsi)
 	if (!(pf->flags & I40E_FLAG_MFP_ENABLED))
 		hw_features |= NETIF_F_NTUPLE | NETIF_F_HW_TC;
 
-	netdev->hw_features |= hw_features;
+	netdev->hw_features |= hw_features | NETIF_F_LOOPBACK;
 
 	netdev->features |= hw_features | NETIF_F_HW_VLAN_CTAG_FILTER;
 	netdev->hw_enc_features |= NETIF_F_TSO_MANGLEID;
@@ -15561,7 +15588,7 @@ static int i40e_init_recovery_mode(struct i40e_pf *pf, struct i40e_hw *hw)
 
 err_switch_setup:
 	i40e_reset_interrupt_capability(pf);
-	del_timer_sync(&pf->service_timer);
+	timer_shutdown_sync(&pf->service_timer);
 	i40e_shutdown_adminq(hw);
 	iounmap(hw->hw_addr);
 	pci_disable_pcie_error_reporting(pf->pdev);
@@ -16180,7 +16207,7 @@ err_vsis:
 	kfree(pf->vsi);
 err_switch_setup:
 	i40e_reset_interrupt_capability(pf);
-	del_timer_sync(&pf->service_timer);
+	timer_shutdown_sync(&pf->service_timer);
 err_mac_addr:
 err_configure_lan_hmc:
 	(void)i40e_shutdown_lan_hmc(hw);
@@ -16242,7 +16269,7 @@ static void i40e_remove(struct pci_dev *pdev)
 	set_bit(__I40E_SUSPENDED, pf->state);
 	set_bit(__I40E_DOWN, pf->state);
 	if (pf->service_timer.function)
-		del_timer_sync(&pf->service_timer);
+		timer_shutdown_sync(&pf->service_timer);
 	if (pf->service_task.func)
 		cancel_work_sync(&pf->service_task);
 
