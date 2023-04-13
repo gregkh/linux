@@ -66,7 +66,7 @@ const volatile bool switch_partial;
 const volatile __u32 greedy_threshold;
 
 /* base slice duration */
-const volatile __u64 slice_us = 20000;
+const volatile __u64 slice_ns = SCX_SLICE_DFL;
 
 /*
  * Exit info
@@ -340,12 +340,12 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
 
 	if (task_ctx->dispatch_local) {
 		task_ctx->dispatch_local = false;
-		scx_bpf_dispatch(p, SCX_DSQ_LOCAL, slice_us * 1000, enq_flags);
+		scx_bpf_dispatch(p, SCX_DSQ_LOCAL, slice_ns, enq_flags);
 		return;
 	}
 
 	if (fifo_sched) {
-		scx_bpf_dispatch(p, task_ctx->dom_id, slice_us * 1000,
+		scx_bpf_dispatch(p, task_ctx->dom_id, slice_ns,
 				 enq_flags);
 	} else {
 		u64 vtime = p->scx.dsq_vtime;
@@ -362,8 +362,8 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
 		 * Limit the amount of budget that an idling task can accumulate
 		 * to one slice.
 		 */
-		if (vtime_before(vtime, domc->vtime_now - slice_us * 1000))
-			vtime = domc->vtime_now - slice_us * 1000;
+		if (vtime_before(vtime, domc->vtime_now - slice_ns))
+			vtime = domc->vtime_now - slice_ns;
 
 		scx_bpf_dispatch_vtime(p, task_ctx->dom_id, SCX_SLICE_DFL, vtime,
 				       enq_flags);
