@@ -1,5 +1,6 @@
 scx_example_simple
 scx_example_qmap
+scx_example_central
 *.skel.h
 *.subskel.h
 /tools/
