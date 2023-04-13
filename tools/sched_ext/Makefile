@@ -85,6 +85,8 @@ CFLAGS += -g -O2 -rdynamic -pthread -Wall -Werror $(GENFLAGS)			\
 	  -I$(INCLUDE_DIR) -I$(GENDIR) -I$(LIBDIR)				\
 	  -I$(TOOLSINCDIR) -I$(APIDIR)
 
+CARGOFLAGS := --release
+
 # Silence some warnings when compiled with clang
 ifneq ($(LLVM),)
 CFLAGS += -Wno-unused-command-line-argument
@@ -116,7 +118,7 @@ BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH)					\
 	     -O2 -mcpu=v3
 
 all: scx_example_simple scx_example_qmap scx_example_central scx_example_pair	\
-     scx_example_flatcg scx_example_userland
+     scx_example_flatcg scx_example_userland atropos
 
 # sort removes libbpf duplicates when not cross-building
 MAKE_DIRS := $(sort $(BUILD_DIR)/libbpf $(HOST_BUILD_DIR)/libbpf		\
@@ -192,13 +194,20 @@ scx_example_userland: scx_example_userland.c scx_example_userland.skel.h	\
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
+atropos: export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR)
+atropos: export ATROPOS_CLANG = $(CLANG)
+atropos: export ATROPOS_BPF_CFLAGS = $(BPF_CFLAGS)
+atropos: $(INCLUDE_DIR)/vmlinux.h
+	cargo build --manifest-path=atropos/Cargo.toml $(CARGOFLAGS)
+
 clean:
+	cargo clean --manifest-path=atropos/Cargo.toml
 	rm -rf $(SCRATCH_DIR) $(HOST_SCRATCH_DIR)
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
 	rm -f scx_example_simple scx_example_qmap scx_example_central		\
 	      scx_example_pair scx_example_flatcg scx_example_userland
 
-.PHONY: all clean
+.PHONY: all atropos clean
 
 # delete failed targets
 .DELETE_ON_ERROR:
