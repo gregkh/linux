@@ -28,6 +28,7 @@
 #include <linux/suspend.h>
 #include <linux/tsacct_kern.h>
 #include <linux/vtime.h>
+#include <linux/percpu-rwsem.h>
 
 #include <uapi/linux/sched/types.h>
 
@@ -52,3 +53,6 @@
 #include "cputime.c"
 #include "deadline.c"
 
+#ifdef CONFIG_SCHED_CLASS_EXT
+# include "ext.c"
+#endif
