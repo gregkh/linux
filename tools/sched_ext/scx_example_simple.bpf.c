@@ -15,6 +15,8 @@
 
 char _license[] SEC("license") = "GPL";
 
+const volatile bool switch_partial;
+
 struct user_exit_info uei;
 
 struct {
@@ -43,6 +45,13 @@ void BPF_STRUCT_OPS(simple_enqueue, struct task_struct *p, u64 enq_flags)
 	scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
 }
 
+s32 BPF_STRUCT_OPS(simple_init)
+{
+	if (!switch_partial)
+		scx_bpf_switch_all();
+	return 0;
+}
+
 void BPF_STRUCT_OPS(simple_exit, struct scx_exit_info *ei)
 {
 	uei_record(&uei, ei);
@@ -51,6 +60,7 @@ void BPF_STRUCT_OPS(simple_exit, struct scx_exit_info *ei)
 SEC(".struct_ops")
 struct sched_ext_ops simple_ops = {
 	.enqueue		= (void *)simple_enqueue,
+	.init			= (void *)simple_init,
 	.exit			= (void *)simple_exit,
 	.name			= "simple",
 };
