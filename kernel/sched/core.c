@@ -2096,15 +2096,7 @@ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 	dequeue_task(rq, p, flags);
 }
 
-struct sched_change_guard {
-	struct task_struct	*p;
-	struct rq		*rq;
-	bool			queued;
-	bool			running;
-	bool			done;
-};
-
-static struct sched_change_guard
+struct sched_change_guard
 sched_change_guard_init(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct sched_change_guard cg = {
@@ -2129,7 +2121,7 @@ sched_change_guard_init(struct rq *rq, struct task_struct *p, int flags)
 	return cg;
 }
 
-static void sched_change_guard_fini(struct sched_change_guard *cg, int flags)
+void sched_change_guard_fini(struct sched_change_guard *cg, int flags)
 {
 	if (cg->queued)
 		enqueue_task(cg->rq, cg->p, flags | ENQUEUE_NOCLOCK);
@@ -2137,34 +2129,6 @@ static void sched_change_guard_fini(struct sched_change_guard *cg, int flags)
 		set_next_task(cg->rq, cg->p);
 	cg->done = true;
 }
-
-/**
- * SCHED_CHANGE_BLOCK - Nested block for task attribute updates
- * @__rq: Runqueue the target task belongs to
- * @__p: Target task
- * @__flags: DEQUEUE/ENQUEUE_* flags
- *
- * A task may need to be dequeued and put_prev_task'd for attribute updates and
- * set_next_task'd and re-enqueued afterwards. This helper defines a nested
- * block which automatically handles these preparation and cleanup operations.
- *
- *  SCHED_CHANGE_BLOCK(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK) {
- *	  update_attribute(p);
- *        ...
- *  }
- *
- * If @__flags is a variable, the variable may be updated in the block body and
- * the updated value will be used when re-enqueueing @p.
- *
- * If %DEQUEUE_NOCLOCK is specified, the caller is responsible for calling
- * update_rq_clock() beforehand. Otherwise, the rq clock is automatically
- * updated iff the task needs to be dequeued and re-enqueued. Only the former
- * case guarantees that the rq clock is up-to-date inside and after the block.
- */
-#define SCHED_CHANGE_BLOCK(__rq, __p, __flags)					\
-	for (struct sched_change_guard __cg =					\
-			sched_change_guard_init(__rq, __p, __flags);		\
-	     !__cg.done; sched_change_guard_fini(&__cg, __flags))
 
 static inline int __normal_prio(int policy, int rt_prio, int nice)
 {
@@ -7016,7 +6980,7 @@ int default_wake_function(wait_queue_entry_t *curr, unsigned mode, int wake_flag
 }
 EXPORT_SYMBOL(default_wake_function);
 
-static void __setscheduler_prio(struct task_struct *p, int prio)
+void __setscheduler_prio(struct task_struct *p, int prio)
 {
 	if (dl_prio(prio))
 		p->sched_class = &dl_sched_class;
@@ -10411,11 +10375,6 @@ void sched_move_task(struct task_struct *tsk)
 		resched_curr(rq);
 
 	task_rq_unlock(rq, tsk, &rf);
-}
-
-static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
-{
-	return css ? container_of(css, struct task_group, css) : NULL;
 }
 
 static struct cgroup_subsys_state *
