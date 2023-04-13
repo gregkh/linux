@@ -68,6 +68,7 @@ void scx_bpf_destroy_dsq(u64 dsq_id) __ksym;
 bool scx_bpf_task_running(const struct task_struct *p) __ksym;
 s32 scx_bpf_task_cpu(const struct task_struct *p) __ksym;
 struct cgroup *scx_bpf_task_cgroup(struct task_struct *p) __ksym;
+u32 scx_bpf_reenqueue_local(void) __ksym;
 
 #define BPF_STRUCT_OPS(name, args...)						\
 SEC("struct_ops/"#name)								\
