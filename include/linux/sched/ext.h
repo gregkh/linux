@@ -317,6 +317,24 @@ struct sched_ext_ops {
 	bool (*yield)(struct task_struct *from, struct task_struct *to);
 
 	/**
+	 * core_sched_before - Task ordering for core-sched
+	 * @a: task A
+	 * @b: task B
+	 *
+	 * Used by core-sched to determine the ordering between two tasks. See
+	 * Documentation/admin-guide/hw-vuln/core-scheduling.rst for details on
+	 * core-sched.
+	 *
+	 * Both @a and @b are runnable and may or may not currently be queued on
+	 * the BPF scheduler. Should return %true if @a should run before @b.
+	 * %false if there's no required ordering or @b should run before @a.
+	 *
+	 * If not specified, the default is ordering them according to when they
+	 * became runnable.
+	 */
+	bool (*core_sched_before)(struct task_struct *a,struct task_struct *b);
+
+	/**
 	 * set_weight - Set task weight
 	 * @p: task to set weight for
 	 * @weight: new eight [1..10000]
@@ -628,6 +646,9 @@ struct sched_ext_entity {
 	struct task_struct	*kf_tasks[2];	/* see SCX_CALL_OP_TASK() */
 	atomic64_t		ops_state;
 	unsigned long		runnable_at;
+#ifdef CONFIG_SCHED_CORE
+	u64			core_sched_at;	/* see scx_prio_less() */
+#endif
 
 	/* BPF scheduler modifiable fields */
 
