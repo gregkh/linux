@@ -365,7 +365,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
 		if (vtime_before(vtime, domc->vtime_now - slice_ns))
 			vtime = domc->vtime_now - slice_ns;
 
-		scx_bpf_dispatch_vtime(p, task_ctx->dom_id, SCX_SLICE_DFL, vtime,
+		scx_bpf_dispatch_vtime(p, task_ctx->dom_id, slice_ns, vtime,
 				       enq_flags);
 	}
 }
@@ -492,7 +492,7 @@ void BPF_STRUCT_OPS(atropos_stopping, struct task_struct *p, bool runnable)
 		return;
 
 	/* scale the execution time by the inverse of the weight and charge */
-	p->scx.dsq_vtime += (SCX_SLICE_DFL - p->scx.slice) * 100 / p->scx.weight;
+	p->scx.dsq_vtime += (slice_ns - p->scx.slice) * 100 / p->scx.weight;
 }
 
 void BPF_STRUCT_OPS(atropos_quiescent, struct task_struct *p, u64 deq_flags)
