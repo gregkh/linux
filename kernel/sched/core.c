@@ -4495,7 +4495,8 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 
 #ifdef CONFIG_SCHED_CLASS_EXT
 	p->scx.dsq		= NULL;
-	INIT_LIST_HEAD(&p->scx.dsq_node);
+	INIT_LIST_HEAD(&p->scx.dsq_node.fifo);
+	RB_CLEAR_NODE(&p->scx.dsq_node.priq);
 	INIT_LIST_HEAD(&p->scx.watchdog_node);
 	p->scx.flags		= 0;
 	p->scx.weight		= 0;

@@ -583,6 +583,7 @@ struct sched_ext_ops {
 struct scx_dispatch_q {
 	raw_spinlock_t		lock;
 	struct list_head	fifo;	/* processed in dispatching order */
+	struct rb_root_cached	priq;	/* processed in p->scx.dsq_vtime order */
 	u32			nr;
 	u64			id;
 	struct rhash_head	hash_node;
@@ -595,6 +596,7 @@ enum scx_ent_flags {
 	SCX_TASK_QUEUED		= 1 << 0, /* on ext runqueue */
 	SCX_TASK_BAL_KEEP	= 1 << 1, /* balance decided to keep current */
 	SCX_TASK_ENQ_LOCAL	= 1 << 2, /* used by scx_select_cpu_dfl() to set SCX_ENQ_LOCAL */
+	SCX_TASK_ON_DSQ_PRIQ	= 1 << 3, /* task is queued on the priority queue of a dsq */
 
 	SCX_TASK_OPS_PREPPED	= 1 << 8, /* prepared for BPF scheduler enable */
 	SCX_TASK_OPS_ENABLED	= 1 << 9, /* task has BPF scheduler enabled */
@@ -636,7 +638,10 @@ enum scx_kf_mask {
  */
 struct sched_ext_entity {
 	struct scx_dispatch_q	*dsq;
-	struct list_head	dsq_node;
+	struct {
+		struct list_head	fifo;	/* dispatch order */
+		struct rb_node		priq;	/* p->scx.dsq_vtime order */
+	} dsq_node;
 	struct list_head	watchdog_node;
 	u32			flags;		/* protected by rq lock */
 	u32			weight;
@@ -663,6 +668,15 @@ struct sched_ext_entity {
 	 * task ran. Use p->se.sum_exec_runtime instead.
 	 */
 	u64			slice;
+
+	/*
+	 * Used to order tasks when dispatching to the vtime-ordered priority
+	 * queue of a dsq. This is usually set through scx_bpf_dispatch_vtime()
+	 * but can also be modified directly by the BPF scheduler. Modifying it
+	 * while a task is queued on a dsq may mangle the ordering and is not
+	 * recommended.
+	 */
+	u64			dsq_vtime;
 
 	/*
 	 * If set, reject future sched_setscheduler(2) calls updating the policy

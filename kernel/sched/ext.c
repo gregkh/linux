@@ -595,12 +595,25 @@ static void update_curr_scx(struct rq *rq)
 	}
 }
 
+static bool scx_dsq_priq_less(struct rb_node *node_a,
+			      const struct rb_node *node_b)
+{
+	const struct task_struct *a =
+		container_of(node_a, struct task_struct, scx.dsq_node.priq);
+	const struct task_struct *b =
+		container_of(node_b, struct task_struct, scx.dsq_node.priq);
+
+	return time_before64(a->scx.dsq_vtime, b->scx.dsq_vtime);
+}
+
 static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 			     u64 enq_flags)
 {
 	bool is_local = dsq->id == SCX_DSQ_LOCAL;
 
-	WARN_ON_ONCE(p->scx.dsq || !list_empty(&p->scx.dsq_node));
+	WARN_ON_ONCE(p->scx.dsq || !list_empty(&p->scx.dsq_node.fifo));
+	WARN_ON_ONCE((p->scx.flags & SCX_TASK_ON_DSQ_PRIQ) ||
+		     !RB_EMPTY_NODE(&p->scx.dsq_node.priq));
 
 	if (!is_local) {
 		raw_spin_lock(&dsq->lock);
@@ -613,10 +626,16 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 		}
 	}
 
-	if (enq_flags & (SCX_ENQ_HEAD | SCX_ENQ_PREEMPT))
-		list_add(&p->scx.dsq_node, &dsq->fifo);
-	else
-		list_add_tail(&p->scx.dsq_node, &dsq->fifo);
+	if (enq_flags & SCX_ENQ_DSQ_PRIQ) {
+		p->scx.flags |= SCX_TASK_ON_DSQ_PRIQ;
+		rb_add_cached(&p->scx.dsq_node.priq, &dsq->priq,
+			      scx_dsq_priq_less);
+	} else {
+		if (enq_flags & (SCX_ENQ_HEAD | SCX_ENQ_PREEMPT))
+			list_add(&p->scx.dsq_node.fifo, &dsq->fifo);
+		else
+			list_add_tail(&p->scx.dsq_node.fifo, &dsq->fifo);
+	}
 	dsq->nr++;
 	p->scx.dsq = dsq;
 
@@ -645,13 +664,31 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 	}
 }
 
+static void task_unlink_from_dsq(struct task_struct *p,
+				 struct scx_dispatch_q *dsq)
+{
+	if (p->scx.flags & SCX_TASK_ON_DSQ_PRIQ) {
+		rb_erase_cached(&p->scx.dsq_node.priq, &dsq->priq);
+		RB_CLEAR_NODE(&p->scx.dsq_node.priq);
+		p->scx.flags &= ~SCX_TASK_ON_DSQ_PRIQ;
+	} else {
+		list_del_init(&p->scx.dsq_node.fifo);
+	}
+}
+
+static bool task_linked_on_dsq(struct task_struct *p)
+{
+	return !list_empty(&p->scx.dsq_node.fifo) ||
+		!RB_EMPTY_NODE(&p->scx.dsq_node.priq);
+}
+
 static void dispatch_dequeue(struct scx_rq *scx_rq, struct task_struct *p)
 {
 	struct scx_dispatch_q *dsq = p->scx.dsq;
 	bool is_local = dsq == &scx_rq->local_dsq;
 
 	if (!dsq) {
-		WARN_ON_ONCE(!list_empty(&p->scx.dsq_node));
+		WARN_ON_ONCE(task_linked_on_dsq(p));
 		/*
 		 * When dispatching directly from the BPF scheduler to a local
 		 * DSQ, the task isn't associated with any DSQ but
@@ -672,8 +709,8 @@ static void dispatch_dequeue(struct scx_rq *scx_rq, struct task_struct *p)
 	*/
 	if (p->scx.holding_cpu < 0) {
 		/* @p must still be on @dsq, dequeue */
-		WARN_ON_ONCE(list_empty(&p->scx.dsq_node));
-		list_del_init(&p->scx.dsq_node);
+		WARN_ON_ONCE(!task_linked_on_dsq(p));
+		task_unlink_from_dsq(p, dsq);
 		dsq->nr--;
 	} else {
 		/*
@@ -682,7 +719,7 @@ static void dispatch_dequeue(struct scx_rq *scx_rq, struct task_struct *p)
 		 * holding_cpu which tells dispatch_to_local_dsq() that it lost
 		 * the race.
 		 */
-		WARN_ON_ONCE(!list_empty(&p->scx.dsq_node));
+		WARN_ON_ONCE(task_linked_on_dsq(p));
 		p->scx.holding_cpu = -1;
 	}
 	p->scx.dsq = NULL;
@@ -1146,33 +1183,52 @@ static void dispatch_to_local_dsq_unlock(struct rq *rq, struct rq_flags *rf,
 #endif	/* CONFIG_SMP */
 
 
+static bool task_can_run_on_rq(struct task_struct *p, struct rq *rq)
+{
+	return likely(test_rq_online(rq)) && !is_migration_disabled(p) &&
+		cpumask_test_cpu(cpu_of(rq), p->cpus_ptr);
+}
+
 static bool consume_dispatch_q(struct rq *rq, struct rq_flags *rf,
 			       struct scx_dispatch_q *dsq)
 {
 	struct scx_rq *scx_rq = &rq->scx;
 	struct task_struct *p;
+	struct rb_node *rb_node;
 	struct rq *task_rq;
 	bool moved = false;
 retry:
-	if (list_empty(&dsq->fifo))
+	if (list_empty(&dsq->fifo) && !rb_first_cached(&dsq->priq))
 		return false;
 
 	raw_spin_lock(&dsq->lock);
-	list_for_each_entry(p, &dsq->fifo, scx.dsq_node) {
+
+	list_for_each_entry(p, &dsq->fifo, scx.dsq_node.fifo) {
 		task_rq = task_rq(p);
 		if (rq == task_rq)
 			goto this_rq;
-		if (likely(test_rq_online(rq)) && !is_migration_disabled(p) &&
-		    cpumask_test_cpu(cpu_of(rq), p->cpus_ptr))
+		if (task_can_run_on_rq(p, rq))
 			goto remote_rq;
 	}
+
+	for (rb_node = rb_first_cached(&dsq->priq); rb_node;
+	     rb_node = rb_next(rb_node)) {
+		p = container_of(rb_node, struct task_struct, scx.dsq_node.priq);
+		task_rq = task_rq(p);
+		if (rq == task_rq)
+			goto this_rq;
+		if (task_can_run_on_rq(p, rq))
+			goto remote_rq;
+	}
+
 	raw_spin_unlock(&dsq->lock);
 	return false;
 
 this_rq:
 	/* @dsq is locked and @p is on this rq */
 	WARN_ON_ONCE(p->scx.holding_cpu >= 0);
-	list_move_tail(&p->scx.dsq_node, &scx_rq->local_dsq.fifo);
+	task_unlink_from_dsq(p, dsq);
+	list_add_tail(&p->scx.dsq_node.fifo, &scx_rq->local_dsq.fifo);
 	dsq->nr--;
 	scx_rq->local_dsq.nr++;
 	p->scx.dsq = &scx_rq->local_dsq;
@@ -1189,7 +1245,7 @@ remote_rq:
 	 * move_task_to_local_dsq().
 	 */
 	WARN_ON_ONCE(p->scx.holding_cpu >= 0);
-	list_del_init(&p->scx.dsq_node);
+	task_unlink_from_dsq(p, dsq);
 	dsq->nr--;
 	p->scx.holding_cpu = raw_smp_processor_id();
 	raw_spin_unlock(&dsq->lock);
@@ -1692,8 +1748,18 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
 
 static struct task_struct *first_local_task(struct rq *rq)
 {
-	return list_first_entry_or_null(&rq->scx.local_dsq.fifo,
-					struct task_struct, scx.dsq_node);
+	struct rb_node *rb_node;
+
+	if (!list_empty(&rq->scx.local_dsq.fifo))
+		return list_first_entry(&rq->scx.local_dsq.fifo,
+					struct task_struct, scx.dsq_node.fifo);
+
+	rb_node = rb_first_cached(&rq->scx.local_dsq.priq);
+	if (rb_node)
+		return container_of(rb_node,
+				    struct task_struct, scx.dsq_node.priq);
+
+	return NULL;
 }
 
 static struct task_struct *pick_next_task_scx(struct rq *rq)
@@ -3359,6 +3425,9 @@ static int bpf_scx_btf_struct_access(struct bpf_verifier_log *log,
 		if (off >= offsetof(struct task_struct, scx.slice) &&
 		    off + size <= offsetofend(struct task_struct, scx.slice))
 			return SCALAR_VALUE;
+		if (off >= offsetof(struct task_struct, scx.dsq_vtime) &&
+		    off + size <= offsetofend(struct task_struct, scx.dsq_vtime))
+			return SCALAR_VALUE;
 		if (off >= offsetof(struct task_struct, scx.disallow) &&
 		    off + size <= offsetofend(struct task_struct, scx.disallow))
 			return SCALAR_VALUE;
@@ -3739,8 +3808,42 @@ void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice,
 	scx_dispatch_commit(p, dsq_id, enq_flags);
 }
 
+/**
+ * scx_bpf_dispatch_vtime - Dispatch a task into the vtime priority queue of a DSQ
+ * @p: task_struct to dispatch
+ * @dsq_id: DSQ to dispatch to
+ * @slice: duration @p can run for in nsecs
+ * @vtime: @p's ordering inside the vtime-sorted queue of the target DSQ
+ * @enq_flags: SCX_ENQ_*
+ *
+ * Dispatch @p into the vtime priority queue of the DSQ identified by @dsq_id.
+ * Tasks queued into the priority queue are ordered by @vtime and always
+ * consumed after the tasks in the FIFO queue. All other aspects are identical
+ * to scx_bpf_dispatch().
+ *
+ * @vtime ordering is according to time_before64() which considers wrapping. A
+ * numerically larger vtime may indicate an earlier position in the ordering and
+ * vice-versa.
+ */
+void scx_bpf_dispatch_vtime(struct task_struct *p, u64 dsq_id, u64 slice,
+			    u64 vtime, u64 enq_flags)
+{
+	if (!scx_dispatch_preamble(p, enq_flags))
+		return;
+
+	if (slice)
+		p->scx.slice = slice;
+	else
+		p->scx.slice = p->scx.slice ?: 1;
+
+	p->scx.dsq_vtime = vtime;
+
+	scx_dispatch_commit(p, dsq_id, enq_flags | SCX_ENQ_DSQ_PRIQ);
+}
+
 BTF_SET8_START(scx_kfunc_ids_enqueue_dispatch)
 BTF_ID_FLAGS(func, scx_bpf_dispatch, KF_RCU)
+BTF_ID_FLAGS(func, scx_bpf_dispatch_vtime, KF_RCU)
 BTF_SET8_END(scx_kfunc_ids_enqueue_dispatch)
 
 static const struct btf_kfunc_id_set scx_kfunc_set_enqueue_dispatch = {

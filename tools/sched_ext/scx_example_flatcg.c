@@ -26,10 +26,11 @@ const char help_fmt[] =
 "\n"
 "See the top-level comment in .bpf.c for more details.\n"
 "\n"
-"Usage: %s [-s SLICE_US] [-i INTERVAL] [-p]\n"
+"Usage: %s [-s SLICE_US] [-i INTERVAL] [-f] [-p]\n"
 "\n"
 "  -s SLICE_US   Override slice duration\n"
 "  -i INTERVAL   Report interval\n"
+"  -f            Use FIFO scheduling instead of weighted vtime scheduling\n"
 "  -p            Switch only tasks on SCHED_EXT policy intead of all\n"
 "  -h            Display this help and exit\n";
 
@@ -148,6 +149,9 @@ int main(int argc, char **argv)
 			break;
 		case 'd':
 			dump_cgrps = true;
+			break;
+		case 'f':
+			skel->rodata->fifo_sched = true;
 			break;
 		case 'p':
 			skel->rodata->switch_partial = true;
