@@ -658,7 +658,7 @@ impl<'a> Scheduler<'a> {
             );
         }
 
-        skel.rodata().slice_us = opts.slice_us;
+        skel.rodata().slice_ns = opts.slice_us * 1000;
         skel.rodata().kthreads_local = opts.kthreads_local;
         skel.rodata().fifo_sched = opts.fifo_sched;
         skel.rodata().switch_partial = opts.partial;
