@@ -2263,6 +2263,13 @@ static void scx_ops_disable_task(struct task_struct *p)
 	}
 }
 
+static void set_task_scx_weight(struct task_struct *p)
+{
+	u32 weight = sched_prio_to_weight[p->static_prio - MAX_RT_PRIO];
+
+	p->scx.weight = sched_weight_to_cgroup(weight);
+}
+
 /**
  * refresh_scx_weight - Refresh a task's ext weight
  * @p: task to refresh ext weight for
@@ -2275,9 +2282,8 @@ static void scx_ops_disable_task(struct task_struct *p)
  */
 static void refresh_scx_weight(struct task_struct *p)
 {
-	u32 weight = sched_prio_to_weight[p->static_prio - MAX_RT_PRIO];
-
-	p->scx.weight = sched_weight_to_cgroup(weight);
+	lockdep_assert_rq_held(task_rq(p));
+	set_task_scx_weight(p);
 	if (SCX_HAS_OP(set_weight))
 		SCX_CALL_OP_TASK(SCX_KF_REST, set_weight, p, p->scx.weight);
 }
@@ -2305,14 +2311,21 @@ int scx_fork(struct task_struct *p)
 
 void scx_post_fork(struct task_struct *p)
 {
-	refresh_scx_weight(p);
-
 	if (scx_enabled()) {
 		struct rq_flags rf;
 		struct rq *rq;
 
 		rq = task_rq_lock(p, &rf);
+		/*
+		 * Set the weight manually before calling ops.enable() so that
+		 * the scheduler doesn't see a stale value if they inspect the
+		 * task struct. We'll invoke ops.set_weight() afterwards, as it
+		 * would be odd to receive a callback on the task before we
+		 * tell the scheduler that it's been fully enabled.
+		 */
+		set_task_scx_weight(p);
 		scx_ops_enable_task(p);
+		refresh_scx_weight(p);
 		task_rq_unlock(rq, p, &rf);
 	}
 
