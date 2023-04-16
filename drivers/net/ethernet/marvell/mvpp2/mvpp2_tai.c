@@ -32,6 +32,7 @@
  *
  * Consequently, we support none of these.
  */
+#include "linux/spinlock.h"
 #include <linux/io.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/slab.h>
@@ -61,6 +62,8 @@ struct mvpp2_tai {
 	u64 period;		// nanosecond period in 32.32 fixed point
 	/* This timestamp is updated every two seconds */
 	struct timespec64 stamp;
+	spinlock_t refcount_lock; /* Protects the poll_worker_refcount variable */
+	u16 poll_worker_refcount;
 };
 
 static void mvpp2_tai_modify(void __iomem *reg, u32 mask, u32 set)
@@ -370,16 +373,34 @@ void mvpp22_tai_tstamp(struct mvpp2_tai *tai, u32 tstamp,
 
 void mvpp22_tai_start(struct mvpp2_tai *tai)
 {
-	long delay;
+	unsigned long flags;
 
-	delay = mvpp22_tai_aux_work(&tai->caps);
+	spin_lock_irqsave(&tai->refcount_lock, flags);
 
-	ptp_schedule_worker(tai->ptp_clock, delay);
+	tai->poll_worker_refcount++;
+	if (tai->poll_worker_refcount > 1)
+		goto out_unlock;
+
+	ptp_schedule_worker(tai->ptp_clock, 0);
+
+out_unlock:
+	spin_unlock_irqrestore(&tai->refcount_lock, flags);
 }
 
 void mvpp22_tai_stop(struct mvpp2_tai *tai)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&tai->refcount_lock, flags);
+
+	tai->poll_worker_refcount--;
+	if (tai->poll_worker_refcount)
+		goto unlock_out;
+
 	ptp_cancel_worker_sync(tai->ptp_clock);
+
+unlock_out:
+	spin_unlock_irqrestore(&tai->refcount_lock, flags);
 }
 
 static void mvpp22_tai_remove(void *priv)
@@ -400,6 +421,7 @@ int mvpp22_tai_probe(struct device *dev, struct mvpp2 *priv)
 		return -ENOMEM;
 
 	spin_lock_init(&tai->lock);
+	spin_lock_init(&tai->refcount_lock);
 
 	tai->base = priv->iface_base;
 
