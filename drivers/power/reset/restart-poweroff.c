@@ -22,12 +22,15 @@ static void restart_poweroff_do_poweroff(void)
 
 static int restart_poweroff_probe(struct platform_device *pdev)
 {
+	/* XXX: ignore any previous settings - we want to reboot instead of poweroff */
+#if 0
 	/* If a pm_power_off function has already been added, leave it alone */
 	if (pm_power_off != NULL) {
 		dev_err(&pdev->dev,
 			"pm_power_off function already registered");
 		return -EBUSY;
 	}
+#endif
 
 	pm_power_off = &restart_poweroff_do_poweroff;
 	return 0;
