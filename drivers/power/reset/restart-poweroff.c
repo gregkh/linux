@@ -23,10 +23,11 @@ static int restart_poweroff_do_poweroff(struct sys_off_data *data)
 
 static int restart_poweroff_probe(struct platform_device *pdev)
 {
-	/* Set this handler to low priority to not override an existing handler */
+	/* Siklu: we want to reboot instead of poweroff */
+	/* Set this handler to high priority to override existing handlers */
 	return devm_register_sys_off_handler(&pdev->dev,
 					     SYS_OFF_MODE_POWER_OFF,
-					     SYS_OFF_PRIO_LOW,
+					     SYS_OFF_PRIO_HIGH,
 					     restart_poweroff_do_poweroff,
 					     NULL);
 }
