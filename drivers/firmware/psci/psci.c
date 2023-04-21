@@ -442,7 +442,7 @@ static void __init psci_0_2_set_functions(void)
 
 	arm_pm_restart = psci_sys_reset;
 
-	if (!pm_power_off)
+	if (pm_power_off != NULL)
 		pm_power_off = psci_sys_poweroff;
 }
 
