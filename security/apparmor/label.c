@@ -1269,14 +1269,14 @@ static inline aa_state_t match_component(struct aa_profile *profile,
 	const char *ns_name;
 
 	if (profile->ns == tp->ns)
-		return aa_dfa_match(rules->policy.dfa, state, tp->base.hname);
+		return aa_dfa_match(rules->policy->dfa, state, tp->base.hname);
 
 	/* try matching with namespace name and then profile */
 	ns_name = aa_ns_name(profile->ns, tp->ns, true);
-	state = aa_dfa_match_len(rules->policy.dfa, state, ":", 1);
-	state = aa_dfa_match(rules->policy.dfa, state, ns_name);
-	state = aa_dfa_match_len(rules->policy.dfa, state, ":", 1);
-	return aa_dfa_match(rules->policy.dfa, state, tp->base.hname);
+	state = aa_dfa_match_len(rules->policy->dfa, state, ":", 1);
+	state = aa_dfa_match(rules->policy->dfa, state, ns_name);
+	state = aa_dfa_match_len(rules->policy->dfa, state, ":", 1);
+	return aa_dfa_match(rules->policy->dfa, state, tp->base.hname);
 }
 
 /**
@@ -1321,12 +1321,12 @@ next:
 	label_for_each_cont(i, label, tp) {
 		if (!aa_ns_visible(profile->ns, tp->ns, subns))
 			continue;
-		state = aa_dfa_match(rules->policy.dfa, state, "//&");
+		state = aa_dfa_match(rules->policy->dfa, state, "//&");
 		state = match_component(profile, rules, tp, state);
 		if (!state)
 			goto fail;
 	}
-	*perms = *aa_lookup_perms(&rules->policy, state);
+	*perms = *aa_lookup_perms(rules->policy, state);
 	aa_apply_modes_to_perms(profile, perms);
 	if ((perms->allow & request) != request)
 		return -EACCES;
@@ -1379,7 +1379,7 @@ static int label_components_match(struct aa_profile *profile,
 	return 0;
 
 next:
-	tmp = *aa_lookup_perms(&rules->policy, state);
+	tmp = *aa_lookup_perms(rules->policy, state);
 	aa_apply_modes_to_perms(profile, &tmp);
 	aa_perms_accum(perms, &tmp);
 	label_for_each_cont(i, label, tp) {
@@ -1388,7 +1388,7 @@ next:
 		state = match_component(profile, rules, tp, start);
 		if (!state)
 			goto fail;
-		tmp = *aa_lookup_perms(&rules->policy, state);
+		tmp = *aa_lookup_perms(rules->policy, state);
 		aa_apply_modes_to_perms(profile, &tmp);
 		aa_perms_accum(perms, &tmp);
 	}
