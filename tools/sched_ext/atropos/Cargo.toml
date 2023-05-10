@@ -21,7 +21,7 @@ ordered-float = "3.4.0"
 simplelog = "0.12.0"
 
 [build-dependencies]
-bindgen = { version = "0.61.0", features = ["logging", "static"], default-features = false }
+bindgen = { version = "0.61.0" }
 libbpf-cargo = "0.13.0"
 
 [features]
