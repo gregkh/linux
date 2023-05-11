@@ -97,17 +97,8 @@ static struct task_struct *usersched_task(void)
 	 * Should never happen -- the usersched task should always be managed
 	 * by sched_ext.
 	 */
-	if (!p) {
+	if (!p)
 		scx_bpf_error("Failed to find usersched task %d", usersched_pid);
-		/*
-		 * We should never hit this path, and we error out of the
-		 * scheduler above just in case, so the scheduler will soon be
-		 * be evicted regardless. So as to simplify the logic in the
-		 * caller to not have to check for NULL, return an acquired
-		 * reference to the current task here rather than NULL.
-		 */
-		return bpf_task_acquire(bpf_get_current_task_btf());
-	}
 
 	return p;
 }
@@ -147,8 +138,10 @@ static void dispatch_user_scheduler(void)
 
 	usersched_needed = false;
 	p = usersched_task();
-	scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, 0);
-	bpf_task_release(p);
+	if (p) {
+		scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, 0);
+		bpf_task_release(p);
+	}
 }
 
 static void enqueue_task_in_user_space(struct task_struct *p, u64 enq_flags)
