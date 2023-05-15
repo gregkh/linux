@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2003 Sistina Software Limited.
  * Copyright (C) 2005-2008 Red Hat, Inc. All rights reserved.
@@ -19,6 +20,8 @@
 #include <linux/dm-kcopyd.h>
 #include <linux/dm-region-hash.h>
 
+static struct workqueue_struct *dm_raid1_wq;
+
 #define DM_MSG_PREFIX "raid1"
 
 #define MAX_RECOVERY 1	/* Maximum number of regions recovered in parallel. */
@@ -32,9 +35,11 @@
 
 static DECLARE_WAIT_QUEUE_HEAD(_kmirrord_recovery_stopped);
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Mirror set structures.
- *---------------------------------------------------------------*/
+ *---------------------------------------------------------------
+ */
 enum dm_raid1_error {
 	DM_RAID1_WRITE_ERROR,
 	DM_RAID1_FLUSH_ERROR,
@@ -236,8 +241,8 @@ static void fail_mirror(struct mirror *m, enum dm_raid1_error error_type)
 		 * Better to issue requests to same failing device
 		 * than to risk returning corrupt data.
 		 */
-		DMERR("Primary mirror (%s) failed while out-of-sync: "
-		      "Reads may fail.", m->dev->name);
+		DMERR("Primary mirror (%s) failed while out-of-sync: Reads may fail.",
+		      m->dev->name);
 		goto out;
 	}
 
@@ -248,7 +253,7 @@ static void fail_mirror(struct mirror *m, enum dm_raid1_error error_type)
 		DMWARN("All sides of mirror have failed.");
 
 out:
-	schedule_work(&ms->trigger_event);
+	queue_work(dm_raid1_wq, &ms->trigger_event);
 }
 
 static int mirror_flush(struct dm_target *ti)
@@ -285,13 +290,15 @@ static int mirror_flush(struct dm_target *ti)
 	return 0;
 }
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Recovery.
  *
  * When a mirror is first activated we may find that some regions
  * are in the no-sync state.  We have to recover these by
  * recopying from the default mirror to all the others.
- *---------------------------------------------------------------*/
+ *---------------------------------------------------------------
+ */
 static void recovery_complete(int read_err, unsigned long write_err,
 			      void *context)
 {
@@ -408,9 +415,11 @@ static void do_recovery(struct mirror_set *ms)
 	}
 }
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Reads
- *---------------------------------------------------------------*/
+ *---------------------------------------------------------------
+ */
 static struct mirror *choose_mirror(struct mirror_set *ms, sector_t sector)
 {
 	struct mirror *m = get_default_mirror(ms);
@@ -498,9 +507,11 @@ static void hold_bio(struct mirror_set *ms, struct bio *bio)
 	spin_unlock_irq(&ms->lock);
 }
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Reads
- *---------------------------------------------------------------*/
+ *---------------------------------------------------------------
+ */
 static void read_callback(unsigned long error, void *context)
 {
 	struct bio *bio = context;
@@ -517,8 +528,7 @@ static void read_callback(unsigned long error, void *context)
 	fail_mirror(m, DM_RAID1_READ_ERROR);
 
 	if (likely(default_ok(m)) || mirror_available(m->ms, bio)) {
-		DMWARN_LIMIT("Read failure on mirror device %s.  "
-			     "Trying alternative device.",
+		DMWARN_LIMIT("Read failure on mirror device %s. Trying alternative device.",
 			     m->dev->name);
 		queue_bio(m->ms, bio, bio_data_dir(bio));
 		return;
@@ -579,18 +589,18 @@ static void do_reads(struct mirror_set *ms, struct bio_list *reads)
 	}
 }
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------------
  * Writes.
  *
  * We do different things with the write io depending on the
  * state of the region that it's in:
  *
- * SYNC: 	increment pending, use kcopyd to write to *all* mirrors
+ * SYNC:	increment pending, use kcopyd to write to *all* mirrors
  * RECOVERING:	delay the io until recovery completes
  * NOSYNC:	increment pending, just write to the default mirror
- *---------------------------------------------------------------*/
-
-
+ *---------------------------------------------------------------------
+ */
 static void write_callback(unsigned long error, void *context)
 {
 	unsigned int i;
@@ -842,9 +852,11 @@ static void trigger_event(struct work_struct *work)
 	dm_table_event(ms->ti->table);
 }
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * kmirrord
- *---------------------------------------------------------------*/
+ *---------------------------------------------------------------
+ */
 static void do_mirror(struct work_struct *work)
 {
 	struct mirror_set *ms = container_of(work, struct mirror_set,
@@ -868,9 +880,11 @@ static void do_mirror(struct work_struct *work)
 	do_failures(ms, &failures);
 }
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Target functions
- *---------------------------------------------------------------*/
+ *---------------------------------------------------------------
+ */
 static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 					uint32_t region_size,
 					struct dm_target *ti,
@@ -903,7 +917,7 @@ static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 	if (IS_ERR(ms->io_client)) {
 		ti->error = "Error creating dm_io client";
 		kfree(ms);
- 		return NULL;
+		return NULL;
 	}
 
 	ms->rh = dm_region_hash_create(ms, dispatch_bios, wakeup_mirrord,
@@ -1484,22 +1498,28 @@ static struct target_type mirror_target = {
 
 static int __init dm_mirror_init(void)
 {
-	int r;
+	int r = -ENOMEM;
+
+	dm_raid1_wq = alloc_workqueue("dm_raid1_wq", 0, 0);
+	if (!dm_raid1_wq)
+		goto bad_target;
 
 	r = dm_register_target(&mirror_target);
 	if (r < 0) {
-		DMERR("Failed to register mirror target");
+		destroy_workqueue(dm_raid1_wq);
 		goto bad_target;
 	}
 
 	return 0;
 
 bad_target:
+	DMERR("Failed to register mirror target");
 	return r;
 }
 
 static void __exit dm_mirror_exit(void)
 {
+	destroy_workqueue(dm_raid1_wq);
 	dm_unregister_target(&mirror_target);
 }
 

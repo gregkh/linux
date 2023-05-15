@@ -441,14 +441,14 @@ irq_list_done:
 }
 
 /**
- * i40e_release_iwarp_qvlist
+ * i40e_release_rdma_qvlist
  * @vf: pointer to the VF.
  *
  **/
-static void i40e_release_iwarp_qvlist(struct i40e_vf *vf)
+static void i40e_release_rdma_qvlist(struct i40e_vf *vf)
 {
 	struct i40e_pf *pf = vf->pf;
-	struct virtchnl_iwarp_qvlist_info *qvlist_info = vf->qvlist_info;
+	struct virtchnl_rdma_qvlist_info *qvlist_info = vf->qvlist_info;
 	u32 msix_vf;
 	u32 i;
 
@@ -457,7 +457,7 @@ static void i40e_release_iwarp_qvlist(struct i40e_vf *vf)
 
 	msix_vf = pf->hw.func_caps.num_msix_vectors_vf;
 	for (i = 0; i < qvlist_info->num_vectors; i++) {
-		struct virtchnl_iwarp_qv_info *qv_info;
+		struct virtchnl_rdma_qv_info *qv_info;
 		u32 next_q_index, next_q_type;
 		struct i40e_hw *hw = &pf->hw;
 		u32 v_idx, reg_idx, reg;
@@ -491,18 +491,19 @@ static void i40e_release_iwarp_qvlist(struct i40e_vf *vf)
 }
 
 /**
- * i40e_config_iwarp_qvlist
+ * i40e_config_rdma_qvlist
  * @vf: pointer to the VF info
  * @qvlist_info: queue and vector list
  *
  * Return 0 on success or < 0 on error
  **/
-static int i40e_config_iwarp_qvlist(struct i40e_vf *vf,
-				    struct virtchnl_iwarp_qvlist_info *qvlist_info)
+static int
+i40e_config_rdma_qvlist(struct i40e_vf *vf,
+			struct virtchnl_rdma_qvlist_info *qvlist_info)
 {
 	struct i40e_pf *pf = vf->pf;
 	struct i40e_hw *hw = &pf->hw;
-	struct virtchnl_iwarp_qv_info *qv_info;
+	struct virtchnl_rdma_qv_info *qv_info;
 	u32 v_idx, i, reg_idx, reg;
 	u32 next_q_idx, next_q_type;
 	u32 msix_vf;
@@ -1264,9 +1265,9 @@ i40e_set_vsi_promisc(struct i40e_vf *vf, u16 seid, bool multi_enable,
 			int aq_err = pf->hw.aq.asq_last_status;
 
 			dev_err(&pf->pdev->dev,
-				"VF %d failed to set multicast promiscuous mode err %d aq_err %s\n",
+				"VF %d failed to set multicast promiscuous mode err %pe aq_err %s\n",
 				vf->vf_id,
-				aq_ret,
+				ERR_PTR(aq_ret),
 				i40e_aq_str(&pf->hw, aq_err));
 
 			return aq_ret;
@@ -1280,9 +1281,9 @@ i40e_set_vsi_promisc(struct i40e_vf *vf, u16 seid, bool multi_enable,
 			int aq_err = pf->hw.aq.asq_last_status;
 
 			dev_err(&pf->pdev->dev,
-				"VF %d failed to set unicast promiscuous mode err %d aq_err %s\n",
+				"VF %d failed to set unicast promiscuous mode err %pe aq_err %s\n",
 				vf->vf_id,
-				aq_ret,
+				ERR_PTR(aq_ret),
 				i40e_aq_str(&pf->hw, aq_err));
 		}
 
@@ -1297,9 +1298,9 @@ i40e_set_vsi_promisc(struct i40e_vf *vf, u16 seid, bool multi_enable,
 			int aq_err = pf->hw.aq.asq_last_status;
 
 			dev_err(&pf->pdev->dev,
-				"VF %d failed to set multicast promiscuous mode err %d aq_err %s\n",
+				"VF %d failed to set multicast promiscuous mode err %pe aq_err %s\n",
 				vf->vf_id,
-				aq_ret,
+				ERR_PTR(aq_ret),
 				i40e_aq_str(&pf->hw, aq_err));
 
 			if (!aq_tmp)
@@ -1313,9 +1314,9 @@ i40e_set_vsi_promisc(struct i40e_vf *vf, u16 seid, bool multi_enable,
 			int aq_err = pf->hw.aq.asq_last_status;
 
 			dev_err(&pf->pdev->dev,
-				"VF %d failed to set unicast promiscuous mode err %d aq_err %s\n",
+				"VF %d failed to set unicast promiscuous mode err %pe aq_err %s\n",
 				vf->vf_id,
-				aq_ret,
+				ERR_PTR(aq_ret),
 				i40e_aq_str(&pf->hw, aq_err));
 
 			if (!aq_tmp)
@@ -2123,11 +2124,11 @@ static int i40e_vc_get_vf_resources_msg(struct i40e_vf *vf, u8 *msg)
 		vfres->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_VLAN;
 
 	if (i40e_vf_client_capable(pf, vf->vf_id) &&
-	    (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_IWARP)) {
-		vfres->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_IWARP;
-		set_bit(I40E_VF_STATE_IWARPENA, &vf->vf_states);
+	    (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_RDMA)) {
+		vfres->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_RDMA;
+		set_bit(I40E_VF_STATE_RDMAENA, &vf->vf_states);
 	} else {
-		clear_bit(I40E_VF_STATE_IWARPENA, &vf->vf_states);
+		clear_bit(I40E_VF_STATE_RDMAENA, &vf->vf_states);
 	}
 
 	if (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_RSS_PF) {
@@ -3187,21 +3188,21 @@ error_param:
 }
 
 /**
- * i40e_vc_iwarp_msg
+ * i40e_vc_rdma_msg
  * @vf: pointer to the VF info
  * @msg: pointer to the msg buffer
  * @msglen: msg length
  *
  * called from the VF for the iwarp msgs
  **/
-static int i40e_vc_iwarp_msg(struct i40e_vf *vf, u8 *msg, u16 msglen)
+static int i40e_vc_rdma_msg(struct i40e_vf *vf, u8 *msg, u16 msglen)
 {
 	struct i40e_pf *pf = vf->pf;
 	int abs_vf_id = vf->vf_id + pf->hw.func_caps.vf_base_id;
 	int aq_ret = 0;
 
 	if (!test_bit(I40E_VF_STATE_ACTIVE, &vf->vf_states) ||
-	    !test_bit(I40E_VF_STATE_IWARPENA, &vf->vf_states)) {
+	    !test_bit(I40E_VF_STATE_RDMAENA, &vf->vf_states)) {
 		aq_ret = I40E_ERR_PARAM;
 		goto error_param;
 	}
@@ -3211,42 +3212,42 @@ static int i40e_vc_iwarp_msg(struct i40e_vf *vf, u8 *msg, u16 msglen)
 
 error_param:
 	/* send the response to the VF */
-	return i40e_vc_send_resp_to_vf(vf, VIRTCHNL_OP_IWARP,
+	return i40e_vc_send_resp_to_vf(vf, VIRTCHNL_OP_RDMA,
 				       aq_ret);
 }
 
 /**
- * i40e_vc_iwarp_qvmap_msg
+ * i40e_vc_rdma_qvmap_msg
  * @vf: pointer to the VF info
  * @msg: pointer to the msg buffer
  * @config: config qvmap or release it
  *
  * called from the VF for the iwarp msgs
  **/
-static int i40e_vc_iwarp_qvmap_msg(struct i40e_vf *vf, u8 *msg, bool config)
+static int i40e_vc_rdma_qvmap_msg(struct i40e_vf *vf, u8 *msg, bool config)
 {
-	struct virtchnl_iwarp_qvlist_info *qvlist_info =
-				(struct virtchnl_iwarp_qvlist_info *)msg;
+	struct virtchnl_rdma_qvlist_info *qvlist_info =
+				(struct virtchnl_rdma_qvlist_info *)msg;
 	int aq_ret = 0;
 
 	if (!test_bit(I40E_VF_STATE_ACTIVE, &vf->vf_states) ||
-	    !test_bit(I40E_VF_STATE_IWARPENA, &vf->vf_states)) {
+	    !test_bit(I40E_VF_STATE_RDMAENA, &vf->vf_states)) {
 		aq_ret = I40E_ERR_PARAM;
 		goto error_param;
 	}
 
 	if (config) {
-		if (i40e_config_iwarp_qvlist(vf, qvlist_info))
+		if (i40e_config_rdma_qvlist(vf, qvlist_info))
 			aq_ret = I40E_ERR_PARAM;
 	} else {
-		i40e_release_iwarp_qvlist(vf);
+		i40e_release_rdma_qvlist(vf);
 	}
 
 error_param:
 	/* send the response to the VF */
 	return i40e_vc_send_resp_to_vf(vf,
-			       config ? VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP :
-			       VIRTCHNL_OP_RELEASE_IWARP_IRQ_MAP,
+			       config ? VIRTCHNL_OP_CONFIG_RDMA_IRQ_MAP :
+			       VIRTCHNL_OP_RELEASE_RDMA_IRQ_MAP,
 			       aq_ret);
 }
 
@@ -3615,8 +3616,8 @@ static void i40e_del_all_cloud_filters(struct i40e_vf *vf)
 			ret = i40e_add_del_cloud_filter(vsi, cfilter, false);
 		if (ret)
 			dev_err(&pf->pdev->dev,
-				"VF %d: Failed to delete cloud filter, err %d aq_err %s\n",
-				vf->vf_id, ret,
+				"VF %d: Failed to delete cloud filter, err %pe aq_err %s\n",
+				vf->vf_id, ERR_PTR(ret),
 				i40e_aq_str(&pf->hw,
 					    pf->hw.aq.asq_last_status));
 
@@ -3718,8 +3719,8 @@ static int i40e_vc_del_cloud_filter(struct i40e_vf *vf, u8 *msg)
 		ret = i40e_add_del_cloud_filter(vsi, &cfilter, false);
 	if (ret) {
 		dev_err(&pf->pdev->dev,
-			"VF %d: Failed to delete cloud filter, err %d aq_err %s\n",
-			vf->vf_id, ret,
+			"VF %d: Failed to delete cloud filter, err %pe aq_err %s\n",
+			vf->vf_id, ERR_PTR(ret),
 			i40e_aq_str(&pf->hw, pf->hw.aq.asq_last_status));
 		goto err;
 	}
@@ -3852,8 +3853,8 @@ static int i40e_vc_add_cloud_filter(struct i40e_vf *vf, u8 *msg)
 		ret = i40e_add_del_cloud_filter(vsi, cfilter, true);
 	if (ret) {
 		dev_err(&pf->pdev->dev,
-			"VF %d: Failed to add cloud filter, err %d aq_err %s\n",
-			vf->vf_id, ret,
+			"VF %d: Failed to add cloud filter, err %pe aq_err %s\n",
+			vf->vf_id, ERR_PTR(ret),
 			i40e_aq_str(&pf->hw, pf->hw.aq.asq_last_status));
 		goto err_free;
 	}
@@ -4112,14 +4113,14 @@ int i40e_vc_process_vf_msg(struct i40e_pf *pf, s16 vf_id, u32 v_opcode,
 	case VIRTCHNL_OP_GET_STATS:
 		ret = i40e_vc_get_stats_msg(vf, msg);
 		break;
-	case VIRTCHNL_OP_IWARP:
-		ret = i40e_vc_iwarp_msg(vf, msg, msglen);
+	case VIRTCHNL_OP_RDMA:
+		ret = i40e_vc_rdma_msg(vf, msg, msglen);
 		break;
-	case VIRTCHNL_OP_CONFIG_IWARP_IRQ_MAP:
-		ret = i40e_vc_iwarp_qvmap_msg(vf, msg, true);
+	case VIRTCHNL_OP_CONFIG_RDMA_IRQ_MAP:
+		ret = i40e_vc_rdma_qvmap_msg(vf, msg, true);
 		break;
-	case VIRTCHNL_OP_RELEASE_IWARP_IRQ_MAP:
-		ret = i40e_vc_iwarp_qvmap_msg(vf, msg, false);
+	case VIRTCHNL_OP_RELEASE_RDMA_IRQ_MAP:
+		ret = i40e_vc_rdma_qvmap_msg(vf, msg, false);
 		break;
 	case VIRTCHNL_OP_CONFIG_RSS_KEY:
 		ret = i40e_vc_config_rss_key(vf, msg);

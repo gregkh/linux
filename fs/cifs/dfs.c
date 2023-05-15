@@ -157,6 +157,8 @@ static int get_dfs_conn(struct cifs_mount_ctx *mnt_ctx, const char *ref_path, co
 		rc = cifs_is_path_remote(mnt_ctx);
 	}
 
+	dfs_cache_noreq_update_tgthint(ref_path + 1, tit);
+
 	if (rc == -EREMOTE && is_refsrv) {
 		rc2 = add_root_smb_session(mnt_ctx);
 		if (rc2)
@@ -259,6 +261,8 @@ static int __dfs_mount_share(struct cifs_mount_ctx *mnt_ctx)
 		if (list_empty(&tcon->dfs_ses_list)) {
 			list_replace_init(&mnt_ctx->dfs_ses_list,
 					  &tcon->dfs_ses_list);
+			queue_delayed_work(dfscache_wq, &tcon->dfs_cache_work,
+					   dfs_cache_get_ttl() * HZ);
 		} else {
 			dfs_put_root_smb_sessions(&mnt_ctx->dfs_ses_list);
 		}
@@ -571,9 +575,13 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon, const stru
 
 	/* only send once per connect */
 	spin_lock(&tcon->tc_lock);
-	if (tcon->ses->ses_status != SES_GOOD ||
-	    (tcon->status != TID_NEW &&
-	    tcon->status != TID_NEED_TCON)) {
+	if (tcon->status != TID_NEW &&
+	    tcon->status != TID_NEED_TCON) {
+		spin_unlock(&tcon->tc_lock);
+		return -EHOSTDOWN;
+	}
+
+	if (tcon->status == TID_GOOD) {
 		spin_unlock(&tcon->tc_lock);
 		return 0;
 	}

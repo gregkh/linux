@@ -93,8 +93,8 @@ void vc4_hvs_dump_state(struct vc4_hvs *hvs)
 
 static int vc4_hvs_debugfs_underrun(struct seq_file *m, void *data)
 {
-	struct drm_info_node *node = m->private;
-	struct drm_device *dev = node->minor->dev;
+	struct drm_debugfs_entry *entry = m->private;
+	struct drm_device *dev = entry->dev;
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct drm_printer p = drm_seq_file_printer(m);
 
@@ -105,8 +105,8 @@ static int vc4_hvs_debugfs_underrun(struct seq_file *m, void *data)
 
 static int vc4_hvs_debugfs_dlist(struct seq_file *m, void *data)
 {
-	struct drm_info_node *node = m->private;
-	struct drm_device *dev = node->minor->dev;
+	struct drm_debugfs_entry *entry = m->private;
+	struct drm_device *dev = entry->dev;
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_hvs *hvs = vc4->hvs;
 	struct drm_printer p = drm_seq_file_printer(m);
@@ -570,6 +570,8 @@ void vc4_hvs_atomic_flush(struct drm_crtc *crtc,
 	bool enable_bg_fill = false;
 	u32 __iomem *dlist_start = vc4->hvs->dlist + vc4_state->mm.start;
 	u32 __iomem *dlist_next = dlist_start;
+	unsigned int zpos = 0;
+	bool found = false;
 	int idx;
 
 	if (!drm_dev_enter(dev, &idx)) {
@@ -577,29 +579,43 @@ void vc4_hvs_atomic_flush(struct drm_crtc *crtc,
 		return;
 	}
 
+	if (vc4_state->assigned_channel == VC4_HVS_CHANNEL_DISABLED)
+		return;
+
 	if (debug_dump_regs) {
 		DRM_INFO("CRTC %d HVS before:\n", drm_crtc_index(crtc));
 		vc4_hvs_dump_state(hvs);
 	}
 
 	/* Copy all the active planes' dlist contents to the hardware dlist. */
-	drm_atomic_crtc_for_each_plane(plane, crtc) {
-		/* Is this the first active plane? */
-		if (dlist_next == dlist_start) {
-			/* We need to enable background fill when a plane
-			 * could be alpha blending from the background, i.e.
-			 * where no other plane is underneath. It suffices to
-			 * consider the first active plane here since we set
-			 * needs_bg_fill such that either the first plane
-			 * already needs it or all planes on top blend from
-			 * the first or a lower plane.
-			 */
-			vc4_plane_state = to_vc4_plane_state(plane->state);
-			enable_bg_fill = vc4_plane_state->needs_bg_fill;
+	do {
+		found = false;
+
+		drm_atomic_crtc_for_each_plane(plane, crtc) {
+			if (plane->state->normalized_zpos != zpos)
+				continue;
+
+			/* Is this the first active plane? */
+			if (dlist_next == dlist_start) {
+				/* We need to enable background fill when a plane
+				 * could be alpha blending from the background, i.e.
+				 * where no other plane is underneath. It suffices to
+				 * consider the first active plane here since we set
+				 * needs_bg_fill such that either the first plane
+				 * already needs it or all planes on top blend from
+				 * the first or a lower plane.
+				 */
+				vc4_plane_state = to_vc4_plane_state(plane->state);
+				enable_bg_fill = vc4_plane_state->needs_bg_fill;
+			}
+
+			dlist_next += vc4_plane_write_dlist(plane, dlist_next);
+
+			found = true;
 		}
 
-		dlist_next += vc4_plane_write_dlist(plane, dlist_next);
-	}
+		zpos++;
+	} while (found);
 
 	writel(SCALER_CTL0_END, dlist_next);
 	dlist_next++;
@@ -747,7 +763,6 @@ int vc4_hvs_debugfs_init(struct drm_minor *minor)
 	struct drm_device *drm = minor->dev;
 	struct vc4_dev *vc4 = to_vc4_dev(drm);
 	struct vc4_hvs *hvs = vc4->hvs;
-	int ret;
 
 	if (!vc4->hvs)
 		return -ENODEV;
@@ -757,22 +772,53 @@ int vc4_hvs_debugfs_init(struct drm_minor *minor)
 				    minor->debugfs_root,
 				    &vc4->load_tracker_enabled);
 
-	ret = vc4_debugfs_add_file(minor, "hvs_dlists",
-				   vc4_hvs_debugfs_dlist, NULL);
-	if (ret)
-		return ret;
+	drm_debugfs_add_file(drm, "hvs_dlists", vc4_hvs_debugfs_dlist, NULL);
 
-	ret = vc4_debugfs_add_file(minor, "hvs_underrun",
-				   vc4_hvs_debugfs_underrun, NULL);
-	if (ret)
-		return ret;
+	drm_debugfs_add_file(drm, "hvs_underrun", vc4_hvs_debugfs_underrun, NULL);
 
-	ret = vc4_debugfs_add_regset32(minor, "hvs_regs",
-				       &hvs->regset);
-	if (ret)
-		return ret;
+	vc4_debugfs_add_regset32(drm, "hvs_regs", &hvs->regset);
 
 	return 0;
+}
+
+struct vc4_hvs *__vc4_hvs_alloc(struct vc4_dev *vc4, struct platform_device *pdev)
+{
+	struct drm_device *drm = &vc4->base;
+	struct vc4_hvs *hvs;
+
+	hvs = drmm_kzalloc(drm, sizeof(*hvs), GFP_KERNEL);
+	if (!hvs)
+		return ERR_PTR(-ENOMEM);
+
+	hvs->vc4 = vc4;
+	hvs->pdev = pdev;
+
+	spin_lock_init(&hvs->mm_lock);
+
+	/* Set up the HVS display list memory manager.  We never
+	 * overwrite the setup from the bootloader (just 128b out of
+	 * our 16K), since we don't want to scramble the screen when
+	 * transitioning from the firmware's boot setup to runtime.
+	 */
+	drm_mm_init(&hvs->dlist_mm,
+		    HVS_BOOTLOADER_DLIST_END,
+		    (SCALER_DLIST_SIZE >> 2) - HVS_BOOTLOADER_DLIST_END);
+
+	/* Set up the HVS LBM memory manager.  We could have some more
+	 * complicated data structure that allowed reuse of LBM areas
+	 * between planes when they don't overlap on the screen, but
+	 * for now we just allocate globally.
+	 */
+	if (!vc4->is_vc5)
+		/* 48k words of 2x12-bit pixels */
+		drm_mm_init(&hvs->lbm_mm, 0, 48 * 1024);
+	else
+		/* 60k words of 4x12-bit pixels */
+		drm_mm_init(&hvs->lbm_mm, 0, 60 * 1024);
+
+	vc4->hvs = hvs;
+
+	return hvs;
 }
 
 static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
@@ -785,11 +831,9 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 	u32 dispctrl;
 	u32 reg, top;
 
-	hvs = drmm_kzalloc(drm, sizeof(*hvs), GFP_KERNEL);
-	if (!hvs)
-		return -ENOMEM;
-	hvs->vc4 = vc4;
-	hvs->pdev = pdev;
+	hvs = __vc4_hvs_alloc(vc4, NULL);
+	if (IS_ERR(hvs))
+		return PTR_ERR(hvs);
 
 	hvs->regs = vc4_ioremap_regs(pdev, 0);
 	if (IS_ERR(hvs->regs))
@@ -842,29 +886,6 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 	else
 		hvs->dlist = hvs->regs + SCALER5_DLIST_START;
 
-	spin_lock_init(&hvs->mm_lock);
-
-	/* Set up the HVS display list memory manager.  We never
-	 * overwrite the setup from the bootloader (just 128b out of
-	 * our 16K), since we don't want to scramble the screen when
-	 * transitioning from the firmware's boot setup to runtime.
-	 */
-	drm_mm_init(&hvs->dlist_mm,
-		    HVS_BOOTLOADER_DLIST_END,
-		    (SCALER_DLIST_SIZE >> 2) - HVS_BOOTLOADER_DLIST_END);
-
-	/* Set up the HVS LBM memory manager.  We could have some more
-	 * complicated data structure that allowed reuse of LBM areas
-	 * between planes when they don't overlap on the screen, but
-	 * for now we just allocate globally.
-	 */
-	if (!vc4->is_vc5)
-		/* 48k words of 2x12-bit pixels */
-		drm_mm_init(&hvs->lbm_mm, 0, 48 * 1024);
-	else
-		/* 60k words of 4x12-bit pixels */
-		drm_mm_init(&hvs->lbm_mm, 0, 60 * 1024);
-
 	/* Upload filter kernels.  We only have the one for now, so we
 	 * keep it around for the lifetime of the driver.
 	 */
@@ -873,8 +894,6 @@ static int vc4_hvs_bind(struct device *dev, struct device *master, void *data)
 					   mitchell_netravali_1_3_1_3_kernel);
 	if (ret)
 		return ret;
-
-	vc4->hvs = hvs;
 
 	reg = HVS_READ(SCALER_DISPECTRL);
 	reg &= ~SCALER_DISPECTRL_DSP2_MUX_MASK;

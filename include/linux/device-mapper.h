@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2001 Sistina Software (UK) Limited.
  * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
@@ -433,10 +434,12 @@ const char *dm_shift_arg(struct dm_arg_set *as);
  */
 void dm_consume_args(struct dm_arg_set *as, unsigned int num_args);
 
-/*-----------------------------------------------------------------
+/*
+ *----------------------------------------------------------------
  * Functions for creating and manipulating mapped devices.
  * Drop the reference with dm_put when you finish with the object.
- *---------------------------------------------------------------*/
+ *----------------------------------------------------------------
+ */
 
 /*
  * DM_ANY_MINOR chooses the next available minor number.
@@ -517,9 +520,11 @@ struct queue_limits *dm_get_queue_limits(struct mapped_device *md);
 int dm_get_geometry(struct mapped_device *md, struct hd_geometry *geo);
 int dm_set_geometry(struct mapped_device *md, struct hd_geometry *geo);
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Functions for manipulating device-mapper tables.
- *---------------------------------------------------------------*/
+ *---------------------------------------------------------------
+ */
 
 /*
  * First create an empty table.
@@ -593,9 +598,11 @@ struct dm_table *dm_swap_table(struct mapped_device *md,
  */
 void dm_destroy_crypto_profile(struct blk_crypto_profile *profile);
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Macros.
- *---------------------------------------------------------------*/
+ *---------------------------------------------------------------
+ */
 #define DM_NAME "device-mapper"
 
 #define DM_FMT(fmt) DM_NAME ": " DM_MSG_PREFIX ": " fmt "\n"
@@ -612,8 +619,7 @@ void dm_destroy_crypto_profile(struct blk_crypto_profile *profile);
 #define DMDEBUG(fmt, ...) pr_debug(DM_FMT(fmt), ##__VA_ARGS__)
 #define DMDEBUG_LIMIT(fmt, ...) pr_debug_ratelimited(DM_FMT(fmt), ##__VA_ARGS__)
 
-#define DMEMIT(x...) sz += ((sz >= maxlen) ? \
-			  0 : scnprintf(result + sz, maxlen - sz, x))
+#define DMEMIT(x...) (sz += ((sz >= maxlen) ? 0 : scnprintf(result + sz, maxlen - sz, x)))
 
 #define DMEMIT_TARGET_NAME_VERSION(y) \
 		DMEMIT("target_name=%s,target_version=%u.%u.%u", \

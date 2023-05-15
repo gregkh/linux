@@ -276,7 +276,7 @@ static bool bvec_split_segs(const struct queue_limits *lim,
  * responsible for ensuring that @bs is only destroyed after processing of the
  * split bio has finished.
  */
-static struct bio *bio_split_rw(struct bio *bio, const struct queue_limits *lim,
+struct bio *bio_split_rw(struct bio *bio, const struct queue_limits *lim,
 		unsigned *segs, struct bio_set *bs, unsigned max_bytes)
 {
 	struct bio_vec bv, bvprv, *bvprvp = NULL;
@@ -336,6 +336,7 @@ split:
 	bio_clear_polled(bio);
 	return bio_split(bio, bytes >> SECTOR_SHIFT, GFP_NOIO, bs);
 }
+EXPORT_SYMBOL_GPL(bio_split_rw);
 
 /**
  * __bio_split_to_limits - split a bio to fit the queue limits
@@ -585,13 +586,6 @@ int __blk_rq_map_sg(struct request_queue *q, struct request *rq,
 	return nsegs;
 }
 EXPORT_SYMBOL(__blk_rq_map_sg);
-
-static inline unsigned int blk_rq_get_max_segments(struct request *rq)
-{
-	if (req_op(rq) == REQ_OP_DISCARD)
-		return queue_max_discard_segments(rq->q);
-	return queue_max_segments(rq->q);
-}
 
 static inline unsigned int blk_rq_get_max_sectors(struct request *rq,
 						  sector_t offset)

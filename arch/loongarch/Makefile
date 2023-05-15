@@ -71,14 +71,15 @@ KBUILD_AFLAGS_MODULE		+= -Wa,-mla-global-with-abs
 KBUILD_CFLAGS_MODULE		+= -fplt -Wa,-mla-global-with-abs,-mla-local-with-abs
 endif
 
+ifeq ($(CONFIG_RELOCATABLE),y)
+KBUILD_CFLAGS_KERNEL		+= -fPIE
+LDFLAGS_vmlinux			+= -static -pie --no-dynamic-linker -z notext
+endif
+
 cflags-y += -ffreestanding
 cflags-y += $(call cc-option, -mno-check-zero-division)
 
-ifndef CONFIG_PHYSICAL_START
 load-y		= 0x9000000000200000
-else
-load-y		= $(CONFIG_PHYSICAL_START)
-endif
 bootvars-y	= VMLINUX_LOAD_ADDRESS=$(load-y)
 
 drivers-$(CONFIG_PCI)		+= arch/loongarch/pci/

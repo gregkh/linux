@@ -401,7 +401,7 @@ struct erdma_write_sqe {
 
 	__le32 rsvd;
 
-	struct erdma_sge sgl[0];
+	struct erdma_sge sgl[];
 };
 
 struct erdma_send_sqe {
@@ -412,7 +412,7 @@ struct erdma_send_sqe {
 	};
 
 	__le32 length;
-	struct erdma_sge sgl[0];
+	struct erdma_sge sgl[];
 };
 
 struct erdma_readreq_sqe {

@@ -30,6 +30,9 @@
  *   creation to have a "primed golden context", i.e. a context image that
  *   already contains the changes needed to all the registers.
  *
+ *   Context workarounds should be implemented in the \*_ctx_workarounds_init()
+ *   variants respective to the targeted platforms.
+ *
  * - Engine workarounds: the list of these WAs is applied whenever the specific
  *   engine is reset. It's also possible that a set of engine classes share a
  *   common power domain and they are reset together. This happens on some
@@ -42,14 +45,27 @@
  *   saves/restores their values before/after the reset takes place. See
  *   ``drivers/gpu/drm/i915/gt/uc/intel_guc_ads.c`` for reference.
  *
+ *   Workarounds for registers specific to RCS and CCS should be implemented in
+ *   rcs_engine_wa_init() and ccs_engine_wa_init(), respectively; those for
+ *   registers belonging to BCS, VCS or VECS should be implemented in
+ *   xcs_engine_wa_init(). Workarounds for registers not belonging to a specific
+ *   engine's MMIO range but that are part of of the common RCS/CCS reset domain
+ *   should be implemented in general_render_compute_wa_init().
+ *
  * - GT workarounds: the list of these WAs is applied whenever these registers
  *   revert to their default values: on GPU reset, suspend/resume [1]_, etc.
+ *
+ *   GT workarounds should be implemented in the \*_gt_workarounds_init()
+ *   variants respective to the targeted platforms.
  *
  * - Register whitelist: some workarounds need to be implemented in userspace,
  *   but need to touch privileged registers. The whitelist in the kernel
  *   instructs the hardware to allow the access to happen. From the kernel side,
  *   this is just a special case of a MMIO workaround (as we write the list of
  *   these to/be-whitelisted registers to some special HW registers).
+ *
+ *   Register whitelisting should be done in the \*_whitelist_build() variants
+ *   respective to the targeted platforms.
  *
  * - Workaround batchbuffers: buffers that get executed automatically by the
  *   hardware on every HW context restore. These buffers are created and
@@ -783,7 +799,7 @@ static void dg2_ctx_workarounds_init(struct intel_engine_cs *engine,
 	/* Wa_18018764978:dg2 */
 	if (IS_DG2_GRAPHICS_STEP(engine->i915, G10, STEP_C0, STEP_FOREVER) ||
 	    IS_DG2_G11(engine->i915) || IS_DG2_G12(engine->i915))
-		wa_masked_en(wal, PSS_MODE2, SCOREBOARD_STALL_FLUSH_CONTROL);
+		wa_mcr_masked_en(wal, XEHP_PSS_MODE2, SCOREBOARD_STALL_FLUSH_CONTROL);
 
 	/* Wa_15010599737:dg2 */
 	wa_mcr_masked_en(wal, CHICKEN_RASTER_1, DIS_SF_ROUND_NEAREST_EVEN);
@@ -811,7 +827,7 @@ static void mtl_ctx_workarounds_init(struct intel_engine_cs *engine,
 		wa_mcr_masked_en(wal, VFLSKPD, VF_PREFETCH_TLB_DIS);
 
 		/* Wa_18018764978 */
-		wa_masked_en(wal, PSS_MODE2, SCOREBOARD_STALL_FLUSH_CONTROL);
+		wa_mcr_masked_en(wal, XEHP_PSS_MODE2, SCOREBOARD_STALL_FLUSH_CONTROL);
 	}
 
 	/* Wa_18019271663 */
@@ -1854,7 +1870,8 @@ static void wa_list_apply(const struct i915_wa_list *wal)
 
 	fw = wal_get_fw_for_rmw(uncore, wal);
 
-	spin_lock_irqsave(&uncore->lock, flags);
+	intel_gt_mcr_lock(gt, &flags);
+	spin_lock(&uncore->lock);
 	intel_uncore_forcewake_get__locked(uncore, fw);
 
 	for (i = 0, wa = wal->list; i < wal->count; i++, wa++) {
@@ -1883,7 +1900,8 @@ static void wa_list_apply(const struct i915_wa_list *wal)
 	}
 
 	intel_uncore_forcewake_put__locked(uncore, fw);
-	spin_unlock_irqrestore(&uncore->lock, flags);
+	spin_unlock(&uncore->lock);
+	intel_gt_mcr_unlock(gt, flags);
 }
 
 void intel_gt_apply_workarounds(struct intel_gt *gt)
@@ -1904,7 +1922,8 @@ static bool wa_list_verify(struct intel_gt *gt,
 
 	fw = wal_get_fw_for_rmw(uncore, wal);
 
-	spin_lock_irqsave(&uncore->lock, flags);
+	intel_gt_mcr_lock(gt, &flags);
+	spin_lock(&uncore->lock);
 	intel_uncore_forcewake_get__locked(uncore, fw);
 
 	for (i = 0, wa = wal->list; i < wal->count; i++, wa++)
@@ -1914,7 +1933,8 @@ static bool wa_list_verify(struct intel_gt *gt,
 				wal->name, from);
 
 	intel_uncore_forcewake_put__locked(uncore, fw);
-	spin_unlock_irqrestore(&uncore->lock, flags);
+	spin_unlock(&uncore->lock);
+	intel_gt_mcr_unlock(gt, flags);
 
 	return ok;
 }
@@ -2384,10 +2404,6 @@ rcs_engine_wa_init(struct intel_engine_cs *engine, struct i915_wa_list *wal)
 		/* Wa_1509727124 */
 		wa_mcr_masked_en(wal, GEN10_SAMPLER_MODE,
 				 SC_DISABLE_POWER_OPTIMIZATION_EBB);
-
-		/* Wa_22013037850 */
-		wa_mcr_write_or(wal, LSC_CHICKEN_BIT_0_UDW,
-				DISABLE_128B_EVICTION_COMMAND_UDW);
 	}
 
 	if (IS_DG2_GRAPHICS_STEP(i915, G10, STEP_B0, STEP_FOREVER) ||
@@ -2408,21 +2424,6 @@ rcs_engine_wa_init(struct intel_engine_cs *engine, struct i915_wa_list *wal)
 		/* Wa_14012419201:dg2 */
 		wa_mcr_masked_en(wal, GEN9_ROW_CHICKEN4,
 				 GEN12_DISABLE_HDR_PAST_PAYLOAD_HOLD_FIX);
-	}
-
-	if (IS_DG2_GRAPHICS_STEP(i915, G10, STEP_B0, STEP_C0) ||
-	    IS_DG2_G11(i915)) {
-		/*
-		 * Wa_22012826095:dg2
-		 * Wa_22013059131:dg2
-		 */
-		wa_mcr_write_clr_set(wal, LSC_CHICKEN_BIT_0_UDW,
-				     MAXREQS_PER_BANK,
-				     REG_FIELD_PREP(MAXREQS_PER_BANK, 2));
-
-		/* Wa_22013059131:dg2 */
-		wa_mcr_write_or(wal, LSC_CHICKEN_BIT_0,
-				FORCE_1_SUB_MESSAGE_PER_FRAGMENT);
 	}
 
 	/* Wa_1308578152:dg2_g10 when first gslice is fused off */
@@ -2449,16 +2450,6 @@ rcs_engine_wa_init(struct intel_engine_cs *engine, struct i915_wa_list *wal)
 		 */
 		wa_mcr_masked_en(wal, GEN8_ROW_CHICKEN,
 				 MDQ_ARBITRATION_MODE | UGM_BACKUP_MODE);
-
-		/*
-		 * Wa_14010918519:dg2_g10
-		 *
-		 * LSC_CHICKEN_BIT_0 always reads back as 0 is this stepping,
-		 * so ignoring verification.
-		 */
-		wa_mcr_add(wal, LSC_CHICKEN_BIT_0_UDW, 0,
-			   FORCE_SLM_FENCE_SCOPE_TO_TILE | FORCE_UGM_FENCE_SCOPE_TO_TILE,
-			   0, false);
 	}
 
 	if (IS_DG2_GRAPHICS_STEP(i915, G10, STEP_A0, STEP_B0)) {
@@ -2993,20 +2984,6 @@ add_render_compute_tuning_settings(struct drm_i915_private *i915,
 	if (IS_DG2(i915)) {
 		wa_mcr_write_or(wal, XEHP_L3SCQREG7, BLEND_FILL_CACHING_OPT_DIS);
 		wa_mcr_write_clr_set(wal, RT_CTRL, STACKID_CTRL, STACKID_CTRL_512);
-
-		/*
-		 * This is also listed as Wa_22012654132 for certain DG2
-		 * steppings, but the tuning setting programming is a superset
-		 * since it applies to all DG2 variants and steppings.
-		 *
-		 * Note that register 0xE420 is write-only and cannot be read
-		 * back for verification on DG2 (due to Wa_14012342262), so
-		 * we need to explicitly skip the readback.
-		 */
-		wa_mcr_add(wal, GEN10_CACHE_MODE_SS, 0,
-			   _MASKED_BIT_ENABLE(ENABLE_PREFETCH_INTO_IC),
-			   0 /* write-only, so skip validation */,
-			   true);
 	}
 
 	/*
@@ -3017,6 +2994,9 @@ add_render_compute_tuning_settings(struct drm_i915_private *i915,
 	if (INTEL_INFO(i915)->tuning_thread_rr_after_dep)
 		wa_mcr_masked_field_set(wal, GEN9_ROW_CHICKEN4, THREAD_EX_ARB_MODE,
 					THREAD_EX_ARB_MODE_RR_AFTER_DEP);
+
+	if (GRAPHICS_VER(i915) == 12 && GRAPHICS_VER_FULL(i915) < IP_VER(12, 50))
+		wa_write_clr(wal, GEN8_GARBCNTL, GEN12_BUS_HASH_CTL_BIT_EXC);
 }
 
 /*
@@ -3037,6 +3017,15 @@ general_render_compute_wa_init(struct intel_engine_cs *engine, struct i915_wa_li
 
 	if (IS_MTL_GRAPHICS_STEP(i915, M, STEP_A0, STEP_B0) ||
 	    IS_MTL_GRAPHICS_STEP(i915, P, STEP_A0, STEP_B0) ||
+	    IS_DG2_GRAPHICS_STEP(i915, G10, STEP_B0, STEP_FOREVER) ||
+	    IS_DG2_G11(i915) || IS_DG2_G12(i915)) {
+		/* Wa_22013037850 */
+		wa_mcr_write_or(wal, LSC_CHICKEN_BIT_0_UDW,
+				DISABLE_128B_EVICTION_COMMAND_UDW);
+	}
+
+	if (IS_MTL_GRAPHICS_STEP(i915, M, STEP_A0, STEP_B0) ||
+	    IS_MTL_GRAPHICS_STEP(i915, P, STEP_A0, STEP_B0) ||
 	    IS_PONTEVECCHIO(i915) ||
 	    IS_DG2(i915)) {
 		/* Wa_22014226127 */
@@ -3048,6 +3037,33 @@ general_render_compute_wa_init(struct intel_engine_cs *engine, struct i915_wa_li
 	    IS_DG2(i915)) {
 		/* Wa_18017747507 */
 		wa_masked_en(wal, VFG_PREEMPTION_CHICKEN, POLYGON_TRIFAN_LINELOOP_DISABLE);
+	}
+
+	if (IS_DG2_GRAPHICS_STEP(i915, G10, STEP_B0, STEP_C0) ||
+	    IS_DG2_G11(i915)) {
+		/*
+		 * Wa_22012826095:dg2
+		 * Wa_22013059131:dg2
+		 */
+		wa_mcr_write_clr_set(wal, LSC_CHICKEN_BIT_0_UDW,
+				     MAXREQS_PER_BANK,
+				     REG_FIELD_PREP(MAXREQS_PER_BANK, 2));
+
+		/* Wa_22013059131:dg2 */
+		wa_mcr_write_or(wal, LSC_CHICKEN_BIT_0,
+				FORCE_1_SUB_MESSAGE_PER_FRAGMENT);
+	}
+
+	if (IS_DG2_GRAPHICS_STEP(i915, G10, STEP_A0, STEP_B0)) {
+		/*
+		 * Wa_14010918519:dg2_g10
+		 *
+		 * LSC_CHICKEN_BIT_0 always reads back as 0 is this stepping,
+		 * so ignoring verification.
+		 */
+		wa_mcr_add(wal, LSC_CHICKEN_BIT_0_UDW, 0,
+			   FORCE_SLM_FENCE_SCOPE_TO_TILE | FORCE_UGM_FENCE_SCOPE_TO_TILE,
+			   0, false);
 	}
 
 	if (IS_PONTEVECCHIO(i915)) {
@@ -3095,6 +3111,19 @@ general_render_compute_wa_init(struct intel_engine_cs *engine, struct i915_wa_li
 		 */
 		wa_mcr_write_or(wal, LSC_CHICKEN_BIT_0_UDW, DIS_CHAIN_2XSIMD8);
 	}
+
+	if (IS_DG2_GRAPHICS_STEP(i915, G10, STEP_A0, STEP_C0) || IS_DG2_G11(i915))
+		/*
+		 * Wa_22012654132
+		 *
+		 * Note that register 0xE420 is write-only and cannot be read
+		 * back for verification on DG2 (due to Wa_14012342262), so
+		 * we need to explicitly skip the readback.
+		 */
+		wa_mcr_add(wal, GEN10_CACHE_MODE_SS, 0,
+			   _MASKED_BIT_ENABLE(ENABLE_PREFETCH_INTO_IC),
+			   0 /* write-only, so skip validation */,
+			   true);
 }
 
 static void

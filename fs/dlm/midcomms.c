@@ -146,8 +146,8 @@
 
 /* init value for sequence numbers for testing purpose only e.g. overflows */
 #define DLM_SEQ_INIT		0
-/* 3 minutes wait to sync ending of dlm */
-#define DLM_SHUTDOWN_TIMEOUT	msecs_to_jiffies(3 * 60 * 1000)
+/* 5 seconds wait to sync ending of dlm */
+#define DLM_SHUTDOWN_TIMEOUT	msecs_to_jiffies(5000)
 #define DLM_VERSION_NOT_SET	0
 
 struct midcomms_node {
@@ -467,7 +467,7 @@ static void dlm_pas_fin_ack_rcv(struct midcomms_node *node)
 		break;
 	default:
 		spin_unlock(&node->state_lock);
-		log_print("%s: unexpected state: %d\n",
+		log_print("%s: unexpected state: %d",
 			  __func__, node->state);
 		WARN_ON_ONCE(1);
 		return;
@@ -506,9 +506,6 @@ static void dlm_midcomms_receive_buffer(union dlm_packet *p,
 			case DLM_ESTABLISHED:
 				dlm_send_ack(node->nodeid, node->seq_next);
 
-				node->state = DLM_CLOSE_WAIT;
-				pr_debug("switch node %d to state %s\n",
-					 node->nodeid, dlm_state_str(node->state));
 				/* passive shutdown DLM_LAST_ACK case 1
 				 * additional we check if the node is used by
 				 * cluster manager events at all.
@@ -519,6 +516,10 @@ static void dlm_midcomms_receive_buffer(union dlm_packet *p,
 						 node->nodeid, dlm_state_str(node->state));
 					set_bit(DLM_NODE_FLAG_STOP_RX, &node->flags);
 					dlm_send_fin(node, dlm_pas_fin_ack_rcv);
+				} else {
+					node->state = DLM_CLOSE_WAIT;
+					pr_debug("switch node %d to state %s\n",
+						 node->nodeid, dlm_state_str(node->state));
 				}
 				break;
 			case DLM_FIN_WAIT1:
@@ -533,14 +534,13 @@ static void dlm_midcomms_receive_buffer(union dlm_packet *p,
 				midcomms_node_reset(node);
 				pr_debug("switch node %d to state %s\n",
 					 node->nodeid, dlm_state_str(node->state));
-				wake_up(&node->shutdown_wait);
 				break;
 			case DLM_LAST_ACK:
 				/* probably remove_member caught it, do nothing */
 				break;
 			default:
 				spin_unlock(&node->state_lock);
-				log_print("%s: unexpected state: %d\n",
+				log_print("%s: unexpected state: %d",
 					  __func__, node->state);
 				WARN_ON_ONCE(1);
 				return;
@@ -606,16 +606,8 @@ dlm_midcomms_recv_node_lookup(int nodeid, const union dlm_packet *p,
 				case DLM_ESTABLISHED:
 					break;
 				default:
-					/* some invalid state passive shutdown
-					 * was failed, we try to reset and
-					 * hope it will go on.
-					 */
-					log_print("reset node %d because shutdown stuck",
-						  node->nodeid);
-
-					midcomms_node_reset(node);
-					node->state = DLM_ESTABLISHED;
-					break;
+					spin_unlock(&node->state_lock);
+					return NULL;
 				}
 				spin_unlock(&node->state_lock);
 			}
@@ -665,6 +657,7 @@ static int dlm_midcomms_version_check_3_2(struct midcomms_node *node)
 	switch (node->version) {
 	case DLM_VERSION_NOT_SET:
 		node->version = DLM_VERSION_3_2;
+		wake_up(&node->shutdown_wait);
 		log_print("version 0x%08x for node %d detected", DLM_VERSION_3_2,
 			  node->nodeid);
 		break;
@@ -834,6 +827,7 @@ static int dlm_midcomms_version_check_3_1(struct midcomms_node *node)
 	switch (node->version) {
 	case DLM_VERSION_NOT_SET:
 		node->version = DLM_VERSION_3_1;
+		wake_up(&node->shutdown_wait);
 		log_print("version 0x%08x for node %d detected", DLM_VERSION_3_1,
 			  node->nodeid);
 		break;
@@ -1267,7 +1261,6 @@ static void dlm_act_fin_ack_rcv(struct midcomms_node *node)
 		midcomms_node_reset(node);
 		pr_debug("switch node %d to state %s\n",
 			 node->nodeid, dlm_state_str(node->state));
-		wake_up(&node->shutdown_wait);
 		break;
 	case DLM_CLOSED:
 		/* not valid but somehow we got what we want */
@@ -1275,7 +1268,7 @@ static void dlm_act_fin_ack_rcv(struct midcomms_node *node)
 		break;
 	default:
 		spin_unlock(&node->state_lock);
-		log_print("%s: unexpected state: %d\n",
+		log_print("%s: unexpected state: %d",
 			  __func__, node->state);
 		WARN_ON_ONCE(1);
 		return;
@@ -1375,7 +1368,7 @@ void dlm_midcomms_remove_member(int nodeid)
 			/* already gone, do nothing */
 			break;
 		default:
-			log_print("%s: unexpected state: %d\n",
+			log_print("%s: unexpected state: %d",
 				  __func__, node->state);
 			break;
 		}
@@ -1392,6 +1385,27 @@ static void midcomms_node_release(struct rcu_head *rcu)
 	WARN_ON_ONCE(atomic_read(&node->send_queue_cnt));
 	dlm_send_queue_flush(node);
 	kfree(node);
+}
+
+void dlm_midcomms_version_wait(void)
+{
+	struct midcomms_node *node;
+	int i, idx, ret;
+
+	idx = srcu_read_lock(&nodes_srcu);
+	for (i = 0; i < CONN_HASH_SIZE; i++) {
+		hlist_for_each_entry_rcu(node, &node_hash[i], hlist) {
+			ret = wait_event_timeout(node->shutdown_wait,
+						 node->version != DLM_VERSION_NOT_SET ||
+						 node->state == DLM_CLOSED ||
+						 test_bit(DLM_NODE_FLAG_CLOSE, &node->flags),
+						 DLM_SHUTDOWN_TIMEOUT);
+			if (!ret || test_bit(DLM_NODE_FLAG_CLOSE, &node->flags))
+				pr_debug("version wait timed out for node %d with state %s\n",
+					 node->nodeid, dlm_state_str(node->state));
+		}
+	}
+	srcu_read_unlock(&nodes_srcu, idx);
 }
 
 static void midcomms_shutdown(struct midcomms_node *node)
@@ -1418,8 +1432,7 @@ static void midcomms_shutdown(struct midcomms_node *node)
 		break;
 	case DLM_CLOSED:
 		/* we have what we want */
-		spin_unlock(&node->state_lock);
-		return;
+		break;
 	default:
 		/* busy to enter DLM_FIN_WAIT1, wait until passive
 		 * done in shutdown_wait to enter DLM_CLOSED.
@@ -1436,25 +1449,18 @@ static void midcomms_shutdown(struct midcomms_node *node)
 				 node->state == DLM_CLOSED ||
 				 test_bit(DLM_NODE_FLAG_CLOSE, &node->flags),
 				 DLM_SHUTDOWN_TIMEOUT);
-	if (!ret || test_bit(DLM_NODE_FLAG_CLOSE, &node->flags)) {
+	if (!ret || test_bit(DLM_NODE_FLAG_CLOSE, &node->flags))
 		pr_debug("active shutdown timed out for node %d with state %s\n",
 			 node->nodeid, dlm_state_str(node->state));
-		midcomms_node_reset(node);
-		dlm_lowcomms_shutdown_node(node->nodeid, true);
-		return;
-	}
-
-	pr_debug("active shutdown done for node %d with state %s\n",
-		 node->nodeid, dlm_state_str(node->state));
-	dlm_lowcomms_shutdown_node(node->nodeid, false);
+	else
+		pr_debug("active shutdown done for node %d with state %s\n",
+			 node->nodeid, dlm_state_str(node->state));
 }
 
 void dlm_midcomms_shutdown(void)
 {
 	struct midcomms_node *node;
 	int i, idx;
-
-	dlm_lowcomms_shutdown();
 
 	mutex_lock(&close_lock);
 	idx = srcu_read_lock(&nodes_srcu);
@@ -1473,6 +1479,8 @@ void dlm_midcomms_shutdown(void)
 	}
 	srcu_read_unlock(&nodes_srcu, idx);
 	mutex_unlock(&close_lock);
+
+	dlm_lowcomms_shutdown();
 }
 
 int dlm_midcomms_close(int nodeid)

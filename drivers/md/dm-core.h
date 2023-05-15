@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Internal header file _only_ for device mapper core
  *
@@ -216,7 +217,7 @@ struct dm_table {
 	struct list_head devices;
 
 	/* events get handed up using this callback */
-	void (*event_fn)(void *);
+	void (*event_fn)(void *data);
 	void *event_context;
 
 	struct dm_md_mempools *mempools;

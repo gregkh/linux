@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0
-#include <linux/acpi.h>
-#include <linux/ctype.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
@@ -144,7 +142,7 @@ static const char *sm_state_to_str(unsigned short sm_state)
 	return sm_state_strings[sm_state];
 }
 
-static const char *gpio_of_names[] = {
+static const char *gpio_names[] = {
 	"mod-def0",
 	"los",
 	"tx-fault",
@@ -2198,6 +2196,11 @@ static void sfp_sm_module(struct sfp *sfp, unsigned int event)
 			break;
 		}
 
+		/* Force a poll to re-read the hardware signal state after
+		 * sfp_sm_mod_probe() changed state_hw_mask.
+		 */
+		mod_delayed_work(system_wq, &sfp->poll, 1);
+
 		err = sfp_hwmon_insert(sfp);
 		if (err)
 			dev_warn(sfp->dev, "hwmon probe failed: %pe\n",
@@ -2484,6 +2487,9 @@ static int sfp_module_eeprom(struct sfp *sfp, struct ethtool_eeprom *ee,
 	unsigned int first, last, len;
 	int ret;
 
+	if (!(sfp->state & SFP_F_PRESENT))
+		return -ENODEV;
+
 	if (ee->len == 0)
 		return -EINVAL;
 
@@ -2516,6 +2522,9 @@ static int sfp_module_eeprom_by_page(struct sfp *sfp,
 				     const struct ethtool_module_eeprom *page,
 				     struct netlink_ext_ack *extack)
 {
+	if (!(sfp->state & SFP_F_PRESENT))
+		return -ENODEV;
+
 	if (page->bank) {
 		NL_SET_ERR_MSG(extack, "Banks not supported");
 		return -EOPNOTSUPP;
@@ -2569,7 +2578,7 @@ static void sfp_check_state(struct sfp *sfp)
 
 	for (i = 0; i < GPIO_MAX; i++)
 		if (changed & BIT(i))
-			dev_dbg(sfp->dev, "%s %u -> %u\n", gpio_of_names[i],
+			dev_dbg(sfp->dev, "%s %u -> %u\n", gpio_names[i],
 				!!(sfp->state & BIT(i)), !!(state & BIT(i)));
 
 	state |= sfp->state & (SFP_F_TX_DISABLE | SFP_F_RATE_SELECT);
@@ -2651,10 +2660,8 @@ static void sfp_cleanup(void *data)
 
 static int sfp_i2c_get(struct sfp *sfp)
 {
-	struct acpi_handle *acpi_handle;
 	struct fwnode_handle *h;
 	struct i2c_adapter *i2c;
-	struct device_node *np;
 	int err;
 
 	h = fwnode_find_reference(dev_fwnode(sfp->dev), "i2c-bus", 0);
@@ -2663,16 +2670,7 @@ static int sfp_i2c_get(struct sfp *sfp)
 		return -ENODEV;
 	}
 
-	if (is_acpi_device_node(h)) {
-		acpi_handle = ACPI_HANDLE_FWNODE(h);
-		i2c = i2c_acpi_find_adapter_by_handle(acpi_handle);
-	} else if ((np = to_of_node(h)) != NULL) {
-		i2c = of_find_i2c_adapter_by_node(np);
-	} else {
-		err = -EINVAL;
-		goto put;
-	}
-
+	i2c = i2c_get_adapter_by_fwnode(h);
 	if (!i2c) {
 		err = -EPROBE_DEFER;
 		goto put;
@@ -2703,19 +2701,11 @@ static int sfp_probe(struct platform_device *pdev)
 	if (err < 0)
 		return err;
 
-	sff = sfp->type = &sfp_data;
+	sff = device_get_match_data(sfp->dev);
+	if (!sff)
+		sff = &sfp_data;
 
-	if (pdev->dev.of_node) {
-		const struct of_device_id *id;
-
-		id = of_match_node(sfp_of_match, pdev->dev.of_node);
-		if (WARN_ON(!id))
-			return -EINVAL;
-
-		sff = sfp->type = id->data;
-	} else if (!has_acpi_companion(&pdev->dev)) {
-		return -EINVAL;
-	}
+	sfp->type = sff;
 
 	err = sfp_i2c_get(sfp);
 	if (err)
@@ -2724,7 +2714,7 @@ static int sfp_probe(struct platform_device *pdev)
 	for (i = 0; i < GPIO_MAX; i++)
 		if (sff->gpios & BIT(i)) {
 			sfp->gpio[i] = devm_gpiod_get_optional(sfp->dev,
-					   gpio_of_names[i], gpio_flags[i]);
+					   gpio_names[i], gpio_flags[i]);
 			if (IS_ERR(sfp->gpio[i]))
 				return PTR_ERR(sfp->gpio[i]);
 		}
@@ -2779,7 +2769,7 @@ static int sfp_probe(struct platform_device *pdev)
 
 		sfp_irq_name = devm_kasprintf(sfp->dev, GFP_KERNEL,
 					      "%s-%s", dev_name(sfp->dev),
-					      gpio_of_names[i]);
+					      gpio_names[i]);
 
 		if (!sfp_irq_name)
 			return -ENOMEM;

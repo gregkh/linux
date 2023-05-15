@@ -43,7 +43,7 @@
 
 static unsigned int dm_verity_prefetch_cluster = DM_VERITY_DEFAULT_PREFETCH_SIZE;
 
-module_param_named(prefetch_cluster, dm_verity_prefetch_cluster, uint, S_IRUGO | S_IWUSR);
+module_param_named(prefetch_cluster, dm_verity_prefetch_cluster, uint, 0644);
 
 static DEFINE_STATIC_KEY_FALSE(use_tasklet_enabled);
 
@@ -110,22 +110,24 @@ static int verity_hash_update(struct dm_verity *v, struct ahash_request *req,
 		sg_init_one(&sg, data, len);
 		ahash_request_set_crypt(req, &sg, NULL, len);
 		return crypto_wait_req(crypto_ahash_update(req), wait);
-	} else {
-		do {
-			int r;
-			size_t this_step = min_t(size_t, len, PAGE_SIZE - offset_in_page(data));
-			flush_kernel_vmap_range((void *)data, this_step);
-			sg_init_table(&sg, 1);
-			sg_set_page(&sg, vmalloc_to_page(data), this_step, offset_in_page(data));
-			ahash_request_set_crypt(req, &sg, NULL, this_step);
-			r = crypto_wait_req(crypto_ahash_update(req), wait);
-			if (unlikely(r))
-				return r;
-			data += this_step;
-			len -= this_step;
-		} while (len);
-		return 0;
 	}
+
+	do {
+		int r;
+		size_t this_step = min_t(size_t, len, PAGE_SIZE - offset_in_page(data));
+
+		flush_kernel_vmap_range((void *)data, this_step);
+		sg_init_table(&sg, 1);
+		sg_set_page(&sg, vmalloc_to_page(data), this_step, offset_in_page(data));
+		ahash_request_set_crypt(req, &sg, NULL, this_step);
+		r = crypto_wait_req(crypto_ahash_update(req), wait);
+		if (unlikely(r))
+			return r;
+		data += this_step;
+		len -= this_step;
+	} while (len);
+
+	return 0;
 }
 
 /*
@@ -164,7 +166,7 @@ static int verity_hash_final(struct dm_verity *v, struct ahash_request *req,
 		r = verity_hash_update(v, req, v->salt, v->salt_size, wait);
 
 		if (r < 0) {
-			DMERR("verity_hash_final failed updating salt: %d", r);
+			DMERR("%s failed updating salt: %d", __func__, r);
 			goto out;
 		}
 	}
@@ -332,10 +334,8 @@ static int verity_verify_level(struct dm_verity *v, struct dm_verity_io *io,
 			 */
 			r = -EAGAIN;
 			goto release_ret_r;
-		}
-		else if (verity_fec_decode(v, io,
-					   DM_VERITY_BLOCK_TYPE_METADATA,
-					   hash_block, data, NULL) == 0)
+		} else if (verity_fec_decode(v, io, DM_VERITY_BLOCK_TYPE_METADATA,
+					     hash_block, data, NULL) == 0)
 			aux->hash_verified = 1;
 		else if (verity_handle_err(v,
 					   DM_VERITY_BLOCK_TYPE_METADATA,
@@ -424,7 +424,7 @@ static int verity_for_io_block(struct dm_verity *v, struct dm_verity_io *io,
 		r = crypto_wait_req(crypto_ahash_update(req), wait);
 
 		if (unlikely(r < 0)) {
-			DMERR("verity_for_io_block crypto op failed: %d", r);
+			DMERR("%s crypto op failed: %d", __func__, r);
 			return r;
 		}
 
@@ -685,8 +685,10 @@ static void verity_prefetch_io(struct work_struct *work)
 	for (i = v->levels - 2; i >= 0; i--) {
 		sector_t hash_block_start;
 		sector_t hash_block_end;
+
 		verity_hash_at_level(v, pw->block, i, &hash_block_start, NULL);
 		verity_hash_at_level(v, pw->block + pw->n_blocks - 1, i, &hash_block_end, NULL);
+
 		if (!i) {
 			unsigned int cluster = READ_ONCE(dm_verity_prefetch_cluster);
 
@@ -1162,7 +1164,6 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	struct dm_verity_sig_opts verify_args = {0};
 	struct dm_arg_set as;
 	unsigned int num;
-	unsigned int wq_flags;
 	unsigned long long num_ll;
 	int r;
 	int i;
@@ -1370,6 +1371,7 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	hash_position = v->hash_start;
 	for (i = v->levels - 1; i >= 0; i--) {
 		sector_t s;
+
 		v->hash_level_block[i] = hash_position;
 		s = (v->data_blocks + ((sector_t)1 << ((i + 1) * v->hash_per_block_bits)) - 1)
 					>> ((i + 1) * v->hash_per_block_bits);
@@ -1399,8 +1401,6 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad;
 	}
 
-	/* WQ_UNBOUND greatly improves performance when running on ramdisk */
-	wq_flags = WQ_MEM_RECLAIM | WQ_UNBOUND;
 	/*
 	 * Using WQ_HIGHPRI improves throughput and completion latency by
 	 * reducing wait times when reading from a dm-verity device.
@@ -1410,8 +1410,7 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	 * will fall-back to using it for error handling (or if the bufio cache
 	 * doesn't have required hashes).
 	 */
-	wq_flags |= WQ_HIGHPRI;
-	v->verify_wq = alloc_workqueue("kverityd", wq_flags, num_online_cpus());
+	v->verify_wq = alloc_workqueue("kverityd", WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
 	if (!v->verify_wq) {
 		ti->error = "Cannot allocate workqueue";
 		r = -ENOMEM;

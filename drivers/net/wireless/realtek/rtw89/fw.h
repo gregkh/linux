@@ -171,6 +171,8 @@ struct rtw89_fw_hdr_section_info {
 	const u8 *addr;
 	u32 len;
 	u32 dladdr;
+	u32 mssc;
+	u8 type;
 };
 
 struct rtw89_fw_bin_info {
@@ -203,6 +205,7 @@ struct rtw89_h2creg_sch_tx_en {
 #define RTW89_DFS_CHAN_TIME 105
 #define RTW89_OFF_CHAN_TIME 100
 #define RTW89_DWELL_TIME 20
+#define RTW89_DWELL_TIME_6G 10
 #define RTW89_SCAN_WIDTH 0
 #define RTW89_SCANOFLD_MAX_SSID 8
 #define RTW89_SCANOFLD_MAX_IE_LEN 512
@@ -480,14 +483,21 @@ static inline void RTW89_SET_EDCA_PARAM(void *cmd, u32 val)
 #define FW_EDCA_PARAM_CWMIN_MSK GENMASK(11, 8)
 #define FW_EDCA_PARAM_AIFS_MSK GENMASK(7, 0)
 
+#define FWDL_SECURITY_SECTION_TYPE 9
+#define FWDL_SECURITY_SIGLEN 512
+
+#define GET_FWSECTION_HDR_DL_ADDR(fwhdr)	\
+	le32_get_bits(*((const __le32 *)(fwhdr)), GENMASK(31, 0))
+#define GET_FWSECTION_HDR_SECTIONTYPE(fwhdr)	\
+	le32_get_bits(*((const __le32 *)(fwhdr) + 1), GENMASK(27, 24))
 #define GET_FWSECTION_HDR_SEC_SIZE(fwhdr)	\
 	le32_get_bits(*((const __le32 *)(fwhdr) + 1), GENMASK(23, 0))
 #define GET_FWSECTION_HDR_CHECKSUM(fwhdr)	\
 	le32_get_bits(*((const __le32 *)(fwhdr) + 1), BIT(28))
 #define GET_FWSECTION_HDR_REDL(fwhdr)	\
 	le32_get_bits(*((const __le32 *)(fwhdr) + 1), BIT(29))
-#define GET_FWSECTION_HDR_DL_ADDR(fwhdr)	\
-	le32_get_bits(*((const __le32 *)(fwhdr)), GENMASK(31, 0))
+#define GET_FWSECTION_HDR_MSSC(fwhdr)	\
+	le32_get_bits(*((const __le32 *)(fwhdr) + 2), GENMASK(31, 0))
 
 #define GET_FW_HDR_MAJOR_VERSION(fwhdr)	\
 	le32_get_bits(*((const __le32 *)(fwhdr) + 1), GENMASK(7, 0))
@@ -3508,7 +3518,11 @@ int rtw89_fw_h2c_raw_with_hdr(struct rtw89_dev *rtwdev,
 int rtw89_fw_h2c_raw(struct rtw89_dev *rtwdev, const u8 *buf, u16 len);
 void rtw89_fw_send_all_early_h2c(struct rtw89_dev *rtwdev);
 void rtw89_fw_free_all_early_h2c(struct rtw89_dev *rtwdev);
-int rtw89_fw_h2c_general_pkt(struct rtw89_dev *rtwdev, u8 macid);
+int rtw89_fw_h2c_general_pkt(struct rtw89_dev *rtwdev, struct rtw89_vif *rtwvif,
+			     u8 macid);
+void rtw89_fw_release_general_pkt_list_vif(struct rtw89_dev *rtwdev,
+					   struct rtw89_vif *rtwvif, bool notify_fw);
+void rtw89_fw_release_general_pkt_list(struct rtw89_dev *rtwdev, bool notify_fw);
 int rtw89_fw_h2c_ba_cam(struct rtw89_dev *rtwdev, struct rtw89_sta *rtwsta,
 			bool valid, struct ieee80211_ampdu_params *params);
 void rtw89_fw_h2c_init_ba_cam_v1(struct rtw89_dev *rtwdev);

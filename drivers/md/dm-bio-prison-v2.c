@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012-2017 Red Hat, Inc.
  *
@@ -194,7 +195,7 @@ static bool __put(struct dm_bio_prison_v2 *prison,
 
 	// FIXME: shared locks granted above the lock level could starve this
 	if (!cell->shared_count) {
-		if (cell->exclusive_lock){
+		if (cell->exclusive_lock) {
 			if (cell->quiesce_continuation) {
 				queue_work(prison->wq, cell->quiesce_continuation);
 				cell->quiesce_continuation = NULL;

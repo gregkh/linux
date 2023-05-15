@@ -442,6 +442,26 @@ union efi_dxe_services_table {
 	} mixed_mode;
 };
 
+typedef union efi_memory_attribute_protocol efi_memory_attribute_protocol_t;
+
+union efi_memory_attribute_protocol {
+	struct {
+		efi_status_t (__efiapi *get_memory_attributes)(
+			efi_memory_attribute_protocol_t *, efi_physical_addr_t, u64, u64 *);
+
+		efi_status_t (__efiapi *set_memory_attributes)(
+			efi_memory_attribute_protocol_t *, efi_physical_addr_t, u64, u64);
+
+		efi_status_t (__efiapi *clear_memory_attributes)(
+			efi_memory_attribute_protocol_t *, efi_physical_addr_t, u64, u64);
+	};
+	struct {
+		u32 get_memory_attributes;
+		u32 set_memory_attributes;
+		u32 clear_memory_attributes;
+	} mixed_mode;
+};
+
 typedef union efi_uga_draw_protocol efi_uga_draw_protocol_t;
 
 union efi_uga_draw_protocol {
@@ -1103,13 +1123,15 @@ struct efi_smbios_type4_record {
 };
 
 #define efi_get_smbios_string(__record, __type, __name) ({		\
-	int size = sizeof(struct efi_smbios_type ## __type ## _record);	\
 	int off = offsetof(struct efi_smbios_type ## __type ## _record,	\
 			   __name);					\
-	__efi_get_smbios_string((__record), __type, off, size);		\
+	__efi_get_smbios_string((__record), __type, off);		\
 })
 
 const u8 *__efi_get_smbios_string(const struct efi_smbios_record *record,
-				  u8 type, int offset, int recsize);
+				  u8 type, int offset);
+
+void efi_remap_image(unsigned long image_base, unsigned alloc_size,
+		     unsigned long code_size);
 
 #endif

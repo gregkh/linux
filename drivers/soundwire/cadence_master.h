@@ -107,7 +107,6 @@ struct sdw_cdns_dai_runtime {
  * @instance: instance number
  * @response_buf: SoundWire response buffer
  * @tx_complete: Tx completion
- * @defer: Defer pointer
  * @ports: Data ports
  * @num_ports: Total number of data ports
  * @pcm: PCM streams
@@ -128,7 +127,6 @@ struct sdw_cdns {
 	u32 response_buf[CDNS_MCP_IP_MAX_CMD_LEN + 2];
 
 	struct completion tx_complete;
-	struct sdw_defer *defer;
 
 	struct sdw_cdns_port *ports;
 	int num_ports;
@@ -156,7 +154,6 @@ struct sdw_cdns {
 /* Exported symbols */
 
 int sdw_cdns_probe(struct sdw_cdns *cdns);
-extern struct sdw_master_ops sdw_cdns_master_ops;
 
 irqreturn_t sdw_cdns_irq(int irq, void *dev_id);
 irqreturn_t sdw_cdns_thread(int irq, void *dev_id);
@@ -182,14 +179,10 @@ void sdw_cdns_config_stream(struct sdw_cdns *cdns,
 			    u32 ch, u32 dir, struct sdw_cdns_pdi *pdi);
 
 enum sdw_command_response
-cdns_reset_page_addr(struct sdw_bus *bus, unsigned int dev_num);
-
-enum sdw_command_response
 cdns_xfer_msg(struct sdw_bus *bus, struct sdw_msg *msg);
 
 enum sdw_command_response
-cdns_xfer_msg_defer(struct sdw_bus *bus,
-		    struct sdw_msg *msg, struct sdw_defer *defer);
+cdns_xfer_msg_defer(struct sdw_bus *bus);
 
 u32 cdns_read_ping_status(struct sdw_bus *bus);
 

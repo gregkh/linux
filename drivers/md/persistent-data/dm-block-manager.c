@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011 Red Hat, Inc.
  *
@@ -91,6 +92,7 @@ static void __add_holder(struct block_lock *lock, struct task_struct *task)
 static void __del_holder(struct block_lock *lock, struct task_struct *task)
 {
 	unsigned int h = __find_holder(lock, task);
+
 	lock->holders[h] = NULL;
 	put_task_struct(task);
 }
@@ -354,6 +356,7 @@ struct buffer_aux {
 static void dm_block_manager_alloc_callback(struct dm_buffer *buf)
 {
 	struct buffer_aux *aux = dm_bufio_get_aux_data(buf);
+
 	aux->validator = NULL;
 	bl_init(&aux->lock);
 }
@@ -361,15 +364,18 @@ static void dm_block_manager_alloc_callback(struct dm_buffer *buf)
 static void dm_block_manager_write_callback(struct dm_buffer *buf)
 {
 	struct buffer_aux *aux = dm_bufio_get_aux_data(buf);
+
 	if (aux->validator) {
 		aux->validator->prepare_for_write(aux->validator, (struct dm_block *) buf,
 			 dm_bufio_get_block_size(dm_bufio_get_client(buf)));
 	}
 }
 
-/*----------------------------------------------------------------
+/*
+ * -------------------------------------------------------------
  * Public interface
- *--------------------------------------------------------------*/
+ *--------------------------------------------------------------
+ */
 struct dm_block_manager {
 	struct dm_bufio_client *bufio;
 	bool read_only:1;
@@ -433,6 +439,7 @@ static int dm_bm_validate_buffer(struct dm_block_manager *bm,
 {
 	if (unlikely(!aux->validator)) {
 		int r;
+
 		if (!v)
 			return 0;
 		r = v->check(v, (struct dm_block *) buf, dm_bufio_get_block_size(bm->bufio));
@@ -588,8 +595,7 @@ EXPORT_SYMBOL_GPL(dm_bm_write_lock_zero);
 
 void dm_bm_unlock(struct dm_block *b)
 {
-	struct buffer_aux *aux;
-	aux = dm_bufio_get_aux_data(to_buffer(b));
+	struct buffer_aux *aux = dm_bufio_get_aux_data(to_buffer(b));
 
 	if (aux->write_locked) {
 		dm_bufio_mark_buffer_dirty(to_buffer(b));
@@ -617,7 +623,7 @@ void dm_bm_prefetch(struct dm_block_manager *bm, dm_block_t b)
 
 bool dm_bm_is_read_only(struct dm_block_manager *bm)
 {
-	return (bm ? bm->read_only : true);
+	return bm ? bm->read_only : true;
 }
 EXPORT_SYMBOL_GPL(dm_bm_is_read_only);
 

@@ -1172,6 +1172,40 @@ static void dsa_slave_net_selftest(struct net_device *ndev,
 	net_selftest(ndev, etest, buf);
 }
 
+static int dsa_slave_get_mm(struct net_device *dev,
+			    struct ethtool_mm_state *state)
+{
+	struct dsa_port *dp = dsa_slave_to_port(dev);
+	struct dsa_switch *ds = dp->ds;
+
+	if (!ds->ops->get_mm)
+		return -EOPNOTSUPP;
+
+	return ds->ops->get_mm(ds, dp->index, state);
+}
+
+static int dsa_slave_set_mm(struct net_device *dev, struct ethtool_mm_cfg *cfg,
+			    struct netlink_ext_ack *extack)
+{
+	struct dsa_port *dp = dsa_slave_to_port(dev);
+	struct dsa_switch *ds = dp->ds;
+
+	if (!ds->ops->set_mm)
+		return -EOPNOTSUPP;
+
+	return ds->ops->set_mm(ds, dp->index, cfg, extack);
+}
+
+static void dsa_slave_get_mm_stats(struct net_device *dev,
+				   struct ethtool_mm_stats *stats)
+{
+	struct dsa_port *dp = dsa_slave_to_port(dev);
+	struct dsa_switch *ds = dp->ds;
+
+	if (ds->ops->get_mm_stats)
+		ds->ops->get_mm_stats(ds, dp->index, stats);
+}
+
 static void dsa_slave_get_wol(struct net_device *dev, struct ethtool_wolinfo *w)
 {
 	struct dsa_port *dp = dsa_slave_to_port(dev);
@@ -2317,6 +2351,9 @@ static const struct ethtool_ops dsa_slave_ethtool_ops = {
 	.set_rxnfc		= dsa_slave_set_rxnfc,
 	.get_ts_info		= dsa_slave_get_ts_info,
 	.self_test		= dsa_slave_net_selftest,
+	.get_mm			= dsa_slave_get_mm,
+	.set_mm			= dsa_slave_set_mm,
+	.get_mm_stats		= dsa_slave_get_mm_stats,
 };
 
 static const struct dcbnl_rtnl_ops __maybe_unused dsa_slave_dcbnl_ops = {
@@ -2767,9 +2804,8 @@ static int dsa_slave_changeupper(struct net_device *dev,
 			if (!err)
 				dsa_bridge_mtu_normalization(dp);
 			if (err == -EOPNOTSUPP) {
-				if (extack && !extack->_msg)
-					NL_SET_ERR_MSG_MOD(extack,
-							   "Offloading not supported");
+				NL_SET_ERR_MSG_WEAK_MOD(extack,
+							"Offloading not supported");
 				err = 0;
 			}
 			err = notifier_from_errno(err);
@@ -2782,8 +2818,8 @@ static int dsa_slave_changeupper(struct net_device *dev,
 			err = dsa_port_lag_join(dp, info->upper_dev,
 						info->upper_info, extack);
 			if (err == -EOPNOTSUPP) {
-				NL_SET_ERR_MSG_MOD(info->info.extack,
-						   "Offloading not supported");
+				NL_SET_ERR_MSG_WEAK_MOD(extack,
+							"Offloading not supported");
 				err = 0;
 			}
 			err = notifier_from_errno(err);
@@ -2795,8 +2831,8 @@ static int dsa_slave_changeupper(struct net_device *dev,
 		if (info->linking) {
 			err = dsa_port_hsr_join(dp, info->upper_dev);
 			if (err == -EOPNOTSUPP) {
-				NL_SET_ERR_MSG_MOD(info->info.extack,
-						   "Offloading not supported");
+				NL_SET_ERR_MSG_WEAK_MOD(extack,
+							"Offloading not supported");
 				err = 0;
 			}
 			err = notifier_from_errno(err);

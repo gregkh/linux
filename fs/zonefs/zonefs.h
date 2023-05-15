@@ -64,6 +64,11 @@ struct zonefs_zone {
 
 	/* Write pointer offset in the zone (sequential zones only, bytes) */
 	loff_t			z_wpoffset;
+
+	/* Saved inode uid, gid and access rights */
+	umode_t			z_mode;
+	kuid_t			z_uid;
+	kgid_t			z_gid;
 };
 
 /*
@@ -71,6 +76,7 @@ struct zonefs_zone {
  * as files, one file per zone.
  */
 struct zonefs_zone_group {
+	struct inode		*g_inode;
 	unsigned int		g_nr_zones;
 	struct zonefs_zone	*g_zones;
 };
@@ -264,6 +270,10 @@ static inline void zonefs_io_error(struct inode *inode, bool write)
 	__zonefs_io_error(inode, write);
 	mutex_unlock(&zi->i_truncate_mutex);
 }
+
+/* In super.c */
+extern const struct inode_operations zonefs_dir_inode_operations;
+extern const struct file_operations zonefs_dir_operations;
 
 /* In file.c */
 extern const struct address_space_operations zonefs_file_aops;

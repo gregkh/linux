@@ -229,6 +229,23 @@ struct tb_switch {
 };
 
 /**
+ * struct tb_bandwidth_group - Bandwidth management group
+ * @tb: Pointer to the domain the group belongs to
+ * @index: Index of the group (aka Group_ID). Valid values %1-%7
+ * @ports: DP IN adapters belonging to this group are linked here
+ *
+ * Any tunnel that requires isochronous bandwidth (that's DP for now) is
+ * attached to a bandwidth group. All tunnels going through the same
+ * USB4 links share the same group and can dynamically distribute the
+ * bandwidth within the group.
+ */
+struct tb_bandwidth_group {
+	struct tb *tb;
+	int index;
+	struct list_head ports;
+};
+
+/**
  * struct tb_port - a thunderbolt port, part of a tb_switch
  * @config: Cached port configuration read from registers
  * @sw: Switch the port belongs to
@@ -252,6 +269,9 @@ struct tb_switch {
  * @ctl_credits: Buffers reserved for control path
  * @dma_credits: Number of credits allocated for DMA tunneling for all
  *		 DMA paths through this port.
+ * @group: Bandwidth allocation group the adapter is assigned to. Only
+ *	   used for DP IN adapters for now.
+ * @group_list: The adapter is linked to the group's list of ports through this
  * @max_bw: Maximum possible bandwidth through this adapter if set to
  *	    non-zero.
  *
@@ -279,6 +299,8 @@ struct tb_port {
 	unsigned int total_credits;
 	unsigned int ctl_credits;
 	unsigned int dma_credits;
+	struct tb_bandwidth_group *group;
+	struct list_head group_list;
 	unsigned int max_bw;
 };
 
@@ -823,7 +845,7 @@ static inline bool tb_is_switch(const struct device *dev)
 	return dev->type == &tb_switch_type;
 }
 
-static inline struct tb_switch *tb_to_switch(struct device *dev)
+static inline struct tb_switch *tb_to_switch(const struct device *dev)
 {
 	if (tb_is_switch(dev))
 		return container_of(dev, struct tb_switch, dev);
@@ -1249,6 +1271,21 @@ int usb4_usb3_port_allocate_bandwidth(struct tb_port *port, int *upstream_bw,
 				      int *downstream_bw);
 int usb4_usb3_port_release_bandwidth(struct tb_port *port, int *upstream_bw,
 				     int *downstream_bw);
+
+int usb4_dp_port_set_cm_id(struct tb_port *port, int cm_id);
+bool usb4_dp_port_bw_mode_supported(struct tb_port *port);
+bool usb4_dp_port_bw_mode_enabled(struct tb_port *port);
+int usb4_dp_port_set_cm_bw_mode_supported(struct tb_port *port, bool supported);
+int usb4_dp_port_group_id(struct tb_port *port);
+int usb4_dp_port_set_group_id(struct tb_port *port, int group_id);
+int usb4_dp_port_nrd(struct tb_port *port, int *rate, int *lanes);
+int usb4_dp_port_set_nrd(struct tb_port *port, int rate, int lanes);
+int usb4_dp_port_granularity(struct tb_port *port);
+int usb4_dp_port_set_granularity(struct tb_port *port, int granularity);
+int usb4_dp_port_set_estimated_bw(struct tb_port *port, int bw);
+int usb4_dp_port_allocated_bw(struct tb_port *port);
+int usb4_dp_port_allocate_bw(struct tb_port *port, int bw);
+int usb4_dp_port_requested_bw(struct tb_port *port);
 
 static inline bool tb_is_usb4_port_device(const struct device *dev)
 {

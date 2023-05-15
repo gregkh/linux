@@ -123,6 +123,13 @@ static int mhi_ep_process_cmd_ring(struct mhi_ep_ring *ring, struct mhi_ring_ele
 	int ret;
 
 	ch_id = MHI_TRE_GET_CMD_CHID(el);
+
+	/* Check if the channel is supported by the controller */
+	if ((ch_id >= mhi_cntrl->max_chan) || !mhi_cntrl->mhi_chan[ch_id].name) {
+		dev_err(dev, "Channel (%u) not supported!\n", ch_id);
+		return -ENODEV;
+	}
+
 	mhi_chan = &mhi_cntrl->mhi_chan[ch_id];
 	ch_ring = &mhi_cntrl->mhi_chan[ch_id].ring;
 
@@ -1543,9 +1550,9 @@ void mhi_ep_driver_unregister(struct mhi_ep_driver *mhi_drv)
 }
 EXPORT_SYMBOL_GPL(mhi_ep_driver_unregister);
 
-static int mhi_ep_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int mhi_ep_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct mhi_ep_device *mhi_dev = to_mhi_ep_device(dev);
+	const struct mhi_ep_device *mhi_dev = to_mhi_ep_device(dev);
 
 	return add_uevent_var(env, "MODALIAS=" MHI_EP_DEVICE_MODALIAS_FMT,
 					mhi_dev->name);

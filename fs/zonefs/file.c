@@ -384,7 +384,7 @@ static ssize_t zonefs_file_dio_append(struct kiocb *iocb, struct iov_iter *from)
 	unsigned int max = bdev_max_zone_append_sectors(bdev);
 	pgoff_t start, end;
 	struct bio *bio;
-	ssize_t size;
+	ssize_t size = 0;
 	int nr_pages;
 	ssize_t ret;
 

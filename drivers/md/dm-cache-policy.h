@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2012 Red Hat. All rights reserved.
  *
@@ -75,7 +76,7 @@ struct dm_cache_policy {
 	 * background work.
 	 */
 	int (*get_background_work)(struct dm_cache_policy *p, bool idle,
-			           struct policy_work **result);
+				   struct policy_work **result);
 
 	/*
 	 * You must pass in the same work pointer that you were given, not

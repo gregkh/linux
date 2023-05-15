@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2004-2005 IBM Corp.  All Rights Reserved.
  * Copyright (C) 2006-2009 NEC Corporation.
@@ -122,8 +123,8 @@ static int ql_add_path(struct path_selector *ps, struct dm_path *path,
 
 	/*
 	 * Arguments: [<repeat_count>]
-	 * 	<repeat_count>: The number of I/Os before switching path.
-	 * 			If not given, default (QL_MIN_IO) is used.
+	 *	<repeat_count>: The number of I/Os before switching path.
+	 *			If not given, default (QL_MIN_IO) is used.
 	 */
 	if (argc > 1) {
 		*error = "queue-length ps: incorrect number of arguments";

@@ -98,7 +98,7 @@ static int __fwnode_link_add(struct fwnode_handle *con,
 
 	list_add(&link->s_hook, &sup->consumers);
 	list_add(&link->c_hook, &con->suppliers);
-	pr_debug("%pfwP Linked as a fwnode consumer to %pfwP\n",
+	pr_debug("%pfwf Linked as a fwnode consumer to %pfwf\n",
 		 con, sup);
 
 	return 0;
@@ -122,7 +122,7 @@ int fwnode_link_add(struct fwnode_handle *con, struct fwnode_handle *sup)
  */
 static void __fwnode_link_del(struct fwnode_link *link)
 {
-	pr_debug("%pfwP Dropping the fwnode link to %pfwP\n",
+	pr_debug("%pfwf Dropping the fwnode link to %pfwf\n",
 		 link->consumer, link->supplier);
 	list_del(&link->s_hook);
 	list_del(&link->c_hook);
@@ -247,7 +247,6 @@ static void __fw_devlink_pickup_dangling_consumers(struct fwnode_handle *fwnode,
 		__fw_devlink_pickup_dangling_consumers(child, new_sup);
 }
 
-#ifdef CONFIG_SRCU
 static DEFINE_MUTEX(device_links_lock);
 DEFINE_STATIC_SRCU(device_links_srcu);
 
@@ -286,47 +285,6 @@ static void device_link_remove_from_lists(struct device_link *link)
 	list_del_rcu(&link->s_node);
 	list_del_rcu(&link->c_node);
 }
-#else /* !CONFIG_SRCU */
-static DECLARE_RWSEM(device_links_lock);
-
-static inline void device_links_write_lock(void)
-{
-	down_write(&device_links_lock);
-}
-
-static inline void device_links_write_unlock(void)
-{
-	up_write(&device_links_lock);
-}
-
-int device_links_read_lock(void)
-{
-	down_read(&device_links_lock);
-	return 0;
-}
-
-void device_links_read_unlock(int not_used)
-{
-	up_read(&device_links_lock);
-}
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-int device_links_read_lock_held(void)
-{
-	return lockdep_is_held(&device_links_lock);
-}
-#endif
-
-static inline void device_link_synchronize_removal(void)
-{
-}
-
-static void device_link_remove_from_lists(struct device_link *link)
-{
-	list_del(&link->s_node);
-	list_del(&link->c_node);
-}
-#endif /* !CONFIG_SRCU */
 
 static bool device_is_ancestor(struct device *dev, struct device *target)
 {
@@ -1104,7 +1062,7 @@ int device_links_check_suppliers(struct device *dev)
 		if (!dev_is_best_effort(dev)) {
 			fwnode_ret = -EPROBE_DEFER;
 			dev_err_probe(dev, -EPROBE_DEFER,
-				    "wait for supplier %pfwP\n", sup_fw);
+				    "wait for supplier %pfwf\n", sup_fw);
 		} else {
 			fwnode_ret = -EAGAIN;
 		}
@@ -2501,7 +2459,7 @@ static void device_get_ownership(const struct kobject *kobj, kuid_t *uid, kgid_t
 		dev->class->get_ownership(dev, uid, gid);
 }
 
-static struct kobj_type device_ktype = {
+static const struct kobj_type device_ktype = {
 	.release	= device_release,
 	.sysfs_ops	= &dev_sysfs_ops,
 	.namespace	= device_namespace,
@@ -2534,9 +2492,9 @@ static const char *dev_uevent_name(const struct kobject *kobj)
 	return NULL;
 }
 
-static int dev_uevent(struct kobject *kobj, struct kobj_uevent_env *env)
+static int dev_uevent(const struct kobject *kobj, struct kobj_uevent_env *env)
 {
-	struct device *dev = kobj_to_dev(kobj);
+	const struct device *dev = kobj_to_dev(kobj);
 	int retval = 0;
 
 	/* add device node properties if present */
@@ -3139,7 +3097,7 @@ struct kobj_ns_type_operations *class_dir_child_ns_type(const struct kobject *ko
 	return dir->class->ns_type;
 }
 
-static struct kobj_type class_dir_ktype = {
+static const struct kobj_type class_dir_ktype = {
 	.release	= class_dir_release,
 	.sysfs_ops	= &kobj_sysfs_ops,
 	.child_ns_type	= class_dir_child_ns_type
@@ -3173,8 +3131,9 @@ static DEFINE_MUTEX(gdp_mutex);
 static struct kobject *get_device_parent(struct device *dev,
 					 struct device *parent)
 {
+	struct kobject *kobj = NULL;
+
 	if (dev->class) {
-		struct kobject *kobj = NULL;
 		struct kobject *parent_kobj;
 		struct kobject *k;
 
@@ -3222,8 +3181,15 @@ static struct kobject *get_device_parent(struct device *dev,
 	}
 
 	/* subsystems can specify a default root directory for their devices */
-	if (!parent && dev->bus && dev->bus->dev_root)
-		return &dev->bus->dev_root->kobj;
+	if (!parent && dev->bus) {
+		struct device *dev_root = bus_get_dev_root(dev->bus);
+
+		if (dev_root) {
+			kobj = &dev_root->kobj;
+			put_device(dev_root);
+			return kobj;
+		}
+	}
 
 	if (parent)
 		return &parent->kobj;
@@ -3600,10 +3566,7 @@ int device_add(struct device *dev)
 	/* Notify clients of device addition.  This call must come
 	 * after dpm_sysfs_add() and before kobject_uevent().
 	 */
-	if (dev->bus)
-		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
-					     BUS_NOTIFY_ADD_DEVICE, dev);
-
+	bus_notify(dev, BUS_NOTIFY_ADD_DEVICE);
 	kobject_uevent(&dev->kobj, KOBJ_ADD);
 
 	/*
@@ -3784,9 +3747,7 @@ void device_del(struct device *dev)
 	 * before dpm_sysfs_remove().
 	 */
 	noio_flag = memalloc_noio_save();
-	if (dev->bus)
-		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
-					     BUS_NOTIFY_DEL_DEVICE, dev);
+	bus_notify(dev, BUS_NOTIFY_DEL_DEVICE);
 
 	dpm_sysfs_remove(dev);
 	if (parent)
@@ -3817,9 +3778,7 @@ void device_del(struct device *dev)
 	device_platform_notify_remove(dev);
 	device_links_purge(dev);
 
-	if (dev->bus)
-		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
-					     BUS_NOTIFY_REMOVED_DEVICE, dev);
+	bus_notify(dev, BUS_NOTIFY_REMOVED_DEVICE);
 	kobject_uevent(&dev->kobj, KOBJ_REMOVE);
 	glue_dir = get_glue_dir(dev);
 	kobject_del(&dev->kobj);
@@ -3887,7 +3846,7 @@ static struct device *next_device(struct klist_iter *i)
  * a name. This memory is returned in tmp and needs to be
  * freed by the caller.
  */
-const char *device_get_devnode(struct device *dev,
+const char *device_get_devnode(const struct device *dev,
 			       umode_t *mode, kuid_t *uid, kgid_t *gid,
 			       const char **tmp)
 {

@@ -542,13 +542,34 @@ static const struct rcar_du_device_info rcar_du_r8a7799x_info = {
 };
 
 static const struct rcar_du_device_info rcar_du_r8a779a0_info = {
-	.gen = 3,
+	.gen = 4,
 	.features = RCAR_DU_FEATURE_CRTC_IRQ
 		  | RCAR_DU_FEATURE_VSP1_SOURCE
 		  | RCAR_DU_FEATURE_NO_BLENDING,
 	.channels_mask = BIT(1) | BIT(0),
 	.routes = {
 		/* R8A779A0 has two MIPI DSI outputs. */
+		[RCAR_DU_OUTPUT_DSI0] = {
+			.possible_crtcs = BIT(0),
+			.port = 0,
+		},
+		[RCAR_DU_OUTPUT_DSI1] = {
+			.possible_crtcs = BIT(1),
+			.port = 1,
+		},
+	},
+	.num_rpf = 5,
+	.dsi_clk_mask =  BIT(1) | BIT(0),
+};
+
+static const struct rcar_du_device_info rcar_du_r8a779g0_info = {
+	.gen = 4,
+	.features = RCAR_DU_FEATURE_CRTC_IRQ
+		  | RCAR_DU_FEATURE_VSP1_SOURCE
+		  | RCAR_DU_FEATURE_NO_BLENDING,
+	.channels_mask = BIT(1) | BIT(0),
+	.routes = {
+		/* R8A779G0 has two MIPI DSI outputs. */
 		[RCAR_DU_OUTPUT_DSI0] = {
 			.possible_crtcs = BIT(0),
 			.port = 0,
@@ -587,6 +608,7 @@ static const struct of_device_id rcar_du_of_table[] = {
 	{ .compatible = "renesas,du-r8a77990", .data = &rcar_du_r8a7799x_info },
 	{ .compatible = "renesas,du-r8a77995", .data = &rcar_du_r8a7799x_info },
 	{ .compatible = "renesas,du-r8a779a0", .data = &rcar_du_r8a779a0_info },
+	{ .compatible = "renesas,du-r8a779g0", .data = &rcar_du_r8a779g0_info },
 	{ }
 };
 
@@ -642,7 +664,6 @@ static const struct drm_driver rcar_du_driver = {
  * Power management
  */
 
-#ifdef CONFIG_PM_SLEEP
 static int rcar_du_pm_suspend(struct device *dev)
 {
 	struct rcar_du_device *rcdu = dev_get_drvdata(dev);
@@ -656,11 +677,9 @@ static int rcar_du_pm_resume(struct device *dev)
 
 	return drm_mode_config_helper_resume(&rcdu->ddev);
 }
-#endif
 
-static const struct dev_pm_ops rcar_du_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(rcar_du_pm_suspend, rcar_du_pm_resume)
-};
+static DEFINE_SIMPLE_DEV_PM_OPS(rcar_du_pm_ops,
+				rcar_du_pm_suspend, rcar_du_pm_resume);
 
 /* -----------------------------------------------------------------------------
  * Platform driver
@@ -761,7 +780,7 @@ static struct platform_driver rcar_du_platform_driver = {
 	.shutdown	= rcar_du_shutdown,
 	.driver		= {
 		.name	= "rcar-du",
-		.pm	= &rcar_du_pm_ops,
+		.pm	= pm_sleep_ptr(&rcar_du_pm_ops),
 		.of_match_table = rcar_du_of_table,
 	},
 };

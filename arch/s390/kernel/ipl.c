@@ -1150,7 +1150,7 @@ static ssize_t reipl_eckd_clear_store(struct kobject *kobj,
 				      struct kobj_attribute *attr,
 				      const char *buf, size_t len)
 {
-	if (strtobool(buf, &reipl_eckd_clear) < 0)
+	if (kstrtobool(buf, &reipl_eckd_clear) < 0)
 		return -EINVAL;
 	return len;
 }
@@ -1938,15 +1938,14 @@ static void dump_reipl_run(struct shutdown_trigger *trigger)
 {
 	unsigned long ipib = (unsigned long) reipl_block_actual;
 	struct lowcore *abs_lc;
-	unsigned long flags;
 	unsigned int csum;
 
 	csum = (__force unsigned int)
 	       csum_partial(reipl_block_actual, reipl_block_actual->hdr.len, 0);
-	abs_lc = get_abs_lowcore(&flags);
+	abs_lc = get_abs_lowcore();
 	abs_lc->ipib = ipib;
 	abs_lc->ipib_checksum = csum;
-	put_abs_lowcore(abs_lc, flags);
+	put_abs_lowcore(abs_lc);
 	dump_run(trigger);
 }
 

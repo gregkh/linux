@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011 Red Hat, Inc.
  *
@@ -13,9 +14,11 @@
 
 #define DM_MSG_PREFIX "btree"
 
-/*----------------------------------------------------------------
+/*
+ *--------------------------------------------------------------
  * Array manipulation
- *--------------------------------------------------------------*/
+ *--------------------------------------------------------------
+ */
 static void memcpy_disk(void *dest, const void *src, size_t len)
 	__dm_written_to_disk(src)
 {
@@ -493,7 +496,6 @@ out:
 	exit_ro_spine(&spine);
 	return r;
 }
-
 EXPORT_SYMBOL_GPL(dm_btree_lookup_next);
 
 /*----------------------------------------------------------------*/
@@ -507,6 +509,7 @@ static void copy_entries(struct btree_node *dest, unsigned int dest_offset,
 			 unsigned int count)
 {
 	size_t value_size = le32_to_cpu(dest->header.value_size);
+
 	memcpy(dest->keys + dest_offset, src->keys + src_offset, count * sizeof(uint64_t));
 	memcpy(value_ptr(dest, dest_offset), value_ptr(src, src_offset), count * value_size);
 }
@@ -520,6 +523,7 @@ static void move_entries(struct btree_node *dest, unsigned int dest_offset,
 			 unsigned int count)
 {
 	size_t value_size = le32_to_cpu(dest->header.value_size);
+
 	memmove(dest->keys + dest_offset, src->keys + src_offset, count * sizeof(uint64_t));
 	memmove(value_ptr(dest, dest_offset), value_ptr(src, src_offset), count * value_size);
 }
@@ -556,10 +560,12 @@ static void redistribute2(struct btree_node *left, struct btree_node *right)
 
 	if (nr_left < target_left) {
 		unsigned int delta = target_left - nr_left;
+
 		copy_entries(left, nr_left, right, 0, delta);
 		shift_down(right, delta);
 	} else if (nr_left > target_left) {
 		unsigned int delta = nr_left - target_left;
+
 		if (nr_right)
 			shift_up(right, delta);
 		copy_entries(right, 0, left, target_left, delta);
@@ -590,18 +596,21 @@ static void redistribute3(struct btree_node *left, struct btree_node *center,
 
 	if (nr_left < target_left) {
 		unsigned int left_short = target_left - nr_left;
+
 		copy_entries(left, nr_left, right, 0, left_short);
 		copy_entries(center, 0, right, left_short, target_center);
 		shift_down(right, nr_right - target_right);
 
 	} else if (nr_left < (target_left + target_center)) {
 		unsigned int left_to_center = nr_left - target_left;
+
 		copy_entries(center, 0, left, target_left, left_to_center);
 		copy_entries(center, left_to_center, right, 0, target_center - left_to_center);
 		shift_down(right, nr_right - target_right);
 
 	} else {
 		unsigned int right_short = target_right - nr_right;
+
 		shift_up(right, right_short);
 		copy_entries(right, 0, left, nr_left - right_short, right_short);
 		copy_entries(center, 0, left, target_left, nr_left - target_left);
@@ -726,7 +735,7 @@ static int shadow_child(struct dm_btree_info *info, struct dm_btree_value_type *
  * nodes, so saves metadata space.
  */
 static int split_two_into_three(struct shadow_spine *s, unsigned int parent_index,
-                                struct dm_btree_value_type *vt, uint64_t key)
+				struct dm_btree_value_type *vt, uint64_t key)
 {
 	int r;
 	unsigned int middle_index;
@@ -781,7 +790,7 @@ static int split_two_into_three(struct shadow_spine *s, unsigned int parent_inde
 		if (shadow_current(s) != right)
 			unlock_block(s->info, right);
 
-	        return r;
+		return r;
 	}
 
 
@@ -1001,6 +1010,7 @@ static int rebalance_or_split(struct shadow_spine *s, struct dm_btree_value_type
 	/* Should we move entries to the left sibling? */
 	if (parent_index > 0) {
 		dm_block_t left_b = value64(parent, parent_index - 1);
+
 		r = dm_tm_block_is_shared(s->info->tm, left_b, &left_shared);
 		if (r)
 			return r;
@@ -1018,6 +1028,7 @@ static int rebalance_or_split(struct shadow_spine *s, struct dm_btree_value_type
 	/* Should we move entries to the right sibling? */
 	if (parent_index < (nr_parent - 1)) {
 		dm_block_t right_b = value64(parent, parent_index + 1);
+
 		r = dm_tm_block_is_shared(s->info->tm, right_b, &right_shared);
 		if (r)
 			return r;
@@ -1216,7 +1227,7 @@ int btree_get_overwrite_leaf(struct dm_btree_info *info, dm_block_t root,
 static bool need_insert(struct btree_node *node, uint64_t *keys,
 			unsigned int level, unsigned int index)
 {
-        return ((index >= le32_to_cpu(node->header.nr_entries)) ||
+	return ((index >= le32_to_cpu(node->header.nr_entries)) ||
 		(le64_to_cpu(node->keys[index]) != keys[level]));
 }
 
@@ -1309,7 +1320,7 @@ bad_unblessed:
 
 int dm_btree_insert(struct dm_btree_info *info, dm_block_t root,
 		    uint64_t *keys, void *value, dm_block_t *new_root)
-		    __dm_written_to_disk(value)
+	__dm_written_to_disk(value)
 {
 	return insert(info, root, keys, value, new_root, NULL);
 }
@@ -1318,7 +1329,7 @@ EXPORT_SYMBOL_GPL(dm_btree_insert);
 int dm_btree_insert_notify(struct dm_btree_info *info, dm_block_t root,
 			   uint64_t *keys, void *value, dm_block_t *new_root,
 			   int *inserted)
-			   __dm_written_to_disk(value)
+	__dm_written_to_disk(value)
 {
 	return insert(info, root, keys, value, new_root, inserted);
 }
@@ -1341,8 +1352,8 @@ static int find_key(struct ro_spine *s, dm_block_t block, bool find_highest,
 		i = le32_to_cpu(ro_node(s)->header.nr_entries);
 		if (!i)
 			return -ENODATA;
-		else
-			i--;
+
+		i--;
 
 		if (find_highest)
 			*result_key = le64_to_cpu(ro_node(s)->keys[i]);
@@ -1585,6 +1596,7 @@ EXPORT_SYMBOL_GPL(dm_btree_cursor_end);
 int dm_btree_cursor_next(struct dm_btree_cursor *c)
 {
 	int r = inc_or_backtrack(c);
+
 	if (!r) {
 		r = find_leaf(c);
 		if (r)

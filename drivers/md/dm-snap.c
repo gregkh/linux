@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2001-2002 Sistina Software (UK) Limited.
  *
@@ -122,11 +123,11 @@ struct dm_snapshot {
 	 * The merge operation failed if this flag is set.
 	 * Failure modes are handled as follows:
 	 * - I/O error reading the header
-	 *   	=> don't load the target; abort.
+	 *	=> don't load the target; abort.
 	 * - Header does not have "valid" flag set
-	 *   	=> use the origin; forget about the snapshot.
+	 *	=> use the origin; forget about the snapshot.
 	 * - I/O error when reading exceptions
-	 *   	=> don't load the target; abort.
+	 *	=> don't load the target; abort.
 	 *         (We can't use the intermediate origin state.)
 	 * - I/O error while merging
 	 *	=> stop merging; set merge_failed; process I/O normally.
@@ -244,12 +245,14 @@ struct dm_snap_tracked_chunk {
 static void init_tracked_chunk(struct bio *bio)
 {
 	struct dm_snap_tracked_chunk *c = dm_per_bio_data(bio, sizeof(struct dm_snap_tracked_chunk));
+
 	INIT_HLIST_NODE(&c->node);
 }
 
 static bool is_bio_tracked(struct bio *bio)
 {
 	struct dm_snap_tracked_chunk *c = dm_per_bio_data(bio, sizeof(struct dm_snap_tracked_chunk));
+
 	return !hlist_unhashed(&c->node);
 }
 
@@ -297,12 +300,12 @@ static int __chunk_is_tracked(struct dm_snapshot *s, chunk_t chunk)
 
 /*
  * This conflicting I/O is extremely improbable in the caller,
- * so msleep(1) is sufficient and there is no need for a wait queue.
+ * so fsleep(1000) is sufficient and there is no need for a wait queue.
  */
 static void __check_for_conflicting_io(struct dm_snapshot *s, chunk_t chunk)
 {
 	while (__chunk_is_tracked(s, chunk))
-		msleep(1);
+		fsleep(1000);
 }
 
 /*
@@ -388,7 +391,7 @@ static struct origin *__lookup_origin(struct block_device *origin)
 	struct origin *o;
 
 	ol = &_origins[origin_hash(origin)];
-	list_for_each_entry (o, ol, hash_list)
+	list_for_each_entry(o, ol, hash_list)
 		if (bdev_equal(o->bdev, origin))
 			return o;
 
@@ -398,6 +401,7 @@ static struct origin *__lookup_origin(struct block_device *origin)
 static void __insert_origin(struct origin *o)
 {
 	struct list_head *sl = &_origins[origin_hash(o->bdev)];
+
 	list_add_tail(&o->hash_list, sl);
 }
 
@@ -407,7 +411,7 @@ static struct dm_origin *__lookup_dm_origin(struct block_device *origin)
 	struct dm_origin *o;
 
 	ol = &_dm_origins[origin_hash(origin)];
-	list_for_each_entry (o, ol, hash_list)
+	list_for_each_entry(o, ol, hash_list)
 		if (bdev_equal(o->dev->bdev, origin))
 			return o;
 
@@ -417,6 +421,7 @@ static struct dm_origin *__lookup_dm_origin(struct block_device *origin)
 static void __insert_dm_origin(struct dm_origin *o)
 {
 	struct list_head *sl = &_dm_origins[origin_hash(o->dev->bdev)];
+
 	list_add_tail(&o->hash_list, sl);
 }
 
@@ -490,8 +495,7 @@ static int __validate_exception_handover(struct dm_snapshot *snap)
 	if ((__find_snapshots_sharing_cow(snap, &snap_src, &snap_dest,
 					  &snap_merge) == 2) ||
 	    snap_dest) {
-		snap->ti->error = "Snapshot cow pairing for exception "
-				  "table handover failed";
+		snap->ti->error = "Snapshot cow pairing for exception table handover failed";
 		return -EINVAL;
 	}
 
@@ -518,8 +522,7 @@ static int __validate_exception_handover(struct dm_snapshot *snap)
 
 	if (!snap_src->store->type->prepare_merge ||
 	    !snap_src->store->type->commit_merge) {
-		snap->ti->error = "Snapshot exception store does not "
-				  "support snapshot-merge.";
+		snap->ti->error = "Snapshot exception store does not support snapshot-merge.";
 		return -EINVAL;
 	}
 
@@ -867,6 +870,7 @@ static int calc_max_buckets(void)
 {
 	/* use a fixed size of 2MB */
 	unsigned long mem = 2 * 1024 * 1024;
+
 	mem /= sizeof(struct hlist_bl_head);
 
 	return mem;
@@ -937,8 +941,7 @@ static int __remove_single_exception_chunk(struct dm_snapshot *s,
 
 	e = dm_lookup_exception(&s->complete, old_chunk);
 	if (!e) {
-		DMERR("Corruption detected: exception for block %llu is "
-		      "on disk but not in memory",
+		DMERR("Corruption detected: exception for block %llu is on disk but not in memory",
 		      (unsigned long long)old_chunk);
 		return -EINVAL;
 	}
@@ -965,8 +968,7 @@ static int __remove_single_exception_chunk(struct dm_snapshot *s,
 		e->new_chunk++;
 	} else if (old_chunk != e->old_chunk +
 		   dm_consecutive_chunk_count(e)) {
-		DMERR("Attempt to merge block %llu from the "
-		      "middle of a chunk range [%llu - %llu]",
+		DMERR("Attempt to merge block %llu from the middle of a chunk range [%llu - %llu]",
 		      (unsigned long long)old_chunk,
 		      (unsigned long long)e->old_chunk,
 		      (unsigned long long)
@@ -1059,8 +1061,7 @@ static void snapshot_merge_next_chunks(struct dm_snapshot *s)
 						      &new_chunk);
 	if (linear_chunks <= 0) {
 		if (linear_chunks < 0) {
-			DMERR("Read error in exception store: "
-			      "shutting down merge");
+			DMERR("Read error in exception store: shutting down merge");
 			down_write(&s->lock);
 			s->merge_failed = true;
 			up_write(&s->lock);
@@ -1493,7 +1494,7 @@ static void snapshot_dtr(struct dm_target *ti)
 	unregister_snapshot(s);
 
 	while (atomic_read(&s->pending_exceptions_count))
-		msleep(1);
+		fsleep(1000);
 	/*
 	 * Ensure instructions in mempool_exit aren't reordered
 	 * before atomic_read.
@@ -1551,6 +1552,7 @@ static bool wait_for_in_progress(struct dm_snapshot *s, bool unlock_origins)
 			 * throttling is unlikely to negatively impact performance.
 			 */
 			DECLARE_WAITQUEUE(wait, current);
+
 			__add_wait_queue(&s->in_progress_wait, &wait);
 			__set_current_state(TASK_UNINTERRUPTIBLE);
 			spin_unlock(&s->in_progress_wait.lock);
@@ -2208,12 +2210,10 @@ static int snapshot_preresume(struct dm_target *ti)
 	if (snap_src && snap_dest) {
 		down_read(&snap_src->lock);
 		if (s == snap_src) {
-			DMERR("Unable to resume snapshot source until "
-			      "handover completes.");
+			DMERR("Unable to resume snapshot source until handover completes.");
 			r = -EINVAL;
 		} else if (!dm_suspended(snap_src->ti)) {
-			DMERR("Unable to perform snapshot handover until "
-			      "source is suspended.");
+			DMERR("Unable to perform snapshot handover until source is suspended.");
 			r = -EINVAL;
 		}
 		up_read(&snap_src->lock);
@@ -2344,8 +2344,7 @@ static void snapshot_status(struct dm_target *ti, status_type_t type,
 				       (unsigned long long)sectors_allocated,
 				       (unsigned long long)total_sectors,
 				       (unsigned long long)metadata_sectors);
-			}
-			else
+			} else
 				DMEMIT("Unknown");
 		}
 
@@ -2419,10 +2418,11 @@ static void snapshot_io_hints(struct dm_target *ti, struct queue_limits *limits)
 	}
 }
 
-/*-----------------------------------------------------------------
+/*
+ *---------------------------------------------------------------
  * Origin methods
- *---------------------------------------------------------------*/
-
+ *---------------------------------------------------------------
+ */
 /*
  * If no exceptions need creating, DM_MAPIO_REMAPPED is returned and any
  * supplied bio was ignored.  The caller may submit it immediately.
@@ -2446,7 +2446,7 @@ static int __origin_write(struct list_head *snapshots, sector_t sector,
 	chunk_t chunk;
 
 	/* Do all the snapshots on this origin */
-	list_for_each_entry (snap, snapshots, list) {
+	list_for_each_entry(snap, snapshots, list) {
 		/*
 		 * Don't make new exceptions in a merging snapshot
 		 * because it has effectively been deleted
@@ -2566,6 +2566,7 @@ again:
 	if (o) {
 		if (limit) {
 			struct dm_snapshot *s;
+
 			list_for_each_entry(s, &o->snapshots, list)
 				if (unlikely(!wait_for_in_progress(s, true)))
 					goto again;

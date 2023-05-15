@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2012 Red Hat, Inc.
  *
@@ -57,7 +58,7 @@ static int array_block_check(struct dm_block_validator *v,
 	__le32 csum_disk;
 
 	if (dm_block_location(b) != le64_to_cpu(bh_le->blocknr)) {
-		DMERR_LIMIT("array_block_check failed: blocknr %llu != wanted %llu",
+		DMERR_LIMIT("%s failed: blocknr %llu != wanted %llu", __func__,
 			    (unsigned long long) le64_to_cpu(bh_le->blocknr),
 			    (unsigned long long) dm_block_location(b));
 		return -ENOTBLK;
@@ -67,7 +68,7 @@ static int array_block_check(struct dm_block_validator *v,
 					       size_of_block - sizeof(__le32),
 					       CSUM_XOR));
 	if (csum_disk != bh_le->csum) {
-		DMERR_LIMIT("array_block_check failed: csum %u != wanted %u",
+		DMERR_LIMIT("%s failed: csum %u != wanted %u", __func__,
 			    (unsigned int) le32_to_cpu(csum_disk),
 			    (unsigned int) le32_to_cpu(bh_le->csum));
 		return -EILSEQ;
@@ -111,6 +112,7 @@ static void on_entries(struct dm_array_info *info, struct array_block *ab,
 		       void (*fn)(void *, const void *, unsigned int))
 {
 	unsigned int nr_entries = le32_to_cpu(ab->nr_entries);
+
 	fn(info->value_type.context, element_at(info, ab, 0), nr_entries);
 }
 
@@ -437,6 +439,7 @@ static int drop_blocks(struct resize *resize, unsigned int begin_index,
 
 	while (begin_index != end_index) {
 		uint64_t key = begin_index++;
+
 		r = dm_btree_remove(&resize->info->btree_info, resize->root,
 				    &key, &resize->root);
 		if (r)
@@ -621,6 +624,7 @@ static void __block_dec(void *context, const void *value)
 static void block_dec(void *context, const void *value, unsigned int count)
 {
 	unsigned int i;
+
 	for (i = 0; i < count; i++, value += sizeof(__le64))
 		__block_dec(context, value);
 }
@@ -691,9 +695,10 @@ static int array_resize(struct dm_array_info *info, dm_block_t root,
 int dm_array_resize(struct dm_array_info *info, dm_block_t root,
 		    uint32_t old_size, uint32_t new_size,
 		    const void *value, dm_block_t *new_root)
-		    __dm_written_to_disk(value)
+	__dm_written_to_disk(value)
 {
 	int r = array_resize(info, root, old_size, new_size, value, new_root);
+
 	__dm_unbless_for_disk(value);
 	return r;
 }
@@ -841,7 +846,7 @@ out:
 
 int dm_array_set_value(struct dm_array_info *info, dm_block_t root,
 		 uint32_t index, const void *value, dm_block_t *new_root)
-		 __dm_written_to_disk(value)
+	__dm_written_to_disk(value)
 {
 	int r;
 

@@ -263,7 +263,6 @@ static int weim_parse_dt(struct platform_device *pdev)
 static int weim_probe(struct platform_device *pdev)
 {
 	struct weim_priv *priv;
-	struct resource *res;
 	struct clk *clk;
 	void __iomem *base;
 	int ret;
@@ -273,8 +272,7 @@ static int weim_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	/* get the resource */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	base = devm_ioremap_resource(&pdev->dev, res);
+	base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
@@ -331,6 +329,12 @@ static int of_weim_notify(struct notifier_block *nb, unsigned long action,
 				 "Failed to setup timing for '%pOF'\n", rd->dn);
 
 		if (!of_node_check_flag(rd->dn, OF_POPULATED)) {
+			/*
+			 * Clear the flag before adding the device so that
+			 * fw_devlink doesn't skip adding consumers to this
+			 * device.
+			 */
+			rd->dn->fwnode.flags &= ~FWNODE_FLAG_NOT_DEVICE;
 			if (!of_platform_device_create(rd->dn, NULL, &pdev->dev)) {
 				dev_err(&pdev->dev,
 					"Failed to create child device '%pOF'\n",

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2003 Sistina Software
  * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
@@ -96,7 +97,7 @@ struct dm_dirty_log_type {
 	 * Do not confuse this function with 'in_sync()', one
 	 * tells you if an area is synchronised, the other
 	 * assigns recovery work.
-	*/
+	 */
 	int (*get_resync_work)(struct dm_dirty_log *log, region_t *region);
 
 	/*
