@@ -613,7 +613,7 @@ void BPF_STRUCT_OPS(pair_exit, struct scx_exit_info *ei)
 	uei_record(&uei, ei);
 }
 
-SEC(".struct_ops")
+SEC(".struct_ops.link")
 struct sched_ext_ops pair_ops = {
 	.enqueue		= (void *)pair_enqueue,
 	.dispatch		= (void *)pair_dispatch,
