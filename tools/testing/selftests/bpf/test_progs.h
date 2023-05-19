@@ -405,7 +405,6 @@ static inline void *u64_to_ptr(__u64 ptr)
 int bpf_find_map(const char *test, struct bpf_object *obj, const char *name);
 int compare_map_keys(int map1_fd, int map2_fd);
 int compare_stack_ips(int smap_fd, int amap_fd, int stack_trace_len);
-int kern_sync_rcu(void);
 int trigger_module_test_read(int read_sz);
 int trigger_module_test_write(int write_sz);
 int write_sysctl(const char *sysctl, const char *value);
@@ -424,13 +423,22 @@ int get_bpf_max_tramp_links(void);
 
 #define BPF_TESTMOD_TEST_FILE "/sys/kernel/bpf_testmod"
 
+typedef int (*pre_execution_cb)(struct bpf_object *obj);
+
 struct test_loader {
 	char *log_buf;
 	size_t log_buf_sz;
 	size_t next_match_pos;
+	pre_execution_cb pre_execution_cb;
 
 	struct bpf_object *obj;
 };
+
+static inline void test_loader__set_pre_execution_cb(struct test_loader *tester,
+						     pre_execution_cb cb)
+{
+	tester->pre_execution_cb = cb;
+}
 
 typedef const void *(*skel_elf_bytes_fn)(size_t *sz);
 

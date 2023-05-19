@@ -11,5 +11,10 @@
 
 struct xdp_meta {
 	__u64 rx_timestamp;
+	__u64 xdp_timestamp;
 	__u32 rx_hash;
+	union {
+		__u32 rx_hash_type;
+		__s32 rx_hash_err;
+	};
 };

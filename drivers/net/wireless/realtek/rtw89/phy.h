@@ -67,6 +67,14 @@
 #define UL_TB_TF_CNT_L2H_TH 100
 #define UL_TB_TF_CNT_H2L_TH 70
 
+#define ANTDIV_TRAINNING_CNT 2
+#define ANTDIV_TRAINNING_INTVL 30
+#define ANTDIV_DELAY 110
+#define ANTDIV_TP_DIFF_TH_HIGH 100
+#define ANTDIV_TP_DIFF_TH_LOW 5
+#define ANTDIV_EVM_DIFF_TH 8
+#define ANTDIV_RSSI_DIFF_TH 3
+
 #define CCX_MAX_PERIOD 2097
 #define CCX_MAX_PERIOD_UNIT 32
 #define MS_TO_4US_RATIO 250
@@ -549,11 +557,19 @@ void rtw89_phy_set_phy_regs(struct rtw89_dev *rtwdev, u32 addr, u32 mask,
 void rtw89_phy_dig_reset(struct rtw89_dev *rtwdev);
 void rtw89_phy_dig(struct rtw89_dev *rtwdev);
 void rtw89_phy_tx_path_div_track(struct rtw89_dev *rtwdev);
+void rtw89_phy_antdiv_parse(struct rtw89_dev *rtwdev,
+			    struct rtw89_rx_phy_ppdu *phy_ppdu);
+void rtw89_phy_antdiv_track(struct rtw89_dev *rtwdev);
+void rtw89_phy_antdiv_work(struct work_struct *work);
 void rtw89_phy_set_bss_color(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif);
 void rtw89_phy_tssi_ctrl_set_bandedge_cfg(struct rtw89_dev *rtwdev,
 					  enum rtw89_mac_idx mac_idx,
 					  enum rtw89_tssi_bandedge_cfg bandedge_cfg);
 void rtw89_phy_ul_tb_assoc(struct rtw89_dev *rtwdev, struct rtw89_vif *rtwvif);
 void rtw89_phy_ul_tb_ctrl_track(struct rtw89_dev *rtwdev);
+u8 rtw89_encode_chan_idx(struct rtw89_dev *rtwdev, u8 central_ch, u8 band);
+void rtw89_decode_chan_idx(struct rtw89_dev *rtwdev, u8 chan_idx,
+			   u8 *ch, enum nl80211_band *band);
+void rtw89_phy_config_edcca(struct rtw89_dev *rtwdev, bool scan);
 
 #endif
