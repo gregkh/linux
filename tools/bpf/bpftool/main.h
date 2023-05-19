@@ -142,7 +142,7 @@ const char *get_fd_type_name(enum bpf_obj_type type);
 char *get_fdinfo(int fd, const char *key);
 int open_obj_pinned(const char *path, bool quiet);
 int open_obj_pinned_any(const char *path, enum bpf_obj_type exp_type);
-int mount_bpffs_for_pin(const char *name);
+int mount_bpffs_for_pin(const char *name, bool is_dir);
 int do_pin_any(int argc, char **argv, int (*get_fd_by_id)(int *, char ***));
 int do_pin_fd(int fd, const char *name);
 
@@ -264,4 +264,10 @@ static inline bool hashmap__empty(struct hashmap *map)
 	return map ? hashmap__size(map) == 0 : true;
 }
 
+int pathname_concat(char *buf, int buf_sz, const char *path,
+		    const char *name);
+
+/* print netfilter bpf_link info */
+void netfilter_dump_plain(const struct bpf_link_info *info);
+void netfilter_dump_json(const struct bpf_link_info *info, json_writer_t *wtr);
 #endif

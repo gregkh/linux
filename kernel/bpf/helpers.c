@@ -1423,7 +1423,7 @@ static const struct bpf_func_proto bpf_kptr_xchg_proto = {
 #define DYNPTR_SIZE_MASK	0xFFFFFF
 #define DYNPTR_RDONLY_BIT	BIT(31)
 
-static bool bpf_dynptr_is_rdonly(const struct bpf_dynptr_kern *ptr)
+static bool __bpf_dynptr_is_rdonly(const struct bpf_dynptr_kern *ptr)
 {
 	return ptr->size & DYNPTR_RDONLY_BIT;
 }
@@ -1443,9 +1443,16 @@ static enum bpf_dynptr_type bpf_dynptr_get_type(const struct bpf_dynptr_kern *pt
 	return (ptr->size & ~(DYNPTR_RDONLY_BIT)) >> DYNPTR_TYPE_SHIFT;
 }
 
-u32 bpf_dynptr_get_size(const struct bpf_dynptr_kern *ptr)
+u32 __bpf_dynptr_size(const struct bpf_dynptr_kern *ptr)
 {
 	return ptr->size & DYNPTR_SIZE_MASK;
+}
+
+static void bpf_dynptr_set_size(struct bpf_dynptr_kern *ptr, u32 new_size)
+{
+	u32 metadata = ptr->size & ~DYNPTR_SIZE_MASK;
+
+	ptr->size = new_size | metadata;
 }
 
 int bpf_dynptr_check_size(u32 size)
@@ -1469,7 +1476,7 @@ void bpf_dynptr_set_null(struct bpf_dynptr_kern *ptr)
 
 static int bpf_dynptr_check_off_len(const struct bpf_dynptr_kern *ptr, u32 offset, u32 len)
 {
-	u32 size = bpf_dynptr_get_size(ptr);
+	u32 size = __bpf_dynptr_size(ptr);
 
 	if (len > size || offset > size - len)
 		return -E2BIG;
@@ -1563,7 +1570,7 @@ BPF_CALL_5(bpf_dynptr_write, const struct bpf_dynptr_kern *, dst, u32, offset, v
 	enum bpf_dynptr_type type;
 	int err;
 
-	if (!dst->data || bpf_dynptr_is_rdonly(dst))
+	if (!dst->data || __bpf_dynptr_is_rdonly(dst))
 		return -EINVAL;
 
 	err = bpf_dynptr_check_off_len(dst, offset, len);
@@ -1619,7 +1626,7 @@ BPF_CALL_3(bpf_dynptr_data, const struct bpf_dynptr_kern *, ptr, u32, offset, u3
 	if (err)
 		return 0;
 
-	if (bpf_dynptr_is_rdonly(ptr))
+	if (__bpf_dynptr_is_rdonly(ptr))
 		return 0;
 
 	type = bpf_dynptr_get_type(ptr);
@@ -1798,6 +1805,8 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 	}
 }
 
+void __bpf_obj_drop_impl(void *p, const struct btf_record *rec);
+
 void bpf_list_head_free(const struct btf_field *field, void *list_head,
 			struct bpf_spin_lock *spin_lock)
 {
@@ -1828,13 +1837,8 @@ unlock:
 		/* The contained type can also have resources, including a
 		 * bpf_list_head which needs to be freed.
 		 */
-		bpf_obj_free_fields(field->graph_root.value_rec, obj);
-		/* bpf_mem_free requires migrate_disable(), since we can be
-		 * called from map free path as well apart from BPF program (as
-		 * part of map ops doing bpf_obj_free_fields).
-		 */
 		migrate_disable();
-		bpf_mem_free(&bpf_global_ma, obj);
+		__bpf_obj_drop_impl(obj, field->graph_root.value_rec);
 		migrate_enable();
 	}
 }
@@ -1871,10 +1875,9 @@ void bpf_rb_root_free(const struct btf_field *field, void *rb_root,
 		obj = pos;
 		obj -= field->graph_root.node_offset;
 
-		bpf_obj_free_fields(field->graph_root.value_rec, obj);
 
 		migrate_disable();
-		bpf_mem_free(&bpf_global_ma, obj);
+		__bpf_obj_drop_impl(obj, field->graph_root.value_rec);
 		migrate_enable();
 	}
 }
@@ -1893,12 +1896,21 @@ __bpf_kfunc void *bpf_obj_new_impl(u64 local_type_id__k, void *meta__ign)
 	if (!p)
 		return NULL;
 	if (meta)
-		bpf_obj_init(meta->field_offs, p);
+		bpf_obj_init(meta->record, p);
 	return p;
 }
 
+/* Must be called under migrate_disable(), as required by bpf_mem_free */
 void __bpf_obj_drop_impl(void *p, const struct btf_record *rec)
 {
+	if (rec && rec->refcount_off >= 0 &&
+	    !refcount_dec_and_test((refcount_t *)(p + rec->refcount_off))) {
+		/* Object is refcounted and refcount_dec didn't result in 0
+		 * refcount. Return without freeing the object
+		 */
+		return;
+	}
+
 	if (rec)
 		bpf_obj_free_fields(rec, p);
 	bpf_mem_free(&bpf_global_ma, p);
@@ -1912,31 +1924,68 @@ __bpf_kfunc void bpf_obj_drop_impl(void *p__alloc, void *meta__ign)
 	__bpf_obj_drop_impl(p, meta ? meta->record : NULL);
 }
 
-static void __bpf_list_add(struct bpf_list_node *node, struct bpf_list_head *head, bool tail)
+__bpf_kfunc void *bpf_refcount_acquire_impl(void *p__refcounted_kptr, void *meta__ign)
+{
+	struct btf_struct_meta *meta = meta__ign;
+	struct bpf_refcount *ref;
+
+	/* Could just cast directly to refcount_t *, but need some code using
+	 * bpf_refcount type so that it is emitted in vmlinux BTF
+	 */
+	ref = (struct bpf_refcount *)(p__refcounted_kptr + meta->record->refcount_off);
+
+	refcount_inc((refcount_t *)ref);
+	return (void *)p__refcounted_kptr;
+}
+
+static int __bpf_list_add(struct bpf_list_node *node, struct bpf_list_head *head,
+			  bool tail, struct btf_record *rec, u64 off)
 {
 	struct list_head *n = (void *)node, *h = (void *)head;
 
+	/* If list_head was 0-initialized by map, bpf_obj_init_field wasn't
+	 * called on its fields, so init here
+	 */
 	if (unlikely(!h->next))
 		INIT_LIST_HEAD(h);
-	if (unlikely(!n->next))
-		INIT_LIST_HEAD(n);
+	if (!list_empty(n)) {
+		/* Only called from BPF prog, no need to migrate_disable */
+		__bpf_obj_drop_impl(n - off, rec);
+		return -EINVAL;
+	}
+
 	tail ? list_add_tail(n, h) : list_add(n, h);
+
+	return 0;
 }
 
-__bpf_kfunc void bpf_list_push_front(struct bpf_list_head *head, struct bpf_list_node *node)
+__bpf_kfunc int bpf_list_push_front_impl(struct bpf_list_head *head,
+					 struct bpf_list_node *node,
+					 void *meta__ign, u64 off)
 {
-	return __bpf_list_add(node, head, false);
+	struct btf_struct_meta *meta = meta__ign;
+
+	return __bpf_list_add(node, head, false,
+			      meta ? meta->record : NULL, off);
 }
 
-__bpf_kfunc void bpf_list_push_back(struct bpf_list_head *head, struct bpf_list_node *node)
+__bpf_kfunc int bpf_list_push_back_impl(struct bpf_list_head *head,
+					struct bpf_list_node *node,
+					void *meta__ign, u64 off)
 {
-	return __bpf_list_add(node, head, true);
+	struct btf_struct_meta *meta = meta__ign;
+
+	return __bpf_list_add(node, head, true,
+			      meta ? meta->record : NULL, off);
 }
 
 static struct bpf_list_node *__bpf_list_del(struct bpf_list_head *head, bool tail)
 {
 	struct list_head *n, *h = (void *)head;
 
+	/* If list_head was 0-initialized by map, bpf_obj_init_field wasn't
+	 * called on its fields, so init here
+	 */
 	if (unlikely(!h->next))
 		INIT_LIST_HEAD(h);
 	if (list_empty(h))
@@ -1962,6 +2011,9 @@ __bpf_kfunc struct bpf_rb_node *bpf_rbtree_remove(struct bpf_rb_root *root,
 	struct rb_root_cached *r = (struct rb_root_cached *)root;
 	struct rb_node *n = (struct rb_node *)node;
 
+	if (RB_EMPTY_NODE(n))
+		return NULL;
+
 	rb_erase_cached(n, r);
 	RB_CLEAR_NODE(n);
 	return (struct bpf_rb_node *)n;
@@ -1970,13 +2022,19 @@ __bpf_kfunc struct bpf_rb_node *bpf_rbtree_remove(struct bpf_rb_root *root,
 /* Need to copy rbtree_add_cached's logic here because our 'less' is a BPF
  * program
  */
-static void __bpf_rbtree_add(struct bpf_rb_root *root, struct bpf_rb_node *node,
-			     void *less)
+static int __bpf_rbtree_add(struct bpf_rb_root *root, struct bpf_rb_node *node,
+			    void *less, struct btf_record *rec, u64 off)
 {
 	struct rb_node **link = &((struct rb_root_cached *)root)->rb_root.rb_node;
+	struct rb_node *parent = NULL, *n = (struct rb_node *)node;
 	bpf_callback_t cb = (bpf_callback_t)less;
-	struct rb_node *parent = NULL;
 	bool leftmost = true;
+
+	if (!RB_EMPTY_NODE(n)) {
+		/* Only called from BPF prog, no need to migrate_disable */
+		__bpf_obj_drop_impl(n - off, rec);
+		return -EINVAL;
+	}
 
 	while (*link) {
 		parent = *link;
@@ -1988,15 +2046,18 @@ static void __bpf_rbtree_add(struct bpf_rb_root *root, struct bpf_rb_node *node,
 		}
 	}
 
-	rb_link_node((struct rb_node *)node, parent, link);
-	rb_insert_color_cached((struct rb_node *)node,
-			       (struct rb_root_cached *)root, leftmost);
+	rb_link_node(n, parent, link);
+	rb_insert_color_cached(n, (struct rb_root_cached *)root, leftmost);
+	return 0;
 }
 
-__bpf_kfunc void bpf_rbtree_add(struct bpf_rb_root *root, struct bpf_rb_node *node,
-				bool (less)(struct bpf_rb_node *a, const struct bpf_rb_node *b))
+__bpf_kfunc int bpf_rbtree_add_impl(struct bpf_rb_root *root, struct bpf_rb_node *node,
+				    bool (less)(struct bpf_rb_node *a, const struct bpf_rb_node *b),
+				    void *meta__ign, u64 off)
 {
-	__bpf_rbtree_add(root, node, (void *)less);
+	struct btf_struct_meta *meta = meta__ign;
+
+	return __bpf_rbtree_add(root, node, (void *)less, meta ? meta->record : NULL, off);
 }
 
 __bpf_kfunc struct bpf_rb_node *bpf_rbtree_first(struct bpf_rb_root *root)
@@ -2088,6 +2149,22 @@ __bpf_kfunc struct cgroup *bpf_cgroup_from_id(u64 cgid)
 		return NULL;
 	return cgrp;
 }
+
+/**
+ * bpf_task_under_cgroup - wrap task_under_cgroup_hierarchy() as a kfunc, test
+ * task's membership of cgroup ancestry.
+ * @task: the task to be tested
+ * @ancestor: possible ancestor of @task's cgroup
+ *
+ * Tests whether @task's default cgroup hierarchy is a descendant of @ancestor.
+ * It follows all the same rules as cgroup_is_descendant, and only applies
+ * to the default hierarchy.
+ */
+__bpf_kfunc long bpf_task_under_cgroup(struct task_struct *task,
+				       struct cgroup *ancestor)
+{
+	return task_under_cgroup_hierarchy(task, ancestor);
+}
 #endif /* CONFIG_CGROUPS */
 
 /**
@@ -2113,12 +2190,14 @@ __bpf_kfunc struct task_struct *bpf_task_from_pid(s32 pid)
  * bpf_dynptr_slice() - Obtain a read-only pointer to the dynptr data.
  * @ptr: The dynptr whose data slice to retrieve
  * @offset: Offset into the dynptr
- * @buffer: User-provided buffer to copy contents into
- * @buffer__szk: Size (in bytes) of the buffer. This is the length of the
- *		 requested slice. This must be a constant.
+ * @buffer__opt: User-provided buffer to copy contents into.  May be NULL
+ * @buffer__szk: Size (in bytes) of the buffer if present. This is the
+ *               length of the requested slice. This must be a constant.
  *
  * For non-skb and non-xdp type dynptrs, there is no difference between
  * bpf_dynptr_slice and bpf_dynptr_data.
+ *
+ *  If buffer__opt is NULL, the call will fail if buffer_opt was needed.
  *
  * If the intention is to write to the data slice, please use
  * bpf_dynptr_slice_rdwr.
@@ -2136,7 +2215,7 @@ __bpf_kfunc struct task_struct *bpf_task_from_pid(s32 pid)
  * direct pointer)
  */
 __bpf_kfunc void *bpf_dynptr_slice(const struct bpf_dynptr_kern *ptr, u32 offset,
-				   void *buffer, u32 buffer__szk)
+				   void *buffer__opt, u32 buffer__szk)
 {
 	enum bpf_dynptr_type type;
 	u32 len = buffer__szk;
@@ -2156,15 +2235,17 @@ __bpf_kfunc void *bpf_dynptr_slice(const struct bpf_dynptr_kern *ptr, u32 offset
 	case BPF_DYNPTR_TYPE_RINGBUF:
 		return ptr->data + ptr->offset + offset;
 	case BPF_DYNPTR_TYPE_SKB:
-		return skb_header_pointer(ptr->data, ptr->offset + offset, len, buffer);
+		return skb_header_pointer(ptr->data, ptr->offset + offset, len, buffer__opt);
 	case BPF_DYNPTR_TYPE_XDP:
 	{
 		void *xdp_ptr = bpf_xdp_pointer(ptr->data, ptr->offset + offset, len);
 		if (xdp_ptr)
 			return xdp_ptr;
 
-		bpf_xdp_copy_buf(ptr->data, ptr->offset + offset, buffer, len, false);
-		return buffer;
+		if (!buffer__opt)
+			return NULL;
+		bpf_xdp_copy_buf(ptr->data, ptr->offset + offset, buffer__opt, len, false);
+		return buffer__opt;
 	}
 	default:
 		WARN_ONCE(true, "unknown dynptr type %d\n", type);
@@ -2176,12 +2257,14 @@ __bpf_kfunc void *bpf_dynptr_slice(const struct bpf_dynptr_kern *ptr, u32 offset
  * bpf_dynptr_slice_rdwr() - Obtain a writable pointer to the dynptr data.
  * @ptr: The dynptr whose data slice to retrieve
  * @offset: Offset into the dynptr
- * @buffer: User-provided buffer to copy contents into
- * @buffer__szk: Size (in bytes) of the buffer. This is the length of the
- *		 requested slice. This must be a constant.
+ * @buffer__opt: User-provided buffer to copy contents into. May be NULL
+ * @buffer__szk: Size (in bytes) of the buffer if present. This is the
+ *               length of the requested slice. This must be a constant.
  *
  * For non-skb and non-xdp type dynptrs, there is no difference between
  * bpf_dynptr_slice and bpf_dynptr_data.
+ *
+ * If buffer__opt is NULL, the call will fail if buffer_opt was needed.
  *
  * The returned pointer is writable and may point to either directly the dynptr
  * data at the requested offset or to the buffer if unable to obtain a direct
@@ -2213,9 +2296,9 @@ __bpf_kfunc void *bpf_dynptr_slice(const struct bpf_dynptr_kern *ptr, u32 offset
  * direct pointer)
  */
 __bpf_kfunc void *bpf_dynptr_slice_rdwr(const struct bpf_dynptr_kern *ptr, u32 offset,
-					void *buffer, u32 buffer__szk)
+					void *buffer__opt, u32 buffer__szk)
 {
-	if (!ptr->data || bpf_dynptr_is_rdonly(ptr))
+	if (!ptr->data || __bpf_dynptr_is_rdonly(ptr))
 		return NULL;
 
 	/* bpf_dynptr_slice_rdwr is the same logic as bpf_dynptr_slice.
@@ -2240,7 +2323,59 @@ __bpf_kfunc void *bpf_dynptr_slice_rdwr(const struct bpf_dynptr_kern *ptr, u32 o
 	 * will be copied out into the buffer and the user will need to call
 	 * bpf_dynptr_write() to commit changes.
 	 */
-	return bpf_dynptr_slice(ptr, offset, buffer, buffer__szk);
+	return bpf_dynptr_slice(ptr, offset, buffer__opt, buffer__szk);
+}
+
+__bpf_kfunc int bpf_dynptr_adjust(struct bpf_dynptr_kern *ptr, u32 start, u32 end)
+{
+	u32 size;
+
+	if (!ptr->data || start > end)
+		return -EINVAL;
+
+	size = __bpf_dynptr_size(ptr);
+
+	if (start > size || end > size)
+		return -ERANGE;
+
+	ptr->offset += start;
+	bpf_dynptr_set_size(ptr, end - start);
+
+	return 0;
+}
+
+__bpf_kfunc bool bpf_dynptr_is_null(struct bpf_dynptr_kern *ptr)
+{
+	return !ptr->data;
+}
+
+__bpf_kfunc bool bpf_dynptr_is_rdonly(struct bpf_dynptr_kern *ptr)
+{
+	if (!ptr->data)
+		return false;
+
+	return __bpf_dynptr_is_rdonly(ptr);
+}
+
+__bpf_kfunc __u32 bpf_dynptr_size(const struct bpf_dynptr_kern *ptr)
+{
+	if (!ptr->data)
+		return -EINVAL;
+
+	return __bpf_dynptr_size(ptr);
+}
+
+__bpf_kfunc int bpf_dynptr_clone(struct bpf_dynptr_kern *ptr,
+				 struct bpf_dynptr_kern *clone__uninit)
+{
+	if (!ptr->data) {
+		bpf_dynptr_set_null(clone__uninit);
+		return -EINVAL;
+	}
+
+	*clone__uninit = *ptr;
+
+	return 0;
 }
 
 __bpf_kfunc void *bpf_cast_to_kern_ctx(void *obj)
@@ -2271,14 +2406,15 @@ BTF_ID_FLAGS(func, crash_kexec, KF_DESTRUCTIVE)
 #endif
 BTF_ID_FLAGS(func, bpf_obj_new_impl, KF_ACQUIRE | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_obj_drop_impl, KF_RELEASE)
-BTF_ID_FLAGS(func, bpf_list_push_front)
-BTF_ID_FLAGS(func, bpf_list_push_back)
+BTF_ID_FLAGS(func, bpf_refcount_acquire_impl, KF_ACQUIRE)
+BTF_ID_FLAGS(func, bpf_list_push_front_impl)
+BTF_ID_FLAGS(func, bpf_list_push_back_impl)
 BTF_ID_FLAGS(func, bpf_list_pop_front, KF_ACQUIRE | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_list_pop_back, KF_ACQUIRE | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_task_acquire, KF_ACQUIRE | KF_RCU | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_task_release, KF_RELEASE)
-BTF_ID_FLAGS(func, bpf_rbtree_remove, KF_ACQUIRE)
-BTF_ID_FLAGS(func, bpf_rbtree_add)
+BTF_ID_FLAGS(func, bpf_rbtree_remove, KF_ACQUIRE | KF_RET_NULL)
+BTF_ID_FLAGS(func, bpf_rbtree_add_impl)
 BTF_ID_FLAGS(func, bpf_rbtree_first, KF_RET_NULL)
 
 #ifdef CONFIG_CGROUPS
@@ -2286,6 +2422,7 @@ BTF_ID_FLAGS(func, bpf_cgroup_acquire, KF_ACQUIRE | KF_RCU | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_cgroup_release, KF_RELEASE)
 BTF_ID_FLAGS(func, bpf_cgroup_ancestor, KF_ACQUIRE | KF_RCU | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_cgroup_from_id, KF_ACQUIRE | KF_RET_NULL)
+BTF_ID_FLAGS(func, bpf_task_under_cgroup, KF_RCU)
 #endif
 BTF_ID_FLAGS(func, bpf_task_from_pid, KF_ACQUIRE | KF_RET_NULL)
 BTF_SET8_END(generic_btf_ids)
@@ -2314,6 +2451,11 @@ BTF_ID_FLAGS(func, bpf_dynptr_slice_rdwr, KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_iter_num_new, KF_ITER_NEW)
 BTF_ID_FLAGS(func, bpf_iter_num_next, KF_ITER_NEXT | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_iter_num_destroy, KF_ITER_DESTROY)
+BTF_ID_FLAGS(func, bpf_dynptr_adjust)
+BTF_ID_FLAGS(func, bpf_dynptr_is_null)
+BTF_ID_FLAGS(func, bpf_dynptr_is_rdonly)
+BTF_ID_FLAGS(func, bpf_dynptr_size)
+BTF_ID_FLAGS(func, bpf_dynptr_clone)
 BTF_SET8_END(common_btf_ids)
 
 static const struct btf_kfunc_id_set common_kfunc_set = {

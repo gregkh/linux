@@ -686,9 +686,7 @@ vmxnet3_append_frag(struct sk_buff *skb, struct Vmxnet3_RxCompDesc *rcd,
 
 	BUG_ON(skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS);
 
-	__skb_frag_set_page(frag, rbi->page);
-	skb_frag_off_set(frag, 0);
-	skb_frag_size_set(frag, rcd->len);
+	skb_frag_fill_page_desc(frag, rbi->page, 0, rcd->len);
 	skb->data_len += rcd->len;
 	skb->truesize += PAGE_SIZE;
 	skb_shinfo(skb)->nr_frags++;
@@ -1504,7 +1502,7 @@ vmxnet3_rq_rx_complete(struct vmxnet3_rx_queue *rq,
 				goto rcd_done;
 			}
 
-			if (rxDataRingUsed) {
+			if (rxDataRingUsed && adapter->rxdataring_enabled) {
 				size_t sz;
 
 				BUG_ON(rcd->len > rq->data_ring.desc_size);
@@ -1688,7 +1686,9 @@ not_lro:
 			if (unlikely(rcd->ts))
 				__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), rcd->tci);
 
-			if (adapter->netdev->features & NETIF_F_LRO)
+			/* Use GRO callback if UPT is enabled */
+			if ((adapter->netdev->features & NETIF_F_LRO) &&
+			    !rq->shared->updateRxProd)
 				netif_receive_skb(skb);
 			else
 				napi_gro_receive(&rq->napi, skb);

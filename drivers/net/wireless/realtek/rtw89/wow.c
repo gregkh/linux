@@ -30,7 +30,7 @@ static void rtw89_wow_enter_lps(struct rtw89_dev *rtwdev)
 	struct ieee80211_vif *wow_vif = rtwdev->wow.wow_vif;
 	struct rtw89_vif *rtwvif = (struct rtw89_vif *)wow_vif->drv_priv;
 
-	rtw89_enter_lps(rtwdev, rtwvif);
+	rtw89_enter_lps(rtwdev, rtwvif, false);
 }
 
 static void rtw89_wow_leave_lps(struct rtw89_dev *rtwdev)
@@ -91,7 +91,7 @@ static void rtw89_wow_show_wakeup_reason(struct rtw89_dev *rtwdev)
 	u32 wow_reason_reg;
 	u8 reason;
 
-	if (chip_id == RTL8852A || chip_id == RTL8852B)
+	if (chip_id == RTL8852A || chip_id == RTL8852B || chip_id == RTL8851B)
 		wow_reason_reg = R_AX_C2HREG_DATA3 + 3;
 	else
 		wow_reason_reg = R_AX_C2HREG_DATA3_V1 + 3;
@@ -420,14 +420,11 @@ static int rtw89_wow_cfg_wake(struct rtw89_dev *rtwdev, bool wow)
 	struct rtw89_vif *rtwvif = (struct rtw89_vif *)wow_vif->drv_priv;
 	struct ieee80211_sta *wow_sta;
 	struct rtw89_sta *rtwsta = NULL;
-	bool is_conn = true;
 	int ret;
 
 	wow_sta = ieee80211_find_sta(wow_vif, rtwvif->bssid);
 	if (wow_sta)
 		rtwsta = (struct rtw89_sta *)wow_sta->drv_priv;
-	else
-		is_conn = false;
 
 	if (wow) {
 		if (rtw_wow->pattern_cnt)
@@ -452,12 +449,6 @@ static int rtw89_wow_cfg_wake(struct rtw89_dev *rtwdev, bool wow)
 				  ret);
 			return ret;
 		}
-	}
-
-	ret = rtw89_fw_h2c_join_info(rtwdev, rtwvif, rtwsta, !is_conn);
-	if (ret) {
-		rtw89_warn(rtwdev, "failed to send h2c join info\n");
-		return ret;
 	}
 
 	ret = rtw89_fw_h2c_cam(rtwdev, rtwvif, rtwsta, NULL);

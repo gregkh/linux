@@ -14,6 +14,7 @@
 #include <linux/compiler.h>
 #include <linux/spinlock.h>
 #include <linux/ethtool.h>
+#include <linux/leds.h>
 #include <linux/linkmode.h>
 #include <linux/netlink.h>
 #include <linux/mdio.h>
@@ -85,6 +86,7 @@ extern const int phy_10gbit_features_array[1];
 #define PHY_IS_INTERNAL		0x00000001
 #define PHY_RST_AFTER_CLK_EN	0x00000002
 #define PHY_POLL_CABLE_TEST	0x00000004
+#define PHY_ALWAYS_CALL_SUSPEND	0x00000008
 #define MDIO_DEVICE_IS_PHY	0x80000000
 
 /**
@@ -547,6 +549,8 @@ struct macsec_ops;
  * @downshifted_rate: Set true if link speed has been downshifted.
  * @is_on_sfp_module: Set true if PHY is located on an SFP module.
  * @mac_managed_pm: Set true if MAC driver takes of suspending/resuming PHY
+ * @wol_enabled: Set to true if the PHY or the attached MAC have Wake-on-LAN
+ * 		 enabled.
  * @state: State of the PHY for management purposes
  * @dev_flags: Device-specific flags used by the PHY driver.
  *
@@ -600,6 +604,7 @@ struct macsec_ops;
  * @phy_num_led_triggers: Number of triggers in @phy_led_triggers
  * @led_link_trigger: LED trigger for link up/down
  * @last_triggered: last LED trigger for link speed
+ * @leds: list of PHY LED structures
  * @master_slave_set: User requested master/slave configuration
  * @master_slave_get: Current master/slave advertisement
  * @master_slave_state: Current master/slave configuration
@@ -642,6 +647,7 @@ struct phy_device {
 	unsigned downshifted_rate:1;
 	unsigned is_on_sfp_module:1;
 	unsigned mac_managed_pm:1;
+	unsigned wol_enabled:1;
 
 	unsigned autoneg:1;
 	/* The most recently read link state */
@@ -699,6 +705,7 @@ struct phy_device {
 
 	struct phy_led_trigger *led_link_trigger;
 #endif
+	struct list_head leds;
 
 	/*
 	 * Interrupt number for this PHY
@@ -833,6 +840,23 @@ struct phy_plca_cfg {
 struct phy_plca_status {
 	bool pst;
 };
+
+/**
+ * struct phy_led: An LED driven by the PHY
+ *
+ * @list: List of LEDs
+ * @phydev: PHY this LED is attached to
+ * @led_cdev: Standard LED class structure
+ * @index: Number of the LED
+ */
+struct phy_led {
+	struct list_head list;
+	struct phy_device *phydev;
+	struct led_classdev led_cdev;
+	u8 index;
+};
+
+#define to_phy_led(d) container_of(d, struct phy_led, led_cdev)
 
 /**
  * struct phy_driver - Driver structure for a particular PHY type
@@ -1056,6 +1080,27 @@ struct phy_driver {
 	/** @get_plca_status: Return the current PLCA status info */
 	int (*get_plca_status)(struct phy_device *dev,
 			       struct phy_plca_status *plca_st);
+
+	/**
+	 * @led_brightness_set: Set a PHY LED brightness. Index
+	 * indicates which of the PHYs led should be set. Value
+	 * follows the standard LED class meaning, e.g. LED_OFF,
+	 * LED_HALF, LED_FULL.
+	 */
+	int (*led_brightness_set)(struct phy_device *dev,
+				  u8 index, enum led_brightness value);
+
+	/**
+	 * @led_blink_set: Set a PHY LED brightness.  Index indicates
+	 * which of the PHYs led should be configured to blink. Delays
+	 * are in milliseconds and if both are zero then a sensible
+	 * default should be chosen.  The call should adjust the
+	 * timings in that case and if it can't match the values
+	 * specified exactly.
+	 */
+	int (*led_blink_set)(struct phy_device *dev, u8 index,
+			     unsigned long *delay_on,
+			     unsigned long *delay_off);
 };
 #define to_phy_driver(d) container_of(to_mdio_common_driver(d),		\
 				      struct phy_driver, mdiodrv)
@@ -1546,7 +1591,7 @@ int fwnode_get_phy_id(struct fwnode_handle *fwnode, u32 *phy_id);
 struct mdio_device *fwnode_mdio_find_device(struct fwnode_handle *fwnode);
 struct phy_device *fwnode_phy_find_device(struct fwnode_handle *phy_fwnode);
 struct phy_device *device_phy_find_device(struct device *dev);
-struct fwnode_handle *fwnode_get_phy_node(struct fwnode_handle *fwnode);
+struct fwnode_handle *fwnode_get_phy_node(const struct fwnode_handle *fwnode);
 struct phy_device *get_phy_device(struct mii_bus *bus, int addr, bool is_c45);
 int phy_device_register(struct phy_device *phy);
 void phy_device_free(struct phy_device *phydev);

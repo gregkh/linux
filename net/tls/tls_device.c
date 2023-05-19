@@ -268,9 +268,8 @@ static void tls_append_frag(struct tls_record_info *record,
 		skb_frag_size_add(frag, size);
 	} else {
 		++frag;
-		__skb_frag_set_page(frag, pfrag->page);
-		skb_frag_off_set(frag, pfrag->offset);
-		skb_frag_size_set(frag, size);
+		skb_frag_fill_page_desc(frag, pfrag->page, pfrag->offset,
+					size);
 		++record->num_frags;
 		get_page(pfrag->page);
 	}
@@ -357,9 +356,8 @@ static int tls_create_new_record(struct tls_offload_context_tx *offload_ctx,
 		return -ENOMEM;
 
 	frag = &record->frags[0];
-	__skb_frag_set_page(frag, pfrag->page);
-	skb_frag_off_set(frag, pfrag->offset);
-	skb_frag_size_set(frag, prepend_size);
+	skb_frag_fill_page_desc(frag, pfrag->page, pfrag->offset,
+				prepend_size);
 
 	get_page(pfrag->page);
 	pfrag->offset += prepend_size;
@@ -508,6 +506,8 @@ handle_error:
 			zc_pfrag.offset = iter_offset.offset;
 			zc_pfrag.size = copy;
 			tls_append_frag(record, &zc_pfrag, copy);
+
+			iter_offset.offset += copy;
 		} else if (copy) {
 			copy = min_t(size_t, copy, pfrag->size - pfrag->offset);
 

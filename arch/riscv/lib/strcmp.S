@@ -2,9 +2,8 @@
 
 #include <linux/linkage.h>
 #include <asm/asm.h>
-#include <asm-generic/export.h>
 #include <asm/alternative-macros.h>
-#include <asm/errata_list.h>
+#include <asm/hwcap.h>
 
 /* int strcmp(const char *cs, const char *ct) */
 SYM_FUNC_START(strcmp)
@@ -40,7 +39,9 @@ SYM_FUNC_START(strcmp)
 	ret
 
 /*
- * Variant of strcmp using the ZBB extension if available
+ * Variant of strcmp using the ZBB extension if available.
+ * The code was published as part of the bitmanip manual
+ * in Appendix A.
  */
 #ifdef CONFIG_RISCV_ISA_ZBB
 strcmp_zbb:
@@ -57,7 +58,7 @@ strcmp_zbb:
 	 *   a1 - string2
 	 *
 	 * Clobbers
-	 *   t0, t1, t2, t3, t4, t5
+	 *   t0, t1, t2, t3, t4
 	 */
 
 	or	t2, a0, a1

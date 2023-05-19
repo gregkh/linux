@@ -73,6 +73,13 @@ struct ip_tunnel_encap {
 #define IP_TUNNEL_OPTS_MAX					\
 	GENMASK((sizeof_field(struct ip_tunnel_info,		\
 			      options_len) * BITS_PER_BYTE) - 1, 0)
+
+#define ip_tunnel_info_opts(info)				\
+	_Generic(info,						\
+		 const struct ip_tunnel_info * : ((const void *)((info) + 1)),\
+		 struct ip_tunnel_info * : ((void *)((info) + 1))\
+	)
+
 struct ip_tunnel_info {
 	struct ip_tunnel_key	key;
 	struct ip_tunnel_encap	encap;
@@ -485,11 +492,6 @@ static inline void iptunnel_xmit_stats(struct net_device *dev, int pkt_len)
 			err_stats->tx_dropped++;
 		}
 	}
-}
-
-static inline void *ip_tunnel_info_opts(struct ip_tunnel_info *info)
-{
-	return info + 1;
 }
 
 static inline void ip_tunnel_info_opts_get(void *to,
