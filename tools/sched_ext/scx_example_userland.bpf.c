@@ -249,7 +249,7 @@ void BPF_STRUCT_OPS(userland_exit, struct scx_exit_info *ei)
 	uei_record(&uei, ei);
 }
 
-SEC(".struct_ops.link")
+SEC(".struct_ops")
 struct sched_ext_ops userland_ops = {
 	.select_cpu		= (void *)userland_select_cpu,
 	.enqueue		= (void *)userland_enqueue,

@@ -314,7 +314,7 @@ void BPF_STRUCT_OPS(central_exit, struct scx_exit_info *ei)
 	uei_record(&uei, ei);
 }
 
-SEC(".struct_ops.link")
+SEC(".struct_ops")
 struct sched_ext_ops central_ops = {
 	/*
 	 * We are offloading all scheduling decisions to the central CPU and

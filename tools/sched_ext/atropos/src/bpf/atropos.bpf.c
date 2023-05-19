@@ -723,7 +723,7 @@ void BPF_STRUCT_OPS(atropos_exit, struct scx_exit_info *ei)
 	exit_type = ei->type;
 }
 
-SEC(".struct_ops.link")
+SEC(".struct_ops")
 struct sched_ext_ops atropos = {
 	.select_cpu = (void *)atropos_select_cpu,
 	.enqueue = (void *)atropos_enqueue,
