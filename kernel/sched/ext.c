@@ -3555,6 +3555,23 @@ static int bpf_scx_init(struct btf *btf)
 	return 0;
 }
 
+static int bpf_scx_update(void *kdata, void *old_kdata)
+{
+	/*
+	 * sched_ext does not support updating the actively-loaded BPF
+	 * scheduler, as registering a BPF scheduler can always fail if the
+	 * scheduler returns an error code for e.g. ops.init(),
+	 * ops.prep_enable(), etc. Similarly, we can always race with
+	 * unregistration happening elsewhere, such as with sysrq.
+	 */
+	return -EOPNOTSUPP;
+}
+
+static int bpf_scx_validate(void *kdata)
+{
+	return 0;
+}
+
 /* "extern" to avoid sparse warning, only used in this file */
 extern struct bpf_struct_ops bpf_sched_ext_ops;
 
@@ -3565,6 +3582,8 @@ struct bpf_struct_ops bpf_sched_ext_ops = {
 	.check_member = bpf_scx_check_member,
 	.init_member = bpf_scx_init_member,
 	.init = bpf_scx_init,
+	.update = bpf_scx_update,
+	.validate = bpf_scx_validate,
 	.name = "sched_ext_ops",
 };
 

@@ -853,7 +853,7 @@ void BPF_STRUCT_OPS(fcg_exit, struct scx_exit_info *ei)
 	uei_record(&uei, ei);
 }
 
-SEC(".struct_ops")
+SEC(".struct_ops.link")
 struct sched_ext_ops flatcg_ops = {
 	.enqueue		= (void *)fcg_enqueue,
 	.dispatch		= (void *)fcg_dispatch,
