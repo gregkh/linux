@@ -625,6 +625,7 @@ int mvpp22_tai_probe(struct device *dev, struct mvpp2 *priv)
 {
 	struct mvpp2_tai *tai;
 	int ret;
+	int i;
 
 	tai = devm_kzalloc(dev, sizeof(*tai), GFP_KERNEL);
 	if (!tai)
@@ -698,7 +699,7 @@ int mvpp22_tai_probe(struct device *dev, struct mvpp2 *priv)
 	tai->caps.verify = mvpp22_tai_verify_pin;
 	tai->caps.pin_config = tai->pin_config;
 
-	for (int i = 0; i < tai->caps.n_pins; ++i) {
+	for (i = 0; i < tai->caps.n_pins; ++i) {
 		struct ptp_pin_desc *ppd = &tai->caps.pin_config[i];
 
 		snprintf(ppd->name, sizeof(ppd->name), "PTP_PULSE_IN%d", i);
