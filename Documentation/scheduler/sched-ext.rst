@@ -88,9 +88,9 @@ scheduler.
     void BPF_STRUCT_OPS(simple_enqueue, struct task_struct *p, u64 enq_flags)
     {
             if (enq_flags & SCX_ENQ_LOCAL)
-                    scx_bpf_dispatch(p, SCX_DSQ_LOCAL, enq_flags);
+                    scx_bpf_dispatch(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, enq_flags);
             else
-                    scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, enq_flags);
+                    scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
     }
 
     void BPF_STRUCT_OPS(simple_exit, struct scx_exit_info *ei)
