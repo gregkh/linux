@@ -5,6 +5,15 @@
 
 menu "Misc devices"
 
+config RSMU
+	tristate "Renesas Synchronization Management Unit (SMU)"
+	depends on MFD_RSMU_I2C || MFD_RSMU_SPI
+	help
+	  This option enables support for Renesas SMU, such as Clockmatrix and
+	  82P33XXX series. It will be used by Renesas PTP Clock Manager for
+	  Linux (pcm4l) software to provide support to GNSS assisted partial
+	  timing support (APTS) and other networking timing functions.
+
 config SENSORS_LIS3LV02D
 	tristate
 	depends on INPUT

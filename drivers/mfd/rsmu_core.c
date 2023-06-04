@@ -82,6 +82,7 @@ int rsmu_core_init(struct rsmu_ddata *rsmu)
 void rsmu_core_exit(struct rsmu_ddata *rsmu)
 {
 	mutex_destroy(&rsmu->lock);
+	regmap_exit(rsmu->regmap);
 }
 
 MODULE_DESCRIPTION("Renesas SMU core driver");
