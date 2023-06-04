@@ -3702,11 +3702,10 @@ __diag_ignore_all("-Wmissing-prototypes",
 
 /**
  * scx_bpf_switch_all - Switch all tasks into SCX
- * @into_scx: switch direction
  *
- * If @into_scx is %true, all existing and future non-dl/rt tasks are switched
- * to SCX. If %false, only tasks which have %SCHED_EXT explicitly set are put on
- * SCX. The actual switching is asynchronous. Can be called from ops.init().
+ * Switch all existing and future non-dl/rt tasks to SCX.
+ * This can only be called from ops.init(), and actual switching
+ * is performed asynchronously.
  */
 void scx_bpf_switch_all(void)
 {
