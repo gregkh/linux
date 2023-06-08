@@ -126,6 +126,7 @@ struct tls_strparser {
 	u32 mark : 8;
 	u32 stopped : 1;
 	u32 copy_mode : 1;
+	u32 mixed_decrypted : 1;
 	u32 msg_ready : 1;
 
 	struct strp_msg stm;
@@ -258,7 +259,7 @@ struct tls_context {
 	struct scatterlist *partially_sent_record;
 	u16 partially_sent_offset;
 
-	bool in_tcp_sendpages;
+	bool splicing_pages;
 	bool pending_open_record_frags;
 
 	struct mutex tx_lock; /* protects partially_sent_* fields and
