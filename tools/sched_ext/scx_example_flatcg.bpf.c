@@ -587,6 +587,16 @@ static bool try_pick_next_cgroup(u64 *cgidp)
 	rb_node = bpf_rbtree_remove(&cgv_tree, rb_node);
 	bpf_spin_unlock(&cgv_tree_lock);
 
+	if (!rb_node) {
+		/*
+		 * This should never happen. bpf_rbtree_first() was called
+		 * above while the tree lock was held, so the node should
+		 * always be present.
+		 */
+		scx_bpf_error("node could not be removed");
+		return true;
+	}
+
 	cgv_node = container_of(rb_node, struct cgv_node, rb_node);
 	cgid = cgv_node->cgid;
 

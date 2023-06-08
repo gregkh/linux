@@ -135,8 +135,11 @@ struct bpf_list_node *bpf_list_pop_front(struct bpf_list_head *head) __ksym;
 struct bpf_list_node *bpf_list_pop_back(struct bpf_list_head *head) __ksym;
 struct bpf_rb_node *bpf_rbtree_remove(struct bpf_rb_root *root,
 				      struct bpf_rb_node *node) __ksym;
-void bpf_rbtree_add(struct bpf_rb_root *root, struct bpf_rb_node *node,
-		    bool (less)(struct bpf_rb_node *a, const struct bpf_rb_node *b)) __ksym;
+int bpf_rbtree_add_impl(struct bpf_rb_root *root, struct bpf_rb_node *node,
+			bool (less)(struct bpf_rb_node *a, const struct bpf_rb_node *b),
+			void *meta, __u64 off) __ksym;
+#define bpf_rbtree_add(head, node, less) bpf_rbtree_add_impl(head, node, less, NULL, 0)
+
 struct bpf_rb_node *bpf_rbtree_first(struct bpf_rb_root *root) __ksym;
 
 /* task */
