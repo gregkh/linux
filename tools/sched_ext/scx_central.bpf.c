@@ -51,14 +51,13 @@ char _license[] SEC("license") = "GPL";
 
 enum {
 	FALLBACK_DSQ_ID		= 0,
-	MAX_CPUS		= 4096,
 	MS_TO_NS		= 1000LLU * 1000,
 	TIMER_INTERVAL_NS	= 1 * MS_TO_NS,
 };
 
 const volatile bool switch_partial;
 const volatile s32 central_cpu;
-const volatile u32 nr_cpu_ids = 64;	/* !0 for veristat, set during init */
+const volatile u32 nr_cpu_ids = 1;	/* !0 for veristat, set during init */
 
 u64 nr_total, nr_locals, nr_queued, nr_lost_pids;
 u64 nr_timers, nr_dispatches, nr_mismatches, nr_retries;
@@ -73,8 +72,8 @@ struct {
 } central_q SEC(".maps");
 
 /* can't use percpu map due to bad lookups */
-static bool cpu_gimme_task[MAX_CPUS];
-static u64 cpu_started_at[MAX_CPUS];
+bool RESIZABLE_ARRAY(data, cpu_gimme_task);
+u64 RESIZABLE_ARRAY(data, cpu_started_at);
 
 struct central_timer {
 	struct bpf_timer timer;
@@ -189,7 +188,7 @@ void BPF_STRUCT_OPS(central_dispatch, s32 cpu, struct task_struct *prev)
 				break;
 
 			/* central's gimme is never set */
-			gimme = MEMBER_VPTR(cpu_gimme_task, [cpu]);
+			gimme = ARRAY_ELEM_PTR(cpu_gimme_task, cpu, nr_cpu_ids);
 			if (gimme && !*gimme)
 				continue;
 
@@ -220,7 +219,7 @@ void BPF_STRUCT_OPS(central_dispatch, s32 cpu, struct task_struct *prev)
 		if (scx_bpf_consume(FALLBACK_DSQ_ID))
 			return;
 
-		gimme = MEMBER_VPTR(cpu_gimme_task, [cpu]);
+		gimme = ARRAY_ELEM_PTR(cpu_gimme_task, cpu, nr_cpu_ids);
 		if (gimme)
 			*gimme = true;
 
@@ -235,7 +234,7 @@ void BPF_STRUCT_OPS(central_dispatch, s32 cpu, struct task_struct *prev)
 void BPF_STRUCT_OPS(central_running, struct task_struct *p)
 {
 	s32 cpu = scx_bpf_task_cpu(p);
-	u64 *started_at = MEMBER_VPTR(cpu_started_at, [cpu]);
+	u64 *started_at = ARRAY_ELEM_PTR(cpu_started_at, cpu, nr_cpu_ids);
 	if (started_at)
 		*started_at = bpf_ktime_get_ns() ?: 1;	/* 0 indicates idle */
 }
@@ -243,7 +242,7 @@ void BPF_STRUCT_OPS(central_running, struct task_struct *p)
 void BPF_STRUCT_OPS(central_stopping, struct task_struct *p, bool runnable)
 {
 	s32 cpu = scx_bpf_task_cpu(p);
-	u64 *started_at = MEMBER_VPTR(cpu_started_at, [cpu]);
+	u64 *started_at = ARRAY_ELEM_PTR(cpu_started_at, cpu, nr_cpu_ids);
 	if (started_at)
 		*started_at = 0;
 }
@@ -262,7 +261,7 @@ static int central_timerfn(void *map, int *key, struct bpf_timer *timer)
 			continue;
 
 		/* kick iff the current one exhausted its slice */
-		started_at = MEMBER_VPTR(cpu_started_at, [cpu]);
+		started_at = ARRAY_ELEM_PTR(cpu_started_at, cpu, nr_cpu_ids);
 		if (started_at && *started_at &&
 		    vtime_before(now, *started_at + SCX_SLICE_DFL))
 			continue;

@@ -67,27 +67,37 @@ int main(int argc, char **argv)
 		}
 	}
 
+	bpf_map__set_max_entries(skel->maps.pair_ctx, skel->rodata->nr_cpu_ids / 2);
+
+	/* Resize arrays so their element count is equal to cpu count. */
+	RESIZE_ARRAY(rodata, pair_cpu, skel->rodata->nr_cpu_ids);
+	RESIZE_ARRAY(rodata, pair_id, skel->rodata->nr_cpu_ids);
+	RESIZE_ARRAY(rodata, in_pair_idx, skel->rodata->nr_cpu_ids);
+
+	for (i = 0; i < skel->rodata->nr_cpu_ids; i++)
+		skel->rodata_pair_cpu->pair_cpu[i] = -1;
+
 	printf("Pairs: ");
 	for (i = 0; i < skel->rodata->nr_cpu_ids; i++) {
 		int j = (i + stride) % skel->rodata->nr_cpu_ids;
 
-		if (skel->rodata->pair_cpu[i] >= 0)
+		if (skel->rodata_pair_cpu->pair_cpu[i] >= 0)
 			continue;
 
 		SCX_BUG_ON(i == j,
 			   "Invalid stride %d - CPU%d wants to be its own pair",
 			   stride, i);
 
-		SCX_BUG_ON(skel->rodata->pair_cpu[j] >= 0,
+		SCX_BUG_ON(skel->rodata_pair_cpu->pair_cpu[j] >= 0,
 			   "Invalid stride %d - three CPUs (%d, %d, %d) want to be a pair",
-			   stride, i, j, skel->rodata->pair_cpu[j]);
+			   stride, i, j, skel->rodata_pair_cpu->pair_cpu[j]);
 
-		skel->rodata->pair_cpu[i] = j;
-		skel->rodata->pair_cpu[j] = i;
-		skel->rodata->pair_id[i] = i;
-		skel->rodata->pair_id[j] = i;
-		skel->rodata->in_pair_idx[i] = 0;
-		skel->rodata->in_pair_idx[j] = 1;
+		skel->rodata_pair_cpu->pair_cpu[i] = j;
+		skel->rodata_pair_cpu->pair_cpu[j] = i;
+		skel->rodata_pair_id->pair_id[i] = i;
+		skel->rodata_pair_id->pair_id[j] = i;
+		skel->rodata_in_pair_idx->in_pair_idx[i] = 0;
+		skel->rodata_in_pair_idx->in_pair_idx[j] = 1;
 
 		printf("[%d, %d] ", i, j);
 	}

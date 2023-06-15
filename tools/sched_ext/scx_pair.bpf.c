@@ -123,19 +123,19 @@ char _license[] SEC("license") = "GPL";
 const volatile bool switch_partial;
 
 /* !0 for veristat, set during init */
-const volatile u32 nr_cpu_ids = 64;
+const volatile u32 nr_cpu_ids = 1;
 
 /* a pair of CPUs stay on a cgroup for this duration */
 const volatile u32 pair_batch_dur_ns = SCX_SLICE_DFL;
 
 /* cpu ID -> pair cpu ID */
-const volatile s32 pair_cpu[MAX_CPUS] = { [0 ... MAX_CPUS - 1] = -1 };
+const volatile s32 RESIZABLE_ARRAY(rodata, pair_cpu);
 
 /* cpu ID -> pair_id */
-const volatile u32 pair_id[MAX_CPUS];
+const volatile u32 RESIZABLE_ARRAY(rodata, pair_id);
 
 /* CPU ID -> CPU # in the pair (0 or 1) */
-const volatile u32 in_pair_idx[MAX_CPUS];
+const volatile u32 RESIZABLE_ARRAY(rodata, in_pair_idx);
 
 struct pair_ctx {
 	struct bpf_spin_lock	lock;
@@ -161,7 +161,6 @@ struct pair_ctx {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, MAX_CPUS / 2);
 	__type(key, u32);
 	__type(value, struct pair_ctx);
 } pair_ctx SEC(".maps");
@@ -299,7 +298,7 @@ static int lookup_pairc_and_mask(s32 cpu, struct pair_ctx **pairc, u32 *mask)
 {
 	u32 *vptr;
 
-	vptr = (u32 *)MEMBER_VPTR(pair_id, [cpu]);
+	vptr = (u32 *)ARRAY_ELEM_PTR(pair_id, cpu, nr_cpu_ids);
 	if (!vptr)
 		return -EINVAL;
 
@@ -307,7 +306,7 @@ static int lookup_pairc_and_mask(s32 cpu, struct pair_ctx **pairc, u32 *mask)
 	if (!(*pairc))
 		return -EINVAL;
 
-	vptr = (u32 *)MEMBER_VPTR(in_pair_idx, [cpu]);
+	vptr = (u32 *)ARRAY_ELEM_PTR(in_pair_idx, cpu, nr_cpu_ids);
 	if (!vptr)
 		return -EINVAL;
 
@@ -490,7 +489,7 @@ static int try_dispatch(s32 cpu)
 
 out_maybe_kick:
 	if (kick_pair) {
-		s32 *pair = (s32 *)MEMBER_VPTR(pair_cpu, [cpu]);
+		s32 *pair = (s32 *)ARRAY_ELEM_PTR(pair_cpu, cpu, nr_cpu_ids);
 		if (pair) {
 			__sync_fetch_and_add(&nr_kicks, 1);
 			scx_bpf_kick_cpu(*pair, SCX_KICK_PREEMPT);
@@ -525,7 +524,7 @@ void BPF_STRUCT_OPS(pair_cpu_acquire, s32 cpu, struct scx_cpu_acquire_args *args
 	bpf_spin_unlock(&pairc->lock);
 
 	if (kick_pair) {
-		s32 *pair = (s32 *)MEMBER_VPTR(pair_cpu, [cpu]);
+		s32 *pair = (s32 *)ARRAY_ELEM_PTR(pair_cpu, cpu, nr_cpu_ids);
 
 		if (pair) {
 			__sync_fetch_and_add(&nr_kicks, 1);
@@ -554,7 +553,7 @@ void BPF_STRUCT_OPS(pair_cpu_release, s32 cpu, struct scx_cpu_release_args *args
 	bpf_spin_unlock(&pairc->lock);
 
 	if (kick_pair) {
-		s32 *pair = (s32 *)MEMBER_VPTR(pair_cpu, [cpu]);
+		s32 *pair = (s32 *)ARRAY_ELEM_PTR(pair_cpu, cpu, nr_cpu_ids);
 
 		if (pair) {
 			__sync_fetch_and_add(&nr_kicks, 1);
