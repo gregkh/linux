@@ -236,22 +236,22 @@ struct Topology {
     nr_cpus: usize,
     nr_doms: usize,
     dom_cpus: Vec<BitVec<u64, Lsb0>>,
-    cpu_dom: Vec<i32>,
+    cpu_dom: Vec<Option<usize>>,
 }
 
 impl Topology {
     fn from_cpumasks(cpumasks: &[String], nr_cpus: usize) -> Result<Self> {
         if cpumasks.len() > atropos_sys::MAX_DOMS as usize {
             bail!(
-                "Number of requested DSQs ({}) is greater than MAX_DOMS ({})",
+                "Number of requested domains ({}) is greater than MAX_DOMS ({})",
                 cpumasks.len(),
                 atropos_sys::MAX_DOMS
             );
         }
-        let mut cpu_dom = vec![-1i32; nr_cpus];
+        let mut cpu_dom = vec![None; nr_cpus];
         let mut dom_cpus =
             vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; cpumasks.len()];
-        for (dsq, cpumask) in cpumasks.iter().enumerate() {
+        for (dom, cpumask) in cpumasks.iter().enumerate() {
             let hex_str = {
                 let mut tmp_str = cpumask
                     .strip_prefix("0x")
@@ -282,25 +282,25 @@ impl Topology {
                             nr_cpus
                         );
                     }
-                    if cpu_dom[cpu] != -1 {
+                    if let Some(other_dom) = cpu_dom[cpu] {
                         bail!(
-                            "Found cpu ({}) with dsq ({}) but also in cpumask ({})",
+                            "Found cpu ({}) with domain ({}) but also in cpumask ({})",
                             cpu,
-                            cpu_dom[cpu],
+                            other_dom,
                             cpumask
                         );
                     }
-                    cpu_dom[cpu] = dsq as i32;
-                    dom_cpus[dsq].set(cpu, true);
+                    cpu_dom[cpu] = Some(dom);
+                    dom_cpus[dom].set(cpu, true);
                 }
             }
-            dom_cpus[dsq].set_uninitialized(false);
+            dom_cpus[dom].set_uninitialized(false);
         }
 
-        for (cpu, &dsq) in cpu_dom.iter().enumerate() {
-            if dsq < 0 {
+        for (cpu, dom) in cpu_dom.iter().enumerate() {
+            if dom.is_none() {
                 bail!(
-                    "Cpu {} not assigned to any dsq. Make sure it is covered by some --cpumasks argument.",
+                    "CPU {} not assigned to any domain. Make sure it is covered by some --cpumasks argument.",
                     cpu
                 );
             }
@@ -315,46 +315,46 @@ impl Topology {
     }
 
     fn from_cache_level(level: u32, nr_cpus: usize) -> Result<Self> {
-        let mut cpu_to_cache = vec![]; // (cpu_id, cache_id)
-        let mut cache_ids = BTreeSet::<u32>::new();
-        let mut nr_not_found = 0;
+        let mut cpu_to_cache = vec![]; // (cpu_id, Option<cache_id>)
+        let mut cache_ids = BTreeSet::<usize>::new();
+        let mut nr_offline = 0;
 
         // Build cpu -> cache ID mapping.
         for cpu in 0..nr_cpus {
             let path = format!("/sys/devices/system/cpu/cpu{}/cache/index{}/id", cpu, level);
             let id = match std::fs::read_to_string(&path) {
-                Ok(val) => val
-                    .trim()
-                    .parse::<u32>()
-                    .with_context(|| format!("Failed to parse {:?}'s content {:?}", &path, &val))?,
+                Ok(val) => Some(val.trim().parse::<usize>().with_context(|| {
+                    format!("Failed to parse {:?}'s content {:?}", &path, &val)
+                })?),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    nr_not_found += 1;
-                    0
+                    nr_offline += 1;
+                    None
                 }
                 Err(e) => return Err(e).with_context(|| format!("Failed to open {:?}", &path)),
             };
 
             cpu_to_cache.push(id);
-            cache_ids.insert(id);
+            if id.is_some() {
+                cache_ids.insert(id.unwrap());
+            }
         }
 
-        if nr_not_found > 1 {
-            warn!(
-                "Couldn't determine level {} cache IDs for {} CPUs out of {}, assigned to cache ID 0",
-                level, nr_not_found, nr_cpus
-            );
-        }
+        info!(
+            "CPUs: online/possible = {}/{}",
+            nr_cpus - nr_offline,
+            nr_cpus
+        );
 
         // Cache IDs may have holes. Assign consecutive domain IDs to
         // existing cache IDs.
-        let mut cache_to_dom = BTreeMap::<u32, u32>::new();
+        let mut cache_to_dom = BTreeMap::<usize, usize>::new();
         let mut nr_doms = 0;
         for cache_id in cache_ids.iter() {
             cache_to_dom.insert(*cache_id, nr_doms);
             nr_doms += 1;
         }
 
-        if nr_doms > atropos_sys::MAX_DOMS {
+        if nr_doms > atropos_sys::MAX_DOMS as usize {
             bail!(
                 "Total number of doms {} is greater than MAX_DOMS ({})",
                 nr_doms,
@@ -368,9 +368,17 @@ impl Topology {
         let mut cpu_dom = vec![];
 
         for cpu in 0..nr_cpus {
-            let dom_id = cache_to_dom[&cpu_to_cache[cpu]];
-            dom_cpus[dom_id as usize].set(cpu, true);
-            cpu_dom.push(dom_id as i32);
+            match cpu_to_cache[cpu] {
+                Some(cache_id) => {
+                    let dom_id = cache_to_dom[&cache_id];
+                    dom_cpus[dom_id].set(cpu, true);
+                    cpu_dom.push(Some(dom_id));
+                }
+                None => {
+                    dom_cpus[0].set(cpu, true);
+                    cpu_dom.push(None);
+                }
+            }
         }
 
         Ok(Self {
@@ -408,12 +416,14 @@ impl Tuner {
         let mut dom_util_sum = vec![0.0; self.top.nr_doms];
 
         for cpu in 0..self.top.nr_cpus {
-            let dom = self.top.cpu_dom[cpu] as usize;
-
-            // None MyCpuStat indicates offline CPU. Ignore.
-            if let (Some(curr), Some(prev)) =
-                (curr_cpu_stats.get(&cpu), self.prev_cpu_stats.get(&cpu))
-            {
+            // None domain indicates the CPU was offline during
+            // initialization and None MyCpuStat indicates the CPU has gone
+            // down since then. Ignore both.
+            if let (Some(dom), Some(curr), Some(prev)) = (
+                self.top.cpu_dom[cpu],
+                curr_cpu_stats.get(&cpu),
+                self.prev_cpu_stats.get(&cpu),
+            ) {
                 dom_nr_cpus[dom] += 1;
                 dom_util_sum[dom] += curr.calc_util(prev);
             }
@@ -421,8 +431,8 @@ impl Tuner {
 
         for dom in 0..self.top.nr_doms {
             // Calculate the domain avg util. If there are no active CPUs,
-	    // it doesn't really matter. Go with 0.0 as that's less likely
-	    // to confuse users.
+            // it doesn't really matter. Go with 0.0 as that's less likely
+            // to confuse users.
             let util = match dom_nr_cpus[dom] {
                 0 => 0.0,
                 nr => dom_util_sum[dom] / nr as f64,
@@ -433,11 +443,13 @@ impl Tuner {
             // This could be implemented better.
             let update_dom_bits = |target: &mut [u64; 8], val: bool| {
                 for cpu in 0..self.top.nr_cpus {
-                    if self.top.cpu_dom[cpu] as usize == dom {
-                        if val {
-                            target[cpu / 64] |= 1u64 << (cpu % 64);
-                        } else {
-                            target[cpu / 64] &= !(1u64 << (cpu % 64));
+                    if let Some(cdom) = self.top.cpu_dom[cpu] {
+                        if cdom == dom {
+                            if val {
+                                target[cpu / 64] |= 1u64 << (cpu % 64);
+                            } else {
+                                target[cpu / 64] &= !(1u64 << (cpu % 64));
+                            }
                         }
                     }
                 }
@@ -868,7 +880,7 @@ impl<'a> Scheduler<'a> {
         skel.rodata().nr_cpus = top.nr_cpus as u32;
 
         for (cpu, dom) in top.cpu_dom.iter().enumerate() {
-            skel.rodata().cpu_dom_id_map[cpu] = *dom as u32;
+            skel.rodata().cpu_dom_id_map[cpu] = dom.unwrap_or(0) as u32;
         }
 
         for (dom, cpus) in top.dom_cpus.iter().enumerate() {
