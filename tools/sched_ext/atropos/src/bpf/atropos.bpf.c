@@ -275,7 +275,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 		return -ENOENT;
 
 	/* If there is an eligible idle CPU, dispatch directly */
-	cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask);
+	cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
 	if (cpu >= 0) {
 		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
 		goto local;
@@ -332,7 +332,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
 			scx_bpf_error("Failed to get task_ctx->cpumask");
 			return;
 		}
-		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask);
+		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
 
 		if (cpu >= 0)
 			scx_bpf_kick_cpu(cpu, 0);

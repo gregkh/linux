@@ -1928,7 +1928,7 @@ static bool test_and_clear_cpu_idle(int cpu)
 	return cpumask_test_and_clear_cpu(cpu, idle_masks.cpu);
 }
 
-static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed)
+static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
 {
 	int cpu;
 
@@ -1948,6 +1948,9 @@ static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed)
 			else
 				cpumask_andnot(idle_masks.smt, idle_masks.smt, cpumask_of(cpu));
 		} else {
+			if (flags & SCX_PICK_IDLE_CPU_WHOLE)
+				return -EBUSY;
+
 			cpu = cpumask_any_and_distribute(idle_masks.cpu, cpus_allowed);
 			if (cpu >= nr_cpu_ids)
 				return -EBUSY;
@@ -1988,7 +1991,7 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 	if (p->nr_cpus_allowed == 1)
 		return prev_cpu;
 
-	cpu = scx_pick_idle_cpu(p->cpus_ptr);
+	cpu = scx_pick_idle_cpu(p->cpus_ptr, 0);
 	if (cpu >= 0) {
 		p->scx.flags |= SCX_TASK_ENQ_LOCAL;
 		return cpu;
@@ -2084,7 +2087,7 @@ static void rq_offline_scx(struct rq *rq, enum rq_onoff_reason reason)
 #else /* !CONFIG_SMP */
 
 static bool test_and_clear_cpu_idle(int cpu) { return false; }
-static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed) { return -EBUSY; }
+static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags) { return -EBUSY; }
 static void reset_idle_masks(void) {}
 
 #endif /* CONFIG_SMP */
@@ -3992,7 +3995,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_cpu_release = {
 /**
  * scx_bpf_kick_cpu - Trigger reschedule on a CPU
  * @cpu: cpu to kick
- * @flags: SCX_KICK_* flags
+ * @flags: %SCX_KICK_* flags
  *
  * Kick @cpu into rescheduling. This can be used to wake up an idle CPU or
  * trigger rescheduling on a busy CPU. This can be called from any online
@@ -4081,21 +4084,22 @@ bool scx_bpf_test_and_clear_cpu_idle(s32 cpu)
 /**
  * scx_bpf_pick_idle_cpu - Pick and claim an idle cpu
  * @cpus_allowed: Allowed cpumask
+ * @flags: %SCX_PICK_IDLE_CPU_* flags
  *
- * Pick and claim an idle cpu which is also in @cpus_allowed. Returns the picked
- * idle cpu number on success. -%EBUSY if no matching cpu was found.
+ * Pick and claim an idle cpu in @cpus_allowed. Returns the picked idle cpu
+ * number on success. -%EBUSY if no matching cpu was found.
  *
  * Unavailable if ops.update_idle() is implemented and
  * %SCX_OPS_KEEP_BUILTIN_IDLE is not set.
  */
-s32 scx_bpf_pick_idle_cpu(const struct cpumask *cpus_allowed)
+s32 scx_bpf_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
 {
 	if (!static_branch_likely(&scx_builtin_idle_enabled)) {
 		scx_ops_error("built-in idle tracking is disabled");
 		return -EBUSY;
 	}
 
-	return scx_pick_idle_cpu(cpus_allowed);
+	return scx_pick_idle_cpu(cpus_allowed, flags);
 }
 
 /**

@@ -91,6 +91,10 @@ enum scx_kick_flags {
 	SCX_KICK_WAIT		= 1LLU << 1,	/* wait for the CPU to be rescheduled */
 };
 
+enum scx_pick_idle_cpu_flags {
+	SCX_PICK_IDLE_CPU_WHOLE	= 1LLU << 0,	/* pick a CPU whose SMT siblings are also idle */
+};
+
 #ifdef CONFIG_SCHED_CLASS_EXT
 
 extern const struct sched_class ext_sched_class;
