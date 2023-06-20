@@ -753,6 +753,7 @@ s32 BPF_STRUCT_OPS(fcg_prep_enable, struct task_struct *p,
 		   struct scx_enable_args *args)
 {
 	struct fcg_task_ctx *taskc;
+	struct fcg_cgrp_ctx *cgc;
 
 	/*
 	 * @p is new. Let's ensure that its task_ctx is available. We can sleep
@@ -764,6 +765,12 @@ s32 BPF_STRUCT_OPS(fcg_prep_enable, struct task_struct *p,
 		return -ENOMEM;
 
 	taskc->bypassed_at = 0;
+
+	if (!(cgc = find_cgrp_ctx(args->cgroup)))
+		return -ENOENT;
+
+	p->scx.dsq_vtime = cgc->tvtime_now;
+
 	return 0;
 }
 
@@ -851,6 +858,20 @@ void BPF_STRUCT_OPS(fcg_cgroup_exit, struct cgroup *cgrp)
 	scx_bpf_destroy_dsq(cgid);
 }
 
+void BPF_STRUCT_OPS(fcg_cgroup_move, struct task_struct *p,
+		    struct cgroup *from, struct cgroup *to)
+{
+	struct fcg_cgrp_ctx *from_cgc, *to_cgc;
+	s64 vtime_delta;
+
+	/* find_cgrp_ctx() triggers scx_ops_error() on lookup failures */
+	if (!(from_cgc = find_cgrp_ctx(from)) || !(to_cgc = find_cgrp_ctx(to)))
+		return;
+
+	vtime_delta = p->scx.dsq_vtime - from_cgc->tvtime_now;
+	p->scx.dsq_vtime = to_cgc->tvtime_now + vtime_delta;
+}
+
 s32 BPF_STRUCT_OPS(fcg_init)
 {
 	if (!switch_partial)
@@ -875,6 +896,7 @@ struct sched_ext_ops flatcg_ops = {
 	.cgroup_set_weight	= (void *)fcg_cgroup_set_weight,
 	.cgroup_init		= (void *)fcg_cgroup_init,
 	.cgroup_exit		= (void *)fcg_cgroup_exit,
+	.cgroup_move		= (void *)fcg_cgroup_move,
 	.init			= (void *)fcg_init,
 	.exit			= (void *)fcg_exit,
 	.flags			= SCX_OPS_CGROUP_KNOB_WEIGHT | SCX_OPS_ENQ_EXITING,
