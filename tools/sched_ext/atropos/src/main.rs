@@ -136,6 +136,14 @@ fn clear_map(map: &mut libbpf_rs::Map) {
     }
 }
 
+fn format_cpumask(cpumask: &[u64], nr_cpus: usize) -> String {
+    cpumask
+        .iter()
+        .take((nr_cpus + 64) / 64)
+        .rev()
+        .fold(String::new(), |acc, x| format!("{} {:016X}", acc, x))
+}
+
 #[derive(Debug)]
 struct TaskLoad {
     runnable_for: u64,
@@ -658,15 +666,10 @@ impl<'a> Scheduler<'a> {
             let dom_cpumask_slice = &mut skel.rodata().dom_cpumasks[dom];
             let (left, _) = dom_cpumask_slice.split_at_mut(raw_cpuset_slice.len());
             left.clone_from_slice(cpuset.as_raw_slice());
-            let cpumask_str = dom_cpumask_slice
-                .iter()
-                .take((nr_cpus + 63) / 64)
-                .rev()
-                .fold(String::new(), |acc, x| format!("{} {:016X}", acc, x));
             info!(
                 "DOM[{:02}] cpumask{} ({} cpus)",
                 dom,
-                &cpumask_str,
+                &format_cpumask(dom_cpumask_slice, nr_cpus),
                 cpuset.count_ones()
             );
         }

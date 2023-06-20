@@ -144,6 +144,20 @@ static inline bool vtime_before(u64 a, u64 b)
 	return (s64)(a - b) < 0;
 }
 
+static u32 cpu_to_dom_id(s32 cpu)
+{
+	const volatile u32 *dom_idp;
+
+	if (nr_doms <= 1)
+		return 0;
+
+	dom_idp = MEMBER_VPTR(cpu_dom_id_map, [cpu]);
+	if (!dom_idp)
+		return MAX_DOMS;
+
+	return *dom_idp;
+}
+
 static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
 			    u32 new_dom_id)
 {
@@ -360,20 +374,6 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 		scx_bpf_dispatch_vtime(p, task_ctx->dom_id, slice_ns, vtime,
 				       enq_flags);
 	}
-}
-
-static u32 cpu_to_dom_id(s32 cpu)
-{
-	const volatile u32 *dom_idp;
-
-	if (nr_doms <= 1)
-		return 0;
-
-	dom_idp = MEMBER_VPTR(cpu_dom_id_map, [cpu]);
-	if (!dom_idp)
-		return MAX_DOMS;
-
-	return *dom_idp;
 }
 
 static bool cpumask_intersects_domain(const struct cpumask *cpumask, u32 dom_id)
