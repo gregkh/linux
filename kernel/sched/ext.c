@@ -1933,8 +1933,7 @@ static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
 	int cpu;
 
 retry:
-#ifdef CONFIG_SCHED_SMT
-	if (static_branch_likely(&sched_smt_present)) {
+	if (sched_smt_active()) {
 		cpu = cpumask_any_and_distribute(idle_masks.smt, cpus_allowed);
 		if (cpu < nr_cpu_ids) {
 			const struct cpumask *sbm = topology_sibling_cpumask(cpu);
@@ -1955,7 +1954,7 @@ retry:
 		if (flags & SCX_PICK_IDLE_CPU_WHOLE)
 			return -EBUSY;
 	}
-#endif
+
 	cpu = cpumask_any_and_distribute(idle_masks.cpu, cpus_allowed);
 	if (cpu >= nr_cpu_ids)
 		return -EBUSY;
@@ -1992,12 +1991,11 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 	if (p->nr_cpus_allowed == 1)
 		return prev_cpu;
 
-#ifdef CONFIG_SCHED_SMT
 	/*
 	 * If CPU has SMT, any wholly idle CPU is likely a better pick than
 	 * partially idle @prev_cpu.
 	 */
-	if (static_branch_likely(&sched_smt_present)) {
+	if (sched_smt_active()) {
 		if (cpumask_test_cpu(prev_cpu, idle_masks.smt) &&
 		    test_and_clear_cpu_idle(prev_cpu)) {
 			p->scx.flags |= SCX_TASK_ENQ_LOCAL;
@@ -2010,7 +2008,6 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 			return cpu;
 		}
 	}
-#endif
 
 	if (test_and_clear_cpu_idle(prev_cpu)) {
 		p->scx.flags |= SCX_TASK_ENQ_LOCAL;
