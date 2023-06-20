@@ -1925,7 +1925,25 @@ void __scx_notify_pick_next_task(struct rq *rq, struct task_struct *task,
 
 static bool test_and_clear_cpu_idle(int cpu)
 {
-	return cpumask_test_and_clear_cpu(cpu, idle_masks.cpu);
+	if (!cpumask_test_and_clear_cpu(cpu, idle_masks.cpu))
+		return false;
+
+	if (sched_smt_active()) {
+		const struct cpumask *sbm = topology_sibling_cpumask(cpu);
+
+		/*
+		 * If offline, @cpu is not its own sibling and
+		 * scx_pick_idle_cpu() can get caught in an infinite loop as
+		 * @cpu is never cleared from idle_masks.smt. Ensure that @cpu
+		 * is eventually cleared.
+		 */
+		if (cpumask_intersects(sbm, idle_masks.smt))
+			cpumask_andnot(idle_masks.smt, idle_masks.smt, sbm);
+		else if (cpumask_test_cpu(cpu, idle_masks.smt))
+			__cpumask_clear_cpu(cpu, idle_masks.smt);
+	}
+
+	return true;
 }
 
 static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
@@ -1935,21 +1953,8 @@ static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
 retry:
 	if (sched_smt_active()) {
 		cpu = cpumask_any_and_distribute(idle_masks.smt, cpus_allowed);
-		if (cpu < nr_cpu_ids) {
-			const struct cpumask *sbm = topology_sibling_cpumask(cpu);
-
-			/*
-			 * If offline, @cpu is not its own sibling and we can
-			 * get caught in an infinite loop as @cpu is never
-			 * cleared from idle_masks.smt. Clear @cpu directly in
-			 * such cases.
-			 */
-			if (likely(cpumask_test_cpu(cpu, sbm)))
-				cpumask_andnot(idle_masks.smt, idle_masks.smt, sbm);
-			else
-				cpumask_andnot(idle_masks.smt, idle_masks.smt, cpumask_of(cpu));
+		if (cpu < nr_cpu_ids)
 			goto found;
-		}
 
 		if (flags & SCX_PICK_IDLE_CPU_WHOLE)
 			return -EBUSY;
