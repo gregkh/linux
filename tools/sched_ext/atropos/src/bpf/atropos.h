@@ -19,15 +19,20 @@
 
 /* Statistics */
 enum stat_idx {
-	ATROPOS_STAT_TASK_GET_ERR,
+	/* The following fields add up to all dispatched tasks */
 	ATROPOS_STAT_WAKE_SYNC,
 	ATROPOS_STAT_PREV_IDLE,
 	ATROPOS_STAT_PINNED,
 	ATROPOS_STAT_DIRECT_DISPATCH,
 	ATROPOS_STAT_DSQ_DISPATCH,
 	ATROPOS_STAT_GREEDY,
+
+	/* Extra stats that don't contribute to total */
 	ATROPOS_STAT_LOAD_BALANCE,
-	ATROPOS_STAT_LAST_TASK,
+
+	/* Errors */
+	ATROPOS_STAT_TASK_GET_ERR,
+
 	ATROPOS_NR_STATS,
 };
 

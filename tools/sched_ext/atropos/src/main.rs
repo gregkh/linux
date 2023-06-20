@@ -811,8 +811,7 @@ impl<'a> Scheduler<'a> {
             + stat(atropos_sys::stat_idx_ATROPOS_STAT_PINNED)
             + stat(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_DISPATCH)
             + stat(atropos_sys::stat_idx_ATROPOS_STAT_DSQ_DISPATCH)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_LAST_TASK);
+            + stat(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY);
 
         info!(
             "cpu={:7.2} bal={} load_avg={:8.2} task_err={} lb_data_err={} proc={:?}ms",
