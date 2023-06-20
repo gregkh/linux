@@ -216,6 +216,157 @@ impl MyProcStat {
 }
 
 #[derive(Debug)]
+struct Topology {
+    nr_cpus: usize,
+    nr_doms: usize,
+    dom_cpus: Vec<BitVec<u64, Lsb0>>,
+    cpu_dom: Vec<i32>,
+}
+
+impl Topology {
+    fn from_cpumasks(cpumasks: &[String], nr_cpus: usize) -> Result<Self> {
+        if cpumasks.len() > atropos_sys::MAX_DOMS as usize {
+            bail!(
+                "Number of requested DSQs ({}) is greater than MAX_DOMS ({})",
+                cpumasks.len(),
+                atropos_sys::MAX_DOMS
+            );
+        }
+        let mut cpu_dom = vec![-1i32; nr_cpus];
+        let mut dom_cpus =
+            vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; cpumasks.len()];
+        for (dsq, cpumask) in cpumasks.iter().enumerate() {
+            let hex_str = {
+                let mut tmp_str = cpumask
+                    .strip_prefix("0x")
+                    .unwrap_or(cpumask)
+                    .replace('_', "");
+                if tmp_str.len() % 2 != 0 {
+                    tmp_str = "0".to_string() + &tmp_str;
+                }
+                tmp_str
+            };
+            let byte_vec = hex::decode(&hex_str)
+                .with_context(|| format!("Failed to parse cpumask: {}", cpumask))?;
+
+            for (index, &val) in byte_vec.iter().rev().enumerate() {
+                let mut v = val;
+                while v != 0 {
+                    let lsb = v.trailing_zeros() as usize;
+                    v &= !(1 << lsb);
+                    let cpu = index * 8 + lsb;
+                    if cpu > nr_cpus {
+                        bail!(
+                            concat!(
+                                "Found cpu ({}) in cpumask ({}) which is larger",
+                                " than the number of cpus on the machine ({})"
+                            ),
+                            cpu,
+                            cpumask,
+                            nr_cpus
+                        );
+                    }
+                    if cpu_dom[cpu] != -1 {
+                        bail!(
+                            "Found cpu ({}) with dsq ({}) but also in cpumask ({})",
+                            cpu,
+                            cpu_dom[cpu],
+                            cpumask
+                        );
+                    }
+                    cpu_dom[cpu] = dsq as i32;
+                    dom_cpus[dsq].set(cpu, true);
+                }
+            }
+            dom_cpus[dsq].set_uninitialized(false);
+        }
+
+        for (cpu, &dsq) in cpu_dom.iter().enumerate() {
+            if dsq < 0 {
+                bail!(
+                    "Cpu {} not assigned to any dsq. Make sure it is covered by some --cpumasks argument.",
+                    cpu
+                );
+            }
+        }
+
+        Ok(Self {
+            nr_cpus,
+            nr_doms: dom_cpus.len(),
+            dom_cpus,
+            cpu_dom,
+        })
+    }
+
+    fn from_cache_level(level: u32, nr_cpus: usize) -> Result<Self> {
+        let mut cpu_to_cache = vec![]; // (cpu_id, cache_id)
+        let mut cache_ids = BTreeSet::<u32>::new();
+        let mut nr_not_found = 0;
+
+        // Build cpu -> cache ID mapping.
+        for cpu in 0..nr_cpus {
+            let path = format!("/sys/devices/system/cpu/cpu{}/cache/index{}/id", cpu, level);
+            let id = match std::fs::read_to_string(&path) {
+                Ok(val) => val
+                    .trim()
+                    .parse::<u32>()
+                    .with_context(|| format!("Failed to parse {:?}'s content {:?}", &path, &val))?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    nr_not_found += 1;
+                    0
+                }
+                Err(e) => return Err(e).with_context(|| format!("Failed to open {:?}", &path)),
+            };
+
+            cpu_to_cache.push(id);
+            cache_ids.insert(id);
+        }
+
+        if nr_not_found > 1 {
+            warn!(
+                "Couldn't determine level {} cache IDs for {} CPUs out of {}, assigned to cache ID 0",
+                level, nr_not_found, nr_cpus
+            );
+        }
+
+        // Cache IDs may have holes. Assign consecutive domain IDs to
+        // existing cache IDs.
+        let mut cache_to_dom = BTreeMap::<u32, u32>::new();
+        let mut nr_doms = 0;
+        for cache_id in cache_ids.iter() {
+            cache_to_dom.insert(*cache_id, nr_doms);
+            nr_doms += 1;
+        }
+
+        if nr_doms > atropos_sys::MAX_DOMS {
+            bail!(
+                "Total number of doms {} is greater than MAX_DOMS ({})",
+                nr_doms,
+                atropos_sys::MAX_DOMS
+            );
+        }
+
+        // Build and return dom -> cpumask and cpu -> dom mappings.
+        let mut dom_cpus =
+            vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; nr_doms as usize];
+        let mut cpu_dom = vec![];
+
+        for cpu in 0..nr_cpus {
+            let dom_id = cache_to_dom[&cpu_to_cache[cpu]];
+            dom_cpus[dom_id as usize].set(cpu, true);
+            cpu_dom.push(dom_id as i32);
+        }
+
+        Ok(Self {
+            nr_cpus,
+            nr_doms: dom_cpus.len(),
+            dom_cpus,
+            cpu_dom,
+        })
+    }
+}
+
+#[derive(Debug)]
 struct TaskLoad {
     runnable_for: u64,
     load: f64,
@@ -231,8 +382,8 @@ struct TaskInfo {
 
 struct LoadBalancer<'a, 'b, 'c> {
     maps: AtroposMapsMut<'a>,
+    top: Arc<Topology>,
     task_loads: &'b mut BTreeMap<i32, TaskLoad>,
-    nr_doms: usize,
     load_decay_factor: f64,
     skip_kworkers: bool,
 
@@ -268,8 +419,8 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
 
     fn new(
         maps: AtroposMapsMut<'a>,
+        top: Arc<Topology>,
         task_loads: &'b mut BTreeMap<i32, TaskLoad>,
-        nr_doms: usize,
         load_decay_factor: f64,
         skip_kworkers: bool,
         nr_lb_data_errors: &'c mut u64,
@@ -277,19 +428,20 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         Self {
             maps,
             task_loads,
-            nr_doms,
             load_decay_factor,
             skip_kworkers,
 
-            tasks_by_load: (0..nr_doms).map(|_| BTreeMap::<_, _>::new()).collect(),
+            tasks_by_load: (0..top.nr_doms).map(|_| BTreeMap::<_, _>::new()).collect(),
             load_avg: 0f64,
-            dom_loads: vec![0.0; nr_doms],
+            dom_loads: vec![0.0; top.nr_doms],
 
-            imbal: vec![0.0; nr_doms],
+            imbal: vec![0.0; top.nr_doms],
             doms_to_pull: BTreeMap::new(),
             doms_to_push: BTreeMap::new(),
 
             nr_lb_data_errors,
+
+	    top,
         }
     }
 
@@ -298,7 +450,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         let task_data = self.maps.task_data();
         let mut this_task_loads = BTreeMap::<i32, TaskLoad>::new();
         let mut load_sum = 0.0f64;
-        self.dom_loads = vec![0f64; self.nr_doms];
+        self.dom_loads = vec![0f64; self.top.nr_doms];
 
         for key in task_data.keys() {
             if let Some(task_ctx_vec) = task_data
@@ -374,7 +526,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
             }
         }
 
-        self.load_avg = load_sum / self.nr_doms as f64;
+        self.load_avg = load_sum / self.top.nr_doms as f64;
         *self.task_loads = this_task_loads;
         Ok(())
     }
@@ -579,11 +731,12 @@ struct Scheduler<'a> {
     skel: AtroposSkel<'a>,
     struct_ops: Option<libbpf_rs::Link>,
 
-    nr_cpus: usize,
-    nr_doms: usize,
+    interval: Duration,
     load_decay_factor: f64,
     balance_load: bool,
     balanced_kworkers: bool,
+
+    top: Arc<Topology>,
 
     prev_at: SystemTime,
     prev_total_cpu: MyCpuStat,
@@ -593,145 +746,6 @@ struct Scheduler<'a> {
 }
 
 impl<'a> Scheduler<'a> {
-    // Returns Vec of cpuset for each dsq and a vec of dsq for each cpu
-    fn parse_cpusets(
-        cpumasks: &[String],
-        nr_cpus: usize,
-    ) -> Result<(Vec<BitVec<u64, Lsb0>>, Vec<i32>)> {
-        if cpumasks.len() > atropos_sys::MAX_DOMS as usize {
-            bail!(
-                "Number of requested DSQs ({}) is greater than MAX_DOMS ({})",
-                cpumasks.len(),
-                atropos_sys::MAX_DOMS
-            );
-        }
-        let mut cpus = vec![-1i32; nr_cpus];
-        let mut cpusets =
-            vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; cpumasks.len()];
-        for (dsq, cpumask) in cpumasks.iter().enumerate() {
-            let hex_str = {
-                let mut tmp_str = cpumask
-                    .strip_prefix("0x")
-                    .unwrap_or(cpumask)
-                    .replace('_', "");
-                if tmp_str.len() % 2 != 0 {
-                    tmp_str = "0".to_string() + &tmp_str;
-                }
-                tmp_str
-            };
-            let byte_vec = hex::decode(&hex_str)
-                .with_context(|| format!("Failed to parse cpumask: {}", cpumask))?;
-
-            for (index, &val) in byte_vec.iter().rev().enumerate() {
-                let mut v = val;
-                while v != 0 {
-                    let lsb = v.trailing_zeros() as usize;
-                    v &= !(1 << lsb);
-                    let cpu = index * 8 + lsb;
-                    if cpu > nr_cpus {
-                        bail!(
-                            concat!(
-                                "Found cpu ({}) in cpumask ({}) which is larger",
-                                " than the number of cpus on the machine ({})"
-                            ),
-                            cpu,
-                            cpumask,
-                            nr_cpus
-                        );
-                    }
-                    if cpus[cpu] != -1 {
-                        bail!(
-                            "Found cpu ({}) with dsq ({}) but also in cpumask ({})",
-                            cpu,
-                            cpus[cpu],
-                            cpumask
-                        );
-                    }
-                    cpus[cpu] = dsq as i32;
-                    cpusets[dsq].set(cpu, true);
-                }
-            }
-            cpusets[dsq].set_uninitialized(false);
-        }
-
-        for (cpu, &dsq) in cpus.iter().enumerate() {
-            if dsq < 0 {
-                bail!(
-                    "Cpu {} not assigned to any dsq. Make sure it is covered by some --cpumasks argument.",
-                    cpu
-                );
-            }
-        }
-
-        Ok((cpusets, cpus))
-    }
-
-    // Returns Vec of cpuset for each dsq and a vec of dsq for each cpu
-    fn cpusets_from_cache(
-        level: u32,
-        nr_cpus: usize,
-    ) -> Result<(Vec<BitVec<u64, Lsb0>>, Vec<i32>)> {
-        let mut cpu_to_cache = vec![]; // (cpu_id, cache_id)
-        let mut cache_ids = BTreeSet::<u32>::new();
-        let mut nr_not_found = 0;
-
-        // Build cpu -> cache ID mapping.
-        for cpu in 0..nr_cpus {
-            let path = format!("/sys/devices/system/cpu/cpu{}/cache/index{}/id", cpu, level);
-            let id = match std::fs::read_to_string(&path) {
-                Ok(val) => val
-                    .trim()
-                    .parse::<u32>()
-                    .with_context(|| format!("Failed to parse {:?}'s content {:?}", &path, &val))?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    nr_not_found += 1;
-                    0
-                }
-                Err(e) => return Err(e).with_context(|| format!("Failed to open {:?}", &path)),
-            };
-
-            cpu_to_cache.push(id);
-            cache_ids.insert(id);
-        }
-
-        if nr_not_found > 1 {
-            warn!(
-                "Couldn't determine level {} cache IDs for {} CPUs out of {}, assigned to cache ID 0",
-                level, nr_not_found, nr_cpus
-            );
-        }
-
-        // Cache IDs may have holes. Assign consecutive domain IDs to
-        // existing cache IDs.
-        let mut cache_to_dom = BTreeMap::<u32, u32>::new();
-        let mut nr_doms = 0;
-        for cache_id in cache_ids.iter() {
-            cache_to_dom.insert(*cache_id, nr_doms);
-            nr_doms += 1;
-        }
-
-        if nr_doms > atropos_sys::MAX_DOMS {
-            bail!(
-                "Total number of doms {} is greater than MAX_DOMS ({})",
-                nr_doms,
-                atropos_sys::MAX_DOMS
-            );
-        }
-
-        // Build and return dom -> cpumask and cpu -> dom mappings.
-        let mut cpusets =
-            vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; nr_doms as usize];
-        let mut cpu_to_dom = vec![];
-
-        for cpu in 0..nr_cpus {
-            let dom_id = cache_to_dom[&cpu_to_cache[cpu]];
-            cpusets[dom_id as usize].set(cpu, true);
-            cpu_to_dom.push(dom_id as i32);
-        }
-
-        Ok((cpusets, cpu_to_dom))
-    }
-
     fn init(opts: &Opts) -> Result<Self> {
         // Open the BPF prog first for verification.
         let mut skel_builder = AtroposSkelBuilder::default();
@@ -748,29 +762,29 @@ impl<'a> Scheduler<'a> {
         }
 
         // Initialize skel according to @opts.
-        let (cpusets, cpus) = if opts.cpumasks.len() > 0 {
-            Self::parse_cpusets(&opts.cpumasks, nr_cpus)?
+        let top = Arc::new(if opts.cpumasks.len() > 0 {
+            Topology::from_cpumasks(&opts.cpumasks, nr_cpus)?
         } else {
-            Self::cpusets_from_cache(opts.cache_level, nr_cpus)?
-        };
-        let nr_doms = cpusets.len();
-        skel.rodata().nr_doms = nr_doms as u32;
-        skel.rodata().nr_cpus = nr_cpus as u32;
+            Topology::from_cache_level(opts.cache_level, nr_cpus)?
+        });
 
-        for (cpu, dom) in cpus.iter().enumerate() {
+        skel.rodata().nr_doms = top.nr_doms as u32;
+        skel.rodata().nr_cpus = top.nr_cpus as u32;
+
+        for (cpu, dom) in top.cpu_dom.iter().enumerate() {
             skel.rodata().cpu_dom_id_map[cpu] = *dom as u32;
         }
 
-        for (dom, cpuset) in cpusets.iter().enumerate() {
-            let raw_cpuset_slice = cpuset.as_raw_slice();
+        for (dom, cpus) in top.dom_cpus.iter().enumerate() {
+            let raw_cpus_slice = cpus.as_raw_slice();
             let dom_cpumask_slice = &mut skel.rodata().dom_cpumasks[dom];
-            let (left, _) = dom_cpumask_slice.split_at_mut(raw_cpuset_slice.len());
-            left.clone_from_slice(cpuset.as_raw_slice());
+            let (left, _) = dom_cpumask_slice.split_at_mut(raw_cpus_slice.len());
+            left.clone_from_slice(cpus.as_raw_slice());
             info!(
                 "DOM[{:02}] cpumask{} ({} cpus)",
                 dom,
                 &format_cpumask(dom_cpumask_slice, nr_cpus),
-                cpuset.count_ones()
+                cpus.count_ones()
             );
         }
 
@@ -798,11 +812,12 @@ impl<'a> Scheduler<'a> {
             skel,
             struct_ops, // should be held to keep it attached
 
-            nr_cpus,
-            nr_doms,
+            interval: Duration::from_secs_f64(opts.interval),
             load_decay_factor: opts.load_decay_factor.clamp(0.0, 0.99),
             balance_load: !opts.no_load_balance,
             balanced_kworkers: opts.balanced_kworkers,
+
+            top,
 
             prev_at: SystemTime::now(),
             prev_total_cpu,
@@ -823,7 +838,7 @@ impl<'a> Scheduler<'a> {
         let mut maps = self.skel.maps_mut();
         let stats_map = maps.stats();
         let mut stats: Vec<u64> = Vec::new();
-        let zero_vec = vec![vec![0u8; stats_map.value_size() as usize]; self.nr_cpus];
+        let zero_vec = vec![vec![0u8; stats_map.value_size() as usize]; self.top.nr_cpus];
 
         for stat in 0..atropos_sys::stat_idx_ATROPOS_NR_STATS {
             let cpu_stat_vec = stats_map
@@ -897,7 +912,7 @@ impl<'a> Scheduler<'a> {
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_REPATRIATE),
         );
 
-        for i in 0..self.nr_doms {
+        for i in 0..self.top.nr_doms {
             info!(
                 "DOM[{:02}] load={:8.2} imbal={:+9.2}",
                 i, dom_loads[i], imbal[i],
@@ -905,15 +920,15 @@ impl<'a> Scheduler<'a> {
         }
     }
 
-    fn step(&mut self) -> Result<()> {
+    fn lb_step(&mut self) -> Result<()> {
         let started_at = std::time::SystemTime::now();
         let bpf_stats = self.read_bpf_stats()?;
         let cpu_busy = self.get_cpu_busy()?;
 
         let mut lb = LoadBalancer::new(
             self.skel.maps_mut(),
+            self.top.clone(),
             &mut self.task_loads,
-            self.nr_doms,
             self.load_decay_factor,
             self.balanced_kworkers,
             &mut self.nr_lb_data_errors,
@@ -965,6 +980,15 @@ impl<'a> Scheduler<'a> {
             }
         }
     }
+
+    fn run(&mut self, shutdown: Arc<AtomicBool>) -> Result<()> {
+        while !shutdown.load(Ordering::Relaxed) && self.read_bpf_exit_type() == 0 {
+            std::thread::sleep(self.interval);
+            self.lb_step()?;
+        }
+
+        self.report_bpf_exit_type()
+    }
 }
 
 impl<'a> Drop for Scheduler<'a> {
@@ -995,6 +1019,8 @@ fn main() -> Result<()> {
         simplelog::ColorChoice::Auto,
     )?;
 
+    let mut sched = Scheduler::init(&opts)?;
+
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
     ctrlc::set_handler(move || {
@@ -1002,12 +1028,5 @@ fn main() -> Result<()> {
     })
     .context("Error setting Ctrl-C handler")?;
 
-    let mut sched = Scheduler::init(&opts)?;
-
-    while !shutdown.load(Ordering::Relaxed) && sched.read_bpf_exit_type() == 0 {
-        std::thread::sleep(Duration::from_secs_f64(opts.interval));
-        sched.step()?;
-    }
-
-    sched.report_bpf_exit_type()
+    sched.run(shutdown)
 }
