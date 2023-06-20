@@ -3954,6 +3954,16 @@ bool cpus_share_cache(int this_cpu, int that_cpu)
 
 static inline bool ttwu_queue_cond(struct task_struct *p, int cpu)
 {
+#ifdef CONFIG_SCHED_CLASS_EXT
+	/*
+	 * The BPF scheduler may depend on select_task_rq() being invoked during
+	 * wakeups and @p may end up executing on a different CPU regardless of
+	 * what happens in the wakeup path making the ttwu_queue optimization
+	 * ineffective. Skip if on SCX.
+	 */
+	if (p->sched_class == &ext_sched_class)
+		return false;
+#endif
 	/*
 	 * Do not complicate things with the async wake_list while the CPU is
 	 * in hotplug state.
