@@ -54,6 +54,11 @@ struct Opts {
     #[clap(short = 'i', long, default_value = "2.0")]
     interval: f64,
 
+    /// Tuner runs at higher frequency than the load balancer to dynamically
+    /// tune scheduling behavior. Tuning interval in seconds.
+    #[clap(short = 'I', long, default_value = "0.1")]
+    tune_interval: f64,
+
     /// Build domains according to how CPUs are grouped at this cache level
     /// as determined by /sys/devices/system/cpu/cpuX/cache/indexI/id.
     #[clap(short = 'c', long, default_value = "3")]
@@ -101,6 +106,17 @@ struct Opts {
     /// Use FIFO scheduling instead of weighted vtime scheduling.
     #[clap(short = 'f', long, action = clap::ArgAction::SetTrue)]
     fifo_sched: bool,
+
+    /// Idle CPUs with utilization lower than this will get remote tasks
+    /// directly pushed on them. 0 disables, 100 enables always.
+    #[clap(short = 'D', long, default_value = "90.0")]
+    direct_greedy_under: f64,
+
+    /// Idle CPUs with utilization lower than this may get kicked to
+    /// accelerate stealing when a task is queued on a saturated remote
+    /// domain. 0 disables, 100 enables always.
+    #[clap(short = 'K', long, default_value = "100.0")]
+    kick_greedy_under: f64,
 
     /// If specified, only tasks which have their scheduling policy set to
     /// SCHED_EXT using sched_setscheduler(2) are switched. Otherwise, all
@@ -366,6 +382,83 @@ impl Topology {
     }
 }
 
+struct Tuner {
+    top: Arc<Topology>,
+    direct_greedy_under: f64,
+    kick_greedy_under: f64,
+    prev_cpu_stats: BTreeMap<usize, MyCpuStat>,
+    dom_utils: Vec<f64>,
+}
+
+impl Tuner {
+    fn new(top: Arc<Topology>, opts: &Opts) -> Result<Self> {
+        Ok(Self {
+            direct_greedy_under: opts.direct_greedy_under / 100.0,
+            kick_greedy_under: opts.kick_greedy_under / 100.0,
+            prev_cpu_stats: MyProcStat::read()?.cpus,
+            dom_utils: vec![0.0; top.nr_doms],
+            top,
+        })
+    }
+
+    fn step(&mut self, skel: &mut AtroposSkel) -> Result<()> {
+        let curr_cpu_stats = MyProcStat::read()?.cpus;
+        let ti = &mut skel.bss().tune_input;
+        let mut dom_nr_cpus = vec![0; self.top.nr_doms];
+        let mut dom_util_sum = vec![0.0; self.top.nr_doms];
+
+        for cpu in 0..self.top.nr_cpus {
+            let dom = self.top.cpu_dom[cpu] as usize;
+
+            // None MyCpuStat indicates offline CPU. Ignore.
+            if let (Some(curr), Some(prev)) =
+                (curr_cpu_stats.get(&cpu), self.prev_cpu_stats.get(&cpu))
+            {
+                dom_nr_cpus[dom] += 1;
+                dom_util_sum[dom] += curr.calc_util(prev);
+            }
+        }
+
+        for dom in 0..self.top.nr_doms {
+            // Calculate the domain avg util. If there are no active CPUs,
+	    // it doesn't really matter. Go with 0.0 as that's less likely
+	    // to confuse users.
+            let util = match dom_nr_cpus[dom] {
+                0 => 0.0,
+                nr => dom_util_sum[dom] / nr as f64,
+            };
+
+            self.dom_utils[dom] = util;
+
+            // This could be implemented better.
+            let update_dom_bits = |target: &mut [u64; 8], val: bool| {
+                for cpu in 0..self.top.nr_cpus {
+                    if self.top.cpu_dom[cpu] as usize == dom {
+                        if val {
+                            target[cpu / 64] |= 1u64 << (cpu % 64);
+                        } else {
+                            target[cpu / 64] &= !(1u64 << (cpu % 64));
+                        }
+                    }
+                }
+            };
+
+            update_dom_bits(
+                &mut ti.direct_greedy_cpumask,
+                self.direct_greedy_under > 0.99999 || util < self.direct_greedy_under,
+            );
+            update_dom_bits(
+                &mut ti.kick_greedy_cpumask,
+                self.kick_greedy_under > 0.99999 || util < self.kick_greedy_under,
+            );
+        }
+
+        ti.gen += 1;
+        self.prev_cpu_stats = curr_cpu_stats;
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct TaskLoad {
     runnable_for: u64,
@@ -441,7 +534,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
 
             nr_lb_data_errors,
 
-	    top,
+            top,
         }
     }
 
@@ -731,7 +824,8 @@ struct Scheduler<'a> {
     skel: AtroposSkel<'a>,
     struct_ops: Option<libbpf_rs::Link>,
 
-    interval: Duration,
+    sched_interval: Duration,
+    tune_interval: Duration,
     load_decay_factor: f64,
     balance_load: bool,
     balanced_kworkers: bool,
@@ -743,6 +837,8 @@ struct Scheduler<'a> {
     task_loads: BTreeMap<i32, TaskLoad>,
 
     nr_lb_data_errors: u64,
+
+    tuner: Tuner,
 }
 
 impl<'a> Scheduler<'a> {
@@ -812,18 +908,21 @@ impl<'a> Scheduler<'a> {
             skel,
             struct_ops, // should be held to keep it attached
 
-            interval: Duration::from_secs_f64(opts.interval),
+            sched_interval: Duration::from_secs_f64(opts.interval),
+            tune_interval: Duration::from_secs_f64(opts.tune_interval),
             load_decay_factor: opts.load_decay_factor.clamp(0.0, 0.99),
             balance_load: !opts.no_load_balance,
             balanced_kworkers: opts.balanced_kworkers,
 
-            top,
+            top: top.clone(),
 
             prev_at: SystemTime::now(),
             prev_total_cpu,
             task_loads: BTreeMap::new(),
 
             nr_lb_data_errors: 0,
+
+            tuner: Tuner::new(top, opts)?,
         })
     }
 
@@ -868,7 +967,7 @@ impl<'a> Scheduler<'a> {
     }
 
     fn report(
-        &self,
+        &mut self,
         stats: &Vec<u64>,
         cpu_busy: f64,
         processing_dur: Duration,
@@ -879,8 +978,11 @@ impl<'a> Scheduler<'a> {
         let stat = |idx| stats[idx as usize];
         let total = stat(atropos_sys::stat_idx_ATROPOS_STAT_WAKE_SYNC)
             + stat(atropos_sys::stat_idx_ATROPOS_STAT_PREV_IDLE)
+            + stat(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY_IDLE)
             + stat(atropos_sys::stat_idx_ATROPOS_STAT_PINNED)
             + stat(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_DISPATCH)
+            + stat(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_GREEDY)
+            + stat(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_GREEDY_FAR)
             + stat(atropos_sys::stat_idx_ATROPOS_STAT_DSQ_DISPATCH)
             + stat(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY);
 
@@ -897,25 +999,50 @@ impl<'a> Scheduler<'a> {
         let stat_pct = |idx| stat(idx) as f64 / total as f64 * 100.0;
 
         info!(
-            "tot={:7} wsync={:5.2} prev_idle={:5.2} pin={:5.2} dir={:5.2}",
+            "tot={:7} wsync={:5.2} prev_idle={:5.2} greedy_idle={:5.2} pin={:5.2}",
             total,
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_WAKE_SYNC),
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_PREV_IDLE),
+            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY_IDLE),
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_PINNED),
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_DISPATCH),
         );
 
         info!(
-            "dsq={:5.2} greedy={:5.2} rep={:5.2}",
+            "dir={:5.2} dir_greedy={:5.2} dir_greedy_far={:5.2}",
+            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_DISPATCH),
+            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_GREEDY),
+            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_GREEDY_FAR),
+        );
+
+        info!(
+            "dsq={:5.2} greedy={:5.2} kick_greedy={:5.2} rep={:5.2}",
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DSQ_DISPATCH),
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY),
+            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_KICK_GREEDY),
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_REPATRIATE),
+        );
+
+        let ti = &self.skel.bss().tune_input;
+        info!(
+            "direct_greedy_cpumask={}",
+            format_cpumask(&ti.direct_greedy_cpumask, self.top.nr_cpus)
+        );
+        info!(
+            "  kick_greedy_cpumask={}",
+            format_cpumask(&ti.kick_greedy_cpumask, self.top.nr_cpus)
         );
 
         for i in 0..self.top.nr_doms {
             info!(
-                "DOM[{:02}] load={:8.2} imbal={:+9.2}",
-                i, dom_loads[i], imbal[i],
+                "DOM[{:02}] util={:6.2} load={:8.2} imbal={}",
+                i,
+                self.tuner.dom_utils[i] * 100.0,
+                dom_loads[i],
+                if imbal[i] == 0.0 {
+                    format!("{:9.2}", 0.0)
+                } else {
+                    format!("{:+9.2}", imbal[i])
+                },
             );
         }
     }
@@ -982,9 +1109,34 @@ impl<'a> Scheduler<'a> {
     }
 
     fn run(&mut self, shutdown: Arc<AtomicBool>) -> Result<()> {
+        let now = std::time::SystemTime::now();
+        let mut next_tune_at = now + self.tune_interval;
+        let mut next_sched_at = now + self.sched_interval;
+
         while !shutdown.load(Ordering::Relaxed) && self.read_bpf_exit_type() == 0 {
-            std::thread::sleep(self.interval);
-            self.lb_step()?;
+            let now = std::time::SystemTime::now();
+
+            if now >= next_tune_at {
+                self.tuner.step(&mut self.skel)?;
+                next_tune_at += self.tune_interval;
+                if next_tune_at < now {
+                    next_tune_at = now + self.tune_interval;
+                }
+            }
+
+            if now >= next_sched_at {
+                self.lb_step()?;
+                next_sched_at += self.sched_interval;
+                if next_sched_at < now {
+                    next_sched_at = now + self.sched_interval;
+                }
+            }
+
+            std::thread::sleep(
+                next_sched_at
+                    .min(next_tune_at)
+                    .duration_since(std::time::SystemTime::now())?,
+            );
         }
 
         self.report_bpf_exit_type()

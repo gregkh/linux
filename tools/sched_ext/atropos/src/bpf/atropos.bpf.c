@@ -91,6 +91,7 @@ struct pcpu_ctx pcpu_ctx[MAX_CPUS];
  */
 struct dom_ctx {
 	struct bpf_cpumask __kptr *cpumask;
+	struct bpf_cpumask __kptr *direct_greedy_cpumask;
 	u64 vtime_now;
 };
 
@@ -142,6 +143,21 @@ struct {
 	__uint(map_flags, 0);
 } lb_data SEC(".maps");
 
+/*
+ * Userspace tuner will frequently update the following struct with tuning
+ * parameters and bump its gen. refresh_tune_params() converts them into forms
+ * that can be used directly in the scheduling paths.
+ */
+struct tune_input{
+	__u64 gen;
+	__u64 direct_greedy_cpumask[MAX_CPUS / 64];
+	__u64 kick_greedy_cpumask[MAX_CPUS / 64];
+} tune_input;
+
+__u64 tune_params_gen;
+private(A) struct bpf_cpumask __kptr *direct_greedy_cpumask;
+private(A) struct bpf_cpumask __kptr *kick_greedy_cpumask;
+
 static inline bool vtime_before(u64 a, u64 b)
 {
 	return (s64)(a - b) < 0;
@@ -159,6 +175,46 @@ static u32 cpu_to_dom_id(s32 cpu)
 		return MAX_DOMS;
 
 	return *dom_idp;
+}
+
+static void refresh_tune_params(void)
+{
+	s32 cpu;
+
+	if (tune_params_gen == tune_input.gen)
+		return;
+
+	tune_params_gen = tune_input.gen;
+
+	bpf_for(cpu, 0, nr_cpus) {
+		u32 dom_id = cpu_to_dom_id(cpu);
+		struct dom_ctx *domc;
+
+		if (!(domc = bpf_map_lookup_elem(&dom_ctx, &dom_id))) {
+			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
+			return;
+		}
+
+		if (tune_input.direct_greedy_cpumask[cpu / 64] & (1LLU << (cpu % 64))) {
+			if (direct_greedy_cpumask)
+				bpf_cpumask_set_cpu(cpu, direct_greedy_cpumask);
+			if (domc->direct_greedy_cpumask)
+				bpf_cpumask_set_cpu(cpu, domc->direct_greedy_cpumask);
+		} else {
+			if (direct_greedy_cpumask)
+				bpf_cpumask_clear_cpu(cpu, direct_greedy_cpumask);
+			if (domc->direct_greedy_cpumask)
+				bpf_cpumask_clear_cpu(cpu, domc->direct_greedy_cpumask);
+		}
+
+		if (tune_input.kick_greedy_cpumask[cpu / 64] & (1LLU << (cpu % 64))) {
+			if (kick_greedy_cpumask)
+				bpf_cpumask_set_cpu(cpu, kick_greedy_cpumask);
+		} else {
+			if (kick_greedy_cpumask)
+				bpf_cpumask_clear_cpu(cpu, kick_greedy_cpumask);
+		}
+	}
 }
 
 static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
@@ -214,13 +270,17 @@ static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
 	return task_ctx->dom_id == new_dom_id;
 }
 
-s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
-		   u32 wake_flags)
+s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
+		   u64 wake_flags)
 {
 	struct task_ctx *task_ctx;
+	struct cpumask *idle_smtmask;
 	struct bpf_cpumask *p_cpumask;
 	pid_t pid = p->pid;
+	bool prev_domestic, has_idle_wholes;
 	s32 cpu;
+
+	refresh_tune_params();
 
 	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid)) ||
 	    !(p_cpumask = task_ctx->cpumask))
@@ -277,21 +337,69 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 		}
 	}
 
-	/* if the previous CPU is idle, dispatch directly to it */
-	if (scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
-		stat_add(ATROPOS_STAT_PREV_IDLE, 1);
-		cpu = prev_cpu;
-		goto direct;
-	}
-
-	/* If only one core is allowed, dispatch */
+	/* If only one CPU is allowed, dispatch */
 	if (p->nr_cpus_allowed == 1) {
 		stat_add(ATROPOS_STAT_PINNED, 1);
 		cpu = prev_cpu;
 		goto direct;
 	}
 
-	/* If there is an eligible idle CPU, dispatch directly */
+	idle_smtmask = scx_bpf_get_idle_smtmask();
+	has_idle_wholes = !bpf_cpumask_empty(idle_smtmask);
+
+	/* did @p get pulled out to a foreign domain by e.g. greedy execution? */
+	prev_domestic = bpf_cpumask_test_cpu(prev_cpu,
+					     (const struct cpumask *)p_cpumask);
+
+	/*
+	 * See if we want to keep @prev_cpu. We want to keep @prev_cpu if the
+	 * whole physical core is idle. If the sibling[s] are busy, it's likely
+	 * more advantageous to look for wholly idle cores first.
+	 */
+	if (prev_domestic) {
+		if (bpf_cpumask_test_cpu(prev_cpu, idle_smtmask) &&
+		    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
+			stat_add(ATROPOS_STAT_PREV_IDLE, 1);
+			cpu = prev_cpu;
+			goto direct;
+		}
+	} else {
+		if (direct_greedy_cpumask &&
+		    bpf_cpumask_test_cpu(prev_cpu, (const struct cpumask *)
+					 direct_greedy_cpumask) &&
+		    bpf_cpumask_test_cpu(prev_cpu, idle_smtmask) &&
+		    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
+			stat_add(ATROPOS_STAT_GREEDY_IDLE, 1);
+			cpu = prev_cpu;
+			goto direct;
+		}
+	}
+
+	/*
+	 * @prev_cpu didn't work out. Find the best idle domestic CPU.
+	 */
+
+	/* If there is a domestic whole idle CPU, dispatch directly */
+	if (has_idle_wholes) {
+		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask,
+					    SCX_PICK_IDLE_CPU_WHOLE);
+		if (cpu >= 0) {
+			stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
+			goto direct;
+		}
+	}
+
+	/*
+	 * If @prev_cpu was domestic and is idle itself even though the whole
+	 * core isn't, picking @prev_cpu may improve L1/2 locality.
+	 */
+	if (prev_domestic && scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
+		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
+		cpu = prev_cpu;
+		goto direct;
+	}
+
+	/* If there is any domestic idle CPU, dispatch directly */
 	cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
 	if (cpu >= 0) {
 		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
@@ -299,19 +407,86 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 	}
 
 	/*
-	 * @prev_cpu may be in a different domain. Returning an out-of-domain
-	 * CPU can lead to stalls as all in-domain CPUs may be idle by the time
-	 * @p gets enqueued.
+	 * Domestic domain is fully booked. If there are CPUs which are idle and
+	 * under-utilized, ignore domain boundaries and push the task there. Try
+	 * to find a whole idle CPU first.
+	 */
+	if (task_ctx->all_cpus && direct_greedy_cpumask &&
+	    !bpf_cpumask_empty((const struct cpumask *)direct_greedy_cpumask)) {
+		u32 dom_id = cpu_to_dom_id(prev_cpu);
+		struct dom_ctx *domc;
+
+		if (!(domc = bpf_map_lookup_elem(&dom_ctx, &dom_id))) {
+			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
+			scx_bpf_put_idle_cpumask(idle_smtmask);
+			return -ENOENT;
+		}
+
+		/*
+		 * Try to find a whole idle CPU in the previous foreign and then
+		 * any domain.
+		 */
+		if (has_idle_wholes) {
+			if (domc->direct_greedy_cpumask) {
+				cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+							    domc->direct_greedy_cpumask,
+							    SCX_PICK_IDLE_CPU_WHOLE);
+				if (cpu >= 0) {
+					stat_add(ATROPOS_STAT_DIRECT_GREEDY, 1);
+					goto direct;
+				}
+			}
+
+			if (direct_greedy_cpumask) {
+				cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+							    direct_greedy_cpumask,
+							    SCX_PICK_IDLE_CPU_WHOLE);
+				if (cpu >= 0) {
+					stat_add(ATROPOS_STAT_DIRECT_GREEDY_FAR, 1);
+					goto direct;
+				}
+			}
+		}
+
+		/*
+		 * No whole idle CPU. Is there any idle CPU?
+		 */
+		if (domc->direct_greedy_cpumask) {
+			cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+						    domc->direct_greedy_cpumask, 0);
+			if (cpu >= 0) {
+				stat_add(ATROPOS_STAT_DIRECT_GREEDY, 1);
+				goto direct;
+			}
+		}
+
+		if (direct_greedy_cpumask) {
+			cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+						    direct_greedy_cpumask, 0);
+			if (cpu >= 0) {
+				stat_add(ATROPOS_STAT_DIRECT_GREEDY_FAR, 1);
+				goto direct;
+			}
+		}
+	}
+
+	/*
+	 * We're going to queue on the domestic domain's DSQ. @prev_cpu may be
+	 * in a different domain. Returning an out-of-domain CPU can lead to
+	 * stalls as all in-domain CPUs may be idle by the time @p gets
+	 * enqueued.
 	 */
 	if (bpf_cpumask_test_cpu(prev_cpu, (const struct cpumask *)p_cpumask))
 		cpu = prev_cpu;
 	else
 		cpu = bpf_cpumask_any((const struct cpumask *)p_cpumask);
 
+	scx_bpf_put_idle_cpumask(idle_smtmask);
 	return cpu;
 
 direct:
 	task_ctx->dispatch_local = true;
+	scx_bpf_put_idle_cpumask(idle_smtmask);
 	return cpu;
 }
 
@@ -399,6 +574,30 @@ dom_queue:
 
 		scx_bpf_dispatch_vtime(p, task_ctx->dom_id, slice_ns, vtime,
 				       enq_flags);
+	}
+
+	/*
+	 * If there are CPUs which are idle and not saturated, wake them up to
+	 * see whether they'd be able to steal the just queued task. This path
+	 * is taken only if DIRECT_GREEDY didn't trigger in select_cpu().
+	 *
+	 * While both mechanisms serve very similar purposes, DIRECT_GREEDY
+	 * emplaces the task in a foreign CPU directly while KICK_GREEDY just
+	 * wakes up a foreign CPU which will then first try to execute from its
+	 * domestic domain first before snooping foreign ones.
+	 *
+	 * While KICK_GREEDY is a more expensive way of accelerating greedy
+	 * execution, DIRECT_GREEDY shows negative performance impacts when the
+	 * CPUs are highly loaded while KICK_GREEDY doesn't. Even under fairly
+	 * high utilization, KICK_GREEDY can slightly improve work-conservation.
+	 */
+	if (task_ctx->all_cpus && kick_greedy_cpumask) {
+		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+					    kick_greedy_cpumask, 0);
+		if (cpu >= 0) {
+			stat_add(ATROPOS_STAT_KICK_GREEDY, 1);
+			scx_bpf_kick_cpu(cpu, 0);
+		}
 	}
 }
 
@@ -593,6 +792,7 @@ void BPF_STRUCT_OPS(atropos_set_cpumask, struct task_struct *p,
 	}
 
 	task_pick_and_set_domain(task_ctx, p, cpumask, false);
+	task_ctx->all_cpus = bpf_cpumask_full(cpumask);
 }
 
 s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
@@ -703,6 +903,21 @@ static s32 create_dom(u32 dom_id)
 		return -EEXIST;
 	}
 
+	cpumask = bpf_cpumask_create();
+	if (!cpumask) {
+		scx_bpf_error("Failed to create BPF cpumask for domain %u",
+			      dom_id);
+		return -ENOMEM;
+	}
+
+	cpumask = bpf_kptr_xchg(&domc->direct_greedy_cpumask, cpumask);
+	if (cpumask) {
+		scx_bpf_error("Domain %u direct_greedy_cpumask already present",
+			      dom_id);
+		bpf_cpumask_release(cpumask);
+		return -EEXIST;
+	}
+
 	return 0;
 }
 
@@ -722,6 +937,20 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(atropos_init)
 
 	for (u32 i = 0; i < nr_cpus; i++)
 		pcpu_ctx[i].dom_rr_cur = i;
+
+	cpumask = bpf_cpumask_create();
+	if (!cpumask)
+		return -ENOMEM;
+	cpumask = bpf_kptr_xchg(&direct_greedy_cpumask, cpumask);
+	if (cpumask)
+		bpf_cpumask_release(cpumask);
+
+	cpumask = bpf_cpumask_create();
+	if (!cpumask)
+		return -ENOMEM;
+	cpumask = bpf_kptr_xchg(&kick_greedy_cpumask, cpumask);
+	if (cpumask)
+		bpf_cpumask_release(cpumask);
 
 	return 0;
 }
