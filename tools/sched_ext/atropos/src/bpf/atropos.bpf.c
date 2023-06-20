@@ -514,49 +514,28 @@ void BPF_STRUCT_OPS(atropos_set_weight, struct task_struct *p, u32 weight)
 	task_ctx->weight = weight;
 }
 
-struct task_pick_domain_loop_ctx {
-	struct task_struct *p;
-	const struct cpumask *cpumask;
-	u64 dom_mask;
-	u32 dom_rr_base;
-	u32 dom_id;
-};
-
-static int task_pick_domain_loopfn(u32 idx, void *data)
-{
-	struct task_pick_domain_loop_ctx *lctx = data;
-	u32 dom_id = (lctx->dom_rr_base + idx) % nr_doms;
-
-	if (dom_id >= MAX_DOMS)
-		return 1;
-
-	if (cpumask_intersects_domain(lctx->cpumask, dom_id)) {
-		lctx->dom_mask |= 1LLU << dom_id;
-		if (lctx->dom_id == MAX_DOMS)
-			lctx->dom_id = dom_id;
-	}
-	return 0;
-}
-
 static u32 task_pick_domain(struct task_ctx *task_ctx, struct task_struct *p,
 			    const struct cpumask *cpumask)
 {
-	struct task_pick_domain_loop_ctx lctx = {
-		.p = p,
-		.cpumask = cpumask,
-		.dom_id = MAX_DOMS,
-	};
 	s32 cpu = bpf_get_smp_processor_id();
+	u32 first_dom = MAX_DOMS, dom;
 
 	if (cpu < 0 || cpu >= MAX_CPUS)
 		return MAX_DOMS;
 
-	lctx.dom_rr_base = ++(pcpu_ctx[cpu].dom_rr_cur);
+	task_ctx->dom_mask = 0;
 
-	bpf_loop(nr_doms, task_pick_domain_loopfn, &lctx, 0);
-	task_ctx->dom_mask = lctx.dom_mask;
+	dom = pcpu_ctx[cpu].dom_rr_cur++;
+	bpf_repeat(nr_doms) {
+		dom = (dom + 1) % nr_doms;
+		if (cpumask_intersects_domain(cpumask, dom)) {
+			task_ctx->dom_mask |= 1LLU << dom;
+			if (first_dom == MAX_DOMS)
+				first_dom = dom;
+		}
+	}
 
-	return lctx.dom_id;
+	return first_dom;
 }
 
 static void task_pick_and_set_domain(struct task_ctx *task_ctx,
@@ -643,36 +622,36 @@ void BPF_STRUCT_OPS(atropos_disable, struct task_struct *p)
 	}
 }
 
-static int create_dom_dsq(u32 idx, void *data)
+static s32 create_dom(u32 dom_id)
 {
 	struct dom_ctx domc_init = {}, *domc;
 	struct bpf_cpumask *cpumask;
-	u32 cpu, dom_id = idx;
+	u32 cpu;
 	s32 ret;
 
 	ret = scx_bpf_create_dsq(dom_id, -1);
 	if (ret < 0) {
 		scx_bpf_error("Failed to create dsq %u (%d)", dom_id, ret);
-		return 1;
+		return ret;
 	}
 
 	ret = bpf_map_update_elem(&dom_ctx, &dom_id, &domc_init, 0);
 	if (ret) {
 		scx_bpf_error("Failed to add dom_ctx entry %u (%d)", dom_id, ret);
-		return 1;
+		return ret;
 	}
 
 	domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
 	if (!domc) {
 		/* Should never happen, we just inserted it above. */
 		scx_bpf_error("No dom%u", dom_id);
-		return 1;
+		return -ENOENT;
 	}
 
 	cpumask = bpf_cpumask_create();
 	if (!cpumask) {
 		scx_bpf_error("Failed to create BPF cpumask for domain %u", dom_id);
-		return 1;
+		return -ENOMEM;
 	}
 
 	for (cpu = 0; cpu < MAX_CPUS; cpu++) {
@@ -682,7 +661,7 @@ static int create_dom_dsq(u32 idx, void *data)
 		if (!dmask) {
 			scx_bpf_error("array index error");
 			bpf_cpumask_release(cpumask);
-			return 1;
+			return -ENOENT;
 		}
 
 		if (*dmask & (1LLU << (cpu % 64)))
@@ -691,20 +670,27 @@ static int create_dom_dsq(u32 idx, void *data)
 
 	cpumask = bpf_kptr_xchg(&domc->cpumask, cpumask);
 	if (cpumask) {
-		scx_bpf_error("Domain %u was already present", dom_id);
+		scx_bpf_error("Domain %u cpumask already present", dom_id);
 		bpf_cpumask_release(cpumask);
-		return 1;
+		return -EEXIST;
 	}
 
 	return 0;
 }
 
-int BPF_STRUCT_OPS_SLEEPABLE(atropos_init)
+s32 BPF_STRUCT_OPS_SLEEPABLE(atropos_init)
 {
+	struct bpf_cpumask *cpumask;
+	s32 i, ret;
+
 	if (!switch_partial)
 		scx_bpf_switch_all();
 
-	bpf_loop(nr_doms, create_dom_dsq, NULL, 0);
+	bpf_for(i, 0, nr_doms) {
+		ret = create_dom(i);
+		if (ret)
+			return ret;
+	}
 
 	for (u32 i = 0; i < nr_cpus; i++)
 		pcpu_ctx[i].dom_rr_cur = i;
