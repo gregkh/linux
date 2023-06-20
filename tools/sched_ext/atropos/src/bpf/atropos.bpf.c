@@ -469,6 +469,7 @@ void BPF_STRUCT_OPS(atropos_runnable, struct task_struct *p, u64 enq_flags)
 	}
 
 	task_ctx->runnable_at = bpf_ktime_get_ns();
+	task_ctx->is_kworker = p->flags & PF_WQ_WORKER;
 }
 
 void BPF_STRUCT_OPS(atropos_running, struct task_struct *p)

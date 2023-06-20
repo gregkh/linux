@@ -93,6 +93,12 @@ struct Opts {
     #[clap(short = 'k', long, action = clap::ArgAction::SetTrue)]
     kthreads_local: bool,
 
+    /// In recent kernels (>=v6.6), the kernel is responsible for balancing
+    /// kworkers across L3 cache domains. Exclude them from load-balancing
+    /// to avoid conflicting operations. Greedy executions still apply.
+    #[clap(short = 'b', long, action = clap::ArgAction::SetTrue)]
+    balanced_kworkers: bool,
+
     /// Use FIFO scheduling instead of weighted vtime scheduling.
     #[clap(short = 'f', long, action = clap::ArgAction::SetTrue)]
     fifo_sched: bool,
@@ -155,6 +161,7 @@ struct TaskInfo {
     pid: i32,
     dom_mask: u64,
     migrated: Cell<bool>,
+    is_kworker: bool,
 }
 
 struct LoadBalancer<'a, 'b, 'c> {
@@ -162,6 +169,7 @@ struct LoadBalancer<'a, 'b, 'c> {
     task_loads: &'b mut BTreeMap<i32, TaskLoad>,
     nr_doms: usize,
     load_decay_factor: f64,
+    skip_kworkers: bool,
 
     tasks_by_load: Vec<BTreeMap<OrderedFloat<f64>, TaskInfo>>,
     load_avg: f64,
@@ -184,6 +192,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         task_loads: &'b mut BTreeMap<i32, TaskLoad>,
         nr_doms: usize,
         load_decay_factor: f64,
+        skip_kworkers: bool,
         nr_lb_data_errors: &'c mut u64,
     ) -> Self {
         Self {
@@ -191,6 +200,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
             task_loads,
             nr_doms,
             load_decay_factor,
+            skip_kworkers,
 
             tasks_by_load: (0..nr_doms).map(|_| BTreeMap::<_, _>::new()).collect(),
             load_avg: 0f64,
@@ -279,6 +289,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                         pid,
                         dom_mask: task_ctx.dom_mask,
                         migrated: Cell::new(false),
+                        is_kworker: task_ctx.is_kworker,
                     },
                 );
             }
@@ -307,13 +318,21 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
 
     // Find the first candidate pid which hasn't already been migrated and
     // can run in @pull_dom.
-    fn find_first_candidate<'d, I>(tasks_by_load: I, pull_dom: u32) -> Option<(f64, &'d TaskInfo)>
+    fn find_first_candidate<'d, I>(
+        tasks_by_load: I,
+        pull_dom: u32,
+        skip_kworkers: bool,
+    ) -> Option<(f64, &'d TaskInfo)>
     where
         I: IntoIterator<Item = (&'d OrderedFloat<f64>, &'d TaskInfo)>,
     {
         match tasks_by_load
             .into_iter()
-            .skip_while(|(_, task)| task.migrated.get() || task.dom_mask & (1 << pull_dom) == 0)
+            .skip_while(|(_, task)| {
+                task.migrated.get()
+                    || (task.dom_mask & (1 << pull_dom) == 0)
+                    || (skip_kworkers && task.is_kworker)
+            })
             .next()
         {
             Some((OrderedFloat(load), task)) => Some((*load, task)),
@@ -356,11 +375,13 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                     .range((Unbounded, Included(&OrderedFloat(to_xfer))))
                     .rev(),
                 pull_dom,
+                self.skip_kworkers,
             ),
             Self::find_first_candidate(
                 self.tasks_by_load[push_dom as usize]
                     .range((Included(&OrderedFloat(to_xfer)), Unbounded)),
                 pull_dom,
+                self.skip_kworkers,
             ),
         ) {
             (None, None) => return None,
@@ -482,6 +503,7 @@ struct Scheduler<'a> {
     nr_doms: usize,
     load_decay_factor: f64,
     balance_load: bool,
+    balanced_kworkers: bool,
 
     proc_reader: procfs::ProcReader,
 
@@ -703,6 +725,7 @@ impl<'a> Scheduler<'a> {
             nr_doms,
             load_decay_factor: opts.load_decay_factor.clamp(0.0, 0.99),
             balance_load: !opts.no_load_balance,
+            balanced_kworkers: opts.balanced_kworkers,
 
             proc_reader,
 
@@ -862,6 +885,7 @@ impl<'a> Scheduler<'a> {
             &mut self.task_loads,
             self.nr_doms,
             self.load_decay_factor,
+            self.balanced_kworkers,
             &mut self.nr_lb_data_errors,
         );
 

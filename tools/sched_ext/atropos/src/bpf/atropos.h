@@ -45,6 +45,7 @@ struct task_ctx {
 	unsigned long long runnable_at;
 	unsigned long long runnable_for;
 	bool dispatch_local;
+	bool is_kworker;
 };
 
 #endif /* __ATROPOS_H */
