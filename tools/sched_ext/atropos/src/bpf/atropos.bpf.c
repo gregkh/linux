@@ -162,7 +162,7 @@ static u32 cpu_to_dom_id(s32 cpu)
 }
 
 static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
-			    u32 new_dom_id)
+			    u32 new_dom_id, bool init_dsq_vtime)
 {
 	struct dom_ctx *old_domc, *new_domc;
 	struct bpf_cpumask *d_cpumask, *t_cpumask;
@@ -175,7 +175,10 @@ static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
 		return false;
 	}
 
-	vtime_delta = p->scx.dsq_vtime - old_domc->vtime_now;
+	if (init_dsq_vtime)
+		vtime_delta = 0;
+	else
+		vtime_delta = p->scx.dsq_vtime - old_domc->vtime_now;
 
 	new_domc = bpf_map_lookup_elem(&dom_ctx, &new_dom_id);
 	if (!new_domc) {
@@ -331,7 +334,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 	 */
 	new_dom = bpf_map_lookup_elem(&lb_data, &pid);
 	if (new_dom && *new_dom != task_ctx->dom_id &&
-	    task_set_domain(task_ctx, p, *new_dom)) {
+	    task_set_domain(task_ctx, p, *new_dom, false)) {
 		stat_add(ATROPOS_STAT_LOAD_BALANCE, 1);
 
 		/*
@@ -563,14 +566,15 @@ static u32 task_pick_domain(struct task_ctx *task_ctx, struct task_struct *p,
 
 static void task_pick_and_set_domain(struct task_ctx *task_ctx,
 				     struct task_struct *p,
-				     const struct cpumask *cpumask)
+				     const struct cpumask *cpumask,
+				     bool init_dsq_vtime)
 {
 	u32 dom_id = 0;
 
 	if (nr_doms > 1)
 		dom_id = task_pick_domain(task_ctx, p, cpumask);
 
-	if (!task_set_domain(task_ctx, p, dom_id))
+	if (!task_set_domain(task_ctx, p, dom_id, init_dsq_vtime))
 		scx_bpf_error("Failed to set dom%d for %s[%d]",
 			      dom_id, p->comm, p->pid);
 }
@@ -587,7 +591,7 @@ void BPF_STRUCT_OPS(atropos_set_cpumask, struct task_struct *p,
 		return;
 	}
 
-	task_pick_and_set_domain(task_ctx, p, cpumask);
+	task_pick_and_set_domain(task_ctx, p, cpumask, false);
 }
 
 s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
@@ -630,7 +634,7 @@ s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
 		return -EINVAL;
 	}
 
-	task_pick_and_set_domain(map_value, p, p->cpus_ptr);
+	task_pick_and_set_domain(map_value, p, p->cpus_ptr, true);
 
 	return 0;
 }
