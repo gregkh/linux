@@ -154,7 +154,7 @@ static bool task_set_dsq(struct task_ctx *task_ctx, struct task_struct *p,
 
 	old_domc = bpf_map_lookup_elem(&dom_ctx, &old_dom_id);
 	if (!old_domc) {
-		scx_bpf_error("No dom%u", old_dom_id);
+		scx_bpf_error("Failed to lookup old dom%u", old_dom_id);
 		return false;
 	}
 
@@ -162,13 +162,13 @@ static bool task_set_dsq(struct task_ctx *task_ctx, struct task_struct *p,
 
 	new_domc = bpf_map_lookup_elem(&dom_ctx, &new_dom_id);
 	if (!new_domc) {
-		scx_bpf_error("No dom%u", new_dom_id);
+		scx_bpf_error("Failed to lookup new dom%u", new_dom_id);
 		return false;
 	}
 
 	d_cpumask = new_domc->cpumask;
 	if (!d_cpumask) {
-		scx_bpf_error("Failed to get domain %u cpumask kptr",
+		scx_bpf_error("Failed to get dom%u cpumask kptr",
 			      new_dom_id);
 		return false;
 	}
@@ -197,19 +197,20 @@ static bool task_set_dsq(struct task_ctx *task_ctx, struct task_struct *p,
 s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 		   u32 wake_flags)
 {
-	s32 cpu;
-	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
+	struct task_ctx *task_ctx;
 	struct bpf_cpumask *p_cpumask;
+	pid_t pid = p->pid;
+	s32 cpu;
 
-	if (!task_ctx)
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid)) ||
+	    !(p_cpumask = task_ctx->cpumask))
 		return -ENOENT;
 
 	if (kthreads_local &&
 	    (p->flags & PF_KTHREAD) && p->nr_cpus_allowed == 1) {
 		cpu = prev_cpu;
 		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
-		goto local;
+		goto direct;
 	}
 
 	/*
@@ -234,7 +235,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 			}
 			d_cpumask = domc->cpumask;
 			if (!d_cpumask) {
-				scx_bpf_error("Failed to acquire domain %u cpumask kptr",
+				scx_bpf_error("Failed to acquire dom%u cpumask kptr",
 					      task_ctx->dom_id);
 				return prev_cpu;
 			}
@@ -250,7 +251,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 				cpu = bpf_get_smp_processor_id();
 				if (bpf_cpumask_test_cpu(cpu, p->cpus_ptr)) {
 					stat_add(ATROPOS_STAT_WAKE_SYNC, 1);
-					goto local;
+					goto direct;
 				}
 			}
 		}
@@ -260,25 +261,21 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 	if (scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
 		stat_add(ATROPOS_STAT_PREV_IDLE, 1);
 		cpu = prev_cpu;
-		goto local;
+		goto direct;
 	}
 
 	/* If only one core is allowed, dispatch */
 	if (p->nr_cpus_allowed == 1) {
 		stat_add(ATROPOS_STAT_PINNED, 1);
 		cpu = prev_cpu;
-		goto local;
+		goto direct;
 	}
-
-	p_cpumask = task_ctx->cpumask;
-	if (!p_cpumask)
-		return -ENOENT;
 
 	/* If there is an eligible idle CPU, dispatch directly */
 	cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
 	if (cpu >= 0) {
 		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
-		goto local;
+		goto direct;
 	}
 
 	/*
@@ -293,26 +290,27 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 
 	return cpu;
 
-local:
+direct:
 	task_ctx->dispatch_local = true;
 	return cpu;
 }
 
-void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
+void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 {
+	struct task_ctx *task_ctx;
+	struct bpf_cpumask *p_cpumask;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
 	u32 *new_dom;
 
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid)) ||
+	    !(p_cpumask = task_ctx->cpumask)) {
+		scx_bpf_error("Failed to lookup task_ctx or cpumask");
 		return;
 	}
 
 	new_dom = bpf_map_lookup_elem(&lb_data, &pid);
 	if (new_dom && *new_dom != task_ctx->dom_id &&
 	    task_set_dsq(task_ctx, p, *new_dom)) {
-		struct bpf_cpumask *p_cpumask;
 		s32 cpu;
 
 		stat_add(ATROPOS_STAT_LOAD_BALANCE, 1);
@@ -327,13 +325,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
 			scx_bpf_kick_cpu(scx_bpf_task_cpu(p), 0);
 		}
 
-		p_cpumask = task_ctx->cpumask;
-		if (!p_cpumask) {
-			scx_bpf_error("Failed to get task_ctx->cpumask");
-			return;
-		}
 		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
-
 		if (cpu >= 0)
 			scx_bpf_kick_cpu(cpu, 0);
 	}
@@ -354,7 +346,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
 
 		domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
 		if (!domc) {
-			scx_bpf_error("No dom[%u]", dom_id);
+			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
 			return;
 		}
 
@@ -442,11 +434,11 @@ void BPF_STRUCT_OPS(atropos_dispatch, s32 cpu, struct task_struct *prev)
 
 void BPF_STRUCT_OPS(atropos_runnable, struct task_struct *p, u64 enq_flags)
 {
+	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
 
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
+		scx_bpf_error("Failed to lookup task_ctx");
 		return;
 	}
 
@@ -465,14 +457,14 @@ void BPF_STRUCT_OPS(atropos_running, struct task_struct *p)
 
 	taskc = bpf_map_lookup_elem(&task_data, &pid);
 	if (!taskc) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+		scx_bpf_error("Failed to lookup task_ctx");
 		return;
 	}
 	dom_id = taskc->dom_id;
 
 	domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
 	if (!domc) {
-		scx_bpf_error("No dom[%u]", dom_id);
+		scx_bpf_error("Failed to lookup dom[%u]", dom_id);
 		return;
 	}
 
@@ -497,11 +489,11 @@ void BPF_STRUCT_OPS(atropos_stopping, struct task_struct *p, bool runnable)
 
 void BPF_STRUCT_OPS(atropos_quiescent, struct task_struct *p, u64 deq_flags)
 {
+	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
 
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
+		scx_bpf_error("Failed to lookup task_ctx");
 		return;
 	}
 
@@ -511,11 +503,11 @@ void BPF_STRUCT_OPS(atropos_quiescent, struct task_struct *p, u64 deq_flags)
 
 void BPF_STRUCT_OPS(atropos_set_weight, struct task_struct *p, u32 weight)
 {
+	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
 
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
+		scx_bpf_error("Failed to lookup task_ctx");
 		return;
 	}
 
@@ -576,17 +568,19 @@ static void task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
 		dom_id = pick_task_domain(task_ctx, p, cpumask);
 
 	if (!task_set_dsq(task_ctx, p, dom_id))
-		scx_bpf_error("Failed to set domain %d for %s[%d]",
+		scx_bpf_error("Failed to set dom%d for %s[%d]",
 			      dom_id, p->comm, p->pid);
 }
 
 void BPF_STRUCT_OPS(atropos_set_cpumask, struct task_struct *p,
 		    const struct cpumask *cpumask)
 {
+	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
+		scx_bpf_error("Failed to lookup task_ctx for %s[%d]",
+			      p->comm, pid);
 		return;
 	}
 
@@ -725,19 +719,18 @@ void BPF_STRUCT_OPS(atropos_exit, struct scx_exit_info *ei)
 
 SEC(".struct_ops.link")
 struct sched_ext_ops atropos = {
-	.select_cpu = (void *)atropos_select_cpu,
-	.enqueue = (void *)atropos_enqueue,
-	.dispatch = (void *)atropos_dispatch,
-	.runnable = (void *)atropos_runnable,
-	.running = (void *)atropos_running,
-	.stopping = (void *)atropos_stopping,
-	.quiescent = (void *)atropos_quiescent,
-	.set_weight = (void *)atropos_set_weight,
-	.set_cpumask = (void *)atropos_set_cpumask,
-	.prep_enable = (void *)atropos_prep_enable,
-	.disable = (void *)atropos_disable,
-	.init = (void *)atropos_init,
-	.exit = (void *)atropos_exit,
-	.flags = 0,
-	.name = "atropos",
+	.select_cpu		= (void *)atropos_select_cpu,
+	.enqueue		= (void *)atropos_enqueue,
+	.dispatch		= (void *)atropos_dispatch,
+	.runnable		= (void *)atropos_runnable,
+	.running		= (void *)atropos_running,
+	.stopping		= (void *)atropos_stopping,
+	.quiescent		= (void *)atropos_quiescent,
+	.set_weight		= (void *)atropos_set_weight,
+	.set_cpumask		= (void *)atropos_set_cpumask,
+	.prep_enable		= (void *)atropos_prep_enable,
+	.disable		= (void *)atropos_disable,
+	.init			= (void *)atropos_init,
+	.exit			= (void *)atropos_exit,
+	.name			= "atropos",
 };

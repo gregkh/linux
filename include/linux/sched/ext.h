@@ -370,8 +370,8 @@ struct sched_ext_ops {
 	 * The user also must implement ops.select_cpu() as the default
 	 * implementation relies on scx_bpf_select_cpu_dfl().
 	 *
-	 * If you keep the built-in idle tracking, specify the
-	 * %SCX_OPS_KEEP_BUILTIN_IDLE flag.
+	 * Specify the %SCX_OPS_KEEP_BUILTIN_IDLE flag to keep the built-in idle
+	 * tracking.
 	 */
 	void (*update_idle)(s32 cpu, bool idle);
 

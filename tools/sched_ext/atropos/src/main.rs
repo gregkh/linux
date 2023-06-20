@@ -8,38 +8,51 @@ pub use atropos::*;
 pub mod atropos_sys;
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::ffi::CStr;
-use std::ops::Bound::{Included, Unbounded};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ops::Bound::Included;
+use std::ops::Bound::Unbounded;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+use std::time::SystemTime;
 
 use ::fb_procfs as procfs;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::anyhow;
+use anyhow::bail;
+use anyhow::Context;
+use anyhow::Result;
 use bitvec::prelude::*;
 use clap::Parser;
-use log::{info, trace, warn};
+use log::info;
+use log::trace;
+use log::warn;
 use ordered_float::OrderedFloat;
 
 /// Atropos is a multi-domain BPF / userspace hybrid scheduler where the BPF
 /// part does simple round robin in each domain and the userspace part
 /// calculates the load factor of each domain and tells the BPF part how to load
 /// balance the domains.
-
+///
 /// This scheduler demonstrates dividing scheduling logic between BPF and
 /// userspace and using rust to build the userspace part. An earlier variant of
 /// this scheduler was used to balance across six domains, each representing a
 /// chiplet in a six-chiplet AMD processor, and could match the performance of
 /// production setup using CFS.
+///
+/// WARNING: Atropos currenlty assumes that all domains have equal
+/// processing power and at similar distances from each other. This
+/// limitation will be removed in the future.
 #[derive(Debug, Parser)]
 struct Opts {
     /// Scheduling slice duration in microseconds.
-    #[clap(short, long, default_value = "20000")]
+    #[clap(short = 's', long, default_value = "20000")]
     slice_us: u64,
 
     /// Monitoring and load balance interval in seconds.
-    #[clap(short, long, default_value = "2.0")]
+    #[clap(short = 'i', long, default_value = "2.0")]
     interval: f64,
 
     /// Build domains according to how CPUs are grouped at this cache level
@@ -59,7 +72,7 @@ struct Opts {
     /// cpu will attempt to steal tasks from a domain with at least
     /// greedy_threshold tasks enqueued. These tasks aren't permanently
     /// stolen from the domain.
-    #[clap(short, long, default_value = "4")]
+    #[clap(short = 'g', long, default_value = "4")]
     greedy_threshold: u32,
 
     /// The load decay factor. Every interval, the existing load is decayed
@@ -67,32 +80,32 @@ struct Opts {
     /// 0.99]. The smaller the value, the more sensitive load calculation
     /// is to recent changes. When 0.0, history is ignored and the load
     /// value from the latest period is used directly.
-    #[clap(short, long, default_value = "0.5")]
+    #[clap(long, default_value = "0.5")]
     load_decay_factor: f64,
 
     /// Disable load balancing. Unless disabled, periodically userspace will
     /// calculate the load factor of each domain and instruct BPF which
     /// processes to move.
-    #[clap(short, long, action = clap::ArgAction::SetTrue)]
+    #[clap(long, action = clap::ArgAction::SetTrue)]
     no_load_balance: bool,
 
     /// Put per-cpu kthreads directly into local dsq's.
-    #[clap(short, long, action = clap::ArgAction::SetTrue)]
+    #[clap(short = 'k', long, action = clap::ArgAction::SetTrue)]
     kthreads_local: bool,
 
     /// Use FIFO scheduling instead of weighted vtime scheduling.
-    #[clap(short, long, action = clap::ArgAction::SetTrue)]
+    #[clap(short = 'f', long, action = clap::ArgAction::SetTrue)]
     fifo_sched: bool,
 
     /// If specified, only tasks which have their scheduling policy set to
     /// SCHED_EXT using sched_setscheduler(2) are switched. Otherwise, all
     /// tasks are switched.
-    #[clap(short, long, action = clap::ArgAction::SetTrue)]
+    #[clap(short = 'p', long, action = clap::ArgAction::SetTrue)]
     partial: bool,
 
     /// Enable verbose output including libbpf details. Specify multiple
     /// times to increase verbosity.
-    #[clap(short, long, action = clap::ArgAction::Count)]
+    #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     verbose: u8,
 }
 
@@ -472,7 +485,7 @@ struct Scheduler<'a> {
 }
 
 impl<'a> Scheduler<'a> {
-    // Returns Vec of cpuset for each dq and a vec of dq for each cpu
+    // Returns Vec of cpuset for each dsq and a vec of dsq for each cpu
     fn parse_cpusets(
         cpumasks: &[String],
         nr_cpus: usize,
@@ -487,7 +500,7 @@ impl<'a> Scheduler<'a> {
         let mut cpus = vec![-1i32; nr_cpus];
         let mut cpusets =
             vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; cpumasks.len()];
-        for (dq, cpumask) in cpumasks.iter().enumerate() {
+        for (dsq, cpumask) in cpumasks.iter().enumerate() {
             let hex_str = {
                 let mut tmp_str = cpumask
                     .strip_prefix("0x")
@@ -520,32 +533,32 @@ impl<'a> Scheduler<'a> {
                     }
                     if cpus[cpu] != -1 {
                         bail!(
-                            "Found cpu ({}) with dq ({}) but also in cpumask ({})",
+                            "Found cpu ({}) with dsq ({}) but also in cpumask ({})",
                             cpu,
                             cpus[cpu],
                             cpumask
                         );
                     }
-                    cpus[cpu] = dq as i32;
-                    cpusets[dq].set(cpu, true);
+                    cpus[cpu] = dsq as i32;
+                    cpusets[dsq].set(cpu, true);
                 }
             }
-            cpusets[dq].set_uninitialized(false);
+            cpusets[dsq].set_uninitialized(false);
         }
 
-        for (cpu, &dq) in cpus.iter().enumerate() {
-            if dq < 0 {
+        for (cpu, &dsq) in cpus.iter().enumerate() {
+            if dsq < 0 {
                 bail!(
-                "Cpu {} not assigned to any dq. Make sure it is covered by some --cpumasks argument.",
-                cpu
-            );
+                    "Cpu {} not assigned to any dsq. Make sure it is covered by some --cpumasks argument.",
+                    cpu
+                );
             }
         }
 
         Ok((cpusets, cpus))
     }
 
-    // Returns Vec of cpuset for each dq and a vec of dq for each cpu
+    // Returns Vec of cpuset for each dsq and a vec of dsq for each cpu
     fn cpusets_from_cache(
         level: u32,
         nr_cpus: usize,
@@ -802,10 +815,10 @@ impl<'a> Scheduler<'a> {
             + stat(atropos_sys::stat_idx_ATROPOS_STAT_LAST_TASK);
 
         info!(
-            "cpu={:6.1} load_avg={:7.1} bal={} task_err={} lb_data_err={} proc={:?}ms",
+            "cpu={:7.2} bal={} load_avg={:8.2} task_err={} lb_data_err={} proc={:?}ms",
             cpu_busy * 100.0,
-            load_avg,
             stats[atropos_sys::stat_idx_ATROPOS_STAT_LOAD_BALANCE as usize],
+            load_avg,
             stats[atropos_sys::stat_idx_ATROPOS_STAT_TASK_GET_ERR as usize],
             self.nr_lb_data_errors,
             processing_dur.as_millis(),
@@ -814,7 +827,7 @@ impl<'a> Scheduler<'a> {
         let stat_pct = |idx| stat(idx) as f64 / total as f64 * 100.0;
 
         info!(
-            "tot={:6} wsync={:4.1} prev_idle={:4.1} pin={:4.1} dir={:4.1} dq={:4.1} greedy={:4.1}",
+            "tot={:7} wsync={:5.2} prev_idle={:5.2} pin={:5.2} dir={:5.2} dsq={:5.2} greedy={:5.2}",
             total,
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_WAKE_SYNC),
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_PREV_IDLE),
@@ -826,11 +839,8 @@ impl<'a> Scheduler<'a> {
 
         for i in 0..self.nr_doms {
             info!(
-                "DOM[{:02}] load={:7.1} to_pull={:7.1} to_push={:7.1}",
-                i,
-                dom_loads[i],
-                if imbal[i] < 0.0 { -imbal[i] } else { 0.0 },
-                if imbal[i] > 0.0 { imbal[i] } else { 0.0 },
+                "DOM[{:02}] load={:8.2} imbal={:+9.2}",
+                i, dom_loads[i], imbal[i],
             );
         }
     }
