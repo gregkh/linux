@@ -72,7 +72,7 @@ struct Opts {
     /// cpu will attempt to steal tasks from a domain with at least
     /// greedy_threshold tasks enqueued. These tasks aren't permanently
     /// stolen from the domain.
-    #[clap(short = 'g', long, default_value = "4")]
+    #[clap(short = 'g', long, default_value = "1")]
     greedy_threshold: u32,
 
     /// The load decay factor. Every interval, the existing load is decayed
@@ -183,8 +183,22 @@ struct LoadBalancer<'a, 'b, 'c> {
 }
 
 impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
+    // If imbalance gets higher than this ratio, try to balance the loads.
     const LOAD_IMBAL_HIGH_RATIO: f64 = 0.10;
-    const LOAD_IMBAL_REDUCTION_MIN_RATIO: f64 = 0.1;
+
+    // Aim to transfer this fraction of the imbalance on each round. We want
+    // to be gradual to avoid unnecessary oscillations. While this can delay
+    // convergence, greedy execution should be able to bridge the temporary
+    // gap.
+    const LOAD_IMBAL_XFER_TARGET_RATIO: f64 = 0.50;
+
+    // Don't push out more than this ratio of load on each round. While this
+    // overlaps with XFER_TARGET_RATIO, XFER_TARGET_RATIO only defines the
+    // target and doesn't limit the total load. As long as the transfer
+    // reduces load imbalance between the two involved domains, it'd happily
+    // transfer whatever amount that can be transferred. This limit is used
+    // as the safety cap to avoid draining a given domain too much in a
+    // single round.
     const LOAD_IMBAL_PUSH_MAX_RATIO: f64 = 0.50;
 
     fn new(
@@ -345,7 +359,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         (push_dom, to_push): (u32, f64),
         (pull_dom, to_pull): (u32, f64),
     ) -> Option<(&TaskInfo, f64)> {
-        let to_xfer = to_pull.min(to_push);
+        let to_xfer = to_pull.min(to_push) * Self::LOAD_IMBAL_XFER_TARGET_RATIO;
 
         trace!(
             "considering dom {}@{:.2} -> {}@{:.2}",
@@ -364,11 +378,12 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         );
 
         // We want to pick a task to transfer from push_dom to pull_dom to
-        // maximize the reduction of load imbalance between the two. IOW,
-        // pick a task which has the closest load value to $to_xfer that can
-        // be migrated. Find such task by locating the first migratable task
-        // while scanning left from $to_xfer and the counterpart while
-        // scanning right and picking the better of the two.
+        // reduce the load imbalance between the two closest to $to_xfer.
+        // IOW, pick a task which has the closest load value to $to_xfer
+        // that can be migrated. Find such task by locating the first
+        // migratable task while scanning left from $to_xfer and the
+        // counterpart while scanning right and picking the better of the
+        // two.
         let (load, task, new_imbal) = match (
             Self::find_first_candidate(
                 self.tasks_by_load[push_dom as usize]
@@ -401,7 +416,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         // If the best candidate can't reduce the imbalance, there's nothing
         // to do for this pair.
         let old_imbal = to_push + to_pull;
-        if old_imbal * (1.0 - Self::LOAD_IMBAL_REDUCTION_MIN_RATIO) < new_imbal {
+        if old_imbal < new_imbal {
             trace!(
                 "skipping pid {}, dom {} -> {} won't improve imbal {:.2} -> {:.2}",
                 task.pid,
