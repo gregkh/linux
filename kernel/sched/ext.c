@@ -126,7 +126,6 @@ static struct {
 	cpumask_var_t smt;
 } idle_masks CL_ALIGNED_IF_ONSTACK;
 
-static bool __cacheline_aligned_in_smp scx_has_idle_cpus;
 #endif	/* CONFIG_SMP */
 
 /* for %SCX_KICK_WAIT */
@@ -1926,13 +1925,7 @@ void __scx_notify_pick_next_task(struct rq *rq, struct task_struct *task,
 
 static bool test_and_clear_cpu_idle(int cpu)
 {
-	if (cpumask_test_and_clear_cpu(cpu, idle_masks.cpu)) {
-		if (cpumask_empty(idle_masks.cpu))
-			scx_has_idle_cpus = false;
-		return true;
-	} else {
-		return false;
-	}
+	return cpumask_test_and_clear_cpu(cpu, idle_masks.cpu);
 }
 
 static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed)
@@ -1978,7 +1971,7 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 	 * local DSQ of the waker.
 	 */
 	if ((wake_flags & SCX_WAKE_SYNC) && p->nr_cpus_allowed > 1 &&
-	    scx_has_idle_cpus && !(current->flags & PF_EXITING)) {
+	    !cpumask_empty(idle_masks.cpu) && !(current->flags & PF_EXITING)) {
 		cpu = smp_processor_id();
 		if (cpumask_test_cpu(cpu, p->cpus_ptr)) {
 			p->scx.flags |= SCX_TASK_ENQ_LOCAL;
@@ -2045,7 +2038,6 @@ static void reset_idle_masks(void)
 	/* consider all cpus idle, should converge to the actual state quickly */
 	cpumask_setall(idle_masks.cpu);
 	cpumask_setall(idle_masks.smt);
-	scx_has_idle_cpus = true;
 }
 
 void __scx_update_idle(struct rq *rq, bool idle)
@@ -2061,8 +2053,6 @@ void __scx_update_idle(struct rq *rq, bool idle)
 
 	if (idle) {
 		cpumask_set_cpu(cpu, idle_masks.cpu);
-		if (!scx_has_idle_cpus)
-			scx_has_idle_cpus = true;
 
 		/*
 		 * idle_masks.smt handling is racy but that's fine as it's only
@@ -2075,9 +2065,6 @@ void __scx_update_idle(struct rq *rq, bool idle)
 		cpumask_or(idle_masks.smt, idle_masks.smt, sib_mask);
 	} else {
 		cpumask_clear_cpu(cpu, idle_masks.cpu);
-		if (scx_has_idle_cpus && cpumask_empty(idle_masks.cpu))
-			scx_has_idle_cpus = false;
-
 		cpumask_andnot(idle_masks.smt, idle_masks.smt, sib_mask);
 	}
 }
