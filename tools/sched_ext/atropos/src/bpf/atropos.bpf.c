@@ -74,11 +74,14 @@ const volatile __u64 slice_ns = SCX_SLICE_DFL;
 int exit_type = SCX_EXIT_NONE;
 char exit_msg[SCX_EXIT_MSG_LEN];
 
+/*
+ * Per-CPU context
+ */
 struct pcpu_ctx {
 	__u32 dom_rr_cur; /* used when scanning other doms */
 
 	/* libbpf-rs does not respect the alignment, so pad out the struct explicitly */
-	__u8 _padding[CACHELINE_SIZE - sizeof(u64)];
+	__u8 _padding[CACHELINE_SIZE - sizeof(u32)];
 } __attribute__((aligned(CACHELINE_SIZE)));
 
 struct pcpu_ctx pcpu_ctx[MAX_CPUS];
