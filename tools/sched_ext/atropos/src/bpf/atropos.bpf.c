@@ -318,6 +318,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 	struct bpf_cpumask *p_cpumask;
 	pid_t pid = p->pid;
 	u32 *new_dom;
+	s32 cpu;
 
 	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid)) ||
 	    !(p_cpumask = task_ctx->cpumask)) {
@@ -325,11 +326,12 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 		return;
 	}
 
+	/*
+	 * Migrate @p to a new domain if requested by userland through lb_data.
+	 */
 	new_dom = bpf_map_lookup_elem(&lb_data, &pid);
 	if (new_dom && *new_dom != task_ctx->dom_id &&
 	    task_set_domain(task_ctx, p, *new_dom)) {
-		s32 cpu;
-
 		stat_add(ATROPOS_STAT_LOAD_BALANCE, 1);
 
 		/*
@@ -345,6 +347,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
 		if (cpu >= 0)
 			scx_bpf_kick_cpu(cpu, 0);
+		goto dom_queue;
 	}
 
 	if (task_ctx->dispatch_local) {
@@ -353,6 +356,23 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 		return;
 	}
 
+	/*
+	 * @p is about to be queued on its domain's dsq. However, @p may be on a
+	 * foreign CPU due to a greedy execution and not have gone through
+	 * ->select_cpu() if it's being enqueued e.g. after slice exhaustion. If
+	 * so, @p would be queued on its domain's dsq but none of the CPUs in
+	 * the domain would be woken up for it which can induce execution
+	 * bubles. Kick a domestic CPU if @p is on a foreign domain.
+	 */
+	if (!bpf_cpumask_test_cpu(scx_bpf_task_cpu(p), (const struct cpumask *)p_cpumask)) {
+		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
+		if (cpu < 0)
+			cpu = bpf_cpumask_any((const struct cpumask *)p_cpumask);
+		scx_bpf_kick_cpu(cpu, 0);
+		stat_add(ATROPOS_STAT_REPATRIATE, 1);
+	}
+
+dom_queue:
 	if (fifo_sched) {
 		scx_bpf_dispatch(p, task_ctx->dom_id, slice_ns,
 				 enq_flags);

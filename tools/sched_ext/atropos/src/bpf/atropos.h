@@ -28,6 +28,7 @@ enum stat_idx {
 	ATROPOS_STAT_GREEDY,
 
 	/* Extra stats that don't contribute to total */
+	ATROPOS_STAT_REPATRIATE,
 	ATROPOS_STAT_LOAD_BALANCE,
 
 	/* Errors */

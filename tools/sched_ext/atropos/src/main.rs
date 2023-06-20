@@ -829,14 +829,19 @@ impl<'a> Scheduler<'a> {
         let stat_pct = |idx| stat(idx) as f64 / total as f64 * 100.0;
 
         info!(
-            "tot={:7} wsync={:5.2} prev_idle={:5.2} pin={:5.2} dir={:5.2} dsq={:5.2} greedy={:5.2}",
+            "tot={:7} wsync={:5.2} prev_idle={:5.2} pin={:5.2} dir={:5.2}",
             total,
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_WAKE_SYNC),
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_PREV_IDLE),
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_PINNED),
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_DISPATCH),
+        );
+
+        info!(
+            "dsq={:5.2} greedy={:5.2} rep={:5.2}",
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DSQ_DISPATCH),
             stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY),
+            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_REPATRIATE),
         );
 
         for i in 0..self.nr_doms {
