@@ -144,8 +144,8 @@ static inline bool vtime_before(u64 a, u64 b)
 	return (s64)(a - b) < 0;
 }
 
-static bool task_set_dsq(struct task_ctx *task_ctx, struct task_struct *p,
-			 u32 new_dom_id)
+static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
+			    u32 new_dom_id)
 {
 	struct dom_ctx *old_domc, *new_domc;
 	struct bpf_cpumask *d_cpumask, *t_cpumask;
@@ -310,7 +310,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 
 	new_dom = bpf_map_lookup_elem(&lb_data, &pid);
 	if (new_dom && *new_dom != task_ctx->dom_id &&
-	    task_set_dsq(task_ctx, p, *new_dom)) {
+	    task_set_domain(task_ctx, p, *new_dom)) {
 		s32 cpu;
 
 		stat_add(ATROPOS_STAT_LOAD_BALANCE, 1);
@@ -514,7 +514,7 @@ void BPF_STRUCT_OPS(atropos_set_weight, struct task_struct *p, u32 weight)
 	task_ctx->weight = weight;
 }
 
-struct pick_task_domain_loop_ctx {
+struct task_pick_domain_loop_ctx {
 	struct task_struct *p;
 	const struct cpumask *cpumask;
 	u64 dom_mask;
@@ -522,9 +522,9 @@ struct pick_task_domain_loop_ctx {
 	u32 dom_id;
 };
 
-static int pick_task_domain_loopfn(u32 idx, void *data)
+static int task_pick_domain_loopfn(u32 idx, void *data)
 {
-	struct pick_task_domain_loop_ctx *lctx = data;
+	struct task_pick_domain_loop_ctx *lctx = data;
 	u32 dom_id = (lctx->dom_rr_base + idx) % nr_doms;
 
 	if (dom_id >= MAX_DOMS)
@@ -538,10 +538,10 @@ static int pick_task_domain_loopfn(u32 idx, void *data)
 	return 0;
 }
 
-static u32 pick_task_domain(struct task_ctx *task_ctx, struct task_struct *p,
+static u32 task_pick_domain(struct task_ctx *task_ctx, struct task_struct *p,
 			    const struct cpumask *cpumask)
 {
-	struct pick_task_domain_loop_ctx lctx = {
+	struct task_pick_domain_loop_ctx lctx = {
 		.p = p,
 		.cpumask = cpumask,
 		.dom_id = MAX_DOMS,
@@ -553,21 +553,22 @@ static u32 pick_task_domain(struct task_ctx *task_ctx, struct task_struct *p,
 
 	lctx.dom_rr_base = ++(pcpu_ctx[cpu].dom_rr_cur);
 
-	bpf_loop(nr_doms, pick_task_domain_loopfn, &lctx, 0);
+	bpf_loop(nr_doms, task_pick_domain_loopfn, &lctx, 0);
 	task_ctx->dom_mask = lctx.dom_mask;
 
 	return lctx.dom_id;
 }
 
-static void task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
-			    const struct cpumask *cpumask)
+static void task_pick_and_set_domain(struct task_ctx *task_ctx,
+				     struct task_struct *p,
+				     const struct cpumask *cpumask)
 {
 	u32 dom_id = 0;
 
 	if (nr_doms > 1)
-		dom_id = pick_task_domain(task_ctx, p, cpumask);
+		dom_id = task_pick_domain(task_ctx, p, cpumask);
 
-	if (!task_set_dsq(task_ctx, p, dom_id))
+	if (!task_set_domain(task_ctx, p, dom_id))
 		scx_bpf_error("Failed to set dom%d for %s[%d]",
 			      dom_id, p->comm, p->pid);
 }
@@ -584,7 +585,7 @@ void BPF_STRUCT_OPS(atropos_set_cpumask, struct task_struct *p,
 		return;
 	}
 
-	task_set_domain(task_ctx, p, cpumask);
+	task_pick_and_set_domain(task_ctx, p, cpumask);
 }
 
 s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
@@ -627,7 +628,7 @@ s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
 		return -EINVAL;
 	}
 
-	task_set_domain(map_value, p, p->cpus_ptr);
+	task_pick_and_set_domain(map_value, p, p->cpus_ptr);
 
 	return 0;
 }
