@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 
-use ::fb_procfs as procfs;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
@@ -115,14 +114,6 @@ struct Opts {
     verbose: u8,
 }
 
-fn read_total_cpu(reader: &mut procfs::ProcReader) -> Result<procfs::CpuStat> {
-    Ok(reader
-        .read_stat()
-        .context("Failed to read procfs")?
-        .total_cpu
-        .ok_or_else(|| anyhow!("Could not read total cpu stat in proc"))?)
-}
-
 fn now_monotonic() -> u64 {
     let mut time = libc::timespec {
         tv_sec: 0,
@@ -148,6 +139,80 @@ fn format_cpumask(cpumask: &[u64], nr_cpus: usize) -> String {
         .take((nr_cpus + 64) / 64)
         .rev()
         .fold(String::new(), |acc, x| format!("{} {:016X}", acc, x))
+}
+
+// Neither procfs or fb_procfs can determine per-CPU utilization reliably
+// with CPU hot[un]plugs. Roll our own.
+//
+// https://github.com/eminence/procfs/issues/274
+// https://github.com/facebookincubator/below/issues/8190
+#[derive(Clone, Debug, Default)]
+struct MyCpuStat {
+    user: u64,
+    nice: u64,
+    system: u64,
+    idle: u64,
+    iowait: u64,
+    irq: u64,
+    softirq: u64,
+    steal: u64,
+}
+
+impl MyCpuStat {
+    fn busy_and_total(&self) -> (u64, u64) {
+        let busy = self.user + self.system + self.nice + self.irq + self.softirq + self.steal;
+        (busy, self.idle + busy + self.iowait)
+    }
+
+    fn calc_util(&self, prev: &MyCpuStat) -> f64 {
+        let (curr_busy, curr_total) = self.busy_and_total();
+        let (prev_busy, prev_total) = prev.busy_and_total();
+        let busy = curr_busy - prev_busy;
+        let total = curr_total - prev_total;
+        if total > 0 {
+            ((busy as f64) / (total as f64)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct MyProcStat {
+    total: MyCpuStat,
+    cpus: BTreeMap<usize, MyCpuStat>,
+}
+
+impl MyProcStat {
+    fn read() -> Result<Self> {
+        let mut result: MyProcStat = Default::default();
+        for line in std::fs::read_to_string("/proc/stat")?.lines() {
+            let mut toks = line.split_whitespace();
+
+            let key = toks.next().ok_or(anyhow!("no key"))?;
+            if !key.starts_with("cpu") {
+                break;
+            }
+
+            let cputime = MyCpuStat {
+                user: toks.next().ok_or(anyhow!("missing"))?.parse::<u64>()?,
+                nice: toks.next().ok_or(anyhow!("missing"))?.parse::<u64>()?,
+                system: toks.next().ok_or(anyhow!("missing"))?.parse::<u64>()?,
+                idle: toks.next().ok_or(anyhow!("missing"))?.parse::<u64>()?,
+                iowait: toks.next().ok_or(anyhow!("missing"))?.parse::<u64>()?,
+                irq: toks.next().ok_or(anyhow!("missing"))?.parse::<u64>()?,
+                softirq: toks.next().ok_or(anyhow!("missing"))?.parse::<u64>()?,
+                steal: toks.next().ok_or(anyhow!("missing"))?.parse::<u64>()?,
+            };
+
+            if key.len() == 3 {
+                result.total = cputime;
+            } else {
+                result.cpus.insert(key[3..].parse::<usize>()?, cputime);
+            }
+        }
+        Ok(result)
+    }
 }
 
 #[derive(Debug)]
@@ -520,10 +585,8 @@ struct Scheduler<'a> {
     balance_load: bool,
     balanced_kworkers: bool,
 
-    proc_reader: procfs::ProcReader,
-
     prev_at: SystemTime,
-    prev_total_cpu: procfs::CpuStat,
+    prev_total_cpu: MyCpuStat,
     task_loads: BTreeMap<i32, TaskLoad>,
 
     nr_lb_data_errors: u64,
@@ -729,8 +792,7 @@ impl<'a> Scheduler<'a> {
         info!("Atropos Scheduler Attached");
 
         // Other stuff.
-        let mut proc_reader = procfs::ProcReader::new();
-        let prev_total_cpu = read_total_cpu(&mut proc_reader)?;
+        let prev_total_cpu = MyProcStat::read()?.total;
 
         Ok(Self {
             skel,
@@ -742,8 +804,6 @@ impl<'a> Scheduler<'a> {
             balance_load: !opts.no_load_balance,
             balanced_kworkers: opts.balanced_kworkers,
 
-            proc_reader,
-
             prev_at: SystemTime::now(),
             prev_total_cpu,
             task_loads: BTreeMap::new(),
@@ -753,53 +813,8 @@ impl<'a> Scheduler<'a> {
     }
 
     fn get_cpu_busy(&mut self) -> Result<f64> {
-        let total_cpu = read_total_cpu(&mut self.proc_reader)?;
-        let busy = match (&self.prev_total_cpu, &total_cpu) {
-            (
-                procfs::CpuStat {
-                    user_usec: Some(prev_user),
-                    nice_usec: Some(prev_nice),
-                    system_usec: Some(prev_system),
-                    idle_usec: Some(prev_idle),
-                    iowait_usec: Some(prev_iowait),
-                    irq_usec: Some(prev_irq),
-                    softirq_usec: Some(prev_softirq),
-                    stolen_usec: Some(prev_stolen),
-                    guest_usec: _,
-                    guest_nice_usec: _,
-                },
-                procfs::CpuStat {
-                    user_usec: Some(curr_user),
-                    nice_usec: Some(curr_nice),
-                    system_usec: Some(curr_system),
-                    idle_usec: Some(curr_idle),
-                    iowait_usec: Some(curr_iowait),
-                    irq_usec: Some(curr_irq),
-                    softirq_usec: Some(curr_softirq),
-                    stolen_usec: Some(curr_stolen),
-                    guest_usec: _,
-                    guest_nice_usec: _,
-                },
-            ) => {
-                let idle_usec = curr_idle - prev_idle;
-                let iowait_usec = curr_iowait - prev_iowait;
-                let user_usec = curr_user - prev_user;
-                let system_usec = curr_system - prev_system;
-                let nice_usec = curr_nice - prev_nice;
-                let irq_usec = curr_irq - prev_irq;
-                let softirq_usec = curr_softirq - prev_softirq;
-                let stolen_usec = curr_stolen - prev_stolen;
-
-                let busy_usec =
-                    user_usec + system_usec + nice_usec + irq_usec + softirq_usec + stolen_usec;
-                let total_usec = idle_usec + busy_usec + iowait_usec;
-                busy_usec as f64 / total_usec as f64
-            }
-            _ => {
-                bail!("Some procfs stats are not populated!");
-            }
-        };
-
+        let total_cpu = MyProcStat::read()?.total;
+        let busy = total_cpu.calc_util(&self.prev_total_cpu);
         self.prev_total_cpu = total_cpu;
         Ok(busy)
     }
