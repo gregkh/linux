@@ -17,7 +17,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::SystemTime;
+use std::time::Instant;
 
 use anyhow::anyhow;
 use anyhow::bail;
@@ -844,7 +844,7 @@ struct Scheduler<'a> {
 
     top: Arc<Topology>,
 
-    prev_at: SystemTime,
+    prev_at: Instant,
     prev_total_cpu: MyCpuStat,
     task_loads: BTreeMap<i32, TaskLoad>,
 
@@ -928,7 +928,7 @@ impl<'a> Scheduler<'a> {
 
             top: top.clone(),
 
-            prev_at: SystemTime::now(),
+            prev_at: Instant::now(),
             prev_total_cpu,
             task_loads: BTreeMap::new(),
 
@@ -1060,7 +1060,7 @@ impl<'a> Scheduler<'a> {
     }
 
     fn lb_step(&mut self) -> Result<()> {
-        let started_at = std::time::SystemTime::now();
+        let started_at = Instant::now();
         let bpf_stats = self.read_bpf_stats()?;
         let cpu_busy = self.get_cpu_busy()?;
 
@@ -1073,7 +1073,7 @@ impl<'a> Scheduler<'a> {
             &mut self.nr_lb_data_errors,
         );
 
-        lb.read_task_loads(started_at.duration_since(self.prev_at)?)?;
+        lb.read_task_loads(started_at.duration_since(self.prev_at))?;
         lb.calculate_dom_load_balance()?;
 
         if self.balance_load {
@@ -1087,7 +1087,7 @@ impl<'a> Scheduler<'a> {
         self.report(
             &bpf_stats,
             cpu_busy,
-            std::time::SystemTime::now().duration_since(started_at)?,
+            Instant::now().duration_since(started_at),
             load_avg,
             &dom_loads,
             &imbal,
@@ -1121,12 +1121,12 @@ impl<'a> Scheduler<'a> {
     }
 
     fn run(&mut self, shutdown: Arc<AtomicBool>) -> Result<()> {
-        let now = std::time::SystemTime::now();
+        let now = Instant::now();
         let mut next_tune_at = now + self.tune_interval;
         let mut next_sched_at = now + self.sched_interval;
 
         while !shutdown.load(Ordering::Relaxed) && self.read_bpf_exit_type() == 0 {
-            let now = std::time::SystemTime::now();
+            let now = Instant::now();
 
             if now >= next_tune_at {
                 self.tuner.step(&mut self.skel)?;
@@ -1147,7 +1147,7 @@ impl<'a> Scheduler<'a> {
             std::thread::sleep(
                 next_sched_at
                     .min(next_tune_at)
-                    .duration_since(std::time::SystemTime::now())?,
+                    .duration_since(Instant::now()),
             );
         }
 
