@@ -1925,9 +1925,11 @@ void __scx_notify_pick_next_task(struct rq *rq, struct task_struct *task,
 
 static bool test_and_clear_cpu_idle(int cpu)
 {
-	if (!cpumask_test_and_clear_cpu(cpu, idle_masks.cpu))
-		return false;
-
+	/*
+	 * SMT mask should be cleared whether we can claim @cpu or not. The SMT
+	 * cluster is not wholly idle either way. This also prevents
+	 * scx_pick_idle_cpu() from getting caught in an infinite loop.
+	 */
 	if (sched_smt_active()) {
 		const struct cpumask *sbm = topology_sibling_cpumask(cpu);
 
@@ -1943,7 +1945,7 @@ static bool test_and_clear_cpu_idle(int cpu)
 			__cpumask_clear_cpu(cpu, idle_masks.smt);
 	}
 
-	return true;
+	return cpumask_test_and_clear_cpu(cpu, idle_masks.cpu);
 }
 
 static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
