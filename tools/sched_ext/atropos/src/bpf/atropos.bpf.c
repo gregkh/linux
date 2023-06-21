@@ -520,18 +520,8 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 	if (new_dom && *new_dom != task_ctx->dom_id &&
 	    task_set_domain(task_ctx, p, *new_dom, false)) {
 		stat_add(ATROPOS_STAT_LOAD_BALANCE, 1);
-
-		/*
-		 * If dispatch_local is set, We own @p's idle state but we are
-		 * not gonna put the task in the associated local dsq which can
-		 * cause the CPU to stall. Kick it.
-		 */
-		if (task_ctx->dispatch_local) {
-			task_ctx->dispatch_local = false;
-			scx_bpf_kick_cpu(scx_bpf_task_cpu(p), 0);
-		}
-
-		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
+		task_ctx->dispatch_local = false;
+		cpu = scx_bpf_pick_any_cpu((const struct cpumask *)p_cpumask, 0);
 		if (cpu >= 0)
 			scx_bpf_kick_cpu(cpu, 0);
 		goto dom_queue;
