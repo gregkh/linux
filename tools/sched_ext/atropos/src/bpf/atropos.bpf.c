@@ -363,6 +363,11 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 			goto direct;
 		}
 	} else {
+		/*
+		 * @prev_cpu is foreign. Linger iff the domain isn't too busy as
+		 * indicated by direct_greedy_cpumask. There may also be an idle
+		 * CPU in the domestic domain
+		 */
 		if (direct_greedy_cpumask &&
 		    bpf_cpumask_test_cpu(prev_cpu, (const struct cpumask *)
 					 direct_greedy_cpumask) &&
@@ -375,7 +380,9 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	}
 
 	/*
-	 * @prev_cpu didn't work out. Find the best idle domestic CPU.
+	 * @prev_cpu didn't work out. Let's see whether there's an idle CPU @p
+	 * can be directly dispatched to. We'll first try to find the best idle
+	 * domestic CPU and then move onto foreign.
 	 */
 
 	/* If there is a domestic whole idle CPU, dispatch directly */
@@ -474,7 +481,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	 * stalls as all in-domain CPUs may be idle by the time @p gets
 	 * enqueued.
 	 */
-	if (bpf_cpumask_test_cpu(prev_cpu, (const struct cpumask *)p_cpumask))
+	if (prev_domestic)
 		cpu = prev_cpu;
 	else
 		cpu = bpf_cpumask_any((const struct cpumask *)p_cpumask);
@@ -541,8 +548,8 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 	 * foreign CPU due to a greedy execution and not have gone through
 	 * ->select_cpu() if it's being enqueued e.g. after slice exhaustion. If
 	 * so, @p would be queued on its domain's dsq but none of the CPUs in
-	 * the domain would be woken up for it which can induce execution
-	 * bubles. Kick a domestic CPU if @p is on a foreign domain.
+	 * the domain would be woken up which can induce temporary execution
+	 * stalls. Kick a domestic CPU if @p is on a foreign domain.
 	 */
 	if (!bpf_cpumask_test_cpu(scx_bpf_task_cpu(p), (const struct cpumask *)p_cpumask)) {
 		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
@@ -758,6 +765,10 @@ static u32 task_pick_domain(struct task_ctx *task_ctx, struct task_struct *p,
 		dom = (dom + 1) % nr_doms;
 		if (cpumask_intersects_domain(cpumask, dom)) {
 			task_ctx->dom_mask |= 1LLU << dom;
+			/*
+			 * AsThe starting point is round-robin'd and the first
+			 * match should be spread across all the domains.
+			 */
 			if (first_dom == MAX_DOMS)
 				first_dom = dom;
 		}

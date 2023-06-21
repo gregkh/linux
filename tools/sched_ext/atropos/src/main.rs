@@ -41,7 +41,7 @@ use ordered_float::OrderedFloat;
 /// chiplet in a six-chiplet AMD processor, and could match the performance of
 /// production setup using CFS.
 ///
-/// WARNING: Atropos currenlty assumes that all domains have equal
+/// WARNING: Atropos currently assumes that all domains have equal
 /// processing power and at similar distances from each other. This
 /// limitation will be removed in the future.
 #[derive(Debug, Parser)]
