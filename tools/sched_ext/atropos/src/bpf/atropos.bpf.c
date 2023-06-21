@@ -273,8 +273,8 @@ static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
 s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 		   u64 wake_flags)
 {
+	struct cpumask *idle_smtmask = scx_bpf_get_idle_smtmask();
 	struct task_ctx *task_ctx;
-	struct cpumask *idle_smtmask;
 	struct bpf_cpumask *p_cpumask;
 	pid_t pid = p->pid;
 	bool prev_domestic, has_idle_wholes;
@@ -284,7 +284,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 
 	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid)) ||
 	    !(p_cpumask = task_ctx->cpumask))
-		return -ENOENT;
+		goto enoent;
 
 	if (kthreads_local &&
 	    (p->flags & PF_KTHREAD) && p->nr_cpus_allowed == 1) {
@@ -311,13 +311,13 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 			if (!domc) {
 				scx_bpf_error("Failed to find dom%u",
 					      task_ctx->dom_id);
-				return prev_cpu;
+				goto enoent;
 			}
 			d_cpumask = domc->cpumask;
 			if (!d_cpumask) {
 				scx_bpf_error("Failed to acquire dom%u cpumask kptr",
 					      task_ctx->dom_id);
-				return prev_cpu;
+				goto enoent;
 			}
 
 			idle_cpumask = scx_bpf_get_idle_cpumask();
@@ -344,7 +344,6 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 		goto direct;
 	}
 
-	idle_smtmask = scx_bpf_get_idle_smtmask();
 	has_idle_wholes = !bpf_cpumask_empty(idle_smtmask);
 
 	/* did @p get pulled out to a foreign domain by e.g. greedy execution? */
@@ -418,8 +417,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 
 		if (!(domc = bpf_map_lookup_elem(&dom_ctx, &dom_id))) {
 			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
-			scx_bpf_put_idle_cpumask(idle_smtmask);
-			return -ENOENT;
+			goto enoent;
 		}
 
 		/*
@@ -488,6 +486,10 @@ direct:
 	task_ctx->dispatch_local = true;
 	scx_bpf_put_idle_cpumask(idle_smtmask);
 	return cpu;
+
+enoent:
+	scx_bpf_put_idle_cpumask(idle_smtmask);
+	return -ENOENT;
 }
 
 void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
