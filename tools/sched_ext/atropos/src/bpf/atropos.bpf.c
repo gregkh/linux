@@ -74,11 +74,14 @@ const volatile __u64 slice_ns = SCX_SLICE_DFL;
 int exit_type = SCX_EXIT_NONE;
 char exit_msg[SCX_EXIT_MSG_LEN];
 
+/*
+ * Per-CPU context
+ */
 struct pcpu_ctx {
 	__u32 dom_rr_cur; /* used when scanning other doms */
 
 	/* libbpf-rs does not respect the alignment, so pad out the struct explicitly */
-	__u8 _padding[CACHELINE_SIZE - sizeof(u64)];
+	__u8 _padding[CACHELINE_SIZE - sizeof(u32)];
 } __attribute__((aligned(CACHELINE_SIZE)));
 
 struct pcpu_ctx pcpu_ctx[MAX_CPUS];
@@ -88,6 +91,7 @@ struct pcpu_ctx pcpu_ctx[MAX_CPUS];
  */
 struct dom_ctx {
 	struct bpf_cpumask __kptr *cpumask;
+	struct bpf_cpumask __kptr *direct_greedy_cpumask;
 	u64 vtime_now;
 };
 
@@ -139,13 +143,82 @@ struct {
 	__uint(map_flags, 0);
 } lb_data SEC(".maps");
 
+/*
+ * Userspace tuner will frequently update the following struct with tuning
+ * parameters and bump its gen. refresh_tune_params() converts them into forms
+ * that can be used directly in the scheduling paths.
+ */
+struct tune_input{
+	__u64 gen;
+	__u64 direct_greedy_cpumask[MAX_CPUS / 64];
+	__u64 kick_greedy_cpumask[MAX_CPUS / 64];
+} tune_input;
+
+__u64 tune_params_gen;
+private(A) struct bpf_cpumask __kptr *direct_greedy_cpumask;
+private(A) struct bpf_cpumask __kptr *kick_greedy_cpumask;
+
 static inline bool vtime_before(u64 a, u64 b)
 {
 	return (s64)(a - b) < 0;
 }
 
-static bool task_set_dsq(struct task_ctx *task_ctx, struct task_struct *p,
-			 u32 new_dom_id)
+static u32 cpu_to_dom_id(s32 cpu)
+{
+	const volatile u32 *dom_idp;
+
+	if (nr_doms <= 1)
+		return 0;
+
+	dom_idp = MEMBER_VPTR(cpu_dom_id_map, [cpu]);
+	if (!dom_idp)
+		return MAX_DOMS;
+
+	return *dom_idp;
+}
+
+static void refresh_tune_params(void)
+{
+	s32 cpu;
+
+	if (tune_params_gen == tune_input.gen)
+		return;
+
+	tune_params_gen = tune_input.gen;
+
+	bpf_for(cpu, 0, nr_cpus) {
+		u32 dom_id = cpu_to_dom_id(cpu);
+		struct dom_ctx *domc;
+
+		if (!(domc = bpf_map_lookup_elem(&dom_ctx, &dom_id))) {
+			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
+			return;
+		}
+
+		if (tune_input.direct_greedy_cpumask[cpu / 64] & (1LLU << (cpu % 64))) {
+			if (direct_greedy_cpumask)
+				bpf_cpumask_set_cpu(cpu, direct_greedy_cpumask);
+			if (domc->direct_greedy_cpumask)
+				bpf_cpumask_set_cpu(cpu, domc->direct_greedy_cpumask);
+		} else {
+			if (direct_greedy_cpumask)
+				bpf_cpumask_clear_cpu(cpu, direct_greedy_cpumask);
+			if (domc->direct_greedy_cpumask)
+				bpf_cpumask_clear_cpu(cpu, domc->direct_greedy_cpumask);
+		}
+
+		if (tune_input.kick_greedy_cpumask[cpu / 64] & (1LLU << (cpu % 64))) {
+			if (kick_greedy_cpumask)
+				bpf_cpumask_set_cpu(cpu, kick_greedy_cpumask);
+		} else {
+			if (kick_greedy_cpumask)
+				bpf_cpumask_clear_cpu(cpu, kick_greedy_cpumask);
+		}
+	}
+}
+
+static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
+			    u32 new_dom_id, bool init_dsq_vtime)
 {
 	struct dom_ctx *old_domc, *new_domc;
 	struct bpf_cpumask *d_cpumask, *t_cpumask;
@@ -154,21 +227,24 @@ static bool task_set_dsq(struct task_ctx *task_ctx, struct task_struct *p,
 
 	old_domc = bpf_map_lookup_elem(&dom_ctx, &old_dom_id);
 	if (!old_domc) {
-		scx_bpf_error("No dom%u", old_dom_id);
+		scx_bpf_error("Failed to lookup old dom%u", old_dom_id);
 		return false;
 	}
 
-	vtime_delta = p->scx.dsq_vtime - old_domc->vtime_now;
+	if (init_dsq_vtime)
+		vtime_delta = 0;
+	else
+		vtime_delta = p->scx.dsq_vtime - old_domc->vtime_now;
 
 	new_domc = bpf_map_lookup_elem(&dom_ctx, &new_dom_id);
 	if (!new_domc) {
-		scx_bpf_error("No dom%u", new_dom_id);
+		scx_bpf_error("Failed to lookup new dom%u", new_dom_id);
 		return false;
 	}
 
 	d_cpumask = new_domc->cpumask;
 	if (!d_cpumask) {
-		scx_bpf_error("Failed to get domain %u cpumask kptr",
+		scx_bpf_error("Failed to get dom%u cpumask kptr",
 			      new_dom_id);
 		return false;
 	}
@@ -194,22 +270,27 @@ static bool task_set_dsq(struct task_ctx *task_ctx, struct task_struct *p,
 	return task_ctx->dom_id == new_dom_id;
 }
 
-s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
-		   u32 wake_flags)
+s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
+		   u64 wake_flags)
 {
-	s32 cpu;
-	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
+	struct cpumask *idle_smtmask = scx_bpf_get_idle_smtmask();
+	struct task_ctx *task_ctx;
 	struct bpf_cpumask *p_cpumask;
+	pid_t pid = p->pid;
+	bool prev_domestic, has_idle_wholes;
+	s32 cpu;
 
-	if (!task_ctx)
-		return -ENOENT;
+	refresh_tune_params();
+
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid)) ||
+	    !(p_cpumask = task_ctx->cpumask))
+		goto enoent;
 
 	if (kthreads_local &&
 	    (p->flags & PF_KTHREAD) && p->nr_cpus_allowed == 1) {
 		cpu = prev_cpu;
 		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
-		goto local;
+		goto direct;
 	}
 
 	/*
@@ -230,13 +311,13 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 			if (!domc) {
 				scx_bpf_error("Failed to find dom%u",
 					      task_ctx->dom_id);
-				return prev_cpu;
+				goto enoent;
 			}
 			d_cpumask = domc->cpumask;
 			if (!d_cpumask) {
-				scx_bpf_error("Failed to acquire domain %u cpumask kptr",
+				scx_bpf_error("Failed to acquire dom%u cpumask kptr",
 					      task_ctx->dom_id);
-				return prev_cpu;
+				goto enoent;
 			}
 
 			idle_cpumask = scx_bpf_get_idle_cpumask();
@@ -250,92 +331,200 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, int prev_cpu,
 				cpu = bpf_get_smp_processor_id();
 				if (bpf_cpumask_test_cpu(cpu, p->cpus_ptr)) {
 					stat_add(ATROPOS_STAT_WAKE_SYNC, 1);
-					goto local;
+					goto direct;
 				}
 			}
 		}
 	}
 
-	/* if the previous CPU is idle, dispatch directly to it */
-	if (scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
-		stat_add(ATROPOS_STAT_PREV_IDLE, 1);
-		cpu = prev_cpu;
-		goto local;
-	}
-
-	/* If only one core is allowed, dispatch */
+	/* If only one CPU is allowed, dispatch */
 	if (p->nr_cpus_allowed == 1) {
 		stat_add(ATROPOS_STAT_PINNED, 1);
 		cpu = prev_cpu;
-		goto local;
+		goto direct;
 	}
 
-	p_cpumask = task_ctx->cpumask;
-	if (!p_cpumask)
-		return -ENOENT;
+	has_idle_wholes = !bpf_cpumask_empty(idle_smtmask);
 
-	/* If there is an eligible idle CPU, dispatch directly */
-	cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask);
-	if (cpu >= 0) {
-		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
-		goto local;
+	/* did @p get pulled out to a foreign domain by e.g. greedy execution? */
+	prev_domestic = bpf_cpumask_test_cpu(prev_cpu,
+					     (const struct cpumask *)p_cpumask);
+
+	/*
+	 * See if we want to keep @prev_cpu. We want to keep @prev_cpu if the
+	 * whole physical core is idle. If the sibling[s] are busy, it's likely
+	 * more advantageous to look for wholly idle cores first.
+	 */
+	if (prev_domestic) {
+		if (bpf_cpumask_test_cpu(prev_cpu, idle_smtmask) &&
+		    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
+			stat_add(ATROPOS_STAT_PREV_IDLE, 1);
+			cpu = prev_cpu;
+			goto direct;
+		}
+	} else {
+		/*
+		 * @prev_cpu is foreign. Linger iff the domain isn't too busy as
+		 * indicated by direct_greedy_cpumask. There may also be an idle
+		 * CPU in the domestic domain
+		 */
+		if (direct_greedy_cpumask &&
+		    bpf_cpumask_test_cpu(prev_cpu, (const struct cpumask *)
+					 direct_greedy_cpumask) &&
+		    bpf_cpumask_test_cpu(prev_cpu, idle_smtmask) &&
+		    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
+			stat_add(ATROPOS_STAT_GREEDY_IDLE, 1);
+			cpu = prev_cpu;
+			goto direct;
+		}
 	}
 
 	/*
-	 * @prev_cpu may be in a different domain. Returning an out-of-domain
-	 * CPU can lead to stalls as all in-domain CPUs may be idle by the time
-	 * @p gets enqueued.
+	 * @prev_cpu didn't work out. Let's see whether there's an idle CPU @p
+	 * can be directly dispatched to. We'll first try to find the best idle
+	 * domestic CPU and then move onto foreign.
 	 */
-	if (bpf_cpumask_test_cpu(prev_cpu, (const struct cpumask *)p_cpumask))
+
+	/* If there is a domestic whole idle CPU, dispatch directly */
+	if (has_idle_wholes) {
+		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask,
+					    SCX_PICK_IDLE_CPU_WHOLE);
+		if (cpu >= 0) {
+			stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
+			goto direct;
+		}
+	}
+
+	/*
+	 * If @prev_cpu was domestic and is idle itself even though the whole
+	 * core isn't, picking @prev_cpu may improve L1/2 locality.
+	 */
+	if (prev_domestic && scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
+		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
+		cpu = prev_cpu;
+		goto direct;
+	}
+
+	/* If there is any domestic idle CPU, dispatch directly */
+	cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
+	if (cpu >= 0) {
+		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
+		goto direct;
+	}
+
+	/*
+	 * Domestic domain is fully booked. If there are CPUs which are idle and
+	 * under-utilized, ignore domain boundaries and push the task there. Try
+	 * to find a whole idle CPU first.
+	 */
+	if (task_ctx->all_cpus && direct_greedy_cpumask &&
+	    !bpf_cpumask_empty((const struct cpumask *)direct_greedy_cpumask)) {
+		u32 dom_id = cpu_to_dom_id(prev_cpu);
+		struct dom_ctx *domc;
+
+		if (!(domc = bpf_map_lookup_elem(&dom_ctx, &dom_id))) {
+			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
+			goto enoent;
+		}
+
+		/*
+		 * Try to find a whole idle CPU in the previous foreign and then
+		 * any domain.
+		 */
+		if (has_idle_wholes) {
+			if (domc->direct_greedy_cpumask) {
+				cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+							    domc->direct_greedy_cpumask,
+							    SCX_PICK_IDLE_CPU_WHOLE);
+				if (cpu >= 0) {
+					stat_add(ATROPOS_STAT_DIRECT_GREEDY, 1);
+					goto direct;
+				}
+			}
+
+			if (direct_greedy_cpumask) {
+				cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+							    direct_greedy_cpumask,
+							    SCX_PICK_IDLE_CPU_WHOLE);
+				if (cpu >= 0) {
+					stat_add(ATROPOS_STAT_DIRECT_GREEDY_FAR, 1);
+					goto direct;
+				}
+			}
+		}
+
+		/*
+		 * No whole idle CPU. Is there any idle CPU?
+		 */
+		if (domc->direct_greedy_cpumask) {
+			cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+						    domc->direct_greedy_cpumask, 0);
+			if (cpu >= 0) {
+				stat_add(ATROPOS_STAT_DIRECT_GREEDY, 1);
+				goto direct;
+			}
+		}
+
+		if (direct_greedy_cpumask) {
+			cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+						    direct_greedy_cpumask, 0);
+			if (cpu >= 0) {
+				stat_add(ATROPOS_STAT_DIRECT_GREEDY_FAR, 1);
+				goto direct;
+			}
+		}
+	}
+
+	/*
+	 * We're going to queue on the domestic domain's DSQ. @prev_cpu may be
+	 * in a different domain. Returning an out-of-domain CPU can lead to
+	 * stalls as all in-domain CPUs may be idle by the time @p gets
+	 * enqueued.
+	 */
+	if (prev_domestic)
 		cpu = prev_cpu;
 	else
-		cpu = bpf_cpumask_any((const struct cpumask *)p_cpumask);
+		cpu = scx_bpf_pick_any_cpu((const struct cpumask *)p_cpumask, 0);
 
+	scx_bpf_put_idle_cpumask(idle_smtmask);
 	return cpu;
 
-local:
+direct:
 	task_ctx->dispatch_local = true;
+	scx_bpf_put_idle_cpumask(idle_smtmask);
 	return cpu;
+
+enoent:
+	scx_bpf_put_idle_cpumask(idle_smtmask);
+	return -ENOENT;
 }
 
-void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
+void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 {
+	struct task_ctx *task_ctx;
+	struct bpf_cpumask *p_cpumask;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
 	u32 *new_dom;
+	s32 cpu;
 
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid)) ||
+	    !(p_cpumask = task_ctx->cpumask)) {
+		scx_bpf_error("Failed to lookup task_ctx or cpumask");
 		return;
 	}
 
+	/*
+	 * Migrate @p to a new domain if requested by userland through lb_data.
+	 */
 	new_dom = bpf_map_lookup_elem(&lb_data, &pid);
 	if (new_dom && *new_dom != task_ctx->dom_id &&
-	    task_set_dsq(task_ctx, p, *new_dom)) {
-		struct bpf_cpumask *p_cpumask;
-		s32 cpu;
-
+	    task_set_domain(task_ctx, p, *new_dom, false)) {
 		stat_add(ATROPOS_STAT_LOAD_BALANCE, 1);
-
-		/*
-		 * If dispatch_local is set, We own @p's idle state but we are
-		 * not gonna put the task in the associated local dsq which can
-		 * cause the CPU to stall. Kick it.
-		 */
-		if (task_ctx->dispatch_local) {
-			task_ctx->dispatch_local = false;
-			scx_bpf_kick_cpu(scx_bpf_task_cpu(p), 0);
-		}
-
-		p_cpumask = task_ctx->cpumask;
-		if (!p_cpumask) {
-			scx_bpf_error("Failed to get task_ctx->cpumask");
-			return;
-		}
-		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask);
-
+		task_ctx->dispatch_local = false;
+		cpu = scx_bpf_pick_any_cpu((const struct cpumask *)p_cpumask, 0);
 		if (cpu >= 0)
 			scx_bpf_kick_cpu(cpu, 0);
+		goto dom_queue;
 	}
 
 	if (task_ctx->dispatch_local) {
@@ -344,6 +533,21 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
 		return;
 	}
 
+	/*
+	 * @p is about to be queued on its domain's dsq. However, @p may be on a
+	 * foreign CPU due to a greedy execution and not have gone through
+	 * ->select_cpu() if it's being enqueued e.g. after slice exhaustion. If
+	 * so, @p would be queued on its domain's dsq but none of the CPUs in
+	 * the domain would be woken up which can induce temporary execution
+	 * stalls. Kick a domestic CPU if @p is on a foreign domain.
+	 */
+	if (!bpf_cpumask_test_cpu(scx_bpf_task_cpu(p), (const struct cpumask *)p_cpumask)) {
+		cpu = scx_bpf_pick_any_cpu((const struct cpumask *)p_cpumask, 0);
+		scx_bpf_kick_cpu(cpu, 0);
+		stat_add(ATROPOS_STAT_REPATRIATE, 1);
+	}
+
+dom_queue:
 	if (fifo_sched) {
 		scx_bpf_dispatch(p, task_ctx->dom_id, slice_ns,
 				 enq_flags);
@@ -354,7 +558,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
 
 		domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
 		if (!domc) {
-			scx_bpf_error("No dom[%u]", dom_id);
+			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
 			return;
 		}
 
@@ -368,20 +572,30 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u32 enq_flags)
 		scx_bpf_dispatch_vtime(p, task_ctx->dom_id, slice_ns, vtime,
 				       enq_flags);
 	}
-}
 
-static u32 cpu_to_dom_id(s32 cpu)
-{
-	const volatile u32 *dom_idp;
-
-	if (nr_doms <= 1)
-		return 0;
-
-	dom_idp = MEMBER_VPTR(cpu_dom_id_map, [cpu]);
-	if (!dom_idp)
-		return MAX_DOMS;
-
-	return *dom_idp;
+	/*
+	 * If there are CPUs which are idle and not saturated, wake them up to
+	 * see whether they'd be able to steal the just queued task. This path
+	 * is taken only if DIRECT_GREEDY didn't trigger in select_cpu().
+	 *
+	 * While both mechanisms serve very similar purposes, DIRECT_GREEDY
+	 * emplaces the task in a foreign CPU directly while KICK_GREEDY just
+	 * wakes up a foreign CPU which will then first try to execute from its
+	 * domestic domain first before snooping foreign ones.
+	 *
+	 * While KICK_GREEDY is a more expensive way of accelerating greedy
+	 * execution, DIRECT_GREEDY shows negative performance impacts when the
+	 * CPUs are highly loaded while KICK_GREEDY doesn't. Even under fairly
+	 * high utilization, KICK_GREEDY can slightly improve work-conservation.
+	 */
+	if (task_ctx->all_cpus && kick_greedy_cpumask) {
+		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
+					    kick_greedy_cpumask, 0);
+		if (cpu >= 0) {
+			stat_add(ATROPOS_STAT_KICK_GREEDY, 1);
+			scx_bpf_kick_cpu(cpu, 0);
+		}
+	}
 }
 
 static bool cpumask_intersects_domain(const struct cpumask *cpumask, u32 dom_id)
@@ -442,15 +656,16 @@ void BPF_STRUCT_OPS(atropos_dispatch, s32 cpu, struct task_struct *prev)
 
 void BPF_STRUCT_OPS(atropos_runnable, struct task_struct *p, u64 enq_flags)
 {
+	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
 
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
+		scx_bpf_error("Failed to lookup task_ctx");
 		return;
 	}
 
 	task_ctx->runnable_at = bpf_ktime_get_ns();
+	task_ctx->is_kworker = p->flags & PF_WQ_WORKER;
 }
 
 void BPF_STRUCT_OPS(atropos_running, struct task_struct *p)
@@ -465,14 +680,14 @@ void BPF_STRUCT_OPS(atropos_running, struct task_struct *p)
 
 	taskc = bpf_map_lookup_elem(&task_data, &pid);
 	if (!taskc) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+		scx_bpf_error("Failed to lookup task_ctx");
 		return;
 	}
 	dom_id = taskc->dom_id;
 
 	domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
 	if (!domc) {
-		scx_bpf_error("No dom[%u]", dom_id);
+		scx_bpf_error("Failed to lookup dom[%u]", dom_id);
 		return;
 	}
 
@@ -497,11 +712,11 @@ void BPF_STRUCT_OPS(atropos_stopping, struct task_struct *p, bool runnable)
 
 void BPF_STRUCT_OPS(atropos_quiescent, struct task_struct *p, u64 deq_flags)
 {
+	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
 
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
+		scx_bpf_error("Failed to lookup task_ctx");
 		return;
 	}
 
@@ -511,86 +726,74 @@ void BPF_STRUCT_OPS(atropos_quiescent, struct task_struct *p, u64 deq_flags)
 
 void BPF_STRUCT_OPS(atropos_set_weight, struct task_struct *p, u32 weight)
 {
+	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
 
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
+		scx_bpf_error("Failed to lookup task_ctx");
 		return;
 	}
 
 	task_ctx->weight = weight;
 }
 
-struct pick_task_domain_loop_ctx {
-	struct task_struct *p;
-	const struct cpumask *cpumask;
-	u64 dom_mask;
-	u32 dom_rr_base;
-	u32 dom_id;
-};
-
-static int pick_task_domain_loopfn(u32 idx, void *data)
-{
-	struct pick_task_domain_loop_ctx *lctx = data;
-	u32 dom_id = (lctx->dom_rr_base + idx) % nr_doms;
-
-	if (dom_id >= MAX_DOMS)
-		return 1;
-
-	if (cpumask_intersects_domain(lctx->cpumask, dom_id)) {
-		lctx->dom_mask |= 1LLU << dom_id;
-		if (lctx->dom_id == MAX_DOMS)
-			lctx->dom_id = dom_id;
-	}
-	return 0;
-}
-
-static u32 pick_task_domain(struct task_ctx *task_ctx, struct task_struct *p,
+static u32 task_pick_domain(struct task_ctx *task_ctx, struct task_struct *p,
 			    const struct cpumask *cpumask)
 {
-	struct pick_task_domain_loop_ctx lctx = {
-		.p = p,
-		.cpumask = cpumask,
-		.dom_id = MAX_DOMS,
-	};
 	s32 cpu = bpf_get_smp_processor_id();
+	u32 first_dom = MAX_DOMS, dom;
 
 	if (cpu < 0 || cpu >= MAX_CPUS)
 		return MAX_DOMS;
 
-	lctx.dom_rr_base = ++(pcpu_ctx[cpu].dom_rr_cur);
+	task_ctx->dom_mask = 0;
 
-	bpf_loop(nr_doms, pick_task_domain_loopfn, &lctx, 0);
-	task_ctx->dom_mask = lctx.dom_mask;
+	dom = pcpu_ctx[cpu].dom_rr_cur++;
+	bpf_repeat(nr_doms) {
+		dom = (dom + 1) % nr_doms;
+		if (cpumask_intersects_domain(cpumask, dom)) {
+			task_ctx->dom_mask |= 1LLU << dom;
+			/*
+			 * AsThe starting point is round-robin'd and the first
+			 * match should be spread across all the domains.
+			 */
+			if (first_dom == MAX_DOMS)
+				first_dom = dom;
+		}
+	}
 
-	return lctx.dom_id;
+	return first_dom;
 }
 
-static void task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
-			    const struct cpumask *cpumask)
+static void task_pick_and_set_domain(struct task_ctx *task_ctx,
+				     struct task_struct *p,
+				     const struct cpumask *cpumask,
+				     bool init_dsq_vtime)
 {
 	u32 dom_id = 0;
 
 	if (nr_doms > 1)
-		dom_id = pick_task_domain(task_ctx, p, cpumask);
+		dom_id = task_pick_domain(task_ctx, p, cpumask);
 
-	if (!task_set_dsq(task_ctx, p, dom_id))
-		scx_bpf_error("Failed to set domain %d for %s[%d]",
+	if (!task_set_domain(task_ctx, p, dom_id, init_dsq_vtime))
+		scx_bpf_error("Failed to set dom%d for %s[%d]",
 			      dom_id, p->comm, p->pid);
 }
 
 void BPF_STRUCT_OPS(atropos_set_cpumask, struct task_struct *p,
 		    const struct cpumask *cpumask)
 {
+	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
-	struct task_ctx *task_ctx = bpf_map_lookup_elem(&task_data, &pid);
-	if (!task_ctx) {
-		scx_bpf_error("No task_ctx[%d]", pid);
+
+	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
+		scx_bpf_error("Failed to lookup task_ctx for %s[%d]",
+			      p->comm, pid);
 		return;
 	}
 
-	task_set_domain(task_ctx, p, cpumask);
+	task_pick_and_set_domain(task_ctx, p, cpumask, false);
+	task_ctx->all_cpus = bpf_cpumask_full(cpumask);
 }
 
 s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
@@ -633,7 +836,7 @@ s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
 		return -EINVAL;
 	}
 
-	task_set_domain(map_value, p, p->cpus_ptr);
+	task_pick_and_set_domain(map_value, p, p->cpus_ptr, true);
 
 	return 0;
 }
@@ -648,36 +851,36 @@ void BPF_STRUCT_OPS(atropos_disable, struct task_struct *p)
 	}
 }
 
-static int create_dom_dsq(u32 idx, void *data)
+static s32 create_dom(u32 dom_id)
 {
 	struct dom_ctx domc_init = {}, *domc;
 	struct bpf_cpumask *cpumask;
-	u32 cpu, dom_id = idx;
+	u32 cpu;
 	s32 ret;
 
 	ret = scx_bpf_create_dsq(dom_id, -1);
 	if (ret < 0) {
 		scx_bpf_error("Failed to create dsq %u (%d)", dom_id, ret);
-		return 1;
+		return ret;
 	}
 
 	ret = bpf_map_update_elem(&dom_ctx, &dom_id, &domc_init, 0);
 	if (ret) {
 		scx_bpf_error("Failed to add dom_ctx entry %u (%d)", dom_id, ret);
-		return 1;
+		return ret;
 	}
 
 	domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
 	if (!domc) {
 		/* Should never happen, we just inserted it above. */
 		scx_bpf_error("No dom%u", dom_id);
-		return 1;
+		return -ENOENT;
 	}
 
 	cpumask = bpf_cpumask_create();
 	if (!cpumask) {
 		scx_bpf_error("Failed to create BPF cpumask for domain %u", dom_id);
-		return 1;
+		return -ENOMEM;
 	}
 
 	for (cpu = 0; cpu < MAX_CPUS; cpu++) {
@@ -687,7 +890,7 @@ static int create_dom_dsq(u32 idx, void *data)
 		if (!dmask) {
 			scx_bpf_error("array index error");
 			bpf_cpumask_release(cpumask);
-			return 1;
+			return -ENOENT;
 		}
 
 		if (*dmask & (1LLU << (cpu % 64)))
@@ -696,23 +899,59 @@ static int create_dom_dsq(u32 idx, void *data)
 
 	cpumask = bpf_kptr_xchg(&domc->cpumask, cpumask);
 	if (cpumask) {
-		scx_bpf_error("Domain %u was already present", dom_id);
+		scx_bpf_error("Domain %u cpumask already present", dom_id);
 		bpf_cpumask_release(cpumask);
-		return 1;
+		return -EEXIST;
+	}
+
+	cpumask = bpf_cpumask_create();
+	if (!cpumask) {
+		scx_bpf_error("Failed to create BPF cpumask for domain %u",
+			      dom_id);
+		return -ENOMEM;
+	}
+
+	cpumask = bpf_kptr_xchg(&domc->direct_greedy_cpumask, cpumask);
+	if (cpumask) {
+		scx_bpf_error("Domain %u direct_greedy_cpumask already present",
+			      dom_id);
+		bpf_cpumask_release(cpumask);
+		return -EEXIST;
 	}
 
 	return 0;
 }
 
-int BPF_STRUCT_OPS_SLEEPABLE(atropos_init)
+s32 BPF_STRUCT_OPS_SLEEPABLE(atropos_init)
 {
+	struct bpf_cpumask *cpumask;
+	s32 i, ret;
+
 	if (!switch_partial)
 		scx_bpf_switch_all();
 
-	bpf_loop(nr_doms, create_dom_dsq, NULL, 0);
+	bpf_for(i, 0, nr_doms) {
+		ret = create_dom(i);
+		if (ret)
+			return ret;
+	}
 
 	for (u32 i = 0; i < nr_cpus; i++)
 		pcpu_ctx[i].dom_rr_cur = i;
+
+	cpumask = bpf_cpumask_create();
+	if (!cpumask)
+		return -ENOMEM;
+	cpumask = bpf_kptr_xchg(&direct_greedy_cpumask, cpumask);
+	if (cpumask)
+		bpf_cpumask_release(cpumask);
+
+	cpumask = bpf_cpumask_create();
+	if (!cpumask)
+		return -ENOMEM;
+	cpumask = bpf_kptr_xchg(&kick_greedy_cpumask, cpumask);
+	if (cpumask)
+		bpf_cpumask_release(cpumask);
 
 	return 0;
 }
@@ -725,19 +964,18 @@ void BPF_STRUCT_OPS(atropos_exit, struct scx_exit_info *ei)
 
 SEC(".struct_ops.link")
 struct sched_ext_ops atropos = {
-	.select_cpu = (void *)atropos_select_cpu,
-	.enqueue = (void *)atropos_enqueue,
-	.dispatch = (void *)atropos_dispatch,
-	.runnable = (void *)atropos_runnable,
-	.running = (void *)atropos_running,
-	.stopping = (void *)atropos_stopping,
-	.quiescent = (void *)atropos_quiescent,
-	.set_weight = (void *)atropos_set_weight,
-	.set_cpumask = (void *)atropos_set_cpumask,
-	.prep_enable = (void *)atropos_prep_enable,
-	.disable = (void *)atropos_disable,
-	.init = (void *)atropos_init,
-	.exit = (void *)atropos_exit,
-	.flags = 0,
-	.name = "atropos",
+	.select_cpu		= (void *)atropos_select_cpu,
+	.enqueue		= (void *)atropos_enqueue,
+	.dispatch		= (void *)atropos_dispatch,
+	.runnable		= (void *)atropos_runnable,
+	.running		= (void *)atropos_running,
+	.stopping		= (void *)atropos_stopping,
+	.quiescent		= (void *)atropos_quiescent,
+	.set_weight		= (void *)atropos_set_weight,
+	.set_cpumask		= (void *)atropos_set_cpumask,
+	.prep_enable		= (void *)atropos_prep_enable,
+	.disable		= (void *)atropos_disable,
+	.init			= (void *)atropos_init,
+	.exit			= (void *)atropos_exit,
+	.name			= "atropos",
 };

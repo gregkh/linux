@@ -122,7 +122,7 @@ s32 BPF_STRUCT_OPS(userland_select_cpu, struct task_struct *p,
 			return prev_cpu;
 		}
 
-		cpu = scx_bpf_pick_idle_cpu(p->cpus_ptr);
+		cpu = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
 		if (cpu >= 0) {
 			tctx->force_local = true;
 			return cpu;

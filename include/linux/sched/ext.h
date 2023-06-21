@@ -366,13 +366,12 @@ struct sched_ext_ops {
 	 * - scx_bpf_select_cpu_dfl()
 	 * - scx_bpf_test_and_clear_cpu_idle()
 	 * - scx_bpf_pick_idle_cpu()
-	 * - scx_bpf_any_idle_cpu()
 	 *
 	 * The user also must implement ops.select_cpu() as the default
 	 * implementation relies on scx_bpf_select_cpu_dfl().
 	 *
-	 * If you keep the built-in idle tracking, specify the
-	 * %SCX_OPS_KEEP_BUILTIN_IDLE flag.
+	 * Specify the %SCX_OPS_KEEP_BUILTIN_IDLE flag to keep the built-in idle
+	 * tracking.
 	 */
 	void (*update_idle)(s32 cpu, bool idle);
 

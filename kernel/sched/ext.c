@@ -126,7 +126,6 @@ static struct {
 	cpumask_var_t smt;
 } idle_masks CL_ALIGNED_IF_ONSTACK;
 
-static bool __cacheline_aligned_in_smp scx_has_idle_cpus;
 #endif	/* CONFIG_SMP */
 
 /* for %SCX_KICK_WAIT */
@@ -1926,42 +1925,50 @@ void __scx_notify_pick_next_task(struct rq *rq, struct task_struct *task,
 
 static bool test_and_clear_cpu_idle(int cpu)
 {
-	if (cpumask_test_and_clear_cpu(cpu, idle_masks.cpu)) {
-		if (cpumask_empty(idle_masks.cpu))
-			scx_has_idle_cpus = false;
-		return true;
-	} else {
+	if (!cpumask_test_and_clear_cpu(cpu, idle_masks.cpu))
 		return false;
+
+	if (sched_smt_active()) {
+		const struct cpumask *sbm = topology_sibling_cpumask(cpu);
+
+		/*
+		 * If offline, @cpu is not its own sibling and
+		 * scx_pick_idle_cpu() can get caught in an infinite loop as
+		 * @cpu is never cleared from idle_masks.smt. Ensure that @cpu
+		 * is eventually cleared.
+		 */
+		if (cpumask_intersects(sbm, idle_masks.smt))
+			cpumask_andnot(idle_masks.smt, idle_masks.smt, sbm);
+		else if (cpumask_test_cpu(cpu, idle_masks.smt))
+			__cpumask_clear_cpu(cpu, idle_masks.smt);
 	}
+
+	return true;
 }
 
-static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed)
+static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
 {
 	int cpu;
 
-	do {
+retry:
+	if (sched_smt_active()) {
 		cpu = cpumask_any_and_distribute(idle_masks.smt, cpus_allowed);
-		if (cpu < nr_cpu_ids) {
-			const struct cpumask *sbm = topology_sibling_cpumask(cpu);
+		if (cpu < nr_cpu_ids)
+			goto found;
 
-			/*
-			 * If offline, @cpu is not its own sibling and we can
-			 * get caught in an infinite loop as @cpu is never
-			 * cleared from idle_masks.smt. Clear @cpu directly in
-			 * such cases.
-			 */
-			if (likely(cpumask_test_cpu(cpu, sbm)))
-				cpumask_andnot(idle_masks.smt, idle_masks.smt, sbm);
-			else
-				cpumask_andnot(idle_masks.smt, idle_masks.smt, cpumask_of(cpu));
-		} else {
-			cpu = cpumask_any_and_distribute(idle_masks.cpu, cpus_allowed);
-			if (cpu >= nr_cpu_ids)
-				return -EBUSY;
-		}
-	} while (!test_and_clear_cpu_idle(cpu));
+		if (flags & SCX_PICK_IDLE_CPU_WHOLE)
+			return -EBUSY;
+	}
 
-	return cpu;
+	cpu = cpumask_any_and_distribute(idle_masks.cpu, cpus_allowed);
+	if (cpu >= nr_cpu_ids)
+		return -EBUSY;
+
+found:
+	if (test_and_clear_cpu_idle(cpu))
+		return cpu;
+	else
+		goto retry;
 }
 
 static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flags)
@@ -1978,7 +1985,7 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 	 * local DSQ of the waker.
 	 */
 	if ((wake_flags & SCX_WAKE_SYNC) && p->nr_cpus_allowed > 1 &&
-	    scx_has_idle_cpus && !(current->flags & PF_EXITING)) {
+	    !cpumask_empty(idle_masks.cpu) && !(current->flags & PF_EXITING)) {
 		cpu = smp_processor_id();
 		if (cpumask_test_cpu(cpu, p->cpus_ptr)) {
 			p->scx.flags |= SCX_TASK_ENQ_LOCAL;
@@ -1986,16 +1993,33 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 		}
 	}
 
-	/* if the previous CPU is idle, dispatch directly to it */
+	if (p->nr_cpus_allowed == 1)
+		return prev_cpu;
+
+	/*
+	 * If CPU has SMT, any wholly idle CPU is likely a better pick than
+	 * partially idle @prev_cpu.
+	 */
+	if (sched_smt_active()) {
+		if (cpumask_test_cpu(prev_cpu, idle_masks.smt) &&
+		    test_and_clear_cpu_idle(prev_cpu)) {
+			p->scx.flags |= SCX_TASK_ENQ_LOCAL;
+			return prev_cpu;
+		}
+
+		cpu = scx_pick_idle_cpu(p->cpus_ptr, SCX_PICK_IDLE_CPU_WHOLE);
+		if (cpu >= 0) {
+			p->scx.flags |= SCX_TASK_ENQ_LOCAL;
+			return cpu;
+		}
+	}
+
 	if (test_and_clear_cpu_idle(prev_cpu)) {
 		p->scx.flags |= SCX_TASK_ENQ_LOCAL;
 		return prev_cpu;
 	}
 
-	if (p->nr_cpus_allowed == 1)
-		return prev_cpu;
-
-	cpu = scx_pick_idle_cpu(p->cpus_ptr);
+	cpu = scx_pick_idle_cpu(p->cpus_ptr, 0);
 	if (cpu >= 0) {
 		p->scx.flags |= SCX_TASK_ENQ_LOCAL;
 		return cpu;
@@ -2045,7 +2069,6 @@ static void reset_idle_masks(void)
 	/* consider all cpus idle, should converge to the actual state quickly */
 	cpumask_setall(idle_masks.cpu);
 	cpumask_setall(idle_masks.smt);
-	scx_has_idle_cpus = true;
 }
 
 void __scx_update_idle(struct rq *rq, bool idle)
@@ -2061,8 +2084,6 @@ void __scx_update_idle(struct rq *rq, bool idle)
 
 	if (idle) {
 		cpumask_set_cpu(cpu, idle_masks.cpu);
-		if (!scx_has_idle_cpus)
-			scx_has_idle_cpus = true;
 
 		/*
 		 * idle_masks.smt handling is racy but that's fine as it's only
@@ -2075,9 +2096,6 @@ void __scx_update_idle(struct rq *rq, bool idle)
 		cpumask_or(idle_masks.smt, idle_masks.smt, sib_mask);
 	} else {
 		cpumask_clear_cpu(cpu, idle_masks.cpu);
-		if (scx_has_idle_cpus && cpumask_empty(idle_masks.cpu))
-			scx_has_idle_cpus = false;
-
 		cpumask_andnot(idle_masks.smt, idle_masks.smt, sib_mask);
 	}
 }
@@ -2097,7 +2115,7 @@ static void rq_offline_scx(struct rq *rq, enum rq_onoff_reason reason)
 #else /* !CONFIG_SMP */
 
 static bool test_and_clear_cpu_idle(int cpu) { return false; }
-static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed) { return -EBUSY; }
+static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags) { return -EBUSY; }
 static void reset_idle_masks(void) {}
 
 #endif /* CONFIG_SMP */
@@ -4005,7 +4023,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_cpu_release = {
 /**
  * scx_bpf_kick_cpu - Trigger reschedule on a CPU
  * @cpu: cpu to kick
- * @flags: SCX_KICK_* flags
+ * @flags: %SCX_KICK_* flags
  *
  * Kick @cpu into rescheduling. This can be used to wake up an idle CPU or
  * trigger rescheduling on a busy CPU. This can be called from any online
@@ -4094,21 +4112,61 @@ bool scx_bpf_test_and_clear_cpu_idle(s32 cpu)
 /**
  * scx_bpf_pick_idle_cpu - Pick and claim an idle cpu
  * @cpus_allowed: Allowed cpumask
+ * @flags: %SCX_PICK_IDLE_CPU_* flags
  *
- * Pick and claim an idle cpu which is also in @cpus_allowed. Returns the picked
- * idle cpu number on success. -%EBUSY if no matching cpu was found.
+ * Pick and claim an idle cpu in @cpus_allowed. Returns the picked idle cpu
+ * number on success. -%EBUSY if no matching cpu was found.
+ *
+ * Idle CPU tracking may race against CPU scheduling state transitions. For
+ * example, this function may return -%EBUSY as CPUs are transitioning into the
+ * idle state. If the caller then assumes that there will be dispatch events on
+ * the CPUs as they were all busy, the scheduler may end up stalling with CPUs
+ * idling while there are pending tasks. Use scx_bpf_pick_any_cpu() and
+ * scx_bpf_kick_cpu() to guarantee that there will be at least one dispatch
+ * event in the near future.
  *
  * Unavailable if ops.update_idle() is implemented and
  * %SCX_OPS_KEEP_BUILTIN_IDLE is not set.
  */
-s32 scx_bpf_pick_idle_cpu(const struct cpumask *cpus_allowed)
+s32 scx_bpf_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
 {
 	if (!static_branch_likely(&scx_builtin_idle_enabled)) {
 		scx_ops_error("built-in idle tracking is disabled");
 		return -EBUSY;
 	}
 
-	return scx_pick_idle_cpu(cpus_allowed);
+	return scx_pick_idle_cpu(cpus_allowed, flags);
+}
+
+/**
+ * scx_bpf_pick_any_cpu - Pick and claim an idle cpu if available or pick any CPU
+ * @cpus_allowed: Allowed cpumask
+ * @flags: %SCX_PICK_IDLE_CPU_* flags
+ *
+ * Pick and claim an idle cpu in @cpus_allowed. If none is available, pick any
+ * CPU in @cpus_allowed. Guaranteed to suceed and returns the picked idle cpu
+ * number if @cpus_allowed is not empty. -%EBUSY is returned if @cpus_allowed is
+ * empty.
+ *
+ * If ops.update_idle() is implemented and %SCX_OPS_KEEP_BUILTIN_IDLE is not
+ * set, this function can't tell which CPUs are idle and will always pick any
+ * CPU.
+ */
+s32 scx_bpf_pick_any_cpu(const struct cpumask *cpus_allowed, u64 flags)
+{
+	s32 cpu;
+
+	if (static_branch_likely(&scx_builtin_idle_enabled)) {
+		cpu = scx_pick_idle_cpu(cpus_allowed, flags);
+		if (cpu >= 0)
+			return cpu;
+	}
+
+	cpu = cpumask_any_distribute(cpus_allowed);
+	if (cpu < nr_cpu_ids)
+		return cpu;
+	else
+		return -EBUSY;
 }
 
 /**
@@ -4297,6 +4355,7 @@ BTF_ID_FLAGS(func, scx_bpf_kick_cpu)
 BTF_ID_FLAGS(func, scx_bpf_dsq_nr_queued)
 BTF_ID_FLAGS(func, scx_bpf_test_and_clear_cpu_idle)
 BTF_ID_FLAGS(func, scx_bpf_pick_idle_cpu, KF_RCU)
+BTF_ID_FLAGS(func, scx_bpf_pick_any_cpu, KF_RCU)
 BTF_ID_FLAGS(func, scx_bpf_get_idle_cpumask, KF_ACQUIRE)
 BTF_ID_FLAGS(func, scx_bpf_get_idle_smtmask, KF_ACQUIRE)
 BTF_ID_FLAGS(func, scx_bpf_put_idle_cpumask, KF_RELEASE)

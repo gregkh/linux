@@ -105,6 +105,12 @@ void BPF_STRUCT_OPS(simple_stopping, struct task_struct *p, bool runnable)
 	p->scx.dsq_vtime += (SCX_SLICE_DFL - p->scx.slice) * 100 / p->scx.weight;
 }
 
+void BPF_STRUCT_OPS(simple_enable, struct task_struct *p,
+		    struct scx_enable_args *args)
+{
+	p->scx.dsq_vtime = vtime_now;
+}
+
 s32 BPF_STRUCT_OPS(simple_init)
 {
 	if (!switch_partial)
@@ -122,6 +128,7 @@ struct sched_ext_ops simple_ops = {
 	.enqueue		= (void *)simple_enqueue,
 	.running		= (void *)simple_running,
 	.stopping		= (void *)simple_stopping,
+	.enable			= (void *)simple_enable,
 	.init			= (void *)simple_init,
 	.exit			= (void *)simple_exit,
 	.name			= "simple",

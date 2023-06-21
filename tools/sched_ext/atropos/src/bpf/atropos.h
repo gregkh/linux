@@ -19,25 +19,45 @@
 
 /* Statistics */
 enum stat_idx {
-	ATROPOS_STAT_TASK_GET_ERR,
+	/* The following fields add up to all dispatched tasks */
 	ATROPOS_STAT_WAKE_SYNC,
 	ATROPOS_STAT_PREV_IDLE,
+	ATROPOS_STAT_GREEDY_IDLE,
 	ATROPOS_STAT_PINNED,
 	ATROPOS_STAT_DIRECT_DISPATCH,
+	ATROPOS_STAT_DIRECT_GREEDY,
+	ATROPOS_STAT_DIRECT_GREEDY_FAR,
 	ATROPOS_STAT_DSQ_DISPATCH,
 	ATROPOS_STAT_GREEDY,
+
+	/* Extra stats that don't contribute to total */
+	ATROPOS_STAT_REPATRIATE,
+	ATROPOS_STAT_KICK_GREEDY,
 	ATROPOS_STAT_LOAD_BALANCE,
-	ATROPOS_STAT_LAST_TASK,
+
+	/* Errors */
+	ATROPOS_STAT_TASK_GET_ERR,
+
 	ATROPOS_NR_STATS,
 };
 
 struct task_ctx {
-	unsigned long long dom_mask; /* the domains this task can run on */
+	/* The domains this task can run on */
+	unsigned long long dom_mask;
+
 	struct bpf_cpumask __kptr *cpumask;
 	unsigned int dom_id;
 	unsigned int weight;
 	unsigned long long runnable_at;
 	unsigned long long runnable_for;
+
+	/* The task is a workqueue worker thread */
+	bool is_kworker;
+
+	/* Allowed on all CPUs and eligible for DIRECT_GREEDY optimization */
+	bool all_cpus;
+
+	/* select_cpu() telling enqueue() to queue directly on the DSQ */
 	bool dispatch_local;
 };
 
