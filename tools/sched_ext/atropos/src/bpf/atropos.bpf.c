@@ -484,7 +484,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	if (prev_domestic)
 		cpu = prev_cpu;
 	else
-		cpu = bpf_cpumask_any((const struct cpumask *)p_cpumask);
+		cpu = scx_bpf_pick_any_cpu((const struct cpumask *)p_cpumask, 0);
 
 	scx_bpf_put_idle_cpumask(idle_smtmask);
 	return cpu;
@@ -552,9 +552,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 	 * stalls. Kick a domestic CPU if @p is on a foreign domain.
 	 */
 	if (!bpf_cpumask_test_cpu(scx_bpf_task_cpu(p), (const struct cpumask *)p_cpumask)) {
-		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
-		if (cpu < 0)
-			cpu = bpf_cpumask_any((const struct cpumask *)p_cpumask);
+		cpu = scx_bpf_pick_any_cpu((const struct cpumask *)p_cpumask, 0);
 		scx_bpf_kick_cpu(cpu, 0);
 		stat_add(ATROPOS_STAT_REPATRIATE, 1);
 	}
