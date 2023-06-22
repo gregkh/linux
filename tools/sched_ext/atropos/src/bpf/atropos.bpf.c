@@ -277,7 +277,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	struct task_ctx *task_ctx;
 	struct bpf_cpumask *p_cpumask;
 	pid_t pid = p->pid;
-	bool prev_domestic, has_idle_wholes;
+	bool prev_domestic, has_idle_cores;
 	s32 cpu;
 
 	refresh_tune_params();
@@ -344,7 +344,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 		goto direct;
 	}
 
-	has_idle_wholes = !bpf_cpumask_empty(idle_smtmask);
+	has_idle_cores = !bpf_cpumask_empty(idle_smtmask);
 
 	/* did @p get pulled out to a foreign domain by e.g. greedy execution? */
 	prev_domestic = bpf_cpumask_test_cpu(prev_cpu,
@@ -385,10 +385,10 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	 * domestic CPU and then move onto foreign.
 	 */
 
-	/* If there is a domestic whole idle CPU, dispatch directly */
-	if (has_idle_wholes) {
+	/* If there is a domestic idle core, dispatch directly */
+	if (has_idle_cores) {
 		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask,
-					    SCX_PICK_IDLE_CPU_WHOLE);
+					    SCX_PICK_IDLE_CORE);
 		if (cpu >= 0) {
 			stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
 			goto direct;
@@ -396,8 +396,8 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	}
 
 	/*
-	 * If @prev_cpu was domestic and is idle itself even though the whole
-	 * core isn't, picking @prev_cpu may improve L1/2 locality.
+	 * If @prev_cpu was domestic and is idle itself even though the core
+	 * isn't, picking @prev_cpu may improve L1/2 locality.
 	 */
 	if (prev_domestic && scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
 		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
@@ -415,7 +415,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	/*
 	 * Domestic domain is fully booked. If there are CPUs which are idle and
 	 * under-utilized, ignore domain boundaries and push the task there. Try
-	 * to find a whole idle CPU first.
+	 * to find an idle core first.
 	 */
 	if (task_ctx->all_cpus && direct_greedy_cpumask &&
 	    !bpf_cpumask_empty((const struct cpumask *)direct_greedy_cpumask)) {
@@ -427,15 +427,12 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 			goto enoent;
 		}
 
-		/*
-		 * Try to find a whole idle CPU in the previous foreign and then
-		 * any domain.
-		 */
-		if (has_idle_wholes) {
+		/* Try to find an idle core in the previous and then any domain */
+		if (has_idle_cores) {
 			if (domc->direct_greedy_cpumask) {
 				cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
 							    domc->direct_greedy_cpumask,
-							    SCX_PICK_IDLE_CPU_WHOLE);
+							    SCX_PICK_IDLE_CORE);
 				if (cpu >= 0) {
 					stat_add(ATROPOS_STAT_DIRECT_GREEDY, 1);
 					goto direct;
@@ -445,7 +442,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 			if (direct_greedy_cpumask) {
 				cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
 							    direct_greedy_cpumask,
-							    SCX_PICK_IDLE_CPU_WHOLE);
+							    SCX_PICK_IDLE_CORE);
 				if (cpu >= 0) {
 					stat_add(ATROPOS_STAT_DIRECT_GREEDY_FAR, 1);
 					goto direct;
@@ -454,7 +451,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 		}
 
 		/*
-		 * No whole idle CPU. Is there any idle CPU?
+		 * No idle core. Is there any idle CPU?
 		 */
 		if (domc->direct_greedy_cpumask) {
 			cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)

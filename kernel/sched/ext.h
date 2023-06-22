@@ -92,7 +92,7 @@ enum scx_kick_flags {
 };
 
 enum scx_pick_idle_cpu_flags {
-	SCX_PICK_IDLE_CPU_WHOLE	= 1LLU << 0,	/* pick a CPU whose SMT siblings are also idle */
+	SCX_PICK_IDLE_CORE	= 1LLU << 0,	/* pick a CPU whose SMT siblings are also idle */
 };
 
 #ifdef CONFIG_SCHED_CLASS_EXT
