@@ -2867,7 +2867,7 @@ static void scx_cgroup_config_knobs(void) {}
  * Used by sched_fork() and __setscheduler_prio() to pick the matching
  * sched_class. dl/rt are already handled.
  */
-bool task_on_scx(struct task_struct *p)
+bool task_should_scx(struct task_struct *p)
 {
 	if (!scx_enabled() || scx_ops_disabling())
 		return false;

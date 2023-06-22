@@ -167,10 +167,8 @@ static inline int __task_prio(const struct task_struct *p)
 	if (p->sched_class == &idle_sched_class)
 		return MAX_RT_PRIO + NICE_WIDTH; /* 140 */
 
-#ifdef CONFIG_SCHED_CLASS_EXT
-	if (p->sched_class == &ext_sched_class)
+	if (task_on_scx(p))
 		return MAX_RT_PRIO + MAX_NICE + 1; /* 120, squash ext */
-#endif
 
 	return MAX_RT_PRIO + MAX_NICE; /* 119, squash fair */
 }
@@ -3954,16 +3952,15 @@ bool cpus_share_cache(int this_cpu, int that_cpu)
 
 static inline bool ttwu_queue_cond(struct task_struct *p, int cpu)
 {
-#ifdef CONFIG_SCHED_CLASS_EXT
 	/*
 	 * The BPF scheduler may depend on select_task_rq() being invoked during
-	 * wakeups and @p may end up executing on a different CPU regardless of
-	 * what happens in the wakeup path making the ttwu_queue optimization
-	 * ineffective. Skip if on SCX.
+	 * wakeups. In addition, @p may end up executing on a different CPU
+	 * regardless of what happens in the wakeup path making the ttwu_queue
+	 * optimization less meaningful. Skip if on SCX.
 	 */
-	if (p->sched_class == &ext_sched_class)
+	if (task_on_scx(p))
 		return false;
-#endif
+
 	/*
 	 * Do not complicate things with the async wake_list while the CPU is
 	 * in hotplug state.
@@ -4799,7 +4796,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	} else if (rt_prio(p->prio)) {
 		p->sched_class = &rt_sched_class;
 #ifdef CONFIG_SCHED_CLASS_EXT
-	} else if (task_on_scx(p)) {
+	} else if (task_should_scx(p)) {
 		p->sched_class = &ext_sched_class;
 #endif
 	} else {
@@ -7096,7 +7093,7 @@ void __setscheduler_prio(struct task_struct *p, int prio)
 	else if (rt_prio(prio))
 		p->sched_class = &rt_sched_class;
 #ifdef CONFIG_SCHED_CLASS_EXT
-	else if (task_on_scx(p))
+	else if (task_should_scx(p))
 		p->sched_class = &ext_sched_class;
 #endif
 	else
