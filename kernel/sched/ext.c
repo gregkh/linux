@@ -1958,7 +1958,7 @@ retry:
 		if (cpu < nr_cpu_ids)
 			goto found;
 
-		if (flags & SCX_PICK_IDLE_CPU_WHOLE)
+		if (flags & SCX_PICK_IDLE_CORE)
 			return -EBUSY;
 	}
 
@@ -2009,7 +2009,7 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 			return prev_cpu;
 		}
 
-		cpu = scx_pick_idle_cpu(p->cpus_ptr, SCX_PICK_IDLE_CPU_WHOLE);
+		cpu = scx_pick_idle_cpu(p->cpus_ptr, SCX_PICK_IDLE_CORE);
 		if (cpu >= 0) {
 			p->scx.flags |= SCX_TASK_ENQ_LOCAL;
 			return cpu;
