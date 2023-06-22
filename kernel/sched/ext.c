@@ -4146,7 +4146,7 @@ s32 scx_bpf_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
  * @flags: %SCX_PICK_IDLE_CPU_* flags
  *
  * Pick and claim an idle cpu in @cpus_allowed. If none is available, pick any
- * CPU in @cpus_allowed. Guaranteed to suceed and returns the picked idle cpu
+ * CPU in @cpus_allowed. Guaranteed to succeed and returns the picked idle cpu
  * number if @cpus_allowed is not empty. -%EBUSY is returned if @cpus_allowed is
  * empty.
  *
