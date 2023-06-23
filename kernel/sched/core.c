@@ -12167,7 +12167,7 @@ void sched_deq_and_put_task(struct task_struct *p, int queue_flags,
 
 	*ctx = (struct sched_enq_and_set_ctx){
 		.p = p,
-		.queue_flags = queue_flags | DEQUEUE_NOCLOCK,
+		.queue_flags = queue_flags,
 		.queued = task_on_rq_queued(p),
 		.running = task_current(rq, p),
 	};
