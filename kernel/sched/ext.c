@@ -3723,9 +3723,8 @@ __diag_ignore_all("-Wmissing-prototypes",
 /**
  * scx_bpf_switch_all - Switch all tasks into SCX
  *
- * Switch all existing and future non-dl/rt tasks to SCX.
- * This can only be called from ops.init(), and actual switching
- * is performed asynchronously.
+ * Switch all existing and future non-dl/rt tasks to SCX. This can only be
+ * called from ops.init(), and actual switching is performed asynchronously.
  */
 void scx_bpf_switch_all(void)
 {
