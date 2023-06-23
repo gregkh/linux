@@ -117,8 +117,7 @@ BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH)					\
 	     -Wall -Wno-compare-distinct-pointer-types				\
 	     -O2 -mcpu=v3
 
-all: scx_example_simple scx_example_qmap scx_example_central scx_example_pair	\
-     scx_example_flatcg scx_example_userland atropos
+all: scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland scx_atropos
 
 # sort removes libbpf duplicates when not cross-building
 MAKE_DIRS := $(sort $(BUILD_DIR)/libbpf $(HOST_BUILD_DIR)/libbpf		\
@@ -169,45 +168,43 @@ endif
 	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(<:.bpf.o=) > $@
 	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(<:.bpf.o=) > $(@:.skel.h=.subskel.h)
 
-scx_example_simple: scx_example_simple.c scx_example_simple.skel.h user_exit_info.h
+scx_simple: scx_simple.c scx_simple.skel.h user_exit_info.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_example_qmap: scx_example_qmap.c scx_example_qmap.skel.h user_exit_info.h
+scx_qmap: scx_qmap.c scx_qmap.skel.h user_exit_info.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_example_central: scx_example_central.c scx_example_central.skel.h user_exit_info.h
+scx_central: scx_central.c scx_central.skel.h user_exit_info.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_example_pair: scx_example_pair.c scx_example_pair.skel.h user_exit_info.h
+scx_pair: scx_pair.c scx_pair.skel.h user_exit_info.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_example_flatcg: scx_example_flatcg.c scx_example_flatcg.skel.h user_exit_info.h
+scx_flatcg: scx_flatcg.c scx_flatcg.skel.h user_exit_info.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_example_userland: scx_example_userland.c scx_example_userland.skel.h	\
-		      scx_example_userland_common.h user_exit_info.h
+scx_userland: scx_userland.c scx_userland.skel.h scx_userland.h user_exit_info.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-atropos: export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR)
-atropos: export ATROPOS_CLANG = $(CLANG)
-atropos: export ATROPOS_BPF_CFLAGS = $(BPF_CFLAGS)
-atropos: $(INCLUDE_DIR)/vmlinux.h
-	cargo build --manifest-path=atropos/Cargo.toml $(CARGOFLAGS)
+scx_atropos: export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR)
+scx_atropos: export ATROPOS_CLANG = $(CLANG)
+scx_atropos: export ATROPOS_BPF_CFLAGS = $(BPF_CFLAGS)
+scx_atropos: $(INCLUDE_DIR)/vmlinux.h
+	cargo build --manifest-path=scx_atropos/Cargo.toml $(CARGOFLAGS)
 
 clean:
-	cargo clean --manifest-path=atropos/Cargo.toml
+	cargo clean --manifest-path=scx_atropos/Cargo.toml
 	rm -rf $(SCRATCH_DIR) $(HOST_SCRATCH_DIR)
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
-	rm -f scx_example_simple scx_example_qmap scx_example_central		\
-	      scx_example_pair scx_example_flatcg scx_example_userland
+	rm -f scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland
 
-.PHONY: all atropos clean
+.PHONY: all scx_atropos clean
 
 # delete failed targets
 .DELETE_ON_ERROR:

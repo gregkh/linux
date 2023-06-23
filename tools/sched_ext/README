@@ -94,8 +94,8 @@ architectures and workloads.
 
 --------------------------------------------------------------------------------
 
-scx_example_central
--------------------
+scx_central
+-----------
 
 Overview
 ~~~~~~~~
@@ -123,8 +123,8 @@ and does not yet have any kind of priority mechanism.
 
 --------------------------------------------------------------------------------
 
-scx_example_flatcg
-------------------
+scx_flatcg
+----------
 
 Overview
 ~~~~~~~~
@@ -152,8 +152,8 @@ able to consume more CPU cycles than they are entitled to.
 
 --------------------------------------------------------------------------------
 
-scx_example_pair
-----------------
+scx_pair
+--------
 
 Overview
 ~~~~~~~~
@@ -178,8 +178,8 @@ No
 
 --------------------------------------------------------------------------------
 
-scx_example_qmap
-----------------
+scx_qmap
+--------
 
 Overview
 ~~~~~~~~
@@ -201,15 +201,15 @@ No
 
 --------------------------------------------------------------------------------
 
-scx_example_simple
-------------------
+scx_simple
+----------
 
 Overview
 ~~~~~~~~
 
-A simple scheduler that provides an example of a minimal sched_ext scheduler.
-scx_example_simple can be run in either global weighted vtime mode, or FIFO
-mode.
+A simple scheduler that provides an example of a minimal sched_ext
+scheduler. scx_simple can be run in either global weighted vtime mode, or
+FIFO mode.
 
 Typical Use Case
 ~~~~~~~~~~~~~~~~
@@ -228,8 +228,8 @@ simple scheduling policy.
 
 --------------------------------------------------------------------------------
 
-scx_example_userland
---------------------
+scx_userland
+------------
 
 Overview
 ~~~~~~~~
@@ -259,6 +259,6 @@ Production Ready?
 ~~~~~~~~~~~~~~~~~
 
 No. This scheduler uses an ordered list for vtime scheduling, and is stricly
-less performant than just using something like `scx_example_simple`. It is
-purely meant to illustrate that it's possible to build a user space scheduler
-on top of sched_ext.
+less performant than just using something like `scx_simple`. It is purely
+meant to illustrate that it's possible to build a user space scheduler on
+top of sched_ext.

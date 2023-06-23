@@ -43,7 +43,7 @@ BPF scheduler and reverts all tasks back to CFS.
 .. code-block:: none
 
     # make -j16 -C tools/sched_ext
-    # tools/sched_ext/scx_example_simple
+    # tools/sched_ext/scx_simple
     local=0 global=3
     local=5 global=24
     local=9 global=44
@@ -73,8 +73,7 @@ Userspace can implement an arbitrary BPF scheduler by loading a set of BPF
 programs that implement ``struct sched_ext_ops``. The only mandatory field
 is ``ops.name`` which must be a valid BPF object name. All operations are
 optional. The following modified excerpt is from
-``tools/sched/scx_example_simple.bpf.c`` showing a minimal global FIFO
-scheduler.
+``tools/sched/scx_simple.bpf.c`` showing a minimal global FIFO scheduler.
 
 .. code-block:: c
 
@@ -196,8 +195,8 @@ DSQs are consumed automatically.
 
 ``scx_bpf_dispatch()`` queues the task on the FIFO of the target DSQ. Use
 ``scx_bpf_dispatch_vtime()`` for the priority queue. See the function
-documentation and usage in ``tools/sched_ext/scx_example_simple.bpf.c`` for
-more information.
+documentation and usage in ``tools/sched_ext/scx_simple.bpf.c`` for more
+information.
 
 Where to Look
 =============
@@ -211,11 +210,11 @@ Where to Look
 
 * ``tools/sched_ext/`` hosts example BPF scheduler implementations.
 
-  * ``scx_example_simple[.bpf].c``: Minimal global FIFO scheduler example
-    using a custom DSQ.
+  * ``scx_simple[.bpf].c``: Minimal global FIFO scheduler example using a
+    custom DSQ.
 
-  * ``scx_example_qmap[.bpf].c``: A multi-level FIFO scheduler supporting
-    five levels of priority implemented with ``BPF_MAP_TYPE_QUEUE``.
+  * ``scx_qmap[.bpf].c``: A multi-level FIFO scheduler supporting five
+    levels of priority implemented with ``BPF_MAP_TYPE_QUEUE``.
 
 ABI Instability
 ===============

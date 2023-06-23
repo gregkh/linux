@@ -12,7 +12,7 @@
 #include <libgen.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
-#include "scx_example_central.skel.h"
+#include "scx_central.skel.h"
 
 const char help_fmt[] =
 "A central FIFO sched_ext scheduler.\n"
@@ -34,7 +34,7 @@ static void sigint_handler(int dummy)
 
 int main(int argc, char **argv)
 {
-	struct scx_example_central *skel;
+	struct scx_central *skel;
 	struct bpf_link *link;
 	u64 seq = 0;
 	s32 opt;
@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
-	skel = scx_example_central__open();
+	skel = scx_central__open();
 	assert(skel);
 
 	skel->rodata->central_cpu = 0;
@@ -64,7 +64,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	assert(!scx_example_central__load(skel));
+	assert(!scx_central__load(skel));
 
 	link = bpf_map__attach_struct_ops(skel->maps.central_ops);
 	assert(link);
@@ -89,6 +89,6 @@ int main(int argc, char **argv)
 
 	bpf_link__destroy(link);
 	uei_print(&skel->bss->uei);
-	scx_example_central__destroy(skel);
+	scx_central__destroy(skel);
 	return 0;
 }

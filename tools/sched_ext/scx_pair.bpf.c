@@ -116,7 +116,7 @@
  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
  */
 #include "scx_common.bpf.h"
-#include "scx_example_pair.h"
+#include "scx_pair.h"
 
 char _license[] SEC("license") = "GPL";
 

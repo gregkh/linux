@@ -12,7 +12,7 @@
 #include <libgen.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
-#include "scx_example_simple.skel.h"
+#include "scx_simple.skel.h"
 
 const char help_fmt[] =
 "A simple sched_ext scheduler.\n"
@@ -32,7 +32,7 @@ static void sigint_handler(int simple)
 	exit_req = 1;
 }
 
-static void read_stats(struct scx_example_simple *skel, u64 *stats)
+static void read_stats(struct scx_simple *skel, u64 *stats)
 {
 	int nr_cpus = libbpf_num_possible_cpus();
 	u64 cnts[2][nr_cpus];
@@ -54,7 +54,7 @@ static void read_stats(struct scx_example_simple *skel, u64 *stats)
 
 int main(int argc, char **argv)
 {
-	struct scx_example_simple *skel;
+	struct scx_simple *skel;
 	struct bpf_link *link;
 	u32 opt;
 
@@ -63,7 +63,7 @@ int main(int argc, char **argv)
 
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
-	skel = scx_example_simple__open();
+	skel = scx_simple__open();
 	assert(skel);
 
 	while ((opt = getopt(argc, argv, "fph")) != -1) {
@@ -80,7 +80,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	assert(!scx_example_simple__load(skel));
+	assert(!scx_simple__load(skel));
 
 	link = bpf_map__attach_struct_ops(skel->maps.simple_ops);
 	assert(link);
@@ -96,6 +96,6 @@ int main(int argc, char **argv)
 
 	bpf_link__destroy(link);
 	uei_print(&skel->bss->uei);
-	scx_example_simple__destroy(skel);
+	scx_simple__destroy(skel);
 	return 0;
 }

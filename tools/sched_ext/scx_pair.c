@@ -12,8 +12,8 @@
 #include <libgen.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
-#include "scx_example_pair.h"
-#include "scx_example_pair.skel.h"
+#include "scx_pair.h"
+#include "scx_pair.skel.h"
 
 const char help_fmt[] =
 "A demo sched_ext core-scheduler which always makes every sibling CPU pair\n"
@@ -36,7 +36,7 @@ static void sigint_handler(int dummy)
 
 int main(int argc, char **argv)
 {
-	struct scx_example_pair *skel;
+	struct scx_pair *skel;
 	struct bpf_link *link;
 	u64 seq = 0;
 	s32 stride, i, opt, outer_fd;
@@ -46,7 +46,7 @@ int main(int argc, char **argv)
 
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
-	skel = scx_example_pair__open();
+	skel = scx_pair__open();
 	assert(skel);
 
 	skel->rodata->nr_cpu_ids = libbpf_num_possible_cpus();
@@ -79,7 +79,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	assert(!scx_example_pair__load(skel));
+	assert(!scx_pair__load(skel));
 
 	/*
 	 * Populate the cgrp_q_arr map which is an array containing per-cgroup
@@ -138,6 +138,6 @@ int main(int argc, char **argv)
 
 	bpf_link__destroy(link);
 	uei_print(&skel->bss->uei);
-	scx_example_pair__destroy(skel);
+	scx_pair__destroy(skel);
 	return 0;
 }

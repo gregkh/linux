@@ -45,7 +45,7 @@
  */
 #include "scx_common.bpf.h"
 #include "user_exit_info.h"
-#include "scx_example_flatcg.h"
+#include "scx_flatcg.h"
 
 char _license[] SEC("license") = "GPL";
 
