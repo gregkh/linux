@@ -13,7 +13,7 @@
 #include <libgen.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
-#include "scx_example_qmap.skel.h"
+#include "scx_qmap.skel.h"
 
 const char help_fmt[] =
 "A simple five-level FIFO queue sched_ext scheduler.\n"
@@ -40,7 +40,7 @@ static void sigint_handler(int dummy)
 
 int main(int argc, char **argv)
 {
-	struct scx_example_qmap *skel;
+	struct scx_qmap *skel;
 	struct bpf_link *link;
 	int opt;
 
@@ -49,7 +49,7 @@ int main(int argc, char **argv)
 
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
-	skel = scx_example_qmap__open();
+	skel = scx_qmap__open();
 	assert(skel);
 
 	while ((opt = getopt(argc, argv, "s:e:t:T:l:d:ph")) != -1) {
@@ -83,7 +83,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	assert(!scx_example_qmap__load(skel));
+	assert(!scx_qmap__load(skel));
 
 	link = bpf_map__attach_struct_ops(skel->maps.qmap_ops);
 	assert(link);
@@ -102,6 +102,6 @@ int main(int argc, char **argv)
 
 	bpf_link__destroy(link);
 	uei_print(&skel->bss->uei);
-	scx_example_qmap__destroy(skel);
+	scx_qmap__destroy(skel);
 	return 0;
 }

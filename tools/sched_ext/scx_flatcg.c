@@ -14,8 +14,8 @@
 #include <assert.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
-#include "scx_example_flatcg.h"
-#include "scx_example_flatcg.skel.h"
+#include "scx_flatcg.h"
+#include "scx_flatcg.skel.h"
 
 #ifndef FILEID_KERNFS
 #define FILEID_KERNFS		0xfe
@@ -91,7 +91,7 @@ static float read_cpu_util(__u64 *last_sum, __u64 *last_idle)
 	return delta_sum ? (float)(delta_sum - delta_idle) / delta_sum : 0.0;
 }
 
-static void fcg_read_stats(struct scx_example_flatcg *skel, __u64 *stats)
+static void fcg_read_stats(struct scx_flatcg *skel, __u64 *stats)
 {
 	__u64 cnts[FCG_NR_STATS][skel->rodata->nr_cpus];
 	__u32 idx;
@@ -112,7 +112,7 @@ static void fcg_read_stats(struct scx_example_flatcg *skel, __u64 *stats)
 
 int main(int argc, char **argv)
 {
-	struct scx_example_flatcg *skel;
+	struct scx_flatcg *skel;
 	struct bpf_link *link;
 	struct timespec intv_ts = { .tv_sec = 2, .tv_nsec = 0 };
 	bool dump_cgrps = false;
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
 
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
-	skel = scx_example_flatcg__open();
+	skel = scx_flatcg__open();
 	if (!skel) {
 		fprintf(stderr, "Failed to open: %s\n", strerror(errno));
 		return 1;
@@ -168,7 +168,7 @@ int main(int argc, char **argv)
 	       (double)intv_ts.tv_sec + (double)intv_ts.tv_nsec / 1000000000.0,
 	       dump_cgrps);
 
-	if (scx_example_flatcg__load(skel)) {
+	if (scx_flatcg__load(skel)) {
 		fprintf(stderr, "Failed to load: %s\n", strerror(errno));
 		return 1;
 	}
@@ -227,6 +227,6 @@ int main(int argc, char **argv)
 
 	bpf_link__destroy(link);
 	uei_print(&skel->bss->uei);
-	scx_example_flatcg__destroy(skel);
+	scx_flatcg__destroy(skel);
 	return 0;
 }

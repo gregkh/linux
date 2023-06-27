@@ -2132,40 +2132,6 @@ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 	dequeue_task(rq, p, flags);
 }
 
-struct sched_change_guard
-sched_change_guard_init(struct rq *rq, struct task_struct *p, int flags)
-{
-	struct sched_change_guard cg = {
-		.rq = rq,
-		.p = p,
-		.queued = task_on_rq_queued(p),
-		.running = task_current(rq, p),
-	};
-
-	if (cg.queued) {
-		/*
-		 * __kthread_bind() may call this on blocked tasks without
-		 * holding rq->lock through __do_set_cpus_allowed(). Assert @rq
-		 * locked iff @p is queued.
-		 */
-		lockdep_assert_rq_held(rq);
-		dequeue_task(rq, p, flags);
-	}
-	if (cg.running)
-		put_prev_task(rq, p);
-
-	return cg;
-}
-
-void sched_change_guard_fini(struct sched_change_guard *cg, int flags)
-{
-	if (cg->queued)
-		enqueue_task(cg->rq, cg->p, flags | ENQUEUE_NOCLOCK);
-	if (cg->running)
-		set_next_task(cg->rq, cg->p);
-	cg->done = true;
-}
-
 static inline int __normal_prio(int policy, int rt_prio, int nice)
 {
 	int prio;
@@ -2635,6 +2601,7 @@ static void
 __do_set_cpus_allowed(struct task_struct *p, struct affinity_context *ctx)
 {
 	struct rq *rq = task_rq(p);
+	bool queued, running;
 
 	/*
 	 * This here violates the locking rules for affinity, since we're only
@@ -2653,9 +2620,26 @@ __do_set_cpus_allowed(struct task_struct *p, struct affinity_context *ctx)
 	else
 		lockdep_assert_held(&p->pi_lock);
 
-	SCHED_CHANGE_BLOCK(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK) {
-		p->sched_class->set_cpus_allowed(p, ctx);
+	queued = task_on_rq_queued(p);
+	running = task_current(rq, p);
+
+	if (queued) {
+		/*
+		 * Because __kthread_bind() calls this on blocked tasks without
+		 * holding rq->lock.
+		 */
+		lockdep_assert_rq_held(rq);
+		dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
 	}
+	if (running)
+		put_prev_task(rq, p);
+
+	p->sched_class->set_cpus_allowed(p, ctx);
+
+	if (queued)
+		enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
+	if (running)
+		set_next_task(rq, p);
 }
 
 /*
@@ -7132,7 +7116,7 @@ static inline int rt_effective_prio(struct task_struct *p, int prio)
  */
 void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 {
-	int prio, oldprio, queue_flag =
+	int prio, oldprio, queued, running, queue_flag =
 		DEQUEUE_SAVE | DEQUEUE_MOVE | DEQUEUE_NOCLOCK;
 	const struct sched_class *prev_class;
 	struct rq_flags rf;
@@ -7192,40 +7176,50 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 		queue_flag &= ~DEQUEUE_MOVE;
 
 	prev_class = p->sched_class;
-	SCHED_CHANGE_BLOCK(rq, p, queue_flag) {
-		/*
-		 * Boosting condition are:
-		 * 1. -rt task is running and holds mutex A
-		 *      --> -dl task blocks on mutex A
-		 *
-		 * 2. -dl task is running and holds mutex A
-		 *      --> -dl task blocks on mutex A and could preempt the
-		 *          running task
-		 */
-		if (dl_prio(prio)) {
-			if (!dl_prio(p->normal_prio) ||
-			    (pi_task && dl_prio(pi_task->prio) &&
-			     dl_entity_preempt(&pi_task->dl, &p->dl))) {
-				p->dl.pi_se = pi_task->dl.pi_se;
-				queue_flag |= ENQUEUE_REPLENISH;
-			} else {
-				p->dl.pi_se = &p->dl;
-			}
-		} else if (rt_prio(prio)) {
-			if (dl_prio(oldprio))
-				p->dl.pi_se = &p->dl;
-			if (oldprio < prio)
-				queue_flag |= ENQUEUE_HEAD;
-		} else {
-			if (dl_prio(oldprio))
-				p->dl.pi_se = &p->dl;
-			if (rt_prio(oldprio))
-				p->rt.timeout = 0;
-		}
+	queued = task_on_rq_queued(p);
+	running = task_current(rq, p);
+	if (queued)
+		dequeue_task(rq, p, queue_flag);
+	if (running)
+		put_prev_task(rq, p);
 
-		__setscheduler_prio(p, prio);
-		check_class_changing(rq, p, prev_class);
+	/*
+	 * Boosting condition are:
+	 * 1. -rt task is running and holds mutex A
+	 *      --> -dl task blocks on mutex A
+	 *
+	 * 2. -dl task is running and holds mutex A
+	 *      --> -dl task blocks on mutex A and could preempt the
+	 *          running task
+	 */
+	if (dl_prio(prio)) {
+		if (!dl_prio(p->normal_prio) ||
+		    (pi_task && dl_prio(pi_task->prio) &&
+		     dl_entity_preempt(&pi_task->dl, &p->dl))) {
+			p->dl.pi_se = pi_task->dl.pi_se;
+			queue_flag |= ENQUEUE_REPLENISH;
+		} else {
+			p->dl.pi_se = &p->dl;
+		}
+	} else if (rt_prio(prio)) {
+		if (dl_prio(oldprio))
+			p->dl.pi_se = &p->dl;
+		if (oldprio < prio)
+			queue_flag |= ENQUEUE_HEAD;
+	} else {
+		if (dl_prio(oldprio))
+			p->dl.pi_se = &p->dl;
+		if (rt_prio(oldprio))
+			p->rt.timeout = 0;
 	}
+
+	__setscheduler_prio(p, prio);
+	check_class_changing(rq, p, prev_class);
+
+	if (queued)
+		enqueue_task(rq, p, queue_flag);
+	if (running)
+		set_next_task(rq, p);
 
 	check_class_changed(rq, p, prev_class, oldprio);
 out_unlock:
@@ -7247,6 +7241,7 @@ static inline int rt_effective_prio(struct task_struct *p, int prio)
 
 void set_user_nice(struct task_struct *p, long nice)
 {
+	bool queued, running;
 	int old_prio;
 	struct rq_flags rf;
 	struct rq *rq;
@@ -7270,13 +7265,22 @@ void set_user_nice(struct task_struct *p, long nice)
 		p->static_prio = NICE_TO_PRIO(nice);
 		goto out_unlock;
 	}
+	queued = task_on_rq_queued(p);
+	running = task_current(rq, p);
+	if (queued)
+		dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
+	if (running)
+		put_prev_task(rq, p);
 
-	SCHED_CHANGE_BLOCK(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK) {
-		p->static_prio = NICE_TO_PRIO(nice);
-		set_load_weight(p, true);
-		old_prio = p->prio;
-		p->prio = effective_prio(p);
-	}
+	p->static_prio = NICE_TO_PRIO(nice);
+	set_load_weight(p, true);
+	old_prio = p->prio;
+	p->prio = effective_prio(p);
+
+	if (queued)
+		enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
+	if (running)
+		set_next_task(rq, p);
 
 	/*
 	 * If the task increased its priority or is running and
@@ -7660,7 +7664,7 @@ static int __sched_setscheduler(struct task_struct *p,
 				bool user, bool pi)
 {
 	int oldpolicy = -1, policy = attr->sched_policy;
-	int retval, oldprio, newprio;
+	int retval, oldprio, newprio, queued, running;
 	const struct sched_class *prev_class;
 	struct balance_callback *head;
 	struct rq_flags rf;
@@ -7829,24 +7833,34 @@ change:
 			queue_flags &= ~DEQUEUE_MOVE;
 	}
 
-	SCHED_CHANGE_BLOCK(rq, p, queue_flags) {
-		prev_class = p->sched_class;
+	queued = task_on_rq_queued(p);
+	running = task_current(rq, p);
+	if (queued)
+		dequeue_task(rq, p, queue_flags);
+	if (running)
+		put_prev_task(rq, p);
 
-		if (!(attr->sched_flags & SCHED_FLAG_KEEP_PARAMS)) {
-			__setscheduler_params(p, attr);
-			__setscheduler_prio(p, newprio);
-		}
-		__setscheduler_uclamp(p, attr);
+	prev_class = p->sched_class;
 
-		check_class_changing(rq, p, prev_class);
+	if (!(attr->sched_flags & SCHED_FLAG_KEEP_PARAMS)) {
+		__setscheduler_params(p, attr);
+		__setscheduler_prio(p, newprio);
+	}
+	__setscheduler_uclamp(p, attr);
+	check_class_changing(rq, p, prev_class);
 
+	if (queued) {
 		/*
 		 * We enqueue to tail when the priority of a task is
 		 * increased (user space view).
 		 */
 		if (oldprio < p->prio)
 			queue_flags |= ENQUEUE_HEAD;
+
+		enqueue_task(rq, p, queue_flags);
 	}
+	if (running)
+		set_next_task(rq, p);
 
 	check_class_changed(rq, p, prev_class, oldprio);
 
@@ -9419,15 +9433,25 @@ int migrate_task_to(struct task_struct *p, int target_cpu)
  */
 void sched_setnuma(struct task_struct *p, int nid)
 {
+	bool queued, running;
 	struct rq_flags rf;
 	struct rq *rq;
 
 	rq = task_rq_lock(p, &rf);
+	queued = task_on_rq_queued(p);
+	running = task_current(rq, p);
 
-	SCHED_CHANGE_BLOCK(rq, p, DEQUEUE_SAVE) {
-		p->numa_preferred_nid = nid;
-	}
+	if (queued)
+		dequeue_task(rq, p, DEQUEUE_SAVE);
+	if (running)
+		put_prev_task(rq, p);
 
+	p->numa_preferred_nid = nid;
+
+	if (queued)
+		enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
+	if (running)
+		set_next_task(rq, p);
 	task_rq_unlock(rq, p, &rf);
 }
 #endif /* CONFIG_NUMA_BALANCING */
@@ -10534,6 +10558,8 @@ static void sched_change_group(struct task_struct *tsk, struct task_group *group
  */
 void sched_move_task(struct task_struct *tsk)
 {
+	int queued, running, queue_flags =
+		DEQUEUE_SAVE | DEQUEUE_MOVE | DEQUEUE_NOCLOCK;
 	struct task_group *group;
 	struct rq_flags rf;
 	struct rq *rq;
@@ -10549,19 +10575,28 @@ void sched_move_task(struct task_struct *tsk)
 
 	update_rq_clock(rq);
 
-	SCHED_CHANGE_BLOCK(rq, tsk,
-			   DEQUEUE_SAVE | DEQUEUE_MOVE | DEQUEUE_NOCLOCK) {
-		sched_change_group(tsk, group);
-		scx_move_task(tsk);
-	}
+	running = task_current(rq, tsk);
+	queued = task_on_rq_queued(tsk);
 
-	/*
-	 * After changing group, the running task may have joined a throttled
-	 * one but it's still the running task. Trigger a resched to make sure
-	 * that task can still run.
-	 */
-	if (task_current(rq, tsk))
+	if (queued)
+		dequeue_task(rq, tsk, queue_flags);
+	if (running)
+		put_prev_task(rq, tsk);
+
+	sched_change_group(tsk, group);
+	scx_move_task(tsk);
+
+	if (queued)
+		enqueue_task(rq, tsk, queue_flags);
+	if (running) {
+		set_next_task(rq, tsk);
+		/*
+		 * After changing group, the running task may have joined a
+		 * throttled one but it's still the running task. Trigger a
+		 * resched to make sure that task can still run.
+		 */
 		resched_curr(rq);
+	}
 
 unlock:
 	task_rq_unlock(rq, tsk, &rf);
@@ -12121,3 +12156,38 @@ void sched_mm_cid_fork(struct task_struct *t)
 	t->mm_cid_active = 1;
 }
 #endif
+
+#ifdef CONFIG_SCHED_CLASS_EXT
+void sched_deq_and_put_task(struct task_struct *p, int queue_flags,
+			    struct sched_enq_and_set_ctx *ctx)
+{
+	struct rq *rq = task_rq(p);
+
+	lockdep_assert_rq_held(rq);
+
+	*ctx = (struct sched_enq_and_set_ctx){
+		.p = p,
+		.queue_flags = queue_flags,
+		.queued = task_on_rq_queued(p),
+		.running = task_current(rq, p),
+	};
+
+	update_rq_clock(rq);
+	if (ctx->queued)
+		dequeue_task(rq, p, queue_flags | DEQUEUE_NOCLOCK);
+	if (ctx->running)
+		put_prev_task(rq, p);
+}
+
+void sched_enq_and_set_task(struct sched_enq_and_set_ctx *ctx)
+{
+	struct rq *rq = task_rq(ctx->p);
+
+	lockdep_assert_rq_held(rq);
+
+	if (ctx->queued)
+		enqueue_task(rq, ctx->p, ctx->queue_flags | ENQUEUE_NOCLOCK);
+	if (ctx->running)
+		set_next_task(rq, ctx->p);
+}
+#endif	/* CONFIG_SCHED_CLASS_EXT */

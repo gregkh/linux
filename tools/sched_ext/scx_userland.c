@@ -29,8 +29,8 @@
 #include <sys/syscall.h>
 
 #include "user_exit_info.h"
-#include "scx_example_userland_common.h"
-#include "scx_example_userland.skel.h"
+#include "scx_userland.h"
+#include "scx_userland.skel.h"
 
 const char help_fmt[] =
 "A minimal userland sched_ext scheduler.\n"
@@ -52,7 +52,7 @@ static __u32 batch_size = 8;
 static volatile int exit_req;
 static int enqueued_fd, dispatched_fd;
 
-static struct scx_example_userland *skel;
+static struct scx_userland *skel;
 static struct bpf_link *ops_link;
 
 /* Stats collected in user space. */
@@ -316,7 +316,7 @@ static int bootstrap(int argc, char **argv)
 		return err;
 	}
 
-	skel = scx_example_userland__open();
+	skel = scx_userland__open();
 	if (!skel) {
 		fprintf(stderr, "Failed to open scheduler: %s\n", strerror(errno));
 		return errno;
@@ -327,7 +327,7 @@ static int bootstrap(int argc, char **argv)
 	assert(skel->rodata->usersched_pid > 0);
 	skel->rodata->switch_partial = switch_partial;
 
-	err = scx_example_userland__load(skel);
+	err = scx_userland__load(skel);
 	if (err) {
 		fprintf(stderr, "Failed to load scheduler: %s\n", strerror(err));
 		goto destroy_skel;
@@ -354,7 +354,7 @@ static int bootstrap(int argc, char **argv)
 	return 0;
 
 destroy_skel:
-	scx_example_userland__destroy(skel);
+	scx_userland__destroy(skel);
 	exit_req = 1;
 	return err;
 }
@@ -397,6 +397,6 @@ int main(int argc, char **argv)
 	exit_req = 1;
 	bpf_link__destroy(ops_link);
 	uei_print(&skel->bss->uei);
-	scx_example_userland__destroy(skel);
+	scx_userland__destroy(skel);
 	return 0;
 }

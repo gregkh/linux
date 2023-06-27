@@ -1,9 +1,9 @@
-scx_example_simple
-scx_example_qmap
-scx_example_central
-scx_example_pair
-scx_example_flatcg
-scx_example_userland
+scx_simple
+scx_qmap
+scx_central
+scx_pair
+scx_flatcg
+scx_userland
 *.skel.h
 *.subskel.h
 /tools/

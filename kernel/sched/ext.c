@@ -1599,6 +1599,7 @@ static int balance_scx(struct rq *rq, struct task_struct *prev,
 
 	ret = balance_one(rq, prev, rf, true);
 
+#ifdef CONFIG_SCHED_SMT
 	/*
 	 * When core-sched is enabled, this ops.balance() call will be followed
 	 * by put_prev_scx() and pick_task_scx() on this CPU and pick_task_scx()
@@ -1629,7 +1630,7 @@ static int balance_scx(struct rq *rq, struct task_struct *prev,
 			rq_repin_lock(rq, rf);
 		}
 	}
-
+#endif
 	return ret;
 }
 
@@ -1925,13 +1926,14 @@ void __scx_notify_pick_next_task(struct rq *rq, struct task_struct *task,
 
 static bool test_and_clear_cpu_idle(int cpu)
 {
+#ifdef CONFIG_SCHED_SMT
 	/*
 	 * SMT mask should be cleared whether we can claim @cpu or not. The SMT
 	 * cluster is not wholly idle either way. This also prevents
 	 * scx_pick_idle_cpu() from getting caught in an infinite loop.
 	 */
 	if (sched_smt_active()) {
-		const struct cpumask *sbm = topology_sibling_cpumask(cpu);
+		const struct cpumask *smt = cpu_smt_mask(cpu);
 
 		/*
 		 * If offline, @cpu is not its own sibling and
@@ -1939,12 +1941,12 @@ static bool test_and_clear_cpu_idle(int cpu)
 		 * @cpu is never cleared from idle_masks.smt. Ensure that @cpu
 		 * is eventually cleared.
 		 */
-		if (cpumask_intersects(sbm, idle_masks.smt))
-			cpumask_andnot(idle_masks.smt, idle_masks.smt, sbm);
+		if (cpumask_intersects(smt, idle_masks.smt))
+			cpumask_andnot(idle_masks.smt, idle_masks.smt, smt);
 		else if (cpumask_test_cpu(cpu, idle_masks.smt))
 			__cpumask_clear_cpu(cpu, idle_masks.smt);
 	}
-
+#endif
 	return cpumask_test_and_clear_cpu(cpu, idle_masks.cpu);
 }
 
@@ -2076,7 +2078,6 @@ static void reset_idle_masks(void)
 void __scx_update_idle(struct rq *rq, bool idle)
 {
 	int cpu = cpu_of(rq);
-	struct cpumask *sib_mask = topology_sibling_cpumask(cpu);
 
 	if (SCX_HAS_OP(update_idle)) {
 		SCX_CALL_OP(SCX_KF_REST, update_idle, cpu_of(rq), idle);
@@ -2084,22 +2085,30 @@ void __scx_update_idle(struct rq *rq, bool idle)
 			return;
 	}
 
-	if (idle) {
+	if (idle)
 		cpumask_set_cpu(cpu, idle_masks.cpu);
-
-		/*
-		 * idle_masks.smt handling is racy but that's fine as it's only
-		 * for optimization and self-correcting.
-		 */
-		for_each_cpu(cpu, sib_mask) {
-			if (!cpumask_test_cpu(cpu, idle_masks.cpu))
-				return;
-		}
-		cpumask_or(idle_masks.smt, idle_masks.smt, sib_mask);
-	} else {
+	else
 		cpumask_clear_cpu(cpu, idle_masks.cpu);
-		cpumask_andnot(idle_masks.smt, idle_masks.smt, sib_mask);
+
+#ifdef CONFIG_SCHED_SMT
+	if (sched_smt_active()) {
+		const struct cpumask *smt = cpu_smt_mask(cpu);
+
+		if (idle) {
+			/*
+			 * idle_masks.smt handling is racy but that's fine as
+			 * it's only for optimization and self-correcting.
+			 */
+			for_each_cpu(cpu, smt) {
+				if (!cpumask_test_cpu(cpu, idle_masks.cpu))
+					return;
+			}
+			cpumask_or(idle_masks.smt, idle_masks.smt, smt);
+		} else {
+			cpumask_andnot(idle_masks.smt, idle_masks.smt, smt);
+		}
 	}
+#endif
 }
 
 static void rq_online_scx(struct rq *rq, enum rq_onoff_reason reason)
@@ -2984,10 +2993,11 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	scx_task_iter_init(&sti);
 	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
 		if (READ_ONCE(p->__state) != TASK_DEAD) {
-			SCHED_CHANGE_BLOCK(task_rq(p), p,
-					   DEQUEUE_SAVE | DEQUEUE_MOVE) {
-				/* cycling deq/enq is enough, see above */
-			}
+			struct sched_enq_and_set_ctx ctx;
+
+			/* cycling deq/enq is enough, see above */
+			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
+			sched_enq_and_set_task(&ctx);
 		}
 	}
 	scx_task_iter_exit(&sti);
@@ -3017,19 +3027,18 @@ forward_progress_guaranteed:
 	scx_task_iter_init(&sti);
 	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
 		const struct sched_class *old_class = p->sched_class;
-		struct rq *rq = task_rq(p);
+		struct sched_enq_and_set_ctx ctx;
 		bool alive = READ_ONCE(p->__state) != TASK_DEAD;
 
-		update_rq_clock(rq);
+		sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
 
-		SCHED_CHANGE_BLOCK(rq, p, DEQUEUE_SAVE | DEQUEUE_MOVE |
-				   DEQUEUE_NOCLOCK) {
-			p->scx.slice = min_t(u64, p->scx.slice, SCX_SLICE_DFL);
+		p->scx.slice = min_t(u64, p->scx.slice, SCX_SLICE_DFL);
 
-			__setscheduler_prio(p, p->prio);
-			if (alive)
-				check_class_changing(task_rq(p), p, old_class);
-		}
+		__setscheduler_prio(p, p->prio);
+		if (alive)
+			check_class_changing(task_rq(p), p, old_class);
+
+		sched_enq_and_set_task(&ctx);
 
 		if (alive)
 			check_class_changed(task_rq(p), p, old_class, p->prio);
@@ -3332,16 +3341,16 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
 		if (READ_ONCE(p->__state) != TASK_DEAD) {
 			const struct sched_class *old_class = p->sched_class;
-			struct rq *rq = task_rq(p);
+			struct sched_enq_and_set_ctx ctx;
 
-			update_rq_clock(rq);
+			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE,
+					       &ctx);
 
-			SCHED_CHANGE_BLOCK(rq, p, DEQUEUE_SAVE | DEQUEUE_MOVE |
-					   DEQUEUE_NOCLOCK) {
-				scx_ops_enable_task(p);
-				__setscheduler_prio(p, p->prio);
-				check_class_changing(task_rq(p), p, old_class);
-			}
+			scx_ops_enable_task(p);
+			__setscheduler_prio(p, p->prio);
+			check_class_changing(task_rq(p), p, old_class);
+
+			sched_enq_and_set_task(&ctx);
 
 			check_class_changed(task_rq(p), p, old_class, p->prio);
 		} else {
@@ -3723,9 +3732,8 @@ __diag_ignore_all("-Wmissing-prototypes",
 /**
  * scx_bpf_switch_all - Switch all tasks into SCX
  *
- * Switch all existing and future non-dl/rt tasks to SCX.
- * This can only be called from ops.init(), and actual switching
- * is performed asynchronously.
+ * Switch all existing and future non-dl/rt tasks to SCX. This can only be
+ * called from ops.init(), and actual switching is performed asynchronously.
  */
 void scx_bpf_switch_all(void)
 {
@@ -4206,7 +4214,10 @@ const struct cpumask *scx_bpf_get_idle_smtmask(void)
 	}
 
 #ifdef CONFIG_SMP
-	return idle_masks.smt;
+	if (sched_smt_active())
+		return idle_masks.smt;
+	else
+		return idle_masks.cpu;
 #else
 	return cpu_none_mask;
 #endif
@@ -4330,6 +4341,7 @@ s32 scx_bpf_task_cpu(const struct task_struct *p)
  * rq-locked operations. Can be called on the parameter tasks of rq-locked
  * operations. The restriction guarantees that @p's rq is locked by the caller.
  */
+#ifdef CONFIG_CGROUP_SCHED
 struct cgroup *scx_bpf_task_cgroup(struct task_struct *p)
 {
 	struct task_group *tg = p->sched_task_group;
@@ -4351,6 +4363,7 @@ out:
 	cgroup_get(cgrp);
 	return cgrp;
 }
+#endif
 
 BTF_SET8_START(scx_kfunc_ids_any)
 BTF_ID_FLAGS(func, scx_bpf_kick_cpu)
@@ -4365,7 +4378,9 @@ BTF_ID_FLAGS(func, scx_bpf_error_bstr, KF_TRUSTED_ARGS)
 BTF_ID_FLAGS(func, scx_bpf_destroy_dsq)
 BTF_ID_FLAGS(func, scx_bpf_task_running, KF_RCU)
 BTF_ID_FLAGS(func, scx_bpf_task_cpu, KF_RCU)
+#ifdef CONFIG_CGROUP_SCHED
 BTF_ID_FLAGS(func, scx_bpf_task_cgroup, KF_RCU | KF_ACQUIRE)
+#endif
 BTF_SET8_END(scx_kfunc_ids_any)
 
 static const struct btf_kfunc_id_set scx_kfunc_set_any = {

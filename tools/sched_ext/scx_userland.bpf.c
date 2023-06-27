@@ -22,7 +22,7 @@
  */
 #include <string.h>
 #include "scx_common.bpf.h"
-#include "scx_example_userland_common.h"
+#include "scx_userland.h"
 
 char _license[] SEC("license") = "GPL";
 
