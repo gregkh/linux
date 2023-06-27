@@ -3027,14 +3027,10 @@ forward_progress_guaranteed:
 	scx_task_iter_init(&sti);
 	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
 		const struct sched_class *old_class = p->sched_class;
-		struct rq *rq = task_rq(p);
 		struct sched_enq_and_set_ctx ctx;
 		bool alive = READ_ONCE(p->__state) != TASK_DEAD;
 
-		update_rq_clock(rq);
-
-		sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE |
-				       DEQUEUE_NOCLOCK, &ctx);
+		sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
 
 		p->scx.slice = min_t(u64, p->scx.slice, SCX_SLICE_DFL);
 
@@ -3345,13 +3341,10 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
 		if (READ_ONCE(p->__state) != TASK_DEAD) {
 			const struct sched_class *old_class = p->sched_class;
-			struct rq *rq = task_rq(p);
 			struct sched_enq_and_set_ctx ctx;
 
-			update_rq_clock(rq);
-
-			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE |
-					       DEQUEUE_NOCLOCK, &ctx);
+			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE,
+					       &ctx);
 
 			scx_ops_enable_task(p);
 			__setscheduler_prio(p, p->prio);

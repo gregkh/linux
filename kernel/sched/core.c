@@ -12174,7 +12174,7 @@ void sched_deq_and_put_task(struct task_struct *p, int queue_flags,
 
 	update_rq_clock(rq);
 	if (ctx->queued)
-		dequeue_task(rq, p, queue_flags);
+		dequeue_task(rq, p, queue_flags | DEQUEUE_NOCLOCK);
 	if (ctx->running)
 		put_prev_task(rq, p);
 }
@@ -12186,7 +12186,7 @@ void sched_enq_and_set_task(struct sched_enq_and_set_ctx *ctx)
 	lockdep_assert_rq_held(rq);
 
 	if (ctx->queued)
-		enqueue_task(rq, ctx->p, ctx->queue_flags);
+		enqueue_task(rq, ctx->p, ctx->queue_flags | ENQUEUE_NOCLOCK);
 	if (ctx->running)
 		set_next_task(rq, ctx->p);
 }
