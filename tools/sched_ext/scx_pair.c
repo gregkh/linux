@@ -68,16 +68,37 @@ int main(int argc, char **argv)
 		}
 	}
 
+	printf("Pairs: ");
 	for (i = 0; i < skel->rodata->nr_cpu_ids; i++) {
-		if (skel->rodata->pair_cpu[i] < 0) {
-			skel->rodata->pair_cpu[i] = i + stride;
-			skel->rodata->pair_cpu[i + stride] = i;
-			skel->rodata->pair_id[i] = i;
-			skel->rodata->pair_id[i + stride] = i;
-			skel->rodata->in_pair_idx[i] = 0;
-			skel->rodata->in_pair_idx[i + stride] = 1;
+		int j = (i + stride) % skel->rodata->nr_cpu_ids;
+
+		if (skel->rodata->pair_cpu[i] >= 0)
+			continue;
+
+		if (i == j) {
+			printf("\n");
+			fprintf(stderr, "Invalid stride %d - CPU%d wants to be its own pair\n",
+				stride, i);
+			return 1;
 		}
+
+		if (skel->rodata->pair_cpu[j] >= 0) {
+			printf("\n");
+			fprintf(stderr, "Invalid stride %d - three CPUs (%d, %d, %d) want to be a pair\n",
+				stride, i, j, skel->rodata->pair_cpu[j]);
+			return 1;
+		}
+
+		skel->rodata->pair_cpu[i] = j;
+		skel->rodata->pair_cpu[j] = i;
+		skel->rodata->pair_id[i] = i;
+		skel->rodata->pair_id[j] = i;
+		skel->rodata->in_pair_idx[i] = 0;
+		skel->rodata->in_pair_idx[j] = 1;
+
+		printf("[%d, %d] ", i, j);
 	}
+	printf("\n");
 
 	assert(!scx_pair__load(skel));
 
