@@ -408,7 +408,7 @@ static int amd_pmf_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int amd_pmf_remove(struct platform_device *pdev)
+static void amd_pmf_remove(struct platform_device *pdev)
 {
 	struct amd_pmf_dev *dev = platform_get_drvdata(pdev);
 
@@ -418,7 +418,6 @@ static int amd_pmf_remove(struct platform_device *pdev)
 	mutex_destroy(&dev->lock);
 	mutex_destroy(&dev->update_mutex);
 	kfree(dev->buf);
-	return 0;
 }
 
 static const struct attribute_group *amd_pmf_driver_groups[] = {
@@ -434,7 +433,7 @@ static struct platform_driver amd_pmf_driver = {
 		.pm = pm_sleep_ptr(&amd_pmf_pm),
 	},
 	.probe = amd_pmf_probe,
-	.remove = amd_pmf_remove,
+	.remove_new = amd_pmf_remove,
 };
 module_platform_driver(amd_pmf_driver);
 

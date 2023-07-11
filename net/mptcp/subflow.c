@@ -827,7 +827,7 @@ create_child:
 			 */
 			if (mp_opt.suboptions & OPTION_MPTCP_MPC_ACK) {
 				mptcp_subflow_fully_established(ctx, &mp_opt);
-				mptcp_pm_fully_established(owner, child, GFP_ATOMIC);
+				mptcp_pm_fully_established(owner, child);
 				ctx->pm_notified = 1;
 			}
 		} else if (ctx->mp_join) {
@@ -1304,7 +1304,7 @@ fallback:
 			subflow->reset_reason = MPTCP_RST_EMPTCP;
 
 reset:
-			ssk->sk_err = EBADMSG;
+			WRITE_ONCE(ssk->sk_err, EBADMSG);
 			tcp_set_state(ssk, TCP_CLOSE);
 			while ((skb = skb_peek(&ssk->sk_receive_queue)))
 				sk_eat_skb(ssk, skb);
@@ -1388,7 +1388,7 @@ void __mptcp_error_report(struct sock *sk)
 		ssk_state = inet_sk_state_load(ssk);
 		if (ssk_state == TCP_CLOSE && !sock_flag(sk, SOCK_DEAD))
 			inet_sk_state_store(sk, ssk_state);
-		sk->sk_err = -err;
+		WRITE_ONCE(sk->sk_err, -err);
 
 		/* This barrier is coupled with smp_rmb() in mptcp_poll() */
 		smp_wmb();

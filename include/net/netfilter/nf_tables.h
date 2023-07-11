@@ -1056,6 +1056,18 @@ struct nft_rule_dp {
 		__attribute__((aligned(__alignof__(struct nft_expr))));
 };
 
+struct nft_rule_dp_last {
+	struct nft_rule_dp end;		/* end of nft_rule_blob marker */
+	struct rcu_head h;		/* call_rcu head */
+	struct nft_rule_blob *blob;	/* ptr to free via call_rcu */
+	const struct nft_chain *chain;	/* for nftables tracing */
+};
+
+static inline const struct nft_rule_dp *nft_rule_next(const struct nft_rule_dp *rule)
+{
+	return (void *)rule + sizeof(*rule) + rule->dlen;
+}
+
 struct nft_rule_blob {
 	unsigned long			size;
 	unsigned char			data[]
@@ -1215,6 +1227,7 @@ unsigned int nft_do_chain(struct nft_pktinfo *pkt, void *priv);
  *	@genmask: generation mask
  *	@afinfo: address family info
  *	@name: name of the table
+ *	@validate_state: internal, set when transaction adds jumps
  */
 struct nft_table {
 	struct list_head		list;
@@ -1233,6 +1246,7 @@ struct nft_table {
 	char				*name;
 	u16				udlen;
 	u8				*udata;
+	u8				validate_state;
 };
 
 static inline bool nft_table_has_owner(const struct nft_table *table)
@@ -1412,11 +1426,7 @@ void nft_unregister_flowtable_type(struct nf_flowtable_type *type);
  *	@type: event type (enum nft_trace_types)
  *	@skbid: hash of skb to be used as trace id
  *	@packet_dumped: packet headers sent in a previous traceinfo message
- *	@pkt: pktinfo currently processed
  *	@basechain: base chain currently processed
- *	@chain: chain currently processed
- *	@rule:  rule that was evaluated
- *	@verdict: verdict given by rule
  */
 struct nft_traceinfo {
 	bool				trace;
@@ -1424,18 +1434,16 @@ struct nft_traceinfo {
 	bool				packet_dumped;
 	enum nft_trace_types		type:8;
 	u32				skbid;
-	const struct nft_pktinfo	*pkt;
 	const struct nft_base_chain	*basechain;
-	const struct nft_chain		*chain;
-	const struct nft_rule_dp	*rule;
-	const struct nft_verdict	*verdict;
 };
 
 void nft_trace_init(struct nft_traceinfo *info, const struct nft_pktinfo *pkt,
-		    const struct nft_verdict *verdict,
 		    const struct nft_chain *basechain);
 
-void nft_trace_notify(struct nft_traceinfo *info);
+void nft_trace_notify(const struct nft_pktinfo *pkt,
+		      const struct nft_verdict *verdict,
+		      const struct nft_rule_dp *rule,
+		      struct nft_traceinfo *info);
 
 #define MODULE_ALIAS_NFT_CHAIN(family, name) \
 	MODULE_ALIAS("nft-chain-" __stringify(family) "-" name)
@@ -1724,7 +1732,6 @@ struct nftables_pernet {
 	struct mutex		commit_mutex;
 	u64			table_handle;
 	unsigned int		base_seq;
-	u8			validate_state;
 };
 
 extern unsigned int nf_tables_net_id;
