@@ -25,6 +25,9 @@ use anyhow::Context;
 use anyhow::Result;
 use bitvec::prelude::*;
 use clap::Parser;
+use libbpf_rs::skel::OpenSkel as _;
+use libbpf_rs::skel::Skel as _;
+use libbpf_rs::skel::SkelBuilder as _;
 use log::info;
 use log::trace;
 use log::warn;
@@ -140,12 +143,9 @@ fn now_monotonic() -> u64 {
     time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
 }
 
-fn clear_map(map: &mut libbpf_rs::Map) {
-    // XXX: libbpf_rs has some design flaw that make it impossible to
-    // delete while iterating despite it being safe so we alias it here
-    let deleter: &mut libbpf_rs::Map = unsafe { &mut *(map as *mut _) };
+fn clear_map(map: &libbpf_rs::Map) {
     for key in map.keys() {
-        let _ = deleter.delete(&key);
+        let _ = map.delete(&key);
     }
 }
 
