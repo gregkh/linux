@@ -121,7 +121,7 @@ DECLARE_STATIC_KEY_FALSE(__scx_switched_all);
 
 DECLARE_STATIC_KEY_FALSE(scx_ops_cpu_preempt);
 
-static inline bool task_on_scx(struct task_struct *p)
+static inline bool task_on_scx(const struct task_struct *p)
 {
 	return scx_enabled() && p->sched_class == &ext_sched_class;
 }
@@ -214,7 +214,7 @@ bool scx_prio_less(const struct task_struct *a, const struct task_struct *b,
 #define scx_enabled()		false
 #define scx_switched_all()	false
 
-static inline bool task_on_scx(struct task_struct *p) { return false; }
+static inline bool task_on_scx(const struct task_struct *p) { return false; }
 static inline void scx_pre_fork(struct task_struct *p) {}
 static inline int scx_fork(struct task_struct *p) { return 0; }
 static inline void scx_post_fork(struct task_struct *p) {}
