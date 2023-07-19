@@ -4,7 +4,6 @@
  * Copyright (c) 2022 Tejun Heo <tj@kernel.org>
  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
  */
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
@@ -36,8 +35,8 @@ int main(int argc, char **argv)
 {
 	struct scx_central *skel;
 	struct bpf_link *link;
-	u64 seq = 0;
-	s32 opt;
+	__u64 seq = 0;
+	__s32 opt;
 
 	signal(SIGINT, sigint_handler);
 	signal(SIGTERM, sigint_handler);
@@ -70,7 +69,7 @@ int main(int argc, char **argv)
 	assert(link);
 
 	while (!exit_req && !uei_exited(&skel->bss->uei)) {
-		printf("[SEQ %lu]\n", seq++);
+		printf("[SEQ %llu]\n", seq++);
 		printf("total   :%10lu    local:%10lu   queued:%10lu  lost:%10lu\n",
 		       skel->bss->nr_total,
 		       skel->bss->nr_locals,

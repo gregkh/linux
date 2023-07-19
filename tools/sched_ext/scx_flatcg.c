@@ -4,10 +4,10 @@
  * Copyright (c) 2023 Tejun Heo <tj@kernel.org>
  * Copyright (c) 2023 David Vernet <dvernet@meta.com>
  */
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <signal.h>
 #include <unistd.h>
+#include <libgen.h>
 #include <limits.h>
 #include <fcntl.h>
 #include <time.h>
@@ -119,7 +119,7 @@ int main(int argc, char **argv)
 	__u64 last_cpu_sum = 0, last_cpu_idle = 0;
 	__u64 last_stats[FCG_NR_STATS] = {};
 	unsigned long seq = 0;
-	s32 opt;
+	__s32 opt;
 
 	signal(SIGINT, sigint_handler);
 	signal(SIGTERM, sigint_handler);

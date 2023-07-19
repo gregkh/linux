@@ -4,7 +4,6 @@
  * Copyright (c) 2022 Tejun Heo <tj@kernel.org>
  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
  */
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
@@ -38,8 +37,8 @@ int main(int argc, char **argv)
 {
 	struct scx_pair *skel;
 	struct bpf_link *link;
-	u64 seq = 0;
-	s32 stride, i, opt, outer_fd;
+	__u64 seq = 0;
+	__s32 stride, i, opt, outer_fd;
 
 	signal(SIGINT, sigint_handler);
 	signal(SIGTERM, sigint_handler);
@@ -113,13 +112,13 @@ int main(int argc, char **argv)
 
 	printf("Initializing");
         for (i = 0; i < MAX_CGRPS; i++) {
-		s32 inner_fd;
+		__s32 inner_fd;
 
 		if (exit_req)
 			break;
 
 		inner_fd = bpf_map_create(BPF_MAP_TYPE_QUEUE, NULL, 0,
-					  sizeof(u32), MAX_QUEUED, NULL);
+					  sizeof(__u32), MAX_QUEUED, NULL);
 		assert(inner_fd >= 0);
 		assert(!bpf_map_update_elem(outer_fd, &i, &inner_fd, BPF_ANY));
 		close(inner_fd);
@@ -137,7 +136,7 @@ int main(int argc, char **argv)
 	assert(link);
 
 	while (!exit_req && !uei_exited(&skel->bss->uei)) {
-		printf("[SEQ %lu]\n", seq++);
+		printf("[SEQ %llu]\n", seq++);
 		printf(" total:%10lu dispatch:%10lu   missing:%10lu\n",
 		       skel->bss->nr_total,
 		       skel->bss->nr_dispatched,

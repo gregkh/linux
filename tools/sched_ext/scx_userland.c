@@ -15,7 +15,6 @@
  * Copyright (c) 2022 Tejun Heo <tj@kernel.org>
  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
  */
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <unistd.h>
 #include <sched.h>
@@ -101,7 +100,7 @@ static __u32 task_pid(const struct enqueued_task *task)
 	return ((uintptr_t)task - (uintptr_t)tasks) / sizeof(*task);
 }
 
-static int dispatch_task(s32 pid)
+static int dispatch_task(__s32 pid)
 {
 	int err;
 
