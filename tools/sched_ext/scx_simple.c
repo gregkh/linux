@@ -7,11 +7,11 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
-#include <assert.h>
 #include <libgen.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
 #include "scx_simple.skel.h"
+#include "scx_user_common.h"
 
 const char help_fmt[] =
 "A simple sched_ext scheduler.\n"
@@ -63,7 +63,7 @@ int main(int argc, char **argv)
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
 	skel = scx_simple__open();
-	assert(skel);
+	SCX_BUG_ON(!skel, "Failed to open skel");
 
 	while ((opt = getopt(argc, argv, "fph")) != -1) {
 		switch (opt) {
@@ -79,10 +79,10 @@ int main(int argc, char **argv)
 		}
 	}
 
-	assert(!scx_simple__load(skel));
+	SCX_BUG_ON(scx_simple__load(skel), "Failed to load skel");
 
 	link = bpf_map__attach_struct_ops(skel->maps.simple_ops);
-	assert(link);
+	SCX_BUG_ON(!link, "Failed to attach struct_ops");
 
 	while (!exit_req && !uei_exited(&skel->bss->uei)) {
 		__u64 stats[2];

@@ -168,27 +168,28 @@ endif
 	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(<:.bpf.o=) > $@
 	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(<:.bpf.o=) > $(@:.skel.h=.subskel.h)
 
-scx_simple: scx_simple.c scx_simple.skel.h user_exit_info.h
+scx_simple: scx_simple.c scx_simple.skel.h user_exit_info.h scx_user_common.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_qmap: scx_qmap.c scx_qmap.skel.h user_exit_info.h
+scx_qmap: scx_qmap.c scx_qmap.skel.h user_exit_info.h scx_user_common.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_central: scx_central.c scx_central.skel.h user_exit_info.h
+scx_central: scx_central.c scx_central.skel.h user_exit_info.h scx_user_common.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_pair: scx_pair.c scx_pair.skel.h user_exit_info.h
+scx_pair: scx_pair.c scx_pair.skel.h user_exit_info.h scx_user_common.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_flatcg: scx_flatcg.c scx_flatcg.skel.h user_exit_info.h
+scx_flatcg: scx_flatcg.c scx_flatcg.skel.h user_exit_info.h scx_user_common.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 
-scx_userland: scx_userland.c scx_userland.skel.h scx_userland.h user_exit_info.h
+scx_userland: scx_userland.c scx_userland.skel.h scx_userland.h user_exit_info.h \
+	      scx_user_common.h
 	$(CC) $(CFLAGS) -c $< -o $@.o
 	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
 

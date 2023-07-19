@@ -7,12 +7,12 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
-#include <assert.h>
 #include <libgen.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
 #include "scx_pair.h"
 #include "scx_pair.skel.h"
+#include "scx_user_common.h"
 
 const char help_fmt[] =
 "A demo sched_ext core-scheduler which always makes every sibling CPU pair\n"
@@ -46,7 +46,7 @@ int main(int argc, char **argv)
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
 	skel = scx_pair__open();
-	assert(skel);
+	SCX_BUG_ON(!skel, "Failed to open skel");
 
 	skel->rodata->nr_cpu_ids = libbpf_num_possible_cpus();
 
@@ -74,19 +74,13 @@ int main(int argc, char **argv)
 		if (skel->rodata->pair_cpu[i] >= 0)
 			continue;
 
-		if (i == j) {
-			printf("\n");
-			fprintf(stderr, "Invalid stride %d - CPU%d wants to be its own pair\n",
-				stride, i);
-			return 1;
-		}
+		SCX_BUG_ON(i == j,
+			   "Invalid stride %d - CPU%d wants to be its own pair",
+			   stride, i);
 
-		if (skel->rodata->pair_cpu[j] >= 0) {
-			printf("\n");
-			fprintf(stderr, "Invalid stride %d - three CPUs (%d, %d, %d) want to be a pair\n",
-				stride, i, j, skel->rodata->pair_cpu[j]);
-			return 1;
-		}
+		SCX_BUG_ON(skel->rodata->pair_cpu[j] >= 0,
+			   "Invalid stride %d - three CPUs (%d, %d, %d) want to be a pair",
+			   stride, i, j, skel->rodata->pair_cpu[j]);
 
 		skel->rodata->pair_cpu[i] = j;
 		skel->rodata->pair_cpu[j] = i;
@@ -99,7 +93,7 @@ int main(int argc, char **argv)
 	}
 	printf("\n");
 
-	assert(!scx_pair__load(skel));
+	SCX_BUG_ON(scx_pair__load(skel), "Failed to load skel");
 
 	/*
 	 * Populate the cgrp_q_arr map which is an array containing per-cgroup
@@ -108,7 +102,7 @@ int main(int argc, char **argv)
 	 * populate from BPF.
 	 */
 	outer_fd = bpf_map__fd(skel->maps.cgrp_q_arr);
-	assert(outer_fd >= 0);
+	SCX_BUG_ON(outer_fd < 0, "Failed to get outer_fd: %d", outer_fd);
 
 	printf("Initializing");
         for (i = 0; i < MAX_CGRPS; i++) {
@@ -119,8 +113,10 @@ int main(int argc, char **argv)
 
 		inner_fd = bpf_map_create(BPF_MAP_TYPE_QUEUE, NULL, 0,
 					  sizeof(__u32), MAX_QUEUED, NULL);
-		assert(inner_fd >= 0);
-		assert(!bpf_map_update_elem(outer_fd, &i, &inner_fd, BPF_ANY));
+		SCX_BUG_ON(inner_fd < 0, "Failed to get inner_fd: %d",
+			   inner_fd);
+		SCX_BUG_ON(bpf_map_update_elem(outer_fd, &i, &inner_fd, BPF_ANY),
+			   "Failed to set inner map");
 		close(inner_fd);
 
 		if (!(i % 10))
@@ -133,7 +129,7 @@ int main(int argc, char **argv)
 	 * Fully initialized, attach and run.
 	 */
 	link = bpf_map__attach_struct_ops(skel->maps.pair_ops);
-	assert(link);
+	SCX_BUG_ON(!link, "Failed to attach struct_ops");
 
 	while (!exit_req && !uei_exited(&skel->bss->uei)) {
 		printf("[SEQ %llu]\n", seq++);

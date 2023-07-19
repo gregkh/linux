@@ -11,11 +11,11 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <time.h>
-#include <assert.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
 #include "scx_flatcg.h"
 #include "scx_flatcg.skel.h"
+#include "scx_user_common.h"
 
 #ifndef FILEID_KERNFS
 #define FILEID_KERNFS		0xfe
@@ -127,10 +127,7 @@ int main(int argc, char **argv)
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
 	skel = scx_flatcg__open();
-	if (!skel) {
-		fprintf(stderr, "Failed to open: %s\n", strerror(errno));
-		return 1;
-	}
+	SCX_BUG_ON(!skel, "Failed to open skel");
 
 	skel->rodata->nr_cpus = libbpf_num_possible_cpus();
 
@@ -168,17 +165,10 @@ int main(int argc, char **argv)
 	       (double)intv_ts.tv_sec + (double)intv_ts.tv_nsec / 1000000000.0,
 	       dump_cgrps);
 
-	if (scx_flatcg__load(skel)) {
-		fprintf(stderr, "Failed to load: %s\n", strerror(errno));
-		return 1;
-	}
+	SCX_BUG_ON(scx_flatcg__load(skel), "Failed to load skel");
 
 	link = bpf_map__attach_struct_ops(skel->maps.flatcg_ops);
-	if (!link) {
-		fprintf(stderr, "Failed to attach_struct_ops: %s\n",
-			strerror(errno));
-		return 1;
-	}
+	SCX_BUG_ON(!link, "Failed to attach struct_ops");
 
 	while (!exit_req && !uei_exited(&skel->bss->uei)) {
 		__u64 acc_stats[FCG_NR_STATS];
