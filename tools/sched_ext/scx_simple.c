@@ -4,7 +4,6 @@
  * Copyright (c) 2022 Tejun Heo <tj@kernel.org>
  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
  */
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
@@ -32,11 +31,11 @@ static void sigint_handler(int simple)
 	exit_req = 1;
 }
 
-static void read_stats(struct scx_simple *skel, u64 *stats)
+static void read_stats(struct scx_simple *skel, __u64 *stats)
 {
 	int nr_cpus = libbpf_num_possible_cpus();
-	u64 cnts[2][nr_cpus];
-	u32 idx;
+	__u64 cnts[2][nr_cpus];
+	__u32 idx;
 
 	memset(stats, 0, sizeof(stats[0]) * 2);
 
@@ -56,7 +55,7 @@ int main(int argc, char **argv)
 {
 	struct scx_simple *skel;
 	struct bpf_link *link;
-	u32 opt;
+	__u32 opt;
 
 	signal(SIGINT, sigint_handler);
 	signal(SIGTERM, sigint_handler);
@@ -86,10 +85,10 @@ int main(int argc, char **argv)
 	assert(link);
 
 	while (!exit_req && !uei_exited(&skel->bss->uei)) {
-		u64 stats[2];
+		__u64 stats[2];
 
 		read_stats(skel, stats);
-		printf("local=%lu global=%lu\n", stats[0], stats[1]);
+		printf("local=%llu global=%llu\n", stats[0], stats[1]);
 		fflush(stdout);
 		sleep(1);
 	}
