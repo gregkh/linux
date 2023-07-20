@@ -2,8 +2,8 @@
 
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
-#ifndef __ATROPOS_H
-#define __ATROPOS_H
+#ifndef __RUSTY_H
+#define __RUSTY_H
 
 #include <stdbool.h>
 #ifndef __kptr
@@ -20,25 +20,25 @@
 /* Statistics */
 enum stat_idx {
 	/* The following fields add up to all dispatched tasks */
-	ATROPOS_STAT_WAKE_SYNC,
-	ATROPOS_STAT_PREV_IDLE,
-	ATROPOS_STAT_GREEDY_IDLE,
-	ATROPOS_STAT_PINNED,
-	ATROPOS_STAT_DIRECT_DISPATCH,
-	ATROPOS_STAT_DIRECT_GREEDY,
-	ATROPOS_STAT_DIRECT_GREEDY_FAR,
-	ATROPOS_STAT_DSQ_DISPATCH,
-	ATROPOS_STAT_GREEDY,
+	RUSTY_STAT_WAKE_SYNC,
+	RUSTY_STAT_PREV_IDLE,
+	RUSTY_STAT_GREEDY_IDLE,
+	RUSTY_STAT_PINNED,
+	RUSTY_STAT_DIRECT_DISPATCH,
+	RUSTY_STAT_DIRECT_GREEDY,
+	RUSTY_STAT_DIRECT_GREEDY_FAR,
+	RUSTY_STAT_DSQ_DISPATCH,
+	RUSTY_STAT_GREEDY,
 
 	/* Extra stats that don't contribute to total */
-	ATROPOS_STAT_REPATRIATE,
-	ATROPOS_STAT_KICK_GREEDY,
-	ATROPOS_STAT_LOAD_BALANCE,
+	RUSTY_STAT_REPATRIATE,
+	RUSTY_STAT_KICK_GREEDY,
+	RUSTY_STAT_LOAD_BALANCE,
 
 	/* Errors */
-	ATROPOS_STAT_TASK_GET_ERR,
+	RUSTY_STAT_TASK_GET_ERR,
 
-	ATROPOS_NR_STATS,
+	RUSTY_NR_STATS,
 };
 
 struct task_ctx {
@@ -61,4 +61,4 @@ struct task_ctx {
 	bool dispatch_local;
 };
 
-#endif /* __ATROPOS_H */
+#endif /* __RUSTY_H */

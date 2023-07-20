@@ -7,4 +7,4 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-include!(concat!(env!("OUT_DIR"), "/atropos-sys.rs"));
+include!(concat!(env!("OUT_DIR"), "/rusty_sys.rs"));

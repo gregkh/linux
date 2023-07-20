@@ -3,16 +3,16 @@
  * This software may be used and distributed according to the terms of the
  * GNU General Public License version 2.
  *
- * Atropos is a multi-domain BPF / userspace hybrid scheduler where the BPF
+ * scx_rusty is a multi-domain BPF / userspace hybrid scheduler where the BPF
  * part does simple round robin in each domain and the userspace part
  * calculates the load factor of each domain and tells the BPF part how to load
  * balance the domains.
  *
  * Every task has an entry in the task_data map which lists which domain the
- * task belongs to. When a task first enters the system (atropos_prep_enable),
+ * task belongs to. When a task first enters the system (rusty_prep_enable),
  * they are round-robined to a domain.
  *
- * atropos_select_cpu is the primary scheduling logic, invoked when a task
+ * rusty_select_cpu is the primary scheduling logic, invoked when a task
  * becomes runnable. The lb_data map is populated by userspace to inform the BPF
  * scheduler that a task should be migrated to a new domain. Otherwise, the task
  * is scheduled in priority order as follows:
@@ -23,11 +23,11 @@
  * * Any idle cpu in the domain
  *
  * If none of the above conditions are met, then the task is enqueued to a
- * dispatch queue corresponding to the domain (atropos_enqueue).
+ * dispatch queue corresponding to the domain (rusty_enqueue).
  *
- * atropos_dispatch will attempt to consume a task from its domain's
+ * rusty_dispatch will attempt to consume a task from its domain's
  * corresponding dispatch queue (this occurs after scheduling any tasks directly
- * assigned to it due to the logic in atropos_select_cpu). If no task is found,
+ * assigned to it due to the logic in rusty_select_cpu). If no task is found,
  * then greedy load stealing will attempt to find a task on another dispatch
  * queue to run.
  *
@@ -36,7 +36,7 @@
  * load balance based on userspace populating the lb_data map.
  */
 #include "../../../scx_common.bpf.h"
-#include "atropos.h"
+#include "rusty.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -110,7 +110,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(key_size, sizeof(u32));
 	__uint(value_size, sizeof(u64));
-	__uint(max_entries, ATROPOS_NR_STATS);
+	__uint(max_entries, RUSTY_NR_STATS);
 } stats SEC(".maps");
 
 static inline void stat_add(enum stat_idx idx, u64 addend)
@@ -270,7 +270,7 @@ static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
 	return task_ctx->dom_id == new_dom_id;
 }
 
-s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
+s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 		   u64 wake_flags)
 {
 	struct cpumask *idle_smtmask = scx_bpf_get_idle_smtmask();
@@ -289,7 +289,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	if (kthreads_local &&
 	    (p->flags & PF_KTHREAD) && p->nr_cpus_allowed == 1) {
 		cpu = prev_cpu;
-		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
+		stat_add(RUSTY_STAT_DIRECT_DISPATCH, 1);
 		goto direct;
 	}
 
@@ -330,7 +330,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 			if (has_idle) {
 				cpu = bpf_get_smp_processor_id();
 				if (bpf_cpumask_test_cpu(cpu, p->cpus_ptr)) {
-					stat_add(ATROPOS_STAT_WAKE_SYNC, 1);
+					stat_add(RUSTY_STAT_WAKE_SYNC, 1);
 					goto direct;
 				}
 			}
@@ -339,7 +339,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 
 	/* If only one CPU is allowed, dispatch */
 	if (p->nr_cpus_allowed == 1) {
-		stat_add(ATROPOS_STAT_PINNED, 1);
+		stat_add(RUSTY_STAT_PINNED, 1);
 		cpu = prev_cpu;
 		goto direct;
 	}
@@ -358,7 +358,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	if (prev_domestic) {
 		if (bpf_cpumask_test_cpu(prev_cpu, idle_smtmask) &&
 		    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
-			stat_add(ATROPOS_STAT_PREV_IDLE, 1);
+			stat_add(RUSTY_STAT_PREV_IDLE, 1);
 			cpu = prev_cpu;
 			goto direct;
 		}
@@ -373,7 +373,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 					 direct_greedy_cpumask) &&
 		    bpf_cpumask_test_cpu(prev_cpu, idle_smtmask) &&
 		    scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
-			stat_add(ATROPOS_STAT_GREEDY_IDLE, 1);
+			stat_add(RUSTY_STAT_GREEDY_IDLE, 1);
 			cpu = prev_cpu;
 			goto direct;
 		}
@@ -390,7 +390,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask,
 					    SCX_PICK_IDLE_CORE);
 		if (cpu >= 0) {
-			stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
+			stat_add(RUSTY_STAT_DIRECT_DISPATCH, 1);
 			goto direct;
 		}
 	}
@@ -400,7 +400,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	 * isn't, picking @prev_cpu may improve L1/2 locality.
 	 */
 	if (prev_domestic && scx_bpf_test_and_clear_cpu_idle(prev_cpu)) {
-		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
+		stat_add(RUSTY_STAT_DIRECT_DISPATCH, 1);
 		cpu = prev_cpu;
 		goto direct;
 	}
@@ -408,7 +408,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 	/* If there is any domestic idle CPU, dispatch directly */
 	cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)p_cpumask, 0);
 	if (cpu >= 0) {
-		stat_add(ATROPOS_STAT_DIRECT_DISPATCH, 1);
+		stat_add(RUSTY_STAT_DIRECT_DISPATCH, 1);
 		goto direct;
 	}
 
@@ -434,7 +434,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 							    domc->direct_greedy_cpumask,
 							    SCX_PICK_IDLE_CORE);
 				if (cpu >= 0) {
-					stat_add(ATROPOS_STAT_DIRECT_GREEDY, 1);
+					stat_add(RUSTY_STAT_DIRECT_GREEDY, 1);
 					goto direct;
 				}
 			}
@@ -444,7 +444,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 							    direct_greedy_cpumask,
 							    SCX_PICK_IDLE_CORE);
 				if (cpu >= 0) {
-					stat_add(ATROPOS_STAT_DIRECT_GREEDY_FAR, 1);
+					stat_add(RUSTY_STAT_DIRECT_GREEDY_FAR, 1);
 					goto direct;
 				}
 			}
@@ -457,7 +457,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 			cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
 						    domc->direct_greedy_cpumask, 0);
 			if (cpu >= 0) {
-				stat_add(ATROPOS_STAT_DIRECT_GREEDY, 1);
+				stat_add(RUSTY_STAT_DIRECT_GREEDY, 1);
 				goto direct;
 			}
 		}
@@ -466,7 +466,7 @@ s32 BPF_STRUCT_OPS(atropos_select_cpu, struct task_struct *p, s32 prev_cpu,
 			cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
 						    direct_greedy_cpumask, 0);
 			if (cpu >= 0) {
-				stat_add(ATROPOS_STAT_DIRECT_GREEDY_FAR, 1);
+				stat_add(RUSTY_STAT_DIRECT_GREEDY_FAR, 1);
 				goto direct;
 			}
 		}
@@ -496,7 +496,7 @@ enoent:
 	return -ENOENT;
 }
 
-void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
+void BPF_STRUCT_OPS(rusty_enqueue, struct task_struct *p, u64 enq_flags)
 {
 	struct task_ctx *task_ctx;
 	struct bpf_cpumask *p_cpumask;
@@ -516,7 +516,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 	new_dom = bpf_map_lookup_elem(&lb_data, &pid);
 	if (new_dom && *new_dom != task_ctx->dom_id &&
 	    task_set_domain(task_ctx, p, *new_dom, false)) {
-		stat_add(ATROPOS_STAT_LOAD_BALANCE, 1);
+		stat_add(RUSTY_STAT_LOAD_BALANCE, 1);
 		task_ctx->dispatch_local = false;
 		cpu = scx_bpf_pick_any_cpu((const struct cpumask *)p_cpumask, 0);
 		if (cpu >= 0)
@@ -541,7 +541,7 @@ void BPF_STRUCT_OPS(atropos_enqueue, struct task_struct *p, u64 enq_flags)
 	if (!bpf_cpumask_test_cpu(scx_bpf_task_cpu(p), (const struct cpumask *)p_cpumask)) {
 		cpu = scx_bpf_pick_any_cpu((const struct cpumask *)p_cpumask, 0);
 		scx_bpf_kick_cpu(cpu, 0);
-		stat_add(ATROPOS_STAT_REPATRIATE, 1);
+		stat_add(RUSTY_STAT_REPATRIATE, 1);
 	}
 
 dom_queue:
@@ -589,7 +589,7 @@ dom_queue:
 		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
 					    kick_greedy_cpumask, 0);
 		if (cpu >= 0) {
-			stat_add(ATROPOS_STAT_KICK_GREEDY, 1);
+			stat_add(RUSTY_STAT_KICK_GREEDY, 1);
 			scx_bpf_kick_cpu(cpu, 0);
 		}
 	}
@@ -628,12 +628,12 @@ static u32 dom_rr_next(s32 cpu)
 	return dom_id;
 }
 
-void BPF_STRUCT_OPS(atropos_dispatch, s32 cpu, struct task_struct *prev)
+void BPF_STRUCT_OPS(rusty_dispatch, s32 cpu, struct task_struct *prev)
 {
 	u32 dom = cpu_to_dom_id(cpu);
 
 	if (scx_bpf_consume(dom)) {
-		stat_add(ATROPOS_STAT_DSQ_DISPATCH, 1);
+		stat_add(RUSTY_STAT_DSQ_DISPATCH, 1);
 		return;
 	}
 
@@ -645,13 +645,13 @@ void BPF_STRUCT_OPS(atropos_dispatch, s32 cpu, struct task_struct *prev)
 
 		if (scx_bpf_dsq_nr_queued(dom_id) >= greedy_threshold &&
 		    scx_bpf_consume(dom_id)) {
-			stat_add(ATROPOS_STAT_GREEDY, 1);
+			stat_add(RUSTY_STAT_GREEDY, 1);
 			break;
 		}
 	}
 }
 
-void BPF_STRUCT_OPS(atropos_runnable, struct task_struct *p, u64 enq_flags)
+void BPF_STRUCT_OPS(rusty_runnable, struct task_struct *p, u64 enq_flags)
 {
 	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
@@ -665,7 +665,7 @@ void BPF_STRUCT_OPS(atropos_runnable, struct task_struct *p, u64 enq_flags)
 	task_ctx->is_kworker = p->flags & PF_WQ_WORKER;
 }
 
-void BPF_STRUCT_OPS(atropos_running, struct task_struct *p)
+void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
 {
 	struct task_ctx *taskc;
 	struct dom_ctx *domc;
@@ -698,7 +698,7 @@ void BPF_STRUCT_OPS(atropos_running, struct task_struct *p)
 		domc->vtime_now = p->scx.dsq_vtime;
 }
 
-void BPF_STRUCT_OPS(atropos_stopping, struct task_struct *p, bool runnable)
+void BPF_STRUCT_OPS(rusty_stopping, struct task_struct *p, bool runnable)
 {
 	if (fifo_sched)
 		return;
@@ -707,7 +707,7 @@ void BPF_STRUCT_OPS(atropos_stopping, struct task_struct *p, bool runnable)
 	p->scx.dsq_vtime += (slice_ns - p->scx.slice) * 100 / p->scx.weight;
 }
 
-void BPF_STRUCT_OPS(atropos_quiescent, struct task_struct *p, u64 deq_flags)
+void BPF_STRUCT_OPS(rusty_quiescent, struct task_struct *p, u64 deq_flags)
 {
 	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
@@ -721,7 +721,7 @@ void BPF_STRUCT_OPS(atropos_quiescent, struct task_struct *p, u64 deq_flags)
 	task_ctx->runnable_at = 0;
 }
 
-void BPF_STRUCT_OPS(atropos_set_weight, struct task_struct *p, u32 weight)
+void BPF_STRUCT_OPS(rusty_set_weight, struct task_struct *p, u32 weight)
 {
 	struct task_ctx *task_ctx;
 	pid_t pid = p->pid;
@@ -777,7 +777,7 @@ static void task_pick_and_set_domain(struct task_ctx *task_ctx,
 			      dom_id, p->comm, p->pid);
 }
 
-void BPF_STRUCT_OPS(atropos_set_cpumask, struct task_struct *p,
+void BPF_STRUCT_OPS(rusty_set_cpumask, struct task_struct *p,
 		    const struct cpumask *cpumask)
 {
 	struct task_ctx *task_ctx;
@@ -793,7 +793,7 @@ void BPF_STRUCT_OPS(atropos_set_cpumask, struct task_struct *p,
 	task_ctx->all_cpus = bpf_cpumask_full(cpumask);
 }
 
-s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
+s32 BPF_STRUCT_OPS(rusty_prep_enable, struct task_struct *p,
 		   struct scx_enable_args *args)
 {
 	struct bpf_cpumask *cpumask;
@@ -806,7 +806,7 @@ s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
 	pid = p->pid;
 	ret = bpf_map_update_elem(&task_data, &pid, &task_ctx, BPF_NOEXIST);
 	if (ret) {
-		stat_add(ATROPOS_STAT_TASK_GET_ERR, 1);
+		stat_add(RUSTY_STAT_TASK_GET_ERR, 1);
 		return ret;
 	}
 
@@ -838,12 +838,12 @@ s32 BPF_STRUCT_OPS(atropos_prep_enable, struct task_struct *p,
 	return 0;
 }
 
-void BPF_STRUCT_OPS(atropos_disable, struct task_struct *p)
+void BPF_STRUCT_OPS(rusty_disable, struct task_struct *p)
 {
 	pid_t pid = p->pid;
 	long ret = bpf_map_delete_elem(&task_data, &pid);
 	if (ret) {
-		stat_add(ATROPOS_STAT_TASK_GET_ERR, 1);
+		stat_add(RUSTY_STAT_TASK_GET_ERR, 1);
 		return;
 	}
 }
@@ -919,7 +919,7 @@ static s32 create_dom(u32 dom_id)
 	return 0;
 }
 
-s32 BPF_STRUCT_OPS_SLEEPABLE(atropos_init)
+s32 BPF_STRUCT_OPS_SLEEPABLE(rusty_init)
 {
 	struct bpf_cpumask *cpumask;
 	s32 i, ret;
@@ -953,26 +953,26 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(atropos_init)
 	return 0;
 }
 
-void BPF_STRUCT_OPS(atropos_exit, struct scx_exit_info *ei)
+void BPF_STRUCT_OPS(rusty_exit, struct scx_exit_info *ei)
 {
 	bpf_probe_read_kernel_str(exit_msg, sizeof(exit_msg), ei->msg);
 	exit_type = ei->type;
 }
 
 SEC(".struct_ops.link")
-struct sched_ext_ops atropos = {
-	.select_cpu		= (void *)atropos_select_cpu,
-	.enqueue		= (void *)atropos_enqueue,
-	.dispatch		= (void *)atropos_dispatch,
-	.runnable		= (void *)atropos_runnable,
-	.running		= (void *)atropos_running,
-	.stopping		= (void *)atropos_stopping,
-	.quiescent		= (void *)atropos_quiescent,
-	.set_weight		= (void *)atropos_set_weight,
-	.set_cpumask		= (void *)atropos_set_cpumask,
-	.prep_enable		= (void *)atropos_prep_enable,
-	.disable		= (void *)atropos_disable,
-	.init			= (void *)atropos_init,
-	.exit			= (void *)atropos_exit,
-	.name			= "atropos",
+struct sched_ext_ops rusty = {
+	.select_cpu		= (void *)rusty_select_cpu,
+	.enqueue		= (void *)rusty_enqueue,
+	.dispatch		= (void *)rusty_dispatch,
+	.runnable		= (void *)rusty_runnable,
+	.running		= (void *)rusty_running,
+	.stopping		= (void *)rusty_stopping,
+	.quiescent		= (void *)rusty_quiescent,
+	.set_weight		= (void *)rusty_set_weight,
+	.set_cpumask		= (void *)rusty_set_cpumask,
+	.prep_enable		= (void *)rusty_prep_enable,
+	.disable		= (void *)rusty_disable,
+	.init			= (void *)rusty_init,
+	.exit			= (void *)rusty_exit,
+	.name			= "rusty",
 };

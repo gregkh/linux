@@ -2,10 +2,10 @@
 
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
-#[path = "bpf/.output/atropos.skel.rs"]
-mod atropos;
-pub use atropos::*;
-pub mod atropos_sys;
+#[path = "bpf/.output/rusty.skel.rs"]
+mod rusty;
+pub use rusty::*;
+pub mod rusty_sys;
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -34,7 +34,7 @@ use log::trace;
 use log::warn;
 use ordered_float::OrderedFloat;
 
-/// Atropos is a multi-domain BPF / userspace hybrid scheduler where the BPF
+/// scx_rusty is a multi-domain BPF / userspace hybrid scheduler where the BPF
 /// part does simple round robin in each domain and the userspace part
 /// calculates the load factor of each domain and tells the BPF part how to load
 /// balance the domains.
@@ -45,9 +45,9 @@ use ordered_float::OrderedFloat;
 /// chiplet in a six-chiplet AMD processor, and could match the performance of
 /// production setup using CFS.
 ///
-/// WARNING: Atropos currently assumes that all domains have equal
-/// processing power and at similar distances from each other. This
-/// limitation will be removed in the future.
+/// WARNING: scx_rusty currently assumes that all domains have equal processing
+/// power and at similar distances from each other. This limitation will be
+/// removed in the future.
 #[derive(Debug, Parser)]
 struct Opts {
     /// Scheduling slice duration in microseconds.
@@ -226,16 +226,16 @@ struct Topology {
 
 impl Topology {
     fn from_cpumasks(cpumasks: &[String], nr_cpus: usize) -> Result<Self> {
-        if cpumasks.len() > atropos_sys::MAX_DOMS as usize {
+        if cpumasks.len() > rusty_sys::MAX_DOMS as usize {
             bail!(
                 "Number of requested domains ({}) is greater than MAX_DOMS ({})",
                 cpumasks.len(),
-                atropos_sys::MAX_DOMS
+                rusty_sys::MAX_DOMS
             );
         }
         let mut cpu_dom = vec![None; nr_cpus];
         let mut dom_cpus =
-            vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; cpumasks.len()];
+            vec![bitvec![u64, Lsb0; 0; rusty_sys::MAX_CPUS as usize]; cpumasks.len()];
         for (dom, cpumask) in cpumasks.iter().enumerate() {
             let hex_str = {
                 let mut tmp_str = cpumask
@@ -339,17 +339,17 @@ impl Topology {
             nr_doms += 1;
         }
 
-        if nr_doms > atropos_sys::MAX_DOMS as usize {
+        if nr_doms > rusty_sys::MAX_DOMS as usize {
             bail!(
                 "Total number of doms {} is greater than MAX_DOMS ({})",
                 nr_doms,
-                atropos_sys::MAX_DOMS
+                rusty_sys::MAX_DOMS
             );
         }
 
         // Build and return dom -> cpumask and cpu -> dom mappings.
         let mut dom_cpus =
-            vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; nr_doms];
+            vec![bitvec![u64, Lsb0; 0; rusty_sys::MAX_CPUS as usize]; nr_doms];
         let mut cpu_dom = vec![];
 
         for (cpu, cache) in cpu_to_cache.iter().enumerate().take(nr_cpus) {
@@ -401,7 +401,7 @@ impl Tuner {
         })
     }
 
-    fn step(&mut self, skel: &mut AtroposSkel) -> Result<()> {
+    fn step(&mut self, skel: &mut RustySkel) -> Result<()> {
         let curr_cpu_stats = self
             .proc_reader
             .read_stat()?
@@ -483,7 +483,7 @@ struct TaskInfo {
 }
 
 struct LoadBalancer<'a, 'b, 'c> {
-    maps: AtroposMapsMut<'a>,
+    maps: RustyMapsMut<'a>,
     top: Arc<Topology>,
     task_loads: &'b mut BTreeMap<i32, TaskLoad>,
     load_decay_factor: f64,
@@ -520,7 +520,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
     const LOAD_IMBAL_PUSH_MAX_RATIO: f64 = 0.50;
 
     fn new(
-        maps: AtroposMapsMut<'a>,
+        maps: RustyMapsMut<'a>,
         top: Arc<Topology>,
         task_loads: &'b mut BTreeMap<i32, TaskLoad>,
         load_decay_factor: f64,
@@ -560,7 +560,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                 .context("Failed to lookup task_data")?
             {
                 let task_ctx =
-                    unsafe { &*(task_ctx_vec.as_slice().as_ptr() as *const atropos_sys::task_ctx) };
+                    unsafe { &*(task_ctx_vec.as_slice().as_ptr() as *const rusty_sys::task_ctx) };
                 let pid = i32::from_ne_bytes(
                     key.as_slice()
                         .try_into()
@@ -830,7 +830,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
 }
 
 struct Scheduler<'a> {
-    skel: AtroposSkel<'a>,
+    skel: RustySkel<'a>,
     struct_ops: Option<libbpf_rs::Link>,
 
     sched_interval: Duration,
@@ -854,16 +854,16 @@ struct Scheduler<'a> {
 impl<'a> Scheduler<'a> {
     fn init(opts: &Opts) -> Result<Self> {
         // Open the BPF prog first for verification.
-        let mut skel_builder = AtroposSkelBuilder::default();
+        let mut skel_builder = RustySkelBuilder::default();
         skel_builder.obj_builder.debug(opts.verbose > 0);
         let mut skel = skel_builder.open().context("Failed to open BPF program")?;
 
         let nr_cpus = libbpf_rs::num_possible_cpus().unwrap();
-        if nr_cpus > atropos_sys::MAX_CPUS as usize {
+        if nr_cpus > rusty_sys::MAX_CPUS as usize {
             bail!(
                 "nr_cpus ({}) is greater than MAX_CPUS ({})",
                 nr_cpus,
-                atropos_sys::MAX_CPUS
+                rusty_sys::MAX_CPUS
             );
         }
 
@@ -905,11 +905,11 @@ impl<'a> Scheduler<'a> {
         skel.attach().context("Failed to attach BPF program")?;
         let struct_ops = Some(
             skel.maps_mut()
-                .atropos()
+                .rusty()
                 .attach_struct_ops()
-                .context("Failed to attach atropos struct ops")?,
+                .context("Failed to attach rusty struct ops")?,
         );
-        info!("Atropos Scheduler Attached");
+        info!("Rusty Scheduler Attached");
 
         // Other stuff.
         let proc_reader = procfs::ProcReader::new();
@@ -996,7 +996,7 @@ impl<'a> Scheduler<'a> {
         let mut stats: Vec<u64> = Vec::new();
         let zero_vec = vec![vec![0u8; stats_map.value_size() as usize]; self.top.nr_cpus];
 
-        for stat in 0..atropos_sys::stat_idx_ATROPOS_NR_STATS {
+        for stat in 0..rusty_sys::stat_idx_RUSTY_NR_STATS {
             let cpu_stat_vec = stats_map
                 .lookup_percpu(&stat.to_ne_bytes(), libbpf_rs::MapFlags::ANY)
                 .with_context(|| format!("Failed to lookup stat {}", stat))?
@@ -1033,22 +1033,22 @@ impl<'a> Scheduler<'a> {
         imbal: &[f64],
     ) {
         let stat = |idx| stats[idx as usize];
-        let total = stat(atropos_sys::stat_idx_ATROPOS_STAT_WAKE_SYNC)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_PREV_IDLE)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY_IDLE)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_PINNED)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_DISPATCH)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_GREEDY)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_GREEDY_FAR)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_DSQ_DISPATCH)
-            + stat(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY);
+        let total = stat(rusty_sys::stat_idx_RUSTY_STAT_WAKE_SYNC)
+            + stat(rusty_sys::stat_idx_RUSTY_STAT_PREV_IDLE)
+            + stat(rusty_sys::stat_idx_RUSTY_STAT_GREEDY_IDLE)
+            + stat(rusty_sys::stat_idx_RUSTY_STAT_PINNED)
+            + stat(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_DISPATCH)
+            + stat(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_GREEDY)
+            + stat(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_GREEDY_FAR)
+            + stat(rusty_sys::stat_idx_RUSTY_STAT_DSQ_DISPATCH)
+            + stat(rusty_sys::stat_idx_RUSTY_STAT_GREEDY);
 
         info!(
             "cpu={:7.2} bal={} load_avg={:8.2} task_err={} lb_data_err={} proc={:?}ms",
             cpu_busy * 100.0,
-            stats[atropos_sys::stat_idx_ATROPOS_STAT_LOAD_BALANCE as usize],
+            stats[rusty_sys::stat_idx_RUSTY_STAT_LOAD_BALANCE as usize],
             load_avg,
-            stats[atropos_sys::stat_idx_ATROPOS_STAT_TASK_GET_ERR as usize],
+            stats[rusty_sys::stat_idx_RUSTY_STAT_TASK_GET_ERR as usize],
             self.nr_lb_data_errors,
             processing_dur.as_millis(),
         );
@@ -1058,25 +1058,25 @@ impl<'a> Scheduler<'a> {
         info!(
             "tot={:7} wsync={:5.2} prev_idle={:5.2} greedy_idle={:5.2} pin={:5.2}",
             total,
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_WAKE_SYNC),
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_PREV_IDLE),
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY_IDLE),
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_PINNED),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_WAKE_SYNC),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_PREV_IDLE),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_GREEDY_IDLE),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_PINNED),
         );
 
         info!(
             "dir={:5.2} dir_greedy={:5.2} dir_greedy_far={:5.2}",
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_DISPATCH),
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_GREEDY),
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DIRECT_GREEDY_FAR),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_DISPATCH),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_GREEDY),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_GREEDY_FAR),
         );
 
         info!(
             "dsq={:5.2} greedy={:5.2} kick_greedy={:5.2} rep={:5.2}",
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_DSQ_DISPATCH),
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_GREEDY),
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_KICK_GREEDY),
-            stat_pct(atropos_sys::stat_idx_ATROPOS_STAT_REPATRIATE),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_DSQ_DISPATCH),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_GREEDY),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_KICK_GREEDY),
+            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_REPATRIATE),
         );
 
         let ti = &self.skel.bss().tune_input;
