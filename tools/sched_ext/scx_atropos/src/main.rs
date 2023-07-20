@@ -159,11 +159,11 @@ fn format_cpumask(cpumask: &[u64], nr_cpus: usize) -> String {
 }
 
 fn read_total_cpu(reader: &procfs::ProcReader) -> Result<procfs::CpuStat> {
-    Ok(reader
+    reader
         .read_stat()
         .context("Failed to read procfs")?
         .total_cpu
-        .ok_or_else(|| anyhow!("Could not read total cpu stat in proc"))?)
+        .ok_or_else(|| anyhow!("Could not read total cpu stat in proc"))
 }
 
 fn calc_util(curr: &procfs::CpuStat, prev: &procfs::CpuStat) -> Result<f64> {
@@ -205,9 +205,9 @@ fn calc_util(curr: &procfs::CpuStat, prev: &procfs::CpuStat) -> Result<f64> {
                 user_usec + system_usec + nice_usec + irq_usec + softirq_usec + stolen_usec;
             let total_usec = idle_usec + busy_usec + iowait_usec;
             if total_usec > 0 {
-                return Ok(((busy_usec as f64) / (total_usec as f64)).clamp(0.0, 1.0));
+                Ok(((busy_usec as f64) / (total_usec as f64)).clamp(0.0, 1.0))
             } else {
-                return Ok(1.0);
+                Ok(1.0)
             }
         }
         _ => {
@@ -319,8 +319,8 @@ impl Topology {
             };
 
             cpu_to_cache.push(id);
-            if id.is_some() {
-                cache_ids.insert(id.unwrap());
+            if let Some(id) = id {
+                cache_ids.insert(id);
             }
         }
 
@@ -349,13 +349,13 @@ impl Topology {
 
         // Build and return dom -> cpumask and cpu -> dom mappings.
         let mut dom_cpus =
-            vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; nr_doms as usize];
+            vec![bitvec![u64, Lsb0; 0; atropos_sys::MAX_CPUS as usize]; nr_doms];
         let mut cpu_dom = vec![];
 
-        for cpu in 0..nr_cpus {
-            match cpu_to_cache[cpu] {
+        for (cpu, cache) in cpu_to_cache.iter().enumerate().take(nr_cpus) {
+            match cache {
                 Some(cache_id) => {
-                    let dom_id = cache_to_dom[&cache_id];
+                    let dom_id = cache_to_dom[cache_id];
                     dom_cpus[dom_id].set(cpu, true);
                     cpu_dom.push(Some(dom_id));
                 }
@@ -868,7 +868,7 @@ impl<'a> Scheduler<'a> {
         }
 
         // Initialize skel according to @opts.
-        let top = Arc::new(if opts.cpumasks.len() > 0 {
+        let top = Arc::new(if !opts.cpumasks.is_empty() {
             Topology::from_cpumasks(&opts.cpumasks, nr_cpus)?
         } else {
             Topology::from_cache_level(opts.cache_level, nr_cpus)?
@@ -939,7 +939,7 @@ impl<'a> Scheduler<'a> {
     }
 
     fn get_cpu_busy(&mut self) -> Result<f64> {
-        let total_cpu = read_total_cpu(&mut self.proc_reader)?;
+        let total_cpu = read_total_cpu(&self.proc_reader)?;
         let busy = match (&self.prev_total_cpu, &total_cpu) {
             (
                 procfs::CpuStat {
@@ -998,7 +998,7 @@ impl<'a> Scheduler<'a> {
 
         for stat in 0..atropos_sys::stat_idx_ATROPOS_NR_STATS {
             let cpu_stat_vec = stats_map
-                .lookup_percpu(&(stat as u32).to_ne_bytes(), libbpf_rs::MapFlags::ANY)
+                .lookup_percpu(&stat.to_ne_bytes(), libbpf_rs::MapFlags::ANY)
                 .with_context(|| format!("Failed to lookup stat {}", stat))?
                 .expect("per-cpu stat should exist");
             let sum = cpu_stat_vec
@@ -1013,7 +1013,7 @@ impl<'a> Scheduler<'a> {
                 .sum();
             stats_map
                 .update_percpu(
-                    &(stat as u32).to_ne_bytes(),
+                    &stat.to_ne_bytes(),
                     &zero_vec,
                     libbpf_rs::MapFlags::ANY,
                 )
@@ -1025,12 +1025,12 @@ impl<'a> Scheduler<'a> {
 
     fn report(
         &mut self,
-        stats: &Vec<u64>,
+        stats: &[u64],
         cpu_busy: f64,
         processing_dur: Duration,
         load_avg: f64,
-        dom_loads: &Vec<f64>,
-        imbal: &Vec<f64>,
+        dom_loads: &[f64],
+        imbal: &[f64],
     ) {
         let stat = |idx| stats[idx as usize];
         let total = stat(atropos_sys::stat_idx_ATROPOS_STAT_WAKE_SYNC)

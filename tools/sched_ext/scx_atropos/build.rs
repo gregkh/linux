@@ -50,7 +50,7 @@ fn gen_bpf_sched(name: &str) {
         .source(src.clone())
         .clang(clang)
         .clang_args(bpf_cflags)
-        .build_and_generate(&skel)
+        .build_and_generate(skel)
         .unwrap();
     println!("cargo:rerun-if-changed={}", src);
 }
