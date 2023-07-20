@@ -30,6 +30,7 @@
 #include "user_exit_info.h"
 #include "scx_userland.h"
 #include "scx_userland.skel.h"
+#include "scx_user_common.h"
 
 const char help_fmt[] =
 "A minimal userland sched_ext scheduler.\n"
@@ -263,7 +264,7 @@ static int spawn_stats_thread(void)
 	return pthread_create(&stats_printer, NULL, run_stats_printer, NULL);
 }
 
-static int bootstrap(int argc, char **argv)
+static void bootstrap(int argc, char **argv)
 {
 	int err;
 	__u32 opt;
@@ -284,10 +285,7 @@ static int bootstrap(int argc, char **argv)
 	 * needs to be scheduled.
 	 */
 	err = syscall(__NR_sched_setscheduler, getpid(), SCHED_EXT, &sched_param);
-	if (err) {
-		fprintf(stderr, "Failed to set scheduler to SCHED_EXT: %s\n", strerror(err));
-		return err;
-	}
+	SCX_BUG_ON(err, "Failed to set scheduler to SCHED_EXT");
 
 	while ((opt = getopt(argc, argv, "b:ph")) != -1) {
 		switch (opt) {
@@ -309,53 +307,28 @@ static int bootstrap(int argc, char **argv)
 	 * to allocate.
 	 */
 	err = mlockall(MCL_CURRENT | MCL_FUTURE);
-	if (err) {
-		fprintf(stderr, "Failed to prefault and lock address space: %s\n",
-			strerror(err));
-		return err;
-	}
+	SCX_BUG_ON(err, "Failed to prefault and lock address space");
 
 	skel = scx_userland__open();
-	if (!skel) {
-		fprintf(stderr, "Failed to open scheduler: %s\n", strerror(errno));
-		return errno;
-	}
+	SCX_BUG_ON(!skel, "Failed to open skel");
+
 	skel->rodata->num_possible_cpus = libbpf_num_possible_cpus();
 	assert(skel->rodata->num_possible_cpus > 0);
 	skel->rodata->usersched_pid = getpid();
 	assert(skel->rodata->usersched_pid > 0);
 	skel->rodata->switch_partial = switch_partial;
 
-	err = scx_userland__load(skel);
-	if (err) {
-		fprintf(stderr, "Failed to load scheduler: %s\n", strerror(err));
-		goto destroy_skel;
-	}
+	SCX_BUG_ON(scx_userland__load(skel), "Failed to load skel");
 
 	enqueued_fd = bpf_map__fd(skel->maps.enqueued);
 	dispatched_fd = bpf_map__fd(skel->maps.dispatched);
 	assert(enqueued_fd > 0);
 	assert(dispatched_fd > 0);
 
-	err = spawn_stats_thread();
-	if (err) {
-		fprintf(stderr, "Failed to spawn stats thread: %s\n", strerror(err));
-		goto destroy_skel;
-	}
+	SCX_BUG_ON(spawn_stats_thread(), "Failed to spawn stats thread");
 
 	ops_link = bpf_map__attach_struct_ops(skel->maps.userland_ops);
-	if (!ops_link) {
-		fprintf(stderr, "Failed to attach struct ops: %s\n", strerror(errno));
-		err = errno;
-		goto destroy_skel;
-	}
-
-	return 0;
-
-destroy_skel:
-	scx_userland__destroy(skel);
-	exit_req = 1;
-	return err;
+	SCX_BUG_ON(!ops_link, "Failed to attach struct_ops");
 }
 
 static void sched_main_loop(void)
@@ -383,14 +356,7 @@ static void sched_main_loop(void)
 
 int main(int argc, char **argv)
 {
-	int err;
-
-	err = bootstrap(argc, argv);
-	if (err) {
-		fprintf(stderr, "Failed to bootstrap scheduler: %s\n", strerror(err));
-		return err;
-	}
-
+	bootstrap(argc, argv);
 	sched_main_loop();
 
 	exit_req = 1;

@@ -8,11 +8,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
-#include <assert.h>
 #include <libgen.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
 #include "scx_qmap.skel.h"
+#include "scx_user_common.h"
 
 const char help_fmt[] =
 "A simple five-level FIFO queue sched_ext scheduler.\n"
@@ -49,7 +49,7 @@ int main(int argc, char **argv)
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
 	skel = scx_qmap__open();
-	assert(skel);
+	SCX_BUG_ON(!skel, "Failed to open skel");
 
 	while ((opt = getopt(argc, argv, "s:e:t:T:l:d:ph")) != -1) {
 		switch (opt) {
@@ -82,10 +82,10 @@ int main(int argc, char **argv)
 		}
 	}
 
-	assert(!scx_qmap__load(skel));
+	SCX_BUG_ON(scx_qmap__load(skel), "Failed to load skel");
 
 	link = bpf_map__attach_struct_ops(skel->maps.qmap_ops);
-	assert(link);
+	SCX_BUG_ON(!link, "Failed to attach struct_ops");
 
 	while (!exit_req && !uei_exited(&skel->bss->uei)) {
 		long nr_enqueued = skel->bss->nr_enqueued;

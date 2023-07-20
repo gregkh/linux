@@ -7,11 +7,11 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
-#include <assert.h>
 #include <libgen.h>
 #include <bpf/bpf.h>
 #include "user_exit_info.h"
 #include "scx_central.skel.h"
+#include "scx_user_common.h"
 
 const char help_fmt[] =
 "A central FIFO sched_ext scheduler.\n"
@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
 	skel = scx_central__open();
-	assert(skel);
+	SCX_BUG_ON(!skel, "Failed to open skel");
 
 	skel->rodata->central_cpu = 0;
 	skel->rodata->nr_cpu_ids = libbpf_num_possible_cpus();
@@ -63,10 +63,10 @@ int main(int argc, char **argv)
 		}
 	}
 
-	assert(!scx_central__load(skel));
+	SCX_BUG_ON(scx_central__load(skel), "Failed to load skel");
 
 	link = bpf_map__attach_struct_ops(skel->maps.central_ops);
-	assert(link);
+	SCX_BUG_ON(!link, "Failed to attach struct_ops");
 
 	while (!exit_req && !uei_exited(&skel->bss->uei)) {
 		printf("[SEQ %llu]\n", seq++);
