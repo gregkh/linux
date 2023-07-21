@@ -11,9 +11,9 @@ use std::path::PathBuf;
 
 use libbpf_cargo::SkeletonBuilder;
 
-const HEADER_PATH: &str = "src/bpf/atropos.h";
+const HEADER_PATH: &str = "src/bpf/rusty.h";
 
-fn bindgen_atropos() {
+fn bindgen_rusty() {
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed={}", HEADER_PATH);
 
@@ -35,13 +35,13 @@ fn bindgen_atropos() {
     // Write the bindings to the $OUT_DIR/bindings.rs file.
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     bindings
-        .write_to_file(out_path.join("atropos-sys.rs"))
+        .write_to_file(out_path.join("rusty_sys.rs"))
         .expect("Couldn't write bindings!");
 }
 
 fn gen_bpf_sched(name: &str) {
-    let bpf_cflags = env::var("ATROPOS_BPF_CFLAGS").unwrap();
-    let clang = env::var("ATROPOS_CLANG").unwrap();
+    let bpf_cflags = env::var("SCX_RUSTY_BPF_CFLAGS").unwrap();
+    let clang = env::var("SCX_RUSTY_CLANG").unwrap();
     eprintln!("{}", clang);
     let outpath = format!("./src/bpf/.output/{}.skel.rs", name);
     let skel = Path::new(&outpath);
@@ -56,7 +56,7 @@ fn gen_bpf_sched(name: &str) {
 }
 
 fn main() {
-    bindgen_atropos();
+    bindgen_rusty();
     // It's unfortunate we cannot use `OUT_DIR` to store the generated skeleton.
     // Reasons are because the generated skeleton contains compiler attributes
     // that cannot be `include!()`ed via macro. And we cannot use the `#[path = "..."]`
@@ -66,5 +66,5 @@ fn main() {
     // However, there is hope! When the above feature stabilizes we can clean this
     // all up.
     create_dir_all("./src/bpf/.output").unwrap();
-    gen_bpf_sched("atropos");
+    gen_bpf_sched("rusty");
 }
