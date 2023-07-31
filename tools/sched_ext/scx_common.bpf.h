@@ -179,8 +179,9 @@ bool bpf_cpumask_subset(const struct cpumask *src1, const struct cpumask *src2) 
 bool bpf_cpumask_empty(const struct cpumask *cpumask) __ksym;
 bool bpf_cpumask_full(const struct cpumask *cpumask) __ksym;
 void bpf_cpumask_copy(struct bpf_cpumask *dst, const struct cpumask *src) __ksym;
-u32 bpf_cpumask_any(const struct cpumask *cpumask) __ksym;
-u32 bpf_cpumask_any_and(const struct cpumask *src1, const struct cpumask *src2) __ksym;
+u32 bpf_cpumask_any_distribute(const struct cpumask *cpumask) __ksym;
+u32 bpf_cpumask_any_and_distribute(const struct cpumask *src1,
+				   const struct cpumask *src2) __ksym;
 
 /* rcu */
 void bpf_rcu_read_lock(void) __ksym;
