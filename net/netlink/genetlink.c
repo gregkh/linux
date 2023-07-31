@@ -593,8 +593,12 @@ static int genl_validate_ops(const struct genl_family *family)
 			return -EINVAL;
 
 		/* Check sort order */
-		if (a->cmd < b->cmd)
+		if (a->cmd < b->cmd) {
 			continue;
+		} else if (a->cmd > b->cmd) {
+			WARN_ON(1);
+			return -EINVAL;
+		}
 
 		if (a->internal_flags != b->internal_flags ||
 		    ((a->flags ^ b->flags) & ~(GENL_CMD_CAP_DO |
@@ -912,6 +916,7 @@ static int genl_family_rcv_msg_dumpit(const struct genl_family *family,
 			.start = genl_start,
 			.dump = genl_lock_dumpit,
 			.done = genl_lock_done,
+			.extack = extack,
 		};
 
 		genl_unlock();
@@ -924,6 +929,7 @@ static int genl_family_rcv_msg_dumpit(const struct genl_family *family,
 			.start = genl_start,
 			.dump = ops->dumpit,
 			.done = genl_parallel_done,
+			.extack = extack,
 		};
 
 		err = __netlink_dump_start(net->genl_sock, skb, nlh, &c);

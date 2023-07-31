@@ -866,12 +866,12 @@ static int sja1105_init_general_params(struct sja1105_private *priv)
 		.hostprio = 7,
 		.mac_fltres1 = SJA1105_LINKLOCAL_FILTER_A,
 		.mac_flt1    = SJA1105_LINKLOCAL_FILTER_A_MASK,
-		.incl_srcpt1 = false,
-		.send_meta1  = false,
+		.incl_srcpt1 = true,
+		.send_meta1  = true,
 		.mac_fltres0 = SJA1105_LINKLOCAL_FILTER_B,
 		.mac_flt0    = SJA1105_LINKLOCAL_FILTER_B_MASK,
-		.incl_srcpt0 = false,
-		.send_meta0  = false,
+		.incl_srcpt0 = true,
+		.send_meta0  = true,
 		/* Default to an invalid value */
 		.mirr_port = priv->ds->num_ports,
 		/* No TTEthernet */
@@ -1395,12 +1395,6 @@ static void sja1105_phylink_get_caps(struct dsa_switch *ds, int port,
 	struct sja1105_private *priv = ds->priv;
 	struct sja1105_xmii_params_entry *mii;
 	phy_interface_t phy_mode;
-
-	/* This driver does not make use of the speed, duplex, pause or the
-	 * advertisement in its mac_config, so it is safe to mark this driver
-	 * as non-legacy.
-	 */
-	config->legacy_pre_march2020 = false;
 
 	phy_mode = priv->phy_mode[port];
 	if (phy_mode == PHY_INTERFACE_MODE_SGMII ||
@@ -2215,7 +2209,6 @@ static int sja1105_reload_cbs(struct sja1105_private *priv)
 
 static const char * const sja1105_reset_reasons[] = {
 	[SJA1105_VLAN_FILTERING] = "VLAN filtering",
-	[SJA1105_RX_HWTSTAMPING] = "RX timestamping",
 	[SJA1105_AGEING_TIME] = "Ageing time",
 	[SJA1105_SCHEDULING] = "Time-aware scheduling",
 	[SJA1105_BEST_EFFORT_POLICING] = "Best-effort policing",
@@ -2314,7 +2307,7 @@ int sja1105_static_config_reload(struct sja1105_private *priv,
 
 	for (i = 0; i < ds->num_ports; i++) {
 		struct dw_xpcs *xpcs = priv->xpcs[i];
-		unsigned int mode;
+		unsigned int neg_mode;
 
 		rc = sja1105_adjust_port_config(priv, i, speed_mbps[i]);
 		if (rc < 0)
@@ -2324,17 +2317,15 @@ int sja1105_static_config_reload(struct sja1105_private *priv,
 			continue;
 
 		if (bmcr[i] & BMCR_ANENABLE)
-			mode = MLO_AN_INBAND;
-		else if (priv->fixed_link[i])
-			mode = MLO_AN_FIXED;
+			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
 		else
-			mode = MLO_AN_PHY;
+			neg_mode = PHYLINK_PCS_NEG_OUTBAND;
 
-		rc = xpcs_do_config(xpcs, priv->phy_mode[i], mode, NULL);
+		rc = xpcs_do_config(xpcs, priv->phy_mode[i], NULL, neg_mode);
 		if (rc < 0)
 			goto out;
 
-		if (!phylink_autoneg_inband(mode)) {
+		if (neg_mode == PHYLINK_PCS_NEG_OUTBAND) {
 			int speed = SPEED_UNKNOWN;
 
 			if (priv->phy_mode[i] == PHY_INTERFACE_MODE_2500BASEX)
@@ -2346,7 +2337,7 @@ int sja1105_static_config_reload(struct sja1105_private *priv,
 			else
 				speed = SPEED_10;
 
-			xpcs_link_up(&xpcs->pcs, mode, priv->phy_mode[i],
+			xpcs_link_up(&xpcs->pcs, neg_mode, priv->phy_mode[i],
 				     speed, DUPLEX_FULL);
 		}
 	}
@@ -2407,11 +2398,6 @@ int sja1105_vlan_filtering(struct dsa_switch *ds, int port, bool enabled,
 	general_params->tpid = tpid;
 	/* EtherType used to identify outer tagged (S-tag) VLAN traffic */
 	general_params->tpid2 = tpid2;
-	/* When VLAN filtering is on, we need to at least be able to
-	 * decode management traffic through the "backup plan".
-	 */
-	general_params->incl_srcpt1 = enabled;
-	general_params->incl_srcpt0 = enabled;
 
 	for (port = 0; port < ds->num_ports; port++) {
 		if (dsa_is_unused_port(ds, port))

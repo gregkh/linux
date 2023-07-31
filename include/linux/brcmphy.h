@@ -44,6 +44,7 @@
 #define PHY_ID_BCM7366			0x600d8490
 #define PHY_ID_BCM7346			0x600d8650
 #define PHY_ID_BCM7362			0x600d84b0
+#define PHY_ID_BCM74165			0x359052c0
 #define PHY_ID_BCM7425			0x600d86b0
 #define PHY_ID_BCM7429			0x600d8730
 #define PHY_ID_BCM7435			0x600d8750
@@ -161,6 +162,7 @@
 #define BCM_LED_SRC_OPENSHORT	0xb
 #define BCM_LED_SRC_OFF		0xe	/* Tied high */
 #define BCM_LED_SRC_ON		0xf	/* Tied low */
+#define BCM_LED_SRC_MASK	GENMASK(3, 0)
 
 /*
  * Broadcom Multicolor LED configurations (expansion register 4)
@@ -206,11 +208,13 @@
 #define  BCM_NO_ANEG_APD_EN		0x0060 /* bits 5 & 6 */
 #define  BCM_APD_SINGLELP_EN	0x0100 /* Bit 8 */
 
-#define BCM5482_SHD_LEDS1	0x0d	/* 01101: LED Selector 1 */
+#define BCM54XX_SHD_LEDS1	0x0d	/* 01101: LED Selector 1 */
 					/* LED3 / ~LINKSPD[2] selector */
-#define BCM5482_SHD_LEDS1_LED3(src)	((src & 0xf) << 4)
+#define BCM54XX_SHD_LEDS_SHIFT(led)	(4 * (led))
+#define BCM54XX_SHD_LEDS1_LED3(src)	((src & 0xf) << 4)
 					/* LED1 / ~LINKSPD[1] selector */
-#define BCM5482_SHD_LEDS1_LED1(src)	((src & 0xf) << 0)
+#define BCM54XX_SHD_LEDS1_LED1(src)	((src & 0xf) << 0)
+#define BCM54XX_SHD_LEDS2	0x0e	/* 01110: LED Selector 2 */
 #define BCM54XX_SHD_RGMII_MODE	0x0b	/* 01011: RGMII Mode Selector */
 #define BCM5482_SHD_SSD		0x14	/* 10100: Secondary SerDes control */
 #define BCM5482_SHD_SSD_LEDM	0x0008	/* SSD LED Mode enable */
@@ -358,6 +362,8 @@
 #define BRCM_CL45VEN_EEE_CONTROL	0x803d
 #define LPI_FEATURE_EN			0x8000
 #define LPI_FEATURE_EN_DIG1000X		0x4000
+
+#define BRCM_CL45VEN_EEE_LPI_CNT	0x803f
 
 /* Core register definitions*/
 #define MII_BRCM_CORE_BASE12	0x12
