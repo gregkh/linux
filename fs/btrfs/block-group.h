@@ -70,6 +70,11 @@ enum btrfs_block_group_flags {
 	BLOCK_GROUP_FLAG_NEEDS_FREE_SPACE,
 	/* Indicate that the block group is placed on a sequential zone */
 	BLOCK_GROUP_FLAG_SEQUENTIAL_ZONE,
+	/*
+	 * Indicate that block group is in the list of new block groups of a
+	 * transaction.
+	 */
+	BLOCK_GROUP_FLAG_NEW,
 };
 
 enum btrfs_caching_type {
@@ -162,7 +167,14 @@ struct btrfs_block_group {
 	 */
 	struct list_head cluster_list;
 
-	/* For delayed block group creation or deletion of empty block groups */
+	/*
+	 * Used for several lists:
+	 *
+	 * 1) struct btrfs_fs_info::unused_bgs
+	 * 2) struct btrfs_fs_info::reclaim_bgs
+	 * 3) struct btrfs_transaction::deleted_bgs
+	 * 4) struct btrfs_trans_handle::new_bgs
+	 */
 	struct list_head bg_list;
 
 	/* For read-only block groups */

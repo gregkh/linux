@@ -3,6 +3,7 @@
 name: ovs_flow
 version: 1
 protocol: genetlink-legacy
+uapi-header: linux/openvswitch.h
 
 doc:
   OVS flow configuration over generic netlink.
@@ -33,6 +34,20 @@ definitions:
         type: u64
         doc: Number of matched bytes.
   -
+    name: ovs-key-ethernet
+    type: struct
+    members:
+      -
+        name: eth-src
+        type: binary
+        len: 6
+        display-hint: mac
+      -
+        name: eth-dst
+        type: binary
+        len: 6
+        display-hint: mac
+  -
     name: ovs-key-mpls
     type: struct
     members:
@@ -48,10 +63,12 @@ definitions:
         name: ipv4-src
         type: u32
         byte-order: big-endian
+        display-hint: ipv4
       -
         name: ipv4-dst
         type: u32
         byte-order: big-endian
+        display-hint: ipv4
       -
         name: ipv4-proto
         type: u8
@@ -66,7 +83,47 @@ definitions:
         type: u8
         enum: ovs-frag-type
   -
+    name: ovs-key-ipv6
+    type: struct
+    members:
+      -
+        name: ipv6-src
+        type: binary
+        len: 16
+        byte-order: big-endian
+        display-hint: ipv6
+      -
+        name: ipv6-dst
+        type: binary
+        len: 16
+        byte-order: big-endian
+        display-hint: ipv6
+      -
+        name: ipv6-label
+        type: u32
+        byte-order: big-endian
+      -
+        name: ipv6-proto
+        type: u8
+      -
+        name: ipv6-tclass
+        type: u8
+      -
+        name: ipv6-hlimit
+        type: u8
+      -
+        name: ipv6-frag
+        type: u8
+  -
+    name: ovs-key-ipv6-exthdrs
+    type: struct
+    members:
+      -
+        name: hdrs
+        type: u16
+  -
     name: ovs-frag-type
+    name-prefix: ovs-frag-type-
     type: enum
     entries:
       -
@@ -128,6 +185,51 @@ definitions:
         name: icmp-code
         type: u8
   -
+    name: ovs-key-arp
+    type: struct
+    members:
+      -
+        name: arp-sip
+        type: u32
+        byte-order: big-endian
+      -
+        name: arp-tip
+        type: u32
+        byte-order: big-endian
+      -
+        name: arp-op
+        type: u16
+        byte-order: big-endian
+      -
+        name: arp-sha
+        type: binary
+        len: 6
+        display-hint: mac
+      -
+        name: arp-tha
+        type: binary
+        len: 6
+        display-hint: mac
+  -
+    name: ovs-key-nd
+    type: struct
+    members:
+      -
+        name: nd_target
+        type: binary
+        len: 16
+        byte-order: big-endian
+      -
+        name: nd-sll
+        type: binary
+        len: 6
+        display-hint: mac
+      -
+        name: nd-tll
+        type: binary
+        len: 6
+        display-hint: mac
+  -
     name: ovs-key-ct-tuple-ipv4
     type: struct
     members:
@@ -166,6 +268,7 @@ definitions:
         doc: Tag control identifier (TCI) to push.
   -
     name: ovs-ufid-flags
+    name-prefix: ovs-ufid-f-
     type: flags
     entries:
       - omit-key
@@ -176,7 +279,7 @@ definitions:
     type: struct
     members:
       -
-        name: hash-algorithm
+        name: hash-alg
         type: u32
         doc: Algorithm used to compute hash prior to recirculation.
       -
@@ -198,13 +301,13 @@ definitions:
     type: struct
     members:
       -
-        name: lse
+        name: mpls-lse
         type: u32
         byte-order: big-endian
         doc: |
           MPLS label stack entry to push
       -
-        name: ethertype
+        name: mpls-ethertype
         type: u32
         byte-order: big-endian
         doc: |
@@ -216,13 +319,13 @@ definitions:
     type: struct
     members:
       -
-        name: lse
+        name: mpls-lse
         type: u32
         byte-order: big-endian
         doc: |
           MPLS label stack entry to push
       -
-        name: ethertype
+        name: mpls-ethertype
         type: u32
         byte-order: big-endian
         doc: |
@@ -237,6 +340,7 @@ definitions:
   -
     name: ct-state-flags
     type: flags
+    name-prefix: ovs-cs-f-
     entries:
       -
         name: new
@@ -266,6 +370,8 @@ definitions:
 attribute-sets:
   -
     name: flow-attrs
+    enum-name: ovs-flow-attr
+    name-prefix: ovs-flow-attr-
     attributes:
       -
         name: key
@@ -339,6 +445,7 @@ attribute-sets:
           value of the OVS_FLOW_ATTR_KEY attribute. Optional for all
           requests. Present in notifications if the flow was created with this
           attribute.
+        display-hint: uuid
       -
         name: ufid-flags
         type: u32
@@ -352,6 +459,8 @@ attribute-sets:
 
   -
     name: key-attrs
+    enum-name: ovs-key-attr
+    name-prefix: ovs-key-attr-
     attributes:
       -
         name: encap
@@ -366,6 +475,7 @@ attribute-sets:
       -
         name: ethernet
         type: binary
+        struct: ovs-key-ethernet
         doc: struct ovs_key_ethernet
       -
         name: vlan
@@ -382,6 +492,7 @@ attribute-sets:
       -
         name: ipv6
         type: binary
+        struct: ovs-key-ipv6
         doc: struct ovs_key_ipv6
       -
         name: tcp
@@ -402,10 +513,12 @@ attribute-sets:
       -
         name: arp
         type: binary
+        struct: ovs-key-arp
         doc: struct ovs_key_arp
       -
         name: nd
         type: binary
+        struct: ovs-key-nd
         doc: struct ovs_key_nd
       -
         name: skb-mark
@@ -449,6 +562,7 @@ attribute-sets:
       -
         name: ct-labels
         type: binary
+        display-hint: hex
         doc: 16-octet connection tracking label
       -
         name: ct-orig-tuple-ipv4
@@ -478,9 +592,12 @@ attribute-sets:
       -
         name: ipv6-exthdrs
         type: binary
+        struct: ovs-key-ipv6-exthdrs
         doc: struct ovs_key_ipv6_exthdr
   -
     name: action-attrs
+    enum-name: ovs-action-attr
+    name-prefix: ovs-action-attr-
     attributes:
       -
         name: output
@@ -608,6 +725,8 @@ attribute-sets:
         nested-attributes: dec-ttl-attrs
   -
     name: tunnel-key-attrs
+    enum-name: ovs-tunnel-key-attr
+    name-prefix: ovs-tunnel-key-attr-
     attributes:
       -
         name: id
@@ -676,6 +795,8 @@ attribute-sets:
         type: flag
   -
     name: check-pkt-len-attrs
+    enum-name: ovs-check-pkt-len-attr
+    name-prefix: ovs-check-pkt-len-attr-
     attributes:
       -
         name: pkt-len
@@ -690,6 +811,8 @@ attribute-sets:
         nested-attributes: action-attrs
   -
     name: sample-attrs
+    enum-name: ovs-sample-attr
+    name-prefix: ovs-sample-attr-
     attributes:
       -
         name: probability
@@ -700,6 +823,8 @@ attribute-sets:
         nested-attributes: action-attrs
   -
     name: userspace-attrs
+    enum-name: ovs-userspace-attr
+    name-prefix: ovs-userspace-attr-
     attributes:
       -
         name: pid
@@ -715,6 +840,8 @@ attribute-sets:
         type: flag
   -
     name: ovs-nsh-key-attrs
+    enum-name: ovs-nsh-key-attr
+    name-prefix: ovs-nsh-key-attr-
     attributes:
       -
         name: base
@@ -727,6 +854,8 @@ attribute-sets:
         type: binary
   -
     name: ct-attrs
+    enum-name: ovs-ct-attr
+    name-prefix: ovs-ct-attr-
     attributes:
       -
         name: commit
@@ -758,13 +887,15 @@ attribute-sets:
         type: string
   -
     name: nat-attrs
+    enum-name: ovs-nat-attr
+    name-prefix: ovs-nat-attr-
     attributes:
       -
         name: src
-        type: binary
+        type: flag
       -
         name: dst
-        type: binary
+        type: flag
       -
         name: ip-min
         type: binary
@@ -773,21 +904,23 @@ attribute-sets:
         type: binary
       -
         name: proto-min
-        type: binary
+        type: u16
       -
         name: proto-max
-        type: binary
+        type: u16
       -
         name: persistent
-        type: binary
+        type: flag
       -
         name: proto-hash
-        type: binary
+        type: flag
       -
         name: proto-random
-        type: binary
+        type: flag
   -
     name: dec-ttl-attrs
+    enum-name: ovs-dec-ttl-attr
+    name-prefix: ovs-dec-ttl-attr-
     attributes:
       -
         name: action
@@ -795,16 +928,19 @@ attribute-sets:
         nested-attributes: action-attrs
   -
     name: vxlan-ext-attrs
+    enum-name: ovs-vxlan-ext-
+    name-prefix: ovs-vxlan-ext-
     attributes:
       -
         name: gbp
         type: u32
 
 operations:
+  name-prefix: ovs-flow-cmd-
   fixed-header: ovs-header
   list:
     -
-      name: flow-get
+      name: get
       doc: Get / dump OVS flow configuration and state
       value: 3
       attribute-set: flow-attrs
@@ -824,6 +960,19 @@ operations:
             - stats
             - actions
       dump: *flow-get-op
+    -
+      name: new
+      doc: Create OVS flow configuration in a data path
+      value: 1
+      attribute-set: flow-attrs
+      do:
+        request:
+          attributes:
+            - dp-ifindex
+            - key
+            - ufid
+            - mask
+            - actions
 
 mcast-groups:
   list:

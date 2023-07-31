@@ -163,7 +163,7 @@ static inline struct rtable *ip_route_output(struct net *net, __be32 daddr,
 }
 
 static inline struct rtable *ip_route_output_ports(struct net *net, struct flowi4 *fl4,
-						   struct sock *sk,
+						   const struct sock *sk,
 						   __be32 daddr, __be32 saddr,
 						   __be16 dport, __be16 sport,
 						   __u8 proto, __u8 tos, int oif)
@@ -309,7 +309,7 @@ static inline void ip_route_connect_init(struct flowi4 *fl4, __be32 dst,
 static inline struct rtable *ip_route_connect(struct flowi4 *fl4, __be32 dst,
 					      __be32 src, int oif, u8 protocol,
 					      __be16 sport, __be16 dport,
-					      struct sock *sk)
+					      const struct sock *sk)
 {
 	struct net *net = sock_net(sk);
 	struct rtable *rt;
@@ -321,8 +321,7 @@ static inline struct rtable *ip_route_connect(struct flowi4 *fl4, __be32 dst,
 		if (IS_ERR(rt))
 			return rt;
 		ip_rt_put(rt);
-		flowi4_update_output(fl4, oif, fl4->flowi4_tos, fl4->daddr,
-				     fl4->saddr);
+		flowi4_update_output(fl4, oif, fl4->daddr, fl4->saddr);
 	}
 	security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
 	return ip_route_output_flow(net, fl4, sk);
@@ -331,14 +330,13 @@ static inline struct rtable *ip_route_connect(struct flowi4 *fl4, __be32 dst,
 static inline struct rtable *ip_route_newports(struct flowi4 *fl4, struct rtable *rt,
 					       __be16 orig_sport, __be16 orig_dport,
 					       __be16 sport, __be16 dport,
-					       struct sock *sk)
+					       const struct sock *sk)
 {
 	if (sport != orig_sport || dport != orig_dport) {
 		fl4->fl4_dport = dport;
 		fl4->fl4_sport = sport;
 		ip_rt_put(rt);
-		flowi4_update_output(fl4, sk->sk_bound_dev_if,
-				     RT_CONN_FLAGS(sk), fl4->daddr,
+		flowi4_update_output(fl4, sk->sk_bound_dev_if, fl4->daddr,
 				     fl4->saddr);
 		security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
 		return ip_route_output_flow(sock_net(sk), fl4, sk);

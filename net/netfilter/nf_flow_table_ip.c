@@ -8,6 +8,7 @@
 #include <linux/ipv6.h>
 #include <linux/netdevice.h>
 #include <linux/if_ether.h>
+#include <net/gso.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
 #include <net/ip6_route.h>
@@ -387,7 +388,7 @@ static int nf_flow_offload_forward(struct nf_flowtable_ctx *ctx,
 	if (skb_try_make_writable(skb, thoff + ctx->hdrsize))
 		return -1;
 
-	flow_offload_refresh(flow_table, flow);
+	flow_offload_refresh(flow_table, flow, false);
 
 	nf_flow_encap_pop(skb, tuplehash);
 	thoff -= ctx->offset;
@@ -666,7 +667,7 @@ static int nf_flow_offload_ipv6_forward(struct nf_flowtable_ctx *ctx,
 	if (skb_try_make_writable(skb, thoff + ctx->hdrsize))
 		return -1;
 
-	flow_offload_refresh(flow_table, flow);
+	flow_offload_refresh(flow_table, flow, false);
 
 	nf_flow_encap_pop(skb, tuplehash);
 
