@@ -30,15 +30,12 @@ There are a few toolchain dependencies for compiling the example schedulers.
 Toolchain dependencies
 ----------------------
 
-1. clang >= 17.0
+1. clang >= 16.0.0
 
 The schedulers are BPF programs, and therefore must be compiled with clang. gcc
 is actively working on adding a BPF backend compiler as well, but are still
 missing some features such as BTF type tags which are necessary for using
 kptrs.
-
-clang 17.0 has not yet been released, so you'll need to compile it yourself if
-you want to compile the benchmarks.
 
 2. rustup nightly
 
