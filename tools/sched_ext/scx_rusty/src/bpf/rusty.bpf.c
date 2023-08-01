@@ -273,7 +273,7 @@ static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
 s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 		   u64 wake_flags)
 {
-	struct cpumask *idle_smtmask = scx_bpf_get_idle_smtmask();
+	const struct cpumask *idle_smtmask = scx_bpf_get_idle_smtmask();
 	struct task_ctx *task_ctx;
 	struct bpf_cpumask *p_cpumask;
 	pid_t pid = p->pid;
@@ -933,7 +933,7 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(rusty_init)
 			return ret;
 	}
 
-	for (u32 i = 0; i < nr_cpus; i++)
+	bpf_for(i, 0, nr_cpus)
 		pcpu_ctx[i].dom_rr_cur = i;
 
 	cpumask = bpf_cpumask_create();
