@@ -42,7 +42,7 @@ you want to compile the benchmarks.
 
 2. rustup nightly
 
-Atropos's user space load balancing component is written in Rust, and uses
+Rusty's user space load balancing component is written in Rust, and uses
 nightly features. You'll need to use the nightly build from rustup in order to
 compile it.
 
@@ -67,8 +67,8 @@ schedulers.
 
 --------------------------------------------------------------------------------
 
-Atropos
--------
+Rusty
+-----
 
 Overview
 ~~~~~~~~
@@ -81,16 +81,17 @@ how tasks should be load balanced accordingly.
 Typical Use Case
 ~~~~~~~~~~~~~~~~
 
-Atropos is designed to be flexible, and accommodate different architectures and
+Rusty is designed to be flexible, and accommodate different architectures and
 workloads. Various load balancing thresholds (e.g. greediness, frequenty, etc),
-as well as how Atropos should partition the system into scheduling domains, can
+as well as how Rusty should partition the system into scheduling domains, can
 be tuned to achieve the optimal configuration for any given system or workload.
 
 Production Ready?
 ~~~~~~~~~~~~~~~~~
 
-Yes. If tuned correctly, Atropos should be performant across various CPU
-architectures and workloads.
+Yes. If tuned correctly, Rusty should be performant across various CPU
+architectures and workloads. Rusty by default creates a separate scheduling
+domain per-LLC, so its default configuration may be performant as well.
 
 --------------------------------------------------------------------------------
 
@@ -235,7 +236,7 @@ Overview
 ~~~~~~~~
 
 A simple weighted vtime scheduler where all scheduling decisions take place in
-user space. This is in contrast to Atropos, where load balancing lives in user
+user space. This is in contrast to Rusty, where load balancing lives in user
 space, but scheduling decisions are still made in the kernel.
 
 Typical Use Case
