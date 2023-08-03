@@ -352,7 +352,8 @@ struct sched_ext_ops {
 	 *
 	 * Update @p's CPU affinity to @cpumask.
 	 */
-	void (*set_cpumask)(struct task_struct *p, struct cpumask *cpumask);
+	void (*set_cpumask)(struct task_struct *p,
+			    const struct cpumask *cpumask);
 
 	/**
 	 * update_idle - Update the idle state of a CPU
