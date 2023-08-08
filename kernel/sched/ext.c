@@ -4365,17 +4365,25 @@ out:
 }
 #endif
 
-BTF_SET8_START(scx_kfunc_ids_any)
+BTF_SET8_START(scx_kfunc_ids_ops_only)
 BTF_ID_FLAGS(func, scx_bpf_kick_cpu)
 BTF_ID_FLAGS(func, scx_bpf_dsq_nr_queued)
 BTF_ID_FLAGS(func, scx_bpf_test_and_clear_cpu_idle)
 BTF_ID_FLAGS(func, scx_bpf_pick_idle_cpu, KF_RCU)
 BTF_ID_FLAGS(func, scx_bpf_pick_any_cpu, KF_RCU)
+BTF_ID_FLAGS(func, scx_bpf_destroy_dsq)
+BTF_SET8_END(scx_kfunc_ids_ops_only)
+
+static const struct btf_kfunc_id_set scx_kfunc_set_ops_only = {
+	.owner			= THIS_MODULE,
+	.set			= &scx_kfunc_ids_ops_only,
+};
+
+BTF_SET8_START(scx_kfunc_ids_any)
 BTF_ID_FLAGS(func, scx_bpf_get_idle_cpumask, KF_ACQUIRE)
 BTF_ID_FLAGS(func, scx_bpf_get_idle_smtmask, KF_ACQUIRE)
 BTF_ID_FLAGS(func, scx_bpf_put_idle_cpumask, KF_RELEASE)
 BTF_ID_FLAGS(func, scx_bpf_error_bstr, KF_TRUSTED_ARGS)
-BTF_ID_FLAGS(func, scx_bpf_destroy_dsq)
 BTF_ID_FLAGS(func, scx_bpf_task_running, KF_RCU)
 BTF_ID_FLAGS(func, scx_bpf_task_cpu, KF_RCU)
 #ifdef CONFIG_CGROUP_SCHED
@@ -4417,6 +4425,10 @@ static int __init register_ext_kfuncs(void)
 	    (ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_STRUCT_OPS,
 					     &scx_kfunc_set_cpu_release)) ||
 	    (ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_STRUCT_OPS,
+					     &scx_kfunc_set_ops_only)) ||
+	    (ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_STRUCT_OPS,
+					     &scx_kfunc_set_any)) ||
+	    (ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACING,
 					     &scx_kfunc_set_any))) {
 		pr_err("sched_ext: failed to register kfunc sets (%d)\n", ret);
 		return ret;
