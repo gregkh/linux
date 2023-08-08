@@ -94,7 +94,7 @@ struct static_key_false scx_has_op[SCX_NR_ONLINE_OPS] =
 static atomic_t scx_exit_type = ATOMIC_INIT(SCX_EXIT_DONE);
 static struct scx_exit_info scx_exit_info;
 
-static atomic64_t scx_nr_rejected = ATOMIC64_INIT(0);
+static atomic_long_t scx_nr_rejected = ATOMIC_LONG_INIT(0);
 
 /*
  * The maximum amount of time in jiffies that a task may be runnable without
@@ -2248,7 +2248,7 @@ static int scx_ops_prepare_task(struct task_struct *p, struct task_group *tg)
 		 */
 		if (p->policy == SCHED_EXT) {
 			p->policy = SCHED_NORMAL;
-			atomic64_inc(&scx_nr_rejected);
+			atomic_long_inc(&scx_nr_rejected);
 		}
 
 		task_rq_unlock(rq, p, &rf);
@@ -3200,7 +3200,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	atomic_set(&scx_exit_type, SCX_EXIT_NONE);
 	scx_warned_zero_slice = false;
 
-	atomic64_set(&scx_nr_rejected, 0);
+	atomic_long_set(&scx_nr_rejected, 0);
 
 	/*
 	 * Keep CPUs stable during enable so that the BPF scheduler can track
@@ -3414,8 +3414,8 @@ static int scx_debug_show(struct seq_file *m, void *v)
 	seq_printf(m, "%-30s: %ld\n", "switched_all", scx_switched_all());
 	seq_printf(m, "%-30s: %s\n", "enable_state",
 		   scx_ops_enable_state_str[scx_ops_enable_state()]);
-	seq_printf(m, "%-30s: %llu\n", "nr_rejected",
-		   atomic64_read(&scx_nr_rejected));
+	seq_printf(m, "%-30s: %lu\n", "nr_rejected",
+		   atomic_long_read(&scx_nr_rejected));
 	mutex_unlock(&scx_ops_enable_mutex);
 	return 0;
 }
