@@ -129,7 +129,7 @@ static struct {
 #endif	/* CONFIG_SMP */
 
 /* for %SCX_KICK_WAIT */
-static u64 __percpu *scx_kick_cpus_pnt_seqs;
+static unsigned long __percpu *scx_kick_cpus_pnt_seqs;
 
 /*
  * Direct dispatch marker.
@@ -3634,7 +3634,7 @@ static const struct sysrq_key_op sysrq_sched_ext_reset_op = {
 static void kick_cpus_irq_workfn(struct irq_work *irq_work)
 {
 	struct rq *this_rq = this_rq();
-	u64 *pseqs = this_cpu_ptr(scx_kick_cpus_pnt_seqs);
+	unsigned long *pseqs = this_cpu_ptr(scx_kick_cpus_pnt_seqs);
 	int this_cpu = cpu_of(this_rq);
 	int cpu;
 
