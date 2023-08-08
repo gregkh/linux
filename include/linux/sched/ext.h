@@ -651,7 +651,7 @@ struct sched_ext_entity {
 	s32			holding_cpu;
 	u32			kf_mask;	/* see scx_kf_mask above */
 	struct task_struct	*kf_tasks[2];	/* see SCX_CALL_OP_TASK() */
-	atomic64_t		ops_state;
+	atomic_long_t		ops_state;
 	unsigned long		runnable_at;
 #ifdef CONFIG_SCHED_CORE
 	u64			core_sched_at;	/* see scx_prio_less() */
