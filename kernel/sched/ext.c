@@ -55,11 +55,18 @@ enum scx_ops_state {
 	 * QSEQ brands each QUEUED instance so that, when dispatch races
 	 * dequeue/requeue, the dispatcher can tell whether it still has a claim
 	 * on the task being dispatched.
+	 *
+	 * As some 32bit archs can't do 64bit store_release/load_acquire,
+	 * p->scx.ops_state is atomic_long_t which leaves 30 bits for QSEQ on
+	 * 32bit machines. The dispatch race window QSEQ protects is very narrow
+	 * and runs with IRQ disabled. 30 bits should be sufficient.
 	 */
 	SCX_OPSS_QSEQ_SHIFT	= 2,
-	SCX_OPSS_STATE_MASK	= (1LLU << SCX_OPSS_QSEQ_SHIFT) - 1,
-	SCX_OPSS_QSEQ_MASK	= ~SCX_OPSS_STATE_MASK,
 };
+
+/* Use macros to ensure that the type is unsigned long for the masks */
+#define SCX_OPSS_STATE_MASK	((1LU << SCX_OPSS_QSEQ_SHIFT) - 1)
+#define SCX_OPSS_QSEQ_MASK	(~SCX_OPSS_STATE_MASK)
 
 /*
  * During exit, a task may schedule after losing its PIDs. When disabling the
@@ -155,7 +162,7 @@ static LLIST_HEAD(dsqs_to_free);
 /* dispatch buf */
 struct scx_dsp_buf_ent {
 	struct task_struct	*task;
-	u64			qseq;
+	unsigned long		qseq;
 	u64			dsq_id;
 	u64			enq_flags;
 };
@@ -491,11 +498,11 @@ static bool scx_ops_disabling(void)
  * has load_acquire semantics to ensure that the caller can see the updates made
  * in the enqueueing and dispatching paths.
  */
-static void wait_ops_state(struct task_struct *p, u64 opss)
+static void wait_ops_state(struct task_struct *p, unsigned long opss)
 {
 	do {
 		cpu_relax();
-	} while (atomic64_read_acquire(&p->scx.ops_state) == opss);
+	} while (atomic_long_read_acquire(&p->scx.ops_state) == opss);
 }
 
 /**
@@ -645,7 +652,7 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 	 * match waiters' load_acquire.
 	 */
 	if (enq_flags & SCX_ENQ_CLEAR_OPSS)
-		atomic64_set_release(&p->scx.ops_state, SCX_OPSS_NONE);
+		atomic_long_set_release(&p->scx.ops_state, SCX_OPSS_NONE);
 
 	if (is_local) {
 		struct rq *rq = container_of(dsq, struct rq, scx.local_dsq);
@@ -811,7 +818,7 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 			    int sticky_cpu)
 {
 	struct task_struct **ddsp_taskp;
-	u64 qseq;
+	unsigned long qseq;
 
 	WARN_ON_ONCE(!(p->scx.flags & SCX_TASK_QUEUED));
 
@@ -852,8 +859,8 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	/* DSQ bypass didn't trigger, enqueue on the BPF scheduler */
 	qseq = rq->scx.ops_qseq++ << SCX_OPSS_QSEQ_SHIFT;
 
-	WARN_ON_ONCE(atomic64_read(&p->scx.ops_state) != SCX_OPSS_NONE);
-	atomic64_set(&p->scx.ops_state, SCX_OPSS_QUEUEING | qseq);
+	WARN_ON_ONCE(atomic_long_read(&p->scx.ops_state) != SCX_OPSS_NONE);
+	atomic_long_set(&p->scx.ops_state, SCX_OPSS_QUEUEING | qseq);
 
 	ddsp_taskp = this_cpu_ptr(&direct_dispatch_task);
 	WARN_ON_ONCE(*ddsp_taskp);
@@ -866,7 +873,7 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	 * dequeue may be waiting. The store_release matches their load_acquire.
 	 */
 	if (*ddsp_taskp == p)
-		atomic64_set_release(&p->scx.ops_state, SCX_OPSS_QUEUED | qseq);
+		atomic_long_set_release(&p->scx.ops_state, SCX_OPSS_QUEUED | qseq);
 	*ddsp_taskp = NULL;
 	return;
 
@@ -948,12 +955,12 @@ static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags
 
 static void ops_dequeue(struct task_struct *p, u64 deq_flags)
 {
-	u64 opss;
+	unsigned long opss;
 
 	watchdog_unwatch_task(p, false);
 
 	/* acquire ensures that we see the preceding updates on QUEUED */
-	opss = atomic64_read_acquire(&p->scx.ops_state);
+	opss = atomic_long_read_acquire(&p->scx.ops_state);
 
 	switch (opss & SCX_OPSS_STATE_MASK) {
 	case SCX_OPSS_NONE:
@@ -968,8 +975,8 @@ static void ops_dequeue(struct task_struct *p, u64 deq_flags)
 		if (SCX_HAS_OP(dequeue))
 			SCX_CALL_OP_TASK(SCX_KF_REST, dequeue, p, deq_flags);
 
-		if (atomic64_try_cmpxchg(&p->scx.ops_state, &opss,
-					 SCX_OPSS_NONE))
+		if (atomic_long_try_cmpxchg(&p->scx.ops_state, &opss,
+					    SCX_OPSS_NONE))
 			break;
 		fallthrough;
 	case SCX_OPSS_DISPATCHING:
@@ -987,7 +994,7 @@ static void ops_dequeue(struct task_struct *p, u64 deq_flags)
 		 * Explicitly wait on %SCX_OPSS_DISPATCHING instead of @opss.
 		 */
 		wait_ops_state(p, SCX_OPSS_DISPATCHING);
-		BUG_ON(atomic64_read(&p->scx.ops_state) != SCX_OPSS_NONE);
+		BUG_ON(atomic_long_read(&p->scx.ops_state) != SCX_OPSS_NONE);
 		break;
 	}
 }
@@ -1338,7 +1345,7 @@ dispatch_to_local_dsq(struct rq *rq, struct rq_flags *rf, u64 dsq_id,
 		p->scx.holding_cpu = raw_smp_processor_id();
 
 		/* store_release ensures that dequeue sees the above */
-		atomic64_set_release(&p->scx.ops_state, SCX_OPSS_NONE);
+		atomic_long_set_release(&p->scx.ops_state, SCX_OPSS_NONE);
 
 		dispatch_to_local_dsq_lock(rq, rf, src_rq, locked_dst_rq);
 
@@ -1406,11 +1413,12 @@ dispatch_to_local_dsq(struct rq *rq, struct rq_flags *rf, u64 dsq_id,
  * BPF scheduler and claim the ownership before dispatching.
  */
 static void finish_dispatch(struct rq *rq, struct rq_flags *rf,
-			    struct task_struct *p, u64 qseq_at_dispatch,
+			    struct task_struct *p,
+			    unsigned long qseq_at_dispatch,
 			    u64 dsq_id, u64 enq_flags)
 {
 	struct scx_dispatch_q *dsq;
-	u64 opss;
+	unsigned long opss;
 
 	touch_core_sched_dispatch(rq, p);
 retry:
@@ -1418,7 +1426,7 @@ retry:
 	 * No need for _acquire here. @p is accessed only after a successful
 	 * try_cmpxchg to DISPATCHING.
 	 */
-	opss = atomic64_read(&p->scx.ops_state);
+	opss = atomic_long_read(&p->scx.ops_state);
 
 	switch (opss & SCX_OPSS_STATE_MASK) {
 	case SCX_OPSS_DISPATCHING:
@@ -1441,8 +1449,8 @@ retry:
 		 * claim @p by atomically transitioning it from QUEUED to
 		 * DISPATCHING.
 		 */
-		if (likely(atomic64_try_cmpxchg(&p->scx.ops_state, &opss,
-						SCX_OPSS_DISPATCHING)))
+		if (likely(atomic_long_try_cmpxchg(&p->scx.ops_state, &opss,
+						   SCX_OPSS_DISPATCHING)))
 			break;
 		goto retry;
 	case SCX_OPSS_QUEUEING:
@@ -3819,7 +3827,7 @@ static void scx_dispatch_commit(struct task_struct *p, u64 dsq_id, u64 enq_flags
 
 	this_cpu_ptr(scx_dsp_buf)[idx] = (struct scx_dsp_buf_ent){
 		.task = p,
-		.qseq = atomic64_read(&p->scx.ops_state) & SCX_OPSS_QSEQ_MASK,
+		.qseq = atomic_long_read(&p->scx.ops_state) & SCX_OPSS_QSEQ_MASK,
 		.dsq_id = dsq_id,
 		.enq_flags = enq_flags,
 	};
@@ -4011,7 +4019,8 @@ u32 scx_bpf_reenqueue_local(void)
 		struct task_struct *p;
 
 		p = first_local_task(rq);
-		WARN_ON_ONCE(atomic64_read(&p->scx.ops_state) != SCX_OPSS_NONE);
+		WARN_ON_ONCE(atomic_long_read(&p->scx.ops_state) !=
+			     SCX_OPSS_NONE);
 		WARN_ON_ONCE(!(p->scx.flags & SCX_TASK_QUEUED));
 		WARN_ON_ONCE(p->scx.holding_cpu != -1);
 		dispatch_dequeue(scx_rq, p);
