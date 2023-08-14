@@ -63,6 +63,10 @@ int main(int argc, char **argv)
 		}
 	}
 
+	/* Resize arrays so their element count is equal to cpu count. */
+	RESIZE_ARRAY(data, cpu_gimme_task, skel->rodata->nr_cpu_ids);
+	RESIZE_ARRAY(data, cpu_started_at, skel->rodata->nr_cpu_ids);
+
 	SCX_BUG_ON(scx_central__load(skel), "Failed to load skel");
 
 	link = bpf_map__attach_struct_ops(skel->maps.central_ops);
