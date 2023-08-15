@@ -653,7 +653,7 @@ static void  pm8001_post_sas_ha_init(struct Scsi_Host *shost,
 	sha->lldd_module = THIS_MODULE;
 	sha->sas_addr = &pm8001_ha->sas_addr[0];
 	sha->num_phys = chip_info->n_phy;
-	sha->core.shost = shost;
+	sha->shost = shost;
 }
 
 /**
