@@ -2667,7 +2667,7 @@ out:
 	return ret;
 }
 
-static void kiocb_end_write(struct io_kiocb *req)
+static void io_req_end_write(struct io_kiocb *req)
 {
 	/*
 	 * Tell lockdep we inherited freeze protection from submission
@@ -2737,7 +2737,7 @@ static void io_req_io_end(struct io_kiocb *req)
 	struct io_rw *rw = &req->rw;
 
 	if (rw->kiocb.ki_flags & IOCB_WRITE) {
-		kiocb_end_write(req);
+		io_req_end_write(req);
 		fsnotify_modify(req->file);
 	} else {
 		fsnotify_access(req->file);
@@ -2817,7 +2817,7 @@ static void io_complete_rw_iopoll(struct kiocb *kiocb, long res, long res2)
 	struct io_kiocb *req = container_of(kiocb, struct io_kiocb, rw.kiocb);
 
 	if (kiocb->ki_flags & IOCB_WRITE)
-		kiocb_end_write(req);
+		io_req_end_write(req);
 	if (unlikely(res != req->result)) {
 		if (res == -EAGAIN && io_rw_should_reissue(req)) {
 			req->flags |= REQ_F_REISSUE;
@@ -3817,7 +3817,7 @@ copy_iov:
 		ret = io_setup_async_rw(req, iovec, inline_vecs, iter, false);
 		if (!ret) {
 			if (kiocb->ki_flags & IOCB_WRITE)
-				kiocb_end_write(req);
+				io_req_end_write(req);
 			return -EAGAIN;
 		}
 		return ret;
