@@ -3485,7 +3485,7 @@ static int bpf_scx_btf_struct_access(struct bpf_verifier_log *log,
 			return SCALAR_VALUE;
 	}
 
-	return 0;
+	return -EACCES;
 }
 
 static const struct bpf_func_proto *
