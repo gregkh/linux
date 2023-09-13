@@ -9,7 +9,8 @@
 	chassis-type = "embedded";
 
 	aliases {
-		serial0 = &blsp1_uart2;
+		mmc0 = &sdhc_1; /* eMMC */
+		serial0 = &blsp_uart2;
 	};
 
 	chosen {
@@ -82,11 +83,11 @@
 	status = "okay";
 };
 
-&blsp1_uart2 {
+&blsp_uart2 {
 	status = "okay";
 };
 
-/* Remove &dsi_phy0 from clocks to make sure that gcc probes with display disabled */
+/* Remove &mdss_dsi0_phy from clocks to make sure that gcc probes with display disabled */
 &gcc {
 	clocks = <&xo_board>, <&sleep_clk>, <0>, <0>, <0>, <0>, <0>;
 };
@@ -100,16 +101,12 @@
 };
 
 &sdhc_1 {
-	pinctrl-0 = <&sdc1_clk_on &sdc1_cmd_on &sdc1_data_on>;
-	pinctrl-1 = <&sdc1_clk_off &sdc1_cmd_off &sdc1_data_off>;
-	pinctrl-names = "default", "sleep";
-
 	status = "okay";
 };
 
 &usb {
 	extcon = <&pm8916_usbin>;
-	dr_mode = "peripheral";
+	usb-role-switch;
 
 	status = "okay";
 };

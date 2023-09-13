@@ -28,7 +28,9 @@
 	chassis-type = "handset";
 
 	aliases {
-		serial0 = &blsp1_uart2;
+		mmc0 = &sdhc_1; /* eMMC */
+		mmc1 = &sdhc_2; /* SD card */
+		serial0 = &blsp_uart2;
 	};
 
 	chosen {
@@ -217,9 +219,9 @@
 		compatible = "yamaha,yas537";
 		reg = <0x2e>;
 
-		mount-matrix =  "0",  "1",  "0",
-				"1",  "0",  "0",
-				"0",  "0", "-1";
+		mount-matrix = "0",  "1",  "0",
+			       "1",  "0",  "0",
+			       "0",  "0", "-1";
 	};
 };
 
@@ -259,7 +261,7 @@
 	};
 };
 
-&blsp1_uart2 {
+&blsp_uart2 {
 	status = "okay";
 };
 
@@ -274,19 +276,10 @@
 
 &sdhc_1 {
 	status = "okay";
-
-	pinctrl-names = "default", "sleep";
-	pinctrl-0 = <&sdc1_clk_on &sdc1_cmd_on &sdc1_data_on>;
-	pinctrl-1 = <&sdc1_clk_off &sdc1_cmd_off &sdc1_data_off>;
 };
 
 &sdhc_2 {
 	status = "okay";
-
-	pinctrl-names = "default", "sleep";
-	pinctrl-0 = <&sdc2_clk_on &sdc2_cmd_on &sdc2_data_on>;
-	pinctrl-1 = <&sdc2_clk_off &sdc2_cmd_off &sdc2_data_off>;
-
 	non-removable;
 
 	/*

@@ -18,8 +18,10 @@
 	compatible = "qcom,apq8016-sbc", "qcom,apq8016";
 
 	aliases {
-		serial0 = &blsp1_uart2;
-		serial1 = &blsp1_uart1;
+		mmc0 = &sdhc_1; /* eMMC */
+		mmc1 = &sdhc_2; /* SD card */
+		serial0 = &blsp_uart2;
+		serial1 = &blsp_uart1;
 		usid0 = &pm8916_0;
 		i2c0 = &blsp_i2c2;
 		i2c1 = &blsp_i2c6;
@@ -211,7 +213,7 @@
 			port@0 {
 				reg = <0>;
 				adv7533_in: endpoint {
-					remote-endpoint = <&dsi0_out>;
+					remote-endpoint = <&mdss_dsi0_out>;
 				};
 			};
 
@@ -243,12 +245,12 @@
 	label = "LS-SPI0";
 };
 
-&blsp1_uart1 {
+&blsp_uart1 {
 	status = "okay";
 	label = "LS-UART0";
 };
 
-&blsp1_uart2 {
+&blsp_uart2 {
 	status = "okay";
 	label = "LS-UART1";
 };
@@ -301,11 +303,6 @@
 	};
 };
 
-&dsi0_out {
-	data-lanes = <0 1 2 3>;
-	remote-endpoint = <&adv7533_in>;
-};
-
 &lpass {
 	status = "okay";
 };
@@ -318,10 +315,23 @@
 	status = "okay";
 };
 
+&mdss_dsi0_out {
+	data-lanes = <0 1 2 3>;
+	remote-endpoint = <&adv7533_in>;
+};
+
 &mpss {
 	status = "okay";
 
 	firmware-name = "qcom/apq8016/mba.mbn", "qcom/apq8016/modem.mbn";
+};
+
+&pm8916_codec {
+	status = "okay";
+	clocks = <&gcc GCC_CODEC_DIGCODEC_CLK>;
+	clock-names = "mclk";
+	qcom,mbhc-vthreshold-low = <75 150 237 450 500>;
+	qcom,mbhc-vthreshold-high = <75 150 237 450 500>;
 };
 
 &pm8916_resin {
@@ -358,25 +368,16 @@
 	};
 };
 
-&pm8916_s4 {
-	regulator-always-on;
-	regulator-boot-on;
-};
-
 &sdhc_1 {
 	status = "okay";
-
-	pinctrl-names = "default", "sleep";
-	pinctrl-0 = <&sdc1_clk_on &sdc1_cmd_on &sdc1_data_on>;
-	pinctrl-1 = <&sdc1_clk_off &sdc1_cmd_off &sdc1_data_off>;
 };
 
 &sdhc_2 {
 	status = "okay";
 
 	pinctrl-names = "default", "sleep";
-	pinctrl-0 = <&sdc2_clk_on &sdc2_cmd_on &sdc2_data_on &sdc2_cd_on>;
-	pinctrl-1 = <&sdc2_clk_off &sdc2_cmd_off &sdc2_data_off &sdc2_cd_off>;
+	pinctrl-0 = <&sdc2_default &sdc2_cd_default>;
+	pinctrl-1 = <&sdc2_sleep &sdc2_cd_default>;
 
 	cd-gpios = <&tlmm 38 GPIO_ACTIVE_LOW>;
 };
@@ -384,8 +385,8 @@
 &sound {
 	status = "okay";
 
-	pinctrl-0 = <&cdc_pdm_lines_act &ext_sec_tlmm_lines_act &ext_mclk_tlmm_lines_act>;
-	pinctrl-1 = <&cdc_pdm_lines_sus &ext_sec_tlmm_lines_sus &ext_mclk_tlmm_lines_sus>;
+	pinctrl-0 = <&cdc_pdm_default &sec_mi2s_default>;
+	pinctrl-1 = <&cdc_pdm_sleep &sec_mi2s_sleep>;
 	pinctrl-names = "default", "sleep";
 	model = "DB410c";
 	audio-routing =
@@ -408,7 +409,7 @@
 			sound-dai = <&lpass MI2S_PRIMARY>;
 		};
 		codec {
-			sound-dai = <&lpass_codec 0>, <&wcd_codec 0>;
+			sound-dai = <&lpass_codec 0>, <&pm8916_codec 0>;
 		};
 	};
 
@@ -418,7 +419,7 @@
 			sound-dai = <&lpass MI2S_TERTIARY>;
 		};
 		codec {
-			sound-dai = <&lpass_codec 1>, <&wcd_codec 1>;
+			sound-dai = <&lpass_codec 1>, <&pm8916_codec 1>;
 		};
 	};
 };
@@ -434,14 +435,6 @@
 
 &usb_hs_phy {
 	extcon = <&usb_id>;
-};
-
-&wcd_codec {
-	status = "okay";
-	clocks = <&gcc GCC_CODEC_DIGCODEC_CLK>;
-	clock-names = "mclk";
-	qcom,mbhc-vthreshold-low = <75 150 237 450 500>;
-	qcom,mbhc-vthreshold-high = <75 150 237 450 500>;
 };
 
 &wcnss {
@@ -484,15 +477,15 @@
  * 2mA drive strength is not enough when connecting multiple
  * I2C devices with different pull up resistors.
  */
-&i2c2_default {
+&blsp_i2c2_default {
 	drive-strength = <16>;
 };
 
-&i2c4_default {
+&blsp_i2c4_default {
 	drive-strength = <16>;
 };
 
-&i2c6_default {
+&blsp_i2c6_default {
 	drive-strength = <16>;
 };
 
@@ -644,6 +637,13 @@
 		"[DSI2HDMI_MI2S_DATA0]",
 		"USR_LED_2_CTRL", /* GPIO 120 */
 		"SB_HS_ID";
+
+	sdc2_cd_default: sdc2-cd-default-state {
+		pins = "gpio38";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
 
 	tlmm_leds: tlmm-leds-state {
 		pins = "gpio21", "gpio120";

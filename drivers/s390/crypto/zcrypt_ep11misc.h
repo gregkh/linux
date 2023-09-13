@@ -49,6 +49,12 @@ static inline bool is_ep11_keyblob(const u8 *key)
 }
 
 /*
+ * For valid ep11 keyblobs, returns a reference to the wrappingkey verification
+ * pattern. Otherwise NULL.
+ */
+const u8 *ep11_kb_wkvp(const u8 *kblob, size_t kbloblen);
+
+/*
  * Simple check if the key blob is a valid EP11 AES key blob with header.
  * If checkcpacfexport is enabled, the key is also checked for the
  * attributes needed to export this key for CPACF use.
@@ -113,7 +119,8 @@ int ep11_genaeskey(u16 card, u16 domain, u32 keybitsize, u32 keygenflags,
  * Generate EP11 AES secure key with given clear key value.
  */
 int ep11_clr2keyblob(u16 cardnr, u16 domain, u32 keybitsize, u32 keygenflags,
-		     const u8 *clrkey, u8 *keybuf, size_t *keybufsize);
+		     const u8 *clrkey, u8 *keybuf, size_t *keybufsize,
+		     u32 keytype);
 
 /*
  * Build a list of ep11 apqns meeting the following constrains:
@@ -124,14 +131,14 @@ int ep11_clr2keyblob(u16 cardnr, u16 domain, u32 keybitsize, u32 keygenflags,
  * - if minapi > 0 only apqns with API_ord_nr >= minapi
  * - if wkvp != NULL only apqns where the wkvp (EP11_WKVPLEN bytes) matches
  *   to the first EP11_WKVPLEN bytes of the wkvp of the current wrapping
- *   key for this domain. When a wkvp is given there will aways be a re-fetch
+ *   key for this domain. When a wkvp is given there will always be a re-fetch
  *   of the domain info for the potential apqn - so this triggers an request
  *   reply to each apqn eligible.
  * The array of apqn entries is allocated with kmalloc and returned in *apqns;
  * the number of apqns stored into the list is returned in *nr_apqns. One apqn
  * entry is simple a 32 bit value with 16 bit cardnr and 16 bit domain nr and
  * may be casted to struct pkey_apqn. The return value is either 0 for success
- * or a negative errno value. If no apqn meeting the criterias is found,
+ * or a negative errno value. If no apqn meeting the criteria is found,
  * -ENODEV is returned.
  */
 int ep11_findcard2(u32 **apqns, u32 *nr_apqns, u16 cardnr, u16 domain,

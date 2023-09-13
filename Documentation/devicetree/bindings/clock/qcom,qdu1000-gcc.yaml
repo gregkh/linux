@@ -7,8 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: Qualcomm Global Clock & Reset Controller for QDU1000 and QRU1000
 
 maintainers:
-  - Taniya Das <quic_tdas@quicinc.com>
-  - Imran Shaik <quic_imrashai@quicinc.com>
+  - Melody Olvera <quic_molvera@quicinc.com>
 
 description: |
   Qualcomm global clock control module which supports the clocks, resets and
