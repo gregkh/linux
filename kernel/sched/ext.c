@@ -620,7 +620,7 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 	bool is_local = dsq->id == SCX_DSQ_LOCAL;
 
 	WARN_ON_ONCE(p->scx.dsq || !list_empty(&p->scx.dsq_node.fifo));
-	WARN_ON_ONCE((p->scx.flags & SCX_TASK_ON_DSQ_PRIQ) ||
+	WARN_ON_ONCE((p->scx.dsq_flags & SCX_TASK_DSQ_ON_PRIQ) ||
 		     !RB_EMPTY_NODE(&p->scx.dsq_node.priq));
 
 	if (!is_local) {
@@ -635,7 +635,7 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 	}
 
 	if (enq_flags & SCX_ENQ_DSQ_PRIQ) {
-		p->scx.flags |= SCX_TASK_ON_DSQ_PRIQ;
+		p->scx.dsq_flags |= SCX_TASK_DSQ_ON_PRIQ;
 		rb_add_cached(&p->scx.dsq_node.priq, &dsq->priq,
 			      scx_dsq_priq_less);
 	} else {
@@ -675,10 +675,10 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 static void task_unlink_from_dsq(struct task_struct *p,
 				 struct scx_dispatch_q *dsq)
 {
-	if (p->scx.flags & SCX_TASK_ON_DSQ_PRIQ) {
+	if (p->scx.dsq_flags & SCX_TASK_DSQ_ON_PRIQ) {
 		rb_erase_cached(&p->scx.dsq_node.priq, &dsq->priq);
 		RB_CLEAR_NODE(&p->scx.dsq_node.priq);
-		p->scx.flags &= ~SCX_TASK_ON_DSQ_PRIQ;
+		p->scx.dsq_flags &= ~SCX_TASK_DSQ_ON_PRIQ;
 	} else {
 		list_del_init(&p->scx.dsq_node.fifo);
 	}

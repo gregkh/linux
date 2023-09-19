@@ -1,0 +1,67 @@
+diff --git a/include/linux/sched/ext.h b/include/linux/sched/ext.h
+index 8a2d8eaefd33..d62b10de9719 100644
+--- a/include/linux/sched/ext.h
++++ b/include/linux/sched/ext.h
+@@ -692,6 +692,9 @@ struct sched_ext_entity {
+ 	 */
+ 	bool			disallow;	/* reject switching into SCX */
+ 
++	u32			enq_seq;
++	u32			deq_seq;
++
+ 	/* cold fields */
+ 	struct list_head	tasks_node;
+ #ifdef CONFIG_EXT_GROUP_SCHED
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 29fcdd00c184..a601a3038456 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4567,6 +4567,8 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
+ 	atomic64_set(&p->scx.ops_state, 0);
+ 	p->scx.runnable_at	= INITIAL_JIFFIES;
+ 	p->scx.slice		= SCX_SLICE_DFL;
++	p->scx.enq_seq		= 0;
++	p->scx.deq_seq		= 0;
+ #endif
+ 
+ #ifdef CONFIG_PREEMPT_NOTIFIERS
+diff --git a/kernel/sched/ext.c b/kernel/sched/ext.c
+index b7a80233ea08..3ead15a505c4 100644
+--- a/kernel/sched/ext.c
++++ b/kernel/sched/ext.c
+@@ -920,6 +920,8 @@ static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags
+ {
+ 	int sticky_cpu = p->scx.sticky_cpu;
+ 
++	p->scx.enq_seq++;
++
+ 	enq_flags |= rq->scx.extra_enq_flags;
+ 
+ 	if (sticky_cpu >= 0)
+@@ -935,7 +937,8 @@ static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags
+ 		sticky_cpu = cpu_of(rq);
+ 
+ 	if (p->scx.flags & SCX_TASK_QUEUED) {
+-		WARN_ON_ONCE(!watchdog_task_watched(p));
++		if (WARN_ON_ONCE(!watchdog_task_watched(p)))
++			trace_printk("%s[%d] %u:%u WARN\n", p->comm, p->pid, p->scx.enq_seq, p->scx.deq_seq);
+ 		return;
+ 	}
+ 
+@@ -1003,6 +1006,8 @@ static void dequeue_task_scx(struct rq *rq, struct task_struct *p, int deq_flags
+ {
+ 	struct scx_rq *scx_rq = &rq->scx;
+ 
++	p->scx.deq_seq++;
++
+ 	if (!(p->scx.flags & SCX_TASK_QUEUED)) {
+ 		WARN_ON_ONCE(watchdog_task_watched(p));
+ 		return;
+@@ -1720,6 +1725,7 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
+ 	 * have decided that @p should keep running.
+ 	 */
+ 	if (p->scx.flags & SCX_TASK_BAL_KEEP) {
++		trace_printk("%s[%d] %u:%u BAL_KEEP\n", p->comm, p->pid, p->scx.enq_seq, p->scx.deq_seq);
+ 		p->scx.flags &= ~SCX_TASK_BAL_KEEP;
+ 		watchdog_watch_task(rq, p);
+ 		dispatch_enqueue(&rq->scx.local_dsq, p, SCX_ENQ_HEAD);

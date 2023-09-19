@@ -1,0 +1,720 @@
+diff --git a/kernel/sched/ext.c b/kernel/sched/ext.c
+index b7a80233ea08..b9f6e50aaafe 100644
+--- a/kernel/sched/ext.c
++++ b/kernel/sched/ext.c
+@@ -814,8 +814,8 @@ static bool test_rq_online(struct rq *rq)
+ #endif
+ }
+ 
+-static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
+-			    int sticky_cpu)
++static noinline void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
++				     int sticky_cpu)
+ {
+ 	struct task_struct **ddsp_taskp;
+ 	unsigned long qseq;
+@@ -895,12 +895,12 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
+ 	dispatch_enqueue(&scx_dsq_global, p, enq_flags);
+ }
+ 
+-static bool watchdog_task_watched(const struct task_struct *p)
++static noinline bool watchdog_task_watched(const struct task_struct *p)
+ {
+ 	return !list_empty(&p->scx.watchdog_node);
+ }
+ 
+-static void watchdog_watch_task(struct rq *rq, struct task_struct *p)
++static noinline void watchdog_watch_task(struct rq *rq, struct task_struct *p)
+ {
+ 	lockdep_assert_rq_held(rq);
+ 	if (p->scx.flags & SCX_TASK_WATCHDOG_RESET)
+@@ -909,14 +909,14 @@ static void watchdog_watch_task(struct rq *rq, struct task_struct *p)
+ 	list_add_tail(&p->scx.watchdog_node, &rq->scx.watchdog_list);
+ }
+ 
+-static void watchdog_unwatch_task(struct task_struct *p, bool reset_timeout)
++static noinline void watchdog_unwatch_task(struct task_struct *p, bool reset_timeout)
+ {
+ 	list_del_init(&p->scx.watchdog_node);
+ 	if (reset_timeout)
+ 		p->scx.flags |= SCX_TASK_WATCHDOG_RESET;
+ }
+ 
+-static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags)
++static noinline void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags)
+ {
+ 	int sticky_cpu = p->scx.sticky_cpu;
+ 
+@@ -953,7 +953,7 @@ static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags
+ 	do_enqueue_task(rq, p, enq_flags, sticky_cpu);
+ }
+ 
+-static void ops_dequeue(struct task_struct *p, u64 deq_flags)
++static noinline void ops_dequeue(struct task_struct *p, u64 deq_flags)
+ {
+ 	unsigned long opss;
+ 
+@@ -999,7 +999,7 @@ static void ops_dequeue(struct task_struct *p, u64 deq_flags)
+ 	}
+ }
+ 
+-static void dequeue_task_scx(struct rq *rq, struct task_struct *p, int deq_flags)
++static noinline void dequeue_task_scx(struct rq *rq, struct task_struct *p, int deq_flags)
+ {
+ 	struct scx_rq *scx_rq = &rq->scx;
+ 
+@@ -1042,7 +1042,7 @@ static void dequeue_task_scx(struct rq *rq, struct task_struct *p, int deq_flags
+ 	dispatch_dequeue(scx_rq, p);
+ }
+ 
+-static void yield_task_scx(struct rq *rq)
++static noinline void yield_task_scx(struct rq *rq)
+ {
+ 	struct task_struct *p = rq->curr;
+ 
+@@ -1052,7 +1052,7 @@ static void yield_task_scx(struct rq *rq)
+ 		p->scx.slice = 0;
+ }
+ 
+-static bool yield_to_task_scx(struct rq *rq, struct task_struct *to)
++static noinline bool yield_to_task_scx(struct rq *rq, struct task_struct *to)
+ {
+ 	struct task_struct *from = rq->curr;
+ 
+@@ -1087,8 +1087,8 @@ static bool yield_to_task_scx(struct rq *rq, struct task_struct *to)
+  * Returns %true if @p was successfully moved. %false after racing dequeue and
+  * losing.
+  */
+-static bool move_task_to_local_dsq(struct rq *rq, struct task_struct *p,
+-				   u64 enq_flags)
++static noinline bool move_task_to_local_dsq(struct rq *rq, struct task_struct *p,
++					    u64 enq_flags)
+ {
+ 	struct rq *task_rq;
+ 
+@@ -1142,8 +1142,8 @@ static bool move_task_to_local_dsq(struct rq *rq, struct task_struct *p,
+  * @rq stays locked isn't important as long as the state is restored after
+  * dispatch_to_local_dsq_unlock().
+  */
+-static void dispatch_to_local_dsq_lock(struct rq *rq, struct rq_flags *rf,
+-				       struct rq *src_rq, struct rq *dst_rq)
++static noinline void dispatch_to_local_dsq_lock(struct rq *rq, struct rq_flags *rf,
++						struct rq *src_rq, struct rq *dst_rq)
+ {
+ 	rq_unpin_lock(rq, rf);
+ 
+@@ -1171,8 +1171,8 @@ static void dispatch_to_local_dsq_lock(struct rq *rq, struct rq_flags *rf,
+  *
+  * Unlock @src_rq and @dst_rq and ensure that @rq is locked on return.
+  */
+-static void dispatch_to_local_dsq_unlock(struct rq *rq, struct rq_flags *rf,
+-					 struct rq *src_rq, struct rq *dst_rq)
++static noinline void dispatch_to_local_dsq_unlock(struct rq *rq, struct rq_flags *rf,
++						  struct rq *src_rq, struct rq *dst_rq)
+ {
+ 	if (src_rq == dst_rq) {
+ 		raw_spin_rq_unlock(dst_rq);
+@@ -1191,14 +1191,14 @@ static void dispatch_to_local_dsq_unlock(struct rq *rq, struct rq_flags *rf,
+ #endif	/* CONFIG_SMP */
+ 
+ 
+-static bool task_can_run_on_rq(struct task_struct *p, struct rq *rq)
++static noinline bool task_can_run_on_rq(struct task_struct *p, struct rq *rq)
+ {
+ 	return likely(test_rq_online(rq)) && !is_migration_disabled(p) &&
+ 		cpumask_test_cpu(cpu_of(rq), p->cpus_ptr);
+ }
+ 
+-static bool consume_dispatch_q(struct rq *rq, struct rq_flags *rf,
+-			       struct scx_dispatch_q *dsq)
++static noinline bool consume_dispatch_q(struct rq *rq, struct rq_flags *rf,
++					struct scx_dispatch_q *dsq)
+ {
+ 	struct scx_rq *scx_rq = &rq->scx;
+ 	struct task_struct *p;
+@@ -1293,7 +1293,7 @@ enum dispatch_to_local_dsq_ret {
+  * The caller must have exclusive ownership of @p (e.g. through
+  * %SCX_OPSS_DISPATCHING).
+  */
+-static enum dispatch_to_local_dsq_ret
++static noinline enum dispatch_to_local_dsq_ret
+ dispatch_to_local_dsq(struct rq *rq, struct rq_flags *rf, u64 dsq_id,
+ 		      struct task_struct *p, u64 enq_flags)
+ {
+@@ -1412,7 +1412,7 @@ dispatch_to_local_dsq(struct rq *rq, struct rq_flags *rf, u64 dsq_id,
+  * was valid in the first place. Make sure that the task is still owned by the
+  * BPF scheduler and claim the ownership before dispatching.
+  */
+-static void finish_dispatch(struct rq *rq, struct rq_flags *rf,
++static noinline void finish_dispatch(struct rq *rq, struct rq_flags *rf,
+ 			    struct task_struct *p,
+ 			    unsigned long qseq_at_dispatch,
+ 			    u64 dsq_id, u64 enq_flags)
+@@ -1482,7 +1482,7 @@ static void finish_dispatch(struct rq *rq, struct rq_flags *rf,
+ 	}
+ }
+ 
+-static void flush_dispatch_buf(struct rq *rq, struct rq_flags *rf)
++static noinline void flush_dispatch_buf(struct rq *rq, struct rq_flags *rf)
+ {
+ 	struct scx_dsp_ctx *dspc = this_cpu_ptr(&scx_dsp_ctx);
+ 	u32 u;
+@@ -1498,7 +1498,7 @@ static void flush_dispatch_buf(struct rq *rq, struct rq_flags *rf)
+ 	dspc->buf_cursor = 0;
+ }
+ 
+-static int balance_one(struct rq *rq, struct task_struct *prev,
++static noinline int balance_one(struct rq *rq, struct task_struct *prev,
+ 		       struct rq_flags *rf, bool local)
+ {
+ 	struct scx_rq *scx_rq = &rq->scx;
+@@ -1600,7 +1600,7 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
+ 	return 0;
+ }
+ 
+-static int balance_scx(struct rq *rq, struct task_struct *prev,
++static noinline int balance_scx(struct rq *rq, struct task_struct *prev,
+ 		       struct rq_flags *rf)
+ {
+ 	int ret;
+@@ -1642,7 +1642,7 @@ static int balance_scx(struct rq *rq, struct task_struct *prev,
+ 	return ret;
+ }
+ 
+-static void set_next_task_scx(struct rq *rq, struct task_struct *p, bool first)
++static noinline void set_next_task_scx(struct rq *rq, struct task_struct *p, bool first)
+ {
+ 	if (p->scx.flags & SCX_TASK_QUEUED) {
+ 		/*
+@@ -1676,7 +1676,7 @@ static void set_next_task_scx(struct rq *rq, struct task_struct *p, bool first)
+ 	}
+ }
+ 
+-static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
++static noinline void put_prev_task_scx(struct rq *rq, struct task_struct *p)
+ {
+ #ifndef CONFIG_SMP
+ 	/*
+@@ -1756,7 +1756,7 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
+ 	}
+ }
+ 
+-static struct task_struct *first_local_task(struct rq *rq)
++static noinline struct task_struct *first_local_task(struct rq *rq)
+ {
+ 	struct rb_node *rb_node;
+ 
+@@ -1772,7 +1772,7 @@ static struct task_struct *first_local_task(struct rq *rq)
+ 	return NULL;
+ }
+ 
+-static struct task_struct *pick_next_task_scx(struct rq *rq)
++static noinline struct task_struct *pick_next_task_scx(struct rq *rq)
+ {
+ 	struct task_struct *p;
+ 
+@@ -1846,7 +1846,7 @@ bool scx_prio_less(const struct task_struct *a, const struct task_struct *b,
+  * at the first task in the local dsq. @rq->curr has to be considered explicitly
+  * to mimic %SCX_TASK_BAL_KEEP.
+  */
+-static struct task_struct *pick_task_scx(struct rq *rq)
++static noinline struct task_struct *pick_task_scx(struct rq *rq)
+ {
+ 	struct task_struct *curr = rq->curr;
+ 	struct task_struct *first = first_local_task(rq);
+@@ -1878,7 +1878,7 @@ static struct task_struct *pick_task_scx(struct rq *rq)
+ }
+ #endif	/* CONFIG_SCHED_CORE */
+ 
+-static enum scx_cpu_preempt_reason
++static noinline enum scx_cpu_preempt_reason
+ preempt_reason_from_class(const struct sched_class *class)
+ {
+ #ifdef CONFIG_SMP
+@@ -1932,7 +1932,7 @@ void __scx_notify_pick_next_task(struct rq *rq, struct task_struct *task,
+ 
+ #ifdef CONFIG_SMP
+ 
+-static bool test_and_clear_cpu_idle(int cpu)
++static noinline bool test_and_clear_cpu_idle(int cpu)
+ {
+ #ifdef CONFIG_SCHED_SMT
+ 	/*
+@@ -1958,7 +1958,7 @@ static bool test_and_clear_cpu_idle(int cpu)
+ 	return cpumask_test_and_clear_cpu(cpu, idle_masks.cpu);
+ }
+ 
+-static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
++static noinline s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
+ {
+ 	int cpu;
+ 
+@@ -1983,7 +1983,7 @@ static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
+ 		goto retry;
+ }
+ 
+-static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flags)
++static noinline s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flags)
+ {
+ 	s32 cpu;
+ 
+@@ -2040,7 +2040,7 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
+ 	return prev_cpu;
+ }
+ 
+-static int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flags)
++static noinline int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flags)
+ {
+ 	if (SCX_HAS_OP(select_cpu)) {
+ 		s32 cpu;
+@@ -2058,7 +2058,7 @@ static int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flag
+ 	}
+ }
+ 
+-static void set_cpus_allowed_scx(struct task_struct *p,
++static noinline void set_cpus_allowed_scx(struct task_struct *p,
+ 				 struct affinity_context *ac)
+ {
+ 	set_cpus_allowed_common(p, ac);
+@@ -2076,7 +2076,7 @@ static void set_cpus_allowed_scx(struct task_struct *p,
+ 				 (struct cpumask *)p->cpus_ptr);
+ }
+ 
+-static void reset_idle_masks(void)
++static noinline void reset_idle_masks(void)
+ {
+ 	/* consider all cpus idle, should converge to the actual state quickly */
+ 	cpumask_setall(idle_masks.cpu);
+@@ -2119,13 +2119,13 @@ void __scx_update_idle(struct rq *rq, bool idle)
+ #endif
+ }
+ 
+-static void rq_online_scx(struct rq *rq, enum rq_onoff_reason reason)
++static noinline void rq_online_scx(struct rq *rq, enum rq_onoff_reason reason)
+ {
+ 	if (SCX_HAS_OP(cpu_online) && reason == RQ_ONOFF_HOTPLUG)
+ 		SCX_CALL_OP(SCX_KF_REST, cpu_online, cpu_of(rq));
+ }
+ 
+-static void rq_offline_scx(struct rq *rq, enum rq_onoff_reason reason)
++static noinline void rq_offline_scx(struct rq *rq, enum rq_onoff_reason reason)
+ {
+ 	if (SCX_HAS_OP(cpu_offline) && reason == RQ_ONOFF_HOTPLUG)
+ 		SCX_CALL_OP(SCX_KF_REST, cpu_offline, cpu_of(rq));
+@@ -2133,13 +2133,13 @@ static void rq_offline_scx(struct rq *rq, enum rq_onoff_reason reason)
+ 
+ #else /* !CONFIG_SMP */
+ 
+-static bool test_and_clear_cpu_idle(int cpu) { return false; }
+-static s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags) { return -EBUSY; }
+-static void reset_idle_masks(void) {}
++static noinline bool test_and_clear_cpu_idle(int cpu) { return false; }
++static noinline s32 scx_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags) { return -EBUSY; }
++static noinline void reset_idle_masks(void) {}
+ 
+ #endif /* CONFIG_SMP */
+ 
+-static bool check_rq_for_timeouts(struct rq *rq)
++static noinline bool check_rq_for_timeouts(struct rq *rq)
+ {
+ 	struct task_struct *p;
+ 	struct rq_flags rf;
+@@ -2166,7 +2166,7 @@ static bool check_rq_for_timeouts(struct rq *rq)
+ 	return timed_out;
+ }
+ 
+-static void scx_watchdog_workfn(struct work_struct *work)
++static noinline void scx_watchdog_workfn(struct work_struct *work)
+ {
+ 	int cpu;
+ 
+@@ -2182,7 +2182,7 @@ static void scx_watchdog_workfn(struct work_struct *work)
+ 			   scx_watchdog_timeout / 2);
+ }
+ 
+-static void task_tick_scx(struct rq *rq, struct task_struct *curr, int queued)
++static noinline void task_tick_scx(struct rq *rq, struct task_struct *curr, int queued)
+ {
+ 	update_curr_scx(rq);
+ 
+@@ -2200,7 +2200,7 @@ static void task_tick_scx(struct rq *rq, struct task_struct *curr, int queued)
+ }
+ 
+ #ifdef CONFIG_EXT_GROUP_SCHED
+-static struct cgroup *tg_cgrp(struct task_group *tg)
++static noinline struct cgroup *tg_cgrp(struct task_group *tg)
+ {
+ 	/*
+ 	 * If CGROUP_SCHED is disabled, @tg is NULL. If @tg is an autogroup,
+@@ -2221,7 +2221,7 @@ static struct cgroup *tg_cgrp(struct task_group *tg)
+ 
+ #endif	/* CONFIG_EXT_GROUP_SCHED */
+ 
+-static int scx_ops_prepare_task(struct task_struct *p, struct task_group *tg)
++static noinline int scx_ops_prepare_task(struct task_struct *p, struct task_group *tg)
+ {
+ 	int ret;
+ 
+@@ -2266,7 +2266,7 @@ static int scx_ops_prepare_task(struct task_struct *p, struct task_group *tg)
+ 	return 0;
+ }
+ 
+-static void scx_ops_enable_task(struct task_struct *p)
++static noinline void scx_ops_enable_task(struct task_struct *p)
+ {
+ 	lockdep_assert_rq_held(task_rq(p));
+ 	WARN_ON_ONCE(!(p->scx.flags & SCX_TASK_OPS_PREPPED));
+@@ -2281,7 +2281,7 @@ static void scx_ops_enable_task(struct task_struct *p)
+ 	p->scx.flags |= SCX_TASK_OPS_ENABLED;
+ }
+ 
+-static void scx_ops_disable_task(struct task_struct *p)
++static noinline void scx_ops_disable_task(struct task_struct *p)
+ {
+ 	lockdep_assert_rq_held(task_rq(p));
+ 
+@@ -2300,7 +2300,7 @@ static void scx_ops_disable_task(struct task_struct *p)
+ 	}
+ }
+ 
+-static void set_task_scx_weight(struct task_struct *p)
++static noinline void set_task_scx_weight(struct task_struct *p)
+ {
+ 	u32 weight = sched_prio_to_weight[p->static_prio - MAX_RT_PRIO];
+ 
+@@ -2317,7 +2317,7 @@ static void set_task_scx_weight(struct task_struct *p)
+  * created, priority is changed for a task on sched_ext, and a task is switched
+  * to sched_ext from other classes.
+  */
+-static void refresh_scx_weight(struct task_struct *p)
++static noinline void refresh_scx_weight(struct task_struct *p)
+ {
+ 	lockdep_assert_rq_held(task_rq(p));
+ 	set_task_scx_weight(p);
+@@ -2402,16 +2402,16 @@ void sched_ext_free(struct task_struct *p)
+ 	}
+ }
+ 
+-static void reweight_task_scx(struct rq *rq, struct task_struct *p, int newprio)
++static noinline void reweight_task_scx(struct rq *rq, struct task_struct *p, int newprio)
+ {
+ 	refresh_scx_weight(p);
+ }
+ 
+-static void prio_changed_scx(struct rq *rq, struct task_struct *p, int oldprio)
++static noinline void prio_changed_scx(struct rq *rq, struct task_struct *p, int oldprio)
+ {
+ }
+ 
+-static void switching_to_scx(struct rq *rq, struct task_struct *p)
++static noinline void switching_to_scx(struct rq *rq, struct task_struct *p)
+ {
+ 	refresh_scx_weight(p);
+ 
+@@ -2424,8 +2424,8 @@ static void switching_to_scx(struct rq *rq, struct task_struct *p)
+ 				 (struct cpumask *)p->cpus_ptr);
+ }
+ 
+-static void check_preempt_curr_scx(struct rq *rq, struct task_struct *p,int wake_flags) {}
+-static void switched_to_scx(struct rq *rq, struct task_struct *p) {}
++static noinline void check_preempt_curr_scx(struct rq *rq, struct task_struct *p,int wake_flags) {}
++static noinline void switched_to_scx(struct rq *rq, struct task_struct *p) {}
+ 
+ int scx_check_setscheduler(struct task_struct *p, int policy)
+ {
+@@ -2602,12 +2602,12 @@ void scx_group_set_weight(struct task_group *tg, unsigned long weight)
+ 	percpu_up_read(&scx_cgroup_rwsem);
+ }
+ 
+-static void scx_cgroup_lock(void)
++static noinline void scx_cgroup_lock(void)
+ {
+ 	percpu_down_write(&scx_cgroup_rwsem);
+ }
+ 
+-static void scx_cgroup_unlock(void)
++static noinline void scx_cgroup_unlock(void)
+ {
+ 	percpu_up_write(&scx_cgroup_rwsem);
+ }
+@@ -2674,7 +2674,7 @@ DEFINE_SCHED_CLASS(ext) = {
+ #endif
+ };
+ 
+-static void init_dsq(struct scx_dispatch_q *dsq, u64 dsq_id)
++static noinline void init_dsq(struct scx_dispatch_q *dsq, u64 dsq_id)
+ {
+ 	memset(dsq, 0, sizeof(*dsq));
+ 
+@@ -2683,7 +2683,7 @@ static void init_dsq(struct scx_dispatch_q *dsq, u64 dsq_id)
+ 	dsq->id = dsq_id;
+ }
+ 
+-static struct scx_dispatch_q *create_dsq(u64 dsq_id, int node)
++static noinline struct scx_dispatch_q *create_dsq(u64 dsq_id, int node)
+ {
+ 	struct scx_dispatch_q *dsq;
+ 	int ret;
+@@ -2706,7 +2706,7 @@ static struct scx_dispatch_q *create_dsq(u64 dsq_id, int node)
+ 	return dsq;
+ }
+ 
+-static void free_dsq_irq_workfn(struct irq_work *irq_work)
++static noinline void free_dsq_irq_workfn(struct irq_work *irq_work)
+ {
+ 	struct llist_node *to_free = llist_del_all(&dsqs_to_free);
+ 	struct scx_dispatch_q *dsq, *tmp_dsq;
+@@ -2717,7 +2717,7 @@ static void free_dsq_irq_workfn(struct irq_work *irq_work)
+ 
+ static DEFINE_IRQ_WORK(free_dsq_irq_work, free_dsq_irq_workfn);
+ 
+-static void destroy_dsq(u64 dsq_id)
++static noinline void destroy_dsq(u64 dsq_id)
+ {
+ 	struct scx_dispatch_q *dsq;
+ 	unsigned long flags;
+@@ -2756,7 +2756,7 @@ static void destroy_dsq(u64 dsq_id)
+ }
+ 
+ #ifdef CONFIG_EXT_GROUP_SCHED
+-static void scx_cgroup_exit(void)
++static noinline void scx_cgroup_exit(void)
+ {
+ 	struct cgroup_subsys_state *css;
+ 
+@@ -2789,7 +2789,7 @@ static void scx_cgroup_exit(void)
+ 	rcu_read_unlock();
+ }
+ 
+-static int scx_cgroup_init(void)
++static noinline int scx_cgroup_init(void)
+ {
+ 	struct cgroup_subsys_state *css;
+ 	int ret;
+@@ -2834,7 +2834,7 @@ static int scx_cgroup_init(void)
+ 	return 0;
+ }
+ 
+-static void scx_cgroup_config_knobs(void)
++static noinline void scx_cgroup_config_knobs(void)
+ {
+ 	static DEFINE_MUTEX(cgintf_mutex);
+ 	DECLARE_BITMAP(mask, CPU_CFTYPE_CNT) = { };
+@@ -2875,9 +2875,9 @@ static void scx_cgroup_config_knobs(void)
+ }
+ 
+ #else
+-static void scx_cgroup_exit(void) {}
+-static int scx_cgroup_init(void) { return 0; }
+-static void scx_cgroup_config_knobs(void) {}
++static noinline void scx_cgroup_exit(void) {}
++static noinline int scx_cgroup_init(void) { return 0; }
++static noinline void scx_cgroup_config_knobs(void) {}
+ #endif
+ 
+ /*
+@@ -2893,7 +2893,7 @@ bool task_should_scx(struct task_struct *p)
+ 	return p->policy == SCHED_EXT;
+ }
+ 
+-static void scx_ops_fallback_enqueue(struct task_struct *p, u64 enq_flags)
++static noinline void scx_ops_fallback_enqueue(struct task_struct *p, u64 enq_flags)
+ {
+ 	if (enq_flags & SCX_ENQ_LAST)
+ 		scx_bpf_dispatch(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, enq_flags);
+@@ -2901,9 +2901,9 @@ static void scx_ops_fallback_enqueue(struct task_struct *p, u64 enq_flags)
+ 		scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
+ }
+ 
+-static void scx_ops_fallback_dispatch(s32 cpu, struct task_struct *prev) {}
++static noinline void scx_ops_fallback_dispatch(s32 cpu, struct task_struct *prev) {}
+ 
+-static void scx_ops_disable_workfn(struct kthread_work *work)
++static noinline void scx_ops_disable_workfn(struct kthread_work *work)
+ {
+ 	struct scx_exit_info *ei = &scx_exit_info;
+ 	struct scx_task_iter sti;
+@@ -3113,7 +3113,7 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
+ 
+ static DEFINE_KTHREAD_WORK(scx_ops_disable_work, scx_ops_disable_workfn);
+ 
+-static void schedule_scx_ops_disable_work(void)
++static noinline void schedule_scx_ops_disable_work(void)
+ {
+ 	struct kthread_worker *helper = READ_ONCE(scx_ops_helper);
+ 
+@@ -3125,7 +3125,7 @@ static void schedule_scx_ops_disable_work(void)
+ 		kthread_queue_work(helper, &scx_ops_disable_work);
+ }
+ 
+-static void scx_ops_disable(enum scx_exit_type type)
++static noinline void scx_ops_disable(enum scx_exit_type type)
+ {
+ 	int none = SCX_EXIT_NONE;
+ 
+@@ -3137,7 +3137,7 @@ static void scx_ops_disable(enum scx_exit_type type)
+ 	schedule_scx_ops_disable_work();
+ }
+ 
+-static void scx_ops_error_irq_workfn(struct irq_work *irq_work)
++static noinline void scx_ops_error_irq_workfn(struct irq_work *irq_work)
+ {
+ 	schedule_scx_ops_disable_work();
+ }
+@@ -3163,7 +3163,7 @@ __printf(2, 3) void scx_ops_error_type(enum scx_exit_type type,
+ 	irq_work_queue(&scx_ops_error_irq_work);
+ }
+ 
+-static struct kthread_worker *scx_create_rt_helper(const char *name)
++static noinline struct kthread_worker *scx_create_rt_helper(const char *name)
+ {
+ 	struct kthread_worker *helper;
+ 
+@@ -3173,7 +3173,7 @@ static struct kthread_worker *scx_create_rt_helper(const char *name)
+ 	return helper;
+ }
+ 
+-static int scx_ops_enable(struct sched_ext_ops *ops)
++static noinline int scx_ops_enable(struct sched_ext_ops *ops)
+ {
+ 	struct scx_task_iter sti;
+ 	struct task_struct *p;
+@@ -3412,7 +3412,7 @@ static const char *scx_ops_enable_state_str[] = {
+ 	[SCX_OPS_DISABLED]	= "disabled",
+ };
+ 
+-static int scx_debug_show(struct seq_file *m, void *v)
++static noinline int scx_debug_show(struct seq_file *m, void *v)
+ {
+ 	mutex_lock(&scx_ops_enable_mutex);
+ 	seq_printf(m, "%-30s: %s\n", "ops", scx_ops.name);
+@@ -3428,7 +3428,7 @@ static int scx_debug_show(struct seq_file *m, void *v)
+ 	return 0;
+ }
+ 
+-static int scx_debug_open(struct inode *inode, struct file *file)
++static noinline int scx_debug_open(struct inode *inode, struct file *file)
+ {
+ 	return single_open(file, scx_debug_show, NULL);
+ }
+@@ -3451,7 +3451,7 @@ const struct file_operations sched_ext_fops = {
+ extern struct btf *btf_vmlinux;
+ static const struct btf_type *task_struct_type;
+ 
+-static bool bpf_scx_is_valid_access(int off, int size,
++static noinline bool bpf_scx_is_valid_access(int off, int size,
+ 				    enum bpf_access_type type,
+ 				    const struct bpf_prog *prog,
+ 				    struct bpf_insn_access_aux *info)
+@@ -3466,7 +3466,7 @@ static bool bpf_scx_is_valid_access(int off, int size,
+ 	return btf_ctx_access(off, size, type, prog, info);
+ }
+ 
+-static int bpf_scx_btf_struct_access(struct bpf_verifier_log *log,
++static noinline int bpf_scx_btf_struct_access(struct bpf_verifier_log *log,
+ 				     const struct bpf_reg_state *reg, int off,
+ 				     int size)
+ {
+@@ -3488,7 +3488,7 @@ static int bpf_scx_btf_struct_access(struct bpf_verifier_log *log,
+ 	return -EACCES;
+ }
+ 
+-static const struct bpf_func_proto *
++static noinline const struct bpf_func_proto *
+ bpf_scx_get_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+ {
+ 	switch (func_id) {
+@@ -3507,7 +3507,7 @@ const struct bpf_verifier_ops bpf_scx_verifier_ops = {
+ 	.btf_struct_access = bpf_scx_btf_struct_access,
+ };
+ 
+-static int bpf_scx_init_member(const struct btf_type *t,
++static noinline int bpf_scx_init_member(const struct btf_type *t,
+ 			       const struct btf_member *member,
+ 			       void *kdata, const void *udata)
+ {
+@@ -3545,7 +3545,7 @@ static int bpf_scx_init_member(const struct btf_type *t,
+ 	return 0;
+ }
+ 
+-static int bpf_scx_check_member(const struct btf_type *t,
++static noinline int bpf_scx_check_member(const struct btf_type *t,
+ 				const struct btf_member *member,
+ 				const struct bpf_prog *prog)
+ {
+@@ -3569,18 +3569,18 @@ static int bpf_scx_check_member(const struct btf_type *t,
+ 	return 0;
+ }
+ 
+-static int bpf_scx_reg(void *kdata)
++static noinline int bpf_scx_reg(void *kdata)
+ {
+ 	return scx_ops_enable(kdata);
+ }
+ 
+-static void bpf_scx_unreg(void *kdata)
++static noinline void bpf_scx_unreg(void *kdata)
+ {
+ 	scx_ops_disable(SCX_EXIT_UNREG);
+ 	kthread_flush_work(&scx_ops_disable_work);
+ }
+ 
+-static int bpf_scx_init(struct btf *btf)
++static noinline int bpf_scx_init(struct btf *btf)
+ {
+ 	u32 type_id;
+ 
+@@ -3592,7 +3592,7 @@ static int bpf_scx_init(struct btf *btf)
+ 	return 0;
+ }
+ 
+-static int bpf_scx_update(void *kdata, void *old_kdata)
++static noinline int bpf_scx_update(void *kdata, void *old_kdata)
+ {
+ 	/*
+ 	 * sched_ext does not support updating the actively-loaded BPF
+@@ -3604,7 +3604,7 @@ static int bpf_scx_update(void *kdata, void *old_kdata)
+ 	return -EOPNOTSUPP;
+ }
+ 
+-static int bpf_scx_validate(void *kdata)
++static noinline int bpf_scx_validate(void *kdata)
+ {
+ 	return 0;
+ }
+@@ -3624,7 +3624,7 @@ struct bpf_struct_ops bpf_sched_ext_ops = {
+ 	.name = "sched_ext_ops",
+ };
+ 
+-static void sysrq_handle_sched_ext_reset(int key)
++static noinline void sysrq_handle_sched_ext_reset(int key)
+ {
+ 	if (scx_ops_helper)
+ 		scx_ops_disable(SCX_EXIT_SYSRQ);
+@@ -3639,7 +3639,7 @@ static const struct sysrq_key_op sysrq_sched_ext_reset_op = {
+ 	.enable_mask	= SYSRQ_ENABLE_RTNICE,
+ };
+ 
+-static void kick_cpus_irq_workfn(struct irq_work *irq_work)
++static noinline void kick_cpus_irq_workfn(struct irq_work *irq_work)
+ {
+ 	struct rq *this_rq = this_rq();
+ 	unsigned long *pseqs = this_cpu_ptr(scx_kick_cpus_pnt_seqs);
+@@ -3788,7 +3788,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_sleepable = {
+ 	.set			= &scx_kfunc_ids_sleepable,
+ };
+ 
+-static bool scx_dispatch_preamble(struct task_struct *p, u64 enq_flags)
++static noinline bool scx_dispatch_preamble(struct task_struct *p, u64 enq_flags)
+ {
+ 	if (!scx_kf_allowed(SCX_KF_ENQUEUE | SCX_KF_DISPATCH))
+ 		return false;
+@@ -3808,7 +3808,7 @@ static bool scx_dispatch_preamble(struct task_struct *p, u64 enq_flags)
+ 	return true;
+ }
+ 
+-static void scx_dispatch_commit(struct task_struct *p, u64 dsq_id, u64 enq_flags)
++static noinline void scx_dispatch_commit(struct task_struct *p, u64 dsq_id, u64 enq_flags)
+ {
+ 	struct task_struct *ddsp_task;
+ 	int idx;
