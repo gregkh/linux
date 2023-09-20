@@ -1148,45 +1148,7 @@ void Hacl_Streaming_SHA2_finish_384(Hacl_Streaming_MD_state_64 *p, uint8_t *dst)
   Hacl_SHA2_Scalar32_sha384_finish(tmp_block_state, dst);
 }
 
-const u8 sha224_zero_message_hash[SHA224_DIGEST_SIZE] = {
-	0xd1, 0x4a, 0x02, 0x8c, 0x2a, 0x3a, 0x2b, 0xc9, 0x47,
-	0x61, 0x02, 0xbb, 0x28, 0x82, 0x34, 0xc4, 0x15, 0xa2,
-	0xb0, 0x1f, 0x82, 0x8e, 0xa6, 0x2a, 0xc5, 0xb3, 0xe4,
-	0x2f
-};
-EXPORT_SYMBOL_GPL(sha224_zero_message_hash);
-
-const u8 sha256_zero_message_hash[SHA256_DIGEST_SIZE] = {
-	0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
-	0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
-	0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
-	0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55
-};
-EXPORT_SYMBOL_GPL(sha256_zero_message_hash);
-
-const u8 sha384_zero_message_hash[SHA384_DIGEST_SIZE] = {
-	0x38, 0xb0, 0x60, 0xa7, 0x51, 0xac, 0x96, 0x38,
-	0x4c, 0xd9, 0x32, 0x7e, 0xb1, 0xb1, 0xe3, 0x6a,
-	0x21, 0xfd, 0xb7, 0x11, 0x14, 0xbe, 0x07, 0x43,
-	0x4c, 0x0c, 0xc7, 0xbf, 0x63, 0xf6, 0xe1, 0xda,
-	0x27, 0x4e, 0xde, 0xbf, 0xe7, 0x6f, 0x65, 0xfb,
-	0xd5, 0x1a, 0xd2, 0xf1, 0x48, 0x98, 0xb9, 0x5b
-};
-EXPORT_SYMBOL_GPL(sha384_zero_message_hash);
-
-const u8 sha512_zero_message_hash[SHA512_DIGEST_SIZE] = {
-	0xcf, 0x83, 0xe1, 0x35, 0x7e, 0xef, 0xb8, 0xbd,
-	0xf1, 0x54, 0x28, 0x50, 0xd6, 0x6d, 0x80, 0x07,
-	0xd6, 0x20, 0xe4, 0x05, 0x0b, 0x57, 0x15, 0xdc,
-	0x83, 0xf4, 0xa9, 0x21, 0xd3, 0x6c, 0xe9, 0xce,
-	0x47, 0xd0, 0xd1, 0x3c, 0x5d, 0x85, 0xf2, 0xb0,
-	0xff, 0x83, 0x18, 0xd2, 0x87, 0x7e, 0xec, 0x2f,
-	0x63, 0xb9, 0x31, 0xbd, 0x47, 0x41, 0x7a, 0x81,
-	0xa5, 0x38, 0x32, 0x7a, 0xf9, 0x27, 0xda, 0x3e
-};
-EXPORT_SYMBOL_GPL(sha512_zero_message_hash);
-
-int crypto_sha256_update(struct shash_desc *desc, const u8 *data,
+int hacl_sha256_update(struct shash_desc *desc, const u8 *data,
 			  unsigned int len)
 {
   struct sha256_state *sctx = shash_desc_ctx(desc);
@@ -1198,9 +1160,9 @@ int crypto_sha256_update(struct shash_desc *desc, const u8 *data,
   sctx->count = st.total_len;
   return 0;
 }
-EXPORT_SYMBOL(crypto_sha256_update);
+EXPORT_SYMBOL(hacl_sha256_update);
 
-static int crypto_sha256_final(struct shash_desc *desc, u8 *out)
+static int hacl_sha256_final(struct shash_desc *desc, u8 *out)
 {
   struct sha256_state *sctx = shash_desc_ctx(desc);
   Hacl_Streaming_MD_state_32 st;
@@ -1214,7 +1176,7 @@ static int crypto_sha256_final(struct shash_desc *desc, u8 *out)
   return 0;
 }
 
-int crypto_sha256_finup(struct shash_desc *desc, const u8 *data,
+int hacl_sha256_finup(struct shash_desc *desc, const u8 *data,
 			unsigned int len, u8 *hash)
 {
   struct sha256_state *sctx = shash_desc_ctx(desc);
@@ -1229,9 +1191,9 @@ int crypto_sha256_finup(struct shash_desc *desc, const u8 *data,
         Hacl_Streaming_SHA2_finish_256(&st,hash);
   return 0;
 }
-EXPORT_SYMBOL(crypto_sha256_finup);
+EXPORT_SYMBOL(hacl_sha256_finup);
 
-int crypto_sha512_update(struct shash_desc *desc, const u8 *data,
+int hacl_sha512_update(struct shash_desc *desc, const u8 *data,
 			unsigned int len)
 {
   struct sha512_state *sctx = shash_desc_ctx(desc);
@@ -1243,9 +1205,9 @@ int crypto_sha512_update(struct shash_desc *desc, const u8 *data,
   sctx->count[0] = st.total_len;
   return 0;
 }
-EXPORT_SYMBOL(crypto_sha512_update);
+EXPORT_SYMBOL(hacl_sha512_update);
 
-static int sha512_final(struct shash_desc *desc, u8 *hash)
+static int hacl_sha512_final(struct shash_desc *desc, u8 *hash)
 {
   struct sha512_state *sctx = shash_desc_ctx(desc);
   Hacl_Streaming_MD_state_64 st;
@@ -1259,7 +1221,7 @@ static int sha512_final(struct shash_desc *desc, u8 *hash)
   return 0;
 }
 
-int crypto_sha512_finup(struct shash_desc *desc, const u8 *data,
+int hacl_sha512_finup(struct shash_desc *desc, const u8 *data,
 			unsigned int len, u8 *hash)
 {
   struct sha512_state *sctx = shash_desc_ctx(desc);
@@ -1274,15 +1236,15 @@ int crypto_sha512_finup(struct shash_desc *desc, const u8 *data,
         Hacl_Streaming_SHA2_finish_512(&st,hash);
   return 0;
 }
-EXPORT_SYMBOL(crypto_sha512_finup);
+EXPORT_SYMBOL(hacl_sha512_finup);
 
 
 static struct shash_alg sha2_hacl_algs[4] = { {
 	.digestsize	=	SHA256_DIGEST_SIZE,
 	.init		=	sha256_base_init,
-	.update		=	crypto_sha256_update,
-	.final		=	crypto_sha256_final,
-	.finup		=	crypto_sha256_finup,
+	.update		=	hacl_sha256_update,
+	.final		=	hacl_sha256_final,
+	.finup		=	hacl_sha256_finup,
 	.descsize	=	sizeof(struct sha256_state),
 	.base		=	{
 		.cra_name	=	"sha256",
@@ -1294,9 +1256,9 @@ static struct shash_alg sha2_hacl_algs[4] = { {
 }, {
 	.digestsize	=	SHA224_DIGEST_SIZE,
 	.init		=	sha224_base_init,
-	.update		=	crypto_sha256_update,
-	.final		=	crypto_sha256_final,
-	.finup		=	crypto_sha256_finup,
+	.update		=	hacl_sha256_update,
+	.final		=	hacl_sha256_final,
+	.finup		=	hacl_sha256_finup,
 	.descsize	=	sizeof(struct sha256_state),
 	.base		=	{
 		.cra_name	=	"sha224",
@@ -1308,9 +1270,9 @@ static struct shash_alg sha2_hacl_algs[4] = { {
 }, {
 	.digestsize	=	SHA384_DIGEST_SIZE,
 	.init		=	sha384_base_init,
-	.update		=	crypto_sha512_update,
-	.final		=	sha512_final,
-	.finup		=	crypto_sha512_finup,
+	.update		=	hacl_sha512_update,
+	.final		=	hacl_sha512_final,
+	.finup		=	hacl_sha512_finup,
 	.descsize	=	sizeof(struct sha512_state),
 	.base		=	{
 		.cra_name	=	"sha384",
@@ -1322,9 +1284,9 @@ static struct shash_alg sha2_hacl_algs[4] = { {
 }, {
 	.digestsize	=	SHA512_DIGEST_SIZE,
 	.init		=	sha512_base_init,
-	.update		=	crypto_sha512_update,
-	.final		=	sha512_final,
-	.finup		=	crypto_sha512_finup,
+	.update		=	hacl_sha512_update,
+	.final		=	hacl_sha512_final,
+	.finup		=	hacl_sha512_finup,
 	.descsize	=	sizeof(struct sha512_state),
 	.base		=	{
 		.cra_name	=	"sha512",
