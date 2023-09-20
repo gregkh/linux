@@ -598,7 +598,6 @@ enum scx_ent_flags {
 	SCX_TASK_QUEUED		= 1 << 0, /* on ext runqueue */
 	SCX_TASK_BAL_KEEP	= 1 << 1, /* balance decided to keep current */
 	SCX_TASK_ENQ_LOCAL	= 1 << 2, /* used by scx_select_cpu_dfl() to set SCX_ENQ_LOCAL */
-	SCX_TASK_ON_DSQ_PRIQ	= 1 << 3, /* task is queued on the priority queue of a dsq */
 
 	SCX_TASK_OPS_PREPPED	= 1 << 8, /* prepared for BPF scheduler enable */
 	SCX_TASK_OPS_ENABLED	= 1 << 9, /* task has BPF scheduler enabled */
@@ -607,6 +606,11 @@ enum scx_ent_flags {
 	SCX_TASK_DEQD_FOR_SLEEP	= 1 << 17, /* last dequeue was for SLEEP */
 
 	SCX_TASK_CURSOR		= 1 << 31, /* iteration cursor, not a task */
+};
+
+/* scx_entity.dsq_flags */
+enum scx_ent_dsq_flags {
+	SCX_TASK_DSQ_ON_PRIQ	= 1 << 0, /* task is queued on the priority queue of a dsq */
 };
 
 /*
@@ -646,6 +650,7 @@ struct sched_ext_entity {
 	} dsq_node;
 	struct list_head	watchdog_node;
 	u32			flags;		/* protected by rq lock */
+	u32			dsq_flags;	/* protected by dsq lock */
 	u32			weight;
 	s32			sticky_cpu;
 	s32			holding_cpu;
