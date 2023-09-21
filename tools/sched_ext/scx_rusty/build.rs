@@ -46,8 +46,10 @@ fn gen_bpf_sched(name: &str) {
     let outpath = format!("./src/bpf/.output/{}.skel.rs", name);
     let skel = Path::new(&outpath);
     let src = format!("./src/bpf/{}.bpf.c", name);
+    let obj = format!("./src/bpf/.output/{}.bpf.o", name);
     SkeletonBuilder::new()
         .source(src.clone())
+	.obj(obj)
         .clang(clang)
         .clang_args(bpf_cflags)
         .build_and_generate(skel)
