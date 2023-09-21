@@ -1,0 +1,218 @@
+diff --git a/include/linux/sched/ext.h b/include/linux/sched/ext.h
+index 8a2d8eaefd33..9b2c9da34ea4 100644
+--- a/include/linux/sched/ext.h
++++ b/include/linux/sched/ext.h
+@@ -634,6 +634,31 @@ enum scx_kf_mask {
+ 	__SCX_KF_TERMINAL	= SCX_KF_ENQUEUE | SCX_KF_REST,
+ };
+ 
++enum {
++	NR_DBGEVS = 32
++};
++
++enum scx_dbgev_kind {
++	DBGEV_NONE,
++	DBGEV_ENQ_TASK,
++	DBGEV_DO_ENQ,
++	DBGEV_DEQ_TASK,
++	DBGEV_OPS_DEQ,
++	DBGEV_WATCH,
++	DBGEV_UNWATCH,
++	DBGEV_PRIQ_LINK,
++	DBGEV_PRIQ_UNLINK,
++};
++
++struct scx_dbgev {
++	u64 at;
++	u32 event;
++	u32 task_flags;
++	u64 ops_state;
++	u64 scx_flags;
++	void *bt[3];
++};
++
+ /*
+  * The following is embedded in task_struct and contains all fields necessary
+  * for a task to be scheduled by SCX.
+@@ -697,6 +722,9 @@ struct sched_ext_entity {
+ #ifdef CONFIG_EXT_GROUP_SCHED
+ 	struct cgroup		*cgrp_moving_from;
+ #endif
++
++	struct scx_dbgev	dbgevs[NR_DBGEVS];
++	int dbgev_cursor;
+ };
+ 
+ void sched_ext_free(struct task_struct *p);
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 29fcdd00c184..264cc795b63e 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4567,6 +4567,12 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
+ 	atomic64_set(&p->scx.ops_state, 0);
+ 	p->scx.runnable_at	= INITIAL_JIFFIES;
+ 	p->scx.slice		= SCX_SLICE_DFL;
++	{
++		int i;
++		for (i = 0; i < ARRAY_SIZE(p->scx.dbgevs); i++)
++			p->scx.dbgevs[i].event = DBGEV_NONE;
++		p->scx.dbgev_cursor = 0;
++	}
+ #endif
+ 
+ #ifdef CONFIG_PREEMPT_NOTIFIERS
+diff --git a/kernel/sched/ext.c b/kernel/sched/ext.c
+index b7a80233ea08..ea92b59ab41a 100644
+--- a/kernel/sched/ext.c
++++ b/kernel/sched/ext.c
+@@ -6,6 +6,58 @@
+  * Copyright (c) 2022 Tejun Heo <tj@kernel.org>
+  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
+  */
++
++static void record_dbgev(struct task_struct *p, u32 dbgev, u64 now)
++{
++	u32 cur = p->scx.dbgev_cursor;
++	struct scx_dbgev *ev = &p->scx.dbgevs[cur];
++
++	p->scx.dbgev_cursor = (cur + 1) % NR_DBGEVS;
++
++	ev->at = now;
++	ev->event = dbgev;
++	ev->task_flags = p->flags;
++	ev->ops_state = p->scx.ops_state.counter;
++	ev->scx_flags = p->scx.flags;
++	ev->bt[0] = __builtin_return_address(0);
++	ev->bt[1] = __builtin_return_address(1);
++	ev->bt[2] = __builtin_return_address(2);
++}
++
++static const char *dbgev_name(u32 event)
++{
++	static const char *names[] = {
++		[DBGEV_NONE] = "NONE",
++		[DBGEV_ENQ_TASK] = "ENQ_TASK",
++		[DBGEV_DO_ENQ] = "DO_ENQ",
++		[DBGEV_DEQ_TASK] = "DEQ_TASK",
++		[DBGEV_OPS_DEQ] = "OPS_DEQ",
++		[DBGEV_WATCH] = "WATCH",
++		[DBGEV_UNWATCH] = "UNWATCH",
++		[DBGEV_PRIQ_LINK] = "PRIQ_LINK",
++		[DBGEV_PRIQ_UNLINK] = "PRIQ_UNLINK",
++	};
++
++	if (event >= ARRAY_SIZE(names) || !names[event])
++		return "UNKNOWN";
++	return names[event];
++}
++
++static void dump_dbgevs(struct task_struct *p)
++{
++	int i;
++
++	for (i = 0; i < NR_DBGEVS; i++) {
++		u32 cur = (p->scx.dbgev_cursor + i) % NR_DBGEVS;
++		struct scx_dbgev *ev = &p->scx.dbgevs[cur];
++
++		trace_printk("DBGEV %llu %-12s t=0x%08x o=0x%08llx s=0x%08llx %pS:%pS:%pS\n",
++			     ev->at / 1000, dbgev_name(ev->event),
++			     ev->task_flags, ev->ops_state, ev->scx_flags,
++			     ev->bt[0], ev->bt[1], ev->bt[2]);
++	}
++}
++
+ #define SCX_OP_IDX(op)		(offsetof(struct sched_ext_ops, op) / sizeof(void (*)(void)))
+ 
+ enum scx_internal_consts {
+@@ -620,8 +672,9 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
+ 	bool is_local = dsq->id == SCX_DSQ_LOCAL;
+ 
+ 	WARN_ON_ONCE(p->scx.dsq || !list_empty(&p->scx.dsq_node.fifo));
+-	WARN_ON_ONCE((p->scx.flags & SCX_TASK_ON_DSQ_PRIQ) ||
+-		     !RB_EMPTY_NODE(&p->scx.dsq_node.priq));
++	if (WARN_ON_ONCE((p->scx.flags & SCX_TASK_ON_DSQ_PRIQ) ||
++			 !RB_EMPTY_NODE(&p->scx.dsq_node.priq)))
++		dump_dbgevs(p);
+ 
+ 	if (!is_local) {
+ 		raw_spin_lock(&dsq->lock);
+@@ -636,6 +689,7 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
+ 
+ 	if (enq_flags & SCX_ENQ_DSQ_PRIQ) {
+ 		p->scx.flags |= SCX_TASK_ON_DSQ_PRIQ;
++		record_dbgev(p, DBGEV_PRIQ_LINK, rq_clock_task(task_rq(p)));
+ 		rb_add_cached(&p->scx.dsq_node.priq, &dsq->priq,
+ 			      scx_dsq_priq_less);
+ 	} else {
+@@ -678,6 +732,7 @@ static void task_unlink_from_dsq(struct task_struct *p,
+ 	if (p->scx.flags & SCX_TASK_ON_DSQ_PRIQ) {
+ 		rb_erase_cached(&p->scx.dsq_node.priq, &dsq->priq);
+ 		RB_CLEAR_NODE(&p->scx.dsq_node.priq);
++		record_dbgev(p, DBGEV_PRIQ_UNLINK, rq_clock_task(task_rq(p)));
+ 		p->scx.flags &= ~SCX_TASK_ON_DSQ_PRIQ;
+ 	} else {
+ 		list_del_init(&p->scx.dsq_node.fifo);
+@@ -820,6 +875,8 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
+ 	struct task_struct **ddsp_taskp;
+ 	unsigned long qseq;
+ 
++	record_dbgev(p, DBGEV_DO_ENQ, rq_clock_task(rq));
++
+ 	WARN_ON_ONCE(!(p->scx.flags & SCX_TASK_QUEUED));
+ 
+ 	if (p->scx.flags & SCX_TASK_ENQ_LOCAL) {
+@@ -902,6 +959,8 @@ static bool watchdog_task_watched(const struct task_struct *p)
+ 
+ static void watchdog_watch_task(struct rq *rq, struct task_struct *p)
+ {
++	record_dbgev(p, DBGEV_WATCH, rq_clock_task(rq));
++
+ 	lockdep_assert_rq_held(rq);
+ 	if (p->scx.flags & SCX_TASK_WATCHDOG_RESET)
+ 		p->scx.runnable_at = jiffies;
+@@ -911,6 +970,8 @@ static void watchdog_watch_task(struct rq *rq, struct task_struct *p)
+ 
+ static void watchdog_unwatch_task(struct task_struct *p, bool reset_timeout)
+ {
++	record_dbgev(p, DBGEV_UNWATCH, rq_clock_task(task_rq(p)));
++
+ 	list_del_init(&p->scx.watchdog_node);
+ 	if (reset_timeout)
+ 		p->scx.flags |= SCX_TASK_WATCHDOG_RESET;
+@@ -920,6 +981,8 @@ static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags
+ {
+ 	int sticky_cpu = p->scx.sticky_cpu;
+ 
++	record_dbgev(p, DBGEV_ENQ_TASK, rq_clock_task(rq));
++
+ 	enq_flags |= rq->scx.extra_enq_flags;
+ 
+ 	if (sticky_cpu >= 0)
+@@ -935,7 +998,8 @@ static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags
+ 		sticky_cpu = cpu_of(rq);
+ 
+ 	if (p->scx.flags & SCX_TASK_QUEUED) {
+-		WARN_ON_ONCE(!watchdog_task_watched(p));
++		if (WARN_ON_ONCE(!watchdog_task_watched(p)))
++			dump_dbgevs(p);
+ 		return;
+ 	}
+ 
+@@ -957,6 +1021,8 @@ static void ops_dequeue(struct task_struct *p, u64 deq_flags)
+ {
+ 	unsigned long opss;
+ 
++	record_dbgev(p, DBGEV_OPS_DEQ, rq_clock_task(task_rq(p)));
++
+ 	watchdog_unwatch_task(p, false);
+ 
+ 	/* acquire ensures that we see the preceding updates on QUEUED */
+@@ -1003,6 +1069,8 @@ static void dequeue_task_scx(struct rq *rq, struct task_struct *p, int deq_flags
+ {
+ 	struct scx_rq *scx_rq = &rq->scx;
+ 
++	record_dbgev(p, DBGEV_DEQ_TASK, rq_clock_task(rq));
++
+ 	if (!(p->scx.flags & SCX_TASK_QUEUED)) {
+ 		WARN_ON_ONCE(watchdog_task_watched(p));
+ 		return;
