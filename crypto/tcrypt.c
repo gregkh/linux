@@ -775,14 +775,14 @@ static int test_ahash_cycles_digest(struct ahash_request *req, int blen,
 	int ret, i;
 
 	/* Warm-up run. */
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < 16; i++) {
 		ret = do_one_ahash_op(req, crypto_ahash_digest(req));
 		if (ret)
 			goto out;
 	}
 
 	/* The real thing. */
-	for (i = 0; i < 8; i++) {
+	for (i = 0; i < 128; i++) {
 		cycles_t start, end;
 
 		start = get_cycles();
@@ -801,7 +801,7 @@ out:
 		return ret;
 
 	pr_cont("%6lu cycles/operation, %4lu cycles/byte\n",
-		cycles / 8, cycles / (8 * blen));
+		cycles / 128, cycles / (128 * blen));
 
 	return 0;
 }
@@ -816,7 +816,7 @@ static int test_ahash_cycles(struct ahash_request *req, int blen,
 		return test_ahash_cycles_digest(req, blen, out);
 
 	/* Warm-up run. */
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < 16; i++) {
 		ret = do_one_ahash_op(req, crypto_ahash_init(req));
 		if (ret)
 			goto out;
@@ -831,7 +831,7 @@ static int test_ahash_cycles(struct ahash_request *req, int blen,
 	}
 
 	/* The real thing. */
-	for (i = 0; i < 8; i++) {
+	for (i = 0; i < 128; i++) {
 		cycles_t start, end;
 
 		start = get_cycles();
@@ -858,7 +858,7 @@ out:
 		return ret;
 
 	pr_cont("%6lu cycles/operation, %4lu cycles/byte\n",
-		cycles / 8, cycles / (8 * blen));
+		cycles / 128, cycles / (128 * blen));
 
 	return 0;
 }
