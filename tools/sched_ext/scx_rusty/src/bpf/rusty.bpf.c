@@ -155,6 +155,7 @@ struct tune_input{
 } tune_input;
 
 __u64 tune_params_gen;
+private(A) struct bpf_cpumask __kptr *all_cpumask;
 private(A) struct bpf_cpumask __kptr *direct_greedy_cpumask;
 private(A) struct bpf_cpumask __kptr *kick_greedy_cpumask;
 
@@ -790,7 +791,8 @@ void BPF_STRUCT_OPS(rusty_set_cpumask, struct task_struct *p,
 	}
 
 	task_pick_and_set_domain(task_ctx, p, cpumask, false);
-	task_ctx->all_cpus = bpf_cpumask_full(cpumask);
+	if (all_cpumask)
+		task_ctx->all_cpus = bpf_cpumask_subset(all_cpumask, cpumask);
 }
 
 s32 BPF_STRUCT_OPS(rusty_prep_enable, struct task_struct *p,
@@ -890,8 +892,14 @@ static s32 create_dom(u32 dom_id)
 			return -ENOENT;
 		}
 
-		if (*dmask & (1LLU << (cpu % 64)))
+		if (*dmask & (1LLU << (cpu % 64))) {
 			bpf_cpumask_set_cpu(cpu, cpumask);
+
+			bpf_rcu_read_lock();
+			if (all_cpumask)
+				bpf_cpumask_set_cpu(cpu, all_cpumask);
+			bpf_rcu_read_unlock();
+		}
 	}
 
 	cpumask = bpf_kptr_xchg(&domc->cpumask, cpumask);
@@ -924,17 +932,12 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(rusty_init)
 	struct bpf_cpumask *cpumask;
 	s32 i, ret;
 
-	if (!switch_partial)
-		scx_bpf_switch_all();
-
-	bpf_for(i, 0, nr_doms) {
-		ret = create_dom(i);
-		if (ret)
-			return ret;
-	}
-
-	bpf_for(i, 0, nr_cpus)
-		pcpu_ctx[i].dom_rr_cur = i;
+	cpumask = bpf_cpumask_create();
+	if (!cpumask)
+		return -ENOMEM;
+	cpumask = bpf_kptr_xchg(&all_cpumask, cpumask);
+	if (cpumask)
+		bpf_cpumask_release(cpumask);
 
 	cpumask = bpf_cpumask_create();
 	if (!cpumask)
@@ -949,6 +952,18 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(rusty_init)
 	cpumask = bpf_kptr_xchg(&kick_greedy_cpumask, cpumask);
 	if (cpumask)
 		bpf_cpumask_release(cpumask);
+
+	if (!switch_partial)
+		scx_bpf_switch_all();
+
+	bpf_for(i, 0, nr_doms) {
+		ret = create_dom(i);
+		if (ret)
+			return ret;
+	}
+
+	bpf_for(i, 0, nr_cpus)
+		pcpu_ctx[i].dom_rr_cur = i;
 
 	return 0;
 }
