@@ -782,7 +782,7 @@ static int test_ahash_cycles_digest(struct ahash_request *req, int blen,
 	}
 
 	/* The real thing. */
-	for (i = 0; i < 128; i++) {
+	for (i = 0; i < 1024; i++) {
 		cycles_t start, end;
 
 		start = get_cycles();
@@ -801,7 +801,7 @@ out:
 		return ret;
 
 	pr_cont("%6lu cycles/operation, %4lu cycles/byte\n",
-		cycles / 128, cycles / (128 * blen));
+		cycles / 1024, cycles / (1024 * blen));
 
 	return 0;
 }
@@ -831,7 +831,7 @@ static int test_ahash_cycles(struct ahash_request *req, int blen,
 	}
 
 	/* The real thing. */
-	for (i = 0; i < 128; i++) {
+	for (i = 0; i < 1024; i++) {
 		cycles_t start, end;
 
 		start = get_cycles();
@@ -858,7 +858,7 @@ out:
 		return ret;
 
 	pr_cont("%6lu cycles/operation, %4lu cycles/byte\n",
-		cycles / 128, cycles / (128 * blen));
+		cycles / 1024, cycles / (1024 * blen));
 
 	return 0;
 }
