@@ -77,6 +77,7 @@ obj-$(CONFIG_CRYPTO_MD5) += md5.o
 obj-$(CONFIG_CRYPTO_RMD160) += rmd160.o
 obj-$(CONFIG_CRYPTO_SHA1) += sha1_generic.o
 obj-$(CONFIG_CRYPTO_SHA256) += sha2-hacl-generated.o sha2-hacl.o sha256_generic.o
+obj-$(CONFIG_CRYPTO_SHA2_HACL) += sha2-hacl-generated.o sha2-hacl.o
 obj-$(CONFIG_CRYPTO_SHA512) += sha512_generic.o
 obj-$(CONFIG_CRYPTO_SHA3) += sha3_generic.o
 obj-$(CONFIG_CRYPTO_SM3) += sm3.o
