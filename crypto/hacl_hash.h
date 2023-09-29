@@ -431,5 +431,50 @@ typedef struct Hacl_Impl_SHA2_Types_uint8_2x8p_s
 Hacl_Impl_SHA2_Types_uint8_2x8p;
 
 
+typedef struct Hacl_Streaming_Keccak_hash_buf_s
+{
+  Spec_Hash_Definitions_hash_alg fst;
+  uint64_t *snd;
+}
+Hacl_Streaming_Keccak_hash_buf;
+
+typedef struct Hacl_Streaming_Keccak_state_s
+{
+  Hacl_Streaming_Keccak_hash_buf block_state;
+  uint8_t *buf;
+  uint64_t total_len;
+}
+Hacl_Streaming_Keccak_state;
+
+Hacl_Streaming_Types_error_code
+Hacl_Streaming_Keccak_update(Hacl_Streaming_Keccak_state *p, uint8_t *data, uint32_t len);
+
+Hacl_Streaming_Types_error_code
+Hacl_Streaming_Keccak_finish(Hacl_Streaming_Keccak_state *p, uint8_t *out);
+
+void
+Hacl_SHA3_shake128_hacl(
+  uint32_t inputByteLen,
+  uint8_t *input,
+  uint32_t outputByteLen,
+  uint8_t *output
+);
+
+void
+Hacl_SHA3_shake256_hacl(
+  uint32_t inputByteLen,
+  uint8_t *input,
+  uint32_t outputByteLen,
+  uint8_t *output
+);
+
+void Hacl_SHA3_sha3_224(uint32_t inputByteLen, uint8_t *input, uint8_t *output);
+
+void Hacl_SHA3_sha3_256(uint32_t inputByteLen, uint8_t *input, uint8_t *output);
+
+void Hacl_SHA3_sha3_384(uint32_t inputByteLen, uint8_t *input, uint8_t *output);
+
+void Hacl_SHA3_sha3_512(uint32_t inputByteLen, uint8_t *input, uint8_t *output);
+
 #define __Hacl_Hash_H_DEFINED
 #endif
