@@ -15,18 +15,20 @@
 
 typedef u128 FStar_UInt128_uint128;
 
-static inline u128 FStar_UInt128_shift_left(u128 x, u32 y) {
-  return (x << y);
+static inline u128 FStar_UInt128_shift_left(u128 x, u32 y)
+{
+	return (x << y);
 }
 
-static inline u128 FStar_UInt128_add(u128 x, u128 y) {
-  return (x + y);
+static inline u128 FStar_UInt128_add(u128 x, u128 y)
+{
+	return (x + y);
 }
 
-static inline u128 FStar_UInt128_uint64_to_uint128(u64 x) {
-  return ((u128)x);
+static inline u128 FStar_UInt128_uint64_to_uint128(u64 x)
+{
+	return ((u128)x);
 }
-
 
 /* Loads and stores. These avoid undefined behavior due to unaligned memory
  * accesses, via memcpy. */
@@ -41,90 +43,95 @@ static inline u128 FStar_UInt128_uint64_to_uint128(u64 x) {
 #define load64_le(b) (get_unaligned_le64(b))
 #define store64_le(b, i) put_unaligned_le64(i, b);
 
-static inline void store128_be(u8* buf, u128 x) {
-  store64_be(buf,(u64)(x>>64));
-  store64_be(buf+8,(u64)(x));
-}
+static inline void store128_be(u8 *buf, u128 x)
+{
+	store64_be(buf, (u64)(x >> 64));
+	store64_be(buf + 8, (u64)(x));
 
-
+	static inline void store128_be(u8 * buf, u128 x)
+	{
+		store64_be(buf, (u64)(x >> 64));
+		store64_be(buf + 8, (u64)(x));
+	}
 
 /* Macros for prettier unrolling of loops */
-#define KRML_LOOP1(i, n, x) { \
-  x \
-  i += n; \
-}
+#define KRML_LOOP1(i, n, x) \
+	{                   \
+		x i += n;   \
+	}
 
 #define KRML_LOOP2(i, n, x) \
-  KRML_LOOP1(i, n, x) \
-  KRML_LOOP1(i, n, x)
+	KRML_LOOP1(i, n, x) \
+	KRML_LOOP1(i, n, x)
 
 #define KRML_LOOP3(i, n, x) \
-  KRML_LOOP2(i, n, x) \
-  KRML_LOOP1(i, n, x)
+	KRML_LOOP2(i, n, x) \
+	KRML_LOOP1(i, n, x)
 
 #define KRML_LOOP4(i, n, x) \
-  KRML_LOOP2(i, n, x) \
-  KRML_LOOP2(i, n, x)
+	KRML_LOOP2(i, n, x) \
+	KRML_LOOP2(i, n, x)
 
 #define KRML_LOOP5(i, n, x) \
-  KRML_LOOP4(i, n, x) \
-  KRML_LOOP1(i, n, x)
+	KRML_LOOP4(i, n, x) \
+	KRML_LOOP1(i, n, x)
 
 #define KRML_LOOP6(i, n, x) \
-  KRML_LOOP4(i, n, x) \
-  KRML_LOOP2(i, n, x)
+	KRML_LOOP4(i, n, x) \
+	KRML_LOOP2(i, n, x)
 
 #define KRML_LOOP7(i, n, x) \
-  KRML_LOOP4(i, n, x) \
-  KRML_LOOP3(i, n, x)
+	KRML_LOOP4(i, n, x) \
+	KRML_LOOP3(i, n, x)
 
 #define KRML_LOOP8(i, n, x) \
-  KRML_LOOP4(i, n, x) \
-  KRML_LOOP4(i, n, x)
+	KRML_LOOP4(i, n, x) \
+	KRML_LOOP4(i, n, x)
 
 #define KRML_LOOP9(i, n, x) \
-  KRML_LOOP8(i, n, x) \
-  KRML_LOOP1(i, n, x)
+	KRML_LOOP8(i, n, x) \
+	KRML_LOOP1(i, n, x)
 
 #define KRML_LOOP10(i, n, x) \
-  KRML_LOOP8(i, n, x) \
-  KRML_LOOP2(i, n, x)
+	KRML_LOOP8(i, n, x)  \
+	KRML_LOOP2(i, n, x)
 
 #define KRML_LOOP11(i, n, x) \
-  KRML_LOOP8(i, n, x) \
-  KRML_LOOP3(i, n, x)
+	KRML_LOOP8(i, n, x)  \
+	KRML_LOOP3(i, n, x)
 
 #define KRML_LOOP12(i, n, x) \
-  KRML_LOOP8(i, n, x) \
-  KRML_LOOP4(i, n, x)
+	KRML_LOOP8(i, n, x)  \
+	KRML_LOOP4(i, n, x)
 
 #define KRML_LOOP13(i, n, x) \
-  KRML_LOOP8(i, n, x) \
-  KRML_LOOP5(i, n, x)
+	KRML_LOOP8(i, n, x)  \
+	KRML_LOOP5(i, n, x)
 
 #define KRML_LOOP14(i, n, x) \
-  KRML_LOOP8(i, n, x) \
-  KRML_LOOP6(i, n, x)
+	KRML_LOOP8(i, n, x)  \
+	KRML_LOOP6(i, n, x)
 
 #define KRML_LOOP15(i, n, x) \
-  KRML_LOOP8(i, n, x) \
-  KRML_LOOP7(i, n, x)
+	KRML_LOOP8(i, n, x)  \
+	KRML_LOOP7(i, n, x)
 
 #define KRML_LOOP16(i, n, x) \
-  KRML_LOOP8(i, n, x) \
-  KRML_LOOP8(i, n, x)
+	KRML_LOOP8(i, n, x)  \
+	KRML_LOOP8(i, n, x)
 
-#define KRML_UNROLL_FOR(i, z, n, k, x) do { \
-  uint32_t i = z; \
-  KRML_LOOP##n(i, k, x) \
-} while (0)
+#define KRML_UNROLL_FOR(i, z, n, k, x) \
+	do {                           \
+		uint32_t i = z;        \
+		KRML_LOOP##n(i, k, x)  \
+	} while (0)
 
-#define KRML_ACTUAL_FOR(i, z, n, k, x) \
-  do { \
-    for (uint32_t i = z; i < n; i += k) { \
-      x \
-    } \
-  } while (0)
+#define KRML_ACTUAL_FOR(i, z, n, k, x)                \
+	do {                                          \
+		for (uint32_t i = z; i < n; i += k) { \
+			x                             \
+		}                                     \
+	} while (0)
 
 #define KRML_UNROLL_MAX 16
 
@@ -234,19 +241,18 @@ static inline void store128_be(u8* buf, u128 x) {
 /* For "bare" targets that do not have a C stdlib, the user might want to use
  * [-add-early-include '"mydefinitions.h"'] and override these. */
 #ifndef KRML_HOST_PRINTF
-#  define KRML_HOST_PRINTF(...)
+#define KRML_HOST_PRINTF(...)
 #endif
 #ifndef KRML_HOST_EPRINTF
-#  define KRML_HOST_EPRINTF(...)
+#define KRML_HOST_EPRINTF(...)
 #endif
 
 #ifndef KRML_HOST_EXIT
-#  define KRML_HOST_EXIT exit
+#define KRML_HOST_EXIT exit
 #endif
 
 #ifndef KRML_HOST_IGNORE
-#  define KRML_HOST_IGNORE(x) (void)(x)
+#define KRML_HOST_IGNORE(x) (void)(x)
 #endif
-
 
 #endif
