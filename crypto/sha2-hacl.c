@@ -10,95 +10,94 @@
 #include "hacl_hash.h"
 
 int hacl_sha256_update(struct shash_desc *desc, const u8 *data,
-			  unsigned int len)
+		       unsigned int len)
 {
-  struct sha256_state *sctx = shash_desc_ctx(desc);
-  Hacl_Streaming_MD_state_32 st;
-  st.block_state = sctx->state;
-  st.buf = sctx->buf;
-  st.total_len = sctx->count;
-  Hacl_Streaming_SHA2_update_256(&st, (u8*)data, len);
-  sctx->count = st.total_len;
-  return 0;
+	struct sha256_state *sctx = shash_desc_ctx(desc);
+	Hacl_Streaming_MD_state_32 st;
+	st.block_state = sctx->state;
+	st.buf = sctx->buf;
+	st.total_len = sctx->count;
+	Hacl_Streaming_SHA2_update_256(&st, (u8 *)data, len);
+	sctx->count = st.total_len;
+	return 0;
 }
 EXPORT_SYMBOL(hacl_sha256_update);
 
 static int hacl_sha256_final(struct shash_desc *desc, u8 *out)
 {
-  struct sha256_state *sctx = shash_desc_ctx(desc);
-  Hacl_Streaming_MD_state_32 st;
-  st.block_state = sctx->state;
-  st.buf = sctx->buf;
-  st.total_len = sctx->count;
-  if (crypto_shash_digestsize(desc->tfm) == SHA224_DIGEST_SIZE)
-	Hacl_Streaming_SHA2_finish_224(&st,out);
-  else
-        Hacl_Streaming_SHA2_finish_256(&st,out);
-  return 0;
+	struct sha256_state *sctx = shash_desc_ctx(desc);
+	Hacl_Streaming_MD_state_32 st;
+	st.block_state = sctx->state;
+	st.buf = sctx->buf;
+	st.total_len = sctx->count;
+	if (crypto_shash_digestsize(desc->tfm) == SHA224_DIGEST_SIZE)
+		Hacl_Streaming_SHA2_finish_224(&st, out);
+	else
+		Hacl_Streaming_SHA2_finish_256(&st, out);
+	return 0;
 }
 
-int hacl_sha256_finup(struct shash_desc *desc, const u8 *data,
-			unsigned int len, u8 *hash)
+int hacl_sha256_finup(struct shash_desc *desc, const u8 *data, unsigned int len,
+		      u8 *hash)
 {
-  struct sha256_state *sctx = shash_desc_ctx(desc);
-  Hacl_Streaming_MD_state_32 st;
-  st.block_state = sctx->state;
-  st.buf = sctx->buf;
-  st.total_len = sctx->count;
-  Hacl_Streaming_SHA2_update_256(&st, (u8*)data, len);
-  if (crypto_shash_digestsize(desc->tfm) == SHA224_DIGEST_SIZE)
-	Hacl_Streaming_SHA2_finish_224(&st,hash);
-  else
-        Hacl_Streaming_SHA2_finish_256(&st,hash);
-  return 0;
+	struct sha256_state *sctx = shash_desc_ctx(desc);
+	Hacl_Streaming_MD_state_32 st;
+	st.block_state = sctx->state;
+	st.buf = sctx->buf;
+	st.total_len = sctx->count;
+	Hacl_Streaming_SHA2_update_256(&st, (u8 *)data, len);
+	if (crypto_shash_digestsize(desc->tfm) == SHA224_DIGEST_SIZE)
+		Hacl_Streaming_SHA2_finish_224(&st, hash);
+	else
+		Hacl_Streaming_SHA2_finish_256(&st, hash);
+	return 0;
 }
 EXPORT_SYMBOL(hacl_sha256_finup);
 
 int hacl_sha512_update(struct shash_desc *desc, const u8 *data,
-			unsigned int len)
+		       unsigned int len)
 {
-  struct sha512_state *sctx = shash_desc_ctx(desc);
-  Hacl_Streaming_MD_state_64 st;
-  st.block_state = sctx->state;
-  st.buf = sctx->buf;
-  st.total_len = sctx->count[0];
-  Hacl_Streaming_SHA2_update_512(&st, (u8*)data, len);
-  sctx->count[0] = st.total_len;
-  return 0;
+	struct sha512_state *sctx = shash_desc_ctx(desc);
+	Hacl_Streaming_MD_state_64 st;
+	st.block_state = sctx->state;
+	st.buf = sctx->buf;
+	st.total_len = sctx->count[0];
+	Hacl_Streaming_SHA2_update_512(&st, (u8 *)data, len);
+	sctx->count[0] = st.total_len;
+	return 0;
 }
 EXPORT_SYMBOL(hacl_sha512_update);
 
 static int hacl_sha512_final(struct shash_desc *desc, u8 *hash)
 {
-  struct sha512_state *sctx = shash_desc_ctx(desc);
-  Hacl_Streaming_MD_state_64 st;
-  st.block_state = sctx->state;
-  st.buf = sctx->buf;
-  st.total_len = sctx->count[0];
-  if (crypto_shash_digestsize(desc->tfm) == SHA384_DIGEST_SIZE)
-	Hacl_Streaming_SHA2_finish_384(&st,hash);
-  else
-        Hacl_Streaming_SHA2_finish_512(&st,hash);
-  return 0;
+	struct sha512_state *sctx = shash_desc_ctx(desc);
+	Hacl_Streaming_MD_state_64 st;
+	st.block_state = sctx->state;
+	st.buf = sctx->buf;
+	st.total_len = sctx->count[0];
+	if (crypto_shash_digestsize(desc->tfm) == SHA384_DIGEST_SIZE)
+		Hacl_Streaming_SHA2_finish_384(&st, hash);
+	else
+		Hacl_Streaming_SHA2_finish_512(&st, hash);
+	return 0;
 }
 
-int hacl_sha512_finup(struct shash_desc *desc, const u8 *data,
-			unsigned int len, u8 *hash)
+int hacl_sha512_finup(struct shash_desc *desc, const u8 *data, unsigned int len,
+		      u8 *hash)
 {
-  struct sha512_state *sctx = shash_desc_ctx(desc);
-  Hacl_Streaming_MD_state_64 st;
-  st.block_state = sctx->state;
-  st.buf = sctx->buf;
-  st.total_len = sctx->count[0];
-  Hacl_Streaming_SHA2_update_512(&st, (u8*)data, len);
-  if (crypto_shash_digestsize(desc->tfm) == SHA384_DIGEST_SIZE)
-	Hacl_Streaming_SHA2_finish_384(&st,hash);
-  else
-        Hacl_Streaming_SHA2_finish_512(&st,hash);
-  return 0;
+	struct sha512_state *sctx = shash_desc_ctx(desc);
+	Hacl_Streaming_MD_state_64 st;
+	st.block_state = sctx->state;
+	st.buf = sctx->buf;
+	st.total_len = sctx->count[0];
+	Hacl_Streaming_SHA2_update_512(&st, (u8 *)data, len);
+	if (crypto_shash_digestsize(desc->tfm) == SHA384_DIGEST_SIZE)
+		Hacl_Streaming_SHA2_finish_384(&st, hash);
+	else
+		Hacl_Streaming_SHA2_finish_512(&st, hash);
+	return 0;
 }
 EXPORT_SYMBOL(hacl_sha512_finup);
-
 
 static struct shash_alg sha2_hacl_algs[4] = { {
 	.digestsize	=	SHA256_DIGEST_SIZE,
@@ -160,7 +159,8 @@ static struct shash_alg sha2_hacl_algs[4] = { {
 
 static int __init sha2_hacl_mod_init(void)
 {
-	return crypto_register_shashes(sha2_hacl_algs, ARRAY_SIZE(sha2_hacl_algs));
+	return crypto_register_shashes(sha2_hacl_algs,
+				       ARRAY_SIZE(sha2_hacl_algs));
 }
 
 static void __exit sha2_hacl_mod_fini(void)
