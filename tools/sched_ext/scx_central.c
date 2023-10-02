@@ -4,6 +4,8 @@
  * Copyright (c) 2022 Tejun Heo <tj@kernel.org>
  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
  */
+#define _GNU_SOURCE
+#include <sched.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
@@ -38,6 +40,7 @@ int main(int argc, char **argv)
 	struct bpf_link *link;
 	__u64 seq = 0;
 	__s32 opt;
+	cpu_set_t *cpuset;
 
 	signal(SIGINT, sigint_handler);
 	signal(SIGTERM, sigint_handler);
@@ -72,6 +75,26 @@ int main(int argc, char **argv)
 	RESIZE_ARRAY(data, cpu_started_at, skel->rodata->nr_cpu_ids);
 
 	SCX_BUG_ON(scx_central__load(skel), "Failed to load skel");
+
+	/*
+	 * Affinitize the loading thread to the central CPU, as:
+	 * - That's where the BPF timer is first invoked in the BPF program.
+	 * - We probably don't want this user space component to take up a core
+	 *   from a task that would benefit from avoiding preemption on one of
+	 *   the tickless cores.
+	 *
+	 * Until BPF supports pinning the timer, it's not guaranteed that it
+	 * will always be invoked on the central CPU. In practice, this
+	 * suffices the majority of the time.
+	 */
+	cpuset = CPU_ALLOC(skel->rodata->nr_cpu_ids);
+	SCX_BUG_ON(!cpuset, "Failed to allocate cpuset");
+	CPU_ZERO(cpuset);
+	CPU_SET(skel->rodata->central_cpu, cpuset);
+	SCX_BUG_ON(sched_setaffinity(0, sizeof(cpuset), cpuset),
+		   "Failed to affinitize to central CPU %d (max %d)",
+		   skel->rodata->central_cpu, skel->rodata->nr_cpu_ids - 1);
+	CPU_FREE(cpuset);
 
 	link = bpf_map__attach_struct_ops(skel->maps.central_ops);
 	SCX_BUG_ON(!link, "Failed to attach struct_ops");
