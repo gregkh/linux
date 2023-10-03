@@ -58,6 +58,7 @@ enum {
 const volatile bool switch_partial;
 const volatile s32 central_cpu;
 const volatile u32 nr_cpu_ids = 1;	/* !0 for veristat, set during init */
+const volatile u64 slice_ns = SCX_SLICE_DFL;
 
 u64 nr_total, nr_locals, nr_queued, nr_lost_pids;
 u64 nr_timers, nr_dispatches, nr_mismatches, nr_retries;
@@ -263,7 +264,7 @@ static int central_timerfn(void *map, int *key, struct bpf_timer *timer)
 		/* kick iff the current one exhausted its slice */
 		started_at = ARRAY_ELEM_PTR(cpu_started_at, cpu, nr_cpu_ids);
 		if (started_at && *started_at &&
-		    vtime_before(now, *started_at + SCX_SLICE_DFL))
+		    vtime_before(now, *started_at + slice_ns))
 			continue;
 
 		/* and there's something pending */

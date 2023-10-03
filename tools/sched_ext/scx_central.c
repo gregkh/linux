@@ -18,8 +18,9 @@ const char help_fmt[] =
 "\n"
 "See the top-level comment in .bpf.c for more details.\n"
 "\n"
-"Usage: %s [-c CPU] [-p]\n"
+"Usage: %s [-s SLICE_US] [-c CPU] [-p]\n"
 "\n"
+"  -s SLICE_US   Override slice duration\n"
 "  -c CPU        Override the central CPU (default: 0)\n"
 "  -p            Switch only tasks on SCHED_EXT policy intead of all\n"
 "  -h            Display this help and exit\n";
@@ -49,8 +50,11 @@ int main(int argc, char **argv)
 	skel->rodata->central_cpu = 0;
 	skel->rodata->nr_cpu_ids = libbpf_num_possible_cpus();
 
-	while ((opt = getopt(argc, argv, "c:ph")) != -1) {
+	while ((opt = getopt(argc, argv, "s:c:ph")) != -1) {
 		switch (opt) {
+		case 's':
+			skel->rodata->slice_ns = strtoull(optarg, NULL, 0) * 1000;
+			break;
 		case 'c':
 			skel->rodata->central_cpu = strtoul(optarg, NULL, 0);
 			break;
