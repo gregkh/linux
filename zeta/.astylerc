@@ -1,0 +1,31 @@
+# Pre-formats files according to the Kernel code style.
+#
+# AStyle prepares code so that clang-format can do the final formatting.
+#
+# Required since clang-format does not handle:
+#  - designated struct initializers
+#  - removing existing tabs
+#
+align-pointer=name
+align-reference=name
+attach-closing-while
+break-one-line-headers
+convert-tabs
+delete-empty-lines
+indent-preproc-define
+indent=spaces=8
+lineend=linux
+max-code-length=80
+max-continuation-indent=80
+min-conditional-indent=0
+mode=c
+pad-comma
+pad-header
+pad-oper
+preserve-date
+squeeze-ws
+style=kr
+suffix=none
+unpad-brackets
+unpad-paren
+verbose
