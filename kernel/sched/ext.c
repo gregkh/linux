@@ -1663,7 +1663,7 @@ static void set_next_task_scx(struct rq *rq, struct task_struct *p, bool first)
 
 	/*
 	 * @p is getting newly scheduled or got kicked after someone updated its
-	 * slice. Refresh whether tick can be stopped. See can_stop_tick_scx().
+	 * slice. Refresh whether tick can be stopped. See scx_can_stop_tick().
 	 */
 	if ((p->scx.slice == SCX_SLICE_INF) !=
 	    (bool)(rq->scx.flags & SCX_RQ_CAN_STOP_TICK)) {
