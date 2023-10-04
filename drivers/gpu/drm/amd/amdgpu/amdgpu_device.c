@@ -4172,6 +4172,9 @@ void amdgpu_device_fini_sw(struct amdgpu_device *adev)
 
 	amdgpu_bios_release(adev);
 
+	kfree(adev->fru_info);
+	adev->fru_info = NULL;
+
 	px = amdgpu_device_supports_px(adev_to_drm(adev));
 
 	if (amdgpu_device_should_register_switcheroo(adev, px))
