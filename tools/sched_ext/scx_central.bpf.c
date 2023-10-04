@@ -303,6 +303,9 @@ int BPF_STRUCT_OPS_SLEEPABLE(central_init)
 	if (!timer)
 		return -ESRCH;
 
+	if (bpf_get_smp_processor_id() != central_cpu)
+		return -EINVAL;
+
 	bpf_timer_init(timer, &central_timer, CLOCK_MONOTONIC);
 	bpf_timer_set_callback(timer, central_timerfn);
 	ret = bpf_timer_start(timer, TIMER_INTERVAL_NS, 0);
