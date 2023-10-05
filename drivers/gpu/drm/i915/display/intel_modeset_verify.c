@@ -234,7 +234,7 @@ void intel_modeset_verify_crtc(struct intel_crtc *crtc,
 	    !intel_crtc_needs_fastset(new_crtc_state))
 		return;
 
-	intel_wm_state_verify(crtc, new_crtc_state);
+	intel_wm_state_verify(state, crtc);
 	verify_connector_state(state, crtc);
 	verify_crtc_state(crtc, old_crtc_state, new_crtc_state);
 	intel_shared_dpll_state_verify(crtc, old_crtc_state, new_crtc_state);
