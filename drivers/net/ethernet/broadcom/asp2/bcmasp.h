@@ -566,7 +566,7 @@ void bcmasp_disable_all_filters(struct bcmasp_intf *intf);
 void bcmasp_core_clock_set_intf(struct bcmasp_intf *intf, bool en);
 
 struct bcmasp_net_filter *bcmasp_netfilt_get_init(struct bcmasp_intf *intf,
-						  int loc, bool wake_filter,
+						  u32 loc, bool wake_filter,
 						  bool init);
 
 bool bcmasp_netfilt_check_dup(struct bcmasp_intf *intf,
@@ -577,8 +577,8 @@ void bcmasp_netfilt_release(struct bcmasp_intf *intf,
 
 int bcmasp_netfilt_get_active(struct bcmasp_intf *intf);
 
-void bcmasp_netfilt_get_all_active(struct bcmasp_intf *intf, u32 *rule_locs,
-				   u32 *rule_cnt);
+int bcmasp_netfilt_get_all_active(struct bcmasp_intf *intf, u32 *rule_locs,
+				  u32 *rule_cnt);
 
 void bcmasp_netfilt_suspend(struct bcmasp_intf *intf);
 

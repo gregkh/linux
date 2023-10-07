@@ -932,7 +932,14 @@ enum bpf_map_type {
 	 */
 	BPF_MAP_TYPE_CGROUP_STORAGE = BPF_MAP_TYPE_CGROUP_STORAGE_DEPRECATED,
 	BPF_MAP_TYPE_REUSEPORT_SOCKARRAY,
-	BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE,
+	BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE_DEPRECATED,
+	/* BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE is available to bpf programs
+	 * attaching to a cgroup. The new mechanism (BPF_MAP_TYPE_CGRP_STORAGE +
+	 * local percpu kptr) supports all BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE
+	 * functionality and more. So mark * BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE
+	 * deprecated.
+	 */
+	BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE = BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE_DEPRECATED,
 	BPF_MAP_TYPE_QUEUE,
 	BPF_MAP_TYPE_STACK,
 	BPF_MAP_TYPE_SK_STORAGE,
@@ -1039,6 +1046,7 @@ enum bpf_attach_type {
 	BPF_NETFILTER,
 	BPF_TCX_INGRESS,
 	BPF_TCX_EGRESS,
+	BPF_TRACE_UPROBE_MULTI,
 	__MAX_BPF_ATTACH_TYPE
 };
 
@@ -1057,6 +1065,7 @@ enum bpf_link_type {
 	BPF_LINK_TYPE_STRUCT_OPS = 9,
 	BPF_LINK_TYPE_NETFILTER = 10,
 	BPF_LINK_TYPE_TCX = 11,
+	BPF_LINK_TYPE_UPROBE_MULTI = 12,
 	MAX_BPF_LINK_TYPE,
 };
 
@@ -1186,7 +1195,16 @@ enum bpf_perf_event_type {
 /* link_create.kprobe_multi.flags used in LINK_CREATE command for
  * BPF_TRACE_KPROBE_MULTI attach type to create return probe.
  */
-#define BPF_F_KPROBE_MULTI_RETURN	(1U << 0)
+enum {
+	BPF_F_KPROBE_MULTI_RETURN = (1U << 0)
+};
+
+/* link_create.uprobe_multi.flags used in LINK_CREATE command for
+ * BPF_TRACE_UPROBE_MULTI attach type to create return probe.
+ */
+enum {
+	BPF_F_UPROBE_MULTI_RETURN = (1U << 0)
+};
 
 /* link_create.netfilter.flags used in LINK_CREATE command for
  * BPF_PROG_TYPE_NETFILTER to enable IP packet defragmentation.
@@ -1624,6 +1642,15 @@ union bpf_attr {
 				};
 				__u64		expected_revision;
 			} tcx;
+			struct {
+				__aligned_u64	path;
+				__aligned_u64	offsets;
+				__aligned_u64	ref_ctr_offsets;
+				__aligned_u64	cookies;
+				__u32		cnt;
+				__u32		flags;
+				__u32		pid;
+			} uprobe_multi;
 		};
 	} link_create;
 
@@ -1942,7 +1969,9 @@ union bpf_attr {
  * 		performed again, if the helper is used in combination with
  * 		direct packet access.
  * 	Return
- * 		0 on success, or a negative error in case of failure.
+ * 		0 on success, or a negative error in case of failure. Positive
+ * 		error indicates a potential drop or congestion in the target
+ * 		device. The particular positive error codes are not defined.
  *
  * u64 bpf_get_current_pid_tgid(void)
  * 	Description
@@ -5086,9 +5115,14 @@ union bpf_attr {
  * u64 bpf_get_func_ip(void *ctx)
  * 	Description
  * 		Get address of the traced function (for tracing and kprobe programs).
+ *
+ * 		When called for kprobe program attached as uprobe it returns
+ * 		probe address for both entry and return uprobe.
+ *
  * 	Return
- * 		Address of the traced function.
+ * 		Address of the traced function for kprobe.
  * 		0 for kprobes placed within the function (not at the entry).
+ * 		Address of the probe for uprobe and return uprobe.
  *
  * u64 bpf_get_attach_cookie(void *ctx)
  * 	Description
@@ -6498,6 +6532,7 @@ struct bpf_link_info {
 			__aligned_u64 addrs;
 			__u32 count; /* in/out: kprobe_multi function count */
 			__u32 flags;
+			__u64 missed;
 		} kprobe_multi;
 		struct {
 			__u32 type; /* enum bpf_perf_event_type */
@@ -6513,6 +6548,7 @@ struct bpf_link_info {
 					__u32 name_len;
 					__u32 offset; /* offset from func_name */
 					__u64 addr;
+					__u64 missed;
 				} kprobe; /* BPF_PERF_EVENT_KPROBE, BPF_PERF_EVENT_KRETPROBE */
 				struct {
 					__aligned_u64 tp_name;   /* in/out */

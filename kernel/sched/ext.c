@@ -3624,7 +3624,7 @@ struct bpf_struct_ops bpf_sched_ext_ops = {
 	.name = "sched_ext_ops",
 };
 
-static void sysrq_handle_sched_ext_reset(int key)
+static void sysrq_handle_sched_ext_reset(u8 key)
 {
 	if (scx_ops_helper)
 		scx_ops_disable(SCX_EXIT_SYSRQ);

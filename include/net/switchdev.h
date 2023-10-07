@@ -201,8 +201,6 @@ struct switchdev_obj_in_state_mrp {
 #define SWITCHDEV_OBJ_IN_STATE_MRP(OBJ) \
 	container_of((OBJ), struct switchdev_obj_in_state_mrp, obj)
 
-typedef int switchdev_obj_dump_cb_t(struct switchdev_obj *obj);
-
 struct switchdev_brport {
 	struct net_device *dev;
 	const void *ctx;
@@ -327,10 +325,6 @@ int unregister_switchdev_blocking_notifier(struct notifier_block *nb);
 int call_switchdev_blocking_notifiers(unsigned long val, struct net_device *dev,
 				      struct switchdev_notifier_info *info,
 				      struct netlink_ext_ack *extack);
-
-void switchdev_port_fwd_mark_set(struct net_device *dev,
-				 struct net_device *group_dev,
-				 bool joining);
 
 int switchdev_handle_fdb_event_to_device(struct net_device *dev, unsigned long event,
 		const struct switchdev_notifier_fdb_info *fdb_info,

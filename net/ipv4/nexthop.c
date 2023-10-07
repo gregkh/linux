@@ -3209,7 +3209,6 @@ static int rtm_dump_walk_nexthops(struct sk_buff *skb,
 			return err;
 	}
 
-	ctx->idx++;
 	return 0;
 }
 
@@ -3244,13 +3243,9 @@ static int rtm_dump_nexthop(struct sk_buff *skb, struct netlink_callback *cb)
 				     &rtm_dump_nexthop_cb, &filter);
 	if (err < 0) {
 		if (likely(skb->len))
-			goto out;
-		goto out_err;
+			err = skb->len;
 	}
 
-out:
-	err = skb->len;
-out_err:
 	cb->seq = net->nexthop.seq;
 	nl_dump_check_consistent(cb, nlmsg_hdr(skb));
 	return err;
@@ -3341,7 +3336,6 @@ static int nh_valid_dump_bucket_req(const struct nlmsghdr *nlh,
 struct rtm_dump_res_bucket_ctx {
 	struct rtm_dump_nh_ctx nh;
 	u16 bucket_index;
-	u32 done_nh_idx; /* 1 + the index of the last fully processed NH. */
 };
 
 static struct rtm_dump_res_bucket_ctx *
@@ -3370,9 +3364,6 @@ static int rtm_dump_nexthop_bucket_nh(struct sk_buff *skb,
 	u16 bucket_index;
 	int err;
 
-	if (dd->ctx->nh.idx < dd->ctx->done_nh_idx)
-		return 0;
-
 	nhg = rtnl_dereference(nh->nh_grp);
 	res_table = rtnl_dereference(nhg->res_table);
 	for (bucket_index = dd->ctx->bucket_index;
@@ -3390,25 +3381,18 @@ static int rtm_dump_nexthop_bucket_nh(struct sk_buff *skb,
 		    dd->filter.res_bucket_nh_id != nhge->nh->id)
 			continue;
 
+		dd->ctx->bucket_index = bucket_index;
 		err = nh_fill_res_bucket(skb, nh, bucket, bucket_index,
 					 RTM_NEWNEXTHOPBUCKET, portid,
 					 cb->nlh->nlmsg_seq, NLM_F_MULTI,
 					 cb->extack);
-		if (err < 0) {
-			if (likely(skb->len))
-				goto out;
-			goto out_err;
-		}
+		if (err)
+			return err;
 	}
 
-	dd->ctx->done_nh_idx = dd->ctx->nh.idx + 1;
-	bucket_index = 0;
+	dd->ctx->bucket_index = 0;
 
-out:
-	err = skb->len;
-out_err:
-	dd->ctx->bucket_index = bucket_index;
-	return err;
+	return 0;
 }
 
 static int rtm_dump_nexthop_bucket_cb(struct sk_buff *skb,
@@ -3457,13 +3441,9 @@ static int rtm_dump_nexthop_bucket(struct sk_buff *skb,
 
 	if (err < 0) {
 		if (likely(skb->len))
-			goto out;
-		goto out_err;
+			err = skb->len;
 	}
 
-out:
-	err = skb->len;
-out_err:
 	cb->seq = net->nexthop.seq;
 	nl_dump_check_consistent(cb, nlmsg_hdr(skb));
 	return err;

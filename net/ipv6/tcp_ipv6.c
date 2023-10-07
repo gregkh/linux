@@ -163,7 +163,7 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 	memset(&fl6, 0, sizeof(fl6));
 
-	if (np->sndflow) {
+	if (inet6_test_bit(SNDFLOW, sk)) {
 		fl6.flowlabel = usin->sin6_flowinfo&IPV6_FLOWINFO_MASK;
 		IP6_ECN_flow_init(fl6.flowlabel);
 		if (fl6.flowlabel&IPV6_FLOWLABEL_MASK) {
@@ -508,7 +508,7 @@ static int tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 			tcp_ld_RTO_revert(sk, seq);
 	}
 
-	if (!sock_owned_by_user(sk) && np->recverr) {
+	if (!sock_owned_by_user(sk) && inet6_test_bit(RECVERR6, sk)) {
 		WRITE_ONCE(sk->sk_err, err);
 		sk_error_report(sk);
 	} else {
@@ -548,7 +548,7 @@ static int tcp_v6_send_synack(const struct sock *sk, struct dst_entry *dst,
 				    &ireq->ir_v6_rmt_addr);
 
 		fl6->daddr = ireq->ir_v6_rmt_addr;
-		if (np->repflow && ireq->pktopts)
+		if (inet6_test_bit(REPFLOW, sk) && ireq->pktopts)
 			fl6->flowlabel = ip6_flowlabel(ipv6_hdr(ireq->pktopts));
 
 		tclass = READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_reflect_tos) ?
@@ -564,8 +564,8 @@ static int tcp_v6_send_synack(const struct sock *sk, struct dst_entry *dst,
 		opt = ireq->ipv6_opt;
 		if (!opt)
 			opt = rcu_dereference(np->opt);
-		err = ip6_xmit(sk, skb, fl6, skb->mark ? : sk->sk_mark, opt,
-			       tclass, sk->sk_priority);
+		err = ip6_xmit(sk, skb, fl6, skb->mark ? : READ_ONCE(sk->sk_mark),
+			       opt, tclass, sk->sk_priority);
 		rcu_read_unlock();
 		err = net_xmit_eval(err);
 	}
@@ -797,7 +797,7 @@ static void tcp_v6_init_req(struct request_sock *req,
 	    (ipv6_opt_accepted(sk_listener, skb, &TCP_SKB_CB(skb)->header.h6) ||
 	     np->rxopt.bits.rxinfo ||
 	     np->rxopt.bits.rxoinfo || np->rxopt.bits.rxhlim ||
-	     np->rxopt.bits.rxohlim || np->repflow)) {
+	     np->rxopt.bits.rxohlim || inet6_test_bit(REPFLOW, sk_listener))) {
 		refcount_inc(&skb->users);
 		ireq->pktopts = skb;
 	}
@@ -939,7 +939,7 @@ static void tcp_v6_send_response(const struct sock *sk, struct sk_buff *skb, u32
 		if (sk->sk_state == TCP_TIME_WAIT)
 			mark = inet_twsk(sk)->tw_mark;
 		else
-			mark = sk->sk_mark;
+			mark = READ_ONCE(sk->sk_mark);
 		skb_set_delivery_time(buff, tcp_transmit_time(sk), true);
 	}
 	if (txhash) {
@@ -1055,10 +1055,8 @@ static void tcp_v6_send_reset(const struct sock *sk, struct sk_buff *skb)
 	if (sk) {
 		oif = sk->sk_bound_dev_if;
 		if (sk_fullsock(sk)) {
-			const struct ipv6_pinfo *np = tcp_inet6_sk(sk);
-
 			trace_tcp_send_reset(sk, skb);
-			if (np->repflow)
+			if (inet6_test_bit(REPFLOW, sk))
 				label = ip6_flowlabel(ipv6h);
 			priority = sk->sk_priority;
 			txhash = sk->sk_txhash;
@@ -1128,7 +1126,8 @@ static void tcp_v6_reqsk_send_ack(const struct sock *sk, struct sk_buff *skb,
 			tcp_time_stamp_raw() + tcp_rsk(req)->ts_off,
 			READ_ONCE(req->ts_recent), sk->sk_bound_dev_if,
 			tcp_v6_md5_do_lookup(sk, &ipv6_hdr(skb)->saddr, l3index),
-			ipv6_get_dsfield(ipv6_hdr(skb)), 0, sk->sk_priority,
+			ipv6_get_dsfield(ipv6_hdr(skb)), 0,
+			READ_ONCE(sk->sk_priority),
 			READ_ONCE(tcp_rsk(req)->txhash));
 }
 
@@ -1246,7 +1245,7 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 		newnp->mcast_oif   = inet_iif(skb);
 		newnp->mcast_hops  = ip_hdr(skb)->ttl;
 		newnp->rcv_flowinfo = 0;
-		if (np->repflow)
+		if (inet6_test_bit(REPFLOW, sk))
 			newnp->flow_label = 0;
 
 		/*
@@ -1319,7 +1318,7 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 	newnp->mcast_oif  = tcp_v6_iif(skb);
 	newnp->mcast_hops = ipv6_hdr(skb)->hop_limit;
 	newnp->rcv_flowinfo = ip6_flowinfo(ipv6_hdr(skb));
-	if (np->repflow)
+	if (inet6_test_bit(REPFLOW, sk))
 		newnp->flow_label = ip6_flowlabel(ipv6_hdr(skb));
 
 	/* Set ToS of the new socket based upon the value of incoming SYN.
@@ -1541,10 +1540,11 @@ ipv6_pktoptions:
 		if (np->rxopt.bits.rxinfo || np->rxopt.bits.rxoinfo)
 			np->mcast_oif = tcp_v6_iif(opt_skb);
 		if (np->rxopt.bits.rxhlim || np->rxopt.bits.rxohlim)
-			np->mcast_hops = ipv6_hdr(opt_skb)->hop_limit;
+			WRITE_ONCE(np->mcast_hops,
+				   ipv6_hdr(opt_skb)->hop_limit);
 		if (np->rxopt.bits.rxflow || np->rxopt.bits.rxtclass)
 			np->rcv_flowinfo = ip6_flowinfo(ipv6_hdr(opt_skb));
-		if (np->repflow)
+		if (inet6_test_bit(REPFLOW, sk))
 			np->flow_label = ip6_flowlabel(ipv6_hdr(opt_skb));
 		if (ipv6_opt_accepted(sk, opt_skb, &TCP_SKB_CB(opt_skb)->header.h6)) {
 			tcp_v6_restore_cb(opt_skb);

@@ -580,8 +580,8 @@ void ping_err(struct sk_buff *skb, int offset, u32 info)
 	 *      RFC1122: OK.  Passes ICMP errors back to application, as per
 	 *	4.1.3.3.
 	 */
-	if ((family == AF_INET && !inet_sock->recverr) ||
-	    (family == AF_INET6 && !inet6_sk(sk)->recverr)) {
+	if ((family == AF_INET && !inet_test_bit(RECVERR, sk)) ||
+	    (family == AF_INET6 && !inet6_test_bit(RECVERR6, sk))) {
 		if (!harderr || sk->sk_state != TCP_ESTABLISHED)
 			goto out;
 	} else {
@@ -894,12 +894,11 @@ int ping_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags,
 			*addr_len = sizeof(*sin);
 		}
 
-		if (isk->cmsg_flags)
+		if (inet_cmsg_flags(isk))
 			ip_cmsg_recv(msg, skb);
 
 #if IS_ENABLED(CONFIG_IPV6)
 	} else if (family == AF_INET6) {
-		struct ipv6_pinfo *np = inet6_sk(sk);
 		struct ipv6hdr *ip6 = ipv6_hdr(skb);
 		DECLARE_SOCKADDR(struct sockaddr_in6 *, sin6, msg->msg_name);
 
@@ -908,7 +907,7 @@ int ping_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags,
 			sin6->sin6_port = 0;
 			sin6->sin6_addr = ip6->saddr;
 			sin6->sin6_flowinfo = 0;
-			if (np->sndflow)
+			if (inet6_test_bit(SNDFLOW, sk))
 				sin6->sin6_flowinfo = ip6_flowinfo(ip6);
 			sin6->sin6_scope_id =
 				ipv6_iface_scope_id(&sin6->sin6_addr,
@@ -921,7 +920,8 @@ int ping_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags,
 		if (skb->protocol == htons(ETH_P_IPV6) &&
 		    inet6_sk(sk)->rxopt.all)
 			pingv6_ops.ip6_datagram_recv_specific_ctl(sk, msg, skb);
-		else if (skb->protocol == htons(ETH_P_IP) && isk->cmsg_flags)
+		else if (skb->protocol == htons(ETH_P_IP) &&
+			 inet_cmsg_flags(isk))
 			ip_cmsg_recv(msg, skb);
 #endif
 	} else {

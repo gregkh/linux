@@ -490,7 +490,7 @@ mlxsw_sp_bridge_port_create(struct mlxsw_sp_bridge_device *bridge_device,
 		bridge_port->system_port = mlxsw_sp_port->local_port;
 	bridge_port->dev = brport_dev;
 	bridge_port->bridge_device = bridge_device;
-	bridge_port->stp_state = BR_STATE_DISABLED;
+	bridge_port->stp_state = br_port_get_stp_state(brport_dev);
 	bridge_port->flags = BR_LEARNING | BR_FLOOD | BR_LEARNING_SYNC |
 			     BR_MCAST_FLOOD;
 	INIT_LIST_HEAD(&bridge_port->vlans_list);
@@ -3066,9 +3066,6 @@ static void mlxsw_sp_fdb_notify_mac_process(struct mlxsw_sp *mlxsw_sp,
 		goto just_remove;
 	}
 
-	if (mlxsw_sp_fid_is_dummy(mlxsw_sp, fid))
-		goto just_remove;
-
 	mlxsw_sp_port_vlan = mlxsw_sp_port_vlan_find_by_fid(mlxsw_sp_port, fid);
 	if (!mlxsw_sp_port_vlan) {
 		netdev_err(mlxsw_sp_port->dev, "Failed to find a matching {Port, VID} following FDB notification\n");
@@ -3135,9 +3132,6 @@ static void mlxsw_sp_fdb_notify_mac_lag_process(struct mlxsw_sp *mlxsw_sp,
 		dev_err_ratelimited(mlxsw_sp->bus_info->dev, "Cannot find port representor for LAG\n");
 		goto just_remove;
 	}
-
-	if (mlxsw_sp_fid_is_dummy(mlxsw_sp, fid))
-		goto just_remove;
 
 	mlxsw_sp_port_vlan = mlxsw_sp_port_vlan_find_by_fid(mlxsw_sp_port, fid);
 	if (!mlxsw_sp_port_vlan) {
@@ -3380,6 +3374,7 @@ out:
 
 struct mlxsw_sp_switchdev_event_work {
 	struct work_struct work;
+	netdevice_tracker dev_tracker;
 	union {
 		struct switchdev_notifier_fdb_info fdb_info;
 		struct switchdev_notifier_vxlan_fdb_info vxlan_fdb_info;
@@ -3536,8 +3531,8 @@ static void mlxsw_sp_switchdev_bridge_fdb_event_work(struct work_struct *work)
 out:
 	rtnl_unlock();
 	kfree(switchdev_work->fdb_info.addr);
+	netdev_put(dev, &switchdev_work->dev_tracker);
 	kfree(switchdev_work);
-	dev_put(dev);
 }
 
 static void
@@ -3548,7 +3543,6 @@ mlxsw_sp_switchdev_vxlan_fdb_add(struct mlxsw_sp *mlxsw_sp,
 	struct switchdev_notifier_vxlan_fdb_info *vxlan_fdb_info;
 	struct mlxsw_sp_bridge_device *bridge_device;
 	struct net_device *dev = switchdev_work->dev;
-	u8 all_zeros_mac[ETH_ALEN] = { 0 };
 	enum mlxsw_sp_l3proto proto;
 	union mlxsw_sp_l3addr addr;
 	struct net_device *br_dev;
@@ -3570,7 +3564,7 @@ mlxsw_sp_switchdev_vxlan_fdb_add(struct mlxsw_sp *mlxsw_sp,
 	mlxsw_sp_switchdev_vxlan_addr_convert(&vxlan_fdb_info->remote_ip,
 					      &proto, &addr);
 
-	if (ether_addr_equal(vxlan_fdb_info->eth_addr, all_zeros_mac)) {
+	if (is_zero_ether_addr(vxlan_fdb_info->eth_addr)) {
 		err = mlxsw_sp_nve_flood_ip_add(mlxsw_sp, fid, proto, &addr);
 		if (err) {
 			mlxsw_sp_fid_put(fid);
@@ -3622,7 +3616,6 @@ mlxsw_sp_switchdev_vxlan_fdb_del(struct mlxsw_sp *mlxsw_sp,
 	struct mlxsw_sp_bridge_device *bridge_device;
 	struct net_device *dev = switchdev_work->dev;
 	struct net_device *br_dev = netdev_master_upper_dev_get(dev);
-	u8 all_zeros_mac[ETH_ALEN] = { 0 };
 	enum mlxsw_sp_l3proto proto;
 	union mlxsw_sp_l3addr addr;
 	struct mlxsw_sp_fid *fid;
@@ -3643,7 +3636,7 @@ mlxsw_sp_switchdev_vxlan_fdb_del(struct mlxsw_sp *mlxsw_sp,
 	mlxsw_sp_switchdev_vxlan_addr_convert(&vxlan_fdb_info->remote_ip,
 					      &proto, &addr);
 
-	if (ether_addr_equal(vxlan_fdb_info->eth_addr, all_zeros_mac)) {
+	if (is_zero_ether_addr(vxlan_fdb_info->eth_addr)) {
 		mlxsw_sp_nve_flood_ip_del(mlxsw_sp, fid, proto, &addr);
 		mlxsw_sp_fid_put(fid);
 		return;
@@ -3692,8 +3685,8 @@ static void mlxsw_sp_switchdev_vxlan_fdb_event_work(struct work_struct *work)
 
 out:
 	rtnl_unlock();
+	netdev_put(dev, &switchdev_work->dev_tracker);
 	kfree(switchdev_work);
-	dev_put(dev);
 }
 
 static int
@@ -3793,7 +3786,7 @@ static int mlxsw_sp_switchdev_event(struct notifier_block *unused,
 		 * upper device containig mlxsw_sp_port or just a
 		 * mlxsw_sp_port
 		 */
-		dev_hold(dev);
+		netdev_hold(dev, &switchdev_work->dev_tracker, GFP_ATOMIC);
 		break;
 	case SWITCHDEV_VXLAN_FDB_ADD_TO_DEVICE:
 	case SWITCHDEV_VXLAN_FDB_DEL_TO_DEVICE:
@@ -3803,7 +3796,7 @@ static int mlxsw_sp_switchdev_event(struct notifier_block *unused,
 							    info);
 		if (err)
 			goto err_vxlan_work_prepare;
-		dev_hold(dev);
+		netdev_hold(dev, &switchdev_work->dev_tracker, GFP_ATOMIC);
 		break;
 	default:
 		kfree(switchdev_work);

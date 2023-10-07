@@ -1817,6 +1817,7 @@ static int ionic_change_mtu(struct net_device *netdev, int new_mtu)
 static void ionic_tx_timeout_work(struct work_struct *ws)
 {
 	struct ionic_lif *lif = container_of(ws, struct ionic_lif, tx_timeout_work);
+	int err;
 
 	if (test_bit(IONIC_LIF_F_FW_RESET, lif->state))
 		return;
@@ -1829,8 +1830,11 @@ static void ionic_tx_timeout_work(struct work_struct *ws)
 
 	mutex_lock(&lif->queue_lock);
 	ionic_stop_queues_reconfig(lif);
-	ionic_start_queues_reconfig(lif);
+	err = ionic_start_queues_reconfig(lif);
 	mutex_unlock(&lif->queue_lock);
+
+	if (err)
+		dev_err(lif->ionic->dev, "%s: Restarting queues failed\n", __func__);
 }
 
 static void ionic_tx_timeout(struct net_device *netdev, unsigned int txqueue)
@@ -2800,17 +2804,22 @@ static int ionic_cmb_reconfig(struct ionic_lif *lif,
 			if (err) {
 				dev_err(lif->ionic->dev,
 					"CMB restore failed: %d\n", err);
-				goto errout;
+				goto err_out;
 			}
 		}
 
-		ionic_start_queues_reconfig(lif);
-	} else {
-		/* This was detached in ionic_stop_queues_reconfig() */
-		netif_device_attach(lif->netdev);
+		err = ionic_start_queues_reconfig(lif);
+		if (err) {
+			dev_err(lif->ionic->dev,
+				"CMB reconfig failed: %d\n", err);
+			goto err_out;
+		}
 	}
 
-errout:
+err_out:
+	/* This was detached in ionic_stop_queues_reconfig() */
+	netif_device_attach(lif->netdev);
+
 	return err;
 }
 
@@ -3822,6 +3831,18 @@ static void ionic_lif_queue_identify(struct ionic_lif *lif)
 			qtype, qti->max_sg_elems);
 		dev_dbg(ionic->dev, " qtype[%d].sg_desc_stride = %d\n",
 			qtype, qti->sg_desc_stride);
+
+		if (qti->max_sg_elems >= IONIC_MAX_FRAGS) {
+			qti->max_sg_elems = IONIC_MAX_FRAGS - 1;
+			dev_dbg(ionic->dev, "limiting qtype %d max_sg_elems to IONIC_MAX_FRAGS-1 %d\n",
+				qtype, qti->max_sg_elems);
+		}
+
+		if (qti->max_sg_elems > MAX_SKB_FRAGS) {
+			qti->max_sg_elems = MAX_SKB_FRAGS;
+			dev_dbg(ionic->dev, "limiting qtype %d max_sg_elems to MAX_SKB_FRAGS %d\n",
+				qtype, qti->max_sg_elems);
+		}
 	}
 }
 

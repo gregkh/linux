@@ -177,7 +177,7 @@ struct inet_hashinfo {
 	struct inet_listen_hashbucket	*lhash2;
 
 	bool				pernet;
-};
+} ____cacheline_aligned_in_smp;
 
 static inline struct inet_hashinfo *tcp_or_dccp_get_hashinfo(const struct sock *sk)
 {
@@ -462,7 +462,7 @@ struct sock *inet_steal_sock(struct net *net, struct sk_buff *skb, int doff,
 	if (!sk)
 		return NULL;
 
-	if (!prefetched)
+	if (!prefetched || !sk_fullsock(sk))
 		return sk;
 
 	if (sk->sk_protocol == IPPROTO_TCP) {

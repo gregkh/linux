@@ -745,6 +745,13 @@ tcp_comp_sack_nr - INTEGER
 
 	Default : 44
 
+tcp_backlog_ack_defer - BOOLEAN
+	If set, user thread processing socket backlog tries sending
+	one ACK for the whole queue. This helps to avoid potential
+	long latencies at end of a TCP socket syscall.
+
+	Default : true
+
 tcp_slow_start_after_idle - BOOLEAN
 	If set, provide RFC2861 behavior and time out the congestion
 	window after an idle period.  An idle period is defined at
@@ -2288,11 +2295,11 @@ accept_ra_min_hop_limit - INTEGER
 
 	Default: 1
 
-accept_ra_min_rtr_lft - INTEGER
-	Minimum acceptable router lifetime in Router Advertisement.
+accept_ra_min_lft - INTEGER
+	Minimum acceptable lifetime value in Router Advertisement.
 
-	RAs with a router lifetime less than this value shall be
-	ignored. RAs with a router lifetime of 0 are unaffected.
+	RA sections with a lifetime less than this value shall be
+	ignored. Zero lifetimes stay unaffected.
 
 	Default: 0
 

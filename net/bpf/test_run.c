@@ -15,11 +15,12 @@
 #include <net/sock.h>
 #include <net/tcp.h>
 #include <net/net_namespace.h>
-#include <net/page_pool.h>
+#include <net/page_pool/helpers.h>
 #include <linux/error-injection.h>
 #include <linux/smp.h>
 #include <linux/sock_diag.h>
 #include <linux/netfilter.h>
+#include <net/netdev_rx_queue.h>
 #include <net/xdp.h>
 #include <net/netfilter/nf_bpf_link.h>
 
@@ -542,6 +543,7 @@ struct bpf_fentry_test_t {
 
 int noinline bpf_fentry_test7(struct bpf_fentry_test_t *arg)
 {
+	asm volatile ("");
 	return (long)arg;
 }
 

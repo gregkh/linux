@@ -37,7 +37,7 @@
 #include <net/ip.h>
 #include <net/ipv6.h>
 #include <net/tso.h>
-#include <net/page_pool.h>
+#include <net/page_pool/helpers.h>
 #include <net/pkt_sched.h>
 #include <linux/bpf_trace.h>
 
@@ -5725,7 +5725,7 @@ err_free_irq:
 }
 
 /* Device removal routine */
-static int mvneta_remove(struct platform_device *pdev)
+static void mvneta_remove(struct platform_device *pdev)
 {
 	struct net_device  *dev = platform_get_drvdata(pdev);
 	struct mvneta_port *pp = netdev_priv(dev);
@@ -5744,8 +5744,6 @@ static int mvneta_remove(struct platform_device *pdev)
 				       1 << pp->id);
 		mvneta_bm_put(pp->bm_priv);
 	}
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -5871,7 +5869,7 @@ MODULE_DEVICE_TABLE(of, mvneta_match);
 
 static struct platform_driver mvneta_driver = {
 	.probe = mvneta_probe,
-	.remove = mvneta_remove,
+	.remove_new = mvneta_remove,
 	.driver = {
 		.name = MVNETA_DRIVER_NAME,
 		.of_match_table = mvneta_match,

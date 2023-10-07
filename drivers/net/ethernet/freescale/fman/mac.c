@@ -18,6 +18,7 @@
 #include <linux/phylink.h>
 #include <linux/etherdevice.h>
 #include <linux/libfdt_env.h>
+#include <linux/platform_device.h>
 
 #include "mac.h"
 #include "fman_mac.h"

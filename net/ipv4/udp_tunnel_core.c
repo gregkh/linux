@@ -63,7 +63,7 @@ void setup_udp_tunnel_sock(struct net *net, struct socket *sock,
 	struct sock *sk = sock->sk;
 
 	/* Disable multicast loopback */
-	inet_sk(sk)->mc_loop = 0;
+	inet_clear_bit(MC_LOOP, sk);
 
 	/* Enable CHECKSUM_UNNECESSARY to CHECKSUM_COMPLETE conversion */
 	inet_inc_convert_csum(sk);
@@ -78,7 +78,7 @@ void setup_udp_tunnel_sock(struct net *net, struct socket *sock,
 	udp_sk(sk)->gro_receive = cfg->gro_receive;
 	udp_sk(sk)->gro_complete = cfg->gro_complete;
 
-	udp_tunnel_encap_enable(sock);
+	udp_tunnel_encap_enable(sk);
 }
 EXPORT_SYMBOL_GPL(setup_udp_tunnel_sock);
 

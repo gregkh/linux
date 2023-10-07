@@ -160,6 +160,16 @@ static int mlxsw_sp_flower_parse_actions(struct mlxsw_sp *mlxsw_sp,
 			 */
 			rulei->egress_bind_blocker = 1;
 
+			/* Ignore learning and security lookup as redirection
+			 * using ingress filters happens before the bridge.
+			 */
+			err = mlxsw_sp_acl_rulei_act_ignore(mlxsw_sp, rulei,
+							    true, true);
+			if (err) {
+				NL_SET_ERR_MSG_MOD(extack, "Cannot append ignore action");
+				return err;
+			}
+
 			fid = mlxsw_sp_acl_dummy_fid(mlxsw_sp);
 			fid_index = mlxsw_sp_fid_index(fid);
 			err = mlxsw_sp_acl_rulei_act_fid_set(mlxsw_sp, rulei,
@@ -558,17 +568,17 @@ static int mlxsw_sp_flower_parse(struct mlxsw_sp *mlxsw_sp,
 	int err;
 
 	if (dissector->used_keys &
-	    ~(BIT(FLOW_DISSECTOR_KEY_META) |
-	      BIT(FLOW_DISSECTOR_KEY_CONTROL) |
-	      BIT(FLOW_DISSECTOR_KEY_BASIC) |
-	      BIT(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_PORTS) |
-	      BIT(FLOW_DISSECTOR_KEY_PORTS_RANGE) |
-	      BIT(FLOW_DISSECTOR_KEY_TCP) |
-	      BIT(FLOW_DISSECTOR_KEY_IP) |
-	      BIT(FLOW_DISSECTOR_KEY_VLAN))) {
+	    ~(BIT_ULL(FLOW_DISSECTOR_KEY_META) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_BASIC) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_PORTS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_PORTS_RANGE) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_TCP) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IP) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_VLAN))) {
 		dev_err(mlxsw_sp->bus_info->dev, "Unsupported key\n");
 		NL_SET_ERR_MSG_MOD(f->common.extack, "Unsupported key");
 		return -EOPNOTSUPP;
