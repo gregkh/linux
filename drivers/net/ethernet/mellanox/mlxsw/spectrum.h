@@ -720,8 +720,6 @@ int mlxsw_sp_txhdr_ptp_data_construct(struct mlxsw_core *mlxsw_core,
 bool mlxsw_sp_port_dev_check(const struct net_device *dev);
 struct mlxsw_sp *mlxsw_sp_lower_get(struct net_device *dev);
 struct mlxsw_sp_port *mlxsw_sp_port_dev_lower_find(struct net_device *dev);
-struct mlxsw_sp_port *mlxsw_sp_port_lower_dev_hold(struct net_device *dev);
-void mlxsw_sp_port_dev_put(struct mlxsw_sp_port *mlxsw_sp_port);
 struct mlxsw_sp_port *mlxsw_sp_port_dev_lower_find_rcu(struct net_device *dev);
 int mlxsw_sp_parsing_depth_inc(struct mlxsw_sp *mlxsw_sp);
 void mlxsw_sp_parsing_depth_dec(struct mlxsw_sp *mlxsw_sp);
@@ -1052,6 +1050,9 @@ int mlxsw_sp_acl_rulei_act_count(struct mlxsw_sp *mlxsw_sp,
 int mlxsw_sp_acl_rulei_act_fid_set(struct mlxsw_sp *mlxsw_sp,
 				   struct mlxsw_sp_acl_rule_info *rulei,
 				   u16 fid, struct netlink_ext_ack *extack);
+int mlxsw_sp_acl_rulei_act_ignore(struct mlxsw_sp *mlxsw_sp,
+				  struct mlxsw_sp_acl_rule_info *rulei,
+				  bool disable_learning, bool disable_security);
 int mlxsw_sp_acl_rulei_act_sample(struct mlxsw_sp *mlxsw_sp,
 				  struct mlxsw_sp_acl_rule_info *rulei,
 				  struct mlxsw_sp_flow_block *block,
@@ -1270,7 +1271,6 @@ int mlxsw_sp_setup_tc_block_qevent_mark(struct mlxsw_sp_port *mlxsw_sp_port,
 					struct flow_block_offload *f);
 
 /* spectrum_fid.c */
-bool mlxsw_sp_fid_is_dummy(struct mlxsw_sp *mlxsw_sp, u16 fid_index);
 struct mlxsw_sp_fid *mlxsw_sp_fid_lookup_by_index(struct mlxsw_sp *mlxsw_sp,
 						  u16 fid_index);
 int mlxsw_sp_fid_nve_ifindex(const struct mlxsw_sp_fid *fid, int *nve_ifindex);
@@ -1402,10 +1402,6 @@ int mlxsw_sp_port_nve_init(struct mlxsw_sp_port *mlxsw_sp_port);
 void mlxsw_sp_port_nve_fini(struct mlxsw_sp_port *mlxsw_sp_port);
 int mlxsw_sp_nve_init(struct mlxsw_sp *mlxsw_sp);
 void mlxsw_sp_nve_fini(struct mlxsw_sp *mlxsw_sp);
-
-/* spectrum_nve_vxlan.c */
-int mlxsw_sp_nve_inc_parsing_depth_get(struct mlxsw_sp *mlxsw_sp);
-void mlxsw_sp_nve_inc_parsing_depth_put(struct mlxsw_sp *mlxsw_sp);
 
 /* spectrum_trap.c */
 int mlxsw_sp_devlink_traps_init(struct mlxsw_sp *mlxsw_sp);

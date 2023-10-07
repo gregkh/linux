@@ -459,8 +459,7 @@ static void notrace irq_work_raise(struct bpf_mem_cache *c)
  * Typical case will be between 11K and 116K closer to 11K.
  * bpf progs can and should share bpf_mem_cache when possible.
  */
-
-static void prefill_mem_cache(struct bpf_mem_cache *c, int cpu)
+static void init_refill_work(struct bpf_mem_cache *c)
 {
 	init_irq_work(&c->refill_work, bpf_mem_refill);
 	if (c->unit_size <= 256) {
@@ -476,12 +475,40 @@ static void prefill_mem_cache(struct bpf_mem_cache *c, int cpu)
 		c->high_watermark = max(96 * 256 / c->unit_size, 3);
 	}
 	c->batch = max((c->high_watermark - c->low_watermark) / 4 * 3, 1);
+}
 
+static void prefill_mem_cache(struct bpf_mem_cache *c, int cpu)
+{
 	/* To avoid consuming memory assume that 1st run of bpf
 	 * prog won't be doing more than 4 map_update_elem from
 	 * irq disabled region
 	 */
 	alloc_bulk(c, c->unit_size <= 256 ? 4 : 1, cpu_to_node(cpu), false);
+}
+
+static int check_obj_size(struct bpf_mem_cache *c, unsigned int idx)
+{
+	struct llist_node *first;
+	unsigned int obj_size;
+
+	/* For per-cpu allocator, the size of free objects in free list doesn't
+	 * match with unit_size and now there is no way to get the size of
+	 * per-cpu pointer saved in free object, so just skip the checking.
+	 */
+	if (c->percpu_size)
+		return 0;
+
+	first = c->free_llist.first;
+	if (!first)
+		return 0;
+
+	obj_size = ksize(first);
+	if (obj_size != c->unit_size) {
+		WARN_ONCE(1, "bpf_mem_cache[%u]: unexpected object size %u, expect %u\n",
+			  idx, obj_size, c->unit_size);
+		return -EINVAL;
+	}
+	return 0;
 }
 
 /* When size != 0 bpf_mem_cache for each cpu.
@@ -494,20 +521,21 @@ static void prefill_mem_cache(struct bpf_mem_cache *c, int cpu)
 int bpf_mem_alloc_init(struct bpf_mem_alloc *ma, int size, bool percpu)
 {
 	static u16 sizes[NUM_CACHES] = {96, 192, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096};
+	int cpu, i, err, unit_size, percpu_size = 0;
 	struct bpf_mem_caches *cc, __percpu *pcc;
 	struct bpf_mem_cache *c, __percpu *pc;
 	struct obj_cgroup *objcg = NULL;
-	int cpu, i, unit_size, percpu_size = 0;
+
+	/* room for llist_node and per-cpu pointer */
+	if (percpu)
+		percpu_size = LLIST_NODE_SZ + sizeof(void *);
 
 	if (size) {
 		pc = __alloc_percpu_gfp(sizeof(*pc), 8, GFP_KERNEL);
 		if (!pc)
 			return -ENOMEM;
 
-		if (percpu)
-			/* room for llist_node and per-cpu pointer */
-			percpu_size = LLIST_NODE_SZ + sizeof(void *);
-		else
+		if (!percpu)
 			size += LLIST_NODE_SZ; /* room for llist_node */
 		unit_size = size;
 
@@ -521,19 +549,17 @@ int bpf_mem_alloc_init(struct bpf_mem_alloc *ma, int size, bool percpu)
 			c->objcg = objcg;
 			c->percpu_size = percpu_size;
 			c->tgt = c;
+			init_refill_work(c);
 			prefill_mem_cache(c, cpu);
 		}
 		ma->cache = pc;
 		return 0;
 	}
 
-	/* size == 0 && percpu is an invalid combination */
-	if (WARN_ON_ONCE(percpu))
-		return -EINVAL;
-
 	pcc = __alloc_percpu_gfp(sizeof(*cc), 8, GFP_KERNEL);
 	if (!pcc)
 		return -ENOMEM;
+	err = 0;
 #ifdef CONFIG_MEMCG_KMEM
 	objcg = get_obj_cgroup_from_current();
 #endif
@@ -543,12 +569,32 @@ int bpf_mem_alloc_init(struct bpf_mem_alloc *ma, int size, bool percpu)
 			c = &cc->cache[i];
 			c->unit_size = sizes[i];
 			c->objcg = objcg;
+			c->percpu_size = percpu_size;
 			c->tgt = c;
+
+			init_refill_work(c);
+			/* Another bpf_mem_cache will be used when allocating
+			 * c->unit_size in bpf_mem_alloc(), so doesn't prefill
+			 * for the bpf_mem_cache because these free objects will
+			 * never be used.
+			 */
+			if (i != bpf_mem_cache_idx(c->unit_size))
+				continue;
 			prefill_mem_cache(c, cpu);
+			err = check_obj_size(c, i);
+			if (err)
+				goto out;
 		}
 	}
+
+out:
 	ma->caches = pcc;
-	return 0;
+	/* refill_work is either zeroed or initialized, so it is safe to
+	 * call irq_work_sync().
+	 */
+	if (err)
+		bpf_mem_alloc_destroy(ma);
+	return err;
 }
 
 static void drain_mem_cache(struct bpf_mem_cache *c)
@@ -734,12 +780,17 @@ static void notrace *unit_alloc(struct bpf_mem_cache *c)
 		}
 	}
 	local_dec(&c->active);
-	local_irq_restore(flags);
 
 	WARN_ON(cnt < 0);
 
 	if (cnt < c->low_watermark)
 		irq_work_raise(c);
+	/* Enable IRQ after the enqueue of irq work completes, so irq work
+	 * will run after IRQ is enabled and free_llist may be refilled by
+	 * irq work before other task preempts current task.
+	 */
+	local_irq_restore(flags);
+
 	return llnode;
 }
 
@@ -775,11 +826,16 @@ static void notrace unit_free(struct bpf_mem_cache *c, void *ptr)
 		llist_add(llnode, &c->free_llist_extra);
 	}
 	local_dec(&c->active);
-	local_irq_restore(flags);
 
 	if (cnt > c->high_watermark)
 		/* free few objects from current cpu into global kmalloc pool */
 		irq_work_raise(c);
+	/* Enable IRQ after irq_work_raise() completes, otherwise when current
+	 * task is preempted by task which does unit_alloc(), unit_alloc() may
+	 * return NULL unexpectedly because irq work is already pending but can
+	 * not been triggered and free_llist can not be refilled timely.
+	 */
+	local_irq_restore(flags);
 }
 
 static void notrace unit_free_rcu(struct bpf_mem_cache *c, void *ptr)
@@ -797,10 +853,10 @@ static void notrace unit_free_rcu(struct bpf_mem_cache *c, void *ptr)
 		llist_add(llnode, &c->free_llist_extra_rcu);
 	}
 	local_dec(&c->active);
-	local_irq_restore(flags);
 
 	if (!atomic_read(&c->call_rcu_in_progress))
 		irq_work_raise(c);
+	local_irq_restore(flags);
 }
 
 /* Called from BPF program or from sys_bpf syscall.
@@ -916,3 +972,41 @@ void notrace *bpf_mem_cache_alloc_flags(struct bpf_mem_alloc *ma, gfp_t flags)
 
 	return !ret ? NULL : ret + LLIST_NODE_SZ;
 }
+
+/* Most of the logic is taken from setup_kmalloc_cache_index_table() */
+static __init int bpf_mem_cache_adjust_size(void)
+{
+	unsigned int size, index;
+
+	/* Normally KMALLOC_MIN_SIZE is 8-bytes, but it can be
+	 * up-to 256-bytes.
+	 */
+	size = KMALLOC_MIN_SIZE;
+	if (size <= 192)
+		index = size_index[(size - 1) / 8];
+	else
+		index = fls(size - 1) - 1;
+	for (size = 8; size < KMALLOC_MIN_SIZE && size <= 192; size += 8)
+		size_index[(size - 1) / 8] = index;
+
+	/* The minimal alignment is 64-bytes, so disable 96-bytes cache and
+	 * use 128-bytes cache instead.
+	 */
+	if (KMALLOC_MIN_SIZE >= 64) {
+		index = size_index[(128 - 1) / 8];
+		for (size = 64 + 8; size <= 96; size += 8)
+			size_index[(size - 1) / 8] = index;
+	}
+
+	/* The minimal alignment is 128-bytes, so disable 192-bytes cache and
+	 * use 256-bytes cache instead.
+	 */
+	if (KMALLOC_MIN_SIZE >= 128) {
+		index = fls(256 - 1) - 1;
+		for (size = 128 + 8; size <= 192; size += 8)
+			size_index[(size - 1) / 8] = index;
+	}
+
+	return 0;
+}
+subsys_initcall(bpf_mem_cache_adjust_size);

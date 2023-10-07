@@ -35,6 +35,7 @@
 #define DWMAC_CORE_5_10		0x51
 #define DWMAC_CORE_5_20		0x52
 #define DWXGMAC_CORE_2_10	0x21
+#define DWXGMAC_CORE_2_20	0x22
 #define DWXLGMAC_CORE_2_00	0x20
 
 /* Device ID */
@@ -69,7 +70,7 @@ struct stmmac_txq_stats {
 	u64 tx_tso_frames;
 	u64 tx_tso_nfrags;
 	struct u64_stats_sync syncp;
-};
+} ____cacheline_aligned_in_smp;
 
 struct stmmac_rxq_stats {
 	u64 rx_bytes;
@@ -78,7 +79,7 @@ struct stmmac_rxq_stats {
 	u64 rx_normal_irq_n;
 	u64 napi_poll;
 	struct u64_stats_sync syncp;
-};
+} ____cacheline_aligned_in_smp;
 
 /* Extra statistic and debug information exposed by ethtool */
 struct stmmac_extra_stats {
@@ -201,6 +202,9 @@ struct stmmac_extra_stats {
 	unsigned long mtl_est_hlbf;
 	unsigned long mtl_est_btre;
 	unsigned long mtl_est_btrlm;
+	/* per queue statistics */
+	struct stmmac_txq_stats txq_stats[MTL_MAX_TX_QUEUES];
+	struct stmmac_rxq_stats rxq_stats[MTL_MAX_RX_QUEUES];
 	unsigned long rx_dropped;
 	unsigned long rx_errors;
 	unsigned long tx_dropped;
@@ -409,6 +413,18 @@ struct dma_features {
 	unsigned int number_tx_queues;
 	/* PPS output */
 	unsigned int pps_out_num;
+	/* Number of Traffic Classes */
+	unsigned int numtc;
+	/* DCB Feature Enable */
+	unsigned int dcben;
+	/* IEEE 1588 High Word Register Enable */
+	unsigned int advthword;
+	/* PTP Offload Enable */
+	unsigned int ptoen;
+	/* One-Step Timestamping Enable */
+	unsigned int osten;
+	/* Priority-Based Flow Control Enable */
+	unsigned int pfcen;
 	/* Alternate (enhanced) DESC mode */
 	unsigned int enh_desc;
 	/* TX and RX FIFO sizes */
@@ -429,14 +445,40 @@ struct dma_features {
 	unsigned int dvlan;
 	unsigned int l3l4fnum;
 	unsigned int arpoffsel;
+	/* One Step for PTP over UDP/IP Feature Enable */
+	unsigned int pou_ost_en;
+	/* Tx Timestamp FIFO Depth */
+	unsigned int ttsfd;
+	/* Queue/Channel-Based VLAN tag insertion on Tx */
+	unsigned int cbtisel;
+	/* Supported Parallel Instruction Processor Engines */
+	unsigned int frppipe_num;
+	/* Number of Extended VLAN Tag Filters */
+	unsigned int nrvf_num;
 	/* TSN Features */
 	unsigned int estwid;
 	unsigned int estdep;
 	unsigned int estsel;
 	unsigned int fpesel;
 	unsigned int tbssel;
+	/* Number of DMA channels enabled for TBS */
+	unsigned int tbs_ch_num;
+	/* Per-Stream Filtering Enable */
+	unsigned int sgfsel;
 	/* Numbers of Auxiliary Snapshot Inputs */
 	unsigned int aux_snapshot_n;
+	/* Timestamp System Time Source */
+	unsigned int tssrc;
+	/* Enhanced DMA Enable */
+	unsigned int edma;
+	/* Different Descriptor Cache Enable */
+	unsigned int ediffc;
+	/* VxLAN/NVGRE Enable */
+	unsigned int vxn;
+	/* Debug Memory Interface Enable */
+	unsigned int dbgmem;
+	/* Number of Policing Counters */
+	unsigned int pcsel;
 };
 
 /* RX Buffer size must be multiple of 4/8/16 bytes */

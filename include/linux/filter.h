@@ -117,27 +117,41 @@ struct ctl_table_header;
 
 /* ALU ops on immediates, bpf_add|sub|...: dst_reg += imm32 */
 
-#define BPF_ALU64_IMM(OP, DST, IMM)				\
+#define BPF_ALU64_IMM_OFF(OP, DST, IMM, OFF)			\
 	((struct bpf_insn) {					\
 		.code  = BPF_ALU64 | BPF_OP(OP) | BPF_K,	\
 		.dst_reg = DST,					\
 		.src_reg = 0,					\
-		.off   = 0,					\
+		.off   = OFF,					\
 		.imm   = IMM })
+#define BPF_ALU64_IMM(OP, DST, IMM)				\
+	BPF_ALU64_IMM_OFF(OP, DST, IMM, 0)
 
-#define BPF_ALU32_IMM(OP, DST, IMM)				\
+#define BPF_ALU32_IMM_OFF(OP, DST, IMM, OFF)			\
 	((struct bpf_insn) {					\
 		.code  = BPF_ALU | BPF_OP(OP) | BPF_K,		\
 		.dst_reg = DST,					\
 		.src_reg = 0,					\
-		.off   = 0,					\
+		.off   = OFF,					\
 		.imm   = IMM })
+#define BPF_ALU32_IMM(OP, DST, IMM)				\
+	BPF_ALU32_IMM_OFF(OP, DST, IMM, 0)
 
 /* Endianess conversion, cpu_to_{l,b}e(), {l,b}e_to_cpu() */
 
 #define BPF_ENDIAN(TYPE, DST, LEN)				\
 	((struct bpf_insn) {					\
 		.code  = BPF_ALU | BPF_END | BPF_SRC(TYPE),	\
+		.dst_reg = DST,					\
+		.src_reg = 0,					\
+		.off   = 0,					\
+		.imm   = LEN })
+
+/* Byte Swap, bswap16/32/64 */
+
+#define BPF_BSWAP(DST, LEN)					\
+	((struct bpf_insn) {					\
+		.code  = BPF_ALU64 | BPF_END | BPF_SRC(BPF_TO_LE),	\
 		.dst_reg = DST,					\
 		.src_reg = 0,					\
 		.off   = 0,					\
@@ -178,6 +192,24 @@ struct ctl_table_header;
 		.src_reg = 0,					\
 		.off   = 0,					\
 		.imm   = IMM })
+
+/* Short form of movsx, dst_reg = (s8,s16,s32)src_reg */
+
+#define BPF_MOVSX64_REG(DST, SRC, OFF)				\
+	((struct bpf_insn) {					\
+		.code  = BPF_ALU64 | BPF_MOV | BPF_X,		\
+		.dst_reg = DST,					\
+		.src_reg = SRC,					\
+		.off   = OFF,					\
+		.imm   = 0 })
+
+#define BPF_MOVSX32_REG(DST, SRC, OFF)				\
+	((struct bpf_insn) {					\
+		.code  = BPF_ALU | BPF_MOV | BPF_X,		\
+		.dst_reg = DST,					\
+		.src_reg = SRC,					\
+		.off   = OFF,					\
+		.imm   = 0 })
 
 /* Special form of mov32, used for doing explicit zero extension on dst. */
 #define BPF_ZEXT_REG(DST)					\
@@ -258,6 +290,16 @@ static inline bool insn_is_zext(const struct bpf_insn *insn)
 #define BPF_LDX_MEM(SIZE, DST, SRC, OFF)			\
 	((struct bpf_insn) {					\
 		.code  = BPF_LDX | BPF_SIZE(SIZE) | BPF_MEM,	\
+		.dst_reg = DST,					\
+		.src_reg = SRC,					\
+		.off   = OFF,					\
+		.imm   = 0 })
+
+/* Memory load, dst_reg = *(signed size *) (src_reg + off16) */
+
+#define BPF_LDX_MEMSX(SIZE, DST, SRC, OFF)			\
+	((struct bpf_insn) {					\
+		.code  = BPF_LDX | BPF_SIZE(SIZE) | BPF_MEMSX,	\
 		.dst_reg = DST,					\
 		.src_reg = SRC,					\
 		.off   = OFF,					\
@@ -694,7 +736,7 @@ static inline void bpf_compute_and_save_data_end(
 	cb->data_end  = skb->data + skb_headlen(skb);
 }
 
-/* Restore data saved by bpf_compute_data_pointers(). */
+/* Restore data saved by bpf_compute_and_save_data_end(). */
 static inline void bpf_restore_data_end(
 	struct sk_buff *skb, void *saved_data_end)
 {
@@ -773,23 +815,6 @@ DECLARE_BPF_DISPATCHER(xdp)
 DECLARE_STATIC_KEY_FALSE(bpf_master_redirect_enabled_key);
 
 u32 xdp_master_redirect(struct xdp_buff *xdp);
-
-static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
-					    struct xdp_buff *xdp)
-{
-	/* Driver XDP hooks are invoked within a single NAPI poll cycle and thus
-	 * under local_bh_disable(), which provides the needed RCU protection
-	 * for accessing map entries.
-	 */
-	u32 act = __bpf_prog_run(prog, xdp, BPF_DISPATCHER_FUNC(xdp));
-
-	if (static_branch_unlikely(&bpf_master_redirect_enabled_key)) {
-		if (act == XDP_TX && netif_is_bond_slave(xdp->rxq->dev))
-			act = xdp_master_redirect(xdp);
-	}
-
-	return act;
-}
 
 void bpf_prog_change_xdp(struct bpf_prog *prev_prog, struct bpf_prog *prog);
 
@@ -929,6 +954,8 @@ bool bpf_jit_needs_zext(void);
 bool bpf_jit_supports_subprog_tailcalls(void);
 bool bpf_jit_supports_kfunc_call(void);
 bool bpf_jit_supports_far_kfunc_call(void);
+bool bpf_jit_supports_exceptions(void);
+void arch_bpf_stack_walk(bool (*consume_fn)(void *cookie, u64 ip, u64 sp, u64 bp), void *cookie);
 bool bpf_helper_changes_pkt_data(void *func);
 
 static inline bool bpf_dump_raw_ok(const struct cred *cred)
@@ -1144,6 +1171,7 @@ const char *__bpf_address_lookup(unsigned long addr, unsigned long *size,
 bool is_bpf_text_address(unsigned long addr);
 int bpf_get_kallsym(unsigned int symnum, unsigned long *value, char *type,
 		    char *sym);
+struct bpf_prog *bpf_prog_ksym_find(unsigned long addr);
 
 static inline const char *
 bpf_address_lookup(unsigned long addr, unsigned long *size,
@@ -1209,6 +1237,11 @@ static inline int bpf_get_kallsym(unsigned int symnum, unsigned long *value,
 				  char *type, char *sym)
 {
 	return -ERANGE;
+}
+
+static inline struct bpf_prog *bpf_prog_ksym_find(unsigned long addr)
+{
+	return NULL;
 }
 
 static inline const char *
@@ -1589,10 +1622,9 @@ static inline void *bpf_xdp_pointer(struct xdp_buff *xdp, u32 offset, u32 len)
 	return NULL;
 }
 
-static inline void *bpf_xdp_copy_buf(struct xdp_buff *xdp, unsigned long off, void *buf,
-				     unsigned long len, bool flush)
+static inline void bpf_xdp_copy_buf(struct xdp_buff *xdp, unsigned long off, void *buf,
+				    unsigned long len, bool flush)
 {
-	return NULL;
 }
 #endif /* CONFIG_NET */
 

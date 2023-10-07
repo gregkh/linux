@@ -25,6 +25,7 @@
 #include <linux/vmalloc.h>
 #include <net/xdp_sock_drv.h>
 #include <net/busy_poll.h>
+#include <net/netdev_rx_queue.h>
 #include <net/xdp.h>
 
 #include "xsk_queue.h"
@@ -601,7 +602,7 @@ static struct sk_buff *xsk_build_skb_zerocopy(struct xdp_sock *xs,
 
 	for (copied = 0, i = skb_shinfo(skb)->nr_frags; copied < len; i++) {
 		if (unlikely(i >= MAX_SKB_FRAGS))
-			return ERR_PTR(-EFAULT);
+			return ERR_PTR(-EOVERFLOW);
 
 		page = pool->umem->pgs[addr >> PAGE_SHIFT];
 		get_page(page);
@@ -654,15 +655,17 @@ static struct sk_buff *xsk_build_skb(struct xdp_sock *xs,
 			skb_put(skb, len);
 
 			err = skb_store_bits(skb, 0, buffer, len);
-			if (unlikely(err))
+			if (unlikely(err)) {
+				kfree_skb(skb);
 				goto free_err;
+			}
 		} else {
 			int nr_frags = skb_shinfo(skb)->nr_frags;
 			struct page *page;
 			u8 *vaddr;
 
 			if (unlikely(nr_frags == (MAX_SKB_FRAGS - 1) && xp_mb_desc(desc))) {
-				err = -EFAULT;
+				err = -EOVERFLOW;
 				goto free_err;
 			}
 
@@ -682,19 +685,21 @@ static struct sk_buff *xsk_build_skb(struct xdp_sock *xs,
 
 	skb->dev = dev;
 	skb->priority = xs->sk.sk_priority;
-	skb->mark = xs->sk.sk_mark;
+	skb->mark = READ_ONCE(xs->sk.sk_mark);
 	skb->destructor = xsk_destruct_skb;
 	xsk_set_destructor_arg(skb);
 
 	return skb;
 
 free_err:
-	if (err == -EAGAIN) {
-		xsk_cq_cancel_locked(xs, 1);
-	} else {
-		xsk_set_destructor_arg(skb);
-		xsk_drop_skb(skb);
+	if (err == -EOVERFLOW) {
+		/* Drop the packet */
+		xsk_set_destructor_arg(xs->skb);
+		xsk_drop_skb(xs->skb);
 		xskq_cons_release(xs->tx);
+	} else {
+		/* Let application retry */
+		xsk_cq_cancel_locked(xs, 1);
 	}
 
 	return ERR_PTR(err);
@@ -737,7 +742,7 @@ static int __xsk_generic_xmit(struct sock *sk)
 		skb = xsk_build_skb(xs, &desc);
 		if (IS_ERR(skb)) {
 			err = PTR_ERR(skb);
-			if (err == -EAGAIN)
+			if (err != -EOVERFLOW)
 				goto out;
 			err = 0;
 			continue;
@@ -1188,6 +1193,7 @@ static int xsk_bind(struct socket *sock, struct sockaddr *addr, int addr_len)
 				err = xp_alloc_tx_descs(xs->pool, xs);
 				if (err) {
 					xp_put_pool(xs->pool);
+					xs->pool = NULL;
 					sockfd_put(sock);
 					goto out_unlock;
 				}
@@ -1222,7 +1228,7 @@ static int xsk_bind(struct socket *sock, struct sockaddr *addr, int addr_len)
 
 	xs->dev = dev;
 	xs->zc = xs->umem->zc;
-	xs->sg = !!(flags & XDP_USE_SG);
+	xs->sg = !!(xs->umem->flags & XDP_UMEM_SG_FLAG);
 	xs->queue_id = qid;
 	xp_add_xsk(xs->pool, xs);
 

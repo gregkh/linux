@@ -1206,9 +1206,8 @@ static int hix5hd2_dev_probe(struct platform_device *pdev)
 	}
 
 	ndev->irq = platform_get_irq(pdev, 0);
-	if (ndev->irq <= 0) {
-		netdev_err(ndev, "No irq resource\n");
-		ret = -EINVAL;
+	if (ndev->irq < 0) {
+		ret = ndev->irq;
 		goto out_phy_node;
 	}
 
@@ -1283,7 +1282,7 @@ out_free_netdev:
 	return ret;
 }
 
-static int hix5hd2_dev_remove(struct platform_device *pdev)
+static void hix5hd2_dev_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct hix5hd2_priv *priv = netdev_priv(ndev);
@@ -1299,8 +1298,6 @@ static int hix5hd2_dev_remove(struct platform_device *pdev)
 	of_node_put(priv->phy_node);
 	cancel_work_sync(&priv->tx_timeout_task);
 	free_netdev(ndev);
-
-	return 0;
 }
 
 static const struct of_device_id hix5hd2_of_match[] = {
@@ -1320,7 +1317,7 @@ static struct platform_driver hix5hd2_dev_driver = {
 		.of_match_table = hix5hd2_of_match,
 	},
 	.probe = hix5hd2_dev_probe,
-	.remove = hix5hd2_dev_remove,
+	.remove_new = hix5hd2_dev_remove,
 };
 
 module_platform_driver(hix5hd2_dev_driver);

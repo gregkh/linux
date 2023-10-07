@@ -45,7 +45,6 @@
 #include <linux/memcontrol.h>
 #include <linux/bpf-cgroup.h>
 #include <linux/siphash.h>
-#include <linux/net_mm.h>
 
 extern struct inet_hashinfo tcp_hashinfo;
 
@@ -323,7 +322,6 @@ int tcp_v4_early_demux(struct sk_buff *skb);
 int tcp_v4_rcv(struct sk_buff *skb);
 
 void tcp_remove_empty_skb(struct sock *sk);
-int tcp_v4_tw_remember_stamp(struct inet_timewait_sock *tw);
 int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size);
 int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size);
 int tcp_sendmsg_fastopen(struct sock *sk, struct msghdr *msg, int *copied,
@@ -622,7 +620,6 @@ void tcp_skb_collapse_tstamp(struct sk_buff *skb,
 void tcp_rearm_rto(struct sock *sk);
 void tcp_synack_rtt_meas(struct sock *sk, struct request_sock *req);
 void tcp_reset(struct sock *sk, struct sk_buff *skb);
-void tcp_skb_mark_lost_uncond_verify(struct tcp_sock *tp, struct sk_buff *skb);
 void tcp_fin(struct sock *sk);
 void tcp_check_space(struct sock *sk);
 void tcp_sack_compress_send_ack(struct sock *sk);
@@ -1430,20 +1427,30 @@ void tcp_select_initial_window(const struct sock *sk, int __space,
 			       __u32 *window_clamp, int wscale_ok,
 			       __u8 *rcv_wscale, __u32 init_rcv_wnd);
 
-static inline int tcp_win_from_space(const struct sock *sk, int space)
+static inline int __tcp_win_from_space(u8 scaling_ratio, int space)
 {
-	s64 scaled_space = (s64)space * tcp_sk(sk)->scaling_ratio;
+	s64 scaled_space = (s64)space * scaling_ratio;
 
 	return scaled_space >> TCP_RMEM_TO_WIN_SCALE;
 }
 
-/* inverse of tcp_win_from_space() */
-static inline int tcp_space_from_win(const struct sock *sk, int win)
+static inline int tcp_win_from_space(const struct sock *sk, int space)
+{
+	return __tcp_win_from_space(tcp_sk(sk)->scaling_ratio, space);
+}
+
+/* inverse of __tcp_win_from_space() */
+static inline int __tcp_space_from_win(u8 scaling_ratio, int win)
 {
 	u64 val = (u64)win << TCP_RMEM_TO_WIN_SCALE;
 
-	do_div(val, tcp_sk(sk)->scaling_ratio);
+	do_div(val, scaling_ratio);
 	return val;
+}
+
+static inline int tcp_space_from_win(const struct sock *sk, int win)
+{
+	return __tcp_space_from_win(tcp_sk(sk)->scaling_ratio, win);
 }
 
 static inline void tcp_scaling_ratio_init(struct sock *sk)
@@ -2023,7 +2030,7 @@ static inline bool inet_sk_transparent(const struct sock *sk)
 	case TCP_NEW_SYN_RECV:
 		return inet_rsk(inet_reqsk(sk))->no_srccheck;
 	}
-	return inet_sk(sk)->transparent;
+	return inet_test_bit(TRANSPARENT, sk);
 }
 
 /* Determines whether this is a thin stream (which may suffer from
@@ -2350,7 +2357,6 @@ struct sk_msg;
 struct sk_psock;
 
 #ifdef CONFIG_BPF_SYSCALL
-struct proto *tcp_bpf_get_proto(struct sock *sk, struct sk_psock *psock);
 int tcp_bpf_update_proto(struct sock *sk, struct sk_psock *psock, bool restore);
 void tcp_bpf_clone(const struct sock *sk, struct sock *newsk);
 #endif /* CONFIG_BPF_SYSCALL */

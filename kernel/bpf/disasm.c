@@ -87,12 +87,12 @@ const char *const bpf_alu_string[16] = {
 	[BPF_END >> 4]  = "endian",
 };
 
-const char *const bpf_alu_sign_string[16] = {
+static const char *const bpf_alu_sign_string[16] = {
 	[BPF_DIV >> 4]  = "s/=",
 	[BPF_MOD >> 4]  = "s%=",
 };
 
-const char *const bpf_movsx_string[4] = {
+static const char *const bpf_movsx_string[4] = {
 	[0] = "(s8)",
 	[1] = "(s16)",
 	[3] = "(s32)",
@@ -162,7 +162,8 @@ static bool is_sdiv_smod(const struct bpf_insn *insn)
 
 static bool is_movsx(const struct bpf_insn *insn)
 {
-	return BPF_OP(insn->code) == BPF_MOV && insn->off != 0;
+	return BPF_OP(insn->code) == BPF_MOV &&
+	       (insn->off == 8 || insn->off == 16 || insn->off == 32);
 }
 
 void print_bpf_insn(const struct bpf_insn_cbs *cbs,

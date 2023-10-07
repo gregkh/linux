@@ -2077,12 +2077,8 @@ static netdev_tx_t bcmgenet_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	spin_lock(&ring->lock);
 	if (ring->free_bds <= (nr_frags + 1)) {
-		if (!netif_tx_queue_stopped(txq)) {
+		if (!netif_tx_queue_stopped(txq))
 			netif_tx_stop_queue(txq);
-			netdev_err(dev,
-				   "%s: tx ring %d full when queue %d awake\n",
-				   __func__, index, ring->queue);
-		}
 		ret = NETDEV_TX_BUSY;
 		goto out;
 	}
@@ -4168,7 +4164,7 @@ err:
 	return err;
 }
 
-static int bcmgenet_remove(struct platform_device *pdev)
+static void bcmgenet_remove(struct platform_device *pdev)
 {
 	struct bcmgenet_priv *priv = dev_to_priv(&pdev->dev);
 
@@ -4176,8 +4172,6 @@ static int bcmgenet_remove(struct platform_device *pdev)
 	unregister_netdev(priv->dev);
 	bcmgenet_mii_exit(priv->dev);
 	free_netdev(priv->dev);
-
-	return 0;
 }
 
 static void bcmgenet_shutdown(struct platform_device *pdev)
@@ -4356,7 +4350,7 @@ MODULE_DEVICE_TABLE(acpi, genet_acpi_match);
 
 static struct platform_driver bcmgenet_driver = {
 	.probe	= bcmgenet_probe,
-	.remove	= bcmgenet_remove,
+	.remove_new = bcmgenet_remove,
 	.shutdown = bcmgenet_shutdown,
 	.driver	= {
 		.name	= "bcmgenet",

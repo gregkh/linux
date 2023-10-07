@@ -1632,7 +1632,7 @@ static int xgene_enet_get_irqs(struct xgene_enet_pdata *pdata)
 
 	for (i = 0; i < max_irqs; i++) {
 		ret = platform_get_irq(pdev, i);
-		if (ret <= 0) {
+		if (ret < 0) {
 			if (pdata->phy_mode == PHY_INTERFACE_MODE_XGMII) {
 				max_irqs = i;
 				pdata->rxq_cnt = max_irqs / 2;
@@ -1640,7 +1640,7 @@ static int xgene_enet_get_irqs(struct xgene_enet_pdata *pdata)
 				pdata->cq_cnt = max_irqs / 2;
 				break;
 			}
-			return ret ? : -ENXIO;
+			return ret;
 		}
 		pdata->irqs[i] = ret;
 	}
@@ -2041,7 +2041,7 @@ static int xgene_enet_probe(struct platform_device *pdev)
 
 	of_id = of_match_device(xgene_enet_of_match, &pdev->dev);
 	if (of_id) {
-		pdata->enet_id = (enum xgene_enet_id)of_id->data;
+		pdata->enet_id = (uintptr_t)of_id->data;
 	}
 #ifdef CONFIG_ACPI
 	else {
@@ -2127,7 +2127,7 @@ err:
 	return ret;
 }
 
-static int xgene_enet_remove(struct platform_device *pdev)
+static void xgene_enet_remove(struct platform_device *pdev)
 {
 	struct xgene_enet_pdata *pdata;
 	struct net_device *ndev;
@@ -2149,8 +2149,6 @@ static int xgene_enet_remove(struct platform_device *pdev)
 	xgene_enet_delete_desc_rings(pdata);
 	pdata->port_ops->shutdown(pdata);
 	free_netdev(ndev);
-
-	return 0;
 }
 
 static void xgene_enet_shutdown(struct platform_device *pdev)
@@ -2174,7 +2172,7 @@ static struct platform_driver xgene_enet_driver = {
 		   .acpi_match_table = ACPI_PTR(xgene_enet_acpi_match),
 	},
 	.probe = xgene_enet_probe,
-	.remove = xgene_enet_remove,
+	.remove_new = xgene_enet_remove,
 	.shutdown = xgene_enet_shutdown,
 };
 

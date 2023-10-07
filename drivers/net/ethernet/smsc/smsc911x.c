@@ -43,7 +43,6 @@
 #include <linux/smsc911x.h>
 #include <linux/device.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_gpio.h>
 #include <linux/of_net.h>
 #include <linux/acpi.h>
@@ -2315,7 +2314,7 @@ static int smsc911x_init(struct net_device *dev)
 	return 0;
 }
 
-static int smsc911x_drv_remove(struct platform_device *pdev)
+static void smsc911x_drv_remove(struct platform_device *pdev)
 {
 	struct net_device *dev;
 	struct smsc911x_data *pdata;
@@ -2349,8 +2348,6 @@ static int smsc911x_drv_remove(struct platform_device *pdev)
 	free_netdev(dev);
 
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 /* standard register acces */
@@ -2669,7 +2666,7 @@ MODULE_DEVICE_TABLE(acpi, smsc911x_acpi_match);
 
 static struct platform_driver smsc911x_driver = {
 	.probe = smsc911x_drv_probe,
-	.remove = smsc911x_drv_remove,
+	.remove_new = smsc911x_drv_remove,
 	.driver = {
 		.name	= SMSC_CHIPNAME,
 		.pm	= SMSC911X_PM_OPS,

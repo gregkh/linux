@@ -20,8 +20,6 @@
 #include <linux/prefetch.h>
 #include <net/ip.h>
 
-static bool xgene_mdio_status;
-
 u32 xgene_mdio_rd_mac(struct xgene_mdio_pdata *pdata, u32 rd_addr)
 {
 	void __iomem *addr, *rd, *cmd, *cmd_done;
@@ -335,7 +333,7 @@ static int xgene_mdio_probe(struct platform_device *pdev)
 
 	of_id = of_match_device(xgene_mdio_of_match, &pdev->dev);
 	if (of_id) {
-		mdio_id = (enum xgene_mdio_id)of_id->data;
+		mdio_id = (uintptr_t)of_id->data;
 	} else {
 #ifdef CONFIG_ACPI
 		const struct acpi_device_id *acpi_id;
@@ -421,7 +419,6 @@ static int xgene_mdio_probe(struct platform_device *pdev)
 		goto out_mdiobus;
 
 	pdata->mdio_bus = mdio_bus;
-	xgene_mdio_status = true;
 
 	return 0;
 
@@ -435,7 +432,7 @@ out_clk:
 	return ret;
 }
 
-static int xgene_mdio_remove(struct platform_device *pdev)
+static void xgene_mdio_remove(struct platform_device *pdev)
 {
 	struct xgene_mdio_pdata *pdata = platform_get_drvdata(pdev);
 	struct mii_bus *mdio_bus = pdata->mdio_bus;
@@ -446,8 +443,6 @@ static int xgene_mdio_remove(struct platform_device *pdev)
 
 	if (dev->of_node)
 		clk_disable_unprepare(pdata->clk);
-
-	return 0;
 }
 
 static struct platform_driver xgene_mdio_driver = {
@@ -457,7 +452,7 @@ static struct platform_driver xgene_mdio_driver = {
 		.acpi_match_table = ACPI_PTR(xgene_mdio_acpi_match),
 	},
 	.probe = xgene_mdio_probe,
-	.remove = xgene_mdio_remove,
+	.remove_new = xgene_mdio_remove,
 };
 
 module_platform_driver(xgene_mdio_driver);
