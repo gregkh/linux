@@ -215,7 +215,44 @@ clean:
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
 	rm -f scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland
 
-.PHONY: all scx_rusty clean
+help:
+	@echo  'Building targets:'
+	@echo  '  all		  - Compile all schedulers'
+	@echo  ''
+	@echo  'Alternatively, you may compile individual schedulers:'
+	@echo  '  scx_simple'
+	@echo  '  scx_qmap'
+	@echo  '  scx_central'
+	@echo  '  scx_pair'
+	@echo  '  scx_flatcg'
+	@echo  '  scx_userland'
+	@echo  '  scx_rusty'
+	@echo  ''
+	@echo  'For any scheduler build target, you may specify an alternative'
+	@echo  'build output path with the O= environment variable. For example:'
+	@echo  ''
+	@echo  '   O=/tmp/sched_ext make all'
+	@echo  ''
+	@echo  'will compile all schedulers, and emit the build artifacts to'
+	@echo  '/tmp/sched_ext/build.'
+	@echo  ''
+	@echo  ''
+	@echo  'Installing targets:'
+	@echo  '  install	  - Compile and install all schedulers to /usr/bin.'
+	@echo  '		    You may specify the DESTDIR= environment variable'
+	@echo  '		    to indicate a prefix for /usr/bin. For example:'
+	@echo  ''
+	@echo  '   DESTDIR=/tmp/sched_ext make install'
+	@echo  ''
+	@echo  '		    will build the schedulers in CWD/build, and'
+	@echo  '		    install the schedulers to /tmp/sched_ext/usr/bin.'
+	@echo  ''
+	@echo  ''
+	@echo  'Cleaning targets:'
+	@echo  '  clean		  - Remove all generated files, including intermediate'
+	@echo  '                    rust files for rust schedulers.'
+
+.PHONY: all scx_rusty clean help
 
 # delete failed targets
 .DELETE_ON_ERROR:
