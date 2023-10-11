@@ -205,6 +205,10 @@ scx_rusty: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
 	cargo build --manifest-path=scx_rusty/Cargo.toml $(CARGOFLAGS)
 	$(Q)cp $(OUTPUT_DIR)/release/$@ $(BINDIR)/$@
 
+install: all
+	$(Q)mkdir -p $(DESTDIR)/usr/bin/
+	$(Q)cp $(BINDIR)/* $(DESTDIR)/usr/bin/
+
 clean:
 	cargo clean --manifest-path=scx_rusty/Cargo.toml
 	rm -rf $(OUTPUT_DIR) $(HOST_OUTPUT_DIR)
