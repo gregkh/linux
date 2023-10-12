@@ -47,23 +47,29 @@ APIDIR := $(TOOLSINCDIR)/uapi
 GENDIR := $(abspath ../../include/generated)
 GENHDR := $(GENDIR)/autoconf.h
 
-SCRATCH_DIR := $(CURDIR)/tools
-BUILD_DIR := $(SCRATCH_DIR)/build
-INCLUDE_DIR := $(SCRATCH_DIR)/include
-BPFOBJ_DIR := $(BUILD_DIR)/libbpf
+ifeq ($(O),)
+OUTPUT_DIR := $(CURDIR)/build
+else
+OUTPUT_DIR := $(O)/build
+endif # O
+OBJ_DIR := $(OUTPUT_DIR)/obj
+INCLUDE_DIR := $(OUTPUT_DIR)/include
+BPFOBJ_DIR := $(OBJ_DIR)/libbpf
+SCXOBJ_DIR := $(OBJ_DIR)/sched_ext
+BINDIR := $(OUTPUT_DIR)/bin
 BPFOBJ := $(BPFOBJ_DIR)/libbpf.a
 ifneq ($(CROSS_COMPILE),)
-HOST_BUILD_DIR		:= $(BUILD_DIR)/host
-HOST_SCRATCH_DIR	:= host-tools
-HOST_INCLUDE_DIR	:= $(HOST_SCRATCH_DIR)/include
+HOST_BUILD_DIR		:= $(OBJ_DIR)/host
+HOST_OUTPUT_DIR	:= host-tools
+HOST_INCLUDE_DIR	:= $(HOST_OUTPUT_DIR)/include
 else
-HOST_BUILD_DIR		:= $(BUILD_DIR)
-HOST_SCRATCH_DIR	:= $(SCRATCH_DIR)
+HOST_BUILD_DIR		:= $(OBJ_DIR)
+HOST_OUTPUT_DIR	:= $(OUTPUT_DIR)
 HOST_INCLUDE_DIR	:= $(INCLUDE_DIR)
 endif
 HOST_BPFOBJ := $(HOST_BUILD_DIR)/libbpf/libbpf.a
 RESOLVE_BTFIDS := $(HOST_BUILD_DIR)/resolve_btfids/resolve_btfids
-DEFAULT_BPFTOOL := $(HOST_SCRATCH_DIR)/sbin/bpftool
+DEFAULT_BPFTOOL := $(HOST_OUTPUT_DIR)/sbin/bpftool
 
 VMLINUX_BTF_PATHS ?= $(if $(O),$(O)/vmlinux)					\
 		     $(if $(KBUILD_OUTPUT),$(KBUILD_OUTPUT)/vmlinux)		\
@@ -85,7 +91,7 @@ CFLAGS += -g -O2 -rdynamic -pthread -Wall -Werror $(GENFLAGS)			\
 	  -I$(INCLUDE_DIR) -I$(GENDIR) -I$(LIBDIR)				\
 	  -I$(TOOLSINCDIR) -I$(APIDIR)
 
-CARGOFLAGS := --release
+CARGOFLAGS := --release --target-dir $(OUTPUT_DIR)
 
 # Silence some warnings when compiled with clang
 ifneq ($(LLVM),)
@@ -120,9 +126,9 @@ BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH)					\
 all: scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland scx_rusty
 
 # sort removes libbpf duplicates when not cross-building
-MAKE_DIRS := $(sort $(BUILD_DIR)/libbpf $(HOST_BUILD_DIR)/libbpf		\
+MAKE_DIRS := $(sort $(OBJ_DIR)/libbpf $(HOST_BUILD_DIR)/libbpf		\
 	       $(HOST_BUILD_DIR)/bpftool $(HOST_BUILD_DIR)/resolve_btfids	\
-	       $(INCLUDE_DIR))
+	       $(INCLUDE_DIR) $(SCXOBJ_DIR) $(BINDIR))
 
 $(MAKE_DIRS):
 	$(call msg,MKDIR,,$@)
@@ -130,10 +136,10 @@ $(MAKE_DIRS):
 
 $(BPFOBJ): $(wildcard $(BPFDIR)/*.[ch] $(BPFDIR)/Makefile)			\
 	   $(APIDIR)/linux/bpf.h						\
-	   | $(BUILD_DIR)/libbpf
-	$(Q)$(MAKE) $(submake_extras) -C $(BPFDIR) OUTPUT=$(BUILD_DIR)/libbpf/	\
+	   | $(OBJ_DIR)/libbpf
+	$(Q)$(MAKE) $(submake_extras) -C $(BPFDIR) OUTPUT=$(OBJ_DIR)/libbpf/	\
 		    EXTRA_CFLAGS='-g -O0 -fPIC'					\
-		    DESTDIR=$(SCRATCH_DIR) prefix= all install_headers
+		    DESTDIR=$(OUTPUT_DIR) prefix= all install_headers
 
 $(DEFAULT_BPFTOOL): $(wildcard $(BPFTOOLDIR)/*.[ch] $(BPFTOOLDIR)/Makefile)	\
 		    $(HOST_BPFOBJ) | $(HOST_BUILD_DIR)/bpftool
@@ -142,8 +148,8 @@ $(DEFAULT_BPFTOOL): $(wildcard $(BPFTOOLDIR)/*.[ch] $(BPFTOOLDIR)/Makefile)	\
 		    EXTRA_CFLAGS='-g -O0'					\
 		    OUTPUT=$(HOST_BUILD_DIR)/bpftool/				\
 		    LIBBPF_OUTPUT=$(HOST_BUILD_DIR)/libbpf/			\
-		    LIBBPF_DESTDIR=$(HOST_SCRATCH_DIR)/				\
-		    prefix= DESTDIR=$(HOST_SCRATCH_DIR)/ install-bin
+		    LIBBPF_DESTDIR=$(HOST_OUTPUT_DIR)/				\
+		    prefix= DESTDIR=$(HOST_OUTPUT_DIR)/ install-bin
 
 $(INCLUDE_DIR)/vmlinux.h: $(VMLINUX_BTF) $(BPFTOOL) | $(INCLUDE_DIR)
 ifeq ($(VMLINUX_H),)
@@ -155,57 +161,100 @@ else
 endif
 
 %.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h scx_common.bpf.h user_exit_info.h	\
-	| $(BPFOBJ)
+	| $(BPFOBJ) $(SCXOBJ_DIR)
 	$(call msg,CLNG-BPF,,$@)
-	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -c $< -o $@
+	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -c $< -o $(SCXOBJ_DIR)/$@
 
 %.skel.h: %.bpf.o $(BPFTOOL)
 	$(call msg,GEN-SKEL,,$@)
-	$(Q)$(BPFTOOL) gen object $(<:.o=.linked1.o) $<
-	$(Q)$(BPFTOOL) gen object $(<:.o=.linked2.o) $(<:.o=.linked1.o)
-	$(Q)$(BPFTOOL) gen object $(<:.o=.linked3.o) $(<:.o=.linked2.o)
-	$(Q)diff $(<:.o=.linked2.o) $(<:.o=.linked3.o)
-	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(<:.bpf.o=) > $@
-	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(<:.bpf.o=) > $(@:.skel.h=.subskel.h)
+	$(Q)$(BPFTOOL) gen object $(SCXOBJ_DIR)/$(<:.o=.linked1.o) $(SCXOBJ_DIR)/$<
+	$(Q)$(BPFTOOL) gen object $(SCXOBJ_DIR)/$(<:.o=.linked2.o) $(SCXOBJ_DIR)/$(<:.o=.linked1.o)
+	$(Q)$(BPFTOOL) gen object $(SCXOBJ_DIR)/$(<:.o=.linked3.o) $(SCXOBJ_DIR)/$(<:.o=.linked2.o)
+	$(Q)diff $(SCXOBJ_DIR)/$(<:.o=.linked2.o) $(SCXOBJ_DIR)/$(<:.o=.linked3.o)
+	$(Q)$(BPFTOOL) gen skeleton $(SCXOBJ_DIR)/$(<:.o=.linked3.o) name $(<:.bpf.o=) > $(INCLUDE_DIR)/$@
+	$(Q)$(BPFTOOL) gen subskeleton $(SCXOBJ_DIR)/$(<:.o=.linked3.o) name $(<:.bpf.o=) > $(INCLUDE_DIR)/$(@:.skel.h=.subskel.h)
 
-scx_simple: scx_simple.c scx_simple.skel.h user_exit_info.h scx_user_common.h
-	$(CC) $(CFLAGS) -c $< -o $@.o
-	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
+define ccsched
+	$(CC) $(CFLAGS) -c $(1) -o $(SCXOBJ_DIR)/$(2).o
+	$(CC) -o $(BINDIR)/$(2) $(SCXOBJ_DIR)/$(2).o $(HOST_BPFOBJ) $(LDFLAGS)
+endef
 
-scx_qmap: scx_qmap.c scx_qmap.skel.h user_exit_info.h scx_user_common.h
-	$(CC) $(CFLAGS) -c $< -o $@.o
-	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
+SCX_COMMON_DEPS := user_exit_info.h scx_user_common.h | $(BINDIR)
+scx_simple: scx_simple.c scx_simple.skel.h $(SCX_COMMON_DEPS)
+	$(call ccsched,$<,$@)
 
-scx_central: scx_central.c scx_central.skel.h user_exit_info.h scx_user_common.h
-	$(CC) $(CFLAGS) -c $< -o $@.o
-	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
+scx_qmap: scx_qmap.c scx_qmap.skel.h $(SCX_COMMON_DEPS)
+	$(call ccsched,$<,$@)
 
-scx_pair: scx_pair.c scx_pair.skel.h user_exit_info.h scx_user_common.h
-	$(CC) $(CFLAGS) -c $< -o $@.o
-	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
+scx_central: scx_central.c scx_central.skel.h $(SCX_COMMON_DEPS)
+	$(call ccsched,$<,$@)
 
-scx_flatcg: scx_flatcg.c scx_flatcg.skel.h user_exit_info.h scx_user_common.h
-	$(CC) $(CFLAGS) -c $< -o $@.o
-	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
+scx_pair: scx_pair.c scx_pair.skel.h $(SCX_COMMON_DEPS)
+	$(call ccsched,$<,$@)
 
-scx_userland: scx_userland.c scx_userland.skel.h scx_userland.h user_exit_info.h \
-	      scx_user_common.h
-	$(CC) $(CFLAGS) -c $< -o $@.o
-	$(CC) -o $@ $@.o $(HOST_BPFOBJ) $(LDFLAGS)
+scx_flatcg: scx_flatcg.c scx_flatcg.skel.h $(SCX_COMMON_DEPS)
+	$(call ccsched,$<,$@)
 
+scx_userland: scx_userland.c scx_userland.skel.h scx_userland.h $(SCX_COMMON_DEPS)
+	$(call ccsched,$<,$@)
+
+scx_rusty_deps: $(SCX_COMMON_DEPS)
+	cargo fetch --manifest-path=scx_rusty/Cargo.toml
 scx_rusty: export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR)
 scx_rusty: export SCX_RUSTY_CLANG = $(CLANG)
 scx_rusty: export SCX_RUSTY_BPF_CFLAGS = $(BPF_CFLAGS)
-scx_rusty: $(INCLUDE_DIR)/vmlinux.h
-	cargo build --manifest-path=scx_rusty/Cargo.toml $(CARGOFLAGS)
+scx_rusty: $(INCLUDE_DIR)/vmlinux.h scx_rusty_deps
+	cargo build --manifest-path=$@/Cargo.toml --offline $(CARGOFLAGS)
+	$(Q)cp $(OUTPUT_DIR)/release/$@ $(BINDIR)/$@
+
+install: all
+	$(Q)mkdir -p $(DESTDIR)/usr/bin/
+	$(Q)cp $(BINDIR)/* $(DESTDIR)/usr/bin/
 
 clean:
 	cargo clean --manifest-path=scx_rusty/Cargo.toml
-	rm -rf $(SCRATCH_DIR) $(HOST_SCRATCH_DIR)
+	rm -rf $(OUTPUT_DIR) $(HOST_OUTPUT_DIR)
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
 	rm -f scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland
 
-.PHONY: all scx_rusty clean
+help:
+	@echo  'Building targets:'
+	@echo  '  all		  - Compile all schedulers'
+	@echo  ''
+	@echo  'Alternatively, you may compile individual schedulers:'
+	@echo  '  scx_simple'
+	@echo  '  scx_qmap'
+	@echo  '  scx_central'
+	@echo  '  scx_pair'
+	@echo  '  scx_flatcg'
+	@echo  '  scx_userland'
+	@echo  '  scx_rusty'
+	@echo  ''
+	@echo  'For any scheduler build target, you may specify an alternative'
+	@echo  'build output path with the O= environment variable. For example:'
+	@echo  ''
+	@echo  '   O=/tmp/sched_ext make all'
+	@echo  ''
+	@echo  'will compile all schedulers, and emit the build artifacts to'
+	@echo  '/tmp/sched_ext/build.'
+	@echo  ''
+	@echo  ''
+	@echo  'Installing targets:'
+	@echo  '  install	  - Compile and install all schedulers to /usr/bin.'
+	@echo  '		    You may specify the DESTDIR= environment variable'
+	@echo  '		    to indicate a prefix for /usr/bin. For example:'
+	@echo  ''
+	@echo  '   DESTDIR=/tmp/sched_ext make install'
+	@echo  ''
+	@echo  '		    will build the schedulers in CWD/build, and'
+	@echo  '		    install the schedulers to /tmp/sched_ext/usr/bin.'
+	@echo  ''
+	@echo  ''
+	@echo  'Cleaning targets:'
+	@echo  '  clean		  - Remove all generated files, including intermediate'
+	@echo  '                    rust files for rust schedulers.'
+
+.PHONY: all scx_rusty clean help
 
 # delete failed targets
 .DELETE_ON_ERROR:
