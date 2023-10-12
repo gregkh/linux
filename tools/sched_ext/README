@@ -37,11 +37,11 @@ is actively working on adding a BPF backend compiler as well, but are still
 missing some features such as BTF type tags which are necessary for using
 kptrs.
 
-2. rustup nightly
+2. rust >= 1.70.0
 
-Rusty's user space load balancing component is written in Rust, and uses
-nightly features. You'll need to use the nightly build from rustup in order to
-compile it.
+scx_rusty's user space load balancing component is written in Rust, and uses
+features present in the rust toolchain >= 1.70.0. You should be able to use the
+stable build from rustup.
 
 There are other requirements as well, such as make, but these are the main /
 non-trivial ones.
@@ -49,9 +49,9 @@ non-trivial ones.
 Compiling the schedulers
 ------------------------
 
-Once you have your toolchain setup, you can compile the schedulers as follows:
+Once you have your toolchain setup, you can compile the schedulers using make:
 
-$ make CC=clang LLVM=1 -j
+$ make -j
 
 See Documentation/scheduler/sched-ext.rst for a description of the config
 options required to compile a sched_ext kernel.
