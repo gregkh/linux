@@ -198,11 +198,13 @@ scx_flatcg: scx_flatcg.c scx_flatcg.skel.h $(SCX_COMMON_DEPS)
 scx_userland: scx_userland.c scx_userland.skel.h scx_userland.h $(SCX_COMMON_DEPS)
 	$(call ccsched,$<,$@)
 
+scx_rusty_deps: $(SCX_COMMON_DEPS)
+	cargo fetch --manifest-path=scx_rusty/Cargo.toml
 scx_rusty: export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR)
 scx_rusty: export SCX_RUSTY_CLANG = $(CLANG)
 scx_rusty: export SCX_RUSTY_BPF_CFLAGS = $(BPF_CFLAGS)
-scx_rusty: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
-	cargo build --manifest-path=scx_rusty/Cargo.toml $(CARGOFLAGS)
+scx_rusty: $(INCLUDE_DIR)/vmlinux.h scx_rusty_deps
+	cargo build --manifest-path=$@/Cargo.toml --offline $(CARGOFLAGS)
 	$(Q)cp $(OUTPUT_DIR)/release/$@ $(BINDIR)/$@
 
 install: all
