@@ -1,4 +1,5 @@
-/* GPLv2 or MIT License
+/* 
+ * GPLv2 or MIT License
  *
  * Copyright (c) 2016-2022 INRIA, CMU and Microsoft Corporation
  * Copyright (c) 2022-2023 HACL* Contributors
@@ -16,7 +17,7 @@ void Hacl_SHA2_Scalar32_sha256_init(uint32_t *hash)
                         os[i] = x;);
 }
 
-static inline void sha256_update_(uint8_t *b, uint32_t *hash)
+static inline void hacl_sha256_update(uint8_t *b, uint32_t *hash)
 {
         uint32_t hash_old[8U] = { 0U };
         uint32_t ws[16U] = { 0U };
@@ -117,7 +118,7 @@ void Hacl_SHA2_Scalar32_sha256_update_nblocks(uint32_t len, uint8_t *b,
         for (uint32_t i = (uint32_t)0U; i < blocks; i++) {
                 uint8_t *b0 = b;
                 uint8_t *mb = b0 + i * (uint32_t)64U;
-                sha256_update_(mb, st);
+                hacl_sha256_update(mb, st);
         }
 }
 
@@ -148,9 +149,9 @@ void Hacl_SHA2_Scalar32_sha256_update_last(uint64_t totlen, uint32_t len,
         uint8_t *lb1 = l1;
         uint8_t *last0 = lb0;
         uint8_t *last1 = lb1;
-        sha256_update_(last0, hash);
+        hacl_sha256_update(last0, hash);
         if (blocks > (uint32_t)1U) {
-                sha256_update_(last1, hash);
+                hacl_sha256_update(last1, hash);
                 return;
         }
 }
@@ -193,13 +194,14 @@ void Hacl_SHA2_Scalar32_sha224_finish(uint32_t *st, uint8_t *h)
 /**
 Reset an existing state to the initial hash state with empty data.
 */
-void Hacl_Streaming_SHA2_init_256(Hacl_Streaming_MD_state_32 *s)
+
+void Hacl_Streaming_SHA2_init_256(struct Hacl_Streaming_MD_state_32_s *s)
 {
-        Hacl_Streaming_MD_state_32 scrut = *s;
+        struct Hacl_Streaming_MD_state_32_s scrut = *s;
         uint8_t *buf = scrut.buf;
         uint32_t *block_state = scrut.block_state;
         Hacl_SHA2_Scalar32_sha256_init(block_state);
-        Hacl_Streaming_MD_state_32 tmp = { .block_state = block_state,
+        struct Hacl_Streaming_MD_state_32_s tmp = { .block_state = block_state,
                                            .buf = buf,
                                            .total_len =
                                                    (uint64_t)(uint32_t)0U };
@@ -207,9 +209,9 @@ void Hacl_Streaming_SHA2_init_256(Hacl_Streaming_MD_state_32 *s)
 }
 
 static inline Hacl_Streaming_Types_error_code
-update_224_256(Hacl_Streaming_MD_state_32 *p, uint8_t *data, uint32_t len)
+update_224_256(struct Hacl_Streaming_MD_state_32_s *p, uint8_t *data, uint32_t len)
 {
-        Hacl_Streaming_MD_state_32 s = *p;
+        struct Hacl_Streaming_MD_state_32_s s = *p;
         uint64_t total_len = s.total_len;
         if ((uint64_t)len > (uint64_t)2305843009213693951U - total_len) {
                 return Hacl_Streaming_Types_MaximumLengthExceeded;
@@ -222,7 +224,7 @@ update_224_256(Hacl_Streaming_MD_state_32 *p, uint8_t *data, uint32_t len)
                 sz = (uint32_t)(total_len % (uint64_t)(uint32_t)64U);
         }
         if (len <= (uint32_t)64U - sz) {
-                Hacl_Streaming_MD_state_32 s1 = *p;
+                struct Hacl_Streaming_MD_state_32_s s1 = *p;
                 uint32_t *block_state1 = s1.block_state;
                 uint8_t *buf = s1.buf;
                 uint64_t total_len1 = s1.total_len;
@@ -236,11 +238,11 @@ update_224_256(Hacl_Streaming_MD_state_32 *p, uint8_t *data, uint32_t len)
                 uint8_t *buf2 = buf + sz1;
                 memcpy(buf2, data, len * sizeof(uint8_t));
                 uint64_t total_len2 = total_len1 + (uint64_t)len;
-                *p = ((Hacl_Streaming_MD_state_32){ .block_state = block_state1,
+                *p = ((struct Hacl_Streaming_MD_state_32_s){ .block_state = block_state1,
                                                     .buf = buf,
                                                     .total_len = total_len2 });
         } else if (sz == (uint32_t)0U) {
-                Hacl_Streaming_MD_state_32 s1 = *p;
+                struct Hacl_Streaming_MD_state_32_s s1 = *p;
                 uint32_t *block_state1 = s1.block_state;
                 uint8_t *buf = s1.buf;
                 uint64_t total_len1 = s1.total_len;
@@ -273,7 +275,7 @@ update_224_256(Hacl_Streaming_MD_state_32 *p, uint8_t *data, uint32_t len)
                         block_state1);
                 uint8_t *dst = buf;
                 memcpy(dst, data2, data2_len * sizeof(uint8_t));
-                *p = ((Hacl_Streaming_MD_state_32){
+                *p = ((struct Hacl_Streaming_MD_state_32_s){
                         .block_state = block_state1,
                         .buf = buf,
                         .total_len = total_len1 + (uint64_t)len });
@@ -281,7 +283,7 @@ update_224_256(Hacl_Streaming_MD_state_32 *p, uint8_t *data, uint32_t len)
                 uint32_t diff = (uint32_t)64U - sz;
                 uint8_t *data1 = data;
                 uint8_t *data2 = data + diff;
-                Hacl_Streaming_MD_state_32 s1 = *p;
+                struct Hacl_Streaming_MD_state_32_s s1 = *p;
                 uint32_t *block_state10 = s1.block_state;
                 uint8_t *buf0 = s1.buf;
                 uint64_t total_len10 = s1.total_len;
@@ -296,11 +298,11 @@ update_224_256(Hacl_Streaming_MD_state_32 *p, uint8_t *data, uint32_t len)
                 uint8_t *buf2 = buf0 + sz10;
                 memcpy(buf2, data1, diff * sizeof(uint8_t));
                 uint64_t total_len2 = total_len10 + (uint64_t)diff;
-                *p = ((Hacl_Streaming_MD_state_32){ .block_state =
+                *p = ((struct Hacl_Streaming_MD_state_32_s){ .block_state =
                                                             block_state10,
                                                     .buf = buf0,
                                                     .total_len = total_len2 });
-                Hacl_Streaming_MD_state_32 s10 = *p;
+                struct Hacl_Streaming_MD_state_32_s s10 = *p;
                 uint32_t *block_state1 = s10.block_state;
                 uint8_t *buf = s10.buf;
                 uint64_t total_len1 = s10.total_len;
@@ -334,7 +336,7 @@ update_224_256(Hacl_Streaming_MD_state_32 *p, uint8_t *data, uint32_t len)
                         block_state1);
                 uint8_t *dst = buf;
                 memcpy(dst, data21, data2_len * sizeof(uint8_t));
-                *p = ((Hacl_Streaming_MD_state_32){
+                *p = ((struct Hacl_Streaming_MD_state_32_s){
                         .block_state = block_state1,
                         .buf = buf,
                         .total_len = total_len1 + (uint64_t)(len - diff) });
@@ -350,7 +352,7 @@ success, or 1 if the combined length of all of the data passed to `update_256`
 This function is identical to the update function for SHA2_224.
 */
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_256(Hacl_Streaming_MD_state_32 *p, uint8_t *input,
+Hacl_Streaming_SHA2_update_256(struct Hacl_Streaming_MD_state_32_s *p, uint8_t *input,
                                uint32_t input_len)
 {
         return update_224_256(p, input, input_len);
@@ -362,9 +364,9 @@ valid after a call to `finish_256`, meaning the user may feed more data into
 the hash via `update_256`. (The finish_256 function operates on an internal copy
 of the state and therefore does not invalidate the client-held state `p`.)
 */
-void Hacl_Streaming_SHA2_finish_256(Hacl_Streaming_MD_state_32 *p, uint8_t *dst)
+void Hacl_Streaming_SHA2_finish_256(struct Hacl_Streaming_MD_state_32_s *p, uint8_t *dst)
 {
-        Hacl_Streaming_MD_state_32 scrut = *p;
+        struct Hacl_Streaming_MD_state_32_s scrut = *p;
         uint32_t *block_state = scrut.block_state;
         uint8_t *buf_ = scrut.buf;
         uint64_t total_len = scrut.total_len;
@@ -414,13 +416,13 @@ void Hacl_Streaming_SHA2_hash_256(uint8_t *input, uint32_t input_len,
         Hacl_SHA2_Scalar32_sha256_finish(st, rb);
 }
 
-void Hacl_Streaming_SHA2_init_224(Hacl_Streaming_MD_state_32 *s)
+void Hacl_Streaming_SHA2_init_224(struct Hacl_Streaming_MD_state_32_s *s)
 {
-        Hacl_Streaming_MD_state_32 scrut = *s;
+        struct Hacl_Streaming_MD_state_32_s scrut = *s;
         uint8_t *buf = scrut.buf;
         uint32_t *block_state = scrut.block_state;
         Hacl_SHA2_Scalar32_sha224_init(block_state);
-        Hacl_Streaming_MD_state_32 tmp = { .block_state = block_state,
+        struct Hacl_Streaming_MD_state_32_s tmp = { .block_state = block_state,
                                            .buf = buf,
                                            .total_len =
                                                    (uint64_t)(uint32_t)0U };
@@ -428,7 +430,7 @@ void Hacl_Streaming_SHA2_init_224(Hacl_Streaming_MD_state_32 *s)
 }
 
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_224(Hacl_Streaming_MD_state_32 *p, uint8_t *input,
+Hacl_Streaming_SHA2_update_224(struct Hacl_Streaming_MD_state_32_s *p, uint8_t *input,
                                uint32_t input_len)
 {
         return update_224_256(p, input, input_len);
@@ -439,9 +441,9 @@ Write the resulting hash into `dst`, an array of 28 bytes. The state remains
 valid after a call to `finish_224`, meaning the user may feed more data into
 the hash via `update_224`.
 */
-void Hacl_Streaming_SHA2_finish_224(Hacl_Streaming_MD_state_32 *p, uint8_t *dst)
+void Hacl_Streaming_SHA2_finish_224(struct Hacl_Streaming_MD_state_32_s *p, uint8_t *dst)
 {
-        Hacl_Streaming_MD_state_32 scrut = *p;
+        struct Hacl_Streaming_MD_state_32_s scrut = *p;
         uint32_t *block_state = scrut.block_state;
         uint8_t *buf_ = scrut.buf;
         uint64_t total_len = scrut.total_len;
@@ -676,13 +678,13 @@ void Hacl_SHA2_Scalar32_sha384_finish(uint64_t *st, uint8_t *h)
         memcpy(h, hbuf, (uint32_t)48U * sizeof(uint8_t));
 }
 
-void Hacl_Streaming_SHA2_init_512(Hacl_Streaming_MD_state_64 *s)
+void Hacl_Streaming_SHA2_init_512(struct Hacl_Streaming_MD_state_64_s *s)
 {
-        Hacl_Streaming_MD_state_64 scrut = *s;
+        struct Hacl_Streaming_MD_state_64_s scrut = *s;
         uint8_t *buf = scrut.buf;
         uint64_t *block_state = scrut.block_state;
         Hacl_SHA2_Scalar32_sha512_init(block_state);
-        Hacl_Streaming_MD_state_64 tmp = { .block_state = block_state,
+        struct Hacl_Streaming_MD_state_64_s tmp = { .block_state = block_state,
                                            .buf = buf,
                                            .total_len =
                                                    (uint64_t)(uint32_t)0U };
@@ -690,9 +692,9 @@ void Hacl_Streaming_SHA2_init_512(Hacl_Streaming_MD_state_64 *s)
 }
 
 static inline Hacl_Streaming_Types_error_code
-update_384_512(Hacl_Streaming_MD_state_64 *p, uint8_t *data, uint32_t len)
+update_384_512(struct Hacl_Streaming_MD_state_64_s *p, uint8_t *data, uint32_t len)
 {
-        Hacl_Streaming_MD_state_64 s = *p;
+        struct Hacl_Streaming_MD_state_64_s s = *p;
         uint64_t total_len = s.total_len;
         if ((uint64_t)len > (uint64_t)18446744073709551615U - total_len) {
                 return Hacl_Streaming_Types_MaximumLengthExceeded;
@@ -705,7 +707,7 @@ update_384_512(Hacl_Streaming_MD_state_64 *p, uint8_t *data, uint32_t len)
                 sz = (uint32_t)(total_len % (uint64_t)(uint32_t)128U);
         }
         if (len <= (uint32_t)128U - sz) {
-                Hacl_Streaming_MD_state_64 s1 = *p;
+                struct Hacl_Streaming_MD_state_64_s s1 = *p;
                 uint64_t *block_state1 = s1.block_state;
                 uint8_t *buf = s1.buf;
                 uint64_t total_len1 = s1.total_len;
@@ -719,11 +721,11 @@ update_384_512(Hacl_Streaming_MD_state_64 *p, uint8_t *data, uint32_t len)
                 uint8_t *buf2 = buf + sz1;
                 memcpy(buf2, data, len * sizeof(uint8_t));
                 uint64_t total_len2 = total_len1 + (uint64_t)len;
-                *p = ((Hacl_Streaming_MD_state_64){ .block_state = block_state1,
+                *p = ((struct Hacl_Streaming_MD_state_64_s){ .block_state = block_state1,
                                                     .buf = buf,
                                                     .total_len = total_len2 });
         } else if (sz == (uint32_t)0U) {
-                Hacl_Streaming_MD_state_64 s1 = *p;
+                struct Hacl_Streaming_MD_state_64_s s1 = *p;
                 uint64_t *block_state1 = s1.block_state;
                 uint8_t *buf = s1.buf;
                 uint64_t total_len1 = s1.total_len;
@@ -756,7 +758,7 @@ update_384_512(Hacl_Streaming_MD_state_64 *p, uint8_t *data, uint32_t len)
                         block_state1);
                 uint8_t *dst = buf;
                 memcpy(dst, data2, data2_len * sizeof(uint8_t));
-                *p = ((Hacl_Streaming_MD_state_64){
+                *p = ((struct Hacl_Streaming_MD_state_64_s){
                         .block_state = block_state1,
                         .buf = buf,
                         .total_len = total_len1 + (uint64_t)len });
@@ -764,7 +766,7 @@ update_384_512(Hacl_Streaming_MD_state_64 *p, uint8_t *data, uint32_t len)
                 uint32_t diff = (uint32_t)128U - sz;
                 uint8_t *data1 = data;
                 uint8_t *data2 = data + diff;
-                Hacl_Streaming_MD_state_64 s1 = *p;
+                struct Hacl_Streaming_MD_state_64_s s1 = *p;
                 uint64_t *block_state10 = s1.block_state;
                 uint8_t *buf0 = s1.buf;
                 uint64_t total_len10 = s1.total_len;
@@ -779,11 +781,11 @@ update_384_512(Hacl_Streaming_MD_state_64 *p, uint8_t *data, uint32_t len)
                 uint8_t *buf2 = buf0 + sz10;
                 memcpy(buf2, data1, diff * sizeof(uint8_t));
                 uint64_t total_len2 = total_len10 + (uint64_t)diff;
-                *p = ((Hacl_Streaming_MD_state_64){ .block_state =
+                *p = ((struct Hacl_Streaming_MD_state_64_s){ .block_state =
                                                             block_state10,
                                                     .buf = buf0,
                                                     .total_len = total_len2 });
-                Hacl_Streaming_MD_state_64 s10 = *p;
+                struct Hacl_Streaming_MD_state_64_s s10 = *p;
                 uint64_t *block_state1 = s10.block_state;
                 uint8_t *buf = s10.buf;
                 uint64_t total_len1 = s10.total_len;
@@ -817,7 +819,7 @@ update_384_512(Hacl_Streaming_MD_state_64 *p, uint8_t *data, uint32_t len)
                         block_state1);
                 uint8_t *dst = buf;
                 memcpy(dst, data21, data2_len * sizeof(uint8_t));
-                *p = ((Hacl_Streaming_MD_state_64){
+                *p = ((struct Hacl_Streaming_MD_state_64_s){
                         .block_state = block_state1,
                         .buf = buf,
                         .total_len = total_len1 + (uint64_t)(len - diff) });
@@ -833,7 +835,7 @@ success, or 1 if the combined length of all of the data passed to `update_512`
 This function is identical to the update function for SHA2_384.
 */
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_512(Hacl_Streaming_MD_state_64 *p, uint8_t *input,
+Hacl_Streaming_SHA2_update_512(struct Hacl_Streaming_MD_state_64_s *p, uint8_t *input,
                                uint32_t input_len)
 {
         return update_384_512(p, input, input_len);
@@ -845,9 +847,9 @@ valid after a call to `finish_512`, meaning the user may feed more data into
 the hash via `update_512`. (The finish_512 function operates on an internal copy
 of the state and therefore does not invalidate the client-held state `p`.)
 */
-void Hacl_Streaming_SHA2_finish_512(Hacl_Streaming_MD_state_64 *p, uint8_t *dst)
+void Hacl_Streaming_SHA2_finish_512(struct Hacl_Streaming_MD_state_64_s *p, uint8_t *dst)
 {
-        Hacl_Streaming_MD_state_64 scrut = *p;
+        struct Hacl_Streaming_MD_state_64_s scrut = *p;
         uint64_t *block_state = scrut.block_state;
         uint8_t *buf_ = scrut.buf;
         uint64_t total_len = scrut.total_len;
@@ -879,13 +881,13 @@ void Hacl_Streaming_SHA2_finish_512(Hacl_Streaming_MD_state_64 *p, uint8_t *dst)
         Hacl_SHA2_Scalar32_sha512_finish(tmp_block_state, dst);
 }
 
-void Hacl_Streaming_SHA2_init_384(Hacl_Streaming_MD_state_64 *s)
+void Hacl_Streaming_SHA2_init_384(struct Hacl_Streaming_MD_state_64_s *s)
 {
-        Hacl_Streaming_MD_state_64 scrut = *s;
+        struct Hacl_Streaming_MD_state_64_s scrut = *s;
         uint8_t *buf = scrut.buf;
         uint64_t *block_state = scrut.block_state;
         Hacl_SHA2_Scalar32_sha384_init(block_state);
-        Hacl_Streaming_MD_state_64 tmp = { .block_state = block_state,
+        struct Hacl_Streaming_MD_state_64_s tmp = { .block_state = block_state,
                                            .buf = buf,
                                            .total_len =
                                                    (uint64_t)(uint32_t)0U };
@@ -893,7 +895,7 @@ void Hacl_Streaming_SHA2_init_384(Hacl_Streaming_MD_state_64 *s)
 }
 
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_384(Hacl_Streaming_MD_state_64 *p, uint8_t *input,
+Hacl_Streaming_SHA2_update_384(struct Hacl_Streaming_MD_state_64_s *p, uint8_t *input,
                                uint32_t input_len)
 {
         return update_384_512(p, input, input_len);
@@ -904,9 +906,9 @@ Write the resulting hash into `dst`, an array of 48 bytes. The state remains
 valid after a call to `finish_384`, meaning the user may feed more data into
 the hash via `update_384`.
 */
-void Hacl_Streaming_SHA2_finish_384(Hacl_Streaming_MD_state_64 *p, uint8_t *dst)
+void Hacl_Streaming_SHA2_finish_384(struct Hacl_Streaming_MD_state_64_s *p, uint8_t *dst)
 {
-        Hacl_Streaming_MD_state_64 scrut = *p;
+        struct Hacl_Streaming_MD_state_64_s scrut = *p;
         uint64_t *block_state = scrut.block_state;
         uint8_t *buf_ = scrut.buf;
         uint64_t total_len = scrut.total_len;

@@ -15,7 +15,7 @@ int hacl_sha256_update(struct shash_desc *desc, const u8 *data,
                        unsigned int len)
 {
         struct sha256_state *sctx = shash_desc_ctx(desc);
-        Hacl_Streaming_MD_state_32 st;
+        struct Hacl_Streaming_MD_state_32_s st;
         st.block_state = sctx->state;
         st.buf = sctx->buf;
         st.total_len = sctx->count;
@@ -28,7 +28,7 @@ EXPORT_SYMBOL(hacl_sha256_update);
 static int hacl_sha256_final(struct shash_desc *desc, u8 *out)
 {
         struct sha256_state *sctx = shash_desc_ctx(desc);
-        Hacl_Streaming_MD_state_32 st;
+        struct Hacl_Streaming_MD_state_32_s st;
         st.block_state = sctx->state;
         st.buf = sctx->buf;
         st.total_len = sctx->count;
@@ -43,7 +43,7 @@ int hacl_sha256_finup(struct shash_desc *desc, const u8 *data, unsigned int len,
                       u8 *hash)
 {
         struct sha256_state *sctx = shash_desc_ctx(desc);
-        Hacl_Streaming_MD_state_32 st;
+        struct Hacl_Streaming_MD_state_32_s st;
         st.block_state = sctx->state;
         st.buf = sctx->buf;
         st.total_len = sctx->count;
@@ -60,7 +60,7 @@ int hacl_sha512_update(struct shash_desc *desc, const u8 *data,
                        unsigned int len)
 {
         struct sha512_state *sctx = shash_desc_ctx(desc);
-        Hacl_Streaming_MD_state_64 st;
+        struct Hacl_Streaming_MD_state_64_s st;
         st.block_state = sctx->state;
         st.buf = sctx->buf;
         st.total_len = sctx->count[0];
@@ -73,7 +73,7 @@ EXPORT_SYMBOL(hacl_sha512_update);
 static int hacl_sha512_final(struct shash_desc *desc, u8 *hash)
 {
         struct sha512_state *sctx = shash_desc_ctx(desc);
-        Hacl_Streaming_MD_state_64 st;
+        struct Hacl_Streaming_MD_state_64_s st;
         st.block_state = sctx->state;
         st.buf = sctx->buf;
         st.total_len = sctx->count[0];
@@ -88,7 +88,7 @@ int hacl_sha512_finup(struct shash_desc *desc, const u8 *data, unsigned int len,
                       u8 *hash)
 {
         struct sha512_state *sctx = shash_desc_ctx(desc);
-        Hacl_Streaming_MD_state_64 st;
+        struct Hacl_Streaming_MD_state_64_s st;
         st.block_state = sctx->state;
         st.buf = sctx->buf;
         st.total_len = sctx->count[0];

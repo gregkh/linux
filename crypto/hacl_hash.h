@@ -9,51 +9,24 @@
 
 #include "./hacl_lib.h"
 
-#define Spec_Hash_Definitions_SHA2_224 0
-#define Spec_Hash_Definitions_SHA2_256 1
-#define Spec_Hash_Definitions_SHA2_384 2
-#define Spec_Hash_Definitions_SHA2_512 3
-#define Spec_Hash_Definitions_SHA1     4
-#define Spec_Hash_Definitions_MD5      5
-#define Spec_Hash_Definitions_Blake2S  6
-#define Spec_Hash_Definitions_Blake2B  7
-#define Spec_Hash_Definitions_SHA3_256 8
-#define Spec_Hash_Definitions_SHA3_224 9
-#define Spec_Hash_Definitions_SHA3_384 10
-#define Spec_Hash_Definitions_SHA3_512 11
-#define Spec_Hash_Definitions_Shake128 12
-#define Spec_Hash_Definitions_Shake256 13
-
-typedef uint8_t Spec_Hash_Definitions_hash_alg;
-
 #define Hacl_Streaming_Types_Success               0
 #define Hacl_Streaming_Types_InvalidAlgorithm      1
 #define Hacl_Streaming_Types_InvalidLength         2
 #define Hacl_Streaming_Types_MaximumLengthExceeded 3
 
-uint32_t Hacl_Hash_Definitions_word_len(Spec_Hash_Definitions_hash_alg a);
-
-uint32_t Hacl_Hash_Definitions_block_len(Spec_Hash_Definitions_hash_alg a);
-
-uint32_t Hacl_Hash_Definitions_hash_word_len(Spec_Hash_Definitions_hash_alg a);
-
-uint32_t Hacl_Hash_Definitions_hash_len(Spec_Hash_Definitions_hash_alg a);
-
-typedef uint8_t *Hacl_Hash_Definitions_hash_t;
-
 typedef uint8_t Hacl_Streaming_Types_error_code;
 
-typedef struct Hacl_Streaming_MD_state_32_s {
+struct Hacl_Streaming_MD_state_32_s {
         uint32_t *block_state;
         uint8_t *buf;
         uint64_t total_len;
-} Hacl_Streaming_MD_state_32;
+};
 
-typedef struct Hacl_Streaming_MD_state_64_s {
+struct Hacl_Streaming_MD_state_64_s {
         uint64_t *block_state;
         uint8_t *buf;
         uint64_t total_len;
-} Hacl_Streaming_MD_state_64;
+};
 
 static const uint32_t Hacl_Impl_SHA2_Generic_h224[8U] = {
         (uint32_t)0xc1059ed8U, (uint32_t)0x367cd507U, (uint32_t)0x3070dd17U,
@@ -149,72 +122,10 @@ static const uint64_t Hacl_Impl_SHA2_Generic_k384_512[80U] = {
         (uint64_t)0x5fcb6fab3ad6faecU, (uint64_t)0x6c44198c4a475817U
 };
 
-void Hacl_SHA2_Scalar32_sha256_init(uint32_t *hash);
-
-void Hacl_SHA2_Scalar32_sha256_update_nblocks(uint32_t len, uint8_t *b,
-                                              uint32_t *st);
-
-void Hacl_SHA2_Scalar32_sha256_update_last(uint64_t totlen, uint32_t len,
-                                           uint8_t *b, uint32_t *hash);
-
-void Hacl_SHA2_Scalar32_sha256_finish(uint32_t *st, uint8_t *h);
-
-void Hacl_SHA2_Scalar32_sha224_init(uint32_t *hash);
-
-void Hacl_SHA2_Scalar32_sha224_update_last(uint64_t totlen, uint32_t len,
-                                           uint8_t *b, uint32_t *st);
-
-void Hacl_SHA2_Scalar32_sha224_finish(uint32_t *st, uint8_t *h);
-
-void Hacl_SHA2_Scalar32_sha512_init(uint64_t *hash);
-
-void Hacl_SHA2_Scalar32_sha512_update_nblocks(uint32_t len, uint8_t *b,
-                                              uint64_t *st);
-
-void Hacl_SHA2_Scalar32_sha512_update_last(FStar_UInt128_uint128 totlen,
-                                           uint32_t len, uint8_t *b,
-                                           uint64_t *hash);
-
-void Hacl_SHA2_Scalar32_sha512_finish(uint64_t *st, uint8_t *h);
-
-void Hacl_SHA2_Scalar32_sha384_init(uint64_t *hash);
-
-void Hacl_SHA2_Scalar32_sha384_update_nblocks(uint32_t len, uint8_t *b,
-                                              uint64_t *st);
-
-void Hacl_SHA2_Scalar32_sha384_update_last(FStar_UInt128_uint128 totlen,
-                                           uint32_t len, uint8_t *b,
-                                           uint64_t *st);
-
-void Hacl_SHA2_Scalar32_sha384_finish(uint64_t *st, uint8_t *h);
-
-typedef Hacl_Streaming_MD_state_32 Hacl_Streaming_SHA2_state_sha2_224;
-
-typedef Hacl_Streaming_MD_state_32 Hacl_Streaming_SHA2_state_sha2_256;
-
-typedef Hacl_Streaming_MD_state_64 Hacl_Streaming_SHA2_state_sha2_384;
-
-typedef Hacl_Streaming_MD_state_64 Hacl_Streaming_SHA2_state_sha2_512;
-
-/**
-Allocate initial state for the SHA2_256 hash. The state is to be freed by
-calling `free_256`.
-*/
-Hacl_Streaming_MD_state_32 *Hacl_Streaming_SHA2_create_in_256(void);
-
-/**
-Copies the state passed as argument into a newly allocated state (deep copy).
-The state is to be freed by calling `free_256`. Cloning the state this way is
-useful, for instance, if your control-flow diverges and you need to feed
-more (different) data into the hash in each branch.
-*/
-Hacl_Streaming_MD_state_32 *
-Hacl_Streaming_SHA2_copy_256(Hacl_Streaming_MD_state_32 *s0);
-
 /**
 Reset an existing state to the initial hash state with empty data.
 */
-void Hacl_Streaming_SHA2_init_256(Hacl_Streaming_MD_state_32 *s);
+void Hacl_Streaming_SHA2_init_256(struct Hacl_Streaming_MD_state_32_s *s);
 
 /**
 Feed an arbitrary amount of data into the hash. This function returns 0 for
@@ -224,7 +135,7 @@ success, or 1 if the combined length of all of the data passed to `update_256`
 This function is identical to the update function for SHA2_224.
 */
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_256(Hacl_Streaming_MD_state_32 *p, uint8_t *input,
+Hacl_Streaming_SHA2_update_256(struct Hacl_Streaming_MD_state_32_s *p, uint8_t *input,
                                uint32_t input_len);
 
 /**
@@ -233,15 +144,8 @@ valid after a call to `finish_256`, meaning the user may feed more data into
 the hash via `update_256`. (The finish_256 function operates on an internal copy
 of the state and therefore does not invalidate the client-held state `p`.)
 */
-void Hacl_Streaming_SHA2_finish_256(Hacl_Streaming_MD_state_32 *p,
+void Hacl_Streaming_SHA2_finish_256(struct Hacl_Streaming_MD_state_32_s *p,
                                     uint8_t *dst);
-
-/**
-Free a state allocated with `create_in_256`.
-
-This function is identical to the free function for SHA2_224.
-*/
-void Hacl_Streaming_SHA2_free_256(Hacl_Streaming_MD_state_32 *s);
 
 /**
 Hash `input`, of len `input_len`, into `dst`, an array of 32 bytes.
@@ -249,12 +153,10 @@ Hash `input`, of len `input_len`, into `dst`, an array of 32 bytes.
 void Hacl_Streaming_SHA2_hash_256(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
 
-Hacl_Streaming_MD_state_32 *Hacl_Streaming_SHA2_create_in_224(void);
-
-void Hacl_Streaming_SHA2_init_224(Hacl_Streaming_MD_state_32 *s);
+void Hacl_Streaming_SHA2_init_224(struct Hacl_Streaming_MD_state_32_s *s);
 
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_224(Hacl_Streaming_MD_state_32 *p, uint8_t *input,
+Hacl_Streaming_SHA2_update_224(struct Hacl_Streaming_MD_state_32_s *p, uint8_t *input,
                                uint32_t input_len);
 
 /**
@@ -262,10 +164,8 @@ Write the resulting hash into `dst`, an array of 28 bytes. The state remains
 valid after a call to `finish_224`, meaning the user may feed more data into
 the hash via `update_224`.
 */
-void Hacl_Streaming_SHA2_finish_224(Hacl_Streaming_MD_state_32 *p,
+void Hacl_Streaming_SHA2_finish_224(struct Hacl_Streaming_MD_state_32_s *p,
                                     uint8_t *dst);
-
-void Hacl_Streaming_SHA2_free_224(Hacl_Streaming_MD_state_32 *p);
 
 /**
 Hash `input`, of len `input_len`, into `dst`, an array of 28 bytes.
@@ -273,18 +173,7 @@ Hash `input`, of len `input_len`, into `dst`, an array of 28 bytes.
 void Hacl_Streaming_SHA2_hash_224(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
 
-Hacl_Streaming_MD_state_64 *Hacl_Streaming_SHA2_create_in_512(void);
-
-/**
-Copies the state passed as argument into a newly allocated state (deep copy).
-The state is to be freed by calling `free_512`. Cloning the state this way is
-useful, for instance, if your control-flow diverges and you need to feed
-more (different) data into the hash in each branch.
-*/
-Hacl_Streaming_MD_state_64 *
-Hacl_Streaming_SHA2_copy_512(Hacl_Streaming_MD_state_64 *s0);
-
-void Hacl_Streaming_SHA2_init_512(Hacl_Streaming_MD_state_64 *s);
+void Hacl_Streaming_SHA2_init_512(struct Hacl_Streaming_MD_state_64_s *s);
 
 /**
 Feed an arbitrary amount of data into the hash. This function returns 0 for
@@ -294,7 +183,7 @@ success, or 1 if the combined length of all of the data passed to `update_512`
 This function is identical to the update function for SHA2_384.
 */
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_512(Hacl_Streaming_MD_state_64 *p, uint8_t *input,
+Hacl_Streaming_SHA2_update_512(struct Hacl_Streaming_MD_state_64_s *p, uint8_t *input,
                                uint32_t input_len);
 
 /**
@@ -303,15 +192,8 @@ valid after a call to `finish_512`, meaning the user may feed more data into
 the hash via `update_512`. (The finish_512 function operates on an internal copy
 of the state and therefore does not invalidate the client-held state `p`.)
 */
-void Hacl_Streaming_SHA2_finish_512(Hacl_Streaming_MD_state_64 *p,
+void Hacl_Streaming_SHA2_finish_512(struct Hacl_Streaming_MD_state_64_s *p,
                                     uint8_t *dst);
-
-/**
-Free a state allocated with `create_in_512`.
-
-This function is identical to the free function for SHA2_384.
-*/
-void Hacl_Streaming_SHA2_free_512(Hacl_Streaming_MD_state_64 *s);
 
 /**
 Hash `input`, of len `input_len`, into `dst`, an array of 64 bytes.
@@ -319,12 +201,10 @@ Hash `input`, of len `input_len`, into `dst`, an array of 64 bytes.
 void Hacl_Streaming_SHA2_hash_512(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
 
-Hacl_Streaming_MD_state_64 *Hacl_Streaming_SHA2_create_in_384(void);
-
-void Hacl_Streaming_SHA2_init_384(Hacl_Streaming_MD_state_64 *s);
+void Hacl_Streaming_SHA2_init_384(struct Hacl_Streaming_MD_state_64_s *s);
 
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_384(Hacl_Streaming_MD_state_64 *p, uint8_t *input,
+Hacl_Streaming_SHA2_update_384(struct Hacl_Streaming_MD_state_64_s *p, uint8_t *input,
                                uint32_t input_len);
 
 /**
@@ -332,61 +212,12 @@ Write the resulting hash into `dst`, an array of 48 bytes. The state remains
 valid after a call to `finish_384`, meaning the user may feed more data into
 the hash via `update_384`.
 */
-void Hacl_Streaming_SHA2_finish_384(Hacl_Streaming_MD_state_64 *p,
+void Hacl_Streaming_SHA2_finish_384(struct Hacl_Streaming_MD_state_64_s *p,
                                     uint8_t *dst);
-
-void Hacl_Streaming_SHA2_free_384(Hacl_Streaming_MD_state_64 *p);
-
 /**
 Hash `input`, of len `input_len`, into `dst`, an array of 48 bytes.
 */
 void Hacl_Streaming_SHA2_hash_384(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
 
-typedef struct Hacl_Impl_SHA2_Types_uint8_2p_s {
-        uint8_t *fst;
-        uint8_t *snd;
-} Hacl_Impl_SHA2_Types_uint8_2p;
-
-typedef struct Hacl_Impl_SHA2_Types_uint8_3p_s {
-        uint8_t *fst;
-        Hacl_Impl_SHA2_Types_uint8_2p snd;
-} Hacl_Impl_SHA2_Types_uint8_3p;
-
-typedef struct Hacl_Impl_SHA2_Types_uint8_4p_s {
-        uint8_t *fst;
-        Hacl_Impl_SHA2_Types_uint8_3p snd;
-} Hacl_Impl_SHA2_Types_uint8_4p;
-
-typedef struct Hacl_Impl_SHA2_Types_uint8_5p_s {
-        uint8_t *fst;
-        Hacl_Impl_SHA2_Types_uint8_4p snd;
-} Hacl_Impl_SHA2_Types_uint8_5p;
-
-typedef struct Hacl_Impl_SHA2_Types_uint8_6p_s {
-        uint8_t *fst;
-        Hacl_Impl_SHA2_Types_uint8_5p snd;
-} Hacl_Impl_SHA2_Types_uint8_6p;
-
-typedef struct Hacl_Impl_SHA2_Types_uint8_7p_s {
-        uint8_t *fst;
-        Hacl_Impl_SHA2_Types_uint8_6p snd;
-} Hacl_Impl_SHA2_Types_uint8_7p;
-
-typedef struct Hacl_Impl_SHA2_Types_uint8_8p_s {
-        uint8_t *fst;
-        Hacl_Impl_SHA2_Types_uint8_7p snd;
-} Hacl_Impl_SHA2_Types_uint8_8p;
-
-typedef struct Hacl_Impl_SHA2_Types_uint8_2x4p_s {
-        Hacl_Impl_SHA2_Types_uint8_4p fst;
-        Hacl_Impl_SHA2_Types_uint8_4p snd;
-} Hacl_Impl_SHA2_Types_uint8_2x4p;
-
-typedef struct Hacl_Impl_SHA2_Types_uint8_2x8p_s {
-        Hacl_Impl_SHA2_Types_uint8_8p fst;
-        Hacl_Impl_SHA2_Types_uint8_8p snd;
-} Hacl_Impl_SHA2_Types_uint8_2x8p;
-
-#define __Hacl_Hash_H_DEFINED
 #endif // CRYPTO_HACL_HASH_H_
