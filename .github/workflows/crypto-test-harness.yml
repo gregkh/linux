@@ -1,0 +1,45 @@
+---
+name: Linux
+
+on:
+  pull_request:
+    branches: ["cf-zeta"]
+  workflow_dispatch:
+
+jobs:
+  tcrypt:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flex bison bc cpio busybox-static kmod
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Build kernel & Modules
+        run: |
+          cp zeta/test-artifacts/config-um .config
+          make olddefconfig ARCH=um
+          make -j$(nproc) ARCH=um all
+          mkdir initramfs
+          make modules_install INSTALL_MOD_PATH=./initramfs ARCH=um
+      - name: Prepare initramfs
+        run: |
+          mkdir initramfs/bin initramfs/proc
+          cp -p /bin/busybox initramfs/bin/busybox
+          cp -p zeta/test-artifacts/init initramfs/init
+          cp -p zeta/test-artifacts/test-script.sh initramfs/test-script.sh
+          cd initramfs
+          find . -print0 | cpio --null --create --verbose --format=newc | gzip --best > ../uml-initramfs.cpio.gz
+          cd ..
+      - name: Run user-mode linux test harness
+        continue-on-error: true
+        run: |
+          sudo ./linux initrd=uml-initramfs.cpio.gz > tcrypt.out 2>&1
+          cat tcrypt.out
+      - name: Collect artifacts
+        uses: actions/upload-artifact@v3
+        if: success() || failure()
+        with:
+          name: tcrypt_job
+          path: ./tcrypt.out

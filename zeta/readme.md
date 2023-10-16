@@ -118,3 +118,19 @@ $ make -C zeta lint FILES="/crypto/sha256_generic.c /crypto/sha512_generic.c"
 
 Pass in `FILES` the files to be linted. Note the leading `/` (slash), which
 indicates the position of the files with respect to the kernel source code.
+
+### Automated performance testing
+
+Any merge requests opened against the `cf-zeta` branch will automatically
+trigger the execution of the [Crypto algorithm implementation testing
+pipeline](.github/workflows/crypto-test-harness.yml) GitHub Action.
+
+This action builds the kernel as a User-mode Linux (UML) binary
+(https://docs.kernel.org/virt/uml/user_mode_linux_howto_v2.html), using the
+kernel config defined in
+[zeta/test-artifacts/config-um](zeta/test-artifacts/config-um), and runs a [test
+script](zeta/test-artifacts/test-script.sh) in it.
+
+New kernel configuration options added as part of development work should be
+added to the [test kernel config](zeta/test-artifacts/config-um), and if needed
+new test clauses added on the test script.
