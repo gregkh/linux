@@ -8,8 +8,8 @@
 #include <crypto/sha2.h>
 #include <crypto/sha512_base.h>
 
-#include "./hacl_hash.h"
-#include "./hacl_lib.h"
+#include "hacl_hash.h"
+#include "hacl_lib.h"
 
 int hacl_sha256_update(struct shash_desc *desc, const u8 *data,
                        unsigned int len)
@@ -93,14 +93,15 @@ int hacl_sha512_finup(struct shash_desc *desc, const u8 *data, unsigned int len,
         st.buf = sctx->buf;
         st.total_len = sctx->count[0];
         uint8_t res = Hacl_Streaming_SHA2_update_512(&st, (u8 *)data, len);
-	if (res == 0) {
-	        if (crypto_shash_digestsize(desc->tfm) == SHA384_DIGEST_SIZE)
-	                Hacl_Streaming_SHA2_finish_384(&st, hash);
-		else
-		        Hacl_Streaming_SHA2_finish_512(&st, hash);
-	        return 0;
-	} else
-	        return res;
+        if (res == 0) {
+                if (crypto_shash_digestsize(desc->tfm) == SHA384_DIGEST_SIZE)
+                        Hacl_Streaming_SHA2_finish_384(&st, hash);
+                else
+                        Hacl_Streaming_SHA2_finish_512(&st, hash);
+                return 0;
+        } else {
+                return res;
+        }
 }
 EXPORT_SYMBOL(hacl_sha512_finup);
 

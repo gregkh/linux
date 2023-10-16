@@ -228,4 +228,4 @@ static inline void store128_be(u8 *buf, u128 x)
 #define KRML_MAYBE_FOR16(i, z, n, k, x) KRML_ACTUAL_FOR(i, z, n, k, x)
 #endif
 
-#endif // CRYPTO_HACL_LIB_H_"
+#endif  // CRYPTO_HACL_LIB_H_

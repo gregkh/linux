@@ -7,7 +7,7 @@
 #ifndef CRYPTO_HACL_HASH_H_
 #define CRYPTO_HACL_HASH_H_
 
-#include "./hacl_lib.h"
+#include "hacl_lib.h"
 
 #define Hacl_Streaming_Types_Success               0
 #define Hacl_Streaming_Types_InvalidAlgorithm      1
@@ -135,8 +135,8 @@ success, or 1 if the combined length of all of the data passed to `update_256`
 This function is identical to the update function for SHA2_224.
 */
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_256(struct Hacl_Streaming_MD_state_32_s *p, uint8_t *input,
-                               uint32_t input_len);
+Hacl_Streaming_SHA2_update_256(struct Hacl_Streaming_MD_state_32_s *p,
+                               uint8_t *input, uint32_t input_len);
 
 /**
 Write the resulting hash into `dst`, an array of 32 bytes. The state remains
@@ -156,8 +156,8 @@ void Hacl_Streaming_SHA2_hash_256(uint8_t *input, uint32_t input_len,
 void Hacl_Streaming_SHA2_init_224(struct Hacl_Streaming_MD_state_32_s *s);
 
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_224(struct Hacl_Streaming_MD_state_32_s *p, uint8_t *input,
-                               uint32_t input_len);
+Hacl_Streaming_SHA2_update_224(struct Hacl_Streaming_MD_state_32_s *p,
+                               uint8_t *input, uint32_t input_len);
 
 /**
 Write the resulting hash into `dst`, an array of 28 bytes. The state remains
@@ -183,8 +183,8 @@ success, or 1 if the combined length of all of the data passed to `update_512`
 This function is identical to the update function for SHA2_384.
 */
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_512(struct Hacl_Streaming_MD_state_64_s *p, uint8_t *input,
-                               uint32_t input_len);
+Hacl_Streaming_SHA2_update_512(struct Hacl_Streaming_MD_state_64_s *p,
+                               uint8_t *input, uint32_t input_len);
 
 /**
 Write the resulting hash into `dst`, an array of 64 bytes. The state remains
@@ -204,8 +204,8 @@ void Hacl_Streaming_SHA2_hash_512(uint8_t *input, uint32_t input_len,
 void Hacl_Streaming_SHA2_init_384(struct Hacl_Streaming_MD_state_64_s *s);
 
 Hacl_Streaming_Types_error_code
-Hacl_Streaming_SHA2_update_384(struct Hacl_Streaming_MD_state_64_s *p, uint8_t *input,
-                               uint32_t input_len);
+Hacl_Streaming_SHA2_update_384(struct Hacl_Streaming_MD_state_64_s *p,
+                               uint8_t *input, uint32_t input_len);
 
 /**
 Write the resulting hash into `dst`, an array of 48 bytes. The state remains
@@ -220,4 +220,4 @@ Hash `input`, of len `input_len`, into `dst`, an array of 48 bytes.
 void Hacl_Streaming_SHA2_hash_384(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
 
-#endif // CRYPTO_HACL_HASH_H_
+#endif  // CRYPTO_HACL_HASH_H_
