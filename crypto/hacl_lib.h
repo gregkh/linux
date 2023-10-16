@@ -30,8 +30,10 @@ static inline u128 FStar_UInt128_uint64_to_uint128(u64 x)
         return ((u128)x);
 }
 
-/* Loads and stores. These avoid undefined behavior due to unaligned memory
- * accesses, via memcpy. */
+/*
+ * Loads and stores. These avoid undefined behavior due to unaligned memory
+ * accesses, via memcpy.
+ */
 
 #define load32_be(b)     (get_unaligned_be32(b))
 #define store32_be(b, i) put_unaligned_be32(i, b);

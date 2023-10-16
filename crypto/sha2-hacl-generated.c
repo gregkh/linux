@@ -912,11 +912,11 @@ Hacl_Streaming_SHA2_update_384(struct Hacl_Streaming_MD_state_64_s *p,
         return update_384_512(p, input, input_len);
 }
 
-/**
-Write the resulting hash into `dst`, an array of 48 bytes. The state remains
-valid after a call to `finish_384`, meaning the user may feed more data into
-the hash via `update_384`.
-*/
+/*
+ * Write the resulting hash into `dst`, an array of 48 bytes. The state remains
+ * valid after a call to `finish_384`, meaning the user may feed more data into
+ * the hash via `update_384`.
+ */
 void Hacl_Streaming_SHA2_finish_384(struct Hacl_Streaming_MD_state_64_s *p,
                                     uint8_t *dst)
 {

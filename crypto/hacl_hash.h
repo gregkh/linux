@@ -122,34 +122,35 @@ static const uint64_t Hacl_Impl_SHA2_Generic_k384_512[80U] = {
         (uint64_t)0x5fcb6fab3ad6faecU, (uint64_t)0x6c44198c4a475817U
 };
 
-/**
-Reset an existing state to the initial hash state with empty data.
-*/
+/*
+ * Reset an existing state to the initial hash state with empty data.
+ */
 void Hacl_Streaming_SHA2_init_256(struct Hacl_Streaming_MD_state_32_s *s);
 
-/**
-Feed an arbitrary amount of data into the hash. This function returns 0 for
-success, or 1 if the combined length of all of the data passed to `update_256`
-(since the last call to `init_256`) exceeds 2^61-1 bytes.
-
-This function is identical to the update function for SHA2_224.
-*/
+/*
+ * Feed an arbitrary amount of data into the hash. This function returns 0 for
+ * success, or 1 if the combined length of all of the data passed to
+ * `update_256` (since the last call to `init_256`) exceeds 2^61-1 bytes.
+ *
+ * This function is identical to the update function for SHA2_224.
+ */
 Hacl_Streaming_Types_error_code
 Hacl_Streaming_SHA2_update_256(struct Hacl_Streaming_MD_state_32_s *p,
                                uint8_t *input, uint32_t input_len);
 
-/**
-Write the resulting hash into `dst`, an array of 32 bytes. The state remains
-valid after a call to `finish_256`, meaning the user may feed more data into
-the hash via `update_256`. (The finish_256 function operates on an internal copy
-of the state and therefore does not invalidate the client-held state `p`.)
-*/
+/*
+ * Write the resulting hash into `dst`, an array of 32 bytes. The state remains
+ * valid after a call to `finish_256`, meaning the user may feed more data into
+ * the hash via `update_256`. (The finish_256 function operates on an internal
+ * copy of the state and therefore does not invalidate the client-held state
+ * `p`.)
+ */
 void Hacl_Streaming_SHA2_finish_256(struct Hacl_Streaming_MD_state_32_s *p,
                                     uint8_t *dst);
 
-/**
-Hash `input`, of len `input_len`, into `dst`, an array of 32 bytes.
-*/
+/*
+ * Hash `input`, of len `input_len`, into `dst`, an array of 32 bytes.
+ */
 void Hacl_Streaming_SHA2_hash_256(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
 
@@ -159,45 +160,46 @@ Hacl_Streaming_Types_error_code
 Hacl_Streaming_SHA2_update_224(struct Hacl_Streaming_MD_state_32_s *p,
                                uint8_t *input, uint32_t input_len);
 
-/**
-Write the resulting hash into `dst`, an array of 28 bytes. The state remains
-valid after a call to `finish_224`, meaning the user may feed more data into
-the hash via `update_224`.
-*/
+/*
+ * Write the resulting hash into `dst`, an array of 28 bytes. The state remains
+ * valid after a call to `finish_224`, meaning the user may feed more data into
+ * the hash via `update_224`.
+ */
 void Hacl_Streaming_SHA2_finish_224(struct Hacl_Streaming_MD_state_32_s *p,
                                     uint8_t *dst);
 
-/**
-Hash `input`, of len `input_len`, into `dst`, an array of 28 bytes.
-*/
+/*
+ * Hash `input`, of len `input_len`, into `dst`, an array of 28 bytes.
+ */
 void Hacl_Streaming_SHA2_hash_224(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
 
 void Hacl_Streaming_SHA2_init_512(struct Hacl_Streaming_MD_state_64_s *s);
 
-/**
-Feed an arbitrary amount of data into the hash. This function returns 0 for
-success, or 1 if the combined length of all of the data passed to `update_512`
-(since the last call to `init_512`) exceeds 2^125-1 bytes.
-
-This function is identical to the update function for SHA2_384.
-*/
+/*
+ * Feed an arbitrary amount of data into the hash. This function returns 0 for
+ * success, or 1 if the combined length of all of the data passed to
+ * `update_512` (since the last call to `init_512`) exceeds 2^125-1 bytes.
+ *
+ * This function is identical to the update function for SHA2_384.
+ */
 Hacl_Streaming_Types_error_code
 Hacl_Streaming_SHA2_update_512(struct Hacl_Streaming_MD_state_64_s *p,
                                uint8_t *input, uint32_t input_len);
 
-/**
-Write the resulting hash into `dst`, an array of 64 bytes. The state remains
-valid after a call to `finish_512`, meaning the user may feed more data into
-the hash via `update_512`. (The finish_512 function operates on an internal copy
-of the state and therefore does not invalidate the client-held state `p`.)
-*/
+/*
+ * Write the resulting hash into `dst`, an array of 64 bytes. The state remains
+ * valid after a call to `finish_512`, meaning the user may feed more data into
+ * the hash via `update_512`. (The finish_512 function operates on an internal
+ * copy of the state and therefore does not invalidate the client-held state
+ * `p`.)
+ */
 void Hacl_Streaming_SHA2_finish_512(struct Hacl_Streaming_MD_state_64_s *p,
                                     uint8_t *dst);
 
-/**
-Hash `input`, of len `input_len`, into `dst`, an array of 64 bytes.
-*/
+/*
+ * Hash `input`, of len `input_len`, into `dst`, an array of 64 bytes.
+ */
 void Hacl_Streaming_SHA2_hash_512(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
 
@@ -207,16 +209,16 @@ Hacl_Streaming_Types_error_code
 Hacl_Streaming_SHA2_update_384(struct Hacl_Streaming_MD_state_64_s *p,
                                uint8_t *input, uint32_t input_len);
 
-/**
-Write the resulting hash into `dst`, an array of 48 bytes. The state remains
-valid after a call to `finish_384`, meaning the user may feed more data into
-the hash via `update_384`.
-*/
+/*
+ * Write the resulting hash into `dst`, an array of 48 bytes. The state remains
+ * valid after a call to `finish_384`, meaning the user may feed more data into
+ * the hash via `update_384`.
+ */
 void Hacl_Streaming_SHA2_finish_384(struct Hacl_Streaming_MD_state_64_s *p,
                                     uint8_t *dst);
-/**
-Hash `input`, of len `input_len`, into `dst`, an array of 48 bytes.
-*/
+/*
+ * Hash `input`, of len `input_len`, into `dst`, an array of 48 bytes.
+ */
 void Hacl_Streaming_SHA2_hash_384(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
 
