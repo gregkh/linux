@@ -92,6 +92,9 @@ CFLAGS += -g -O2 -rdynamic -pthread -Wall -Werror $(GENFLAGS)			\
 	  -I$(TOOLSINCDIR) -I$(APIDIR)
 
 CARGOFLAGS := --release --target-dir $(OUTPUT_DIR)
+ifneq ($(CARGO_OFFLINE),)
+CARGOFLAGS += --offline
+endif
 
 # Silence some warnings when compiled with clang
 ifneq ($(LLVM),)
@@ -198,13 +201,21 @@ scx_flatcg: scx_flatcg.c scx_flatcg.skel.h $(SCX_COMMON_DEPS)
 scx_userland: scx_userland.c scx_userland.skel.h scx_userland.h $(SCX_COMMON_DEPS)
 	$(call ccsched,$<,$@)
 
-scx_rusty_deps: $(SCX_COMMON_DEPS)
+# Separate build target that is available for build systems to use to fetch
+# dependencies in a separate step from building. This allows the scheduler
+# to be compiled without network access.
+#
+# If the scx_rusty Make target is invoked without CARGO_OFFLINE=1 (e.g. if
+# building locally), then cargo build will download all of the necessary
+# dependencies, and scx_rusty_deps can be skipped.
+scx_rusty_deps:
 	cargo fetch --manifest-path=scx_rusty/Cargo.toml
+
 scx_rusty: export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR)
 scx_rusty: export SCX_RUSTY_CLANG = $(CLANG)
 scx_rusty: export SCX_RUSTY_BPF_CFLAGS = $(BPF_CFLAGS)
-scx_rusty: $(INCLUDE_DIR)/vmlinux.h scx_rusty_deps
-	cargo build --manifest-path=$@/Cargo.toml --offline $(CARGOFLAGS)
+scx_rusty: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
+	cargo build --manifest-path=$@/Cargo.toml $(CARGOFLAGS)
 	$(Q)cp $(OUTPUT_DIR)/release/$@ $(BINDIR)/$@
 
 install: all
@@ -237,6 +248,24 @@ help:
 	@echo  ''
 	@echo  'will compile all schedulers, and emit the build artifacts to'
 	@echo  '/tmp/sched_ext/build.'
+	@echo  ''
+	@echo  ''
+	@echo  'Rust schedulers:'
+	@echo  '  scx_rusty	  - Build the scx_rusty load balancing scheduler.'
+	@echo  '  scx_rusty_deps  - Download the scx_rusty scheduler cargo dependencies.'
+	@echo  ''
+	@echo  'For any cargo rust schedulers built with cargo, you can specify'
+	@echo  'CARGO_OFFLINE=1 to ensure the build portion does not access the'
+	@echo  'network (e.g. if the scheduler is being packaged).'
+	@echo  ''
+	@echo  'For such use cases, the build workflow will look something like this:'
+	@echo  ''
+	@echo  '   make scx_rusty_deps'
+	@echo  '   CARGO_OFFLINE=1 make scx_rusty'
+	@echo  ''
+	@echo  'If network access during build is allowed, you can just make scx_rusty'
+	@echo  'directly without CARGO_OFFLINE, and dependencies will be downloaded'
+	@echo  'during the build step.'
 	@echo  ''
 	@echo  ''
 	@echo  'Installing targets:'
