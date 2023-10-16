@@ -28,4 +28,4 @@ format: check-env
 
 lint: check-env
 	# Tested with cpplint v1.5.5
-	cpplint --filter=-whitespace/braces,-readability/casting ${ALL_FILES}
+	cpplint --filter=-whitespace/braces,-readability/casting,-build/include_subdir ${ALL_FILES}
