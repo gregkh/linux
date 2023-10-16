@@ -1404,6 +1404,12 @@ CONFIG_CRYPTO_TEST=m
 # end of Crypto core or helper
 
 #
+# HACL implementation
+#
+CONFIG_CRYPTO_SHA2_HACL=y
+# end of HACL implementation
+
+#
 # Public-key cryptography
 #
 CONFIG_CRYPTO_RSA=y

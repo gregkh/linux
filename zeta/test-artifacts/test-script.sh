@@ -1,5 +1,11 @@
 #!/bin/busybox sh
 
+echo "tcrypt: starting CRYPTO_SHA2_HACL"
+modprobe tcrypt mode=300 alg=sha224-hacl sec=2
+modprobe tcrypt mode=300 alg=sha256-hacl sec=2
+modprobe tcrypt mode=300 alg=sha384-hacl sec=2
+modprobe tcrypt mode=300 alg=sha512-hacl sec=2
+
 echo "tcrypt: starting SHA2 (256) test"
 echo "tcrypt: testing sha256 generic implementation"
 modprobe tcrypt mode=300 alg=sha256-generic sec=2
