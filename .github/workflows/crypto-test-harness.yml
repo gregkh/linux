@@ -3,7 +3,6 @@ name: Linux
 
 on:
   pull_request:
-    branches: ["cf-zeta"]
   workflow_dispatch:
 
 jobs:
