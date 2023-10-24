@@ -40,6 +40,11 @@ static inline u128 FStar_UInt128_uint64_to_uint128(u64 x)
 #define load64_be(b)     (get_unaligned_be64(b))
 #define store64_be(b, i) put_unaligned_be64(i, b);
 
+#define load32_le(b)     (get_unaligned_le32(b))
+#define store32_le(b, i) put_unaligned_le32(i, b);
+#define load64_le(b)     (get_unaligned_le64(b))
+#define store64_le(b, i) put_unaligned_le64(i, b);
+
 static inline void store128_be(u8 *buf, u128 x)
 {
         store64_be(buf, (u64)(x >> 64));
@@ -228,6 +233,10 @@ static inline void store128_be(u8 *buf, u128 x)
 #define KRML_MAYBE_FOR16(i, z, n, k, x) KRML_UNROLL_FOR(i, z, 16, k, x)
 #else
 #define KRML_MAYBE_FOR16(i, z, n, k, x) KRML_ACTUAL_FOR(i, z, n, k, x)
+#endif
+
+#ifndef KRML_HOST_IGNORE
+#define KRML_HOST_IGNORE(x) (void)(x)
 #endif
 
 #endif  // CRYPTO_HACL_LIB_H_

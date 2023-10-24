@@ -1044,6 +1044,12 @@ config CRYPTO_SHA3
 	help
 	  SHA-3 secure hash algorithms (FIPS 202, ISO/IEC 10118-3)
 
+config CRYPTO_SHA3_HACL
+	tristate "SHA-3"
+	select CRYPTO_HASH
+	help
+	  SHA-3 secure hash algorithms (FIPS 202, ISO/IEC 10118-3) from HACL*
+
 config CRYPTO_SM3
 	tristate
 

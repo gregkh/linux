@@ -9,6 +9,15 @@
 
 #include "hacl_lib.h"
 
+#define Spec_Hash_Definitions_SHA3_256 8
+#define Spec_Hash_Definitions_SHA3_224 9
+#define Spec_Hash_Definitions_SHA3_384 10
+#define Spec_Hash_Definitions_SHA3_512 11
+#define Spec_Hash_Definitions_Shake128 12
+#define Spec_Hash_Definitions_Shake256 13
+
+typedef uint8_t Spec_Hash_Definitions_hash_alg;
+
 #define Hacl_Streaming_Types_Success               0
 #define Hacl_Streaming_Types_InvalidAlgorithm      1
 #define Hacl_Streaming_Types_InvalidLength         2
@@ -221,5 +230,38 @@ void Hacl_Streaming_SHA2_finish_384(struct Hacl_Streaming_MD_state_64_s *p,
  */
 void Hacl_Streaming_SHA2_hash_384(uint8_t *input, uint32_t input_len,
                                   uint8_t *dst);
+
+struct Hacl_Streaming_Keccak_hash_buf_s {
+        Spec_Hash_Definitions_hash_alg fst;
+        uint64_t *snd;
+};
+
+struct Hacl_Streaming_Keccak_state_s {
+        struct Hacl_Streaming_Keccak_hash_buf_s block_state;
+        uint8_t *buf;
+        uint64_t total_len;
+};
+
+Hacl_Streaming_Types_error_code
+Hacl_Streaming_Keccak_update(struct Hacl_Streaming_Keccak_state_s *p,
+                             uint8_t *data, uint32_t len);
+
+Hacl_Streaming_Types_error_code
+Hacl_Streaming_Keccak_finish(struct Hacl_Streaming_Keccak_state_s *p,
+                             uint8_t *out);
+
+void Hacl_SHA3_shake128_hacl(uint32_t inputByteLen, uint8_t *input,
+                             uint32_t outputByteLen, uint8_t *output);
+
+void Hacl_SHA3_shake256_hacl(uint32_t inputByteLen, uint8_t *input,
+                             uint32_t outputByteLen, uint8_t *output);
+
+void Hacl_SHA3_sha3_224(uint32_t inputByteLen, uint8_t *input, uint8_t *output);
+
+void Hacl_SHA3_sha3_256(uint32_t inputByteLen, uint8_t *input, uint8_t *output);
+
+void Hacl_SHA3_sha3_384(uint32_t inputByteLen, uint8_t *input, uint8_t *output);
+
+void Hacl_SHA3_sha3_512(uint32_t inputByteLen, uint8_t *input, uint8_t *output);
 
 #endif  // CRYPTO_HACL_HASH_H_
