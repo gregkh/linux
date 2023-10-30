@@ -7,3 +7,4 @@ scx_userland
 *.skel.h
 *.subskel.h
 /tools/
+build/
