@@ -358,9 +358,13 @@ clang than what's supported (i.e. older than 16.0.0). To remediate this:
 
 1. `which clang` to make sure you're using a sufficiently new version of clang.
 
-2. `make mrproper` in the root path of the repository, and rebuild the kernel.
+2. `make fullclean` in the root path of the repository, and rebuild the kernel
+   and schedulers.
 
-3. `make clean` in the example scheduler directory and rebuild the schedulers.
+3. Rebuild the kernel, and then your example schedulers.
+
+The schedulers are also cleaned if you invoke `make mrproper` in the root
+directory of the tree.
 
 ### Stale kernel build / incomplete vmlinux.h file
 

@@ -228,6 +228,9 @@ clean:
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
 	rm -f scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland
 
+fullclean: clean
+	$(Q)$(MAKE) -sC ../../ clean
+
 help:
 	@echo  'Building targets:'
 	@echo  '  all		  - Compile all schedulers'
@@ -282,8 +285,12 @@ help:
 	@echo  'Cleaning targets:'
 	@echo  '  clean		  - Remove all generated files, including intermediate'
 	@echo  '                    rust files for rust schedulers.'
+	@echo  ''
+	@echo  '  fullclean	  - Remove all generated files, including intermediate'
+	@echo  '                    rust files for rust schedulers, and also trigger a'
+	@echo  '                    clean of the kernel at the root of the whole repository.'
 
-.PHONY: all scx_rusty clean help
+.PHONY: all scx_rusty clean fullclean help
 
 # delete failed targets
 .DELETE_ON_ERROR:
