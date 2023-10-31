@@ -126,7 +126,7 @@ BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH)					\
 	     -Wall -Wno-compare-distinct-pointer-types				\
 	     -O2 -mcpu=v3
 
-all: scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland scx_rusty
+all: scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland scx_rusty scx_layered
 
 # sort removes libbpf duplicates when not cross-building
 MAKE_DIRS := $(sort $(OBJ_DIR)/libbpf $(HOST_BUILD_DIR)/libbpf		\
@@ -218,12 +218,23 @@ scx_rusty: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
 	cargo build --manifest-path=$@/Cargo.toml $(CARGOFLAGS)
 	$(Q)cp $(OUTPUT_DIR)/release/$@ $(BINDIR)/$@
 
+scx_layered_deps:
+	cargo fetch --manifest-path=scx_layered/Cargo.toml
+
+scx_layered: export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR)
+scx_layered: export SCX_LAYERED_CLANG = $(CLANG)
+scx_layered: export SCX_LAYERED_BPF_CFLAGS = $(BPF_CFLAGS)
+scx_layered: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
+	cargo build --manifest-path=$@/Cargo.toml $(CARGOFLAGS)
+	$(Q)cp $(OUTPUT_DIR)/release/$@ $(BINDIR)/$@
+
 install: all
 	$(Q)mkdir -p $(DESTDIR)/usr/bin/
 	$(Q)cp $(BINDIR)/* $(DESTDIR)/usr/bin/
 
 clean:
 	cargo clean --manifest-path=scx_rusty/Cargo.toml
+	cargo clean --manifest-path=scx_layered/Cargo.toml
 	rm -rf $(OUTPUT_DIR) $(HOST_OUTPUT_DIR)
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
 	rm -f scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland
@@ -243,6 +254,7 @@ help:
 	@echo  '  scx_flatcg'
 	@echo  '  scx_userland'
 	@echo  '  scx_rusty'
+	@echo  '  scx_layered'
 	@echo  ''
 	@echo  'For any scheduler build target, you may specify an alternative'
 	@echo  'build output path with the O= environment variable. For example:'
@@ -254,8 +266,10 @@ help:
 	@echo  ''
 	@echo  ''
 	@echo  'Rust schedulers:'
-	@echo  '  scx_rusty	  - Build the scx_rusty load balancing scheduler.'
-	@echo  '  scx_rusty_deps  - Download the scx_rusty scheduler cargo dependencies.'
+	@echo  '  scx_rusty	   - Build the scx_rusty scheduler.'
+	@echo  '  scx_rusty_deps   - Download the scx_rusty scheduler cargo dependencies.'
+	@echo  '  scx_layered	   - Build the scx_layered scheduler.'
+	@echo  '  scx_layered_deps - Download the scx_layered scheduler cargo dependencies.'
 	@echo  ''
 	@echo  'For any cargo rust schedulers built with cargo, you can specify'
 	@echo  'CARGO_OFFLINE=1 to ensure the build portion does not access the'
@@ -290,7 +304,7 @@ help:
 	@echo  '                    rust files for rust schedulers, and also trigger a'
 	@echo  '                    clean of the kernel at the root of the whole repository.'
 
-.PHONY: all scx_rusty clean fullclean help
+.PHONY: all scx_rusty scx_layered clean fullclean help
 
 # delete failed targets
 .DELETE_ON_ERROR:

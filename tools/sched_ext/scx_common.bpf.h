@@ -123,9 +123,9 @@ BPF_PROG(name, ##args)
  *		return error;
  *	*vptr = new_value;
  */
-#define MEMBER_VPTR(base, member) (typeof(base member) *)({			\
-	u64 __base = (u64)base;							\
-	u64 __addr = (u64)&(base member) - __base;				\
+#define MEMBER_VPTR(base, member) (typeof((base) member) *)({			\
+	u64 __base = (u64)&(base);						\
+	u64 __addr = (u64)&((base) member) - __base;				\
 	asm volatile (								\
 		"if %0 <= %[max] goto +2\n"					\
 		"%0 = 0\n"							\
@@ -133,7 +133,7 @@ BPF_PROG(name, ##args)
 		"%0 += %1\n"							\
 		: "+r"(__addr)							\
 		: "r"(__base),							\
-		  [max]"i"(sizeof(base) - sizeof(base member)));		\
+		  [max]"i"(sizeof(base) - sizeof((base) member)));		\
 	__addr;									\
 })
 
