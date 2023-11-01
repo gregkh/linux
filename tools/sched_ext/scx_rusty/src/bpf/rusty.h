@@ -49,6 +49,7 @@ struct task_ctx {
 	unsigned int dom_id;
 	unsigned int weight;
 	unsigned long long runnable_at;
+	unsigned long long running_at;
 	unsigned long long runnable_for;
 
 	/* The task is a workqueue worker thread */

@@ -681,8 +681,10 @@ void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
 		scx_bpf_error("Failed to lookup task_ctx");
 		return;
 	}
-	dom_id = taskc->dom_id;
 
+	taskc->running_at = bpf_ktime_get_ns();
+
+	dom_id = taskc->dom_id;
 	domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
 	if (!domc) {
 		scx_bpf_error("Failed to lookup dom[%u]", dom_id);
@@ -701,11 +703,20 @@ void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
 
 void BPF_STRUCT_OPS(rusty_stopping, struct task_struct *p, bool runnable)
 {
+	struct task_ctx *taskc;
+	pid_t pid = p->pid;
+
 	if (fifo_sched)
 		return;
 
+	if (!(taskc = bpf_map_lookup_elem(&task_data, &pid))) {
+		scx_bpf_error("Failed to lookup task_ctx");
+		return;
+	}
+
 	/* scale the execution time by the inverse of the weight and charge */
-	p->scx.dsq_vtime += (slice_ns - p->scx.slice) * 100 / p->scx.weight;
+	p->scx.dsq_vtime +=
+		(bpf_ktime_get_ns() - taskc->running_at) * 100 / p->scx.weight;
 }
 
 void BPF_STRUCT_OPS(rusty_quiescent, struct task_struct *p, u64 deq_flags)
@@ -792,7 +803,9 @@ void BPF_STRUCT_OPS(rusty_set_cpumask, struct task_struct *p,
 
 	task_pick_and_set_domain(task_ctx, p, cpumask, false);
 	if (all_cpumask)
-		task_ctx->all_cpus = bpf_cpumask_subset(all_cpumask, cpumask);
+		task_ctx->all_cpus =
+			bpf_cpumask_subset((const struct cpumask *)all_cpumask,
+					   cpumask);
 }
 
 s32 BPF_STRUCT_OPS(rusty_prep_enable, struct task_struct *p,
