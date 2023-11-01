@@ -13,6 +13,10 @@
 #define __kptr
 #endif
 
+typedef unsigned char u8;
+typedef unsigned int u32;
+typedef unsigned long long u64;
+
 #define	MAX_CPUS 512
 #define	MAX_DOMS 64 /* limited to avoid complex bitmask ops */
 #define	CACHELINE_SIZE 64
@@ -43,14 +47,14 @@ enum stat_idx {
 
 struct task_ctx {
 	/* The domains this task can run on */
-	unsigned long long dom_mask;
+	u64 dom_mask;
 
 	struct bpf_cpumask __kptr *cpumask;
-	unsigned int dom_id;
-	unsigned int weight;
-	unsigned long long runnable_at;
-	unsigned long long running_at;
-	unsigned long long runnable_for;
+	u32 dom_id;
+	u32 weight;
+	u64 runnable_at;
+	u64 running_at;
+	u64 runnable_for;
 
 	/* The task is a workqueue worker thread */
 	bool is_kworker;
@@ -60,6 +64,12 @@ struct task_ctx {
 
 	/* select_cpu() telling enqueue() to queue directly on the DSQ */
 	bool dispatch_local;
+};
+
+struct dom_ctx {
+	struct bpf_cpumask __kptr *cpumask;
+	struct bpf_cpumask __kptr *direct_greedy_cpumask;
+	u64 vtime_now;
 };
 
 #endif /* __RUSTY_H */

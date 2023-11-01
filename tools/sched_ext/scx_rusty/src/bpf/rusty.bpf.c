@@ -55,18 +55,18 @@ char _license[] SEC("license") = "GPL";
 /*
  * Domains and cpus
  */
-const volatile __u32 nr_doms = 32;	/* !0 for veristat, set during init */
-const volatile __u32 nr_cpus = 64;	/* !0 for veristat, set during init */
-const volatile __u32 cpu_dom_id_map[MAX_CPUS];
-const volatile __u64 dom_cpumasks[MAX_DOMS][MAX_CPUS / 64];
+const volatile u32 nr_doms = 32;	/* !0 for veristat, set during init */
+const volatile u32 nr_cpus = 64;	/* !0 for veristat, set during init */
+const volatile u32 cpu_dom_id_map[MAX_CPUS];
+const volatile u64 dom_cpumasks[MAX_DOMS][MAX_CPUS / 64];
 
 const volatile bool kthreads_local;
 const volatile bool fifo_sched;
 const volatile bool switch_partial;
-const volatile __u32 greedy_threshold;
+const volatile u32 greedy_threshold;
 
 /* base slice duration */
-const volatile __u64 slice_ns = SCX_SLICE_DFL;
+const volatile u64 slice_ns = SCX_SLICE_DFL;
 
 /*
  * Exit info
@@ -78,10 +78,10 @@ char exit_msg[SCX_EXIT_MSG_LEN];
  * Per-CPU context
  */
 struct pcpu_ctx {
-	__u32 dom_rr_cur; /* used when scanning other doms */
+	u32 dom_rr_cur; /* used when scanning other doms */
 
 	/* libbpf-rs does not respect the alignment, so pad out the struct explicitly */
-	__u8 _padding[CACHELINE_SIZE - sizeof(u32)];
+	u8 _padding[CACHELINE_SIZE - sizeof(u32)];
 } __attribute__((aligned(CACHELINE_SIZE)));
 
 struct pcpu_ctx pcpu_ctx[MAX_CPUS];
@@ -89,12 +89,6 @@ struct pcpu_ctx pcpu_ctx[MAX_CPUS];
 /*
  * Domain context
  */
-struct dom_ctx {
-	struct bpf_cpumask __kptr *cpumask;
-	struct bpf_cpumask __kptr *direct_greedy_cpumask;
-	u64 vtime_now;
-};
-
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__type(key, u32);
@@ -162,12 +156,12 @@ struct {
  * that can be used directly in the scheduling paths.
  */
 struct tune_input{
-	__u64 gen;
-	__u64 direct_greedy_cpumask[MAX_CPUS / 64];
-	__u64 kick_greedy_cpumask[MAX_CPUS / 64];
+	u64 gen;
+	u64 direct_greedy_cpumask[MAX_CPUS / 64];
+	u64 kick_greedy_cpumask[MAX_CPUS / 64];
 } tune_input;
 
-__u64 tune_params_gen;
+u64 tune_params_gen;
 private(A) struct bpf_cpumask __kptr *all_cpumask;
 private(A) struct bpf_cpumask __kptr *direct_greedy_cpumask;
 private(A) struct bpf_cpumask __kptr *kick_greedy_cpumask;
@@ -884,7 +878,7 @@ static s32 create_dom(u32 dom_id)
 	}
 
 	for (cpu = 0; cpu < MAX_CPUS; cpu++) {
-		const volatile __u64 *dmask;
+		const volatile u64 *dmask;
 
 		dmask = MEMBER_VPTR(dom_cpumasks, [dom_id][cpu / 64]);
 		if (!dmask) {
