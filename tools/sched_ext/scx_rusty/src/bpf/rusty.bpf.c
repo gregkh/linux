@@ -36,6 +36,7 @@
  * load balance based on userspace populating the lb_data map.
  */
 #include "../../../scx_common.bpf.h"
+#include "../../../scx_ravg_impl.bpf.h"
 #include "rusty.h"
 
 #include <errno.h>
@@ -96,6 +97,41 @@ struct {
 	__uint(max_entries, MAX_DOMS);
 	__uint(map_flags, 0);
 } dom_ctx SEC(".maps");
+
+struct dom_load {
+	struct bpf_spin_lock lock;
+	u64 load;
+	struct ravg_data ravg_data;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, u32);
+	__type(value, struct dom_load);
+	__uint(max_entries, MAX_DOMS);
+	__uint(map_flags, 0);
+} dom_load SEC(".maps");
+
+const u64 ravg_1 = 1 << RAVG_FRAC_BITS;
+
+static void adj_dom_load(u32 dom_id, s64 adj, u64 now)
+{
+	struct dom_load *load;
+
+	if (!(load = bpf_map_lookup_elem(&dom_load, &dom_id))) {
+		scx_bpf_error("no dom_load for dom %u", dom_id);
+		return;
+	}
+
+	bpf_spin_lock(&load->lock);
+	load->load += adj;
+	ravg_accumulate(&load->ravg_data, load->load, now, USAGE_HALF_LIFE);
+	bpf_spin_unlock(&load->lock);
+
+	if (adj < 0 && (s64)load->load < 0)
+		scx_bpf_error("cpu%d dom%u load underflow (load=%lld adj=%lld)",
+			      bpf_get_smp_processor_id(), dom_id, load->load, adj);
+}
 
 /*
  * Statistics
@@ -225,12 +261,12 @@ static void refresh_tune_params(void)
 	}
 }
 
-static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
+static bool task_set_domain(struct task_ctx *taskc, struct task_struct *p,
 			    u32 new_dom_id, bool init_dsq_vtime)
 {
 	struct dom_ctx *old_domc, *new_domc;
 	struct bpf_cpumask *d_cpumask, *t_cpumask;
-	u32 old_dom_id = task_ctx->dom_id;
+	u32 old_dom_id = taskc->dom_id;
 	s64 vtime_delta;
 
 	old_domc = bpf_map_lookup_elem(&dom_ctx, &old_dom_id);
@@ -257,7 +293,7 @@ static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
 		return false;
 	}
 
-	t_cpumask = task_ctx->cpumask;
+	t_cpumask = taskc->cpumask;
 	if (!t_cpumask) {
 		scx_bpf_error("Failed to look up task cpumask");
 		return false;
@@ -269,13 +305,21 @@ static bool task_set_domain(struct task_ctx *task_ctx, struct task_struct *p,
 	 */
 	if (bpf_cpumask_intersects((const struct cpumask *)d_cpumask,
 				   p->cpus_ptr)) {
+		u64 now = bpf_ktime_get_ns();
+
+		if (taskc->runnable)
+			adj_dom_load(taskc->dom_id, -(s64)p->scx.weight, now);
+
 		p->scx.dsq_vtime = new_domc->vtime_now + vtime_delta;
-		task_ctx->dom_id = new_dom_id;
+		taskc->dom_id = new_dom_id;
 		bpf_cpumask_and(t_cpumask, (const struct cpumask *)d_cpumask,
 				p->cpus_ptr);
+
+		if (taskc->runnable)
+			adj_dom_load(taskc->dom_id, p->scx.weight, now);
 	}
 
-	return task_ctx->dom_id == new_dom_id;
+	return taskc->dom_id == new_dom_id;
 }
 
 s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
@@ -657,13 +701,17 @@ void BPF_STRUCT_OPS(rusty_dispatch, s32 cpu, struct task_struct *prev)
 
 void BPF_STRUCT_OPS(rusty_runnable, struct task_struct *p, u64 enq_flags)
 {
+	u64 now = bpf_ktime_get_ns();
 	struct task_ctx *taskc;
 
 	if (!(taskc = lookup_task_ctx(p)))
 		return;
 
+	taskc->runnable = true;
 	taskc->runnable_at = bpf_ktime_get_ns();
 	taskc->is_kworker = p->flags & PF_WQ_WORKER;
+
+	adj_dom_load(taskc->dom_id, p->scx.weight, now);
 }
 
 void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
@@ -714,13 +762,17 @@ void BPF_STRUCT_OPS(rusty_stopping, struct task_struct *p, bool runnable)
 
 void BPF_STRUCT_OPS(rusty_quiescent, struct task_struct *p, u64 deq_flags)
 {
+	u64 now = bpf_ktime_get_ns();
 	struct task_ctx *taskc;
 
 	if (!(taskc = lookup_task_ctx(p)))
 		return;
 
-	taskc->runnable_for += bpf_ktime_get_ns() - taskc->runnable_at;
+	taskc->runnable = false;
+	taskc->runnable_for += now - taskc->runnable_at;
 	taskc->runnable_at = 0;
+
+	adj_dom_load(taskc->dom_id, -(s64)p->scx.weight, now);
 }
 
 void BPF_STRUCT_OPS(rusty_set_weight, struct task_struct *p, u32 weight)

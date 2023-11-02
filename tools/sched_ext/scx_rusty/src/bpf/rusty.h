@@ -17,9 +17,12 @@ typedef unsigned char u8;
 typedef unsigned int u32;
 typedef unsigned long long u64;
 
-#define	MAX_CPUS 512
-#define	MAX_DOMS 64 /* limited to avoid complex bitmask ops */
-#define	CACHELINE_SIZE 64
+#include "../../../scx_ravg.bpf.h"
+
+#define	MAX_CPUS	512
+#define	MAX_DOMS	64		/* limited to avoid complex bitmask ops */
+#define	CACHELINE_SIZE	64
+#define USAGE_HALF_LIFE	1000000000	/* 1s */
 
 /* Statistics */
 enum stat_idx {
@@ -52,6 +55,7 @@ struct task_ctx {
 	struct bpf_cpumask __kptr *cpumask;
 	u32 dom_id;
 	u32 weight;
+	bool runnable;
 	u64 runnable_at;
 	u64 running_at;
 	u64 runnable_for;
