@@ -179,6 +179,8 @@ static RAVG_FN_ATTRS int ravg_transfer(struct ravg_data *base, struct ravg_data 
 		else
 			base->cur = 0;
 	}
+
+	return 0;
 }
 
 /**
@@ -221,6 +223,22 @@ __u64 u64_x_u32_rshift(__u64 a, __u32 b, __u32 rshift)
 		ah >>= rshift - 32;
 
 	return al + ah;
+}
+
+/**
+ * ravg_scale - Scale a running avg
+ * @rd: ravg_data to scale
+ * @mult: multipler
+ * @rshift: right shift amount
+ *
+ * Scale @rd by multiplying the tracked values by @mult and shifting right by
+ * @rshift.
+ */
+static RAVG_FN_ATTRS void ravg_scale(struct ravg_data *rd, u32 mult, u32 rshift)
+{
+	rd->val = u64_x_u32_rshift(rd->val, mult, rshift);
+	rd->old = u64_x_u32_rshift(rd->old, mult, rshift);
+	rd->cur = u64_x_u32_rshift(rd->cur, mult, rshift);
 }
 
 /**

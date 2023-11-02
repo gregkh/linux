@@ -68,6 +68,8 @@ struct task_ctx {
 
 	/* select_cpu() telling enqueue() to queue directly on the DSQ */
 	bool dispatch_local;
+
+	struct ravg_data dcyc_rd;
 };
 
 struct dom_ctx {

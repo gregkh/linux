@@ -101,7 +101,7 @@ struct {
 struct dom_load {
 	struct bpf_spin_lock lock;
 	u64 load;
-	struct ravg_data ravg_data;
+	struct ravg_data load_rd;
 };
 
 struct {
@@ -125,12 +125,56 @@ static void dom_load_adj(u32 dom_id, s64 adj, u64 now)
 
 	bpf_spin_lock(&load->lock);
 	load->load += adj;
-	ravg_accumulate(&load->ravg_data, load->load, now, USAGE_HALF_LIFE);
+	ravg_accumulate(&load->load_rd, load->load, now, USAGE_HALF_LIFE);
 	bpf_spin_unlock(&load->lock);
 
 	if (adj < 0 && (s64)load->load < 0)
 		scx_bpf_error("cpu%d dom%u load underflow (load=%lld adj=%lld)",
 			      bpf_get_smp_processor_id(), dom_id, load->load, adj);
+}
+
+static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
+			       u32 from_dom_id, u32 to_dom_id, u64 now)
+{
+	struct dom_load *from_load, *to_load;
+	struct ravg_data task_load_rd;
+	int ret;
+
+	from_load = bpf_map_lookup_elem(&dom_load, &from_dom_id);
+	to_load = bpf_map_lookup_elem(&dom_load, &to_dom_id);
+	if (!from_load || !to_load) {
+		scx_bpf_error("dom_load lookup failed");
+		return;
+	}
+
+	/*
+	 * @p is moving from @from_dom_id to @to_dom_id. Its load contribution
+	 * should be moved together. We only track duty cycle for tasks. Scale
+	 * it by weight to get load_rd.
+	 */
+	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, USAGE_HALF_LIFE);
+	task_load_rd = taskc->dcyc_rd;
+	ravg_scale(&task_load_rd, p->scx.weight, 0);
+
+	/* transfer out of @from_dom_id */
+	bpf_spin_lock(&from_load->lock);
+	if (taskc->runnable)
+		from_load->load -= p->scx.weight;
+	ravg_accumulate(&from_load->load_rd, from_load->load, now, USAGE_HALF_LIFE);
+	ret = ravg_transfer(&from_load->load_rd, &task_load_rd, false);
+	bpf_spin_unlock(&from_load->lock);
+	if (ret < 0)
+		scx_bpf_error("Failed to transfer out load");
+
+	/* transfer into @to_dom_id */
+	bpf_spin_lock(&to_load->lock);
+	if (taskc->runnable)
+		to_load->load += p->scx.weight;
+	ravg_accumulate(&to_load->load_rd, to_load->load, now, USAGE_HALF_LIFE);
+	ret = ravg_transfer(&to_load->load_rd, &task_load_rd, true);
+	bpf_spin_unlock(&to_load->lock);
+	if (ret < 0)
+		scx_bpf_error("Failed to transfer in load");
 }
 
 /*
@@ -307,16 +351,12 @@ static bool task_set_domain(struct task_ctx *taskc, struct task_struct *p,
 				   p->cpus_ptr)) {
 		u64 now = bpf_ktime_get_ns();
 
-		if (taskc->runnable)
-			dom_load_adj(taskc->dom_id, -(s64)p->scx.weight, now);
+		dom_load_xfer_task(p, taskc, taskc->dom_id, new_dom_id, now);
 
 		p->scx.dsq_vtime = new_domc->vtime_now + vtime_delta;
 		taskc->dom_id = new_dom_id;
 		bpf_cpumask_and(t_cpumask, (const struct cpumask *)d_cpumask,
 				p->cpus_ptr);
-
-		if (taskc->runnable)
-			dom_load_adj(taskc->dom_id, p->scx.weight, now);
 	}
 
 	return taskc->dom_id == new_dom_id;
@@ -711,6 +751,7 @@ void BPF_STRUCT_OPS(rusty_runnable, struct task_struct *p, u64 enq_flags)
 	taskc->runnable_at = bpf_ktime_get_ns();
 	taskc->is_kworker = p->flags & PF_WQ_WORKER;
 
+	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, USAGE_HALF_LIFE);
 	dom_load_adj(taskc->dom_id, p->scx.weight, now);
 }
 
@@ -772,6 +813,7 @@ void BPF_STRUCT_OPS(rusty_quiescent, struct task_struct *p, u64 deq_flags)
 	taskc->runnable_for += now - taskc->runnable_at;
 	taskc->runnable_at = 0;
 
+	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, USAGE_HALF_LIFE);
 	dom_load_adj(taskc->dom_id, -(s64)p->scx.weight, now);
 }
 
