@@ -17,7 +17,7 @@ typedef unsigned char u8;
 typedef unsigned int u32;
 typedef unsigned long long u64;
 
-#include "../../../scx_ravg.bpf.h"
+#include "../../../ravg.bpf.h"
 
 #define	MAX_CPUS	512
 #define	MAX_DOMS	64		/* limited to avoid complex bitmask ops */

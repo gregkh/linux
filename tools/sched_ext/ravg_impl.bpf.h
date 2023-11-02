@@ -1,5 +1,5 @@
 /* to be included in the main bpf.c file */
-#include "scx_ravg.bpf.h"
+#include "ravg.bpf.h"
 
 #define RAVG_FN_ATTRS		inline __attribute__((unused, always_inline))
 //#define RAVG_FN_ATTRS		__attribute__((unused))
@@ -145,6 +145,43 @@ out:
 }
 
 /**
+ * ravg_transfer - Transfer in or out a component running avg
+ * @base: ravg_data to transfer @xfer into or out of
+ * @xfer: ravg_data to transfer
+ * @is_xfer_in: transfer direction
+ *
+ * An ravg may be a sum of component ravgs. For example, a scheduling domain's
+ * load is the sum of the load values of all member tasks. If a task is migrated
+ * to a different domain, its contribution should be subtracted from the source
+ * ravg and added to the destination one.
+ *
+ * This function can be used for such component transfers. Both @base and @xfer
+ * must have been accumulated at the same timestamp. @xfer's contribution is
+ * subtracted if @is_fer_in is %false and added if %true.
+ */
+static RAVG_FN_ATTRS int ravg_transfer(struct ravg_data *base, struct ravg_data *xfer,
+				       bool is_xfer_in)
+{
+	if (base->val_at != xfer->val_at)
+		return -EINVAL;
+
+	if (is_xfer_in) {
+		base->old += xfer->old;
+		base->cur += xfer->cur;
+	} else {
+		if (base->old > xfer->old)
+			base->old -= xfer->old;
+		else
+			base->old = 0;
+
+		if (base->cur > xfer->cur)
+			base->cur -= xfer->cur;
+		else
+			base->cur = 0;
+	}
+}
+
+/**
  * u64_x_u32_rshift - Calculate ((u64 * u32) >> rshift)
  * @a: multiplicand
  * @b: multiplier
@@ -154,7 +191,8 @@ out:
  * u64 and @b is u32 and (@a * @b) may be bigger than #U64_MAX. The caller must
  * ensure that the final shifted result fits in u64.
  */
-static __u64 u64_x_u32_rshift(__u64 a, __u32 b, __u32 rshift)
+static inline __attribute__((always_inline))
+__u64 u64_x_u32_rshift(__u64 a, __u32 b, __u32 rshift)
 {
 	const __u64 mask32 = (__u32)-1;
 	__u64 al = a & mask32;

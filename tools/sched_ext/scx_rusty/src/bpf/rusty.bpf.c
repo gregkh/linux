@@ -36,7 +36,7 @@
  * load balance based on userspace populating the lb_data map.
  */
 #include "../../../scx_common.bpf.h"
-#include "../../../scx_ravg_impl.bpf.h"
+#include "../../../ravg_impl.bpf.h"
 #include "rusty.h"
 
 #include <errno.h>
@@ -114,7 +114,7 @@ struct {
 
 const u64 ravg_1 = 1 << RAVG_FRAC_BITS;
 
-static void adj_dom_load(u32 dom_id, s64 adj, u64 now)
+static void dom_load_adj(u32 dom_id, s64 adj, u64 now)
 {
 	struct dom_load *load;
 
@@ -308,7 +308,7 @@ static bool task_set_domain(struct task_ctx *taskc, struct task_struct *p,
 		u64 now = bpf_ktime_get_ns();
 
 		if (taskc->runnable)
-			adj_dom_load(taskc->dom_id, -(s64)p->scx.weight, now);
+			dom_load_adj(taskc->dom_id, -(s64)p->scx.weight, now);
 
 		p->scx.dsq_vtime = new_domc->vtime_now + vtime_delta;
 		taskc->dom_id = new_dom_id;
@@ -316,7 +316,7 @@ static bool task_set_domain(struct task_ctx *taskc, struct task_struct *p,
 				p->cpus_ptr);
 
 		if (taskc->runnable)
-			adj_dom_load(taskc->dom_id, p->scx.weight, now);
+			dom_load_adj(taskc->dom_id, p->scx.weight, now);
 	}
 
 	return taskc->dom_id == new_dom_id;
@@ -711,7 +711,7 @@ void BPF_STRUCT_OPS(rusty_runnable, struct task_struct *p, u64 enq_flags)
 	taskc->runnable_at = bpf_ktime_get_ns();
 	taskc->is_kworker = p->flags & PF_WQ_WORKER;
 
-	adj_dom_load(taskc->dom_id, p->scx.weight, now);
+	dom_load_adj(taskc->dom_id, p->scx.weight, now);
 }
 
 void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
@@ -772,7 +772,7 @@ void BPF_STRUCT_OPS(rusty_quiescent, struct task_struct *p, u64 deq_flags)
 	taskc->runnable_for += now - taskc->runnable_at;
 	taskc->runnable_at = 0;
 
-	adj_dom_load(taskc->dom_id, -(s64)p->scx.weight, now);
+	dom_load_adj(taskc->dom_id, -(s64)p->scx.weight, now);
 }
 
 void BPF_STRUCT_OPS(rusty_set_weight, struct task_struct *p, u32 weight)
