@@ -1207,10 +1207,10 @@ impl<'a> Scheduler<'a> {
         );
 
         lb.read_dom_loads()?;
-        lb.read_task_loads(started_at.duration_since(self.prev_at))?;
         lb.calculate_dom_load_balance()?;
 
-        if self.balance_load {
+        if self.balance_load && lb.doms_to_push.len() > 0 {
+            lb.read_task_loads(started_at.duration_since(self.prev_at))?;
             lb.load_balance()?;
         }
 
