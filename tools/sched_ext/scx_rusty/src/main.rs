@@ -136,7 +136,7 @@ struct Opts {
 
 fn ravg_read(rd: &rusty_sys::ravg_data, now: u64, half_life: u64) -> f64 {
     const RAVG_1: f64 = (1 << rusty_sys::ravg_consts_RAVG_FRAC_BITS) as f64;
-    let val = rd.val as f64 / RAVG_1;
+    let val = rd.val as f64;
     let val_at = rd.val_at;
     let mut old = rd.old as f64 / RAVG_1;
     let mut cur = rd.cur as f64 / RAVG_1;
@@ -621,8 +621,6 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         let now_mono = now_monotonic();
         let task_data = self.maps.task_data();
         let mut this_task_loads = BTreeMap::<i32, TaskLoad>::new();
-        let mut load_sum = 0.0f64;
-        self.dom_loads = vec![0f64; self.top.nr_doms];
 
         for key in task_data.keys() {
             if let Some(task_ctx_vec) = task_data
@@ -680,8 +678,6 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                     },
                 );
 
-                load_sum += this_load;
-                self.dom_loads[task_ctx.dom_id as usize] += this_load;
                 // Only record pids that are eligible for load balancing
                 if task_ctx.dom_mask == (1u64 << task_ctx.dom_id) {
                     continue;
@@ -698,7 +694,6 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
             }
         }
 
-        self.load_avg = load_sum / self.top.nr_doms as f64;
         *self.task_loads = this_task_loads;
         Ok(())
     }
@@ -706,9 +701,10 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
     fn read_dom_loads(&mut self) -> Result<()> {
         let now_mono = now_monotonic();
         let dom_data = self.maps.dom_data();
+	let mut load_sum = 0.0f64;
 
         for i in 0..self.top.nr_doms {
-	    let key = unsafe { std::mem::transmute::<u32, [u8; 4]>(i as u32) };
+            let key = unsafe { std::mem::transmute::<u32, [u8; 4]>(i as u32) };
 
             if let Some(dom_ctx_map_elem) = dom_data
                 .lookup(&key, libbpf_rs::MapFlags::ANY)
@@ -723,8 +719,12 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                     now_mono,
                     rusty_sys::USAGE_HALF_LIFE as u64,
                 );
+
+		load_sum += self.dom_loads[i];
             }
         }
+
+        self.load_avg = load_sum / self.top.nr_doms as f64;
 
         Ok(())
     }
@@ -995,6 +995,7 @@ impl<'a> Scheduler<'a> {
         skel.rodata().fifo_sched = opts.fifo_sched;
         skel.rodata().switch_partial = opts.partial;
         skel.rodata().greedy_threshold = opts.greedy_threshold;
+        skel.rodata().debug = opts.verbose as u32;
 
         // Attach.
         let mut skel = skel.load().context("Failed to load BPF program")?;
@@ -1210,18 +1211,8 @@ impl<'a> Scheduler<'a> {
             &mut self.nr_lb_data_errors,
         );
 
-        lb.read_task_loads(started_at.duration_since(self.prev_at))?;
-
-        let dom_loads_from_task_loads = lb.dom_loads.clone();
-        lb.dom_loads = vec![0f64; self.top.nr_doms];
         lb.read_dom_loads()?;
-        for i in 0..self.top.nr_doms {
-            info!(
-                "dom{} = {:.2} {:.2}",
-                i, dom_loads_from_task_loads[i], lb.dom_loads[i]
-            );
-        }
-
+        lb.read_task_loads(started_at.duration_since(self.prev_at))?;
         lb.calculate_dom_load_balance()?;
 
         if self.balance_load {

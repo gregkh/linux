@@ -65,6 +65,7 @@ const volatile bool kthreads_local;
 const volatile bool fifo_sched;
 const volatile bool switch_partial;
 const volatile u32 greedy_threshold;
+const volatile u32 debug;
 
 /* base slice duration */
 const volatile u64 slice_ns = SCX_SLICE_DFL;
@@ -133,6 +134,15 @@ static void dom_load_adj(u32 dom_id, s64 adj, u64 now)
 	if (adj < 0 && (s64)domc->load < 0)
 		scx_bpf_error("cpu%d dom%u load underflow (load=%lld adj=%lld)",
 			      bpf_get_smp_processor_id(), dom_id, domc->load, adj);
+
+	if (debug >=2 &&
+	    (!domc->dbg_load_printed_at || now - domc->dbg_load_printed_at >= 1000000000)) {
+		bpf_printk("LOAD ADJ dom=%u adj=%lld load=%llu",
+			   dom_id,
+			   adj,
+			   ravg_read(&domc->load_rd, now, USAGE_HALF_LIFE) >> RAVG_FRAC_BITS);
+		domc->dbg_load_printed_at = now;
+	}
 }
 
 static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
@@ -141,6 +151,7 @@ static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 	struct dom_ctx *from_domc, *to_domc;
 	struct lock_wrapper *from_lockw, *to_lockw;
 	struct ravg_data task_load_rd;
+	u64 from_load[2], to_load[2], task_load;
 	int ret;
 
 	from_domc = bpf_map_lookup_elem(&dom_data, &from_dom_id);
@@ -161,12 +172,23 @@ static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 	task_load_rd = taskc->dcyc_rd;
 	ravg_scale(&task_load_rd, p->scx.weight, 0);
 
+	if (debug >= 2)
+		task_load = ravg_read(&task_load_rd, now, USAGE_HALF_LIFE);
+
 	/* transfer out of @from_dom_id */
 	bpf_spin_lock(&from_lockw->lock);
 	if (taskc->runnable)
 		from_domc->load -= p->scx.weight;
 	ravg_accumulate(&from_domc->load_rd, from_domc->load, now, USAGE_HALF_LIFE);
+
+	if (debug >= 2)
+		from_load[0] = ravg_read(&from_domc->load_rd, now, USAGE_HALF_LIFE);
+
 	ret = ravg_transfer(&from_domc->load_rd, &task_load_rd, false);
+
+	if (debug >= 2)
+		from_load[1] = ravg_read(&from_domc->load_rd, now, USAGE_HALF_LIFE);
+
 	bpf_spin_unlock(&from_lockw->lock);
 	if (ret < 0)
 		scx_bpf_error("Failed to transfer out load");
@@ -176,10 +198,27 @@ static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 	if (taskc->runnable)
 		to_domc->load += p->scx.weight;
 	ravg_accumulate(&to_domc->load_rd, to_domc->load, now, USAGE_HALF_LIFE);
+
+	if (debug >= 2)
+		to_load[0] = ravg_read(&to_domc->load_rd, now, USAGE_HALF_LIFE);
+
 	ret = ravg_transfer(&to_domc->load_rd, &task_load_rd, true);
+
+	if (debug >= 2)
+		to_load[1] = ravg_read(&to_domc->load_rd, now, USAGE_HALF_LIFE);
+
 	bpf_spin_unlock(&to_lockw->lock);
 	if (ret < 0)
 		scx_bpf_error("Failed to transfer in load");
+
+	if (debug >= 2)
+		bpf_printk("XFER dom%u->%u task=%lu from=%lu->%lu to=%lu->%lu",
+			   from_dom_id, to_dom_id,
+			   task_load >> RAVG_FRAC_BITS,
+			   from_load[0] >> RAVG_FRAC_BITS,
+			   from_load[1] >> RAVG_FRAC_BITS,
+			   to_load[0] >> RAVG_FRAC_BITS,
+			   to_load[1] >> RAVG_FRAC_BITS);
 }
 
 /*

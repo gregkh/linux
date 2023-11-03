@@ -79,6 +79,7 @@ struct dom_ctx {
 
 	u64 load;
 	struct ravg_data load_rd;
+	u64 dbg_load_printed_at;
 };
 
 #endif /* __RUSTY_H */
