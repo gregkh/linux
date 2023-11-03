@@ -195,29 +195,36 @@ $(addprefix $(BINDIR)/,$(c-sched-targets)): \
 	$(CC) -o $@ $(SCXOBJ_DIR)/$(sched).o $(HOST_BPFOBJ) $(LDFLAGS)
 $(c-sched-targets): %: $(BINDIR)/%
 
+
+###################
+# Rust schedulers #
+###################
+rust-sched-targets := scx_rusty
+
 # Separate build target that is available for build systems to use to fetch
 # dependencies in a separate step from building. This allows the scheduler
 # to be compiled without network access.
 #
-# If the scx_rusty Make target is invoked without CARGO_OFFLINE=1 (e.g. if
-# building locally), then cargo build will download all of the necessary
-# dependencies, and scx_rusty_deps can be skipped.
-scx_rusty_deps:
-	cargo fetch --manifest-path=scx_rusty/Cargo.toml
+# If the regular rust scheduler Make target (e.g. scx_rusty) is invoked without
+# CARGO_OFFLINE=1 (e.g. if building locally), then cargo build will download
+# all of the necessary dependencies, and the deps target can be skipped.
+$(addsuffix _deps,$(rust-sched-targets)):
+	$(Q)cargo fetch --manifest-path=scx_rusty/Cargo.toml
 
-scx_rusty: export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR)
-scx_rusty: export SCX_RUSTY_CLANG = $(CLANG)
-scx_rusty: export SCX_RUSTY_BPF_CFLAGS = $(BPF_CFLAGS)
-scx_rusty: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
-	cargo build --manifest-path=$@/Cargo.toml $(CARGOFLAGS)
-	$(Q)cp $(OUTPUT_DIR)/release/$@ $(BINDIR)/$@
+$(rust-sched-targets): %: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
+	$(eval export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR))
+	$(eval export SCX_RUST_CLANG = $(CLANG))
+	$(eval export SCX_RUST_BPF_CFLAGS= $(BPF_CFLAGS))
+	$(eval sched=$(notdir $@))
+	$(Q)cargo build --manifest-path=$(sched)/Cargo.toml $(CARGOFLAGS)
+	$(Q)cp $(OUTPUT_DIR)/release/$(sched) $(BINDIR)/$@
 
 install: all
 	$(Q)mkdir -p $(DESTDIR)/usr/bin/
 	$(Q)cp $(BINDIR)/* $(DESTDIR)/usr/bin/
 
 clean:
-	cargo clean --manifest-path=scx_rusty/Cargo.toml
+	$(foreach sched,$(rust-sched-targets),cargo clean --manifest-path=$(sched)/Cargo.toml;)
 	rm -rf $(OUTPUT_DIR) $(HOST_OUTPUT_DIR)
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
 	rm -f $(c-sched-targets)
@@ -284,7 +291,7 @@ help:
 	@echo  '                    rust files for rust schedulers, and also trigger a'
 	@echo  '                    clean of the kernel at the root of the whole repository.'
 
-.PHONY: all $(c-sched-targets) scx_rusty clean fullclean help
+.PHONY: all $(c-sched-targets) $(rust-sched-targets) clean fullclean help
 
 # delete failed targets
 .DELETE_ON_ERROR:
