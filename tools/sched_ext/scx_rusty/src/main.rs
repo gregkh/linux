@@ -635,13 +635,8 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                         .context("Invalid key length in task_data map")?,
                 );
 
-                let (this_at, this_for, weight) = unsafe {
-                    (
-                        std::ptr::read_volatile(&task_ctx.runnable_at as *const u64),
-                        std::ptr::read_volatile(&task_ctx.runnable_for as *const u64),
-                        std::ptr::read_volatile(&task_ctx.weight as *const u32),
-                    )
-                };
+                let (this_at, this_for, weight) =
+                    (task_ctx.runnable_at, task_ctx.runnable_for, task_ctx.weight);
 
                 let (mut delta, prev_load) = match self.task_loads.get(&pid) {
                     Some(prev) => (this_for - prev.runnable_for, Some(prev.load)),
@@ -701,7 +696,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
     fn read_dom_loads(&mut self) -> Result<()> {
         let now_mono = now_monotonic();
         let dom_data = self.maps.dom_data();
-	let mut load_sum = 0.0f64;
+        let mut load_sum = 0.0f64;
 
         for i in 0..self.top.nr_doms {
             let key = unsafe { std::mem::transmute::<u32, [u8; 4]>(i as u32) };
@@ -720,7 +715,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                     rusty_sys::USAGE_HALF_LIFE as u64,
                 );
 
-		load_sum += self.dom_loads[i];
+                load_sum += self.dom_loads[i];
             }
         }
 
