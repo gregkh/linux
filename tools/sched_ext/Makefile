@@ -178,29 +178,22 @@ $(INCLUDE_DIR)/%.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BPFTOO
 	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $@
 	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $(@:.skel.h=.subskel.h)
 
-define ccsched
-	$(CC) $(CFLAGS) -c $(1) -o $(SCXOBJ_DIR)/$(2).o
-	$(CC) -o $(BINDIR)/$(2) $(SCXOBJ_DIR)/$(2).o $(HOST_BPFOBJ) $(LDFLAGS)
-endef
-
 SCX_COMMON_DEPS := user_exit_info.h scx_user_common.h | $(BINDIR)
-scx_simple: scx_simple.c $(INCLUDE_DIR)/scx_simple.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
 
-scx_qmap: scx_qmap.c scx_qmap.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
+################
+# C schedulers #
+################
+c-sched-targets = scx_qmap scx_simple scx_central scx_pair scx_flatcg scx_userland
 
-scx_central: scx_central.c scx_central.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
-
-scx_pair: scx_pair.c scx_pair.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
-
-scx_flatcg: scx_flatcg.c scx_flatcg.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
-
-scx_userland: scx_userland.c scx_userland.skel.h scx_userland.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
+$(addprefix $(BINDIR)/,$(c-sched-targets)): \
+	$(BINDIR)/%: \
+		$(filter-out %.bpf.c,%.c) \
+		$(INCLUDE_DIR)/%.skel.h \
+		$(SCX_COMMON_DEPS)
+	$(eval sched=$(notdir $@))
+	$(CC) $(CFLAGS) -c $(sched).c -o $(SCXOBJ_DIR)/$(sched).o
+	$(CC) -o $@ $(SCXOBJ_DIR)/$(sched).o $(HOST_BPFOBJ) $(LDFLAGS)
+$(c-sched-targets): %: $(BINDIR)/%
 
 # Separate build target that is available for build systems to use to fetch
 # dependencies in a separate step from building. This allows the scheduler
@@ -227,7 +220,7 @@ clean:
 	cargo clean --manifest-path=scx_rusty/Cargo.toml
 	rm -rf $(OUTPUT_DIR) $(HOST_OUTPUT_DIR)
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
-	rm -f scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland
+	rm -f $(c-sched-targets)
 
 fullclean: clean
 	$(Q)$(MAKE) -sC ../../ clean
@@ -291,7 +284,7 @@ help:
 	@echo  '                    rust files for rust schedulers, and also trigger a'
 	@echo  '                    clean of the kernel at the root of the whole repository.'
 
-.PHONY: all scx_rusty clean fullclean help
+.PHONY: all $(c-sched-targets) scx_rusty clean fullclean help
 
 # delete failed targets
 .DELETE_ON_ERROR:
