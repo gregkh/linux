@@ -163,70 +163,71 @@ else
 	$(Q)cp "$(VMLINUX_H)" $@
 endif
 
-%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h scx_common.bpf.h user_exit_info.h	\
+$(SCXOBJ_DIR)/%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h scx_common.bpf.h user_exit_info.h	\
 	| $(BPFOBJ) $(SCXOBJ_DIR)
-	$(call msg,CLNG-BPF,,$@)
-	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -c $< -o $(SCXOBJ_DIR)/$@
+	$(call msg,CLNG-BPF,,$(notdir $@))
+	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -c $< -o $@
 
-%.skel.h: %.bpf.o $(BPFTOOL)
-	$(call msg,GEN-SKEL,,$@)
-	$(Q)$(BPFTOOL) gen object $(SCXOBJ_DIR)/$(<:.o=.linked1.o) $(SCXOBJ_DIR)/$<
-	$(Q)$(BPFTOOL) gen object $(SCXOBJ_DIR)/$(<:.o=.linked2.o) $(SCXOBJ_DIR)/$(<:.o=.linked1.o)
-	$(Q)$(BPFTOOL) gen object $(SCXOBJ_DIR)/$(<:.o=.linked3.o) $(SCXOBJ_DIR)/$(<:.o=.linked2.o)
-	$(Q)diff $(SCXOBJ_DIR)/$(<:.o=.linked2.o) $(SCXOBJ_DIR)/$(<:.o=.linked3.o)
-	$(Q)$(BPFTOOL) gen skeleton $(SCXOBJ_DIR)/$(<:.o=.linked3.o) name $(<:.bpf.o=) > $(INCLUDE_DIR)/$@
-	$(Q)$(BPFTOOL) gen subskeleton $(SCXOBJ_DIR)/$(<:.o=.linked3.o) name $(<:.bpf.o=) > $(INCLUDE_DIR)/$(@:.skel.h=.subskel.h)
-
-define ccsched
-	$(CC) $(CFLAGS) -c $(1) -o $(SCXOBJ_DIR)/$(2).o
-	$(CC) -o $(BINDIR)/$(2) $(SCXOBJ_DIR)/$(2).o $(HOST_BPFOBJ) $(LDFLAGS)
-endef
+$(INCLUDE_DIR)/%.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BPFTOOL)
+	$(eval sched=$(notdir $@))
+	$(call msg,GEN-SKEL,,$(sched))
+	$(Q)$(BPFTOOL) gen object $(<:.o=.linked1.o) $<
+	$(Q)$(BPFTOOL) gen object $(<:.o=.linked2.o) $(<:.o=.linked1.o)
+	$(Q)$(BPFTOOL) gen object $(<:.o=.linked3.o) $(<:.o=.linked2.o)
+	$(Q)diff $(<:.o=.linked2.o) $(<:.o=.linked3.o)
+	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $@
+	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $(@:.skel.h=.subskel.h)
 
 SCX_COMMON_DEPS := user_exit_info.h scx_user_common.h | $(BINDIR)
-scx_simple: scx_simple.c scx_simple.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
 
-scx_qmap: scx_qmap.c scx_qmap.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
+################
+# C schedulers #
+################
+c-sched-targets = scx_qmap scx_simple scx_central scx_pair scx_flatcg scx_userland
 
-scx_central: scx_central.c scx_central.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
+$(addprefix $(BINDIR)/,$(c-sched-targets)): \
+	$(BINDIR)/%: \
+		$(filter-out %.bpf.c,%.c) \
+		$(INCLUDE_DIR)/%.skel.h \
+		$(SCX_COMMON_DEPS)
+	$(eval sched=$(notdir $@))
+	$(CC) $(CFLAGS) -c $(sched).c -o $(SCXOBJ_DIR)/$(sched).o
+	$(CC) -o $@ $(SCXOBJ_DIR)/$(sched).o $(HOST_BPFOBJ) $(LDFLAGS)
+$(c-sched-targets): %: $(BINDIR)/%
 
-scx_pair: scx_pair.c scx_pair.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
 
-scx_flatcg: scx_flatcg.c scx_flatcg.skel.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
-
-scx_userland: scx_userland.c scx_userland.skel.h scx_userland.h $(SCX_COMMON_DEPS)
-	$(call ccsched,$<,$@)
+###################
+# Rust schedulers #
+###################
+rust-sched-targets := scx_rusty
 
 # Separate build target that is available for build systems to use to fetch
 # dependencies in a separate step from building. This allows the scheduler
 # to be compiled without network access.
 #
-# If the scx_rusty Make target is invoked without CARGO_OFFLINE=1 (e.g. if
-# building locally), then cargo build will download all of the necessary
-# dependencies, and scx_rusty_deps can be skipped.
-scx_rusty_deps:
-	cargo fetch --manifest-path=scx_rusty/Cargo.toml
+# If the regular rust scheduler Make target (e.g. scx_rusty) is invoked without
+# CARGO_OFFLINE=1 (e.g. if building locally), then cargo build will download
+# all of the necessary dependencies, and the deps target can be skipped.
+$(addsuffix _deps,$(rust-sched-targets)):
+	$(Q)cargo fetch --manifest-path=scx_rusty/Cargo.toml
 
-scx_rusty: export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR)
-scx_rusty: export SCX_RUSTY_CLANG = $(CLANG)
-scx_rusty: export SCX_RUSTY_BPF_CFLAGS = $(BPF_CFLAGS)
-scx_rusty: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
-	cargo build --manifest-path=$@/Cargo.toml $(CARGOFLAGS)
-	$(Q)cp $(OUTPUT_DIR)/release/$@ $(BINDIR)/$@
+$(rust-sched-targets): %: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
+	$(eval export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR))
+	$(eval export SCX_RUST_CLANG = $(CLANG))
+	$(eval export SCX_RUST_BPF_CFLAGS= $(BPF_CFLAGS))
+	$(eval sched=$(notdir $@))
+	$(Q)cargo build --manifest-path=$(sched)/Cargo.toml $(CARGOFLAGS)
+	$(Q)cp $(OUTPUT_DIR)/release/$(sched) $(BINDIR)/$@
 
 install: all
 	$(Q)mkdir -p $(DESTDIR)/usr/bin/
 	$(Q)cp $(BINDIR)/* $(DESTDIR)/usr/bin/
 
 clean:
-	cargo clean --manifest-path=scx_rusty/Cargo.toml
+	$(foreach sched,$(rust-sched-targets),cargo clean --manifest-path=$(sched)/Cargo.toml;)
 	rm -rf $(OUTPUT_DIR) $(HOST_OUTPUT_DIR)
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
-	rm -f scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland
+	rm -f $(c-sched-targets)
 
 fullclean: clean
 	$(Q)$(MAKE) -sC ../../ clean
@@ -290,7 +291,7 @@ help:
 	@echo  '                    rust files for rust schedulers, and also trigger a'
 	@echo  '                    clean of the kernel at the root of the whole repository.'
 
-.PHONY: all scx_rusty clean fullclean help
+.PHONY: all $(c-sched-targets) $(rust-sched-targets) clean fullclean help
 
 # delete failed targets
 .DELETE_ON_ERROR:
