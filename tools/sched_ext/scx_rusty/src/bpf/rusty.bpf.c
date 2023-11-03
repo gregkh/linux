@@ -96,54 +96,59 @@ struct {
 	__type(value, struct dom_ctx);
 	__uint(max_entries, MAX_DOMS);
 	__uint(map_flags, 0);
-} dom_ctx SEC(".maps");
+} dom_data SEC(".maps");
 
-struct dom_load {
+struct lock_wrapper {
 	struct bpf_spin_lock lock;
-	u64 load;
-	struct ravg_data load_rd;
 };
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__type(key, u32);
-	__type(value, struct dom_load);
+	__type(value, struct lock_wrapper);
 	__uint(max_entries, MAX_DOMS);
 	__uint(map_flags, 0);
-} dom_load SEC(".maps");
+} dom_load_locks SEC(".maps");
 
 const u64 ravg_1 = 1 << RAVG_FRAC_BITS;
 
 static void dom_load_adj(u32 dom_id, s64 adj, u64 now)
 {
-	struct dom_load *load;
+	struct dom_ctx *domc;
+	struct lock_wrapper *lockw;
 
-	if (!(load = bpf_map_lookup_elem(&dom_load, &dom_id))) {
-		scx_bpf_error("no dom_load for dom %u", dom_id);
+	domc = bpf_map_lookup_elem(&dom_data, &dom_id);
+	lockw = bpf_map_lookup_elem(&dom_load_locks, &dom_id);
+
+	if (!domc || !lockw) {
+		scx_bpf_error("dom_ctx / lock lookup failed");
 		return;
 	}
 
-	bpf_spin_lock(&load->lock);
-	load->load += adj;
-	ravg_accumulate(&load->load_rd, load->load, now, USAGE_HALF_LIFE);
-	bpf_spin_unlock(&load->lock);
+	bpf_spin_lock(&lockw->lock);
+	domc->load += adj;
+	ravg_accumulate(&domc->load_rd, domc->load, now, USAGE_HALF_LIFE);
+	bpf_spin_unlock(&lockw->lock);
 
-	if (adj < 0 && (s64)load->load < 0)
+	if (adj < 0 && (s64)domc->load < 0)
 		scx_bpf_error("cpu%d dom%u load underflow (load=%lld adj=%lld)",
-			      bpf_get_smp_processor_id(), dom_id, load->load, adj);
+			      bpf_get_smp_processor_id(), dom_id, domc->load, adj);
 }
 
 static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 			       u32 from_dom_id, u32 to_dom_id, u64 now)
 {
-	struct dom_load *from_load, *to_load;
+	struct dom_ctx *from_domc, *to_domc;
+	struct lock_wrapper *from_lockw, *to_lockw;
 	struct ravg_data task_load_rd;
 	int ret;
 
-	from_load = bpf_map_lookup_elem(&dom_load, &from_dom_id);
-	to_load = bpf_map_lookup_elem(&dom_load, &to_dom_id);
-	if (!from_load || !to_load) {
-		scx_bpf_error("dom_load lookup failed");
+	from_domc = bpf_map_lookup_elem(&dom_data, &from_dom_id);
+	from_lockw = bpf_map_lookup_elem(&dom_load_locks, &from_dom_id);
+	to_domc = bpf_map_lookup_elem(&dom_data, &to_dom_id);
+	to_lockw = bpf_map_lookup_elem(&dom_load_locks, &to_dom_id);
+	if (!from_domc || !from_lockw || !to_domc || !to_lockw) {
+		scx_bpf_error("dom_ctx / lock lookup failed");
 		return;
 	}
 
@@ -157,22 +162,22 @@ static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 	ravg_scale(&task_load_rd, p->scx.weight, 0);
 
 	/* transfer out of @from_dom_id */
-	bpf_spin_lock(&from_load->lock);
+	bpf_spin_lock(&from_lockw->lock);
 	if (taskc->runnable)
-		from_load->load -= p->scx.weight;
-	ravg_accumulate(&from_load->load_rd, from_load->load, now, USAGE_HALF_LIFE);
-	ret = ravg_transfer(&from_load->load_rd, &task_load_rd, false);
-	bpf_spin_unlock(&from_load->lock);
+		from_domc->load -= p->scx.weight;
+	ravg_accumulate(&from_domc->load_rd, from_domc->load, now, USAGE_HALF_LIFE);
+	ret = ravg_transfer(&from_domc->load_rd, &task_load_rd, false);
+	bpf_spin_unlock(&from_lockw->lock);
 	if (ret < 0)
 		scx_bpf_error("Failed to transfer out load");
 
 	/* transfer into @to_dom_id */
-	bpf_spin_lock(&to_load->lock);
+	bpf_spin_lock(&to_lockw->lock);
 	if (taskc->runnable)
-		to_load->load += p->scx.weight;
-	ravg_accumulate(&to_load->load_rd, to_load->load, now, USAGE_HALF_LIFE);
-	ret = ravg_transfer(&to_load->load_rd, &task_load_rd, true);
-	bpf_spin_unlock(&to_load->lock);
+		to_domc->load += p->scx.weight;
+	ravg_accumulate(&to_domc->load_rd, to_domc->load, now, USAGE_HALF_LIFE);
+	ret = ravg_transfer(&to_domc->load_rd, &task_load_rd, true);
+	bpf_spin_unlock(&to_lockw->lock);
 	if (ret < 0)
 		scx_bpf_error("Failed to transfer in load");
 }
@@ -278,7 +283,7 @@ static void refresh_tune_params(void)
 		u32 dom_id = cpu_to_dom_id(cpu);
 		struct dom_ctx *domc;
 
-		if (!(domc = bpf_map_lookup_elem(&dom_ctx, &dom_id))) {
+		if (!(domc = bpf_map_lookup_elem(&dom_data, &dom_id))) {
 			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
 			return;
 		}
@@ -313,7 +318,7 @@ static bool task_set_domain(struct task_ctx *taskc, struct task_struct *p,
 	u32 old_dom_id = taskc->dom_id;
 	s64 vtime_delta;
 
-	old_domc = bpf_map_lookup_elem(&dom_ctx, &old_dom_id);
+	old_domc = bpf_map_lookup_elem(&dom_data, &old_dom_id);
 	if (!old_domc) {
 		scx_bpf_error("Failed to lookup old dom%u", old_dom_id);
 		return false;
@@ -324,7 +329,7 @@ static bool task_set_domain(struct task_ctx *taskc, struct task_struct *p,
 	else
 		vtime_delta = p->scx.dsq_vtime - old_domc->vtime_now;
 
-	new_domc = bpf_map_lookup_elem(&dom_ctx, &new_dom_id);
+	new_domc = bpf_map_lookup_elem(&dom_data, &new_dom_id);
 	if (!new_domc) {
 		scx_bpf_error("Failed to lookup new dom%u", new_dom_id);
 		return false;
@@ -397,7 +402,7 @@ s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 			const struct cpumask *idle_cpumask;
 			bool has_idle;
 
-			domc = bpf_map_lookup_elem(&dom_ctx, &taskc->dom_id);
+			domc = bpf_map_lookup_elem(&dom_data, &taskc->dom_id);
 			if (!domc) {
 				scx_bpf_error("Failed to find dom%u", taskc->dom_id);
 				goto enoent;
@@ -511,7 +516,7 @@ s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 		u32 dom_id = cpu_to_dom_id(prev_cpu);
 		struct dom_ctx *domc;
 
-		if (!(domc = bpf_map_lookup_elem(&dom_ctx, &dom_id))) {
+		if (!(domc = bpf_map_lookup_elem(&dom_data, &dom_id))) {
 			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
 			goto enoent;
 		}
@@ -642,7 +647,7 @@ dom_queue:
 		u32 dom_id = taskc->dom_id;
 		struct dom_ctx *domc;
 
-		domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
+		domc = bpf_map_lookup_elem(&dom_data, &dom_id);
 		if (!domc) {
 			scx_bpf_error("Failed to lookup dom[%u]", dom_id);
 			return;
@@ -770,7 +775,7 @@ void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
 	taskc->running_at = bpf_ktime_get_ns();
 
 	dom_id = taskc->dom_id;
-	domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
+	domc = bpf_map_lookup_elem(&dom_data, &dom_id);
 	if (!domc) {
 		scx_bpf_error("Failed to lookup dom[%u]", dom_id);
 		return;
@@ -952,13 +957,13 @@ static s32 create_dom(u32 dom_id)
 		return ret;
 	}
 
-	ret = bpf_map_update_elem(&dom_ctx, &dom_id, &domc_init, 0);
+	ret = bpf_map_update_elem(&dom_data, &dom_id, &domc_init, 0);
 	if (ret) {
 		scx_bpf_error("Failed to add dom_ctx entry %u (%d)", dom_id, ret);
 		return ret;
 	}
 
-	domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
+	domc = bpf_map_lookup_elem(&dom_data, &dom_id);
 	if (!domc) {
 		/* Should never happen, we just inserted it above. */
 		scx_bpf_error("No dom%u", dom_id);

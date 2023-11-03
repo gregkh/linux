@@ -134,6 +134,77 @@ struct Opts {
     verbose: u8,
 }
 
+fn ravg_read(rd: &rusty_sys::ravg_data, now: u64, half_life: u64) -> f64 {
+    const RAVG_1: f64 = (1 << rusty_sys::ravg_consts_RAVG_FRAC_BITS) as f64;
+    let val = rd.val as f64 / RAVG_1;
+    let val_at = rd.val_at;
+    let mut old = rd.old as f64 / RAVG_1;
+    let mut cur = rd.cur as f64 / RAVG_1;
+
+    let now = now.max(val_at);
+    let normalized_dur = |dur| dur as f64 / half_life as f64;
+
+    //
+    // The following is f64 implementation of BPF ravg_accumulate().
+    //
+    let cur_seq = (now / half_life) as i64;
+    let val_seq = (val_at / half_life) as i64;
+    let seq_delta = (cur_seq - val_seq) as i32;
+
+    if seq_delta > 0 {
+        let full_decay = 2f64.powi(seq_delta);
+
+        // Decay $old and fold $cur into it.
+        old /= full_decay;
+        old += cur / full_decay;
+        cur = 0.0;
+
+        // Fold the oldest period whicy may be partial.
+        old += val * normalized_dur(half_life - val_at % half_life) / full_decay;
+
+        /* pre-computed decayed full-period values */
+        const FULL_SUMS: [f64; 20] = [
+            0.5,
+            0.75,
+            0.875,
+            0.9375,
+            0.96875,
+            0.984375,
+            0.9921875,
+            0.99609375,
+            0.998046875,
+            0.9990234375,
+            0.99951171875,
+            0.999755859375,
+            0.9998779296875,
+            0.99993896484375,
+            0.999969482421875,
+            0.9999847412109375,
+            0.9999923706054688,
+            0.9999961853027344,
+            0.9999980926513672,
+            0.9999990463256836,
+            /* use the same value beyond this point */
+        ];
+
+        // Fold the full periods in the middle.
+        if seq_delta >= 2 {
+            let idx = ((seq_delta - 2) as usize).min(FULL_SUMS.len() - 1);
+            old += val * FULL_SUMS[idx];
+        }
+
+        // Accumulate the current period duration into @cur.
+        cur += val * normalized_dur(now % half_life);
+    } else {
+        cur += val * normalized_dur(now - val_at);
+    }
+
+    //
+    // The following is the blending part of BPF ravg_read().
+    //
+    old * (1.0 - normalized_dur(now % half_life) / 2.0) + cur / 2.0
+}
+
 fn now_monotonic() -> u64 {
     let mut time = libc::timespec {
         tv_sec: 0,
@@ -348,8 +419,7 @@ impl Topology {
         }
 
         // Build and return dom -> cpumask and cpu -> dom mappings.
-        let mut dom_cpus =
-            vec![bitvec![u64, Lsb0; 0; rusty_sys::MAX_CPUS as usize]; nr_doms];
+        let mut dom_cpus = vec![bitvec![u64, Lsb0; 0; rusty_sys::MAX_CPUS as usize]; nr_doms];
         let mut cpu_dom = vec![];
 
         for (cpu, cache) in cpu_to_cache.iter().enumerate().take(nr_cpus) {
@@ -630,6 +700,32 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
 
         self.load_avg = load_sum / self.top.nr_doms as f64;
         *self.task_loads = this_task_loads;
+        Ok(())
+    }
+
+    fn read_dom_loads(&mut self) -> Result<()> {
+        let now_mono = now_monotonic();
+        let dom_data = self.maps.dom_data();
+
+        for i in 0..self.top.nr_doms {
+	    let key = unsafe { std::mem::transmute::<u32, [u8; 4]>(i as u32) };
+
+            if let Some(dom_ctx_map_elem) = dom_data
+                .lookup(&key, libbpf_rs::MapFlags::ANY)
+                .context("Failed to lookup dom_ctx")?
+            {
+                let dom_ctx = unsafe {
+                    &*(dom_ctx_map_elem.as_slice().as_ptr() as *const rusty_sys::dom_ctx)
+                };
+
+                self.dom_loads[i] = ravg_read(
+                    &dom_ctx.load_rd,
+                    now_mono,
+                    rusty_sys::USAGE_HALF_LIFE as u64,
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -1012,11 +1108,7 @@ impl<'a> Scheduler<'a> {
                 })
                 .sum();
             stats_map
-                .update_percpu(
-                    &stat.to_ne_bytes(),
-                    &zero_vec,
-                    libbpf_rs::MapFlags::ANY,
-                )
+                .update_percpu(&stat.to_ne_bytes(), &zero_vec, libbpf_rs::MapFlags::ANY)
                 .context("Failed to zero stat")?;
             stats.push(sum);
         }
@@ -1119,6 +1211,17 @@ impl<'a> Scheduler<'a> {
         );
 
         lb.read_task_loads(started_at.duration_since(self.prev_at))?;
+
+        let dom_loads_from_task_loads = lb.dom_loads.clone();
+        lb.dom_loads = vec![0f64; self.top.nr_doms];
+        lb.read_dom_loads()?;
+        for i in 0..self.top.nr_doms {
+            info!(
+                "dom{} = {:.2} {:.2}",
+                i, dom_loads_from_task_loads[i], lb.dom_loads[i]
+            );
+        }
+
         lb.calculate_dom_load_balance()?;
 
         if self.balance_load {

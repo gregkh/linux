@@ -121,15 +121,13 @@ static RAVG_FN_ATTRS void ravg_accumulate(struct ravg_data *rd,
 		if (seq_delta > 1) {
 			__u32 idx = seq_delta - 2;
 
-			if (idx < ravg_full_sum_len)
-				ravg_add(&rd->old, rd->val *
-					 ravg_full_sum[idx]);
-			else
-				ravg_add(&rd->old, rd->val *
-					 ravg_full_sum[ravg_full_sum_len - 2]);
+			if (idx >= ravg_full_sum_len)
+				idx = ravg_full_sum_len - 1;
+
+			ravg_add(&rd->old, rd->val * ravg_full_sum[idx]);
 		}
 
-		/* accumulate the current period duration into ->runtime */
+		/* accumulate the current period duration into ->cur */
 		rd->cur += rd->val * ravg_normalize_dur(now % half_life,
 							half_life);
 	} else {
@@ -253,7 +251,17 @@ static RAVG_FN_ATTRS __u64 ravg_read(struct ravg_data *rd, __u64 now,
 				     __u64 half_life)
 {
 	struct ravg_data trd;
-	__u32 elapsed = now % half_life;
+	__u32 elapsed;
+
+	/*
+	 * It may be difficult for the caller to guarantee monotonic progress if
+	 * multiple CPUs accumulate to the same ravg_data. Handle @now being in
+	 * the past of @rd->val_at.
+	 */
+	if (now < rd->val_at)
+		now = rd->val_at;
+
+	elapsed = now % half_life;
 
 	/*
 	 * Accumulate the ongoing period into a temporary copy. This allows

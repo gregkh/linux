@@ -73,9 +73,12 @@ struct task_ctx {
 };
 
 struct dom_ctx {
+	u64 vtime_now;
 	struct bpf_cpumask __kptr *cpumask;
 	struct bpf_cpumask __kptr *direct_greedy_cpumask;
-	u64 vtime_now;
+
+	u64 load;
+	struct ravg_data load_rd;
 };
 
 #endif /* __RUSTY_H */
