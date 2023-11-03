@@ -163,19 +163,20 @@ else
 	$(Q)cp "$(VMLINUX_H)" $@
 endif
 
-%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h scx_common.bpf.h user_exit_info.h	\
+$(SCXOBJ_DIR)/%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h scx_common.bpf.h user_exit_info.h	\
 	| $(BPFOBJ) $(SCXOBJ_DIR)
-	$(call msg,CLNG-BPF,,$@)
-	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -c $< -o $(SCXOBJ_DIR)/$@
+	$(call msg,CLNG-BPF,,$(notdir $@))
+	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -c $< -o $@
 
-%.skel.h: %.bpf.o $(BPFTOOL)
-	$(call msg,GEN-SKEL,,$@)
-	$(Q)$(BPFTOOL) gen object $(SCXOBJ_DIR)/$(<:.o=.linked1.o) $(SCXOBJ_DIR)/$<
-	$(Q)$(BPFTOOL) gen object $(SCXOBJ_DIR)/$(<:.o=.linked2.o) $(SCXOBJ_DIR)/$(<:.o=.linked1.o)
-	$(Q)$(BPFTOOL) gen object $(SCXOBJ_DIR)/$(<:.o=.linked3.o) $(SCXOBJ_DIR)/$(<:.o=.linked2.o)
-	$(Q)diff $(SCXOBJ_DIR)/$(<:.o=.linked2.o) $(SCXOBJ_DIR)/$(<:.o=.linked3.o)
-	$(Q)$(BPFTOOL) gen skeleton $(SCXOBJ_DIR)/$(<:.o=.linked3.o) name $(<:.bpf.o=) > $(INCLUDE_DIR)/$@
-	$(Q)$(BPFTOOL) gen subskeleton $(SCXOBJ_DIR)/$(<:.o=.linked3.o) name $(<:.bpf.o=) > $(INCLUDE_DIR)/$(@:.skel.h=.subskel.h)
+$(INCLUDE_DIR)/%.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BPFTOOL)
+	$(eval sched=$(notdir $@))
+	$(call msg,GEN-SKEL,,$(sched))
+	$(Q)$(BPFTOOL) gen object $(<:.o=.linked1.o) $<
+	$(Q)$(BPFTOOL) gen object $(<:.o=.linked2.o) $(<:.o=.linked1.o)
+	$(Q)$(BPFTOOL) gen object $(<:.o=.linked3.o) $(<:.o=.linked2.o)
+	$(Q)diff $(<:.o=.linked2.o) $(<:.o=.linked3.o)
+	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $@
+	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $(@:.skel.h=.subskel.h)
 
 define ccsched
 	$(CC) $(CFLAGS) -c $(1) -o $(SCXOBJ_DIR)/$(2).o
@@ -183,7 +184,7 @@ define ccsched
 endef
 
 SCX_COMMON_DEPS := user_exit_info.h scx_user_common.h | $(BINDIR)
-scx_simple: scx_simple.c scx_simple.skel.h $(SCX_COMMON_DEPS)
+scx_simple: scx_simple.c $(INCLUDE_DIR)/scx_simple.skel.h $(SCX_COMMON_DEPS)
 	$(call ccsched,$<,$@)
 
 scx_qmap: scx_qmap.c scx_qmap.skel.h $(SCX_COMMON_DEPS)
