@@ -111,6 +111,15 @@ struct {
 	__uint(map_flags, 0);
 } dom_load_locks SEC(".maps");
 
+struct dom_active_pids {
+	u64 gen;
+	u64 read_idx;
+	u64 write_idx;
+	s32 pids[MAX_DOM_ACTIVE_PIDS];
+};
+
+struct dom_active_pids dom_active_pids[MAX_DOMS];
+
 const u64 ravg_1 = 1 << RAVG_FRAC_BITS;
 
 static void dom_load_adj(u32 dom_id, s64 adj, u64 now)
@@ -792,7 +801,6 @@ void BPF_STRUCT_OPS(rusty_runnable, struct task_struct *p, u64 enq_flags)
 		return;
 
 	taskc->runnable = true;
-	taskc->runnable_at = bpf_ktime_get_ns();
 	taskc->is_kworker = p->flags & PF_WQ_WORKER;
 
 	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, USAGE_HALF_LIFE);
@@ -803,17 +811,42 @@ void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
 {
 	struct task_ctx *taskc;
 	struct dom_ctx *domc;
-	u32 dom_id;
-
-	if (fifo_sched)
-		return;
+	u32 dom_id, dap_gen;
 
 	if (!(taskc = lookup_task_ctx(p)))
 		return;
 
 	taskc->running_at = bpf_ktime_get_ns();
-
 	dom_id = taskc->dom_id;
+	if (dom_id >= MAX_DOMS) {
+		scx_bpf_error("Invalid dom ID");
+		return;
+	}
+
+	/*
+	 * Record that @p has been active in @domc. Load balancer will only
+	 * consider recently active tasks. Access synchronization rules aren't
+	 * strict. We just need to be right most of the time.
+	 */
+	dap_gen = dom_active_pids[dom_id].gen;
+	if (taskc->dom_active_pids_gen != dap_gen) {
+		u64 idx = __sync_fetch_and_add(&dom_active_pids[dom_id].write_idx, 1) %
+			MAX_DOM_ACTIVE_PIDS;
+		u32 *pidp;
+
+		pidp = MEMBER_VPTR(dom_active_pids, [dom_id].pids[idx]);
+		if (!pidp) {
+			scx_bpf_error("dom_active_pids[%u][%u] indexing failed", dom_id, idx);
+			return;
+		}
+
+		*pidp = p->pid;
+		taskc->dom_active_pids_gen = dap_gen;
+	}
+
+	if (fifo_sched)
+		return;
+
 	domc = bpf_map_lookup_elem(&dom_data, &dom_id);
 	if (!domc) {
 		scx_bpf_error("Failed to lookup dom[%u]", dom_id);
@@ -854,8 +887,6 @@ void BPF_STRUCT_OPS(rusty_quiescent, struct task_struct *p, u64 deq_flags)
 		return;
 
 	taskc->runnable = false;
-	taskc->runnable_for += now - taskc->runnable_at;
-	taskc->runnable_at = 0;
 
 	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, USAGE_HALF_LIFE);
 	dom_load_adj(taskc->dom_id, -(s64)p->scx.weight, now);
@@ -932,11 +963,10 @@ s32 BPF_STRUCT_OPS(rusty_prep_enable, struct task_struct *p,
 		   struct scx_enable_args *args)
 {
 	struct bpf_cpumask *cpumask;
-	struct task_ctx taskc, *map_value;
+	struct task_ctx taskc = { .dom_active_pids_gen = -1 };
+	struct task_ctx *map_value;
 	long ret;
 	pid_t pid;
-
-	memset(&taskc, 0, sizeof(taskc));
 
 	pid = p->pid;
 	ret = bpf_map_update_elem(&task_data, &pid, &taskc, BPF_NOEXIST);

@@ -23,6 +23,7 @@ typedef unsigned long long u64;
 #define	MAX_DOMS	64		/* limited to avoid complex bitmask ops */
 #define	CACHELINE_SIZE	64
 #define USAGE_HALF_LIFE	1000000000	/* 1s */
+#define MAX_DOM_ACTIVE_PIDS 1024	/* LB looks at the latest 1k active tasks per dom */
 
 /* Statistics */
 enum stat_idx {
@@ -56,9 +57,8 @@ struct task_ctx {
 	u32 dom_id;
 	u32 weight;
 	bool runnable;
-	u64 runnable_at;
+	u64 dom_active_pids_gen;
 	u64 running_at;
-	u64 runnable_for;
 
 	/* The task is a workqueue worker thread */
 	bool is_kworker;

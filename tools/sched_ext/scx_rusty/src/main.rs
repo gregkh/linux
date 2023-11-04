@@ -83,14 +83,6 @@ struct Opts {
     #[clap(short = 'g', long, default_value = "1")]
     greedy_threshold: u32,
 
-    /// The load decay factor. Every interval, the existing load is decayed
-    /// by this factor and new load is added. Must be in the range [0.0,
-    /// 0.99]. The smaller the value, the more sensitive load calculation
-    /// is to recent changes. When 0.0, history is ignored and the load
-    /// value from the latest period is used directly.
-    #[clap(long, default_value = "0.5")]
-    load_decay_factor: f64,
-
     /// Disable load balancing. Unless disabled, periodically userspace will
     /// calculate the load factor of each domain and instruct BPF which
     /// processes to move.
@@ -162,7 +154,7 @@ fn ravg_read(rd: &rusty_sys::ravg_data, now: u64, half_life: u64) -> f64 {
         // Fold the oldest period whicy may be partial.
         old += val * normalized_dur(half_life - val_at % half_life) / full_decay;
 
-        /* pre-computed decayed full-period values */
+        // Pre-computed decayed full-period values.
         const FULL_SUMS: [f64; 20] = [
             0.5,
             0.75,
@@ -184,7 +176,7 @@ fn ravg_read(rd: &rusty_sys::ravg_data, now: u64, half_life: u64) -> f64 {
             0.9999961853027344,
             0.9999980926513672,
             0.9999990463256836,
-            /* use the same value beyond this point */
+            // Use the same value beyond this point.
         ];
 
         // Fold the full periods in the middle.
@@ -539,12 +531,6 @@ impl Tuner {
 }
 
 #[derive(Debug)]
-struct TaskLoad {
-    runnable_for: u64,
-    load: f64,
-}
-
-#[derive(Debug)]
 struct TaskInfo {
     pid: i32,
     dom_mask: u64,
@@ -553,13 +539,11 @@ struct TaskInfo {
 }
 
 struct LoadBalancer<'a, 'b, 'c> {
-    maps: RustyMapsMut<'a>,
+    skel: &'a mut RustySkel<'b>,
     top: Arc<Topology>,
-    task_loads: &'b mut BTreeMap<i32, TaskLoad>,
-    load_decay_factor: f64,
     skip_kworkers: bool,
 
-    tasks_by_load: Vec<BTreeMap<OrderedFloat<f64>, TaskInfo>>,
+    tasks_by_load: Vec<Option<BTreeMap<OrderedFloat<f64>, TaskInfo>>>,
     load_avg: f64,
     dom_loads: Vec<f64>,
 
@@ -590,20 +574,16 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
     const LOAD_IMBAL_PUSH_MAX_RATIO: f64 = 0.50;
 
     fn new(
-        maps: RustyMapsMut<'a>,
+        skel: &'a mut RustySkel<'b>,
         top: Arc<Topology>,
-        task_loads: &'b mut BTreeMap<i32, TaskLoad>,
-        load_decay_factor: f64,
         skip_kworkers: bool,
         nr_lb_data_errors: &'c mut u64,
     ) -> Self {
         Self {
-            maps,
-            task_loads,
-            load_decay_factor,
+            skel,
             skip_kworkers,
 
-            tasks_by_load: (0..top.nr_doms).map(|_| BTreeMap::<_, _>::new()).collect(),
+            tasks_by_load: (0..top.nr_doms).map(|_| None).collect(),
             load_avg: 0f64,
             dom_loads: vec![0.0; top.nr_doms],
 
@@ -617,85 +597,10 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         }
     }
 
-    fn read_task_loads(&mut self, period: Duration) -> Result<()> {
-        let now_mono = now_monotonic();
-        let task_data = self.maps.task_data();
-        let mut this_task_loads = BTreeMap::<i32, TaskLoad>::new();
-
-        for key in task_data.keys() {
-            if let Some(task_ctx_vec) = task_data
-                .lookup(&key, libbpf_rs::MapFlags::ANY)
-                .context("Failed to lookup task_data")?
-            {
-                let task_ctx =
-                    unsafe { &*(task_ctx_vec.as_slice().as_ptr() as *const rusty_sys::task_ctx) };
-                let pid = i32::from_ne_bytes(
-                    key.as_slice()
-                        .try_into()
-                        .context("Invalid key length in task_data map")?,
-                );
-
-                let (this_at, this_for, weight) =
-                    (task_ctx.runnable_at, task_ctx.runnable_for, task_ctx.weight);
-
-                let (mut delta, prev_load) = match self.task_loads.get(&pid) {
-                    Some(prev) => (this_for - prev.runnable_for, Some(prev.load)),
-                    None => (this_for, None),
-                };
-
-                // Non-zero this_at indicates that the task is currently
-                // runnable. Note that we read runnable_at and runnable_for
-                // without any synchronization and there is a small window
-                // where we end up misaccounting. While this can cause
-                // temporary error, it's unlikely to cause any noticeable
-                // misbehavior especially given the load value clamping.
-                if this_at > 0 && this_at < now_mono {
-                    delta += now_mono - this_at;
-                }
-
-                delta = delta.min(period.as_nanos() as u64);
-                let this_load = (weight as f64 * delta as f64 / period.as_nanos() as f64)
-                    .clamp(0.0, weight as f64);
-
-                let this_load = match prev_load {
-                    Some(prev_load) => {
-                        prev_load * self.load_decay_factor
-                            + this_load * (1.0 - self.load_decay_factor)
-                    }
-                    None => this_load,
-                };
-
-                this_task_loads.insert(
-                    pid,
-                    TaskLoad {
-                        runnable_for: this_for,
-                        load: this_load,
-                    },
-                );
-
-                // Only record pids that are eligible for load balancing
-                if task_ctx.dom_mask == (1u64 << task_ctx.dom_id) {
-                    continue;
-                }
-                self.tasks_by_load[task_ctx.dom_id as usize].insert(
-                    OrderedFloat(this_load),
-                    TaskInfo {
-                        pid,
-                        dom_mask: task_ctx.dom_mask,
-                        migrated: Cell::new(false),
-                        is_kworker: task_ctx.is_kworker,
-                    },
-                );
-            }
-        }
-
-        *self.task_loads = this_task_loads;
-        Ok(())
-    }
-
     fn read_dom_loads(&mut self) -> Result<()> {
         let now_mono = now_monotonic();
-        let dom_data = self.maps.dom_data();
+        let maps = self.skel.maps();
+        let dom_data = maps.dom_data();
         let mut load_sum = 0.0f64;
 
         for i in 0..self.top.nr_doms {
@@ -740,6 +645,68 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         Ok(())
     }
 
+    fn populate_tasks_by_load(&mut self, dom: u32) -> Result<()> {
+        if self.tasks_by_load[dom as usize].is_some() {
+            return Ok(());
+        }
+
+        // Read active_pids and update write_idx and gen.
+        //
+        // XXX - We can't read task_ctx inline because self.skel.bss()
+        // borrows mutably and thus conflicts with self.skel.maps().
+        const MAX_PIDS: u64 = rusty_sys::MAX_DOM_ACTIVE_PIDS as u64;
+        let active_pids = &mut self.skel.bss().dom_active_pids[dom as usize];
+        let mut pids = vec![];
+
+        let (mut ridx, widx) = (active_pids.read_idx, active_pids.write_idx);
+        if widx - ridx > MAX_PIDS {
+            ridx = widx - MAX_PIDS;
+        }
+
+        for idx in ridx..widx {
+            let pid = active_pids.pids[(idx % MAX_PIDS) as usize];
+            pids.push(pid);
+        }
+
+        active_pids.read_idx = active_pids.write_idx;
+        active_pids.gen += 1;
+
+        // Read task_ctx and load.
+        let maps = self.skel.maps();
+        let task_data = maps.task_data();
+        let now_mono = now_monotonic();
+        let mut tasks_by_load = BTreeMap::new();
+
+        for pid in pids.iter() {
+            let key = unsafe { std::mem::transmute::<i32, [u8; 4]>(*pid) };
+
+            if let Some(task_data_elem) = task_data.lookup(&key, libbpf_rs::MapFlags::ANY)? {
+                let task_ctx =
+                    unsafe { &*(task_data_elem.as_slice().as_ptr() as *const rusty_sys::task_ctx) };
+
+                let load = task_ctx.weight as f64
+                    * ravg_read(
+                        &task_ctx.dcyc_rd,
+                        now_mono,
+                        rusty_sys::USAGE_HALF_LIFE as u64,
+                    );
+
+                tasks_by_load.insert(
+                    OrderedFloat(load),
+                    TaskInfo {
+                        pid: *pid,
+                        dom_mask: task_ctx.dom_mask,
+                        migrated: Cell::new(false),
+                        is_kworker: task_ctx.is_kworker,
+                    },
+                );
+            }
+        }
+
+        self.tasks_by_load[dom as usize] = Some(tasks_by_load);
+        Ok(())
+    }
+
     // Find the first candidate pid which hasn't already been migrated and
     // can run in @pull_dom.
     fn find_first_candidate<'d, I>(
@@ -765,10 +732,10 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
     }
 
     fn pick_victim(
-        &self,
+        &mut self,
         (push_dom, to_push): (u32, f64),
         (pull_dom, to_pull): (u32, f64),
-    ) -> Option<(&TaskInfo, f64)> {
+    ) -> Result<Option<(&TaskInfo, f64)>> {
         let to_xfer = to_pull.min(to_push) * Self::LOAD_IMBAL_XFER_TARGET_RATIO;
 
         trace!(
@@ -780,6 +747,8 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         );
 
         let calc_new_imbal = |xfer: f64| (to_push - xfer).abs() + (to_pull - xfer).abs();
+
+        self.populate_tasks_by_load(push_dom)?;
 
         trace!(
             "to_xfer={:.2} tasks_by_load={:?}",
@@ -797,6 +766,8 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         let (load, task, new_imbal) = match (
             Self::find_first_candidate(
                 self.tasks_by_load[push_dom as usize]
+                    .as_ref()
+                    .unwrap()
                     .range((Unbounded, Included(&OrderedFloat(to_xfer))))
                     .rev(),
                 pull_dom,
@@ -804,12 +775,14 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
             ),
             Self::find_first_candidate(
                 self.tasks_by_load[push_dom as usize]
+                    .as_ref()
+                    .unwrap()
                     .range((Included(&OrderedFloat(to_xfer)), Unbounded)),
                 pull_dom,
                 self.skip_kworkers,
             ),
         ) {
-            (None, None) => return None,
+            (None, None) => return Ok(None),
             (Some((load, task)), None) | (None, Some((load, task))) => {
                 (load, task, calc_new_imbal(load))
             }
@@ -835,7 +808,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                 old_imbal,
                 new_imbal
             );
-            return None;
+            return Ok(None);
         }
 
         trace!(
@@ -847,13 +820,13 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
             new_imbal,
         );
 
-        Some((task, load))
+        Ok(Some((task, load)))
     }
 
     // Actually execute the load balancing. Concretely this writes pid -> dom
     // entries into the lb_data map for bpf side to consume.
     fn load_balance(&mut self) -> Result<()> {
-        clear_map(self.maps.lb_data());
+        clear_map(self.skel.maps().lb_data());
 
         trace!("imbal={:?}", &self.imbal);
         trace!("doms_to_push={:?}", &self.doms_to_push);
@@ -875,7 +848,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
 
                 for (to_pull, pull_dom) in pull_doms.iter_mut() {
                     if let Some((task, load)) =
-                        self.pick_victim((push_dom, to_push), (*pull_dom, f64::from(*to_pull)))
+                        self.pick_victim((push_dom, to_push), (*pull_dom, f64::from(*to_pull)))?
                     {
                         // Execute migration.
                         task.migrated.set(true);
@@ -886,7 +859,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                         // Ask BPF code to execute the migration.
                         let pid = task.pid;
                         let cpid = (pid as libc::pid_t).to_ne_bytes();
-                        if let Err(e) = self.maps.lb_data().update(
+                        if let Err(e) = self.skel.maps_mut().lb_data().update(
                             &cpid,
                             &pull_dom.to_ne_bytes(),
                             libbpf_rs::MapFlags::NO_EXIST,
@@ -926,7 +899,6 @@ struct Scheduler<'a> {
 
     sched_interval: Duration,
     tune_interval: Duration,
-    load_decay_factor: f64,
     balance_load: bool,
     balanced_kworkers: bool,
 
@@ -935,7 +907,6 @@ struct Scheduler<'a> {
 
     prev_at: Instant,
     prev_total_cpu: procfs::CpuStat,
-    task_loads: BTreeMap<i32, TaskLoad>,
 
     nr_lb_data_errors: u64,
 
@@ -1013,7 +984,6 @@ impl<'a> Scheduler<'a> {
 
             sched_interval: Duration::from_secs_f64(opts.interval),
             tune_interval: Duration::from_secs_f64(opts.tune_interval),
-            load_decay_factor: opts.load_decay_factor.clamp(0.0, 0.99),
             balance_load: !opts.no_load_balance,
             balanced_kworkers: opts.balanced_kworkers,
 
@@ -1022,7 +992,6 @@ impl<'a> Scheduler<'a> {
 
             prev_at: Instant::now(),
             prev_total_cpu,
-            task_loads: BTreeMap::new(),
 
             nr_lb_data_errors: 0,
 
@@ -1198,10 +1167,8 @@ impl<'a> Scheduler<'a> {
         let cpu_busy = self.get_cpu_busy()?;
 
         let mut lb = LoadBalancer::new(
-            self.skel.maps_mut(),
+            &mut self.skel,
             self.top.clone(),
-            &mut self.task_loads,
-            self.load_decay_factor,
             self.balanced_kworkers,
             &mut self.nr_lb_data_errors,
         );
@@ -1209,8 +1176,7 @@ impl<'a> Scheduler<'a> {
         lb.read_dom_loads()?;
         lb.calculate_dom_load_balance()?;
 
-        if self.balance_load && lb.doms_to_push.len() > 0 {
-            lb.read_task_loads(started_at.duration_since(self.prev_at))?;
+        if self.balance_load {
             lb.load_balance()?;
         }
 
