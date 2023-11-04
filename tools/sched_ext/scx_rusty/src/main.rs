@@ -35,9 +35,8 @@ use log::trace;
 use log::warn;
 use ordered_float::OrderedFloat;
 
-const USAGE_HALF_LIFE: u64 = rusty_sys::USAGE_HALF_LIFE as u64;
-const MAX_DOMS: usize = rusty_sys::MAX_DOMS as usize;
-const MAX_CPUS: usize = rusty_sys::MAX_CPUS as usize;
+const MAX_DOMS: usize = rusty_sys::consts_MAX_DOMS as usize;
+const MAX_CPUS: usize = rusty_sys::consts_MAX_CPUS as usize;
 
 /// scx_rusty is a multi-domain BPF / userspace hybrid scheduler where the BPF
 /// part does simple round robin in each domain and the userspace part
@@ -67,6 +66,10 @@ struct Opts {
     /// tune scheduling behavior. Tuning interval in seconds.
     #[clap(short = 'I', long, default_value = "0.1")]
     tune_interval: f64,
+
+    /// The half-life of task and domain load running averages in seconds.
+    #[clap(short = 'l', long, default_value = "1.0")]
+    load_half_life: f64,
 
     /// Build domains according to how CPUs are grouped at this cache level
     /// as determined by /sys/devices/system/cpu/cpuX/cache/indexI/id.
@@ -131,8 +134,9 @@ struct Opts {
     verbose: u8,
 }
 
-fn ravg_read(rd: &rusty_sys::ravg_data, now: u64, half_life: u64) -> f64 {
+fn ravg_read(rd: &rusty_sys::ravg_data, now: u64, half_life: u32) -> f64 {
     const RAVG_1: f64 = (1 << rusty_sys::ravg_consts_RAVG_FRAC_BITS) as f64;
+    let half_life = half_life as u64;
     let val = rd.val as f64;
     let val_at = rd.val_at;
     let mut old = rd.old as f64 / RAVG_1;
@@ -603,6 +607,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
 
     fn read_dom_loads(&mut self) -> Result<()> {
         let now_mono = now_monotonic();
+        let load_half_life = self.skel.rodata().load_half_life;
         let maps = self.skel.maps();
         let dom_data = maps.dom_data();
         let mut load_sum = 0.0f64;
@@ -618,7 +623,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                     &*(dom_ctx_map_elem.as_slice().as_ptr() as *const rusty_sys::dom_ctx)
                 };
 
-                self.dom_loads[i] = ravg_read(&dom_ctx.load_rd, now_mono, USAGE_HALF_LIFE);
+                self.dom_loads[i] = ravg_read(&dom_ctx.load_rd, now_mono, load_half_life);
 
                 load_sum += self.dom_loads[i];
             }
@@ -629,7 +634,8 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         Ok(())
     }
 
-    // To balance dom loads we identify doms with lower and higher load than average
+    /// To balance dom loads, identify doms with lower and higher load than
+    /// average.
     fn calculate_dom_load_balance(&mut self) -> Result<()> {
         for (dom, dom_load) in self.dom_loads.iter().enumerate() {
             let imbal = dom_load - self.load_avg;
@@ -645,6 +651,8 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         Ok(())
     }
 
+    /// @dom needs to push out tasks to balance loads. Make sure its
+    /// tasks_by_load is populated so that the victim tasks can be picked.
     fn populate_tasks_by_load(&mut self, dom: u32) -> Result<()> {
         if self.tasks_by_load[dom as usize].is_some() {
             return Ok(());
@@ -654,7 +662,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         //
         // XXX - We can't read task_ctx inline because self.skel.bss()
         // borrows mutably and thus conflicts with self.skel.maps().
-        const MAX_PIDS: u64 = rusty_sys::MAX_DOM_ACTIVE_PIDS as u64;
+        const MAX_PIDS: u64 = rusty_sys::consts_MAX_DOM_ACTIVE_PIDS as u64;
         let active_pids = &mut self.skel.bss().dom_active_pids[dom as usize];
         let mut pids = vec![];
 
@@ -672,6 +680,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         active_pids.gen += 1;
 
         // Read task_ctx and load.
+        let load_half_life = self.skel.rodata().load_half_life;
         let maps = self.skel.maps();
         let task_data = maps.task_data();
         let now_mono = now_monotonic();
@@ -684,8 +693,12 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                 let task_ctx =
                     unsafe { &*(task_data_elem.as_slice().as_ptr() as *const rusty_sys::task_ctx) };
 
-                let load = task_ctx.weight as f64
-                    * ravg_read(&task_ctx.dcyc_rd, now_mono, USAGE_HALF_LIFE);
+                if task_ctx.dom_id != dom {
+                    continue;
+                }
+
+                let load =
+                    task_ctx.weight as f64 * ravg_read(&task_ctx.dcyc_rd, now_mono, load_half_life);
 
                 tasks_by_load.insert(
                     OrderedFloat(load),
@@ -943,6 +956,7 @@ impl<'a> Scheduler<'a> {
         }
 
         skel.rodata().slice_ns = opts.slice_us * 1000;
+        skel.rodata().load_half_life = (opts.load_half_life * 1000000000.0) as u32;
         skel.rodata().kthreads_local = opts.kthreads_local;
         skel.rodata().fifo_sched = opts.fifo_sched;
         skel.rodata().switch_partial = opts.partial;

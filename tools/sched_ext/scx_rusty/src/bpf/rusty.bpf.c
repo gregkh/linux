@@ -60,6 +60,7 @@ const volatile u32 nr_doms = 32;	/* !0 for veristat, set during init */
 const volatile u32 nr_cpus = 64;	/* !0 for veristat, set during init */
 const volatile u32 cpu_dom_id_map[MAX_CPUS];
 const volatile u64 dom_cpumasks[MAX_DOMS][MAX_CPUS / 64];
+const volatile u32 load_half_life = 1000000000	/* 1s */;
 
 const volatile bool kthreads_local;
 const volatile bool fifo_sched;
@@ -137,7 +138,7 @@ static void dom_load_adj(u32 dom_id, s64 adj, u64 now)
 
 	bpf_spin_lock(&lockw->lock);
 	domc->load += adj;
-	ravg_accumulate(&domc->load_rd, domc->load, now, USAGE_HALF_LIFE);
+	ravg_accumulate(&domc->load_rd, domc->load, now, load_half_life);
 	bpf_spin_unlock(&lockw->lock);
 
 	if (adj < 0 && (s64)domc->load < 0)
@@ -149,7 +150,7 @@ static void dom_load_adj(u32 dom_id, s64 adj, u64 now)
 		bpf_printk("LOAD ADJ dom=%u adj=%lld load=%llu",
 			   dom_id,
 			   adj,
-			   ravg_read(&domc->load_rd, now, USAGE_HALF_LIFE) >> RAVG_FRAC_BITS);
+			   ravg_read(&domc->load_rd, now, load_half_life) >> RAVG_FRAC_BITS);
 		domc->dbg_load_printed_at = now;
 	}
 }
@@ -176,12 +177,12 @@ static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 	 * should be moved together. We only track duty cycle for tasks. Scale
 	 * it by weight to get load_rd.
 	 */
-	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, USAGE_HALF_LIFE);
+	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, load_half_life);
 	task_load_rd = taskc->dcyc_rd;
 	ravg_scale(&task_load_rd, p->scx.weight, 0);
 
 	if (debug >= 2)
-		task_load = ravg_read(&task_load_rd, now, USAGE_HALF_LIFE);
+		task_load = ravg_read(&task_load_rd, now, load_half_life);
 
 	/* transfer out of @from_dom_id */
 	bpf_spin_lock(&from_lockw->lock);
@@ -189,13 +190,13 @@ static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 		from_domc->load -= p->scx.weight;
 
 	if (debug >= 2)
-		from_load[0] = ravg_read(&from_domc->load_rd, now, USAGE_HALF_LIFE);
+		from_load[0] = ravg_read(&from_domc->load_rd, now, load_half_life);
 
 	ravg_transfer(&from_domc->load_rd, from_domc->load,
-		      &task_load_rd, taskc->runnable, USAGE_HALF_LIFE, false);
+		      &task_load_rd, taskc->runnable, load_half_life, false);
 
 	if (debug >= 2)
-		from_load[1] = ravg_read(&from_domc->load_rd, now, USAGE_HALF_LIFE);
+		from_load[1] = ravg_read(&from_domc->load_rd, now, load_half_life);
 
 	bpf_spin_unlock(&from_lockw->lock);
 
@@ -205,13 +206,13 @@ static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 		to_domc->load += p->scx.weight;
 
 	if (debug >= 2)
-		to_load[0] = ravg_read(&to_domc->load_rd, now, USAGE_HALF_LIFE);
+		to_load[0] = ravg_read(&to_domc->load_rd, now, load_half_life);
 
 	ravg_transfer(&to_domc->load_rd, to_domc->load,
-		      &task_load_rd, taskc->runnable, USAGE_HALF_LIFE, true);
+		      &task_load_rd, taskc->runnable, load_half_life, true);
 
 	if (debug >= 2)
-		to_load[1] = ravg_read(&to_domc->load_rd, now, USAGE_HALF_LIFE);
+		to_load[1] = ravg_read(&to_domc->load_rd, now, load_half_life);
 
 	bpf_spin_unlock(&to_lockw->lock);
 
@@ -798,7 +799,7 @@ void BPF_STRUCT_OPS(rusty_runnable, struct task_struct *p, u64 enq_flags)
 	taskc->runnable = true;
 	taskc->is_kworker = p->flags & PF_WQ_WORKER;
 
-	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, USAGE_HALF_LIFE);
+	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, load_half_life);
 	dom_load_adj(taskc->dom_id, p->scx.weight, now);
 }
 
@@ -883,7 +884,7 @@ void BPF_STRUCT_OPS(rusty_quiescent, struct task_struct *p, u64 deq_flags)
 
 	taskc->runnable = false;
 
-	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, USAGE_HALF_LIFE);
+	ravg_accumulate(&taskc->dcyc_rd, taskc->runnable, now, load_half_life);
 	dom_load_adj(taskc->dom_id, -(s64)p->scx.weight, now);
 }
 

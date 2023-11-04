@@ -19,11 +19,21 @@ typedef unsigned long long u64;
 
 #include "../../../ravg.bpf.h"
 
-#define	MAX_CPUS	512
-#define	MAX_DOMS	64		/* limited to avoid complex bitmask ops */
-#define	CACHELINE_SIZE	64
-#define USAGE_HALF_LIFE	1000000000	/* 1s */
-#define MAX_DOM_ACTIVE_PIDS 1024	/* LB looks at the latest 1k active tasks per dom */
+enum consts {
+	MAX_CPUS		= 512,
+	MAX_DOMS		= 64,	/* limited to avoid complex bitmask ops */
+	CACHELINE_SIZE		= 64,
+
+	/*
+	 * When userspace load balancer is trying to determine the tasks to push
+	 * out from an overloaded domain, it looks at the the following number
+	 * of recently active tasks of the domain. While this may lead to
+	 * spurious migration victim selection failures in pathological cases,
+	 * this isn't a practical problem as the LB rounds are best-effort
+	 * anyway and will be retried until loads are balanced.
+	 */
+	MAX_DOM_ACTIVE_PIDS	= 1024,
+};
 
 /* Statistics */
 enum stat_idx {
