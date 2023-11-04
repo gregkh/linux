@@ -161,7 +161,6 @@ static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 	struct lock_wrapper *from_lockw, *to_lockw;
 	struct ravg_data task_load_rd;
 	u64 from_load[2], to_load[2], task_load;
-	int ret;
 
 	from_domc = bpf_map_lookup_elem(&dom_data, &from_dom_id);
 	from_lockw = bpf_map_lookup_elem(&dom_load_locks, &from_dom_id);
@@ -188,37 +187,33 @@ static void dom_load_xfer_task(struct task_struct *p, struct task_ctx *taskc,
 	bpf_spin_lock(&from_lockw->lock);
 	if (taskc->runnable)
 		from_domc->load -= p->scx.weight;
-	ravg_accumulate(&from_domc->load_rd, from_domc->load, now, USAGE_HALF_LIFE);
 
 	if (debug >= 2)
 		from_load[0] = ravg_read(&from_domc->load_rd, now, USAGE_HALF_LIFE);
 
-	ret = ravg_transfer(&from_domc->load_rd, &task_load_rd, false);
+	ravg_transfer(&from_domc->load_rd, from_domc->load,
+		      &task_load_rd, taskc->runnable, USAGE_HALF_LIFE, false);
 
 	if (debug >= 2)
 		from_load[1] = ravg_read(&from_domc->load_rd, now, USAGE_HALF_LIFE);
 
 	bpf_spin_unlock(&from_lockw->lock);
-	if (ret < 0)
-		scx_bpf_error("Failed to transfer out load");
 
 	/* transfer into @to_dom_id */
 	bpf_spin_lock(&to_lockw->lock);
 	if (taskc->runnable)
 		to_domc->load += p->scx.weight;
-	ravg_accumulate(&to_domc->load_rd, to_domc->load, now, USAGE_HALF_LIFE);
 
 	if (debug >= 2)
 		to_load[0] = ravg_read(&to_domc->load_rd, now, USAGE_HALF_LIFE);
 
-	ret = ravg_transfer(&to_domc->load_rd, &task_load_rd, true);
+	ravg_transfer(&to_domc->load_rd, to_domc->load,
+		      &task_load_rd, taskc->runnable, USAGE_HALF_LIFE, true);
 
 	if (debug >= 2)
 		to_load[1] = ravg_read(&to_domc->load_rd, now, USAGE_HALF_LIFE);
 
 	bpf_spin_unlock(&to_lockw->lock);
-	if (ret < 0)
-		scx_bpf_error("Failed to transfer in load");
 
 	if (debug >= 2)
 		bpf_printk("XFER dom%u->%u task=%lu from=%lu->%lu to=%lu->%lu",

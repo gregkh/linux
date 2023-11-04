@@ -4,9 +4,9 @@
 #define RAVG_FN_ATTRS		inline __attribute__((unused, always_inline))
 //#define RAVG_FN_ATTRS		__attribute__((unused))
 
-static RAVG_FN_ATTRS void ravg_add(__u64 *sum, __u64 addend)
+static RAVG_FN_ATTRS void ravg_add(u64 *sum, u64 addend)
 {
-	__u64 new = *sum + addend;
+	u64 new = *sum + addend;
 
 	if (new >= *sum)
 		*sum = new;
@@ -14,7 +14,7 @@ static RAVG_FN_ATTRS void ravg_add(__u64 *sum, __u64 addend)
 		*sum = -1;
 }
 
-static RAVG_FN_ATTRS __u64 ravg_decay(__u64 v, __u32 shift)
+static RAVG_FN_ATTRS u64 ravg_decay(u64 v, u32 shift)
 {
 	if (shift >= 64)
 		return 0;
@@ -22,10 +22,10 @@ static RAVG_FN_ATTRS __u64 ravg_decay(__u64 v, __u32 shift)
 		return v >> shift;
 }
 
-static RAVG_FN_ATTRS __u32 ravg_normalize_dur(__u32 dur, __u32 half_life)
+static RAVG_FN_ATTRS u32 ravg_normalize_dur(u32 dur, u32 half_life)
 {
 	if (dur < half_life)
-		return (((__u64)dur << RAVG_FRAC_BITS) + half_life - 1) /
+		return (((u64)dur << RAVG_FRAC_BITS) + half_life - 1) /
 			half_life;
 	else
 		return 1 << RAVG_FRAC_BITS;
@@ -40,7 +40,7 @@ static RAVG_FN_ATTRS __u32 ravg_normalize_dur(__u32 dur, __u32 half_life)
  * [2] = [1] + ravg_decay(1 << RAVG_FRAC_BITS, 3)
  * ...
  */
-static __u64 ravg_full_sum[] = {
+static u64 ravg_full_sum[] = {
 	 524288,  786432,  917504,  983040,
 	1015808, 1032192, 1040384, 1044480,
 	1046528, 1047552, 1048064, 1048320,
@@ -60,11 +60,10 @@ static const int ravg_full_sum_len = sizeof(ravg_full_sum) / sizeof(ravg_full_su
  *
  * The current value is changing to @val at @now. Accumulate accordingly.
  */
-static RAVG_FN_ATTRS void ravg_accumulate(struct ravg_data *rd,
-					  __u64 new_val, __u64 now,
-					  __u32 half_life)
+static RAVG_FN_ATTRS void ravg_accumulate(struct ravg_data *rd, u64 new_val, u64 now,
+					  u32 half_life)
 {
-	__u32 cur_seq, val_seq, seq_delta;
+	u32 cur_seq, val_seq, seq_delta;
 
 	/*
 	 * It may be difficult for the caller to guarantee monotonic progress if
@@ -111,7 +110,7 @@ static RAVG_FN_ATTRS void ravg_accumulate(struct ravg_data *rd,
 	 * seq delta                  [  3  |    2    |    1    |  0  ]
 	 */
 	if (seq_delta > 0) {
-		__u32 dur;
+		u32 dur;
 
 		/* fold the oldest period which may be partial */
 		dur = ravg_normalize_dur(half_life - rd->val_at % half_life, half_life);
@@ -119,7 +118,7 @@ static RAVG_FN_ATTRS void ravg_accumulate(struct ravg_data *rd,
 
 		/* fold the full periods in the middle with precomputed vals */
 		if (seq_delta > 1) {
-			__u32 idx = seq_delta - 2;
+			u32 idx = seq_delta - 2;
 
 			if (idx >= ravg_full_sum_len)
 				idx = ravg_full_sum_len - 1;
@@ -145,7 +144,9 @@ out:
 /**
  * ravg_transfer - Transfer in or out a component running avg
  * @base: ravg_data to transfer @xfer into or out of
+ * @base_new_val: new value for @base
  * @xfer: ravg_data to transfer
+ * @xfer_new_val: new value for @xfer
  * @is_xfer_in: transfer direction
  *
  * An ravg may be a sum of component ravgs. For example, a scheduling domain's
@@ -157,12 +158,17 @@ out:
  * must have been accumulated at the same timestamp. @xfer's contribution is
  * subtracted if @is_fer_in is %false and added if %true.
  */
-static RAVG_FN_ATTRS int ravg_transfer(struct ravg_data *base, struct ravg_data *xfer,
-				       bool is_xfer_in)
+static RAVG_FN_ATTRS void ravg_transfer(struct ravg_data *base, u64 base_new_val,
+					struct ravg_data *xfer, u64 xfer_new_val,
+					u32 half_life, bool is_xfer_in)
 {
-	if (base->val_at != xfer->val_at)
-		return -EINVAL;
+	/* synchronize @base and @xfer */
+	if ((s64)(base->val_at - xfer->val_at) < 0)
+		ravg_accumulate(base, base_new_val, xfer->val_at, half_life);
+	else if ((s64)(base->val_at - xfer->val_at) > 0)
+		ravg_accumulate(xfer, xfer_new_val, base->val_at, half_life);
 
+	/* transfer */
 	if (is_xfer_in) {
 		base->old += xfer->old;
 		base->cur += xfer->cur;
@@ -177,8 +183,6 @@ static RAVG_FN_ATTRS int ravg_transfer(struct ravg_data *base, struct ravg_data 
 		else
 			base->cur = 0;
 	}
-
-	return 0;
 }
 
 /**
@@ -192,11 +196,11 @@ static RAVG_FN_ATTRS int ravg_transfer(struct ravg_data *base, struct ravg_data 
  * ensure that the final shifted result fits in u64.
  */
 static inline __attribute__((always_inline))
-__u64 u64_x_u32_rshift(__u64 a, __u32 b, __u32 rshift)
+u64 u64_x_u32_rshift(u64 a, u32 b, u32 rshift)
 {
-	const __u64 mask32 = (__u32)-1;
-	__u64 al = a & mask32;
-	__u64 ah = (a & (mask32 << 32)) >> 32;
+	const u64 mask32 = (u32)-1;
+	u64 al = a & mask32;
+	u64 ah = (a & (mask32 << 32)) >> 32;
 
 	/*
 	 *                                        ah: high 32     al: low 32
@@ -247,11 +251,10 @@ static RAVG_FN_ATTRS void ravg_scale(struct ravg_data *rd, u32 mult, u32 rshift)
  *
  * Read running avg from @rd as of @now.
  */
-static RAVG_FN_ATTRS __u64 ravg_read(struct ravg_data *rd, __u64 now,
-				     __u64 half_life)
+static RAVG_FN_ATTRS u64 ravg_read(struct ravg_data *rd, u64 now, u64 half_life)
 {
 	struct ravg_data trd;
-	__u32 elapsed;
+	u32 elapsed;
 
 	/*
 	 * It may be difficult for the caller to guarantee monotonic progress if
@@ -278,7 +281,7 @@ static RAVG_FN_ATTRS __u64 ravg_read(struct ravg_data *rd, __u64 now,
 	 * + current load / 2. Inbetween, we blend the two linearly.
 	 */
 	if (elapsed) {
-		__u32 progress = ravg_normalize_dur(elapsed, half_life);
+		u32 progress = ravg_normalize_dur(elapsed, half_life);
 		/*
 		 * `H` is the duration of the half-life window, and `E` is how
 		 * much time has elapsed in this window. `P` is [0.0, 1.0]
@@ -309,9 +312,9 @@ static RAVG_FN_ATTRS __u64 ravg_read(struct ravg_data *rd, __u64 now,
 		 * than @rd->old and thus fit. Use u64_x_u32_rshift() to handle
 		 * the interim multiplication correctly.
 		 */
-		__u64 old = u64_x_u32_rshift(rd->old,
-					(1 << RAVG_FRAC_BITS) - progress / 2,
-					RAVG_FRAC_BITS);
+		u64 old = u64_x_u32_rshift(rd->old,
+					   (1 << RAVG_FRAC_BITS) - progress / 2,
+					   RAVG_FRAC_BITS);
 		/*
 		 * If `S` is the Sum(val * duration) for this half-life window,
 		 * the avg for this window is:
@@ -347,7 +350,7 @@ static RAVG_FN_ATTRS __u64 ravg_read(struct ravg_data *rd, __u64 now,
 		 *
 		 *  rd->cur / 2
 		 */
-		__u64 cur = rd->cur / 2;
+		u64 cur = rd->cur / 2;
 
 		return old + cur;
 	} else {
