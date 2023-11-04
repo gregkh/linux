@@ -35,6 +35,10 @@ use log::trace;
 use log::warn;
 use ordered_float::OrderedFloat;
 
+const USAGE_HALF_LIFE: u64 = rusty_sys::USAGE_HALF_LIFE as u64;
+const MAX_DOMS: usize = rusty_sys::MAX_DOMS as usize;
+const MAX_CPUS: usize = rusty_sys::MAX_CPUS as usize;
+
 /// scx_rusty is a multi-domain BPF / userspace hybrid scheduler where the BPF
 /// part does simple round robin in each domain and the userspace part
 /// calculates the load factor of each domain and tells the BPF part how to load
@@ -290,16 +294,15 @@ struct Topology {
 
 impl Topology {
     fn from_cpumasks(cpumasks: &[String], nr_cpus: usize) -> Result<Self> {
-        if cpumasks.len() > rusty_sys::MAX_DOMS as usize {
+        if cpumasks.len() > MAX_DOMS {
             bail!(
                 "Number of requested domains ({}) is greater than MAX_DOMS ({})",
                 cpumasks.len(),
-                rusty_sys::MAX_DOMS
+                MAX_DOMS
             );
         }
         let mut cpu_dom = vec![None; nr_cpus];
-        let mut dom_cpus =
-            vec![bitvec![u64, Lsb0; 0; rusty_sys::MAX_CPUS as usize]; cpumasks.len()];
+        let mut dom_cpus = vec![bitvec![u64, Lsb0; 0; MAX_CPUS]; cpumasks.len()];
         for (dom, cpumask) in cpumasks.iter().enumerate() {
             let hex_str = {
                 let mut tmp_str = cpumask
@@ -403,16 +406,16 @@ impl Topology {
             nr_doms += 1;
         }
 
-        if nr_doms > rusty_sys::MAX_DOMS as usize {
+        if nr_doms > MAX_DOMS {
             bail!(
                 "Total number of doms {} is greater than MAX_DOMS ({})",
                 nr_doms,
-                rusty_sys::MAX_DOMS
+                MAX_DOMS
             );
         }
 
         // Build and return dom -> cpumask and cpu -> dom mappings.
-        let mut dom_cpus = vec![bitvec![u64, Lsb0; 0; rusty_sys::MAX_CPUS as usize]; nr_doms];
+        let mut dom_cpus = vec![bitvec![u64, Lsb0; 0; MAX_CPUS]; nr_doms];
         let mut cpu_dom = vec![];
 
         for (cpu, cache) in cpu_to_cache.iter().enumerate().take(nr_cpus) {
@@ -615,11 +618,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                     &*(dom_ctx_map_elem.as_slice().as_ptr() as *const rusty_sys::dom_ctx)
                 };
 
-                self.dom_loads[i] = ravg_read(
-                    &dom_ctx.load_rd,
-                    now_mono,
-                    rusty_sys::USAGE_HALF_LIFE as u64,
-                );
+                self.dom_loads[i] = ravg_read(&dom_ctx.load_rd, now_mono, USAGE_HALF_LIFE);
 
                 load_sum += self.dom_loads[i];
             }
@@ -686,11 +685,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                     unsafe { &*(task_data_elem.as_slice().as_ptr() as *const rusty_sys::task_ctx) };
 
                 let load = task_ctx.weight as f64
-                    * ravg_read(
-                        &task_ctx.dcyc_rd,
-                        now_mono,
-                        rusty_sys::USAGE_HALF_LIFE as u64,
-                    );
+                    * ravg_read(&task_ctx.dcyc_rd, now_mono, USAGE_HALF_LIFE);
 
                 tasks_by_load.insert(
                     OrderedFloat(load),
@@ -912,11 +907,11 @@ impl<'a> Scheduler<'a> {
         let mut skel = skel_builder.open().context("Failed to open BPF program")?;
 
         let nr_cpus = libbpf_rs::num_possible_cpus().unwrap();
-        if nr_cpus > rusty_sys::MAX_CPUS as usize {
+        if nr_cpus > MAX_CPUS {
             bail!(
                 "nr_cpus ({}) is greater than MAX_CPUS ({})",
                 nr_cpus,
-                rusty_sys::MAX_CPUS
+                MAX_CPUS
             );
         }
 
