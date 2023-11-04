@@ -29,6 +29,7 @@ use clap::Parser;
 use libbpf_rs::skel::OpenSkel as _;
 use libbpf_rs::skel::Skel as _;
 use libbpf_rs::skel::SkelBuilder as _;
+use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
@@ -703,6 +704,13 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
             }
         }
 
+        debug!(
+            "DOM[{:02}] read load for {} tasks",
+            dom,
+            &tasks_by_load.len(),
+        );
+        trace!("DOM[{:02}] tasks_by_load={:?}", dom, &tasks_by_load);
+
         self.tasks_by_load[dom as usize] = Some(tasks_by_load);
         Ok(())
     }
@@ -738,23 +746,14 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
     ) -> Result<Option<(&TaskInfo, f64)>> {
         let to_xfer = to_pull.min(to_push) * Self::LOAD_IMBAL_XFER_TARGET_RATIO;
 
-        trace!(
+        debug!(
             "considering dom {}@{:.2} -> {}@{:.2}",
-            push_dom,
-            to_push,
-            pull_dom,
-            to_pull
+            push_dom, to_push, pull_dom, to_pull
         );
 
         let calc_new_imbal = |xfer: f64| (to_push - xfer).abs() + (to_pull - xfer).abs();
 
         self.populate_tasks_by_load(push_dom)?;
-
-        trace!(
-            "to_xfer={:.2} tasks_by_load={:?}",
-            to_xfer,
-            &self.tasks_by_load[push_dom as usize]
-        );
 
         // We want to pick a task to transfer from push_dom to pull_dom to
         // reduce the load imbalance between the two closest to $to_xfer.
@@ -800,24 +799,16 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         // to do for this pair.
         let old_imbal = to_push + to_pull;
         if old_imbal < new_imbal {
-            trace!(
+            debug!(
                 "skipping pid {}, dom {} -> {} won't improve imbal {:.2} -> {:.2}",
-                task.pid,
-                push_dom,
-                pull_dom,
-                old_imbal,
-                new_imbal
+                task.pid, push_dom, pull_dom, old_imbal, new_imbal
             );
             return Ok(None);
         }
 
-        trace!(
+        debug!(
             "migrating pid {}, dom {} -> {}, imbal={:.2} -> {:.2}",
-            task.pid,
-            push_dom,
-            pull_dom,
-            old_imbal,
-            new_imbal,
+            task.pid, push_dom, pull_dom, old_imbal, new_imbal,
         );
 
         Ok(Some((task, load)))
@@ -828,9 +819,9 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
     fn load_balance(&mut self) -> Result<()> {
         clear_map(self.skel.maps().lb_data());
 
-        trace!("imbal={:?}", &self.imbal);
-        trace!("doms_to_push={:?}", &self.doms_to_push);
-        trace!("doms_to_pull={:?}", &self.doms_to_pull);
+        debug!("imbal={:?}", &self.imbal);
+        debug!("doms_to_push={:?}", &self.doms_to_push);
+        debug!("doms_to_pull={:?}", &self.doms_to_pull);
 
         // Push from the most imbalanced to least.
         while let Some((OrderedFloat(mut to_push), push_dom)) = self.doms_to_push.pop_last() {
