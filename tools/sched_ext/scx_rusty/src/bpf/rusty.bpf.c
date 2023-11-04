@@ -55,18 +55,18 @@ char _license[] SEC("license") = "GPL";
 /*
  * Domains and cpus
  */
-const volatile __u32 nr_doms = 32;	/* !0 for veristat, set during init */
-const volatile __u32 nr_cpus = 64;	/* !0 for veristat, set during init */
-const volatile __u32 cpu_dom_id_map[MAX_CPUS];
-const volatile __u64 dom_cpumasks[MAX_DOMS][MAX_CPUS / 64];
+const volatile u32 nr_doms = 32;	/* !0 for veristat, set during init */
+const volatile u32 nr_cpus = 64;	/* !0 for veristat, set during init */
+const volatile u32 cpu_dom_id_map[MAX_CPUS];
+const volatile u64 dom_cpumasks[MAX_DOMS][MAX_CPUS / 64];
 
 const volatile bool kthreads_local;
 const volatile bool fifo_sched;
 const volatile bool switch_partial;
-const volatile __u32 greedy_threshold;
+const volatile u32 greedy_threshold;
 
 /* base slice duration */
-const volatile __u64 slice_ns = SCX_SLICE_DFL;
+const volatile u64 slice_ns = SCX_SLICE_DFL;
 
 /*
  * Exit info
@@ -78,10 +78,10 @@ char exit_msg[SCX_EXIT_MSG_LEN];
  * Per-CPU context
  */
 struct pcpu_ctx {
-	__u32 dom_rr_cur; /* used when scanning other doms */
+	u32 dom_rr_cur; /* used when scanning other doms */
 
 	/* libbpf-rs does not respect the alignment, so pad out the struct explicitly */
-	__u8 _padding[CACHELINE_SIZE - sizeof(u32)];
+	u8 _padding[CACHELINE_SIZE - sizeof(u32)];
 } __attribute__((aligned(CACHELINE_SIZE)));
 
 struct pcpu_ctx pcpu_ctx[MAX_CPUS];
@@ -89,12 +89,6 @@ struct pcpu_ctx pcpu_ctx[MAX_CPUS];
 /*
  * Domain context
  */
-struct dom_ctx {
-	struct bpf_cpumask __kptr *cpumask;
-	struct bpf_cpumask __kptr *direct_greedy_cpumask;
-	u64 vtime_now;
-};
-
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__type(key, u32);
@@ -131,6 +125,19 @@ struct {
 	__uint(map_flags, 0);
 } task_data SEC(".maps");
 
+struct task_ctx *lookup_task_ctx(struct task_struct *p)
+{
+	struct task_ctx *taskc;
+	s32 pid = p->pid;
+
+	if ((taskc = bpf_map_lookup_elem(&task_data, &pid))) {
+		return taskc;
+	} else {
+		scx_bpf_error("task_ctx lookup failed for pid %d", p->pid);
+		return NULL;
+	}
+}
+
 /*
  * This is populated from userspace to indicate which pids should be reassigned
  * to new doms.
@@ -149,12 +156,12 @@ struct {
  * that can be used directly in the scheduling paths.
  */
 struct tune_input{
-	__u64 gen;
-	__u64 direct_greedy_cpumask[MAX_CPUS / 64];
-	__u64 kick_greedy_cpumask[MAX_CPUS / 64];
+	u64 gen;
+	u64 direct_greedy_cpumask[MAX_CPUS / 64];
+	u64 kick_greedy_cpumask[MAX_CPUS / 64];
 } tune_input;
 
-__u64 tune_params_gen;
+u64 tune_params_gen;
 private(A) struct bpf_cpumask __kptr *all_cpumask;
 private(A) struct bpf_cpumask __kptr *direct_greedy_cpumask;
 private(A) struct bpf_cpumask __kptr *kick_greedy_cpumask;
@@ -275,16 +282,14 @@ s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 		   u64 wake_flags)
 {
 	const struct cpumask *idle_smtmask = scx_bpf_get_idle_smtmask();
-	struct task_ctx *task_ctx;
+	struct task_ctx *taskc;
 	struct bpf_cpumask *p_cpumask;
-	pid_t pid = p->pid;
 	bool prev_domestic, has_idle_cores;
 	s32 cpu;
 
 	refresh_tune_params();
 
-	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid)) ||
-	    !(p_cpumask = task_ctx->cpumask))
+	if (!(taskc = lookup_task_ctx(p)) || !(p_cpumask = taskc->cpumask))
 		goto enoent;
 
 	if (kthreads_local &&
@@ -302,22 +307,21 @@ s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 		struct task_struct *current = (void *)bpf_get_current_task();
 
 		if (!(BPF_CORE_READ(current, flags) & PF_EXITING) &&
-		    task_ctx->dom_id < MAX_DOMS) {
+		    taskc->dom_id < MAX_DOMS) {
 			struct dom_ctx *domc;
 			struct bpf_cpumask *d_cpumask;
 			const struct cpumask *idle_cpumask;
 			bool has_idle;
 
-			domc = bpf_map_lookup_elem(&dom_ctx, &task_ctx->dom_id);
+			domc = bpf_map_lookup_elem(&dom_ctx, &taskc->dom_id);
 			if (!domc) {
-				scx_bpf_error("Failed to find dom%u",
-					      task_ctx->dom_id);
+				scx_bpf_error("Failed to find dom%u", taskc->dom_id);
 				goto enoent;
 			}
 			d_cpumask = domc->cpumask;
 			if (!d_cpumask) {
 				scx_bpf_error("Failed to acquire dom%u cpumask kptr",
-					      task_ctx->dom_id);
+					      taskc->dom_id);
 				goto enoent;
 			}
 
@@ -418,7 +422,7 @@ s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 	 * under-utilized, ignore domain boundaries and push the task there. Try
 	 * to find an idle core first.
 	 */
-	if (task_ctx->all_cpus && direct_greedy_cpumask &&
+	if (taskc->all_cpus && direct_greedy_cpumask &&
 	    !bpf_cpumask_empty((const struct cpumask *)direct_greedy_cpumask)) {
 		u32 dom_id = cpu_to_dom_id(prev_cpu);
 		struct dom_ctx *domc;
@@ -488,7 +492,7 @@ s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 	return cpu;
 
 direct:
-	task_ctx->dispatch_local = true;
+	taskc->dispatch_local = true;
 	scx_bpf_put_idle_cpumask(idle_smtmask);
 	return cpu;
 
@@ -499,15 +503,16 @@ enoent:
 
 void BPF_STRUCT_OPS(rusty_enqueue, struct task_struct *p, u64 enq_flags)
 {
-	struct task_ctx *task_ctx;
+	struct task_ctx *taskc;
 	struct bpf_cpumask *p_cpumask;
 	pid_t pid = p->pid;
 	u32 *new_dom;
 	s32 cpu;
 
-	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid)) ||
-	    !(p_cpumask = task_ctx->cpumask)) {
-		scx_bpf_error("Failed to lookup task_ctx or cpumask");
+	if (!(taskc = lookup_task_ctx(p)))
+		return;
+	if (!(p_cpumask = taskc->cpumask)) {
+		scx_bpf_error("NULL cpmask");
 		return;
 	}
 
@@ -515,18 +520,18 @@ void BPF_STRUCT_OPS(rusty_enqueue, struct task_struct *p, u64 enq_flags)
 	 * Migrate @p to a new domain if requested by userland through lb_data.
 	 */
 	new_dom = bpf_map_lookup_elem(&lb_data, &pid);
-	if (new_dom && *new_dom != task_ctx->dom_id &&
-	    task_set_domain(task_ctx, p, *new_dom, false)) {
+	if (new_dom && *new_dom != taskc->dom_id &&
+	    task_set_domain(taskc, p, *new_dom, false)) {
 		stat_add(RUSTY_STAT_LOAD_BALANCE, 1);
-		task_ctx->dispatch_local = false;
+		taskc->dispatch_local = false;
 		cpu = scx_bpf_pick_any_cpu((const struct cpumask *)p_cpumask, 0);
 		if (cpu >= 0)
 			scx_bpf_kick_cpu(cpu, 0);
 		goto dom_queue;
 	}
 
-	if (task_ctx->dispatch_local) {
-		task_ctx->dispatch_local = false;
+	if (taskc->dispatch_local) {
+		taskc->dispatch_local = false;
 		scx_bpf_dispatch(p, SCX_DSQ_LOCAL, slice_ns, enq_flags);
 		return;
 	}
@@ -547,11 +552,10 @@ void BPF_STRUCT_OPS(rusty_enqueue, struct task_struct *p, u64 enq_flags)
 
 dom_queue:
 	if (fifo_sched) {
-		scx_bpf_dispatch(p, task_ctx->dom_id, slice_ns,
-				 enq_flags);
+		scx_bpf_dispatch(p, taskc->dom_id, slice_ns, enq_flags);
 	} else {
 		u64 vtime = p->scx.dsq_vtime;
-		u32 dom_id = task_ctx->dom_id;
+		u32 dom_id = taskc->dom_id;
 		struct dom_ctx *domc;
 
 		domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
@@ -567,8 +571,7 @@ dom_queue:
 		if (vtime_before(vtime, domc->vtime_now - slice_ns))
 			vtime = domc->vtime_now - slice_ns;
 
-		scx_bpf_dispatch_vtime(p, task_ctx->dom_id, slice_ns, vtime,
-				       enq_flags);
+		scx_bpf_dispatch_vtime(p, taskc->dom_id, slice_ns, vtime, enq_flags);
 	}
 
 	/*
@@ -586,7 +589,7 @@ dom_queue:
 	 * CPUs are highly loaded while KICK_GREEDY doesn't. Even under fairly
 	 * high utilization, KICK_GREEDY can slightly improve work-conservation.
 	 */
-	if (task_ctx->all_cpus && kick_greedy_cpumask) {
+	if (taskc->all_cpus && kick_greedy_cpumask) {
 		cpu = scx_bpf_pick_idle_cpu((const struct cpumask *)
 					    kick_greedy_cpumask, 0);
 		if (cpu >= 0) {
@@ -654,35 +657,30 @@ void BPF_STRUCT_OPS(rusty_dispatch, s32 cpu, struct task_struct *prev)
 
 void BPF_STRUCT_OPS(rusty_runnable, struct task_struct *p, u64 enq_flags)
 {
-	struct task_ctx *task_ctx;
-	pid_t pid = p->pid;
+	struct task_ctx *taskc;
 
-	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
-		scx_bpf_error("Failed to lookup task_ctx");
+	if (!(taskc = lookup_task_ctx(p)))
 		return;
-	}
 
-	task_ctx->runnable_at = bpf_ktime_get_ns();
-	task_ctx->is_kworker = p->flags & PF_WQ_WORKER;
+	taskc->runnable_at = bpf_ktime_get_ns();
+	taskc->is_kworker = p->flags & PF_WQ_WORKER;
 }
 
 void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
 {
 	struct task_ctx *taskc;
 	struct dom_ctx *domc;
-	pid_t pid = p->pid;
 	u32 dom_id;
 
 	if (fifo_sched)
 		return;
 
-	taskc = bpf_map_lookup_elem(&task_data, &pid);
-	if (!taskc) {
-		scx_bpf_error("Failed to lookup task_ctx");
+	if (!(taskc = lookup_task_ctx(p)))
 		return;
-	}
-	dom_id = taskc->dom_id;
 
+	taskc->running_at = bpf_ktime_get_ns();
+
+	dom_id = taskc->dom_id;
 	domc = bpf_map_lookup_elem(&dom_ctx, &dom_id);
 	if (!domc) {
 		scx_bpf_error("Failed to lookup dom[%u]", dom_id);
@@ -701,41 +699,41 @@ void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
 
 void BPF_STRUCT_OPS(rusty_stopping, struct task_struct *p, bool runnable)
 {
+	struct task_ctx *taskc;
+
 	if (fifo_sched)
 		return;
 
+	if (!(taskc = lookup_task_ctx(p)))
+		return;
+
 	/* scale the execution time by the inverse of the weight and charge */
-	p->scx.dsq_vtime += (slice_ns - p->scx.slice) * 100 / p->scx.weight;
+	p->scx.dsq_vtime +=
+		(bpf_ktime_get_ns() - taskc->running_at) * 100 / p->scx.weight;
 }
 
 void BPF_STRUCT_OPS(rusty_quiescent, struct task_struct *p, u64 deq_flags)
 {
-	struct task_ctx *task_ctx;
-	pid_t pid = p->pid;
+	struct task_ctx *taskc;
 
-	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
-		scx_bpf_error("Failed to lookup task_ctx");
+	if (!(taskc = lookup_task_ctx(p)))
 		return;
-	}
 
-	task_ctx->runnable_for += bpf_ktime_get_ns() - task_ctx->runnable_at;
-	task_ctx->runnable_at = 0;
+	taskc->runnable_for += bpf_ktime_get_ns() - taskc->runnable_at;
+	taskc->runnable_at = 0;
 }
 
 void BPF_STRUCT_OPS(rusty_set_weight, struct task_struct *p, u32 weight)
 {
-	struct task_ctx *task_ctx;
-	pid_t pid = p->pid;
+	struct task_ctx *taskc;
 
-	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
-		scx_bpf_error("Failed to lookup task_ctx");
+	if (!(taskc = lookup_task_ctx(p)))
 		return;
-	}
 
-	task_ctx->weight = weight;
+	taskc->weight = weight;
 }
 
-static u32 task_pick_domain(struct task_ctx *task_ctx, struct task_struct *p,
+static u32 task_pick_domain(struct task_ctx *taskc, struct task_struct *p,
 			    const struct cpumask *cpumask)
 {
 	s32 cpu = bpf_get_smp_processor_id();
@@ -744,13 +742,13 @@ static u32 task_pick_domain(struct task_ctx *task_ctx, struct task_struct *p,
 	if (cpu < 0 || cpu >= MAX_CPUS)
 		return MAX_DOMS;
 
-	task_ctx->dom_mask = 0;
+	taskc->dom_mask = 0;
 
 	dom = pcpu_ctx[cpu].dom_rr_cur++;
 	bpf_repeat(nr_doms) {
 		dom = (dom + 1) % nr_doms;
 		if (cpumask_intersects_domain(cpumask, dom)) {
-			task_ctx->dom_mask |= 1LLU << dom;
+			taskc->dom_mask |= 1LLU << dom;
 			/*
 			 * AsThe starting point is round-robin'd and the first
 			 * match should be spread across all the domains.
@@ -763,7 +761,7 @@ static u32 task_pick_domain(struct task_ctx *task_ctx, struct task_struct *p,
 	return first_dom;
 }
 
-static void task_pick_and_set_domain(struct task_ctx *task_ctx,
+static void task_pick_and_set_domain(struct task_ctx *taskc,
 				     struct task_struct *p,
 				     const struct cpumask *cpumask,
 				     bool init_dsq_vtime)
@@ -771,9 +769,9 @@ static void task_pick_and_set_domain(struct task_ctx *task_ctx,
 	u32 dom_id = 0;
 
 	if (nr_doms > 1)
-		dom_id = task_pick_domain(task_ctx, p, cpumask);
+		dom_id = task_pick_domain(taskc, p, cpumask);
 
-	if (!task_set_domain(task_ctx, p, dom_id, init_dsq_vtime))
+	if (!task_set_domain(taskc, p, dom_id, init_dsq_vtime))
 		scx_bpf_error("Failed to set dom%d for %s[%d]",
 			      dom_id, p->comm, p->pid);
 }
@@ -781,32 +779,29 @@ static void task_pick_and_set_domain(struct task_ctx *task_ctx,
 void BPF_STRUCT_OPS(rusty_set_cpumask, struct task_struct *p,
 		    const struct cpumask *cpumask)
 {
-	struct task_ctx *task_ctx;
-	pid_t pid = p->pid;
+	struct task_ctx *taskc;
 
-	if (!(task_ctx = bpf_map_lookup_elem(&task_data, &pid))) {
-		scx_bpf_error("Failed to lookup task_ctx for %s[%d]",
-			      p->comm, pid);
+	if (!(taskc = lookup_task_ctx(p)))
 		return;
-	}
 
-	task_pick_and_set_domain(task_ctx, p, cpumask, false);
+	task_pick_and_set_domain(taskc, p, cpumask, false);
 	if (all_cpumask)
-		task_ctx->all_cpus = bpf_cpumask_subset(all_cpumask, cpumask);
+		taskc->all_cpus =
+			bpf_cpumask_subset((const struct cpumask *)all_cpumask, cpumask);
 }
 
 s32 BPF_STRUCT_OPS(rusty_prep_enable, struct task_struct *p,
 		   struct scx_enable_args *args)
 {
 	struct bpf_cpumask *cpumask;
-	struct task_ctx task_ctx, *map_value;
+	struct task_ctx taskc, *map_value;
 	long ret;
 	pid_t pid;
 
-	memset(&task_ctx, 0, sizeof(task_ctx));
+	memset(&taskc, 0, sizeof(taskc));
 
 	pid = p->pid;
-	ret = bpf_map_update_elem(&task_data, &pid, &task_ctx, BPF_NOEXIST);
+	ret = bpf_map_update_elem(&task_data, &pid, &taskc, BPF_NOEXIST);
 	if (ret) {
 		stat_add(RUSTY_STAT_TASK_GET_ERR, 1);
 		return ret;
@@ -883,7 +878,7 @@ static s32 create_dom(u32 dom_id)
 	}
 
 	for (cpu = 0; cpu < MAX_CPUS; cpu++) {
-		const volatile __u64 *dmask;
+		const volatile u64 *dmask;
 
 		dmask = MEMBER_VPTR(dom_cpumasks, [dom_id][cpu / 64]);
 		if (!dmask) {

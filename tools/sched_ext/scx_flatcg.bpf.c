@@ -510,7 +510,15 @@ void BPF_STRUCT_OPS(fcg_stopping, struct task_struct *p, bool runnable)
 	struct cgroup *cgrp;
 	struct fcg_cgrp_ctx *cgc;
 
-	/* scale the execution time by the inverse of the weight and charge */
+	/*
+	 * Scale the execution time by the inverse of the weight and charge.
+	 *
+	 * Note that the default yield implementation yields by setting
+	 * @p->scx.slice to zero and the following would treat the yielding task
+	 * as if it has consumed all its slice. If this penalizes yielding tasks
+	 * too much, determine the execution time by taking explicit timestamps
+	 * instead of depending on @p->scx.slice.
+	 */
 	if (!fifo_sched)
 		p->scx.dsq_vtime +=
 			(SCX_SLICE_DFL - p->scx.slice) * 100 / p->scx.weight;
