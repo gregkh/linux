@@ -432,7 +432,11 @@ scx_task_iter_next_filtered(struct scx_task_iter *iter)
 	struct task_struct *p;
 
 	while ((p = scx_task_iter_next(iter))) {
-		if (!is_idle_task(p))
+		/*
+		 * is_idle_task() tests %PF_IDLE which may not be set for CPUs
+		 * which haven't yet been onlined. Test sched_class directly.
+		 */
+		if (p->sched_class != &idle_sched_class)
 			return p;
 	}
 	return NULL;
