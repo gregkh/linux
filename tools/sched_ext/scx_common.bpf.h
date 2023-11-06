@@ -104,7 +104,7 @@ BPF_PROG(name, ##args)
 /**
  * MEMBER_VPTR - Obtain the verified pointer to a struct or array member
  * @base: struct or array to index
- * @member: dereferenced member (e.g. ->field, [idx0][idx1], ...)
+ * @member: dereferenced member (e.g. .field, [idx0][idx1], .field[idx0] ...)
  *
  * The verifier often gets confused by the instruction sequence the compiler
  * generates for indexing struct fields or arrays. This macro forces the
@@ -113,19 +113,24 @@ BPF_PROG(name, ##args)
  * generate the pointer to the member to help the verifier.
  *
  * Ideally, we want to abort if the calculated offset is out-of-bounds. However,
- * BPF currently doesn't support abort, so evaluate to NULL instead. The caller
- * must check for NULL and take appropriate action to appease the verifier. To
- * avoid confusing the verifier, it's best to check for NULL and dereference
+ * BPF currently doesn't support abort, so evaluate to %NULL instead. The caller
+ * must check for %NULL and take appropriate action to appease the verifier. To
+ * avoid confusing the verifier, it's best to check for %NULL and dereference
  * immediately.
  *
  *	vptr = MEMBER_VPTR(my_array, [i][j]);
  *	if (!vptr)
  *		return error;
  *	*vptr = new_value;
+ *
+ * sizeof(@base) should encompass the memory area to be accessed and thus can't
+ * be a pointer to the area. Use `MEMBER_VPTR(*ptr, .member)` instead of
+ * `MEMBER_VPTR(ptr, ->member)`.
  */
-#define MEMBER_VPTR(base, member) (typeof(base member) *)({			\
-	u64 __base = (u64)base;							\
-	u64 __addr = (u64)&(base member) - __base;				\
+#define MEMBER_VPTR(base, member) (typeof((base) member) *)({			\
+	u64 __base = (u64)&(base);						\
+	u64 __addr = (u64)&((base) member) - __base;				\
+	_Static_assert(sizeof(base) >= sizeof((base) member));			\
 	asm volatile (								\
 		"if %0 <= %[max] goto +2\n"					\
 		"%0 = 0\n"							\
@@ -133,7 +138,7 @@ BPF_PROG(name, ##args)
 		"%0 += %1\n"							\
 		: "+r"(__addr)							\
 		: "r"(__base),							\
-		  [max]"i"(sizeof(base) - sizeof(base member)));		\
+		  [max]"i"(sizeof(base) - sizeof((base) member)));		\
 	__addr;									\
 })
 
