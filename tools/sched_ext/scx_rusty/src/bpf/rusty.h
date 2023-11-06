@@ -17,9 +17,23 @@ typedef unsigned char u8;
 typedef unsigned int u32;
 typedef unsigned long long u64;
 
-#define	MAX_CPUS 512
-#define	MAX_DOMS 64 /* limited to avoid complex bitmask ops */
-#define	CACHELINE_SIZE 64
+#include "../../../ravg.bpf.h"
+
+enum consts {
+	MAX_CPUS		= 512,
+	MAX_DOMS		= 64,	/* limited to avoid complex bitmask ops */
+	CACHELINE_SIZE		= 64,
+
+	/*
+	 * When userspace load balancer is trying to determine the tasks to push
+	 * out from an overloaded domain, it looks at the the following number
+	 * of recently active tasks of the domain. While this may lead to
+	 * spurious migration victim selection failures in pathological cases,
+	 * this isn't a practical problem as the LB rounds are best-effort
+	 * anyway and will be retried until loads are balanced.
+	 */
+	MAX_DOM_ACTIVE_PIDS	= 1024,
+};
 
 /* Statistics */
 enum stat_idx {
@@ -52,9 +66,9 @@ struct task_ctx {
 	struct bpf_cpumask __kptr *cpumask;
 	u32 dom_id;
 	u32 weight;
-	u64 runnable_at;
+	bool runnable;
+	u64 dom_active_pids_gen;
 	u64 running_at;
-	u64 runnable_for;
 
 	/* The task is a workqueue worker thread */
 	bool is_kworker;
@@ -64,12 +78,18 @@ struct task_ctx {
 
 	/* select_cpu() telling enqueue() to queue directly on the DSQ */
 	bool dispatch_local;
+
+	struct ravg_data dcyc_rd;
 };
 
 struct dom_ctx {
+	u64 vtime_now;
 	struct bpf_cpumask __kptr *cpumask;
 	struct bpf_cpumask __kptr *direct_greedy_cpumask;
-	u64 vtime_now;
+
+	u64 load;
+	struct ravg_data load_rd;
+	u64 dbg_load_printed_at;
 };
 
 #endif /* __RUSTY_H */
