@@ -2,7 +2,6 @@
 #include "ravg.bpf.h"
 
 #define RAVG_FN_ATTRS		inline __attribute__((unused, always_inline))
-//#define RAVG_FN_ATTRS		__attribute__((unused))
 
 static RAVG_FN_ATTRS void ravg_add(u64 *sum, u64 addend)
 {
