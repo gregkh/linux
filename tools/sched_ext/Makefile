@@ -209,7 +209,8 @@ rust-sched-targets := scx_rusty
 # CARGO_OFFLINE=1 (e.g. if building locally), then cargo build will download
 # all of the necessary dependencies, and the deps target can be skipped.
 $(addsuffix _deps,$(rust-sched-targets)):
-	$(Q)cargo fetch --manifest-path=scx_rusty/Cargo.toml
+	$(eval sched=$(@:_deps=))
+	$(Q)cargo fetch --manifest-path=$(sched)/Cargo.toml
 
 $(rust-sched-targets): %: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
 	$(eval export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR))
