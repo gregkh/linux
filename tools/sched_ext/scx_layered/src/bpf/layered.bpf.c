@@ -38,7 +38,7 @@ static inline bool vtime_before(u64 a, u64 b)
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__type(key, __u32);
+	__type(key, u32);
 	__type(value, struct cpu_ctx);
 	__uint(max_entries, 1);
 } cpu_ctxs SEC(".maps");

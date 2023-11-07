@@ -14,8 +14,8 @@
 #endif
 
 #ifndef __KERNEL__
-typedef unsigned long long __u64;
-typedef long long __s64;
+typedef unsigned long long u64;
+typedef long long s64;
 #endif
 
 enum consts {
@@ -50,9 +50,9 @@ enum layer_stat_idx {
 
 struct cpu_ctx {
 	bool			current_preempt;
-	__u64			layer_cycles[MAX_LAYERS];
-	__u64			gstats[NR_GSTATS];
-	__u64			lstats[MAX_LAYERS][NR_LSTATS];
+	u64			layer_cycles[MAX_LAYERS];
+	u64			gstats[NR_GSTATS];
+	u64			lstats[MAX_LAYERS][NR_LSTATS];
 };
 
 enum layer_match_kind {
@@ -83,11 +83,11 @@ struct layer {
 	bool			open;
 	bool			preempt;
 
-	__u64			vtime_now;
-	__u64			nr_tasks;
-	__u64			load_avg;
+	u64			vtime_now;
+	u64			nr_tasks;
+	u64			load_avg;
 
-	__u64			cpus_seq;
+	u64			cpus_seq;
 	unsigned int		refresh_cpus;
 	unsigned char		cpus[MAX_CPUS_U8];
 	unsigned int		nr_cpus;	// managed from BPF side
