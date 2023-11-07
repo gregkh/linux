@@ -18,6 +18,8 @@ typedef unsigned long long u64;
 typedef long long s64;
 #endif
 
+#include "../../../ravg.bpf.h"
+
 enum consts {
 	MAX_CPUS_SHIFT		= 9,
 	MAX_CPUS		= 1 << MAX_CPUS_SHIFT,
@@ -85,7 +87,9 @@ struct layer {
 
 	u64			vtime_now;
 	u64			nr_tasks;
-	u64			load_avg;
+
+	u64			load;
+	struct ravg_data	load_rd;
 
 	u64			cpus_seq;
 	unsigned int		refresh_cpus;

@@ -81,52 +81,59 @@ static void lstat_inc(enum layer_stat_idx idx, struct layer *layer, struct cpu_c
 		scx_bpf_error("invalid layer or stat idxs: %d, %d", idx, layer->idx);
 }
 
-static struct layer_load {
-	u64			load;
-	struct ravg_data	ravg_data;
-} layer_loads[MAX_LAYERS];
+struct lock_wrapper {
+	struct bpf_spin_lock	lock;
+};
 
-private(layer_loads) struct bpf_spin_lock layer_loads_lock;
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, u32);
+	__type(value, struct lock_wrapper);
+	__uint(max_entries, MAX_LAYERS);
+	__uint(map_flags, 0);
+} layer_load_locks SEC(".maps");
 
-const u64 ravg_1 = 1 << RAVG_FRAC_BITS;
-
-static void adj_load(u32 layer, s64 adj, u64 now)
+static void adj_load(u32 layer_idx, s64 adj, u64 now)
 {
-	struct layer_load *load = &layer_loads[layer];
+	struct layer *layer;
+	struct lock_wrapper *lockw;
 
-	if (layer >= nr_layers) {
-		scx_bpf_error("invalid layer %u", layer);
+	layer = MEMBER_VPTR(layers, [layer_idx]);
+	lockw = bpf_map_lookup_elem(&layer_load_locks, &layer_idx);
+
+	if (!layer || !lockw) {
+		scx_bpf_error("Can't access layer%d or its load_lock", layer_idx);
 		return;
 	}
 
-	bpf_spin_lock(&layer_loads_lock);
-	load->load += adj;
-	ravg_accumulate(&load->ravg_data, load->load, now, USAGE_HALF_LIFE);
-	bpf_spin_unlock(&layer_loads_lock);
+	bpf_spin_lock(&lockw->lock);
+	layer->load += adj;
+	ravg_accumulate(&layer->load_rd, layer->load, now, USAGE_HALF_LIFE);
+	bpf_spin_unlock(&lockw->lock);
 
-	if (debug && adj < 0 && (s64)load->load < 0)
+	if (debug && adj < 0 && (s64)layer->load < 0)
 		scx_bpf_error("cpu%d layer%d load underflow (load=%lld adj=%lld)",
-			      bpf_get_smp_processor_id(), layer, load->load, adj);
+			      bpf_get_smp_processor_id(), layer, layer->load, adj);
 }
 
-struct layer_cpumask_container {
+struct layer_cpumask_wrapper {
 	struct bpf_cpumask __kptr *cpumask;
 };
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__type(key, u32);
-	__type(value, struct layer_cpumask_container);
+	__type(value, struct layer_cpumask_wrapper);
 	__uint(max_entries, MAX_LAYERS);
 	__uint(map_flags, 0);
 } layer_cpumasks SEC(".maps");
 
 static struct cpumask *lookup_layer_cpumask(int idx)
 {
-	struct layer_cpumask_container *cont;
+	struct layer_cpumask_wrapper *cpumaskw;
 
-	if ((cont = bpf_map_lookup_elem(&layer_cpumasks, &idx))) {
-		return (struct cpumask *)cont->cpumask;
+	if ((cpumaskw = bpf_map_lookup_elem(&layer_cpumasks, &idx))) {
+		return (struct cpumask *)cpumaskw->cpumask;
 	} else {
 		scx_bpf_error("no layer_cpumask");
 		return NULL;
@@ -135,14 +142,14 @@ static struct cpumask *lookup_layer_cpumask(int idx)
 
 static void refresh_cpumasks(int idx)
 {
-	struct layer_cpumask_container *cont;
+	struct layer_cpumask_wrapper *cpumaskw;
 	struct layer *layer;
 	int cpu, total = 0;
 
 	if (!__sync_val_compare_and_swap(&layers[idx].refresh_cpus, 1, 0))
 		return;
 
-	cont = bpf_map_lookup_elem(&layer_cpumasks, &idx);
+	cpumaskw = bpf_map_lookup_elem(&layer_cpumasks, &idx);
 
 	bpf_for(cpu, 0, nr_possible_cpus) {
 		u8 *u8_ptr;
@@ -150,20 +157,20 @@ static void refresh_cpumasks(int idx)
 		if ((u8_ptr = MEMBER_VPTR(layers, [idx].cpus[cpu / 8]))) {
 			/*
 			 * XXX - The following test should be outside the loop
-			 * but that makes the verifier think that cont->cpumask
-			 * might be NULL in the loop.
+			 * but that makes the verifier think that
+			 * cpumaskw->cpumask might be NULL in the loop.
 			 */
-			barrier_var(cont);
-			if (!cont || !cont->cpumask) {
+			barrier_var(cpumaskw);
+			if (!cpumaskw || !cpumaskw->cpumask) {
 				scx_bpf_error("can't happen");
 				return;
 			}
 
 			if (*u8_ptr & (1 << (cpu % 8))) {
-				bpf_cpumask_set_cpu(cpu, cont->cpumask);
+				bpf_cpumask_set_cpu(cpu, cpumaskw->cpumask);
 				total++;
 			} else {
-				bpf_cpumask_clear_cpu(cpu, cont->cpumask);
+				bpf_cpumask_clear_cpu(cpu, cpumaskw->cpumask);
 			}
 		} else {
 			scx_bpf_error("can't happen");
@@ -191,12 +198,8 @@ int scheduler_tick_fentry(const void *ctx)
 	if (bpf_get_smp_processor_id() != 0)
 		return 0;
 
-	now = bpf_ktime_get_ns();
-	bpf_for(idx, 0, nr_layers) {
-		layers[idx].load_avg = ravg_read(&layer_loads[idx].ravg_data,
-						 now, USAGE_HALF_LIFE);
+	bpf_for(idx, 0, nr_layers)
 		refresh_cpumasks(idx);
-	}
 	return 0;
 }
 
@@ -919,7 +922,7 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(layered_init)
 	}
 
 	bpf_for(i, 0, nr_layers) {
-		struct layer_cpumask_container *cont;
+		struct layer_cpumask_wrapper *cpumaskw;
 
 		layers[i].idx = i;
 
@@ -927,7 +930,7 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(layered_init)
 		if (ret < 0)
 			return ret;
 
-		if (!(cont = bpf_map_lookup_elem(&layer_cpumasks, &i)))
+		if (!(cpumaskw = bpf_map_lookup_elem(&layer_cpumasks, &i)))
 			return -ENONET;
 
 		cpumask = bpf_cpumask_create();
@@ -941,7 +944,7 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(layered_init)
 		 */
 		bpf_cpumask_setall(cpumask);
 
-		cpumask = bpf_kptr_xchg(&cont->cpumask, cpumask);
+		cpumask = bpf_kptr_xchg(&cpumaskw->cpumask, cpumask);
 		if (cpumask)
 			bpf_cpumask_release(cpumask);
 	}

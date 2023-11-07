@@ -37,20 +37,24 @@ use log::trace;
 use serde::Deserialize;
 use serde::Serialize;
 
+const RAVG_FRAC_BITS: u32 = layered_sys::ravg_consts_RAVG_FRAC_BITS;
 const MAX_CPUS: usize = layered_sys::consts_MAX_CPUS as usize;
 const MAX_PATH: usize = layered_sys::consts_MAX_PATH as usize;
 const MAX_COMM: usize = layered_sys::consts_MAX_COMM as usize;
 const MAX_LAYER_MATCH_ORS: usize = layered_sys::consts_MAX_LAYER_MATCH_ORS as usize;
 const MAX_LAYERS: usize = layered_sys::consts_MAX_LAYERS as usize;
-const USAGE_HALF_LIFE: f64 = layered_sys::consts_USAGE_HALF_LIFE as f64 / 1_000_000_000.0;
+const USAGE_HALF_LIFE: u32 = layered_sys::consts_USAGE_HALF_LIFE;
+const USAGE_HALF_LIFE_F64: f64 = USAGE_HALF_LIFE as f64 / 1_000_000_000.0;
 const NR_GSTATS: usize = layered_sys::global_stat_idx_NR_GSTATS as usize;
 const NR_LSTATS: usize = layered_sys::layer_stat_idx_NR_LSTATS as usize;
 const NR_LAYER_MATCH_KINDS: usize = layered_sys::layer_match_kind_NR_LAYER_MATCH_KINDS as usize;
 const CORE_CACHE_LEVEL: u32 = 2;
 
+include!("../../ravg_read.rs.h");
+
 lazy_static::lazy_static! {
     static ref NR_POSSIBLE_CPUS: usize = libbpf_rs::num_possible_cpus().unwrap();
-    static ref USAGE_DECAY: f64 = 0.5f64.powf(1.0 / USAGE_HALF_LIFE as f64);
+    static ref USAGE_DECAY: f64 = 0.5f64.powf(1.0 / USAGE_HALF_LIFE_F64);
 }
 
 /// scx_layered: A highly configurable multi-layer sched_ext scheduler
@@ -312,6 +316,16 @@ struct LayerConfig {
     specs: Vec<LayerSpec>,
 }
 
+fn now_monotonic() -> u64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let ret = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) };
+    assert!(ret == 0);
+    time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+}
+
 fn read_total_cpu(reader: &procfs::ProcReader) -> Result<procfs::CpuStat> {
     reader
         .read_stat()
@@ -490,13 +504,24 @@ struct Stats {
 
 impl Stats {
     fn read_layer_loads(skel: &mut LayeredSkel, nr_layers: usize) -> (f64, Vec<f64>) {
-        let one = skel.rodata().ravg_1;
+	let now_mono = now_monotonic();
         let layer_loads: Vec<f64> = skel
             .bss()
             .layers
             .iter()
             .take(nr_layers)
-            .map(|layer| layer.load_avg as f64 / one as f64)
+            .map(|layer| {
+                let rd = &layer.load_rd;
+                ravg_read(
+                    rd.val,
+                    rd.val_at,
+                    rd.old,
+                    rd.cur,
+                    now_mono,
+                    USAGE_HALF_LIFE,
+                    RAVG_FRAC_BITS,
+                )
+            })
             .collect();
         (layer_loads.iter().sum(), layer_loads)
     }
