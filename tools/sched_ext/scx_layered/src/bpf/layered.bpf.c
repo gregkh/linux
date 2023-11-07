@@ -21,7 +21,7 @@ const volatile unsigned char all_cpus[MAX_CPUS_U8];
 private(all_cpumask) struct bpf_cpumask __kptr *all_cpumask;
 struct layer layers[MAX_LAYERS];
 u32 fallback_cpu;
-u32 preempt_cursor;
+static u32 preempt_cursor;
 
 #define dbg(fmt, args...)	do { if (debug) bpf_printk(fmt, ##args); } while (0)
 #define trace(fmt, args...)	do { if (debug > 1) bpf_printk(fmt, ##args); } while (0)
@@ -148,11 +148,17 @@ static void refresh_cpumasks(int idx)
 		u8 *u8_ptr;
 
 		if ((u8_ptr = MEMBER_VPTR(layers, [idx].cpus[cpu / 8]))) {
+			/*
+			 * XXX - The following test should be outside the loop
+			 * but that makes the verifier think that cont->cpumask
+			 * might be NULL in the loop.
+			 */
 			barrier_var(cont);
 			if (!cont || !cont->cpumask) {
 				scx_bpf_error("can't happen");
 				return;
 			}
+
 			if (*u8_ptr & (1 << (cpu % 8))) {
 				bpf_cpumask_set_cpu(cpu, cont->cpumask);
 				total++;
@@ -311,6 +317,11 @@ static void maybe_refresh_layered_cpumask(struct cpumask *layered_cpumask,
 	if (tctx->layer_cpus_seq == layer_seq)
 		return;
 
+	/*
+	 * XXX - We're assuming that the updated @layer_cpumask matching the new
+	 * @layer_seq is visible which may not be true. For now, leave it as-is.
+	 * Let's update once BPF grows enough memory ordering constructs.
+	 */
 	bpf_cpumask_and((struct bpf_cpumask *)layered_cpumask, layer_cpumask, p->cpus_ptr);
 	tctx->layer_cpus_seq = layer_seq;
 	trace("%s[%d] cpumask refreshed to seq %llu", p->comm, p->pid, layer_seq);
@@ -472,7 +483,13 @@ void BPF_STRUCT_OPS(layered_enqueue, struct task_struct *p, u64 enq_flags)
 			continue;
 
 		scx_bpf_kick_cpu(cpu, SCX_KICK_PREEMPT);
+
+		/*
+		 * Round-robining doesn't have to be strict. Let's not bother
+		 * with atomic ops on $preempt_cursor.
+		 */
 		preempt_cursor = (cpu + 1) % nr_possible_cpus;
+
 		lstat_inc(LSTAT_PREEMPT, layer, cctx);
 		break;
 	}
@@ -499,10 +516,8 @@ void BPF_STRUCT_OPS(layered_dispatch, s32 cpu, struct task_struct *prev)
 		if (!(layer_cpumask = lookup_layer_cpumask(idx)))
 			return;
 
-		if (bpf_cpumask_test_cpu(cpu, layer_cpumask)) {
-			if (scx_bpf_consume(idx))
-				return;
-		} else if (cpu == fallback_cpu && layer->nr_cpus == 0) {
+		if (bpf_cpumask_test_cpu(cpu, layer_cpumask) ||
+		    (cpu == fallback_cpu && layer->nr_cpus == 0)) {
 			if (scx_bpf_consume(idx))
 				return;
 		}
@@ -705,13 +720,17 @@ void BPF_STRUCT_OPS(layered_set_cpumask, struct task_struct *p,
 		    const struct cpumask *cpumask)
 {
 	struct task_ctx *tctx;
-	pid_t pid = p->pid;
 
-	if ((tctx = bpf_map_lookup_elem(&task_ctxs, &pid)) && all_cpumask)
-		tctx->all_cpus_allowed =
-			bpf_cpumask_subset((const struct cpumask *)all_cpumask, cpumask);
-	else
-		scx_bpf_error("missing task_ctx or all_cpumask");
+	if (!(tctx = lookup_task_ctx(p)))
+		return;
+
+	if (!all_cpumask) {
+		scx_bpf_error("NULL all_cpumask");
+		return;
+	}
+
+	tctx->all_cpus_allowed =
+		bpf_cpumask_subset((const struct cpumask *)all_cpumask, cpumask);
 }
 
 s32 BPF_STRUCT_OPS(layered_prep_enable, struct task_struct *p,
@@ -914,6 +933,14 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(layered_init)
 		cpumask = bpf_cpumask_create();
 		if (!cpumask)
 			return -ENOMEM;
+
+		/*
+		 * Start all layers with full cpumask so that everything runs
+		 * everywhere. This will soon be updated by refresh_cpumasks()
+		 * once the scheduler starts running.
+		 */
+		bpf_cpumask_setall(cpumask);
+
 		cpumask = bpf_kptr_xchg(&cont->cpumask, cpumask);
 		if (cpumask)
 			bpf_cpumask_release(cpumask);

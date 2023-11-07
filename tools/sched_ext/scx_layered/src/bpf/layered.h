@@ -27,7 +27,7 @@ enum consts {
 	MAX_COMM		= 16,
 	MAX_LAYER_MATCH_ORS	= 32,
 	MAX_LAYERS		= 16,
-	USAGE_HALF_LIFE		= 1 * 100000000,	/* 100ms */
+	USAGE_HALF_LIFE		= 100000000,	/* 100ms */
 
 	/* XXX remove */
 	MAX_CGRP_PREFIXES = 32

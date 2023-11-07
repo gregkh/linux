@@ -88,11 +88,11 @@ lazy_static::lazy_static! {
 /// * Tasks which are in the cgroup sub-hierarchy under "system.slice".
 /// * Or tasks whose comm starts with "fbagent" and have a nice value > 0.
 ///
-/// Currenlty, the following matches are supported:
+/// Currently, the following matches are supported:
 ///
 /// * CgroupPrefix: Matches the prefix of the cgroup that the task belongs
 ///   to. As this is a string match, whether the pattern has the trailing
-///   '/' makes difference. For example, "TOP/CHILD/" only matches tasks
+///   '/' makes a difference. For example, "TOP/CHILD/" only matches tasks
 ///   which are under that particular cgroup while "TOP/CHILD" also matches
 ///   tasks under "TOP/CHILD0/" or "TOP/CHILD1/".
 ///
@@ -105,7 +105,7 @@ lazy_static::lazy_static! {
 ///   pattern.
 ///
 /// While there are complexity limitations as the matches are performed in
-/// BPF, it is straight-forward to add more types of matches.
+/// BPF, it is straightforward to add more types of matches.
 ///
 /// Policies
 /// ========
@@ -115,8 +115,7 @@ lazy_static::lazy_static! {
 ///   "kind": {
 ///     "Confined": {
 ///       "cpus_range": [1, 8],
-///       "util_range": [0.8, 0.9],
-///       ]
+///       "util_range": [0.8, 0.9]
 ///     }
 ///   }
 ///
@@ -146,7 +145,7 @@ lazy_static::lazy_static! {
 ///   idle CPUs are available.
 ///
 /// Similar to matches, adding new policies and extending existing ones
-/// should be relatively straight-forward.
+/// should be relatively straightforward.
 ///
 /// Configuration example and running scx_layered
 /// =============================================
@@ -255,21 +254,7 @@ struct Opts {
     #[clap(short = 'e', long)]
     example: Option<String>,
 
-    /// Layer specification. An argument should be a string containing one
-    /// specification.
-    ///
-    /// Prefix of cgroup paths whose tasks are in the batch execution layer.
-    /// Tasks in this layer will get the weight-matching CPU cycles but may
-    /// experience higher scheduling latencies.
-    ///
-    /// The paths don't have the leading '/' and may or may not have trailing
-    /// '/'. If there is no trailing '/', the prefix matches any cgroups
-    /// which have matching prefix upto that point.
-    ///
-    /// - "" matches all cgroups.
-    /// - "/" only matches the root cgroup.
-    /// - "workload" matches both "workload/work" and "workload-1/work".
-    /// - "workload/" matches "workload/work" but not "workload-1/work".
+    /// Layer specification. See --help.
     specs: Vec<String>,
 }
 
