@@ -432,7 +432,11 @@ scx_task_iter_next_filtered(struct scx_task_iter *iter)
 	struct task_struct *p;
 
 	while ((p = scx_task_iter_next(iter))) {
-		if (!is_idle_task(p))
+		/*
+		 * is_idle_task() tests %PF_IDLE which may not be set for CPUs
+		 * which haven't yet been onlined. Test sched_class directly.
+		 */
+		if (p->sched_class != &idle_sched_class)
 			return p;
 	}
 	return NULL;
@@ -3682,6 +3686,68 @@ static void kick_cpus_irq_workfn(struct irq_work *irq_work)
 	cpumask_clear(this_rq->scx.cpus_to_kick);
 	cpumask_clear(this_rq->scx.cpus_to_preempt);
 	cpumask_clear(this_rq->scx.cpus_to_wait);
+}
+
+/**
+ * print_scx_info - print out sched_ext scheduler state
+ * @log_lvl: the log level to use when printing
+ * @p: target task
+ *
+ * If @task is running on a sched_ext scheduler, print out the name of the
+ * sched_ext scheduler, and other various scheduler-related debugging
+ * information about the task.
+ *
+ * This function can be safely called on any task as long as the
+ * task_struct itself is accessible. While safe, this function isn't
+ * synchronized and may print out mixups or garbages of limited length.
+ */
+void print_scx_info(const char *log_lvl, struct task_struct *p)
+{
+	struct sched_class *class = NULL;
+	enum scx_ops_enable_state state = scx_ops_enable_state();
+	s64 delta = 0;
+	long ops_state = 0;
+	int task_cpu;
+	struct thread_info *thread_info;
+	const char *all = READ_ONCE(scx_switching_all) ? "+all" : "";
+
+	if (!scx_enabled() || state == SCX_OPS_DISABLED)
+		return;
+
+	/*
+	 * Carefully check if the task was running on sched_ext, and then
+	 * carefully copy the time it's been runnable, and its state.
+	 */
+	copy_from_kernel_nofault(&class, &p->sched_class, sizeof(class));
+	if (!class || class != &ext_sched_class) {
+		printk("%ssched_ext: %s (%s%s)", log_lvl, scx_ops.name,
+		       scx_ops_enable_state_str[state], all);
+		return;
+	}
+
+	copy_from_kernel_nofault(&thread_info, task_thread_info(p),
+				 sizeof(thread_info));
+	copy_from_kernel_nofault(&task_cpu, &thread_info->cpu,
+				 sizeof(task_cpu));
+	if (ops_cpu_valid(task_cpu)) {
+		struct rq *task_rq;
+		u64 rq_clock;
+		unsigned long runnable_at;
+
+		task_rq = cpu_rq(task_cpu);
+		copy_from_kernel_nofault(&rq_clock, &task_rq->clock,
+					 sizeof(rq_clock));
+		copy_from_kernel_nofault(&ops_state, &p->scx.ops_state.counter,
+					 sizeof(ops_state));
+		copy_from_kernel_nofault(&runnable_at, &p->scx.runnable_at,
+					 sizeof(runnable_at));
+		delta = rq_clock - runnable_at;
+	}
+
+	/* Print everything onto one line to conserve console spce. */
+	printk("%ssched_ext: %s (%s%s), task: runnable_at=%+lld state=%#lx",
+	       log_lvl, scx_ops.name, scx_ops_enable_state_str[state], all,
+	       delta, ops_state);
 }
 
 void __init init_sched_ext_class(void)

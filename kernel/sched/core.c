@@ -9267,6 +9267,7 @@ void sched_show_task(struct task_struct *p)
 
 	print_worker_info(KERN_INFO, p);
 	print_stop_info(KERN_INFO, p);
+	print_scx_info(KERN_INFO, p);
 	show_stack(p, NULL, KERN_INFO);
 	put_task_stack(p);
 }
@@ -11421,6 +11422,7 @@ static int cpu_extra_stat_show(struct seq_file *sf,
 	return 0;
 }
 
+#if defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_EXT_GROUP_SCHED)
 static int cpu_local_stat_show(struct seq_file *sf,
 			       struct cgroup_subsys_state *css)
 {
@@ -11438,6 +11440,7 @@ static int cpu_local_stat_show(struct seq_file *sf,
 #endif
 	return 0;
 }
+#endif
 
 #if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_EXT_GROUP_SCHED)
 

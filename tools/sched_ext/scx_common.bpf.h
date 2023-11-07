@@ -104,7 +104,7 @@ BPF_PROG(name, ##args)
 /**
  * MEMBER_VPTR - Obtain the verified pointer to a struct or array member
  * @base: struct or array to index
- * @member: dereferenced member (e.g. ->field, [idx0][idx1], ...)
+ * @member: dereferenced member (e.g. .field, [idx0][idx1], .field[idx0] ...)
  *
  * The verifier often gets confused by the instruction sequence the compiler
  * generates for indexing struct fields or arrays. This macro forces the
@@ -113,19 +113,24 @@ BPF_PROG(name, ##args)
  * generate the pointer to the member to help the verifier.
  *
  * Ideally, we want to abort if the calculated offset is out-of-bounds. However,
- * BPF currently doesn't support abort, so evaluate to NULL instead. The caller
- * must check for NULL and take appropriate action to appease the verifier. To
- * avoid confusing the verifier, it's best to check for NULL and dereference
+ * BPF currently doesn't support abort, so evaluate to %NULL instead. The caller
+ * must check for %NULL and take appropriate action to appease the verifier. To
+ * avoid confusing the verifier, it's best to check for %NULL and dereference
  * immediately.
  *
  *	vptr = MEMBER_VPTR(my_array, [i][j]);
  *	if (!vptr)
  *		return error;
  *	*vptr = new_value;
+ *
+ * sizeof(@base) should encompass the memory area to be accessed and thus can't
+ * be a pointer to the area. Use `MEMBER_VPTR(*ptr, .member)` instead of
+ * `MEMBER_VPTR(ptr, ->member)`.
  */
 #define MEMBER_VPTR(base, member) (typeof((base) member) *)({			\
 	u64 __base = (u64)&(base);						\
 	u64 __addr = (u64)&((base) member) - __base;				\
+	_Static_assert(sizeof(base) >= sizeof((base) member));			\
 	asm volatile (								\
 		"if %0 <= %[max] goto +2\n"					\
 		"%0 = 0\n"							\
@@ -234,109 +239,5 @@ u32 bpf_cpumask_any_and_distribute(const struct cpumask *src1,
 /* rcu */
 void bpf_rcu_read_lock(void) __ksym;
 void bpf_rcu_read_unlock(void) __ksym;
-
-/* BPF core iterators from tools/testing/selftests/bpf/progs/bpf_misc.h */
-struct bpf_iter_num;
-
-extern int bpf_iter_num_new(struct bpf_iter_num *it, int start, int end) __ksym;
-extern int *bpf_iter_num_next(struct bpf_iter_num *it) __ksym;
-extern void bpf_iter_num_destroy(struct bpf_iter_num *it) __ksym;
-
-#ifndef bpf_for_each
-/* bpf_for_each(iter_type, cur_elem, args...) provides generic construct for
- * using BPF open-coded iterators without having to write mundane explicit
- * low-level loop logic. Instead, it provides for()-like generic construct
- * that can be used pretty naturally. E.g., for some hypothetical cgroup
- * iterator, you'd write:
- *
- * struct cgroup *cg, *parent_cg = <...>;
- *
- * bpf_for_each(cgroup, cg, parent_cg, CG_ITER_CHILDREN) {
- *     bpf_printk("Child cgroup id = %d", cg->cgroup_id);
- *     if (cg->cgroup_id == 123)
- *         break;
- * }
- *
- * I.e., it looks almost like high-level for each loop in other languages,
- * supports continue/break, and is verifiable by BPF verifier.
- *
- * For iterating integers, the difference betwen bpf_for_each(num, i, N, M)
- * and bpf_for(i, N, M) is in that bpf_for() provides additional proof to
- * verifier that i is in [N, M) range, and in bpf_for_each() case i is `int
- * *`, not just `int`. So for integers bpf_for() is more convenient.
- *
- * Note: this macro relies on C99 feature of allowing to declare variables
- * inside for() loop, bound to for() loop lifetime. It also utilizes GCC
- * extension: __attribute__((cleanup(<func>))), supported by both GCC and
- * Clang.
- */
-#define bpf_for_each(type, cur, args...) for (							\
-	/* initialize and define destructor */							\
-	struct bpf_iter_##type ___it __attribute__((aligned(8), /* enforce, just in case */,	\
-						    cleanup(bpf_iter_##type##_destroy))),	\
-	/* ___p pointer is just to call bpf_iter_##type##_new() *once* to init ___it */		\
-			       *___p __attribute__((unused)) = (				\
-					bpf_iter_##type##_new(&___it, ##args),			\
-	/* this is a workaround for Clang bug: it currently doesn't emit BTF */			\
-	/* for bpf_iter_##type##_destroy() when used from cleanup() attribute */		\
-					(void)bpf_iter_##type##_destroy, (void *)0);		\
-	/* iteration and termination check */							\
-	(((cur) = bpf_iter_##type##_next(&___it)));						\
-)
-#endif /* bpf_for_each */
-
-#ifndef bpf_for
-/* bpf_for(i, start, end) implements a for()-like looping construct that sets
- * provided integer variable *i* to values starting from *start* through,
- * but not including, *end*. It also proves to BPF verifier that *i* belongs
- * to range [start, end), so this can be used for accessing arrays without
- * extra checks.
- *
- * Note: *start* and *end* are assumed to be expressions with no side effects
- * and whose values do not change throughout bpf_for() loop execution. They do
- * not have to be statically known or constant, though.
- *
- * Note: similarly to bpf_for_each(), it relies on C99 feature of declaring for()
- * loop bound variables and cleanup attribute, supported by GCC and Clang.
- */
-#define bpf_for(i, start, end) for (								\
-	/* initialize and define destructor */							\
-	struct bpf_iter_num ___it __attribute__((aligned(8), /* enforce, just in case */	\
-						 cleanup(bpf_iter_num_destroy))),		\
-	/* ___p pointer is necessary to call bpf_iter_num_new() *once* to init ___it */		\
-			    *___p __attribute__((unused)) = (					\
-				bpf_iter_num_new(&___it, (start), (end)),			\
-	/* this is a workaround for Clang bug: it currently doesn't emit BTF */			\
-	/* for bpf_iter_num_destroy() when used from cleanup() attribute */			\
-				(void)bpf_iter_num_destroy, (void *)0);				\
-	({											\
-		/* iteration step */								\
-		int *___t = bpf_iter_num_next(&___it);						\
-		/* termination and bounds check */						\
-		(___t && ((i) = *___t, (i) >= (start) && (i) < (end)));				\
-	});											\
-)
-#endif /* bpf_for */
-
-#ifndef bpf_repeat
-/* bpf_repeat(N) performs N iterations without exposing iteration number
- *
- * Note: similarly to bpf_for_each(), it relies on C99 feature of declaring for()
- * loop bound variables and cleanup attribute, supported by GCC and Clang.
- */
-#define bpf_repeat(N) for (									\
-	/* initialize and define destructor */							\
-	struct bpf_iter_num ___it __attribute__((aligned(8), /* enforce, just in case */	\
-						 cleanup(bpf_iter_num_destroy))),		\
-	/* ___p pointer is necessary to call bpf_iter_num_new() *once* to init ___it */		\
-			    *___p __attribute__((unused)) = (					\
-				bpf_iter_num_new(&___it, 0, (N)),				\
-	/* this is a workaround for Clang bug: it currently doesn't emit BTF */			\
-	/* for bpf_iter_num_destroy() when used from cleanup() attribute */			\
-				(void)bpf_iter_num_destroy, (void *)0);				\
-	bpf_iter_num_next(&___it);								\
-	/* nothing here  */									\
-)
-#endif /* bpf_repeat */
 
 #endif	/* __SCHED_EXT_COMMON_BPF_H */
