@@ -298,8 +298,8 @@ int BPF_PROG(tp_cgroup_attach_task, struct cgroup *cgrp, const char *cgrp_path,
 	return 0;
 }
 
-SEC("fentry/__set_task_comm")
-int BPF_PROG(fentry_set_task_comm, struct task_struct *p, const char *buf, bool exec)
+SEC("tp_btf/task_rename")
+int BPF_PROG(tp_task_rename, struct task_struct *p, const char *buf)
 {
 	struct task_ctx *tctx;
 
