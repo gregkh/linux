@@ -41,8 +41,8 @@ fn bindgen_layered() {
 }
 
 fn gen_bpf_sched(name: &str) {
-    let bpf_cflags = env::var("SCX_LAYERED_BPF_CFLAGS").unwrap();
-    let clang = env::var("SCX_LAYERED_CLANG").unwrap();
+    let bpf_cflags = env::var("SCX_RUST_BPF_CFLAGS").unwrap();
+    let clang = env::var("SCX_RUST_CLANG").unwrap();
     eprintln!("{}", clang);
     let outpath = format!("./src/bpf/.output/{}.skel.rs", name);
     let skel = Path::new(&outpath);
