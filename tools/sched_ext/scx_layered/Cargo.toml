@@ -1,0 +1,30 @@
+[package]
+name = "scx_layered"
+version = "0.0.1"
+authors = ["Tejun Heo <htejun@meta.com>", "Meta"]
+edition = "2021"
+description = "Userspace scheduling with BPF for Ads"
+license = "GPL-2.0-only"
+
+[dependencies]
+anyhow = "1.0"
+bitvec = "1.0"
+clap = { version = "4.1", features = ["derive", "env", "unicode", "wrap_help"] }
+ctrlc = { version = "3.1", features = ["termination"] }
+fb_procfs = "0.7"
+lazy_static = "1.4"
+libbpf-rs = "0.21"
+libbpf-sys = { version = "1.2.0", features = ["novendor", "static"] }
+libc = "0.2"
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+simplelog = "0.12"
+
+[build-dependencies]
+bindgen = { version = "0.61" }
+libbpf-cargo = "0.21"
+glob = "0.3"
+
+[features]
+enable_backtrace = []

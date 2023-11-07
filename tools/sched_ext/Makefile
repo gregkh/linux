@@ -126,7 +126,7 @@ BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH)					\
 	     -Wall -Wno-compare-distinct-pointer-types				\
 	     -O2 -mcpu=v3
 
-all: scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland scx_rusty
+all: scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland scx_rusty scx_layered
 
 # sort removes libbpf duplicates when not cross-building
 MAKE_DIRS := $(sort $(OBJ_DIR)/libbpf $(HOST_BUILD_DIR)/libbpf		\
@@ -200,7 +200,7 @@ $(c-sched-targets): %: $(BINDIR)/%
 ###################
 # Rust schedulers #
 ###################
-rust-sched-targets := scx_rusty
+rust-sched-targets := scx_rusty scx_layered
 
 # Separate build target that is available for build systems to use to fetch
 # dependencies in a separate step from building. This allows the scheduler
