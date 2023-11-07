@@ -130,7 +130,8 @@ BPF_PROG(name, ##args)
 #define MEMBER_VPTR(base, member) (typeof((base) member) *)({			\
 	u64 __base = (u64)&(base);						\
 	u64 __addr = (u64)&((base) member) - __base;				\
-	_Static_assert(sizeof(base) >= sizeof((base) member));			\
+	_Static_assert(sizeof(base) >= sizeof((base) member),			\
+		       "@base is smaller than @member, is @base a pointer?");	\
 	asm volatile (								\
 		"if %0 <= %[max] goto +2\n"					\
 		"%0 = 0\n"							\

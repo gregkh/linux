@@ -35,8 +35,11 @@ use log::trace;
 use log::warn;
 use ordered_float::OrderedFloat;
 
+const RAVG_FRAC_BITS: u32 = rusty_sys::ravg_consts_RAVG_FRAC_BITS;
 const MAX_DOMS: usize = rusty_sys::consts_MAX_DOMS as usize;
 const MAX_CPUS: usize = rusty_sys::consts_MAX_CPUS as usize;
+
+include!("../../ravg_read.rs.h");
 
 /// scx_rusty is a multi-domain BPF / userspace hybrid scheduler where the BPF
 /// part does simple round robin in each domain and the userspace part
@@ -132,78 +135,6 @@ struct Opts {
     /// times to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     verbose: u8,
-}
-
-fn ravg_read(rd: &rusty_sys::ravg_data, now: u64, half_life: u32) -> f64 {
-    const RAVG_1: f64 = (1 << rusty_sys::ravg_consts_RAVG_FRAC_BITS) as f64;
-    let half_life = half_life as u64;
-    let val = rd.val as f64;
-    let val_at = rd.val_at;
-    let mut old = rd.old as f64 / RAVG_1;
-    let mut cur = rd.cur as f64 / RAVG_1;
-
-    let now = now.max(val_at);
-    let normalized_dur = |dur| dur as f64 / half_life as f64;
-
-    //
-    // The following is f64 implementation of BPF ravg_accumulate().
-    //
-    let cur_seq = (now / half_life) as i64;
-    let val_seq = (val_at / half_life) as i64;
-    let seq_delta = (cur_seq - val_seq) as i32;
-
-    if seq_delta > 0 {
-        let full_decay = 2f64.powi(seq_delta);
-
-        // Decay $old and fold $cur into it.
-        old /= full_decay;
-        old += cur / full_decay;
-        cur = 0.0;
-
-        // Fold the oldest period whicy may be partial.
-        old += val * normalized_dur(half_life - val_at % half_life) / full_decay;
-
-        // Pre-computed decayed full-period values.
-        const FULL_SUMS: [f64; 20] = [
-            0.5,
-            0.75,
-            0.875,
-            0.9375,
-            0.96875,
-            0.984375,
-            0.9921875,
-            0.99609375,
-            0.998046875,
-            0.9990234375,
-            0.99951171875,
-            0.999755859375,
-            0.9998779296875,
-            0.99993896484375,
-            0.999969482421875,
-            0.9999847412109375,
-            0.9999923706054688,
-            0.9999961853027344,
-            0.9999980926513672,
-            0.9999990463256836,
-            // Use the same value beyond this point.
-        ];
-
-        // Fold the full periods in the middle.
-        if seq_delta >= 2 {
-            let idx = ((seq_delta - 2) as usize).min(FULL_SUMS.len() - 1);
-            old += val * FULL_SUMS[idx];
-        }
-
-        // Accumulate the current period duration into @cur.
-        cur += val * normalized_dur(now % half_life);
-    } else {
-        cur += val * normalized_dur(now - val_at);
-    }
-
-    //
-    // The following is the blending part of BPF ravg_read().
-    //
-    old * (1.0 - normalized_dur(now % half_life) / 2.0) + cur / 2.0
 }
 
 fn now_monotonic() -> u64 {
@@ -623,7 +554,16 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                     &*(dom_ctx_map_elem.as_slice().as_ptr() as *const rusty_sys::dom_ctx)
                 };
 
-                self.dom_loads[i] = ravg_read(&dom_ctx.load_rd, now_mono, load_half_life);
+                let rd = &dom_ctx.load_rd;
+                self.dom_loads[i] = ravg_read(
+                    rd.val,
+                    rd.val_at,
+                    rd.old,
+                    rd.cur,
+                    now_mono,
+                    load_half_life,
+                    RAVG_FRAC_BITS,
+                );
 
                 load_sum += self.dom_loads[i];
             }
@@ -697,8 +637,17 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                     continue;
                 }
 
-                let load =
-                    task_ctx.weight as f64 * ravg_read(&task_ctx.dcyc_rd, now_mono, load_half_life);
+                let rd = &task_ctx.dcyc_rd;
+                let load = task_ctx.weight as f64
+                    * ravg_read(
+                        rd.val,
+                        rd.val_at,
+                        rd.old,
+                        rd.cur,
+                        now_mono,
+                        load_half_life,
+                        RAVG_FRAC_BITS,
+                    );
 
                 tasks_by_load.insert(
                     OrderedFloat(load),
