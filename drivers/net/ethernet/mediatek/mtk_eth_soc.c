@@ -2211,7 +2211,7 @@ rx_done:
 	net_dim(&eth->rx_dim, dim_sample);
 
 	if (xdp_flush)
-		xdp_do_flush_map();
+		xdp_do_flush();
 
 	return done;
 }
@@ -3172,8 +3172,8 @@ static irqreturn_t mtk_handle_irq_rx(int irq, void *_eth)
 
 	eth->rx_events++;
 	if (likely(napi_schedule_prep(&eth->rx_napi))) {
-		__napi_schedule(&eth->rx_napi);
 		mtk_rx_irq_disable(eth, eth->soc->txrx.rx_irq_done_mask);
+		__napi_schedule(&eth->rx_napi);
 	}
 
 	return IRQ_HANDLED;
@@ -3185,8 +3185,8 @@ static irqreturn_t mtk_handle_irq_tx(int irq, void *_eth)
 
 	eth->tx_events++;
 	if (likely(napi_schedule_prep(&eth->tx_napi))) {
-		__napi_schedule(&eth->tx_napi);
 		mtk_tx_irq_disable(eth, MTK_TX_DONE_INT);
+		__napi_schedule(&eth->tx_napi);
 	}
 
 	return IRQ_HANDLED;
@@ -3329,7 +3329,7 @@ static int mtk_device_event(struct notifier_block *n, unsigned long event, void 
 	return NOTIFY_DONE;
 
 found:
-	if (!dsa_slave_dev_check(dev))
+	if (!dsa_user_dev_check(dev))
 		return NOTIFY_DONE;
 
 	if (__ethtool_get_link_ksettings(dev, &s))

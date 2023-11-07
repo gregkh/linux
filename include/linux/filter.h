@@ -1025,12 +1025,6 @@ int xdp_do_redirect_frame(struct net_device *dev,
 			  struct bpf_prog *prog);
 void xdp_do_flush(void);
 
-/* The xdp_do_flush_map() helper has been renamed to drop the _map suffix, as
- * it is no longer only flushing maps. Keep this define for compatibility
- * until all drivers are updated - do not use xdp_do_flush_map() in new code!
- */
-#define xdp_do_flush_map xdp_do_flush
-
 void bpf_warn_invalid_xdp_action(struct net_device *dev, struct bpf_prog *prog, u32 act);
 
 #ifdef CONFIG_INET
@@ -1335,6 +1329,7 @@ struct bpf_sock_addr_kern {
 	 */
 	u64 tmp_reg;
 	void *t_ctx;	/* Attach type specific context. */
+	u32 uaddrlen;
 };
 
 struct bpf_sock_ops_kern {

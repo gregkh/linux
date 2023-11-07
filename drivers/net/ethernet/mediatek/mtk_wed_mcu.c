@@ -32,12 +32,12 @@ static struct mtk_wed_wo_memory_region mem_region[] = {
 	},
 };
 
-static u32 wo_r32(struct mtk_wed_wo *wo, u32 reg)
+static u32 wo_r32(u32 reg)
 {
 	return readl(mem_region[MTK_WED_WO_REGION_BOOT].addr + reg);
 }
 
-static void wo_w32(struct mtk_wed_wo *wo, u32 reg, u32 val)
+static void wo_w32(u32 reg, u32 val)
 {
 	writel(val, mem_region[MTK_WED_WO_REGION_BOOT].addr + reg);
 }
@@ -258,15 +258,11 @@ mtk_wed_get_memory_region(struct mtk_wed_hw *hw, int index,
 }
 
 static int
-mtk_wed_mcu_run_firmware(struct mtk_wed_wo *wo, const struct firmware *fw,
-			 struct mtk_wed_wo_memory_region *region)
+mtk_wed_mcu_run_firmware(struct mtk_wed_wo *wo, const struct firmware *fw)
 {
 	const u8 *first_region_ptr, *region_ptr, *trailer_ptr, *ptr = fw->data;
 	const struct mtk_wed_fw_trailer *trailer;
 	const struct mtk_wed_fw_region *fw_region;
-
-	if (!region->phy_addr || !region->size)
-		return 0;
 
 	trailer_ptr = fw->data + fw->size - sizeof(*trailer);
 	trailer = (const struct mtk_wed_fw_trailer *)trailer_ptr;
@@ -275,33 +271,41 @@ mtk_wed_mcu_run_firmware(struct mtk_wed_wo *wo, const struct firmware *fw,
 
 	while (region_ptr < trailer_ptr) {
 		u32 length;
+		int i;
 
 		fw_region = (const struct mtk_wed_fw_region *)region_ptr;
 		length = le32_to_cpu(fw_region->len);
-
-		if (region->phy_addr != le32_to_cpu(fw_region->addr))
-			goto next;
-
-		if (region->size < length)
-			goto next;
-
 		if (first_region_ptr < ptr + length)
 			goto next;
 
-		if (region->shared && region->consumed)
-			return 0;
+		for (i = 0; i < ARRAY_SIZE(mem_region); i++) {
+			struct mtk_wed_wo_memory_region *region;
 
-		if (!region->shared || !region->consumed) {
-			memcpy_toio(region->addr, ptr, length);
-			region->consumed = true;
-			return 0;
+			region = &mem_region[i];
+			if (region->phy_addr != le32_to_cpu(fw_region->addr))
+				continue;
+
+			if (region->size < length)
+				continue;
+
+			if (region->shared && region->consumed)
+				break;
+
+			if (!region->shared || !region->consumed) {
+				memcpy_toio(region->addr, ptr, length);
+				region->consumed = true;
+				break;
+			}
 		}
+
+		if (i == ARRAY_SIZE(mem_region))
+			return -EINVAL;
 next:
 		region_ptr += sizeof(*fw_region);
 		ptr += length;
 	}
 
-	return -EINVAL;
+	return 0;
 }
 
 static int
@@ -360,24 +364,22 @@ mtk_wed_mcu_load_firmware(struct mtk_wed_wo *wo)
 	dev_info(wo->hw->dev, "MTK WED WO Chip ID %02x Region %d\n",
 		 trailer->chip_id, trailer->num_region);
 
-	for (i = 0; i < ARRAY_SIZE(mem_region); i++) {
-		ret = mtk_wed_mcu_run_firmware(wo, fw, &mem_region[i]);
-		if (ret)
-			goto out;
-	}
+	ret = mtk_wed_mcu_run_firmware(wo, fw);
+	if (ret)
+		goto out;
 
 	/* set the start address */
 	if (!mtk_wed_is_v3_or_greater(wo->hw) && wo->hw->index)
 		boot_cr = MTK_WO_MCU_CFG_LS_WA_BOOT_ADDR_ADDR;
 	else
 		boot_cr = MTK_WO_MCU_CFG_LS_WM_BOOT_ADDR_ADDR;
-	wo_w32(wo, boot_cr, mem_region[MTK_WED_WO_REGION_EMI].phy_addr >> 16);
+	wo_w32(boot_cr, mem_region[MTK_WED_WO_REGION_EMI].phy_addr >> 16);
 	/* wo firmware reset */
-	wo_w32(wo, MTK_WO_MCU_CFG_LS_WF_MCCR_CLR_ADDR, 0xc00);
+	wo_w32(MTK_WO_MCU_CFG_LS_WF_MCCR_CLR_ADDR, 0xc00);
 
-	val = wo_r32(wo, MTK_WO_MCU_CFG_LS_WF_MCU_CFG_WM_WA_ADDR) |
+	val = wo_r32(MTK_WO_MCU_CFG_LS_WF_MCU_CFG_WM_WA_ADDR) |
 	      MTK_WO_MCU_CFG_LS_WF_WM_WA_WM_CPU_RSTB_MASK;
-	wo_w32(wo, MTK_WO_MCU_CFG_LS_WF_MCU_CFG_WM_WA_ADDR, val);
+	wo_w32(MTK_WO_MCU_CFG_LS_WF_MCU_CFG_WM_WA_ADDR, val);
 out:
 	release_firmware(fw);
 
