@@ -113,7 +113,7 @@ static void adj_load(u32 layer_idx, s64 adj, u64 now)
 
 	if (debug && adj < 0 && (s64)layer->load < 0)
 		scx_bpf_error("cpu%d layer%d load underflow (load=%lld adj=%lld)",
-			      bpf_get_smp_processor_id(), layer, layer->load, adj);
+			      bpf_get_smp_processor_id(), layer_idx, layer->load, adj);
 }
 
 struct layer_cpumask_wrapper {
@@ -192,14 +192,11 @@ static void refresh_cpumasks(int idx)
 SEC("fentry/scheduler_tick")
 int scheduler_tick_fentry(const void *ctx)
 {
-	u64 now;
 	int idx;
 
-	if (bpf_get_smp_processor_id() != 0)
-		return 0;
-
-	bpf_for(idx, 0, nr_layers)
-		refresh_cpumasks(idx);
+	if (bpf_get_smp_processor_id() == 0)
+		bpf_for(idx, 0, nr_layers)
+			refresh_cpumasks(idx);
 	return 0;
 }
 
