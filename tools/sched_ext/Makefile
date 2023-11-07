@@ -163,8 +163,9 @@ else
 	$(Q)cp "$(VMLINUX_H)" $@
 endif
 
-$(SCXOBJ_DIR)/%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h scx_common.bpf.h user_exit_info.h	\
-	| $(BPFOBJ) $(SCXOBJ_DIR)
+$(SCXOBJ_DIR)/%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h scx_common.bpf.h	\
+		       user_exit_info.h ravg.bpf.h ravg_impl.bpf.h		\
+		       | $(BPFOBJ) $(SCXOBJ_DIR)
 	$(call msg,CLNG-BPF,,$(notdir $@))
 	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -c $< -o $@
 
