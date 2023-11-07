@@ -11421,6 +11421,7 @@ static int cpu_extra_stat_show(struct seq_file *sf,
 	return 0;
 }
 
+#if defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_EXT_GROUP_SCHED)
 static int cpu_local_stat_show(struct seq_file *sf,
 			       struct cgroup_subsys_state *css)
 {
@@ -11438,6 +11439,7 @@ static int cpu_local_stat_show(struct seq_file *sf,
 #endif
 	return 0;
 }
+#endif
 
 #if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_EXT_GROUP_SCHED)
 
