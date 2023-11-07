@@ -239,6 +239,7 @@ static void ovl_file_accessed(struct file *file)
 {
 	struct inode *inode, *upperinode;
 	struct timespec64 ctime, uctime;
+	struct timespec64 mtime, umtime;
 
 	if (file->f_flags & O_NOATIME)
 		return;
@@ -251,9 +252,11 @@ static void ovl_file_accessed(struct file *file)
 
 	ctime = inode_get_ctime(inode);
 	uctime = inode_get_ctime(upperinode);
-	if ((!timespec64_equal(&inode->i_mtime, &upperinode->i_mtime) ||
-	     !timespec64_equal(&ctime, &uctime))) {
-		inode->i_mtime = upperinode->i_mtime;
+	mtime = inode_get_mtime(inode);
+	umtime = inode_get_mtime(upperinode);
+	if ((!timespec64_equal(&mtime, &umtime)) ||
+	     !timespec64_equal(&ctime, &uctime)) {
+		inode_set_mtime_to_ts(inode, inode_get_mtime(upperinode));
 		inode_set_ctime_to_ts(inode, uctime);
 	}
 
@@ -341,7 +344,6 @@ static ssize_t ovl_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 		if (!aio_req)
 			goto out;
 
-		real.flags = 0;
 		aio_req->orig_iocb = iocb;
 		kiocb_clone(&aio_req->iocb, iocb, get_file(real.file));
 		aio_req->iocb.ki_complete = ovl_aio_rw_complete;
@@ -391,6 +393,12 @@ static ssize_t ovl_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 	if (!ovl_should_sync(OVL_FS(inode->i_sb)))
 		ifl &= ~(IOCB_DSYNC | IOCB_SYNC);
 
+	/*
+	 * Overlayfs doesn't support deferred completions, don't copy
+	 * this property in case it is set by the issuer.
+	 */
+	ifl &= ~IOCB_DIO_CALLER_COMP;
+
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	if (is_sync_kiocb(iocb)) {
 		file_start_write(real.file);
@@ -407,7 +415,6 @@ static ssize_t ovl_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 		if (!aio_req)
 			goto out;
 
-		real.flags = 0;
 		aio_req->orig_iocb = iocb;
 		kiocb_clone(&aio_req->iocb, iocb, get_file(real.file));
 		aio_req->iocb.ki_flags = ifl;

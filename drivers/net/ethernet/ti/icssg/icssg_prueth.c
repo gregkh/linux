@@ -19,11 +19,11 @@
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/phy.h>
+#include <linux/property.h>
 #include <linux/remoteproc/pruss.h>
 #include <linux/regmap.h>
 #include <linux/remoteproc.h>
@@ -316,12 +316,12 @@ static int prueth_init_tx_chns(struct prueth_emac *emac)
 			goto fail;
 		}
 
-		tx_chn->irq = k3_udma_glue_tx_get_irq(tx_chn->tx_chn);
-		if (tx_chn->irq <= 0) {
-			ret = -EINVAL;
+		ret = k3_udma_glue_tx_get_irq(tx_chn->tx_chn);
+		if (ret < 0) {
 			netdev_err(ndev, "failed to get tx irq\n");
 			goto fail;
 		}
+		tx_chn->irq = ret;
 
 		snprintf(tx_chn->name, sizeof(tx_chn->name), "%s-tx%d",
 			 dev_name(dev), tx_chn->id);
@@ -1659,6 +1659,19 @@ static void emac_ndo_get_stats64(struct net_device *ndev,
 	stats->tx_dropped = ndev->stats.tx_dropped;
 }
 
+static int emac_ndo_get_phys_port_name(struct net_device *ndev, char *name,
+				       size_t len)
+{
+	struct prueth_emac *emac = netdev_priv(ndev);
+	int ret;
+
+	ret = snprintf(name, len, "p%d", emac->port_id);
+	if (ret >= len)
+		return -EINVAL;
+
+	return 0;
+}
+
 static const struct net_device_ops emac_netdev_ops = {
 	.ndo_open = emac_ndo_open,
 	.ndo_stop = emac_ndo_stop,
@@ -1669,6 +1682,7 @@ static const struct net_device_ops emac_netdev_ops = {
 	.ndo_set_rx_mode = emac_ndo_set_rx_mode,
 	.ndo_eth_ioctl = emac_ndo_ioctl,
 	.ndo_get_stats64 = emac_ndo_get_stats64,
+	.ndo_get_phys_port_name = emac_ndo_get_phys_port_name,
 };
 
 /* get emac_port corresponding to eth_node name */
@@ -1934,8 +1948,6 @@ static void prueth_put_cores(struct prueth *prueth, int slice)
 		pru_rproc_put(prueth->pru[slice]);
 }
 
-static const struct of_device_id prueth_dt_match[];
-
 static int prueth_probe(struct platform_device *pdev)
 {
 	struct device_node *eth_node, *eth_ports_node;
@@ -1944,7 +1956,6 @@ static int prueth_probe(struct platform_device *pdev)
 	struct genpool_data_align gp_data = {
 		.align = SZ_64K,
 	};
-	const struct of_device_id *match;
 	struct device *dev = &pdev->dev;
 	struct device_node *np;
 	struct prueth *prueth;
@@ -1954,17 +1965,13 @@ static int prueth_probe(struct platform_device *pdev)
 
 	np = dev->of_node;
 
-	match = of_match_device(prueth_dt_match, dev);
-	if (!match)
-		return -ENODEV;
-
 	prueth = devm_kzalloc(dev, sizeof(*prueth), GFP_KERNEL);
 	if (!prueth)
 		return -ENOMEM;
 
 	dev_set_drvdata(dev, prueth);
 	prueth->pdev = pdev;
-	prueth->pdata = *(const struct prueth_pdata *)match->data;
+	prueth->pdata = *(const struct prueth_pdata *)device_get_match_data(dev);
 
 	prueth->dev = dev;
 	eth_ports_node = of_get_child_by_name(np, "ethernet-ports");

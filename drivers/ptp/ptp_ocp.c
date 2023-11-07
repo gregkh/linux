@@ -4046,7 +4046,6 @@ ptp_ocp_device_init(struct ptp_ocp *bp, struct pci_dev *pdev)
 	return 0;
 
 out:
-	ptp_ocp_dev_release(&bp->dev);
 	put_device(&bp->dev);
 	return err;
 }
@@ -4255,7 +4254,7 @@ static int ptp_ocp_dpll_state_get(const struct dpll_pin *pin, void *pin_priv,
 }
 
 static int ptp_ocp_dpll_mode_get(const struct dpll_device *dpll, void *priv,
-				 u32 *mode, struct netlink_ext_ack *extack)
+				 enum dpll_mode *mode, struct netlink_ext_ack *extack)
 {
 	*mode = DPLL_MODE_AUTOMATIC;
 	return 0;
@@ -4453,7 +4452,7 @@ ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	for (i = 0; i < OCP_SMA_NUM; i++) {
 		bp->sma[i].dpll_pin = dpll_pin_get(clkid, i, THIS_MODULE, &bp->sma[i].dpll_prop);
 		if (IS_ERR(bp->sma[i].dpll_pin)) {
-			err = PTR_ERR(bp->dpll);
+			err = PTR_ERR(bp->sma[i].dpll_pin);
 			goto out_dpll;
 		}
 
