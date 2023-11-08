@@ -179,7 +179,7 @@ $(INCLUDE_DIR)/%.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BPFTOO
 	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $@
 	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $(@:.skel.h=.subskel.h)
 
-SCX_COMMON_DEPS := user_exit_info.h scx_user_common.h | $(BINDIR)
+SCX_COMMON_DEPS := scx_common.h user_exit_info.h | $(BINDIR)
 
 ################
 # C schedulers #
