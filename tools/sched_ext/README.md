@@ -111,7 +111,7 @@ void BPF_STRUCT_OPS(example_enable, struct task_struct *p,
 // vmlinux.h provides the definition for struct sched_ext_ops.
 SEC(".struct_ops.link")
 struct sched_ext_ops example_ops {
-	.enable	= (void *)example_enable,			
+	.enable	= (void *)example_enable,
 	.name	= "example",
 }
 ```
