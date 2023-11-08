@@ -41,20 +41,21 @@ const MAX_CPUS: usize = rusty_sys::consts_MAX_CPUS as usize;
 
 include!("../../ravg_read.rs.h");
 
-/// scx_rusty is a multi-domain BPF / userspace hybrid scheduler where the BPF
-/// part does simple round robin in each domain and the userspace part
-/// calculates the load factor of each domain and tells the BPF part how to load
-/// balance the domains.
+/// scx_rusty: A multi-domain BPF / userspace hybrid scheduler
+///
+/// The BPF part does simple vtime or round robin scheduling in each domain
+/// and the userspace part calculates the load factor of each domain and
+/// tells the BPF part how to load balance the domains.
 ///
 /// This scheduler demonstrates dividing scheduling logic between BPF and
-/// userspace and using rust to build the userspace part. An earlier variant of
-/// this scheduler was used to balance across six domains, each representing a
-/// chiplet in a six-chiplet AMD processor, and could match the performance of
-/// production setup using CFS.
+/// userspace and using rust to build the userspace part. An earlier variant
+/// of this scheduler was used to balance across six domains, each
+/// representing a chiplet in a six-chiplet AMD processor, and could match
+/// the performance of production setup using CFS.
 ///
-/// WARNING: scx_rusty currently assumes that all domains have equal processing
-/// power and at similar distances from each other. This limitation will be
-/// removed in the future.
+/// WARNING: scx_rusty currently assumes that all domains have equal
+/// processing power and at similar distances from each other. This
+/// limitation will be removed in the future.
 #[derive(Debug, Parser)]
 struct Opts {
     /// Scheduling slice duration in microseconds.
