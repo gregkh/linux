@@ -33,19 +33,18 @@ is actively working on adding a BPF backend compiler as well, but are still
 missing some features such as BTF type tags which are necessary for using
 kptrs.
 
-2. rust >= 1.70.0
+2. pahole >= 1.25
 
-scx_rusty's user space load balancing component is written in Rust, and uses
-features present in the rust toolchain >= 1.70.0. You should be able to use the
-stable build from rustup, but if that doesn't work, try using the rustup
-nightly build.
+You may need pahole in order to generate BTF from DWARF.
+
+3. rust >= 1.70.0
+
+Rust schedulers uses features present in the rust toolchain >= 1.70.0. You
+should be able to use the stable build from rustup, but if that doesn't
+work, try using the rustup nightly build.
 
 There are other requirements as well, such as make, but these are the main /
 non-trivial ones.
-
-3. pahole >= 1.25
-
-You may need pahole in order to generate BTF from DWARF.
 
 ## Compiling the kernel
 
@@ -162,32 +161,46 @@ schedulers.
 
 --------------------------------------------------------------------------------
 
-## Rusty
+## scx_simple
 
 ### Overview
 
-A multi-domain, BPF / user space hybrid scheduler. The BPF portion of the
-scheduler does a simple round robin in each domain, and the user space portion
-(written in Rust) calculates the load factor of each domain, and informs BPF of
-how tasks should be load balanced accordingly.
+A simple scheduler that provides an example of a minimal sched_ext
+scheduler. scx_simple can be run in either global weighted vtime mode, or
+FIFO mode.
 
 ### Typical Use Case
 
-Rusty is designed to be flexible, and accommodate different architectures and
-workloads. Various load balancing thresholds (e.g. greediness, frequenty, etc),
-as well as how Rusty should partition the system into scheduling domains, can
-be tuned to achieve the optimal configuration for any given system or workload.
+Though very simple, this scheduler should perform reasonably well on
+single-socket CPUs with a uniform L3 cache topology. Note that while running in
+global FIFO mode may work well for some workloads, saturating threads can
+easily drown out inactive ones.
 
 ### Production Ready?
 
-Yes. If tuned correctly, rusty should be performant across various CPU
-architectures and workloads. Rusty by default creates a separate scheduling
-domain per-LLC, so its default configuration may be performant as well.
+This scheduler could be used in a production environment, assuming the hardware
+constraints enumerated above, and assuming the workload can accommodate a
+simple scheduling policy.
 
-That said, you may run into an issue with infeasible weights, where a task with
-a very high weight may cause the scheduler to incorrectly leave cores idle
-because it thinks they're necessary to accommodate the compute for a single
-task. This can also happen in CFS, and should soon be addressed for rusty.
+--------------------------------------------------------------------------------
+
+## scx_qmap
+
+### Overview
+
+Another simple, yet slightly more complex scheduler that provides an example of
+a basic weighted FIFO queuing policy. It also provides examples of some common
+useful BPF features, such as sleepable per-task storage allocation in the
+`ops.prep_enable()` callback, and using the `BPF_MAP_TYPE_QUEUE` map type to
+enqueue tasks. It also illustrates how core-sched support could be implemented.
+
+### Typical Use Case
+
+Purely used to illustrate sched_ext features.
+
+### Production Ready?
+
+No
 
 --------------------------------------------------------------------------------
 
@@ -216,31 +229,6 @@ and does not yet have any kind of priority mechanism.
 
 --------------------------------------------------------------------------------
 
-## scx_flatcg
-
-### Overview
-
-A flattened cgroup hierarchy scheduler. This scheduler implements hierarchical
-weight-based cgroup CPU control by flattening the cgroup hierarchy into a
-single layer, by compounding the active weight share at each level. The effect
-of this is a much more performant CPU controller, which does not need to
-descend down cgroup trees in order to properly compute a cgroup's share.
-
-### Typical Use Case
-
-This scheduler could be useful for any typical workload requiring a CPU
-controller, but which cannot tolerate the higher overheads of the fair CPU
-controller.
-
-### Production Ready?
-
-Yes, though the scheduler (currently) does not adequately accommodate
-thundering herds of cgroups. If, for example, many cgroups which are nested
-behind a low-priority cgroup were to wake up around the same time, they may be
-able to consume more CPU cycles than they are entitled to.
-
---------------------------------------------------------------------------------
-
 ## scx_pair
 
 ### Overview
@@ -263,46 +251,28 @@ No
 
 --------------------------------------------------------------------------------
 
-## scx_qmap
+## scx_flatcg
 
 ### Overview
 
-Another simple, yet slightly more complex scheduler that provides an example of
-a basic weighted FIFO queuing policy. It also provides examples of some common
-useful BPF features, such as sleepable per-task storage allocation in the
-`ops.prep_enable()` callback, and using the `BPF_MAP_TYPE_QUEUE` map type to
-enqueue tasks. It also illustrates how core-sched support could be implemented.
+A flattened cgroup hierarchy scheduler. This scheduler implements hierarchical
+weight-based cgroup CPU control by flattening the cgroup hierarchy into a
+single layer, by compounding the active weight share at each level. The effect
+of this is a much more performant CPU controller, which does not need to
+descend down cgroup trees in order to properly compute a cgroup's share.
 
 ### Typical Use Case
 
-Purely used to illustrate sched_ext features.
+This scheduler could be useful for any typical workload requiring a CPU
+controller, but which cannot tolerate the higher overheads of the fair CPU
+controller.
 
 ### Production Ready?
 
-No
-
---------------------------------------------------------------------------------
-
-## scx_simple
-
-### Overview
-
-A simple scheduler that provides an example of a minimal sched_ext
-scheduler. scx_simple can be run in either global weighted vtime mode, or
-FIFO mode.
-
-### Typical Use Case
-
-Though very simple, this scheduler should perform reasonably well on
-single-socket CPUs with a uniform L3 cache topology. Note that while running in
-global FIFO mode may work well for some workloads, saturating threads can
-easily drown out inactive ones.
-
-### Production Ready?
-
-This scheduler could be used in a production environment, assuming the hardware
-constraints enumerated above, and assuming the workload can accommodate a
-simple scheduling policy.
+Yes, though the scheduler (currently) does not adequately accommodate
+thundering herds of cgroups. If, for example, many cgroups which are nested
+behind a low-priority cgroup were to wake up around the same time, they may be
+able to consume more CPU cycles than they are entitled to.
 
 --------------------------------------------------------------------------------
 
@@ -336,6 +306,37 @@ No. This scheduler uses an ordered list for vtime scheduling, and is stricly
 less performant than just using something like `scx_simple`. It is purely
 meant to illustrate that it's possible to build a user space scheduler on
 top of sched_ext.
+
+--------------------------------------------------------------------------------
+
+## scx_rusty
+
+### Overview
+
+A multi-domain, BPF / user space hybrid scheduler. The BPF portion of the
+scheduler does a simple round robin in each domain, and the user space portion
+(written in Rust) calculates the load factor of each domain, and informs BPF of
+how tasks should be load balanced accordingly.
+
+### Typical Use Case
+
+Rusty is designed to be flexible, and accommodate different architectures and
+workloads. Various load balancing thresholds (e.g. greediness, frequenty, etc),
+as well as how Rusty should partition the system into scheduling domains, can
+be tuned to achieve the optimal configuration for any given system or workload.
+
+### Production Ready?
+
+Yes. If tuned correctly, rusty should be performant across various CPU
+architectures and workloads. Rusty by default creates a separate scheduling
+domain per-LLC, so its default configuration may be performant as well.
+
+That said, you may run into an issue with infeasible weights, where a task with
+a very high weight may cause the scheduler to incorrectly leave cores idle
+because it thinks they're necessary to accommodate the compute for a single
+task. This can also happen in CFS, and should soon be addressed for rusty.
+
+--------------------------------------------------------------------------------
 
 # Troubleshooting
 
