@@ -504,7 +504,7 @@ struct Stats {
 
 impl Stats {
     fn read_layer_loads(skel: &mut LayeredSkel, nr_layers: usize) -> (f64, Vec<f64>) {
-	let now_mono = now_monotonic();
+        let now_mono = now_monotonic();
         let layer_loads: Vec<f64> = skel
             .bss()
             .layers
@@ -658,11 +658,7 @@ impl UserExitInfo {
             (None, None)
         };
 
-        Ok(Self {
-            kind,
-            reason,
-            msg,
-        })
+        Ok(Self { kind, reason, msg })
     }
 
     fn exited(bpf_uei: &layered_bss_types::user_exit_info) -> Result<bool> {

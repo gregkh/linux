@@ -832,7 +832,8 @@ void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
 
 		pidp = MEMBER_VPTR(dom_active_pids, [dom_id].pids[idx]);
 		if (!pidp) {
-			scx_bpf_error("dom_active_pids[%u][%u] indexing failed", dom_id, idx);
+			scx_bpf_error("dom_active_pids[%u][%llu] indexing failed",
+				      dom_id, idx);
 			return;
 		}
 
