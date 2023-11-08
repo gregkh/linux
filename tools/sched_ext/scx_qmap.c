@@ -10,9 +10,8 @@
 #include <signal.h>
 #include <libgen.h>
 #include <bpf/bpf.h>
-#include "user_exit_info.h"
+#include "scx_common.h"
 #include "scx_qmap.skel.h"
-#include "scx_user_common.h"
 
 const char help_fmt[] =
 "A simple five-level FIFO queue sched_ext scheduler.\n"

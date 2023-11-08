@@ -98,7 +98,7 @@ static DEFINE_STATIC_KEY_FALSE(scx_builtin_idle_enabled);
 struct static_key_false scx_has_op[SCX_NR_ONLINE_OPS] =
 	{ [0 ... SCX_NR_ONLINE_OPS-1] = STATIC_KEY_FALSE_INIT };
 
-static atomic_t scx_exit_type = ATOMIC_INIT(SCX_EXIT_DONE);
+static atomic_t scx_exit_kind = ATOMIC_INIT(SCX_EXIT_DONE);
 static struct scx_exit_info scx_exit_info;
 
 static atomic_long_t scx_nr_rejected = ATOMIC_LONG_INIT(0);
@@ -2157,7 +2157,7 @@ static bool check_rq_for_timeouts(struct rq *rq)
 					last_runnable + scx_watchdog_timeout))) {
 			u32 dur_ms = jiffies_to_msecs(jiffies - last_runnable);
 
-			scx_ops_error_type(SCX_EXIT_ERROR_STALL,
+			scx_ops_error_kind(SCX_EXIT_ERROR_STALL,
 					   "%s[%d] failed to run for %u.%03us",
 					   p->comm, p->pid,
 					   dur_ms / 1000, dur_ms % 1000);
@@ -2914,24 +2914,24 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	struct rhashtable_iter rht_iter;
 	struct scx_dispatch_q *dsq;
 	const char *reason;
-	int i, cpu, type;
+	int i, cpu, kind;
 
-	type = atomic_read(&scx_exit_type);
+	kind = atomic_read(&scx_exit_kind);
 	while (true) {
 		/*
 		 * NONE indicates that a new scx_ops has been registered since
 		 * disable was scheduled - don't kill the new ops. DONE
 		 * indicates that the ops has already been disabled.
 		 */
-		if (type == SCX_EXIT_NONE || type == SCX_EXIT_DONE)
+		if (kind == SCX_EXIT_NONE || kind == SCX_EXIT_DONE)
 			return;
-		if (atomic_try_cmpxchg(&scx_exit_type, &type, SCX_EXIT_DONE))
+		if (atomic_try_cmpxchg(&scx_exit_kind, &kind, SCX_EXIT_DONE))
 			break;
 	}
 
 	cancel_delayed_work_sync(&scx_watchdog_work);
 
-	switch (type) {
+	switch (kind) {
 	case SCX_EXIT_UNREG:
 		reason = "BPF scheduler unregistered";
 		break;
@@ -2951,7 +2951,7 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 		reason = "<UNKNOWN>";
 	}
 
-	ei->type = type;
+	ei->kind = kind;
 	strlcpy(ei->reason, reason, sizeof(ei->reason));
 
 	switch (scx_ops_set_enable_state(SCX_OPS_DISABLING)) {
@@ -3075,7 +3075,7 @@ forward_progress_guaranteed:
 	percpu_up_write(&scx_fork_rwsem);
 	cpus_read_unlock();
 
-	if (ei->type >= SCX_EXIT_ERROR) {
+	if (ei->kind >= SCX_EXIT_ERROR) {
 		printk(KERN_ERR "sched_ext: BPF scheduler \"%s\" errored, disabling\n", scx_ops.name);
 
 		if (ei->msg[0] == '\0')
@@ -3128,14 +3128,14 @@ static void schedule_scx_ops_disable_work(void)
 		kthread_queue_work(helper, &scx_ops_disable_work);
 }
 
-static void scx_ops_disable(enum scx_exit_type type)
+static void scx_ops_disable(enum scx_exit_kind kind)
 {
 	int none = SCX_EXIT_NONE;
 
-	if (WARN_ON_ONCE(type == SCX_EXIT_NONE || type == SCX_EXIT_DONE))
-		type = SCX_EXIT_ERROR;
+	if (WARN_ON_ONCE(kind == SCX_EXIT_NONE || kind == SCX_EXIT_DONE))
+		kind = SCX_EXIT_ERROR;
 
-	atomic_try_cmpxchg(&scx_exit_type, &none, type);
+	atomic_try_cmpxchg(&scx_exit_kind, &none, kind);
 
 	schedule_scx_ops_disable_work();
 }
@@ -3147,14 +3147,14 @@ static void scx_ops_error_irq_workfn(struct irq_work *irq_work)
 
 static DEFINE_IRQ_WORK(scx_ops_error_irq_work, scx_ops_error_irq_workfn);
 
-__printf(2, 3) void scx_ops_error_type(enum scx_exit_type type,
+__printf(2, 3) void scx_ops_error_kind(enum scx_exit_kind kind,
 				       const char *fmt, ...)
 {
 	struct scx_exit_info *ei = &scx_exit_info;
 	int none = SCX_EXIT_NONE;
 	va_list args;
 
-	if (!atomic_try_cmpxchg(&scx_exit_type, &none, type))
+	if (!atomic_try_cmpxchg(&scx_exit_kind, &none, kind))
 		return;
 
 	ei->bt_len = stack_trace_save(ei->bt, ARRAY_SIZE(ei->bt), 1);
@@ -3208,7 +3208,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		     SCX_OPS_DISABLED);
 
 	memset(&scx_exit_info, 0, sizeof(scx_exit_info));
-	atomic_set(&scx_exit_type, SCX_EXIT_NONE);
+	atomic_set(&scx_exit_kind, SCX_EXIT_NONE);
 	scx_warned_zero_slice = false;
 
 	atomic_long_set(&scx_nr_rejected, 0);
@@ -3235,7 +3235,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		 * early with success so that the condition is notified through
 		 * ops.exit() like other scx_bpf_error() invocations.
 		 */
-		if (atomic_read(&scx_exit_type) != SCX_EXIT_NONE)
+		if (atomic_read(&scx_exit_kind) != SCX_EXIT_NONE)
 			goto err_disable;
 	}
 
@@ -4367,7 +4367,7 @@ void scx_bpf_error_bstr(char *fmt, unsigned long long *data, u32 data__sz)
 		goto out_restore;
 	}
 
-	scx_ops_error_type(SCX_EXIT_ERROR_BPF, "%s", bufs->msg);
+	scx_ops_error_kind(SCX_EXIT_ERROR_BPF, "%s", bufs->msg);
 out_restore:
 	local_irq_restore(flags);
 }

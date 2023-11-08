@@ -12,10 +12,9 @@
 #include <fcntl.h>
 #include <time.h>
 #include <bpf/bpf.h>
-#include "user_exit_info.h"
+#include "scx_common.h"
 #include "scx_flatcg.h"
 #include "scx_flatcg.skel.h"
-#include "scx_user_common.h"
 
 #ifndef FILEID_KERNFS
 #define FILEID_KERNFS		0xfe

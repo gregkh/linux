@@ -4,6 +4,8 @@ include ../build/Build.include
 include ../scripts/Makefile.arch
 include ../scripts/Makefile.include
 
+all: all_targets
+
 ifneq ($(LLVM),)
 ifneq ($(filter %/,$(LLVM)),)
 LLVM_PREFIX := $(LLVM)
@@ -126,10 +128,8 @@ BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH)					\
 	     -Wall -Wno-compare-distinct-pointer-types				\
 	     -O2 -mcpu=v3
 
-all: scx_simple scx_qmap scx_central scx_pair scx_flatcg scx_userland scx_rusty scx_layered
-
 # sort removes libbpf duplicates when not cross-building
-MAKE_DIRS := $(sort $(OBJ_DIR)/libbpf $(HOST_BUILD_DIR)/libbpf		\
+MAKE_DIRS := $(sort $(OBJ_DIR)/libbpf $(HOST_BUILD_DIR)/libbpf			\
 	       $(HOST_BUILD_DIR)/bpftool $(HOST_BUILD_DIR)/resolve_btfids	\
 	       $(INCLUDE_DIR) $(SCXOBJ_DIR) $(BINDIR))
 
@@ -179,12 +179,13 @@ $(INCLUDE_DIR)/%.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BPFTOO
 	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $@
 	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $(@:.skel.h=.subskel.h)
 
-SCX_COMMON_DEPS := user_exit_info.h scx_user_common.h | $(BINDIR)
+SCX_COMMON_DEPS := scx_common.h user_exit_info.h | $(BINDIR)
 
 ################
 # C schedulers #
 ################
-c-sched-targets = scx_qmap scx_simple scx_central scx_pair scx_flatcg scx_userland
+c-sched-targets = scx_simple scx_qmap scx_central scx_pair scx_flatcg		\
+		  scx_userland
 
 $(addprefix $(BINDIR)/,$(c-sched-targets)): \
 	$(BINDIR)/%: \
@@ -222,8 +223,8 @@ $(rust-sched-targets): %: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
 	$(Q)cp $(OUTPUT_DIR)/release/$(sched) $(BINDIR)/$@
 
 install: all
-	$(Q)mkdir -p $(DESTDIR)/usr/bin/
-	$(Q)cp $(BINDIR)/* $(DESTDIR)/usr/bin/
+	$(Q)mkdir -p $(DESTDIR)/usr/local/bin/
+	$(Q)cp $(BINDIR)/* $(DESTDIR)/usr/local/bin/
 
 clean:
 	$(foreach sched,$(rust-sched-targets),cargo clean --manifest-path=$(sched)/Cargo.toml;)
@@ -231,69 +232,67 @@ clean:
 	rm -f *.o *.bpf.o *.skel.h *.subskel.h
 	rm -f $(c-sched-targets)
 
-fullclean: clean
-	$(Q)$(MAKE) -sC ../../ clean
-
 help:
-	@echo  'Building targets:'
-	@echo  '  all		  - Compile all schedulers'
-	@echo  ''
-	@echo  'Alternatively, you may compile individual schedulers:'
-	@echo  '  scx_simple'
-	@echo  '  scx_qmap'
-	@echo  '  scx_central'
-	@echo  '  scx_pair'
-	@echo  '  scx_flatcg'
-	@echo  '  scx_userland'
-	@echo  '  scx_rusty'
-	@echo  ''
-	@echo  'For any scheduler build target, you may specify an alternative'
-	@echo  'build output path with the O= environment variable. For example:'
-	@echo  ''
-	@echo  '   O=/tmp/sched_ext make all'
-	@echo  ''
-	@echo  'will compile all schedulers, and emit the build artifacts to'
-	@echo  '/tmp/sched_ext/build.'
-	@echo  ''
-	@echo  ''
-	@echo  'Rust schedulers:'
-	@echo  '  scx_rusty	  - Build the scx_rusty load balancing scheduler.'
-	@echo  '  scx_rusty_deps  - Download the scx_rusty scheduler cargo dependencies.'
-	@echo  ''
-	@echo  'For any cargo rust schedulers built with cargo, you can specify'
-	@echo  'CARGO_OFFLINE=1 to ensure the build portion does not access the'
-	@echo  'network (e.g. if the scheduler is being packaged).'
-	@echo  ''
-	@echo  'For such use cases, the build workflow will look something like this:'
-	@echo  ''
-	@echo  '   make scx_rusty_deps'
-	@echo  '   CARGO_OFFLINE=1 make scx_rusty'
-	@echo  ''
-	@echo  'If network access during build is allowed, you can just make scx_rusty'
-	@echo  'directly without CARGO_OFFLINE, and dependencies will be downloaded'
-	@echo  'during the build step.'
-	@echo  ''
-	@echo  ''
-	@echo  'Installing targets:'
-	@echo  '  install	  - Compile and install all schedulers to /usr/bin.'
-	@echo  '		    You may specify the DESTDIR= environment variable'
-	@echo  '		    to indicate a prefix for /usr/bin. For example:'
-	@echo  ''
-	@echo  '   DESTDIR=/tmp/sched_ext make install'
-	@echo  ''
-	@echo  '		    will build the schedulers in CWD/build, and'
-	@echo  '		    install the schedulers to /tmp/sched_ext/usr/bin.'
-	@echo  ''
-	@echo  ''
-	@echo  'Cleaning targets:'
-	@echo  '  clean		  - Remove all generated files, including intermediate'
-	@echo  '                    rust files for rust schedulers.'
-	@echo  ''
-	@echo  '  fullclean	  - Remove all generated files, including intermediate'
-	@echo  '                    rust files for rust schedulers, and also trigger a'
-	@echo  '                    clean of the kernel at the root of the whole repository.'
+	@echo   'Building targets'
+	@echo   '================'
+	@echo   ''
+	@echo   '  all		  - Compile all schedulers'
+	@echo   ''
+	@echo   'Alternatively, you may compile individual schedulers:'
+	@echo   ''
+	@printf '  %s\n' $(c-sched-targets) $(rust-sched-targets)
+	@echo   ''
+	@echo   'For any scheduler build target, you may specify an alternative'
+	@echo   'build output path with the O= environment variable. For example:'
+	@echo   ''
+	@echo   '   O=/tmp/sched_ext make all'
+	@echo   ''
+	@echo   'will compile all schedulers, and emit the build artifacts to'
+	@echo   '/tmp/sched_ext/build.'
+	@echo   ''
+	@echo   ''
+	@echo   'Rust scheduler targets'
+	@echo   '======================'
+	@echo   ''
+	@printf '  %s\n' $(rust-sched-targets)
+	@printf '  %s_deps\n' $(rust-sched-targets)
+	@echo   ''
+	@echo   'For any rust schedulers built with cargo, you can specify'
+	@echo   'CARGO_OFFLINE=1 to ensure the build portion does not access the'
+	@echo   'network (e.g. if the scheduler is being packaged).'
+	@echo   ''
+	@echo   'For such use cases, the build workflow will look something like this:'
+	@echo   ''
+	@echo   '   make scx_rusty_deps'
+	@echo   '   CARGO_OFFLINE=1 make scx_rusty'
+	@echo   ''
+	@echo   'If network access during build is allowed, you can just make scx_rusty'
+	@echo   'directly without CARGO_OFFLINE, and dependencies will be downloaded'
+	@echo   'during the build step.'
+	@echo   ''
+	@echo   ''
+	@echo   'Installing targets'
+	@echo   '=================='
+	@echo   ''
+	@echo   '  install	  - Compile and install all schedulers to /usr/bin.'
+	@echo   '		    You may specify the DESTDIR= environment variable'
+	@echo   '		    to indicate a prefix for /usr/bin. For example:'
+	@echo   ''
+	@echo   '                     DESTDIR=/tmp/sched_ext make install'
+	@echo   ''
+	@echo   '		    will build the schedulers in CWD/build, and'
+	@echo   '		    install the schedulers to /tmp/sched_ext/usr/bin.'
+	@echo   ''
+	@echo   ''
+	@echo   'Cleaning targets'
+	@echo   '================'
+	@echo   ''
+	@echo   '  clean		  - Remove all generated files, including intermediate'
+	@echo   '                    rust files for rust schedulers.'
 
-.PHONY: all $(c-sched-targets) $(rust-sched-targets) clean fullclean help
+all_targets: $(c-sched-targets) $(rust-sched-targets)
+
+.PHONY: all all_targets $(c-sched-targets) $(rust-sched-targets) clean help
 
 # delete failed targets
 .DELETE_ON_ERROR:

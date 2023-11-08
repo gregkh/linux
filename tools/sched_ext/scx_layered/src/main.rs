@@ -504,7 +504,7 @@ struct Stats {
 
 impl Stats {
     fn read_layer_loads(skel: &mut LayeredSkel, nr_layers: usize) -> (f64, Vec<f64>) {
-	let now_mono = now_monotonic();
+        let now_mono = now_monotonic();
         let layer_loads: Vec<f64> = skel
             .bss()
             .layers
@@ -628,16 +628,16 @@ impl Stats {
 
 #[derive(Debug, Default)]
 struct UserExitInfo {
-    exit_type: i32,
+    kind: i32,
     reason: Option<String>,
     msg: Option<String>,
 }
 
 impl UserExitInfo {
     fn read(bpf_uei: &layered_bss_types::user_exit_info) -> Result<Self> {
-        let exit_type = unsafe { std::ptr::read_volatile(&bpf_uei.exit_type as *const _) };
+        let kind = unsafe { std::ptr::read_volatile(&bpf_uei.kind as *const _) };
 
-        let (reason, msg) = if exit_type != 0 {
+        let (reason, msg) = if kind != 0 {
             (
                 Some(
                     unsafe { CStr::from_ptr(bpf_uei.reason.as_ptr() as *const _) }
@@ -658,15 +658,11 @@ impl UserExitInfo {
             (None, None)
         };
 
-        Ok(Self {
-            exit_type,
-            reason,
-            msg,
-        })
+        Ok(Self { kind, reason, msg })
     }
 
     fn exited(bpf_uei: &layered_bss_types::user_exit_info) -> Result<bool> {
-        Ok(Self::read(bpf_uei)?.exit_type != 0)
+        Ok(Self::read(bpf_uei)?.kind != 0)
     }
 
     fn report(&self) -> Result<()> {
@@ -676,11 +672,11 @@ impl UserExitInfo {
             _ => "".into(),
         };
 
-        match self.exit_type {
+        match self.kind {
             0 => Ok(()),
             etype => {
                 if etype != 64 {
-                    bail!("BPF exit_type={} {}", etype, why);
+                    bail!("EXIT: kind={} {}", etype, why);
                 } else {
                     info!("EXIT: {}", why);
                     Ok(())

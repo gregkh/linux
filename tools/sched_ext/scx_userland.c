@@ -27,10 +27,9 @@
 #include <sys/queue.h>
 #include <sys/syscall.h>
 
-#include "user_exit_info.h"
+#include "scx_common.h"
 #include "scx_userland.h"
 #include "scx_userland.skel.h"
-#include "scx_user_common.h"
 
 const char help_fmt[] =
 "A minimal userland sched_ext scheduler.\n"

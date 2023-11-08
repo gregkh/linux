@@ -4,12 +4,14 @@
  * Copyright (c) 2023 Tejun Heo <tj@kernel.org>
  * Copyright (c) 2023 David Vernet <dvernet@meta.com>
  */
-#ifndef __SCHED_EXT_USER_COMMON_H
-#define __SCHED_EXT_USER_COMMON_H
+#ifndef __SCHED_EXT_COMMON_H
+#define __SCHED_EXT_COMMON_H
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "user_exit_info.h"
 
 #ifdef __KERNEL__
 #error "Should not be included by BPF programs"
@@ -54,4 +56,4 @@
 			bpf_map__initial_value(skel->maps.elfsec##_##arr, &__sz); \
 	} while (0)
 
-#endif	/* __SCHED_EXT_USER_COMMON_H */
+#endif	/* __SCHED_EXT_COMMON_H */
