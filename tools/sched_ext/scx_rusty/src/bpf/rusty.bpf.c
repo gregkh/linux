@@ -74,7 +74,7 @@ const volatile u64 slice_ns = SCX_SLICE_DFL;
 /*
  * Exit info
  */
-int exit_type = SCX_EXIT_NONE;
+int exit_kind = SCX_EXIT_NONE;
 char exit_msg[SCX_EXIT_MSG_LEN];
 
 /*
@@ -828,7 +828,7 @@ void BPF_STRUCT_OPS(rusty_running, struct task_struct *p)
 	if (taskc->dom_active_pids_gen != dap_gen) {
 		u64 idx = __sync_fetch_and_add(&dom_active_pids[dom_id].write_idx, 1) %
 			MAX_DOM_ACTIVE_PIDS;
-		u32 *pidp;
+		s32 *pidp;
 
 		pidp = MEMBER_VPTR(dom_active_pids, [dom_id].pids[idx]);
 		if (!pidp) {
@@ -1130,7 +1130,7 @@ s32 BPF_STRUCT_OPS_SLEEPABLE(rusty_init)
 void BPF_STRUCT_OPS(rusty_exit, struct scx_exit_info *ei)
 {
 	bpf_probe_read_kernel_str(exit_msg, sizeof(exit_msg), ei->msg);
-	exit_type = ei->type;
+	exit_kind = ei->kind;
 }
 
 SEC(".struct_ops.link")

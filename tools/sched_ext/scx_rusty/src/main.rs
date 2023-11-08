@@ -1146,13 +1146,13 @@ impl<'a> Scheduler<'a> {
         Ok(())
     }
 
-    fn read_bpf_exit_type(&mut self) -> i32 {
-        unsafe { std::ptr::read_volatile(&self.skel.bss().exit_type as *const _) }
+    fn read_bpf_exit_kind(&mut self) -> i32 {
+        unsafe { std::ptr::read_volatile(&self.skel.bss().exit_kind as *const _) }
     }
 
-    fn report_bpf_exit_type(&mut self) -> Result<()> {
+    fn report_bpf_exit_kind(&mut self) -> Result<()> {
         // Report msg if EXT_OPS_EXIT_ERROR.
-        match self.read_bpf_exit_type() {
+        match self.read_bpf_exit_kind() {
             0 => Ok(()),
             etype if etype == 2 => {
                 let cstr = unsafe { CStr::from_ptr(self.skel.bss().exit_msg.as_ptr() as *const _) };
@@ -1160,10 +1160,10 @@ impl<'a> Scheduler<'a> {
                     .to_str()
                     .context("Failed to convert exit msg to string")
                     .unwrap();
-                bail!("BPF exit_type={} msg={}", etype, msg);
+                bail!("BPF exit_kind={} msg={}", etype, msg);
             }
             etype => {
-                info!("BPF exit_type={}", etype);
+                info!("BPF exit_kind={}", etype);
                 Ok(())
             }
         }
@@ -1174,7 +1174,7 @@ impl<'a> Scheduler<'a> {
         let mut next_tune_at = now + self.tune_interval;
         let mut next_sched_at = now + self.sched_interval;
 
-        while !shutdown.load(Ordering::Relaxed) && self.read_bpf_exit_type() == 0 {
+        while !shutdown.load(Ordering::Relaxed) && self.read_bpf_exit_kind() == 0 {
             let now = Instant::now();
 
             if now >= next_tune_at {
@@ -1200,7 +1200,7 @@ impl<'a> Scheduler<'a> {
             );
         }
 
-        self.report_bpf_exit_type()
+        self.report_bpf_exit_kind()
     }
 }
 

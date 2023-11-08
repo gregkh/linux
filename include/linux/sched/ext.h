@@ -55,7 +55,7 @@ enum scx_dsq_id_flags {
 	SCX_DSQ_LOCAL_CPU_MASK	= 0xffffffffLLU,
 };
 
-enum scx_exit_type {
+enum scx_exit_kind {
 	SCX_EXIT_NONE,
 	SCX_EXIT_DONE,
 
@@ -73,7 +73,7 @@ enum scx_exit_type {
  */
 struct scx_exit_info {
 	/* %SCX_EXIT_* - broad category of the exit reason */
-	enum scx_exit_type	type;
+	enum scx_exit_kind	kind;
 	/* textual representation of the above */
 	char			reason[SCX_EXIT_REASON_LEN];
 	/* number of entries in the backtrace */

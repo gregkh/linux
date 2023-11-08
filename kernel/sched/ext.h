@@ -135,10 +135,10 @@ int scx_check_setscheduler(struct task_struct *p, int policy);
 bool scx_can_stop_tick(struct rq *rq);
 void init_sched_ext_class(void);
 
-__printf(2, 3) void scx_ops_error_type(enum scx_exit_type type,
+__printf(2, 3) void scx_ops_error_kind(enum scx_exit_kind kind,
 				       const char *fmt, ...);
 #define scx_ops_error(fmt, args...)						\
-	scx_ops_error_type(SCX_EXIT_ERROR, fmt, ##args)
+	scx_ops_error_kind(SCX_EXIT_ERROR, fmt, ##args)
 
 void __scx_notify_pick_next_task(struct rq *rq,
 				 struct task_struct *p,
@@ -174,7 +174,7 @@ static inline void scx_notify_sched_tick(void)
 	if (unlikely(time_after(jiffies, last_check + scx_watchdog_timeout))) {
 		u32 dur_ms = jiffies_to_msecs(jiffies - last_check);
 
-		scx_ops_error_type(SCX_EXIT_ERROR_STALL,
+		scx_ops_error_kind(SCX_EXIT_ERROR_STALL,
 				   "watchdog failed to check in for %u.%03us",
 				   dur_ms / 1000, dur_ms % 1000);
 	}
