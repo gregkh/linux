@@ -3692,13 +3692,12 @@ static void kick_cpus_irq_workfn(struct irq_work *irq_work)
  * @log_lvl: the log level to use when printing
  * @p: target task
  *
- * If @task is running on a sched_ext scheduler, print out the name of the
- * sched_ext scheduler, and other various scheduler-related debugging
- * information about the task.
+ * If a sched_ext scheduler is enabled, print the name and state of the
+ * scheduler. If @p is on sched_ext, print further information about the task.
  *
- * This function can be safely called on any task as long as the
- * task_struct itself is accessible. While safe, this function isn't
- * synchronized and may print out mixups or garbages of limited length.
+ * This function can be safely called on any task as long as the task_struct
+ * itself is accessible. While safe, this function isn't synchronized and may
+ * print out mixups or garbages of limited length.
  */
 void print_scx_info(const char *log_lvl, struct task_struct *p)
 {
