@@ -3702,51 +3702,35 @@ static void kick_cpus_irq_workfn(struct irq_work *irq_work)
  */
 void print_scx_info(const char *log_lvl, struct task_struct *p)
 {
-	struct sched_class *class = NULL;
 	enum scx_ops_enable_state state = scx_ops_enable_state();
-	s64 delta = 0;
-	long ops_state = 0;
-	int task_cpu;
-	struct thread_info *thread_info;
 	const char *all = READ_ONCE(scx_switching_all) ? "+all" : "";
+	char runnable_at_buf[22] = "?";
+	struct sched_class *class;
+	unsigned long runnable_at;
 
-	if (!scx_enabled() || state == SCX_OPS_DISABLED)
+	if (state == SCX_OPS_DISABLED)
 		return;
 
 	/*
 	 * Carefully check if the task was running on sched_ext, and then
 	 * carefully copy the time it's been runnable, and its state.
 	 */
-	copy_from_kernel_nofault(&class, &p->sched_class, sizeof(class));
-	if (!class || class != &ext_sched_class) {
-		printk("%ssched_ext: %s (%s%s)", log_lvl, scx_ops.name,
+	if (copy_from_kernel_nofault(&class, &p->sched_class, sizeof(class)) ||
+	    class != &ext_sched_class) {
+		printk("%sSched_ext: %s (%s%s)", log_lvl, scx_ops.name,
 		       scx_ops_enable_state_str[state], all);
 		return;
 	}
 
-	copy_from_kernel_nofault(&thread_info, task_thread_info(p),
-				 sizeof(thread_info));
-	copy_from_kernel_nofault(&task_cpu, &thread_info->cpu,
-				 sizeof(task_cpu));
-	if (ops_cpu_valid(task_cpu)) {
-		struct rq *task_rq;
-		u64 rq_clock;
-		unsigned long runnable_at;
-
-		task_rq = cpu_rq(task_cpu);
-		copy_from_kernel_nofault(&rq_clock, &task_rq->clock,
-					 sizeof(rq_clock));
-		copy_from_kernel_nofault(&ops_state, &p->scx.ops_state.counter,
-					 sizeof(ops_state));
-		copy_from_kernel_nofault(&runnable_at, &p->scx.runnable_at,
-					 sizeof(runnable_at));
-		delta = rq_clock - runnable_at;
-	}
+	if (!copy_from_kernel_nofault(&runnable_at, &p->scx.runnable_at,
+				      sizeof(runnable_at)))
+		scnprintf(runnable_at_buf, sizeof(runnable_at_buf), "%+lldms",
+			  (s64)(runnable_at - jiffies) * (HZ / MSEC_PER_SEC));
 
 	/* Print everything onto one line to conserve console spce. */
-	printk("%ssched_ext: %s (%s%s), task: runnable_at=%+lld state=%#lx",
+	printk("%sSched_ext: %s (%s%s), task: runnable_at=%s",
 	       log_lvl, scx_ops.name, scx_ops_enable_state_str[state], all,
-	       delta, ops_state);
+	       runnable_at_buf);
 }
 
 void __init init_sched_ext_class(void)
