@@ -44,14 +44,33 @@ include!("../../ravg_read.rs.h");
 /// scx_rusty: A multi-domain BPF / userspace hybrid scheduler
 ///
 /// The BPF part does simple vtime or round robin scheduling in each domain
-/// and the userspace part calculates the load factor of each domain and
-/// tells the BPF part how to load balance the domains.
+/// while tracking average load of each domain and duty cycle of each task.
 ///
-/// This scheduler demonstrates dividing scheduling logic between BPF and
-/// userspace and using rust to build the userspace part. An earlier variant
-/// of this scheduler was used to balance across six domains, each
-/// representing a chiplet in a six-chiplet AMD processor, and could match
-/// the performance of production setup using CFS.
+/// The userspace part performs two roles. First, it makes higher frequency
+/// (100ms) tuning decisions. It identifies CPUs which are not too heavily
+/// loaded and mark them so that they can pull tasks from other overloaded
+/// domains on the fly.
+///
+/// Second, it drives lower frequency (2s) load balancing. It determines
+/// whether load balancing is necessary by comparing domain load averages.
+/// If there are large enough load differences, it examines upto 1024
+/// recently active tasks on the domain to determine which should be
+/// migrated.
+///
+/// The overhead of userspace operations is low. Load balancing is not
+/// performed frequently but work-conservation is still maintained through
+/// tuning and greedy execution. Load balancing itself is not that expensive
+/// either. It only accesses per-domain load metrics to determine the
+/// domains that need load balancing and limited number of per-task metrics
+/// for each pushing domain.
+///
+/// An earlier variant of this scheduler was used to balance across six
+/// domains, each representing a chiplet in a six-chiplet AMD processor, and
+/// could match the performance of production setup using CFS.
+///
+/// WARNING: Very high weight (low nice value) tasks can throw off load
+/// balancing due to infeasible weight problem. This problem will be solved
+/// in the near future.
 ///
 /// WARNING: scx_rusty currently assumes that all domains have equal
 /// processing power and at similar distances from each other. This
