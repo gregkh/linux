@@ -23,6 +23,14 @@ enum scx_ops_enable_state {
 	SCX_OPS_DISABLED,
 };
 
+static const char *scx_ops_enable_state_str[] = {
+	[SCX_OPS_PREPPING]	= "prepping",
+	[SCX_OPS_ENABLING]	= "enabling",
+	[SCX_OPS_ENABLED]	= "enabled",
+	[SCX_OPS_DISABLING]	= "disabling",
+	[SCX_OPS_DISABLED]	= "disabled",
+};
+
 /*
  * sched_ext_entity->ops_state
  *
@@ -3407,14 +3415,6 @@ err_disable:
 }
 
 #ifdef CONFIG_SCHED_DEBUG
-static const char *scx_ops_enable_state_str[] = {
-	[SCX_OPS_PREPPING]	= "prepping",
-	[SCX_OPS_ENABLING]	= "enabling",
-	[SCX_OPS_ENABLED]	= "enabled",
-	[SCX_OPS_DISABLING]	= "disabling",
-	[SCX_OPS_DISABLED]	= "disabled",
-};
-
 static int scx_debug_show(struct seq_file *m, void *v)
 {
 	mutex_lock(&scx_ops_enable_mutex);
