@@ -132,7 +132,7 @@ static ssize_t vfio_ccw_crw_region_read(struct vfio_ccw_private *private,
 	/* Notify the guest if more CRWs are on our queue */
 	spin_lock_irqsave(&private->crw_lock, flags);
 	if (!list_empty(&private->crw) && private->crw_trigger)
-		eventfd_signal(private->crw_trigger, 1);
+		eventfd_signal(private->crw_trigger);
 	spin_unlock_irqrestore(&private->crw_lock, flags);
 
 out:

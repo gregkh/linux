@@ -143,7 +143,7 @@ static int vfio_platform_set_irq_unmask(struct vfio_platform_device *vdev,
 static void vfio_send_eventfd(struct vfio_platform_irq *irq_ctx)
 {
 	if (likely(irq_ctx->trigger))
-		eventfd_signal(irq_ctx->trigger, 1);
+		eventfd_signal(irq_ctx->trigger);
 }
 
 static irqreturn_t vfio_automasked_irq_handler(int irq, void *dev_id)

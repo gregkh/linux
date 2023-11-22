@@ -112,7 +112,7 @@ void vfio_ccw_sch_io_todo(struct work_struct *work)
 	mutex_unlock(&private->io_mutex);
 
 	if (private->io_trigger)
-		eventfd_signal(private->io_trigger, 1);
+		eventfd_signal(private->io_trigger);
 }
 
 void vfio_ccw_crw_todo(struct work_struct *work)
@@ -124,7 +124,7 @@ void vfio_ccw_crw_todo(struct work_struct *work)
 
 	spin_lock_irqsave(&private->crw_lock, flags);
 	if (!list_empty(&private->crw) && private->crw_trigger)
-		eventfd_signal(private->crw_trigger, 1);
+		eventfd_signal(private->crw_trigger);
 	spin_unlock_irqrestore(&private->crw_lock, flags);
 }
 
