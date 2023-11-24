@@ -21,9 +21,10 @@ struct pkcs8_parse_context {
 	struct public_key *pub;
 	unsigned long	data;			/* Start of data */
 	enum OID	last_oid;		/* Last OID encountered */
-	enum OID	algo_oid;		/* Algorithm OID */
 	u32		key_size;
 	const void	*key;
+	const void	*algo_param;
+	u32		algo_param_len;
 };
 
 /*
@@ -44,6 +45,17 @@ int pkcs8_note_OID(void *context, size_t hdrlen,
 		pr_info("Unknown OID: [%lu] %s\n",
 			(unsigned long)value - ctx->data, buffer);
 	}
+	return 0;
+}
+
+int pkcs8_note_algo_parameter(void *context, size_t hdrlen,
+			      unsigned char tag,
+			      const void *value, size_t vlen)
+{
+	struct pkcs8_parse_context *ctx = context;
+
+	ctx->algo_param = value;
+	ctx->algo_param_len = vlen;
 	return 0;
 }
 
@@ -70,12 +82,39 @@ int pkcs8_note_algo(void *context, size_t hdrlen,
 {
 	struct pkcs8_parse_context *ctx = context;
 
-	if (ctx->last_oid != OID_rsaEncryption)
-		return -ENOPKG;
+	enum OID curve_id;
 
-	ctx->pub->pkey_algo = "rsa";
-	return 0;
-}
+	switch (ctx->last_oid) {
+	case OID_id_ecPublicKey:
+		if (!ctx->algo_param || ctx->algo_param_len == 0)
+			return -EBADMSG;
+		curve_id = look_up_OID(ctx->algo_param, ctx->algo_param_len);
+
+		switch (curve_id) {
+		case OID_id_prime192v1:
+			ctx->pub->pkey_algo = "ecdsa-nist-p192";
+			break;
+		case OID_id_prime256v1:
+			ctx->pub->pkey_algo = "ecdsa-nist-p256";
+			break;
+		case OID_id_ansip384r1:
+			ctx->pub->pkey_algo = "ecdsa-nist-p384";
+			break;
+		default:
+			return -ENOPKG;
+		}
+		break;
+
+	case OID_rsaEncryption:
+		ctx->pub->pkey_algo = "rsa";
+		break;
+
+	default:
+ 		return -ENOPKG;
+	}
+ 
+ 	return 0;
+ }
 
 /*
  * Note the key data of the ASN.1 blob.

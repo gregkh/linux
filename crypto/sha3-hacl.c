@@ -4,10 +4,10 @@
  *
  */
 
-#include <crypto/sha3.h>
-
 #include "hacl_hash.h"
 #include "hacl_lib.h"
+
+#include <crypto/sha3.h>
 
 int hacl_sha3_init(struct shash_desc *desc)
 {

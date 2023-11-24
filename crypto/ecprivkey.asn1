@@ -1,0 +1,6 @@
+ECPrivateKey ::= SEQUENCE {
+	version	INTEGER ({ ecc_get_priv_version }),
+	privateKey	OCTET STRING ({ ecc_get_priv_key }),
+	parameters	[0] OBJECT IDENTIFIER OPTIONAL ({ ecc_get_priv_params }),
+	publicKey	[1] BIT STRING OPTIONAL
+}
