@@ -19,6 +19,8 @@
 #include "ecprivkey.asn1.h"
 #include "ecdsasignature.asn1.h"
 
+#include "hacl_p256.h"
+
 struct ecc_ctx {
 	unsigned int curve_id;
 	const struct ecc_curve *curve;
@@ -26,7 +28,7 @@ struct ecc_ctx {
 	bool is_private;
 
 	bool pub_key_set;
-	u64 d[ECC_MAX_DIGITS]; /* priv key big integer */
+	u64 d[ECC_MAX_DIGITS]; /* privkey  big integer */
 	u64 x[ECC_MAX_DIGITS]; /* pub key x and y coordinates */
 	u64 y[ECC_MAX_DIGITS];
 	struct ecc_point pub_key;
@@ -184,9 +186,18 @@ static int ecdsa_verify(struct akcipher_request *req)
 		memcpy(&rawhash, buffer + req->src_len, keylen);
 	}
 
-	ecc_swap_digits((u64 *)rawhash, hash, ctx->curve->g.ndigits);
-
-	ret = _ecdsa_verify(ctx, hash, sig_ctx.r, sig_ctx.s);
+	if (strncmp(ctx->curve->name, "nist_256", 8) == 0) {
+		if (Hacl_P256_ecdsa_verif_without_hash(req->dst_len, rawhash,
+											(u8*)ctx->x,
+											(u8*)sig_ctx.r, (u8*)sig_ctx.s)) {
+			ret = 0;
+		} else {
+			ret = -1;
+		}
+	} else {
+		ecc_swap_digits((u64 *)rawhash, hash, ctx->curve->g.ndigits);
+		ret = _ecdsa_verify(ctx, hash, sig_ctx.r, sig_ctx.s);
+	}
 
 error:
 	kfree(buffer);

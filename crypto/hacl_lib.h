@@ -30,6 +30,69 @@ static inline u128 FStar_UInt128_uint64_to_uint128(u64 x)
         return ((u128)x);
 }
 
+inline static u128 FStar_UInt128_mul_wide(u64 x, u64 y) {
+  return ((u128) x) * y;
+}
+
+inline static uint64_t FStar_UInt128_uint128_to_uint64(u128 x) {
+  return (u64)x;
+}
+
+inline static u128 FStar_UInt128_shift_right(u128 x, u32 y) {
+  return x >> y;
+}
+
+static u64 FStar_UInt64_eq_mask(u64 a, u64 b)
+{
+  u64 x = a ^ b;
+  u64 minus_x = ~x + (u64)1U;
+  u64 x_or_minus_x = x | minus_x;
+  u64 xnx = x_or_minus_x >> (u32)63U;
+  return xnx - (u64)1U;
+}
+
+static u64 FStar_UInt64_gte_mask(u64 a, u64 b)
+{
+  u64 x = a;
+  u64 y = b;
+  u64 x_xor_y = x ^ y;
+  u64 x_sub_y = x - y;
+  u64 x_sub_y_xor_y = x_sub_y ^ y;
+  u64 q = x_xor_y | x_sub_y_xor_y;
+  u64 x_xor_q = x ^ q;
+  u64 x_xor_q_ = x_xor_q >> (u32)63U;
+  return x_xor_q_ - (u64)1U;
+}
+
+static inline uint64_t
+Hacl_IntTypes_Intrinsics_sub_borrow_u64(uint64_t cin, uint64_t x, uint64_t y, uint64_t *r)
+{
+  uint64_t res = x - y - cin;
+  uint64_t
+  c =
+    ((FStar_UInt64_gte_mask(res, x) & ~FStar_UInt64_eq_mask(res, x))
+    | (FStar_UInt64_eq_mask(res, x) & cin))
+    & (uint64_t)1U;
+  r[0U] = res;
+  return c;
+}
+
+static inline uint64_t
+Hacl_IntTypes_Intrinsics_add_carry_u64(uint64_t cin, uint64_t x, uint64_t y, uint64_t *r)
+{
+  uint64_t res = x + cin + y;
+  uint64_t
+  c = (~FStar_UInt64_gte_mask(res, x) | (FStar_UInt64_eq_mask(res, x) & cin)) & (uint64_t)1U;
+  r[0U] = res;
+  return c;
+}
+
+#define Lib_IntTypes_Intrinsics_sub_borrow_u64(x1, x2, x3, x4) \
+    (Hacl_IntTypes_Intrinsics_sub_borrow_u64(x1, x2, x3, x4))
+    
+#define Lib_IntTypes_Intrinsics_add_carry_u64(x1, x2, x3, x4) \
+    (Hacl_IntTypes_Intrinsics_add_carry_u64(x1, x2, x3, x4))
+
 /*
  * Loads and stores. These avoid undefined behavior due to unaligned memory
  * accesses, via memcpy.

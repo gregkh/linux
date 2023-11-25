@@ -57,7 +57,7 @@ $(obj)/ecdsa.o: $(obj)/ecdsasignature.asn1.h $(obj)/ecprivkey.asn1.h
 ecdsa_generic-y += ecdsa.o
 ecdsa_generic-y += ecprivkey.asn1.o
 ecdsa_generic-y += ecdsasignature.asn1.o
-obj-$(CONFIG_CRYPTO_ECDSA) += ecdsa_generic.o
+obj-$(CONFIG_CRYPTO_ECDSA) += ecdsa_generic.o p256-hacl-generated.o
 
 crypto_acompress-y := acompress.o
 crypto_acompress-y += scompress.o
