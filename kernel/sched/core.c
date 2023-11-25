@@ -4561,7 +4561,7 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->scx.sticky_cpu	= -1;
 	p->scx.holding_cpu	= -1;
 	p->scx.kf_mask		= 0;
-	atomic64_set(&p->scx.ops_state, 0);
+	atomic_long_set(&p->scx.ops_state, 0);
 	p->scx.runnable_at	= INITIAL_JIFFIES;
 	p->scx.slice		= SCX_SLICE_DFL;
 #endif
