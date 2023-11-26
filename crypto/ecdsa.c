@@ -190,27 +190,14 @@ static int ecdsa_verify(struct akcipher_request *req)
 		u8 pk[64];
 		u8 r[32];
 		u8 s[32];
-		// printk(KERN_INFO " >>> HACL P256");
-		// printk(KERN_INFO " >>> x: ");
-		// for(int i = 0; i < ECC_MAX_DIGITS; ++i) {
-		// 	pr_cont(KERN_INFO "%02llx ", ctx->x[i]);
-		// }
-		// printk(KERN_INFO "\n");
 		ecc_swap_digits(ctx->x, (u64*)pk, 4);
 		ecc_swap_digits(ctx->y, (u64*)(pk + 32), 4);
-		// printk(KERN_INFO " >>> pk (bytes): ");
-		// for(int i = 0; i < 64; ++i) {
-		// 	pr_cont(KERN_INFO "%02x ", pk[i]);
-		// }
-		// printk(KERN_INFO "\n");
 		ecc_swap_digits(sig_ctx.r, (u64*)r, ctx->curve->g.ndigits);
 		ecc_swap_digits(sig_ctx.s, (u64*)s, ctx->curve->g.ndigits);
 		if (Hacl_P256_ecdsa_verif_without_hash(req->dst_len, rawhash, pk, r, s)) {
 			ret = 0;
-			// printk(KERN_INFO " >>> HACL P256 - DONE OK\n");
 		} else {
 			ret = -EKEYREJECTED;
-			// printk(KERN_INFO " >>> HACL P256 - DONE ERROR\n");
 		}
 	} else {
 		ecc_swap_digits((u64 *)rawhash, hash, ctx->curve->g.ndigits);
