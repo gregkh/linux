@@ -187,12 +187,30 @@ static int ecdsa_verify(struct akcipher_request *req)
 	}
 
 	if (strncmp(ctx->curve->name, "nist_256", 8) == 0) {
-		if (Hacl_P256_ecdsa_verif_without_hash(req->dst_len, rawhash,
-											(u8*)ctx->x,
-											(u8*)sig_ctx.r, (u8*)sig_ctx.s)) {
+		u8 pk[64];
+		u8 r[32];
+		u8 s[32];
+		// printk(KERN_INFO " >>> HACL P256");
+		// printk(KERN_INFO " >>> x: ");
+		// for(int i = 0; i < ECC_MAX_DIGITS; ++i) {
+		// 	pr_cont(KERN_INFO "%02llx ", ctx->x[i]);
+		// }
+		// printk(KERN_INFO "\n");
+		ecc_swap_digits(ctx->x, (u64*)pk, 4);
+		ecc_swap_digits(ctx->y, (u64*)(pk + 32), 4);
+		// printk(KERN_INFO " >>> pk (bytes): ");
+		// for(int i = 0; i < 64; ++i) {
+		// 	pr_cont(KERN_INFO "%02x ", pk[i]);
+		// }
+		// printk(KERN_INFO "\n");
+		ecc_swap_digits(sig_ctx.r, (u64*)r, ctx->curve->g.ndigits);
+		ecc_swap_digits(sig_ctx.s, (u64*)s, ctx->curve->g.ndigits);
+		if (Hacl_P256_ecdsa_verif_without_hash(req->dst_len, rawhash, pk, r, s)) {
 			ret = 0;
+			// printk(KERN_INFO " >>> HACL P256 - DONE OK\n");
 		} else {
-			ret = -1;
+			ret = -EKEYREJECTED;
+			// printk(KERN_INFO " >>> HACL P256 - DONE ERROR\n");
 		}
 	} else {
 		ecc_swap_digits((u64 *)rawhash, hash, ctx->curve->g.ndigits);
@@ -302,6 +320,21 @@ static int rfc6979_gen_k(struct ecc_ctx *ctx, struct crypto_rng *rng, u64 *k)
 	} while (vli_cmp(k, ctx->curve->n, ndigits) >= 0);
 
 	memzero_explicit(K, sizeof(K));
+	return 0;
+}
+
+static int rfc6979_gen_k_hacl(struct ecc_ctx *ctx, struct crypto_rng *rng, u8 *k)
+{
+	unsigned int ndigits = ctx->curve->g.ndigits;
+	int ret;
+
+	do {
+		ret = crypto_rng_get_bytes(rng, k, ndigits << ECC_DIGITS_TO_BYTES_SHIFT);
+		if (ret)
+			return ret;
+
+	} while (!Hacl_P256_validate_private_key(k));
+
 	return 0;
 }
 
@@ -418,22 +451,47 @@ static int ecdsa_sign(struct akcipher_request *req)
 				  rawhash_k, req->src_len);
 	}
 
-	ecc_swap_digits((u64 *)rawhash_k, hash, ctx->curve->g.ndigits);
-
 	rng = rfc6979_alloc_rng(ctx, req->src_len, rawhash_k);
 	if (IS_ERR(rng))
 		return PTR_ERR(rng);
 
-	do {
-		ret = rfc6979_gen_k(ctx, rng, (u64 *)rawhash_k);
-		if (ret)
+	if (strncmp(ctx->curve->name, "nist_256", 8) == 0) {
+		u8 private_key[32];
+		u8 signature[64];
+		u8 nonce[32];
+		ecc_swap_digits(ctx->d, (u64*)private_key, 2);
+		ret = rfc6979_gen_k_hacl(ctx, rng, nonce);
+		if (ret) {
 			goto alloc_rng;
+		}
+		/* The signing function also checks that the scalars are valid. */
+		/* XXX: Is the value blinded already or should this be done here? */
+		do {
+			if (Hacl_P256_ecdsa_sign_p256_without_hash(signature, req->dst_len,
+													   rawhash_k, private_key, nonce)) {
+				ret = 0;
+			} else {
+				ret = -EAGAIN;
+			}
+		} while (ret == -EAGAIN);
+		/* Encode the signature. Note that this could be more efficient when
+		   done directly and not first converting it to u64s. */
+		ecc_swap_digits(signature, sig_ctx.r, 2);
+		ecc_swap_digits(signature + 32, sig_ctx.s, 2);
+		ret = asn1_encode_signature_sg(req, &sig_ctx, rawhash_k);
+	} else {
+		ecc_swap_digits((u64 *)rawhash_k, hash, ctx->curve->g.ndigits);
+		do {
+			ret = rfc6979_gen_k(ctx, rng, (u64 *)rawhash_k);
+			if (ret)
+				goto alloc_rng;
 
-		ret = _ecdsa_sign(ctx, hash, (u64 *)rawhash_k, &sig_ctx);
-	} while (ret == -EAGAIN);
-	memzero_explicit(rawhash_k, sizeof(rawhash_k));
+			ret = _ecdsa_sign(ctx, hash, (u64 *)rawhash_k, &sig_ctx);
+		} while (ret == -EAGAIN);
+		memzero_explicit(rawhash_k, sizeof(rawhash_k));
 
-	ret = asn1_encode_signature_sg(req, &sig_ctx, rawhash_k);
+		ret = asn1_encode_signature_sg(req, &sig_ctx, rawhash_k);
+	}
 
 alloc_rng:
 	crypto_free_rng(rng);
