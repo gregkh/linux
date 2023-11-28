@@ -38,10 +38,17 @@ $(obj)/rsa_helper.o: $(obj)/rsapubkey.asn1.h $(obj)/rsaprivkey.asn1.h
 
 rsa_generic-y := rsapubkey.asn1.o
 rsa_generic-y += rsaprivkey.asn1.o
-rsa_generic-y += rsa.o
 rsa_generic-y += rsa_helper.o
+rsa_generic-y += rsa.o
 rsa_generic-y += rsa-pkcs1pad.o
 obj-$(CONFIG_CRYPTO_RSA) += rsa_generic.o
+
+rsa_hacl-y := rsapubkey.asn1.o
+rsa_hacl-y += rsaprivkey.asn1.o
+rsa_hacl-y += rsa-hacl-generated.o
+rsa_hacl-y += rsa_helper.o
+rsa_hacl-y += rsa-hacl.o
+obj-$(CONFIG_CRYPTO_RSA_HACL) += rsa_hacl.o
 
 $(obj)/sm2signature.asn1.o: $(obj)/sm2signature.asn1.c $(obj)/sm2signature.asn1.h
 $(obj)/sm2.o: $(obj)/sm2signature.asn1.h
