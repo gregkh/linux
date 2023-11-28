@@ -169,15 +169,15 @@ $(SCXOBJ_DIR)/%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h scx_common.bpf.h	\
 	$(call msg,CLNG-BPF,,$(notdir $@))
 	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -c $< -o $@
 
-$(INCLUDE_DIR)/%.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BPFTOOL)
+$(INCLUDE_DIR)/%.bpf.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BPFTOOL)
 	$(eval sched=$(notdir $@))
 	$(call msg,GEN-SKEL,,$(sched))
 	$(Q)$(BPFTOOL) gen object $(<:.o=.linked1.o) $<
 	$(Q)$(BPFTOOL) gen object $(<:.o=.linked2.o) $(<:.o=.linked1.o)
 	$(Q)$(BPFTOOL) gen object $(<:.o=.linked3.o) $(<:.o=.linked2.o)
 	$(Q)diff $(<:.o=.linked2.o) $(<:.o=.linked3.o)
-	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $@
-	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(subst .skel.h,,$(sched)) > $(@:.skel.h=.subskel.h)
+	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(subst .bpf.skel.h,,$(sched)) > $@
+	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(subst .bpf.skel.h,,$(sched)) > $(@:.skel.h=.subskel.h)
 
 SCX_COMMON_DEPS := scx_common.h user_exit_info.h | $(BINDIR)
 
@@ -190,7 +190,7 @@ c-sched-targets = scx_simple scx_qmap scx_central scx_pair scx_flatcg		\
 $(addprefix $(BINDIR)/,$(c-sched-targets)): \
 	$(BINDIR)/%: \
 		$(filter-out %.bpf.c,%.c) \
-		$(INCLUDE_DIR)/%.skel.h \
+		$(INCLUDE_DIR)/%.bpf.skel.h \
 		$(SCX_COMMON_DEPS)
 	$(eval sched=$(notdir $@))
 	$(CC) $(CFLAGS) -c $(sched).c -o $(SCXOBJ_DIR)/$(sched).o
@@ -229,7 +229,7 @@ install: all
 clean:
 	$(foreach sched,$(rust-sched-targets),cargo clean --manifest-path=$(sched)/Cargo.toml;)
 	rm -rf $(OUTPUT_DIR) $(HOST_OUTPUT_DIR)
-	rm -f *.o *.bpf.o *.skel.h *.subskel.h
+	rm -f *.o *.bpf.o *.bpf.skel.h *.bpf.subskel.h
 	rm -f $(c-sched-targets)
 
 help:
@@ -297,5 +297,5 @@ all_targets: $(c-sched-targets) $(rust-sched-targets)
 # delete failed targets
 .DELETE_ON_ERROR:
 
-# keep intermediate (.skel.h, .bpf.o, etc) targets
+# keep intermediate (.bpf.skel.h, .bpf.o, etc) targets
 .SECONDARY:

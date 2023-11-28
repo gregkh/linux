@@ -23,7 +23,6 @@
  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
  */
 #include "scx_common.bpf.h"
-#include <linux/sched/prio.h>
 
 char _license[] SEC("license") = "GPL";
 

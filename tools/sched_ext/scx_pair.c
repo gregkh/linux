@@ -11,7 +11,7 @@
 #include <bpf/bpf.h>
 #include "scx_common.h"
 #include "scx_pair.h"
-#include "scx_pair.skel.h"
+#include "scx_pair.bpf.skel.h"
 
 const char help_fmt[] =
 "A demo sched_ext core-scheduler which always makes every sibling CPU pair\n"

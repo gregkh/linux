@@ -12,7 +12,7 @@
 #include <libgen.h>
 #include <bpf/bpf.h>
 #include "scx_common.h"
-#include "scx_central.skel.h"
+#include "scx_central.bpf.skel.h"
 
 const char help_fmt[] =
 "A central FIFO sched_ext scheduler.\n"
