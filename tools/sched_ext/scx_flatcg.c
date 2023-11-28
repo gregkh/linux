@@ -14,7 +14,7 @@
 #include <bpf/bpf.h>
 #include "scx_common.h"
 #include "scx_flatcg.h"
-#include "scx_flatcg.skel.h"
+#include "scx_flatcg.bpf.skel.h"
 
 #ifndef FILEID_KERNFS
 #define FILEID_KERNFS		0xfe
