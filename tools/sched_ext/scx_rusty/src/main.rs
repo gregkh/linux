@@ -2,7 +2,6 @@
 
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
-#[path = "bpf/.output/rusty.skel.rs"]
 mod rusty;
 pub use rusty::*;
 pub mod rusty_sys;

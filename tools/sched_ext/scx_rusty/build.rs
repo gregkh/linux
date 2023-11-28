@@ -5,8 +5,6 @@
 extern crate bindgen;
 
 use std::env;
-use std::fs::create_dir_all;
-use std::path::Path;
 use std::path::PathBuf;
 
 use libbpf_cargo::SkeletonBuilder;
@@ -42,31 +40,21 @@ fn bindgen_rusty() {
 fn gen_bpf_sched(name: &str) {
     let bpf_cflags = env::var("SCX_RUST_BPF_CFLAGS").unwrap();
     let clang = env::var("SCX_RUST_CLANG").unwrap();
-    eprintln!("{}", clang);
-    let outpath = format!("./src/bpf/.output/{}.skel.rs", name);
-    let skel = Path::new(&outpath);
     let src = format!("./src/bpf/{}.bpf.c", name);
-    let obj = format!("./src/bpf/.output/{}.bpf.o", name);
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let skel_path = out_path.join(format!("{}.bpf.skel.rs", name));
+    let obj = out_path.join(format!("{}.bpf.o", name));
     SkeletonBuilder::new()
-        .source(src.clone())
-	.obj(obj)
+        .source(&src)
+	.obj(&obj)
         .clang(clang)
         .clang_args(bpf_cflags)
-        .build_and_generate(skel)
+        .build_and_generate(&skel_path)
         .unwrap();
     println!("cargo:rerun-if-changed={}", src);
 }
 
 fn main() {
     bindgen_rusty();
-    // It's unfortunate we cannot use `OUT_DIR` to store the generated skeleton.
-    // Reasons are because the generated skeleton contains compiler attributes
-    // that cannot be `include!()`ed via macro. And we cannot use the `#[path = "..."]`
-    // trick either because you cannot yet `concat!(env!("OUT_DIR"), "/skel.rs")` inside
-    // the path attribute either (see https://github.com/rust-lang/rust/pull/83366).
-    //
-    // However, there is hope! When the above feature stabilizes we can clean this
-    // all up.
-    create_dir_all("./src/bpf/.output").unwrap();
     gen_bpf_sched("rusty");
 }

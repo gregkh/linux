@@ -2,7 +2,6 @@
 
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
-#[path = "bpf/.output/layered.skel.rs"]
 mod layered;
 pub use layered::*;
 pub mod layered_sys;
