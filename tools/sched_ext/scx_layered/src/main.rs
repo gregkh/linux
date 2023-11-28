@@ -33,6 +33,7 @@ use libbpf_rs::skel::SkelBuilder as _;
 use log::debug;
 use log::info;
 use log::trace;
+use scx_utils::ravg::ravg_read;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -48,8 +49,6 @@ const NR_GSTATS: usize = layered_sys::global_stat_idx_NR_GSTATS as usize;
 const NR_LSTATS: usize = layered_sys::layer_stat_idx_NR_LSTATS as usize;
 const NR_LAYER_MATCH_KINDS: usize = layered_sys::layer_match_kind_NR_LAYER_MATCH_KINDS as usize;
 const CORE_CACHE_LEVEL: u32 = 2;
-
-include!("../../ravg_read.rs.h");
 
 lazy_static::lazy_static! {
     static ref NR_POSSIBLE_CPUS: usize = libbpf_rs::num_possible_cpus().unwrap();

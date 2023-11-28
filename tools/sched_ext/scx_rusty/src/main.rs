@@ -33,12 +33,11 @@ use log::info;
 use log::trace;
 use log::warn;
 use ordered_float::OrderedFloat;
+use scx_utils::ravg::ravg_read;
 
 const RAVG_FRAC_BITS: u32 = rusty_sys::ravg_consts_RAVG_FRAC_BITS;
 const MAX_DOMS: usize = rusty_sys::consts_MAX_DOMS as usize;
 const MAX_CPUS: usize = rusty_sys::consts_MAX_CPUS as usize;
-
-include!("../../ravg_read.rs.h");
 
 /// scx_rusty: A multi-domain BPF / userspace hybrid scheduler
 ///

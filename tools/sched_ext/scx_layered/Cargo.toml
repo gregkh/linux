@@ -7,6 +7,7 @@ description = "Userspace scheduling with BPF for Ads"
 license = "GPL-2.0-only"
 
 [dependencies]
+scx_utils = "0.1"
 anyhow = "1.0"
 bitvec = "1.0"
 clap = { version = "4.1", features = ["derive", "env", "unicode", "wrap_help"] }

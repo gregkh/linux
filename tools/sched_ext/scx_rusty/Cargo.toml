@@ -7,6 +7,7 @@ description = "Userspace scheduling with BPF"
 license = "GPL-2.0-only"
 
 [dependencies]
+scx_utils = "0.1"
 anyhow = "1.0.65"
 bitvec = { version = "1.0", features = ["serde"] }
 clap = { version = "4.1", features = ["derive", "env", "unicode", "wrap_help"] }
