@@ -1233,15 +1233,13 @@ err_audio_deinit:
 	return ret;
 }
 
-static int cdn_dp_remove(struct platform_device *pdev)
+static void cdn_dp_remove(struct platform_device *pdev)
 {
 	struct cdn_dp_device *dp = platform_get_drvdata(pdev);
 
 	platform_device_unregister(dp->audio_pdev);
 	cdn_dp_suspend(dp->dev);
 	component_del(&pdev->dev, &cdn_dp_component_ops);
-
-	return 0;
 }
 
 static void cdn_dp_shutdown(struct platform_device *pdev)
@@ -1258,7 +1256,7 @@ static const struct dev_pm_ops cdn_dp_pm_ops = {
 
 struct platform_driver cdn_dp_driver = {
 	.probe = cdn_dp_probe,
-	.remove = cdn_dp_remove,
+	.remove_new = cdn_dp_remove,
 	.shutdown = cdn_dp_shutdown,
 	.driver = {
 		   .name = "cdn-dp",

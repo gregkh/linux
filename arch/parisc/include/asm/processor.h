@@ -47,6 +47,8 @@
 
 #ifndef __ASSEMBLY__
 
+struct rlimit;
+unsigned long mmap_upper_limit(struct rlimit *rlim_stack);
 unsigned long calc_max_stack_size(unsigned long stack_max);
 
 /*
@@ -310,18 +312,11 @@ extern void do_syscall_trace_exit(struct pt_regs *);
 struct seq_file;
 extern void early_trap_init(void);
 extern void collect_boot_cpu_data(void);
+extern void btlb_init_per_cpu(void);
 extern int show_cpuinfo (struct seq_file *m, void *v);
 
 /* driver code in driver/parisc */
-extern void gsc_init(void);
 extern void processor_init(void);
-extern void ccio_init(void);
-extern void hppb_init(void);
-extern void dino_init(void);
-extern void iosapic_init(void);
-extern void lba_init(void);
-extern void sba_init(void);
-extern void parisc_eisa_init(void);
 struct parisc_device;
 struct resource;
 extern void sba_distributed_lmmio(struct parisc_device *, struct resource *);
