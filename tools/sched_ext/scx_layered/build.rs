@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use glob::glob;
 use libbpf_cargo::SkeletonBuilder;
 
-const HEADER_PATH: &str = "src/bpf/layered.h";
+const HEADER_PATH: &str = "src/bpf/intf.h";
+const SKEL_NAME: &str = "bpf";
 
-fn bindgen_layered() {
+fn bindgen_bpf_intf() {
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed={}", HEADER_PATH);
 
@@ -34,17 +35,17 @@ fn bindgen_layered() {
     // Write the bindings to the $OUT_DIR/bindings.rs file.
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     bindings
-        .write_to_file(out_path.join("layered_sys.rs"))
+        .write_to_file(out_path.join("bpf_intf.rs"))
         .expect("Couldn't write bindings!");
 }
 
-fn gen_bpf_sched(name: &str) {
-    let bpf_cflags = env::var("SCX_RUST_BPF_CFLAGS").unwrap();
-    let clang = env::var("SCX_RUST_CLANG").unwrap();
-    let src = format!("./src/bpf/{}.bpf.c", name);
+fn gen_bpf_skel() {
+    let bpf_cflags = env::var("BPF_CFLAGS").unwrap();
+    let clang = env::var("BPF_CLANG").unwrap();
+    let src = format!("./src/bpf/main.bpf.c");
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let skel_path = out_path.join(format!("{}.bpf.skel.rs", name));
-    let obj = out_path.join(format!("{}.bpf.o", name));
+    let skel_path = out_path.join(format!("{}_skel.rs", SKEL_NAME));
+    let obj = out_path.join(format!("{}.bpf.o", SKEL_NAME));
     SkeletonBuilder::new()
         .source(&src)
         .obj(&obj)
@@ -60,6 +61,6 @@ fn gen_bpf_sched(name: &str) {
 }
 
 fn main() {
-    bindgen_layered();
-    gen_bpf_sched("layered");
+    bindgen_bpf_intf();
+    gen_bpf_skel();
 }

@@ -216,8 +216,8 @@ $(addsuffix _deps,$(rust-sched-targets)):
 
 $(rust-sched-targets): %: $(INCLUDE_DIR)/vmlinux.h $(SCX_COMMON_DEPS)
 	$(eval export RUSTFLAGS = -C link-args=-lzstd -C link-args=-lz -C link-args=-lelf -L $(BPFOBJ_DIR))
-	$(eval export SCX_RUST_CLANG = $(CLANG))
-	$(eval export SCX_RUST_BPF_CFLAGS= $(BPF_CFLAGS))
+	$(eval export BPF_CLANG = $(CLANG))
+	$(eval export BPF_CFLAGS = $(BPF_CFLAGS))
 	$(eval sched=$(notdir $@))
 	$(Q)cargo build --manifest-path=$(sched)/Cargo.toml $(CARGOFLAGS)
 	$(Q)cp $(OUTPUT_DIR)/release/$(sched) $(BINDIR)/$@

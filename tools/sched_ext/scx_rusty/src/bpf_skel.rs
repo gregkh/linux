@@ -9,4 +9,4 @@
 // "/bpf.skel.rs")` does not work inside the path attribute yet (see
 // https://github.com/rust-lang/rust/pull/83366).
 
-include!(concat!(env!("OUT_DIR"), "/layered.bpf.skel.rs"));
+include!(concat!(env!("OUT_DIR"), "/bpf_skel.rs"));

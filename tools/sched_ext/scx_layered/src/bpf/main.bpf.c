@@ -1,6 +1,6 @@
 /* Copyright (c) Meta Platforms, Inc. and affiliates. */
 #include "../../../scx_common.bpf.h"
-#include "layered.h"
+#include "intf.h"
 
 #include <errno.h>
 #include <stdbool.h>

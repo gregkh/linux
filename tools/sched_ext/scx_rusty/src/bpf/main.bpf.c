@@ -37,7 +37,7 @@
  */
 #include "../../../scx_common.bpf.h"
 #include "../../../ravg_impl.bpf.h"
-#include "rusty.h"
+#include "intf.h"
 
 #include <errno.h>
 #include <stdbool.h>
