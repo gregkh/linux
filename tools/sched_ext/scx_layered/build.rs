@@ -21,6 +21,8 @@ fn bindgen_bpf_intf() {
     // to bindgen, and lets you build up options for
     // the resulting bindings.
     let bindings = bindgen::Builder::default()
+        // Should run clang with the same -I options as BPF compilation.
+        .clang_args(env::var("BPF_CFLAGS").unwrap().split_whitespace())
         // The input header we would like to generate
         // bindings for.
         .header(HEADER_PATH)
@@ -41,21 +43,23 @@ fn bindgen_bpf_intf() {
 
 fn gen_bpf_skel() {
     let bpf_cflags = env::var("BPF_CFLAGS").unwrap();
-    let clang = env::var("BPF_CLANG").unwrap();
+    let bpf_clang = env::var("BPF_CLANG").unwrap();
+
     let src = format!("./src/bpf/main.bpf.c");
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let skel_path = out_path.join(format!("{}_skel.rs", SKEL_NAME));
     let obj = out_path.join(format!("{}.bpf.o", SKEL_NAME));
+    let skel_path = out_path.join(format!("{}_skel.rs", SKEL_NAME));
+
     SkeletonBuilder::new()
         .source(&src)
         .obj(&obj)
-        .clang(clang)
+        .clang(bpf_clang)
         .clang_args(bpf_cflags)
         .build_and_generate(&skel_path)
         .unwrap();
 
     // Trigger rebuild if any .[hc] files are changed in the directory.
-    for path in glob("./src/bpf/*.[hc]").unwrap().filter_map(Result::ok) {
+    for path in glob("src/bpf/*.[hc]").unwrap().filter_map(Result::ok) {
         println!("cargo:rerun-if-changed={}", path.to_str().unwrap());
     }
 }
