@@ -7,7 +7,6 @@ description = "Userspace scheduling with BPF"
 license = "GPL-2.0-only"
 
 [dependencies]
-scx_utils = "0.1"
 anyhow = "1.0.65"
 bitvec = { version = "1.0", features = ["serde"] }
 clap = { version = "4.1", features = ["derive", "env", "unicode", "wrap_help"] }
@@ -15,16 +14,14 @@ ctrlc = { version = "3.1", features = ["termination"] }
 fb_procfs = "0.7.0"
 hex = "0.4.3"
 libbpf-rs = "0.21.0"
-libbpf-sys = { version = "1.2.0", features = ["novendor", "static"] }
 libc = "0.2.137"
 log = "0.4.17"
 ordered-float = "3.4.0"
+scx_utils = { path = "/home/htejun/os/scx/rust/scx_utils", version = "0.1" }
 simplelog = "0.12.0"
 
 [build-dependencies]
-bindgen = { version = "0.61.0" }
-libbpf-cargo = "0.21.0"
-glob = "0.3"
+scx_utils = { path = "/home/htejun/os/scx/rust/scx_utils", version = "0.1" }
 
 [features]
 enable_backtrace = []
