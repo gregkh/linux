@@ -15,7 +15,7 @@ static inline uint64_t check_num_bits_u64(uint32_t bs, uint64_t *b)
     return 0xFFFFFFFFFFFFFFFFULL;
   }
   KRML_CHECK_SIZE(sizeof (uint64_t), bLen);
-  uint64_t b2[bLen];
+  uint64_t *b2 = (uint64_t *)alloca(bLen * sizeof (uint64_t));
   memset(b2, 0U, bLen * sizeof (uint64_t));
   uint32_t i0 = bs / 64U;
   uint32_t j = bs % 64U;
@@ -37,7 +37,7 @@ uint64_t Hacl_Impl_RSA_Keys_check_modulus_u64(uint32_t modBits, uint64_t *n)
   uint64_t bits0 = n[0U] & 1ULL;
   uint64_t m0 = 0ULL - bits0;
   KRML_CHECK_SIZE(sizeof (uint64_t), nLen);
-  uint64_t b2[nLen];
+  uint64_t *b2 = (uint64_t *)alloca(nLen * sizeof (uint64_t));
   memset(b2, 0U, nLen * sizeof (uint64_t));
   uint32_t i0 = (modBits - 1U) / 64U;
   uint32_t j = (modBits - 1U) % 64U;
@@ -59,7 +59,7 @@ uint64_t Hacl_Impl_RSA_Keys_check_exponent_u64(uint32_t eBits, uint64_t *e)
 {
   uint32_t eLen = (eBits - 1U) / 64U + 1U;
   KRML_CHECK_SIZE(sizeof (uint64_t), eLen);
-  uint64_t bn_zero[eLen];
+  uint64_t *bn_zero = (uint64_t *)alloca(eLen * sizeof (uint64_t));
   memset(bn_zero, 0U, eLen * sizeof (uint64_t));
   uint64_t mask = 0xFFFFFFFFFFFFFFFFULL;
   for (uint32_t i = 0U; i < eLen; i++)
@@ -101,13 +101,13 @@ Hacl_RSA_rsa_dec(
   uint32_t emLen = (emBits - 1U) / 8U + 1U;
   uint32_t k = (modBits - 1U) / 8U + 1U;
   KRML_CHECK_SIZE(sizeof (uint64_t), nLen);
-  uint64_t m[nLen];
+  uint64_t *m = (uint64_t *)alloca(nLen * sizeof (uint64_t));
   memset(m, 0U, nLen * sizeof (uint64_t));
   KRML_CHECK_SIZE(sizeof (uint64_t), nLen);
-  uint64_t s[nLen];
+  uint64_t *s = (uint64_t *)alloca(nLen * sizeof (uint64_t));
   memset(s, 0U, nLen * sizeof (uint64_t));
   KRML_CHECK_SIZE(sizeof (uint64_t), nLen);
-  uint64_t m_[nLen];
+  uint64_t *m_ = (uint64_t *)alloca(nLen * sizeof (uint64_t));
   memset(m_, 0U, nLen * sizeof (uint64_t));
   Hacl_Bignum_Convert_bn_from_bytes_be_uint64(emLen, cipher, m);
   uint32_t nLen1 = (modBits - 1U) / 64U + 1U;
@@ -180,10 +180,10 @@ Hacl_RSA_rsa_enc(
   uint32_t emBits = modBits - 1U;
   uint32_t emLen = (emBits - 1U) / 8U + 1U;
   KRML_CHECK_SIZE(sizeof (uint64_t), nLen);
-  uint64_t s[nLen];
+  uint64_t *s = (uint64_t *)alloca(nLen * sizeof (uint64_t));
   memset(s, 0U, nLen * sizeof (uint64_t));
   KRML_CHECK_SIZE(sizeof (uint64_t), (modBits - 1U) / 64U + 1U);
-  uint64_t m[(modBits - 1U) / 64U + 1U];
+  uint64_t *m = (uint64_t *)alloca(((modBits - 1U) / 64U + 1U) * sizeof (uint64_t));
   memset(m, 0U, ((modBits - 1U) / 64U + 1U) * sizeof (uint64_t));
   Hacl_Bignum_Convert_bn_from_bytes_be_uint64(k, plain, s);
   uint32_t nLen1 = (modBits - 1U) / 64U + 1U;

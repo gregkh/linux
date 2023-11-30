@@ -66,7 +66,7 @@ Load a public key from key parts.
 uint64_t
 *Hacl_RSA_new_rsa_load_pkey(uint32_t modBits, uint32_t eBits, uint8_t *nb, uint8_t *eb);
 
-l/**
+/**
 Load a secret key from key parts.
 
 @param modBits Count of bits in modulus (`n`).

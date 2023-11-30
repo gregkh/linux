@@ -26,7 +26,7 @@ struct hacl_rsa_key {
     uint8_t *nb;
     uint8_t *eb;
     uint8_t *db;
-}
+};
 
 static inline struct hacl_rsa_key *rsa_get_key(struct crypto_akcipher *tfm)
 {
@@ -51,21 +51,32 @@ static int rsa_enc(struct akcipher_request *req)
 		goto done;
 	}
 
-	uint64_t *pk = HACL_RSA_new_rsa_load_pkey(pkey->modBits,pkey->eBits,pkey->nb,pkey->eb);
+	unsigned char* buffer = kmalloc(req->src_len + req->dst_len, GFP_KERNEL);
+	if (!buffer)
+		return -ENOMEM;
+	sg_copy_to_buffer(req->src,
+		          sg_nents_for_len(req->src, req->src_len),
+			  buffer, req->src_len);
+	
+	uint64_t *pk = Hacl_RSA_new_rsa_load_pkey(pkey->modBits,pkey->eBits,pkey->nb,pkey->eb);
 
 	if (!pk) {
 		ret = -EINVAL;
 		goto done;
 	}
 	
-	ret = HACL_RSA_rsa_enc(pkey->modBits,pkey->eBits,pk, req->src, req->dst);
+	ret = Hacl_RSA_rsa_enc(pkey->modBits,pkey->eBits,pk, buffer, buffer+req->src_len);
 
 	if (!ret)
 	         ret = -EBADMSG;
 
-	free(pk);
+	sg_copy_from_buffer(req->dst,
+		          sg_nents_for_len(req->dst, req->dst_len),
+			  buffer+req->src_len, req->dst_len);
+	kfree(pk);
 
- done:	return ret;
+ done:  kfree(buffer);
+	return ret;
 }
 
 static int rsa_dec(struct akcipher_request *req)
@@ -86,51 +97,44 @@ static int rsa_dec(struct akcipher_request *req)
 		goto done;
 	}
 
-	uint64_t *sk = HACL_RSA_new_rsa_load_skey(skey->modBits,skey->eBits,skey->dBits,skey->nb,skey->eb,skey->db);
+	unsigned char* buffer = kmalloc(req->src_len + req->dst_len, GFP_KERNEL);
+	if (!buffer)
+		return -ENOMEM;
+	sg_copy_to_buffer(req->src,
+		          sg_nents_for_len(req->src, req->src_len),
+			  buffer, req->src_len);
+	
+	uint64_t *sk = Hacl_RSA_new_rsa_load_skey(skey->modBits,skey->eBits,skey->dBits,skey->nb,skey->eb,skey->db);
 
 	if (!sk) {
 		ret = -EINVAL;
 		goto done;
 	}
 	
-	ret = HACL_RSA_rsa_dec(skey->modBits,skey->eBits,skey->dBits,sk,req->src,req->dst);
+	ret = Hacl_RSA_rsa_dec(skey->modBits,skey->eBits,skey->dBits,sk,buffer,buffer+req->src_len);
 
 	if (!ret)
 	         ret = -EBADMSG;
 
-	free(sk);
+	sg_copy_from_buffer(req->dst,
+		          sg_nents_for_len(req->dst, req->dst_len),
+			  buffer+req->src_len, req->dst_len);
 
- done:	return ret;
+	kfree(sk);
+
+ done:  kfree(buffer);
+	return ret;
 }
 
 static void rsa_free_key(struct hacl_rsa_key *key)
 {
-	free(key->db);
-	free(key->eb);
-	free(key->nb);
+	kfree(key->db);
+	kfree(key->eb);
+	kfree(key->nb);
 	key->db = NULL;
 	key->eb = NULL;
 	key->nb = NULL;
 }
-
-static int rsa_check_key_length(unsigned int len)
-{
-	switch (len) {
-	case 512:
-	case 1024:
-	case 1536:
-		if (fips_enabled)
-			return -EINVAL;
-		fallthrough;
-	case 2048:
-	case 3072:
-	case 4096:
-		return 0;
-	}
-
-	return -EINVAL;
-}
-
 
 static int rsa_set_pub_key(struct crypto_akcipher *tfm, const void *key,
 			   unsigned int keylen)
@@ -149,8 +153,8 @@ static int rsa_set_pub_key(struct crypto_akcipher *tfm, const void *key,
 
 	pkey->modBits = raw_key.n_sz * 8;
 	pkey->eBits = raw_key.e_sz * 8;
-	pkey->nb = raw_key.n;
-	pkey->eb = raw_key.e;
+	pkey->nb = (uint8_t*) raw_key.n;
+	pkey->eb = (uint8_t*) raw_key.e;
 
 	if (!pkey->nb || !pkey->eb)
 		goto err;
@@ -180,9 +184,9 @@ static int rsa_set_priv_key(struct crypto_akcipher *tfm, const void *key,
 	skey->modBits = raw_key.n_sz * 8;
 	skey->eBits = raw_key.e_sz * 8;
        	skey->dBits = raw_key.d_sz * 8;
-	skey->nb = raw_key.n;
-	skey->eb = raw_key.e;
-	skey->db = raw_key.d;
+	skey->nb = (uint8_t*) raw_key.n;
+	skey->eb = (uint8_t*) raw_key.e;
+	skey->db = (uint8_t*) raw_key.d;
 
 	if (!skey->nb || !skey->eb || !skey->db)
 		goto err;
@@ -196,14 +200,14 @@ err:
 
 static unsigned int rsa_max_size(struct crypto_akcipher *tfm)
 {
-	struct rsa_mpi_key *pkey = akcipher_tfm_ctx(tfm);
+	struct hacl_rsa_key *pkey = akcipher_tfm_ctx(tfm);
 
-	return mpi_get_size(pkey->modBits);
+	return pkey->modBits;
 }
 
 static void rsa_exit_tfm(struct crypto_akcipher *tfm)
 {
-	struct rsa_mpi_key *pkey = akcipher_tfm_ctx(tfm);
+	struct hacl_rsa_key *pkey = akcipher_tfm_ctx(tfm);
 
 	rsa_free_key(pkey);
 }
@@ -228,7 +232,7 @@ static int __init hacl_rsa_init(void)
 {
 	int err;
 
-	err = crypto_register_akcipher(&rsa);
+	err = crypto_register_akcipher(&hacl_rsa);
 	if (err)
 		return err;
 
@@ -237,7 +241,7 @@ static int __init hacl_rsa_init(void)
 
 static void __exit hacl_rsa_exit(void)
 {
-	crypto_unregister_akcipher(&rsa);
+	crypto_unregister_akcipher(&hacl_rsa);
 }
 
 subsys_initcall(hacl_rsa_init);

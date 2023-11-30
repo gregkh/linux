@@ -45,6 +45,7 @@ obj-$(CONFIG_CRYPTO_RSA) += rsa_generic.o
 
 rsa_hacl-y := rsapubkey.asn1.o
 rsa_hacl-y += rsaprivkey.asn1.o
+rsa_hacl-y += hacl_bignum.o
 rsa_hacl-y += rsa-hacl-generated.o
 rsa_hacl-y += rsa_helper.o
 rsa_hacl-y += rsa-hacl.o

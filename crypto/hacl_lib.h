@@ -12,6 +12,9 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/string.h>
+#include <linux/string.h>
+
+#define alloca __builtin_alloca
 
 typedef u128 FStar_UInt128_uint128;
 
@@ -42,7 +45,35 @@ inline static u128 FStar_UInt128_shift_right(u128 x, u32 y) {
   return x >> y;
 }
 
-static u64 FStar_UInt64_eq_mask(u64 a, u64 b)
+#define KRML_NOINLINE noinline __maybe_unused
+#define KRML_MAYBE_UNUSED_VAR(x) (void)(x)
+#define KRML_HOST_CALLOC(x,y) kcalloc(x,y,GFP_KERNEL)
+#define KRML_HOST_FREE(x) kfree(x)
+
+static KRML_NOINLINE u32 FStar_UInt32_eq_mask(u32 a, u32 b)
+{
+  u32 x = a ^ b;
+  u32 minus_x = ~x + (u32)1U;
+  u32 x_or_minus_x = x | minus_x;
+  u32 xnx = x_or_minus_x >> (u32)31U;
+  return xnx - (u32)1U;
+}
+
+static KRML_NOINLINE u32 FStar_UInt32_gte_mask(u32 a, u32 b)
+{
+  u32 x = a;
+  u32 y = b;
+  u32 x_xor_y = x ^ y;
+  u32 x_sub_y = x - y;
+  u32 x_sub_y_xor_y = x_sub_y ^ y;
+  u32 q = x_xor_y | x_sub_y_xor_y;
+  u32 x_xor_q = x ^ q;
+  u32 x_xor_q_ = x_xor_q >> (u32)31U;
+  return x_xor_q_ - (u32)1U;
+}
+
+
+static KRML_NOINLINE u64 FStar_UInt64_eq_mask(u64 a, u64 b)
 {
   u64 x = a ^ b;
   u64 minus_x = ~x + (u64)1U;
@@ -51,7 +82,7 @@ static u64 FStar_UInt64_eq_mask(u64 a, u64 b)
   return xnx - (u64)1U;
 }
 
-static u64 FStar_UInt64_gte_mask(u64 a, u64 b)
+static KRML_NOINLINE u64 FStar_UInt64_gte_mask(u64 a, u64 b)
 {
   u64 x = a;
   u64 y = b;
@@ -63,6 +94,25 @@ static u64 FStar_UInt64_gte_mask(u64 a, u64 b)
   u64 x_xor_q_ = x_xor_q >> (u32)63U;
   return x_xor_q_ - (u64)1U;
 }
+
+static inline uint32_t
+Hacl_IntTypes_Intrinsics_add_carry_u32(uint32_t cin, uint32_t x, uint32_t y, uint32_t *r)
+{
+  uint64_t res = (uint64_t)x + (uint64_t)cin + (uint64_t)y;
+  uint32_t c = (uint32_t)(res >> 32U);
+  r[0U] = (uint32_t)res;
+  return c;
+}
+
+static inline uint32_t
+Hacl_IntTypes_Intrinsics_sub_borrow_u32(uint32_t cin, uint32_t x, uint32_t y, uint32_t *r)
+{
+  uint64_t res = (uint64_t)x - (uint64_t)y - (uint64_t)cin;
+  uint32_t c = (uint32_t)(res >> 32U) & 1U;
+  r[0U] = (uint32_t)res;
+  return c;
+}
+
 
 static inline uint64_t
 Hacl_IntTypes_Intrinsics_sub_borrow_u64(uint64_t cin, uint64_t x, uint64_t y, uint64_t *r)
@@ -86,6 +136,12 @@ Hacl_IntTypes_Intrinsics_add_carry_u64(uint64_t cin, uint64_t x, uint64_t y, uin
   r[0U] = res;
   return c;
 }
+
+#define Lib_IntTypes_Intrinsics_sub_borrow_u32(x1, x2, x3, x4) \
+    (Hacl_IntTypes_Intrinsics_sub_borrow_u32(x1, x2, x3, x4))
+    
+#define Lib_IntTypes_Intrinsics_add_carry_u32(x1, x2, x3, x4) \
+    (Hacl_IntTypes_Intrinsics_add_carry_u32(x1, x2, x3, x4))
 
 #define Lib_IntTypes_Intrinsics_sub_borrow_u64(x1, x2, x3, x4) \
     (Hacl_IntTypes_Intrinsics_sub_borrow_u64(x1, x2, x3, x4))
@@ -113,6 +169,8 @@ static inline void store128_be(u8 *buf, u128 x)
         store64_be(buf, (u64)(x >> 64));
         store64_be(buf + 8, (u64)(x));
 }
+
+#define KRML_CHECK_SIZE(size_elt, sz) {}
 
 /* Macros for prettier unrolling of loops */
 #define KRML_LOOP1(i, n, x) \
@@ -182,13 +240,13 @@ static inline void store128_be(u8 *buf, u128 x)
 
 #define KRML_UNROLL_FOR(i, z, n, k, x) \
         do {                           \
-                uint32_t i = z;        \
+                u32 i = z;        \
                 KRML_LOOP##n(i, k, x)  \
         } while (0)
 
 #define KRML_ACTUAL_FOR(i, z, n, k, x)                \
         do {                                          \
-                for (uint32_t i = z; i < n; i += k) { \
+                for (u32 i = z; i < n; i += k) { \
                         x                             \
                 }                                     \
         } while (0)
