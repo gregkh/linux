@@ -4,6 +4,10 @@
 // GNU General Public License version 2.
 
 fn main() {
-    scx_utils::build_helpers::bindgen_bpf_intf(None, None);
-    scx_utils::build_helpers::gen_bpf_skel(None, None, None);
+    scx_utils::BpfBuilder::new()
+        .unwrap()
+        .enable_intf("src/bpf/intf.h", "bpf_intf.rs")
+        .enable_skel("src/bpf/main.bpf.c", "bpf")
+        .build()
+        .unwrap();
 }
