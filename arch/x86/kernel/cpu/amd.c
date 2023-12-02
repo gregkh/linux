@@ -714,7 +714,7 @@ static void bsp_init_amd(struct cpuinfo_x86 *c)
 		switch (c->x86_model) {
 		case 0x00 ... 0x2f:
 		case 0x50 ... 0x5f:
-			setup_force_cpu_cap(X86_FEATURE_ZEN);
+			setup_force_cpu_cap(X86_FEATURE_ZEN1);
 			break;
 		case 0x30 ... 0x4f:
 		case 0x60 ... 0x7f:
@@ -1095,12 +1095,13 @@ void init_spectral_chicken(struct cpuinfo_x86 *c)
 
 static void init_amd_zen_common(void)
 {
+	setup_force_cpu_cap(X86_FEATURE_ZEN);
 #ifdef CONFIG_NUMA
 	node_reclaim_distance = 32;
 #endif
 }
 
-static void init_amd_zen(struct cpuinfo_x86 *c)
+static void init_amd_zen1(struct cpuinfo_x86 *c)
 {
 	init_amd_zen_common();
 
@@ -1212,8 +1213,8 @@ static void init_amd(struct cpuinfo_x86 *c)
 	case 0x16: init_amd_jg(c); break;
 	}
 
-	if (boot_cpu_has(X86_FEATURE_ZEN))
-		init_amd_zen(c);
+	if (boot_cpu_has(X86_FEATURE_ZEN1))
+		init_amd_zen1(c);
 	else if (boot_cpu_has(X86_FEATURE_ZEN2))
 		init_amd_zen2(c);
 	else if (boot_cpu_has(X86_FEATURE_ZEN3))
