@@ -91,7 +91,7 @@ endif
 
 CFLAGS += -g -O2 -rdynamic -pthread -Wall -Werror $(GENFLAGS)			\
 	  -I$(INCLUDE_DIR) -I$(GENDIR) -I$(LIBDIR)				\
-	  -I$(TOOLSINCDIR) -I$(APIDIR)
+	  -I$(TOOLSINCDIR) -I$(APIDIR) -I$(CURDIR)/include
 
 CARGOFLAGS := --release --target-dir $(OUTPUT_DIR)
 ifneq ($(CARGO_OFFLINE),)
@@ -122,7 +122,7 @@ endef
 
 BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH)					\
 	     $(if $(IS_LITTLE_ENDIAN),-mlittle-endian,-mbig-endian)		\
-	     -I$(INCLUDE_DIR) -I$(CURDIR) -I$(APIDIR)				\
+	     -I$(INCLUDE_DIR) -I$(CURDIR)/include -I$(APIDIR)			\
 	     -I../../include							\
 	     $(call get_sys_includes,$(CLANG))					\
 	     -Wall -Wno-compare-distinct-pointer-types				\
@@ -163,7 +163,7 @@ else
 	$(Q)cp "$(VMLINUX_H)" $@
 endif
 
-$(SCXOBJ_DIR)/%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h scx_common.bpf.h	\
+$(SCXOBJ_DIR)/%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h include/scx/common.bpf.h \
 		       user_exit_info.h ravg.bpf.h ravg_impl.bpf.h		\
 		       | $(BPFOBJ) $(SCXOBJ_DIR)
 	$(call msg,CLNG-BPF,,$(notdir $@))
@@ -179,7 +179,7 @@ $(INCLUDE_DIR)/%.bpf.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BP
 	$(Q)$(BPFTOOL) gen skeleton $(<:.o=.linked3.o) name $(subst .bpf.skel.h,,$(sched)) > $@
 	$(Q)$(BPFTOOL) gen subskeleton $(<:.o=.linked3.o) name $(subst .bpf.skel.h,,$(sched)) > $(@:.skel.h=.subskel.h)
 
-SCX_COMMON_DEPS := scx_common.h user_exit_info.h | $(BINDIR)
+SCX_COMMON_DEPS := include/scx/common.h include/scx/user_exit_info.h | $(BINDIR)
 
 ################
 # C schedulers #
