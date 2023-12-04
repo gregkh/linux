@@ -966,7 +966,13 @@ s32 BPF_STRUCT_OPS(rusty_prep_enable, struct task_struct *p,
 	pid_t pid;
 
 	pid = p->pid;
-	ret = bpf_map_update_elem(&task_data, &pid, &taskc, BPF_NOEXIST);
+
+	/*
+	 * XXX - We want BPF_NOEXIST but bpf_map_delete_elem() in .disable() may
+	 * fail spuriously due to BPF recursion protection triggering
+	 * unnecessarily.
+	 */
+	ret = bpf_map_update_elem(&task_data, &pid, &taskc, 0 /*BPF_NOEXIST*/);
 	if (ret) {
 		stat_add(RUSTY_STAT_TASK_GET_ERR, 1);
 		return ret;
@@ -1003,7 +1009,15 @@ s32 BPF_STRUCT_OPS(rusty_prep_enable, struct task_struct *p,
 void BPF_STRUCT_OPS(rusty_disable, struct task_struct *p)
 {
 	pid_t pid = p->pid;
-	long ret = bpf_map_delete_elem(&task_data, &pid);
+	long ret;
+
+	/*
+	 * XXX - There's no reason delete should fail here but BPF's recursion
+	 * protection can unnecessarily fail the operation. The fact that
+	 * deletions aren't reliable means that we sometimes leak task_ctx and
+	 * can't use BPF_NOEXIST on allocation in .prep_enable().
+	 */
+	ret = bpf_map_delete_elem(&task_data, &pid);
 	if (ret) {
 		stat_add(RUSTY_STAT_TASK_GET_ERR, 1);
 		return;
