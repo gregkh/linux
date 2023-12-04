@@ -2,8 +2,8 @@
 
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
-#ifndef __LAYERED_H
-#define __LAYERED_H
+#ifndef __INTF_H
+#define __INTF_H
 
 #include <stdbool.h>
 #ifndef __kptr
@@ -18,7 +18,7 @@ typedef unsigned long long u64;
 typedef long long s64;
 #endif
 
-#include "../../../ravg.bpf.h"
+#include <scx/ravg.bpf.h>
 
 enum consts {
 	MAX_CPUS_SHIFT		= 9,
@@ -97,4 +97,4 @@ struct layer {
 	unsigned int		nr_cpus;	// managed from BPF side
 };
 
-#endif /* __LAYERED_H */
+#endif /* __INTF_H */

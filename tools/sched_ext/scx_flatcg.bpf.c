@@ -43,8 +43,7 @@
  * within by using nested weighted vtime scheduling by default. The
  * cgroup-internal scheduling can be switched to FIFO with the -f option.
  */
-#include "scx_common.bpf.h"
-#include "user_exit_info.h"
+#include <scx/common.bpf.h>
 #include "scx_flatcg.h"
 
 char _license[] SEC("license") = "GPL";

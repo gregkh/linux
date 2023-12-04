@@ -2,8 +2,8 @@
 
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
-#ifndef __RUSTY_H
-#define __RUSTY_H
+#ifndef __INTF_H
+#define __INTF_H
 
 #include <stdbool.h>
 #ifndef __kptr
@@ -19,7 +19,7 @@ typedef unsigned int u32;
 typedef unsigned long long u64;
 #endif
 
-#include "../../../ravg.bpf.h"
+#include <scx/ravg.bpf.h>
 
 enum consts {
 	MAX_CPUS		= 512,
@@ -94,4 +94,4 @@ struct dom_ctx {
 	u64 dbg_load_printed_at;
 };
 
-#endif /* __RUSTY_H */
+#endif /* __INTF_H */

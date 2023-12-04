@@ -2,10 +2,9 @@
 
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
-#[path = "bpf/.output/rusty.skel.rs"]
-mod rusty;
-pub use rusty::*;
-pub mod rusty_sys;
+mod bpf_skel;
+pub use bpf_skel::*;
+pub mod bpf_intf;
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -34,12 +33,11 @@ use log::info;
 use log::trace;
 use log::warn;
 use ordered_float::OrderedFloat;
+use scx_utils::ravg::ravg_read;
 
-const RAVG_FRAC_BITS: u32 = rusty_sys::ravg_consts_RAVG_FRAC_BITS;
-const MAX_DOMS: usize = rusty_sys::consts_MAX_DOMS as usize;
-const MAX_CPUS: usize = rusty_sys::consts_MAX_CPUS as usize;
-
-include!("../../ravg_read.rs.h");
+const RAVG_FRAC_BITS: u32 = bpf_intf::ravg_consts_RAVG_FRAC_BITS;
+const MAX_DOMS: usize = bpf_intf::consts_MAX_DOMS as usize;
+const MAX_CPUS: usize = bpf_intf::consts_MAX_CPUS as usize;
 
 /// scx_rusty: A multi-domain BPF / userspace hybrid scheduler
 ///
@@ -422,7 +420,7 @@ impl Tuner {
         })
     }
 
-    fn step(&mut self, skel: &mut RustySkel) -> Result<()> {
+    fn step(&mut self, skel: &mut BpfSkel) -> Result<()> {
         let curr_cpu_stats = self
             .proc_reader
             .read_stat()?
@@ -498,7 +496,7 @@ struct TaskInfo {
 }
 
 struct LoadBalancer<'a, 'b, 'c> {
-    skel: &'a mut RustySkel<'b>,
+    skel: &'a mut BpfSkel<'b>,
     top: Arc<Topology>,
     skip_kworkers: bool,
 
@@ -533,7 +531,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
     const LOAD_IMBAL_PUSH_MAX_RATIO: f64 = 0.50;
 
     fn new(
-        skel: &'a mut RustySkel<'b>,
+        skel: &'a mut BpfSkel<'b>,
         top: Arc<Topology>,
         skip_kworkers: bool,
         nr_lb_data_errors: &'c mut u64,
@@ -570,9 +568,8 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
                 .lookup(&key, libbpf_rs::MapFlags::ANY)
                 .context("Failed to lookup dom_ctx")?
             {
-                let dom_ctx = unsafe {
-                    &*(dom_ctx_map_elem.as_slice().as_ptr() as *const rusty_sys::dom_ctx)
-                };
+                let dom_ctx =
+                    unsafe { &*(dom_ctx_map_elem.as_slice().as_ptr() as *const bpf_intf::dom_ctx) };
 
                 let rd = &dom_ctx.load_rd;
                 self.dom_loads[i] = ravg_read(
@@ -622,7 +619,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
         //
         // XXX - We can't read task_ctx inline because self.skel.bss()
         // borrows mutably and thus conflicts with self.skel.maps().
-        const MAX_PIDS: u64 = rusty_sys::consts_MAX_DOM_ACTIVE_PIDS as u64;
+        const MAX_PIDS: u64 = bpf_intf::consts_MAX_DOM_ACTIVE_PIDS as u64;
         let active_pids = &mut self.skel.bss().dom_active_pids[dom as usize];
         let mut pids = vec![];
 
@@ -651,7 +648,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
 
             if let Some(task_data_elem) = task_data.lookup(&key, libbpf_rs::MapFlags::ANY)? {
                 let task_ctx =
-                    unsafe { &*(task_data_elem.as_slice().as_ptr() as *const rusty_sys::task_ctx) };
+                    unsafe { &*(task_data_elem.as_slice().as_ptr() as *const bpf_intf::task_ctx) };
 
                 if task_ctx.dom_id != dom {
                     continue;
@@ -862,7 +859,7 @@ impl<'a, 'b, 'c> LoadBalancer<'a, 'b, 'c> {
 }
 
 struct Scheduler<'a> {
-    skel: RustySkel<'a>,
+    skel: BpfSkel<'a>,
     struct_ops: Option<libbpf_rs::Link>,
 
     sched_interval: Duration,
@@ -884,7 +881,7 @@ struct Scheduler<'a> {
 impl<'a> Scheduler<'a> {
     fn init(opts: &Opts) -> Result<Self> {
         // Open the BPF prog first for verification.
-        let mut skel_builder = RustySkelBuilder::default();
+        let mut skel_builder = BpfSkelBuilder::default();
         skel_builder.obj_builder.debug(opts.verbose > 0);
         let mut skel = skel_builder.open().context("Failed to open BPF program")?;
 
@@ -1026,7 +1023,7 @@ impl<'a> Scheduler<'a> {
         let mut stats: Vec<u64> = Vec::new();
         let zero_vec = vec![vec![0u8; stats_map.value_size() as usize]; self.top.nr_cpus];
 
-        for stat in 0..rusty_sys::stat_idx_RUSTY_NR_STATS {
+        for stat in 0..bpf_intf::stat_idx_RUSTY_NR_STATS {
             let cpu_stat_vec = stats_map
                 .lookup_percpu(&stat.to_ne_bytes(), libbpf_rs::MapFlags::ANY)
                 .with_context(|| format!("Failed to lookup stat {}", stat))?
@@ -1059,22 +1056,22 @@ impl<'a> Scheduler<'a> {
         imbal: &[f64],
     ) {
         let stat = |idx| stats[idx as usize];
-        let total = stat(rusty_sys::stat_idx_RUSTY_STAT_WAKE_SYNC)
-            + stat(rusty_sys::stat_idx_RUSTY_STAT_PREV_IDLE)
-            + stat(rusty_sys::stat_idx_RUSTY_STAT_GREEDY_IDLE)
-            + stat(rusty_sys::stat_idx_RUSTY_STAT_PINNED)
-            + stat(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_DISPATCH)
-            + stat(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_GREEDY)
-            + stat(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_GREEDY_FAR)
-            + stat(rusty_sys::stat_idx_RUSTY_STAT_DSQ_DISPATCH)
-            + stat(rusty_sys::stat_idx_RUSTY_STAT_GREEDY);
+        let total = stat(bpf_intf::stat_idx_RUSTY_STAT_WAKE_SYNC)
+            + stat(bpf_intf::stat_idx_RUSTY_STAT_PREV_IDLE)
+            + stat(bpf_intf::stat_idx_RUSTY_STAT_GREEDY_IDLE)
+            + stat(bpf_intf::stat_idx_RUSTY_STAT_PINNED)
+            + stat(bpf_intf::stat_idx_RUSTY_STAT_DIRECT_DISPATCH)
+            + stat(bpf_intf::stat_idx_RUSTY_STAT_DIRECT_GREEDY)
+            + stat(bpf_intf::stat_idx_RUSTY_STAT_DIRECT_GREEDY_FAR)
+            + stat(bpf_intf::stat_idx_RUSTY_STAT_DSQ_DISPATCH)
+            + stat(bpf_intf::stat_idx_RUSTY_STAT_GREEDY);
 
         info!(
             "cpu={:7.2} bal={} load_avg={:8.2} task_err={} lb_data_err={} proc={:?}ms",
             cpu_busy * 100.0,
-            stats[rusty_sys::stat_idx_RUSTY_STAT_LOAD_BALANCE as usize],
+            stats[bpf_intf::stat_idx_RUSTY_STAT_LOAD_BALANCE as usize],
             load_avg,
-            stats[rusty_sys::stat_idx_RUSTY_STAT_TASK_GET_ERR as usize],
+            stats[bpf_intf::stat_idx_RUSTY_STAT_TASK_GET_ERR as usize],
             self.nr_lb_data_errors,
             processing_dur.as_millis(),
         );
@@ -1084,25 +1081,25 @@ impl<'a> Scheduler<'a> {
         info!(
             "tot={:7} wsync={:5.2} prev_idle={:5.2} greedy_idle={:5.2} pin={:5.2}",
             total,
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_WAKE_SYNC),
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_PREV_IDLE),
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_GREEDY_IDLE),
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_PINNED),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_WAKE_SYNC),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_PREV_IDLE),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_GREEDY_IDLE),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_PINNED),
         );
 
         info!(
             "dir={:5.2} dir_greedy={:5.2} dir_greedy_far={:5.2}",
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_DISPATCH),
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_GREEDY),
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_DIRECT_GREEDY_FAR),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_DIRECT_DISPATCH),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_DIRECT_GREEDY),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_DIRECT_GREEDY_FAR),
         );
 
         info!(
             "dsq={:5.2} greedy={:5.2} kick_greedy={:5.2} rep={:5.2}",
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_DSQ_DISPATCH),
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_GREEDY),
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_KICK_GREEDY),
-            stat_pct(rusty_sys::stat_idx_RUSTY_STAT_REPATRIATE),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_DSQ_DISPATCH),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_GREEDY),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_KICK_GREEDY),
+            stat_pct(bpf_intf::stat_idx_RUSTY_STAT_REPATRIATE),
         );
 
         let ti = &self.skel.bss().tune_input;

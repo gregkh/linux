@@ -2,10 +2,9 @@
 
 // This software may be used and distributed according to the terms of the
 // GNU General Public License version 2.
-#[path = "bpf/.output/layered.skel.rs"]
-mod layered;
-pub use layered::*;
-pub mod layered_sys;
+mod bpf_skel;
+pub use bpf_skel::*;
+pub mod bpf_intf;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -34,23 +33,22 @@ use libbpf_rs::skel::SkelBuilder as _;
 use log::debug;
 use log::info;
 use log::trace;
+use scx_utils::ravg::ravg_read;
 use serde::Deserialize;
 use serde::Serialize;
 
-const RAVG_FRAC_BITS: u32 = layered_sys::ravg_consts_RAVG_FRAC_BITS;
-const MAX_CPUS: usize = layered_sys::consts_MAX_CPUS as usize;
-const MAX_PATH: usize = layered_sys::consts_MAX_PATH as usize;
-const MAX_COMM: usize = layered_sys::consts_MAX_COMM as usize;
-const MAX_LAYER_MATCH_ORS: usize = layered_sys::consts_MAX_LAYER_MATCH_ORS as usize;
-const MAX_LAYERS: usize = layered_sys::consts_MAX_LAYERS as usize;
-const USAGE_HALF_LIFE: u32 = layered_sys::consts_USAGE_HALF_LIFE;
+const RAVG_FRAC_BITS: u32 = bpf_intf::ravg_consts_RAVG_FRAC_BITS;
+const MAX_CPUS: usize = bpf_intf::consts_MAX_CPUS as usize;
+const MAX_PATH: usize = bpf_intf::consts_MAX_PATH as usize;
+const MAX_COMM: usize = bpf_intf::consts_MAX_COMM as usize;
+const MAX_LAYER_MATCH_ORS: usize = bpf_intf::consts_MAX_LAYER_MATCH_ORS as usize;
+const MAX_LAYERS: usize = bpf_intf::consts_MAX_LAYERS as usize;
+const USAGE_HALF_LIFE: u32 = bpf_intf::consts_USAGE_HALF_LIFE;
 const USAGE_HALF_LIFE_F64: f64 = USAGE_HALF_LIFE as f64 / 1_000_000_000.0;
-const NR_GSTATS: usize = layered_sys::global_stat_idx_NR_GSTATS as usize;
-const NR_LSTATS: usize = layered_sys::layer_stat_idx_NR_LSTATS as usize;
-const NR_LAYER_MATCH_KINDS: usize = layered_sys::layer_match_kind_NR_LAYER_MATCH_KINDS as usize;
+const NR_GSTATS: usize = bpf_intf::global_stat_idx_NR_GSTATS as usize;
+const NR_LSTATS: usize = bpf_intf::layer_stat_idx_NR_LSTATS as usize;
+const NR_LAYER_MATCH_KINDS: usize = bpf_intf::layer_match_kind_NR_LAYER_MATCH_KINDS as usize;
 const CORE_CACHE_LEVEL: u32 = 2;
-
-include!("../../ravg_read.rs.h");
 
 lazy_static::lazy_static! {
     static ref NR_POSSIBLE_CPUS: usize = libbpf_rs::num_possible_cpus().unwrap();
@@ -410,7 +408,7 @@ fn format_bitvec(bitvec: &BitVec) -> String {
     output
 }
 
-fn read_cpu_ctxs(skel: &LayeredSkel) -> Result<Vec<layered_sys::cpu_ctx>> {
+fn read_cpu_ctxs(skel: &BpfSkel) -> Result<Vec<bpf_intf::cpu_ctx>> {
     let mut cpu_ctxs = vec![];
     let cpu_ctxs_vec = skel
         .maps()
@@ -420,7 +418,7 @@ fn read_cpu_ctxs(skel: &LayeredSkel) -> Result<Vec<layered_sys::cpu_ctx>> {
         .unwrap();
     for cpu in 0..*NR_POSSIBLE_CPUS {
         cpu_ctxs.push(*unsafe {
-            &*(cpu_ctxs_vec[cpu].as_slice().as_ptr() as *const layered_sys::cpu_ctx)
+            &*(cpu_ctxs_vec[cpu].as_slice().as_ptr() as *const bpf_intf::cpu_ctx)
         });
     }
     Ok(cpu_ctxs)
@@ -434,7 +432,7 @@ struct BpfStats {
 }
 
 impl BpfStats {
-    fn read(cpu_ctxs: &[layered_sys::cpu_ctx], nr_layers: usize) -> Self {
+    fn read(cpu_ctxs: &[bpf_intf::cpu_ctx], nr_layers: usize) -> Self {
         let mut gstats = vec![0u64; NR_GSTATS];
         let mut lstats = vec![vec![0u64; NR_LSTATS]; nr_layers];
 
@@ -503,7 +501,7 @@ struct Stats {
 }
 
 impl Stats {
-    fn read_layer_loads(skel: &mut LayeredSkel, nr_layers: usize) -> (f64, Vec<f64>) {
+    fn read_layer_loads(skel: &mut BpfSkel, nr_layers: usize) -> (f64, Vec<f64>) {
         let now_mono = now_monotonic();
         let layer_loads: Vec<f64> = skel
             .bss()
@@ -526,7 +524,7 @@ impl Stats {
         (layer_loads.iter().sum(), layer_loads)
     }
 
-    fn read_layer_cycles(cpu_ctxs: &[layered_sys::cpu_ctx], nr_layers: usize) -> Vec<u64> {
+    fn read_layer_cycles(cpu_ctxs: &[bpf_intf::cpu_ctx], nr_layers: usize) -> Vec<u64> {
         let mut layer_cycles = vec![0u64; nr_layers];
 
         for cpu in 0..*NR_POSSIBLE_CPUS {
@@ -538,7 +536,7 @@ impl Stats {
         layer_cycles
     }
 
-    fn new(skel: &mut LayeredSkel, proc_reader: &procfs::ProcReader) -> Result<Self> {
+    fn new(skel: &mut BpfSkel, proc_reader: &procfs::ProcReader) -> Result<Self> {
         let nr_layers = skel.rodata().nr_layers as usize;
         let bpf_stats = BpfStats::read(&read_cpu_ctxs(skel)?, nr_layers);
 
@@ -565,7 +563,7 @@ impl Stats {
 
     fn refresh(
         &mut self,
-        skel: &mut LayeredSkel,
+        skel: &mut BpfSkel,
         proc_reader: &procfs::ProcReader,
         now: Instant,
     ) -> Result<()> {
@@ -634,7 +632,7 @@ struct UserExitInfo {
 }
 
 impl UserExitInfo {
-    fn read(bpf_uei: &layered_bss_types::user_exit_info) -> Result<Self> {
+    fn read(bpf_uei: &bpf_bss_types::user_exit_info) -> Result<Self> {
         let kind = unsafe { std::ptr::read_volatile(&bpf_uei.kind as *const _) };
 
         let (reason, msg) = if kind != 0 {
@@ -661,7 +659,7 @@ impl UserExitInfo {
         Ok(Self { kind, reason, msg })
     }
 
-    fn exited(bpf_uei: &layered_bss_types::user_exit_info) -> Result<bool> {
+    fn exited(bpf_uei: &bpf_bss_types::user_exit_info) -> Result<bool> {
         Ok(Self::read(bpf_uei)?.kind != 0)
     }
 
@@ -1102,7 +1100,7 @@ impl Layer {
 }
 
 struct Scheduler<'a> {
-    skel: LayeredSkel<'a>,
+    skel: BpfSkel<'a>,
     struct_ops: Option<libbpf_rs::Link>,
     layer_specs: Vec<LayerSpec>,
 
@@ -1123,7 +1121,7 @@ struct Scheduler<'a> {
 }
 
 impl<'a> Scheduler<'a> {
-    fn init_layers(skel: &mut OpenLayeredSkel, specs: &Vec<LayerSpec>) -> Result<()> {
+    fn init_layers(skel: &mut OpenBpfSkel, specs: &Vec<LayerSpec>) -> Result<()> {
         skel.rodata().nr_layers = specs.len() as u32;
 
         for (spec_i, spec) in specs.iter().enumerate() {
@@ -1134,19 +1132,19 @@ impl<'a> Scheduler<'a> {
                     let mt = &mut layer.matches[or_i].matches[and_i];
                     match and {
                         LayerMatch::CgroupPrefix(prefix) => {
-                            mt.kind = layered_sys::layer_match_kind_MATCH_CGROUP_PREFIX as i32;
+                            mt.kind = bpf_intf::layer_match_kind_MATCH_CGROUP_PREFIX as i32;
                             copy_into_cstr(&mut mt.cgroup_prefix, prefix.as_str());
                         }
                         LayerMatch::CommPrefix(prefix) => {
-                            mt.kind = layered_sys::layer_match_kind_MATCH_COMM_PREFIX as i32;
+                            mt.kind = bpf_intf::layer_match_kind_MATCH_COMM_PREFIX as i32;
                             copy_into_cstr(&mut mt.comm_prefix, prefix.as_str());
                         }
                         LayerMatch::NiceAbove(nice) => {
-                            mt.kind = layered_sys::layer_match_kind_MATCH_NICE_ABOVE as i32;
+                            mt.kind = bpf_intf::layer_match_kind_MATCH_NICE_ABOVE as i32;
                             mt.nice_above_or_below = *nice;
                         }
                         LayerMatch::NiceBelow(nice) => {
-                            mt.kind = layered_sys::layer_match_kind_MATCH_NICE_BELOW as i32;
+                            mt.kind = bpf_intf::layer_match_kind_MATCH_NICE_BELOW as i32;
                             mt.nice_above_or_below = *nice;
                         }
                     }
@@ -1173,7 +1171,7 @@ impl<'a> Scheduler<'a> {
         let mut cpu_pool = CpuPool::new()?;
 
         // Open the BPF prog first for verification.
-        let mut skel_builder = LayeredSkelBuilder::default();
+        let mut skel_builder = BpfSkelBuilder::default();
         skel_builder.obj_builder.debug(opts.verbose > 1);
         let mut skel = skel_builder.open().context("Failed to open BPF program")?;
 
@@ -1229,7 +1227,7 @@ impl<'a> Scheduler<'a> {
         })
     }
 
-    fn update_bpf_layer_cpumask(layer: &Layer, bpf_layer: &mut layered_bss_types::layer) {
+    fn update_bpf_layer_cpumask(layer: &Layer, bpf_layer: &mut bpf_bss_types::layer) {
         for bit in 0..layer.cpus.len() {
             if layer.cpus[bit] {
                 bpf_layer.cpus[bit / 8] |= 1 << (bit % 8);
@@ -1325,8 +1323,8 @@ impl<'a> Scheduler<'a> {
         self.prev_processing_dur = self.processing_dur;
 
         let lsum = |idx| stats.bpf_stats.lstats_sums[idx as usize];
-        let total = lsum(layered_sys::layer_stat_idx_LSTAT_LOCAL)
-            + lsum(layered_sys::layer_stat_idx_LSTAT_GLOBAL);
+        let total = lsum(bpf_intf::layer_stat_idx_LSTAT_LOCAL)
+            + lsum(bpf_intf::layer_stat_idx_LSTAT_GLOBAL);
         let lsum_pct = |idx| {
             if total != 0 {
                 lsum(idx) as f64 / total as f64 * 100.0
@@ -1338,11 +1336,11 @@ impl<'a> Scheduler<'a> {
         info!(
             "tot={:7} local={:5.2} open_idle={:5.2} affn_viol={:5.2} tctx_err={} proc={:?}ms",
             total,
-            lsum_pct(layered_sys::layer_stat_idx_LSTAT_LOCAL),
-            lsum_pct(layered_sys::layer_stat_idx_LSTAT_OPEN_IDLE),
-            lsum_pct(layered_sys::layer_stat_idx_LSTAT_AFFN_VIOL),
+            lsum_pct(bpf_intf::layer_stat_idx_LSTAT_LOCAL),
+            lsum_pct(bpf_intf::layer_stat_idx_LSTAT_OPEN_IDLE),
+            lsum_pct(bpf_intf::layer_stat_idx_LSTAT_AFFN_VIOL),
             stats.prev_bpf_stats.gstats
-                [layered_sys::global_stat_idx_GSTAT_TASK_CTX_FREE_FAILED as usize],
+                [bpf_intf::global_stat_idx_GSTAT_TASK_CTX_FREE_FAILED as usize],
             processing_dur.as_millis(),
         );
 
@@ -1368,8 +1366,8 @@ impl<'a> Scheduler<'a> {
 
         for (lidx, (spec, layer)) in self.layer_specs.iter().zip(self.layers.iter()).enumerate() {
             let lstat = |sidx| stats.bpf_stats.lstats[lidx][sidx as usize];
-            let ltotal = lstat(layered_sys::layer_stat_idx_LSTAT_LOCAL)
-                + lstat(layered_sys::layer_stat_idx_LSTAT_GLOBAL);
+            let ltotal = lstat(bpf_intf::layer_stat_idx_LSTAT_LOCAL)
+                + lstat(bpf_intf::layer_stat_idx_LSTAT_GLOBAL);
             let lstat_pct = |sidx| {
                 if ltotal != 0 {
                     lstat(sidx) as f64 / ltotal as f64 * 100.0
@@ -1392,10 +1390,10 @@ impl<'a> Scheduler<'a> {
                 "  {:<width$}  tot={:7} local={:5.2} open_idle={:5.2} preempt={:5.2} affn_viol={:5.2}",
                 "",
                 ltotal,
-                lstat_pct(layered_sys::layer_stat_idx_LSTAT_LOCAL),
-                lstat_pct(layered_sys::layer_stat_idx_LSTAT_OPEN_IDLE),
-                lstat_pct(layered_sys::layer_stat_idx_LSTAT_PREEMPT),
-                lstat_pct(layered_sys::layer_stat_idx_LSTAT_AFFN_VIOL),
+                lstat_pct(bpf_intf::layer_stat_idx_LSTAT_LOCAL),
+                lstat_pct(bpf_intf::layer_stat_idx_LSTAT_OPEN_IDLE),
+                lstat_pct(bpf_intf::layer_stat_idx_LSTAT_PREEMPT),
+                lstat_pct(bpf_intf::layer_stat_idx_LSTAT_AFFN_VIOL),
                 width = header_width,
             );
             info!(
