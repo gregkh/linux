@@ -122,7 +122,8 @@ endef
 
 BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH)					\
 	     $(if $(IS_LITTLE_ENDIAN),-mlittle-endian,-mbig-endian)		\
-	     -I$(INCLUDE_DIR) -I$(CURDIR)/include -I$(APIDIR)			\
+	     -I$(CURDIR)/include -I$(CURDIR)/include/bpf-compat			\
+	     -I$(INCLUDE_DIR) -I$(APIDIR)					\
 	     -I../../include							\
 	     $(call get_sys_includes,$(CLANG))					\
 	     -Wall -Wno-compare-distinct-pointer-types				\
@@ -163,8 +164,7 @@ else
 	$(Q)cp "$(VMLINUX_H)" $@
 endif
 
-$(SCXOBJ_DIR)/%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h include/scx/common.bpf.h \
-		       user_exit_info.h ravg.bpf.h ravg_impl.bpf.h		\
+$(SCXOBJ_DIR)/%.bpf.o: %.bpf.c $(INCLUDE_DIR)/vmlinux.h include/scx/*.h		\
 		       | $(BPFOBJ) $(SCXOBJ_DIR)
 	$(call msg,CLNG-BPF,,$(notdir $@))
 	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -c $< -o $@
