@@ -651,11 +651,19 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 		p->scx.dsq_flags |= SCX_TASK_DSQ_ON_PRIQ;
 		rb_add_cached(&p->scx.dsq_node.priq, &dsq->priq,
 			      scx_dsq_priq_less);
+		/* A DSQ should only be using either FIFO or PRIQ enqueuing. */
+		if (unlikely(!list_empty(&dsq->fifo)))
+			scx_ops_error("DSQ ID 0x%016llx already had FIFO-enqueued tasks",
+				      dsq->id);
 	} else {
 		if (enq_flags & (SCX_ENQ_HEAD | SCX_ENQ_PREEMPT))
 			list_add(&p->scx.dsq_node.fifo, &dsq->fifo);
 		else
 			list_add_tail(&p->scx.dsq_node.fifo, &dsq->fifo);
+		/* A DSQ should only be using either FIFO or PRIQ enqueuing. */
+		if (unlikely(rb_first_cached(&dsq->priq)))
+			scx_ops_error("DSQ ID 0x%016llx already had PRIQ-enqueued tasks",
+				      dsq->id);
 	}
 	dsq->nr++;
 	p->scx.dsq = dsq;
