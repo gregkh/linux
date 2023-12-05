@@ -194,9 +194,11 @@ a task is never queued on the BPF scheduler and both the local and global
 DSQs are consumed automatically.
 
 ``scx_bpf_dispatch()`` queues the task on the FIFO of the target DSQ. Use
-``scx_bpf_dispatch_vtime()`` for the priority queue. See the function
-documentation and usage in ``tools/sched_ext/scx_simple.bpf.c`` for more
-information.
+``scx_bpf_dispatch_vtime()`` for the priority queue. Internal DSQs such as
+``SCX_DSQ_LOCAL`` and ``SCX_DSQ_GLOBAL`` do not support priority-queue
+dispatching, and must be dispatched to with ``scx_bpf_dispatch()``.  See the
+function documentation and usage in ``tools/sched_ext/scx_simple.bpf.c`` for
+more information.
 
 Where to Look
 =============

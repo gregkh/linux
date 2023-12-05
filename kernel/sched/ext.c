@@ -647,14 +647,23 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 	}
 
 	if (enq_flags & SCX_ENQ_DSQ_PRIQ) {
+		WARN_ON_ONCE(dsq->id & SCX_DSQ_FLAG_BUILTIN);
 		p->scx.dsq_flags |= SCX_TASK_DSQ_ON_PRIQ;
 		rb_add_cached(&p->scx.dsq_node.priq, &dsq->priq,
 			      scx_dsq_priq_less);
+		/* A DSQ should only be using either FIFO or PRIQ enqueuing. */
+		if (unlikely(!list_empty(&dsq->fifo)))
+			scx_ops_error("DSQ ID 0x%016llx already had FIFO-enqueued tasks",
+				      dsq->id);
 	} else {
 		if (enq_flags & (SCX_ENQ_HEAD | SCX_ENQ_PREEMPT))
 			list_add(&p->scx.dsq_node.fifo, &dsq->fifo);
 		else
 			list_add_tail(&p->scx.dsq_node.fifo, &dsq->fifo);
+		/* A DSQ should only be using either FIFO or PRIQ enqueuing. */
+		if (unlikely(rb_first_cached(&dsq->priq)))
+			scx_ops_error("DSQ ID 0x%016llx already had PRIQ-enqueued tasks",
+				      dsq->id);
 	}
 	dsq->nr++;
 	p->scx.dsq = dsq;
@@ -1772,16 +1781,9 @@ static struct task_struct *first_local_task(struct rq *rq)
 {
 	struct rb_node *rb_node;
 
-	if (!list_empty(&rq->scx.local_dsq.fifo))
-		return list_first_entry(&rq->scx.local_dsq.fifo,
+	WARN_ON_ONCE(rb_first_cached(&rq->scx.local_dsq.priq));
+	return list_first_entry_or_null(&rq->scx.local_dsq.fifo,
 					struct task_struct, scx.dsq_node.fifo);
-
-	rb_node = rb_first_cached(&rq->scx.local_dsq.priq);
-	if (rb_node)
-		return container_of(rb_node,
-				    struct task_struct, scx.dsq_node.priq);
-
-	return NULL;
 }
 
 static struct task_struct *pick_next_task_scx(struct rq *rq)
@@ -3947,6 +3949,17 @@ void scx_bpf_dispatch_vtime(struct task_struct *p, u64 dsq_id, u64 slice,
 {
 	if (!scx_dispatch_preamble(p, enq_flags))
 		return;
+
+	/*
+	 * SCX_DSQ_LOCAL and SCX_DSQ_GLOBAL DSQs always consume from their FIFO
+	 * queues. To avoid confusion and accidentally starving
+	 * vtime-dispatched tasks by FIFO-dispatched tasks, we disallow any
+	 * internal DSQ from doing vtime ordering of tasks.
+	 */
+	if (dsq_id & SCX_DSQ_FLAG_BUILTIN) {
+		scx_ops_error("Cannot use vtime ordering for built-in DSQs");
+		return;
+	}
 
 	if (slice)
 		p->scx.slice = slice;
