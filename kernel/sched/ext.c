@@ -1779,8 +1779,6 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
 
 static struct task_struct *first_local_task(struct rq *rq)
 {
-	struct rb_node *rb_node;
-
 	WARN_ON_ONCE(rb_first_cached(&rq->scx.local_dsq.priq));
 	return list_first_entry_or_null(&rq->scx.local_dsq.fifo,
 					struct task_struct, scx.dsq_node.fifo);
