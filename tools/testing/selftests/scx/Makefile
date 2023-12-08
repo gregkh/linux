@@ -162,6 +162,7 @@ auto-test-targets :=			\
 	ddsp_vtimelocal_fail		\
 	init_enable_count		\
 	maybe_null			\
+	maximal				\
 	minimal				\
 	select_cpu_dfl			\
 	select_cpu_dfl_nodispatch	\

@@ -3,6 +3,7 @@ ddsp_vtimelocal_fail
 enq_last_no_enq_fails
 enq_select_cpu_fails
 init_enable_count
+maximal
 minimal
 runner
 select_cpu_dfl
