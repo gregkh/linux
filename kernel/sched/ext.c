@@ -2332,6 +2332,13 @@ static int scx_ops_prepare_task(struct task_struct *p, struct task_group *tg)
 	return 0;
 }
 
+static void set_task_scx_weight(struct task_struct *p)
+{
+	u32 weight = sched_prio_to_weight[p->static_prio - MAX_RT_PRIO];
+
+	p->scx.weight = sched_weight_to_cgroup(weight);
+}
+
 static void scx_ops_enable_task(struct task_struct *p)
 {
 	lockdep_assert_rq_held(task_rq(p));
@@ -2341,6 +2348,15 @@ static void scx_ops_enable_task(struct task_struct *p)
 		struct scx_enable_args args = {
 			SCX_ENABLE_ARGS_INIT_CGROUP(task_group(p))
 		};
+
+		/*
+		 * Set the weight manually before calling ops.enable() so that
+		 * the scheduler doesn't see a stale value if they inspect the
+		 * task struct. ops.set_weight() is invoked afterwards in the
+		 * caller, as it would be odd to receive a callback on the task
+		 * before we tell the scheduler that it's been fully enabled.
+		 */
+		set_task_scx_weight(p);
 		SCX_CALL_OP_TASK(SCX_KF_REST, enable, p, &args);
 	}
 	p->scx.flags &= ~SCX_TASK_OPS_PREPPED;
@@ -2364,13 +2380,6 @@ static void scx_ops_disable_task(struct task_struct *p)
 			SCX_CALL_OP(SCX_KF_REST, disable, p);
 		p->scx.flags &= ~SCX_TASK_OPS_ENABLED;
 	}
-}
-
-static void set_task_scx_weight(struct task_struct *p)
-{
-	u32 weight = sched_prio_to_weight[p->static_prio - MAX_RT_PRIO];
-
-	p->scx.weight = sched_weight_to_cgroup(weight);
 }
 
 /**
@@ -2419,14 +2428,6 @@ void scx_post_fork(struct task_struct *p)
 		struct rq *rq;
 
 		rq = task_rq_lock(p, &rf);
-		/*
-		 * Set the weight manually before calling ops.enable() so that
-		 * the scheduler doesn't see a stale value if they inspect the
-		 * task struct. We'll invoke ops.set_weight() afterwards, as it
-		 * would be odd to receive a callback on the task before we
-		 * tell the scheduler that it's been fully enabled.
-		 */
-		set_task_scx_weight(p);
 		scx_ops_enable_task(p);
 		refresh_scx_weight(p);
 		task_rq_unlock(rq, p, &rf);
