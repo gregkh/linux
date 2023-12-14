@@ -123,12 +123,18 @@ enum scx_ops_flags {
 				  SCX_OPS_CGROUP_KNOB_WEIGHT,
 };
 
-/* argument container for ops.enable() and friends */
-struct scx_enable_args {
+/* argument container for ops.init_task() */
+struct scx_init_task_args {
 #ifdef CONFIG_EXT_GROUP_SCHED
 	/* the cgroup the task is joining */
 	struct cgroup		*cgroup;
 #endif
+};
+
+/* argument container for ops.exit_task() */
+struct scx_exit_task_args {
+	/* Whether the task exited before running on sched_ext. */
+	bool cancelled;
 };
 
 /* argument container for ops->cgroup_init() */
@@ -425,41 +431,40 @@ struct sched_ext_ops {
 	void (*cpu_offline)(s32 cpu);
 
 	/**
-	 * prep_enable - Prepare to enable BPF scheduling for a task
-	 * @p: task to prepare BPF scheduling for
-	 * @args: enable arguments, see the struct definition
+	 * init_task - Initialize a task to run in a BPF scheduler
+	 * @p: task to initialize for BPF scheduling
+	 * @args: init arguments, see the struct definition
 	 *
 	 * Either we're loading a BPF scheduler or a new task is being forked.
-	 * Prepare BPF scheduling for @p. This operation may block and can be
-	 * used for allocations, and is called exactly once for a task.
+	 * Initialize @p for BPF scheduling. This operation may block and can
+	 * be used for allocations, and is called exactly once for a task.
 	 *
 	 * Return 0 for success, -errno for failure. An error return while
 	 * loading will abort loading of the BPF scheduler. During a fork, it
 	 * will abort that specific fork.
 	 */
-	s32 (*prep_enable)(struct task_struct *p, struct scx_enable_args *args);
+	s32 (*init_task)(struct task_struct *p,
+			 struct scx_init_task_args *args);
+
+	/**
+	 * exit_task - Exit a previously-running task from the system
+	 * @p: task to exit
+	 *
+	 * @p is exiting or the BPF scheduler is being unloaded. Perform any
+	 * necessary cleanup for @p.
+	 */
+	void (*exit_task)(struct task_struct *p,
+			  struct scx_exit_task_args *args);
 
 	/**
 	 * enable - Enable BPF scheduling for a task
 	 * @p: task to enable BPF scheduling for
-	 * @args: enable arguments, see the struct definition
 	 *
 	 * Enable @p for BPF scheduling. @p is now in the cgroup specified in
 	 * @args. enable() is called on @p any time it enters SCX, and is
 	 * always paired with a matching disable().
 	 */
-	void (*enable)(struct task_struct *p, struct scx_enable_args *args);
-
-	/**
-	 * cancel_enable - Cancel prep_enable()
-	 * @p: task being canceled
-	 * @args: enable arguments, see the struct definition
-	 *
-	 * @p was prep_enable()'d but failed before reaching enable(). Undo the
-	 * preparation.
-	 */
-	void (*cancel_enable)(struct task_struct *p,
-			      struct scx_enable_args *args);
+	void (*enable)(struct task_struct *p);
 
 	/**
 	 * disable - Disable BPF scheduling for a task
@@ -722,11 +727,11 @@ struct sched_ext_entity {
 	 * If set, reject future sched_setscheduler(2) calls updating the policy
 	 * to %SCHED_EXT with -%EACCES.
 	 *
-	 * If set from ops.prep_enable() and the task's policy is already
+	 * If set from ops.init_task() and the task's policy is already
 	 * %SCHED_EXT, which can happen while the BPF scheduler is being loaded
 	 * or by inhering the parent's policy during fork, the task's policy is
-	 * rejected and forcefully reverted to %SCHED_NORMAL. The number of such
-	 * events are reported through /sys/kernel/debug/sched_ext::nr_rejected.
+	 * rejected and forcefully reverted to %SCHED_NORMAL. The number of
+	 * such events are reported through /sys/kernel/debug/sched_ext::nr_rejected.
 	 */
 	bool			disallow;	/* reject switching into SCX */
 
