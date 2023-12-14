@@ -431,11 +431,11 @@ struct sched_ext_ops {
 	 *
 	 * Either we're loading a BPF scheduler or a new task is being forked.
 	 * Prepare BPF scheduling for @p. This operation may block and can be
-	 * used for allocations.
+	 * used for allocations, and is called exactly once for a task.
 	 *
 	 * Return 0 for success, -errno for failure. An error return while
-	 * loading will abort loading of the BPF scheduler. During a fork, will
-	 * abort the specific fork.
+	 * loading will abort loading of the BPF scheduler. During a fork, it
+	 * will abort that specific fork.
 	 */
 	s32 (*prep_enable)(struct task_struct *p, struct scx_enable_args *args);
 
@@ -444,8 +444,9 @@ struct sched_ext_ops {
 	 * @p: task to enable BPF scheduling for
 	 * @args: enable arguments, see the struct definition
 	 *
-	 * Enable @p for BPF scheduling. @p is now in the cgroup specified for
-	 * the preceding prep_enable() and will start running soon.
+	 * Enable @p for BPF scheduling. @p is now in the cgroup specified in
+	 * @args. enable() is called on @p any time it enters SCX, and is
+	 * always paired with a matching disable().
 	 */
 	void (*enable)(struct task_struct *p, struct scx_enable_args *args);
 
@@ -465,7 +466,8 @@ struct sched_ext_ops {
 	 * @p: task to disable BPF scheduling for
 	 *
 	 * @p is exiting, leaving SCX or the BPF scheduler is being unloaded.
-	 * Disable BPF scheduling for @p.
+	 * Disable BPF scheduling for @p. A disable() call is always matched
+	 * with a prior enable() call.
 	 */
 	void (*disable)(struct task_struct *p);
 
@@ -606,14 +608,15 @@ enum scx_ent_flags {
 	SCX_TASK_QUEUED		= 1 << 0, /* on ext runqueue */
 	SCX_TASK_BAL_KEEP	= 1 << 1, /* balance decided to keep current */
 	SCX_TASK_DDSP_PRIQ	= 1 << 2, /* task should be enqueued on priq when directly dispatched */
-
-	SCX_TASK_OPS_PREPPED	= 1 << 8, /* prepared for BPF scheduler enable */
-	SCX_TASK_OPS_ENABLED	= 1 << 9, /* task has BPF scheduler enabled */
+	SCX_TASK_STATE_0	= 1 << 3, /* first bit encoding the task's current state */
+	SCX_TASK_STATE_1	= 1 << 4, /* second bit encoding the task's current state */
 
 	SCX_TASK_WATCHDOG_RESET = 1 << 16, /* task watchdog counter should be reset */
 	SCX_TASK_DEQD_FOR_SLEEP	= 1 << 17, /* last dequeue was for SLEEP */
 
 	SCX_TASK_CURSOR		= 1 << 31, /* iteration cursor, not a task */
+
+	SCX_TASK_STATE_MASK	= SCX_TASK_STATE_0 | SCX_TASK_STATE_1,
 };
 
 /* scx_entity.dsq_flags */
@@ -645,6 +648,21 @@ enum scx_kf_mask {
 	__SCX_KF_RQ_LOCKED	= SCX_KF_CPU_RELEASE | SCX_KF_DISPATCH |
 				  SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU | SCX_KF_REST,
 	__SCX_KF_TERMINAL	= SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU | SCX_KF_REST,
+};
+
+/* scx_entity.task_state */
+enum scx_task_state {
+	/* ops.prep_enable() has not yet been called on task */
+	SCX_TASK_NONE,
+
+	/* ops.prep_enable() succeeded on task, but it still be cancelled */
+	SCX_TASK_INIT,
+
+	/* Task is fully initialized, but not being scheduled in sched_ext */
+	SCX_TASK_READY,
+
+	/* Task is fully initialized and is being scheduled in sched_ext */
+	SCX_TASK_ENABLED,
 };
 
 /*

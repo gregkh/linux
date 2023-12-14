@@ -108,6 +108,7 @@ struct task_struct init_task
 	.scx		= {
 		.dsq_node.fifo	= LIST_HEAD_INIT(init_task.scx.dsq_node.fifo),
 		.watchdog_node	= LIST_HEAD_INIT(init_task.scx.watchdog_node),
+		.flags		= 0,
 		.sticky_cpu	= -1,
 		.holding_cpu	= -1,
 		.ops_state	= ATOMIC_INIT(0),
