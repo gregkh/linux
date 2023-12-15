@@ -2,6 +2,7 @@ dsp_fallbackdsq_fail
 dsp_localdsq_fail
 enq_last_no_enq_fails
 enqueue_select_cpu_fails
+init_enable_count
 minimal
 select_cpu_dfl
 select_cpu_dfl_nodispatch
