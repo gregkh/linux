@@ -786,18 +786,24 @@ static struct scx_dispatch_q *find_dsq_for_dispatch(struct rq *rq, u64 dsq_id,
 	return dsq;
 }
 
-static void direct_dispatch(struct task_struct *ddsp_task, struct task_struct *p,
-			    u64 dsq_id, u64 enq_flags)
+static void mark_direct_dispatch(struct task_struct *ddsp_task,
+				 struct task_struct *p, u64 dsq_id,
+				 u64 enq_flags)
 {
-	struct scx_dispatch_q *dsq;
+	/*
+	 * Mark that dispatch already happened from ops.select_cpu() or
+	 * ops.enqueue() by spoiling direct_dispatch_task with a non-NULL value
+	 * which can never match a valid task pointer.
+	 */
+	__this_cpu_write(direct_dispatch_task, ERR_PTR(-ESRCH));
 
-	/* @p must match the task which is being enqueued */
+	/* @p must match the task on the enqueue path */
 	if (unlikely(p != ddsp_task)) {
 		if (IS_ERR(ddsp_task))
 			scx_ops_error("%s[%d] already direct-dispatched",
 				      p->comm, p->pid);
 		else
-			scx_ops_error("enqueueing %s[%d] but trying to direct-dispatch %s[%d]",
+			scx_ops_error("scheduling for %s[%d] but trying to direct-dispatch %s[%d]",
 				      ddsp_task->comm, ddsp_task->pid,
 				      p->comm, p->pid);
 		return;
@@ -814,16 +820,28 @@ static void direct_dispatch(struct task_struct *ddsp_task, struct task_struct *p
 		return;
 	}
 
+	WARN_ON_ONCE(p->scx.ddsq_id != SCX_DSQ_INVALID);
+	WARN_ON_ONCE(p->scx.flags & SCX_TASK_DDSP_PRIQ);
+
+	p->scx.ddsq_id = dsq_id;
+	if (enq_flags & SCX_ENQ_DSQ_PRIQ)
+		p->scx.flags |= SCX_TASK_DDSP_PRIQ;
+}
+
+static void direct_dispatch(struct task_struct *p, u64 enq_flags)
+{
+	struct scx_dispatch_q *dsq;
+
 	touch_core_sched_dispatch(task_rq(p), p);
 
-	dsq = find_dsq_for_dispatch(task_rq(p), dsq_id, p);
-	dispatch_enqueue(dsq, p, enq_flags | SCX_ENQ_CLEAR_OPSS);
+	if (p->scx.flags & SCX_TASK_DDSP_PRIQ) {
+		enq_flags |= SCX_ENQ_DSQ_PRIQ;
+		p->scx.flags &= ~SCX_TASK_DDSP_PRIQ;
+	}
 
-	/*
-	 * Mark that dispatch already happened by spoiling direct_dispatch_task
-	 * with a non-NULL value which can never match a valid task pointer.
-	 */
-	__this_cpu_write(direct_dispatch_task, ERR_PTR(-ESRCH));
+	dsq = find_dsq_for_dispatch(task_rq(p), p->scx.ddsq_id, p);
+	dispatch_enqueue(dsq, p, enq_flags | SCX_ENQ_CLEAR_OPSS);
+	p->scx.ddsq_id = SCX_DSQ_INVALID;
 }
 
 static bool test_rq_online(struct rq *rq)
@@ -843,10 +861,8 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 
 	WARN_ON_ONCE(!(p->scx.flags & SCX_TASK_QUEUED));
 
-	if (p->scx.flags & SCX_TASK_ENQ_LOCAL) {
-		enq_flags |= SCX_ENQ_LOCAL;
-		p->scx.flags &= ~SCX_TASK_ENQ_LOCAL;
-	}
+	if (p->scx.ddsq_id != SCX_DSQ_INVALID)
+		goto direct;
 
 	/* rq migration */
 	if (sticky_cpu == cpu_of(rq))
@@ -889,13 +905,19 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 
 	SCX_CALL_OP_TASK(SCX_KF_ENQUEUE, enqueue, p, enq_flags);
 
+	*ddsp_taskp = NULL;
+	if (p->scx.ddsq_id != SCX_DSQ_INVALID)
+		goto direct;
+
 	/*
 	 * If not directly dispatched, QUEUEING isn't clear yet and dispatch or
 	 * dequeue may be waiting. The store_release matches their load_acquire.
 	 */
-	if (*ddsp_taskp == p)
-		atomic_long_set_release(&p->scx.ops_state, SCX_OPSS_QUEUED | qseq);
-	*ddsp_taskp = NULL;
+	atomic_long_set_release(&p->scx.ops_state, SCX_OPSS_QUEUED | qseq);
+	return;
+
+direct:
+	direct_dispatch(p, enq_flags);
 	return;
 
 local:
@@ -2011,10 +2033,8 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 	if ((wake_flags & SCX_WAKE_SYNC) && p->nr_cpus_allowed > 1 &&
 	    !cpumask_empty(idle_masks.cpu) && !(current->flags & PF_EXITING)) {
 		cpu = smp_processor_id();
-		if (cpumask_test_cpu(cpu, p->cpus_ptr)) {
-			p->scx.flags |= SCX_TASK_ENQ_LOCAL;
-			return cpu;
-		}
+		if (cpumask_test_cpu(cpu, p->cpus_ptr))
+			goto dispatch_local;
 	}
 
 	if (p->nr_cpus_allowed == 1)
@@ -2027,38 +2047,44 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 	if (sched_smt_active()) {
 		if (cpumask_test_cpu(prev_cpu, idle_masks.smt) &&
 		    test_and_clear_cpu_idle(prev_cpu)) {
-			p->scx.flags |= SCX_TASK_ENQ_LOCAL;
-			return prev_cpu;
+			cpu = prev_cpu;
+			goto dispatch_local;
 		}
 
 		cpu = scx_pick_idle_cpu(p->cpus_ptr, SCX_PICK_IDLE_CORE);
-		if (cpu >= 0) {
-			p->scx.flags |= SCX_TASK_ENQ_LOCAL;
-			return cpu;
-		}
+		if (cpu >= 0)
+			goto dispatch_local;
 	}
 
 	if (test_and_clear_cpu_idle(prev_cpu)) {
-		p->scx.flags |= SCX_TASK_ENQ_LOCAL;
-		return prev_cpu;
+		cpu = prev_cpu;
+		goto dispatch_local;
 	}
 
 	cpu = scx_pick_idle_cpu(p->cpus_ptr, 0);
-	if (cpu >= 0) {
-		p->scx.flags |= SCX_TASK_ENQ_LOCAL;
-		return cpu;
-	}
+	if (cpu >= 0)
+		goto dispatch_local;
 
 	return prev_cpu;
+
+dispatch_local:
+	p->scx.ddsq_id = SCX_DSQ_LOCAL;
+	return cpu;
 }
 
 static int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flags)
 {
 	if (SCX_HAS_OP(select_cpu)) {
 		s32 cpu;
+		struct task_struct **ddsp_taskp;
 
-		cpu = SCX_CALL_OP_TASK_RET(SCX_KF_REST, select_cpu, p, prev_cpu,
+		ddsp_taskp = this_cpu_ptr(&direct_dispatch_task);
+		WARN_ON_ONCE(*ddsp_taskp);
+		*ddsp_taskp = p;
+
+		cpu = SCX_CALL_OP_TASK_RET(SCX_KF_ENQUEUE, select_cpu, p, prev_cpu,
 					   wake_flags);
+		*ddsp_taskp = NULL;
 		if (ops_cpu_valid(cpu)) {
 			return cpu;
 		} else {
@@ -3870,7 +3896,7 @@ static void scx_dispatch_commit(struct task_struct *p, u64 dsq_id, u64 enq_flags
 
 	ddsp_task = __this_cpu_read(direct_dispatch_task);
 	if (ddsp_task) {
-		direct_dispatch(ddsp_task, p, dsq_id, enq_flags);
+		mark_direct_dispatch(ddsp_task, p, dsq_id, enq_flags);
 		return;
 	}
 

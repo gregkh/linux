@@ -142,11 +142,19 @@ The following briefly shows how a waking task is scheduled and executed.
    scheduler can wake up any cpu using the ``scx_bpf_kick_cpu()`` helper,
    using ``ops.select_cpu()`` judiciously can be simpler and more efficient.
 
+   A task can be immediately dispatched to a DSQ from ``ops.select_cpu()`` by
+   calling ``scx_bpf_dispatch()``. If the task is dispatched to
+   ``SCX_DSQ_LOCAL`` from ``ops.select_cpu()``, it will be dispatched to the
+   local DSQ of whichever CPU is returned from ``ops.select_cpu()``.
+   Additionally, dispatching directly from ``ops.select_cpu()`` will cause the
+   ``ops.enqueue()`` callback to be skipped.
+
    Note that the scheduler core will ignore an invalid CPU selection, for
    example, if it's outside the allowed cpumask of the task.
 
-2. Once the target CPU is selected, ``ops.enqueue()`` is invoked. It can
-   make one of the following decisions:
+2. Once the target CPU is selected, ``ops.enqueue()`` is invoked (unless the
+   task was dispatched directly from ``ops.select_cpu()``). ``ops.enqueue()``
+   can make one of the following decisions:
 
    * Immediately dispatch the task to either the global or local DSQ by
      calling ``scx_bpf_dispatch()`` with ``SCX_DSQ_GLOBAL`` or
