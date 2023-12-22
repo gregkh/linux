@@ -272,7 +272,7 @@ do {										\
  */
 #define SCX_CALL_OP_TASK(mask, op, task, args...)				\
 do {										\
-	BUILD_BUG_ON(mask & ~__SCX_KF_TERMINAL);				\
+	BUILD_BUG_ON((mask) & ~__SCX_KF_TERMINAL);				\
 	current->scx.kf_tasks[0] = task;					\
 	SCX_CALL_OP(mask, op, task, ##args);					\
 	current->scx.kf_tasks[0] = NULL;					\
@@ -281,7 +281,7 @@ do {										\
 #define SCX_CALL_OP_TASK_RET(mask, op, task, args...)				\
 ({										\
 	__typeof__(scx_ops.op(task, ##args)) __ret;				\
-	BUILD_BUG_ON(mask & ~__SCX_KF_TERMINAL);				\
+	BUILD_BUG_ON((mask) & ~__SCX_KF_TERMINAL);				\
 	current->scx.kf_tasks[0] = task;					\
 	__ret = SCX_CALL_OP_RET(mask, op, task, ##args);			\
 	current->scx.kf_tasks[0] = NULL;					\
@@ -291,7 +291,7 @@ do {										\
 #define SCX_CALL_OP_2TASKS_RET(mask, op, task0, task1, args...)			\
 ({										\
 	__typeof__(scx_ops.op(task0, task1, ##args)) __ret;			\
-	BUILD_BUG_ON(mask & ~__SCX_KF_TERMINAL);				\
+	BUILD_BUG_ON((mask) & ~__SCX_KF_TERMINAL);				\
 	current->scx.kf_tasks[0] = task0;					\
 	current->scx.kf_tasks[1] = task1;					\
 	__ret = SCX_CALL_OP_RET(mask, op, task0, task1, ##args);		\
@@ -2013,9 +2013,12 @@ found:
 		goto retry;
 }
 
-static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flags)
+static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu,
+			      u64 wake_flags, bool *found)
 {
 	s32 cpu;
+
+	*found = false;
 
 	if (!static_branch_likely(&scx_builtin_idle_enabled)) {
 		scx_ops_error("built-in idle tracking is disabled");
@@ -2030,7 +2033,7 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 	    !cpumask_empty(idle_masks.cpu) && !(current->flags & PF_EXITING)) {
 		cpu = smp_processor_id();
 		if (cpumask_test_cpu(cpu, p->cpus_ptr))
-			goto dispatch_local;
+			goto cpu_found;
 	}
 
 	if (p->nr_cpus_allowed == 1)
@@ -2044,28 +2047,39 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flag
 		if (cpumask_test_cpu(prev_cpu, idle_masks.smt) &&
 		    test_and_clear_cpu_idle(prev_cpu)) {
 			cpu = prev_cpu;
-			goto dispatch_local;
+			goto cpu_found;
 		}
 
 		cpu = scx_pick_idle_cpu(p->cpus_ptr, SCX_PICK_IDLE_CORE);
 		if (cpu >= 0)
-			goto dispatch_local;
+			goto cpu_found;
 	}
 
 	if (test_and_clear_cpu_idle(prev_cpu)) {
 		cpu = prev_cpu;
-		goto dispatch_local;
+		goto cpu_found;
 	}
 
 	cpu = scx_pick_idle_cpu(p->cpus_ptr, 0);
 	if (cpu >= 0)
-		goto dispatch_local;
+		goto cpu_found;
 
 	return prev_cpu;
 
-dispatch_local:
-	p->scx.ddsq_id = SCX_DSQ_LOCAL;
+cpu_found:
+	*found = true;
 	return cpu;
+}
+
+s32 scx_bpf_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flags,
+			   bool *found)
+{
+	if (!scx_kf_allowed(SCX_KF_SELECT_CPU)) {
+		*found = false;
+		return prev_cpu;
+	}
+
+	return scx_select_cpu_dfl(p, prev_cpu, wake_flags, found);
 }
 
 static int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flags)
@@ -2078,8 +2092,8 @@ static int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flag
 		WARN_ON_ONCE(*ddsp_taskp);
 		*ddsp_taskp = p;
 
-		cpu = SCX_CALL_OP_TASK_RET(SCX_KF_ENQUEUE, select_cpu, p, prev_cpu,
-					   wake_flags);
+		cpu = SCX_CALL_OP_TASK_RET(SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU,
+					   select_cpu, p, prev_cpu, wake_flags);
 		*ddsp_taskp = NULL;
 		if (ops_cpu_valid(cpu)) {
 			return cpu;
@@ -2088,7 +2102,13 @@ static int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flag
 			return prev_cpu;
 		}
 	} else {
-		return scx_select_cpu_dfl(p, prev_cpu, wake_flags);
+		bool found;
+		s32 cpu;
+
+		cpu = scx_select_cpu_dfl(p, prev_cpu, wake_flags, &found);
+		if (found)
+			p->scx.ddsq_id = SCX_DSQ_LOCAL;
+		return cpu;
 	}
 }
 
@@ -4487,6 +4507,7 @@ BTF_ID_FLAGS(func, scx_bpf_test_and_clear_cpu_idle)
 BTF_ID_FLAGS(func, scx_bpf_pick_idle_cpu, KF_RCU)
 BTF_ID_FLAGS(func, scx_bpf_pick_any_cpu, KF_RCU)
 BTF_ID_FLAGS(func, scx_bpf_destroy_dsq)
+BTF_ID_FLAGS(func, scx_bpf_select_cpu_dfl, KF_RCU)
 BTF_SET8_END(scx_kfunc_ids_ops_only)
 
 static const struct btf_kfunc_id_set scx_kfunc_set_ops_only = {

@@ -639,11 +639,12 @@ enum scx_kf_mask {
 	/* ops.dequeue (in REST) may be nested inside DISPATCH */
 	SCX_KF_DISPATCH		= 1 << 3, /* ops.dispatch() */
 	SCX_KF_ENQUEUE		= 1 << 4, /* ops.enqueue() and ops.select_cpu() */
-	SCX_KF_REST		= 1 << 5, /* other rq-locked operations */
+	SCX_KF_SELECT_CPU	= 1 << 5, /* ops.select_cpu() */
+	SCX_KF_REST		= 1 << 6, /* other rq-locked operations */
 
 	__SCX_KF_RQ_LOCKED	= SCX_KF_CPU_RELEASE | SCX_KF_DISPATCH |
-				  SCX_KF_ENQUEUE | SCX_KF_REST,
-	__SCX_KF_TERMINAL	= SCX_KF_ENQUEUE | SCX_KF_REST,
+				  SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU | SCX_KF_REST,
+	__SCX_KF_TERMINAL	= SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU | SCX_KF_REST,
 };
 
 /*
