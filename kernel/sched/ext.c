@@ -886,12 +886,8 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	    (enq_flags & SCX_ENQ_LAST))
 		goto local;
 
-	if (!SCX_HAS_OP(enqueue)) {
-		if (enq_flags & SCX_ENQ_LOCAL)
-			goto local;
-		else
-			goto global;
-	}
+	if (!SCX_HAS_OP(enqueue))
+		goto global;
 
 	/* DSQ bypass didn't trigger, enqueue on the BPF scheduler */
 	qseq = rq->scx.ops_qseq++ << SCX_OPSS_QSEQ_SHIFT;
@@ -1793,7 +1789,7 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
 		 * follow-up scheduling event.
 		 */
 		if (list_empty(&rq->scx.local_dsq.fifo))
-			do_enqueue_task(rq, p, SCX_ENQ_LAST | SCX_ENQ_LOCAL, -1);
+			do_enqueue_task(rq, p, SCX_ENQ_LAST, -1);
 		else
 			do_enqueue_task(rq, p, 0, -1);
 	}
@@ -3217,6 +3213,20 @@ static struct kthread_worker *scx_create_rt_helper(const char *name)
 	return helper;
 }
 
+static int validate_ops(const struct sched_ext_ops *ops)
+{
+	/*
+	 * It doesn't make sense to specify the SCX_OPS_ENQ_LAST flag if the
+	 * ops.enqueue() callback isn't implemented.
+	 */
+	if ((ops->flags & SCX_OPS_ENQ_LAST) && !ops->enqueue) {
+		scx_ops_error("SCX_OPS_ENQ_LAST requires ops.enqueue() to be implemented");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int scx_ops_enable(struct sched_ext_ops *ops)
 {
 	struct scx_task_iter sti;
@@ -3279,6 +3289,10 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		if (atomic_read(&scx_exit_kind) != SCX_EXIT_NONE)
 			goto err_disable;
 	}
+
+	ret = validate_ops(ops);
+	if (ret)
+		goto err_disable;
 
 	WARN_ON_ONCE(scx_dsp_buf);
 	scx_dsp_max_batch = ops->dispatch_max_batch ?: SCX_DSP_DFL_MAX_BATCH;
