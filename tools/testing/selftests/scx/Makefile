@@ -42,6 +42,8 @@ SCXOBJ_DIR := $(OBJ_DIR)/sched_ext
 BPFOBJ := $(BPFOBJ_DIR)/libbpf.a
 LIBBPF_OUTPUT := $(OBJ_DIR)/libbpf/libbpf.a
 DEFAULT_BPFTOOL := $(OUTPUT_DIR)/sbin/bpftool
+HOST_BUILD_DIR := $(OBJ_DIR)
+HOST_OUTPUT_DIR := $(OUTPUT_DIR)
 
 VMLINUX_BTF_PATHS ?= ../../../../vmlinux					\
 		     /sys/kernel/btf/vmlinux					\
@@ -145,7 +147,15 @@ $(INCLUDE_DIR)/%.bpf.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BP
 ################
 # C schedulers #
 ################
-c-sched-targets := minimal
+c-sched-targets :=			\
+	minimal				\
+	select_cpu_dfl			\
+	select_cpu_dfl_nodispatch	\
+	select_cpu_dispatch		\
+	select_cpu_dispatch_dbl_dsp	\
+	select_cpu_dispatch_bad_dsq	\
+	enqueue_select_cpu_fails	\
+	enq_last_no_enq_fails
 
 $(c-sched-targets): %: $(filter-out %.bpf.c,%.c) $(INCLUDE_DIR)/%.bpf.skel.h
 	$(eval sched=$(notdir $@))

@@ -1,2 +1,9 @@
+enq_last_no_enq_fails
+enqueue_select_cpu_fails
 minimal
+select_cpu_dfl
+select_cpu_dfl_nodispatch
+select_cpu_dispatch
+select_cpu_dispatch_dbl_dsp
+select_cpu_dispatch_bad_dsq
 build/
