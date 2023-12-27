@@ -2560,15 +2560,22 @@ void scx_move_task(struct task_struct *p)
 	/*
 	 * We're called from sched_move_task() which handles both cgroup and
 	 * autogroup moves. Ignore the latter.
+	 *
+	 * Also ignore exiting tasks, because in the exit path tasks transition
+	 * from the autogroup to the root group, so task_group_is_autogroup()
+	 * alone isn't able to catch exiting autogroup tasks. This is safe for
+	 * cgroup_move(), because cgroup migrations never happen for PF_EXITING
+	 * tasks.
 	 */
-	if (task_group_is_autogroup(task_group(p)))
+	if (p->flags & PF_EXITING || task_group_is_autogroup(task_group(p)))
 		return;
 
 	if (!scx_enabled())
 		return;
 
 	if (SCX_HAS_OP(cgroup_move)) {
-		WARN_ON_ONCE(!p->scx.cgrp_moving_from);
+		if (WARN_ON_ONCE(!p->scx.cgrp_moving_from))
+			return;
 		SCX_CALL_OP_TASK(SCX_KF_UNLOCKED, cgroup_move, p,
 			p->scx.cgrp_moving_from, tg_cgrp(task_group(p)));
 	}
