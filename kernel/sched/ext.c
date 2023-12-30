@@ -2244,7 +2244,7 @@ static void scx_watchdog_workfn(struct work_struct *work)
 {
 	int cpu;
 
-	scx_watchdog_timestamp = jiffies;
+	WRITE_ONCE(scx_watchdog_timestamp, jiffies);
 
 	for_each_online_cpu(cpu) {
 		if (unlikely(check_rq_for_timeouts(cpu_rq(cpu))))
@@ -3321,6 +3321,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 {
 	struct scx_task_iter sti;
 	struct task_struct *p;
+	unsigned long timeout;
 	int i, ret;
 
 	mutex_lock(&scx_ops_enable_mutex);
@@ -3402,11 +3403,13 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		goto err_disable;
 	}
 
-	scx_watchdog_timeout = SCX_WATCHDOG_MAX_TIMEOUT;
 	if (ops->timeout_ms)
-		scx_watchdog_timeout = msecs_to_jiffies(ops->timeout_ms);
+		timeout = msecs_to_jiffies(ops->timeout_ms);
+	else
+		timeout = SCX_WATCHDOG_MAX_TIMEOUT;
 
-	scx_watchdog_timestamp = jiffies;
+	WRITE_ONCE(scx_watchdog_timeout, timeout);
+	WRITE_ONCE(scx_watchdog_timestamp, jiffies);
 	queue_delayed_work(system_unbound_wq, &scx_watchdog_work,
 			   scx_watchdog_timeout / 2);
 
