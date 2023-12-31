@@ -222,21 +222,22 @@ static int psp_memory_training_init(struct psp_context *psp)
 	struct psp_memory_training_context *ctx = &psp->mem_train_ctx;
 
 	if (ctx->init != PSP_MEM_TRAIN_RESERVE_SUCCESS) {
-		DRM_DEBUG("memory training is not supported!\n");
+		dev_dbg(psp->adev->dev, "memory training is not supported!\n");
 		return 0;
 	}
 
 	ctx->sys_cache = kzalloc(ctx->train_data_size, GFP_KERNEL);
 	if (ctx->sys_cache == NULL) {
-		DRM_ERROR("alloc mem_train_ctx.sys_cache failed!\n");
+		dev_err(psp->adev->dev, "alloc mem_train_ctx.sys_cache failed!\n");
 		ret = -ENOMEM;
 		goto Err_out;
 	}
 
-	DRM_DEBUG("train_data_size:%llx,p2c_train_data_offset:%llx,c2p_train_data_offset:%llx.\n",
-		  ctx->train_data_size,
-		  ctx->p2c_train_data_offset,
-		  ctx->c2p_train_data_offset);
+	dev_dbg(psp->adev->dev,
+		"train_data_size:%llx,p2c_train_data_offset:%llx,c2p_train_data_offset:%llx.\n",
+		ctx->train_data_size,
+		ctx->p2c_train_data_offset,
+		ctx->c2p_train_data_offset);
 	ctx->init = PSP_MEM_TRAIN_INIT_SUCCESS;
 	return 0;
 
@@ -371,7 +372,7 @@ static int psp_sw_init(void *handle)
 
 	psp->cmd = kzalloc(sizeof(struct psp_gfx_cmd_resp), GFP_KERNEL);
 	if (!psp->cmd) {
-		DRM_ERROR("Failed to allocate memory to command buffer!\n");
+		dev_err(adev->dev, "Failed to allocate memory to command buffer!\n");
 		ret = -ENOMEM;
 	}
 
@@ -426,13 +427,13 @@ static int psp_sw_init(void *handle)
 	if (mem_training_ctx->enable_mem_training) {
 		ret = psp_memory_training_init(psp);
 		if (ret) {
-			DRM_ERROR("Failed to initialize memory training!\n");
+			dev_err(adev->dev, "Failed to initialize memory training!\n");
 			return ret;
 		}
 
 		ret = psp_mem_training(psp, PSP_MEM_TRAIN_COLD_BOOT);
 		if (ret) {
-			DRM_ERROR("Failed to process memory training!\n");
+			dev_err(adev->dev, "Failed to process memory training!\n");
 			return ret;
 		}
 	}
@@ -651,9 +652,11 @@ psp_cmd_submit_buf(struct psp_context *psp,
 	 */
 	if (!skip_unsupport && (psp->cmd_buf_mem->resp.status || !timeout) && !ras_intr) {
 		if (ucode)
-			DRM_WARN("failed to load ucode %s(0x%X) ",
-				  amdgpu_ucode_name(ucode->ucode_id), ucode->ucode_id);
-		DRM_WARN("psp gfx command %s(0x%X) failed and response status is (0x%X)\n",
+			dev_warn(psp->adev->dev,
+				 "failed to load ucode %s(0x%X) ",
+				 amdgpu_ucode_name(ucode->ucode_id), ucode->ucode_id);
+		dev_warn(psp->adev->dev,
+			 "psp gfx command %s(0x%X) failed and response status is (0x%X)\n",
 			 psp_gfx_cmd_name(psp->cmd_buf_mem->cmd_id), psp->cmd_buf_mem->cmd_id,
 			 psp->cmd_buf_mem->resp.status);
 		/* If any firmware (including CAP) load fails under SRIOV, it should
@@ -783,7 +786,7 @@ static int psp_tmr_init(struct psp_context *psp)
 	    psp->fw_pri_buf) {
 		ret = psp_load_toc(psp, &tmr_size);
 		if (ret) {
-			DRM_ERROR("Failed to load toc\n");
+			dev_err(psp->adev->dev, "Failed to load toc\n");
 			return ret;
 		}
 	}
@@ -826,7 +829,7 @@ static int psp_tmr_load(struct psp_context *psp)
 
 	psp_prep_tmr_cmd_buf(psp, cmd, psp->tmr_mc_addr, psp->tmr_bo);
 	if (psp->tmr_bo)
-		DRM_INFO("reserve 0x%lx from 0x%llx for PSP TMR\n",
+		dev_info(psp->adev->dev, "reserve 0x%lx from 0x%llx for PSP TMR\n",
 			 amdgpu_bo_size(psp->tmr_bo), psp->tmr_mc_addr);
 
 	ret = psp_cmd_submit_buf(psp, NULL, cmd,
@@ -1055,7 +1058,7 @@ int psp_reg_program(struct psp_context *psp, enum psp_reg_prog_id reg,
 	psp_prep_reg_prog_cmd_buf(cmd, reg, value);
 	ret = psp_cmd_submit_buf(psp, NULL, cmd, psp->fence_buf_mc_addr);
 	if (ret)
-		DRM_ERROR("PSP failed to program reg id %d", reg);
+		dev_err(psp->adev->dev, "PSP failed to program reg id %d\n", reg);
 
 	release_psp_cmd_buf(psp);
 
@@ -1466,22 +1469,22 @@ static void psp_ras_ta_check_status(struct psp_context *psp)
 	switch (ras_cmd->ras_status) {
 	case TA_RAS_STATUS__ERROR_UNSUPPORTED_IP:
 		dev_warn(psp->adev->dev,
-				"RAS WARNING: cmd failed due to unsupported ip\n");
+			 "RAS WARNING: cmd failed due to unsupported ip\n");
 		break;
 	case TA_RAS_STATUS__ERROR_UNSUPPORTED_ERROR_INJ:
 		dev_warn(psp->adev->dev,
-				"RAS WARNING: cmd failed due to unsupported error injection\n");
+			 "RAS WARNING: cmd failed due to unsupported error injection\n");
 		break;
 	case TA_RAS_STATUS__SUCCESS:
 		break;
 	case TA_RAS_STATUS__TEE_ERROR_ACCESS_DENIED:
 		if (ras_cmd->cmd_id == TA_RAS_COMMAND__TRIGGER_ERROR)
 			dev_warn(psp->adev->dev,
-					"RAS WARNING: Inject error to critical region is not allowed\n");
+				 "RAS WARNING: Inject error to critical region is not allowed\n");
 		break;
 	default:
 		dev_warn(psp->adev->dev,
-				"RAS WARNING: ras status = 0x%X\n", ras_cmd->ras_status);
+			 "RAS WARNING: ras status = 0x%X\n", ras_cmd->ras_status);
 		break;
 	}
 }
@@ -1505,7 +1508,7 @@ int psp_ras_invoke(struct psp_context *psp, uint32_t ta_cmd_id)
 		return ret;
 
 	if (ras_cmd->if_version > RAS_TA_HOST_IF_VER) {
-		DRM_WARN("RAS: Unsupported Interface");
+		dev_warn(psp->adev->dev, "RAS: Unsupported Interface\n");
 		return -EINVAL;
 	}
 
@@ -1652,7 +1655,7 @@ static int psp_ras_initialize(struct psp_context *psp)
 		psp->ras_context.context.initialized = true;
 	else {
 		if (ras_cmd->ras_status)
-			dev_warn(psp->adev->dev, "RAS Init Status: 0x%X\n", ras_cmd->ras_status);
+			dev_warn(adev->dev, "RAS Init Status: 0x%X\n", ras_cmd->ras_status);
 
 		/* fail to load RAS TA */
 		psp->ras_context.context.initialized = false;
@@ -2036,7 +2039,7 @@ static int psp_hw_start(struct psp_context *psp)
 		    (psp->funcs->bootloader_load_kdb != NULL)) {
 			ret = psp_bootloader_load_kdb(psp);
 			if (ret) {
-				DRM_ERROR("PSP load kdb failed!\n");
+				dev_err(adev->dev, "PSP load kdb failed!\n");
 				return ret;
 			}
 		}
@@ -2045,7 +2048,7 @@ static int psp_hw_start(struct psp_context *psp)
 		    (psp->funcs->bootloader_load_spl != NULL)) {
 			ret = psp_bootloader_load_spl(psp);
 			if (ret) {
-				DRM_ERROR("PSP load spl failed!\n");
+				dev_err(adev->dev, "PSP load spl failed!\n");
 				return ret;
 			}
 		}
@@ -2054,7 +2057,7 @@ static int psp_hw_start(struct psp_context *psp)
 		    (psp->funcs->bootloader_load_sysdrv != NULL)) {
 			ret = psp_bootloader_load_sysdrv(psp);
 			if (ret) {
-				DRM_ERROR("PSP load sys drv failed!\n");
+				dev_err(adev->dev, "PSP load sys drv failed!\n");
 				return ret;
 			}
 		}
@@ -2063,7 +2066,7 @@ static int psp_hw_start(struct psp_context *psp)
 		    (psp->funcs->bootloader_load_soc_drv != NULL)) {
 			ret = psp_bootloader_load_soc_drv(psp);
 			if (ret) {
-				DRM_ERROR("PSP load soc drv failed!\n");
+				dev_err(adev->dev, "PSP load soc drv failed!\n");
 				return ret;
 			}
 		}
@@ -2072,7 +2075,7 @@ static int psp_hw_start(struct psp_context *psp)
 		    (psp->funcs->bootloader_load_intf_drv != NULL)) {
 			ret = psp_bootloader_load_intf_drv(psp);
 			if (ret) {
-				DRM_ERROR("PSP load intf drv failed!\n");
+				dev_err(adev->dev, "PSP load intf drv failed!\n");
 				return ret;
 			}
 		}
@@ -2081,7 +2084,7 @@ static int psp_hw_start(struct psp_context *psp)
 		    (psp->funcs->bootloader_load_dbg_drv != NULL)) {
 			ret = psp_bootloader_load_dbg_drv(psp);
 			if (ret) {
-				DRM_ERROR("PSP load dbg drv failed!\n");
+				dev_err(adev->dev, "PSP load dbg drv failed!\n");
 				return ret;
 			}
 		}
@@ -2090,7 +2093,7 @@ static int psp_hw_start(struct psp_context *psp)
 		    (psp->funcs->bootloader_load_ras_drv != NULL)) {
 			ret = psp_bootloader_load_ras_drv(psp);
 			if (ret) {
-				DRM_ERROR("PSP load ras_drv failed!\n");
+				dev_err(adev->dev, "PSP load ras_drv failed!\n");
 				return ret;
 			}
 		}
@@ -2099,7 +2102,7 @@ static int psp_hw_start(struct psp_context *psp)
 		    (psp->funcs->bootloader_load_sos != NULL)) {
 			ret = psp_bootloader_load_sos(psp);
 			if (ret) {
-				DRM_ERROR("PSP load sos failed!\n");
+				dev_err(adev->dev, "PSP load sos failed!\n");
 				return ret;
 			}
 		}
@@ -2107,7 +2110,7 @@ static int psp_hw_start(struct psp_context *psp)
 
 	ret = psp_ring_create(psp, PSP_RING_TYPE__KM);
 	if (ret) {
-		DRM_ERROR("PSP create ring failed!\n");
+		dev_err(adev->dev, "PSP create ring failed!\n");
 		return ret;
 	}
 
@@ -2117,7 +2120,7 @@ static int psp_hw_start(struct psp_context *psp)
 	if (!psp_boottime_tmr(psp)) {
 		ret = psp_tmr_init(psp);
 		if (ret) {
-			DRM_ERROR("PSP tmr init failed!\n");
+			dev_err(adev->dev, "PSP tmr init failed!\n");
 			return ret;
 		}
 	}
@@ -2136,7 +2139,7 @@ skip_pin_bo:
 
 	ret = psp_tmr_load(psp);
 	if (ret) {
-		DRM_ERROR("PSP load tmr failed!\n");
+		dev_err(adev->dev, "PSP load tmr failed!\n");
 		return ret;
 	}
 
@@ -2383,7 +2386,8 @@ static void psp_print_fw_hdr(struct psp_context *psp,
 	}
 }
 
-static int psp_prep_load_ip_fw_cmd_buf(struct amdgpu_firmware_info *ucode,
+static int psp_prep_load_ip_fw_cmd_buf(struct psp_context *psp,
+				       struct amdgpu_firmware_info *ucode,
 				       struct psp_gfx_cmd_resp *cmd)
 {
 	int ret;
@@ -2396,7 +2400,7 @@ static int psp_prep_load_ip_fw_cmd_buf(struct amdgpu_firmware_info *ucode,
 
 	ret = psp_get_fw_type(ucode, &cmd->cmd.cmd_load_ip_fw.fw_type);
 	if (ret)
-		DRM_ERROR("Unknown firmware type\n");
+		dev_err(psp->adev->dev, "Unknown firmware type\n");
 
 	return ret;
 }
@@ -2407,7 +2411,7 @@ static int psp_execute_non_psp_fw_load(struct psp_context *psp,
 	int ret = 0;
 	struct psp_gfx_cmd_resp *cmd = acquire_psp_cmd_buf(psp);
 
-	ret = psp_prep_load_ip_fw_cmd_buf(ucode, cmd);
+	ret = psp_prep_load_ip_fw_cmd_buf(psp, ucode, cmd);
 	if (!ret) {
 		ret = psp_cmd_submit_buf(psp, ucode, cmd,
 					 psp->fence_buf_mc_addr);
@@ -2442,13 +2446,13 @@ static int psp_load_smu_fw(struct psp_context *psp)
 	      adev->ip_versions[MP0_HWIP][0] == IP_VERSION(11, 0, 2)))) {
 		ret = amdgpu_dpm_set_mp1_state(adev, PP_MP1_STATE_UNLOAD);
 		if (ret)
-			DRM_WARN("Failed to set MP1 state prepare for reload\n");
+			dev_err(adev->dev, "Failed to set MP1 state prepare for reload\n");
 	}
 
 	ret = psp_execute_non_psp_fw_load(psp, ucode);
 
 	if (ret)
-		DRM_ERROR("PSP load smu failed!\n");
+		dev_err(adev->dev, "PSP load smu failed!\n");
 
 	return ret;
 }
@@ -2543,7 +2547,7 @@ static int psp_load_non_psp_fw(struct psp_context *psp)
 		    adev->virt.autoload_ucode_id : AMDGPU_UCODE_ID_RLC_G)) {
 			ret = psp_rlc_autoload_start(psp);
 			if (ret) {
-				DRM_ERROR("Failed to start rlc autoload\n");
+				dev_err(adev->dev, "Failed to start rlc autoload\n");
 				return ret;
 			}
 		}
@@ -2565,7 +2569,7 @@ static int psp_load_fw(struct amdgpu_device *adev)
 
 		ret = psp_ring_init(psp, PSP_RING_TYPE__KM);
 		if (ret) {
-			DRM_ERROR("PSP ring init failed!\n");
+			dev_err(adev->dev, "PSP ring init failed!\n");
 			goto failed;
 		}
 	}
@@ -2580,13 +2584,13 @@ static int psp_load_fw(struct amdgpu_device *adev)
 
 	ret = psp_asd_initialize(psp);
 	if (ret) {
-		DRM_ERROR("PSP load asd failed!\n");
+		dev_err(adev->dev, "PSP load asd failed!\n");
 		goto failed1;
 	}
 
 	ret = psp_rl_load(adev);
 	if (ret) {
-		DRM_ERROR("PSP load RL failed!\n");
+		dev_err(adev->dev, "PSP load RL failed!\n");
 		goto failed1;
 	}
 
@@ -2606,7 +2610,7 @@ static int psp_load_fw(struct amdgpu_device *adev)
 		ret = psp_ras_initialize(psp);
 		if (ret)
 			dev_err(psp->adev->dev,
-					"RAS: Failed to initialize RAS\n");
+				"RAS: Failed to initialize RAS\n");
 
 		ret = psp_hdcp_initialize(psp);
 		if (ret)
@@ -2659,7 +2663,7 @@ static int psp_hw_init(void *handle)
 
 	ret = psp_load_fw(adev);
 	if (ret) {
-		DRM_ERROR("PSP firmware loading failed\n");
+		dev_err(adev->dev, "PSP firmware loading failed\n");
 		goto failed;
 	}
 
@@ -2706,7 +2710,7 @@ static int psp_suspend(void *handle)
 	    psp->xgmi_context.context.initialized) {
 		ret = psp_xgmi_terminate(psp);
 		if (ret) {
-			DRM_ERROR("Failed to terminate xgmi ta\n");
+			dev_err(adev->dev, "Failed to terminate xgmi ta\n");
 			goto out;
 		}
 	}
@@ -2714,46 +2718,46 @@ static int psp_suspend(void *handle)
 	if (psp->ta_fw) {
 		ret = psp_ras_terminate(psp);
 		if (ret) {
-			DRM_ERROR("Failed to terminate ras ta\n");
+			dev_err(adev->dev, "Failed to terminate ras ta\n");
 			goto out;
 		}
 		ret = psp_hdcp_terminate(psp);
 		if (ret) {
-			DRM_ERROR("Failed to terminate hdcp ta\n");
+			dev_err(adev->dev, "Failed to terminate hdcp ta\n");
 			goto out;
 		}
 		ret = psp_dtm_terminate(psp);
 		if (ret) {
-			DRM_ERROR("Failed to terminate dtm ta\n");
+			dev_err(adev->dev, "Failed to terminate dtm ta\n");
 			goto out;
 		}
 		ret = psp_rap_terminate(psp);
 		if (ret) {
-			DRM_ERROR("Failed to terminate rap ta\n");
+			dev_err(adev->dev, "Failed to terminate rap ta\n");
 			goto out;
 		}
 		ret = psp_securedisplay_terminate(psp);
 		if (ret) {
-			DRM_ERROR("Failed to terminate securedisplay ta\n");
+			dev_err(adev->dev, "Failed to terminate securedisplay ta\n");
 			goto out;
 		}
 	}
 
 	ret = psp_asd_terminate(psp);
 	if (ret) {
-		DRM_ERROR("Failed to terminate asd\n");
+		dev_err(adev->dev, "Failed to terminate asd\n");
 		goto out;
 	}
 
 	ret = psp_tmr_terminate(psp);
 	if (ret) {
-		DRM_ERROR("Failed to terminate tmr\n");
+		dev_err(adev->dev, "Failed to terminate tmr\n");
 		goto out;
 	}
 
 	ret = psp_ring_stop(psp, PSP_RING_TYPE__KM);
 	if (ret)
-		DRM_ERROR("PSP ring stop failed\n");
+		dev_err(adev->dev, "PSP ring stop failed\n");
 
 out:
 	return ret;
@@ -2765,12 +2769,12 @@ static int psp_resume(void *handle)
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct psp_context *psp = &adev->psp;
 
-	DRM_INFO("PSP is resuming...\n");
+	dev_info(adev->dev, "PSP is resuming...\n");
 
 	if (psp->mem_train_ctx.enable_mem_training) {
 		ret = psp_mem_training(psp, PSP_MEM_TRAIN_RESUME);
 		if (ret) {
-			DRM_ERROR("Failed to process memory training!\n");
+			dev_err(adev->dev, "Failed to process memory training!\n");
 			return ret;
 		}
 	}
@@ -2787,7 +2791,7 @@ static int psp_resume(void *handle)
 
 	ret = psp_asd_initialize(psp);
 	if (ret) {
-		DRM_ERROR("PSP load asd failed!\n");
+		dev_err(adev->dev, "PSP load asd failed!\n");
 		goto failed;
 	}
 
@@ -2811,7 +2815,7 @@ static int psp_resume(void *handle)
 		ret = psp_ras_initialize(psp);
 		if (ret)
 			dev_err(psp->adev->dev,
-					"RAS: Failed to initialize RAS\n");
+				"RAS: Failed to initialize RAS\n");
 
 		ret = psp_hdcp_initialize(psp);
 		if (ret)
@@ -2839,7 +2843,7 @@ static int psp_resume(void *handle)
 	return 0;
 
 failed:
-	DRM_ERROR("PSP resume failed\n");
+	dev_err(adev->dev, "PSP resume failed\n");
 	mutex_unlock(&adev->firmware.mutex);
 	return ret;
 }
@@ -2913,9 +2917,11 @@ int psp_ring_cmd_submit(struct psp_context *psp,
 		write_frame = ring_buffer_start + (psp_write_ptr_reg / rb_frame_size_dw);
 	/* Check invalid write_frame ptr address */
 	if ((write_frame < ring_buffer_start) || (ring_buffer_end < write_frame)) {
-		DRM_ERROR("ring_buffer_start = %p; ring_buffer_end = %p; write_frame = %p\n",
-			  ring_buffer_start, ring_buffer_end, write_frame);
-		DRM_ERROR("write_frame is pointing to address out of bounds\n");
+		dev_err(adev->dev,
+			"ring_buffer_start = %p; ring_buffer_end = %p; write_frame = %p\n",
+			ring_buffer_start, ring_buffer_end, write_frame);
+		dev_err(adev->dev,
+			"write_frame is pointing to address out of bounds\n");
 		return -EINVAL;
 	}
 
@@ -3427,7 +3433,7 @@ static ssize_t psp_usbc_pd_fw_sysfs_read(struct device *dev,
 	int ret;
 
 	if (!adev->ip_blocks[AMD_IP_BLOCK_TYPE_PSP].status.late_initialized) {
-		DRM_INFO("PSP block is not ready yet.");
+		dev_info(adev->dev, "PSP block is not ready yet\n.");
 		return -EBUSY;
 	}
 
@@ -3436,7 +3442,7 @@ static ssize_t psp_usbc_pd_fw_sysfs_read(struct device *dev,
 	mutex_unlock(&adev->psp.mutex);
 
 	if (ret) {
-		DRM_ERROR("Failed to read USBC PD FW, err = %d", ret);
+		dev_err(adev->dev, "Failed to read USBC PD FW, err = %d\n", ret);
 		return ret;
 	}
 
@@ -3458,7 +3464,7 @@ static ssize_t psp_usbc_pd_fw_sysfs_write(struct device *dev,
 	void *fw_pri_cpu_addr;
 
 	if (!adev->ip_blocks[AMD_IP_BLOCK_TYPE_PSP].status.late_initialized) {
-		DRM_INFO("PSP block is not ready yet.");
+		dev_err(adev->dev, "PSP block is not ready yet.");
 		return -EBUSY;
 	}
 
@@ -3491,7 +3497,7 @@ rel_buf:
 	release_firmware(usbc_pd_fw);
 fail:
 	if (ret) {
-		DRM_ERROR("Failed to load USBC PD FW, err = %d", ret);
+		dev_err(adev->dev, "Failed to load USBC PD FW, err = %d", ret);
 		count = ret;
 	}
 
@@ -3533,7 +3539,7 @@ static ssize_t amdgpu_psp_vbflash_write(struct file *filp, struct kobject *kobj,
 
 	/* Safeguard against memory drain */
 	if (adev->psp.vbflash_image_size > AMD_VBIOS_FILE_MAX_SIZE_B) {
-		dev_err(adev->dev, "File size cannot exceed %u", AMD_VBIOS_FILE_MAX_SIZE_B);
+		dev_err(adev->dev, "File size cannot exceed %u\n", AMD_VBIOS_FILE_MAX_SIZE_B);
 		kvfree(adev->psp.vbflash_tmp_buf);
 		adev->psp.vbflash_tmp_buf = NULL;
 		adev->psp.vbflash_image_size = 0;
@@ -3552,7 +3558,7 @@ static ssize_t amdgpu_psp_vbflash_write(struct file *filp, struct kobject *kobj,
 	adev->psp.vbflash_image_size += count;
 	mutex_unlock(&adev->psp.mutex);
 
-	dev_dbg(adev->dev, "IFWI staged for update");
+	dev_dbg(adev->dev, "IFWI staged for update\n");
 
 	return count;
 }
@@ -3572,7 +3578,7 @@ static ssize_t amdgpu_psp_vbflash_read(struct file *filp, struct kobject *kobj,
 	if (adev->psp.vbflash_image_size == 0)
 		return -EINVAL;
 
-	dev_dbg(adev->dev, "PSP IFWI flash process initiated");
+	dev_dbg(adev->dev, "PSP IFWI flash process initiated\n");
 
 	ret = amdgpu_bo_create_kernel(adev, adev->psp.vbflash_image_size,
 					AMDGPU_GPU_PAGE_SIZE,
@@ -3597,11 +3603,11 @@ rel_buf:
 	adev->psp.vbflash_image_size = 0;
 
 	if (ret) {
-		dev_err(adev->dev, "Failed to load IFWI, err = %d", ret);
+		dev_err(adev->dev, "Failed to load IFWI, err = %d\n", ret);
 		return ret;
 	}
 
-	dev_dbg(adev->dev, "PSP IFWI flash process done");
+	dev_dbg(adev->dev, "PSP IFWI flash process done\n");
 	return 0;
 }
 
