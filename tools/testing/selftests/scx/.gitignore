@@ -1,3 +1,5 @@
+dsp_fallbackdsq_fail
+dsp_localdsq_fail
 enq_last_no_enq_fails
 enqueue_select_cpu_fails
 minimal

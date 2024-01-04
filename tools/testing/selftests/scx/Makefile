@@ -155,7 +155,9 @@ c-sched-targets :=			\
 	select_cpu_dispatch_dbl_dsp	\
 	select_cpu_dispatch_bad_dsq	\
 	enqueue_select_cpu_fails	\
-	enq_last_no_enq_fails
+	enq_last_no_enq_fails		\
+	dsp_localdsq_fail		\
+	dsp_fallbackdsq_fail
 
 $(c-sched-targets): %: $(filter-out %.bpf.c,%.c) $(INCLUDE_DIR)/%.bpf.skel.h
 	$(eval sched=$(notdir $@))
