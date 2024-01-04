@@ -646,8 +646,20 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 		}
 	}
 
+	if (unlikely((dsq->id & SCX_DSQ_FLAG_BUILTIN) &&
+		     (enq_flags & SCX_ENQ_DSQ_PRIQ))) {
+		/*
+		 * SCX_DSQ_LOCAL and SCX_DSQ_GLOBAL DSQs always consume from
+		 * their FIFO queues. To avoid confusion and accidentally
+		 * starving vtime-dispatched tasks by FIFO-dispatched tasks, we
+		 * disallow any internal DSQ from doing vtime ordering of
+		 * tasks.
+		 */
+		scx_ops_error("Cannot use vtime ordering for built-in DSQs");
+		enq_flags &= ~SCX_ENQ_DSQ_PRIQ;
+	}
+
 	if (enq_flags & SCX_ENQ_DSQ_PRIQ) {
-		WARN_ON_ONCE(dsq->id & SCX_DSQ_FLAG_BUILTIN);
 		p->scx.dsq_flags |= SCX_TASK_DSQ_ON_PRIQ;
 		rb_add_cached(&p->scx.dsq_node.priq, &dsq->priq,
 			      scx_dsq_priq_less);
@@ -4014,17 +4026,6 @@ void scx_bpf_dispatch_vtime(struct task_struct *p, u64 dsq_id, u64 slice,
 {
 	if (!scx_dispatch_preamble(p, enq_flags))
 		return;
-
-	/*
-	 * SCX_DSQ_LOCAL and SCX_DSQ_GLOBAL DSQs always consume from their FIFO
-	 * queues. To avoid confusion and accidentally starving
-	 * vtime-dispatched tasks by FIFO-dispatched tasks, we disallow any
-	 * internal DSQ from doing vtime ordering of tasks.
-	 */
-	if (dsq_id & SCX_DSQ_FLAG_BUILTIN) {
-		scx_ops_error("Cannot use vtime ordering for built-in DSQs");
-		return;
-	}
 
 	if (slice)
 		p->scx.slice = slice;
