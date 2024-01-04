@@ -184,6 +184,11 @@ struct sched_ext_ops {
 	 * If an idle CPU is returned, the CPU is kicked and will try to
 	 * dispatch. While an explicit custom mechanism can be added,
 	 * select_cpu() serves as the default way to wake up idle CPUs.
+	 *
+	 * @p may be dispatched directly by calling scx_bpf_dispatch(). If @p
+	 * is dispatched, the ops.enqueue() callback will be skipped. Finally,
+	 * if @p is dispatched to SCX_DSQ_LOCAL, it will be dispatched to the
+	 * local DSQ of whatever CPU is returned by this callback.
 	 */
 	s32 (*select_cpu)(struct task_struct *p, s32 prev_cpu, u64 wake_flags);
 
@@ -196,6 +201,9 @@ struct sched_ext_ops {
 	 * or enqueue on the BPF scheduler. If not directly dispatched, the bpf
 	 * scheduler owns @p and if it fails to dispatch @p, the task will
 	 * stall.
+	 *
+	 * If @p was dispatched from ops.select_cpu(), this callback is
+	 * skipped.
 	 */
 	void (*enqueue)(struct task_struct *p, u64 enq_flags);
 
@@ -597,7 +605,7 @@ struct scx_dispatch_q {
 enum scx_ent_flags {
 	SCX_TASK_QUEUED		= 1 << 0, /* on ext runqueue */
 	SCX_TASK_BAL_KEEP	= 1 << 1, /* balance decided to keep current */
-	SCX_TASK_ENQ_LOCAL	= 1 << 2, /* used by scx_select_cpu_dfl() to set SCX_ENQ_LOCAL */
+	SCX_TASK_DDSP_PRIQ	= 1 << 2, /* task should be enqueued on priq when directly dispatched */
 
 	SCX_TASK_OPS_PREPPED	= 1 << 8, /* prepared for BPF scheduler enable */
 	SCX_TASK_OPS_ENABLED	= 1 << 9, /* task has BPF scheduler enabled */
@@ -630,12 +638,13 @@ enum scx_kf_mask {
 	SCX_KF_CPU_RELEASE	= 1 << 2, /* ops.cpu_release() */
 	/* ops.dequeue (in REST) may be nested inside DISPATCH */
 	SCX_KF_DISPATCH		= 1 << 3, /* ops.dispatch() */
-	SCX_KF_ENQUEUE		= 1 << 4, /* ops.enqueue() */
-	SCX_KF_REST		= 1 << 5, /* other rq-locked operations */
+	SCX_KF_ENQUEUE		= 1 << 4, /* ops.enqueue() and ops.select_cpu() */
+	SCX_KF_SELECT_CPU	= 1 << 5, /* ops.select_cpu() */
+	SCX_KF_REST		= 1 << 6, /* other rq-locked operations */
 
 	__SCX_KF_RQ_LOCKED	= SCX_KF_CPU_RELEASE | SCX_KF_DISPATCH |
-				  SCX_KF_ENQUEUE | SCX_KF_REST,
-	__SCX_KF_TERMINAL	= SCX_KF_ENQUEUE | SCX_KF_REST,
+				  SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU | SCX_KF_REST,
+	__SCX_KF_TERMINAL	= SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU | SCX_KF_REST,
 };
 
 /*
@@ -684,6 +693,12 @@ struct sched_ext_entity {
 	 * recommended.
 	 */
 	u64			dsq_vtime;
+
+	/*
+	 * Used to track when a task has requested a direct dispatch from the
+	 * ops.select_cpu() path.
+	 */
+	u64			ddsq_id;
 
 	/*
 	 * If set, reject future sched_setscheduler(2) calls updating the policy

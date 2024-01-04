@@ -43,8 +43,8 @@ enum scx_enq_flags {
 	/*
 	 * The task being enqueued is the only task available for the cpu. By
 	 * default, ext core keeps executing such tasks but when
-	 * %SCX_OPS_ENQ_LAST is specified, they're ops.enqueue()'d with
-	 * %SCX_ENQ_LAST and %SCX_ENQ_LOCAL flags set.
+	 * %SCX_OPS_ENQ_LAST is specified, they're ops.enqueue()'d with the
+	 * %SCX_ENQ_LAST flag set.
 	 *
 	 * If the BPF scheduler wants to continue executing the task,
 	 * ops.enqueue() should dispatch the task to %SCX_DSQ_LOCAL immediately.
@@ -53,13 +53,6 @@ enum scx_enq_flags {
 	 * Otherwise, Execution may stall.
 	 */
 	SCX_ENQ_LAST		= 1LLU << 41,
-
-	/*
-	 * A hint indicating that it's advisable to enqueue the task on the
-	 * local dsq of the currently selected CPU. Currently used by
-	 * select_cpu_dfl() and together with %SCX_ENQ_LAST.
-	 */
-	SCX_ENQ_LOCAL		= 1LLU << 42,
 
 	/* high 8 bits are internal */
 	__SCX_ENQ_INTERNAL_MASK	= 0xffLLU << 56,

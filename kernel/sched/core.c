@@ -4564,6 +4564,7 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	atomic_long_set(&p->scx.ops_state, 0);
 	p->scx.runnable_at	= INITIAL_JIFFIES;
 	p->scx.slice		= SCX_SLICE_DFL;
+	p->scx.ddsq_id		= SCX_DSQ_INVALID;
 #endif
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS

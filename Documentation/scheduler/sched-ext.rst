@@ -77,19 +77,57 @@ optional. The following modified excerpt is from
 
 .. code-block:: c
 
-    s32 BPF_STRUCT_OPS(simple_init)
+    /*
+     * Decide which CPU a task should be migrated to before being
+     * enqueued (either at wakeup, fork time, or exec time). If an
+     * idle core is found by the default ops.select_cpu() implementation,
+     * then dispatch the task directly to SCX_DSQ_LOCAL and skip the
+     * ops.enqueue() callback.
+     *
+     * Note that this implemenation has exactly the same behavior as the
+     * default ops.select_cpu implementation. The behavior of the scheduler
+     * would be exactly same if the implementation just didn't define the
+     * simple_select_cpu() struct_ops prog.
+     */
+    s32 BPF_STRUCT_OPS(simple_select_cpu, struct task_struct *p,
+                       s32 prev_cpu, u64 wake_flags)
     {
-            if (!switch_partial)
-                    scx_bpf_switch_all();
-            return 0;
+            s32 cpu;
+            /* Need to initialize or the BPF verifier will reject the program */
+            bool direct = false;
+
+            cpu = scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, &direct);
+
+            if (direct)
+                    scx_bpf_dispatch(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, 0);
+
+            return cpu;
     }
 
+    /*
+     * Do a direct dispatch of a task to the global DSQ. This ops.enqueue()
+     * callback will only be invoked if we failed to find a core to dispatch
+     * to in ops.select_cpu() above.
+     *
+     * Note that this implemenation has exactly the same behavior as the
+     * default ops.enqueue implementation, which just dispatches the task
+     * to SCX_DSQ_GLOBAL. The behavior of the scheduler would be exactly same
+     * if the implementation just didn't define the simple_enqueue struct_ops
+     * prog.
+     */
     void BPF_STRUCT_OPS(simple_enqueue, struct task_struct *p, u64 enq_flags)
     {
-            if (enq_flags & SCX_ENQ_LOCAL)
-                    scx_bpf_dispatch(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, enq_flags);
-            else
-                    scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
+            scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
+    }
+
+    s32 BPF_STRUCT_OPS(simple_init)
+    {
+            /*
+             * All SCHED_OTHER, SCHED_IDLE, and SCHED_BATCH tasks should
+             * use sched_ext.
+             */
+            scx_bpf_switch_all();
+            return 0;
     }
 
     void BPF_STRUCT_OPS(simple_exit, struct scx_exit_info *ei)
@@ -99,6 +137,7 @@ optional. The following modified excerpt is from
 
     SEC(".struct_ops")
     struct sched_ext_ops simple_ops = {
+            .select_cpu             = (void *)simple_select_cpu,
             .enqueue                = (void *)simple_enqueue,
             .init                   = (void *)simple_init,
             .exit                   = (void *)simple_exit,
@@ -142,11 +181,19 @@ The following briefly shows how a waking task is scheduled and executed.
    scheduler can wake up any cpu using the ``scx_bpf_kick_cpu()`` helper,
    using ``ops.select_cpu()`` judiciously can be simpler and more efficient.
 
+   A task can be immediately dispatched to a DSQ from ``ops.select_cpu()`` by
+   calling ``scx_bpf_dispatch()``. If the task is dispatched to
+   ``SCX_DSQ_LOCAL`` from ``ops.select_cpu()``, it will be dispatched to the
+   local DSQ of whichever CPU is returned from ``ops.select_cpu()``.
+   Additionally, dispatching directly from ``ops.select_cpu()`` will cause the
+   ``ops.enqueue()`` callback to be skipped.
+
    Note that the scheduler core will ignore an invalid CPU selection, for
    example, if it's outside the allowed cpumask of the task.
 
-2. Once the target CPU is selected, ``ops.enqueue()`` is invoked. It can
-   make one of the following decisions:
+2. Once the target CPU is selected, ``ops.enqueue()`` is invoked (unless the
+   task was dispatched directly from ``ops.select_cpu()``). ``ops.enqueue()``
+   can make one of the following decisions:
 
    * Immediately dispatch the task to either the global or local DSQ by
      calling ``scx_bpf_dispatch()`` with ``SCX_DSQ_GLOBAL`` or
