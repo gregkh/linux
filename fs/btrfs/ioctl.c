@@ -793,6 +793,9 @@ static int create_snapshot(struct btrfs_root *root, struct inode *dir,
 	if (!test_bit(BTRFS_ROOT_REF_COWS, &root->state))
 		return -EINVAL;
 
+	if (btrfs_root_refs(&root->root_item) == 0)
+		return -ENOENT;
+
 	if (atomic_read(&root->nr_swapfiles)) {
 		btrfs_warn(fs_info,
 			   "cannot snapshot subvolume with active swapfile");
