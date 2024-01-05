@@ -693,6 +693,7 @@ struct sched_ext_entity {
 #ifdef CONFIG_SCHED_CORE
 	u64			core_sched_at;	/* see scx_prio_less() */
 #endif
+	u64			ddsq_id;
 
 	/* BPF scheduler modifiable fields */
 
@@ -716,12 +717,6 @@ struct sched_ext_entity {
 	 * recommended.
 	 */
 	u64			dsq_vtime;
-
-	/*
-	 * Used to track when a task has requested a direct dispatch from the
-	 * ops.select_cpu() path.
-	 */
-	u64			ddsq_id;
 
 	/*
 	 * If set, reject future sched_setscheduler(2) calls updating the policy
