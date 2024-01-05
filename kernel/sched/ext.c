@@ -2048,8 +2048,14 @@ static s32 scx_select_cpu_dfl(struct task_struct *p, s32 prev_cpu,
 			goto cpu_found;
 	}
 
-	if (p->nr_cpus_allowed == 1)
-		return prev_cpu;
+	if (p->nr_cpus_allowed == 1) {
+		if (test_and_clear_cpu_idle(prev_cpu)) {
+			cpu = prev_cpu;
+			goto cpu_found;
+		} else {
+			return prev_cpu;
+		}
+	}
 
 	/*
 	 * If CPU has SMT, any wholly idle CPU is likely a better pick than
