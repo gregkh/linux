@@ -14,14 +14,20 @@ char _license[] SEC("license") = "GPL";
 
 bool saw_local = false;
 
+static bool task_is_test(const struct task_struct *p)
+{
+	return !bpf_strncmp(p->comm, 9, "select_cpu");
+}
+
 void BPF_STRUCT_OPS(select_cpu_dfl_enqueue, struct task_struct *p,
 		    u64 enq_flags)
 {
 	const struct cpumask *idle_mask = scx_bpf_get_idle_cpumask();
 
-	if (p->nr_cpus_allowed > 1 &&
-	    bpf_cpumask_test_cpu(scx_bpf_task_cpu(p), idle_mask))
+	if (task_is_test(p) &&
+	    bpf_cpumask_test_cpu(scx_bpf_task_cpu(p), idle_mask)) {
 		saw_local = true;
+	}
 	scx_bpf_put_idle_cpumask(idle_mask);
 
 	scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
