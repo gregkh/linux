@@ -535,9 +535,9 @@ static bool ops_cpu_valid(s32 cpu)
  * @err: -errno value to sanitize
  *
  * Verify @err is a valid -errno. If not, trigger scx_ops_error() and return
- * -%EPROTO. This is necessary because returning a rogue -errno up the chain can
- * cause misbehaviors. For an example, a large negative return from
- * ops.prep_enable() triggers an oops when passed up the call chain because the
+ * -%EPROTO. This is necessary because returning a rogue -errno up the chain
+ * can cause misbehaviors. For an example, a large negative return from
+ * ops.init_task() triggers an oops when passed up the call chain because the
  * value fails IS_ERR() test after being encoded with ERR_PTR() and then is
  * handled as a pointer.
  */
@@ -2279,33 +2279,72 @@ static struct cgroup *tg_cgrp(struct task_group *tg)
 		return &cgrp_dfl_root.cgrp;
 }
 
-#define SCX_ENABLE_ARGS_INIT_CGROUP(tg)		.cgroup = tg_cgrp(tg),
+#define SCX_INIT_TASK_ARGS_CGROUP(tg)		.cgroup = tg_cgrp(tg),
 
 #else	/* CONFIG_EXT_GROUP_SCHED */
 
-#define SCX_ENABLE_ARGS_INIT_CGROUP(tg)
+#define SCX_INIT_TASK_ARGS_CGROUP(tg)
 
 #endif	/* CONFIG_EXT_GROUP_SCHED */
 
-static int scx_ops_prepare_task(struct task_struct *p, struct task_group *tg)
+static enum scx_task_state scx_get_task_state(const struct task_struct *p)
+{
+	int state = p->scx.flags & SCX_TASK_STATE_MASK;
+
+	switch (state) {
+	case SCX_TASK_STATE_0 | SCX_TASK_STATE_1:
+		return SCX_TASK_ENABLED;
+	case SCX_TASK_STATE_1:
+		return SCX_TASK_READY;
+	case SCX_TASK_STATE_0:
+		return SCX_TASK_INIT;
+	default:
+		return SCX_TASK_NONE;
+	}
+}
+
+static void scx_set_task_state(struct task_struct *p, enum scx_task_state state)
+{
+	enum scx_task_state prev_state = scx_get_task_state(p);
+
+	p->scx.flags &= ~SCX_TASK_STATE_MASK;
+	switch (state) {
+	case SCX_TASK_NONE:
+		return;
+	case SCX_TASK_INIT:
+		WARN_ON_ONCE(prev_state != SCX_TASK_NONE);
+		p->scx.flags |= SCX_TASK_STATE_0;
+		return;
+	case SCX_TASK_READY:
+		WARN_ON_ONCE(prev_state == SCX_TASK_NONE);
+		p->scx.flags |= SCX_TASK_STATE_1;
+		return;
+	case SCX_TASK_ENABLED:
+		WARN_ON_ONCE(prev_state != SCX_TASK_READY);
+		p->scx.flags |= (SCX_TASK_STATE_0 | SCX_TASK_STATE_1);
+		return;
+	}
+}
+
+static int scx_ops_init_task(struct task_struct *p, struct task_group *tg)
 {
 	int ret;
 
-	WARN_ON_ONCE(p->scx.flags & SCX_TASK_OPS_PREPPED);
-
 	p->scx.disallow = false;
 
-	if (SCX_HAS_OP(prep_enable)) {
-		struct scx_enable_args args = {
-			SCX_ENABLE_ARGS_INIT_CGROUP(tg)
+	if (SCX_HAS_OP(init_task)) {
+		struct scx_init_task_args args = {
+			SCX_INIT_TASK_ARGS_CGROUP(tg)
 		};
 
-		ret = SCX_CALL_OP_RET(SCX_KF_SLEEPABLE, prep_enable, p, &args);
+		ret = SCX_CALL_OP_RET(SCX_KF_SLEEPABLE, init_task, p, &args);
 		if (unlikely(ret)) {
-			ret = ops_sanitize_err("prep_enable", ret);
+			ret = ops_sanitize_err("init_task", ret);
 			return ret;
 		}
 	}
+
+	scx_set_task_state(p, SCX_TASK_INIT);
 
 	if (p->scx.disallow) {
 		struct rq *rq;
@@ -2317,8 +2356,8 @@ static int scx_ops_prepare_task(struct task_struct *p, struct task_group *tg)
 		 * We're either in fork or load path and @p->policy will be
 		 * applied right after. Reverting @p->policy here and rejecting
 		 * %SCHED_EXT transitions from scx_check_setscheduler()
-		 * guarantees that if ops.prep_enable() sets @p->disallow, @p
-		 * can never be in SCX.
+		 * guarantees that if ops.init_task() sets @p->disallow, @p can
+		 * never be in SCX.
 		 */
 		if (p->policy == SCHED_EXT) {
 			p->policy = SCHED_NORMAL;
@@ -2328,42 +2367,8 @@ static int scx_ops_prepare_task(struct task_struct *p, struct task_group *tg)
 		task_rq_unlock(rq, p, &rf);
 	}
 
-	p->scx.flags |= (SCX_TASK_OPS_PREPPED | SCX_TASK_WATCHDOG_RESET);
+	p->scx.flags |= SCX_TASK_WATCHDOG_RESET;
 	return 0;
-}
-
-static void scx_ops_enable_task(struct task_struct *p)
-{
-	lockdep_assert_rq_held(task_rq(p));
-	WARN_ON_ONCE(!(p->scx.flags & SCX_TASK_OPS_PREPPED));
-
-	if (SCX_HAS_OP(enable)) {
-		struct scx_enable_args args = {
-			SCX_ENABLE_ARGS_INIT_CGROUP(task_group(p))
-		};
-		SCX_CALL_OP_TASK(SCX_KF_REST, enable, p, &args);
-	}
-	p->scx.flags &= ~SCX_TASK_OPS_PREPPED;
-	p->scx.flags |= SCX_TASK_OPS_ENABLED;
-}
-
-static void scx_ops_disable_task(struct task_struct *p)
-{
-	lockdep_assert_rq_held(task_rq(p));
-
-	if (p->scx.flags & SCX_TASK_OPS_PREPPED) {
-		if (SCX_HAS_OP(cancel_enable)) {
-			struct scx_enable_args args = {
-				SCX_ENABLE_ARGS_INIT_CGROUP(task_group(p))
-			};
-			SCX_CALL_OP(SCX_KF_REST, cancel_enable, p, &args);
-		}
-		p->scx.flags &= ~SCX_TASK_OPS_PREPPED;
-	} else if (p->scx.flags & SCX_TASK_OPS_ENABLED) {
-		if (SCX_HAS_OP(disable))
-			SCX_CALL_OP(SCX_KF_REST, disable, p);
-		p->scx.flags &= ~SCX_TASK_OPS_ENABLED;
-	}
 }
 
 static void set_task_scx_weight(struct task_struct *p)
@@ -2373,22 +2378,56 @@ static void set_task_scx_weight(struct task_struct *p)
 	p->scx.weight = sched_weight_to_cgroup(weight);
 }
 
-/**
- * refresh_scx_weight - Refresh a task's ext weight
- * @p: task to refresh ext weight for
- *
- * @p->scx.weight carries the task's static priority in cgroup weight scale to
- * enable easy access from the BPF scheduler. To keep it synchronized with the
- * current task priority, this function should be called when a new task is
- * created, priority is changed for a task on sched_ext, and a task is switched
- * to sched_ext from other classes.
- */
-static void refresh_scx_weight(struct task_struct *p)
+static void scx_ops_enable_task(struct task_struct *p)
 {
 	lockdep_assert_rq_held(task_rq(p));
+
+	/*
+	 * Set the weight before calling ops.enable() so that the scheduler
+	 * doesn't see a stale value if they inspect the task struct.
+	 */
 	set_task_scx_weight(p);
+	if (SCX_HAS_OP(enable))
+		SCX_CALL_OP_TASK(SCX_KF_REST, enable, p);
+	scx_set_task_state(p, SCX_TASK_ENABLED);
+
 	if (SCX_HAS_OP(set_weight))
 		SCX_CALL_OP_TASK(SCX_KF_REST, set_weight, p, p->scx.weight);
+}
+
+static void scx_ops_disable_task(struct task_struct *p)
+{
+	lockdep_assert_rq_held(task_rq(p));
+	WARN_ON_ONCE(scx_get_task_state(p) != SCX_TASK_ENABLED);
+
+	if (SCX_HAS_OP(disable))
+		SCX_CALL_OP(SCX_KF_REST, disable, p);
+	scx_set_task_state(p, SCX_TASK_READY);
+}
+
+static void scx_ops_exit_task(struct task_struct *p)
+{
+	struct scx_exit_task_args args = {
+		.cancelled = false,
+	};
+
+	lockdep_assert_rq_held(task_rq(p));
+	switch (scx_get_task_state(p)) {
+	case SCX_TASK_NONE:
+		return;
+	case SCX_TASK_INIT:
+		args.cancelled = true;
+		break;
+	case SCX_TASK_READY:
+		break;
+	case SCX_TASK_ENABLED:
+		scx_ops_disable_task(p);
+		break;
+	}
+
+	if (SCX_HAS_OP(exit_task))
+		SCX_CALL_OP(SCX_KF_REST, exit_task, p, &args);
+	scx_set_task_state(p, SCX_TASK_NONE);
 }
 
 void scx_pre_fork(struct task_struct *p)
@@ -2407,7 +2446,7 @@ int scx_fork(struct task_struct *p)
 	percpu_rwsem_assert_held(&scx_fork_rwsem);
 
 	if (scx_enabled())
-		return scx_ops_prepare_task(p, task_group(p));
+		return scx_ops_init_task(p, task_group(p));
 	else
 		return 0;
 }
@@ -2415,21 +2454,20 @@ int scx_fork(struct task_struct *p)
 void scx_post_fork(struct task_struct *p)
 {
 	if (scx_enabled()) {
-		struct rq_flags rf;
-		struct rq *rq;
-
-		rq = task_rq_lock(p, &rf);
+		scx_set_task_state(p, SCX_TASK_READY);
 		/*
-		 * Set the weight manually before calling ops.enable() so that
-		 * the scheduler doesn't see a stale value if they inspect the
-		 * task struct. We'll invoke ops.set_weight() afterwards, as it
-		 * would be odd to receive a callback on the task before we
-		 * tell the scheduler that it's been fully enabled.
+		 * Enable the task immediately if it's running on sched_ext.
+		 * Otherwise, it'll be enabled in switching_to_scx() if and
+		 * when it's ever configured to run with a SCHED_EXT policy.
 		 */
-		set_task_scx_weight(p);
-		scx_ops_enable_task(p);
-		refresh_scx_weight(p);
-		task_rq_unlock(rq, p, &rf);
+		if (p->sched_class == &ext_sched_class) {
+			struct rq_flags rf;
+			struct rq *rq;
+
+			rq = task_rq_lock(p, &rf);
+			scx_ops_enable_task(p);
+			task_rq_unlock(rq, p, &rf);
+		}
 	}
 
 	spin_lock_irq(&scx_tasks_lock);
@@ -2441,8 +2479,10 @@ void scx_post_fork(struct task_struct *p)
 
 void scx_cancel_fork(struct task_struct *p)
 {
-	if (scx_enabled())
-		scx_ops_disable_task(p);
+	if (scx_enabled()) {
+		WARN_ON_ONCE(scx_get_task_state(p) >= SCX_TASK_READY);
+		scx_ops_exit_task(p);
+	}
 	percpu_up_read(&scx_fork_rwsem);
 }
 
@@ -2455,22 +2495,26 @@ void sched_ext_free(struct task_struct *p)
 	spin_unlock_irqrestore(&scx_tasks_lock, flags);
 
 	/*
-	 * @p is off scx_tasks and wholly ours. scx_ops_enable()'s PREPPED ->
+	 * @p is off scx_tasks and wholly ours. scx_ops_enable()'s READY ->
 	 * ENABLED transitions can't race us. Disable ops for @p.
 	 */
-	if (p->scx.flags & (SCX_TASK_OPS_PREPPED | SCX_TASK_OPS_ENABLED)) {
+	if (scx_get_task_state(p) != SCX_TASK_NONE) {
 		struct rq_flags rf;
 		struct rq *rq;
 
 		rq = task_rq_lock(p, &rf);
-		scx_ops_disable_task(p);
+		scx_ops_exit_task(p);
 		task_rq_unlock(rq, p, &rf);
 	}
 }
 
 static void reweight_task_scx(struct rq *rq, struct task_struct *p, int newprio)
 {
-	refresh_scx_weight(p);
+	lockdep_assert_rq_held(task_rq(p));
+
+	set_task_scx_weight(p);
+	if (SCX_HAS_OP(set_weight))
+		SCX_CALL_OP_TASK(SCX_KF_REST, set_weight, p, p->scx.weight);
 }
 
 static void prio_changed_scx(struct rq *rq, struct task_struct *p, int oldprio)
@@ -2479,7 +2523,7 @@ static void prio_changed_scx(struct rq *rq, struct task_struct *p, int oldprio)
 
 static void switching_to_scx(struct rq *rq, struct task_struct *p)
 {
-	refresh_scx_weight(p);
+	scx_ops_enable_task(p);
 
 	/*
 	 * set_cpus_allowed_scx() is not called while @p is associated with a
@@ -2488,6 +2532,11 @@ static void switching_to_scx(struct rq *rq, struct task_struct *p)
 	if (SCX_HAS_OP(set_cpumask))
 		SCX_CALL_OP_TASK(SCX_KF_REST, set_cpumask, p,
 				 (struct cpumask *)p->cpus_ptr);
+}
+
+static void switched_from_scx(struct rq *rq, struct task_struct *p)
+{
+	scx_ops_disable_task(p);
 }
 
 static void wakeup_preempt_scx(struct rq *rq, struct task_struct *p,int wake_flags) {}
@@ -2704,7 +2753,7 @@ static inline void scx_cgroup_unlock(void) {}
  * - task_fork/dead: We need fork/dead notifications for all tasks regardless of
  *   their current sched_class. Call them directly from sched core instead.
  *
- * - task_woken, switched_from: Unnecessary.
+ * - task_woken: Unnecessary.
  */
 DEFINE_SCHED_CLASS(ext) = {
 	.enqueue_task		= enqueue_task_scx,
@@ -2735,6 +2784,7 @@ DEFINE_SCHED_CLASS(ext) = {
 	.task_tick		= task_tick_scx,
 
 	.switching_to		= switching_to_scx,
+	.switched_from		= switched_from_scx,
 	.switched_to		= switched_to_scx,
 	.reweight_task		= reweight_task_scx,
 	.prio_changed		= prio_changed_scx,
@@ -3123,7 +3173,7 @@ forward_progress_guaranteed:
 		if (alive)
 			check_class_changed(task_rq(p), p, old_class, p->prio);
 
-		scx_ops_disable_task(p);
+		scx_ops_exit_task(p);
 	}
 	scx_task_iter_exit(&sti);
 	spin_unlock_irq(&scx_tasks_lock);
@@ -3313,7 +3363,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		/*
 		 * Exit early if ops.init() triggered scx_bpf_error(). Not
 		 * strictly necessary as we'll fail transitioning into ENABLING
-		 * later but that'd be after calling ops.prep_enable() on all
+		 * later but that'd be after calling ops.init_task() on all
 		 * tasks and with -EBUSY which isn't very intuitive. Let's exit
 		 * early with success so that the condition is notified through
 		 * ops.exit() like other scx_bpf_error() invocations.
@@ -3393,13 +3443,13 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		get_task_struct(p);
 		spin_unlock_irq(&scx_tasks_lock);
 
-		ret = scx_ops_prepare_task(p, task_group(p));
+		ret = scx_ops_init_task(p, task_group(p));
 		if (ret) {
 			put_task_struct(p);
 			spin_lock_irq(&scx_tasks_lock);
 			scx_task_iter_exit(&sti);
 			spin_unlock_irq(&scx_tasks_lock);
-			pr_err("sched_ext: ops.prep_enable() failed (%d) for %s[%d] while loading\n",
+			pr_err("sched_ext: ops.init_task() failed (%d) for %s[%d] while loading\n",
 			       ret, p->comm, p->pid);
 			goto err_disable_unlock;
 		}
@@ -3444,7 +3494,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE,
 					       &ctx);
 
-			scx_ops_enable_task(p);
+			scx_set_task_state(p, SCX_TASK_READY);
 			__setscheduler_prio(p, p->prio);
 			check_class_changing(task_rq(p), p, old_class);
 
@@ -3452,7 +3502,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 
 			check_class_changed(task_rq(p), p, old_class, p->prio);
 		} else {
-			scx_ops_disable_task(p);
+			scx_ops_exit_task(p);
 		}
 	}
 	scx_task_iter_exit(&sti);
@@ -3634,7 +3684,7 @@ static int bpf_scx_check_member(const struct btf_type *t,
 	u32 moff = __btf_member_bit_offset(t, member) / 8;
 
 	switch (moff) {
-	case offsetof(struct sched_ext_ops, prep_enable):
+	case offsetof(struct sched_ext_ops, init_task):
 #ifdef CONFIG_EXT_GROUP_SCHED
 	case offsetof(struct sched_ext_ops, cgroup_init):
 	case offsetof(struct sched_ext_ops, cgroup_exit):
@@ -3680,7 +3730,7 @@ static int bpf_scx_update(void *kdata, void *old_kdata)
 	 * sched_ext does not support updating the actively-loaded BPF
 	 * scheduler, as registering a BPF scheduler can always fail if the
 	 * scheduler returns an error code for e.g. ops.init(),
-	 * ops.prep_enable(), etc. Similarly, we can always race with
+	 * ops.init_task(), etc. Similarly, we can always race with
 	 * unregistration happening elsewhere, such as with sysrq.
 	 */
 	return -EOPNOTSUPP;
@@ -3893,7 +3943,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_init = {
  * @node: NUMA node to allocate from
  *
  * Create a custom DSQ identified by @dsq_id. Can be called from ops.init(),
- * ops.prep_enable(), ops.cgroup_init() and ops.cgroup_prep_move().
+ * ops.init_task(), ops.cgroup_init() and ops.cgroup_prep_move().
  */
 s32 scx_bpf_create_dsq(u64 dsq_id, s32 node)
 {

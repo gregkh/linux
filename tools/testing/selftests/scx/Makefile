@@ -96,8 +96,8 @@ BPF_CFLAGS = -g -D__TARGET_ARCH_$(SRCARCH)					\
 	     -O2 -mcpu=v3
 
 # sort removes libbpf duplicates when not cross-building
-MAKE_DIRS := $(sort $(OBJ_DIR)/libbpf $(HOST_BUILD_DIR)/libbpf			\
-	       $(HOST_BUILD_DIR)/bpftool $(HOST_BUILD_DIR)/resolve_btfids	\
+MAKE_DIRS := $(sort $(OBJ_DIR)/libbpf $(OBJ_DIR)/libbpf				\
+	       $(OBJ_DIR)/bpftool $(OBJ_DIR)/resolve_btfids			\
 	       $(INCLUDE_DIR) $(SCXOBJ_DIR))
 
 $(MAKE_DIRS):
@@ -112,14 +112,14 @@ $(BPFOBJ): $(wildcard $(BPFDIR)/*.[ch] $(BPFDIR)/Makefile)			\
 		    DESTDIR=$(OUTPUT_DIR) prefix= all install_headers
 
 $(DEFAULT_BPFTOOL): $(wildcard $(BPFTOOLDIR)/*.[ch] $(BPFTOOLDIR)/Makefile)	\
-		    $(LIBBPF_OUTPUT) | $(HOST_BUILD_DIR)/bpftool
+		    $(LIBBPF_OUTPUT) | $(OBJ_DIR)/bpftool
 	$(Q)$(MAKE) $(submake_extras)  -C $(BPFTOOLDIR)				\
 		    ARCH= CROSS_COMPILE= CC=$(HOSTCC) LD=$(HOSTLD)		\
 		    EXTRA_CFLAGS='-g -O0'					\
-		    OUTPUT=$(HOST_BUILD_DIR)/bpftool/				\
-		    LIBBPF_OUTPUT=$(HOST_BUILD_DIR)/libbpf/			\
-		    LIBBPF_DESTDIR=$(HOST_OUTPUT_DIR)/				\
-		    prefix= DESTDIR=$(HOST_OUTPUT_DIR)/ install-bin
+		    OUTPUT=$(OBJ_DIR)/bpftool/					\
+		    LIBBPF_OUTPUT=$(OBJ_DIR)/libbpf/				\
+		    LIBBPF_DESTDIR=$(OUTPUT_DIR)/				\
+		    prefix= DESTDIR=$(OUTPUT_DIR)/ install-bin
 
 $(INCLUDE_DIR)/vmlinux.h: $(VMLINUX_BTF) $(BPFTOOL) | $(INCLUDE_DIR)
 ifeq ($(VMLINUX_H),)
@@ -148,16 +148,17 @@ $(INCLUDE_DIR)/%.bpf.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BP
 # C schedulers #
 ################
 c-sched-targets :=			\
+	dsp_fallbackdsq_fail		\
+	dsp_localdsq_fail		\
+	enq_last_no_enq_fails		\
+	enqueue_select_cpu_fails	\
+	init_enable_count		\
 	minimal				\
 	select_cpu_dfl			\
 	select_cpu_dfl_nodispatch	\
 	select_cpu_dispatch		\
-	select_cpu_dispatch_dbl_dsp	\
 	select_cpu_dispatch_bad_dsq	\
-	enqueue_select_cpu_fails	\
-	enq_last_no_enq_fails		\
-	dsp_localdsq_fail		\
-	dsp_fallbackdsq_fail
+	select_cpu_dispatch_dbl_dsp
 
 $(c-sched-targets): %: $(filter-out %.bpf.c,%.c) $(INCLUDE_DIR)/%.bpf.skel.h
 	$(eval sched=$(notdir $@))
@@ -167,7 +168,7 @@ $(c-sched-targets): %: $(filter-out %.bpf.c,%.c) $(INCLUDE_DIR)/%.bpf.skel.h
 TEST_GEN_PROGS := $(c-sched-targets)
 
 override define CLEAN
-	rm -rf $(OUTPUT_DIR) $(HOST_OUTPUT_DIR)
+	rm -rf $(OUTPUT_DIR)
 	rm -f *.o *.bpf.o *.bpf.skel.h *.bpf.subskel.h
 	rm -f $(TEST_GEN_PROGS)
 endef

@@ -70,8 +70,8 @@ void BPF_STRUCT_OPS(select_cpu_dfl_nodispatch_enqueue, struct task_struct *p,
 	scx_bpf_dispatch(p, dsq_id, SCX_SLICE_DFL, enq_flags);
 }
 
-s32 BPF_STRUCT_OPS(select_cpu_dfl_nodispatch_prep_enable,
-		   struct task_struct *p, struct scx_enable_args *args)
+s32 BPF_STRUCT_OPS(select_cpu_dfl_nodispatch_init_task,
+		   struct task_struct *p, struct scx_init_task_args *args)
 {
 	if (bpf_task_storage_get(&task_ctx_stor, p, 0,
 				 BPF_LOCAL_STORAGE_GET_F_CREATE))
@@ -91,7 +91,7 @@ SEC(".struct_ops.link")
 struct sched_ext_ops select_cpu_dfl_nodispatch_ops = {
 	.select_cpu		= select_cpu_dfl_nodispatch_select_cpu,
 	.enqueue		= select_cpu_dfl_nodispatch_enqueue,
-	.prep_enable		= select_cpu_dfl_nodispatch_prep_enable,
+	.init_task		= select_cpu_dfl_nodispatch_init_task,
 	.init			= select_cpu_dfl_nodispatch_init,
 	.name			= "select_cpu_dfl_nodispatch",
 };
