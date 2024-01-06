@@ -8,14 +8,14 @@
 #include <scx/common.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include "enq_last_no_enq_fails.bpf.skel.h"
+#include "enq_select_cpu_fails.bpf.skel.h"
 #include "scx_test.h"
 
 static enum scx_test_status setup(void **ctx)
 {
-	struct enq_last_no_enq_fails *skel;
+	struct enq_select_cpu_fails *skel;
 
-	skel = enq_last_no_enq_fails__open_and_load();
+	skel = enq_select_cpu_fails__open_and_load();
 	if (!skel) {
 		SCX_ERR("Failed to open and load skel");
 		return SCX_TEST_FAIL;
@@ -27,14 +27,16 @@ static enum scx_test_status setup(void **ctx)
 
 static enum scx_test_status run(void *ctx)
 {
-	struct enq_last_no_enq_fails *skel = ctx;
+	struct enq_select_cpu_fails *skel = ctx;
 	struct bpf_link *link;
 
-	link = bpf_map__attach_struct_ops(skel->maps.enq_last_no_enq_fails_ops);
-	if (link) {
-		SCX_ERR("Incorrectly succeeded in to attaching scheduler");
+	link = bpf_map__attach_struct_ops(skel->maps.enq_select_cpu_fails_ops);
+	if (!link) {
+		SCX_ERR("Failed to attach scheduler");
 		return SCX_TEST_FAIL;
 	}
+
+	sleep(1);
 
 	bpf_link__destroy(link);
 
@@ -43,18 +45,17 @@ static enum scx_test_status run(void *ctx)
 
 static void cleanup(void *ctx)
 {
-	struct enq_last_no_enq_fails *skel = ctx;
+	struct enq_select_cpu_fails *skel = ctx;
 
-	enq_last_no_enq_fails__destroy(skel);
+	enq_select_cpu_fails__destroy(skel);
 }
 
-struct scx_test enq_last_no_enq_fails = {
-	.name = "enq_last_no_enq_fails",
-	.description = "Verify we fail to load a scheduler if we specify "
-		       "the SCX_OPS_ENQ_LAST flag without defining "
-		       "ops.enqueue()",
+struct scx_test enq_select_cpu_fails = {
+	.name = "enq_select_cpu_fails",
+	.description = "Verify we fail to call scx_bpf_select_cpu_dfl() "
+		       "from ops.enqueue()",
 	.setup = setup,
 	.run = run,
 	.cleanup = cleanup,
 };
-REGISTER_SCX_TEST(&enq_last_no_enq_fails)
+REGISTER_SCX_TEST(&enq_select_cpu_fails)

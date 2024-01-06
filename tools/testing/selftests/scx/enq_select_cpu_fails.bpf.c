@@ -1,8 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * A scheduler that validates the behavior of direct dispatching with a default
- * select_cpu implementation.
- *
  * Copyright (c) 2023 Meta Platforms, Inc. and affiliates.
  * Copyright (c) 2023 David Vernet <dvernet@meta.com>
  * Copyright (c) 2023 Tejun Heo <tj@kernel.org>
@@ -16,13 +13,13 @@ char _license[] SEC("license") = "GPL";
 s32 scx_bpf_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flags,
 			   bool *found) __ksym;
 
-s32 BPF_STRUCT_OPS(enqueue_select_cpu_fails_select_cpu, struct task_struct *p,
+s32 BPF_STRUCT_OPS(enq_select_cpu_fails_select_cpu, struct task_struct *p,
 		   s32 prev_cpu, u64 wake_flags)
 {
 	return prev_cpu;
 }
 
-void BPF_STRUCT_OPS(enqueue_select_cpu_fails_enqueue, struct task_struct *p,
+void BPF_STRUCT_OPS(enq_select_cpu_fails_enqueue, struct task_struct *p,
 		    u64 enq_flags)
 {
 	/*
@@ -37,7 +34,7 @@ void BPF_STRUCT_OPS(enqueue_select_cpu_fails_enqueue, struct task_struct *p,
 	scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
 }
 
-s32 BPF_STRUCT_OPS(enqueue_select_cpu_fails_init)
+s32 BPF_STRUCT_OPS(enq_select_cpu_fails_init)
 {
 	scx_bpf_switch_all();
 
@@ -45,10 +42,10 @@ s32 BPF_STRUCT_OPS(enqueue_select_cpu_fails_init)
 }
 
 SEC(".struct_ops.link")
-struct sched_ext_ops enqueue_select_cpu_fails_ops = {
-	.select_cpu		= enqueue_select_cpu_fails_select_cpu,
-	.enqueue		= enqueue_select_cpu_fails_enqueue,
-	.init			= enqueue_select_cpu_fails_init,
-	.name			= "enqueue_select_cpu_fails",
+struct sched_ext_ops enq_select_cpu_fails_ops = {
+	.select_cpu		= enq_select_cpu_fails_select_cpu,
+	.enqueue		= enq_select_cpu_fails_enqueue,
+	.init			= enq_select_cpu_fails_init,
+	.name			= "enq_select_cpu_fails",
 	.timeout_ms		= 1000U,
 };
