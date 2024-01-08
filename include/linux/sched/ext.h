@@ -613,15 +613,24 @@ enum scx_ent_flags {
 	SCX_TASK_QUEUED		= 1 << 0, /* on ext runqueue */
 	SCX_TASK_BAL_KEEP	= 1 << 1, /* balance decided to keep current */
 	SCX_TASK_DDSP_PRIQ	= 1 << 2, /* task should be enqueued on priq when directly dispatched */
-	SCX_TASK_STATE_0	= 1 << 3, /* first bit encoding the task's current state */
-	SCX_TASK_STATE_1	= 1 << 4, /* second bit encoding the task's current state */
+	SCX_TASK_RESET_RUNNABLE_AT = 1 << 3, /* runnable_at should be reset */
+	SCX_TASK_DEQD_FOR_SLEEP	= 1 << 4, /* last dequeue was for SLEEP */
 
-	SCX_TASK_RESET_RUNNABLE_AT = 1 << 16, /* runnable_at should be reset */
-	SCX_TASK_DEQD_FOR_SLEEP	= 1 << 17, /* last dequeue was for SLEEP */
+	SCX_TASK_STATE_SHIFT	= 8,	  /* bit 8 and 9 are used to carry scx_task_state */
+	SCX_TASK_STATE_BITS	= 2,
+	SCX_TASK_STATE_MASK	= ((1 << SCX_TASK_STATE_BITS) - 1) << SCX_TASK_STATE_SHIFT,
 
 	SCX_TASK_CURSOR		= 1 << 31, /* iteration cursor, not a task */
+};
 
-	SCX_TASK_STATE_MASK	= SCX_TASK_STATE_0 | SCX_TASK_STATE_1,
+/* scx_entity.flags & SCX_TASK_STATE_MASK */
+enum scx_task_state {
+	SCX_TASK_NONE,		/* ops.init_task() not called yet */
+	SCX_TASK_INIT,		/* ops.init_task() succeeded, but task can be cancelled */
+	SCX_TASK_READY,		/* fully initialized, but not in sched_ext */
+	SCX_TASK_ENABLED,	/* fully initialized and in sched_ext */
+
+	SCX_TASK_NR_STATES,
 };
 
 /* scx_entity.dsq_flags */
@@ -653,21 +662,6 @@ enum scx_kf_mask {
 	__SCX_KF_RQ_LOCKED	= SCX_KF_CPU_RELEASE | SCX_KF_DISPATCH |
 				  SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU | SCX_KF_REST,
 	__SCX_KF_TERMINAL	= SCX_KF_ENQUEUE | SCX_KF_SELECT_CPU | SCX_KF_REST,
-};
-
-/* scx_entity.task_state */
-enum scx_task_state {
-	/* ops.prep_enable() has not yet been called on task */
-	SCX_TASK_NONE,
-
-	/* ops.prep_enable() succeeded on task, but it still be cancelled */
-	SCX_TASK_INIT,
-
-	/* Task is fully initialized, but not being scheduled in sched_ext */
-	SCX_TASK_READY,
-
-	/* Task is fully initialized and is being scheduled in sched_ext */
-	SCX_TASK_ENABLED,
 };
 
 /*
