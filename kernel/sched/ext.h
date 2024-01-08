@@ -163,8 +163,9 @@ static inline void scx_notify_sched_tick(void)
 	if (!scx_enabled())
 		return;
 
-	last_check = scx_watchdog_timestamp;
-	if (unlikely(time_after(jiffies, last_check + scx_watchdog_timeout))) {
+	last_check = READ_ONCE(scx_watchdog_timestamp);
+	if (unlikely(time_after(jiffies,
+				last_check + READ_ONCE(scx_watchdog_timeout)))) {
 		u32 dur_ms = jiffies_to_msecs(jiffies - last_check);
 
 		scx_ops_error_kind(SCX_EXIT_ERROR_STALL,

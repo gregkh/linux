@@ -91,6 +91,7 @@ static DEFINE_MUTEX(scx_ops_enable_mutex);
 DEFINE_STATIC_KEY_FALSE(__scx_ops_enabled);
 DEFINE_STATIC_PERCPU_RWSEM(scx_fork_rwsem);
 static atomic_t scx_ops_enable_state_var = ATOMIC_INIT(SCX_OPS_DISABLED);
+static atomic_t scx_ops_bypass_depth = ATOMIC_INIT(0);
 static bool scx_switch_all_req;
 static bool scx_switching_all;
 DEFINE_STATIC_KEY_FALSE(__scx_switched_all);
@@ -495,9 +496,9 @@ static bool scx_ops_tryset_enable_state(enum scx_ops_enable_state to,
 	return atomic_try_cmpxchg(&scx_ops_enable_state_var, &from_v, to);
 }
 
-static bool scx_ops_disabling(void)
+static bool scx_ops_bypassing(void)
 {
-	return unlikely(scx_ops_enable_state() == SCX_OPS_DISABLING);
+	return unlikely(atomic_read(&scx_ops_bypass_depth));
 }
 
 /**
@@ -888,6 +889,13 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	if (unlikely(!test_rq_online(rq)))
 		goto local;
 
+	if (scx_ops_bypassing()) {
+		if (enq_flags & SCX_ENQ_LAST)
+			goto local;
+		else
+			goto global;
+	}
+
 	/* see %SCX_OPS_ENQ_EXITING */
 	if (!static_branch_unlikely(&scx_ops_enq_exiting) &&
 	    unlikely(p->flags & PF_EXITING))
@@ -946,25 +954,32 @@ global:
 	dispatch_enqueue(&scx_dsq_global, p, enq_flags);
 }
 
-static bool watchdog_task_watched(const struct task_struct *p)
+static bool task_runnable(const struct task_struct *p)
 {
-	return !list_empty(&p->scx.watchdog_node);
+	return !list_empty(&p->scx.runnable_node);
 }
 
-static void watchdog_watch_task(struct rq *rq, struct task_struct *p)
+static void set_task_runnable(struct rq *rq, struct task_struct *p)
 {
 	lockdep_assert_rq_held(rq);
-	if (p->scx.flags & SCX_TASK_WATCHDOG_RESET)
+
+	if (p->scx.flags & SCX_TASK_RESET_RUNNABLE_AT) {
 		p->scx.runnable_at = jiffies;
-	p->scx.flags &= ~SCX_TASK_WATCHDOG_RESET;
-	list_add_tail(&p->scx.watchdog_node, &rq->scx.watchdog_list);
+		p->scx.flags &= ~SCX_TASK_RESET_RUNNABLE_AT;
+	}
+
+	/*
+	 * list_add_tail() must be used. scx_ops_bypass() depends on tasks being
+	 * appened to the runnable_list.
+	 */
+	list_add_tail(&p->scx.runnable_node, &rq->scx.runnable_list);
 }
 
-static void watchdog_unwatch_task(struct task_struct *p, bool reset_timeout)
+static void clr_task_runnable(struct task_struct *p, bool reset_runnable_at)
 {
-	list_del_init(&p->scx.watchdog_node);
-	if (reset_timeout)
-		p->scx.flags |= SCX_TASK_WATCHDOG_RESET;
+	list_del_init(&p->scx.runnable_node);
+	if (reset_runnable_at)
+		p->scx.flags |= SCX_TASK_RESET_RUNNABLE_AT;
 }
 
 static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags)
@@ -986,11 +1001,11 @@ static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags
 		sticky_cpu = cpu_of(rq);
 
 	if (p->scx.flags & SCX_TASK_QUEUED) {
-		WARN_ON_ONCE(!watchdog_task_watched(p));
+		WARN_ON_ONCE(!task_runnable(p));
 		return;
 	}
 
-	watchdog_watch_task(rq, p);
+	set_task_runnable(rq, p);
 	p->scx.flags |= SCX_TASK_QUEUED;
 	rq->scx.nr_running++;
 	add_nr_running(rq, 1);
@@ -1008,7 +1023,8 @@ static void ops_dequeue(struct task_struct *p, u64 deq_flags)
 {
 	unsigned long opss;
 
-	watchdog_unwatch_task(p, false);
+	/* dequeue is always temporary, don't reset runnable_at */
+	clr_task_runnable(p, false);
 
 	/* acquire ensures that we see the preceding updates on QUEUED */
 	opss = atomic_long_read_acquire(&p->scx.ops_state);
@@ -1055,7 +1071,7 @@ static void dequeue_task_scx(struct rq *rq, struct task_struct *p, int deq_flags
 	struct scx_rq *scx_rq = &rq->scx;
 
 	if (!(p->scx.flags & SCX_TASK_QUEUED)) {
-		WARN_ON_ONCE(watchdog_task_watched(p));
+		WARN_ON_ONCE(task_runnable(p));
 		return;
 	}
 
@@ -1593,7 +1609,7 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 		 * same conditions later and pick @rq->curr accordingly.
 		 */
 		if ((prev->scx.flags & SCX_TASK_QUEUED) &&
-		    prev->scx.slice && !scx_ops_disabling()) {
+		    prev->scx.slice && !scx_ops_bypassing()) {
 			if (local)
 				prev->scx.flags |= SCX_TASK_BAL_KEEP;
 			return 1;
@@ -1607,7 +1623,7 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 	if (consume_dispatch_q(rq, rf, &scx_dsq_global))
 		return 1;
 
-	if (!SCX_HAS_OP(dispatch))
+	if (!SCX_HAS_OP(dispatch) || scx_ops_bypassing())
 		return 0;
 
 	dspc->rq = rq;
@@ -1710,7 +1726,7 @@ static void set_next_task_scx(struct rq *rq, struct task_struct *p, bool first)
 	if (SCX_HAS_OP(running) && (p->scx.flags & SCX_TASK_QUEUED))
 		SCX_CALL_OP_TASK(SCX_KF_REST, running, p);
 
-	watchdog_unwatch_task(p, true);
+	clr_task_runnable(p, true);
 
 	/*
 	 * @p is getting newly scheduled or got kicked after someone updated its
@@ -1772,13 +1788,13 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
 	 */
 	if (p->scx.flags & SCX_TASK_BAL_KEEP) {
 		p->scx.flags &= ~SCX_TASK_BAL_KEEP;
-		watchdog_watch_task(rq, p);
+		set_task_runnable(rq, p);
 		dispatch_enqueue(&rq->scx.local_dsq, p, SCX_ENQ_HEAD);
 		return;
 	}
 
 	if (p->scx.flags & SCX_TASK_QUEUED) {
-		watchdog_watch_task(rq, p);
+		set_task_runnable(rq, p);
 
 		/*
 		 * If @p has slice left and balance_scx() didn't tag it for
@@ -1786,7 +1802,7 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
 		 * scheduler class or core-sched forcing a different task. Leave
 		 * it at the head of the local DSQ.
 		 */
-		if (p->scx.slice && !scx_ops_disabling()) {
+		if (p->scx.slice && !scx_ops_bypassing()) {
 			dispatch_enqueue(&rq->scx.local_dsq, p, SCX_ENQ_HEAD);
 			return;
 		}
@@ -1829,7 +1845,7 @@ static struct task_struct *pick_next_task_scx(struct rq *rq)
 		return NULL;
 
 	if (unlikely(!p->scx.slice)) {
-		if (!scx_ops_disabling() && !scx_warned_zero_slice) {
+		if (!scx_ops_bypassing() && !scx_warned_zero_slice) {
 			printk_deferred(KERN_WARNING "sched_ext: %s[%d] has zero slice in pick_next_task_scx()\n",
 					p->comm, p->pid);
 			scx_warned_zero_slice = true;
@@ -1868,7 +1884,7 @@ bool scx_prio_less(const struct task_struct *a, const struct task_struct *b,
 	 * calling ops.core_sched_before(). Accesses are controlled by the
 	 * verifier.
 	 */
-	if (SCX_HAS_OP(core_sched_before) && !scx_ops_disabling())
+	if (SCX_HAS_OP(core_sched_before) && !scx_ops_bypassing())
 		return SCX_CALL_OP_2TASKS_RET(SCX_KF_REST, core_sched_before,
 					      (struct task_struct *)a,
 					      (struct task_struct *)b);
@@ -2220,7 +2236,7 @@ static bool check_rq_for_timeouts(struct rq *rq)
 	bool timed_out = false;
 
 	rq_lock_irqsave(rq, &rf);
-	list_for_each_entry(p, &rq->scx.watchdog_list, scx.watchdog_node) {
+	list_for_each_entry(p, &rq->scx.runnable_list, scx.runnable_node) {
 		unsigned long last_runnable = p->scx.runnable_at;
 
 		if (unlikely(time_after(jiffies,
@@ -2244,7 +2260,7 @@ static void scx_watchdog_workfn(struct work_struct *work)
 {
 	int cpu;
 
-	scx_watchdog_timestamp = jiffies;
+	WRITE_ONCE(scx_watchdog_timestamp, jiffies);
 
 	for_each_online_cpu(cpu) {
 		if (unlikely(check_rq_for_timeouts(cpu_rq(cpu))))
@@ -2264,7 +2280,7 @@ static void task_tick_scx(struct rq *rq, struct task_struct *curr, int queued)
 	 * While disabling, always resched and refresh core-sched timestamp as
 	 * we can't trust the slice management or ops.core_sched_before().
 	 */
-	if (scx_ops_disabling()) {
+	if (scx_ops_bypassing()) {
 		curr->scx.slice = 0;
 		touch_core_sched(rq, curr);
 	}
@@ -2375,7 +2391,7 @@ static int scx_ops_init_task(struct task_struct *p, struct task_group *tg)
 		task_rq_unlock(rq, p, &rf);
 	}
 
-	p->scx.flags |= SCX_TASK_WATCHDOG_RESET;
+	p->scx.flags |= SCX_TASK_RESET_RUNNABLE_AT;
 	return 0;
 }
 
@@ -2567,7 +2583,7 @@ bool scx_can_stop_tick(struct rq *rq)
 {
 	struct task_struct *p = rq->curr;
 
-	if (scx_ops_disabling())
+	if (scx_ops_bypassing())
 		return false;
 
 	if (p->sched_class != &ext_sched_class)
@@ -3016,22 +3032,95 @@ static void scx_cgroup_config_knobs(void) {}
  */
 bool task_should_scx(struct task_struct *p)
 {
-	if (!scx_enabled() || scx_ops_disabling())
+	if (!scx_enabled() ||
+	    unlikely(scx_ops_enable_state() == SCX_OPS_DISABLING))
 		return false;
 	if (READ_ONCE(scx_switching_all))
 		return true;
 	return p->policy == SCHED_EXT;
 }
 
-static void scx_ops_fallback_enqueue(struct task_struct *p, u64 enq_flags)
+/**
+ * scx_ops_bypass - [Un]bypass scx_ops and guarantee forward progress
+ *
+ * Bypassing guarantees that all runnable tasks make forward progress without
+ * trusting the BPF scheduler. We can't grab any mutexes or rwsems as they might
+ * be held by tasks that the BPF scheduler is forgetting to run, which
+ * unfortunately also excludes toggling the static branches.
+ *
+ * Let's work around by overriding a couple ops and modifying behaviors based on
+ * the DISABLING state and then cycling the queued tasks through dequeue/enqueue
+ * to force global FIFO scheduling.
+ *
+ * a. ops.enqueue() is ignored and tasks are queued in simple global FIFO order.
+ *
+ * b. ops.dispatch() is ignored.
+ *
+ * c. balance_scx() never sets %SCX_TASK_BAL_KEEP as the slice value can't be
+ *    trusted. Whenever a tick triggers, the running task is rotated to the tail
+ *    of the queue with core_sched_at touched.
+ *
+ * d. pick_next_task() suppresses zero slice warning.
+ *
+ * e. scx_prio_less() reverts to the default core_sched_at order.
+ *
+ * f. scx_bpf_kick_cpu() is disabled to avoid irq_work malfunction during PM
+ *    operations.
+ */
+static void scx_ops_bypass(bool bypass)
 {
-	if (enq_flags & SCX_ENQ_LAST)
-		scx_bpf_dispatch(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, enq_flags);
-	else
-		scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
-}
+	int depth, cpu;
 
-static void scx_ops_fallback_dispatch(s32 cpu, struct task_struct *prev) {}
+	if (bypass) {
+		depth = atomic_inc_return(&scx_ops_bypass_depth);
+		WARN_ON_ONCE(depth <= 0);
+		if (depth != 1)
+			return;
+	} else {
+		depth = atomic_dec_return(&scx_ops_bypass_depth);
+		WARN_ON_ONCE(depth < 0);
+		if (depth != 0)
+			return;
+	}
+
+	/*
+	 * No task property is changing. We just need to make sure all currently
+	 * queued tasks are re-queued according to the new scx_ops_bypassing()
+	 * state. As an optimization, walk each rq's runnable_list instead of
+	 * the scx_tasks list.
+	 *
+	 * This function can't trust the scheduler and thus can't use
+	 * cpus_read_lock(). Walk all possible CPUs instead of online.
+	 */
+	for_each_possible_cpu(cpu) {
+		struct rq *rq = cpu_rq(cpu);
+		struct rq_flags rf;
+		struct task_struct *p, *n;
+
+		rq_lock_irqsave(rq, &rf);
+
+		/*
+		 * The use of list_for_each_entry_safe_reverse() is required
+		 * because each task is going to be removed from and added back
+		 * to the runnable_list during iteration. Because they're added
+		 * to the tail of the list, safe reverse iteration can still
+		 * visit all nodes.
+		 */
+		list_for_each_entry_safe_reverse(p, n, &rq->scx.runnable_list,
+						 scx.runnable_node) {
+			struct sched_enq_and_set_ctx ctx;
+
+			/* cycling deq/enq is enough, see the function comment */
+			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
+			sched_enq_and_set_task(&ctx);
+		}
+
+		rq_unlock_irqrestore(rq, &rf);
+
+		/* kick to restore ticks */
+		resched_cpu(cpu);
+	}
+}
 
 static void scx_ops_disable_workfn(struct kthread_work *work)
 {
@@ -3041,7 +3130,7 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	struct rhashtable_iter rht_iter;
 	struct scx_dispatch_q *dsq;
 	const char *reason;
-	int i, cpu, kind;
+	int i, kind;
 
 	kind = atomic_read(&scx_exit_kind);
 	while (true) {
@@ -3081,71 +3170,23 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	ei->kind = kind;
 	strlcpy(ei->reason, reason, sizeof(ei->reason));
 
+	/* guarantee forward progress by bypassing scx_ops */
+	scx_ops_bypass(true);
+
 	switch (scx_ops_set_enable_state(SCX_OPS_DISABLING)) {
+	case SCX_OPS_DISABLING:
+		WARN_ONCE(true, "sched_ext: duplicate disabling instance?");
+		break;
 	case SCX_OPS_DISABLED:
 		pr_warn("sched_ext: ops error detected without ops (%s)\n",
 			scx_exit_info.msg);
 		WARN_ON_ONCE(scx_ops_set_enable_state(SCX_OPS_DISABLED) !=
 			     SCX_OPS_DISABLING);
-		return;
-	case SCX_OPS_PREPPING:
-		goto forward_progress_guaranteed;
-	case SCX_OPS_DISABLING:
-		/* shouldn't happen but handle it like ENABLING if it does */
-		WARN_ONCE(true, "sched_ext: duplicate disabling instance?");
-		fallthrough;
-	case SCX_OPS_ENABLING:
-	case SCX_OPS_ENABLED:
+		goto done;
+	default:
 		break;
 	}
 
-	/*
-	 * DISABLING is set and ops was either ENABLING or ENABLED indicating
-	 * that the ops and static branches are set.
-	 *
-	 * We must guarantee that all runnable tasks make forward progress
-	 * without trusting the BPF scheduler. We can't grab any mutexes or
-	 * rwsems as they might be held by tasks that the BPF scheduler is
-	 * forgetting to run, which unfortunately also excludes toggling the
-	 * static branches.
-	 *
-	 * Let's work around by overriding a couple ops and modifying behaviors
-	 * based on the DISABLING state and then cycling the tasks through
-	 * dequeue/enqueue to force global FIFO scheduling.
-	 *
-	 * a. ops.enqueue() and .dispatch() are overridden for simple global
-	 *    FIFO scheduling.
-	 *
-	 * b. balance_scx() never sets %SCX_TASK_BAL_KEEP as the slice value
-	 *    can't be trusted. Whenever a tick triggers, the running task is
-	 *    rotated to the tail of the queue with core_sched_at touched.
-	 *
-	 * c. pick_next_task() suppresses zero slice warning.
-	 *
-	 * d. scx_prio_less() reverts to the default core_sched_at order.
-	 */
-	scx_ops.enqueue = scx_ops_fallback_enqueue;
-	scx_ops.dispatch = scx_ops_fallback_dispatch;
-
-	spin_lock_irq(&scx_tasks_lock);
-	scx_task_iter_init(&sti);
-	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
-		if (READ_ONCE(p->__state) != TASK_DEAD) {
-			struct sched_enq_and_set_ctx ctx;
-
-			/* cycling deq/enq is enough, see above */
-			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
-			sched_enq_and_set_task(&ctx);
-		}
-	}
-	scx_task_iter_exit(&sti);
-	spin_unlock_irq(&scx_tasks_lock);
-
-	/* kick all CPUs to restore ticks */
-	for_each_possible_cpu(cpu)
-		resched_cpu(cpu);
-
-forward_progress_guaranteed:
 	/*
 	 * Here, every runnable task is guaranteed to make forward progress and
 	 * we can safely use blocking synchronization constructs. Actually
@@ -3239,6 +3280,8 @@ forward_progress_guaranteed:
 		     SCX_OPS_DISABLING);
 
 	scx_cgroup_config_knobs();
+done:
+	scx_ops_bypass(false);
 }
 
 static DEFINE_KTHREAD_WORK(scx_ops_disable_work, scx_ops_disable_workfn);
@@ -3321,6 +3364,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 {
 	struct scx_task_iter sti;
 	struct task_struct *p;
+	unsigned long timeout;
 	int i, ret;
 
 	mutex_lock(&scx_ops_enable_mutex);
@@ -3402,11 +3446,13 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		goto err_disable;
 	}
 
-	scx_watchdog_timeout = SCX_WATCHDOG_MAX_TIMEOUT;
 	if (ops->timeout_ms)
-		scx_watchdog_timeout = msecs_to_jiffies(ops->timeout_ms);
+		timeout = msecs_to_jiffies(ops->timeout_ms);
+	else
+		timeout = SCX_WATCHDOG_MAX_TIMEOUT;
 
-	scx_watchdog_timestamp = jiffies;
+	WRITE_ONCE(scx_watchdog_timeout, timeout);
+	WRITE_ONCE(scx_watchdog_timestamp, jiffies);
 	queue_delayed_work(system_unbound_wq, &scx_watchdog_work,
 			   scx_watchdog_timeout / 2);
 
@@ -3563,6 +3609,7 @@ static int scx_debug_show(struct seq_file *m, void *v)
 	seq_printf(m, "%-30s: %ld\n", "switched_all", scx_switched_all());
 	seq_printf(m, "%-30s: %s\n", "enable_state",
 		   scx_ops_enable_state_str[scx_ops_enable_state()]);
+	seq_printf(m, "%-30s: %d\n", "bypassing", scx_ops_bypassing());
 	seq_printf(m, "%-30s: %lu\n", "nr_rejected",
 		   atomic_long_read(&scx_nr_rejected));
 	mutex_unlock(&scx_ops_enable_mutex);
@@ -3870,6 +3917,37 @@ void print_scx_info(const char *log_lvl, struct task_struct *p)
 	       runnable_at_buf);
 }
 
+static int scx_pm_handler(struct notifier_block *nb, unsigned long event, void *ptr)
+{
+	if (!scx_enabled())
+		return NOTIFY_OK;
+
+	/*
+	 * SCX schedulers often have userspace components which are sometimes
+	 * involved in critial scheduling paths. PM operations involve freezing
+	 * userspace which can lead to scheduling misbehaviors including stalls.
+	 * Let's bypass while PM operations are in progress.
+	 */
+	switch (event) {
+	case PM_HIBERNATION_PREPARE:
+	case PM_SUSPEND_PREPARE:
+	case PM_RESTORE_PREPARE:
+		scx_ops_bypass(true);
+		break;
+	case PM_POST_HIBERNATION:
+	case PM_POST_SUSPEND:
+	case PM_POST_RESTORE:
+		scx_ops_bypass(false);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block scx_pm_notifier = {
+	.notifier_call = scx_pm_handler,
+};
+
 void __init init_sched_ext_class(void)
 {
 	int cpu;
@@ -3899,7 +3977,7 @@ void __init init_sched_ext_class(void)
 		struct rq *rq = cpu_rq(cpu);
 
 		init_dsq(&rq->scx.local_dsq, SCX_DSQ_LOCAL);
-		INIT_LIST_HEAD(&rq->scx.watchdog_list);
+		INIT_LIST_HEAD(&rq->scx.runnable_list);
 
 		BUG_ON(!zalloc_cpumask_var(&rq->scx.cpus_to_kick, GFP_KERNEL));
 		BUG_ON(!zalloc_cpumask_var(&rq->scx.cpus_to_preempt, GFP_KERNEL));
@@ -4243,6 +4321,14 @@ void scx_bpf_kick_cpu(s32 cpu, u64 flags)
 		scx_ops_error("invalid cpu %d", cpu);
 		return;
 	}
+
+	/*
+	 * While bypassing for PM ops, IRQ handling may not be online which can
+	 * lead to irq_work_queue() malfunction such as infinite busy wait for
+	 * IRQ status update. Suppress kicking.
+	 */
+	if (scx_ops_bypassing())
+		return;
 
 	preempt_disable();
 	rq = this_rq();
@@ -4594,15 +4680,14 @@ static const struct btf_kfunc_id_set scx_kfunc_set_any = {
 
 __diag_pop();
 
-/*
- * This can't be done from init_sched_ext_class() as register_btf_kfunc_id_set()
- * needs most of the system to be up.
- */
-static int __init register_ext_kfuncs(void)
+static int __init scx_init(void)
 {
 	int ret;
 
 	/*
+	 * kfunc registration can't be done from init_sched_ext_class() as
+	 * register_btf_kfunc_id_set() needs most of the system to be up.
+	 *
 	 * Some kfuncs are context-sensitive and can only be called from
 	 * specific SCX ops. They are grouped into BTF sets accordingly.
 	 * Unfortunately, BPF currently doesn't have a way of enforcing such
@@ -4626,10 +4711,14 @@ static int __init register_ext_kfuncs(void)
 					     &scx_kfunc_set_any)) ||
 	    (ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACING,
 					     &scx_kfunc_set_any))) {
-		pr_err("sched_ext: failed to register kfunc sets (%d)\n", ret);
+		pr_err("sched_ext: Failed to register kfunc sets (%d)\n", ret);
 		return ret;
 	}
 
+	ret = register_pm_notifier(&scx_pm_notifier);
+	if (ret)
+		pr_warn("sched_ext: Failed to register PM notifier (%d)\n", ret);
+
 	return 0;
 }
-__initcall(register_ext_kfuncs);
+__initcall(scx_init);
