@@ -2313,41 +2313,34 @@ static struct cgroup *tg_cgrp(struct task_group *tg)
 
 static enum scx_task_state scx_get_task_state(const struct task_struct *p)
 {
-	int state = p->scx.flags & SCX_TASK_STATE_MASK;
-
-	switch (state) {
-	case SCX_TASK_STATE_0 | SCX_TASK_STATE_1:
-		return SCX_TASK_ENABLED;
-	case SCX_TASK_STATE_1:
-		return SCX_TASK_READY;
-	case SCX_TASK_STATE_0:
-		return SCX_TASK_INIT;
-	default:
-		return SCX_TASK_NONE;
-	}
+	return (p->scx.flags & SCX_TASK_STATE_MASK) >> SCX_TASK_STATE_SHIFT;
 }
 
 static void scx_set_task_state(struct task_struct *p, enum scx_task_state state)
 {
 	enum scx_task_state prev_state = scx_get_task_state(p);
 
-	p->scx.flags &= ~SCX_TASK_STATE_MASK;
+	BUILD_BUG_ON(SCX_TASK_NR_STATES > (1 << SCX_TASK_STATE_BITS));
+
 	switch (state) {
 	case SCX_TASK_NONE:
-		return;
+		break;
 	case SCX_TASK_INIT:
 		WARN_ON_ONCE(prev_state != SCX_TASK_NONE);
-		p->scx.flags |= SCX_TASK_STATE_0;
-		return;
+		break;
 	case SCX_TASK_READY:
 		WARN_ON_ONCE(prev_state == SCX_TASK_NONE);
-		p->scx.flags |= SCX_TASK_STATE_1;
-		return;
+		break;
 	case SCX_TASK_ENABLED:
 		WARN_ON_ONCE(prev_state != SCX_TASK_READY);
-		p->scx.flags |= (SCX_TASK_STATE_0 | SCX_TASK_STATE_1);
+		break;
+	default:
+		WARN_ON_ONCE(true);
 		return;
 	}
+
+	p->scx.flags &= ~SCX_TASK_STATE_MASK;
+	p->scx.flags |= state << SCX_TASK_STATE_SHIFT;
 }
 
 static int scx_ops_init_task(struct task_struct *p, struct task_group *tg)
@@ -2447,6 +2440,9 @@ static void scx_ops_exit_task(struct task_struct *p)
 	case SCX_TASK_ENABLED:
 		scx_ops_disable_task(p);
 		break;
+	default:
+		WARN_ON_ONCE(true);
+		return;
 	}
 
 	if (SCX_HAS_OP(exit_task))
