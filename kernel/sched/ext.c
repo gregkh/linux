@@ -946,25 +946,25 @@ global:
 	dispatch_enqueue(&scx_dsq_global, p, enq_flags);
 }
 
-static bool watchdog_task_watched(const struct task_struct *p)
+static bool task_runnable(const struct task_struct *p)
 {
-	return !list_empty(&p->scx.watchdog_node);
+	return !list_empty(&p->scx.runnable_node);
 }
 
-static void watchdog_watch_task(struct rq *rq, struct task_struct *p)
+static void set_task_runnable(struct rq *rq, struct task_struct *p)
 {
 	lockdep_assert_rq_held(rq);
-	if (p->scx.flags & SCX_TASK_WATCHDOG_RESET)
+	if (p->scx.flags & SCX_TASK_RESET_RUNNABLE_AT)
 		p->scx.runnable_at = jiffies;
-	p->scx.flags &= ~SCX_TASK_WATCHDOG_RESET;
-	list_add_tail(&p->scx.watchdog_node, &rq->scx.watchdog_list);
+	p->scx.flags &= ~SCX_TASK_RESET_RUNNABLE_AT;
+	list_add_tail(&p->scx.runnable_node, &rq->scx.runnable_list);
 }
 
-static void watchdog_unwatch_task(struct task_struct *p, bool reset_timeout)
+static void clr_task_runnable(struct task_struct *p, bool reset_runnable_at)
 {
-	list_del_init(&p->scx.watchdog_node);
-	if (reset_timeout)
-		p->scx.flags |= SCX_TASK_WATCHDOG_RESET;
+	list_del_init(&p->scx.runnable_node);
+	if (reset_runnable_at)
+		p->scx.flags |= SCX_TASK_RESET_RUNNABLE_AT;
 }
 
 static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags)
@@ -986,11 +986,11 @@ static void enqueue_task_scx(struct rq *rq, struct task_struct *p, int enq_flags
 		sticky_cpu = cpu_of(rq);
 
 	if (p->scx.flags & SCX_TASK_QUEUED) {
-		WARN_ON_ONCE(!watchdog_task_watched(p));
+		WARN_ON_ONCE(!task_runnable(p));
 		return;
 	}
 
-	watchdog_watch_task(rq, p);
+	set_task_runnable(rq, p);
 	p->scx.flags |= SCX_TASK_QUEUED;
 	rq->scx.nr_running++;
 	add_nr_running(rq, 1);
@@ -1008,7 +1008,8 @@ static void ops_dequeue(struct task_struct *p, u64 deq_flags)
 {
 	unsigned long opss;
 
-	watchdog_unwatch_task(p, false);
+	/* dequeue is always temporary, don't reset runnable_at */
+	clr_task_runnable(p, false);
 
 	/* acquire ensures that we see the preceding updates on QUEUED */
 	opss = atomic_long_read_acquire(&p->scx.ops_state);
@@ -1055,7 +1056,7 @@ static void dequeue_task_scx(struct rq *rq, struct task_struct *p, int deq_flags
 	struct scx_rq *scx_rq = &rq->scx;
 
 	if (!(p->scx.flags & SCX_TASK_QUEUED)) {
-		WARN_ON_ONCE(watchdog_task_watched(p));
+		WARN_ON_ONCE(task_runnable(p));
 		return;
 	}
 
@@ -1710,7 +1711,7 @@ static void set_next_task_scx(struct rq *rq, struct task_struct *p, bool first)
 	if (SCX_HAS_OP(running) && (p->scx.flags & SCX_TASK_QUEUED))
 		SCX_CALL_OP_TASK(SCX_KF_REST, running, p);
 
-	watchdog_unwatch_task(p, true);
+	clr_task_runnable(p, true);
 
 	/*
 	 * @p is getting newly scheduled or got kicked after someone updated its
@@ -1772,13 +1773,13 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
 	 */
 	if (p->scx.flags & SCX_TASK_BAL_KEEP) {
 		p->scx.flags &= ~SCX_TASK_BAL_KEEP;
-		watchdog_watch_task(rq, p);
+		set_task_runnable(rq, p);
 		dispatch_enqueue(&rq->scx.local_dsq, p, SCX_ENQ_HEAD);
 		return;
 	}
 
 	if (p->scx.flags & SCX_TASK_QUEUED) {
-		watchdog_watch_task(rq, p);
+		set_task_runnable(rq, p);
 
 		/*
 		 * If @p has slice left and balance_scx() didn't tag it for
@@ -2220,7 +2221,7 @@ static bool check_rq_for_timeouts(struct rq *rq)
 	bool timed_out = false;
 
 	rq_lock_irqsave(rq, &rf);
-	list_for_each_entry(p, &rq->scx.watchdog_list, scx.watchdog_node) {
+	list_for_each_entry(p, &rq->scx.runnable_list, scx.runnable_node) {
 		unsigned long last_runnable = p->scx.runnable_at;
 
 		if (unlikely(time_after(jiffies,
@@ -2375,7 +2376,7 @@ static int scx_ops_init_task(struct task_struct *p, struct task_group *tg)
 		task_rq_unlock(rq, p, &rf);
 	}
 
-	p->scx.flags |= SCX_TASK_WATCHDOG_RESET;
+	p->scx.flags |= SCX_TASK_RESET_RUNNABLE_AT;
 	return 0;
 }
 
@@ -3902,7 +3903,7 @@ void __init init_sched_ext_class(void)
 		struct rq *rq = cpu_rq(cpu);
 
 		init_dsq(&rq->scx.local_dsq, SCX_DSQ_LOCAL);
-		INIT_LIST_HEAD(&rq->scx.watchdog_list);
+		INIT_LIST_HEAD(&rq->scx.runnable_list);
 
 		BUG_ON(!zalloc_cpumask_var(&rq->scx.cpus_to_kick, GFP_KERNEL));
 		BUG_ON(!zalloc_cpumask_var(&rq->scx.cpus_to_preempt, GFP_KERNEL));

@@ -616,7 +616,7 @@ enum scx_ent_flags {
 	SCX_TASK_STATE_0	= 1 << 3, /* first bit encoding the task's current state */
 	SCX_TASK_STATE_1	= 1 << 4, /* second bit encoding the task's current state */
 
-	SCX_TASK_WATCHDOG_RESET = 1 << 16, /* task watchdog counter should be reset */
+	SCX_TASK_RESET_RUNNABLE_AT = 1 << 16, /* runnable_at should be reset */
 	SCX_TASK_DEQD_FOR_SLEEP	= 1 << 17, /* last dequeue was for SLEEP */
 
 	SCX_TASK_CURSOR		= 1 << 31, /* iteration cursor, not a task */
@@ -680,7 +680,6 @@ struct sched_ext_entity {
 		struct list_head	fifo;	/* dispatch order */
 		struct rb_node		priq;	/* p->scx.dsq_vtime order */
 	} dsq_node;
-	struct list_head	watchdog_node;
 	u32			flags;		/* protected by rq lock */
 	u32			dsq_flags;	/* protected by dsq lock */
 	u32			weight;
@@ -689,7 +688,10 @@ struct sched_ext_entity {
 	u32			kf_mask;	/* see scx_kf_mask above */
 	struct task_struct	*kf_tasks[2];	/* see SCX_CALL_OP_TASK() */
 	atomic_long_t		ops_state;
+
+	struct list_head	runnable_node;	/* rq->scx.runnable_list */
 	unsigned long		runnable_at;
+
 #ifdef CONFIG_SCHED_CORE
 	u64			core_sched_at;	/* see scx_prio_less() */
 #endif
