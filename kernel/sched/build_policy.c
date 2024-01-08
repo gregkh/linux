@@ -22,6 +22,7 @@
 #include <linux/cpuidle.h>
 #include <linux/jiffies.h>
 #include <linux/livepatch.h>
+#include <linux/pm.h>
 #include <linux/psi.h>
 #include <linux/seqlock_api.h>
 #include <linux/slab.h>
