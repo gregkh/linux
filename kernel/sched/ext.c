@@ -889,6 +889,13 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	if (unlikely(!test_rq_online(rq)))
 		goto local;
 
+	if (scx_ops_bypassing()) {
+		if (enq_flags & SCX_ENQ_LAST)
+			goto local;
+		else
+			goto global;
+	}
+
 	/* see %SCX_OPS_ENQ_EXITING */
 	if (!static_branch_unlikely(&scx_ops_enq_exiting) &&
 	    unlikely(p->flags & PF_EXITING))
@@ -1609,7 +1616,7 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 	if (consume_dispatch_q(rq, rf, &scx_dsq_global))
 		return 1;
 
-	if (!SCX_HAS_OP(dispatch))
+	if (!SCX_HAS_OP(dispatch) || scx_ops_bypassing())
 		return 0;
 
 	dspc->rq = rq;
@@ -3026,16 +3033,6 @@ bool task_should_scx(struct task_struct *p)
 	return p->policy == SCHED_EXT;
 }
 
-static void scx_ops_fallback_enqueue(struct task_struct *p, u64 enq_flags)
-{
-	if (enq_flags & SCX_ENQ_LAST)
-		scx_bpf_dispatch(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, enq_flags);
-	else
-		scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
-}
-
-static void scx_ops_fallback_dispatch(s32 cpu, struct task_struct *prev) {}
-
 /**
  * scx_ops_bypass - [Un]bypass scx_ops and guarantee forward progress
  *
@@ -3048,16 +3045,17 @@ static void scx_ops_fallback_dispatch(s32 cpu, struct task_struct *prev) {}
  * the DISABLING state and then cycling the tasks through dequeue/enqueue to
  * force global FIFO scheduling.
  *
- * a. ops.enqueue() and .dispatch() are overridden for simple global FIFO
- *    scheduling.
+ * a. ops.enqueue() is ignored and tasks are queued in simple global FIFO order.
  *
- * b. balance_scx() never sets %SCX_TASK_BAL_KEEP as the slice value can't be
+ * b. ops.dispatch() is ignored.
+ *
+ * c. balance_scx() never sets %SCX_TASK_BAL_KEEP as the slice value can't be
  *    trusted. Whenever a tick triggers, the running task is rotated to the tail
  *    of the queue with core_sched_at touched.
  *
- * c. pick_next_task() suppresses zero slice warning.
+ * d. pick_next_task() suppresses zero slice warning.
  *
- * d. scx_prio_less() reverts to the default core_sched_at order.
+ * e. scx_prio_less() reverts to the default core_sched_at order.
  */
 static void scx_ops_bypass(bool bypass)
 {
@@ -3070,9 +3068,6 @@ static void scx_ops_bypass(bool bypass)
 		WARN_ON_ONCE(depth <= 0);
 		if (depth != 1)
 			return;
-
-		scx_ops.enqueue = scx_ops_fallback_enqueue;
-		scx_ops.dispatch = scx_ops_fallback_dispatch;
 	} else {
 		depth = atomic_dec_return(&scx_ops_bypass_depth);
 		WARN_ON_ONCE(depth < 0);
@@ -3086,7 +3081,7 @@ static void scx_ops_bypass(bool bypass)
 		if (READ_ONCE(p->__state) != TASK_DEAD) {
 			struct sched_enq_and_set_ctx ctx;
 
-			/* cycling deq/enq is enough, see above */
+			/* cycling deq/enq is enough, see the function comment */
 			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
 			sched_enq_and_set_task(&ctx);
 		}
