@@ -62,7 +62,8 @@ static int check_subvol(struct btree_trans *trans,
 		if (ret)
 			return ret;
 
-		if (fsck_err_on(le32_to_cpu(st.master_subvol) != subvol.k->p.offset, c,
+		if (fsck_err_on(le32_to_cpu(st.master_subvol) != subvol.k->p.offset,
+				c, subvol_not_master_and_not_snapshot,
 				"subvolume %llu is not set as snapshot but is not master subvolume",
 				k.k->p.offset)) {
 			struct bkey_i_subvolume *s =
@@ -97,16 +98,17 @@ int bch2_check_subvols(struct bch_fs *c)
 
 /* Subvolumes: */
 
-int bch2_subvolume_invalid(const struct bch_fs *c, struct bkey_s_c k,
+int bch2_subvolume_invalid(struct bch_fs *c, struct bkey_s_c k,
 			   enum bkey_invalid_flags flags, struct printbuf *err)
 {
-	if (bkey_lt(k.k->p, SUBVOL_POS_MIN) ||
-	    bkey_gt(k.k->p, SUBVOL_POS_MAX)) {
-		prt_printf(err, "invalid pos");
-		return -BCH_ERR_invalid_bkey;
-	}
+	int ret = 0;
 
-	return 0;
+	bkey_fsck_err_on(bkey_lt(k.k->p, SUBVOL_POS_MIN) ||
+			 bkey_gt(k.k->p, SUBVOL_POS_MAX), c, err,
+			 subvol_pos_bad,
+			 "invalid pos");
+fsck_err:
+	return ret;
 }
 
 void bch2_subvolume_to_text(struct printbuf *out, struct bch_fs *c,
@@ -142,6 +144,24 @@ int bch2_subvolume_get(struct btree_trans *trans, unsigned subvol,
 		       struct bch_subvolume *s)
 {
 	return bch2_subvolume_get_inlined(trans, subvol, inconsistent_if_not_found, iter_flags, s);
+}
+
+int bch2_subvol_is_ro_trans(struct btree_trans *trans, u32 subvol)
+{
+	struct bch_subvolume s;
+	int ret = bch2_subvolume_get_inlined(trans, subvol, true, 0, &s);
+	if (ret)
+		return ret;
+
+	if (BCH_SUBVOLUME_RO(&s))
+		return -EROFS;
+	return 0;
+}
+
+int bch2_subvol_is_ro(struct bch_fs *c, u32 subvol)
+{
+	return bch2_trans_do(c, NULL, NULL, 0,
+		bch2_subvol_is_ro_trans(trans, subvol));
 }
 
 int bch2_snapshot_get_subvol(struct btree_trans *trans, u32 snapshot,
@@ -230,7 +250,6 @@ static int __bch2_subvolume_delete(struct btree_trans *trans, u32 subvolid)
 {
 	struct btree_iter iter;
 	struct bkey_s_c_subvolume subvol;
-	struct btree_trans_commit_hook *h;
 	u32 snapid;
 	int ret = 0;
 
@@ -246,22 +265,8 @@ static int __bch2_subvolume_delete(struct btree_trans *trans, u32 subvolid)
 
 	snapid = le32_to_cpu(subvol.v->snapshot);
 
-	ret = bch2_btree_delete_at(trans, &iter, 0);
-	if (ret)
-		goto err;
-
-	ret = bch2_snapshot_node_set_deleted(trans, snapid);
-	if (ret)
-		goto err;
-
-	h = bch2_trans_kmalloc(trans, sizeof(*h));
-	ret = PTR_ERR_OR_ZERO(h);
-	if (ret)
-		goto err;
-
-	h->fn = bch2_delete_dead_snapshots_hook;
-	bch2_trans_commit_hook(trans, h);
-err:
+	ret =   bch2_btree_delete_at(trans, &iter, 0) ?:
+		bch2_snapshot_node_set_deleted(trans, snapid);
 	bch2_trans_iter_exit(trans, &iter);
 	return ret;
 }

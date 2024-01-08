@@ -13,6 +13,8 @@
 #include "replicas.h"
 #include "quota.h"
 #include "sb-clean.h"
+#include "sb-downgrade.h"
+#include "sb-errors.h"
 #include "sb-members.h"
 #include "super-io.h"
 #include "super.h"
@@ -165,6 +167,7 @@ void bch2_free_super(struct bch_sb_handle *sb)
 	if (!IS_ERR_OR_NULL(sb->bdev))
 		blkdev_put(sb->bdev, sb->holder);
 	kfree(sb->holder);
+	kfree(sb->sb_name);
 
 	kfree(sb->sb);
 	memset(sb, 0, sizeof(*sb));
@@ -259,6 +262,17 @@ struct bch_sb_field *bch2_sb_field_resize_id(struct bch_sb_handle *sb,
 	f = __bch2_sb_field_resize(sb, f, u64s);
 	if (f)
 		f->type = cpu_to_le32(type);
+	return f;
+}
+
+struct bch_sb_field *bch2_sb_field_get_minsize_id(struct bch_sb_handle *sb,
+						  enum bch_sb_field_type type,
+						  unsigned u64s)
+{
+	struct bch_sb_field *f = bch2_sb_field_get_id(sb->sb, type);
+
+	if (!f || le32_to_cpu(f->u64s) < u64s)
+		f = bch2_sb_field_resize_id(sb, type, u64s);
 	return f;
 }
 
@@ -482,6 +496,21 @@ static int bch2_sb_validate(struct bch_sb_handle *disk_sb, struct printbuf *out,
 
 /* device open: */
 
+static unsigned long le_ulong_to_cpu(unsigned long v)
+{
+	return sizeof(unsigned long) == 8
+		? le64_to_cpu(v)
+		: le32_to_cpu(v);
+}
+
+static void le_bitvector_to_cpu(unsigned long *dst, unsigned long *src, unsigned nr)
+{
+	BUG_ON(nr & (BITS_PER_TYPE(long) - 1));
+
+	for (unsigned i = 0; i < BITS_TO_LONGS(nr); i++)
+		dst[i] = le_ulong_to_cpu(src[i]);
+}
+
 static void bch2_sb_update(struct bch_fs *c)
 {
 	struct bch_sb *src = c->disk_sb.sb;
@@ -510,8 +539,15 @@ static void bch2_sb_update(struct bch_fs *c)
 	c->sb.features		= le64_to_cpu(src->features[0]);
 	c->sb.compat		= le64_to_cpu(src->compat[0]);
 
+	memset(c->sb.errors_silent, 0, sizeof(c->sb.errors_silent));
+
+	struct bch_sb_field_ext *ext = bch2_sb_field_get(src, ext);
+	if (ext)
+		le_bitvector_to_cpu(c->sb.errors_silent, (void *) ext->errors_silent,
+				    sizeof(c->sb.errors_silent) * 8);
+
 	for_each_member_device(ca, c, i) {
-		struct bch_member m = bch2_sb_member_get(src, i);
+		struct bch_member m = bch2_sb_member_get(src, ca->dev_idx);
 		ca->mi = bch2_mi_to_cpu(&m);
 	}
 }
@@ -674,6 +710,10 @@ retry:
 	if (!sb->holder)
 		return -ENOMEM;
 
+	sb->sb_name = kstrdup(path, GFP_KERNEL);
+	if (!sb->sb_name)
+		return -ENOMEM;
+
 #ifndef __KERNEL__
 	if (opt_get(*opts, direct_io) == false)
 		sb->mode |= BLK_OPEN_BUFFERED;
@@ -720,7 +760,7 @@ retry:
 	if (opt_defined(*opts, sb))
 		goto err;
 
-	printk(KERN_ERR "bcachefs (%s): error reading default superblock: %s",
+	printk(KERN_ERR "bcachefs (%s): error reading default superblock: %s\n",
 	       path, err.buf);
 	printbuf_reset(&err);
 
@@ -782,7 +822,7 @@ got_super:
 
 	ret = bch2_sb_validate(sb, &err, READ);
 	if (ret) {
-		printk(KERN_ERR "bcachefs (%s): error validating superblock: %s",
+		printk(KERN_ERR "bcachefs (%s): error validating superblock: %s\n",
 		       path, err.buf);
 		goto err_no_print;
 	}
@@ -790,7 +830,7 @@ out:
 	printbuf_exit(&err);
 	return ret;
 err:
-	printk(KERN_ERR "bcachefs (%s): error reading superblock: %s",
+	printk(KERN_ERR "bcachefs (%s): error reading superblock: %s\n",
 	       path, err.buf);
 err_no_print:
 	bch2_free_super(sb);
@@ -805,7 +845,12 @@ static void write_super_endio(struct bio *bio)
 
 	/* XXX: return errors directly */
 
-	if (bch2_dev_io_err_on(bio->bi_status, ca, "superblock write error: %s",
+	if (bch2_dev_io_err_on(bio->bi_status, ca,
+			       bio_data_dir(bio)
+			       ? BCH_MEMBER_ERROR_write
+			       : BCH_MEMBER_ERROR_read,
+			       "superblock %s error: %s",
+			       bio_data_dir(bio) ? "write" : "read",
 			       bch2_blk_status_to_str(bio->bi_status)))
 		ca->sb_write_error = 1;
 
@@ -892,7 +937,10 @@ int bch2_write_super(struct bch_fs *c)
 	SET_BCH_SB_BIG_ENDIAN(c->disk_sb.sb, CPU_BIG_ENDIAN);
 
 	bch2_sb_counters_from_cpu(c);
-	bch_members_cpy_v2_v1(&c->disk_sb);
+	bch2_sb_members_from_cpu(c);
+	bch2_sb_members_cpy_v2_v1(&c->disk_sb);
+	bch2_sb_errors_from_cpu(c);
+	bch2_sb_downgrade_update(c);
 
 	for_each_online_member(ca, c, i)
 		bch2_sb_from_fs(c, ca);
@@ -1016,8 +1064,10 @@ void __bch2_check_set_feature(struct bch_fs *c, unsigned feat)
 }
 
 /* Downgrade if superblock is at a higher version than currently supported: */
-void bch2_sb_maybe_downgrade(struct bch_fs *c)
+bool bch2_check_version_downgrade(struct bch_fs *c)
 {
+	bool ret = bcachefs_metadata_version_current < c->sb.version;
+
 	lockdep_assert_held(&c->sb_lock);
 
 	/*
@@ -1031,15 +1081,60 @@ void bch2_sb_maybe_downgrade(struct bch_fs *c)
 	if (c->sb.version_min > bcachefs_metadata_version_current)
 		c->disk_sb.sb->version_min = cpu_to_le16(bcachefs_metadata_version_current);
 	c->disk_sb.sb->compat[0] &= cpu_to_le64((1ULL << BCH_COMPAT_NR) - 1);
+	return ret;
 }
 
 void bch2_sb_upgrade(struct bch_fs *c, unsigned new_version)
 {
 	lockdep_assert_held(&c->sb_lock);
 
+	if (BCH_VERSION_MAJOR(new_version) >
+	    BCH_VERSION_MAJOR(le16_to_cpu(c->disk_sb.sb->version)))
+		bch2_sb_field_resize(&c->disk_sb, downgrade, 0);
+
 	c->disk_sb.sb->version = cpu_to_le16(new_version);
 	c->disk_sb.sb->features[0] |= cpu_to_le64(BCH_SB_FEATURES_ALL);
 }
+
+static int bch2_sb_ext_validate(struct bch_sb *sb, struct bch_sb_field *f,
+				struct printbuf *err)
+{
+	if (vstruct_bytes(f) < 88) {
+		prt_printf(err, "field too small (%zu < %u)", vstruct_bytes(f), 88);
+		return -BCH_ERR_invalid_sb_ext;
+	}
+
+	return 0;
+}
+
+static void bch2_sb_ext_to_text(struct printbuf *out, struct bch_sb *sb,
+				struct bch_sb_field *f)
+{
+	struct bch_sb_field_ext *e = field_to_type(f, ext);
+
+	prt_printf(out, "Recovery passes required:");
+	prt_tab(out);
+	prt_bitflags(out, bch2_recovery_passes,
+		     bch2_recovery_passes_from_stable(le64_to_cpu(e->recovery_passes_required[0])));
+	prt_newline(out);
+
+	unsigned long *errors_silent = kmalloc(sizeof(e->errors_silent), GFP_KERNEL);
+	if (errors_silent) {
+		le_bitvector_to_cpu(errors_silent, (void *) e->errors_silent, sizeof(e->errors_silent) * 8);
+
+		prt_printf(out, "Errors to silently fix:");
+		prt_tab(out);
+		prt_bitflags_vector(out, bch2_sb_error_strs, errors_silent, sizeof(e->errors_silent) * 8);
+		prt_newline(out);
+
+		kfree(errors_silent);
+	}
+}
+
+static const struct bch_sb_field_ops bch_sb_field_ops_ext = {
+	.validate	= bch2_sb_ext_validate,
+	.to_text	= bch2_sb_ext_to_text,
+};
 
 static const struct bch_sb_field_ops *bch2_sb_field_ops[] = {
 #define x(f, nr)					\
@@ -1175,7 +1270,7 @@ void bch2_sb_to_text(struct printbuf *out, struct bch_sb *sb,
 	prt_printf(out, "Created:");
 	prt_tab(out);
 	if (sb->time_base_lo)
-		pr_time(out, div_u64(le64_to_cpu(sb->time_base_lo), NSEC_PER_SEC));
+		bch2_prt_datetime(out, div_u64(le64_to_cpu(sb->time_base_lo), NSEC_PER_SEC));
 	else
 		prt_printf(out, "(not set)");
 	prt_newline(out);

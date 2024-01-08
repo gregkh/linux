@@ -45,13 +45,13 @@ static int bch2_inode_flags_set(struct btree_trans *trans,
 	unsigned newflags = s->flags;
 	unsigned oldflags = bi->bi_flags & s->mask;
 
-	if (((newflags ^ oldflags) & (BCH_INODE_APPEND|BCH_INODE_IMMUTABLE)) &&
+	if (((newflags ^ oldflags) & (BCH_INODE_append|BCH_INODE_immutable)) &&
 	    !capable(CAP_LINUX_IMMUTABLE))
 		return -EPERM;
 
 	if (!S_ISREG(bi->bi_mode) &&
 	    !S_ISDIR(bi->bi_mode) &&
-	    (newflags & (BCH_INODE_NODUMP|BCH_INODE_NOATIME)) != newflags)
+	    (newflags & (BCH_INODE_nodump|BCH_INODE_noatime)) != newflags)
 		return -EINVAL;
 
 	if (s->set_projinherit) {
@@ -100,7 +100,8 @@ static int bch2_ioc_setflags(struct bch_fs *c,
 	}
 
 	mutex_lock(&inode->ei_update_lock);
-	ret = bch2_write_inode(c, inode, bch2_inode_flags_set, &s,
+	ret   = bch2_subvol_is_ro(c, inode->ei_subvol) ?:
+		bch2_write_inode(c, inode, bch2_inode_flags_set, &s,
 			       ATTR_CTIME);
 	mutex_unlock(&inode->ei_update_lock);
 
@@ -183,13 +184,10 @@ static int bch2_ioc_fssetxattr(struct bch_fs *c,
 	}
 
 	mutex_lock(&inode->ei_update_lock);
-	ret = bch2_set_projid(c, inode, fa.fsx_projid);
-	if (ret)
-		goto err_unlock;
-
-	ret = bch2_write_inode(c, inode, fssetxattr_inode_update_fn, &s,
+	ret   = bch2_subvol_is_ro(c, inode->ei_subvol) ?:
+		bch2_set_projid(c, inode, fa.fsx_projid) ?:
+		bch2_write_inode(c, inode, fssetxattr_inode_update_fn, &s,
 			       ATTR_CTIME);
-err_unlock:
 	mutex_unlock(&inode->ei_update_lock);
 err:
 	inode_unlock(&inode->v);
@@ -413,7 +411,7 @@ retry:
 
 	if ((arg.flags & BCH_SUBVOL_SNAPSHOT_CREATE) &&
 	    !arg.src_ptr)
-		snapshot_src.subvol = to_bch_ei(dir)->ei_inode.bi_subvol;
+		snapshot_src.subvol = inode_inum(to_bch_ei(dir)).subvol;
 
 	inode = __bch2_create(file_mnt_idmap(filp), to_bch_ei(dir),
 			      dst_dentry, arg.mode|S_IFDIR,

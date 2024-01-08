@@ -23,9 +23,11 @@
 #include "logged_ops.h"
 #include "move.h"
 #include "quota.h"
+#include "rebalance.h"
 #include "recovery.h"
 #include "replicas.h"
 #include "sb-clean.h"
+#include "sb-downgrade.h"
 #include "snapshot.h"
 #include "subvolume.h"
 #include "super-io.h"
@@ -143,7 +145,7 @@ static int bch2_journal_replay(struct bch_fs *c)
 	u64 start_seq	= c->journal_replay_seq_start;
 	u64 end_seq	= c->journal_replay_seq_start;
 	size_t i;
-	int ret;
+	int ret = 0;
 
 	move_gap(keys->d, keys->nr, keys->size, keys->gap, keys->nr);
 	keys->gap = keys->nr;
@@ -166,6 +168,8 @@ static int bch2_journal_replay(struct bch_fs *c)
 			goto err;
 	}
 
+	BUG_ON(!atomic_read(&keys->ref));
+
 	for (i = 0; i < keys->nr; i++) {
 		k = keys_sorted[i];
 
@@ -182,10 +186,13 @@ static int bch2_journal_replay(struct bch_fs *c)
 			     bch2_journal_replay_key(trans, k));
 		if (ret) {
 			bch_err(c, "journal replay: error while replaying key at btree %s level %u: %s",
-				bch2_btree_ids[k->btree_id], k->level, bch2_err_str(ret));
+				bch2_btree_id_str(k->btree_id), k->level, bch2_err_str(ret));
 			goto err;
 		}
 	}
+
+	if (!c->opts.keep_journal)
+		bch2_journal_keys_put_initial(c);
 
 	replay_now_at(j, j->replay_journal_seq_end);
 	j->replay_journal_seq = 0;
@@ -225,7 +232,7 @@ static int journal_replay_entry_early(struct bch_fs *c,
 
 		if (entry->u64s) {
 			r->level = entry->level;
-			bkey_copy(&r->key, &entry->start[0]);
+			bkey_copy(&r->key, (struct bkey_i *) entry->start);
 			r->error = 0;
 		} else {
 			r->error = -EIO;
@@ -364,10 +371,12 @@ static int read_btree_roots(struct bch_fs *c)
 		}
 
 		if (r->error) {
-			__fsck_err(c, btree_id_is_alloc(i)
+			__fsck_err(c,
+				   btree_id_is_alloc(i)
 				   ? FSCK_CAN_IGNORE : 0,
+				   btree_root_bkey_invalid,
 				   "invalid btree root %s",
-				   bch2_btree_ids[i]);
+				   bch2_btree_id_str(i));
 			if (i == BTREE_ID_alloc)
 				c->sb.compat &= ~(1ULL << BCH_COMPAT_alloc_info);
 		}
@@ -375,8 +384,9 @@ static int read_btree_roots(struct bch_fs *c)
 		ret = bch2_btree_root_read(c, i, &r->key, r->level);
 		if (ret) {
 			fsck_err(c,
+				 btree_root_read_error,
 				 "error reading btree root %s",
-				 bch2_btree_ids[i]);
+				 bch2_btree_id_str(i));
 			if (btree_id_is_alloc(i))
 				c->sb.compat &= ~(1ULL << BCH_COMPAT_alloc_info);
 			ret = 0;
@@ -472,7 +482,7 @@ static int bch2_fs_upgrade_for_subvolumes(struct bch_fs *c)
 }
 
 const char * const bch2_recovery_passes[] = {
-#define x(_fn, _when)	#_fn,
+#define x(_fn, ...)	#_fn,
 	BCH_RECOVERY_PASSES()
 #undef x
 	NULL
@@ -495,18 +505,47 @@ struct recovery_pass_fn {
 };
 
 static struct recovery_pass_fn recovery_pass_fns[] = {
-#define x(_fn, _when)	{ .fn = bch2_##_fn, .when = _when },
+#define x(_fn, _id, _when)	{ .fn = bch2_##_fn, .when = _when },
 	BCH_RECOVERY_PASSES()
 #undef x
 };
 
-static void check_version_upgrade(struct bch_fs *c)
+u64 bch2_recovery_passes_to_stable(u64 v)
+{
+	static const u8 map[] = {
+#define x(n, id, ...)	[BCH_RECOVERY_PASS_##n] = BCH_RECOVERY_PASS_STABLE_##n,
+	BCH_RECOVERY_PASSES()
+#undef x
+	};
+
+	u64 ret = 0;
+	for (unsigned i = 0; i < ARRAY_SIZE(map); i++)
+		if (v & BIT_ULL(i))
+			ret |= BIT_ULL(map[i]);
+	return ret;
+}
+
+u64 bch2_recovery_passes_from_stable(u64 v)
+{
+	static const u8 map[] = {
+#define x(n, id, ...)	[BCH_RECOVERY_PASS_STABLE_##n] = BCH_RECOVERY_PASS_##n,
+	BCH_RECOVERY_PASSES()
+#undef x
+	};
+
+	u64 ret = 0;
+	for (unsigned i = 0; i < ARRAY_SIZE(map); i++)
+		if (v & BIT_ULL(i))
+			ret |= BIT_ULL(map[i]);
+	return ret;
+}
+
+static bool check_version_upgrade(struct bch_fs *c)
 {
 	unsigned latest_compatible = bch2_latest_compatible_version(c->sb.version);
 	unsigned latest_version	= bcachefs_metadata_version_current;
 	unsigned old_version = c->sb.version_upgrade_complete ?: c->sb.version;
 	unsigned new_version = 0;
-	u64 recovery_passes;
 
 	if (old_version < bcachefs_metadata_required_upgrade_below) {
 		if (c->opts.version_upgrade == BCH_VERSION_UPGRADE_incompatible ||
@@ -550,7 +589,7 @@ static void check_version_upgrade(struct bch_fs *c)
 		bch2_version_to_text(&buf, new_version);
 		prt_newline(&buf);
 
-		recovery_passes = bch2_upgrade_recovery_passes(c, old_version, new_version);
+		u64 recovery_passes = bch2_upgrade_recovery_passes(c, old_version, new_version);
 		if (recovery_passes) {
 			if ((recovery_passes & RECOVERY_PASS_ALL_FSCK) == RECOVERY_PASS_ALL_FSCK)
 				prt_str(&buf, "fsck required");
@@ -565,12 +604,13 @@ static void check_version_upgrade(struct bch_fs *c)
 
 		bch_info(c, "%s", buf.buf);
 
-		mutex_lock(&c->sb_lock);
 		bch2_sb_upgrade(c, new_version);
-		mutex_unlock(&c->sb_lock);
 
 		printbuf_exit(&buf);
+		return true;
 	}
+
+	return false;
 }
 
 u64 bch2_fsck_recovery_passes(void)
@@ -645,7 +685,6 @@ int bch2_fs_recovery(struct bch_fs *c)
 	struct bch_sb_field_clean *clean = NULL;
 	struct jset *last_journal_entry = NULL;
 	u64 last_seq = 0, blacklist_seq, journal_seq;
-	bool write_sb = false;
 	int ret = 0;
 
 	if (c->sb.clean) {
@@ -673,14 +712,72 @@ int bch2_fs_recovery(struct bch_fs *c)
 		goto err;
 	}
 
-	if (c->opts.fsck || !(c->opts.nochanges && c->opts.norecovery))
-		check_version_upgrade(c);
-
 	if (c->opts.fsck && c->opts.norecovery) {
 		bch_err(c, "cannot select both norecovery and fsck");
 		ret = -EINVAL;
 		goto err;
 	}
+
+	if (!(c->opts.nochanges && c->opts.norecovery)) {
+		mutex_lock(&c->sb_lock);
+		bool write_sb = false;
+
+		struct bch_sb_field_ext *ext =
+			bch2_sb_field_get_minsize(&c->disk_sb, ext, sizeof(*ext) / sizeof(u64));
+		if (!ext) {
+			ret = -BCH_ERR_ENOSPC_sb;
+			mutex_unlock(&c->sb_lock);
+			goto err;
+		}
+
+		if (BCH_SB_HAS_TOPOLOGY_ERRORS(c->disk_sb.sb)) {
+			ext->recovery_passes_required[0] |=
+				cpu_to_le64(bch2_recovery_passes_to_stable(BIT_ULL(BCH_RECOVERY_PASS_check_topology)));
+			write_sb = true;
+		}
+
+		u64 sb_passes = bch2_recovery_passes_from_stable(le64_to_cpu(ext->recovery_passes_required[0]));
+		if (sb_passes) {
+			struct printbuf buf = PRINTBUF;
+			prt_str(&buf, "superblock requires following recovery passes to be run:\n  ");
+			prt_bitflags(&buf, bch2_recovery_passes, sb_passes);
+			bch_info(c, "%s", buf.buf);
+			printbuf_exit(&buf);
+		}
+
+		if (bch2_check_version_downgrade(c)) {
+			struct printbuf buf = PRINTBUF;
+
+			prt_str(&buf, "Version downgrade required:\n");
+
+			__le64 passes = ext->recovery_passes_required[0];
+			bch2_sb_set_downgrade(c,
+					BCH_VERSION_MINOR(bcachefs_metadata_version_current),
+					BCH_VERSION_MINOR(c->sb.version));
+			passes = ext->recovery_passes_required[0] & ~passes;
+			if (passes) {
+				prt_str(&buf, "  running recovery passes: ");
+				prt_bitflags(&buf, bch2_recovery_passes,
+					     bch2_recovery_passes_from_stable(le64_to_cpu(passes)));
+			}
+
+			bch_info(c, "%s", buf.buf);
+			printbuf_exit(&buf);
+			write_sb = true;
+		}
+
+		if (check_version_upgrade(c))
+			write_sb = true;
+
+		if (write_sb)
+			bch2_write_super(c);
+
+		c->recovery_passes_explicit |= bch2_recovery_passes_from_stable(le64_to_cpu(ext->recovery_passes_required[0]));
+		mutex_unlock(&c->sb_lock);
+	}
+
+	if (c->opts.fsck && IS_ENABLED(CONFIG_BCACHEFS_DEBUG))
+		c->recovery_passes_explicit |= BIT_ULL(BCH_RECOVERY_PASS_check_topology);
 
 	ret = bch2_blacklist_table_initialize(c);
 	if (ret) {
@@ -713,6 +810,7 @@ int bch2_fs_recovery(struct bch_fs *c)
 		if (mustfix_fsck_err_on(c->sb.clean &&
 					last_journal_entry &&
 					!journal_entry_empty(last_journal_entry), c,
+				clean_but_journal_not_empty,
 				"filesystem marked clean but journal not empty")) {
 			c->sb.compat &= ~(1ULL << BCH_COMPAT_alloc_info);
 			SET_BCH_SB_CLEAN(c->disk_sb.sb, false);
@@ -720,7 +818,9 @@ int bch2_fs_recovery(struct bch_fs *c)
 		}
 
 		if (!last_journal_entry) {
-			fsck_err_on(!c->sb.clean, c, "no journal entries found");
+			fsck_err_on(!c->sb.clean, c,
+				    dirty_but_no_journal_entries,
+				    "no journal entries found");
 			if (clean)
 				goto use_clean;
 
@@ -728,6 +828,13 @@ int bch2_fs_recovery(struct bch_fs *c)
 				if (*i) {
 					last_journal_entry = &(*i)->j;
 					(*i)->ignore = false;
+					/*
+					 * This was probably a NO_FLUSH entry,
+					 * so last_seq was garbage - but we know
+					 * we're only using a single journal
+					 * entry, set it here:
+					 */
+					(*i)->j.last_seq = (*i)->j.seq;
 					break;
 				}
 		}
@@ -808,11 +915,6 @@ use_clean:
 	if (ret)
 		goto err;
 
-	if (c->opts.fsck &&
-	    (IS_ENABLED(CONFIG_BCACHEFS_DEBUG) ||
-	     BCH_SB_HAS_TOPOLOGY_ERRORS(c->disk_sb.sb)))
-		c->recovery_passes_explicit |= BIT_ULL(BCH_RECOVERY_PASS_check_topology);
-
 	ret = bch2_run_recovery_passes(c);
 	if (ret)
 		goto err;
@@ -849,14 +951,28 @@ use_clean:
 	}
 
 	mutex_lock(&c->sb_lock);
-	if (BCH_SB_VERSION_UPGRADE_COMPLETE(c->disk_sb.sb) != c->sb.version) {
-		SET_BCH_SB_VERSION_UPGRADE_COMPLETE(c->disk_sb.sb, c->sb.version);
+	bool write_sb = false;
+
+	if (BCH_SB_VERSION_UPGRADE_COMPLETE(c->disk_sb.sb) != le16_to_cpu(c->disk_sb.sb->version)) {
+		SET_BCH_SB_VERSION_UPGRADE_COMPLETE(c->disk_sb.sb, le16_to_cpu(c->disk_sb.sb->version));
+		write_sb = true;
+	}
+
+	if (!test_bit(BCH_FS_ERROR, &c->flags) &&
+	    !(c->disk_sb.sb->compat[0] & cpu_to_le64(1ULL << BCH_COMPAT_alloc_info))) {
+		c->disk_sb.sb->compat[0] |= cpu_to_le64(1ULL << BCH_COMPAT_alloc_info);
 		write_sb = true;
 	}
 
 	if (!test_bit(BCH_FS_ERROR, &c->flags)) {
-		c->disk_sb.sb->compat[0] |= cpu_to_le64(1ULL << BCH_COMPAT_alloc_info);
-		write_sb = true;
+		struct bch_sb_field_ext *ext = bch2_sb_field_get(c->disk_sb.sb, ext);
+		if (ext &&
+		    (!bch2_is_zero(ext->recovery_passes_required, sizeof(ext->recovery_passes_required)) ||
+		     !bch2_is_zero(ext->errors_silent, sizeof(ext->errors_silent)))) {
+			memset(ext->recovery_passes_required, 0, sizeof(ext->recovery_passes_required));
+			memset(ext->errors_silent, 0, sizeof(ext->errors_silent));
+			write_sb = true;
+		}
 	}
 
 	if (c->opts.fsck &&
@@ -895,13 +1011,11 @@ out:
 	bch2_flush_fsck_errs(c);
 
 	if (!c->opts.keep_journal &&
-	    test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags)) {
-		bch2_journal_keys_free(&c->journal_keys);
-		bch2_journal_entries_free(c);
-	}
+	    test_bit(JOURNAL_REPLAY_DONE, &c->journal.flags))
+		bch2_journal_keys_put_initial(c);
 	kfree(clean);
 
-	if (!ret && test_bit(BCH_FS_HAVE_DELETED_SNAPSHOTS, &c->flags)) {
+	if (!ret && test_bit(BCH_FS_NEED_DELETE_DEAD_SNAPSHOTS, &c->flags)) {
 		bch2_fs_read_write_early(c);
 		bch2_delete_dead_snapshots_async(c);
 	}
@@ -930,7 +1044,7 @@ int bch2_fs_initialize(struct bch_fs *c)
 	c->disk_sb.sb->compat[0] |= cpu_to_le64(1ULL << BCH_COMPAT_extents_above_btree_updates_done);
 	c->disk_sb.sb->compat[0] |= cpu_to_le64(1ULL << BCH_COMPAT_bformat_overflow_done);
 
-	bch2_sb_maybe_downgrade(c);
+	bch2_check_version_downgrade(c);
 
 	if (c->opts.version_upgrade != BCH_VERSION_UPGRADE_none) {
 		bch2_sb_upgrade(c, bcachefs_metadata_version_current);
@@ -946,16 +1060,12 @@ int bch2_fs_initialize(struct bch_fs *c)
 	for (i = 0; i < BTREE_ID_NR; i++)
 		bch2_btree_root_alloc(c, i);
 
-	for_each_online_member(ca, c, i)
+	for_each_member_device(ca, c, i)
 		bch2_dev_usage_init(ca);
 
-	for_each_online_member(ca, c, i) {
-		ret = bch2_dev_journal_alloc(ca);
-		if (ret) {
-			percpu_ref_put(&ca->io_ref);
-			goto err;
-		}
-	}
+	ret = bch2_fs_journal_alloc(c);
+	if (ret)
+		goto err;
 
 	/*
 	 * journal_res_get() will crash if called before this has
@@ -973,15 +1083,13 @@ int bch2_fs_initialize(struct bch_fs *c)
 	 * btree updates
 	 */
 	bch_verbose(c, "marking superblocks");
-	for_each_member_device(ca, c, i) {
-		ret = bch2_trans_mark_dev_sb(c, ca);
-		if (ret) {
-			percpu_ref_put(&ca->ref);
-			goto err;
-		}
+	ret = bch2_trans_mark_dev_sbs(c);
+	bch_err_msg(c, ret, "marking superblocks");
+	if (ret)
+		goto err;
 
+	for_each_online_member(ca, c, i)
 		ca->new_fs_bucket_idx = 0;
-	}
 
 	ret = bch2_fs_freespace_init(c);
 	if (ret)

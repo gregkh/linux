@@ -396,7 +396,7 @@ static void idpf_rx_desc_rel(struct idpf_queue *rxq, bool bufq, s32 q_model)
 	if (!rxq)
 		return;
 
-	if (!bufq && idpf_is_queue_model_split(q_model) && rxq->skb) {
+	if (rxq->skb) {
 		dev_kfree_skb_any(rxq->skb);
 		rxq->skb = NULL;
 	}
@@ -2365,7 +2365,7 @@ static void idpf_tx_splitq_map(struct idpf_queue *tx_q,
  */
 int idpf_tso(struct sk_buff *skb, struct idpf_tx_offload_params *off)
 {
-	const struct skb_shared_info *shinfo = skb_shinfo(skb);
+	const struct skb_shared_info *shinfo;
 	union {
 		struct iphdr *v4;
 		struct ipv6hdr *v6;
@@ -2379,12 +2379,14 @@ int idpf_tso(struct sk_buff *skb, struct idpf_tx_offload_params *off)
 	u32 paylen, l4_start;
 	int err;
 
-	if (!shinfo->gso_size)
+	if (!skb_is_gso(skb))
 		return 0;
 
 	err = skb_cow_head(skb, 0);
 	if (err < 0)
 		return err;
+
+	shinfo = skb_shinfo(skb);
 
 	ip.hdr = skb_network_header(skb);
 	l4.hdr = skb_transport_header(skb);
