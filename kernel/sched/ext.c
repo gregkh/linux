@@ -495,7 +495,7 @@ static bool scx_ops_tryset_enable_state(enum scx_ops_enable_state to,
 	return atomic_try_cmpxchg(&scx_ops_enable_state_var, &from_v, to);
 }
 
-static bool scx_ops_disabling(void)
+static bool scx_ops_bypassing(void)
 {
 	return unlikely(scx_ops_enable_state() == SCX_OPS_DISABLING);
 }
@@ -1594,7 +1594,7 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 		 * same conditions later and pick @rq->curr accordingly.
 		 */
 		if ((prev->scx.flags & SCX_TASK_QUEUED) &&
-		    prev->scx.slice && !scx_ops_disabling()) {
+		    prev->scx.slice && !scx_ops_bypassing()) {
 			if (local)
 				prev->scx.flags |= SCX_TASK_BAL_KEEP;
 			return 1;
@@ -1787,7 +1787,7 @@ static void put_prev_task_scx(struct rq *rq, struct task_struct *p)
 		 * scheduler class or core-sched forcing a different task. Leave
 		 * it at the head of the local DSQ.
 		 */
-		if (p->scx.slice && !scx_ops_disabling()) {
+		if (p->scx.slice && !scx_ops_bypassing()) {
 			dispatch_enqueue(&rq->scx.local_dsq, p, SCX_ENQ_HEAD);
 			return;
 		}
@@ -1830,7 +1830,7 @@ static struct task_struct *pick_next_task_scx(struct rq *rq)
 		return NULL;
 
 	if (unlikely(!p->scx.slice)) {
-		if (!scx_ops_disabling() && !scx_warned_zero_slice) {
+		if (!scx_ops_bypassing() && !scx_warned_zero_slice) {
 			printk_deferred(KERN_WARNING "sched_ext: %s[%d] has zero slice in pick_next_task_scx()\n",
 					p->comm, p->pid);
 			scx_warned_zero_slice = true;
@@ -1869,7 +1869,7 @@ bool scx_prio_less(const struct task_struct *a, const struct task_struct *b,
 	 * calling ops.core_sched_before(). Accesses are controlled by the
 	 * verifier.
 	 */
-	if (SCX_HAS_OP(core_sched_before) && !scx_ops_disabling())
+	if (SCX_HAS_OP(core_sched_before) && !scx_ops_bypassing())
 		return SCX_CALL_OP_2TASKS_RET(SCX_KF_REST, core_sched_before,
 					      (struct task_struct *)a,
 					      (struct task_struct *)b);
@@ -2265,7 +2265,7 @@ static void task_tick_scx(struct rq *rq, struct task_struct *curr, int queued)
 	 * While disabling, always resched and refresh core-sched timestamp as
 	 * we can't trust the slice management or ops.core_sched_before().
 	 */
-	if (scx_ops_disabling()) {
+	if (scx_ops_bypassing()) {
 		curr->scx.slice = 0;
 		touch_core_sched(rq, curr);
 	}
@@ -2568,7 +2568,7 @@ bool scx_can_stop_tick(struct rq *rq)
 {
 	struct task_struct *p = rq->curr;
 
-	if (scx_ops_disabling())
+	if (scx_ops_bypassing())
 		return false;
 
 	if (p->sched_class != &ext_sched_class)
@@ -3017,7 +3017,7 @@ static void scx_cgroup_config_knobs(void) {}
  */
 bool task_should_scx(struct task_struct *p)
 {
-	if (!scx_enabled() || scx_ops_disabling())
+	if (!scx_enabled() || scx_ops_bypassing())
 		return false;
 	if (READ_ONCE(scx_switching_all))
 		return true;
@@ -3034,6 +3034,57 @@ static void scx_ops_fallback_enqueue(struct task_struct *p, u64 enq_flags)
 
 static void scx_ops_fallback_dispatch(s32 cpu, struct task_struct *prev) {}
 
+/**
+ * scx_ops_bypass - Bypass scx_ops and guarantee forward progress
+ *
+ * We must guarantee that all runnable tasks make forward progress without
+ * trusting the BPF scheduler. We can't grab any mutexes or rwsems as they might
+ * be held by tasks that the BPF scheduler is forgetting to run, which
+ * unfortunately also excludes toggling the static branches.
+ *
+ * Let's work around by overriding a couple ops and modifying behaviors based on
+ * the DISABLING state and then cycling the tasks through dequeue/enqueue to
+ * force global FIFO scheduling.
+ *
+ * a. ops.enqueue() and .dispatch() are overridden for simple global FIFO
+ *    scheduling.
+ *
+ * b. balance_scx() never sets %SCX_TASK_BAL_KEEP as the slice value can't be
+ *    trusted. Whenever a tick triggers, the running task is rotated to the tail
+ *    of the queue with core_sched_at touched.
+ *
+ * c. pick_next_task() suppresses zero slice warning.
+ *
+ * d. scx_prio_less() reverts to the default core_sched_at order.
+ */
+static void scx_ops_bypass(void)
+{
+	struct scx_task_iter sti;
+	struct task_struct *p;
+	int cpu;
+
+	scx_ops.enqueue = scx_ops_fallback_enqueue;
+	scx_ops.dispatch = scx_ops_fallback_dispatch;
+
+	spin_lock_irq(&scx_tasks_lock);
+	scx_task_iter_init(&sti);
+	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
+		if (READ_ONCE(p->__state) != TASK_DEAD) {
+			struct sched_enq_and_set_ctx ctx;
+
+			/* cycling deq/enq is enough, see above */
+			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
+			sched_enq_and_set_task(&ctx);
+		}
+	}
+	scx_task_iter_exit(&sti);
+	spin_unlock_irq(&scx_tasks_lock);
+
+	/* kick all CPUs to restore ticks */
+	for_each_possible_cpu(cpu)
+		resched_cpu(cpu);
+}
+
 static void scx_ops_disable_workfn(struct kthread_work *work)
 {
 	struct scx_exit_info *ei = &scx_exit_info;
@@ -3042,7 +3093,7 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	struct rhashtable_iter rht_iter;
 	struct scx_dispatch_q *dsq;
 	const char *reason;
-	int i, cpu, kind;
+	int i, kind;
 
 	kind = atomic_read(&scx_exit_kind);
 	while (true) {
@@ -3090,63 +3141,17 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 			     SCX_OPS_DISABLING);
 		return;
 	case SCX_OPS_PREPPING:
-		goto forward_progress_guaranteed;
+		break;
 	case SCX_OPS_DISABLING:
 		/* shouldn't happen but handle it like ENABLING if it does */
 		WARN_ONCE(true, "sched_ext: duplicate disabling instance?");
 		fallthrough;
 	case SCX_OPS_ENABLING:
 	case SCX_OPS_ENABLED:
+		scx_ops_bypass();
 		break;
 	}
 
-	/*
-	 * DISABLING is set and ops was either ENABLING or ENABLED indicating
-	 * that the ops and static branches are set.
-	 *
-	 * We must guarantee that all runnable tasks make forward progress
-	 * without trusting the BPF scheduler. We can't grab any mutexes or
-	 * rwsems as they might be held by tasks that the BPF scheduler is
-	 * forgetting to run, which unfortunately also excludes toggling the
-	 * static branches.
-	 *
-	 * Let's work around by overriding a couple ops and modifying behaviors
-	 * based on the DISABLING state and then cycling the tasks through
-	 * dequeue/enqueue to force global FIFO scheduling.
-	 *
-	 * a. ops.enqueue() and .dispatch() are overridden for simple global
-	 *    FIFO scheduling.
-	 *
-	 * b. balance_scx() never sets %SCX_TASK_BAL_KEEP as the slice value
-	 *    can't be trusted. Whenever a tick triggers, the running task is
-	 *    rotated to the tail of the queue with core_sched_at touched.
-	 *
-	 * c. pick_next_task() suppresses zero slice warning.
-	 *
-	 * d. scx_prio_less() reverts to the default core_sched_at order.
-	 */
-	scx_ops.enqueue = scx_ops_fallback_enqueue;
-	scx_ops.dispatch = scx_ops_fallback_dispatch;
-
-	spin_lock_irq(&scx_tasks_lock);
-	scx_task_iter_init(&sti);
-	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
-		if (READ_ONCE(p->__state) != TASK_DEAD) {
-			struct sched_enq_and_set_ctx ctx;
-
-			/* cycling deq/enq is enough, see above */
-			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
-			sched_enq_and_set_task(&ctx);
-		}
-	}
-	scx_task_iter_exit(&sti);
-	spin_unlock_irq(&scx_tasks_lock);
-
-	/* kick all CPUs to restore ticks */
-	for_each_possible_cpu(cpu)
-		resched_cpu(cpu);
-
-forward_progress_guaranteed:
 	/*
 	 * Here, every runnable task is guaranteed to make forward progress and
 	 * we can safely use blocking synchronization constructs. Actually
