@@ -1012,7 +1012,6 @@ struct task_struct {
 	/* PID/PID hash table linkage. */
 	struct pid			*thread_pid;
 	struct hlist_node		pid_links[PIDTYPE_MAX];
-	struct list_head		thread_group;
 	struct list_head		thread_node;
 
 	struct completion		*vfork_done;
@@ -1451,6 +1450,10 @@ struct task_struct {
 
 	/* Used by memcontrol for targeted memcg charge: */
 	struct mem_cgroup		*active_memcg;
+#endif
+
+#ifdef CONFIG_MEMCG_KMEM
+	struct obj_cgroup		*objcg;
 #endif
 
 #ifdef CONFIG_BLK_CGROUP

@@ -202,6 +202,17 @@ static inline int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
 	struct btree_iter iter;
 	struct bkey_i *k;
 	struct bkey_i_inode_v3 *inode;
+	/*
+	 * Crazy performance optimization:
+	 * Every extent update needs to also update the inode: the inode trigger
+	 * will set bi->journal_seq to the journal sequence number of this
+	 * transaction - for fsync.
+	 *
+	 * But if that's the only reason we're updating the inode (we're not
+	 * updating bi_size or bi_sectors), then we don't need the inode update
+	 * to be journalled - if we crash, the bi_journal_seq update will be
+	 * lost, but that's fine.
+	 */
 	unsigned inode_update_flags = BTREE_UPDATE_NOJOURNAL;
 	int ret;
 
@@ -223,7 +234,7 @@ static inline int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
 
 	inode = bkey_i_to_inode_v3(k);
 
-	if (!(le64_to_cpu(inode->v.bi_flags) & BCH_INODE_I_SIZE_DIRTY) &&
+	if (!(le64_to_cpu(inode->v.bi_flags) & BCH_INODE_i_size_dirty) &&
 	    new_i_size > le64_to_cpu(inode->v.bi_size)) {
 		inode->v.bi_size = cpu_to_le64(new_i_size);
 		inode_update_flags = 0;
@@ -351,10 +362,13 @@ static int bch2_write_index_default(struct bch_write_op *op)
 				     bkey_start_pos(&sk.k->k),
 				     BTREE_ITER_SLOTS|BTREE_ITER_INTENT);
 
-		ret = bch2_extent_update(trans, inum, &iter, sk.k,
-					 &op->res,
-					 op->new_i_size, &op->i_sectors_delta,
-					 op->flags & BCH_WRITE_CHECK_ENOSPC);
+		ret =   bch2_bkey_set_needs_rebalance(c, sk.k,
+					op->opts.background_target,
+					op->opts.background_compression) ?:
+			bch2_extent_update(trans, inum, &iter, sk.k,
+					&op->res,
+					op->new_i_size, &op->i_sectors_delta,
+					op->flags & BCH_WRITE_CHECK_ENOSPC);
 		bch2_trans_iter_exit(trans, &iter);
 
 		if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
@@ -495,7 +509,6 @@ static void __bch2_write_index(struct bch_write_op *op)
 {
 	struct bch_fs *c = op->c;
 	struct keylist *keys = &op->insert_keys;
-	struct bkey_i *k;
 	unsigned dev;
 	int ret = 0;
 
@@ -504,14 +517,6 @@ static void __bch2_write_index(struct bch_write_op *op)
 		if (ret)
 			goto err;
 	}
-
-	/*
-	 * probably not the ideal place to hook this in, but I don't
-	 * particularly want to plumb io_opts all the way through the btree
-	 * update stack right now
-	 */
-	for_each_keylist_key(keys, k)
-		bch2_rebalance_add_key(c, bkey_i_to_s_c(k), &op->opts);
 
 	if (!bch2_keylist_empty(keys)) {
 		u64 sectors_start = keylist_sectors(keys);
@@ -575,9 +580,9 @@ static inline void wp_update_state(struct write_point *wp, bool running)
 	__wp_update_state(wp, state);
 }
 
-static void bch2_write_index(struct closure *cl)
+static CLOSURE_CALLBACK(bch2_write_index)
 {
-	struct bch_write_op *op = container_of(cl, struct bch_write_op, cl);
+	closure_type(op, struct bch_write_op, cl);
 	struct write_point *wp = op->wp;
 	struct workqueue_struct *wq = index_update_wq(op);
 	unsigned long flags;
@@ -643,7 +648,7 @@ static void bch2_write_endio(struct bio *bio)
 	struct bch_fs *c		= wbio->c;
 	struct bch_dev *ca		= bch_dev_bkey_exists(c, wbio->dev);
 
-	if (bch2_dev_inum_io_err_on(bio->bi_status, ca,
+	if (bch2_dev_inum_io_err_on(bio->bi_status, ca, BCH_MEMBER_ERROR_write,
 				    op->pos.inode,
 				    wbio->inode_offset << 9,
 				    "data write error: %s",
@@ -790,7 +795,7 @@ static int bch2_write_decrypt(struct bch_write_op *op)
 	 * checksum:
 	 */
 	csum = bch2_checksum_bio(c, op->crc.csum_type, nonce, &op->wbio.bio);
-	if (bch2_crc_cmp(op->crc.csum, csum))
+	if (bch2_crc_cmp(op->crc.csum, csum) && !c->opts.no_data_io)
 		return -EIO;
 
 	ret = bch2_encrypt_bio(c, op->crc.csum_type, nonce, &op->wbio.bio);
@@ -816,6 +821,7 @@ static enum prep_encoded_ret {
 
 	/* Can we just write the entire extent as is? */
 	if (op->crc.uncompressed_size == op->crc.live_size &&
+	    op->crc.uncompressed_size <= c->opts.encoded_extent_max >> 9 &&
 	    op->crc.compressed_size <= wp->sectors_free &&
 	    (op->crc.compression_type == bch2_compression_opt_to_type(op->compression_opt) ||
 	     op->incompressible)) {
@@ -1091,9 +1097,7 @@ static bool bch2_extent_is_writeable(struct bch_write_op *op,
 
 	e = bkey_s_c_to_extent(k);
 	extent_for_each_ptr_decode(e, p, entry) {
-		if (p.crc.csum_type ||
-		    crc_is_compressed(p.crc) ||
-		    p.has_ec)
+		if (crc_is_encoded(p.crc) || p.has_ec)
 			return false;
 
 		replicas += bch2_extent_ptr_durability(c, &p);
@@ -1204,13 +1208,19 @@ static void __bch2_nocow_write_done(struct bch_write_op *op)
 		bch2_nocow_write_convert_unwritten(op);
 }
 
-static void bch2_nocow_write_done(struct closure *cl)
+static CLOSURE_CALLBACK(bch2_nocow_write_done)
 {
-	struct bch_write_op *op = container_of(cl, struct bch_write_op, cl);
+	closure_type(op, struct bch_write_op, cl);
 
 	__bch2_nocow_write_done(op);
 	bch2_write_done(cl);
 }
+
+struct bucket_to_lock {
+	struct bpos		b;
+	unsigned		gen;
+	struct nocow_lock_bucket *l;
+};
 
 static void bch2_nocow_write(struct bch_write_op *op)
 {
@@ -1220,18 +1230,16 @@ static void bch2_nocow_write(struct bch_write_op *op)
 	struct bkey_s_c k;
 	struct bkey_ptrs_c ptrs;
 	const struct bch_extent_ptr *ptr;
-	struct {
-		struct bpos	b;
-		unsigned	gen;
-		struct nocow_lock_bucket *l;
-	} buckets[BCH_REPLICAS_MAX];
-	unsigned nr_buckets = 0;
+	DARRAY_PREALLOCATED(struct bucket_to_lock, 3) buckets;
+	struct bucket_to_lock *i;
 	u32 snapshot;
-	int ret, i;
+	struct bucket_to_lock *stale_at;
+	int ret;
 
 	if (op->flags & BCH_WRITE_MOVE)
 		return;
 
+	darray_init(&buckets);
 	trans = bch2_trans_get(c);
 retry:
 	bch2_trans_begin(trans);
@@ -1246,7 +1254,7 @@ retry:
 	while (1) {
 		struct bio *bio = &op->wbio.bio;
 
-		nr_buckets = 0;
+		buckets.nr = 0;
 
 		k = bch2_btree_iter_peek_slot(&iter);
 		ret = bkey_err(k);
@@ -1259,26 +1267,26 @@ retry:
 			break;
 
 		if (bch2_keylist_realloc(&op->insert_keys,
-					op->inline_keys,
-					ARRAY_SIZE(op->inline_keys),
-					k.k->u64s))
+					 op->inline_keys,
+					 ARRAY_SIZE(op->inline_keys),
+					 k.k->u64s))
 			break;
 
 		/* Get iorefs before dropping btree locks: */
 		ptrs = bch2_bkey_ptrs_c(k);
 		bkey_for_each_ptr(ptrs, ptr) {
-			buckets[nr_buckets].b = PTR_BUCKET_POS(c, ptr);
-			buckets[nr_buckets].gen = ptr->gen;
-			buckets[nr_buckets].l =
-				bucket_nocow_lock(&c->nocow_locks,
-						  bucket_to_u64(buckets[nr_buckets].b));
-
-			prefetch(buckets[nr_buckets].l);
+			struct bpos b = PTR_BUCKET_POS(c, ptr);
+			struct nocow_lock_bucket *l =
+				bucket_nocow_lock(&c->nocow_locks, bucket_to_u64(b));
+			prefetch(l);
 
 			if (unlikely(!bch2_dev_get_ioref(bch_dev_bkey_exists(c, ptr->dev), WRITE)))
 				goto err_get_ioref;
 
-			nr_buckets++;
+			/* XXX allocating memory with btree locks held - rare */
+			darray_push_gfp(&buckets, ((struct bucket_to_lock) {
+						   .b = b, .gen = ptr->gen, .l = l,
+						   }), GFP_KERNEL|__GFP_NOFAIL);
 
 			if (ptr->unwritten)
 				op->flags |= BCH_WRITE_CONVERT_UNWRITTEN;
@@ -1292,21 +1300,21 @@ retry:
 		if (op->flags & BCH_WRITE_CONVERT_UNWRITTEN)
 			bch2_cut_back(POS(op->pos.inode, op->pos.offset + bio_sectors(bio)), op->insert_keys.top);
 
-		for (i = 0; i < nr_buckets; i++) {
-			struct bch_dev *ca = bch_dev_bkey_exists(c, buckets[i].b.inode);
-			struct nocow_lock_bucket *l = buckets[i].l;
-			bool stale;
+		darray_for_each(buckets, i) {
+			struct bch_dev *ca = bch_dev_bkey_exists(c, i->b.inode);
 
-			__bch2_bucket_nocow_lock(&c->nocow_locks, l,
-						 bucket_to_u64(buckets[i].b),
+			__bch2_bucket_nocow_lock(&c->nocow_locks, i->l,
+						 bucket_to_u64(i->b),
 						 BUCKET_NOCOW_LOCK_UPDATE);
 
 			rcu_read_lock();
-			stale = gen_after(*bucket_gen(ca, buckets[i].b.offset), buckets[i].gen);
+			bool stale = gen_after(*bucket_gen(ca, i->b.offset), i->gen);
 			rcu_read_unlock();
 
-			if (unlikely(stale))
+			if (unlikely(stale)) {
+				stale_at = i;
 				goto err_bucket_stale;
+			}
 		}
 
 		bio = &op->wbio.bio;
@@ -1342,15 +1350,14 @@ err:
 
 	if (ret) {
 		bch_err_inum_offset_ratelimited(c,
-				op->pos.inode,
-				op->pos.offset << 9,
-				"%s: btree lookup error %s",
-				__func__, bch2_err_str(ret));
+			op->pos.inode, op->pos.offset << 9,
+			"%s: btree lookup error %s", __func__, bch2_err_str(ret));
 		op->error = ret;
 		op->flags |= BCH_WRITE_DONE;
 	}
 
 	bch2_trans_put(trans);
+	darray_exit(&buckets);
 
 	/* fallback to cow write path? */
 	if (!(op->flags & BCH_WRITE_DONE)) {
@@ -1359,7 +1366,7 @@ err:
 		op->insert_keys.top = op->insert_keys.keys;
 	} else if (op->flags & BCH_WRITE_SYNC) {
 		closure_sync(&op->cl);
-		bch2_nocow_write_done(&op->cl);
+		bch2_nocow_write_done(&op->cl.work);
 	} else {
 		/*
 		 * XXX
@@ -1370,24 +1377,21 @@ err:
 	}
 	return;
 err_get_ioref:
-	for (i = 0; i < nr_buckets; i++)
-		percpu_ref_put(&bch_dev_bkey_exists(c, buckets[i].b.inode)->io_ref);
+	darray_for_each(buckets, i)
+		percpu_ref_put(&bch_dev_bkey_exists(c, i->b.inode)->io_ref);
 
 	/* Fall back to COW path: */
 	goto out;
 err_bucket_stale:
-	while (i >= 0) {
-		bch2_bucket_nocow_unlock(&c->nocow_locks,
-					 buckets[i].b,
-					 BUCKET_NOCOW_LOCK_UPDATE);
-		--i;
+	darray_for_each(buckets, i) {
+		bch2_bucket_nocow_unlock(&c->nocow_locks, i->b, BUCKET_NOCOW_LOCK_UPDATE);
+		if (i == stale_at)
+			break;
 	}
-	for (i = 0; i < nr_buckets; i++)
-		percpu_ref_put(&bch_dev_bkey_exists(c, buckets[i].b.inode)->io_ref);
 
 	/* We can retry this: */
 	ret = -BCH_ERR_transaction_restart;
-	goto out;
+	goto err_get_ioref;
 }
 
 static void __bch2_write(struct bch_write_op *op)
@@ -1562,9 +1566,9 @@ err:
  * If op->discard is true, instead of inserting the data it invalidates the
  * region of the cache represented by op->bio and op->inode.
  */
-void bch2_write(struct closure *cl)
+CLOSURE_CALLBACK(bch2_write)
 {
-	struct bch_write_op *op = container_of(cl, struct bch_write_op, cl);
+	closure_type(op, struct bch_write_op, cl);
 	struct bio *bio = &op->wbio.bio;
 	struct bch_fs *c = op->c;
 	unsigned data_len;

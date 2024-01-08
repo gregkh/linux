@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1+
 /* Copyright (C) 2022 Kent Overstreet */
 
+#include <linux/bitmap.h>
 #include <linux/err.h>
 #include <linux/export.h>
 #include <linux/kernel.h>
@@ -415,11 +416,32 @@ void bch2_prt_bitflags(struct printbuf *out,
 	while (list[nr])
 		nr++;
 
-	while (flags && (bit = __ffs(flags)) < nr) {
+	while (flags && (bit = __ffs64(flags)) < nr) {
 		if (!first)
 			bch2_prt_printf(out, ",");
 		first = false;
 		bch2_prt_printf(out, "%s", list[bit]);
-		flags ^= 1 << bit;
+		flags ^= BIT_ULL(bit);
+	}
+}
+
+void bch2_prt_bitflags_vector(struct printbuf *out,
+			      const char * const list[],
+			      unsigned long *v, unsigned nr)
+{
+	bool first = true;
+	unsigned i;
+
+	for (i = 0; i < nr; i++)
+		if (!list[i]) {
+			nr = i - 1;
+			break;
+		}
+
+	for_each_set_bit(i, v, nr) {
+		if (!first)
+			bch2_prt_printf(out, ",");
+		first = false;
+		bch2_prt_printf(out, "%s", list[i]);
 	}
 }
