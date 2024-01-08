@@ -3063,6 +3063,9 @@ bool task_should_scx(struct task_struct *p)
  * d. pick_next_task() suppresses zero slice warning.
  *
  * e. scx_prio_less() reverts to the default core_sched_at order.
+ *
+ * f. scx_bpf_kick_cpu() is disabled to avoid irq_work malfunction during PM
+ *    operations.
  */
 static void scx_ops_bypass(bool bypass)
 {
@@ -4318,6 +4321,14 @@ void scx_bpf_kick_cpu(s32 cpu, u64 flags)
 		scx_ops_error("invalid cpu %d", cpu);
 		return;
 	}
+
+	/*
+	 * While bypassing for PM ops, IRQ handling may not be online which can
+	 * lead to irq_work_queue() malfunction such as infinite busy wait for
+	 * IRQ status update. Suppress kicking.
+	 */
+	if (scx_ops_bypassing())
+		return;
 
 	preempt_disable();
 	rq = this_rq();
