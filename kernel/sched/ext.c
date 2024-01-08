@@ -3606,6 +3606,7 @@ static int scx_debug_show(struct seq_file *m, void *v)
 	seq_printf(m, "%-30s: %ld\n", "switched_all", scx_switched_all());
 	seq_printf(m, "%-30s: %s\n", "enable_state",
 		   scx_ops_enable_state_str[scx_ops_enable_state()]);
+	seq_printf(m, "%-30s: %d\n", "bypassing", scx_ops_bypassing());
 	seq_printf(m, "%-30s: %lu\n", "nr_rejected",
 		   atomic_long_read(&scx_nr_rejected));
 	mutex_unlock(&scx_ops_enable_mutex);
