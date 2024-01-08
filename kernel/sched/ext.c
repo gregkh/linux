@@ -91,6 +91,7 @@ static DEFINE_MUTEX(scx_ops_enable_mutex);
 DEFINE_STATIC_KEY_FALSE(__scx_ops_enabled);
 DEFINE_STATIC_PERCPU_RWSEM(scx_fork_rwsem);
 static atomic_t scx_ops_enable_state_var = ATOMIC_INIT(SCX_OPS_DISABLED);
+static atomic_t scx_ops_bypass_depth = ATOMIC_INIT(0);
 static bool scx_switch_all_req;
 static bool scx_switching_all;
 DEFINE_STATIC_KEY_FALSE(__scx_switched_all);
@@ -497,7 +498,7 @@ static bool scx_ops_tryset_enable_state(enum scx_ops_enable_state to,
 
 static bool scx_ops_bypassing(void)
 {
-	return unlikely(scx_ops_enable_state() == SCX_OPS_DISABLING);
+	return unlikely(atomic_read(&scx_ops_bypass_depth));
 }
 
 /**
@@ -3017,7 +3018,8 @@ static void scx_cgroup_config_knobs(void) {}
  */
 bool task_should_scx(struct task_struct *p)
 {
-	if (!scx_enabled() || scx_ops_bypassing())
+	if (!scx_enabled() ||
+	    unlikely(scx_ops_enable_state() == SCX_OPS_DISABLING))
 		return false;
 	if (READ_ONCE(scx_switching_all))
 		return true;
@@ -3035,9 +3037,9 @@ static void scx_ops_fallback_enqueue(struct task_struct *p, u64 enq_flags)
 static void scx_ops_fallback_dispatch(s32 cpu, struct task_struct *prev) {}
 
 /**
- * scx_ops_bypass - Bypass scx_ops and guarantee forward progress
+ * scx_ops_bypass - [Un]bypass scx_ops and guarantee forward progress
  *
- * We must guarantee that all runnable tasks make forward progress without
+ * Bypassing guarantees that all runnable tasks make forward progress without
  * trusting the BPF scheduler. We can't grab any mutexes or rwsems as they might
  * be held by tasks that the BPF scheduler is forgetting to run, which
  * unfortunately also excludes toggling the static branches.
@@ -3057,14 +3059,26 @@ static void scx_ops_fallback_dispatch(s32 cpu, struct task_struct *prev) {}
  *
  * d. scx_prio_less() reverts to the default core_sched_at order.
  */
-static void scx_ops_bypass(void)
+static void scx_ops_bypass(bool bypass)
 {
 	struct scx_task_iter sti;
 	struct task_struct *p;
-	int cpu;
+	int depth, cpu;
 
-	scx_ops.enqueue = scx_ops_fallback_enqueue;
-	scx_ops.dispatch = scx_ops_fallback_dispatch;
+	if (bypass) {
+		depth = atomic_inc_return(&scx_ops_bypass_depth);
+		WARN_ON_ONCE(depth <= 0);
+		if (depth != 1)
+			return;
+
+		scx_ops.enqueue = scx_ops_fallback_enqueue;
+		scx_ops.dispatch = scx_ops_fallback_dispatch;
+	} else {
+		depth = atomic_dec_return(&scx_ops_bypass_depth);
+		WARN_ON_ONCE(depth < 0);
+		if (depth != 0)
+			return;
+	}
 
 	spin_lock_irq(&scx_tasks_lock);
 	scx_task_iter_init(&sti);
@@ -3133,22 +3147,20 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	ei->kind = kind;
 	strlcpy(ei->reason, reason, sizeof(ei->reason));
 
+	/* guarantee forward progress by bypassing scx_ops */
+	scx_ops_bypass(true);
+
 	switch (scx_ops_set_enable_state(SCX_OPS_DISABLING)) {
+	case SCX_OPS_DISABLING:
+		WARN_ONCE(true, "sched_ext: duplicate disabling instance?");
+		break;
 	case SCX_OPS_DISABLED:
 		pr_warn("sched_ext: ops error detected without ops (%s)\n",
 			scx_exit_info.msg);
 		WARN_ON_ONCE(scx_ops_set_enable_state(SCX_OPS_DISABLED) !=
 			     SCX_OPS_DISABLING);
-		return;
-	case SCX_OPS_PREPPING:
-		break;
-	case SCX_OPS_DISABLING:
-		/* shouldn't happen but handle it like ENABLING if it does */
-		WARN_ONCE(true, "sched_ext: duplicate disabling instance?");
-		fallthrough;
-	case SCX_OPS_ENABLING:
-	case SCX_OPS_ENABLED:
-		scx_ops_bypass();
+		goto done;
+	default:
 		break;
 	}
 
@@ -3245,6 +3257,8 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 		     SCX_OPS_DISABLING);
 
 	scx_cgroup_config_knobs();
+done:
+	scx_ops_bypass(false);
 }
 
 static DEFINE_KTHREAD_WORK(scx_ops_disable_work, scx_ops_disable_workfn);
