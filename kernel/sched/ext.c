@@ -4638,15 +4638,14 @@ static const struct btf_kfunc_id_set scx_kfunc_set_any = {
 
 __diag_pop();
 
-/*
- * This can't be done from init_sched_ext_class() as register_btf_kfunc_id_set()
- * needs most of the system to be up.
- */
-static int __init register_ext_kfuncs(void)
+static int __init scx_init(void)
 {
 	int ret;
 
 	/*
+	 * kfunc registration can't be done from init_sched_ext_class() as
+	 * register_btf_kfunc_id_set() needs most of the system to be up.
+	 *
 	 * Some kfuncs are context-sensitive and can only be called from
 	 * specific SCX ops. They are grouped into BTF sets accordingly.
 	 * Unfortunately, BPF currently doesn't have a way of enforcing such
@@ -4676,4 +4675,4 @@ static int __init register_ext_kfuncs(void)
 
 	return 0;
 }
-__initcall(register_ext_kfuncs);
+__initcall(scx_init);
