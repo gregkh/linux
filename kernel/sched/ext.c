@@ -3155,9 +3155,9 @@ forward_progress_guaranteed:
 	WRITE_ONCE(scx_switching_all, false);
 
 	/* avoid racing against fork and cgroup changes */
-	cpus_read_lock();
 	percpu_down_write(&scx_fork_rwsem);
 	scx_cgroup_lock();
+	cpus_read_lock();
 
 	spin_lock_irq(&scx_tasks_lock);
 	scx_task_iter_init(&sti);
@@ -3196,9 +3196,9 @@ forward_progress_guaranteed:
 
 	scx_cgroup_exit();
 
+	cpus_read_unlock();
 	scx_cgroup_unlock();
 	percpu_up_write(&scx_fork_rwsem);
-	cpus_read_unlock();
 
 	if (ei->kind >= SCX_EXIT_ERROR) {
 		printk(KERN_ERR "sched_ext: BPF scheduler \"%s\" errored, disabling\n", scx_ops.name);
@@ -3353,9 +3353,18 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	atomic_long_set(&scx_nr_rejected, 0);
 
 	/*
-	 * Keep CPUs stable during enable so that the BPF scheduler can track
-	 * online CPUs by watching ->on/offline_cpu() after ->init().
+	 * Lock out forks, cgroup on/offlining and moves before opening the
+	 * floodgate so that they don't wander into the operations prematurely.
+	 *
+	 * Also keep CPUs stable during enable so that the BPF scheduler can
+	 * track online CPUs by watching ->on/offline_cpu() after ->init().
+	 *
+	 * Acquire scx_fork_rwsem and scx_group_rwsem before the hotplug lock.
+	 * cpus_read_lock() is acquired in a ton of places, so let's be a bit
+	 * cautious to avoid possible deadlock.
 	 */
+	percpu_down_write(&scx_fork_rwsem);
+	scx_cgroup_lock();
 	cpus_read_lock();
 
 	scx_switch_all_req = false;
@@ -3399,13 +3408,6 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	queue_delayed_work(system_unbound_wq, &scx_watchdog_work,
 			   scx_watchdog_timeout / 2);
 
-	/*
-	 * Lock out forks, cgroup on/offlining and moves before opening the
-	 * floodgate so that they don't wander into the operations prematurely.
-	 */
-	percpu_down_write(&scx_fork_rwsem);
-	scx_cgroup_lock();
-
 	for (i = 0; i < SCX_NR_ONLINE_OPS; i++)
 		if (((void (**)(void))ops)[i])
 			static_branch_enable_cpuslocked(&scx_has_op[i]);
@@ -3431,7 +3433,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	 */
 	ret = scx_cgroup_init();
 	if (ret)
-		goto err_disable_unlock;
+		goto err_disable;
 
 	static_branch_enable_cpuslocked(&__scx_ops_enabled);
 
@@ -3457,7 +3459,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 			spin_unlock_irq(&scx_tasks_lock);
 			pr_err("sched_ext: ops.init_task() failed (%d) for %s[%d] while loading\n",
 			       ret, p->comm, p->pid);
-			goto err_disable_unlock;
+			goto err_disable;
 		}
 
 		put_task_struct(p);
@@ -3481,7 +3483,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		preempt_enable();
 		spin_unlock_irq(&scx_tasks_lock);
 		ret = -EBUSY;
-		goto err_disable_unlock;
+		goto err_disable;
 	}
 
 	/*
@@ -3515,8 +3517,6 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 
 	spin_unlock_irq(&scx_tasks_lock);
 	preempt_enable();
-	scx_cgroup_unlock();
-	percpu_up_write(&scx_fork_rwsem);
 
 	if (!scx_ops_tryset_enable_state(SCX_OPS_ENABLED, SCX_OPS_ENABLING)) {
 		ret = -EBUSY;
@@ -3527,6 +3527,8 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		static_branch_enable_cpuslocked(&__scx_switched_all);
 
 	cpus_read_unlock();
+	scx_cgroup_unlock();
+	percpu_up_write(&scx_fork_rwsem);
 	mutex_unlock(&scx_ops_enable_mutex);
 
 	scx_cgroup_config_knobs();
@@ -3537,11 +3539,10 @@ err_unlock:
 	mutex_unlock(&scx_ops_enable_mutex);
 	return ret;
 
-err_disable_unlock:
-	scx_cgroup_unlock();
-	percpu_up_write(&scx_fork_rwsem);
 err_disable:
 	cpus_read_unlock();
+	scx_cgroup_unlock();
+	percpu_up_write(&scx_fork_rwsem);
 	mutex_unlock(&scx_ops_enable_mutex);
 	/* must be fully disabled before returning */
 	scx_ops_disable(SCX_EXIT_ERROR);
