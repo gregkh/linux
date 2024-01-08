@@ -962,9 +962,16 @@ static bool task_runnable(const struct task_struct *p)
 static void set_task_runnable(struct rq *rq, struct task_struct *p)
 {
 	lockdep_assert_rq_held(rq);
-	if (p->scx.flags & SCX_TASK_RESET_RUNNABLE_AT)
+
+	if (p->scx.flags & SCX_TASK_RESET_RUNNABLE_AT) {
 		p->scx.runnable_at = jiffies;
-	p->scx.flags &= ~SCX_TASK_RESET_RUNNABLE_AT;
+		p->scx.flags &= ~SCX_TASK_RESET_RUNNABLE_AT;
+	}
+
+	/*
+	 * list_add_tail() must be used. scx_ops_bypass() depends on tasks being
+	 * appened to the runnable_list.
+	 */
 	list_add_tail(&p->scx.runnable_node, &rq->scx.runnable_list);
 }
 
@@ -3042,8 +3049,8 @@ bool task_should_scx(struct task_struct *p)
  * unfortunately also excludes toggling the static branches.
  *
  * Let's work around by overriding a couple ops and modifying behaviors based on
- * the DISABLING state and then cycling the tasks through dequeue/enqueue to
- * force global FIFO scheduling.
+ * the DISABLING state and then cycling the queued tasks through dequeue/enqueue
+ * to force global FIFO scheduling.
  *
  * a. ops.enqueue() is ignored and tasks are queued in simple global FIFO order.
  *
@@ -3059,8 +3066,6 @@ bool task_should_scx(struct task_struct *p)
  */
 static void scx_ops_bypass(bool bypass)
 {
-	struct scx_task_iter sti;
-	struct task_struct *p;
 	int depth, cpu;
 
 	if (bypass) {
@@ -3075,23 +3080,43 @@ static void scx_ops_bypass(bool bypass)
 			return;
 	}
 
-	spin_lock_irq(&scx_tasks_lock);
-	scx_task_iter_init(&sti);
-	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
-		if (READ_ONCE(p->__state) != TASK_DEAD) {
+	/*
+	 * No task property is changing. We just need to make sure all currently
+	 * queued tasks are re-queued according to the new scx_ops_bypassing()
+	 * state. As an optimization, walk each rq's runnable_list instead of
+	 * the scx_tasks list.
+	 *
+	 * This function can't trust the scheduler and thus can't use
+	 * cpus_read_lock(). Walk all possible CPUs instead of online.
+	 */
+	for_each_possible_cpu(cpu) {
+		struct rq *rq = cpu_rq(cpu);
+		struct rq_flags rf;
+		struct task_struct *p, *n;
+
+		rq_lock_irqsave(rq, &rf);
+
+		/*
+		 * The use of list_for_each_entry_safe_reverse() is required
+		 * because each task is going to be removed from and added back
+		 * to the runnable_list during iteration. Because they're added
+		 * to the tail of the list, safe reverse iteration can still
+		 * visit all nodes.
+		 */
+		list_for_each_entry_safe_reverse(p, n, &rq->scx.runnable_list,
+						 scx.runnable_node) {
 			struct sched_enq_and_set_ctx ctx;
 
 			/* cycling deq/enq is enough, see the function comment */
 			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
 			sched_enq_and_set_task(&ctx);
 		}
-	}
-	scx_task_iter_exit(&sti);
-	spin_unlock_irq(&scx_tasks_lock);
 
-	/* kick all CPUs to restore ticks */
-	for_each_possible_cpu(cpu)
+		rq_unlock_irqrestore(rq, &rf);
+
+		/* kick to restore ticks */
 		resched_cpu(cpu);
+	}
 }
 
 static void scx_ops_disable_workfn(struct kthread_work *work)
