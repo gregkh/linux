@@ -224,6 +224,8 @@ struct kernfs_node {
 	u64			id;
 
 	struct kernfs_iattrs	*iattr;
+
+	struct rcu_head		rcu;
 };
 
 /*
