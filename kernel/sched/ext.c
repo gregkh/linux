@@ -682,6 +682,13 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 	p->scx.dsq = dsq;
 
 	/*
+	 * scx.ddsq_id is only relevant on the direct dispatch path, but we
+	 * clear it here because the direct dispatch verdict may be overridden
+	 * on the enqueue path during e.g. bypass.
+	 */
+	p->scx.ddsq_id = SCX_DSQ_INVALID;
+
+	/*
 	 * We're transitioning out of QUEUEING or DISPATCHING. store_release to
 	 * match waiters' load_acquire.
 	 */
@@ -854,7 +861,6 @@ static void direct_dispatch(struct task_struct *p, u64 enq_flags)
 
 	dsq = find_dsq_for_dispatch(task_rq(p), p->scx.ddsq_id, p);
 	dispatch_enqueue(dsq, p, enq_flags | SCX_ENQ_CLEAR_OPSS);
-	p->scx.ddsq_id = SCX_DSQ_INVALID;
 }
 
 static bool test_rq_online(struct rq *rq)
@@ -874,9 +880,6 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 
 	WARN_ON_ONCE(!(p->scx.flags & SCX_TASK_QUEUED));
 
-	if (p->scx.ddsq_id != SCX_DSQ_INVALID)
-		goto direct;
-
 	/* rq migration */
 	if (sticky_cpu == cpu_of(rq))
 		goto local_norefill;
@@ -895,6 +898,9 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 		else
 			goto global;
 	}
+
+	if (p->scx.ddsq_id != SCX_DSQ_INVALID)
+		goto direct;
 
 	/* see %SCX_OPS_ENQ_EXITING */
 	if (!static_branch_unlikely(&scx_ops_enq_exiting) &&
