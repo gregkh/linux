@@ -9,4 +9,5 @@ select_cpu_dfl_nodispatch
 select_cpu_dispatch
 select_cpu_dispatch_dbl_dsp
 select_cpu_dispatch_bad_dsq
+select_cpu_vtime
 build/

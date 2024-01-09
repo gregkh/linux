@@ -158,7 +158,8 @@ c-sched-targets :=			\
 	select_cpu_dfl_nodispatch	\
 	select_cpu_dispatch		\
 	select_cpu_dispatch_bad_dsq	\
-	select_cpu_dispatch_dbl_dsp
+	select_cpu_dispatch_dbl_dsp	\
+	select_cpu_vtime
 
 $(c-sched-targets): %: $(filter-out %.bpf.c,%.c) $(INCLUDE_DIR)/%.bpf.skel.h
 	$(eval sched=$(notdir $@))
