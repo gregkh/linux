@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <libgen.h>
 #include <limits.h>
+#include <inttypes.h>
 #include <fcntl.h>
 #include <time.h>
 #include <bpf/bpf.h>
@@ -183,7 +184,7 @@ int main(int argc, char **argv)
 
 		memcpy(last_stats, acc_stats, sizeof(acc_stats));
 
-		printf("\n[SEQ %6lu cpu=%5.1lf hweight_gen=%lu]\n",
+		printf("\n[SEQ %6lu cpu=%5.1lf hweight_gen=%" PRIu64 "]\n",
 		       seq++, cpu_util * 100.0, skel->data->hweight_gen);
 		printf("       act:%6llu  deact:%6llu local:%6llu global:%6llu\n",
 		       stats[FCG_STAT_ACT],
@@ -210,6 +211,7 @@ int main(int argc, char **argv)
 		       stats[FCG_STAT_PNC_GONE]);
 		printf("BAD remove:%6llu\n",
 		       acc_stats[FCG_STAT_BAD_REMOVAL]);
+		fflush(stdout);
 
 		nanosleep(&intv_ts, NULL);
 	}

@@ -425,10 +425,13 @@ s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 	if (!(taskc = lookup_task_ctx(p)) || !(p_cpumask = taskc->cpumask))
 		goto enoent;
 
-	if (kthreads_local &&
-	    (p->flags & PF_KTHREAD) && p->nr_cpus_allowed == 1) {
+	if (p->nr_cpus_allowed == 1) {
 		cpu = prev_cpu;
-		stat_add(RUSTY_STAT_DIRECT_DISPATCH, 1);
+		if (kthreads_local && (p->flags & PF_KTHREAD)) {
+			stat_add(RUSTY_STAT_DIRECT_DISPATCH, 1);
+		} else {
+			stat_add(RUSTY_STAT_PINNED, 1);
+		}
 		goto direct;
 	}
 
@@ -436,7 +439,7 @@ s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 	 * If WAKE_SYNC and the machine isn't fully saturated, wake up @p to the
 	 * local dsq of the waker.
 	 */
-	if (p->nr_cpus_allowed > 1 && (wake_flags & SCX_WAKE_SYNC)) {
+	if (wake_flags & SCX_WAKE_SYNC) {
 		struct task_struct *current = (void *)bpf_get_current_task();
 
 		if (!(BPF_CORE_READ(current, flags) & PF_EXITING) &&
@@ -473,13 +476,6 @@ s32 BPF_STRUCT_OPS(rusty_select_cpu, struct task_struct *p, s32 prev_cpu,
 				}
 			}
 		}
-	}
-
-	/* If only one CPU is allowed, dispatch */
-	if (p->nr_cpus_allowed == 1) {
-		stat_add(RUSTY_STAT_PINNED, 1);
-		cpu = prev_cpu;
-		goto direct;
 	}
 
 	has_idle_cores = !bpf_cpumask_empty(idle_smtmask);
@@ -956,8 +952,8 @@ void BPF_STRUCT_OPS(rusty_set_cpumask, struct task_struct *p,
 			bpf_cpumask_subset((const struct cpumask *)all_cpumask, cpumask);
 }
 
-s32 BPF_STRUCT_OPS(rusty_prep_enable, struct task_struct *p,
-		   struct scx_enable_args *args)
+s32 BPF_STRUCT_OPS(rusty_init_task, struct task_struct *p,
+		   struct scx_init_task_args *args)
 {
 	struct bpf_cpumask *cpumask;
 	struct task_ctx taskc = { .dom_active_pids_gen = -1 };
@@ -1006,7 +1002,8 @@ s32 BPF_STRUCT_OPS(rusty_prep_enable, struct task_struct *p,
 	return 0;
 }
 
-void BPF_STRUCT_OPS(rusty_disable, struct task_struct *p)
+void BPF_STRUCT_OPS(rusty_exit_task, struct task_struct *p,
+		    struct scx_exit_task_args *args)
 {
 	pid_t pid = p->pid;
 	long ret;
@@ -1159,8 +1156,8 @@ struct sched_ext_ops rusty = {
 	.quiescent		= (void *)rusty_quiescent,
 	.set_weight		= (void *)rusty_set_weight,
 	.set_cpumask		= (void *)rusty_set_cpumask,
-	.prep_enable		= (void *)rusty_prep_enable,
-	.disable		= (void *)rusty_disable,
+	.init_task		= (void *)rusty_init_task,
+	.exit_task		= (void *)rusty_exit_task,
 	.init			= (void *)rusty_init,
 	.exit			= (void *)rusty_exit,
 	.name			= "rusty",
