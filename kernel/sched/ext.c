@@ -682,6 +682,15 @@ static void dispatch_enqueue(struct scx_dispatch_q *dsq, struct task_struct *p,
 	p->scx.dsq = dsq;
 
 	/*
+	 * scx.ddsp_dsq_id and scx.ddsp_enq_flags are only relevant on the
+	 * direct dispatch path, but we clear them here because the direct
+	 * dispatch verdict may be overridden on the enqueue path during e.g.
+	 * bypass.
+	 */
+	p->scx.ddsp_dsq_id = SCX_DSQ_INVALID;
+	p->scx.ddsp_enq_flags = 0;
+
+	/*
 	 * We're transitioning out of QUEUEING or DISPATCHING. store_release to
 	 * match waiters' load_acquire.
 	 */
@@ -833,12 +842,11 @@ static void mark_direct_dispatch(struct task_struct *ddsp_task,
 		return;
 	}
 
-	WARN_ON_ONCE(p->scx.ddsq_id != SCX_DSQ_INVALID);
-	WARN_ON_ONCE(p->scx.flags & SCX_TASK_DDSP_PRIQ);
+	WARN_ON_ONCE(p->scx.ddsp_dsq_id != SCX_DSQ_INVALID);
+	WARN_ON_ONCE(p->scx.ddsp_enq_flags);
 
-	p->scx.ddsq_id = dsq_id;
-	if (enq_flags & SCX_ENQ_DSQ_PRIQ)
-		p->scx.flags |= SCX_TASK_DDSP_PRIQ;
+	p->scx.ddsp_dsq_id = dsq_id;
+	p->scx.ddsp_enq_flags = enq_flags;
 }
 
 static void direct_dispatch(struct task_struct *p, u64 enq_flags)
@@ -847,14 +855,9 @@ static void direct_dispatch(struct task_struct *p, u64 enq_flags)
 
 	touch_core_sched_dispatch(task_rq(p), p);
 
-	if (p->scx.flags & SCX_TASK_DDSP_PRIQ) {
-		enq_flags |= SCX_ENQ_DSQ_PRIQ;
-		p->scx.flags &= ~SCX_TASK_DDSP_PRIQ;
-	}
-
-	dsq = find_dsq_for_dispatch(task_rq(p), p->scx.ddsq_id, p);
-	dispatch_enqueue(dsq, p, enq_flags | SCX_ENQ_CLEAR_OPSS);
-	p->scx.ddsq_id = SCX_DSQ_INVALID;
+	enq_flags |= (p->scx.ddsp_enq_flags | SCX_ENQ_CLEAR_OPSS);
+	dsq = find_dsq_for_dispatch(task_rq(p), p->scx.ddsp_dsq_id, p);
+	dispatch_enqueue(dsq, p, enq_flags);
 }
 
 static bool test_rq_online(struct rq *rq)
@@ -874,9 +877,6 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 
 	WARN_ON_ONCE(!(p->scx.flags & SCX_TASK_QUEUED));
 
-	if (p->scx.ddsq_id != SCX_DSQ_INVALID)
-		goto direct;
-
 	/* rq migration */
 	if (sticky_cpu == cpu_of(rq))
 		goto local_norefill;
@@ -895,6 +895,9 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 		else
 			goto global;
 	}
+
+	if (p->scx.ddsp_dsq_id != SCX_DSQ_INVALID)
+		goto direct;
 
 	/* see %SCX_OPS_ENQ_EXITING */
 	if (!static_branch_unlikely(&scx_ops_enq_exiting) &&
@@ -922,7 +925,7 @@ static void do_enqueue_task(struct rq *rq, struct task_struct *p, u64 enq_flags,
 	SCX_CALL_OP_TASK(SCX_KF_ENQUEUE, enqueue, p, enq_flags);
 
 	*ddsp_taskp = NULL;
-	if (p->scx.ddsq_id != SCX_DSQ_INVALID)
+	if (p->scx.ddsp_dsq_id != SCX_DSQ_INVALID)
 		goto direct;
 
 	/*
@@ -2142,7 +2145,7 @@ static int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flag
 		cpu = scx_select_cpu_dfl(p, prev_cpu, wake_flags, &found);
 		if (found) {
 			p->scx.slice = SCX_SLICE_DFL;
-			p->scx.ddsq_id = SCX_DSQ_LOCAL;
+			p->scx.ddsp_dsq_id = SCX_DSQ_LOCAL;
 		}
 		return cpu;
 	}
@@ -4101,13 +4104,20 @@ static void scx_dispatch_commit(struct task_struct *p, u64 dsq_id, u64 enq_flags
  * @enq_flags: SCX_ENQ_*
  *
  * Dispatch @p into the FIFO queue of the DSQ identified by @dsq_id. It is safe
- * to call this function spuriously. Can be called from ops.enqueue() and
- * ops.dispatch().
+ * to call this function spuriously. Can be called from ops.enqueue(),
+ * ops.select_cpu(), and ops.dispatch().
  *
- * When called from ops.enqueue(), it's for direct dispatch and @p must match
- * the task being enqueued. Also, %SCX_DSQ_LOCAL_ON can't be used to target the
- * local DSQ of a CPU other than the enqueueing one. Use ops.select_cpu() to be
- * on the target CPU in the first place.
+ * When called from ops.select_cpu() or ops.enqueue(), it's for direct dispatch
+ * and @p must match the task being enqueued. Also, %SCX_DSQ_LOCAL_ON can't be
+ * used to target the local DSQ of a CPU other than the enqueueing one. Use
+ * ops.select_cpu() to be on the target CPU in the first place.
+ *
+ * When called from ops.select_cpu(), @enq_flags and @dsp_id are stored, and @p
+ * will be directly dispatched to the corresponding dispatch queue after
+ * ops.select_cpu() returns. If @p is dispatched to SCX_DSQ_LOCAL, it will be
+ * dispatched to the local DSQ of the CPU returned by ops.select_cpu().
+ * @enq_flags are OR'd with the enqueue flags on the enqueue path before the
+ * task is dispatched.
  *
  * When called from ops.dispatch(), there are no restrictions on @p or @dsq_id
  * and this function can be called upto ops.dispatch_max_batch times to dispatch

@@ -114,7 +114,8 @@ struct task_struct init_task
 		.ops_state	= ATOMIC_INIT(0),
 		.runnable_at	= INITIAL_JIFFIES,
 		.slice		= SCX_SLICE_DFL,
-		.ddsq_id	= SCX_DSQ_INVALID,
+		.ddsp_dsq_id	= SCX_DSQ_INVALID,
+		.ddsp_enq_flags	= 0,
 	},
 #endif
 	.ptraced	= LIST_HEAD_INIT(init_task.ptraced),
