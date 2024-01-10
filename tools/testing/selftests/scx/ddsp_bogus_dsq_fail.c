@@ -11,6 +11,8 @@
 #include "ddsp_bogus_dsq_fail.bpf.skel.h"
 #include "scx_test.h"
 
+#define SCX_EXIT_ERROR 1024
+
 static enum scx_test_status setup(void **ctx)
 {
 	struct ddsp_bogus_dsq_fail *skel;
@@ -31,6 +33,8 @@ static enum scx_test_status run(void *ctx)
 	SCX_FAIL_IF(!link, "Failed to attach struct_ops");
 
 	sleep(1);
+
+	SCX_EQ(skel->bss->uei.kind, SCX_EXIT_ERROR);
 	bpf_link__destroy(link);
 
 	return SCX_TEST_PASS;
