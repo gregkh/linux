@@ -8,17 +8,14 @@
 
 char _license[] SEC("license") = "GPL";
 
-s32 BPF_STRUCT_OPS(dsp_fallbackdsq_fail_select_cpu, struct task_struct *p,
+s32 BPF_STRUCT_OPS(ddsp_vtimelocal_fail_select_cpu, struct task_struct *p,
 		   s32 prev_cpu, u64 wake_flags)
 {
 	s32 cpu = scx_bpf_pick_idle_cpu(p->cpus_ptr, 0);
 
 	if (cpu >= 0) {
-		/*
-		 * If we dispatch to a bogus DSQ that will fall back to the
-		 * builtin global DSQ, we fail gracefully.
-		 */
-		scx_bpf_dispatch_vtime(p, 0xcafef00d, SCX_SLICE_DFL,
+		/* Shouldn't be allowed to vtime dispatch to a builtin DSQ. */
+		scx_bpf_dispatch_vtime(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL,
 				       p->scx.dsq_vtime, 0);
 		return cpu;
 	}
@@ -26,7 +23,7 @@ s32 BPF_STRUCT_OPS(dsp_fallbackdsq_fail_select_cpu, struct task_struct *p,
 	return prev_cpu;
 }
 
-s32 BPF_STRUCT_OPS(dsp_fallbackdsq_fail_init)
+s32 BPF_STRUCT_OPS(ddsp_vtimelocal_fail_init)
 {
 	scx_bpf_switch_all();
 
@@ -34,9 +31,9 @@ s32 BPF_STRUCT_OPS(dsp_fallbackdsq_fail_init)
 }
 
 SEC(".struct_ops.link")
-struct sched_ext_ops dsp_fallbackdsq_fail_ops = {
-	.select_cpu		= dsp_fallbackdsq_fail_select_cpu,
-	.init			= dsp_fallbackdsq_fail_init,
-	.name			= "dsp_fallbackdsq_fail",
+struct sched_ext_ops ddsp_vtimelocal_fail_ops = {
+	.select_cpu		= ddsp_vtimelocal_fail_select_cpu,
+	.init			= ddsp_vtimelocal_fail_init,
+	.name			= "ddsp_vtimelocal_fail",
 	.timeout_ms		= 1000U,
 };

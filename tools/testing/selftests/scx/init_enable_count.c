@@ -31,7 +31,7 @@ open_load_prog(bool global)
 	return skel;
 }
 
-static void run_test(bool global)
+static enum scx_test_status run_test(bool global)
 {
 	struct init_enable_count *skel;
 	struct bpf_link *link;
@@ -42,12 +42,12 @@ static void run_test(bool global)
 
 	skel = open_load_prog(global);
 	link = bpf_map__attach_struct_ops(skel->maps.init_enable_count_ops);
-	SCX_BUG_ON(!link, "Failed to attach struct_ops");
+	SCX_FAIL_IF(!link, "Failed to attach struct_ops");
 
 	/* SCHED_EXT children */
 	for (i = 0; i < num_children; i++) {
 		pids[i] = fork();
-		SCX_BUG_ON(pids[i] < 0, "Failed to fork child");
+		SCX_FAIL_IF(pids[i] < 0, "Failed to fork child");
 
 		if (pids[i] == 0) {
 			ret = sched_setscheduler(0, SCHED_EXT, &param);
@@ -67,10 +67,11 @@ static void run_test(bool global)
 		}
 	}
 	for (i = 0; i < num_children; i++) {
-		SCX_BUG_ON(waitpid(pids[i], &status, 0) != pids[i],
-			   "Failed to wait for SCX child");
-		SCX_BUG_ON(status != 0, "SCX child %d exited with status %d",
-			   i, status);
+		SCX_FAIL_IF(waitpid(pids[i], &status, 0) != pids[i],
+			    "Failed to wait for SCX child\n");
+
+		SCX_FAIL_IF(status != 0, "SCX child %d exited with status %d\n", i,
+			    status);
 	}
 
 	/* SCHED_OTHER children */
@@ -79,11 +80,13 @@ static void run_test(bool global)
 		if (pids[i] == 0)
 			exit(0);
 	}
+
 	for (i = 0; i < num_children; i++) {
-		SCX_BUG_ON(waitpid(pids[i], &status, 0) != pids[i],
-			   "Failed to wait for normal child");
-		SCX_BUG_ON(status != 0,
-			   "Normal child %d exited with status %d", i, status);
+		SCX_FAIL_IF(waitpid(pids[i], &status, 0) != pids[i],
+			    "Failed to wait for normal child\n");
+
+		SCX_FAIL_IF(status != 0, "Normal child %d exited with status %d\n", i,
+			    status);
 	}
 
 	sleep(1);
@@ -101,14 +104,25 @@ static void run_test(bool global)
 
 	bpf_link__destroy(link);
 	init_enable_count__destroy(skel);
+
+	return SCX_TEST_PASS;
 }
 
-int main(int argc, char **argv)
+static enum scx_test_status run(void *ctx)
 {
-	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+	enum scx_test_status status;
 
-	run_test(true);
-	run_test(false);
+	status = run_test(true);
+	if (status != SCX_TEST_PASS)
+		return status;
 
-	return 0;
+	return run_test(false);
 }
+
+struct scx_test init_enable_count = {
+	.name = "init_enable_count",
+	.description = "Verify we do the correct amount of counting of init, "
+		       "enable, etc callbacks.",
+	.run = run,
+};
+REGISTER_SCX_TEST(&init_enable_count)
