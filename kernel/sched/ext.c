@@ -3201,9 +3201,12 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	static_branch_disable(&__scx_switched_all);
 	WRITE_ONCE(scx_switching_all, false);
 
-	/* avoid racing against fork and cgroup changes */
-	cpus_read_lock();
+	/*
+	 * Avoid racing against fork and cgroup changes. See scx_ops_enable()
+	 * for explanation on the locking order.
+	 */
 	percpu_down_write(&scx_fork_rwsem);
+	cpus_read_lock();
 	scx_cgroup_lock();
 
 	spin_lock_irq(&scx_tasks_lock);
@@ -3244,8 +3247,8 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	scx_cgroup_exit();
 
 	scx_cgroup_unlock();
-	percpu_up_write(&scx_fork_rwsem);
 	cpus_read_unlock();
+	percpu_up_write(&scx_fork_rwsem);
 
 	if (ei->kind >= SCX_EXIT_ERROR) {
 		printk(KERN_ERR "sched_ext: BPF scheduler \"%s\" errored, disabling\n", scx_ops.name);
@@ -3460,9 +3463,23 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	/*
 	 * Lock out forks, cgroup on/offlining and moves before opening the
 	 * floodgate so that they don't wander into the operations prematurely.
+	 *
+	 * We don't need to keep the CPUs stable but static_branch_*() requires
+	 * cpus_read_lock() and scx_cgroup_rwsem must nest inside
+	 * cpu_hotplug_lock because of the following dependency chain:
+	 *
+	 *   cpu_hotplug_lock --> cgroup_threadgroup_rwsem --> scx_cgroup_rwsem
+	 *
+	 * So, we need to do cpus_read_lock() before scx_cgroup_lock() and use
+	 * static_branch_*_cpuslocked().
+	 *
+	 * Note that cpu_hotplug_lock must nest inside scx_fork_rwsem due to the
+	 * following dependency chain:
+	 *
+	 *   scx_fork_rwsem --> pernet_ops_rwsem --> cpu_hotplug_lock
 	 */
-	cpus_read_lock();
 	percpu_down_write(&scx_fork_rwsem);
+	cpus_read_lock();
 	scx_cgroup_lock();
 
 	for (i = SCX_OPI_NORMAL_BEGIN; i < SCX_OPI_NORMAL_END; i++)
@@ -3575,8 +3592,8 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	spin_unlock_irq(&scx_tasks_lock);
 	preempt_enable();
 	scx_cgroup_unlock();
-	percpu_up_write(&scx_fork_rwsem);
 	cpus_read_unlock();
+	percpu_up_write(&scx_fork_rwsem);
 
 	if (!scx_ops_tryset_enable_state(SCX_OPS_ENABLED, SCX_OPS_ENABLING)) {
 		ret = -EBUSY;
