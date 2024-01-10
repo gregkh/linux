@@ -10,8 +10,6 @@
 #include "ddsp_vtimelocal_fail.bpf.skel.h"
 #include "scx_test.h"
 
-#define SCX_EXIT_ERROR 1024
-
 static enum scx_test_status setup(void **ctx)
 {
 	struct ddsp_vtimelocal_fail *skel;

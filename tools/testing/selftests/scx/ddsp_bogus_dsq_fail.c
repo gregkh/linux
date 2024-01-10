@@ -11,8 +11,6 @@
 #include "ddsp_bogus_dsq_fail.bpf.skel.h"
 #include "scx_test.h"
 
-#define SCX_EXIT_ERROR 1024
-
 static enum scx_test_status setup(void **ctx)
 {
 	struct ddsp_bogus_dsq_fail *skel;
