@@ -30,6 +30,8 @@ static enum scx_test_status run(void *ctx)
 	SCX_FAIL_IF(!link, "Failed to attach struct_ops");
 
 	sleep(1);
+
+	SCX_EQ(skel->bss->uei.kind, SCX_EXIT_ERROR);
 	bpf_link__destroy(link);
 
 	return SCX_TEST_PASS;

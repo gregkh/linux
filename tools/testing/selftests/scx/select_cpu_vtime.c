@@ -4,36 +4,56 @@
  * Copyright (c) 2024 David Vernet <dvernet@meta.com>
  * Copyright (c) 2024 Tejun Heo <tj@kernel.org>
  */
-#include <stdio.h>
-#include <unistd.h>
-#include <libgen.h>
 #include <bpf/bpf.h>
 #include <scx/common.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #include "select_cpu_vtime.bpf.skel.h"
 #include "scx_test.h"
 
-int main(int argc, char **argv)
+static enum scx_test_status setup(void **ctx)
 {
 	struct select_cpu_vtime *skel;
-	struct bpf_link *link;
-
-	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
 	skel = select_cpu_vtime__open_and_load();
-	SCX_BUG_ON(!skel, "Failed to open and load skel");
+	SCX_FAIL_IF(!skel, "Failed to open and load skel");
+	*ctx = skel;
+
+	return SCX_TEST_PASS;
+}
+
+static enum scx_test_status run(void *ctx)
+{
+	struct select_cpu_vtime *skel = ctx;
+	struct bpf_link *link;
 
 	SCX_ASSERT(!skel->bss->consumed);
 
 	link = bpf_map__attach_struct_ops(skel->maps.select_cpu_vtime_ops);
-	SCX_BUG_ON(!link, "Failed to attach struct_ops");
+	SCX_FAIL_IF(!link, "Failed to attach scheduler");
 
 	sleep(1);
 
 	SCX_ASSERT(skel->bss->consumed);
 
 	bpf_link__destroy(link);
-	select_cpu_vtime__destroy(skel);
 
-	return 0;
+	return SCX_TEST_PASS;
 }
+
+static void cleanup(void *ctx)
+{
+	struct select_cpu_vtime *skel = ctx;
+
+	select_cpu_vtime__destroy(skel);
+}
+
+struct scx_test select_cpu_vtime = {
+	.name = "select_cpu_vtime",
+	.description = "Test doing direct vtime-dispatching from "
+		       "ops.select_cpu(), to a non-built-in DSQ",
+	.setup = setup,
+	.run = run,
+	.cleanup = cleanup,
+};
+REGISTER_SCX_TEST(&select_cpu_vtime)

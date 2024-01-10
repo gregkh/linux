@@ -8,6 +8,8 @@
 
 char _license[] SEC("license") = "GPL";
 
+struct user_exit_info uei;
+
 s32 BPF_STRUCT_OPS(ddsp_bogus_dsq_fail_select_cpu, struct task_struct *p,
 		   s32 prev_cpu, u64 wake_flags)
 {
@@ -26,6 +28,11 @@ s32 BPF_STRUCT_OPS(ddsp_bogus_dsq_fail_select_cpu, struct task_struct *p,
 	return prev_cpu;
 }
 
+void BPF_STRUCT_OPS(ddsp_bogus_dsq_fail_exit, struct scx_exit_info *ei)
+{
+	uei_record(&uei, ei);
+}
+
 s32 BPF_STRUCT_OPS(ddsp_bogus_dsq_fail_init)
 {
 	scx_bpf_switch_all();
@@ -36,6 +43,7 @@ s32 BPF_STRUCT_OPS(ddsp_bogus_dsq_fail_init)
 SEC(".struct_ops.link")
 struct sched_ext_ops ddsp_bogus_dsq_fail_ops = {
 	.select_cpu		= ddsp_bogus_dsq_fail_select_cpu,
+	.exit			= ddsp_bogus_dsq_fail_exit,
 	.init			= ddsp_bogus_dsq_fail_init,
 	.name			= "ddsp_bogus_dsq_fail",
 	.timeout_ms		= 1000U,

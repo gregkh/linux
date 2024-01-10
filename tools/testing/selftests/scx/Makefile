@@ -147,20 +147,6 @@ $(INCLUDE_DIR)/%.bpf.skel.h: $(SCXOBJ_DIR)/%.bpf.o $(INCLUDE_DIR)/vmlinux.h $(BP
 ################
 # C schedulers #
 ################
-c-sched-targets :=			\
-	select_cpu_dfl			\
-	select_cpu_dfl_nodispatch	\
-	select_cpu_dispatch		\
-	select_cpu_dispatch_bad_dsq	\
-	select_cpu_dispatch_dbl_dsp	\
-	select_cpu_vtime
-
-$(c-sched-targets): %: $(filter-out %.bpf.c,%.c) $(INCLUDE_DIR)/%.bpf.skel.h
-	$(eval sched=$(notdir $@))
-	$(CC) $(CFLAGS) -c $(sched).c -o $(SCXOBJ_DIR)/$(sched).o
-	$(CC) -o $@ $(SCXOBJ_DIR)/$(sched).o $(LIBBPF_OUTPUT) $(LDFLAGS)
-
-TEST_GEN_PROGS := $(c-sched-targets)
 
 override define CLEAN
 	rm -rf $(OUTPUT_DIR)
@@ -176,6 +162,12 @@ auto-test-targets :=			\
 	ddsp_vtimelocal_fail		\
 	init_enable_count		\
 	minimal				\
+	select_cpu_dfl			\
+	select_cpu_dfl_nodispatch	\
+	select_cpu_dispatch		\
+	select_cpu_dispatch_bad_dsq	\
+	select_cpu_dispatch_dbl_dsp	\
+	select_cpu_vtime		\
 	test_example
 
 testcase-targets := $(addsuffix .o,$(addprefix $(SCXOBJ_DIR)/,$(auto-test-targets)))
@@ -197,6 +189,8 @@ $(testcase-targets): $(SCXOBJ_DIR)/%.o: %.c $(SCXOBJ_DIR)/runner.o $$(if $$(wild
 runner: $(SCXOBJ_DIR)/runner.o $(BPFOBJ) $(testcase-targets)
 	@echo "$(testcase-targets)"
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+TEST_GEN_PROGS := runner
 
 all: runner
 
