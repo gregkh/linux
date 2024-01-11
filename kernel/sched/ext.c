@@ -9,10 +9,15 @@
 #define SCX_OP_IDX(op)		(offsetof(struct sched_ext_ops, op) / sizeof(void (*)(void)))
 
 enum scx_internal_consts {
-	SCX_NR_ONLINE_OPS	= SCX_OP_IDX(init),
-	SCX_DSP_DFL_MAX_BATCH	= 32,
-	SCX_DSP_MAX_LOOPS	= 32,
-	SCX_WATCHDOG_MAX_TIMEOUT = 30 * HZ,
+	SCX_OPI_BEGIN			= 0,
+	SCX_OPI_NORMAL_BEGIN		= 0,
+	SCX_OPI_NORMAL_END		= SCX_OP_IDX(cpu_online),
+	SCX_OPI_CPU_HOTPLUG_BEGIN	= SCX_OP_IDX(cpu_online),
+	SCX_OPI_CPU_HOTPLUG_END		= SCX_OP_IDX(init),
+	SCX_OPI_END			= SCX_OP_IDX(init),
+	SCX_DSP_DFL_MAX_BATCH		= 32,
+	SCX_DSP_MAX_LOOPS		= 32,
+	SCX_WATCHDOG_MAX_TIMEOUT	= 30 * HZ,
 };
 
 enum scx_ops_enable_state {
@@ -104,8 +109,8 @@ static DEFINE_STATIC_KEY_FALSE(scx_ops_enq_exiting);
 DEFINE_STATIC_KEY_FALSE(scx_ops_cpu_preempt);
 static DEFINE_STATIC_KEY_FALSE(scx_builtin_idle_enabled);
 
-struct static_key_false scx_has_op[SCX_NR_ONLINE_OPS] =
-	{ [0 ... SCX_NR_ONLINE_OPS-1] = STATIC_KEY_FALSE_INIT };
+struct static_key_false scx_has_op[SCX_OPI_END] =
+	{ [0 ... SCX_OPI_END-1] = STATIC_KEY_FALSE_INIT };
 
 static atomic_t scx_exit_kind = ATOMIC_INIT(SCX_EXIT_DONE);
 static struct scx_exit_info scx_exit_info;
@@ -3196,9 +3201,12 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	static_branch_disable(&__scx_switched_all);
 	WRITE_ONCE(scx_switching_all, false);
 
-	/* avoid racing against fork and cgroup changes */
-	cpus_read_lock();
+	/*
+	 * Avoid racing against fork and cgroup changes. See scx_ops_enable()
+	 * for explanation on the locking order.
+	 */
 	percpu_down_write(&scx_fork_rwsem);
+	cpus_read_lock();
 	scx_cgroup_lock();
 
 	spin_lock_irq(&scx_tasks_lock);
@@ -3228,7 +3236,7 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 
 	/* no task is on scx, turn off all the switches and flush in-progress calls */
 	static_branch_disable_cpuslocked(&__scx_ops_enabled);
-	for (i = 0; i < SCX_NR_ONLINE_OPS; i++)
+	for (i = SCX_OPI_BEGIN; i < SCX_OPI_END; i++)
 		static_branch_disable_cpuslocked(&scx_has_op[i]);
 	static_branch_disable_cpuslocked(&scx_ops_enq_last);
 	static_branch_disable_cpuslocked(&scx_ops_enq_exiting);
@@ -3239,8 +3247,8 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	scx_cgroup_exit();
 
 	scx_cgroup_unlock();
-	percpu_up_write(&scx_fork_rwsem);
 	cpus_read_unlock();
+	percpu_up_write(&scx_fork_rwsem);
 
 	if (ei->kind >= SCX_EXIT_ERROR) {
 		printk(KERN_ERR "sched_ext: BPF scheduler \"%s\" errored, disabling\n", scx_ops.name);
@@ -3373,13 +3381,13 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 			   scx_create_rt_helper("sched_ext_ops_helper"));
 		if (!scx_ops_helper) {
 			ret = -ENOMEM;
-			goto err_unlock;
+			goto err;
 		}
 	}
 
 	if (scx_ops_enable_state() != SCX_OPS_DISABLED) {
 		ret = -EBUSY;
-		goto err_unlock;
+		goto err;
 	}
 
 	/*
@@ -3408,7 +3416,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		ret = SCX_CALL_OP_RET(SCX_KF_INIT, init);
 		if (ret) {
 			ret = ops_sanitize_err("init", ret);
-			goto err_disable;
+			goto err_disable_unlock_cpus;
 		}
 
 		/*
@@ -3420,8 +3428,14 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		 * ops.exit() like other scx_bpf_error() invocations.
 		 */
 		if (atomic_read(&scx_exit_kind) != SCX_EXIT_NONE)
-			goto err_disable;
+			goto err_disable_unlock_cpus;
 	}
+
+	for (i = SCX_OPI_CPU_HOTPLUG_BEGIN; i < SCX_OPI_CPU_HOTPLUG_END; i++)
+		if (((void (**)(void))ops)[i])
+			static_branch_enable_cpuslocked(&scx_has_op[i]);
+
+	cpus_read_unlock();
 
 	ret = validate_ops(ops);
 	if (ret)
@@ -3449,11 +3463,26 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	/*
 	 * Lock out forks, cgroup on/offlining and moves before opening the
 	 * floodgate so that they don't wander into the operations prematurely.
+	 *
+	 * We don't need to keep the CPUs stable but static_branch_*() requires
+	 * cpus_read_lock() and scx_cgroup_rwsem must nest inside
+	 * cpu_hotplug_lock because of the following dependency chain:
+	 *
+	 *   cpu_hotplug_lock --> cgroup_threadgroup_rwsem --> scx_cgroup_rwsem
+	 *
+	 * So, we need to do cpus_read_lock() before scx_cgroup_lock() and use
+	 * static_branch_*_cpuslocked().
+	 *
+	 * Note that cpu_hotplug_lock must nest inside scx_fork_rwsem due to the
+	 * following dependency chain:
+	 *
+	 *   scx_fork_rwsem --> pernet_ops_rwsem --> cpu_hotplug_lock
 	 */
 	percpu_down_write(&scx_fork_rwsem);
+	cpus_read_lock();
 	scx_cgroup_lock();
 
-	for (i = 0; i < SCX_NR_ONLINE_OPS; i++)
+	for (i = SCX_OPI_NORMAL_BEGIN; i < SCX_OPI_NORMAL_END; i++)
 		if (((void (**)(void))ops)[i])
 			static_branch_enable_cpuslocked(&scx_has_op[i]);
 
@@ -3478,7 +3507,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	 */
 	ret = scx_cgroup_init();
 	if (ret)
-		goto err_disable_unlock;
+		goto err_disable_unlock_all;
 
 	static_branch_enable_cpuslocked(&__scx_ops_enabled);
 
@@ -3504,7 +3533,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 			spin_unlock_irq(&scx_tasks_lock);
 			pr_err("sched_ext: ops.init_task() failed (%d) for %s[%d] while loading\n",
 			       ret, p->comm, p->pid);
-			goto err_disable_unlock;
+			goto err_disable_unlock_all;
 		}
 
 		put_task_struct(p);
@@ -3528,7 +3557,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		preempt_enable();
 		spin_unlock_irq(&scx_tasks_lock);
 		ret = -EBUSY;
-		goto err_disable_unlock;
+		goto err_disable_unlock_all;
 	}
 
 	/*
@@ -3563,6 +3592,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	spin_unlock_irq(&scx_tasks_lock);
 	preempt_enable();
 	scx_cgroup_unlock();
+	cpus_read_unlock();
 	percpu_up_write(&scx_fork_rwsem);
 
 	if (!scx_ops_tryset_enable_state(SCX_OPS_ENABLED, SCX_OPS_ENABLING)) {
@@ -3571,24 +3601,24 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	}
 
 	if (scx_switch_all_req)
-		static_branch_enable_cpuslocked(&__scx_switched_all);
+		static_branch_enable(&__scx_switched_all);
 
-	cpus_read_unlock();
 	mutex_unlock(&scx_ops_enable_mutex);
 
 	scx_cgroup_config_knobs();
 
 	return 0;
 
-err_unlock:
+err:
 	mutex_unlock(&scx_ops_enable_mutex);
 	return ret;
 
-err_disable_unlock:
+err_disable_unlock_all:
 	scx_cgroup_unlock();
 	percpu_up_write(&scx_fork_rwsem);
-err_disable:
+err_disable_unlock_cpus:
 	cpus_read_unlock();
+err_disable:
 	mutex_unlock(&scx_ops_enable_mutex);
 	/* must be fully disabled before returning */
 	scx_ops_disable(SCX_EXIT_ERROR);
