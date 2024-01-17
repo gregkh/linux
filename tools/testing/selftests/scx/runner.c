@@ -55,6 +55,8 @@ static const char *status_to_result(enum scx_test_status status)
 	case SCX_TEST_FAIL:
 		return "not ok";
 	}
+
+        return NULL;
 }
 
 static void print_test_result(const struct scx_test *test,

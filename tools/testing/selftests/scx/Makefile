@@ -161,6 +161,7 @@ auto-test-targets :=			\
 	ddsp_bogus_dsq_fail		\
 	ddsp_vtimelocal_fail		\
 	init_enable_count		\
+	maybe_null			\
 	minimal				\
 	select_cpu_dfl			\
 	select_cpu_dfl_nodispatch	\
@@ -175,6 +176,8 @@ testcase-targets := $(addsuffix .o,$(addprefix $(SCXOBJ_DIR)/,$(auto-test-target
 $(SCXOBJ_DIR)/runner.o: runner.c | $(SCXOBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(SCXOBJ_DIR)/maybe_null.o: $(INCLUDE_DIR)/maybe_null_fail.bpf.skel.h
+
 # Create all of the test targets object files, whose testcase objects will be
 # registered into the runner in ELF constructors.
 #
@@ -188,7 +191,7 @@ $(testcase-targets): $(SCXOBJ_DIR)/%.o: %.c $(SCXOBJ_DIR)/runner.o $$(if $$(wild
 
 runner: $(SCXOBJ_DIR)/runner.o $(BPFOBJ) $(testcase-targets)
 	@echo "$(testcase-targets)"
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 TEST_GEN_PROGS := runner
 
