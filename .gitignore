@@ -169,3 +169,6 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+# Include ".github" directory
+!.github/
