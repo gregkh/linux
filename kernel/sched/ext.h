@@ -103,7 +103,6 @@ void sched_enq_and_set_task(struct sched_enq_and_set_ctx *ctx);
 
 extern const struct sched_class ext_sched_class;
 extern const struct bpf_verifier_ops bpf_sched_ext_verifier_ops;
-extern const struct file_operations sched_ext_fops;
 extern unsigned long scx_watchdog_timeout;
 extern unsigned long scx_watchdog_timestamp;
 

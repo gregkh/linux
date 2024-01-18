@@ -51,17 +51,33 @@ BPF scheduler and reverts all tasks back to CFS.
     local=17 global=72
     ^CEXIT: BPF scheduler unregistered
 
-If ``CONFIG_SCHED_DEBUG`` is set, the current status of the BPF scheduler
-and whether a given task is on sched_ext can be determined as follows:
+The current status of the BPF scheduler can be determined as follows:
 
 .. code-block:: none
 
-    # cat /sys/kernel/debug/sched/ext
-    ops                           : simple
-    enabled                       : 1
-    switching_all                 : 1
-    switched_all                  : 1
-    enable_state                  : enabled
+    # cat /sys/kernel/sched_ext/state
+    enabled
+    # cat /sys/kernel/sched_ext/root/ops
+    simple
+
+``tools/sched_ext/scx_show_state.py`` is a drgn script which shows more
+detailed information:
+
+.. code-block:: none
+
+    # tools/sched_ext/scx_show_state.py
+    ops           : simple
+    enabled       : 1
+    switching_all : 1
+    switched_all  : 1
+    enable_state  : enabled (2)
+    bypass_depth  : 0
+    nr_rejected   : 0
+
+If ``CONFIG_SCHED_DEBUG`` is set, whether a given task is on sched_ext can
+be determined as follows:
+
+.. code-block:: none
 
     # grep ext /proc/self/sched
     ext.enabled                                  :                    1
