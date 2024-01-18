@@ -193,6 +193,10 @@ struct scx_dsp_ctx {
 
 static DEFINE_PER_CPU(struct scx_dsp_ctx, scx_dsp_ctx);
 
+/* /sys/kernel/sched_ext interface */
+static struct kset *scx_kset;
+static struct kobject *scx_root_kobj;
+
 void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice,
 		      u64 enq_flags);
 void scx_bpf_kick_cpu(s32 cpu, u64 flags);
@@ -3030,6 +3034,83 @@ static int scx_cgroup_init(void) { return 0; }
 static void scx_cgroup_config_knobs(void) {}
 #endif
 
+
+/********************************************************************************
+ * Sysfs interface and ops enable/disable.
+ */
+
+#define SCX_ATTR(_name)								\
+	static struct kobj_attribute scx_attr_##_name = {			\
+		.attr = { .name = __stringify(_name), .mode = 0444 },		\
+		.show = scx_attr_##_name##_show,				\
+	}
+
+static ssize_t scx_attr_state_show(struct kobject *kobj,
+				   struct kobj_attribute *ka, char *buf)
+{
+	return sysfs_emit(buf, "%s\n",
+			  scx_ops_enable_state_str[scx_ops_enable_state()]);
+}
+SCX_ATTR(state);
+
+static ssize_t scx_attr_switch_all_show(struct kobject *kobj,
+					struct kobj_attribute *ka, char *buf)
+{
+	return sysfs_emit(buf, "%d\n", READ_ONCE(scx_switching_all));
+}
+SCX_ATTR(switch_all);
+
+static ssize_t scx_attr_nr_rejected_show(struct kobject *kobj,
+					 struct kobj_attribute *ka, char *buf)
+{
+	return sysfs_emit(buf, "%ld\n", atomic_long_read(&scx_nr_rejected));
+}
+SCX_ATTR(nr_rejected);
+
+static struct attribute *scx_global_attrs[] = {
+	&scx_attr_state.attr,
+	&scx_attr_switch_all.attr,
+	&scx_attr_nr_rejected.attr,
+	NULL,
+};
+
+static const struct attribute_group scx_global_attr_group = {
+	.attrs = scx_global_attrs,
+};
+
+static void scx_kobj_release(struct kobject *kobj)
+{
+	kfree(kobj);
+}
+
+static ssize_t scx_attr_ops_show(struct kobject *kobj,
+				 struct kobj_attribute *ka, char *buf)
+{
+	return sysfs_emit(buf, "%s\n", scx_ops.name);
+}
+SCX_ATTR(ops);
+
+static struct attribute *scx_sched_attrs[] = {
+	&scx_attr_ops.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(scx_sched);
+
+static const struct kobj_type scx_ktype = {
+	.release = scx_kobj_release,
+	.sysfs_ops = &kobj_sysfs_ops,
+	.default_groups = scx_sched_groups,
+};
+
+static int scx_uevent(const struct kobject *kobj, struct kobj_uevent_env *env)
+{
+	return add_uevent_var(env, "SCXOPS=%s", scx_ops.name);
+}
+
+static const struct kset_uevent_ops scx_uevent_ops = {
+	.uevent = scx_uevent,
+};
+
 /*
  * Used by sched_fork() and __setscheduler_prio() to pick the matching
  * sched_class. dl/rt are already handled.
@@ -3264,6 +3345,9 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	if (scx_ops.exit)
 		SCX_CALL_OP(SCX_KF_UNLOCKED, exit, ei);
 
+	kobject_del(scx_root_kobj);
+	scx_root_kobj = NULL;
+
 	memset(&scx_ops, 0, sizeof(scx_ops));
 
 	rhashtable_walk_enter(&dsq_hash, &rht_iter);
@@ -3389,6 +3473,17 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		ret = -EBUSY;
 		goto err;
 	}
+
+	scx_root_kobj = kzalloc(sizeof(*scx_root_kobj), GFP_KERNEL);
+	if (!scx_root_kobj) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	scx_root_kobj->kset = scx_kset;
+	ret = kobject_init_and_add(scx_root_kobj, &scx_ktype, NULL, "root");
+	if (ret < 0)
+		goto err;
 
 	/*
 	 * Set scx_ops, transition to PREPPING and clear exit info to arm the
@@ -3603,6 +3698,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	if (scx_switch_all_req)
 		static_branch_enable(&__scx_switched_all);
 
+	kobject_uevent(scx_root_kobj, KOBJ_ADD);
 	mutex_unlock(&scx_ops_enable_mutex);
 
 	scx_cgroup_config_knobs();
@@ -3610,6 +3706,8 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	return 0;
 
 err:
+	kfree(scx_root_kobj);
+	scx_root_kobj = NULL;
 	mutex_unlock(&scx_ops_enable_mutex);
 	return ret;
 
@@ -3656,6 +3754,7 @@ const struct file_operations sched_ext_fops = {
 	.release	= single_release,
 };
 #endif
+
 
 /********************************************************************************
  * bpf_struct_ops plumbing.
@@ -3840,6 +3939,11 @@ struct bpf_struct_ops bpf_sched_ext_ops = {
 	.name = "sched_ext_ops",
 };
 
+
+/********************************************************************************
+ * System integration and init.
+ */
+
 static void sysrq_handle_sched_ext_reset(u8 key)
 {
 	if (scx_ops_helper)
@@ -3939,7 +4043,7 @@ void print_scx_info(const char *log_lvl, struct task_struct *p)
 		scnprintf(runnable_at_buf, sizeof(runnable_at_buf), "%+lldms",
 			  (s64)(runnable_at - jiffies) * (HZ / MSEC_PER_SEC));
 
-	/* Print everything onto one line to conserve console spce. */
+	/* print everything onto one line to conserve console space */
 	printk("%sSched_ext: %s (%s%s), task: runnable_at=%s",
 	       log_lvl, scx_ops.name, scx_ops_enable_state_str[state], all,
 	       runnable_at_buf);
@@ -4751,8 +4855,22 @@ static int __init scx_init(void)
 	}
 
 	ret = register_pm_notifier(&scx_pm_notifier);
-	if (ret)
-		pr_warn("sched_ext: Failed to register PM notifier (%d)\n", ret);
+	if (ret) {
+		pr_err("sched_ext: Failed to register PM notifier (%d)\n", ret);
+		return ret;
+	}
+
+	scx_kset = kset_create_and_add("sched_ext", &scx_uevent_ops, kernel_kobj);
+	if (!scx_kset) {
+		pr_err("sched_ext: Failed to create /sys/sched_ext\n");
+		return -ENOMEM;
+	}
+
+	ret = sysfs_create_group(&scx_kset->kobj, &scx_global_attr_group);
+	if (ret < 0) {
+		pr_err("sched_ext: Failed to add global attributes\n");
+		return ret;
+	}
 
 	return 0;
 }
