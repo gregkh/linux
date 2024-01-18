@@ -5142,9 +5142,16 @@ int amdgpu_do_asic_reset(struct list_head *device_list_handle,
 				tmp_adev->reset_vram_lost = vram_lost;
 				memset(&tmp_adev->reset_task_info, 0,
 						sizeof(tmp_adev->reset_task_info));
-				if (reset_context->job && reset_context->job->vm)
-					tmp_adev->reset_task_info =
-						reset_context->job->vm->task_info;
+				if (reset_context->job && reset_context->job->vm) {
+					struct amdgpu_task_info *ti;
+					struct amdgpu_vm *vm = reset_context->job->vm;
+
+					ti = amdgpu_vm_get_task_info_vm(vm);
+					if (ti) {
+						tmp_adev->reset_task_info = *ti;
+						amdgpu_vm_put_task_info(ti);
+					}
+				}
 				amdgpu_reset_capture_coredumpm(tmp_adev);
 #endif
 				if (vram_lost) {
