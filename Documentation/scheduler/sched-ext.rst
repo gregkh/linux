@@ -60,8 +60,24 @@ The current status of the BPF scheduler can be determined as follows:
     # cat /sys/kernel/sched_ext/root/ops
     simple
 
+``tools/sched_ext/scx_show_state.py`` is a drgn script which shows more
+detailed information:
+
+.. code-block:: none
+
+    # tools/sched_ext/scx_show_state.py
+    ops           : simple
+    enabled       : 1
+    switching_all : 1
+    switched_all  : 1
+    enable_state  : enabled (2)
+    bypass_depth  : 0
+    nr_rejected   : 0
+
 If ``CONFIG_SCHED_DEBUG`` is set, whether a given task is on sched_ext can
 be determined as follows:
+
+.. code-block:: none
 
     # grep ext /proc/self/sched
     ext.enabled                                  :                    1

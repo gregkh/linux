@@ -3724,37 +3724,6 @@ err_disable:
 	return ret;
 }
 
-#ifdef CONFIG_SCHED_DEBUG
-static int scx_debug_show(struct seq_file *m, void *v)
-{
-	mutex_lock(&scx_ops_enable_mutex);
-	seq_printf(m, "%-30s: %s\n", "ops", scx_ops.name);
-	seq_printf(m, "%-30s: %ld\n", "enabled", scx_enabled());
-	seq_printf(m, "%-30s: %d\n", "switching_all",
-		   READ_ONCE(scx_switching_all));
-	seq_printf(m, "%-30s: %ld\n", "switched_all", scx_switched_all());
-	seq_printf(m, "%-30s: %s\n", "enable_state",
-		   scx_ops_enable_state_str[scx_ops_enable_state()]);
-	seq_printf(m, "%-30s: %d\n", "bypassing", scx_ops_bypassing());
-	seq_printf(m, "%-30s: %lu\n", "nr_rejected",
-		   atomic_long_read(&scx_nr_rejected));
-	mutex_unlock(&scx_ops_enable_mutex);
-	return 0;
-}
-
-static int scx_debug_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, scx_debug_show, NULL);
-}
-
-const struct file_operations sched_ext_fops = {
-	.open		= scx_debug_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-#endif
-
 
 /********************************************************************************
  * bpf_struct_ops plumbing.
