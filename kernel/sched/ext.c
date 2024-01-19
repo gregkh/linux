@@ -3734,15 +3734,75 @@ err_disable:
 
 extern struct btf *btf_vmlinux;
 static const struct btf_type *task_struct_type;
+static u32 task_struct_type_id;
+
+/* Make the 2nd argument of .dispatch a pointer that can be NULL. */
+static bool promote_dispatch_2nd_arg(int off, int size,
+                                     enum bpf_access_type type,
+                                     const struct bpf_prog *prog,
+                                     struct bpf_insn_access_aux *info)
+{
+	const struct bpf_struct_ops *st_ops;
+	const struct btf_member *member;
+        const struct btf_type *t;
+        u32 btf_id, member_idx;
+	const char *mname;
+
+        /* btf_id should be the type id of struct sched_ext_ops */
+	btf_id = prog->aux->attach_btf_id;
+	st_ops = bpf_struct_ops_find(btf_id);
+	if (!st_ops)
+                return false;
+
+        /* BTF type of struct sched_ext_ops */
+        t = st_ops->type;
+
+	member_idx = prog->expected_attach_type;
+	if (member_idx >= btf_type_vlen(t))
+                return false;
+
+        /* Get the member name of this program.  For example, the
+         * member name of the dispatch program is "dispatch".
+         */
+	member = &btf_type_member(t)[member_idx];
+	mname = btf_name_by_offset(btf_vmlinux, member->name_off);
+
+        /* Chkeck if it is the 2nd argument of the function pointer at
+         * "dispatch" in struct sched_ext_ops. The arguments of
+         * struct_ops operators are placed in the context one after
+         * another. And, they are 64-bits. So, the 2nd argument is at
+         * offset sizeof(__u64).
+         */
+        if (strcmp(mname, "dispatch") == 0 &&
+            off == sizeof(__u64)) {
+                /* The value is a pointer to a type (struct
+                 * task_struct) given by a BTF ID (PTR_TO_BTF_ID). It
+                 * is tursted (PTR_TRUSTED), however, can be a NULL
+                 * (PTR_MAYBE_NULL).  The BPF program should check the
+                 * pointer to make sure it is not null before using
+                 * it, or the verifier will reject the program.
+                 */
+                info->reg_type = PTR_MAYBE_NULL | PTR_TO_BTF_ID |
+                  PTR_TRUSTED;
+                info->btf = btf_vmlinux;
+                info->btf_id = task_struct_type_id;
+
+                return true;
+        }
+
+        return false;
+}
 
 static bool bpf_scx_is_valid_access(int off, int size,
 				    enum bpf_access_type type,
 				    const struct bpf_prog *prog,
 				    struct bpf_insn_access_aux *info)
 {
-	if (off < 0 || off >= sizeof(__u64) * MAX_BPF_FUNC_ARGS)
-		return false;
 	if (type != BPF_READ)
+		return false;
+        if (promote_dispatch_2nd_arg(off, size, type, prog, info))
+                return true;
+	if (off < 0 || off >= sizeof(__u64) * MAX_BPF_FUNC_ARGS)
 		return false;
 	if (off % size != 0)
 		return false;
@@ -3872,6 +3932,7 @@ static int bpf_scx_init(struct btf *btf)
 	if (type_id < 0)
 		return -EINVAL;
 	task_struct_type = btf_type_by_id(btf, type_id);
+        task_struct_type_id = type_id;
 
 	return 0;
 }
