@@ -2364,3 +2364,8 @@ out:
 
 	return ret;
 }
+
+bool bpf_jit_supports_ptr_xchg(void)
+{
+	return true;
+}
