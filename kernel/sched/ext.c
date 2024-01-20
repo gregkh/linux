@@ -3761,26 +3761,31 @@ static bool promote_dispatch_2nd_arg(int off, int size,
 	if (member_idx >= btf_type_vlen(t))
                 return false;
 
-        /* Get the member name of this program.  For example, the
-         * member name of the dispatch program is "dispatch".
+        /*
+	 * Get the member name of this struct_ops program, which corresponds to
+	 * a field in struct sched_ext_ops. For example, the member name of the
+	 * dispatch struct_ops program (callback) is "dispatch".
          */
 	member = &btf_type_member(t)[member_idx];
 	mname = btf_name_by_offset(btf_vmlinux, member->name_off);
 
-        /* Chkeck if it is the 2nd argument of the function pointer at
-         * "dispatch" in struct sched_ext_ops. The arguments of
-         * struct_ops operators are placed in the context one after
-         * another. And, they are 64-bits. So, the 2nd argument is at
-         * offset sizeof(__u64).
+        /*
+	 * Check if it is the second argument of the function pointer at
+	 * "dispatch" in struct sched_ext_ops. The arguments of struct_ops
+	 * operators are sequential and 64-bit, so the second argument is at
+	 * offset sizeof(__u64).
          */
         if (strcmp(mname, "dispatch") == 0 &&
             off == sizeof(__u64)) {
-                /* The value is a pointer to a type (struct
-                 * task_struct) given by a BTF ID (PTR_TO_BTF_ID). It
-                 * is tursted (PTR_TRUSTED), however, can be a NULL
-                 * (PTR_MAYBE_NULL).  The BPF program should check the
-                 * pointer to make sure it is not null before using
-                 * it, or the verifier will reject the program.
+                /*
+		 * The value is a pointer to a type (struct task_struct) given
+		 * by a BTF ID (PTR_TO_BTF_ID). It is trusted (PTR_TRUSTED),
+		 * however, can be a NULL (PTR_MAYBE_NULL). The BPF program
+		 * should check the pointer to make sure it is not NULL before
+		 * using it, or the verifier will reject the program.
+		 *
+		 * Longer term, this is something that should be addressed by
+		 * BTF, and be fully contained within the verifier.
                  */
                 info->reg_type = PTR_MAYBE_NULL | PTR_TO_BTF_ID |
                   PTR_TRUSTED;

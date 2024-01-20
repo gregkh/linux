@@ -176,8 +176,6 @@ testcase-targets := $(addsuffix .o,$(addprefix $(SCXOBJ_DIR)/,$(auto-test-target
 $(SCXOBJ_DIR)/runner.o: runner.c | $(SCXOBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(SCXOBJ_DIR)/maybe_null.o: $(INCLUDE_DIR)/maybe_null_fail.bpf.skel.h
-
 # Create all of the test targets object files, whose testcase objects will be
 # registered into the runner in ELF constructors.
 #
@@ -185,7 +183,10 @@ $(SCXOBJ_DIR)/maybe_null.o: $(INCLUDE_DIR)/maybe_null_fail.bpf.skel.h
 # compiling BPF object files only if one is present, as the wildcard Make
 # function doesn't support using implicit rules otherwise.
 .SECONDEXPANSION:
-$(testcase-targets): $(SCXOBJ_DIR)/%.o: %.c $(SCXOBJ_DIR)/runner.o $$(if $$(wildcard $$*.bpf.c), $(INCLUDE_DIR)/%.bpf.skel.h) | $(SCXOBJ_DIR)
+$(testcase-targets): $(SCXOBJ_DIR)/%.o: %.c $(SCXOBJ_DIR)/runner.o		\
+	$$(if $$(wildcard $$*.bpf.c), $(INCLUDE_DIR)/%.bpf.skel.h)		\
+	$$(if $$(wildcard $$*_fail.bpf.c), $(INCLUDE_DIR)/%_fail.bpf.skel.h)	\
+	| $(SCXOBJ_DIR)
 	$(eval test=$(patsubst %.o,%.c,$(notdir $@)))
 	$(CC) $(CFLAGS) -c $< -o $@ $(SCXOBJ_DIR)/runner.o
 
