@@ -18,6 +18,9 @@ enum scx_internal_consts {
 	SCX_DSP_DFL_MAX_BATCH		= 32,
 	SCX_DSP_MAX_LOOPS		= 32,
 	SCX_WATCHDOG_MAX_TIMEOUT	= 30 * HZ,
+
+	SCX_EXIT_BT_LEN			= 64,
+	SCX_EXIT_MSG_LEN		= 1024,
 };
 
 enum scx_ops_enable_state {
@@ -113,7 +116,7 @@ struct static_key_false scx_has_op[SCX_OPI_END] =
 	{ [0 ... SCX_OPI_END-1] = STATIC_KEY_FALSE_INIT };
 
 static atomic_t scx_exit_kind = ATOMIC_INIT(SCX_EXIT_DONE);
-static struct scx_exit_info scx_exit_info;
+static struct scx_exit_info *scx_exit_info;
 
 static atomic_long_t scx_nr_rejected = ATOMIC_LONG_INIT(0);
 
@@ -3207,14 +3210,39 @@ static void scx_ops_bypass(bool bypass)
 	}
 }
 
+static void free_exit_info(struct scx_exit_info *ei)
+{
+	kfree(ei->msg);
+	kfree(ei->bt);
+	kfree(ei);
+}
+
+static struct scx_exit_info *alloc_exit_info(void)
+{
+	struct scx_exit_info *ei;
+
+	ei = kzalloc(sizeof(*ei), GFP_KERNEL);
+	if (!ei)
+		return NULL;
+
+	ei->bt = kcalloc(sizeof(ei->bt[0]), SCX_EXIT_BT_LEN, GFP_KERNEL);
+	ei->msg = kzalloc(SCX_EXIT_MSG_LEN, GFP_KERNEL);
+
+	if (!ei->bt || !ei->msg) {
+		free_exit_info(ei);
+		return NULL;
+	}
+
+	return ei;
+}
+
 static void scx_ops_disable_workfn(struct kthread_work *work)
 {
-	struct scx_exit_info *ei = &scx_exit_info;
+	struct scx_exit_info *ei = scx_exit_info;
 	struct scx_task_iter sti;
 	struct task_struct *p;
 	struct rhashtable_iter rht_iter;
 	struct scx_dispatch_q *dsq;
-	const char *reason;
 	int i, kind;
 
 	kind = atomic_read(&scx_exit_kind);
@@ -3229,31 +3257,29 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 		if (atomic_try_cmpxchg(&scx_exit_kind, &kind, SCX_EXIT_DONE))
 			break;
 	}
+	ei->kind = kind;
 
 	cancel_delayed_work_sync(&scx_watchdog_work);
 
-	switch (kind) {
+	switch (ei->kind) {
 	case SCX_EXIT_UNREG:
-		reason = "BPF scheduler unregistered";
+		ei->reason = "BPF scheduler unregistered";
 		break;
 	case SCX_EXIT_SYSRQ:
-		reason = "disabled by sysrq-S";
+		ei->reason = "disabled by sysrq-S";
 		break;
 	case SCX_EXIT_ERROR:
-		reason = "runtime error";
+		ei->reason = "runtime error";
 		break;
 	case SCX_EXIT_ERROR_BPF:
-		reason = "scx_bpf_error";
+		ei->reason = "scx_bpf_error";
 		break;
 	case SCX_EXIT_ERROR_STALL:
-		reason = "runnable task stall";
+		ei->reason = "runnable task stall";
 		break;
 	default:
-		reason = "<UNKNOWN>";
+		ei->reason = "<UNKNOWN>";
 	}
-
-	ei->kind = kind;
-	strlcpy(ei->reason, reason, sizeof(ei->reason));
 
 	/* guarantee forward progress by bypassing scx_ops */
 	scx_ops_bypass(true);
@@ -3264,7 +3290,7 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 		break;
 	case SCX_OPS_DISABLED:
 		pr_warn("sched_ext: ops error detected without ops (%s)\n",
-			scx_exit_info.msg);
+			scx_exit_info->msg);
 		WARN_ON_ONCE(scx_ops_set_enable_state(SCX_OPS_DISABLED) !=
 			     SCX_OPS_DISABLING);
 		goto done;
@@ -3365,6 +3391,9 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	scx_dsp_buf = NULL;
 	scx_dsp_max_batch = 0;
 
+	free_exit_info(scx_exit_info);
+	scx_exit_info = NULL;
+
 	mutex_unlock(&scx_ops_enable_mutex);
 
 	WARN_ON_ONCE(scx_ops_set_enable_state(SCX_OPS_DISABLED) !=
@@ -3411,17 +3440,17 @@ static DEFINE_IRQ_WORK(scx_ops_error_irq_work, scx_ops_error_irq_workfn);
 __printf(2, 3) void scx_ops_error_kind(enum scx_exit_kind kind,
 				       const char *fmt, ...)
 {
-	struct scx_exit_info *ei = &scx_exit_info;
+	struct scx_exit_info *ei = scx_exit_info;
 	int none = SCX_EXIT_NONE;
 	va_list args;
 
 	if (!atomic_try_cmpxchg(&scx_exit_kind, &none, kind))
 		return;
 
-	ei->bt_len = stack_trace_save(ei->bt, ARRAY_SIZE(ei->bt), 1);
+	ei->bt_len = stack_trace_save(ei->bt, SCX_EXIT_BT_LEN, 1);
 
 	va_start(args, fmt);
-	vscnprintf(ei->msg, ARRAY_SIZE(ei->msg), fmt, args);
+	vscnprintf(ei->msg, SCX_EXIT_MSG_LEN, fmt, args);
 	va_end(args);
 
 	irq_work_queue(&scx_ops_error_irq_work);
@@ -3474,6 +3503,12 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		goto err;
 	}
 
+	scx_exit_info = alloc_exit_info();
+	if (!scx_exit_info) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
 	scx_root_kobj = kzalloc(sizeof(*scx_root_kobj), GFP_KERNEL);
 	if (!scx_root_kobj) {
 		ret = -ENOMEM;
@@ -3494,7 +3529,6 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	WARN_ON_ONCE(scx_ops_set_enable_state(SCX_OPS_PREPPING) !=
 		     SCX_OPS_DISABLED);
 
-	memset(&scx_exit_info, 0, sizeof(scx_exit_info));
 	atomic_set(&scx_exit_kind, SCX_EXIT_NONE);
 	scx_warned_zero_slice = false;
 
@@ -3706,8 +3740,14 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 	return 0;
 
 err:
-	kfree(scx_root_kobj);
-	scx_root_kobj = NULL;
+	if (scx_root_kobj) {
+		kfree(scx_root_kobj);
+		scx_root_kobj = NULL;
+	}
+	if (scx_exit_info) {
+		free_exit_info(scx_exit_info);
+		scx_exit_info = NULL;
+	}
 	mutex_unlock(&scx_ops_enable_mutex);
 	return ret;
 
