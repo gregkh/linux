@@ -6,6 +6,7 @@
 #include <linux/sched/sysctl.h>
 #include <linux/sched/rt.h>
 #include <linux/sched/task.h>
+#include <linux/sched/ext.h>
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
@@ -97,6 +98,20 @@ struct task_struct init_task __aligned(L1_CACHE_BYTES) = {
 #endif
 #ifdef CONFIG_CGROUP_SCHED
 	.sched_task_group = &root_task_group,
+#endif
+#ifdef CONFIG_SCHED_CLASS_EXT
+	.scx		= {
+		.dsq_node.fifo	= LIST_HEAD_INIT(init_task.scx.dsq_node.fifo),
+		.runnable_node	= LIST_HEAD_INIT(init_task.scx.runnable_node),
+		.flags		= 0,
+		.sticky_cpu	= -1,
+		.holding_cpu	= -1,
+		.ops_state	= ATOMIC_INIT(0),
+		.runnable_at	= INITIAL_JIFFIES,
+		.slice		= SCX_SLICE_DFL,
+		.ddsp_dsq_id	= SCX_DSQ_INVALID,
+		.ddsp_enq_flags	= 0,
+	},
 #endif
 	.ptraced	= LIST_HEAD_INIT(init_task.ptraced),
 	.ptrace_entry	= LIST_HEAD_INIT(init_task.ptrace_entry),
