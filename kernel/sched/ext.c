@@ -213,6 +213,14 @@ struct scx_task_iter {
 
 #define SCX_HAS_OP(op)	static_branch_likely(&scx_has_op[SCX_OP_IDX(op)])
 
+static long jiffies_delta_msecs(unsigned long at, unsigned long now)
+{
+	if (time_after(at, now))
+		return jiffies_to_msecs(at - now);
+	else
+		return -(long)jiffies_to_msecs(now - at);
+}
+
 /* if the highest set bit is N, return a mask with bits [N+1, 31] set */
 static u32 higher_bits(u32 flags)
 {
@@ -3236,6 +3244,24 @@ static struct scx_exit_info *alloc_exit_info(void)
 	return ei;
 }
 
+static const char *scx_exit_reason(enum scx_exit_kind kind)
+{
+	switch (kind) {
+	case SCX_EXIT_UNREG:
+		return "BPF scheduler unregistered";
+	case SCX_EXIT_SYSRQ:
+		return "disabled by sysrq-S";
+	case SCX_EXIT_ERROR:
+		return "runtime error";
+	case SCX_EXIT_ERROR_BPF:
+		return "scx_bpf_error";
+	case SCX_EXIT_ERROR_STALL:
+		return "runnable task stall";
+	default:
+		return "<UNKNOWN>";
+	}
+}
+
 static void scx_ops_disable_workfn(struct kthread_work *work)
 {
 	struct scx_exit_info *ei = scx_exit_info;
@@ -3258,28 +3284,9 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 			break;
 	}
 	ei->kind = kind;
+	ei->reason = scx_exit_reason(ei->kind);
 
 	cancel_delayed_work_sync(&scx_watchdog_work);
-
-	switch (ei->kind) {
-	case SCX_EXIT_UNREG:
-		ei->reason = "BPF scheduler unregistered";
-		break;
-	case SCX_EXIT_SYSRQ:
-		ei->reason = "disabled by sysrq-S";
-		break;
-	case SCX_EXIT_ERROR:
-		ei->reason = "runtime error";
-		break;
-	case SCX_EXIT_ERROR_BPF:
-		ei->reason = "scx_bpf_error";
-		break;
-	case SCX_EXIT_ERROR_STALL:
-		ei->reason = "runnable task stall";
-		break;
-	default:
-		ei->reason = "<UNKNOWN>";
-	}
 
 	/* guarantee forward progress by bypassing scx_ops */
 	scx_ops_bypass(true);
@@ -4115,8 +4122,8 @@ void print_scx_info(const char *log_lvl, struct task_struct *p)
 
 	if (!copy_from_kernel_nofault(&runnable_at, &p->scx.runnable_at,
 				      sizeof(runnable_at)))
-		scnprintf(runnable_at_buf, sizeof(runnable_at_buf), "%+lldms",
-			  (s64)(runnable_at - jiffies) * (HZ / MSEC_PER_SEC));
+		scnprintf(runnable_at_buf, sizeof(runnable_at_buf), "%+ldms",
+			  jiffies_delta_msecs(runnable_at, jiffies));
 
 	/* print everything onto one line to conserve console space */
 	printk("%sSched_ext: %s (%s%s), task: runnable_at=%s",
