@@ -2524,8 +2524,13 @@ void scx_post_fork(struct task_struct *p)
 void scx_cancel_fork(struct task_struct *p)
 {
 	if (scx_enabled()) {
+		struct rq *rq;
+		struct rq_flags rf;
+
+		rq = task_rq_lock(p, &rf);
 		WARN_ON_ONCE(scx_get_task_state(p) >= SCX_TASK_READY);
 		scx_ops_exit_task(p);
+		task_rq_unlock(rq, p, &rf);
 	}
 	percpu_up_read(&scx_fork_rwsem);
 }
