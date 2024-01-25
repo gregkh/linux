@@ -206,6 +206,9 @@ struct kernfs_node {
 
 	const void		*ns;	/* namespace tag */
 	unsigned int		hash;	/* ns + name hash */
+	unsigned short		flags;
+	umode_t			mode;
+
 	union {
 		struct kernfs_elem_dir		dir;
 		struct kernfs_elem_symlink	symlink;
@@ -220,9 +223,9 @@ struct kernfs_node {
 	 */
 	u64			id;
 
-	unsigned short		flags;
-	umode_t			mode;
 	struct kernfs_iattrs	*iattr;
+
+	struct rcu_head		rcu;
 };
 
 /*
