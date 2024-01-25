@@ -18,9 +18,6 @@ struct cgroup;
 
 enum scx_consts {
 	SCX_OPS_NAME_LEN	= 128,
-	SCX_EXIT_REASON_LEN	= 128,
-	SCX_EXIT_BT_LEN		= 64,
-	SCX_EXIT_MSG_LEN	= 1024,
 
 	SCX_SLICE_DFL		= 20 * NSEC_PER_MSEC,
 	SCX_SLICE_INF		= U64_MAX,	/* infinite, implies nohz */
@@ -74,14 +71,19 @@ enum scx_exit_kind {
 struct scx_exit_info {
 	/* %SCX_EXIT_* - broad category of the exit reason */
 	enum scx_exit_kind	kind;
+
 	/* textual representation of the above */
-	char			reason[SCX_EXIT_REASON_LEN];
-	/* number of entries in the backtrace */
-	u32			bt_len;
+	const char		*reason;
+
 	/* backtrace if exiting due to an error */
-	unsigned long		bt[SCX_EXIT_BT_LEN];
-	/* extra message */
-	char			msg[SCX_EXIT_MSG_LEN];
+	unsigned long		*bt;
+	u32			bt_len;
+
+	/* informational message */
+	char			*msg;
+
+	/* debug dump */
+	char			*dump;
 };
 
 /* sched_ext_ops.flags */
