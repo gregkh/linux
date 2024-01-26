@@ -6,11 +6,16 @@
 #include <linux/err.h>
 #include <linux/uuid.h>
 #include "ctree.h"
+#include "fs.h"
+#include "messages.h"
 #include "transaction.h"
 #include "disk-io.h"
 #include "print-tree.h"
 #include "qgroup.h"
 #include "space-info.h"
+#include "accessors.h"
+#include "root-tree.h"
+#include "orphan.h"
 
 /*
  * Read a root item from the tree. In case we detect a root item smaller then
@@ -186,7 +191,7 @@ int btrfs_update_root(struct btrfs_trans_handle *trans, struct btrfs_root
 	btrfs_set_root_generation_v2(item, btrfs_root_generation(item));
 
 	write_extent_buffer(l, item, ptr, sizeof(*item));
-	btrfs_mark_buffer_dirty(path->nodes[0]);
+	btrfs_mark_buffer_dirty(trans, path->nodes[0]);
 out:
 	btrfs_free_path(path);
 	return ret;
@@ -433,7 +438,7 @@ again:
 	btrfs_set_root_ref_name_len(leaf, ref, name->len);
 	ptr = (unsigned long)(ref + 1);
 	write_extent_buffer(leaf, name->name, ptr, name->len);
-	btrfs_mark_buffer_dirty(leaf);
+	btrfs_mark_buffer_dirty(trans, leaf);
 
 	if (key.type == BTRFS_ROOT_BACKREF_KEY) {
 		btrfs_release_path(path);

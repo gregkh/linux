@@ -463,7 +463,7 @@ static ssize_t bq24190_sysfs_show(struct device *dev,
 	if (ret)
 		count = ret;
 	else
-		count = scnprintf(buf, PAGE_SIZE, "%hhx\n", v);
+		count = sysfs_emit(buf, "%hhx\n", v);
 
 	pm_runtime_mark_last_busy(bdi->dev);
 	pm_runtime_put_autosuspend(bdi->dev);
@@ -965,7 +965,7 @@ static int bq24190_charger_get_precharge(struct bq24190_dev_info *bdi,
 		union power_supply_propval *val)
 {
 	u8 v;
-	int ret;
+	int curr, ret;
 
 	ret = bq24190_read_mask(bdi, BQ24190_REG_PCTCC,
 			BQ24190_REG_PCTCC_IPRECHG_MASK,
@@ -973,7 +973,20 @@ static int bq24190_charger_get_precharge(struct bq24190_dev_info *bdi,
 	if (ret < 0)
 		return ret;
 
-	val->intval = ++v * 128 * 1000;
+	curr = ++v * 128 * 1000;
+
+	ret = bq24190_read_mask(bdi, BQ24190_REG_CCC,
+			BQ24190_REG_CCC_FORCE_20PCT_MASK,
+			BQ24190_REG_CCC_FORCE_20PCT_SHIFT, &v);
+	if (ret < 0)
+		return ret;
+
+	/* If FORCE_20PCT is enabled, then current is 50% of IPRECHG value */
+	if (v)
+		curr /= 2;
+
+	val->intval = curr;
+
 	return 0;
 }
 
@@ -1768,9 +1781,9 @@ static int bq24190_get_config(struct bq24190_dev_info *bdi)
 	return 0;
 }
 
-static int bq24190_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int bq24190_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct i2c_adapter *adapter = client->adapter;
 	struct device *dev = &client->dev;
 	struct power_supply_config charger_cfg = {}, battery_cfg = {};

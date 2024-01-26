@@ -5,6 +5,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/filelock.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 
@@ -251,7 +252,7 @@ static void __ksmbd_inode_close(struct ksmbd_file *fp)
 	filp = fp->filp;
 	if (ksmbd_stream_fd(fp) && (ci->m_flags & S_DEL_ON_CLS_STREAM)) {
 		ci->m_flags &= ~S_DEL_ON_CLS_STREAM;
-		err = ksmbd_vfs_remove_xattr(file_mnt_user_ns(filp),
+		err = ksmbd_vfs_remove_xattr(file_mnt_idmap(filp),
 					     &filp->f_path,
 					     fp->stream.name);
 		if (err)

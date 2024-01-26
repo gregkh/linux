@@ -230,8 +230,8 @@ enum tpm2_pt_props {
  * compiler warnings about stack frame size. */
 #define TPM_MAX_RNG_DATA	128
 
-extern struct class *tpm_class;
-extern struct class *tpmrm_class;
+extern const struct class tpm_class;
+extern const struct class tpmrm_class;
 extern dev_t tpm_devt;
 extern const struct file_operations tpm_fops;
 extern const struct file_operations tpmrm_fops;
@@ -256,6 +256,7 @@ int tpm1_get_pcr_allocation(struct tpm_chip *chip);
 unsigned long tpm_calc_ordinal_duration(struct tpm_chip *chip, u32 ordinal);
 int tpm_pm_suspend(struct device *dev);
 int tpm_pm_resume(struct device *dev);
+int tpm_class_shutdown(struct device *dev);
 
 static inline void tpm_msleep(unsigned int delay_msec)
 {

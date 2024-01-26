@@ -84,7 +84,7 @@ static inline bool is_vlan_dev(const struct net_device *dev)
         return dev->priv_flags & IFF_802_1Q_VLAN;
 }
 
-#define skb_vlan_tag_present(__skb)	((__skb)->vlan_present)
+#define skb_vlan_tag_present(__skb)	(!!(__skb)->vlan_all)
 #define skb_vlan_tag_get(__skb)		((__skb)->vlan_tci)
 #define skb_vlan_tag_get_id(__skb)	((__skb)->vlan_tci & VLAN_VID_MASK)
 #define skb_vlan_tag_get_cfi(__skb)	(!!((__skb)->vlan_tci & VLAN_CFI_MASK))
@@ -359,7 +359,8 @@ static inline int __vlan_insert_inner_tag(struct sk_buff *skb,
 	/* Move the mac header sans proto to the beginning of the new header. */
 	if (likely(mac_len > ETH_TLEN))
 		memmove(skb->data, skb->data + VLAN_HLEN, mac_len - ETH_TLEN);
-	skb->mac_header -= VLAN_HLEN;
+	if (skb_mac_header_was_set(skb))
+		skb->mac_header -= VLAN_HLEN;
 
 	veth = (struct vlan_ethhdr *)(skb->data + mac_len - ETH_HLEN);
 
@@ -407,7 +408,7 @@ static inline int __vlan_insert_tag(struct sk_buff *skb,
  * @mac_len: MAC header length including outer vlan headers
  *
  * Inserts the VLAN tag into @skb as part of the payload at offset mac_len
- * Returns a VLAN tagged skb. If a new skb is created, @skb is freed.
+ * Returns a VLAN tagged skb. This might change skb->head.
  *
  * Following the skb_unshare() example, in case of error, the calling function
  * doesn't have to worry about freeing the original skb.
@@ -436,7 +437,7 @@ static inline struct sk_buff *vlan_insert_inner_tag(struct sk_buff *skb,
  * @vlan_tci: VLAN TCI to insert
  *
  * Inserts the VLAN tag into @skb as part of the payload
- * Returns a VLAN tagged skb. If a new skb is created, @skb is freed.
+ * Returns a VLAN tagged skb. This might change skb->head.
  *
  * Following the skb_unshare() example, in case of error, the calling function
  * doesn't have to worry about freeing the original skb.
@@ -456,7 +457,7 @@ static inline struct sk_buff *vlan_insert_tag(struct sk_buff *skb,
  * @vlan_tci: VLAN TCI to insert
  *
  * Inserts the VLAN tag into @skb as part of the payload
- * Returns a VLAN tagged skb. If a new skb is created, @skb is freed.
+ * Returns a VLAN tagged skb. This might change skb->head.
  *
  * Following the skb_unshare() example, in case of error, the calling function
  * doesn't have to worry about freeing the original skb.
@@ -479,7 +480,7 @@ static inline struct sk_buff *vlan_insert_tag_set_proto(struct sk_buff *skb,
  */
 static inline void __vlan_hwaccel_clear_tag(struct sk_buff *skb)
 {
-	skb->vlan_present = 0;
+	skb->vlan_all = 0;
 }
 
 /**
@@ -491,9 +492,7 @@ static inline void __vlan_hwaccel_clear_tag(struct sk_buff *skb)
  */
 static inline void __vlan_hwaccel_copy_tag(struct sk_buff *dst, const struct sk_buff *src)
 {
-	dst->vlan_present = src->vlan_present;
-	dst->vlan_proto = src->vlan_proto;
-	dst->vlan_tci = src->vlan_tci;
+	dst->vlan_all = src->vlan_all;
 }
 
 /*
@@ -527,7 +526,6 @@ static inline void __vlan_hwaccel_put_tag(struct sk_buff *skb,
 {
 	skb->vlan_proto = vlan_proto;
 	skb->vlan_tci = vlan_tci;
-	skb->vlan_present = 1;
 }
 
 /**
@@ -702,6 +700,27 @@ static inline void vlan_set_encap_proto(struct sk_buff *skb,
 		 * Real 802.2 LLC
 		 */
 		skb->protocol = htons(ETH_P_802_2);
+}
+
+/**
+ * vlan_remove_tag - remove outer VLAN tag from payload
+ * @skb: skbuff to remove tag from
+ * @vlan_tci: buffer to store value
+ *
+ * Expects the skb to contain a VLAN tag in the payload, and to have skb->data
+ * pointing at the MAC header.
+ *
+ * Returns a new pointer to skb->data, or NULL on failure to pull.
+ */
+static inline void *vlan_remove_tag(struct sk_buff *skb, u16 *vlan_tci)
+{
+	struct vlan_hdr *vhdr = (struct vlan_hdr *)(skb->data + ETH_HLEN);
+
+	*vlan_tci = ntohs(vhdr->h_vlan_TCI);
+
+	memmove(skb->data + VLAN_HLEN, skb->data, 2 * ETH_ALEN);
+	vlan_set_encap_proto(skb, vhdr);
+	return __skb_pull(skb, VLAN_HLEN);
 }
 
 /**

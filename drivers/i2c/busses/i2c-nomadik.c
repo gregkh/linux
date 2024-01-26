@@ -873,7 +873,6 @@ static irqreturn_t i2c_irq_handler(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int nmk_i2c_suspend_late(struct device *dev)
 {
 	int ret;
@@ -890,9 +889,7 @@ static int nmk_i2c_resume_early(struct device *dev)
 {
 	return pm_runtime_force_resume(dev);
 }
-#endif
 
-#ifdef CONFIG_PM
 static int nmk_i2c_runtime_suspend(struct device *dev)
 {
 	struct amba_device *adev = to_amba_device(dev);
@@ -925,13 +922,10 @@ static int nmk_i2c_runtime_resume(struct device *dev)
 
 	return ret;
 }
-#endif
 
 static const struct dev_pm_ops nmk_i2c_pm = {
-	SET_LATE_SYSTEM_SLEEP_PM_OPS(nmk_i2c_suspend_late, nmk_i2c_resume_early)
-	SET_RUNTIME_PM_OPS(nmk_i2c_runtime_suspend,
-			nmk_i2c_runtime_resume,
-			NULL)
+	LATE_SYSTEM_SLEEP_PM_OPS(nmk_i2c_suspend_late, nmk_i2c_resume_early)
+	RUNTIME_PM_OPS(nmk_i2c_runtime_suspend, nmk_i2c_runtime_resume, NULL)
 };
 
 static unsigned int nmk_i2c_functionality(struct i2c_adapter *adap)
@@ -1000,16 +994,14 @@ static int nmk_i2c_probe(struct amba_device *adev, const struct amba_id *id)
 	dev->irq = adev->irq[0];
 	ret = devm_request_irq(&adev->dev, dev->irq, i2c_irq_handler, 0,
 				DRIVER_NAME, dev);
-	if (ret) {
-		dev_err(&adev->dev, "cannot claim the irq %d\n", dev->irq);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(&adev->dev, ret,
+				     "cannot claim the irq %d\n", dev->irq);
 
 	dev->clk = devm_clk_get_enabled(&adev->dev, NULL);
-	if (IS_ERR(dev->clk)) {
-		dev_err(&adev->dev, "could enable i2c clock\n");
-		return PTR_ERR(dev->clk);
-	}
+	if (IS_ERR(dev->clk))
+		return dev_err_probe(&adev->dev, PTR_ERR(dev->clk),
+				     "could enable i2c clock\n");
 
 	init_hw(dev);
 
@@ -1080,7 +1072,7 @@ static struct amba_driver nmk_i2c_driver = {
 	.drv = {
 		.owner = THIS_MODULE,
 		.name = DRIVER_NAME,
-		.pm = &nmk_i2c_pm,
+		.pm = pm_ptr(&nmk_i2c_pm),
 	},
 	.id_table = nmk_i2c_ids,
 	.probe = nmk_i2c_probe,

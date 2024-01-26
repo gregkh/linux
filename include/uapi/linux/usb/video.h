@@ -496,7 +496,7 @@ struct uvc_format_uncompressed {
 	__u8  bDefaultFrameIndex;
 	__u8  bAspectRatioX;
 	__u8  bAspectRatioY;
-	__u8  bmInterfaceFlags;
+	__u8  bmInterlaceFlags;
 	__u8  bCopyProtect;
 } __attribute__((__packed__));
 
@@ -552,7 +552,7 @@ struct uvc_format_mjpeg {
 	__u8  bDefaultFrameIndex;
 	__u8  bAspectRatioX;
 	__u8  bAspectRatioY;
-	__u8  bmInterfaceFlags;
+	__u8  bmInterlaceFlags;
 	__u8  bCopyProtect;
 } __attribute__((__packed__));
 

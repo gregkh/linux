@@ -68,14 +68,15 @@ static const struct of_device_id of_match_clk_mt6765_mm[] = {
 		/* sentinel */
 	}
 };
+MODULE_DEVICE_TABLE(of, of_match_clk_mt6765_mm);
 
 static struct platform_driver clk_mt6765_mm_drv = {
 	.probe = mtk_clk_simple_probe,
-	.remove = mtk_clk_simple_remove,
+	.remove_new = mtk_clk_simple_remove,
 	.driver = {
 		.name = "clk-mt6765-mm",
 		.of_match_table = of_match_clk_mt6765_mm,
 	},
 };
-
-builtin_platform_driver(clk_mt6765_mm_drv);
+module_platform_driver(clk_mt6765_mm_drv);
+MODULE_LICENSE("GPL");

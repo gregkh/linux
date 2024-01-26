@@ -39,7 +39,7 @@ static const struct fb_fix_screeninfo dlfb_fix = {
 	.accel =        FB_ACCEL_NONE,
 };
 
-static const u32 udlfb_info_flags = FBINFO_DEFAULT | FBINFO_READS_FAST |
+static const u32 udlfb_info_flags = FBINFO_READS_FAST |
 		FBINFO_VIRTFB |
 		FBINFO_HWACCEL_IMAGEBLIT | FBINFO_HWACCEL_FILLRECT |
 		FBINFO_HWACCEL_COPYAREA | FBINFO_MISC_ALWAYS_SETPAR;
@@ -1008,7 +1008,7 @@ static void dlfb_ops_destroy(struct fb_info *info)
 		fb_dealloc_cmap(&info->cmap);
 	if (info->monspecs.modedb)
 		fb_destroy_modedb(info->monspecs.modedb);
-	vfree(info->screen_base);
+	vfree(info->screen_buffer);
 
 	fb_destroy_modelist(&info->modelist);
 
@@ -1122,7 +1122,7 @@ static int dlfb_ops_set_par(struct fb_info *info)
 
 		/* paint greenscreen */
 
-		pix_framebuffer = (u16 *) info->screen_base;
+		pix_framebuffer = (u16 *)info->screen_buffer;
 		for (i = 0; i < info->fix.smem_len / 2; i++)
 			pix_framebuffer[i] = 0x37e6;
 	}
@@ -1221,7 +1221,7 @@ static void dlfb_deferred_vfree(struct dlfb_data *dlfb, void *mem)
 static int dlfb_realloc_framebuffer(struct dlfb_data *dlfb, struct fb_info *info, u32 new_len)
 {
 	u32 old_len = info->fix.smem_len;
-	const void *old_fb = (const void __force *)info->screen_base;
+	const void *old_fb = info->screen_buffer;
 	unsigned char *new_fb;
 	unsigned char *new_back = NULL;
 
@@ -1238,12 +1238,12 @@ static int dlfb_realloc_framebuffer(struct dlfb_data *dlfb, struct fb_info *info
 		}
 		memset(new_fb, 0xff, new_len);
 
-		if (info->screen_base) {
+		if (info->screen_buffer) {
 			memcpy(new_fb, old_fb, old_len);
-			dlfb_deferred_vfree(dlfb, (void __force *)info->screen_base);
+			dlfb_deferred_vfree(dlfb, info->screen_buffer);
 		}
 
-		info->screen_base = (char __iomem *)new_fb;
+		info->screen_buffer = new_fb;
 		info->fix.smem_len = new_len;
 		info->fix.smem_start = (unsigned long) new_fb;
 		info->flags = udlfb_info_flags;
@@ -1543,24 +1543,16 @@ static const struct device_attribute fb_device_attrs[] = {
 static int dlfb_select_std_channel(struct dlfb_data *dlfb)
 {
 	int ret;
-	void *buf;
 	static const u8 set_def_chn[] = {
 				0x57, 0xCD, 0xDC, 0xA7,
 				0x1C, 0x88, 0x5E, 0x15,
 				0x60, 0xFE, 0xC6, 0x97,
 				0x16, 0x3D, 0x47, 0xF2  };
 
-	buf = kmemdup(set_def_chn, sizeof(set_def_chn), GFP_KERNEL);
-
-	if (!buf)
-		return -ENOMEM;
-
-	ret = usb_control_msg(dlfb->udev, usb_sndctrlpipe(dlfb->udev, 0),
-			NR_USB_REQUEST_CHANNEL,
+	ret = usb_control_msg_send(dlfb->udev, 0, NR_USB_REQUEST_CHANNEL,
 			(USB_DIR_OUT | USB_TYPE_VENDOR), 0, 0,
-			buf, sizeof(set_def_chn), USB_CTRL_SET_TIMEOUT);
-
-	kfree(buf);
+			&set_def_chn, sizeof(set_def_chn), USB_CTRL_SET_TIMEOUT,
+			GFP_KERNEL);
 
 	return ret;
 }

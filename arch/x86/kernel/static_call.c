@@ -43,6 +43,7 @@ extern void __static_call_return(void);
 
 asm (".global __static_call_return\n\t"
      ".type __static_call_return, @function\n\t"
+     ASM_FUNC_ALIGN "\n\t"
      "__static_call_return:\n\t"
      ANNOTATE_NOENDBR
      ANNOTATE_RETPOLINE_SAFE
@@ -62,6 +63,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 
 	switch (type) {
 	case CALL:
+		func = callthunks_translate_call_dest(func);
 		code = text_gen_insn(CALL_INSN_OPCODE, insn, func);
 		if (func == &__static_call_return0) {
 			emulate = code;
@@ -80,7 +82,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 
 	case RET:
 		if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
-			code = text_gen_insn(JMP32_INSN_OPCODE, insn, &__x86_return_thunk);
+			code = text_gen_insn(JMP32_INSN_OPCODE, insn, x86_return_thunk);
 		else
 			code = &retinsn;
 		break;
@@ -89,7 +91,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 		if (!func) {
 			func = __static_call_return;
 			if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
-				func = __x86_return_thunk;
+				func = x86_return_thunk;
 		}
 
 		buf[0] = 0x0f;

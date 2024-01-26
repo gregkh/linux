@@ -311,7 +311,6 @@ static int add_direct_chain(struct mlx5_vdpa_dev *mvdev, u64 start, u64 size, u8
 	u64 st;
 	u64 sz;
 	int err;
-	int i = 0;
 
 	st = start;
 	while (size) {
@@ -336,7 +335,6 @@ static int add_direct_chain(struct mlx5_vdpa_dev *mvdev, u64 start, u64 size, u8
 		mr->num_directs++;
 		mr->num_klms++;
 		st += sz;
-		i++;
 	}
 	list_splice_tail(&tmp, &mr->head);
 	return 0;
@@ -514,7 +512,6 @@ static void _mlx5_vdpa_destroy_dvq_mr(struct mlx5_vdpa_dev *mvdev, unsigned int 
 	else
 		destroy_dma_mr(mvdev, mr);
 
-	memset(mr, 0, sizeof(*mr));
 	mr->initialized = false;
 }
 

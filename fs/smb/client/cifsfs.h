@@ -49,7 +49,7 @@ extern void cifs_sb_deactive(struct super_block *sb);
 /* Functions related to inodes */
 extern const struct inode_operations cifs_dir_inode_ops;
 extern struct inode *cifs_root_iget(struct super_block *);
-extern int cifs_create(struct user_namespace *, struct inode *,
+extern int cifs_create(struct mnt_idmap *, struct inode *,
 		       struct dentry *, umode_t, bool excl);
 extern int cifs_atomic_open(struct inode *, struct dentry *,
 			    struct file *, unsigned, umode_t);
@@ -57,12 +57,12 @@ extern struct dentry *cifs_lookup(struct inode *, struct dentry *,
 				  unsigned int);
 extern int cifs_unlink(struct inode *dir, struct dentry *dentry);
 extern int cifs_hardlink(struct dentry *, struct inode *, struct dentry *);
-extern int cifs_mknod(struct user_namespace *, struct inode *, struct dentry *,
+extern int cifs_mknod(struct mnt_idmap *, struct inode *, struct dentry *,
 		      umode_t, dev_t);
-extern int cifs_mkdir(struct user_namespace *, struct inode *, struct dentry *,
+extern int cifs_mkdir(struct mnt_idmap *, struct inode *, struct dentry *,
 		      umode_t);
 extern int cifs_rmdir(struct inode *, struct dentry *);
-extern int cifs_rename2(struct user_namespace *, struct inode *,
+extern int cifs_rename2(struct mnt_idmap *, struct inode *,
 			struct dentry *, struct inode *, struct dentry *,
 			unsigned int);
 extern int cifs_revalidate_file_attr(struct file *filp);
@@ -72,16 +72,16 @@ extern int cifs_revalidate_dentry(struct dentry *);
 extern int cifs_invalidate_mapping(struct inode *inode);
 extern int cifs_revalidate_mapping(struct inode *inode);
 extern int cifs_zap_mapping(struct inode *inode);
-extern int cifs_getattr(struct user_namespace *, const struct path *,
+extern int cifs_getattr(struct mnt_idmap *, const struct path *,
 			struct kstat *, u32, unsigned int);
-extern int cifs_setattr(struct user_namespace *, struct dentry *,
+extern int cifs_setattr(struct mnt_idmap *, struct dentry *,
 			struct iattr *);
 extern int cifs_fiemap(struct inode *, struct fiemap_extent_info *, u64 start,
 		       u64 len);
 
 extern const struct inode_operations cifs_file_inode_ops;
 extern const struct inode_operations cifs_symlink_inode_ops;
-extern const struct inode_operations cifs_dfs_referral_inode_operations;
+extern const struct inode_operations cifs_namespace_inode_operations;
 
 
 /* Functions related to files and directories */
@@ -110,24 +110,20 @@ extern int cifs_file_strict_mmap(struct file *file, struct vm_area_struct *vma);
 extern const struct file_operations cifs_dir_ops;
 extern int cifs_dir_open(struct inode *inode, struct file *file);
 extern int cifs_readdir(struct file *file, struct dir_context *ctx);
+extern void cifs_pages_written_back(struct inode *inode, loff_t start, unsigned int len);
+extern void cifs_pages_write_failed(struct inode *inode, loff_t start, unsigned int len);
+extern void cifs_pages_write_redirty(struct inode *inode, loff_t start, unsigned int len);
 
 /* Functions related to dir entries */
 extern const struct dentry_operations cifs_dentry_ops;
 extern const struct dentry_operations cifs_ci_dentry_ops;
 
-#ifdef CONFIG_CIFS_DFS_UPCALL
-extern struct vfsmount *cifs_dfs_d_automount(struct path *path);
-#else
-static inline struct vfsmount *cifs_dfs_d_automount(struct path *path)
-{
-	return ERR_PTR(-EREMOTE);
-}
-#endif
+extern struct vfsmount *cifs_d_automount(struct path *path);
 
 /* Functions related to symlinks */
 extern const char *cifs_get_link(struct dentry *, struct inode *,
 			struct delayed_call *);
-extern int cifs_symlink(struct user_namespace *mnt_userns, struct inode *inode,
+extern int cifs_symlink(struct mnt_idmap *idmap, struct inode *inode,
 			struct dentry *direntry, const char *symname);
 
 #ifdef CONFIG_CIFS_XATTR
@@ -156,6 +152,6 @@ extern const struct export_operations cifs_export_ops;
 #endif /* CONFIG_CIFS_NFSD_EXPORT */
 
 /* when changing internal version - update following two lines at same time */
-#define SMB3_PRODUCT_BUILD 40
-#define CIFS_VERSION   "2.40"
+#define SMB3_PRODUCT_BUILD 45
+#define CIFS_VERSION   "2.45"
 #endif				/* _CIFSFS_H */

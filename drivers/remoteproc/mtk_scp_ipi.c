@@ -6,12 +6,16 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/time64.h>
 #include <linux/remoteproc/mtk_scp.h>
 
 #include "mtk_common.h"
+
+#define SCP_TIMEOUT_US		(2000 * USEC_PER_MSEC)
 
 /**
  * scp_ipi_register() - register an ipi function
@@ -121,7 +125,7 @@ void scp_ipi_lock(struct mtk_scp *scp, u32 id)
 EXPORT_SYMBOL_GPL(scp_ipi_lock);
 
 /**
- * scp_ipi_lock() - Unlock after operations of an IPI ID
+ * scp_ipi_unlock() - Unlock after operations of an IPI ID
  *
  * @scp:	mtk_scp structure
  * @id:		IPI ID
@@ -156,7 +160,7 @@ int scp_ipi_send(struct mtk_scp *scp, u32 id, void *buf, unsigned int len,
 		 unsigned int wait)
 {
 	struct mtk_share_obj __iomem *send_obj = scp->send_buf;
-	unsigned long timeout;
+	u32 val;
 	int ret;
 
 	if (WARN_ON(id <= SCP_IPI_INIT) || WARN_ON(id >= SCP_IPI_MAX) ||
@@ -173,14 +177,12 @@ int scp_ipi_send(struct mtk_scp *scp, u32 id, void *buf, unsigned int len,
 	mutex_lock(&scp->send_lock);
 
 	 /* Wait until SCP receives the last command */
-	timeout = jiffies + msecs_to_jiffies(2000);
-	do {
-		if (time_after(jiffies, timeout)) {
-			dev_err(scp->dev, "%s: IPI timeout!\n", __func__);
-			ret = -ETIMEDOUT;
-			goto unlock_mutex;
-		}
-	} while (readl(scp->reg_base + scp->data->host_to_scp_reg));
+	ret = readl_poll_timeout_atomic(scp->reg_base + scp->data->host_to_scp_reg,
+					val, !val, 0, SCP_TIMEOUT_US);
+	if (ret) {
+		dev_err(scp->dev, "%s: IPI timeout!\n", __func__);
+		goto unlock_mutex;
+	}
 
 	scp_memcpy_aligned(send_obj->share_buf, buf, len);
 
@@ -194,10 +196,9 @@ int scp_ipi_send(struct mtk_scp *scp, u32 id, void *buf, unsigned int len,
 
 	if (wait) {
 		/* wait for SCP's ACK */
-		timeout = msecs_to_jiffies(wait);
 		ret = wait_event_timeout(scp->ack_wq,
 					 scp->ipi_id_ack[id],
-					 timeout);
+					 msecs_to_jiffies(wait));
 		scp->ipi_id_ack[id] = false;
 		if (WARN(!ret, "scp ipi %d ack time out !", id))
 			ret = -EIO;

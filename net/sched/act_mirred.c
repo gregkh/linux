@@ -24,6 +24,7 @@
 #include <net/pkt_cls.h>
 #include <linux/tc_act/tc_mirred.h>
 #include <net/tc_act/tc_mirred.h>
+#include <net/tc_wrapper.h>
 
 static LIST_HEAD(mirred_list);
 static DEFINE_SPINLOCK(mirred_list_lock);
@@ -224,8 +225,9 @@ static int tcf_mirred_forward(bool want_ingress, struct sk_buff *skb)
 	return err;
 }
 
-static int tcf_mirred_act(struct sk_buff *skb, const struct tc_action *a,
-			  struct tcf_result *res)
+TC_INDIRECT_SCOPE int tcf_mirred_act(struct sk_buff *skb,
+				     const struct tc_action *a,
+				     struct tcf_result *res)
 {
 	struct tcf_mirred *m = to_mirred(a);
 	struct sk_buff *skb2 = skb;
@@ -293,7 +295,7 @@ static int tcf_mirred_act(struct sk_buff *skb, const struct tc_action *a,
 	at_nh = skb->data == skb_network_header(skb);
 	if (at_nh != expects_nh) {
 		mac_len = skb_at_tc_ingress(skb) ? skb->mac_len :
-			  skb_network_header(skb) - skb_mac_header(skb);
+			  skb_network_offset(skb);
 		if (expects_nh) {
 			/* target device/action expect data at nh */
 			skb_pull_rcsum(skb2, mac_len);

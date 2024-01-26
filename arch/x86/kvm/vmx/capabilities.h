@@ -66,13 +66,13 @@ struct vmcs_config {
 	u64 misc;
 	struct nested_vmx_msrs nested;
 };
-extern struct vmcs_config vmcs_config;
+extern struct vmcs_config vmcs_config __ro_after_init;
 
 struct vmx_capability {
 	u32 ept;
 	u32 vpid;
 };
-extern struct vmx_capability vmx_capability;
+extern struct vmx_capability vmx_capability __ro_after_init;
 
 static inline bool cpu_has_vmx_basic_inout(void)
 {
@@ -152,8 +152,8 @@ static inline bool cpu_has_vmx_ept(void)
 
 static inline bool vmx_umip_emulated(void)
 {
-	return vmcs_config.cpu_based_2nd_exec_ctrl &
-		SECONDARY_EXEC_DESC;
+	return !boot_cpu_has(X86_FEATURE_UMIP) &&
+	       (vmcs_config.cpu_based_2nd_exec_ctrl & SECONDARY_EXEC_DESC);
 }
 
 static inline bool cpu_has_vmx_rdtscp(void)
@@ -252,7 +252,7 @@ static inline bool cpu_has_vmx_pml(void)
 static inline bool cpu_has_vmx_xsaves(void)
 {
 	return vmcs_config.cpu_based_2nd_exec_ctrl &
-		SECONDARY_EXEC_XSAVES;
+		SECONDARY_EXEC_ENABLE_XSAVES;
 }
 
 static inline bool cpu_has_vmx_waitpkg(void)

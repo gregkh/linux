@@ -3,7 +3,7 @@
  *
  * Module Name: dswstate - Dispatcher parse tree walk management routines
  *
- * Copyright (C) 2000 - 2022, Intel Corp.
+ * Copyright (C) 2000 - 2023, Intel Corp.
  *
  *****************************************************************************/
 
@@ -146,8 +146,8 @@ acpi_ds_result_push(union acpi_operand_object *object,
 
 	if (!object) {
 		ACPI_ERROR((AE_INFO,
-			    "Null Object! Obj=%p State=%p Num=%u",
-			    object, walk_state, walk_state->result_count));
+			    "Null Object! State=%p Num=%u",
+			    walk_state, walk_state->result_count));
 		return (AE_BAD_PARAMETER);
 	}
 

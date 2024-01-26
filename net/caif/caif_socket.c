@@ -533,10 +533,6 @@ static int caif_seqpkt_sendmsg(struct socket *sock, struct msghdr *msg,
 	if (msg->msg_namelen)
 		goto err;
 
-	ret = -EINVAL;
-	if (unlikely(msg->msg_iter.nr_segs == 0) ||
-	    unlikely(msg->msg_iter.iov->iov_base == NULL))
-		goto err;
 	noblock = msg->msg_flags & MSG_DONTWAIT;
 
 	timeo = sock_sndtimeo(sk, noblock);
@@ -980,7 +976,6 @@ static const struct proto_ops caif_seqpacket_ops = {
 	.sendmsg = caif_seqpkt_sendmsg,
 	.recvmsg = caif_seqpkt_recvmsg,
 	.mmap = sock_no_mmap,
-	.sendpage = sock_no_sendpage,
 };
 
 static const struct proto_ops caif_stream_ops = {
@@ -1000,7 +995,6 @@ static const struct proto_ops caif_stream_ops = {
 	.sendmsg = caif_stream_sendmsg,
 	.recvmsg = caif_stream_recvmsg,
 	.mmap = sock_no_mmap,
-	.sendpage = sock_no_sendpage,
 };
 
 /* This function is called when a socket is finally destroyed. */

@@ -29,10 +29,11 @@ struct sock *unix_get_socket(struct file *filp)
 	/* Socket ? */
 	if (S_ISSOCK(inode->i_mode) && !(filp->f_mode & FMODE_PATH)) {
 		struct socket *sock = SOCKET_I(inode);
+		const struct proto_ops *ops = READ_ONCE(sock->ops);
 		struct sock *s = sock->sk;
 
 		/* PF_UNIX ? */
-		if (s && sock->ops && sock->ops->family == PF_UNIX)
+		if (s && ops && ops->family == PF_UNIX)
 			u_sock = s;
 	} else {
 		/* Could be an io_uring instance */
@@ -152,3 +153,9 @@ void unix_destruct_scm(struct sk_buff *skb)
 	sock_wfree(skb);
 }
 EXPORT_SYMBOL(unix_destruct_scm);
+
+void io_uring_destruct_scm(struct sk_buff *skb)
+{
+	unix_destruct_scm(skb);
+}
+EXPORT_SYMBOL(io_uring_destruct_scm);

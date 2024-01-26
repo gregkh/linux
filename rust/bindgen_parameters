@@ -6,6 +6,7 @@
 --opaque-type local_apic
 
 # Packed type cannot transitively contain a `#[repr(align)]` type.
+--opaque-type alt_instr
 --opaque-type x86_msi_data
 --opaque-type x86_msi_addr_lo
 
@@ -19,3 +20,7 @@
 
 # `seccomp`'s comment gets understood as a doctest
 --no-doc-comments
+
+# These functions use the `__preserve_most` calling convention, which neither bindgen
+# nor Rust currently understand, and which Clang currently declares to be unstable.
+--blocklist-function __list_.*_report

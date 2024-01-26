@@ -77,7 +77,7 @@ static int men_z069_wdt_set_timeout(struct watchdog_device *wdt,
 	wdt->timeout = timeout;
 	val = timeout * MEN_Z069_TIMER_FREQ;
 
-	reg = readw(drv->base + MEN_Z069_WVR);
+	reg = readw(drv->base + MEN_Z069_WTR);
 	ena = reg & MEN_Z069_WTR_WDEN;
 	reg = ena | val;
 	writew(reg, drv->base + MEN_Z069_WTR);
@@ -153,7 +153,6 @@ MODULE_DEVICE_TABLE(mcb, men_z069_ids);
 static struct mcb_driver men_z069_driver = {
 	.driver = {
 		.name = "z069-wdt",
-		.owner = THIS_MODULE,
 	},
 	.probe = men_z069_probe,
 	.remove = men_z069_remove,

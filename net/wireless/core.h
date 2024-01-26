@@ -75,7 +75,7 @@ struct cfg80211_registered_device {
 	struct sk_buff *scan_msg;
 	struct list_head sched_scan_req_list;
 	time64_t suspend_at;
-	struct work_struct scan_done_wk;
+	struct wiphy_work scan_done_wk;
 
 	struct genl_info *cur_cmd_info;
 
@@ -95,7 +95,7 @@ struct cfg80211_registered_device {
 	struct cfg80211_coalesce *coalesce;
 
 	struct work_struct destroy_work;
-	struct work_struct sched_scan_stop_wk;
+	struct wiphy_work sched_scan_stop_wk;
 	struct work_struct sched_scan_res_wk;
 
 	struct cfg80211_chan_def radar_chandef;
@@ -277,13 +277,15 @@ struct cfg80211_event {
 		} ij;
 		struct {
 			u8 bssid[ETH_ALEN];
+			const u8 *td_bitmap;
+			u8 td_bitmap_len;
 		} pa;
 	};
 };
 
 struct cfg80211_cached_keys {
-	struct key_params params[CFG80211_MAX_WEP_KEYS];
-	u8 data[CFG80211_MAX_WEP_KEYS][WLAN_KEY_LEN_WEP104];
+	struct key_params params[4];
+	u8 data[4][WLAN_KEY_LEN_WEP104];
 	int def;
 };
 
@@ -299,7 +301,7 @@ struct cfg80211_cqm_config {
 	enum nl80211_cqm_rssi_threshold_event last_rssi_event_type;
 	bool use_range_api;
 	int n_rssi_thresholds;
-	s32 rssi_thresholds[];
+	s32 rssi_thresholds[] __counted_by(n_rssi_thresholds);
 };
 
 void cfg80211_cqm_rssi_notify_work(struct wiphy *wiphy,
@@ -421,7 +423,8 @@ int cfg80211_disconnect(struct cfg80211_registered_device *rdev,
 			bool wextev);
 void __cfg80211_roamed(struct wireless_dev *wdev,
 		       struct cfg80211_roam_info *info);
-void __cfg80211_port_authorized(struct wireless_dev *wdev, const u8 *bssid);
+void __cfg80211_port_authorized(struct wireless_dev *wdev, const u8 *bssid,
+				const u8 *td_bitmap, u8 td_bitmap_len);
 int cfg80211_mgd_wext_connect(struct cfg80211_registered_device *rdev,
 			      struct wireless_dev *wdev);
 void cfg80211_autodisconnect_wk(struct work_struct *work);
@@ -444,7 +447,7 @@ bool cfg80211_valid_key_idx(struct cfg80211_registered_device *rdev,
 int cfg80211_validate_key_settings(struct cfg80211_registered_device *rdev,
 				   struct key_params *params, int key_idx,
 				   bool pairwise, const u8 *mac_addr);
-void __cfg80211_scan_done(struct work_struct *wk);
+void __cfg80211_scan_done(struct wiphy *wiphy, struct wiphy_work *wk);
 void ___cfg80211_scan_done(struct cfg80211_registered_device *rdev,
 			   bool send_message);
 void cfg80211_add_sched_scan_req(struct cfg80211_registered_device *rdev,
@@ -578,5 +581,6 @@ void cfg80211_remove_link(struct wireless_dev *wdev, unsigned int link_id);
 void cfg80211_remove_links(struct wireless_dev *wdev);
 int cfg80211_remove_virtual_intf(struct cfg80211_registered_device *rdev,
 				 struct wireless_dev *wdev);
+void cfg80211_wdev_release_link_bsses(struct wireless_dev *wdev, u16 link_mask);
 
 #endif /* __NET_WIRELESS_CORE_H */

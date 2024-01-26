@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * balloc.c
  *
@@ -5,11 +6,6 @@
  *	Block allocation handling routines for the OSTA-UDF(tm) filesystem.
  *
  * COPYRIGHT
- *	This file is distributed under the terms of the GNU General Public
- *	License (GPL). Copies of the GPL can be obtained from:
- *		ftp://prep.ai.mit.edu/pub/gnu/GPL
- *	Each contributing author retains all rights to their own work.
- *
  *  (C) 1999-2001 Ben Fennema
  *  (C) 1999 Stelias Computing Inc
  *
@@ -43,7 +39,7 @@ static int read_block_bitmap(struct super_block *sb,
 	loc.logicalBlockNum = bitmap->s_extPosition;
 	loc.partitionReferenceNum = UDF_SB(sb)->s_partition;
 
-	bh = udf_tread(sb, udf_get_lb_pblock(sb, &loc, block));
+	bh = sb_bread(sb, udf_get_lb_pblock(sb, &loc, block));
 	bitmap->s_block_bitmap[bitmap_nr] = bh;
 	if (!bh)
 		return -EIO;
@@ -56,7 +52,7 @@ static int read_block_bitmap(struct super_block *sb,
 	} else {
 		/*
 		 * Rough check if bitmap number is too big to have any bitmap
-		 * blocks reserved.
+ 		 * blocks reserved.
 		 */
 		if (bitmap_nr >
 		    (bitmap->s_nr_groups >> (sb->s_blocksize_bits + 3)) + 2)

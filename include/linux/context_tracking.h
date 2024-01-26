@@ -98,7 +98,7 @@ static inline void exception_exit(enum ctx_state prev_ctx) { }
 static inline int ct_state(void) { return -1; }
 static inline int __ct_state(void) { return -1; }
 static __always_inline bool context_tracking_guest_enter(void) { return false; }
-static inline void context_tracking_guest_exit(void) { }
+static __always_inline void context_tracking_guest_exit(void) { }
 #define CT_WARN_ON(cond) do { } while (0)
 #endif /* !CONFIG_CONTEXT_TRACKING_USER */
 
@@ -119,7 +119,7 @@ extern void ct_idle_exit(void);
  */
 static __always_inline bool rcu_dynticks_curr_cpu_in_eqs(void)
 {
-	return !(arch_atomic_read(this_cpu_ptr(&context_tracking.state)) & RCU_DYNTICKS_IDX);
+	return !(raw_atomic_read(this_cpu_ptr(&context_tracking.state)) & RCU_DYNTICKS_IDX);
 }
 
 /*
@@ -128,7 +128,7 @@ static __always_inline bool rcu_dynticks_curr_cpu_in_eqs(void)
  */
 static __always_inline unsigned long ct_state_inc(int incby)
 {
-	return arch_atomic_add_return(incby, this_cpu_ptr(&context_tracking.state));
+	return raw_atomic_add_return(incby, this_cpu_ptr(&context_tracking.state));
 }
 
 static __always_inline bool warn_rcu_enter(void)

@@ -1657,8 +1657,7 @@ static int pm2fb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	info->fbops		= &pm2fb_ops;
 	info->fix		= pm2fb_fix;
 	info->pseudo_palette	= default_par->palette;
-	info->flags		= FBINFO_DEFAULT |
-				  FBINFO_HWACCEL_YPAN |
+	info->flags		= FBINFO_HWACCEL_YPAN |
 				  FBINFO_HWACCEL_COPYAREA |
 				  FBINFO_HWACCEL_IMAGEBLIT |
 				  FBINFO_HWACCEL_FILLRECT;
@@ -1804,7 +1803,12 @@ static int __init pm2fb_init(void)
 {
 #ifndef MODULE
 	char *option = NULL;
+#endif
 
+	if (fb_modesetting_disabled("pm2fb"))
+		return -ENODEV;
+
+#ifndef MODULE
 	if (fb_get_options("pm2fb", &option))
 		return -ENODEV;
 	pm2fb_setup(option);

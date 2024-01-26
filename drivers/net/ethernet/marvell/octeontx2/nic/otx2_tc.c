@@ -19,24 +19,10 @@
 
 #include "cn10k.h"
 #include "otx2_common.h"
-
-/* Egress rate limiting definitions */
-#define MAX_BURST_EXPONENT		0x0FULL
-#define MAX_BURST_MANTISSA		0xFFULL
-#define MAX_BURST_SIZE			130816ULL
-#define MAX_RATE_DIVIDER_EXPONENT	12ULL
-#define MAX_RATE_EXPONENT		0x0FULL
-#define MAX_RATE_MANTISSA		0xFFULL
+#include "qos.h"
 
 #define CN10K_MAX_BURST_MANTISSA	0x7FFFULL
 #define CN10K_MAX_BURST_SIZE		8453888ULL
-
-/* Bitfields in NIX_TLX_PIR register */
-#define TLX_RATE_MANTISSA		GENMASK_ULL(8, 1)
-#define TLX_RATE_EXPONENT		GENMASK_ULL(12, 9)
-#define TLX_RATE_DIVIDER_EXPONENT	GENMASK_ULL(16, 13)
-#define TLX_BURST_MANTISSA		GENMASK_ULL(36, 29)
-#define TLX_BURST_EXPONENT		GENMASK_ULL(40, 37)
 
 #define CN10K_TLX_BURST_MANTISSA	GENMASK_ULL(43, 29)
 #define CN10K_TLX_BURST_EXPONENT	GENMASK_ULL(47, 44)
@@ -128,8 +114,8 @@ static void otx2_get_egress_rate_cfg(u64 maxrate, u32 *exp,
 	}
 }
 
-static u64 otx2_get_txschq_rate_regval(struct otx2_nic *nic,
-				       u64 maxrate, u32 burst)
+u64 otx2_get_txschq_rate_regval(struct otx2_nic *nic,
+				u64 maxrate, u32 burst)
 {
 	u32 burst_exp, burst_mantissa;
 	u32 exp, mantissa, div_exp;
@@ -245,7 +231,6 @@ static int otx2_tc_egress_matchall_install(struct otx2_nic *nic,
 	struct netlink_ext_ack *extack = cls->common.extack;
 	struct flow_action *actions = &cls->rule->action;
 	struct flow_action_entry *entry;
-	u64 rate;
 	int err;
 
 	err = otx2_tc_validate_flow(nic, actions, extack);
@@ -269,10 +254,8 @@ static int otx2_tc_egress_matchall_install(struct otx2_nic *nic,
 			NL_SET_ERR_MSG_MOD(extack, "QoS offload not support packets per second");
 			return -EOPNOTSUPP;
 		}
-		/* Convert bytes per second to Mbps */
-		rate = entry->police.rate_bytes_ps * 8;
-		rate = max_t(u64, rate / 1000000, 1);
-		err = otx2_set_matchall_egress_rate(nic, entry->police.burst, rate);
+		err = otx2_set_matchall_egress_rate(nic, entry->police.burst,
+						    otx2_convert_rate(entry->police.rate_bytes_ps));
 		if (err)
 			return err;
 		nic->flags |= OTX2_FLAG_TC_MATCHALL_EGRESS_ENABLED;
@@ -410,8 +393,12 @@ static int otx2_tc_parse_actions(struct otx2_nic *nic,
 				return -EOPNOTSUPP;
 			}
 			req->vf = priv->pcifunc & RVU_PFVF_FUNC_MASK;
-			req->op = NIX_RX_ACTION_DEFAULT;
-			return 0;
+
+			/* if op is already set; avoid overwriting the same */
+			if (!req->op)
+				req->op = NIX_RX_ACTION_DEFAULT;
+			break;
+
 		case FLOW_ACTION_VLAN_POP:
 			req->vtag0_valid = true;
 			/* use RX_VTAG_TYPE7 which is initialized to strip vlan tag */
@@ -447,6 +434,12 @@ static int otx2_tc_parse_actions(struct otx2_nic *nic,
 		case FLOW_ACTION_MARK:
 			mark = act->mark;
 			break;
+
+		case FLOW_ACTION_RX_QUEUE_MAPPING:
+			req->op = NIX_RX_ACTIONOP_UCAST;
+			req->index = act->rx_queue;
+			break;
+
 		default:
 			return -EOPNOTSUPP;
 		}
@@ -461,6 +454,62 @@ static int otx2_tc_parse_actions(struct otx2_nic *nic,
 	if (nr_police)
 		return otx2_tc_act_set_police(nic, node, f, rate, burst,
 					      mark, req, pps);
+
+	return 0;
+}
+
+static int otx2_tc_process_vlan(struct otx2_nic *nic, struct flow_msg *flow_spec,
+				struct flow_msg *flow_mask, struct flow_rule *rule,
+				struct npc_install_flow_req *req, bool is_inner)
+{
+	struct flow_match_vlan match;
+	u16 vlan_tci, vlan_tci_mask;
+
+	if (is_inner)
+		flow_rule_match_cvlan(rule, &match);
+	else
+		flow_rule_match_vlan(rule, &match);
+
+	if (!eth_type_vlan(match.key->vlan_tpid)) {
+		netdev_err(nic->netdev, "vlan tpid 0x%x not supported\n",
+			   ntohs(match.key->vlan_tpid));
+		return -EOPNOTSUPP;
+	}
+
+	if (!match.mask->vlan_id) {
+		struct flow_action_entry *act;
+		int i;
+
+		flow_action_for_each(i, act, &rule->action) {
+			if (act->id == FLOW_ACTION_DROP) {
+				netdev_err(nic->netdev,
+					   "vlan tpid 0x%x with vlan_id %d is not supported for DROP rule.\n",
+					   ntohs(match.key->vlan_tpid), match.key->vlan_id);
+				return -EOPNOTSUPP;
+			}
+		}
+	}
+
+	if (match.mask->vlan_id ||
+	    match.mask->vlan_dei ||
+	    match.mask->vlan_priority) {
+		vlan_tci = match.key->vlan_id |
+			   match.key->vlan_dei << 12 |
+			   match.key->vlan_priority << 13;
+
+		vlan_tci_mask = match.mask->vlan_id |
+				match.mask->vlan_dei << 12 |
+				match.mask->vlan_priority << 13;
+		if (is_inner) {
+			flow_spec->vlan_itci = htons(vlan_tci);
+			flow_mask->vlan_itci = htons(vlan_tci_mask);
+			req->features |= BIT_ULL(NPC_INNER_VID);
+		} else {
+			flow_spec->vlan_tci = htons(vlan_tci);
+			flow_mask->vlan_tci = htons(vlan_tci_mask);
+			req->features |= BIT_ULL(NPC_OUTER_VID);
+		}
+	}
 
 	return 0;
 }
@@ -480,15 +529,17 @@ static int otx2_tc_prepare_flow(struct otx2_nic *nic, struct otx2_tc_flow *node,
 	dissector = rule->match.dissector;
 
 	if ((dissector->used_keys &
-	    ~(BIT(FLOW_DISSECTOR_KEY_CONTROL) |
-	      BIT(FLOW_DISSECTOR_KEY_BASIC) |
-	      BIT(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_VLAN) |
-	      BIT(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_PORTS) |
-	      BIT(FLOW_DISSECTOR_KEY_IP))))  {
-		netdev_info(nic->netdev, "unsupported flow used key 0x%x",
+	    ~(BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_BASIC) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_ETH_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_VLAN) |
+	      BIT(FLOW_DISSECTOR_KEY_CVLAN) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_PORTS) |
+	      BIT(FLOW_DISSECTOR_KEY_IPSEC) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IP))))  {
+		netdev_info(nic->netdev, "unsupported flow used key 0x%llx",
 			    dissector->used_keys);
 		return -EOPNOTSUPP;
 	}
@@ -508,6 +559,8 @@ static int otx2_tc_prepare_flow(struct otx2_nic *nic, struct otx2_tc_flow *node,
 		     match.key->ip_proto != IPPROTO_UDP &&
 		     match.key->ip_proto != IPPROTO_SCTP &&
 		     match.key->ip_proto != IPPROTO_ICMP &&
+		     match.key->ip_proto != IPPROTO_ESP &&
+		     match.key->ip_proto != IPPROTO_AH &&
 		     match.key->ip_proto != IPPROTO_ICMPV6)) {
 			netdev_info(nic->netdev,
 				    "ip_proto=0x%x not supported\n",
@@ -527,6 +580,35 @@ static int otx2_tc_prepare_flow(struct otx2_nic *nic, struct otx2_tc_flow *node,
 			req->features |= BIT_ULL(NPC_IPPROTO_ICMP);
 		else if (ip_proto == IPPROTO_ICMPV6)
 			req->features |= BIT_ULL(NPC_IPPROTO_ICMP6);
+		else if (ip_proto == IPPROTO_ESP)
+			req->features |= BIT_ULL(NPC_IPPROTO_ESP);
+		else if (ip_proto == IPPROTO_AH)
+			req->features |= BIT_ULL(NPC_IPPROTO_AH);
+	}
+
+	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_CONTROL)) {
+		struct flow_match_control match;
+
+		flow_rule_match_control(rule, &match);
+		if (match.mask->flags & FLOW_DIS_FIRST_FRAG) {
+			NL_SET_ERR_MSG_MOD(extack, "HW doesn't support frag first/later");
+			return -EOPNOTSUPP;
+		}
+
+		if (match.mask->flags & FLOW_DIS_IS_FRAGMENT) {
+			if (ntohs(flow_spec->etype) == ETH_P_IP) {
+				flow_spec->ip_flag = IPV4_FLAG_MORE;
+				flow_mask->ip_flag = IPV4_FLAG_MORE;
+				req->features |= BIT_ULL(NPC_IPFRAG_IPV4);
+			} else if (ntohs(flow_spec->etype) == ETH_P_IPV6) {
+				flow_spec->next_header = IPPROTO_FRAGMENT;
+				flow_mask->next_header = 0xff;
+				req->features |= BIT_ULL(NPC_IPFRAG_IPV6);
+			} else {
+				NL_SET_ERR_MSG_MOD(extack, "flow-type should be either IPv4 and IPv6");
+				return -EOPNOTSUPP;
+			}
+		}
 	}
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_ETH_ADDRS)) {
@@ -544,6 +626,26 @@ static int otx2_tc_prepare_flow(struct otx2_nic *nic, struct otx2_tc_flow *node,
 					(u8 *)&match.mask->dst);
 			req->features |= BIT_ULL(NPC_DMAC);
 		}
+	}
+
+	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IPSEC)) {
+		struct flow_match_ipsec match;
+
+		flow_rule_match_ipsec(rule, &match);
+		if (!match.mask->spi) {
+			NL_SET_ERR_MSG_MOD(extack, "spi index not specified");
+			return -EOPNOTSUPP;
+		}
+		if (ip_proto != IPPROTO_ESP &&
+		    ip_proto != IPPROTO_AH) {
+			NL_SET_ERR_MSG_MOD(extack,
+					   "SPI index is valid only for ESP/AH proto");
+			return -EOPNOTSUPP;
+		}
+
+		flow_spec->spi = match.key->spi;
+		flow_mask->spi = match.mask->spi;
+		req->features |= BIT_ULL(NPC_IPSEC_SPI);
 	}
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IP)) {
@@ -565,47 +667,19 @@ static int otx2_tc_prepare_flow(struct otx2_nic *nic, struct otx2_tc_flow *node,
 	}
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_VLAN)) {
-		struct flow_match_vlan match;
-		u16 vlan_tci, vlan_tci_mask;
+		int ret;
 
-		flow_rule_match_vlan(rule, &match);
+		ret = otx2_tc_process_vlan(nic, flow_spec, flow_mask, rule, req, false);
+		if (ret)
+			return ret;
+	}
 
-		if (ntohs(match.key->vlan_tpid) != ETH_P_8021Q) {
-			netdev_err(nic->netdev, "vlan tpid 0x%x not supported\n",
-				   ntohs(match.key->vlan_tpid));
-			return -EOPNOTSUPP;
-		}
+	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_CVLAN)) {
+		int ret;
 
-		if (!match.mask->vlan_id) {
-			struct flow_action_entry *act;
-			int i;
-
-			flow_action_for_each(i, act, &rule->action) {
-				if (act->id == FLOW_ACTION_DROP) {
-					netdev_err(nic->netdev,
-						   "vlan tpid 0x%x with vlan_id %d is not supported for DROP rule.\n",
-						   ntohs(match.key->vlan_tpid),
-						   match.key->vlan_id);
-					return -EOPNOTSUPP;
-				}
-			}
-		}
-
-		if (match.mask->vlan_id ||
-		    match.mask->vlan_dei ||
-		    match.mask->vlan_priority) {
-			vlan_tci = match.key->vlan_id |
-				   match.key->vlan_dei << 12 |
-				   match.key->vlan_priority << 13;
-
-			vlan_tci_mask = match.mask->vlan_id |
-					match.mask->vlan_dei << 12 |
-					match.mask->vlan_priority << 13;
-
-			flow_spec->vlan_tci = htons(vlan_tci);
-			flow_mask->vlan_tci = htons(vlan_tci_mask);
-			req->features |= BIT_ULL(NPC_OUTER_VID);
-		}
+		ret = otx2_tc_process_vlan(nic, flow_spec, flow_mask, rule, req, true);
+		if (ret)
+			return ret;
 	}
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IPV4_ADDRS)) {
@@ -1310,6 +1384,8 @@ int otx2_setup_tc(struct net_device *netdev, enum tc_setup_type type,
 	switch (type) {
 	case TC_SETUP_BLOCK:
 		return otx2_setup_tc_block(netdev, type_data);
+	case TC_SETUP_QDISC_HTB:
+		return otx2_setup_tc_htb(netdev, type_data);
 	default:
 		return -EOPNOTSUPP;
 	}

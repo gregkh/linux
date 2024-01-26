@@ -15,8 +15,8 @@
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/err.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/driver.h>
@@ -324,7 +324,7 @@ static int tps65219_regulator_probe(struct platform_device *pdev)
 					       &config);
 		if (IS_ERR(rdev)) {
 			dev_err(tps->dev, "failed to register %s regulator\n",
-				pdev->name);
+				regulators[i].name);
 			return PTR_ERR(rdev);
 		}
 		rdevtbl[i] = rdev;
@@ -380,6 +380,7 @@ MODULE_DEVICE_TABLE(platform, tps65219_regulator_id_table);
 static struct platform_driver tps65219_regulator_driver = {
 	.driver = {
 		.name = "tps65219-pmic",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = tps65219_regulator_probe,
 	.id_table = tps65219_regulator_id_table,

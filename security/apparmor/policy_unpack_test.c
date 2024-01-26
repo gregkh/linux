@@ -69,31 +69,30 @@ static struct aa_ext *build_aa_ext_struct(struct policy_unpack_fixture *puf,
 
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_STRING_NAME) + 1;
-	strcpy(buf + 3, TEST_STRING_NAME);
+	strscpy(buf + 3, TEST_STRING_NAME, e->end - (void *)(buf + 3));
 
 	buf = e->start + TEST_STRING_BUF_OFFSET;
 	*buf = AA_STRING;
 	*(buf + 1) = strlen(TEST_STRING_DATA) + 1;
-	strcpy(buf + 3, TEST_STRING_DATA);
-
+	strscpy(buf + 3, TEST_STRING_DATA, e->end - (void *)(buf + 3));
 	buf = e->start + TEST_NAMED_U32_BUF_OFFSET;
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_U32_NAME) + 1;
-	strcpy(buf + 3, TEST_U32_NAME);
+	strscpy(buf + 3, TEST_U32_NAME, e->end - (void *)(buf + 3));
 	*(buf + 3 + strlen(TEST_U32_NAME) + 1) = AA_U32;
 	*((u32 *)(buf + 3 + strlen(TEST_U32_NAME) + 2)) = TEST_U32_DATA;
 
 	buf = e->start + TEST_NAMED_U64_BUF_OFFSET;
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_U64_NAME) + 1;
-	strcpy(buf + 3, TEST_U64_NAME);
+	strscpy(buf + 3, TEST_U64_NAME, e->end - (void *)(buf + 3));
 	*(buf + 3 + strlen(TEST_U64_NAME) + 1) = AA_U64;
 	*((u64 *)(buf + 3 + strlen(TEST_U64_NAME) + 2)) = TEST_U64_DATA;
 
 	buf = e->start + TEST_NAMED_BLOB_BUF_OFFSET;
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_BLOB_NAME) + 1;
-	strcpy(buf + 3, TEST_BLOB_NAME);
+	strscpy(buf + 3, TEST_BLOB_NAME, e->end - (void *)(buf + 3));
 	*(buf + 3 + strlen(TEST_BLOB_NAME) + 1) = AA_BLOB;
 	*(buf + 3 + strlen(TEST_BLOB_NAME) + 2) = TEST_BLOB_DATA_SIZE;
 	memcpy(buf + 3 + strlen(TEST_BLOB_NAME) + 6,
@@ -102,7 +101,7 @@ static struct aa_ext *build_aa_ext_struct(struct policy_unpack_fixture *puf,
 	buf = e->start + TEST_NAMED_ARRAY_BUF_OFFSET;
 	*buf = AA_NAME;
 	*(buf + 1) = strlen(TEST_ARRAY_NAME) + 1;
-	strcpy(buf + 3, TEST_ARRAY_NAME);
+	strscpy(buf + 3, TEST_ARRAY_NAME, e->end - (void *)(buf + 3));
 	*(buf + 3 + strlen(TEST_ARRAY_NAME) + 1) = AA_ARRAY;
 	*((u16 *)(buf + 3 + strlen(TEST_ARRAY_NAME) + 2)) = TEST_ARRAY_SIZE;
 
@@ -143,12 +142,11 @@ static void policy_unpack_test_inbounds_when_out_of_bounds(struct kunit *test)
 static void policy_unpack_test_unpack_array_with_null_name(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
-	u16 array_size;
+	u16 array_size = 0;
 
 	puf->e->pos += TEST_ARRAY_BUF_OFFSET;
 
-	array_size = aa_unpack_array(puf->e, NULL);
-
+	KUNIT_EXPECT_TRUE(test, aa_unpack_array(puf->e, NULL, &array_size));
 	KUNIT_EXPECT_EQ(test, array_size, (u16)TEST_ARRAY_SIZE);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
 		puf->e->start + TEST_ARRAY_BUF_OFFSET + sizeof(u16) + 1);
@@ -158,12 +156,11 @@ static void policy_unpack_test_unpack_array_with_name(struct kunit *test)
 {
 	struct policy_unpack_fixture *puf = test->priv;
 	const char name[] = TEST_ARRAY_NAME;
-	u16 array_size;
+	u16 array_size = 0;
 
 	puf->e->pos += TEST_NAMED_ARRAY_BUF_OFFSET;
 
-	array_size = aa_unpack_array(puf->e, name);
-
+	KUNIT_EXPECT_TRUE(test, aa_unpack_array(puf->e, name, &array_size));
 	KUNIT_EXPECT_EQ(test, array_size, (u16)TEST_ARRAY_SIZE);
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
 		puf->e->start + TEST_ARRAY_BUF_OFFSET + sizeof(u16) + 1);
@@ -178,9 +175,7 @@ static void policy_unpack_test_unpack_array_out_of_bounds(struct kunit *test)
 	puf->e->pos += TEST_NAMED_ARRAY_BUF_OFFSET;
 	puf->e->end = puf->e->start + TEST_ARRAY_BUF_OFFSET + sizeof(u16);
 
-	array_size = aa_unpack_array(puf->e, name);
-
-	KUNIT_EXPECT_EQ(test, array_size, 0);
+	KUNIT_EXPECT_FALSE(test, aa_unpack_array(puf->e, name, &array_size));
 	KUNIT_EXPECT_PTR_EQ(test, puf->e->pos,
 		puf->e->start + TEST_NAMED_ARRAY_BUF_OFFSET);
 }

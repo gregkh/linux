@@ -8,9 +8,9 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
-#include <media/dvb_math.h>
+#include <linux/int_log.h>
 
 #include "mn88443x.h"
 
@@ -673,9 +673,9 @@ static const struct regmap_config regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static int mn88443x_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int mn88443x_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct mn88443x_config *conf = client->dev.platform_data;
 	struct mn88443x_priv *chip;
 	struct device *dev = &client->dev;

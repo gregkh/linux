@@ -1470,7 +1470,7 @@ static int tgafb_register(struct device *dev)
 		par->tga_chip_rev = TGA_READ_REG(par, TGA_START_REG) & 0xff;
 
 	/* Setup framebuffer.  */
-	info->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_COPYAREA |
+	info->flags = FBINFO_HWACCEL_COPYAREA |
 		      FBINFO_HWACCEL_IMAGEBLIT | FBINFO_HWACCEL_FILLRECT;
 	info->fbops = &tgafb_ops;
 	info->screen_base = par->tga_fb_base;
@@ -1600,7 +1600,12 @@ static int tgafb_init(void)
 	int status;
 #ifndef MODULE
 	char *option = NULL;
+#endif
 
+	if (fb_modesetting_disabled("tgafb"))
+		return -ENODEV;
+
+#ifndef MODULE
 	if (fb_get_options("tgafb", &option))
 		return -ENODEV;
 	tgafb_setup(option);

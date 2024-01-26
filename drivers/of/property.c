@@ -1072,7 +1072,7 @@ static struct device_node *of_get_compat_node(struct device_node *np)
 			np = NULL;
 		}
 
-		if (of_find_property(np, "compatible", NULL))
+		if (of_property_present(np, "compatible"))
 			break;
 
 		np = of_get_next_parent(np);
@@ -1144,8 +1144,8 @@ static struct device_node *parse_prop_cells(struct device_node *np,
 	if (strcmp(prop_name, list_name))
 		return NULL;
 
-	if (of_parse_phandle_with_args(np, list_name, cells_name, index,
-				       &sup_args))
+	if (__of_parse_phandle_with_args(np, list_name, cells_name, 0, index,
+					 &sup_args))
 		return NULL;
 
 	return sup_args.np;
@@ -1249,7 +1249,7 @@ DEFINE_SIMPLE_PROP(dmas, "dmas", "#dma-cells")
 DEFINE_SIMPLE_PROP(power_domains, "power-domains", "#power-domain-cells")
 DEFINE_SIMPLE_PROP(hwlocks, "hwlocks", "#hwlock-cells")
 DEFINE_SIMPLE_PROP(extcon, "extcon", NULL)
-DEFINE_SIMPLE_PROP(nvmem_cells, "nvmem-cells", NULL)
+DEFINE_SIMPLE_PROP(nvmem_cells, "nvmem-cells", "#nvmem-cell-cells")
 DEFINE_SIMPLE_PROP(phys, "phys", "#phy-cells")
 DEFINE_SIMPLE_PROP(wakeup_parent, "wakeup-parent", NULL)
 DEFINE_SIMPLE_PROP(pinctrl0, "pinctrl-0", NULL)
@@ -1301,7 +1301,7 @@ static struct device_node *parse_gpio_compat(struct device_node *np,
 	 * Ignore node with gpio-hog property since its gpios are all provided
 	 * by its parent.
 	 */
-	if (of_find_property(np, "gpio-hog", NULL))
+	if (of_property_read_bool(np, "gpio-hog"))
 		return NULL;
 
 	if (of_parse_phandle_with_args(np, prop_name, "#gpio-cells", index,

@@ -425,7 +425,7 @@ static int fsi_spi_transfer_one_message(struct spi_controller *ctlr,
 					struct spi_message *mesg)
 {
 	int rc;
-	u8 seq_slave = SPI_FSI_SEQUENCE_SEL_SLAVE(mesg->spi->chip_select + 1);
+	u8 seq_slave = SPI_FSI_SEQUENCE_SEL_SLAVE(spi_get_chipselect(mesg->spi, 0) + 1);
 	unsigned int len;
 	struct spi_transfer *transfer;
 	struct fsi_spi *ctx = spi_controller_get_devdata(ctlr);
@@ -542,7 +542,7 @@ static int fsi_spi_probe(struct device *dev)
 		if (of_property_read_u32(np, "reg", &base))
 			continue;
 
-		ctlr = spi_alloc_master(dev, sizeof(*ctx));
+		ctlr = spi_alloc_host(dev, sizeof(*ctx));
 		if (!ctlr) {
 			of_node_put(np);
 			break;

@@ -13,9 +13,11 @@ description: |
 
 maintainers:
   - Michael Tretter <m.tretter@pengutronix.de>
+  - Harini Katakam <harini.katakam@amd.com>
+  - Radhey Shyam Pandey <radhey.shyam.pandey@amd.com>
 
 allOf:
-  - $ref: "../dma-controller.yaml#"
+  - $ref: ../dma-controller.yaml#
 
 properties:
   "#dma-cells":
@@ -65,6 +67,7 @@ required:
   - interrupts
   - clocks
   - clock-names
+  - xlnx,bus-width
 
 additionalProperties: false
 

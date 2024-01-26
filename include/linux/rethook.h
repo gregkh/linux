@@ -14,7 +14,7 @@
 
 struct rethook_node;
 
-typedef void (*rethook_handler_t) (struct rethook_node *, void *, struct pt_regs *);
+typedef void (*rethook_handler_t) (struct rethook_node *, void *, unsigned long, struct pt_regs *);
 
 /**
  * struct rethook - The rethook management data structure.
@@ -34,7 +34,7 @@ struct rethook {
 	 * __rcu, instead of rethook_handler_t. But this must be same as
 	 * rethook_handler_t.
 	 */
-	void (__rcu *handler) (struct rethook_node *, void *, struct pt_regs *);
+	void (__rcu *handler) (struct rethook_node *, void *, unsigned long, struct pt_regs *);
 	struct freelist_head	pool;
 	refcount_t		ref;
 	struct rcu_head		rcu;

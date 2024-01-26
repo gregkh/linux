@@ -214,7 +214,7 @@
 			};
 
 			ldo5_reg: LDO5 {
-				regulator-compatible = "ldo5";
+				regulator-name = "ldo5";
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
 				regulator-always-on;
@@ -228,6 +228,12 @@
 				regulator-always-on;
 			};
 		};
+	};
+
+	eeprom_som: eeprom@52 {
+		compatible = "atmel,24c04";
+		reg = <0x52>;
+		pagesize = <16>;
 	};
 };
 

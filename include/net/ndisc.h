@@ -445,7 +445,7 @@ int ndisc_late_init(void);
 void ndisc_late_cleanup(void);
 void ndisc_cleanup(void);
 
-int ndisc_rcv(struct sk_buff *skb);
+enum skb_drop_reason ndisc_rcv(struct sk_buff *skb);
 
 struct sk_buff *ndisc_ns_create(struct net_device *dev, const struct in6_addr *solicit,
 				const struct in6_addr *saddr, u64 nonce);
@@ -488,9 +488,6 @@ void igmp6_event_report(struct sk_buff *skb);
 #ifdef CONFIG_SYSCTL
 int ndisc_ifinfo_sysctl_change(struct ctl_table *ctl, int write,
 			       void *buffer, size_t *lenp, loff_t *ppos);
-int ndisc_ifinfo_sysctl_strategy(struct ctl_table *ctl,
-				 void __user *oldval, size_t __user *oldlenp,
-				 void __user *newval, size_t newlen);
 #endif
 
 void inet6_ifinfo_notify(int event, struct inet6_dev *idev);

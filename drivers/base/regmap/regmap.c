@@ -311,26 +311,6 @@ static void regmap_format_32_native(void *buf, unsigned int val,
 	memcpy(buf, &v, sizeof(v));
 }
 
-#ifdef CONFIG_64BIT
-static void regmap_format_64_be(void *buf, unsigned int val, unsigned int shift)
-{
-	put_unaligned_be64((u64) val << shift, buf);
-}
-
-static void regmap_format_64_le(void *buf, unsigned int val, unsigned int shift)
-{
-	put_unaligned_le64((u64) val << shift, buf);
-}
-
-static void regmap_format_64_native(void *buf, unsigned int val,
-				    unsigned int shift)
-{
-	u64 v = (u64) val << shift;
-
-	memcpy(buf, &v, sizeof(v));
-}
-#endif
-
 static void regmap_parse_inplace_noop(void *buf)
 {
 }
@@ -410,40 +390,6 @@ static unsigned int regmap_parse_32_native(const void *buf)
 	memcpy(&v, buf, sizeof(v));
 	return v;
 }
-
-#ifdef CONFIG_64BIT
-static unsigned int regmap_parse_64_be(const void *buf)
-{
-	return get_unaligned_be64(buf);
-}
-
-static unsigned int regmap_parse_64_le(const void *buf)
-{
-	return get_unaligned_le64(buf);
-}
-
-static void regmap_parse_64_be_inplace(void *buf)
-{
-	u64 v =  get_unaligned_be64(buf);
-
-	memcpy(buf, &v, sizeof(v));
-}
-
-static void regmap_parse_64_le_inplace(void *buf)
-{
-	u64 v = get_unaligned_le64(buf);
-
-	memcpy(buf, &v, sizeof(v));
-}
-
-static unsigned int regmap_parse_64_native(const void *buf)
-{
-	u64 v;
-
-	memcpy(&v, buf, sizeof(v));
-	return v;
-}
-#endif
 
 static void regmap_lock_hwlock(void *__map)
 {
@@ -814,7 +760,7 @@ struct regmap *__regmap_init(struct device *dev,
 
 	map->format.reg_bytes = DIV_ROUND_UP(config->reg_bits, 8);
 	map->format.pad_bytes = config->pad_bits / 8;
-	map->format.reg_downshift = config->reg_downshift;
+	map->format.reg_shift = config->reg_shift;
 	map->format.val_bytes = DIV_ROUND_UP(config->val_bits, 8);
 	map->format.buf_size = DIV_ROUND_UP(config->reg_bits +
 			config->val_bits + config->pad_bits, 8);
@@ -1005,24 +951,6 @@ struct regmap *__regmap_init(struct device *dev,
 		}
 		break;
 
-#ifdef CONFIG_64BIT
-	case 64:
-		switch (reg_endian) {
-		case REGMAP_ENDIAN_BIG:
-			map->format.format_reg = regmap_format_64_be;
-			break;
-		case REGMAP_ENDIAN_LITTLE:
-			map->format.format_reg = regmap_format_64_le;
-			break;
-		case REGMAP_ENDIAN_NATIVE:
-			map->format.format_reg = regmap_format_64_native;
-			break;
-		default:
-			goto err_hwlock;
-		}
-		break;
-#endif
-
 	default:
 		goto err_hwlock;
 	}
@@ -1086,28 +1014,6 @@ struct regmap *__regmap_init(struct device *dev,
 			goto err_hwlock;
 		}
 		break;
-#ifdef CONFIG_64BIT
-	case 64:
-		switch (val_endian) {
-		case REGMAP_ENDIAN_BIG:
-			map->format.format_val = regmap_format_64_be;
-			map->format.parse_val = regmap_parse_64_be;
-			map->format.parse_inplace = regmap_parse_64_be_inplace;
-			break;
-		case REGMAP_ENDIAN_LITTLE:
-			map->format.format_val = regmap_format_64_le;
-			map->format.parse_val = regmap_parse_64_le;
-			map->format.parse_inplace = regmap_parse_64_le_inplace;
-			break;
-		case REGMAP_ENDIAN_NATIVE:
-			map->format.format_val = regmap_format_64_native;
-			map->format.parse_val = regmap_parse_64_native;
-			break;
-		default:
-			goto err_hwlock;
-		}
-		break;
-#endif
 	}
 
 	if (map->format.format_write) {
@@ -1676,6 +1582,18 @@ static void regmap_set_work_buf_flag_mask(struct regmap *map, int max_bytes,
 		buf[i] |= (mask >> (8 * i)) & 0xff;
 }
 
+static unsigned int regmap_reg_addr(struct regmap *map, unsigned int reg)
+{
+	reg += map->reg_base;
+
+	if (map->format.reg_shift > 0)
+		reg >>= map->format.reg_shift;
+	else if (map->format.reg_shift < 0)
+		reg <<= -(map->format.reg_shift);
+
+	return reg;
+}
+
 static int _regmap_raw_write_impl(struct regmap *map, unsigned int reg,
 				  const void *val, size_t val_len, bool noinc)
 {
@@ -1755,8 +1673,7 @@ static int _regmap_raw_write_impl(struct regmap *map, unsigned int reg,
 			return ret;
 	}
 
-	reg += map->reg_base;
-	reg >>= map->format.reg_downshift;
+	reg = regmap_reg_addr(map, reg);
 	map->format.format_reg(map->work_buf, reg, map->reg_shift);
 	regmap_set_work_buf_flag_mask(map, map->format.reg_bytes,
 				      map->write_flag_mask);
@@ -1926,8 +1843,7 @@ static int _regmap_bus_formatted_write(void *context, unsigned int reg,
 			return ret;
 	}
 
-	reg += map->reg_base;
-	reg >>= map->format.reg_downshift;
+	reg = regmap_reg_addr(map, reg);
 	map->format.format_write(map, reg, val);
 
 	trace_regmap_hw_write_start(map, reg, 1);
@@ -1943,9 +1859,17 @@ static int _regmap_bus_reg_write(void *context, unsigned int reg,
 				 unsigned int val)
 {
 	struct regmap *map = context;
+	struct regmap_range_node *range;
+	int ret;
 
-	reg += map->reg_base;
-	reg >>= map->format.reg_downshift;
+	range = _regmap_range_lookup(map, reg);
+	if (range) {
+		ret = _regmap_select_page(map, &reg, range, 1);
+		if (ret != 0)
+			return ret;
+	}
+
+	reg = regmap_reg_addr(map, reg);
 	return map->bus->reg_write(map->bus_context, reg, val);
 }
 
@@ -2142,9 +2066,6 @@ static int regmap_noinc_readwrite(struct regmap *map, unsigned int reg,
 	u8 *u8p;
 	u16 *u16p;
 	u32 *u32p;
-#ifdef CONFIG_64BIT
-	u64 *u64p;
-#endif
 	int ret;
 	int i;
 
@@ -2164,13 +2085,6 @@ static int regmap_noinc_readwrite(struct regmap *map, unsigned int reg,
 		if (write)
 			lastval = (unsigned int)u32p[val_count - 1];
 		break;
-#ifdef CONFIG_64BIT
-	case 8:
-		u64p = val;
-		if (write)
-			lastval = (unsigned int)u64p[val_count - 1];
-		break;
-#endif
 	default:
 		return -EINVAL;
 	}
@@ -2208,11 +2122,6 @@ static int regmap_noinc_readwrite(struct regmap *map, unsigned int reg,
 			case 4:
 				pr_cont("%x", u32p[i]);
 				break;
-#ifdef CONFIG_64BIT
-			case 8:
-				pr_cont("%llx", u64p[i]);
-				break;
-#endif
 			default:
 				break;
 			}
@@ -2420,11 +2329,6 @@ int regmap_bulk_write(struct regmap *map, unsigned int reg, const void *val,
 			case 4:
 				ival = *(u32 *)(val + (i * val_bytes));
 				break;
-#ifdef CONFIG_64BIT
-			case 8:
-				ival = *(u64 *)(val + (i * val_bytes));
-				break;
-#endif
 			default:
 				ret = -EINVAL;
 				goto out;
@@ -2496,8 +2400,7 @@ static int _regmap_raw_multi_reg_write(struct regmap *map,
 		unsigned int reg = regs[i].reg;
 		unsigned int val = regs[i].def;
 		trace_regmap_hw_write_start(map, reg, 1);
-		reg += map->reg_base;
-		reg >>= map->format.reg_downshift;
+		reg = regmap_reg_addr(map, reg);
 		map->format.format_reg(u8, reg, map->reg_shift);
 		u8 += reg_bytes + pad_bytes;
 		map->format.format_val(u8, val, 0);
@@ -2823,8 +2726,7 @@ static int _regmap_raw_read(struct regmap *map, unsigned int reg, void *val,
 			return ret;
 	}
 
-	reg += map->reg_base;
-	reg >>= map->format.reg_downshift;
+	reg = regmap_reg_addr(map, reg);
 	map->format.format_reg(map->work_buf, reg, map->reg_shift);
 	regmap_set_work_buf_flag_mask(map, map->format.reg_bytes,
 				      map->read_flag_mask);
@@ -2843,9 +2745,17 @@ static int _regmap_bus_reg_read(void *context, unsigned int reg,
 				unsigned int *val)
 {
 	struct regmap *map = context;
+	struct regmap_range_node *range;
+	int ret;
 
-	reg += map->reg_base;
-	reg >>= map->format.reg_downshift;
+	range = _regmap_range_lookup(map, reg);
+	if (range) {
+		ret = _regmap_select_page(map, &reg, range, 1);
+		if (ret != 0)
+			return ret;
+	}
+
+	reg = regmap_reg_addr(map, reg);
 	return map->bus->reg_read(map->bus_context, reg, val);
 }
 
@@ -2959,6 +2869,11 @@ int regmap_raw_read(struct regmap *map, unsigned int reg, void *val,
 		size_t chunk_count, chunk_bytes;
 		size_t chunk_regs = val_count;
 
+		if (!map->cache_bypass && map->cache_only) {
+			ret = -EBUSY;
+			goto out;
+		}
+
 		if (!map->read) {
 			ret = -ENOTSUPP;
 			goto out;
@@ -3054,18 +2969,19 @@ int regmap_noinc_read(struct regmap *map, unsigned int reg,
 		goto out_unlock;
 	}
 
+	/*
+	 * We have not defined the FIFO semantics for cache, as the
+	 * cache is just one value deep. Should we return the last
+	 * written value? Just avoid this by always reading the FIFO
+	 * even when using cache. Cache only will not work.
+	 */
+	if (!map->cache_bypass && map->cache_only) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
 	/* Use the accelerated operation if we can */
 	if (map->bus->reg_noinc_read) {
-		/*
-		 * We have not defined the FIFO semantics for cache, as the
-		 * cache is just one value deep. Should we return the last
-		 * written value? Just avoid this by always reading the FIFO
-		 * even when using cache. Cache only will not work.
-		 */
-		if (map->cache_only) {
-			ret = -EBUSY;
-			goto out_unlock;
-		}
 		ret = regmap_noinc_readwrite(map, reg, val, val_len, false);
 		goto out_unlock;
 	}
@@ -3177,9 +3093,6 @@ int regmap_bulk_read(struct regmap *map, unsigned int reg, void *val,
 		for (i = 0; i < val_count * val_bytes; i += val_bytes)
 			map->format.parse_inplace(val + i);
 	} else {
-#ifdef CONFIG_64BIT
-		u64 *u64 = val;
-#endif
 		u32 *u32 = val;
 		u16 *u16 = val;
 		u8 *u8 = val;
@@ -3195,11 +3108,6 @@ int regmap_bulk_read(struct regmap *map, unsigned int reg, void *val,
 				goto out;
 
 			switch (map->format.val_bytes) {
-#ifdef CONFIG_64BIT
-			case 8:
-				u64[i] = ival;
-				break;
-#endif
 			case 4:
 				u32[i] = ival;
 				break;
@@ -3237,8 +3145,7 @@ static int _regmap_update_bits(struct regmap *map, unsigned int reg,
 		*change = false;
 
 	if (regmap_volatile(map, reg) && map->reg_update_bits) {
-		reg += map->reg_base;
-		reg >>= map->format.reg_downshift;
+		reg = regmap_reg_addr(map, reg);
 		ret = map->reg_update_bits(map->bus_context, reg, mask, val);
 		if (ret == 0 && change)
 			*change = true;
@@ -3250,7 +3157,7 @@ static int _regmap_update_bits(struct regmap *map, unsigned int reg,
 		tmp = orig & ~mask;
 		tmp |= val & mask;
 
-		if (force_write || (tmp != orig)) {
+		if (force_write || (tmp != orig) || map->force_write_field) {
 			ret = _regmap_write(map, reg, tmp);
 			if (ret == 0 && change)
 				*change = true;
@@ -3493,6 +3400,19 @@ int regmap_get_reg_stride(struct regmap *map)
 	return map->reg_stride;
 }
 EXPORT_SYMBOL_GPL(regmap_get_reg_stride);
+
+/**
+ * regmap_might_sleep() - Returns whether a regmap access might sleep.
+ *
+ * @map: Register map to operate on.
+ *
+ * Returns true if an access to the register might sleep, else false.
+ */
+bool regmap_might_sleep(struct regmap *map)
+{
+	return map->can_sleep;
+}
+EXPORT_SYMBOL_GPL(regmap_might_sleep);
 
 int regmap_parse_val(struct regmap *map, const void *buf,
 			unsigned int *val)

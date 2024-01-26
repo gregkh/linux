@@ -6,8 +6,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
@@ -93,7 +92,7 @@ static int stm32_pwr_reg_disable(struct regulator_dev *rdev)
 	writel_relaxed(val, priv->base + REG_PWR_CR3);
 
 	/* use an arbitrary timeout of 20ms */
-	ret = readx_poll_timeout(stm32_pwr_reg_is_ready, rdev, val, !val,
+	ret = readx_poll_timeout(stm32_pwr_reg_is_enabled, rdev, val, !val,
 				 100, 20 * 1000);
 	if (ret)
 		dev_err(&rdev->dev, "regulator disable timed out!\n");
@@ -175,6 +174,7 @@ static struct platform_driver stm32_pwr_driver = {
 	.probe = stm32_pwr_regulator_probe,
 	.driver = {
 		.name  = "stm32-pwr-regulator",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_match_ptr(stm32_pwr_of_match),
 	},
 };
@@ -182,4 +182,3 @@ module_platform_driver(stm32_pwr_driver);
 
 MODULE_DESCRIPTION("STM32MP1 PWR voltage regulator driver");
 MODULE_AUTHOR("Pascal Paillet <p.paillet@st.com>");
-MODULE_LICENSE("GPL v2");

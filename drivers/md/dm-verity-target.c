@@ -16,6 +16,7 @@
 #include "dm-verity.h"
 #include "dm-verity-fec.h"
 #include "dm-verity-verify-sig.h"
+#include "dm-audit.h"
 #include <linux/module.h>
 #include <linux/reboot.h>
 #include <linux/scatterlist.h>
@@ -43,7 +44,7 @@
 
 static unsigned int dm_verity_prefetch_cluster = DM_VERITY_DEFAULT_PREFETCH_SIZE;
 
-module_param_named(prefetch_cluster, dm_verity_prefetch_cluster, uint, S_IRUGO | S_IWUSR);
+module_param_named(prefetch_cluster, dm_verity_prefetch_cluster, uint, 0644);
 
 static DEFINE_STATIC_KEY_FALSE(use_tasklet_enabled);
 
@@ -110,22 +111,24 @@ static int verity_hash_update(struct dm_verity *v, struct ahash_request *req,
 		sg_init_one(&sg, data, len);
 		ahash_request_set_crypt(req, &sg, NULL, len);
 		return crypto_wait_req(crypto_ahash_update(req), wait);
-	} else {
-		do {
-			int r;
-			size_t this_step = min_t(size_t, len, PAGE_SIZE - offset_in_page(data));
-			flush_kernel_vmap_range((void *)data, this_step);
-			sg_init_table(&sg, 1);
-			sg_set_page(&sg, vmalloc_to_page(data), this_step, offset_in_page(data));
-			ahash_request_set_crypt(req, &sg, NULL, this_step);
-			r = crypto_wait_req(crypto_ahash_update(req), wait);
-			if (unlikely(r))
-				return r;
-			data += this_step;
-			len -= this_step;
-		} while (len);
-		return 0;
 	}
+
+	do {
+		int r;
+		size_t this_step = min_t(size_t, len, PAGE_SIZE - offset_in_page(data));
+
+		flush_kernel_vmap_range((void *)data, this_step);
+		sg_init_table(&sg, 1);
+		sg_set_page(&sg, vmalloc_to_page(data), this_step, offset_in_page(data));
+		ahash_request_set_crypt(req, &sg, NULL, this_step);
+		r = crypto_wait_req(crypto_ahash_update(req), wait);
+		if (unlikely(r))
+			return r;
+		data += this_step;
+		len -= this_step;
+	} while (len);
+
+	return 0;
 }
 
 /*
@@ -165,7 +168,7 @@ static int verity_hash_final(struct dm_verity *v, struct ahash_request *req,
 		r = verity_hash_update(v, req, v->salt, v->salt_size, wait);
 
 		if (r < 0) {
-			DMERR("verity_hash_final failed updating salt: %d", r);
+			DMERR("%s failed updating salt: %d", __func__, r);
 			goto out;
 		}
 	}
@@ -247,8 +250,10 @@ static int verity_handle_err(struct dm_verity *v, enum verity_block_type type,
 	DMERR_LIMIT("%s: %s block %llu is corrupted", v->data_dev->name,
 		    type_str, block);
 
-	if (v->corrupted_errs == DM_VERITY_MAX_CORRUPTED_ERRS)
+	if (v->corrupted_errs == DM_VERITY_MAX_CORRUPTED_ERRS) {
 		DMERR("%s: reached maximum errors", v->data_dev->name);
+		dm_audit_log_target(DM_MSG_PREFIX, "max-corrupted-errors", v->ti, 0);
+	}
 
 	snprintf(verity_env, DM_VERITY_ENV_LENGTH, "%s=%d,%llu",
 		DM_VERITY_ENV_VAR_NAME, type, block);
@@ -333,14 +338,17 @@ static int verity_verify_level(struct dm_verity *v, struct dm_verity_io *io,
 			 */
 			r = -EAGAIN;
 			goto release_ret_r;
-		}
-		else if (verity_fec_decode(v, io,
-					   DM_VERITY_BLOCK_TYPE_METADATA,
-					   hash_block, data, NULL) == 0)
+		} else if (verity_fec_decode(v, io, DM_VERITY_BLOCK_TYPE_METADATA,
+					     hash_block, data, NULL) == 0)
 			aux->hash_verified = 1;
 		else if (verity_handle_err(v,
 					   DM_VERITY_BLOCK_TYPE_METADATA,
 					   hash_block)) {
+			struct bio *bio =
+				dm_bio_from_per_bio_data(io,
+							 v->ti->per_io_data_size);
+			dm_audit_log_bio(DM_MSG_PREFIX, "verify-metadata", bio,
+					 block, 0);
 			r = -EIO;
 			goto release_ret_r;
 		}
@@ -425,7 +433,7 @@ static int verity_for_io_block(struct dm_verity *v, struct dm_verity_io *io,
 		r = crypto_wait_req(crypto_ahash_update(req), wait);
 
 		if (unlikely(r < 0)) {
-			DMERR("verity_for_io_block crypto op failed: %d", r);
+			DMERR("%s crypto op failed: %d", __func__, r);
 			return r;
 		}
 
@@ -591,8 +599,11 @@ static int verity_verify_io(struct dm_verity_io *io)
 				return -EIO;
 			}
 			if (verity_handle_err(v, DM_VERITY_BLOCK_TYPE_DATA,
-					      cur_block))
+					      cur_block)) {
+				dm_audit_log_bio(DM_MSG_PREFIX, "verify-data",
+						 bio, cur_block, 0);
 				return -EIO;
+			}
 		}
 	}
 
@@ -687,8 +698,10 @@ static void verity_prefetch_io(struct work_struct *work)
 	for (i = v->levels - 2; i >= 0; i--) {
 		sector_t hash_block_start;
 		sector_t hash_block_end;
+
 		verity_hash_at_level(v, pw->block, i, &hash_block_start, NULL);
 		verity_hash_at_level(v, pw->block + pw->n_blocks - 1, i, &hash_block_end, NULL);
+
 		if (!i) {
 			unsigned int cluster = READ_ONCE(dm_verity_prefetch_cluster);
 
@@ -977,6 +990,8 @@ static void verity_dtr(struct dm_target *ti)
 		static_branch_dec(&use_tasklet_enabled);
 
 	kfree(v);
+
+	dm_audit_log_dtr(DM_MSG_PREFIX, ti, 1);
 }
 
 static int verity_alloc_most_once(struct dm_verity *v)
@@ -1166,7 +1181,6 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	struct dm_verity_sig_opts verify_args = {0};
 	struct dm_arg_set as;
 	unsigned int num;
-	unsigned int wq_flags;
 	unsigned long long num_ll;
 	int r;
 	int i;
@@ -1186,7 +1200,7 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (r)
 		goto bad;
 
-	if ((dm_table_get_mode(ti->table) & ~FMODE_READ)) {
+	if ((dm_table_get_mode(ti->table) & ~BLK_OPEN_READ)) {
 		ti->error = "Device must be readonly";
 		r = -EINVAL;
 		goto bad;
@@ -1215,13 +1229,13 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 	v->version = num;
 
-	r = dm_get_device(ti, argv[1], FMODE_READ, &v->data_dev);
+	r = dm_get_device(ti, argv[1], BLK_OPEN_READ, &v->data_dev);
 	if (r) {
 		ti->error = "Data device lookup failed";
 		goto bad;
 	}
 
-	r = dm_get_device(ti, argv[2], FMODE_READ, &v->hash_dev);
+	r = dm_get_device(ti, argv[2], BLK_OPEN_READ, &v->hash_dev);
 	if (r) {
 		ti->error = "Hash device lookup failed";
 		goto bad;
@@ -1374,6 +1388,7 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	hash_position = v->hash_start;
 	for (i = v->levels - 1; i >= 0; i--) {
 		sector_t s;
+
 		v->hash_level_block[i] = hash_position;
 		s = (v->data_blocks + ((sector_t)1 << ((i + 1) * v->hash_per_block_bits)) - 1)
 					>> ((i + 1) * v->hash_per_block_bits);
@@ -1403,8 +1418,6 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad;
 	}
 
-	/* WQ_UNBOUND greatly improves performance when running on ramdisk */
-	wq_flags = WQ_MEM_RECLAIM | WQ_UNBOUND;
 	/*
 	 * Using WQ_HIGHPRI improves throughput and completion latency by
 	 * reducing wait times when reading from a dm-verity device.
@@ -1414,8 +1427,7 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	 * will fall-back to using it for error handling (or if the bufio cache
 	 * doesn't have required hashes).
 	 */
-	wq_flags |= WQ_HIGHPRI;
-	v->verify_wq = alloc_workqueue("kverityd", wq_flags, num_online_cpus());
+	v->verify_wq = alloc_workqueue("kverityd", WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
 	if (!v->verify_wq) {
 		ti->error = "Cannot allocate workqueue";
 		r = -ENOMEM;
@@ -1434,11 +1446,14 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	verity_verify_sig_opts_cleanup(&verify_args);
 
+	dm_audit_log_ctr(DM_MSG_PREFIX, ti, 1);
+
 	return 0;
 
 bad:
 
 	verity_verify_sig_opts_cleanup(&verify_args);
+	dm_audit_log_ctr(DM_MSG_PREFIX, ti, 0);
 	verity_dtr(ti);
 
 	return r;
@@ -1503,25 +1518,7 @@ static struct target_type verity_target = {
 	.iterate_devices = verity_iterate_devices,
 	.io_hints	= verity_io_hints,
 };
-
-static int __init dm_verity_init(void)
-{
-	int r;
-
-	r = dm_register_target(&verity_target);
-	if (r < 0)
-		DMERR("register failed %d", r);
-
-	return r;
-}
-
-static void __exit dm_verity_exit(void)
-{
-	dm_unregister_target(&verity_target);
-}
-
-module_init(dm_verity_init);
-module_exit(dm_verity_exit);
+module_dm(verity);
 
 MODULE_AUTHOR("Mikulas Patocka <mpatocka@redhat.com>");
 MODULE_AUTHOR("Mandeep Baines <msb@chromium.org>");

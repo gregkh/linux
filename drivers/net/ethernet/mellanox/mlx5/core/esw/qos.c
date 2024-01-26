@@ -740,18 +740,18 @@ int mlx5_esw_qos_modify_vport_rate(struct mlx5_eswitch *esw, u16 vport_num, u32 
 static int esw_qos_devlink_rate_to_mbps(struct mlx5_core_dev *mdev, const char *name,
 					u64 *rate, struct netlink_ext_ack *extack)
 {
-	u32 link_speed_max, reminder;
+	u32 link_speed_max, remainder;
 	u64 value;
 	int err;
 
-	err = mlx5e_port_max_linkspeed(mdev, &link_speed_max);
+	err = mlx5_port_max_linkspeed(mdev, &link_speed_max);
 	if (err) {
 		NL_SET_ERR_MSG_MOD(extack, "Failed to get link maximum speed");
 		return err;
 	}
 
-	value = div_u64_rem(*rate, MLX5_LINKSPEED_UNIT, &reminder);
-	if (reminder) {
+	value = div_u64_rem(*rate, MLX5_LINKSPEED_UNIT, &remainder);
+	if (remainder) {
 		pr_err("%s rate value %lluBps not in link speed units of 1Mbps.\n",
 		       name, *rate);
 		NL_SET_ERR_MSG_MOD(extack, "TX rate value not in link speed units of 1Mbps");

@@ -77,9 +77,10 @@
 #include <linux/module.h>
 #include <linux/clk.h>
 #include <linux/mtd/rawnand.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/iopoll.h>
 #include <linux/interrupt.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
@@ -114,6 +115,7 @@
 #define GENCONF_SOC_DEVICE_MUX_ECC_CLK_RST BIT(20)
 #define GENCONF_SOC_DEVICE_MUX_ECC_CORE_RST BIT(21)
 #define GENCONF_SOC_DEVICE_MUX_NFC_INT_EN BIT(25)
+#define GENCONF_SOC_DEVICE_MUX_NFC_DEVBUS_ARB_EN BIT(27)
 #define GENCONF_CLK_GATING_CTRL	0x220
 #define GENCONF_CLK_GATING_CTRL_ND_GATE BIT(2)
 #define GENCONF_ND_CLK_CTRL	0x700
@@ -287,10 +289,17 @@ static const struct marvell_hw_ecc_layout marvell_nfc_layouts[] = {
 	MARVELL_LAYOUT( 2048,   512,  1,  1,  1, 2048, 40, 24,  0,  0,  0),
 	MARVELL_LAYOUT( 2048,   512,  4,  1,  1, 2048, 32, 30,  0,  0,  0),
 	MARVELL_LAYOUT( 2048,   512,  8,  2,  1, 1024,  0, 30,1024,32, 30),
+	MARVELL_LAYOUT( 2048,   512,  8,  2,  1, 1024,  0, 30,1024,64, 30),
+	MARVELL_LAYOUT( 2048,   512,  12, 3,  2, 704,   0, 30,640,  0, 30),
+	MARVELL_LAYOUT( 2048,   512,  16, 5,  4, 512,   0, 30,  0, 32, 30),
 	MARVELL_LAYOUT( 4096,   512,  4,  2,  2, 2048, 32, 30,  0,  0,  0),
 	MARVELL_LAYOUT( 4096,   512,  8,  5,  4, 1024,  0, 30,  0, 64, 30),
+	MARVELL_LAYOUT( 4096,   512,  12, 6,  5, 704,   0, 30,576, 32, 30),
+	MARVELL_LAYOUT( 4096,   512,  16, 9,  8, 512,   0, 30,  0, 32, 30),
 	MARVELL_LAYOUT( 8192,   512,  4,  4,  4, 2048,  0, 30,  0,  0,  0),
 	MARVELL_LAYOUT( 8192,   512,  8,  9,  8, 1024,  0, 30,  0, 160, 30),
+	MARVELL_LAYOUT( 8192,   512,  12, 12, 11, 704,  0, 30,448,  64, 30),
+	MARVELL_LAYOUT( 8192,   512,  16, 17, 16, 512,  0, 30,  0,  32, 30),
 };
 
 /**
@@ -367,6 +376,7 @@ static inline struct marvell_nand_chip_sel *to_nand_sel(struct marvell_nand_chip
  *			BCH error detection and correction algorithm,
  *			NDCB3 register has been added
  * @use_dma:		Use dma for data transfers
+ * @max_mode_number:	Maximum timing mode supported by the controller
  */
 struct marvell_nfc_caps {
 	unsigned int max_cs_nb;
@@ -375,6 +385,7 @@ struct marvell_nfc_caps {
 	bool legacy_of_bindings;
 	bool is_nfcv2;
 	bool use_dma;
+	unsigned int max_mode_number;
 };
 
 /**
@@ -2389,6 +2400,9 @@ static int marvell_nfc_setup_interface(struct nand_chip *chip, int chipnr,
 	if (IS_ERR(sdr))
 		return PTR_ERR(sdr);
 
+	if (nfc->caps->max_mode_number && nfc->caps->max_mode_number < conf->timings.mode)
+		return -EOPNOTSUPP;
+
 	/*
 	 * SDR timings are given in pico-seconds while NFC timings must be
 	 * expressed in NAND controller clock cycles, which is half of the
@@ -2907,7 +2921,8 @@ static int marvell_nfc_init(struct marvell_nfc *nfc)
 			     GENCONF_SOC_DEVICE_MUX_NFC_EN |
 			     GENCONF_SOC_DEVICE_MUX_ECC_CLK_RST |
 			     GENCONF_SOC_DEVICE_MUX_ECC_CORE_RST |
-			     GENCONF_SOC_DEVICE_MUX_NFC_INT_EN);
+			     GENCONF_SOC_DEVICE_MUX_NFC_INT_EN |
+			     GENCONF_SOC_DEVICE_MUX_NFC_DEVBUS_ARB_EN);
 
 		regmap_update_bits(sysctrl_base, GENCONF_CLK_GATING_CTRL,
 				   GENCONF_CLK_GATING_CTRL_ND_GATE,
@@ -3018,7 +3033,7 @@ unprepare_core_clk:
 	return ret;
 }
 
-static int marvell_nfc_remove(struct platform_device *pdev)
+static void marvell_nfc_remove(struct platform_device *pdev)
 {
 	struct marvell_nfc *nfc = platform_get_drvdata(pdev);
 
@@ -3031,8 +3046,6 @@ static int marvell_nfc_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(nfc->reg_clk);
 	clk_disable_unprepare(nfc->core_clk);
-
-	return 0;
 }
 
 static int __maybe_unused marvell_nfc_suspend(struct device *dev)
@@ -3087,6 +3100,13 @@ static const struct marvell_nfc_caps marvell_armada_8k_nfc_caps = {
 	.is_nfcv2 = true,
 };
 
+static const struct marvell_nfc_caps marvell_ac5_caps = {
+	.max_cs_nb = 2,
+	.max_rb_nb = 1,
+	.is_nfcv2 = true,
+	.max_mode_number = 3,
+};
+
 static const struct marvell_nfc_caps marvell_armada370_nfc_caps = {
 	.max_cs_nb = 4,
 	.max_rb_nb = 2,
@@ -3136,6 +3156,10 @@ static const struct of_device_id marvell_nfc_of_ids[] = {
 		.data = &marvell_armada_8k_nfc_caps,
 	},
 	{
+		.compatible = "marvell,ac5-nand-controller",
+		.data = &marvell_ac5_caps,
+	},
+	{
 		.compatible = "marvell,armada370-nand-controller",
 		.data = &marvell_armada370_nfc_caps,
 	},
@@ -3168,7 +3192,7 @@ static struct platform_driver marvell_nfc_driver = {
 	},
 	.id_table = marvell_nfc_platform_ids,
 	.probe = marvell_nfc_probe,
-	.remove	= marvell_nfc_remove,
+	.remove_new = marvell_nfc_remove,
 };
 module_platform_driver(marvell_nfc_driver);
 

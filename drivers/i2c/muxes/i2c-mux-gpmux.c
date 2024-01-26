@@ -11,7 +11,7 @@
 #include <linux/i2c-mux.h>
 #include <linux/module.h>
 #include <linux/mux/consumer.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 
 struct mux {
@@ -142,19 +142,17 @@ err_parent:
 	return ret;
 }
 
-static int i2c_mux_remove(struct platform_device *pdev)
+static void i2c_mux_remove(struct platform_device *pdev)
 {
 	struct i2c_mux_core *muxc = platform_get_drvdata(pdev);
 
 	i2c_mux_del_adapters(muxc);
 	i2c_put_adapter(muxc->parent);
-
-	return 0;
 }
 
 static struct platform_driver i2c_mux_driver = {
 	.probe	= i2c_mux_probe,
-	.remove	= i2c_mux_remove,
+	.remove_new = i2c_mux_remove,
 	.driver	= {
 		.name	= "i2c-mux-gpmux",
 		.of_match_table = i2c_mux_of_match,

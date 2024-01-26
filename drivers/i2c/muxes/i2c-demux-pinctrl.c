@@ -286,7 +286,7 @@ err_rollback:
 	return err;
 }
 
-static int i2c_demux_pinctrl_remove(struct platform_device *pdev)
+static void i2c_demux_pinctrl_remove(struct platform_device *pdev)
 {
 	struct i2c_demux_pinctrl_priv *priv = platform_get_drvdata(pdev);
 	int i;
@@ -300,8 +300,6 @@ static int i2c_demux_pinctrl_remove(struct platform_device *pdev)
 		of_node_put(priv->chan[i].parent_np);
 		of_changeset_destroy(&priv->chan[i].chgset);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id i2c_demux_pinctrl_of_match[] = {
@@ -316,7 +314,7 @@ static struct platform_driver i2c_demux_pinctrl_driver = {
 		.of_match_table = i2c_demux_pinctrl_of_match,
 	},
 	.probe	= i2c_demux_pinctrl_probe,
-	.remove	= i2c_demux_pinctrl_remove,
+	.remove_new = i2c_demux_pinctrl_remove,
 };
 module_platform_driver(i2c_demux_pinctrl_driver);
 

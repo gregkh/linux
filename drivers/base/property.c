@@ -40,7 +40,7 @@ EXPORT_SYMBOL_GPL(__dev_fwnode_const);
  *
  * Return: true if property @propname is present. Otherwise, returns false.
  */
-bool device_property_present(struct device *dev, const char *propname)
+bool device_property_present(const struct device *dev, const char *propname)
 {
 	return fwnode_property_present(dev_fwnode(dev), propname);
 }
@@ -90,7 +90,7 @@ EXPORT_SYMBOL_GPL(fwnode_property_present);
  *	   %-EOVERFLOW if the size of the property is not as expected.
  *	   %-ENXIO if no suitable firmware interface is present.
  */
-int device_property_read_u8_array(struct device *dev, const char *propname,
+int device_property_read_u8_array(const struct device *dev, const char *propname,
 				  u8 *val, size_t nval)
 {
 	return fwnode_property_read_u8_array(dev_fwnode(dev), propname, val, nval);
@@ -118,7 +118,7 @@ EXPORT_SYMBOL_GPL(device_property_read_u8_array);
  *	   %-EOVERFLOW if the size of the property is not as expected.
  *	   %-ENXIO if no suitable firmware interface is present.
  */
-int device_property_read_u16_array(struct device *dev, const char *propname,
+int device_property_read_u16_array(const struct device *dev, const char *propname,
 				   u16 *val, size_t nval)
 {
 	return fwnode_property_read_u16_array(dev_fwnode(dev), propname, val, nval);
@@ -146,7 +146,7 @@ EXPORT_SYMBOL_GPL(device_property_read_u16_array);
  *	   %-EOVERFLOW if the size of the property is not as expected.
  *	   %-ENXIO if no suitable firmware interface is present.
  */
-int device_property_read_u32_array(struct device *dev, const char *propname,
+int device_property_read_u32_array(const struct device *dev, const char *propname,
 				   u32 *val, size_t nval)
 {
 	return fwnode_property_read_u32_array(dev_fwnode(dev), propname, val, nval);
@@ -174,7 +174,7 @@ EXPORT_SYMBOL_GPL(device_property_read_u32_array);
  *	   %-EOVERFLOW if the size of the property is not as expected.
  *	   %-ENXIO if no suitable firmware interface is present.
  */
-int device_property_read_u64_array(struct device *dev, const char *propname,
+int device_property_read_u64_array(const struct device *dev, const char *propname,
 				   u64 *val, size_t nval)
 {
 	return fwnode_property_read_u64_array(dev_fwnode(dev), propname, val, nval);
@@ -202,7 +202,7 @@ EXPORT_SYMBOL_GPL(device_property_read_u64_array);
  *	   %-EOVERFLOW if the size of the property is not as expected.
  *	   %-ENXIO if no suitable firmware interface is present.
  */
-int device_property_read_string_array(struct device *dev, const char *propname,
+int device_property_read_string_array(const struct device *dev, const char *propname,
 				      const char **val, size_t nval)
 {
 	return fwnode_property_read_string_array(dev_fwnode(dev), propname, val, nval);
@@ -224,7 +224,7 @@ EXPORT_SYMBOL_GPL(device_property_read_string_array);
  *	   %-EPROTO or %-EILSEQ if the property type is not a string.
  *	   %-ENXIO if no suitable firmware interface is present.
  */
-int device_property_read_string(struct device *dev, const char *propname,
+int device_property_read_string(const struct device *dev, const char *propname,
 				const char **val)
 {
 	return fwnode_property_read_string(dev_fwnode(dev), propname, val);
@@ -246,7 +246,7 @@ EXPORT_SYMBOL_GPL(device_property_read_string);
  *	   %-EPROTO if the property is not an array of strings,
  *	   %-ENXIO if no suitable firmware interface is present.
  */
-int device_property_match_string(struct device *dev, const char *propname,
+int device_property_match_string(const struct device *dev, const char *propname,
 				 const char *string)
 {
 	return fwnode_property_match_string(dev_fwnode(dev), propname, string);
@@ -486,12 +486,13 @@ int fwnode_property_match_string(const struct fwnode_handle *fwnode,
 
 	ret = fwnode_property_read_string_array(fwnode, propname, values, nval);
 	if (ret < 0)
-		goto out;
+		goto out_free;
 
 	ret = match_string(values, nval, string);
 	if (ret < 0)
 		ret = -ENODATA;
-out:
+
+out_free:
 	kfree(values);
 	return ret;
 }
@@ -647,7 +648,7 @@ EXPORT_SYMBOL_GPL(fwnode_get_next_parent);
  *
  * Return: a pointer to the device of the @fwnode's closest ancestor.
  */
-struct device *fwnode_get_next_parent_dev(struct fwnode_handle *fwnode)
+struct device *fwnode_get_next_parent_dev(const struct fwnode_handle *fwnode)
 {
 	struct fwnode_handle *parent;
 	struct device *dev;
@@ -717,7 +718,7 @@ EXPORT_SYMBOL_GPL(fwnode_get_nth_parent);
  *
  * Return: true if @ancestor is an ancestor of @child. Otherwise, returns false.
  */
-bool fwnode_is_ancestor_of(struct fwnode_handle *ancestor, struct fwnode_handle *child)
+bool fwnode_is_ancestor_of(const struct fwnode_handle *ancestor, const struct fwnode_handle *child)
 {
 	struct fwnode_handle *parent;
 
@@ -790,7 +791,7 @@ EXPORT_SYMBOL_GPL(fwnode_get_next_available_child_node);
  * fwnode pointer. Note that this function also puts a reference to @child
  * unconditionally.
  */
-struct fwnode_handle *device_get_next_child_node(struct device *dev,
+struct fwnode_handle *device_get_next_child_node(const struct device *dev,
 						 struct fwnode_handle *child)
 {
 	const struct fwnode_handle *fwnode = dev_fwnode(dev);
@@ -833,7 +834,7 @@ EXPORT_SYMBOL_GPL(fwnode_get_named_child_node);
  * The caller is responsible for calling fwnode_handle_put() on the returned
  * fwnode pointer.
  */
-struct fwnode_handle *device_get_named_child_node(struct device *dev,
+struct fwnode_handle *device_get_named_child_node(const struct device *dev,
 						  const char *childname)
 {
 	return fwnode_get_named_child_node(dev_fwnode(dev), childname);
@@ -899,7 +900,7 @@ EXPORT_SYMBOL_GPL(fwnode_device_is_available);
  *
  * Return: the number of child nodes for a given device.
  */
-unsigned int device_get_child_node_count(struct device *dev)
+unsigned int device_get_child_node_count(const struct device *dev)
 {
 	struct fwnode_handle *child;
 	unsigned int count = 0;
@@ -911,13 +912,13 @@ unsigned int device_get_child_node_count(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(device_get_child_node_count);
 
-bool device_dma_supported(struct device *dev)
+bool device_dma_supported(const struct device *dev)
 {
 	return fwnode_call_bool_op(dev_fwnode(dev), device_dma_supported);
 }
 EXPORT_SYMBOL_GPL(device_dma_supported);
 
-enum dev_dma_attr device_get_dma_attr(struct device *dev)
+enum dev_dma_attr device_get_dma_attr(const struct device *dev)
 {
 	if (!fwnode_has_op(dev_fwnode(dev), device_get_dma_attr))
 		return DEV_DMA_NOT_SUPPORTED;
@@ -934,7 +935,7 @@ EXPORT_SYMBOL_GPL(device_get_dma_attr);
  * 'phy-connection-type', and return its index in phy_modes table, or errno in
  * error case.
  */
-int fwnode_get_phy_mode(struct fwnode_handle *fwnode)
+int fwnode_get_phy_mode(const struct fwnode_handle *fwnode)
 {
 	const char *pm;
 	int err, i;
@@ -1240,7 +1241,7 @@ EXPORT_SYMBOL_GPL(fwnode_graph_get_endpoint_by_id);
  * If FWNODE_GRAPH_DEVICE_DISABLED flag is specified, also unconnected endpoints
  * and endpoints connected to disabled devices are counted.
  */
-unsigned int fwnode_graph_get_endpoint_count(struct fwnode_handle *fwnode,
+unsigned int fwnode_graph_get_endpoint_count(const struct fwnode_handle *fwnode,
 					     unsigned long flags)
 {
 	struct fwnode_handle *ep;
@@ -1280,7 +1281,7 @@ const void *device_get_match_data(const struct device *dev)
 }
 EXPORT_SYMBOL_GPL(device_get_match_data);
 
-static unsigned int fwnode_graph_devcon_matches(struct fwnode_handle *fwnode,
+static unsigned int fwnode_graph_devcon_matches(const struct fwnode_handle *fwnode,
 						const char *con_id, void *data,
 						devcon_match_fn_t match,
 						void **matches,
@@ -1314,7 +1315,7 @@ static unsigned int fwnode_graph_devcon_matches(struct fwnode_handle *fwnode,
 	return count;
 }
 
-static unsigned int fwnode_devcon_matches(struct fwnode_handle *fwnode,
+static unsigned int fwnode_devcon_matches(const struct fwnode_handle *fwnode,
 					  const char *con_id, void *data,
 					  devcon_match_fn_t match,
 					  void **matches,
@@ -1356,7 +1357,7 @@ static unsigned int fwnode_devcon_matches(struct fwnode_handle *fwnode,
  * device node. @match will be used to convert the connection description to
  * data the caller is expecting to be returned.
  */
-void *fwnode_connection_find_match(struct fwnode_handle *fwnode,
+void *fwnode_connection_find_match(const struct fwnode_handle *fwnode,
 				   const char *con_id, void *data,
 				   devcon_match_fn_t match)
 {
@@ -1394,7 +1395,7 @@ EXPORT_SYMBOL_GPL(fwnode_connection_find_match);
  *
  * Return: Number of matches resolved, or negative errno.
  */
-int fwnode_connection_find_matches(struct fwnode_handle *fwnode,
+int fwnode_connection_find_matches(const struct fwnode_handle *fwnode,
 				   const char *con_id, void *data,
 				   devcon_match_fn_t match,
 				   void **matches, unsigned int matches_len)

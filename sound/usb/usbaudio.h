@@ -49,7 +49,9 @@ struct snd_usb_audio {
 	struct list_head clock_ref_list; /* list of clock refcounts */
 	int pcm_devs;
 
+	unsigned int num_rawmidis;	/* number of created rawmidi devices */
 	struct list_head midi_list;	/* list of midi interfaces */
+	struct list_head midi_v2_list;	/* list of MIDI 2 interfaces */
 
 	struct list_head mixer_list;	/* list of mixer interfaces */
 
@@ -67,6 +69,8 @@ struct snd_usb_audio {
 
 #define usb_audio_err(chip, fmt, args...) \
 	dev_err(&(chip)->dev->dev, fmt, ##args)
+#define usb_audio_err_ratelimited(chip, fmt, args...) \
+	dev_err_ratelimited(&(chip)->dev->dev, fmt, ##args)
 #define usb_audio_warn(chip, fmt, args...) \
 	dev_warn(&(chip)->dev->dev, fmt, ##args)
 #define usb_audio_info(chip, fmt, args...) \

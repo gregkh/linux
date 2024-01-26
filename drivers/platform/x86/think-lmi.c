@@ -169,11 +169,11 @@ MODULE_PARM_DESC(debug_support, "Enable debug command support");
  */
 #define LENOVO_CERT_THUMBPRINT_GUID "C59119ED-1C0D-4806-A8E9-59AA318176C4"
 
-#define TLMI_POP_PWD (1 << 0)
-#define TLMI_PAP_PWD (1 << 1)
-#define TLMI_HDD_PWD (1 << 2)
-#define TLMI_SMP_PWD (1 << 6) /* System Management */
-#define TLMI_CERT    (1 << 7)
+#define TLMI_POP_PWD BIT(0) /* Supervisor */
+#define TLMI_PAP_PWD BIT(1) /* Power-on */
+#define TLMI_HDD_PWD BIT(2) /* HDD/NVME */
+#define TLMI_SMP_PWD BIT(6) /* System Management */
+#define TLMI_CERT    BIT(7) /* Certificate Based */
 
 #define to_tlmi_pwd_setting(kobj)  container_of(kobj, struct tlmi_pwd_setting, kobj)
 #define to_tlmi_attr_setting(kobj)  container_of(kobj, struct tlmi_attr_setting, kobj)
@@ -319,8 +319,8 @@ static int tlmi_get_pwd_settings(struct tlmi_pwdcfg *pwdcfg)
 		return -EIO;
 	}
 
-	copy_size = obj->buffer.length < sizeof(struct tlmi_pwdcfg) ?
-		obj->buffer.length : sizeof(struct tlmi_pwdcfg);
+	copy_size = min_t(size_t, obj->buffer.length, sizeof(struct tlmi_pwdcfg));
+
 	memcpy(pwdcfg, obj->buffer.pointer, copy_size);
 	kfree(obj);
 
@@ -868,23 +868,27 @@ static umode_t auth_attr_is_visible(struct kobject *kobj,
 	struct tlmi_pwd_setting *setting = to_tlmi_pwd_setting(kobj);
 
 	/* We only want to display level and index settings on HDD/NVMe */
-	if ((attr == (struct attribute *)&auth_index) ||
-			(attr == (struct attribute *)&auth_level)) {
+	if (attr == &auth_index.attr || attr == &auth_level.attr) {
 		if ((setting == tlmi_priv.pwd_hdd) || (setting == tlmi_priv.pwd_nvme))
 			return attr->mode;
 		return 0;
 	}
 
 	/* We only display certificates on Admin account, if supported */
-	if ((attr == (struct attribute *)&auth_certificate) ||
-			(attr == (struct attribute *)&auth_signature) ||
-			(attr == (struct attribute *)&auth_save_signature) ||
-			(attr == (struct attribute *)&auth_cert_thumb) ||
-			(attr == (struct attribute *)&auth_cert_to_password)) {
+	if (attr == &auth_certificate.attr ||
+	    attr == &auth_signature.attr ||
+	    attr == &auth_save_signature.attr ||
+	    attr == &auth_cert_thumb.attr ||
+	    attr == &auth_cert_to_password.attr) {
 		if ((setting == tlmi_priv.pwd_admin) && tlmi_priv.certificate_support)
 			return attr->mode;
 		return 0;
 	}
+
+	/* Don't display un-needed settings if opcode available */
+	if ((attr == &auth_encoding.attr || attr == &auth_kbdlang.attr) &&
+	    tlmi_priv.opcode_support)
+		return 0;
 
 	return attr->mode;
 }
@@ -1011,7 +1015,33 @@ static ssize_t current_value_store(struct kobject *kobj,
 				tlmi_priv.pwd_admin->save_signature);
 		if (ret)
 			goto out;
-	} else { /* Non certiifcate based authentication */
+	} else if (tlmi_priv.opcode_support) {
+		/*
+		 * If opcode support is present use that interface.
+		 * Note - this sets the variable and then the password as separate
+		 * WMI calls. Function tlmi_save_bios_settings will error if the
+		 * password is incorrect.
+		 */
+		set_str = kasprintf(GFP_KERNEL, "%s,%s;", setting->display_name,
+				    new_setting);
+		if (!set_str) {
+			ret = -ENOMEM;
+			goto out;
+		}
+
+		ret = tlmi_simple_call(LENOVO_SET_BIOS_SETTINGS_GUID, set_str);
+		if (ret)
+			goto out;
+
+		if (tlmi_priv.pwd_admin->valid && tlmi_priv.pwd_admin->password[0]) {
+			ret = tlmi_opcode_setting("WmiOpcodePasswordAdmin",
+						  tlmi_priv.pwd_admin->password);
+			if (ret)
+				goto out;
+		}
+
+		ret = tlmi_save_bios_settings("");
+	} else { /* old non-opcode based authentication method (deprecated) */
 		if (tlmi_priv.pwd_admin->valid && tlmi_priv.pwd_admin->password[0]) {
 			auth_str = kasprintf(GFP_KERNEL, "%s,%s,%s;",
 					tlmi_priv.pwd_admin->password,
@@ -1089,33 +1119,6 @@ static const struct attribute_group tlmi_attr_group = {
 	.attrs = tlmi_attrs,
 };
 
-static ssize_t tlmi_attr_show(struct kobject *kobj, struct attribute *attr,
-				    char *buf)
-{
-	struct kobj_attribute *kattr;
-
-	kattr = container_of(attr, struct kobj_attribute, attr);
-	if (kattr->show)
-		return kattr->show(kobj, kattr, buf);
-	return -EIO;
-}
-
-static ssize_t tlmi_attr_store(struct kobject *kobj, struct attribute *attr,
-				     const char *buf, size_t count)
-{
-	struct kobj_attribute *kattr;
-
-	kattr = container_of(attr, struct kobj_attribute, attr);
-	if (kattr->store)
-		return kattr->store(kobj, kattr, buf, count);
-	return -EIO;
-}
-
-static const struct sysfs_ops tlmi_kobj_sysfs_ops = {
-	.show	= tlmi_attr_show,
-	.store	= tlmi_attr_store,
-};
-
 static void tlmi_attr_setting_release(struct kobject *kobj)
 {
 	struct tlmi_attr_setting *setting = to_tlmi_attr_setting(kobj);
@@ -1131,14 +1134,14 @@ static void tlmi_pwd_setting_release(struct kobject *kobj)
 	kfree(setting);
 }
 
-static struct kobj_type tlmi_attr_setting_ktype = {
+static const struct kobj_type tlmi_attr_setting_ktype = {
 	.release        = &tlmi_attr_setting_release,
-	.sysfs_ops	= &tlmi_kobj_sysfs_ops,
+	.sysfs_ops	= &kobj_sysfs_ops,
 };
 
-static struct kobj_type tlmi_pwd_setting_ktype = {
+static const struct kobj_type tlmi_pwd_setting_ktype = {
 	.release        = &tlmi_pwd_setting_release,
-	.sysfs_ops	= &tlmi_kobj_sysfs_ops,
+	.sysfs_ops	= &kobj_sysfs_ops,
 };
 
 static ssize_t pending_reboot_show(struct kobject *kobj, struct kobj_attribute *attr,
@@ -1411,7 +1414,6 @@ static struct tlmi_pwd_setting *tlmi_create_auth(const char *pwd_type,
 
 static int tlmi_analyze(void)
 {
-	acpi_status status;
 	int i, ret;
 
 	if (wmi_has_guid(LENOVO_SET_BIOS_SETTINGS_GUID) &&
@@ -1448,8 +1450,8 @@ static int tlmi_analyze(void)
 		char *p;
 
 		tlmi_priv.setting[i] = NULL;
-		status = tlmi_setting(i, &item, LENOVO_BIOS_SETTING_GUID);
-		if (ACPI_FAILURE(status))
+		ret = tlmi_setting(i, &item, LENOVO_BIOS_SETTING_GUID);
+		if (ret)
 			break;
 		if (!item)
 			break;
@@ -1552,6 +1554,10 @@ static int tlmi_analyze(void)
 		tlmi_priv.pwd_nvme = tlmi_create_auth("nvm", "nvme");
 		if (!tlmi_priv.pwd_nvme)
 			goto fail_clear_attr;
+
+		/* Set default hdd/nvme index to 1 as there is no device 0 */
+		tlmi_priv.pwd_hdd->index = 1;
+		tlmi_priv.pwd_nvme->index = 1;
 
 		if (tlmi_priv.pwdcfg.core.password_state & TLMI_HDD_PWD) {
 			/* Check if PWD is configured and set index to first drive found */

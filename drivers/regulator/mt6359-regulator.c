@@ -7,7 +7,7 @@
 #include <linux/mfd/mt6359p/registers.h>
 #include <linux/mfd/mt6397/core.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
@@ -985,6 +985,7 @@ MODULE_DEVICE_TABLE(platform, mt6359_platform_ids);
 static struct platform_driver mt6359_regulator_driver = {
 	.driver = {
 		.name = "mt6359-regulator",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = mt6359_regulator_probe,
 	.id_table = mt6359_platform_ids,

@@ -1281,11 +1281,8 @@ static void ssif_remove(struct i2c_client *client)
 	struct ssif_info *ssif_info = i2c_get_clientdata(client);
 	struct ssif_addr_info *addr_info;
 
-	if (!ssif_info)
-		return;
-
 	/*
-	 * After this point, we won't deliver anything asychronously
+	 * After this point, we won't deliver anything asynchronously
 	 * to the message handler.  We can unregister ourself.
 	 */
 	ipmi_unregister_smi(ssif_info->intf);
@@ -1442,7 +1439,7 @@ static bool check_acpi(struct ssif_info *ssif_info, struct device *dev)
 	if (acpi_handle) {
 		ssif_info->addr_source = SI_ACPI;
 		ssif_info->addr_info.acpi_info.acpi_handle = acpi_handle;
-		request_module("acpi_ipmi");
+		request_module_nowait("acpi_ipmi");
 		return true;
 	}
 #endif
@@ -2062,7 +2059,7 @@ static struct i2c_driver ssif_i2c_driver = {
 	.driver		= {
 		.name			= DEVICE_NAME
 	},
-	.probe_new	= ssif_probe,
+	.probe		= ssif_probe,
 	.remove		= ssif_remove,
 	.alert		= ssif_alert,
 	.id_table	= ssif_id,
@@ -2077,9 +2074,6 @@ static int ssif_platform_probe(struct platform_device *dev)
 static int ssif_platform_remove(struct platform_device *dev)
 {
 	struct ssif_addr_info *addr_info = dev_get_drvdata(&dev->dev);
-
-	if (!addr_info)
-		return 0;
 
 	mutex_lock(&ssif_infos_mutex);
 	list_del(&addr_info->link);

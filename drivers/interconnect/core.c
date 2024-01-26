@@ -13,7 +13,6 @@
 #include <linux/interconnect.h>
 #include <linux/interconnect-provider.h>
 #include <linux/list.h>
-#include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/of.h>
@@ -147,6 +146,21 @@ DEFINE_SHOW_ATTRIBUTE(icc_graph);
 static struct icc_node *node_find(const int id)
 {
 	return idr_find(&icc_idr, id);
+}
+
+static struct icc_node *node_find_by_name(const char *name)
+{
+	struct icc_provider *provider;
+	struct icc_node *n;
+
+	list_for_each_entry(provider, &icc_providers, provider_list) {
+		list_for_each_entry(n, &provider->nodes, node_list) {
+			if (!strcmp(n->name, name))
+				return n;
+		}
+	}
+
+	return NULL;
 }
 
 static struct icc_path *path_init(struct device *dev, struct icc_node *dst,
@@ -455,7 +469,7 @@ struct icc_path *of_icc_get_by_index(struct device *dev, int idx)
 	 * When the consumer DT node do not have "interconnects" property
 	 * return a NULL path to skip setting constraints.
 	 */
-	if (!of_find_property(np, "interconnects", NULL))
+	if (!of_property_present(np, "interconnects"))
 		return NULL;
 
 	/*
@@ -548,7 +562,7 @@ struct icc_path *of_icc_get(struct device *dev, const char *name)
 	 * When the consumer DT node do not have "interconnects" property
 	 * return a NULL path to skip setting constraints.
 	 */
-	if (!of_find_property(np, "interconnects", NULL))
+	if (!of_property_present(np, "interconnects"))
 		return NULL;
 
 	/*
@@ -565,6 +579,54 @@ struct icc_path *of_icc_get(struct device *dev, const char *name)
 	return of_icc_get_by_index(dev, idx);
 }
 EXPORT_SYMBOL_GPL(of_icc_get);
+
+/**
+ * icc_get() - get a path handle between two endpoints
+ * @dev: device pointer for the consumer device
+ * @src: source node name
+ * @dst: destination node name
+ *
+ * This function will search for a path between two endpoints and return an
+ * icc_path handle on success. Use icc_put() to release constraints when they
+ * are not needed anymore.
+ *
+ * Return: icc_path pointer on success or ERR_PTR() on error. NULL is returned
+ * when the API is disabled.
+ */
+struct icc_path *icc_get(struct device *dev, const char *src, const char *dst)
+{
+	struct icc_node *src_node, *dst_node;
+	struct icc_path *path = ERR_PTR(-EPROBE_DEFER);
+
+	mutex_lock(&icc_lock);
+
+	src_node = node_find_by_name(src);
+	if (!src_node) {
+		dev_err(dev, "%s: invalid src=%s\n", __func__, src);
+		goto out;
+	}
+
+	dst_node = node_find_by_name(dst);
+	if (!dst_node) {
+		dev_err(dev, "%s: invalid dst=%s\n", __func__, dst);
+		goto out;
+	}
+
+	path = path_find(dev, src_node, dst_node);
+	if (IS_ERR(path)) {
+		dev_err(dev, "%s: invalid path=%ld\n", __func__, PTR_ERR(path));
+		goto out;
+	}
+
+	path->name = kasprintf(GFP_KERNEL, "%s-%s", src_node->name, dst_node->name);
+	if (!path->name) {
+		kfree(path);
+		path = ERR_PTR(-ENOMEM);
+	}
+out:
+	mutex_unlock(&icc_lock);
+	return path;
+}
 
 /**
  * icc_set_tag() - set an optional tag on a path
@@ -592,7 +654,7 @@ EXPORT_SYMBOL_GPL(icc_set_tag);
 
 /**
  * icc_get_name() - Get name of the icc path
- * @path: reference to the path returned by icc_get()
+ * @path: interconnect path
  *
  * This function is used by an interconnect consumer to get the name of the icc
  * path.
@@ -610,7 +672,7 @@ EXPORT_SYMBOL_GPL(icc_get_name);
 
 /**
  * icc_set_bw() - set bandwidth constraints on an interconnect path
- * @path: reference to the path returned by icc_get()
+ * @path: interconnect path
  * @avg_bw: average bandwidth in kilobytes per second
  * @peak_bw: peak bandwidth in kilobytes per second
  *
@@ -708,54 +770,6 @@ int icc_disable(struct icc_path *path)
 	return __icc_enable(path, false);
 }
 EXPORT_SYMBOL_GPL(icc_disable);
-
-/**
- * icc_get() - return a handle for path between two endpoints
- * @dev: the device requesting the path
- * @src_id: source device port id
- * @dst_id: destination device port id
- *
- * This function will search for a path between two endpoints and return an
- * icc_path handle on success. Use icc_put() to release
- * constraints when they are not needed anymore.
- * If the interconnect API is disabled, NULL is returned and the consumer
- * drivers will still build. Drivers are free to handle this specifically,
- * but they don't have to.
- *
- * Return: icc_path pointer on success, ERR_PTR() on error or NULL if the
- * interconnect API is disabled.
- */
-struct icc_path *icc_get(struct device *dev, const int src_id, const int dst_id)
-{
-	struct icc_node *src, *dst;
-	struct icc_path *path = ERR_PTR(-EPROBE_DEFER);
-
-	mutex_lock(&icc_lock);
-
-	src = node_find(src_id);
-	if (!src)
-		goto out;
-
-	dst = node_find(dst_id);
-	if (!dst)
-		goto out;
-
-	path = path_find(dev, src, dst);
-	if (IS_ERR(path)) {
-		dev_err(dev, "%s: invalid path=%ld\n", __func__, PTR_ERR(path));
-		goto out;
-	}
-
-	path->name = kasprintf(GFP_KERNEL, "%s-%s", src->name, dst->name);
-	if (!path->name) {
-		kfree(path);
-		path = ERR_PTR(-ENOMEM);
-	}
-out:
-	mutex_unlock(&icc_lock);
-	return path;
-}
-EXPORT_SYMBOL_GPL(icc_get);
 
 /**
  * icc_put() - release the reference to the icc_path
@@ -915,52 +929,6 @@ out:
 EXPORT_SYMBOL_GPL(icc_link_create);
 
 /**
- * icc_link_destroy() - destroy a link between two nodes
- * @src: pointer to source node
- * @dst: pointer to destination node
- *
- * Return: 0 on success, or an error code otherwise
- */
-int icc_link_destroy(struct icc_node *src, struct icc_node *dst)
-{
-	struct icc_node **new;
-	size_t slot;
-	int ret = 0;
-
-	if (IS_ERR_OR_NULL(src))
-		return -EINVAL;
-
-	if (IS_ERR_OR_NULL(dst))
-		return -EINVAL;
-
-	mutex_lock(&icc_lock);
-
-	for (slot = 0; slot < src->num_links; slot++)
-		if (src->links[slot] == dst)
-			break;
-
-	if (WARN_ON(slot == src->num_links)) {
-		ret = -ENXIO;
-		goto out;
-	}
-
-	src->links[slot] = src->links[--src->num_links];
-
-	new = krealloc(src->links, src->num_links * sizeof(*src->links),
-		       GFP_KERNEL);
-	if (new)
-		src->links = new;
-	else
-		ret = -ENOMEM;
-
-out:
-	mutex_unlock(&icc_lock);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(icc_link_destroy);
-
-/**
  * icc_node_add() - add interconnect node to interconnect provider
  * @node: pointer to the interconnect node
  * @provider: pointer to the interconnect provider
@@ -986,14 +954,17 @@ void icc_node_add(struct icc_node *node, struct icc_provider *provider)
 	node->avg_bw = node->init_avg;
 	node->peak_bw = node->init_peak;
 
-	if (provider->pre_aggregate)
-		provider->pre_aggregate(node);
+	if (node->avg_bw || node->peak_bw) {
+		if (provider->pre_aggregate)
+			provider->pre_aggregate(node);
 
-	if (provider->aggregate)
-		provider->aggregate(node, 0, node->init_avg, node->init_peak,
-				    &node->avg_bw, &node->peak_bw);
+		if (provider->aggregate)
+			provider->aggregate(node, 0, node->init_avg, node->init_peak,
+					    &node->avg_bw, &node->peak_bw);
+		if (provider->set)
+			provider->set(node, node);
+	}
 
-	provider->set(node, node);
 	node->avg_bw = 0;
 	node->peak_bw = 0;
 
@@ -1087,26 +1058,12 @@ void icc_provider_deregister(struct icc_provider *provider)
 }
 EXPORT_SYMBOL_GPL(icc_provider_deregister);
 
-int icc_provider_add(struct icc_provider *provider)
-{
-	icc_provider_init(provider);
-
-	return icc_provider_register(provider);
-}
-EXPORT_SYMBOL_GPL(icc_provider_add);
-
-void icc_provider_del(struct icc_provider *provider)
-{
-	WARN_ON(!list_empty(&provider->nodes));
-
-	icc_provider_deregister(provider);
-}
-EXPORT_SYMBOL_GPL(icc_provider_del);
-
 static const struct of_device_id __maybe_unused ignore_list[] = {
 	{ .compatible = "qcom,sc7180-ipa-virt" },
+	{ .compatible = "qcom,sc8180x-ipa-virt" },
 	{ .compatible = "qcom,sdx55-ipa-virt" },
 	{ .compatible = "qcom,sm8150-ipa-virt" },
+	{ .compatible = "qcom,sm8250-ipa-virt" },
 	{}
 };
 
@@ -1174,11 +1131,10 @@ static int __init icc_init(void)
 			    icc_debugfs_dir, NULL, &icc_summary_fops);
 	debugfs_create_file("interconnect_graph", 0444,
 			    icc_debugfs_dir, NULL, &icc_graph_fops);
+
+	icc_debugfs_client_init(icc_debugfs_dir);
+
 	return 0;
 }
 
 device_initcall(icc_init);
-
-MODULE_AUTHOR("Georgi Djakov <georgi.djakov@linaro.org>");
-MODULE_DESCRIPTION("Interconnect Driver Core");
-MODULE_LICENSE("GPL v2");

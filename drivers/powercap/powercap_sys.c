@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/kstrtox.h>
 #include <linux/slab.h>
 #include <linux/powercap.h>
 
@@ -446,7 +447,7 @@ static ssize_t enabled_store(struct device *dev,
 {
 	bool mode;
 
-	if (strtobool(buf, &mode))
+	if (kstrtobool(buf, &mode))
 		return -EINVAL;
 	if (dev->parent) {
 		struct powercap_zone *power_zone = to_powercap_zone(dev);
@@ -678,4 +679,3 @@ fs_initcall(powercap_init);
 
 MODULE_DESCRIPTION("PowerCap sysfs Driver");
 MODULE_AUTHOR("Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>");
-MODULE_LICENSE("GPL v2");

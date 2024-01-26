@@ -14,7 +14,6 @@
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/gpio/consumer.h>
-#include <linux/of_gpio.h>
 #include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
@@ -306,7 +305,7 @@ err_clk_put:
 	return ret;
 }
 
-static int dwc3_xlnx_remove(struct platform_device *pdev)
+static void dwc3_xlnx_remove(struct platform_device *pdev)
 {
 	struct dwc3_xlnx	*priv_data = platform_get_drvdata(pdev);
 	struct device		*dev = &pdev->dev;
@@ -319,8 +318,6 @@ static int dwc3_xlnx_remove(struct platform_device *pdev)
 	pm_runtime_disable(dev);
 	pm_runtime_put_noidle(dev);
 	pm_runtime_set_suspended(dev);
-
-	return 0;
 }
 
 static int __maybe_unused dwc3_xlnx_runtime_suspend(struct device *dev)
@@ -389,7 +386,7 @@ static const struct dev_pm_ops dwc3_xlnx_dev_pm_ops = {
 
 static struct platform_driver dwc3_xlnx_driver = {
 	.probe		= dwc3_xlnx_probe,
-	.remove		= dwc3_xlnx_remove,
+	.remove_new	= dwc3_xlnx_remove,
 	.driver		= {
 		.name		= "dwc3-xilinx",
 		.of_match_table	= dwc3_xlnx_of_match,

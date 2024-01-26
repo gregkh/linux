@@ -2,7 +2,6 @@
 /* Copyright (c) 2019 HiSilicon Limited. */
 
 #include <linux/acpi.h>
-#include <linux/aer.h>
 #include <linux/bitops.h>
 #include <linux/debugfs.h>
 #include <linux/init.h>
@@ -55,7 +54,7 @@
 #define SEC_CONTROL_REG		0x301200
 #define SEC_DYNAMIC_GATE_REG		0x30121c
 #define SEC_CORE_AUTO_GATE		0x30212c
-#define SEC_DYNAMIC_GATE_EN		0x7bff
+#define SEC_DYNAMIC_GATE_EN		0x7fff
 #define SEC_CORE_AUTO_GATE_EN		GENMASK(3, 0)
 #define SEC_CLK_GATE_ENABLE		BIT(3)
 #define SEC_CLK_GATE_DISABLE		(~BIT(3))
@@ -430,7 +429,6 @@ static void sec_set_endian(struct hisi_qm *qm)
 	reg &= ~(BIT(1) | BIT(0));
 	if (!IS_ENABLED(CONFIG_64BIT))
 		reg |= BIT(1);
-
 
 	if (!IS_ENABLED(CONFIG_CPU_LITTLE_ENDIAN))
 		reg |= BIT(0);

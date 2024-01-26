@@ -4,12 +4,7 @@
 #include <net/if.h>
 #include "empty_skb.skel.h"
 
-#define SYS(cmd) ({ \
-	if (!ASSERT_OK(system(cmd), (cmd))) \
-		goto out; \
-})
-
-void serial_test_empty_skb(void)
+void test_empty_skb(void)
 {
 	LIBBPF_OPTS(bpf_test_run_opts, tattr);
 	struct empty_skb *bpf_obj = NULL;
@@ -29,6 +24,7 @@ void serial_test_empty_skb(void)
 		int *ifindex;
 		int err;
 		int ret;
+		int lwt_egress_ret; /* expected retval at lwt/egress */
 		bool success_on_tc;
 	} tests[] = {
 		/* Empty packets are always rejected. */
@@ -62,6 +58,7 @@ void serial_test_empty_skb(void)
 			.data_size_in = sizeof(eth_hlen),
 			.ifindex = &veth_ifindex,
 			.ret = -ERANGE,
+			.lwt_egress_ret = -ERANGE,
 			.success_on_tc = true,
 		},
 		{
@@ -75,6 +72,7 @@ void serial_test_empty_skb(void)
 			.data_size_in = sizeof(eth_hlen),
 			.ifindex = &ipip_ifindex,
 			.ret = -ERANGE,
+			.lwt_egress_ret = -ERANGE,
 		},
 
 		/* ETH_HLEN+1-sized packet should be redirected. */
@@ -84,6 +82,7 @@ void serial_test_empty_skb(void)
 			.data_in = eth_hlen_pp,
 			.data_size_in = sizeof(eth_hlen_pp),
 			.ifindex = &veth_ifindex,
+			.lwt_egress_ret = 1, /* veth_xmit NET_XMIT_DROP */
 		},
 		{
 			.msg = "ipip ETH_HLEN+1 packet ingress",
@@ -93,18 +92,18 @@ void serial_test_empty_skb(void)
 		},
 	};
 
-	SYS("ip netns add empty_skb");
+	SYS(out, "ip netns add empty_skb");
 	tok = open_netns("empty_skb");
-	SYS("ip link add veth0 type veth peer veth1");
-	SYS("ip link set dev veth0 up");
-	SYS("ip link set dev veth1 up");
-	SYS("ip addr add 10.0.0.1/8 dev veth0");
-	SYS("ip addr add 10.0.0.2/8 dev veth1");
+	SYS(out, "ip link add veth0 type veth peer veth1");
+	SYS(out, "ip link set dev veth0 up");
+	SYS(out, "ip link set dev veth1 up");
+	SYS(out, "ip addr add 10.0.0.1/8 dev veth0");
+	SYS(out, "ip addr add 10.0.0.2/8 dev veth1");
 	veth_ifindex = if_nametoindex("veth0");
 
-	SYS("ip link add ipip0 type ipip local 10.0.0.1 remote 10.0.0.2");
-	SYS("ip link set ipip0 up");
-	SYS("ip addr add 192.168.1.1/16 dev ipip0");
+	SYS(out, "ip link add ipip0 type ipip local 10.0.0.1 remote 10.0.0.2");
+	SYS(out, "ip link set ipip0 up");
+	SYS(out, "ip addr add 192.168.1.1/16 dev ipip0");
 	ipip_ifindex = if_nametoindex("ipip0");
 
 	bpf_obj = empty_skb__open_and_load();
@@ -113,8 +112,12 @@ void serial_test_empty_skb(void)
 
 	for (i = 0; i < ARRAY_SIZE(tests); i++) {
 		bpf_object__for_each_program(prog, bpf_obj->obj) {
-			char buf[128];
+			bool at_egress = strstr(bpf_program__name(prog), "egress") != NULL;
 			bool at_tc = !strncmp(bpf_program__section_name(prog), "tc", 2);
+			int expected_ret;
+			char buf[128];
+
+			expected_ret = at_egress && !at_tc ? tests[i].lwt_egress_ret : tests[i].ret;
 
 			tattr.data_in = tests[i].data_in;
 			tattr.data_size_in = tests[i].data_size_in;
@@ -133,7 +136,7 @@ void serial_test_empty_skb(void)
 			if (at_tc && tests[i].success_on_tc)
 				ASSERT_GE(bpf_obj->bss->ret, 0, buf);
 			else
-				ASSERT_EQ(bpf_obj->bss->ret, tests[i].ret, buf);
+				ASSERT_EQ(bpf_obj->bss->ret, expected_ret, buf);
 		}
 	}
 
@@ -142,5 +145,5 @@ out:
 		empty_skb__destroy(bpf_obj);
 	if (tok)
 		close_netns(tok);
-	system("ip netns del empty_skb");
+	SYS_NOFAIL("ip netns del empty_skb");
 }

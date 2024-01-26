@@ -93,9 +93,9 @@ static int ltc2497_result_and_measure(struct ltc2497core_driverdata *ddata,
 	return ret;
 }
 
-static int ltc2497_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int ltc2497_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	const struct ltc2497_chip_info *chip_info;
 	struct iio_dev *indio_dev;
 	struct ltc2497_driverdata *st;

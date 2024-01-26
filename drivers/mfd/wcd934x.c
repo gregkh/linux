@@ -55,17 +55,22 @@ static const struct regmap_irq wcd934x_irqs[] = {
 	WCD934X_REGMAP_IRQ_REG(WCD934X_IRQ_SOUNDWIRE, 2, BIT(4)),
 };
 
+static const unsigned int wcd934x_config_regs[] = {
+	WCD934X_INTR_LEVEL0,
+};
+
 static const struct regmap_irq_chip wcd934x_regmap_irq_chip = {
 	.name = "wcd934x_irq",
 	.status_base = WCD934X_INTR_PIN1_STATUS0,
 	.mask_base = WCD934X_INTR_PIN1_MASK0,
 	.ack_base = WCD934X_INTR_PIN1_CLEAR0,
-	.type_base = WCD934X_INTR_LEVEL0,
-	.num_type_reg = 4,
-	.type_in_mask = false,
 	.num_regs = 4,
 	.irqs = wcd934x_irqs,
 	.num_irqs = ARRAY_SIZE(wcd934x_irqs),
+	.config_base = wcd934x_config_regs,
+	.num_config_bases = ARRAY_SIZE(wcd934x_config_regs),
+	.num_config_regs = 4,
+	.set_type_config = regmap_irq_set_type_config_simple,
 };
 
 static bool wcd934x_is_volatile_register(struct device *dev, unsigned int reg)
@@ -222,10 +227,9 @@ static int wcd934x_slim_probe(struct slim_device *sdev)
 				     "Failed to get IRQ\n");
 
 	ddata->extclk = devm_clk_get(dev, "extclk");
-	if (IS_ERR(ddata->extclk)) {
-		dev_err(dev, "Failed to get extclk");
-		return PTR_ERR(ddata->extclk);
-	}
+	if (IS_ERR(ddata->extclk))
+		return dev_err_probe(dev, PTR_ERR(ddata->extclk),
+				     "Failed to get extclk");
 
 	ddata->supplies[0].supply = "vdd-buck";
 	ddata->supplies[1].supply = "vdd-buck-sido";
@@ -234,16 +238,12 @@ static int wcd934x_slim_probe(struct slim_device *sdev)
 	ddata->supplies[4].supply = "vdd-io";
 
 	ret = regulator_bulk_get(dev, WCD934X_MAX_SUPPLY, ddata->supplies);
-	if (ret) {
-		dev_err(dev, "Failed to get supplies: err = %d\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to get supplies\n");
 
 	ret = regulator_bulk_enable(WCD934X_MAX_SUPPLY, ddata->supplies);
-	if (ret) {
-		dev_err(dev, "Failed to enable supplies: err = %d\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to enable supplies\n");
 
 	/*
 	 * For WCD934X, it takes about 600us for the Vout_A and

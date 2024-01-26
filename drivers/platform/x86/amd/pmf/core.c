@@ -40,6 +40,7 @@
 /* List of supported CPU ids */
 #define AMD_CPU_ID_RMB			0x14b5
 #define AMD_CPU_ID_PS			0x14e8
+#define PCI_DEVICE_ID_AMD_1AH_M20H_ROOT	0x1507
 
 #define PMF_MSG_DELAY_MIN_US		50
 #define RESPONSE_REGISTER_LOOP_MAX	20000
@@ -246,6 +247,7 @@ out_unlock:
 static const struct pci_device_id pmf_pci_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, AMD_CPU_ID_RMB) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, AMD_CPU_ID_PS) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_1AH_M20H_ROOT) },
 	{ }
 };
 
@@ -339,6 +341,7 @@ static void amd_pmf_deinit_features(struct amd_pmf_dev *dev)
 static const struct acpi_device_id amd_pmf_acpi_ids[] = {
 	{"AMDI0100", 0x100},
 	{"AMDI0102", 0},
+	{"AMDI0103", 0},
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, amd_pmf_acpi_ids);
@@ -414,7 +417,7 @@ static int amd_pmf_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int amd_pmf_remove(struct platform_device *pdev)
+static void amd_pmf_remove(struct platform_device *pdev)
 {
 	struct amd_pmf_dev *dev = platform_get_drvdata(pdev);
 
@@ -424,7 +427,6 @@ static int amd_pmf_remove(struct platform_device *pdev)
 	mutex_destroy(&dev->lock);
 	mutex_destroy(&dev->update_mutex);
 	kfree(dev->buf);
-	return 0;
 }
 
 static const struct attribute_group *amd_pmf_driver_groups[] = {
@@ -440,7 +442,7 @@ static struct platform_driver amd_pmf_driver = {
 		.pm = pm_sleep_ptr(&amd_pmf_pm),
 	},
 	.probe = amd_pmf_probe,
-	.remove = amd_pmf_remove,
+	.remove_new = amd_pmf_remove,
 };
 module_platform_driver(amd_pmf_driver);
 

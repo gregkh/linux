@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/prandom.h>
+#include <linux/string_helpers.h>
 #include <linux/utsname.h>
 #include <linux/uuid.h>
 #include <linux/workqueue.h>
@@ -341,7 +342,6 @@ static int tb_xdp_properties_request(struct tb_ctl *ctl, u64 route,
 	memcpy(&req.src_uuid, src_uuid, sizeof(*src_uuid));
 	memcpy(&req.dst_uuid, dst_uuid, sizeof(*dst_uuid));
 
-	len = 0;
 	data_len = 0;
 
 	do {
@@ -537,9 +537,8 @@ static int tb_xdp_link_state_status_request(struct tb_ctl *ctl, u64 route,
 static int tb_xdp_link_state_status_response(struct tb *tb, struct tb_ctl *ctl,
 					     struct tb_xdomain *xd, u8 sequence)
 {
-	struct tb_switch *sw = tb_to_switch(xd->dev.parent);
 	struct tb_xdp_link_state_status_response res;
-	struct tb_port *port = tb_port_at(xd->route, sw);
+	struct tb_port *port = tb_xdomain_downstream_port(xd);
 	u32 val[2];
 	int ret;
 
@@ -911,7 +910,7 @@ static ssize_t key_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(key);
 
-static int get_modalias(struct tb_service *svc, char *buf, size_t size)
+static int get_modalias(const struct tb_service *svc, char *buf, size_t size)
 {
 	return snprintf(buf, size, "tbsvc:k%sp%08Xv%08Xr%08X", svc->key,
 			svc->prtcid, svc->prtcvers, svc->prtcrevs);
@@ -983,9 +982,9 @@ static const struct attribute_group *tb_service_attr_groups[] = {
 	NULL,
 };
 
-static int tb_service_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int tb_service_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct tb_service *svc = container_of(dev, struct tb_service, dev);
+	const struct tb_service *svc = container_of_const(dev, struct tb_service, dev);
 	char modalias[64];
 
 	get_modalias(svc, modalias, sizeof(modalias));
@@ -1167,7 +1166,7 @@ static int tb_xdomain_update_link_attributes(struct tb_xdomain *xd)
 	struct tb_port *port;
 	int ret;
 
-	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
+	port = tb_xdomain_downstream_port(xd);
 
 	ret = tb_port_get_link_speed(port);
 	if (ret < 0)
@@ -1208,9 +1207,8 @@ static int tb_xdomain_get_uuid(struct tb_xdomain *xd)
 		if (xd->state_retries-- > 0) {
 			dev_dbg(&xd->dev, "failed to request UUID, retrying\n");
 			return -EAGAIN;
-		} else {
-			dev_dbg(&xd->dev, "failed to read remote UUID\n");
 		}
+		dev_dbg(&xd->dev, "failed to read remote UUID\n");
 		return ret;
 	}
 
@@ -1282,8 +1280,7 @@ static int tb_xdomain_get_link_status(struct tb_xdomain *xd)
 static int tb_xdomain_link_state_change(struct tb_xdomain *xd,
 					unsigned int width)
 {
-	struct tb_switch *sw = tb_to_switch(xd->dev.parent);
-	struct tb_port *port = tb_port_at(xd->route, sw);
+	struct tb_port *port = tb_xdomain_downstream_port(xd);
 	struct tb *tb = xd->tb;
 	u8 tlw, tls;
 	u32 val;
@@ -1323,13 +1320,16 @@ static int tb_xdomain_link_state_change(struct tb_xdomain *xd,
 
 static int tb_xdomain_bond_lanes_uuid_high(struct tb_xdomain *xd)
 {
+	unsigned int width, width_mask;
 	struct tb_port *port;
-	int ret, width;
+	int ret;
 
 	if (xd->target_link_width == LANE_ADP_CS_1_TARGET_WIDTH_SINGLE) {
-		width = 1;
+		width = TB_LINK_WIDTH_SINGLE;
+		width_mask = width;
 	} else if (xd->target_link_width == LANE_ADP_CS_1_TARGET_WIDTH_DUAL) {
-		width = 2;
+		width = TB_LINK_WIDTH_DUAL;
+		width_mask = width | TB_LINK_WIDTH_ASYM_TX | TB_LINK_WIDTH_ASYM_RX;
 	} else {
 		if (xd->state_retries-- > 0) {
 			dev_dbg(&xd->dev,
@@ -1340,7 +1340,7 @@ static int tb_xdomain_bond_lanes_uuid_high(struct tb_xdomain *xd)
 		return -ETIMEDOUT;
 	}
 
-	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
+	port = tb_xdomain_downstream_port(xd);
 
 	/*
 	 * We can't use tb_xdomain_lane_bonding_enable() here because it
@@ -1361,20 +1361,21 @@ static int tb_xdomain_bond_lanes_uuid_high(struct tb_xdomain *xd)
 		return ret;
 	}
 
-	ret = tb_port_wait_for_link_width(port, width, XDOMAIN_BONDING_TIMEOUT);
+	ret = tb_port_wait_for_link_width(port, width_mask,
+					  XDOMAIN_BONDING_TIMEOUT);
 	if (ret) {
 		dev_warn(&xd->dev, "error waiting for link width to become %d\n",
-			 width);
+			 width_mask);
 		return ret;
 	}
 
-	port->bonded = width == 2;
-	port->dual_link_port->bonded = width == 2;
+	port->bonded = width > TB_LINK_WIDTH_SINGLE;
+	port->dual_link_port->bonded = width > TB_LINK_WIDTH_SINGLE;
 
 	tb_port_update_credits(port);
 	tb_xdomain_update_link_attributes(xd);
 
-	dev_dbg(&xd->dev, "lane bonding %sabled\n", width == 2 ? "en" : "dis");
+	dev_dbg(&xd->dev, "lane bonding %s\n", str_enabled_disabled(width == 2));
 	return 0;
 }
 
@@ -1397,12 +1398,10 @@ static int tb_xdomain_get_properties(struct tb_xdomain *xd)
 			dev_dbg(&xd->dev,
 				"failed to request remote properties, retrying\n");
 			return -EAGAIN;
-		} else {
-			/* Give up now */
-			dev_err(&xd->dev,
-				"failed read XDomain properties from %pUb\n",
-				xd->remote_uuid);
 		}
+		/* Give up now */
+		dev_err(&xd->dev, "failed read XDomain properties from %pUb\n",
+			xd->remote_uuid);
 
 		return ret;
 	}
@@ -1458,7 +1457,7 @@ static int tb_xdomain_get_properties(struct tb_xdomain *xd)
 		if (xd->bonding_possible) {
 			struct tb_port *port;
 
-			port = tb_port_at(xd->route, tb_xdomain_parent(xd));
+			port = tb_xdomain_downstream_port(xd);
 			if (!port->bonded)
 				tb_port_disable(port->dual_link_port);
 		}
@@ -1779,16 +1778,57 @@ static ssize_t speed_show(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR(rx_speed, 0444, speed_show, NULL);
 static DEVICE_ATTR(tx_speed, 0444, speed_show, NULL);
 
-static ssize_t lanes_show(struct device *dev, struct device_attribute *attr,
-			  char *buf)
+static ssize_t rx_lanes_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
 {
 	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
+	unsigned int width;
 
-	return sysfs_emit(buf, "%u\n", xd->link_width);
+	switch (xd->link_width) {
+	case TB_LINK_WIDTH_SINGLE:
+	case TB_LINK_WIDTH_ASYM_RX:
+		width = 1;
+		break;
+	case TB_LINK_WIDTH_DUAL:
+		width = 2;
+		break;
+	case TB_LINK_WIDTH_ASYM_TX:
+		width = 3;
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		return -EINVAL;
+	}
+
+	return sysfs_emit(buf, "%u\n", width);
 }
+static DEVICE_ATTR(rx_lanes, 0444, rx_lanes_show, NULL);
 
-static DEVICE_ATTR(rx_lanes, 0444, lanes_show, NULL);
-static DEVICE_ATTR(tx_lanes, 0444, lanes_show, NULL);
+static ssize_t tx_lanes_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
+	unsigned int width;
+
+	switch (xd->link_width) {
+	case TB_LINK_WIDTH_SINGLE:
+	case TB_LINK_WIDTH_ASYM_TX:
+		width = 1;
+		break;
+	case TB_LINK_WIDTH_DUAL:
+		width = 2;
+		break;
+	case TB_LINK_WIDTH_ASYM_RX:
+		width = 3;
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		return -EINVAL;
+	}
+
+	return sysfs_emit(buf, "%u\n", width);
+}
+static DEVICE_ATTR(tx_lanes, 0444, tx_lanes_show, NULL);
 
 static struct attribute *xdomain_attrs[] = {
 	&dev_attr_device.attr,
@@ -2003,10 +2043,11 @@ void tb_xdomain_remove(struct tb_xdomain *xd)
  */
 int tb_xdomain_lane_bonding_enable(struct tb_xdomain *xd)
 {
+	unsigned int width_mask;
 	struct tb_port *port;
 	int ret;
 
-	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
+	port = tb_xdomain_downstream_port(xd);
 	if (!port->dual_link_port)
 		return -ENODEV;
 
@@ -2026,7 +2067,12 @@ int tb_xdomain_lane_bonding_enable(struct tb_xdomain *xd)
 		return ret;
 	}
 
-	ret = tb_port_wait_for_link_width(port, 2, XDOMAIN_BONDING_TIMEOUT);
+	/* Any of the widths are all bonded */
+	width_mask = TB_LINK_WIDTH_DUAL | TB_LINK_WIDTH_ASYM_TX |
+		     TB_LINK_WIDTH_ASYM_RX;
+
+	ret = tb_port_wait_for_link_width(port, width_mask,
+					  XDOMAIN_BONDING_TIMEOUT);
 	if (ret) {
 		tb_port_warn(port, "failed to enable lane bonding\n");
 		return ret;
@@ -2051,10 +2097,13 @@ void tb_xdomain_lane_bonding_disable(struct tb_xdomain *xd)
 {
 	struct tb_port *port;
 
-	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
+	port = tb_xdomain_downstream_port(xd);
 	if (port->dual_link_port) {
+		int ret;
+
 		tb_port_lane_bonding_disable(port);
-		if (tb_port_wait_for_link_width(port, 1, 100) == -ETIMEDOUT)
+		ret = tb_port_wait_for_link_width(port, TB_LINK_WIDTH_SINGLE, 100);
+		if (ret == -ETIMEDOUT)
 			tb_port_warn(port, "timeout disabling lane bonding\n");
 		tb_port_disable(port->dual_link_port);
 		tb_port_update_credits(port);
@@ -2203,13 +2252,12 @@ static struct tb_xdomain *switch_find_xdomain(struct tb_switch *sw,
 				if (xd->remote_uuid &&
 				    uuid_equal(xd->remote_uuid, lookup->uuid))
 					return xd;
-			} else if (lookup->link &&
-				   lookup->link == xd->link &&
-				   lookup->depth == xd->depth) {
-				return xd;
-			} else if (lookup->route &&
-				   lookup->route == xd->route) {
-				return xd;
+			} else {
+				if (lookup->link && lookup->link == xd->link &&
+				    lookup->depth == xd->depth)
+					return xd;
+				if (lookup->route && lookup->route == xd->route)
+					return xd;
 			}
 		} else if (tb_port_has_remote(port)) {
 			xd = switch_find_xdomain(port->remote->sw, lookup);

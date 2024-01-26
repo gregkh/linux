@@ -15,12 +15,15 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/spinlock.h>
+
+#include <linux/pinctrl/consumer.h>
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/spinlock.h>
 
 #include <dt-bindings/pinctrl/rzv2m-pinctrl.h>
 
@@ -117,7 +120,6 @@ struct rzv2m_pinctrl {
 	const struct rzv2m_pinctrl_data	*data;
 	void __iomem			*base;
 	struct device			*dev;
-	struct clk			*clk;
 
 	struct gpio_chip		gpio_chip;
 	struct pinctrl_gpio_range	gpio_range;
@@ -417,8 +419,7 @@ static int rzv2m_dt_node_to_map(struct pinctrl_dev *pctldev,
 	ret = -EINVAL;
 
 done:
-	if (ret < 0)
-		rzv2m_dt_free_map(pctldev, *map, *num_maps);
+	rzv2m_dt_free_map(pctldev, *map, *num_maps);
 
 	return ret;
 }
@@ -1046,14 +1047,10 @@ static int rzv2m_pinctrl_register(struct rzv2m_pinctrl *pctrl)
 	return 0;
 }
 
-static void rzv2m_pinctrl_clk_disable(void *data)
-{
-	clk_disable_unprepare(data);
-}
-
 static int rzv2m_pinctrl_probe(struct platform_device *pdev)
 {
 	struct rzv2m_pinctrl *pctrl;
+	struct clk *clk;
 	int ret;
 
 	pctrl = devm_kzalloc(&pdev->dev, sizeof(*pctrl), GFP_KERNEL);
@@ -1070,32 +1067,15 @@ static int rzv2m_pinctrl_probe(struct platform_device *pdev)
 	if (IS_ERR(pctrl->base))
 		return PTR_ERR(pctrl->base);
 
-	pctrl->clk = devm_clk_get(pctrl->dev, NULL);
-	if (IS_ERR(pctrl->clk)) {
-		ret = PTR_ERR(pctrl->clk);
-		dev_err(pctrl->dev, "failed to get GPIO clk : %i\n", ret);
-		return ret;
-	}
+	clk = devm_clk_get_enabled(pctrl->dev, NULL);
+	if (IS_ERR(clk))
+		return dev_err_probe(pctrl->dev, PTR_ERR(clk),
+				     "failed to enable GPIO clk\n");
 
 	spin_lock_init(&pctrl->lock);
 	mutex_init(&pctrl->mutex);
 
 	platform_set_drvdata(pdev, pctrl);
-
-	ret = clk_prepare_enable(pctrl->clk);
-	if (ret) {
-		dev_err(pctrl->dev, "failed to enable GPIO clk: %i\n", ret);
-		return ret;
-	}
-
-	ret = devm_add_action_or_reset(&pdev->dev, rzv2m_pinctrl_clk_disable,
-				       pctrl->clk);
-	if (ret) {
-		dev_err(pctrl->dev,
-			"failed to register GPIO clk disable action, %i\n",
-			ret);
-		return ret;
-	}
 
 	ret = rzv2m_pinctrl_register(pctrl);
 	if (ret)
@@ -1137,4 +1117,3 @@ core_initcall(rzv2m_pinctrl_init);
 
 MODULE_AUTHOR("Phil Edworthy <phil.edworthy@renesas.com>");
 MODULE_DESCRIPTION("Pin and gpio controller driver for RZ/V2M");
-MODULE_LICENSE("GPL");

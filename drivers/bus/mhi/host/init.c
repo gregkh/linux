@@ -759,7 +759,7 @@ static int parse_ch_cfg(struct mhi_controller *mhi_cntrl,
 	 * so to avoid any memory possible allocation failures, vzalloc is
 	 * used here
 	 */
-	mhi_cntrl->mhi_chan = vzalloc(mhi_cntrl->max_chan *
+	mhi_cntrl->mhi_chan = vcalloc(mhi_cntrl->max_chan,
 				      sizeof(*mhi_cntrl->mhi_chan));
 	if (!mhi_cntrl->mhi_chan)
 		return -ENOMEM;
@@ -1112,7 +1112,7 @@ int mhi_prepare_for_power_up(struct mhi_controller *mhi_cntrl)
 	if (bhi_off >= mhi_cntrl->reg_len) {
 		dev_err(dev, "BHI offset: 0x%x is out of range: 0x%zx\n",
 			bhi_off, mhi_cntrl->reg_len);
-		ret = -EINVAL;
+		ret = -ERANGE;
 		goto error_reg_offset;
 	}
 	mhi_cntrl->bhi = mhi_cntrl->regs + bhi_off;
@@ -1129,7 +1129,7 @@ int mhi_prepare_for_power_up(struct mhi_controller *mhi_cntrl)
 			dev_err(dev,
 				"BHIe offset: 0x%x is out of range: 0x%zx\n",
 				bhie_off, mhi_cntrl->reg_len);
-			ret = -EINVAL;
+			ret = -ERANGE;
 			goto error_reg_offset;
 		}
 		mhi_cntrl->bhie = mhi_cntrl->regs + bhie_off;
@@ -1407,9 +1407,9 @@ void mhi_driver_unregister(struct mhi_driver *mhi_drv)
 }
 EXPORT_SYMBOL_GPL(mhi_driver_unregister);
 
-static int mhi_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int mhi_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct mhi_device *mhi_dev = to_mhi_device(dev);
+	const struct mhi_device *mhi_dev = to_mhi_device(dev);
 
 	return add_uevent_var(env, "MODALIAS=" MHI_DEVICE_MODALIAS_FMT,
 					mhi_dev->name);
@@ -1461,4 +1461,4 @@ postcore_initcall(mhi_init);
 module_exit(mhi_exit);
 
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("MHI Host Interface");
+MODULE_DESCRIPTION("Modem Host Interface");

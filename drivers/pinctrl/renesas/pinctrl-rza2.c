@@ -15,8 +15,9 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/pinctrl/pinmux.h>
+#include <linux/platform_device.h>
 
 #include "../core.h"
 #include "../pinmux.h"
@@ -527,4 +528,3 @@ core_initcall(rza2_pinctrl_init);
 
 MODULE_AUTHOR("Chris Brandt <chris.brandt@renesas.com>");
 MODULE_DESCRIPTION("Pin and gpio controller driver for RZ/A2 SoC");
-MODULE_LICENSE("GPL v2");

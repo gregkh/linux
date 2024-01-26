@@ -93,7 +93,7 @@ static void nsim_prog_set_loaded(struct bpf_prog *prog, bool loaded)
 {
 	struct nsim_bpf_bound_prog *state;
 
-	if (!prog || !prog->aux->offload)
+	if (!prog || !bpf_prog_is_offloaded(prog->aux))
 		return;
 
 	state = prog->aux->offload->dev_priv;
@@ -311,12 +311,8 @@ nsim_setup_prog_hw_checks(struct netdevsim *ns, struct netdev_bpf *bpf)
 	if (!bpf->prog)
 		return 0;
 
-	if (!bpf->prog->aux->offload) {
+	if (!bpf_prog_is_offloaded(bpf->prog->aux)) {
 		NSIM_EA(bpf->extack, "xdpoffload of non-bound program");
-		return -EINVAL;
-	}
-	if (!bpf_offload_dev_match(bpf->prog, ns->netdev)) {
-		NSIM_EA(bpf->extack, "program bound to different dev");
 		return -EINVAL;
 	}
 

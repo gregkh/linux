@@ -21,7 +21,6 @@
 #include <linux/pm_opp.h>
 #include <linux/pm_runtime.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/reset.h>
 #include <linux/spi/spi.h>
 
@@ -758,9 +757,9 @@ static int tegra_slink_setup(struct spi_device *spi)
 	spin_lock_irqsave(&tspi->lock, flags);
 	val = tspi->def_command_reg;
 	if (spi->mode & SPI_CS_HIGH)
-		val |= cs_pol_bit[spi->chip_select];
+		val |= cs_pol_bit[spi_get_chipselect(spi, 0)];
 	else
-		val &= ~cs_pol_bit[spi->chip_select];
+		val &= ~cs_pol_bit[spi_get_chipselect(spi, 0)];
 	tspi->def_command_reg = val;
 	tegra_slink_writel(tspi, tspi->def_command_reg, SLINK_COMMAND);
 	spin_unlock_irqrestore(&tspi->lock, flags);
@@ -781,7 +780,7 @@ static int tegra_slink_prepare_message(struct spi_master *master,
 	tspi->command_reg |= SLINK_CS_SW | SLINK_CS_VALUE;
 
 	tspi->command2_reg = tspi->def_command2_reg;
-	tspi->command2_reg |= SLINK_SS_EN_CS(spi->chip_select);
+	tspi->command2_reg |= SLINK_SS_EN_CS(spi_get_chipselect(spi, 0));
 
 	tspi->command_reg &= ~SLINK_MODES;
 	if (spi->mode & SPI_CPHA)
@@ -1034,18 +1033,12 @@ static int tegra_slink_probe(struct platform_device *pdev)
 				 &master->max_speed_hz))
 		master->max_speed_hz = 25000000; /* 25MHz */
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!r) {
-		dev_err(&pdev->dev, "No IO memory resource\n");
-		ret = -ENODEV;
-		goto exit_free_master;
-	}
-	tspi->phys = r->start;
-	tspi->base = devm_ioremap_resource(&pdev->dev, r);
+	tspi->base = devm_platform_get_and_ioremap_resource(pdev, 0, &r);
 	if (IS_ERR(tspi->base)) {
 		ret = PTR_ERR(tspi->base);
 		goto exit_free_master;
 	}
+	tspi->phys = r->start;
 
 	/* disabled clock may cause interrupt storm upon request */
 	tspi->clk = devm_clk_get(&pdev->dev, NULL);
@@ -1136,7 +1129,7 @@ exit_free_master:
 	return ret;
 }
 
-static int tegra_slink_remove(struct platform_device *pdev)
+static void tegra_slink_remove(struct platform_device *pdev)
 {
 	struct spi_master *master = spi_master_get(platform_get_drvdata(pdev));
 	struct tegra_slink_data	*tspi = spi_master_get_devdata(master);
@@ -1154,7 +1147,6 @@ static int tegra_slink_remove(struct platform_device *pdev)
 		tegra_slink_deinit_dma_param(tspi, true);
 
 	spi_master_put(master);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1222,7 +1214,7 @@ static struct platform_driver tegra_slink_driver = {
 		.of_match_table	= tegra_slink_of_match,
 	},
 	.probe =	tegra_slink_probe,
-	.remove =	tegra_slink_remove,
+	.remove_new =	tegra_slink_remove,
 };
 module_platform_driver(tegra_slink_driver);
 

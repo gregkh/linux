@@ -5,8 +5,8 @@
  */
 
 #include <linux/err.h>
+#include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 #include "cpufreq-dt.h"
@@ -86,6 +86,8 @@ static const struct of_device_id allowlist[] __initconst = {
 	{ .compatible = "st-ericsson,u9500", },
 	{ .compatible = "st-ericsson,u9540", },
 
+	{ .compatible = "starfive,jh7110", },
+
 	{ .compatible = "ti,omap2", },
 	{ .compatible = "ti,omap4", },
 	{ .compatible = "ti,omap5", },
@@ -102,6 +104,8 @@ static const struct of_device_id allowlist[] __initconst = {
  */
 static const struct of_device_id blocklist[] __initconst = {
 	{ .compatible = "allwinner,sun50i-h6", },
+
+	{ .compatible = "apple,arm-platform", },
 
 	{ .compatible = "arm,vexpress", },
 
@@ -139,20 +143,28 @@ static const struct of_device_id blocklist[] __initconst = {
 
 	{ .compatible = "qcom,apq8096", },
 	{ .compatible = "qcom,msm8996", },
+	{ .compatible = "qcom,msm8998", },
+	{ .compatible = "qcom,qcm2290", },
 	{ .compatible = "qcom,qcs404", },
+	{ .compatible = "qcom,qdu1000", },
 	{ .compatible = "qcom,sa8155p" },
 	{ .compatible = "qcom,sa8540p" },
+	{ .compatible = "qcom,sa8775p" },
 	{ .compatible = "qcom,sc7180", },
 	{ .compatible = "qcom,sc7280", },
 	{ .compatible = "qcom,sc8180x", },
 	{ .compatible = "qcom,sc8280xp", },
 	{ .compatible = "qcom,sdm845", },
+	{ .compatible = "qcom,sdx75", },
 	{ .compatible = "qcom,sm6115", },
 	{ .compatible = "qcom,sm6350", },
 	{ .compatible = "qcom,sm6375", },
+	{ .compatible = "qcom,sm7225", },
 	{ .compatible = "qcom,sm8150", },
 	{ .compatible = "qcom,sm8250", },
 	{ .compatible = "qcom,sm8350", },
+	{ .compatible = "qcom,sm8450", },
+	{ .compatible = "qcom,sm8550", },
 
 	{ .compatible = "st,stih407", },
 	{ .compatible = "st,stih410", },
@@ -162,6 +174,8 @@ static const struct of_device_id blocklist[] __initconst = {
 	{ .compatible = "ti,am43", },
 	{ .compatible = "ti,dra7", },
 	{ .compatible = "ti,omap3", },
+	{ .compatible = "ti,am625", },
+	{ .compatible = "ti,am62a7", },
 
 	{ .compatible = "qcom,ipq8064", },
 	{ .compatible = "qcom,apq8064", },
@@ -211,3 +225,4 @@ create_pdev:
 			       sizeof(struct cpufreq_dt_platform_data)));
 }
 core_initcall(cpufreq_dt_platdev_init);
+MODULE_LICENSE("GPL");

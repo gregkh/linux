@@ -17,7 +17,7 @@
 #include <drm/drm_aperture.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fb_helper.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_module.h>
 #include <drm/drm_of.h>
@@ -111,7 +111,7 @@ static int sun4i_drv_bind(struct device *dev)
 	if (ret)
 		goto finish_poll;
 
-	drm_fbdev_generic_setup(drm, 32);
+	drm_fbdev_dma_setup(drm, 32);
 
 	dev_set_drvdata(dev, drm);
 
@@ -408,11 +408,9 @@ static int sun4i_drv_probe(struct platform_device *pdev)
 		return 0;
 }
 
-static int sun4i_drv_remove(struct platform_device *pdev)
+static void sun4i_drv_remove(struct platform_device *pdev)
 {
 	component_master_del(&pdev->dev, &sun4i_drv_master_ops);
-
-	return 0;
 }
 
 static const struct of_device_id sun4i_drv_of_table[] = {
@@ -438,7 +436,7 @@ MODULE_DEVICE_TABLE(of, sun4i_drv_of_table);
 
 static struct platform_driver sun4i_drv_platform_driver = {
 	.probe		= sun4i_drv_probe,
-	.remove		= sun4i_drv_remove,
+	.remove_new	= sun4i_drv_remove,
 	.driver		= {
 		.name		= "sun4i-drm",
 		.of_match_table	= sun4i_drv_of_table,

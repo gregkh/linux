@@ -80,7 +80,7 @@ static void megasas_fusion_crash_dump(struct megasas_instance *instance);
  * @ocr_context:			If called from OCR context this will
  *					be set to 1, else 0
  *
- * This function initates a chip reset followed by a wait for controller to
+ * This function initiates a chip reset followed by a wait for controller to
  * transition to ready state.
  * During this, driver will block all access to PCI config space from userspace
  */
@@ -334,7 +334,7 @@ megasas_fire_cmd_fusion(struct megasas_instance *instance,
  *
  * This function is only for fusion controllers.
  * Update host can queue, if firmware downgrade max supported firmware commands.
- * Firmware upgrade case will be skiped because underlying firmware has
+ * Firmware upgrade case will be skipped because underlying firmware has
  * more resource than exposed to the OS.
  *
  */
@@ -1200,6 +1200,9 @@ megasas_ioc_init_fusion(struct megasas_instance *instance)
 	drv_ops->mfi_capabilities.support_pd_map_target_id = 1;
 	drv_ops->mfi_capabilities.support_nvme_passthru = 1;
 	drv_ops->mfi_capabilities.support_fw_exposed_dev_list = 1;
+
+	if (reset_devices)
+		drv_ops->mfi_capabilities.support_memdump = 1;
 
 	if (instance->consistent_mask_64bit)
 		drv_ops->mfi_capabilities.support_64bit_mode = 1;
@@ -2588,7 +2591,7 @@ static void megasas_stream_detect(struct megasas_instance *instance,
 			if ((io_info->ldStartBlock != current_sd->next_seq_lba)	&&
 			    ((!io_info->isRead) || (!is_read_ahead)))
 				/*
-				 * Once the API availible we need to change this.
+				 * Once the API is available we need to change this.
 				 * At this point we are not allowing any gap
 				 */
 				continue;
@@ -4650,7 +4653,7 @@ megasas_issue_tm(struct megasas_instance *instance, u16 device_handle,
 }
 
 /*
- * megasas_fusion_smid_lookup : Look for fusion command correpspodning to SCSI
+ * megasas_fusion_smid_lookup : Look for fusion command corresponding to SCSI
  * @instance: per adapter struct
  *
  * Return Non Zero index, if SMID found in outstanding commands

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /*
- * Device Tree Source for the RZ/G2UL SoC
+ * Device Tree Source for the RZ/Five and RZ/G2UL SoCs
  *
  * Copyright (C) 2022 Renesas Electronics Corp.
  */
@@ -68,39 +68,81 @@
 		};
 	};
 
-	cpus {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		cpu0: cpu@0 {
-			compatible = "arm,cortex-a55";
-			reg = <0>;
-			device_type = "cpu";
-			#cooling-cells = <2>;
-			next-level-cache = <&L3_CA55>;
-			enable-method = "psci";
-			clocks = <&cpg CPG_CORE R9A07G043_CLK_I>;
-			operating-points-v2 = <&cluster0_opp>;
-		};
-
-		L3_CA55: cache-controller-0 {
-			compatible = "cache";
-			cache-unified;
-			cache-size = <0x40000>;
-		};
-	};
-
-	psci {
-		compatible = "arm,psci-1.0", "arm,psci-0.2";
-		method = "smc";
-	};
-
 	soc: soc {
 		compatible = "simple-bus";
-		interrupt-parent = <&gic>;
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
+
+		mtu3: timer@10001200 {
+			compatible = "renesas,r9a07g043-mtu3",
+				     "renesas,rz-mtu3";
+			reg = <0 0x10001200 0 0xb00>;
+			interrupts = <SOC_PERIPHERAL_IRQ(170) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(171) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(172) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(173) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(174) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(175) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(176) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(177) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(178) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(179) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(180) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(181) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(182) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(183) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(184) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(185) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(186) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(187) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(188) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(189) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(190) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(191) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(192) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(193) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(194) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(195) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(196) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(197) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(198) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(199) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(200) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(201) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(202) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(203) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(204) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(205) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(206) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(207) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(208) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(209) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(210) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(211) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(212) IRQ_TYPE_EDGE_RISING>,
+				     <SOC_PERIPHERAL_IRQ(213) IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "tgia0", "tgib0", "tgic0", "tgid0",
+					  "tciv0", "tgie0", "tgif0",
+					  "tgia1", "tgib1", "tciv1", "tciu1",
+					  "tgia2", "tgib2", "tciv2", "tciu2",
+					  "tgia3", "tgib3", "tgic3", "tgid3",
+					  "tciv3",
+					  "tgia4", "tgib4", "tgic4", "tgid4",
+					  "tciv4",
+					  "tgiu5", "tgiv5", "tgiw5",
+					  "tgia6", "tgib6", "tgic6", "tgid6",
+					  "tciv6",
+					  "tgia7", "tgib7", "tgic7", "tgid7",
+					  "tciv7",
+					  "tgia8", "tgib8", "tgic8", "tgid8",
+					  "tciv8", "tciu8";
+			clocks = <&cpg CPG_MOD R9A07G043_MTU_X_MCK_MTU3>;
+			power-domains = <&cpg>;
+			resets = <&cpg R9A07G043_MTU_X_PRESET_MTU3>;
+			#pwm-cells = <2>;
+			status = "disabled";
+		};
 
 		ssi0: ssi@10049c00 {
 			compatible = "renesas,r9a07g043-ssi",
@@ -545,12 +587,6 @@
 		sysc: system-controller@11020000 {
 			compatible = "renesas,r9a07g043-sysc";
 			reg = <0 0x11020000 0 0x10000>;
-			interrupts = <SOC_PERIPHERAL_IRQ(42) IRQ_TYPE_LEVEL_HIGH>,
-				     <SOC_PERIPHERAL_IRQ(43) IRQ_TYPE_LEVEL_HIGH>,
-				     <SOC_PERIPHERAL_IRQ(44) IRQ_TYPE_LEVEL_HIGH>,
-				     <SOC_PERIPHERAL_IRQ(45) IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "lpm_int", "ca55stbydone_int",
-					  "cm33stbyr_int", "ca55_deny";
 			status = "disabled";
 		};
 
@@ -560,6 +596,8 @@
 			gpio-controller;
 			#gpio-cells = <2>;
 			gpio-ranges = <&pinctrl 0 0 152>;
+			#interrupt-cells = <2>;
+			interrupt-controller;
 			clocks = <&cpg CPG_MOD R9A07G043_GPIO_HCLK>;
 			power-domains = <&cpg>;
 			resets = <&cpg R9A07G043_GPIO_RSTN>,
@@ -596,21 +634,13 @@
 					  "ch12", "ch13", "ch14", "ch15";
 			clocks = <&cpg CPG_MOD R9A07G043_DMAC_ACLK>,
 				 <&cpg CPG_MOD R9A07G043_DMAC_PCLK>;
+			clock-names = "main", "register";
 			power-domains = <&cpg>;
 			resets = <&cpg R9A07G043_DMAC_ARESETN>,
 				 <&cpg R9A07G043_DMAC_RST_ASYNC>;
+			reset-names = "arst", "rst_async";
 			#dma-cells = <1>;
 			dma-channels = <16>;
-		};
-
-		gic: interrupt-controller@11900000 {
-			compatible = "arm,gic-v3";
-			#interrupt-cells = <3>;
-			#address-cells = <0>;
-			interrupt-controller;
-			reg = <0x0 0x11900000 0 0x40000>,
-			      <0x0 0x11940000 0 0x60000>;
-			interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_LOW>;
 		};
 
 		sdhi0: mmc@11c00000 {
@@ -814,21 +844,6 @@
 			status = "disabled";
 		};
 
-		wdt2: watchdog@12800400 {
-			compatible = "renesas,r9a07g043-wdt",
-				     "renesas,rzg2l-wdt";
-			reg = <0 0x12800400 0 0x400>;
-			clocks = <&cpg CPG_MOD R9A07G043_WDT2_PCLK>,
-				 <&cpg CPG_MOD R9A07G043_WDT2_CLK>;
-			clock-names = "pclk", "oscclk";
-			interrupts = <GIC_SPI 53 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 54 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "wdt", "perrout";
-			resets = <&cpg R9A07G043_WDT2_PRESETN>;
-			power-domains = <&cpg>;
-			status = "disabled";
-		};
-
 		ostm0: timer@12801000 {
 			compatible = "renesas,r9a07g043-ostm",
 				     "renesas,ostm";
@@ -892,13 +907,5 @@
 				};
 			};
 		};
-	};
-
-	timer {
-		compatible = "arm,armv8-timer";
-		interrupts-extended = <&gic GIC_PPI 13 (GIC_CPU_MASK_SIMPLE(1) | IRQ_TYPE_LEVEL_LOW)>,
-				      <&gic GIC_PPI 14 (GIC_CPU_MASK_SIMPLE(1) | IRQ_TYPE_LEVEL_LOW)>,
-				      <&gic GIC_PPI 11 (GIC_CPU_MASK_SIMPLE(1) | IRQ_TYPE_LEVEL_LOW)>,
-				      <&gic GIC_PPI 10 (GIC_CPU_MASK_SIMPLE(1) | IRQ_TYPE_LEVEL_LOW)>;
 	};
 };

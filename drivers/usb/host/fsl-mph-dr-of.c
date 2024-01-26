@@ -10,7 +10,8 @@
 #include <linux/fsl_devices.h>
 #include <linux/err.h>
 #include <linux/io.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/clk.h>
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
@@ -200,19 +201,16 @@ static int fsl_usb2_mph_dr_of_probe(struct platform_device *ofdev)
 	dev_data = get_dr_mode_data(np);
 
 	if (of_device_is_compatible(np, "fsl-usb2-mph")) {
-		if (of_get_property(np, "port0", NULL))
+		if (of_property_present(np, "port0"))
 			pdata->port_enables |= FSL_USB2_PORT0_ENABLED;
 
-		if (of_get_property(np, "port1", NULL))
+		if (of_property_present(np, "port1"))
 			pdata->port_enables |= FSL_USB2_PORT1_ENABLED;
 
 		pdata->operating_mode = FSL_USB2_MPH_HOST;
 	} else {
-		if (of_get_property(np, "fsl,invert-drvvbus", NULL))
-			pdata->invert_drvvbus = 1;
-
-		if (of_get_property(np, "fsl,invert-pwr-fault", NULL))
-			pdata->invert_pwr_fault = 1;
+		pdata->invert_drvvbus = of_property_read_bool(np, "fsl,invert-drvvbus");
+		pdata->invert_pwr_fault = of_property_read_bool(np, "fsl,invert-pwr-fault");
 
 		/* setup mode selected in the device tree */
 		pdata->operating_mode = dev_data->op_mode;
@@ -268,10 +266,9 @@ static int __unregister_subdev(struct device *dev, void *d)
 	return 0;
 }
 
-static int fsl_usb2_mph_dr_of_remove(struct platform_device *ofdev)
+static void fsl_usb2_mph_dr_of_remove(struct platform_device *ofdev)
 {
 	device_for_each_child(&ofdev->dev, NULL, __unregister_subdev);
-	return 0;
 }
 
 #ifdef CONFIG_PPC_MPC512x
@@ -365,7 +362,7 @@ static struct platform_driver fsl_usb2_mph_dr_driver = {
 		.of_match_table = fsl_usb2_mph_dr_of_match,
 	},
 	.probe	= fsl_usb2_mph_dr_of_probe,
-	.remove	= fsl_usb2_mph_dr_of_remove,
+	.remove_new = fsl_usb2_mph_dr_of_remove,
 };
 
 module_platform_driver(fsl_usb2_mph_dr_driver);

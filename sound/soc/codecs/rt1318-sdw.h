@@ -88,14 +88,9 @@ struct rt1318_sdw_priv {
 	struct snd_soc_component *component;
 	struct regmap *regmap;
 	struct sdw_slave *sdw_slave;
-	enum sdw_slave_status status;
 	struct sdw_bus_params params;
 	bool hw_init;
 	bool first_hw_init;
-};
-
-struct sdw_stream_data {
-	struct sdw_stream_runtime *sdw_stream;
 };
 
 #endif /* __RT1318_SDW_H__ */

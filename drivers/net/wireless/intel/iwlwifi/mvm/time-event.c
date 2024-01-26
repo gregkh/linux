@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2012-2014, 2018-2022 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2023 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2017 Intel Deutschland GmbH
  */
@@ -78,8 +78,29 @@ void iwl_mvm_roc_done_wk(struct work_struct *wk)
 		 */
 
 		if (!WARN_ON(!mvm->p2p_device_vif)) {
-			mvmvif = iwl_mvm_vif_from_mac80211(mvm->p2p_device_vif);
-			iwl_mvm_flush_sta(mvm, &mvmvif->bcast_sta, true);
+			struct ieee80211_vif *vif = mvm->p2p_device_vif;
+
+			mvmvif = iwl_mvm_vif_from_mac80211(vif);
+			iwl_mvm_flush_sta(mvm, mvmvif->deflink.bcast_sta.sta_id,
+					  mvmvif->deflink.bcast_sta.tfd_queue_msk);
+
+			if (mvm->mld_api_is_used) {
+				iwl_mvm_mld_rm_bcast_sta(mvm, vif,
+							 &vif->bss_conf);
+
+				iwl_mvm_link_changed(mvm, vif, &vif->bss_conf,
+						     LINK_CONTEXT_MODIFY_ACTIVE,
+						     false);
+			} else {
+				iwl_mvm_rm_p2p_bcast_sta(mvm, vif);
+				iwl_mvm_binding_remove_vif(mvm, vif);
+			}
+
+			/* Do not remove the PHY context as removing and adding
+			 * a PHY context has timing overheads. Leaving it
+			 * configured in FW would be useful in case the next ROC
+			 * is with the same channel.
+			 */
 		}
 	}
 
@@ -92,15 +113,22 @@ void iwl_mvm_roc_done_wk(struct work_struct *wk)
 	 */
 	if (test_and_clear_bit(IWL_MVM_STATUS_ROC_AUX_RUNNING, &mvm->status)) {
 		/* do the same in case of hot spot 2.0 */
-		iwl_mvm_flush_sta(mvm, &mvm->aux_sta, true);
+		iwl_mvm_flush_sta(mvm, mvm->aux_sta.sta_id,
+				  mvm->aux_sta.tfd_queue_msk);
+
+		if (mvm->mld_api_is_used) {
+			iwl_mvm_mld_rm_aux_sta(mvm);
+			goto out_unlock;
+		}
 
 		/* In newer version of this command an aux station is added only
 		 * in cases of dedicated tx queue and need to be removed in end
 		 * of use */
-		if (iwl_fw_lookup_cmd_ver(mvm->fw, ADD_STA, 0) >= 12)
+		if (iwl_mvm_has_new_station_api(mvm->fw))
 			iwl_mvm_rm_aux_sta(mvm);
 	}
 
+out_unlock:
 	mutex_unlock(&mvm->mutex);
 }
 
@@ -170,7 +198,8 @@ static bool iwl_mvm_te_check_disconnect(struct iwl_mvm *mvm,
 		struct iwl_mvm_sta *mvmsta;
 
 		rcu_read_lock();
-		mvmsta = iwl_mvm_sta_from_staid_rcu(mvm, mvmvif->ap_sta_id);
+		mvmsta = iwl_mvm_sta_from_staid_rcu(mvm,
+						    mvmvif->deflink.ap_sta_id);
 		if (!WARN_ON(!mvmsta))
 			iwl_mvm_sta_modify_disable_tx(mvm, mvmsta, false);
 		rcu_read_unlock();
@@ -376,12 +405,11 @@ static void iwl_mvm_te_handle_notif(struct iwl_mvm *mvm,
 static int iwl_mvm_aux_roc_te_handle_notif(struct iwl_mvm *mvm,
 					   struct iwl_time_event_notif *notif)
 {
-	struct iwl_mvm_time_event_data *te_data, *tmp;
-	bool aux_roc_te = false;
+	struct iwl_mvm_time_event_data *aux_roc_te = NULL, *te_data;
 
-	list_for_each_entry_safe(te_data, tmp, &mvm->aux_roc_te_list, list) {
+	list_for_each_entry(te_data, &mvm->aux_roc_te_list, list) {
 		if (le32_to_cpu(notif->unique_id) == te_data->uid) {
-			aux_roc_te = true;
+			aux_roc_te = te_data;
 			break;
 		}
 	}
@@ -873,8 +901,8 @@ void iwl_mvm_rx_session_protect_notif(struct iwl_mvm *mvm,
 	if (!le32_to_cpu(notif->status) || !le32_to_cpu(notif->start)) {
 		/* End TE, notify mac80211 */
 		mvmvif->time_event_data.id = SESSION_PROTECT_CONF_MAX_ID;
-		ieee80211_remain_on_channel_expired(mvm->hw);
 		iwl_mvm_p2p_roc_finished(mvm);
+		ieee80211_remain_on_channel_expired(mvm->hw);
 	} else if (le32_to_cpu(notif->start)) {
 		if (WARN_ON(mvmvif->time_event_data.id !=
 				le32_to_cpu(notif->conf_id)))

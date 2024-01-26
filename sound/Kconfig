@@ -39,8 +39,6 @@ config SOUND_OSS_CORE_PRECLAIM
 
 source "sound/oss/dmasound/Kconfig"
 
-if !UML
-
 menuconfig SND
 	tristate "Advanced Linux Sound Architecture"
 	help
@@ -103,11 +101,8 @@ source "sound/virtio/Kconfig"
 
 endif # SND
 
-endif # !UML
-
 endif # SOUND
 
-# AC97_BUS is used from both sound and ucb1400
 config AC97_BUS
 	tristate
 	help

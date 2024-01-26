@@ -3,6 +3,8 @@
  * Copyright (c) 2020-2022, Linaro Limited
  */
 
+#include <drm/display/drm_dsc_helper.h>
+
 #include "dpu_kms.h"
 #include "dpu_hw_catalog.h"
 #include "dpu_hwio.h"
@@ -28,6 +30,8 @@
 #define DSC_RANGE_MIN_QP                0x074
 #define DSC_RANGE_MAX_QP                0x0B0
 #define DSC_RANGE_BPG_OFFSET            0x0EC
+
+#define DSC_CTL(m) (0x1800 - 0x3FC * (m - DSC_0))
 
 static void dpu_hw_dsc_disable(struct dpu_hw_dsc *dsc)
 {
@@ -101,7 +105,7 @@ static void dpu_hw_dsc_config(struct dpu_hw_dsc *hw_dsc,
 	data |= dsc->final_offset;
 	DPU_REG_WRITE(c, DSC_DSC_OFFSET, data);
 
-	det_thresh_flatness = 7 + 2 * (dsc->bits_per_component - 8);
+	det_thresh_flatness = drm_dsc_flatness_det_thresh(dsc);
 	data = det_thresh_flatness << 10;
 	data |= dsc->flatness_max_qp << 5;
 	data |= dsc->flatness_min_qp;
@@ -151,22 +155,27 @@ static void dpu_hw_dsc_config_thresh(struct dpu_hw_dsc *hw_dsc,
 	}
 }
 
-static struct dpu_dsc_cfg *_dsc_offset(enum dpu_dsc dsc,
-				       const struct dpu_mdss_cfg *m,
-				       void __iomem *addr,
-				       struct dpu_hw_blk_reg_map *b)
+static void dpu_hw_dsc_bind_pingpong_blk(
+		struct dpu_hw_dsc *hw_dsc,
+		const enum dpu_pingpong pp)
 {
-	int i;
+	struct dpu_hw_blk_reg_map *c = &hw_dsc->hw;
+	int mux_cfg = 0xF;
+	u32 dsc_ctl_offset;
 
-	for (i = 0; i < m->dsc_count; i++) {
-		if (dsc == m->dsc[i].id) {
-			b->blk_addr = addr + m->dsc[i].base;
-			b->log_mask = DPU_DBG_MASK_DSC;
-			return &m->dsc[i];
-		}
-	}
+	dsc_ctl_offset = DSC_CTL(hw_dsc->idx);
 
-	return NULL;
+	if (pp)
+		mux_cfg = (pp - PINGPONG_0) & 0x7;
+
+	if (pp)
+		DRM_DEBUG_KMS("Binding dsc:%d to pp:%d\n",
+			      hw_dsc->idx - DSC_0, pp - PINGPONG_0);
+	else
+		DRM_DEBUG_KMS("Unbinding dsc:%d from any pp\n",
+			      hw_dsc->idx - DSC_0);
+
+	DPU_REG_WRITE(c, dsc_ctl_offset, mux_cfg);
 }
 
 static void _setup_dsc_ops(struct dpu_hw_dsc_ops *ops,
@@ -175,25 +184,23 @@ static void _setup_dsc_ops(struct dpu_hw_dsc_ops *ops,
 	ops->dsc_disable = dpu_hw_dsc_disable;
 	ops->dsc_config = dpu_hw_dsc_config;
 	ops->dsc_config_thresh = dpu_hw_dsc_config_thresh;
+	if (cap & BIT(DPU_DSC_OUTPUT_CTRL))
+		ops->dsc_bind_pingpong_blk = dpu_hw_dsc_bind_pingpong_blk;
 };
 
-struct dpu_hw_dsc *dpu_hw_dsc_init(enum dpu_dsc idx, void __iomem *addr,
-				   const struct dpu_mdss_cfg *m)
+struct dpu_hw_dsc *dpu_hw_dsc_init(const struct dpu_dsc_cfg *cfg,
+				   void __iomem *addr)
 {
 	struct dpu_hw_dsc *c;
-	struct dpu_dsc_cfg *cfg;
 
 	c = kzalloc(sizeof(*c), GFP_KERNEL);
 	if (!c)
 		return ERR_PTR(-ENOMEM);
 
-	cfg = _dsc_offset(idx, m, addr, &c->hw);
-	if (IS_ERR_OR_NULL(cfg)) {
-		kfree(c);
-		return ERR_PTR(-EINVAL);
-	}
+	c->hw.blk_addr = addr + cfg->base;
+	c->hw.log_mask = DPU_DBG_MASK_DSC;
 
-	c->idx = idx;
+	c->idx = cfg->id;
 	c->caps = cfg;
 	_setup_dsc_ops(&c->ops, c->caps->features);
 

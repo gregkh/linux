@@ -12,8 +12,7 @@
 #include <linux/mailbox_client.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
@@ -27,6 +26,14 @@
 #include "remoteproc_internal.h"
 
 #define DSP_RPROC_CLK_MAX			5
+
+/*
+ * Module parameters
+ */
+static unsigned int no_mailboxes;
+module_param_named(no_mailboxes, no_mailboxes, int, 0644);
+MODULE_PARM_DESC(no_mailboxes,
+		 "There is no mailbox between cores, so ignore remote proc reply after start, default is 0 (off).");
 
 #define REMOTE_IS_READY				BIT(0)
 #define REMOTE_READY_WAIT_MAX_RETRIES		500
@@ -171,6 +178,9 @@ static const struct imx_rproc_att imx_dsp_rproc_att_imx8ulp[] = {
 	{ 0x0c000000, 0x80000000, 0x10000000, 0},
 	{ 0x30000000, 0x90000000, 0x10000000, 0},
 };
+
+/* Initialize the mailboxes between cores, if exists */
+static int (*imx_dsp_rproc_mbox_init)(struct imx_dsp_rproc *priv);
 
 /* Reset function for DSP on i.MX8MP */
 static int imx8mp_dsp_reset(struct imx_dsp_rproc *priv)
@@ -492,12 +502,12 @@ static void imx_dsp_rproc_rxdb_callback(struct mbox_client *cl, void *data)
 }
 
 /**
- * imx_dsp_rproc_mbox_init() - request mailbox channels
+ * imx_dsp_rproc_mbox_alloc() - request mailbox channels
  * @priv: private data pointer
  *
  * Request three mailbox channels (tx, rx, rxdb).
  */
-static int imx_dsp_rproc_mbox_init(struct imx_dsp_rproc *priv)
+static int imx_dsp_rproc_mbox_alloc(struct imx_dsp_rproc *priv)
 {
 	struct device *dev = priv->rproc->dev.parent;
 	struct mbox_client *cl;
@@ -519,7 +529,7 @@ static int imx_dsp_rproc_mbox_init(struct imx_dsp_rproc *priv)
 		ret = PTR_ERR(priv->tx_ch);
 		dev_dbg(cl->dev, "failed to request tx mailbox channel: %d\n",
 			ret);
-		goto err_out;
+		return ret;
 	}
 
 	/* Channel for receiving message */
@@ -528,7 +538,7 @@ static int imx_dsp_rproc_mbox_init(struct imx_dsp_rproc *priv)
 		ret = PTR_ERR(priv->rx_ch);
 		dev_dbg(cl->dev, "failed to request rx mailbox channel: %d\n",
 			ret);
-		goto err_out;
+		goto free_channel_tx;
 	}
 
 	cl = &priv->cl_rxdb;
@@ -544,20 +554,28 @@ static int imx_dsp_rproc_mbox_init(struct imx_dsp_rproc *priv)
 		ret = PTR_ERR(priv->rxdb_ch);
 		dev_dbg(cl->dev, "failed to request mbox chan rxdb, ret %d\n",
 			ret);
-		goto err_out;
+		goto free_channel_rx;
 	}
 
 	return 0;
 
-err_out:
-	if (!IS_ERR(priv->tx_ch))
-		mbox_free_channel(priv->tx_ch);
-	if (!IS_ERR(priv->rx_ch))
-		mbox_free_channel(priv->rx_ch);
-	if (!IS_ERR(priv->rxdb_ch))
-		mbox_free_channel(priv->rxdb_ch);
-
+free_channel_rx:
+	mbox_free_channel(priv->rx_ch);
+free_channel_tx:
+	mbox_free_channel(priv->tx_ch);
 	return ret;
+}
+
+/*
+ * imx_dsp_rproc_mbox_no_alloc()
+ *
+ * Empty function for no mailbox between cores
+ *
+ * Always return 0
+ */
+static int imx_dsp_rproc_mbox_no_alloc(struct imx_dsp_rproc *priv)
+{
+	return 0;
 }
 
 static void imx_dsp_rproc_free_mbox(struct imx_dsp_rproc *priv)
@@ -1094,6 +1112,11 @@ static int imx_dsp_rproc_probe(struct platform_device *pdev)
 	priv->rproc = rproc;
 	priv->dsp_dcfg = dsp_dcfg;
 
+	if (no_mailboxes)
+		imx_dsp_rproc_mbox_init = imx_dsp_rproc_mbox_no_alloc;
+	else
+		imx_dsp_rproc_mbox_init = imx_dsp_rproc_mbox_alloc;
+
 	dev_set_drvdata(dev, rproc);
 
 	INIT_WORK(&priv->rproc_work, imx_dsp_rproc_vq_work);
@@ -1137,7 +1160,7 @@ err_put_rproc:
 	return ret;
 }
 
-static int imx_dsp_rproc_remove(struct platform_device *pdev)
+static void imx_dsp_rproc_remove(struct platform_device *pdev)
 {
 	struct rproc *rproc = platform_get_drvdata(pdev);
 	struct imx_dsp_rproc *priv = rproc->priv;
@@ -1146,8 +1169,6 @@ static int imx_dsp_rproc_remove(struct platform_device *pdev)
 	rproc_del(rproc);
 	imx_dsp_detach_pm_domains(priv);
 	rproc_free(rproc);
-
-	return 0;
 }
 
 /* pm runtime functions */
@@ -1219,7 +1240,7 @@ out:
 	release_firmware(fw);
 }
 
-static __maybe_unused int imx_dsp_suspend(struct device *dev)
+static int imx_dsp_suspend(struct device *dev)
 {
 	struct rproc *rproc = dev_get_drvdata(dev);
 	struct imx_dsp_rproc *priv = rproc->priv;
@@ -1254,7 +1275,7 @@ out:
 	return pm_runtime_force_suspend(dev);
 }
 
-static __maybe_unused int imx_dsp_resume(struct device *dev)
+static int imx_dsp_resume(struct device *dev)
 {
 	struct rproc *rproc = dev_get_drvdata(dev);
 	int ret = 0;
@@ -1288,9 +1309,8 @@ err:
 }
 
 static const struct dev_pm_ops imx_dsp_rproc_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(imx_dsp_suspend, imx_dsp_resume)
-	SET_RUNTIME_PM_OPS(imx_dsp_runtime_suspend,
-			   imx_dsp_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(imx_dsp_suspend, imx_dsp_resume)
+	RUNTIME_PM_OPS(imx_dsp_runtime_suspend, imx_dsp_runtime_resume, NULL)
 };
 
 static const struct of_device_id imx_dsp_rproc_of_match[] = {
@@ -1304,11 +1324,11 @@ MODULE_DEVICE_TABLE(of, imx_dsp_rproc_of_match);
 
 static struct platform_driver imx_dsp_rproc_driver = {
 	.probe = imx_dsp_rproc_probe,
-	.remove = imx_dsp_rproc_remove,
+	.remove_new = imx_dsp_rproc_remove,
 	.driver = {
 		.name = "imx-dsp-rproc",
 		.of_match_table = imx_dsp_rproc_of_match,
-		.pm = &imx_dsp_rproc_pm_ops,
+		.pm = pm_ptr(&imx_dsp_rproc_pm_ops),
 	},
 };
 module_platform_driver(imx_dsp_rproc_driver);

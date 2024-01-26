@@ -97,10 +97,17 @@ struct scmi_clk_proto_ops {
 			      u32 clk_id);
 };
 
+struct scmi_perf_domain_info {
+	char name[SCMI_MAX_STR_SIZE];
+	bool set_perf;
+};
+
 /**
  * struct scmi_perf_proto_ops - represents the various operations provided
  *	by SCMI Performance Protocol
  *
+ * @num_domains_get: gets the number of supported performance domains
+ * @info_get: get the information of a performance domain
  * @limits_set: sets limits on the performance level of a domain
  * @limits_get: gets limits on the performance level of a domain
  * @level_set: sets the performance level of a domain
@@ -120,6 +127,9 @@ struct scmi_clk_proto_ops {
  *	or in some other (abstract) scale
  */
 struct scmi_perf_proto_ops {
+	int (*num_domains_get)(const struct scmi_protocol_handle *ph);
+	const struct scmi_perf_domain_info __must_check *(*info_get)
+		(const struct scmi_protocol_handle *ph, u32 domain);
 	int (*limits_set)(const struct scmi_protocol_handle *ph, u32 domain,
 			  u32 max_perf, u32 min_perf);
 	int (*limits_get)(const struct scmi_protocol_handle *ph, u32 domain,
@@ -629,11 +639,25 @@ struct scmi_powercap_info {
  * @num_domains_get: get the count of powercap domains provided by SCMI.
  * @info_get: get the information for the specified domain.
  * @cap_get: get the current CAP value for the specified domain.
+ *	     On SCMI platforms supporting powercap zone disabling, this could
+ *	     report a zero value for a zone where powercapping is disabled.
  * @cap_set: set the CAP value for the specified domain to the provided value;
  *	     if the domain supports setting the CAP with an asynchronous command
  *	     this request will finally trigger an asynchronous transfer, but, if
  *	     @ignore_dresp here is set to true, this call will anyway return
  *	     immediately without waiting for the related delayed response.
+ *	     Note that the powercap requested value must NOT be zero, even if
+ *	     the platform supports disabling a powercap by setting its cap to
+ *	     zero (since SCMI v3.2): there are dedicated operations that should
+ *	     be used for that. (@cap_enable_set/get)
+ * @cap_enable_set: enable or disable the powercapping on the specified domain,
+ *		    if supported by the SCMI platform implementation.
+ *		    Note that, by the SCMI specification, the platform can
+ *		    silently ignore our disable request and decide to enforce
+ *		    anyway some other powercap value requested by another agent
+ *		    on the system: for this reason @cap_get and @cap_enable_get
+ *		    will always report the final platform view of the powercaps.
+ * @cap_enable_get: get the current CAP enable status for the specified domain.
  * @pai_get: get the current PAI value for the specified domain.
  * @pai_set: set the PAI value for the specified domain to the provided value.
  * @measurements_get: retrieve the current average power measurements for the
@@ -662,6 +686,10 @@ struct scmi_powercap_proto_ops {
 		       u32 *power_cap);
 	int (*cap_set)(const struct scmi_protocol_handle *ph, u32 domain_id,
 		       u32 power_cap, bool ignore_dresp);
+	int (*cap_enable_set)(const struct scmi_protocol_handle *ph,
+			      u32 domain_id, bool enable);
+	int (*cap_enable_get)(const struct scmi_protocol_handle *ph,
+			      u32 domain_id, bool *enable);
 	int (*pai_get)(const struct scmi_protocol_handle *ph, u32 domain_id,
 		       u32 *pai);
 	int (*pai_set)(const struct scmi_protocol_handle *ph, u32 domain_id,
@@ -803,11 +831,6 @@ struct scmi_device {
 };
 
 #define to_scmi_dev(d) container_of(d, struct scmi_device, dev)
-
-struct scmi_device *
-scmi_device_create(struct device_node *np, struct device *parent, int protocol,
-		   const char *name);
-void scmi_device_destroy(struct scmi_device *scmi_dev);
 
 struct scmi_device_id {
 	u8 protocol_id;

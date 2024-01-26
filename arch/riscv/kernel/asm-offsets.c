@@ -9,6 +9,7 @@
 #include <linux/kbuild.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/suspend.h>
 #include <asm/kvm_host.h>
 #include <asm/thread_info.h>
 #include <asm/ptrace.h>
@@ -38,6 +39,7 @@ void asm_offsets(void)
 	OFFSET(TASK_TI_KERNEL_SP, task_struct, thread_info.kernel_sp);
 	OFFSET(TASK_TI_USER_SP, task_struct, thread_info.user_sp);
 
+	OFFSET(TASK_TI_CPU_NUM, task_struct, thread_info.cpu);
 	OFFSET(TASK_THREAD_F0,  task_struct, thread.fstate.f[0]);
 	OFFSET(TASK_THREAD_F1,  task_struct, thread.fstate.f[1]);
 	OFFSET(TASK_THREAD_F2,  task_struct, thread.fstate.f[2]);
@@ -115,6 +117,10 @@ void asm_offsets(void)
 	OFFSET(PT_CAUSE, pt_regs, cause);
 
 	OFFSET(SUSPEND_CONTEXT_REGS, suspend_context, regs);
+
+	OFFSET(HIBERN_PBE_ADDR, pbe, address);
+	OFFSET(HIBERN_PBE_ORIG, pbe, orig_address);
+	OFFSET(HIBERN_PBE_NEXT, pbe, next);
 
 	OFFSET(KVM_ARCH_GUEST_ZERO, kvm_vcpu_arch, guest_context.zero);
 	OFFSET(KVM_ARCH_GUEST_RA, kvm_vcpu_arch, guest_context.ra);

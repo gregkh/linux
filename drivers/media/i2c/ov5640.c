@@ -13,8 +13,8 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -521,7 +521,18 @@ static u32 ov5640_code_to_bpp(struct ov5640_dev *sensor, u32 code)
  */
 /* YUV422 UYVY VGA@30fps */
 
-static const struct v4l2_mbus_framefmt ov5640_default_fmt = {
+static const struct v4l2_mbus_framefmt ov5640_csi2_default_fmt = {
+	.code = MEDIA_BUS_FMT_UYVY8_1X16,
+	.width = 640,
+	.height = 480,
+	.colorspace = V4L2_COLORSPACE_SRGB,
+	.ycbcr_enc = V4L2_MAP_YCBCR_ENC_DEFAULT(V4L2_COLORSPACE_SRGB),
+	.quantization = V4L2_QUANTIZATION_FULL_RANGE,
+	.xfer_func = V4L2_MAP_XFER_FUNC_DEFAULT(V4L2_COLORSPACE_SRGB),
+	.field = V4L2_FIELD_NONE,
+};
+
+static const struct v4l2_mbus_framefmt ov5640_dvp_default_fmt = {
 	.code = MEDIA_BUS_FMT_UYVY8_2X8,
 	.width = 640,
 	.height = 480,
@@ -2735,20 +2746,20 @@ static int ov5640_sensor_resume(struct device *dev)
 
 static int ov5640_try_frame_interval(struct ov5640_dev *sensor,
 				     struct v4l2_fract *fi,
-				     u32 width, u32 height)
+				     const struct ov5640_mode_info *mode_info)
 {
-	const struct ov5640_mode_info *mode;
+	const struct ov5640_mode_info *mode = mode_info;
 	enum ov5640_frame_rate rate = OV5640_15_FPS;
 	int minfps, maxfps, best_fps, fps;
 	int i;
 
 	minfps = ov5640_framerates[OV5640_15_FPS];
-	maxfps = ov5640_framerates[OV5640_60_FPS];
+	maxfps = ov5640_framerates[mode->max_fps];
 
 	if (fi->numerator == 0) {
 		fi->denominator = maxfps;
 		fi->numerator = 1;
-		rate = OV5640_60_FPS;
+		rate = mode->max_fps;
 		goto find_mode;
 	}
 
@@ -2769,7 +2780,7 @@ static int ov5640_try_frame_interval(struct ov5640_dev *sensor,
 	fi->denominator = best_fps;
 
 find_mode:
-	mode = ov5640_find_mode(sensor, width, height, false);
+	mode = ov5640_find_mode(sensor, mode->width, mode->height, false);
 	return mode ? rate : -EINVAL;
 }
 
@@ -2800,7 +2811,6 @@ static int ov5640_get_fmt(struct v4l2_subdev *sd,
 
 static int ov5640_try_fmt_internal(struct v4l2_subdev *sd,
 				   struct v4l2_mbus_framefmt *fmt,
-				   enum ov5640_frame_rate fr,
 				   const struct ov5640_mode_info **new_mode)
 {
 	struct ov5640_dev *sensor = to_ov5640_dev(sd);
@@ -2956,8 +2966,7 @@ static int ov5640_set_fmt(struct v4l2_subdev *sd,
 		goto out;
 	}
 
-	ret = ov5640_try_fmt_internal(sd, mbus_fmt,
-				      sensor->current_fr, &new_mode);
+	ret = ov5640_try_fmt_internal(sd, mbus_fmt, &new_mode);
 	if (ret)
 		goto out;
 
@@ -3332,6 +3341,7 @@ static int ov5640_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
+	pm_runtime_mark_last_busy(&sensor->i2c_client->dev);
 	pm_runtime_put_autosuspend(&sensor->i2c_client->dev);
 
 	return 0;
@@ -3407,6 +3417,7 @@ static int ov5640_s_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
+	pm_runtime_mark_last_busy(&sensor->i2c_client->dev);
 	pm_runtime_put_autosuspend(&sensor->i2c_client->dev);
 
 	return ret;
@@ -3570,6 +3581,7 @@ static int ov5640_enum_frame_interval(
 	struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct ov5640_dev *sensor = to_ov5640_dev(sd);
+	const struct ov5640_mode_info *mode;
 	struct v4l2_fract tpf;
 	int ret;
 
@@ -3578,11 +3590,14 @@ static int ov5640_enum_frame_interval(
 	if (fie->index >= OV5640_NUM_FRAMERATES)
 		return -EINVAL;
 
+	mode = ov5640_find_mode(sensor, fie->width, fie->height, false);
+	if (!mode)
+		return -EINVAL;
+
 	tpf.numerator = 1;
 	tpf.denominator = ov5640_framerates[fie->index];
 
-	ret = ov5640_try_frame_interval(sensor, &tpf,
-					fie->width, fie->height);
+	ret = ov5640_try_frame_interval(sensor, &tpf, mode);
 	if (ret < 0)
 		return -EINVAL;
 
@@ -3621,9 +3636,7 @@ static int ov5640_s_frame_interval(struct v4l2_subdev *sd,
 
 	mode = sensor->current_mode;
 
-	frame_rate = ov5640_try_frame_interval(sensor, &fi->interval,
-					       mode->width,
-					       mode->height);
+	frame_rate = ov5640_try_frame_interval(sensor, &fi->interval, mode);
 	if (frame_rate < 0) {
 		/* Always return a valid frame interval value */
 		fi->interval = sensor->frame_interval;
@@ -3724,8 +3737,10 @@ static int ov5640_s_stream(struct v4l2_subdev *sd, int enable)
 out:
 	mutex_unlock(&sensor->lock);
 
-	if (!enable || ret)
+	if (!enable || ret) {
+		pm_runtime_mark_last_busy(&sensor->i2c_client->dev);
 		pm_runtime_put_autosuspend(&sensor->i2c_client->dev);
+	}
 
 	return ret;
 }
@@ -3733,11 +3748,13 @@ out:
 static int ov5640_init_cfg(struct v4l2_subdev *sd,
 			   struct v4l2_subdev_state *state)
 {
+	struct ov5640_dev *sensor = to_ov5640_dev(sd);
 	struct v4l2_mbus_framefmt *fmt =
 				v4l2_subdev_get_try_format(sd, state, 0);
 	struct v4l2_rect *crop = v4l2_subdev_get_try_crop(sd, state, 0);
 
-	*fmt = ov5640_default_fmt;
+	*fmt = ov5640_is_csi2(sensor) ? ov5640_csi2_default_fmt :
+					ov5640_dvp_default_fmt;
 
 	crop->left = OV5640_PIXEL_ARRAY_LEFT;
 	crop->top = OV5640_PIXEL_ARRAY_TOP;
@@ -3824,9 +3841,8 @@ static int ov5640_probe(struct i2c_client *client)
 
 	/*
 	 * default init sequence initialize sensor to
-	 * YUV422 UYVY VGA@30fps
+	 * YUV422 UYVY VGA(30FPS in parallel mode, 60 in MIPI CSI-2 mode)
 	 */
-	sensor->fmt = ov5640_default_fmt;
 	sensor->frame_interval.numerator = 1;
 	sensor->frame_interval.denominator = ov5640_framerates[OV5640_30_FPS];
 	sensor->current_fr = OV5640_30_FPS;
@@ -3858,6 +3874,9 @@ static int ov5640_probe(struct i2c_client *client)
 		dev_err(dev, "Unsupported bus type %d\n", sensor->ep.bus_type);
 		return -EINVAL;
 	}
+
+	sensor->fmt = ov5640_is_csi2(sensor) ? ov5640_csi2_default_fmt :
+					       ov5640_dvp_default_fmt;
 
 	/* get system clock (xclk) */
 	sensor->xclk = devm_clk_get(dev, "xclk");
@@ -3926,6 +3945,7 @@ static int ov5640_probe(struct i2c_client *client)
 
 	pm_runtime_set_autosuspend_delay(dev, 1000);
 	pm_runtime_use_autosuspend(dev);
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return 0;
@@ -3982,7 +4002,7 @@ static struct i2c_driver ov5640_i2c_driver = {
 		.pm = &ov5640_pm_ops,
 	},
 	.id_table = ov5640_id,
-	.probe_new = ov5640_probe,
+	.probe    = ov5640_probe,
 	.remove   = ov5640_remove,
 };
 

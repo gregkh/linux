@@ -15,7 +15,6 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/rawnand.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -1432,7 +1431,7 @@ release_nfc:
 	return ret;
 }
 
-static int rk_nfc_remove(struct platform_device *pdev)
+static void rk_nfc_remove(struct platform_device *pdev)
 {
 	struct rk_nfc *nfc = platform_get_drvdata(pdev);
 
@@ -1440,8 +1439,6 @@ static int rk_nfc_remove(struct platform_device *pdev)
 	kfree(nfc->oob_buf);
 	rk_nfc_chips_cleanup(nfc);
 	rk_nfc_disable_clks(nfc);
-
-	return 0;
 }
 
 static int __maybe_unused rk_nfc_suspend(struct device *dev)
@@ -1481,7 +1478,7 @@ static const struct dev_pm_ops rk_nfc_pm_ops = {
 
 static struct platform_driver rk_nfc_driver = {
 	.probe = rk_nfc_probe,
-	.remove = rk_nfc_remove,
+	.remove_new = rk_nfc_remove,
 	.driver = {
 		.name = "rockchip-nfc",
 		.of_match_table = rk_nfc_id_table,

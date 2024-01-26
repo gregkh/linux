@@ -337,7 +337,7 @@ static const struct regmap_config rt1318_sdw_regmap = {
 	.max_register = 0x41081488,
 	.reg_defaults = rt1318_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(rt1318_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.use_single_read = true,
 	.use_single_write = true,
 };
@@ -353,7 +353,6 @@ static int rt1318_read_prop(struct sdw_slave *slave)
 
 	prop->scp_int1_mask = SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY;
 	prop->quirks = SDW_SLAVE_QUIRKS_INVALID_INITIAL_PARITY;
-	prop->is_sdca = true;
 
 	prop->paging_support = true;
 
@@ -409,25 +408,15 @@ static int rt1318_io_init(struct device *dev, struct sdw_slave *slave)
 	if (rt1318->hw_init)
 		return 0;
 
+	regcache_cache_only(rt1318->regmap, false);
 	if (rt1318->first_hw_init) {
-		regcache_cache_only(rt1318->regmap, false);
 		regcache_cache_bypass(rt1318->regmap, true);
 	} else {
 		/*
-		 * PM runtime is only enabled when a Slave reports as Attached
+		 * PM runtime status is marked as 'active' only when a Slave reports as Attached
 		 */
-
-		/* set autosuspend parameters */
-		pm_runtime_set_autosuspend_delay(&slave->dev, 3000);
-		pm_runtime_use_autosuspend(&slave->dev);
-
 		/* update count of parent 'active' children */
 		pm_runtime_set_active(&slave->dev);
-
-		/* make sure the device does not suspend immediately */
-		pm_runtime_mark_last_busy(&slave->dev);
-
-		pm_runtime_enable(&slave->dev);
 	}
 
 	pm_runtime_get_noresume(&slave->dev);
@@ -457,9 +446,6 @@ static int rt1318_update_status(struct sdw_slave *slave,
 {
 	struct  rt1318_sdw_priv *rt1318 = dev_get_drvdata(&slave->dev);
 
-	/* Update the status */
-	rt1318->status = status;
-
 	if (status == SDW_SLAVE_UNATTACHED)
 		rt1318->hw_init = false;
 
@@ -467,7 +453,7 @@ static int rt1318_update_status(struct sdw_slave *slave,
 	 * Perform initialization only if slave status is present and
 	 * hw_init flag is false
 	 */
-	if (rt1318->hw_init || rt1318->status != SDW_SLAVE_ATTACHED)
+	if (rt1318->hw_init || status != SDW_SLAVE_ATTACHED)
 		return 0;
 
 	/* perform I/O transfers required for Slave initialization */
@@ -563,22 +549,7 @@ static const struct snd_soc_dapm_route rt1318_dapm_routes[] = {
 static int rt1318_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
 				int direction)
 {
-	struct sdw_stream_data *stream;
-
-	if (!sdw_stream)
-		return 0;
-
-	stream = kzalloc(sizeof(*stream), GFP_KERNEL);
-	if (!stream)
-		return -ENOMEM;
-
-	stream->sdw_stream = sdw_stream;
-
-	/* Use tx_mask or rx_mask to configure stream tag and set dma_data */
-	if (direction == SNDRV_PCM_STREAM_PLAYBACK)
-		dai->playback_dma_data = stream;
-	else
-		dai->capture_dma_data = stream;
+	snd_soc_dai_dma_data_set(dai, direction, sdw_stream);
 
 	return 0;
 }
@@ -586,11 +557,7 @@ static int rt1318_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
 static void rt1318_sdw_shutdown(struct snd_pcm_substream *substream,
 				struct snd_soc_dai *dai)
 {
-	struct sdw_stream_data *stream;
-
-	stream = snd_soc_dai_get_dma_data(dai, substream);
 	snd_soc_dai_set_dma_data(dai, substream, NULL);
-	kfree(stream);
 }
 
 static int rt1318_sdw_hw_params(struct snd_pcm_substream *substream,
@@ -602,14 +569,14 @@ static int rt1318_sdw_hw_params(struct snd_pcm_substream *substream,
 	struct sdw_stream_config stream_config;
 	struct sdw_port_config port_config;
 	enum sdw_data_direction direction;
-	struct sdw_stream_data *stream;
+	struct sdw_stream_runtime *sdw_stream;
 	int retval, port, num_channels, ch_mask;
 	unsigned int sampling_rate;
 
 	dev_dbg(dai->dev, "%s %s", __func__, dai->name);
-	stream = snd_soc_dai_get_dma_data(dai, substream);
+	sdw_stream = snd_soc_dai_get_dma_data(dai, substream);
 
-	if (!stream)
+	if (!sdw_stream)
 		return -EINVAL;
 
 	if (!rt1318->sdw_slave)
@@ -637,7 +604,7 @@ static int rt1318_sdw_hw_params(struct snd_pcm_substream *substream,
 	port_config.num = port;
 
 	retval = sdw_stream_add_slave(rt1318->sdw_slave, &stream_config,
-				&port_config, 1, stream->sdw_stream);
+				&port_config, 1, sdw_stream);
 	if (retval) {
 		dev_err(dai->dev, "Unable to configure port\n");
 		return retval;
@@ -683,13 +650,13 @@ static int rt1318_sdw_pcm_hw_free(struct snd_pcm_substream *substream,
 	struct snd_soc_component *component = dai->component;
 	struct rt1318_sdw_priv *rt1318 =
 		snd_soc_component_get_drvdata(component);
-	struct sdw_stream_data *stream =
+	struct sdw_stream_runtime *sdw_stream =
 		snd_soc_dai_get_dma_data(dai, substream);
 
 	if (!rt1318->sdw_slave)
 		return -EINVAL;
 
-	sdw_stream_remove_slave(rt1318->sdw_slave, stream->sdw_stream);
+	sdw_stream_remove_slave(rt1318->sdw_slave, sdw_stream);
 	return 0;
 }
 
@@ -708,6 +675,9 @@ static int rt1318_sdw_component_probe(struct snd_soc_component *component)
 	struct rt1318_sdw_priv *rt1318 = snd_soc_component_get_drvdata(component);
 
 	rt1318->component = component;
+
+	if (!rt1318->first_hw_init)
+		return 0;
 
 	ret = pm_runtime_resume(component->dev);
 	dev_dbg(&rt1318->sdw_slave->dev, "%s pm_runtime_resume, ret=%d", __func__, ret);
@@ -775,6 +745,8 @@ static int rt1318_sdw_init(struct device *dev, struct regmap *regmap,
 	rt1318->sdw_slave = slave;
 	rt1318->regmap = regmap;
 
+	regcache_cache_only(rt1318->regmap, true);
+
 	/*
 	 * Mark hw_init to false
 	 * HW init will be performed when device reports present
@@ -786,8 +758,25 @@ static int rt1318_sdw_init(struct device *dev, struct regmap *regmap,
 				&soc_component_sdw_rt1318,
 				rt1318_sdw_dai,
 				ARRAY_SIZE(rt1318_sdw_dai));
+	if (ret < 0)
+		return ret;
 
-	dev_dbg(&slave->dev, "%s\n", __func__);
+	/* set autosuspend parameters */
+	pm_runtime_set_autosuspend_delay(dev, 3000);
+	pm_runtime_use_autosuspend(dev);
+
+	/* make sure the device does not suspend immediately */
+	pm_runtime_mark_last_busy(dev);
+
+	pm_runtime_enable(dev);
+
+	/* important note: the device is NOT tagged as 'active' and will remain
+	 * 'suspended' until the hardware is enumerated/initialized. This is required
+	 * to make sure the ASoC framework use of pm_runtime_get_sync() does not silently
+	 * fail with -EACCESS because of race conditions between card creation and enumeration
+	 */
+
+	dev_dbg(dev, "%s\n", __func__);
 
 	return ret;
 }
@@ -807,10 +796,7 @@ static int rt1318_sdw_probe(struct sdw_slave *slave,
 
 static int rt1318_sdw_remove(struct sdw_slave *slave)
 {
-	struct rt1318_sdw_priv *rt1318 = dev_get_drvdata(&slave->dev);
-
-	if (rt1318->first_hw_init)
-		pm_runtime_disable(&slave->dev);
+	pm_runtime_disable(&slave->dev);
 
 	return 0;
 }

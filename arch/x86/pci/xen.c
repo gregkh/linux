@@ -392,6 +392,7 @@ static void xen_teardown_msi_irqs(struct pci_dev *dev)
 	msi_for_each_desc(msidesc, &dev->dev, MSI_DESC_ASSOCIATED) {
 		for (i = 0; i < msidesc->nvec_used; i++)
 			xen_destroy_irq(msidesc->irq + i);
+		msidesc->irq = 0;
 	}
 
 	msi_device_destroy_sysfs(&dev->dev);
@@ -435,6 +436,7 @@ static struct msi_domain_ops xen_pci_msi_domain_ops = {
 };
 
 static struct msi_domain_info xen_pci_msi_domain_info = {
+	.flags			= MSI_FLAG_PCI_MSIX | MSI_FLAG_FREE_MSI_DESCS | MSI_FLAG_DEV_SYSFS,
 	.ops			= &xen_pci_msi_domain_ops,
 };
 
@@ -515,7 +517,7 @@ int __init pci_xen_init(void)
 #ifdef CONFIG_PCI_MSI
 static void __init xen_hvm_msi_init(void)
 {
-	if (!disable_apic) {
+	if (!apic_is_disabled) {
 		/*
 		 * If hardware supports (x2)APIC virtualization (as indicated
 		 * by hypervisor's leaf 4) then we don't need to use pirqs/

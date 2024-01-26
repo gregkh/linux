@@ -95,7 +95,7 @@ out:
 	nvmet_req_complete(req, status);
 }
 
-void nvmet_execute_identify_cns_cs_ns(struct nvmet_req *req)
+void nvmet_execute_identify_ns_zns(struct nvmet_req *req)
 {
 	struct nvme_id_ns_zns *id_zns = NULL;
 	u64 zsze;
@@ -256,8 +256,7 @@ static unsigned long nvmet_req_nr_zones_from_slba(struct nvmet_req *req)
 {
 	unsigned int sect = nvmet_lba_to_sect(req->ns, req->cmd->zmr.slba);
 
-	return bdev_nr_zones(req->ns->bdev) -
-		(sect >> ilog2(bdev_zone_sectors(req->ns->bdev)));
+	return bdev_nr_zones(req->ns->bdev) - bdev_zone_no(req->ns->bdev, sect);
 }
 
 static unsigned long get_nr_zones_from_buf(struct nvmet_req *req, u32 bufsize)

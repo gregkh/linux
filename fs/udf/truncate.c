@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * truncate.c
  *
@@ -5,11 +6,6 @@
  *	Truncate handling routines for the OSTA-UDF(tm) filesystem.
  *
  * COPYRIGHT
- *	This file is distributed under the terms of the GNU General Public
- *	License (GPL). Copies of the GPL can be obtained from:
- *		ftp://prep.ai.mit.edu/pub/gnu/GPL
- *	Each contributing author retains all rights to their own work.
- *
  *  (C) 1999-2004 Ben Fennema
  *  (C) 1999 Stelias Computing Inc
  *
@@ -125,9 +121,9 @@ void udf_discard_prealloc(struct inode *inode)
 	struct kernel_lb_addr eloc;
 	uint32_t elen;
 	uint64_t lbcount = 0;
-	int8_t etype = -1, netype;
+	int8_t etype = -1;
 	struct udf_inode_info *iinfo = UDF_I(inode);
-	int bsize = 1 << inode->i_blkbits;
+	int bsize = i_blocksize(inode);
 
 	if (iinfo->i_alloc_type == ICBTAG_FLAG_AD_IN_ICB ||
 	    ALIGN(inode->i_size, bsize) == ALIGN(iinfo->i_lenExtents, bsize))
@@ -136,7 +132,7 @@ void udf_discard_prealloc(struct inode *inode)
 	epos.block = iinfo->i_location;
 
 	/* Find the last extent in the file */
-	while ((netype = udf_next_aext(inode, &epos, &eloc, &elen, 0)) != -1) {
+	while (udf_next_aext(inode, &epos, &eloc, &elen, 0) != -1) {
 		brelse(prev_epos.bh);
 		prev_epos = epos;
 		if (prev_epos.bh)
@@ -149,7 +145,7 @@ void udf_discard_prealloc(struct inode *inode)
 		lbcount -= elen;
 		udf_delete_aext(inode, prev_epos);
 		udf_free_blocks(inode->i_sb, inode, &eloc, 0,
-				DIV_ROUND_UP(elen, 1 << inode->i_blkbits));
+				DIV_ROUND_UP(elen, bsize));
 	}
 	/* This inode entry is in-memory only and thus we don't have to mark
 	 * the inode dirty */
@@ -240,7 +236,7 @@ int udf_truncate_extents(struct inode *inode)
 			brelse(epos.bh);
 			epos.offset = sizeof(struct allocExtDesc);
 			epos.block = eloc;
-			epos.bh = udf_tread(sb,
+			epos.bh = sb_bread(sb,
 					udf_get_lb_pblock(sb, &eloc, 0));
 			/* Error reading indirect block? */
 			if (!epos.bh)

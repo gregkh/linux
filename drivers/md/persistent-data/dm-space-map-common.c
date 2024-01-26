@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011 Red Hat, Inc.
  *
@@ -41,7 +42,7 @@ static int index_check(struct dm_block_validator *v,
 	__le32 csum_disk;
 
 	if (dm_block_location(b) != le64_to_cpu(mi_le->blocknr)) {
-		DMERR_LIMIT("index_check failed: blocknr %llu != wanted %llu",
+		DMERR_LIMIT("%s failed: blocknr %llu != wanted %llu", __func__,
 			    le64_to_cpu(mi_le->blocknr), dm_block_location(b));
 		return -ENOTBLK;
 	}
@@ -50,7 +51,7 @@ static int index_check(struct dm_block_validator *v,
 					       block_size - sizeof(__le32),
 					       INDEX_CSUM_XOR));
 	if (csum_disk != mi_le->csum) {
-		DMERR_LIMIT("index_check failed: csum %u != wanted %u",
+		DMERR_LIMIT("i%s failed: csum %u != wanted %u", __func__,
 			    le32_to_cpu(csum_disk), le32_to_cpu(mi_le->csum));
 		return -EILSEQ;
 	}
@@ -390,7 +391,7 @@ int sm_ll_find_free_block(struct ll_disk *ll, dm_block_t begin,
 }
 
 int sm_ll_find_common_free_block(struct ll_disk *old_ll, struct ll_disk *new_ll,
-	                         dm_block_t begin, dm_block_t end, dm_block_t *b)
+				 dm_block_t begin, dm_block_t end, dm_block_t *b)
 {
 	int r;
 	uint32_t count;
@@ -608,6 +609,7 @@ static int sm_ll_inc_overflow(struct ll_disk *ll, dm_block_t b, struct inc_conte
 static inline int shadow_bitmap(struct ll_disk *ll, struct inc_context *ic)
 {
 	int r, inc;
+
 	r = dm_tm_shadow_block(ll->tm, le64_to_cpu(ic->ie_disk.blocknr),
 			       &dm_sm_bitmap_validator, &ic->bitmap_block, &inc);
 	if (r < 0) {
@@ -747,6 +749,7 @@ int sm_ll_inc(struct ll_disk *ll, dm_block_t b, dm_block_t e,
 	*nr_allocations = 0;
 	while (b != e) {
 		int r = __sm_ll_inc(ll, b, e, nr_allocations, &b);
+
 		if (r)
 			return r;
 	}
@@ -790,13 +793,12 @@ static int __sm_ll_dec_overflow(struct ll_disk *ll, dm_block_t b,
 	rc = le32_to_cpu(*v_ptr);
 	*old_rc = rc;
 
-	if (rc == 3) {
+	if (rc == 3)
 		return __sm_ll_del_overflow(ll, b, ic);
-	} else {
-		rc--;
-		*v_ptr = cpu_to_le32(rc);
-		return 0;
-	}
+
+	rc--;
+	*v_ptr = cpu_to_le32(rc);
+	return 0;
 }
 
 static int sm_ll_dec_overflow(struct ll_disk *ll, dm_block_t b,
@@ -929,6 +931,7 @@ int sm_ll_dec(struct ll_disk *ll, dm_block_t b, dm_block_t e,
 	*nr_allocations = 0;
 	while (b != e) {
 		int r = __sm_ll_dec(ll, b, e, nr_allocations, &b);
+
 		if (r)
 			return r;
 	}
@@ -1165,8 +1168,10 @@ static int disk_ll_save_ie(struct ll_disk *ll, dm_block_t index,
 static int disk_ll_init_index(struct ll_disk *ll)
 {
 	unsigned int i;
+
 	for (i = 0; i < IE_CACHE_SIZE; i++) {
 		struct ie_cache *iec = ll->ie_cache + i;
+
 		iec->valid = false;
 		iec->dirty = false;
 	}
@@ -1190,6 +1195,7 @@ static int disk_ll_commit(struct ll_disk *ll)
 
 	for (i = 0; i < IE_CACHE_SIZE; i++) {
 		struct ie_cache *iec = ll->ie_cache + i;
+
 		if (iec->valid && iec->dirty)
 			r = ie_cache_writeback(ll, iec);
 	}

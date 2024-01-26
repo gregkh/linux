@@ -152,11 +152,11 @@ config USB_DWC3_IMX8MP
 
 config USB_DWC3_XILINX
 	tristate "Xilinx Platforms"
-	depends on (ARCH_ZYNQMP || ARCH_VERSAL) && OF
+	depends on (ARCH_ZYNQMP || COMPILE_TEST) && OF
 	default USB_DWC3
 	help
 	  Support Xilinx SoCs with DesignWare Core USB3 IP.
-	  This driver handles both ZynqMP and Versal SoC operations.
+	  This driver handles ZynqMP SoC operations.
 	  Say 'Y' or 'M' if you have one such device.
 
 config USB_DWC3_AM62
@@ -168,4 +168,14 @@ config USB_DWC3_AM62
 	  The Designware Core USB3 IP is programmed to operate in
 	  in USB 2.0 mode only.
 	  Say 'Y' or 'M' here if you have one such device
+
+config USB_DWC3_OCTEON
+	tristate "Cavium Octeon Platforms"
+	depends on CAVIUM_OCTEON_SOC || COMPILE_TEST
+	default USB_DWC3
+	help
+	  Support Cavium Octeon platforms with DesignWare Core USB3 IP.
+	  Only the host mode is currently supported.
+	  Say 'Y' or 'M' here if you have one such device.
+
 endif

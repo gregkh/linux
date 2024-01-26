@@ -206,7 +206,7 @@ static void rbtn_input_event(struct rbtn_data *rbtn_data)
  */
 
 static int rbtn_add(struct acpi_device *device);
-static int rbtn_remove(struct acpi_device *device);
+static void rbtn_remove(struct acpi_device *device);
 static void rbtn_notify(struct acpi_device *device, u32 event);
 
 static const struct acpi_device_id rbtn_ids[] = {
@@ -428,7 +428,7 @@ static int rbtn_add(struct acpi_device *device)
 	return ret;
 }
 
-static int rbtn_remove(struct acpi_device *device)
+static void rbtn_remove(struct acpi_device *device)
 {
 	struct rbtn_data *rbtn_data = device->driver_data;
 
@@ -444,8 +444,6 @@ static int rbtn_remove(struct acpi_device *device)
 	}
 
 	rbtn_acquire(device, false);
-
-	return 0;
 }
 
 static void rbtn_notify(struct acpi_device *device, u32 event)

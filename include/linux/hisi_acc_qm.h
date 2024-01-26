@@ -104,7 +104,7 @@
 enum qm_stop_reason {
 	QM_NORMAL,
 	QM_SOFT_RESET,
-	QM_FLR,
+	QM_DOWN,
 };
 
 enum qm_state {
@@ -122,7 +122,6 @@ enum qp_state {
 };
 
 enum qm_hw_ver {
-	QM_HW_UNKNOWN = -1,
 	QM_HW_V1 = 0x20,
 	QM_HW_V2 = 0x21,
 	QM_HW_V3 = 0x30,
@@ -292,6 +291,21 @@ struct hisi_qm_poll_data {
 	struct hisi_qm *qm;
 	struct work_struct work;
 	u16 *qp_finish_id;
+	u16 eqe_num;
+};
+
+/**
+ * struct qm_err_isolate
+ * @isolate_lock: protects device error log
+ * @err_threshold: user config error threshold which triggers isolation
+ * @is_isolate: device isolation state
+ * @uacce_hw_errs: index into qm device error list
+ */
+struct qm_err_isolate {
+	struct mutex isolate_lock;
+	u32 err_threshold;
+	bool is_isolate;
+	struct list_head qm_hw_errs;
 };
 
 struct hisi_qm {
@@ -331,7 +345,8 @@ struct hisi_qm {
 	const struct hisi_qm_err_ini *err_ini;
 	struct hisi_qm_err_info err_info;
 	struct hisi_qm_err_status err_status;
-	unsigned long misc_ctl; /* driver removing and reset sched */
+	/* driver removing and reset sched */
+	unsigned long misc_ctl;
 	/* Device capability bit */
 	unsigned long caps;
 
@@ -353,7 +368,6 @@ struct hisi_qm {
 	struct work_struct cmd_process;
 
 	bool use_sva;
-	bool is_frozen;
 
 	resource_size_t phys_base;
 	resource_size_t db_phys_base;
@@ -362,6 +376,7 @@ struct hisi_qm {
 	struct qm_shaper_factor *factor;
 	u32 mb_qos;
 	u32 type_rate;
+	struct qm_err_isolate isolate_data;
 
 	struct hisi_qm_cap_tables cap_tables;
 };

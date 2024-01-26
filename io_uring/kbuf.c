@@ -31,19 +31,42 @@ struct io_provide_buf {
 	__u16				bid;
 };
 
+static struct io_buffer_list *__io_buffer_get_list(struct io_ring_ctx *ctx,
+						   struct io_buffer_list *bl,
+						   unsigned int bgid)
+{
+	if (bl && bgid < BGID_ARRAY)
+		return &bl[bgid];
+
+	return xa_load(&ctx->io_bl_xa, bgid);
+}
+
+struct io_buf_free {
+	struct hlist_node		list;
+	void				*mem;
+	size_t				size;
+	int				inuse;
+};
+
 static inline struct io_buffer_list *io_buffer_get_list(struct io_ring_ctx *ctx,
 							unsigned int bgid)
 {
-	if (ctx->io_bl && bgid < BGID_ARRAY)
-		return &ctx->io_bl[bgid];
+	lockdep_assert_held(&ctx->uring_lock);
 
-	return xa_load(&ctx->io_bl_xa, bgid);
+	return __io_buffer_get_list(ctx, ctx->io_bl, bgid);
 }
 
 static int io_buffer_add_list(struct io_ring_ctx *ctx,
 			      struct io_buffer_list *bl, unsigned int bgid)
 {
+	/*
+	 * Store buffer group ID and finally mark the list as visible.
+	 * The normal lookup doesn't care about the visibility as we're
+	 * always under the ->uring_lock, but the RCU lookup from mmap does.
+	 */
 	bl->bgid = bgid;
+	smp_store_release(&bl->is_ready, 1);
+
 	if (bgid < BGID_ARRAY)
 		return 0;
 
@@ -140,7 +163,8 @@ static void __user *io_ring_buffer_select(struct io_kiocb *req, size_t *len,
 		return NULL;
 
 	head &= bl->mask;
-	if (head < IO_BUFFER_LIST_BUF_PER_PAGE) {
+	/* mmaped buffers are always contig */
+	if (bl->is_mmap || head < IO_BUFFER_LIST_BUF_PER_PAGE) {
 		buf = &br->bufs[head];
 	} else {
 		int off = head & (IO_BUFFER_LIST_BUF_PER_PAGE - 1);
@@ -182,7 +206,7 @@ void __user *io_buffer_select(struct io_kiocb *req, size_t *len,
 
 	bl = io_buffer_get_list(ctx, req->buf_index);
 	if (likely(bl)) {
-		if (bl->buf_nr_pages)
+		if (bl->is_mapped)
 			ret = io_ring_buffer_select(req, len, bl, issue_flags);
 		else
 			ret = io_provided_buffer_select(req, len, bl);
@@ -193,19 +217,38 @@ void __user *io_buffer_select(struct io_kiocb *req, size_t *len,
 
 static __cold int io_init_bl_list(struct io_ring_ctx *ctx)
 {
+	struct io_buffer_list *bl;
 	int i;
 
-	ctx->io_bl = kcalloc(BGID_ARRAY, sizeof(struct io_buffer_list),
-				GFP_KERNEL);
-	if (!ctx->io_bl)
+	bl = kcalloc(BGID_ARRAY, sizeof(struct io_buffer_list), GFP_KERNEL);
+	if (!bl)
 		return -ENOMEM;
 
 	for (i = 0; i < BGID_ARRAY; i++) {
-		INIT_LIST_HEAD(&ctx->io_bl[i].buf_list);
-		ctx->io_bl[i].bgid = i;
+		INIT_LIST_HEAD(&bl[i].buf_list);
+		bl[i].bgid = i;
 	}
 
+	smp_store_release(&ctx->io_bl, bl);
 	return 0;
+}
+
+/*
+ * Mark the given mapped range as free for reuse
+ */
+static void io_kbuf_mark_free(struct io_ring_ctx *ctx, struct io_buffer_list *bl)
+{
+	struct io_buf_free *ibf;
+
+	hlist_for_each_entry(ibf, &ctx->io_buf_list, list) {
+		if (bl->buf_ring == ibf->mem) {
+			ibf->inuse = 0;
+			return;
+		}
+	}
+
+	/* can't happen... */
+	WARN_ON_ONCE(1);
 }
 
 static int __io_remove_buffers(struct io_ring_ctx *ctx,
@@ -217,17 +260,28 @@ static int __io_remove_buffers(struct io_ring_ctx *ctx,
 	if (!nbufs)
 		return 0;
 
-	if (bl->buf_nr_pages) {
-		int j;
-
+	if (bl->is_mapped) {
 		i = bl->buf_ring->tail - bl->head;
-		for (j = 0; j < bl->buf_nr_pages; j++)
-			unpin_user_page(bl->buf_pages[j]);
-		kvfree(bl->buf_pages);
-		bl->buf_pages = NULL;
-		bl->buf_nr_pages = 0;
+		if (bl->is_mmap) {
+			/*
+			 * io_kbuf_list_free() will free the page(s) at
+			 * ->release() time.
+			 */
+			io_kbuf_mark_free(ctx, bl);
+			bl->buf_ring = NULL;
+			bl->is_mmap = 0;
+		} else if (bl->buf_nr_pages) {
+			int j;
+
+			for (j = 0; j < bl->buf_nr_pages; j++)
+				unpin_user_page(bl->buf_pages[j]);
+			kvfree(bl->buf_pages);
+			bl->buf_pages = NULL;
+			bl->buf_nr_pages = 0;
+		}
 		/* make sure it's seen as empty */
 		INIT_LIST_HEAD(&bl->buf_list);
+		bl->is_mapped = 0;
 		return i;
 	}
 
@@ -262,7 +316,7 @@ void io_destroy_buffers(struct io_ring_ctx *ctx)
 	xa_for_each(&ctx->io_bl_xa, index, bl) {
 		xa_erase(&ctx->io_bl_xa, bl->bgid);
 		__io_remove_buffers(ctx, bl, -1U);
-		kfree(bl);
+		kfree_rcu(bl, rcu);
 	}
 
 	while (!list_empty(&ctx->io_buffers_pages)) {
@@ -307,17 +361,14 @@ int io_remove_buffers(struct io_kiocb *req, unsigned int issue_flags)
 	if (bl) {
 		ret = -EINVAL;
 		/* can't use provide/remove buffers command on mapped buffers */
-		if (!bl->buf_nr_pages)
+		if (!bl->is_mapped)
 			ret = __io_remove_buffers(ctx, bl, p->nbufs);
 	}
+	io_ring_submit_unlock(ctx, issue_flags);
 	if (ret < 0)
 		req_set_fail(req);
-
-	/* complete before unlock, IOPOLL may need the lock */
 	io_req_set_res(req, ret, 0);
-	__io_req_complete(req, issue_flags);
-	io_ring_submit_unlock(ctx, issue_flags);
-	return IOU_ISSUE_SKIP_COMPLETE;
+	return IOU_OK;
 }
 
 int io_provide_buffers_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
@@ -450,44 +501,173 @@ int io_provide_buffers(struct io_kiocb *req, unsigned int issue_flags)
 		INIT_LIST_HEAD(&bl->buf_list);
 		ret = io_buffer_add_list(ctx, bl, p->bgid);
 		if (ret) {
-			kfree(bl);
+			/*
+			 * Doesn't need rcu free as it was never visible, but
+			 * let's keep it consistent throughout. Also can't
+			 * be a lower indexed array group, as adding one
+			 * where lookup failed cannot happen.
+			 */
+			if (p->bgid >= BGID_ARRAY)
+				kfree_rcu(bl, rcu);
+			else
+				WARN_ON_ONCE(1);
 			goto err;
 		}
 	}
 	/* can't add buffers via this command for a mapped buffer ring */
-	if (bl->buf_nr_pages) {
+	if (bl->is_mapped) {
 		ret = -EINVAL;
 		goto err;
 	}
 
 	ret = io_add_buffers(ctx, p, bl);
 err:
+	io_ring_submit_unlock(ctx, issue_flags);
+
 	if (ret < 0)
 		req_set_fail(req);
-	/* complete before unlock, IOPOLL may need the lock */
 	io_req_set_res(req, ret, 0);
-	__io_req_complete(req, issue_flags);
-	io_ring_submit_unlock(ctx, issue_flags);
-	return IOU_ISSUE_SKIP_COMPLETE;
+	return IOU_OK;
+}
+
+static int io_pin_pbuf_ring(struct io_uring_buf_reg *reg,
+			    struct io_buffer_list *bl)
+{
+	struct io_uring_buf_ring *br;
+	struct page **pages;
+	int i, nr_pages;
+
+	pages = io_pin_pages(reg->ring_addr,
+			     flex_array_size(br, bufs, reg->ring_entries),
+			     &nr_pages);
+	if (IS_ERR(pages))
+		return PTR_ERR(pages);
+
+	/*
+	 * Apparently some 32-bit boxes (ARM) will return highmem pages,
+	 * which then need to be mapped. We could support that, but it'd
+	 * complicate the code and slowdown the common cases quite a bit.
+	 * So just error out, returning -EINVAL just like we did on kernels
+	 * that didn't support mapped buffer rings.
+	 */
+	for (i = 0; i < nr_pages; i++)
+		if (PageHighMem(pages[i]))
+			goto error_unpin;
+
+	br = page_address(pages[0]);
+#ifdef SHM_COLOUR
+	/*
+	 * On platforms that have specific aliasing requirements, SHM_COLOUR
+	 * is set and we must guarantee that the kernel and user side align
+	 * nicely. We cannot do that if IOU_PBUF_RING_MMAP isn't set and
+	 * the application mmap's the provided ring buffer. Fail the request
+	 * if we, by chance, don't end up with aligned addresses. The app
+	 * should use IOU_PBUF_RING_MMAP instead, and liburing will handle
+	 * this transparently.
+	 */
+	if ((reg->ring_addr | (unsigned long) br) & (SHM_COLOUR - 1))
+		goto error_unpin;
+#endif
+	bl->buf_pages = pages;
+	bl->buf_nr_pages = nr_pages;
+	bl->buf_ring = br;
+	bl->is_mapped = 1;
+	bl->is_mmap = 0;
+	return 0;
+error_unpin:
+	for (i = 0; i < nr_pages; i++)
+		unpin_user_page(pages[i]);
+	kvfree(pages);
+	return -EINVAL;
+}
+
+/*
+ * See if we have a suitable region that we can reuse, rather than allocate
+ * both a new io_buf_free and mem region again. We leave it on the list as
+ * even a reused entry will need freeing at ring release.
+ */
+static struct io_buf_free *io_lookup_buf_free_entry(struct io_ring_ctx *ctx,
+						    size_t ring_size)
+{
+	struct io_buf_free *ibf, *best = NULL;
+	size_t best_dist;
+
+	hlist_for_each_entry(ibf, &ctx->io_buf_list, list) {
+		size_t dist;
+
+		if (ibf->inuse || ibf->size < ring_size)
+			continue;
+		dist = ibf->size - ring_size;
+		if (!best || dist < best_dist) {
+			best = ibf;
+			if (!dist)
+				break;
+			best_dist = dist;
+		}
+	}
+
+	return best;
+}
+
+static int io_alloc_pbuf_ring(struct io_ring_ctx *ctx,
+			      struct io_uring_buf_reg *reg,
+			      struct io_buffer_list *bl)
+{
+	struct io_buf_free *ibf;
+	size_t ring_size;
+	void *ptr;
+
+	ring_size = reg->ring_entries * sizeof(struct io_uring_buf_ring);
+
+	/* Reuse existing entry, if we can */
+	ibf = io_lookup_buf_free_entry(ctx, ring_size);
+	if (!ibf) {
+		ptr = io_mem_alloc(ring_size);
+		if (IS_ERR(ptr))
+			return PTR_ERR(ptr);
+
+		/* Allocate and store deferred free entry */
+		ibf = kmalloc(sizeof(*ibf), GFP_KERNEL_ACCOUNT);
+		if (!ibf) {
+			io_mem_free(ptr);
+			return -ENOMEM;
+		}
+		ibf->mem = ptr;
+		ibf->size = ring_size;
+		hlist_add_head(&ibf->list, &ctx->io_buf_list);
+	}
+	ibf->inuse = 1;
+	bl->buf_ring = ibf->mem;
+	bl->is_mapped = 1;
+	bl->is_mmap = 1;
+	return 0;
 }
 
 int io_register_pbuf_ring(struct io_ring_ctx *ctx, void __user *arg)
 {
-	struct io_uring_buf_ring *br;
 	struct io_uring_buf_reg reg;
 	struct io_buffer_list *bl, *free_bl = NULL;
-	struct page **pages;
-	int nr_pages;
+	int ret;
+
+	lockdep_assert_held(&ctx->uring_lock);
 
 	if (copy_from_user(&reg, arg, sizeof(reg)))
 		return -EFAULT;
 
-	if (reg.pad || reg.resv[0] || reg.resv[1] || reg.resv[2])
+	if (reg.resv[0] || reg.resv[1] || reg.resv[2])
 		return -EINVAL;
-	if (!reg.ring_addr)
-		return -EFAULT;
-	if (reg.ring_addr & ~PAGE_MASK)
+	if (reg.flags & ~IOU_PBUF_RING_MMAP)
 		return -EINVAL;
+	if (!(reg.flags & IOU_PBUF_RING_MMAP)) {
+		if (!reg.ring_addr)
+			return -EFAULT;
+		if (reg.ring_addr & ~PAGE_MASK)
+			return -EINVAL;
+	} else {
+		if (reg.ring_addr)
+			return -EINVAL;
+	}
+
 	if (!is_power_of_2(reg.ring_entries))
 		return -EINVAL;
 
@@ -504,7 +684,7 @@ int io_register_pbuf_ring(struct io_ring_ctx *ctx, void __user *arg)
 	bl = io_buffer_get_list(ctx, reg.bgid);
 	if (bl) {
 		/* if mapped buffer ring OR classic exists, don't allow */
-		if (bl->buf_nr_pages || !list_empty(&bl->buf_list))
+		if (bl->is_mapped || !list_empty(&bl->buf_list))
 			return -EEXIST;
 	} else {
 		free_bl = bl = kzalloc(sizeof(*bl), GFP_KERNEL);
@@ -512,22 +692,21 @@ int io_register_pbuf_ring(struct io_ring_ctx *ctx, void __user *arg)
 			return -ENOMEM;
 	}
 
-	pages = io_pin_pages(reg.ring_addr,
-			     flex_array_size(br, bufs, reg.ring_entries),
-			     &nr_pages);
-	if (IS_ERR(pages)) {
-		kfree(free_bl);
-		return PTR_ERR(pages);
+	if (!(reg.flags & IOU_PBUF_RING_MMAP))
+		ret = io_pin_pbuf_ring(&reg, bl);
+	else
+		ret = io_alloc_pbuf_ring(ctx, &reg, bl);
+
+	if (!ret) {
+		bl->nr_entries = reg.ring_entries;
+		bl->mask = reg.ring_entries - 1;
+
+		io_buffer_add_list(ctx, bl, reg.bgid);
+		return 0;
 	}
 
-	br = page_address(pages[0]);
-	bl->buf_pages = pages;
-	bl->buf_nr_pages = nr_pages;
-	bl->nr_entries = reg.ring_entries;
-	bl->buf_ring = br;
-	bl->mask = reg.ring_entries - 1;
-	io_buffer_add_list(ctx, bl, reg.bgid);
-	return 0;
+	kfree_rcu(free_bl, rcu);
+	return ret;
 }
 
 int io_unregister_pbuf_ring(struct io_ring_ctx *ctx, void __user *arg)
@@ -535,21 +714,60 @@ int io_unregister_pbuf_ring(struct io_ring_ctx *ctx, void __user *arg)
 	struct io_uring_buf_reg reg;
 	struct io_buffer_list *bl;
 
+	lockdep_assert_held(&ctx->uring_lock);
+
 	if (copy_from_user(&reg, arg, sizeof(reg)))
 		return -EFAULT;
-	if (reg.pad || reg.resv[0] || reg.resv[1] || reg.resv[2])
+	if (reg.resv[0] || reg.resv[1] || reg.resv[2])
+		return -EINVAL;
+	if (reg.flags)
 		return -EINVAL;
 
 	bl = io_buffer_get_list(ctx, reg.bgid);
 	if (!bl)
 		return -ENOENT;
-	if (!bl->buf_nr_pages)
+	if (!bl->is_mapped)
 		return -EINVAL;
 
 	__io_remove_buffers(ctx, bl, -1U);
 	if (bl->bgid >= BGID_ARRAY) {
 		xa_erase(&ctx->io_bl_xa, bl->bgid);
-		kfree(bl);
+		kfree_rcu(bl, rcu);
 	}
 	return 0;
+}
+
+void *io_pbuf_get_address(struct io_ring_ctx *ctx, unsigned long bgid)
+{
+	struct io_buffer_list *bl;
+
+	bl = __io_buffer_get_list(ctx, smp_load_acquire(&ctx->io_bl), bgid);
+
+	if (!bl || !bl->is_mmap)
+		return NULL;
+	/*
+	 * Ensure the list is fully setup. Only strictly needed for RCU lookup
+	 * via mmap, and in that case only for the array indexed groups. For
+	 * the xarray lookups, it's either visible and ready, or not at all.
+	 */
+	if (!smp_load_acquire(&bl->is_ready))
+		return NULL;
+
+	return bl->buf_ring;
+}
+
+/*
+ * Called at or after ->release(), free the mmap'ed buffers that we used
+ * for memory mapped provided buffer rings.
+ */
+void io_kbuf_mmap_list_free(struct io_ring_ctx *ctx)
+{
+	struct io_buf_free *ibf;
+	struct hlist_node *tmp;
+
+	hlist_for_each_entry_safe(ibf, tmp, &ctx->io_buf_list, list) {
+		hlist_del(&ibf->list);
+		io_mem_free(ibf->mem);
+		kfree(ibf);
+	}
 }

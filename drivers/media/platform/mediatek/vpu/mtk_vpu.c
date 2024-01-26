@@ -9,10 +9,10 @@
 #include <linux/interrupt.h>
 #include <linux/iommu.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/platform_device.h>
 #include <linux/sched.h>
 #include <linux/sizes.h>
 #include <linux/dma-mapping.h>
@@ -955,7 +955,7 @@ static const struct of_device_id mtk_vpu_match[] = {
 };
 MODULE_DEVICE_TABLE(of, mtk_vpu_match);
 
-static int mtk_vpu_remove(struct platform_device *pdev)
+static void mtk_vpu_remove(struct platform_device *pdev)
 {
 	struct mtk_vpu *vpu = platform_get_drvdata(pdev);
 
@@ -968,8 +968,6 @@ static int mtk_vpu_remove(struct platform_device *pdev)
 	vpu_free_ext_mem(vpu, D_FW);
 	mutex_destroy(&vpu->vpu_mutex);
 	clk_unprepare(vpu->clk);
-
-	return 0;
 }
 
 static int mtk_vpu_suspend(struct device *dev)
@@ -1020,6 +1018,7 @@ static int mtk_vpu_resume(struct device *dev)
 	clk_prepare(vpu->clk);
 	ret = vpu_clock_enable(vpu);
 	if (ret) {
+		clk_unprepare(vpu->clk);
 		dev_err(dev, "failed to enable vpu clock\n");
 		return ret;
 	}
@@ -1042,7 +1041,7 @@ static const struct dev_pm_ops mtk_vpu_pm = {
 
 static struct platform_driver mtk_vpu_driver = {
 	.probe	= mtk_vpu_probe,
-	.remove	= mtk_vpu_remove,
+	.remove_new = mtk_vpu_remove,
 	.driver	= {
 		.name	= "mtk_vpu",
 		.pm = &mtk_vpu_pm,

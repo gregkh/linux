@@ -85,6 +85,9 @@ void show_pte(const char *lvl, struct mm_struct *mm, unsigned long addr)
 			break;
 
 		pte = pte_offset_map(pmd, addr);
+		if (!pte)
+			break;
+
 		pr_cont(", *pte=%08llx", (long long)pte_val(*pte));
 #ifndef CONFIG_ARM_LPAE
 		pr_cont(", *ppte=%08llx",
@@ -124,8 +127,9 @@ static void die_kernel_fault(const char *msg, struct mm_struct *mm,
 {
 	bust_spinlocks(1);
 	pr_alert("8<--- cut here ---\n");
-	pr_alert("Unable to handle kernel %s at virtual address %08lx\n",
-		 msg, addr);
+	pr_alert("Unable to handle kernel %s at virtual address %08lx when %s\n",
+		 msg, addr, fsr & FSR_LNX_PF ? "execute" :
+		 fsr & FSR_WRITE ? "write" : "read");
 
 	show_pte(KERN_ALERT, mm, addr);
 	die("Oops", regs, fsr);

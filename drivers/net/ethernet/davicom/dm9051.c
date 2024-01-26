@@ -510,10 +510,7 @@ static int dm9051_map_init(struct spi_device *spi, struct board_info *db)
 
 	regconfigdmbulk.lock_arg = db;
 	db->regmap_dmbulk = devm_regmap_init_spi(db->spidev, &regconfigdmbulk);
-	if (IS_ERR(db->regmap_dmbulk))
-		return PTR_ERR(db->regmap_dmbulk);
-
-	return 0;
+	return PTR_ERR_OR_ZERO(db->regmap_dmbulk);
 }
 
 static int dm9051_map_chipid(struct board_info *db)
@@ -1123,7 +1120,7 @@ static int dm9051_mdio_register(struct board_info *db)
 	db->mdiobus->phy_mask = (u32)~BIT(1);
 	db->mdiobus->parent = &spi->dev;
 	snprintf(db->mdiobus->id, MII_BUS_ID_SIZE,
-		 "dm9051-%s.%u", dev_name(&spi->dev), spi->chip_select);
+		 "dm9051-%s.%u", dev_name(&spi->dev), spi_get_chipselect(spi, 0));
 
 	ret = devm_mdiobus_register(&spi->dev, db->mdiobus);
 	if (ret)
@@ -1161,9 +1158,7 @@ static int dm9051_phy_connect(struct board_info *db)
 
 	db->phydev = phy_connect(db->ndev, phy_id, dm9051_handle_link_change,
 				 PHY_INTERFACE_MODE_MII);
-	if (IS_ERR(db->phydev))
-		return PTR_ERR_OR_ZERO(db->phydev);
-	return 0;
+	return PTR_ERR_OR_ZERO(db->phydev);
 }
 
 static int dm9051_probe(struct spi_device *spi)

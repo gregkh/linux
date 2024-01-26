@@ -313,6 +313,10 @@ static const struct nfp_eth_media_link_mode {
 		.ethtool_link_mode	= ETHTOOL_LINK_MODE_10000baseKR_Full_BIT,
 		.speed			= NFP_SPEED_10G,
 	},
+	[NFP_MEDIA_10GBASE_LR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_10000baseLR_Full_BIT,
+		.speed			= NFP_SPEED_10G,
+	},
 	[NFP_MEDIA_10GBASE_CX4] = {
 		.ethtool_link_mode	= ETHTOOL_LINK_MODE_10000baseKX4_Full_BIT,
 		.speed			= NFP_SPEED_10G,
@@ -346,6 +350,14 @@ static const struct nfp_eth_media_link_mode {
 		.speed			= NFP_SPEED_25G,
 	},
 	[NFP_MEDIA_25GBASE_SR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_25000baseSR_Full_BIT,
+		.speed			= NFP_SPEED_25G,
+	},
+	[NFP_MEDIA_25GBASE_LR] = {
+		.ethtool_link_mode	= ETHTOOL_LINK_MODE_25000baseSR_Full_BIT,
+		.speed			= NFP_SPEED_25G,
+	},
+	[NFP_MEDIA_25GBASE_ER] = {
 		.ethtool_link_mode	= ETHTOOL_LINK_MODE_25000baseSR_Full_BIT,
 		.speed			= NFP_SPEED_25G,
 	},
@@ -424,49 +436,41 @@ static void nfp_add_media_link_mode(struct nfp_port *port,
 				    struct nfp_eth_table_port *eth_port,
 				    struct ethtool_link_ksettings *cmd)
 {
-	u64 supported_modes[2], advertised_modes[2];
-	struct nfp_eth_media_buf ethm = {
-		.eth_index = eth_port->eth_index,
-	};
-	struct nfp_cpp *cpp = port->app->cpp;
-
-	if (nfp_eth_read_media(cpp, &ethm)) {
-		bitmap_fill(port->speed_bitmap, NFP_SUP_SPEED_NUMBER);
-		return;
-	}
-
 	bitmap_zero(port->speed_bitmap, NFP_SUP_SPEED_NUMBER);
-
-	for (u32 i = 0; i < 2; i++) {
-		supported_modes[i] = le64_to_cpu(ethm.supported_modes[i]);
-		advertised_modes[i] = le64_to_cpu(ethm.advertised_modes[i]);
-	}
 
 	for (u32 i = 0; i < NFP_MEDIA_LINK_MODES_NUMBER; i++) {
 		if (i < 64) {
-			if (supported_modes[0] & BIT_ULL(i)) {
+			if (eth_port->link_modes_supp[0] & BIT_ULL(i)) {
 				__set_bit(nfp_eth_media_table[i].ethtool_link_mode,
 					  cmd->link_modes.supported);
 				__set_bit(nfp_eth_media_table[i].speed,
 					  port->speed_bitmap);
 			}
 
-			if (advertised_modes[0] & BIT_ULL(i))
+			if (eth_port->link_modes_ad[0] & BIT_ULL(i))
 				__set_bit(nfp_eth_media_table[i].ethtool_link_mode,
 					  cmd->link_modes.advertising);
 		} else {
-			if (supported_modes[1] & BIT_ULL(i - 64)) {
+			if (eth_port->link_modes_supp[1] & BIT_ULL(i - 64)) {
 				__set_bit(nfp_eth_media_table[i].ethtool_link_mode,
 					  cmd->link_modes.supported);
 				__set_bit(nfp_eth_media_table[i].speed,
 					  port->speed_bitmap);
 			}
 
-			if (advertised_modes[1] & BIT_ULL(i - 64))
+			if (eth_port->link_modes_ad[1] & BIT_ULL(i - 64))
 				__set_bit(nfp_eth_media_table[i].ethtool_link_mode,
 					  cmd->link_modes.advertising);
 		}
 	}
+
+	/* We take all speeds as supported when it fails to read
+	 * link modes due to old management firmware that doesn't
+	 * support link modes reading or error occurring, so that
+	 * speed change of this port is allowed.
+	 */
+	if (bitmap_empty(port->speed_bitmap, NFP_SUP_SPEED_NUMBER))
+		bitmap_fill(port->speed_bitmap, NFP_SUP_SPEED_NUMBER);
 }
 
 /**
@@ -881,7 +885,7 @@ static u64 *nfp_vnic_get_sw_stats(struct net_device *netdev, u64 *data)
 		unsigned int start;
 
 		do {
-			start = u64_stats_fetch_begin_irq(&nn->r_vecs[i].rx_sync);
+			start = u64_stats_fetch_begin(&nn->r_vecs[i].rx_sync);
 			data[0] = nn->r_vecs[i].rx_pkts;
 			tmp[0] = nn->r_vecs[i].hw_csum_rx_ok;
 			tmp[1] = nn->r_vecs[i].hw_csum_rx_inner_ok;
@@ -889,10 +893,10 @@ static u64 *nfp_vnic_get_sw_stats(struct net_device *netdev, u64 *data)
 			tmp[3] = nn->r_vecs[i].hw_csum_rx_error;
 			tmp[4] = nn->r_vecs[i].rx_replace_buf_alloc_fail;
 			tmp[5] = nn->r_vecs[i].hw_tls_rx;
-		} while (u64_stats_fetch_retry_irq(&nn->r_vecs[i].rx_sync, start));
+		} while (u64_stats_fetch_retry(&nn->r_vecs[i].rx_sync, start));
 
 		do {
-			start = u64_stats_fetch_begin_irq(&nn->r_vecs[i].tx_sync);
+			start = u64_stats_fetch_begin(&nn->r_vecs[i].tx_sync);
 			data[1] = nn->r_vecs[i].tx_pkts;
 			data[2] = nn->r_vecs[i].tx_busy;
 			tmp[6] = nn->r_vecs[i].hw_csum_tx;
@@ -902,7 +906,7 @@ static u64 *nfp_vnic_get_sw_stats(struct net_device *netdev, u64 *data)
 			tmp[10] = nn->r_vecs[i].hw_tls_tx;
 			tmp[11] = nn->r_vecs[i].tls_tx_fallback;
 			tmp[12] = nn->r_vecs[i].tls_tx_no_fallback;
-		} while (u64_stats_fetch_retry_irq(&nn->r_vecs[i].tx_sync, start));
+		} while (u64_stats_fetch_retry(&nn->r_vecs[i].tx_sync, start));
 
 		data += NN_RVEC_PER_Q_STATS;
 
@@ -2027,16 +2031,16 @@ static int
 nfp_net_get_eeprom(struct net_device *netdev,
 		   struct ethtool_eeprom *eeprom, u8 *bytes)
 {
-	struct nfp_net *nn = netdev_priv(netdev);
+	struct nfp_app *app = nfp_app_from_netdev(netdev);
 	u8 buf[NFP_EEPROM_LEN] = {};
-
-	if (eeprom->len == 0)
-		return -EINVAL;
 
 	if (nfp_net_get_port_mac_by_hwinfo(netdev, buf))
 		return -EOPNOTSUPP;
 
-	eeprom->magic = nn->pdev->vendor | (nn->pdev->device << 16);
+	if (eeprom->len == 0)
+		return -EINVAL;
+
+	eeprom->magic = app->pdev->vendor | (app->pdev->device << 16);
 	memcpy(bytes, buf + eeprom->offset, eeprom->len);
 
 	return 0;
@@ -2046,17 +2050,17 @@ static int
 nfp_net_set_eeprom(struct net_device *netdev,
 		   struct ethtool_eeprom *eeprom, u8 *bytes)
 {
-	struct nfp_net *nn = netdev_priv(netdev);
+	struct nfp_app *app = nfp_app_from_netdev(netdev);
 	u8 buf[NFP_EEPROM_LEN] = {};
+
+	if (nfp_net_get_port_mac_by_hwinfo(netdev, buf))
+		return -EOPNOTSUPP;
 
 	if (eeprom->len == 0)
 		return -EINVAL;
 
-	if (eeprom->magic != (nn->pdev->vendor | nn->pdev->device << 16))
+	if (eeprom->magic != (app->pdev->vendor | app->pdev->device << 16))
 		return -EINVAL;
-
-	if (nfp_net_get_port_mac_by_hwinfo(netdev, buf))
-		return -EOPNOTSUPP;
 
 	memcpy(buf + eeprom->offset, bytes, eeprom->len);
 	if (nfp_net_set_port_mac_by_hwinfo(netdev, buf))
@@ -2117,6 +2121,9 @@ const struct ethtool_ops nfp_port_ethtool_ops = {
 	.set_dump		= nfp_app_set_dump,
 	.get_dump_flag		= nfp_app_get_dump_flag,
 	.get_dump_data		= nfp_app_get_dump_data,
+	.get_eeprom_len         = nfp_net_get_eeprom_len,
+	.get_eeprom             = nfp_net_get_eeprom,
+	.set_eeprom             = nfp_net_set_eeprom,
 	.get_module_info	= nfp_port_get_module_info,
 	.get_module_eeprom	= nfp_port_get_module_eeprom,
 	.get_link_ksettings	= nfp_net_get_link_ksettings,

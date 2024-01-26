@@ -584,7 +584,7 @@ void ocxl_file_unregister_afu(struct ocxl_afu *afu)
 	device_unregister(&info->dev);
 }
 
-static char *ocxl_devnode(struct device *dev, umode_t *mode)
+static char *ocxl_devnode(const struct device *dev, umode_t *mode)
 {
 	return kasprintf(GFP_KERNEL, "ocxl/%s", dev_name(dev));
 }
@@ -601,7 +601,7 @@ int ocxl_file_init(void)
 		return rc;
 	}
 
-	ocxl_class = class_create(THIS_MODULE, "ocxl");
+	ocxl_class = class_create("ocxl");
 	if (IS_ERR(ocxl_class)) {
 		pr_err("Unable to create ocxl class\n");
 		unregister_chrdev_region(ocxl_dev, OCXL_NUM_MINORS);

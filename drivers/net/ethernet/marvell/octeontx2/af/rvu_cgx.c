@@ -236,6 +236,11 @@ static void cgx_notify_pfs(struct cgx_link_event *event, struct rvu *rvu)
 
 	linfo = &event->link_uinfo;
 	pfmap = cgxlmac_to_pfmap(rvu, event->cgx_id, event->lmac_id);
+	if (!pfmap) {
+		dev_err(rvu->dev, "CGX port%d:%d not mapped with PF\n",
+			event->cgx_id, event->lmac_id);
+		return;
+	}
 
 	do {
 		pfid = find_first_bit(&pfmap,
@@ -345,7 +350,7 @@ int rvu_cgx_init(struct rvu *rvu)
 	rvu->cgx_cnt_max = cgx_get_cgxcnt_max();
 	if (!rvu->cgx_cnt_max) {
 		dev_info(rvu->dev, "No CGX devices found!\n");
-		return -ENODEV;
+		return 0;
 	}
 
 	rvu->cgx_idmap = devm_kzalloc(rvu->dev, rvu->cgx_cnt_max *
@@ -489,6 +494,7 @@ void rvu_cgx_disable_dmac_entries(struct rvu *rvu, u16 pcifunc)
 {
 	int pf = rvu_get_pf(pcifunc);
 	int i = 0, lmac_count = 0;
+	struct mac_ops *mac_ops;
 	u8 max_dmac_filters;
 	u8 cgx_id, lmac_id;
 	void *cgx_dev;
@@ -504,7 +510,12 @@ void rvu_cgx_disable_dmac_entries(struct rvu *rvu, u16 pcifunc)
 	rvu_get_cgx_lmac_id(rvu->pf2cgxlmac_map[pf], &cgx_id, &lmac_id);
 	cgx_dev = cgx_get_pdata(cgx_id);
 	lmac_count = cgx_get_lmac_cnt(cgx_dev);
-	max_dmac_filters = MAX_DMAC_ENTRIES_PER_CGX / lmac_count;
+
+	mac_ops = get_mac_ops(cgx_dev);
+	if (!mac_ops)
+		return;
+
+	max_dmac_filters = mac_ops->dmac_filter_count / lmac_count;
 
 	for (i = 0; i < max_dmac_filters; i++)
 		cgx_lmac_addr_del(cgx_id, lmac_id, i);
@@ -590,6 +601,7 @@ int rvu_mbox_handler_cgx_fec_stats(struct rvu *rvu,
 				   struct cgx_fec_stats_rsp *rsp)
 {
 	int pf = rvu_get_pf(req->hdr.pcifunc);
+	struct mac_ops *mac_ops;
 	u8 cgx_idx, lmac;
 	void *cgxd;
 
@@ -598,7 +610,8 @@ int rvu_mbox_handler_cgx_fec_stats(struct rvu *rvu,
 	rvu_get_cgx_lmac_id(rvu->pf2cgxlmac_map[pf], &cgx_idx, &lmac);
 
 	cgxd = rvu_cgx_pdata(cgx_idx, rvu);
-	return cgx_get_fec_stats(cgxd, lmac, rsp);
+	mac_ops = get_mac_ops(cgxd);
+	return  mac_ops->get_fec_stats(cgxd, lmac, rsp);
 }
 
 int rvu_mbox_handler_cgx_mac_addr_set(struct rvu *rvu,
@@ -695,7 +708,7 @@ int rvu_mbox_handler_cgx_mac_addr_get(struct rvu *rvu,
 {
 	int pf = rvu_get_pf(req->hdr.pcifunc);
 	u8 cgx_id, lmac_id;
-	int rc = 0, i;
+	int rc = 0;
 	u64 cfg;
 
 	if (!is_cgx_config_permitted(rvu, req->hdr.pcifunc))
@@ -706,8 +719,7 @@ int rvu_mbox_handler_cgx_mac_addr_get(struct rvu *rvu,
 	rsp->hdr.rc = rc;
 	cfg = cgx_lmac_addr_get(cgx_id, lmac_id);
 	/* copy 48 bit mac address to req->mac_addr */
-	for (i = 0; i < ETH_ALEN; i++)
-		rsp->mac_addr[i] = cfg >> (ETH_ALEN - 1 - i) * 8;
+	u64_to_ether_addr(cfg, rsp->mac_addr);
 	return 0;
 }
 
@@ -1133,8 +1145,15 @@ int rvu_mbox_handler_cgx_get_aux_link_info(struct rvu *rvu, struct msg_req *req,
 
 	rvu_get_cgx_lmac_id(rvu->pf2cgxlmac_map[pf], &cgx_id, &lmac_id);
 
-	memcpy(&rsp->fwdata, &rvu->fwdata->cgx_fw_data[cgx_id][lmac_id],
-	       sizeof(struct cgx_lmac_fwdata_s));
+	if (rvu->hw->lmac_per_cgx == CGX_LMACS_USX)
+		memcpy(&rsp->fwdata,
+		       &rvu->fwdata->cgx_fw_data_usx[cgx_id][lmac_id],
+		       sizeof(struct cgx_lmac_fwdata_s));
+	else
+		memcpy(&rsp->fwdata,
+		       &rvu->fwdata->cgx_fw_data[cgx_id][lmac_id],
+		       sizeof(struct cgx_lmac_fwdata_s));
+
 	return 0;
 }
 
@@ -1251,4 +1270,22 @@ int rvu_mbox_handler_cgx_prio_flow_ctrl_cfg(struct rvu *rvu,
 
 	mac_ops->mac_get_pfc_frm_cfg(cgxd, lmac_id, &rsp->tx_pause, &rsp->rx_pause);
 	return err;
+}
+
+void rvu_mac_reset(struct rvu *rvu, u16 pcifunc)
+{
+	int pf = rvu_get_pf(pcifunc);
+	struct mac_ops *mac_ops;
+	struct cgx *cgxd;
+	u8 cgx, lmac;
+
+	if (!is_pf_cgxmapped(rvu, pf))
+		return;
+
+	rvu_get_cgx_lmac_id(rvu->pf2cgxlmac_map[pf], &cgx, &lmac);
+	cgxd = rvu_cgx_pdata(cgx, rvu);
+	mac_ops = get_mac_ops(cgxd);
+
+	if (mac_ops->mac_reset(cgxd, lmac, !is_vf(pcifunc)))
+		dev_err(rvu->dev, "Failed to reset MAC\n");
 }

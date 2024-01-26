@@ -27,32 +27,36 @@ module_param_named(cnds_mcp_int_mask, interrupt_mask, int, 0444);
 MODULE_PARM_DESC(cdns_mcp_int_mask, "Cadence MCP IntMask");
 
 #define CDNS_MCP_CONFIG				0x0
-
-#define CDNS_MCP_CONFIG_MCMD_RETRY		GENMASK(27, 24)
-#define CDNS_MCP_CONFIG_MPREQ_DELAY		GENMASK(20, 16)
-#define CDNS_MCP_CONFIG_MMASTER			BIT(7)
 #define CDNS_MCP_CONFIG_BUS_REL			BIT(6)
-#define CDNS_MCP_CONFIG_SNIFFER			BIT(5)
-#define CDNS_MCP_CONFIG_SSPMOD			BIT(4)
-#define CDNS_MCP_CONFIG_CMD			BIT(3)
-#define CDNS_MCP_CONFIG_OP			GENMASK(2, 0)
-#define CDNS_MCP_CONFIG_OP_NORMAL		0
+
+#define CDNS_IP_MCP_CONFIG			0x0 /* IP offset added at run-time */
+
+#define CDNS_IP_MCP_CONFIG_MCMD_RETRY		GENMASK(27, 24)
+#define CDNS_IP_MCP_CONFIG_MPREQ_DELAY		GENMASK(20, 16)
+#define CDNS_IP_MCP_CONFIG_MMASTER		BIT(7)
+#define CDNS_IP_MCP_CONFIG_SNIFFER		BIT(5)
+#define CDNS_IP_MCP_CONFIG_CMD			BIT(3)
+#define CDNS_IP_MCP_CONFIG_OP			GENMASK(2, 0)
+#define CDNS_IP_MCP_CONFIG_OP_NORMAL		0
 
 #define CDNS_MCP_CONTROL			0x4
 
-#define CDNS_MCP_CONTROL_RST_DELAY		GENMASK(10, 8)
 #define CDNS_MCP_CONTROL_CMD_RST		BIT(7)
 #define CDNS_MCP_CONTROL_SOFT_RST		BIT(6)
-#define CDNS_MCP_CONTROL_SW_RST			BIT(5)
 #define CDNS_MCP_CONTROL_HW_RST			BIT(4)
-#define CDNS_MCP_CONTROL_CLK_PAUSE		BIT(3)
 #define CDNS_MCP_CONTROL_CLK_STOP_CLR		BIT(2)
-#define CDNS_MCP_CONTROL_CMD_ACCEPT		BIT(1)
-#define CDNS_MCP_CONTROL_BLOCK_WAKEUP		BIT(0)
 
-#define CDNS_MCP_CMDCTRL			0x8
+#define CDNS_IP_MCP_CONTROL			0x4  /* IP offset added at run-time */
 
-#define CDNS_MCP_CMDCTRL_INSERT_PARITY_ERR	BIT(2)
+#define CDNS_IP_MCP_CONTROL_RST_DELAY		GENMASK(10, 8)
+#define CDNS_IP_MCP_CONTROL_SW_RST		BIT(5)
+#define CDNS_IP_MCP_CONTROL_CLK_PAUSE		BIT(3)
+#define CDNS_IP_MCP_CONTROL_CMD_ACCEPT		BIT(1)
+#define CDNS_IP_MCP_CONTROL_BLOCK_WAKEUP	BIT(0)
+
+#define CDNS_IP_MCP_CMDCTRL			0x8 /* IP offset added at run-time */
+
+#define CDNS_IP_MCP_CMDCTRL_INSERT_PARITY_ERR	BIT(2)
 
 #define CDNS_MCP_SSPSTAT			0xC
 #define CDNS_MCP_FRAME_SHAPE			0x10
@@ -125,8 +129,8 @@ MODULE_PARM_DESC(cdns_mcp_int_mask, "Cadence MCP IntMask");
 #define CDNS_MCP_FIFOSTAT			0x7C
 #define CDNS_MCP_RX_FIFO_AVAIL			GENMASK(5, 0)
 
-#define CDNS_MCP_CMD_BASE			0x80
-#define CDNS_MCP_RESP_BASE			0x80
+#define CDNS_IP_MCP_CMD_BASE			0x80 /* IP offset added at run-time */
+#define CDNS_IP_MCP_RESP_BASE			0x80 /* IP offset added at run-time */
 /* FIFO can hold 8 commands */
 #define CDNS_MCP_CMD_LEN			8
 #define CDNS_MCP_CMD_WORD_LEN			0x4
@@ -206,6 +210,16 @@ static inline void cdns_writel(struct sdw_cdns *cdns, int offset, u32 value)
 	writel(value, cdns->registers + offset);
 }
 
+static inline u32 cdns_ip_readl(struct sdw_cdns *cdns, int offset)
+{
+	return cdns_readl(cdns, cdns->ip_offset + offset);
+}
+
+static inline void cdns_ip_writel(struct sdw_cdns *cdns, int offset, u32 value)
+{
+	return cdns_writel(cdns, cdns->ip_offset + offset, value);
+}
+
 static inline void cdns_updatel(struct sdw_cdns *cdns,
 				int offset, u32 mask, u32 val)
 {
@@ -214,6 +228,12 @@ static inline void cdns_updatel(struct sdw_cdns *cdns,
 	tmp = cdns_readl(cdns, offset);
 	tmp = (tmp & ~mask) | val;
 	cdns_writel(cdns, offset, tmp);
+}
+
+static inline void cdns_ip_updatel(struct sdw_cdns *cdns,
+				   int offset, u32 mask, u32 val)
+{
+	cdns_updatel(cdns, cdns->ip_offset + offset, mask, val);
 }
 
 static int cdns_set_wait(struct sdw_cdns *cdns, int offset, u32 mask, u32 value)
@@ -262,6 +282,29 @@ static int cdns_config_update(struct sdw_cdns *cdns)
 
 	return ret;
 }
+
+/**
+ * sdw_cdns_config_update() - Update configurations
+ * @cdns: Cadence instance
+ */
+void sdw_cdns_config_update(struct sdw_cdns *cdns)
+{
+	/* commit changes */
+	cdns_writel(cdns, CDNS_MCP_CONFIG_UPDATE, CDNS_MCP_CONFIG_UPDATE_BIT);
+}
+EXPORT_SYMBOL(sdw_cdns_config_update);
+
+/**
+ * sdw_cdns_config_update_set_wait() - wait until configuration update bit is self-cleared
+ * @cdns: Cadence instance
+ */
+int sdw_cdns_config_update_set_wait(struct sdw_cdns *cdns)
+{
+	/* the hardware recommendation is to wait at least 300us */
+	return cdns_set_wait(cdns, CDNS_MCP_CONFIG_UPDATE,
+			     CDNS_MCP_CONFIG_UPDATE_BIT, 0);
+}
+EXPORT_SYMBOL(sdw_cdns_config_update_set_wait);
 
 /*
  * debugfs
@@ -408,34 +451,35 @@ static int cdns_parity_error_injection(void *data, u64 value)
 	mutex_lock(&bus->bus_lock);
 
 	/* program hardware to inject parity error */
-	cdns_updatel(cdns, CDNS_MCP_CMDCTRL,
-		     CDNS_MCP_CMDCTRL_INSERT_PARITY_ERR,
-		     CDNS_MCP_CMDCTRL_INSERT_PARITY_ERR);
+	cdns_ip_updatel(cdns, CDNS_IP_MCP_CMDCTRL,
+			CDNS_IP_MCP_CMDCTRL_INSERT_PARITY_ERR,
+			CDNS_IP_MCP_CMDCTRL_INSERT_PARITY_ERR);
 
 	/* commit changes */
-	cdns_updatel(cdns, CDNS_MCP_CONFIG_UPDATE,
-		     CDNS_MCP_CONFIG_UPDATE_BIT,
-		     CDNS_MCP_CONFIG_UPDATE_BIT);
+	ret = cdns_clear_bit(cdns, CDNS_MCP_CONFIG_UPDATE, CDNS_MCP_CONFIG_UPDATE_BIT);
+	if (ret < 0)
+		goto unlock;
 
 	/* do a broadcast dummy read to avoid bus clashes */
 	ret = sdw_bread_no_pm_unlocked(&cdns->bus, 0xf, SDW_SCP_DEVID_0);
 	dev_info(cdns->dev, "parity error injection, read: %d\n", ret);
 
 	/* program hardware to disable parity error */
-	cdns_updatel(cdns, CDNS_MCP_CMDCTRL,
-		     CDNS_MCP_CMDCTRL_INSERT_PARITY_ERR,
-		     0);
+	cdns_ip_updatel(cdns, CDNS_IP_MCP_CMDCTRL,
+			CDNS_IP_MCP_CMDCTRL_INSERT_PARITY_ERR,
+			0);
 
 	/* commit changes */
-	cdns_updatel(cdns, CDNS_MCP_CONFIG_UPDATE,
-		     CDNS_MCP_CONFIG_UPDATE_BIT,
-		     CDNS_MCP_CONFIG_UPDATE_BIT);
-
-	/* Continue bus operation with parity error injection disabled */
-	mutex_unlock(&bus->bus_lock);
+	ret = cdns_clear_bit(cdns, CDNS_MCP_CONFIG_UPDATE, CDNS_MCP_CONFIG_UPDATE_BIT);
+	if (ret < 0)
+		goto unlock;
 
 	/* Userspace changed the hardware state behind the kernel's back */
 	add_taint(TAINT_USER, LOCKDEP_STILL_OK);
+
+unlock:
+	/* Continue bus operation with parity error injection disabled */
+	mutex_unlock(&bus->bus_lock);
 
 	/*
 	 * allow Master device to enter pm_runtime suspend. This may
@@ -570,10 +614,10 @@ static void cdns_read_response(struct sdw_cdns *cdns)
 		num_resp = ARRAY_SIZE(cdns->response_buf);
 	}
 
-	cmd_base = CDNS_MCP_CMD_BASE;
+	cmd_base = CDNS_IP_MCP_CMD_BASE;
 
 	for (i = 0; i < num_resp; i++) {
-		cdns->response_buf[i] = cdns_readl(cdns, cmd_base);
+		cdns->response_buf[i] = cdns_ip_readl(cdns, cmd_base);
 		cmd_base += CDNS_MCP_CMD_WORD_LEN;
 	}
 }
@@ -592,7 +636,7 @@ _cdns_xfer_msg(struct sdw_cdns *cdns, struct sdw_msg *msg, int cmd,
 		cdns->msg_count = count;
 	}
 
-	base = CDNS_MCP_CMD_BASE;
+	base = CDNS_IP_MCP_CMD_BASE;
 	addr = msg->addr + offset;
 
 	for (i = 0; i < count; i++) {
@@ -605,7 +649,7 @@ _cdns_xfer_msg(struct sdw_cdns *cdns, struct sdw_msg *msg, int cmd,
 			data |= msg->buf[i + offset];
 
 		data |= FIELD_PREP(CDNS_MCP_CMD_SSP_TAG, msg->ssp_sync);
-		cdns_writel(cdns, base, data);
+		cdns_ip_writel(cdns, base, data);
 		base += CDNS_MCP_CMD_WORD_LEN;
 	}
 
@@ -653,10 +697,10 @@ cdns_program_scp_addr(struct sdw_cdns *cdns, struct sdw_msg *msg)
 	data[0] |= msg->addr_page1;
 	data[1] |= msg->addr_page2;
 
-	base = CDNS_MCP_CMD_BASE;
-	cdns_writel(cdns, base, data[0]);
+	base = CDNS_IP_MCP_CMD_BASE;
+	cdns_ip_writel(cdns, base, data[0]);
 	base += CDNS_MCP_CMD_WORD_LEN;
-	cdns_writel(cdns, base, data[1]);
+	cdns_ip_writel(cdns, base, data[1]);
 
 	time = wait_for_completion_timeout(&cdns->tx_complete,
 					   msecs_to_jiffies(CDNS_TX_TIMEOUT));
@@ -749,10 +793,11 @@ cdns_xfer_msg(struct sdw_bus *bus, struct sdw_msg *msg)
 EXPORT_SYMBOL(cdns_xfer_msg);
 
 enum sdw_command_response
-cdns_xfer_msg_defer(struct sdw_bus *bus,
-		    struct sdw_msg *msg, struct sdw_defer *defer)
+cdns_xfer_msg_defer(struct sdw_bus *bus)
 {
 	struct sdw_cdns *cdns = bus_to_cdns(bus);
+	struct sdw_defer *defer = &bus->defer_msg;
+	struct sdw_msg *msg = defer->msg;
 	int cmd = 0, ret;
 
 	/* for defer only 1 message is supported */
@@ -763,26 +808,9 @@ cdns_xfer_msg_defer(struct sdw_bus *bus,
 	if (ret)
 		return SDW_CMD_FAIL_OTHER;
 
-	cdns->defer = defer;
-	cdns->defer->length = msg->len;
-
 	return _cdns_xfer_msg(cdns, msg, cmd, 0, msg->len, true);
 }
 EXPORT_SYMBOL(cdns_xfer_msg_defer);
-
-enum sdw_command_response
-cdns_reset_page_addr(struct sdw_bus *bus, unsigned int dev_num)
-{
-	struct sdw_cdns *cdns = bus_to_cdns(bus);
-	struct sdw_msg msg;
-
-	/* Create dummy message with valid device number */
-	memset(&msg, 0, sizeof(msg));
-	msg.dev_num = dev_num;
-
-	return cdns_program_scp_addr(cdns, &msg);
-}
-EXPORT_SYMBOL(cdns_reset_page_addr);
 
 u32 cdns_read_ping_status(struct sdw_bus *bus)
 {
@@ -893,13 +921,15 @@ irqreturn_t sdw_cdns_irq(int irq, void *dev_id)
 		return IRQ_NONE;
 
 	if (int_status & CDNS_MCP_INT_RX_WL) {
+		struct sdw_bus *bus = &cdns->bus;
+		struct sdw_defer *defer = &bus->defer_msg;
+
 		cdns_read_response(cdns);
 
-		if (cdns->defer) {
-			cdns_fill_msg_resp(cdns, cdns->defer->msg,
-					   cdns->defer->length, 0);
-			complete(&cdns->defer->complete);
-			cdns->defer = NULL;
+		if (defer && defer->msg) {
+			cdns_fill_msg_resp(cdns, defer->msg,
+					   defer->length, 0);
+			complete(&defer->complete);
 		} else {
 			complete(&cdns->tx_complete);
 		}
@@ -1047,12 +1077,19 @@ update_status:
 void sdw_cdns_check_self_clearing_bits(struct sdw_cdns *cdns, const char *string,
 				       bool initial_delay, int reset_iterations)
 {
+	u32 ip_mcp_control;
 	u32 mcp_control;
 	u32 mcp_config_update;
 	int i;
 
 	if (initial_delay)
 		usleep_range(1000, 1500);
+
+	ip_mcp_control = cdns_ip_readl(cdns, CDNS_IP_MCP_CONTROL);
+
+	/* the following bits should be cleared immediately */
+	if (ip_mcp_control & CDNS_IP_MCP_CONTROL_SW_RST)
+		dev_err(cdns->dev, "%s failed: IP_MCP_CONTROL_SW_RST is not cleared\n", string);
 
 	mcp_control = cdns_readl(cdns, CDNS_MCP_CONTROL);
 
@@ -1061,10 +1098,9 @@ void sdw_cdns_check_self_clearing_bits(struct sdw_cdns *cdns, const char *string
 		dev_err(cdns->dev, "%s failed: MCP_CONTROL_CMD_RST is not cleared\n", string);
 	if (mcp_control & CDNS_MCP_CONTROL_SOFT_RST)
 		dev_err(cdns->dev, "%s failed: MCP_CONTROL_SOFT_RST is not cleared\n", string);
-	if (mcp_control & CDNS_MCP_CONTROL_SW_RST)
-		dev_err(cdns->dev, "%s failed: MCP_CONTROL_SW_RST is not cleared\n", string);
 	if (mcp_control & CDNS_MCP_CONTROL_CLK_STOP_CLR)
 		dev_err(cdns->dev, "%s failed: MCP_CONTROL_CLK_STOP_CLR is not cleared\n", string);
+
 	mcp_config_update = cdns_readl(cdns, CDNS_MCP_CONFIG_UPDATE);
 	if (mcp_config_update & CDNS_MCP_CONFIG_UPDATE_BIT)
 		dev_err(cdns->dev, "%s failed: MCP_CONFIG_UPDATE_BIT is not cleared\n", string);
@@ -1104,13 +1140,7 @@ int sdw_cdns_exit_reset(struct sdw_cdns *cdns)
 		     CDNS_MCP_CONTROL_HW_RST);
 
 	/* commit changes */
-	cdns_updatel(cdns, CDNS_MCP_CONFIG_UPDATE,
-		     CDNS_MCP_CONFIG_UPDATE_BIT,
-		     CDNS_MCP_CONFIG_UPDATE_BIT);
-
-	/* don't wait here */
-	return 0;
-
+	return cdns_config_update(cdns);
 }
 EXPORT_SYMBOL(sdw_cdns_exit_reset);
 
@@ -1341,34 +1371,39 @@ int sdw_cdns_init(struct sdw_cdns *cdns)
 		     CDNS_MCP_CONTROL_CMD_RST);
 
 	/* Set cmd accept mode */
-	cdns_updatel(cdns, CDNS_MCP_CONTROL, CDNS_MCP_CONTROL_CMD_ACCEPT,
-		     CDNS_MCP_CONTROL_CMD_ACCEPT);
+	cdns_ip_updatel(cdns, CDNS_IP_MCP_CONTROL, CDNS_IP_MCP_CONTROL_CMD_ACCEPT,
+			CDNS_IP_MCP_CONTROL_CMD_ACCEPT);
 
 	/* Configure mcp config */
 	val = cdns_readl(cdns, CDNS_MCP_CONFIG);
 
-	/* enable bus operations with clock and data */
-	val &= ~CDNS_MCP_CONFIG_OP;
-	val |= CDNS_MCP_CONFIG_OP_NORMAL;
-
-	/* Set cmd mode for Tx and Rx cmds */
-	val &= ~CDNS_MCP_CONFIG_CMD;
-
-	/* Disable sniffer mode */
-	val &= ~CDNS_MCP_CONFIG_SNIFFER;
-
 	/* Disable auto bus release */
 	val &= ~CDNS_MCP_CONFIG_BUS_REL;
 
+	cdns_writel(cdns, CDNS_MCP_CONFIG, val);
+
+	/* Configure IP mcp config */
+	val = cdns_ip_readl(cdns, CDNS_IP_MCP_CONFIG);
+
+	/* enable bus operations with clock and data */
+	val &= ~CDNS_IP_MCP_CONFIG_OP;
+	val |= CDNS_IP_MCP_CONFIG_OP_NORMAL;
+
+	/* Set cmd mode for Tx and Rx cmds */
+	val &= ~CDNS_IP_MCP_CONFIG_CMD;
+
+	/* Disable sniffer mode */
+	val &= ~CDNS_IP_MCP_CONFIG_SNIFFER;
+
 	if (cdns->bus.multi_link)
 		/* Set Multi-master mode to take gsync into account */
-		val |= CDNS_MCP_CONFIG_MMASTER;
+		val |= CDNS_IP_MCP_CONFIG_MMASTER;
 
 	/* leave frame delay to hardware default of 0x1F */
 
 	/* leave command retry to hardware default of 0 */
 
-	cdns_writel(cdns, CDNS_MCP_CONFIG, val);
+	cdns_ip_writel(cdns, CDNS_IP_MCP_CONFIG, val);
 
 	/* changes will be committed later */
 	return 0;
@@ -1598,9 +1633,9 @@ int sdw_cdns_clock_stop(struct sdw_cdns *cdns, bool block_wake)
 	 * in clock stop state
 	 */
 	if (block_wake)
-		cdns_updatel(cdns, CDNS_MCP_CONTROL,
-			     CDNS_MCP_CONTROL_BLOCK_WAKEUP,
-			     CDNS_MCP_CONTROL_BLOCK_WAKEUP);
+		cdns_ip_updatel(cdns, CDNS_IP_MCP_CONTROL,
+				CDNS_IP_MCP_CONTROL_BLOCK_WAKEUP,
+				CDNS_IP_MCP_CONTROL_BLOCK_WAKEUP);
 
 	list_for_each_entry(slave, &cdns->bus.slaves, node) {
 		if (slave->status == SDW_SLAVE_ATTACHED ||
@@ -1673,18 +1708,18 @@ int sdw_cdns_clock_restart(struct sdw_cdns *cdns, bool bus_reset)
 		return ret;
 	}
 
-	cdns_updatel(cdns, CDNS_MCP_CONTROL,
-		     CDNS_MCP_CONTROL_BLOCK_WAKEUP, 0);
+	cdns_ip_updatel(cdns, CDNS_IP_MCP_CONTROL,
+			CDNS_IP_MCP_CONTROL_BLOCK_WAKEUP, 0);
 
-	cdns_updatel(cdns, CDNS_MCP_CONTROL, CDNS_MCP_CONTROL_CMD_ACCEPT,
-		     CDNS_MCP_CONTROL_CMD_ACCEPT);
+	cdns_ip_updatel(cdns, CDNS_IP_MCP_CONTROL, CDNS_IP_MCP_CONTROL_CMD_ACCEPT,
+			CDNS_IP_MCP_CONTROL_CMD_ACCEPT);
 
 	if (!bus_reset) {
 
 		/* enable bus operations with clock and data */
-		cdns_updatel(cdns, CDNS_MCP_CONFIG,
-			     CDNS_MCP_CONFIG_OP,
-			     CDNS_MCP_CONFIG_OP_NORMAL);
+		cdns_ip_updatel(cdns, CDNS_IP_MCP_CONFIG,
+				CDNS_IP_MCP_CONFIG_OP,
+				CDNS_IP_MCP_CONFIG_OP_NORMAL);
 
 		ret = cdns_config_update(cdns);
 		if (ret < 0) {
@@ -1721,13 +1756,10 @@ int cdns_set_sdw_stream(struct snd_soc_dai *dai,
 	struct sdw_cdns *cdns = snd_soc_dai_get_drvdata(dai);
 	struct sdw_cdns_dai_runtime *dai_runtime;
 
+	dai_runtime = cdns->dai_runtime_array[dai->id];
+
 	if (stream) {
 		/* first paranoia check */
-		if (direction == SNDRV_PCM_STREAM_PLAYBACK)
-			dai_runtime = dai->playback_dma_data;
-		else
-			dai_runtime = dai->capture_dma_data;
-
 		if (dai_runtime) {
 			dev_err(dai->dev,
 				"dai_runtime already allocated for dai %s\n",
@@ -1746,20 +1778,21 @@ int cdns_set_sdw_stream(struct snd_soc_dai *dai,
 		dai_runtime->link_id = cdns->instance;
 
 		dai_runtime->stream = stream;
+		dai_runtime->direction = direction;
 
-		if (direction == SNDRV_PCM_STREAM_PLAYBACK)
-			dai->playback_dma_data = dai_runtime;
-		else
-			dai->capture_dma_data = dai_runtime;
+		cdns->dai_runtime_array[dai->id] = dai_runtime;
 	} else {
-		/* for NULL stream we release allocated dai_runtime */
-		if (direction == SNDRV_PCM_STREAM_PLAYBACK) {
-			kfree(dai->playback_dma_data);
-			dai->playback_dma_data = NULL;
-		} else {
-			kfree(dai->capture_dma_data);
-			dai->capture_dma_data = NULL;
+		/* second paranoia check */
+		if (!dai_runtime) {
+			dev_err(dai->dev,
+				"dai_runtime not allocated for dai %s\n",
+				dai->name);
+			return -EINVAL;
 		}
+
+		/* for NULL stream we release allocated dai_runtime */
+		kfree(dai_runtime);
+		cdns->dai_runtime_array[dai->id] = NULL;
 	}
 	return 0;
 }

@@ -6,4 +6,4 @@ CFLAGS += $(KHDR_INCLUDES)
 top_srcdir = ../../../../..
 include ../../lib.mk
 
-$(TEST_GEN_PROGS): ../harness.c
+$(TEST_GEN_PROGS): ../harness.c ../utils.c

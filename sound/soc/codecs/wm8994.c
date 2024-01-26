@@ -3215,6 +3215,7 @@ static const struct snd_soc_dai_ops wm8994_aif1_dai_ops = {
 };
 
 static const struct snd_soc_dai_ops wm8994_aif2_dai_ops = {
+	.probe		= wm8994_aif2_probe,
 	.set_sysclk	= wm8994_set_dai_sysclk,
 	.set_fmt	= wm8994_set_dai_fmt,
 	.hw_params	= wm8994_hw_params,
@@ -3269,7 +3270,6 @@ static struct snd_soc_dai_driver wm8994_dai[] = {
 			.formats = WM8994_FORMATS,
 			.sig_bits = 24,
 		},
-		.probe = wm8994_aif2_probe,
 		.ops = &wm8994_aif2_dai_ops,
 	},
 	{
@@ -4657,11 +4657,9 @@ static int wm8994_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int wm8994_remove(struct platform_device *pdev)
+static void wm8994_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -4701,7 +4699,7 @@ static struct platform_driver wm8994_codec_driver = {
 		.pm = &wm8994_pm_ops,
 	},
 	.probe = wm8994_probe,
-	.remove = wm8994_remove,
+	.remove_new = wm8994_remove,
 };
 
 module_platform_driver(wm8994_codec_driver);

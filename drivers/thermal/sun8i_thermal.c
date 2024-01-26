@@ -14,7 +14,7 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/nvmem-consumer.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
@@ -55,8 +55,6 @@
 #define SUN50I_THS_FILTER_TYPE(x)		(GENMASK(1, 0) & (x))
 #define SUN50I_H6_THS_PC_TEMP_PERIOD(x)		((GENMASK(19, 0) & (x)) << 12)
 #define SUN50I_H6_THS_DATA_IRQ_STS(x)		BIT(x)
-
-/* millidegree celsius */
 
 struct tsensor {
 	struct ths_device		*tmdev;
@@ -110,7 +108,7 @@ static int sun50i_h5_calc_temp(struct ths_device *tmdev,
 
 static int sun8i_ths_get_temp(struct thermal_zone_device *tz, int *temp)
 {
-	struct tsensor *s = tz->devdata;
+	struct tsensor *s = thermal_zone_device_priv(tz);
 	struct ths_device *tmdev = s->tmdev;
 	int val = 0;
 
@@ -210,7 +208,7 @@ static int sun8i_h3_ths_calibrate(struct ths_device *tmdev,
 
 		regmap_update_bits(tmdev->regmap,
 				   SUN8I_THS_TEMP_CALIB + (4 * (i >> 1)),
-				   0xfff << offset,
+				   TEMP_CALIB_MASK << offset,
 				   caldata[i] << offset);
 	}
 
@@ -271,7 +269,7 @@ static int sun50i_h6_ths_calibrate(struct ths_device *tmdev,
 		offset = (i % 2) * 16;
 		regmap_update_bits(tmdev->regmap,
 				   SUN50I_H6_THS_TEMP_CALIB + (i / 2 * 4),
-				   0xfff << offset,
+				   TEMP_CALIB_MASK << offset,
 				   cdata << offset);
 	}
 
@@ -286,7 +284,7 @@ static int sun8i_ths_calibrate(struct ths_device *tmdev)
 	size_t callen;
 	int ret = 0;
 
-	calcell = devm_nvmem_cell_get(dev, "calibration");
+	calcell = nvmem_cell_get(dev, "calibration");
 	if (IS_ERR(calcell)) {
 		if (PTR_ERR(calcell) == -EPROBE_DEFER)
 			return -EPROBE_DEFER;
@@ -316,6 +314,8 @@ static int sun8i_ths_calibrate(struct ths_device *tmdev)
 
 	kfree(caldata);
 out:
+	if (!IS_ERR(calcell))
+		nvmem_cell_put(calcell);
 	return ret;
 }
 
@@ -468,9 +468,7 @@ static int sun8i_ths_register(struct ths_device *tmdev)
 		if (IS_ERR(tmdev->sensor[i].tzd))
 			return PTR_ERR(tmdev->sensor[i].tzd);
 
-		if (devm_thermal_add_hwmon_sysfs(tmdev->sensor[i].tzd))
-			dev_warn(tmdev->dev,
-				 "Failed to add hwmon sysfs attributes\n");
+		devm_thermal_add_hwmon_sysfs(tmdev->dev, tmdev->sensor[i].tzd);
 	}
 
 	return 0;
@@ -490,8 +488,6 @@ static int sun8i_ths_probe(struct platform_device *pdev)
 	tmdev->chip = of_device_get_match_data(&pdev->dev);
 	if (!tmdev->chip)
 		return -EINVAL;
-
-	platform_set_drvdata(pdev, tmdev);
 
 	ret = sun8i_ths_resource_init(tmdev);
 	if (ret)

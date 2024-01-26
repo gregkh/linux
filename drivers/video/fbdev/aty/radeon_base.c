@@ -1972,8 +1972,7 @@ static int radeon_set_fbinfo(struct radeonfb_info *rinfo)
 
 	info->par = rinfo;
 	info->pseudo_palette = rinfo->pseudo_palette;
-	info->flags = FBINFO_DEFAULT
-		    | FBINFO_HWACCEL_COPYAREA
+	info->flags = FBINFO_HWACCEL_COPYAREA
 		    | FBINFO_HWACCEL_FILLRECT
 		    | FBINFO_HWACCEL_XPAN
 		    | FBINFO_HWACCEL_YPAN;
@@ -2517,9 +2516,8 @@ static void radeonfb_pci_unregister(struct pci_dev *pdev)
 
 	del_timer_sync(&rinfo->lvds_timer);
 	arch_phys_wc_del(rinfo->wc_cookie);
-        unregister_framebuffer(info);
-
         radeonfb_bl_exit(rinfo);
+	unregister_framebuffer(info);
 
         iounmap(rinfo->mmio_base);
         iounmap(rinfo->fb_base);
@@ -2599,7 +2597,12 @@ static int __init radeonfb_init (void)
 {
 #ifndef MODULE
 	char *option = NULL;
+#endif
 
+	if (fb_modesetting_disabled("radeonfb"))
+		return -ENODEV;
+
+#ifndef MODULE
 	if (fb_get_options("radeonfb", &option))
 		return -ENODEV;
 	radeonfb_setup(option);

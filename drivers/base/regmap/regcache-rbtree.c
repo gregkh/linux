@@ -22,7 +22,7 @@ struct regcache_rbtree_node {
 	/* block of adjacent registers */
 	void *block;
 	/* Which registers are present */
-	long *cache_present;
+	unsigned long *cache_present;
 	/* base register handled by this block */
 	unsigned int base_reg;
 	/* number of registers available in the block */
@@ -472,6 +472,8 @@ static int regcache_rbtree_sync(struct regmap *map, unsigned int min,
 	unsigned int start, end;
 	int ret;
 
+	map->async = true;
+
 	rbtree_ctx = map->cache;
 	for (node = rb_first(&rbtree_ctx->root); node; node = rb_next(node)) {
 		rbnode = rb_entry(node, struct regcache_rbtree_node, node);
@@ -499,6 +501,8 @@ static int regcache_rbtree_sync(struct regmap *map, unsigned int min,
 		if (ret != 0)
 			return ret;
 	}
+
+	map->async = false;
 
 	return regmap_async_complete(map);
 }

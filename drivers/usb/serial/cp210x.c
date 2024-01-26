@@ -39,7 +39,7 @@ static int cp210x_tiocmget(struct tty_struct *);
 static int cp210x_tiocmset(struct tty_struct *, unsigned int, unsigned int);
 static int cp210x_tiocmset_port(struct usb_serial_port *port,
 		unsigned int, unsigned int);
-static void cp210x_break_ctl(struct tty_struct *, int);
+static int cp210x_break_ctl(struct tty_struct *, int);
 static int cp210x_attach(struct usb_serial *);
 static void cp210x_disconnect(struct usb_serial *);
 static void cp210x_release(struct usb_serial *);
@@ -1051,11 +1051,12 @@ static void cp210x_change_speed(struct tty_struct *tty,
 	struct cp210x_serial_private *priv = usb_get_serial_data(serial);
 	u32 baud;
 
+	if (tty->termios.c_ospeed == 0)
+		return;
+
 	/*
 	 * This maps the requested rate to the actual rate, a valid rate on
 	 * cp2102 or cp2103, or to an arbitrary rate in [1M, max_speed].
-	 *
-	 * NOTE: B0 is not implemented.
 	 */
 	baud = clamp(tty->termios.c_ospeed, priv->min_speed, priv->max_speed);
 
@@ -1148,7 +1149,8 @@ static void cp210x_set_flow_control(struct tty_struct *tty,
 		tty->termios.c_iflag &= ~(IXON | IXOFF);
 	}
 
-	if (old_termios &&
+	if (tty->termios.c_ospeed != 0 &&
+			old_termios && old_termios->c_ospeed != 0 &&
 			C_CRTSCTS(tty) == (old_termios->c_cflag & CRTSCTS) &&
 			I_IXON(tty) == (old_termios->c_iflag & IXON) &&
 			I_IXOFF(tty) == (old_termios->c_iflag & IXOFF) &&
@@ -1172,6 +1174,14 @@ static void cp210x_set_flow_control(struct tty_struct *tty,
 	}
 
 	mutex_lock(&port_priv->mutex);
+
+	if (tty->termios.c_ospeed == 0) {
+		port_priv->dtr = false;
+		port_priv->rts = false;
+	} else if (old_termios && old_termios->c_ospeed == 0) {
+		port_priv->dtr = true;
+		port_priv->rts = true;
+	}
 
 	ret = cp210x_read_reg_block(port, CP210X_GET_FLOW, &flow_ctl,
 			sizeof(flow_ctl));
@@ -1245,7 +1255,8 @@ static void cp210x_set_termios(struct tty_struct *tty,
 	u16 bits;
 	int ret;
 
-	if (old_termios && !cp210x_termios_change(&tty->termios, old_termios))
+	if (old_termios && !cp210x_termios_change(&tty->termios, old_termios) &&
+			tty->termios.c_ospeed != 0)
 		return;
 
 	if (!old_termios || tty->termios.c_ospeed != old_termios->c_ospeed)
@@ -1423,18 +1434,26 @@ static int cp210x_tiocmget(struct tty_struct *tty)
 	return result;
 }
 
-static void cp210x_break_ctl(struct tty_struct *tty, int break_state)
+static int cp210x_break_ctl(struct tty_struct *tty, int break_state)
 {
 	struct usb_serial_port *port = tty->driver_data;
+	struct cp210x_serial_private *priv = usb_get_serial_data(port->serial);
 	u16 state;
+
+	if (priv->partnum == CP210X_PARTNUM_CP2105) {
+		if (cp210x_interface_num(port->serial) == 1)
+			return -ENOTTY;
+	}
 
 	if (break_state == 0)
 		state = BREAK_OFF;
 	else
 		state = BREAK_ON;
+
 	dev_dbg(&port->dev, "%s - turning break %s\n", __func__,
 		state == BREAK_OFF ? "off" : "on");
-	cp210x_write_u16_reg(port, CP210X_SET_BREAK, state);
+
+	return cp210x_write_u16_reg(port, CP210X_SET_BREAK, state);
 }
 
 #ifdef CONFIG_GPIOLIB

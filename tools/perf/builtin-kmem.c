@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "builtin.h"
-#include "perf.h"
 
 #include "util/dso.h"
 #include "util/evlist.h"
@@ -24,6 +23,7 @@
 
 #include "util/debug.h"
 #include "util/string2.h"
+#include "util/util.h"
 
 #include <linux/kernel.h>
 #include <linux/numa.h>
@@ -36,6 +36,7 @@
 #include <regex.h>
 
 #include <linux/ctype.h>
+#include <traceevent/event-parse.h>
 
 static int	kmem_slab;
 static int	kmem_page;
@@ -398,21 +399,29 @@ static u64 find_callsite(struct evsel *evsel, struct perf_sample *sample)
 	struct addr_location al;
 	struct machine *machine = &kmem_session->machines.host;
 	struct callchain_cursor_node *node;
+	struct callchain_cursor *cursor;
+	u64 result = sample->ip;
 
+	addr_location__init(&al);
 	if (alloc_func_list == NULL) {
 		if (build_alloc_func_list() < 0)
 			goto out;
 	}
 
 	al.thread = machine__findnew_thread(machine, sample->pid, sample->tid);
-	sample__resolve_callchain(sample, &callchain_cursor, NULL, evsel, &al, 16);
 
-	callchain_cursor_commit(&callchain_cursor);
+	cursor = get_tls_callchain_cursor();
+	if (cursor == NULL)
+		goto out;
+
+	sample__resolve_callchain(sample, cursor, NULL, evsel, &al, 16);
+
+	callchain_cursor_commit(cursor);
 	while (true) {
 		struct alloc_func key, *caller;
 		u64 addr;
 
-		node = callchain_cursor_current(&callchain_cursor);
+		node = callchain_cursor_current(cursor);
 		if (node == NULL)
 			break;
 
@@ -422,20 +431,22 @@ static u64 find_callsite(struct evsel *evsel, struct perf_sample *sample)
 		if (!caller) {
 			/* found */
 			if (node->ms.map)
-				addr = map__unmap_ip(node->ms.map, node->ip);
+				addr = map__dso_unmap_ip(node->ms.map, node->ip);
 			else
 				addr = node->ip;
 
-			return addr;
+			result = addr;
+			goto out;
 		} else
 			pr_debug3("skipping alloc function: %s\n", caller->name);
 
-		callchain_cursor_advance(&callchain_cursor);
+		callchain_cursor_advance(cursor);
 	}
 
-out:
 	pr_debug2("unknown callsite: %"PRIx64 "\n", sample->ip);
-	return sample->ip;
+out:
+	addr_location__exit(&al);
+	return result;
 }
 
 struct sort_dimension {
@@ -652,7 +663,6 @@ static const struct {
 	{ "__GFP_HIGHMEM",		"HM" },
 	{ "GFP_DMA32",			"D32" },
 	{ "__GFP_HIGH",			"H" },
-	{ "__GFP_ATOMIC",		"_A" },
 	{ "__GFP_IO",			"I" },
 	{ "__GFP_FS",			"F" },
 	{ "__GFP_NOWARN",		"NWR" },
@@ -964,7 +974,7 @@ static int process_sample_event(struct perf_tool *tool __maybe_unused,
 	if (perf_kmem__skip_sample(sample))
 		return 0;
 
-	dump_printf(" ... thread: %s:%d\n", thread__comm_str(thread), thread->tid);
+	dump_printf(" ... thread: %s:%d\n", thread__comm_str(thread), thread__tid(thread));
 
 	if (evsel->handler != NULL) {
 		tracepoint_handler f = evsel->handler;
@@ -1024,7 +1034,7 @@ static void __print_slab_result(struct rb_root *root,
 
 		if (sym != NULL)
 			snprintf(buf, sizeof(buf), "%s+%" PRIx64 "", sym->name,
-				 addr - map->unmap_ip(map, sym->start));
+				 addr - map__unmap_ip(map, sym->start));
 		else
 			snprintf(buf, sizeof(buf), "%#" PRIx64 "", addr);
 		printf(" %-34s |", buf);

@@ -49,6 +49,12 @@
 	PORT_GP_CFG_21(7,	fn, sfx, CFG_FLAGS),					\
 	PORT_GP_CFG_14(8,	fn, sfx, CFG_FLAGS | SH_PFC_PIN_CFG_IO_VOLTAGE_18_33)
 
+#define CPU_ALL_NOGP(fn)								\
+	PIN_NOGP_CFG(VDDQ_AVB0, "VDDQ_AVB0", fn, SH_PFC_PIN_CFG_IO_VOLTAGE_18_25),	\
+	PIN_NOGP_CFG(VDDQ_AVB1, "VDDQ_AVB1", fn, SH_PFC_PIN_CFG_IO_VOLTAGE_18_25),	\
+	PIN_NOGP_CFG(VDDQ_AVB2, "VDDQ_AVB2", fn, SH_PFC_PIN_CFG_IO_VOLTAGE_18_25),	\
+	PIN_NOGP_CFG(VDDQ_TSN0, "VDDQ_TSN0", fn, SH_PFC_PIN_CFG_IO_VOLTAGE_18_25)
+
 /* GPSR0 */
 #define GPSR0_18	F_(MSIOF2_RXD,		IP2SR0_11_8)
 #define GPSR0_17	F_(MSIOF2_SCK,		IP2SR0_7_4)
@@ -206,66 +212,66 @@
 #define GPSR5_0		F_(AVB2_AVTP_PPS,	IP0SR5_3_0)
 
 /* GPSR 6 */
-#define GPSR6_20	F_(AVB1_TXCREFCLK,		IP2SR6_19_16)
-#define GPSR6_19	F_(AVB1_RD3,			IP2SR6_15_12)
-#define GPSR6_18	F_(AVB1_TD3,			IP2SR6_11_8)
-#define GPSR6_17	F_(AVB1_RD2,			IP2SR6_7_4)
-#define GPSR6_16	F_(AVB1_TD2,			IP2SR6_3_0)
-#define GPSR6_15	F_(AVB1_RD0,			IP1SR6_31_28)
-#define GPSR6_14	F_(AVB1_RD1,			IP1SR6_27_24)
-#define GPSR6_13	F_(AVB1_TD0,			IP1SR6_23_20)
-#define GPSR6_12	F_(AVB1_TD1,			IP1SR6_19_16)
-#define GPSR6_11	F_(AVB1_AVTP_CAPTURE,		IP1SR6_15_12)
-#define GPSR6_10	F_(AVB1_AVTP_PPS,		IP1SR6_11_8)
-#define GPSR6_9		F_(AVB1_RX_CTL,			IP1SR6_7_4)
-#define GPSR6_8		F_(AVB1_RXC,			IP1SR6_3_0)
-#define GPSR6_7		F_(AVB1_TX_CTL,			IP0SR6_31_28)
-#define GPSR6_6		F_(AVB1_TXC,			IP0SR6_27_24)
-#define GPSR6_5		F_(AVB1_AVTP_MATCH,		IP0SR6_23_20)
-#define GPSR6_4		F_(AVB1_LINK,			IP0SR6_19_16)
-#define GPSR6_3		F_(AVB1_PHY_INT,		IP0SR6_15_12)
-#define GPSR6_2		F_(AVB1_MDC,			IP0SR6_11_8)
-#define GPSR6_1		F_(AVB1_MAGIC,			IP0SR6_7_4)
-#define GPSR6_0		F_(AVB1_MDIO,			IP0SR6_3_0)
+#define GPSR6_20	F_(AVB1_TXCREFCLK,	IP2SR6_19_16)
+#define GPSR6_19	F_(AVB1_RD3,		IP2SR6_15_12)
+#define GPSR6_18	F_(AVB1_TD3,		IP2SR6_11_8)
+#define GPSR6_17	F_(AVB1_RD2,		IP2SR6_7_4)
+#define GPSR6_16	F_(AVB1_TD2,		IP2SR6_3_0)
+#define GPSR6_15	F_(AVB1_RD0,		IP1SR6_31_28)
+#define GPSR6_14	F_(AVB1_RD1,		IP1SR6_27_24)
+#define GPSR6_13	F_(AVB1_TD0,		IP1SR6_23_20)
+#define GPSR6_12	F_(AVB1_TD1,		IP1SR6_19_16)
+#define GPSR6_11	F_(AVB1_AVTP_CAPTURE,	IP1SR6_15_12)
+#define GPSR6_10	F_(AVB1_AVTP_PPS,	IP1SR6_11_8)
+#define GPSR6_9		F_(AVB1_RX_CTL,		IP1SR6_7_4)
+#define GPSR6_8		F_(AVB1_RXC,		IP1SR6_3_0)
+#define GPSR6_7		F_(AVB1_TX_CTL,		IP0SR6_31_28)
+#define GPSR6_6		F_(AVB1_TXC,		IP0SR6_27_24)
+#define GPSR6_5		F_(AVB1_AVTP_MATCH,	IP0SR6_23_20)
+#define GPSR6_4		F_(AVB1_LINK,		IP0SR6_19_16)
+#define GPSR6_3		F_(AVB1_PHY_INT,	IP0SR6_15_12)
+#define GPSR6_2		F_(AVB1_MDC,		IP0SR6_11_8)
+#define GPSR6_1		F_(AVB1_MAGIC,		IP0SR6_7_4)
+#define GPSR6_0		F_(AVB1_MDIO,		IP0SR6_3_0)
 
 /* GPSR7 */
-#define GPSR7_20	F_(AVB0_RX_CTL,			IP2SR7_19_16)
-#define GPSR7_19	F_(AVB0_RXC,			IP2SR7_15_12)
-#define GPSR7_18	F_(AVB0_RD0,			IP2SR7_11_8)
-#define GPSR7_17	F_(AVB0_RD1,			IP2SR7_7_4)
-#define GPSR7_16	F_(AVB0_TX_CTL,			IP2SR7_3_0)
-#define GPSR7_15	F_(AVB0_TXC,			IP1SR7_31_28)
-#define GPSR7_14	F_(AVB0_MDIO,			IP1SR7_27_24)
-#define GPSR7_13	F_(AVB0_MDC,			IP1SR7_23_20)
-#define GPSR7_12	F_(AVB0_RD2,			IP1SR7_19_16)
-#define GPSR7_11	F_(AVB0_TD0,			IP1SR7_15_12)
-#define GPSR7_10	F_(AVB0_MAGIC,			IP1SR7_11_8)
-#define GPSR7_9		F_(AVB0_TXCREFCLK,		IP1SR7_7_4)
-#define GPSR7_8		F_(AVB0_RD3,			IP1SR7_3_0)
-#define GPSR7_7		F_(AVB0_TD1,			IP0SR7_31_28)
-#define GPSR7_6		F_(AVB0_TD2,			IP0SR7_27_24)
-#define GPSR7_5		F_(AVB0_PHY_INT,		IP0SR7_23_20)
-#define GPSR7_4		F_(AVB0_LINK,			IP0SR7_19_16)
-#define GPSR7_3		F_(AVB0_TD3,			IP0SR7_15_12)
-#define GPSR7_2		F_(AVB0_AVTP_MATCH,		IP0SR7_11_8)
-#define GPSR7_1		F_(AVB0_AVTP_CAPTURE,		IP0SR7_7_4)
-#define GPSR7_0		F_(AVB0_AVTP_PPS,		IP0SR7_3_0)
+#define GPSR7_20	F_(AVB0_RX_CTL,		IP2SR7_19_16)
+#define GPSR7_19	F_(AVB0_RXC,		IP2SR7_15_12)
+#define GPSR7_18	F_(AVB0_RD0,		IP2SR7_11_8)
+#define GPSR7_17	F_(AVB0_RD1,		IP2SR7_7_4)
+#define GPSR7_16	F_(AVB0_TX_CTL,		IP2SR7_3_0)
+#define GPSR7_15	F_(AVB0_TXC,		IP1SR7_31_28)
+#define GPSR7_14	F_(AVB0_MDIO,		IP1SR7_27_24)
+#define GPSR7_13	F_(AVB0_MDC,		IP1SR7_23_20)
+#define GPSR7_12	F_(AVB0_RD2,		IP1SR7_19_16)
+#define GPSR7_11	F_(AVB0_TD0,		IP1SR7_15_12)
+#define GPSR7_10	F_(AVB0_MAGIC,		IP1SR7_11_8)
+#define GPSR7_9		F_(AVB0_TXCREFCLK,	IP1SR7_7_4)
+#define GPSR7_8		F_(AVB0_RD3,		IP1SR7_3_0)
+#define GPSR7_7		F_(AVB0_TD1,		IP0SR7_31_28)
+#define GPSR7_6		F_(AVB0_TD2,		IP0SR7_27_24)
+#define GPSR7_5		F_(AVB0_PHY_INT,	IP0SR7_23_20)
+#define GPSR7_4		F_(AVB0_LINK,		IP0SR7_19_16)
+#define GPSR7_3		F_(AVB0_TD3,		IP0SR7_15_12)
+#define GPSR7_2		F_(AVB0_AVTP_MATCH,	IP0SR7_11_8)
+#define GPSR7_1		F_(AVB0_AVTP_CAPTURE,	IP0SR7_7_4)
+#define GPSR7_0		F_(AVB0_AVTP_PPS,	IP0SR7_3_0)
 
 /* GPSR8 */
-#define GPSR8_13	F_(GP8_13,			IP1SR8_23_20)
-#define GPSR8_12	F_(GP8_12,			IP1SR8_19_16)
-#define GPSR8_11	F_(SDA5,			IP1SR8_15_12)
-#define GPSR8_10	F_(SCL5,			IP1SR8_11_8)
-#define GPSR8_9		F_(SDA4,			IP1SR8_7_4)
-#define GPSR8_8		F_(SCL4,			IP1SR8_3_0)
-#define GPSR8_7		F_(SDA3,			IP0SR8_31_28)
-#define GPSR8_6		F_(SCL3,			IP0SR8_27_24)
-#define GPSR8_5		F_(SDA2,			IP0SR8_23_20)
-#define GPSR8_4		F_(SCL2,			IP0SR8_19_16)
-#define GPSR8_3		F_(SDA1,			IP0SR8_15_12)
-#define GPSR8_2		F_(SCL1,			IP0SR8_11_8)
-#define GPSR8_1		F_(SDA0,			IP0SR8_7_4)
-#define GPSR8_0		F_(SCL0,			IP0SR8_3_0)
+#define GPSR8_13	F_(GP8_13,		IP1SR8_23_20)
+#define GPSR8_12	F_(GP8_12,		IP1SR8_19_16)
+#define GPSR8_11	F_(SDA5,		IP1SR8_15_12)
+#define GPSR8_10	F_(SCL5,		IP1SR8_11_8)
+#define GPSR8_9		F_(SDA4,		IP1SR8_7_4)
+#define GPSR8_8		F_(SCL4,		IP1SR8_3_0)
+#define GPSR8_7		F_(SDA3,		IP0SR8_31_28)
+#define GPSR8_6		F_(SCL3,		IP0SR8_27_24)
+#define GPSR8_5		F_(SDA2,		IP0SR8_23_20)
+#define GPSR8_4		F_(SCL2,		IP0SR8_19_16)
+#define GPSR8_3		F_(SDA1,		IP0SR8_15_12)
+#define GPSR8_2		F_(SCL1,		IP0SR8_11_8)
+#define GPSR8_1		F_(SDA0,		IP0SR8_7_4)
+#define GPSR8_0		F_(SCL0,		IP0SR8_3_0)
 
 /* SR0 */
 /* IP0SR0 */		/* 0 */			/* 1 */			/* 2 */			/* 3		4	 5	  6	   7	    8	     9	      A	       B	C	 D	  E	   F */
@@ -1221,10 +1227,28 @@ static const u16 pinmux_data[] = {
  */
 enum {
 	GP_ASSIGN_LAST(),
+	NOGP_ALL(),
 };
 
 static const struct sh_pfc_pin pinmux_pins[] = {
 	PINMUX_GPIO_GP_ALL(),
+	PINMUX_NOGP_ALL(),
+};
+
+/* - AUDIO CLOCK ----------------------------------------- */
+static const unsigned int audio_clkin_pins[] = {
+	/* CLK IN */
+	RCAR_GP_PIN(1, 22),
+};
+static const unsigned int audio_clkin_mux[] = {
+	AUDIO_CLKIN_MARK,
+};
+static const unsigned int audio_clkout_pins[] = {
+	/* CLK OUT */
+	RCAR_GP_PIN(1, 21),
+};
+static const unsigned int audio_clkout_mux[] = {
+	AUDIO_CLKOUT_MARK,
 };
 
 /* - AVB0 ------------------------------------------------ */
@@ -2360,6 +2384,22 @@ static const unsigned int scif_clk_mux[] = {
 	SCIF_CLK_MARK,
 };
 
+/* - SSI ------------------------------------------------- */
+static const unsigned int ssi_data_pins[] = {
+	/* SSI_SD */
+	RCAR_GP_PIN(1, 20),
+};
+static const unsigned int ssi_data_mux[] = {
+	SSI_SD_MARK,
+};
+static const unsigned int ssi_ctrl_pins[] = {
+	/* SSI_SCK,  SSI_WS */
+	RCAR_GP_PIN(1, 18), RCAR_GP_PIN(1, 19),
+};
+static const unsigned int ssi_ctrl_mux[] = {
+	SSI_SCK_MARK, SSI_WS_MARK,
+};
+
 /* - TPU ------------------------------------------------------------------- */
 static const unsigned int tpu_to0_pins[] = {
 	/* TPU0TO0 */
@@ -2492,6 +2532,9 @@ static const unsigned int tsn0_avtp_match_mux[] = {
 };
 
 static const struct sh_pfc_pin_group pinmux_groups[] = {
+	SH_PFC_PIN_GROUP(audio_clkin),
+	SH_PFC_PIN_GROUP(audio_clkout),
+
 	SH_PFC_PIN_GROUP(avb0_link),
 	SH_PFC_PIN_GROUP(avb0_magic),
 	SH_PFC_PIN_GROUP(avb0_phy_int),
@@ -2652,6 +2695,9 @@ static const struct sh_pfc_pin_group pinmux_groups[] = {
 	SH_PFC_PIN_GROUP(scif4_ctrl),
 	SH_PFC_PIN_GROUP(scif_clk),
 
+	SH_PFC_PIN_GROUP(ssi_data),
+	SH_PFC_PIN_GROUP(ssi_ctrl),
+
 	SH_PFC_PIN_GROUP(tpu_to0),		/* suffix might be updated */
 	SH_PFC_PIN_GROUP(tpu_to0_a),		/* suffix might be updated */
 	SH_PFC_PIN_GROUP(tpu_to1),		/* suffix might be updated */
@@ -2669,6 +2715,11 @@ static const struct sh_pfc_pin_group pinmux_groups[] = {
 	SH_PFC_PIN_GROUP(tsn0_avtp_pps),
 	SH_PFC_PIN_GROUP(tsn0_avtp_capture),
 	SH_PFC_PIN_GROUP(tsn0_avtp_match),
+};
+
+static const char * const audio_clk_groups[] = {
+	"audio_clkin",
+	"audio_clkout",
 };
 
 static const char * const avb0_groups[] = {
@@ -2964,6 +3015,11 @@ static const char * const scif_clk_groups[] = {
 	"scif_clk",
 };
 
+static const char * const ssi_groups[] = {
+	"ssi_data",
+	"ssi_ctrl",
+};
+
 static const char * const tpu_groups[] = {
 	/* suffix might be updated */
 	"tpu_to0",
@@ -2988,6 +3044,8 @@ static const char * const tsn0_groups[] = {
 };
 
 static const struct sh_pfc_function pinmux_functions[] = {
+	SH_PFC_FUNCTION(audio_clk),
+
 	SH_PFC_FUNCTION(avb0),
 	SH_PFC_FUNCTION(avb1),
 	SH_PFC_FUNCTION(avb2),
@@ -3044,6 +3102,8 @@ static const struct sh_pfc_function pinmux_functions[] = {
 	SH_PFC_FUNCTION(scif3),
 	SH_PFC_FUNCTION(scif4),
 	SH_PFC_FUNCTION(scif_clk),
+
+	SH_PFC_FUNCTION(ssi),
 
 	SH_PFC_FUNCTION(tpu),
 
@@ -3629,7 +3689,7 @@ static const struct pinmux_cfg_reg pinmux_config_regs[] = {
 		MOD_SEL8_1
 		MOD_SEL8_0))
 	},
-	{ },
+	{ /* sentinel */ }
 };
 
 static const struct pinmux_drive_reg pinmux_drive_regs[] = {
@@ -3891,7 +3951,7 @@ static const struct pinmux_drive_reg pinmux_drive_regs[] = {
 		{ RCAR_GP_PIN(8,  9),  4, 3 },	/* SDA4 */
 		{ RCAR_GP_PIN(8,  8),  0, 3 },	/* SCL4 */
 	} },
-	{ },
+	{ /* sentinel */ }
 };
 
 enum ioctrl_regs {
@@ -3914,30 +3974,49 @@ static const struct pinmux_ioctrl_reg pinmux_ioctrl_regs[] = {
 	[POC6]		= { 0xE60610A0, },
 	[POC7]		= { 0xE60618A0, },
 	[POC8]		= { 0xE60680A0, },
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 
 static int r8a779g0_pin_to_pocctrl(unsigned int pin, u32 *pocctrl)
 {
 	int bit = pin & 0x1f;
 
-	*pocctrl = pinmux_ioctrl_regs[POC0].reg;
-	if (pin >= RCAR_GP_PIN(0, 0) && pin <= RCAR_GP_PIN(0, 18))
+	switch (pin) {
+	case RCAR_GP_PIN(0, 0) ... RCAR_GP_PIN(0, 18):
+		*pocctrl = pinmux_ioctrl_regs[POC0].reg;
 		return bit;
 
-	*pocctrl = pinmux_ioctrl_regs[POC1].reg;
-	if (pin >= RCAR_GP_PIN(1, 0) && pin <= RCAR_GP_PIN(1, 22))
+	case RCAR_GP_PIN(1, 0) ... RCAR_GP_PIN(1, 22):
+		*pocctrl = pinmux_ioctrl_regs[POC1].reg;
 		return bit;
 
-	*pocctrl = pinmux_ioctrl_regs[POC3].reg;
-	if (pin >= RCAR_GP_PIN(3, 0) && pin <= RCAR_GP_PIN(3, 12))
+	case RCAR_GP_PIN(3, 0) ... RCAR_GP_PIN(3, 12):
+		*pocctrl = pinmux_ioctrl_regs[POC3].reg;
 		return bit;
 
-	*pocctrl = pinmux_ioctrl_regs[POC8].reg;
-	if (pin >= RCAR_GP_PIN(8, 0) && pin <= RCAR_GP_PIN(8, 13))
+	case PIN_VDDQ_TSN0:
+		*pocctrl = pinmux_ioctrl_regs[POC4].reg;
+		return 0;
+
+	case PIN_VDDQ_AVB2:
+		*pocctrl = pinmux_ioctrl_regs[POC5].reg;
+		return 0;
+
+	case PIN_VDDQ_AVB1:
+		*pocctrl = pinmux_ioctrl_regs[POC6].reg;
+		return 0;
+
+	case PIN_VDDQ_AVB0:
+		*pocctrl = pinmux_ioctrl_regs[POC7].reg;
+		return 0;
+
+	case RCAR_GP_PIN(8, 0) ... RCAR_GP_PIN(8, 13):
+		*pocctrl = pinmux_ioctrl_regs[POC8].reg;
 		return bit;
 
-	return -EINVAL;
+	default:
+		return -EINVAL;
+	}
 }
 
 static const struct pinmux_bias_reg pinmux_bias_regs[] = {
@@ -4247,7 +4326,7 @@ static const struct pinmux_bias_reg pinmux_bias_regs[] = {
 		[30] = SH_PFC_PIN_NONE,
 		[31] = SH_PFC_PIN_NONE,
 	} },
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 
 static const struct sh_pfc_soc_operations r8a779g0_pin_ops = {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "util/pmu.h"
+#include "util/pmus.h"
 #include "util/env.h"
 #include "map_symbol.h"
 #include "mem-events.h"
@@ -40,18 +41,18 @@ struct perf_mem_event *perf_mem_events__ptr(int i)
 
 bool is_mem_loads_aux_event(struct evsel *leader)
 {
-	if (perf_pmu__find("cpu")) {
-		if (!pmu_have_event("cpu", "mem-loads-aux"))
-			return false;
-	} else if (perf_pmu__find("cpu_core")) {
-		if (!pmu_have_event("cpu_core", "mem-loads-aux"))
-			return false;
-	}
+	struct perf_pmu *pmu = perf_pmus__find("cpu");
+
+	if (!pmu)
+		pmu = perf_pmus__find("cpu_core");
+
+	if (pmu && !perf_pmu__have_event(pmu, "mem-loads-aux"))
+		return false;
 
 	return leader->core.attr.config == MEM_LOADS_AUX;
 }
 
-char *perf_mem_events__name(int i, char *pmu_name)
+const char *perf_mem_events__name(int i, const char *pmu_name)
 {
 	struct perf_mem_event *e = perf_mem_events__ptr(i);
 
@@ -64,10 +65,10 @@ char *perf_mem_events__name(int i, char *pmu_name)
 
 		if (!pmu_name) {
 			mem_loads_name__init = true;
-			pmu_name = (char *)"cpu";
+			pmu_name = "cpu";
 		}
 
-		if (pmu_have_event(pmu_name, "mem-loads-aux")) {
+		if (perf_pmus__have_event(pmu_name, "mem-loads-aux")) {
 			scnprintf(mem_loads_name, sizeof(mem_loads_name),
 				  MEM_LOADS_AUX_NAME, pmu_name, pmu_name,
 				  perf_mem_events__loads_ldlat);
@@ -81,12 +82,12 @@ char *perf_mem_events__name(int i, char *pmu_name)
 
 	if (i == PERF_MEM_EVENTS__STORE) {
 		if (!pmu_name)
-			pmu_name = (char *)"cpu";
+			pmu_name = "cpu";
 
 		scnprintf(mem_stores_name, sizeof(mem_stores_name),
 			  e->name, pmu_name);
 		return mem_stores_name;
 	}
 
-	return (char *)e->name;
+	return e->name;
 }

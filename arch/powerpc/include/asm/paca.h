@@ -84,7 +84,9 @@ struct paca_struct {
 	u16 lock_token;			/* Constant 0x8000, used in locks */
 #endif
 
+#ifndef CONFIG_PPC_KERNEL_PCREL
 	u64 kernel_toc;			/* Kernel TOC address */
+#endif
 	u64 kernelbase;			/* Base address of kernel */
 	u64 kernel_msr;			/* MSR while running in kernel */
 	void *emergency_sp;		/* pointer to emergency stack */
@@ -185,6 +187,7 @@ struct paca_struct {
 #ifdef CONFIG_PPC_POWERNV
 	/* PowerNV idle fields */
 	/* PNV_CORE_IDLE_* bits, all siblings work on thread 0 paca */
+	unsigned long idle_lock; /* A value of 1 means acquired */
 	unsigned long idle_state;
 	union {
 		/* P7/P8 specific fields */

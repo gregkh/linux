@@ -18,7 +18,6 @@
 #include <linux/units.h>
 
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_crtc_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_of.h>
@@ -963,7 +962,7 @@ tc358768_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 	case 24:
 		input_fmts[0] = MEDIA_BUS_FMT_RGB888_1X24;
 		break;
-	};
+	}
 
 	*num_input_fmts = MAX_INPUT_SEL_FORMATS;
 
@@ -1079,8 +1078,7 @@ static int tc358768_get_regulators(struct tc358768_priv *priv)
 	return ret;
 }
 
-static int tc358768_i2c_probe(struct i2c_client *client,
-			      const struct i2c_device_id *id)
+static int tc358768_i2c_probe(struct i2c_client *client)
 {
 	struct tc358768_priv *priv;
 	struct device *dev = &client->dev;

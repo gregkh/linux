@@ -143,6 +143,7 @@ static bool reparse_file_needs_reval(const struct cifs_fattr *fattr)
 	case IO_REPARSE_TAG_DFSR:
 	case IO_REPARSE_TAG_SYMLINK:
 	case IO_REPARSE_TAG_NFS:
+	case IO_REPARSE_TAG_MOUNT_POINT:
 	case 0:
 		return true;
 	}
@@ -152,6 +153,10 @@ static bool reparse_file_needs_reval(const struct cifs_fattr *fattr)
 static void
 cifs_fill_common_info(struct cifs_fattr *fattr, struct cifs_sb_info *cifs_sb)
 {
+	struct cifs_open_info_data data = {
+		.reparse = { .tag = fattr->cf_cifstag, },
+	};
+
 	fattr->cf_uid = cifs_sb->ctx->linux_uid;
 	fattr->cf_gid = cifs_sb->ctx->linux_gid;
 
@@ -163,29 +168,19 @@ cifs_fill_common_info(struct cifs_fattr *fattr, struct cifs_sb_info *cifs_sb)
 	 * TODO: go through all documented  reparse tags to see if we can
 	 * reasonably map some of them to directories vs. files vs. symlinks
 	 */
+	if ((fattr->cf_cifsattrs & ATTR_REPARSE) &&
+	    cifs_reparse_point_to_fattr(cifs_sb, fattr, &data))
+		goto out_reparse;
+
 	if (fattr->cf_cifsattrs & ATTR_DIRECTORY) {
 		fattr->cf_mode = S_IFDIR | cifs_sb->ctx->dir_mode;
 		fattr->cf_dtype = DT_DIR;
-	} else if (fattr->cf_cifstag == IO_REPARSE_TAG_LX_SYMLINK) {
-		fattr->cf_mode |= S_IFLNK | cifs_sb->ctx->file_mode;
-		fattr->cf_dtype = DT_LNK;
-	} else if (fattr->cf_cifstag == IO_REPARSE_TAG_LX_FIFO) {
-		fattr->cf_mode |= S_IFIFO | cifs_sb->ctx->file_mode;
-		fattr->cf_dtype = DT_FIFO;
-	} else if (fattr->cf_cifstag == IO_REPARSE_TAG_AF_UNIX) {
-		fattr->cf_mode |= S_IFSOCK | cifs_sb->ctx->file_mode;
-		fattr->cf_dtype = DT_SOCK;
-	} else if (fattr->cf_cifstag == IO_REPARSE_TAG_LX_CHR) {
-		fattr->cf_mode |= S_IFCHR | cifs_sb->ctx->file_mode;
-		fattr->cf_dtype = DT_CHR;
-	} else if (fattr->cf_cifstag == IO_REPARSE_TAG_LX_BLK) {
-		fattr->cf_mode |= S_IFBLK | cifs_sb->ctx->file_mode;
-		fattr->cf_dtype = DT_BLK;
-	} else { /* TODO: should we mark some other reparse points (like DFSR) as directories? */
+	} else {
 		fattr->cf_mode = S_IFREG | cifs_sb->ctx->file_mode;
 		fattr->cf_dtype = DT_REG;
 	}
 
+out_reparse:
 	/*
 	 * We need to revalidate it further to make a decision about whether it
 	 * is a symbolic link, DFS referral or a reparse point with a direct
@@ -495,7 +490,7 @@ static char *nxt_dir_entry(char *old_entry, char *end_of_smb, int level)
 		FIND_FILE_STANDARD_INFO *pfData;
 		pfData = (FIND_FILE_STANDARD_INFO *)pDirInfo;
 
-		new_entry = old_entry + sizeof(FIND_FILE_STANDARD_INFO) +
+		new_entry = old_entry + sizeof(FIND_FILE_STANDARD_INFO) + 1 +
 				pfData->FileNameLength;
 	} else {
 		u32 next_offset = le32_to_cpu(pDirInfo->NextEntryOffset);
@@ -513,9 +508,9 @@ static char *nxt_dir_entry(char *old_entry, char *end_of_smb, int level)
 			 new_entry, end_of_smb, old_entry);
 		return NULL;
 	} else if (((level == SMB_FIND_FILE_INFO_STANDARD) &&
-		    (new_entry + sizeof(FIND_FILE_STANDARD_INFO) > end_of_smb))
+		    (new_entry + sizeof(FIND_FILE_STANDARD_INFO) + 1 > end_of_smb))
 		  || ((level != SMB_FIND_FILE_INFO_STANDARD) &&
-		   (new_entry + sizeof(FILE_DIRECTORY_INFO) > end_of_smb)))  {
+		   (new_entry + sizeof(FILE_DIRECTORY_INFO) + 1 > end_of_smb)))  {
 		cifs_dbg(VFS, "search entry %p extends after end of SMB %p\n",
 			 new_entry, end_of_smb);
 		return NULL;

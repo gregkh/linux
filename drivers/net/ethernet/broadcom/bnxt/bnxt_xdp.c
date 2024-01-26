@@ -15,7 +15,7 @@
 #include <linux/bpf.h>
 #include <linux/bpf_trace.h>
 #include <linux/filter.h>
-#include <net/page_pool.h>
+#include <net/page_pool/helpers.h>
 #include "bnxt_hsi.h"
 #include "bnxt.h"
 #include "bnxt_xdp.h"
@@ -59,12 +59,11 @@ struct bnxt_sw_tx_bd *bnxt_xmit_bd(struct bnxt *bp,
 	for (i = 0; i < num_frags ; i++) {
 		skb_frag_t *frag = &sinfo->frags[i];
 		struct bnxt_sw_tx_bd *frag_tx_buf;
-		struct pci_dev *pdev = bp->pdev;
 		dma_addr_t frag_mapping;
 		int frag_len;
 
 		prod = NEXT_TX(prod);
-		txr->tx_prod = prod;
+		WRITE_ONCE(txr->tx_prod, prod);
 
 		/* first fill up the first buffer */
 		frag_tx_buf = &txr->tx_buf_ring[prod];
@@ -73,16 +72,10 @@ struct bnxt_sw_tx_bd *bnxt_xmit_bd(struct bnxt *bp,
 		txbd = &txr->tx_desc_ring[TX_RING(prod)][TX_IDX(prod)];
 
 		frag_len = skb_frag_size(frag);
-		frag_mapping = skb_frag_dma_map(&pdev->dev, frag, 0,
-						frag_len, DMA_TO_DEVICE);
-
-		if (unlikely(dma_mapping_error(&pdev->dev, frag_mapping)))
-			return NULL;
-
-		dma_unmap_addr_set(frag_tx_buf, mapping, frag_mapping);
-
 		flags = frag_len << TX_BD_LEN_SHIFT;
 		txbd->tx_bd_len_flags_type = cpu_to_le32(flags);
+		frag_mapping = page_pool_get_dma_addr(skb_frag_page(frag)) +
+			       skb_frag_off(frag);
 		txbd->tx_bd_haddr = cpu_to_le64(frag_mapping);
 
 		len = frag_len;
@@ -94,7 +87,7 @@ struct bnxt_sw_tx_bd *bnxt_xmit_bd(struct bnxt *bp,
 	/* Sync TX BD */
 	wmb();
 	prod = NEXT_TX(prod);
-	txr->tx_prod = prod;
+	WRITE_ONCE(txr->tx_prod, prod);
 
 	return tx_buf;
 }
@@ -125,15 +118,19 @@ static void __bnxt_xmit_xdp_redirect(struct bnxt *bp,
 	dma_unmap_len_set(tx_buf, len, 0);
 }
 
-void bnxt_tx_int_xdp(struct bnxt *bp, struct bnxt_napi *bnapi, int nr_pkts)
+void bnxt_tx_int_xdp(struct bnxt *bp, struct bnxt_napi *bnapi, int budget)
 {
 	struct bnxt_tx_ring_info *txr = bnapi->tx_ring;
 	struct bnxt_rx_ring_info *rxr = bnapi->rx_ring;
 	bool rx_doorbell_needed = false;
+	int nr_pkts = bnapi->tx_pkts;
 	struct bnxt_sw_tx_bd *tx_buf;
 	u16 tx_cons = txr->tx_cons;
 	u16 last_tx_cons = tx_cons;
 	int i, j, frags;
+
+	if (!budget)
+		return;
 
 	for (i = 0; i < nr_pkts; i++) {
 		tx_buf = &txr->tx_buf_ring[tx_cons];
@@ -149,6 +146,7 @@ void bnxt_tx_int_xdp(struct bnxt *bp, struct bnxt_napi *bnapi, int nr_pkts)
 			tx_buf->action = 0;
 			tx_buf->xdpf = NULL;
 		} else if (tx_buf->action == XDP_TX) {
+			tx_buf->action = 0;
 			rx_doorbell_needed = true;
 			last_tx_cons = tx_cons;
 
@@ -158,10 +156,15 @@ void bnxt_tx_int_xdp(struct bnxt *bp, struct bnxt_napi *bnapi, int nr_pkts)
 				tx_buf = &txr->tx_buf_ring[tx_cons];
 				page_pool_recycle_direct(rxr->page_pool, tx_buf->page);
 			}
+		} else {
+			bnxt_sched_reset_txr(bp, txr, i);
+			return;
 		}
 		tx_cons = NEXT_TX(tx_cons);
 	}
-	txr->tx_cons = tx_cons;
+
+	bnapi->tx_pkts = 0;
+	WRITE_ONCE(txr->tx_cons, tx_cons);
 	if (rx_doorbell_needed) {
 		tx_buf = &txr->tx_buf_ring[last_tx_cons];
 		bnxt_db_write(bp, &rxr->rx_db, tx_buf->rx_prod);
@@ -422,9 +425,11 @@ static int bnxt_xdp_set(struct bnxt *bp, struct bpf_prog *prog)
 
 	if (prog) {
 		bnxt_set_rx_skb_mode(bp, true);
+		xdp_features_set_redirect_target(dev, true);
 	} else {
 		int rx, tx;
 
+		xdp_features_clear_redirect_target(dev);
 		bnxt_set_rx_skb_mode(bp, false);
 		bnxt_get_max_rings(bp, &rx, &tx, true);
 		if (rx > 1) {

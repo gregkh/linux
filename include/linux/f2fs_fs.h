@@ -103,6 +103,8 @@ enum f2fs_error {
 	ERROR_INCONSISTENT_SIT,
 	ERROR_CORRUPTED_VERITY_XATTR,
 	ERROR_CORRUPTED_XATTR,
+	ERROR_INVALID_NODE_REFERENCE,
+	ERROR_INCONSISTENT_NAT,
 	ERROR_MAX,
 };
 
@@ -314,7 +316,7 @@ struct f2fs_inode {
 			__u8 i_log_cluster_size;	/* log of cluster size */
 			__le16 i_compress_flag;		/* compress flag */
 						/* 0 bit: chksum flag
-						 * [10,15] bits: compress level
+						 * [8,15] bits: compress level
 						 */
 			__le32 i_extra_end[0];	/* for attribute size calculation */
 		} __packed;
@@ -583,21 +585,6 @@ struct f2fs_dentry_block {
 	struct f2fs_dir_entry dentry[NR_DENTRY_IN_BLOCK];
 	__u8 filename[NR_DENTRY_IN_BLOCK][F2FS_SLOT_LEN];
 } __packed;
-
-/* file types used in inode_info->flags */
-enum {
-	F2FS_FT_UNKNOWN,
-	F2FS_FT_REG_FILE,
-	F2FS_FT_DIR,
-	F2FS_FT_CHRDEV,
-	F2FS_FT_BLKDEV,
-	F2FS_FT_FIFO,
-	F2FS_FT_SOCK,
-	F2FS_FT_SYMLINK,
-	F2FS_FT_MAX
-};
-
-#define S_SHIFT 12
 
 #define	F2FS_DEF_PROJID		0	/* default project ID */
 

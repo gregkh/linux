@@ -23,7 +23,11 @@
 #define HIDG_MINORS	4
 
 static int major, minors;
-static struct class *hidg_class;
+
+static const struct class hidg_class = {
+	.name = "hidg",
+};
+
 static DEFINE_IDA(hidg_ida);
 static DEFINE_MUTEX(hidg_ida_lock); /* protects access to hidg_ida */
 
@@ -1270,18 +1274,14 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 	opts = container_of(fi, struct f_hid_opts, func_inst);
 
 	mutex_lock(&opts->lock);
-	++opts->refcnt;
 
 	device_initialize(&hidg->dev);
 	hidg->dev.release = hidg_release;
-	hidg->dev.class = hidg_class;
+	hidg->dev.class = &hidg_class;
 	hidg->dev.devt = MKDEV(major, opts->minor);
 	ret = dev_set_name(&hidg->dev, "hidg%d", opts->minor);
-	if (ret) {
-		--opts->refcnt;
-		mutex_unlock(&opts->lock);
-		return ERR_PTR(ret);
-	}
+	if (ret)
+		goto err_unlock;
 
 	hidg->bInterfaceSubClass = opts->subclass;
 	hidg->bInterfaceProtocol = opts->protocol;
@@ -1292,14 +1292,13 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 					    opts->report_desc_length,
 					    GFP_KERNEL);
 		if (!hidg->report_desc) {
-			put_device(&hidg->dev);
-			--opts->refcnt;
-			mutex_unlock(&opts->lock);
-			return ERR_PTR(-ENOMEM);
+			ret = -ENOMEM;
+			goto err_put_device;
 		}
 	}
 	hidg->use_out_ep = !opts->no_out_endpoint;
 
+	++opts->refcnt;
 	mutex_unlock(&opts->lock);
 
 	hidg->func.name    = "hid";
@@ -1314,6 +1313,12 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 	hidg->qlen	   = 4;
 
 	return &hidg->func;
+
+err_put_device:
+	put_device(&hidg->dev);
+err_unlock:
+	mutex_unlock(&opts->lock);
+	return ERR_PTR(ret);
 }
 
 DECLARE_USB_FUNCTION_INIT(hid, hidg_alloc_inst, hidg_alloc);
@@ -1325,17 +1330,13 @@ int ghid_setup(struct usb_gadget *g, int count)
 	int status;
 	dev_t dev;
 
-	hidg_class = class_create(THIS_MODULE, "hidg");
-	if (IS_ERR(hidg_class)) {
-		status = PTR_ERR(hidg_class);
-		hidg_class = NULL;
+	status = class_register(&hidg_class);
+	if (status)
 		return status;
-	}
 
 	status = alloc_chrdev_region(&dev, 0, count, "hidg");
 	if (status) {
-		class_destroy(hidg_class);
-		hidg_class = NULL;
+		class_unregister(&hidg_class);
 		return status;
 	}
 
@@ -1352,6 +1353,5 @@ void ghid_cleanup(void)
 		major = minors = 0;
 	}
 
-	class_destroy(hidg_class);
-	hidg_class = NULL;
+	class_unregister(&hidg_class);
 }

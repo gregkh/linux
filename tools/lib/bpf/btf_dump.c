@@ -13,6 +13,7 @@
 #include <ctype.h>
 #include <endian.h>
 #include <errno.h>
+#include <limits.h>
 #include <linux/err.h>
 #include <linux/btf.h>
 #include <linux/kernel.h>
@@ -117,14 +118,14 @@ struct btf_dump {
 	struct btf_dump_data *typed_dump;
 };
 
-static size_t str_hash_fn(const void *key, void *ctx)
+static size_t str_hash_fn(long key, void *ctx)
 {
-	return str_hash(key);
+	return str_hash((void *)key);
 }
 
-static bool str_equal_fn(const void *a, const void *b, void *ctx)
+static bool str_equal_fn(long a, long b, void *ctx)
 {
-	return strcmp(a, b) == 0;
+	return strcmp((void *)a, (void *)b) == 0;
 }
 
 static const char *btf_name_of(const struct btf_dump *d, __u32 name_off)
@@ -225,7 +226,7 @@ static void btf_dump_free_names(struct hashmap *map)
 	struct hashmap_entry *cur;
 
 	hashmap__for_each_entry(map, cur, bkt)
-		free((void *)cur->key);
+		free((void *)cur->pkey);
 
 	hashmap__free(map);
 }
@@ -1132,6 +1133,43 @@ static void btf_dump_emit_enum_def(struct btf_dump *d, __u32 id,
 	else
 		btf_dump_emit_enum64_val(d, t, lvl, vlen);
 	btf_dump_printf(d, "\n%s}", pfx(lvl));
+
+	/* special case enums with special sizes */
+	if (t->size == 1) {
+		/* one-byte enums can be forced with mode(byte) attribute */
+		btf_dump_printf(d, " __attribute__((mode(byte)))");
+	} else if (t->size == 8 && d->ptr_sz == 8) {
+		/* enum can be 8-byte sized if one of the enumerator values
+		 * doesn't fit in 32-bit integer, or by adding mode(word)
+		 * attribute (but probably only on 64-bit architectures); do
+		 * our best here to try to satisfy the contract without adding
+		 * unnecessary attributes
+		 */
+		bool needs_word_mode;
+
+		if (btf_is_enum(t)) {
+			/* enum can't represent 64-bit values, so we need word mode */
+			needs_word_mode = true;
+		} else {
+			/* enum64 needs mode(word) if none of its values has
+			 * non-zero upper 32-bits (which means that all values
+			 * fit in 32-bit integers and won't cause compiler to
+			 * bump enum to be 64-bit naturally
+			 */
+			int i;
+
+			needs_word_mode = true;
+			for (i = 0; i < vlen; i++) {
+				if (btf_enum64(t)[i].val_hi32 != 0) {
+					needs_word_mode = false;
+					break;
+				}
+			}
+		}
+		if (needs_word_mode)
+			btf_dump_printf(d, " __attribute__((mode(word)))");
+	}
+
 }
 
 static void btf_dump_emit_fwd_def(struct btf_dump *d, __u32 id,
@@ -1602,11 +1640,10 @@ static size_t btf_dump_name_dups(struct btf_dump *d, struct hashmap *name_map,
 	if (!new_name)
 		return 1;
 
-	hashmap__find(name_map, orig_name, (void **)&dup_cnt);
+	(void)hashmap__find(name_map, orig_name, &dup_cnt);
 	dup_cnt++;
 
-	err = hashmap__set(name_map, new_name, (void *)dup_cnt,
-			   (const void **)&old_name, NULL);
+	err = hashmap__set(name_map, new_name, dup_cnt, &old_name, NULL);
 	if (err)
 		free(new_name);
 

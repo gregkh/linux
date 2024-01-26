@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2015 Intel Deutschland GmbH
- * Copyright (C) 2022 Intel Corporation
+ * Copyright (C) 2022-2023 Intel Corporation
  */
 #include <net/mac80211.h>
 #include "ieee80211_i.h"
 #include "trace.h"
 #include "driver-ops.h"
+#include "debugfs_sta.h"
+#include "debugfs_netdev.h"
 
 int drv_start(struct ieee80211_local *local)
 {
@@ -476,6 +478,10 @@ int drv_change_vif_links(struct ieee80211_local *local,
 			 u16 old_links, u16 new_links,
 			 struct ieee80211_bss_conf *old[IEEE80211_MLD_MAX_NUM_LINKS])
 {
+	struct ieee80211_link_data *link;
+	unsigned long links_to_add;
+	unsigned long links_to_rem;
+	unsigned int link_id;
 	int ret = -EOPNOTSUPP;
 
 	might_sleep();
@@ -486,13 +492,34 @@ int drv_change_vif_links(struct ieee80211_local *local,
 	if (old_links == new_links)
 		return 0;
 
+	links_to_add = ~old_links & new_links;
+	links_to_rem = old_links & ~new_links;
+
+	for_each_set_bit(link_id, &links_to_rem, IEEE80211_MLD_MAX_NUM_LINKS) {
+		link = rcu_access_pointer(sdata->link[link_id]);
+
+		ieee80211_link_debugfs_drv_remove(link);
+	}
+
 	trace_drv_change_vif_links(local, sdata, old_links, new_links);
 	if (local->ops->change_vif_links)
 		ret = local->ops->change_vif_links(&local->hw, &sdata->vif,
 						   old_links, new_links, old);
 	trace_drv_return_int(local, ret);
 
-	return ret;
+	if (ret)
+		return ret;
+
+	if (!local->in_reconfig) {
+		for_each_set_bit(link_id, &links_to_add,
+				 IEEE80211_MLD_MAX_NUM_LINKS) {
+			link = rcu_access_pointer(sdata->link[link_id]);
+
+			ieee80211_link_debugfs_drv_add(link);
+		}
+	}
+
+	return 0;
 }
 
 int drv_change_sta_links(struct ieee80211_local *local,
@@ -500,6 +527,11 @@ int drv_change_sta_links(struct ieee80211_local *local,
 			 struct ieee80211_sta *sta,
 			 u16 old_links, u16 new_links)
 {
+	struct sta_info *info = container_of(sta, struct sta_info, sta);
+	struct link_sta_info *link_sta;
+	unsigned long links_to_add;
+	unsigned long links_to_rem;
+	unsigned int link_id;
 	int ret = -EOPNOTSUPP;
 
 	might_sleep();
@@ -513,11 +545,34 @@ int drv_change_sta_links(struct ieee80211_local *local,
 	if (old_links == new_links)
 		return 0;
 
+	links_to_add = ~old_links & new_links;
+	links_to_rem = old_links & ~new_links;
+
+	for_each_set_bit(link_id, &links_to_rem, IEEE80211_MLD_MAX_NUM_LINKS) {
+		link_sta = rcu_dereference_protected(info->link[link_id],
+						     lockdep_is_held(&local->sta_mtx));
+
+		ieee80211_link_sta_debugfs_drv_remove(link_sta);
+	}
+
 	trace_drv_change_sta_links(local, sdata, sta, old_links, new_links);
 	if (local->ops->change_sta_links)
 		ret = local->ops->change_sta_links(&local->hw, &sdata->vif, sta,
 						   old_links, new_links);
 	trace_drv_return_int(local, ret);
 
-	return ret;
+	if (ret)
+		return ret;
+
+	/* during reconfig don't add it to debugfs again */
+	if (local->in_reconfig)
+		return 0;
+
+	for_each_set_bit(link_id, &links_to_add, IEEE80211_MLD_MAX_NUM_LINKS) {
+		link_sta = rcu_dereference_protected(info->link[link_id],
+						     lockdep_is_held(&local->sta_mtx));
+		ieee80211_link_sta_debugfs_drv_add(link_sta);
+	}
+
+	return 0;
 }

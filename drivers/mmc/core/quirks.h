@@ -110,19 +110,19 @@ static const struct mmc_fixup __maybe_unused mmc_blk_fixups[] = {
 		  MMC_QUIRK_TRIM_BROKEN),
 
 	/*
-	 * Kingston EMMC04G-M627 advertises TRIM but it does not seems to
-	 * support being used to offload WRITE_ZEROES.
-	 */
-	MMC_FIXUP("M62704", CID_MANFID_KINGSTON, 0x0100, add_quirk_mmc,
-		  MMC_QUIRK_TRIM_BROKEN),
-
-	/*
 	 * Micron MTFC4GACAJCN-1M supports TRIM but does not appear to support
 	 * WRITE_ZEROES offloading. It also supports caching, but the cache can
 	 * only be flushed after a write has occurred.
 	 */
 	MMC_FIXUP("Q2J54A", CID_MANFID_MICRON, 0x014e, add_quirk_mmc,
 		  MMC_QUIRK_TRIM_BROKEN | MMC_QUIRK_BROKEN_CACHE_FLUSH),
+
+	/*
+	 * Kingston EMMC04G-M627 advertises TRIM but it does not seems to
+	 * support being used to offload WRITE_ZEROES.
+	 */
+	MMC_FIXUP("M62704", CID_MANFID_KINGSTON, 0x0100, add_quirk_mmc,
+		  MMC_QUIRK_TRIM_BROKEN),
 
 	/*
 	 * Some SD cards reports discard support while they don't

@@ -58,17 +58,6 @@ void __init cmma_init(void)
 		cmma_flag = 2;
 }
 
-static inline unsigned char get_page_state(struct page *page)
-{
-	unsigned char state;
-
-	asm volatile("	.insn	rrf,0xb9ab0000,%0,%1,%2,0"
-		     : "=&d" (state)
-		     : "a" (page_to_phys(page)),
-		       "i" (ESSA_GET_STATE));
-	return state & 0x3f;
-}
-
 static inline void set_page_unused(struct page *page, int order)
 {
 	int i, rc;
@@ -192,6 +181,12 @@ void __init cmma_init_nodat(void)
 		return;
 	/* Mark pages used in kernel page tables */
 	mark_kernel_pgd();
+	page = virt_to_page(&swapper_pg_dir);
+	for (i = 0; i < 4; i++)
+		set_bit(PG_arch_1, &page[i].flags);
+	page = virt_to_page(&invalid_pg_dir);
+	for (i = 0; i < 4; i++)
+		set_bit(PG_arch_1, &page[i].flags);
 
 	/* Set all kernel pages not used for page tables to stable/no-dat */
 	for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, NULL) {

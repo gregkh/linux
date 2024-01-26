@@ -381,9 +381,9 @@ static int mcp4725_probe_dt(struct device *dev,
 	return 0;
 }
 
-static int mcp4725_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int mcp4725_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct mcp4725_data *data;
 	struct iio_dev *indio_dev;
 	struct mcp4725_platform_data *pdata, pdata_dt;

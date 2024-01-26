@@ -1004,10 +1004,7 @@ static int _nbu2ss_in_dma(struct nbu2ss_udc *udc, struct nbu2ss_ep *ep,
 	/* MAX Packet Size */
 	mpkt = _nbu2ss_readl(&preg->EP_REGS[num].EP_PCKT_ADRS) & EPN_MPKT;
 
-	if ((DMA_MAX_COUNT * mpkt) < length)
-		i_write_length = DMA_MAX_COUNT * mpkt;
-	else
-		i_write_length = length;
+	i_write_length = min(DMA_MAX_COUNT * mpkt, length);
 
 	/*------------------------------------------------------------*/
 	/* Number of transmission packets */
@@ -3140,7 +3137,7 @@ static void nbu2ss_drv_shutdown(struct platform_device *pdev)
 }
 
 /*-------------------------------------------------------------------------*/
-static int nbu2ss_drv_remove(struct platform_device *pdev)
+static void nbu2ss_drv_remove(struct platform_device *pdev)
 {
 	struct nbu2ss_udc	*udc;
 	struct nbu2ss_ep	*ep;
@@ -3157,8 +3154,6 @@ static int nbu2ss_drv_remove(struct platform_device *pdev)
 
 	/* Interrupt Handler - Release */
 	free_irq(vbus_irq, udc);
-
-	return 0;
 }
 
 /*-------------------------------------------------------------------------*/
@@ -3213,7 +3208,7 @@ static int nbu2ss_drv_resume(struct platform_device *pdev)
 static struct platform_driver udc_driver = {
 	.probe		= nbu2ss_drv_probe,
 	.shutdown	= nbu2ss_drv_shutdown,
-	.remove		= nbu2ss_drv_remove,
+	.remove_new	= nbu2ss_drv_remove,
 	.suspend	= nbu2ss_drv_suspend,
 	.resume		= nbu2ss_drv_resume,
 	.driver		= {

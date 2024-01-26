@@ -391,22 +391,6 @@ int rvu_mbox_handler_npc_get_field_hash_info(struct rvu *rvu,
 }
 
 /**
- *	rvu_npc_exact_mac2u64 - utility function to convert mac address to u64.
- *	@mac_addr: MAC address.
- *	Return: mdata for exact match table.
- */
-static u64 rvu_npc_exact_mac2u64(u8 *mac_addr)
-{
-	u64 mac = 0;
-	int index;
-
-	for (index = ETH_ALEN - 1; index >= 0; index--)
-		mac |= ((u64)*mac_addr++) << (8 * index);
-
-	return mac;
-}
-
-/**
  *	rvu_exact_prepare_mdata - Make mdata for mcam entry
  *	@mac: MAC address
  *	@chan: Channel number.
@@ -416,7 +400,7 @@ static u64 rvu_npc_exact_mac2u64(u8 *mac_addr)
  */
 static u64 rvu_exact_prepare_mdata(u8 *mac, u16 chan, u16 ctype, u64 mask)
 {
-	u64 ldata = rvu_npc_exact_mac2u64(mac);
+	u64 ldata = ether_addr_to_u64(mac);
 
 	/* Please note that mask is 48bit which excludes chan and ctype.
 	 * Increase mask bits if we need to include them as well.
@@ -544,7 +528,7 @@ static bool rvu_npc_exact_alloc_id(struct rvu *rvu, u32 *seq_id)
 	if (idx == table->tot_ids) {
 		mutex_unlock(&table->lock);
 		dev_err(rvu->dev, "%s: No space in id bitmap (%d)\n",
-			__func__, bitmap_weight(table->id_bmap, table->tot_ids));
+			__func__, table->tot_ids);
 
 		return false;
 	}
@@ -604,7 +588,7 @@ static u64 rvu_exact_prepare_table_entry(struct rvu *rvu, bool enable,
 					 u8 ctype, u16 chan, u8 *mac_addr)
 
 {
-	u64 ldata = rvu_npc_exact_mac2u64(mac_addr);
+	u64 ldata = ether_addr_to_u64(mac_addr);
 
 	/* Enable or disable */
 	u64 mdata = FIELD_PREP(GENMASK_ULL(63, 63), enable ? 1 : 0);
@@ -1912,12 +1896,11 @@ int rvu_npc_exact_init(struct rvu *rvu)
 	/* Set capability to true */
 	rvu->hw->cap.npc_exact_match_enabled = true;
 
-	table = kmalloc(sizeof(*table), GFP_KERNEL);
+	table = kzalloc(sizeof(*table), GFP_KERNEL);
 	if (!table)
 		return -ENOMEM;
 
 	dev_dbg(rvu->dev, "%s: Memory allocation for table success\n", __func__);
-	memset(table, 0, sizeof(*table));
 	rvu->hw->table = table;
 
 	/* Read table size, ways and depth */
@@ -1941,24 +1924,24 @@ int rvu_npc_exact_init(struct rvu *rvu)
 	table_size = table->mem_table.depth * table->mem_table.ways;
 
 	/* Allocate bitmap for 4way 2K table */
-	table->mem_table.bmap = devm_kcalloc(rvu->dev, BITS_TO_LONGS(table_size),
-					     sizeof(long), GFP_KERNEL);
+	table->mem_table.bmap = devm_bitmap_zalloc(rvu->dev, table_size,
+						   GFP_KERNEL);
 	if (!table->mem_table.bmap)
 		return -ENOMEM;
 
 	dev_dbg(rvu->dev, "%s: Allocated bitmap for 4way 2K entry table\n", __func__);
 
 	/* Allocate bitmap for 32 entry mcam */
-	table->cam_table.bmap = devm_kcalloc(rvu->dev, 1, sizeof(long), GFP_KERNEL);
+	table->cam_table.bmap = devm_bitmap_zalloc(rvu->dev, 32, GFP_KERNEL);
 
 	if (!table->cam_table.bmap)
 		return -ENOMEM;
 
 	dev_dbg(rvu->dev, "%s: Allocated bitmap for 32 entry cam\n", __func__);
 
-	table->tot_ids = (table->mem_table.depth * table->mem_table.ways) + table->cam_table.depth;
-	table->id_bmap = devm_kcalloc(rvu->dev, BITS_TO_LONGS(table->tot_ids),
-				      table->tot_ids, GFP_KERNEL);
+	table->tot_ids = table_size + table->cam_table.depth;
+	table->id_bmap = devm_bitmap_zalloc(rvu->dev, table->tot_ids,
+					    GFP_KERNEL);
 
 	if (!table->id_bmap)
 		return -ENOMEM;

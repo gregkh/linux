@@ -36,7 +36,7 @@
 
 #define PRID_SERIES_LA132	0x8000  /* Loongson 32bit */
 #define PRID_SERIES_LA264	0xa000  /* Loongson 64bit, 2-issue */
-#define PRID_SERIES_LA364	0xb000  /* Loongson 64bit，3-issue */
+#define PRID_SERIES_LA364	0xb000  /* Loongson 64bit, 3-issue */
 #define PRID_SERIES_LA464	0xc000  /* Loongson 64bit, 4-issue */
 #define PRID_SERIES_LA664	0xd000  /* Loongson 64bit, 6-issue */
 
@@ -98,6 +98,7 @@ enum cpu_type_enum {
 #define CPU_FEATURE_EIODECODE		23	/* CPU has EXTIOI interrupt pin decode mode */
 #define CPU_FEATURE_GUESTID		24	/* CPU has GuestID feature */
 #define CPU_FEATURE_HYPERVISOR		25	/* CPU has hypervisor (running in VM) */
+#define CPU_FEATURE_PTW			26	/* CPU has hardware page table walker */
 
 #define LOONGARCH_CPU_CPUCFG		BIT_ULL(CPU_FEATURE_CPUCFG)
 #define LOONGARCH_CPU_LAM		BIT_ULL(CPU_FEATURE_LAM)
@@ -125,5 +126,6 @@ enum cpu_type_enum {
 #define LOONGARCH_CPU_EIODECODE		BIT_ULL(CPU_FEATURE_EIODECODE)
 #define LOONGARCH_CPU_GUESTID		BIT_ULL(CPU_FEATURE_GUESTID)
 #define LOONGARCH_CPU_HYPERVISOR	BIT_ULL(CPU_FEATURE_HYPERVISOR)
+#define LOONGARCH_CPU_PTW		BIT_ULL(CPU_FEATURE_PTW)
 
 #endif /* _ASM_CPU_H */

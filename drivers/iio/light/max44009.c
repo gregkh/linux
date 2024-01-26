@@ -487,8 +487,7 @@ static irqreturn_t max44009_threaded_irq_handler(int irq, void *p)
 	return IRQ_NONE;
 }
 
-static int max44009_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int max44009_probe(struct i2c_client *client)
 {
 	struct max44009_data *data;
 	struct iio_dev *indio_dev;

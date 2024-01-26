@@ -15,8 +15,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/of_pci.h>
 #include <linux/pci.h>
@@ -543,7 +542,7 @@ static const struct of_device_id faraday_pci_of_match[] = {
 static struct platform_driver faraday_pci_driver = {
 	.driver = {
 		.name = "ftpci100",
-		.of_match_table = of_match_ptr(faraday_pci_of_match),
+		.of_match_table = faraday_pci_of_match,
 		.suppress_bind_attrs = true,
 	},
 	.probe  = faraday_pci_probe,

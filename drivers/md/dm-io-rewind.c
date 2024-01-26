@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2022 Red Hat, Inc.
  */
@@ -68,7 +68,6 @@ static void dm_bio_integrity_rewind(struct bio *bio, unsigned int bytes_done)
 static inline void dm_bio_integrity_rewind(struct bio *bio,
 					   unsigned int bytes_done)
 {
-	return;
 }
 
 #endif
@@ -104,7 +103,6 @@ static void dm_bio_crypt_rewind(struct bio *bio, unsigned int bytes)
 
 static inline void dm_bio_crypt_rewind(struct bio *bio, unsigned int bytes)
 {
-	return;
 }
 
 #endif

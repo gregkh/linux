@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2003 Sistina Software Limited.
  * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
@@ -12,9 +13,11 @@
 
 #include <linux/dm-dirty-log.h>
 
-/*-----------------------------------------------------------------
+/*
+ *----------------------------------------------------------------
  * Region hash
- *----------------------------------------------------------------*/
+ *----------------------------------------------------------------
+ */
 struct dm_region_hash;
 struct dm_region;
 

@@ -34,6 +34,8 @@
 
 #define UNCORE_EVENT_CONSTRAINT(c, n) EVENT_CONSTRAINT(c, n, 0xff)
 
+#define UNCORE_IGNORE_END		-1
+
 struct pci_extra_dev {
 	struct pci_dev *dev[UNCORE_EXTRA_PCI_DEV_MAX];
 };
@@ -89,12 +91,12 @@ struct intel_uncore_type {
 	 * to identify which platform component each PMON block of that type is
 	 * supposed to monitor.
 	 */
-	struct intel_uncore_topology *topology;
+	struct intel_uncore_topology **topology;
 	/*
 	 * Optional callbacks for managing mapping of Uncore units to PMONs
 	 */
 	int (*get_topology)(struct intel_uncore_type *type);
-	int (*set_mapping)(struct intel_uncore_type *type);
+	void (*set_mapping)(struct intel_uncore_type *type);
 	void (*cleanup_mapping)(struct intel_uncore_type *type);
 };
 
@@ -179,9 +181,24 @@ struct freerunning_counters {
 	unsigned *box_offsets;
 };
 
-struct intel_uncore_topology {
-	u64 configuration;
+struct uncore_iio_topology {
+	int pci_bus_no;
 	int segment;
+};
+
+struct uncore_upi_topology {
+	int die_to;
+	int pmu_idx_to;
+	int enabled;
+};
+
+struct intel_uncore_topology {
+	int pmu_idx;
+	union {
+		void *untyped;
+		struct uncore_iio_topology *iio;
+		struct uncore_upi_topology *upi;
+	};
 };
 
 struct pci2phy_map {
@@ -193,6 +210,7 @@ struct pci2phy_map {
 struct pci2phy_map *__find_pci2phy_map(int segment);
 int uncore_pcibus_to_dieid(struct pci_bus *bus);
 int uncore_die_to_segment(int die);
+int uncore_device_to_die(struct pci_dev *dev);
 
 ssize_t uncore_event_show(struct device *dev,
 			  struct device_attribute *attr, char *buf);
@@ -574,6 +592,7 @@ extern raw_spinlock_t pci2phy_map_lock;
 extern struct list_head pci2phy_map_head;
 extern struct pci_extra_dev *uncore_extra_pci_dev;
 extern struct event_constraint uncore_constraint_empty;
+extern int spr_uncore_units_ignore[];
 
 /* uncore_snb.c */
 int snb_uncore_pci_init(void);

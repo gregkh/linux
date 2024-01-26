@@ -2,8 +2,8 @@
 #ifndef _ASM_X86_DEBUGREG_H
 #define _ASM_X86_DEBUGREG_H
 
-
 #include <linux/bug.h>
+#include <linux/percpu.h>
 #include <uapi/asm/debugreg.h>
 
 DECLARE_PER_CPU(unsigned long, cpu_dr7);
@@ -148,9 +148,14 @@ static __always_inline void local_db_restore(unsigned long dr7)
 }
 
 #ifdef CONFIG_CPU_SUP_AMD
-extern void set_dr_addr_mask(unsigned long mask, int dr);
+extern void amd_set_dr_addr_mask(unsigned long mask, unsigned int dr);
+extern unsigned long amd_get_dr_addr_mask(unsigned int dr);
 #else
-static inline void set_dr_addr_mask(unsigned long mask, int dr) { }
+static inline void amd_set_dr_addr_mask(unsigned long mask, unsigned int dr) { }
+static inline unsigned long amd_get_dr_addr_mask(unsigned int dr)
+{
+	return 0;
+}
 #endif
 
 #endif /* _ASM_X86_DEBUGREG_H */

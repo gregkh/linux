@@ -119,7 +119,7 @@ static const struct regmap_config rt711_sdca_regmap = {
 	.max_register = 0x44ffffff,
 	.reg_defaults = rt711_sdca_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(rt711_sdca_reg_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.use_single_read = true,
 	.use_single_write = true,
 };
@@ -133,7 +133,7 @@ static const struct regmap_config rt711_sdca_mbq_regmap = {
 	.max_register = 0x40800f12,
 	.reg_defaults = rt711_sdca_mbq_defaults,
 	.num_reg_defaults = ARRAY_SIZE(rt711_sdca_mbq_defaults),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.use_single_read = true,
 	.use_single_write = true,
 };
@@ -142,9 +142,6 @@ static int rt711_sdca_update_status(struct sdw_slave *slave,
 				enum sdw_slave_status status)
 {
 	struct rt711_sdca_priv *rt711 = dev_get_drvdata(&slave->dev);
-
-	/* Update the status */
-	rt711->status = status;
 
 	if (status == SDW_SLAVE_UNATTACHED)
 		rt711->hw_init = false;
@@ -168,7 +165,7 @@ static int rt711_sdca_update_status(struct sdw_slave *slave,
 	 * Perform initialization only if slave status is present and
 	 * hw_init flag is false
 	 */
-	if (rt711->hw_init || rt711->status != SDW_SLAVE_ATTACHED)
+	if (rt711->hw_init || status != SDW_SLAVE_ATTACHED)
 		return 0;
 
 	/* perform I/O transfers required for Slave initialization */
@@ -186,7 +183,6 @@ static int rt711_sdca_read_prop(struct sdw_slave *slave)
 
 	prop->scp_int1_mask = SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY;
 	prop->quirks = SDW_SLAVE_QUIRKS_INVALID_INITIAL_PARITY;
-	prop->is_sdca = true;
 
 	prop->paging_support = true;
 
@@ -370,8 +366,7 @@ static int rt711_sdca_sdw_remove(struct sdw_slave *slave)
 		cancel_delayed_work_sync(&rt711->jack_btn_check_work);
 	}
 
-	if (rt711->first_hw_init)
-		pm_runtime_disable(&slave->dev);
+	pm_runtime_disable(&slave->dev);
 
 	mutex_destroy(&rt711->calibrate_mutex);
 	mutex_destroy(&rt711->disable_irq_lock);

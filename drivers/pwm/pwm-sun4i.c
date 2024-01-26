@@ -17,7 +17,6 @@
 #include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
 #include <linux/reset.h>
@@ -118,6 +117,8 @@ static int sun4i_pwm_get_state(struct pwm_chip *chip,
 	unsigned int prescaler;
 
 	clk_rate = clk_get_rate(sun4i_pwm->clk);
+	if (!clk_rate)
+		return -EINVAL;
 
 	val = sun4i_pwm_readl(sun4i_pwm, PWM_CTRL_REG);
 
@@ -142,7 +143,7 @@ static int sun4i_pwm_get_state(struct pwm_chip *chip,
 		prescaler = prescaler_table[PWM_REG_PRESCAL(val, pwm->hwpwm)];
 
 	if (prescaler == 0)
-		return 0;
+		return -EINVAL;
 
 	if (val & BIT_CH(PWM_ACT_STATE, pwm->hwpwm))
 		state->polarity = PWM_POLARITY_NORMAL;
@@ -475,7 +476,7 @@ err_bus:
 	return ret;
 }
 
-static int sun4i_pwm_remove(struct platform_device *pdev)
+static void sun4i_pwm_remove(struct platform_device *pdev)
 {
 	struct sun4i_pwm_chip *sun4ichip = platform_get_drvdata(pdev);
 
@@ -483,8 +484,6 @@ static int sun4i_pwm_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(sun4ichip->bus_clk);
 	reset_control_assert(sun4ichip->rst);
-
-	return 0;
 }
 
 static struct platform_driver sun4i_pwm_driver = {
@@ -493,7 +492,7 @@ static struct platform_driver sun4i_pwm_driver = {
 		.of_match_table = sun4i_pwm_dt_ids,
 	},
 	.probe = sun4i_pwm_probe,
-	.remove = sun4i_pwm_remove,
+	.remove_new = sun4i_pwm_remove,
 };
 module_platform_driver(sun4i_pwm_driver);
 

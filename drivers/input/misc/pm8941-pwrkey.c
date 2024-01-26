@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
 #include <linux/regmap.h>
@@ -220,7 +219,7 @@ static int pm8941_pwrkey_sw_debounce_init(struct pm8941_pwrkey *pwrkey)
 	return 0;
 }
 
-static int __maybe_unused pm8941_pwrkey_suspend(struct device *dev)
+static int pm8941_pwrkey_suspend(struct device *dev)
 {
 	struct pm8941_pwrkey *pwrkey = dev_get_drvdata(dev);
 
@@ -230,7 +229,7 @@ static int __maybe_unused pm8941_pwrkey_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused pm8941_pwrkey_resume(struct device *dev)
+static int pm8941_pwrkey_resume(struct device *dev)
 {
 	struct pm8941_pwrkey *pwrkey = dev_get_drvdata(dev);
 
@@ -240,8 +239,8 @@ static int __maybe_unused pm8941_pwrkey_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(pm8941_pwr_key_pm_ops,
-			 pm8941_pwrkey_suspend, pm8941_pwrkey_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(pm8941_pwr_key_pm_ops,
+				pm8941_pwrkey_suspend, pm8941_pwrkey_resume);
 
 static int pm8941_pwrkey_probe(struct platform_device *pdev)
 {
@@ -471,7 +470,7 @@ static struct platform_driver pm8941_pwrkey_driver = {
 	.remove = pm8941_pwrkey_remove,
 	.driver = {
 		.name = "pm8941-pwrkey",
-		.pm = &pm8941_pwr_key_pm_ops,
+		.pm = pm_sleep_ptr(&pm8941_pwr_key_pm_ops),
 		.of_match_table = of_match_ptr(pm8941_pwr_key_id_table),
 	},
 };

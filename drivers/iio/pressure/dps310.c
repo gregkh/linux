@@ -827,9 +827,9 @@ static const struct iio_info dps310_info = {
 	.write_raw = dps310_write_raw,
 };
 
-static int dps310_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int dps310_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct dps310_data *data;
 	struct iio_dev *iio;
 	int rc;

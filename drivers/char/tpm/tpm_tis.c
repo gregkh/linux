@@ -25,9 +25,7 @@
 #include <linux/acpi.h>
 #include <linux/freezer.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/kernel.h>
-#include <linux/dmi.h>
 #include "tpm.h"
 #include "tpm_tis_core.h"
 
@@ -50,8 +48,47 @@ static inline struct tpm_tis_tcg_phy *to_tpm_tis_tcg_phy(struct tpm_tis_data *da
 	return container_of(data, struct tpm_tis_tcg_phy, priv);
 }
 
-static int interrupts = -1;
-module_param(interrupts, int, 0444);
+#ifdef CONFIG_PREEMPT_RT
+/*
+ * Flush previous write operations with a dummy read operation to the
+ * TPM MMIO base address.
+ */
+static inline void tpm_tis_flush(void __iomem *iobase)
+{
+	ioread8(iobase + TPM_ACCESS(0));
+}
+#else
+#define tpm_tis_flush(iobase) do { } while (0)
+#endif
+
+/*
+ * Write a byte word to the TPM MMIO address, and flush the write queue.
+ * The flush ensures that the data is sent immediately over the bus and not
+ * aggregated with further requests and transferred later in a batch. The large
+ * write requests can lead to unwanted latency spikes by blocking the CPU until
+ * the complete batch has been transferred.
+ */
+static inline void tpm_tis_iowrite8(u8 b, void __iomem *iobase, u32 addr)
+{
+	iowrite8(b, iobase + addr);
+	tpm_tis_flush(iobase);
+}
+
+/*
+ * Write a 32-bit word to the TPM MMIO address, and flush the write queue.
+ * The flush ensures that the data is sent immediately over the bus and not
+ * aggregated with further requests and transferred later in a batch. The large
+ * write requests can lead to unwanted latency spikes by blocking the CPU until
+ * the complete batch has been transferred.
+ */
+static inline void tpm_tis_iowrite32(u32 b, void __iomem *iobase, u32 addr)
+{
+	iowrite32(b, iobase + addr);
+	tpm_tis_flush(iobase);
+}
+
+static bool interrupts;
+module_param(interrupts, bool, 0444);
 MODULE_PARM_DESC(interrupts, "Enable interrupts");
 
 static bool itpm;
@@ -63,44 +100,6 @@ static bool force;
 module_param(force, bool, 0444);
 MODULE_PARM_DESC(force, "Force device probe rather than using ACPI entry");
 #endif
-
-static int tpm_tis_disable_irq(const struct dmi_system_id *d)
-{
-	if (interrupts == -1) {
-		pr_notice("tpm_tis: %s detected: disabling interrupts.\n", d->ident);
-		interrupts = 0;
-	}
-
-	return 0;
-}
-
-static const struct dmi_system_id tpm_tis_dmi_table[] = {
-	{
-		.callback = tpm_tis_disable_irq,
-		.ident = "ThinkPad T490s",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkPad T490s"),
-		},
-	},
-	{
-		.callback = tpm_tis_disable_irq,
-		.ident = "ThinkStation P360 Tiny",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkStation P360 Tiny"),
-		},
-	},
-	{
-		.callback = tpm_tis_disable_irq,
-		.ident = "ThinkPad L490",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkPad L490"),
-		},
-	},
-	{}
-};
 
 #if defined(CONFIG_PNP) && defined(CONFIG_ACPI)
 static int has_hid(struct acpi_device *dev, const char *hid)
@@ -202,12 +201,12 @@ static int tpm_tcg_write_bytes(struct tpm_tis_data *data, u32 addr, u16 len,
 	switch (io_mode) {
 	case TPM_TIS_PHYS_8:
 		while (len--)
-			iowrite8(*value++, phy->iobase + addr);
+			tpm_tis_iowrite8(*value++, phy->iobase, addr);
 		break;
 	case TPM_TIS_PHYS_16:
 		return -EINVAL;
 	case TPM_TIS_PHYS_32:
-		iowrite32(le32_to_cpu(*((__le32 *)value)), phy->iobase + addr);
+		tpm_tis_iowrite32(le32_to_cpu(*((__le32 *)value)), phy->iobase, addr);
 		break;
 	}
 
@@ -224,8 +223,6 @@ static int tpm_tis_init(struct device *dev, struct tpm_info *tpm_info)
 	struct tpm_tis_tcg_phy *phy;
 	int irq = -1;
 	int rc;
-
-	dmi_check_system(tpm_tis_dmi_table);
 
 	rc = check_acpi_tpm2(dev);
 	if (rc)
@@ -340,14 +337,12 @@ static int tpm_tis_plat_probe(struct platform_device *pdev)
 	return tpm_tis_init(&pdev->dev, &tpm_info);
 }
 
-static int tpm_tis_plat_remove(struct platform_device *pdev)
+static void tpm_tis_plat_remove(struct platform_device *pdev)
 {
 	struct tpm_chip *chip = dev_get_drvdata(&pdev->dev);
 
 	tpm_chip_unregister(chip);
 	tpm_tis_remove(chip);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -360,7 +355,7 @@ MODULE_DEVICE_TABLE(of, tis_of_platform_match);
 
 static struct platform_driver tis_drv = {
 	.probe = tpm_tis_plat_probe,
-	.remove = tpm_tis_plat_remove,
+	.remove_new = tpm_tis_plat_remove,
 	.driver = {
 		.name		= "tpm_tis",
 		.pm		= &tpm_tis_pm,

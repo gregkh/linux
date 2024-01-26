@@ -175,7 +175,7 @@ static inline struct ext2_sb_info *EXT2_SB(struct super_block *sb)
  * Macro-instructions used to manage several block sizes
  */
 #define EXT2_MIN_BLOCK_SIZE		1024
-#define	EXT2_MAX_BLOCK_SIZE		4096
+#define	EXT2_MAX_BLOCK_SIZE		65536
 #define EXT2_MIN_BLOCK_LOG_SIZE		  10
 #define EXT2_MAX_BLOCK_LOG_SIZE		  16
 #define EXT2_BLOCK_SIZE(s)		((s)->s_blocksize)
@@ -397,6 +397,12 @@ struct ext2_inode {
 #define EXT2_ERRORS_RO			2	/* Remount fs read-only */
 #define EXT2_ERRORS_PANIC		3	/* Panic */
 #define EXT2_ERRORS_DEFAULT		EXT2_ERRORS_CONTINUE
+
+/*
+ * Allocation flags
+ */
+#define EXT2_ALLOC_NORESERVE            0x1	/* Do not use reservation
+						 * window for allocation */
 
 /*
  * Structure of the super block
@@ -695,13 +701,11 @@ static inline struct ext2_inode_info *EXT2_I(struct inode *inode)
 /* balloc.c */
 extern int ext2_bg_has_super(struct super_block *sb, int group);
 extern unsigned long ext2_bg_num_gdb(struct super_block *sb, int group);
-extern ext2_fsblk_t ext2_new_block(struct inode *, unsigned long, int *);
-extern ext2_fsblk_t ext2_new_blocks(struct inode *, unsigned long,
-				unsigned long *, int *);
+extern ext2_fsblk_t ext2_new_blocks(struct inode *, ext2_fsblk_t,
+				unsigned long *, int *, unsigned int);
 extern int ext2_data_block_valid(struct ext2_sb_info *sbi, ext2_fsblk_t start_blk,
 				 unsigned int count);
-extern void ext2_free_blocks (struct inode *, unsigned long,
-			      unsigned long);
+extern void ext2_free_blocks(struct inode *, ext2_fsblk_t, unsigned long);
 extern unsigned long ext2_count_free_blocks (struct super_block *);
 extern unsigned long ext2_count_dirs (struct super_block *);
 extern struct ext2_group_desc * ext2_get_group_desc(struct super_block * sb,
@@ -718,13 +722,12 @@ extern int ext2_inode_by_name(struct inode *dir,
 			      const struct qstr *child, ino_t *ino);
 extern int ext2_make_empty(struct inode *, struct inode *);
 extern struct ext2_dir_entry_2 *ext2_find_entry(struct inode *, const struct qstr *,
-						struct page **, void **res_page_addr);
-extern int ext2_delete_entry(struct ext2_dir_entry_2 *dir, struct page *page,
-			     char *kaddr);
+						struct page **);
+extern int ext2_delete_entry(struct ext2_dir_entry_2 *dir, struct page *page);
 extern int ext2_empty_dir (struct inode *);
-extern struct ext2_dir_entry_2 *ext2_dotdot(struct inode *dir, struct page **p, void **pa);
-extern void ext2_set_link(struct inode *, struct ext2_dir_entry_2 *, struct page *, void *,
-			  struct inode *, int);
+extern struct ext2_dir_entry_2 *ext2_dotdot(struct inode *dir, struct page **p);
+int ext2_set_link(struct inode *dir, struct ext2_dir_entry_2 *de,
+		struct page *page, struct inode *inode, bool update_times);
 static inline void ext2_put_page(struct page *page, void *page_addr)
 {
 	kunmap_local(page_addr);
@@ -741,9 +744,10 @@ extern unsigned long ext2_count_free (struct buffer_head *, unsigned);
 extern struct inode *ext2_iget (struct super_block *, unsigned long);
 extern int ext2_write_inode (struct inode *, struct writeback_control *);
 extern void ext2_evict_inode(struct inode *);
+void ext2_write_failed(struct address_space *mapping, loff_t to);
 extern int ext2_get_block(struct inode *, sector_t, struct buffer_head *, int);
-extern int ext2_setattr (struct user_namespace *, struct dentry *, struct iattr *);
-extern int ext2_getattr (struct user_namespace *, const struct path *,
+extern int ext2_setattr (struct mnt_idmap *, struct dentry *, struct iattr *);
+extern int ext2_getattr (struct mnt_idmap *, const struct path *,
 			 struct kstat *, u32, unsigned int);
 extern void ext2_set_inode_flags(struct inode *inode);
 extern int ext2_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
@@ -751,7 +755,7 @@ extern int ext2_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 
 /* ioctl.c */
 extern int ext2_fileattr_get(struct dentry *dentry, struct fileattr *fa);
-extern int ext2_fileattr_set(struct user_namespace *mnt_userns,
+extern int ext2_fileattr_set(struct mnt_idmap *idmap,
 			     struct dentry *dentry, struct fileattr *fa);
 extern long ext2_ioctl(struct file *, unsigned int, unsigned long);
 extern long ext2_compat_ioctl(struct file *, unsigned int, unsigned long);

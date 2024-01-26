@@ -89,6 +89,7 @@ static const struct mm_walk_ops pageattr_ops = {
 	.pmd_entry = pageattr_pmd_entry,
 	.pte_entry = pageattr_pte_entry,
 	.pte_hole = pageattr_pte_hole,
+	.walk_lock = PGWALK_RDLOCK,
 };
 
 #ifdef CONFIG_64BIT

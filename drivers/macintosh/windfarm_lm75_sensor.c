@@ -14,7 +14,7 @@
 #include <linux/init.h>
 #include <linux/wait.h>
 #include <linux/i2c.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <asm/machdep.h>
 #include <asm/io.h>
 #include <asm/sections.h>
@@ -87,9 +87,9 @@ static const struct wf_sensor_ops wf_lm75_ops = {
 	.owner		= THIS_MODULE,
 };
 
-static int wf_lm75_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
-{	
+static int wf_lm75_probe(struct i2c_client *client)
+{
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct wf_lm75_sensor *lm;
 	int rc, ds1775;
 	const char *name, *loc;

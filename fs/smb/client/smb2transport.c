@@ -86,13 +86,14 @@ int smb2_get_sign_key(__u64 ses_id, struct TCP_Server_Info *server, u8 *key)
 	spin_lock(&cifs_tcp_ses_lock);
 
 	/* If server is a channel, select the primary channel */
-	pserver = CIFS_SERVER_IS_CHAN(server) ? server->primary_server : server;
+	pserver = SERVER_IS_CHAN(server) ? server->primary_server : server;
 
 	list_for_each_entry(ses, &pserver->smb_ses_list, smb_ses_list) {
 		if (ses->Suid == ses_id)
 			goto found;
 	}
-	cifs_server_dbg(VFS, "%s: Could not find session 0x%llx\n",
+	trace_smb3_ses_not_found(ses_id);
+	cifs_server_dbg(FYI, "%s: Could not find session 0x%llx\n",
 			__func__, ses_id);
 	rc = -ENOENT;
 	goto out;
@@ -148,7 +149,7 @@ smb2_find_smb_ses_unlocked(struct TCP_Server_Info *server, __u64 ses_id)
 	struct cifs_ses *ses;
 
 	/* If server is a channel, select the primary channel */
-	pserver = CIFS_SERVER_IS_CHAN(server) ? server->primary_server : server;
+	pserver = SERVER_IS_CHAN(server) ? server->primary_server : server;
 
 	list_for_each_entry(ses, &pserver->smb_ses_list, smb_ses_list) {
 		if (ses->Suid != ses_id)
@@ -159,7 +160,7 @@ smb2_find_smb_ses_unlocked(struct TCP_Server_Info *server, __u64 ses_id)
 			spin_unlock(&ses->ses_lock);
 			continue;
 		}
-		++ses->ses_count;
+		cifs_smb_ses_inc_refcount(ses);
 		spin_unlock(&ses->ses_lock);
 		return ses;
 	}
@@ -563,7 +564,7 @@ smb3_calc_signature(struct smb_rqst *rqst, struct TCP_Server_Info *server,
 
 	rc = smb2_get_sign_key(le64_to_cpu(shdr->SessionId), server, key);
 	if (unlikely(rc)) {
-		cifs_server_dbg(VFS, "%s: Could not get signing key\n", __func__);
+		cifs_server_dbg(FYI, "%s: Could not get signing key\n", __func__);
 		return rc;
 	}
 

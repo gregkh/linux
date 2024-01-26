@@ -35,10 +35,16 @@ void sas_ata_end_eh(struct ata_port *ap);
 void sas_ata_device_link_abort(struct domain_device *dev, bool force_reset);
 int sas_execute_ata_cmd(struct domain_device *device, u8 *fis,
 			int force_phy_id);
-int sas_ata_wait_after_reset(struct domain_device *dev, unsigned long deadline);
 int smp_ata_check_ready_type(struct ata_link *link);
+int sas_discover_sata(struct domain_device *dev);
+int sas_ata_add_dev(struct domain_device *parent, struct ex_phy *phy,
+		    struct domain_device *child, int phy_id);
 #else
 
+static inline void sas_ata_disabled_notice(void)
+{
+	pr_notice_once("ATA device seen but CONFIG_SCSI_SAS_ATA=N\n");
+}
 
 static inline int dev_is_sata(struct domain_device *dev)
 {
@@ -100,15 +106,22 @@ static inline int sas_execute_ata_cmd(struct domain_device *device, u8 *fis,
 	return 0;
 }
 
-static inline int sas_ata_wait_after_reset(struct domain_device *dev,
-					   unsigned long deadline)
-{
-	return -ETIMEDOUT;
-}
-
 static inline int smp_ata_check_ready_type(struct ata_link *link)
 {
 	return 0;
+}
+
+static inline int sas_discover_sata(struct domain_device *dev)
+{
+	sas_ata_disabled_notice();
+	return -ENXIO;
+}
+
+static inline int sas_ata_add_dev(struct domain_device *parent, struct ex_phy *phy,
+				  struct domain_device *child, int phy_id)
+{
+	sas_ata_disabled_notice();
+	return -ENODEV;
 }
 #endif
 

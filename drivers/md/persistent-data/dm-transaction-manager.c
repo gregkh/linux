@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011 Red Hat, Inc.
  *
@@ -36,6 +37,7 @@ static unsigned int prefetch_hash(dm_block_t b)
 static void prefetch_wipe(struct prefetch_set *p)
 {
 	unsigned int i;
+
 	for (i = 0; i < PREFETCH_SIZE; i++)
 		p->blocks[i] = PREFETCH_SENTINEL;
 }

@@ -403,6 +403,14 @@ bool ionic_rx_service(struct ionic_cq *cq, struct ionic_cq_info *cq_info)
 	return true;
 }
 
+static inline void ionic_write_cmb_desc(struct ionic_queue *q,
+					void __iomem *cmb_desc,
+					void *desc)
+{
+	if (q_to_qcq(q)->flags & IONIC_QCQ_F_CMB_RINGS)
+		memcpy_toio(cmb_desc, desc, q->desc_size);
+}
+
 void ionic_rx_fill(struct ionic_queue *q)
 {
 	struct net_device *netdev = q->lif->netdev;
@@ -483,6 +491,8 @@ void ionic_rx_fill(struct ionic_queue *q)
 		desc->opcode = (nfrags > 1) ? IONIC_RXQ_DESC_OPCODE_SG :
 					      IONIC_RXQ_DESC_OPCODE_SIMPLE;
 		desc_info->nbufs = nfrags;
+
+		ionic_write_cmb_desc(q, desc_info->cmb_desc, desc);
 
 		ionic_rxq_post(q, false, ionic_rx_clean, NULL);
 	}
@@ -947,7 +957,8 @@ static int ionic_tx_tcp_pseudo_csum(struct sk_buff *skb)
 	return 0;
 }
 
-static void ionic_tx_tso_post(struct ionic_queue *q, struct ionic_txq_desc *desc,
+static void ionic_tx_tso_post(struct ionic_queue *q,
+			      struct ionic_desc_info *desc_info,
 			      struct sk_buff *skb,
 			      dma_addr_t addr, u8 nsge, u16 len,
 			      unsigned int hdrlen, unsigned int mss,
@@ -955,6 +966,7 @@ static void ionic_tx_tso_post(struct ionic_queue *q, struct ionic_txq_desc *desc
 			      u16 vlan_tci, bool has_vlan,
 			      bool start, bool done)
 {
+	struct ionic_txq_desc *desc = desc_info->desc;
 	u8 flags = 0;
 	u64 cmd;
 
@@ -969,6 +981,8 @@ static void ionic_tx_tso_post(struct ionic_queue *q, struct ionic_txq_desc *desc
 	desc->vlan_tci = cpu_to_le16(vlan_tci);
 	desc->hdr_len = cpu_to_le16(hdrlen);
 	desc->mss = cpu_to_le16(mss);
+
+	ionic_write_cmb_desc(q, desc_info->cmb_desc, desc);
 
 	if (start) {
 		skb_tx_timestamp(skb);
@@ -1013,8 +1027,12 @@ static int ionic_tx_tso(struct ionic_queue *q, struct sk_buff *skb)
 
 	len = skb->len;
 	mss = skb_shinfo(skb)->gso_size;
-	outer_csum = (skb_shinfo(skb)->gso_type & SKB_GSO_GRE_CSUM) ||
-		     (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_TUNNEL_CSUM);
+	outer_csum = (skb_shinfo(skb)->gso_type & (SKB_GSO_GRE |
+						   SKB_GSO_GRE_CSUM |
+						   SKB_GSO_IPXIP4 |
+						   SKB_GSO_IPXIP6 |
+						   SKB_GSO_UDP_TUNNEL |
+						   SKB_GSO_UDP_TUNNEL_CSUM));
 	has_vlan = !!skb_vlan_tag_present(skb);
 	vlan_tci = skb_vlan_tag_get(skb);
 	encap = skb->encapsulation;
@@ -1084,7 +1102,7 @@ static int ionic_tx_tso(struct ionic_queue *q, struct sk_buff *skb)
 		seg_rem = min(tso_rem, mss);
 		done = (tso_rem == 0);
 		/* post descriptor */
-		ionic_tx_tso_post(q, desc, skb,
+		ionic_tx_tso_post(q, desc_info, skb,
 				  desc_addr, desc_nsge, desc_len,
 				  hdrlen, mss, outer_csum, vlan_tci, has_vlan,
 				  start, done);
@@ -1133,6 +1151,8 @@ static void ionic_tx_calc_csum(struct ionic_queue *q, struct sk_buff *skb,
 	desc->csum_start = cpu_to_le16(skb_checksum_start_offset(skb));
 	desc->csum_offset = cpu_to_le16(skb->csum_offset);
 
+	ionic_write_cmb_desc(q, desc_info->cmb_desc, desc);
+
 	if (skb_csum_is_sctp(skb))
 		stats->crc32_csum++;
 	else
@@ -1169,6 +1189,8 @@ static void ionic_tx_calc_no_csum(struct ionic_queue *q, struct sk_buff *skb,
 	}
 	desc->csum_start = 0;
 	desc->csum_offset = 0;
+
+	ionic_write_cmb_desc(q, desc_info->cmb_desc, desc);
 
 	stats->csum_none++;
 }

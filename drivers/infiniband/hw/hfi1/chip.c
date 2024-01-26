@@ -1461,7 +1461,8 @@ static u64 dc_access_lcb_cntr(const struct cntr_entry *entry, void *context,
 		ret = write_lcb_csr(dd, csr, data);
 
 	if (ret) {
-		dd_dev_err(dd, "Could not acquire LCB for counter 0x%x", csr);
+		if (!(dd->flags & HFI1_SHUTDOWN))
+			dd_dev_err(dd, "Could not acquire LCB for counter 0x%x", csr);
 		return 0;
 	}
 
@@ -6160,7 +6161,7 @@ static int request_host_lcb_access(struct hfi1_devdata *dd)
 	ret = do_8051_command(dd, HCMD_MISC,
 			      (u64)HCMD_MISC_REQUEST_LCB_ACCESS <<
 			      LOAD_DATA_FIELD_ID_SHIFT, NULL);
-	if (ret != HCMD_SUCCESS) {
+	if (ret != HCMD_SUCCESS && !(dd->flags & HFI1_SHUTDOWN)) {
 		dd_dev_err(dd, "%s: command failed with error %d\n",
 			   __func__, ret);
 	}
@@ -6241,7 +6242,8 @@ int acquire_lcb_access(struct hfi1_devdata *dd, int sleep_ok)
 	if (dd->lcb_access_count == 0) {
 		ret = request_host_lcb_access(dd);
 		if (ret) {
-			dd_dev_err(dd,
+			if (!(dd->flags & HFI1_SHUTDOWN))
+				dd_dev_err(dd,
 				   "%s: unable to acquire LCB access, err %d\n",
 				   __func__, ret);
 			goto done;
@@ -12135,7 +12137,7 @@ void hfi1_rcvctrl(struct hfi1_devdata *dd, unsigned int op,
 		set_intr_bits(dd, IS_RCVURGENT_START + rcd->ctxt,
 			      IS_RCVURGENT_START + rcd->ctxt, false);
 
-	hfi1_cdbg(RCVCTRL, "ctxt %d rcvctrl 0x%llx\n", ctxt, rcvctrl);
+	hfi1_cdbg(RCVCTRL, "ctxt %d rcvctrl 0x%llx", ctxt, rcvctrl);
 	write_kctxt_csr(dd, ctxt, RCV_CTXT_CTRL, rcvctrl);
 
 	/* work around sticky RcvCtxtStatus.BlockedRHQFull */
@@ -12205,10 +12207,10 @@ u32 hfi1_read_cntrs(struct hfi1_devdata *dd, char **namep, u64 **cntrp)
 			hfi1_cdbg(CNTR, "reading %s", entry->name);
 			if (entry->flags & CNTR_DISABLED) {
 				/* Nothing */
-				hfi1_cdbg(CNTR, "\tDisabled\n");
+				hfi1_cdbg(CNTR, "\tDisabled");
 			} else {
 				if (entry->flags & CNTR_VL) {
-					hfi1_cdbg(CNTR, "\tPer VL\n");
+					hfi1_cdbg(CNTR, "\tPer VL");
 					for (j = 0; j < C_VL_COUNT; j++) {
 						val = entry->rw_cntr(entry,
 								  dd, j,
@@ -12216,21 +12218,21 @@ u32 hfi1_read_cntrs(struct hfi1_devdata *dd, char **namep, u64 **cntrp)
 								  0);
 						hfi1_cdbg(
 						   CNTR,
-						   "\t\tRead 0x%llx for %d\n",
+						   "\t\tRead 0x%llx for %d",
 						   val, j);
 						dd->cntrs[entry->offset + j] =
 									    val;
 					}
 				} else if (entry->flags & CNTR_SDMA) {
 					hfi1_cdbg(CNTR,
-						  "\t Per SDMA Engine\n");
+						  "\t Per SDMA Engine");
 					for (j = 0; j < chip_sdma_engines(dd);
 					     j++) {
 						val =
 						entry->rw_cntr(entry, dd, j,
 							       CNTR_MODE_R, 0);
 						hfi1_cdbg(CNTR,
-							  "\t\tRead 0x%llx for %d\n",
+							  "\t\tRead 0x%llx for %d",
 							  val, j);
 						dd->cntrs[entry->offset + j] =
 									val;
@@ -12271,7 +12273,7 @@ u32 hfi1_read_portcntrs(struct hfi1_pportdata *ppd, char **namep, u64 **cntrp)
 			hfi1_cdbg(CNTR, "reading %s", entry->name);
 			if (entry->flags & CNTR_DISABLED) {
 				/* Nothing */
-				hfi1_cdbg(CNTR, "\tDisabled\n");
+				hfi1_cdbg(CNTR, "\tDisabled");
 				continue;
 			}
 
@@ -12514,7 +12516,7 @@ static void do_update_synth_timer(struct work_struct *work)
 
 	hfi1_cdbg(
 	    CNTR,
-	    "[%d] curr tx=0x%llx rx=0x%llx :: last tx=0x%llx rx=0x%llx\n",
+	    "[%d] curr tx=0x%llx rx=0x%llx :: last tx=0x%llx rx=0x%llx",
 	    dd->unit, cur_tx, cur_rx, dd->last_tx, dd->last_rx);
 
 	if ((cur_tx < dd->last_tx) || (cur_rx < dd->last_rx)) {
@@ -12528,7 +12530,7 @@ static void do_update_synth_timer(struct work_struct *work)
 	} else {
 		total_flits = (cur_tx - dd->last_tx) + (cur_rx - dd->last_rx);
 		hfi1_cdbg(CNTR,
-			  "[%d] total flits 0x%llx limit 0x%llx\n", dd->unit,
+			  "[%d] total flits 0x%llx limit 0x%llx", dd->unit,
 			  total_flits, (u64)CNTR_32BIT_MAX);
 		if (total_flits >= CNTR_32BIT_MAX) {
 			hfi1_cdbg(CNTR, "[%d] 32bit limit hit, updating",

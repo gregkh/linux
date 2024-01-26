@@ -94,6 +94,7 @@ config PPC_BOOK3S_64
 	select PPC_FPU
 	select PPC_HAVE_PMU_SUPPORT
 	select HAVE_ARCH_TRANSPARENT_HUGEPAGE
+	select HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
 	select ARCH_ENABLE_HUGEPAGE_MIGRATION if HUGETLB_PAGE && MIGRATION
 	select ARCH_ENABLE_SPLIT_PMD_PTLOCK
 	select ARCH_ENABLE_THP_MIGRATION if TRANSPARENT_HUGEPAGE
@@ -134,6 +135,7 @@ config POWERPC64_CPU
 	depends on PPC_BOOK3S_64 && CPU_LITTLE_ENDIAN
 	select ARCH_HAS_FAST_MULTIPLIER
 	select PPC_64S_HASH_MMU
+	select PPC_HAS_LBARX_LHARX
 
 config POWERPC_CPU
 	bool "Generic 32 bits powerpc"
@@ -160,22 +162,27 @@ config POWER7_CPU
 	depends on PPC_BOOK3S_64
 	select ARCH_HAS_FAST_MULTIPLIER
 	select PPC_64S_HASH_MMU
+	select PPC_HAS_LBARX_LHARX
 
 config POWER8_CPU
 	bool "POWER8"
 	depends on PPC_BOOK3S_64
 	select ARCH_HAS_FAST_MULTIPLIER
 	select PPC_64S_HASH_MMU
+	select PPC_HAS_LBARX_LHARX
 
 config POWER9_CPU
 	bool "POWER9"
 	depends on PPC_BOOK3S_64
 	select ARCH_HAS_FAST_MULTIPLIER
+	select PPC_HAS_LBARX_LHARX
 
 config POWER10_CPU
 	bool "POWER10"
 	depends on PPC_BOOK3S_64
 	select ARCH_HAS_FAST_MULTIPLIER
+	select PPC_HAVE_PREFIXED_SUPPORT
+	select PPC_HAVE_PCREL_SUPPORT
 
 config E5500_CPU
 	bool "Freescale e5500"
@@ -185,6 +192,7 @@ config E6500_CPU
 	bool "Freescale e6500"
 	depends on PPC64 && PPC_E500
 	depends on !CC_IS_CLANG
+	select PPC_HAS_LBARX_LHARX
 
 config 405_CPU
 	bool "40x family"
@@ -267,6 +275,13 @@ config TARGET_CPU
 	default "8540" if E500_CPU
 	default "e500mc" if E500MC_CPU
 	default "powerpc" if POWERPC_CPU
+
+config TUNE_CPU
+	string
+	depends on POWERPC64_CPU
+	default "-mtune=power10" if $(cc-option,-mtune=power10)
+	default "-mtune=power9"  if $(cc-option,-mtune=power9)
+	default "-mtune=power8"  if $(cc-option,-mtune=power8)
 
 config PPC_BOOK3S
 	def_bool y
@@ -449,6 +464,36 @@ config PPC_RADIX_MMU_DEFAULT
 
 	  If you're unsure, say Y.
 
+config PPC_KERNEL_PREFIXED
+	depends on PPC_HAVE_PREFIXED_SUPPORT
+	depends on CC_HAS_PREFIXED
+	default n
+	bool "Build Kernel with Prefixed Instructions"
+	help
+	  POWER10 and later CPUs support prefixed instructions, 8 byte
+	  instructions that include large immediate, pc relative addressing,
+	  and various floating point, vector, MMA.
+
+	  This option builds the kernel with prefixed instructions, and
+	  allows a pc relative addressing option to be selected.
+
+	  Kernel support for prefixed instructions in applications and guests
+	  is not affected by this option.
+
+config PPC_KERNEL_PCREL
+	depends on PPC_HAVE_PCREL_SUPPORT
+	depends on PPC_HAVE_PREFIXED_SUPPORT
+	depends on CC_HAS_PCREL
+	default n
+	select PPC_KERNEL_PREFIXED
+	bool "Build Kernel with PC-Relative addressing model"
+	help
+	  POWER10 and later CPUs support pc relative addressing. Recent
+	  compilers have support for an ELF ABI extension for a pc relative
+	  ABI.
+
+	  This option builds the kernel with the pc relative ABI model.
+
 config PPC_KUEP
 	bool "Kernel Userspace Execution Prevention" if !40x
 	default y if !40x
@@ -483,6 +528,12 @@ config PPC_MMU_NOHASH
 	depends on !PPC_BOOK3S
 
 config PPC_HAVE_PMU_SUPPORT
+	bool
+
+config PPC_HAVE_PREFIXED_SUPPORT
+	bool
+
+config PPC_HAVE_PCREL_SUPPORT
 	bool
 
 config PMU_SYSFS
@@ -585,10 +636,10 @@ config CPU_LITTLE_ENDIAN
 endchoice
 
 config PPC64_ELF_ABI_V1
-	def_bool PPC64 && CPU_BIG_ENDIAN
+	def_bool PPC64 && (CPU_BIG_ENDIAN && !PPC64_BIG_ENDIAN_ELF_ABI_V2)
 
 config PPC64_ELF_ABI_V2
-	def_bool PPC64 && CPU_LITTLE_ENDIAN
+	def_bool PPC64 && !PPC64_ELF_ABI_V1
 
 config PPC64_BOOT_WRAPPER
 	def_bool n
