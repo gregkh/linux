@@ -2,8 +2,9 @@
 /*
  *  event_inode.c - part of tracefs, a pseudo file system for activating tracing
  *
- *  Copyright (C) 2020-23 VMware Inc, author: Steven Rostedt (VMware) <rostedt@goodmis.org>
+ *  Copyright (C) 2020-23 VMware Inc, author: Steven Rostedt <rostedt@goodmis.org>
  *  Copyright (C) 2020-23 VMware Inc, author: Ajay Kaher <akaher@vmware.com>
+ *  Copyright (C) 2023 Google, author: Steven Rostedt <rostedt@goodmis.org>
  *
  *  eventfs is used to dynamically create inodes and dentries based on the
  *  meta data provided by the tracing system.
@@ -23,51 +24,20 @@
 #include <linux/delay.h>
 #include "internal.h"
 
-struct eventfs_inode {
-	struct list_head	e_top_files;
-};
+/*
+ * eventfs_mutex protects the eventfs_inode (ei) dentry. Any access
+ * to the ei->dentry must be done under this mutex and after checking
+ * if ei->is_freed is not set. When ei->is_freed is set, the dentry
+ * is on its way to being freed after the last dput() is made on it.
+ */
+static DEFINE_MUTEX(eventfs_mutex);
 
 /*
- * struct eventfs_file - hold the properties of the eventfs files and
- *                       directories.
- * @name:	the name of the file or directory to create
- * @d_parent:   holds parent's dentry
- * @dentry:     once accessed holds dentry
- * @list:	file or directory to be added to parent directory
- * @ei:		list of files and directories within directory
- * @fop:	file_operations for file or directory
- * @iop:	inode_operations for file or directory
- * @data:	something that the caller will want to get to later on
- * @is_freed:	Flag set if the eventfs is on its way to be freed
- * @mode:	the permission that the file or directory should have
- * @uid:	saved uid if changed
- * @gid:	saved gid if changed
+ * The eventfs_inode (ei) itself is protected by SRCU. It is released from
+ * its parent's list and will have is_freed set (under eventfs_mutex).
+ * After the SRCU grace period is over and the last dput() is called
+ * the ei is freed.
  */
-struct eventfs_file {
-	const char			*name;
-	struct dentry			*d_parent;
-	struct dentry			*dentry;
-	struct list_head		list;
-	struct eventfs_inode		*ei;
-	const struct file_operations	*fop;
-	const struct inode_operations	*iop;
-	/*
-	 * Union - used for deletion
-	 * @llist:	for calling dput() if needed after RCU
-	 * @rcu:	eventfs_file to delete in RCU
-	 */
-	union {
-		struct llist_node	llist;
-		struct rcu_head		rcu;
-	};
-	void				*data;
-	unsigned int			is_freed:1;
-	unsigned int			mode:31;
-	kuid_t				uid;
-	kgid_t				gid;
-};
-
-static DEFINE_MUTEX(eventfs_mutex);
 DEFINE_STATIC_SRCU(eventfs_srcu);
 
 /* Mode is unsigned short, use the upper bits for flags */
@@ -86,42 +56,84 @@ static int dcache_dir_open_wrapper(struct inode *inode, struct file *file);
 static int dcache_readdir_wrapper(struct file *file, struct dir_context *ctx);
 static int eventfs_release(struct inode *inode, struct file *file);
 
-static void update_attr(struct eventfs_file *ef, struct iattr *iattr)
+static void update_attr(struct eventfs_attr *attr, struct iattr *iattr)
 {
 	unsigned int ia_valid = iattr->ia_valid;
 
 	if (ia_valid & ATTR_MODE) {
-		ef->mode = (ef->mode & ~EVENTFS_MODE_MASK) |
+		attr->mode = (attr->mode & ~EVENTFS_MODE_MASK) |
 			(iattr->ia_mode & EVENTFS_MODE_MASK) |
 			EVENTFS_SAVE_MODE;
 	}
 	if (ia_valid & ATTR_UID) {
-		ef->mode |= EVENTFS_SAVE_UID;
-		ef->uid = iattr->ia_uid;
+		attr->mode |= EVENTFS_SAVE_UID;
+		attr->uid = iattr->ia_uid;
 	}
 	if (ia_valid & ATTR_GID) {
-		ef->mode |= EVENTFS_SAVE_GID;
-		ef->gid = iattr->ia_gid;
+		attr->mode |= EVENTFS_SAVE_GID;
+		attr->gid = iattr->ia_gid;
 	}
 }
 
 static int eventfs_set_attr(struct mnt_idmap *idmap, struct dentry *dentry,
-			     struct iattr *iattr)
+			    struct iattr *iattr)
 {
-	struct eventfs_file *ef;
+	const struct eventfs_entry *entry;
+	struct eventfs_inode *ei;
+	const char *name;
 	int ret;
 
 	mutex_lock(&eventfs_mutex);
-	ef = dentry->d_fsdata;
-	if (ef && ef->is_freed) {
+	ei = dentry->d_fsdata;
+	if (ei->is_freed) {
 		/* Do not allow changes if the event is about to be removed. */
 		mutex_unlock(&eventfs_mutex);
 		return -ENODEV;
 	}
 
+	/* Preallocate the children mode array if necessary */
+	if (!(dentry->d_inode->i_mode & S_IFDIR)) {
+		if (!ei->entry_attrs) {
+			ei->entry_attrs = kzalloc(sizeof(*ei->entry_attrs) * ei->nr_entries,
+						  GFP_NOFS);
+			if (!ei->entry_attrs) {
+				ret = -ENOMEM;
+				goto out;
+			}
+		}
+	}
+
 	ret = simple_setattr(idmap, dentry, iattr);
-	if (!ret && ef)
-		update_attr(ef, iattr);
+	if (ret < 0)
+		goto out;
+
+	/*
+	 * If this is a dir, then update the ei cache, only the file
+	 * mode is saved in the ei->m_children, and the ownership is
+	 * determined by the parent directory.
+	 */
+	if (dentry->d_inode->i_mode & S_IFDIR) {
+		/*
+		 * The events directory dentry is never freed, unless its
+		 * part of an instance that is deleted. It's attr is the
+		 * default for its child files and directories.
+		 * Do not update it. It's not used for its own mode or ownership
+		 */
+		if (!ei->is_events)
+			update_attr(&ei->attr, iattr);
+
+	} else {
+		name = dentry->d_name.name;
+
+		for (int i = 0; i < ei->nr_entries; i++) {
+			entry = &ei->entries[i];
+			if (strcmp(name, entry->name) == 0) {
+				update_attr(&ei->entry_attrs[i], iattr);
+				break;
+			}
+		}
+	}
+ out:
 	mutex_unlock(&eventfs_mutex);
 	return ret;
 }
@@ -143,36 +155,110 @@ static const struct file_operations eventfs_file_operations = {
 	.release	= eventfs_release,
 };
 
-static void update_inode_attr(struct inode *inode, struct eventfs_file *ef)
+/* Return the evenfs_inode of the "events" directory */
+static struct eventfs_inode *eventfs_find_events(struct dentry *dentry)
 {
-	inode->i_mode = ef->mode & EVENTFS_MODE_MASK;
+	struct eventfs_inode *ei;
 
-	if (ef->mode & EVENTFS_SAVE_UID)
-		inode->i_uid = ef->uid;
+	mutex_lock(&eventfs_mutex);
+	do {
+		/* The parent always has an ei, except for events itself */
+		ei = dentry->d_parent->d_fsdata;
 
-	if (ef->mode & EVENTFS_SAVE_GID)
-		inode->i_gid = ef->gid;
+		/*
+		 * If the ei is being freed, the ownership of the children
+		 * doesn't matter.
+		 */
+		if (ei->is_freed) {
+			ei = NULL;
+			break;
+		}
+
+		dentry = ei->dentry;
+	} while (!ei->is_events);
+	mutex_unlock(&eventfs_mutex);
+
+	return ei;
+}
+
+static void update_inode_attr(struct dentry *dentry, struct inode *inode,
+			      struct eventfs_attr *attr, umode_t mode)
+{
+	struct eventfs_inode *events_ei = eventfs_find_events(dentry);
+
+	if (!events_ei)
+		return;
+
+	inode->i_mode = mode;
+	inode->i_uid = events_ei->attr.uid;
+	inode->i_gid = events_ei->attr.gid;
+
+	if (!attr)
+		return;
+
+	if (attr->mode & EVENTFS_SAVE_MODE)
+		inode->i_mode = attr->mode & EVENTFS_MODE_MASK;
+
+	if (attr->mode & EVENTFS_SAVE_UID)
+		inode->i_uid = attr->uid;
+
+	if (attr->mode & EVENTFS_SAVE_GID)
+		inode->i_gid = attr->gid;
+}
+
+static void update_gid(struct eventfs_inode *ei, kgid_t gid, int level)
+{
+	struct eventfs_inode *ei_child;
+
+	/* at most we have events/system/event */
+	if (WARN_ON_ONCE(level > 3))
+		return;
+
+	ei->attr.gid = gid;
+
+	if (ei->entry_attrs) {
+		for (int i = 0; i < ei->nr_entries; i++) {
+			ei->entry_attrs[i].gid = gid;
+		}
+	}
+
+	/*
+	 * Only eventfs_inode with dentries are updated, make sure
+	 * all eventfs_inodes are updated. If one of the children
+	 * do not have a dentry, this function must traverse it.
+	 */
+	list_for_each_entry_srcu(ei_child, &ei->children, list,
+				 srcu_read_lock_held(&eventfs_srcu)) {
+		if (!ei_child->dentry)
+			update_gid(ei_child, gid, level + 1);
+	}
+}
+
+void eventfs_update_gid(struct dentry *dentry, kgid_t gid)
+{
+	struct eventfs_inode *ei = dentry->d_fsdata;
+	int idx;
+
+	idx = srcu_read_lock(&eventfs_srcu);
+	update_gid(ei, gid, 0);
+	srcu_read_unlock(&eventfs_srcu, idx);
 }
 
 /**
  * create_file - create a file in the tracefs filesystem
- * @ef: the eventfs_file
+ * @name: the name of the file to create.
+ * @mode: the permission that the file should have.
+ * @attr: saved attributes changed by user
  * @parent: parent dentry for this file.
  * @data: something that the caller will want to get to later on.
  * @fop: struct file_operations that should be used for this file.
  *
- * This is the basic "create a file" function for tracefs.  It allows for a
- * wide range of flexibility in creating a file.
- *
- * This function will return a pointer to a dentry if it succeeds.  This
- * pointer must be passed to the tracefs_remove() function when the file is
- * to be removed (no automatic cleanup happens if your module is unloaded,
- * you are responsible here.)  If an error occurs, %NULL will be returned.
- *
- * If tracefs is not enabled in the kernel, the value -%ENODEV will be
- * returned.
+ * This function creates a dentry that represents a file in the eventsfs_inode
+ * directory. The inode.i_private pointer will point to @data in the open()
+ * call.
  */
-static struct dentry *create_file(struct eventfs_file *ef,
+static struct dentry *create_file(const char *name, umode_t mode,
+				  struct eventfs_attr *attr,
 				  struct dentry *parent, void *data,
 				  const struct file_operations *fop)
 {
@@ -180,13 +266,14 @@ static struct dentry *create_file(struct eventfs_file *ef,
 	struct dentry *dentry;
 	struct inode *inode;
 
-	if (!(ef->mode & S_IFMT))
-		ef->mode |= S_IFREG;
+	if (!(mode & S_IFMT))
+		mode |= S_IFREG;
 
-	if (WARN_ON_ONCE(!S_ISREG(ef->mode)))
+	if (WARN_ON_ONCE(!S_ISREG(mode)))
 		return NULL;
 
-	dentry = eventfs_start_creating(ef->name, parent);
+	WARN_ON_ONCE(!parent);
+	dentry = eventfs_start_creating(name, parent);
 
 	if (IS_ERR(dentry))
 		return dentry;
@@ -196,7 +283,7 @@ static struct dentry *create_file(struct eventfs_file *ef,
 		return eventfs_failed_creating(dentry);
 
 	/* If the user updated the directory's attributes, use them */
-	update_inode_attr(inode, ef);
+	update_inode_attr(dentry, inode, attr, mode);
 
 	inode->i_op = &eventfs_file_inode_operations;
 	inode->i_fop = fop;
@@ -213,27 +300,17 @@ static struct dentry *create_file(struct eventfs_file *ef,
  * create_dir - create a dir in the tracefs filesystem
  * @ei: the eventfs_inode that represents the directory to create
  * @parent: parent dentry for this file.
- * @data: something that the caller will want to get to later on.
  *
- * This is the basic "create a dir" function for eventfs.  It allows for a
- * wide range of flexibility in creating a dir.
- *
- * This function will return a pointer to a dentry if it succeeds.  This
- * pointer must be passed to the tracefs_remove() function when the file is
- * to be removed (no automatic cleanup happens if your module is unloaded,
- * you are responsible here.)  If an error occurs, %NULL will be returned.
- *
- * If tracefs is not enabled in the kernel, the value -%ENODEV will be
- * returned.
+ * This function will create a dentry for a directory represented by
+ * a eventfs_inode.
  */
-static struct dentry *create_dir(struct eventfs_file *ef,
-				 struct dentry *parent, void *data)
+static struct dentry *create_dir(struct eventfs_inode *ei, struct dentry *parent)
 {
 	struct tracefs_inode *ti;
 	struct dentry *dentry;
 	struct inode *inode;
 
-	dentry = eventfs_start_creating(ef->name, parent);
+	dentry = eventfs_start_creating(ei->name, parent);
 	if (IS_ERR(dentry))
 		return dentry;
 
@@ -241,11 +318,12 @@ static struct dentry *create_dir(struct eventfs_file *ef,
 	if (unlikely(!inode))
 		return eventfs_failed_creating(dentry);
 
-	update_inode_attr(inode, ef);
+	/* If the user updated the directory's attributes, use them */
+	update_inode_attr(dentry, inode, &ei->attr,
+			  S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO);
 
 	inode->i_op = &eventfs_root_dir_inode_operations;
 	inode->i_fop = &eventfs_file_operations;
-	inode->i_private = data;
 
 	ti = get_tracefs(inode);
 	ti->flags |= TRACEFS_EVENT_INODE;
@@ -257,102 +335,192 @@ static struct dentry *create_dir(struct eventfs_file *ef,
 	return eventfs_end_creating(dentry);
 }
 
-static void free_ef(struct eventfs_file *ef)
+static void free_ei(struct eventfs_inode *ei)
 {
-	kfree(ef->name);
-	kfree(ef->ei);
-	kfree(ef);
+	kfree_const(ei->name);
+	kfree(ei->d_children);
+	kfree(ei->entry_attrs);
+	kfree(ei);
 }
 
 /**
- * eventfs_set_ef_status_free - set the ef->status to free
+ * eventfs_set_ei_status_free - remove the dentry reference from an eventfs_inode
  * @ti: the tracefs_inode of the dentry
- * @dentry: dentry who's status to be freed
+ * @dentry: dentry which has the reference to remove.
  *
- * eventfs_set_ef_status_free will be called if no more
- * references remain
+ * Remove the association between a dentry from an eventfs_inode.
  */
-void eventfs_set_ef_status_free(struct tracefs_inode *ti, struct dentry *dentry)
+void eventfs_set_ei_status_free(struct tracefs_inode *ti, struct dentry *dentry)
 {
 	struct eventfs_inode *ei;
-	struct eventfs_file *ef;
-
-	/* The top level events directory may be freed by this */
-	if (unlikely(ti->flags & TRACEFS_EVENT_TOP_INODE)) {
-		mutex_lock(&eventfs_mutex);
-		ei = ti->private;
-
-		/* Nothing should access this, but just in case! */
-		ti->private = NULL;
-		mutex_unlock(&eventfs_mutex);
-
-		ef = dentry->d_fsdata;
-		if (ef)
-			free_ef(ef);
-		return;
-	}
+	int i;
 
 	mutex_lock(&eventfs_mutex);
 
-	ef = dentry->d_fsdata;
-	if (!ef)
+	ei = dentry->d_fsdata;
+	if (!ei)
 		goto out;
 
-	if (ef->is_freed) {
-		free_ef(ef);
+	/* This could belong to one of the files of the ei */
+	if (ei->dentry != dentry) {
+		for (i = 0; i < ei->nr_entries; i++) {
+			if (ei->d_children[i] == dentry)
+				break;
+		}
+		if (WARN_ON_ONCE(i == ei->nr_entries))
+			goto out;
+		ei->d_children[i] = NULL;
+	} else if (ei->is_freed) {
+		free_ei(ei);
 	} else {
-		ef->dentry = NULL;
+		ei->dentry = NULL;
 	}
 
 	dentry->d_fsdata = NULL;
-out:
+ out:
 	mutex_unlock(&eventfs_mutex);
 }
 
 /**
- * eventfs_post_create_dir - post create dir routine
- * @ef: eventfs_file of recently created dir
+ * create_file_dentry - create a dentry for a file of an eventfs_inode
+ * @ei: the eventfs_inode that the file will be created under
+ * @idx: the index into the d_children[] of the @ei
+ * @parent: The parent dentry of the created file.
+ * @name: The name of the file to create
+ * @mode: The mode of the file.
+ * @data: The data to use to set the inode of the file with on open()
+ * @fops: The fops of the file to be created.
+ * @lookup: If called by the lookup routine, in which case, dput() the created dentry.
  *
- * Map the meta-data of files within an eventfs dir to their parent dentry
- */
-static void eventfs_post_create_dir(struct eventfs_file *ef)
-{
-	struct eventfs_file *ef_child;
-	struct tracefs_inode *ti;
-
-	/* srcu lock already held */
-	/* fill parent-child relation */
-	list_for_each_entry_srcu(ef_child, &ef->ei->e_top_files, list,
-				 srcu_read_lock_held(&eventfs_srcu)) {
-		ef_child->d_parent = ef->dentry;
-	}
-
-	ti = get_tracefs(ef->dentry->d_inode);
-	ti->private = ef->ei;
-}
-
-/**
- * create_dentry - helper function to create dentry
- * @ef: eventfs_file of file or directory to create
- * @parent: parent dentry
- * @lookup: true if called from lookup routine
- *
- * Used to create a dentry for file/dir, executes post dentry creation routine
+ * Create a dentry for a file of an eventfs_inode @ei and place it into the
+ * address located at @e_dentry. If the @e_dentry already has a dentry, then
+ * just do a dget() on it and return. Otherwise create the dentry and attach it.
  */
 static struct dentry *
-create_dentry(struct eventfs_file *ef, struct dentry *parent, bool lookup)
+create_file_dentry(struct eventfs_inode *ei, int idx,
+		   struct dentry *parent, const char *name, umode_t mode, void *data,
+		   const struct file_operations *fops, bool lookup)
 {
-	bool invalidate = false;
+	struct eventfs_attr *attr = NULL;
+	struct dentry **e_dentry = &ei->d_children[idx];
 	struct dentry *dentry;
 
+	WARN_ON_ONCE(!inode_is_locked(parent->d_inode));
+
 	mutex_lock(&eventfs_mutex);
-	if (ef->is_freed) {
+	if (ei->is_freed) {
 		mutex_unlock(&eventfs_mutex);
 		return NULL;
 	}
-	if (ef->dentry) {
-		dentry = ef->dentry;
-		/* On dir open, up the ref count */
+	/* If the e_dentry already has a dentry, use it */
+	if (*e_dentry) {
+		/* lookup does not need to up the ref count */
+		if (!lookup)
+			dget(*e_dentry);
+		mutex_unlock(&eventfs_mutex);
+		return *e_dentry;
+	}
+
+	/* ei->entry_attrs are protected by SRCU */
+	if (ei->entry_attrs)
+		attr = &ei->entry_attrs[idx];
+
+	mutex_unlock(&eventfs_mutex);
+
+	dentry = create_file(name, mode, attr, parent, data, fops);
+
+	mutex_lock(&eventfs_mutex);
+
+	if (IS_ERR_OR_NULL(dentry)) {
+		/*
+		 * When the mutex was released, something else could have
+		 * created the dentry for this e_dentry. In which case
+		 * use that one.
+		 *
+		 * If ei->is_freed is set, the e_dentry is currently on its
+		 * way to being freed, don't return it. If e_dentry is NULL
+		 * it means it was already freed.
+		 */
+		if (ei->is_freed)
+			dentry = NULL;
+		else
+			dentry = *e_dentry;
+		/* The lookup does not need to up the dentry refcount */
+		if (dentry && !lookup)
+			dget(dentry);
+		mutex_unlock(&eventfs_mutex);
+		return dentry;
+	}
+
+	if (!*e_dentry && !ei->is_freed) {
+		*e_dentry = dentry;
+		dentry->d_fsdata = ei;
+	} else {
+		/*
+		 * Should never happen unless we get here due to being freed.
+		 * Otherwise it means two dentries exist with the same name.
+		 */
+		WARN_ON_ONCE(!ei->is_freed);
+		dentry = NULL;
+	}
+	mutex_unlock(&eventfs_mutex);
+
+	if (lookup)
+		dput(dentry);
+
+	return dentry;
+}
+
+/**
+ * eventfs_post_create_dir - post create dir routine
+ * @ei: eventfs_inode of recently created dir
+ *
+ * Map the meta-data of files within an eventfs dir to their parent dentry
+ */
+static void eventfs_post_create_dir(struct eventfs_inode *ei)
+{
+	struct eventfs_inode *ei_child;
+	struct tracefs_inode *ti;
+
+	lockdep_assert_held(&eventfs_mutex);
+
+	/* srcu lock already held */
+	/* fill parent-child relation */
+	list_for_each_entry_srcu(ei_child, &ei->children, list,
+				 srcu_read_lock_held(&eventfs_srcu)) {
+		ei_child->d_parent = ei->dentry;
+	}
+
+	ti = get_tracefs(ei->dentry->d_inode);
+	ti->private = ei;
+}
+
+/**
+ * create_dir_dentry - Create a directory dentry for the eventfs_inode
+ * @pei: The eventfs_inode parent of ei.
+ * @ei: The eventfs_inode to create the directory for
+ * @parent: The dentry of the parent of this directory
+ * @lookup: True if this is called by the lookup code
+ *
+ * This creates and attaches a directory dentry to the eventfs_inode @ei.
+ */
+static struct dentry *
+create_dir_dentry(struct eventfs_inode *pei, struct eventfs_inode *ei,
+		  struct dentry *parent, bool lookup)
+{
+	struct dentry *dentry = NULL;
+
+	WARN_ON_ONCE(!inode_is_locked(parent->d_inode));
+
+	mutex_lock(&eventfs_mutex);
+	if (pei->is_freed || ei->is_freed) {
+		mutex_unlock(&eventfs_mutex);
+		return NULL;
+	}
+	if (ei->dentry) {
+		/* If the dentry already has a dentry, use it */
+		dentry = ei->dentry;
+		/* lookup does not need to up the ref count */
 		if (!lookup)
 			dget(dentry);
 		mutex_unlock(&eventfs_mutex);
@@ -360,96 +528,134 @@ create_dentry(struct eventfs_file *ef, struct dentry *parent, bool lookup)
 	}
 	mutex_unlock(&eventfs_mutex);
 
-	if (!lookup)
-		inode_lock(parent->d_inode);
-
-	if (ef->ei)
-		dentry = create_dir(ef, parent, ef->data);
-	else
-		dentry = create_file(ef, parent, ef->data, ef->fop);
-
-	if (!lookup)
-		inode_unlock(parent->d_inode);
+	dentry = create_dir(ei, parent);
 
 	mutex_lock(&eventfs_mutex);
-	if (IS_ERR_OR_NULL(dentry)) {
-		/* If the ef was already updated get it */
-		dentry = ef->dentry;
+
+	if (IS_ERR_OR_NULL(dentry) && !ei->is_freed) {
+		/*
+		 * When the mutex was released, something else could have
+		 * created the dentry for this e_dentry. In which case
+		 * use that one.
+		 *
+		 * If ei->is_freed is set, the e_dentry is currently on its
+		 * way to being freed.
+		 */
+		dentry = ei->dentry;
 		if (dentry && !lookup)
 			dget(dentry);
 		mutex_unlock(&eventfs_mutex);
 		return dentry;
 	}
 
-	if (!ef->dentry && !ef->is_freed) {
-		ef->dentry = dentry;
-		if (ef->ei)
-			eventfs_post_create_dir(ef);
-		dentry->d_fsdata = ef;
+	if (!ei->dentry && !ei->is_freed) {
+		ei->dentry = dentry;
+		eventfs_post_create_dir(ei);
+		dentry->d_fsdata = ei;
 	} else {
-		/* A race here, should try again (unless freed) */
-		invalidate = true;
-
 		/*
 		 * Should never happen unless we get here due to being freed.
 		 * Otherwise it means two dentries exist with the same name.
 		 */
-		WARN_ON_ONCE(!ef->is_freed);
+		WARN_ON_ONCE(!ei->is_freed);
+		dentry = NULL;
 	}
 	mutex_unlock(&eventfs_mutex);
-	if (invalidate)
-		d_invalidate(dentry);
 
-	if (lookup || invalidate)
+	if (lookup)
 		dput(dentry);
 
-	return invalidate ? NULL : dentry;
-}
-
-static bool match_event_file(struct eventfs_file *ef, const char *name)
-{
-	bool ret;
-
-	mutex_lock(&eventfs_mutex);
-	ret = !ef->is_freed && strcmp(ef->name, name) == 0;
-	mutex_unlock(&eventfs_mutex);
-
-	return ret;
+	return dentry;
 }
 
 /**
  * eventfs_root_lookup - lookup routine to create file/dir
  * @dir: in which a lookup is being done
  * @dentry: file/dir dentry
- * @flags: to pass as flags parameter to simple lookup
+ * @flags: Just passed to simple_lookup()
  *
- * Used to create a dynamic file/dir within @dir. Use the eventfs_inode
- * list of meta data to find the information needed to create the file/dir.
+ * Used to create dynamic file/dir with-in @dir, search with-in @ei
+ * list, if @dentry found go ahead and create the file/dir
  */
+
 static struct dentry *eventfs_root_lookup(struct inode *dir,
 					  struct dentry *dentry,
 					  unsigned int flags)
 {
+	const struct file_operations *fops;
+	const struct eventfs_entry *entry;
+	struct eventfs_inode *ei_child;
 	struct tracefs_inode *ti;
 	struct eventfs_inode *ei;
-	struct eventfs_file *ef;
+	struct dentry *ei_dentry = NULL;
 	struct dentry *ret = NULL;
+	const char *name = dentry->d_name.name;
+	bool created = false;
+	umode_t mode;
+	void *data;
 	int idx;
+	int i;
+	int r;
 
 	ti = get_tracefs(dir);
 	if (!(ti->flags & TRACEFS_EVENT_INODE))
 		return NULL;
 
-	ei = ti->private;
+	/* Grab srcu to prevent the ei from going away */
 	idx = srcu_read_lock(&eventfs_srcu);
-	list_for_each_entry_srcu(ef, &ei->e_top_files, list,
+
+	/*
+	 * Grab the eventfs_mutex to consistent value from ti->private.
+	 * This s
+	 */
+	mutex_lock(&eventfs_mutex);
+	ei = READ_ONCE(ti->private);
+	if (ei && !ei->is_freed)
+		ei_dentry = READ_ONCE(ei->dentry);
+	mutex_unlock(&eventfs_mutex);
+
+	if (!ei || !ei_dentry)
+		goto out;
+
+	data = ei->data;
+
+	list_for_each_entry_srcu(ei_child, &ei->children, list,
 				 srcu_read_lock_held(&eventfs_srcu)) {
-		if (!match_event_file(ef, dentry->d_name.name))
+		if (strcmp(ei_child->name, name) != 0)
 			continue;
 		ret = simple_lookup(dir, dentry, flags);
-		create_dentry(ef, ef->d_parent, true);
+		if (IS_ERR(ret))
+			goto out;
+		create_dir_dentry(ei, ei_child, ei_dentry, true);
+		created = true;
 		break;
 	}
+
+	if (created)
+		goto out;
+
+	for (i = 0; i < ei->nr_entries; i++) {
+		entry = &ei->entries[i];
+		if (strcmp(name, entry->name) == 0) {
+			void *cdata = data;
+			mutex_lock(&eventfs_mutex);
+			/* If ei->is_freed, then the event itself may be too */
+			if (!ei->is_freed)
+				r = entry->callback(name, &mode, &cdata, &fops);
+			else
+				r = -1;
+			mutex_unlock(&eventfs_mutex);
+			if (r <= 0)
+				continue;
+			ret = simple_lookup(dir, dentry, flags);
+			if (IS_ERR(ret))
+				goto out;
+			create_file_dentry(ei, i, ei_dentry, name, mode, cdata,
+					   fops, true);
+			break;
+		}
+	}
+ out:
 	srcu_read_unlock(&eventfs_srcu, idx);
 	return ret;
 }
@@ -489,29 +695,48 @@ static int eventfs_release(struct inode *inode, struct file *file)
 	return dcache_dir_close(inode, file);
 }
 
+static int add_dentries(struct dentry ***dentries, struct dentry *d, int cnt)
+{
+	struct dentry **tmp;
+
+	tmp = krealloc(*dentries, sizeof(d) * (cnt + 2), GFP_NOFS);
+	if (!tmp)
+		return -1;
+	tmp[cnt] = d;
+	tmp[cnt + 1] = NULL;
+	*dentries = tmp;
+	return 0;
+}
+
 /**
  * dcache_dir_open_wrapper - eventfs open wrapper
  * @inode: not used
- * @file: dir to be opened (to create its child)
+ * @file: dir to be opened (to create it's children)
  *
- * Used to dynamically create the file/dir within @file. @file is really a
- * directory and all the files/dirs of the children within @file will be
- * created. If any of the files/dirs have already been created, their
- * reference count will be incremented.
+ * Used to dynamic create file/dir with-in @file, all the
+ * file/dir will be created. If already created then references
+ * will be increased
  */
 static int dcache_dir_open_wrapper(struct inode *inode, struct file *file)
 {
+	const struct file_operations *fops;
+	const struct eventfs_entry *entry;
+	struct eventfs_inode *ei_child;
 	struct tracefs_inode *ti;
 	struct eventfs_inode *ei;
-	struct eventfs_file *ef;
 	struct dentry_list *dlist;
 	struct dentry **dentries = NULL;
-	struct dentry *dentry = file_dentry(file);
+	struct dentry *parent = file_dentry(file);
 	struct dentry *d;
 	struct inode *f_inode = file_inode(file);
+	const char *name = parent->d_name.name;
+	umode_t mode;
+	void *data;
 	int cnt = 0;
 	int idx;
 	int ret;
+	int i;
+	int r;
 
 	ti = get_tracefs(f_inode);
 	if (!(ti->flags & TRACEFS_EVENT_INODE))
@@ -520,28 +745,60 @@ static int dcache_dir_open_wrapper(struct inode *inode, struct file *file)
 	if (WARN_ON_ONCE(file->private_data))
 		return -EINVAL;
 
-	dlist = kmalloc(sizeof(*dlist), GFP_KERNEL);
-	if (!dlist)
-		return -ENOMEM;
-
-	ei = ti->private;
 	idx = srcu_read_lock(&eventfs_srcu);
-	list_for_each_entry_srcu(ef, &ei->e_top_files, list,
+
+	mutex_lock(&eventfs_mutex);
+	ei = READ_ONCE(ti->private);
+	mutex_unlock(&eventfs_mutex);
+
+	if (!ei) {
+		srcu_read_unlock(&eventfs_srcu, idx);
+		return -EINVAL;
+	}
+
+
+	data = ei->data;
+
+	dlist = kmalloc(sizeof(*dlist), GFP_KERNEL);
+	if (!dlist) {
+		srcu_read_unlock(&eventfs_srcu, idx);
+		return -ENOMEM;
+	}
+
+	inode_lock(parent->d_inode);
+	list_for_each_entry_srcu(ei_child, &ei->children, list,
 				 srcu_read_lock_held(&eventfs_srcu)) {
-		d = create_dentry(ef, dentry, false);
+		d = create_dir_dentry(ei, ei_child, parent, false);
 		if (d) {
-			struct dentry **tmp;
-
-
-			tmp = krealloc(dentries, sizeof(d) * (cnt + 2), GFP_KERNEL);
-			if (!tmp)
+			ret = add_dentries(&dentries, d, cnt);
+			if (ret < 0)
 				break;
-			tmp[cnt] = d;
-			tmp[cnt + 1] = NULL;
 			cnt++;
-			dentries = tmp;
 		}
 	}
+
+	for (i = 0; i < ei->nr_entries; i++) {
+		void *cdata = data;
+		entry = &ei->entries[i];
+		name = entry->name;
+		mutex_lock(&eventfs_mutex);
+		/* If ei->is_freed, then the event itself may be too */
+		if (!ei->is_freed)
+			r = entry->callback(name, &mode, &cdata, &fops);
+		else
+			r = -1;
+		mutex_unlock(&eventfs_mutex);
+		if (r <= 0)
+			continue;
+		d = create_file_dentry(ei, i, parent, name, mode, cdata, fops, false);
+		if (d) {
+			ret = add_dentries(&dentries, d, cnt);
+			if (ret < 0)
+				break;
+			cnt++;
+		}
+	}
+	inode_unlock(parent->d_inode);
 	srcu_read_unlock(&eventfs_srcu, idx);
 	ret = dcache_dir_open(inode, file);
 
@@ -572,294 +829,220 @@ static int dcache_readdir_wrapper(struct file *file, struct dir_context *ctx)
 }
 
 /**
- * eventfs_prepare_ef - helper function to prepare eventfs_file
- * @name: the name of the file/directory to create.
- * @mode: the permission that the file should have.
- * @fop: struct file_operations that should be used for this file/directory.
- * @iop: struct inode_operations that should be used for this file/directory.
- * @data: something that the caller will want to get to later on. The
- *        inode.i_private pointer will point to this value on the open() call.
+ * eventfs_create_dir - Create the eventfs_inode for this directory
+ * @name: The name of the directory to create.
+ * @parent: The eventfs_inode of the parent directory.
+ * @entries: A list of entries that represent the files under this directory
+ * @size: The number of @entries
+ * @data: The default data to pass to the files (an entry may override it).
  *
- * This function allocates and fills the eventfs_file structure.
+ * This function creates the descriptor to represent a directory in the
+ * eventfs. This descriptor is an eventfs_inode, and it is returned to be
+ * used to create other children underneath.
+ *
+ * The @entries is an array of eventfs_entry structures which has:
+ *	const char		 *name
+ *	eventfs_callback	callback;
+ *
+ * The name is the name of the file, and the callback is a pointer to a function
+ * that will be called when the file is reference (either by lookup or by
+ * reading a directory). The callback is of the prototype:
+ *
+ *    int callback(const char *name, umode_t *mode, void **data,
+ *		   const struct file_operations **fops);
+ *
+ * When a file needs to be created, this callback will be called with
+ *   name = the name of the file being created (so that the same callback
+ *          may be used for multiple files).
+ *   mode = a place to set the file's mode
+ *   data = A pointer to @data, and the callback may replace it, which will
+ *         cause the file created to pass the new data to the open() call.
+ *   fops = the fops to use for the created file.
+ *
+ * NB. @callback is called while holding internal locks of the eventfs
+ *     system. The callback must not call any code that might also call into
+ *     the tracefs or eventfs system or it will risk creating a deadlock.
  */
-static struct eventfs_file *eventfs_prepare_ef(const char *name, umode_t mode,
-					const struct file_operations *fop,
-					const struct inode_operations *iop,
-					void *data)
+struct eventfs_inode *eventfs_create_dir(const char *name, struct eventfs_inode *parent,
+					 const struct eventfs_entry *entries,
+					 int size, void *data)
 {
-	struct eventfs_file *ef;
+	struct eventfs_inode *ei;
 
-	ef = kzalloc(sizeof(*ef), GFP_KERNEL);
-	if (!ef)
+	if (!parent)
+		return ERR_PTR(-EINVAL);
+
+	ei = kzalloc(sizeof(*ei), GFP_KERNEL);
+	if (!ei)
 		return ERR_PTR(-ENOMEM);
 
-	ef->name = kstrdup(name, GFP_KERNEL);
-	if (!ef->name) {
-		kfree(ef);
+	ei->name = kstrdup_const(name, GFP_KERNEL);
+	if (!ei->name) {
+		kfree(ei);
 		return ERR_PTR(-ENOMEM);
 	}
 
-	if (S_ISDIR(mode)) {
-		ef->ei = kzalloc(sizeof(*ef->ei), GFP_KERNEL);
-		if (!ef->ei) {
-			kfree(ef->name);
-			kfree(ef);
+	if (size) {
+		ei->d_children = kzalloc(sizeof(*ei->d_children) * size, GFP_KERNEL);
+		if (!ei->d_children) {
+			kfree_const(ei->name);
+			kfree(ei);
 			return ERR_PTR(-ENOMEM);
 		}
-		INIT_LIST_HEAD(&ef->ei->e_top_files);
-		ef->mode = S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO;
-	} else {
-		ef->ei = NULL;
-		ef->mode = mode;
 	}
 
-	ef->iop = iop;
-	ef->fop = fop;
-	ef->data = data;
-	return ef;
+	ei->entries = entries;
+	ei->nr_entries = size;
+	ei->data = data;
+	INIT_LIST_HEAD(&ei->children);
+	INIT_LIST_HEAD(&ei->list);
+
+	mutex_lock(&eventfs_mutex);
+	if (!parent->is_freed) {
+		list_add_tail(&ei->list, &parent->children);
+		ei->d_parent = parent->dentry;
+	}
+	mutex_unlock(&eventfs_mutex);
+
+	/* Was the parent freed? */
+	if (list_empty(&ei->list)) {
+		free_ei(ei);
+		ei = NULL;
+	}
+	return ei;
 }
 
 /**
- * eventfs_create_events_dir - create the trace event structure
- * @name: the name of the directory to create.
- * @parent: parent dentry for this file.  This should be a directory dentry
- *          if set.  If this parameter is NULL, then the directory will be
- *          created in the root of the tracefs filesystem.
+ * eventfs_create_events_dir - create the top level events directory
+ * @name: The name of the top level directory to create.
+ * @parent: Parent dentry for this file in the tracefs directory.
+ * @entries: A list of entries that represent the files under this directory
+ * @size: The number of @entries
+ * @data: The default data to pass to the files (an entry may override it).
  *
  * This function creates the top of the trace event directory.
+ *
+ * See eventfs_create_dir() for use of @entries.
  */
-struct dentry *eventfs_create_events_dir(const char *name,
-					 struct dentry *parent)
+struct eventfs_inode *eventfs_create_events_dir(const char *name, struct dentry *parent,
+						const struct eventfs_entry *entries,
+						int size, void *data)
 {
 	struct dentry *dentry = tracefs_start_creating(name, parent);
 	struct eventfs_inode *ei;
 	struct tracefs_inode *ti;
 	struct inode *inode;
+	kuid_t uid;
+	kgid_t gid;
 
 	if (security_locked_down(LOCKDOWN_TRACEFS))
 		return NULL;
 
 	if (IS_ERR(dentry))
-		return dentry;
+		return ERR_CAST(dentry);
 
 	ei = kzalloc(sizeof(*ei), GFP_KERNEL);
 	if (!ei)
-		return ERR_PTR(-ENOMEM);
+		goto fail_ei;
+
 	inode = tracefs_get_inode(dentry->d_sb);
-	if (unlikely(!inode)) {
-		kfree(ei);
-		tracefs_failed_creating(dentry);
-		return ERR_PTR(-ENOMEM);
+	if (unlikely(!inode))
+		goto fail;
+
+	if (size) {
+		ei->d_children = kzalloc(sizeof(*ei->d_children) * size, GFP_KERNEL);
+		if (!ei->d_children)
+			goto fail;
 	}
 
-	INIT_LIST_HEAD(&ei->e_top_files);
+	ei->dentry = dentry;
+	ei->entries = entries;
+	ei->nr_entries = size;
+	ei->is_events = 1;
+	ei->data = data;
+	ei->name = kstrdup_const(name, GFP_KERNEL);
+	if (!ei->name)
+		goto fail;
+
+	/* Save the ownership of this directory */
+	uid = d_inode(dentry->d_parent)->i_uid;
+	gid = d_inode(dentry->d_parent)->i_gid;
+
+	/* This is used as the default ownership of the files and directories */
+	ei->attr.uid = uid;
+	ei->attr.gid = gid;
+
+	INIT_LIST_HEAD(&ei->children);
+	INIT_LIST_HEAD(&ei->list);
 
 	ti = get_tracefs(inode);
 	ti->flags |= TRACEFS_EVENT_INODE | TRACEFS_EVENT_TOP_INODE;
 	ti->private = ei;
 
 	inode->i_mode = S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO;
+	inode->i_uid = uid;
+	inode->i_gid = gid;
 	inode->i_op = &eventfs_root_dir_inode_operations;
 	inode->i_fop = &eventfs_file_operations;
+
+	dentry->d_fsdata = ei;
 
 	/* directory inodes start off with i_nlink == 2 (for "." entry) */
 	inc_nlink(inode);
 	d_instantiate(dentry, inode);
 	inc_nlink(dentry->d_parent->d_inode);
 	fsnotify_mkdir(dentry->d_parent->d_inode, dentry);
-	return tracefs_end_creating(dentry);
-}
+	tracefs_end_creating(dentry);
 
-/**
- * eventfs_add_subsystem_dir - add eventfs subsystem_dir to list to create later
- * @name: the name of the file to create.
- * @parent: parent dentry for this dir.
- *
- * This function adds eventfs subsystem dir to list.
- * And all these dirs are created on the fly when they are looked up,
- * and the dentry and inodes will be removed when they are done.
- */
-struct eventfs_file *eventfs_add_subsystem_dir(const char *name,
-					       struct dentry *parent)
-{
-	struct tracefs_inode *ti_parent;
-	struct eventfs_inode *ei_parent;
-	struct eventfs_file *ef;
+	return ei;
 
-	if (security_locked_down(LOCKDOWN_TRACEFS))
-		return NULL;
-
-	if (!parent)
-		return ERR_PTR(-EINVAL);
-
-	ti_parent = get_tracefs(parent->d_inode);
-	ei_parent = ti_parent->private;
-
-	ef = eventfs_prepare_ef(name, S_IFDIR, NULL, NULL, NULL);
-	if (IS_ERR(ef))
-		return ef;
-
-	mutex_lock(&eventfs_mutex);
-	list_add_tail(&ef->list, &ei_parent->e_top_files);
-	ef->d_parent = parent;
-	mutex_unlock(&eventfs_mutex);
-	return ef;
-}
-
-/**
- * eventfs_add_dir - add eventfs dir to list to create later
- * @name: the name of the file to create.
- * @ef_parent: parent eventfs_file for this dir.
- *
- * This function adds eventfs dir to list.
- * And all these dirs are created on the fly when they are looked up,
- * and the dentry and inodes will be removed when they are done.
- */
-struct eventfs_file *eventfs_add_dir(const char *name,
-				     struct eventfs_file *ef_parent)
-{
-	struct eventfs_file *ef;
-
-	if (security_locked_down(LOCKDOWN_TRACEFS))
-		return NULL;
-
-	if (!ef_parent)
-		return ERR_PTR(-EINVAL);
-
-	ef = eventfs_prepare_ef(name, S_IFDIR, NULL, NULL, NULL);
-	if (IS_ERR(ef))
-		return ef;
-
-	mutex_lock(&eventfs_mutex);
-	list_add_tail(&ef->list, &ef_parent->ei->e_top_files);
-	ef->d_parent = ef_parent->dentry;
-	mutex_unlock(&eventfs_mutex);
-	return ef;
-}
-
-/**
- * eventfs_add_events_file - add the data needed to create a file for later reference
- * @name: the name of the file to create.
- * @mode: the permission that the file should have.
- * @parent: parent dentry for this file.
- * @data: something that the caller will want to get to later on.
- * @fop: struct file_operations that should be used for this file.
- *
- * This function is used to add the information needed to create a
- * dentry/inode within the top level events directory. The file created
- * will have the @mode permissions. The @data will be used to fill the
- * inode.i_private when the open() call is done. The dentry and inodes are
- * all created when they are referenced, and removed when they are no
- * longer referenced.
- */
-int eventfs_add_events_file(const char *name, umode_t mode,
-			 struct dentry *parent, void *data,
-			 const struct file_operations *fop)
-{
-	struct tracefs_inode *ti;
-	struct eventfs_inode *ei;
-	struct eventfs_file *ef;
-
-	if (security_locked_down(LOCKDOWN_TRACEFS))
-		return -ENODEV;
-
-	if (!parent)
-		return -EINVAL;
-
-	if (!(mode & S_IFMT))
-		mode |= S_IFREG;
-
-	if (!parent->d_inode)
-		return -EINVAL;
-
-	ti = get_tracefs(parent->d_inode);
-	if (!(ti->flags & TRACEFS_EVENT_INODE))
-		return -EINVAL;
-
-	ei = ti->private;
-	ef = eventfs_prepare_ef(name, mode, fop, NULL, data);
-
-	if (IS_ERR(ef))
-		return -ENOMEM;
-
-	mutex_lock(&eventfs_mutex);
-	list_add_tail(&ef->list, &ei->e_top_files);
-	ef->d_parent = parent;
-	mutex_unlock(&eventfs_mutex);
-	return 0;
-}
-
-/**
- * eventfs_add_file - add eventfs file to list to create later
- * @name: the name of the file to create.
- * @mode: the permission that the file should have.
- * @ef_parent: parent eventfs_file for this file.
- * @data: something that the caller will want to get to later on.
- * @fop: struct file_operations that should be used for this file.
- *
- * This function is used to add the information needed to create a
- * file within a subdirectory of the events directory. The file created
- * will have the @mode permissions. The @data will be used to fill the
- * inode.i_private when the open() call is done. The dentry and inodes are
- * all created when they are referenced, and removed when they are no
- * longer referenced.
- */
-int eventfs_add_file(const char *name, umode_t mode,
-		     struct eventfs_file *ef_parent,
-		     void *data,
-		     const struct file_operations *fop)
-{
-	struct eventfs_file *ef;
-
-	if (security_locked_down(LOCKDOWN_TRACEFS))
-		return -ENODEV;
-
-	if (!ef_parent)
-		return -EINVAL;
-
-	if (!(mode & S_IFMT))
-		mode |= S_IFREG;
-
-	ef = eventfs_prepare_ef(name, mode, fop, NULL, data);
-	if (IS_ERR(ef))
-		return -ENOMEM;
-
-	mutex_lock(&eventfs_mutex);
-	list_add_tail(&ef->list, &ef_parent->ei->e_top_files);
-	ef->d_parent = ef_parent->dentry;
-	mutex_unlock(&eventfs_mutex);
-	return 0;
+ fail:
+	kfree(ei->d_children);
+	kfree(ei);
+ fail_ei:
+	tracefs_failed_creating(dentry);
+	return ERR_PTR(-ENOMEM);
 }
 
 static LLIST_HEAD(free_list);
 
 static void eventfs_workfn(struct work_struct *work)
 {
-        struct eventfs_file *ef, *tmp;
+        struct eventfs_inode *ei, *tmp;
         struct llist_node *llnode;
 
 	llnode = llist_del_all(&free_list);
-        llist_for_each_entry_safe(ef, tmp, llnode, llist) {
+        llist_for_each_entry_safe(ei, tmp, llnode, llist) {
+		/* This dput() matches the dget() from unhook_dentry() */
+		for (int i = 0; i < ei->nr_entries; i++) {
+			if (ei->d_children[i])
+				dput(ei->d_children[i]);
+		}
 		/* This should only get here if it had a dentry */
-		if (!WARN_ON_ONCE(!ef->dentry))
-			dput(ef->dentry);
+		if (!WARN_ON_ONCE(!ei->dentry))
+			dput(ei->dentry);
         }
 }
 
 static DECLARE_WORK(eventfs_work, eventfs_workfn);
 
-static void free_rcu_ef(struct rcu_head *head)
+static void free_rcu_ei(struct rcu_head *head)
 {
-	struct eventfs_file *ef = container_of(head, struct eventfs_file, rcu);
+	struct eventfs_inode *ei = container_of(head, struct eventfs_inode, rcu);
 
-	if (ef->dentry) {
-		/* Do not free the ef until all references of dentry are gone */
-		if (llist_add(&ef->llist, &free_list))
+	if (ei->dentry) {
+		/* Do not free the ei until all references of dentry are gone */
+		if (llist_add(&ei->llist, &free_list))
 			queue_work(system_unbound_wq, &eventfs_work);
 		return;
 	}
 
-	free_ef(ef);
+	/* If the ei doesn't have a dentry, neither should its children */
+	for (int i = 0; i < ei->nr_entries; i++) {
+		WARN_ON_ONCE(ei->d_children[i]);
+	}
+
+	free_ei(ei);
 }
 
 static void unhook_dentry(struct dentry *dentry)
@@ -882,17 +1065,17 @@ static void unhook_dentry(struct dentry *dentry)
 
 /**
  * eventfs_remove_rec - remove eventfs dir or file from list
- * @ef: eventfs_file to be removed.
- * @level: to check recursion depth
+ * @ei: eventfs_inode to be removed.
+ * @level: prevent recursion from going more than 3 levels deep.
  *
- * The helper function eventfs_remove_rec() is used to clean up and free the
- * associated data from eventfs for both of the added functions.
+ * This function recursively removes eventfs_inodes which
+ * contains info of files and/or directories.
  */
-static void eventfs_remove_rec(struct eventfs_file *ef, int level)
+static void eventfs_remove_rec(struct eventfs_inode *ei, int level)
 {
-	struct eventfs_file *ef_child;
+	struct eventfs_inode *ei_child;
 
-	if (!ef)
+	if (!ei)
 		return;
 	/*
 	 * Check recursion depth. It should never be greater than 3:
@@ -904,38 +1087,47 @@ static void eventfs_remove_rec(struct eventfs_file *ef, int level)
 	if (WARN_ON_ONCE(level > 3))
 		return;
 
-	if (ef->ei) {
-		/* search for nested folders or files */
-		list_for_each_entry_srcu(ef_child, &ef->ei->e_top_files, list,
-					 lockdep_is_held(&eventfs_mutex)) {
-			eventfs_remove_rec(ef_child, level + 1);
+	/* search for nested folders or files */
+	list_for_each_entry_srcu(ei_child, &ei->children, list,
+				 lockdep_is_held(&eventfs_mutex)) {
+		/* Children only have dentry if parent does */
+		WARN_ON_ONCE(ei_child->dentry && !ei->dentry);
+		eventfs_remove_rec(ei_child, level + 1);
+	}
+
+
+	ei->is_freed = 1;
+
+	for (int i = 0; i < ei->nr_entries; i++) {
+		if (ei->d_children[i]) {
+			/* Children only have dentry if parent does */
+			WARN_ON_ONCE(!ei->dentry);
+			unhook_dentry(ei->d_children[i]);
 		}
 	}
 
-	ef->is_freed = 1;
+	unhook_dentry(ei->dentry);
 
-	unhook_dentry(ef->dentry);
-
-	list_del_rcu(&ef->list);
-	call_srcu(&eventfs_srcu, &ef->rcu, free_rcu_ef);
+	list_del_rcu(&ei->list);
+	call_srcu(&eventfs_srcu, &ei->rcu, free_rcu_ei);
 }
 
 /**
- * eventfs_remove - remove eventfs dir or file from list
- * @ef: eventfs_file to be removed.
+ * eventfs_remove_dir - remove eventfs dir or file from list
+ * @ei: eventfs_inode to be removed.
  *
  * This function acquire the eventfs_mutex lock and call eventfs_remove_rec()
  */
-void eventfs_remove(struct eventfs_file *ef)
+void eventfs_remove_dir(struct eventfs_inode *ei)
 {
 	struct dentry *dentry;
 
-	if (!ef)
+	if (!ei)
 		return;
 
 	mutex_lock(&eventfs_mutex);
-	dentry = ef->dentry;
-	eventfs_remove_rec(ef, 0);
+	dentry = ei->dentry;
+	eventfs_remove_rec(ei, 0);
 	mutex_unlock(&eventfs_mutex);
 
 	/*
@@ -947,29 +1139,24 @@ void eventfs_remove(struct eventfs_file *ef)
 }
 
 /**
- * eventfs_remove_events_dir - remove eventfs dir or file from list
- * @dentry: events's dentry to be removed.
+ * eventfs_remove_events_dir - remove the top level eventfs directory
+ * @ei: the event_inode returned by eventfs_create_events_dir().
  *
- * This function remove events main directory
+ * This function removes the events main directory
  */
-void eventfs_remove_events_dir(struct dentry *dentry)
+void eventfs_remove_events_dir(struct eventfs_inode *ei)
 {
-	struct eventfs_file *ef_child;
-	struct eventfs_inode *ei;
-	struct tracefs_inode *ti;
+	struct dentry *dentry;
 
-	if (!dentry || !dentry->d_inode)
-		return;
+	dentry = ei->dentry;
+	eventfs_remove_dir(ei);
 
-	ti = get_tracefs(dentry->d_inode);
-	if (!ti || !(ti->flags & TRACEFS_EVENT_INODE))
-		return;
-
-	mutex_lock(&eventfs_mutex);
-	ei = ti->private;
-	list_for_each_entry_srcu(ef_child, &ei->e_top_files, list,
-				 lockdep_is_held(&eventfs_mutex)) {
-		eventfs_remove_rec(ef_child, 0);
-	}
-	mutex_unlock(&eventfs_mutex);
+	/*
+	 * Matches the dget() done by tracefs_start_creating()
+	 * in eventfs_create_events_dir() when it the dentry was
+	 * created. In other words, it's a normal dentry that
+	 * sticks around while the other ei->dentry are created
+	 * and destroyed dynamically.
+	 */
+	dput(dentry);
 }

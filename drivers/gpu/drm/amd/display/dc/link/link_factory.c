@@ -33,7 +33,6 @@
 #include "link_dpms.h"
 #include "accessories/link_dp_cts.h"
 #include "accessories/link_dp_trace.h"
-#include "accessories/link_fpga.h"
 #include "protocols/link_ddc.h"
 #include "protocols/link_dp_capability.h"
 #include "protocols/link_dp_dpia_bw.h"
@@ -46,6 +45,8 @@
 #include "gpio_service_interface.h"
 #include "atomfirmware.h"
 
+#define DC_LOGGER \
+	dc_ctx->logger
 #define DC_LOGGER_INIT(logger)
 
 #define LINK_INFO(...) \
@@ -370,6 +371,9 @@ static enum transmitter translate_encoder_to_transmitter(
 static uint8_t translate_dig_inst_to_pwrseq_inst(struct dc_link *link)
 {
 	uint8_t pwrseq_inst = 0xF;
+	struct dc_context *dc_ctx = link->dc->ctx;
+
+	DC_LOGGER_INIT(dc_ctx->logger);
 
 	switch (link->eng_id) {
 	case ENGINE_ID_DIGA:

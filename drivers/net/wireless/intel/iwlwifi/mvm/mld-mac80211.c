@@ -10,6 +10,7 @@ static int iwl_mvm_mld_mac_add_interface(struct ieee80211_hw *hw,
 	struct iwl_mvm *mvm = IWL_MAC80211_GET_MVM(hw);
 	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
 	int ret;
+	int i;
 
 	mutex_lock(&mvm->mutex);
 
@@ -22,8 +23,9 @@ static int iwl_mvm_mld_mac_add_interface(struct ieee80211_hw *hw,
 
 	/* make sure that beacon statistics don't go backwards with FW reset */
 	if (test_bit(IWL_MVM_STATUS_IN_HW_RESTART, &mvm->status))
-		mvmvif->deflink.beacon_stats.accu_num_beacons +=
-			mvmvif->deflink.beacon_stats.num_beacons;
+		for_each_mvm_vif_valid_link(mvmvif, i)
+			mvmvif->link[i]->beacon_stats.accu_num_beacons +=
+				mvmvif->link[i]->beacon_stats.num_beacons;
 
 	/* Allocate resources for the MAC context, and add it to the fw  */
 	ret = iwl_mvm_mac_ctxt_init(mvm, vif);
@@ -79,7 +81,7 @@ static int iwl_mvm_mld_mac_add_interface(struct ieee80211_hw *hw,
 		ieee80211_hw_set(mvm->hw, RX_INCLUDES_FCS);
 	}
 
-	iwl_mvm_vif_dbgfs_register(mvm, vif);
+	iwl_mvm_vif_dbgfs_add_link(mvm, vif);
 
 	if (!test_bit(IWL_MVM_STATUS_IN_HW_RESTART, &mvm->status) &&
 	    vif->type == NL80211_IFTYPE_STATION && !vif->p2p &&
@@ -135,7 +137,7 @@ static void iwl_mvm_mld_mac_remove_interface(struct ieee80211_hw *hw,
 	if (vif->bss_conf.ftm_responder)
 		memset(&mvm->ftm_resp_stats, 0, sizeof(mvm->ftm_resp_stats));
 
-	iwl_mvm_vif_dbgfs_clean(mvm, vif);
+	iwl_mvm_vif_dbgfs_rm_link(mvm, vif);
 
 	/* For AP/GO interface, the tear down of the resources allocated to the
 	 * interface is be handled as part of the stop_ap flow.
@@ -211,8 +213,8 @@ static int iwl_mvm_esr_mode_active(struct iwl_mvm *mvm,
 
 	mvmvif->esr_active = true;
 
-	/* Disable SMPS overrideing by user */
-	vif->driver_flags |= IEEE80211_VIF_DISABLE_SMPS_OVERRIDE;
+	/* Indicate to mac80211 that EML is enabled */
+	vif->driver_flags |= IEEE80211_VIF_EML_ACTIVE;
 
 	iwl_mvm_update_smps_on_active_links(mvm, vif, IWL_MVM_SMPS_REQ_FW,
 					    IEEE80211_SMPS_OFF);
@@ -370,7 +372,7 @@ static int iwl_mvm_esr_mode_inactive(struct iwl_mvm *mvm,
 
 	mvmvif->esr_active = false;
 
-	vif->driver_flags &= ~IEEE80211_VIF_DISABLE_SMPS_OVERRIDE;
+	vif->driver_flags &= ~IEEE80211_VIF_EML_ACTIVE;
 
 	iwl_mvm_update_smps_on_active_links(mvm, vif, IWL_MVM_SMPS_REQ_FW,
 					    IEEE80211_SMPS_AUTOMATIC);
@@ -460,10 +462,17 @@ static void iwl_mvm_mld_unassign_vif_chanctx(struct ieee80211_hw *hw,
 					     struct ieee80211_bss_conf *link_conf,
 					     struct ieee80211_chanctx_conf *ctx)
 {
+	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
 	struct iwl_mvm *mvm = IWL_MAC80211_GET_MVM(hw);
 
 	mutex_lock(&mvm->mutex);
 	__iwl_mvm_mld_unassign_vif_chanctx(mvm, vif, link_conf, ctx, false);
+	/* in the non-MLD case, remove/re-add the link to clean up FW state */
+	if (!ieee80211_vif_is_mld(vif) && !mvmvif->ap_sta &&
+	    !WARN_ON_ONCE(vif->cfg.assoc)) {
+		iwl_mvm_remove_link(mvm, vif, link_conf);
+		iwl_mvm_add_link(mvm, vif, link_conf);
+	}
 	mutex_unlock(&mvm->mutex);
 }
 
@@ -594,6 +603,126 @@ static int iwl_mvm_mld_mac_sta_state(struct ieee80211_hw *hw,
 					    &callbacks);
 }
 
+struct iwl_mvm_link_sel_data {
+	u8 link_id;
+	enum nl80211_band band;
+	bool active;
+};
+
+static bool iwl_mvm_mld_valid_link_pair(struct iwl_mvm_link_sel_data *a,
+					struct iwl_mvm_link_sel_data *b)
+{
+	return a->band != b->band;
+}
+
+void iwl_mvm_mld_select_links(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
+			      bool valid_links_changed)
+{
+	struct iwl_mvm_link_sel_data data[IEEE80211_MLD_MAX_NUM_LINKS];
+	unsigned long usable_links = ieee80211_vif_usable_links(vif);
+	u32 max_active_links = iwl_mvm_max_active_links(mvm, vif);
+	u16 new_active_links;
+	u8 link_id, n_data = 0, i, j;
+
+	if (!IWL_MVM_AUTO_EML_ENABLE)
+		return;
+
+	if (!ieee80211_vif_is_mld(vif) || usable_links == 1)
+		return;
+
+	/* The logic below is a simple version that doesn't suit more than 2
+	 * links
+	 */
+	WARN_ON_ONCE(max_active_links > 2);
+
+	/* if only a single active link is supported, assume that the one
+	 * selected by higher layer for connection establishment is the best.
+	 */
+	if (max_active_links == 1 && !valid_links_changed)
+		return;
+
+	/* If we are already using the maximal number of active links, don't do
+	 * any change. This can later be optimized to pick a 'better' link pair.
+	 */
+	if (hweight16(vif->active_links) == max_active_links)
+		return;
+
+	rcu_read_lock();
+
+	for_each_set_bit(link_id, &usable_links, IEEE80211_MLD_MAX_NUM_LINKS) {
+		struct ieee80211_bss_conf *link_conf =
+			rcu_dereference(vif->link_conf[link_id]);
+
+		if (WARN_ON_ONCE(!link_conf))
+			continue;
+
+		data[n_data].link_id = link_id;
+		data[n_data].band = link_conf->chandef.chan->band;
+		data[n_data].active = vif->active_links & BIT(link_id);
+		n_data++;
+	}
+
+	rcu_read_unlock();
+
+	/* this is expected to be the current active link */
+	if (n_data == 1)
+		return;
+
+	new_active_links = 0;
+
+	/* Assume that after association only a single link is active, thus,
+	 * select only the 2nd link
+	 */
+	if (!valid_links_changed) {
+		for (i = 0; i < n_data; i++) {
+			if (data[i].active)
+				break;
+		}
+
+		if (WARN_ON_ONCE(i == n_data))
+			return;
+
+		for (j = 0; j < n_data; j++) {
+			if (i == j)
+				continue;
+
+			if (iwl_mvm_mld_valid_link_pair(&data[i], &data[j]))
+				break;
+		}
+
+		if (j != n_data)
+			new_active_links = BIT(data[i].link_id) |
+				BIT(data[j].link_id);
+	} else {
+		/* Try to find a valid link pair for EMLSR operation. If a pair
+		 * is not found continue using the current active link.
+		 */
+		for (i = 0; i < n_data; i++) {
+			for (j = 0; j < n_data; j++) {
+				if (i == j)
+					continue;
+
+				if (iwl_mvm_mld_valid_link_pair(&data[i],
+								&data[j]))
+					break;
+			}
+
+			/* found a valid pair for EMLSR, use it */
+			if (j != n_data) {
+				new_active_links = BIT(data[i].link_id) |
+					BIT(data[j].link_id);
+				break;
+			}
+		}
+	}
+
+	if (!new_active_links)
+		return;
+
+	if (vif->active_links != new_active_links)
+		ieee80211_set_active_links_async(vif, new_active_links);
+}
+
 static void
 iwl_mvm_mld_link_info_changed_station(struct iwl_mvm *mvm,
 				      struct ieee80211_vif *vif,
@@ -637,6 +766,9 @@ iwl_mvm_mld_link_info_changed_station(struct iwl_mvm *mvm,
 	ret = iwl_mvm_mld_mac_ctxt_changed(mvm, vif, false);
 	if (ret)
 		IWL_ERR(mvm, "failed to update MAC %pM\n", vif->addr);
+
+	if (changes & BSS_CHANGED_MLD_VALID_LINKS)
+		iwl_mvm_mld_select_links(mvm, vif, true);
 
 	memcpy(mvmvif->link[link_conf->link_id]->bssid, link_conf->bssid,
 	       ETH_ALEN);
@@ -728,6 +860,12 @@ static void iwl_mvm_mld_vif_cfg_changed_station(struct iwl_mvm *mvm,
 
 			if (!test_bit(IWL_MVM_STATUS_IN_HW_RESTART, &mvm->status) &&
 			    protect) {
+				/* We are in assoc so only one link is active-
+				 * The association link
+				 */
+				unsigned int link_id =
+					ffs(vif->active_links) - 1;
+
 				/* If we're not restarting and still haven't
 				 * heard a beacon (dtim period unknown) then
 				 * make sure we still have enough minimum time
@@ -737,7 +875,7 @@ static void iwl_mvm_mld_vif_cfg_changed_station(struct iwl_mvm *mvm,
 				 * time could be small without us having heard
 				 * a beacon yet.
 				 */
-				iwl_mvm_protect_assoc(mvm, vif, 0);
+				iwl_mvm_protect_assoc(mvm, vif, 0, link_id);
 			}
 
 			iwl_mvm_sf_update(mvm, vif, false);
@@ -1090,6 +1228,7 @@ const struct ieee80211_ops iwl_mvm_mld_hw_ops = {
 	.wake_tx_queue = iwl_mvm_mac_wake_tx_queue,
 	.ampdu_action = iwl_mvm_mac_ampdu_action,
 	.get_antenna = iwl_mvm_op_get_antenna,
+	.set_antenna = iwl_mvm_op_set_antenna,
 	.start = iwl_mvm_mac_start,
 	.reconfig_complete = iwl_mvm_mac_reconfig_complete,
 	.stop = iwl_mvm_mac_stop,
@@ -1136,8 +1275,6 @@ const struct ieee80211_ops iwl_mvm_mld_hw_ops = {
 
 	.tx_last_beacon = iwl_mvm_tx_last_beacon,
 
-	.set_tim = iwl_mvm_set_tim,
-
 	.channel_switch = iwl_mvm_channel_switch,
 	.pre_channel_switch = iwl_mvm_pre_channel_switch,
 	.post_channel_switch = iwl_mvm_post_channel_switch,
@@ -1172,6 +1309,8 @@ const struct ieee80211_ops iwl_mvm_mld_hw_ops = {
 	.abort_pmsr = iwl_mvm_abort_pmsr,
 
 #ifdef CONFIG_IWLWIFI_DEBUGFS
+	.vif_add_debugfs = iwl_mvm_vif_add_debugfs,
+	.link_add_debugfs = iwl_mvm_link_add_debugfs,
 	.link_sta_add_debugfs = iwl_mvm_link_sta_add_debugfs,
 #endif
 	.set_hw_timestamp = iwl_mvm_set_hw_timestamp,

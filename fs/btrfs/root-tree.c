@@ -51,7 +51,8 @@ static void btrfs_read_root_item(struct extent_buffer *eb, int slot,
 }
 
 /*
- * btrfs_find_root - lookup the root by the key.
+ * Lookup the root by the key.
+ *
  * root: the root of the root tree
  * search_key: the key to search
  * path: the path we search
@@ -485,7 +486,8 @@ void btrfs_update_root_times(struct btrfs_trans_handle *trans,
 }
 
 /*
- * btrfs_subvolume_reserve_metadata() - reserve space for subvolume operation
+ * Reserve space for subvolume operation.
+ *
  * root: the root of the parent directory
  * rsv: block reservation
  * items: the number of items that we need do reservation
@@ -508,7 +510,7 @@ int btrfs_subvolume_reserve_metadata(struct btrfs_root *root,
 	struct btrfs_fs_info *fs_info = root->fs_info;
 	struct btrfs_block_rsv *global_rsv = &fs_info->global_block_rsv;
 
-	if (test_bit(BTRFS_FS_QUOTA_ENABLED, &fs_info->flags)) {
+	if (btrfs_qgroup_enabled(fs_info)) {
 		/* One for parent inode, two for dir entries */
 		qgroup_num_bytes = 3 * fs_info->nodesize;
 		ret = btrfs_qgroup_reserve_meta_prealloc(root,

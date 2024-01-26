@@ -182,7 +182,7 @@ static int path_name(const char *op, const struct cred *subj_cred,
 struct aa_perms default_perms = {};
 /**
  * aa_lookup_fperms - convert dfa compressed perms to internal perms
- * @dfa: dfa to lookup perms for   (NOT NULL)
+ * @file_rules: the aa_policydb to lookup perms for  (NOT NULL)
  * @state: state in dfa
  * @cond:  conditions to consider  (NOT NULL)
  *
@@ -206,8 +206,8 @@ struct aa_perms *aa_lookup_fperms(struct aa_policydb *file_rules,
 
 /**
  * aa_str_perms - find permission that match @name
- * @dfa: to match against  (MAYBE NULL)
- * @state: state to start matching in
+ * @file_rules: the aa_policydb to match against  (NOT NULL)
+ * @start: state to start matching in
  * @name: string to match against dfa  (NOT NULL)
  * @cond: conditions to consider for permission set computation  (NOT NULL)
  * @perms: Returns - the permissions found when matching @name
@@ -236,7 +236,7 @@ static int __aa_path_perm(const char *op, const struct cred *subj_cred,
 
 	if (profile_unconfined(profile))
 		return 0;
-	aa_str_perms(&(rules->file), rules->file.start[AA_CLASS_FILE],
+	aa_str_perms(rules->file, rules->file->start[AA_CLASS_FILE],
 		     name, cond, perms);
 	if (request & ~perms->allow)
 		e = -EACCES;
@@ -353,16 +353,16 @@ static int profile_path_link(const struct cred *subj_cred,
 
 	error = -EACCES;
 	/* aa_str_perms - handles the case of the dfa being NULL */
-	state = aa_str_perms(&(rules->file),
-			     rules->file.start[AA_CLASS_FILE], lname,
+	state = aa_str_perms(rules->file,
+			     rules->file->start[AA_CLASS_FILE], lname,
 			     cond, &lperms);
 
 	if (!(lperms.allow & AA_MAY_LINK))
 		goto audit;
 
 	/* test to see if target can be paired with link */
-	state = aa_dfa_null_transition(rules->file.dfa, state);
-	aa_str_perms(&(rules->file), state, tname, cond, &perms);
+	state = aa_dfa_null_transition(rules->file->dfa, state);
+	aa_str_perms(rules->file, state, tname, cond, &perms);
 
 	/* force audit/quiet masks for link are stored in the second entry
 	 * in the link pair.
@@ -384,7 +384,7 @@ static int profile_path_link(const struct cred *subj_cred,
 	/* Do link perm subset test requiring allowed permission on link are
 	 * a subset of the allowed permissions on target.
 	 */
-	aa_str_perms(&(rules->file), rules->file.start[AA_CLASS_FILE],
+	aa_str_perms(rules->file, rules->file->start[AA_CLASS_FILE],
 		     tname, cond, &perms);
 
 	/* AA_MAY_LINK is not considered in the subset test */

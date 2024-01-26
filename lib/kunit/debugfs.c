@@ -37,14 +37,21 @@ void kunit_debugfs_init(void)
 		debugfs_rootdir = debugfs_create_dir(KUNIT_DEBUGFS_ROOT, NULL);
 }
 
-static void debugfs_print_result(struct seq_file *seq,
-				 struct kunit_suite *suite,
-				 struct kunit_case *test_case)
+static void debugfs_print_result(struct seq_file *seq, struct string_stream *log)
 {
-	if (!test_case || !test_case->log)
+	struct string_stream_fragment *frag_container;
+
+	if (!log)
 		return;
 
-	seq_printf(seq, "%s", test_case->log);
+	/*
+	 * Walk the fragments so we don't need to allocate a temporary
+	 * buffer to hold the entire string.
+	 */
+	spin_lock(&log->lock);
+	list_for_each_entry(frag_container, &log->fragments, node)
+		seq_printf(seq, "%s", frag_container->fragment);
+	spin_unlock(&log->lock);
 }
 
 /*
@@ -71,10 +78,9 @@ static int debugfs_print_results(struct seq_file *seq, void *v)
 	seq_printf(seq, KUNIT_SUBTEST_INDENT "1..%zd\n", kunit_suite_num_test_cases(suite));
 
 	kunit_suite_for_each_test_case(suite, test_case)
-		debugfs_print_result(seq, suite, test_case);
+		debugfs_print_result(seq, test_case->log);
 
-	if (suite->log)
-		seq_printf(seq, "%s", suite->log);
+	debugfs_print_result(seq, suite->log);
 
 	seq_printf(seq, "%s %d %s\n",
 		   kunit_status_to_ok_not_ok(success), 1, suite->name);
@@ -105,17 +111,41 @@ static const struct file_operations debugfs_results_fops = {
 void kunit_debugfs_create_suite(struct kunit_suite *suite)
 {
 	struct kunit_case *test_case;
+	struct string_stream *stream;
 
-	/* Allocate logs before creating debugfs representation. */
-	suite->log = kzalloc(KUNIT_LOG_SIZE, GFP_KERNEL);
-	kunit_suite_for_each_test_case(suite, test_case)
-		test_case->log = kzalloc(KUNIT_LOG_SIZE, GFP_KERNEL);
+	/*
+	 * Allocate logs before creating debugfs representation.
+	 * The suite->log and test_case->log pointer are expected to be NULL
+	 * if there isn't a log, so only set it if the log stream was created
+	 * successfully.
+	 */
+	stream = alloc_string_stream(GFP_KERNEL);
+	if (IS_ERR_OR_NULL(stream))
+		return;
+
+	string_stream_set_append_newlines(stream, true);
+	suite->log = stream;
+
+	kunit_suite_for_each_test_case(suite, test_case) {
+		stream = alloc_string_stream(GFP_KERNEL);
+		if (IS_ERR_OR_NULL(stream))
+			goto err;
+
+		string_stream_set_append_newlines(stream, true);
+		test_case->log = stream;
+	}
 
 	suite->debugfs = debugfs_create_dir(suite->name, debugfs_rootdir);
 
 	debugfs_create_file(KUNIT_DEBUGFS_RESULTS, S_IFREG | 0444,
 			    suite->debugfs,
 			    suite, &debugfs_results_fops);
+	return;
+
+err:
+	string_stream_destroy(suite->log);
+	kunit_suite_for_each_test_case(suite, test_case)
+		string_stream_destroy(test_case->log);
 }
 
 void kunit_debugfs_destroy_suite(struct kunit_suite *suite)
@@ -123,7 +153,7 @@ void kunit_debugfs_destroy_suite(struct kunit_suite *suite)
 	struct kunit_case *test_case;
 
 	debugfs_remove_recursive(suite->debugfs);
-	kfree(suite->log);
+	string_stream_destroy(suite->log);
 	kunit_suite_for_each_test_case(suite, test_case)
-		kfree(test_case->log);
+		string_stream_destroy(test_case->log);
 }

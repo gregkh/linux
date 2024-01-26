@@ -38,6 +38,8 @@
 #include "dc/dc_dmub_srv.h"
 #include "dce/dmub_replay.h"
 #include "abm.h"
+#define DC_LOGGER \
+	link->ctx->logger
 #define DC_LOGGER_INIT(logger)
 
 #define DP_SINK_PR_ENABLE_AND_CONFIGURATION		0x37B
@@ -179,7 +181,7 @@ bool edp_set_backlight_level_nits(struct dc_link *link,
 			&backlight_control, 1) != DC_OK)
 			return false;
 	} else {
-		const uint8_t backlight_enable = DP_EDP_PANEL_LUMINANCE_CONTROL_ENABLE;
+		uint8_t backlight_enable = 0;
 		struct target_luminance_value *target_luminance = NULL;
 
 		//if target luminance value is greater than 24 bits, clip the value to 24 bits
@@ -187,6 +189,11 @@ bool edp_set_backlight_level_nits(struct dc_link *link,
 			backlight_millinits = 0xFFFFFF;
 
 		target_luminance = (struct target_luminance_value *)&backlight_millinits;
+
+		core_link_read_dpcd(link, DP_EDP_BACKLIGHT_MODE_SET_REGISTER,
+			&backlight_enable, sizeof(uint8_t));
+
+		backlight_enable |= DP_EDP_PANEL_LUMINANCE_CONTROL_ENABLE;
 
 		if (core_link_write_dpcd(link, DP_EDP_BACKLIGHT_MODE_SET_REGISTER,
 			&backlight_enable,

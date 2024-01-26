@@ -52,7 +52,11 @@ struct aa_sk_ctx {
 };
 
 #define SK_CTX(X) ((X)->sk_security)
-#define SOCK_ctx(X) SOCK_INODE(X)->i_security
+static inline struct aa_sk_ctx *aa_sock(const struct sock *sk)
+{
+	return sk->sk_security;
+}
+
 #define DEFINE_AUDIT_NET(NAME, OP, SK, F, T, P)				  \
 	struct lsm_network_audit NAME ## _net = { .sk = (SK),		  \
 						  .family = (F)};	  \

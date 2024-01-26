@@ -827,7 +827,7 @@ static int iwl_mvm_get_queue_size(struct ieee80211_sta *sta)
 		if (!link)
 			continue;
 
-		/* support for 1k ba size */
+		/* support for 512 ba size */
 		if (link->eht_cap.has_eht &&
 		    max_size < IWL_DEFAULT_QUEUE_SIZE_EHT)
 			max_size = IWL_DEFAULT_QUEUE_SIZE_EHT;
@@ -865,11 +865,11 @@ int iwl_mvm_tvqm_enable_txq(struct iwl_mvm *mvm,
 
 	if (sta) {
 		struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
+		struct ieee80211_link_sta *link_sta;
 		unsigned int link_id;
 
-		for (link_id = 0;
-		     link_id < ARRAY_SIZE(mvmsta->link);
-		     link_id++) {
+		rcu_read_lock();
+		for_each_sta_active_link(mvmsta->vif, sta, link_sta, link_id) {
 			struct iwl_mvm_link_sta *link =
 				rcu_dereference_protected(mvmsta->link[link_id],
 							  lockdep_is_held(&mvm->mutex));
@@ -879,6 +879,7 @@ int iwl_mvm_tvqm_enable_txq(struct iwl_mvm *mvm,
 
 			sta_mask |= BIT(link->sta_id);
 		}
+		rcu_read_unlock();
 	} else {
 		sta_mask |= BIT(sta_id);
 	}
@@ -2718,18 +2719,9 @@ static void iwl_mvm_free_reorder(struct iwl_mvm *mvm,
 		WARN_ON(1);
 
 		for (j = 0; j < reorder_buf->buf_size; j++)
-			__skb_queue_purge(&entries[j].e.frames);
-		/*
-		 * Prevent timer re-arm. This prevents a very far fetched case
-		 * where we timed out on the notification. There may be prior
-		 * RX frames pending in the RX queue before the notification
-		 * that might get processed between now and the actual deletion
-		 * and we would re-arm the timer although we are deleting the
-		 * reorder buffer.
-		 */
-		reorder_buf->removed = true;
+			__skb_queue_purge(&entries[j].frames);
+
 		spin_unlock_bh(&reorder_buf->lock);
-		del_timer_sync(&reorder_buf->reorder_timer);
 	}
 }
 
@@ -2749,15 +2741,12 @@ static void iwl_mvm_init_reorder_buffer(struct iwl_mvm *mvm,
 		reorder_buf->num_stored = 0;
 		reorder_buf->head_sn = ssn;
 		reorder_buf->buf_size = buf_size;
-		/* rx reorder timer */
-		timer_setup(&reorder_buf->reorder_timer,
-			    iwl_mvm_reorder_timer_expired, 0);
 		spin_lock_init(&reorder_buf->lock);
 		reorder_buf->mvm = mvm;
 		reorder_buf->queue = i;
 		reorder_buf->valid = false;
 		for (j = 0; j < reorder_buf->buf_size; j++)
-			__skb_queue_head_init(&entries[j].e.frames);
+			__skb_queue_head_init(&entries[j].frames);
 	}
 }
 

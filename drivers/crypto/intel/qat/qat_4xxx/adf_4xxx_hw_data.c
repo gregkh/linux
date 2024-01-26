@@ -2,16 +2,18 @@
 /* Copyright(c) 2020 - 2021 Intel Corporation */
 #include <linux/iopoll.h>
 #include <adf_accel_devices.h>
+#include <adf_admin.h>
 #include <adf_cfg.h>
+#include <adf_cfg_services.h>
 #include <adf_clock.h>
 #include <adf_common_drv.h>
 #include <adf_gen4_dc.h>
 #include <adf_gen4_hw_data.h>
 #include <adf_gen4_pfvf.h>
 #include <adf_gen4_pm.h>
+#include "adf_gen4_ras.h"
 #include <adf_gen4_timer.h>
 #include "adf_4xxx_hw_data.h"
-#include "adf_cfg_services.h"
 #include "icp_qat_hw.h"
 
 #define ADF_AE_GROUP_0		GENMASK(3, 0)
@@ -341,6 +343,24 @@ static u32 get_heartbeat_clock(struct adf_hw_device_data *self)
 	return ADF_4XXX_KPT_COUNTER_FREQ;
 }
 
+static void adf_init_rl_data(struct adf_rl_hw_data *rl_data)
+{
+	rl_data->pciout_tb_offset = ADF_GEN4_RL_TOKEN_PCIEOUT_BUCKET_OFFSET;
+	rl_data->pciin_tb_offset = ADF_GEN4_RL_TOKEN_PCIEIN_BUCKET_OFFSET;
+	rl_data->r2l_offset = ADF_GEN4_RL_R2L_OFFSET;
+	rl_data->l2c_offset = ADF_GEN4_RL_L2C_OFFSET;
+	rl_data->c2s_offset = ADF_GEN4_RL_C2S_OFFSET;
+
+	rl_data->pcie_scale_div = ADF_4XXX_RL_PCIE_SCALE_FACTOR_DIV;
+	rl_data->pcie_scale_mul = ADF_4XXX_RL_PCIE_SCALE_FACTOR_MUL;
+	rl_data->dcpr_correction = ADF_4XXX_RL_DCPR_CORRECTION;
+	rl_data->max_tp[ADF_SVC_ASYM] = ADF_4XXX_RL_MAX_TP_ASYM;
+	rl_data->max_tp[ADF_SVC_SYM] = ADF_4XXX_RL_MAX_TP_SYM;
+	rl_data->max_tp[ADF_SVC_DC] = ADF_4XXX_RL_MAX_TP_DC;
+	rl_data->scan_interval = ADF_4XXX_RL_SCANS_PER_SEC;
+	rl_data->scale_ref = ADF_4XXX_RL_SLICE_REF;
+}
+
 static void adf_enable_error_correction(struct adf_accel_dev *accel_dev)
 {
 	struct adf_bar *misc_bar = &GET_BARS(accel_dev)[ADF_4XXX_PMISC_BAR];
@@ -519,6 +539,16 @@ static u32 uof_get_ae_mask(struct adf_accel_dev *accel_dev, u32 obj_num)
 	return fw_config[obj_num].ae_mask;
 }
 
+static void adf_gen4_set_err_mask(struct adf_dev_err_mask *dev_err_mask)
+{
+	dev_err_mask->cppagentcmdpar_mask = ADF_4XXX_HICPPAGENTCMDPARERRLOG_MASK;
+	dev_err_mask->parerr_ath_cph_mask = ADF_4XXX_PARITYERRORMASK_ATH_CPH_MASK;
+	dev_err_mask->parerr_cpr_xlt_mask = ADF_4XXX_PARITYERRORMASK_CPR_XLT_MASK;
+	dev_err_mask->parerr_dcpr_ucs_mask = ADF_4XXX_PARITYERRORMASK_DCPR_UCS_MASK;
+	dev_err_mask->parerr_pke_mask = ADF_4XXX_PARITYERRORMASK_PKE_MASK;
+	dev_err_mask->ssmfeatren_mask = ADF_4XXX_SSMFEATREN_MASK;
+}
+
 void adf_init_hw_data_4xxx(struct adf_hw_device_data *hw_data, u32 dev_id)
 {
 	hw_data->dev_class = &adf_4xxx_class;
@@ -582,10 +612,14 @@ void adf_init_hw_data_4xxx(struct adf_hw_device_data *hw_data, u32 dev_id)
 	hw_data->stop_timer = adf_gen4_timer_stop;
 	hw_data->get_hb_clock = get_heartbeat_clock;
 	hw_data->num_hb_ctrs = ADF_NUM_HB_CNT_PER_AE;
+	hw_data->clock_frequency = ADF_4XXX_AE_FREQ;
 
+	adf_gen4_set_err_mask(&hw_data->dev_err_mask);
 	adf_gen4_init_hw_csr_ops(&hw_data->csr_ops);
 	adf_gen4_init_pf_pfvf_ops(&hw_data->pfvf_ops);
 	adf_gen4_init_dc_ops(&hw_data->dc_ops);
+	adf_gen4_init_ras_ops(&hw_data->ras_ops);
+	adf_init_rl_data(&hw_data->rl_data);
 }
 
 void adf_clean_hw_data_4xxx(struct adf_hw_device_data *hw_data)

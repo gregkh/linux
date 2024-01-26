@@ -112,8 +112,6 @@ struct gpio_array {
 	unsigned long		invert_mask[];
 };
 
-struct gpio_desc *gpiochip_get_desc(struct gpio_chip *gc, unsigned int hwnum);
-
 #define for_each_gpio_desc(gc, desc)					\
 	for (unsigned int __i = 0;					\
 	     __i < gc->ngpio && (desc = gpiochip_get_desc(gc, __i));	\
@@ -133,6 +131,8 @@ int gpiod_set_array_value_complex(bool raw, bool can_sleep,
 				  struct gpio_desc **desc_array,
 				  struct gpio_array *array_info,
 				  unsigned long *value_bitmap);
+
+int gpiod_set_transitory(struct gpio_desc *desc, bool transitory);
 
 extern spinlock_t gpio_lock;
 extern struct list_head gpio_devices;

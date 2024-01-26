@@ -287,7 +287,6 @@ struct i801_priv {
 	u8 *data;
 
 #if IS_ENABLED(CONFIG_I2C_MUX_GPIO) && defined CONFIG_DMI
-	const struct i801_mux_config *mux_drvdata;
 	struct platform_device *mux_pdev;
 	struct gpiod_lookup_table *lookup;
 #endif
@@ -295,10 +294,9 @@ struct i801_priv {
 
 	/*
 	 * If set to true the host controller registers are reserved for
-	 * ACPI AML use. Protected by acpi_lock.
+	 * ACPI AML use.
 	 */
 	bool acpi_reserved;
-	struct mutex acpi_lock;
 };
 
 #define FEATURE_SMBUS_PEC	BIT(0)
@@ -876,11 +874,8 @@ static s32 i801_access(struct i2c_adapter *adap, u16 addr,
 	int hwpec, ret;
 	struct i801_priv *priv = i2c_get_adapdata(adap);
 
-	mutex_lock(&priv->acpi_lock);
-	if (priv->acpi_reserved) {
-		mutex_unlock(&priv->acpi_lock);
+	if (priv->acpi_reserved)
 		return -EBUSY;
-	}
 
 	pm_runtime_get_sync(&priv->pci_dev->dev);
 
@@ -921,7 +916,6 @@ out:
 
 	pm_runtime_mark_last_busy(&priv->pci_dev->dev);
 	pm_runtime_put_autosuspend(&priv->pci_dev->dev);
-	mutex_unlock(&priv->acpi_lock);
 	return ret;
 }
 
@@ -1290,7 +1284,7 @@ static void i801_probe_optional_slaves(struct i801_priv *priv)
 
 	/* Instantiate SPD EEPROMs unless the SMBus is multiplexed */
 #if IS_ENABLED(CONFIG_I2C_MUX_GPIO)
-	if (!priv->mux_drvdata)
+	if (!priv->mux_pdev)
 #endif
 		i2c_register_spd(&priv->adapter);
 }
@@ -1392,11 +1386,14 @@ static void i801_add_mux(struct i801_priv *priv)
 	const struct i801_mux_config *mux_config;
 	struct i2c_mux_gpio_platform_data gpio_data;
 	struct gpiod_lookup_table *lookup;
+	const struct dmi_system_id *id;
 	int i;
 
-	if (!priv->mux_drvdata)
+	id = dmi_first_match(mux_dmi_table);
+	if (!id)
 		return;
-	mux_config = priv->mux_drvdata;
+
+	mux_config = id->driver_data;
 
 	/* Prepare the platform data */
 	memset(&gpio_data, 0, sizeof(struct i2c_mux_gpio_platform_data));
@@ -1440,35 +1437,9 @@ static void i801_del_mux(struct i801_priv *priv)
 	platform_device_unregister(priv->mux_pdev);
 	gpiod_remove_lookup_table(priv->lookup);
 }
-
-static unsigned int i801_get_adapter_class(struct i801_priv *priv)
-{
-	const struct dmi_system_id *id;
-	const struct i801_mux_config *mux_config;
-	unsigned int class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
-	int i;
-
-	id = dmi_first_match(mux_dmi_table);
-	if (id) {
-		/* Remove branch classes from trunk */
-		mux_config = id->driver_data;
-		for (i = 0; i < mux_config->n_values; i++)
-			class &= ~mux_config->classes[i];
-
-		/* Remember for later */
-		priv->mux_drvdata = mux_config;
-	}
-
-	return class;
-}
 #else
 static inline void i801_add_mux(struct i801_priv *priv) { }
 static inline void i801_del_mux(struct i801_priv *priv) { }
-
-static inline unsigned int i801_get_adapter_class(struct i801_priv *priv)
-{
-	return I2C_CLASS_HWMON | I2C_CLASS_SPD;
-}
 #endif
 
 static struct platform_device *
@@ -1574,7 +1545,7 @@ i801_acpi_io_handler(u32 function, acpi_physical_address address, u32 bits,
 	 * further access from the driver itself. This device is now owned
 	 * by the system firmware.
 	 */
-	mutex_lock(&priv->acpi_lock);
+	i2c_lock_bus(&priv->adapter, I2C_LOCK_SEGMENT);
 
 	if (!priv->acpi_reserved && i801_acpi_is_smbus_ioport(priv, address)) {
 		priv->acpi_reserved = true;
@@ -1594,7 +1565,7 @@ i801_acpi_io_handler(u32 function, acpi_physical_address address, u32 bits,
 	else
 		status = acpi_os_write_port(address, (u32)*value, bits);
 
-	mutex_unlock(&priv->acpi_lock);
+	i2c_unlock_bus(&priv->adapter, I2C_LOCK_SEGMENT);
 
 	return status;
 }
@@ -1632,6 +1603,12 @@ static void i801_setup_hstcfg(struct i801_priv *priv)
 	pci_write_config_byte(priv->pci_dev, SMBHSTCFG, hstcfg);
 }
 
+static void i801_restore_regs(struct i801_priv *priv)
+{
+	outb_p(priv->original_hstcnt, SMBHSTCNT(priv));
+	pci_write_config_byte(priv->pci_dev, SMBHSTCFG, priv->original_hstcfg);
+}
+
 static int i801_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	int err, i;
@@ -1643,12 +1620,11 @@ static int i801_probe(struct pci_dev *dev, const struct pci_device_id *id)
 
 	i2c_set_adapdata(&priv->adapter, priv);
 	priv->adapter.owner = THIS_MODULE;
-	priv->adapter.class = i801_get_adapter_class(priv);
+	priv->adapter.class = I2C_CLASS_HWMON;
 	priv->adapter.algo = &smbus_algorithm;
 	priv->adapter.dev.parent = &dev->dev;
-	ACPI_COMPANION_SET(&priv->adapter.dev, ACPI_COMPANION(&dev->dev));
+	acpi_use_parent_companion(&priv->adapter.dev);
 	priv->adapter.retries = 3;
-	mutex_init(&priv->acpi_lock);
 
 	priv->pci_dev = dev;
 	priv->features = id->driver_data;
@@ -1758,6 +1734,7 @@ static int i801_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	if (err) {
 		platform_device_unregister(priv->tco_pdev);
 		i801_acpi_remove(priv);
+		i801_restore_regs(priv);
 		return err;
 	}
 
@@ -1782,18 +1759,18 @@ static void i801_remove(struct pci_dev *dev)
 {
 	struct i801_priv *priv = pci_get_drvdata(dev);
 
-	outb_p(priv->original_hstcnt, SMBHSTCNT(priv));
 	i801_disable_host_notify(priv);
 	i801_del_mux(priv);
 	i2c_del_adapter(&priv->adapter);
 	i801_acpi_remove(priv);
-	pci_write_config_byte(dev, SMBHSTCFG, priv->original_hstcfg);
 
 	platform_device_unregister(priv->tco_pdev);
 
 	/* if acpi_reserved is set then usage_count is incremented already */
 	if (!priv->acpi_reserved)
 		pm_runtime_get_noresume(&dev->dev);
+
+	i801_restore_regs(priv);
 
 	/*
 	 * do not call pci_disable_device(dev) since it can cause hard hangs on
@@ -1805,18 +1782,18 @@ static void i801_shutdown(struct pci_dev *dev)
 {
 	struct i801_priv *priv = pci_get_drvdata(dev);
 
-	/* Restore config registers to avoid hard hang on some systems */
-	outb_p(priv->original_hstcnt, SMBHSTCNT(priv));
 	i801_disable_host_notify(priv);
-	pci_write_config_byte(dev, SMBHSTCFG, priv->original_hstcfg);
+	/* Restore config registers to avoid hard hang on some systems */
+	i801_restore_regs(priv);
 }
 
 static int i801_suspend(struct device *dev)
 {
 	struct i801_priv *priv = dev_get_drvdata(dev);
 
-	outb_p(priv->original_hstcnt, SMBHSTCNT(priv));
-	pci_write_config_byte(priv->pci_dev, SMBHSTCFG, priv->original_hstcfg);
+	i2c_mark_adapter_suspended(&priv->adapter);
+	i801_restore_regs(priv);
+
 	return 0;
 }
 
@@ -1826,6 +1803,7 @@ static int i801_resume(struct device *dev)
 
 	i801_setup_hstcfg(priv);
 	i801_enable_host_notify(&priv->adapter);
+	i2c_mark_adapter_resumed(&priv->adapter);
 
 	return 0;
 }
@@ -1844,16 +1822,11 @@ static struct pci_driver i801_driver = {
 	},
 };
 
-static int __init i2c_i801_init(void)
+static int __init i2c_i801_init(struct pci_driver *drv)
 {
 	if (dmi_name_in_vendors("FUJITSU"))
 		input_apanel_init();
-	return pci_register_driver(&i801_driver);
-}
-
-static void __exit i2c_i801_exit(void)
-{
-	pci_unregister_driver(&i801_driver);
+	return pci_register_driver(drv);
 }
 
 MODULE_AUTHOR("Mark D. Studebaker <mdsxyz123@yahoo.com>");
@@ -1861,5 +1834,4 @@ MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
 MODULE_DESCRIPTION("I801 SMBus driver");
 MODULE_LICENSE("GPL");
 
-module_init(i2c_i801_init);
-module_exit(i2c_i801_exit);
+module_driver(i801_driver, i2c_i801_init, pci_unregister_driver);

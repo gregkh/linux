@@ -355,7 +355,7 @@ asmlinkage void start_secondary(void)
 
 	cpu_probe();
 	per_cpu_trap_init(false);
-	rcu_cpu_starting(cpu);
+	rcutree_report_cpu_starting(cpu);
 	mips_clockevent_init();
 	mp_ops->init_secondary();
 	cpu_report();

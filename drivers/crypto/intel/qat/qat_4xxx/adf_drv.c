@@ -418,6 +418,7 @@ static int adf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto out_err;
 	}
 
+	accel_dev->ras_errors.enabled = true;
 	adf_dbgfs_init(accel_dev);
 
 	ret = adf_dev_up(accel_dev, true);
@@ -467,3 +468,4 @@ MODULE_FIRMWARE(ADF_4XXX_MMP);
 MODULE_DESCRIPTION("Intel(R) QuickAssist Technology");
 MODULE_VERSION(ADF_DRV_VERSION);
 MODULE_SOFTDEP("pre: crypto-intel_qat");
+MODULE_IMPORT_NS(CRYPTO_QAT);

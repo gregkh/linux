@@ -8,6 +8,8 @@
 #include "adf_cfg_services.h"
 #include "adf_common_drv.h"
 
+#define UNSET_RING_NUM -1
+
 static const char * const state_operations[] = {
 	[DEV_DOWN] = "down",
 	[DEV_UP] = "up",
@@ -61,8 +63,8 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
 		}
 
 		ret = adf_dev_down(accel_dev, true);
-		if (ret < 0)
-			return -EINVAL;
+		if (ret)
+			return ret;
 
 		break;
 	case DEV_UP:
@@ -205,10 +207,90 @@ static DEVICE_ATTR_RW(pm_idle_enabled);
 static DEVICE_ATTR_RW(state);
 static DEVICE_ATTR_RW(cfg_services);
 
+static ssize_t rp2srv_show(struct device *dev, struct device_attribute *attr,
+			   char *buf)
+{
+	struct adf_hw_device_data *hw_data;
+	struct adf_accel_dev *accel_dev;
+	enum adf_cfg_service_type svc;
+
+	accel_dev = adf_devmgr_pci_to_accel_dev(to_pci_dev(dev));
+	if (!accel_dev)
+		return -EINVAL;
+
+	hw_data = GET_HW_DATA(accel_dev);
+
+	if (accel_dev->sysfs.ring_num == UNSET_RING_NUM)
+		return -EINVAL;
+
+	down_read(&accel_dev->sysfs.lock);
+	svc = GET_SRV_TYPE(accel_dev, accel_dev->sysfs.ring_num %
+					      hw_data->num_banks_per_vf);
+	up_read(&accel_dev->sysfs.lock);
+
+	switch (svc) {
+	case COMP:
+		return sysfs_emit(buf, "%s\n", ADF_CFG_DC);
+	case SYM:
+		return sysfs_emit(buf, "%s\n", ADF_CFG_SYM);
+	case ASYM:
+		return sysfs_emit(buf, "%s\n", ADF_CFG_ASYM);
+	default:
+		break;
+	}
+	return -EINVAL;
+}
+
+static ssize_t rp2srv_store(struct device *dev, struct device_attribute *attr,
+			    const char *buf, size_t count)
+{
+	struct adf_accel_dev *accel_dev;
+	int num_rings, ret;
+	unsigned int ring;
+
+	accel_dev = adf_devmgr_pci_to_accel_dev(to_pci_dev(dev));
+	if (!accel_dev)
+		return -EINVAL;
+
+	ret = kstrtouint(buf, 10, &ring);
+	if (ret)
+		return ret;
+
+	num_rings = GET_MAX_BANKS(accel_dev);
+	if (ring >= num_rings) {
+		dev_err(&GET_DEV(accel_dev),
+			"Device does not support more than %u ring pairs\n",
+			num_rings);
+		return -EINVAL;
+	}
+
+	down_write(&accel_dev->sysfs.lock);
+	accel_dev->sysfs.ring_num = ring;
+	up_write(&accel_dev->sysfs.lock);
+
+	return count;
+}
+static DEVICE_ATTR_RW(rp2srv);
+
+static ssize_t num_rps_show(struct device *dev, struct device_attribute *attr,
+			    char *buf)
+{
+	struct adf_accel_dev *accel_dev;
+
+	accel_dev = adf_devmgr_pci_to_accel_dev(to_pci_dev(dev));
+	if (!accel_dev)
+		return -EINVAL;
+
+	return sysfs_emit(buf, "%u\n", GET_MAX_BANKS(accel_dev));
+}
+static DEVICE_ATTR_RO(num_rps);
+
 static struct attribute *qat_attrs[] = {
 	&dev_attr_state.attr,
 	&dev_attr_cfg_services.attr,
 	&dev_attr_pm_idle_enabled.attr,
+	&dev_attr_rp2srv.attr,
+	&dev_attr_num_rps.attr,
 	NULL,
 };
 
@@ -226,6 +308,8 @@ int adf_sysfs_init(struct adf_accel_dev *accel_dev)
 		dev_err(&GET_DEV(accel_dev),
 			"Failed to create qat attribute group: %d\n", ret);
 	}
+
+	accel_dev->sysfs.ring_num = UNSET_RING_NUM;
 
 	return ret;
 }

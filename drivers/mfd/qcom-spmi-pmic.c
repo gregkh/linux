@@ -8,10 +8,12 @@
 #include <linux/gfp.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/spmi.h>
 #include <linux/types.h>
 #include <linux/regmap.h>
-#include <linux/of_platform.h>
 #include <soc/qcom/qcom-spmi-pmic.h>
 
 #define PMIC_REV2		0x101
@@ -114,7 +116,7 @@ static struct spmi_device *qcom_pmic_get_base_usid(struct spmi_device *sdev, str
 		}
 
 		if (pmic_addr == function_parent_usid - (ctx->num_usids - 1)) {
-			sdev = spmi_device_from_of(child);
+			sdev = spmi_find_device_by_of_node(child);
 			if (!sdev) {
 				/*
 				 * If the base USID for this PMIC hasn't been
@@ -241,7 +243,7 @@ const struct qcom_spmi_pmic *qcom_pmic_get(struct device *dev)
 
 	return &spmi->pmic;
 }
-EXPORT_SYMBOL(qcom_pmic_get);
+EXPORT_SYMBOL_GPL(qcom_pmic_get);
 
 static const struct regmap_config spmi_regmap_config = {
 	.reg_bits	= 16,
@@ -264,7 +266,7 @@ static int pmic_spmi_probe(struct spmi_device *sdev)
 	if (!ctx)
 		return -ENOMEM;
 
-	ctx->num_usids = (uintptr_t)of_device_get_match_data(&sdev->dev);
+	ctx->num_usids = (uintptr_t)device_get_match_data(&sdev->dev);
 
 	/* Only the first slave id for a PMIC contains this information */
 	if (sdev->usid % ctx->num_usids == 0) {

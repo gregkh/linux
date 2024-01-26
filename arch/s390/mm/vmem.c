@@ -15,6 +15,7 @@
 #include <asm/page-states.h>
 #include <asm/cacheflush.h>
 #include <asm/nospec-branch.h>
+#include <asm/ctlreg.h>
 #include <asm/pgalloc.h>
 #include <asm/setup.h>
 #include <asm/tlbflush.h>
@@ -49,8 +50,7 @@ void *vmem_crst_alloc(unsigned long val)
 	if (!table)
 		return NULL;
 	crst_table_init(table, val);
-	if (slab_is_available())
-		arch_set_page_dat(virt_to_page(table), CRST_ALLOC_ORDER);
+	__arch_set_page_dat(table, 1UL << CRST_ALLOC_ORDER);
 	return table;
 }
 
@@ -66,6 +66,7 @@ pte_t __ref *vmem_pte_alloc(void)
 	if (!pte)
 		return NULL;
 	memset64((u64 *)pte, _PAGE_INVALID, PTRS_PER_PTE);
+	__arch_set_page_dat(pte, 1);
 	return pte;
 }
 
@@ -502,6 +503,8 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node,
 	return ret;
 }
 
+#ifdef CONFIG_MEMORY_HOTPLUG
+
 void vmemmap_free(unsigned long start, unsigned long end,
 		  struct vmem_altmap *altmap)
 {
@@ -509,6 +512,8 @@ void vmemmap_free(unsigned long start, unsigned long end,
 	remove_pagetable(start, end, false);
 	mutex_unlock(&vmem_mutex);
 }
+
+#endif
 
 void vmem_remove_mapping(unsigned long start, unsigned long size)
 {
@@ -663,7 +668,7 @@ void __init vmem_map_init(void)
 		__set_memory_4k(__va(0), RELOC_HIDE(__va(0), ident_map_size));
 	}
 	if (MACHINE_HAS_NX)
-		ctl_set_bit(0, 20);
+		system_ctl_set_bit(0, CR0_INSTRUCTION_EXEC_PROTECTION_BIT);
 	pr_info("Write protected kernel read-only data: %luk\n",
 		(unsigned long)(__end_rodata - _stext) >> 10);
 }
