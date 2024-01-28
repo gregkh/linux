@@ -3614,13 +3614,13 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 			   scx_create_rt_helper("sched_ext_ops_helper"));
 		if (!scx_ops_helper) {
 			ret = -ENOMEM;
-			goto err;
+			goto err_unlock;
 		}
 	}
 
 	if (scx_ops_enable_state() != SCX_OPS_DISABLED) {
 		ret = -EBUSY;
-		goto err;
+		goto err_unlock;
 	}
 
 	scx_exit_info = alloc_exit_info();
@@ -3868,6 +3868,7 @@ err:
 		free_exit_info(scx_exit_info);
 		scx_exit_info = NULL;
 	}
+err_unlock:
 	mutex_unlock(&scx_ops_enable_mutex);
 	return ret;
 
