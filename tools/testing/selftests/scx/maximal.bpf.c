@@ -6,7 +6,6 @@
  *
  * Copyright (c) 2024 Meta Platforms, Inc. and affiliates.
  * Copyright (c) 2024 David Vernet <dvernet@meta.com>
- * Copyright (c) 2024 Tejun Heo <tj@kernel.org>
  */
 
 #include <scx/common.bpf.h>
