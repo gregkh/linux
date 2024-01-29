@@ -1350,7 +1350,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			return -EFAULT;
 		rc = cca_genseckey(kgs.cardnr, kgs.domain,
 				   kgs.keytype, kgs.seckey.seckey);
-		DEBUG_DBG("%s cca_genseckey()=%d\n", __func__, rc);
+		pr_debug("%s cca_genseckey()=%d\n", __func__, rc);
 		if (rc)
 			break;
 		if (copy_to_user(ugs, &kgs, sizeof(kgs)))
@@ -1381,7 +1381,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		rc = cca_sec2protkey(ksp.cardnr, ksp.domain,
 				     ksp.seckey.seckey, ksp.protkey.protkey,
 				     &ksp.protkey.len, &ksp.protkey.type);
-		DEBUG_DBG("%s cca_sec2protkey()=%d\n", __func__, rc);
+		pr_debug("%s cca_sec2protkey()=%d\n", __func__, rc);
 		if (rc)
 			break;
 		if (copy_to_user(usp, &ksp, sizeof(ksp)))
@@ -1428,7 +1428,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		ksp.protkey.len = sizeof(ksp.protkey.protkey);
 		rc = pkey_skey2pkey(ksp.seckey.seckey, ksp.protkey.protkey,
 				    &ksp.protkey.len, &ksp.protkey.type);
-		DEBUG_DBG("%s pkey_skey2pkey()=%d\n", __func__, rc);
+		pr_debug("%s pkey_skey2pkey()=%d\n", __func__, rc);
 		if (rc)
 			break;
 		if (copy_to_user(usp, &ksp, sizeof(ksp)))
@@ -1443,7 +1443,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			return -EFAULT;
 		rc = pkey_verifykey(&kvk.seckey, &kvk.cardnr, &kvk.domain,
 				    &kvk.keysize, &kvk.attributes);
-		DEBUG_DBG("%s pkey_verifykey()=%d\n", __func__, rc);
+		pr_debug("%s pkey_verifykey()=%d\n", __func__, rc);
 		if (rc)
 			break;
 		if (copy_to_user(uvk, &kvk, sizeof(kvk)))
@@ -1459,7 +1459,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		kgp.protkey.len = sizeof(kgp.protkey.protkey);
 		rc = pkey_genprotkey(kgp.keytype, kgp.protkey.protkey,
 				     &kgp.protkey.len, &kgp.protkey.type);
-		DEBUG_DBG("%s pkey_genprotkey()=%d\n", __func__, rc);
+		pr_debug("%s pkey_genprotkey()=%d\n", __func__, rc);
 		if (rc)
 			break;
 		if (copy_to_user(ugp, &kgp, sizeof(kgp)))
@@ -1474,7 +1474,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			return -EFAULT;
 		rc = pkey_verifyprotkey(kvp.protkey.protkey,
 					kvp.protkey.len, kvp.protkey.type);
-		DEBUG_DBG("%s pkey_verifyprotkey()=%d\n", __func__, rc);
+		pr_debug("%s pkey_verifyprotkey()=%d\n", __func__, rc);
 		break;
 	}
 	case PKEY_KBLOB2PROTK: {
@@ -1490,9 +1490,8 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		ktp.protkey.len = sizeof(ktp.protkey.protkey);
 		rc = pkey_keyblob2pkey(kkey, ktp.keylen, ktp.protkey.protkey,
 				       &ktp.protkey.len, &ktp.protkey.type);
-		DEBUG_DBG("%s pkey_keyblob2pkey()=%d\n", __func__, rc);
-		memzero_explicit(kkey, ktp.keylen);
-		kfree(kkey);
+		pr_debug("%s pkey_keyblob2pkey()=%d\n", __func__, rc);
+		kfree_sensitive(kkey);
 		if (rc)
 			break;
 		if (copy_to_user(utp, &ktp, sizeof(ktp)))
@@ -1519,7 +1518,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		rc = pkey_genseckey2(apqns, kgs.apqn_entries,
 				     kgs.type, kgs.size, kgs.keygenflags,
 				     kkey, &klen);
-		DEBUG_DBG("%s pkey_genseckey2()=%d\n", __func__, rc);
+		pr_debug("%s pkey_genseckey2()=%d\n", __func__, rc);
 		kfree(apqns);
 		if (rc) {
 			kfree(kkey);
@@ -1564,7 +1563,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		rc = pkey_clr2seckey2(apqns, kcs.apqn_entries,
 				      kcs.type, kcs.size, kcs.keygenflags,
 				      kcs.clrkey.clrkey, kkey, &klen);
-		DEBUG_DBG("%s pkey_clr2seckey2()=%d\n", __func__, rc);
+		pr_debug("%s pkey_clr2seckey2()=%d\n", __func__, rc);
 		kfree(apqns);
 		if (rc) {
 			kfree(kkey);
@@ -1603,7 +1602,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		rc = pkey_verifykey2(kkey, kvk.keylen,
 				     &kvk.cardnr, &kvk.domain,
 				     &kvk.type, &kvk.size, &kvk.flags);
-		DEBUG_DBG("%s pkey_verifykey2()=%d\n", __func__, rc);
+		pr_debug("%s pkey_verifykey2()=%d\n", __func__, rc);
 		kfree(kkey);
 		if (rc)
 			break;
@@ -1632,10 +1631,9 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 					kkey, ktp.keylen,
 					ktp.protkey.protkey, &ktp.protkey.len,
 					&ktp.protkey.type);
-		DEBUG_DBG("%s pkey_keyblob2pkey2()=%d\n", __func__, rc);
+		pr_debug("%s pkey_keyblob2pkey2()=%d\n", __func__, rc);
 		kfree(apqns);
-		memzero_explicit(kkey, ktp.keylen);
-		kfree(kkey);
+		kfree_sensitive(kkey);
 		if (rc)
 			break;
 		if (copy_to_user(utp, &ktp, sizeof(ktp)))
@@ -1666,7 +1664,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		}
 		rc = pkey_apqns4key(kkey, kak.keylen, kak.flags,
 				    apqns, &nr_apqns);
-		DEBUG_DBG("%s pkey_apqns4key()=%d\n", __func__, rc);
+		pr_debug("%s pkey_apqns4key()=%d\n", __func__, rc);
 		kfree(kkey);
 		if (rc && rc != -ENOSPC) {
 			kfree(apqns);
@@ -1761,8 +1759,7 @@ static long pkey_unlocked_ioctl(struct file *filp, unsigned int cmd,
 					protkey, &protkeylen, &ktp.pkeytype);
 		DEBUG_DBG("%s pkey_keyblob2pkey3()=%d\n", __func__, rc);
 		kfree(apqns);
-		memzero_explicit(kkey, ktp.keylen);
-		kfree(kkey);
+		kfree_sensitive(kkey);
 		if (rc) {
 			kfree(protkey);
 			break;
