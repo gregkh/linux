@@ -2367,7 +2367,7 @@ static void scx_set_task_state(struct task_struct *p, enum scx_task_state state)
 	p->scx.flags |= state << SCX_TASK_STATE_SHIFT;
 }
 
-static int scx_ops_init_task(struct task_struct *p, struct task_group *tg)
+static int scx_ops_init_task(struct task_struct *p, struct task_group *tg, bool fork)
 {
 	int ret;
 
@@ -2376,6 +2376,7 @@ static int scx_ops_init_task(struct task_struct *p, struct task_group *tg)
 	if (SCX_HAS_OP(init_task)) {
 		struct scx_init_task_args args = {
 			SCX_INIT_TASK_ARGS_CGROUP(tg)
+			.fork = fork,
 		};
 
 		ret = SCX_CALL_OP_RET(SCX_KF_SLEEPABLE, init_task, p, &args);
@@ -2490,7 +2491,7 @@ int scx_fork(struct task_struct *p)
 	percpu_rwsem_assert_held(&scx_fork_rwsem);
 
 	if (scx_enabled())
-		return scx_ops_init_task(p, task_group(p));
+		return scx_ops_init_task(p, task_group(p), true);
 	else
 		return 0;
 }
@@ -3774,7 +3775,7 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		get_task_struct(p);
 		spin_unlock_irq(&scx_tasks_lock);
 
-		ret = scx_ops_init_task(p, task_group(p));
+		ret = scx_ops_init_task(p, task_group(p), false);
 		if (ret) {
 			put_task_struct(p);
 			spin_lock_irq(&scx_tasks_lock);
