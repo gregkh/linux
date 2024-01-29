@@ -12,22 +12,22 @@
 
 static enum scx_test_status run(void *ctx)
 {
-        struct maybe_null *skel;
-        struct maybe_null_fail *fail_skel;
+	struct maybe_null *skel;
+	struct maybe_null_fail *fail_skel;
 
-        skel = maybe_null__open_and_load();
-        if (!skel) {
-                SCX_ERR("Failed to open and load maybe_null skel");
-                return SCX_TEST_FAIL;
-        }
-        maybe_null__destroy(skel);
+	skel = maybe_null__open_and_load();
+	if (!skel) {
+		SCX_ERR("Failed to open and load maybe_null skel");
+		return SCX_TEST_FAIL;
+	}
+	maybe_null__destroy(skel);
 
-        fail_skel = maybe_null_fail__open_and_load();
-        if (fail_skel) {
-                maybe_null_fail__destroy(fail_skel);
-                SCX_ERR("Should failed to open and load maybe_null_fail skel");
-                return SCX_TEST_FAIL;
-        }
+	fail_skel = maybe_null_fail__open_and_load();
+	if (fail_skel) {
+		maybe_null_fail__destroy(fail_skel);
+		SCX_ERR("Should failed to open and load maybe_null_fail skel");
+		return SCX_TEST_FAIL;
+	}
 
 	return SCX_TEST_PASS;
 }
