@@ -151,16 +151,17 @@ nlmsvc_lookup_block(struct nlm_file *file, struct nlm_lock *lock)
 	struct file_lock	*fl;
 
 	dprintk("lockd: nlmsvc_lookup_block f=%p pd=%d %Ld-%Ld ty=%d\n",
-				file, lock->fl.fl_pid,
+				file, lock->fl.c.flc_pid,
 				(long long)lock->fl.fl_start,
-				(long long)lock->fl.fl_end, lock->fl.fl_type);
+				(long long)lock->fl.fl_end,
+				lock->fl.c.flc_type);
 	spin_lock(&nlm_blocked_lock);
 	list_for_each_entry(block, &nlm_blocked, b_list) {
 		fl = &block->b_call->a_args.lock.fl;
 		dprintk("lockd: check f=%p pd=%d %Ld-%Ld ty=%d cookie=%s\n",
-				block->b_file, fl->fl_pid,
+				block->b_file, fl->c.flc_pid,
 				(long long)fl->fl_start,
-				(long long)fl->fl_end, fl->fl_type,
+				(long long)fl->fl_end, fl->c.flc_type,
 				nlmdbg_cookie2a(&block->b_call->a_args.cookie));
 		if (block->b_file == file && nlm_compare_locks(fl, &lock->fl)) {
 			kref_get(&block->b_count);
@@ -245,7 +246,7 @@ nlmsvc_create_block(struct svc_rqst *rqstp, struct nlm_host *host,
 		goto failed_free;
 
 	/* Set notifier function for VFS, and init args */
-	call->a_args.lock.fl.fl_flags |= FL_SLEEP;
+	call->a_args.lock.fl.c.flc_flags |= FL_SLEEP;
 	call->a_args.lock.fl.fl_lmops = &nlmsvc_lock_operations;
 	nlmclnt_next_cookie(&call->a_args.cookie);
 
@@ -403,14 +404,14 @@ static struct nlm_lockowner *nlmsvc_find_lockowner(struct nlm_host *host, pid_t 
 void
 nlmsvc_release_lockowner(struct nlm_lock *lock)
 {
-	if (lock->fl.fl_owner)
-		nlmsvc_put_lockowner(lock->fl.fl_owner);
+	if (lock->fl.c.flc_owner)
+		nlmsvc_put_lockowner(lock->fl.c.flc_owner);
 }
 
 void nlmsvc_locks_init_private(struct file_lock *fl, struct nlm_host *host,
 						pid_t pid)
 {
-	fl->fl_owner = nlmsvc_find_lockowner(host, pid);
+	fl->c.flc_owner = nlmsvc_find_lockowner(host, pid);
 }
 
 /*
@@ -426,7 +427,7 @@ static int nlmsvc_setgrantargs(struct nlm_rqst *call, struct nlm_lock *lock)
 
 	/* set default data area */
 	call->a_args.lock.oh.data = call->a_owner;
-	call->a_args.lock.svid = ((struct nlm_lockowner *)lock->fl.fl_owner)->pid;
+	call->a_args.lock.svid = ((struct nlm_lockowner *) lock->fl.c.flc_owner)->pid;
 
 	if (lock->oh.len > NLMCLNT_OHSIZE) {
 		void *data = kmalloc(lock->oh.len, GFP_KERNEL);
@@ -492,7 +493,8 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
 
 	dprintk("lockd: nlmsvc_lock(%s/%ld, ty=%d, pi=%d, %Ld-%Ld, bl=%d)\n",
 				inode->i_sb->s_id, inode->i_ino,
-				lock->fl.fl_type, lock->fl.fl_pid,
+				lock->fl.c.flc_type,
+				lock->fl.c.flc_pid,
 				(long long)lock->fl.fl_start,
 				(long long)lock->fl.fl_end,
 				wait);
@@ -515,7 +517,7 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
 			goto out;
 		lock = &block->b_call->a_args.lock;
 	} else
-		lock->fl.fl_flags &= ~FL_SLEEP;
+		lock->fl.c.flc_flags &= ~FL_SLEEP;
 
 	if (block->b_flags & B_QUEUED) {
 		dprintk("lockd: nlmsvc_lock deferred block %p flags %d\n",
@@ -544,10 +546,10 @@ nlmsvc_lock(struct svc_rqst *rqstp, struct nlm_file *file,
 	}
 
 	if (!wait)
-		lock->fl.fl_flags &= ~FL_SLEEP;
+		lock->fl.c.flc_flags &= ~FL_SLEEP;
 	mode = lock_to_openmode(&lock->fl);
 	error = vfs_lock_file(file->f_file[mode], F_SETLK, &lock->fl, NULL);
-	lock->fl.fl_flags &= ~FL_SLEEP;
+	lock->fl.c.flc_flags &= ~FL_SLEEP;
 
 	dprintk("lockd: vfs_lock_file returned %d\n", error);
 	switch (error) {
@@ -605,7 +607,7 @@ nlmsvc_testlock(struct svc_rqst *rqstp, struct nlm_file *file,
 	dprintk("lockd: nlmsvc_testlock(%s/%ld, ty=%d, %Ld-%Ld)\n",
 				nlmsvc_file_inode(file)->i_sb->s_id,
 				nlmsvc_file_inode(file)->i_ino,
-				lock->fl.fl_type,
+				lock->fl.c.flc_type,
 				(long long)lock->fl.fl_start,
 				(long long)lock->fl.fl_end);
 
@@ -617,10 +619,10 @@ nlmsvc_testlock(struct svc_rqst *rqstp, struct nlm_file *file,
 	mode = lock_to_openmode(&lock->fl);
 	locks_init_lock(&conflock->fl);
 	/* vfs_test_lock only uses start, end, and owner, but tests fl_file */
-	conflock->fl.fl_file = lock->fl.fl_file;
+	conflock->fl.c.flc_file = lock->fl.c.flc_file;
 	conflock->fl.fl_start = lock->fl.fl_start;
 	conflock->fl.fl_end = lock->fl.fl_end;
-	conflock->fl.fl_owner = lock->fl.fl_owner;
+	conflock->fl.c.flc_owner = lock->fl.c.flc_owner;
 	error = vfs_test_lock(file->f_file[mode], &conflock->fl);
 	if (error) {
 		/* We can't currently deal with deferred test requests */
@@ -631,18 +633,18 @@ nlmsvc_testlock(struct svc_rqst *rqstp, struct nlm_file *file,
 		goto out;
 	}
 
-	if (conflock->fl.fl_type == F_UNLCK) {
+	if (conflock->fl.c.flc_type == F_UNLCK) {
 		ret = nlm_granted;
 		goto out;
 	}
 
 	dprintk("lockd: conflicting lock(ty=%d, %Ld-%Ld)\n",
-		conflock->fl.fl_type, (long long)conflock->fl.fl_start,
+		conflock->fl.c.flc_type, (long long)conflock->fl.fl_start,
 		(long long)conflock->fl.fl_end);
 	conflock->caller = "somehost";	/* FIXME */
 	conflock->len = strlen(conflock->caller);
 	conflock->oh.len = 0;		/* don't return OH info */
-	conflock->svid = conflock->fl.fl_pid;
+	conflock->svid = conflock->fl.c.flc_pid;
 	locks_release_private(&conflock->fl);
 
 	ret = nlm_lck_denied;
@@ -665,21 +667,21 @@ nlmsvc_unlock(struct net *net, struct nlm_file *file, struct nlm_lock *lock)
 	dprintk("lockd: nlmsvc_unlock(%s/%ld, pi=%d, %Ld-%Ld)\n",
 				nlmsvc_file_inode(file)->i_sb->s_id,
 				nlmsvc_file_inode(file)->i_ino,
-				lock->fl.fl_pid,
+				lock->fl.c.flc_pid,
 				(long long)lock->fl.fl_start,
 				(long long)lock->fl.fl_end);
 
 	/* First, cancel any lock that might be there */
 	nlmsvc_cancel_blocked(net, file, lock);
 
-	lock->fl.fl_type = F_UNLCK;
-	lock->fl.fl_file = file->f_file[O_RDONLY];
-	if (lock->fl.fl_file)
-		error = vfs_lock_file(lock->fl.fl_file, F_SETLK,
+	lock->fl.c.flc_type = F_UNLCK;
+	lock->fl.c.flc_file = file->f_file[O_RDONLY];
+	if (lock->fl.c.flc_file)
+		error = vfs_lock_file(lock->fl.c.flc_file, F_SETLK,
 					&lock->fl, NULL);
-	lock->fl.fl_file = file->f_file[O_WRONLY];
-	if (lock->fl.fl_file)
-		error |= vfs_lock_file(lock->fl.fl_file, F_SETLK,
+	lock->fl.c.flc_file = file->f_file[O_WRONLY];
+	if (lock->fl.c.flc_file)
+		error |= vfs_lock_file(lock->fl.c.flc_file, F_SETLK,
 					&lock->fl, NULL);
 
 	return (error < 0)? nlm_lck_denied_nolocks : nlm_granted;
@@ -702,7 +704,7 @@ nlmsvc_cancel_blocked(struct net *net, struct nlm_file *file, struct nlm_lock *l
 	dprintk("lockd: nlmsvc_cancel(%s/%ld, pi=%d, %Ld-%Ld)\n",
 				nlmsvc_file_inode(file)->i_sb->s_id,
 				nlmsvc_file_inode(file)->i_ino,
-				lock->fl.fl_pid,
+				lock->fl.c.flc_pid,
 				(long long)lock->fl.fl_start,
 				(long long)lock->fl.fl_end);
 
@@ -855,12 +857,12 @@ nlmsvc_grant_blocked(struct nlm_block *block)
 	/* vfs_lock_file() can mangle fl_start and fl_end, but we need
 	 * them unchanged for the GRANT_MSG
 	 */
-	lock->fl.fl_flags |= FL_SLEEP;
+	lock->fl.c.flc_flags |= FL_SLEEP;
 	fl_start = lock->fl.fl_start;
 	fl_end = lock->fl.fl_end;
 	mode = lock_to_openmode(&lock->fl);
 	error = vfs_lock_file(file->f_file[mode], F_SETLK, &lock->fl, NULL);
-	lock->fl.fl_flags &= ~FL_SLEEP;
+	lock->fl.c.flc_flags &= ~FL_SLEEP;
 	lock->fl.fl_start = fl_start;
 	lock->fl.fl_end = fl_end;
 
@@ -985,8 +987,8 @@ nlmsvc_grant_reply(struct nlm_cookie *cookie, __be32 status)
 		/* Client doesn't want it, just unlock it */
 		nlmsvc_unlink_block(block);
 		fl = &block->b_call->a_args.lock.fl;
-		fl->fl_type = F_UNLCK;
-		error = vfs_lock_file(fl->fl_file, F_SETLK, fl, NULL);
+		fl->c.flc_type = F_UNLCK;
+		error = vfs_lock_file(fl->c.flc_file, F_SETLK, fl, NULL);
 		if (error)
 			pr_warn("lockd: unable to unlock lock rejected by client!\n");
 		break;
