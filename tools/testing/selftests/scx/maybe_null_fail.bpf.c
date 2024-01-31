@@ -14,12 +14,12 @@ void BPF_STRUCT_OPS(maybe_null_running, struct task_struct *p)
 
 void BPF_STRUCT_OPS(maybe_null_fail_dispatch, s32 cpu, struct task_struct *p)
 {
-          vtime_test = p->scx.dsq_vtime;
+	vtime_test = p->scx.dsq_vtime;
 }
 
 SEC(".struct_ops.link")
 struct sched_ext_ops maybe_null_fail = {
-        .dispatch               = maybe_null_fail_dispatch,
+	.dispatch               = maybe_null_fail_dispatch,
 	.enable			= maybe_null_running,
 	.name			= "minimal",
 };

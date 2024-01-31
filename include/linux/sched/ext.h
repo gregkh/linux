@@ -131,6 +131,11 @@ struct scx_init_task_args {
 	/* the cgroup the task is joining */
 	struct cgroup		*cgroup;
 #endif
+	/*
+	 * Set if ops.init_task() is being invoked on the fork path, as opposed
+	 * to the scheduler transition path.
+	 */
+	bool			fork;
 };
 
 /* argument container for ops.exit_task() */

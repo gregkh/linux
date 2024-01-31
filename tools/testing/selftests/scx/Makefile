@@ -155,21 +155,28 @@ override define CLEAN
 	rm -f runner
 endef
 
+# Every testcase takes all of the BPF progs are dependencies by default. This
+# allows testcases to load any BPF scheduler, which is useful for testcases
+# that don't need their own prog to run their test.
+all_test_bpfprogs := $(foreach prog,$(wildcard *.bpf.c),$(INCLUDE_DIR)/$(patsubst %.c,%.skel.h,$(prog)))
+
 auto-test-targets :=			\
 	enq_last_no_enq_fails		\
 	enq_select_cpu_fails		\
 	ddsp_bogus_dsq_fail		\
 	ddsp_vtimelocal_fail		\
 	init_enable_count		\
+	maximal				\
 	maybe_null			\
 	minimal				\
+	reload_loop			\
 	select_cpu_dfl			\
 	select_cpu_dfl_nodispatch	\
 	select_cpu_dispatch		\
 	select_cpu_dispatch_bad_dsq	\
 	select_cpu_dispatch_dbl_dsp	\
 	select_cpu_vtime		\
-	test_example
+	test_example			\
 
 testcase-targets := $(addsuffix .o,$(addprefix $(SCXOBJ_DIR)/,$(auto-test-targets)))
 
@@ -182,11 +189,7 @@ $(SCXOBJ_DIR)/runner.o: runner.c | $(SCXOBJ_DIR)
 # Note that we must do double expansion here in order to support conditionally
 # compiling BPF object files only if one is present, as the wildcard Make
 # function doesn't support using implicit rules otherwise.
-.SECONDEXPANSION:
-$(testcase-targets): $(SCXOBJ_DIR)/%.o: %.c $(SCXOBJ_DIR)/runner.o		\
-	$$(if $$(wildcard $$*.bpf.c), $(INCLUDE_DIR)/%.bpf.skel.h)		\
-	$$(if $$(wildcard $$*_fail.bpf.c), $(INCLUDE_DIR)/%_fail.bpf.skel.h)	\
-	| $(SCXOBJ_DIR)
+$(testcase-targets): $(SCXOBJ_DIR)/%.o: %.c $(SCXOBJ_DIR)/runner.o $(all_test_bpfprogs) | $(SCXOBJ_DIR)
 	$(eval test=$(patsubst %.o,%.c,$(notdir $@)))
 	$(CC) $(CFLAGS) -c $< -o $@ $(SCXOBJ_DIR)/runner.o
 
