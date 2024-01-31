@@ -21,11 +21,12 @@ const char help_fmt[] =
 "Usage: %s [-t TEST] [-h]\n"
 "\n"
 "  -t TEST       Only run tests whose name includes this string\n"
+"  -s            Include print output for skipped tests\n"
 "  -q            Don't print the test descriptions during run\n"
 "  -h            Display this help and exit\n";
 
 static volatile int exit_req;
-static bool quiet;
+static bool quiet, print_skipped;
 
 #define MAX_SCX_TESTS 2048
 
@@ -132,10 +133,13 @@ int main(int argc, char **argv)
 
 	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
-	while ((opt = getopt(argc, argv, "qt:h")) != -1) {
+	while ((opt = getopt(argc, argv, "qst:h")) != -1) {
 		switch (opt) {
 		case 'q':
 			quiet = true;
+			break;
+		case 's':
+			print_skipped = true;
 			break;
 		case 't':
 			filter = optarg;
@@ -150,13 +154,21 @@ int main(int argc, char **argv)
 		enum scx_test_status status;
 		struct scx_test *test = &__scx_tests[i];
 
-		print_test_preamble(test, quiet);
-
 		if (filter && should_skip_test(test, filter)) {
-			print_test_result(test, SCX_TEST_SKIP, ++testnum);
+			/*
+			 * Printing the skipped tests and their preambles can
+			 * add a lot of noise to the runner output. Printing
+			 * this is only really useful for CI, so let's skip it
+			 * by default.
+			 */
+			if (print_skipped) {
+				print_test_preamble(test, quiet);
+				print_test_result(test, SCX_TEST_SKIP, ++testnum);
+			}
 			continue;
 		}
 
+		print_test_preamble(test, quiet);
 		status = run_test(test);
 		print_test_result(test, status, ++testnum);
 		switch (status) {

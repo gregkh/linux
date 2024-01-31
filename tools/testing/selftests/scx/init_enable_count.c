@@ -35,14 +35,38 @@ static enum scx_test_status run_test(bool global)
 {
 	struct init_enable_count *skel;
 	struct bpf_link *link;
-	const u32 num_children = 5;
+	const u32 num_children = 5, num_pre_forks = 1024;
 	int ret, i, status;
 	struct sched_param param = {};
-	pid_t pids[num_children];
+	pid_t pids[num_pre_forks];
 
 	skel = open_load_prog(global);
+
+	/*
+	 * Fork a bunch of children before we attach the scheduler so that we
+	 * ensure (at least in practical terms) that there are more tasks that
+	 * transition from SCHED_OTHER -> SCHED_EXT than there are tasks that
+	 * take the fork() path either below or in other processes.
+	 */
+	for (i = 0; i < num_pre_forks; i++) {
+		pids[i] = fork();
+		SCX_FAIL_IF(pids[i] < 0, "Failed to fork child");
+		if (pids[i] == 0) {
+			sleep(1);
+			exit(0);
+		}
+	}
+
 	link = bpf_map__attach_struct_ops(skel->maps.init_enable_count_ops);
 	SCX_FAIL_IF(!link, "Failed to attach struct_ops");
+
+	for (i = 0; i < num_pre_forks; i++) {
+		SCX_FAIL_IF(waitpid(pids[i], &status, 0) != pids[i],
+			    "Failed to wait for pre-forked child\n");
+
+		SCX_FAIL_IF(status != 0, "Pre-forked child %d exited with status %d\n", i,
+			    status);
+	}
 
 	/* SCHED_EXT children */
 	for (i = 0; i < num_children; i++) {
@@ -101,6 +125,14 @@ static enum scx_test_status run_test(bool global)
 		SCX_EQ(skel->bss->enable_cnt, num_children);
 		SCX_EQ(skel->bss->disable_cnt, num_children);
 	}
+	/*
+	 * We forked a ton of tasks before we attached the scheduler above, so
+	 * this should be fine. Technically it could be flaky if a ton of forks
+	 * are happening at the same time in other processes, but that should
+	 * be exceedingly unlikely.
+	 */
+	SCX_GT(skel->bss->init_transition_cnt, skel->bss->init_fork_cnt);
+	SCX_GE(skel->bss->init_fork_cnt, 2 * num_children);
 
 	bpf_link__destroy(link);
 	init_enable_count__destroy(skel);
