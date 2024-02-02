@@ -3460,17 +3460,18 @@ static void scx_dump_task(struct seq_buf *s, struct task_struct *p, char marker,
 		scnprintf(dsq_id_buf, sizeof(dsq_id_buf), "0x%llx",
 			  (unsigned long long)p->scx.dsq->id);
 
-	seq_buf_printf(s, "\n %c%c %-16s: pid=%d state/flags=%u/0x%x dsq_flags=0x%x\n",
+	seq_buf_printf(s, "\n %c%c %s[%d] %+ldms\n",
 		       marker, task_state_to_char(p), p->comm, p->pid,
+		       jiffies_delta_msecs(p->scx.runnable_at, now));
+	seq_buf_printf(s, "      scx_state/flags=%u/0x%x dsq_flags=0x%x ops_state/qseq=%lu/%lu\n",
 		       scx_get_task_state(p),
 		       p->scx.flags & ~SCX_TASK_STATE_MASK,
-		       p->scx.dsq_flags);
-	seq_buf_printf(s, "%*sops_state/qseq=%lu/%lu run_at=%+ldms\n", 22, "",
+		       p->scx.dsq_flags,
 		       ops_state & SCX_OPSS_STATE_MASK,
-		       ops_state >> SCX_OPSS_QSEQ_SHIFT,
-		       jiffies_delta_msecs(p->scx.runnable_at, now));
-	seq_buf_printf(s, "%*sdsq_id=%s sticky/holding_cpu=%d/%d\n", 22, "",
-		       dsq_id_buf, p->scx.sticky_cpu, p->scx.holding_cpu);
+		       ops_state >> SCX_OPSS_QSEQ_SHIFT);
+	seq_buf_printf(s, "      sticky/holding_cpu=%d/%d dsq_id=%s\n",
+		       p->scx.sticky_cpu, p->scx.holding_cpu, dsq_id_buf);
+	seq_buf_printf(s, "      cpus=%*pb\n\n", cpumask_pr_args(p->cpus_ptr));
 
 	bt_len = stack_trace_save_tsk(p, bt, SCX_EXIT_BT_LEN, 1);
 
