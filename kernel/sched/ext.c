@@ -4535,6 +4535,25 @@ u32 scx_bpf_dispatch_nr_slots(void)
 }
 
 /**
+ * scx_bpf_dispatch_cancel - Cancel the latest dispatch
+ *
+ * Cancel the latest dispatch. Can be called multiple times to cancel further
+ * dispatches. Can only be called from ops.dispatch().
+ */
+void scx_bpf_dispatch_cancel(void)
+{
+	struct scx_dsp_ctx *dspc = this_cpu_ptr(&scx_dsp_ctx);
+
+	if (!scx_kf_allowed(SCX_KF_DISPATCH))
+		return;
+
+	if (dspc->buf_cursor > 0)
+		dspc->buf_cursor--;
+	else
+		scx_ops_error("dispatch buffer underflow");
+}
+
+/**
  * scx_bpf_consume - Transfer a task from a DSQ to the current CPU's local DSQ
  * @dsq_id: DSQ to consume
  *
@@ -4581,6 +4600,7 @@ bool scx_bpf_consume(u64 dsq_id)
 
 BTF_SET8_START(scx_kfunc_ids_dispatch)
 BTF_ID_FLAGS(func, scx_bpf_dispatch_nr_slots)
+BTF_ID_FLAGS(func, scx_bpf_dispatch_cancel)
 BTF_ID_FLAGS(func, scx_bpf_consume)
 BTF_SET8_END(scx_kfunc_ids_dispatch)
 
