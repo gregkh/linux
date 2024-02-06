@@ -6,6 +6,8 @@
  * Copyright (c) 2022 Tejun Heo <tj@kernel.org>
  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
  */
+#include <linux/btf.h>
+
 #define SCX_OP_IDX(op)		(offsetof(struct sched_ext_ops, op) / sizeof(void (*)(void)))
 
 enum scx_internal_consts {
@@ -2129,8 +2131,8 @@ cpu_found:
 	return cpu;
 }
 
-s32 scx_bpf_select_cpu_dfl(struct task_struct *p, s32 prev_cpu, u64 wake_flags,
-			   bool *found)
+__bpf_kfunc s32 scx_bpf_select_cpu_dfl(struct task_struct *p, s32 prev_cpu,
+				       u64 wake_flags, bool *found)
 {
 	if (!scx_kf_allowed(SCX_KF_SELECT_CPU)) {
 		*found = false;
@@ -3893,7 +3895,6 @@ err_disable:
  */
 #include <linux/bpf_verifier.h>
 #include <linux/bpf.h>
-#include <linux/btf.h>
 
 extern struct btf *btf_vmlinux;
 static const struct btf_type *task_struct_type;
@@ -4326,10 +4327,7 @@ void __init init_sched_ext_class(void)
  */
 #include <linux/btf_ids.h>
 
-/* Disables missing prototype warnings for kfuncs */
-__diag_push();
-__diag_ignore_all("-Wmissing-prototypes",
-		  "Global functions as their definitions will be in vmlinux BTF");
+__bpf_kfunc_start_defs();
 
 /**
  * scx_bpf_switch_all - Switch all tasks into SCX
@@ -4337,7 +4335,7 @@ __diag_ignore_all("-Wmissing-prototypes",
  * Switch all existing and future non-dl/rt tasks to SCX. This can only be
  * called from ops.init(), and actual switching is performed asynchronously.
  */
-void scx_bpf_switch_all(void)
+__bpf_kfunc void scx_bpf_switch_all(void)
 {
 	if (!scx_kf_allowed(SCX_KF_INIT))
 		return;
@@ -4362,7 +4360,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_init = {
  * Create a custom DSQ identified by @dsq_id. Can be called from ops.init(),
  * ops.init_task(), ops.cgroup_init() and ops.cgroup_prep_move().
  */
-s32 scx_bpf_create_dsq(u64 dsq_id, s32 node)
+__bpf_kfunc s32 scx_bpf_create_dsq(u64 dsq_id, s32 node)
 {
 	if (!scx_kf_allowed(SCX_KF_INIT | SCX_KF_SLEEPABLE))
 		return -EINVAL;
@@ -4464,7 +4462,7 @@ static void scx_dispatch_commit(struct task_struct *p, u64 dsq_id, u64 enq_flags
  * %SCX_SLICE_INF, @p never expires and the BPF scheduler must kick the CPU with
  * scx_bpf_kick_cpu() to trigger scheduling.
  */
-void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice,
+__bpf_kfunc void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice,
 		      u64 enq_flags)
 {
 	if (!scx_dispatch_preamble(p, enq_flags))
@@ -4495,7 +4493,7 @@ void scx_bpf_dispatch(struct task_struct *p, u64 dsq_id, u64 slice,
  * numerically larger vtime may indicate an earlier position in the ordering and
  * vice-versa.
  */
-void scx_bpf_dispatch_vtime(struct task_struct *p, u64 dsq_id, u64 slice,
+__bpf_kfunc void scx_bpf_dispatch_vtime(struct task_struct *p, u64 dsq_id, u64 slice,
 			    u64 vtime, u64 enq_flags)
 {
 	if (!scx_dispatch_preamble(p, enq_flags))
@@ -4526,7 +4524,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_enqueue_dispatch = {
  *
  * Can only be called from ops.dispatch().
  */
-u32 scx_bpf_dispatch_nr_slots(void)
+__bpf_kfunc u32 scx_bpf_dispatch_nr_slots(void)
 {
 	if (!scx_kf_allowed(SCX_KF_DISPATCH))
 		return 0;
@@ -4540,7 +4538,7 @@ u32 scx_bpf_dispatch_nr_slots(void)
  * Cancel the latest dispatch. Can be called multiple times to cancel further
  * dispatches. Can only be called from ops.dispatch().
  */
-void scx_bpf_dispatch_cancel(void)
+__bpf_kfunc void scx_bpf_dispatch_cancel(void)
 {
 	struct scx_dsp_ctx *dspc = this_cpu_ptr(&scx_dsp_ctx);
 
@@ -4568,7 +4566,7 @@ void scx_bpf_dispatch_cancel(void)
  * Returns %true if a task has been consumed, %false if there isn't any task to
  * consume.
  */
-bool scx_bpf_consume(u64 dsq_id)
+__bpf_kfunc bool scx_bpf_consume(u64 dsq_id)
 {
 	struct scx_dsp_ctx *dspc = this_cpu_ptr(&scx_dsp_ctx);
 	struct scx_dispatch_q *dsq;
@@ -4616,7 +4614,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_dispatch = {
  * caller's CPU, and re-enqueue them in the BPF scheduler. Returns the number of
  * processed tasks. Can only be called from ops.cpu_release().
  */
-u32 scx_bpf_reenqueue_local(void)
+__bpf_kfunc u32 scx_bpf_reenqueue_local(void)
 {
 	u32 nr_enqueued, i;
 	struct rq *rq;
@@ -4670,7 +4668,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_cpu_release = {
  * scx_ops operation and the actual kicking is performed asynchronously through
  * an irq work.
  */
-void scx_bpf_kick_cpu(s32 cpu, u64 flags)
+__bpf_kfunc void scx_bpf_kick_cpu(s32 cpu, u64 flags)
 {
 	struct rq *rq;
 
@@ -4713,7 +4711,7 @@ void scx_bpf_kick_cpu(s32 cpu, u64 flags)
  * -%ENOENT is returned. Can be called from any non-sleepable online scx_ops
  * operations.
  */
-s32 scx_bpf_dsq_nr_queued(u64 dsq_id)
+__bpf_kfunc s32 scx_bpf_dsq_nr_queued(u64 dsq_id)
 {
 	struct scx_dispatch_q *dsq;
 
@@ -4744,7 +4742,7 @@ s32 scx_bpf_dsq_nr_queued(u64 dsq_id)
  * Unavailable if ops.update_idle() is implemented and
  * %SCX_OPS_KEEP_BUILTIN_IDLE is not set.
  */
-bool scx_bpf_test_and_clear_cpu_idle(s32 cpu)
+__bpf_kfunc bool scx_bpf_test_and_clear_cpu_idle(s32 cpu)
 {
 	if (!static_branch_likely(&scx_builtin_idle_enabled)) {
 		scx_ops_error("built-in idle tracking is disabled");
@@ -4776,7 +4774,7 @@ bool scx_bpf_test_and_clear_cpu_idle(s32 cpu)
  * Unavailable if ops.update_idle() is implemented and
  * %SCX_OPS_KEEP_BUILTIN_IDLE is not set.
  */
-s32 scx_bpf_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
+__bpf_kfunc s32 scx_bpf_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
 {
 	if (!static_branch_likely(&scx_builtin_idle_enabled)) {
 		scx_ops_error("built-in idle tracking is disabled");
@@ -4800,7 +4798,7 @@ s32 scx_bpf_pick_idle_cpu(const struct cpumask *cpus_allowed, u64 flags)
  * set, this function can't tell which CPUs are idle and will always pick any
  * CPU.
  */
-s32 scx_bpf_pick_any_cpu(const struct cpumask *cpus_allowed, u64 flags)
+__bpf_kfunc s32 scx_bpf_pick_any_cpu(const struct cpumask *cpus_allowed, u64 flags)
 {
 	s32 cpu;
 
@@ -4823,7 +4821,7 @@ s32 scx_bpf_pick_any_cpu(const struct cpumask *cpus_allowed, u64 flags)
  *
  * Returns NULL if idle tracking is not enabled, or running on a UP kernel.
  */
-const struct cpumask *scx_bpf_get_idle_cpumask(void)
+__bpf_kfunc const struct cpumask *scx_bpf_get_idle_cpumask(void)
 {
 	if (!static_branch_likely(&scx_builtin_idle_enabled)) {
 		scx_ops_error("built-in idle tracking is disabled");
@@ -4844,7 +4842,7 @@ const struct cpumask *scx_bpf_get_idle_cpumask(void)
  *
  * Returns NULL if idle tracking is not enabled, or running on a UP kernel.
  */
-const struct cpumask *scx_bpf_get_idle_smtmask(void)
+__bpf_kfunc const struct cpumask *scx_bpf_get_idle_smtmask(void)
 {
 	if (!static_branch_likely(&scx_builtin_idle_enabled)) {
 		scx_ops_error("built-in idle tracking is disabled");
@@ -4865,7 +4863,7 @@ const struct cpumask *scx_bpf_get_idle_smtmask(void)
  * scx_bpf_put_idle_cpumask - Release a previously acquired referenced kptr to
  * either the percpu, or SMT idle-tracking cpumask.
  */
-void scx_bpf_put_idle_cpumask(const struct cpumask *idle_mask)
+__bpf_kfunc void scx_bpf_put_idle_cpumask(const struct cpumask *idle_mask)
 {
 	/*
 	 * Empty function body because we aren't actually acquiring or
@@ -4892,7 +4890,8 @@ static DEFINE_PER_CPU(struct scx_bpf_error_bstr_bufs, scx_bpf_error_bstr_bufs);
  * Indicate that the BPF scheduler encountered a fatal error and initiate ops
  * disabling.
  */
-void scx_bpf_error_bstr(char *fmt, unsigned long long *data, u32 data__sz)
+__bpf_kfunc void scx_bpf_error_bstr(char *fmt, unsigned long long *data,
+				    u32 data__sz)
 {
 	struct bpf_bprintf_data bprintf_data = { .get_bin_args = true };
 	struct scx_bpf_error_bstr_bufs *bufs;
@@ -4945,7 +4944,7 @@ out_restore:
  * empty and no further tasks are dispatched to it. Ignored if called on a DSQ
  * which doesn't exist. Can be called from any online scx_ops operations.
  */
-void scx_bpf_destroy_dsq(u64 dsq_id)
+__bpf_kfunc void scx_bpf_destroy_dsq(u64 dsq_id)
 {
 	destroy_dsq(dsq_id);
 }
@@ -4954,7 +4953,7 @@ void scx_bpf_destroy_dsq(u64 dsq_id)
  * scx_bpf_task_running - Is task currently running?
  * @p: task of interest
  */
-bool scx_bpf_task_running(const struct task_struct *p)
+__bpf_kfunc bool scx_bpf_task_running(const struct task_struct *p)
 {
 	return task_rq(p)->curr == p;
 }
@@ -4963,7 +4962,7 @@ bool scx_bpf_task_running(const struct task_struct *p)
  * scx_bpf_task_cpu - CPU a task is currently associated with
  * @p: task of interest
  */
-s32 scx_bpf_task_cpu(const struct task_struct *p)
+__bpf_kfunc s32 scx_bpf_task_cpu(const struct task_struct *p)
 {
 	return task_cpu(p);
 }
@@ -4980,7 +4979,7 @@ s32 scx_bpf_task_cpu(const struct task_struct *p)
  * operations. The restriction guarantees that @p's rq is locked by the caller.
  */
 #ifdef CONFIG_CGROUP_SCHED
-struct cgroup *scx_bpf_task_cgroup(struct task_struct *p)
+__bpf_kfunc struct cgroup *scx_bpf_task_cgroup(struct task_struct *p)
 {
 	struct task_group *tg = p->sched_task_group;
 	struct cgroup *cgrp = &cgrp_dfl_root.cgrp;
@@ -5035,7 +5034,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_any = {
 	.set			= &scx_kfunc_ids_any,
 };
 
-__diag_pop();
+__bpf_kfunc_end_defs();
 
 static int __init scx_init(void)
 {
