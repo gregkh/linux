@@ -1598,8 +1598,10 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 	struct scx_dsp_ctx *dspc = this_cpu_ptr(&scx_dsp_ctx);
 	bool prev_on_scx = prev->sched_class == &ext_sched_class;
 	int nr_loops = SCX_DSP_MAX_LOOPS;
+	bool has_tasks = false;
 
 	lockdep_assert_rq_held(rq);
+	scx_rq->flags |= SCX_RQ_BALANCING;
 
 	if (static_branch_unlikely(&scx_ops_cpu_preempt) &&
 	    unlikely(rq->scx.cpu_released)) {
@@ -1638,19 +1640,19 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 		    prev->scx.slice && !scx_ops_bypassing()) {
 			if (local)
 				prev->scx.flags |= SCX_TASK_BAL_KEEP;
-			return 1;
+			goto has_tasks;
 		}
 	}
 
 	/* if there already are tasks to run, nothing to do */
 	if (scx_rq->local_dsq.nr)
-		return 1;
+		goto has_tasks;
 
 	if (consume_dispatch_q(rq, rf, &scx_dsq_global))
-		return 1;
+		goto has_tasks;
 
 	if (!SCX_HAS_OP(dispatch) || scx_ops_bypassing())
-		return 0;
+		goto out;
 
 	dspc->rq = rq;
 	dspc->rf = rf;
@@ -1671,9 +1673,9 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 		flush_dispatch_buf(rq, rf);
 
 		if (scx_rq->local_dsq.nr)
-			return 1;
+			goto has_tasks;
 		if (consume_dispatch_q(rq, rf, &scx_dsq_global))
-			return 1;
+			goto has_tasks;
 
 		/*
 		 * ops.dispatch() can trap us in this loop by repeatedly
@@ -1690,7 +1692,13 @@ static int balance_one(struct rq *rq, struct task_struct *prev,
 		}
 	} while (dspc->nr_tasks);
 
-	return 0;
+	goto out;
+
+has_tasks:
+	has_tasks = true;
+out:
+	scx_rq->flags &= ~SCX_RQ_BALANCING;
+	return has_tasks;
 }
 
 static int balance_scx(struct rq *rq, struct task_struct *prev,
@@ -4158,6 +4166,23 @@ static const struct sysrq_key_op sysrq_sched_ext_reset_op = {
 	.enable_mask	= SYSRQ_ENABLE_RTNICE,
 };
 
+static bool can_skip_idle_kick(struct rq *rq)
+{
+	lockdep_assert_rq_held(rq);
+
+	/*
+	 * We can skip idle kicking if @rq is going to go through at least one
+	 * full SCX scheduling cycle before going idle. Just checking whether
+	 * curr is not idle is insufficient because we could be racing
+	 * balance_one() trying to pull the next task from a remote rq, which
+	 * may fail, and @rq may become idle afterwards.
+	 *
+	 * The race window is small and we don't and can't guarantee that @rq is
+	 * only kicked while idle anyway. Skip only when sure.
+	 */
+	return !is_idle_task(rq->curr) && !(rq->scx.flags & SCX_RQ_BALANCING);
+}
+
 static bool kick_one_cpu(s32 cpu, struct rq *this_rq, unsigned long *pseqs)
 {
 	struct rq *rq = cpu_rq(cpu);
@@ -4194,6 +4219,20 @@ static bool kick_one_cpu(s32 cpu, struct rq *this_rq, unsigned long *pseqs)
 	return should_wait;
 }
 
+static void kick_one_cpu_if_idle(s32 cpu, struct rq *this_rq)
+{
+	struct rq *rq = cpu_rq(cpu);
+	unsigned long flags;
+
+	raw_spin_rq_lock_irqsave(rq, flags);
+
+	if (!can_skip_idle_kick(rq) &&
+	    (cpu_online(cpu) || cpu == cpu_of(this_rq)))
+		resched_curr(rq);
+
+	raw_spin_rq_unlock_irqrestore(rq, flags);
+}
+
 static void kick_cpus_irq_workfn(struct irq_work *irq_work)
 {
 	struct rq *this_rq = this_rq();
@@ -4205,6 +4244,12 @@ static void kick_cpus_irq_workfn(struct irq_work *irq_work)
 	for_each_cpu(cpu, this_scx->cpus_to_kick) {
 		should_wait |= kick_one_cpu(cpu, this_rq, pseqs);
 		cpumask_clear_cpu(cpu, this_scx->cpus_to_kick);
+		cpumask_clear_cpu(cpu, this_scx->cpus_to_kick_if_idle);
+	}
+
+	for_each_cpu(cpu, this_scx->cpus_to_kick_if_idle) {
+		kick_one_cpu_if_idle(cpu, this_rq);
+		cpumask_clear_cpu(cpu, this_scx->cpus_to_kick_if_idle);
 	}
 
 	if (!should_wait)
@@ -4696,7 +4741,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_cpu_release = {
  */
 __bpf_kfunc void scx_bpf_kick_cpu(s32 cpu, u64 flags)
 {
-	struct rq *rq;
+	struct rq *this_rq;
 	unsigned long irq_flags;
 
 	if (!ops_cpu_valid(cpu)) {
@@ -4713,20 +4758,39 @@ __bpf_kfunc void scx_bpf_kick_cpu(s32 cpu, u64 flags)
 		return;
 
 	local_irq_save(irq_flags);
-	rq = this_rq();
+
+	this_rq = this_rq();
 
 	/*
 	 * Actual kicking is bounced to kick_cpus_irq_workfn() to avoid nesting
 	 * rq locks. We can probably be smarter and avoid bouncing if called
 	 * from ops which don't hold a rq lock.
 	 */
-	cpumask_set_cpu(cpu, rq->scx.cpus_to_kick);
-	if (flags & SCX_KICK_PREEMPT)
-		cpumask_set_cpu(cpu, rq->scx.cpus_to_preempt);
-	if (flags & SCX_KICK_WAIT)
-		cpumask_set_cpu(cpu, rq->scx.cpus_to_wait);
+	if (flags & SCX_KICK_IDLE) {
+		struct rq *target_rq = cpu_rq(cpu);
 
-	irq_work_queue(&rq->scx.kick_cpus_irq_work);
+		if (unlikely(flags & (SCX_KICK_PREEMPT | SCX_KICK_WAIT)))
+			scx_ops_error("PREEMPT/WAIT cannot be used with SCX_KICK_IDLE");
+
+		if (raw_spin_rq_trylock(target_rq)) {
+			if (can_skip_idle_kick(target_rq)) {
+				raw_spin_rq_unlock(target_rq);
+				goto out;
+			}
+			raw_spin_rq_unlock(target_rq);
+		}
+		cpumask_set_cpu(cpu, this_rq->scx.cpus_to_kick_if_idle);
+	} else {
+		cpumask_set_cpu(cpu, this_rq->scx.cpus_to_kick);
+
+		if (flags & SCX_KICK_PREEMPT)
+			cpumask_set_cpu(cpu, this_rq->scx.cpus_to_preempt);
+		if (flags & SCX_KICK_WAIT)
+			cpumask_set_cpu(cpu, this_rq->scx.cpus_to_wait);
+	}
+
+	irq_work_queue(&this_rq->scx.kick_cpus_irq_work);
+out:
 	local_irq_restore(irq_flags);
 }
 

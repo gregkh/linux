@@ -685,7 +685,8 @@ struct cfs_rq {
 #ifdef CONFIG_SCHED_CLASS_EXT
 /* scx_rq->flags, protected by the rq lock */
 enum scx_rq_flags {
-	SCX_RQ_CAN_STOP_TICK	= 1 << 0,
+	SCX_RQ_BALANCING	= 1 << 0,
+	SCX_RQ_CAN_STOP_TICK	= 1 << 1,
 };
 
 struct scx_rq {
@@ -697,6 +698,7 @@ struct scx_rq {
 	u32			flags;
 	bool			cpu_released;
 	cpumask_var_t		cpus_to_kick;
+	cpumask_var_t		cpus_to_kick_if_idle;
 	cpumask_var_t		cpus_to_preempt;
 	cpumask_var_t		cpus_to_wait;
 	unsigned long		pnt_seq;
