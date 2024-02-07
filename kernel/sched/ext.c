@@ -4161,46 +4161,62 @@ static const struct sysrq_key_op sysrq_sched_ext_reset_op = {
 static void kick_cpus_irq_workfn(struct irq_work *irq_work)
 {
 	struct rq *this_rq = this_rq();
+	struct scx_rq *this_scx = &this_rq->scx;
 	unsigned long *pseqs = this_cpu_ptr(scx_kick_cpus_pnt_seqs);
-	int this_cpu = cpu_of(this_rq);
-	int cpu;
+	bool should_wait = false;
+	s32 this_cpu = cpu_of(this_rq);
+	s32 cpu;
 
-	for_each_cpu(cpu, this_rq->scx.cpus_to_kick) {
+	for_each_cpu(cpu, this_scx->cpus_to_kick) {
 		struct rq *rq = cpu_rq(cpu);
 		unsigned long flags;
 
 		raw_spin_rq_lock_irqsave(rq, flags);
 
 		if (cpu_online(cpu) || cpu == this_cpu) {
-			if (cpumask_test_cpu(cpu, this_rq->scx.cpus_to_preempt) &&
-			    rq->curr->sched_class == &ext_sched_class)
-				rq->curr->scx.slice = 0;
-			pseqs[cpu] = rq->scx.pnt_seq;
+			if (cpumask_test_cpu(cpu, this_scx->cpus_to_preempt)) {
+				if (rq->curr->sched_class == &ext_sched_class)
+					rq->curr->scx.slice = 0;
+				cpumask_clear_cpu(cpu, this_scx->cpus_to_preempt);
+			}
+
+			if (cpumask_test_cpu(cpu, this_scx->cpus_to_wait)) {
+				pseqs[cpu] = rq->scx.pnt_seq;
+				should_wait = true;
+			}
+
 			resched_curr(rq);
 		} else {
-			cpumask_clear_cpu(cpu, this_rq->scx.cpus_to_wait);
+			cpumask_clear_cpu(cpu, this_scx->cpus_to_preempt);
+			cpumask_clear_cpu(cpu, this_scx->cpus_to_wait);
 		}
 
 		raw_spin_rq_unlock_irqrestore(rq, flags);
+
+		cpumask_clear_cpu(cpu, this_scx->cpus_to_kick);
 	}
 
-	for_each_cpu_andnot(cpu, this_rq->scx.cpus_to_wait,
-			    cpumask_of(this_cpu)) {
-		/*
-		 * Pairs with smp_store_release() issued by this CPU in
-		 * scx_notify_pick_next_task() on the resched path.
-		 *
-		 * We busy-wait here to guarantee that no other task can be
-		 * scheduled on our core before the target CPU has entered the
-		 * resched path.
-		 */
-		while (smp_load_acquire(&cpu_rq(cpu)->scx.pnt_seq) == pseqs[cpu])
-			cpu_relax();
-	}
+	if (!should_wait)
+		return;
 
-	cpumask_clear(this_rq->scx.cpus_to_kick);
-	cpumask_clear(this_rq->scx.cpus_to_preempt);
-	cpumask_clear(this_rq->scx.cpus_to_wait);
+	for_each_cpu(cpu, this_scx->cpus_to_wait) {
+		unsigned long *wait_pnt_seq = &cpu_rq(cpu)->scx.pnt_seq;
+
+		if (cpu != this_cpu) {
+			/*
+			 * Pairs with smp_store_release() issued by this CPU in
+			 * scx_notify_pick_next_task() on the resched path.
+			 *
+			 * We busy-wait here to guarantee that no other task can
+			 * be scheduled on our core before the target CPU has
+			 * entered the resched path.
+			 */
+			while (smp_load_acquire(wait_pnt_seq) == pseqs[cpu])
+				cpu_relax();
+		}
+
+		cpumask_clear_cpu(cpu, this_scx->cpus_to_wait);
+	}
 }
 
 /**
@@ -4281,8 +4297,7 @@ static struct notifier_block scx_pm_notifier = {
 
 void __init init_sched_ext_class(void)
 {
-	int cpu;
-	u32 v;
+	s32 cpu, v;
 
 	/*
 	 * The following is to prevent the compiler from optimizing out the enum
@@ -4671,6 +4686,7 @@ static const struct btf_kfunc_id_set scx_kfunc_set_cpu_release = {
 __bpf_kfunc void scx_bpf_kick_cpu(s32 cpu, u64 flags)
 {
 	struct rq *rq;
+	unsigned long irq_flags;
 
 	if (!ops_cpu_valid(cpu)) {
 		scx_ops_error("invalid cpu %d", cpu);
@@ -4685,7 +4701,7 @@ __bpf_kfunc void scx_bpf_kick_cpu(s32 cpu, u64 flags)
 	if (scx_ops_bypassing())
 		return;
 
-	preempt_disable();
+	local_irq_save(irq_flags);
 	rq = this_rq();
 
 	/*
@@ -4700,7 +4716,7 @@ __bpf_kfunc void scx_bpf_kick_cpu(s32 cpu, u64 flags)
 		cpumask_set_cpu(cpu, rq->scx.cpus_to_wait);
 
 	irq_work_queue(&rq->scx.kick_cpus_irq_work);
-	preempt_enable();
+	local_irq_restore(irq_flags);
 }
 
 /**
