@@ -2353,6 +2353,7 @@ static enum scx_task_state scx_get_task_state(const struct task_struct *p)
 static void scx_set_task_state(struct task_struct *p, enum scx_task_state state)
 {
 	enum scx_task_state prev_state = scx_get_task_state(p);
+	bool warn = false;
 
 	BUILD_BUG_ON(SCX_TASK_NR_STATES > (1 << SCX_TASK_STATE_BITS));
 
@@ -2360,18 +2361,21 @@ static void scx_set_task_state(struct task_struct *p, enum scx_task_state state)
 	case SCX_TASK_NONE:
 		break;
 	case SCX_TASK_INIT:
-		WARN_ON_ONCE(prev_state != SCX_TASK_NONE);
+		warn = prev_state != SCX_TASK_NONE;
 		break;
 	case SCX_TASK_READY:
-		WARN_ON_ONCE(prev_state == SCX_TASK_NONE);
+		warn = prev_state == SCX_TASK_NONE;
 		break;
 	case SCX_TASK_ENABLED:
-		WARN_ON_ONCE(prev_state != SCX_TASK_READY);
+		warn = prev_state != SCX_TASK_READY;
 		break;
 	default:
-		WARN_ON_ONCE(true);
+		warn = true;
 		return;
 	}
+
+	WARN_ONCE(warn, "sched_ext: Invalid task state transition %d -> %d for %s[%d]",
+		  prev_state, state, p->comm, p->pid);
 
 	p->scx.flags &= ~SCX_TASK_STATE_MASK;
 	p->scx.flags |= state << SCX_TASK_STATE_SHIFT;
