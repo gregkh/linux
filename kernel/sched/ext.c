@@ -4158,41 +4158,52 @@ static const struct sysrq_key_op sysrq_sched_ext_reset_op = {
 	.enable_mask	= SYSRQ_ENABLE_RTNICE,
 };
 
+static bool kick_one_cpu(s32 cpu, struct rq *this_rq, unsigned long *pseqs)
+{
+	struct rq *rq = cpu_rq(cpu);
+	struct scx_rq *this_scx = &this_rq->scx;
+	bool should_wait = false;
+	unsigned long flags;
+
+	raw_spin_rq_lock_irqsave(rq, flags);
+
+	/*
+	 * During CPU hotplug, a CPU may depend on kicking itself to make
+	 * forward progress. Allow kicking self regardless of online state.
+	 */
+	if (cpu_online(cpu) || cpu == cpu_of(this_rq)) {
+		if (cpumask_test_cpu(cpu, this_scx->cpus_to_preempt)) {
+			if (rq->curr->sched_class == &ext_sched_class)
+				rq->curr->scx.slice = 0;
+			cpumask_clear_cpu(cpu, this_scx->cpus_to_preempt);
+		}
+
+		if (cpumask_test_cpu(cpu, this_scx->cpus_to_wait)) {
+			pseqs[cpu] = rq->scx.pnt_seq;
+			should_wait = true;
+		}
+
+		resched_curr(rq);
+	} else {
+		cpumask_clear_cpu(cpu, this_scx->cpus_to_preempt);
+		cpumask_clear_cpu(cpu, this_scx->cpus_to_wait);
+	}
+
+	raw_spin_rq_unlock_irqrestore(rq, flags);
+
+	return should_wait;
+}
+
 static void kick_cpus_irq_workfn(struct irq_work *irq_work)
 {
 	struct rq *this_rq = this_rq();
 	struct scx_rq *this_scx = &this_rq->scx;
 	unsigned long *pseqs = this_cpu_ptr(scx_kick_cpus_pnt_seqs);
 	bool should_wait = false;
-	s32 this_cpu = cpu_of(this_rq);
 	s32 cpu;
 
 	for_each_cpu(cpu, this_scx->cpus_to_kick) {
-		struct rq *rq = cpu_rq(cpu);
-		unsigned long flags;
-
-		raw_spin_rq_lock_irqsave(rq, flags);
-
-		if (cpu_online(cpu) || cpu == this_cpu) {
-			if (cpumask_test_cpu(cpu, this_scx->cpus_to_preempt)) {
-				if (rq->curr->sched_class == &ext_sched_class)
-					rq->curr->scx.slice = 0;
-				cpumask_clear_cpu(cpu, this_scx->cpus_to_preempt);
-			}
-
-			if (cpumask_test_cpu(cpu, this_scx->cpus_to_wait)) {
-				pseqs[cpu] = rq->scx.pnt_seq;
-				should_wait = true;
-			}
-
-			resched_curr(rq);
-		} else {
-			cpumask_clear_cpu(cpu, this_scx->cpus_to_preempt);
-			cpumask_clear_cpu(cpu, this_scx->cpus_to_wait);
-		}
-
-		raw_spin_rq_unlock_irqrestore(rq, flags);
-
+		should_wait |= kick_one_cpu(cpu, this_rq, pseqs);
 		cpumask_clear_cpu(cpu, this_scx->cpus_to_kick);
 	}
 
@@ -4202,7 +4213,7 @@ static void kick_cpus_irq_workfn(struct irq_work *irq_work)
 	for_each_cpu(cpu, this_scx->cpus_to_wait) {
 		unsigned long *wait_pnt_seq = &cpu_rq(cpu)->scx.pnt_seq;
 
-		if (cpu != this_cpu) {
+		if (cpu != cpu_of(this_rq)) {
 			/*
 			 * Pairs with smp_store_release() issued by this CPU in
 			 * scx_notify_pick_next_task() on the resched path.
