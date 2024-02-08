@@ -3351,21 +3351,16 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
 		const struct sched_class *old_class = p->sched_class;
 		struct sched_enq_and_set_ctx ctx;
-		bool alive = READ_ONCE(p->__state) != TASK_DEAD;
 
 		sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
 
 		p->scx.slice = min_t(u64, p->scx.slice, SCX_SLICE_DFL);
-
 		__setscheduler_prio(p, p->prio);
-		if (alive)
-			check_class_changing(task_rq(p), p, old_class);
+		check_class_changing(task_rq(p), p, old_class);
 
 		sched_enq_and_set_task(&ctx);
 
-		if (alive)
-			check_class_changed(task_rq(p), p, old_class, p->prio);
-
+		check_class_changed(task_rq(p), p, old_class, p->prio);
 		scx_ops_exit_task(p);
 	}
 	scx_task_iter_exit(&sti);
@@ -3834,23 +3829,18 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 
 	scx_task_iter_init(&sti);
 	while ((p = scx_task_iter_next_filtered_locked(&sti))) {
-		if (READ_ONCE(p->__state) != TASK_DEAD) {
-			const struct sched_class *old_class = p->sched_class;
-			struct sched_enq_and_set_ctx ctx;
+		const struct sched_class *old_class = p->sched_class;
+		struct sched_enq_and_set_ctx ctx;
 
-			sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE,
-					       &ctx);
+		sched_deq_and_put_task(p, DEQUEUE_SAVE | DEQUEUE_MOVE, &ctx);
 
-			scx_set_task_state(p, SCX_TASK_READY);
-			__setscheduler_prio(p, p->prio);
-			check_class_changing(task_rq(p), p, old_class);
+		scx_set_task_state(p, SCX_TASK_READY);
+		__setscheduler_prio(p, p->prio);
+		check_class_changing(task_rq(p), p, old_class);
 
-			sched_enq_and_set_task(&ctx);
+		sched_enq_and_set_task(&ctx);
 
-			check_class_changed(task_rq(p), p, old_class, p->prio);
-		} else {
-			scx_ops_exit_task(p);
-		}
+		check_class_changed(task_rq(p), p, old_class, p->prio);
 	}
 	scx_task_iter_exit(&sti);
 
