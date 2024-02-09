@@ -3309,8 +3309,6 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	ei->kind = kind;
 	ei->reason = scx_exit_reason(ei->kind);
 
-	cancel_delayed_work_sync(&scx_watchdog_work);
-
 	/* guarantee forward progress by bypassing scx_ops */
 	scx_ops_bypass(true);
 
@@ -3396,6 +3394,7 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 	if (scx_ops.exit)
 		SCX_CALL_OP(SCX_KF_UNLOCKED, exit, ei);
 
+	cancel_delayed_work_sync(&scx_watchdog_work);
 	kobject_del(scx_root_kobj);
 	scx_root_kobj = NULL;
 
