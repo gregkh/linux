@@ -727,6 +727,7 @@ out:
 	connector_set = NULL;
 	fb = NULL;
 	mode = NULL;
+	num_connectors = 0;
 
 	DRM_MODESET_LOCK_ALL_END(ctx, ret);
 	mutex_unlock(&crtc->dev->mode_config.mutex);
