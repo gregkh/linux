@@ -372,7 +372,7 @@ static void *dh_safe_prime_gen_privkey(const struct dh_safe_prime *safe_prime,
 	 */
 	n = roundup_pow_of_two(2 * safe_prime->max_strength);
 	WARN_ON_ONCE(n & ((1u << 6) - 1));
-	n >>= 6; /* Convert N into units of u64. */
+	n >>= 3; /* Convert N into units of u64. */
 
 	/*
 	 * Reserve one extra u64 to hold the extra random bits
