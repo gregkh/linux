@@ -3400,7 +3400,14 @@ static void scx_ops_disable_workfn(struct kthread_work *work)
 		SCX_CALL_OP(SCX_KF_UNLOCKED, exit, ei);
 
 	cancel_delayed_work_sync(&scx_watchdog_work);
+	/*
+	 * Delete the kobject from the hierarchy eagerly in addition to just
+	 * dropping a reference. Otherwise, if the object is deleted
+	 * asynchronously, sysfs could observe an object of the same name still
+	 * in the hierarchy when another scheduler is loaded.
+	 */
 	kobject_del(scx_root_kobj);
+	kobject_put(scx_root_kobj);
 	scx_root_kobj = NULL;
 
 	memset(&scx_ops, 0, sizeof(scx_ops));
@@ -3638,22 +3645,22 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 		goto err_unlock;
 	}
 
-	scx_exit_info = alloc_exit_info();
-	if (!scx_exit_info) {
-		ret = -ENOMEM;
-		goto err;
-	}
-
 	scx_root_kobj = kzalloc(sizeof(*scx_root_kobj), GFP_KERNEL);
 	if (!scx_root_kobj) {
 		ret = -ENOMEM;
-		goto err;
+		goto err_unlock;
 	}
 
 	scx_root_kobj->kset = scx_kset;
 	ret = kobject_init_and_add(scx_root_kobj, &scx_ktype, NULL, "root");
 	if (ret < 0)
 		goto err;
+
+	scx_exit_info = alloc_exit_info();
+	if (!scx_exit_info) {
+		ret = -ENOMEM;
+		goto err_del;
+	}
 
 	/*
 	 * Set scx_ops, transition to PREPPING and clear exit info to arm the
@@ -3869,11 +3876,11 @@ static int scx_ops_enable(struct sched_ext_ops *ops)
 
 	return 0;
 
+err_del:
+	kobject_del(scx_root_kobj);
 err:
-	if (scx_root_kobj) {
-		kfree(scx_root_kobj);
-		scx_root_kobj = NULL;
-	}
+	kobject_put(scx_root_kobj);
+	scx_root_kobj = NULL;
 	if (scx_exit_info) {
 		free_exit_info(scx_exit_info);
 		scx_exit_info = NULL;
