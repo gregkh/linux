@@ -79,8 +79,27 @@ enum scx_pick_idle_cpu_flags {
 };
 
 enum scx_kick_flags {
-	SCX_KICK_PREEMPT	= 1LLU << 0,	/* force scheduling on the CPU */
-	SCX_KICK_WAIT		= 1LLU << 1,	/* wait for the CPU to be rescheduled */
+	/*
+	 * Kick the target CPU if idle. Guarantees that the target CPU goes
+	 * through at least one full scheduling cycle before going idle. If the
+	 * target CPU can be determined to be currently not idle and going to go
+	 * through a scheduling cycle before going idle, noop.
+	 */
+	SCX_KICK_IDLE		= 1LLU << 0,
+
+	/*
+	 * Preempt the current task and execute the dispatch path. If the
+	 * current task of the target CPU is an SCX task, its ->scx.slice is
+	 * cleared to zero before the scheduling path is invoked so that the
+	 * task expires and the dispatch path is invoked.
+	 */
+	SCX_KICK_PREEMPT	= 1LLU << 1,
+
+	/*
+	 * Wait for the CPU to be rescheduled. The scx_bpf_kick_cpu() call will
+	 * return after the target CPU finishes picking the next task.
+	 */
+	SCX_KICK_WAIT		= 1LLU << 2,
 };
 
 enum scx_tg_flags {
