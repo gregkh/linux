@@ -4062,7 +4062,8 @@ static int bpf_scx_init_member(const struct btf_type *t,
 			return -EINVAL;
 		return 1;
 	case offsetof(struct sched_ext_ops, timeout_ms):
-		if (*(u32 *)(udata + moff) > SCX_WATCHDOG_MAX_TIMEOUT)
+		if (msecs_to_jiffies(*(u32 *)(udata + moff)) >
+		    SCX_WATCHDOG_MAX_TIMEOUT)
 			return -E2BIG;
 		ops->timeout_ms = *(u32 *)(udata + moff);
 		return 1;
