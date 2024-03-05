@@ -252,7 +252,7 @@ static pte_t *pti_user_pagetable_walk_pte(unsigned long address, bool late_text)
 		return NULL;
 
 	/* Large PMD mapping found */
-	if (pmd_large(*pmd)) {
+	if (pmd_leaf(*pmd)) {
 		/* Clear the PMD if we hit a large mapping from the first round */
 		if (late_text) {
 			set_pmd(pmd, __pmd(0));
@@ -346,7 +346,7 @@ pti_clone_pgtable(unsigned long start, unsigned long end,
 			continue;
 		}
 
-		if (pmd_large(*pmd) || level == PTI_CLONE_PMD) {
+		if (pmd_leaf(*pmd) || level == PTI_CLONE_PMD) {
 			target_pmd = pti_user_pagetable_walk_pmd(addr);
 			if (WARN_ON(!target_pmd))
 				return;
