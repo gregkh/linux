@@ -3218,6 +3218,10 @@ static void scx_ops_bypass(bool bypass)
 			return;
 	}
 
+	mutex_lock(&scx_ops_enable_mutex);
+	if (!scx_enabled())
+		goto out_unlock;
+
 	/*
 	 * No task property is changing. We just need to make sure all currently
 	 * queued tasks are re-queued according to the new scx_ops_bypassing()
@@ -3255,6 +3259,9 @@ static void scx_ops_bypass(bool bypass)
 		/* kick to restore ticks */
 		resched_cpu(cpu);
 	}
+
+out_unlock:
+	mutex_unlock(&scx_ops_enable_mutex);
 }
 
 static void free_exit_info(struct scx_exit_info *ei)
@@ -4486,9 +4493,6 @@ void print_scx_info(const char *log_lvl, struct task_struct *p)
 
 static int scx_pm_handler(struct notifier_block *nb, unsigned long event, void *ptr)
 {
-	if (!scx_enabled())
-		return NOTIFY_OK;
-
 	/*
 	 * SCX schedulers often have userspace components which are sometimes
 	 * involved in critial scheduling paths. PM operations involve freezing
