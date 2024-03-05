@@ -2157,6 +2157,19 @@ __bpf_kfunc_end_defs();
 
 static int select_task_rq_scx(struct task_struct *p, int prev_cpu, int wake_flags)
 {
+	/*
+	 * sched_exec() calls with %WF_EXEC when @p is about to exec(2) as it
+	 * can be a good migration opportunity with low cache and memory
+	 * footprint. Returning a CPU different than @prev_cpu triggers
+	 * immediate rq migration. However, for SCX, as the current rq
+	 * association doesn't dictate where the task is going to run, this
+	 * doesn't fit well. If necessary, we can later add a dedicated method
+	 * which can decide to preempt self to force it through the regular
+	 * scheduling path.
+	 */
+	if (unlikely(wake_flags & WF_EXEC))
+		return prev_cpu;
+
 	if (SCX_HAS_OP(select_cpu)) {
 		s32 cpu;
 		struct task_struct **ddsp_taskp;
@@ -4511,8 +4524,8 @@ void __init init_sched_ext_class(void)
 	 * definitions so that BPF scheduler implementations can use them
 	 * through the generated vmlinux.h.
 	 */
-	WRITE_ONCE(v, SCX_WAKE_EXEC | SCX_ENQ_WAKEUP | SCX_DEQ_SLEEP |
-		   SCX_TG_ONLINE | SCX_KICK_PREEMPT);
+	WRITE_ONCE(v, SCX_ENQ_WAKEUP | SCX_DEQ_SLEEP | SCX_TG_ONLINE |
+		   SCX_KICK_PREEMPT);
 
 	BUG_ON(rhashtable_init(&dsq_hash, &dsq_hash_params));
 	init_dsq(&scx_dsq_global, SCX_DSQ_GLOBAL);
