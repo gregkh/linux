@@ -205,7 +205,13 @@ skip_init_ctx:
 
 	bpf_flush_icache(bpf_hdr, (u8 *)bpf_hdr + bpf_hdr->size);
 	if (!fp->is_func || extra_pass) {
-		bpf_jit_binary_lock_ro(bpf_hdr);
+		if (bpf_jit_binary_lock_ro(bpf_hdr)) {
+			bpf_jit_binary_free(bpf_hdr);
+			fp->bpf_func = NULL;
+			fp->jited = 0;
+			fp->jited_len = 0;
+			goto out_addrs;
+		}
 		bpf_prog_fill_jited_linfo(fp, addrs);
 out_addrs:
 		kfree(addrs);
