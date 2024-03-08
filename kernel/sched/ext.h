@@ -8,7 +8,6 @@
  */
 enum scx_wake_flags {
 	/* expose select WF_* flags as enums */
-	SCX_WAKE_EXEC		= WF_EXEC,
 	SCX_WAKE_FORK		= WF_FORK,
 	SCX_WAKE_TTWU		= WF_TTWU,
 	SCX_WAKE_SYNC		= WF_SYNC,

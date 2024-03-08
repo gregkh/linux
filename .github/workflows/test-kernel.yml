@@ -23,7 +23,7 @@ jobs:
       # add-apt-repository. Otherwise, the CI job will hang. If and when
       # https://github.com/opencollab/llvm-jenkins.debian.net/pull/26 is
       # merged, we can go back to using https://apt.llvm.org/llvm.sh.
-      - run: wget https://raw.githubusercontent.com/Decave/llvm-jenkins.debian.net/fix_llvmsh/llvm.sh
+      - run: wget https://raw.githubusercontent.com/Byte-Lab/llvm-jenkins.debian.net/fix_llvmsh/llvm.sh
       - run: chmod +x llvm.sh
       - run: sudo ./llvm.sh all
       - run: sudo ln -sf /usr/bin/clang-17 /usr/bin/clang
