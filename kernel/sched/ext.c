@@ -2758,12 +2758,9 @@ void scx_move_task(struct task_struct *p)
 	if (!scx_enabled())
 		return;
 
-	if (SCX_HAS_OP(cgroup_move)) {
-		if (WARN_ON_ONCE(!p->scx.cgrp_moving_from))
-			return;
+	if (SCX_HAS_OP(cgroup_move) && !WARN_ON_ONCE(!p->scx.cgrp_moving_from))
 		SCX_CALL_OP_TASK(SCX_KF_UNLOCKED, cgroup_move, p,
 			p->scx.cgrp_moving_from, tg_cgrp(task_group(p)));
-	}
 	p->scx.cgrp_moving_from = NULL;
 }
 
@@ -2781,11 +2778,10 @@ void scx_cgroup_cancel_attach(struct cgroup_taskset *tset)
 		goto out_unlock;
 
 	cgroup_taskset_for_each(p, css, tset) {
-		if (SCX_HAS_OP(cgroup_cancel_move)) {
-			WARN_ON_ONCE(!p->scx.cgrp_moving_from);
+		if (SCX_HAS_OP(cgroup_cancel_move) &&
+		    !WARN_ON_ONCE(!p->scx.cgrp_moving_from))
 			SCX_CALL_OP(SCX_KF_SLEEPABLE, cgroup_cancel_move, p,
 				    p->scx.cgrp_moving_from, css->cgroup);
-		}
 		p->scx.cgrp_moving_from = NULL;
 	}
 out_unlock:
