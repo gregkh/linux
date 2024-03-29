@@ -124,7 +124,7 @@ void retransmit_timer(struct timer_list *t)
 	spin_lock_irqsave(&qp->state_lock, flags);
 	if (qp->valid) {
 		qp->comp.timeout = 1;
-		rxe_sched_task(&qp->comp.task);
+		rxe_sched_task(&qp->send_task);
 	}
 	spin_unlock_irqrestore(&qp->state_lock, flags);
 	rxe_put(qp);
@@ -136,14 +136,14 @@ void rxe_comp_queue_pkt(struct rxe_qp *qp, struct sk_buff *skb)
 
 	must_sched = skb_queue_len(&qp->resp_pkts) > 0;
 	if (must_sched != 0)
-		rxe_counter_inc(SKB_TO_PKT(skb)->rxe, RXE_CNT_COMPLETER_SCHED);
+		rxe_counter_inc(SKB_TO_PKT(skb)->rxe, RXE_CNT_SENDER_SCHED);
 
 	skb_queue_tail(&qp->resp_pkts, skb);
 
 	if (must_sched)
-		rxe_sched_task(&qp->comp.task);
+		rxe_sched_task(&qp->send_task);
 	else
-		rxe_run_task(&qp->comp.task);
+		rxe_run_task(&qp->send_task);
 }
 
 static inline enum comp_state get_wqe(struct rxe_qp *qp,
@@ -328,7 +328,7 @@ static inline enum comp_state check_ack(struct rxe_qp *qp,
 					qp->comp.psn = pkt->psn;
 					if (qp->req.wait_psn) {
 						qp->req.wait_psn = 0;
-						rxe_sched_task(&qp->req.task);
+						rxe_sched_task(&qp->send_task);
 					}
 				}
 				return COMPST_ERROR_RETRY;
@@ -479,7 +479,7 @@ static void do_complete(struct rxe_qp *qp, struct rxe_send_wqe *wqe)
 	 */
 	if (qp->req.wait_fence) {
 		qp->req.wait_fence = 0;
-		rxe_sched_task(&qp->req.task);
+		rxe_sched_task(&qp->send_task);
 	}
 }
 
@@ -518,7 +518,7 @@ static inline enum comp_state complete_ack(struct rxe_qp *qp,
 		if (qp->req.need_rd_atomic) {
 			qp->comp.timeout_retry = 0;
 			qp->req.need_rd_atomic = 0;
-			rxe_sched_task(&qp->req.task);
+			rxe_sched_task(&qp->send_task);
 		}
 	}
 
@@ -544,7 +544,7 @@ static inline enum comp_state complete_wqe(struct rxe_qp *qp,
 
 		if (qp->req.wait_psn) {
 			qp->req.wait_psn = 0;
-			rxe_sched_task(&qp->req.task);
+			rxe_sched_task(&qp->send_task);
 		}
 	}
 
@@ -740,7 +740,7 @@ int rxe_completer(struct rxe_qp *qp)
 
 			if (qp->req.wait_psn) {
 				qp->req.wait_psn = 0;
-				rxe_sched_task(&qp->req.task);
+				rxe_sched_task(&qp->send_task);
 			}
 
 			state = COMPST_DONE;
@@ -795,7 +795,7 @@ int rxe_completer(struct rxe_qp *qp)
 							RXE_CNT_COMP_RETRY);
 					qp->req.need_retry = 1;
 					qp->comp.started_retry = 1;
-					rxe_sched_task(&qp->req.task);
+					rxe_sched_task(&qp->send_task);
 				}
 				goto done;
 
