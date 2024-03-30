@@ -620,6 +620,23 @@ Contact: Javier Martinez Canillas <javierm@redhat.com>
 
 Level: Intermediate
 
+Clean up and document former selftests suites
+---------------------------------------------
+
+Some KUnit test suites (drm_buddy, drm_cmdline_parser, drm_damage_helper,
+drm_format, drm_framebuffer, drm_dp_mst_helper, drm_mm, drm_plane_helper and
+drm_rect) are former selftests suites that have been converted over when KUnit
+was first introduced.
+
+These suites were fairly undocumented, and with different goals than what unit
+tests can be. Trying to identify what each test in these suites actually test
+for, whether that makes sense for a unit test, and either remove it if it
+doesn't or document it if it does would be of great help.
+
+Contact: Maxime Ripard <mripard@kernel.org>
+
+Level: Intermediate
+
 Enable trinity for DRM
 ----------------------
 
@@ -761,6 +778,29 @@ userspace changes to add support for brightness control on devices with
 multiple panels really should build on top of this new KMS property.
 
 Contact: Hans de Goede
+
+Level: Advanced
+
+Buffer age or other damage accumulation algorithm for buffer damage
+===================================================================
+
+Drivers that do per-buffer uploads, need a buffer damage handling (rather than
+frame damage like drivers that do per-plane or per-CRTC uploads), but there is
+no support to get the buffer age or any other damage accumulation algorithm.
+
+For this reason, the damage helpers just fallback to a full plane update if the
+framebuffer attached to a plane has changed since the last page-flip. Drivers
+set &drm_plane_state.ignore_damage_clips to true as indication to
+drm_atomic_helper_damage_iter_init() and drm_atomic_helper_damage_iter_next()
+helpers that the damage clips should be ignored.
+
+This should be improved to get damage tracking properly working on drivers that
+do per-buffer uploads.
+
+More information about damage tracking and references to learning materials can
+be found in :ref:`damage_tracking_properties`.
+
+Contact: Javier Martinez Canillas <javierm@redhat.com>
 
 Level: Advanced
 

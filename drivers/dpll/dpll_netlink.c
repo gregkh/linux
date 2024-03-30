@@ -8,6 +8,7 @@
  */
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/netdevice.h>
 #include <net/genetlink.h>
 #include "dpll_core.h"
 #include "dpll_netlink.h"
@@ -48,18 +49,6 @@ dpll_msg_add_dev_parent_handle(struct sk_buff *msg, u32 id)
 }
 
 /**
- * dpll_msg_pin_handle_size - get size of pin handle attribute for given pin
- * @pin: pin pointer
- *
- * Return: byte size of pin handle attribute for given pin.
- */
-size_t dpll_msg_pin_handle_size(struct dpll_pin *pin)
-{
-	return pin ? nla_total_size(4) : 0; /* DPLL_A_PIN_ID */
-}
-EXPORT_SYMBOL_GPL(dpll_msg_pin_handle_size);
-
-/**
  * dpll_msg_add_pin_handle - attach pin handle attribute to a given message
  * @msg: pointer to sk_buff message to attach a pin handle
  * @pin: pin pointer
@@ -68,7 +57,7 @@ EXPORT_SYMBOL_GPL(dpll_msg_pin_handle_size);
  * * 0 - success
  * * -EMSGSIZE - no space in message to attach pin handle
  */
-int dpll_msg_add_pin_handle(struct sk_buff *msg, struct dpll_pin *pin)
+static int dpll_msg_add_pin_handle(struct sk_buff *msg, struct dpll_pin *pin)
 {
 	if (!pin)
 		return 0;
@@ -76,7 +65,28 @@ int dpll_msg_add_pin_handle(struct sk_buff *msg, struct dpll_pin *pin)
 		return -EMSGSIZE;
 	return 0;
 }
-EXPORT_SYMBOL_GPL(dpll_msg_add_pin_handle);
+
+static struct dpll_pin *dpll_netdev_pin(const struct net_device *dev)
+{
+	return rcu_dereference_rtnl(dev->dpll_pin);
+}
+
+/**
+ * dpll_netdev_pin_handle_size - get size of pin handle attribute of a netdev
+ * @dev: netdev from which to get the pin
+ *
+ * Return: byte size of pin handle attribute, or 0 if @dev has no pin.
+ */
+size_t dpll_netdev_pin_handle_size(const struct net_device *dev)
+{
+	return dpll_netdev_pin(dev) ? nla_total_size(4) : 0; /* DPLL_A_PIN_ID */
+}
+
+int dpll_netdev_add_pin_handle(struct sk_buff *msg,
+			       const struct net_device *dev)
+{
+	return dpll_msg_add_pin_handle(msg, dpll_netdev_pin(dev));
+}
 
 static int
 dpll_msg_add_mode(struct sk_buff *msg, struct dpll_device *dpll,
@@ -101,13 +111,17 @@ dpll_msg_add_mode_supported(struct sk_buff *msg, struct dpll_device *dpll,
 {
 	const struct dpll_device_ops *ops = dpll_device_ops(dpll);
 	enum dpll_mode mode;
+	int ret;
 
-	if (!ops->mode_supported)
-		return 0;
-	for (mode = DPLL_MODE_MANUAL; mode <= DPLL_MODE_MAX; mode++)
-		if (ops->mode_supported(dpll, dpll_priv(dpll), mode, extack))
-			if (nla_put_u32(msg, DPLL_A_MODE_SUPPORTED, mode))
-				return -EMSGSIZE;
+	/* No mode change is supported now, so the only supported mode is the
+	 * one obtained by mode_get().
+	 */
+
+	ret = ops->mode_get(dpll, dpll_priv(dpll), &mode, extack);
+	if (ret)
+		return ret;
+	if (nla_put_u32(msg, DPLL_A_MODE_SUPPORTED, mode))
+		return -EMSGSIZE;
 
 	return 0;
 }
@@ -257,6 +271,27 @@ dpll_msg_add_phase_offset(struct sk_buff *msg, struct dpll_pin *pin,
 		return -EMSGSIZE;
 
 	return 0;
+}
+
+static int dpll_msg_add_ffo(struct sk_buff *msg, struct dpll_pin *pin,
+			    struct dpll_pin_ref *ref,
+			    struct netlink_ext_ack *extack)
+{
+	const struct dpll_pin_ops *ops = dpll_pin_ops(ref);
+	struct dpll_device *dpll = ref->dpll;
+	s64 ffo;
+	int ret;
+
+	if (!ops->ffo_get)
+		return 0;
+	ret = ops->ffo_get(pin, dpll_pin_on_dpll_priv(dpll, pin),
+			   dpll, dpll_priv(dpll), &ffo, extack);
+	if (ret) {
+		if (ret == -ENODATA)
+			return 0;
+		return ret;
+	}
+	return nla_put_sint(msg, DPLL_A_PIN_FRACTIONAL_FREQUENCY_OFFSET, ffo);
 }
 
 static int
@@ -436,6 +471,9 @@ dpll_cmd_pin_get_one(struct sk_buff *msg, struct dpll_pin *pin,
 			prop->phase_range.max))
 		return -EMSGSIZE;
 	ret = dpll_msg_add_pin_phase_adjust(msg, pin, ref, extack);
+	if (ret)
+		return ret;
+	ret = dpll_msg_add_ffo(msg, pin, ref, extack);
 	if (ret)
 		return ret;
 	if (xa_empty(&pin->parent_refs))

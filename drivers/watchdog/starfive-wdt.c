@@ -511,7 +511,7 @@ err_exit:
 	return ret;
 }
 
-static int starfive_wdt_remove(struct platform_device *pdev)
+static void starfive_wdt_remove(struct platform_device *pdev)
 {
 	struct starfive_wdt *wdt = platform_get_drvdata(pdev);
 
@@ -523,8 +523,6 @@ static int starfive_wdt_remove(struct platform_device *pdev)
 	else
 		/* disable clock without PM */
 		starfive_wdt_disable_clock(wdt);
-
-	return 0;
 }
 
 static void starfive_wdt_shutdown(struct platform_device *pdev)
@@ -594,7 +592,7 @@ MODULE_DEVICE_TABLE(of, starfive_wdt_match);
 
 static struct platform_driver starfive_wdt_driver = {
 	.probe = starfive_wdt_probe,
-	.remove = starfive_wdt_remove,
+	.remove_new = starfive_wdt_remove,
 	.shutdown = starfive_wdt_shutdown,
 	.driver = {
 		.name = "starfive-wdt",

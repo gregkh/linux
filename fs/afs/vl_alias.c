@@ -41,8 +41,8 @@ static int afs_compare_fs_alists(const struct afs_server *server_a,
 	const struct afs_addr_list *la, *lb;
 	int a = 0, b = 0, addr_matches = 0;
 
-	la = rcu_dereference(server_a->addresses);
-	lb = rcu_dereference(server_b->addresses);
+	la = rcu_dereference(server_a->endpoint_state)->addresses;
+	lb = rcu_dereference(server_b->endpoint_state)->addresses;
 
 	while (a < la->nr_addrs && b < lb->nr_addrs) {
 		unsigned long pa = (unsigned long)la->addrs[a].peer;
@@ -77,7 +77,7 @@ static int afs_compare_volume_slists(const struct afs_volume *vol_a,
 	lb = rcu_dereference(vol_b->servers);
 
 	for (i = 0; i < AFS_MAXTYPES; i++)
-		if (la->vids[i] != lb->vids[i])
+		if (vol_a->vids[i] != vol_b->vids[i])
 			return 0;
 
 	while (a < la->nr_servers && b < lb->nr_servers) {
@@ -156,7 +156,7 @@ static int afs_query_for_alias_one(struct afs_cell *cell, struct key *key,
 	/* And see if it's in the new cell. */
 	volume = afs_sample_volume(cell, key, pvol->name, pvol->name_len);
 	if (IS_ERR(volume)) {
-		afs_put_volume(cell->net, pvol, afs_volume_trace_put_query_alias);
+		afs_put_volume(pvol, afs_volume_trace_put_query_alias);
 		if (PTR_ERR(volume) != -ENOMEDIUM)
 			return PTR_ERR(volume);
 		/* That volume is not in the new cell, so not an alias */
@@ -174,8 +174,8 @@ static int afs_query_for_alias_one(struct afs_cell *cell, struct key *key,
 		rcu_read_unlock();
 	}
 
-	afs_put_volume(cell->net, volume, afs_volume_trace_put_query_alias);
-	afs_put_volume(cell->net, pvol, afs_volume_trace_put_query_alias);
+	afs_put_volume(volume, afs_volume_trace_put_query_alias);
+	afs_put_volume(pvol, afs_volume_trace_put_query_alias);
 	return ret;
 }
 

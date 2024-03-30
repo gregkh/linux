@@ -74,9 +74,14 @@
 #define MP0_C2PMSG_114_REG			0x3810AC8
 #define MP0_C2PMSG_73_REG			0x3810A24
 #define MBOX_ACP_SHA_DMA_COMMAND		0x70000
+#define MBOX_ACP_IRAM_DRAM_FENCE_COMMAND	0x80000
 #define MBOX_DELAY_US				1000
 #define MBOX_READY_MASK				0x80000000
 #define MBOX_STATUS_MASK			0xFFFF
+#define MBOX_ISREADY_FLAG			0x40000000
+#define IRAM_DRAM_FENCE_0			0X0
+#define IRAM_DRAM_FENCE_1			0X01
+#define IRAM_DRAM_FENCE_2			0X02
 
 #define BOX_SIZE_512				0x200
 #define BOX_SIZE_1024				0x400
@@ -188,6 +193,11 @@ struct sof_amd_acp_desc {
 	u32 probe_reg_offset;
 };
 
+struct acp_quirk_entry {
+	bool signed_fw_image;
+	bool skip_iram_dram_size_mod;
+};
+
 /* Common device data struct for ACP devices */
 struct acp_dev_data {
 	struct snd_sof_dev  *dev;
@@ -208,7 +218,7 @@ struct acp_dev_data {
 	u8 *data_buf;
 	dma_addr_t sram_dma_addr;
 	u8 *sram_data_buf;
-	bool signed_fw_image;
+	struct acp_quirk_entry *quirks;
 	struct dma_descriptor dscr_info[ACP_MAX_DESC];
 	struct acp_dsp_stream stream_buf[ACP_MAX_STREAM];
 	struct acp_dsp_stream *dtrace_stream;

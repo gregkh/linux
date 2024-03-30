@@ -20,26 +20,48 @@ static void afs_free_addrlist(struct rcu_head *rcu)
 
 	for (i = 0; i < alist->nr_addrs; i++)
 		rxrpc_kernel_put_peer(alist->addrs[i].peer);
+	trace_afs_alist(alist->debug_id, refcount_read(&alist->usage), afs_alist_trace_free);
+	kfree(alist);
 }
 
 /*
  * Release an address list.
  */
-void afs_put_addrlist(struct afs_addr_list *alist)
+void afs_put_addrlist(struct afs_addr_list *alist, enum afs_alist_trace reason)
 {
-	if (alist && refcount_dec_and_test(&alist->usage))
+	unsigned int debug_id;
+	bool dead;
+	int r;
+
+	if (!alist)
+		return;
+	debug_id = alist->debug_id;
+	dead = __refcount_dec_and_test(&alist->usage, &r);
+	trace_afs_alist(debug_id, r - 1, reason);
+	if (dead)
 		call_rcu(&alist->rcu, afs_free_addrlist);
+}
+
+struct afs_addr_list *afs_get_addrlist(struct afs_addr_list *alist, enum afs_alist_trace reason)
+{
+	int r;
+
+	if (alist) {
+		__refcount_inc(&alist->usage, &r);
+		trace_afs_alist(alist->debug_id, r + 1, reason);
+	}
+	return alist;
 }
 
 /*
  * Allocate an address list.
  */
-struct afs_addr_list *afs_alloc_addrlist(unsigned int nr, u16 service_id)
+struct afs_addr_list *afs_alloc_addrlist(unsigned int nr)
 {
 	struct afs_addr_list *alist;
-	unsigned int i;
+	static atomic_t debug_id;
 
-	_enter("%u,%u", nr, service_id);
+	_enter("%u", nr);
 
 	if (nr > AFS_MAX_ADDRESSES)
 		nr = AFS_MAX_ADDRESSES;
@@ -50,9 +72,8 @@ struct afs_addr_list *afs_alloc_addrlist(unsigned int nr, u16 service_id)
 
 	refcount_set(&alist->usage, 1);
 	alist->max_addrs = nr;
-
-	for (i = 0; i < nr; i++)
-		alist->addrs[i].service_id = service_id;
+	alist->debug_id = atomic_inc_return(&debug_id);
+	trace_afs_alist(alist->debug_id, 1, afs_alist_trace_alloc);
 	return alist;
 }
 
@@ -125,7 +146,7 @@ struct afs_vlserver_list *afs_parse_text_addrs(struct afs_net *net,
 	if (!vllist->servers[0].server)
 		goto error_vl;
 
-	alist = afs_alloc_addrlist(nr, service);
+	alist = afs_alloc_addrlist(nr);
 	if (!alist)
 		goto error;
 
@@ -217,24 +238,11 @@ bad_address:
 	       problem, p - text, (int)len, (int)len, text);
 	ret = -EINVAL;
 error:
-	afs_put_addrlist(alist);
+	afs_put_addrlist(alist, afs_alist_trace_put_parse_error);
 error_vl:
 	afs_put_vlserverlist(net, vllist);
 	return ERR_PTR(ret);
 }
-
-/*
- * Compare old and new address lists to see if there's been any change.
- * - How to do this in better than O(Nlog(N)) time?
- *   - We don't really want to sort the address list, but would rather take the
- *     list as we got it so as not to undo record rotation by the DNS server.
- */
-#if 0
-static int afs_cmp_addr_list(const struct afs_addr_list *a1,
-			     const struct afs_addr_list *a2)
-{
-}
-#endif
 
 /*
  * Perform a DNS query for VL servers and build a up an address list.
@@ -353,57 +361,4 @@ int afs_merge_fs_addr6(struct afs_net *net, struct afs_addr_list *alist,
 	alist->addrs[i].peer = peer;
 	alist->nr_addrs++;
 	return 0;
-}
-
-/*
- * Get an address to try.
- */
-bool afs_iterate_addresses(struct afs_addr_cursor *ac)
-{
-	unsigned long set, failed;
-	int index;
-
-	if (!ac->alist)
-		return false;
-
-	set = ac->alist->responded;
-	failed = ac->alist->failed;
-	_enter("%lx-%lx-%lx,%d", set, failed, ac->tried, ac->index);
-
-	ac->nr_iterations++;
-
-	set &= ~(failed | ac->tried);
-
-	if (!set)
-		return false;
-
-	index = READ_ONCE(ac->alist->preferred);
-	if (test_bit(index, &set))
-		goto selected;
-
-	index = __ffs(set);
-
-selected:
-	ac->index = index;
-	set_bit(index, &ac->tried);
-	ac->call_responded = false;
-	return true;
-}
-
-/*
- * Release an address list cursor.
- */
-void afs_end_cursor(struct afs_addr_cursor *ac)
-{
-	struct afs_addr_list *alist;
-
-	alist = ac->alist;
-	if (alist) {
-		if (ac->call_responded &&
-		    ac->index != alist->preferred &&
-		    test_bit(ac->alist->preferred, &ac->tried))
-			WRITE_ONCE(alist->preferred, ac->index);
-		afs_put_addrlist(alist);
-		ac->alist = NULL;
-	}
 }

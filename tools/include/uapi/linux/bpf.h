@@ -1074,8 +1074,10 @@ enum bpf_link_type {
 	BPF_LINK_TYPE_TCX = 11,
 	BPF_LINK_TYPE_UPROBE_MULTI = 12,
 	BPF_LINK_TYPE_NETKIT = 13,
-	MAX_BPF_LINK_TYPE,
+	__MAX_BPF_LINK_TYPE,
 };
+
+#define MAX_BPF_LINK_TYPE __MAX_BPF_LINK_TYPE
 
 enum bpf_perf_event_type {
 	BPF_PERF_EVENT_UNSPEC = 0,
@@ -1199,6 +1201,9 @@ enum bpf_perf_event_type {
  * program becomes device-bound but can access XDP metadata.
  */
 #define BPF_F_XDP_DEV_BOUND_ONLY	(1U << 6)
+
+/* The verifier internal test flag. Behavior is undefined */
+#define BPF_F_TEST_REG_INVARIANTS	(1U << 7)
 
 /* link_create.kprobe_multi.flags used in LINK_CREATE command for
  * BPF_TRACE_KPROBE_MULTI attach type to create return probe.
@@ -6560,6 +6565,16 @@ struct bpf_link_info {
 			__u64 missed;
 		} kprobe_multi;
 		struct {
+			__aligned_u64 path;
+			__aligned_u64 offsets;
+			__aligned_u64 ref_ctr_offsets;
+			__aligned_u64 cookies;
+			__u32 path_size; /* in/out: real path size on success, including zero byte */
+			__u32 count; /* in/out: uprobe_multi offsets/ref_ctr_offsets/cookies count */
+			__u32 flags;
+			__u32 pid;
+		} uprobe_multi;
+		struct {
 			__u32 type; /* enum bpf_perf_event_type */
 			__u32 :32;
 			union {
@@ -7154,40 +7169,31 @@ struct bpf_spin_lock {
 };
 
 struct bpf_timer {
-	__u64 :64;
-	__u64 :64;
+	__u64 __opaque[2];
 } __attribute__((aligned(8)));
 
 struct bpf_dynptr {
-	__u64 :64;
-	__u64 :64;
+	__u64 __opaque[2];
 } __attribute__((aligned(8)));
 
 struct bpf_list_head {
-	__u64 :64;
-	__u64 :64;
+	__u64 __opaque[2];
 } __attribute__((aligned(8)));
 
 struct bpf_list_node {
-	__u64 :64;
-	__u64 :64;
-	__u64 :64;
+	__u64 __opaque[3];
 } __attribute__((aligned(8)));
 
 struct bpf_rb_root {
-	__u64 :64;
-	__u64 :64;
+	__u64 __opaque[2];
 } __attribute__((aligned(8)));
 
 struct bpf_rb_node {
-	__u64 :64;
-	__u64 :64;
-	__u64 :64;
-	__u64 :64;
+	__u64 __opaque[4];
 } __attribute__((aligned(8)));
 
 struct bpf_refcount {
-	__u32 :32;
+	__u32 __opaque[1];
 } __attribute__((aligned(4)));
 
 struct bpf_sysctl {

@@ -23,6 +23,7 @@ static void __afs_put_server(struct afs_net *, struct afs_server *);
  */
 struct afs_server *afs_find_server(struct afs_net *net, const struct rxrpc_peer *peer)
 {
+	const struct afs_endpoint_state *estate;
 	const struct afs_addr_list *alist;
 	struct afs_server *server = NULL;
 	unsigned int i;
@@ -37,8 +38,9 @@ struct afs_server *afs_find_server(struct afs_net *net, const struct rxrpc_peer 
 		seq++; /* 2 on the 1st/lockless path, otherwise odd */
 		read_seqbegin_or_lock(&net->fs_addr_lock, &seq);
 
-		hlist_for_each_entry_rcu(server, &net->fs_addresses6, addr6_link) {
-			alist = rcu_dereference(server->addresses);
+		hlist_for_each_entry_rcu(server, &net->fs_addresses, addr_link) {
+			estate = rcu_dereference(server->endpoint_state);
+			alist = estate->addresses;
 			for (i = 0; i < alist->nr_addrs; i++)
 				if (alist->addrs[i].peer == peer)
 					goto found;
@@ -111,6 +113,7 @@ struct afs_server *afs_find_server_by_uuid(struct afs_net *net, const uuid_t *uu
 static struct afs_server *afs_install_server(struct afs_cell *cell,
 					     struct afs_server *candidate)
 {
+	const struct afs_endpoint_state *estate;
 	const struct afs_addr_list *alist;
 	struct afs_server *server, *next;
 	struct afs_net *net = cell->net;
@@ -162,8 +165,9 @@ static struct afs_server *afs_install_server(struct afs_cell *cell,
 
 added_dup:
 	write_seqlock(&net->fs_addr_lock);
-	alist = rcu_dereference_protected(server->addresses,
-					  lockdep_is_held(&net->fs_addr_lock.lock));
+	estate = rcu_dereference_protected(server->endpoint_state,
+					   lockdep_is_held(&net->fs_addr_lock.lock));
+	alist = estate->addresses;
 
 	/* Secondly, if the server has any IPv4 and/or IPv6 addresses, install
 	 * it in the IPv4 and/or IPv6 reverse-map lists.
@@ -173,10 +177,8 @@ added_dup:
 	 * bit, but anything we might want to do gets messy and memory
 	 * intensive.
 	 */
-	if (alist->nr_ipv4 > 0)
-		hlist_add_head_rcu(&server->addr4_link, &net->fs_addresses4);
-	if (alist->nr_addrs > alist->nr_ipv4)
-		hlist_add_head_rcu(&server->addr6_link, &net->fs_addresses6);
+	if (alist->nr_addrs > 0)
+		hlist_add_head_rcu(&server->addr_link, &net->fs_addresses);
 
 	write_sequnlock(&net->fs_addr_lock);
 
@@ -193,6 +195,7 @@ static struct afs_server *afs_alloc_server(struct afs_cell *cell,
 					   const uuid_t *uuid,
 					   struct afs_addr_list *alist)
 {
+	struct afs_endpoint_state *estate;
 	struct afs_server *server;
 	struct afs_net *net = cell->net;
 
@@ -202,25 +205,41 @@ static struct afs_server *afs_alloc_server(struct afs_cell *cell,
 	if (!server)
 		goto enomem;
 
+	estate = kzalloc(sizeof(struct afs_endpoint_state), GFP_KERNEL);
+	if (!estate)
+		goto enomem_server;
+
 	refcount_set(&server->ref, 1);
 	atomic_set(&server->active, 1);
 	server->debug_id = atomic_inc_return(&afs_server_debug_id);
-	RCU_INIT_POINTER(server->addresses, alist);
 	server->addr_version = alist->version;
 	server->uuid = *uuid;
 	rwlock_init(&server->fs_lock);
-	INIT_WORK(&server->initcb_work, afs_server_init_callback_work);
+	INIT_LIST_HEAD(&server->volumes);
 	init_waitqueue_head(&server->probe_wq);
 	INIT_LIST_HEAD(&server->probe_link);
 	spin_lock_init(&server->probe_lock);
 	server->cell = cell;
 	server->rtt = UINT_MAX;
+	server->service_id = FS_SERVICE;
+
+	server->probe_counter = 1;
+	server->probed_at = jiffies - LONG_MAX / 2;
+	refcount_set(&estate->ref, 1);
+	estate->addresses = alist;
+	estate->server_id = server->debug_id;
+	estate->probe_seq = 1;
+	rcu_assign_pointer(server->endpoint_state, estate);
 
 	afs_inc_servers_outstanding(net);
 	trace_afs_server(server->debug_id, 1, 1, afs_server_trace_alloc);
+	trace_afs_estate(estate->server_id, estate->probe_seq, refcount_read(&estate->ref),
+			 afs_estate_trace_alloc_server);
 	_leave(" = %p", server);
 	return server;
 
+enomem_server:
+	kfree(server);
 enomem:
 	_leave(" = NULL [nomem]");
 	return NULL;
@@ -275,20 +294,20 @@ struct afs_server *afs_lookup_server(struct afs_cell *cell, struct key *key,
 
 	candidate = afs_alloc_server(cell, uuid, alist);
 	if (!candidate) {
-		afs_put_addrlist(alist);
+		afs_put_addrlist(alist, afs_alist_trace_put_server_oom);
 		return ERR_PTR(-ENOMEM);
 	}
 
 	server = afs_install_server(cell, candidate);
 	if (server != candidate) {
-		afs_put_addrlist(alist);
+		afs_put_addrlist(alist, afs_alist_trace_put_server_dup);
 		kfree(candidate);
 	} else {
 		/* Immediately dispatch an asynchronous probe to each interface
 		 * on the fileserver.  This will make sure the repeat-probing
 		 * service is started.
 		 */
-		afs_fs_probe_fileserver(cell->net, server, key, true);
+		afs_fs_probe_fileserver(cell->net, server, alist, key);
 	}
 
 	return server;
@@ -421,7 +440,8 @@ static void afs_server_rcu(struct rcu_head *rcu)
 
 	trace_afs_server(server->debug_id, refcount_read(&server->ref),
 			 atomic_read(&server->active), afs_server_trace_free);
-	afs_put_addrlist(rcu_access_pointer(server->addresses));
+	afs_put_endpoint_state(rcu_access_pointer(server->endpoint_state),
+			       afs_estate_trace_put_server);
 	kfree(server);
 }
 
@@ -433,13 +453,10 @@ static void __afs_put_server(struct afs_net *net, struct afs_server *server)
 
 static void afs_give_up_callbacks(struct afs_net *net, struct afs_server *server)
 {
-	struct afs_addr_list *alist = rcu_access_pointer(server->addresses);
-	struct afs_addr_cursor ac = {
-		.alist	= alist,
-		.index	= alist->preferred,
-	};
+	struct afs_endpoint_state *estate = rcu_access_pointer(server->endpoint_state);
+	struct afs_addr_list *alist = estate->addresses;
 
-	afs_fs_give_up_all_callbacks(net, server, &ac, NULL);
+	afs_fs_give_up_all_callbacks(net, server, &alist->addrs[alist->preferred], NULL);
 }
 
 /*
@@ -450,7 +467,6 @@ static void afs_destroy_server(struct afs_net *net, struct afs_server *server)
 	if (test_bit(AFS_SERVER_FL_MAY_HAVE_CB, &server->flags))
 		afs_give_up_callbacks(net, server);
 
-	flush_work(&server->initcb_work);
 	afs_put_server(net, server, afs_server_trace_destroy);
 }
 
@@ -493,10 +509,8 @@ static void afs_gc_servers(struct afs_net *net, struct afs_server *gc_list)
 
 			list_del(&server->probe_link);
 			hlist_del_rcu(&server->proc_link);
-			if (!hlist_unhashed(&server->addr4_link))
-				hlist_del_rcu(&server->addr4_link);
-			if (!hlist_unhashed(&server->addr6_link))
-				hlist_del_rcu(&server->addr6_link);
+			if (!hlist_unhashed(&server->addr_link))
+				hlist_del_rcu(&server->addr_link);
 		}
 		write_sequnlock(&net->fs_lock);
 
@@ -609,9 +623,12 @@ void afs_purge_servers(struct afs_net *net)
  * Get an update for a server's address list.
  */
 static noinline bool afs_update_server_record(struct afs_operation *op,
-					      struct afs_server *server)
+					      struct afs_server *server,
+					      struct key *key)
 {
-	struct afs_addr_list *alist, *discard;
+	struct afs_endpoint_state *estate;
+	struct afs_addr_list *alist;
+	bool has_addrs;
 
 	_enter("");
 
@@ -621,10 +638,15 @@ static noinline bool afs_update_server_record(struct afs_operation *op,
 
 	alist = afs_vl_lookup_addrs(op->volume->cell, op->key, &server->uuid);
 	if (IS_ERR(alist)) {
+		rcu_read_lock();
+		estate = rcu_dereference(server->endpoint_state);
+		has_addrs = estate->addresses;
+		rcu_read_unlock();
+
 		if ((PTR_ERR(alist) == -ERESTARTSYS ||
 		     PTR_ERR(alist) == -EINTR) &&
 		    (op->flags & AFS_OPERATION_UNINTR) &&
-		    server->addresses) {
+		    has_addrs) {
 			_leave(" = t [intr]");
 			return true;
 		}
@@ -633,17 +655,10 @@ static noinline bool afs_update_server_record(struct afs_operation *op,
 		return false;
 	}
 
-	discard = alist;
-	if (server->addr_version != alist->version) {
-		write_lock(&server->fs_lock);
-		discard = rcu_dereference_protected(server->addresses,
-						    lockdep_is_held(&server->fs_lock));
-		rcu_assign_pointer(server->addresses, alist);
-		server->addr_version = alist->version;
-		write_unlock(&server->fs_lock);
-	}
+	if (server->addr_version != alist->version)
+		afs_fs_probe_fileserver(op->net, server, alist, key);
 
-	afs_put_addrlist(discard);
+	afs_put_addrlist(alist, afs_alist_trace_put_server_update);
 	_leave(" = t");
 	return true;
 }
@@ -651,7 +666,8 @@ static noinline bool afs_update_server_record(struct afs_operation *op,
 /*
  * See if a server's address list needs updating.
  */
-bool afs_check_server_record(struct afs_operation *op, struct afs_server *server)
+bool afs_check_server_record(struct afs_operation *op, struct afs_server *server,
+			     struct key *key)
 {
 	bool success;
 	int ret, retries = 0;
@@ -671,7 +687,7 @@ retry:
 update:
 	if (!test_and_set_bit_lock(AFS_SERVER_FL_UPDATING, &server->flags)) {
 		clear_bit(AFS_SERVER_FL_NEEDS_UPDATE, &server->flags);
-		success = afs_update_server_record(op, server);
+		success = afs_update_server_record(op, server, key);
 		clear_bit_unlock(AFS_SERVER_FL_UPDATING, &server->flags);
 		wake_up_bit(&server->flags, AFS_SERVER_FL_UPDATING);
 		_leave(" = %d", success);

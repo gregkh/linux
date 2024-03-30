@@ -107,12 +107,12 @@ struct ffa_drv_info {
 	struct work_struct notif_pcpu_work;
 	struct work_struct irq_work;
 	struct xarray partition_info;
-	unsigned int partition_count;
 	DECLARE_HASHTABLE(notifier_hash, ilog2(FFA_MAX_NOTIFICATIONS));
 	struct mutex notify_lock; /* lock to protect notifier hashtable  */
 };
 
 static struct ffa_drv_info *drv_info;
+static void ffa_partitions_cleanup(void);
 
 /*
  * The driver must be able to support all the versions from the earliest
@@ -1196,9 +1196,9 @@ void ffa_device_match_uuid(struct ffa_device *ffa_dev, const uuid_t *uuid)
 	kfree(pbuf);
 }
 
-static void ffa_setup_partitions(void)
+static int ffa_setup_partitions(void)
 {
-	int count, idx;
+	int count, idx, ret;
 	uuid_t uuid;
 	struct ffa_device *ffa_dev;
 	struct ffa_dev_part_info *info;
@@ -1207,7 +1207,7 @@ static void ffa_setup_partitions(void)
 	count = ffa_partition_probe(&uuid_null, &pbuf);
 	if (count <= 0) {
 		pr_info("%s: No partitions found, error %d\n", __func__, count);
-		return;
+		return -EINVAL;
 	}
 
 	xa_init(&drv_info->partition_info);
@@ -1237,41 +1237,52 @@ static void ffa_setup_partitions(void)
 			continue;
 		}
 		rwlock_init(&info->rw_lock);
-		xa_store(&drv_info->partition_info, tpbuf->id, info, GFP_KERNEL);
+		ret = xa_insert(&drv_info->partition_info, tpbuf->id,
+				info, GFP_KERNEL);
+		if (ret) {
+			pr_err("%s: failed to save partition ID 0x%x - ret:%d\n",
+			       __func__, tpbuf->id, ret);
+			ffa_device_unregister(ffa_dev);
+			kfree(info);
+		}
 	}
-	drv_info->partition_count = count;
 
 	kfree(pbuf);
 
 	/* Allocate for the host */
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (!info)
-		return;
+	if (!info) {
+		pr_err("%s: failed to alloc Host partition ID 0x%x. Abort.\n",
+		       __func__, drv_info->vm_id);
+		/* Already registered devices are freed on bus_exit */
+		ffa_partitions_cleanup();
+		return -ENOMEM;
+	}
+
 	rwlock_init(&info->rw_lock);
-	xa_store(&drv_info->partition_info, drv_info->vm_id, info, GFP_KERNEL);
-	drv_info->partition_count++;
+	ret = xa_insert(&drv_info->partition_info, drv_info->vm_id,
+			info, GFP_KERNEL);
+	if (ret) {
+		pr_err("%s: failed to save Host partition ID 0x%x - ret:%d. Abort.\n",
+		       __func__, drv_info->vm_id, ret);
+		kfree(info);
+		/* Already registered devices are freed on bus_exit */
+		ffa_partitions_cleanup();
+	}
+
+	return ret;
 }
 
 static void ffa_partitions_cleanup(void)
 {
-	struct ffa_dev_part_info **info;
-	int idx, count = drv_info->partition_count;
+	struct ffa_dev_part_info *info;
+	unsigned long idx;
 
-	if (!count)
-		return;
+	xa_for_each(&drv_info->partition_info, idx, info) {
+		xa_erase(&drv_info->partition_info, idx);
+		kfree(info);
+	}
 
-	info = kcalloc(count, sizeof(*info), GFP_KERNEL);
-	if (!info)
-		return;
-
-	xa_extract(&drv_info->partition_info, (void **)info, 0, VM_ID_MASK,
-		   count, XA_PRESENT);
-
-	for (idx = 0; idx < count; idx++)
-		kfree(info[idx]);
-	kfree(info);
-
-	drv_info->partition_count = 0;
 	xa_destroy(&drv_info->partition_info);
 }
 
@@ -1520,7 +1531,11 @@ static int __init ffa_init(void)
 
 	ffa_notifications_setup();
 
-	ffa_setup_partitions();
+	ret = ffa_setup_partitions();
+	if (ret) {
+		pr_err("failed to setup partitions\n");
+		goto cleanup_notifs;
+	}
 
 	ret = ffa_sched_recv_cb_update(drv_info->vm_id, ffa_self_notif_handle,
 				       drv_info, true);
@@ -1528,6 +1543,9 @@ static int __init ffa_init(void)
 		pr_info("Failed to register driver sched callback %d\n", ret);
 
 	return 0;
+
+cleanup_notifs:
+	ffa_notifications_cleanup();
 free_pages:
 	if (drv_info->tx_buffer)
 		free_pages_exact(drv_info->tx_buffer, RXTX_BUFFER_SIZE);
@@ -1547,7 +1565,6 @@ static void __exit ffa_exit(void)
 	ffa_rxtx_unmap(drv_info->vm_id);
 	free_pages_exact(drv_info->tx_buffer, RXTX_BUFFER_SIZE);
 	free_pages_exact(drv_info->rx_buffer, RXTX_BUFFER_SIZE);
-	xa_destroy(&drv_info->partition_info);
 	kfree(drv_info);
 	arm_ffa_bus_exit();
 }

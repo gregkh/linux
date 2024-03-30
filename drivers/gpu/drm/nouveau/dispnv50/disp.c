@@ -38,7 +38,9 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_eld.h>
 #include <drm/drm_fb_helper.h>
+#include <drm/drm_fixed.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -945,7 +947,8 @@ nv50_msto_prepare(struct drm_atomic_state *state,
 	if (ret == 0) {
 		nvif_outp_dp_mst_vcpi(&mstm->outp->outp, msto->head->base.index,
 				      payload->vc_start_slot, payload->time_slots,
-				      payload->pbn, payload->time_slots * mst_state->pbn_div);
+				      payload->pbn,
+				      payload->time_slots * dfixed_trunc(mst_state->pbn_div));
 	} else {
 		nvif_outp_dp_mst_vcpi(&mstm->outp->outp, msto->head->base.index, 0, 0, 0, 0);
 	}
@@ -989,7 +992,7 @@ nv50_msto_atomic_check(struct drm_encoder *encoder,
 	if (IS_ERR(mst_state))
 		return PTR_ERR(mst_state);
 
-	if (!mst_state->pbn_div) {
+	if (!mst_state->pbn_div.full) {
 		struct nouveau_encoder *outp = mstc->mstm->outp;
 
 		mst_state->pbn_div = drm_dp_get_vc_payload_bw(&mstm->mgr,

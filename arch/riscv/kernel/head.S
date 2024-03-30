@@ -11,7 +11,6 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/csr.h>
-#include <asm/cpu_ops_sbi.h>
 #include <asm/hwcap.h>
 #include <asm/image.h>
 #include <asm/scs.h>
@@ -266,10 +265,12 @@ SYM_CODE_START(_start_kernel)
 	la sp, _end + THREAD_SIZE
 	XIP_FIXUP_OFFSET sp
 	mv s0, a0
+	mv s1, a1
 	call __copy_data
 
-	/* Restore a0 copy */
+	/* Restore a0 & a1 copy */
 	mv a0, s0
+	mv a1, s1
 #endif
 
 #ifndef CONFIG_XIP_KERNEL

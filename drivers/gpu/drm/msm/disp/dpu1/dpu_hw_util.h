@@ -19,6 +19,12 @@
 #define MISR_CTRL_STATUS_CLEAR          BIT(10)
 #define MISR_CTRL_FREE_RUN_MASK         BIT(31)
 
+#define TO_S15D16(_x_)((_x_) << 7)
+
+extern const struct dpu_csc_cfg dpu_csc_YUV2RGB_601L;
+extern const struct dpu_csc_cfg dpu_csc10_YUV2RGB_601L;
+extern const struct dpu_csc_cfg dpu_csc10_rgb2yuv_601l;
+
 /*
  * This is the common struct maintained by each sub block
  * for mapping the register offsets in this block to the
@@ -339,9 +345,6 @@ void dpu_hw_setup_scaler3(struct dpu_hw_blk_reg_map *c,
 		struct dpu_hw_scaler3_cfg *scaler3_cfg,
 		u32 scaler_offset, u32 scaler_version,
 		const struct dpu_format *format);
-
-u32 dpu_hw_get_scaler3_ver(struct dpu_hw_blk_reg_map *c,
-		u32 scaler_offset);
 
 void dpu_hw_csc_setup(struct dpu_hw_blk_reg_map  *c,
 		u32 csc_reg_off,

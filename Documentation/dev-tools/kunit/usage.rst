@@ -566,13 +566,9 @@ By reusing the same ``cases`` array from above, we can write the test as a
 		},
 	};
 
-	// Need a helper function to generate a name for each test case.
-	static void case_to_desc(const struct sha1_test_case *t, char *desc)
-	{
-		strcpy(desc, t->str);
-	}
-	// Creates `sha1_gen_params()` to iterate over `cases`.
-	KUNIT_ARRAY_PARAM(sha1, cases, case_to_desc);
+	// Creates `sha1_gen_params()` to iterate over `cases` while using
+	// the struct member `str` for the case description.
+	KUNIT_ARRAY_PARAM_DESC(sha1, cases, str);
 
 	// Looks no different from a normal test.
 	static void sha1_test(struct kunit *test)
@@ -588,7 +584,7 @@ By reusing the same ``cases`` array from above, we can write the test as a
 	}
 
 	// Instead of KUNIT_CASE, we use KUNIT_CASE_PARAM and pass in the
-	// function declared by KUNIT_ARRAY_PARAM.
+	// function declared by KUNIT_ARRAY_PARAM or KUNIT_ARRAY_PARAM_DESC.
 	static struct kunit_case sha1_test_cases[] = {
 		KUNIT_CASE_PARAM(sha1_test, sha1_gen_params),
 		{}
@@ -675,8 +671,23 @@ Testing Static Functions
 ------------------------
 
 If we do not want to expose functions or variables for testing, one option is to
-conditionally ``#include`` the test file at the end of your .c file. For
-example:
+conditionally export the used symbol. For example:
+
+.. code-block:: c
+
+	/* In my_file.c */
+
+	VISIBLE_IF_KUNIT int do_interesting_thing();
+	EXPORT_SYMBOL_IF_KUNIT(do_interesting_thing);
+
+	/* In my_file.h */
+
+	#if IS_ENABLED(CONFIG_KUNIT)
+		int do_interesting_thing(void);
+	#endif
+
+Alternatively, you could conditionally ``#include`` the test file at the end of
+your .c file. For example:
 
 .. code-block:: c
 
@@ -797,3 +808,53 @@ structures as shown below:
 KUnit is not enabled, or if no test is running in the current task, it will do
 nothing. This compiles down to either a no-op or a static key check, so will
 have a negligible performance impact when no test is running.
+
+Managing Fake Devices and Drivers
+---------------------------------
+
+When testing drivers or code which interacts with drivers, many functions will
+require a ``struct device`` or ``struct device_driver``. In many cases, setting
+up a real device is not required to test any given function, so a fake device
+can be used instead.
+
+KUnit provides helper functions to create and manage these fake devices, which
+are internally of type ``struct kunit_device``, and are attached to a special
+``kunit_bus``. These devices support managed device resources (devres), as
+described in Documentation/driver-api/driver-model/devres.rst
+
+To create a KUnit-managed ``struct device_driver``, use ``kunit_driver_create()``,
+which will create a driver with the given name, on the ``kunit_bus``. This driver
+will automatically be destroyed when the corresponding test finishes, but can also
+be manually destroyed with ``driver_unregister()``.
+
+To create a fake device, use the ``kunit_device_register()``, which will create
+and register a device, using a new KUnit-managed driver created with ``kunit_driver_create()``.
+To provide a specific, non-KUnit-managed driver, use ``kunit_device_register_with_driver()``
+instead. Like with managed drivers, KUnit-managed fake devices are automatically
+cleaned up when the test finishes, but can be manually cleaned up early with
+``kunit_device_unregister()``.
+
+The KUnit devices should be used in preference to ``root_device_register()``, and
+instead of ``platform_device_register()`` in cases where the device is not otherwise
+a platform device.
+
+For example:
+
+.. code-block:: c
+
+	#include <kunit/device.h>
+
+	static void test_my_device(struct kunit *test)
+	{
+		struct device *fake_device;
+		const char *dev_managed_string;
+
+		// Create a fake device.
+		fake_device = kunit_device_register(test, "my_device");
+		KUNIT_ASSERT_NOT_ERR_OR_NULL(test, fake_device)
+
+		// Pass it to functions which need a device.
+		dev_managed_string = devm_kstrdup(fake_device, "Hello, World!");
+
+		// Everything is cleaned up automatically when the test ends.
+	}
