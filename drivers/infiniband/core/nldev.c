@@ -137,6 +137,8 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_RES_SUMMARY_ENTRY_NAME]= { .type = NLA_NUL_STRING,
 					.len = RDMA_NLDEV_ATTR_EMPTY_STRING },
 	[RDMA_NLDEV_ATTR_RES_TYPE]		= { .type = NLA_U8 },
+	[RDMA_NLDEV_ATTR_RES_SUBTYPE]		= { .type = NLA_NUL_STRING,
+					.len = RDMA_NLDEV_ATTR_EMPTY_STRING },
 	[RDMA_NLDEV_ATTR_RES_UNSAFE_GLOBAL_RKEY]= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_RES_USECNT]		= { .type = NLA_U64 },
 	[RDMA_NLDEV_ATTR_RES_SRQ]		= { .type = NLA_NESTED },
@@ -164,6 +166,7 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_STAT_HWCOUNTER_INDEX]	= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_STAT_HWCOUNTER_DYNAMIC] = { .type = NLA_U8 },
 	[RDMA_NLDEV_SYS_ATTR_PRIVILEGED_QKEY_MODE] = { .type = NLA_U8 },
+	[RDMA_NLDEV_ATTR_DRIVER_DETAILS]	= { .type = NLA_U8 },
 };
 
 static int put_driver_name_print_type(struct sk_buff *msg, const char *name,
@@ -400,7 +403,8 @@ err:
 	return -EMSGSIZE;
 }
 
-static int fill_res_info(struct sk_buff *msg, struct ib_device *device)
+static int fill_res_info(struct sk_buff *msg, struct ib_device *device,
+			 bool show_details)
 {
 	static const char * const names[RDMA_RESTRACK_MAX] = {
 		[RDMA_RESTRACK_PD] = "pd",
@@ -425,7 +429,7 @@ static int fill_res_info(struct sk_buff *msg, struct ib_device *device)
 	for (i = 0; i < RDMA_RESTRACK_MAX; i++) {
 		if (!names[i])
 			continue;
-		curr = rdma_restrack_count(device, i);
+		curr = rdma_restrack_count(device, i, show_details);
 		ret = fill_res_info_entry(msg, names[i], curr);
 		if (ret)
 			goto err;
@@ -1288,6 +1292,7 @@ static int nldev_res_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 			      struct netlink_ext_ack *extack)
 {
 	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	bool show_details = false;
 	struct ib_device *device;
 	struct sk_buff *msg;
 	u32 index;
@@ -1303,6 +1308,9 @@ static int nldev_res_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (!device)
 		return -EINVAL;
 
+	if (tb[RDMA_NLDEV_ATTR_DRIVER_DETAILS])
+		show_details = nla_get_u8(tb[RDMA_NLDEV_ATTR_DRIVER_DETAILS]);
+
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
 	if (!msg) {
 		ret = -ENOMEM;
@@ -1317,7 +1325,7 @@ static int nldev_res_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 		goto err_free;
 	}
 
-	ret = fill_res_info(msg, device);
+	ret = fill_res_info(msg, device, show_details);
 	if (ret)
 		goto err_free;
 
@@ -1347,7 +1355,7 @@ static int _nldev_res_get_dumpit(struct ib_device *device,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_RES_GET),
 			0, NLM_F_MULTI);
 
-	if (!nlh || fill_res_info(skb, device)) {
+	if (!nlh || fill_res_info(skb, device, false)) {
 		nlmsg_cancel(skb, nlh);
 		goto out;
 	}
@@ -1518,6 +1526,7 @@ static int res_get_common_dumpit(struct sk_buff *skb,
 	struct rdma_restrack_entry *res;
 	struct rdma_restrack_root *rt;
 	int err, ret = 0, idx = 0;
+	bool show_details = false;
 	struct nlattr *table_attr;
 	struct nlattr *entry_attr;
 	struct ib_device *device;
@@ -1545,6 +1554,9 @@ static int res_get_common_dumpit(struct sk_buff *skb,
 	device = ib_device_get_by_index(sock_net(skb->sk), index);
 	if (!device)
 		return -EINVAL;
+
+	if (tb[RDMA_NLDEV_ATTR_DRIVER_DETAILS])
+		show_details = nla_get_u8(tb[RDMA_NLDEV_ATTR_DRIVER_DETAILS]);
 
 	/*
 	 * If no PORT_INDEX is supplied, we will return all QPs from that device
@@ -1583,6 +1595,9 @@ static int res_get_common_dumpit(struct sk_buff *skb,
 	 * objects.
 	 */
 	xa_for_each(&rt->xa, id, res) {
+		if (xa_get_mark(&rt->xa, res->id, RESTRACK_DD) && !show_details)
+			goto next;
+
 		if (idx < start || !rdma_restrack_get(res))
 			goto next;
 
