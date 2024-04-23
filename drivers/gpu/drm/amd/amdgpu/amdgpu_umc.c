@@ -162,6 +162,7 @@ static int amdgpu_umc_do_page_retirement(struct amdgpu_device *adev,
 	}
 
 	kfree(err_data->err_addr);
+	err_data->err_addr = NULL;
 	return AMDGPU_RAS_SUCCESS;
 }
 
