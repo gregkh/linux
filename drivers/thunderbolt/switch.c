@@ -778,7 +778,7 @@ static int tb_port_alloc_hopid(struct tb_port *port, bool in, int min_hopid,
 	if (max_hopid < 0 || max_hopid > port_max_hopid)
 		max_hopid = port_max_hopid;
 
-	return ida_simple_get(ida, min_hopid, max_hopid + 1, GFP_KERNEL);
+	return ida_alloc_range(ida, min_hopid, max_hopid, GFP_KERNEL);
 }
 
 /**
@@ -816,7 +816,7 @@ int tb_port_alloc_out_hopid(struct tb_port *port, int min_hopid, int max_hopid)
  */
 void tb_port_release_in_hopid(struct tb_port *port, int hopid)
 {
-	ida_simple_remove(&port->in_hopids, hopid);
+	ida_free(&port->in_hopids, hopid);
 }
 
 /**
@@ -826,7 +826,7 @@ void tb_port_release_in_hopid(struct tb_port *port, int hopid)
  */
 void tb_port_release_out_hopid(struct tb_port *port, int hopid)
 {
-	ida_simple_remove(&port->out_hopids, hopid);
+	ida_free(&port->out_hopids, hopid);
 }
 
 static inline bool tb_switch_is_reachable(const struct tb_switch *parent,
@@ -1127,7 +1127,7 @@ int tb_port_lane_bonding_enable(struct tb_port *port)
 		ret = tb_port_set_link_width(port->dual_link_port,
 					     TB_LINK_WIDTH_DUAL);
 		if (ret)
-			goto err_lane0;
+			goto err_lane1;
 	}
 
 	/*
@@ -2330,7 +2330,7 @@ static const struct dev_pm_ops tb_switch_pm_ops = {
 			   NULL)
 };
 
-struct device_type tb_switch_type = {
+const struct device_type tb_switch_type = {
 	.name = "thunderbolt_device",
 	.release = tb_switch_release,
 	.uevent = tb_switch_uevent,

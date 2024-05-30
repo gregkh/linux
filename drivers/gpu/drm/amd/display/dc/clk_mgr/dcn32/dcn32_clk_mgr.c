@@ -257,10 +257,8 @@ void dcn32_init_clocks(struct clk_mgr *clk_mgr_base)
 	/* Get UCLK, update bounding box */
 	clk_mgr_base->funcs->get_memclk_states_from_smu(clk_mgr_base);
 
-	DC_FP_START();
 	/* WM range table */
 	dcn32_build_wm_range_table(clk_mgr);
-	DC_FP_END();
 }
 
 static void dcn32_update_clocks_update_dtb_dto(struct clk_mgr_internal *clk_mgr,
@@ -401,7 +399,15 @@ static void dcn32_update_clocks_update_dentist(
 		uint32_t temp_dispclk_khz = (DENTIST_DIVIDER_RANGE_SCALE_FACTOR * clk_mgr->base.dentist_vco_freq_khz) / temp_disp_divider;
 
 		if (clk_mgr->smu_present)
-			dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_DISPCLK, khz_to_mhz_ceil(temp_dispclk_khz));
+			/*
+			 * SMU uses discrete dispclk presets. We applied
+			 * the same formula to increase our dppclk_khz
+			 * to the next matching discrete value. By
+			 * contract, we should use the preset dispclk
+			 * floored in Mhz to describe the intended clock.
+			 */
+			dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_DISPCLK,
+					khz_to_mhz_floor(temp_dispclk_khz));
 
 		if (dc->debug.override_dispclk_programming) {
 			REG_GET(DENTIST_DISPCLK_CNTL,
@@ -440,7 +446,15 @@ static void dcn32_update_clocks_update_dentist(
 
 	/* do requested DISPCLK updates*/
 	if (clk_mgr->smu_present)
-		dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_DISPCLK, khz_to_mhz_ceil(clk_mgr->base.clks.dispclk_khz));
+		/*
+		 * SMU uses discrete dispclk presets. We applied
+		 * the same formula to increase our dppclk_khz
+		 * to the next matching discrete value. By
+		 * contract, we should use the preset dispclk
+		 * floored in Mhz to describe the intended clock.
+		 */
+		dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_DISPCLK,
+				khz_to_mhz_floor(clk_mgr->base.clks.dispclk_khz));
 
 	if (dc->debug.override_dispclk_programming) {
 		REG_GET(DENTIST_DISPCLK_CNTL,
@@ -506,6 +520,8 @@ static void dcn32_auto_dpm_test_log(
 			active_pipe_count++;
 		}
 	}
+
+	msleep(5);
 
 	mall_ss_size_bytes = context->bw_ctx.bw.dcn.mall_ss_size_bytes;
 
@@ -696,8 +712,12 @@ static void dcn32_update_clocks(struct clk_mgr *clk_mgr_base,
 					 * since we calculate mode support based on softmax being the max UCLK
 					 * frequency.
 					 */
-					dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_UCLK,
-							dc->clk_mgr->bw_params->dc_mode_softmax_memclk);
+					if (dc->debug.disable_dc_mode_overwrite) {
+						dcn30_smu_set_hard_max_by_freq(clk_mgr, PPCLK_UCLK, dc->clk_mgr->bw_params->max_memclk_mhz);
+						dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_UCLK, dc->clk_mgr->bw_params->max_memclk_mhz);
+					} else
+						dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_UCLK,
+								dc->clk_mgr->bw_params->dc_mode_softmax_memclk);
 				} else {
 					dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_UCLK, dc->clk_mgr->bw_params->max_memclk_mhz);
 				}
@@ -730,8 +750,13 @@ static void dcn32_update_clocks(struct clk_mgr *clk_mgr_base,
 		/* set UCLK to requested value if P-State switching is supported, or to re-enable P-State switching */
 		if (clk_mgr_base->clks.p_state_change_support &&
 				(update_uclk || !clk_mgr_base->clks.prev_p_state_change_support) &&
-				!dc->work_arounds.clock_update_disable_mask.uclk)
+				!dc->work_arounds.clock_update_disable_mask.uclk) {
+			if (dc->clk_mgr->dc_mode_softmax_enabled && dc->debug.disable_dc_mode_overwrite)
+				dcn30_smu_set_hard_max_by_freq(clk_mgr, PPCLK_UCLK,
+						max((int)dc->clk_mgr->bw_params->dc_mode_softmax_memclk, khz_to_mhz_ceil(clk_mgr_base->clks.dramclk_khz)));
+
 			dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_UCLK, khz_to_mhz_ceil(clk_mgr_base->clks.dramclk_khz));
+		}
 
 		if (clk_mgr_base->clks.num_ways != new_clocks->num_ways &&
 				clk_mgr_base->clks.num_ways > new_clocks->num_ways) {
@@ -748,7 +773,15 @@ static void dcn32_update_clocks(struct clk_mgr *clk_mgr_base,
 		clk_mgr_base->clks.dppclk_khz = new_clocks->dppclk_khz;
 
 		if (clk_mgr->smu_present && !dpp_clock_lowered)
-			dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_DPPCLK, khz_to_mhz_ceil(clk_mgr_base->clks.dppclk_khz));
+			/*
+			 * SMU uses discrete dppclk presets. We applied
+			 * the same formula to increase our dppclk_khz
+			 * to the next matching discrete value. By
+			 * contract, we should use the preset dppclk
+			 * floored in Mhz to describe the intended clock.
+			 */
+			dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_DPPCLK,
+					khz_to_mhz_floor(clk_mgr_base->clks.dppclk_khz));
 
 		update_dppclk = true;
 	}
@@ -779,7 +812,15 @@ static void dcn32_update_clocks(struct clk_mgr *clk_mgr_base,
 			dcn32_update_clocks_update_dpp_dto(clk_mgr, context, safe_to_lower);
 			dcn32_update_clocks_update_dentist(clk_mgr, context);
 			if (clk_mgr->smu_present)
-				dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_DPPCLK, khz_to_mhz_ceil(clk_mgr_base->clks.dppclk_khz));
+				/*
+				 * SMU uses discrete dppclk presets. We applied
+				 * the same formula to increase our dppclk_khz
+				 * to the next matching discrete value. By
+				 * contract, we should use the preset dppclk
+				 * floored in Mhz to describe the intended clock.
+				 */
+				dcn32_smu_set_hard_min_by_freq(clk_mgr, PPCLK_DPPCLK,
+						khz_to_mhz_floor(clk_mgr_base->clks.dppclk_khz));
 		} else {
 			/* if clock is being raised, increase refclk before lowering DTO */
 			if (update_dppclk || update_dispclk)
@@ -797,7 +838,7 @@ static void dcn32_update_clocks(struct clk_mgr *clk_mgr_base,
 		dmcu->funcs->set_psr_wait_loop(dmcu,
 				clk_mgr_base->clks.dispclk_khz / 1000 / 7);
 
-	if (dc->config.enable_auto_dpm_test_logs) {
+	if (dc->config.enable_auto_dpm_test_logs && safe_to_lower) {
 	    dcn32_auto_dpm_test_log(new_clocks, clk_mgr, context);
 	}
 }

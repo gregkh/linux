@@ -877,10 +877,7 @@ void dqput(struct dquot *dquot)
 	}
 
 	/* Need to release dquot? */
-#ifdef CONFIG_QUOTA_DEBUG
-	/* sanity check */
-	BUG_ON(!list_empty(&dquot->dq_free));
-#endif
+	WARN_ON_ONCE(!list_empty(&dquot->dq_free));
 	put_releasing_dquots(dquot);
 	atomic_dec(&dquot->dq_count);
 	spin_unlock(&dq_list_lock);
@@ -989,9 +986,8 @@ we_slept:
 	 * smp_mb__before_atomic() in dquot_acquire().
 	 */
 	smp_rmb();
-#ifdef CONFIG_QUOTA_DEBUG
-	BUG_ON(!dquot->dq_sb);	/* Has somebody invalidated entry under us? */
-#endif
+	/* Has somebody invalidated entry under us? */
+	WARN_ON_ONCE(hlist_unhashed(&dquot->dq_hash));
 out:
 	if (empty)
 		do_destroy_dquot(empty);
@@ -2415,7 +2411,8 @@ int dquot_load_quota_sb(struct super_block *sb, int type, int format_id,
 	lockdep_assert_held_write(&sb->s_umount);
 
 	/* Just unsuspend quotas? */
-	BUG_ON(flags & DQUOT_SUSPENDED);
+	if (WARN_ON_ONCE(flags & DQUOT_SUSPENDED))
+		return -EINVAL;
 
 	if (!fmt)
 		return -ESRCH;
@@ -3011,7 +3008,7 @@ static int __init dquot_init(void)
 	dquot_cachep = kmem_cache_create("dquot",
 			sizeof(struct dquot), sizeof(unsigned long) * 4,
 			(SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|
-				SLAB_MEM_SPREAD|SLAB_PANIC),
+				SLAB_PANIC),
 			NULL);
 
 	order = 0;

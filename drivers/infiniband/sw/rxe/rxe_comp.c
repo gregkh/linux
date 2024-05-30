@@ -131,11 +131,11 @@ void rxe_comp_queue_pkt(struct rxe_qp *qp, struct sk_buff *skb)
 {
 	int must_sched;
 
-	skb_queue_tail(&qp->resp_pkts, skb);
-
-	must_sched = skb_queue_len(&qp->resp_pkts) > 1;
+	must_sched = skb_queue_len(&qp->resp_pkts) > 0;
 	if (must_sched != 0)
 		rxe_counter_inc(SKB_TO_PKT(skb)->rxe, RXE_CNT_COMPLETER_SCHED);
+
+	skb_queue_tail(&qp->resp_pkts, skb);
 
 	if (must_sched)
 		rxe_sched_task(&qp->comp.task);
@@ -433,7 +433,7 @@ static void make_send_cqe(struct rxe_qp *qp, struct rxe_send_wqe *wqe,
 		}
 	} else {
 		if (wqe->status != IB_WC_WR_FLUSH_ERR)
-			rxe_err_qp(qp, "non-flush error status = %d",
+			rxe_err_qp(qp, "non-flush error status = %d\n",
 				wqe->status);
 	}
 }
@@ -582,7 +582,7 @@ static int flush_send_wqe(struct rxe_qp *qp, struct rxe_send_wqe *wqe)
 
 	err = rxe_cq_post(qp->scq, &cqe, 0);
 	if (err)
-		rxe_dbg_cq(qp->scq, "post cq failed, err = %d", err);
+		rxe_dbg_cq(qp->scq, "post cq failed, err = %d\n", err);
 
 	return err;
 }

@@ -410,13 +410,13 @@ int mt7996_mmio_wed_init(struct mt7996_dev *dev, void *pdev_ptr,
 	wed->wlan.amsdu_max_len = 1536;
 
 	wed->wlan.init_buf = mt7996_wed_init_buf;
-	wed->wlan.init_rx_buf = mt76_mmio_wed_init_rx_buf;
-	wed->wlan.release_rx_buf = mt76_mmio_wed_release_rx_buf;
-	wed->wlan.offload_enable = mt76_mmio_wed_offload_enable;
-	wed->wlan.offload_disable = mt76_mmio_wed_offload_disable;
+	wed->wlan.init_rx_buf = mt76_wed_init_rx_buf;
+	wed->wlan.release_rx_buf = mt76_wed_release_rx_buf;
+	wed->wlan.offload_enable = mt76_wed_offload_enable;
+	wed->wlan.offload_disable = mt76_wed_offload_disable;
 	if (!hif2) {
 		wed->wlan.reset = mt7996_mmio_wed_reset;
-		wed->wlan.reset_complete = mt76_mmio_wed_reset_complete;
+		wed->wlan.reset_complete = mt76_wed_reset_complete;
 	}
 
 	if (mtk_wed_device_attach(wed))
@@ -519,7 +519,7 @@ static void mt7996_irq_tasklet(struct tasklet_struct *t)
 	struct mt7996_dev *dev = from_tasklet(dev, t, mt76.irq_tasklet);
 	struct mtk_wed_device *wed = &dev->mt76.mmio.wed;
 	struct mtk_wed_device *wed_hif2 = &dev->mt76.mmio.wed_hif2;
-	u32 i, intr, mask, intr1;
+	u32 i, intr, mask, intr1 = 0;
 
 	if (dev->hif2 && mtk_wed_device_active(wed_hif2)) {
 		mtk_wed_device_irq_set_mask(wed_hif2, 0);

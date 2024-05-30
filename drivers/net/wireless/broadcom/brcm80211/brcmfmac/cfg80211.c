@@ -3067,7 +3067,7 @@ brcmf_cfg80211_get_station_ibss(struct brcmf_if *ifp,
 	struct brcmf_scb_val_le scbval;
 	struct brcmf_pktcnt_le pktcnt;
 	s32 err;
-	u32 rate;
+	u32 rate = 0;
 	u32 rssi;
 
 	/* Get the current tx rate */
@@ -5104,6 +5104,7 @@ brcmf_cfg80211_start_ap(struct wiphy *wiphy, struct net_device *ndev,
 	bool mbss;
 	int is_11d;
 	bool supports_11d;
+	bool closednet;
 
 	brcmf_dbg(TRACE, "ctrlchn=%d, center=%d, bw=%d, beacon_interval=%d, dtim_period=%d,\n",
 		  settings->chandef.chan->hw_value,
@@ -5273,12 +5274,12 @@ brcmf_cfg80211_start_ap(struct wiphy *wiphy, struct net_device *ndev,
 			goto exit;
 		}
 
-		err = brcmf_fil_iovar_int_set(ifp, "closednet",
-					      settings->hidden_ssid);
+		closednet =
+			(settings->hidden_ssid != NL80211_HIDDEN_SSID_NOT_IN_USE);
+		err = brcmf_fil_iovar_int_set(ifp, "closednet",	closednet);
 		if (err) {
 			bphy_err(drvr, "%s closednet error (%d)\n",
-				 settings->hidden_ssid ?
-				 "enabled" : "disabled",
+				 (closednet ? "enabled" : "disabled"),
 				 err);
 			goto exit;
 		}
@@ -7261,7 +7262,7 @@ static int brcmf_setup_wiphybands(struct brcmf_cfg80211_info *cfg)
 	u32 nmode = 0;
 	u32 vhtmode = 0;
 	u32 bw_cap[2] = { WLC_BW_20MHZ_BIT, WLC_BW_20MHZ_BIT };
-	u32 rxchain;
+	u32 rxchain = 0;
 	u32 nchain;
 	int err;
 	s32 i;

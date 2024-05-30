@@ -36,7 +36,7 @@ struct kunit_device {
 
 #define to_kunit_device(d) container_of_const(d, struct kunit_device, dev)
 
-static struct bus_type kunit_bus_type = {
+static const struct bus_type kunit_bus_type = {
 	.name		= "kunit",
 };
 
@@ -51,7 +51,7 @@ int kunit_bus_init(void)
 
 	error = bus_register(&kunit_bus_type);
 	if (error)
-		bus_unregister(&kunit_bus_type);
+		root_device_unregister(kunit_bus_device);
 	return error;
 }
 

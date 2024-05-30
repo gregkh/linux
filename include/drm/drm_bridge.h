@@ -107,7 +107,7 @@ struct drm_bridge_funcs {
 	 * Since this function is both called from the check phase of an atomic
 	 * commit, and the mode validation in the probe paths it is not allowed
 	 * to look at anything else but the passed-in mode, and validate it
-	 * against configuration-invariant hardward constraints. Any further
+	 * against configuration-invariant hardware constraints. Any further
 	 * limits which depend upon the configuration can only be checked in
 	 * @mode_fixup.
 	 *
@@ -541,7 +541,7 @@ struct drm_bridge_funcs {
 	 * The @get_modes callback is mostly intended to support non-probeable
 	 * displays such as many fixed panels. Bridges that support reading
 	 * EDID shall leave @get_modes unimplemented and implement the
-	 * &drm_bridge_funcs->get_edid callback instead.
+	 * &drm_bridge_funcs->edid_read callback instead.
 	 *
 	 * This callback is optional. Bridges that implement it shall set the
 	 * DRM_BRIDGE_OP_MODES flag in their &drm_bridge->ops.
@@ -587,36 +587,6 @@ struct drm_bridge_funcs {
 	 */
 	const struct drm_edid *(*edid_read)(struct drm_bridge *bridge,
 					    struct drm_connector *connector);
-
-	/**
-	 * @get_edid:
-	 *
-	 * Read and parse the EDID data of the connected display.
-	 *
-	 * The @get_edid callback is the preferred way of reporting mode
-	 * information for a display connected to the bridge output. Bridges
-	 * that support reading EDID shall implement this callback and leave
-	 * the @get_modes callback unimplemented.
-	 *
-	 * The caller of this operation shall first verify the output
-	 * connection status and refrain from reading EDID from a disconnected
-	 * output.
-	 *
-	 * This callback is optional. Bridges that implement it shall set the
-	 * DRM_BRIDGE_OP_EDID flag in their &drm_bridge->ops.
-	 *
-	 * The connector parameter shall be used for the sole purpose of EDID
-	 * retrieval and parsing, and shall not be stored internally by bridge
-	 * drivers for future usage.
-	 *
-	 * RETURNS:
-	 *
-	 * An edid structure newly allocated with kmalloc() (or similar) on
-	 * success, or NULL otherwise. The caller is responsible for freeing
-	 * the returned edid structure with kfree().
-	 */
-	struct edid *(*get_edid)(struct drm_bridge *bridge,
-				 struct drm_connector *connector);
 
 	/**
 	 * @hpd_notify:
@@ -717,7 +687,7 @@ enum drm_bridge_ops {
 	/**
 	 * @DRM_BRIDGE_OP_EDID: The bridge can retrieve the EDID of the display
 	 * connected to its output. Bridges that set this flag shall implement
-	 * the &drm_bridge_funcs->get_edid callback.
+	 * the &drm_bridge_funcs->edid_read callback.
 	 */
 	DRM_BRIDGE_OP_EDID = BIT(1),
 	/**
@@ -921,8 +891,6 @@ int drm_bridge_get_modes(struct drm_bridge *bridge,
 			 struct drm_connector *connector);
 const struct drm_edid *drm_bridge_edid_read(struct drm_bridge *bridge,
 					    struct drm_connector *connector);
-struct edid *drm_bridge_get_edid(struct drm_bridge *bridge,
-				 struct drm_connector *connector);
 void drm_bridge_hpd_enable(struct drm_bridge *bridge,
 			   void (*cb)(void *data,
 				      enum drm_connector_status status),

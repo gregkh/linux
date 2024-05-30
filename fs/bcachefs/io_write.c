@@ -88,7 +88,7 @@ void bch2_latency_acct(struct bch_dev *ca, u64 submit_time, int rw)
 
 	bch2_congested_acct(ca, io_latency, now, rw);
 
-	__bch2_time_stats_update(&ca->io_latency[rw], submit_time, now);
+	__bch2_time_stats_update(&ca->io_latency[rw].stats, submit_time, now);
 }
 
 #endif
@@ -199,9 +199,6 @@ static inline int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
 						    u64 new_i_size,
 						    s64 i_sectors_delta)
 {
-	struct btree_iter iter;
-	struct bkey_i *k;
-	struct bkey_i_inode_v3 *inode;
 	/*
 	 * Crazy performance optimization:
 	 * Every extent update needs to also update the inode: the inode trigger
@@ -214,25 +211,36 @@ static inline int bch2_extent_update_i_size_sectors(struct btree_trans *trans,
 	 * lost, but that's fine.
 	 */
 	unsigned inode_update_flags = BTREE_UPDATE_NOJOURNAL;
-	int ret;
 
-	k = bch2_bkey_get_mut_noupdate(trans, &iter, BTREE_ID_inodes,
+	struct btree_iter iter;
+	struct bkey_s_c k = bch2_bkey_get_iter(trans, &iter, BTREE_ID_inodes,
 			      SPOS(0,
 				   extent_iter->pos.inode,
 				   extent_iter->snapshot),
 			      BTREE_ITER_CACHED);
-	ret = PTR_ERR_OR_ZERO(k);
+	int ret = bkey_err(k);
 	if (unlikely(ret))
 		return ret;
 
-	if (unlikely(k->k.type != KEY_TYPE_inode_v3)) {
-		k = bch2_inode_to_v3(trans, k);
-		ret = PTR_ERR_OR_ZERO(k);
+	/*
+	 * varint_decode_fast(), in the inode .invalid method, reads up to 7
+	 * bytes past the end of the buffer:
+	 */
+	struct bkey_i *k_mut = bch2_trans_kmalloc_nomemzero(trans, bkey_bytes(k.k) + 8);
+	ret = PTR_ERR_OR_ZERO(k_mut);
+	if (unlikely(ret))
+		goto err;
+
+	bkey_reassemble(k_mut, k);
+
+	if (unlikely(k_mut->k.type != KEY_TYPE_inode_v3)) {
+		k_mut = bch2_inode_to_v3(trans, k_mut);
+		ret = PTR_ERR_OR_ZERO(k_mut);
 		if (unlikely(ret))
 			goto err;
 	}
 
-	inode = bkey_i_to_inode_v3(k);
+	struct bkey_i_inode_v3 *inode = bkey_i_to_inode_v3(k_mut);
 
 	if (!(le64_to_cpu(inode->v.bi_flags) & BCH_INODE_i_size_dirty) &&
 	    new_i_size > le64_to_cpu(inode->v.bi_size)) {
@@ -530,7 +538,8 @@ static void __bch2_write_index(struct bch_write_op *op)
 
 			bch_err_inum_offset_ratelimited(c,
 				insert->k.p.inode, insert->k.p.offset << 9,
-				"write error while doing btree update: %s",
+				"%s write error while doing btree update: %s",
+				op->flags & BCH_WRITE_MOVE ? "move" : "user",
 				bch2_err_str(ret));
 		}
 
@@ -1067,7 +1076,8 @@ do_write:
 	*_dst = dst;
 	return more;
 csum_err:
-	bch_err(c, "error verifying existing checksum while rewriting existing data (memory corruption?)");
+	bch_err(c, "%s writ error: error verifying existing checksum while rewriting existing data (memory corruption?)",
+		op->flags & BCH_WRITE_MOVE ? "move" : "user");
 	ret = -EIO;
 err:
 	if (to_wbio(dst)->bounce)
@@ -1169,7 +1179,8 @@ static void bch2_nocow_write_convert_unwritten(struct bch_write_op *op)
 
 			bch_err_inum_offset_ratelimited(c,
 				insert->k.p.inode, insert->k.p.offset << 9,
-				"write error while doing btree update: %s",
+				"%s write error while doing btree update: %s",
+				op->flags & BCH_WRITE_MOVE ? "move" : "user",
 				bch2_err_str(ret));
 		}
 
@@ -1449,7 +1460,9 @@ err:
 					bch_err_inum_offset_ratelimited(c,
 						op->pos.inode,
 						op->pos.offset << 9,
-						"%s(): error: %s", __func__, bch2_err_str(ret));
+						"%s(): %s error: %s", __func__,
+						op->flags & BCH_WRITE_MOVE ? "move" : "user",
+						bch2_err_str(ret));
 				op->error = ret;
 				break;
 			}
@@ -1499,6 +1512,8 @@ static void bch2_write_data_inline(struct bch_write_op *op, unsigned data_len)
 	struct bkey_i_inline_data *id;
 	unsigned sectors;
 	int ret;
+
+	memset(&op->failed, 0, sizeof(op->failed));
 
 	op->flags |= BCH_WRITE_WROTE_DATA_INLINE;
 	op->flags |= BCH_WRITE_DONE;
@@ -1573,7 +1588,8 @@ CLOSURE_CALLBACK(bch2_write)
 		bch_err_inum_offset_ratelimited(c,
 			op->pos.inode,
 			op->pos.offset << 9,
-			"misaligned write");
+			"%s write error: misaligned write",
+			op->flags & BCH_WRITE_MOVE ? "move" : "user");
 		op->error = -EIO;
 		goto err;
 	}

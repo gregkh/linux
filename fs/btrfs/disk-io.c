@@ -29,7 +29,6 @@
 #include "tree-log.h"
 #include "free-space-cache.h"
 #include "free-space-tree.h"
-#include "rcu-string.h"
 #include "dev-replace.h"
 #include "raid56.h"
 #include "sysfs.h"
@@ -193,7 +192,7 @@ static int btrfs_repair_eb_io_failure(const struct extent_buffer *eb,
 		struct folio *folio = eb->folios[i];
 		u64 start = max_t(u64, eb->start, folio_pos(folio));
 		u64 end = min_t(u64, eb->start + eb->len,
-				folio_pos(folio) + folio_size(folio));
+				folio_pos(folio) + eb->folio_size);
 		u32 len = end - start;
 
 		ret = btrfs_repair_io_failure(fs_info, 0, start, len,
@@ -1245,6 +1244,7 @@ void btrfs_check_leaked_roots(struct btrfs_fs_info *fs_info)
 		btrfs_err(fs_info, "leaked root %s refcount %d",
 			  btrfs_root_name(&root->root_key, buf),
 			  refcount_read(&root->refs));
+		WARN_ON_ONCE(1);
 		while (refcount_read(&root->refs) > 1)
 			btrfs_put_root(root);
 		btrfs_put_root(root);
@@ -2240,7 +2240,7 @@ static int btrfs_read_roots(struct btrfs_fs_info *fs_info)
 	struct btrfs_key location;
 	int ret;
 
-	BUG_ON(!fs_info->tree_root);
+	ASSERT(fs_info->tree_root);
 
 	ret = load_global_roots(tree_root);
 	if (ret)
@@ -4629,7 +4629,7 @@ static void btrfs_destroy_delalloc_inodes(struct btrfs_root *root)
 		struct inode *inode = NULL;
 		btrfs_inode = list_first_entry(&splice, struct btrfs_inode,
 					       delalloc_inodes);
-		__btrfs_del_delalloc_inode(root, btrfs_inode);
+		btrfs_del_delalloc_inode(btrfs_inode);
 		spin_unlock(&root->delalloc_lock);
 
 		/*
@@ -4928,7 +4928,14 @@ int btrfs_init_root_free_objectid(struct btrfs_root *root)
 	ret = btrfs_search_slot(NULL, root, &search_key, path, 0, 0);
 	if (ret < 0)
 		goto error;
-	BUG_ON(ret == 0); /* Corruption */
+	if (ret == 0) {
+		/*
+		 * Key with offset -1 found, there would have to exist a root
+		 * with such id, but this is out of valid range.
+		 */
+		ret = -EUCLEAN;
+		goto error;
+	}
 	if (path->slots[0] > 0) {
 		slot = path->slots[0] - 1;
 		l = path->nodes[0];

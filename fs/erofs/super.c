@@ -177,7 +177,7 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 	struct erofs_fscache *fscache;
 	struct erofs_deviceslot *dis;
-	struct bdev_handle *bdev_handle;
+	struct file *bdev_file;
 	void *ptr;
 
 	ptr = erofs_read_metabuf(buf, sb, erofs_blknr(sb, *pos), EROFS_KMAP);
@@ -201,12 +201,12 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 			return PTR_ERR(fscache);
 		dif->fscache = fscache;
 	} else if (!sbi->devs->flatdev) {
-		bdev_handle = bdev_open_by_path(dif->path, BLK_OPEN_READ,
+		bdev_file = bdev_file_open_by_path(dif->path, BLK_OPEN_READ,
 						sb->s_type, NULL);
-		if (IS_ERR(bdev_handle))
-			return PTR_ERR(bdev_handle);
-		dif->bdev_handle = bdev_handle;
-		dif->dax_dev = fs_dax_get_by_bdev(bdev_handle->bdev,
+		if (IS_ERR(bdev_file))
+			return PTR_ERR(bdev_file);
+		dif->bdev_file = bdev_file;
+		dif->dax_dev = fs_dax_get_by_bdev(file_bdev(bdev_file),
 				&dif->dax_part_off, NULL, NULL);
 	}
 
@@ -430,7 +430,6 @@ static bool erofs_fc_set_dax_mode(struct fs_context *fc, unsigned int mode)
 
 	switch (mode) {
 	case EROFS_MOUNT_DAX_ALWAYS:
-		warnfc(fc, "DAX enabled. Warning: EXPERIMENTAL, use at your own risk");
 		set_opt(&sbi->opt, DAX_ALWAYS);
 		clear_opt(&sbi->opt, DAX_NEVER);
 		return true;
@@ -728,8 +727,8 @@ static int erofs_release_device_info(int id, void *ptr, void *data)
 	struct erofs_device_info *dif = ptr;
 
 	fs_put_dax(dif->dax_dev, NULL);
-	if (dif->bdev_handle)
-		bdev_release(dif->bdev_handle);
+	if (dif->bdev_file)
+		fput(dif->bdev_file);
 	erofs_fscache_unregister_cookie(dif->fscache);
 	dif->fscache = NULL;
 	kfree(dif->path);
@@ -843,7 +842,7 @@ static int __init erofs_module_init(void)
 
 	erofs_inode_cachep = kmem_cache_create("erofs_inode",
 			sizeof(struct erofs_inode), 0,
-			SLAB_RECLAIM_ACCOUNT | SLAB_MEM_SPREAD | SLAB_ACCOUNT,
+			SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,
 			erofs_inode_init_once);
 	if (!erofs_inode_cachep)
 		return -ENOMEM;

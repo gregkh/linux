@@ -222,6 +222,7 @@ struct dlm_callback {
 	int			sb_status;	/* copy to lksb status */
 	uint8_t			sb_flags;	/* copy to lksb flags */
 	int8_t			mode; /* rq mode of bast, gr mode of cast */
+	int			copy_lvb;
 
 	struct list_head	list;
 	struct kref		ref;
@@ -246,7 +247,7 @@ struct dlm_lkb {
 	int8_t			lkb_highbast;	/* highest mode bast sent for */
 
 	int8_t			lkb_wait_type;	/* type of reply waiting for */
-	atomic_t		lkb_wait_count;
+	int8_t			lkb_wait_count;
 	int			lkb_wait_nodeid; /* for debugging */
 
 	struct list_head	lkb_statequeue;	/* rsb g/c/w list */

@@ -1476,6 +1476,39 @@ const struct ksz_chip_data ksz_switch_chips[] = {
 		.gbit_capable = {true, true, true},
 	},
 
+	[KSZ8567] = {
+		.chip_id = KSZ8567_CHIP_ID,
+		.dev_name = "KSZ8567",
+		.num_vlans = 4096,
+		.num_alus = 4096,
+		.num_statics = 16,
+		.cpu_ports = 0x7F,	/* can be configured as cpu port */
+		.port_cnt = 7,		/* total port count */
+		.port_nirqs = 3,
+		.num_tx_queues = 4,
+		.tc_cbs_supported = true,
+		.tc_ets_supported = true,
+		.ops = &ksz9477_dev_ops,
+		.mib_names = ksz9477_mib_names,
+		.mib_cnt = ARRAY_SIZE(ksz9477_mib_names),
+		.reg_mib_cnt = MIB_COUNTER_NUM,
+		.regs = ksz9477_regs,
+		.masks = ksz9477_masks,
+		.shifts = ksz9477_shifts,
+		.xmii_ctrl0 = ksz9477_xmii_ctrl0,
+		.xmii_ctrl1 = ksz9477_xmii_ctrl1,
+		.supports_mii	= {false, false, false, false,
+				   false, true, true},
+		.supports_rmii	= {false, false, false, false,
+				   false, true, true},
+		.supports_rgmii = {false, false, false, false,
+				   false, true, true},
+		.internal_phy	= {true, true, true, true,
+				   true, false, false},
+		.gbit_capable	= {false, false, false, false, false,
+				   true, true},
+	},
+
 	[KSZ9567] = {
 		.chip_id = KSZ9567_CHIP_ID,
 		.dev_name = "KSZ9567",
@@ -1864,6 +1897,29 @@ static void ksz_get_strings(struct dsa_switch *ds, int port,
 	}
 }
 
+/**
+ * ksz_update_port_member - Adjust port forwarding rules based on STP state and
+ *			    isolation settings.
+ * @dev: A pointer to the struct ksz_device representing the device.
+ * @port: The port number to adjust.
+ *
+ * This function dynamically adjusts the port membership configuration for a
+ * specified port and other device ports, based on Spanning Tree Protocol (STP)
+ * states and port isolation settings. Each port, including the CPU port, has a
+ * membership register, represented as a bitfield, where each bit corresponds
+ * to a port number. A set bit indicates permission to forward frames to that
+ * port. This function iterates over all ports, updating the membership register
+ * to reflect current forwarding permissions:
+ *
+ * 1. Forwards frames only to ports that are part of the same bridge group and
+ *    in the BR_STATE_FORWARDING state.
+ * 2. Takes into account the isolation status of ports; ports in the
+ *    BR_STATE_FORWARDING state with BR_ISOLATED configuration will not forward
+ *    frames to each other, even if they are in the same bridge group.
+ * 3. Ensures that the CPU port is included in the membership based on its
+ *    upstream port configuration, allowing for management and control traffic
+ *    to flow as required.
+ */
 static void ksz_update_port_member(struct ksz_device *dev, int port)
 {
 	struct ksz_port *p = &dev->ports[port];
@@ -1892,7 +1948,14 @@ static void ksz_update_port_member(struct ksz_device *dev, int port)
 		if (other_p->stp_state != BR_STATE_FORWARDING)
 			continue;
 
-		if (p->stp_state == BR_STATE_FORWARDING) {
+		/* At this point we know that "port" and "other" port [i] are in
+		 * the same bridge group and that "other" port [i] is in
+		 * forwarding stp state. If "port" is also in forwarding stp
+		 * state, we can allow forwarding from port [port] to port [i].
+		 * Except if both ports are isolated.
+		 */
+		if (p->stp_state == BR_STATE_FORWARDING &&
+		    !(p->isolated && other_p->isolated)) {
 			val |= BIT(port);
 			port_member |= BIT(i);
 		}
@@ -1911,8 +1974,19 @@ static void ksz_update_port_member(struct ksz_device *dev, int port)
 			third_p = &dev->ports[j];
 			if (third_p->stp_state != BR_STATE_FORWARDING)
 				continue;
+
 			third_dp = dsa_to_port(ds, j);
-			if (dsa_port_bridge_same(other_dp, third_dp))
+
+			/* Now we updating relation of the "other" port [i] to
+			 * the "third" port [j]. We already know that "other"
+			 * port [i] is in forwarding stp state and that "third"
+			 * port [j] is in forwarding stp state too.
+			 * We need to check if "other" port [i] and "third" port
+			 * [j] are in the same bridge group and not isolated
+			 * before allowing forwarding from port [i] to port [j].
+			 */
+			if (dsa_port_bridge_same(other_dp, third_dp) &&
+			    !(other_p->isolated && third_p->isolated))
 				val |= BIT(j);
 		}
 
@@ -2655,6 +2729,7 @@ static void ksz_port_teardown(struct dsa_switch *ds, int port)
 
 	switch (dev->chip_id) {
 	case KSZ8563_CHIP_ID:
+	case KSZ8567_CHIP_ID:
 	case KSZ9477_CHIP_ID:
 	case KSZ9563_CHIP_ID:
 	case KSZ9567_CHIP_ID:
@@ -2670,7 +2745,7 @@ static int ksz_port_pre_bridge_flags(struct dsa_switch *ds, int port,
 				     struct switchdev_brport_flags flags,
 				     struct netlink_ext_ack *extack)
 {
-	if (flags.mask & ~BR_LEARNING)
+	if (flags.mask & ~(BR_LEARNING | BR_ISOLATED))
 		return -EINVAL;
 
 	return 0;
@@ -2683,8 +2758,12 @@ static int ksz_port_bridge_flags(struct dsa_switch *ds, int port,
 	struct ksz_device *dev = ds->priv;
 	struct ksz_port *p = &dev->ports[port];
 
-	if (flags.mask & BR_LEARNING) {
-		p->learning = !!(flags.val & BR_LEARNING);
+	if (flags.mask & (BR_LEARNING | BR_ISOLATED)) {
+		if (flags.mask & BR_LEARNING)
+			p->learning = !!(flags.val & BR_LEARNING);
+
+		if (flags.mask & BR_ISOLATED)
+			p->isolated = !!(flags.val & BR_ISOLATED);
 
 		/* Make the change take effect immediately */
 		ksz_port_stp_state_set(ds, port, p->stp_state);
@@ -2711,7 +2790,8 @@ static enum dsa_tag_protocol ksz_get_tag_protocol(struct dsa_switch *ds,
 	    dev->chip_id == KSZ9563_CHIP_ID)
 		proto = DSA_TAG_PROTO_KSZ9893;
 
-	if (dev->chip_id == KSZ9477_CHIP_ID ||
+	if (dev->chip_id == KSZ8567_CHIP_ID ||
+	    dev->chip_id == KSZ9477_CHIP_ID ||
 	    dev->chip_id == KSZ9896_CHIP_ID ||
 	    dev->chip_id == KSZ9897_CHIP_ID ||
 	    dev->chip_id == KSZ9567_CHIP_ID)
@@ -2819,6 +2899,7 @@ static int ksz_max_mtu(struct dsa_switch *ds, int port)
 	case KSZ8830_CHIP_ID:
 		return KSZ8863_HUGE_PACKET_SIZE - VLAN_ETH_HLEN - ETH_FCS_LEN;
 	case KSZ8563_CHIP_ID:
+	case KSZ8567_CHIP_ID:
 	case KSZ9477_CHIP_ID:
 	case KSZ9563_CHIP_ID:
 	case KSZ9567_CHIP_ID:
@@ -2845,6 +2926,7 @@ static int ksz_validate_eee(struct dsa_switch *ds, int port)
 
 	switch (dev->chip_id) {
 	case KSZ8563_CHIP_ID:
+	case KSZ8567_CHIP_ID:
 	case KSZ9477_CHIP_ID:
 	case KSZ9563_CHIP_ID:
 	case KSZ9567_CHIP_ID:
@@ -2858,7 +2940,7 @@ static int ksz_validate_eee(struct dsa_switch *ds, int port)
 }
 
 static int ksz_get_mac_eee(struct dsa_switch *ds, int port,
-			   struct ethtool_eee *e)
+			   struct ethtool_keee *e)
 {
 	int ret;
 
@@ -2878,7 +2960,7 @@ static int ksz_get_mac_eee(struct dsa_switch *ds, int port,
 }
 
 static int ksz_set_mac_eee(struct dsa_switch *ds, int port,
-			   struct ethtool_eee *e)
+			   struct ethtool_keee *e)
 {
 	struct ksz_device *dev = ds->priv;
 	int ret;
@@ -3189,6 +3271,7 @@ static int ksz_switch_detect(struct ksz_device *dev)
 		case KSZ9896_CHIP_ID:
 		case KSZ9897_CHIP_ID:
 		case KSZ9567_CHIP_ID:
+		case KSZ8567_CHIP_ID:
 		case LAN9370_CHIP_ID:
 		case LAN9371_CHIP_ID:
 		case LAN9372_CHIP_ID:
@@ -3226,6 +3309,7 @@ static int ksz_cls_flower_add(struct dsa_switch *ds, int port,
 
 	switch (dev->chip_id) {
 	case KSZ8563_CHIP_ID:
+	case KSZ8567_CHIP_ID:
 	case KSZ9477_CHIP_ID:
 	case KSZ9563_CHIP_ID:
 	case KSZ9567_CHIP_ID:
@@ -3245,6 +3329,7 @@ static int ksz_cls_flower_del(struct dsa_switch *ds, int port,
 
 	switch (dev->chip_id) {
 	case KSZ8563_CHIP_ID:
+	case KSZ8567_CHIP_ID:
 	case KSZ9477_CHIP_ID:
 	case KSZ9563_CHIP_ID:
 	case KSZ9567_CHIP_ID:
@@ -4148,6 +4233,7 @@ static int ksz_parse_drive_strength(struct ksz_device *dev)
 	case KSZ8794_CHIP_ID:
 	case KSZ8765_CHIP_ID:
 	case KSZ8563_CHIP_ID:
+	case KSZ8567_CHIP_ID:
 	case KSZ9477_CHIP_ID:
 	case KSZ9563_CHIP_ID:
 	case KSZ9567_CHIP_ID:

@@ -5,7 +5,6 @@
 #include <linux/spinlock.h>
 #include "messages.h"
 #include "ctree.h"
-#include "volumes.h"
 #include "extent_map.h"
 #include "compression.h"
 #include "btrfs_inode.h"
@@ -16,8 +15,7 @@ static struct kmem_cache *extent_map_cache;
 int __init extent_map_init(void)
 {
 	extent_map_cache = kmem_cache_create("btrfs_extent_map",
-			sizeof(struct extent_map), 0,
-			SLAB_MEM_SPREAD, NULL);
+					     sizeof(struct extent_map), 0, 0, NULL);
 	if (!extent_map_cache)
 		return -ENOMEM;
 	return 0;
@@ -539,7 +537,8 @@ static noinline int merge_extent_mapping(struct extent_map_tree *em_tree,
 	u64 end;
 	u64 start_diff;
 
-	BUG_ON(map_start < em->start || map_start >= extent_map_end(em));
+	if (map_start < em->start || map_start >= extent_map_end(em))
+		return -EINVAL;
 
 	if (existing->start > map_start) {
 		next = existing;
@@ -630,13 +629,13 @@ int btrfs_add_extent_mapping(struct btrfs_fs_info *fs_info,
 			 */
 			ret = merge_extent_mapping(em_tree, existing,
 						   em, start);
-			if (ret) {
+			if (WARN_ON(ret)) {
 				free_extent_map(em);
 				*em_in = NULL;
-				WARN_ONCE(ret,
-"unexpected error %d: merge existing(start %llu len %llu) with em(start %llu len %llu)\n",
-					  ret, existing->start, existing->len,
-					  orig_start, orig_len);
+				btrfs_warn(fs_info,
+"extent map merge error existing [%llu, %llu) with em [%llu, %llu) start %llu",
+					   existing->start, extent_map_end(existing),
+					   orig_start, orig_start + orig_len, start);
 			}
 			free_extent_map(existing);
 		}

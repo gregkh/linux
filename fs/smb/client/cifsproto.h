@@ -210,10 +210,6 @@ extern struct inode *cifs_iget(struct super_block *sb,
 int cifs_get_inode_info(struct inode **inode, const char *full_path,
 			struct cifs_open_info_data *data, struct super_block *sb, int xid,
 			const struct cifs_fid *fid);
-bool cifs_reparse_point_to_fattr(struct cifs_sb_info *cifs_sb,
-				 struct cifs_fattr *fattr,
-				 struct cifs_open_info_data *data);
-
 extern int smb311_posix_get_inode_info(struct inode **inode,
 				       const char *full_path,
 				       struct cifs_open_info_data *data,
@@ -298,12 +294,16 @@ extern void cifs_close_all_deferred_files(struct cifs_tcon *cifs_tcon);
 
 extern void cifs_close_deferred_file_under_dentry(struct cifs_tcon *cifs_tcon,
 				const char *path);
+
+extern void cifs_mark_open_handles_for_deleted_file(struct inode *inode,
+				const char *path);
+
 extern struct TCP_Server_Info *
 cifs_get_tcp_session(struct smb3_fs_context *ctx,
 		     struct TCP_Server_Info *primary_server);
 extern void cifs_put_tcp_session(struct TCP_Server_Info *server,
 				 int from_reconnect);
-extern void cifs_put_tcon(struct cifs_tcon *tcon);
+extern void cifs_put_tcon(struct cifs_tcon *tcon, enum smb3_tcon_ref_trace trace);
 
 extern void cifs_release_automount_timer(void);
 
@@ -404,7 +404,8 @@ extern int CIFSSMBSetFileDisposition(const unsigned int xid,
 				     __u32 pid_of_opener);
 extern int CIFSSMBSetEOF(const unsigned int xid, struct cifs_tcon *tcon,
 			 const char *file_name, __u64 size,
-			 struct cifs_sb_info *cifs_sb, bool set_allocation);
+			 struct cifs_sb_info *cifs_sb, bool set_allocation,
+			 struct dentry *dentry);
 extern int CIFSSMBSetFileSize(const unsigned int xid, struct cifs_tcon *tcon,
 			      struct cifsFileInfo *cfile, __u64 size,
 			      bool set_allocation);
@@ -440,7 +441,8 @@ extern int CIFSPOSIXDelFile(const unsigned int xid, struct cifs_tcon *tcon,
 			const struct nls_table *nls_codepage,
 			int remap_special_chars);
 extern int CIFSSMBDelFile(const unsigned int xid, struct cifs_tcon *tcon,
-			  const char *name, struct cifs_sb_info *cifs_sb);
+			  const char *name, struct cifs_sb_info *cifs_sb,
+			  struct dentry *dentry);
 int CIFSSMBRename(const unsigned int xid, struct cifs_tcon *tcon,
 		  struct dentry *source_dentry,
 		  const char *from_name, const char *to_name,
@@ -528,8 +530,9 @@ extern int CIFSSMBLogoff(const unsigned int xid, struct cifs_ses *ses);
 
 extern struct cifs_ses *sesInfoAlloc(void);
 extern void sesInfoFree(struct cifs_ses *);
-extern struct cifs_tcon *tcon_info_alloc(bool dir_leases_enabled);
-extern void tconInfoFree(struct cifs_tcon *);
+extern struct cifs_tcon *tcon_info_alloc(bool dir_leases_enabled,
+					 enum smb3_tcon_ref_trace trace);
+extern void tconInfoFree(struct cifs_tcon *tcon, enum smb3_tcon_ref_trace trace);
 
 extern int cifs_sign_rqst(struct smb_rqst *rqst, struct TCP_Server_Info *server,
 		   __u32 *pexpected_response_sequence_number);
@@ -719,8 +722,6 @@ static inline int cifs_create_options(struct cifs_sb_info *cifs_sb, int options)
 		return options;
 }
 
-struct super_block *cifs_get_tcon_super(struct cifs_tcon *tcon);
-void cifs_put_tcon_super(struct super_block *sb);
 int cifs_wait_for_server_reconnect(struct TCP_Server_Info *server, bool retry);
 
 /* Put references of @ses and its children */

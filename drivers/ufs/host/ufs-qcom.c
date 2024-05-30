@@ -284,9 +284,6 @@ static void ufs_qcom_select_unipro_mode(struct ufs_qcom_host *host)
 
 	if (host->hw_ver.major >= 0x05)
 		ufshcd_rmwl(host->hba, QUNIPRO_G4_SEL, 0, REG_UFS_CFG0);
-
-	/* make sure above configuration is applied before we return */
-	mb();
 }
 
 /*
@@ -415,7 +412,7 @@ static void ufs_qcom_enable_hw_clk_gating(struct ufs_hba *hba)
 		    REG_UFS_CFG2);
 
 	/* Ensure that HW clock gating is enabled before next operations */
-	mb();
+	ufshcd_readl(hba, REG_UFS_CFG2);
 }
 
 static int ufs_qcom_hce_enable_notify(struct ufs_hba *hba,
@@ -507,7 +504,7 @@ static int ufs_qcom_cfg_timers(struct ufs_hba *hba, u32 gear,
 		 * make sure above write gets applied before we return from
 		 * this function.
 		 */
-		mb();
+		ufshcd_readl(hba, REG_UFS_SYS1CLK_1US);
 	}
 
 	return 0;
@@ -858,15 +855,20 @@ static void ufs_qcom_set_phy_gear(struct ufs_qcom_host *host)
 	struct ufs_host_params *host_params = &host->host_params;
 	u32 val, dev_major;
 
+	/*
+	 * Default to powering up the PHY to the max gear possible, which is
+	 * backwards compatible with lower gears but not optimal from
+	 * a power usage point of view. After device negotiation, if the
+	 * gear is lower a reinit will be performed to program the PHY
+	 * to the ideal gear for this combo of controller and device.
+	 */
 	host->phy_gear = host_params->hs_tx_gear;
 
 	if (host->hw_ver.major < 0x4) {
 		/*
-		 * For controllers whose major HW version is < 4, power up the
-		 * PHY using minimum supported gear (UFS_HS_G2). Switching to
-		 * max gear will be performed during reinit if supported.
-		 * For newer controllers, whose major HW version is >= 4, power
-		 * up the PHY using max supported gear.
+		 * These controllers only have one PHY init sequence,
+		 * let's power up the PHY using that (the minimum supported
+		 * gear, UFS_HS_G2).
 		 */
 		host->phy_gear = UFS_HS_G2;
 	} else if (host->hw_ver.major >= 0x5) {
@@ -1729,8 +1731,8 @@ static int ufs_qcom_config_esi(struct ufs_hba *hba)
 	 * 2. Poll queues do not need ESI.
 	 */
 	nr_irqs = hba->nr_hw_queues - hba->nr_queues[HCTX_TYPE_POLL];
-	ret = platform_msi_domain_alloc_irqs(hba->dev, nr_irqs,
-					     ufs_qcom_write_msi_msg);
+	ret = platform_device_msi_init_and_alloc_irqs(hba->dev, nr_irqs,
+						      ufs_qcom_write_msi_msg);
 	if (ret) {
 		dev_err(hba->dev, "Failed to request Platform MSI %d\n", ret);
 		return ret;
@@ -1759,7 +1761,7 @@ static int ufs_qcom_config_esi(struct ufs_hba *hba)
 			devm_free_irq(hba->dev, desc->irq, hba);
 		}
 		msi_unlock_descs(hba->dev);
-		platform_msi_domain_free_irqs(hba->dev);
+		platform_device_msi_free_irqs_all(hba->dev);
 	} else {
 		if (host->hw_ver.major == 6 && host->hw_ver.minor == 0 &&
 		    host->hw_ver.step == 0)
@@ -1835,7 +1837,7 @@ static void ufs_qcom_remove(struct platform_device *pdev)
 
 	pm_runtime_get_sync(&(pdev)->dev);
 	ufshcd_remove(hba);
-	platform_msi_domain_free_irqs(hba->dev);
+	platform_device_msi_free_irqs_all(hba->dev);
 }
 
 static const struct of_device_id ufs_qcom_of_match[] __maybe_unused = {

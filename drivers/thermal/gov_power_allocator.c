@@ -706,6 +706,8 @@ static int power_allocator_bind(struct thermal_zone_device *tz)
 
 	if (!tz->tzp->sustainable_power)
 		dev_warn(&tz->device, "power_allocator: sustainable_power will be estimated\n");
+	else
+		params->sustainable_power = tz->tzp->sustainable_power;
 
 	if (params->trip_max)
 		estimate_pid_constants(tz, tz->tzp->sustainable_power,

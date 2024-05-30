@@ -637,10 +637,14 @@ void intel_uc_reset_finish(struct intel_uc *uc)
 {
 	struct intel_guc *guc = &uc->guc;
 
+	/*
+	 * NB: The wedge code path results in prepare -> prepare -> finish -> finish.
+	 * So this function is sometimes called with the in-progress flag not set.
+	 */
 	uc->reset_in_progress = false;
 
 	/* Firmware expected to be running when this function is called */
-	if (intel_guc_is_fw_running(guc) && intel_uc_uses_guc_submission(uc))
+	if (intel_uc_uses_guc_submission(uc))
 		intel_guc_submission_reset_finish(guc);
 }
 
@@ -689,6 +693,8 @@ void intel_uc_suspend(struct intel_uc *uc)
 		guc->interrupts.enabled = false;
 		return;
 	}
+
+	intel_guc_submission_flush_work(guc);
 
 	with_intel_runtime_pm(&uc_to_gt(uc)->i915->runtime_pm, wakeref) {
 		err = intel_guc_suspend(guc);

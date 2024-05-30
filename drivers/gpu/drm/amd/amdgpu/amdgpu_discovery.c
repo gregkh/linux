@@ -27,6 +27,7 @@
 #include "amdgpu_discovery.h"
 #include "soc15_hw_ip.h"
 #include "discovery.h"
+#include "amdgpu_ras.h"
 
 #include "soc15.h"
 #include "gfx_v9_0.h"
@@ -60,20 +61,24 @@
 #include "nbio_v4_3.h"
 #include "nbio_v7_2.h"
 #include "nbio_v7_7.h"
+#include "nbif_v6_3_1.h"
 #include "hdp_v5_0.h"
 #include "hdp_v5_2.h"
 #include "hdp_v6_0.h"
+#include "hdp_v7_0.h"
 #include "nv.h"
 #include "soc21.h"
 #include "navi10_ih.h"
 #include "ih_v6_0.h"
 #include "ih_v6_1.h"
+#include "ih_v7_0.h"
 #include "gfx_v10_0.h"
 #include "gfx_v11_0.h"
 #include "sdma_v5_0.h"
 #include "sdma_v5_2.h"
 #include "sdma_v6_0.h"
 #include "lsdma_v6_0.h"
+#include "lsdma_v7_0.h"
 #include "vcn_v2_0.h"
 #include "jpeg_v2_0.h"
 #include "vcn_v3_0.h"
@@ -92,12 +97,15 @@
 #include "smuio_v13_0.h"
 #include "smuio_v13_0_3.h"
 #include "smuio_v13_0_6.h"
+#include "vcn_v5_0_0.h"
+#include "jpeg_v5_0_0.h"
 
 #include "amdgpu_vpe.h"
 
 #define FIRMWARE_IP_DISCOVERY "amdgpu/ip_discovery.bin"
 MODULE_FIRMWARE(FIRMWARE_IP_DISCOVERY);
 
+#define mmIP_DISCOVERY_VERSION  0x16A00
 #define mmRCC_CONFIG_MEMSIZE	0xde3
 #define mmMP0_SMN_C2PMSG_33	0x16061
 #define mmMM_INDEX		0x0
@@ -518,7 +526,9 @@ static int amdgpu_discovery_init(struct amdgpu_device *adev)
 out:
 	kfree(adev->mman.discovery_bin);
 	adev->mman.discovery_bin = NULL;
-
+	if ((amdgpu_discovery != 2) &&
+	    (RREG32(mmIP_DISCOVERY_VERSION) == 4))
+		amdgpu_ras_query_boot_status(adev, 4);
 	return r;
 }
 
@@ -1310,6 +1320,15 @@ static int amdgpu_discovery_reg_base_init(struct amdgpu_device *adev)
 				}
 			}
 
+			if (le16_to_cpu(ip->hw_id) == VPE_HWID) {
+				if (adev->vpe.num_instances < AMDGPU_MAX_VPE_INSTANCES)
+					adev->vpe.num_instances++;
+				else
+					dev_err(adev->dev, "Too many VPE instances: %d vs %d\n",
+						adev->vpe.num_instances + 1,
+						AMDGPU_MAX_VPE_INSTANCES);
+			}
+
 			if (le16_to_cpu(ip->hw_id) == UMC_HWID) {
 				adev->gmc.num_umc++;
 				adev->umc.node_inst_num++;
@@ -1674,6 +1693,7 @@ static int amdgpu_discovery_set_common_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(11, 0, 3):
 	case IP_VERSION(11, 0, 4):
 	case IP_VERSION(11, 5, 0):
+	case IP_VERSION(11, 5, 1):
 		amdgpu_device_ip_block_add(adev, &soc21_common_ip_block);
 		break;
 	default:
@@ -1721,6 +1741,7 @@ static int amdgpu_discovery_set_gmc_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(11, 0, 3):
 	case IP_VERSION(11, 0, 4):
 	case IP_VERSION(11, 5, 0):
+	case IP_VERSION(11, 5, 1):
 		amdgpu_device_ip_block_add(adev, &gmc_v11_0_ip_block);
 		break;
 	default:
@@ -1762,6 +1783,9 @@ static int amdgpu_discovery_set_ih_ip_blocks(struct amdgpu_device *adev)
 		break;
 	case IP_VERSION(6, 1, 0):
 		amdgpu_device_ip_block_add(adev, &ih_v6_1_ip_block);
+		break;
+	case IP_VERSION(7, 0, 0):
+		amdgpu_device_ip_block_add(adev, &ih_v7_0_ip_block);
 		break;
 	default:
 		dev_err(adev->dev,
@@ -1812,10 +1836,15 @@ static int amdgpu_discovery_set_psp_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(13, 0, 10):
 	case IP_VERSION(13, 0, 11):
 	case IP_VERSION(14, 0, 0):
+	case IP_VERSION(14, 0, 1):
 		amdgpu_device_ip_block_add(adev, &psp_v13_0_ip_block);
 		break;
 	case IP_VERSION(13, 0, 4):
 		amdgpu_device_ip_block_add(adev, &psp_v13_0_4_ip_block);
+		break;
+	case IP_VERSION(14, 0, 2):
+	case IP_VERSION(14, 0, 3):
+		amdgpu_device_ip_block_add(adev, &psp_v14_0_ip_block);
 		break;
 	default:
 		dev_err(adev->dev,
@@ -1918,6 +1947,7 @@ static int amdgpu_discovery_set_display_ip_blocks(struct amdgpu_device *adev)
 		case IP_VERSION(3, 2, 0):
 		case IP_VERSION(3, 2, 1):
 		case IP_VERSION(3, 5, 0):
+		case IP_VERSION(3, 5, 1):
 			if (amdgpu_sriov_vf(adev))
 				amdgpu_discovery_set_sriov_display(adev);
 			else
@@ -1987,6 +2017,7 @@ static int amdgpu_discovery_set_gc_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(11, 0, 3):
 	case IP_VERSION(11, 0, 4):
 	case IP_VERSION(11, 5, 0):
+	case IP_VERSION(11, 5, 1):
 		amdgpu_device_ip_block_add(adev, &gfx_v11_0_ip_block);
 		break;
 	default:
@@ -2034,6 +2065,7 @@ static int amdgpu_discovery_set_sdma_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(6, 0, 2):
 	case IP_VERSION(6, 0, 3):
 	case IP_VERSION(6, 1, 0):
+	case IP_VERSION(6, 1, 1):
 		amdgpu_device_ip_block_add(adev, &sdma_v6_0_ip_block);
 		break;
 	default:
@@ -2120,8 +2152,13 @@ static int amdgpu_discovery_set_mm_ip_blocks(struct amdgpu_device *adev)
 			amdgpu_device_ip_block_add(adev, &jpeg_v4_0_3_ip_block);
 			break;
 		case IP_VERSION(4, 0, 5):
+		case IP_VERSION(4, 0, 6):
 			amdgpu_device_ip_block_add(adev, &vcn_v4_0_5_ip_block);
 			amdgpu_device_ip_block_add(adev, &jpeg_v4_0_5_ip_block);
+			break;
+		case IP_VERSION(5, 0, 0):
+			amdgpu_device_ip_block_add(adev, &vcn_v5_0_0_ip_block);
+			amdgpu_device_ip_block_add(adev, &jpeg_v5_0_0_ip_block);
 			break;
 		default:
 			dev_err(adev->dev,
@@ -2161,6 +2198,7 @@ static int amdgpu_discovery_set_mes_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(11, 0, 3):
 	case IP_VERSION(11, 0, 4):
 	case IP_VERSION(11, 5, 0):
+	case IP_VERSION(11, 5, 1):
 		amdgpu_device_ip_block_add(adev, &mes_v11_0_ip_block);
 		adev->enable_mes = true;
 		adev->enable_mes_kiq = true;
@@ -2186,6 +2224,7 @@ static int amdgpu_discovery_set_vpe_ip_blocks(struct amdgpu_device *adev)
 {
 	switch (amdgpu_ip_version(adev, VPE_HWIP, 0)) {
 	case IP_VERSION(6, 1, 0):
+	case IP_VERSION(6, 1, 1):
 		amdgpu_device_ip_block_add(adev, &vpe_v6_1_ip_block);
 		break;
 	default:
@@ -2199,6 +2238,7 @@ static int amdgpu_discovery_set_umsch_mm_ip_blocks(struct amdgpu_device *adev)
 {
 	switch (amdgpu_ip_version(adev, VCN_HWIP, 0)) {
 	case IP_VERSION(4, 0, 5):
+	case IP_VERSION(4, 0, 6):
 		if (amdgpu_umsch_mm & 0x1) {
 			amdgpu_device_ip_block_add(adev, &umsch_mm_v4_0_ip_block);
 			adev->enable_umsch_mm = true;
@@ -2439,6 +2479,7 @@ int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
 		adev->family = AMDGPU_FAMILY_GC_11_0_1;
 		break;
 	case IP_VERSION(11, 5, 0):
+	case IP_VERSION(11, 5, 1):
 		adev->family = AMDGPU_FAMILY_GC_11_5_0;
 		break;
 	default:
@@ -2458,6 +2499,7 @@ int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(11, 0, 1):
 	case IP_VERSION(11, 0, 4):
 	case IP_VERSION(11, 5, 0):
+	case IP_VERSION(11, 5, 1):
 		adev->flags |= AMD_IS_APU;
 		break;
 	default:
@@ -2494,6 +2536,7 @@ int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
 		adev->nbio.hdp_flush_reg = &nbio_v7_9_hdp_flush_reg;
 		break;
 	case IP_VERSION(7, 11, 0):
+	case IP_VERSION(7, 11, 1):
 		adev->nbio.funcs = &nbio_v7_11_funcs;
 		adev->nbio.hdp_flush_reg = &nbio_v7_11_hdp_flush_reg;
 		break;
@@ -2529,6 +2572,10 @@ int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
 		adev->nbio.funcs = &nbio_v7_7_funcs;
 		adev->nbio.hdp_flush_reg = &nbio_v7_7_hdp_flush_reg;
 		break;
+	case IP_VERSION(6, 3, 1):
+		adev->nbio.funcs = &nbif_v6_3_1_funcs;
+		adev->nbio.hdp_flush_reg = &nbif_v6_3_1_hdp_flush_reg;
+		break;
 	default:
 		break;
 	}
@@ -2560,6 +2607,9 @@ int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(6, 0, 1):
 	case IP_VERSION(6, 1, 0):
 		adev->hdp.funcs = &hdp_v6_0_funcs;
+		break;
+	case IP_VERSION(7, 0, 0):
+		adev->hdp.funcs = &hdp_v7_0_funcs;
 		break;
 	default:
 		break;
@@ -2625,6 +2675,7 @@ int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(13, 0, 6):
 	case IP_VERSION(13, 0, 8):
 	case IP_VERSION(14, 0, 0):
+	case IP_VERSION(14, 0, 1):
 		adev->smuio.funcs = &smuio_v13_0_6_funcs;
 		break;
 	default:
@@ -2637,6 +2688,10 @@ int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
 	case IP_VERSION(6, 0, 2):
 	case IP_VERSION(6, 0, 3):
 		adev->lsdma.funcs = &lsdma_v6_0_funcs;
+		break;
+	case IP_VERSION(7, 0, 0):
+	case IP_VERSION(7, 0, 1):
+		adev->lsdma.funcs = &lsdma_v7_0_funcs;
 		break;
 	default:
 		break;

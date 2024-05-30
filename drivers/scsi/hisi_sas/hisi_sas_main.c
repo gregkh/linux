@@ -1507,7 +1507,12 @@ void hisi_sas_controller_reset_prepare(struct hisi_hba *hisi_hba)
 	scsi_block_requests(shost);
 	hisi_hba->hw->wait_cmds_complete_timeout(hisi_hba, 100, 5000);
 
-	del_timer_sync(&hisi_hba->timer);
+	/*
+	 * hisi_hba->timer is only used for v1/v2 hw, and check hw->sht
+	 * which is also only used for v1/v2 hw to skip it for v3 hw
+	 */
+	if (hisi_hba->hw->sht)
+		del_timer_sync(&hisi_hba->timer);
 
 	set_bit(HISI_SAS_REJECT_CMD_BIT, &hisi_hba->flags);
 }
@@ -1573,7 +1578,7 @@ static int hisi_sas_controller_prereset(struct hisi_hba *hisi_hba)
 		return -EPERM;
 	}
 
-	if (hisi_sas_debugfs_enable && hisi_hba->debugfs_itct[0].itct)
+	if (hisi_sas_debugfs_enable)
 		hisi_hba->hw->debugfs_snapshot_regs(hisi_hba);
 
 	return 0;
@@ -1961,7 +1966,7 @@ static bool hisi_sas_internal_abort_timeout(struct sas_task *task,
 	struct hisi_hba *hisi_hba = dev_to_hisi_hba(device);
 	struct hisi_sas_internal_abort_data *timeout = data;
 
-	if (hisi_sas_debugfs_enable && hisi_hba->debugfs_itct[0].itct) {
+	if (hisi_sas_debugfs_enable) {
 		/*
 		 * If timeout occurs in device gone scenario, to avoid
 		 * circular dependency like:
@@ -2625,7 +2630,8 @@ static __exit void hisi_sas_exit(void)
 {
 	sas_release_transport(hisi_sas_stt);
 
-	debugfs_remove(hisi_sas_debugfs_dir);
+	if (hisi_sas_debugfs_enable)
+		debugfs_remove(hisi_sas_debugfs_dir);
 }
 
 module_init(hisi_sas_init);

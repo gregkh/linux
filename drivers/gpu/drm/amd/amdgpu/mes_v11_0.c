@@ -49,6 +49,8 @@ MODULE_FIRMWARE("amdgpu/gc_11_0_4_mes_2.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_0_4_mes1.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_5_0_mes_2.bin");
 MODULE_FIRMWARE("amdgpu/gc_11_5_0_mes1.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_1_mes_2.bin");
+MODULE_FIRMWARE("amdgpu/gc_11_5_1_mes1.bin");
 
 
 static int mes_v11_0_hw_fini(void *handle);
@@ -56,6 +58,7 @@ static int mes_v11_0_kiq_hw_init(struct amdgpu_device *adev);
 static int mes_v11_0_kiq_hw_fini(struct amdgpu_device *adev);
 
 #define MES_EOP_SIZE   2048
+#define GFX_MES_DRAM_SIZE	0x80000
 
 static void mes_v11_0_ring_set_wptr(struct amdgpu_ring *ring)
 {
@@ -408,8 +411,11 @@ static int mes_v11_0_set_hw_resources(struct amdgpu_mes *mes)
 	mes_set_hw_res_pkt.enable_reg_active_poll = 1;
 	mes_set_hw_res_pkt.enable_level_process_quantum_check = 1;
 	mes_set_hw_res_pkt.oversubscription_timer = 50;
-	mes_set_hw_res_pkt.enable_mes_event_int_logging = 1;
-	mes_set_hw_res_pkt.event_intr_history_gpu_mc_ptr = mes->event_log_gpu_addr;
+	if (amdgpu_mes_log_enable) {
+		mes_set_hw_res_pkt.enable_mes_event_int_logging = 1;
+		mes_set_hw_res_pkt.event_intr_history_gpu_mc_ptr =
+					mes->event_log_gpu_addr;
+	}
 
 	return mes_v11_0_submit_pkt_and_poll_completion(mes,
 			&mes_set_hw_res_pkt, sizeof(mes_set_hw_res_pkt),
@@ -475,7 +481,13 @@ static int mes_v11_0_allocate_ucode_data_buffer(struct amdgpu_device *adev,
 		   le32_to_cpu(mes_hdr->mes_ucode_data_offset_bytes));
 	fw_size = le32_to_cpu(mes_hdr->mes_ucode_data_size_bytes);
 
-	r = amdgpu_bo_create_reserved(adev, fw_size,
+	if (fw_size > GFX_MES_DRAM_SIZE) {
+		dev_err(adev->dev, "PIPE%d ucode data fw size (%d) is greater than dram size (%d)\n",
+			pipe, fw_size, GFX_MES_DRAM_SIZE);
+		return -EINVAL;
+	}
+
+	r = amdgpu_bo_create_reserved(adev, GFX_MES_DRAM_SIZE,
 				      64 * 1024,
 				      AMDGPU_GEM_DOMAIN_VRAM |
 				      AMDGPU_GEM_DOMAIN_GTT,
@@ -611,8 +623,8 @@ static int mes_v11_0_load_microcode(struct amdgpu_device *adev,
 	WREG32_SOC15(GC, 0, regCP_MES_MDBASE_HI,
 		     upper_32_bits(adev->mes.data_fw_gpu_addr[pipe]));
 
-	/* Set 0x3FFFF (256K-1) to CP_MES_MDBOUND_LO */
-	WREG32_SOC15(GC, 0, regCP_MES_MDBOUND_LO, 0x3FFFF);
+	/* Set 0x7FFFF (512K-1) to CP_MES_MDBOUND_LO */
+	WREG32_SOC15(GC, 0, regCP_MES_MDBOUND_LO, 0x7FFFF);
 
 	if (prime_icache) {
 		/* invalidate ICACHE */

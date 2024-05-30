@@ -498,7 +498,7 @@ void __init sme_early_init(void)
 	 * as this memory is not pre-validated and would thus cause a crash.
 	 */
 	if (sev_status & MSR_AMD64_SEV_SNP_ENABLED) {
-		x86_init.mpparse.find_smp_config = x86_init_noop;
+		x86_init.mpparse.find_mptable = x86_init_noop;
 		x86_init.pci.init_irq = x86_init_noop;
 		x86_init.resources.probe_roms = x86_init_noop;
 

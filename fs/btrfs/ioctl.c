@@ -34,11 +34,9 @@
 #include "export.h"
 #include "transaction.h"
 #include "btrfs_inode.h"
-#include "print-tree.h"
 #include "volumes.h"
 #include "locking.h"
 #include "backref.h"
-#include "rcu-string.h"
 #include "send.h"
 #include "dev-replace.h"
 #include "props.h"
@@ -47,9 +45,7 @@
 #include "tree-log.h"
 #include "compression.h"
 #include "space-info.h"
-#include "delalloc-space.h"
 #include "block-group.h"
-#include "subpage.h"
 #include "fs.h"
 #include "accessors.h"
 #include "extent-tree.h"
@@ -228,6 +224,20 @@ static int check_fsflags_compatible(struct btrfs_fs_info *fs_info,
 	if (btrfs_is_zoned(fs_info) && (flags & FS_NOCOW_FL))
 		return -EPERM;
 
+	return 0;
+}
+
+int btrfs_check_ioctl_vol_args_path(const struct btrfs_ioctl_vol_args *vol_args)
+{
+	if (memchr(vol_args->name, 0, sizeof(vol_args->name)) == NULL)
+		return -ENAMETOOLONG;
+	return 0;
+}
+
+static int btrfs_check_ioctl_vol_args2_subvol_name(const struct btrfs_ioctl_vol_args_v2 *vol_args2)
+{
+	if (memchr(vol_args2->name, 0, sizeof(vol_args2->name)) == NULL)
+		return -ENAMETOOLONG;
 	return 0;
 }
 
@@ -929,7 +939,9 @@ static int btrfs_may_delete(struct mnt_idmap *idmap,
 	if (d_really_is_negative(victim))
 		return -ENOENT;
 
-	BUG_ON(d_inode(victim->d_parent) != dir);
+	/* The @victim is not inside @dir. */
+	if (d_inode(victim->d_parent) != dir)
+		return -EINVAL;
 	audit_inode_child(dir, victim, AUDIT_TYPE_CHILD_DELETE);
 
 	error = inode_permission(idmap, dir, MAY_WRITE | MAY_EXEC);
@@ -1147,7 +1159,10 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		ret = PTR_ERR(vol_args);
 		goto out_drop;
 	}
-	vol_args->name[BTRFS_PATH_NAME_MAX] = '\0';
+	ret = btrfs_check_ioctl_vol_args_path(vol_args);
+	if (ret < 0)
+		goto out_free;
+
 	sizestr = vol_args->name;
 	cancel = (strcmp("cancel", sizestr) == 0);
 	ret = exclop_start_or_cancel_reloc(fs_info, BTRFS_EXCLOP_RESIZE, cancel);
@@ -1347,12 +1362,15 @@ static noinline int btrfs_ioctl_snap_create(struct file *file,
 	vol_args = memdup_user(arg, sizeof(*vol_args));
 	if (IS_ERR(vol_args))
 		return PTR_ERR(vol_args);
-	vol_args->name[BTRFS_PATH_NAME_MAX] = '\0';
+	ret = btrfs_check_ioctl_vol_args_path(vol_args);
+	if (ret < 0)
+		goto out;
 
 	ret = __btrfs_ioctl_snap_create(file, file_mnt_idmap(file),
 					vol_args->name, vol_args->fd, subvol,
 					false, NULL);
 
+out:
 	kfree(vol_args);
 	return ret;
 }
@@ -1371,7 +1389,9 @@ static noinline int btrfs_ioctl_snap_create_v2(struct file *file,
 	vol_args = memdup_user(arg, sizeof(*vol_args));
 	if (IS_ERR(vol_args))
 		return PTR_ERR(vol_args);
-	vol_args->name[BTRFS_SUBVOL_NAME_MAX] = '\0';
+	ret = btrfs_check_ioctl_vol_args2_subvol_name(vol_args);
+	if (ret < 0)
+		goto free_args;
 
 	if (vol_args->flags & ~BTRFS_SUBVOL_CREATE_ARGS_MASK) {
 		ret = -EOPNOTSUPP;
@@ -2391,7 +2411,9 @@ static noinline int btrfs_ioctl_snap_destroy(struct file *file,
 		 * name, same as v1 currently does.
 		 */
 		if (!(vol_args2->flags & BTRFS_SUBVOL_SPEC_BY_ID)) {
-			vol_args2->name[BTRFS_SUBVOL_NAME_MAX] = 0;
+			err = btrfs_check_ioctl_vol_args2_subvol_name(vol_args2);
+			if (err < 0)
+				goto out;
 			subvol_name = vol_args2->name;
 
 			err = mnt_want_write_file(file);
@@ -2475,7 +2497,10 @@ static noinline int btrfs_ioctl_snap_destroy(struct file *file,
 		if (IS_ERR(vol_args))
 			return PTR_ERR(vol_args);
 
-		vol_args->name[BTRFS_PATH_NAME_MAX] = 0;
+		err = btrfs_check_ioctl_vol_args_path(vol_args);
+		if (err < 0)
+			goto out;
+
 		subvol_name = vol_args->name;
 
 		err = mnt_want_write_file(file);
@@ -2686,12 +2711,16 @@ static long btrfs_ioctl_add_dev(struct btrfs_fs_info *fs_info, void __user *arg)
 		goto out;
 	}
 
-	vol_args->name[BTRFS_PATH_NAME_MAX] = '\0';
+	ret = btrfs_check_ioctl_vol_args_path(vol_args);
+	if (ret < 0)
+		goto out_free;
+
 	ret = btrfs_init_new_device(fs_info, vol_args->name);
 
 	if (!ret)
 		btrfs_info(fs_info, "disk added %s", vol_args->name);
 
+out_free:
 	kfree(vol_args);
 out:
 	if (restore_op)
@@ -2707,7 +2736,7 @@ static long btrfs_ioctl_rm_dev_v2(struct file *file, void __user *arg)
 	struct inode *inode = file_inode(file);
 	struct btrfs_fs_info *fs_info = inode_to_fs_info(inode);
 	struct btrfs_ioctl_vol_args_v2 *vol_args;
-	struct bdev_handle *bdev_handle = NULL;
+	struct file *bdev_file = NULL;
 	int ret;
 	bool cancel = false;
 
@@ -2723,7 +2752,10 @@ static long btrfs_ioctl_rm_dev_v2(struct file *file, void __user *arg)
 		goto out;
 	}
 
-	vol_args->name[BTRFS_SUBVOL_NAME_MAX] = '\0';
+	ret = btrfs_check_ioctl_vol_args2_subvol_name(vol_args);
+	if (ret < 0)
+		goto out;
+
 	if (vol_args->flags & BTRFS_DEVICE_SPEC_BY_ID) {
 		args.devid = vol_args->devid;
 	} else if (!strcmp("cancel", vol_args->name)) {
@@ -2744,7 +2776,7 @@ static long btrfs_ioctl_rm_dev_v2(struct file *file, void __user *arg)
 		goto err_drop;
 
 	/* Exclusive operation is now claimed */
-	ret = btrfs_rm_device(fs_info, &args, &bdev_handle);
+	ret = btrfs_rm_device(fs_info, &args, &bdev_file);
 
 	btrfs_exclop_finish(fs_info);
 
@@ -2758,8 +2790,8 @@ static long btrfs_ioctl_rm_dev_v2(struct file *file, void __user *arg)
 	}
 err_drop:
 	mnt_drop_write_file(file);
-	if (bdev_handle)
-		bdev_release(bdev_handle);
+	if (bdev_file)
+		fput(bdev_file);
 out:
 	btrfs_put_dev_args_from_path(&args);
 	kfree(vol_args);
@@ -2772,7 +2804,7 @@ static long btrfs_ioctl_rm_dev(struct file *file, void __user *arg)
 	struct inode *inode = file_inode(file);
 	struct btrfs_fs_info *fs_info = inode_to_fs_info(inode);
 	struct btrfs_ioctl_vol_args *vol_args;
-	struct bdev_handle *bdev_handle = NULL;
+	struct file *bdev_file = NULL;
 	int ret;
 	bool cancel = false;
 
@@ -2783,7 +2815,10 @@ static long btrfs_ioctl_rm_dev(struct file *file, void __user *arg)
 	if (IS_ERR(vol_args))
 		return PTR_ERR(vol_args);
 
-	vol_args->name[BTRFS_PATH_NAME_MAX] = '\0';
+	ret = btrfs_check_ioctl_vol_args_path(vol_args);
+	if (ret < 0)
+		goto out_free;
+
 	if (!strcmp("cancel", vol_args->name)) {
 		cancel = true;
 	} else {
@@ -2799,17 +2834,18 @@ static long btrfs_ioctl_rm_dev(struct file *file, void __user *arg)
 	ret = exclop_start_or_cancel_reloc(fs_info, BTRFS_EXCLOP_DEV_REMOVE,
 					   cancel);
 	if (ret == 0) {
-		ret = btrfs_rm_device(fs_info, &args, &bdev_handle);
+		ret = btrfs_rm_device(fs_info, &args, &bdev_file);
 		if (!ret)
 			btrfs_info(fs_info, "disk deleted %s", vol_args->name);
 		btrfs_exclop_finish(fs_info);
 	}
 
 	mnt_drop_write_file(file);
-	if (bdev_handle)
-		bdev_release(bdev_handle);
+	if (bdev_file)
+		fput(bdev_file);
 out:
 	btrfs_put_dev_args_from_path(&args);
+out_free:
 	kfree(vol_args);
 	return ret;
 }
@@ -3722,15 +3758,43 @@ static long btrfs_ioctl_quota_ctl(struct file *file, void __user *arg)
 		goto drop_write;
 	}
 
-	down_write(&fs_info->subvol_sem);
-
 	switch (sa->cmd) {
 	case BTRFS_QUOTA_CTL_ENABLE:
 	case BTRFS_QUOTA_CTL_ENABLE_SIMPLE_QUOTA:
+		down_write(&fs_info->subvol_sem);
 		ret = btrfs_quota_enable(fs_info, sa);
+		up_write(&fs_info->subvol_sem);
 		break;
 	case BTRFS_QUOTA_CTL_DISABLE:
+		/*
+		 * Lock the cleaner mutex to prevent races with concurrent
+		 * relocation, because relocation may be building backrefs for
+		 * blocks of the quota root while we are deleting the root. This
+		 * is like dropping fs roots of deleted snapshots/subvolumes, we
+		 * need the same protection.
+		 *
+		 * This also prevents races between concurrent tasks trying to
+		 * disable quotas, because we will unlock and relock
+		 * qgroup_ioctl_lock across BTRFS_FS_QUOTA_ENABLED changes.
+		 *
+		 * We take this here because we have the dependency of
+		 *
+		 * inode_lock -> subvol_sem
+		 *
+		 * because of rename.  With relocation we can prealloc extents,
+		 * so that makes the dependency chain
+		 *
+		 * cleaner_mutex -> inode_lock -> subvol_sem
+		 *
+		 * so we must take the cleaner_mutex here before we take the
+		 * subvol_sem.  The deadlock can't actually happen, but this
+		 * quiets lockdep.
+		 */
+		mutex_lock(&fs_info->cleaner_mutex);
+		down_write(&fs_info->subvol_sem);
 		ret = btrfs_quota_disable(fs_info);
+		up_write(&fs_info->subvol_sem);
+		mutex_unlock(&fs_info->cleaner_mutex);
 		break;
 	default:
 		ret = -EINVAL;
@@ -3738,7 +3802,6 @@ static long btrfs_ioctl_quota_ctl(struct file *file, void __user *arg)
 	}
 
 	kfree(sa);
-	up_write(&fs_info->subvol_sem);
 drop_write:
 	mnt_drop_write_file(file);
 	return ret;

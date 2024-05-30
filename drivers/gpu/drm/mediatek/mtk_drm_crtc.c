@@ -215,6 +215,22 @@ static void mtk_drm_crtc_destroy_state(struct drm_crtc *crtc,
 	kfree(to_mtk_crtc_state(state));
 }
 
+static enum drm_mode_status
+mtk_drm_crtc_mode_valid(struct drm_crtc *crtc,
+			const struct drm_display_mode *mode)
+{
+	struct mtk_drm_crtc *mtk_crtc = to_mtk_crtc(crtc);
+	enum drm_mode_status status = MODE_OK;
+	int i;
+
+	for (i = 0; i < mtk_crtc->ddp_comp_nr; i++) {
+		status = mtk_ddp_comp_mode_valid(mtk_crtc->ddp_comp[i], mode);
+		if (status != MODE_OK)
+			break;
+	}
+	return status;
+}
+
 static bool mtk_drm_crtc_mode_fixup(struct drm_crtc *crtc,
 				    const struct drm_display_mode *mode,
 				    struct drm_display_mode *adjusted_mode)
@@ -833,6 +849,7 @@ static const struct drm_crtc_funcs mtk_crtc_funcs = {
 static const struct drm_crtc_helper_funcs mtk_crtc_helper_funcs = {
 	.mode_fixup	= mtk_drm_crtc_mode_fixup,
 	.mode_set_nofb	= mtk_drm_crtc_mode_set_nofb,
+	.mode_valid	= mtk_drm_crtc_mode_valid,
 	.atomic_begin	= mtk_drm_crtc_atomic_begin,
 	.atomic_flush	= mtk_drm_crtc_atomic_flush,
 	.atomic_enable	= mtk_drm_crtc_atomic_enable,
@@ -992,10 +1009,10 @@ int mtk_drm_crtc_create(struct drm_device *drm_dev,
 
 	mtk_crtc->mmsys_dev = priv->mmsys_dev;
 	mtk_crtc->ddp_comp_nr = path_len;
-	mtk_crtc->ddp_comp = devm_kmalloc_array(dev,
-						mtk_crtc->ddp_comp_nr + (conn_routes ? 1 : 0),
-						sizeof(*mtk_crtc->ddp_comp),
-						GFP_KERNEL);
+	mtk_crtc->ddp_comp = devm_kcalloc(dev,
+					  mtk_crtc->ddp_comp_nr + (conn_routes ? 1 : 0),
+					  sizeof(*mtk_crtc->ddp_comp),
+					  GFP_KERNEL);
 	if (!mtk_crtc->ddp_comp)
 		return -ENOMEM;
 

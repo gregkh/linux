@@ -16,6 +16,7 @@
 #include "hda-ipc.h"
 #include "../sof-audio.h"
 #include "mtl.h"
+#include "lnl.h"
 #include <sound/hda-mlink.h>
 
 /* LunarLake ops */
@@ -29,15 +30,17 @@ static const struct snd_sof_debugfs_map lnl_dsp_debugfs[] = {
 };
 
 /* this helps allows the DSP to setup DMIC/SSP */
-static int hdac_bus_offload_dmic_ssp(struct hdac_bus *bus)
+static int hdac_bus_offload_dmic_ssp(struct hdac_bus *bus, bool enable)
 {
 	int ret;
 
-	ret = hdac_bus_eml_enable_offload(bus, true,  AZX_REG_ML_LEPTR_ID_INTEL_SSP, true);
+	ret = hdac_bus_eml_enable_offload(bus, true,
+					  AZX_REG_ML_LEPTR_ID_INTEL_SSP, enable);
 	if (ret < 0)
 		return ret;
 
-	ret = hdac_bus_eml_enable_offload(bus, true,  AZX_REG_ML_LEPTR_ID_INTEL_DMIC, true);
+	ret = hdac_bus_eml_enable_offload(bus, true,
+					  AZX_REG_ML_LEPTR_ID_INTEL_DMIC, enable);
 	if (ret < 0)
 		return ret;
 
@@ -52,7 +55,19 @@ static int lnl_hda_dsp_probe(struct snd_sof_dev *sdev)
 	if (ret < 0)
 		return ret;
 
-	return hdac_bus_offload_dmic_ssp(sof_to_bus(sdev));
+	return hdac_bus_offload_dmic_ssp(sof_to_bus(sdev), true);
+}
+
+static void lnl_hda_dsp_remove(struct snd_sof_dev *sdev)
+{
+	int ret;
+
+	ret = hdac_bus_offload_dmic_ssp(sof_to_bus(sdev), false);
+	if (ret < 0)
+		dev_warn(sdev->dev,
+			 "Failed to disable offload for DMIC/SSP: %d\n", ret);
+
+	hda_dsp_remove(sdev);
 }
 
 static int lnl_hda_dsp_resume(struct snd_sof_dev *sdev)
@@ -63,7 +78,7 @@ static int lnl_hda_dsp_resume(struct snd_sof_dev *sdev)
 	if (ret < 0)
 		return ret;
 
-	return hdac_bus_offload_dmic_ssp(sof_to_bus(sdev));
+	return hdac_bus_offload_dmic_ssp(sof_to_bus(sdev), true);
 }
 
 static int lnl_hda_dsp_runtime_resume(struct snd_sof_dev *sdev)
@@ -74,7 +89,20 @@ static int lnl_hda_dsp_runtime_resume(struct snd_sof_dev *sdev)
 	if (ret < 0)
 		return ret;
 
-	return hdac_bus_offload_dmic_ssp(sof_to_bus(sdev));
+	return hdac_bus_offload_dmic_ssp(sof_to_bus(sdev), true);
+}
+
+static int lnl_dsp_post_fw_run(struct snd_sof_dev *sdev)
+{
+	if (sdev->first_boot) {
+		struct sof_intel_hda_dev *hda = sdev->pdata->hw_pdata;
+
+		/* Check if IMR boot is usable */
+		if (!sof_debug_check_flag(SOF_DBG_IGNORE_D3_PERSISTENT))
+			hda->imrboot_supported = true;
+	}
+
+	return 0;
 }
 
 int sof_lnl_ops_init(struct snd_sof_dev *sdev)
@@ -84,8 +112,11 @@ int sof_lnl_ops_init(struct snd_sof_dev *sdev)
 	/* common defaults */
 	memcpy(&sof_lnl_ops, &sof_hda_common_ops, sizeof(struct snd_sof_dsp_ops));
 
-	/* probe */
-	sof_lnl_ops.probe = lnl_hda_dsp_probe;
+	/* probe/remove */
+	if (!sdev->dspless_mode_selected) {
+		sof_lnl_ops.probe = lnl_hda_dsp_probe;
+		sof_lnl_ops.remove = lnl_hda_dsp_remove;
+	}
 
 	/* shutdown */
 	sof_lnl_ops.shutdown = hda_dsp_shutdown;
@@ -106,7 +137,7 @@ int sof_lnl_ops_init(struct snd_sof_dev *sdev)
 
 	/* pre/post fw run */
 	sof_lnl_ops.pre_fw_run = mtl_dsp_pre_fw_run;
-	sof_lnl_ops.post_fw_run = mtl_dsp_post_fw_run;
+	sof_lnl_ops.post_fw_run = lnl_dsp_post_fw_run;
 
 	/* parse platform specific extended manifest */
 	sof_lnl_ops.parse_platform_ext_manifest = NULL;
@@ -115,8 +146,10 @@ int sof_lnl_ops_init(struct snd_sof_dev *sdev)
 	/* TODO: add core_get and core_put */
 
 	/* PM */
-	sof_lnl_ops.resume			= lnl_hda_dsp_resume;
-	sof_lnl_ops.runtime_resume		= lnl_hda_dsp_runtime_resume;
+	if (!sdev->dspless_mode_selected) {
+		sof_lnl_ops.resume = lnl_hda_dsp_resume;
+		sof_lnl_ops.runtime_resume = lnl_hda_dsp_runtime_resume;
+	}
 
 	/* dsp core get/put */
 	sof_lnl_ops.core_get = mtl_dsp_core_get;
@@ -176,7 +209,7 @@ const struct sof_intel_dsp_desc lnl_chip_info = {
 	.ipc_ack = MTL_DSP_REG_HFIPCXIDA,
 	.ipc_ack_mask = MTL_DSP_REG_HFIPCXIDA_DONE,
 	.ipc_ctl = MTL_DSP_REG_HFIPCXCTL,
-	.rom_status_reg = MTL_DSP_ROM_STS,
+	.rom_status_reg = LNL_DSP_REG_HFDSC,
 	.rom_init_timeout = 300,
 	.ssp_count = MTL_SSP_COUNT,
 	.d0i3_offset = MTL_HDA_VS_D0I3C,

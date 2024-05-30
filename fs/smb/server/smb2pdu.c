@@ -611,30 +611,6 @@ int smb2_check_user_session(struct ksmbd_work *work)
 	return -ENOENT;
 }
 
-static void destroy_previous_session(struct ksmbd_conn *conn,
-				     struct ksmbd_user *user, u64 id)
-{
-	struct ksmbd_session *prev_sess = ksmbd_session_lookup_slowpath(id);
-	struct ksmbd_user *prev_user;
-	struct channel *chann;
-	long index;
-
-	if (!prev_sess)
-		return;
-
-	prev_user = prev_sess->user;
-
-	if (!prev_user ||
-	    strcmp(user->name, prev_user->name) ||
-	    user->passkey_sz != prev_user->passkey_sz ||
-	    memcmp(user->passkey, prev_user->passkey, user->passkey_sz))
-		return;
-
-	prev_sess->state = SMB2_SESSION_EXPIRED;
-	xa_for_each(&prev_sess->ksmbd_chann_list, index, chann)
-		ksmbd_conn_set_exiting(chann->conn);
-}
-
 /**
  * smb2_get_name() - get filename string from on the wire smb format
  * @src:	source buffer
@@ -1950,7 +1926,7 @@ int smb2_tree_connect(struct ksmbd_work *work)
 	struct ksmbd_session *sess = work->sess;
 	char *treename = NULL, *name = NULL;
 	struct ksmbd_tree_conn_status status;
-	struct ksmbd_share_config *share;
+	struct ksmbd_share_config *share = NULL;
 	int rc = -EINVAL;
 
 	WORK_BUFFERS(work, req, rsp);
@@ -2012,7 +1988,12 @@ int smb2_tree_connect(struct ksmbd_work *work)
 	write_unlock(&sess->tree_conns_lock);
 	rsp->StructureSize = cpu_to_le16(16);
 out_err1:
-	rsp->Capabilities = 0;
+	if (server_conf.flags & KSMBD_GLOBAL_FLAG_DURABLE_HANDLE && share &&
+	    test_share_config_flag(share,
+				   KSMBD_SHARE_FLAG_CONTINUOUS_AVAILABILITY))
+		rsp->Capabilities = SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY;
+	else
+		rsp->Capabilities = 0;
 	rsp->Reserved = 0;
 	/* default manual caching */
 	rsp->ShareFlags = SMB2_SHAREFLAG_MANUAL_CACHING;
@@ -2646,6 +2627,165 @@ static void ksmbd_acls_fattr(struct smb_fattr *fattr,
 	}
 }
 
+enum {
+	DURABLE_RECONN_V2 = 1,
+	DURABLE_RECONN,
+	DURABLE_REQ_V2,
+	DURABLE_REQ,
+};
+
+struct durable_info {
+	struct ksmbd_file *fp;
+	unsigned short int type;
+	bool persistent;
+	bool reconnected;
+	unsigned int timeout;
+	char *CreateGuid;
+};
+
+static int parse_durable_handle_context(struct ksmbd_work *work,
+					struct smb2_create_req *req,
+					struct lease_ctx_info *lc,
+					struct durable_info *dh_info)
+{
+	struct ksmbd_conn *conn = work->conn;
+	struct create_context *context;
+	int dh_idx, err = 0;
+	u64 persistent_id = 0;
+	int req_op_level;
+	static const char * const durable_arr[] = {"DH2C", "DHnC", "DH2Q", "DHnQ"};
+
+	req_op_level = req->RequestedOplockLevel;
+	for (dh_idx = DURABLE_RECONN_V2; dh_idx <= ARRAY_SIZE(durable_arr);
+	     dh_idx++) {
+		context = smb2_find_context_vals(req, durable_arr[dh_idx - 1], 4);
+		if (IS_ERR(context)) {
+			err = PTR_ERR(context);
+			goto out;
+		}
+		if (!context)
+			continue;
+
+		switch (dh_idx) {
+		case DURABLE_RECONN_V2:
+		{
+			struct create_durable_reconn_v2_req *recon_v2;
+
+			if (dh_info->type == DURABLE_RECONN ||
+			    dh_info->type == DURABLE_REQ_V2) {
+				err = -EINVAL;
+				goto out;
+			}
+
+			recon_v2 = (struct create_durable_reconn_v2_req *)context;
+			persistent_id = recon_v2->Fid.PersistentFileId;
+			dh_info->fp = ksmbd_lookup_durable_fd(persistent_id);
+			if (!dh_info->fp) {
+				ksmbd_debug(SMB, "Failed to get durable handle state\n");
+				err = -EBADF;
+				goto out;
+			}
+
+			if (memcmp(dh_info->fp->create_guid, recon_v2->CreateGuid,
+				   SMB2_CREATE_GUID_SIZE)) {
+				err = -EBADF;
+				ksmbd_put_durable_fd(dh_info->fp);
+				goto out;
+			}
+
+			dh_info->type = dh_idx;
+			dh_info->reconnected = true;
+			ksmbd_debug(SMB,
+				"reconnect v2 Persistent-id from reconnect = %llu\n",
+					persistent_id);
+			break;
+		}
+		case DURABLE_RECONN:
+		{
+			struct create_durable_reconn_req *recon;
+
+			if (dh_info->type == DURABLE_RECONN_V2 ||
+			    dh_info->type == DURABLE_REQ_V2) {
+				err = -EINVAL;
+				goto out;
+			}
+
+			recon = (struct create_durable_reconn_req *)context;
+			persistent_id = recon->Data.Fid.PersistentFileId;
+			dh_info->fp = ksmbd_lookup_durable_fd(persistent_id);
+			if (!dh_info->fp) {
+				ksmbd_debug(SMB, "Failed to get durable handle state\n");
+				err = -EBADF;
+				goto out;
+			}
+
+			dh_info->type = dh_idx;
+			dh_info->reconnected = true;
+			ksmbd_debug(SMB, "reconnect Persistent-id from reconnect = %llu\n",
+				    persistent_id);
+			break;
+		}
+		case DURABLE_REQ_V2:
+		{
+			struct create_durable_req_v2 *durable_v2_blob;
+
+			if (dh_info->type == DURABLE_RECONN ||
+			    dh_info->type == DURABLE_RECONN_V2) {
+				err = -EINVAL;
+				goto out;
+			}
+
+			durable_v2_blob =
+				(struct create_durable_req_v2 *)context;
+			ksmbd_debug(SMB, "Request for durable v2 open\n");
+			dh_info->fp = ksmbd_lookup_fd_cguid(durable_v2_blob->CreateGuid);
+			if (dh_info->fp) {
+				if (!memcmp(conn->ClientGUID, dh_info->fp->client_guid,
+					    SMB2_CLIENT_GUID_SIZE)) {
+					if (!(req->hdr.Flags & SMB2_FLAGS_REPLAY_OPERATION)) {
+						err = -ENOEXEC;
+						goto out;
+					}
+
+					dh_info->fp->conn = conn;
+					dh_info->reconnected = true;
+					goto out;
+				}
+			}
+
+			if (((lc && (lc->req_state & SMB2_LEASE_HANDLE_CACHING_LE)) ||
+			     req_op_level == SMB2_OPLOCK_LEVEL_BATCH)) {
+				dh_info->CreateGuid =
+					durable_v2_blob->CreateGuid;
+				dh_info->persistent =
+					le32_to_cpu(durable_v2_blob->Flags);
+				dh_info->timeout =
+					le32_to_cpu(durable_v2_blob->Timeout);
+				dh_info->type = dh_idx;
+			}
+			break;
+		}
+		case DURABLE_REQ:
+			if (dh_info->type == DURABLE_RECONN)
+				goto out;
+			if (dh_info->type == DURABLE_RECONN_V2 ||
+			    dh_info->type == DURABLE_REQ_V2) {
+				err = -EINVAL;
+				goto out;
+			}
+
+			if (((lc && (lc->req_state & SMB2_LEASE_HANDLE_CACHING_LE)) ||
+			     req_op_level == SMB2_OPLOCK_LEVEL_BATCH)) {
+				ksmbd_debug(SMB, "Request for durable open\n");
+				dh_info->type = dh_idx;
+			}
+		}
+	}
+
+out:
+	return err;
+}
+
 /**
  * smb2_open() - handler for smb file open request
  * @work:	smb work containing request buffer
@@ -2669,6 +2809,7 @@ int smb2_open(struct ksmbd_work *work)
 	struct lease_ctx_info *lc = NULL;
 	struct create_ea_buf_req *ea_buf = NULL;
 	struct oplock_info *opinfo;
+	struct durable_info dh_info = {0};
 	__le32 *next_ptr = NULL;
 	int req_op_level = 0, open_flags = 0, may_flags = 0, file_info = 0;
 	int rc = 0;
@@ -2748,6 +2889,49 @@ int smb2_open(struct ksmbd_work *work)
 			goto err_out2;
 		}
 	}
+
+	req_op_level = req->RequestedOplockLevel;
+
+	if (server_conf.flags & KSMBD_GLOBAL_FLAG_DURABLE_HANDLE &&
+	    req->CreateContextsOffset) {
+		lc = parse_lease_state(req);
+		rc = parse_durable_handle_context(work, req, lc, &dh_info);
+		if (rc) {
+			ksmbd_debug(SMB, "error parsing durable handle context\n");
+			goto err_out2;
+		}
+
+		if (dh_info.reconnected == true) {
+			rc = smb2_check_durable_oplock(conn, share, dh_info.fp, lc, name);
+			if (rc) {
+				ksmbd_put_durable_fd(dh_info.fp);
+				goto err_out2;
+			}
+
+			rc = ksmbd_reopen_durable_fd(work, dh_info.fp);
+			if (rc) {
+				ksmbd_put_durable_fd(dh_info.fp);
+				goto err_out2;
+			}
+
+			if (ksmbd_override_fsids(work)) {
+				rc = -ENOMEM;
+				ksmbd_put_durable_fd(dh_info.fp);
+				goto err_out2;
+			}
+
+			fp = dh_info.fp;
+			file_info = FILE_OPENED;
+
+			rc = ksmbd_vfs_getattr(&fp->filp->f_path, &stat);
+			if (rc)
+				goto err_out2;
+
+			ksmbd_put_durable_fd(fp);
+			goto reconnected_fp;
+		}
+	} else if (req_op_level == SMB2_OPLOCK_LEVEL_LEASE)
+		lc = parse_lease_state(req);
 
 	if (le32_to_cpu(req->ImpersonationLevel) > le32_to_cpu(IL_DELEGATE)) {
 		pr_err("Invalid impersonationlevel : 0x%x\n",
@@ -3192,9 +3376,9 @@ int smb2_open(struct ksmbd_work *work)
 	 * after daccess, saccess, attrib_only, and stream are
 	 * initialized.
 	 */
-	write_lock(&fp->f_ci->m_lock);
+	down_write(&fp->f_ci->m_lock);
 	list_add(&fp->node, &fp->f_ci->m_fp_list);
-	write_unlock(&fp->f_ci->m_lock);
+	up_write(&fp->f_ci->m_lock);
 
 	/* Check delete pending among previous fp before oplock break */
 	if (ksmbd_inode_pending_delete(fp)) {
@@ -3211,10 +3395,6 @@ int smb2_open(struct ksmbd_work *work)
 		need_truncate = 1;
 	}
 
-	req_op_level = req->RequestedOplockLevel;
-	if (req_op_level == SMB2_OPLOCK_LEVEL_LEASE)
-		lc = parse_lease_state(req, S_ISDIR(file_inode(filp)->i_mode));
-
 	share_ret = ksmbd_smb_check_shared_mode(fp->filp, fp);
 	if (!test_share_config_flag(work->tcon->share_conf, KSMBD_SHARE_FLAG_OPLOCKS) ||
 	    (req_op_level == SMB2_OPLOCK_LEVEL_LEASE &&
@@ -3225,6 +3405,11 @@ int smb2_open(struct ksmbd_work *work)
 		}
 	} else {
 		if (req_op_level == SMB2_OPLOCK_LEVEL_LEASE) {
+			if (S_ISDIR(file_inode(filp)->i_mode)) {
+				lc->req_state &= ~SMB2_LEASE_WRITE_CACHING_LE;
+				lc->is_dir = true;
+			}
+
 			/*
 			 * Compare parent lease using parent key. If there is no
 			 * a lease that has same parent key, Send lease break
@@ -3321,6 +3506,26 @@ int smb2_open(struct ksmbd_work *work)
 
 	memcpy(fp->client_guid, conn->ClientGUID, SMB2_CLIENT_GUID_SIZE);
 
+	if (dh_info.type == DURABLE_REQ_V2 || dh_info.type == DURABLE_REQ) {
+		if (dh_info.type == DURABLE_REQ_V2 && dh_info.persistent &&
+		    test_share_config_flag(work->tcon->share_conf,
+					   KSMBD_SHARE_FLAG_CONTINUOUS_AVAILABILITY))
+			fp->is_persistent = true;
+		else
+			fp->is_durable = true;
+
+		if (dh_info.type == DURABLE_REQ_V2) {
+			memcpy(fp->create_guid, dh_info.CreateGuid,
+					SMB2_CREATE_GUID_SIZE);
+			if (dh_info.timeout)
+				fp->durable_timeout = min(dh_info.timeout,
+						300000);
+			else
+				fp->durable_timeout = 60;
+		}
+	}
+
+reconnected_fp:
 	rsp->StructureSize = cpu_to_le16(89);
 	rcu_read_lock();
 	opinfo = rcu_dereference(fp->f_opinfo);
@@ -3405,6 +3610,33 @@ int smb2_open(struct ksmbd_work *work)
 			*next_ptr = cpu_to_le32(next_off);
 		next_ptr = &disk_id_ccontext->Next;
 		next_off = conn->vals->create_disk_id_size;
+	}
+
+	if (dh_info.type == DURABLE_REQ || dh_info.type == DURABLE_REQ_V2) {
+		struct create_context *durable_ccontext;
+
+		durable_ccontext = (struct create_context *)(rsp->Buffer +
+				le32_to_cpu(rsp->CreateContextsLength));
+		contxt_cnt++;
+		if (dh_info.type == DURABLE_REQ) {
+			create_durable_rsp_buf(rsp->Buffer +
+					le32_to_cpu(rsp->CreateContextsLength));
+			le32_add_cpu(&rsp->CreateContextsLength,
+					conn->vals->create_durable_size);
+			iov_len += conn->vals->create_durable_size;
+		} else {
+			create_durable_v2_rsp_buf(rsp->Buffer +
+					le32_to_cpu(rsp->CreateContextsLength),
+					fp);
+			le32_add_cpu(&rsp->CreateContextsLength,
+					conn->vals->create_durable_v2_size);
+			iov_len += conn->vals->create_durable_v2_size;
+		}
+
+		if (next_ptr)
+			*next_ptr = cpu_to_le32(next_off);
+		next_ptr = &durable_ccontext->Next;
+		next_off = conn->vals->create_durable_size;
 	}
 
 	if (posix_ctxt) {
@@ -6827,10 +7059,10 @@ struct file_lock *smb_flock_init(struct file *f)
 
 	locks_init_lock(fl);
 
-	fl->fl_owner = f;
-	fl->fl_pid = current->tgid;
-	fl->fl_file = f;
-	fl->fl_flags = FL_POSIX;
+	fl->c.flc_owner = f;
+	fl->c.flc_pid = current->tgid;
+	fl->c.flc_file = f;
+	fl->c.flc_flags = FL_POSIX;
 	fl->fl_ops = NULL;
 	fl->fl_lmops = NULL;
 
@@ -6847,30 +7079,30 @@ static int smb2_set_flock_flags(struct file_lock *flock, int flags)
 	case SMB2_LOCKFLAG_SHARED:
 		ksmbd_debug(SMB, "received shared request\n");
 		cmd = F_SETLKW;
-		flock->fl_type = F_RDLCK;
-		flock->fl_flags |= FL_SLEEP;
+		flock->c.flc_type = F_RDLCK;
+		flock->c.flc_flags |= FL_SLEEP;
 		break;
 	case SMB2_LOCKFLAG_EXCLUSIVE:
 		ksmbd_debug(SMB, "received exclusive request\n");
 		cmd = F_SETLKW;
-		flock->fl_type = F_WRLCK;
-		flock->fl_flags |= FL_SLEEP;
+		flock->c.flc_type = F_WRLCK;
+		flock->c.flc_flags |= FL_SLEEP;
 		break;
 	case SMB2_LOCKFLAG_SHARED | SMB2_LOCKFLAG_FAIL_IMMEDIATELY:
 		ksmbd_debug(SMB,
 			    "received shared & fail immediately request\n");
 		cmd = F_SETLK;
-		flock->fl_type = F_RDLCK;
+		flock->c.flc_type = F_RDLCK;
 		break;
 	case SMB2_LOCKFLAG_EXCLUSIVE | SMB2_LOCKFLAG_FAIL_IMMEDIATELY:
 		ksmbd_debug(SMB,
 			    "received exclusive & fail immediately request\n");
 		cmd = F_SETLK;
-		flock->fl_type = F_WRLCK;
+		flock->c.flc_type = F_WRLCK;
 		break;
 	case SMB2_LOCKFLAG_UNLOCK:
 		ksmbd_debug(SMB, "received unlock request\n");
-		flock->fl_type = F_UNLCK;
+		flock->c.flc_type = F_UNLCK;
 		cmd = F_SETLK;
 		break;
 	}
@@ -6908,13 +7140,13 @@ static void smb2_remove_blocked_lock(void **argv)
 	struct file_lock *flock = (struct file_lock *)argv[0];
 
 	ksmbd_vfs_posix_lock_unblock(flock);
-	wake_up(&flock->fl_wait);
+	locks_wake_up(flock);
 }
 
 static inline bool lock_defer_pending(struct file_lock *fl)
 {
 	/* check pending lock waiters */
-	return waitqueue_active(&fl->fl_wait);
+	return waitqueue_active(&fl->c.flc_wait);
 }
 
 /**
@@ -7005,8 +7237,8 @@ int smb2_lock(struct ksmbd_work *work)
 		list_for_each_entry(cmp_lock, &lock_list, llist) {
 			if (cmp_lock->fl->fl_start <= flock->fl_start &&
 			    cmp_lock->fl->fl_end >= flock->fl_end) {
-				if (cmp_lock->fl->fl_type != F_UNLCK &&
-				    flock->fl_type != F_UNLCK) {
+				if (cmp_lock->fl->c.flc_type != F_UNLCK &&
+				    flock->c.flc_type != F_UNLCK) {
 					pr_err("conflict two locks in one request\n");
 					err = -EINVAL;
 					locks_free_lock(flock);
@@ -7054,12 +7286,12 @@ int smb2_lock(struct ksmbd_work *work)
 		list_for_each_entry(conn, &conn_list, conns_list) {
 			spin_lock(&conn->llist_lock);
 			list_for_each_entry_safe(cmp_lock, tmp2, &conn->lock_list, clist) {
-				if (file_inode(cmp_lock->fl->fl_file) !=
-				    file_inode(smb_lock->fl->fl_file))
+				if (file_inode(cmp_lock->fl->c.flc_file) !=
+				    file_inode(smb_lock->fl->c.flc_file))
 					continue;
 
-				if (smb_lock->fl->fl_type == F_UNLCK) {
-					if (cmp_lock->fl->fl_file == smb_lock->fl->fl_file &&
+				if (lock_is_unlock(smb_lock->fl)) {
+					if (cmp_lock->fl->c.flc_file == smb_lock->fl->c.flc_file &&
 					    cmp_lock->start == smb_lock->start &&
 					    cmp_lock->end == smb_lock->end &&
 					    !lock_defer_pending(cmp_lock->fl)) {
@@ -7076,7 +7308,7 @@ int smb2_lock(struct ksmbd_work *work)
 					continue;
 				}
 
-				if (cmp_lock->fl->fl_file == smb_lock->fl->fl_file) {
+				if (cmp_lock->fl->c.flc_file == smb_lock->fl->c.flc_file) {
 					if (smb_lock->flags & SMB2_LOCKFLAG_SHARED)
 						continue;
 				} else {
@@ -7118,7 +7350,7 @@ int smb2_lock(struct ksmbd_work *work)
 		}
 		up_read(&conn_list_lock);
 out_check_cl:
-		if (smb_lock->fl->fl_type == F_UNLCK && nolock) {
+		if (lock_is_unlock(smb_lock->fl) && nolock) {
 			pr_err("Try to unlock nolocked range\n");
 			rsp->hdr.Status = STATUS_RANGE_NOT_LOCKED;
 			goto out;
@@ -7242,7 +7474,7 @@ out:
 		struct file_lock *rlock = NULL;
 
 		rlock = smb_flock_init(filp);
-		rlock->fl_type = F_UNLCK;
+		rlock->c.flc_type = F_UNLCK;
 		rlock->fl_start = smb_lock->start;
 		rlock->fl_end = smb_lock->end;
 

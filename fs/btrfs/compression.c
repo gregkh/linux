@@ -25,8 +25,6 @@
 #include "misc.h"
 #include "ctree.h"
 #include "fs.h"
-#include "disk-io.h"
-#include "transaction.h"
 #include "btrfs_inode.h"
 #include "bio.h"
 #include "ordered-data.h"
@@ -34,8 +32,7 @@
 #include "extent_io.h"
 #include "extent_map.h"
 #include "subpage.h"
-#include "zoned.h"
-#include "file-item.h"
+#include "messages.h"
 #include "super.h"
 
 static struct bio_set btrfs_compressed_bioset;
@@ -1478,11 +1475,6 @@ static void heuristic_collect_sample(struct inode *inode, u64 start, u64 end,
 
 /*
  * Compression heuristic.
- *
- * For now is's a naive and optimistic 'return true', we'll extend the logic to
- * quickly (compared to direct compression) detect data characteristics
- * (compressible/incompressible) to avoid wasting CPU time on incompressible
- * data.
  *
  * The following types of analysis can be performed:
  * - detect mostly zero data

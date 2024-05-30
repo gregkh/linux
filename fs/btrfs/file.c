@@ -22,10 +22,8 @@
 #include "disk-io.h"
 #include "transaction.h"
 #include "btrfs_inode.h"
-#include "print-tree.h"
 #include "tree-log.h"
 #include "locking.h"
-#include "volumes.h"
 #include "qgroup.h"
 #include "compression.h"
 #include "delalloc-space.h"
@@ -1912,6 +1910,8 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 		goto out_release_extents;
 	}
 
+	btrfs_init_log_ctx_scratch_eb(&ctx);
+
 	/*
 	 * We use start here because we will need to wait on the IO to complete
 	 * in btrfs_sync_log, which could require joining a transaction (for
@@ -1931,6 +1931,15 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	trans->in_fsync = true;
 
 	ret = btrfs_log_dentry_safe(trans, dentry, &ctx);
+	/*
+	 * Scratch eb no longer needed, release before syncing log or commit
+	 * transaction, to avoid holding unnecessary memory during such long
+	 * operations.
+	 */
+	if (ctx.scratch_eb) {
+		free_extent_buffer(ctx.scratch_eb);
+		ctx.scratch_eb = NULL;
+	}
 	btrfs_release_log_ctx_extents(&ctx);
 	if (ret < 0) {
 		/* Fallthrough and commit/free transaction. */
@@ -2006,6 +2015,7 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 
 	ret = btrfs_commit_transaction(trans);
 out:
+	free_extent_buffer(ctx.scratch_eb);
 	ASSERT(list_empty(&ctx.list));
 	ASSERT(list_empty(&ctx.conflict_inodes));
 	err = file_check_and_advance_wb_err(file);
@@ -2176,7 +2186,7 @@ static int find_first_non_hole(struct btrfs_inode *inode, u64 *start, u64 *len)
 	struct extent_map *em;
 	int ret = 0;
 
-	em = btrfs_get_extent(inode, NULL, 0,
+	em = btrfs_get_extent(inode, NULL,
 			      round_down(*start, fs_info->sectorsize),
 			      round_up(*len, fs_info->sectorsize));
 	if (IS_ERR(em))
@@ -2835,7 +2845,7 @@ static int btrfs_zero_range_check_range_boundary(struct btrfs_inode *inode,
 	int ret;
 
 	offset = round_down(offset, sectorsize);
-	em = btrfs_get_extent(inode, NULL, 0, offset, sectorsize);
+	em = btrfs_get_extent(inode, NULL, offset, sectorsize);
 	if (IS_ERR(em))
 		return PTR_ERR(em);
 
@@ -2866,7 +2876,7 @@ static int btrfs_zero_range(struct inode *inode,
 	u64 bytes_to_reserve = 0;
 	bool space_reserved = false;
 
-	em = btrfs_get_extent(BTRFS_I(inode), NULL, 0, alloc_start,
+	em = btrfs_get_extent(BTRFS_I(inode), NULL, alloc_start,
 			      alloc_end - alloc_start);
 	if (IS_ERR(em)) {
 		ret = PTR_ERR(em);
@@ -2909,8 +2919,7 @@ static int btrfs_zero_range(struct inode *inode,
 
 	if (BTRFS_BYTES_TO_BLKS(fs_info, offset) ==
 	    BTRFS_BYTES_TO_BLKS(fs_info, offset + len - 1)) {
-		em = btrfs_get_extent(BTRFS_I(inode), NULL, 0, alloc_start,
-				      sectorsize);
+		em = btrfs_get_extent(BTRFS_I(inode), NULL, alloc_start, sectorsize);
 		if (IS_ERR(em)) {
 			ret = PTR_ERR(em);
 			goto out;
@@ -3005,7 +3014,7 @@ reserve_space:
 		}
 		ret = btrfs_prealloc_file_range(inode, mode, alloc_start,
 						alloc_end - alloc_start,
-						i_blocksize(inode),
+						fs_info->sectorsize,
 						offset + len, &alloc_hint);
 		unlock_extent(&BTRFS_I(inode)->io_tree, lockstart, lockend,
 			      &cached_state);
@@ -3126,7 +3135,7 @@ static long btrfs_fallocate(struct file *file, int mode,
 
 	/* First, check if we exceed the qgroup limit */
 	while (cur_offset < alloc_end) {
-		em = btrfs_get_extent(BTRFS_I(inode), NULL, 0, cur_offset,
+		em = btrfs_get_extent(BTRFS_I(inode), NULL, cur_offset,
 				      alloc_end - cur_offset);
 		if (IS_ERR(em)) {
 			ret = PTR_ERR(em);
@@ -3177,7 +3186,7 @@ static long btrfs_fallocate(struct file *file, int mode,
 		if (!ret) {
 			ret = btrfs_prealloc_file_range(inode, mode,
 					range->start,
-					range->len, i_blocksize(inode),
+					range->len, blocksize,
 					offset + len, &alloc_hint);
 			/*
 			 * btrfs_prealloc_file_range() releases space even

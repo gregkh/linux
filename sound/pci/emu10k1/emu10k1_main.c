@@ -816,6 +816,8 @@ static void emu1010_work(struct work_struct *work)
 		return;
 #endif
 
+	snd_emu1010_fpga_lock(emu);
+
 	snd_emu1010_fpga_read(emu, EMU_HANA_IRQ_STATUS, &sts);
 
 	// The distinction of the IRQ status bits is unreliable,
@@ -825,6 +827,8 @@ static void emu1010_work(struct work_struct *work)
 
 	if (sts & EMU_HANA_IRQ_WCLK_CHANGED)
 		emu1010_clock_event(emu);
+
+	snd_emu1010_fpga_unlock(emu);
 }
 
 static void emu1010_interrupt(struct snd_emu10k1 *emu)
@@ -858,6 +862,8 @@ static int snd_emu10k1_emu1010_init(struct snd_emu10k1 *emu)
 	 * Proper init follows in snd_emu10k1_init(). */
 	outl(HCFG_LOCKSOUNDCACHE | HCFG_LOCKTANKCACHE_MASK, emu->port + HCFG);
 
+	snd_emu1010_fpga_lock(emu);
+
 	/* Disable 48Volt power to Audio Dock */
 	snd_emu1010_fpga_write(emu, EMU_HANA_DOCK_PWR, 0);
 
@@ -883,7 +889,7 @@ static int snd_emu10k1_emu1010_init(struct snd_emu10k1 *emu)
 	err = snd_emu1010_load_firmware(emu, 0, &emu->firmware);
 	if (err < 0) {
 		dev_info(emu->card->dev, "emu1010: Loading Firmware failed\n");
-		return err;
+		goto fail;
 	}
 
 	/* ID, should read & 0x7f = 0x55 when FPGA programmed. */
@@ -893,7 +899,8 @@ static int snd_emu10k1_emu1010_init(struct snd_emu10k1 *emu)
 		dev_info(emu->card->dev,
 			 "emu1010: Loading Hana Firmware file failed, reg = 0x%x\n",
 			 reg);
-		return -ENODEV;
+		err = -ENODEV;
+		goto fail;
 	}
 
 	dev_info(emu->card->dev, "emu1010: Hana Firmware loaded\n");
@@ -953,7 +960,9 @@ static int snd_emu10k1_emu1010_init(struct snd_emu10k1 *emu)
 	// so it is safe to simply enable the outputs.
 	snd_emu1010_fpga_write(emu, EMU_HANA_UNMUTE, EMU_UNMUTE);
 
-	return 0;
+fail:
+	snd_emu1010_fpga_unlock(emu);
+	return err;
 }
 /*
  *  Create the EMU10K1 instance
@@ -975,9 +984,10 @@ static void snd_emu10k1_free(struct snd_card *card)
 	}
 	if (emu->card_capabilities->emu_model == EMU_MODEL_EMU1010) {
 		/* Disable 48Volt power to Audio Dock */
-		snd_emu1010_fpga_write(emu, EMU_HANA_DOCK_PWR, 0);
+		snd_emu1010_fpga_write_lock(emu, EMU_HANA_DOCK_PWR, 0);
 	}
 	cancel_work_sync(&emu->emu1010.work);
+	mutex_destroy(&emu->emu1010.lock);
 	release_firmware(emu->firmware);
 	release_firmware(emu->dock_fw);
 	snd_util_memhdr_free(emu->memhdr);
@@ -1557,6 +1567,7 @@ int snd_emu10k1_create(struct snd_card *card,
 	emu->synth = NULL;
 	emu->get_synth_voice = NULL;
 	INIT_WORK(&emu->emu1010.work, emu1010_work);
+	mutex_init(&emu->emu1010.lock);
 	/* read revision & serial */
 	emu->revision = pci->revision;
 	pci_read_config_dword(pci, PCI_SUBSYSTEM_VENDOR_ID, &emu->serial);

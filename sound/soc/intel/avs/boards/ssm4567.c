@@ -172,7 +172,6 @@ static int avs_ssm4567_probe(struct platform_device *pdev)
 	card->dapm_routes = card_base_routes;
 	card->num_dapm_routes = ARRAY_SIZE(card_base_routes);
 	card->fully_routed = true;
-	card->disable_route_checks = true;
 
 	ret = snd_soc_fixup_dai_links_platform_name(card, pname);
 	if (ret)
@@ -200,4 +199,5 @@ static struct platform_driver avs_ssm4567_driver = {
 
 module_platform_driver(avs_ssm4567_driver)
 
+MODULE_DESCRIPTION("Intel ssm4567 machine driver");
 MODULE_LICENSE("GPL");

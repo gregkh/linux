@@ -355,11 +355,15 @@ static u8
 mt792x_acpi_get_mtcl_map(int row, int column, struct mt792x_asar_cl *cl)
 {
 	u8 config = 0;
+	u8 mode_6g, mode_5g9;
 
-	if (cl->cl6g[row] & BIT(column))
-		config |= (cl->mode_6g & 0x3) << 2;
+	mode_6g = (cl->mode_6g > 0x02) ? 0 : cl->mode_6g;
+	mode_5g9 = (cl->mode_5g9 > 0x01) ? 0 : cl->mode_5g9;
+
+	if ((cl->cl6g[row] & BIT(column)) || cl->mode_6g == 0x02)
+		config |= (mode_6g & 0x3) << 2;
 	if (cl->version > 1 && cl->cl5g9[row] & BIT(column))
-		config |= (cl->mode_5g9 & 0x3);
+		config |= (mode_5g9 & 0x3);
 
 	return config;
 }
@@ -376,7 +380,7 @@ u8 mt792x_acpi_get_mtcl_conf(struct mt792x_phy *phy, char *alpha2)
 		"AT", "BE", "BG", "CY", "CZ", "HR", "DK", "EE",
 		"FI", "FR", "DE", "GR", "HU", "IS", "IE", "IT",
 		"LV", "LI", "LT", "LU", "MT", "NL", "NO", "PL",
-		"PT", "RO", "MT", "SK", "SI", "ES", "CH",
+		"PT", "RO", "SK", "SI", "ES", "SE", "CH",
 	};
 	struct mt792x_acpi_sar *sar = phy->acpisar;
 	struct mt792x_asar_cl *cl;

@@ -94,9 +94,16 @@
  *	Unlock all
  */
 
+/*
+ * Add validation and rebinding to the drm_exec locking loop, since both can
+ * trigger eviction which may require sleeping dma_resv locks.
+ */
 static int xe_exec_fn(struct drm_gpuvm_exec *vm_exec)
 {
-	return drm_gpuvm_validate(vm_exec->vm, &vm_exec->exec);
+	struct xe_vm *vm = container_of(vm_exec->vm, struct xe_vm, gpuvm);
+
+	/* The fence slot added here is intended for the exec sched job. */
+	return xe_vm_validate_rebind(vm, &vm_exec->exec, 1);
 }
 
 int xe_exec_ioctl(struct drm_device *dev, void *data, struct drm_file *file)
@@ -219,7 +226,6 @@ retry:
 	}
 
 	vm_exec.vm = &vm->gpuvm;
-	vm_exec.num_fences = 1 + vm->xe->info.tile_count;
 	vm_exec.flags = DRM_EXEC_INTERRUPTIBLE_WAIT;
 	if (xe_vm_in_lr_mode(vm)) {
 		drm_exec_init(exec, vm_exec.flags, 0);
@@ -250,14 +256,6 @@ retry:
 		err = PTR_ERR(job);
 		goto err_exec;
 	}
-
-	/*
-	 * Rebind any invalidated userptr or evicted BOs in the VM, non-compute
-	 * VM mode only.
-	 */
-	err = xe_vm_rebind(vm, false);
-	if (err)
-		goto err_put_job;
 
 	/* Wait behind rebinds */
 	if (!xe_vm_in_lr_mode(vm)) {

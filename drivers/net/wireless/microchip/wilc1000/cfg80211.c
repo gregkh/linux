@@ -356,7 +356,7 @@ static int connect(struct wiphy *wiphy, struct net_device *dev,
 			memcpy(vif->auth.ssid.ssid, sme->ssid, sme->ssid_len);
 			vif->auth.ssid.ssid_len = sme->ssid_len;
 		}
-		vif->auth.key_mgmt_suite = cpu_to_be32(sme->crypto.akm_suites[0]);
+		vif->auth.key_mgmt_suite = sme->crypto.akm_suites[0];
 		ether_addr_copy(vif->auth.bssid, sme->bssid);
 		break;
 
@@ -1518,7 +1518,7 @@ static struct wilc_vif *wilc_get_vif_from_type(struct wilc *wl, int type)
 {
 	struct wilc_vif *vif;
 
-	list_for_each_entry_rcu(vif, &wl->vif_list, list) {
+	wilc_for_each_vif(wl, vif) {
 		if (vif->iftype == type)
 			return vif;
 	}

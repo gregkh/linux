@@ -31,11 +31,11 @@ struct es8326_priv {
 	 * while enabling or disabling or during an irq.
 	 */
 	struct mutex lock;
-	u8 mic1_src;
-	u8 mic2_src;
 	u8 jack_pol;
 	u8 interrupt_src;
 	u8 interrupt_clk;
+	u8 hpl_vol;
+	u8 hpr_vol;
 	bool jd_inverted;
 	unsigned int sysclk;
 
@@ -121,6 +121,72 @@ static int es8326_crosstalk2_set(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static int es8326_hplvol_get(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct es8326_priv *es8326 = snd_soc_component_get_drvdata(component);
+
+	ucontrol->value.integer.value[0] = es8326->hpl_vol;
+
+	return 0;
+}
+
+static int es8326_hplvol_set(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct es8326_priv *es8326 = snd_soc_component_get_drvdata(component);
+	unsigned int hp_vol;
+
+	hp_vol = ucontrol->value.integer.value[0];
+	if (hp_vol > 5)
+		return -EINVAL;
+	if (es8326->hpl_vol != hp_vol) {
+		es8326->hpl_vol = hp_vol;
+		if (hp_vol >= 3)
+			hp_vol++;
+		regmap_update_bits(es8326->regmap, ES8326_HP_VOL,
+				0x70, (hp_vol << 4));
+		return 1;
+	}
+
+	return 0;
+}
+
+static int es8326_hprvol_get(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct es8326_priv *es8326 = snd_soc_component_get_drvdata(component);
+
+	ucontrol->value.integer.value[0] = es8326->hpr_vol;
+
+	return 0;
+}
+
+static int es8326_hprvol_set(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct es8326_priv *es8326 = snd_soc_component_get_drvdata(component);
+	unsigned int hp_vol;
+
+	hp_vol = ucontrol->value.integer.value[0];
+	if (hp_vol > 5)
+		return -EINVAL;
+	if (es8326->hpr_vol != hp_vol) {
+		es8326->hpr_vol = hp_vol;
+		if (hp_vol >= 3)
+			hp_vol++;
+		regmap_update_bits(es8326->regmap, ES8326_HP_VOL,
+				0x07, hp_vol);
+		return 1;
+	}
+
+	return 0;
+}
+
 static const SNDRV_CTL_TLVD_DECLARE_DB_SCALE(dac_vol_tlv, -9550, 50, 0);
 static const SNDRV_CTL_TLVD_DECLARE_DB_SCALE(adc_vol_tlv, -9550, 50, 0);
 static const SNDRV_CTL_TLVD_DECLARE_DB_SCALE(adc_analog_pga_tlv, 0, 300, 0);
@@ -151,15 +217,24 @@ static const char *const winsize[] = {
 static const char *const dacpol_txt[] =	{
 	"Normal", "R Invert", "L Invert", "L + R Invert" };
 
+static const char *const hp_spkvol_switch[] = {
+	"HPVOL: HPL+HPL, SPKVOL: HPL+HPL",
+	"HPVOL: HPL+HPR, SPKVOL: HPL+HPR",
+	"HPVOL: HPL+HPL, SPKVOL: SPKL+SPKR",
+	"HPVOL: HPL+HPR, SPKVOL: SPKL+SPKR",
+};
+
 static const struct soc_enum dacpol =
 	SOC_ENUM_SINGLE(ES8326_DAC_DSM, 4, 4, dacpol_txt);
 static const struct soc_enum alc_winsize =
 	SOC_ENUM_SINGLE(ES8326_ADC_RAMPRATE, 4, 16, winsize);
 static const struct soc_enum drc_winsize =
 	SOC_ENUM_SINGLE(ES8326_DRC_WINSIZE, 4, 16, winsize);
+static const struct soc_enum hpvol_spkvol_switch =
+	SOC_ENUM_SINGLE(ES8326_HP_MISC, 6, 4, hp_spkvol_switch);
 
 static const struct snd_kcontrol_new es8326_snd_controls[] = {
-	SOC_SINGLE_TLV("DAC Playback Volume", ES8326_DAC_VOL, 0, 0xbf, 0, dac_vol_tlv),
+	SOC_SINGLE_TLV("DAC Playback Volume", ES8326_DACL_VOL, 0, 0xbf, 0, dac_vol_tlv),
 	SOC_ENUM("Playback Polarity", dacpol),
 	SOC_SINGLE_TLV("DAC Ramp Rate", ES8326_DAC_RAMPRATE, 0, 0x0f, 0, softramp_rate),
 	SOC_SINGLE_TLV("DRC Recovery Level", ES8326_DRC_RECOVERY, 0, 4, 0, drc_recovery_tlv),
@@ -182,6 +257,17 @@ static const struct snd_kcontrol_new es8326_snd_controls[] = {
 			es8326_crosstalk1_get, es8326_crosstalk1_set),
 	SOC_SINGLE_EXT("CROSSTALK2", SND_SOC_NOPM, 0, 31, 0,
 			es8326_crosstalk2_get, es8326_crosstalk2_set),
+	SOC_SINGLE_EXT("HPL Volume", SND_SOC_NOPM, 0, 5, 0,
+			es8326_hplvol_get, es8326_hplvol_set),
+	SOC_SINGLE_EXT("HPR Volume", SND_SOC_NOPM, 0, 5, 0,
+			es8326_hprvol_get, es8326_hprvol_set),
+
+	SOC_SINGLE_TLV("HPL Playback Volume", ES8326_DACL_VOL, 0, 0xbf, 0, dac_vol_tlv),
+	SOC_SINGLE_TLV("HPR Playback Volume", ES8326_DACR_VOL, 0, 0xbf, 0, dac_vol_tlv),
+	SOC_SINGLE_TLV("SPKL Playback Volume", ES8326_SPKL_VOL, 0, 0xbf, 0, dac_vol_tlv),
+	SOC_SINGLE_TLV("SPKR Playback Volume", ES8326_SPKR_VOL, 0, 0xbf, 0, dac_vol_tlv),
+
+	SOC_ENUM("HPVol SPKVol Switch", hpvol_spkvol_switch),
 };
 
 static const struct snd_soc_dapm_widget es8326_dapm_widgets[] = {
@@ -749,7 +835,6 @@ static void es8326_jack_detect_handler(struct work_struct *work)
 			dev_dbg(comp->dev, "Report hp remove event\n");
 			snd_soc_jack_report(es8326->jack, 0, SND_JACK_HEADSET);
 			/* mute adc when mic path switch */
-			regmap_write(es8326->regmap, ES8326_ADC_SCALE, 0x33);
 			regmap_write(es8326->regmap, ES8326_ADC1_SRC, 0x44);
 			regmap_write(es8326->regmap, ES8326_ADC2_SRC, 0x66);
 			es8326->hp = 0;
@@ -808,7 +893,6 @@ static void es8326_jack_detect_handler(struct work_struct *work)
 			snd_soc_jack_report(es8326->jack,
 					SND_JACK_HEADSET, SND_JACK_HEADSET);
 
-			regmap_write(es8326->regmap, ES8326_ADC_SCALE, 0x33);
 			regmap_update_bits(es8326->regmap, ES8326_PGA_PDN,
 					0x08, 0x08);
 			regmap_update_bits(es8326->regmap, ES8326_PGAGAIN,
@@ -974,6 +1058,10 @@ static int es8326_resume(struct snd_soc_component *component)
 
 	es8326->jack_remove_retry = 0;
 	es8326->hp = 0;
+	es8326->hpl_vol = 0x03;
+	es8326->hpr_vol = 0x03;
+
+	es8326_irq(es8326->irq, es8326);
 	return 0;
 }
 
@@ -984,6 +1072,9 @@ static int es8326_suspend(struct snd_soc_component *component)
 	cancel_delayed_work_sync(&es8326->jack_detect_work);
 	es8326_disable_micbias(component);
 	es8326->calibrated = false;
+	regmap_write(es8326->regmap, ES8326_CLK_MUX, 0x2d);
+	regmap_write(es8326->regmap, ES8326_DAC2HPMIX, 0x00);
+	regmap_write(es8326->regmap, ES8326_ANA_PDN, 0x3b);
 	regmap_write(es8326->regmap, ES8326_CLK_CTL, ES8326_CLK_OFF);
 	regcache_cache_only(es8326->regmap, true);
 	regcache_mark_dirty(es8326->regmap);
@@ -1004,20 +1095,6 @@ static int es8326_probe(struct snd_soc_component *component)
 	es8326->jd_inverted = device_property_read_bool(component->dev,
 							"everest,jack-detect-inverted");
 
-	ret = device_property_read_u8(component->dev, "everest,mic1-src", &es8326->mic1_src);
-	if (ret != 0) {
-		dev_dbg(component->dev, "mic1-src return %d", ret);
-		es8326->mic1_src = ES8326_ADC_AMIC;
-	}
-	dev_dbg(component->dev, "mic1-src %x", es8326->mic1_src);
-
-	ret = device_property_read_u8(component->dev, "everest,mic2-src", &es8326->mic2_src);
-	if (ret != 0) {
-		dev_dbg(component->dev, "mic2-src return %d", ret);
-		es8326->mic2_src = ES8326_ADC_DMIC;
-	}
-	dev_dbg(component->dev, "mic2-src %x", es8326->mic2_src);
-
 	ret = device_property_read_u8(component->dev, "everest,jack-pol", &es8326->jack_pol);
 	if (ret != 0) {
 		dev_dbg(component->dev, "jack-pol return %d", ret);
@@ -1037,7 +1114,7 @@ static int es8326_probe(struct snd_soc_component *component)
 				      &es8326->interrupt_clk);
 	if (ret != 0) {
 		dev_dbg(component->dev, "interrupt-clk return %d", ret);
-		es8326->interrupt_clk = 0x45;
+		es8326->interrupt_clk = 0x00;
 	}
 	dev_dbg(component->dev, "interrupt-clk %x", es8326->interrupt_clk);
 

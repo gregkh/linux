@@ -367,6 +367,7 @@ static int avs_asrc_create(struct avs_dev *adev, struct avs_path_module *mod)
 	struct avs_tplg_module *t = mod->template;
 	struct avs_asrc_cfg cfg;
 
+	memset(&cfg, 0, sizeof(cfg));
 	cfg.base.cpc = t->cfg_base->cpc;
 	cfg.base.ibs = t->cfg_base->ibs;
 	cfg.base.obs = t->cfg_base->obs;
@@ -547,6 +548,33 @@ static int avs_path_module_type_create(struct avs_dev *adev, struct avs_path_mod
 	return avs_modext_create(adev, mod);
 }
 
+static int avs_path_module_send_init_configs(struct avs_dev *adev, struct avs_path_module *mod)
+{
+	struct avs_soc_component *acomp;
+
+	acomp = to_avs_soc_component(mod->template->owner->owner->owner->owner->comp);
+
+	u32 num_ids = mod->template->num_config_ids;
+	u32 *ids = mod->template->config_ids;
+
+	for (int i = 0; i < num_ids; i++) {
+		struct avs_tplg_init_config *config = &acomp->tplg->init_configs[ids[i]];
+		size_t len = config->length;
+		void *data = config->data;
+		u32 param = config->param;
+		int ret;
+
+		ret = avs_ipc_set_large_config(adev, mod->module_id, mod->instance_id,
+					       param, data, len);
+		if (ret) {
+			dev_err(adev->dev, "send initial module config failed: %d\n", ret);
+			return AVS_IPC_RET(ret);
+		}
+	}
+
+	return 0;
+}
+
 static void avs_path_module_free(struct avs_dev *adev, struct avs_path_module *mod)
 {
 	kfree(mod);
@@ -576,6 +604,12 @@ avs_path_module_create(struct avs_dev *adev,
 	ret = avs_path_module_type_create(adev, mod);
 	if (ret) {
 		dev_err(adev->dev, "module-type create failed: %d\n", ret);
+		kfree(mod);
+		return ERR_PTR(ret);
+	}
+
+	ret = avs_path_module_send_init_configs(adev, mod);
+	if (ret) {
 		kfree(mod);
 		return ERR_PTR(ret);
 	}
