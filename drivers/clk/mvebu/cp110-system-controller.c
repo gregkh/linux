@@ -130,7 +130,16 @@ static int cp110_gate_enable(struct clk_hw *hw)
 
 static void cp110_gate_disable(struct clk_hw *hw)
 {
-	struct cp110_gate_clk *gate = to_cp110_gate_clk(hw);
+	struct cp110_gate_clk *gate = to_cp110_gate_clk(hw);  
+
+// ignore disabling those specific clock as a temporarily solution to a problem: 
+// the pcie(s) try to enable those clocks in their init but this causes a kernel stuck, 
+// and even pcie reset doesn't help. a proper solution will be implemented in 
+// DEV-6467: Improve DEV-6442-Add initialization order to the falcon phy and modems
+	if ((gate->bit_idx == CP110_GATE_PCIE_X1_0) ||
+		(gate->bit_idx == CP110_GATE_PCIE_X4)) {
+			return;
+		}
 
 	regmap_update_bits(gate->regmap, CP110_PM_CLOCK_GATING_REG,
 			   BIT(gate->bit_idx), 0);

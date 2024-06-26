@@ -118,6 +118,7 @@ struct idtcm {
 	u8			calculate_overhead_flag;
 	s64			tod_write_overhead_ns;
 	ktime_t			start_time;
+	struct clk_hw *clock_hw;
 };
 
 struct idtcm_fwrc {

@@ -17,6 +17,7 @@
 #include <linux/of.h>
 #include <linux/mfd/rsmu.h>
 #include <linux/mfd/idt8a340_reg.h>
+#include <linux/clk-provider.h>
 #include <asm/unaligned.h>
 
 #include "ptp_private.h"
@@ -2408,6 +2409,29 @@ static void set_default_masks(struct idtcm *idtcm)
 	idtcm->channel[3].output_mask = DEFAULT_OUTPUT_MASK_PLL3;
 }
 
+
+// add the dpll as a hw clock.
+static int internal_of_clk_add_hw_provider(struct platform_device *pdev, struct idtcm *idtcm)
+{
+	int err;
+
+	if (!pdev || !pdev->dev.parent || !pdev->dev.parent->of_node) {
+		return -EINVAL;
+	}
+
+	idtcm->clock_hw = clk_hw_register_fixed_rate_with_accuracy(NULL, pdev->dev.parent->of_node->name, NULL,
+						    0, 0 /* rate*/, 0 /*accuracy*/);
+	if (IS_ERR(idtcm->clock_hw))
+		return -ENOMEM;;
+
+	err = of_clk_add_hw_provider(pdev->dev.parent->of_node, of_clk_hw_simple_get, idtcm->clock_hw);
+	if (err) {
+		clk_hw_unregister_fixed_rate(idtcm->clock_hw);
+		return -ENOMEM;;
+	}
+	return 0;
+}
+
 static int idtcm_probe(struct platform_device *pdev)
 {
 	struct rsmu_ddata *ddata = dev_get_drvdata(pdev->dev.parent);
@@ -2425,6 +2449,7 @@ static int idtcm_probe(struct platform_device *pdev)
 	idtcm->lock = &ddata->lock;
 	idtcm->regmap = ddata->regmap;
 	idtcm->calculate_overhead_flag = 0;
+	idtcm->clock_hw = NULL;
 
 	INIT_DELAYED_WORK(&idtcm->extts_work, idtcm_extts_check);
 
@@ -2466,6 +2491,15 @@ static int idtcm_probe(struct platform_device *pdev)
 		return err;
 	}
 
+	// add the dpll as a hw clock. this is needed to cause the phys and pcies (modems) components
+	// to be called after the dpll initialization by creating clock dependencies in the 
+	// dts file (DEV-6442)
+	err = internal_of_clk_add_hw_provider(pdev, idtcm);
+	if (err) {
+		ptp_clock_unregister_all(idtcm);
+		return err;
+	}
+
 	platform_set_drvdata(pdev, idtcm);
 
 	return 0;
@@ -2474,6 +2508,10 @@ static int idtcm_probe(struct platform_device *pdev)
 static int idtcm_remove(struct platform_device *pdev)
 {
 	struct idtcm *idtcm = platform_get_drvdata(pdev);
+
+	if (idtcm->clock_hw) {
+		clk_hw_unregister_fixed_rate(idtcm->clock_hw);
+	}
 
 	idtcm->extts_mask = 0;
 	ptp_clock_unregister_all(idtcm);
