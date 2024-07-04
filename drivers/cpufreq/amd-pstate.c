@@ -900,7 +900,7 @@ free_cpudata1:
 	return ret;
 }
 
-static int amd_pstate_cpu_exit(struct cpufreq_policy *policy)
+static void amd_pstate_cpu_exit(struct cpufreq_policy *policy)
 {
 	struct amd_cpudata *cpudata = policy->driver_data;
 
@@ -908,8 +908,6 @@ static int amd_pstate_cpu_exit(struct cpufreq_policy *policy)
 	freq_qos_remove_request(&cpudata->req[0]);
 	policy->fast_switch_possible = false;
 	kfree(cpudata);
-
-	return 0;
 }
 
 static int amd_pstate_cpu_resume(struct cpufreq_policy *policy)
@@ -1353,7 +1351,7 @@ free_cpudata1:
 	return ret;
 }
 
-static int amd_pstate_epp_cpu_exit(struct cpufreq_policy *policy)
+static void amd_pstate_epp_cpu_exit(struct cpufreq_policy *policy)
 {
 	struct amd_cpudata *cpudata = policy->driver_data;
 
@@ -1363,7 +1361,6 @@ static int amd_pstate_epp_cpu_exit(struct cpufreq_policy *policy)
 	}
 
 	pr_debug("CPU %d exiting\n", policy->cpu);
-	return 0;
 }
 
 static void amd_pstate_epp_update_limit(struct cpufreq_policy *policy)
