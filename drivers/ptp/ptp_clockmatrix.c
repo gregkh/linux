@@ -1884,18 +1884,14 @@ static int idtcm_adjtime(struct ptp_clock_info *ptp, s64 delta)
 
 	mutex_lock(idtcm->lock);
 
-	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS) {
-		err = channel->do_phase_pull_in(channel, delta, 0);
+	if (delta >= 0) {
+		ts = ns_to_timespec64(delta);
+		type = SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS;
 	} else {
-		if (delta >= 0) {
-			ts = ns_to_timespec64(delta);
-			type = SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS;
-		} else {
-			ts = ns_to_timespec64(-delta);
-			type = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS;
-		}
-		err = _idtcm_settime(channel, &ts, type);
+		ts = ns_to_timespec64(-delta);
+		type = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS;
 	}
+	err = _idtcm_settime(channel, &ts, type);
 
 	mutex_unlock(idtcm->lock);
 
