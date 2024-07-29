@@ -242,9 +242,6 @@ static inline bool acpi_gicc_is_usable(struct acpi_madt_generic_interrupt *gicc)
 	return gicc->flags & ACPI_MADT_ENABLED;
 }
 
-/* the following numa functions are architecture-dependent */
-void acpi_numa_slit_init (struct acpi_table_slit *slit);
-
 #if defined(CONFIG_X86) || defined(CONFIG_LOONGARCH)
 void acpi_numa_processor_affinity_init (struct acpi_srat_cpu_affinity *pa);
 #else
@@ -266,8 +263,6 @@ void acpi_numa_gicc_affinity_init(struct acpi_srat_gicc_affinity *pa);
 static inline void
 acpi_numa_gicc_affinity_init(struct acpi_srat_gicc_affinity *pa) { }
 #endif
-
-int acpi_numa_memory_affinity_init (struct acpi_srat_mem_affinity *ma);
 
 #ifndef PHYS_CPUID_INVALID
 typedef u32 phys_cpuid_t;
@@ -421,7 +416,7 @@ extern char *wmi_get_acpi_device_uid(const char *guid);
 
 extern char acpi_video_backlight_string[];
 extern long acpi_is_video_device(acpi_handle handle);
-extern int acpi_blacklisted(void);
+
 extern void acpi_osi_setup(char *str);
 extern bool acpi_osi_is_win8(void);
 
@@ -1237,7 +1232,7 @@ bool acpi_gpio_get_irq_resource(struct acpi_resource *ares,
 				struct acpi_resource_gpio **agpio);
 bool acpi_gpio_get_io_resource(struct acpi_resource *ares,
 			       struct acpi_resource_gpio **agpio);
-int acpi_dev_gpio_irq_wake_get_by(struct acpi_device *adev, const char *name, int index,
+int acpi_dev_gpio_irq_wake_get_by(struct acpi_device *adev, const char *con_id, int index,
 				  bool *wake_capable);
 #else
 static inline bool acpi_gpio_get_irq_resource(struct acpi_resource *ares,
@@ -1250,7 +1245,7 @@ static inline bool acpi_gpio_get_io_resource(struct acpi_resource *ares,
 {
 	return false;
 }
-static inline int acpi_dev_gpio_irq_wake_get_by(struct acpi_device *adev, const char *name,
+static inline int acpi_dev_gpio_irq_wake_get_by(struct acpi_device *adev, const char *con_id,
 						int index, bool *wake_capable)
 {
 	return -ENXIO;
@@ -1263,10 +1258,10 @@ static inline int acpi_dev_gpio_irq_wake_get(struct acpi_device *adev, int index
 	return acpi_dev_gpio_irq_wake_get_by(adev, NULL, index, wake_capable);
 }
 
-static inline int acpi_dev_gpio_irq_get_by(struct acpi_device *adev, const char *name,
+static inline int acpi_dev_gpio_irq_get_by(struct acpi_device *adev, const char *con_id,
 					   int index)
 {
-	return acpi_dev_gpio_irq_wake_get_by(adev, name, index, NULL);
+	return acpi_dev_gpio_irq_wake_get_by(adev, con_id, index, NULL);
 }
 
 static inline int acpi_dev_gpio_irq_get(struct acpi_device *adev, int index)

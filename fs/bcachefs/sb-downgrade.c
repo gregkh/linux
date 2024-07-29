@@ -139,7 +139,7 @@ downgrade_entry_next_c(const struct bch_sb_field_downgrade_entry *e)
 	     _i = downgrade_entry_next_c(_i))
 
 static int bch2_sb_downgrade_validate(struct bch_sb *sb, struct bch_sb_field *f,
-				      struct printbuf *err)
+				      enum bch_validate_flags flags, struct printbuf *err)
 {
 	struct bch_sb_field_downgrade *e = field_to_type(f, downgrade);
 
@@ -153,6 +153,12 @@ static int bch2_sb_downgrade_validate(struct bch_sb *sb, struct bch_sb_field *f,
 		 */
 		if ((void *) &i->errors[0] > vstruct_end(&e->field))
 			break;
+
+		if (flags & BCH_VALIDATE_write &&
+		    (void *) downgrade_entry_next_c(i) > vstruct_end(&e->field)) {
+			prt_printf(err, "downgrade entry overruns end of superblock section");
+			return -BCH_ERR_invalid_sb_downgrade;
+		}
 
 		if (BCH_VERSION_MAJOR(le16_to_cpu(i->version)) !=
 		    BCH_VERSION_MAJOR(le16_to_cpu(sb->version))) {
@@ -175,19 +181,16 @@ static void bch2_sb_downgrade_to_text(struct printbuf *out, struct bch_sb *sb,
 		printbuf_tabstop_push(out, 16);
 
 	for_each_downgrade_entry(e, i) {
-		prt_str(out, "version:");
-		prt_tab(out);
+		prt_str(out, "version:\t");
 		bch2_version_to_text(out, le16_to_cpu(i->version));
 		prt_newline(out);
 
-		prt_str(out, "recovery passes:");
-		prt_tab(out);
+		prt_str(out, "recovery passes:\t");
 		prt_bitflags(out, bch2_recovery_passes,
 			     bch2_recovery_passes_from_stable(le64_to_cpu(i->recovery_passes[0])));
 		prt_newline(out);
 
-		prt_str(out, "errors:");
-		prt_tab(out);
+		prt_str(out, "errors:\t");
 		bool first = true;
 		for (unsigned j = 0; j < le16_to_cpu(i->nr_errors); j++) {
 			if (!first)

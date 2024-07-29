@@ -241,11 +241,11 @@ static int configure_datapath_sync(struct hci_dev *hdev, struct bt_codec *codec)
 	__u8 vnd_len, *vnd_data = NULL;
 	struct hci_op_configure_data_path *cmd = NULL;
 
+	/* Do not take below 2 checks as error since the 1st means user do not
+	 * want to use HFP offload mode and the 2nd means the vendor controller
+	 * do not need to send below HCI command for offload mode.
+	 */
 	if (!codec->data_path || !hdev->get_codec_config_data)
-		return 0;
-
-	/* Do not take me as error */
-	if (!hdev->get_codec_config_data)
 		return 0;
 
 	err = hdev->get_codec_config_data(hdev, ESCO_LINK, codec, &vnd_len,
@@ -663,11 +663,6 @@ static void le_conn_timeout(struct work_struct *work)
 
 	hci_abort_conn(conn, HCI_ERROR_REMOTE_USER_TERM);
 }
-
-struct iso_cig_params {
-	struct hci_cp_le_set_cig_params cp;
-	struct hci_cis_params cis[0x1f];
-};
 
 struct iso_list_data {
 	union {
@@ -1763,34 +1758,33 @@ static int hci_le_create_big(struct hci_conn *conn, struct bt_iso_qos *qos)
 
 static int set_cig_params_sync(struct hci_dev *hdev, void *data)
 {
+	DEFINE_FLEX(struct hci_cp_le_set_cig_params, pdu, cis, num_cis, 0x1f);
 	u8 cig_id = PTR_UINT(data);
 	struct hci_conn *conn;
 	struct bt_iso_qos *qos;
-	struct iso_cig_params pdu;
+	u8 aux_num_cis = 0;
 	u8 cis_id;
 
 	conn = hci_conn_hash_lookup_cig(hdev, cig_id);
 	if (!conn)
 		return 0;
 
-	memset(&pdu, 0, sizeof(pdu));
-
 	qos = &conn->iso_qos;
-	pdu.cp.cig_id = cig_id;
-	hci_cpu_to_le24(qos->ucast.out.interval, pdu.cp.c_interval);
-	hci_cpu_to_le24(qos->ucast.in.interval, pdu.cp.p_interval);
-	pdu.cp.sca = qos->ucast.sca;
-	pdu.cp.packing = qos->ucast.packing;
-	pdu.cp.framing = qos->ucast.framing;
-	pdu.cp.c_latency = cpu_to_le16(qos->ucast.out.latency);
-	pdu.cp.p_latency = cpu_to_le16(qos->ucast.in.latency);
+	pdu->cig_id = cig_id;
+	hci_cpu_to_le24(qos->ucast.out.interval, pdu->c_interval);
+	hci_cpu_to_le24(qos->ucast.in.interval, pdu->p_interval);
+	pdu->sca = qos->ucast.sca;
+	pdu->packing = qos->ucast.packing;
+	pdu->framing = qos->ucast.framing;
+	pdu->c_latency = cpu_to_le16(qos->ucast.out.latency);
+	pdu->p_latency = cpu_to_le16(qos->ucast.in.latency);
 
 	/* Reprogram all CIS(s) with the same CIG, valid range are:
 	 * num_cis: 0x00 to 0x1F
 	 * cis_id: 0x00 to 0xEF
 	 */
 	for (cis_id = 0x00; cis_id < 0xf0 &&
-	     pdu.cp.num_cis < ARRAY_SIZE(pdu.cis); cis_id++) {
+	     aux_num_cis < pdu->num_cis; cis_id++) {
 		struct hci_cis_params *cis;
 
 		conn = hci_conn_hash_lookup_cis(hdev, NULL, 0, cig_id, cis_id);
@@ -1799,7 +1793,7 @@ static int set_cig_params_sync(struct hci_dev *hdev, void *data)
 
 		qos = &conn->iso_qos;
 
-		cis = &pdu.cis[pdu.cp.num_cis++];
+		cis = &pdu->cis[aux_num_cis++];
 		cis->cis_id = cis_id;
 		cis->c_sdu  = cpu_to_le16(conn->iso_qos.ucast.out.sdu);
 		cis->p_sdu  = cpu_to_le16(conn->iso_qos.ucast.in.sdu);
@@ -1810,14 +1804,14 @@ static int set_cig_params_sync(struct hci_dev *hdev, void *data)
 		cis->c_rtn  = qos->ucast.out.rtn;
 		cis->p_rtn  = qos->ucast.in.rtn;
 	}
+	pdu->num_cis = aux_num_cis;
 
-	if (!pdu.cp.num_cis)
+	if (!pdu->num_cis)
 		return 0;
 
 	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_CIG_PARAMS,
-				     sizeof(pdu.cp) +
-				     pdu.cp.num_cis * sizeof(pdu.cis[0]), &pdu,
-				     HCI_CMD_TIMEOUT);
+				     struct_size(pdu, cis, pdu->num_cis),
+				     pdu, HCI_CMD_TIMEOUT);
 }
 
 static bool hci_le_set_cig_params(struct hci_conn *conn, struct bt_iso_qos *qos)
@@ -2144,13 +2138,10 @@ int hci_le_big_create_sync(struct hci_dev *hdev, struct hci_conn *hcon,
 			   struct bt_iso_qos *qos,
 			   __u16 sync_handle, __u8 num_bis, __u8 bis[])
 {
-	struct _packed {
-		struct hci_cp_le_big_create_sync cp;
-		__u8  bis[0x11];
-	} pdu;
+	DEFINE_FLEX(struct hci_cp_le_big_create_sync, pdu, bis, num_bis, 0x11);
 	int err;
 
-	if (num_bis < 0x01 || num_bis > sizeof(pdu.bis))
+	if (num_bis < 0x01 || num_bis > pdu->num_bis)
 		return -EINVAL;
 
 	err = qos_set_big(hdev, qos);
@@ -2160,18 +2151,17 @@ int hci_le_big_create_sync(struct hci_dev *hdev, struct hci_conn *hcon,
 	if (hcon)
 		hcon->iso_qos.bcast.big = qos->bcast.big;
 
-	memset(&pdu, 0, sizeof(pdu));
-	pdu.cp.handle = qos->bcast.big;
-	pdu.cp.sync_handle = cpu_to_le16(sync_handle);
-	pdu.cp.encryption = qos->bcast.encryption;
-	memcpy(pdu.cp.bcode, qos->bcast.bcode, sizeof(pdu.cp.bcode));
-	pdu.cp.mse = qos->bcast.mse;
-	pdu.cp.timeout = cpu_to_le16(qos->bcast.timeout);
-	pdu.cp.num_bis = num_bis;
-	memcpy(pdu.bis, bis, num_bis);
+	pdu->handle = qos->bcast.big;
+	pdu->sync_handle = cpu_to_le16(sync_handle);
+	pdu->encryption = qos->bcast.encryption;
+	memcpy(pdu->bcode, qos->bcast.bcode, sizeof(pdu->bcode));
+	pdu->mse = qos->bcast.mse;
+	pdu->timeout = cpu_to_le16(qos->bcast.timeout);
+	pdu->num_bis = num_bis;
+	memcpy(pdu->bis, bis, num_bis);
 
 	return hci_send_cmd(hdev, HCI_OP_LE_BIG_CREATE_SYNC,
-			    sizeof(pdu.cp) + num_bis, &pdu);
+			    struct_size(pdu, bis, num_bis), pdu);
 }
 
 static void create_big_complete(struct hci_dev *hdev, void *data, int err)

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2022-2023 Intel Corporation
+ * Copyright (C) 2022-2024 Intel Corporation
  */
 #include "mvm.h"
 #include "time-sync.h"
@@ -619,9 +619,6 @@ static void iwl_mvm_mld_set_ap_sta_id(struct ieee80211_sta *sta,
 	}
 }
 
-/* FIXME: consider waiting for mac80211 to add the STA instead of allocating
- * queues here
- */
 static int iwl_mvm_alloc_sta_after_restart(struct iwl_mvm *mvm,
 					   struct ieee80211_vif *vif,
 					   struct ieee80211_sta *sta)
@@ -726,7 +723,6 @@ int iwl_mvm_mld_add_sta(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 			iwl_mvm_mld_set_ap_sta_id(sta, mvm_vif->link[link_id],
 						  mvm_link_sta);
 	}
-
 	return 0;
 
 err:
@@ -852,6 +848,8 @@ int iwl_mvm_mld_rm_sta(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 		iwl_mvm_mld_free_sta_link(mvm, mvm_sta, mvm_link_sta,
 					  link_id, stay_in_fw);
 	}
+	kfree(mvm_sta->mpdu_counters);
+	mvm_sta->mpdu_counters = NULL;
 
 	return ret;
 }
@@ -992,6 +990,10 @@ static int iwl_mvm_mld_update_sta_baids(struct iwl_mvm *mvm,
 	u32 cmd_id = WIDE_ID(DATA_PATH_GROUP, RX_BAID_ALLOCATION_CONFIG_CMD);
 	int baid;
 
+	/* mac80211 will remove sessions later, but we ignore all that */
+	if (test_bit(IWL_MVM_STATUS_IN_HW_RESTART, &mvm->status))
+		return 0;
+
 	BUILD_BUG_ON(sizeof(struct iwl_rx_baid_cfg_resp) != sizeof(baid));
 
 	for (baid = 0; baid < ARRAY_SIZE(mvm->baid_map); baid++) {
@@ -1126,10 +1128,21 @@ int iwl_mvm_mld_update_sta_links(struct iwl_mvm *mvm,
 		}
 
 		if (test_bit(IWL_MVM_STATUS_IN_HW_RESTART, &mvm->status)) {
-			if (WARN_ON(!mvm_sta->link[link_id])) {
+			struct iwl_mvm_link_sta *mvm_link_sta =
+				rcu_dereference_protected(mvm_sta->link[link_id],
+							  lockdep_is_held(&mvm->mutex));
+			u32 sta_id;
+
+			if (WARN_ON(!mvm_link_sta)) {
 				ret = -EINVAL;
 				goto err;
 			}
+
+			sta_id = mvm_link_sta->sta_id;
+
+			rcu_assign_pointer(mvm->fw_id_to_mac_id[sta_id], sta);
+			rcu_assign_pointer(mvm->fw_id_to_link_sta[sta_id],
+					   link_sta);
 		} else {
 			if (WARN_ON(mvm_sta->link[link_id])) {
 				ret = -EINVAL;

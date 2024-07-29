@@ -42,6 +42,7 @@ static struct dmi_memdev_info {
 	u8 type;		/* DDR2, DDR3, DDR4 etc */
 } *dmi_memdev;
 static int dmi_memdev_nr;
+static int dmi_memdev_populated_nr __initdata;
 
 static const char * __init dmi_string_nosave(const struct dmi_header *dm, u8 s)
 {
@@ -459,6 +460,9 @@ static void __init save_mem_devices(const struct dmi_header *dm, void *v)
 	else
 		bytes = (u64)get_unaligned((u32 *)&d[0x1C]) << 20;
 
+	if (bytes)
+		dmi_memdev_populated_nr++;
+
 	dmi_memdev[nr].size = bytes;
 	nr++;
 }
@@ -757,16 +761,8 @@ static void __init dmi_scan_machine(void)
 	pr_info("DMI not present or invalid.\n");
 }
 
-static ssize_t raw_table_read(struct file *file, struct kobject *kobj,
-			      struct bin_attribute *attr, char *buf,
-			      loff_t pos, size_t count)
-{
-	memcpy(buf, attr->private + pos, count);
-	return count;
-}
-
-static BIN_ATTR(smbios_entry_point, S_IRUSR, raw_table_read, NULL, 0);
-static BIN_ATTR(DMI, S_IRUSR, raw_table_read, NULL, 0);
+static BIN_ATTR_SIMPLE_ADMIN_RO(smbios_entry_point);
+static BIN_ATTR_SIMPLE_ADMIN_RO(DMI);
 
 static int __init dmi_init(void)
 {
@@ -835,6 +831,8 @@ void __init dmi_setup(void)
 		return;
 
 	dmi_memdev_walk();
+	pr_info("DMI: Memory slots populated: %d/%d\n",
+		dmi_memdev_populated_nr, dmi_memdev_nr);
 	dump_stack_set_arch_desc("%s", dmi_ids_string);
 }
 

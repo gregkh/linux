@@ -290,13 +290,13 @@ static const struct pci_device_id intel_th_pci_id_table[] = {
 		.driver_data = (kernel_ulong_t)&intel_th_2x,
 	},
 	{
-		/* Meteor Lake-S CPU */
-		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xae24),
+		/* Meteor Lake-S */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x7f26),
 		.driver_data = (kernel_ulong_t)&intel_th_2x,
 	},
 	{
-		/* Meteor Lake-S */
-		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x7f26),
+		/* Meteor Lake-S CPU */
+		PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0xae24),
 		.driver_data = (kernel_ulong_t)&intel_th_2x,
 	},
 	{

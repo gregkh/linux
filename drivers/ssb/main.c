@@ -1146,7 +1146,7 @@ u32 ssb_dma_translation(struct ssb_device *dev)
 				return SSB_PCI_DMA;
 		}
 	default:
-		__ssb_dma_not_implemented(dev);
+		break;
 	}
 	return 0;
 }

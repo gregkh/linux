@@ -1014,6 +1014,9 @@ static int mtd_otp_nvmem_add(struct mtd_info *mtd)
 
 err:
 	nvmem_unregister(mtd->otp_user_nvmem);
+	/* Don't report error if OTP is not supported. */
+	if (err == -EOPNOTSUPP)
+		return 0;
 	return dev_err_probe(dev, err, "Failed to register OTP NVMEM device\n");
 }
 

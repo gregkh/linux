@@ -329,7 +329,7 @@ int mt7915_set_channel(struct mt7915_phy *phy)
 
 	mt76_set_channel(phy->mt76);
 
-	if (dev->flash_mode) {
+	if (dev->cal) {
 		ret = mt7915_mcu_apply_tx_dpd(phy);
 		if (ret)
 			goto out;
@@ -744,6 +744,7 @@ int mt7915_mac_sta_add(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 	struct mt7915_vif *mvif = (struct mt7915_vif *)vif->drv_priv;
 	bool ext_phy = mvif->phy != &dev->phy;
 	int ret, idx;
+	u32 addr;
 
 	idx = mt76_wcid_alloc(dev->mt76.wcid_mask, MT7915_WTBL_STA);
 	if (idx < 0)
@@ -766,6 +767,9 @@ int mt7915_mac_sta_add(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 	ret = mt7915_mcu_add_sta(dev, vif, sta, true);
 	if (ret)
 		return ret;
+
+	addr = mt7915_mac_wtbl_lmac_addr(dev, msta->wcid.idx, 30);
+	mt76_rmw_field(dev, addr, GENMASK(7, 0), 0xa0);
 
 	return mt7915_mcu_add_rate_ctrl(dev, vif, sta, false);
 }

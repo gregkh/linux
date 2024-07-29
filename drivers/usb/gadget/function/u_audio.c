@@ -1242,7 +1242,7 @@ int g_audio_setup(struct g_audio *g_audio, const char *pcm_name,
 	if (err < 0)
 		goto snd_fail;
 
-	strscpy(pcm->name, pcm_name, sizeof(pcm->name));
+	strscpy(pcm->name, pcm_name);
 	pcm->private_data = uac;
 	uac->pcm = pcm;
 
@@ -1256,7 +1256,7 @@ int g_audio_setup(struct g_audio *g_audio, const char *pcm_name,
 	if ((c_chmask && g_audio->in_ep_fback)
 			|| (p_chmask && params->p_fu.id)
 			|| (c_chmask && params->c_fu.id))
-		strscpy(card->mixername, card_name, sizeof(card->driver));
+		strscpy(card->mixername, card_name);
 
 	if (c_chmask && g_audio->in_ep_fback) {
 		kctl = snd_ctl_new1(&u_audio_controls[UAC_FBACK_CTRL],
@@ -1385,9 +1385,10 @@ int g_audio_setup(struct g_audio *g_audio, const char *pcm_name,
 		prm->snd_kctl_rate_id = kctl->id;
 	}
 
-	strscpy(card->driver, card_name, sizeof(card->driver));
-	strscpy(card->shortname, card_name, sizeof(card->shortname));
-	sprintf(card->longname, "%s %i", card_name, card->dev->id);
+	strscpy(card->driver, card_name);
+	strscpy(card->shortname, card_name);
+	snprintf(card->longname, sizeof(card->longname), "%s %i",
+		 card_name, card->dev->id);
 
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_CONTINUOUS,
 				       NULL, 0, BUFF_SIZE_MAX);

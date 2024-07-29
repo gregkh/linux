@@ -91,6 +91,8 @@ struct cdev_record {
  *
  * @timestamp: the trip crossing timestamp
  * @duration: total time when the zone temperature was above the trip point
+ * @trip_temp: trip temperature at mitigation start
+ * @trip_hyst: trip hysteresis at mitigation start
  * @count: the number of times the zone temperature was above the trip point
  * @max: maximum recorded temperature above the trip point
  * @min: minimum recorded temperature above the trip point
@@ -99,6 +101,8 @@ struct cdev_record {
 struct trip_stats {
 	ktime_t timestamp;
 	ktime_t duration;
+	int trip_temp;
+	int trip_hyst;
 	int count;
 	int max;
 	int min;
@@ -556,6 +560,7 @@ static struct tz_episode *thermal_debugfs_tz_event_alloc(struct thermal_zone_dev
 
 	INIT_LIST_HEAD(&tze->node);
 	tze->timestamp = now;
+	tze->duration = KTIME_MIN;
 
 	for (i = 0; i < tz->num_trips; i++) {
 		tze->trip_stats[i].min = INT_MAX;
@@ -573,6 +578,7 @@ void thermal_debug_tz_trip_up(struct thermal_zone_device *tz,
 	struct thermal_debugfs *thermal_dbg = tz->debugfs;
 	int trip_id = thermal_zone_trip_id(tz, trip);
 	ktime_t now = ktime_get();
+	struct trip_stats *trip_stats;
 
 	if (!thermal_dbg)
 		return;
@@ -638,7 +644,10 @@ void thermal_debug_tz_trip_up(struct thermal_zone_device *tz,
 	tz_dbg->trips_crossed[tz_dbg->nr_trips++] = trip_id;
 
 	tze = list_first_entry(&tz_dbg->tz_episodes, struct tz_episode, node);
-	tze->trip_stats[trip_id].timestamp = now;
+	trip_stats = &tze->trip_stats[trip_id];
+	trip_stats->trip_temp = trip->temperature;
+	trip_stats->trip_hyst = trip->hysteresis;
+	trip_stats->timestamp = now;
 
 unlock:
 	mutex_unlock(&thermal_dbg->lock);
@@ -691,6 +700,9 @@ void thermal_debug_tz_trip_down(struct thermal_zone_device *tz,
 	tze->trip_stats[trip_id].duration =
 		ktime_add(delta, tze->trip_stats[trip_id].duration);
 
+	/* Mark the end of mitigation for this trip point. */
+	tze->trip_stats[trip_id].timestamp = KTIME_MAX;
+
 	/*
 	 * This event closes the mitigation as we are crossing the
 	 * last trip point the way down.
@@ -702,12 +714,12 @@ out:
 	mutex_unlock(&thermal_dbg->lock);
 }
 
-void thermal_debug_update_temp(struct thermal_zone_device *tz)
+void thermal_debug_update_trip_stats(struct thermal_zone_device *tz)
 {
 	struct thermal_debugfs *thermal_dbg = tz->debugfs;
-	struct tz_episode *tze;
 	struct tz_debugfs *tz_dbg;
-	int trip_id, i;
+	struct tz_episode *tze;
+	int i;
 
 	if (!thermal_dbg)
 		return;
@@ -719,15 +731,16 @@ void thermal_debug_update_temp(struct thermal_zone_device *tz)
 	if (!tz_dbg->nr_trips)
 		goto out;
 
+	tze = list_first_entry(&tz_dbg->tz_episodes, struct tz_episode, node);
+
 	for (i = 0; i < tz_dbg->nr_trips; i++) {
-		trip_id = tz_dbg->trips_crossed[i];
-		tze = list_first_entry(&tz_dbg->tz_episodes, struct tz_episode, node);
-		tze->trip_stats[trip_id].count++;
-		tze->trip_stats[trip_id].max = max(tze->trip_stats[trip_id].max, tz->temperature);
-		tze->trip_stats[trip_id].min = min(tze->trip_stats[trip_id].min, tz->temperature);
-		tze->trip_stats[trip_id].avg = tze->trip_stats[trip_id].avg +
-			(tz->temperature - tze->trip_stats[trip_id].avg) /
-			tze->trip_stats[trip_id].count;
+		int trip_id = tz_dbg->trips_crossed[i];
+		struct trip_stats *trip_stats = &tze->trip_stats[trip_id];
+
+		trip_stats->max = max(trip_stats->max, tz->temperature);
+		trip_stats->min = min(trip_stats->min, tz->temperature);
+		trip_stats->avg += (tz->temperature - trip_stats->avg) /
+					++trip_stats->count;
 	}
 out:
 	mutex_unlock(&thermal_dbg->lock);
@@ -762,26 +775,46 @@ static int tze_seq_show(struct seq_file *s, void *v)
 {
 	struct thermal_debugfs *thermal_dbg = s->private;
 	struct thermal_zone_device *tz = thermal_dbg->tz_dbg.tz;
-	struct thermal_trip *trip;
+	struct thermal_trip_desc *td;
 	struct tz_episode *tze;
 	const char *type;
+	u64 duration_ms;
 	int trip_id;
+	char c;
 
 	tze = list_entry((struct list_head *)v, struct tz_episode, node);
 
-	seq_printf(s, ",-Mitigation at %lluus, duration=%llums\n",
-		   ktime_to_us(tze->timestamp),
-		   ktime_to_ms(tze->duration));
+	if (tze->duration == KTIME_MIN) {
+		/* Mitigation in progress. */
+		duration_ms = ktime_to_ms(ktime_sub(ktime_get(), tze->timestamp));
+		c = '>';
+	} else {
+		duration_ms = ktime_to_ms(tze->duration);
+		c = '=';
+	}
 
-	seq_printf(s, "| trip |     type | temp(°mC) | hyst(°mC) |  duration  |  avg(°mC) |  min(°mC) |  max(°mC) |\n");
+	seq_printf(s, ",-Mitigation at %lluus, duration%c%llums\n",
+		   ktime_to_us(tze->timestamp), c, duration_ms);
 
-	for_each_trip(tz, trip) {
+	seq_printf(s, "| trip |     type | temp(°mC) | hyst(°mC) |  duration   |  avg(°mC) |  min(°mC) |  max(°mC) |\n");
+
+	for_each_trip_desc(tz, td) {
+		const struct thermal_trip *trip = &td->trip;
+		struct trip_stats *trip_stats;
+
 		/*
 		 * There is no possible mitigation happening at the
 		 * critical trip point, so the stats will be always
 		 * zero, skip this trip point
 		 */
 		if (trip->type == THERMAL_TRIP_CRITICAL)
+			continue;
+
+		trip_id = thermal_zone_trip_id(tz, trip);
+		trip_stats = &tze->trip_stats[trip_id];
+
+		/* Skip trips without any stats. */
+		if (trip_stats->min > trip_stats->max)
 			continue;
 
 		if (trip->type == THERMAL_TRIP_PASSIVE)
@@ -791,17 +824,28 @@ static int tze_seq_show(struct seq_file *s, void *v)
 		else
 			type = "hot";
 
-		trip_id = thermal_zone_trip_id(tz, trip);
+		if (trip_stats->timestamp != KTIME_MAX) {
+			/* Mitigation in progress. */
+			ktime_t delta = ktime_sub(ktime_get(),
+						  trip_stats->timestamp);
 
-		seq_printf(s, "| %*d | %*s | %*d | %*d | %*lld | %*d | %*d | %*d |\n",
+			delta = ktime_add(delta, trip_stats->duration);
+			duration_ms = ktime_to_ms(delta);
+			c = '>';
+		} else {
+			duration_ms = ktime_to_ms(trip_stats->duration);
+			c = ' ';
+		}
+
+		seq_printf(s, "| %*d | %*s | %*d | %*d | %c%*lld | %*d | %*d | %*d |\n",
 			   4 , trip_id,
 			   8, type,
-			   9, trip->temperature,
-			   9, trip->hysteresis,
-			   10, ktime_to_ms(tze->trip_stats[trip_id].duration),
-			   9, tze->trip_stats[trip_id].avg,
-			   9, tze->trip_stats[trip_id].min,
-			   9, tze->trip_stats[trip_id].max);
+			   9, trip_stats->trip_temp,
+			   9, trip_stats->trip_hyst,
+			   c, 10, duration_ms,
+			   9, trip_stats->avg,
+			   9, trip_stats->min,
+			   9, trip_stats->max);
 	}
 
 	return 0;

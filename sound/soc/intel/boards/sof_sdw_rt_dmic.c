@@ -14,10 +14,12 @@
 
 static const char * const dmics[] = {
 	"rt715",
+	"rt715-sdca",
 	"rt712-sdca-dmic",
+	"rt722-sdca",
 };
 
-int rt_dmic_rtd_init(struct snd_soc_pcm_runtime *rtd)
+int rt_dmic_rtd_init(struct snd_soc_pcm_runtime *rtd, struct snd_soc_dai *dai)
 {
 	struct snd_soc_card *card = rtd->card;
 	struct snd_soc_component *component;

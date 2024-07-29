@@ -109,9 +109,7 @@ struct alc_spec {
 
 	/* hooks */
 	void (*init_hook)(struct hda_codec *codec);
-#ifdef CONFIG_PM
 	void (*power_hook)(struct hda_codec *codec);
-#endif
 	void (*shutup)(struct hda_codec *codec);
 
 	int init_amp;
@@ -951,7 +949,6 @@ static int alc_init(struct hda_codec *codec)
 
 #define alc_free	snd_hda_gen_free
 
-#ifdef CONFIG_PM
 static inline void alc_shutup(struct hda_codec *codec)
 {
 	struct alc_spec *spec = codec->spec;
@@ -990,7 +987,6 @@ static int alc_resume(struct hda_codec *codec)
 	hda_call_check_power_status(codec, 0x01);
 	return 0;
 }
-#endif
 
 /*
  */
@@ -1000,11 +996,9 @@ static const struct hda_codec_ops alc_patch_ops = {
 	.init = alc_init,
 	.free = alc_free,
 	.unsol_event = snd_hda_jack_unsol_event,
-#ifdef CONFIG_PM
 	.resume = alc_resume,
 	.suspend = alc_suspend,
 	.check_power_status = snd_hda_gen_check_power_status,
-#endif
 };
 
 
@@ -4045,7 +4039,6 @@ static void alc5505_dsp_init(struct hda_codec *codec)
 #define alc5505_dsp_resume(codec)	alc5505_dsp_back_from_halt(codec)
 #endif
 
-#ifdef CONFIG_PM
 static int alc269_suspend(struct hda_codec *codec)
 {
 	struct alc_spec *spec = codec->spec;
@@ -4091,7 +4084,6 @@ static int alc269_resume(struct hda_codec *codec)
 
 	return 0;
 }
-#endif /* CONFIG_PM */
 
 static void alc269_fixup_pincfg_no_hp_to_lineout(struct hda_codec *codec,
 						 const struct hda_fixup *fix, int action)
@@ -6539,6 +6531,20 @@ static void alc295_fixup_chromebook(struct hda_codec *codec,
 	}
 }
 
+static void alc256_fixup_chromebook(struct hda_codec *codec,
+				    const struct hda_fixup *fix, int action)
+{
+	struct alc_spec *spec = codec->spec;
+
+	switch (action) {
+	case HDA_FIXUP_ACT_PRE_PROBE:
+		spec->gen.suppress_auto_mute = 1;
+		spec->gen.suppress_auto_mic = 1;
+		spec->en_3kpull_low = false;
+		break;
+	}
+}
+
 static void alc_fixup_disable_mic_vref(struct hda_codec *codec,
 				  const struct hda_fixup *fix, int action)
 {
@@ -7208,7 +7214,7 @@ static void alc287_alc1318_playback_pcm_hook(struct hda_pcm_stream *hinfo,
 	}
 }
 
-static void __maybe_unused alc287_s4_power_gpio3_default(struct hda_codec *codec)
+static void alc287_s4_power_gpio3_default(struct hda_codec *codec)
 {
 	if (is_s4_suspend(codec)) {
 		alc_write_coef_idx(codec, 0x10, 0x8806); /* Change MLK to GPIO3 */
@@ -7223,9 +7229,7 @@ static void alc287_fixup_lenovo_thinkpad_with_alc1318(struct hda_codec *codec,
 
 	if (action != HDA_FIXUP_ACT_PRE_PROBE)
 		return;
-#ifdef CONFIG_PM
 	spec->power_hook = alc287_s4_power_gpio3_default;
-#endif
 	spec->gen.pcm_playback_hook = alc287_alc1318_playback_pcm_hook;
 }
 
@@ -7519,6 +7523,9 @@ enum {
 	ALC285_FIXUP_ASUS_GU605_SPI_2_HEADSET_MIC,
 	ALC285_FIXUP_ASUS_GU605_SPI_SPEAKER2_TO_DAC1,
 	ALC287_FIXUP_LENOVO_THKPAD_WH_ALC1318,
+	ALC256_FIXUP_CHROME_BOOK,
+	ALC287_FIXUP_LENOVO_14ARP8_LEGION_IAH7,
+	ALC287_FIXUP_LENOVO_SSID_17AA3820,
 };
 
 /* A special fixup for Lenovo C940 and Yoga Duet 7;
@@ -7558,6 +7565,21 @@ static void alc287_fixup_lenovo_14irp8_duetitl(struct hda_codec *codec,
 	__snd_hda_apply_fixup(codec, id, action, 0);
 }
 
+/* Similar to above the Lenovo Yoga Pro 7 14ARP8 PCI SSID matches the codec SSID of the
+   Legion Y9000X 2022 IAH7.*/
+static void alc287_fixup_lenovo_14arp8_legion_iah7(struct hda_codec *codec,
+					   const struct hda_fixup *fix,
+					   int action)
+{
+	int id;
+
+	if (codec->core.subsystem_id == 0x17aa386e)
+		id = ALC287_FIXUP_CS35L41_I2C_2; /* Legion Y9000X 2022 IAH7 */
+	else
+		id = ALC285_FIXUP_SPEAKER2_TO_DAC1; /* Yoga Pro 7 14ARP8 */
+	__snd_hda_apply_fixup(codec, id, action, 0);
+}
+
 /* Another hilarious PCI SSID conflict with Lenovo Legion Pro 7 16ARX8H (with
  * TAS2781 codec) and Legion 7i 16IAX7 (with CS35L41 codec);
  * we apply a corresponding fixup depending on the codec SSID instead
@@ -7572,6 +7594,20 @@ static void alc287_fixup_lenovo_legion_7(struct hda_codec *codec,
 		id = ALC287_FIXUP_TAS2781_I2C; /* Legion Pro 7 16ARX8H */
 	else
 		id = ALC287_FIXUP_CS35L41_I2C_2; /* Legion 7i 16IAX7 */
+	__snd_hda_apply_fixup(codec, id, action, 0);
+}
+
+/* Yet more conflicting PCI SSID (17aa:3820) on two Lenovo models */
+static void alc287_fixup_lenovo_ssid_17aa3820(struct hda_codec *codec,
+					      const struct hda_fixup *fix,
+					      int action)
+{
+	int id;
+
+	if (codec->core.subsystem_id == 0x17aa3820)
+		id = ALC269_FIXUP_ASPIRE_HEADSET_MIC; /* IdeaPad 330-17IKB 81DM */
+	else /* 0x17aa3802 */
+		id =  ALC287_FIXUP_YOGA7_14ITL_SPEAKERS; /* "Yoga Duet 7 13ITL6 */
 	__snd_hda_apply_fixup(codec, id, action, 0);
 }
 
@@ -9657,6 +9693,10 @@ static const struct hda_fixup alc269_fixups[] = {
 		.chained = true,
 		.chain_id = ALC287_FIXUP_YOGA9_14IAP7_BASS_SPK,
 	},
+	[ALC287_FIXUP_LENOVO_14ARP8_LEGION_IAH7] = {
+		.type = HDA_FIXUP_FUNC,
+		.v.func = alc287_fixup_lenovo_14arp8_legion_iah7,
+	},
 	[ALC287_FIXUP_YOGA9_14IMH9_BASS_SPK_PIN] = {
 		.type = HDA_FIXUP_FUNC,
 		.v.func = alc287_fixup_yoga9_14iap7_bass_spk_pin,
@@ -9800,6 +9840,16 @@ static const struct hda_fixup alc269_fixups[] = {
 		.v.func = alc287_fixup_lenovo_thinkpad_with_alc1318,
 		.chained = true,
 		.chain_id = ALC269_FIXUP_THINKPAD_ACPI
+	},
+	[ALC256_FIXUP_CHROME_BOOK] = {
+		.type = HDA_FIXUP_FUNC,
+		.v.func = alc256_fixup_chromebook,
+		.chained = true,
+		.chain_id = ALC225_FIXUP_HEADSET_JACK
+	},
+	[ALC287_FIXUP_LENOVO_SSID_17AA3820] = {
+		.type = HDA_FIXUP_FUNC,
+		.v.func = alc287_fixup_lenovo_ssid_17aa3820,
 	},
 };
 
@@ -10301,6 +10351,7 @@ static const struct snd_pci_quirk alc269_fixup_tbl[] = {
 	SND_PCI_QUIRK(0x1043, 0x1e63, "ASUS H7606W", ALC285_FIXUP_CS35L56_I2C_2),
 	SND_PCI_QUIRK(0x1043, 0x1e83, "ASUS GA605W", ALC285_FIXUP_CS35L56_I2C_2),
 	SND_PCI_QUIRK(0x1043, 0x1e8e, "ASUS Zephyrus G15", ALC289_FIXUP_ASUS_GA401),
+	SND_PCI_QUIRK(0x1043, 0x1ed3, "ASUS HN7306W", ALC287_FIXUP_CS35L41_I2C_2),
 	SND_PCI_QUIRK(0x1043, 0x1ee2, "ASUS UM6702RA/RC", ALC287_FIXUP_CS35L41_I2C_2),
 	SND_PCI_QUIRK(0x1043, 0x1c52, "ASUS Zephyrus G15 2022", ALC289_FIXUP_ASUS_GA401),
 	SND_PCI_QUIRK(0x1043, 0x1f11, "ASUS Zephyrus G14", ALC289_FIXUP_ASUS_GA401),
@@ -10508,7 +10559,7 @@ static const struct snd_pci_quirk alc269_fixup_tbl[] = {
 	SND_PCI_QUIRK(0x17aa, 0x3813, "Legion 7i 15IMHG05", ALC287_FIXUP_LEGION_15IMHG05_SPEAKERS),
 	SND_PCI_QUIRK(0x17aa, 0x3818, "Lenovo C940 / Yoga Duet 7", ALC298_FIXUP_LENOVO_C940_DUET7),
 	SND_PCI_QUIRK(0x17aa, 0x3819, "Lenovo 13s Gen2 ITL", ALC287_FIXUP_13S_GEN2_SPEAKERS),
-	SND_PCI_QUIRK(0x17aa, 0x3820, "IdeaPad 330-17IKB 81DM", ALC269_FIXUP_ASPIRE_HEADSET_MIC),
+	SND_PCI_QUIRK(0x17aa, 0x3820, "IdeaPad 330 / Yoga Duet 7", ALC287_FIXUP_LENOVO_SSID_17AA3820),
 	SND_PCI_QUIRK(0x17aa, 0x3824, "Legion Y9000X 2020", ALC285_FIXUP_LEGION_Y9000X_SPEAKERS),
 	SND_PCI_QUIRK(0x17aa, 0x3827, "Ideapad S740", ALC285_FIXUP_IDEAPAD_S740_COEF),
 	SND_PCI_QUIRK(0x17aa, 0x3834, "Lenovo IdeaPad Slim 9i 14ITL5", ALC287_FIXUP_YOGA7_14ITL_SPEAKERS),
@@ -10522,6 +10573,7 @@ static const struct snd_pci_quirk alc269_fixup_tbl[] = {
 	SND_PCI_QUIRK(0x17aa, 0x3865, "Lenovo 13X", ALC287_FIXUP_CS35L41_I2C_2),
 	SND_PCI_QUIRK(0x17aa, 0x3866, "Lenovo 13X", ALC287_FIXUP_CS35L41_I2C_2),
 	SND_PCI_QUIRK(0x17aa, 0x3869, "Lenovo Yoga7 14IAL7", ALC287_FIXUP_YOGA9_14IAP7_BASS_SPK_PIN),
+	SND_PCI_QUIRK(0x17aa, 0x386e, "Legion Y9000X 2022 IAH7 / Yoga Pro 7 14ARP8",  ALC287_FIXUP_LENOVO_14ARP8_LEGION_IAH7),
 	SND_PCI_QUIRK(0x17aa, 0x386f, "Legion Pro 7/7i", ALC287_FIXUP_LENOVO_LEGION_7),
 	SND_PCI_QUIRK(0x17aa, 0x3870, "Lenovo Yoga 7 14ARB7", ALC287_FIXUP_YOGA7_14ARB7_I2C),
 	SND_PCI_QUIRK(0x17aa, 0x3877, "Lenovo Legion 7 Slim 16ARHA7", ALC287_FIXUP_CS35L41_I2C_2),
@@ -10787,6 +10839,7 @@ static const struct hda_model_fixup alc269_fixup_models[] = {
 	{.id = ALC295_FIXUP_HP_X360, .name = "alc295-hp-x360"},
 	{.id = ALC225_FIXUP_HEADSET_JACK, .name = "alc-headset-jack"},
 	{.id = ALC295_FIXUP_CHROME_BOOK, .name = "alc-chrome-book"},
+	{.id = ALC256_FIXUP_CHROME_BOOK, .name = "alc-2024y-chromebook"},
 	{.id = ALC299_FIXUP_PREDATOR_SPK, .name = "predator-spk"},
 	{.id = ALC298_FIXUP_HUAWEI_MBX_STEREO, .name = "huawei-mbx-stereo"},
 	{.id = ALC256_FIXUP_MEDION_HEADSET_NO_PRESENCE, .name = "alc256-medion-headset"},
@@ -11319,10 +11372,8 @@ static int patch_alc269(struct hda_codec *codec)
 	codec->power_save_node = 0;
 	spec->en_3kpull_low = true;
 
-#ifdef CONFIG_PM
 	codec->patch_ops.suspend = alc269_suspend;
 	codec->patch_ops.resume = alc269_resume;
-#endif
 	spec->shutup = alc_default_shutup;
 	spec->init_hook = alc_default_init;
 
@@ -11620,9 +11671,7 @@ static int patch_alc861(struct hda_codec *codec)
 	if (has_cdefine_beep(codec))
 		spec->gen.beep_nid = 0x23;
 
-#ifdef CONFIG_PM
 	spec->power_hook = alc_power_eapd;
-#endif
 
 	alc_pre_init(codec);
 

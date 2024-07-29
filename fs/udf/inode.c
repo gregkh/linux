@@ -208,19 +208,14 @@ static int udf_writepages(struct address_space *mapping,
 	return write_cache_pages(mapping, wbc, udf_adinicb_writepage, NULL);
 }
 
-static void udf_adinicb_readpage(struct page *page)
+static void udf_adinicb_read_folio(struct folio *folio)
 {
-	struct inode *inode = page->mapping->host;
-	char *kaddr;
+	struct inode *inode = folio->mapping->host;
 	struct udf_inode_info *iinfo = UDF_I(inode);
 	loff_t isize = i_size_read(inode);
 
-	kaddr = kmap_local_page(page);
-	memcpy(kaddr, iinfo->i_data + iinfo->i_lenEAttr, isize);
-	memset(kaddr + isize, 0, PAGE_SIZE - isize);
-	flush_dcache_page(page);
-	SetPageUptodate(page);
-	kunmap_local(kaddr);
+	folio_fill_tail(folio, 0, iinfo->i_data + iinfo->i_lenEAttr, isize);
+	folio_mark_uptodate(folio);
 }
 
 static int udf_read_folio(struct file *file, struct folio *folio)
@@ -228,7 +223,7 @@ static int udf_read_folio(struct file *file, struct folio *folio)
 	struct udf_inode_info *iinfo = UDF_I(file_inode(file));
 
 	if (iinfo->i_alloc_type == ICBTAG_FLAG_AD_IN_ICB) {
-		udf_adinicb_readpage(&folio->page);
+		udf_adinicb_read_folio(folio);
 		folio_unlock(folio);
 		return 0;
 	}
@@ -254,7 +249,7 @@ static int udf_write_begin(struct file *file, struct address_space *mapping,
 			   struct page **pagep, void **fsdata)
 {
 	struct udf_inode_info *iinfo = UDF_I(file_inode(file));
-	struct page *page;
+	struct folio *folio;
 	int ret;
 
 	if (iinfo->i_alloc_type != ICBTAG_FLAG_AD_IN_ICB) {
@@ -266,12 +261,13 @@ static int udf_write_begin(struct file *file, struct address_space *mapping,
 	}
 	if (WARN_ON_ONCE(pos >= PAGE_SIZE))
 		return -EIO;
-	page = grab_cache_page_write_begin(mapping, 0);
-	if (!page)
-		return -ENOMEM;
-	*pagep = page;
-	if (!PageUptodate(page))
-		udf_adinicb_readpage(page);
+	folio = __filemap_get_folio(mapping, 0, FGP_WRITEBEGIN,
+			mapping_gfp_mask(mapping));
+	if (IS_ERR(folio))
+		return PTR_ERR(folio);
+	*pagep = &folio->page;
+	if (!folio_test_uptodate(folio))
+		udf_adinicb_read_folio(folio);
 	return 0;
 }
 
@@ -280,17 +276,19 @@ static int udf_write_end(struct file *file, struct address_space *mapping,
 			 struct page *page, void *fsdata)
 {
 	struct inode *inode = file_inode(file);
+	struct folio *folio;
 	loff_t last_pos;
 
 	if (UDF_I(inode)->i_alloc_type != ICBTAG_FLAG_AD_IN_ICB)
 		return generic_write_end(file, mapping, pos, len, copied, page,
 					 fsdata);
+	folio = page_folio(page);
 	last_pos = pos + copied;
 	if (last_pos > inode->i_size)
 		i_size_write(inode, last_pos);
-	set_page_dirty(page);
-	unlock_page(page);
-	put_page(page);
+	folio_mark_dirty(folio);
+	folio_unlock(folio);
+	folio_put(folio);
 
 	return copied;
 }
@@ -363,7 +361,7 @@ int udf_expand_file_adinicb(struct inode *inode)
 		return PTR_ERR(folio);
 
 	if (!folio_test_uptodate(folio))
-		udf_adinicb_readpage(&folio->page);
+		udf_adinicb_read_folio(folio);
 	down_write(&iinfo->i_data_sem);
 	memset(iinfo->i_data + iinfo->i_lenEAttr, 0x00,
 	       iinfo->i_lenAlloc);

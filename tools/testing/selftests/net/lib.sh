@@ -4,11 +4,16 @@
 ##############################################################################
 # Defines
 
-WAIT_TIMEOUT=${WAIT_TIMEOUT:=20}
+: "${WAIT_TIMEOUT:=20}"
+
 BUSYWAIT_TIMEOUT=$((WAIT_TIMEOUT * 1000)) # ms
 
-# Kselftest framework requirement - SKIP code is 4.
+# Kselftest framework constants.
+ksft_pass=0
+ksft_fail=1
+ksft_xfail=2
 ksft_skip=4
+
 # namespace list created by setup_ns
 NS_LIST=()
 

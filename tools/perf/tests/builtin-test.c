@@ -39,7 +39,10 @@
  * making them easier to debug.
  */
 static bool dont_fork;
-/* Fork the tests in parallel and then wait for their completion. */
+/* Don't fork the tests in parallel and wait for their completion. */
+static bool sequential = true;
+/* Do it in parallel, lacks infrastructure to avoid running tests that clash for resources,
+ * So leave it as the developers choice to enable while working on the needed infra */
 static bool parallel;
 const char *dso_to_test;
 const char *test_objdump_path = "objdump";
@@ -307,8 +310,8 @@ static int finish_test(struct child_test *child_test, int width)
 		char buf[512];
 		ssize_t len;
 
-		/* Poll to avoid excessive spinning, timeout set for 1000ms. */
-		poll(pfds, ARRAY_SIZE(pfds), /*timeout=*/1000);
+		/* Poll to avoid excessive spinning, timeout set for 100ms. */
+		poll(pfds, ARRAY_SIZE(pfds), /*timeout=*/100);
 		if (!err_done && pfds[0].revents) {
 			errno = 0;
 			len = read(err, buf, sizeof(buf) - 1);
@@ -374,7 +377,7 @@ static int start_test(struct test_suite *test, int i, int subi, struct child_tes
 	}
 	(*child)->process.no_exec_cmd = run_test_child;
 	err = start_command(&(*child)->process);
-	if (err || parallel)
+	if (err || !sequential)
 		return  err;
 	return finish_test(*child, width);
 }
@@ -440,7 +443,7 @@ static int __cmd_test(int argc, const char *argv[], struct intlist *skiplist)
 			int err = start_test(t, curr, -1, &child_tests[child_test_num++], width);
 
 			if (err) {
-				/* TODO: if parallel waitpid the already forked children. */
+				/* TODO: if !sequential waitpid the already forked children. */
 				free(child_tests);
 				return err;
 			}
@@ -460,7 +463,7 @@ static int __cmd_test(int argc, const char *argv[], struct intlist *skiplist)
 		}
 	}
 	for (i = 0; i < child_test_num; i++) {
-		if (parallel) {
+		if (!sequential) {
 			int ret  = finish_test(child_tests[i], width);
 
 			if (ret)
@@ -536,8 +539,9 @@ int cmd_test(int argc, const char **argv)
 		    "be more verbose (show symbol address, etc)"),
 	OPT_BOOLEAN('F', "dont-fork", &dont_fork,
 		    "Do not fork for testcase"),
-	OPT_BOOLEAN('p', "parallel", &parallel,
-		    "Run the tests altogether in parallel"),
+	OPT_BOOLEAN('p', "parallel", &parallel, "Run the tests in parallel"),
+	OPT_BOOLEAN('S', "sequential", &sequential,
+		    "Run the tests one after another rather than in parallel"),
 	OPT_STRING('w', "workload", &workload, "work", "workload to run for testing"),
 	OPT_STRING(0, "dso", &dso_to_test, "dso", "dso to test"),
 	OPT_STRING(0, "objdump", &test_objdump_path, "path",
@@ -563,6 +567,11 @@ int cmd_test(int argc, const char **argv)
 
 	if (workload)
 		return run_workload(workload, argc, argv);
+
+	if (dont_fork)
+		sequential = true;
+	else if (parallel)
+		sequential = false;
 
 	symbol_conf.priv_size = sizeof(int);
 	symbol_conf.try_vmlinux_path = true;

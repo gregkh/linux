@@ -2156,11 +2156,15 @@ static bool cfg80211_6ghz_power_type_valid(const u8 *ie, size_t ielen,
 		switch (u8_get_bits(he_6ghz_oper->control,
 				    IEEE80211_HE_6GHZ_OPER_CTRL_REG_INFO)) {
 		case IEEE80211_6GHZ_CTRL_REG_LPI_AP:
+		case IEEE80211_6GHZ_CTRL_REG_INDOOR_LPI_AP:
 			return true;
 		case IEEE80211_6GHZ_CTRL_REG_SP_AP:
+		case IEEE80211_6GHZ_CTRL_REG_INDOOR_SP_AP:
 			return !(flags & IEEE80211_CHAN_NO_6GHZ_AFC_CLIENT);
 		case IEEE80211_6GHZ_CTRL_REG_VLP_AP:
 			return !(flags & IEEE80211_CHAN_NO_6GHZ_VLP_CLIENT);
+		default:
+			return false;
 		}
 	}
 	return false;
@@ -2464,7 +2468,8 @@ cfg80211_parse_mbssid_data(struct wiphy *wiphy,
 				 profile, profile_len);
 			if (!mbssid_index_ie || mbssid_index_ie[1] < 1 ||
 			    mbssid_index_ie[2] == 0 ||
-			    mbssid_index_ie[2] > 46) {
+			    mbssid_index_ie[2] > 46 ||
+			    mbssid_index_ie[2] >= (1 << elem->data[0])) {
 				/* No valid Multiple BSSID-Index element */
 				continue;
 			}

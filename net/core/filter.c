@@ -4691,7 +4691,7 @@ set_compat:
 	to->tunnel_tos = info->key.tos;
 	to->tunnel_ttl = info->key.ttl;
 	if (flags & BPF_F_TUNINFO_FLAGS)
-		to->tunnel_flags = info->key.tun_flags;
+		to->tunnel_flags = ip_tunnel_flags_to_be16(info->key.tun_flags);
 	else
 		to->tunnel_ext = 0;
 
@@ -4734,7 +4734,7 @@ BPF_CALL_3(bpf_skb_get_tunnel_opt, struct sk_buff *, skb, u8 *, to, u32, size)
 	int err;
 
 	if (unlikely(!info ||
-		     !(info->key.tun_flags & TUNNEL_OPTIONS_PRESENT))) {
+		     !ip_tunnel_is_options_present(info->key.tun_flags))) {
 		err = -ENOENT;
 		goto err_clear;
 	}
@@ -4804,15 +4804,15 @@ BPF_CALL_4(bpf_skb_set_tunnel_key, struct sk_buff *, skb,
 	memset(info, 0, sizeof(*info));
 	info->mode = IP_TUNNEL_INFO_TX;
 
-	info->key.tun_flags = TUNNEL_KEY | TUNNEL_CSUM | TUNNEL_NOCACHE;
-	if (flags & BPF_F_DONT_FRAGMENT)
-		info->key.tun_flags |= TUNNEL_DONT_FRAGMENT;
-	if (flags & BPF_F_ZERO_CSUM_TX)
-		info->key.tun_flags &= ~TUNNEL_CSUM;
-	if (flags & BPF_F_SEQ_NUMBER)
-		info->key.tun_flags |= TUNNEL_SEQ;
-	if (flags & BPF_F_NO_TUNNEL_KEY)
-		info->key.tun_flags &= ~TUNNEL_KEY;
+	__set_bit(IP_TUNNEL_NOCACHE_BIT, info->key.tun_flags);
+	__assign_bit(IP_TUNNEL_DONT_FRAGMENT_BIT, info->key.tun_flags,
+		     flags & BPF_F_DONT_FRAGMENT);
+	__assign_bit(IP_TUNNEL_CSUM_BIT, info->key.tun_flags,
+		     !(flags & BPF_F_ZERO_CSUM_TX));
+	__assign_bit(IP_TUNNEL_SEQ_BIT, info->key.tun_flags,
+		     flags & BPF_F_SEQ_NUMBER);
+	__assign_bit(IP_TUNNEL_KEY_BIT, info->key.tun_flags,
+		     !(flags & BPF_F_NO_TUNNEL_KEY));
 
 	info->key.tun_id = cpu_to_be64(from->tunnel_id);
 	info->key.tos = from->tunnel_tos;
@@ -4850,13 +4850,15 @@ BPF_CALL_3(bpf_skb_set_tunnel_opt, struct sk_buff *, skb,
 {
 	struct ip_tunnel_info *info = skb_tunnel_info(skb);
 	const struct metadata_dst *md = this_cpu_ptr(md_dst);
+	IP_TUNNEL_DECLARE_FLAGS(present) = { };
 
 	if (unlikely(info != &md->u.tun_info || (size & (sizeof(u32) - 1))))
 		return -EINVAL;
 	if (unlikely(size > IP_TUNNEL_OPTS_MAX))
 		return -ENOMEM;
 
-	ip_tunnel_info_opts_set(info, from, size, TUNNEL_OPTIONS_PRESENT);
+	ip_tunnel_set_options_present(present);
+	ip_tunnel_info_opts_set(info, from, size, present);
 
 	return 0;
 }
@@ -5913,7 +5915,10 @@ static int bpf_ipv4_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
 
 		err = fib_table_lookup(tb, &fl4, &res, FIB_LOOKUP_NOREF);
 	} else {
-		fl4.flowi4_mark = 0;
+		if (flags & BPF_FIB_LOOKUP_MARK)
+			fl4.flowi4_mark = params->mark;
+		else
+			fl4.flowi4_mark = 0;
 		fl4.flowi4_secid = 0;
 		fl4.flowi4_tun_key.tun_id = 0;
 		fl4.flowi4_uid = sock_net_uid(net, NULL);
@@ -6056,7 +6061,10 @@ static int bpf_ipv6_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
 		err = ipv6_stub->fib6_table_lookup(net, tb, oif, &fl6, &res,
 						   strict);
 	} else {
-		fl6.flowi6_mark = 0;
+		if (flags & BPF_FIB_LOOKUP_MARK)
+			fl6.flowi6_mark = params->mark;
+		else
+			fl6.flowi6_mark = 0;
 		fl6.flowi6_secid = 0;
 		fl6.flowi6_tun_key.tun_id = 0;
 		fl6.flowi6_uid = sock_net_uid(net, NULL);
@@ -6134,7 +6142,7 @@ set_fwd_params:
 
 #define BPF_FIB_LOOKUP_MASK (BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_OUTPUT | \
 			     BPF_FIB_LOOKUP_SKIP_NEIGH | BPF_FIB_LOOKUP_TBID | \
-			     BPF_FIB_LOOKUP_SRC)
+			     BPF_FIB_LOOKUP_SRC | BPF_FIB_LOOKUP_MARK)
 
 BPF_CALL_4(bpf_xdp_fib_lookup, struct xdp_buff *, ctx,
 	   struct bpf_fib_lookup *, params, int, plen, u32, flags)
@@ -8371,8 +8379,6 @@ sk_msg_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_event_output_data_proto;
 	case BPF_FUNC_get_current_uid_gid:
 		return &bpf_get_current_uid_gid_proto;
-	case BPF_FUNC_get_current_pid_tgid:
-		return &bpf_get_current_pid_tgid_proto;
 	case BPF_FUNC_sk_storage_get:
 		return &bpf_sk_storage_get_proto;
 	case BPF_FUNC_sk_storage_delete:

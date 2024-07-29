@@ -1918,7 +1918,7 @@ static int shmem_swapin_folio(struct inode *inode, pgoff_t index,
 	 * Some architectures may have to restore extra metadata to the
 	 * folio after reading from swap.
 	 */
-	arch_swap_restore(swap, folio);
+	arch_swap_restore(folio_swap(swap, folio), folio);
 
 	if (shmem_should_replace_folio(folio, gfp)) {
 		error = shmem_replace_folio(&folio, gfp, info, index);
@@ -2278,8 +2278,6 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 				      unsigned long uaddr, unsigned long len,
 				      unsigned long pgoff, unsigned long flags)
 {
-	unsigned long (*get_area)(struct file *,
-		unsigned long, unsigned long, unsigned long, unsigned long);
 	unsigned long addr;
 	unsigned long offset;
 	unsigned long inflated_len;
@@ -2289,8 +2287,8 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 	if (len > TASK_SIZE)
 		return -ENOMEM;
 
-	get_area = current->mm->get_unmapped_area;
-	addr = get_area(file, uaddr, len, pgoff, flags);
+	addr = mm_get_unmapped_area(current->mm, file, uaddr, len, pgoff,
+				    flags);
 
 	if (!IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE))
 		return addr;
@@ -2347,7 +2345,8 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 	if (inflated_len < len)
 		return addr;
 
-	inflated_addr = get_area(NULL, uaddr, inflated_len, 0, flags);
+	inflated_addr = mm_get_unmapped_area(current->mm, NULL, uaddr,
+					     inflated_len, 0, flags);
 	if (IS_ERR_VALUE(inflated_addr))
 		return addr;
 	if (inflated_addr & ~PAGE_MASK)
@@ -4811,7 +4810,7 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 				      unsigned long addr, unsigned long len,
 				      unsigned long pgoff, unsigned long flags)
 {
-	return current->mm->get_unmapped_area(file, addr, len, pgoff, flags);
+	return mm_get_unmapped_area(current->mm, file, addr, len, pgoff, flags);
 }
 #endif
 

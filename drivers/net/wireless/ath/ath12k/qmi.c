@@ -583,6 +583,24 @@ static const struct qmi_elem_info qmi_wlanfw_phy_cap_resp_msg_v01_ei[] = {
 					   board_id),
 	},
 	{
+		.data_type      = QMI_OPT_FLAG,
+		.elem_len       = 1,
+		.elem_size      = sizeof(u8),
+		.array_type     = NO_ARRAY,
+		.tlv_type       = 0x13,
+		.offset         = offsetof(struct qmi_wlanfw_phy_cap_resp_msg_v01,
+					   single_chip_mlo_support_valid),
+	},
+	{
+		.data_type      = QMI_UNSIGNED_1_BYTE,
+		.elem_len       = 1,
+		.elem_size      = sizeof(u8),
+		.array_type     = NO_ARRAY,
+		.tlv_type       = 0x13,
+		.offset         = offsetof(struct qmi_wlanfw_phy_cap_resp_msg_v01,
+					   single_chip_mlo_support),
+	},
+	{
 		.data_type	= QMI_EOTI,
 		.array_type	= NO_ARRAY,
 		.tlv_type	= QMI_COMMON_TLV_TYPE,
@@ -2005,7 +2023,15 @@ static void ath12k_host_cap_parse_mlo(struct ath12k_base *ab,
 	u8 hw_link_id = 0;
 	int i;
 
+	if (!(ab->mlo_capable_flags & ATH12K_INTRA_DEVICE_MLO_SUPPORT)) {
+		ath12k_dbg(ab, ATH12K_DBG_QMI,
+			   "intra device MLO is disabled hence skip QMI MLO cap");
+		return;
+	}
+
 	if (!ab->qmi.num_radios || ab->qmi.num_radios == U8_MAX) {
+		ab->mlo_capable_flags = 0;
+
 		ath12k_dbg(ab, ATH12K_DBG_QMI,
 			   "skip QMI MLO cap due to invalid num_radio %d\n",
 			   ab->qmi.num_radios);
@@ -2124,9 +2150,6 @@ static void ath12k_qmi_phy_cap_send(struct ath12k_base *ab)
 	struct qmi_txn txn;
 	int ret;
 
-	if (!ab->slo_capable)
-		goto out;
-
 	ret = qmi_txn_init(&ab->qmi.handle, &txn,
 			   qmi_wlanfw_phy_cap_resp_msg_v01_ei, &resp);
 	if (ret < 0)
@@ -2151,6 +2174,13 @@ static void ath12k_qmi_phy_cap_send(struct ath12k_base *ab)
 		goto out;
 	}
 
+	if (resp.single_chip_mlo_support_valid) {
+		if (resp.single_chip_mlo_support)
+			ab->mlo_capable_flags |= ATH12K_INTRA_DEVICE_MLO_SUPPORT;
+		else
+			ab->mlo_capable_flags &= ~ATH12K_INTRA_DEVICE_MLO_SUPPORT;
+	}
+
 	if (!resp.num_phy_valid) {
 		ret = -ENODATA;
 		goto out;
@@ -2158,9 +2188,11 @@ static void ath12k_qmi_phy_cap_send(struct ath12k_base *ab)
 
 	ab->qmi.num_radios = resp.num_phy;
 
-	ath12k_dbg(ab, ATH12K_DBG_QMI, "phy capability resp valid %d num_phy %d valid %d board_id %d\n",
+	ath12k_dbg(ab, ATH12K_DBG_QMI,
+		   "phy capability resp valid %d num_phy %d valid %d board_id %d valid %d single_chip_mlo_support %d\n",
 		   resp.num_phy_valid, resp.num_phy,
-		   resp.board_id_valid, resp.board_id);
+		   resp.board_id_valid, resp.board_id,
+		   resp.single_chip_mlo_support_valid, resp.single_chip_mlo_support);
 
 	return;
 
@@ -3289,7 +3321,8 @@ static void ath12k_qmi_driver_event_work(struct work_struct *work)
 		case ATH12K_QMI_EVENT_FW_READY:
 			clear_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
 			if (test_bit(ATH12K_FLAG_REGISTERED, &ab->dev_flags)) {
-				ath12k_hal_dump_srng_stats(ab);
+				if (ab->is_reset)
+					ath12k_hal_dump_srng_stats(ab);
 				queue_work(ab->workqueue, &ab->restart_work);
 				break;
 			}

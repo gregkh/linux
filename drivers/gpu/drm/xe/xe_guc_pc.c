@@ -145,25 +145,6 @@ static int pc_action_reset(struct xe_guc_pc *pc)
 	return ret;
 }
 
-static int pc_action_shutdown(struct xe_guc_pc *pc)
-{
-	struct  xe_guc_ct *ct = &pc_to_guc(pc)->ct;
-	int ret;
-	u32 action[] = {
-		GUC_ACTION_HOST2GUC_PC_SLPC_REQUEST,
-		SLPC_EVENT(SLPC_EVENT_SHUTDOWN, 2),
-		xe_bo_ggtt_addr(pc->bo),
-		0,
-	};
-
-	ret = xe_guc_ct_send(ct, action, ARRAY_SIZE(action), 0, 0);
-	if (ret)
-		drm_err(&pc_to_xe(pc)->drm, "GuC PC shutdown %pe",
-			ERR_PTR(ret));
-
-	return ret;
-}
-
 static int pc_action_query_task_state(struct xe_guc_pc *pc)
 {
 	struct xe_guc_ct *ct = &pc_to_guc(pc)->ct;
@@ -714,24 +695,28 @@ static int pc_adjust_freq_bounds(struct xe_guc_pc *pc)
 
 	ret = pc_action_query_task_state(pc);
 	if (ret)
-		return ret;
+		goto out;
 
 	/*
 	 * GuC defaults to some RPmax that is not actually achievable without
 	 * overclocking. Let's adjust it to the Hardware RP0, which is the
 	 * regular maximum
 	 */
-	if (pc_get_max_freq(pc) > pc->rp0_freq)
-		pc_set_max_freq(pc, pc->rp0_freq);
+	if (pc_get_max_freq(pc) > pc->rp0_freq) {
+		ret = pc_set_max_freq(pc, pc->rp0_freq);
+		if (ret)
+			goto out;
+	}
 
 	/*
 	 * Same thing happens for Server platforms where min is listed as
 	 * RPMax
 	 */
 	if (pc_get_min_freq(pc) > pc->rp0_freq)
-		pc_set_min_freq(pc, pc->rp0_freq);
+		ret = pc_set_min_freq(pc, pc->rp0_freq);
 
-	return 0;
+out:
+	return ret;
 }
 
 static int pc_adjust_requested_freq(struct xe_guc_pc *pc)
@@ -889,7 +874,6 @@ out:
 int xe_guc_pc_stop(struct xe_guc_pc *pc)
 {
 	struct xe_device *xe = pc_to_xe(pc);
-	int ret;
 
 	if (xe->info.skip_guc_pc) {
 		xe_gt_idle_disable_c6(pc_to_gt(pc));
@@ -899,15 +883,6 @@ int xe_guc_pc_stop(struct xe_guc_pc *pc)
 	mutex_lock(&pc->freq_lock);
 	pc->freq_ready = false;
 	mutex_unlock(&pc->freq_lock);
-
-	ret = pc_action_shutdown(pc);
-	if (ret)
-		return ret;
-
-	if (wait_for_pc_state(pc, SLPC_GLOBAL_STATE_NOT_RUNNING)) {
-		drm_err(&pc_to_xe(pc)->drm, "GuC PC Shutdown failed\n");
-		return -EIO;
-	}
 
 	return 0;
 }
@@ -921,7 +896,7 @@ static void xe_guc_pc_fini(struct drm_device *drm, void *arg)
 {
 	struct xe_guc_pc *pc = arg;
 
-	xe_force_wake_get(gt_to_fw(pc_to_gt(pc)), XE_FORCEWAKE_ALL);
+	XE_WARN_ON(xe_force_wake_get(gt_to_fw(pc_to_gt(pc)), XE_FORCEWAKE_ALL));
 	XE_WARN_ON(xe_guc_pc_gucrc_disable(pc));
 	XE_WARN_ON(xe_guc_pc_stop(pc));
 	xe_force_wake_put(gt_to_fw(pc_to_gt(pc)), XE_FORCEWAKE_ALL);
@@ -948,16 +923,13 @@ int xe_guc_pc_init(struct xe_guc_pc *pc)
 		return err;
 
 	bo = xe_managed_bo_create_pin_map(xe, tile, size,
-					  XE_BO_CREATE_VRAM_IF_DGFX(tile) |
-					  XE_BO_CREATE_GGTT_BIT);
+					  XE_BO_FLAG_VRAM_IF_DGFX(tile) |
+					  XE_BO_FLAG_GGTT |
+					  XE_BO_FLAG_GGTT_INVALIDATE);
 	if (IS_ERR(bo))
 		return PTR_ERR(bo);
 
 	pc->bo = bo;
 
-	err = drmm_add_action_or_reset(&xe->drm, xe_guc_pc_fini, pc);
-	if (err)
-		return err;
-
-	return 0;
+	return drmm_add_action_or_reset(&xe->drm, xe_guc_pc_fini, pc);
 }

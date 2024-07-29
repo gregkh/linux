@@ -27,10 +27,11 @@ capout=""
 size=0
 
 usage() {
-	echo "Usage: $0 [ -b ] [ -c ] [ -d ]"
+	echo "Usage: $0 [ -b ] [ -c ] [ -d ] [ -i]"
 	echo -e "\t-b: bail out after first error, otherwise runs al testcases"
 	echo -e "\t-c: capture packets for each test using tcpdump (default: no capture)"
 	echo -e "\t-d: debug this script"
+	echo -e "\t-i: use 'ip mptcp' instead of 'pm_nl_ctl'"
 }
 
 # This function is used in the cleanup trap
@@ -45,7 +46,7 @@ cleanup()
 }
 
 mptcp_lib_check_mptcp
-mptcp_lib_check_tools ip
+mptcp_lib_check_tools ip tc
 
 #  "$ns1"              ns2                    ns3
 #     ns1eth1    ns2eth1   ns2eth3      ns3eth1
@@ -85,8 +86,8 @@ setup()
 	ip -net "$ns1" route add default via 10.0.2.2 metric 101
 	ip -net "$ns1" route add default via dead:beef:2::2 metric 101
 
-	ip netns exec "$ns1" ./pm_nl_ctl limits 1 1
-	ip netns exec "$ns1" ./pm_nl_ctl add 10.0.2.1 dev ns1eth2 flags subflow
+	mptcp_lib_pm_nl_set_limits "${ns1}" 1 1
+	mptcp_lib_pm_nl_add_endpoint "${ns1}" 10.0.2.1 dev ns1eth2 flags subflow
 
 	ip -net "$ns2" addr add 10.0.1.2/24 dev ns2eth1
 	ip -net "$ns2" addr add dead:beef:1::2/64 dev ns2eth1 nodad
@@ -108,7 +109,7 @@ setup()
 	ip -net "$ns3" route add default via 10.0.3.2
 	ip -net "$ns3" route add default via dead:beef:3::2
 
-	ip netns exec "$ns3" ./pm_nl_ctl limits 1 1
+	mptcp_lib_pm_nl_set_limits "${ns3}" 1 1
 
 	# debug build can slow down measurably the test program
 	# we use quite tight time limit on the run-time, to ensure
@@ -259,7 +260,7 @@ run_test()
 	fi
 }
 
-while getopts "bcdh" option;do
+while getopts "bcdhi" option;do
 	case "$option" in
 	"h")
 		usage $0
@@ -273,6 +274,9 @@ while getopts "bcdh" option;do
 		;;
 	"d")
 		set -x
+		;;
+	"i")
+		mptcp_lib_set_ip_mptcp
 		;;
 	"?")
 		usage $0

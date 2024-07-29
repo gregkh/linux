@@ -368,9 +368,10 @@ static inline void notify_partition_change(struct cpuset *cs, int old_prs)
 }
 
 static struct cpuset top_cpuset = {
-	.flags = ((1 << CS_ONLINE) | (1 << CS_CPU_EXCLUSIVE) |
-		  (1 << CS_MEM_EXCLUSIVE)),
+	.flags = BIT(CS_ONLINE) | BIT(CS_CPU_EXCLUSIVE) |
+		 BIT(CS_MEM_EXCLUSIVE) | BIT(CS_SCHED_LOAD_BALANCE),
 	.partition_root_state = PRS_ROOT,
+	.relax_domain_level = -1,
 	.remote_sibling = LIST_HEAD_INIT(top_cpuset.remote_sibling),
 };
 
@@ -3773,9 +3774,6 @@ static ssize_t sched_partition_write(struct kernfs_open_file *of, char *buf,
 
 	buf = strstrip(buf);
 
-	/*
-	 * Convert "root" to ENABLED, and convert "member" to DISABLED.
-	 */
 	if (!strcmp(buf, "root"))
 		val = PRS_ROOT;
 	else if (!strcmp(buf, "member"))
@@ -4051,11 +4049,6 @@ static int cpuset_css_online(struct cgroup_subsys_state *css)
 		cs->effective_mems = parent->effective_mems;
 		cs->use_parent_ecpus = true;
 		parent->child_ecpus_count++;
-		/*
-		 * Clear CS_SCHED_LOAD_BALANCE if parent is isolated
-		 */
-		if (!is_sched_load_balance(parent))
-			clear_bit(CS_SCHED_LOAD_BALANCE, &cs->flags);
 	}
 
 	/*
@@ -4309,8 +4302,6 @@ int __init cpuset_init(void)
 	nodes_setall(top_cpuset.effective_mems);
 
 	fmeter_init(&top_cpuset.fmeter);
-	set_bit(CS_SCHED_LOAD_BALANCE, &top_cpuset.flags);
-	top_cpuset.relax_domain_level = -1;
 	INIT_LIST_HEAD(&remote_children);
 
 	BUG_ON(!alloc_cpumask_var(&cpus_attach, GFP_KERNEL));

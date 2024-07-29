@@ -361,7 +361,7 @@ err_cleanup_notifier:
  *
  * Always returns 0.
  */
-static int stfcamss_remove(struct platform_device *pdev)
+static void stfcamss_remove(struct platform_device *pdev)
 {
 	struct stfcamss *stfcamss = platform_get_drvdata(pdev);
 
@@ -370,8 +370,6 @@ static int stfcamss_remove(struct platform_device *pdev)
 	media_device_cleanup(&stfcamss->media_dev);
 	v4l2_async_nf_cleanup(&stfcamss->notifier);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id stfcamss_of_match[] = {
@@ -426,7 +424,7 @@ static const struct dev_pm_ops stfcamss_pm_ops = {
 
 static struct platform_driver stfcamss_driver = {
 	.probe = stfcamss_probe,
-	.remove = stfcamss_remove,
+	.remove_new = stfcamss_remove,
 	.driver = {
 		.name = "starfive-camss",
 		.pm = &stfcamss_pm_ops,

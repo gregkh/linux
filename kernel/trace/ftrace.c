@@ -2538,7 +2538,6 @@ ftrace_find_unique_ops(struct dyn_ftrace *rec)
 /* Protected by rcu_tasks for reading, and direct_mutex for writing */
 static struct ftrace_hash __rcu *direct_functions = EMPTY_HASH;
 static DEFINE_MUTEX(direct_mutex);
-int ftrace_direct_func_count;
 
 /*
  * Search the direct_functions hash to see if the given instruction pointer
@@ -3157,8 +3156,7 @@ out:
 		 * synchronize_rcu_tasks() will wait for those tasks to
 		 * execute and either schedule voluntarily or enter user space.
 		 */
-		if (IS_ENABLED(CONFIG_PREEMPTION))
-			synchronize_rcu_tasks();
+		synchronize_rcu_tasks();
 
 		ftrace_trampoline_free(ops);
 	}
@@ -4202,12 +4200,12 @@ static int
 add_rec_by_index(struct ftrace_hash *hash, struct ftrace_glob *func_g,
 		 int clear_filter)
 {
-	long index = simple_strtoul(func_g->search, NULL, 0);
+	long index;
 	struct ftrace_page *pg;
 	struct dyn_ftrace *rec;
 
 	/* The index starts at 1 */
-	if (--index < 0)
+	if (kstrtoul(func_g->search, 0, &index) || --index < 0)
 		return 0;
 
 	do_for_each_ftrace_rec(pg, rec) {
@@ -5318,14 +5316,6 @@ ftrace_set_addr(struct ftrace_ops *ops, unsigned long *ips, unsigned int cnt,
 
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
 
-struct ftrace_direct_func {
-	struct list_head	next;
-	unsigned long		addr;
-	int			count;
-};
-
-static LIST_HEAD(ftrace_direct_funcs);
-
 static int register_ftrace_function_nolock(struct ftrace_ops *ops);
 
 /*
@@ -5364,6 +5354,13 @@ static void remove_direct_functions_hash(struct ftrace_hash *hash, unsigned long
 			}
 		}
 	}
+}
+
+static void register_ftrace_direct_cb(struct rcu_head *rhp)
+{
+	struct ftrace_hash *fhp = container_of(rhp, struct ftrace_hash, rcu);
+
+	free_ftrace_hash(fhp);
 }
 
 /**
@@ -5464,10 +5461,8 @@ int register_ftrace_direct(struct ftrace_ops *ops, unsigned long addr)
  out_unlock:
 	mutex_unlock(&direct_mutex);
 
-	if (free_hash && free_hash != EMPTY_HASH) {
-		synchronize_rcu_tasks();
-		free_ftrace_hash(free_hash);
-	}
+	if (free_hash && free_hash != EMPTY_HASH)
+		call_rcu_tasks(&free_hash->rcu, register_ftrace_direct_cb);
 
 	if (new_hash)
 		free_ftrace_hash(new_hash);
@@ -5817,9 +5812,8 @@ __setup("ftrace_graph_notrace=", set_graph_notrace_function);
 
 static int __init set_graph_max_depth_function(char *str)
 {
-	if (!str)
+	if (!str || kstrtouint(str, 0, &fgraph_max_depth))
 		return 0;
-	fgraph_max_depth = simple_strtoul(str, NULL, 0);
 	return 1;
 }
 __setup("ftrace_graph_max_depth=", set_graph_max_depth_function);
@@ -6975,7 +6969,7 @@ allocate_ftrace_mod_map(struct module *mod,
 	return mod_map;
 }
 
-static const char *
+static int
 ftrace_func_address_lookup(struct ftrace_mod_map *mod_map,
 			   unsigned long addr, unsigned long *size,
 			   unsigned long *off, char *sym)
@@ -6996,21 +6990,18 @@ ftrace_func_address_lookup(struct ftrace_mod_map *mod_map,
 			*size = found_func->size;
 		if (off)
 			*off = addr - found_func->ip;
-		if (sym)
-			strscpy(sym, found_func->name, KSYM_NAME_LEN);
-
-		return found_func->name;
+		return strscpy(sym, found_func->name, KSYM_NAME_LEN);
 	}
 
-	return NULL;
+	return 0;
 }
 
-const char *
+int
 ftrace_mod_address_lookup(unsigned long addr, unsigned long *size,
 		   unsigned long *off, char **modname, char *sym)
 {
 	struct ftrace_mod_map *mod_map;
-	const char *ret = NULL;
+	int ret = 0;
 
 	/* mod_map is freed via call_rcu() */
 	preempt_disable();
@@ -8278,7 +8269,6 @@ static struct ctl_table ftrace_sysctls[] = {
 		.mode           = 0644,
 		.proc_handler   = ftrace_enable_sysctl,
 	},
-	{}
 };
 
 static int __init ftrace_sysctl_init(void)

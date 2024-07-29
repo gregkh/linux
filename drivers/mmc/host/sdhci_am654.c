@@ -141,8 +141,8 @@ static const struct timing_data td[] = {
 
 struct sdhci_am654_data {
 	struct regmap *base;
-	int otap_del_sel[ARRAY_SIZE(td)];
-	int itap_del_sel[ARRAY_SIZE(td)];
+	u32 otap_del_sel[ARRAY_SIZE(td)];
+	u32 itap_del_sel[ARRAY_SIZE(td)];
 	u32 itap_del_ena[ARRAY_SIZE(td)];
 	int clkbuf_sel;
 	int trm_icp;
@@ -279,7 +279,7 @@ static void sdhci_am654_set_clock(struct sdhci_host *host, unsigned int clock)
 
 	sdhci_set_clock(host, clock);
 
-	/* Setup DLL Output TAP delay */
+	/* Setup Output TAP delay */
 	otap_del_sel = sdhci_am654->otap_del_sel[timing];
 
 	mask = OTAPDLYENA_MASK | OTAPDLYSEL_MASK;
@@ -329,7 +329,7 @@ static void sdhci_j721e_4bit_set_clock(struct sdhci_host *host,
 	u32 itap_del_sel;
 	u32 mask, val;
 
-	/* Setup DLL Output TAP delay */
+	/* Setup Output TAP delay */
 	otap_del_sel = sdhci_am654->otap_del_sel[timing];
 
 	mask = OTAPDLYENA_MASK | OTAPDLYSEL_MASK;
@@ -543,7 +543,7 @@ static int sdhci_am654_platform_execute_tuning(struct sdhci_host *host,
 	return 0;
 }
 
-static struct sdhci_ops sdhci_am654_ops = {
+static const struct sdhci_ops sdhci_am654_ops = {
 	.platform_execute_tuning = sdhci_am654_platform_execute_tuning,
 	.get_max_clock = sdhci_pltfm_clk_get_max_clock,
 	.get_timeout_clock = sdhci_pltfm_clk_get_max_clock,
@@ -573,7 +573,7 @@ static const struct sdhci_am654_driver_data sdhci_am654_drvdata = {
 	.flags = IOMUX_PRESENT | FREQSEL_2_BIT | STRBSEL_4_BIT | DLL_PRESENT,
 };
 
-static struct sdhci_ops sdhci_j721e_8bit_ops = {
+static const struct sdhci_ops sdhci_j721e_8bit_ops = {
 	.platform_execute_tuning = sdhci_am654_platform_execute_tuning,
 	.get_max_clock = sdhci_pltfm_clk_get_max_clock,
 	.get_timeout_clock = sdhci_pltfm_clk_get_max_clock,
@@ -597,7 +597,7 @@ static const struct sdhci_am654_driver_data sdhci_j721e_8bit_drvdata = {
 	.flags = DLL_PRESENT | DLL_CALIB,
 };
 
-static struct sdhci_ops sdhci_j721e_4bit_ops = {
+static const struct sdhci_ops sdhci_j721e_4bit_ops = {
 	.platform_execute_tuning = sdhci_am654_platform_execute_tuning,
 	.get_max_clock = sdhci_pltfm_clk_get_max_clock,
 	.get_timeout_clock = sdhci_pltfm_clk_get_max_clock,

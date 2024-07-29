@@ -88,8 +88,7 @@ static ssize_t dp_aux_write(struct dp_aux_private *aux,
 		/* index = 0, write */
 		if (i == 0)
 			reg |= DP_AUX_DATA_INDEX_WRITE;
-		aux->catalog->aux_data = reg;
-		dp_catalog_aux_write_data(aux->catalog);
+		dp_catalog_aux_write_data(aux->catalog, reg);
 	}
 
 	dp_catalog_aux_clear_trans(aux->catalog, false);
@@ -107,8 +106,7 @@ static ssize_t dp_aux_write(struct dp_aux_private *aux,
 	}
 
 	reg |= DP_AUX_TRANS_CTRL_GO;
-	aux->catalog->aux_data = reg;
-	dp_catalog_aux_write_trans(aux->catalog);
+	dp_catalog_aux_write_trans(aux->catalog, reg);
 
 	return len;
 }
@@ -146,8 +144,7 @@ static ssize_t dp_aux_cmd_fifo_rx(struct dp_aux_private *aux,
 	data = DP_AUX_DATA_INDEX_WRITE; /* INDEX_WRITE */
 	data |= DP_AUX_DATA_READ;  /* read */
 
-	aux->catalog->aux_data = data;
-	dp_catalog_aux_write_data(aux->catalog);
+	dp_catalog_aux_write_data(aux->catalog, data);
 
 	dp = msg->buffer;
 
@@ -314,23 +311,6 @@ static ssize_t dp_aux_transfer(struct drm_dp_aux *dp_aux,
 	if (!aux->is_edp && !aux->enable_xfers) {
 		ret = -ENXIO;
 		goto exit;
-	}
-
-	/*
-	 * For eDP it's important to give a reasonably long wait here for HPD
-	 * to be asserted. This is because the panel driver may have _just_
-	 * turned on the panel and then tried to do an AUX transfer. The panel
-	 * driver has no way of knowing when the panel is ready, so it's up
-	 * to us to wait. For DP we never get into this situation so let's
-	 * avoid ever doing the extra long wait for DP.
-	 */
-	if (aux->is_edp) {
-		ret = dp_catalog_aux_wait_for_hpd_connect_state(aux->catalog,
-								500000);
-		if (ret) {
-			DRM_DEBUG_DP("Panel not ready for aux transactions\n");
-			goto exit;
-		}
 	}
 
 	dp_aux_update_offset_and_segment(aux, msg);

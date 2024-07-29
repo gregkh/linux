@@ -2,33 +2,124 @@
 # SPDX-License-Identifier: GPL-2.0
 
 ##############################################################################
+# Topology description. p1 looped back to p2, p3 to p4 and so on.
+
+declare -A NETIFS=(
+    [p1]=veth0
+    [p2]=veth1
+    [p3]=veth2
+    [p4]=veth3
+    [p5]=veth4
+    [p6]=veth5
+    [p7]=veth6
+    [p8]=veth7
+    [p9]=veth8
+    [p10]=veth9
+)
+
+# Port that does not have a cable connected.
+: "${NETIF_NO_CABLE:=eth8}"
+
+##############################################################################
 # Defines
 
-# Can be overridden by the configuration file.
-PING=${PING:=ping}
-PING6=${PING6:=ping6}
-MZ=${MZ:=mausezahn}
-MZ_DELAY=${MZ_DELAY:=0}
-ARPING=${ARPING:=arping}
-TEAMD=${TEAMD:=teamd}
-WAIT_TIME=${WAIT_TIME:=5}
-PAUSE_ON_FAIL=${PAUSE_ON_FAIL:=no}
-PAUSE_ON_CLEANUP=${PAUSE_ON_CLEANUP:=no}
-NETIF_TYPE=${NETIF_TYPE:=veth}
-NETIF_CREATE=${NETIF_CREATE:=yes}
-MCD=${MCD:=smcrouted}
-MC_CLI=${MC_CLI:=smcroutectl}
-PING_COUNT=${PING_COUNT:=10}
-PING_TIMEOUT=${PING_TIMEOUT:=5}
-WAIT_TIMEOUT=${WAIT_TIMEOUT:=20}
-INTERFACE_TIMEOUT=${INTERFACE_TIMEOUT:=600}
-LOW_AGEING_TIME=${LOW_AGEING_TIME:=1000}
-REQUIRE_JQ=${REQUIRE_JQ:=yes}
-REQUIRE_MZ=${REQUIRE_MZ:=yes}
-REQUIRE_MTOOLS=${REQUIRE_MTOOLS:=no}
-STABLE_MAC_ADDRS=${STABLE_MAC_ADDRS:=no}
-TCPDUMP_EXTRA_FLAGS=${TCPDUMP_EXTRA_FLAGS:=}
-TROUTE6=${TROUTE6:=traceroute6}
+# Networking utilities.
+: "${PING:=ping}"
+: "${PING6:=ping6}"	# Some distros just use ping.
+: "${ARPING:=arping}"
+: "${TROUTE6:=traceroute6}"
+
+# Packet generator.
+: "${MZ:=mausezahn}"	# Some distributions use 'mz'.
+: "${MZ_DELAY:=0}"
+
+# Host configuration tools.
+: "${TEAMD:=teamd}"
+: "${MCD:=smcrouted}"
+: "${MC_CLI:=smcroutectl}"
+
+# Constants for netdevice bring-up:
+# Default time in seconds to wait for an interface to come up before giving up
+# and bailing out. Used during initial setup.
+: "${INTERFACE_TIMEOUT:=600}"
+# Like INTERFACE_TIMEOUT, but default for ad-hoc waiting in testing scripts.
+: "${WAIT_TIMEOUT:=20}"
+# Time to wait after interfaces participating in the test are all UP.
+: "${WAIT_TIME:=5}"
+
+# Whether to pause on, respectively, after a failure and before cleanup.
+: "${PAUSE_ON_FAIL:=no}"
+: "${PAUSE_ON_CLEANUP:=no}"
+
+# Whether to create virtual interfaces, and what netdevice type they should be.
+: "${NETIF_CREATE:=yes}"
+: "${NETIF_TYPE:=veth}"
+
+# Constants for ping tests:
+# How many packets should be sent.
+: "${PING_COUNT:=10}"
+# Timeout (in seconds) before ping exits regardless of how many packets have
+# been sent or received
+: "${PING_TIMEOUT:=5}"
+
+# Minimum ageing_time (in centiseconds) supported by hardware
+: "${LOW_AGEING_TIME:=1000}"
+
+# Whether to check for availability of certain tools.
+: "${REQUIRE_JQ:=yes}"
+: "${REQUIRE_MZ:=yes}"
+: "${REQUIRE_MTOOLS:=no}"
+
+# Whether to override MAC addresses on interfaces participating in the test.
+: "${STABLE_MAC_ADDRS:=no}"
+
+# Flags for tcpdump
+: "${TCPDUMP_EXTRA_FLAGS:=}"
+
+# Flags for TC filters.
+: "${TC_FLAG:=skip_hw}"
+
+# Whether the machine is "slow" -- i.e. might be incapable of running tests
+# involving heavy traffic. This might be the case on a debug kernel, a VM, or
+# e.g. a low-power board.
+: "${KSFT_MACHINE_SLOW:=no}"
+
+##############################################################################
+# Find netifs by test-specified driver name
+
+driver_name_get()
+{
+	local dev=$1; shift
+	local driver_path="/sys/class/net/$dev/device/driver"
+
+	if [[ -L $driver_path ]]; then
+		basename `realpath $driver_path`
+	fi
+}
+
+netif_find_driver()
+{
+	local ifnames=`ip -j link show | jq -r ".[].ifname"`
+	local count=0
+
+	for ifname in $ifnames
+	do
+		local driver_name=`driver_name_get $ifname`
+		if [[ ! -z $driver_name && $driver_name == $NETIF_FIND_DRIVER ]]; then
+			count=$((count + 1))
+			NETIFS[p$count]="$ifname"
+		fi
+	done
+}
+
+# Whether to find netdevice according to the driver speficied by the importer
+: "${NETIF_FIND_DRIVER:=}"
+
+if [[ $NETIF_FIND_DRIVER ]]; then
+	unset NETIFS
+	declare -A NETIFS
+	netif_find_driver
+fi
 
 net_forwarding_dir=$(dirname "$(readlink -e "${BASH_SOURCE[0]}")")
 
@@ -179,21 +270,22 @@ check_port_mab_support()
 	fi
 }
 
-skip_on_veth()
-{
-	local kind=$(ip -j -d link show dev ${NETIFS[p1]} |
-		jq -r '.[].linkinfo.info_kind')
-
-	if [[ $kind == veth ]]; then
-		echo "SKIP: Test cannot be run with veth pairs"
-		exit $ksft_skip
-	fi
-}
-
 if [[ "$(id -u)" -ne 0 ]]; then
 	echo "SKIP: need root privileges"
 	exit $ksft_skip
 fi
+
+check_driver()
+{
+	local dev=$1; shift
+	local expected=$1; shift
+	local driver_name=`driver_name_get $dev`
+
+	if [[ $driver_name != $expected ]]; then
+		echo "SKIP: expected driver $expected for $dev, got $driver_name instead"
+		exit $ksft_skip
+	fi
+}
 
 if [[ "$CHECK_TC" = "yes" ]]; then
 	check_tc_version
@@ -209,6 +301,21 @@ require_command()
 	fi
 }
 
+# IPv6 support was added in v3.0
+check_mtools_version()
+{
+	local version="$(msend -v)"
+	local major
+
+	version=${version##msend version }
+	major=$(echo $version | cut -d. -f1)
+
+	if [ $major -lt 3 ]; then
+		echo "SKIP: expected mtools version 3.0, got $version"
+		exit $ksft_skip
+	fi
+}
+
 if [[ "$REQUIRE_JQ" = "yes" ]]; then
 	require_command jq
 fi
@@ -216,15 +323,10 @@ if [[ "$REQUIRE_MZ" = "yes" ]]; then
 	require_command $MZ
 fi
 if [[ "$REQUIRE_MTOOLS" = "yes" ]]; then
-	# https://github.com/vladimiroltean/mtools/
-	# patched for IPv6 support
+	# https://github.com/troglobit/mtools
 	require_command msend
 	require_command mreceive
-fi
-
-if [[ ! -v NUM_NETIFS ]]; then
-	echo "SKIP: importer does not define \"NUM_NETIFS\""
-	exit $ksft_skip
+	check_mtools_version
 fi
 
 ##############################################################################
@@ -244,6 +346,23 @@ done
 
 ##############################################################################
 # Network interfaces configuration
+
+if [[ ! -v NUM_NETIFS ]]; then
+	echo "SKIP: importer does not define \"NUM_NETIFS\""
+	exit $ksft_skip
+fi
+
+if (( NUM_NETIFS > ${#NETIFS[@]} )); then
+	echo "SKIP: Importer requires $NUM_NETIFS NETIFS, but only ${#NETIFS[@]} are defined (${NETIFS[@]})"
+	exit $ksft_skip
+fi
+
+for i in $(seq ${#NETIFS[@]}); do
+	if [[ ! ${NETIFS[p$i]} ]]; then
+		echo "SKIP: NETIFS[p$i] not given"
+		exit $ksft_skip
+	fi
+done
 
 create_netif_veth()
 {
@@ -343,13 +462,20 @@ ret_set_ksft_status()
 	fi
 }
 
+# Whether FAILs should be interpreted as XFAILs. Internal.
+FAIL_TO_XFAIL=
+
 check_err()
 {
 	local err=$1
 	local msg=$2
 
 	if ((err)); then
-		ret_set_ksft_status $ksft_fail "$msg"
+		if [[ $FAIL_TO_XFAIL = yes ]]; then
+			ret_set_ksft_status $ksft_xfail "$msg"
+		else
+			ret_set_ksft_status $ksft_fail "$msg"
+		fi
 	fi
 }
 
@@ -371,6 +497,29 @@ check_err_fail()
 		check_fail $err "$what succeeded, but should have failed"
 	else
 		check_err $err "$what failed"
+	fi
+}
+
+xfail_on_slow()
+{
+	if [[ $KSFT_MACHINE_SLOW = yes ]]; then
+		FAIL_TO_XFAIL=yes "$@"
+	else
+		"$@"
+	fi
+}
+
+xfail_on_veth()
+{
+	local dev=$1; shift
+	local kind
+
+	kind=$(ip -j -d link show dev $dev |
+			jq -r '.[].linkinfo.info_kind')
+	if [[ $kind = veth ]]; then
+		FAIL_TO_XFAIL=yes "$@"
+	else
+		"$@"
 	fi
 }
 
@@ -567,6 +716,19 @@ setup_wait()
 
 	# Make sure links are ready.
 	sleep $WAIT_TIME
+}
+
+wait_for_dev()
+{
+        local dev=$1; shift
+        local timeout=${1:-$WAIT_TIMEOUT}; shift
+
+        slowwait $timeout ip link show dev $dev &> /dev/null
+        if (( $? )); then
+                check_err 1
+                log_test wait_for_dev "Interface $dev did not appear."
+                exit $EXIT_STATUS
+        fi
 }
 
 cmd_jq()
@@ -1995,6 +2157,8 @@ bail_on_lldpad()
 {
 	local reason1="$1"; shift
 	local reason2="$1"; shift
+	local caller=${FUNCNAME[1]}
+	local src=${BASH_SOURCE[1]}
 
 	if systemctl is-active --quiet lldpad; then
 
@@ -2015,7 +2179,8 @@ bail_on_lldpad()
 				an environment variable ALLOW_LLDPAD to a
 				non-empty string.
 			EOF
-			exit 1
+			log_test_skip $src:$caller
+			exit $EXIT_STATUS
 		else
 			return
 		fi
