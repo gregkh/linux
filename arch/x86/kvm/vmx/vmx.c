@@ -1889,7 +1889,7 @@ static int vmx_get_msr_feature(struct kvm_msr_entry *msr)
 		msr->data = kvm_caps.supported_perf_cap;
 		return 0;
 	default:
-		return KVM_MSR_RET_INVALID;
+		return KVM_MSR_RET_UNSUPPORTED;
 	}
 }
 
