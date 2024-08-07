@@ -24,10 +24,6 @@ static vm_fault_t snd_us428ctls_vm_fault(struct vm_fault *vmf)
 	struct page *page;
 	void *vaddr;
 
-	snd_printdd("ENTER, start %lXh, pgoff %ld\n",
-		   vmf->vma->vm_start,
-		   vmf->pgoff);
-
 	offset = vmf->pgoff << PAGE_SHIFT;
 	if (offset >= US428_SHAREDMEM_PAGES)
 		return VM_FAULT_SIGBUS;
@@ -35,9 +31,6 @@ static vm_fault_t snd_us428ctls_vm_fault(struct vm_fault *vmf)
 	page = virt_to_page(vaddr);
 	get_page(page);
 	vmf->page = page;
-
-	snd_printdd("vaddr=%p made us428ctls_vm_fault() page %p\n",
-		    vaddr, page);
 
 	return 0;
 }
@@ -58,7 +51,8 @@ static int snd_us428ctls_mmap(struct snd_hwdep *hw, struct file *filp, struct vm
 
 	/* if userspace tries to mmap beyond end of our buffer, fail */
 	if (size > US428_SHAREDMEM_PAGES) {
-		snd_printd("%lu > %lu\n", size, (unsigned long)US428_SHAREDMEM_PAGES);
+		dev_dbg(hw->card->dev, "%s: mmap size %lu > %lu\n", __func__,
+			size, (unsigned long)US428_SHAREDMEM_PAGES);
 		return -EINVAL;
 	}
 
@@ -152,7 +146,6 @@ static int usx2y_create_usbmidi(struct snd_card *card)
 		le16_to_cpu(dev->descriptor.idProduct) == USB_ID_US428 ?
 		&quirk_2 : &quirk_1;
 
-	snd_printdd("%s\n", __func__);
 	return snd_usbmidi_create(card, iface, &usx2y(card)->midi_list, quirk);
 }
 
@@ -162,7 +155,8 @@ static int usx2y_create_alsa_devices(struct snd_card *card)
 
 	err = usx2y_create_usbmidi(card);
 	if (err < 0) {
-		snd_printk(KERN_ERR "%s: usx2y_create_usbmidi error %i\n", __func__, err);
+		dev_err(card->dev, "%s: usx2y_create_usbmidi error %i\n",
+			__func__, err);
 		return err;
 	}
 	err = usx2y_audio_create(card);
@@ -185,15 +179,13 @@ static int snd_usx2y_hwdep_dsp_load(struct snd_hwdep *hw,
 	int lret, err;
 	char *buf;
 
-	snd_printdd("dsp_load %s\n", dsp->name);
-
 	buf = memdup_user(dsp->image, dsp->length);
 	if (IS_ERR(buf))
 		return PTR_ERR(buf);
 
 	err = usb_set_interface(dev, 0, 1);
 	if (err)
-		snd_printk(KERN_ERR "usb_set_interface error\n");
+		dev_err(&dev->dev, "usb_set_interface error\n");
 	else
 		err = usb_bulk_msg(dev, usb_sndbulkpipe(dev, 2), buf, dsp->length, &lret, 6000);
 	kfree(buf);
@@ -203,21 +195,20 @@ static int snd_usx2y_hwdep_dsp_load(struct snd_hwdep *hw,
 		msleep(250);				// give the device some time
 		err = usx2y_async_seq04_init(priv);
 		if (err) {
-			snd_printk(KERN_ERR "usx2y_async_seq04_init error\n");
+			dev_err(&dev->dev, "usx2y_async_seq04_init error\n");
 			return err;
 		}
 		err = usx2y_in04_init(priv);
 		if (err) {
-			snd_printk(KERN_ERR "usx2y_in04_init error\n");
+			dev_err(&dev->dev, "usx2y_in04_init error\n");
 			return err;
 		}
 		err = usx2y_create_alsa_devices(hw->card);
 		if (err) {
-			snd_printk(KERN_ERR "usx2y_create_alsa_devices error %i\n", err);
+			dev_err(&dev->dev, "usx2y_create_alsa_devices error %i\n", err);
 			return err;
 		}
 		priv->chip_status |= USX2Y_STAT_CHIP_INIT;
-		snd_printdd("%s: alsa all started\n", hw->name);
 	}
 	return err;
 }
