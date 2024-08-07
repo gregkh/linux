@@ -97,7 +97,7 @@ struct nh_res_table {
 
 struct nh_grp_entry {
 	struct nexthop	*nh;
-	u8		weight;
+	u16		weight;
 
 	union {
 		struct {
@@ -180,7 +180,7 @@ struct nh_notifier_single_info {
 };
 
 struct nh_notifier_grp_entry_info {
-	u8 weight;
+	u16 weight;
 	struct nh_notifier_single_info nh;
 };
 
