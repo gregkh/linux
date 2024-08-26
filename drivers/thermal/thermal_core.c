@@ -553,10 +553,7 @@ void __thermal_zone_device_update(struct thermal_zone_device *tz,
 	LIST_HEAD(way_up_list);
 	int temp, ret;
 
-	if (tz->suspended)
-		return;
-
-	if (!thermal_zone_device_is_enabled(tz))
+	if (tz->suspended || tz->mode != THERMAL_DEVICE_ENABLED)
 		return;
 
 	ret = __thermal_zone_get_temp(tz, &temp);
@@ -650,13 +647,6 @@ int thermal_zone_device_disable(struct thermal_zone_device *tz)
 	return thermal_zone_device_set_mode(tz, THERMAL_DEVICE_DISABLED);
 }
 EXPORT_SYMBOL_GPL(thermal_zone_device_disable);
-
-int thermal_zone_device_is_enabled(struct thermal_zone_device *tz)
-{
-	lockdep_assert_held(&tz->lock);
-
-	return tz->mode == THERMAL_DEVICE_ENABLED;
-}
 
 static bool thermal_zone_is_present(struct thermal_zone_device *tz)
 {
