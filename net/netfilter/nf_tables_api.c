@@ -4894,6 +4894,9 @@ static int nft_add_set_elem(struct nft_ctx *ctx, struct nft_set *set,
 					    &expiration);
 		if (err)
 			return err;
+
+		if (expiration > timeout)
+			return -ERANGE;
 	}
 
 	err = nft_setelem_parse_key(ctx, set, &elem.key.val,
