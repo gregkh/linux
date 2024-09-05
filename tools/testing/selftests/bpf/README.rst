@@ -36,8 +36,6 @@ For more information on about using the script, run:
           If you want to change pahole and llvm, you can change `PATH` environment
           variable in the beginning of script.
 
-.. note:: The script currently only supports x86_64 and s390x architectures.
-
 Additional information about selftest failures are
 documented here.
 
