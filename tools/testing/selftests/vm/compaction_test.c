@@ -183,8 +183,6 @@ int main(int argc, char **argv)
 	if (prereq() != 0)
 		return ksft_exit_pass();
 
-	ksft_set_plan(1);
-
 	lim.rlim_cur = RLIM_INFINITY;
 	lim.rlim_max = RLIM_INFINITY;
 	if (setrlimit(RLIMIT_MEMLOCK, &lim))
