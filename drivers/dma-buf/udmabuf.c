@@ -146,7 +146,7 @@ static void release_udmabuf(struct dma_buf *buf)
 
 	for (pg = 0; pg < ubuf->pagecount; pg++)
 		put_page(ubuf->pages[pg]);
-	kfree(ubuf->pages);
+	kvfree(ubuf->pages);
 	kfree(ubuf);
 }
 
@@ -233,8 +233,8 @@ static long udmabuf_create(struct miscdevice *device,
 	if (!ubuf->pagecount)
 		goto err;
 
-	ubuf->pages = kmalloc_array(ubuf->pagecount, sizeof(*ubuf->pages),
-				    GFP_KERNEL);
+	ubuf->pages = kvmalloc_array(ubuf->pagecount, sizeof(*ubuf->pages),
+				     GFP_KERNEL);
 	if (!ubuf->pages) {
 		ret = -ENOMEM;
 		goto err;
@@ -292,7 +292,7 @@ err:
 		put_page(ubuf->pages[--pgbuf]);
 	if (memfd)
 		fput(memfd);
-	kfree(ubuf->pages);
+	kvfree(ubuf->pages);
 	kfree(ubuf);
 	return ret;
 }
