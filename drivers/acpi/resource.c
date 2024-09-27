@@ -495,6 +495,13 @@ static const struct dmi_system_id asus_laptop[] = {
 		},
 	},
 	{
+		/* Asus ExpertBook B2502CVA */
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_BOARD_NAME, "B2502CVA"),
+		},
+	},
+	{
 		/* TongFang GMxHGxx/TUXEDO Stellaris Slim Gen1 AMD */
 		.matches = {
 			DMI_MATCH(DMI_BOARD_NAME, "GMxHGxx"),
