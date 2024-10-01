@@ -4317,6 +4317,17 @@ static void btrfs_destroy_all_ordered_extents(struct btrfs_fs_info *fs_info)
 	spin_unlock(&fs_info->ordered_root_lock);
 
 	/*
+	 * Wait for any fixup workers to complete.
+	 * If we don't wait for them here and they are still running by the time
+	 * we call kthread_stop() against the cleaner kthread further below, we
+	 * get an use-after-free on the cleaner because the fixup worker adds an
+	 * inode to the list of delayed iputs and then attempts to wakeup the
+	 * cleaner kthread, which was already stopped and destroyed. We parked
+	 * already the cleaner, but below we run all pending delayed iputs.
+	 */
+	btrfs_flush_workqueue(fs_info->fixup_workers);
+
+	/*
 	 * We need this here because if we've been flipped read-only we won't
 	 * get sync() from the umount, so we need to make sure any ordered
 	 * extents that haven't had their dirty pages IO start writeout yet
