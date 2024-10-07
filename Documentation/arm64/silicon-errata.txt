@@ -66,6 +66,7 @@ stable kernels.
 | ARM            | Cortex-A78      | #3324344        | ARM64_ERRATUM_3194386       |
 | ARM            | Cortex-A78C     | #3324346,3324347| ARM64_ERRATUM_3194386       |
 | ARM            | Cortex-A710     | #3324338        | ARM64_ERRATUM_3194386       |
+| ARM            | Cortex-A715     | #3456084        | ARM64_ERRATUM_3194386       |
 | ARM            | Cortex-A720     | #3456091        | ARM64_ERRATUM_3194386       |
 | ARM            | Cortex-A725     | #3456106        | ARM64_ERRATUM_3194386       |
 | ARM            | Cortex-X1       | #3324344        | ARM64_ERRATUM_3194386       |
@@ -77,6 +78,7 @@ stable kernels.
 | ARM            | Neoverse-N1     | #1542419        | ARM64_ERRATUM_1542419       |
 | ARM            | Neoverse-N1     | #3324349        | ARM64_ERRATUM_3194386       |
 | ARM            | Neoverse-N2     | #3324339        | ARM64_ERRATUM_3194386       |
+| ARM            | Neoverse-N3     | #3456111        | ARM64_ERRATUM_3194386       |
 | ARM            | Neoverse-V1     | #3324341        | ARM64_ERRATUM_3194386       |
 | ARM            | Neoverse-V2     | #3324336        | ARM64_ERRATUM_3194386       |
 | ARM            | Neoverse-V3     | #3312417        | ARM64_ERRATUM_3194386       |
