@@ -471,7 +471,6 @@ struct hci_dev {
 	unsigned int	iso_pkts;
 
 	unsigned long	acl_last_tx;
-	unsigned long	sco_last_tx;
 	unsigned long	le_last_tx;
 
 	__u8		le_tx_def_phys;
@@ -523,7 +522,6 @@ struct hci_dev {
 
 	struct discovery_state	discovery;
 
-	int			discovery_old_state;
 	bool			discovery_paused;
 	int			advertising_old_state;
 	bool			advertising_paused;
@@ -642,6 +640,7 @@ struct hci_dev {
 	int (*get_codec_config_data)(struct hci_dev *hdev, __u8 type,
 				     struct bt_codec *codec, __u8 *vnd_len,
 				     __u8 **vnd_data);
+	u8 (*classify_pkt_type)(struct hci_dev *hdev, struct sk_buff *skb);
 };
 
 #define HCI_PHY_HANDLE(handle)	(handle & 0xff)

@@ -26,7 +26,7 @@ bool netfs_dirty_folio(struct address_space *mapping, struct folio *folio)
 	struct fscache_cookie *cookie = netfs_i_cookie(ictx);
 	bool need_use = false;
 
-	kenter("");
+	_enter("");
 
 	if (!filemap_dirty_folio(mapping, folio))
 		return false;
@@ -100,7 +100,7 @@ void netfs_invalidate_folio(struct folio *folio, size_t offset, size_t length)
 	struct netfs_inode *ctx = netfs_inode(folio_inode(folio));
 	size_t flen = folio_size(folio);
 
-	kenter("{%lx},%zx,%zx", folio->index, offset, length);
+	_enter("{%lx},%zx,%zx", folio->index, offset, length);
 
 	if (offset == 0 && length == flen) {
 		unsigned long long i_size = i_size_read(&ctx->inode);

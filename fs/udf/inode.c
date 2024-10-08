@@ -1247,8 +1247,6 @@ int udf_setsize(struct inode *inode, loff_t newsize)
 	if (!(S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode) ||
 	      S_ISLNK(inode->i_mode)))
 		return -EINVAL;
-	if (IS_APPEND(inode) || IS_IMMUTABLE(inode))
-		return -EPERM;
 
 	iinfo = UDF_I(inode);
 	if (newsize > inode->i_size) {

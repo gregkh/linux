@@ -10,7 +10,7 @@
 #include <linux/rcupdate.h>
 #include "base.h"
 
-static char *make_driver_name(struct device_driver *drv)
+static char *make_driver_name(const struct device_driver *drv)
 {
 	char *driver_name;
 
@@ -31,7 +31,7 @@ static void module_create_drivers_dir(struct module_kobject *mk)
 	mutex_unlock(&drivers_dir_mutex);
 }
 
-int module_add_driver(struct module *mod, struct device_driver *drv)
+int module_add_driver(struct module *mod, const struct device_driver *drv)
 {
 	char *driver_name;
 	struct module_kobject *mk = NULL;
@@ -94,7 +94,7 @@ out_remove_kobj:
 	return ret;
 }
 
-void module_remove_driver(struct device_driver *drv)
+void module_remove_driver(const struct device_driver *drv)
 {
 	struct module_kobject *mk = NULL;
 	char *driver_name;

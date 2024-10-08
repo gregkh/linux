@@ -4405,6 +4405,7 @@ static const struct of_device_id udma_of_match[] = {
 	},
 	{ /* Sentinel */ },
 };
+MODULE_DEVICE_TABLE(of, udma_of_match);
 
 static struct udma_soc_data am654_soc_data = {
 	.oes = {
@@ -5623,6 +5624,7 @@ static struct platform_driver udma_driver = {
 };
 
 module_platform_driver(udma_driver);
+MODULE_DESCRIPTION("Texas Instruments UDMA support");
 MODULE_LICENSE("GPL v2");
 
 /* Private interfaces to UDMA */

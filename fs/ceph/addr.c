@@ -246,7 +246,8 @@ static void finish_netfs_read(struct ceph_osd_request *req)
 	if (err >= 0) {
 		if (sparse && err > 0)
 			err = ceph_sparse_ext_map_end(op);
-		if (err < subreq->len)
+		if (err < subreq->len &&
+		    subreq->rreq->origin != NETFS_DIO_READ)
 			__set_bit(NETFS_SREQ_CLEAR_TAIL, &subreq->flags);
 		if (IS_ENCRYPTED(inode) && err > 0) {
 			err = ceph_fscrypt_decrypt_extents(inode,
@@ -282,7 +283,8 @@ static bool ceph_netfs_issue_op_inline(struct netfs_io_subrequest *subreq)
 	size_t len;
 	int mode;
 
-	__set_bit(NETFS_SREQ_CLEAR_TAIL, &subreq->flags);
+	if (rreq->origin != NETFS_DIO_READ)
+		__set_bit(NETFS_SREQ_CLEAR_TAIL, &subreq->flags);
 	__clear_bit(NETFS_SREQ_COPY_TO_CACHE, &subreq->flags);
 
 	if (subreq->start >= inode->i_size)
@@ -423,6 +425,9 @@ static int ceph_init_request(struct netfs_io_request *rreq, struct file *file)
 	int got = 0, want = CEPH_CAP_FILE_CACHE;
 	struct ceph_netfs_request_data *priv;
 	int ret = 0;
+
+	/* [DEPRECATED] Use PG_private_2 to mark folio being written to the cache. */
+	__set_bit(NETFS_RREQ_USE_PGPRIV2, &rreq->flags);
 
 	if (rreq->origin != NETFS_READAHEAD)
 		return 0;

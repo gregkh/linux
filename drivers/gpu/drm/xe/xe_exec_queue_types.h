@@ -38,6 +38,9 @@ enum xe_exec_queue_priority {
  * a kernel object.
  */
 struct xe_exec_queue {
+	/** @xef: Back pointer to xe file if this is user created exec queue */
+	struct xe_file *xef;
+
 	/** @gt: graphics tile this exec queue can submit to */
 	struct xe_gt *gt;
 	/**
@@ -70,18 +73,16 @@ struct xe_exec_queue {
 	 */
 	struct dma_fence *last_fence;
 
-/* queue no longer allowed to submit */
-#define EXEC_QUEUE_FLAG_BANNED			BIT(0)
 /* queue used for kernel submission only */
-#define EXEC_QUEUE_FLAG_KERNEL			BIT(1)
+#define EXEC_QUEUE_FLAG_KERNEL			BIT(0)
 /* kernel engine only destroyed at driver unload */
-#define EXEC_QUEUE_FLAG_PERMANENT		BIT(2)
+#define EXEC_QUEUE_FLAG_PERMANENT		BIT(1)
 /* for VM jobs. Caller needs to hold rpm ref when creating queue with this flag */
-#define EXEC_QUEUE_FLAG_VM			BIT(3)
+#define EXEC_QUEUE_FLAG_VM			BIT(2)
 /* child of VM queue for multi-tile VM jobs */
-#define EXEC_QUEUE_FLAG_BIND_ENGINE_CHILD	BIT(4)
+#define EXEC_QUEUE_FLAG_BIND_ENGINE_CHILD	BIT(3)
 /* kernel exec_queue only, set priority to highest level */
-#define EXEC_QUEUE_FLAG_HIGH_PRIORITY		BIT(5)
+#define EXEC_QUEUE_FLAG_HIGH_PRIORITY		BIT(4)
 
 	/**
 	 * @flags: flags for this exec queue, should statically setup aside from ban
@@ -140,7 +141,7 @@ struct xe_exec_queue {
 	 */
 	u64 tlb_flush_seqno;
 	/** @lrc: logical ring context for this exec queue */
-	struct xe_lrc lrc[];
+	struct xe_lrc *lrc[];
 };
 
 /**

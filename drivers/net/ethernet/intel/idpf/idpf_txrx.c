@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (C) 2023 Intel Corporation */
 
+#include <net/libeth/rx.h>
+
 #include "idpf.h"
 #include "idpf_virtchnl.h"
 
@@ -379,7 +381,7 @@ err_out:
  * idpf_rx_page_rel - Release an rx buffer page
  * @rx_buf: the buffer to free
  */
-static void idpf_rx_page_rel(struct idpf_rx_buf *rx_buf)
+static void idpf_rx_page_rel(struct libeth_fqe *rx_buf)
 {
 	if (unlikely(!rx_buf->page))
 		return;
@@ -387,46 +389,53 @@ static void idpf_rx_page_rel(struct idpf_rx_buf *rx_buf)
 	page_pool_put_full_page(rx_buf->page->pp, rx_buf->page, false);
 
 	rx_buf->page = NULL;
-	rx_buf->page_offset = 0;
+	rx_buf->offset = 0;
 }
 
 /**
  * idpf_rx_hdr_buf_rel_all - Release header buffer memory
  * @bufq: queue to use
- * @dev: device to free DMA memory
  */
-static void idpf_rx_hdr_buf_rel_all(struct idpf_buf_queue *bufq,
-				    struct device *dev)
+static void idpf_rx_hdr_buf_rel_all(struct idpf_buf_queue *bufq)
 {
-	dma_free_coherent(dev, bufq->desc_count * IDPF_HDR_BUF_SIZE,
-			  bufq->rx_buf.hdr_buf_va, bufq->rx_buf.hdr_buf_pa);
-	bufq->rx_buf.hdr_buf_va = NULL;
+	struct libeth_fq fq = {
+		.fqes	= bufq->hdr_buf,
+		.pp	= bufq->hdr_pp,
+	};
+
+	for (u32 i = 0; i < bufq->desc_count; i++)
+		idpf_rx_page_rel(&bufq->hdr_buf[i]);
+
+	libeth_rx_fq_destroy(&fq);
+	bufq->hdr_buf = NULL;
+	bufq->hdr_pp = NULL;
 }
 
 /**
  * idpf_rx_buf_rel_bufq - Free all Rx buffer resources for a buffer queue
  * @bufq: queue to be cleaned
- * @dev: device to free DMA memory
  */
-static void idpf_rx_buf_rel_bufq(struct idpf_buf_queue *bufq,
-				 struct device *dev)
+static void idpf_rx_buf_rel_bufq(struct idpf_buf_queue *bufq)
 {
+	struct libeth_fq fq = {
+		.fqes	= bufq->buf,
+		.pp	= bufq->pp,
+	};
+
 	/* queue already cleared, nothing to do */
-	if (!bufq->rx_buf.buf)
+	if (!bufq->buf)
 		return;
 
 	/* Free all the bufs allocated and given to hw on Rx queue */
 	for (u32 i = 0; i < bufq->desc_count; i++)
-		idpf_rx_page_rel(&bufq->rx_buf.buf[i]);
+		idpf_rx_page_rel(&bufq->buf[i]);
 
 	if (idpf_queue_has(HSPLIT_EN, bufq))
-		idpf_rx_hdr_buf_rel_all(bufq, dev);
+		idpf_rx_hdr_buf_rel_all(bufq);
 
-	page_pool_destroy(bufq->pp);
+	libeth_rx_fq_destroy(&fq);
+	bufq->buf = NULL;
 	bufq->pp = NULL;
-
-	kfree(bufq->rx_buf.buf);
-	bufq->rx_buf.buf = NULL;
 }
 
 /**
@@ -435,17 +444,20 @@ static void idpf_rx_buf_rel_bufq(struct idpf_buf_queue *bufq,
  */
 static void idpf_rx_buf_rel_all(struct idpf_rx_queue *rxq)
 {
+	struct libeth_fq fq = {
+		.fqes	= rxq->rx_buf,
+		.pp	= rxq->pp,
+	};
+
 	if (!rxq->rx_buf)
 		return;
 
 	for (u32 i = 0; i < rxq->desc_count; i++)
 		idpf_rx_page_rel(&rxq->rx_buf[i]);
 
-	page_pool_destroy(rxq->pp);
-	rxq->pp = NULL;
-
-	kfree(rxq->rx_buf);
+	libeth_rx_fq_destroy(&fq);
 	rxq->rx_buf = NULL;
+	rxq->pp = NULL;
 }
 
 /**
@@ -491,7 +503,7 @@ static void idpf_rx_desc_rel_bufq(struct idpf_buf_queue *bufq,
 	if (!bufq)
 		return;
 
-	idpf_rx_buf_rel_bufq(bufq, dev);
+	idpf_rx_buf_rel_bufq(bufq);
 
 	bufq->next_to_alloc = 0;
 	bufq->next_to_clean = 0;
@@ -571,12 +583,21 @@ static void idpf_rx_buf_hw_update(struct idpf_buf_queue *bufq, u32 val)
  */
 static int idpf_rx_hdr_buf_alloc_all(struct idpf_buf_queue *bufq)
 {
-	bufq->rx_buf.hdr_buf_va =
-		dma_alloc_coherent(bufq->q_vector->vport->netdev->dev.parent,
-				   IDPF_HDR_BUF_SIZE * bufq->desc_count,
-				   &bufq->rx_buf.hdr_buf_pa, GFP_KERNEL);
-	if (!bufq->rx_buf.hdr_buf_va)
-		return -ENOMEM;
+	struct libeth_fq fq = {
+		.count	= bufq->desc_count,
+		.type	= LIBETH_FQE_HDR,
+		.nid	= idpf_q_vector_to_mem(bufq->q_vector),
+	};
+	int ret;
+
+	ret = libeth_rx_fq_create(&fq, &bufq->q_vector->napi);
+	if (ret)
+		return ret;
+
+	bufq->hdr_pp = fq.pp;
+	bufq->hdr_buf = fq.fqes;
+	bufq->hdr_truesize = fq.truesize;
+	bufq->rx_hbuf_size = fq.buf_len;
 
 	return 0;
 }
@@ -614,20 +635,32 @@ static void idpf_rx_post_buf_refill(struct idpf_sw_queue *refillq, u16 buf_id)
 static bool idpf_rx_post_buf_desc(struct idpf_buf_queue *bufq, u16 buf_id)
 {
 	struct virtchnl2_splitq_rx_buf_desc *splitq_rx_desc = NULL;
+	struct libeth_fq_fp fq = {
+		.count	= bufq->desc_count,
+	};
 	u16 nta = bufq->next_to_alloc;
-	struct idpf_rx_buf *buf;
 	dma_addr_t addr;
 
 	splitq_rx_desc = &bufq->split_buf[nta];
-	buf = &bufq->rx_buf.buf[buf_id];
 
-	if (idpf_queue_has(HSPLIT_EN, bufq))
-		splitq_rx_desc->hdr_addr =
-			cpu_to_le64(bufq->rx_buf.hdr_buf_pa +
-				    (u32)buf_id * IDPF_HDR_BUF_SIZE);
+	if (idpf_queue_has(HSPLIT_EN, bufq)) {
+		fq.pp = bufq->hdr_pp;
+		fq.fqes = bufq->hdr_buf;
+		fq.truesize = bufq->hdr_truesize;
 
-	addr = idpf_alloc_page(bufq->pp, buf, bufq->rx_buf_size);
-	if (unlikely(addr == DMA_MAPPING_ERROR))
+		addr = libeth_rx_alloc(&fq, buf_id);
+		if (addr == DMA_MAPPING_ERROR)
+			return false;
+
+		splitq_rx_desc->hdr_addr = cpu_to_le64(addr);
+	}
+
+	fq.pp = bufq->pp;
+	fq.fqes = bufq->buf;
+	fq.truesize = bufq->truesize;
+
+	addr = libeth_rx_alloc(&fq, buf_id);
+	if (addr == DMA_MAPPING_ERROR)
 		return false;
 
 	splitq_rx_desc->pkt_addr = cpu_to_le64(addr);
@@ -665,30 +698,6 @@ static bool idpf_rx_post_init_bufs(struct idpf_buf_queue *bufq,
 }
 
 /**
- * idpf_rx_create_page_pool - Create a page pool
- * @napi: NAPI of the associated queue vector
- * @count: queue descriptor count
- *
- * Returns &page_pool on success, casted -errno on failure
- */
-static struct page_pool *idpf_rx_create_page_pool(struct napi_struct *napi,
-						  u32 count)
-{
-	struct page_pool_params pp = {
-		.flags		= PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
-		.order		= 0,
-		.pool_size	= count,
-		.nid		= NUMA_NO_NODE,
-		.dev		= napi->dev->dev.parent,
-		.max_len	= PAGE_SIZE,
-		.dma_dir	= DMA_FROM_DEVICE,
-		.offset		= 0,
-	};
-
-	return page_pool_create(&pp);
-}
-
-/**
  * idpf_rx_buf_alloc_singleq - Allocate memory for all buffer resources
  * @rxq: queue for which the buffers are allocated
  *
@@ -696,11 +705,6 @@ static struct page_pool *idpf_rx_create_page_pool(struct napi_struct *napi,
  */
 static int idpf_rx_buf_alloc_singleq(struct idpf_rx_queue *rxq)
 {
-	rxq->rx_buf = kcalloc(rxq->desc_count, sizeof(*rxq->rx_buf),
-			      GFP_KERNEL);
-	if (!rxq->rx_buf)
-		return -ENOMEM;
-
 	if (idpf_rx_singleq_buf_hw_alloc_all(rxq, rxq->desc_count - 1))
 		goto err;
 
@@ -720,13 +724,21 @@ err:
  */
 static int idpf_rx_bufs_init_singleq(struct idpf_rx_queue *rxq)
 {
-	struct page_pool *pool;
+	struct libeth_fq fq = {
+		.count	= rxq->desc_count,
+		.type	= LIBETH_FQE_MTU,
+		.nid	= idpf_q_vector_to_mem(rxq->q_vector),
+	};
+	int ret;
 
-	pool = idpf_rx_create_page_pool(&rxq->q_vector->napi, rxq->desc_count);
-	if (IS_ERR(pool))
-		return PTR_ERR(pool);
+	ret = libeth_rx_fq_create(&fq, &rxq->q_vector->napi);
+	if (ret)
+		return ret;
 
-	rxq->pp = pool;
+	rxq->pp = fq.pp;
+	rxq->rx_buf = fq.fqes;
+	rxq->truesize = fq.truesize;
+	rxq->rx_buf_size = fq.buf_len;
 
 	return idpf_rx_buf_alloc_singleq(rxq);
 }
@@ -739,16 +751,7 @@ static int idpf_rx_bufs_init_singleq(struct idpf_rx_queue *rxq)
  */
 static int idpf_rx_buf_alloc_all(struct idpf_buf_queue *rxbufq)
 {
-	struct device *dev = rxbufq->q_vector->vport->netdev->dev.parent;
 	int err = 0;
-
-	/* Allocate book keeping buffers */
-	rxbufq->rx_buf.buf = kcalloc(rxbufq->desc_count,
-				     sizeof(struct idpf_rx_buf), GFP_KERNEL);
-	if (!rxbufq->rx_buf.buf) {
-		err = -ENOMEM;
-		goto rx_buf_alloc_all_out;
-	}
 
 	if (idpf_queue_has(HSPLIT_EN, rxbufq)) {
 		err = idpf_rx_hdr_buf_alloc_all(rxbufq);
@@ -762,7 +765,7 @@ static int idpf_rx_buf_alloc_all(struct idpf_buf_queue *rxbufq)
 
 rx_buf_alloc_all_out:
 	if (err)
-		idpf_rx_buf_rel_bufq(rxbufq, dev);
+		idpf_rx_buf_rel_bufq(rxbufq);
 
 	return err;
 }
@@ -770,19 +773,30 @@ rx_buf_alloc_all_out:
 /**
  * idpf_rx_bufs_init - Initialize page pool, allocate rx bufs, and post to HW
  * @bufq: buffer queue to create page pool for
+ * @type: type of Rx buffers to allocate
  *
  * Returns 0 on success, negative on failure
  */
-static int idpf_rx_bufs_init(struct idpf_buf_queue *bufq)
+static int idpf_rx_bufs_init(struct idpf_buf_queue *bufq,
+			     enum libeth_fqe_type type)
 {
-	struct page_pool *pool;
+	struct libeth_fq fq = {
+		.truesize	= bufq->truesize,
+		.count		= bufq->desc_count,
+		.type		= type,
+		.hsplit		= idpf_queue_has(HSPLIT_EN, bufq),
+		.nid		= idpf_q_vector_to_mem(bufq->q_vector),
+	};
+	int ret;
 
-	pool = idpf_rx_create_page_pool(&bufq->q_vector->napi,
-					bufq->desc_count);
-	if (IS_ERR(pool))
-		return PTR_ERR(pool);
+	ret = libeth_rx_fq_create(&fq, &bufq->q_vector->napi);
+	if (ret)
+		return ret;
 
-	bufq->pp = pool;
+	bufq->pp = fq.pp;
+	bufq->buf = fq.fqes;
+	bufq->truesize = fq.truesize;
+	bufq->rx_buf_size = fq.buf_len;
 
 	return idpf_rx_buf_alloc_all(bufq);
 }
@@ -795,14 +809,15 @@ static int idpf_rx_bufs_init(struct idpf_buf_queue *bufq)
  */
 int idpf_rx_bufs_init_all(struct idpf_vport *vport)
 {
-	struct idpf_rxq_group *rx_qgrp;
+	bool split = idpf_is_queue_model_split(vport->rxq_model);
 	int i, j, err;
 
 	for (i = 0; i < vport->num_rxq_grp; i++) {
-		rx_qgrp = &vport->rxq_grps[i];
+		struct idpf_rxq_group *rx_qgrp = &vport->rxq_grps[i];
+		u32 truesize = 0;
 
 		/* Allocate bufs for the rxq itself in singleq */
-		if (!idpf_is_queue_model_split(vport->rxq_model)) {
+		if (!split) {
 			int num_rxq = rx_qgrp->singleq.num_rxq;
 
 			for (j = 0; j < num_rxq; j++) {
@@ -819,12 +834,19 @@ int idpf_rx_bufs_init_all(struct idpf_vport *vport)
 
 		/* Otherwise, allocate bufs for the buffer queues */
 		for (j = 0; j < vport->num_bufqs_per_qgrp; j++) {
+			enum libeth_fqe_type type;
 			struct idpf_buf_queue *q;
 
 			q = &rx_qgrp->splitq.bufq_sets[j].bufq;
-			err = idpf_rx_bufs_init(q);
+			q->truesize = truesize;
+
+			type = truesize ? LIBETH_FQE_SHORT : LIBETH_FQE_MTU;
+
+			err = idpf_rx_bufs_init(q, type);
 			if (err)
 				return err;
+
+			truesize = q->truesize >> 1;
 		}
 	}
 
@@ -1136,17 +1158,11 @@ void idpf_vport_init_num_qs(struct idpf_vport *vport,
 	/* Adjust number of buffer queues per Rx queue group. */
 	if (!idpf_is_queue_model_split(vport->rxq_model)) {
 		vport->num_bufqs_per_qgrp = 0;
-		vport->bufq_size[0] = IDPF_RX_BUF_2048;
 
 		return;
 	}
 
 	vport->num_bufqs_per_qgrp = IDPF_MAX_BUFQS_PER_RXQ_GRP;
-	/* Bufq[0] default buffer size is 4K
-	 * Bufq[1] default buffer size is 2K
-	 */
-	vport->bufq_size[0] = IDPF_RX_BUF_4096;
-	vport->bufq_size[1] = IDPF_RX_BUF_2048;
 }
 
 /**
@@ -1309,7 +1325,7 @@ static void idpf_vport_calc_numq_per_grp(struct idpf_vport *vport,
 static void idpf_rxq_set_descids(const struct idpf_vport *vport,
 				 struct idpf_rx_queue *q)
 {
-	if (vport->rxq_model == VIRTCHNL2_QUEUE_MODEL_SPLIT) {
+	if (idpf_is_queue_model_split(vport->rxq_model)) {
 		q->rxdids = VIRTCHNL2_RXDID_2_FLEX_SPLITQ_M;
 	} else {
 		if (vport->base_rxd)
@@ -1483,11 +1499,9 @@ static int idpf_rxq_group_alloc(struct idpf_vport *vport, u16 num_rxq)
 
 			q = &rx_qgrp->splitq.bufq_sets[j].bufq;
 			q->desc_count = vport->bufq_desc_count[j];
-			q->rx_buf_size = vport->bufq_size[j];
 			q->rx_buffer_low_watermark = IDPF_LOW_WATERMARK;
 
 			idpf_queue_assign(HSPLIT_EN, q, hs);
-			q->rx_hbuf_size = hs ? IDPF_HDR_BUF_SIZE : 0;
 
 			bufq_set->num_refillqs = num_rxq;
 			bufq_set->refillqs = kcalloc(num_rxq, swq_size,
@@ -1530,7 +1544,6 @@ skip_splitq_rx_init:
 				      &rx_qgrp->splitq.bufq_sets[1].refillqs[j];
 
 			idpf_queue_assign(HSPLIT_EN, q, hs);
-			q->rx_hbuf_size = hs ? IDPF_HDR_BUF_SIZE : 0;
 
 setup_rxq:
 			q->desc_count = vport->rxq_desc_count;
@@ -1538,14 +1551,9 @@ setup_rxq:
 			q->netdev = vport->netdev;
 			q->bufq_sets = rx_qgrp->splitq.bufq_sets;
 			q->idx = (i * num_rxq) + j;
-			/* In splitq mode, RXQ buffer size should be
-			 * set to that of the first buffer queue
-			 * associated with this RXQ
-			 */
-			q->rx_buf_size = vport->bufq_size[0];
 			q->rx_buffer_low_watermark = IDPF_LOW_WATERMARK;
 			q->rx_max_pkt_size = vport->netdev->mtu +
-							IDPF_PACKET_HDR_PAD;
+							LIBETH_RX_LL_LEN;
 			idpf_rxq_set_descids(vport, q);
 		}
 	}
@@ -2870,30 +2878,6 @@ netdev_tx_t idpf_tx_start(struct sk_buff *skb, struct net_device *netdev)
 }
 
 /**
- * idpf_ptype_to_htype - get a hash type
- * @decoded: Decoded Rx packet type related fields
- *
- * Returns appropriate hash type (such as PKT_HASH_TYPE_L2/L3/L4) to be used by
- * skb_set_hash based on PTYPE as parsed by HW Rx pipeline and is part of
- * Rx desc.
- */
-enum pkt_hash_types idpf_ptype_to_htype(const struct idpf_rx_ptype_decoded *decoded)
-{
-	if (!decoded->known)
-		return PKT_HASH_TYPE_NONE;
-	if (decoded->payload_layer == IDPF_RX_PTYPE_PAYLOAD_LAYER_PAY2 &&
-	    decoded->inner_prot)
-		return PKT_HASH_TYPE_L4;
-	if (decoded->payload_layer == IDPF_RX_PTYPE_PAYLOAD_LAYER_PAY2 &&
-	    decoded->outer_ip)
-		return PKT_HASH_TYPE_L3;
-	if (decoded->outer_ip == IDPF_RX_PTYPE_OUTER_L2)
-		return PKT_HASH_TYPE_L2;
-
-	return PKT_HASH_TYPE_NONE;
-}
-
-/**
  * idpf_rx_hash - set the hash value in the skb
  * @rxq: Rx descriptor ring packet is being transacted on
  * @skb: pointer to current skb being populated
@@ -2903,18 +2887,18 @@ enum pkt_hash_types idpf_ptype_to_htype(const struct idpf_rx_ptype_decoded *deco
 static void
 idpf_rx_hash(const struct idpf_rx_queue *rxq, struct sk_buff *skb,
 	     const struct virtchnl2_rx_flex_desc_adv_nic_3 *rx_desc,
-	     struct idpf_rx_ptype_decoded *decoded)
+	     struct libeth_rx_pt decoded)
 {
 	u32 hash;
 
-	if (unlikely(!(rxq->netdev->features & NETIF_F_RXHASH)))
+	if (!libeth_rx_pt_has_hash(rxq->netdev, decoded))
 		return;
 
 	hash = le16_to_cpu(rx_desc->hash1) |
 	       (rx_desc->ff2_mirrid_hash2.hash2 << 16) |
 	       (rx_desc->hash3 << 24);
 
-	skb_set_hash(skb, hash, idpf_ptype_to_htype(decoded));
+	libeth_rx_pt_set_hash(skb, hash, decoded);
 }
 
 /**
@@ -2927,54 +2911,42 @@ idpf_rx_hash(const struct idpf_rx_queue *rxq, struct sk_buff *skb,
  * skb->protocol must be set before this function is called
  */
 static void idpf_rx_csum(struct idpf_rx_queue *rxq, struct sk_buff *skb,
-			 struct idpf_rx_csum_decoded *csum_bits,
-			 struct idpf_rx_ptype_decoded *decoded)
+			 struct idpf_rx_csum_decoded csum_bits,
+			 struct libeth_rx_pt decoded)
 {
 	bool ipv4, ipv6;
 
 	/* check if Rx checksum is enabled */
-	if (unlikely(!(rxq->netdev->features & NETIF_F_RXCSUM)))
+	if (!libeth_rx_pt_has_checksum(rxq->netdev, decoded))
 		return;
 
 	/* check if HW has decoded the packet and checksum */
-	if (!(csum_bits->l3l4p))
+	if (unlikely(!csum_bits.l3l4p))
 		return;
 
-	ipv4 = IDPF_RX_PTYPE_TO_IPV(decoded, IDPF_RX_PTYPE_OUTER_IPV4);
-	ipv6 = IDPF_RX_PTYPE_TO_IPV(decoded, IDPF_RX_PTYPE_OUTER_IPV6);
+	ipv4 = libeth_rx_pt_get_ip_ver(decoded) == LIBETH_RX_PT_OUTER_IPV4;
+	ipv6 = libeth_rx_pt_get_ip_ver(decoded) == LIBETH_RX_PT_OUTER_IPV6;
 
-	if (ipv4 && (csum_bits->ipe || csum_bits->eipe))
+	if (unlikely(ipv4 && (csum_bits.ipe || csum_bits.eipe)))
 		goto checksum_fail;
 
-	if (ipv6 && csum_bits->ipv6exadd)
+	if (unlikely(ipv6 && csum_bits.ipv6exadd))
 		return;
 
 	/* check for L4 errors and handle packets that were not able to be
 	 * checksummed
 	 */
-	if (csum_bits->l4e)
+	if (unlikely(csum_bits.l4e))
 		goto checksum_fail;
 
-	/* Only report checksum unnecessary for ICMP, TCP, UDP, or SCTP */
-	switch (decoded->inner_prot) {
-	case IDPF_RX_PTYPE_INNER_PROT_ICMP:
-	case IDPF_RX_PTYPE_INNER_PROT_TCP:
-	case IDPF_RX_PTYPE_INNER_PROT_UDP:
-		if (!csum_bits->raw_csum_inv) {
-			u16 csum = csum_bits->raw_csum;
-
-			skb->csum = csum_unfold((__force __sum16)~swab16(csum));
-			skb->ip_summed = CHECKSUM_COMPLETE;
-		} else {
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
-		}
-		break;
-	case IDPF_RX_PTYPE_INNER_PROT_SCTP:
+	if (csum_bits.raw_csum_inv ||
+	    decoded.inner_prot == LIBETH_RX_PT_INNER_SCTP) {
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
-		break;
-	default:
-		break;
+		return;
 	}
+
+	skb->csum = csum_unfold((__force __sum16)~swab16(csum_bits.raw_csum));
+	skb->ip_summed = CHECKSUM_COMPLETE;
 
 	return;
 
@@ -2987,32 +2959,34 @@ checksum_fail:
 /**
  * idpf_rx_splitq_extract_csum_bits - Extract checksum bits from descriptor
  * @rx_desc: receive descriptor
- * @csum: structure to extract checksum fields
  *
+ * Return: parsed checksum status.
  **/
-static void
-idpf_rx_splitq_extract_csum_bits(const struct virtchnl2_rx_flex_desc_adv_nic_3 *rx_desc,
-				 struct idpf_rx_csum_decoded *csum)
+static struct idpf_rx_csum_decoded
+idpf_rx_splitq_extract_csum_bits(const struct virtchnl2_rx_flex_desc_adv_nic_3 *rx_desc)
 {
+	struct idpf_rx_csum_decoded csum = { };
 	u8 qword0, qword1;
 
 	qword0 = rx_desc->status_err0_qw0;
 	qword1 = rx_desc->status_err0_qw1;
 
-	csum->ipe = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_XSUM_IPE_M,
+	csum.ipe = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_XSUM_IPE_M,
+			     qword1);
+	csum.eipe = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_XSUM_EIPE_M,
 			      qword1);
-	csum->eipe = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_XSUM_EIPE_M,
+	csum.l4e = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_XSUM_L4E_M,
+			     qword1);
+	csum.l3l4p = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_L3L4P_M,
 			       qword1);
-	csum->l4e = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_XSUM_L4E_M,
-			      qword1);
-	csum->l3l4p = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_L3L4P_M,
-				qword1);
-	csum->ipv6exadd = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_IPV6EXADD_M,
-				    qword0);
-	csum->raw_csum_inv =
+	csum.ipv6exadd = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_IPV6EXADD_M,
+				   qword0);
+	csum.raw_csum_inv =
 		le16_get_bits(rx_desc->ptype_err_fflags0,
 			      VIRTCHNL2_RX_FLEX_DESC_ADV_RAW_CSUM_INV_M);
-	csum->raw_csum = le16_to_cpu(rx_desc->misc.raw_cs);
+	csum.raw_csum = le16_to_cpu(rx_desc->misc.raw_cs);
+
+	return csum;
 }
 
 /**
@@ -3029,21 +3003,22 @@ idpf_rx_splitq_extract_csum_bits(const struct virtchnl2_rx_flex_desc_adv_nic_3 *
  */
 static int idpf_rx_rsc(struct idpf_rx_queue *rxq, struct sk_buff *skb,
 		       const struct virtchnl2_rx_flex_desc_adv_nic_3 *rx_desc,
-		       struct idpf_rx_ptype_decoded *decoded)
+		       struct libeth_rx_pt decoded)
 {
 	u16 rsc_segments, rsc_seg_len;
 	bool ipv4, ipv6;
 	int len;
 
-	if (unlikely(!decoded->outer_ip))
+	if (unlikely(libeth_rx_pt_get_ip_ver(decoded) ==
+		     LIBETH_RX_PT_OUTER_L2))
 		return -EINVAL;
 
 	rsc_seg_len = le16_to_cpu(rx_desc->misc.rscseglen);
 	if (unlikely(!rsc_seg_len))
 		return -EINVAL;
 
-	ipv4 = IDPF_RX_PTYPE_TO_IPV(decoded, IDPF_RX_PTYPE_OUTER_IPV4);
-	ipv6 = IDPF_RX_PTYPE_TO_IPV(decoded, IDPF_RX_PTYPE_OUTER_IPV6);
+	ipv4 = libeth_rx_pt_get_ip_ver(decoded) == LIBETH_RX_PT_OUTER_IPV4;
+	ipv6 = libeth_rx_pt_get_ip_ver(decoded) == LIBETH_RX_PT_OUTER_IPV6;
 
 	if (unlikely(!(ipv4 ^ ipv6)))
 		return -EINVAL;
@@ -3101,8 +3076,8 @@ static int
 idpf_rx_process_skb_fields(struct idpf_rx_queue *rxq, struct sk_buff *skb,
 			   const struct virtchnl2_rx_flex_desc_adv_nic_3 *rx_desc)
 {
-	struct idpf_rx_csum_decoded csum_bits = { };
-	struct idpf_rx_ptype_decoded decoded;
+	struct idpf_rx_csum_decoded csum_bits;
+	struct libeth_rx_pt decoded;
 	u16 rx_ptype;
 
 	rx_ptype = le16_get_bits(rx_desc->ptype_err_fflags0,
@@ -3110,16 +3085,18 @@ idpf_rx_process_skb_fields(struct idpf_rx_queue *rxq, struct sk_buff *skb,
 	decoded = rxq->rx_ptype_lkup[rx_ptype];
 
 	/* process RSS/hash */
-	idpf_rx_hash(rxq, skb, rx_desc, &decoded);
+	idpf_rx_hash(rxq, skb, rx_desc, decoded);
 
 	skb->protocol = eth_type_trans(skb, rxq->netdev);
 
 	if (le16_get_bits(rx_desc->hdrlen_flags,
 			  VIRTCHNL2_RX_FLEX_DESC_ADV_RSC_M))
-		return idpf_rx_rsc(rxq, skb, rx_desc, &decoded);
+		return idpf_rx_rsc(rxq, skb, rx_desc, decoded);
 
-	idpf_rx_splitq_extract_csum_bits(rx_desc, &csum_bits);
-	idpf_rx_csum(rxq, skb, &csum_bits, &decoded);
+	csum_bits = idpf_rx_splitq_extract_csum_bits(rx_desc);
+	idpf_rx_csum(rxq, skb, csum_bits, decoded);
+
+	skb_record_rx_queue(skb, rxq->idx);
 
 	return 0;
 }
@@ -3137,102 +3114,72 @@ idpf_rx_process_skb_fields(struct idpf_rx_queue *rxq, struct sk_buff *skb,
 void idpf_rx_add_frag(struct idpf_rx_buf *rx_buf, struct sk_buff *skb,
 		      unsigned int size)
 {
+	u32 hr = rx_buf->page->pp->p.offset;
+
 	skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags, rx_buf->page,
-			rx_buf->page_offset, size, rx_buf->truesize);
-
-	rx_buf->page = NULL;
+			rx_buf->offset + hr, size, rx_buf->truesize);
 }
 
 /**
- * idpf_rx_construct_skb - Allocate skb and populate it
- * @rxq: Rx descriptor queue
- * @rx_buf: Rx buffer to pull data from
- * @size: the length of the packet
+ * idpf_rx_hsplit_wa - handle header buffer overflows and split errors
+ * @hdr: Rx buffer for the headers
+ * @buf: Rx buffer for the payload
+ * @data_len: number of bytes received to the payload buffer
  *
- * This function allocates an skb. It then populates it with the page
- * data from the current receive descriptor, taking care to set up the
- * skb correctly.
+ * When a header buffer overflow occurs or the HW was unable do parse the
+ * packet type to perform header split, the whole frame gets placed to the
+ * payload buffer. We can't build a valid skb around a payload buffer when
+ * the header split is active since it doesn't reserve any head- or tailroom.
+ * In that case, copy either the whole frame when it's short or just the
+ * Ethernet header to the header buffer to be able to build an skb and adjust
+ * the data offset in the payload buffer, IOW emulate the header split.
+ *
+ * Return: number of bytes copied to the header buffer.
  */
-struct sk_buff *idpf_rx_construct_skb(const struct idpf_rx_queue *rxq,
-				      struct idpf_rx_buf *rx_buf,
-				      unsigned int size)
+static u32 idpf_rx_hsplit_wa(const struct libeth_fqe *hdr,
+			     struct libeth_fqe *buf, u32 data_len)
 {
-	unsigned int headlen;
-	struct sk_buff *skb;
-	void *va;
+	u32 copy = data_len <= L1_CACHE_BYTES ? data_len : ETH_HLEN;
+	const void *src;
+	void *dst;
 
-	va = page_address(rx_buf->page) + rx_buf->page_offset;
+	if (!libeth_rx_sync_for_cpu(buf, copy))
+		return 0;
 
-	/* prefetch first cache line of first page */
-	net_prefetch(va);
-	/* allocate a skb to store the frags */
-	skb = napi_alloc_skb(rxq->napi, IDPF_RX_HDR_SIZE);
-	if (unlikely(!skb)) {
-		idpf_rx_put_page(rx_buf);
+	dst = page_address(hdr->page) + hdr->offset + hdr->page->pp->p.offset;
+	src = page_address(buf->page) + buf->offset + buf->page->pp->p.offset;
+	memcpy(dst, src, LARGEST_ALIGN(copy));
 
-		return NULL;
-	}
+	buf->offset += copy;
 
-	skb_record_rx_queue(skb, rxq->idx);
-	skb_mark_for_recycle(skb);
-
-	/* Determine available headroom for copy */
-	headlen = size;
-	if (headlen > IDPF_RX_HDR_SIZE)
-		headlen = eth_get_headlen(skb->dev, va, IDPF_RX_HDR_SIZE);
-
-	/* align pull length to size of long to optimize memcpy performance */
-	memcpy(__skb_put(skb, headlen), va, ALIGN(headlen, sizeof(long)));
-
-	/* if we exhaust the linear part then add what is left as a frag */
-	size -= headlen;
-	if (!size) {
-		idpf_rx_put_page(rx_buf);
-
-		return skb;
-	}
-
-	skb_add_rx_frag(skb, 0, rx_buf->page, rx_buf->page_offset + headlen,
-			size, rx_buf->truesize);
-
-	/* Since we're giving the page to the stack, clear our reference to it.
-	 * We'll get a new one during buffer posting.
-	 */
-	rx_buf->page = NULL;
-
-	return skb;
+	return copy;
 }
 
 /**
- * idpf_rx_hdr_construct_skb - Allocate skb and populate it from header buffer
- * @rxq: Rx descriptor queue
- * @va: Rx buffer to pull data from
+ * idpf_rx_build_skb - Allocate skb and populate it from header buffer
+ * @buf: Rx buffer to pull data from
  * @size: the length of the packet
  *
  * This function allocates an skb. It then populates it with the page data from
  * the current receive descriptor, taking care to set up the skb correctly.
- * This specifically uses a header buffer to start building the skb.
  */
-static struct sk_buff *
-idpf_rx_hdr_construct_skb(const struct idpf_rx_queue *rxq, const void *va,
-			  unsigned int size)
+struct sk_buff *idpf_rx_build_skb(const struct libeth_fqe *buf, u32 size)
 {
+	u32 hr = buf->page->pp->p.offset;
 	struct sk_buff *skb;
+	void *va;
 
-	/* allocate a skb to store the frags */
-	skb = napi_alloc_skb(rxq->napi, size);
+	va = page_address(buf->page) + buf->offset;
+	prefetch(va + hr);
+
+	skb = napi_build_skb(va, buf->truesize);
 	if (unlikely(!skb))
 		return NULL;
 
-	skb_record_rx_queue(skb, rxq->idx);
-
-	memcpy(__skb_put(skb, size), va, ALIGN(size, sizeof(long)));
-
-	/* More than likely, a payload fragment, which will use a page from
-	 * page_pool will be added to the SKB so mark it for recycle
-	 * preemptively. And if not, it's inconsequential.
-	 */
 	skb_mark_for_recycle(skb);
+
+	skb_reserve(skb, hr);
+	__skb_put(skb, size);
 
 	return skb;
 }
@@ -3286,14 +3233,12 @@ static int idpf_rx_splitq_clean(struct idpf_rx_queue *rxq, int budget)
 	/* Process Rx packets bounded by budget */
 	while (likely(total_rx_pkts < budget)) {
 		struct virtchnl2_rx_flex_desc_adv_nic_3 *rx_desc;
+		struct libeth_fqe *hdr, *rx_buf = NULL;
 		struct idpf_sw_queue *refillq = NULL;
 		struct idpf_rxq_set *rxq_set = NULL;
-		struct idpf_rx_buf *rx_buf = NULL;
 		unsigned int pkt_len = 0;
 		unsigned int hdr_len = 0;
 		u16 gen_id, buf_id = 0;
-		 /* Header buffer overflow only valid for header split */
-		bool hbo = false;
 		int bufq_id;
 		u8 rxdid;
 
@@ -3325,25 +3270,6 @@ static int idpf_rx_splitq_clean(struct idpf_rx_queue *rxq, int budget)
 		pkt_len = le16_get_bits(rx_desc->pktlen_gen_bufq_id,
 					VIRTCHNL2_RX_FLEX_DESC_ADV_LEN_PBUF_M);
 
-		hbo = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_HBO_M,
-				rx_desc->status_err0_qw1);
-
-		if (unlikely(hbo)) {
-			/* If a header buffer overflow, occurs, i.e. header is
-			 * too large to fit in the header split buffer, HW will
-			 * put the entire packet, including headers, in the
-			 * data/payload buffer.
-			 */
-			u64_stats_update_begin(&rxq->stats_sync);
-			u64_stats_inc(&rxq->q_stats.hsplit_buf_ovf);
-			u64_stats_update_end(&rxq->stats_sync);
-			goto bypass_hsplit;
-		}
-
-		hdr_len = le16_get_bits(rx_desc->hdrlen_flags,
-					VIRTCHNL2_RX_FLEX_DESC_ADV_LEN_HDR_M);
-
-bypass_hsplit:
 		bufq_id = le16_get_bits(rx_desc->pktlen_gen_bufq_id,
 					VIRTCHNL2_RX_FLEX_DESC_ADV_BUFQ_ID_M);
 
@@ -3355,38 +3281,68 @@ bypass_hsplit:
 
 		buf_id = le16_to_cpu(rx_desc->buf_id);
 
-		rx_buf = &rx_bufq->rx_buf.buf[buf_id];
+		rx_buf = &rx_bufq->buf[buf_id];
 
-		if (hdr_len) {
-			const void *va = (u8 *)rx_bufq->rx_buf.hdr_buf_va +
-						(u32)buf_id * IDPF_HDR_BUF_SIZE;
+		if (!rx_bufq->hdr_pp)
+			goto payload;
 
-			skb = idpf_rx_hdr_construct_skb(rxq, va, hdr_len);
+#define __HBO_BIT	VIRTCHNL2_RX_FLEX_DESC_ADV_STATUS0_HBO_M
+#define __HDR_LEN_MASK	VIRTCHNL2_RX_FLEX_DESC_ADV_LEN_HDR_M
+		if (likely(!(rx_desc->status_err0_qw1 & __HBO_BIT)))
+			/* If a header buffer overflow, occurs, i.e. header is
+			 * too large to fit in the header split buffer, HW will
+			 * put the entire packet, including headers, in the
+			 * data/payload buffer.
+			 */
+			hdr_len = le16_get_bits(rx_desc->hdrlen_flags,
+						__HDR_LEN_MASK);
+#undef __HDR_LEN_MASK
+#undef __HBO_BIT
+
+		hdr = &rx_bufq->hdr_buf[buf_id];
+
+		if (unlikely(!hdr_len && !skb)) {
+			hdr_len = idpf_rx_hsplit_wa(hdr, rx_buf, pkt_len);
+			pkt_len -= hdr_len;
+
+			u64_stats_update_begin(&rxq->stats_sync);
+			u64_stats_inc(&rxq->q_stats.hsplit_buf_ovf);
+			u64_stats_update_end(&rxq->stats_sync);
+		}
+
+		if (libeth_rx_sync_for_cpu(hdr, hdr_len)) {
+			skb = idpf_rx_build_skb(hdr, hdr_len);
+			if (!skb)
+				break;
+
 			u64_stats_update_begin(&rxq->stats_sync);
 			u64_stats_inc(&rxq->q_stats.hsplit_pkts);
 			u64_stats_update_end(&rxq->stats_sync);
 		}
 
-		if (pkt_len) {
-			idpf_rx_sync_for_cpu(rx_buf, pkt_len);
-			if (skb)
-				idpf_rx_add_frag(rx_buf, skb, pkt_len);
-			else
-				skb = idpf_rx_construct_skb(rxq, rx_buf,
-							    pkt_len);
-		} else {
-			idpf_rx_put_page(rx_buf);
-		}
+		hdr->page = NULL;
+
+payload:
+		if (!libeth_rx_sync_for_cpu(rx_buf, pkt_len))
+			goto skip_data;
+
+		if (skb)
+			idpf_rx_add_frag(rx_buf, skb, pkt_len);
+		else
+			skb = idpf_rx_build_skb(rx_buf, pkt_len);
 
 		/* exit if we failed to retrieve a buffer */
 		if (!skb)
 			break;
 
-		idpf_rx_post_buf_refill(refillq, buf_id);
+skip_data:
+		rx_buf->page = NULL;
 
+		idpf_rx_post_buf_refill(refillq, buf_id);
 		IDPF_RX_BUMP_NTC(rxq, ntc);
+
 		/* skip if it is non EOP desc */
-		if (!idpf_rx_splitq_is_eop(rx_desc))
+		if (!idpf_rx_splitq_is_eop(rx_desc) || unlikely(!skb))
 			continue;
 
 		/* pad skb if needed (to make valid ethernet frame) */
@@ -3436,13 +3392,16 @@ bypass_hsplit:
 static int idpf_rx_update_bufq_desc(struct idpf_buf_queue *bufq, u32 buf_id,
 				    struct virtchnl2_splitq_rx_buf_desc *buf_desc)
 {
-	struct idpf_rx_buf *buf;
+	struct libeth_fq_fp fq = {
+		.pp		= bufq->pp,
+		.fqes		= bufq->buf,
+		.truesize	= bufq->truesize,
+		.count		= bufq->desc_count,
+	};
 	dma_addr_t addr;
 
-	buf = &bufq->rx_buf.buf[buf_id];
-
-	addr = idpf_alloc_page(bufq->pp, buf, bufq->rx_buf_size);
-	if (unlikely(addr == DMA_MAPPING_ERROR))
+	addr = libeth_rx_alloc(&fq, buf_id);
+	if (addr == DMA_MAPPING_ERROR)
 		return -ENOMEM;
 
 	buf_desc->pkt_addr = cpu_to_le64(addr);
@@ -3451,8 +3410,15 @@ static int idpf_rx_update_bufq_desc(struct idpf_buf_queue *bufq, u32 buf_id,
 	if (!idpf_queue_has(HSPLIT_EN, bufq))
 		return 0;
 
-	buf_desc->hdr_addr = cpu_to_le64(bufq->rx_buf.hdr_buf_pa +
-					 (u32)buf_id * IDPF_HDR_BUF_SIZE);
+	fq.pp = bufq->hdr_pp;
+	fq.fqes = bufq->hdr_buf;
+	fq.truesize = bufq->hdr_truesize;
+
+	addr = libeth_rx_alloc(&fq, buf_id);
+	if (addr == DMA_MAPPING_ERROR)
+		return -ENOMEM;
+
+	buf_desc->hdr_addr = cpu_to_le64(addr);
 
 	return 0;
 }
@@ -3523,15 +3489,20 @@ static void idpf_rx_clean_refillq(struct idpf_buf_queue *bufq,
 /**
  * idpf_rx_clean_refillq_all - Clean all refill queues
  * @bufq: buffer queue with refill queues
+ * @nid: ID of the closest NUMA node with memory
  *
  * Iterates through all refill queues assigned to the buffer queue assigned to
  * this vector.  Returns true if clean is complete within budget, false
  * otherwise.
  */
-static void idpf_rx_clean_refillq_all(struct idpf_buf_queue *bufq)
+static void idpf_rx_clean_refillq_all(struct idpf_buf_queue *bufq, int nid)
 {
 	struct idpf_bufq_set *bufq_set;
 	int i;
+
+	page_pool_nid_changed(bufq->pp, nid);
+	if (bufq->hdr_pp)
+		page_pool_nid_changed(bufq->hdr_pp, nid);
 
 	bufq_set = container_of(bufq, struct idpf_bufq_set, bufq);
 	for (i = 0; i < bufq_set->num_refillqs; i++)
@@ -3599,6 +3570,8 @@ void idpf_vport_intr_rel(struct idpf_vport *vport)
 		q_vector->tx = NULL;
 		kfree(q_vector->rx);
 		q_vector->rx = NULL;
+
+		free_cpumask_var(q_vector->affinity_mask);
 	}
 
 	kfree(vport->q_vectors);
@@ -3627,7 +3600,7 @@ static void idpf_vport_intr_rel_irq(struct idpf_vport *vport)
 
 		/* clear the affinity_mask in the IRQ descriptor */
 		irq_set_affinity_hint(irq_num, NULL);
-		free_irq(irq_num, q_vector);
+		kfree(free_irq(irq_num, q_vector));
 	}
 }
 
@@ -3780,6 +3753,7 @@ static int idpf_vport_intr_req_irq(struct idpf_vport *vport)
 
 	for (vector = 0; vector < vport->num_q_vectors; vector++) {
 		struct idpf_q_vector *q_vector = &vport->q_vectors[vector];
+		char *name;
 
 		vidx = vport->q_vector_idxs[vector];
 		irq_num = adapter->msix_entries[vidx].vector;
@@ -3793,18 +3767,18 @@ static int idpf_vport_intr_req_irq(struct idpf_vport *vport)
 		else
 			continue;
 
-		q_vector->name = kasprintf(GFP_KERNEL, "%s-%s-%s-%d", drv_name,
-					   if_name, vec_name, vidx);
+		name = kasprintf(GFP_KERNEL, "%s-%s-%s-%d", drv_name, if_name,
+				 vec_name, vidx);
 
 		err = request_irq(irq_num, idpf_vport_intr_clean_queues, 0,
-				  q_vector->name, q_vector);
+				  name, q_vector);
 		if (err) {
 			netdev_err(vport->netdev,
 				   "Request_irq failed, error: %d\n", err);
 			goto free_q_irqs;
 		}
 		/* assign the mask for this irq */
-		irq_set_affinity_hint(irq_num, &q_vector->affinity_mask);
+		irq_set_affinity_hint(irq_num, q_vector->affinity_mask);
 	}
 
 	return 0;
@@ -3813,7 +3787,7 @@ free_q_irqs:
 	while (--vector >= 0) {
 		vidx = vport->q_vector_idxs[vector];
 		irq_num = adapter->msix_entries[vidx].vector;
-		free_irq(irq_num, &vport->q_vectors[vector]);
+		kfree(free_irq(irq_num, &vport->q_vectors[vector]));
 	}
 
 	return err;
@@ -4011,6 +3985,7 @@ static bool idpf_rx_splitq_clean_all(struct idpf_q_vector *q_vec, int budget,
 	bool clean_complete = true;
 	int pkts_cleaned = 0;
 	int i, budget_per_q;
+	int nid;
 
 	/* We attempt to distribute budget to each Rx queue fairly, but don't
 	 * allow the budget to go below 1 because that would exit polling early.
@@ -4028,8 +4003,10 @@ static bool idpf_rx_splitq_clean_all(struct idpf_q_vector *q_vec, int budget,
 	}
 	*cleaned = pkts_cleaned;
 
+	nid = numa_mem_id();
+
 	for (i = 0; i < q_vec->num_bufq; i++)
-		idpf_rx_clean_refillq_all(q_vec->bufq[i]);
+		idpf_rx_clean_refillq_all(q_vec->bufq[i], nid);
 
 	return clean_complete;
 }
@@ -4223,7 +4200,7 @@ static void idpf_vport_intr_napi_add_all(struct idpf_vport *vport)
 
 		/* only set affinity_mask if the CPU is online */
 		if (cpu_online(v_idx))
-			cpumask_set_cpu(v_idx, &q_vector->affinity_mask);
+			cpumask_set_cpu(v_idx, q_vector->affinity_mask);
 	}
 }
 
@@ -4266,6 +4243,9 @@ int idpf_vport_intr_alloc(struct idpf_vport *vport)
 		q_vector->rx_itr_value = IDPF_ITR_RX_DEF;
 		q_vector->rx_intr_mode = IDPF_ITR_DYNAMIC;
 		q_vector->rx_itr_idx = VIRTCHNL2_ITR_IDX_0;
+
+		if (!zalloc_cpumask_var(&q_vector->affinity_mask, GFP_KERNEL))
+			goto error;
 
 		q_vector->tx = kcalloc(txqs_per_vector, sizeof(*q_vector->tx),
 				       GFP_KERNEL);

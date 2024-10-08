@@ -2615,7 +2615,7 @@ static int it6505_poweron(struct it6505 *it6505)
 		gpiod_set_value_cansleep(pdata->gpiod_reset, 0);
 		usleep_range(1000, 2000);
 		gpiod_set_value_cansleep(pdata->gpiod_reset, 1);
-		usleep_range(10000, 20000);
+		usleep_range(25000, 35000);
 	}
 
 	it6505->powered = true;
@@ -2905,11 +2905,6 @@ static int it6505_bridge_attach(struct drm_bridge *bridge,
 	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)) {
 		DRM_ERROR("DRM_BRIDGE_ATTACH_NO_CONNECTOR must be supplied");
 		return -EINVAL;
-	}
-
-	if (!bridge->encoder) {
-		dev_err(dev, "Parent encoder object not found");
-		return -ENODEV;
 	}
 
 	/* Register aux channel */

@@ -417,7 +417,6 @@ static noinline int update_ref_for_cow(struct btrfs_trans_handle *trans,
 	u64 refs;
 	u64 owner;
 	u64 flags;
-	u64 new_flags = 0;
 	int ret;
 
 	/*
@@ -489,18 +488,16 @@ static noinline int update_ref_for_cow(struct btrfs_trans_handle *trans,
 				if (ret)
 					return ret;
 			}
-			new_flags |= BTRFS_BLOCK_FLAG_FULL_BACKREF;
+			ret = btrfs_set_disk_extent_flags(trans, buf,
+						  BTRFS_BLOCK_FLAG_FULL_BACKREF);
+			if (ret)
+				return ret;
 		} else {
 
 			if (btrfs_root_id(root) == BTRFS_TREE_RELOC_OBJECTID)
 				ret = btrfs_inc_ref(trans, root, cow, 1);
 			else
 				ret = btrfs_inc_ref(trans, root, cow, 0);
-			if (ret)
-				return ret;
-		}
-		if (new_flags != 0) {
-			ret = btrfs_set_disk_extent_flags(trans, buf, new_flags);
 			if (ret)
 				return ret;
 		}
@@ -596,19 +593,15 @@ int btrfs_force_cow_block(struct btrfs_trans_handle *trans,
 
 	ret = update_ref_for_cow(trans, root, buf, cow, &last_ref);
 	if (ret) {
-		btrfs_tree_unlock(cow);
-		free_extent_buffer(cow);
 		btrfs_abort_transaction(trans, ret);
-		return ret;
+		goto error_unlock_cow;
 	}
 
 	if (test_bit(BTRFS_ROOT_SHAREABLE, &root->state)) {
 		ret = btrfs_reloc_cow_block(trans, root, buf, cow);
 		if (ret) {
-			btrfs_tree_unlock(cow);
-			free_extent_buffer(cow);
 			btrfs_abort_transaction(trans, ret);
-			return ret;
+			goto error_unlock_cow;
 		}
 	}
 
@@ -620,10 +613,8 @@ int btrfs_force_cow_block(struct btrfs_trans_handle *trans,
 
 		ret = btrfs_tree_mod_log_insert_root(root->node, cow, true);
 		if (ret < 0) {
-			btrfs_tree_unlock(cow);
-			free_extent_buffer(cow);
 			btrfs_abort_transaction(trans, ret);
-			return ret;
+			goto error_unlock_cow;
 		}
 		atomic_inc(&cow->refs);
 		rcu_assign_pointer(root->node, cow);
@@ -633,20 +624,16 @@ int btrfs_force_cow_block(struct btrfs_trans_handle *trans,
 		free_extent_buffer(buf);
 		add_root_to_dirty_list(root);
 		if (ret < 0) {
-			btrfs_tree_unlock(cow);
-			free_extent_buffer(cow);
 			btrfs_abort_transaction(trans, ret);
-			return ret;
+			goto error_unlock_cow;
 		}
 	} else {
 		WARN_ON(trans->transid != btrfs_header_generation(parent));
 		ret = btrfs_tree_mod_log_insert_key(parent, parent_slot,
 						    BTRFS_MOD_LOG_KEY_REPLACE);
 		if (ret) {
-			btrfs_tree_unlock(cow);
-			free_extent_buffer(cow);
 			btrfs_abort_transaction(trans, ret);
-			return ret;
+			goto error_unlock_cow;
 		}
 		btrfs_set_node_blockptr(parent, parent_slot,
 					cow->start);
@@ -656,19 +643,15 @@ int btrfs_force_cow_block(struct btrfs_trans_handle *trans,
 		if (last_ref) {
 			ret = btrfs_tree_mod_log_free_eb(buf);
 			if (ret) {
-				btrfs_tree_unlock(cow);
-				free_extent_buffer(cow);
 				btrfs_abort_transaction(trans, ret);
-				return ret;
+				goto error_unlock_cow;
 			}
 		}
 		ret = btrfs_free_tree_block(trans, btrfs_root_id(root), buf,
 					    parent_start, last_ref);
 		if (ret < 0) {
-			btrfs_tree_unlock(cow);
-			free_extent_buffer(cow);
 			btrfs_abort_transaction(trans, ret);
-			return ret;
+			goto error_unlock_cow;
 		}
 	}
 	if (unlock_orig)
@@ -677,6 +660,11 @@ int btrfs_force_cow_block(struct btrfs_trans_handle *trans,
 	btrfs_mark_buffer_dirty(trans, cow);
 	*cow_ret = cow;
 	return 0;
+
+error_unlock_cow:
+	btrfs_tree_unlock(cow);
+	free_extent_buffer(cow);
+	return ret;
 }
 
 static inline int should_cow_block(struct btrfs_trans_handle *trans,
@@ -1583,12 +1571,7 @@ read_block_for_search(struct btrfs_root *root, struct btrfs_path *p,
 		if (ret) {
 			free_extent_buffer(tmp);
 			btrfs_release_path(p);
-			return -EIO;
-		}
-		if (btrfs_check_eb_owner(tmp, btrfs_root_id(root))) {
-			free_extent_buffer(tmp);
-			btrfs_release_path(p);
-			return -EUCLEAN;
+			return ret;
 		}
 
 		if (unlock_up)

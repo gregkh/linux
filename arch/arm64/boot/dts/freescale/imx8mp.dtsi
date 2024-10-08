@@ -1541,6 +1541,31 @@
 					dma-names = "tx";
 					status = "disabled";
 				};
+
+				xcvr: xcvr@30cc0000 {
+					compatible = "fsl,imx8mp-xcvr";
+					reg = <0x30cc0000 0x800>,
+					      <0x30cc0800 0x400>,
+					      <0x30cc0c00 0x080>,
+					      <0x30cc0e00 0x080>;
+					reg-names = "ram", "regs", "rxfifo",
+						    "txfifo";
+					interrupts = /* XCVR IRQ 0 */
+						     <GIC_SPI 128 IRQ_TYPE_LEVEL_HIGH>,
+						     /* XCVR IRQ 1 */
+						     <GIC_SPI 129 IRQ_TYPE_LEVEL_HIGH>,
+						     /* XCVR PHY - SPDIF wakeup IRQ */
+						     <GIC_SPI 146 IRQ_TYPE_LEVEL_HIGH>;
+					clocks = <&audio_blk_ctrl IMX8MP_CLK_AUDIOMIX_EARC_IPG>,
+						 <&audio_blk_ctrl IMX8MP_CLK_AUDIOMIX_EARC_PHY>,
+						 <&audio_blk_ctrl IMX8MP_CLK_AUDIOMIX_SPBA2_ROOT>,
+						 <&audio_blk_ctrl IMX8MP_CLK_AUDIOMIX_AUDPLL_ROOT>;
+					clock-names = "ipg", "phy", "spba", "pll_ipg";
+					dmas = <&sdma2 30 2 0>, <&sdma2 31 2 0>;
+					dma-names = "rx", "tx";
+					resets = <&audio_blk_ctrl 0>;
+					status = "disabled";
+				};
 			};
 
 			sdma3: dma-controller@30e00000 {
@@ -1569,6 +1594,7 @@
 				compatible = "fsl,imx8mp-audio-blk-ctrl";
 				reg = <0x30e20000 0x10000>;
 				#clock-cells = <1>;
+				#reset-cells = <1>;
 				clocks = <&clk IMX8MP_CLK_AUDIO_ROOT>,
 					 <&clk IMX8MP_CLK_SAI1>,
 					 <&clk IMX8MP_CLK_SAI2>,
@@ -1580,6 +1606,9 @@
 					      "sai1", "sai2", "sai3",
 					      "sai5", "sai6", "sai7";
 				power-domains = <&pgc_audio>;
+				assigned-clocks = <&clk IMX8MP_AUDIO_PLL1>,
+						  <&clk IMX8MP_AUDIO_PLL2>;
+				assigned-clock-rates = <393216000>, <361267200>;
 			};
 		};
 
@@ -1947,7 +1976,7 @@
 			};
 
 			irqsteer_hdmi: interrupt-controller@32fc2000 {
-				compatible = "fsl,imx-irqsteer";
+				compatible = "fsl,imx8mp-irqsteer", "fsl,imx-irqsteer";
 				reg = <0x32fc2000 0x1000>;
 				interrupts = <GIC_SPI 43 IRQ_TYPE_LEVEL_HIGH>;
 				interrupt-controller;

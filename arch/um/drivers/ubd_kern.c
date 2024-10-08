@@ -36,7 +36,6 @@
 #include <linux/vmalloc.h>
 #include <linux/platform_device.h>
 #include <linux/scatterlist.h>
-#include <asm/tlbflush.h>
 #include <kern_util.h>
 #include "mconsole_kern.h"
 #include <init.h>
@@ -106,7 +105,6 @@ static inline void ubd_set_bit(__u64 bit, unsigned char *data)
 #define DRIVER_NAME "uml-blkdev"
 
 static DEFINE_MUTEX(ubd_lock);
-static DEFINE_MUTEX(ubd_mutex); /* replaces BKL, might not be needed */
 
 static int ubd_ioctl(struct block_device *bdev, blk_mode_t mode,
 		     unsigned int cmd, unsigned long arg);
@@ -451,9 +449,9 @@ static void ubd_end_request(struct io_thread_req *io_req)
 {
 	if (io_req->error == BLK_STS_NOTSUPP) {
 		if (req_op(io_req->req) == REQ_OP_DISCARD)
-			blk_queue_max_discard_sectors(io_req->req->q, 0);
+			blk_queue_disable_discard(io_req->req->q);
 		else if (req_op(io_req->req) == REQ_OP_WRITE_ZEROES)
-			blk_queue_max_write_zeroes_sectors(io_req->req->q, 0);
+			blk_queue_disable_write_zeroes(io_req->req->q);
 	}
 	blk_mq_end_request(io_req->req, io_req->error);
 	kfree(io_req);
@@ -759,7 +757,6 @@ static int ubd_open_dev(struct ubd *ubd_dev)
 			printk(KERN_ERR "Failed to vmalloc COW bitmap\n");
 			goto error;
 		}
-		flush_tlb_kernel_vm();
 
 		err = read_cow_bitmap(ubd_dev->fd, ubd_dev->cow.bitmap,
 				      ubd_dev->cow.bitmap_offset,
@@ -835,6 +832,7 @@ static int ubd_add(int n, char **error_out)
 	struct queue_limits lim = {
 		.max_segments		= MAX_SG,
 		.seg_boundary_mask	= PAGE_SIZE - 1,
+		.features		= BLK_FEAT_WRITE_CACHE,
 	};
 	struct gendisk *disk;
 	int err = 0;
@@ -881,8 +879,6 @@ static int ubd_add(int n, char **error_out)
 		goto out_cleanup_tags;
 	}
 
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, disk->queue);
-	blk_queue_write_cache(disk->queue, true, false);
 	disk->major = UBD_MAJOR;
 	disk->first_minor = n << UBD_SHIFT;
 	disk->minors = 1 << UBD_SHIFT;

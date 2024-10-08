@@ -26,7 +26,6 @@ static struct io_napi_entry *io_napi_hash_find(struct hlist_head *hash_list,
 	hlist_for_each_entry_rcu(e, hash_list, node) {
 		if (e->napi_id != napi_id)
 			continue;
-		e->timeout = jiffies + NAPI_TIMEOUT;
 		return e;
 	}
 
@@ -205,7 +204,6 @@ void io_napi_init(struct io_ring_ctx *ctx)
 void io_napi_free(struct io_ring_ctx *ctx)
 {
 	struct io_napi_entry *e;
-	LIST_HEAD(napi_list);
 	unsigned int i;
 
 	spin_lock(&ctx->napi_lock);
@@ -282,20 +280,12 @@ int io_unregister_napi(struct io_ring_ctx *ctx, void __user *arg)
  * the NAPI timeout accordingly.
  */
 void __io_napi_adjust_timeout(struct io_ring_ctx *ctx, struct io_wait_queue *iowq,
-			      struct timespec64 *ts)
+			      ktime_t to_wait)
 {
 	ktime_t poll_dt = READ_ONCE(ctx->napi_busy_poll_dt);
 
-	if (ts) {
-		struct timespec64 poll_to_ts;
-
-		poll_to_ts = ns_to_timespec64(ktime_to_ns(poll_dt));
-		if (timespec64_compare(ts, &poll_to_ts) < 0) {
-			s64 poll_to_ns = timespec64_to_ns(ts);
-			if (poll_to_ns > 0)
-				poll_dt = ns_to_ktime(poll_to_ns);
-		}
-	}
+	if (to_wait)
+		poll_dt = min(poll_dt, to_wait);
 
 	iowq->napi_busy_poll_dt = poll_dt;
 }
@@ -323,7 +313,6 @@ void __io_napi_busy_loop(struct io_ring_ctx *ctx, struct io_wait_queue *iowq)
  */
 int io_napi_sqpoll_busy_poll(struct io_ring_ctx *ctx)
 {
-	LIST_HEAD(napi_list);
 	bool is_stale = false;
 
 	if (!READ_ONCE(ctx->napi_busy_poll_dt))

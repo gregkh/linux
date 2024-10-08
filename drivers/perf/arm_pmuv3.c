@@ -25,8 +25,6 @@
 #include <linux/smp.h>
 #include <linux/nmi.h>
 
-#include <asm/arm_pmuv3.h>
-
 /* ARMv8 Cortex-A53 specific event types. */
 #define ARMV8_A53_PERFCTR_PREF_LINEFILL				0xC2
 
@@ -1045,7 +1043,7 @@ static int armv8pmu_set_event_filter(struct hw_perf_event *event,
 		return -EINVAL;
 	}
 
-	if (IS_ENABLED(CONFIG_ARM64) && th) {
+	if (th) {
 		config_base |= FIELD_PREP(ARMV8_PMU_EVTYPE_TH, th);
 		config_base |= FIELD_PREP(ARMV8_PMU_EVTYPE_TC,
 					  armv8pmu_event_threshold_control(attr));
@@ -1259,7 +1257,7 @@ static void armv8pmu_disable_user_access_ipi(void *unused)
 	armv8pmu_disable_user_access();
 }
 
-static int armv8pmu_proc_user_access_handler(struct ctl_table *table, int write,
+static int armv8pmu_proc_user_access_handler(const struct ctl_table *table, int write,
 		void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
@@ -1346,14 +1344,20 @@ PMUV3_INIT_SIMPLE(armv9_cortex_a520)
 PMUV3_INIT_SIMPLE(armv9_cortex_a710)
 PMUV3_INIT_SIMPLE(armv9_cortex_a715)
 PMUV3_INIT_SIMPLE(armv9_cortex_a720)
+PMUV3_INIT_SIMPLE(armv9_cortex_a725)
 PMUV3_INIT_SIMPLE(armv8_cortex_x1)
 PMUV3_INIT_SIMPLE(armv9_cortex_x2)
 PMUV3_INIT_SIMPLE(armv9_cortex_x3)
 PMUV3_INIT_SIMPLE(armv9_cortex_x4)
+PMUV3_INIT_SIMPLE(armv9_cortex_x925)
 PMUV3_INIT_SIMPLE(armv8_neoverse_e1)
 PMUV3_INIT_SIMPLE(armv8_neoverse_n1)
 PMUV3_INIT_SIMPLE(armv9_neoverse_n2)
+PMUV3_INIT_SIMPLE(armv9_neoverse_n3)
 PMUV3_INIT_SIMPLE(armv8_neoverse_v1)
+PMUV3_INIT_SIMPLE(armv8_neoverse_v2)
+PMUV3_INIT_SIMPLE(armv8_neoverse_v3)
+PMUV3_INIT_SIMPLE(armv8_neoverse_v3ae)
 
 PMUV3_INIT_SIMPLE(armv8_nvidia_carmel)
 PMUV3_INIT_SIMPLE(armv8_nvidia_denver)
@@ -1385,14 +1389,20 @@ static const struct of_device_id armv8_pmu_of_device_ids[] = {
 	{.compatible = "arm,cortex-a710-pmu",	.data = armv9_cortex_a710_pmu_init},
 	{.compatible = "arm,cortex-a715-pmu",	.data = armv9_cortex_a715_pmu_init},
 	{.compatible = "arm,cortex-a720-pmu",	.data = armv9_cortex_a720_pmu_init},
+	{.compatible = "arm,cortex-a725-pmu",	.data = armv9_cortex_a725_pmu_init},
 	{.compatible = "arm,cortex-x1-pmu",	.data = armv8_cortex_x1_pmu_init},
 	{.compatible = "arm,cortex-x2-pmu",	.data = armv9_cortex_x2_pmu_init},
 	{.compatible = "arm,cortex-x3-pmu",	.data = armv9_cortex_x3_pmu_init},
 	{.compatible = "arm,cortex-x4-pmu",	.data = armv9_cortex_x4_pmu_init},
+	{.compatible = "arm,cortex-x925-pmu",	.data = armv9_cortex_x925_pmu_init},
 	{.compatible = "arm,neoverse-e1-pmu",	.data = armv8_neoverse_e1_pmu_init},
 	{.compatible = "arm,neoverse-n1-pmu",	.data = armv8_neoverse_n1_pmu_init},
 	{.compatible = "arm,neoverse-n2-pmu",	.data = armv9_neoverse_n2_pmu_init},
+	{.compatible = "arm,neoverse-n3-pmu",	.data = armv9_neoverse_n3_pmu_init},
 	{.compatible = "arm,neoverse-v1-pmu",	.data = armv8_neoverse_v1_pmu_init},
+	{.compatible = "arm,neoverse-v2-pmu",	.data = armv8_neoverse_v2_pmu_init},
+	{.compatible = "arm,neoverse-v3-pmu",	.data = armv8_neoverse_v3_pmu_init},
+	{.compatible = "arm,neoverse-v3ae-pmu",	.data = armv8_neoverse_v3ae_pmu_init},
 	{.compatible = "cavium,thunder-pmu",	.data = armv8_cavium_thunder_pmu_init},
 	{.compatible = "brcm,vulcan-pmu",	.data = armv8_brcm_vulcan_pmu_init},
 	{.compatible = "nvidia,carmel-pmu",	.data = armv8_nvidia_carmel_pmu_init},

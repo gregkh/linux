@@ -103,6 +103,8 @@
 #define ACP70_PGFSM_CONTROL			ACP6X_PGFSM_CONTROL
 #define ACP70_PGFSM_STATUS			ACP6X_PGFSM_STATUS
 
+#define ACP_ZSC_DSP_CTRL			0x0001014
+#define ACP_ZSC_STS				0x0001018
 #define ACP_SOFT_RST_DONE_MASK	0x00010001
 
 #define ACP_PGFSM_CNTL_POWER_ON_MASK            0xffffffff
@@ -162,8 +164,6 @@ struct acp_resource {
 	int irqp_used;
 	bool soc_mclk;
 	u32 irq_reg_offset;
-	u32 i2s_pin_cfg_offset;
-	int i2s_mode;
 	u64 scratch_reg_offset;
 	u64 sram_pte_offset;
 };
@@ -175,6 +175,7 @@ struct acp_dev_data {
 	unsigned int i2s_irq;
 
 	bool tdm_mode;
+	bool is_i2s_config;
 	/* SOC specific dais */
 	struct snd_soc_dai_driver *dai_driver;
 	int num_dai;

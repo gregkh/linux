@@ -280,6 +280,21 @@ int nvmf_reg_write32(struct nvme_ctrl *ctrl, u32 off, u32 val)
 }
 EXPORT_SYMBOL_GPL(nvmf_reg_write32);
 
+int nvmf_subsystem_reset(struct nvme_ctrl *ctrl)
+{
+	int ret;
+
+	if (!nvme_wait_reset(ctrl))
+		return -EBUSY;
+
+	ret = ctrl->ops->reg_write32(ctrl, NVME_REG_NSSR, NVME_SUBSYS_RESET);
+	if (ret)
+		return ret;
+
+	return nvme_try_sched_reset(ctrl);
+}
+EXPORT_SYMBOL_GPL(nvmf_subsystem_reset);
+
 /**
  * nvmf_log_connect_error() - Error-parsing-diagnostic print out function for
  * 				connect() errors.
@@ -1388,10 +1403,10 @@ static void __nvmf_concat_opt_tokens(struct seq_file *seq_file)
 		tok = &opt_tokens[idx];
 		if (tok->token == NVMF_OPT_ERR)
 			continue;
-		seq_puts(seq_file, ",");
+		seq_putc(seq_file, ',');
 		seq_puts(seq_file, tok->pattern);
 	}
-	seq_puts(seq_file, "\n");
+	seq_putc(seq_file, '\n');
 }
 
 static int nvmf_dev_show(struct seq_file *seq_file, void *private)

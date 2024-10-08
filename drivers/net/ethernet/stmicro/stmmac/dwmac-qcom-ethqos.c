@@ -628,6 +628,14 @@ static int ethqos_configure_rgmii(struct qcom_ethqos *ethqos)
 	return 0;
 }
 
+static void ethqos_set_serdes_speed(struct qcom_ethqos *ethqos, int speed)
+{
+	if (ethqos->serdes_speed != speed) {
+		phy_set_speed(ethqos->serdes_phy, speed);
+		ethqos->serdes_speed = speed;
+	}
+}
+
 /* On interface toggle MAC registers gets reset.
  * Configure MAC block for SGMII on ethernet phy link up
  */
@@ -645,9 +653,7 @@ static int ethqos_configure_sgmii(struct qcom_ethqos *ethqos)
 		rgmii_updatel(ethqos, RGMII_CONFIG2_RGMII_CLK_SEL_CFG,
 			      RGMII_CONFIG2_RGMII_CLK_SEL_CFG,
 			      RGMII_IO_MACRO_CONFIG2);
-		if (ethqos->serdes_speed != SPEED_2500)
-			phy_set_speed(ethqos->serdes_phy, SPEED_2500);
-		ethqos->serdes_speed = SPEED_2500;
+		ethqos_set_serdes_speed(ethqos, SPEED_2500);
 		stmmac_pcs_ctrl_ane(priv, priv->ioaddr, 0, 0, 0);
 		break;
 	case SPEED_1000:
@@ -655,16 +661,12 @@ static int ethqos_configure_sgmii(struct qcom_ethqos *ethqos)
 		rgmii_updatel(ethqos, RGMII_CONFIG2_RGMII_CLK_SEL_CFG,
 			      RGMII_CONFIG2_RGMII_CLK_SEL_CFG,
 			      RGMII_IO_MACRO_CONFIG2);
-		if (ethqos->serdes_speed != SPEED_1000)
-			phy_set_speed(ethqos->serdes_phy, SPEED_1000);
-		ethqos->serdes_speed = SPEED_1000;
+		ethqos_set_serdes_speed(ethqos, SPEED_1000);
 		stmmac_pcs_ctrl_ane(priv, priv->ioaddr, 1, 0, 0);
 		break;
 	case SPEED_100:
 		val |= ETHQOS_MAC_CTRL_PORT_SEL | ETHQOS_MAC_CTRL_SPEED_MODE;
-		if (ethqos->serdes_speed != SPEED_1000)
-			phy_set_speed(ethqos->serdes_phy, SPEED_1000);
-		ethqos->serdes_speed = SPEED_1000;
+		ethqos_set_serdes_speed(ethqos, SPEED_1000);
 		stmmac_pcs_ctrl_ane(priv, priv->ioaddr, 1, 0, 0);
 		break;
 	case SPEED_10:
@@ -674,9 +676,7 @@ static int ethqos_configure_sgmii(struct qcom_ethqos *ethqos)
 			      FIELD_PREP(RGMII_CONFIG_SGMII_CLK_DVDR,
 					 SGMII_10M_RX_CLK_DVDR),
 			      RGMII_IO_MACRO_CONFIG);
-		if (ethqos->serdes_speed != SPEED_1000)
-			phy_set_speed(ethqos->serdes_phy, ethqos->speed);
-		ethqos->serdes_speed = SPEED_1000;
+		ethqos_set_serdes_speed(ethqos, SPEED_1000);
 		stmmac_pcs_ctrl_ane(priv, priv->ioaddr, 1, 0, 0);
 		break;
 	}
@@ -684,6 +684,14 @@ static int ethqos_configure_sgmii(struct qcom_ethqos *ethqos)
 	writel(val, ethqos->mac_base + MAC_CTRL_REG);
 
 	return val;
+}
+
+static void qcom_ethqos_speed_mode_2500(struct net_device *ndev, void *data)
+{
+	struct stmmac_priv *priv = netdev_priv(ndev);
+
+	priv->plat->max_speed = 2500;
+	priv->plat->phy_interface = PHY_INTERFACE_MODE_2500BASEX;
 }
 
 static int ethqos_configure(struct qcom_ethqos *ethqos)
@@ -809,6 +817,9 @@ static int qcom_ethqos_probe(struct platform_device *pdev)
 	case PHY_INTERFACE_MODE_RGMII_TXID:
 		ethqos->configure_func = ethqos_configure_rgmii;
 		break;
+	case PHY_INTERFACE_MODE_2500BASEX:
+		plat_dat->speed_mode_2500 = qcom_ethqos_speed_mode_2500;
+		fallthrough;
 	case PHY_INTERFACE_MODE_SGMII:
 		ethqos->configure_func = ethqos_configure_sgmii;
 		break;

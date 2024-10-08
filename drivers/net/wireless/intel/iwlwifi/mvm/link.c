@@ -11,6 +11,7 @@
 	HOW(BLOCKED_TPT)		\
 	HOW(BLOCKED_FW)			\
 	HOW(BLOCKED_NON_BSS)		\
+	HOW(BLOCKED_ROC)		\
 	HOW(EXIT_MISSED_BEACON)		\
 	HOW(EXIT_LOW_RSSI)		\
 	HOW(EXIT_COEX)			\
@@ -50,26 +51,15 @@ static void iwl_mvm_print_esr_state(struct iwl_mvm *mvm, u32 mask)
 static u32 iwl_mvm_get_free_fw_link_id(struct iwl_mvm *mvm,
 				       struct iwl_mvm_vif *mvm_vif)
 {
-	u32 link_id;
+	u32 i;
 
 	lockdep_assert_held(&mvm->mutex);
 
-	link_id = ffz(mvm->fw_link_ids_map);
+	for (i = 0; i < ARRAY_SIZE(mvm->link_id_to_link_conf); i++)
+		if (!rcu_access_pointer(mvm->link_id_to_link_conf[i]))
+			return i;
 
-	/* this case can happen if there're deactivated but not removed links */
-	if (link_id > IWL_MVM_FW_MAX_LINK_ID)
-		return IWL_MVM_FW_LINK_ID_INVALID;
-
-	mvm->fw_link_ids_map |= BIT(link_id);
-	return link_id;
-}
-
-static void iwl_mvm_release_fw_link_id(struct iwl_mvm *mvm, u32 link_id)
-{
-	lockdep_assert_held(&mvm->mutex);
-
-	if (!WARN_ON(link_id > IWL_MVM_FW_MAX_LINK_ID))
-		mvm->fw_link_ids_map &= ~BIT(link_id);
+	return IWL_MVM_FW_LINK_ID_INVALID;
 }
 
 static int iwl_mvm_link_cmd_send(struct iwl_mvm *mvm,
@@ -380,7 +370,6 @@ int iwl_mvm_unset_link_mapping(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 
 	RCU_INIT_POINTER(mvm->link_id_to_link_conf[link_info->fw_link_id],
 			 NULL);
-	iwl_mvm_release_fw_link_id(mvm, link_info->fw_link_id);
 	return 0;
 }
 
@@ -988,6 +977,9 @@ void iwl_mvm_exit_esr(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 
 	lockdep_assert_held(&mvm->mutex);
 
+	if (!IWL_MVM_AUTO_EML_ENABLE)
+		return;
+
 	/* Nothing to do */
 	if (!mvmvif->esr_active)
 		return;
@@ -1035,18 +1027,23 @@ void iwl_mvm_block_esr(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 
 	lockdep_assert_held(&mvm->mutex);
 
+	if (!IWL_MVM_AUTO_EML_ENABLE)
+		return;
+
 	/* This should be called only with disable reasons */
 	if (WARN_ON(!(reason & IWL_MVM_BLOCK_ESR_REASONS)))
 		return;
 
-	if (!(mvmvif->esr_disable_reason & reason)) {
-		IWL_DEBUG_INFO(mvm,
-			       "Blocking EMLSR mode. reason = %s (0x%x)\n",
-			       iwl_get_esr_state_string(reason), reason);
-		iwl_mvm_print_esr_state(mvm, mvmvif->esr_disable_reason);
-	}
+	if (mvmvif->esr_disable_reason & reason)
+		return;
+
+	IWL_DEBUG_INFO(mvm,
+		       "Blocking EMLSR mode. reason = %s (0x%x)\n",
+		       iwl_get_esr_state_string(reason), reason);
 
 	mvmvif->esr_disable_reason |= reason;
+
+	iwl_mvm_print_esr_state(mvm, mvmvif->esr_disable_reason);
 
 	iwl_mvm_exit_esr(mvm, vif, reason, link_to_keep);
 }
@@ -1129,6 +1126,9 @@ void iwl_mvm_unblock_esr(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
 
 	lockdep_assert_held(&mvm->mutex);
+
+	if (!IWL_MVM_AUTO_EML_ENABLE)
+		return;
 
 	/* This should be called only with disable reasons */
 	if (WARN_ON(!(reason & IWL_MVM_BLOCK_ESR_REASONS)))

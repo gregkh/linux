@@ -33,8 +33,10 @@
 #include "resource.h"
 #include "link_enc_cfg.h"
 
+#if defined(CONFIG_DRM_AMD_DC_FP)
 #include "dml2/dml2_wrapper.h"
 #include "dml2/dml2_internal_types.h"
+#endif
 
 #define DC_LOGGER \
 	dc->ctx->logger
@@ -190,11 +192,14 @@ static void init_state(struct dc *dc, struct dc_state *state)
 /* Public dc_state functions */
 struct dc_state *dc_state_create(struct dc *dc, struct dc_state_create_params *params)
 {
+	struct dc_state *state;
 #ifdef CONFIG_DRM_AMD_DC_FP
-	struct dml2_configuration_options dml2_opt = dc->dml2_options;
+	struct dml2_configuration_options *dml2_opt = &dc->dml2_tmp;
+
+	memcpy(dml2_opt, &dc->dml2_options, sizeof(dc->dml2_options));
 #endif
-	struct dc_state *state = kvzalloc(sizeof(struct dc_state),
-			GFP_KERNEL);
+
+	state = kvzalloc(sizeof(struct dc_state), GFP_KERNEL);
 
 	if (!state)
 		return NULL;
@@ -205,11 +210,11 @@ struct dc_state *dc_state_create(struct dc *dc, struct dc_state_create_params *p
 
 #ifdef CONFIG_DRM_AMD_DC_FP
 	if (dc->debug.using_dml2) {
-		dml2_opt.use_clock_dc_limits = false;
-		dml2_create(dc, &dml2_opt, &state->bw_ctx.dml2);
+		dml2_opt->use_clock_dc_limits = false;
+		dml2_create(dc, dml2_opt, &state->bw_ctx.dml2);
 
-		dml2_opt.use_clock_dc_limits = true;
-		dml2_create(dc, &dml2_opt, &state->bw_ctx.dml2_dc_power_source);
+		dml2_opt->use_clock_dc_limits = true;
+		dml2_create(dc, dml2_opt, &state->bw_ctx.dml2_dc_power_source);
 	}
 #endif
 
@@ -789,11 +794,16 @@ enum dc_status dc_state_add_phantom_stream(const struct dc *dc,
 
 	/* setup subvp meta */
 	main_stream_status = dc_state_get_stream_status(state, main_stream);
+	if (main_stream_status) {
+		main_stream_status->mall_stream_config.type = SUBVP_MAIN;
+		main_stream_status->mall_stream_config.paired_stream = phantom_stream;
+	}
+
 	phantom_stream_status = dc_state_get_stream_status(state, phantom_stream);
-	phantom_stream_status->mall_stream_config.type = SUBVP_PHANTOM;
-	phantom_stream_status->mall_stream_config.paired_stream = main_stream;
-	main_stream_status->mall_stream_config.type = SUBVP_MAIN;
-	main_stream_status->mall_stream_config.paired_stream = phantom_stream;
+	if (phantom_stream_status) {
+		phantom_stream_status->mall_stream_config.type = SUBVP_PHANTOM;
+		phantom_stream_status->mall_stream_config.paired_stream = main_stream;
+	}
 
 	return res;
 }
@@ -802,14 +812,17 @@ enum dc_status dc_state_remove_phantom_stream(const struct dc *dc,
 		struct dc_state *state,
 		struct dc_stream_state *phantom_stream)
 {
-	struct dc_stream_status *main_stream_status;
+	struct dc_stream_status *main_stream_status = NULL;
 	struct dc_stream_status *phantom_stream_status;
 
 	/* reset subvp meta */
 	phantom_stream_status = dc_state_get_stream_status(state, phantom_stream);
-	main_stream_status = dc_state_get_stream_status(state, phantom_stream_status->mall_stream_config.paired_stream);
-	phantom_stream_status->mall_stream_config.type = SUBVP_NONE;
-	phantom_stream_status->mall_stream_config.paired_stream = NULL;
+	if (phantom_stream_status) {
+		main_stream_status = dc_state_get_stream_status(state, phantom_stream_status->mall_stream_config.paired_stream);
+		phantom_stream_status->mall_stream_config.type = SUBVP_NONE;
+		phantom_stream_status->mall_stream_config.paired_stream = NULL;
+	}
+
 	if (main_stream_status) {
 		main_stream_status->mall_stream_config.type = SUBVP_NONE;
 		main_stream_status->mall_stream_config.paired_stream = NULL;
@@ -941,3 +954,17 @@ struct dc_stream_state *dc_state_get_stream_from_id(const struct dc_state *state
 	return stream;
 }
 
+bool dc_state_is_fams2_in_use(
+		const struct dc *dc,
+		const struct dc_state *state)
+{
+	bool is_fams2_in_use = false;
+
+	if (state)
+		is_fams2_in_use |= state->bw_ctx.bw.dcn.fams2_stream_count > 0;
+
+	if (dc->current_state)
+		is_fams2_in_use |= dc->current_state->bw_ctx.bw.dcn.fams2_stream_count > 0;
+
+	return is_fams2_in_use;
+}

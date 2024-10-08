@@ -195,6 +195,13 @@ int led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)
 		led_cdev->trigger = trig;
 
 		/*
+		 * Some activate() calls use led_trigger_event() to initialize
+		 * the brightness of the LED for which the trigger is being set.
+		 * Ensure the led_cdev is visible on trig->led_cdevs for this.
+		 */
+		synchronize_rcu();
+
+		/*
 		 * If "set brightness to 0" is pending in workqueue,
 		 * we don't want that to be reordered after ->activate()
 		 */
@@ -401,6 +408,26 @@ void led_trigger_event(struct led_trigger *trig,
 	rcu_read_unlock();
 }
 EXPORT_SYMBOL_GPL(led_trigger_event);
+
+void led_mc_trigger_event(struct led_trigger *trig,
+			  unsigned int *intensity_value, unsigned int num_colors,
+			  enum led_brightness brightness)
+{
+	struct led_classdev *led_cdev;
+
+	if (!trig)
+		return;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(led_cdev, &trig->led_cdevs, trig_list) {
+		if (!(led_cdev->flags & LED_MULTI_COLOR))
+			continue;
+
+		led_mc_set_brightness(led_cdev, intensity_value, num_colors, brightness);
+	}
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(led_mc_trigger_event);
 
 static void led_trigger_blink_setup(struct led_trigger *trig,
 			     unsigned long delay_on,

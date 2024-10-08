@@ -14,8 +14,8 @@
 
 #include <generated/xe_wa_oob.h>
 
+#include "instructions/xe_gpu_commands.h"
 #include "instructions/xe_mi_commands.h"
-#include "regs/xe_gpu_commands.h"
 #include "regs/xe_gtt_defs.h"
 #include "tests/xe_test.h"
 #include "xe_assert.h"
@@ -32,7 +32,7 @@
 #include "xe_res_cursor.h"
 #include "xe_sched_job.h"
 #include "xe_sync.h"
-#include "xe_trace.h"
+#include "xe_trace_bo.h"
 #include "xe_vm.h"
 
 /**
@@ -404,7 +404,7 @@ struct xe_migrate *xe_migrate_init(struct xe_tile *tile)
 		m->q = xe_exec_queue_create_class(xe, primary_gt, vm,
 						  XE_ENGINE_CLASS_COPY,
 						  EXEC_QUEUE_FLAG_KERNEL |
-						  EXEC_QUEUE_FLAG_PERMANENT);
+						  EXEC_QUEUE_FLAG_PERMANENT, 0);
 	}
 	if (IS_ERR(m->q)) {
 		xe_vm_close_and_put(vm);
@@ -412,6 +412,9 @@ struct xe_migrate *xe_migrate_init(struct xe_tile *tile)
 	}
 
 	mutex_init(&m->job_mutex);
+	fs_reclaim_acquire(GFP_KERNEL);
+	might_lock(&m->job_mutex);
+	fs_reclaim_release(GFP_KERNEL);
 
 	err = drmm_add_action_or_reset(&xe->drm, xe_migrate_fini, m);
 	if (err)
@@ -644,12 +647,6 @@ static void emit_copy(struct xe_gt *gt, struct xe_bb *bb,
 	bb->cs[bb->len++] = upper_32_bits(src_ofs);
 }
 
-static int job_add_deps(struct xe_sched_job *job, struct dma_resv *resv,
-			enum dma_resv_usage usage)
-{
-	return drm_sched_job_add_resv_dependencies(&job->drm, resv, usage);
-}
-
 static u64 xe_migrate_batch_base(struct xe_migrate *m, bool usm)
 {
 	return usm ? m->usm_batch_base_ofs : m->batch_base_ofs;
@@ -836,7 +833,6 @@ struct dma_fence *xe_migrate_copy(struct xe_migrate *m,
 						  IS_DGFX(xe) ? dst_is_vram : dst_is_pltt,
 						  src_L0, ccs_ofs, copy_ccs);
 
-		mutex_lock(&m->job_mutex);
 		job = xe_bb_create_migration_job(m->q, bb,
 						 xe_migrate_batch_base(m, usm),
 						 update_idx);
@@ -847,15 +843,16 @@ struct dma_fence *xe_migrate_copy(struct xe_migrate *m,
 
 		xe_sched_job_add_migrate_flush(job, flush_flags);
 		if (!fence) {
-			err = job_add_deps(job, src_bo->ttm.base.resv,
-					   DMA_RESV_USAGE_BOOKKEEP);
+			err = xe_sched_job_add_deps(job, src_bo->ttm.base.resv,
+						    DMA_RESV_USAGE_BOOKKEEP);
 			if (!err && src_bo != dst_bo)
-				err = job_add_deps(job, dst_bo->ttm.base.resv,
-						   DMA_RESV_USAGE_BOOKKEEP);
+				err = xe_sched_job_add_deps(job, dst_bo->ttm.base.resv,
+							    DMA_RESV_USAGE_BOOKKEEP);
 			if (err)
 				goto err_job;
 		}
 
+		mutex_lock(&m->job_mutex);
 		xe_sched_job_arm(job);
 		dma_fence_put(fence);
 		fence = dma_fence_get(&job->drm.s_fence->finished);
@@ -873,7 +870,6 @@ struct dma_fence *xe_migrate_copy(struct xe_migrate *m,
 err_job:
 		xe_sched_job_put(job);
 err:
-		mutex_unlock(&m->job_mutex);
 		xe_bb_free(bb, NULL);
 
 err_sync:
@@ -963,8 +959,8 @@ static bool has_service_copy_support(struct xe_gt *gt)
 	 * all of the actual service copy engines (BCS1-BCS8) have been fused
 	 * off.
 	 */
-	return gt->info.__engine_mask & GENMASK(XE_HW_ENGINE_BCS8,
-						XE_HW_ENGINE_BCS1);
+	return gt->info.engine_mask & GENMASK(XE_HW_ENGINE_BCS8,
+					      XE_HW_ENGINE_BCS1);
 }
 
 static u32 emit_clear_cmd_len(struct xe_gt *gt)
@@ -1073,7 +1069,6 @@ struct dma_fence *xe_migrate_clear(struct xe_migrate *m,
 			flush_flags = MI_FLUSH_DW_CCS;
 		}
 
-		mutex_lock(&m->job_mutex);
 		job = xe_bb_create_migration_job(m->q, bb,
 						 xe_migrate_batch_base(m, usm),
 						 update_idx);
@@ -1090,12 +1085,13 @@ struct dma_fence *xe_migrate_clear(struct xe_migrate *m,
 			 * fences, which are always tracked as
 			 * DMA_RESV_USAGE_KERNEL.
 			 */
-			err = job_add_deps(job, bo->ttm.base.resv,
-					   DMA_RESV_USAGE_KERNEL);
+			err = xe_sched_job_add_deps(job, bo->ttm.base.resv,
+						    DMA_RESV_USAGE_KERNEL);
 			if (err)
 				goto err_job;
 		}
 
+		mutex_lock(&m->job_mutex);
 		xe_sched_job_arm(job);
 		dma_fence_put(fence);
 		fence = dma_fence_get(&job->drm.s_fence->finished);
@@ -1112,7 +1108,6 @@ struct dma_fence *xe_migrate_clear(struct xe_migrate *m,
 err_job:
 		xe_sched_job_put(job);
 err:
-		mutex_unlock(&m->job_mutex);
 		xe_bb_free(bb, NULL);
 err_sync:
 		/* Sync partial copies if any. FIXME: job_mutex? */
@@ -1406,9 +1401,6 @@ xe_migrate_update_pgtables(struct xe_migrate *m,
 			write_pgtable(tile, bb, 0, &updates[i], pt_update);
 	}
 
-	if (!q)
-		mutex_lock(&m->job_mutex);
-
 	job = xe_bb_create_migration_job(q ?: m->q, bb,
 					 xe_migrate_batch_base(m, usm),
 					 update_idx);
@@ -1419,8 +1411,8 @@ xe_migrate_update_pgtables(struct xe_migrate *m,
 
 	/* Wait on BO move */
 	if (bo) {
-		err = job_add_deps(job, bo->ttm.base.resv,
-				   DMA_RESV_USAGE_KERNEL);
+		err = xe_sched_job_add_deps(job, bo->ttm.base.resv,
+					    DMA_RESV_USAGE_KERNEL);
 		if (err)
 			goto err_job;
 	}
@@ -1430,8 +1422,8 @@ xe_migrate_update_pgtables(struct xe_migrate *m,
 	 * trigger preempts before moving forward
 	 */
 	if (first_munmap_rebind) {
-		err = job_add_deps(job, xe_vm_resv(vm),
-				   DMA_RESV_USAGE_BOOKKEEP);
+		err = xe_sched_job_add_deps(job, xe_vm_resv(vm),
+					    DMA_RESV_USAGE_BOOKKEEP);
 		if (err)
 			goto err_job;
 	}
@@ -1449,6 +1441,9 @@ xe_migrate_update_pgtables(struct xe_migrate *m,
 		if (err)
 			goto err_job;
 	}
+	if (!q)
+		mutex_lock(&m->job_mutex);
+
 	xe_sched_job_arm(job);
 	fence = dma_fence_get(&job->drm.s_fence->finished);
 	xe_sched_job_push(job);
@@ -1466,8 +1461,6 @@ err_job:
 err_sa:
 	drm_suballoc_free(sa_bo, NULL);
 err_bb:
-	if (!q)
-		mutex_unlock(&m->job_mutex);
 	xe_bb_free(bb, NULL);
 	return ERR_PTR(err);
 }

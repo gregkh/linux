@@ -295,7 +295,6 @@ komeda_crtc_flush_and_wait_for_flip_done(struct komeda_crtc *kcrtc,
 	struct komeda_dev *mdev = kcrtc->master->mdev;
 	struct completion *flip_done;
 	struct completion temp;
-	int timeout;
 
 	/* if caller doesn't send a flip_done, use a private flip_done */
 	if (input_flip_done) {
@@ -309,8 +308,7 @@ komeda_crtc_flush_and_wait_for_flip_done(struct komeda_crtc *kcrtc,
 	mdev->funcs->flush(mdev, kcrtc->master->id, 0);
 
 	/* wait the flip take affect.*/
-	timeout = wait_for_completion_timeout(flip_done, HZ);
-	if (timeout == 0) {
+	if (wait_for_completion_timeout(flip_done, HZ) == 0) {
 		DRM_ERROR("wait pipe%d flip done timeout\n", kcrtc->master->id);
 		if (!input_flip_done) {
 			unsigned long flags;
@@ -666,6 +664,8 @@ static int komeda_crtc_add(struct komeda_kms_dev *kms,
 	}
 
 	drm_crtc_enable_color_mgmt(crtc, 0, true, KOMEDA_COLOR_LUT_SIZE);
+
+	komeda_pipeline_dump(pipe);
 
 	return 0;
 }

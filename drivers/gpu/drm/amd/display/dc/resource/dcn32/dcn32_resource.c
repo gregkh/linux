@@ -719,6 +719,7 @@ static const struct dc_debug_options debug_defaults_drv = {
 	.force_disable_subvp = false,
 	.exit_idle_opt_for_cursor_updates = true,
 	.using_dml2 = false,
+	.using_dml21 = false, // TODO : Temporary for N-1 validation. Remove after N-1 is done.
 	.enable_single_display_2to1_odm_policy = true,
 
 	/* Must match enable_single_display_2to1_odm_policy to support dynamic ODM transitions*/
@@ -1686,6 +1687,8 @@ static struct dc_stream_state *dcn32_enable_phantom_stream(struct dc *dc,
 	struct pipe_ctx *ref_pipe = &context->res_ctx.pipe_ctx[dc_pipe_idx];
 
 	phantom_stream = dc_state_create_phantom_stream(dc, context, ref_pipe->stream);
+	if (!phantom_stream)
+		return phantom_stream;
 
 	/* stream has limited viewport and small timing */
 	memcpy(&phantom_stream->timing, &ref_pipe->stream->timing, sizeof(phantom_stream->timing));
@@ -1976,6 +1979,10 @@ int dcn32_populate_dml_pipes_from_context(
 unsigned int dcn32_calculate_mall_ways_from_bytes(const struct dc *dc, unsigned int total_size_in_mall_bytes)
 {
 	uint32_t cache_lines_used, lines_per_way, total_cache_lines, num_ways;
+
+	if (total_size_in_mall_bytes == 0) {
+		return 0;
+	}
 
 	/* add 2 lines for worst case alignment */
 	cache_lines_used = total_size_in_mall_bytes / dc->caps.cache_line_size + 2;

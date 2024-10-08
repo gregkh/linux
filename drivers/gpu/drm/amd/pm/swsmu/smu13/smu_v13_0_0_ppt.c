@@ -2562,17 +2562,21 @@ static int smu_v13_0_0_set_power_profile_mode(struct smu_context *smu,
 			(amdgpu_ip_version(smu->adev, MP1_HWIP, 0) == IP_VERSION(13, 0, 10) &&
 			 smu->adev->pm.fw_version >= 0x00504500)) {
 			workload_type = smu_cmn_to_asic_specific_index(smu,
-														   CMN2ASIC_MAPPING_WORKLOAD,
-														   PP_SMC_POWER_PROFILE_POWERSAVING);
+								CMN2ASIC_MAPPING_WORKLOAD,
+								PP_SMC_POWER_PROFILE_POWERSAVING);
 			if (workload_type >= 0)
 				workload_mask |= 1 << workload_type;
 		}
 	}
 
-	return smu_cmn_send_smc_msg_with_param(smu,
+	ret = smu_cmn_send_smc_msg_with_param(smu,
 					       SMU_MSG_SetWorkloadMask,
 					       workload_mask,
 					       NULL);
+	if (!ret)
+		smu->workload_mask = workload_mask;
+
+	return ret;
 }
 
 static bool smu_v13_0_0_is_mode1_reset_supported(struct smu_context *smu)
@@ -2786,10 +2790,9 @@ static void smu_v13_0_0_set_mode1_reset_param(struct smu_context *smu,
 						uint32_t *param)
 {
 	struct amdgpu_device *adev = smu->adev;
-	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
 
 	if ((smu->smc_fw_version >= supported_version) &&
-			ras && atomic_read(&ras->in_recovery))
+	    amdgpu_ras_get_fed_status(adev))
 		/* Set RAS fatal error reset flag */
 		*param = 1 << 16;
 	else

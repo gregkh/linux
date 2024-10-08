@@ -880,14 +880,15 @@ static const struct ath12k_hw_params ath12k_hw_params[] = {
 		.hal_params = &ath12k_hw_hal_params_qcn9274,
 
 		.rxdma1_enable = false,
-		.num_rxmda_per_pdev = 1,
+		.num_rxdma_per_pdev = 1,
 		.num_rxdma_dst_ring = 0,
 		.rx_mac_buf_ring = false,
 		.vdev_start_delay = false,
 
 		.interface_modes = BIT(NL80211_IFTYPE_STATION) |
 					BIT(NL80211_IFTYPE_AP) |
-					BIT(NL80211_IFTYPE_MESH_POINT),
+					BIT(NL80211_IFTYPE_MESH_POINT) |
+					BIT(NL80211_IFTYPE_AP_VLAN),
 		.supports_monitor = false,
 
 		.idle_ps = false,
@@ -922,6 +923,7 @@ static const struct ath12k_hw_params ath12k_hw_params[] = {
 		.supports_sta_ps = false,
 
 		.acpi_guid = NULL,
+		.supports_dynamic_smps_6ghz = true,
 
 		.iova_mask = 0,
 	},
@@ -954,7 +956,7 @@ static const struct ath12k_hw_params ath12k_hw_params[] = {
 		.hal_params = &ath12k_hw_hal_params_wcn7850,
 
 		.rxdma1_enable = false,
-		.num_rxmda_per_pdev = 2,
+		.num_rxdma_per_pdev = 2,
 		.num_rxdma_dst_ring = 1,
 		.rx_mac_buf_ring = true,
 		.vdev_start_delay = true,
@@ -999,6 +1001,7 @@ static const struct ath12k_hw_params ath12k_hw_params[] = {
 		.supports_sta_ps = true,
 
 		.acpi_guid = &wcn7850_uuid,
+		.supports_dynamic_smps_6ghz = false,
 
 		.iova_mask = ATH12K_PCIE_MAX_PAYLOAD_SIZE - 1,
 	},
@@ -1029,14 +1032,15 @@ static const struct ath12k_hw_params ath12k_hw_params[] = {
 		.hal_params = &ath12k_hw_hal_params_qcn9274,
 
 		.rxdma1_enable = false,
-		.num_rxmda_per_pdev = 1,
+		.num_rxdma_per_pdev = 1,
 		.num_rxdma_dst_ring = 0,
 		.rx_mac_buf_ring = false,
 		.vdev_start_delay = false,
 
 		.interface_modes = BIT(NL80211_IFTYPE_STATION) |
 					BIT(NL80211_IFTYPE_AP) |
-					BIT(NL80211_IFTYPE_MESH_POINT),
+					BIT(NL80211_IFTYPE_MESH_POINT) |
+					BIT(NL80211_IFTYPE_AP_VLAN),
 		.supports_monitor = false,
 
 		.idle_ps = false,
@@ -1071,6 +1075,7 @@ static const struct ath12k_hw_params ath12k_hw_params[] = {
 		.supports_sta_ps = false,
 
 		.acpi_guid = NULL,
+		.supports_dynamic_smps_6ghz = true,
 
 		.iova_mask = 0,
 	},

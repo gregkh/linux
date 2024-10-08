@@ -1479,7 +1479,7 @@ static int recv_wake_function(wait_queue_entry_t *wait, unsigned int mode, int s
 				  void *key)
 {
 	/* Avoid a wakeup if event not interesting for us. */
-	if (key && !(key_to_poll(key) & (EPOLLIN | EPOLLERR)))
+	if (key && !(key_to_poll(key) & (EPOLLIN | EPOLLERR | EPOLLHUP)))
 		return 0;
 	return autoremove_wake_function(wait, mode, sync, key);
 }
@@ -1489,6 +1489,9 @@ static int recv_wait_event(struct seccomp_filter *filter)
 	DEFINE_WAIT_FUNC(wait, recv_wake_function);
 	int ret;
 
+	if (refcount_read(&filter->users) == 0)
+		return 0;
+
 	if (atomic_dec_if_positive(&filter->notif->requests) >= 0)
 		return 0;
 
@@ -1496,6 +1499,8 @@ static int recv_wait_event(struct seccomp_filter *filter)
 		ret = prepare_to_wait_event(&filter->wqh, &wait, TASK_INTERRUPTIBLE);
 
 		if (atomic_dec_if_positive(&filter->notif->requests) >= 0)
+			break;
+		if (refcount_read(&filter->users) == 0)
 			break;
 
 		if (ret)
@@ -2426,7 +2431,7 @@ static void audit_actions_logged(u32 actions_logged, u32 old_actions_logged,
 	return audit_seccomp_actions_logged(new, old, !ret);
 }
 
-static int seccomp_actions_logged_handler(struct ctl_table *ro_table, int write,
+static int seccomp_actions_logged_handler(const struct ctl_table *ro_table, int write,
 					  void *buffer, size_t *lenp,
 					  loff_t *ppos)
 {

@@ -131,7 +131,9 @@ int pqm_set_gws(struct process_queue_manager *pqm, unsigned int qid,
 	if (!gws && pdd->qpd.num_gws == 0)
 		return -EINVAL;
 
-	if (KFD_GC_VERSION(dev) != IP_VERSION(9, 4, 3) && !dev->kfd->shared_resources.enable_mes) {
+	if (KFD_GC_VERSION(dev) != IP_VERSION(9, 4, 3) &&
+	    KFD_GC_VERSION(dev) != IP_VERSION(9, 4, 4) &&
+	    !dev->kfd->shared_resources.enable_mes) {
 		if (gws)
 			ret = amdgpu_amdkfd_add_gws_to_process(pdd->process->kgd_process_info,
 				gws, &mem);
@@ -194,6 +196,7 @@ static void pqm_clean_queue_resource(struct process_queue_manager *pqm,
 
 	if (pqn->q->gws) {
 		if (KFD_GC_VERSION(pqn->q->device) != IP_VERSION(9, 4, 3) &&
+		    KFD_GC_VERSION(pqn->q->device) != IP_VERSION(9, 4, 4) &&
 		    !dev->kfd->shared_resources.enable_mes)
 			amdgpu_amdkfd_remove_gws_from_process(
 				pqm->process->kgd_process_info, pqn->q->gws);
@@ -295,7 +298,8 @@ int pqm_create_queue(struct process_queue_manager *pqm,
 	 * On GFX 9.4.3, increase the number of queues that
 	 * can be created to 255. No HWS limit on GFX 9.4.3.
 	 */
-	if (KFD_GC_VERSION(dev) == IP_VERSION(9, 4, 3))
+	if (KFD_GC_VERSION(dev) == IP_VERSION(9, 4, 3) ||
+	    KFD_GC_VERSION(dev) == IP_VERSION(9, 4, 4))
 		max_queues = 255;
 
 	q = NULL;
@@ -435,7 +439,7 @@ int pqm_create_queue(struct process_queue_manager *pqm,
 err_create_queue:
 	uninit_queue(q);
 	if (kq)
-		kernel_queue_uninit(kq, false);
+		kernel_queue_uninit(kq);
 	kfree(pqn);
 err_allocate_pqn:
 	/* check if queues list is empty unregister process from device */
@@ -482,7 +486,7 @@ int pqm_destroy_queue(struct process_queue_manager *pqm, unsigned int qid)
 		/* destroy kernel queue (DIQ) */
 		dqm = pqn->kq->dev->dqm;
 		dqm->ops.destroy_kernel_queue(dqm, pqn->kq, &pdd->qpd);
-		kernel_queue_uninit(pqn->kq, false);
+		kernel_queue_uninit(pqn->kq);
 	}
 
 	if (pqn->q) {

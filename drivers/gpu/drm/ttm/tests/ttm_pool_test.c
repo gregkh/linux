@@ -48,7 +48,7 @@ static void ttm_pool_test_fini(struct kunit *test)
 }
 
 static struct ttm_tt *ttm_tt_kunit_init(struct kunit *test,
-					uint32_t page_flags,
+					u32 page_flags,
 					enum ttm_caching caching,
 					size_t size)
 {
@@ -433,4 +433,5 @@ static struct kunit_suite ttm_pool_test_suite = {
 
 kunit_test_suites(&ttm_pool_test_suite);
 
-MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("KUnit tests for ttm_pool APIs");
+MODULE_LICENSE("GPL and additional rights");

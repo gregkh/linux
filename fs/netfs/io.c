@@ -270,7 +270,7 @@ static void netfs_reset_subreq_iter(struct netfs_io_request *rreq,
 	if (count == remaining)
 		return;
 
-	kdebug("R=%08x[%u] ITER RESUB-MISMATCH %zx != %zx-%zx-%llx %x\n",
+	_debug("R=%08x[%u] ITER RESUB-MISMATCH %zx != %zx-%zx-%llx %x",
 	       rreq->debug_id, subreq->debug_index,
 	       iov_iter_count(&subreq->io_iter), subreq->transferred,
 	       subreq->len, rreq->i_size,
@@ -474,7 +474,7 @@ void netfs_subreq_terminated(struct netfs_io_subrequest *subreq,
 	struct netfs_io_request *rreq = subreq->rreq;
 	int u;
 
-	kenter("R=%x[%x]{%llx,%lx},%zd",
+	_enter("R=%x[%x]{%llx,%lx},%zd",
 	       rreq->debug_id, subreq->debug_index,
 	       subreq->start, subreq->flags, transferred_or_error);
 
@@ -535,7 +535,8 @@ incomplete:
 
 	if (transferred_or_error == 0) {
 		if (__test_and_set_bit(NETFS_SREQ_NO_PROGRESS, &subreq->flags)) {
-			subreq->error = -ENODATA;
+			if (rreq->origin != NETFS_DIO_READ)
+				subreq->error = -ENODATA;
 			goto failed;
 		}
 	} else {
@@ -584,7 +585,7 @@ netfs_rreq_prepare_read(struct netfs_io_request *rreq,
 	struct netfs_inode *ictx = netfs_inode(rreq->inode);
 	size_t lsize;
 
-	kenter("%llx-%llx,%llx", subreq->start, subreq->start + subreq->len, rreq->i_size);
+	_enter("%llx-%llx,%llx", subreq->start, subreq->start + subreq->len, rreq->i_size);
 
 	if (rreq->origin != NETFS_DIO_READ) {
 		source = netfs_cache_prepare_read(subreq, rreq->i_size);
@@ -606,9 +607,14 @@ netfs_rreq_prepare_read(struct netfs_io_request *rreq,
 			}
 			if (subreq->len > ictx->zero_point - subreq->start)
 				subreq->len = ictx->zero_point - subreq->start;
+
+			/* We limit buffered reads to the EOF, but let the
+			 * server deal with larger-than-EOF DIO/unbuffered
+			 * reads.
+			 */
+			if (subreq->len > rreq->i_size - subreq->start)
+				subreq->len = rreq->i_size - subreq->start;
 		}
-		if (subreq->len > rreq->i_size - subreq->start)
-			subreq->len = rreq->i_size - subreq->start;
 		if (rreq->rsize && subreq->len > rreq->rsize)
 			subreq->len = rreq->rsize;
 
@@ -667,7 +673,7 @@ static bool netfs_rreq_submit_slice(struct netfs_io_request *rreq,
 	subreq->start		= rreq->start + rreq->submitted;
 	subreq->len		= io_iter->count;
 
-	kdebug("slice %llx,%zx,%llx", subreq->start, subreq->len, rreq->submitted);
+	_debug("slice %llx,%zx,%llx", subreq->start, subreq->len, rreq->submitted);
 	list_add_tail(&subreq->rreq_link, &rreq->subrequests);
 
 	/* Call out to the cache to find out what it can do with the remaining
@@ -719,7 +725,7 @@ int netfs_begin_read(struct netfs_io_request *rreq, bool sync)
 	struct iov_iter io_iter;
 	int ret;
 
-	kenter("R=%x %llx-%llx",
+	_enter("R=%x %llx-%llx",
 	       rreq->debug_id, rreq->start, rreq->start + rreq->len - 1);
 
 	if (rreq->len == 0) {
@@ -742,12 +748,11 @@ int netfs_begin_read(struct netfs_io_request *rreq, bool sync)
 	atomic_set(&rreq->nr_outstanding, 1);
 	io_iter = rreq->io_iter;
 	do {
-		kdebug("submit %llx + %llx >= %llx",
+		_debug("submit %llx + %llx >= %llx",
 		       rreq->start, rreq->submitted, rreq->i_size);
-		if (rreq->origin == NETFS_DIO_READ &&
-		    rreq->start + rreq->submitted >= rreq->i_size)
-			break;
 		if (!netfs_rreq_submit_slice(rreq, &io_iter))
+			break;
+		if (test_bit(NETFS_SREQ_NO_PROGRESS, &rreq->flags))
 			break;
 		if (test_bit(NETFS_RREQ_BLOCKED, &rreq->flags) &&
 		    test_bit(NETFS_RREQ_NONBLOCK, &rreq->flags))

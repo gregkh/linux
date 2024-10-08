@@ -8,7 +8,7 @@
 #include "posted_intr.h"
 
 #define VMX_REQUIRED_APICV_INHIBITS				\
-	(BIT(APICV_INHIBIT_REASON_DISABLE)|			\
+	(BIT(APICV_INHIBIT_REASON_DISABLED) |			\
 	 BIT(APICV_INHIBIT_REASON_ABSENT) |			\
 	 BIT(APICV_INHIBIT_REASON_HYPERV) |			\
 	 BIT(APICV_INHIBIT_REASON_BLOCKIRQ) |			\
@@ -122,8 +122,6 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 
 	.check_intercept = vmx_check_intercept,
 	.handle_exit_irqoff = vmx_handle_exit_irqoff,
-
-	.sched_in = vmx_sched_in,
 
 	.cpu_dirty_log_size = PML_ENTITY_NUM,
 	.update_cpu_dirty_logging = vmx_update_cpu_dirty_logging,

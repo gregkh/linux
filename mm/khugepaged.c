@@ -385,10 +385,7 @@ int hugepage_madvise(struct vm_area_struct *vma,
 
 int __init khugepaged_init(void)
 {
-	mm_slot_cache = kmem_cache_create("khugepaged_mm_slot",
-					  sizeof(struct khugepaged_mm_slot),
-					  __alignof__(struct khugepaged_mm_slot),
-					  0, NULL);
+	mm_slot_cache = KMEM_CACHE(khugepaged_mm_slot, 0);
 	if (!mm_slot_cache)
 		return -ENOMEM;
 
@@ -1233,7 +1230,7 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 
 	spin_lock(pmd_ptl);
 	BUG_ON(!pmd_none(*pmd));
-	folio_add_new_anon_rmap(folio, vma, address);
+	folio_add_new_anon_rmap(folio, vma, address, RMAP_EXCLUSIVE);
 	folio_add_lru_vma(folio, vma);
 	pgtable_trans_huge_deposit(mm, pmd, pgtable);
 	set_pmd_at(mm, address, pmd, _pmd);
@@ -2020,9 +2017,9 @@ out_unlock:
 	if (!is_shmem) {
 		filemap_nr_thps_inc(mapping);
 		/*
-		 * Paired with smp_mb() in do_dentry_open() to ensure
-		 * i_writecount is up to date and the update to nr_thps is
-		 * visible. Ensures the page cache will be truncated if the
+		 * Paired with the fence in do_dentry_open() -> get_write_access()
+		 * to ensure i_writecount is up to date and the update to nr_thps
+		 * is visible. Ensures the page cache will be truncated if the
 		 * file is opened writable.
 		 */
 		smp_mb();
@@ -2210,8 +2207,8 @@ rollback:
 	if (!is_shmem && result == SCAN_COPY_MC) {
 		filemap_nr_thps_dec(mapping);
 		/*
-		 * Paired with smp_mb() in do_dentry_open() to
-		 * ensure the update to nr_thps is visible.
+		 * Paired with the fence in do_dentry_open() -> get_write_access()
+		 * to ensure the update to nr_thps is visible.
 		 */
 		smp_mb();
 	}
