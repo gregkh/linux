@@ -1975,7 +1975,6 @@ int ni_fiemap(struct ntfs_inode *ni, struct fiemap_extent_info *fieinfo,
 	if (end > alloc_size)
 		end = alloc_size;
 
-
 	while (vbo < end) {
 		if (idx == -1) {
 			ok = run_lookup_entry(&run, vcn, &lcn, &clen, &idx);
