@@ -172,7 +172,7 @@ int amdtp_tscm_init(struct amdtp_stream *s, struct fw_unit *unit,
 				CIP_NONBLOCKING | CIP_SKIP_DBC_ZERO_CHECK, fmt,
 				process_data_blocks, sizeof(struct amdtp_tscm));
 	if (err < 0)
-		return 0;
+		return err;
 
 	/* Use fixed value for FDF field. */
 	s->fdf = 0x00;
