@@ -52,7 +52,7 @@ void show_stack_loglvl(struct task_struct *task, unsigned long *stack,
 	}
 
 	printk("%sCall Trace:\n", loglvl);
-	dump_trace(current, &stackops, (void *)loglvl);
+	dump_trace(task ?: current, &stackops, (void *)loglvl);
 }
 
 void show_stack(struct task_struct *task, unsigned long *stack)
