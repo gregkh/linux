@@ -349,7 +349,7 @@
 	*(.data..decrypted)						\
 	*(.ref.data)							\
 	*(.data..shared_aligned) /* percpu related */			\
-	*(.data.unlikely)						\
+	*(.data..unlikely)						\
 	__start_once = .;						\
 	*(.data.once)							\
 	__end_once = .;							\
