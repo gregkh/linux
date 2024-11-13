@@ -307,11 +307,14 @@ int bt_sock_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	if (flags & MSG_OOB)
 		return -EOPNOTSUPP;
 
+	lock_sock(sk);
+
 	skb = skb_recv_datagram(sk, flags, &err);
 	if (!skb) {
 		if (sk->sk_shutdown & RCV_SHUTDOWN)
 			err = 0;
 
+		release_sock(sk);
 		return err;
 	}
 
@@ -336,6 +339,8 @@ int bt_sock_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	}
 
 	skb_free_datagram(sk, skb);
+
+	release_sock(sk);
 
 	if (flags & MSG_TRUNC)
 		copied = skblen;
@@ -559,11 +564,10 @@ int bt_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		if (sk->sk_state == BT_LISTEN)
 			return -EINVAL;
 
-		spin_lock(&sk->sk_receive_queue.lock);
+		lock_sock(sk);
 		skb = skb_peek(&sk->sk_receive_queue);
 		amount = skb ? skb->len : 0;
-		spin_unlock(&sk->sk_receive_queue.lock);
-
+		release_sock(sk);
 		err = put_user(amount, (int __user *)arg);
 		break;
 
