@@ -119,7 +119,8 @@ static int gc_thread_func(void *data)
 		}
 
 		if (f2fs_sb_has_blkzoned(sbi)) {
-			if (has_enough_free_blocks(sbi, LIMIT_NO_ZONED_GC)) {
+			if (has_enough_free_blocks(sbi,
+				gc_th->no_zoned_gc_percent)) {
 				wait_ms = gc_th->no_gc_sleep_time;
 				f2fs_up_write(&sbi->gc_lock);
 				goto next;
@@ -195,15 +196,20 @@ int f2fs_start_gc_thread(struct f2fs_sb_info *sbi)
 		return -ENOMEM;
 
 	gc_th->urgent_sleep_time = DEF_GC_THREAD_URGENT_SLEEP_TIME;
+	gc_th->valid_thresh_ratio = DEF_GC_THREAD_VALID_THRESH_RATIO;
 
 	if (f2fs_sb_has_blkzoned(sbi)) {
 		gc_th->min_sleep_time = DEF_GC_THREAD_MIN_SLEEP_TIME_ZONED;
 		gc_th->max_sleep_time = DEF_GC_THREAD_MAX_SLEEP_TIME_ZONED;
 		gc_th->no_gc_sleep_time = DEF_GC_THREAD_NOGC_SLEEP_TIME_ZONED;
+		gc_th->no_zoned_gc_percent = LIMIT_NO_ZONED_GC;
+		gc_th->boost_zoned_gc_percent = LIMIT_BOOST_ZONED_GC;
 	} else {
 		gc_th->min_sleep_time = DEF_GC_THREAD_MIN_SLEEP_TIME;
 		gc_th->max_sleep_time = DEF_GC_THREAD_MAX_SLEEP_TIME;
 		gc_th->no_gc_sleep_time = DEF_GC_THREAD_NOGC_SLEEP_TIME;
+		gc_th->no_zoned_gc_percent = 0;
+		gc_th->boost_zoned_gc_percent = 0;
 	}
 
 	gc_th->gc_wake = false;
@@ -364,7 +370,7 @@ static unsigned int get_cb_cost(struct f2fs_sb_info *sbi, unsigned int segno)
 	unsigned char age = 0;
 	unsigned char u;
 	unsigned int i;
-	unsigned int usable_segs_per_sec = f2fs_usable_segs_in_sec(sbi, segno);
+	unsigned int usable_segs_per_sec = f2fs_usable_segs_in_sec(sbi);
 
 	for (i = 0; i < usable_segs_per_sec; i++)
 		mtime += get_seg_entry(sbi, start + i)->mtime;
@@ -392,6 +398,11 @@ static inline unsigned int get_gc_cost(struct f2fs_sb_info *sbi,
 {
 	if (p->alloc_mode == SSR)
 		return get_seg_entry(sbi, segno)->ckpt_valid_blocks;
+
+	if (p->one_time_gc && (get_valid_blocks(sbi, segno, true) >=
+		CAP_BLKS_PER_SEC(sbi) * sbi->gc_thread->valid_thresh_ratio /
+		100))
+		return UINT_MAX;
 
 	/* alloc_mode == LFS */
 	if (p->gc_mode == GC_GREEDY)
@@ -767,7 +778,7 @@ static int f2fs_gc_pinned_control(struct inode *inode, int gc_type,
  */
 int f2fs_get_victim(struct f2fs_sb_info *sbi, unsigned int *result,
 			int gc_type, int type, char alloc_mode,
-			unsigned long long age)
+			unsigned long long age, bool one_time)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 	struct sit_info *sm = SIT_I(sbi);
@@ -784,6 +795,7 @@ int f2fs_get_victim(struct f2fs_sb_info *sbi, unsigned int *result,
 	p.alloc_mode = alloc_mode;
 	p.age = age;
 	p.age_threshold = sbi->am.age_threshold;
+	p.one_time_gc = one_time;
 
 retry:
 	select_policy(sbi, gc_type, type, &p);
@@ -1695,13 +1707,14 @@ next_step:
 }
 
 static int __get_victim(struct f2fs_sb_info *sbi, unsigned int *victim,
-			int gc_type)
+			int gc_type, bool one_time)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
 	int ret;
 
 	down_write(&sit_i->sentry_lock);
-	ret = f2fs_get_victim(sbi, victim, gc_type, NO_CHECK_TYPE, LFS, 0);
+	ret = f2fs_get_victim(sbi, victim, gc_type, NO_CHECK_TYPE,
+			LFS, 0, one_time);
 	up_write(&sit_i->sentry_lock);
 	return ret;
 }
@@ -1734,7 +1747,7 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 		 */
 		if (f2fs_sb_has_blkzoned(sbi))
 			sec_end_segno -= SEGS_PER_SEC(sbi) -
-					f2fs_usable_segs_in_sec(sbi, segno);
+					f2fs_usable_segs_in_sec(sbi);
 
 		if (gc_type == BG_GC || one_time) {
 			unsigned int window_granularity =
@@ -1742,8 +1755,9 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 
 			if (f2fs_sb_has_blkzoned(sbi) &&
 					!has_enough_free_blocks(sbi,
-					LIMIT_BOOST_ZONED_GC))
-				window_granularity *= BOOST_GC_MULTIPLE;
+					sbi->gc_thread->boost_zoned_gc_percent))
+				window_granularity *=
+					BOOST_GC_MULTIPLE;
 
 			end_segno = start_segno + window_granularity;
 		}
@@ -1907,7 +1921,7 @@ gc_more:
 		goto stop;
 	}
 retry:
-	ret = __get_victim(sbi, &segno, gc_type);
+	ret = __get_victim(sbi, &segno, gc_type, gc_control->one_time);
 	if (ret) {
 		/* allow to search victim from sections has pinned data */
 		if (ret == -ENODATA && gc_type == FG_GC &&
@@ -1926,7 +1940,7 @@ retry:
 
 	total_freed += seg_freed;
 
-	if (seg_freed == f2fs_usable_segs_in_sec(sbi, segno)) {
+	if (seg_freed == f2fs_usable_segs_in_sec(sbi)) {
 		sec_freed++;
 		total_sec_freed++;
 	}

@@ -71,7 +71,10 @@ static inline void __user *mask_user_address(const void __user *ptr)
 		 "0" (runtime_const_ptr(USER_PTR_MAX)));
 	return (__force void __user *)(mask | (__force unsigned long)ptr);
 }
-#define masked_user_access_begin(x) ({ __uaccess_begin(); mask_user_address(x); })
+#define masked_user_access_begin(x) ({				\
+	__auto_type __masked_ptr = (x);				\
+	__masked_ptr = mask_user_address(__masked_ptr);		\
+	__uaccess_begin(); __masked_ptr; })
 
 /*
  * User pointers can have tag bits on x86-64.  This scheme tolerates

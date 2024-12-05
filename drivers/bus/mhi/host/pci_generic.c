@@ -26,6 +26,7 @@
 /* PCI VID definitions */
 #define PCI_VENDOR_ID_THALES	0x1269
 #define PCI_VENDOR_ID_QUECTEL	0x1eac
+#define PCI_VENDOR_ID_NETPRISMA	0x203e
 
 #define MHI_EDL_DB			91
 #define MHI_EDL_COOKIE			0xEDEDEDED
@@ -434,6 +435,7 @@ static const struct mhi_controller_config modem_foxconn_sdx72_config = {
 static const struct mhi_pci_dev_info mhi_foxconn_sdx55_info = {
 	.name = "foxconn-sdx55",
 	.edl = "qcom/sdx55m/foxconn/prog_firehose_sdx55.mbn",
+	.edl_trigger = true,
 	.config = &modem_foxconn_sdx55_config,
 	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
 	.dma_data_width = 32,
@@ -444,6 +446,7 @@ static const struct mhi_pci_dev_info mhi_foxconn_sdx55_info = {
 static const struct mhi_pci_dev_info mhi_foxconn_t99w175_info = {
 	.name = "foxconn-t99w175",
 	.edl = "qcom/sdx55m/foxconn/prog_firehose_sdx55.mbn",
+	.edl_trigger = true,
 	.config = &modem_foxconn_sdx55_config,
 	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
 	.dma_data_width = 32,
@@ -454,6 +457,7 @@ static const struct mhi_pci_dev_info mhi_foxconn_t99w175_info = {
 static const struct mhi_pci_dev_info mhi_foxconn_dw5930e_info = {
 	.name = "foxconn-dw5930e",
 	.edl = "qcom/sdx55m/foxconn/prog_firehose_sdx55.mbn",
+	.edl_trigger = true,
 	.config = &modem_foxconn_sdx55_config,
 	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
 	.dma_data_width = 32,
@@ -463,6 +467,8 @@ static const struct mhi_pci_dev_info mhi_foxconn_dw5930e_info = {
 
 static const struct mhi_pci_dev_info mhi_foxconn_t99w368_info = {
 	.name = "foxconn-t99w368",
+	.edl = "qcom/sdx65m/foxconn/prog_firehose_lite.elf",
+	.edl_trigger = true,
 	.config = &modem_foxconn_sdx55_config,
 	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
 	.dma_data_width = 32,
@@ -472,6 +478,8 @@ static const struct mhi_pci_dev_info mhi_foxconn_t99w368_info = {
 
 static const struct mhi_pci_dev_info mhi_foxconn_t99w373_info = {
 	.name = "foxconn-t99w373",
+	.edl = "qcom/sdx65m/foxconn/prog_firehose_lite.elf",
+	.edl_trigger = true,
 	.config = &modem_foxconn_sdx55_config,
 	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
 	.dma_data_width = 32,
@@ -481,6 +489,8 @@ static const struct mhi_pci_dev_info mhi_foxconn_t99w373_info = {
 
 static const struct mhi_pci_dev_info mhi_foxconn_t99w510_info = {
 	.name = "foxconn-t99w510",
+	.edl = "qcom/sdx24m/foxconn/prog_firehose_sdx24.mbn",
+	.edl_trigger = true,
 	.config = &modem_foxconn_sdx55_config,
 	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
 	.dma_data_width = 32,
@@ -490,6 +500,8 @@ static const struct mhi_pci_dev_info mhi_foxconn_t99w510_info = {
 
 static const struct mhi_pci_dev_info mhi_foxconn_dw5932e_info = {
 	.name = "foxconn-dw5932e",
+	.edl = "qcom/sdx65m/foxconn/prog_firehose_lite.elf",
+	.edl_trigger = true,
 	.config = &modem_foxconn_sdx55_config,
 	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
 	.dma_data_width = 32,
@@ -686,6 +698,26 @@ static const struct mhi_pci_dev_info mhi_telit_fe990a_info = {
 	.mru_default = 32768,
 };
 
+static const struct mhi_pci_dev_info mhi_netprisma_lcur57_info = {
+	.name = "netprisma-lcur57",
+	.edl = "qcom/prog_firehose_sdx24.mbn",
+	.config = &modem_quectel_em1xx_config,
+	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
+	.dma_data_width = 32,
+	.mru_default = 32768,
+	.sideband_wake = true,
+};
+
+static const struct mhi_pci_dev_info mhi_netprisma_fcun69_info = {
+	.name = "netprisma-fcun69",
+	.edl = "qcom/prog_firehose_sdx6x.elf",
+	.config = &modem_quectel_em1xx_config,
+	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
+	.dma_data_width = 32,
+	.mru_default = 32768,
+	.sideband_wake = true,
+};
+
 /* Keep the list sorted based on the PID. New VID should be added as the last entry */
 static const struct pci_device_id mhi_pci_id_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_QCOM, 0x0304),
@@ -784,6 +816,12 @@ static const struct pci_device_id mhi_pci_id_table[] = {
 	/* T99W175 (sdx55), HP variant */
 	{ PCI_DEVICE(0x03f0, 0x0a6c),
 		.driver_data = (kernel_ulong_t) &mhi_foxconn_t99w175_info },
+	/* NETPRISMA LCUR57 (SDX24) */
+	{ PCI_DEVICE(PCI_VENDOR_ID_NETPRISMA, 0x1000),
+		.driver_data = (kernel_ulong_t) &mhi_netprisma_lcur57_info },
+	/* NETPRISMA FCUN69 (SDX6X) */
+	{ PCI_DEVICE(PCI_VENDOR_ID_NETPRISMA, 0x1001),
+		.driver_data = (kernel_ulong_t) &mhi_netprisma_fcun69_info },
 	{  }
 };
 MODULE_DEVICE_TABLE(pci, mhi_pci_id_table);

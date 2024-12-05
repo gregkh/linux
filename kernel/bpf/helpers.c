@@ -158,6 +158,7 @@ const struct bpf_func_proto bpf_get_smp_processor_id_proto = {
 	.func		= bpf_get_smp_processor_id,
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
+	.allow_fastcall	= true,
 };
 
 BPF_CALL_0(bpf_get_numa_node_id)
@@ -526,8 +527,6 @@ BPF_CALL_4(bpf_strtol, const char *, buf, size_t, buf_len, u64, flags,
 	err = __bpf_strtoll(buf, buf_len, flags, &_res);
 	if (err < 0)
 		return err;
-	if (_res != (long)_res)
-		return -ERANGE;
 	*res = _res;
 	return err;
 }
@@ -556,8 +555,6 @@ BPF_CALL_4(bpf_strtoul, const char *, buf, size_t, buf_len, u64, flags,
 		return err;
 	if (is_negative)
 		return -EINVAL;
-	if (_res != (unsigned long)_res)
-		return -ERANGE;
 	*res = _res;
 	return err;
 }
@@ -718,7 +715,7 @@ BPF_CALL_2(bpf_per_cpu_ptr, const void *, ptr, u32, cpu)
 	if (cpu >= nr_cpu_ids)
 		return (unsigned long)NULL;
 
-	return (unsigned long)per_cpu_ptr((const void __percpu *)ptr, cpu);
+	return (unsigned long)per_cpu_ptr((const void __percpu *)(const uintptr_t)ptr, cpu);
 }
 
 const struct bpf_func_proto bpf_per_cpu_ptr_proto = {
@@ -731,7 +728,7 @@ const struct bpf_func_proto bpf_per_cpu_ptr_proto = {
 
 BPF_CALL_1(bpf_this_cpu_ptr, const void *, percpu_ptr)
 {
-	return (unsigned long)this_cpu_ptr((const void __percpu *)percpu_ptr);
+	return (unsigned long)this_cpu_ptr((const void __percpu *)(const uintptr_t)percpu_ptr);
 }
 
 const struct bpf_func_proto bpf_this_cpu_ptr_proto = {
@@ -1622,9 +1619,9 @@ void bpf_wq_cancel_and_free(void *val)
 	schedule_work(&work->delete_work);
 }
 
-BPF_CALL_2(bpf_kptr_xchg, void *, map_value, void *, ptr)
+BPF_CALL_2(bpf_kptr_xchg, void *, dst, void *, ptr)
 {
-	unsigned long *kptr = map_value;
+	unsigned long *kptr = dst;
 
 	/* This helper may be inlined by verifier. */
 	return xchg(kptr, (unsigned long)ptr);
@@ -1639,7 +1636,7 @@ static const struct bpf_func_proto bpf_kptr_xchg_proto = {
 	.gpl_only     = false,
 	.ret_type     = RET_PTR_TO_BTF_ID_OR_NULL,
 	.ret_btf_id   = BPF_PTR_POISON,
-	.arg1_type    = ARG_PTR_TO_KPTR,
+	.arg1_type    = ARG_KPTR_XCHG_DEST,
 	.arg2_type    = ARG_PTR_TO_BTF_ID_OR_NULL | OBJ_RELEASE,
 	.arg2_btf_id  = BPF_PTR_POISON,
 };
@@ -2037,6 +2034,7 @@ bpf_base_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return NULL;
 	}
 }
+EXPORT_SYMBOL_GPL(bpf_base_func_proto);
 
 void bpf_list_head_free(const struct btf_field *field, void *list_head,
 			struct bpf_spin_lock *spin_lock)
@@ -2461,6 +2459,29 @@ __bpf_kfunc long bpf_task_under_cgroup(struct task_struct *task,
 	return ret;
 }
 
+BPF_CALL_2(bpf_current_task_under_cgroup, struct bpf_map *, map, u32, idx)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	struct cgroup *cgrp;
+
+	if (unlikely(idx >= array->map.max_entries))
+		return -E2BIG;
+
+	cgrp = READ_ONCE(array->ptrs[idx]);
+	if (unlikely(!cgrp))
+		return -EAGAIN;
+
+	return task_under_cgroup_hierarchy(current, cgrp);
+}
+
+const struct bpf_func_proto bpf_current_task_under_cgroup_proto = {
+	.func           = bpf_current_task_under_cgroup,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_CONST_MAP_PTR,
+	.arg2_type      = ARG_ANYTHING,
+};
+
 /**
  * bpf_task_get_cgroup1 - Acquires the associated cgroup of a task within a
  * specific cgroup1 hierarchy. The cgroup1 hierarchy is identified by its
@@ -2834,12 +2855,35 @@ struct bpf_iter_bits {
 
 struct bpf_iter_bits_kern {
 	union {
-		unsigned long *bits;
-		unsigned long bits_copy;
+		__u64 *bits;
+		__u64 bits_copy;
 	};
 	int nr_bits;
 	int bit;
 } __aligned(8);
+
+/* On 64-bit hosts, unsigned long and u64 have the same size, so passing
+ * a u64 pointer and an unsigned long pointer to find_next_bit() will
+ * return the same result, as both point to the same 8-byte area.
+ *
+ * For 32-bit little-endian hosts, using a u64 pointer or unsigned long
+ * pointer also makes no difference. This is because the first iterated
+ * unsigned long is composed of bits 0-31 of the u64 and the second unsigned
+ * long is composed of bits 32-63 of the u64.
+ *
+ * However, for 32-bit big-endian hosts, this is not the case. The first
+ * iterated unsigned long will be bits 32-63 of the u64, so swap these two
+ * ulong values within the u64.
+ */
+static void swap_ulong_in_u64(u64 *bits, unsigned int nr)
+{
+#if (BITS_PER_LONG == 32) && defined(__BIG_ENDIAN)
+	unsigned int i;
+
+	for (i = 0; i < nr; i++)
+		bits[i] = (bits[i] >> 32) | ((u64)(u32)bits[i] << 32);
+#endif
+}
 
 /**
  * bpf_iter_bits_new() - Initialize a new bits iterator for a given memory area
@@ -2883,6 +2927,8 @@ bpf_iter_bits_new(struct bpf_iter_bits *it, const u64 *unsafe_ptr__ign, u32 nr_w
 		if (err)
 			return -EFAULT;
 
+		swap_ulong_in_u64(&kit->bits_copy, nr_words);
+
 		kit->nr_bits = nr_bits;
 		return 0;
 	}
@@ -2901,6 +2947,8 @@ bpf_iter_bits_new(struct bpf_iter_bits *it, const u64 *unsafe_ptr__ign, u32 nr_w
 		return err;
 	}
 
+	swap_ulong_in_u64(kit->bits, nr_words);
+
 	kit->nr_bits = nr_bits;
 	return 0;
 }
@@ -2918,7 +2966,7 @@ __bpf_kfunc int *bpf_iter_bits_next(struct bpf_iter_bits *it)
 {
 	struct bpf_iter_bits_kern *kit = (void *)it;
 	int bit = kit->bit, nr_bits = kit->nr_bits;
-	const unsigned long *bits;
+	const void *bits;
 
 	if (!nr_bits || bit >= nr_bits)
 		return NULL;
@@ -2947,6 +2995,47 @@ __bpf_kfunc void bpf_iter_bits_destroy(struct bpf_iter_bits *it)
 	if (kit->nr_bits <= 64)
 		return;
 	bpf_mem_free(&bpf_global_ma, kit->bits);
+}
+
+/**
+ * bpf_copy_from_user_str() - Copy a string from an unsafe user address
+ * @dst:             Destination address, in kernel space.  This buffer must be
+ *                   at least @dst__sz bytes long.
+ * @dst__sz:         Maximum number of bytes to copy, includes the trailing NUL.
+ * @unsafe_ptr__ign: Source address, in user space.
+ * @flags:           The only supported flag is BPF_F_PAD_ZEROS
+ *
+ * Copies a NUL-terminated string from userspace to BPF space. If user string is
+ * too long this will still ensure zero termination in the dst buffer unless
+ * buffer size is 0.
+ *
+ * If BPF_F_PAD_ZEROS flag is set, memset the tail of @dst to 0 on success and
+ * memset all of @dst on failure.
+ */
+__bpf_kfunc int bpf_copy_from_user_str(void *dst, u32 dst__sz, const void __user *unsafe_ptr__ign, u64 flags)
+{
+	int ret;
+
+	if (unlikely(flags & ~BPF_F_PAD_ZEROS))
+		return -EINVAL;
+
+	if (unlikely(!dst__sz))
+		return 0;
+
+	ret = strncpy_from_user(dst, unsafe_ptr__ign, dst__sz - 1);
+	if (ret < 0) {
+		if (flags & BPF_F_PAD_ZEROS)
+			memset((char *)dst, 0, dst__sz);
+
+		return ret;
+	}
+
+	if (flags & BPF_F_PAD_ZEROS)
+		memset((char *)dst + ret, 0, dst__sz - ret);
+	else
+		((char *)dst)[ret] = '\0';
+
+	return ret + 1;
 }
 
 __bpf_kfunc_end_defs();
@@ -3034,6 +3123,7 @@ BTF_ID_FLAGS(func, bpf_preempt_enable)
 BTF_ID_FLAGS(func, bpf_iter_bits_new, KF_ITER_NEW)
 BTF_ID_FLAGS(func, bpf_iter_bits_next, KF_ITER_NEXT | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_iter_bits_destroy, KF_ITER_DESTROY)
+BTF_ID_FLAGS(func, bpf_copy_from_user_str, KF_SLEEPABLE)
 BTF_KFUNCS_END(common_btf_ids)
 
 static const struct btf_kfunc_id_set common_kfunc_set = {
@@ -3062,6 +3152,7 @@ static int __init kfunc_init(void)
 	ret = ret ?: register_btf_kfunc_id_set(BPF_PROG_TYPE_XDP, &generic_kfunc_set);
 	ret = ret ?: register_btf_kfunc_id_set(BPF_PROG_TYPE_STRUCT_OPS, &generic_kfunc_set);
 	ret = ret ?: register_btf_kfunc_id_set(BPF_PROG_TYPE_SYSCALL, &generic_kfunc_set);
+	ret = ret ?: register_btf_kfunc_id_set(BPF_PROG_TYPE_CGROUP_SKB, &generic_kfunc_set);
 	ret = ret ?: register_btf_id_dtor_kfuncs(generic_dtors,
 						  ARRAY_SIZE(generic_dtors),
 						  THIS_MODULE);

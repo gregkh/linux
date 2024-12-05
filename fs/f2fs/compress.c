@@ -90,11 +90,13 @@ bool f2fs_is_compressed_page(struct page *page)
 static void f2fs_set_compressed_page(struct page *page,
 		struct inode *inode, pgoff_t index, void *data)
 {
-	attach_page_private(page, (void *)data);
+	struct folio *folio = page_folio(page);
+
+	folio_attach_private(folio, (void *)data);
 
 	/* i_crypto_info and iv index */
-	page->index = index;
-	page->mapping = inode->i_mapping;
+	folio->index = index;
+	folio->mapping = inode->i_mapping;
 }
 
 static void f2fs_drop_rpages(struct compress_ctx *cc, int len, bool unlock)
@@ -160,17 +162,17 @@ void f2fs_destroy_compress_ctx(struct compress_ctx *cc, bool reuse)
 		cc->cluster_idx = NULL_CLUSTER;
 }
 
-void f2fs_compress_ctx_add_page(struct compress_ctx *cc, struct page *page)
+void f2fs_compress_ctx_add_page(struct compress_ctx *cc, struct folio *folio)
 {
 	unsigned int cluster_ofs;
 
-	if (!f2fs_cluster_can_merge_page(cc, page->index))
+	if (!f2fs_cluster_can_merge_page(cc, folio->index))
 		f2fs_bug_on(F2FS_I_SB(cc->inode), 1);
 
-	cluster_ofs = offset_in_cluster(cc, page->index);
-	cc->rpages[cluster_ofs] = page;
+	cluster_ofs = offset_in_cluster(cc, folio->index);
+	cc->rpages[cluster_ofs] = folio_page(folio, 0);
 	cc->nr_rpages++;
-	cc->cluster_idx = cluster_idx(cc, page->index);
+	cc->cluster_idx = cluster_idx(cc, folio->index);
 }
 
 #ifdef CONFIG_F2FS_FS_LZO
@@ -879,7 +881,7 @@ static bool cluster_has_invalid_data(struct compress_ctx *cc)
 		f2fs_bug_on(F2FS_I_SB(cc->inode), !page);
 
 		/* beyond EOF */
-		if (page->index >= nr_pages)
+		if (page_folio(page)->index >= nr_pages)
 			return true;
 	}
 	return false;
@@ -1113,7 +1115,7 @@ retry:
 		if (PageUptodate(page))
 			f2fs_put_page(page, 1);
 		else
-			f2fs_compress_ctx_add_page(cc, page);
+			f2fs_compress_ctx_add_page(cc, page_folio(page));
 	}
 
 	if (!f2fs_cluster_is_empty(cc)) {
@@ -1143,7 +1145,7 @@ retry:
 		}
 
 		f2fs_wait_on_page_writeback(page, DATA, true, true);
-		f2fs_compress_ctx_add_page(cc, page);
+		f2fs_compress_ctx_add_page(cc, page_folio(page));
 
 		if (!PageUptodate(page)) {
 release_and_retry:
@@ -1543,7 +1545,8 @@ continue_unlock:
 		if (!clear_page_dirty_for_io(cc->rpages[i]))
 			goto continue_unlock;
 
-		ret = f2fs_write_single_data_page(cc->rpages[i], &submitted,
+		ret = f2fs_write_single_data_page(page_folio(cc->rpages[i]),
+						&submitted,
 						NULL, NULL, wbc, io_type,
 						compr_blocks, false);
 		if (ret) {

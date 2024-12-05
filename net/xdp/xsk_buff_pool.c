@@ -211,6 +211,11 @@ int xp_assign_dev(struct xsk_buff_pool *pool,
 		goto err_unreg_pool;
 	}
 
+	if (dev_get_min_mp_channel_count(netdev)) {
+		err = -EBUSY;
+		goto err_unreg_pool;
+	}
+
 	bpf.command = XDP_SETUP_XSK_POOL;
 	bpf.xsk.pool = pool;
 	bpf.xsk.queue_id = queue_id;
@@ -667,9 +672,17 @@ EXPORT_SYMBOL(xp_alloc_batch);
 
 bool xp_can_alloc(struct xsk_buff_pool *pool, u32 count)
 {
+	u32 req_count, avail_count;
+
 	if (pool->free_list_cnt >= count)
 		return true;
-	return xskq_cons_has_entries(pool->fq, count - pool->free_list_cnt);
+
+	req_count = count - pool->free_list_cnt;
+	avail_count = xskq_cons_nb_entries(pool->fq, req_count);
+	if (!avail_count)
+		pool->fq->queue_empty_descs++;
+
+	return avail_count >= req_count;
 }
 EXPORT_SYMBOL(xp_can_alloc);
 

@@ -1060,7 +1060,7 @@ static const void *rx_queue_namespace(const struct kobject *kobj)
 	struct device *dev = &queue->dev->dev;
 	const void *ns = NULL;
 
-	if (dev->class && dev->class->ns_type)
+	if (dev->class && dev->class->namespace)
 		ns = dev->class->namespace(dev);
 
 	return ns;
@@ -1744,7 +1744,7 @@ static const void *netdev_queue_namespace(const struct kobject *kobj)
 	struct device *dev = &queue->dev->dev;
 	const void *ns = NULL;
 
-	if (dev->class && dev->class->ns_type)
+	if (dev->class && dev->class->namespace)
 		ns = dev->class->namespace(dev);
 
 	return ns;
@@ -1768,8 +1768,7 @@ static const struct kobj_type netdev_queue_ktype = {
 
 static bool netdev_uses_bql(const struct net_device *dev)
 {
-	if (dev->features & NETIF_F_LLTX ||
-	    dev->priv_flags & IFF_NO_QUEUE)
+	if (dev->lltx || (dev->priv_flags & IFF_NO_QUEUE))
 		return false;
 
 	return IS_ENABLED(CONFIG_BQL);

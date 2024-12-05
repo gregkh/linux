@@ -909,6 +909,7 @@ enum dc_status dcn20_enable_stream_timing(
 			pipe_ctx->pipe_dlg_param.vstartup_start,
 			pipe_ctx->pipe_dlg_param.vupdate_offset,
 			pipe_ctx->pipe_dlg_param.vupdate_width,
+			pipe_ctx->pipe_dlg_param.pstate_keepout,
 			pipe_ctx->stream->signal,
 			true);
 
@@ -1699,7 +1700,7 @@ static void dcn20_update_dchubp_dpp(
 			plane_state->update_flags.bits.input_csc_change ||
 			plane_state->update_flags.bits.color_space_change ||
 			plane_state->update_flags.bits.coeff_reduction_change) {
-		struct dc_bias_and_scale bns_params = {0};
+		struct dc_bias_and_scale bns_params = plane_state->bias_and_scale;
 
 		// program the input csc
 		dpp->funcs->dpp_setup(dpp,
@@ -1716,7 +1717,6 @@ static void dcn20_update_dchubp_dpp(
 		}
 		if (dpp->funcs->dpp_program_bias_and_scale) {
 			//TODO :for CNVC set scale and bias registers if necessary
-			build_prescale_params(&bns_params, plane_state);
 			dpp->funcs->dpp_program_bias_and_scale(dpp, &bns_params);
 		}
 	}
@@ -1826,7 +1826,7 @@ static void dcn20_update_dchubp_dpp(
 			params.subvp_save_surf_addr.subvp_index = pipe_ctx->subvp_index;
 			hwss_subvp_save_surf_addr(&params);
 		}
-		hws->funcs.update_plane_addr(dc, pipe_ctx);
+		dc->hwss.update_plane_addr(dc, pipe_ctx);
 	}
 
 	if (pipe_ctx->update_flags.bits.enable)
@@ -1887,7 +1887,8 @@ static void dcn20_program_pipe(
 				calculate_vready_offset_for_group(pipe_ctx),
 				pipe_ctx->pipe_dlg_param.vstartup_start,
 				pipe_ctx->pipe_dlg_param.vupdate_offset,
-				pipe_ctx->pipe_dlg_param.vupdate_width);
+				pipe_ctx->pipe_dlg_param.vupdate_width,
+				pipe_ctx->pipe_dlg_param.pstate_keepout);
 
 		if (dc_state_get_pipe_subvp_type(context, pipe_ctx) != SUBVP_PHANTOM)
 			pipe_ctx->stream_res.tg->funcs->wait_for_state(pipe_ctx->stream_res.tg, CRTC_STATE_VACTIVE);
@@ -1927,14 +1928,9 @@ static void dcn20_program_pipe(
 	    pipe_ctx->stream->update_flags.raw))
 		dcn20_update_dchubp_dpp(dc, pipe_ctx, context);
 
-	if (pipe_ctx->update_flags.bits.enable ||
-	    (pipe_ctx->plane_state && pipe_ctx->plane_state->update_flags.bits.hdr_mult))
+	if (pipe_ctx->plane_state && (pipe_ctx->update_flags.bits.enable ||
+	    pipe_ctx->plane_state->update_flags.bits.hdr_mult))
 		hws->funcs.set_hdr_multiplier(pipe_ctx);
-
-	if ((pipe_ctx->plane_state && pipe_ctx->plane_state->update_flags.bits.hdr_mult) ||
-	    pipe_ctx->update_flags.bits.enable)
-		hws->funcs.set_hdr_multiplier(pipe_ctx);
-
 
 	if (hws->funcs.populate_mcm_luts) {
 		if (pipe_ctx->plane_state) {
@@ -1943,13 +1939,12 @@ static void dcn20_program_pipe(
 			pipe_ctx->plane_state->lut_bank_a = !pipe_ctx->plane_state->lut_bank_a;
 		}
 	}
-	if ((pipe_ctx->plane_state &&
-	     pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change) ||
-	    (pipe_ctx->plane_state &&
-	     pipe_ctx->plane_state->update_flags.bits.gamma_change) ||
-	    (pipe_ctx->plane_state &&
-	     pipe_ctx->plane_state->update_flags.bits.lut_3d) ||
-	     pipe_ctx->update_flags.bits.enable)
+
+	if (pipe_ctx->plane_state &&
+	    (pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change ||
+	    pipe_ctx->plane_state->update_flags.bits.gamma_change ||
+	    pipe_ctx->plane_state->update_flags.bits.lut_3d ||
+	    pipe_ctx->update_flags.bits.enable))
 		hws->funcs.set_input_transfer_func(dc, pipe_ctx, pipe_ctx->plane_state);
 
 	/* dcn10_translate_regamma_to_hw_format takes 750us to finish
@@ -2200,9 +2195,9 @@ static void post_unlock_reset_opp(struct dc *dc,
 			 * yet power gated.
 			 */
 			dsc->funcs->dsc_wait_disconnect_pending_clear(dsc);
+			dsc->funcs->dsc_disable(dsc);
 			if (dccg->funcs->set_ref_dscclk)
 				dccg->funcs->set_ref_dscclk(dccg, dsc->inst);
-			dsc->funcs->dsc_disable(dsc);
 		}
 	}
 }
@@ -2476,7 +2471,8 @@ bool dcn20_update_bandwidth(
 					calculate_vready_offset_for_group(pipe_ctx),
 					pipe_ctx->pipe_dlg_param.vstartup_start,
 					pipe_ctx->pipe_dlg_param.vupdate_offset,
-					pipe_ctx->pipe_dlg_param.vupdate_width);
+					pipe_ctx->pipe_dlg_param.vupdate_width,
+					pipe_ctx->pipe_dlg_param.pstate_keepout);
 
 			pipe_ctx->stream_res.tg->funcs->set_vtg_params(
 					pipe_ctx->stream_res.tg, &pipe_ctx->stream->timing, false);

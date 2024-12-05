@@ -9,11 +9,12 @@
 
 #include <drm/drm_device.h>
 #include <drm/drm_file.h>
-#include <drm/xe_drm.h>
+#include <uapi/drm/xe_drm.h>
 
 #include "xe_device.h"
 #include "xe_gt.h"
 #include "xe_hw_engine_class_sysfs.h"
+#include "xe_hw_engine_group.h"
 #include "xe_hw_fence.h"
 #include "xe_lrc.h"
 #include "xe_macros.h"
@@ -73,6 +74,7 @@ static struct xe_exec_queue *__xe_exec_queue_alloc(struct xe_device *xe,
 	q->ops = gt->exec_queue_ops;
 	INIT_LIST_HEAD(&q->lr.link);
 	INIT_LIST_HEAD(&q->multi_gt_link);
+	INIT_LIST_HEAD(&q->hw_engine_group_link);
 
 	q->sched_props.timeslice_us = hwe->eclass->sched_props.timeslice_us;
 	q->sched_props.preempt_timeout_us =
@@ -258,8 +260,14 @@ void xe_exec_queue_fini(struct xe_exec_queue *q)
 {
 	int i;
 
+	/*
+	 * Before releasing our ref to lrc and xef, accumulate our run ticks
+	 */
+	xe_exec_queue_update_run_ticks(q);
+
 	for (i = 0; i < q->width; ++i)
 		xe_lrc_put(q->lrc[i]);
+
 	__xe_exec_queue_free(q);
 }
 
@@ -625,14 +633,22 @@ int xe_exec_queue_create_ioctl(struct drm_device *dev, void *data,
 			if (XE_IOCTL_DBG(xe, err))
 				goto put_exec_queue;
 		}
+
+		if (q->vm && q->hwe->hw_engine_group) {
+			err = xe_hw_engine_group_add_exec_queue(q->hwe->hw_engine_group, q);
+			if (err)
+				goto put_exec_queue;
+		}
 	}
 
+	q->xef = xe_file_get(xef);
+
+	/* user id alloc must always be last in ioctl to prevent UAF */
 	err = xa_alloc(&xef->exec_queue.xa, &id, q, xa_limit_32b, GFP_KERNEL);
 	if (err)
 		goto kill_exec_queue;
 
 	args->exec_queue_id = id;
-	q->xef = xe_file_get(xef);
 
 	return 0;
 
@@ -773,6 +789,15 @@ void xe_exec_queue_update_run_ticks(struct xe_exec_queue *q)
 	xef->run_ticks[q->class] += (new_ts - old_ts) * q->width;
 }
 
+/**
+ * xe_exec_queue_kill - permanently stop all execution from an exec queue
+ * @q: The exec queue
+ *
+ * This function permanently stops all activity on an exec queue. If the queue
+ * is actively executing on the HW, it will be kicked off the engine; any
+ * pending jobs are discarded and all future submissions are rejected.
+ * This function is safe to call multiple times.
+ */
 void xe_exec_queue_kill(struct xe_exec_queue *q)
 {
 	struct xe_exec_queue *eq = q, *next;
@@ -805,6 +830,9 @@ int xe_exec_queue_destroy_ioctl(struct drm_device *dev, void *data,
 	if (XE_IOCTL_DBG(xe, !q))
 		return -ENOENT;
 
+	if (q->vm && q->hwe->hw_engine_group)
+		xe_hw_engine_group_del_exec_queue(q->hwe->hw_engine_group, q);
+
 	xe_exec_queue_kill(q);
 
 	trace_xe_exec_queue_close(q);
@@ -816,10 +844,12 @@ int xe_exec_queue_destroy_ioctl(struct drm_device *dev, void *data,
 static void xe_exec_queue_last_fence_lockdep_assert(struct xe_exec_queue *q,
 						    struct xe_vm *vm)
 {
-	if (q->flags & EXEC_QUEUE_FLAG_VM)
+	if (q->flags & EXEC_QUEUE_FLAG_VM) {
 		lockdep_assert_held(&vm->lock);
-	else
+	} else {
 		xe_vm_assert_held(vm);
+		lockdep_assert_held(&q->hwe->hw_engine_group->mode_sem);
+	}
 }
 
 /**
@@ -831,10 +861,7 @@ void xe_exec_queue_last_fence_put(struct xe_exec_queue *q, struct xe_vm *vm)
 {
 	xe_exec_queue_last_fence_lockdep_assert(q, vm);
 
-	if (q->last_fence) {
-		dma_fence_put(q->last_fence);
-		q->last_fence = NULL;
-	}
+	xe_exec_queue_last_fence_put_unlocked(q);
 }
 
 /**
@@ -877,6 +904,33 @@ struct dma_fence *xe_exec_queue_last_fence_get(struct xe_exec_queue *q,
 }
 
 /**
+ * xe_exec_queue_last_fence_get_for_resume() - Get last fence
+ * @q: The exec queue
+ * @vm: The VM the engine does a bind or exec for
+ *
+ * Get last fence, takes a ref. Only safe to be called in the context of
+ * resuming the hw engine group's long-running exec queue, when the group
+ * semaphore is held.
+ *
+ * Returns: last fence if not signaled, dma fence stub if signaled
+ */
+struct dma_fence *xe_exec_queue_last_fence_get_for_resume(struct xe_exec_queue *q,
+							  struct xe_vm *vm)
+{
+	struct dma_fence *fence;
+
+	lockdep_assert_held_write(&q->hwe->hw_engine_group->mode_sem);
+
+	if (q->last_fence &&
+	    test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &q->last_fence->flags))
+		xe_exec_queue_last_fence_put_unlocked(q);
+
+	fence = q->last_fence ? q->last_fence : dma_fence_get_stub();
+	dma_fence_get(fence);
+	return fence;
+}
+
+/**
  * xe_exec_queue_last_fence_set() - Set last fence
  * @q: The exec queue
  * @vm: The VM the engine does a bind or exec for
@@ -892,4 +946,27 @@ void xe_exec_queue_last_fence_set(struct xe_exec_queue *q, struct xe_vm *vm,
 
 	xe_exec_queue_last_fence_put(q, vm);
 	q->last_fence = dma_fence_get(fence);
+}
+
+/**
+ * xe_exec_queue_last_fence_test_dep - Test last fence dependency of queue
+ * @q: The exec queue
+ * @vm: The VM the engine does a bind or exec for
+ *
+ * Returns:
+ * -ETIME if there exists an unsignalled last fence dependency, zero otherwise.
+ */
+int xe_exec_queue_last_fence_test_dep(struct xe_exec_queue *q, struct xe_vm *vm)
+{
+	struct dma_fence *fence;
+	int err = 0;
+
+	fence = xe_exec_queue_last_fence_get(q, vm);
+	if (fence) {
+		err = test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags) ?
+			0 : -ETIME;
+		dma_fence_put(fence);
+	}
+
+	return err;
 }

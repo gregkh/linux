@@ -228,14 +228,10 @@ int fuse_backing_open(struct fuse_conn *fc, struct fuse_backing_map *map)
 	if (map->flags || map->padding)
 		goto out;
 
-	file = fget(map->fd);
+	file = fget_raw(map->fd);
 	res = -EBADF;
 	if (!file)
 		goto out;
-
-	res = -EOPNOTSUPP;
-	if (!file->f_op->read_iter || !file->f_op->write_iter)
-		goto out_fput;
 
 	backing_sb = file_inode(file)->i_sb;
 	res = -ELOOP;

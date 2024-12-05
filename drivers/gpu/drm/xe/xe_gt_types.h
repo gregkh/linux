@@ -10,6 +10,7 @@
 #include "xe_gt_idle_types.h"
 #include "xe_gt_sriov_pf_types.h"
 #include "xe_gt_sriov_vf_types.h"
+#include "xe_gt_stats.h"
 #include "xe_hw_engine_types.h"
 #include "xe_hw_fence_types.h"
 #include "xe_oa.h"
@@ -25,6 +26,11 @@ enum xe_gt_type {
 	XE_GT_TYPE_UNINITIALIZED,
 	XE_GT_TYPE_MAIN,
 	XE_GT_TYPE_MEDIA,
+};
+
+enum xe_gt_eu_type {
+	XE_GT_EU_TYPE_SIMD8,
+	XE_GT_EU_TYPE_SIMD16,
 };
 
 #define XE_MAX_DSS_FUSE_REGS		3
@@ -127,6 +133,14 @@ struct xe_gt {
 		/** @info.has_indirect_ring_state: GT has indirect ring state support */
 		u8 has_indirect_ring_state:1;
 	} info;
+
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	/** @stats: GT stats */
+	struct {
+		/** @stats.counters: counters for various GT stats */
+		atomic_t counters[__XE_GT_STATS_NUM_IDS];
+	} stats;
+#endif
 
 	/**
 	 * @mmio: mmio info for GT.  All GTs within a tile share the same
@@ -342,6 +356,12 @@ struct xe_gt {
 
 		/** @fuse_topo.l3_bank_mask: L3 bank mask */
 		xe_l3_bank_mask_t l3_bank_mask;
+
+		/**
+		 * @fuse_topo.eu_type: type/width of EU stored in
+		 * fuse_topo.eu_mask_per_dss
+		 */
+		enum xe_gt_eu_type eu_type;
 	} fuse_topo;
 
 	/** @steering: register steering for individual HW units */
@@ -354,6 +374,12 @@ struct xe_gt {
 		/** @steering.instance_target: instance to steer accesses to */
 		u16 instance_target;
 	} steering[NUM_STEERING_TYPES];
+
+	/**
+	 * @steering_dss_per_grp: number of DSS per steering group (gslice,
+	 *    cslice, etc.).
+	 */
+	unsigned int steering_dss_per_grp;
 
 	/**
 	 * @mcr_lock: protects the MCR_SELECTOR register for the duration
@@ -375,8 +401,14 @@ struct xe_gt {
 		unsigned long *engine;
 		/** @wa_active.lrc: bitmap with active LRC workarounds */
 		unsigned long *lrc;
-		/** @wa_active.oob: bitmap with active OOB workaroudns */
+		/** @wa_active.oob: bitmap with active OOB workarounds */
 		unsigned long *oob;
+		/**
+		 * @wa_active.oob_initialized: mark oob as initialized to help
+		 * detecting misuse of XE_WA() - it can only be called on
+		 * initialization after OOB WAs have being processed
+		 */
+		bool oob_initialized;
 	} wa_active;
 
 	/** @user_engines: engines present in GT and available to userspace */

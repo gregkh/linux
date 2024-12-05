@@ -783,22 +783,6 @@ int amdgpu_amdkfd_send_close_event_drain_irq(struct amdgpu_device *adev,
 	return 0;
 }
 
-bool amdgpu_amdkfd_ras_query_utcl2_poison_status(struct amdgpu_device *adev,
-			int hub_inst, int hub_type)
-{
-	if (!hub_type) {
-		if (adev->gfxhub.funcs->query_utcl2_poison_status)
-			return adev->gfxhub.funcs->query_utcl2_poison_status(adev, hub_inst);
-		else
-			return false;
-	} else {
-		if (adev->mmhub.funcs->query_utcl2_poison_status)
-			return adev->mmhub.funcs->query_utcl2_poison_status(adev, hub_inst);
-		else
-			return false;
-	}
-}
-
 int amdgpu_amdkfd_check_and_lock_kfd(struct amdgpu_device *adev)
 {
 	return kgd2kfd_check_and_lock_kfd();
@@ -895,4 +879,22 @@ free_ring_funcs:
 	kfree(ring_funcs);
 
 	return r;
+}
+
+/* Stop scheduling on KFD */
+int amdgpu_amdkfd_stop_sched(struct amdgpu_device *adev, uint32_t node_id)
+{
+	if (!adev->kfd.init_complete)
+		return 0;
+
+	return kgd2kfd_stop_sched(adev->kfd.dev, node_id);
+}
+
+/* Start scheduling on KFD */
+int amdgpu_amdkfd_start_sched(struct amdgpu_device *adev, uint32_t node_id)
+{
+	if (!adev->kfd.init_complete)
+		return 0;
+
+	return kgd2kfd_start_sched(adev->kfd.dev, node_id);
 }

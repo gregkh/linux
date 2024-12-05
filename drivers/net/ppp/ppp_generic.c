@@ -44,7 +44,7 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/file.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <net/slhc_vj.h>
 #include <linux/atomic.h>
 #include <linux/refcount.h>
@@ -1631,7 +1631,7 @@ static void ppp_setup(struct net_device *dev)
 	dev->netdev_ops = &ppp_netdev_ops;
 	SET_NETDEV_DEVTYPE(dev, &ppp_type);
 
-	dev->features |= NETIF_F_LLTX;
+	dev->lltx = true;
 
 	dev->hard_header_len = PPP_HDRLEN;
 	dev->mtu = PPP_MRU;

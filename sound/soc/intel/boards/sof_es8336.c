@@ -818,6 +818,16 @@ static const struct platform_device_id board_ids[] = {
 					SOF_ES8336_SPEAKERS_EN_GPIO1_QUIRK |
 					SOF_ES8336_JD_INVERTED),
 	},
+	{
+		.name = "arl_es83x6_c1_h02",
+		.driver_data = (kernel_ulong_t)(SOF_ES8336_SSP_CODEC(1) |
+					SOF_NO_OF_HDMI_CAPTURE_SSP(2) |
+					SOF_HDMI_CAPTURE_1_SSP(0) |
+					SOF_HDMI_CAPTURE_2_SSP(2) |
+					SOF_SSP_HDMI_CAPTURE_PRESENT |
+					SOF_ES8336_SPEAKERS_EN_GPIO1_QUIRK |
+					SOF_ES8336_JD_INVERTED),
+	},
 	{ }
 };
 MODULE_DEVICE_TABLE(platform, board_ids);
@@ -828,7 +838,7 @@ static struct platform_driver sof_es8336_driver = {
 		.pm = &snd_soc_pm_ops,
 	},
 	.probe = sof_es8336_probe,
-	.remove_new = sof_es8336_remove,
+	.remove = sof_es8336_remove,
 	.id_table = board_ids,
 };
 module_platform_driver(sof_es8336_driver);

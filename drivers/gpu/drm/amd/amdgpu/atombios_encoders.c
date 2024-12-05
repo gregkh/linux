@@ -215,7 +215,7 @@ void amdgpu_atombios_encoder_init_backlight(struct amdgpu_encoder *amdgpu_encode
 	dig->bl_dev = bd;
 
 	bd->props.brightness = amdgpu_atombios_encoder_get_backlight_brightness(bd);
-	bd->props.power = FB_BLANK_UNBLANK;
+	bd->props.power = BACKLIGHT_POWER_ON;
 	backlight_update_status(bd);
 
 	DRM_INFO("amdgpu atom DIG backlight initialized\n");
@@ -2064,23 +2064,18 @@ amdgpu_atombios_encoder_get_lcd_info(struct amdgpu_encoder *encoder)
 				case LCD_FAKE_EDID_PATCH_RECORD_TYPE:
 					fake_edid_record = (ATOM_FAKE_EDID_PATCH_RECORD *)record;
 					if (fake_edid_record->ucFakeEDIDLength) {
-						struct edid *edid;
+						const struct drm_edid *edid;
 						int edid_size;
 
 						if (fake_edid_record->ucFakeEDIDLength == 128)
 							edid_size = fake_edid_record->ucFakeEDIDLength;
 						else
 							edid_size = fake_edid_record->ucFakeEDIDLength * 128;
-						edid = kmemdup(&fake_edid_record->ucFakeEDIDString[0],
-							       edid_size, GFP_KERNEL);
-						if (edid) {
-							if (drm_edid_is_valid(edid)) {
-								adev->mode_info.bios_hardcoded_edid = edid;
-								adev->mode_info.bios_hardcoded_edid_size = edid_size;
-							} else {
-								kfree(edid);
-							}
-						}
+						edid = drm_edid_alloc(fake_edid_record->ucFakeEDIDString, edid_size);
+						if (drm_edid_valid(edid))
+							adev->mode_info.bios_hardcoded_edid = edid;
+						else
+							drm_edid_free(edid);
 						record += struct_size(fake_edid_record,
 								      ucFakeEDIDString,
 								      edid_size);

@@ -74,8 +74,9 @@ struct subtest_state {
 	int error_cnt;
 	bool skipped;
 	bool filtered;
+	bool should_tmon;
 
-	FILE *stdout;
+	FILE *stdout_saved;
 };
 
 struct test_state {
@@ -92,12 +93,15 @@ struct test_state {
 	size_t log_cnt;
 	char *log_buf;
 
-	FILE *stdout;
+	FILE *stdout_saved;
 };
+
+extern int env_verbosity;
 
 struct test_env {
 	struct test_selector test_selector;
 	struct test_selector subtest_selector;
+	struct test_selector tmon_selector;
 	bool verifier_stats;
 	bool debug;
 	enum verbosity verbosity;
@@ -111,8 +115,8 @@ struct test_env {
 	struct test_state *test_state; /* current running test state */
 	struct subtest_state *subtest_state; /* current running subtest state */
 
-	FILE *stdout;
-	FILE *stderr;
+	FILE *stdout_saved;
+	FILE *stderr_saved;
 	int nr_cpus;
 	FILE *json;
 

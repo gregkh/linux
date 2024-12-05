@@ -10451,6 +10451,7 @@ lpfc_sli4_queue_create(struct lpfc_hba *phba)
 	struct lpfc_vector_map_info *cpup;
 	struct lpfc_vector_map_info *eqcpup;
 	struct lpfc_eq_intr_info *eqi;
+	u32 wqesize;
 
 	/*
 	 * Create HBA Record arrays.
@@ -10670,9 +10671,15 @@ lpfc_sli4_queue_create(struct lpfc_hba *phba)
 	 * Create ELS Work Queues
 	 */
 
-	/* Create slow-path ELS Work Queue */
+	/*
+	 * Create slow-path ELS Work Queue.
+	 * Increase the ELS WQ size when WQEs contain an embedded cdb
+	 */
+	wqesize = (phba->fcp_embed_io) ?
+			LPFC_WQE128_SIZE : phba->sli4_hba.wq_esize;
+
 	qdesc = lpfc_sli4_queue_alloc(phba, LPFC_DEFAULT_PAGE_SIZE,
-				      phba->sli4_hba.wq_esize,
+				      wqesize,
 				      phba->sli4_hba.wq_ecount, cpu);
 	if (!qdesc) {
 		lpfc_printf_log(phba, KERN_ERR, LOG_TRACE_EVENT,
@@ -13876,12 +13883,7 @@ fcponly:
 	if (sli4_params->sge_supp_len > LPFC_MAX_SGE_SIZE)
 		sli4_params->sge_supp_len = LPFC_MAX_SGE_SIZE;
 
-	rc = dma_set_max_seg_size(&phba->pcidev->dev, sli4_params->sge_supp_len);
-	if (unlikely(rc)) {
-		lpfc_printf_log(phba, KERN_INFO, LOG_INIT,
-				"6400 Can't set dma maximum segment size\n");
-		return rc;
-	}
+	dma_set_max_seg_size(&phba->pcidev->dev, sli4_params->sge_supp_len);
 
 	/*
 	 * Check whether the adapter supports an embedded copy of the

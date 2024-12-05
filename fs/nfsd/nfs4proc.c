@@ -158,7 +158,7 @@ do_open_permission(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nfs
 	return fh_verify(rqstp, current_fh, S_IFREG, accmode);
 }
 
-static __be32 nfsd_check_obj_isreg(struct svc_fh *fh)
+static __be32 nfsd_check_obj_isreg(struct svc_fh *fh, u32 minor_version)
 {
 	umode_t mode = d_inode(fh->fh_dentry)->i_mode;
 
@@ -166,14 +166,15 @@ static __be32 nfsd_check_obj_isreg(struct svc_fh *fh)
 		return nfs_ok;
 	if (S_ISDIR(mode))
 		return nfserr_isdir;
-	/*
-	 * Using err_symlink as our catch-all case may look odd; but
-	 * there's no other obvious error for this case in 4.0, and we
-	 * happen to know that it will cause the linux v4 client to do
-	 * the right thing on attempts to open something other than a
-	 * regular file.
-	 */
-	return nfserr_symlink;
+	if (S_ISLNK(mode))
+		return nfserr_symlink;
+
+	/* RFC 7530 - 16.16.6 */
+	if (minor_version == 0)
+		return nfserr_symlink;
+	else
+		return nfserr_wrong_type;
+
 }
 
 static void nfsd4_set_open_owner_reply_cache(struct nfsd4_compound_state *cstate, struct nfsd4_open *open, struct svc_fh *resfh)
@@ -466,7 +467,7 @@ do_open_lookup(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate, stru
 	}
 	if (status)
 		goto out;
-	status = nfsd_check_obj_isreg(*resfh);
+	status = nfsd_check_obj_isreg(*resfh, cstate->minorversion);
 	if (status)
 		goto out;
 
@@ -1616,7 +1617,8 @@ static int nfsd4_cb_offload_done(struct nfsd4_callback *cb,
 
 static const struct nfsd4_callback_ops nfsd4_cb_offload_ops = {
 	.release = nfsd4_cb_offload_release,
-	.done = nfsd4_cb_offload_done
+	.done = nfsd4_cb_offload_done,
+	.opcode = OP_CB_OFFLOAD,
 };
 
 static void nfsd4_init_copy_res(struct nfsd4_copy *copy, bool sync)
@@ -1761,7 +1763,7 @@ static int nfsd4_do_async_copy(void *data)
 {
 	struct nfsd4_copy *copy = (struct nfsd4_copy *)data;
 
-	trace_nfsd_copy_do_async(copy);
+	trace_nfsd_copy_async(copy);
 	if (nfsd4_ssc_is_inter(copy)) {
 		struct file *filp;
 
@@ -1788,6 +1790,7 @@ static int nfsd4_do_async_copy(void *data)
 
 do_callback:
 	set_bit(NFSD4_COPY_F_COMPLETED, &copy->cp_flags);
+	trace_nfsd_copy_async_done(copy);
 	nfsd4_send_cb_offload(copy);
 	cleanup_async_copy(copy);
 	return 0;
@@ -1943,7 +1946,7 @@ nfsd4_copy_notify(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 	struct nfsd4_copy_notify *cn = &u->copy_notify;
 	__be32 status;
 	struct nfsd_net *nn = net_generic(SVC_NET(rqstp), nfsd_net_id);
-	struct nfs4_stid *stid;
+	struct nfs4_stid *stid = NULL;
 	struct nfs4_cpntf_state *cps;
 	struct nfs4_client *clp = cstate->clp;
 
@@ -1952,6 +1955,8 @@ nfsd4_copy_notify(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 					&stid);
 	if (status)
 		return status;
+	if (!stid)
+		return nfserr_bad_stateid;
 
 	cn->cpn_lease_time.tv_sec = nn->nfsd4_lease;
 	cn->cpn_lease_time.tv_nsec = 0;
@@ -2232,7 +2237,9 @@ nfsd4_getdeviceinfo(struct svc_rqst *rqstp,
 		return nfserr_noent;
 	}
 
-	exp = rqst_exp_find(rqstp, map->fsid_type, map->fsid);
+	exp = rqst_exp_find(&rqstp->rq_chandle, SVC_NET(rqstp),
+			    rqstp->rq_client, rqstp->rq_gssclient,
+			    map->fsid_type, map->fsid);
 	if (IS_ERR(exp)) {
 		dprintk("%s: could not find device id\n", __func__);
 		return nfserr_noent;

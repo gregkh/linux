@@ -391,7 +391,7 @@ EXPORT_SYMBOL_GPL(bus_for_each_dev);
  */
 struct device *bus_find_device(const struct bus_type *bus,
 			       struct device *start, const void *data,
-			       int (*match)(struct device *dev, const void *data))
+			       device_match_t match)
 {
 	struct subsys_private *sp = bus_to_subsys(bus);
 	struct klist_iter i;
@@ -1298,7 +1298,7 @@ int subsys_virtual_register(const struct bus_type *subsys,
 {
 	struct kobject *virtual_dir;
 
-	virtual_dir = virtual_device_parent(NULL);
+	virtual_dir = virtual_device_parent();
 	if (!virtual_dir)
 		return -ENOMEM;
 
@@ -1389,8 +1389,13 @@ int __init buses_init(void)
 		return -ENOMEM;
 
 	system_kset = kset_create_and_add("system", NULL, &devices_kset->kobj);
-	if (!system_kset)
+	if (!system_kset) {
+		/* Do error handling here as devices_init() do */
+		kset_unregister(bus_kset);
+		bus_kset = NULL;
+		pr_err("%s: failed to create and add kset 'bus'\n", __func__);
 		return -ENOMEM;
+	}
 
 	return 0;
 }

@@ -3091,7 +3091,8 @@ static int get_ssr_segment(struct f2fs_sb_info *sbi, int type,
 	sanity_check_seg_type(sbi, seg_type);
 
 	/* f2fs_need_SSR() already forces to do this */
-	if (!f2fs_get_victim(sbi, &segno, BG_GC, seg_type, alloc_mode, age)) {
+	if (!f2fs_get_victim(sbi, &segno, BG_GC, seg_type,
+				alloc_mode, age, false)) {
 		curseg->next_segno = segno;
 		return 1;
 	}
@@ -3118,7 +3119,8 @@ static int get_ssr_segment(struct f2fs_sb_info *sbi, int type,
 	for (; cnt-- > 0; reversed ? i-- : i++) {
 		if (i == seg_type)
 			continue;
-		if (!f2fs_get_victim(sbi, &segno, BG_GC, i, alloc_mode, age)) {
+		if (!f2fs_get_victim(sbi, &segno, BG_GC, i,
+					alloc_mode, age, false)) {
 			curseg->next_segno = segno;
 			return 1;
 		}
@@ -3561,7 +3563,8 @@ static int __get_segment_type_6(struct f2fs_io_info *fio)
 		if (file_is_cold(inode) || f2fs_need_compress_data(inode))
 			return CURSEG_COLD_DATA;
 
-		type = __get_age_segment_type(inode, fio->page->index);
+		type = __get_age_segment_type(inode,
+				page_folio(fio->page)->index);
 		if (type != NO_CHECK_TYPE)
 			return type;
 
@@ -3820,7 +3823,7 @@ out:
 		f2fs_up_read(&fio->sbi->io_order_lock);
 }
 
-void f2fs_do_write_meta_page(struct f2fs_sb_info *sbi, struct page *page,
+void f2fs_do_write_meta_page(struct f2fs_sb_info *sbi, struct folio *folio,
 					enum iostat_type io_type)
 {
 	struct f2fs_io_info fio = {
@@ -3829,20 +3832,20 @@ void f2fs_do_write_meta_page(struct f2fs_sb_info *sbi, struct page *page,
 		.temp = HOT,
 		.op = REQ_OP_WRITE,
 		.op_flags = REQ_SYNC | REQ_META | REQ_PRIO,
-		.old_blkaddr = page->index,
-		.new_blkaddr = page->index,
-		.page = page,
+		.old_blkaddr = folio->index,
+		.new_blkaddr = folio->index,
+		.page = folio_page(folio, 0),
 		.encrypted_page = NULL,
 		.in_list = 0,
 	};
 
-	if (unlikely(page->index >= MAIN_BLKADDR(sbi)))
+	if (unlikely(folio->index >= MAIN_BLKADDR(sbi)))
 		fio.op_flags &= ~REQ_META;
 
-	set_page_writeback(page);
+	folio_start_writeback(folio);
 	f2fs_submit_page_write(&fio);
 
-	stat_inc_meta_count(sbi, page->index);
+	stat_inc_meta_count(sbi, folio->index);
 	f2fs_update_iostat(sbi, NULL, io_type, F2FS_BLKSIZE);
 }
 
@@ -5420,8 +5423,7 @@ unsigned int f2fs_usable_blks_in_seg(struct f2fs_sb_info *sbi,
 	return BLKS_PER_SEG(sbi);
 }
 
-unsigned int f2fs_usable_segs_in_sec(struct f2fs_sb_info *sbi,
-					unsigned int segno)
+unsigned int f2fs_usable_segs_in_sec(struct f2fs_sb_info *sbi)
 {
 	if (f2fs_sb_has_blkzoned(sbi))
 		return CAP_SEGS_PER_SEC(sbi);

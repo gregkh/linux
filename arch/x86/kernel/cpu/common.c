@@ -1514,6 +1514,11 @@ static void __init cpu_parse_early_param(void)
 	if (cmdline_find_option_bool(boot_command_line, "nousershstk"))
 		setup_clear_cpu_cap(X86_FEATURE_USER_SHSTK);
 
+	/* Minimize the gap between FRED is available and available but disabled. */
+	arglen = cmdline_find_option(boot_command_line, "fred", arg, sizeof(arg));
+	if (arglen != 2 || strncmp(arg, "on", 2))
+		setup_clear_cpu_cap(X86_FEATURE_FRED);
+
 	arglen = cmdline_find_option(boot_command_line, "clearcpuid", arg, sizeof(arg));
 	if (arglen <= 0)
 		return;
@@ -2177,7 +2182,7 @@ static inline void tss_setup_io_bitmap(struct tss_struct *tss)
  * Setup everything needed to handle exceptions from the IDT, including the IST
  * exceptions which use paranoid_entry().
  */
-void cpu_init_exception_handling(void)
+void cpu_init_exception_handling(bool boot_cpu)
 {
 	struct tss_struct *tss = this_cpu_ptr(&cpu_tss_rw);
 	int cpu = raw_smp_processor_id();
@@ -2196,10 +2201,23 @@ void cpu_init_exception_handling(void)
 	/* GHCB needs to be setup to handle #VC. */
 	setup_ghcb();
 
+	if (cpu_feature_enabled(X86_FEATURE_FRED)) {
+		/* The boot CPU has enabled FRED during early boot */
+		if (!boot_cpu)
+			cpu_init_fred_exceptions();
+
+		cpu_init_fred_rsps();
+	} else {
+		load_current_idt();
+	}
+}
+
+void __init cpu_init_replace_early_idt(void)
+{
 	if (cpu_feature_enabled(X86_FEATURE_FRED))
 		cpu_init_fred_exceptions();
 	else
-		load_current_idt();
+		idt_setup_early_pf();
 }
 
 /*

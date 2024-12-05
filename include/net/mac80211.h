@@ -22,7 +22,7 @@
 #include <net/cfg80211.h>
 #include <net/codel.h>
 #include <net/ieee80211_radiotap.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /**
  * DOC: Introduction
@@ -2488,7 +2488,7 @@ struct ieee80211_link_sta {
  * @spp_amsdu: indicates whether the STA uses SPP A-MSDU or not.
  */
 struct ieee80211_sta {
-	u8 addr[ETH_ALEN];
+	u8 addr[ETH_ALEN] __aligned(2);
 	u16 aid;
 	u16 max_rx_aggregation_subframes;
 	bool wme;
@@ -3180,6 +3180,19 @@ ieee80211_get_alt_retry_rate(const struct ieee80211_hw *hw,
  * to transmit happened and thus status cannot be reported.
  */
 void ieee80211_free_txskb(struct ieee80211_hw *hw, struct sk_buff *skb);
+
+/**
+ * ieee80211_purge_tx_queue - purge TX skb queue
+ * @hw: the hardware
+ * @skbs: the skbs
+ *
+ * Free a set of transmit skbs. Use this function when device is going to stop
+ * but some transmit skbs without TX status are still queued.
+ * This function does not take the list lock and the caller must hold the
+ * relevant locks to use it.
+ */
+void ieee80211_purge_tx_queue(struct ieee80211_hw *hw,
+			      struct sk_buff_head *skbs);
 
 /**
  * DOC: Hardware crypto acceleration
@@ -6243,6 +6256,24 @@ void ieee80211_iterate_stations_atomic(struct ieee80211_hw *hw,
 				       void (*iterator)(void *data,
 						struct ieee80211_sta *sta),
 				       void *data);
+
+/**
+ * ieee80211_iterate_stations_mtx - iterate stations
+ *
+ * This function iterates over all stations associated with a given
+ * hardware that are currently uploaded to the driver and calls the callback
+ * function for them. This version can only be used while holding the wiphy
+ * mutex.
+ *
+ * @hw: the hardware struct of which the interfaces should be iterated over
+ * @iterator: the iterator function to call
+ * @data: first argument of the iterator function
+ */
+void ieee80211_iterate_stations_mtx(struct ieee80211_hw *hw,
+				    void (*iterator)(void *data,
+						     struct ieee80211_sta *sta),
+				    void *data);
+
 /**
  * ieee80211_queue_work - add work onto the mac80211 workqueue
  *
@@ -6717,8 +6748,11 @@ void ieee80211_cqm_beacon_loss_notify(struct ieee80211_vif *vif, gfp_t gfp);
  * ieee80211_radar_detected - inform that a radar was detected
  *
  * @hw: pointer as obtained from ieee80211_alloc_hw()
+ * @chanctx_conf: Channel context on which radar is detected. Mandatory to
+ *	pass a valid pointer during MLO. For non-MLO %NULL can be passed
  */
-void ieee80211_radar_detected(struct ieee80211_hw *hw);
+void ieee80211_radar_detected(struct ieee80211_hw *hw,
+			      struct ieee80211_chanctx_conf *chanctx_conf);
 
 /**
  * ieee80211_chswitch_done - Complete channel switch process

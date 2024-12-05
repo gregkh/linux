@@ -986,7 +986,7 @@ find_struct_ops_kern_types(struct bpf_object *obj, const char *tname_raw,
 {
 	const struct btf_type *kern_type, *kern_vtype;
 	const struct btf_member *kern_data_member;
-	struct btf *btf;
+	struct btf *btf = NULL;
 	__s32 kern_vtype_id, kern_type_id;
 	char tname[256];
 	__u32 i;
@@ -1116,7 +1116,7 @@ static int bpf_map__init_kern_struct_ops(struct bpf_map *map)
 	const struct btf *btf = obj->btf;
 	struct bpf_struct_ops *st_ops;
 	const struct btf *kern_btf;
-	struct module_btf *mod_btf;
+	struct module_btf *mod_btf = NULL;
 	void *data, *kern_data;
 	const char *tname;
 	int err;
@@ -1848,7 +1848,7 @@ static char *internal_map_name(struct bpf_object *obj, const char *real_name)
 	snprintf(map_name, sizeof(map_name), "%.*s%.*s", pfx_len, obj->name,
 		 sfx_len, real_name);
 
-	/* sanitise map name to characters allowed by kernel */
+	/* sanities map name to characters allowed by kernel */
 	for (p = map_name; *p && p < map_name + sizeof(map_name); p++)
 		if (!isalnum(*p) && *p != '_' && *p != '.')
 			*p = '_';
@@ -9095,6 +9095,11 @@ unsigned int bpf_object__kversion(const struct bpf_object *obj)
 	return obj ? obj->kern_version : 0;
 }
 
+int bpf_object__token_fd(const struct bpf_object *obj)
+{
+	return obj->token_fd ?: -1;
+}
+
 struct btf *bpf_object__btf(const struct bpf_object *obj)
 {
 	return obj ? obj->btf : NULL;
@@ -11724,7 +11729,7 @@ static int attach_uprobe_multi(const struct bpf_program *prog, long cookie, stru
 		ret = 0;
 		break;
 	case 3:
-		opts.retprobe = strcmp(probe_type, "uretprobe.multi") == 0;
+		opts.retprobe = str_has_pfx(probe_type, "uretprobe.multi");
 		*link = bpf_program__attach_uprobe_multi(prog, -1, binary_path, func_name, &opts);
 		ret = libbpf_get_error(*link);
 		break;

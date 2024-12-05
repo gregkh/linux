@@ -1640,8 +1640,6 @@ static int sev_update_firmware(struct device *dev)
 
 	if (ret)
 		dev_dbg(dev, "Failed to update SEV firmware: %#x\n", error);
-	else
-		dev_info(dev, "SEV firmware update successful\n");
 
 	__free_pages(p, order);
 
@@ -2393,6 +2391,7 @@ void sev_pci_init(void)
 {
 	struct sev_device *sev = psp_master->sev_data;
 	struct sev_platform_init_args args = {0};
+	u8 api_major, api_minor, build;
 	int rc;
 
 	if (!sev)
@@ -2403,8 +2402,18 @@ void sev_pci_init(void)
 	if (sev_get_api_version())
 		goto err;
 
+	api_major = sev->api_major;
+	api_minor = sev->api_minor;
+	build     = sev->build;
+
 	if (sev_update_firmware(sev->dev) == 0)
 		sev_get_api_version();
+
+	if (api_major != sev->api_major || api_minor != sev->api_minor ||
+	    build != sev->build)
+		dev_info(sev->dev, "SEV firmware updated from %d.%d.%d to %d.%d.%d\n",
+			 api_major, api_minor, build,
+			 sev->api_major, sev->api_minor, sev->build);
 
 	/* Initialize the platform */
 	args.probe = true;

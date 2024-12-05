@@ -44,8 +44,6 @@ struct sg_table *radeon_gem_prime_get_sg_table(struct drm_gem_object *obj);
 int radeon_gem_prime_pin(struct drm_gem_object *obj);
 void radeon_gem_prime_unpin(struct drm_gem_object *obj);
 
-const struct drm_gem_object_funcs radeon_gem_object_funcs;
-
 static vm_fault_t radeon_gem_fault(struct vm_fault *vmf)
 {
 	struct ttm_buffer_object *bo = vmf->vma->vm_private_data;
@@ -88,7 +86,7 @@ static void radeon_gem_object_free(struct drm_gem_object *gobj)
 
 	if (robj) {
 		radeon_mn_unregister(robj);
-		radeon_bo_unref(&robj);
+		ttm_bo_put(&robj->tbo);
 	}
 }
 
@@ -132,7 +130,6 @@ retry:
 		return r;
 	}
 	*obj = &robj->tbo.base;
-	(*obj)->funcs = &radeon_gem_object_funcs;
 	robj->pid = task_pid_nr(current);
 
 	mutex_lock(&rdev->gem.mutex);

@@ -15,12 +15,11 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
-#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/errno.h>
 #include <linux/acpi.h>
 #include <linux/input/touchscreen.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 
 #define ILITEK_TS_NAME					"ilitek_ts"

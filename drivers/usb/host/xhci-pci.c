@@ -100,6 +100,10 @@ static const struct xhci_driver_overrides xhci_pci_overrides __initconst = {
 	.update_hub_device = xhci_pci_update_hub_device,
 };
 
+/*
+ * Primary Legacy and MSI IRQ are synced in suspend_common().
+ * All MSI-X IRQs and secondary MSI IRQs should be synced here.
+ */
 static void xhci_msix_sync_irqs(struct xhci_hcd *xhci)
 {
 	struct usb_hcd *hcd = xhci_to_hcd(xhci);
@@ -112,13 +116,12 @@ static void xhci_msix_sync_irqs(struct xhci_hcd *xhci)
 	}
 }
 
-/* Free any IRQs and disable MSI-X */
+/* Legacy IRQ is freed by usb_remove_hcd() or usb_hcd_pci_shutdown() */
 static void xhci_cleanup_msix(struct xhci_hcd *xhci)
 {
 	struct usb_hcd *hcd = xhci_to_hcd(xhci);
 	struct pci_dev *pdev = to_pci_dev(hcd->self.controller);
 
-	/* return if using legacy interrupt */
 	if (hcd->irq > 0)
 		return;
 
@@ -242,15 +245,6 @@ static int xhci_pci_reinit(struct xhci_hcd *xhci, struct pci_dev *pdev)
 static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 {
 	struct pci_dev                  *pdev = to_pci_dev(dev);
-	struct xhci_driver_data         *driver_data;
-	const struct pci_device_id      *id;
-
-	id = pci_match_id(to_pci_driver(pdev->dev.driver)->id_table, pdev);
-
-	if (id && id->driver_data) {
-		driver_data = (struct xhci_driver_data *)id->driver_data;
-		xhci->quirks |= driver_data->quirks;
-	}
 
 	/* Look for vendor-specific quirks */
 	if (pdev->vendor == PCI_VENDOR_ID_FRESCO_LOGIC &&
@@ -551,10 +545,9 @@ static int xhci_pci_setup(struct usb_hcd *hcd)
 	struct xhci_hcd		*xhci;
 	struct pci_dev		*pdev = to_pci_dev(hcd->self.controller);
 	int			retval;
+	u8			sbrn;
 
 	xhci = hcd_to_xhci(hcd);
-	if (!xhci->sbrn)
-		pci_read_config_byte(pdev, XHCI_SBRN_OFFSET, &xhci->sbrn);
 
 	/* imod_interval is the interrupt moderation value in nanoseconds. */
 	xhci->imod_interval = 40000;
@@ -569,7 +562,8 @@ static int xhci_pci_setup(struct usb_hcd *hcd)
 	if (xhci->quirks & XHCI_PME_STUCK_QUIRK)
 		xhci_pme_acpi_rtd3_enable(pdev);
 
-	xhci_dbg(xhci, "Got SBRN %u\n", (unsigned int) xhci->sbrn);
+	pci_read_config_byte(pdev, XHCI_SBRN_OFFSET, &sbrn);
+	xhci_dbg(xhci, "Got SBRN %u\n", (unsigned int)sbrn);
 
 	/* Find any debug ports */
 	return xhci_pci_reinit(xhci, pdev);
@@ -589,20 +583,12 @@ static int xhci_pci_update_hub_device(struct usb_hcd *hcd, struct usb_device *hd
  * We need to register our own PCI probe function (instead of the USB core's
  * function) in order to create a second roothub under xHCI.
  */
-static int xhci_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
+int xhci_pci_common_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	int retval;
 	struct xhci_hcd *xhci;
 	struct usb_hcd *hcd;
-	struct xhci_driver_data *driver_data;
 	struct reset_control *reset;
-
-	driver_data = (struct xhci_driver_data *)id->driver_data;
-	if (driver_data && driver_data->quirks & XHCI_RENESAS_FW_QUIRK) {
-		retval = renesas_xhci_check_request_fw(dev, id);
-		if (retval)
-			return retval;
-	}
 
 	reset = devm_reset_control_get_optional_exclusive(&dev->dev, NULL);
 	if (IS_ERR(reset))
@@ -668,8 +654,24 @@ put_runtime_pm:
 	pm_runtime_put_noidle(&dev->dev);
 	return retval;
 }
+EXPORT_SYMBOL_NS_GPL(xhci_pci_common_probe, xhci);
 
-static void xhci_pci_remove(struct pci_dev *dev)
+static const struct pci_device_id pci_ids_reject[] = {
+	/* handled by xhci-pci-renesas */
+	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, 0x0014) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, 0x0015) },
+	{ /* end: all zeroes */ }
+};
+
+static int xhci_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
+{
+	if (pci_match_id(pci_ids_reject, dev))
+		return -ENODEV;
+
+	return xhci_pci_common_probe(dev, id);
+}
+
+void xhci_pci_remove(struct pci_dev *dev)
 {
 	struct xhci_hcd *xhci;
 	bool set_power_d3;
@@ -696,6 +698,7 @@ static void xhci_pci_remove(struct pci_dev *dev)
 	if (set_power_d3)
 		pci_set_power_state(dev, PCI_D3hot);
 }
+EXPORT_SYMBOL_NS_GPL(xhci_pci_remove, xhci);
 
 /*
  * In some Intel xHCI controllers, in order to get D3 working,
@@ -804,7 +807,6 @@ static int xhci_pci_resume(struct usb_hcd *hcd, pm_message_t msg)
 {
 	struct xhci_hcd		*xhci = hcd_to_xhci(hcd);
 	struct pci_dev		*pdev = to_pci_dev(hcd->self.controller);
-	int			retval = 0;
 
 	reset_control_reset(xhci->reset);
 
@@ -835,8 +837,7 @@ static int xhci_pci_resume(struct usb_hcd *hcd, pm_message_t msg)
 	if (xhci->quirks & XHCI_PME_STUCK_QUIRK)
 		xhci_pme_quirk(hcd);
 
-	retval = xhci_resume(xhci, msg);
-	return retval;
+	return xhci_resume(xhci, msg);
 }
 
 static int xhci_pci_poweroff_late(struct usb_hcd *hcd, bool do_wakeup)
@@ -903,33 +904,14 @@ static void xhci_pci_shutdown(struct usb_hcd *hcd)
 
 /*-------------------------------------------------------------------------*/
 
-static const struct xhci_driver_data reneses_data = {
-	.quirks  = XHCI_RENESAS_FW_QUIRK,
-	.firmware = "renesas_usb_fw.mem",
-};
-
 /* PCI driver selection metadata; PCI hotplugging uses this */
 static const struct pci_device_id pci_ids[] = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, 0x0014),
-		.driver_data =  (unsigned long)&reneses_data,
-	},
-	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, 0x0015),
-		.driver_data =  (unsigned long)&reneses_data,
-	},
 	/* handle any USB 3.0 xHCI controller */
 	{ PCI_DEVICE_CLASS(PCI_CLASS_SERIAL_USB_XHCI, ~0),
 	},
 	{ /* end: all zeroes */ }
 };
 MODULE_DEVICE_TABLE(pci, pci_ids);
-
-/*
- * Without CONFIG_USB_XHCI_PCI_RENESAS renesas_xhci_check_request_fw() won't
- * load firmware, so don't encumber the xhci-pci driver with it.
- */
-#if IS_ENABLED(CONFIG_USB_XHCI_PCI_RENESAS)
-MODULE_FIRMWARE("renesas_usb_fw.mem");
-#endif
 
 /* pci driver glue; this is a "new style" PCI driver module */
 static struct pci_driver xhci_pci_driver = {

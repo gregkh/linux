@@ -378,7 +378,8 @@ static inline struct bio *__bio_split_to_limits(struct bio *bio,
 		const struct queue_limits *lim, unsigned int *nr_segs)
 {
 	switch (bio_op(bio)) {
-	default:
+	case REQ_OP_READ:
+	case REQ_OP_WRITE:
 		if (bio_may_need_split(bio, lim))
 			return bio_split_rw(bio, lim, nr_segs);
 		*nr_segs = 1;
@@ -390,6 +391,10 @@ static inline struct bio *__bio_split_to_limits(struct bio *bio,
 		return bio_split_discard(bio, lim, nr_segs);
 	case REQ_OP_WRITE_ZEROES:
 		return bio_split_write_zeroes(bio, lim, nr_segs);
+	default:
+		/* other operations can't be split */
+		*nr_segs = 0;
+		return bio;
 	}
 }
 
@@ -575,6 +580,10 @@ int bio_add_hw_page(struct request_queue *q, struct bio *bio,
 		struct page *page, unsigned int len, unsigned int offset,
 		unsigned int max_sectors, bool *same_page);
 
+int bio_add_hw_folio(struct request_queue *q, struct bio *bio,
+		struct folio *folio, size_t len, size_t offset,
+		unsigned int max_sectors, bool *same_page);
+
 /*
  * Clean up a page appropriately, where the page may be pinned, may have a
  * ref taken on it or neither.
@@ -606,6 +615,7 @@ blk_mode_t file_to_blk_mode(struct file *file);
 int truncate_bdev_range(struct block_device *bdev, blk_mode_t mode,
 		loff_t lstart, loff_t lend);
 long blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg);
+int blkdev_uring_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags);
 long compat_blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg);
 
 extern const struct address_space_operations def_blk_aops;

@@ -379,6 +379,12 @@ int adreno_get_param(struct msm_gpu *gpu, struct msm_file_private *ctx,
 	case MSM_PARAM_RAYTRACING:
 		*value = adreno_gpu->has_ray_tracing;
 		return 0;
+	case MSM_PARAM_UBWC_SWIZZLE:
+		*value = adreno_gpu->ubwc_config.ubwc_swizzle;
+		return 0;
+	case MSM_PARAM_MACROTILE_MODE:
+		*value = adreno_gpu->ubwc_config.macrotile_mode;
+		return 0;
 	default:
 		DBG("%s: invalid param: %u", gpu->name, param);
 		return -EINVAL;
@@ -688,11 +694,9 @@ int adreno_gpu_state_get(struct msm_gpu *gpu, struct msm_gpu_state *state)
 				size = j + 1;
 
 		if (size) {
-			state->ring[i].data = kvmalloc(size << 2, GFP_KERNEL);
-			if (state->ring[i].data) {
-				memcpy(state->ring[i].data, gpu->rb[i]->start, size << 2);
+			state->ring[i].data = kvmemdup(gpu->rb[i]->start, size << 2, GFP_KERNEL);
+			if (state->ring[i].data)
 				state->ring[i].data_size = size << 2;
-			}
 		}
 	}
 

@@ -43,15 +43,16 @@ obj-y	+= sysinfo.o lgr.o os_info.o ctlreg.o
 obj-y	+= runtime_instr.o cache.o fpu.o dumpstack.o guarded_storage.o sthyi.o
 obj-y	+= entry.o reipl.o kdebugfs.o alternative.o
 obj-y	+= nospec-branch.o ipl_vmparm.o machine_kexec_reloc.o unwind_bc.o
-obj-y	+= smp.o text_amode31.o stacktrace.o abs_lowcore.o facility.o uv.o
+obj-y	+= smp.o text_amode31.o stacktrace.o abs_lowcore.o facility.o uv.o wti.o
 
 extra-y				+= vmlinux.lds
 
 obj-$(CONFIG_SYSFS)		+= nospec-sysfs.o
 CFLAGS_REMOVE_nospec-branch.o	+= $(CC_FLAGS_EXPOLINE)
 
+obj-$(CONFIG_SYSFS)		+= cpacf.o
 obj-$(CONFIG_MODULES)		+= module.o
-obj-$(CONFIG_SCHED_TOPOLOGY)	+= topology.o
+obj-$(CONFIG_SCHED_TOPOLOGY)	+= topology.o hiperdispatch.o
 obj-$(CONFIG_NUMA)		+= numa.o
 obj-$(CONFIG_AUDIT)		+= audit.o
 compat-obj-$(CONFIG_AUDIT)	+= compat_audit.o

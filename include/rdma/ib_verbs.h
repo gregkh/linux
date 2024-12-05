@@ -2476,7 +2476,7 @@ struct ib_device_ops {
 	struct ib_mr *(*reg_user_mr_dmabuf)(struct ib_pd *pd, u64 offset,
 					    u64 length, u64 virt_addr, int fd,
 					    int mr_access_flags,
-					    struct ib_udata *udata);
+					    struct uverbs_attr_bundle *attrs);
 	struct ib_mr *(*rereg_user_mr)(struct ib_mr *mr, int flags, u64 start,
 				       u64 length, u64 virt_addr,
 				       int mr_access_flags, struct ib_pd *pd,
@@ -4461,6 +4461,8 @@ struct net_device *ib_get_net_dev_by_params(struct ib_device *dev, u32 port,
 					    const struct sockaddr *addr);
 int ib_device_set_netdev(struct ib_device *ib_dev, struct net_device *ndev,
 			 unsigned int port);
+struct net_device *ib_device_get_netdev(struct ib_device *ib_dev,
+					u32 port);
 struct ib_wq *ib_create_wq(struct ib_pd *pd,
 			   struct ib_wq_init_attr *init_attr);
 int ib_destroy_wq_user(struct ib_wq *wq, struct ib_udata *udata);
@@ -4732,6 +4734,9 @@ ib_get_vector_affinity(struct ib_device *device, int comp_vector)
  * @device:         the rdma device
  */
 void rdma_roce_rescan_device(struct ib_device *ibdev);
+void rdma_roce_rescan_port(struct ib_device *ib_dev, u32 port);
+void roce_del_all_netdev_gids(struct ib_device *ib_dev,
+			      u32 port, struct net_device *ndev);
 
 struct ib_ucontext *ib_uverbs_get_ucontext_file(struct ib_uverbs_file *ufile);
 

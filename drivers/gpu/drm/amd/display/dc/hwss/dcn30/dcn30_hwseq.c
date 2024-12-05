@@ -455,7 +455,7 @@ bool dcn30_mmhubbub_warmup(
 	struct mcif_wb *mcif_wb;
 	struct mcif_warmup_params warmup_params = {0};
 	unsigned int  i, i_buf;
-	/*make sure there is no active DWB eanbled */
+	/* make sure there is no active DWB enabled */
 	for (i = 0; i < num_dwb; i++) {
 		dwb = dc->res_pool->dwbc[wb_info[i].dwb_pipe_inst];
 		if (dwb->dwb_is_efc_transition || dwb->dwb_is_drc) {
@@ -735,10 +735,10 @@ void dcn30_init_hw(struct dc *dc)
 		if (edp_link && edp_link->link_enc->funcs->is_dig_enabled &&
 				edp_link->link_enc->funcs->is_dig_enabled(edp_link->link_enc) &&
 				dc->hwss.edp_backlight_control &&
-				dc->hwss.power_down &&
+				hws->funcs.power_down &&
 				dc->hwss.edp_power_control) {
 			dc->hwss.edp_backlight_control(edp_link, false);
-			dc->hwss.power_down(dc);
+			hws->funcs.power_down(dc);
 			dc->hwss.edp_power_control(edp_link, false);
 		} else {
 			for (i = 0; i < dc->link_count; i++) {
@@ -746,8 +746,8 @@ void dcn30_init_hw(struct dc *dc)
 
 				if (link->link_enc->funcs->is_dig_enabled &&
 						link->link_enc->funcs->is_dig_enabled(link->link_enc) &&
-						dc->hwss.power_down) {
-					dc->hwss.power_down(dc);
+						hws->funcs.power_down) {
+					hws->funcs.power_down(dc);
 					break;
 				}
 

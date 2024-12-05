@@ -1538,14 +1538,6 @@ static int compare_func(const void *lptr, const void *rptr)
 	return 0;
 }
 
-static void swap_func(void *lptr, void *rptr, int size)
-{
-	struct cpt_device_desc *ldesc = (struct cpt_device_desc *) lptr;
-	struct cpt_device_desc *rdesc = (struct cpt_device_desc *) rptr;
-
-	swap(*ldesc, *rdesc);
-}
-
 int otx_cpt_crypto_init(struct pci_dev *pdev, struct module *mod,
 			enum otx_cptpf_type pf_type,
 			enum otx_cptvf_type engine_type,
@@ -1580,7 +1572,7 @@ int otx_cpt_crypto_init(struct pci_dev *pdev, struct module *mod,
 			is_crypto_registered = true;
 		}
 		sort(se_devices.desc, count, sizeof(struct cpt_device_desc),
-		     compare_func, swap_func);
+		     compare_func, NULL);
 		break;
 
 	case OTX_CPT_AE_TYPES:
@@ -1595,7 +1587,7 @@ int otx_cpt_crypto_init(struct pci_dev *pdev, struct module *mod,
 		ae_devices.desc[count++].dev = pdev;
 		atomic_inc(&ae_devices.count);
 		sort(ae_devices.desc, count, sizeof(struct cpt_device_desc),
-		     compare_func, swap_func);
+		     compare_func, NULL);
 		break;
 
 	default:

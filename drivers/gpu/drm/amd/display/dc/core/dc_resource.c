@@ -342,11 +342,6 @@ struct resource_pool *dc_create_resource_pool(struct dc  *dc,
 				res_pool->ref_clocks.xtalin_clock_inKhz;
 			res_pool->ref_clocks.dchub_ref_clock_inKhz =
 				res_pool->ref_clocks.xtalin_clock_inKhz;
-			if (dc->debug.using_dml2)
-				if (res_pool->hubbub && res_pool->hubbub->funcs->get_dchub_ref_freq)
-					res_pool->hubbub->funcs->get_dchub_ref_freq(res_pool->hubbub,
-										    res_pool->ref_clocks.dccg_ref_clock_inKhz,
-										    &res_pool->ref_clocks.dchub_ref_clock_inKhz);
 		} else
 			ASSERT_CRITICAL(false);
 	}
@@ -1511,8 +1506,6 @@ bool resource_build_scaling_params(struct pipe_ctx *pipe_ctx)
 			pipe_ctx->plane_res.scl_data.lb_params.depth = LB_PIXEL_DEPTH_30BPP;
 
 		pipe_ctx->plane_res.scl_data.lb_params.alpha_en = plane_state->per_pixel_alpha;
-		spl_out->scl_data.h_active = pipe_ctx->plane_res.scl_data.h_active;
-		spl_out->scl_data.v_active = pipe_ctx->plane_res.scl_data.v_active;
 
 		// Convert pipe_ctx to respective input params for SPL
 		translate_SPL_in_params_from_pipe_ctx(pipe_ctx, spl_in);
@@ -5168,7 +5161,7 @@ bool dc_resource_acquire_secondary_pipe_for_mpc_odm_legacy(
 			sec_pipe->stream_res.opp = sec_pipe->top_pipe->stream_res.opp;
 		if (sec_pipe->stream->timing.flags.DSC == 1) {
 #if defined(CONFIG_DRM_AMD_DC_FP)
-			dcn20_acquire_dsc(dc, &state->res_ctx, &sec_pipe->stream_res.dsc, pipe_idx);
+			dcn20_acquire_dsc(dc, &state->res_ctx, &sec_pipe->stream_res.dsc, sec_pipe->stream_res.opp->inst);
 #endif
 			ASSERT(sec_pipe->stream_res.dsc);
 			if (sec_pipe->stream_res.dsc == NULL)
@@ -5302,4 +5295,17 @@ int resource_calculate_det_for_stream(struct dc_state *state, struct pipe_ctx *o
 		}
 	}
 	return det_segments;
+}
+
+bool resource_is_hpo_acquired(struct dc_state *context)
+{
+	int i;
+
+	for (i = 0; i < MAX_HPO_DP2_ENCODERS; i++) {
+		if (context->res_ctx.is_hpo_dp_stream_enc_acquired[i]) {
+			return true;
+		}
+	}
+
+	return false;
 }

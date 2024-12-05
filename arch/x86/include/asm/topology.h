@@ -282,19 +282,27 @@ static inline long arch_scale_freq_capacity(int cpu)
 }
 #define arch_scale_freq_capacity arch_scale_freq_capacity
 
+bool arch_enable_hybrid_capacity_scale(void);
+void arch_set_cpu_capacity(int cpu, unsigned long cap, unsigned long max_cap,
+			   unsigned long cap_freq, unsigned long base_freq);
+
+unsigned long arch_scale_cpu_capacity(int cpu);
+#define arch_scale_cpu_capacity arch_scale_cpu_capacity
+
 extern void arch_set_max_freq_ratio(bool turbo_disabled);
 extern void freq_invariance_set_perf_ratio(u64 ratio, bool turbo_disabled);
 #else
+static inline bool arch_enable_hybrid_capacity_scale(void) { return false; }
+static inline void arch_set_cpu_capacity(int cpu, unsigned long cap,
+					 unsigned long max_cap,
+					 unsigned long cap_freq,
+					 unsigned long base_freq) { }
+
 static inline void arch_set_max_freq_ratio(bool turbo_disabled) { }
 static inline void freq_invariance_set_perf_ratio(u64 ratio, bool turbo_disabled) { }
 #endif
 
 extern void arch_scale_freq_tick(void);
 #define arch_scale_freq_tick arch_scale_freq_tick
-
-#ifdef CONFIG_ACPI_CPPC_LIB
-void init_freq_invariance_cppc(void);
-#define arch_init_invariance_cppc init_freq_invariance_cppc
-#endif
 
 #endif /* _ASM_X86_TOPOLOGY_H */

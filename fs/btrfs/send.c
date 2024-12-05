@@ -62,7 +62,7 @@ struct fs_path {
 		/*
 		 * Average path length does not exceed 200 bytes, we'll have
 		 * better packing in the slab and higher chance to satisfy
-		 * a allocation later during send.
+		 * an allocation later during send.
 		 */
 		char pad[256];
 	};
@@ -1138,7 +1138,7 @@ static int iterate_dir_item(struct btrfs_root *root, struct btrfs_path *path,
 	/*
 	 * Start with a small buffer (1 page). If later we end up needing more
 	 * space, which can happen for xattrs on a fs with a leaf size greater
-	 * then the page size, attempt to increase the buffer. Typically xattr
+	 * than the page size, attempt to increase the buffer. Typically xattr
 	 * values are small.
 	 */
 	buf_len = PATH_MAX;
@@ -7190,13 +7190,11 @@ static int changed_extent(struct send_ctx *sctx,
 
 static int changed_verity(struct send_ctx *sctx, enum btrfs_compare_tree_result result)
 {
-	int ret = 0;
-
 	if (!sctx->cur_inode_new_gen && !sctx->cur_inode_deleted) {
 		if (result == BTRFS_COMPARE_TREE_NEW)
 			sctx->cur_inode_needs_verity = true;
 	}
-	return ret;
+	return 0;
 }
 
 static int dir_changed(struct send_ctx *sctx, u64 dir)

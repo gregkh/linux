@@ -38,6 +38,8 @@ __weak void backtrace_symbols_fd(void *const *buffer, int size, int fd)
 }
 #endif /*__GLIBC__ */
 
+int env_verbosity = 0;
+
 static bool verbose(void)
 {
 	return env.verbosity > VERBOSE_NONE;
@@ -56,15 +58,15 @@ static void stdio_hijack_init(char **log_buf, size_t *log_cnt)
 
 	stdout = open_memstream(log_buf, log_cnt);
 	if (!stdout) {
-		stdout = env.stdout;
+		stdout = env.stdout_saved;
 		perror("open_memstream");
 		return;
 	}
 
 	if (env.subtest_state)
-		env.subtest_state->stdout = stdout;
+		env.subtest_state->stdout_saved = stdout;
 	else
-		env.test_state->stdout = stdout;
+		env.test_state->stdout_saved = stdout;
 
 	stderr = stdout;
 #endif
@@ -78,8 +80,8 @@ static void stdio_hijack(char **log_buf, size_t *log_cnt)
 		return;
 	}
 
-	env.stdout = stdout;
-	env.stderr = stderr;
+	env.stdout_saved = stdout;
+	env.stderr_saved = stderr;
 
 	stdio_hijack_init(log_buf, log_cnt);
 #endif
@@ -96,13 +98,13 @@ static void stdio_restore_cleanup(void)
 	fflush(stdout);
 
 	if (env.subtest_state) {
-		fclose(env.subtest_state->stdout);
-		env.subtest_state->stdout = NULL;
-		stdout = env.test_state->stdout;
-		stderr = env.test_state->stdout;
+		fclose(env.subtest_state->stdout_saved);
+		env.subtest_state->stdout_saved = NULL;
+		stdout = env.test_state->stdout_saved;
+		stderr = env.test_state->stdout_saved;
 	} else {
-		fclose(env.test_state->stdout);
-		env.test_state->stdout = NULL;
+		fclose(env.test_state->stdout_saved);
+		env.test_state->stdout_saved = NULL;
 	}
 #endif
 }
@@ -115,13 +117,13 @@ static void stdio_restore(void)
 		return;
 	}
 
-	if (stdout == env.stdout)
+	if (stdout == env.stdout_saved)
 		return;
 
 	stdio_restore_cleanup();
 
-	stdout = env.stdout;
-	stderr = env.stderr;
+	stdout = env.stdout_saved;
+	stderr = env.stderr_saved;
 #endif
 }
 
@@ -160,6 +162,7 @@ struct prog_test_def {
 	void (*run_serial_test)(void);
 	bool should_run;
 	bool need_cgroup_cleanup;
+	bool should_tmon;
 };
 
 /* Override C runtime library's usleep() implementation to ensure nanosleep()
@@ -197,44 +200,57 @@ static bool should_run(struct test_selector *sel, int num, const char *name)
 	return num < sel->num_set_len && sel->num_set[num];
 }
 
+static bool match_subtest(struct test_filter_set *filter,
+			  const char *test_name,
+			  const char *subtest_name)
+{
+	int i, j;
+
+	for (i = 0; i < filter->cnt; i++) {
+		if (glob_match(test_name, filter->tests[i].name)) {
+			if (!filter->tests[i].subtest_cnt)
+				return true;
+
+			for (j = 0; j < filter->tests[i].subtest_cnt; j++) {
+				if (glob_match(subtest_name,
+					       filter->tests[i].subtests[j]))
+					return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 static bool should_run_subtest(struct test_selector *sel,
 			       struct test_selector *subtest_sel,
 			       int subtest_num,
 			       const char *test_name,
 			       const char *subtest_name)
 {
-	int i, j;
+	if (match_subtest(&sel->blacklist, test_name, subtest_name))
+		return false;
 
-	for (i = 0; i < sel->blacklist.cnt; i++) {
-		if (glob_match(test_name, sel->blacklist.tests[i].name)) {
-			if (!sel->blacklist.tests[i].subtest_cnt)
-				return false;
-
-			for (j = 0; j < sel->blacklist.tests[i].subtest_cnt; j++) {
-				if (glob_match(subtest_name,
-					       sel->blacklist.tests[i].subtests[j]))
-					return false;
-			}
-		}
-	}
-
-	for (i = 0; i < sel->whitelist.cnt; i++) {
-		if (glob_match(test_name, sel->whitelist.tests[i].name)) {
-			if (!sel->whitelist.tests[i].subtest_cnt)
-				return true;
-
-			for (j = 0; j < sel->whitelist.tests[i].subtest_cnt; j++) {
-				if (glob_match(subtest_name,
-					       sel->whitelist.tests[i].subtests[j]))
-					return true;
-			}
-		}
-	}
+	if (match_subtest(&sel->whitelist, test_name, subtest_name))
+		return true;
 
 	if (!sel->whitelist.cnt && !subtest_sel->num_set)
 		return true;
 
 	return subtest_num < subtest_sel->num_set_len && subtest_sel->num_set[subtest_num];
+}
+
+static bool should_tmon(struct test_selector *sel, const char *name)
+{
+	int i;
+
+	for (i = 0; i < sel->whitelist.cnt; i++) {
+		if (glob_match(name, sel->whitelist.tests[i].name) &&
+		    !sel->whitelist.tests[i].subtest_cnt)
+			return true;
+	}
+
+	return false;
 }
 
 static char *test_result(bool failed, bool skipped)
@@ -249,25 +265,25 @@ static void print_test_result(const struct prog_test_def *test, const struct tes
 	int skipped_cnt = test_state->skip_cnt;
 	int subtests_cnt = test_state->subtest_num;
 
-	fprintf(env.stdout, "#%-*d %s:", TEST_NUM_WIDTH, test->test_num, test->test_name);
+	fprintf(env.stdout_saved, "#%-*d %s:", TEST_NUM_WIDTH, test->test_num, test->test_name);
 	if (test_state->error_cnt)
-		fprintf(env.stdout, "FAIL");
+		fprintf(env.stdout_saved, "FAIL");
 	else if (!skipped_cnt)
-		fprintf(env.stdout, "OK");
+		fprintf(env.stdout_saved, "OK");
 	else if (skipped_cnt == subtests_cnt || !subtests_cnt)
-		fprintf(env.stdout, "SKIP");
+		fprintf(env.stdout_saved, "SKIP");
 	else
-		fprintf(env.stdout, "OK (SKIP: %d/%d)", skipped_cnt, subtests_cnt);
+		fprintf(env.stdout_saved, "OK (SKIP: %d/%d)", skipped_cnt, subtests_cnt);
 
-	fprintf(env.stdout, "\n");
+	fprintf(env.stdout_saved, "\n");
 }
 
 static void print_test_log(char *log_buf, size_t log_cnt)
 {
 	log_buf[log_cnt] = '\0';
-	fprintf(env.stdout, "%s", log_buf);
+	fprintf(env.stdout_saved, "%s", log_buf);
 	if (log_buf[log_cnt - 1] != '\n')
-		fprintf(env.stdout, "\n");
+		fprintf(env.stdout_saved, "\n");
 }
 
 static void print_subtest_name(int test_num, int subtest_num,
@@ -278,14 +294,14 @@ static void print_subtest_name(int test_num, int subtest_num,
 
 	snprintf(test_num_str, sizeof(test_num_str), "%d/%d", test_num, subtest_num);
 
-	fprintf(env.stdout, "#%-*s %s/%s",
+	fprintf(env.stdout_saved, "#%-*s %s/%s",
 		TEST_NUM_WIDTH, test_num_str,
 		test_name, subtest_name);
 
 	if (result)
-		fprintf(env.stdout, ":%s", result);
+		fprintf(env.stdout_saved, ":%s", result);
 
-	fprintf(env.stdout, "\n");
+	fprintf(env.stdout_saved, "\n");
 }
 
 static void jsonw_write_log_message(json_writer_t *w, char *log_buf, size_t log_cnt)
@@ -470,7 +486,7 @@ bool test__start_subtest(const char *subtest_name)
 	memset(subtest_state, 0, sub_state_size);
 
 	if (!subtest_name || !subtest_name[0]) {
-		fprintf(env.stderr,
+		fprintf(env.stderr_saved,
 			"Subtest #%d didn't provide sub-test name!\n",
 			state->subtest_num);
 		return false;
@@ -478,7 +494,7 @@ bool test__start_subtest(const char *subtest_name)
 
 	subtest_state->name = strdup(subtest_name);
 	if (!subtest_state->name) {
-		fprintf(env.stderr,
+		fprintf(env.stderr_saved,
 			"Subtest #%d: failed to copy subtest name!\n",
 			state->subtest_num);
 		return false;
@@ -492,6 +508,10 @@ bool test__start_subtest(const char *subtest_name)
 		subtest_state->filtered = true;
 		return false;
 	}
+
+	subtest_state->should_tmon = match_subtest(&env.tmon_selector.whitelist,
+						   test->test_name,
+						   subtest_name);
 
 	env.subtest_state = subtest_state;
 	stdio_hijack_init(&subtest_state->log_buf, &subtest_state->log_cnt);
@@ -758,7 +778,8 @@ enum ARG_KEYS {
 	ARG_TEST_NAME_GLOB_DENYLIST = 'd',
 	ARG_NUM_WORKERS = 'j',
 	ARG_DEBUG = -1,
-	ARG_JSON_SUMMARY = 'J'
+	ARG_JSON_SUMMARY = 'J',
+	ARG_TRAFFIC_MONITOR = 'm',
 };
 
 static const struct argp_option opts[] = {
@@ -785,6 +806,10 @@ static const struct argp_option opts[] = {
 	{ "debug", ARG_DEBUG, NULL, 0,
 	  "print extra debug information for test_progs." },
 	{ "json-summary", ARG_JSON_SUMMARY, "FILE", 0, "Write report in json format to this file."},
+#ifdef TRAFFIC_MONITOR
+	{ "traffic-monitor", ARG_TRAFFIC_MONITOR, "NAMES", 0,
+	  "Monitor network traffic of tests with name matching the pattern (supports '*' wildcard)." },
+#endif
 	{},
 };
 
@@ -953,6 +978,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				return -EINVAL;
 			}
 		}
+		env_verbosity = env->verbosity;
 
 		if (verbose()) {
 			if (setenv("SELFTESTS_VERBOSE", "1", 1) == -1) {
@@ -996,6 +1022,18 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case ARGP_KEY_END:
 		break;
+#ifdef TRAFFIC_MONITOR
+	case ARG_TRAFFIC_MONITOR:
+		if (arg[0] == '@')
+			err = parse_test_list_file(arg + 1,
+						   &env->tmon_selector.whitelist,
+						   true);
+		else
+			err = parse_test_list(arg,
+					      &env->tmon_selector.whitelist,
+					      true);
+		break;
+#endif
 	default:
 		return ARGP_ERR_UNKNOWN;
 	}
@@ -1134,7 +1172,7 @@ void crash_handler(int signum)
 
 	sz = backtrace(bt, ARRAY_SIZE(bt));
 
-	if (env.stdout)
+	if (env.stdout_saved)
 		stdio_restore();
 	if (env.test) {
 		env.test_state->error_cnt++;
@@ -1450,7 +1488,7 @@ static void calculate_summary_and_print_errors(struct test_env *env)
 	if (env->json) {
 		w = jsonw_new(env->json);
 		if (!w)
-			fprintf(env->stderr, "Failed to create new JSON stream.");
+			fprintf(env->stderr_saved, "Failed to create new JSON stream.");
 	}
 
 	if (w) {
@@ -1465,7 +1503,7 @@ static void calculate_summary_and_print_errors(struct test_env *env)
 
 	/*
 	 * We only print error logs summary when there are failed tests and
-	 * verbose mode is not enabled. Otherwise, results may be incosistent.
+	 * verbose mode is not enabled. Otherwise, results may be inconsistent.
 	 *
 	 */
 	if (!verbose() && fail_cnt) {
@@ -1799,8 +1837,8 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	env.stdout = stdout;
-	env.stderr = stderr;
+	env.stdout_saved = stdout;
+	env.stderr_saved = stderr;
 
 	env.has_testmod = true;
 	if (!env.list_test_names) {
@@ -1808,7 +1846,7 @@ int main(int argc, char **argv)
 		unload_bpf_testmod(verbose());
 
 		if (load_bpf_testmod(verbose())) {
-			fprintf(env.stderr, "WARNING! Selftests relying on bpf_testmod.ko will be skipped.\n");
+			fprintf(env.stderr_saved, "WARNING! Selftests relying on bpf_testmod.ko will be skipped.\n");
 			env.has_testmod = false;
 		}
 	}
@@ -1827,6 +1865,8 @@ int main(int argc, char **argv)
 				test->test_num, test->test_name, test->test_name, test->test_name);
 			exit(EXIT_ERR_SETUP_INFRA);
 		}
+		if (test->should_run)
+			test->should_tmon = should_tmon(&env.tmon_selector, test->test_name);
 	}
 
 	/* ignore workers if we are just listing */
@@ -1886,7 +1926,7 @@ int main(int argc, char **argv)
 		}
 
 		if (env.list_test_names) {
-			fprintf(env.stdout, "%s\n", test->test_name);
+			fprintf(env.stdout_saved, "%s\n", test->test_name);
 			env.succ_cnt++;
 			continue;
 		}
@@ -1911,6 +1951,7 @@ out:
 
 	free_test_selector(&env.test_selector);
 	free_test_selector(&env.subtest_selector);
+	free_test_selector(&env.tmon_selector);
 	free_test_states();
 
 	if (env.succ_cnt + env.fail_cnt + env.skip_cnt == 0)

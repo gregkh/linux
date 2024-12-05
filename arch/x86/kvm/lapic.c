@@ -1944,7 +1944,7 @@ static void start_sw_tscdeadline(struct kvm_lapic *apic)
 	u64 ns = 0;
 	ktime_t expire;
 	struct kvm_vcpu *vcpu = apic->vcpu;
-	unsigned long this_tsc_khz = vcpu->arch.virtual_tsc_khz;
+	u32 this_tsc_khz = vcpu->arch.virtual_tsc_khz;
 	unsigned long flags;
 	ktime_t now;
 
@@ -2966,14 +2966,13 @@ void kvm_inject_apic_timer_irqs(struct kvm_vcpu *vcpu)
 	}
 }
 
-int kvm_get_apic_interrupt(struct kvm_vcpu *vcpu)
+void kvm_apic_ack_interrupt(struct kvm_vcpu *vcpu, int vector)
 {
-	int vector = kvm_apic_has_interrupt(vcpu);
 	struct kvm_lapic *apic = vcpu->arch.apic;
 	u32 ppr;
 
-	if (vector == -1)
-		return -1;
+	if (WARN_ON_ONCE(vector < 0 || !apic))
+		return;
 
 	/*
 	 * We get here even with APIC virtualization enabled, if doing
@@ -3001,8 +3000,8 @@ int kvm_get_apic_interrupt(struct kvm_vcpu *vcpu)
 		__apic_update_ppr(apic, &ppr);
 	}
 
-	return vector;
 }
+EXPORT_SYMBOL_GPL(kvm_apic_ack_interrupt);
 
 static int kvm_apic_state_fixup(struct kvm_vcpu *vcpu,
 		struct kvm_lapic_state *s, bool set)

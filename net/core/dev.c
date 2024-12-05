@@ -158,8 +158,10 @@
 #include <net/page_pool/types.h>
 #include <net/page_pool/helpers.h>
 #include <net/rps.h>
+#include <linux/phy_link_topology.h>
 
 #include "dev.h"
+#include "devmem.h"
 #include "net-sysfs.h"
 
 static DEFINE_SPINLOCK(ptype_lock);
@@ -3310,6 +3312,10 @@ int skb_checksum_help(struct sk_buff *skb)
 		return -EINVAL;
 	}
 
+	if (!skb_frags_readable(skb)) {
+		return -EFAULT;
+	}
+
 	/* Before computing a checksum, we should make sure no frag could
 	 * be modified by an external entity : checksum could be wrong.
 	 */
@@ -3386,6 +3392,7 @@ int skb_crc32c_csum_help(struct sk_buff *skb)
 out:
 	return ret;
 }
+EXPORT_SYMBOL(skb_crc32c_csum_help);
 
 __be16 skb_network_protocol(struct sk_buff *skb, int *depth)
 {
@@ -3431,8 +3438,9 @@ static int illegal_highdma(struct net_device *dev, struct sk_buff *skb)
 	if (!(dev->features & NETIF_F_HIGHDMA)) {
 		for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 			skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+			struct page *page = skb_frag_page(frag);
 
-			if (PageHighMem(skb_frag_page(frag)))
+			if (page && PageHighMem(page))
 				return 1;
 		}
 	}
@@ -3709,7 +3717,7 @@ struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *d
 		next = skb->next;
 		skb_mark_not_on_list(skb);
 
-		/* in case skb wont be segmented, point to itself */
+		/* in case skb won't be segmented, point to itself */
 		skb->prev = skb;
 
 		skb = validate_xmit_skb(skb, dev, again);
@@ -4252,13 +4260,6 @@ u16 dev_pick_tx_zero(struct net_device *dev, struct sk_buff *skb,
 	return 0;
 }
 EXPORT_SYMBOL(dev_pick_tx_zero);
-
-u16 dev_pick_tx_cpu_id(struct net_device *dev, struct sk_buff *skb,
-		       struct net_device *sb_dev)
-{
-	return (u16)raw_smp_processor_id() % dev->real_num_tx_queues;
-}
-EXPORT_SYMBOL(dev_pick_tx_cpu_id);
 
 u16 netdev_pick_tx(struct net_device *dev, struct sk_buff *skb,
 		     struct net_device *sb_dev)
@@ -5256,7 +5257,7 @@ int netif_rx(struct sk_buff *skb)
 }
 EXPORT_SYMBOL(netif_rx);
 
-static __latent_entropy void net_tx_action(struct softirq_action *h)
+static __latent_entropy void net_tx_action(void)
 {
 	struct softnet_data *sd = this_cpu_ptr(&softnet_data);
 
@@ -5733,10 +5734,9 @@ static void __netif_receive_skb_list_core(struct list_head *head, bool pfmemallo
 	struct packet_type *pt_curr = NULL;
 	/* Current (common) orig_dev of sublist */
 	struct net_device *od_curr = NULL;
-	struct list_head sublist;
 	struct sk_buff *skb, *next;
+	LIST_HEAD(sublist);
 
-	INIT_LIST_HEAD(&sublist);
 	list_for_each_entry_safe(skb, next, head, list) {
 		struct net_device *orig_dev = skb->dev;
 		struct packet_type *pt_prev = NULL;
@@ -5874,9 +5874,8 @@ static int netif_receive_skb_internal(struct sk_buff *skb)
 void netif_receive_skb_list_internal(struct list_head *head)
 {
 	struct sk_buff *skb, *next;
-	struct list_head sublist;
+	LIST_HEAD(sublist);
 
-	INIT_LIST_HEAD(&sublist);
 	list_for_each_entry_safe(skb, next, head, list) {
 		net_timestamp_check(READ_ONCE(net_hotdata.tstamp_prequeue),
 				    skb);
@@ -6929,7 +6928,7 @@ static int napi_threaded_poll(void *data)
 	return 0;
 }
 
-static __latent_entropy void net_rx_action(struct softirq_action *h)
+static __latent_entropy void net_rx_action(void)
 {
 	struct softnet_data *sd = this_cpu_ptr(&softnet_data);
 	unsigned long time_limit = jiffies +
@@ -9280,7 +9279,7 @@ EXPORT_SYMBOL(netdev_port_same_parent_id);
  */
 int dev_change_proto_down(struct net_device *dev, bool proto_down)
 {
-	if (!(dev->priv_flags & IFF_CHANGE_PROTO_DOWN))
+	if (!dev->change_proto_down)
 		return -EOPNOTSUPP;
 	if (!netif_device_present(dev))
 		return -ENODEV;
@@ -9377,6 +9376,20 @@ u8 dev_xdp_prog_count(struct net_device *dev)
 }
 EXPORT_SYMBOL_GPL(dev_xdp_prog_count);
 
+int dev_xdp_propagate(struct net_device *dev, struct netdev_bpf *bpf)
+{
+	if (!dev->netdev_ops->ndo_bpf)
+		return -EOPNOTSUPP;
+
+	if (dev_get_min_mp_channel_count(dev)) {
+		NL_SET_ERR_MSG(bpf->extack, "unable to propagate XDP to device using memory provider");
+		return -EBUSY;
+	}
+
+	return dev->netdev_ops->ndo_bpf(dev, bpf);
+}
+EXPORT_SYMBOL_GPL(dev_xdp_propagate);
+
 u32 dev_xdp_prog_id(struct net_device *dev, enum bpf_xdp_mode mode)
 {
 	struct bpf_prog *prog = dev_xdp_prog(dev, mode);
@@ -9404,6 +9417,11 @@ static int dev_xdp_install(struct net_device *dev, enum bpf_xdp_mode mode,
 {
 	struct netdev_bpf xdp;
 	int err;
+
+	if (dev_get_min_mp_channel_count(dev)) {
+		NL_SET_ERR_MSG(extack, "unable to install XDP to device using memory provider");
+		return -EBUSY;
+	}
 
 	memset(&xdp, 0, sizeof(xdp));
 	xdp.command = mode == XDP_MODE_HW ? XDP_SETUP_PROG_HW : XDP_SETUP_PROG;
@@ -9827,6 +9845,20 @@ err_out:
 	if (old_prog)
 		bpf_prog_put(old_prog);
 	return err;
+}
+
+u32 dev_get_min_mp_channel_count(const struct net_device *dev)
+{
+	int i;
+
+	ASSERT_RTNL();
+
+	for (i = dev->real_num_rx_queues - 1; i >= 0; i--)
+		if (dev->_rx[i].mp_params.mp_priv)
+			/* The channel count is the idx plus 1. */
+			return i + 1;
+
+	return 0;
 }
 
 /**
@@ -10326,6 +10358,17 @@ static void netdev_do_free_pcpu_stats(struct net_device *dev)
 	case NETDEV_PCPU_STAT_DSTATS:
 		free_percpu(dev->dstats);
 		break;
+	}
+}
+
+static void netdev_free_phy_link_topology(struct net_device *dev)
+{
+	struct phy_link_topology *topo = dev->link_topo;
+
+	if (IS_ENABLED(CONFIG_PHYLIB) && topo) {
+		xa_destroy(&topo->phys);
+		kfree(topo);
+		dev->link_topo = NULL;
 	}
 }
 
@@ -10876,7 +10919,7 @@ noinline void netdev_core_stats_inc(struct net_device *dev, u32 offset)
 			return;
 	}
 
-	field = (__force unsigned long __percpu *)((__force void *)p + offset);
+	field = (unsigned long __percpu *)((void __percpu *)p + offset);
 	this_cpu_inc(*field);
 }
 EXPORT_SYMBOL_GPL(netdev_core_stats_inc);
@@ -11107,6 +11150,7 @@ struct net_device *alloc_netdev_mqs(int sizeof_priv, const char *name,
 #ifdef CONFIG_NET_SCHED
 	hash_init(dev->qdisc_hash);
 #endif
+
 	dev->priv_flags = IFF_XMIT_DST_RELEASE | IFF_XMIT_DST_RELEASE_PERM;
 	setup(dev);
 
@@ -11128,7 +11172,7 @@ struct net_device *alloc_netdev_mqs(int sizeof_priv, const char *name,
 	if (!dev->ethtool)
 		goto free_all;
 
-	strcpy(dev->name, name);
+	strscpy(dev->name, name);
 	dev->name_assign_type = name_assign_type;
 	dev->group = INIT_NETDEV_GROUP;
 	if (!dev->ethtool_ops)
@@ -11198,6 +11242,8 @@ void free_netdev(struct net_device *dev)
 	dev->core_stats = NULL;
 	free_percpu(dev->xdp_bulkq);
 	dev->xdp_bulkq = NULL;
+
+	netdev_free_phy_link_topology(dev);
 
 	/*  Compatibility with error handling in drivers */
 	if (dev->reg_state == NETREG_UNINITIALIZED ||
@@ -11351,6 +11397,7 @@ void unregister_netdevice_many_notify(struct list_head *head,
 		dev_tcx_uninstall(dev);
 		dev_xdp_uninstall(dev);
 		bpf_dev_bound_netdev_unregister(dev);
+		dev_dmabuf_uninstall(dev);
 
 		netdev_offload_xstats_disable_all(dev);
 
@@ -11415,7 +11462,7 @@ void unregister_netdevice_many_notify(struct list_head *head,
  *	@head: list of devices
  *
  *  Note: As most callers use a stack allocated list_head,
- *  we force a list_del() to make sure stack wont be corrupted later.
+ *  we force a list_del() to make sure stack won't be corrupted later.
  */
 void unregister_netdevice_many(struct list_head *head)
 {
@@ -11470,10 +11517,10 @@ int __dev_change_net_namespace(struct net_device *dev, struct net *net,
 
 	/* Don't allow namespace local devices to be moved. */
 	err = -EINVAL;
-	if (dev->features & NETIF_F_NETNS_LOCAL)
+	if (dev->netns_local)
 		goto out;
 
-	/* Ensure the device has been registrered */
+	/* Ensure the device has been registered */
 	if (dev->reg_state != NETREG_REGISTERED)
 		goto out;
 
@@ -11852,7 +11899,7 @@ static void __net_exit default_device_exit_net(struct net *net)
 		char fb_name[IFNAMSIZ];
 
 		/* Ignore unmoveable devices (i.e. loopback) */
-		if (dev->features & NETIF_F_NETNS_LOCAL)
+		if (dev->netns_local)
 			continue;
 
 		/* Leave virtual devices for the generic cleanup */
@@ -11913,7 +11960,7 @@ static struct pernet_operations __net_initdata default_device_ops = {
 static void __init net_dev_struct_check(void)
 {
 	/* TX read-mostly hotpath */
-	CACHELINE_ASSERT_GROUP_MEMBER(struct net_device, net_device_read_tx, priv_flags);
+	CACHELINE_ASSERT_GROUP_MEMBER(struct net_device, net_device_read_tx, priv_flags_fast);
 	CACHELINE_ASSERT_GROUP_MEMBER(struct net_device, net_device_read_tx, netdev_ops);
 	CACHELINE_ASSERT_GROUP_MEMBER(struct net_device, net_device_read_tx, header_ops);
 	CACHELINE_ASSERT_GROUP_MEMBER(struct net_device, net_device_read_tx, _tx);

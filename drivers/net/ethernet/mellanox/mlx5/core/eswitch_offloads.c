@@ -613,6 +613,13 @@ esw_setup_dests(struct mlx5_flow_destination *dest,
 		}
 	}
 
+	if (attr->extra_split_ft) {
+		flow_act->flags |= FLOW_ACT_IGNORE_FLOW_LEVEL;
+		dest[*i].type = MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE;
+		dest[*i].ft = attr->extra_split_ft;
+		(*i)++;
+	}
+
 out:
 	return err;
 }
@@ -2520,8 +2527,11 @@ static void __esw_offloads_unload_rep(struct mlx5_eswitch *esw,
 				      struct mlx5_eswitch_rep *rep, u8 rep_type)
 {
 	if (atomic_cmpxchg(&rep->rep_data[rep_type].state,
-			   REP_LOADED, REP_REGISTERED) == REP_LOADED)
+			   REP_LOADED, REP_REGISTERED) == REP_LOADED) {
+		if (rep_type == REP_ETH)
+			__esw_offloads_unload_rep(esw, rep, REP_IB);
 		esw->offloads.rep_ops[rep_type]->unload(rep);
+	}
 }
 
 static void __unload_reps_all_vport(struct mlx5_eswitch *esw, u8 rep_type)

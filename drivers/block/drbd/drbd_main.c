@@ -471,20 +471,6 @@ void _drbd_thread_stop(struct drbd_thread *thi, int restart, int wait)
 		wait_for_completion(&thi->stop);
 }
 
-int conn_lowest_minor(struct drbd_connection *connection)
-{
-	struct drbd_peer_device *peer_device;
-	int vnr = 0, minor = -1;
-
-	rcu_read_lock();
-	peer_device = idr_get_next(&connection->peer_devices, &vnr);
-	if (peer_device)
-		minor = device_to_minor(peer_device->device);
-	rcu_read_unlock();
-
-	return minor;
-}
-
 #ifdef CONFIG_SMP
 /*
  * drbd_calc_cpu_mask() - Generate CPU masks, spread over all CPUs
@@ -1550,7 +1536,7 @@ static int _drbd_send_page(struct drbd_peer_device *peer_device, struct page *pa
 	 * put_page(); and would cause either a VM_BUG directly, or
 	 * __page_cache_release a page that would actually still be referenced
 	 * by someone, leading to some obscure delayed Oops somewhere else. */
-	if (!drbd_disable_sendpage && sendpage_ok(page))
+	if (!drbd_disable_sendpage && sendpages_ok(page, len, offset))
 		msg.msg_flags |= MSG_NOSIGNAL | MSG_SPLICE_PAGES;
 
 	drbd_update_congested(peer_device->connection);

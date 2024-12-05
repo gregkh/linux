@@ -170,6 +170,7 @@
 #define IER_RRIE	BIT(3)		/* Register Reload Interrupt Enable */
 #define IER_FUEIE	BIT(6)		/* Fifo Underrun Error Interrupt Enable */
 #define IER_CRCIE	BIT(7)		/* CRC Error Interrupt Enable */
+#define IER_MASK (IER_LIE | IER_FUWIE | IER_TERRIE | IER_RRIE | IER_FUEIE | IER_CRCIE)
 
 #define CPSR_CYPOS	GENMASK(15, 0)	/* Current Y position */
 
@@ -188,6 +189,7 @@
 #define LXCR_COLKEN	BIT(1)		/* Color Keying Enable */
 #define LXCR_CLUTEN	BIT(4)		/* Color Look-Up Table ENable */
 #define LXCR_HMEN	BIT(8)		/* Horizontal Mirroring ENable */
+#define LXCR_MASK (LXCR_LEN | LXCR_COLKEN | LXCR_CLUTEN | LXCR_HMEN)
 
 #define LXWHPCR_WHSTPOS	GENMASK(11, 0)	/* Window Horizontal StarT POSition */
 #define LXWHPCR_WHSPPOS	GENMASK(27, 16)	/* Window Horizontal StoP POSition */
@@ -492,11 +494,6 @@ static inline struct ltdc_device *plane_to_ltdc(struct drm_plane *plane)
 	return (struct ltdc_device *)plane->dev->dev_private;
 }
 
-static inline struct ltdc_device *encoder_to_ltdc(struct drm_encoder *enc)
-{
-	return (struct ltdc_device *)enc->dev->dev_private;
-}
-
 static inline enum ltdc_pix_fmt to_ltdc_pixelformat(u32 drm_fmt)
 {
 	enum ltdc_pix_fmt pf;
@@ -785,7 +782,7 @@ static void ltdc_crtc_atomic_enable(struct drm_crtc *crtc,
 	regmap_write(ldev->regmap, LTDC_BCCR, BCCR_BCBLACK);
 
 	/* Enable IRQ */
-	regmap_set_bits(ldev->regmap, LTDC_IER, IER_FUWIE | IER_FUEIE | IER_RRIE | IER_TERRIE);
+	regmap_set_bits(ldev->regmap, LTDC_IER, IER_FUWIE | IER_FUEIE | IER_TERRIE);
 
 	/* Commit shadow registers = update planes at next vblank */
 	if (!ldev->caps.plane_reg_shadow)
@@ -807,11 +804,10 @@ static void ltdc_crtc_atomic_disable(struct drm_crtc *crtc,
 
 	/* Disable all layers */
 	for (layer_index = 0; layer_index < ldev->caps.nb_layers; layer_index++)
-		regmap_write_bits(ldev->regmap, LTDC_L1CR + layer_index * LAY_OFS,
-				  LXCR_CLUTEN | LXCR_LEN, 0);
+		regmap_write_bits(ldev->regmap, LTDC_L1CR + layer_index * LAY_OFS, LXCR_MASK, 0);
 
-	/* disable IRQ */
-	regmap_clear_bits(ldev->regmap, LTDC_IER, IER_FUWIE | IER_FUEIE | IER_RRIE | IER_TERRIE);
+	/* Disable IRQ */
+	regmap_clear_bits(ldev->regmap, LTDC_IER, IER_FUWIE | IER_FUEIE | IER_TERRIE);
 
 	/* immediately commit disable of layers before switching off LTDC */
 	if (!ldev->caps.plane_reg_shadow)
@@ -1473,7 +1469,7 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
 	if (newstate->rotation & DRM_MODE_REFLECT_X)
 		val |= LXCR_HMEN;
 
-	regmap_write_bits(ldev->regmap, LTDC_L1CR + lofs, LXCR_LEN | LXCR_CLUTEN | LXCR_HMEN, val);
+	regmap_write_bits(ldev->regmap, LTDC_L1CR + lofs, LXCR_MASK, val);
 
 	/* Commit shadow registers = update plane at next vblank */
 	if (ldev->caps.plane_reg_shadow)
@@ -1511,7 +1507,7 @@ static void ltdc_plane_atomic_disable(struct drm_plane *plane,
 	u32 lofs = plane->index * LAY_OFS;
 
 	/* Disable layer */
-	regmap_write_bits(ldev->regmap, LTDC_L1CR + lofs, LXCR_LEN | LXCR_CLUTEN |  LXCR_HMEN, 0);
+	regmap_write_bits(ldev->regmap, LTDC_L1CR + lofs, LXCR_MASK, 0);
 
 	/* Reset the layer transparency to hide any related background color */
 	regmap_write_bits(ldev->regmap, LTDC_L1CACR + lofs, LXCACR_CONSTA, 0x00);
@@ -1992,13 +1988,8 @@ int ltdc_load(struct drm_device *ddev)
 		goto err;
 	}
 
-	/* Disable interrupts */
-	if (ldev->caps.fifo_threshold)
-		regmap_clear_bits(ldev->regmap, LTDC_IER, IER_LIE | IER_RRIE | IER_FUWIE |
-				  IER_TERRIE);
-	else
-		regmap_clear_bits(ldev->regmap, LTDC_IER, IER_LIE | IER_RRIE | IER_FUWIE |
-				  IER_TERRIE | IER_FUEIE);
+	/* Disable all interrupts */
+	regmap_clear_bits(ldev->regmap, LTDC_IER, IER_MASK);
 
 	DRM_DEBUG_DRIVER("ltdc hw version 0x%08x\n", ldev->caps.hw_version);
 

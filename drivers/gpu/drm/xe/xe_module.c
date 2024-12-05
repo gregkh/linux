@@ -13,11 +13,12 @@
 #include "xe_drv.h"
 #include "xe_hw_fence.h"
 #include "xe_pci.h"
+#include "xe_pm.h"
 #include "xe_observation.h"
 #include "xe_sched_job.h"
 
 struct xe_modparam xe_modparam = {
-	.enable_display = true,
+	.probe_display = true,
 	.guc_log_level = 5,
 	.force_probe = CONFIG_DRM_XE_FORCE_PROBE,
 	.wedged_mode = 1,
@@ -27,8 +28,8 @@ struct xe_modparam xe_modparam = {
 module_param_named_unsafe(force_execlist, xe_modparam.force_execlist, bool, 0444);
 MODULE_PARM_DESC(force_execlist, "Force Execlist submission");
 
-module_param_named(enable_display, xe_modparam.enable_display, bool, 0444);
-MODULE_PARM_DESC(enable_display, "Enable display");
+module_param_named(probe_display, xe_modparam.probe_display, bool, 0444);
+MODULE_PARM_DESC(probe_display, "Probe display HW, otherwise it's left untouched (default: true)");
 
 module_param_named(vram_bar_size, xe_modparam.force_vram_bar_size, uint, 0600);
 MODULE_PARM_DESC(vram_bar_size, "Set the vram bar size(in MiB)");
@@ -76,6 +77,10 @@ struct init_funcs {
 	void (*exit)(void);
 };
 
+static void xe_dummy_exit(void)
+{
+}
+
 static const struct init_funcs init_funcs[] = {
 	{
 		.init = xe_check_nomodeset,
@@ -95,6 +100,10 @@ static const struct init_funcs init_funcs[] = {
 	{
 		.init = xe_observation_sysctl_register,
 		.exit = xe_observation_sysctl_unregister,
+	},
+	{
+		.init = xe_pm_module_init,
+		.exit = xe_dummy_exit,
 	},
 };
 

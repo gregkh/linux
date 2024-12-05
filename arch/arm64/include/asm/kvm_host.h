@@ -51,6 +51,7 @@
 #define KVM_REQ_RELOAD_PMU	KVM_ARCH_REQ(5)
 #define KVM_REQ_SUSPEND		KVM_ARCH_REQ(6)
 #define KVM_REQ_RESYNC_PMU_EL0	KVM_ARCH_REQ(7)
+#define KVM_REQ_NESTED_S2_UNMAP	KVM_ARCH_REQ(8)
 
 #define KVM_DIRTY_LOG_MANUAL_CAPS   (KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \
 				     KVM_DIRTY_LOG_INITIALLY_SET)
@@ -208,6 +209,12 @@ struct kvm_s2_mmu {
 	 * HCR_EL2.VM == 1
 	 */
 	bool	nested_stage2_enabled;
+
+	/*
+	 * true when this MMU needs to be unmapped before being used for a new
+	 * purpose.
+	 */
+	bool	pending_unmap;
 
 	/*
 	 *  0: Nobody is currently using this, check vttbr for validity
@@ -444,6 +451,12 @@ enum vcpu_sysreg {
 	GCR_EL1,	/* Tag Control Register */
 	TFSRE0_EL1,	/* Tag Fault Status Register (EL0) */
 
+	POR_EL0,	/* Permission Overlay Register 0 (EL0) */
+
+	/* FP/SIMD/SVE */
+	SVCR,
+	FPMR,
+
 	/* 32bit specific registers. */
 	DACR32_EL2,	/* Domain Access Control Register */
 	IFSR32_EL2,	/* Instruction Fault Status Register */
@@ -515,6 +528,8 @@ enum vcpu_sysreg {
 	VNCR(PIR_EL1),	 /* Permission Indirection Register 1 (EL1) */
 	VNCR(PIRE0_EL1), /*  Permission Indirection Register 0 (EL1) */
 
+	VNCR(POR_EL1),	/* Permission Overlay Register 1 (EL1) */
+
 	VNCR(HFGRTR_EL2),
 	VNCR(HFGWTR_EL2),
 	VNCR(HFGITR_EL2),
@@ -527,6 +542,8 @@ enum vcpu_sysreg {
 	VNCR(CNTV_CTL_EL0),
 	VNCR(CNTP_CVAL_EL0),
 	VNCR(CNTP_CTL_EL0),
+
+	VNCR(ICH_HCR_EL2),
 
 	NR_SYS_REGS	/* Nothing after this line! */
 };
@@ -591,6 +608,16 @@ struct kvm_host_data {
 	union {
 		struct user_fpsimd_state *fpsimd_state;
 		struct cpu_sve_state *sve_state;
+	};
+
+	union {
+		/* HYP VA pointer to the host storage for FPMR */
+		u64	*fpmr_ptr;
+		/*
+		 * Used by pKVM only, as it needs to provide storage
+		 * for the host
+		 */
+		u64	fpmr;
 	};
 
 	/* Ownership of the FP regs */
@@ -662,8 +689,6 @@ struct kvm_vcpu_arch {
 	void *sve_state;
 	enum fp_type fp_type;
 	unsigned int sve_max_vl;
-	u64 svcr;
-	u64 fpmr;
 
 	/* Stage 2 paging state used by the hardware on next switch */
 	struct kvm_s2_mmu *hw_mmu;
@@ -1328,12 +1353,12 @@ void kvm_arch_vcpu_load_debug_state_flags(struct kvm_vcpu *vcpu);
 void kvm_arch_vcpu_put_debug_state_flags(struct kvm_vcpu *vcpu);
 
 #ifdef CONFIG_KVM
-void kvm_set_pmu_events(u32 set, struct perf_event_attr *attr);
-void kvm_clr_pmu_events(u32 clr);
+void kvm_set_pmu_events(u64 set, struct perf_event_attr *attr);
+void kvm_clr_pmu_events(u64 clr);
 bool kvm_set_pmuserenr(u64 val);
 #else
-static inline void kvm_set_pmu_events(u32 set, struct perf_event_attr *attr) {}
-static inline void kvm_clr_pmu_events(u32 clr) {}
+static inline void kvm_set_pmu_events(u64 set, struct perf_event_attr *attr) {}
+static inline void kvm_clr_pmu_events(u64 clr) {}
 static inline bool kvm_set_pmuserenr(u64 val)
 {
 	return false;
@@ -1471,5 +1496,9 @@ void kvm_set_vm_id_reg(struct kvm *kvm, u32 reg, u64 val);
 									\
 		(pa + pi + pa3) == 1;					\
 	})
+
+#define kvm_has_fpmr(k)					\
+	(system_supports_fpmr() &&			\
+	 kvm_has_feat((k), ID_AA64PFR2_EL1, FPMR, IMP))
 
 #endif /* __ARM64_KVM_HOST_H__ */
