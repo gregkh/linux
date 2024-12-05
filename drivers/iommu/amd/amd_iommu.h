@@ -45,7 +45,7 @@ extern enum io_pgtable_fmt amd_iommu_pgtable;
 extern int amd_iommu_gpt_level;
 
 /* Protection domain ops */
-struct protection_domain *protection_domain_alloc(unsigned int type);
+struct protection_domain *protection_domain_alloc(unsigned int type, int nid);
 void protection_domain_free(struct protection_domain *domain);
 struct iommu_domain *amd_iommu_domain_alloc_sva(struct device *dev,
 						struct mm_struct *mm);
@@ -141,19 +141,6 @@ static inline u64 iommu_virt_to_phys(void *vaddr)
 static inline void *iommu_phys_to_virt(unsigned long paddr)
 {
 	return phys_to_virt(__sme_clr(paddr));
-}
-
-static inline
-void amd_iommu_domain_set_pt_root(struct protection_domain *domain, u64 root)
-{
-	domain->iop.root = (u64 *)(root & PAGE_MASK);
-	domain->iop.mode = root & 7; /* lowest 3 bits encode pgtable mode */
-}
-
-static inline
-void amd_iommu_domain_clr_pt_root(struct protection_domain *domain)
-{
-	amd_iommu_domain_set_pt_root(domain, 0);
 }
 
 static inline int get_pci_sbdf_id(struct pci_dev *pdev)
