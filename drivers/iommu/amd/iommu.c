@@ -2292,6 +2292,7 @@ static int attach_device(struct device *dev,
 	struct iommu_dev_data *dev_data = dev_iommu_priv_get(dev);
 	struct amd_iommu *iommu = get_amd_iommu_from_dev_data(dev_data);
 	struct pci_dev *pdev;
+	unsigned long flags;
 	int ret = 0;
 
 	mutex_lock(&dev_data->mutex);
@@ -2332,7 +2333,9 @@ static int attach_device(struct device *dev,
 
 	/* Update data structures */
 	dev_data->domain = domain;
+	spin_lock_irqsave(&domain->lock, flags);
 	list_add(&dev_data->list, &domain->dev_list);
+	spin_unlock_irqrestore(&domain->lock, flags);
 
 	/* Update device table */
 	dev_update_dte(dev_data, true);
@@ -2379,6 +2382,7 @@ static void detach_device(struct device *dev)
 	/* Flush IOTLB and wait for the flushes to finish */
 	spin_lock_irqsave(&domain->lock, flags);
 	amd_iommu_domain_flush_all(domain);
+	list_del(&dev_data->list);
 	spin_unlock_irqrestore(&domain->lock, flags);
 
 	/* Clear GCR3 table */
@@ -2387,7 +2391,6 @@ static void detach_device(struct device *dev)
 
 	/* Update data structures */
 	dev_data->domain = NULL;
-	list_del(&dev_data->list);
 
 	/* decrease reference counters - needs to happen after the flushes */
 	pdom_detach_iommu(iommu, domain);
