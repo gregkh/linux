@@ -102,6 +102,9 @@ static int skl_int3472_tps68470_probe(struct i2c_client *client)
 	int device_type;
 	int ret;
 
+	if (!adev)
+		return -ENODEV;
+
 	regmap = devm_regmap_init_i2c(client, &tps68470_regmap_config);
 	if (IS_ERR(regmap)) {
 		dev_err(&client->dev, "Failed to create regmap: %ld\n", PTR_ERR(regmap));
