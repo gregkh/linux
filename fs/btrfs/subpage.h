@@ -145,6 +145,19 @@ DECLARE_BTRFS_SUBPAGE_OPS(writeback);
 DECLARE_BTRFS_SUBPAGE_OPS(ordered);
 DECLARE_BTRFS_SUBPAGE_OPS(checked);
 
+/*
+ * Helper for error cleanup, where a page will have its dirty flag cleared,
+ * with writeback started and finished.
+ */
+static inline void btrfs_page_clamp_finish_io(struct btrfs_fs_info *fs_info,
+					      struct page *locked_page,
+					      u64 start, u32 len)
+{
+	btrfs_page_clamp_clear_dirty(fs_info, locked_page, start, len);
+	btrfs_page_clamp_set_writeback(fs_info, locked_page, start, len);
+	btrfs_page_clamp_clear_writeback(fs_info, locked_page, start, len);
+}
+
 bool btrfs_subpage_clear_and_test_dirty(const struct btrfs_fs_info *fs_info,
 		struct page *page, u64 start, u32 len);
 
