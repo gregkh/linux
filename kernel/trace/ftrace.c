@@ -1554,7 +1554,7 @@ unsigned long ftrace_location_range(unsigned long start, unsigned long end)
 	struct dyn_ftrace key;
 	unsigned long ip = 0;
 
-	rcu_read_lock();
+	preempt_disable_notrace();
 	key.ip = start;
 	key.flags = end;	/* overload flags, as it is unsigned long */
 
@@ -1572,7 +1572,7 @@ unsigned long ftrace_location_range(unsigned long start, unsigned long end)
 			break;
 		}
 	}
-	rcu_read_unlock();
+	preempt_enable_notrace();
 	return ip;
 }
 
