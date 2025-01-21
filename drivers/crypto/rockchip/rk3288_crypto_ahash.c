@@ -9,7 +9,7 @@
  * Some ideas are from marvell/cesa.c and s5p-sss.c driver.
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <crypto/internal/hash.h>
 #include <linux/device.h>
 #include <linux/err.h>
@@ -393,7 +393,6 @@ struct rk_crypto_tmp rk_ahash_sha1 = {
 					       CRYPTO_ALG_NEED_FALLBACK,
 				  .cra_blocksize = SHA1_BLOCK_SIZE,
 				  .cra_ctxsize = sizeof(struct rk_ahash_ctx),
-				  .cra_alignmask = 3,
 				  .cra_module = THIS_MODULE,
 			}
 		}
@@ -426,7 +425,6 @@ struct rk_crypto_tmp rk_ahash_sha256 = {
 					       CRYPTO_ALG_NEED_FALLBACK,
 				  .cra_blocksize = SHA256_BLOCK_SIZE,
 				  .cra_ctxsize = sizeof(struct rk_ahash_ctx),
-				  .cra_alignmask = 3,
 				  .cra_module = THIS_MODULE,
 			}
 		}
@@ -459,7 +457,6 @@ struct rk_crypto_tmp rk_ahash_md5 = {
 					       CRYPTO_ALG_NEED_FALLBACK,
 				  .cra_blocksize = SHA1_BLOCK_SIZE,
 				  .cra_ctxsize = sizeof(struct rk_ahash_ctx),
-				  .cra_alignmask = 3,
 				  .cra_module = THIS_MODULE,
 			}
 		}

@@ -421,7 +421,7 @@ submit_and_retry:
 		io_submit_init_bio(io, bh);
 	if (!bio_add_folio(io->io_bio, io_folio, bh->b_size, bh_offset(bh)))
 		goto submit_and_retry;
-	wbc_account_cgroup_owner(io->io_wbc, &folio->page, bh->b_size);
+	wbc_account_cgroup_owner(io->io_wbc, folio, bh->b_size);
 	io->io_next_block++;
 }
 
@@ -441,7 +441,7 @@ int ext4_bio_write_folio(struct ext4_io_submit *io, struct folio *folio,
 	BUG_ON(folio_test_writeback(folio));
 
 	/*
-	 * Comments copied from block_write_full_page:
+	 * Comments copied from block_write_full_folio:
 	 *
 	 * The folio straddles i_size.  It must be zeroed out on each and every
 	 * writepage invocation because it may be mmapped.  "A file is mapped

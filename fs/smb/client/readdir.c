@@ -143,7 +143,7 @@ retry:
 						fattr->cf_rdev = inode->i_rdev;
 						fattr->cf_uid = inode->i_uid;
 						fattr->cf_gid = inode->i_gid;
-						fattr->cf_eof = CIFS_I(inode)->server_eof;
+						fattr->cf_eof = CIFS_I(inode)->netfs.remote_i_size;
 						fattr->cf_symlink_target = NULL;
 					} else {
 						CIFS_I(inode)->time = 0;
@@ -567,7 +567,7 @@ static void cifs_fill_dirent_std(struct cifs_dirent *de,
 		const FIND_FILE_STANDARD_INFO *info)
 {
 	de->name = &info->FileName[0];
-	/* one byte length, no endianess conversion */
+	/* one byte length, no endianness conversion */
 	de->namelen = info->FileNameLength;
 	de->resume_key = info->ResumeKey;
 }
@@ -829,7 +829,7 @@ static bool emit_cached_dirents(struct cached_dirents *cde,
 		 * However, this sequence of ->pos values may have holes
 		 * in it, for example dot-dirs returned from the server
 		 * are suppressed.
-		 * Handle this bu forcing ctx->pos to be the same as the
+		 * Handle this by forcing ctx->pos to be the same as the
 		 * ->pos of the current dirent we emit from the cache.
 		 * This means that when we emit these entries from the cache
 		 * we now emit them with the same ->pos value as in the

@@ -76,6 +76,7 @@
 #define QUIRK_HDMIPHY		(1 << 1)
 #define QUIRK_NO_GPIO		(1 << 2)
 #define QUIRK_POLL		(1 << 3)
+#define QUIRK_ATOMIC		(1 << 4)
 
 /* Max time to wait for bus to become idle after a xfer (in us) */
 #define S3C2410_IDLE_TIMEOUT	5000
@@ -129,11 +130,11 @@ static const struct platform_device_id s3c24xx_driver_ids[] = {
 	}, {
 		.name		= "s3c2440-hdmiphy-i2c",
 		.driver_data	= QUIRK_S3C2440 | QUIRK_HDMIPHY | QUIRK_NO_GPIO,
-	}, { },
+	}, { }
 };
 MODULE_DEVICE_TABLE(platform, s3c24xx_driver_ids);
 
-static int i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat);
+static void i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat);
 
 #ifdef CONFIG_OF
 static const struct of_device_id s3c24xx_i2c_match[] = {
@@ -174,7 +175,7 @@ static inline void s3c24xx_i2c_master_complete(struct s3c24xx_i2c *i2c, int ret)
 	if (ret)
 		i2c->msg_idx = ret;
 
-	if (!(i2c->quirks & QUIRK_POLL))
+	if (!(i2c->quirks & (QUIRK_POLL | QUIRK_ATOMIC)))
 		wake_up(&i2c->wait);
 }
 
@@ -376,11 +377,10 @@ static inline int is_msgend(struct s3c24xx_i2c *i2c)
 /*
  * process an interrupt and work out what to do
  */
-static int i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat)
+static void i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat)
 {
 	unsigned long tmp;
 	unsigned char byte;
-	int ret = 0;
 
 	switch (i2c->state) {
 
@@ -543,7 +543,7 @@ static int i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat)
 	tmp &= ~S3C2410_IICCON_IRQPEND;
 	writel(tmp, i2c->regs + S3C2410_IICCON);
  out:
-	return ret;
+	return;
 }
 
 /*
@@ -685,7 +685,7 @@ static void s3c24xx_i2c_wait_idle(struct s3c24xx_i2c *i2c)
 static int s3c24xx_i2c_doxfer(struct s3c24xx_i2c *i2c,
 			      struct i2c_msg *msgs, int num)
 {
-	unsigned long timeout = 0;
+	long time_left = 0;
 	int ret;
 
 	ret = s3c24xx_i2c_set_master(i2c);
@@ -704,7 +704,7 @@ static int s3c24xx_i2c_doxfer(struct s3c24xx_i2c *i2c,
 	s3c24xx_i2c_enable_irq(i2c);
 	s3c24xx_i2c_message_start(i2c, msgs);
 
-	if (i2c->quirks & QUIRK_POLL) {
+	if (i2c->quirks & (QUIRK_POLL | QUIRK_ATOMIC)) {
 		while ((i2c->msg_num != 0) && is_ack(i2c)) {
 			unsigned long stat = readl(i2c->regs + S3C2410_IICSTAT);
 
@@ -715,7 +715,7 @@ static int s3c24xx_i2c_doxfer(struct s3c24xx_i2c *i2c,
 				dev_err(i2c->dev, "deal with arbitration loss\n");
 		}
 	} else {
-		timeout = wait_event_timeout(i2c->wait, i2c->msg_num == 0, HZ * 5);
+		time_left = wait_event_timeout(i2c->wait, i2c->msg_num == 0, HZ * 5);
 	}
 
 	ret = i2c->msg_idx;
@@ -724,7 +724,7 @@ static int s3c24xx_i2c_doxfer(struct s3c24xx_i2c *i2c,
 	 * Having these next two as dev_err() makes life very
 	 * noisy when doing an i2cdetect
 	 */
-	if (timeout == 0)
+	if (time_left == 0)
 		dev_dbg(i2c->dev, "timeout\n");
 	else if (ret != num)
 		dev_dbg(i2c->dev, "incomplete xfer (%d)\n", ret);
@@ -776,6 +776,21 @@ static int s3c24xx_i2c_xfer(struct i2c_adapter *adap,
 	return -EREMOTEIO;
 }
 
+static int s3c24xx_i2c_xfer_atomic(struct i2c_adapter *adap,
+				   struct i2c_msg *msgs, int num)
+{
+	struct s3c24xx_i2c *i2c = (struct s3c24xx_i2c *)adap->algo_data;
+	int ret;
+
+	disable_irq(i2c->irq);
+	i2c->quirks |= QUIRK_ATOMIC;
+	ret = s3c24xx_i2c_xfer(adap, msgs, num);
+	i2c->quirks &= ~QUIRK_ATOMIC;
+	enable_irq(i2c->irq);
+
+	return ret;
+}
+
 /* declare our i2c functionality */
 static u32 s3c24xx_i2c_func(struct i2c_adapter *adap)
 {
@@ -786,6 +801,7 @@ static u32 s3c24xx_i2c_func(struct i2c_adapter *adap)
 /* i2c bus registration info */
 static const struct i2c_algorithm s3c24xx_i2c_algorithm = {
 	.master_xfer		= s3c24xx_i2c_xfer,
+	.master_xfer_atomic     = s3c24xx_i2c_xfer_atomic,
 	.functionality		= s3c24xx_i2c_func,
 };
 

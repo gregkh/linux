@@ -4,6 +4,7 @@
  * Copyright (c) 2022, Linaro Ltd
  */
 #include <linux/auxiliary_bus.h>
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -13,14 +14,13 @@
 #include <linux/soc/qcom/pmic_glink.h>
 #include <linux/spinlock.h>
 
+#define PMIC_GLINK_SEND_TIMEOUT (5 * HZ)
+
 enum {
 	PMIC_GLINK_CLIENT_BATT = 0,
 	PMIC_GLINK_CLIENT_ALTMODE,
 	PMIC_GLINK_CLIENT_UCSI,
 };
-
-#define PMIC_GLINK_CLIENT_DEFAULT	(BIT(PMIC_GLINK_CLIENT_BATT) |	\
-					 BIT(PMIC_GLINK_CLIENT_ALTMODE))
 
 struct pmic_glink {
 	struct device *dev;
@@ -115,8 +115,32 @@ EXPORT_SYMBOL_GPL(pmic_glink_client_register);
 int pmic_glink_send(struct pmic_glink_client *client, void *data, size_t len)
 {
 	struct pmic_glink *pg = client->pg;
+	bool timeout_reached = false;
+	unsigned long start;
+	int ret;
 
-	return rpmsg_send(pg->ept, data, len);
+	mutex_lock(&pg->state_lock);
+	if (!pg->ept) {
+		ret = -ECONNRESET;
+	} else {
+		start = jiffies;
+		for (;;) {
+			ret = rpmsg_send(pg->ept, data, len);
+			if (ret != -EAGAIN)
+				break;
+
+			if (timeout_reached) {
+				ret = -ETIMEDOUT;
+				break;
+			}
+
+			usleep_range(1000, 5000);
+			timeout_reached = time_after(jiffies, start + PMIC_GLINK_SEND_TIMEOUT);
+		}
+	}
+	mutex_unlock(&pg->state_lock);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(pmic_glink_send);
 
@@ -285,10 +309,10 @@ static int pmic_glink_probe(struct platform_device *pdev)
 	mutex_init(&pg->state_lock);
 
 	match_data = (unsigned long *)of_device_get_match_data(&pdev->dev);
-	if (match_data)
-		pg->client_mask = *match_data;
-	else
-		pg->client_mask = PMIC_GLINK_CLIENT_DEFAULT;
+	if (!match_data)
+		return -EINVAL;
+
+	pg->client_mask = *match_data;
 
 	pg->pdr = pdr_handle_alloc(pmic_glink_pdr_callback, pg);
 	if (IS_ERR(pg->pdr)) {
@@ -341,7 +365,7 @@ out_release_pdr_handle:
 	return ret;
 }
 
-static int pmic_glink_remove(struct platform_device *pdev)
+static void pmic_glink_remove(struct platform_device *pdev)
 {
 	struct pmic_glink *pg = dev_get_drvdata(&pdev->dev);
 
@@ -357,25 +381,25 @@ static int pmic_glink_remove(struct platform_device *pdev)
 	mutex_lock(&__pmic_glink_lock);
 	__pmic_glink = NULL;
 	mutex_unlock(&__pmic_glink_lock);
-
-	return 0;
 }
+
+static const unsigned long pmic_glink_sc8280xp_client_mask = BIT(PMIC_GLINK_CLIENT_BATT) |
+							     BIT(PMIC_GLINK_CLIENT_ALTMODE);
 
 static const unsigned long pmic_glink_sm8450_client_mask = BIT(PMIC_GLINK_CLIENT_BATT) |
 							   BIT(PMIC_GLINK_CLIENT_ALTMODE) |
 							   BIT(PMIC_GLINK_CLIENT_UCSI);
 
 static const struct of_device_id pmic_glink_of_match[] = {
-	{ .compatible = "qcom,sm8450-pmic-glink", .data = &pmic_glink_sm8450_client_mask },
-	{ .compatible = "qcom,sm8550-pmic-glink", .data = &pmic_glink_sm8450_client_mask },
-	{ .compatible = "qcom,pmic-glink" },
+	{ .compatible = "qcom,sc8280xp-pmic-glink", .data = &pmic_glink_sc8280xp_client_mask },
+	{ .compatible = "qcom,pmic-glink", .data = &pmic_glink_sm8450_client_mask },
 	{}
 };
 MODULE_DEVICE_TABLE(of, pmic_glink_of_match);
 
 static struct platform_driver pmic_glink_driver = {
 	.probe = pmic_glink_probe,
-	.remove = pmic_glink_remove,
+	.remove_new = pmic_glink_remove,
 	.driver = {
 		.name = "qcom_pmic_glink",
 		.of_match_table = pmic_glink_of_match,
@@ -397,14 +421,14 @@ static int pmic_glink_init(void)
 	}
 
 	return 0;
-};
+}
 module_init(pmic_glink_init);
 
 static void pmic_glink_exit(void)
 {
 	unregister_rpmsg_driver(&pmic_glink_rpmsg_driver);
 	platform_driver_unregister(&pmic_glink_driver);
-};
+}
 module_exit(pmic_glink_exit);
 
 MODULE_DESCRIPTION("Qualcomm PMIC GLINK driver");

@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
+#include <linux/export.h>
 #include <linux/stringify.h>
 #include <linux/linkage.h>
 #include <asm/dwarf2.h>
 #include <asm/cpufeatures.h>
 #include <asm/alternative.h>
 #include <asm/asm-offsets.h>
-#include <asm/export.h>
 #include <asm/nospec-branch.h>
 #include <asm/unwind_hints.h>
 #include <asm/percpu.h>
@@ -71,7 +71,7 @@ SYM_CODE_END(__x86_indirect_thunk_array)
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 
-#ifdef CONFIG_CALL_DEPTH_TRACKING
+#ifdef CONFIG_MITIGATION_CALL_DEPTH_TRACKING
 .macro CALL_THUNK reg
 	.align RETPOLINE_THUNK_SIZE
 
@@ -127,11 +127,18 @@ SYM_CODE_END(__x86_indirect_jump_thunk_array)
 #undef GEN
 #endif
 
-#ifdef CONFIG_RETHUNK
+#ifdef CONFIG_MITIGATION_RETHUNK
 
+/*
+ * Be careful here: that label cannot really be removed because in
+ * some configurations and toolchains, the JMP __x86_return_thunk the
+ * compiler issues is either a short one or the compiler doesn't use
+ * relocations for same-section JMPs and that breaks the returns
+ * detection logic in apply_returns() and in objtool.
+ */
 	.section .text..__x86.return_thunk
 
-#ifdef CONFIG_CPU_SRSO
+#ifdef CONFIG_MITIGATION_SRSO
 
 /*
  * srso_alias_untrain_ret() and srso_alias_safe_ret() are placed at
@@ -149,7 +156,7 @@ SYM_CODE_END(__x86_indirect_jump_thunk_array)
  * As a result, srso_alias_safe_ret() becomes a safe return.
  */
 	.pushsection .text..__x86.rethunk_untrain
-SYM_START(srso_alias_untrain_ret, SYM_L_GLOBAL, SYM_A_NONE)
+SYM_CODE_START_NOALIGN(srso_alias_untrain_ret)
 	UNWIND_HINT_FUNC
 	ANNOTATE_NOENDBR
 	ASM_NOP2
@@ -160,7 +167,7 @@ __EXPORT_THUNK(srso_alias_untrain_ret)
 	.popsection
 
 	.pushsection .text..__x86.rethunk_safe
-SYM_START(srso_alias_safe_ret, SYM_L_GLOBAL, SYM_A_NONE)
+SYM_CODE_START_NOALIGN(srso_alias_safe_ret)
 	lea 8(%_ASM_SP), %_ASM_SP
 	UNWIND_HINT_FUNC
 	ANNOTATE_UNRET_SAFE
@@ -188,7 +195,7 @@ SYM_CODE_END(srso_alias_return_thunk)
  */
 	.align 64
 	.skip 64 - (srso_safe_ret - srso_untrain_ret), 0xcc
-SYM_START(srso_untrain_ret, SYM_L_LOCAL, SYM_A_NONE)
+SYM_CODE_START_LOCAL_NOALIGN(srso_untrain_ret)
 	ANNOTATE_NOENDBR
 	.byte 0x48, 0xb8
 
@@ -218,8 +225,7 @@ SYM_CODE_START(srso_return_thunk)
 SYM_CODE_END(srso_return_thunk)
 
 #define JMP_SRSO_UNTRAIN_RET "jmp srso_untrain_ret"
-#else /* !CONFIG_CPU_SRSO */
-#define JMP_SRSO_UNTRAIN_RET "ud2"
+#else /* !CONFIG_MITIGATION_SRSO */
 /* Dummy for the alternative in CALL_UNTRAIN_RET. */
 SYM_CODE_START(srso_alias_untrain_ret)
 	ANNOTATE_UNRET_SAFE
@@ -228,9 +234,10 @@ SYM_CODE_START(srso_alias_untrain_ret)
 	int3
 SYM_FUNC_END(srso_alias_untrain_ret)
 __EXPORT_THUNK(srso_alias_untrain_ret)
-#endif /* CONFIG_CPU_SRSO */
+#define JMP_SRSO_UNTRAIN_RET "ud2"
+#endif /* CONFIG_MITIGATION_SRSO */
 
-#ifdef CONFIG_CPU_UNRET_ENTRY
+#ifdef CONFIG_MITIGATION_UNRET_ENTRY
 
 /*
  * Some generic notes on the untraining sequences:
@@ -262,7 +269,7 @@ __EXPORT_THUNK(srso_alias_untrain_ret)
  */
 	.align 64
 	.skip 64 - (retbleed_return_thunk - retbleed_untrain_ret), 0xcc
-SYM_START(retbleed_untrain_ret, SYM_L_GLOBAL, SYM_A_NONE)
+SYM_CODE_START_LOCAL_NOALIGN(retbleed_untrain_ret)
 	ANNOTATE_NOENDBR
 	/*
 	 * As executed from retbleed_untrain_ret, this is:
@@ -310,26 +317,25 @@ SYM_CODE_END(retbleed_return_thunk)
 	jmp retbleed_return_thunk
 	int3
 SYM_FUNC_END(retbleed_untrain_ret)
-__EXPORT_THUNK(retbleed_untrain_ret)
 
 #define JMP_RETBLEED_UNTRAIN_RET "jmp retbleed_untrain_ret"
-#else /* !CONFIG_CPU_UNRET_ENTRY */
+#else /* !CONFIG_MITIGATION_UNRET_ENTRY */
 #define JMP_RETBLEED_UNTRAIN_RET "ud2"
-#endif /* CONFIG_CPU_UNRET_ENTRY */
+#endif /* CONFIG_MITIGATION_UNRET_ENTRY */
 
-#if defined(CONFIG_CPU_UNRET_ENTRY) || defined(CONFIG_CPU_SRSO)
+#if defined(CONFIG_MITIGATION_UNRET_ENTRY) || defined(CONFIG_MITIGATION_SRSO)
 
 SYM_FUNC_START(entry_untrain_ret)
 	ALTERNATIVE JMP_RETBLEED_UNTRAIN_RET, JMP_SRSO_UNTRAIN_RET, X86_FEATURE_SRSO
 SYM_FUNC_END(entry_untrain_ret)
 __EXPORT_THUNK(entry_untrain_ret)
 
-#endif /* CONFIG_CPU_UNRET_ENTRY || CONFIG_CPU_SRSO */
+#endif /* CONFIG_MITIGATION_UNRET_ENTRY || CONFIG_MITIGATION_SRSO */
 
-#ifdef CONFIG_CALL_DEPTH_TRACKING
+#ifdef CONFIG_MITIGATION_CALL_DEPTH_TRACKING
 
 	.align 64
-SYM_FUNC_START(__x86_return_skl)
+SYM_FUNC_START(call_depth_return_thunk)
 	ANNOTATE_NOENDBR
 	/*
 	 * Keep the hotpath in a 16byte I-fetch for the non-debug
@@ -356,9 +362,9 @@ SYM_FUNC_START(__x86_return_skl)
 	ANNOTATE_UNRET_SAFE
 	ret
 	int3
-SYM_FUNC_END(__x86_return_skl)
+SYM_FUNC_END(call_depth_return_thunk)
 
-#endif /* CONFIG_CALL_DEPTH_TRACKING */
+#endif /* CONFIG_MITIGATION_CALL_DEPTH_TRACKING */
 
 /*
  * This function name is magical and is used by -mfunction-return=thunk-extern
@@ -367,14 +373,26 @@ SYM_FUNC_END(__x86_return_skl)
  * This code is only used during kernel boot or module init.  All
  * 'JMP __x86_return_thunk' sites are changed to something else by
  * apply_returns().
+ *
+ * The ALTERNATIVE below adds a really loud warning to catch the case
+ * where the insufficient default return thunk ends up getting used for
+ * whatever reason like miscompilation or failure of
+ * objtool/alternatives/etc to patch all the return sites.
  */
 SYM_CODE_START(__x86_return_thunk)
 	UNWIND_HINT_FUNC
 	ANNOTATE_NOENDBR
+#if defined(CONFIG_MITIGATION_UNRET_ENTRY) || \
+    defined(CONFIG_MITIGATION_SRSO) || \
+    defined(CONFIG_MITIGATION_CALL_DEPTH_TRACKING)
+	ALTERNATIVE __stringify(ANNOTATE_UNRET_SAFE; ret), \
+		   "jmp warn_thunk_thunk", X86_FEATURE_ALWAYS
+#else
 	ANNOTATE_UNRET_SAFE
 	ret
+#endif
 	int3
 SYM_CODE_END(__x86_return_thunk)
 EXPORT_SYMBOL(__x86_return_thunk)
 
-#endif /* CONFIG_RETHUNK */
+#endif /* CONFIG_MITIGATION_RETHUNK */

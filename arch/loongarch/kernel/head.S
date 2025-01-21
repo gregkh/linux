@@ -44,11 +44,7 @@ SYM_DATA(kernel_fsize, .long _kernel_fsize);
 SYM_CODE_START(kernel_entry)			# kernel entry point
 
 	/* Config direct window and set PG */
-	li.d		t0, CSR_DMW0_INIT	# UC, PLV0, 0x8000 xxxx xxxx xxxx
-	csrwr		t0, LOONGARCH_CSR_DMWIN0
-	li.d		t0, CSR_DMW1_INIT	# CA, PLV0, 0x9000 xxxx xxxx xxxx
-	csrwr		t0, LOONGARCH_CSR_DMWIN1
-
+	SETUP_DMWINS	t0
 	JUMP_VIRT_ADDR	t0, t1
 
 	/* Enable PG */
@@ -74,6 +70,11 @@ SYM_CODE_START(kernel_entry)			# kernel entry point
 	la.pcrel	t0, fw_arg2
 	st.d		a2, t0, 0
 
+#ifdef CONFIG_PAGE_SIZE_4KB
+	li.d		t0, 0
+	li.d		t1, CSR_STFILL
+	csrxchg		t0, t1, LOONGARCH_CSR_IMPCTL1
+#endif
 	/* KSave3 used for percpu base, initialized as 0 */
 	csrwr		zero, PERCPU_BASE_KS
 	/* GPR21 used for percpu base (runtime), initialized as 0 */
@@ -119,13 +120,15 @@ SYM_CODE_END(kernel_entry)
  * function after setting up the stack and tp registers.
  */
 SYM_CODE_START(smpboot_entry)
-	li.d		t0, CSR_DMW0_INIT	# UC, PLV0
-	csrwr		t0, LOONGARCH_CSR_DMWIN0
-	li.d		t0, CSR_DMW1_INIT	# CA, PLV0
-	csrwr		t0, LOONGARCH_CSR_DMWIN1
 
+	SETUP_DMWINS	t0
 	JUMP_VIRT_ADDR	t0, t1
 
+#ifdef CONFIG_PAGE_SIZE_4KB
+	li.d		t0, 0
+	li.d		t1, CSR_STFILL
+	csrxchg		t0, t1, LOONGARCH_CSR_IMPCTL1
+#endif
 	/* Enable PG */
 	li.w		t0, 0xb0		# PLV=0, IE=0, PG=1
 	csrwr		t0, LOONGARCH_CSR_CRMD

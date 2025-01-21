@@ -45,8 +45,6 @@
  */
 static size_t mfd_def_size = MFD_DEF_SIZE;
 static const char *memfd_str = MEMFD_STR;
-static int newpid_thread_fn2(void *arg);
-static void join_newpid_thread(pid_t pid);
 
 static ssize_t fd2name(int fd, char *buf, size_t bufsize)
 {
@@ -195,7 +193,6 @@ static unsigned int mfd_assert_get_seals(int fd)
 static void mfd_assert_has_seals(int fd, unsigned int seals)
 {
 	char buf[PATH_MAX];
-	int nbytes;
 	unsigned int s;
 	fd2name(fd, buf, PATH_MAX);
 
@@ -697,7 +694,6 @@ static void mfd_assert_mode(int fd, int mode)
 {
 	struct stat st;
 	char buf[PATH_MAX];
-	int nbytes;
 
 	fd2name(fd, buf, PATH_MAX);
 
@@ -716,7 +712,6 @@ static void mfd_assert_mode(int fd, int mode)
 static void mfd_assert_chmod(int fd, int mode)
 {
 	char buf[PATH_MAX];
-	int nbytes;
 
 	fd2name(fd, buf, PATH_MAX);
 
@@ -732,7 +727,6 @@ static void mfd_fail_chmod(int fd, int mode)
 {
 	struct stat st;
 	char buf[PATH_MAX];
-	int nbytes;
 
 	fd2name(fd, buf, PATH_MAX);
 
@@ -1255,9 +1249,6 @@ static void test_sysctl_set_sysctl2(void)
 
 static int sysctl_simple_child(void *arg)
 {
-	int fd;
-	int pid;
-
 	printf("%s sysctl 0\n", memfd_str);
 	test_sysctl_set_sysctl0();
 
@@ -1322,7 +1313,6 @@ static void test_sysctl_sysctl2_failset(void)
 
 static int sysctl_nested_child(void *arg)
 {
-	int fd;
 	int pid;
 
 	printf("%s nested sysctl 0\n", memfd_str);
@@ -1539,7 +1529,7 @@ static void test_share_open(char *banner, char *b_suffix)
 
 /*
  * Test sharing via fork()
- * Test whether seal-modifications work as expected with forked childs.
+ * Test whether seal-modifications work as expected with forked children.
  */
 static void test_share_fork(char *banner, char *b_suffix)
 {

@@ -779,6 +779,23 @@ bool dw_dma_filter(struct dma_chan *chan, void *param)
 }
 EXPORT_SYMBOL_GPL(dw_dma_filter);
 
+static int dwc_verify_maxburst(struct dma_chan *chan)
+{
+	struct dw_dma_chan *dwc = to_dw_dma_chan(chan);
+
+	dwc->dma_sconfig.src_maxburst =
+		clamp(dwc->dma_sconfig.src_maxburst, 1U, dwc->max_burst);
+	dwc->dma_sconfig.dst_maxburst =
+		clamp(dwc->dma_sconfig.dst_maxburst, 1U, dwc->max_burst);
+
+	dwc->dma_sconfig.src_maxburst =
+		rounddown_pow_of_two(dwc->dma_sconfig.src_maxburst);
+	dwc->dma_sconfig.dst_maxburst =
+		rounddown_pow_of_two(dwc->dma_sconfig.dst_maxburst);
+
+	return 0;
+}
+
 static int dwc_verify_p_buswidth(struct dma_chan *chan)
 {
 	struct dw_dma_chan *dwc = to_dw_dma_chan(chan);
@@ -838,7 +855,7 @@ static int dwc_verify_m_buswidth(struct dma_chan *chan)
 		dwc->dma_sconfig.src_addr_width = mem_width;
 	} else if (dwc->dma_sconfig.direction == DMA_DEV_TO_MEM) {
 		reg_width = dwc->dma_sconfig.src_addr_width;
-		reg_burst = rounddown_pow_of_two(dwc->dma_sconfig.src_maxburst);
+		reg_burst = dwc->dma_sconfig.src_maxburst;
 
 		dwc->dma_sconfig.dst_addr_width = min(mem_width, reg_width * reg_burst);
 	}
@@ -849,15 +866,13 @@ static int dwc_verify_m_buswidth(struct dma_chan *chan)
 static int dwc_config(struct dma_chan *chan, struct dma_slave_config *sconfig)
 {
 	struct dw_dma_chan *dwc = to_dw_dma_chan(chan);
-	struct dw_dma *dw = to_dw_dma(chan->device);
 	int ret;
 
 	memcpy(&dwc->dma_sconfig, sconfig, sizeof(*sconfig));
 
-	dwc->dma_sconfig.src_maxburst =
-		clamp(dwc->dma_sconfig.src_maxburst, 1U, dwc->max_burst);
-	dwc->dma_sconfig.dst_maxburst =
-		clamp(dwc->dma_sconfig.dst_maxburst, 1U, dwc->max_burst);
+	ret = dwc_verify_maxburst(chan);
+	if (ret)
+		return ret;
 
 	ret = dwc_verify_p_buswidth(chan);
 	if (ret)
@@ -866,9 +881,6 @@ static int dwc_config(struct dma_chan *chan, struct dma_slave_config *sconfig)
 	ret = dwc_verify_m_buswidth(chan);
 	if (ret)
 		return ret;
-
-	dw->encode_maxburst(dwc, &dwc->dma_sconfig.src_maxburst);
-	dw->encode_maxburst(dwc, &dwc->dma_sconfig.dst_maxburst);
 
 	return 0;
 }
@@ -1143,7 +1155,7 @@ int do_dma_probe(struct dw_dma_chip *chip)
 	bool			autocfg = false;
 	unsigned int		dw_params;
 	unsigned int		i;
-	int			err;
+	int			ret;
 
 	dw->pdata = devm_kzalloc(chip->dev, sizeof(*dw->pdata), GFP_KERNEL);
 	if (!dw->pdata)
@@ -1159,7 +1171,7 @@ int do_dma_probe(struct dw_dma_chip *chip)
 
 		autocfg = dw_params >> DW_PARAMS_EN & 1;
 		if (!autocfg) {
-			err = -EINVAL;
+			ret = -EINVAL;
 			goto err_pdata;
 		}
 
@@ -1179,7 +1191,7 @@ int do_dma_probe(struct dw_dma_chip *chip)
 		pdata->chan_allocation_order = CHAN_ALLOCATION_ASCENDING;
 		pdata->chan_priority = CHAN_PRIORITY_ASCENDING;
 	} else if (chip->pdata->nr_channels > DW_DMA_MAX_NR_CHANNELS) {
-		err = -EINVAL;
+		ret = -EINVAL;
 		goto err_pdata;
 	} else {
 		memcpy(dw->pdata, chip->pdata, sizeof(*dw->pdata));
@@ -1191,7 +1203,7 @@ int do_dma_probe(struct dw_dma_chip *chip)
 	dw->chan = devm_kcalloc(chip->dev, pdata->nr_channels, sizeof(*dw->chan),
 				GFP_KERNEL);
 	if (!dw->chan) {
-		err = -ENOMEM;
+		ret = -ENOMEM;
 		goto err_pdata;
 	}
 
@@ -1209,15 +1221,15 @@ int do_dma_probe(struct dw_dma_chip *chip)
 					 sizeof(struct dw_desc), 4, 0);
 	if (!dw->desc_pool) {
 		dev_err(chip->dev, "No memory for descriptors dma pool\n");
-		err = -ENOMEM;
+		ret = -ENOMEM;
 		goto err_pdata;
 	}
 
 	tasklet_setup(&dw->tasklet, dw_dma_tasklet);
 
-	err = request_irq(chip->irq, dw_dma_interrupt, IRQF_SHARED,
+	ret = request_irq(chip->irq, dw_dma_interrupt, IRQF_SHARED,
 			  dw->name, dw);
-	if (err)
+	if (ret)
 		goto err_pdata;
 
 	INIT_LIST_HEAD(&dw->dma.channels);
@@ -1329,8 +1341,8 @@ int do_dma_probe(struct dw_dma_chip *chip)
 	 */
 	dma_set_max_seg_size(dw->dma.dev, dw->chan[0].block_size);
 
-	err = dma_async_device_register(&dw->dma);
-	if (err)
+	ret = dma_async_device_register(&dw->dma);
+	if (ret)
 		goto err_dma_register;
 
 	dev_info(chip->dev, "DesignWare DMA Controller, %d channels\n",
@@ -1344,7 +1356,7 @@ err_dma_register:
 	free_irq(chip->irq, dw);
 err_pdata:
 	pm_runtime_put_sync_suspend(chip->dev);
-	return err;
+	return ret;
 }
 
 int do_dma_remove(struct dw_dma_chip *chip)

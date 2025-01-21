@@ -10,7 +10,6 @@
 #include <linux/clk.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 
 #include <sound/soc.h>
 
@@ -188,7 +187,7 @@ static struct platform_driver atmel_asoc_wm8904_driver = {
 		.pm		= &snd_soc_pm_ops,
 	},
 	.probe = atmel_asoc_wm8904_probe,
-	.remove_new = atmel_asoc_wm8904_remove,
+	.remove = atmel_asoc_wm8904_remove,
 };
 
 module_platform_driver(atmel_asoc_wm8904_driver);

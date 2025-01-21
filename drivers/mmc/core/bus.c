@@ -216,7 +216,7 @@ static const struct dev_pm_ops mmc_bus_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(mmc_bus_suspend, mmc_bus_resume)
 };
 
-static struct bus_type mmc_bus_type = {
+static const struct bus_type mmc_bus_type = {
 	.name		= "mmc",
 	.dev_groups	= mmc_dev_groups,
 	.uevent		= mmc_bus_uevent,
@@ -274,7 +274,7 @@ static void mmc_release_card(struct device *dev)
 /*
  * Allocate and initialise a new MMC card structure.
  */
-struct mmc_card *mmc_alloc_card(struct mmc_host *host, struct device_type *type)
+struct mmc_card *mmc_alloc_card(struct mmc_host *host, const struct device_type *type)
 {
 	struct mmc_card *card;
 
@@ -323,7 +323,9 @@ int mmc_add_card(struct mmc_card *card)
 	case MMC_TYPE_SD:
 		type = "SD";
 		if (mmc_card_blockaddr(card)) {
-			if (mmc_card_ext_capacity(card))
+			if (mmc_card_ult_capacity(card))
+				type = "SDUC";
+			else if (mmc_card_ext_capacity(card))
 				type = "SDXC";
 			else
 				type = "SDHC";

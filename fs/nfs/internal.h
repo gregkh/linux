@@ -9,6 +9,7 @@
 #include <linux/crc32.h>
 #include <linux/sunrpc/addr.h>
 #include <linux/nfs_page.h>
+#include <linux/nfslocalio.h>
 #include <linux/wait_bit.h>
 
 #define NFS_SB_MASK (SB_NOSUID|SB_NODEV|SB_NOEXEC|SB_SYNCHRONOUS)
@@ -112,6 +113,7 @@ struct nfs_fs_context {
 	unsigned short		protofamily;
 	unsigned short		mountfamily;
 	bool			has_sec_mnt_opts;
+	int			lock_status;
 
 	struct {
 		union {
@@ -151,6 +153,12 @@ struct nfs_fs_context {
 		struct nfs_fattr	*fattr;
 		unsigned int		inherited_bsize;
 	} clone_data;
+};
+
+enum nfs_lock_status {
+	NFS_LOCK_NOT_SET	= 0,
+	NFS_LOCK_LOCK		= 1,
+	NFS_LOCK_NOLOCK		= 2,
 };
 
 #define nfs_errorf(fc, fmt, ...) ((fc)->log.log ?		\
@@ -301,7 +309,8 @@ void nfs_pgio_header_free(struct nfs_pgio_header *);
 int nfs_generic_pgio(struct nfs_pageio_descriptor *, struct nfs_pgio_header *);
 int nfs_initiate_pgio(struct rpc_clnt *clnt, struct nfs_pgio_header *hdr,
 		      const struct cred *cred, const struct nfs_rpc_ops *rpc_ops,
-		      const struct rpc_call_ops *call_ops, int how, int flags);
+		      const struct rpc_call_ops *call_ops, int how, int flags,
+		      struct nfsd_file *localio);
 void nfs_free_request(struct nfs_page *req);
 struct nfs_pgio_mirror *
 nfs_pgio_current_mirror(struct nfs_pageio_descriptor *desc);
@@ -431,6 +440,7 @@ int nfs_check_flags(int);
 
 /* inode.c */
 extern struct workqueue_struct *nfsiod_workqueue;
+extern struct workqueue_struct *nfslocaliod_workqueue;
 extern struct inode *nfs_alloc_inode(struct super_block *sb);
 extern void nfs_free_inode(struct inode *);
 extern int nfs_write_inode(struct inode *, struct writeback_control *);
@@ -441,6 +451,51 @@ extern void nfs_zap_acl_cache(struct inode *inode);
 extern void nfs_set_cache_invalid(struct inode *inode, unsigned long flags);
 extern bool nfs_check_cache_invalid(struct inode *, unsigned long);
 extern int nfs_wait_bit_killable(struct wait_bit_key *key, int mode);
+
+#if IS_ENABLED(CONFIG_NFS_LOCALIO)
+/* localio.c */
+extern void nfs_local_disable(struct nfs_client *);
+extern void nfs_local_probe(struct nfs_client *);
+extern struct nfsd_file *nfs_local_open_fh(struct nfs_client *,
+					   const struct cred *,
+					   struct nfs_fh *,
+					   const fmode_t);
+extern int nfs_local_doio(struct nfs_client *,
+			  struct nfsd_file *,
+			  struct nfs_pgio_header *,
+			  const struct rpc_call_ops *);
+extern int nfs_local_commit(struct nfsd_file *,
+			    struct nfs_commit_data *,
+			    const struct rpc_call_ops *, int);
+extern bool nfs_server_is_local(const struct nfs_client *clp);
+
+#else /* CONFIG_NFS_LOCALIO */
+static inline void nfs_local_disable(struct nfs_client *clp) {}
+static inline void nfs_local_probe(struct nfs_client *clp) {}
+static inline struct nfsd_file *
+nfs_local_open_fh(struct nfs_client *clp, const struct cred *cred,
+		  struct nfs_fh *fh, const fmode_t mode)
+{
+	return NULL;
+}
+static inline int nfs_local_doio(struct nfs_client *clp,
+				 struct nfsd_file *localio,
+				 struct nfs_pgio_header *hdr,
+				 const struct rpc_call_ops *call_ops)
+{
+	return -EINVAL;
+}
+static inline int nfs_local_commit(struct nfsd_file *localio,
+				struct nfs_commit_data *data,
+				const struct rpc_call_ops *call_ops, int how)
+{
+	return -EINVAL;
+}
+static inline bool nfs_server_is_local(const struct nfs_client *clp)
+{
+	return false;
+}
+#endif /* CONFIG_NFS_LOCALIO */
 
 /* super.c */
 extern const struct super_operations nfs_sops;
@@ -498,7 +553,6 @@ extern int nfs_read_add_folio(struct nfs_pageio_descriptor *pgio,
 			       struct nfs_open_context *ctx,
 			       struct folio *folio);
 extern void nfs_pageio_complete_read(struct nfs_pageio_descriptor *pgio);
-extern void nfs_read_prepare(struct rpc_task *task, void *calldata);
 extern void nfs_pageio_reset_read_mds(struct nfs_pageio_descriptor *pgio);
 
 /* super.c */
@@ -521,7 +575,8 @@ extern int nfs_initiate_commit(struct rpc_clnt *clnt,
 			       struct nfs_commit_data *data,
 			       const struct nfs_rpc_ops *nfs_ops,
 			       const struct rpc_call_ops *call_ops,
-			       int how, int flags);
+			       int how, int flags,
+			       struct nfsd_file *localio);
 extern void nfs_init_commit(struct nfs_commit_data *data,
 			    struct list_head *head,
 			    struct pnfs_layout_segment *lseg,
@@ -778,7 +833,7 @@ static inline void nfs_folio_mark_unstable(struct folio *folio,
 					   struct nfs_commit_info *cinfo)
 {
 	if (folio && !cinfo->dreq) {
-		struct inode *inode = folio_file_mapping(folio)->host;
+		struct inode *inode = folio->mapping->host;
 		long nr = folio_nr_pages(folio);
 
 		/* This page is really still in write-back - just that the
@@ -793,31 +848,12 @@ static inline void nfs_folio_mark_unstable(struct folio *folio,
 /*
  * Determine the number of bytes of data the page contains
  */
-static inline
-unsigned int nfs_page_length(struct page *page)
-{
-	loff_t i_size = i_size_read(page_file_mapping(page)->host);
-
-	if (i_size > 0) {
-		pgoff_t index = page_index(page);
-		pgoff_t end_index = (i_size - 1) >> PAGE_SHIFT;
-		if (index < end_index)
-			return PAGE_SIZE;
-		if (index == end_index)
-			return ((i_size - 1) & ~PAGE_MASK) + 1;
-	}
-	return 0;
-}
-
-/*
- * Determine the number of bytes of data the page contains
- */
 static inline size_t nfs_folio_length(struct folio *folio)
 {
-	loff_t i_size = i_size_read(folio_file_mapping(folio)->host);
+	loff_t i_size = i_size_read(folio->mapping->host);
 
 	if (i_size > 0) {
-		pgoff_t index = folio_index(folio) >> folio_order(folio);
+		pgoff_t index = folio->index >> folio_order(folio);
 		pgoff_t end_index = (i_size - 1) >> folio_shift(folio);
 		if (index < end_index)
 			return folio_size(folio);
@@ -934,7 +970,6 @@ struct nfs_direct_req {
 	loff_t			io_start;	/* Start offset for I/O */
 	ssize_t			count,		/* bytes actually processed */
 				max_count,	/* max expected count */
-				bytes_left,	/* bytes left to be sent */
 				error;		/* any reported error */
 	struct completion	completion;	/* wait for i/o completion */
 

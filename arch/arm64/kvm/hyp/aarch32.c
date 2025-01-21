@@ -98,7 +98,7 @@ bool kvm_condition_valid32(const struct kvm_vcpu *vcpu)
 }
 
 /**
- * adjust_itstate - adjust ITSTATE when emulating instructions in IT-block
+ * kvm_adjust_itstate - adjust ITSTATE when emulating instructions in IT-block
  * @vcpu:	The VCPU pointer
  *
  * When exceptions occur while instructions are executed in Thumb IF-THEN
@@ -134,7 +134,7 @@ static void kvm_adjust_itstate(struct kvm_vcpu *vcpu)
 }
 
 /**
- * kvm_skip_instr - skip a trapped instruction and proceed to the next
+ * kvm_skip_instr32 - skip a trapped instruction and proceed to the next
  * @vcpu: The vcpu pointer
  */
 void kvm_skip_instr32(struct kvm_vcpu *vcpu)

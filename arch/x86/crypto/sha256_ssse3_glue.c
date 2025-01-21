@@ -1,8 +1,8 @@
 /*
  * Cryptographic API.
  *
- * Glue code for the SHA256 Secure Hash Algorithm assembler
- * implementation using supplemental SSE3 / AVX / AVX2 instructions.
+ * Glue code for the SHA256 Secure Hash Algorithm assembler implementations
+ * using SSSE3, AVX, AVX2, and SHA-NI instructions.
  *
  * This file is based on sha256_generic.c
  *
@@ -45,6 +45,9 @@ asmlinkage void sha256_transform_ssse3(struct sha256_state *state,
 				       const u8 *data, int blocks);
 
 static const struct x86_cpu_id module_cpu_ids[] = {
+#ifdef CONFIG_AS_SHA256_NI
+	X86_MATCH_FEATURE(X86_FEATURE_SHA_NI, NULL),
+#endif
 	X86_MATCH_FEATURE(X86_FEATURE_AVX2, NULL),
 	X86_MATCH_FEATURE(X86_FEATURE_AVX, NULL),
 	X86_MATCH_FEATURE(X86_FEATURE_SSSE3, NULL),
@@ -107,12 +110,20 @@ static int sha256_ssse3_final(struct shash_desc *desc, u8 *out)
 	return sha256_ssse3_finup(desc, NULL, 0, out);
 }
 
+static int sha256_ssse3_digest(struct shash_desc *desc, const u8 *data,
+	      unsigned int len, u8 *out)
+{
+	return sha256_base_init(desc) ?:
+	       sha256_ssse3_finup(desc, data, len, out);
+}
+
 static struct shash_alg sha256_ssse3_algs[] = { {
 	.digestsize	=	SHA256_DIGEST_SIZE,
 	.init		=	sha256_base_init,
 	.update		=	sha256_ssse3_update,
 	.final		=	sha256_ssse3_final,
 	.finup		=	sha256_ssse3_finup,
+	.digest		=	sha256_ssse3_digest,
 	.descsize	=	sizeof(struct sha256_state),
 	.base		=	{
 		.cra_name	=	"sha256",
@@ -172,12 +183,20 @@ static int sha256_avx_final(struct shash_desc *desc, u8 *out)
 	return sha256_avx_finup(desc, NULL, 0, out);
 }
 
+static int sha256_avx_digest(struct shash_desc *desc, const u8 *data,
+		      unsigned int len, u8 *out)
+{
+	return sha256_base_init(desc) ?:
+	       sha256_avx_finup(desc, data, len, out);
+}
+
 static struct shash_alg sha256_avx_algs[] = { {
 	.digestsize	=	SHA256_DIGEST_SIZE,
 	.init		=	sha256_base_init,
 	.update		=	sha256_avx_update,
 	.final		=	sha256_avx_final,
 	.finup		=	sha256_avx_finup,
+	.digest		=	sha256_avx_digest,
 	.descsize	=	sizeof(struct sha256_state),
 	.base		=	{
 		.cra_name	=	"sha256",
@@ -248,12 +267,20 @@ static int sha256_avx2_final(struct shash_desc *desc, u8 *out)
 	return sha256_avx2_finup(desc, NULL, 0, out);
 }
 
+static int sha256_avx2_digest(struct shash_desc *desc, const u8 *data,
+		      unsigned int len, u8 *out)
+{
+	return sha256_base_init(desc) ?:
+	       sha256_avx2_finup(desc, data, len, out);
+}
+
 static struct shash_alg sha256_avx2_algs[] = { {
 	.digestsize	=	SHA256_DIGEST_SIZE,
 	.init		=	sha256_base_init,
 	.update		=	sha256_avx2_update,
 	.final		=	sha256_avx2_final,
 	.finup		=	sha256_avx2_finup,
+	.digest		=	sha256_avx2_digest,
 	.descsize	=	sizeof(struct sha256_state),
 	.base		=	{
 		.cra_name	=	"sha256",
@@ -323,12 +350,20 @@ static int sha256_ni_final(struct shash_desc *desc, u8 *out)
 	return sha256_ni_finup(desc, NULL, 0, out);
 }
 
+static int sha256_ni_digest(struct shash_desc *desc, const u8 *data,
+		      unsigned int len, u8 *out)
+{
+	return sha256_base_init(desc) ?:
+	       sha256_ni_finup(desc, data, len, out);
+}
+
 static struct shash_alg sha256_ni_algs[] = { {
 	.digestsize	=	SHA256_DIGEST_SIZE,
 	.init		=	sha256_base_init,
 	.update		=	sha256_ni_update,
 	.final		=	sha256_ni_final,
 	.finup		=	sha256_ni_finup,
+	.digest		=	sha256_ni_digest,
 	.descsize	=	sizeof(struct sha256_state),
 	.base		=	{
 		.cra_name	=	"sha256",

@@ -300,37 +300,54 @@ static void drv_resume_rx(struct rtw89_ser *ser)
 
 static void ser_reset_vif(struct rtw89_dev *rtwdev, struct rtw89_vif *rtwvif)
 {
-	rtw89_core_release_bit_map(rtwdev->hw_port, rtwvif->port);
-	rtwvif->net_type = RTW89_NET_TYPE_NO_LINK;
-	rtwvif->trigger = false;
+	struct rtw89_vif_link *rtwvif_link;
+	unsigned int link_id;
+
 	rtwvif->tdls_peer = 0;
+
+	rtw89_vif_for_each_link(rtwvif, rtwvif_link, link_id) {
+		rtw89_core_release_bit_map(rtwdev->hw_port, rtwvif_link->port);
+		rtwvif_link->net_type = RTW89_NET_TYPE_NO_LINK;
+		rtwvif_link->trigger = false;
+	}
 }
 
 static void ser_sta_deinit_cam_iter(void *data, struct ieee80211_sta *sta)
 {
 	struct rtw89_vif *target_rtwvif = (struct rtw89_vif *)data;
-	struct rtw89_sta *rtwsta = (struct rtw89_sta *)sta->drv_priv;
+	struct rtw89_sta *rtwsta = sta_to_rtwsta(sta);
 	struct rtw89_vif *rtwvif = rtwsta->rtwvif;
 	struct rtw89_dev *rtwdev = rtwvif->rtwdev;
+	struct rtw89_vif_link *rtwvif_link;
+	struct rtw89_sta_link *rtwsta_link;
+	unsigned int link_id;
 
 	if (rtwvif != target_rtwvif)
 		return;
 
-	if (rtwvif->net_type == RTW89_NET_TYPE_AP_MODE || sta->tdls)
-		rtw89_cam_deinit_addr_cam(rtwdev, &rtwsta->addr_cam);
-	if (sta->tdls)
-		rtw89_cam_deinit_bssid_cam(rtwdev, &rtwsta->bssid_cam);
+	rtw89_sta_for_each_link(rtwsta, rtwsta_link, link_id) {
+		rtwvif_link = rtwsta_link->rtwvif_link;
 
-	INIT_LIST_HEAD(&rtwsta->ba_cam_list);
+		if (rtwvif_link->net_type == RTW89_NET_TYPE_AP_MODE || sta->tdls)
+			rtw89_cam_deinit_addr_cam(rtwdev, &rtwsta_link->addr_cam);
+		if (sta->tdls)
+			rtw89_cam_deinit_bssid_cam(rtwdev, &rtwsta_link->bssid_cam);
+
+		INIT_LIST_HEAD(&rtwsta_link->ba_cam_list);
+	}
 }
 
 static void ser_deinit_cam(struct rtw89_dev *rtwdev, struct rtw89_vif *rtwvif)
 {
+	struct rtw89_vif_link *rtwvif_link;
+	unsigned int link_id;
+
 	ieee80211_iterate_stations_atomic(rtwdev->hw,
 					  ser_sta_deinit_cam_iter,
 					  rtwvif);
 
-	rtw89_cam_deinit(rtwdev, rtwvif);
+	rtw89_vif_for_each_link(rtwvif, rtwvif_link, link_id)
+		rtw89_cam_deinit(rtwdev, rtwvif_link);
 
 	bitmap_zero(rtwdev->cam_info.ba_cam_map, RTW89_MAX_BA_CAM_NUM);
 }
@@ -365,6 +382,9 @@ static int hal_enable_dma(struct rtw89_ser *ser)
 	ret = rtwdev->hci.ops->mac_lv1_rcvy(rtwdev, RTW89_LV1_RCVY_STEP_2);
 	if (!ret)
 		clear_bit(RTW89_SER_HAL_STOP_DMA, ser->flags);
+	else
+		rtw89_debug(rtwdev, RTW89_DBG_SER,
+			    "lv1 rcvy fail to start dma: %d\n", ret);
 
 	return ret;
 }
@@ -380,6 +400,9 @@ static int hal_stop_dma(struct rtw89_ser *ser)
 	ret = rtwdev->hci.ops->mac_lv1_rcvy(rtwdev, RTW89_LV1_RCVY_STEP_1);
 	if (!ret)
 		set_bit(RTW89_SER_HAL_STOP_DMA, ser->flags);
+	else
+		rtw89_debug(rtwdev, RTW89_DBG_SER,
+			    "lv1 rcvy fail to stop dma: %d\n", ret);
 
 	return ret;
 }
@@ -588,6 +611,14 @@ struct __fw_backtrace_info {
 static_assert(RTW89_FW_BACKTRACE_INFO_SIZE ==
 	      sizeof(struct __fw_backtrace_info));
 
+static u32 convert_addr_from_wcpu(u32 wcpu_addr)
+{
+	if (wcpu_addr < 0x30000000)
+		return wcpu_addr;
+
+	return wcpu_addr & GENMASK(28, 0);
+}
+
 static int rtw89_ser_fw_backtrace_dump(struct rtw89_dev *rtwdev, u8 *buf,
 				       const struct __fw_backtrace_entry *ent)
 {
@@ -595,7 +626,7 @@ static int rtw89_ser_fw_backtrace_dump(struct rtw89_dev *rtwdev, u8 *buf,
 	const struct rtw89_mac_gen_def *mac = rtwdev->chip->mac_def;
 	u32 filter_model_addr = mac->filter_model_addr;
 	u32 indir_access_addr = mac->indir_access_addr;
-	u32 fwbt_addr = ent->wcpu_addr & RTW89_WCPU_BASE_MASK;
+	u32 fwbt_addr = convert_addr_from_wcpu(ent->wcpu_addr);
 	u32 fwbt_size = ent->size;
 	u32 fwbt_key = ent->key;
 	u32 i;

@@ -124,10 +124,10 @@ void ni_clear(struct ntfs_inode *ni)
 	else {
 		run_close(&ni->file.run);
 #ifdef CONFIG_NTFS3_LZX_XPRESS
-		if (ni->file.offs_page) {
+		if (ni->file.offs_folio) {
 			/* On-demand allocated page for offsets. */
-			put_page(ni->file.offs_page);
-			ni->file.offs_page = NULL;
+			folio_put(ni->file.offs_folio);
+			ni->file.offs_folio = NULL;
 		}
 #endif
 	}
@@ -2079,12 +2079,12 @@ out:
  * When decompressing, we typically obtain more than one page per reference.
  * We inject the additional pages into the page cache.
  */
-int ni_readpage_cmpr(struct ntfs_inode *ni, struct page *page)
+int ni_readpage_cmpr(struct ntfs_inode *ni, struct folio *folio)
 {
 	int err;
 	struct ntfs_sb_info *sbi = ni->mi.sbi;
-	struct address_space *mapping = page->mapping;
-	pgoff_t index = page->index;
+	struct address_space *mapping = folio->mapping;
+	pgoff_t index = folio->index;
 	u64 frame_vbo, vbo = (u64)index << PAGE_SHIFT;
 	struct page **pages = NULL; /* Array of at most 16 pages. stack? */
 	u8 frame_bits;
@@ -2094,7 +2094,8 @@ int ni_readpage_cmpr(struct ntfs_inode *ni, struct page *page)
 	struct page *pg;
 
 	if (vbo >= i_size_read(&ni->vfs_inode)) {
-		SetPageUptodate(page);
+		folio_zero_range(folio, 0, folio_size(folio));
+		folio_mark_uptodate(folio);
 		err = 0;
 		goto out;
 	}
@@ -2118,7 +2119,7 @@ int ni_readpage_cmpr(struct ntfs_inode *ni, struct page *page)
 		goto out;
 	}
 
-	pages[idx] = page;
+	pages[idx] = &folio->page;
 	index = frame_vbo >> PAGE_SHIFT;
 	gfp_mask = mapping_gfp_mask(mapping);
 
@@ -2137,9 +2138,6 @@ int ni_readpage_cmpr(struct ntfs_inode *ni, struct page *page)
 	err = ni_read_frame(ni, frame_vbo, pages, pages_per_frame);
 
 out1:
-	if (err)
-		SetPageError(page);
-
 	for (i = 0; i < pages_per_frame; i++) {
 		pg = pages[i];
 		if (i == idx || !pg)
@@ -2151,7 +2149,7 @@ out1:
 out:
 	/* At this point, err contains 0 or -EIO depending on the "critical" page. */
 	kfree(pages);
-	unlock_page(page);
+	folio_unlock(folio);
 
 	return err;
 }
@@ -2356,9 +2354,9 @@ remove_wof:
 
 	/* Clear cached flag. */
 	ni->ni_flags &= ~NI_FLAG_COMPRESSED_MASK;
-	if (ni->file.offs_page) {
-		put_page(ni->file.offs_page);
-		ni->file.offs_page = NULL;
+	if (ni->file.offs_folio) {
+		folio_put(ni->file.offs_folio);
+		ni->file.offs_folio = NULL;
 	}
 	mapping->a_ops = &ntfs_aops;
 
@@ -2631,7 +2629,7 @@ int ni_read_frame(struct ntfs_inode *ni, u64 frame_vbo, struct page **pages,
 		goto out1;
 	}
 
-	pages_disk = kzalloc(npages_disk * sizeof(struct page *), GFP_NOFS);
+	pages_disk = kcalloc(npages_disk, sizeof(*pages_disk), GFP_NOFS);
 	if (!pages_disk) {
 		err = -ENOMEM;
 		goto out2;
@@ -2713,7 +2711,6 @@ out:
 	for (i = 0; i < pages_per_frame; i++) {
 		pg = pages[i];
 		kunmap(pg);
-		ClearPageError(pg);
 		SetPageUptodate(pg);
 	}
 
@@ -3269,7 +3266,7 @@ int ni_write_inode(struct inode *inode, int sync, const char *hint)
 	if (is_rec_inuse(ni->mi.mrec) &&
 	    !(sbi->flags & NTFS_FLAGS_LOG_REPLAYING) && inode->i_nlink) {
 		bool modified = false;
-		struct timespec64 ctime = inode_get_ctime(inode);
+		struct timespec64 ts;
 
 		/* Update times in standard attribute. */
 		std = ni_std(ni);
@@ -3279,19 +3276,22 @@ int ni_write_inode(struct inode *inode, int sync, const char *hint)
 		}
 
 		/* Update the access times if they have changed. */
-		dup.m_time = kernel2nt(&inode->i_mtime);
+		ts = inode_get_mtime(inode);
+		dup.m_time = kernel2nt(&ts);
 		if (std->m_time != dup.m_time) {
 			std->m_time = dup.m_time;
 			modified = true;
 		}
 
-		dup.c_time = kernel2nt(&ctime);
+		ts = inode_get_ctime(inode);
+		dup.c_time = kernel2nt(&ts);
 		if (std->c_time != dup.c_time) {
 			std->c_time = dup.c_time;
 			modified = true;
 		}
 
-		dup.a_time = kernel2nt(&inode->i_atime);
+		ts = inode_get_atime(inode);
+		dup.a_time = kernel2nt(&ts);
 		if (std->a_time != dup.a_time) {
 			std->a_time = dup.a_time;
 			modified = true;
@@ -3378,4 +3378,76 @@ out:
 		mark_inode_dirty_sync(inode);
 
 	return 0;
+}
+
+/*
+ * ni_set_compress
+ *
+ * Helper for 'ntfs_fileattr_set'.
+ * Changes compression for empty files and directories only.
+ */
+int ni_set_compress(struct inode *inode, bool compr)
+{
+	int err;
+	struct ntfs_inode *ni = ntfs_i(inode);
+	struct ATTR_STD_INFO *std;
+	const char *bad_inode;
+
+	if (is_compressed(ni) == !!compr)
+		return 0;
+
+	if (is_sparsed(ni)) {
+		/* sparse and compress not compatible. */
+		return -EOPNOTSUPP;
+	}
+
+	if (!S_ISREG(inode->i_mode) && !S_ISDIR(inode->i_mode)) {
+		/*Skip other inodes. (symlink,fifo,...) */
+		return -EOPNOTSUPP;
+	}
+
+	bad_inode = NULL;
+
+	ni_lock(ni);
+
+	std = ni_std(ni);
+	if (!std) {
+		bad_inode = "no std";
+		goto out;
+	}
+
+	if (S_ISREG(inode->i_mode)) {
+		err = attr_set_compress(ni, compr);
+		if (err) {
+			if (err == -ENOENT) {
+				/* Fix on the fly? */
+				/* Each file must contain data attribute. */
+				bad_inode = "no data attribute";
+			}
+			goto out;
+		}
+	}
+
+	ni->std_fa = std->fa;
+	if (compr)
+		std->fa |= FILE_ATTRIBUTE_COMPRESSED;
+	else
+		std->fa &= ~FILE_ATTRIBUTE_COMPRESSED;
+
+	if (ni->std_fa != std->fa) {
+		ni->std_fa = std->fa;
+		ni->mi.dirty = true;
+	}
+	/* update duplicate information and directory entries in ni_write_inode.*/
+	ni->ni_flags |= NI_FLAG_UPDATE_PARENT;
+	err = 0;
+
+out:
+	ni_unlock(ni);
+	if (bad_inode) {
+		ntfs_bad_inode(inode, bad_inode);
+		err = -EINVAL;
+	}
+
+	return err;
 }

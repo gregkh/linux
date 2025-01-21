@@ -1121,6 +1121,7 @@ static int k3_r5_rproc_configure_mode(struct k3_r5_rproc *kproc)
 	u32 atcm_enable, btcm_enable, loczrama;
 	struct k3_r5_core *core0;
 	enum cluster_mode mode = cluster->mode;
+	int reset_ctrl_status;
 	int ret;
 
 	core0 = list_first_entry(&cluster->cores, struct k3_r5_core, elem);
@@ -1137,11 +1138,11 @@ static int k3_r5_rproc_configure_mode(struct k3_r5_rproc *kproc)
 			 r_state, c_state);
 	}
 
-	ret = reset_control_status(core->reset);
-	if (ret < 0) {
+	reset_ctrl_status = reset_control_status(core->reset);
+	if (reset_ctrl_status < 0) {
 		dev_err(cdev, "failed to get initial local reset status, ret = %d\n",
-			ret);
-		return ret;
+			reset_ctrl_status);
+		return reset_ctrl_status;
 	}
 
 	/*
@@ -1176,7 +1177,7 @@ static int k3_r5_rproc_configure_mode(struct k3_r5_rproc *kproc)
 	 * irrelevant if module reset is asserted (POR value has local reset
 	 * deasserted), and is deemed as remoteproc mode
 	 */
-	if (c_state && !ret && !halted) {
+	if (c_state && !reset_ctrl_status && !halted) {
 		dev_info(cdev, "configured R5F for IPC-only mode\n");
 		kproc->rproc->state = RPROC_DETACHED;
 		ret = 1;
@@ -1194,7 +1195,7 @@ static int k3_r5_rproc_configure_mode(struct k3_r5_rproc *kproc)
 		ret = 0;
 	} else {
 		dev_err(cdev, "mismatched mode: local_reset = %s, module_reset = %s, core_state = %s\n",
-			!ret ? "deasserted" : "asserted",
+			!reset_ctrl_status ? "deasserted" : "asserted",
 			c_state ? "deasserted" : "asserted",
 			halted ? "halted" : "unhalted");
 		ret = -EINVAL;
@@ -1235,8 +1236,8 @@ static int k3_r5_cluster_rproc_init(struct platform_device *pdev)
 			goto out;
 		}
 
-		rproc = rproc_alloc(cdev, dev_name(cdev), &k3_r5_rproc_ops,
-				    fw_name, sizeof(*kproc));
+		rproc = devm_rproc_alloc(cdev, dev_name(cdev), &k3_r5_rproc_ops,
+					 fw_name, sizeof(*kproc));
 		if (!rproc) {
 			ret = -ENOMEM;
 			goto out;
@@ -1260,7 +1261,7 @@ static int k3_r5_cluster_rproc_init(struct platform_device *pdev)
 
 		ret = k3_r5_rproc_configure_mode(kproc);
 		if (ret < 0)
-			goto err_config;
+			goto out;
 		if (ret)
 			goto init_rmem;
 
@@ -1268,7 +1269,7 @@ static int k3_r5_cluster_rproc_init(struct platform_device *pdev)
 		if (ret) {
 			dev_err(dev, "initial configure failed, ret = %d\n",
 				ret);
-			goto err_config;
+			goto out;
 		}
 
 init_rmem:
@@ -1278,7 +1279,7 @@ init_rmem:
 		if (ret) {
 			dev_err(dev, "reserved memory init failed, ret = %d\n",
 				ret);
-			goto err_config;
+			goto out;
 		}
 
 		ret = rproc_add(rproc);
@@ -1332,9 +1333,6 @@ err_powerup:
 	rproc_del(rproc);
 err_add:
 	k3_r5_reserved_mem_exit(kproc);
-err_config:
-	rproc_free(rproc);
-	core->rproc = NULL;
 out:
 	/* undo core0 upon any failures on core1 in split-mode */
 	if (cluster->mode == CLUSTER_MODE_SPLIT && core == core1) {
@@ -1381,9 +1379,6 @@ static void k3_r5_cluster_rproc_exit(void *data)
 		rproc_del(rproc);
 
 		k3_r5_reserved_mem_exit(kproc);
-
-		rproc_free(rproc);
-		core->rproc = NULL;
 	}
 }
 
@@ -1516,32 +1511,6 @@ static int k3_r5_core_of_get_sram_memories(struct platform_device *pdev,
 	return 0;
 }
 
-static
-struct ti_sci_proc *k3_r5_core_of_get_tsp(struct device *dev,
-					  const struct ti_sci_handle *sci)
-{
-	struct ti_sci_proc *tsp;
-	u32 temp[2];
-	int ret;
-
-	ret = of_property_read_u32_array(dev_of_node(dev), "ti,sci-proc-ids",
-					 temp, 2);
-	if (ret < 0)
-		return ERR_PTR(ret);
-
-	tsp = devm_kzalloc(dev, sizeof(*tsp), GFP_KERNEL);
-	if (!tsp)
-		return ERR_PTR(-ENOMEM);
-
-	tsp->dev = dev;
-	tsp->sci = sci;
-	tsp->ops = &sci->ops.proc_ops;
-	tsp->proc_id = temp[0];
-	tsp->host_id = temp[1];
-
-	return tsp;
-}
-
 static int k3_r5_core_of_init(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1616,7 +1585,7 @@ static int k3_r5_core_of_init(struct platform_device *pdev)
 		goto err;
 	}
 
-	core->tsp = k3_r5_core_of_get_tsp(dev, core->ti_sci);
+	core->tsp = ti_sci_proc_of_get_tsp(dev, core->ti_sci);
 	if (IS_ERR(core->tsp)) {
 		ret = PTR_ERR(core->tsp);
 		dev_err(dev, "failed to construct ti-sci proc control, ret = %d\n",

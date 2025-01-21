@@ -34,7 +34,7 @@ enum {
 	P_GPU_CC_PLL1_OUT_MAIN,
 };
 
-static struct pll_vco lucid_5lpe_vco[] = {
+static const struct pll_vco lucid_5lpe_vco[] = {
 	{ 249600000, 1750000000, 0 },
 };
 
@@ -605,7 +605,7 @@ static int gpu_cc_sm8350_probe(struct platform_device *pdev)
 	clk_lucid_pll_configure(&gpu_cc_pll0, regmap, &gpu_cc_pll0_config);
 	clk_lucid_pll_configure(&gpu_cc_pll1, regmap, &gpu_cc_pll1_config);
 
-	return qcom_cc_really_probe(pdev, &gpu_cc_sm8350_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &gpu_cc_sm8350_desc, regmap);
 }
 
 static const struct of_device_id gpu_cc_sm8350_match_table[] = {
@@ -622,17 +622,7 @@ static struct platform_driver gpu_cc_sm8350_driver = {
 	},
 };
 
-static int __init gpu_cc_sm8350_init(void)
-{
-	return platform_driver_register(&gpu_cc_sm8350_driver);
-}
-subsys_initcall(gpu_cc_sm8350_init);
-
-static void __exit gpu_cc_sm8350_exit(void)
-{
-	platform_driver_unregister(&gpu_cc_sm8350_driver);
-}
-module_exit(gpu_cc_sm8350_exit);
+module_platform_driver(gpu_cc_sm8350_driver);
 
 MODULE_DESCRIPTION("QTI GPU_CC SM8350 Driver");
 MODULE_LICENSE("GPL v2");

@@ -13,7 +13,7 @@
 #include <crypto/internal/hash.h>
 
 #include <asm/cpu-features.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define _CRC32(crc, value, size, type)			\
 do {							\
@@ -237,7 +237,6 @@ static struct shash_alg crc32_alg = {
 		.cra_priority		=	300,
 		.cra_flags		=	CRYPTO_ALG_OPTIONAL_KEY,
 		.cra_blocksize		=	CHKSUM_BLOCK_SIZE,
-		.cra_alignmask		=	0,
 		.cra_ctxsize		=	sizeof(struct chksum_ctx),
 		.cra_module		=	THIS_MODULE,
 		.cra_init		=	chksum_cra_init,
@@ -259,7 +258,6 @@ static struct shash_alg crc32c_alg = {
 		.cra_priority		=	300,
 		.cra_flags		=	CRYPTO_ALG_OPTIONAL_KEY,
 		.cra_blocksize		=	CHKSUM_BLOCK_SIZE,
-		.cra_alignmask		=	0,
 		.cra_ctxsize		=	sizeof(struct chksum_ctx),
 		.cra_module		=	THIS_MODULE,
 		.cra_init		=	chksumc_cra_init,

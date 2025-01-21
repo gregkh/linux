@@ -5,6 +5,7 @@
 #include <linux/lockdep.h>
 #include <linux/resume_user_mode.h>
 #include <linux/kasan.h>
+#include <linux/poll.h>
 #include <linux/io_uring_types.h>
 #include <uapi/linux/eventpoll.h>
 #include "io-wq.h"
@@ -14,17 +15,6 @@
 #ifndef CREATE_TRACE_POINTS
 #include <trace/events/io_uring.h>
 #endif
-
-enum {
-	/*
-	 * A hint to not wake right away but delay until there are enough of
-	 * tw's queued to match the number of CQEs the task is waiting for.
-	 *
-	 * Must not be used wirh requests generating more than one CQE.
-	 * It's also ignored unless IORING_SETUP_DEFER_TASKRUN is set.
-	 */
-	IOU_F_TWQ_LAZY_WAKE			= 1,
-};
 
 enum {
 	IOU_OK			= 0,
@@ -45,27 +35,58 @@ enum {
 	IOU_STOP_MULTISHOT	= -ECANCELED,
 };
 
+struct io_wait_queue {
+	struct wait_queue_entry wq;
+	struct io_ring_ctx *ctx;
+	unsigned cq_tail;
+	unsigned cq_min_tail;
+	unsigned nr_timeouts;
+	int hit_timeout;
+	ktime_t min_timeout;
+	ktime_t timeout;
+	struct hrtimer t;
+
+#ifdef CONFIG_NET_RX_BUSY_POLL
+	ktime_t napi_busy_poll_dt;
+	bool napi_prefer_busy_poll;
+#endif
+};
+
+static inline bool io_should_wake(struct io_wait_queue *iowq)
+{
+	struct io_ring_ctx *ctx = iowq->ctx;
+	int dist = READ_ONCE(ctx->rings->cq.tail) - (int) iowq->cq_tail;
+
+	/*
+	 * Wake up if we have enough events, or if a timeout occurred since we
+	 * started waiting. For timeouts, we always want to return to userspace,
+	 * regardless of event count.
+	 */
+	return dist >= 0 || atomic_read(&ctx->cq_timeouts) != iowq->nr_timeouts;
+}
+
 bool io_cqe_cache_refill(struct io_ring_ctx *ctx, bool overflow);
-void io_req_cqe_overflow(struct io_kiocb *req);
 int io_run_task_work_sig(struct io_ring_ctx *ctx);
 void io_req_defer_failed(struct io_kiocb *req, s32 res);
-void io_req_complete_post(struct io_kiocb *req, unsigned issue_flags);
 bool io_post_aux_cqe(struct io_ring_ctx *ctx, u64 user_data, s32 res, u32 cflags);
-bool io_fill_cqe_req_aux(struct io_kiocb *req, bool defer, s32 res, u32 cflags);
+void io_add_aux_cqe(struct io_ring_ctx *ctx, u64 user_data, s32 res, u32 cflags);
+bool io_req_post_cqe(struct io_kiocb *req, s32 res, u32 cflags);
 void __io_commit_cqring_flush(struct io_ring_ctx *ctx);
-
-struct page **io_pin_pages(unsigned long ubuf, unsigned long len, int *npages);
 
 struct file *io_file_get_normal(struct io_kiocb *req, int fd);
 struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
 			       unsigned issue_flags);
 
 void __io_req_task_work_add(struct io_kiocb *req, unsigned flags);
+void io_req_task_work_add_remote(struct io_kiocb *req, struct io_ring_ctx *ctx,
+				 unsigned flags);
 bool io_alloc_async_data(struct io_kiocb *req);
 void io_req_task_queue(struct io_kiocb *req);
 void io_req_task_complete(struct io_kiocb *req, struct io_tw_state *ts);
 void io_req_task_queue_fail(struct io_kiocb *req, int ret);
 void io_req_task_submit(struct io_kiocb *req, struct io_tw_state *ts);
+struct llist_node *io_handle_tw_list(struct llist_node *node, unsigned int *count, unsigned int max_entries);
+struct llist_node *tctx_task_work_run(struct io_uring_task *tctx, unsigned int max_entries, unsigned int *count);
 void tctx_task_work(struct callback_head *cb);
 __cold void io_uring_cancel_generic(bool cancel_all, struct io_sq_data *sqd);
 int io_uring_alloc_task_context(struct task_struct *task,
@@ -73,12 +94,12 @@ int io_uring_alloc_task_context(struct task_struct *task,
 
 int io_ring_add_registered_file(struct io_uring_task *tctx, struct file *file,
 				     int start, int end);
+void io_req_queue_iowq(struct io_kiocb *req);
 
 int io_poll_issue(struct io_kiocb *req, struct io_tw_state *ts);
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr);
 int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin);
 void __io_submit_flush_completions(struct io_ring_ctx *ctx);
-int io_req_prep_async(struct io_kiocb *req);
 
 struct io_wq_work *io_wq_free_work(struct io_wq_work *work);
 void io_wq_submit_work(struct io_wq_work *work);
@@ -91,12 +112,11 @@ bool __io_alloc_req_refill(struct io_ring_ctx *ctx);
 bool io_match_task_safe(struct io_kiocb *head, struct task_struct *task,
 			bool cancel_all);
 
-void *io_mem_alloc(size_t size);
-void io_mem_free(void *ptr);
+void io_activate_pollwq(struct io_ring_ctx *ctx);
 
-#if defined(CONFIG_PROVE_LOCKING)
 static inline void io_lockdep_assert_cq_locked(struct io_ring_ctx *ctx)
 {
+#if defined(CONFIG_PROVE_LOCKING)
 	lockdep_assert(in_task());
 
 	if (ctx->flags & IORING_SETUP_IOPOLL) {
@@ -115,16 +135,19 @@ static inline void io_lockdep_assert_cq_locked(struct io_ring_ctx *ctx)
 		else
 			lockdep_assert(current == ctx->submitter_task);
 	}
-}
-#else
-static inline void io_lockdep_assert_cq_locked(struct io_ring_ctx *ctx)
-{
-}
 #endif
+}
 
 static inline void io_req_task_work_add(struct io_kiocb *req)
 {
 	__io_req_task_work_add(req, 0);
+}
+
+static inline void io_submit_flush_completions(struct io_ring_ctx *ctx)
+{
+	if (!wq_list_empty(&ctx->submit_state.compl_reqs) ||
+	    ctx->submit_state.cq_flush)
+		__io_submit_flush_completions(ctx);
 }
 
 #define io_for_each_link(pos, head) \
@@ -209,7 +232,7 @@ static inline void io_ring_submit_unlock(struct io_ring_ctx *ctx,
 					 unsigned issue_flags)
 {
 	lockdep_assert_held(&ctx->uring_lock);
-	if (issue_flags & IO_URING_F_UNLOCKED)
+	if (unlikely(issue_flags & IO_URING_F_UNLOCKED))
 		mutex_unlock(&ctx->uring_lock);
 }
 
@@ -222,7 +245,7 @@ static inline void io_ring_submit_lock(struct io_ring_ctx *ctx,
 	 * The only exception is when we've detached the request and issue it
 	 * from an async worker thread, grab the lock for that case.
 	 */
-	if (issue_flags & IO_URING_F_UNLOCKED)
+	if (unlikely(issue_flags & IO_URING_F_UNLOCKED))
 		mutex_lock(&ctx->uring_lock);
 	lockdep_assert_held(&ctx->uring_lock);
 }
@@ -283,6 +306,8 @@ static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
 
 static inline int io_run_task_work(void)
 {
+	bool ret = false;
+
 	/*
 	 * Always check-and-clear the task_work notification signal. With how
 	 * signaling works for task_work, we can find it set with nothing to
@@ -294,18 +319,27 @@ static inline int io_run_task_work(void)
 	 * PF_IO_WORKER never returns to userspace, so check here if we have
 	 * notify work that needs processing.
 	 */
-	if (current->flags & PF_IO_WORKER &&
-	    test_thread_flag(TIF_NOTIFY_RESUME)) {
-		__set_current_state(TASK_RUNNING);
-		resume_user_mode_work(NULL);
+	if (current->flags & PF_IO_WORKER) {
+		if (test_thread_flag(TIF_NOTIFY_RESUME)) {
+			__set_current_state(TASK_RUNNING);
+			resume_user_mode_work(NULL);
+		}
+		if (current->io_uring) {
+			unsigned int count = 0;
+
+			__set_current_state(TASK_RUNNING);
+			tctx_task_work_run(current->io_uring, UINT_MAX, &count);
+			if (count)
+				ret = true;
+		}
 	}
 	if (task_work_pending(current)) {
 		__set_current_state(TASK_RUNNING);
 		task_work_run();
-		return 1;
+		ret = true;
 	}
 
-	return 0;
+	return ret;
 }
 
 static inline bool io_task_work_pending(struct io_ring_ctx *ctx)
@@ -315,10 +349,7 @@ static inline bool io_task_work_pending(struct io_ring_ctx *ctx)
 
 static inline void io_tw_lock(struct io_ring_ctx *ctx, struct io_tw_state *ts)
 {
-	if (!ts->locked) {
-		mutex_lock(&ctx->uring_lock);
-		ts->locked = true;
-	}
+	lockdep_assert_held(&ctx->uring_lock);
 }
 
 /*
@@ -358,6 +389,7 @@ static inline bool io_req_cache_empty(struct io_ring_ctx *ctx)
 }
 
 extern struct kmem_cache *req_cachep;
+extern struct kmem_cache *io_buf_cachep;
 
 static inline struct io_kiocb *io_extract_req(struct io_ring_ctx *ctx)
 {
@@ -405,5 +437,35 @@ static inline size_t uring_sqe_size(struct io_ring_ctx *ctx)
 	if (ctx->flags & IORING_SETUP_SQE128)
 		return 2 * sizeof(struct io_uring_sqe);
 	return sizeof(struct io_uring_sqe);
+}
+
+static inline bool io_file_can_poll(struct io_kiocb *req)
+{
+	if (req->flags & REQ_F_CAN_POLL)
+		return true;
+	if (req->file && file_can_poll(req->file)) {
+		req->flags |= REQ_F_CAN_POLL;
+		return true;
+	}
+	return false;
+}
+
+static inline ktime_t io_get_time(struct io_ring_ctx *ctx)
+{
+	if (ctx->clockid == CLOCK_MONOTONIC)
+		return ktime_get();
+
+	return ktime_get_with_offset(ctx->clock_offset);
+}
+
+enum {
+	IO_CHECK_CQ_OVERFLOW_BIT,
+	IO_CHECK_CQ_DROPPED_BIT,
+};
+
+static inline bool io_has_work(struct io_ring_ctx *ctx)
+{
+	return test_bit(IO_CHECK_CQ_OVERFLOW_BIT, &ctx->check_cq) ||
+	       !llist_empty(&ctx->work_llist);
 }
 #endif

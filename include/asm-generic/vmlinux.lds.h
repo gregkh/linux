@@ -3,7 +3,7 @@
  * linker scripts.
  *
  * A minimal linker scripts has following content:
- * [This is a sample, architectures may have special requiriements]
+ * [This is a sample, architectures may have special requirements]
  *
  * OUTPUT_FORMAT(...)
  * OUTPUT_ARCH(...)
@@ -49,6 +49,8 @@
  * Examples are: [__initramfs_start, __initramfs_end] for initramfs and
  *               [__nosave_begin, __nosave_end] for the nosave data
  */
+
+#include <asm-generic/codetag.lds.h>
 
 #ifndef LOAD_OFFSET
 #define LOAD_OFFSET 0
@@ -131,6 +133,7 @@
 	*(__dl_sched_class)			\
 	*(__rt_sched_class)			\
 	*(__fair_sched_class)			\
+	*(__ext_sched_class)			\
 	*(__idle_sched_class)			\
 	__sched_class_lowest = .;
 
@@ -357,11 +360,13 @@
 	. = ALIGN(8);							\
 	BOUNDED_SECTION_BY(__dyndbg_classes, ___dyndbg_classes)		\
 	BOUNDED_SECTION_BY(__dyndbg, ___dyndbg)				\
+	CODETAG_SECTIONS()						\
 	LIKELY_PROFILE()		       				\
 	BRANCH_PROFILE()						\
 	TRACE_PRINTKS()							\
 	BPF_RAW_TP()							\
-	TRACEPOINT_STR()
+	TRACEPOINT_STR()						\
+	KUNIT_TABLE()
 
 /*
  * Data section helpers
@@ -389,13 +394,13 @@
 
 #define INIT_TASK_DATA(align)						\
 	. = ALIGN(align);						\
-	__start_init_task = .;						\
+	__start_init_stack = .;						\
 	init_thread_union = .;						\
 	init_stack = .;							\
 	KEEP(*(.data..init_task))					\
 	KEEP(*(.data..init_thread_info))				\
-	. = __start_init_task + THREAD_SIZE;				\
-	__end_init_task = .;
+	. = __start_init_stack + THREAD_SIZE;				\
+	__end_init_stack = .;
 
 #define JUMP_TABLE_DATA							\
 	. = ALIGN(8);							\
@@ -687,7 +692,7 @@
 	EARLYCON_TABLE()						\
 	LSM_TABLE()							\
 	EARLY_LSM_TABLE()						\
-	KUNIT_TABLE()
+	KUNIT_INIT_TABLE()
 
 #define INIT_TEXT							\
 	*(.init.text .init.text.*)					\
@@ -907,10 +912,27 @@
 #define CON_INITCALL							\
 	BOUNDED_SECTION_POST_LABEL(.con_initcall.init, __con_initcall, _start, _end)
 
+#define NAMED_SECTION(name) \
+	. = ALIGN(8); \
+	name : AT(ADDR(name) - LOAD_OFFSET) \
+	{ BOUNDED_SECTION_PRE_LABEL(name, name, __start_, __stop_) }
+
+#define RUNTIME_CONST(t,x) NAMED_SECTION(runtime_##t##_##x)
+
+#define RUNTIME_CONST_VARIABLES						\
+		RUNTIME_CONST(shift, d_hash_shift)			\
+		RUNTIME_CONST(ptr, dentry_hashtable)
+
 /* Alignment must be consistent with (kunit_suite *) in include/kunit/test.h */
 #define KUNIT_TABLE()							\
 		. = ALIGN(8);						\
 		BOUNDED_SECTION_POST_LABEL(.kunit_test_suites, __kunit_suites, _start, _end)
+
+/* Alignment must be consistent with (kunit_suite *) in include/kunit/test.h */
+#define KUNIT_INIT_TABLE()						\
+		. = ALIGN(8);						\
+		BOUNDED_SECTION_POST_LABEL(.kunit_init_test_suites, \
+				__kunit_init_suites, _start, _end)
 
 #ifdef CONFIG_BLK_DEV_INITRD
 #define INIT_RAM_FS							\
@@ -963,7 +985,7 @@
  * -fsanitize=thread produce unwanted sections (.eh_frame
  * and .init_array.*), but CONFIG_CONSTRUCTORS wants to
  * keep any .init_array.* sections.
- * https://bugs.llvm.org/show_bug.cgi?id=46478
+ * https://llvm.org/pr46478
  */
 #ifdef CONFIG_UNWIND_TABLES
 #define DISCARD_EH_FRAME

@@ -32,8 +32,8 @@ void __init hv_vtl_init_platform(void)
 	x86_init.timers.timer_init = x86_init_noop;
 
 	/* Avoid searching for BIOS MP tables */
-	x86_init.mpparse.find_smp_config = x86_init_noop;
-	x86_init.mpparse.get_smp_config = x86_init_uint_noop;
+	x86_init.mpparse.find_mptable = x86_init_noop;
+	x86_init.mpparse.early_parse_smp_cfg = x86_init_noop;
 
 	x86_platform.get_wallclock = get_rtc_noop;
 	x86_platform.set_wallclock = set_rtc_noop;
@@ -206,7 +206,7 @@ static int hv_vtl_apicid_to_vp_id(u32 apic_id)
 	return ret;
 }
 
-static int hv_vtl_wakeup_secondary_cpu(int apicid, unsigned long start_eip)
+static int hv_vtl_wakeup_secondary_cpu(u32 apicid, unsigned long start_eip)
 {
 	int vp_id, cpu;
 

@@ -23,6 +23,7 @@
 #include <linux/pstore.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/cleanup.h>
 
 #include "internal.h"
 
@@ -33,6 +34,8 @@ static LIST_HEAD(records_list);
 
 static DEFINE_MUTEX(pstore_sb_lock);
 static struct super_block *pstore_sb;
+
+DEFINE_FREE(pstore_iput, struct inode *, if (_T) iput(_T))
 
 struct pstore_private {
 	struct list_head list;
@@ -60,11 +63,12 @@ static void free_pstore_private(struct pstore_private *private)
 	}
 	kfree(private);
 }
+DEFINE_FREE(pstore_private, struct pstore_private *, free_pstore_private(_T));
 
 static void *pstore_ftrace_seq_start(struct seq_file *s, loff_t *pos)
 {
 	struct pstore_private *ps = s->private;
-	struct pstore_ftrace_seq_data *data;
+	struct pstore_ftrace_seq_data *data __free(kfree) = NULL;
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -72,13 +76,10 @@ static void *pstore_ftrace_seq_start(struct seq_file *s, loff_t *pos)
 
 	data->off = ps->total_size % REC_SIZE;
 	data->off += *pos * REC_SIZE;
-	if (data->off + REC_SIZE > ps->total_size) {
-		kfree(data);
+	if (data->off + REC_SIZE > ps->total_size)
 		return NULL;
-	}
 
-	return data;
-
+	return_ptr(data);
 }
 
 static void pstore_ftrace_seq_stop(struct seq_file *s, void *v)
@@ -219,7 +220,7 @@ static struct inode *pstore_get_inode(struct super_block *sb)
 	struct inode *inode = new_inode(sb);
 	if (inode) {
 		inode->i_ino = get_next_ino();
-		inode->i_atime = inode->i_mtime = inode_set_ctime_current(inode);
+		simple_inode_init_ts(inode);
 	}
 	return inode;
 }
@@ -335,10 +336,9 @@ int pstore_put_backend_records(struct pstore_info *psi)
 int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 {
 	struct dentry		*dentry;
-	struct inode		*inode;
-	int			rc = 0;
+	struct inode		*inode __free(pstore_iput) = NULL;
 	char			name[PSTORE_NAMELEN];
-	struct pstore_private	*private, *pos;
+	struct pstore_private	*private __free(pstore_private) = NULL, *pos;
 	size_t			size = record->size + record->ecc_notice_size;
 
 	if (WARN_ON(!inode_is_locked(d_inode(root))))
@@ -354,7 +354,6 @@ int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 			return -EEXIST;
 	}
 
-	rc = -ENOMEM;
 	inode = pstore_get_inode(root->d_sb);
 	if (!inode)
 		return -ENOMEM;
@@ -367,11 +366,11 @@ int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 
 	private = kzalloc(sizeof(*private), GFP_KERNEL);
 	if (!private)
-		goto fail_inode;
+		return -ENOMEM;
 
 	dentry = d_alloc_name(root, name);
 	if (!dentry)
-		goto fail_private;
+		return -ENOMEM;
 
 	private->dentry = dentry;
 	private->record = record;
@@ -379,19 +378,14 @@ int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 	inode->i_private = private;
 
 	if (record->time.tv_sec)
-		inode->i_mtime = inode_set_ctime_to_ts(inode, record->time);
+		inode_set_mtime_to_ts(inode,
+				      inode_set_ctime_to_ts(inode, record->time));
 
-	d_add(dentry, inode);
+	d_add(dentry, no_free_ptr(inode));
 
-	list_add(&private->list, &records_list);
+	list_add(&(no_free_ptr(private))->list, &records_list);
 
 	return 0;
-
-fail_private:
-	free_pstore_private(private);
-fail_inode:
-	iput(inode);
-	return rc;
 }
 
 /*

@@ -135,7 +135,7 @@ static void update_general_status(struct f2fs_sb_info *sbi)
 	si->cur_ckpt_time = sbi->cprc_info.cur_time;
 	si->peak_ckpt_time = sbi->cprc_info.peak_time;
 	spin_unlock(&sbi->cprc_info.stat_lock);
-	si->total_count = (int)sbi->user_block_count / BLKS_PER_SEG(sbi);
+	si->total_count = BLKS_TO_SEGS(sbi, (int)sbi->user_block_count);
 	si->rsvd_segs = reserved_segments(sbi);
 	si->overp_segs = overprovision_segments(sbi);
 	si->valid_count = valid_user_blocks(sbi);
@@ -176,11 +176,10 @@ static void update_general_status(struct f2fs_sb_info *sbi)
 	si->alloc_nids = NM_I(sbi)->nid_cnt[PREALLOC_NID];
 	si->io_skip_bggc = sbi->io_skip_bggc;
 	si->other_skip_bggc = sbi->other_skip_bggc;
-	si->util_free = (int)(free_user_blocks(sbi) >> sbi->log_blocks_per_seg)
+	si->util_free = (int)(BLKS_TO_SEGS(sbi, free_user_blocks(sbi)))
 		* 100 / (int)(sbi->user_block_count >> sbi->log_blocks_per_seg)
 		/ 2;
-	si->util_valid = (int)(written_block_count(sbi) >>
-						sbi->log_blocks_per_seg)
+	si->util_valid = (int)(BLKS_TO_SEGS(sbi, written_block_count(sbi)))
 		* 100 / (int)(sbi->user_block_count >> sbi->log_blocks_per_seg)
 		/ 2;
 	si->util_invalid = 50 - si->util_free - si->util_valid;
@@ -276,7 +275,7 @@ static void update_mem_info(struct f2fs_sb_info *sbi)
 	/* build nm */
 	si->base_mem += sizeof(struct f2fs_nm_info);
 	si->base_mem += __bitmap_size(sbi, NAT_BITMAP);
-	si->base_mem += (NM_I(sbi)->nat_bits_blocks << F2FS_BLKSIZE_BITS);
+	si->base_mem += F2FS_BLK_TO_BYTES(NM_I(sbi)->nat_bits_blocks);
 	si->base_mem += NM_I(sbi)->nat_blocks *
 				f2fs_bitmap_size(NAT_ENTRY_PER_BLOCK);
 	si->base_mem += NM_I(sbi)->nat_blocks / 8;

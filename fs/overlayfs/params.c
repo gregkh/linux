@@ -139,10 +139,6 @@ static int ovl_verity_mode_def(void)
 	return OVL_VERITY_OFF;
 }
 
-#define fsparam_string_empty(NAME, OPT) \
-	__fsparam(fs_param_is_string, NAME, OPT, fs_param_can_be_empty, NULL)
-
-
 const struct fs_parameter_spec ovl_parameter_spec[] = {
 	fsparam_string_empty("lowerdir",    Opt_lowerdir),
 	fsparam_string("lowerdir+",         Opt_lowerdir_add),
@@ -724,10 +720,8 @@ void ovl_free_fs(struct ovl_fs *ofs)
 	unsigned i;
 
 	iput(ofs->workbasedir_trap);
-	iput(ofs->indexdir_trap);
 	iput(ofs->workdir_trap);
 	dput(ofs->whiteout);
-	dput(ofs->indexdir);
 	dput(ofs->workdir);
 	if (ofs->workdir_locked)
 		ovl_inuse_unlock(ofs->workbasedir);

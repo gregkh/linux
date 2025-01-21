@@ -432,7 +432,7 @@ static struct scsi_host_template mac_scsi_template = {
 	.eh_host_reset_handler	= macscsi_host_reset,
 	.can_queue		= 16,
 	.this_id		= 7,
-	.sg_tablesize		= 1,
+	.sg_tablesize		= SG_ALL,
 	.cmd_per_lun		= 2,
 	.dma_boundary		= PAGE_SIZE - 1,
 	.cmd_size		= sizeof(struct NCR5380_cmd),
@@ -470,6 +470,9 @@ static int __init mac_scsi_probe(struct platform_device *pdev)
 	if (setup_hostid >= 0)
 		mac_scsi_template.this_id = setup_hostid & 7;
 
+	if (macintosh_config->ident == MAC_MODEL_IIFX)
+		mac_scsi_template.sg_tablesize = 1;
+
 	instance = scsi_host_alloc(&mac_scsi_template,
 	                           sizeof(struct NCR5380_hostdata));
 	if (!instance)
@@ -490,6 +493,9 @@ static int __init mac_scsi_probe(struct platform_device *pdev)
 		host_flags |= FLAG_NO_PSEUDO_DMA;
 
 	host_flags |= setup_toshiba_delay > 0 ? FLAG_TOSHIBA_DELAY : 0;
+
+	if (instance->sg_tablesize > 1)
+		host_flags |= FLAG_DMA_FIXUP;
 
 	error = NCR5380_init(instance, host_flags | FLAG_LATE_DMA_SETUP);
 	if (error)
@@ -523,7 +529,7 @@ fail_init:
 	return error;
 }
 
-static int __exit mac_scsi_remove(struct platform_device *pdev)
+static void __exit mac_scsi_remove(struct platform_device *pdev)
 {
 	struct Scsi_Host *instance = platform_get_drvdata(pdev);
 
@@ -532,11 +538,16 @@ static int __exit mac_scsi_remove(struct platform_device *pdev)
 		free_irq(instance->irq, instance);
 	NCR5380_exit(instance);
 	scsi_host_put(instance);
-	return 0;
 }
 
-static struct platform_driver mac_scsi_driver = {
-	.remove = __exit_p(mac_scsi_remove),
+/*
+ * mac_scsi_remove() lives in .exit.text. For drivers registered via
+ * module_platform_driver_probe() this is ok because they cannot get unbound at
+ * runtime. So mark the driver struct with __refdata to prevent modpost
+ * triggering a section mismatch warning.
+ */
+static struct platform_driver mac_scsi_driver __refdata = {
+	.remove_new = __exit_p(mac_scsi_remove),
 	.driver = {
 		.name	= DRV_MODULE_NAME,
 	},
@@ -545,4 +556,5 @@ static struct platform_driver mac_scsi_driver = {
 module_platform_driver_probe(mac_scsi_driver, mac_scsi_probe);
 
 MODULE_ALIAS("platform:" DRV_MODULE_NAME);
+MODULE_DESCRIPTION("Macintosh NCR5380 SCSI driver");
 MODULE_LICENSE("GPL");

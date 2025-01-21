@@ -279,7 +279,7 @@ struct ceph_osd_request {
 	int r_attempts;
 	u32 r_map_dne_bound;
 
-	struct ceph_osd_req_op r_ops[];
+	struct ceph_osd_req_op r_ops[] __counted_by(r_num_ops);
 };
 
 struct ceph_request_redirect {
@@ -449,8 +449,6 @@ extern int ceph_osdc_init(struct ceph_osd_client *osdc,
 extern void ceph_osdc_stop(struct ceph_osd_client *osdc);
 extern void ceph_osdc_reopen_osds(struct ceph_osd_client *osdc);
 
-extern void ceph_osdc_handle_reply(struct ceph_osd_client *osdc,
-				   struct ceph_msg *msg);
 extern void ceph_osdc_handle_map(struct ceph_osd_client *osdc,
 				 struct ceph_msg *msg);
 void ceph_osdc_update_epoch_barrier(struct ceph_osd_client *osdc, u32 eb);

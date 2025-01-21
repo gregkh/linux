@@ -42,6 +42,8 @@ int pdsc_err_to_errno(enum pds_core_status_code code)
 		return -ERANGE;
 	case PDS_RC_BAD_ADDR:
 		return -EFAULT;
+	case PDS_RC_BAD_PCI:
+		return -ENXIO;
 	case PDS_RC_EOPCODE:
 	case PDS_RC_EINTR:
 	case PDS_RC_DEV_CMD:
@@ -65,7 +67,7 @@ bool pdsc_is_fw_running(struct pdsc *pdsc)
 	/* Firmware is useful only if the running bit is set and
 	 * fw_status != 0xff (bad PCI read)
 	 */
-	return (pdsc->fw_status != 0xff) &&
+	return (pdsc->fw_status != PDS_RC_BAD_PCI) &&
 		(pdsc->fw_status & PDS_CORE_FW_STS_F_RUNNING);
 }
 
@@ -131,6 +133,7 @@ static int pdsc_devcmd_wait(struct pdsc *pdsc, u8 opcode, int max_seconds)
 	unsigned long max_wait;
 	unsigned long duration;
 	int timeout = 0;
+	bool running;
 	int done = 0;
 	int err = 0;
 	int status;
@@ -139,6 +142,10 @@ static int pdsc_devcmd_wait(struct pdsc *pdsc, u8 opcode, int max_seconds)
 	max_wait = start_time + (max_seconds * HZ);
 
 	while (!done && !timeout) {
+		running = pdsc_is_fw_running(pdsc);
+		if (!running)
+			break;
+
 		done = pdsc_devcmd_done(pdsc);
 		if (done)
 			break;
@@ -155,7 +162,7 @@ static int pdsc_devcmd_wait(struct pdsc *pdsc, u8 opcode, int max_seconds)
 		dev_dbg(dev, "DEVCMD %d %s after %ld secs\n",
 			opcode, pdsc_devcmd_str(opcode), duration / HZ);
 
-	if (!done || timeout) {
+	if ((!done || timeout) && running) {
 		dev_err(dev, "DEVCMD %d %s timeout, done %d timeout %d max_seconds=%d\n",
 			opcode, pdsc_devcmd_str(opcode), done, timeout,
 			max_seconds);
@@ -221,6 +228,9 @@ int pdsc_devcmd_reset(struct pdsc *pdsc)
 	union pds_core_dev_cmd cmd = {
 		.reset.opcode = PDS_CORE_CMD_RESET,
 	};
+
+	if (!pdsc_is_fw_running(pdsc))
+		return 0;
 
 	return pdsc_devcmd(pdsc, &cmd, &comp, pdsc->devcmd_timeout);
 }
@@ -309,6 +319,22 @@ static int pdsc_identify(struct pdsc *pdsc)
 	return 0;
 }
 
+void pdsc_dev_uninit(struct pdsc *pdsc)
+{
+	if (pdsc->intr_info) {
+		int i;
+
+		for (i = 0; i < pdsc->nintrs; i++)
+			pdsc_intr_free(pdsc, i);
+
+		kfree(pdsc->intr_info);
+		pdsc->intr_info = NULL;
+		pdsc->nintrs = 0;
+	}
+
+	pci_free_irq_vectors(pdsc->pdev);
+}
+
 int pdsc_dev_init(struct pdsc *pdsc)
 {
 	unsigned int nintrs;
@@ -334,10 +360,8 @@ int pdsc_dev_init(struct pdsc *pdsc)
 
 	/* Get intr_info struct array for tracking */
 	pdsc->intr_info = kcalloc(nintrs, sizeof(*pdsc->intr_info), GFP_KERNEL);
-	if (!pdsc->intr_info) {
-		err = -ENOMEM;
-		goto err_out;
-	}
+	if (!pdsc->intr_info)
+		return -ENOMEM;
 
 	err = pci_alloc_irq_vectors(pdsc->pdev, nintrs, nintrs, PCI_IRQ_MSIX);
 	if (err != nintrs) {

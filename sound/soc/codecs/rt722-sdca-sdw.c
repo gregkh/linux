@@ -258,6 +258,9 @@ static int rt722_sdca_read_prop(struct sdw_slave *slave)
 	/* wake-up event */
 	prop->wake_capable = 1;
 
+	/* Three data lanes are supported by rt722-sdca codec */
+	prop->lane_control_support = true;
+
 	return 0;
 }
 
@@ -361,7 +364,7 @@ io_error:
 	return ret;
 }
 
-static struct sdw_slave_ops rt722_sdca_slave_ops = {
+static const struct sdw_slave_ops rt722_sdca_slave_ops = {
 	.read_prop = rt722_sdca_read_prop,
 	.interrupt_callback = rt722_sdca_interrupt_callback,
 	.update_status = rt722_sdca_update_status,
@@ -502,7 +505,6 @@ static const struct dev_pm_ops rt722_sdca_pm = {
 static struct sdw_driver rt722_sdca_sdw_driver = {
 	.driver = {
 		.name = "rt722-sdca",
-		.owner = THIS_MODULE,
 		.pm = &rt722_sdca_pm,
 	},
 	.probe = rt722_sdca_sdw_probe,

@@ -17,6 +17,7 @@
 #include <linux/pm.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include <linux/suspend.h>
 #include <linux/thermal.h>
 #include "../thermal_hwmon.h"
 #include "tsens.h"
@@ -1196,6 +1197,36 @@ static int tsens_register_irq(struct tsens_priv *priv, char *irqname,
 	return ret;
 }
 
+#ifdef CONFIG_SUSPEND
+static int tsens_reinit(struct tsens_priv *priv)
+{
+	if (tsens_version(priv) >= VER_2_X) {
+		/*
+		 * Re-enable the watchdog, unmask the bark.
+		 * Disable cycle completion monitoring
+		 */
+		if (priv->feat->has_watchdog) {
+			regmap_field_write(priv->rf[WDOG_BARK_MASK], 0);
+			regmap_field_write(priv->rf[CC_MON_MASK], 1);
+		}
+
+		/* Re-enable interrupts */
+		tsens_enable_irq(priv);
+	}
+
+	return 0;
+}
+
+int tsens_resume_common(struct tsens_priv *priv)
+{
+	if (pm_suspend_target_state == PM_SUSPEND_MEM)
+		tsens_reinit(priv);
+
+	return 0;
+}
+
+#endif /* !CONFIG_SUSPEND */
+
 static int tsens_register(struct tsens_priv *priv)
 {
 	int i, ret;
@@ -1308,11 +1339,9 @@ static int tsens_probe(struct platform_device *pdev)
 
 	if (priv->ops->calibrate) {
 		ret = priv->ops->calibrate(priv);
-		if (ret < 0) {
-			if (ret != -EPROBE_DEFER)
-				dev_err(dev, "%s: calibration failed\n", __func__);
-			return ret;
-		}
+		if (ret < 0)
+			return dev_err_probe(dev, ret, "%s: calibration failed\n",
+					     __func__);
 	}
 
 	ret = tsens_register(priv);
@@ -1322,7 +1351,7 @@ static int tsens_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int tsens_remove(struct platform_device *pdev)
+static void tsens_remove(struct platform_device *pdev)
 {
 	struct tsens_priv *priv = platform_get_drvdata(pdev);
 
@@ -1330,13 +1359,11 @@ static int tsens_remove(struct platform_device *pdev)
 	tsens_disable_irq(priv);
 	if (priv->ops->disable)
 		priv->ops->disable(priv);
-
-	return 0;
 }
 
 static struct platform_driver tsens_driver = {
 	.probe = tsens_probe,
-	.remove = tsens_remove,
+	.remove_new = tsens_remove,
 	.driver = {
 		.name = "qcom-tsens",
 		.pm	= &tsens_pm_ops,

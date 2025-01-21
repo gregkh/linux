@@ -798,6 +798,22 @@
 			reset-names = "rst", "arst", "prst";
 			power-domains = <&cpg>;
 			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					dsi0_in: endpoint {
+						remote-endpoint = <&du_out_dsi>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+				};
+			};
 		};
 
 		vspd: vsp@10870000 {
@@ -824,6 +840,37 @@
 			clock-names = "aclk", "pclk", "vclk";
 			power-domains = <&cpg>;
 			resets = <&cpg R9A07G054_LCDC_RESET_N>;
+		};
+
+		du: display@10890000 {
+			compatible = "renesas,r9a07g054-du",
+				     "renesas,r9a07g044-du";
+			reg = <0 0x10890000 0 0x10000>;
+			interrupts = <GIC_SPI 152 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&cpg CPG_MOD R9A07G054_LCDC_CLK_A>,
+				 <&cpg CPG_MOD R9A07G054_LCDC_CLK_P>,
+				 <&cpg CPG_MOD R9A07G054_LCDC_CLK_D>;
+			clock-names = "aclk", "pclk", "vclk";
+			power-domains = <&cpg>;
+			resets = <&cpg R9A07G054_LCDC_RESET_N>;
+			renesas,vsps = <&vspd 0>;
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					du_out_dsi: endpoint {
+						remote-endpoint = <&dsi0_in>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+				};
+			};
 		};
 
 		cpg: clock-controller@11010000 {
@@ -1011,7 +1058,7 @@
 
 		sdhi0: mmc@11c00000 {
 			compatible = "renesas,sdhi-r9a07g054",
-				     "renesas,rcar-gen3-sdhi";
+				     "renesas,rzg2l-sdhi";
 			reg = <0x0 0x11c00000 0 0x10000>;
 			interrupts = <GIC_SPI 104 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 105 IRQ_TYPE_LEVEL_HIGH>;
@@ -1027,7 +1074,7 @@
 
 		sdhi1: mmc@11c10000 {
 			compatible = "renesas,sdhi-r9a07g054",
-				     "renesas,rcar-gen3-sdhi";
+				     "renesas,rzg2l-sdhi";
 			reg = <0x0 0x11c10000 0 0x10000>;
 			interrupts = <GIC_SPI 106 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 107 IRQ_TYPE_LEVEL_HIGH>;
@@ -1090,6 +1137,10 @@
 			power-domains = <&cpg>;
 			#reset-cells = <1>;
 			status = "disabled";
+
+			usb0_vbus_otg: regulator-vbus {
+				regulator-name = "vbus";
+			};
 		};
 
 		ohci0: usb@11c50000 {
@@ -1178,7 +1229,7 @@
 
 		hsusb: usb@11c60000 {
 			compatible = "renesas,usbhs-r9a07g054",
-				     "renesas,rza2-usbhs";
+				     "renesas,rzg2l-usbhs";
 			reg = <0 0x11c60000 0 0x10000>;
 			interrupts = <GIC_SPI 100 IRQ_TYPE_EDGE_RISING>,
 				     <GIC_SPI 101 IRQ_TYPE_LEVEL_HIGH>,

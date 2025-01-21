@@ -627,7 +627,8 @@ retry:
 			skb = txm->frag_skb;
 		}
 
-		if (WARN_ON(!skb_shinfo(skb)->nr_frags)) {
+		if (WARN_ON(!skb_shinfo(skb)->nr_frags) ||
+		    WARN_ON_ONCE(!skb_frag_page(&skb_shinfo(skb)->frags[0]))) {
 			ret = -EINVAL;
 			goto out;
 		}
@@ -637,8 +638,8 @@ retry:
 			msize += skb_frag_size(&skb_shinfo(skb)->frags[i]);
 
 		iov_iter_bvec(&msg.msg_iter, ITER_SOURCE,
-			      skb_shinfo(skb)->frags, skb_shinfo(skb)->nr_frags,
-			      msize);
+			      (const struct bio_vec *)skb_shinfo(skb)->frags,
+			      skb_shinfo(skb)->nr_frags, msize);
 		iov_iter_advance(&msg.msg_iter, txm->frag_offset);
 
 		do {
@@ -1882,15 +1883,11 @@ static int __init kcm_init(void)
 {
 	int err = -ENOMEM;
 
-	kcm_muxp = kmem_cache_create("kcm_mux_cache",
-				     sizeof(struct kcm_mux), 0,
-				     SLAB_HWCACHE_ALIGN, NULL);
+	kcm_muxp = KMEM_CACHE(kcm_mux, SLAB_HWCACHE_ALIGN);
 	if (!kcm_muxp)
 		goto fail;
 
-	kcm_psockp = kmem_cache_create("kcm_psock_cache",
-				       sizeof(struct kcm_psock), 0,
-					SLAB_HWCACHE_ALIGN, NULL);
+	kcm_psockp = KMEM_CACHE(kcm_psock, SLAB_HWCACHE_ALIGN);
 	if (!kcm_psockp)
 		goto fail;
 
@@ -1951,4 +1948,5 @@ module_init(kcm_init);
 module_exit(kcm_exit);
 
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("KCM (Kernel Connection Multiplexor) sockets");
 MODULE_ALIAS_NETPROTO(PF_KCM);

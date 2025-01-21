@@ -191,6 +191,7 @@ struct hfsplus_sb_info {
 	int work_queued;               /* non-zero delayed work is queued */
 	struct delayed_work sync_work; /* FS sync delayed work */
 	spinlock_t work_lock;          /* protects sync_work and work_queued */
+	struct rcu_head rcu;
 };
 
 #define HFSPLUS_SB_WRITEBACKUP	0
@@ -472,7 +473,7 @@ extern const struct address_space_operations hfsplus_btree_aops;
 extern const struct dentry_operations hfsplus_dentry_operations;
 
 int hfsplus_write_begin(struct file *file, struct address_space *mapping,
-		loff_t pos, unsigned len, struct page **pagep, void **fsdata);
+		loff_t pos, unsigned len, struct folio **foliop, void **fsdata);
 struct inode *hfsplus_new_inode(struct super_block *sb, struct inode *dir,
 				umode_t mode);
 void hfsplus_delete_inode(struct inode *inode);

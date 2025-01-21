@@ -62,7 +62,6 @@ struct dp_link_phy_params {
 struct dp_link {
 	u32 sink_request;
 	u32 test_response;
-	bool psm_enabled;
 
 	u8 sink_count;
 	struct dp_link_test_video test_video;
@@ -94,29 +93,6 @@ static inline u32 dp_link_bit_depth_to_bpp(u32 tbd)
 		return 24;
 	case DP_TEST_BIT_DEPTH_10:
 		return 30;
-	case DP_TEST_BIT_DEPTH_UNKNOWN:
-	default:
-		return 0;
-	}
-}
-
-/**
- * dp_test_bit_depth_to_bpc() - convert test bit depth to bpc
- * @tbd: test bit depth
- *
- * Returns the bits per comp (bpc) to be used corresponding to the
- * bit depth value. This function assumes that bit depth has
- * already been validated.
- */
-static inline u32 dp_link_bit_depth_to_bpc(u32 tbd)
-{
-	switch (tbd) {
-	case DP_TEST_BIT_DEPTH_6:
-		return 6;
-	case DP_TEST_BIT_DEPTH_8:
-		return 8;
-	case DP_TEST_BIT_DEPTH_10:
-		return 10;
 	case DP_TEST_BIT_DEPTH_UNKNOWN:
 	default:
 		return 0;

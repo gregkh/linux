@@ -5,6 +5,7 @@
 #define _LAN743X_H
 
 #include <linux/phy.h>
+#include <linux/phylink.h>
 #include "lan743x_ptp.h"
 
 #define DRIVER_AUTHOR   "Bryan Whitehead <Bryan.Whitehead@microchip.com>"
@@ -550,6 +551,8 @@
 	(((u32)(rx_latency)) & 0x0000FFFF)
 #define PTP_CAP_INFO				(0x0A60)
 #define PTP_CAP_INFO_TX_TS_CNT_GET_(reg_val)	(((reg_val) & 0x00000070) >> 4)
+#define PTP_RX_TS_CFG				(0x0A68)
+#define PTP_RX_TS_CFG_EVENT_MSGS_               GENMASK(3, 0)
 
 #define PTP_TX_MOD				(0x0AA4)
 #define PTP_TX_MOD_TX_PTP_SYNC_TS_INSERT_	(0x10000000)
@@ -685,6 +688,9 @@
 
 #define RX_CFG_B(channel)			(0xC44 + ((channel) << 6))
 #define RX_CFG_B_TS_ALL_RX_			BIT(29)
+#define RX_CFG_B_TS_DESCR_EN_			BIT(28)
+#define RX_CFG_B_TS_NONE_			0
+#define RX_CFG_B_TS_MASK_			(0xCFFFFFFF)
 #define RX_CFG_B_RX_PAD_MASK_			(0x03000000)
 #define RX_CFG_B_RX_PAD_0_			(0x00000000)
 #define RX_CFG_B_RX_PAD_2_			(0x02000000)
@@ -1019,6 +1025,9 @@ struct lan743x_rx {
 	struct sk_buff *skb_head, *skb_tail;
 };
 
+int lan743x_rx_set_tstamp_mode(struct lan743x_adapter *adapter,
+			       int rx_filter);
+
 /* SGMII Link Speed Duplex status */
 enum lan743x_sgmii_lsd {
 	POWER_DOWN = 0,
@@ -1075,6 +1084,8 @@ struct lan743x_adapter {
 	u32			flags;
 	u32			hw_cfg;
 	phy_interface_t		phy_interface;
+	struct phylink		*phylink;
+	struct phylink_config	phylink_config;
 };
 
 #define LAN743X_COMPONENT_FLAG_RX(channel)  BIT(20 + (channel))
@@ -1099,7 +1110,7 @@ struct lan743x_adapter {
 #define DMA_DESCRIPTOR_SPACING_32       (32)
 #define DMA_DESCRIPTOR_SPACING_64       (64)
 #define DMA_DESCRIPTOR_SPACING_128      (128)
-#define DEFAULT_DMA_DESCRIPTOR_SPACING  (L1_CACHE_BYTES)
+#define DEFAULT_DMA_DESCRIPTOR_SPACING  (DMA_DESCRIPTOR_SPACING_16)
 
 #define DMAC_CHANNEL_STATE_SET(start_bit, stop_bit) \
 	(((start_bit) ? 2 : 0) | ((stop_bit) ? 1 : 0))
@@ -1195,5 +1206,6 @@ void lan743x_hs_syslock_release(struct lan743x_adapter *adapter);
 void lan743x_mac_flow_ctrl_set_enables(struct lan743x_adapter *adapter,
 				       bool tx_enable, bool rx_enable);
 int lan743x_sgmii_read(struct lan743x_adapter *adapter, u8 mmd, u16 addr);
+void lan743x_mac_eee_enable(struct lan743x_adapter *adapter, bool enable);
 
 #endif /* _LAN743X_H */

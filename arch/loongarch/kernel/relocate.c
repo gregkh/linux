@@ -35,11 +35,27 @@ static inline void __init relocate_relative(void)
 		if (rela->r_info != R_LARCH_RELATIVE)
 			continue;
 
-		if (relocated_addr >= VMLINUX_LOAD_ADDRESS)
-			relocated_addr = (Elf64_Addr)RELOCATED(relocated_addr);
-
+		relocated_addr = (Elf64_Addr)RELOCATED(relocated_addr);
 		*(Elf64_Addr *)RELOCATED(addr) = relocated_addr;
 	}
+
+#ifdef CONFIG_RELR
+	u64 *addr = NULL;
+	u64 *relr = (u64 *)&__relr_dyn_begin;
+	u64 *relr_end = (u64 *)&__relr_dyn_end;
+
+	for ( ; relr < relr_end; relr++) {
+		if ((*relr & 1) == 0) {
+			addr = (u64 *)(*relr + reloc_offset);
+			*addr++ += reloc_offset;
+		} else {
+			for (u64 *p = addr, r = *relr >> 1; r; p++, r >>= 1)
+				if (r & 1)
+					*p += reloc_offset;
+			addr += 63;
+		}
+	}
+#endif
 }
 
 static inline void __init relocate_absolute(long random_offset)
@@ -123,6 +139,32 @@ static inline __init bool kaslr_disabled(void)
 	str = strstr(boot_command_line, "nokaslr");
 	if (str == boot_command_line || (str > boot_command_line && *(str - 1) == ' '))
 		return true;
+
+#ifdef CONFIG_HIBERNATION
+	str = strstr(builtin_cmdline, "nohibernate");
+	if (str == builtin_cmdline || (str > builtin_cmdline && *(str - 1) == ' '))
+		return false;
+
+	str = strstr(boot_command_line, "nohibernate");
+	if (str == boot_command_line || (str > boot_command_line && *(str - 1) == ' '))
+		return false;
+
+	str = strstr(builtin_cmdline, "noresume");
+	if (str == builtin_cmdline || (str > builtin_cmdline && *(str - 1) == ' '))
+		return false;
+
+	str = strstr(boot_command_line, "noresume");
+	if (str == boot_command_line || (str > boot_command_line && *(str - 1) == ' '))
+		return false;
+
+	str = strstr(builtin_cmdline, "resume=");
+	if (str == builtin_cmdline || (str > builtin_cmdline && *(str - 1) == ' '))
+		return true;
+
+	str = strstr(boot_command_line, "resume=");
+	if (str == boot_command_line || (str > boot_command_line && *(str - 1) == ' '))
+		return true;
+#endif
 
 	return false;
 }

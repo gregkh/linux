@@ -139,7 +139,7 @@ int cmd_db_ready(void)
 
 	return 0;
 }
-EXPORT_SYMBOL(cmd_db_ready);
+EXPORT_SYMBOL_GPL(cmd_db_ready);
 
 static int cmd_db_get_header(const char *id, const struct entry_header **eh,
 			     const struct rsc_hdr **rh)
@@ -153,12 +153,7 @@ static int cmd_db_get_header(const char *id, const struct entry_header **eh,
 	if (ret)
 		return ret;
 
-	/*
-	 * Pad out query string to same length as in DB. NOTE: the output
-	 * query string is not necessarily '\0' terminated if it bumps up
-	 * against the max size. That's OK and expected.
-	 */
-	strncpy(query, id, sizeof(query));
+	strtomem_pad(query, id, 0);
 
 	for (i = 0; i < MAX_SLV_ID; i++) {
 		rsc_hdr = &cmd_db_header->header[i];
@@ -199,7 +194,7 @@ u32 cmd_db_read_addr(const char *id)
 
 	return ret < 0 ? 0 : le32_to_cpu(ent->addr);
 }
-EXPORT_SYMBOL(cmd_db_read_addr);
+EXPORT_SYMBOL_GPL(cmd_db_read_addr);
 
 /**
  * cmd_db_read_aux_data() - Query command db for aux data.
@@ -224,7 +219,7 @@ const void *cmd_db_read_aux_data(const char *id, size_t *len)
 
 	return rsc_offset(rsc_hdr, ent);
 }
-EXPORT_SYMBOL(cmd_db_read_aux_data);
+EXPORT_SYMBOL_GPL(cmd_db_read_aux_data);
 
 /**
  * cmd_db_match_resource_addr() - Compare if both Resource addresses are same
@@ -270,7 +265,7 @@ enum cmd_db_hw_type cmd_db_read_slave_id(const char *id)
 	addr = le32_to_cpu(ent->addr);
 	return (addr >> SLAVE_ID_SHIFT) & SLAVE_ID_MASK;
 }
-EXPORT_SYMBOL(cmd_db_read_slave_id);
+EXPORT_SYMBOL_GPL(cmd_db_read_slave_id);
 
 #ifdef CONFIG_DEBUG_FS
 static int cmd_db_debugfs_dump(struct seq_file *seq, void *p)
@@ -392,7 +387,7 @@ static int __init cmd_db_device_init(void)
 {
 	return platform_driver_register(&cmd_db_dev_driver);
 }
-arch_initcall(cmd_db_device_init);
+core_initcall(cmd_db_device_init);
 
 MODULE_DESCRIPTION("Qualcomm Technologies, Inc. Command DB Driver");
 MODULE_LICENSE("GPL v2");

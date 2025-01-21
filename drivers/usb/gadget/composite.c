@@ -19,7 +19,7 @@
 #include <linux/usb/composite.h>
 #include <linux/usb/otg.h>
 #include <linux/usb/webusb.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "u_os_desc.h"
 
@@ -2811,5 +2811,6 @@ void usb_composite_overwrite_options(struct usb_composite_dev *cdev,
 }
 EXPORT_SYMBOL_GPL(usb_composite_overwrite_options);
 
+MODULE_DESCRIPTION("infrastructure for Composite USB Gadgets");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("David Brownell");

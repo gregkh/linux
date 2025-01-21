@@ -161,14 +161,6 @@
 
 #define PSB_NUM_VBLANKS 2
 
-
-#define PSB_2D_SIZE (256*1024*1024)
-#define PSB_MAX_RELOC_PAGES 1024
-
-#define PSB_LOW_REG_OFFS 0x0204
-#define PSB_HIGH_REG_OFFS 0x0600
-
-#define PSB_NUM_VBLANKS 2
 #define PSB_WATCHDOG_DELAY (HZ * 2)
 
 #define PSB_MAX_BRIGHTNESS		100
@@ -210,7 +202,7 @@ struct psb_intel_opregion {
 struct sdvo_device_mapping {
 	u8 initialized;
 	u8 dvo_port;
-	u8 slave_addr;
+	u8 target_addr;
 	u8 dvo_wiring;
 	u8 i2c_pin;
 	u8 i2c_speed;

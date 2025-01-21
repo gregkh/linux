@@ -24,7 +24,7 @@ static inline struct udphdr *udp_hdr(const struct sk_buff *skb)
 }
 
 #define UDP_HTABLE_SIZE_MIN_PERNET	128
-#define UDP_HTABLE_SIZE_MIN		(CONFIG_BASE_SMALL ? 128 : 256)
+#define UDP_HTABLE_SIZE_MIN		(IS_ENABLED(CONFIG_BASE_SMALL) ? 128 : 256)
 #define UDP_HTABLE_SIZE_MAX		65536
 
 static inline u32 udp_hashfn(const struct net *net, u32 num, u32 mask)
@@ -92,6 +92,9 @@ struct udp_sock {
 
 	/* This fields follows rcvbuf value, and is touched by udp_recvmsg */
 	int		forward_threshold;
+
+	/* Cache friendly copy of sk->sk_peek_off >= 0 */
+	bool		peeking_with_offset;
 };
 
 #define udp_test_bit(nr, sk)			\
@@ -108,6 +111,13 @@ struct udp_sock {
 #define UDP_MAX_SEGMENTS	(1 << 7UL)
 
 #define udp_sk(ptr) container_of_const(ptr, struct udp_sock, inet.sk)
+
+static inline int udp_set_peek_off(struct sock *sk, int val)
+{
+	sk_set_peek_off(sk, val);
+	WRITE_ONCE(udp_sk(sk)->peeking_with_offset, val >= 0);
+	return 0;
+}
 
 static inline void udp_set_no_check6_tx(struct sock *sk, bool val)
 {

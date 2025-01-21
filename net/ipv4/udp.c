@@ -115,6 +115,7 @@
 #include <net/addrconf.h>
 #include <net/udp_tunnel.h>
 #include <net/gro.h>
+#include <net/inet_dscp.h>
 #if IS_ENABLED(CONFIG_IPV6)
 #include <net/ipv6_stubs.h>
 #endif
@@ -365,7 +366,7 @@ int udp_v4_get_port(struct sock *sk, unsigned short snum)
 	return udp_lib_get_port(sk, snum, hash2_nulladdr);
 }
 
-static int compute_score(struct sock *sk, struct net *net,
+static int compute_score(struct sock *sk, const struct net *net,
 			 __be32 saddr, __be16 sport,
 			 __be32 daddr, unsigned short hnum,
 			 int dif, int sdif)
@@ -413,8 +414,6 @@ INDIRECT_CALLABLE_SCOPE
 u32 udp_ehashfn(const struct net *net, const __be32 laddr, const __u16 lport,
 		const __be32 faddr, const __be16 fport)
 {
-	static u32 udp_ehash_secret __read_mostly;
-
 	net_get_random_once(&udp_ehash_secret, sizeof(udp_ehash_secret));
 
 	return __inet_ehashfn(laddr, lport, faddr, fport,
@@ -422,7 +421,7 @@ u32 udp_ehashfn(const struct net *net, const __be32 laddr, const __u16 lport,
 }
 
 /* called with rcu_read_lock() */
-static struct sock *udp4_lib_lookup2(struct net *net,
+static struct sock *udp4_lib_lookup2(const struct net *net,
 				     __be32 saddr, __be16 sport,
 				     __be32 daddr, unsigned int hnum,
 				     int dif, int sdif,
@@ -482,7 +481,7 @@ rescore:
 /* UDP is nearly always wildcards out the wazoo, it makes no sense to try
  * harder than this. -DaveM
  */
-struct sock *__udp4_lib_lookup(struct net *net, __be32 saddr,
+struct sock *__udp4_lib_lookup(const struct net *net, __be32 saddr,
 		__be16 sport, __be32 daddr, __be16 dport, int dif,
 		int sdif, struct udp_table *udptable, struct sk_buff *skb)
 {
@@ -563,7 +562,7 @@ struct sock *udp4_lib_lookup_skb(const struct sk_buff *skb,
  * Does increment socket refcount.
  */
 #if IS_ENABLED(CONFIG_NF_TPROXY_IPV4) || IS_ENABLED(CONFIG_NF_SOCKET_IPV4)
-struct sock *udp4_lib_lookup(struct net *net, __be32 saddr, __be16 sport,
+struct sock *udp4_lib_lookup(const struct net *net, __be32 saddr, __be16 sport,
 			     __be32 daddr, __be16 dport, int dif)
 {
 	struct sock *sk;
@@ -771,7 +770,7 @@ int __udp4_lib_err(struct sk_buff *skb, u32 info, struct udp_table *udptable)
 	case ICMP_DEST_UNREACH:
 		if (code == ICMP_FRAG_NEEDED) { /* Path MTU discovery */
 			ipv4_sk_update_pmtu(skb, sk, info);
-			if (inet->pmtudisc != IP_PMTUDISC_DONT) {
+			if (READ_ONCE(inet->pmtudisc) != IP_PMTUDISC_DONT) {
 				err = EMSGSIZE;
 				harderr = 1;
 				break;
@@ -942,8 +941,7 @@ static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4,
 			kfree_skb(skb);
 			return -EINVAL;
 		}
-		if (skb->ip_summed != CHECKSUM_PARTIAL || is_udplite ||
-		    dst_xfrm(skb_dst(skb))) {
+		if (is_udplite || dst_xfrm(skb_dst(skb))) {
 			kfree_skb(skb);
 			return -EIO;
 		}
@@ -953,8 +951,10 @@ static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4,
 			skb_shinfo(skb)->gso_type = SKB_GSO_UDP_L4;
 			skb_shinfo(skb)->gso_segs = DIV_ROUND_UP(datalen,
 								 cork->gso_size);
+
+			/* Don't checksum the payload, skb will get segmented */
+			goto csum_partial;
 		}
-		goto csum_partial;
 	}
 
 	if (is_udplite)  				 /*     UDP-Lite      */
@@ -1076,6 +1076,7 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	int (*getfrag)(void *, char *, int, int, int, struct sk_buff *);
 	struct sk_buff *skb;
 	struct ip_options_data opt_copy;
+	int uc_index;
 
 	if (len > 0xFFFF)
 		return -EMSGSIZE;
@@ -1197,30 +1198,31 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	if (scope == RT_SCOPE_LINK)
 		connected = 0;
 
+	uc_index = READ_ONCE(inet->uc_index);
 	if (ipv4_is_multicast(daddr)) {
 		if (!ipc.oif || netif_index_is_l3_master(sock_net(sk), ipc.oif))
-			ipc.oif = inet->mc_index;
+			ipc.oif = READ_ONCE(inet->mc_index);
 		if (!saddr)
-			saddr = inet->mc_addr;
+			saddr = READ_ONCE(inet->mc_addr);
 		connected = 0;
 	} else if (!ipc.oif) {
-		ipc.oif = inet->uc_index;
-	} else if (ipv4_is_lbcast(daddr) && inet->uc_index) {
+		ipc.oif = uc_index;
+	} else if (ipv4_is_lbcast(daddr) && uc_index) {
 		/* oif is set, packet is to local broadcast and
 		 * uc_index is set. oif is most likely set
 		 * by sk_bound_dev_if. If uc_index != oif check if the
 		 * oif is an L3 master and uc_index is an L3 slave.
 		 * If so, we want to allow the send using the uc_index.
 		 */
-		if (ipc.oif != inet->uc_index &&
+		if (ipc.oif != uc_index &&
 		    ipc.oif == l3mdev_master_ifindex_by_index(sock_net(sk),
-							      inet->uc_index)) {
-			ipc.oif = inet->uc_index;
+							      uc_index)) {
+			ipc.oif = uc_index;
 		}
 	}
 
 	if (connected)
-		rt = (struct rtable *)sk_dst_check(sk, 0);
+		rt = dst_rtable(sk_dst_check(sk, 0));
 
 	if (!rt) {
 		struct net *net = sock_net(sk);
@@ -1514,13 +1516,14 @@ int __udp_enqueue_schedule_skb(struct sock *sk, struct sk_buff *skb)
 	struct sk_buff_head *list = &sk->sk_receive_queue;
 	int rmem, err = -ENOMEM;
 	spinlock_t *busy = NULL;
-	int size;
+	int size, rcvbuf;
 
-	/* try to avoid the costly atomic add/sub pair when the receive
-	 * queue is full; always allow at least a packet
+	/* Immediately drop when the receive queue is full.
+	 * Always allow at least one packet.
 	 */
 	rmem = atomic_read(&sk->sk_rmem_alloc);
-	if (rmem > sk->sk_rcvbuf)
+	rcvbuf = READ_ONCE(sk->sk_rcvbuf);
+	if (rmem > rcvbuf)
 		goto drop;
 
 	/* Under mem pressure, it might be helpful to help udp_recvmsg()
@@ -1529,7 +1532,7 @@ int __udp_enqueue_schedule_skb(struct sock *sk, struct sk_buff *skb)
 	 * - Less cache line misses at copyout() time
 	 * - Less work at consume_skb() (less alien page frag freeing)
 	 */
-	if (rmem > (sk->sk_rcvbuf >> 1)) {
+	if (rmem > (rcvbuf >> 1)) {
 		skb_condense(skb);
 
 		busy = busylock_acquire(sk);
@@ -1537,12 +1540,7 @@ int __udp_enqueue_schedule_skb(struct sock *sk, struct sk_buff *skb)
 	size = skb->truesize;
 	udp_set_dev_scratch(skb);
 
-	/* we drop only if the receive buf is full and the receive
-	 * queue contains some other skb
-	 */
-	rmem = atomic_add_return(size, &sk->sk_rmem_alloc);
-	if (rmem > (size + (unsigned int)sk->sk_rcvbuf))
-		goto uncharge_drop;
+	atomic_add(size, &sk->sk_rmem_alloc);
 
 	spin_lock(&list->lock);
 	err = udp_rmem_schedule(sk, size);
@@ -1609,12 +1607,8 @@ int udp_init_sock(struct sock *sk)
 
 void skb_consume_udp(struct sock *sk, struct sk_buff *skb, int len)
 {
-	if (unlikely(READ_ONCE(sk->sk_peek_off) >= 0)) {
-		bool slow = lock_sock_fast(sk);
-
+	if (unlikely(READ_ONCE(udp_sk(sk)->peeking_with_offset)))
 		sk_peek_offset_bwd(sk, len);
-		unlock_sock_fast(sk, slow);
-	}
 
 	if (!skb_unref(skb))
 		return;
@@ -2075,8 +2069,8 @@ static int __udp_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 			drop_reason = SKB_DROP_REASON_PROTO_MEM;
 		}
 		UDP_INC_STATS(sock_net(sk), UDP_MIB_INERRORS, is_udplite);
-		kfree_skb_reason(skb, drop_reason);
-		trace_udp_fail_queue_rcv_skb(rc, sk);
+		trace_udp_fail_queue_rcv_skb(rc, sk, skb);
+		sk_skb_reason_drop(sk, skb, drop_reason);
 		return -1;
 	}
 
@@ -2198,7 +2192,7 @@ csum_error:
 drop:
 	__UDP_INC_STATS(sock_net(sk), UDP_MIB_INERRORS, is_udplite);
 	atomic_inc(&sk->sk_drops);
-	kfree_skb_reason(skb, drop_reason);
+	sk_skb_reason_drop(sk, skb, drop_reason);
 	return -1;
 }
 
@@ -2385,7 +2379,7 @@ static int udp_unicast_rcv_skb(struct sock *sk, struct sk_buff *skb,
 int __udp4_lib_rcv(struct sk_buff *skb, struct udp_table *udptable,
 		   int proto)
 {
-	struct sock *sk;
+	struct sock *sk = NULL;
 	struct udphdr *uh;
 	unsigned short ulen;
 	struct rtable *rt = skb_rtable(skb);
@@ -2462,7 +2456,7 @@ no_sk:
 	 * Hmm.  We got an UDP packet to a port to which we
 	 * don't wanna listen.  Ignore it.
 	 */
-	kfree_skb_reason(skb, drop_reason);
+	sk_skb_reason_drop(sk, skb, drop_reason);
 	return 0;
 
 short_packet:
@@ -2487,7 +2481,7 @@ csum_error:
 	__UDP_INC_STATS(net, UDP_MIB_CSUMERRORS, proto == IPPROTO_UDPLITE);
 drop:
 	__UDP_INC_STATS(net, UDP_MIB_INERRORS, proto == IPPROTO_UDPLITE);
-	kfree_skb_reason(skb, drop_reason);
+	sk_skb_reason_drop(sk, skb, drop_reason);
 	return 0;
 }
 
@@ -2594,11 +2588,12 @@ int udp_v4_early_demux(struct sk_buff *skb)
 					     uh->source, iph->saddr, dif, sdif);
 	}
 
-	if (!sk || !refcount_inc_not_zero(&sk->sk_refcnt))
+	if (!sk)
 		return 0;
 
 	skb->sk = sk;
-	skb->destructor = sock_efree;
+	DEBUG_NET_WARN_ON_ONCE(sk_is_refcounted(sk));
+	skb->destructor = sock_pfree;
 	dst = rcu_dereference(sk->sk_rx_dst);
 
 	if (dst)
@@ -2618,7 +2613,7 @@ int udp_v4_early_demux(struct sk_buff *skb)
 		if (!inet_sk(sk)->inet_daddr && in_dev)
 			return ip_mc_validate_source(skb, iph->daddr,
 						     iph->saddr,
-						     iph->tos & IPTOS_RT_MASK,
+						     iph->tos & INET_DSCP_MASK,
 						     skb->dev, in_dev, &itag);
 	}
 	return 0;
@@ -2648,6 +2643,19 @@ void udp_destroy_sock(struct sock *sk)
 		if (udp_test_bit(ENCAP_ENABLED, sk))
 			static_branch_dec(&udp_encap_needed_key);
 	}
+}
+
+static void set_xfrm_gro_udp_encap_rcv(__u16 encap_type, unsigned short family,
+				       struct sock *sk)
+{
+#ifdef CONFIG_XFRM
+	if (udp_test_bit(GRO_ENABLED, sk) && encap_type == UDP_ENCAP_ESPINUDP) {
+		if (family == AF_INET)
+			WRITE_ONCE(udp_sk(sk)->gro_receive, xfrm4_gro_udp_encap_rcv);
+		else if (IS_ENABLED(CONFIG_IPV6) && family == AF_INET6)
+			WRITE_ONCE(udp_sk(sk)->gro_receive, ipv6_stub->xfrm6_gro_udp_encap_rcv);
+	}
+#endif
 }
 
 /*
@@ -2699,7 +2707,7 @@ int udp_lib_setsockopt(struct sock *sk, int level, int optname,
 		case 0:
 #ifdef CONFIG_XFRM
 		case UDP_ENCAP_ESPINUDP:
-		case UDP_ENCAP_ESPINUDP_NON_IKE:
+			set_xfrm_gro_udp_encap_rcv(val, sk->sk_family, sk);
 #if IS_ENABLED(CONFIG_IPV6)
 			if (sk->sk_family == AF_INET6)
 				WRITE_ONCE(up->encap_rcv,
@@ -2741,6 +2749,7 @@ int udp_lib_setsockopt(struct sock *sk, int level, int optname,
 			udp_tunnel_encap_enable(sk);
 		udp_assign_bit(GRO_ENABLED, sk, valbool);
 		udp_assign_bit(ACCEPT_L4, sk, valbool);
+		set_xfrm_gro_udp_encap_rcv(up->encap_type, sk->sk_family, sk);
 		break;
 
 	/*

@@ -202,7 +202,7 @@ struct edma_desc {
 	u32				residue;
 	u32				residue_stat;
 
-	struct edma_pset		pset[];
+	struct edma_pset		pset[] __counted_by(pset_nr);
 };
 
 struct edma_cc;
@@ -2560,7 +2560,7 @@ static void edma_cleanupp_vchan(struct dma_device *dmadev)
 	}
 }
 
-static int edma_remove(struct platform_device *pdev)
+static void edma_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct edma_cc *ecc = dev_get_drvdata(dev);
@@ -2578,8 +2578,6 @@ static int edma_remove(struct platform_device *pdev)
 	edma_free_slot(ecc, ecc->dummy_slot);
 	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -2638,7 +2636,7 @@ static const struct dev_pm_ops edma_pm_ops = {
 
 static struct platform_driver edma_driver = {
 	.probe		= edma_probe,
-	.remove		= edma_remove,
+	.remove_new	= edma_remove,
 	.driver = {
 		.name	= "edma",
 		.pm	= &edma_pm_ops,

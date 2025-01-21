@@ -1734,32 +1734,32 @@ static int bnx2fc_bind_pcidev(struct bnx2fc_hba *hba)
 
 	switch (pdev->device) {
 	case PCI_DEVICE_ID_NX2_57710:
-		strncpy(hba->chip_num, "BCM57710", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57710", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57711:
-		strncpy(hba->chip_num, "BCM57711", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57711", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57712:
 	case PCI_DEVICE_ID_NX2_57712_MF:
 	case PCI_DEVICE_ID_NX2_57712_VF:
-		strncpy(hba->chip_num, "BCM57712", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57712", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57800:
 	case PCI_DEVICE_ID_NX2_57800_MF:
 	case PCI_DEVICE_ID_NX2_57800_VF:
-		strncpy(hba->chip_num, "BCM57800", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57800", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57810:
 	case PCI_DEVICE_ID_NX2_57810_MF:
 	case PCI_DEVICE_ID_NX2_57810_VF:
-		strncpy(hba->chip_num, "BCM57810", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57810", sizeof(hba->chip_num));
 		break;
 	case PCI_DEVICE_ID_NX2_57840:
 	case PCI_DEVICE_ID_NX2_57840_MF:
 	case PCI_DEVICE_ID_NX2_57840_VF:
 	case PCI_DEVICE_ID_NX2_57840_2_20:
 	case PCI_DEVICE_ID_NX2_57840_4_10:
-		strncpy(hba->chip_num, "BCM57840", BCM_CHIP_LEN);
+		strscpy(hba->chip_num, "BCM57840", sizeof(hba->chip_num));
 		break;
 	default:
 		pr_err(PFX "Unknown device id 0x%x\n", pdev->device);
@@ -1797,7 +1797,7 @@ static int bnx2fc_ulp_get_stats(void *handle)
 	if (!stats_addr)
 		return -EINVAL;
 
-	strncpy(stats_addr->version, BNX2FC_VERSION,
+	strscpy(stats_addr->version, BNX2FC_VERSION,
 		sizeof(stats_addr->version));
 	stats_addr->txq_size = BNX2FC_SQ_WQES_MAX;
 	stats_addr->rxq_size = BNX2FC_CQ_WQES_MAX;
@@ -2363,8 +2363,8 @@ static int _bnx2fc_create(struct net_device *netdev,
 	interface->vlan_id = vlan_id;
 	interface->tm_timeout = BNX2FC_TM_TIMEOUT;
 
-	interface->timer_work_queue =
-			create_singlethread_workqueue("bnx2fc_timer_wq");
+	interface->timer_work_queue = alloc_ordered_workqueue(
+		"%s", WQ_MEM_RECLAIM, "bnx2fc_timer_wq");
 	if (!interface->timer_work_queue) {
 		printk(KERN_ERR PFX "ulp_init could not create timer_wq\n");
 		rc = -EINVAL;

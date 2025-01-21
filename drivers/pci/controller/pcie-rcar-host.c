@@ -29,6 +29,7 @@
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/regulator/consumer.h>
 
 #include "pcie-rcar.h"
 
@@ -464,7 +465,7 @@ static int rcar_pcie_hw_init(struct rcar_pcie *pcie)
 	rcar_rmw32(pcie, REXPCAP(0), 0xff, PCI_CAP_ID_EXP);
 	rcar_rmw32(pcie, REXPCAP(PCI_EXP_FLAGS),
 		PCI_EXP_FLAGS_TYPE, PCI_EXP_TYPE_ROOT_PORT << 4);
-	rcar_rmw32(pcie, RCONF(PCI_HEADER_TYPE), 0x7f,
+	rcar_rmw32(pcie, RCONF(PCI_HEADER_TYPE), PCI_HEADER_TYPE_MASK,
 		PCI_HEADER_TYPE_BRIDGE);
 
 	/* Enable data link layer active state reporting */
@@ -657,11 +658,6 @@ static void rcar_msi_irq_unmask(struct irq_data *d)
 	spin_unlock_irqrestore(&msi->mask_lock, flags);
 }
 
-static int rcar_msi_set_affinity(struct irq_data *d, const struct cpumask *mask, bool force)
-{
-	return -EINVAL;
-}
-
 static void rcar_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 {
 	struct rcar_msi *msi = irq_data_get_irq_chip_data(data);
@@ -677,7 +673,6 @@ static struct irq_chip rcar_msi_bottom_chip = {
 	.irq_ack		= rcar_msi_irq_ack,
 	.irq_mask		= rcar_msi_irq_mask,
 	.irq_unmask		= rcar_msi_irq_unmask,
-	.irq_set_affinity 	= rcar_msi_set_affinity,
 	.irq_compose_msi_msg	= rcar_compose_msi_msg,
 };
 
@@ -724,8 +719,8 @@ static const struct irq_domain_ops rcar_msi_domain_ops = {
 };
 
 static struct msi_domain_info rcar_msi_info = {
-	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
-		   MSI_FLAG_MULTI_PCI_MSI),
+	.flags	= MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
+		  MSI_FLAG_NO_AFFINITY | MSI_FLAG_MULTI_PCI_MSI,
 	.chip	= &rcar_msi_top_chip,
 };
 
@@ -957,14 +952,22 @@ static const struct of_device_id rcar_pcie_of_match[] = {
 	{},
 };
 
+/* Design note 346 from Linear Technology says order is not important. */
+static const char * const rcar_pcie_supplies[] = {
+	"vpcie1v5",
+	"vpcie3v3",
+	"vpcie12v",
+};
+
 static int rcar_pcie_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct pci_host_bridge *bridge;
 	struct rcar_pcie_host *host;
 	struct rcar_pcie *pcie;
+	unsigned int i;
 	u32 data;
 	int err;
-	struct pci_host_bridge *bridge;
 
 	bridge = devm_pci_alloc_host_bridge(dev, sizeof(*host));
 	if (!bridge)
@@ -974,6 +977,13 @@ static int rcar_pcie_probe(struct platform_device *pdev)
 	pcie = &host->pcie;
 	pcie->dev = dev;
 	platform_set_drvdata(pdev, host);
+
+	for (i = 0; i < ARRAY_SIZE(rcar_pcie_supplies); i++) {
+		err = devm_regulator_get_enable_optional(dev, rcar_pcie_supplies[i]);
+		if (err < 0 && err != -ENODEV)
+			return dev_err_probe(dev, err, "failed to enable regulator: %s\n",
+					     rcar_pcie_supplies[i]);
+	}
 
 	pm_runtime_enable(pcie->dev);
 	err = pm_runtime_get_sync(pcie->dev);

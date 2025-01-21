@@ -1277,7 +1277,7 @@ int mlxsw_sp1_ptp_hwtstamp_set(struct mlxsw_sp_port *mlxsw_sp_port,
 }
 
 int mlxsw_sp1_ptp_get_ts_info(struct mlxsw_sp *mlxsw_sp,
-			      struct ethtool_ts_info *info)
+			      struct kernel_ethtool_ts_info *info)
 {
 	info->phc_index = ptp_clock_index(mlxsw_sp->clock->ptp);
 
@@ -1662,7 +1662,7 @@ err_get_message_types:
 }
 
 int mlxsw_sp2_ptp_get_ts_info(struct mlxsw_sp *mlxsw_sp,
-			      struct ethtool_ts_info *info)
+			      struct kernel_ethtool_ts_info *info)
 {
 	info->phc_index = ptp_clock_index(mlxsw_sp->clock->ptp);
 

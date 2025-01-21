@@ -27,13 +27,14 @@
 #define _CRYPTO_ECC_H
 
 #include <crypto/ecc_curve.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /* One digit is u64 qword. */
 #define ECC_CURVE_NIST_P192_DIGITS  3
 #define ECC_CURVE_NIST_P256_DIGITS  4
 #define ECC_CURVE_NIST_P384_DIGITS  6
-#define ECC_MAX_DIGITS              (512 / 64) /* due to ecrdsa */
+#define ECC_CURVE_NIST_P521_DIGITS  9
+#define ECC_MAX_DIGITS              DIV_ROUND_UP(521, 64) /* NIST P521 */
 
 #define ECC_DIGITS_TO_BYTES_SHIFT 3
 
@@ -62,6 +63,9 @@ static inline void ecc_swap_digits(const void *in, u64 *out, unsigned int ndigit
  * @nbytes    Size of input byte array
  * @out       Output digits array
  * @ndigits:  Number of digits to create from byte array
+ *
+ * The first byte in the input byte array is expected to hold the most
+ * significant bits of the large integer.
  */
 void ecc_digits_from_bytes(const u8 *in, unsigned int nbytes,
 			   u64 *out, unsigned int ndigits);
@@ -91,7 +95,8 @@ int ecc_is_key_valid(unsigned int curve_id, unsigned int ndigits,
  * Returns 0 if the private key was generated successfully, a negative value
  * if an error occurred.
  */
-int ecc_gen_privkey(unsigned int curve_id, unsigned int ndigits, u64 *privkey);
+int ecc_gen_privkey(unsigned int curve_id, unsigned int ndigits,
+		    u64 *private_key);
 
 /**
  * ecc_make_pub_key() - Compute an ECC public key

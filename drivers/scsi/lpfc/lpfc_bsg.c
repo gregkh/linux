@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2023 Broadcom. All Rights Reserved. The term *
+ * Copyright (C) 2017-2024 Broadcom. All Rights Reserved. The term *
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2009-2015 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
@@ -1977,7 +1977,7 @@ lpfc_sli4_bsg_set_loopback_mode(struct lpfc_hba *phba, int mode,
 static int
 lpfc_sli4_diag_fcport_reg_setup(struct lpfc_hba *phba)
 {
-	if (phba->pport->fc_flag & FC_VFI_REGISTERED) {
+	if (test_bit(FC_VFI_REGISTERED, &phba->pport->fc_flag)) {
 		lpfc_printf_log(phba, KERN_WARNING, LOG_LIBDFC,
 				"3136 Port still had vfi registered: "
 				"mydid:x%x, fcfi:%d, vfi:%d, vpi:%d\n",
@@ -2513,7 +2513,7 @@ static int lpfcdiag_loop_self_reg(struct lpfc_hba *phba, uint16_t *rpi)
 		return -ENOMEM;
 	}
 
-	dmabuff = (struct lpfc_dmabuf *)mbox->ctx_buf;
+	dmabuff = mbox->ctx_buf;
 	mbox->ctx_buf = NULL;
 	mbox->ctx_ndlp = NULL;
 	status = lpfc_sli_issue_mbox_wait(phba, mbox, LPFC_MBOX_TMO);
@@ -3208,6 +3208,9 @@ lpfc_bsg_diag_loopback_run(struct bsg_job *job)
 	cmdiocbq->num_bdes = num_bde;
 	cmdiocbq->cmd_flag |= LPFC_IO_LIBDFC;
 	cmdiocbq->cmd_flag |= LPFC_IO_LOOPBACK;
+	if (phba->cfg_vmid_app_header)
+		cmdiocbq->cmd_flag |= LPFC_IO_VMID;
+
 	cmdiocbq->vport = phba->pport;
 	cmdiocbq->cmd_cmpl = NULL;
 	cmdiocbq->bpl_dmabuf = txbmp;
@@ -3376,7 +3379,7 @@ lpfc_bsg_issue_mbox_cmpl(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmboxq)
 	unsigned long flags;
 	uint8_t *pmb, *pmb_buf;
 
-	dd_data = pmboxq->ctx_ndlp;
+	dd_data = pmboxq->ctx_u.dd_data;
 
 	/*
 	 * The outgoing buffer is readily referred from the dma buffer,
@@ -3448,7 +3451,7 @@ static int lpfc_bsg_check_cmd_access(struct lpfc_hba *phba,
 	case MBX_RUN_DIAGS:
 	case MBX_RESTART:
 	case MBX_SET_MASK:
-		if (!(vport->fc_flag & FC_OFFLINE_MODE)) {
+		if (!test_bit(FC_OFFLINE_MODE, &vport->fc_flag)) {
 			lpfc_printf_log(phba, KERN_WARNING, LOG_LIBDFC,
 				"2743 Command 0x%x is illegal in on-line "
 				"state\n",
@@ -3553,7 +3556,7 @@ lpfc_bsg_issue_mbox_ext_handle_job(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmboxq)
 	struct lpfc_sli_config_mbox *sli_cfg_mbx;
 	uint8_t *pmbx;
 
-	dd_data = pmboxq->ctx_buf;
+	dd_data = pmboxq->ctx_u.dd_data;
 
 	/* Determine if job has been aborted */
 	spin_lock_irqsave(&phba->ct_ev_lock, flags);
@@ -3940,7 +3943,7 @@ lpfc_bsg_sli_cfg_read_cmd_ext(struct lpfc_hba *phba, struct bsg_job *job,
 	pmboxq->mbox_cmpl = lpfc_bsg_issue_read_mbox_ext_cmpl;
 
 	/* context fields to callback function */
-	pmboxq->ctx_buf = dd_data;
+	pmboxq->ctx_u.dd_data = dd_data;
 	dd_data->type = TYPE_MBOX;
 	dd_data->set_job = job;
 	dd_data->context_un.mbox.pmboxq = pmboxq;
@@ -4112,7 +4115,7 @@ lpfc_bsg_sli_cfg_write_cmd_ext(struct lpfc_hba *phba, struct bsg_job *job,
 		pmboxq->mbox_cmpl = lpfc_bsg_issue_write_mbox_ext_cmpl;
 
 		/* context fields to callback function */
-		pmboxq->ctx_buf = dd_data;
+		pmboxq->ctx_u.dd_data = dd_data;
 		dd_data->type = TYPE_MBOX;
 		dd_data->set_job = job;
 		dd_data->context_un.mbox.pmboxq = pmboxq;
@@ -4460,7 +4463,7 @@ lpfc_bsg_write_ebuf_set(struct lpfc_hba *phba, struct bsg_job *job,
 		pmboxq->mbox_cmpl = lpfc_bsg_issue_write_mbox_ext_cmpl;
 
 		/* context fields to callback function */
-		pmboxq->ctx_buf = dd_data;
+		pmboxq->ctx_u.dd_data = dd_data;
 		dd_data->type = TYPE_MBOX;
 		dd_data->set_job = job;
 		dd_data->context_un.mbox.pmboxq = pmboxq;
@@ -4747,7 +4750,7 @@ lpfc_bsg_issue_mbox(struct lpfc_hba *phba, struct bsg_job *job,
 	if (mbox_req->inExtWLen || mbox_req->outExtWLen) {
 		from = pmbx;
 		ext = from + sizeof(MAILBOX_t);
-		pmboxq->ctx_buf = ext;
+		pmboxq->ext_buf = ext;
 		pmboxq->in_ext_byte_len =
 			mbox_req->inExtWLen * sizeof(uint32_t);
 		pmboxq->out_ext_byte_len =
@@ -4875,7 +4878,7 @@ lpfc_bsg_issue_mbox(struct lpfc_hba *phba, struct bsg_job *job,
 	pmboxq->mbox_cmpl = lpfc_bsg_issue_mbox_cmpl;
 
 	/* setup context field to pass wait_queue pointer to wake function */
-	pmboxq->ctx_ndlp = dd_data;
+	pmboxq->ctx_u.dd_data = dd_data;
 	dd_data->type = TYPE_MBOX;
 	dd_data->set_job = job;
 	dd_data->context_un.mbox.pmboxq = pmboxq;
@@ -4886,7 +4889,7 @@ lpfc_bsg_issue_mbox(struct lpfc_hba *phba, struct bsg_job *job,
 	dd_data->context_un.mbox.outExtWLen = mbox_req->outExtWLen;
 	job->dd_data = dd_data;
 
-	if ((vport->fc_flag & FC_OFFLINE_MODE) ||
+	if (test_bit(FC_OFFLINE_MODE, &vport->fc_flag) ||
 	    (!(phba->sli.sli_flag & LPFC_SLI_ACTIVE))) {
 		rc = lpfc_sli_issue_mbox(phba, pmboxq, MBX_POLL);
 		if (rc != MBX_SUCCESS) {
@@ -5002,7 +5005,8 @@ lpfc_forced_link_speed(struct bsg_job *job)
 		goto job_error;
 	}
 
-	forced_reply->supported = (phba->hba_flag & HBA_FORCED_LINK_SPEED)
+	forced_reply->supported = test_bit(HBA_FORCED_LINK_SPEED,
+					   &phba->hba_flag)
 				   ? LPFC_FORCED_LINK_SPEED_SUPPORTED
 				   : LPFC_FORCED_LINK_SPEED_NOT_SUPPORTED;
 job_error:

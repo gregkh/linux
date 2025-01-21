@@ -65,8 +65,8 @@ static struct {
 	{ "map_compat_raw_tp", "tracing progs cannot use bpf_{list_head,rb_root} yet" },
 	{ "map_compat_raw_tp_w", "tracing progs cannot use bpf_{list_head,rb_root} yet" },
 	{ "obj_type_id_oor", "local type ID argument must be in range [0, U32_MAX]" },
-	{ "obj_new_no_composite", "bpf_obj_new type ID argument must be of a struct" },
-	{ "obj_new_no_struct", "bpf_obj_new type ID argument must be of a struct" },
+	{ "obj_new_no_composite", "bpf_obj_new/bpf_percpu_obj_new type ID argument must be of a struct" },
+	{ "obj_new_no_struct", "bpf_obj_new/bpf_percpu_obj_new type ID argument must be of a struct" },
 	{ "obj_drop_non_zero_off", "R1 must have zero offset when passed to release func" },
 	{ "new_null_ret", "R0 invalid mem access 'ptr_or_null_'" },
 	{ "obj_new_acq", "Unreleased reference id=" },
@@ -183,6 +183,18 @@ static void test_linked_list_success(int mode, bool leave_in_map)
 	if (!leave_in_map)
 		clear_fields(skel->maps.bss_A);
 
+	ret = bpf_prog_test_run_opts(bpf_program__fd(skel->progs.global_list_push_pop_nested), &opts);
+	ASSERT_OK(ret, "global_list_push_pop_nested");
+	ASSERT_OK(opts.retval, "global_list_push_pop_nested retval");
+	if (!leave_in_map)
+		clear_fields(skel->maps.bss_A);
+
+	ret = bpf_prog_test_run_opts(bpf_program__fd(skel->progs.global_list_array_push_pop), &opts);
+	ASSERT_OK(ret, "global_list_array_push_pop");
+	ASSERT_OK(opts.retval, "global_list_array_push_pop retval");
+	if (!leave_in_map)
+		clear_fields(skel->maps.bss_A);
+
 	if (mode == PUSH_POP)
 		goto end;
 
@@ -262,7 +274,7 @@ end:
 
 static void list_and_rb_node_same_struct(bool refcount_field)
 {
-	int bpf_rb_node_btf_id, bpf_refcount_btf_id, foo_btf_id;
+	int bpf_rb_node_btf_id, bpf_refcount_btf_id = 0, foo_btf_id;
 	struct btf *btf;
 	int id, err;
 

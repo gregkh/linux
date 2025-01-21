@@ -13,6 +13,7 @@
 
 static int cs35l56_hda_spi_probe(struct spi_device *spi)
 {
+	const struct spi_device_id *id = spi_get_device_id(spi);
 	struct cs35l56_hda *cs35l56;
 	int ret;
 
@@ -21,6 +22,10 @@ static int cs35l56_hda_spi_probe(struct spi_device *spi)
 		return -ENOMEM;
 
 	cs35l56->base.dev = &spi->dev;
+
+#ifdef CS35L56_WAKE_HOLD_TIME_US
+	cs35l56->base.can_hibernate = true;
+#endif
 	cs35l56->base.regmap = devm_regmap_init_spi(spi, &cs35l56_regmap_spi);
 	if (IS_ERR(cs35l56->base.regmap)) {
 		ret = PTR_ERR(cs35l56->base.regmap);
@@ -29,7 +34,7 @@ static int cs35l56_hda_spi_probe(struct spi_device *spi)
 		return ret;
 	}
 
-	ret = cs35l56_hda_common_probe(cs35l56, spi->chip_select);
+	ret = cs35l56_hda_common_probe(cs35l56, id->driver_data, spi_get_chipselect(spi, 0));
 	if (ret)
 		return ret;
 	ret = cs35l56_irq_request(&cs35l56->base, spi->irq);
@@ -45,7 +50,9 @@ static void cs35l56_hda_spi_remove(struct spi_device *spi)
 }
 
 static const struct spi_device_id cs35l56_hda_spi_id[] = {
-	{ "cs35l56-hda", 0 },
+	{ "cs35l54-hda", 0x3554 },
+	{ "cs35l56-hda", 0x3556 },
+	{ "cs35l57-hda", 0x3557 },
 	{}
 };
 

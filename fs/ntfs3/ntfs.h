@@ -520,7 +520,7 @@ struct ATTR_LIST_ENTRY {
 	__le64 vcn;		// 0x08: Starting VCN of this attribute.
 	struct MFT_REF ref;	// 0x10: MFT record number with attribute.
 	__le16 id;		// 0x18: struct ATTRIB ID.
-	__le16 name[];		// 0x1A: Just to align. To get real name can use name_off.
+	__le16 name[];		// 0x1A: To get real name use name_off.
 
 }; // sizeof(0x20)
 
@@ -999,9 +999,6 @@ struct REPARSE_POINT {
 };
 
 static_assert(sizeof(struct REPARSE_POINT) == 0x18);
-
-/* Maximum allowed size of the reparse data. */
-#define MAXIMUM_REPARSE_DATA_BUFFER_SIZE	(16 * 1024)
 
 /*
  * The value of the following constant needs to satisfy the following

@@ -45,6 +45,7 @@ struct ksmbd_server_config {
 	unsigned int		max_inflight_req;
 
 	char			*conf[SERVER_CONF_WORK_GROUP + 1];
+	struct task_struct	*dh_task;
 };
 
 extern struct ksmbd_server_config server_conf;

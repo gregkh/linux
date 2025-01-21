@@ -48,7 +48,7 @@
 
 #include <trace/events/scsi.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /*
  * These should *probably* be handled by the host itself.
@@ -302,6 +302,7 @@ void scsi_eh_scmd_add(struct scsi_cmnd *scmd)
 	int ret;
 
 	WARN_ON_ONCE(!shost->ehandler);
+	WARN_ON_ONCE(!test_bit(SCMD_STATE_INFLIGHT, &scmd->state));
 
 	spin_lock_irqsave(shost->host_lock, flags);
 	if (scsi_host_set_state(shost, SHOST_RECOVERY)) {

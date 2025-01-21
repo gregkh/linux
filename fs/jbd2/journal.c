@@ -220,19 +220,12 @@ loop:
 		 * so we don't sleep
 		 */
 		DEFINE_WAIT(wait);
-		int should_sleep = 1;
 
 		prepare_to_wait(&journal->j_wait_commit, &wait,
 				TASK_INTERRUPTIBLE);
-		if (journal->j_commit_sequence != journal->j_commit_request)
-			should_sleep = 0;
 		transaction = journal->j_running_transaction;
-		if (transaction && time_after_eq(jiffies,
-						transaction->t_expires))
-			should_sleep = 0;
-		if (journal->j_flags & JBD2_UNMOUNT)
-			should_sleep = 0;
-		if (should_sleep) {
+		if (transaction == NULL ||
+		    time_before(jiffies, transaction->t_expires)) {
 			write_unlock(&journal->j_state_lock);
 			schedule();
 			write_lock(&journal->j_state_lock);
@@ -288,6 +281,16 @@ static void journal_kill_thread(journal_t *journal)
 	write_unlock(&journal->j_state_lock);
 }
 
+static inline bool jbd2_data_needs_escaping(char *data)
+{
+	return *((__be32 *)data) == cpu_to_be32(JBD2_MAGIC_NUMBER);
+}
+
+static inline void jbd2_data_do_escape(char *data)
+{
+	*((unsigned int *)data) = 0;
+}
+
 /*
  * jbd2_journal_write_metadata_buffer: write a metadata buffer to the journal.
  *
@@ -316,11 +319,8 @@ static void journal_kill_thread(journal_t *journal)
  *
  * Return value:
  *  <0: Error
- * >=0: Finished OK
- *
- * On success:
- * Bit 0 set == escape performed on the data
- * Bit 1 set == buffer copy-out performed (kfree the data after IO)
+ *  =0: Finished OK without escape
+ *  =1: Finished OK with escape
  */
 
 int jbd2_journal_write_metadata_buffer(transaction_t *transaction,
@@ -328,10 +328,7 @@ int jbd2_journal_write_metadata_buffer(transaction_t *transaction,
 				  struct buffer_head **bh_out,
 				  sector_t blocknr)
 {
-	int need_copy_out = 0;
-	int done_copy_out = 0;
 	int do_escape = 0;
-	char *mapped_data;
 	struct buffer_head *new_bh;
 	struct folio *new_folio;
 	unsigned int new_offset;
@@ -355,45 +352,38 @@ int jbd2_journal_write_metadata_buffer(transaction_t *transaction,
 	atomic_set(&new_bh->b_count, 1);
 
 	spin_lock(&jh_in->b_state_lock);
-repeat:
 	/*
 	 * If a new transaction has already done a buffer copy-out, then
 	 * we use that version of the data for the commit.
 	 */
 	if (jh_in->b_frozen_data) {
-		done_copy_out = 1;
 		new_folio = virt_to_folio(jh_in->b_frozen_data);
 		new_offset = offset_in_folio(new_folio, jh_in->b_frozen_data);
+		do_escape = jbd2_data_needs_escaping(jh_in->b_frozen_data);
+		if (do_escape)
+			jbd2_data_do_escape(jh_in->b_frozen_data);
 	} else {
-		new_folio = jh2bh(jh_in)->b_folio;
-		new_offset = offset_in_folio(new_folio, jh2bh(jh_in)->b_data);
-	}
+		char *tmp;
+		char *mapped_data;
 
-	mapped_data = kmap_local_folio(new_folio, new_offset);
-	/*
-	 * Fire data frozen trigger if data already wasn't frozen.  Do this
-	 * before checking for escaping, as the trigger may modify the magic
-	 * offset.  If a copy-out happens afterwards, it will have the correct
-	 * data in the buffer.
-	 */
-	if (!done_copy_out)
+		new_folio = bh_in->b_folio;
+		new_offset = offset_in_folio(new_folio, bh_in->b_data);
+		mapped_data = kmap_local_folio(new_folio, new_offset);
+		/*
+		 * Fire data frozen trigger if data already wasn't frozen. Do
+		 * this before checking for escaping, as the trigger may modify
+		 * the magic offset.  If a copy-out happens afterwards, it will
+		 * have the correct data in the buffer.
+		 */
 		jbd2_buffer_frozen_trigger(jh_in, mapped_data,
 					   jh_in->b_triggers);
-
-	/*
-	 * Check for escaping
-	 */
-	if (*((__be32 *)mapped_data) == cpu_to_be32(JBD2_MAGIC_NUMBER)) {
-		need_copy_out = 1;
-		do_escape = 1;
-	}
-	kunmap_local(mapped_data);
-
-	/*
-	 * Do we need to do a data copy?
-	 */
-	if (need_copy_out && !done_copy_out) {
-		char *tmp;
+		do_escape = jbd2_data_needs_escaping(mapped_data);
+		kunmap_local(mapped_data);
+		/*
+		 * Do we need to do a data copy?
+		 */
+		if (!do_escape)
+			goto escape_done;
 
 		spin_unlock(&jh_in->b_state_lock);
 		tmp = jbd2_alloc(bh_in->b_size, GFP_NOFS);
@@ -405,34 +395,25 @@ repeat:
 		spin_lock(&jh_in->b_state_lock);
 		if (jh_in->b_frozen_data) {
 			jbd2_free(tmp, bh_in->b_size);
-			goto repeat;
+			goto copy_done;
 		}
 
 		jh_in->b_frozen_data = tmp;
 		memcpy_from_folio(tmp, new_folio, new_offset, bh_in->b_size);
-
-		new_folio = virt_to_folio(tmp);
-		new_offset = offset_in_folio(new_folio, tmp);
-		done_copy_out = 1;
-
 		/*
 		 * This isn't strictly necessary, as we're using frozen
 		 * data for the escaping, but it keeps consistency with
 		 * b_frozen_data usage.
 		 */
 		jh_in->b_frozen_triggers = jh_in->b_triggers;
+
+copy_done:
+		new_folio = virt_to_folio(jh_in->b_frozen_data);
+		new_offset = offset_in_folio(new_folio, jh_in->b_frozen_data);
+		jbd2_data_do_escape(jh_in->b_frozen_data);
 	}
 
-	/*
-	 * Did we need to do an escaping?  Now we've done all the
-	 * copying, we can finally do so.
-	 */
-	if (do_escape) {
-		mapped_data = kmap_local_folio(new_folio, new_offset);
-		*((unsigned int *)mapped_data) = 0;
-		kunmap_local(mapped_data);
-	}
-
+escape_done:
 	folio_set_bh(new_bh, new_folio, new_offset);
 	new_bh->b_size = bh_in->b_size;
 	new_bh->b_bdev = journal->j_dev;
@@ -455,7 +436,7 @@ repeat:
 	set_buffer_shadow(bh_in);
 	spin_unlock(&jh_in->b_state_lock);
 
-	return do_escape | (done_copy_out << 1);
+	return do_escape;
 }
 
 /*
@@ -790,17 +771,7 @@ EXPORT_SYMBOL(jbd2_fc_end_commit_fallback);
 /* Return 1 when transaction with given tid has already committed. */
 int jbd2_transaction_committed(journal_t *journal, tid_t tid)
 {
-	int ret = 1;
-
-	read_lock(&journal->j_state_lock);
-	if (journal->j_running_transaction &&
-	    journal->j_running_transaction->t_tid == tid)
-		ret = 0;
-	if (journal->j_committing_transaction &&
-	    journal->j_committing_transaction->t_tid == tid)
-		ret = 0;
-	read_unlock(&journal->j_state_lock);
-	return ret;
+	return tid_geq(READ_ONCE(journal->j_commit_sequence), tid);
 }
 EXPORT_SYMBOL(jbd2_transaction_committed);
 
@@ -866,17 +837,12 @@ int jbd2_fc_get_buf(journal_t *journal, struct buffer_head **bh_out)
 
 	*bh_out = NULL;
 
-	if (journal->j_fc_off + journal->j_fc_first < journal->j_fc_last) {
-		fc_off = journal->j_fc_off;
-		blocknr = journal->j_fc_first + fc_off;
-		journal->j_fc_off++;
-	} else {
-		ret = -EINVAL;
-	}
+	if (journal->j_fc_off + journal->j_fc_first >= journal->j_fc_last)
+		return -EINVAL;
 
-	if (ret)
-		return ret;
-
+	fc_off = journal->j_fc_off;
+	blocknr = journal->j_fc_first + fc_off;
+	journal->j_fc_off++;
 	ret = jbd2_journal_bmap(journal, blocknr, &pblock);
 	if (ret)
 		return ret;
@@ -884,7 +850,6 @@ int jbd2_fc_get_buf(journal_t *journal, struct buffer_head **bh_out)
 	bh = __getblk(journal->j_dev, pblock, journal->j_blocksize);
 	if (!bh)
 		return -ENOMEM;
-
 
 	journal->j_fc_wbuf[fc_off] = bh;
 
@@ -928,7 +893,7 @@ int jbd2_fc_wait_bufs(journal_t *journal, int num_blks)
 }
 EXPORT_SYMBOL(jbd2_fc_wait_bufs);
 
-int jbd2_fc_release_bufs(journal_t *journal)
+void jbd2_fc_release_bufs(journal_t *journal)
 {
 	struct buffer_head *bh;
 	int i, j_fc_off;
@@ -942,8 +907,6 @@ int jbd2_fc_release_bufs(journal_t *journal)
 		put_bh(bh);
 		journal->j_fc_wbuf[i] = NULL;
 	}
-
-	return 0;
 }
 EXPORT_SYMBOL(jbd2_fc_release_bufs);
 
@@ -1290,7 +1253,7 @@ static int jbd2_min_tag_size(void)
 static unsigned long jbd2_journal_shrink_scan(struct shrinker *shrink,
 					      struct shrink_control *sc)
 {
-	journal_t *journal = container_of(shrink, journal_t, j_shrinker);
+	journal_t *journal = shrink->private_data;
 	unsigned long nr_to_scan = sc->nr_to_scan;
 	unsigned long nr_shrunk;
 	unsigned long count;
@@ -1316,7 +1279,7 @@ static unsigned long jbd2_journal_shrink_scan(struct shrinker *shrink,
 static unsigned long jbd2_journal_shrink_count(struct shrinker *shrink,
 					       struct shrink_control *sc)
 {
-	journal_t *journal = container_of(shrink, journal_t, j_shrinker);
+	journal_t *journal = shrink->private_data;
 	unsigned long count;
 
 	count = percpu_counter_read_positive(&journal->j_checkpoint_jh_count);
@@ -1454,7 +1417,7 @@ static int journal_revoke_records_per_block(journal_t *journal)
 
 static int jbd2_journal_get_max_txn_bufs(journal_t *journal)
 {
-	return (journal->j_total_len - journal->j_fc_wbufsize) / 4;
+	return (journal->j_total_len - journal->j_fc_wbufsize) / 3;
 }
 
 /*
@@ -1577,6 +1540,7 @@ static journal_t *journal_init_common(struct block_device *bdev,
 	journal->j_fs_dev = fs_dev;
 	journal->j_blk_offset = start;
 	journal->j_total_len = len;
+	jbd2_init_fs_dev_write_error(journal);
 
 	err = journal_load_superblock(journal);
 	if (err)
@@ -1630,14 +1594,20 @@ static journal_t *journal_init_common(struct block_device *bdev,
 		goto err_cleanup;
 
 	journal->j_shrink_transaction = NULL;
-	journal->j_shrinker.scan_objects = jbd2_journal_shrink_scan;
-	journal->j_shrinker.count_objects = jbd2_journal_shrink_count;
-	journal->j_shrinker.seeks = DEFAULT_SEEKS;
-	journal->j_shrinker.batch = journal->j_max_transaction_buffers;
-	err = register_shrinker(&journal->j_shrinker, "jbd2-journal:(%u:%u)",
-				MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev));
-	if (err)
+
+	journal->j_shrinker = shrinker_alloc(0, "jbd2-journal:(%u:%u)",
+					     MAJOR(bdev->bd_dev),
+					     MINOR(bdev->bd_dev));
+	if (!journal->j_shrinker) {
+		err = -ENOMEM;
 		goto err_cleanup;
+	}
+
+	journal->j_shrinker->scan_objects = jbd2_journal_shrink_scan;
+	journal->j_shrinker->count_objects = jbd2_journal_shrink_count;
+	journal->j_shrinker->private_data = journal;
+
+	shrinker_register(journal->j_shrinker);
 
 	return journal;
 
@@ -1895,7 +1865,7 @@ int jbd2_journal_update_sb_log_tail(journal_t *journal, tid_t tail_tid,
 
 	if (is_journal_aborted(journal))
 		return -EIO;
-	if (test_bit(JBD2_CHECKPOINT_IO_ERROR, &journal->j_atomic_flags)) {
+	if (jbd2_check_fs_dev_write_error(journal)) {
 		jbd2_journal_abort(journal, -EIO);
 		return -EIO;
 	}
@@ -1962,7 +1932,7 @@ static void jbd2_mark_journal_empty(journal_t *journal, blk_opf_t write_flags)
 	if (had_fast_commit)
 		jbd2_set_feature_fast_commit(journal);
 
-	/* Log is no longer empty */
+	/* Log is empty */
 	write_lock(&journal->j_state_lock);
 	journal->j_flags |= JBD2_FLUSHED;
 	write_unlock(&journal->j_state_lock);
@@ -2042,7 +2012,7 @@ static int __jbd2_journal_erase(journal_t *journal, unsigned int flags)
 		byte_count = (block_stop - block_start + 1) *
 				journal->j_blocksize;
 
-		truncate_inode_pages_range(journal->j_dev->bd_inode->i_mapping,
+		truncate_inode_pages_range(journal->j_dev->bd_mapping,
 				byte_start, byte_stop);
 
 		if (flags & JBD2_JOURNAL_FLUSH_DISCARD) {
@@ -2193,12 +2163,12 @@ int jbd2_journal_destroy(journal_t *journal)
 
 	/*
 	 * OK, all checkpoint transactions have been checked, now check the
-	 * write out io error flag and abort the journal if some buffer failed
-	 * to write back to the original location, otherwise the filesystem
-	 * may become inconsistent.
+	 * writeback errseq of fs dev and abort the journal if some buffer
+	 * failed to write back to the original location, otherwise the
+	 * filesystem may become inconsistent.
 	 */
 	if (!is_journal_aborted(journal) &&
-	    test_bit(JBD2_CHECKPOINT_IO_ERROR, &journal->j_atomic_flags))
+	    jbd2_check_fs_dev_write_error(journal))
 		jbd2_journal_abort(journal, -EIO);
 
 	if (journal->j_sb_buffer) {
@@ -2217,9 +2187,9 @@ int jbd2_journal_destroy(journal_t *journal)
 		brelse(journal->j_sb_buffer);
 	}
 
-	if (journal->j_shrinker.flags & SHRINKER_REGISTERED) {
+	if (journal->j_shrinker) {
 		percpu_counter_destroy(&journal->j_checkpoint_jh_count);
-		unregister_shrinker(&journal->j_shrinker);
+		shrinker_free(journal->j_shrinker);
 	}
 	if (journal->j_proc_entry)
 		jbd2_stats_proc_exit(journal);
@@ -2884,8 +2854,7 @@ static struct journal_head *journal_alloc_journal_head(void)
 		ret = kmem_cache_zalloc(jbd2_journal_head_cache,
 				GFP_NOFS | __GFP_NOFAIL);
 	}
-	if (ret)
-		spin_lock_init(&ret->b_state_lock);
+	spin_lock_init(&ret->b_state_lock);
 	return ret;
 }
 
@@ -3210,6 +3179,7 @@ static void __exit journal_exit(void)
 	jbd2_journal_destroy_caches();
 }
 
+MODULE_DESCRIPTION("Generic filesystem journal-writing module");
 MODULE_LICENSE("GPL");
 module_init(journal_init);
 module_exit(journal_exit);

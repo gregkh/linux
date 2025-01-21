@@ -98,7 +98,7 @@ static int vc4_get_param_ioctl(struct drm_device *dev, void *data,
 	if (args->pad != 0)
 		return -EINVAL;
 
-	if (WARN_ON_ONCE(vc4->is_vc5))
+	if (WARN_ON_ONCE(vc4->gen == VC4_GEN_5))
 		return -ENODEV;
 
 	if (!vc4->v3d)
@@ -147,7 +147,7 @@ static int vc4_open(struct drm_device *dev, struct drm_file *file)
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_file *vc4file;
 
-	if (WARN_ON_ONCE(vc4->is_vc5))
+	if (WARN_ON_ONCE(vc4->gen == VC4_GEN_5))
 		return -ENODEV;
 
 	vc4file = kzalloc(sizeof(*vc4file), GFP_KERNEL);
@@ -165,7 +165,7 @@ static void vc4_close(struct drm_device *dev, struct drm_file *file)
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_file *vc4file = file->driver_priv;
 
-	if (WARN_ON_ONCE(vc4->is_vc5))
+	if (WARN_ON_ONCE(vc4->gen == VC4_GEN_5))
 		return;
 
 	if (vc4file->bin_bo_used)
@@ -291,13 +291,17 @@ static int vc4_drm_bind(struct device *dev)
 	struct vc4_dev *vc4;
 	struct device_node *node;
 	struct drm_crtc *crtc;
-	bool is_vc5;
+	enum vc4_gen gen;
 	int ret = 0;
 
 	dev->coherent_dma_mask = DMA_BIT_MASK(32);
 
-	is_vc5 = of_device_is_compatible(dev->of_node, "brcm,bcm2711-vc5");
-	if (is_vc5)
+	if (of_device_is_compatible(dev->of_node, "brcm,bcm2711-vc5"))
+		gen = VC4_GEN_5;
+	else
+		gen = VC4_GEN_4;
+
+	if (gen == VC4_GEN_5)
 		driver = &vc5_drm_driver;
 	else
 		driver = &vc4_drm_driver;
@@ -315,30 +319,30 @@ static int vc4_drm_bind(struct device *dev)
 	vc4 = devm_drm_dev_alloc(dev, driver, struct vc4_dev, base);
 	if (IS_ERR(vc4))
 		return PTR_ERR(vc4);
-	vc4->is_vc5 = is_vc5;
+	vc4->gen = gen;
 	vc4->dev = dev;
 
 	drm = &vc4->base;
 	platform_set_drvdata(pdev, drm);
 
-	if (!is_vc5) {
+	if (gen == VC4_GEN_4) {
 		ret = drmm_mutex_init(drm, &vc4->bin_bo_lock);
 		if (ret)
-			return ret;
+			goto err;
 
 		ret = vc4_bo_cache_init(drm);
 		if (ret)
-			return ret;
+			goto err;
 	}
 
 	ret = drmm_mode_config_init(drm);
 	if (ret)
-		return ret;
+		goto err;
 
-	if (!is_vc5) {
+	if (gen == VC4_GEN_4) {
 		ret = vc4_gem_init(drm);
 		if (ret)
-			return ret;
+			goto err;
 	}
 
 	node = of_find_compatible_node(NULL, NULL, "raspberrypi,bcm2835-firmware");
@@ -346,13 +350,15 @@ static int vc4_drm_bind(struct device *dev)
 		firmware = rpi_firmware_get(node);
 		of_node_put(node);
 
-		if (!firmware)
-			return -EPROBE_DEFER;
+		if (!firmware) {
+			ret = -EPROBE_DEFER;
+			goto err;
+		}
 	}
 
 	ret = drm_aperture_remove_framebuffers(driver);
 	if (ret)
-		return ret;
+		goto err;
 
 	if (firmware) {
 		ret = rpi_firmware_property(firmware,
@@ -366,32 +372,33 @@ static int vc4_drm_bind(struct device *dev)
 
 	ret = component_bind_all(dev, drm);
 	if (ret)
-		return ret;
+		goto err;
 
 	ret = devm_add_action_or_reset(dev, vc4_component_unbind_all, vc4);
 	if (ret)
-		return ret;
+		goto err;
 
 	ret = vc4_plane_create_additional_planes(drm);
 	if (ret)
-		goto unbind_all;
+		goto err;
 
 	ret = vc4_kms_load(drm);
 	if (ret < 0)
-		goto unbind_all;
+		goto err;
 
 	drm_for_each_crtc(crtc, drm)
 		vc4_crtc_disable_at_boot(crtc);
 
 	ret = drm_dev_register(drm, 0);
 	if (ret < 0)
-		goto unbind_all;
+		goto err;
 
 	drm_fbdev_dma_setup(drm, 16);
 
 	return 0;
 
-unbind_all:
+err:
+	platform_set_drvdata(pdev, NULL);
 	return ret;
 }
 
@@ -401,6 +408,7 @@ static void vc4_drm_unbind(struct device *dev)
 
 	drm_dev_unplug(drm);
 	drm_atomic_helper_shutdown(drm);
+	dev_set_drvdata(dev, NULL);
 }
 
 static const struct component_master_ops vc4_drm_ops = {
@@ -444,6 +452,11 @@ static void vc4_platform_drm_remove(struct platform_device *pdev)
 	component_master_del(&pdev->dev, &vc4_drm_ops);
 }
 
+static void vc4_platform_drm_shutdown(struct platform_device *pdev)
+{
+	drm_atomic_helper_shutdown(platform_get_drvdata(pdev));
+}
+
 static const struct of_device_id vc4_of_match[] = {
 	{ .compatible = "brcm,bcm2711-vc5", },
 	{ .compatible = "brcm,bcm2835-vc4", },
@@ -455,6 +468,7 @@ MODULE_DEVICE_TABLE(of, vc4_of_match);
 static struct platform_driver vc4_platform_driver = {
 	.probe		= vc4_platform_drm_probe,
 	.remove_new	= vc4_platform_drm_remove,
+	.shutdown	= vc4_platform_drm_shutdown,
 	.driver		= {
 		.name	= "vc4-drm",
 		.of_match_table = vc4_of_match,

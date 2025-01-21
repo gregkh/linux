@@ -93,6 +93,8 @@ struct pcpu_secy_stats {
  * @secys: linked list of SecY's on the underlying device
  * @gro_cells: pointer to the Generic Receive Offload cell
  * @offload: status of offloading on the MACsec device
+ * @insert_tx_tag: when offloading, device requires to insert an
+ *	additional tag
  */
 struct macsec_dev {
 	struct macsec_secy secy;
@@ -102,6 +104,7 @@ struct macsec_dev {
 	struct list_head secys;
 	struct gro_cells gro_cells;
 	enum macsec_offload offload;
+	bool insert_tx_tag;
 };
 
 /**
@@ -2591,6 +2594,33 @@ static bool macsec_is_configured(struct macsec_dev *macsec)
 	return false;
 }
 
+static bool macsec_needs_tx_tag(struct macsec_dev *macsec,
+				const struct macsec_ops *ops)
+{
+	return macsec->offload == MACSEC_OFFLOAD_PHY &&
+		ops->mdo_insert_tx_tag;
+}
+
+static void macsec_set_head_tail_room(struct net_device *dev)
+{
+	struct macsec_dev *macsec = macsec_priv(dev);
+	struct net_device *real_dev = macsec->real_dev;
+	int needed_headroom, needed_tailroom;
+	const struct macsec_ops *ops;
+
+	ops = macsec_get_ops(macsec, NULL);
+	if (ops) {
+		needed_headroom = ops->needed_headroom;
+		needed_tailroom = ops->needed_tailroom;
+	} else {
+		needed_headroom = MACSEC_NEEDED_HEADROOM;
+		needed_tailroom = MACSEC_NEEDED_TAILROOM;
+	}
+
+	dev->needed_headroom = real_dev->needed_headroom + needed_headroom;
+	dev->needed_tailroom = real_dev->needed_tailroom + needed_tailroom;
+}
+
 static int macsec_update_offload(struct net_device *dev, enum macsec_offload offload)
 {
 	enum macsec_offload prev_offload;
@@ -2628,8 +2658,13 @@ static int macsec_update_offload(struct net_device *dev, enum macsec_offload off
 	ctx.secy = &macsec->secy;
 	ret = offload == MACSEC_OFFLOAD_OFF ? macsec_offload(ops->mdo_del_secy, &ctx)
 					    : macsec_offload(ops->mdo_add_secy, &ctx);
-	if (ret)
+	if (ret) {
 		macsec->offload = prev_offload;
+		return ret;
+	}
+
+	macsec_set_head_tail_room(dev);
+	macsec->insert_tx_tag = macsec_needs_tx_tag(macsec, ops);
 
 	return ret;
 }
@@ -3387,6 +3422,40 @@ static struct genl_family macsec_fam __ro_after_init = {
 	.resv_start_op	= MACSEC_CMD_UPD_OFFLOAD + 1,
 };
 
+static struct sk_buff *macsec_insert_tx_tag(struct sk_buff *skb,
+					    struct net_device *dev)
+{
+	struct macsec_dev *macsec = macsec_priv(dev);
+	const struct macsec_ops *ops;
+	struct phy_device *phydev;
+	struct macsec_context ctx;
+	int skb_final_len;
+	int err;
+
+	ops = macsec_get_ops(macsec, &ctx);
+	skb_final_len = skb->len - ETH_HLEN + ops->needed_headroom +
+		ops->needed_tailroom;
+	if (unlikely(skb_final_len > macsec->real_dev->mtu)) {
+		err = -EINVAL;
+		goto cleanup;
+	}
+
+	phydev = macsec->real_dev->phydev;
+
+	err = skb_ensure_writable_head_tail(skb, dev);
+	if (unlikely(err < 0))
+		goto cleanup;
+
+	err = ops->mdo_insert_tx_tag(phydev, skb);
+	if (unlikely(err))
+		goto cleanup;
+
+	return skb;
+cleanup:
+	kfree_skb(skb);
+	return ERR_PTR(err);
+}
+
 static netdev_tx_t macsec_start_xmit(struct sk_buff *skb,
 				     struct net_device *dev)
 {
@@ -3401,6 +3470,15 @@ static netdev_tx_t macsec_start_xmit(struct sk_buff *skb,
 		skb_dst_drop(skb);
 		dst_hold(&md_dst->dst);
 		skb_dst_set(skb, &md_dst->dst);
+
+		if (macsec->insert_tx_tag) {
+			skb = macsec_insert_tx_tag(skb, dev);
+			if (IS_ERR(skb)) {
+				DEV_STATS_INC(dev, tx_dropped);
+				return NETDEV_TX_OK;
+			}
+		}
+
 		skb->dev = macsec->real_dev;
 		return dev_queue_xmit(skb);
 	}
@@ -3449,23 +3527,16 @@ static int macsec_dev_init(struct net_device *dev)
 	struct net_device *real_dev = macsec->real_dev;
 	int err;
 
-	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
-	if (!dev->tstats)
-		return -ENOMEM;
-
 	err = gro_cells_init(&macsec->gro_cells, dev);
-	if (err) {
-		free_percpu(dev->tstats);
+	if (err)
 		return err;
-	}
 
 	dev->features = real_dev->features & MACSEC_FEATURES;
-	dev->features |= NETIF_F_LLTX | NETIF_F_GSO_SOFTWARE;
+	dev->features |= NETIF_F_GSO_SOFTWARE;
+	dev->lltx = true;
+	dev->pcpu_stat_type = NETDEV_PCPU_STAT_TSTATS;
 
-	dev->needed_headroom = real_dev->needed_headroom +
-			       MACSEC_NEEDED_HEADROOM;
-	dev->needed_tailroom = real_dev->needed_tailroom +
-			       MACSEC_NEEDED_TAILROOM;
+	macsec_set_head_tail_room(dev);
 
 	if (is_zero_ether_addr(dev->dev_addr))
 		eth_hw_addr_inherit(dev, real_dev);
@@ -3483,7 +3554,6 @@ static void macsec_dev_uninit(struct net_device *dev)
 	struct macsec_dev *macsec = macsec_priv(dev);
 
 	gro_cells_destroy(&macsec->gro_cells);
-	free_percpu(dev->tstats);
 }
 
 static netdev_features_t macsec_fix_features(struct net_device *dev,
@@ -3494,7 +3564,6 @@ static netdev_features_t macsec_fix_features(struct net_device *dev,
 
 	features &= (real_dev->features & MACSEC_FEATURES) |
 		    NETIF_F_GSO_SOFTWARE | NETIF_F_SOFT_FEATURES;
-	features |= NETIF_F_LLTX;
 
 	return features;
 }
@@ -3612,21 +3681,19 @@ static int macsec_set_mac_address(struct net_device *dev, void *p)
 	struct macsec_dev *macsec = macsec_priv(dev);
 	struct net_device *real_dev = macsec->real_dev;
 	struct sockaddr *addr = p;
+	u8  old_addr[ETH_ALEN];
 	int err;
 
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	if (!(dev->flags & IFF_UP))
-		goto out;
+	if (dev->flags & IFF_UP) {
+		err = dev_uc_add(real_dev, addr->sa_data);
+		if (err < 0)
+			return err;
+	}
 
-	err = dev_uc_add(real_dev, addr->sa_data);
-	if (err < 0)
-		return err;
-
-	dev_uc_del(real_dev, dev->dev_addr);
-
-out:
+	ether_addr_copy(old_addr, dev->dev_addr);
 	eth_hw_addr_set(dev, addr->sa_data);
 
 	/* If h/w offloading is available, propagate to the device */
@@ -3635,13 +3702,29 @@ out:
 		struct macsec_context ctx;
 
 		ops = macsec_get_ops(macsec, &ctx);
-		if (ops) {
-			ctx.secy = &macsec->secy;
-			macsec_offload(ops->mdo_upd_secy, &ctx);
+		if (!ops) {
+			err = -EOPNOTSUPP;
+			goto restore_old_addr;
 		}
+
+		ctx.secy = &macsec->secy;
+		err = macsec_offload(ops->mdo_upd_secy, &ctx);
+		if (err)
+			goto restore_old_addr;
 	}
 
+	if (dev->flags & IFF_UP)
+		dev_uc_del(real_dev, old_addr);
+
 	return 0;
+
+restore_old_addr:
+	if (dev->flags & IFF_UP)
+		dev_uc_del(real_dev, addr->sa_data);
+
+	eth_hw_addr_set(dev, old_addr);
+
+	return err;
 }
 
 static int macsec_change_mtu(struct net_device *dev, int new_mtu)
@@ -3652,7 +3735,7 @@ static int macsec_change_mtu(struct net_device *dev, int new_mtu)
 	if (macsec->real_dev->mtu - extra < new_mtu)
 		return -ERANGE;
 
-	dev->mtu = new_mtu;
+	WRITE_ONCE(dev->mtu, new_mtu);
 
 	return 0;
 }
@@ -3672,7 +3755,7 @@ static void macsec_get_stats64(struct net_device *dev,
 
 static int macsec_get_iflink(const struct net_device *dev)
 {
-	return macsec_priv(dev)->real_dev->ifindex;
+	return READ_ONCE(macsec_priv(dev)->real_dev->ifindex);
 }
 
 static const struct net_device_ops macsec_netdev_ops = {
@@ -4133,6 +4216,9 @@ static int macsec_newlink(struct net *net, struct net_device *dev,
 			err = macsec_offload(ops->mdo_add_secy, &ctx);
 			if (err)
 				goto del_dev;
+
+			macsec->insert_tx_tag =
+				macsec_needs_tx_tag(macsec, ops);
 		}
 	}
 

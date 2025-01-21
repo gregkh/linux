@@ -43,6 +43,7 @@
 #define QM_MB_CMD_CQC_BT                0x5
 #define QM_MB_CMD_SQC_VFT_V2            0x6
 #define QM_MB_CMD_STOP_QP               0x8
+#define QM_MB_CMD_FLUSH_QM		0x9
 #define QM_MB_CMD_SRC                   0xc
 #define QM_MB_CMD_DST                   0xd
 
@@ -108,17 +109,13 @@ enum qm_stop_reason {
 };
 
 enum qm_state {
-	QM_INIT = 0,
-	QM_START,
-	QM_CLOSE,
+	QM_WORK = 0,
 	QM_STOP,
 };
 
 enum qp_state {
-	QP_INIT = 1,
-	QP_START,
+	QP_START = 1,
 	QP_STOP,
-	QP_CLOSE,
 };
 
 enum qm_hw_ver {
@@ -155,6 +152,7 @@ enum qm_cap_bits {
 	QM_SUPPORT_DB_ISOLATION = 0x0,
 	QM_SUPPORT_FUNC_QOS,
 	QM_SUPPORT_STOP_QP,
+	QM_SUPPORT_STOP_FUNC,
 	QM_SUPPORT_MB_COMMAND,
 	QM_SUPPORT_SVA_PREFETCH,
 	QM_SUPPORT_RPM,
@@ -163,6 +161,11 @@ enum qm_cap_bits {
 struct qm_dev_alg {
 	u64 alg_msk;
 	const char *alg;
+};
+
+struct qm_dev_dfx {
+	u32 dev_state;
+	u32 dev_timeout;
 };
 
 struct dfx_diff_registers {
@@ -193,6 +196,7 @@ struct qm_debug {
 	struct dentry *debug_root;
 	struct dentry *qm_d;
 	struct debugfs_file files[DEBUG_FILE_NUM];
+	struct qm_dev_dfx dev_dfx;
 	unsigned int *qm_last_words;
 	/* ACC engines recoreding last regs */
 	unsigned int *last_words;
@@ -314,6 +318,18 @@ struct qm_err_isolate {
 	struct list_head qm_hw_errs;
 };
 
+struct qm_rsv_buf {
+	struct qm_sqc *sqc;
+	struct qm_cqc *cqc;
+	struct qm_eqc *eqc;
+	struct qm_aeqc *aeqc;
+	dma_addr_t sqc_dma;
+	dma_addr_t cqc_dma;
+	dma_addr_t eqc_dma;
+	dma_addr_t aeqc_dma;
+	struct qm_dma qcdma;
+};
+
 struct hisi_qm {
 	enum qm_hw_ver ver;
 	enum qm_fun_type fun_type;
@@ -346,6 +362,7 @@ struct hisi_qm {
 	dma_addr_t cqc_dma;
 	dma_addr_t eqe_dma;
 	dma_addr_t aeqe_dma;
+	struct qm_rsv_buf xqc_buf;
 
 	struct hisi_qm_status status;
 	const struct hisi_qm_err_ini *err_ini;
@@ -501,12 +518,26 @@ static inline void hisi_qm_init_list(struct hisi_qm_list *qm_list)
 	mutex_init(&qm_list->lock);
 }
 
+static inline void hisi_qm_add_list(struct hisi_qm *qm, struct hisi_qm_list *qm_list)
+{
+	mutex_lock(&qm_list->lock);
+	list_add_tail(&qm->list, &qm_list->list);
+	mutex_unlock(&qm_list->lock);
+}
+
+static inline void hisi_qm_del_list(struct hisi_qm *qm, struct hisi_qm_list *qm_list)
+{
+	mutex_lock(&qm_list->lock);
+	list_del(&qm->list);
+	mutex_unlock(&qm_list->lock);
+}
+
 int hisi_qm_init(struct hisi_qm *qm);
 void hisi_qm_uninit(struct hisi_qm *qm);
 int hisi_qm_start(struct hisi_qm *qm);
 int hisi_qm_stop(struct hisi_qm *qm, enum qm_stop_reason r);
 int hisi_qm_start_qp(struct hisi_qp *qp, unsigned long arg);
-int hisi_qm_stop_qp(struct hisi_qp *qp);
+void hisi_qm_stop_qp(struct hisi_qp *qp);
 int hisi_qp_send(struct hisi_qp *qp, const void *msg);
 void hisi_qm_debug_init(struct hisi_qm *qm);
 void hisi_qm_debug_regs_clear(struct hisi_qm *qm);
@@ -546,8 +577,8 @@ int hisi_qm_alloc_qps_node(struct hisi_qm_list *qm_list, int qp_num,
 void hisi_qm_free_qps(struct hisi_qp **qps, int qp_num);
 void hisi_qm_dev_shutdown(struct pci_dev *pdev);
 void hisi_qm_wait_task_finish(struct hisi_qm *qm, struct hisi_qm_list *qm_list);
-int hisi_qm_alg_register(struct hisi_qm *qm, struct hisi_qm_list *qm_list);
-void hisi_qm_alg_unregister(struct hisi_qm *qm, struct hisi_qm_list *qm_list);
+int hisi_qm_alg_register(struct hisi_qm *qm, struct hisi_qm_list *qm_list, int guard);
+void hisi_qm_alg_unregister(struct hisi_qm *qm, struct hisi_qm_list *qm_list, int guard);
 int hisi_qm_resume(struct device *dev);
 int hisi_qm_suspend(struct device *dev);
 void hisi_qm_pm_uninit(struct hisi_qm *qm);

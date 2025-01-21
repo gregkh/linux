@@ -786,19 +786,6 @@ static int qcom_battmgr_usb_get_property(struct power_supply *psy,
 	return 0;
 }
 
-static const enum power_supply_usb_type usb_psy_supported_types[] = {
-	POWER_SUPPLY_USB_TYPE_UNKNOWN,
-	POWER_SUPPLY_USB_TYPE_SDP,
-	POWER_SUPPLY_USB_TYPE_DCP,
-	POWER_SUPPLY_USB_TYPE_CDP,
-	POWER_SUPPLY_USB_TYPE_ACA,
-	POWER_SUPPLY_USB_TYPE_C,
-	POWER_SUPPLY_USB_TYPE_PD,
-	POWER_SUPPLY_USB_TYPE_PD_DRP,
-	POWER_SUPPLY_USB_TYPE_PD_PPS,
-	POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID,
-};
-
 static const enum power_supply_property sc8280xp_usb_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 };
@@ -809,8 +796,16 @@ static const struct power_supply_desc sc8280xp_usb_psy_desc = {
 	.properties = sc8280xp_usb_props,
 	.num_properties = ARRAY_SIZE(sc8280xp_usb_props),
 	.get_property = qcom_battmgr_usb_get_property,
-	.usb_types = usb_psy_supported_types,
-	.num_usb_types = ARRAY_SIZE(usb_psy_supported_types),
+	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
+		     BIT(POWER_SUPPLY_USB_TYPE_SDP)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_DCP)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_CDP)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_ACA)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_C)       |
+		     BIT(POWER_SUPPLY_USB_TYPE_PD)      |
+		     BIT(POWER_SUPPLY_USB_TYPE_PD_DRP)  |
+		     BIT(POWER_SUPPLY_USB_TYPE_PD_PPS)  |
+		     BIT(POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID),
 };
 
 static const enum power_supply_property sm8350_usb_props[] = {
@@ -829,8 +824,16 @@ static const struct power_supply_desc sm8350_usb_psy_desc = {
 	.properties = sm8350_usb_props,
 	.num_properties = ARRAY_SIZE(sm8350_usb_props),
 	.get_property = qcom_battmgr_usb_get_property,
-	.usb_types = usb_psy_supported_types,
-	.num_usb_types = ARRAY_SIZE(usb_psy_supported_types),
+	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
+		     BIT(POWER_SUPPLY_USB_TYPE_SDP)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_DCP)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_CDP)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_ACA)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_C)       |
+		     BIT(POWER_SUPPLY_USB_TYPE_PD)      |
+		     BIT(POWER_SUPPLY_USB_TYPE_PD_DRP)  |
+		     BIT(POWER_SUPPLY_USB_TYPE_PD_PPS)  |
+		     BIT(POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID),
 };
 
 static const u8 sm8350_wls_prop_map[] = {
@@ -1007,7 +1010,9 @@ static void qcom_battmgr_sc8280xp_callback(struct qcom_battmgr *battmgr,
 		battmgr->error = 0;
 		break;
 	case BATTMGR_BAT_INFO:
-		if (payload_len != sizeof(resp->info)) {
+		/* some firmware versions report an extra __le32 at the end of the payload */
+		if (payload_len != sizeof(resp->info) &&
+		    payload_len != (sizeof(resp->info) + sizeof(__le32))) {
 			dev_warn(battmgr->dev,
 				 "invalid payload length for battery information request: %zd\n",
 				 payload_len);
@@ -1308,6 +1313,7 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
 static const struct of_device_id qcom_battmgr_of_variants[] = {
 	{ .compatible = "qcom,sc8180x-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
 	{ .compatible = "qcom,sc8280xp-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
+	{ .compatible = "qcom,x1e80100-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
 	/* Unmatched devices falls back to QCOM_BATTMGR_SM8350 */
 	{}
 };

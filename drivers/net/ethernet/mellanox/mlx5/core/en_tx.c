@@ -752,11 +752,13 @@ static void mlx5e_consume_skb(struct mlx5e_txqsq *sq, struct sk_buff *skb,
 		u64 ts = get_cqe_ts(cqe);
 
 		hwts.hwtstamp = mlx5e_cqe_ts_to_ns(sq->ptp_cyc2time, sq->clock, ts);
-		if (sq->ptpsq)
+		if (sq->ptpsq) {
 			mlx5e_skb_cb_hwtstamp_handler(skb, MLX5E_SKB_CB_CQE_HWTSTAMP,
 						      hwts.hwtstamp, sq->ptpsq->cq_stats);
-		else
+		} else {
 			skb_tstamp_tx(skb, &hwts);
+			sq->stats->timestamps++;
+		}
 	}
 
 	napi_consume_skb(skb, napi_budget);
@@ -865,7 +867,7 @@ bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq, int napi_budget)
 				mlx5e_dump_error_cqe(&sq->cq, sq->sqn,
 						     (struct mlx5_err_cqe *)cqe);
 				mlx5_wq_cyc_wqe_dump(&sq->wq, ci, wi->num_wqebbs);
-				queue_work(cq->priv->wq, &sq->recover_work);
+				queue_work(cq->workqueue, &sq->recover_work);
 			}
 			stats->cqe_err++;
 		}

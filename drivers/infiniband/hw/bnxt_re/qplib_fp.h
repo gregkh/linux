@@ -105,6 +105,7 @@ struct bnxt_qplib_srq {
 	struct bnxt_qplib_sg_info	sg_info;
 	u16				eventq_hw_ring_id;
 	spinlock_t			lock; /* protect SRQE link list */
+	u8				toggle;
 };
 
 struct bnxt_qplib_sge {
@@ -421,6 +422,7 @@ struct bnxt_qplib_cq {
 	bool				resize_in_progress;
 	struct bnxt_qplib_sg_info	sg_info;
 	u64				cq_handle;
+	u8				toggle;
 
 #define CQ_RESIZE_WAIT_TIME_MS		500
 	unsigned long			flags;
@@ -646,5 +648,15 @@ static inline __le64 bnxt_re_update_msn_tbl(u32 st_idx, u32 npsn, u32 start_psn)
 		SQ_MSN_SEARCH_NEXT_PSN_MASK) |
 		(((start_psn) << SQ_MSN_SEARCH_START_PSN_SFT) &
 		SQ_MSN_SEARCH_START_PSN_MASK));
+}
+
+static inline bool __is_var_wqe(struct bnxt_qplib_qp *qp)
+{
+	return (qp->wqe_mode == BNXT_QPLIB_WQE_MODE_VARIABLE);
+}
+
+static inline bool __is_err_cqe_for_var_wqe(struct bnxt_qplib_qp *qp, u8 status)
+{
+	return (status != CQ_REQ_STATUS_OK) && __is_var_wqe(qp);
 }
 #endif /* __BNXT_QPLIB_FP_H__ */

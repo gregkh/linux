@@ -559,7 +559,7 @@ int bnxt_qplib_alloc_mrw(struct bnxt_qplib_res *res, struct bnxt_qplib_mrw *mrw)
 	req.pd_id = cpu_to_le32(mrw->pd->id);
 	req.mrw_flags = mrw->type;
 	if ((mrw->type == CMDQ_ALLOCATE_MRW_MRW_FLAGS_PMR &&
-	     mrw->flags & BNXT_QPLIB_FR_PMR) ||
+	     mrw->access_flags & BNXT_QPLIB_FR_PMR) ||
 	    mrw->type == CMDQ_ALLOCATE_MRW_MRW_FLAGS_MW_TYPE2A ||
 	    mrw->type == CMDQ_ALLOCATE_MRW_MRW_FLAGS_MW_TYPE2B)
 		req.access = CMDQ_ALLOCATE_MRW_ACCESS_CONSUMER_OWNED_KEY;
@@ -671,9 +671,12 @@ int bnxt_qplib_reg_mr(struct bnxt_qplib_res *res, struct bnxt_qplib_mrw *mr,
 	req.log2_pbl_pg_size = cpu_to_le16(((ilog2(PAGE_SIZE) <<
 				 CMDQ_REGISTER_MR_LOG2_PBL_PG_SIZE_SFT) &
 				CMDQ_REGISTER_MR_LOG2_PBL_PG_SIZE_MASK));
-	req.access = (mr->flags & 0xFFFF);
+	req.access = (mr->access_flags & 0xFFFF);
 	req.va = cpu_to_le64(mr->va);
 	req.key = cpu_to_le32(mr->lkey);
+	if (_is_alloc_mr_unified(res->dattr->dev_cap_flags))
+		req.key = cpu_to_le32(mr->pd->id);
+	req.flags = cpu_to_le16(mr->flags);
 	req.mr_size = cpu_to_le64(mr->total_size);
 
 	bnxt_qplib_fill_cmdqmsg(&msg, &req, &resp, NULL, sizeof(req),
@@ -681,6 +684,11 @@ int bnxt_qplib_reg_mr(struct bnxt_qplib_res *res, struct bnxt_qplib_mrw *mr,
 	rc = bnxt_qplib_rcfw_send_message(rcfw, &msg);
 	if (rc)
 		goto fail;
+
+	if (_is_alloc_mr_unified(res->dattr->dev_cap_flags)) {
+		mr->lkey = le32_to_cpu(resp.xid);
+		mr->rkey = mr->lkey;
+	}
 
 	return 0;
 

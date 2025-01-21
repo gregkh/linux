@@ -47,11 +47,20 @@ extern const struct bnxt_qplib_gid bnxt_qplib_gid_zero;
 #define CHIP_NUM_58818          0xd818
 #define CHIP_NUM_57608          0x1760
 
+#define BNXT_QPLIB_DBR_VALID		(0x1UL << 26)
+#define BNXT_QPLIB_DBR_EPOCH_SHIFT	24
+#define BNXT_QPLIB_DBR_TOGGLE_SHIFT	25
 
 struct bnxt_qplib_drv_modes {
 	u8	wqe_mode;
 	bool db_push;
 	bool dbr_pacing;
+	u32 toggle_bits;
+};
+
+enum bnxt_re_toggle_modes {
+	BNXT_QPLIB_CQ_TOGGLE_BIT = 0x1,
+	BNXT_QPLIB_SRQ_TOGGLE_BIT = 0x2,
 };
 
 struct bnxt_qplib_chip_ctx {
@@ -73,6 +82,7 @@ struct bnxt_qplib_db_pacing_data {
 	u32 fifo_room_mask;
 	u32 fifo_room_shift;
 	u32 grc_reg_offset;
+	u32 dev_err_state;
 };
 
 #define BNXT_QPLIB_DBR_PF_DB_OFFSET     0x10000
@@ -190,6 +200,7 @@ struct bnxt_qplib_db_info {
 	u32			xid;
 	u32			max_slot;
 	u32                     flags;
+	u8			toggle;
 };
 
 enum bnxt_qplib_db_info_flags_mask {
@@ -197,6 +208,11 @@ enum bnxt_qplib_db_info_flags_mask {
 	BNXT_QPLIB_FLAG_EPOCH_PROD_SHIFT        = 0x1UL,
 	BNXT_QPLIB_FLAG_EPOCH_CONS_MASK         = 0x1UL,
 	BNXT_QPLIB_FLAG_EPOCH_PROD_MASK         = 0x2UL,
+};
+
+enum bnxt_qplib_db_epoch_flag_shift {
+	BNXT_QPLIB_DB_EPOCH_CONS_SHIFT  = BNXT_QPLIB_DBR_EPOCH_SHIFT,
+	BNXT_QPLIB_DB_EPOCH_PROD_SHIFT  = (BNXT_QPLIB_DBR_EPOCH_SHIFT - 1),
 };
 
 /* Tables */
@@ -452,14 +468,27 @@ static inline void bnxt_qplib_ring_db32(struct bnxt_qplib_db_info *info,
 	writel(key, info->db);
 }
 
+#define BNXT_QPLIB_INIT_DBHDR(xid, type, indx, toggle) \
+	(((u64)(((xid) & DBC_DBC_XID_MASK) | DBC_DBC_PATH_ROCE |  \
+		(type) | BNXT_QPLIB_DBR_VALID) << 32) | (indx) |  \
+	 (((u32)(toggle)) << (BNXT_QPLIB_DBR_TOGGLE_SHIFT)))
+
 static inline void bnxt_qplib_ring_db(struct bnxt_qplib_db_info *info,
 				      u32 type)
 {
 	u64 key = 0;
+	u32 indx;
+	u8 toggle = 0;
 
-	key = (info->xid & DBC_DBC_XID_MASK) | DBC_DBC_PATH_ROCE | type;
-	key <<= 32;
-	key |= (info->hwq->cons & DBC_DBC_INDEX_MASK);
+	if (type == DBC_DBC_TYPE_CQ_ARMALL ||
+	    type == DBC_DBC_TYPE_CQ_ARMSE)
+		toggle = info->toggle;
+
+	indx = (info->hwq->cons & DBC_DBC_INDEX_MASK) |
+	       ((info->flags & BNXT_QPLIB_FLAG_EPOCH_CONS_MASK) <<
+		 BNXT_QPLIB_DB_EPOCH_CONS_SHIFT);
+
+	key =  BNXT_QPLIB_INIT_DBHDR(info->xid, type, indx, toggle);
 	writeq(key, info->db);
 }
 
@@ -467,10 +496,12 @@ static inline void bnxt_qplib_ring_prod_db(struct bnxt_qplib_db_info *info,
 					   u32 type)
 {
 	u64 key = 0;
+	u32 indx;
 
-	key = (info->xid & DBC_DBC_XID_MASK) | DBC_DBC_PATH_ROCE | type;
-	key <<= 32;
-	key |= ((info->hwq->prod / info->max_slot)) & DBC_DBC_INDEX_MASK;
+	indx = (((info->hwq->prod / info->max_slot) & DBC_DBC_INDEX_MASK) |
+		((info->flags & BNXT_QPLIB_FLAG_EPOCH_PROD_MASK) <<
+		 BNXT_QPLIB_DB_EPOCH_PROD_SHIFT));
+	key = BNXT_QPLIB_INIT_DBHDR(info->xid, type, indx, 0);
 	writeq(key, info->db);
 }
 
@@ -478,9 +509,12 @@ static inline void bnxt_qplib_armen_db(struct bnxt_qplib_db_info *info,
 				       u32 type)
 {
 	u64 key = 0;
+	u8 toggle = 0;
 
-	key = (info->xid & DBC_DBC_XID_MASK) | DBC_DBC_PATH_ROCE | type;
-	key <<= 32;
+	if (type == DBC_DBC_TYPE_CQ_ARMENA || type == DBC_DBC_TYPE_SRQ_ARMENA)
+		toggle = info->toggle;
+	/* Index always at 0 */
+	key = BNXT_QPLIB_INIT_DBHDR(info->xid, type, 0, toggle);
 	writeq(key, info->priv_db);
 }
 
@@ -489,9 +523,7 @@ static inline void bnxt_qplib_srq_arm_db(struct bnxt_qplib_db_info *info,
 {
 	u64 key = 0;
 
-	key = (info->xid & DBC_DBC_XID_MASK) | DBC_DBC_PATH_ROCE | th;
-	key <<= 32;
-	key |=  th & DBC_DBC_INDEX_MASK;
+	key = BNXT_QPLIB_INIT_DBHDR(info->xid, DBC_DBC_TYPE_SRQ_ARM, th, info->toggle);
 	writeq(key, info->priv_db);
 }
 
@@ -532,6 +564,16 @@ static inline bool _is_host_msn_table(u16 dev_cap_ext_flags2)
 static inline u8 bnxt_qplib_dbr_pacing_en(struct bnxt_qplib_chip_ctx *cctx)
 {
 	return cctx->modes.dbr_pacing;
+}
+
+static inline bool _is_alloc_mr_unified(u16 dev_cap_flags)
+{
+	return dev_cap_flags & CREQ_QUERY_FUNC_RESP_SB_MR_REGISTER_ALLOC;
+}
+
+static inline bool _is_relaxed_ordering_supported(u16 dev_cap_ext_flags2)
+{
+	return dev_cap_ext_flags2 & CREQ_QUERY_FUNC_RESP_SB_MEMORY_REGION_RO_SUPPORTED;
 }
 
 #endif /* __BNXT_QPLIB_RES_H__ */

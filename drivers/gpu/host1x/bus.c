@@ -333,7 +333,7 @@ static int host1x_del_client(struct host1x *host1x,
 	return -ENODEV;
 }
 
-static int host1x_device_match(struct device *dev, struct device_driver *drv)
+static int host1x_device_match(struct device *dev, const struct device_driver *drv)
 {
 	return strcmp(dev_name(dev), drv->name) == 0;
 }
@@ -360,7 +360,7 @@ static const struct dev_pm_ops host1x_device_pm_ops = {
 	.restore = pm_generic_restore,
 };
 
-struct bus_type host1x_bus_type = {
+const struct bus_type host1x_bus_type = {
 	.name = "host1x",
 	.match = host1x_device_match,
 	.uevent = host1x_device_uevent,

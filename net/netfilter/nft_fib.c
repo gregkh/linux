@@ -26,8 +26,7 @@ const struct nla_policy nft_fib_policy[NFTA_FIB_MAX + 1] = {
 };
 EXPORT_SYMBOL(nft_fib_policy);
 
-int nft_fib_validate(const struct nft_ctx *ctx, const struct nft_expr *expr,
-		     const struct nft_data **data)
+int nft_fib_validate(const struct nft_ctx *ctx, const struct nft_expr *expr)
 {
 	const struct nft_fib *priv = nft_expr_priv(expr);
 	unsigned int hooks;
@@ -206,4 +205,5 @@ bool nft_fib_reduce(struct nft_regs_track *track,
 EXPORT_SYMBOL_GPL(nft_fib_reduce);
 
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Query routing table from nftables");
 MODULE_AUTHOR("Florian Westphal <fw@strlen.de>");

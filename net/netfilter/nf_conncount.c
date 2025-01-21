@@ -522,11 +522,10 @@ unsigned int nf_conncount_count(struct net *net,
 }
 EXPORT_SYMBOL_GPL(nf_conncount_count);
 
-struct nf_conncount_data *nf_conncount_init(struct net *net, unsigned int family,
-					    unsigned int keylen)
+struct nf_conncount_data *nf_conncount_init(struct net *net, unsigned int keylen)
 {
 	struct nf_conncount_data *data;
-	int ret, i;
+	int i;
 
 	if (keylen % sizeof(u32) ||
 	    keylen / sizeof(u32) > MAX_KEYLEN ||
@@ -538,12 +537,6 @@ struct nf_conncount_data *nf_conncount_init(struct net *net, unsigned int family
 	data = kmalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return ERR_PTR(-ENOMEM);
-
-	ret = nf_ct_netns_get(net, family);
-	if (ret < 0) {
-		kfree(data);
-		return ERR_PTR(ret);
-	}
 
 	for (i = 0; i < ARRAY_SIZE(data->root); ++i)
 		data->root[i] = RB_ROOT;
@@ -581,13 +574,11 @@ static void destroy_tree(struct rb_root *r)
 	}
 }
 
-void nf_conncount_destroy(struct net *net, unsigned int family,
-			  struct nf_conncount_data *data)
+void nf_conncount_destroy(struct net *net, struct nf_conncount_data *data)
 {
 	unsigned int i;
 
 	cancel_work_sync(&data->gc_work);
-	nf_ct_netns_put(net, family);
 
 	for (i = 0; i < ARRAY_SIZE(data->root); ++i)
 		destroy_tree(&data->root[i]);
@@ -603,15 +594,11 @@ static int __init nf_conncount_modinit(void)
 	for (i = 0; i < CONNCOUNT_SLOTS; ++i)
 		spin_lock_init(&nf_conncount_locks[i]);
 
-	conncount_conn_cachep = kmem_cache_create("nf_conncount_tuple",
-					   sizeof(struct nf_conncount_tuple),
-					   0, 0, NULL);
+	conncount_conn_cachep = KMEM_CACHE(nf_conncount_tuple, 0);
 	if (!conncount_conn_cachep)
 		return -ENOMEM;
 
-	conncount_rb_cachep = kmem_cache_create("nf_conncount_rb",
-					   sizeof(struct nf_conncount_rb),
-					   0, 0, NULL);
+	conncount_rb_cachep = KMEM_CACHE(nf_conncount_rb, 0);
 	if (!conncount_rb_cachep) {
 		kmem_cache_destroy(conncount_conn_cachep);
 		return -ENOMEM;

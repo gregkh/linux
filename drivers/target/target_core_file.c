@@ -22,7 +22,7 @@
 #include <linux/uio.h>
 #include <linux/scatterlist.h>
 #include <scsi/scsi_proto.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <target/target_core_base.h>
 #include <target/target_core_backend.h>
@@ -299,9 +299,9 @@ fd_execute_rw_aio(struct se_cmd *cmd, struct scatterlist *sgl, u32 sgl_nents,
 		aio_cmd->iocb.ki_flags |= IOCB_DSYNC;
 
 	if (is_write)
-		ret = call_write_iter(file, &aio_cmd->iocb, &iter);
+		ret = file->f_op->write_iter(&aio_cmd->iocb, &iter);
 	else
-		ret = call_read_iter(file, &aio_cmd->iocb, &iter);
+		ret = file->f_op->read_iter(&aio_cmd->iocb, &iter);
 
 	if (ret != -EIOCBQUEUED)
 		cmd_rw_aio_complete(&aio_cmd->iocb, ret);
@@ -332,13 +332,11 @@ static int fd_do_rw(struct se_cmd *cmd, struct file *fd,
 	}
 
 	iov_iter_bvec(&iter, is_write, bvec, sgl_nents, len);
-	if (is_write) {
-		file_start_write(fd);
+	if (is_write)
 		ret = vfs_iter_write(fd, &iter, &pos, 0);
-		file_end_write(fd);
-	} else {
+	else
 		ret = vfs_iter_read(fd, &iter, &pos, 0);
-	}
+
 	if (is_write) {
 		if (ret < 0 || ret != data_length) {
 			pr_err("%s() write returned %d\n", __func__, ret);
@@ -469,9 +467,7 @@ fd_execute_write_same(struct se_cmd *cmd)
 	}
 
 	iov_iter_bvec(&iter, ITER_SOURCE, bvec, nolb, len);
-	file_start_write(fd_dev->fd_file);
 	ret = vfs_iter_write(fd_dev->fd_file, &iter, &pos, 0);
-	file_end_write(fd_dev->fd_file);
 
 	kfree(bvec);
 	if (ret < 0 || ret != len) {

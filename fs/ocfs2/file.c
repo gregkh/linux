@@ -755,7 +755,7 @@ static int ocfs2_write_zero_page(struct inode *inode, u64 abs_from,
 				 u64 abs_to, struct buffer_head *di_bh)
 {
 	struct address_space *mapping = inode->i_mapping;
-	struct page *page;
+	struct folio *folio;
 	unsigned long index = abs_from >> PAGE_SHIFT;
 	handle_t *handle;
 	int ret = 0;
@@ -774,9 +774,10 @@ static int ocfs2_write_zero_page(struct inode *inode, u64 abs_from,
 		goto out;
 	}
 
-	page = find_or_create_page(mapping, index, GFP_NOFS);
-	if (!page) {
-		ret = -ENOMEM;
+	folio = __filemap_get_folio(mapping, index,
+			FGP_LOCK | FGP_ACCESSED | FGP_CREAT, GFP_NOFS);
+	if (IS_ERR(folio)) {
+		ret = PTR_ERR(folio);
 		mlog_errno(ret);
 		goto out_commit_trans;
 	}
@@ -803,7 +804,7 @@ static int ocfs2_write_zero_page(struct inode *inode, u64 abs_from,
 		 * __block_write_begin and block_commit_write to zero the
 		 * whole block.
 		 */
-		ret = __block_write_begin(page, block_start + 1, 0,
+		ret = __block_write_begin(folio, block_start + 1, 0,
 					  ocfs2_get_block);
 		if (ret < 0) {
 			mlog_errno(ret);
@@ -812,13 +813,13 @@ static int ocfs2_write_zero_page(struct inode *inode, u64 abs_from,
 
 
 		/* must not update i_size! */
-		block_commit_write(page, block_start + 1, block_start + 1);
+		block_commit_write(&folio->page, block_start + 1, block_start + 1);
 	}
 
 	/*
 	 * fs-writeback will release the dirty pages without page lock
 	 * whose offset are over inode size, the release happens at
-	 * block_write_full_page().
+	 * block_write_full_folio().
 	 */
 	i_size_write(inode, abs_to);
 	inode->i_blocks = ocfs2_inode_sector_count(inode);
@@ -833,8 +834,8 @@ static int ocfs2_write_zero_page(struct inode *inode, u64 abs_from,
 	}
 
 out_unlock:
-	unlock_page(page);
-	put_page(page);
+	folio_unlock(folio);
+	folio_put(folio);
 out_commit_trans:
 	if (handle)
 		ocfs2_commit_trans(OCFS2_SB(inode->i_sb), handle);
@@ -2765,6 +2766,13 @@ out_unlock:
 	return remapped > 0 ? remapped : ret;
 }
 
+static loff_t ocfs2_dir_llseek(struct file *file, loff_t offset, int whence)
+{
+	struct ocfs2_file_private *fp = file->private_data;
+
+	return generic_llseek_cookie(file, offset, whence, &fp->cookie);
+}
+
 const struct inode_operations ocfs2_file_iops = {
 	.setattr	= ocfs2_setattr,
 	.getattr	= ocfs2_getattr,
@@ -2780,6 +2788,7 @@ const struct inode_operations ocfs2_file_iops = {
 const struct inode_operations ocfs2_special_file_iops = {
 	.setattr	= ocfs2_setattr,
 	.getattr	= ocfs2_getattr,
+	.listxattr	= ocfs2_listxattr,
 	.permission	= ocfs2_permission,
 	.get_inode_acl	= ocfs2_iop_get_acl,
 	.set_acl	= ocfs2_iop_set_acl,
@@ -2811,7 +2820,7 @@ const struct file_operations ocfs2_fops = {
 
 WRAP_DIR_ITER(ocfs2_readdir) // FIXME!
 const struct file_operations ocfs2_dops = {
-	.llseek		= generic_file_llseek,
+	.llseek		= ocfs2_dir_llseek,
 	.read		= generic_read_dir,
 	.iterate_shared	= shared_ocfs2_readdir,
 	.fsync		= ocfs2_sync_file,
@@ -2857,7 +2866,7 @@ const struct file_operations ocfs2_fops_no_plocks = {
 };
 
 const struct file_operations ocfs2_dops_no_plocks = {
-	.llseek		= generic_file_llseek,
+	.llseek		= ocfs2_dir_llseek,
 	.read		= generic_read_dir,
 	.iterate_shared	= shared_ocfs2_readdir,
 	.fsync		= ocfs2_sync_file,

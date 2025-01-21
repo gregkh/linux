@@ -24,7 +24,7 @@
 	backlight_lcd0: backlight_lcd0 {
 		compatible = "pwm-backlight";
 		pwms = <&pwm0 0 500000>;
-		power-supply = <&bl_pp5000>;
+		power-supply = <&reg_vsys>;
 		enable-gpios = <&pio 176 0>;
 		brightness-levels = <0 1023>;
 		num-interpolated-steps = <1023>;
@@ -47,10 +47,9 @@
 	it6505_pp18_reg: regulator0 {
 		compatible = "regulator-fixed";
 		regulator-name = "it6505_pp18";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
 		gpio = <&pio 178 0>;
 		enable-active-high;
+		vin-supply = <&pp1800_alw>;
 	};
 
 	lcd_pp3300: regulator1 {
@@ -62,27 +61,16 @@
 		regulator-boot-on;
 	};
 
-	bl_pp5000: regulator2 {
-		compatible = "regulator-fixed";
-		regulator-name = "bl_pp5000";
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		regulator-always-on;
-		regulator-boot-on;
-	};
-
 	mmc1_fixed_power: regulator3 {
 		compatible = "regulator-fixed";
 		regulator-name = "mmc1_power";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
+		vin-supply = <&pp3300_alw>;
 	};
 
 	mmc1_fixed_io: regulator4 {
 		compatible = "regulator-fixed";
 		regulator-name = "mmc1_io";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
+		vin-supply = <&pp1800_alw>;
 	};
 
 	pp1800_alw: regulator5 {
@@ -92,6 +80,7 @@
 		regulator-boot-on;
 		regulator-min-microvolt = <1800000>;
 		regulator-max-microvolt = <1800000>;
+		vin-supply = <&reg_vsys>;
 	};
 
 	pp3300_alw: regulator6 {
@@ -101,6 +90,15 @@
 		regulator-boot-on;
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
+		vin-supply = <&reg_vsys>;
+	};
+
+	/* system wide semi-regulated power rail from charger */
+	reg_vsys: regulator-vsys {
+		compatible = "regulator-fixed";
+		regulator-name = "vsys";
+		regulator-always-on;
+		regulator-boot-on;
 	};
 
 	reserved_memory: reserved-memory {
@@ -144,7 +142,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&wifi_pins_wakeup>;
 
-		button-wowlan {
+		wifi_wakeup_event: event-wowlan {
 			label = "Wake on WiFi";
 			gpios = <&pio 113 GPIO_ACTIVE_HIGH>;
 			linux,code = <KEY_WAKEUP>;
@@ -292,6 +290,11 @@
 	};
 };
 
+&dpi0 {
+	/* TODO Re-enable after DP to Type-C port muxing can be described */
+	status = "disabled";
+};
+
 &gic {
 	mediatek,broken-save-restore-fw;
 };
@@ -404,6 +407,26 @@
 	Avdd-supply = <&mt6358_vaud28_reg>;
 };
 
+&mt6358regulator {
+	vsys-ldo1-supply = <&reg_vsys>;
+	vsys-ldo2-supply = <&reg_vsys>;
+	vsys-ldo3-supply = <&reg_vsys>;
+	vsys-vcore-supply = <&reg_vsys>;
+	vsys-vdram1-supply = <&reg_vsys>;
+	vsys-vgpu-supply = <&reg_vsys>;
+	vsys-vmodem-supply = <&reg_vsys>;
+	vsys-vpa-supply = <&reg_vsys>;
+	vsys-vproc11-supply = <&reg_vsys>;
+	vsys-vproc12-supply = <&reg_vsys>;
+	vsys-vs1-supply = <&reg_vsys>;
+	vsys-vs2-supply = <&reg_vsys>;
+	vs1-ldo1-supply = <&mt6358_vs1_reg>;
+	vs2-ldo1-supply = <&mt6358_vdram1_reg>;
+	vs2-ldo2-supply = <&mt6358_vs2_reg>;
+	vs2-ldo3-supply = <&mt6358_vs2_reg>;
+	vs2-ldo4-supply = <&mt6358_vs2_reg>;
+};
+
 &mt6358_vgpu_reg {
 	regulator-max-microvolt = <900000>;
 
@@ -460,7 +483,7 @@
 				<PINMUX_GPIO172__FUNC_TDM_DATA1_2ND>,
 				<PINMUX_GPIO173__FUNC_TDM_DATA2_2ND>,
 				<PINMUX_GPIO10__FUNC_TDM_DATA3>; /*8ch-i2s to it6505*/
-			drive-strength = <MTK_DRIVE_6mA>;
+			drive-strength = <6>;
 		};
 	};
 
@@ -474,7 +497,7 @@
 				<PINMUX_GPIO10__FUNC_GPIO10>;
 			input-enable;
 			bias-pull-down;
-			drive-strength = <MTK_DRIVE_2mA>;
+			drive-strength = <2>;
 		};
 	};
 
@@ -505,7 +528,6 @@
 			pinmux = <PINMUX_GPIO82__FUNC_SDA0>,
 				 <PINMUX_GPIO83__FUNC_SCL0>;
 			mediatek,pull-up-adv = <3>;
-			mediatek,drive-strength-adv = <00>;
 		};
 	};
 
@@ -514,7 +536,6 @@
 			pinmux = <PINMUX_GPIO81__FUNC_SDA1>,
 				 <PINMUX_GPIO84__FUNC_SCL1>;
 			mediatek,pull-up-adv = <3>;
-			mediatek,drive-strength-adv = <00>;
 		};
 	};
 
@@ -523,7 +544,6 @@
 			pinmux = <PINMUX_GPIO103__FUNC_SCL2>,
 				 <PINMUX_GPIO104__FUNC_SDA2>;
 			bias-disable;
-			mediatek,drive-strength-adv = <00>;
 		};
 	};
 
@@ -532,7 +552,6 @@
 			pinmux = <PINMUX_GPIO50__FUNC_SCL3>,
 				 <PINMUX_GPIO51__FUNC_SDA3>;
 			mediatek,pull-up-adv = <3>;
-			mediatek,drive-strength-adv = <00>;
 		};
 	};
 
@@ -541,7 +560,6 @@
 			pinmux = <PINMUX_GPIO105__FUNC_SCL4>,
 				 <PINMUX_GPIO106__FUNC_SDA4>;
 			bias-disable;
-			mediatek,drive-strength-adv = <00>;
 		};
 	};
 
@@ -550,7 +568,6 @@
 			pinmux = <PINMUX_GPIO48__FUNC_SCL5>,
 				 <PINMUX_GPIO49__FUNC_SDA5>;
 			mediatek,pull-up-adv = <3>;
-			mediatek,drive-strength-adv = <00>;
 		};
 	};
 
@@ -651,14 +668,14 @@
 				 <PINMUX_GPIO34__FUNC_MSDC1_DAT1>,
 				 <PINMUX_GPIO33__FUNC_MSDC1_DAT2>,
 				 <PINMUX_GPIO30__FUNC_MSDC1_DAT3>;
-			drive-strength = <MTK_DRIVE_6mA>;
+			drive-strength = <6>;
 			input-enable;
 			mediatek,pull-up-adv = <10>;
 		};
 
 		pins-clk {
 			pinmux = <PINMUX_GPIO29__FUNC_MSDC1_CLK>;
-			drive-strength = <MTK_DRIVE_8mA>;
+			drive-strength = <8>;
 			mediatek,pull-down-adv = <10>;
 			input-enable;
 		};
@@ -815,6 +832,10 @@
 	};
 };
 
+&pmic {
+	interrupts-extended = <&pio 182 IRQ_TYPE_LEVEL_HIGH>;
+};
+
 &pwm0 {
 	status = "okay";
 	pinctrl-names = "default";
@@ -828,7 +849,7 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&scp_pins>;
 
-	cros_ec {
+	cros-ec-rpmsg {
 		compatible = "google,cros-ec-rpmsg";
 		mediatek,rpmsg-name = "cros-ec-rpmsg";
 	};
@@ -842,10 +863,6 @@
 	domain-supply = <&mt6358_vgpu_reg>;
 };
 
-&soc_data {
-	status = "okay";
-};
-
 &spi0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&spi0_pins>;
@@ -853,14 +870,13 @@
 	status = "okay";
 	cs-gpios = <&pio 86 GPIO_ACTIVE_LOW>;
 
-	cr50@0 {
+	tpm@0 {
 		compatible = "google,cr50";
 		reg = <0>;
 		spi-max-frequency = <1000000>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&h1_int_od_l>;
-		interrupt-parent = <&pio>;
-		interrupts = <153 IRQ_TYPE_EDGE_RISING>;
+		interrupts-extended = <&pio 153 IRQ_TYPE_EDGE_RISING>;
 	};
 };
 
@@ -887,10 +903,10 @@
 		compatible = "google,cros-ec-spi";
 		reg = <0>;
 		spi-max-frequency = <3000000>;
-		interrupt-parent = <&pio>;
-		interrupts = <151 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&pio 151 IRQ_TYPE_LEVEL_LOW>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&ec_ap_int_odl>;
+		wakeup-source;
 
 		i2c_tunnel: i2c-tunnel {
 			compatible = "google,cros-ec-i2c-tunnel";

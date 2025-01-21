@@ -21,7 +21,7 @@
 #include <linux/netdevice.h>
 #include <linux/random.h>
 #include <linux/crc32.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/bitsperlong.h>
 
 #ifdef __KERNEL__
@@ -70,6 +70,12 @@ int eth_gro_complete(struct sk_buff *skb, int nhoff);
 static const u8 eth_reserved_addr_base[ETH_ALEN] __aligned(2) =
 { 0x01, 0x80, 0xc2, 0x00, 0x00, 0x00 };
 #define eth_stp_addr eth_reserved_addr_base
+
+static const u8 eth_ipv4_mcast_addr_base[ETH_ALEN] __aligned(2) =
+{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0x00 };
+
+static const u8 eth_ipv6_mcast_addr_base[ETH_ALEN] __aligned(2) =
+{ 0x33, 0x33, 0x00, 0x00, 0x00, 0x00 };
 
 /**
  * is_link_local_ether_addr - Determine if given Ethernet address is link-local
@@ -430,18 +436,16 @@ static inline bool ether_addr_equal_masked(const u8 *addr1, const u8 *addr2,
 
 static inline bool ether_addr_is_ipv4_mcast(const u8 *addr)
 {
-	u8 base[ETH_ALEN] = { 0x01, 0x00, 0x5e, 0x00, 0x00, 0x00 };
 	u8 mask[ETH_ALEN] = { 0xff, 0xff, 0xff, 0x80, 0x00, 0x00 };
 
-	return ether_addr_equal_masked(addr, base, mask);
+	return ether_addr_equal_masked(addr, eth_ipv4_mcast_addr_base, mask);
 }
 
 static inline bool ether_addr_is_ipv6_mcast(const u8 *addr)
 {
-	u8 base[ETH_ALEN] = { 0x33, 0x33, 0x00, 0x00, 0x00, 0x00 };
 	u8 mask[ETH_ALEN] = { 0xff, 0xff, 0x00, 0x00, 0x00, 0x00 };
 
-	return ether_addr_equal_masked(addr, base, mask);
+	return ether_addr_equal_masked(addr, eth_ipv6_mcast_addr_base, mask);
 }
 
 static inline bool ether_addr_is_ip_mcast(const u8 *addr)
@@ -632,8 +636,16 @@ static inline void eth_skb_pkt_type(struct sk_buff *skb,
 	}
 }
 
+static inline struct ethhdr *eth_skb_pull_mac(struct sk_buff *skb)
+{
+	struct ethhdr *eth = (struct ethhdr *)skb->data;
+
+	skb_pull_inline(skb, ETH_HLEN);
+	return eth;
+}
+
 /**
- * eth_skb_pad - Pad buffer to mininum number of octets for Ethernet frame
+ * eth_skb_pad - Pad buffer to minimum number of octets for Ethernet frame
  * @skb: Buffer to pad
  *
  * An Ethernet frame should have a minimum size of 60 bytes.  This function

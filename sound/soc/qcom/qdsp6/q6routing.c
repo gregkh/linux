@@ -2,14 +2,15 @@
 // Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
 // Copyright (c) 2018, Linaro Limited
 
+#include <dt-bindings/sound/qcom,q6asm.h>
+#include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/of_platform.h>
 #include <linux/bitops.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
 #include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/soc.h>
@@ -1160,7 +1161,7 @@ static struct platform_driver q6pcm_routing_platform_driver = {
 		.of_match_table = of_match_ptr(q6pcm_routing_device_id),
 	},
 	.probe = q6pcm_routing_probe,
-	.remove_new = q6pcm_routing_remove,
+	.remove = q6pcm_routing_remove,
 };
 module_platform_driver(q6pcm_routing_platform_driver);
 

@@ -17,6 +17,7 @@
 #include <sound/pcm_iec958.h>
 
 #include <drm/drm_crtc.h> /* This is only to get MAX_ELD_BYTES */
+#include <drm/drm_eld.h>
 
 #define HDMI_CODEC_CHMAP_IDX_UNKNOWN  -1
 
@@ -728,7 +729,7 @@ static int hdmi_codec_mute(struct snd_soc_dai *dai, int mute, int direction)
  * For example,
  *	${LINUX}/drivers/gpu/drm/bridge/synopsys/dw-hdmi-i2s-audio.c
  */
-static u64 hdmi_codec_formats =
+static const u64 hdmi_codec_formats =
 	SND_SOC_POSSIBLE_DAIFMT_NB_NF	|
 	SND_SOC_POSSIBLE_DAIFMT_NB_IF	|
 	SND_SOC_POSSIBLE_DAIFMT_IB_NF	|

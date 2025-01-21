@@ -16,8 +16,6 @@ extern bool pgtable_l5_enabled;
 #define PGDIR_SHIFT_L3  30
 #define PGDIR_SHIFT_L4  39
 #define PGDIR_SHIFT_L5  48
-#define PGDIR_SIZE_L3   (_AC(1, UL) << PGDIR_SHIFT_L3)
-
 #define PGDIR_SHIFT     (pgtable_l5_enabled ? PGDIR_SHIFT_L5 : \
 		(pgtable_l4_enabled ? PGDIR_SHIFT_L4 : PGDIR_SHIFT_L3))
 /* Size of region mapped by a page global directory */
@@ -126,14 +124,18 @@ enum napot_cont_order {
 
 /*
  * [63:59] T-Head Memory Type definitions:
- *
- * 00000 - NC   Weakly-ordered, Non-cacheable, Non-bufferable, Non-shareable, Non-trustable
+ * bit[63] SO - Strong Order
+ * bit[62] C - Cacheable
+ * bit[61] B - Bufferable
+ * bit[60] SH - Shareable
+ * bit[59] Sec - Trustable
+ * 00110 - NC   Weakly-ordered, Non-cacheable, Bufferable, Shareable, Non-trustable
  * 01110 - PMA  Weakly-ordered, Cacheable, Bufferable, Shareable, Non-trustable
- * 10000 - IO   Strongly-ordered, Non-cacheable, Non-bufferable, Non-shareable, Non-trustable
+ * 10010 - IO   Strongly-ordered, Non-cacheable, Non-bufferable, Shareable, Non-trustable
  */
 #define _PAGE_PMA_THEAD		((1UL << 62) | (1UL << 61) | (1UL << 60))
-#define _PAGE_NOCACHE_THEAD	0UL
-#define _PAGE_IO_THEAD		(1UL << 63)
+#define _PAGE_NOCACHE_THEAD	((1UL << 61) | (1UL << 60))
+#define _PAGE_IO_THEAD		((1UL << 63) | (1UL << 60))
 #define _PAGE_MTMASK_THEAD	(_PAGE_PMA_THEAD | _PAGE_IO_THEAD | (1UL << 59))
 
 static inline u64 riscv_page_mtmask(void)
@@ -186,7 +188,7 @@ static inline int pud_bad(pud_t pud)
 }
 
 #define pud_leaf	pud_leaf
-static inline int pud_leaf(pud_t pud)
+static inline bool pud_leaf(pud_t pud)
 {
 	return pud_present(pud) && (pud_val(pud) & _PAGE_LEAF);
 }
@@ -395,5 +397,25 @@ static inline struct page *pgd_page(pgd_t pgd)
 
 #define p4d_offset p4d_offset
 p4d_t *p4d_offset(pgd_t *pgd, unsigned long address);
+
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+static inline int pte_devmap(pte_t pte);
+static inline pte_t pmd_pte(pmd_t pmd);
+
+static inline int pmd_devmap(pmd_t pmd)
+{
+	return pte_devmap(pmd_pte(pmd));
+}
+
+static inline int pud_devmap(pud_t pud)
+{
+	return 0;
+}
+
+static inline int pgd_devmap(pgd_t pgd)
+{
+	return 0;
+}
+#endif
 
 #endif /* _ASM_RISCV_PGTABLE_64_H */

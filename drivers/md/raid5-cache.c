@@ -313,10 +313,10 @@ void r5c_handle_cached_data_endio(struct r5conf *conf,
 		if (sh->dev[i].written) {
 			set_bit(R5_UPTODATE, &sh->dev[i].flags);
 			r5c_return_dev_pending_writes(conf, &sh->dev[i]);
-			md_bitmap_endwrite(conf->mddev->bitmap, sh->sector,
-					   RAID5_STRIPE_SECTORS(conf),
-					   !test_bit(STRIPE_DEGRADED, &sh->state),
-					   0);
+			conf->mddev->bitmap_ops->endwrite(conf->mddev,
+					sh->sector, RAID5_STRIPE_SECTORS(conf),
+					!test_bit(STRIPE_DEGRADED, &sh->state),
+					false);
 		}
 	}
 }
@@ -686,7 +686,6 @@ static void r5c_disable_writeback_async(struct work_struct *work)
 					   disable_writeback_work);
 	struct mddev *mddev = log->rdev->mddev;
 	struct r5conf *conf = mddev->private;
-	int locked = 0;
 
 	if (log->r5c_journal_mode == R5C_JOURNAL_MODE_WRITE_THROUGH)
 		return;
@@ -696,13 +695,13 @@ static void r5c_disable_writeback_async(struct work_struct *work)
 	/* wait superblock change before suspend */
 	wait_event(mddev->sb_wait,
 		   !READ_ONCE(conf->log) ||
-		   (!test_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags) &&
-		    (locked = mddev_trylock(mddev))));
-	if (locked) {
-		mddev_suspend(mddev);
+		   !test_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags));
+
+	log = READ_ONCE(conf->log);
+	if (log) {
+		mddev_suspend(mddev, false);
 		log->r5c_journal_mode = R5C_JOURNAL_MODE_WRITE_THROUGH;
 		mddev_resume(mddev);
-		mddev_unlock(mddev);
 	}
 }
 
@@ -1891,28 +1890,22 @@ r5l_recovery_replay_one_stripe(struct r5conf *conf,
 			continue;
 
 		/* in case device is broken */
-		rcu_read_lock();
-		rdev = rcu_dereference(conf->disks[disk_index].rdev);
+		rdev = conf->disks[disk_index].rdev;
 		if (rdev) {
 			atomic_inc(&rdev->nr_pending);
-			rcu_read_unlock();
 			sync_page_io(rdev, sh->sector, PAGE_SIZE,
 				     sh->dev[disk_index].page, REQ_OP_WRITE,
 				     false);
 			rdev_dec_pending(rdev, rdev->mddev);
-			rcu_read_lock();
 		}
-		rrdev = rcu_dereference(conf->disks[disk_index].replacement);
+		rrdev = conf->disks[disk_index].replacement;
 		if (rrdev) {
 			atomic_inc(&rrdev->nr_pending);
-			rcu_read_unlock();
 			sync_page_io(rrdev, sh->sector, PAGE_SIZE,
 				     sh->dev[disk_index].page, REQ_OP_WRITE,
 				     false);
 			rdev_dec_pending(rrdev, rrdev->mddev);
-			rcu_read_lock();
 		}
-		rcu_read_unlock();
 	}
 	ctx->data_parity_stripes++;
 out:
@@ -2586,9 +2579,7 @@ int r5c_journal_mode_set(struct mddev *mddev, int mode)
 	    mode == R5C_JOURNAL_MODE_WRITE_BACK)
 		return -EINVAL;
 
-	mddev_suspend(mddev);
 	conf->log->r5c_journal_mode = mode;
-	mddev_resume(mddev);
 
 	pr_debug("md/raid:%s: setting r5c cache mode to %d: %s\n",
 		 mdname(mddev), mode, r5c_journal_mode_str[mode]);
@@ -2613,11 +2604,11 @@ static ssize_t r5c_journal_mode_store(struct mddev *mddev,
 		if (strlen(r5c_journal_mode_str[mode]) == len &&
 		    !strncmp(page, r5c_journal_mode_str[mode], len))
 			break;
-	ret = mddev_lock(mddev);
+	ret = mddev_suspend_and_lock(mddev);
 	if (ret)
 		return ret;
 	ret = r5c_journal_mode_set(mddev, mode);
-	mddev_unlock(mddev);
+	mddev_unlock_and_resume(mddev);
 	return ret ?: length;
 }
 
@@ -2807,7 +2798,6 @@ void r5c_finish_stripe_write_out(struct r5conf *conf,
 {
 	struct r5l_log *log = READ_ONCE(conf->log);
 	int i;
-	int do_wakeup = 0;
 	sector_t tree_index;
 	void __rcu **pslot;
 	uintptr_t refcount;
@@ -2824,7 +2814,7 @@ void r5c_finish_stripe_write_out(struct r5conf *conf,
 	for (i = sh->disks; i--; ) {
 		clear_bit(R5_InJournal, &sh->dev[i].flags);
 		if (test_and_clear_bit(R5_Overlap, &sh->dev[i].flags))
-			do_wakeup = 1;
+			wake_up_bit(&sh->dev[i].flags, R5_Overlap);
 	}
 
 	/*
@@ -2836,9 +2826,6 @@ void r5c_finish_stripe_write_out(struct r5conf *conf,
 	if (test_and_clear_bit(STRIPE_FULL_WRITE, &sh->state))
 		if (atomic_dec_and_test(&conf->pending_full_writes))
 			md_wakeup_thread(conf->mddev->thread);
-
-	if (do_wakeup)
-		wake_up(&conf->wait_for_overlap);
 
 	spin_lock_irq(&log->stripe_in_journal_lock);
 	list_del_init(&sh->r5c);
@@ -2951,7 +2938,6 @@ bool r5c_big_stripe_cached(struct r5conf *conf, sector_t sect)
 	if (!log)
 		return false;
 
-	WARN_ON_ONCE(!rcu_read_lock_held());
 	tree_index = r5c_tree_index(conf, sect);
 	slot = radix_tree_lookup(&log->big_stripe_tree, tree_index);
 	return slot != NULL;

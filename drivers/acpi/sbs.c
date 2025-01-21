@@ -240,11 +240,11 @@ static int acpi_sbs_battery_get_property(struct power_supply *psy,
 	return 0;
 }
 
-static enum power_supply_property sbs_ac_props[] = {
+static const enum power_supply_property sbs_ac_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 };
 
-static enum power_supply_property sbs_charge_battery_props[] = {
+static const enum power_supply_property sbs_charge_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
@@ -262,7 +262,7 @@ static enum power_supply_property sbs_charge_battery_props[] = {
 	POWER_SUPPLY_PROP_MANUFACTURER,
 };
 
-static enum power_supply_property sbs_energy_battery_props[] = {
+static const enum power_supply_property sbs_energy_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
@@ -611,7 +611,7 @@ static void acpi_sbs_callback(void *context)
 	if (sbs->charger_exists) {
 		acpi_ac_get_present(sbs);
 		if (sbs->charger_present != saved_charger_state)
-			kobject_uevent(&sbs->charger->dev.kobj, KOBJ_CHANGE);
+			power_supply_changed(sbs->charger);
 	}
 
 	if (sbs->manager_present) {
@@ -623,7 +623,7 @@ static void acpi_sbs_callback(void *context)
 			acpi_battery_read(bat);
 			if (saved_battery_state == bat->present)
 				continue;
-			kobject_uevent(&bat->bat->dev.kobj, KOBJ_CHANGE);
+			power_supply_changed(bat->bat);
 		}
 	}
 }

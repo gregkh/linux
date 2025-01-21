@@ -491,8 +491,6 @@ static void i40e_release_rdma_qvlist(struct i40e_vf *vf)
 		u32 v_idx, reg_idx, reg;
 
 		qv_info = &qvlist_info->qv_info[i];
-		if (!qv_info)
-			continue;
 		v_idx = qv_info->v_idx;
 		if (qv_info->ceq_idx != I40E_QUEUE_INVALID_IDX) {
 			/* Figure out the queue after CEQ and make that the
@@ -500,10 +498,10 @@ static void i40e_release_rdma_qvlist(struct i40e_vf *vf)
 			 */
 			reg_idx = (msix_vf - 1) * vf->vf_id + qv_info->ceq_idx;
 			reg = rd32(hw, I40E_VPINT_CEQCTL(reg_idx));
-			next_q_index = (reg & I40E_VPINT_CEQCTL_NEXTQ_INDX_MASK)
-					>> I40E_VPINT_CEQCTL_NEXTQ_INDX_SHIFT;
-			next_q_type = (reg & I40E_VPINT_CEQCTL_NEXTQ_TYPE_MASK)
-					>> I40E_VPINT_CEQCTL_NEXTQ_TYPE_SHIFT;
+			next_q_index = FIELD_GET(I40E_VPINT_CEQCTL_NEXTQ_INDX_MASK,
+						 reg);
+			next_q_type = FIELD_GET(I40E_VPINT_CEQCTL_NEXTQ_TYPE_MASK,
+						reg);
 
 			reg_idx = ((msix_vf - 1) * vf->vf_id) + (v_idx - 1);
 			reg = (next_q_index &
@@ -562,8 +560,6 @@ i40e_config_rdma_qvlist(struct i40e_vf *vf,
 	msix_vf = pf->hw.func_caps.num_msix_vectors_vf;
 	for (i = 0; i < qvlist_info->num_vectors; i++) {
 		qv_info = &qvlist_info->qv_info[i];
-		if (!qv_info)
-			continue;
 
 		/* Validate vector id belongs to this vf */
 		if (!i40e_vc_isvalid_vector_id(vf, qv_info->v_idx)) {
@@ -581,10 +577,10 @@ i40e_config_rdma_qvlist(struct i40e_vf *vf,
 		 * queue on top. Also link it with the new queue in CEQCTL.
 		 */
 		reg = rd32(hw, I40E_VPINT_LNKLSTN(reg_idx));
-		next_q_idx = ((reg & I40E_VPINT_LNKLSTN_FIRSTQ_INDX_MASK) >>
-				I40E_VPINT_LNKLSTN_FIRSTQ_INDX_SHIFT);
-		next_q_type = ((reg & I40E_VPINT_LNKLSTN_FIRSTQ_TYPE_MASK) >>
-				I40E_VPINT_LNKLSTN_FIRSTQ_TYPE_SHIFT);
+		next_q_idx = FIELD_GET(I40E_VPINT_LNKLSTN_FIRSTQ_INDX_MASK,
+				       reg);
+		next_q_type = FIELD_GET(I40E_VPINT_LNKLSTN_FIRSTQ_TYPE_MASK,
+					reg);
 
 		if (qv_info->ceq_idx != I40E_QUEUE_INVALID_IDX) {
 			reg_idx = (msix_vf - 1) * vf->vf_id + qv_info->ceq_idx;
@@ -685,11 +681,9 @@ static int i40e_config_vsi_tx_queue(struct i40e_vf *vf, u16 vsi_id,
 
 	/* associate this queue with the PCI VF function */
 	qtx_ctl = I40E_QTX_CTL_VF_QUEUE;
-	qtx_ctl |= ((hw->pf_id << I40E_QTX_CTL_PF_INDX_SHIFT)
-		    & I40E_QTX_CTL_PF_INDX_MASK);
-	qtx_ctl |= (((vf->vf_id + hw->func_caps.vf_base_id)
-		     << I40E_QTX_CTL_VFVM_INDX_SHIFT)
-		    & I40E_QTX_CTL_VFVM_INDX_MASK);
+	qtx_ctl |= FIELD_PREP(I40E_QTX_CTL_PF_INDX_MASK, hw->pf_id);
+	qtx_ctl |= FIELD_PREP(I40E_QTX_CTL_VFVM_INDX_MASK,
+			      vf->vf_id + hw->func_caps.vf_base_id);
 	wr32(hw, I40E_QTX_CTL(pf_queue_id), qtx_ctl);
 	i40e_flush(hw);
 
@@ -801,13 +795,13 @@ error_param:
 static int i40e_alloc_vsi_res(struct i40e_vf *vf, u8 idx)
 {
 	struct i40e_mac_filter *f = NULL;
+	struct i40e_vsi *main_vsi, *vsi;
 	struct i40e_pf *pf = vf->pf;
-	struct i40e_vsi *vsi;
 	u64 max_tx_rate = 0;
 	int ret = 0;
 
-	vsi = i40e_vsi_setup(pf, I40E_VSI_SRIOV, pf->vsi[pf->lan_vsi]->seid,
-			     vf->vf_id);
+	main_vsi = i40e_pf_get_main_vsi(pf);
+	vsi = i40e_vsi_setup(pf, I40E_VSI_SRIOV, main_vsi->seid, vf->vf_id);
 
 	if (!vsi) {
 		dev_err(&pf->pdev->dev,
@@ -1832,7 +1826,7 @@ int i40e_alloc_vfs(struct i40e_pf *pf, u16 num_alloc_vfs)
 	if (pci_num_vf(pf->pdev) != num_alloc_vfs) {
 		ret = pci_enable_sriov(pf->pdev, num_alloc_vfs);
 		if (ret) {
-			pf->flags &= ~I40E_FLAG_VEB_MODE_ENABLED;
+			clear_bit(I40E_FLAG_VEB_MODE_ENA, pf->flags);
 			pf->num_alloc_vfs = 0;
 			goto err_iov;
 		}
@@ -1943,8 +1937,8 @@ int i40e_pci_sriov_configure(struct pci_dev *pdev, int num_vfs)
 	}
 
 	if (num_vfs) {
-		if (!(pf->flags & I40E_FLAG_VEB_MODE_ENABLED)) {
-			pf->flags |= I40E_FLAG_VEB_MODE_ENABLED;
+		if (!test_bit(I40E_FLAG_VEB_MODE_ENA, pf->flags)) {
+			set_bit(I40E_FLAG_VEB_MODE_ENA, pf->flags);
 			i40e_do_reset_safe(pf, I40E_PF_RESET_AND_REBUILD_FLAG);
 		}
 		ret = i40e_pci_sriov_enable(pdev, num_vfs);
@@ -1953,7 +1947,7 @@ int i40e_pci_sriov_configure(struct pci_dev *pdev, int num_vfs)
 
 	if (!pci_vfs_assigned(pf->pdev)) {
 		i40e_free_vfs(pf);
-		pf->flags &= ~I40E_FLAG_VEB_MODE_ENABLED;
+		clear_bit(I40E_FLAG_VEB_MODE_ENA, pf->flags);
 		i40e_do_reset_safe(pf, I40E_PF_RESET_AND_REBUILD_FLAG);
 	} else {
 		dev_warn(&pdev->dev, "Unable to free VFs because some are assigned to VMs.\n");
@@ -2161,14 +2155,14 @@ static int i40e_vc_get_vf_resources_msg(struct i40e_vf *vf, u8 *msg)
 	if (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_RSS_PF) {
 		vfres->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_RSS_PF;
 	} else {
-		if ((pf->hw_features & I40E_HW_RSS_AQ_CAPABLE) &&
+		if (test_bit(I40E_HW_CAP_RSS_AQ, pf->hw.caps) &&
 		    (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_RSS_AQ))
 			vfres->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_RSS_AQ;
 		else
 			vfres->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_RSS_REG;
 	}
 
-	if (pf->hw_features & I40E_HW_MULTIPLE_TCP_UDP_RSS_PCTYPE) {
+	if (test_bit(I40E_HW_CAP_MULTI_TCP_UDP_RSS_PCTYPE, pf->hw.caps)) {
 		if (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_RSS_PCTYPE_V2)
 			vfres->vf_cap_flags |=
 				VIRTCHNL_VF_OFFLOAD_RSS_PCTYPE_V2;
@@ -2177,12 +2171,12 @@ static int i40e_vc_get_vf_resources_msg(struct i40e_vf *vf, u8 *msg)
 	if (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_ENCAP)
 		vfres->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_ENCAP;
 
-	if ((pf->hw_features & I40E_HW_OUTER_UDP_CSUM_CAPABLE) &&
+	if (test_bit(I40E_HW_CAP_OUTER_UDP_CSUM, pf->hw.caps) &&
 	    (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM))
 		vfres->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_ENCAP_CSUM;
 
 	if (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_RX_POLLING) {
-		if (pf->flags & I40E_FLAG_MFP_ENABLED) {
+		if (test_bit(I40E_FLAG_MFP_ENA, pf->flags)) {
 			dev_err(&pf->pdev->dev,
 				"VF %d requested polling mode: this feature is supported only when the device is running in single function per port (SFP) mode\n",
 				 vf->vf_id);
@@ -2192,7 +2186,7 @@ static int i40e_vc_get_vf_resources_msg(struct i40e_vf *vf, u8 *msg)
 		vfres->vf_cap_flags |= VIRTCHNL_VF_OFFLOAD_RX_POLLING;
 	}
 
-	if (pf->hw_features & I40E_HW_WB_ON_ITR_CAPABLE) {
+	if (test_bit(I40E_HW_CAP_WB_ON_ITR, pf->hw.caps)) {
 		if (vf->driver_caps & VIRTCHNL_VF_OFFLOAD_WB_ON_ITR)
 			vfres->vf_cap_flags |=
 					VIRTCHNL_VF_OFFLOAD_WB_ON_ITR;
@@ -3330,8 +3324,9 @@ error_param:
 static int i40e_vc_rdma_msg(struct i40e_vf *vf, u8 *msg, u16 msglen)
 {
 	struct i40e_pf *pf = vf->pf;
-	int abs_vf_id = vf->vf_id + pf->hw.func_caps.vf_base_id;
+	struct i40e_vsi *main_vsi;
 	int aq_ret = 0;
+	int abs_vf_id;
 
 	if (!test_bit(I40E_VF_STATE_ACTIVE, &vf->vf_states) ||
 	    !test_bit(I40E_VF_STATE_RDMAENA, &vf->vf_states)) {
@@ -3339,8 +3334,9 @@ static int i40e_vc_rdma_msg(struct i40e_vf *vf, u8 *msg, u16 msglen)
 		goto error_param;
 	}
 
-	i40e_notify_client_of_vf_msg(pf->vsi[pf->lan_vsi], abs_vf_id,
-				     msg, msglen);
+	main_vsi = i40e_pf_get_main_vsi(pf);
+	abs_vf_id = vf->vf_id + pf->hw.func_caps.vf_base_id;
+	i40e_notify_client_of_vf_msg(main_vsi, abs_vf_id, msg, msglen);
 
 error_param:
 	/* send the response to the VF */
@@ -4738,9 +4734,8 @@ int i40e_ndo_get_vf_config(struct net_device *netdev,
 
 	ivi->max_tx_rate = vf->tx_rate;
 	ivi->min_tx_rate = 0;
-	ivi->vlan = le16_to_cpu(vsi->info.pvid) & I40E_VLAN_MASK;
-	ivi->qos = (le16_to_cpu(vsi->info.pvid) & I40E_PRIORITY_MASK) >>
-		   I40E_VLAN_PRIORITY_SHIFT;
+	ivi->vlan = le16_get_bits(vsi->info.pvid, I40E_VLAN_MASK);
+	ivi->qos = le16_get_bits(vsi->info.pvid, I40E_PRIORITY_MASK);
 	if (vf->link_forced == false)
 		ivi->linkstate = IFLA_VF_LINK_STATE_AUTO;
 	else if (vf->link_up == true)
@@ -4930,7 +4925,7 @@ int i40e_ndo_set_vf_trust(struct net_device *netdev, int vf_id, bool setting)
 		goto out;
 	}
 
-	if (pf->flags & I40E_FLAG_MFP_ENABLED) {
+	if (test_bit(I40E_FLAG_MFP_ENA, pf->flags)) {
 		dev_err(&pf->pdev->dev, "Trusted VF not supported in MFP mode.\n");
 		ret = -EINVAL;
 		goto out;
@@ -5007,7 +5002,7 @@ int i40e_get_vf_stats(struct net_device *netdev, int vf_id,
 	vf_stats->tx_bytes   = stats->tx_bytes;
 	vf_stats->broadcast  = stats->rx_broadcast;
 	vf_stats->multicast  = stats->rx_multicast;
-	vf_stats->rx_dropped = stats->rx_discards;
+	vf_stats->rx_dropped = stats->rx_discards + stats->rx_discards_other;
 	vf_stats->tx_dropped = stats->tx_discards;
 
 	return 0;

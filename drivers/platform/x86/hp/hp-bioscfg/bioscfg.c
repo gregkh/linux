@@ -24,7 +24,7 @@ struct bioscfg_priv bioscfg_drv = {
 	.mutex = __MUTEX_INITIALIZER(bioscfg_drv.mutex),
 };
 
-static struct class *fw_attr_class;
+static const struct class *fw_attr_class;
 
 ssize_t display_name_language_code_show(struct kobject *kobj,
 					struct kobj_attribute *attr,
@@ -588,7 +588,6 @@ static void release_attributes_data(void)
 static int hp_add_other_attributes(int attr_type)
 {
 	struct kobject *attr_name_kobj;
-	union acpi_object *obj = NULL;
 	int ret;
 	char *attr_name;
 
@@ -648,7 +647,6 @@ err_other_attr_init:
 	kobject_put(attr_name_kobj);
 unlock_drv_mutex:
 	mutex_unlock(&bioscfg_drv.mutex);
-	kfree(obj);
 	return ret;
 }
 

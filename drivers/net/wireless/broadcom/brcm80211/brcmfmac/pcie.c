@@ -16,7 +16,7 @@
 #include <linux/kthread.h>
 #include <linux/io.h>
 #include <linux/random.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <soc.h>
 #include <chipcommon.h>
@@ -311,11 +311,6 @@ struct brcmf_pcie_shared_info {
 	void *ringupd;
 	dma_addr_t ringupd_dmahandle;
 	u8 version;
-};
-
-struct brcmf_pcie_core_info {
-	u32 base;
-	u32 wrapbase;
 };
 
 #define BRCMF_OTP_MAX_PARAM_LEN 16
@@ -2712,7 +2707,6 @@ MODULE_DEVICE_TABLE(pci, brcmf_pcie_devid_table);
 
 
 static struct pci_driver brcmf_pciedrvr = {
-	.node = {},
 	.name = KBUILD_MODNAME,
 	.id_table = brcmf_pcie_devid_table,
 	.probe = brcmf_pcie_probe,

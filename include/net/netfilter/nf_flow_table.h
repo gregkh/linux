@@ -74,12 +74,13 @@ enum nf_flowtable_flags {
 };
 
 struct nf_flowtable {
-	struct list_head		list;
-	struct rhashtable		rhashtable;
-	int				priority;
+	unsigned int			flags;		/* readonly in datapath */
+	int				priority;	/* control path (padding hole) */
+	struct rhashtable		rhashtable;	/* datapath, read-mostly members come first */
+
+	struct list_head		list;		/* slowpath parts */
 	const struct nf_flowtable_type	*type;
 	struct delayed_work		gc_work;
-	unsigned int			flags;
 	struct flow_block		flow_block;
 	struct rw_semaphore		flow_block_lock; /* Guards flow_block */
 	possible_net_t			net;
@@ -304,10 +305,25 @@ struct flow_ports {
 	__be16 source, dest;
 };
 
+struct nf_flowtable *nf_flowtable_by_dev(const struct net_device *dev);
+int nf_flow_offload_xdp_setup(struct nf_flowtable *flowtable,
+			      struct net_device *dev,
+			      enum flow_block_command cmd);
+
 unsigned int nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 				     const struct nf_hook_state *state);
 unsigned int nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 				       const struct nf_hook_state *state);
+
+#if (IS_BUILTIN(CONFIG_NF_FLOW_TABLE) && IS_ENABLED(CONFIG_DEBUG_INFO_BTF)) || \
+    (IS_MODULE(CONFIG_NF_FLOW_TABLE) && IS_ENABLED(CONFIG_DEBUG_INFO_BTF_MODULES))
+extern int nf_flow_register_bpf(void);
+#else
+static inline int nf_flow_register_bpf(void)
+{
+	return 0;
+}
+#endif
 
 #define MODULE_ALIAS_NF_FLOWTABLE(family)	\
 	MODULE_ALIAS("nf-flowtable-" __stringify(family))

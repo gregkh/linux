@@ -5,7 +5,7 @@
  * Copyright (c) 2012 Samsung Electronics Co., Ltd.
  *             http://www.samsung.com/
  */
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/fs.h>
 #include <linux/f2fs_fs.h>
 #include <linux/sched/mm.h>
@@ -45,10 +45,6 @@
  */
 
 static struct kmem_cache *fsync_entry_slab;
-
-#if IS_ENABLED(CONFIG_UNICODE)
-extern struct kmem_cache *f2fs_cf_name_slab;
-#endif
 
 bool f2fs_space_for_roll_forward(struct f2fs_sb_info *sbi)
 {
@@ -153,11 +149,8 @@ static int init_recovered_filename(const struct inode *dir,
 		if (err)
 			return err;
 		f2fs_hash_filename(dir, fname);
-#if IS_ENABLED(CONFIG_UNICODE)
 		/* Case-sensitive match is fine for recovery */
-		kmem_cache_free(f2fs_cf_name_slab, fname->cf_name.name);
-		fname->cf_name.name = NULL;
-#endif
+		f2fs_free_casefolded_name(fname);
 	} else {
 		f2fs_hash_filename(dir, fname);
 	}
@@ -287,6 +280,7 @@ static void recover_inline_flags(struct inode *inode, struct f2fs_inode *ri)
 static int recover_inode(struct inode *inode, struct page *page)
 {
 	struct f2fs_inode *raw = F2FS_INODE(page);
+	struct f2fs_inode_info *fi = F2FS_I(inode);
 	char *name;
 	int err;
 
@@ -309,29 +303,28 @@ static int recover_inode(struct inode *inode, struct page *page)
 			i_projid = (projid_t)le32_to_cpu(raw->i_projid);
 			kprojid = make_kprojid(&init_user_ns, i_projid);
 
-			if (!projid_eq(kprojid, F2FS_I(inode)->i_projid)) {
+			if (!projid_eq(kprojid, fi->i_projid)) {
 				err = f2fs_transfer_project_quota(inode,
 								kprojid);
 				if (err)
 					return err;
-				F2FS_I(inode)->i_projid = kprojid;
+				fi->i_projid = kprojid;
 			}
 		}
 	}
 
 	f2fs_i_size_write(inode, le64_to_cpu(raw->i_size));
-	inode->i_atime.tv_sec = le64_to_cpu(raw->i_atime);
+	inode_set_atime(inode, le64_to_cpu(raw->i_atime),
+			le32_to_cpu(raw->i_atime_nsec));
 	inode_set_ctime(inode, le64_to_cpu(raw->i_ctime),
 			le32_to_cpu(raw->i_ctime_nsec));
-	inode->i_mtime.tv_sec = le64_to_cpu(raw->i_mtime);
-	inode->i_atime.tv_nsec = le32_to_cpu(raw->i_atime_nsec);
-	inode->i_mtime.tv_nsec = le32_to_cpu(raw->i_mtime_nsec);
+	inode_set_mtime(inode, le64_to_cpu(raw->i_mtime),
+			le32_to_cpu(raw->i_mtime_nsec));
 
-	F2FS_I(inode)->i_advise = raw->i_advise;
-	F2FS_I(inode)->i_flags = le32_to_cpu(raw->i_flags);
+	fi->i_advise = raw->i_advise;
+	fi->i_flags = le32_to_cpu(raw->i_flags);
 	f2fs_set_inode_flags(inode);
-	F2FS_I(inode)->i_gc_failures[GC_FAILURE_PIN] =
-				le16_to_cpu(raw->i_gc_failures);
+	fi->i_gc_failures = le16_to_cpu(raw->i_gc_failures);
 
 	recover_inline_flags(inode, raw);
 
@@ -693,14 +686,12 @@ retry_dn:
 		if (__is_valid_data_blkaddr(src) &&
 			!f2fs_is_valid_blkaddr(sbi, src, META_POR)) {
 			err = -EFSCORRUPTED;
-			f2fs_handle_error(sbi, ERROR_INVALID_BLKADDR);
 			goto err;
 		}
 
 		if (__is_valid_data_blkaddr(dest) &&
 			!f2fs_is_valid_blkaddr(sbi, dest, META_POR)) {
 			err = -EFSCORRUPTED;
-			f2fs_handle_error(sbi, ERROR_INVALID_BLKADDR);
 			goto err;
 		}
 
@@ -755,8 +746,6 @@ retry_prev:
 				f2fs_err(sbi, "Inconsistent dest blkaddr:%u, ino:%lu, ofs:%u",
 					dest, inode->i_ino, dn.ofs_in_node);
 				err = -EFSCORRUPTED;
-				f2fs_handle_error(sbi,
-						ERROR_INVALID_BLKADDR);
 				goto err;
 			}
 
@@ -851,7 +840,7 @@ next:
 		f2fs_ra_meta_pages_cond(sbi, blkaddr, ra_blocks);
 	}
 	if (!err)
-		f2fs_allocate_new_segments(sbi);
+		err = f2fs_allocate_new_segments(sbi);
 	return err;
 }
 
@@ -863,7 +852,6 @@ int f2fs_recover_fsync_data(struct f2fs_sb_info *sbi, bool check_only)
 	int ret = 0;
 	unsigned long s_flags = sbi->sb->s_flags;
 	bool need_writecp = false;
-	bool fix_curseg_write_pointer = false;
 
 	if (is_sbi_flag_set(sbi, SBI_IS_WRITABLE))
 		f2fs_info(sbi, "recover fsync data on readonly fs");
@@ -894,8 +882,6 @@ int f2fs_recover_fsync_data(struct f2fs_sb_info *sbi, bool check_only)
 	else
 		f2fs_bug_on(sbi, sbi->sb->s_flags & SB_ACTIVE);
 skip:
-	fix_curseg_write_pointer = !check_only || list_empty(&inode_list);
-
 	destroy_fsync_dnodes(&inode_list, err);
 	destroy_fsync_dnodes(&tmp_inode_list, err);
 
@@ -913,11 +899,13 @@ skip:
 	 * and the f2fs is not read only, check and fix zoned block devices'
 	 * write pointer consistency.
 	 */
-	if (!err && fix_curseg_write_pointer && !f2fs_readonly(sbi->sb) &&
-			f2fs_sb_has_blkzoned(sbi)) {
-		err = f2fs_fix_curseg_write_pointer(sbi);
-		if (!err)
-			err = f2fs_check_write_pointer(sbi);
+	if (f2fs_sb_has_blkzoned(sbi) && !f2fs_readonly(sbi->sb)) {
+		int err2 = f2fs_fix_curseg_write_pointer(sbi);
+
+		if (!err2)
+			err2 = f2fs_check_write_pointer(sbi);
+		if (err2)
+			err = err2;
 		ret = err;
 	}
 

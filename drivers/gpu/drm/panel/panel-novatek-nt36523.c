@@ -38,8 +38,6 @@ struct panel_info {
 	struct gpio_desc *reset_gpio;
 	struct backlight_device *backlight;
 	struct regulator *vddio;
-
-	bool prepared;
 };
 
 struct panel_desc {
@@ -1044,9 +1042,6 @@ static int nt36523_prepare(struct drm_panel *panel)
 	struct panel_info *pinfo = to_panel_info(panel);
 	int ret;
 
-	if (pinfo->prepared)
-		return 0;
-
 	ret = regulator_enable(pinfo->vddio);
 	if (ret) {
 		dev_err(panel->dev, "failed to enable vddio regulator: %d\n", ret);
@@ -1061,8 +1056,6 @@ static int nt36523_prepare(struct drm_panel *panel)
 		dev_err(panel->dev, "failed to initialize panel: %d\n", ret);
 		return ret;
 	}
-
-	pinfo->prepared = true;
 
 	return 0;
 }
@@ -1093,13 +1086,8 @@ static int nt36523_unprepare(struct drm_panel *panel)
 {
 	struct panel_info *pinfo = to_panel_info(panel);
 
-	if (!pinfo->prepared)
-		return 0;
-
 	gpiod_set_value_cansleep(pinfo->reset_gpio, 1);
 	regulator_disable(pinfo->vddio);
-
-	pinfo->prepared = false;
 
 	return 0;
 }
@@ -1279,6 +1267,8 @@ static int nt36523_probe(struct mipi_dsi_device *dsi)
 		dev_err(dev, "%pOF: failed to get orientation %d\n", dev->of_node, ret);
 		return ret;
 	}
+
+	pinfo->panel.prepare_prev_first = true;
 
 	if (pinfo->desc->has_dcs_backlight) {
 		pinfo->panel.backlight = nt36523_create_backlight(dsi);

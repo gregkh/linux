@@ -8,7 +8,7 @@
 
 #include <linux/tracepoint.h>
 #include <linux/pci.h>
-#include <asm-generic/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <cxl.h>
 #include <cxlmem.h>
@@ -60,8 +60,8 @@ TRACE_EVENT(cxl_aer_uncorrectable_error,
 		__array(u32, header_log, CXL_HEADERLOG_SIZE_U32)
 	),
 	TP_fast_assign(
-		__assign_str(memdev, dev_name(&cxlmd->dev));
-		__assign_str(host, dev_name(cxlmd->dev.parent));
+		__assign_str(memdev);
+		__assign_str(host);
 		__entry->serial = cxlmd->cxlds->serial;
 		__entry->status = status;
 		__entry->first_error = fe;
@@ -106,8 +106,8 @@ TRACE_EVENT(cxl_aer_correctable_error,
 		__field(u32, status)
 	),
 	TP_fast_assign(
-		__assign_str(memdev, dev_name(&cxlmd->dev));
-		__assign_str(host, dev_name(cxlmd->dev.parent));
+		__assign_str(memdev);
+		__assign_str(host);
 		__entry->serial = cxlmd->cxlds->serial;
 		__entry->status = status;
 	),
@@ -142,8 +142,8 @@ TRACE_EVENT(cxl_overflow,
 	),
 
 	TP_fast_assign(
-		__assign_str(memdev, dev_name(&cxlmd->dev));
-		__assign_str(host, dev_name(cxlmd->dev.parent));
+		__assign_str(memdev);
+		__assign_str(host);
 		__entry->serial = cxlmd->cxlds->serial;
 		__entry->log = log;
 		__entry->count = le16_to_cpu(payload->overflow_err_count);
@@ -181,6 +181,7 @@ TRACE_EVENT(cxl_overflow,
  *	1) Add CXL_EVT_TP_entry to TP_STRUCT__entry
  *	2) Use CXL_EVT_TP_fast_assign within TP_fast_assign;
  *	   pass the dev, log, and CXL event header
+ *	   NOTE: The uuid must be assigned by the specific trace event
  *	3) Use CXL_EVT_TP_printk() instead of TP_printk()
  *
  * See the generic_event tracepoint as an example.
@@ -199,11 +200,10 @@ TRACE_EVENT(cxl_overflow,
 	__field(u8, hdr_maint_op_class)
 
 #define CXL_EVT_TP_fast_assign(cxlmd, l, hdr)					\
-	__assign_str(memdev, dev_name(&(cxlmd)->dev));				\
-	__assign_str(host, dev_name((cxlmd)->dev.parent));			\
+	__assign_str(memdev);				\
+	__assign_str(host);			\
 	__entry->log = (l);							\
 	__entry->serial = (cxlmd)->cxlds->serial;				\
-	memcpy(&__entry->hdr_uuid, &(hdr).id, sizeof(uuid_t));			\
 	__entry->hdr_length = (hdr).length;					\
 	__entry->hdr_flags = get_unaligned_le24((hdr).flags);			\
 	__entry->hdr_handle = le16_to_cpu((hdr).handle);			\
@@ -225,9 +225,9 @@ TRACE_EVENT(cxl_overflow,
 TRACE_EVENT(cxl_generic_event,
 
 	TP_PROTO(const struct cxl_memdev *cxlmd, enum cxl_event_log_type log,
-		 struct cxl_event_record_raw *rec),
+		 const uuid_t *uuid, struct cxl_event_generic *gen_rec),
 
-	TP_ARGS(cxlmd, log, rec),
+	TP_ARGS(cxlmd, log, uuid, gen_rec),
 
 	TP_STRUCT__entry(
 		CXL_EVT_TP_entry
@@ -235,8 +235,9 @@ TRACE_EVENT(cxl_generic_event,
 	),
 
 	TP_fast_assign(
-		CXL_EVT_TP_fast_assign(cxlmd, log, rec->hdr);
-		memcpy(__entry->data, &rec->data, CXL_EVENT_RECORD_DATA_LENGTH);
+		CXL_EVT_TP_fast_assign(cxlmd, log, gen_rec->hdr);
+		memcpy(&__entry->hdr_uuid, uuid, sizeof(uuid_t));
+		memcpy(__entry->data, gen_rec->data, CXL_EVENT_RECORD_DATA_LENGTH);
 	),
 
 	CXL_EVT_TP_printk("%s",
@@ -315,9 +316,9 @@ TRACE_EVENT(cxl_generic_event,
 TRACE_EVENT(cxl_general_media,
 
 	TP_PROTO(const struct cxl_memdev *cxlmd, enum cxl_event_log_type log,
-		 struct cxl_event_gen_media *rec),
+		 struct cxl_region *cxlr, u64 hpa, struct cxl_event_gen_media *rec),
 
-	TP_ARGS(cxlmd, log, rec),
+	TP_ARGS(cxlmd, log, cxlr, hpa, rec),
 
 	TP_STRUCT__entry(
 		CXL_EVT_TP_entry
@@ -329,41 +330,55 @@ TRACE_EVENT(cxl_general_media,
 		__field(u8, channel)
 		__field(u32, device)
 		__array(u8, comp_id, CXL_EVENT_GEN_MED_COMP_ID_SIZE)
-		__field(u16, validity_flags)
 		/* Following are out of order to pack trace record */
+		__field(u64, hpa)
+		__field_struct(uuid_t, region_uuid)
+		__field(u16, validity_flags)
 		__field(u8, rank)
 		__field(u8, dpa_flags)
+		__string(region_name, cxlr ? dev_name(&cxlr->dev) : "")
 	),
 
 	TP_fast_assign(
-		CXL_EVT_TP_fast_assign(cxlmd, log, rec->hdr);
+		CXL_EVT_TP_fast_assign(cxlmd, log, rec->media_hdr.hdr);
+		__entry->hdr_uuid = CXL_EVENT_GEN_MEDIA_UUID;
 
 		/* General Media */
-		__entry->dpa = le64_to_cpu(rec->phys_addr);
+		__entry->dpa = le64_to_cpu(rec->media_hdr.phys_addr);
 		__entry->dpa_flags = __entry->dpa & CXL_DPA_FLAGS_MASK;
 		/* Mask after flags have been parsed */
 		__entry->dpa &= CXL_DPA_MASK;
-		__entry->descriptor = rec->descriptor;
-		__entry->type = rec->type;
-		__entry->transaction_type = rec->transaction_type;
-		__entry->channel = rec->channel;
-		__entry->rank = rec->rank;
+		__entry->descriptor = rec->media_hdr.descriptor;
+		__entry->type = rec->media_hdr.type;
+		__entry->transaction_type = rec->media_hdr.transaction_type;
+		__entry->channel = rec->media_hdr.channel;
+		__entry->rank = rec->media_hdr.rank;
 		__entry->device = get_unaligned_le24(rec->device);
 		memcpy(__entry->comp_id, &rec->component_id,
 			CXL_EVENT_GEN_MED_COMP_ID_SIZE);
-		__entry->validity_flags = get_unaligned_le16(&rec->validity_flags);
+		__entry->validity_flags = get_unaligned_le16(&rec->media_hdr.validity_flags);
+		__entry->hpa = hpa;
+		if (cxlr) {
+			__assign_str(region_name);
+			uuid_copy(&__entry->region_uuid, &cxlr->params.uuid);
+		} else {
+			__assign_str(region_name);
+			uuid_copy(&__entry->region_uuid, &uuid_null);
+		}
 	),
 
 	CXL_EVT_TP_printk("dpa=%llx dpa_flags='%s' " \
 		"descriptor='%s' type='%s' transaction_type='%s' channel=%u rank=%u " \
-		"device=%x comp_id=%s validity_flags='%s'",
+		"device=%x comp_id=%s validity_flags='%s' " \
+		"hpa=%llx region=%s region_uuid=%pUb",
 		__entry->dpa, show_dpa_flags(__entry->dpa_flags),
 		show_event_desc_flags(__entry->descriptor),
 		show_gmer_mem_event_type(__entry->type),
 		show_trans_type(__entry->transaction_type),
 		__entry->channel, __entry->rank, __entry->device,
 		__print_hex(__entry->comp_id, CXL_EVENT_GEN_MED_COMP_ID_SIZE),
-		show_valid_flags(__entry->validity_flags)
+		show_valid_flags(__entry->validity_flags),
+		__entry->hpa, __get_str(region_name), &__entry->region_uuid
 	)
 );
 
@@ -409,9 +424,9 @@ TRACE_EVENT(cxl_general_media,
 TRACE_EVENT(cxl_dram,
 
 	TP_PROTO(const struct cxl_memdev *cxlmd, enum cxl_event_log_type log,
-		 struct cxl_event_dram *rec),
+		 struct cxl_region *cxlr, u64 hpa, struct cxl_event_dram *rec),
 
-	TP_ARGS(cxlmd, log, rec),
+	TP_ARGS(cxlmd, log, cxlr, hpa, rec),
 
 	TP_STRUCT__entry(
 		CXL_EVT_TP_entry
@@ -426,25 +441,29 @@ TRACE_EVENT(cxl_dram,
 		__field(u32, nibble_mask)
 		__field(u32, row)
 		__array(u8, cor_mask, CXL_EVENT_DER_CORRECTION_MASK_SIZE)
+		__field(u64, hpa)
+		__field_struct(uuid_t, region_uuid)
 		__field(u8, rank)	/* Out of order to pack trace record */
 		__field(u8, bank_group)	/* Out of order to pack trace record */
 		__field(u8, bank)	/* Out of order to pack trace record */
 		__field(u8, dpa_flags)	/* Out of order to pack trace record */
+		__string(region_name, cxlr ? dev_name(&cxlr->dev) : "")
 	),
 
 	TP_fast_assign(
-		CXL_EVT_TP_fast_assign(cxlmd, log, rec->hdr);
+		CXL_EVT_TP_fast_assign(cxlmd, log, rec->media_hdr.hdr);
+		__entry->hdr_uuid = CXL_EVENT_DRAM_UUID;
 
 		/* DRAM */
-		__entry->dpa = le64_to_cpu(rec->phys_addr);
+		__entry->dpa = le64_to_cpu(rec->media_hdr.phys_addr);
 		__entry->dpa_flags = __entry->dpa & CXL_DPA_FLAGS_MASK;
 		__entry->dpa &= CXL_DPA_MASK;
-		__entry->descriptor = rec->descriptor;
-		__entry->type = rec->type;
-		__entry->transaction_type = rec->transaction_type;
-		__entry->validity_flags = get_unaligned_le16(rec->validity_flags);
-		__entry->channel = rec->channel;
-		__entry->rank = rec->rank;
+		__entry->descriptor = rec->media_hdr.descriptor;
+		__entry->type = rec->media_hdr.type;
+		__entry->transaction_type = rec->media_hdr.transaction_type;
+		__entry->validity_flags = get_unaligned_le16(rec->media_hdr.validity_flags);
+		__entry->channel = rec->media_hdr.channel;
+		__entry->rank = rec->media_hdr.rank;
 		__entry->nibble_mask = get_unaligned_le24(rec->nibble_mask);
 		__entry->bank_group = rec->bank_group;
 		__entry->bank = rec->bank;
@@ -452,12 +471,21 @@ TRACE_EVENT(cxl_dram,
 		__entry->column = get_unaligned_le16(rec->column);
 		memcpy(__entry->cor_mask, &rec->correction_mask,
 			CXL_EVENT_DER_CORRECTION_MASK_SIZE);
+		__entry->hpa = hpa;
+		if (cxlr) {
+			__assign_str(region_name);
+			uuid_copy(&__entry->region_uuid, &cxlr->params.uuid);
+		} else {
+			__assign_str(region_name);
+			uuid_copy(&__entry->region_uuid, &uuid_null);
+		}
 	),
 
 	CXL_EVT_TP_printk("dpa=%llx dpa_flags='%s' descriptor='%s' type='%s' " \
 		"transaction_type='%s' channel=%u rank=%u nibble_mask=%x " \
 		"bank_group=%u bank=%u row=%u column=%u cor_mask=%s " \
-		"validity_flags='%s'",
+		"validity_flags='%s' " \
+		"hpa=%llx region=%s region_uuid=%pUb",
 		__entry->dpa, show_dpa_flags(__entry->dpa_flags),
 		show_event_desc_flags(__entry->descriptor),
 		show_dram_mem_event_type(__entry->type),
@@ -466,7 +494,8 @@ TRACE_EVENT(cxl_dram,
 		__entry->bank_group, __entry->bank,
 		__entry->row, __entry->column,
 		__print_hex(__entry->cor_mask, CXL_EVENT_DER_CORRECTION_MASK_SIZE),
-		show_dram_valid_flags(__entry->validity_flags)
+		show_dram_valid_flags(__entry->validity_flags),
+		__entry->hpa, __get_str(region_name), &__entry->region_uuid
 	)
 );
 
@@ -581,6 +610,7 @@ TRACE_EVENT(cxl_memory_module,
 
 	TP_fast_assign(
 		CXL_EVT_TP_fast_assign(cxlmd, log, rec->hdr);
+		__entry->hdr_uuid = CXL_EVENT_MEM_MODULE_UUID;
 
 		/* Memory Module Event */
 		__entry->event_type = rec->event_type;
@@ -649,8 +679,6 @@ TRACE_EVENT(cxl_memory_module,
 #define cxl_poison_overflow(flags, time)				\
 	(flags & CXL_POISON_FLAG_OVERFLOW ? le64_to_cpu(time) : 0)
 
-u64 cxl_trace_hpa(struct cxl_region *cxlr, struct cxl_memdev *memdev, u64 dpa);
-
 TRACE_EVENT(cxl_poison,
 
 	TP_PROTO(struct cxl_memdev *cxlmd, struct cxl_region *cxlr,
@@ -675,8 +703,8 @@ TRACE_EVENT(cxl_poison,
 	    ),
 
 	TP_fast_assign(
-		__assign_str(memdev, dev_name(&cxlmd->dev));
-		__assign_str(host, dev_name(cxlmd->dev.parent));
+		__assign_str(memdev);
+		__assign_str(host);
 		__entry->serial = cxlmd->cxlds->serial;
 		__entry->overflow_ts = cxl_poison_overflow(flags, overflow_ts);
 		__entry->dpa = cxl_poison_record_dpa(record);
@@ -685,12 +713,12 @@ TRACE_EVENT(cxl_poison,
 		__entry->trace_type = trace_type;
 		__entry->flags = flags;
 		if (cxlr) {
-			__assign_str(region, dev_name(&cxlr->dev));
+			__assign_str(region);
 			memcpy(__entry->uuid, &cxlr->params.uuid, 16);
-			__entry->hpa = cxl_trace_hpa(cxlr, cxlmd,
-						     __entry->dpa);
+			__entry->hpa = cxl_dpa_to_hpa(cxlr, cxlmd,
+						      __entry->dpa);
 		} else {
-			__assign_str(region, "");
+			__assign_str(region);
 			memset(__entry->uuid, 0, 16);
 			__entry->hpa = ULLONG_MAX;
 		}

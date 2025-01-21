@@ -8,6 +8,7 @@
  *    Sai Praneeth Prakhya <sai.praneeth.prakhya@intel.com>,
  *    Fenghua Yu <fenghua.yu@intel.com>
  */
+#include <fcntl.h>
 #include <limits.h>
 
 #include "resctrl.h"
@@ -55,7 +56,7 @@ static int find_resctrl_mount(char *buffer)
  * Mounts resctrl FS. Fails if resctrl FS is already mounted to avoid
  * pre-existing settings interfering with the test results.
  *
- * Return: 0 on success, non-zero on failure
+ * Return: 0 on success, < 0 on error.
  */
 int mount_resctrlfs(void)
 {
@@ -87,39 +88,65 @@ int umount_resctrlfs(void)
 	if (umount(mountpoint)) {
 		ksft_perror("Unable to umount resctrl");
 
-		return errno;
+		return -1;
 	}
 
 	return 0;
 }
 
 /*
- * get_resource_id - Get socket number/l3 id for a specified CPU
+ * get_cache_level - Convert cache level from string to integer
+ * @cache_type:		Cache level as string
+ *
+ * Return: cache level as integer or -1 if @cache_type is invalid.
+ */
+static int get_cache_level(const char *cache_type)
+{
+	if (!strcmp(cache_type, "L3"))
+		return 3;
+	if (!strcmp(cache_type, "L2"))
+		return 2;
+
+	ksft_print_msg("Invalid cache level\n");
+	return -1;
+}
+
+static int get_resource_cache_level(const char *resource)
+{
+	/* "MB" use L3 (LLC) as resource */
+	if (!strcmp(resource, "MB"))
+		return 3;
+	return get_cache_level(resource);
+}
+
+/*
+ * get_domain_id - Get resctrl domain ID for a specified CPU
+ * @resource:	resource name
  * @cpu_no:	CPU number
- * @resource_id: Socket number or l3_id
+ * @domain_id:	domain ID (cache ID; for MB, L3 cache ID)
  *
  * Return: >= 0 on success, < 0 on failure.
  */
-int get_resource_id(int cpu_no, int *resource_id)
+int get_domain_id(const char *resource, int cpu_no, int *domain_id)
 {
 	char phys_pkg_path[1024];
+	int cache_num;
 	FILE *fp;
 
-	if (get_vendor() == ARCH_AMD)
-		sprintf(phys_pkg_path, "%s%d/cache/index3/id",
-			PHYS_ID_PATH, cpu_no);
-	else
-		sprintf(phys_pkg_path, "%s%d/topology/physical_package_id",
-			PHYS_ID_PATH, cpu_no);
+	cache_num = get_resource_cache_level(resource);
+	if (cache_num < 0)
+		return cache_num;
+
+	sprintf(phys_pkg_path, "%s%d/cache/index%d/id", PHYS_ID_PATH, cpu_no, cache_num);
 
 	fp = fopen(phys_pkg_path, "r");
 	if (!fp) {
-		ksft_perror("Failed to open physical_package_id");
+		ksft_perror("Failed to open cache id file");
 
 		return -1;
 	}
-	if (fscanf(fp, "%d", resource_id) <= 0) {
-		ksft_perror("Could not get socket number or l3 id");
+	if (fscanf(fp, "%d", domain_id) <= 0) {
+		ksft_perror("Could not get domain ID");
 		fclose(fp);
 
 		return -1;
@@ -137,20 +164,15 @@ int get_resource_id(int cpu_no, int *resource_id)
  *
  * Return: = 0 on success, < 0 on failure.
  */
-int get_cache_size(int cpu_no, char *cache_type, unsigned long *cache_size)
+int get_cache_size(int cpu_no, const char *cache_type, unsigned long *cache_size)
 {
 	char cache_path[1024], cache_str[64];
 	int length, i, cache_num;
 	FILE *fp;
 
-	if (!strcmp(cache_type, "L3")) {
-		cache_num = 3;
-	} else if (!strcmp(cache_type, "L2")) {
-		cache_num = 2;
-	} else {
-		ksft_print_msg("Invalid cache level\n");
-		return -1;
-	}
+	cache_num = get_cache_level(cache_type);
+	if (cache_num < 0)
+		return cache_num;
 
 	sprintf(cache_path, "/sys/bus/cpu/devices/cpu%d/cache/index%d/size",
 		cpu_no, cache_num);
@@ -195,30 +217,29 @@ int get_cache_size(int cpu_no, char *cache_type, unsigned long *cache_size)
 #define CORE_SIBLINGS_PATH	"/sys/bus/cpu/devices/cpu"
 
 /*
- * get_cbm_mask - Get cbm mask for given cache
- * @cache_type:	Cache level L2/L3
- * @cbm_mask:	cbm_mask returned as a string
+ * get_bit_mask - Get bit mask from given file
+ * @filename:	File containing the mask
+ * @mask:	The bit mask returned as unsigned long
  *
  * Return: = 0 on success, < 0 on failure.
  */
-int get_cbm_mask(char *cache_type, char *cbm_mask)
+static int get_bit_mask(const char *filename, unsigned long *mask)
 {
-	char cbm_mask_path[1024];
 	FILE *fp;
 
-	if (!cbm_mask)
+	if (!filename || !mask)
 		return -1;
 
-	sprintf(cbm_mask_path, "%s/%s/cbm_mask", INFO_PATH, cache_type);
-
-	fp = fopen(cbm_mask_path, "r");
+	fp = fopen(filename, "r");
 	if (!fp) {
-		ksft_perror("Failed to open cache level");
-
+		ksft_print_msg("Failed to open bit mask file '%s': %s\n",
+			       filename, strerror(errno));
 		return -1;
 	}
-	if (fscanf(fp, "%s", cbm_mask) <= 0) {
-		ksft_perror("Could not get max cbm_mask");
+
+	if (fscanf(fp, "%lx", mask) <= 0) {
+		ksft_print_msg("Could not read bit mask file '%s': %s\n",
+			       filename, strerror(errno));
 		fclose(fp);
 
 		return -1;
@@ -229,57 +250,176 @@ int get_cbm_mask(char *cache_type, char *cbm_mask)
 }
 
 /*
- * get_core_sibling - Get sibling core id from the same socket for given CPU
- * @cpu_no:	CPU number
+ * resource_info_unsigned_get - Read an unsigned value from
+ * /sys/fs/resctrl/info/@resource/@filename
+ * @resource:	Resource name that matches directory name in
+ *		/sys/fs/resctrl/info
+ * @filename:	File in /sys/fs/resctrl/info/@resource
+ * @val:	Contains read value on success.
  *
- * Return:	> 0 on success, < 0 on failure.
+ * Return: = 0 on success, < 0 on failure. On success the read
+ * value is saved into @val.
  */
-int get_core_sibling(int cpu_no)
+int resource_info_unsigned_get(const char *resource, const char *filename,
+			       unsigned int *val)
 {
-	char core_siblings_path[1024], cpu_list_str[64];
-	int sibling_cpu_no = -1;
+	char file_path[PATH_MAX];
 	FILE *fp;
 
-	sprintf(core_siblings_path, "%s%d/topology/core_siblings_list",
-		CORE_SIBLINGS_PATH, cpu_no);
+	snprintf(file_path, sizeof(file_path), "%s/%s/%s", INFO_PATH, resource,
+		 filename);
 
-	fp = fopen(core_siblings_path, "r");
+	fp = fopen(file_path, "r");
 	if (!fp) {
-		ksft_perror("Failed to open core siblings path");
-
+		ksft_print_msg("Error opening %s: %m\n", file_path);
 		return -1;
 	}
-	if (fscanf(fp, "%s", cpu_list_str) <= 0) {
-		ksft_perror("Could not get core_siblings list");
+
+	if (fscanf(fp, "%u", val) <= 0) {
+		ksft_print_msg("Could not get contents of %s: %m\n", file_path);
 		fclose(fp);
-
 		return -1;
 	}
+
 	fclose(fp);
+	return 0;
+}
 
-	char *token = strtok(cpu_list_str, "-,");
+/*
+ * create_bit_mask- Create bit mask from start, len pair
+ * @start:	LSB of the mask
+ * @len		Number of bits in the mask
+ */
+unsigned long create_bit_mask(unsigned int start, unsigned int len)
+{
+	return ((1UL << len) - 1UL) << start;
+}
 
-	while (token) {
-		sibling_cpu_no = atoi(token);
-		/* Skipping core 0 as we don't want to run test on core 0 */
-		if (sibling_cpu_no != 0 && sibling_cpu_no != cpu_no)
-			break;
-		token = strtok(NULL, "-,");
+/*
+ * count_contiguous_bits - Returns the longest train of bits in a bit mask
+ * @val		A bit mask
+ * @start	The location of the least-significant bit of the longest train
+ *
+ * Return:	The length of the contiguous bits in the longest train of bits
+ */
+unsigned int count_contiguous_bits(unsigned long val, unsigned int *start)
+{
+	unsigned long last_val;
+	unsigned int count = 0;
+
+	while (val) {
+		last_val = val;
+		val &= (val >> 1);
+		count++;
 	}
 
-	return sibling_cpu_no;
+	if (start) {
+		if (count)
+			*start = ffsl(last_val) - 1;
+		else
+			*start = 0;
+	}
+
+	return count;
+}
+
+/*
+ * get_full_cbm - Get full Cache Bit Mask (CBM)
+ * @cache_type:	Cache type as "L2" or "L3"
+ * @mask:	Full cache bit mask representing the maximal portion of cache
+ *		available for allocation, returned as unsigned long.
+ *
+ * Return: = 0 on success, < 0 on failure.
+ */
+int get_full_cbm(const char *cache_type, unsigned long *mask)
+{
+	char cbm_path[PATH_MAX];
+	int ret;
+
+	if (!cache_type)
+		return -1;
+
+	snprintf(cbm_path, sizeof(cbm_path), "%s/%s/cbm_mask",
+		 INFO_PATH, cache_type);
+
+	ret = get_bit_mask(cbm_path, mask);
+	if (ret || !*mask)
+		return -1;
+
+	return 0;
+}
+
+/*
+ * get_shareable_mask - Get shareable mask from shareable_bits
+ * @cache_type:		Cache type as "L2" or "L3"
+ * @shareable_mask:	Shareable mask returned as unsigned long
+ *
+ * Return: = 0 on success, < 0 on failure.
+ */
+static int get_shareable_mask(const char *cache_type, unsigned long *shareable_mask)
+{
+	char mask_path[PATH_MAX];
+
+	if (!cache_type)
+		return -1;
+
+	snprintf(mask_path, sizeof(mask_path), "%s/%s/shareable_bits",
+		 INFO_PATH, cache_type);
+
+	return get_bit_mask(mask_path, shareable_mask);
+}
+
+/*
+ * get_mask_no_shareable - Get Cache Bit Mask (CBM) without shareable bits
+ * @cache_type:		Cache type as "L2" or "L3"
+ * @mask:		The largest exclusive portion of the cache out of the
+ *			full CBM, returned as unsigned long
+ *
+ * Parts of a cache may be shared with other devices such as GPU. This function
+ * calculates the largest exclusive portion of the cache where no other devices
+ * besides CPU have access to the cache portion.
+ *
+ * Return: = 0 on success, < 0 on failure.
+ */
+int get_mask_no_shareable(const char *cache_type, unsigned long *mask)
+{
+	unsigned long full_mask, shareable_mask;
+	unsigned int start, len;
+
+	if (get_full_cbm(cache_type, &full_mask) < 0)
+		return -1;
+	if (get_shareable_mask(cache_type, &shareable_mask) < 0)
+		return -1;
+
+	len = count_contiguous_bits(full_mask & ~shareable_mask, &start);
+	if (!len)
+		return -1;
+
+	*mask = create_bit_mask(start, len);
+
+	return 0;
 }
 
 /*
  * taskset_benchmark - Taskset PID (i.e. benchmark) to a specified cpu
- * @bm_pid:	PID that should be binded
- * @cpu_no:	CPU number at which the PID would be binded
+ * @bm_pid:		PID that should be binded
+ * @cpu_no:		CPU number at which the PID would be binded
+ * @old_affinity:	When not NULL, set to old CPU affinity
  *
- * Return: 0 on success, non-zero on failure
+ * Return: 0 on success, < 0 on error.
  */
-int taskset_benchmark(pid_t bm_pid, int cpu_no)
+int taskset_benchmark(pid_t bm_pid, int cpu_no, cpu_set_t *old_affinity)
 {
 	cpu_set_t my_set;
+
+	if (old_affinity) {
+		CPU_ZERO(old_affinity);
+		if (sched_getaffinity(bm_pid, sizeof(*old_affinity),
+				      old_affinity)) {
+			ksft_perror("Unable to read CPU affinity");
+			return -1;
+		}
+	}
 
 	CPU_ZERO(&my_set);
 	CPU_SET(cpu_no, &my_set);
@@ -294,12 +434,32 @@ int taskset_benchmark(pid_t bm_pid, int cpu_no)
 }
 
 /*
+ * taskset_restore - Taskset PID to the earlier CPU affinity
+ * @bm_pid:		PID that should be reset
+ * @old_affinity:	The old CPU affinity to restore
+ *
+ * Return: 0 on success, < 0 on error.
+ */
+int taskset_restore(pid_t bm_pid, cpu_set_t *old_affinity)
+{
+	if (sched_setaffinity(bm_pid, sizeof(*old_affinity), old_affinity)) {
+		ksft_perror("Unable to restore CPU affinity");
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
  * create_grp - Create a group only if one doesn't exist
  * @grp_name:	Name of the group
  * @grp:	Full path and name of the group
  * @parent_grp:	Full path and name of the parent group
  *
- * Return: 0 on success, non-zero on failure
+ * Creates a group @grp_name if it does not exist yet. If @grp_name is NULL,
+ * it is interpreted as the root group which always results in success.
+ *
+ * Return: 0 on success, < 0 on error.
  */
 static int create_grp(const char *grp_name, char *grp, const char *parent_grp)
 {
@@ -307,12 +467,7 @@ static int create_grp(const char *grp_name, char *grp, const char *parent_grp)
 	struct dirent *ep;
 	DIR *dp;
 
-	/*
-	 * At this point, we are guaranteed to have resctrl FS mounted and if
-	 * length of grp_name == 0, it means, user wants to use root con_mon
-	 * grp, so do nothing
-	 */
-	if (strlen(grp_name) == 0)
+	if (!grp_name)
 		return 0;
 
 	/* Check if requested grp exists or not */
@@ -351,7 +506,7 @@ static int write_pid_to_tasks(char *tasks, pid_t pid)
 
 		return -1;
 	}
-	if (fprintf(fp, "%d\n", pid) < 0) {
+	if (fprintf(fp, "%d\n", (int)pid) < 0) {
 		ksft_print_msg("Failed to write pid to tasks file\n");
 		fclose(fp);
 
@@ -367,7 +522,6 @@ static int write_pid_to_tasks(char *tasks, pid_t pid)
  * @bm_pid:		PID that should be written
  * @ctrlgrp:		Name of the control monitor group (con_mon grp)
  * @mongrp:		Name of the monitor group (mon grp)
- * @resctrl_val:	Resctrl feature (Eg: mbm, mba.. etc)
  *
  * If a con_mon grp is requested, create it and write pid to it, otherwise
  * write pid to root con_mon grp.
@@ -375,16 +529,15 @@ static int write_pid_to_tasks(char *tasks, pid_t pid)
  * pid is not written, this means that pid is in con_mon grp and hence
  * should consult con_mon grp's mon_data directory for results.
  *
- * Return: 0 on success, non-zero on failure
+ * Return: 0 on success, < 0 on error.
  */
-int write_bm_pid_to_resctrl(pid_t bm_pid, char *ctrlgrp, char *mongrp,
-			    char *resctrl_val)
+int write_bm_pid_to_resctrl(pid_t bm_pid, const char *ctrlgrp, const char *mongrp)
 {
 	char controlgroup[128], monitorgroup[512], monitorgroup_p[256];
 	char tasks[1024];
 	int ret = 0;
 
-	if (strlen(ctrlgrp))
+	if (ctrlgrp)
 		sprintf(controlgroup, "%s/%s", RESCTRL_PATH, ctrlgrp);
 	else
 		sprintf(controlgroup, "%s", RESCTRL_PATH);
@@ -398,22 +551,19 @@ int write_bm_pid_to_resctrl(pid_t bm_pid, char *ctrlgrp, char *mongrp,
 	if (ret)
 		goto out;
 
-	/* Create mon grp and write pid into it for "mbm" and "cmt" test */
-	if (!strncmp(resctrl_val, CMT_STR, sizeof(CMT_STR)) ||
-	    !strncmp(resctrl_val, MBM_STR, sizeof(MBM_STR))) {
-		if (strlen(mongrp)) {
-			sprintf(monitorgroup_p, "%s/mon_groups", controlgroup);
-			sprintf(monitorgroup, "%s/%s", monitorgroup_p, mongrp);
-			ret = create_grp(mongrp, monitorgroup, monitorgroup_p);
-			if (ret)
-				goto out;
+	/* Create monitor group and write pid into if it is used */
+	if (mongrp) {
+		sprintf(monitorgroup_p, "%s/mon_groups", controlgroup);
+		sprintf(monitorgroup, "%s/%s", monitorgroup_p, mongrp);
+		ret = create_grp(mongrp, monitorgroup, monitorgroup_p);
+		if (ret)
+			goto out;
 
-			sprintf(tasks, "%s/mon_groups/%s/tasks",
-				controlgroup, mongrp);
-			ret = write_pid_to_tasks(tasks, bm_pid);
-			if (ret)
-				goto out;
-		}
+		sprintf(tasks, "%s/mon_groups/%s/tasks",
+			controlgroup, mongrp);
+		ret = write_pid_to_tasks(tasks, bm_pid);
+		if (ret)
+			goto out;
 	}
 
 out:
@@ -429,24 +579,18 @@ out:
  * @ctrlgrp:		Name of the con_mon grp
  * @schemata:		Schemata that should be updated to
  * @cpu_no:		CPU number that the benchmark PID is binded to
- * @resctrl_val:	Resctrl feature (Eg: mbm, mba.. etc)
+ * @resource:		Resctrl resource (Eg: MB, L3, L2, etc.)
  *
- * Update schemata of a con_mon grp *only* if requested resctrl feature is
+ * Update schemata of a con_mon grp *only* if requested resctrl resource is
  * allocation type
  *
- * Return: 0 on success, non-zero on failure
+ * Return: 0 on success, < 0 on error.
  */
-int write_schemata(char *ctrlgrp, char *schemata, int cpu_no, char *resctrl_val)
+int write_schemata(const char *ctrlgrp, char *schemata, int cpu_no,
+		   const char *resource)
 {
-	char controlgroup[1024], schema[1024], reason[64];
-	int resource_id, ret = 0;
-	FILE *fp;
-
-	if (strncmp(resctrl_val, MBA_STR, sizeof(MBA_STR)) &&
-	    strncmp(resctrl_val, MBM_STR, sizeof(MBM_STR)) &&
-	    strncmp(resctrl_val, CAT_STR, sizeof(CAT_STR)) &&
-	    strncmp(resctrl_val, CMT_STR, sizeof(CMT_STR)))
-		return -ENOENT;
+	char controlgroup[1024], reason[128], schema[1024] = {};
+	int domain_id, fd, schema_len, ret = 0;
 
 	if (!schemata) {
 		ksft_print_msg("Skipping empty schemata update\n");
@@ -454,42 +598,47 @@ int write_schemata(char *ctrlgrp, char *schemata, int cpu_no, char *resctrl_val)
 		return -1;
 	}
 
-	if (get_resource_id(cpu_no, &resource_id) < 0) {
-		sprintf(reason, "Failed to get resource id");
+	if (get_domain_id(resource, cpu_no, &domain_id) < 0) {
+		sprintf(reason, "Failed to get domain ID");
 		ret = -1;
 
 		goto out;
 	}
 
-	if (strlen(ctrlgrp) != 0)
+	if (ctrlgrp)
 		sprintf(controlgroup, "%s/%s/schemata", RESCTRL_PATH, ctrlgrp);
 	else
 		sprintf(controlgroup, "%s/schemata", RESCTRL_PATH);
 
-	if (!strncmp(resctrl_val, CAT_STR, sizeof(CAT_STR)) ||
-	    !strncmp(resctrl_val, CMT_STR, sizeof(CMT_STR)))
-		sprintf(schema, "%s%d%c%s", "L3:", resource_id, '=', schemata);
-	if (!strncmp(resctrl_val, MBA_STR, sizeof(MBA_STR)) ||
-	    !strncmp(resctrl_val, MBM_STR, sizeof(MBM_STR)))
-		sprintf(schema, "%s%d%c%s", "MB:", resource_id, '=', schemata);
-
-	fp = fopen(controlgroup, "w");
-	if (!fp) {
-		sprintf(reason, "Failed to open control group");
+	schema_len = snprintf(schema, sizeof(schema), "%s:%d=%s\n",
+			      resource, domain_id, schemata);
+	if (schema_len < 0 || schema_len >= sizeof(schema)) {
+		snprintf(reason, sizeof(reason),
+			 "snprintf() failed with return value : %d", schema_len);
 		ret = -1;
-
 		goto out;
 	}
 
-	if (fprintf(fp, "%s\n", schema) < 0) {
-		sprintf(reason, "Failed to write schemata in control group");
-		fclose(fp);
+	fd = open(controlgroup, O_WRONLY);
+	if (fd < 0) {
+		snprintf(reason, sizeof(reason),
+			 "open() failed : %s", strerror(errno));
 		ret = -1;
 
-		goto out;
+		goto err_schema_not_empty;
 	}
-	fclose(fp);
+	if (write(fd, schema, schema_len) < 0) {
+		snprintf(reason, sizeof(reason),
+			 "write() failed : %s", strerror(errno));
+		close(fd);
+		ret = -1;
 
+		goto err_schema_not_empty;
+	}
+	close(fd);
+
+err_schema_not_empty:
+	schema[schema_len - 1] = 0;
 out:
 	ksft_print_msg("Write schema \"%s\" to resctrl FS%s%s\n",
 		       schema, ret ? " # " : "",
@@ -553,20 +702,16 @@ char *fgrep(FILE *inf, const char *str)
 }
 
 /*
- * validate_resctrl_feature_request - Check if requested feature is valid.
- * @resource:	Required resource (e.g., MB, L3, L2, L3_MON, etc.)
- * @feature:	Required monitor feature (in mon_features file). Can only be
- *		set for L3_MON. Must be NULL for all other resources.
+ * resctrl_resource_exists - Check if a resource is supported.
+ * @resource:	Resctrl resource (e.g., MB, L3, L2, L3_MON, etc.)
  *
- * Return: True if the resource/feature is supported, else false. False is
+ * Return: True if the resource is supported, else false. False is
  *         also returned if resctrl FS is not mounted.
  */
-bool validate_resctrl_feature_request(const char *resource, const char *feature)
+bool resctrl_resource_exists(const char *resource)
 {
 	char res_path[PATH_MAX];
 	struct stat statbuf;
-	char *res;
-	FILE *inf;
 	int ret;
 
 	if (!resource)
@@ -581,8 +726,25 @@ bool validate_resctrl_feature_request(const char *resource, const char *feature)
 	if (stat(res_path, &statbuf))
 		return false;
 
-	if (!feature)
-		return true;
+	return true;
+}
+
+/*
+ * resctrl_mon_feature_exists - Check if requested monitoring feature is valid.
+ * @resource:	Resource that uses the mon_features file. Currently only L3_MON
+ *		is valid.
+ * @feature:	Required monitor feature (in mon_features file).
+ *
+ * Return: True if the feature is supported, else false.
+ */
+bool resctrl_mon_feature_exists(const char *resource, const char *feature)
+{
+	char res_path[PATH_MAX];
+	char *res;
+	FILE *inf;
+
+	if (!feature || !resource)
+		return false;
 
 	snprintf(res_path, sizeof(res_path), "%s/%s/mon_features", INFO_PATH, resource);
 	inf = fopen(res_path, "r");
@@ -594,6 +756,36 @@ bool validate_resctrl_feature_request(const char *resource, const char *feature)
 	fclose(inf);
 
 	return !!res;
+}
+
+/*
+ * resource_info_file_exists - Check if a file is present inside
+ * /sys/fs/resctrl/info/@resource.
+ * @resource:	Required resource (Eg: MB, L3, L2, etc.)
+ * @file:	Required file.
+ *
+ * Return: True if the /sys/fs/resctrl/info/@resource/@file exists, else false.
+ */
+bool resource_info_file_exists(const char *resource, const char *file)
+{
+	char res_path[PATH_MAX];
+	struct stat statbuf;
+
+	if (!file || !resource)
+		return false;
+
+	snprintf(res_path, sizeof(res_path), "%s/%s/%s", INFO_PATH, resource,
+		 file);
+
+	if (stat(res_path, &statbuf))
+		return false;
+
+	return true;
+}
+
+bool test_resource_feature_check(const struct resctrl_test *test)
+{
+	return resctrl_resource_exists(test->resource);
 }
 
 int filter_dmesg(void)
@@ -639,22 +831,21 @@ int filter_dmesg(void)
 	return 0;
 }
 
-int validate_bw_report_request(char *bw_report)
+const char *get_bw_report_type(const char *bw_report)
 {
 	if (strcmp(bw_report, "reads") == 0)
-		return 0;
+		return bw_report;
 	if (strcmp(bw_report, "writes") == 0)
-		return 0;
+		return bw_report;
 	if (strcmp(bw_report, "nt-writes") == 0) {
-		strcpy(bw_report, "writes");
-		return 0;
+		return "writes";
 	}
 	if (strcmp(bw_report, "total") == 0)
-		return 0;
+		return bw_report;
 
-	fprintf(stderr, "Requested iMC B/W report type unavailable\n");
+	fprintf(stderr, "Requested iMC bandwidth report type unavailable\n");
 
-	return -1;
+	return NULL;
 }
 
 int perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,

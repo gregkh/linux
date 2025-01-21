@@ -207,7 +207,6 @@ int vhost_get_vq_desc(struct vhost_virtqueue *,
 		      struct vhost_log *log, unsigned int *log_num);
 void vhost_discard_vq_desc(struct vhost_virtqueue *, int n);
 
-void vhost_vq_flush(struct vhost_virtqueue *vq);
 bool vhost_vq_work_queue(struct vhost_virtqueue *vq, struct vhost_work *work);
 bool vhost_vq_has_work(struct vhost_virtqueue *vq);
 bool vhost_vq_is_setup(struct vhost_virtqueue *vq);
@@ -251,7 +250,7 @@ void vhost_iotlb_map_free(struct vhost_iotlb *iotlb,
 #define vq_err(vq, fmt, ...) do {                                  \
 		pr_debug(pr_fmt(fmt), ##__VA_ARGS__);       \
 		if ((vq)->error_ctx)                               \
-				eventfd_signal((vq)->error_ctx, 1);\
+				eventfd_signal((vq)->error_ctx);\
 	} while (0)
 
 enum {

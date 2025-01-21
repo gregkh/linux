@@ -207,7 +207,7 @@ static int netlink_diag_dump(struct sk_buff *skb, struct netlink_callback *cb)
 		err = __netlink_diag_dump(skb, cb, req->sdiag_protocol, s_num);
 	}
 
-	return err < 0 ? err : skb->len;
+	return err <= 0 ? err : skb->len;
 }
 
 static int netlink_diag_dump_done(struct netlink_callback *cb)
@@ -258,5 +258,6 @@ static void __exit netlink_diag_exit(void)
 
 module_init(netlink_diag_init);
 module_exit(netlink_diag_exit);
+MODULE_DESCRIPTION("Netlink-based socket monitoring/diagnostic interface (sock_diag)");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_NET_PF_PROTO_TYPE(PF_NETLINK, NETLINK_SOCK_DIAG, 16 /* AF_NETLINK */);

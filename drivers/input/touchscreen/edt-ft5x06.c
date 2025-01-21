@@ -32,7 +32,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define WORK_REGISTER_THRESHOLD		0x00
 #define WORK_REGISTER_REPORT_RATE	0x08
@@ -431,7 +431,7 @@ static ssize_t edt_ft5x06_setting_show(struct device *dev,
 		*field = val;
 	}
 
-	count = scnprintf(buf, PAGE_SIZE, "%d\n", val);
+	count = sysfs_emit(buf, "%d\n", val);
 out:
 	mutex_unlock(&tsdata->mutex);
 	return error ?: count;
@@ -580,10 +580,7 @@ static struct attribute *edt_ft5x06_attrs[] = {
 	&dev_attr_crc_errors.attr,
 	NULL
 };
-
-static const struct attribute_group edt_ft5x06_attr_group = {
-	.attrs = edt_ft5x06_attrs,
-};
+ATTRIBUTE_GROUPS(edt_ft5x06);
 
 static void edt_ft5x06_restore_reg_parameters(struct edt_ft5x06_ts_data *tsdata)
 {
@@ -1348,10 +1345,6 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client)
 		return error;
 	}
 
-	error = devm_device_add_group(&client->dev, &edt_ft5x06_attr_group);
-	if (error)
-		return error;
-
 	error = input_register_device(input);
 	if (error)
 		return error;
@@ -1486,6 +1479,10 @@ static const struct edt_i2c_chip_data edt_ft5x06_data = {
 	.max_support_points = 5,
 };
 
+static const struct edt_i2c_chip_data edt_ft5452_data = {
+	.max_support_points = 5,
+};
+
 static const struct edt_i2c_chip_data edt_ft5506_data = {
 	.max_support_points = 10,
 };
@@ -1494,12 +1491,23 @@ static const struct edt_i2c_chip_data edt_ft6236_data = {
 	.max_support_points = 2,
 };
 
+static const struct edt_i2c_chip_data edt_ft8201_data = {
+	.max_support_points = 10,
+};
+
+static const struct edt_i2c_chip_data edt_ft8719_data = {
+	.max_support_points = 10,
+};
+
 static const struct i2c_device_id edt_ft5x06_ts_id[] = {
 	{ .name = "edt-ft5x06", .driver_data = (long)&edt_ft5x06_data },
 	{ .name = "edt-ft5506", .driver_data = (long)&edt_ft5506_data },
 	{ .name = "ev-ft5726", .driver_data = (long)&edt_ft5506_data },
+	{ .name = "ft5452", .driver_data = (long)&edt_ft5452_data },
 	/* Note no edt- prefix for compatibility with the ft6236.c driver */
 	{ .name = "ft6236", .driver_data = (long)&edt_ft6236_data },
+	{ .name = "ft8201", .driver_data = (long)&edt_ft8201_data },
+	{ .name = "ft8719", .driver_data = (long)&edt_ft8719_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(i2c, edt_ft5x06_ts_id);
@@ -1510,8 +1518,12 @@ static const struct of_device_id edt_ft5x06_of_match[] = {
 	{ .compatible = "edt,edt-ft5406", .data = &edt_ft5x06_data },
 	{ .compatible = "edt,edt-ft5506", .data = &edt_ft5506_data },
 	{ .compatible = "evervision,ev-ft5726", .data = &edt_ft5506_data },
+	{ .compatible = "focaltech,ft5426", .data = &edt_ft5506_data },
+	{ .compatible = "focaltech,ft5452", .data = &edt_ft5452_data },
 	/* Note focaltech vendor prefix for compatibility with ft6236.c */
 	{ .compatible = "focaltech,ft6236", .data = &edt_ft6236_data },
+	{ .compatible = "focaltech,ft8201", .data = &edt_ft8201_data },
+	{ .compatible = "focaltech,ft8719", .data = &edt_ft8719_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, edt_ft5x06_of_match);
@@ -1519,6 +1531,7 @@ MODULE_DEVICE_TABLE(of, edt_ft5x06_of_match);
 static struct i2c_driver edt_ft5x06_ts_driver = {
 	.driver = {
 		.name = "edt_ft5x06",
+		.dev_groups = edt_ft5x06_groups,
 		.of_match_table = edt_ft5x06_of_match,
 		.pm = pm_sleep_ptr(&edt_ft5x06_ts_pm_ops),
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,

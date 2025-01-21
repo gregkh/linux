@@ -22,7 +22,7 @@
 #include <linux/vmalloc.h>
 #include <uapi/linux/sched/types.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <acpi/cppc_acpi.h>
 
@@ -227,9 +227,9 @@ static void __init cppc_freq_invariance_init(void)
 		 * Fake (unused) bandwidth; workaround to "fix"
 		 * priority inheritance.
 		 */
-		.sched_runtime	= 1000000,
-		.sched_deadline = 10000000,
-		.sched_period	= 10000000,
+		.sched_runtime	= NSEC_PER_MSEC,
+		.sched_deadline = 10 * NSEC_PER_MSEC,
+		.sched_period	= 10 * NSEC_PER_MSEC,
 	};
 	int ret;
 
@@ -294,15 +294,10 @@ static int cppc_cpufreq_set_target(struct cpufreq_policy *policy,
 	struct cppc_cpudata *cpu_data = policy->driver_data;
 	unsigned int cpu = policy->cpu;
 	struct cpufreq_freqs freqs;
-	u32 desired_perf;
 	int ret = 0;
 
-	desired_perf = cppc_khz_to_perf(&cpu_data->perf_caps, target_freq);
-	/* Return if it is exactly the same perf */
-	if (desired_perf == cpu_data->perf_ctrls.desired_perf)
-		return ret;
-
-	cpu_data->perf_ctrls.desired_perf = desired_perf;
+	cpu_data->perf_ctrls.desired_perf =
+			cppc_khz_to_perf(&cpu_data->perf_caps, target_freq);
 	freqs.old = policy->cur;
 	freqs.new = target_freq;
 
@@ -697,7 +692,7 @@ out:
 	return ret;
 }
 
-static int cppc_cpufreq_cpu_exit(struct cpufreq_policy *policy)
+static void cppc_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 {
 	struct cppc_cpudata *cpu_data = policy->driver_data;
 	struct cppc_perf_caps *caps = &cpu_data->perf_caps;
@@ -714,7 +709,6 @@ static int cppc_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 			 caps->lowest_perf, cpu, ret);
 
 	cppc_cpufreq_put_cpu_data(policy);
-	return 0;
 }
 
 static inline u64 get_delta(u64 t1, u64 t0)

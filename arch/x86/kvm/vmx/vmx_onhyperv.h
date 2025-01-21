@@ -4,11 +4,12 @@
 #define __ARCH_X86_KVM_VMX_ONHYPERV_H__
 
 #include <asm/hyperv-tlfs.h>
+#include <asm/mshyperv.h>
 
 #include <linux/jump_label.h>
 
 #include "capabilities.h"
-#include "hyperv.h"
+#include "hyperv_evmcs.h"
 #include "vmcs12.h"
 
 #define current_evmcs ((struct hv_enlightened_vmcs *)this_cpu_read(current_vmcs))
@@ -102,6 +103,14 @@ static inline void evmcs_load(u64 phys_addr)
 {
 	struct hv_vp_assist_page *vp_ap =
 		hv_get_vp_assist_page(smp_processor_id());
+
+	/*
+	 * When enabling eVMCS, KVM verifies that every CPU has a valid hv_vp_assist_page()
+	 * and aborts enabling the feature otherwise. CPU onlining path is also checked in
+	 * vmx_hardware_enable().
+	 */
+	if (KVM_BUG_ON(!vp_ap, kvm_get_running_vcpu()->kvm))
+		return;
 
 	if (current_evmcs->hv_enlightenments_control.nested_flush_hypercall)
 		vp_ap->nested_control.features.directhypercall = 1;

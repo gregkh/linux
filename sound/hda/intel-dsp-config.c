@@ -13,6 +13,8 @@
 #include <sound/intel-nhlt.h>
 #include <sound/soc-acpi.h>
 
+#include <acpi/nhlt.h>
+
 static int dsp_driver;
 
 module_param(dsp_driver, int, 0444);
@@ -54,10 +56,59 @@ static const struct config_entry config_table[] = {
 	},
 #endif
 /*
- * Apollolake (Broxton-P)
+ * Skylake, Kabylake, Apollolake
  * the legacy HDAudio driver is used except on Up Squared (SOF) and
  * Chromebooks (SST), as well as devices based on the ES8336 codec
  */
+#if IS_ENABLED(CONFIG_SND_SOC_INTEL_AVS)
+	{
+		.flags = FLAG_SST,
+		.device = PCI_DEVICE_ID_INTEL_HDA_SKL_LP,
+		.dmi_table = (const struct dmi_system_id []) {
+			{
+				.ident = "Google Chromebooks",
+				.matches = {
+					DMI_MATCH(DMI_SYS_VENDOR, "Google"),
+				}
+			},
+			{}
+		}
+	},
+	{
+		.flags = FLAG_SST | FLAG_SST_ONLY_IF_DMIC,
+		.device = PCI_DEVICE_ID_INTEL_HDA_SKL_LP,
+	},
+	{
+		.flags = FLAG_SST,
+		.device = PCI_DEVICE_ID_INTEL_HDA_KBL_LP,
+		.dmi_table = (const struct dmi_system_id []) {
+			{
+				.ident = "Google Chromebooks",
+				.matches = {
+					DMI_MATCH(DMI_SYS_VENDOR, "Google"),
+				}
+			},
+			{}
+		}
+	},
+	{
+		.flags = FLAG_SST | FLAG_SST_ONLY_IF_DMIC,
+		.device = PCI_DEVICE_ID_INTEL_HDA_KBL_LP,
+	},
+	{
+		.flags = FLAG_SST,
+		.device = PCI_DEVICE_ID_INTEL_HDA_APL,
+		.dmi_table = (const struct dmi_system_id []) {
+			{
+				.ident = "Google Chromebooks",
+				.matches = {
+					DMI_MATCH(DMI_SYS_VENDOR, "Google"),
+				}
+			},
+			{}
+		}
+	},
+#endif
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_APOLLOLAKE)
 	{
 		.flags = FLAG_SOF,
@@ -77,66 +128,6 @@ static const struct config_entry config_table[] = {
 		.flags = FLAG_SOF,
 		.device = PCI_DEVICE_ID_INTEL_HDA_APL,
 		.codec_hid =  &essx_83x6,
-	},
-#endif
-#if IS_ENABLED(CONFIG_SND_SOC_INTEL_APL)
-	{
-		.flags = FLAG_SST,
-		.device = PCI_DEVICE_ID_INTEL_HDA_APL,
-		.dmi_table = (const struct dmi_system_id []) {
-			{
-				.ident = "Google Chromebooks",
-				.matches = {
-					DMI_MATCH(DMI_SYS_VENDOR, "Google"),
-				}
-			},
-			{}
-		}
-	},
-#endif
-/*
- * Skylake and Kabylake use legacy HDAudio driver except for Google
- * Chromebooks (SST)
- */
-
-/* Sunrise Point-LP */
-#if IS_ENABLED(CONFIG_SND_SOC_INTEL_SKL)
-	{
-		.flags = FLAG_SST,
-		.device = PCI_DEVICE_ID_INTEL_HDA_SKL_LP,
-		.dmi_table = (const struct dmi_system_id []) {
-			{
-				.ident = "Google Chromebooks",
-				.matches = {
-					DMI_MATCH(DMI_SYS_VENDOR, "Google"),
-				}
-			},
-			{}
-		}
-	},
-	{
-		.flags = FLAG_SST | FLAG_SST_ONLY_IF_DMIC,
-		.device = PCI_DEVICE_ID_INTEL_HDA_SKL_LP,
-	},
-#endif
-/* Kabylake-LP */
-#if IS_ENABLED(CONFIG_SND_SOC_INTEL_KBL)
-	{
-		.flags = FLAG_SST,
-		.device = PCI_DEVICE_ID_INTEL_HDA_KBL_LP,
-		.dmi_table = (const struct dmi_system_id []) {
-			{
-				.ident = "Google Chromebooks",
-				.matches = {
-					DMI_MATCH(DMI_SYS_VENDOR, "Google"),
-				}
-			},
-			{}
-		}
-	},
-	{
-		.flags = FLAG_SST | FLAG_SST_ONLY_IF_DMIC,
-		.device = PCI_DEVICE_ID_INTEL_HDA_KBL_LP,
 	},
 #endif
 
@@ -541,6 +532,15 @@ static const struct config_entry config_table[] = {
 		.device = PCI_DEVICE_ID_INTEL_HDA_LNL_P,
 	},
 #endif
+
+	/* Panther Lake */
+#if IS_ENABLED(CONFIG_SND_SOC_SOF_PANTHERLAKE)
+	{
+		.flags = FLAG_SOF | FLAG_SOF_ONLY_IF_DMIC_OR_SOUNDWIRE,
+		.device = PCI_DEVICE_ID_INTEL_HDA_PTL,
+	},
+#endif
+
 };
 
 static const struct config_entry *snd_intel_dsp_find_config
@@ -593,15 +593,15 @@ static const struct config_entry *snd_intel_dsp_find_config
 
 static int snd_intel_dsp_check_dmic(struct pci_dev *pci)
 {
-	struct nhlt_acpi_table *nhlt;
 	int ret = 0;
 
-	nhlt = intel_nhlt_init(&pci->dev);
-	if (nhlt) {
-		if (intel_nhlt_has_endpoint_type(nhlt, NHLT_LINK_DMIC))
-			ret = 1;
-		intel_nhlt_free(nhlt);
-	}
+	acpi_nhlt_get_gbl_table();
+
+	if (acpi_nhlt_find_endpoint(ACPI_NHLT_LINKTYPE_PDM, -1, -1, -1))
+		ret = 1;
+
+	acpi_nhlt_put_gbl_table();
+
 	return ret;
 }
 
@@ -666,7 +666,7 @@ int snd_intel_dsp_driver_probe(struct pci_dev *pci)
 		return SND_INTEL_DSP_DRIVER_LEGACY;
 	}
 
-	dev_info(&pci->dev, "DSP detected with PCI class/subclass/prog-if info 0x%06x\n", pci->class);
+	dev_dbg(&pci->dev, "DSP detected with PCI class/subclass/prog-if info 0x%06x\n", pci->class);
 
 	/* find the configuration for the specific device */
 	cfg = snd_intel_dsp_find_config(pci, config_table, ARRAY_SIZE(config_table));
@@ -676,12 +676,12 @@ int snd_intel_dsp_driver_probe(struct pci_dev *pci)
 	if (cfg->flags & FLAG_SOF) {
 		if (cfg->flags & FLAG_SOF_ONLY_IF_SOUNDWIRE &&
 		    snd_intel_dsp_check_soundwire(pci) > 0) {
-			dev_info(&pci->dev, "SoundWire enabled on CannonLake+ platform, using SOF driver\n");
+			dev_info_once(&pci->dev, "SoundWire enabled on CannonLake+ platform, using SOF driver\n");
 			return SND_INTEL_DSP_DRIVER_SOF;
 		}
 		if (cfg->flags & FLAG_SOF_ONLY_IF_DMIC &&
 		    snd_intel_dsp_check_dmic(pci)) {
-			dev_info(&pci->dev, "Digital mics found on Skylake+ platform, using SOF driver\n");
+			dev_info_once(&pci->dev, "Digital mics found on Skylake+ platform, using SOF driver\n");
 			return SND_INTEL_DSP_DRIVER_SOF;
 		}
 		if (!(cfg->flags & FLAG_SOF_ONLY_IF_DMIC_OR_SOUNDWIRE))
@@ -692,7 +692,7 @@ int snd_intel_dsp_driver_probe(struct pci_dev *pci)
 	if (cfg->flags & FLAG_SST) {
 		if (cfg->flags & FLAG_SST_ONLY_IF_DMIC) {
 			if (snd_intel_dsp_check_dmic(pci)) {
-				dev_info(&pci->dev, "Digital mics found on Skylake+ platform, using SST driver\n");
+				dev_info_once(&pci->dev, "Digital mics found on Skylake+ platform, using SST driver\n");
 				return SND_INTEL_DSP_DRIVER_SST;
 			}
 		} else {

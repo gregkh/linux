@@ -37,7 +37,7 @@
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/uaccess.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/composite.h>
@@ -1527,6 +1527,7 @@ static struct usb_function *gprinter_alloc(struct usb_function_instance *fi)
 }
 
 DECLARE_USB_FUNCTION_INIT(printer, gprinter_alloc_inst, gprinter_alloc);
+MODULE_DESCRIPTION("USB printer function driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Craig Nadler");
 

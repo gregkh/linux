@@ -97,7 +97,7 @@ DECLARE_STATIC_KEY_FALSE(interrupt_exit_not_reentrant);
 
 static inline bool is_implicit_soft_masked(struct pt_regs *regs)
 {
-	if (regs->msr & MSR_PR)
+	if (user_mode(regs))
 		return false;
 
 	if (regs->nip >= (unsigned long)__end_soft_masked)
@@ -177,7 +177,7 @@ static inline void interrupt_enter_prepare(struct pt_regs *regs)
 
 	if (user_mode(regs)) {
 		kuap_lock();
-		CT_WARN_ON(ct_state() != CONTEXT_USER);
+		CT_WARN_ON(ct_state() != CT_STATE_USER);
 		user_exit_irqoff();
 
 		account_cpu_user_entry();
@@ -189,8 +189,8 @@ static inline void interrupt_enter_prepare(struct pt_regs *regs)
 		 * so avoid recursion.
 		 */
 		if (TRAP(regs) != INTERRUPT_PROGRAM)
-			CT_WARN_ON(ct_state() != CONTEXT_KERNEL &&
-				   ct_state() != CONTEXT_IDLE);
+			CT_WARN_ON(ct_state() != CT_STATE_KERNEL &&
+				   ct_state() != CT_STATE_IDLE);
 		INT_SOFT_MASK_BUG_ON(regs, is_implicit_soft_masked(regs));
 		INT_SOFT_MASK_BUG_ON(regs, arch_irq_disabled_regs(regs) &&
 					   search_kernel_restart_table(regs->nip));

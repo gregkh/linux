@@ -45,9 +45,9 @@ static bool match_service_id(const struct tb_service_id *id,
 }
 
 static const struct tb_service_id *__tb_service_match(struct device *dev,
-						      struct device_driver *drv)
+						      const struct device_driver *drv)
 {
-	struct tb_service_driver *driver;
+	const struct tb_service_driver *driver;
 	const struct tb_service_id *ids;
 	struct tb_service *svc;
 
@@ -55,7 +55,7 @@ static const struct tb_service_id *__tb_service_match(struct device *dev,
 	if (!svc)
 		return NULL;
 
-	driver = container_of(drv, struct tb_service_driver, driver);
+	driver = container_of_const(drv, struct tb_service_driver, driver);
 	if (!driver->id_table)
 		return NULL;
 
@@ -67,7 +67,7 @@ static const struct tb_service_id *__tb_service_match(struct device *dev,
 	return NULL;
 }
 
-static int tb_service_match(struct device *dev, struct device_driver *drv)
+static int tb_service_match(struct device *dev, const struct device_driver *drv)
 {
 	return !!__tb_service_match(dev, drv);
 }
@@ -307,7 +307,7 @@ static const struct attribute_group *domain_attr_groups[] = {
 	NULL,
 };
 
-struct bus_type tb_bus_type = {
+const struct bus_type tb_bus_type = {
 	.name = "thunderbolt",
 	.match = tb_service_match,
 	.probe = tb_service_probe,
@@ -321,12 +321,12 @@ static void tb_domain_release(struct device *dev)
 
 	tb_ctl_free(tb->ctl);
 	destroy_workqueue(tb->wq);
-	ida_simple_remove(&tb_domain_ida, tb->index);
+	ida_free(&tb_domain_ida, tb->index);
 	mutex_destroy(&tb->lock);
 	kfree(tb);
 }
 
-struct device_type tb_domain_type = {
+const struct device_type tb_domain_type = {
 	.name = "thunderbolt_domain",
 	.release = tb_domain_release,
 };
@@ -389,7 +389,7 @@ struct tb *tb_domain_alloc(struct tb_nhi *nhi, int timeout_msec, size_t privsize
 	tb->nhi = nhi;
 	mutex_init(&tb->lock);
 
-	tb->index = ida_simple_get(&tb_domain_ida, 0, 0, GFP_KERNEL);
+	tb->index = ida_alloc(&tb_domain_ida, GFP_KERNEL);
 	if (tb->index < 0)
 		goto err_free;
 
@@ -397,7 +397,7 @@ struct tb *tb_domain_alloc(struct tb_nhi *nhi, int timeout_msec, size_t privsize
 	if (!tb->wq)
 		goto err_remove_ida;
 
-	tb->ctl = tb_ctl_alloc(nhi, timeout_msec, tb_domain_event_cb, tb);
+	tb->ctl = tb_ctl_alloc(nhi, tb->index, timeout_msec, tb_domain_event_cb, tb);
 	if (!tb->ctl)
 		goto err_destroy_wq;
 
@@ -413,7 +413,7 @@ struct tb *tb_domain_alloc(struct tb_nhi *nhi, int timeout_msec, size_t privsize
 err_destroy_wq:
 	destroy_workqueue(tb->wq);
 err_remove_ida:
-	ida_simple_remove(&tb_domain_ida, tb->index);
+	ida_free(&tb_domain_ida, tb->index);
 err_free:
 	kfree(tb);
 
@@ -506,6 +506,10 @@ void tb_domain_remove(struct tb *tb)
 	mutex_unlock(&tb->lock);
 
 	flush_workqueue(tb->wq);
+
+	if (tb->cm_ops->deinit)
+		tb->cm_ops->deinit(tb);
+
 	device_unregister(&tb->dev);
 }
 

@@ -3,6 +3,7 @@
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
  */
 #include <linux/bits.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
@@ -458,7 +459,9 @@ struct it6505 {
 	/* it6505 driver hold option */
 	bool enable_drv_hold;
 
-	struct edid *cached_edid;
+	const struct drm_edid *cached_edid;
+
+	int irq;
 };
 
 struct it6505_step_train_para {
@@ -2268,7 +2271,7 @@ static void it6505_plugged_status_to_codec(struct it6505 *it6505)
 
 static void it6505_remove_edid(struct it6505 *it6505)
 {
-	kfree(it6505->cached_edid);
+	drm_edid_free(it6505->cached_edid);
 	it6505->cached_edid = NULL;
 }
 
@@ -2623,6 +2626,8 @@ static int it6505_poweron(struct it6505 *it6505)
 	it6505_init(it6505);
 	it6505_lane_off(it6505);
 
+	enable_irq(it6505->irq);
+
 	return 0;
 }
 
@@ -2638,6 +2643,8 @@ static int it6505_poweroff(struct it6505 *it6505)
 		DRM_DEV_DEBUG_DRIVER(dev, "power had been already off");
 		return 0;
 	}
+
+	disable_irq_nosync(it6505->irq);
 
 	if (pdata->gpiod_reset)
 		gpiod_set_value_cansleep(pdata->gpiod_reset, 1);
@@ -2906,11 +2913,6 @@ static int it6505_bridge_attach(struct drm_bridge *bridge,
 		return -EINVAL;
 	}
 
-	if (!bridge->encoder) {
-		dev_err(dev, "Parent encoder object not found");
-		return -ENODEV;
-	}
-
 	/* Register aux channel */
 	it6505->aux.drm_dev = bridge->dev;
 
@@ -3059,15 +3061,16 @@ it6505_bridge_detect(struct drm_bridge *bridge)
 	return it6505_detect(it6505);
 }
 
-static struct edid *it6505_bridge_get_edid(struct drm_bridge *bridge,
-					   struct drm_connector *connector)
+static const struct drm_edid *it6505_bridge_edid_read(struct drm_bridge *bridge,
+						      struct drm_connector *connector)
 {
 	struct it6505 *it6505 = bridge_to_it6505(bridge);
 	struct device *dev = it6505->dev;
 
 	if (!it6505->cached_edid) {
-		it6505->cached_edid = drm_do_get_edid(connector, it6505_get_edid_block,
-						      it6505);
+		it6505->cached_edid = drm_edid_read_custom(connector,
+							   it6505_get_edid_block,
+							   it6505);
 
 		if (!it6505->cached_edid) {
 			DRM_DEV_DEBUG_DRIVER(dev, "failed to get edid!");
@@ -3075,7 +3078,7 @@ static struct edid *it6505_bridge_get_edid(struct drm_bridge *bridge,
 		}
 	}
 
-	return drm_edid_duplicate(it6505->cached_edid);
+	return drm_edid_dup(it6505->cached_edid);
 }
 
 static const struct drm_bridge_funcs it6505_bridge_funcs = {
@@ -3090,7 +3093,7 @@ static const struct drm_bridge_funcs it6505_bridge_funcs = {
 	.atomic_pre_enable = it6505_bridge_atomic_pre_enable,
 	.atomic_post_disable = it6505_bridge_atomic_post_disable,
 	.detect = it6505_bridge_detect,
-	.get_edid = it6505_bridge_get_edid,
+	.edid_read = it6505_bridge_edid_read,
 };
 
 static __maybe_unused int it6505_bridge_resume(struct device *dev)
@@ -3394,7 +3397,7 @@ static int it6505_i2c_probe(struct i2c_client *client)
 	struct it6505 *it6505;
 	struct device *dev = &client->dev;
 	struct extcon_dev *extcon;
-	int err, intp_irq;
+	int err;
 
 	it6505 = devm_kzalloc(&client->dev, sizeof(*it6505), GFP_KERNEL);
 	if (!it6505)
@@ -3435,17 +3438,18 @@ static int it6505_i2c_probe(struct i2c_client *client)
 
 	it6505_parse_dt(it6505);
 
-	intp_irq = client->irq;
+	it6505->irq = client->irq;
 
-	if (!intp_irq) {
+	if (!it6505->irq) {
 		dev_err(dev, "Failed to get INTP IRQ");
 		err = -ENODEV;
 		return err;
 	}
 
-	err = devm_request_threaded_irq(&client->dev, intp_irq, NULL,
+	err = devm_request_threaded_irq(&client->dev, it6505->irq, NULL,
 					it6505_int_threaded_handler,
-					IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+					IRQF_TRIGGER_LOW | IRQF_ONESHOT |
+					IRQF_NO_AUTOEN,
 					"it6505-intp", it6505);
 	if (err) {
 		dev_err(dev, "Failed to request INTP threaded IRQ: %d", err);

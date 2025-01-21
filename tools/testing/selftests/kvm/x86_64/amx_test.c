@@ -6,8 +6,6 @@
  *
  * Tests for amx #NM exception and save/restore.
  */
-
-#define _GNU_SOURCE /* for program_invocation_short_name */
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -246,8 +244,6 @@ int main(int argc, char *argv[])
 	vcpu_regs_get(vcpu, &regs1);
 
 	/* Register #NM handler */
-	vm_init_descriptor_tables(vm);
-	vcpu_init_descriptor_tables(vcpu);
 	vm_install_exception_handler(vm, NM_VECTOR, guest_nm_handler);
 
 	/* amx cfg for guest_code */
@@ -296,7 +292,7 @@ int main(int argc, char *argv[])
 				void *tiles_data = (void *)addr_gva2hva(vm, tiledata);
 				/* Only check TMM0 register, 1 tile */
 				ret = memcmp(amx_start, tiles_data, TILE_SIZE);
-				TEST_ASSERT(ret == 0, "memcmp failed, ret=%d\n", ret);
+				TEST_ASSERT(ret == 0, "memcmp failed, ret=%d", ret);
 				kvm_x86_state_cleanup(state);
 				break;
 			case 9:

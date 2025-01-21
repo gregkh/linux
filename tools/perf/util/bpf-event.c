@@ -59,10 +59,11 @@ static int machine__process_bpf_event_load(struct machine *machine,
 		if (map) {
 			struct dso *dso = map__dso(map);
 
-			dso->binary_type = DSO_BINARY_TYPE__BPF_PROG_INFO;
-			dso->bpf_prog.id = id;
-			dso->bpf_prog.sub_id = i;
-			dso->bpf_prog.env = env;
+			dso__set_binary_type(dso, DSO_BINARY_TYPE__BPF_PROG_INFO);
+			dso__bpf_prog(dso)->id = id;
+			dso__bpf_prog(dso)->sub_id = i;
+			dso__bpf_prog(dso)->env = env;
+			map__put(map);
 		}
 	}
 	return 0;
@@ -169,7 +170,7 @@ static int perf_event__synthesize_one_bpf_prog(struct perf_session *session,
 {
 	struct perf_record_ksymbol *ksymbol_event = &event->ksymbol;
 	struct perf_record_bpf_event *bpf_event = &event->bpf;
-	struct perf_tool *tool = session->tool;
+	const struct perf_tool *tool = session->tool;
 	struct bpf_prog_info_node *info_node;
 	struct perf_bpil *info_linear;
 	struct bpf_prog_info *info;
@@ -309,7 +310,7 @@ struct kallsyms_parse {
 	union perf_event	*event;
 	perf_event__handler_t	 process;
 	struct machine		*machine;
-	struct perf_tool	*tool;
+	const struct perf_tool	*tool;
 };
 
 static int
@@ -385,6 +386,9 @@ int perf_event__synthesize_bpf_events(struct perf_session *session,
 	__u32 id = 0;
 	int err;
 	int fd;
+
+	if (opts->no_bpf_event)
+		return 0;
 
 	event = malloc(sizeof(event->bpf) + KSYM_NAME_LEN + machine->id_hdr_size);
 	if (!event)

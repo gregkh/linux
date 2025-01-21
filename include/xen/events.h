@@ -88,7 +88,6 @@ void xen_irq_resume(void);
 
 /* Clear an irq's pending state, in preparation for polling on it */
 void xen_clear_irq_pending(int irq);
-void xen_set_irq_pending(int irq);
 bool xen_test_irq_pending(int irq);
 
 /* Poll waiting for an irq to become pending.  In the usual case, the
@@ -122,9 +121,6 @@ int xen_bind_pirq_msi_to_irq(struct pci_dev *dev, struct msi_desc *msidesc,
 /* De-allocates the above mentioned physical interrupt. */
 int xen_destroy_irq(int irq);
 
-/* Return irq from pirq */
-int xen_irq_from_pirq(unsigned pirq);
-
 /* Return the pirq allocated to the irq. */
 int xen_pirq_from_irq(unsigned irq);
 
@@ -147,5 +143,7 @@ static inline void xen_evtchn_close(evtchn_port_t port)
 	if (HYPERVISOR_event_channel_op(EVTCHNOP_close, &close) != 0)
 		BUG();
 }
+
+extern bool xen_fifo_events;
 
 #endif	/* _XEN_EVENTS_H */

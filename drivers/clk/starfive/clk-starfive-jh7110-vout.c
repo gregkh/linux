@@ -209,12 +209,10 @@ err_exit:
 	return ret;
 }
 
-static int jh7110_voutcrg_remove(struct platform_device *pdev)
+static void jh7110_voutcrg_remove(struct platform_device *pdev)
 {
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id jh7110_voutcrg_match[] = {

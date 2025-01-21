@@ -3,8 +3,9 @@
  * Copyright (c) 2023, The Linux Foundation. All rights reserved.
  */
 #include <linux/clk-provider.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
 
 #include <dt-bindings/clock/qcom,gcc-ipq5018.h>
@@ -3697,7 +3698,7 @@ static int gcc_ipq5018_probe(struct platform_device *pdev)
 
 	clk_alpha_pll_configure(&ubi32_pll_main, regmap, &ubi32_pll_config);
 
-	return qcom_cc_really_probe(pdev, &ipq5018_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &ipq5018_desc, regmap);
 }
 
 static struct platform_driver gcc_ipq5018_driver = {

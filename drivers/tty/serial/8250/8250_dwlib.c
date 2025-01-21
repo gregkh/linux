@@ -89,7 +89,7 @@ static void dw8250_set_divisor(struct uart_port *p, unsigned int baud,
 			       unsigned int quot, unsigned int quot_frac)
 {
 	dw8250_writel_ext(p, DW_UART_DLF, quot_frac);
-	serial8250_do_set_divisor(p, baud, quot, quot_frac);
+	serial8250_do_set_divisor(p, baud, quot);
 }
 
 void dw8250_do_set_termios(struct uart_port *p, struct ktermios *termios,
@@ -258,17 +258,6 @@ void dw8250_setup_port(struct uart_port *p)
 	}
 	up->capabilities |= UART_CAP_NOTEMT;
 
-	/*
-	 * If the Component Version Register returns zero, we know that
-	 * ADDITIONAL_FEATURES are not enabled. No need to go any further.
-	 */
-	reg = dw8250_readl_ext(p, DW_UART_UCV);
-	if (!reg)
-		return;
-
-	dev_dbg(p->dev, "Designware UART version %c.%c%c\n",
-		(reg >> 24) & 0xff, (reg >> 16) & 0xff, (reg >> 8) & 0xff);
-
 	/* Preserve value written by firmware or bootloader  */
 	old_dlf = dw8250_readl_ext(p, DW_UART_DLF);
 	dw8250_writel_ext(p, DW_UART_DLF, ~0U);
@@ -280,6 +269,11 @@ void dw8250_setup_port(struct uart_port *p)
 		p->get_divisor = dw8250_get_divisor;
 		p->set_divisor = dw8250_set_divisor;
 	}
+
+	reg = dw8250_readl_ext(p, DW_UART_UCV);
+	if (reg)
+		dev_dbg(p->dev, "Designware UART version %c.%c%c\n",
+			(reg >> 24) & 0xff, (reg >> 16) & 0xff, (reg >> 8) & 0xff);
 
 	reg = dw8250_readl_ext(p, DW_UART_CPR);
 	if (!reg) {

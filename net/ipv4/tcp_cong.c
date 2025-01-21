@@ -145,11 +145,7 @@ EXPORT_SYMBOL_GPL(tcp_unregister_congestion_control);
 int tcp_update_congestion_control(struct tcp_congestion_ops *ca, struct tcp_congestion_ops *old_ca)
 {
 	struct tcp_congestion_ops *existing;
-	int ret;
-
-	ret = tcp_validate_congestion_control(ca);
-	if (ret)
-		return ret;
+	int ret = 0;
 
 	ca->key = jhash(ca->name, sizeof(ca->name), strlen(ca->name));
 
@@ -206,9 +202,10 @@ char *tcp_ca_get_name_by_key(u32 key, char *buffer)
 
 	rcu_read_lock();
 	ca = tcp_ca_find_key(key);
-	if (ca)
-		ret = strncpy(buffer, ca->name,
-			      TCP_CA_NAME_MAX);
+	if (ca) {
+		strscpy(buffer, ca->name, TCP_CA_NAME_MAX);
+		ret = buffer;
+	}
 	rcu_read_unlock();
 
 	return ret;
@@ -341,7 +338,7 @@ void tcp_get_default_congestion_control(struct net *net, char *name)
 
 	rcu_read_lock();
 	ca = rcu_dereference(net->ipv4.tcp_congestion_control);
-	strncpy(name, ca->name, TCP_CA_NAME_MAX);
+	strscpy(name, ca->name, TCP_CA_NAME_MAX);
 	rcu_read_unlock();
 }
 

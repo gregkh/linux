@@ -1612,7 +1612,7 @@ static void audit_log_multicast(int group, const char *op, int err)
 	cred = current_cred();
 	tty = audit_get_tty();
 	audit_log_format(ab, "pid=%u uid=%u auid=%u tty=%s ses=%u",
-			 task_pid_nr(current),
+			 task_tgid_nr(current),
 			 from_kuid(&init_user_ns, cred->uid),
 			 from_kuid(&init_user_ns, audit_get_loginuid(current)),
 			 tty ? tty_name(tty) : "(none)",
@@ -1693,9 +1693,7 @@ static int __init audit_init(void)
 	if (audit_initialized == AUDIT_DISABLED)
 		return 0;
 
-	audit_buffer_cache = kmem_cache_create("audit_buffer",
-					       sizeof(struct audit_buffer),
-					       0, SLAB_PANIC, NULL);
+	audit_buffer_cache = KMEM_CACHE(audit_buffer, SLAB_PANIC);
 
 	skb_queue_head_init(&audit_queue);
 	skb_queue_head_init(&audit_retry_queue);
@@ -1708,7 +1706,7 @@ static int __init audit_init(void)
 	audit_cmd_mutex.owner = NULL;
 
 	pr_info("initializing netlink subsys (%s)\n",
-		audit_default ? "enabled" : "disabled");
+		str_enabled_disabled(audit_default));
 	register_pernet_subsys(&audit_net_ops);
 
 	audit_initialized = AUDIT_INITIALIZED;

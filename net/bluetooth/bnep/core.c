@@ -29,7 +29,7 @@
 #include <linux/kthread.h>
 #include <linux/file.h>
 #include <linux/etherdevice.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/l2cap.h>
@@ -550,7 +550,7 @@ static struct device *bnep_get_device(struct bnep_session *session)
 	return &conn->hcon->dev;
 }
 
-static struct device_type bnep_type = {
+static const struct device_type bnep_type = {
 	.name	= "bluetooth",
 };
 

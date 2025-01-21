@@ -39,7 +39,7 @@ static int firmware_poweroff(struct sys_off_data *unused)
 	return NOTIFY_DONE;
 }
 
-#ifdef CONFIG_KEXEC
+#ifdef CONFIG_KEXEC_CORE
 
 /* 0X80000000~0X80200000 is safe */
 #define MAX_ARGS	64
@@ -152,7 +152,7 @@ static int __init mips_reboot_setup(void)
 				 firmware_poweroff, NULL);
 	}
 
-#ifdef CONFIG_KEXEC
+#ifdef CONFIG_KEXEC_CORE
 	kexec_argv = kmalloc(KEXEC_ARGV_SIZE, GFP_KERNEL);
 	if (WARN_ON(!kexec_argv))
 		return -ENOMEM;

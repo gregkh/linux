@@ -43,6 +43,7 @@
 #define METER_CERT_MAX_SIZE	4096
 #define STATE_MAX_NUM_LICENSES	16
 #define STATE_MAX_NUM_IN_BUNDLE	(uint32_t)8
+#define FEAT_LEN		5	/* 4 plus NUL terminator */
 
 #define __round_mask(x, y) ((__typeof__(x))((y) - 1))
 #define round_up(x, y) ((((x) - 1) | __round_mask(x, y)) + 1)
@@ -184,6 +185,7 @@ struct sdsi_dev {
 enum command {
 	CMD_SOCKET_INFO,
 	CMD_METER_CERT,
+	CMD_METER_CURRENT_CERT,
 	CMD_STATE_CERT,
 	CMD_PROV_AKC,
 	CMD_PROV_CAP,
@@ -321,25 +323,27 @@ static char *content_type(uint32_t type)
 	}
 }
 
-static void get_feature(uint32_t encoding, char *feature)
+static void get_feature(uint32_t encoding, char feature[5])
 {
 	char *name = (char *)&encoding;
 
+	feature[4] = '\0';
 	feature[3] = name[0];
 	feature[2] = name[1];
 	feature[1] = name[2];
 	feature[0] = name[3];
 }
 
-static int sdsi_meter_cert_show(struct sdsi_dev *s)
+static int sdsi_meter_cert_show(struct sdsi_dev *s, bool show_current)
 {
 	char buf[METER_CERT_MAX_SIZE] = {0};
 	struct bundle_encoding_counter *bec;
 	struct meter_certificate *mc;
 	uint32_t count = 0;
 	FILE *cert_ptr;
+	char *cert_fname;
 	int ret, size;
-	char name[4];
+	char name[FEAT_LEN];
 
 	ret = sdsi_update_registers(s);
 	if (ret)
@@ -347,7 +351,6 @@ static int sdsi_meter_cert_show(struct sdsi_dev *s)
 
 	if (!s->regs.en_features.sdsi) {
 		fprintf(stderr, "SDSi feature is present but not enabled.\n");
-		fprintf(stderr, " Unable to read meter certificate\n");
 		return -1;
 	}
 
@@ -362,15 +365,17 @@ static int sdsi_meter_cert_show(struct sdsi_dev *s)
 		return ret;
 	}
 
-	cert_ptr = fopen("meter_certificate", "r");
+	cert_fname = show_current ? "meter_current" : "meter_certificate";
+	cert_ptr = fopen(cert_fname, "r");
+
 	if (!cert_ptr) {
-		perror("Could not open 'meter_certificate' file");
+		fprintf(stderr, "Could not open '%s' file: %s", cert_fname, strerror(errno));
 		return -1;
 	}
 
 	size = fread(buf, 1, sizeof(buf), cert_ptr);
 	if (!size) {
-		fprintf(stderr, "Could not read 'meter_certificate' file\n");
+		fprintf(stderr, "Could not read '%s' file\n", cert_fname);
 		fclose(cert_ptr);
 		return -1;
 	}
@@ -383,7 +388,7 @@ static int sdsi_meter_cert_show(struct sdsi_dev *s)
 	printf("\n");
 
 	get_feature(mc->signature, name);
-	printf("Signature:                    %.4s\n", name);
+	printf("Signature:                    %s\n", name);
 
 	printf("Version:                      %d\n", mc->version);
 	printf("Count Unit:                   %dms\n", mc->counter_unit);
@@ -391,7 +396,7 @@ static int sdsi_meter_cert_show(struct sdsi_dev *s)
 	printf("Feature Bundle Length:        %d\n", mc->bundle_length);
 
 	get_feature(mc->mmrc_encoding, name);
-	printf("MMRC encoding:                %.4s\n", name);
+	printf("MMRC encoding:                %s\n", name);
 
 	printf("MMRC counter:                 %d\n", mc->mmrc_counter);
 	if (mc->bundle_length % METER_BUNDLE_SIZE) {
@@ -409,9 +414,8 @@ static int sdsi_meter_cert_show(struct sdsi_dev *s)
 
 	printf("Number of Feature Counters:   %ld\n", BUNDLE_COUNT(mc->bundle_length));
 	while (count < BUNDLE_COUNT(mc->bundle_length)) {
-		char feature[5];
+		char feature[FEAT_LEN];
 
-		feature[4] = '\0';
 		get_feature(bec[count].encoding, feature);
 		printf("    %s:          %d\n", feature, bec[count].counter);
 		++count;
@@ -494,7 +498,7 @@ static int sdsi_state_cert_show(struct sdsi_dev *s)
 			sizeof(*lki) +			// size of the license key info
 			offset;				// offset to this blob content
 		struct bundle_encoding *bundle = (void *)(lbc) + sizeof(*lbc);
-		char feature[5];
+		char feature[FEAT_LEN];
 		uint32_t i;
 
 		printf("     Blob %d:\n", count - 1);
@@ -506,8 +510,6 @@ static int sdsi_state_cert_show(struct sdsi_dev *s)
 		printf("        Previous PPIN:              0x%lx\n", lbc->previous_ppin);
 		printf("        Blob revision ID:           %u\n", lbc->rev_id);
 		printf("        Number of Features:         %u\n", lbc->num_bundles);
-
-		feature[4] = '\0';
 
 		for (i = 0; i < min(lbc->num_bundles, STATE_MAX_NUM_IN_BUNDLE); i++) {
 			get_feature(bundle[i].encoding, feature);
@@ -739,7 +741,7 @@ static void sdsi_free_dev(struct sdsi_dev *s)
 
 static void usage(char *prog)
 {
-	printf("Usage: %s [-l] [-d DEVNO [-i] [-s] [-m] [-a FILE] [-c FILE]]\n", prog);
+	printf("Usage: %s [-l] [-d DEVNO [-i] [-s] [-m | -C] [-a FILE] [-c FILE]\n", prog);
 }
 
 static void show_help(void)
@@ -748,8 +750,9 @@ static void show_help(void)
 	printf("  %-18s\t%s\n", "-l, --list",           "list available On Demand devices");
 	printf("  %-18s\t%s\n", "-d, --devno DEVNO",    "On Demand device number");
 	printf("  %-18s\t%s\n", "-i, --info",           "show socket information");
-	printf("  %-18s\t%s\n", "-s, --state",          "show state certificate");
-	printf("  %-18s\t%s\n", "-m, --meter",          "show meter certificate");
+	printf("  %-18s\t%s\n", "-s, --state",          "show state certificate data");
+	printf("  %-18s\t%s\n", "-m, --meter",          "show meter certificate data");
+	printf("  %-18s\t%s\n", "-C, --meter_current",  "show live unattested meter data");
 	printf("  %-18s\t%s\n", "-a, --akc FILE",       "provision socket with AKC FILE");
 	printf("  %-18s\t%s\n", "-c, --cap FILE>",      "provision socket with CAP FILE");
 }
@@ -765,21 +768,22 @@ int main(int argc, char *argv[])
 	int option_index = 0;
 
 	static struct option long_options[] = {
-		{"akc",		required_argument,	0, 'a'},
-		{"cap",		required_argument,	0, 'c'},
-		{"devno",	required_argument,	0, 'd'},
-		{"help",	no_argument,		0, 'h'},
-		{"info",	no_argument,		0, 'i'},
-		{"list",	no_argument,		0, 'l'},
-		{"meter",	no_argument,		0, 'm'},
-		{"state",	no_argument,		0, 's'},
-		{0,		0,			0, 0 }
+		{"akc",			required_argument,	0, 'a'},
+		{"cap",			required_argument,	0, 'c'},
+		{"devno",		required_argument,	0, 'd'},
+		{"help",		no_argument,		0, 'h'},
+		{"info",		no_argument,		0, 'i'},
+		{"list",		no_argument,		0, 'l'},
+		{"meter",		no_argument,		0, 'm'},
+		{"meter_current",	no_argument,		0, 'C'},
+		{"state",		no_argument,		0, 's'},
+		{0,			0,			0, 0 }
 	};
 
 
 	progname = argv[0];
 
-	while ((opt = getopt_long_only(argc, argv, "+a:c:d:hilms", long_options,
+	while ((opt = getopt_long_only(argc, argv, "+a:c:d:hilmCs", long_options,
 			&option_index)) != -1) {
 		switch (opt) {
 		case 'd':
@@ -794,6 +798,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'm':
 			command = CMD_METER_CERT;
+			break;
+		case 'C':
+			command = CMD_METER_CURRENT_CERT;
 			break;
 		case 's':
 			command = CMD_STATE_CERT;
@@ -833,7 +840,10 @@ int main(int argc, char *argv[])
 			ret = sdsi_read_reg(s);
 			break;
 		case CMD_METER_CERT:
-			ret = sdsi_meter_cert_show(s);
+			ret = sdsi_meter_cert_show(s, false);
+			break;
+		case CMD_METER_CURRENT_CERT:
+			ret = sdsi_meter_cert_show(s, true);
 			break;
 		case CMD_STATE_CERT:
 			ret = sdsi_state_cert_show(s);

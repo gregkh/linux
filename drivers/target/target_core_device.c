@@ -21,7 +21,7 @@
 #include <linux/in.h>
 #include <linux/export.h>
 #include <linux/t10-pi.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <net/sock.h>
 #include <net/tcp.h>
 #include <scsi/scsi_common.h>
@@ -37,7 +37,6 @@
 #include "target_core_ua.h"
 
 static DEFINE_MUTEX(device_mutex);
-static LIST_HEAD(device_list);
 static DEFINE_IDR(devices_idr);
 
 static struct se_hba *lun0_hba;
@@ -774,6 +773,7 @@ struct se_device *target_alloc_device(struct se_hba *hba, const char *name)
 	dev->dev_attrib.unmap_zeroes_data =
 				DA_UNMAP_ZEROES_DATA_DEFAULT;
 	dev->dev_attrib.max_write_same_len = DA_MAX_WRITE_SAME_LEN;
+	dev->dev_attrib.submit_type = TARGET_FABRIC_DEFAULT_SUBMIT;
 
 	xcopy_lun = &dev->xcopy_lun;
 	rcu_assign_pointer(xcopy_lun->lun_se_dev, dev);

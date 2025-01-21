@@ -644,10 +644,9 @@ static int param_set_dyndbg_classnames(const char *instr, const struct kernel_pa
 	int cls_id, totct = 0;
 	bool wanted;
 
-	cl_str = tmp = kstrdup(instr, GFP_KERNEL);
-	p = strchr(cl_str, '\n');
-	if (p)
-		*p = '\0';
+	cl_str = tmp = kstrdup_and_replace(instr, '\n', '\0', GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
 
 	/* start with previously set state-bits, then modify */
 	curr_bits = old_bits = *dcp->bits;
@@ -1148,7 +1147,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		   iter->table->mod_name, dp->function,
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
-	seq_puts(m, "\"");
+	seq_putc(m, '"');
 
 	if (dp->class_id != _DPRINTK_CLASS_DFLT) {
 		class = ddebug_class_name(iter, dp);
@@ -1157,7 +1156,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		else
 			seq_printf(m, " class unknown, _id:%d", dp->class_id);
 	}
-	seq_puts(m, "\n");
+	seq_putc(m, '\n');
 
 	return 0;
 }

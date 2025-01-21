@@ -695,7 +695,7 @@ static nokprobe_inline int do_vec_load(int rn, unsigned long ea,
 	if (err)
 		return err;
 	if (unlikely(cross_endian))
-		do_byte_reverse(&u.b[ea & 0xf], size);
+		do_byte_reverse(&u.b[ea & 0xf], min_t(size_t, size, sizeof(u)));
 	preempt_disable();
 	if (regs->msr & MSR_VEC)
 		put_vr(rn, &u.v);
@@ -729,7 +729,7 @@ static nokprobe_inline int do_vec_store(int rn, unsigned long ea,
 		u.v = current->thread.vr_state.vr[rn];
 	preempt_enable();
 	if (unlikely(cross_endian))
-		do_byte_reverse(&u.b[ea & 0xf], size);
+		do_byte_reverse(&u.b[ea & 0xf], min_t(size_t, size, sizeof(u)));
 	return copy_mem_out(&u.b[ea & 0xf], ea, size, regs);
 }
 #endif /* CONFIG_ALTIVEC */
@@ -1425,7 +1425,7 @@ int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
 			return 1;
 
 		case 18:	/* rfid, scary */
-			if (regs->msr & MSR_PR)
+			if (user_mode(regs))
 				goto priv;
 			op->type = RFI;
 			return 0;
@@ -1738,13 +1738,13 @@ int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
 			return 1;
 #endif
 		case 83:	/* mfmsr */
-			if (regs->msr & MSR_PR)
+			if (user_mode(regs))
 				goto priv;
 			op->type = MFMSR;
 			op->reg = rd;
 			return 0;
 		case 146:	/* mtmsr */
-			if (regs->msr & MSR_PR)
+			if (user_mode(regs))
 				goto priv;
 			op->type = MTMSR;
 			op->reg = rd;
@@ -1752,7 +1752,7 @@ int analyse_instr(struct instruction_op *op, const struct pt_regs *regs,
 			return 0;
 #ifdef CONFIG_PPC64
 		case 178:	/* mtmsrd */
-			if (regs->msr & MSR_PR)
+			if (user_mode(regs))
 				goto priv;
 			op->type = MTMSR;
 			op->reg = rd;
@@ -3433,14 +3433,14 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 		 * stored in the thread_struct.  If the instruction is in
 		 * the kernel, we must not touch the state in the thread_struct.
 		 */
-		if (!(regs->msr & MSR_PR) && !(regs->msr & MSR_FP))
+		if (!user_mode(regs) && !(regs->msr & MSR_FP))
 			return 0;
 		err = do_fp_load(op, ea, regs, cross_endian);
 		break;
 #endif
 #ifdef CONFIG_ALTIVEC
 	case LOAD_VMX:
-		if (!(regs->msr & MSR_PR) && !(regs->msr & MSR_VEC))
+		if (!user_mode(regs) && !(regs->msr & MSR_VEC))
 			return 0;
 		err = do_vec_load(op->reg, ea, size, regs, cross_endian);
 		break;
@@ -3455,7 +3455,7 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 		 */
 		if (op->reg >= 32 && (op->vsx_flags & VSX_CHECK_VEC))
 			msrbit = MSR_VEC;
-		if (!(regs->msr & MSR_PR) && !(regs->msr & msrbit))
+		if (!user_mode(regs) && !(regs->msr & msrbit))
 			return 0;
 		err = do_vsx_load(op, ea, regs, cross_endian);
 		break;
@@ -3491,8 +3491,7 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 		}
 #endif
 		if ((op->type & UPDATE) && size == sizeof(long) &&
-		    op->reg == 1 && op->update_reg == 1 &&
-		    !(regs->msr & MSR_PR) &&
+		    op->reg == 1 && op->update_reg == 1 && !user_mode(regs) &&
 		    ea >= regs->gpr[1] - STACK_INT_FRAME_SIZE) {
 			err = handle_stack_update(ea, regs);
 			break;
@@ -3504,14 +3503,14 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 
 #ifdef CONFIG_PPC_FPU
 	case STORE_FP:
-		if (!(regs->msr & MSR_PR) && !(regs->msr & MSR_FP))
+		if (!user_mode(regs) && !(regs->msr & MSR_FP))
 			return 0;
 		err = do_fp_store(op, ea, regs, cross_endian);
 		break;
 #endif
 #ifdef CONFIG_ALTIVEC
 	case STORE_VMX:
-		if (!(regs->msr & MSR_PR) && !(regs->msr & MSR_VEC))
+		if (!user_mode(regs) && !(regs->msr & MSR_VEC))
 			return 0;
 		err = do_vec_store(op->reg, ea, size, regs, cross_endian);
 		break;
@@ -3526,7 +3525,7 @@ int emulate_loadstore(struct pt_regs *regs, struct instruction_op *op)
 		 */
 		if (op->reg >= 32 && (op->vsx_flags & VSX_CHECK_VEC))
 			msrbit = MSR_VEC;
-		if (!(regs->msr & MSR_PR) && !(regs->msr & msrbit))
+		if (!user_mode(regs) && !(regs->msr & msrbit))
 			return 0;
 		err = do_vsx_store(op, ea, regs, cross_endian);
 		break;

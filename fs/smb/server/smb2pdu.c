@@ -30,7 +30,7 @@
 
 #include "server.h"
 #include "smb_common.h"
-#include "smbstatus.h"
+#include "../common/smb2status.h"
 #include "ksmbd_work.h"
 #include "mgmt/user_config.h"
 #include "mgmt/share_config.h"
@@ -521,7 +521,7 @@ int init_smb2_rsp_hdr(struct ksmbd_work *work)
  * smb2_allocate_rsp_buf() - allocate smb2 response buffer
  * @work:	smb work containing smb request buffer
  *
- * Return:      0 on success, otherwise -ENOMEM
+ * Return:      0 on success, otherwise error
  */
 int smb2_allocate_rsp_buf(struct ksmbd_work *work)
 {
@@ -1340,8 +1340,7 @@ static int ntlm_negotiate(struct ksmbd_work *work,
 		return rc;
 
 	sz = le16_to_cpu(rsp->SecurityBufferOffset);
-	chgblob =
-		(struct challenge_message *)((char *)&rsp->hdr.ProtocolId + sz);
+	chgblob = (struct challenge_message *)rsp->Buffer;
 	memset(chgblob, 0, sizeof(struct challenge_message));
 
 	if (!work->conn->use_spnego) {
@@ -1374,8 +1373,7 @@ static int ntlm_negotiate(struct ksmbd_work *work,
 		goto out;
 	}
 
-	sz = le16_to_cpu(rsp->SecurityBufferOffset);
-	memcpy((char *)&rsp->hdr.ProtocolId + sz, spnego_blob, spnego_blob_len);
+	memcpy(rsp->Buffer, spnego_blob, spnego_blob_len);
 	rsp->SecurityBufferLength = cpu_to_le16(spnego_blob_len);
 
 out:
@@ -1457,8 +1455,7 @@ static int ntlm_authenticate(struct ksmbd_work *work,
 		if (rc)
 			return -ENOMEM;
 
-		sz = le16_to_cpu(rsp->SecurityBufferOffset);
-		memcpy((char *)&rsp->hdr.ProtocolId + sz, spnego_blob, spnego_blob_len);
+		memcpy(rsp->Buffer, spnego_blob, spnego_blob_len);
 		rsp->SecurityBufferLength = cpu_to_le16(spnego_blob_len);
 		kfree(spnego_blob);
 	}
@@ -2067,18 +2064,20 @@ out_err1:
  * @access:		file access flags
  * @disposition:	file disposition flags
  * @may_flags:		set with MAY_ flags
- * @is_dir:		is creating open flags for directory
+ * @coptions:		file creation options
+ * @mode:		file mode
  *
  * Return:      file open flags
  */
 static int smb2_create_open_flags(bool file_present, __le32 access,
 				  __le32 disposition,
 				  int *may_flags,
-				  bool is_dir)
+				  __le32 coptions,
+				  umode_t mode)
 {
 	int oflags = O_NONBLOCK | O_LARGEFILE;
 
-	if (is_dir) {
+	if (coptions & FILE_DIRECTORY_FILE_LE || S_ISDIR(mode)) {
 		access &= ~FILE_WRITE_DESIRE_ACCESS_LE;
 		ksmbd_debug(SMB, "Discard write access to a directory\n");
 	}
@@ -2095,7 +2094,7 @@ static int smb2_create_open_flags(bool file_present, __le32 access,
 		*may_flags = MAY_OPEN | MAY_READ;
 	}
 
-	if (access == FILE_READ_ATTRIBUTES_LE)
+	if (access == FILE_READ_ATTRIBUTES_LE || S_ISBLK(mode) || S_ISCHR(mode))
 		oflags |= O_PATH;
 
 	if (file_present) {
@@ -3106,7 +3105,6 @@ int smb2_open(struct ksmbd_work *work)
 			goto err_out;
 		}
 
-		file_present = true;
 		idmap = mnt_idmap(path.mnt);
 	} else {
 		if (rc != -ENOENT)
@@ -3188,8 +3186,8 @@ int smb2_open(struct ksmbd_work *work)
 	open_flags = smb2_create_open_flags(file_present, daccess,
 					    req->CreateDisposition,
 					    &may_flags,
-		req->CreateOptions & FILE_DIRECTORY_FILE_LE ||
-		(file_present && S_ISDIR(d_inode(path.dentry)->i_mode)));
+					    req->CreateOptions,
+					    file_present ? d_inode(path.dentry)->i_mode : 0);
 
 	if (!test_tree_conn_flag(tcon, KSMBD_TREE_CONN_FLAG_WRITABLE)) {
 		if (open_flags & (O_CREAT | O_TRUNC)) {
@@ -3538,8 +3536,9 @@ int smb2_open(struct ksmbd_work *work)
 			memcpy(fp->create_guid, dh_info.CreateGuid,
 					SMB2_CREATE_GUID_SIZE);
 			if (dh_info.timeout)
-				fp->durable_timeout = min(dh_info.timeout,
-						300000);
+				fp->durable_timeout =
+					min_t(unsigned int, dh_info.timeout,
+					      DURABLE_HANDLE_MAX_TIMEOUT);
 			else
 				fp->durable_timeout = 60;
 		}
@@ -4623,7 +4622,7 @@ static int smb2_get_ea(struct ksmbd_work *work, struct ksmbd_file *fp,
 	path = &fp->filp->f_path;
 	/* single EA entry is requested with given user.* name */
 	if (req->InputBufferLength) {
-		if (le32_to_cpu(req->InputBufferLength) <
+		if (le32_to_cpu(req->InputBufferLength) <=
 		    sizeof(struct smb2_ea_info_req))
 			return -EINVAL;
 
@@ -4923,7 +4922,7 @@ static void get_file_alternate_info(struct ksmbd_work *work,
 	spin_unlock(&dentry->d_lock);
 	file_info->FileNameLength = cpu_to_le32(conv_len);
 	rsp->OutputBufferLength =
-		cpu_to_le32(sizeof(struct smb2_file_alt_name_info) + conv_len);
+		cpu_to_le32(struct_size(file_info, FileName, conv_len));
 }
 
 static int get_file_stream_info(struct ksmbd_work *work,
@@ -5421,7 +5420,7 @@ static int smb2_get_info_filesystem(struct ksmbd_work *work,
 					"NTFS", PATH_MAX, conn->local_nls, 0);
 		len = len * 2;
 		info->FileSystemNameLen = cpu_to_le32(len);
-		sz = sizeof(struct filesystem_attribute_info) - 2 + len;
+		sz = sizeof(struct filesystem_attribute_info) + len;
 		rsp->OutputBufferLength = cpu_to_le32(sz);
 		break;
 	}
@@ -5447,7 +5446,7 @@ static int smb2_get_info_filesystem(struct ksmbd_work *work,
 		len = len * 2;
 		info->VolumeLabelSize = cpu_to_le32(len);
 		info->Reserved = 0;
-		sz = sizeof(struct filesystem_vol_info) - 2 + len;
+		sz = sizeof(struct filesystem_vol_info) + len;
 		rsp->OutputBufferLength = cpu_to_le32(sz);
 		break;
 	}
@@ -7144,10 +7143,10 @@ struct file_lock *smb_flock_init(struct file *f)
 
 	locks_init_lock(fl);
 
-	fl->fl_owner = f;
-	fl->fl_pid = current->tgid;
-	fl->fl_file = f;
-	fl->fl_flags = FL_POSIX;
+	fl->c.flc_owner = f;
+	fl->c.flc_pid = current->tgid;
+	fl->c.flc_file = f;
+	fl->c.flc_flags = FL_POSIX;
 	fl->fl_ops = NULL;
 	fl->fl_lmops = NULL;
 
@@ -7164,30 +7163,30 @@ static int smb2_set_flock_flags(struct file_lock *flock, int flags)
 	case SMB2_LOCKFLAG_SHARED:
 		ksmbd_debug(SMB, "received shared request\n");
 		cmd = F_SETLKW;
-		flock->fl_type = F_RDLCK;
-		flock->fl_flags |= FL_SLEEP;
+		flock->c.flc_type = F_RDLCK;
+		flock->c.flc_flags |= FL_SLEEP;
 		break;
 	case SMB2_LOCKFLAG_EXCLUSIVE:
 		ksmbd_debug(SMB, "received exclusive request\n");
 		cmd = F_SETLKW;
-		flock->fl_type = F_WRLCK;
-		flock->fl_flags |= FL_SLEEP;
+		flock->c.flc_type = F_WRLCK;
+		flock->c.flc_flags |= FL_SLEEP;
 		break;
 	case SMB2_LOCKFLAG_SHARED | SMB2_LOCKFLAG_FAIL_IMMEDIATELY:
 		ksmbd_debug(SMB,
 			    "received shared & fail immediately request\n");
 		cmd = F_SETLK;
-		flock->fl_type = F_RDLCK;
+		flock->c.flc_type = F_RDLCK;
 		break;
 	case SMB2_LOCKFLAG_EXCLUSIVE | SMB2_LOCKFLAG_FAIL_IMMEDIATELY:
 		ksmbd_debug(SMB,
 			    "received exclusive & fail immediately request\n");
 		cmd = F_SETLK;
-		flock->fl_type = F_WRLCK;
+		flock->c.flc_type = F_WRLCK;
 		break;
 	case SMB2_LOCKFLAG_UNLOCK:
 		ksmbd_debug(SMB, "received unlock request\n");
-		flock->fl_type = F_UNLCK;
+		flock->c.flc_type = F_UNLCK;
 		cmd = F_SETLK;
 		break;
 	}
@@ -7225,13 +7224,13 @@ static void smb2_remove_blocked_lock(void **argv)
 	struct file_lock *flock = (struct file_lock *)argv[0];
 
 	ksmbd_vfs_posix_lock_unblock(flock);
-	wake_up(&flock->fl_wait);
+	locks_wake_up(flock);
 }
 
 static inline bool lock_defer_pending(struct file_lock *fl)
 {
 	/* check pending lock waiters */
-	return waitqueue_active(&fl->fl_wait);
+	return waitqueue_active(&fl->c.flc_wait);
 }
 
 /**
@@ -7322,8 +7321,8 @@ int smb2_lock(struct ksmbd_work *work)
 		list_for_each_entry(cmp_lock, &lock_list, llist) {
 			if (cmp_lock->fl->fl_start <= flock->fl_start &&
 			    cmp_lock->fl->fl_end >= flock->fl_end) {
-				if (cmp_lock->fl->fl_type != F_UNLCK &&
-				    flock->fl_type != F_UNLCK) {
+				if (cmp_lock->fl->c.flc_type != F_UNLCK &&
+				    flock->c.flc_type != F_UNLCK) {
 					pr_err("conflict two locks in one request\n");
 					err = -EINVAL;
 					locks_free_lock(flock);
@@ -7371,12 +7370,12 @@ int smb2_lock(struct ksmbd_work *work)
 		list_for_each_entry(conn, &conn_list, conns_list) {
 			spin_lock(&conn->llist_lock);
 			list_for_each_entry_safe(cmp_lock, tmp2, &conn->lock_list, clist) {
-				if (file_inode(cmp_lock->fl->fl_file) !=
-				    file_inode(smb_lock->fl->fl_file))
+				if (file_inode(cmp_lock->fl->c.flc_file) !=
+				    file_inode(smb_lock->fl->c.flc_file))
 					continue;
 
-				if (smb_lock->fl->fl_type == F_UNLCK) {
-					if (cmp_lock->fl->fl_file == smb_lock->fl->fl_file &&
+				if (lock_is_unlock(smb_lock->fl)) {
+					if (cmp_lock->fl->c.flc_file == smb_lock->fl->c.flc_file &&
 					    cmp_lock->start == smb_lock->start &&
 					    cmp_lock->end == smb_lock->end &&
 					    !lock_defer_pending(cmp_lock->fl)) {
@@ -7393,7 +7392,7 @@ int smb2_lock(struct ksmbd_work *work)
 					continue;
 				}
 
-				if (cmp_lock->fl->fl_file == smb_lock->fl->fl_file) {
+				if (cmp_lock->fl->c.flc_file == smb_lock->fl->c.flc_file) {
 					if (smb_lock->flags & SMB2_LOCKFLAG_SHARED)
 						continue;
 				} else {
@@ -7435,7 +7434,7 @@ int smb2_lock(struct ksmbd_work *work)
 		}
 		up_read(&conn_list_lock);
 out_check_cl:
-		if (smb_lock->fl->fl_type == F_UNLCK && nolock) {
+		if (lock_is_unlock(smb_lock->fl) && nolock) {
 			pr_err("Try to unlock nolocked range\n");
 			rsp->hdr.Status = STATUS_RANGE_NOT_LOCKED;
 			goto out;
@@ -7559,7 +7558,7 @@ out:
 		struct file_lock *rlock = NULL;
 
 		rlock = smb_flock_init(filp);
-		rlock->fl_type = F_UNLCK;
+		rlock->c.flc_type = F_UNLCK;
 		rlock->fl_start = smb_lock->start;
 		rlock->fl_end = smb_lock->end;
 
@@ -7624,7 +7623,6 @@ static int fsctl_copychunk(struct ksmbd_work *work,
 	ci_rsp->TotalBytesWritten =
 		cpu_to_le32(ksmbd_server_side_copy_max_total_size());
 
-	chunks = (struct srv_copychunk *)&ci_req->Chunks[0];
 	chunk_count = le32_to_cpu(ci_req->ChunkCount);
 	if (chunk_count == 0)
 		goto out;
@@ -7632,12 +7630,12 @@ static int fsctl_copychunk(struct ksmbd_work *work,
 
 	/* verify the SRV_COPYCHUNK_COPY packet */
 	if (chunk_count > ksmbd_server_side_copy_max_chunk_count() ||
-	    input_count < offsetof(struct copychunk_ioctl_req, Chunks) +
-	     chunk_count * sizeof(struct srv_copychunk)) {
+	    input_count < struct_size(ci_req, Chunks, chunk_count)) {
 		rsp->hdr.Status = STATUS_INVALID_PARAMETER;
 		return -EINVAL;
 	}
 
+	chunks = &ci_req->Chunks[0];
 	for (i = 0; i < chunk_count; i++) {
 		if (le32_to_cpu(chunks[i].Length) == 0 ||
 		    le32_to_cpu(chunks[i].Length) > ksmbd_server_side_copy_max_chunk_size())
@@ -8149,7 +8147,7 @@ int smb2_ioctl(struct ksmbd_work *work)
 			goto out;
 		}
 
-		if (in_buf_len < sizeof(struct copychunk_ioctl_req)) {
+		if (in_buf_len <= sizeof(struct copychunk_ioctl_req)) {
 			ret = -EINVAL;
 			goto out;
 		}

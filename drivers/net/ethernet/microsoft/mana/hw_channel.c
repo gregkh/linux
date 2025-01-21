@@ -3,6 +3,7 @@
 
 #include <net/mana/gdma.h>
 #include <net/mana/hw_channel.h>
+#include <linux/vmalloc.h>
 
 static int mana_hwc_get_msg_index(struct hw_channel_context *hwc, u16 *msg_id)
 {
@@ -306,6 +307,7 @@ static int mana_hwc_create_gdma_eq(struct hw_channel_context *hwc,
 	spec.eq.context = ctx;
 	spec.eq.callback = cb;
 	spec.eq.log2_throttle_limit = DEFAULT_LOG2_THROTTLING_FOR_ERROR_EQ;
+	spec.eq.msix_index = 0;
 
 	return mana_gd_create_hwc_queue(hwc->gdma_dev, &spec, queue);
 }

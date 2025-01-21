@@ -435,7 +435,7 @@ static int grgpio_probe(struct platform_device *ofdev)
 	return 0;
 }
 
-static int grgpio_remove(struct platform_device *ofdev)
+static void grgpio_remove(struct platform_device *ofdev)
 {
 	struct grgpio_priv *priv = platform_get_drvdata(ofdev);
 
@@ -443,8 +443,6 @@ static int grgpio_remove(struct platform_device *ofdev)
 
 	if (priv->domain)
 		irq_domain_remove(priv->domain);
-
-	return 0;
 }
 
 static const struct of_device_id grgpio_match[] = {
@@ -461,7 +459,7 @@ static struct platform_driver grgpio_driver = {
 		.of_match_table = grgpio_match,
 	},
 	.probe = grgpio_probe,
-	.remove = grgpio_remove,
+	.remove_new = grgpio_remove,
 };
 module_platform_driver(grgpio_driver);
 

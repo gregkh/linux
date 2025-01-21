@@ -35,6 +35,7 @@
 
 #include <linux/sync_file.h>
 #include <linux/hashtable.h>
+#include <linux/vmalloc.h>
 
 /*
  * Helper macro to get dx_ctx_node if available otherwise print an error
@@ -621,10 +622,10 @@ static int vmw_resources_reserve(struct vmw_sw_context *sw_context)
  * @sw_context: Pointer to the software context.
  * @res_type: Resource type.
  * @dirty: Whether to change dirty status.
- * @converter: User-space visisble type specific information.
+ * @converter: User-space visible type specific information.
  * @id_loc: Pointer to the location in the command buffer currently being parsed
  * from where the user-space resource id handle is located.
- * @p_res: Pointer to pointer to resource validalidation node. Populated on
+ * @p_res: Pointer to pointer to resource validation node. Populated on
  * exit.
  */
 static int
@@ -3611,6 +3612,8 @@ static const struct vmw_cmd_entry vmw_cmd_entries[SVGA_3D_CMD_MAX] = {
 		    &vmw_cmd_dx_bind_streamoutput, true, false, true),
 	VMW_CMD_DEF(SVGA_3D_CMD_DX_DEFINE_RASTERIZER_STATE_V2,
 		    &vmw_cmd_dx_so_define, true, false, true),
+	VMW_CMD_DEF(SVGA_3D_CMD_DEFINE_GB_SURFACE_V4,
+		    &vmw_cmd_invalid, false, false, true),
 };
 
 bool vmw_cmd_describe(const void *buf, u32 *size, char const **cmd)

@@ -388,7 +388,7 @@ static struct gs_tx_context *gs_get_tx_context(struct gs_can *dev,
 static int gs_cmd_reset(struct gs_can *dev)
 {
 	struct gs_device_mode dm = {
-		.mode = GS_CAN_MODE_RESET,
+		.mode = cpu_to_le32(GS_CAN_MODE_RESET),
 	};
 
 	return usb_control_msg_send(dev->udev, 0, GS_USB_BREQ_MODE,
@@ -1147,7 +1147,7 @@ static int gs_usb_set_phys_id(struct net_device *netdev,
 }
 
 static int gs_usb_get_ts_info(struct net_device *netdev,
-			      struct ethtool_ts_info *info)
+			      struct kernel_ethtool_ts_info *info)
 {
 	struct gs_can *dev = netdev_priv(netdev);
 

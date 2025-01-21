@@ -30,7 +30,7 @@ struct aa_task_ctx {
 };
 
 int aa_replace_current_label(struct aa_label *label);
-int aa_set_current_onexec(struct aa_label *label, bool stack);
+void aa_set_current_onexec(struct aa_label *label, bool stack);
 int aa_set_current_hat(struct aa_label *label, u64 token);
 int aa_restore_previous_label(u64 cookie);
 struct aa_label *aa_get_task_label(struct task_struct *task);
@@ -95,5 +95,11 @@ int aa_may_ptrace(const struct cred *tracer_cred, struct aa_label *tracer,
 		  const struct cred *tracee_cred, struct aa_label *tracee,
 		  u32 request);
 
+
+
+#define AA_USERNS_CREATE	8
+
+int aa_profile_ns_perm(struct aa_profile *profile,
+		       struct apparmor_audit_data *ad, u32 request);
 
 #endif /* __AA_TASK_H */

@@ -372,6 +372,7 @@ static int tb_switch_nvm_add(struct tb_switch *sw)
 		ret = tb_nvm_add_active(nvm, nvm_read);
 		if (ret)
 			goto err_nvm;
+		tb_sw_dbg(sw, "NVM version %x.%x\n", nvm->major, nvm->minor);
 	}
 
 	if (!sw->no_nvm_upgrade) {
@@ -777,7 +778,7 @@ static int tb_port_alloc_hopid(struct tb_port *port, bool in, int min_hopid,
 	if (max_hopid < 0 || max_hopid > port_max_hopid)
 		max_hopid = port_max_hopid;
 
-	return ida_simple_get(ida, min_hopid, max_hopid + 1, GFP_KERNEL);
+	return ida_alloc_range(ida, min_hopid, max_hopid, GFP_KERNEL);
 }
 
 /**
@@ -815,7 +816,7 @@ int tb_port_alloc_out_hopid(struct tb_port *port, int min_hopid, int max_hopid)
  */
 void tb_port_release_in_hopid(struct tb_port *port, int hopid)
 {
-	ida_simple_remove(&port->in_hopids, hopid);
+	ida_free(&port->in_hopids, hopid);
 }
 
 /**
@@ -825,7 +826,7 @@ void tb_port_release_in_hopid(struct tb_port *port, int hopid)
  */
 void tb_port_release_out_hopid(struct tb_port *port, int hopid)
 {
-	ida_simple_remove(&port->out_hopids, hopid);
+	ida_free(&port->out_hopids, hopid);
 }
 
 static inline bool tb_switch_is_reachable(const struct tb_switch *parent,
@@ -944,22 +945,6 @@ int tb_port_get_link_generation(struct tb_port *port)
 		return 3;
 	default:
 		return 2;
-	}
-}
-
-static const char *width_name(enum tb_link_width width)
-{
-	switch (width) {
-	case TB_LINK_WIDTH_SINGLE:
-		return "symmetric, single lane";
-	case TB_LINK_WIDTH_DUAL:
-		return "symmetric, dual lanes";
-	case TB_LINK_WIDTH_ASYM_TX:
-		return "asymmetric, 3 transmitters, 1 receiver";
-	case TB_LINK_WIDTH_ASYM_RX:
-		return "asymmetric, 3 receivers, 1 transmitter";
-	default:
-		return "unknown";
 	}
 }
 
@@ -1142,7 +1127,7 @@ int tb_port_lane_bonding_enable(struct tb_port *port)
 		ret = tb_port_set_link_width(port->dual_link_port,
 					     TB_LINK_WIDTH_DUAL);
 		if (ret)
-			goto err_lane0;
+			goto err_lane1;
 	}
 
 	/*
@@ -1403,7 +1388,7 @@ int tb_pci_port_enable(struct tb_port *port, bool enable)
  * tb_dp_port_hpd_is_active() - Is HPD already active
  * @port: DP out port to check
  *
- * Checks if the DP OUT adapter port has HDP bit already set.
+ * Checks if the DP OUT adapter port has HPD bit already set.
  */
 int tb_dp_port_hpd_is_active(struct tb_port *port)
 {
@@ -1415,14 +1400,14 @@ int tb_dp_port_hpd_is_active(struct tb_port *port)
 	if (ret)
 		return ret;
 
-	return !!(data & ADP_DP_CS_2_HDP);
+	return !!(data & ADP_DP_CS_2_HPD);
 }
 
 /**
  * tb_dp_port_hpd_clear() - Clear HPD from DP IN port
  * @port: Port to clear HPD
  *
- * If the DP IN port has HDP set, this function can be used to clear it.
+ * If the DP IN port has HPD set, this function can be used to clear it.
  */
 int tb_dp_port_hpd_clear(struct tb_port *port)
 {
@@ -1434,7 +1419,7 @@ int tb_dp_port_hpd_clear(struct tb_port *port)
 	if (ret)
 		return ret;
 
-	data |= ADP_DP_CS_3_HDPC;
+	data |= ADP_DP_CS_3_HPDC;
 	return tb_port_write(port, &data, TB_CFG_PORT,
 			     port->cap_adap + ADP_DP_CS_3, 1);
 }
@@ -2345,7 +2330,7 @@ static const struct dev_pm_ops tb_switch_pm_ops = {
 			   NULL)
 };
 
-struct device_type tb_switch_type = {
+const struct device_type tb_switch_type = {
 	.name = "thunderbolt_device",
 	.release = tb_switch_release,
 	.uevent = tb_switch_uevent,
@@ -2873,7 +2858,7 @@ static void tb_switch_link_init(struct tb_switch *sw)
 		return;
 
 	tb_sw_dbg(sw, "current link speed %u.0 Gb/s\n", sw->link_speed);
-	tb_sw_dbg(sw, "current link width %s\n", width_name(sw->link_width));
+	tb_sw_dbg(sw, "current link width %s\n", tb_width_name(sw->link_width));
 
 	bonded = sw->link_width >= TB_LINK_WIDTH_DUAL;
 
@@ -2893,6 +2878,19 @@ static void tb_switch_link_init(struct tb_switch *sw)
 	if (down->dual_link_port)
 		down->dual_link_port->bonded = bonded;
 	tb_port_update_credits(down);
+
+	if (tb_port_get_link_generation(up) < 4)
+		return;
+
+	/*
+	 * Set the Gen 4 preferred link width. This is what the router
+	 * prefers when the link is brought up. If the router does not
+	 * support asymmetric link configuration, this also will be set
+	 * to TB_LINK_WIDTH_DUAL.
+	 */
+	sw->preferred_link_width = sw->link_width;
+	tb_sw_dbg(sw, "preferred link width %s\n",
+		  tb_width_name(sw->preferred_link_width));
 }
 
 /**
@@ -3133,7 +3131,7 @@ int tb_switch_set_link_width(struct tb_switch *sw, enum tb_link_width width)
 
 	tb_switch_update_link_attributes(sw);
 
-	tb_sw_dbg(sw, "link width set to %s\n", width_name(width));
+	tb_sw_dbg(sw, "link width set to %s\n", tb_width_name(width));
 	return ret;
 }
 

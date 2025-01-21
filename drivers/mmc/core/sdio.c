@@ -66,7 +66,7 @@ static struct attribute *sdio_std_attrs[] = {
 };
 ATTRIBUTE_GROUPS(sdio_std);
 
-static struct device_type sdio_type = {
+static const struct device_type sdio_type = {
 	.groups = sdio_std_groups,
 };
 
@@ -769,7 +769,7 @@ try_again:
 	 * Read CSD, before selecting the card
 	 */
 	if (!oldcard && mmc_card_sd_combo(card)) {
-		err = mmc_sd_get_csd(card);
+		err = mmc_sd_get_csd(card, false);
 		if (err)
 			goto remove;
 

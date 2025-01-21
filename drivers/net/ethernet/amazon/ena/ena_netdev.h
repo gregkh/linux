@@ -130,7 +130,13 @@ struct ena_napi {
 };
 
 struct ena_tx_buffer {
-	struct sk_buff *skb;
+	union {
+		struct sk_buff *skb;
+		/* XDP buffer structure which is used for sending packets in
+		 * the xdp queues
+		 */
+		struct xdp_frame *xdpf;
+	};
 	/* num of ena desc for this specific skb
 	 * (includes data desc and metadata desc)
 	 */
@@ -138,16 +144,14 @@ struct ena_tx_buffer {
 	/* num of buffers used by this skb */
 	u32 num_of_bufs;
 
-	/* XDP buffer structure which is used for sending packets in
-	 * the xdp queues
-	 */
-	struct xdp_frame *xdpf;
+	/* Total size of all buffers in bytes */
+	u32 total_tx_size;
 
 	/* Indicate if bufs[0] map the linear data of the skb. */
 	u8 map_linear_data;
 
 	/* Used for detect missing tx packets to limit the number of prints */
-	u32 print_once;
+	u8 print_once;
 	/* Save the last jiffies to detect missing tx packets
 	 *
 	 * sets to non zero value on ena_start_xmit and set to zero on
@@ -286,6 +290,7 @@ struct ena_stats_dev {
 	u64 admin_q_pause;
 	u64 rx_drops;
 	u64 tx_drops;
+	u64 reset_fail;
 };
 
 enum ena_flags_t {
@@ -368,6 +373,7 @@ struct ena_adapter {
 	struct u64_stats_sync syncp;
 	struct ena_stats_dev dev_stats;
 	struct ena_admin_eni_stats eni_stats;
+	struct ena_admin_ena_srd_info ena_srd_info;
 
 	/* last queue index that was checked for uncompleted tx packets */
 	u32 last_monitored_tx_qid;
@@ -385,7 +391,6 @@ void ena_dump_stats_to_dmesg(struct ena_adapter *adapter);
 
 void ena_dump_stats_to_buf(struct ena_adapter *adapter, u8 *buf);
 
-int ena_update_hw_stats(struct ena_adapter *adapter);
 
 int ena_update_queue_params(struct ena_adapter *adapter,
 			    u32 new_tx_size,

@@ -400,7 +400,7 @@ static ssize_t yurex_read(struct file *file, char __user *buffer, size_t count,
 			  loff_t *ppos)
 {
 	struct usb_yurex *dev;
-	int len = 0;
+	int len;
 	char in_buffer[20];
 	unsigned long flags;
 
@@ -533,4 +533,5 @@ static const struct file_operations yurex_fops = {
 
 module_usb_driver(yurex_driver);
 
+MODULE_DESCRIPTION("USB YUREX driver support");
 MODULE_LICENSE("GPL");

@@ -86,7 +86,7 @@ void nvme_mpath_start_freeze(struct nvme_subsystem *subsys)
 void nvme_failover_req(struct request *req)
 {
 	struct nvme_ns *ns = req->q->queuedata;
-	u16 status = nvme_req(req)->status & 0x7ff;
+	u16 status = nvme_req(req)->status & NVME_SCT_SC_MASK;
 	unsigned long flags;
 	struct bio *bio;
 
@@ -170,7 +170,7 @@ void nvme_kick_requeue_lists(struct nvme_ctrl *ctrl)
 		if (!ns->head->disk)
 			continue;
 		kblockd_schedule_work(&ns->head->requeue_work);
-		if (ctrl->state == NVME_CTRL_LIVE)
+		if (nvme_ctrl_state(ns->ctrl) == NVME_CTRL_LIVE)
 			disk_uevent(ns->head->disk, KOBJ_CHANGE);
 	}
 	srcu_read_unlock(&ctrl->srcu, srcu_idx);
@@ -240,13 +240,14 @@ void nvme_mpath_revalidate_paths(struct nvme_ns *ns)
 
 static bool nvme_path_is_disabled(struct nvme_ns *ns)
 {
+	enum nvme_ctrl_state state = nvme_ctrl_state(ns->ctrl);
+
 	/*
 	 * We don't treat NVME_CTRL_DELETING as a disabled path as I/O should
 	 * still be able to complete assuming that the controller is connected.
 	 * Otherwise it will fail immediately and return to the requeue list.
 	 */
-	if (ns->ctrl->state != NVME_CTRL_LIVE &&
-	    ns->ctrl->state != NVME_CTRL_DELETING)
+	if (state != NVME_CTRL_LIVE && state != NVME_CTRL_DELETING)
 		return true;
 	if (test_bit(NVME_NS_ANA_PENDING, &ns->flags) ||
 	    !test_bit(NVME_NS_READY, &ns->flags))
@@ -392,7 +393,7 @@ static struct nvme_ns *nvme_queue_depth_path(struct nvme_ns_head *head)
 
 static inline bool nvme_path_is_optimized(struct nvme_ns *ns)
 {
-	return ns->ctrl->state == NVME_CTRL_LIVE &&
+	return nvme_ctrl_state(ns->ctrl) == NVME_CTRL_LIVE &&
 		ns->ana_state == NVME_ANA_OPTIMIZED;
 }
 
@@ -432,11 +433,10 @@ static bool nvme_available_path(struct nvme_ns_head *head)
 				 srcu_read_lock_held(&head->srcu)) {
 		if (test_bit(NVME_CTRL_FAILFAST_EXPIRED, &ns->ctrl->flags))
 			continue;
-		switch (ns->ctrl->state) {
+		switch (nvme_ctrl_state(ns->ctrl)) {
 		case NVME_CTRL_LIVE:
 		case NVME_CTRL_RESETTING:
 		case NVME_CTRL_CONNECTING:
-			/* fallthru */
 			return true;
 		default:
 			break;
@@ -496,6 +496,21 @@ static void nvme_ns_head_release(struct gendisk *disk)
 	nvme_put_ns_head(disk->private_data);
 }
 
+static int nvme_ns_head_get_unique_id(struct gendisk *disk, u8 id[16],
+		enum blk_unique_id type)
+{
+	struct nvme_ns_head *head = disk->private_data;
+	struct nvme_ns *ns;
+	int srcu_idx, ret = -EWOULDBLOCK;
+
+	srcu_idx = srcu_read_lock(&head->srcu);
+	ns = nvme_find_path(head);
+	if (ns)
+		ret = nvme_ns_get_unique_id(ns, id, type);
+	srcu_read_unlock(&head->srcu, srcu_idx);
+	return ret;
+}
+
 #ifdef CONFIG_BLK_DEV_ZONED
 static int nvme_ns_head_report_zones(struct gendisk *disk, sector_t sector,
 		unsigned int nr_zones, report_zones_cb cb, void *data)
@@ -523,6 +538,7 @@ const struct block_device_operations nvme_ns_head_ops = {
 	.ioctl		= nvme_ns_head_ioctl,
 	.compat_ioctl	= blkdev_compat_ptr_ioctl,
 	.getgeo		= nvme_getgeo,
+	.get_unique_id	= nvme_ns_head_get_unique_id,
 	.report_zones	= nvme_ns_head_report_zones,
 	.pr_ops		= &nvme_pr_ops,
 };
@@ -603,7 +619,7 @@ static void nvme_requeue_work(struct work_struct *work)
 
 int nvme_mpath_alloc_disk(struct nvme_ctrl *ctrl, struct nvme_ns_head *head)
 {
-	bool vwc = false;
+	struct queue_limits lim;
 
 	mutex_init(&head->lock);
 	bio_list_init(&head->requeue_list);
@@ -620,9 +636,17 @@ int nvme_mpath_alloc_disk(struct nvme_ctrl *ctrl, struct nvme_ns_head *head)
 	    !nvme_is_unique_nsid(ctrl, head) || !multipath)
 		return 0;
 
-	head->disk = blk_alloc_disk(ctrl->numa_node);
-	if (!head->disk)
-		return -ENOMEM;
+	blk_set_stacking_limits(&lim);
+	lim.dma_alignment = 3;
+	lim.features |= BLK_FEAT_IO_STAT | BLK_FEAT_NOWAIT | BLK_FEAT_POLL;
+	if (head->ids.csi == NVME_CSI_ZNS)
+		lim.features |= BLK_FEAT_ZONED;
+	else
+		lim.max_zone_append_sectors = 0;
+
+	head->disk = blk_alloc_disk(&lim, ctrl->numa_node);
+	if (IS_ERR(head->disk))
+		return PTR_ERR(head->disk);
 	head->disk->fops = &nvme_ns_head_ops;
 	head->disk->private_data = head;
 
@@ -637,29 +661,6 @@ int nvme_mpath_alloc_disk(struct nvme_ctrl *ctrl, struct nvme_ns_head *head)
 	set_bit(GD_SUPPRESS_PART_SCAN, &head->disk->state);
 	sprintf(head->disk->disk_name, "nvme%dn%d",
 			ctrl->subsys->instance, head->instance);
-
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, head->disk->queue);
-	blk_queue_flag_set(QUEUE_FLAG_NOWAIT, head->disk->queue);
-	blk_queue_flag_set(QUEUE_FLAG_IO_STAT, head->disk->queue);
-	/*
-	 * This assumes all controllers that refer to a namespace either
-	 * support poll queues or not.  That is not a strict guarantee,
-	 * but if the assumption is wrong the effect is only suboptimal
-	 * performance but not correctness problem.
-	 */
-	if (ctrl->tagset->nr_maps > HCTX_TYPE_POLL &&
-	    ctrl->tagset->map[HCTX_TYPE_POLL].nr_queues)
-		blk_queue_flag_set(QUEUE_FLAG_POLL, head->disk->queue);
-
-	/* set to a default value of 512 until the disk is validated */
-	blk_queue_logical_block_size(head->disk->queue, 512);
-	blk_set_stacking_limits(&head->disk->queue->limits);
-	blk_queue_dma_alignment(head->disk->queue, 3);
-
-	/* we need to propagate up the VMC settings */
-	if (ctrl->vwc & NVME_CTRL_VWC_PRESENT)
-		vwc = true;
-	blk_queue_write_cache(head->disk->queue, vwc, vwc);
 	return 0;
 }
 
@@ -678,7 +679,7 @@ static void nvme_mpath_set_live(struct nvme_ns *ns)
 	 */
 	if (!test_and_set_bit(NVME_NSHEAD_DISK_LIVE, &head->flags)) {
 		rc = device_add_disk(&head->subsys->dev, head->disk,
-				     nvme_ns_id_attr_groups);
+				     nvme_ns_attr_groups);
 		if (rc) {
 			clear_bit(NVME_NSHEAD_DISK_LIVE, &head->flags);
 			return;
@@ -767,7 +768,7 @@ static void nvme_update_ns_ana_state(struct nvme_ana_group_desc *desc,
 	 * controller is ready.
 	 */
 	if (nvme_state_is_live(ns->ana_state) &&
-	    ns->ctrl->state == NVME_CTRL_LIVE)
+	    nvme_ctrl_state(ns->ctrl) == NVME_CTRL_LIVE)
 		nvme_mpath_set_live(ns);
 }
 
@@ -850,7 +851,7 @@ static void nvme_ana_work(struct work_struct *work)
 {
 	struct nvme_ctrl *ctrl = container_of(work, struct nvme_ctrl, ana_work);
 
-	if (ctrl->state != NVME_CTRL_LIVE)
+	if (nvme_ctrl_state(ctrl) != NVME_CTRL_LIVE)
 		return;
 
 	nvme_read_ana_log(ctrl);
@@ -993,9 +994,6 @@ void nvme_mpath_add_disk(struct nvme_ns *ns, __le32 anagrpid)
 		nvme_mpath_set_live(ns);
 	}
 
-	if (blk_queue_stable_writes(ns->queue) && ns->head->disk)
-		blk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES,
-				   ns->head->disk->queue);
 #ifdef CONFIG_BLK_DEV_ZONED
 	if (blk_queue_is_zoned(ns->queue) && ns->head->disk)
 		ns->head->disk->nr_zones = ns->disk->nr_zones;
@@ -1016,12 +1014,6 @@ void nvme_mpath_shutdown_disk(struct nvme_ns_head *head)
 		kblockd_schedule_work(&head->requeue_work);
 		del_gendisk(head->disk);
 	}
-	/*
-	 * requeue I/O after NVME_NSHEAD_DISK_LIVE has been cleared
-	 * to allow multipath to fail all I/O.
-	 */
-	synchronize_srcu(&head->srcu);
-	kblockd_schedule_work(&head->requeue_work);
 }
 
 void nvme_mpath_remove_disk(struct nvme_ns_head *head)

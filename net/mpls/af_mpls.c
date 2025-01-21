@@ -594,7 +594,7 @@ static struct net_device *inet_fib_lookup_dev(struct net *net,
 	struct in_addr daddr;
 
 	memcpy(&daddr, addr, sizeof(struct in_addr));
-	rt = ip_route_output(net, daddr.s_addr, 0, 0, 0);
+	rt = ip_route_output(net, daddr.s_addr, 0, 0, 0, RT_SCOPE_UNIVERSE);
 	if (IS_ERR(rt))
 		return ERR_CAST(rt);
 
@@ -1201,8 +1201,7 @@ static void mpls_netconf_notify_devconf(struct net *net, int event,
 	rtnl_notify(skb, net, 0, RTNLGRP_MPLS_NETCONF, NULL, GFP_KERNEL);
 	return;
 errout:
-	if (err < 0)
-		rtnl_set_sk_err(net, RTNLGRP_MPLS_NETCONF, err);
+	rtnl_set_sk_err(net, RTNLGRP_MPLS_NETCONF, err);
 }
 
 static const struct nla_policy devconf_mpls_policy[NETCONFA_MAX + 1] = {
@@ -1347,7 +1346,7 @@ static int mpls_netconf_dump_devconf(struct sk_buff *skb,
 #define MPLS_PERDEV_SYSCTL_OFFSET(field)	\
 	(&((struct mpls_dev *)0)->field)
 
-static int mpls_conf_proc(struct ctl_table *ctl, int write,
+static int mpls_conf_proc(const struct ctl_table *ctl, int write,
 			  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int oval = *(int *)ctl->data;
@@ -1377,13 +1376,13 @@ static const struct ctl_table mpls_dev_table[] = {
 		.proc_handler	= mpls_conf_proc,
 		.data		= MPLS_PERDEV_SYSCTL_OFFSET(input_enabled),
 	},
-	{ }
 };
 
 static int mpls_dev_sysctl_register(struct net_device *dev,
 				    struct mpls_dev *mdev)
 {
 	char path[sizeof("net/mpls/conf/") + IFNAMSIZ];
+	size_t table_size = ARRAY_SIZE(mpls_dev_table);
 	struct net *net = dev_net(dev);
 	struct ctl_table *table;
 	int i;
@@ -1395,7 +1394,7 @@ static int mpls_dev_sysctl_register(struct net_device *dev,
 	/* Table data contains only offsets relative to the base of
 	 * the mdev at this point, so make them absolute.
 	 */
-	for (i = 0; i < ARRAY_SIZE(mpls_dev_table); i++) {
+	for (i = 0; i < table_size; i++) {
 		table[i].data = (char *)mdev + (uintptr_t)table[i].data;
 		table[i].extra1 = mdev;
 		table[i].extra2 = net;
@@ -1403,8 +1402,7 @@ static int mpls_dev_sysctl_register(struct net_device *dev,
 
 	snprintf(path, sizeof(path), "net/mpls/conf/%s", dev->name);
 
-	mdev->sysctl = register_net_sysctl_sz(net, path, table,
-					      ARRAY_SIZE(mpls_dev_table));
+	mdev->sysctl = register_net_sysctl_sz(net, path, table, table_size);
 	if (!mdev->sysctl)
 		goto free;
 
@@ -1422,7 +1420,7 @@ static void mpls_dev_sysctl_unregister(struct net_device *dev,
 				       struct mpls_dev *mdev)
 {
 	struct net *net = dev_net(dev);
-	struct ctl_table *table;
+	const struct ctl_table *table;
 
 	if (!mdev->sysctl)
 		return;
@@ -2163,7 +2161,9 @@ static int mpls_dump_routes(struct sk_buff *skb, struct netlink_callback *cb)
 	const struct nlmsghdr *nlh = cb->nlh;
 	struct net *net = sock_net(skb->sk);
 	struct mpls_route __rcu **platform_label;
-	struct fib_dump_filter filter = {};
+	struct fib_dump_filter filter = {
+		.rtnl_held = true,
+	};
 	unsigned int flags = NLM_F_MULTI;
 	size_t platform_labels;
 	unsigned int index;
@@ -2277,8 +2277,7 @@ static void rtmsg_lfib(int event, u32 label, struct mpls_route *rt,
 
 	return;
 errout:
-	if (err < 0)
-		rtnl_set_sk_err(net, RTNLGRP_MPLS_ROUTE, err);
+	rtnl_set_sk_err(net, RTNLGRP_MPLS_ROUTE, err);
 }
 
 static int mpls_valid_getroute_req(struct sk_buff *skb,
@@ -2599,7 +2598,7 @@ nolabels:
 	return -ENOMEM;
 }
 
-static int mpls_platform_labels(struct ctl_table *table, int write,
+static int mpls_platform_labels(const struct ctl_table *table, int write,
 				void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct net *net = table->data;
@@ -2651,11 +2650,11 @@ static const struct ctl_table mpls_table[] = {
 		.extra1		= SYSCTL_ONE,
 		.extra2		= &ttl_max,
 	},
-	{ }
 };
 
 static int mpls_net_init(struct net *net)
 {
+	size_t table_size = ARRAY_SIZE(mpls_table);
 	struct ctl_table *table;
 	int i;
 
@@ -2671,11 +2670,11 @@ static int mpls_net_init(struct net *net)
 	/* Table data contains only offsets relative to the base of
 	 * the mdev at this point, so make them absolute.
 	 */
-	for (i = 0; i < ARRAY_SIZE(mpls_table) - 1; i++)
+	for (i = 0; i < table_size; i++)
 		table[i].data = (char *)net + (uintptr_t)table[i].data;
 
 	net->mpls.ctl = register_net_sysctl_sz(net, "net/mpls", table,
-					       ARRAY_SIZE(mpls_table));
+					       table_size);
 	if (net->mpls.ctl == NULL) {
 		kfree(table);
 		return -ENOMEM;
@@ -2688,7 +2687,7 @@ static void mpls_net_exit(struct net *net)
 {
 	struct mpls_route __rcu **platform_label;
 	size_t platform_labels;
-	struct ctl_table *table;
+	const struct ctl_table *table;
 	unsigned int index;
 
 	table = net->mpls.ctl->ctl_table_arg;

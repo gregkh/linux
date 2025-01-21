@@ -57,7 +57,7 @@ static int nfsd_show(struct seq_file *seq, void *v)
 #ifdef CONFIG_NFSD_V4
 	/* Show count for individual nfsv4 operations */
 	/* Writing operation numbers 0 1 2 also for maintaining uniformity */
-	seq_printf(seq,"proc4ops %u", LAST_NFS4_OP + 1);
+	seq_printf(seq, "proc4ops %u", LAST_NFS4_OP + 1);
 	for (i = 0; i <= LAST_NFS4_OP; i++) {
 		seq_printf(seq, " %lld",
 			   percpu_counter_sum_positive(&nn->counter[NFSD_STATS_NFS4_OP(i)]));
@@ -72,48 +72,6 @@ static int nfsd_show(struct seq_file *seq, void *v)
 }
 
 DEFINE_PROC_SHOW_ATTRIBUTE(nfsd);
-
-int nfsd_percpu_counters_init(struct percpu_counter *counters, int num)
-{
-	int i, err = 0;
-
-	for (i = 0; !err && i < num; i++)
-		err = percpu_counter_init(&counters[i], 0, GFP_KERNEL);
-
-	if (!err)
-		return 0;
-
-	for (; i > 0; i--)
-		percpu_counter_destroy(&counters[i-1]);
-
-	return err;
-}
-
-void nfsd_percpu_counters_reset(struct percpu_counter counters[], int num)
-{
-	int i;
-
-	for (i = 0; i < num; i++)
-		percpu_counter_set(&counters[i], 0);
-}
-
-void nfsd_percpu_counters_destroy(struct percpu_counter counters[], int num)
-{
-	int i;
-
-	for (i = 0; i < num; i++)
-		percpu_counter_destroy(&counters[i]);
-}
-
-int nfsd_stat_counters_init(struct nfsd_net *nn)
-{
-	return nfsd_percpu_counters_init(nn->counter, NFSD_STATS_COUNTERS_NUM);
-}
-
-void nfsd_stat_counters_destroy(struct nfsd_net *nn)
-{
-	nfsd_percpu_counters_destroy(nn->counter, NFSD_STATS_COUNTERS_NUM);
-}
 
 void nfsd_proc_stat_init(struct net *net)
 {

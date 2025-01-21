@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2019 Intel Corporation. All rights reserved.
+// Copyright(c) 2019 Intel Corporation
 //
 // Author: Ranjani Sridharan <ranjani.sridharan@linux.intel.com>
 //
@@ -11,7 +11,6 @@
 #include <linux/bitfield.h>
 #include <trace/events/sof.h>
 #include "sof-audio.h"
-#include "sof-of-dev.h"
 #include "ops.h"
 
 static bool is_virtual_widget(struct snd_sof_dev *sdev, struct snd_soc_dapm_widget *widget,
@@ -47,7 +46,6 @@ static int sof_widget_free_unlocked(struct snd_sof_dev *sdev,
 {
 	const struct sof_ipc_tplg_ops *tplg_ops = sof_ipc_get_ops(sdev, tplg);
 	struct snd_sof_pipeline *spipe = swidget->spipe;
-	struct snd_sof_widget *pipe_widget;
 	int err = 0;
 	int ret;
 
@@ -59,8 +57,6 @@ static int sof_widget_free_unlocked(struct snd_sof_dev *sdev,
 	/* only free when use_count is 0 */
 	if (--swidget->use_count)
 		return 0;
-
-	pipe_widget = swidget->spipe->pipe_widget;
 
 	/* reset route setup status for all routes that contain this widget */
 	sof_reset_route_setup_status(sdev, swidget);
@@ -110,8 +106,9 @@ static int sof_widget_free_unlocked(struct snd_sof_dev *sdev,
 	 * free the scheduler widget (same as pipe_widget) associated with the current swidget.
 	 * skip for static pipelines
 	 */
-	if (swidget->dynamic_pipeline_widget && swidget->id != snd_soc_dapm_scheduler) {
-		ret = sof_widget_free_unlocked(sdev, pipe_widget);
+	if (swidget->spipe && swidget->dynamic_pipeline_widget &&
+	    swidget->id != snd_soc_dapm_scheduler) {
+		ret = sof_widget_free_unlocked(sdev, swidget->spipe->pipe_widget);
 		if (ret < 0 && !err)
 			err = ret;
 	}
@@ -837,35 +834,48 @@ int sof_pcm_stream_free(struct snd_sof_dev *sdev, struct snd_pcm_substream *subs
 {
 	const struct sof_ipc_pcm_ops *pcm_ops = sof_ipc_get_ops(sdev, pcm);
 	int ret;
+	int err = 0;
 
 	if (spcm->prepared[substream->stream]) {
 		/* stop DMA first if needed */
 		if (pcm_ops && pcm_ops->platform_stop_during_hw_free)
 			snd_sof_pcm_platform_trigger(sdev, substream, SNDRV_PCM_TRIGGER_STOP);
 
-		/* Send PCM_FREE IPC to reset pipeline */
+		/* free PCM in the DSP */
 		if (pcm_ops && pcm_ops->hw_free) {
 			ret = pcm_ops->hw_free(sdev->component, substream);
-			if (ret < 0)
-				return ret;
+			if (ret < 0) {
+				dev_err(sdev->dev, "%s: pcm_ops hw_free failed %d\n",
+					__func__, ret);
+				err = ret;
+			}
 		}
 
 		spcm->prepared[substream->stream] = false;
+		spcm->pending_stop[substream->stream] = false;
 	}
 
 	/* reset the DMA */
 	ret = snd_sof_pcm_platform_hw_free(sdev, substream);
-	if (ret < 0)
-		return ret;
+	if (ret < 0) {
+		dev_err(sdev->dev, "%s: platform hw free failed %d\n",
+			__func__, ret);
+		if (!err)
+			err = ret;
+	}
 
 	/* free widget list */
 	if (free_widget_list) {
 		ret = sof_widget_list_free(sdev, spcm, dir);
-		if (ret < 0)
-			dev_err(sdev->dev, "failed to free widgets during suspend\n");
+		if (ret < 0) {
+			dev_err(sdev->dev, "%s: sof_widget_list_free failed %d\n",
+				__func__, ret);
+			if (!err)
+				err = ret;
+		}
 	}
 
-	return ret;
+	return err;
 }
 
 /*
@@ -968,7 +978,7 @@ struct snd_sof_dai *snd_sof_find_dai(struct snd_soc_component *scomp,
 	return NULL;
 }
 
-static int sof_dai_get_clk(struct snd_soc_pcm_runtime *rtd, int clk_type)
+static int sof_dai_get_param(struct snd_soc_pcm_runtime *rtd, int param_type)
 {
 	struct snd_soc_component *component =
 		snd_soc_rtdcom_lookup(rtd, SOF_AUDIO_PCM_DRV_NAME);
@@ -981,8 +991,8 @@ static int sof_dai_get_clk(struct snd_soc_pcm_runtime *rtd, int clk_type)
 	if (!dai)
 		return 0;
 
-	if (tplg_ops && tplg_ops->dai_get_clk)
-		return tplg_ops->dai_get_clk(sdev, dai, clk_type);
+	if (tplg_ops && tplg_ops->dai_get_param)
+		return tplg_ops->dai_get_param(sdev, dai, param_type);
 
 	return 0;
 }
@@ -993,7 +1003,7 @@ static int sof_dai_get_clk(struct snd_soc_pcm_runtime *rtd, int clk_type)
  */
 int sof_dai_get_mclk(struct snd_soc_pcm_runtime *rtd)
 {
-	return sof_dai_get_clk(rtd, SOF_DAI_CLK_INTEL_SSP_MCLK);
+	return sof_dai_get_param(rtd, SOF_DAI_PARAM_INTEL_SSP_MCLK);
 }
 EXPORT_SYMBOL(sof_dai_get_mclk);
 
@@ -1003,125 +1013,16 @@ EXPORT_SYMBOL(sof_dai_get_mclk);
  */
 int sof_dai_get_bclk(struct snd_soc_pcm_runtime *rtd)
 {
-	return sof_dai_get_clk(rtd, SOF_DAI_CLK_INTEL_SSP_BCLK);
+	return sof_dai_get_param(rtd, SOF_DAI_PARAM_INTEL_SSP_BCLK);
 }
 EXPORT_SYMBOL(sof_dai_get_bclk);
 
-static struct snd_sof_of_mach *sof_of_machine_select(struct snd_sof_dev *sdev)
-{
-	struct snd_sof_pdata *sof_pdata = sdev->pdata;
-	const struct sof_dev_desc *desc = sof_pdata->desc;
-	struct snd_sof_of_mach *mach = desc->of_machines;
-
-	if (!mach)
-		return NULL;
-
-	for (; mach->compatible; mach++) {
-		if (of_machine_is_compatible(mach->compatible)) {
-			sof_pdata->tplg_filename = mach->sof_tplg_filename;
-			if (mach->fw_filename)
-				sof_pdata->fw_filename = mach->fw_filename;
-
-			return mach;
-		}
-	}
-
-	return NULL;
-}
-
 /*
- * SOF Driver enumeration.
+ * Helper to get SSP TDM slot number from a pcm_runtime.
+ * Return 0 if not exist.
  */
-int sof_machine_check(struct snd_sof_dev *sdev)
+int sof_dai_get_tdm_slots(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_sof_pdata *sof_pdata = sdev->pdata;
-	const struct sof_dev_desc *desc = sof_pdata->desc;
-	struct snd_soc_acpi_mach *mach;
-
-	if (!IS_ENABLED(CONFIG_SND_SOC_SOF_FORCE_NOCODEC_MODE)) {
-		const struct snd_sof_of_mach *of_mach;
-
-		if (IS_ENABLED(CONFIG_SND_SOC_SOF_NOCODEC_DEBUG_SUPPORT) &&
-		    sof_debug_check_flag(SOF_DBG_FORCE_NOCODEC))
-			goto nocodec;
-
-		/* find machine */
-		mach = snd_sof_machine_select(sdev);
-		if (mach) {
-			sof_pdata->machine = mach;
-
-			if (sof_pdata->subsystem_id_set) {
-				mach->mach_params.subsystem_vendor = sof_pdata->subsystem_vendor;
-				mach->mach_params.subsystem_device = sof_pdata->subsystem_device;
-				mach->mach_params.subsystem_id_set = true;
-			}
-
-			snd_sof_set_mach_params(mach, sdev);
-			return 0;
-		}
-
-		of_mach = sof_of_machine_select(sdev);
-		if (of_mach) {
-			sof_pdata->of_machine = of_mach;
-			return 0;
-		}
-
-		if (!IS_ENABLED(CONFIG_SND_SOC_SOF_NOCODEC)) {
-			dev_err(sdev->dev, "error: no matching ASoC machine driver found - aborting probe\n");
-			return -ENODEV;
-		}
-	} else {
-		dev_warn(sdev->dev, "Force to use nocodec mode\n");
-	}
-
-nocodec:
-	/* select nocodec mode */
-	dev_warn(sdev->dev, "Using nocodec machine driver\n");
-	mach = devm_kzalloc(sdev->dev, sizeof(*mach), GFP_KERNEL);
-	if (!mach)
-		return -ENOMEM;
-
-	mach->drv_name = "sof-nocodec";
-	if (!sof_pdata->tplg_filename)
-		sof_pdata->tplg_filename = desc->nocodec_tplg_filename;
-
-	sof_pdata->machine = mach;
-	snd_sof_set_mach_params(mach, sdev);
-
-	return 0;
+	return sof_dai_get_param(rtd, SOF_DAI_PARAM_INTEL_SSP_TDM_SLOTS);
 }
-EXPORT_SYMBOL(sof_machine_check);
-
-int sof_machine_register(struct snd_sof_dev *sdev, void *pdata)
-{
-	struct snd_sof_pdata *plat_data = pdata;
-	const char *drv_name;
-	const void *mach;
-	int size;
-
-	drv_name = plat_data->machine->drv_name;
-	mach = plat_data->machine;
-	size = sizeof(*plat_data->machine);
-
-	/* register machine driver, pass machine info as pdata */
-	plat_data->pdev_mach =
-		platform_device_register_data(sdev->dev, drv_name,
-					      PLATFORM_DEVID_NONE, mach, size);
-	if (IS_ERR(plat_data->pdev_mach))
-		return PTR_ERR(plat_data->pdev_mach);
-
-	dev_dbg(sdev->dev, "created machine %s\n",
-		dev_name(&plat_data->pdev_mach->dev));
-
-	return 0;
-}
-EXPORT_SYMBOL(sof_machine_register);
-
-void sof_machine_unregister(struct snd_sof_dev *sdev, void *pdata)
-{
-	struct snd_sof_pdata *plat_data = pdata;
-
-	if (!IS_ERR_OR_NULL(plat_data->pdev_mach))
-		platform_device_unregister(plat_data->pdev_mach);
-}
-EXPORT_SYMBOL(sof_machine_unregister);
+EXPORT_SYMBOL(sof_dai_get_tdm_slots);

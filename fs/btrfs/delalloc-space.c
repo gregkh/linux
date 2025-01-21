@@ -6,9 +6,7 @@
 #include "block-rsv.h"
 #include "btrfs_inode.h"
 #include "space-info.h"
-#include "transaction.h"
 #include "qgroup.h"
-#include "block-group.h"
 #include "fs.h"
 
 /*
@@ -113,7 +111,7 @@
  *  making error handling and cleanup easier.
  */
 
-int btrfs_alloc_data_chunk_ondemand(struct btrfs_inode *inode, u64 bytes)
+int btrfs_alloc_data_chunk_ondemand(const struct btrfs_inode *inode, u64 bytes)
 {
 	struct btrfs_root *root = inode->root;
 	struct btrfs_fs_info *fs_info = root->fs_info;
@@ -350,7 +348,8 @@ int btrfs_delalloc_reserve_metadata(struct btrfs_inode *inode, u64 num_bytes,
 						 noflush);
 	if (ret)
 		return ret;
-	ret = btrfs_reserve_metadata_bytes(fs_info, block_rsv, meta_reserve, flush);
+	ret = btrfs_reserve_metadata_bytes(fs_info, block_rsv->space_info,
+					   meta_reserve, flush);
 	if (ret) {
 		btrfs_qgroup_free_meta_prealloc(root, qgroup_reserve);
 		return ret;

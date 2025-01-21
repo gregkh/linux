@@ -379,7 +379,7 @@ static int uinput_open(struct inode *inode, struct file *file)
 {
 	struct uinput_device *newdev;
 
-	newdev = kzalloc(sizeof(struct uinput_device), GFP_KERNEL);
+	newdev = kzalloc(sizeof(*newdev), GFP_KERNEL);
 	if (!newdev)
 		return -ENOMEM;
 
@@ -1132,7 +1132,6 @@ static const struct file_operations uinput_fops = {
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= uinput_compat_ioctl,
 #endif
-	.llseek		= no_llseek,
 };
 
 static struct miscdevice uinput_misc = {

@@ -151,22 +151,7 @@ struct ath11k_htc_credit_report {
 
 struct ath11k_htc_record {
 	struct ath11k_htc_record_hdr hdr;
-	union {
-		struct ath11k_htc_credit_report credit_report[0];
-		u8 pauload[0];
-	};
-} __packed __aligned(4);
-
-/* note: the trailer offset is dynamic depending
- * on payload length. this is only a struct layout draft
- */
-struct ath11k_htc_frame {
-	struct ath11k_htc_hdr hdr;
-	union {
-		struct ath11k_htc_msg msg;
-		u8 payload[0];
-	};
-	struct ath11k_htc_record trailer[0];
+	struct ath11k_htc_credit_report credit_report[];
 } __packed __aligned(4);
 
 enum ath11k_htc_svc_gid {

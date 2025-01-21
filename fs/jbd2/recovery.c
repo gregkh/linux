@@ -19,6 +19,7 @@
 #include <linux/errno.h>
 #include <linux/crc32.h>
 #include <linux/blkdev.h>
+#include <linux/string_choices.h>
 #endif
 
 /*
@@ -289,8 +290,6 @@ int jbd2_journal_recover(journal_t *journal)
 	journal_superblock_t *	sb;
 
 	struct recovery_info	info;
-	errseq_t		wb_err;
-	struct address_space	*mapping;
 
 	memset(&info, 0, sizeof(info));
 	sb = journal->j_superblock;
@@ -308,9 +307,6 @@ int jbd2_journal_recover(journal_t *journal)
 		return 0;
 	}
 
-	wb_err = 0;
-	mapping = journal->j_fs_dev->bd_inode->i_mapping;
-	errseq_check_and_advance(&mapping->wb_err, &wb_err);
 	err = do_one_pass(journal, &info, PASS_SCAN);
 	if (!err)
 		err = do_one_pass(journal, &info, PASS_REVOKE);
@@ -334,7 +330,7 @@ int jbd2_journal_recover(journal_t *journal)
 	err2 = sync_blockdev(journal->j_fs_dev);
 	if (!err)
 		err = err2;
-	err2 = errseq_check_and_advance(&mapping->wb_err, &wb_err);
+	err2 = jbd2_check_fs_dev_write_error(journal);
 	if (!err)
 		err = err2;
 	/* Make sure all replayed data is on permanent storage */
@@ -379,7 +375,7 @@ int jbd2_journal_skip_recovery(journal_t *journal)
 			be32_to_cpu(journal->j_superblock->s_sequence);
 		jbd2_debug(1,
 			  "JBD2: ignoring %d transaction%s from the journal.\n",
-			  dropped, (dropped == 1) ? "" : "s");
+			  dropped, str_plural(dropped));
 #endif
 		journal->j_transaction_sequence = ++info.end_transaction;
 		journal->j_head = info.head_block;
@@ -661,7 +657,7 @@ static int do_one_pass(journal_t *journal,
 					success = err;
 					printk(KERN_ERR
 						"JBD2: IO error %d recovering "
-						"block %ld in log\n",
+						"block %lu in log\n",
 						err, io_block);
 				} else {
 					unsigned long long blocknr;
@@ -690,7 +686,8 @@ static int do_one_pass(journal_t *journal,
 						printk(KERN_ERR "JBD2: Invalid "
 						       "checksum recovering "
 						       "data block %llu in "
-						       "log\n", blocknr);
+						       "journal block %lu\n",
+						       blocknr, io_block);
 						block_error = 1;
 						goto skip_write;
 					}

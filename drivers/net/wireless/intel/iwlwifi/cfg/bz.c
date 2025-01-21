@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
- * Copyright (C) 2018-2023 Intel Corporation
+ * Copyright (C) 2018-2024 Intel Corporation
  */
 #include <linux/module.h>
 #include <linux/stringify.h>
@@ -10,10 +10,10 @@
 #include "fw/api/txq.h"
 
 /* Highest firmware API version supported */
-#define IWL_BZ_UCODE_API_MAX	83
+#define IWL_BZ_UCODE_API_MAX	93
 
 /* Lowest firmware API version supported */
-#define IWL_BZ_UCODE_API_MIN	80
+#define IWL_BZ_UCODE_API_MIN	90
 
 /* NVM versions */
 #define IWL_BZ_NVM_VERSION		0x0a1d
@@ -129,10 +129,6 @@ static const struct iwl_base_params iwl_bz_base_params = {
 	IWL_DEVICE_BZ_COMMON,						\
 	.ht_params = &iwl_22000_ht_params
 
-#define IWL_DEVICE_GL_A							\
-	IWL_DEVICE_BZ_COMMON,						\
-	.ht_params = &iwl_gl_a_ht_params
-
 /*
  * This size was picked according to 8 MSDUs inside 512 A-MSDUs in an
  * A-MPDU, with additional overhead to account for processing time.
@@ -164,6 +160,10 @@ const struct iwl_cfg_trans_params iwl_gl_trans_cfg = {
 };
 
 const char iwl_bz_name[] = "Intel(R) TBD Bz device";
+const char iwl_fm_name[] = "Intel(R) Wi-Fi 7 BE201 320MHz";
+const char iwl_wh_name[] = "Intel(R) Wi-Fi 7 BE211 320MHz";
+const char iwl_gl_name[] = "Intel(R) Wi-Fi 7 BE200 320MHz";
+const char iwl_mtp_name[] = "Intel(R) Wi-Fi 7 BE202 160MHz";
 
 const struct iwl_cfg iwl_cfg_bz = {
 	.fw_name_mac = "bz",

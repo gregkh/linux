@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2005-2014, 2018-2021 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2024 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
@@ -163,6 +163,8 @@ static inline char iwl_drv_get_step(int step)
 {
 	if (step == SILICON_Z_STEP)
 		return 'z';
+	if (step == SILICON_TC_STEP)
+		return 'a';
 	return 'a' + step;
 }
 
@@ -179,33 +181,34 @@ const char *iwl_drv_get_fwname_pre(struct iwl_trans *trans, char *buf)
 
 	mac_step = iwl_drv_get_step(trans->hw_rev_step);
 
+	rf_step = iwl_drv_get_step(CSR_HW_RFID_STEP(trans->hw_rf_id));
+
 	switch (CSR_HW_RFID_TYPE(trans->hw_rf_id)) {
 	case IWL_CFG_RF_TYPE_HR1:
 	case IWL_CFG_RF_TYPE_HR2:
 		rf = "hr";
+		rf_step = 'b';
 		break;
 	case IWL_CFG_RF_TYPE_GF:
 		rf = "gf";
-		break;
-	case IWL_CFG_RF_TYPE_MR:
-		rf = "mr";
-		break;
-	case IWL_CFG_RF_TYPE_MS:
-		rf = "ms";
 		break;
 	case IWL_CFG_RF_TYPE_FM:
 		rf = "fm";
 		break;
 	case IWL_CFG_RF_TYPE_WH:
-		rf = "wh";
+		if (SILICON_Z_STEP ==
+		    CSR_HW_RFID_STEP(trans->hw_rf_id)) {
+			rf = "whtc";
+			rf_step = 'a';
+		} else {
+			rf = "wh";
+		}
 		break;
 	default:
 		return "unknown-rf";
 	}
 
 	cdb = CSR_HW_RFID_IS_CDB(trans->hw_rf_id) ? "4" : "";
-
-	rf_step = iwl_drv_get_step(CSR_HW_RFID_STEP(trans->hw_rf_id));
 
 	scnprintf(buf, FW_NAME_PRE_BUFSIZE,
 		  "iwlwifi-%s-%c0-%s%s-%c0",
@@ -979,16 +982,10 @@ static int iwl_parse_tlv_firmware(struct iwl_drv *drv,
 			minor = le32_to_cpup(ptr++);
 			local_comp = le32_to_cpup(ptr);
 
-			if (major >= 35)
-				snprintf(drv->fw.fw_version,
-					 sizeof(drv->fw.fw_version),
-					"%u.%08x.%u %s", major, minor,
-					local_comp, iwl_reduced_fw_name(drv));
-			else
-				snprintf(drv->fw.fw_version,
-					 sizeof(drv->fw.fw_version),
-					"%u.%u.%u %s", major, minor,
-					local_comp, iwl_reduced_fw_name(drv));
+			snprintf(drv->fw.fw_version,
+				 sizeof(drv->fw.fw_version),
+				 "%u.%08x.%u %s", major, minor,
+				 local_comp, iwl_reduced_fw_name(drv));
 			break;
 			}
 		case IWL_UCODE_TLV_FW_DBG_DEST: {
@@ -1208,7 +1205,7 @@ static int iwl_parse_tlv_firmware(struct iwl_drv *drv,
 			if (tlv_len != sizeof(u32))
 				goto invalid_tlv_len;
 			if (le32_to_cpup((const __le32 *)tlv_data) >
-			    IWL_MVM_STATION_COUNT_MAX) {
+			    IWL_STATION_COUNT_MAX) {
 				IWL_ERR(drv,
 					"%d is an invalid number of station\n",
 					le32_to_cpup((const __le32 *)tlv_data));
@@ -1418,6 +1415,9 @@ _iwl_op_mode_start(struct iwl_drv *drv, struct iwlwifi_opmode_table *op)
 	struct iwl_op_mode *op_mode = NULL;
 	int retry, max_retry = !!iwlwifi_mod_params.fw_restart * IWL_MAX_INIT_RETRY;
 
+	/* also protects start/stop from racing against each other */
+	lockdep_assert_held(&iwlwifi_opmode_table_mtx);
+
 	for (retry = 0; retry <= max_retry; retry++) {
 
 #ifdef CONFIG_IWLWIFI_DEBUGFS
@@ -1432,6 +1432,9 @@ _iwl_op_mode_start(struct iwl_drv *drv, struct iwlwifi_opmode_table *op)
 		if (op_mode)
 			return op_mode;
 
+		if (test_bit(STATUS_TRANS_DEAD, &drv->trans->status))
+			break;
+
 		IWL_ERR(drv, "retry init count %d\n", retry);
 
 #ifdef CONFIG_IWLWIFI_DEBUGFS
@@ -1445,6 +1448,9 @@ _iwl_op_mode_start(struct iwl_drv *drv, struct iwlwifi_opmode_table *op)
 
 static void _iwl_op_mode_stop(struct iwl_drv *drv)
 {
+	/* also protects start/stop from racing against each other */
+	lockdep_assert_held(&iwlwifi_opmode_table_mtx);
+
 	/* op_mode can be NULL if its start failed */
 	if (drv->op_mode) {
 		iwl_op_mode_stop(drv->op_mode);
@@ -1476,7 +1482,6 @@ static void iwl_req_fw_callback(const struct firmware *ucode_raw, void *context)
 	size_t trigger_tlv_sz[FW_DBG_TRIGGER_MAX];
 	u32 api_ver;
 	int i;
-	bool load_module = false;
 	bool usniffer_images = false;
 	bool failure = true;
 
@@ -1484,7 +1489,7 @@ static void iwl_req_fw_callback(const struct firmware *ucode_raw, void *context)
 	fw->ucode_capa.standard_phy_calibration_size =
 			IWL_DEFAULT_STANDARD_PHY_CALIBRATE_TBL_SIZE;
 	fw->ucode_capa.n_scan_channels = IWL_DEFAULT_SCAN_CHANNELS;
-	fw->ucode_capa.num_stations = IWL_MVM_STATION_COUNT_MAX;
+	fw->ucode_capa.num_stations = IWL_STATION_COUNT_MAX;
 	fw->ucode_capa.num_beacons = 1;
 	/* dump all fw memory areas by default */
 	fw->dbg.dump_mask = 0xffffffff;
@@ -1724,24 +1729,12 @@ static void iwl_req_fw_callback(const struct firmware *ucode_raw, void *context)
 			goto out_unbind;
 		}
 	} else {
-		load_module = true;
+		request_module_nowait("%s", op->name);
 	}
 	mutex_unlock(&iwlwifi_opmode_table_mtx);
 
-	/*
-	 * Complete the firmware request last so that
-	 * a driver unbind (stop) doesn't run while we
-	 * are doing the start() above.
-	 */
 	complete(&drv->request_firmware_complete);
 
-	/*
-	 * Load the module last so we don't block anything
-	 * else from proceeding if the module fails to load
-	 * or hangs loading.
-	 */
-	if (load_module)
-		request_module("%s", op->name);
 	failure = false;
 	goto free;
 
@@ -1837,11 +1830,12 @@ void iwl_drv_stop(struct iwl_drv *drv)
 {
 	wait_for_completion(&drv->request_firmware_complete);
 
+	mutex_lock(&iwlwifi_opmode_table_mtx);
+
 	_iwl_op_mode_stop(drv);
 
 	iwl_dealloc_ucode(drv);
 
-	mutex_lock(&iwlwifi_opmode_table_mtx);
 	/*
 	 * List is empty (this item wasn't added)
 	 * when firmware loading failed -- in that
@@ -1852,7 +1846,7 @@ void iwl_drv_stop(struct iwl_drv *drv)
 	mutex_unlock(&iwlwifi_opmode_table_mtx);
 
 #ifdef CONFIG_IWLWIFI_DEBUGFS
-	drv->trans->ops->debugfs_cleanup(drv->trans);
+	iwl_trans_debugfs_cleanup(drv->trans);
 
 	debugfs_remove_recursive(drv->dbgfs_drv);
 #endif

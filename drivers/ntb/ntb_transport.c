@@ -284,7 +284,7 @@ static void ntb_memcpy_rx(struct ntb_queue_entry *entry, void *offset);
 
 
 static int ntb_transport_bus_match(struct device *dev,
-				   struct device_driver *drv)
+				   const struct device_driver *drv)
 {
 	return !strncmp(dev_name(dev), drv->name, strlen(drv->name));
 }
@@ -314,7 +314,7 @@ static void ntb_transport_bus_remove(struct device *dev)
 	put_device(dev);
 }
 
-static struct bus_type ntb_transport_bus = {
+static const struct bus_type ntb_transport_bus = {
 	.name = "ntb_transport",
 	.match = ntb_transport_bus_match,
 	.probe = ntb_transport_bus_probe,
@@ -377,6 +377,8 @@ EXPORT_SYMBOL_GPL(ntb_transport_unregister_client_dev);
  * @device_name: Name of NTB client device
  *
  * Register an NTB client device with the NTB transport layer
+ *
+ * Returns: %0 on success or -errno code on error
  */
 int ntb_transport_register_client_dev(char *device_name)
 {
@@ -1979,9 +1981,9 @@ static bool ntb_dma_filter_fn(struct dma_chan *chan, void *node)
 
 /**
  * ntb_transport_create_queue - Create a new NTB transport layer queue
- * @rx_handler: receive callback function
- * @tx_handler: transmit callback function
- * @event_handler: event callback function
+ * @data: pointer for callback data
+ * @client_dev: &struct device pointer
+ * @handlers: pointer to various ntb queue (callback) handlers
  *
  * Create a new NTB transport layer queue and provide the queue with a callback
  * routine for both transmit and receive.  The receive callback routine will be

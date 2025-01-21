@@ -41,7 +41,7 @@
 #include <linux/topology.h>
 #include <linux/dmi.h>
 #include <linux/units.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <acpi/cppc_acpi.h>
 
@@ -165,6 +165,7 @@ show_cppc_data(cppc_get_perf_caps, cppc_perf_caps, highest_perf);
 show_cppc_data(cppc_get_perf_caps, cppc_perf_caps, lowest_perf);
 show_cppc_data(cppc_get_perf_caps, cppc_perf_caps, nominal_perf);
 show_cppc_data(cppc_get_perf_caps, cppc_perf_caps, lowest_nonlinear_perf);
+show_cppc_data(cppc_get_perf_caps, cppc_perf_caps, guaranteed_perf);
 show_cppc_data(cppc_get_perf_caps, cppc_perf_caps, lowest_freq);
 show_cppc_data(cppc_get_perf_caps, cppc_perf_caps, nominal_freq);
 
@@ -204,6 +205,7 @@ static struct attribute *cppc_attrs[] = {
 	&highest_perf.attr,
 	&lowest_perf.attr,
 	&lowest_nonlinear_perf.attr,
+	&guaranteed_perf.attr,
 	&nominal_perf.attr,
 	&nominal_freq.attr,
 	&lowest_freq.attr,
@@ -669,10 +671,6 @@ static int pcc_data_alloc(int pcc_ss_id)
  *  )
  */
 
-#ifndef arch_init_invariance_cppc
-static inline void arch_init_invariance_cppc(void) { }
-#endif
-
 /**
  * acpi_cppc_processor_probe - Search for per CPU _CPC objects.
  * @pr: Ptr to acpi_processor containing this CPU's logical ID.
@@ -694,8 +692,10 @@ int acpi_cppc_processor_probe(struct acpi_processor *pr)
 
 	if (!osc_sb_cppc2_support_acked) {
 		pr_debug("CPPC v2 _OSC not acked\n");
-		if (!cpc_supported_by_cpu())
+		if (!cpc_supported_by_cpu()) {
+			pr_debug("CPPC is not supported by the CPU\n");
 			return -ENODEV;
+		}
 	}
 
 	/* Parse the ACPI _CPC table for this CPU. */
@@ -900,8 +900,6 @@ int acpi_cppc_processor_probe(struct acpi_processor *pr)
 		kobject_put(&cpc_ptr->kobj);
 		goto out_free;
 	}
-
-	arch_init_invariance_cppc();
 
 	kfree(output.pointer);
 	return 0;
@@ -1878,7 +1876,7 @@ static void cppc_find_dmi_mhz(const struct dmi_header *dm, void *private)
 	    dm->length >= DMI_ENTRY_PROCESSOR_MIN_LENGTH) {
 		u16 val = (u16)get_unaligned((const u16 *)
 				(dmi_data + DMI_PROCESSOR_MAX_SPEED));
-		*mhz = val > *mhz ? val : *mhz;
+		*mhz = umax(val, *mhz);
 	}
 }
 

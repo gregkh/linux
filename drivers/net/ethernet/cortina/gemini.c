@@ -288,13 +288,13 @@ static void gmac_set_flow_control(struct net_device *netdev, bool tx, bool rx)
 	spin_unlock_irqrestore(&port->config_lock, flags);
 }
 
-static void gmac_speed_set(struct net_device *netdev)
+static void gmac_adjust_link(struct net_device *netdev)
 {
 	struct gemini_ethernet_port *port = netdev_priv(netdev);
 	struct phy_device *phydev = netdev->phydev;
 	union gmac_status status, old_status;
-	int pause_tx = 0;
-	int pause_rx = 0;
+	bool pause_tx = false;
+	bool pause_rx = false;
 
 	status.bits32 = readl(port->gmac_base + GMAC_STATUS);
 	old_status.bits32 = status.bits32;
@@ -329,14 +329,9 @@ static void gmac_speed_set(struct net_device *netdev)
 	}
 
 	if (phydev->duplex == DUPLEX_FULL) {
-		u16 lcladv = phy_read(phydev, MII_ADVERTISE);
-		u16 rmtadv = phy_read(phydev, MII_LPA);
-		u8 cap = mii_resolve_flowctrl_fdx(lcladv, rmtadv);
-
-		if (cap & FLOW_CTRL_RX)
-			pause_rx = 1;
-		if (cap & FLOW_CTRL_TX)
-			pause_tx = 1;
+		phy_get_pause(phydev, &pause_tx, &pause_rx);
+		netdev_dbg(netdev, "set negotiated pause params pause TX = %s, pause RX = %s\n",
+			   pause_tx ? "ON" : "OFF", pause_rx ? "ON" : "OFF");
 	}
 
 	gmac_set_flow_control(netdev, pause_tx, pause_rx);
@@ -367,7 +362,7 @@ static int gmac_setup_phy(struct net_device *netdev)
 
 	phy = of_phy_get_and_connect(netdev,
 				     dev->of_node,
-				     gmac_speed_set);
+				     gmac_adjust_link);
 	if (!phy)
 		return -ENODEV;
 	netdev->phydev = phy;
@@ -2001,7 +1996,7 @@ static int gmac_change_mtu(struct net_device *netdev, int new_mtu)
 
 	gmac_disable_tx_rx(netdev);
 
-	netdev->mtu = new_mtu;
+	WRITE_ONCE(netdev->mtu, new_mtu);
 	gmac_update_config0_reg(netdev, max_len << CONFIG0_MAXLEN_SHIFT,
 				CONFIG0_MAXLEN_MASK);
 
@@ -2131,6 +2126,19 @@ static void gmac_get_pauseparam(struct net_device *netdev,
 	pparam->autoneg = true;
 }
 
+static int gmac_set_pauseparam(struct net_device *netdev,
+			       struct ethtool_pauseparam *pparam)
+{
+	struct phy_device *phydev = netdev->phydev;
+
+	if (!pparam->autoneg)
+		return -EOPNOTSUPP;
+
+	phy_set_asym_pause(phydev, pparam->rx_pause, pparam->tx_pause);
+
+	return 0;
+}
+
 static void gmac_get_ringparam(struct net_device *netdev,
 			       struct ethtool_ringparam *rp,
 			       struct kernel_ethtool_ringparam *kernel_rp,
@@ -2251,6 +2259,7 @@ static const struct ethtool_ops gmac_351x_ethtool_ops = {
 	.set_link_ksettings = gmac_set_ksettings,
 	.nway_reset	= gmac_nway_reset,
 	.get_pauseparam	= gmac_get_pauseparam,
+	.set_pauseparam = gmac_set_pauseparam,
 	.get_ringparam	= gmac_get_ringparam,
 	.set_ringparam	= gmac_set_ringparam,
 	.get_coalesce	= gmac_get_coalesce,
@@ -2543,13 +2552,11 @@ unprepare:
 	return ret;
 }
 
-static int gemini_ethernet_port_remove(struct platform_device *pdev)
+static void gemini_ethernet_port_remove(struct platform_device *pdev)
 {
 	struct gemini_ethernet_port *port = platform_get_drvdata(pdev);
 
 	gemini_port_remove(port);
-
-	return 0;
 }
 
 static const struct of_device_id gemini_ethernet_port_of_match[] = {
@@ -2566,7 +2573,7 @@ static struct platform_driver gemini_ethernet_port_driver = {
 		.of_match_table = gemini_ethernet_port_of_match,
 	},
 	.probe = gemini_ethernet_port_probe,
-	.remove = gemini_ethernet_port_remove,
+	.remove_new = gemini_ethernet_port_remove,
 };
 
 static int gemini_ethernet_probe(struct platform_device *pdev)
@@ -2608,14 +2615,12 @@ static int gemini_ethernet_probe(struct platform_device *pdev)
 	return devm_of_platform_populate(dev);
 }
 
-static int gemini_ethernet_remove(struct platform_device *pdev)
+static void gemini_ethernet_remove(struct platform_device *pdev)
 {
 	struct gemini_ethernet *geth = platform_get_drvdata(pdev);
 
 	geth_cleanup_freeq(geth);
 	geth->initialized = false;
-
-	return 0;
 }
 
 static const struct of_device_id gemini_ethernet_of_match[] = {
@@ -2632,7 +2637,7 @@ static struct platform_driver gemini_ethernet_driver = {
 		.of_match_table = gemini_ethernet_of_match,
 	},
 	.probe = gemini_ethernet_probe,
-	.remove = gemini_ethernet_remove,
+	.remove_new = gemini_ethernet_remove,
 };
 
 static int __init gemini_ethernet_module_init(void)

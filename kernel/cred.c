@@ -36,7 +36,7 @@ do {									\
 static struct kmem_cache *cred_jar;
 
 /* init to 2 - one for init_task, one to ensure it is never freed */
-static struct group_info init_groups = { .usage = ATOMIC_INIT(2) };
+static struct group_info init_groups = { .usage = REFCOUNT_INIT(2) };
 
 /*
  * The initial credentials for the initial task
@@ -116,18 +116,23 @@ EXPORT_SYMBOL(__put_cred);
  */
 void exit_creds(struct task_struct *tsk)
 {
-	struct cred *cred;
+	struct cred *real_cred, *cred;
 
 	kdebug("exit_creds(%u,%p,%p,{%ld})", tsk->pid, tsk->real_cred, tsk->cred,
 	       atomic_long_read(&tsk->cred->usage));
 
-	cred = (struct cred *) tsk->real_cred;
+	real_cred = (struct cred *) tsk->real_cred;
 	tsk->real_cred = NULL;
-	put_cred(cred);
 
 	cred = (struct cred *) tsk->cred;
 	tsk->cred = NULL;
-	put_cred(cred);
+
+	if (real_cred == cred) {
+		put_cred_many(cred, 2);
+	} else {
+		put_cred(real_cred);
+		put_cred(cred);
+	}
 
 #ifdef CONFIG_KEYS_REQUEST_CACHE
 	key_put(tsk->cached_requested_key);
@@ -297,8 +302,7 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 #endif
 		clone_flags & CLONE_THREAD
 	    ) {
-		p->real_cred = get_cred(p->cred);
-		get_cred(p->cred);
+		p->real_cred = get_cred_many(p->cred, 2);
 		kdebug("share_creds(%p{%ld})",
 		       p->cred, atomic_long_read(&p->cred->usage));
 		inc_rlimit_ucounts(task_ucounts(p), UCOUNT_RLIMIT_NPROC, 1);
@@ -450,8 +454,7 @@ int commit_creds(struct cred *new)
 		proc_id_connector(task, PROC_EVENT_GID);
 
 	/* release the old obj and subj refs both */
-	put_cred(old);
-	put_cred(old);
+	put_cred_many(old, 2);
 	return 0;
 }
 EXPORT_SYMBOL(commit_creds);
@@ -603,8 +606,8 @@ int set_cred_ucounts(struct cred *new)
 void __init cred_init(void)
 {
 	/* allocate a slab in which we can store credentials */
-	cred_jar = kmem_cache_create("cred_jar", sizeof(struct cred), 0,
-			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
+	cred_jar = KMEM_CACHE(cred,
+			      SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT);
 }
 
 /**

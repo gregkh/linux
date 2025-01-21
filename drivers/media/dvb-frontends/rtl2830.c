@@ -838,7 +838,7 @@ static int rtl2830_probe(struct i2c_client *client)
 		goto err_regmap_exit;
 	}
 	dev->muxc->priv = client;
-	ret = i2c_mux_add_adapter(dev->muxc, 0, 0, 0);
+	ret = i2c_mux_add_adapter(dev->muxc, 0, 0);
 	if (ret)
 		goto err_regmap_exit;
 
@@ -876,7 +876,7 @@ static void rtl2830_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id rtl2830_id_table[] = {
-	{"rtl2830", 0},
+	{ "rtl2830" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, rtl2830_id_table);

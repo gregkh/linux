@@ -193,12 +193,14 @@ setup_err:
 /* Provides a way for both kernel and bpf-prog to know
  * more about the RX-queue a given XDP frame arrived on.
  */
-static int ena_xdp_register_rxq_info(struct ena_ring *rx_ring)
+int ena_xdp_register_rxq_info(struct ena_ring *rx_ring)
 {
 	int rc;
 
 	rc = xdp_rxq_info_reg(&rx_ring->xdp_rxq, rx_ring->netdev, rx_ring->qid, 0);
 
+	netif_dbg(rx_ring->adapter, ifup, rx_ring->netdev, "Registering RX info for queue %d",
+		  rx_ring->qid);
 	if (rc) {
 		netif_err(rx_ring->adapter, ifup, rx_ring->netdev,
 			  "Failed to register xdp rx queue info. RX queue num %d rc: %d\n",
@@ -219,8 +221,11 @@ err:
 	return rc;
 }
 
-static void ena_xdp_unregister_rxq_info(struct ena_ring *rx_ring)
+void ena_xdp_unregister_rxq_info(struct ena_ring *rx_ring)
 {
+	netif_dbg(rx_ring->adapter, ifdown, rx_ring->netdev,
+		  "Unregistering RX info for queue %d",
+		  rx_ring->qid);
 	xdp_rxq_info_unreg_mem_model(&rx_ring->xdp_rxq);
 	xdp_rxq_info_unreg(&rx_ring->xdp_rxq);
 }
@@ -238,10 +243,8 @@ void ena_xdp_exchange_program_rx_in_range(struct ena_adapter *adapter,
 		old_bpf_prog = xchg(&rx_ring->xdp_bpf_prog, prog);
 
 		if (!old_bpf_prog && prog) {
-			ena_xdp_register_rxq_info(rx_ring);
 			rx_ring->rx_headroom = XDP_PACKET_HEADROOM;
 		} else if (old_bpf_prog && !prog) {
-			ena_xdp_unregister_rxq_info(rx_ring);
 			rx_ring->rx_headroom = NET_SKB_PAD;
 		}
 	}
@@ -303,6 +306,8 @@ static int ena_xdp_set(struct net_device *netdev, struct netdev_bpf *bpf)
 			}
 			ena_xdp_exchange_program(adapter, prog);
 
+			netif_dbg(adapter, drv, adapter->netdev, "Set a new XDP program\n");
+
 			if (is_up && !old_bpf_prog) {
 				rc = ena_up(adapter);
 				if (rc)
@@ -311,6 +316,8 @@ static int ena_xdp_set(struct net_device *netdev, struct netdev_bpf *bpf)
 			xdp_features_set_redirect_target(netdev, false);
 		} else if (old_bpf_prog) {
 			xdp_features_clear_redirect_target(netdev);
+			netif_dbg(adapter, drv, adapter->netdev, "Removing XDP program\n");
+
 			rc = ena_destroy_and_free_all_xdp_queues(adapter);
 			if (rc)
 				return rc;
@@ -387,28 +394,26 @@ static int ena_clean_xdp_irq(struct ena_ring *tx_ring, u32 budget)
 			break;
 
 		tx_info = &tx_ring->tx_buffer_info[req_id];
-		xdpf = tx_info->xdpf;
 
-		tx_info->xdpf = NULL;
 		tx_info->last_jiffies = 0;
-		ena_unmap_tx_buff(tx_ring, tx_info);
 
-		netif_dbg(tx_ring->adapter, tx_done, tx_ring->netdev,
-			  "tx_poll: q %d skb %p completed\n", tx_ring->qid,
-			  xdpf);
+		xdpf = tx_info->xdpf;
+		tx_info->xdpf = NULL;
+		ena_unmap_tx_buff(tx_ring, tx_info);
+		xdp_return_frame(xdpf);
 
 		tx_pkts++;
 		total_done += tx_info->tx_descs;
-
-		xdp_return_frame(xdpf);
 		tx_ring->free_ids[next_to_clean] = req_id;
 		next_to_clean = ENA_TX_RING_IDX_NEXT(next_to_clean,
 						     tx_ring->ring_size);
+
+		netif_dbg(tx_ring->adapter, tx_done, tx_ring->netdev,
+			  "tx_poll: q %d pkt #%d req_id %d\n", tx_ring->qid, tx_pkts, req_id);
 	}
 
 	tx_ring->next_to_clean = next_to_clean;
 	ena_com_comp_ack(tx_ring->ena_com_io_sq, total_done);
-	ena_com_update_dev_comp_head(tx_ring->ena_com_io_cq);
 
 	netif_dbg(tx_ring->adapter, tx_done, tx_ring->netdev,
 		  "tx_poll: q %d done. total pkts: %d\n",
@@ -423,14 +428,11 @@ static int ena_clean_xdp_irq(struct ena_ring *tx_ring, u32 budget)
 int ena_xdp_io_poll(struct napi_struct *napi, int budget)
 {
 	struct ena_napi *ena_napi = container_of(napi, struct ena_napi, napi);
-	u32 xdp_work_done, xdp_budget;
 	struct ena_ring *tx_ring;
-	int napi_comp_call = 0;
+	u32 work_done;
 	int ret;
 
 	tx_ring = ena_napi->tx_ring;
-
-	xdp_budget = budget;
 
 	if (!test_bit(ENA_FLAG_DEV_UP, &tx_ring->adapter->flags) ||
 	    test_bit(ENA_FLAG_TRIGGER_RESET, &tx_ring->adapter->flags)) {
@@ -438,7 +440,7 @@ int ena_xdp_io_poll(struct napi_struct *napi, int budget)
 		return 0;
 	}
 
-	xdp_work_done = ena_clean_xdp_irq(tx_ring, xdp_budget);
+	work_done = ena_clean_xdp_irq(tx_ring, budget);
 
 	/* If the device is about to reset or down, avoid unmask
 	 * the interrupt and return 0 so NAPI won't reschedule
@@ -446,18 +448,19 @@ int ena_xdp_io_poll(struct napi_struct *napi, int budget)
 	if (unlikely(!test_bit(ENA_FLAG_DEV_UP, &tx_ring->adapter->flags))) {
 		napi_complete_done(napi, 0);
 		ret = 0;
-	} else if (xdp_budget > xdp_work_done) {
-		napi_comp_call = 1;
-		if (napi_complete_done(napi, xdp_work_done))
+	} else if (budget > work_done) {
+		ena_increase_stat(&tx_ring->tx_stats.napi_comp, 1,
+				  &tx_ring->syncp);
+		if (napi_complete_done(napi, work_done))
 			ena_unmask_interrupt(tx_ring, NULL);
+
 		ena_update_ring_numa_node(tx_ring, NULL);
-		ret = xdp_work_done;
+		ret = work_done;
 	} else {
-		ret = xdp_budget;
+		ret = budget;
 	}
 
 	u64_stats_update_begin(&tx_ring->syncp);
-	tx_ring->tx_stats.napi_comp += napi_comp_call;
 	tx_ring->tx_stats.tx_poll++;
 	u64_stats_update_end(&tx_ring->syncp);
 	tx_ring->tx_stats.last_napi_jiffies = jiffies;

@@ -660,7 +660,9 @@ static unsigned int bch_root_usage(struct cache_set *c)
 	unsigned int bytes = 0;
 	struct bkey *k;
 	struct btree *b;
-	struct btree_iter_stack iter;
+	struct btree_iter iter;
+
+	min_heap_init(&iter.heap, NULL, MAX_BSETS);
 
 	goto lock_root;
 
@@ -702,13 +704,7 @@ static unsigned int bch_cache_max_chain(struct cache_set *c)
 	for (h = c->bucket_hash;
 	     h < c->bucket_hash + (1 << BUCKET_HASH_BITS);
 	     h++) {
-		unsigned int i = 0;
-		struct hlist_node *p;
-
-		hlist_for_each(p, h)
-			i++;
-
-		ret = max(ret, i);
+		ret = max(ret, hlist_count_nodes(h));
 	}
 
 	mutex_unlock(&c->bucket_lock);
@@ -866,7 +862,8 @@ STORE(__bch_cache_set)
 
 		sc.gfp_mask = GFP_KERNEL;
 		sc.nr_to_scan = strtoul_or_return(buf);
-		c->shrink.scan_objects(&c->shrink, &sc);
+		if (c->shrink)
+			c->shrink->scan_objects(c->shrink, &sc);
 	}
 
 	sysfs_strtoul_clamp(congested_read_threshold_us,

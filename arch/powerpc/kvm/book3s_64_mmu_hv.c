@@ -121,7 +121,7 @@ void kvmppc_set_hpt(struct kvm *kvm, struct kvm_hpt_info *info)
 	kvm->arch.hpt = *info;
 	kvm->arch.sdr1 = __pa(info->virt) | (info->order - 18);
 
-	pr_debug("KVM guest htab at %lx (order %ld), LPID %x\n",
+	pr_debug("KVM guest htab at %lx (order %ld), LPID %llx\n",
 		 info->virt, (long)info->order, kvm->arch.lpid);
 }
 
@@ -1008,18 +1008,6 @@ bool kvm_test_age_gfn_hv(struct kvm *kvm, struct kvm_gfn_range *range)
 		return kvm_test_age_radix(kvm, range->slot, range->start);
 	else
 		return kvm_test_age_rmapp(kvm, range->slot, range->start);
-}
-
-bool kvm_set_spte_gfn_hv(struct kvm *kvm, struct kvm_gfn_range *range)
-{
-	WARN_ON(range->start + 1 != range->end);
-
-	if (kvm_is_radix(kvm))
-		kvm_unmap_radix(kvm, range->slot, range->start);
-	else
-		kvm_unmap_rmapp(kvm, range->slot, range->start);
-
-	return false;
 }
 
 static int vcpus_running(struct kvm *kvm)

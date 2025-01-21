@@ -82,7 +82,7 @@ struct ti_iodelay_reg_data {
 	u32 reg_start_offset;
 	u32 reg_nr_per_pin;
 
-	struct regmap_config *regmap_config;
+	const struct regmap_config *regmap_config;
 };
 
 /**
@@ -776,14 +776,14 @@ static int ti_iodelay_alloc_pins(struct device *dev,
 	return 0;
 }
 
-static struct regmap_config dra7_iodelay_regmap_config = {
+static const struct regmap_config dra7_iodelay_regmap_config = {
 	.reg_bits = 32,
 	.reg_stride = 4,
 	.val_bits = 32,
 	.max_register = 0xd1c,
 };
 
-static struct ti_iodelay_reg_data dra7_iodelay_data = {
+static const struct ti_iodelay_reg_data dra7_iodelay_data = {
 	.signature_mask = 0x0003f000,
 	.signature_value = 0x29,
 	.lock_mask = 0x00000400,

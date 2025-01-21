@@ -17,7 +17,7 @@
 #include <linux/cred.h>
 #include "util.h"
 
-static int proc_ipc_dointvec_minmax_orphans(struct ctl_table *table, int write,
+static int proc_ipc_dointvec_minmax_orphans(const struct ctl_table *table, int write,
 		void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct ipc_namespace *ns =
@@ -33,7 +33,7 @@ static int proc_ipc_dointvec_minmax_orphans(struct ctl_table *table, int write,
 	return err;
 }
 
-static int proc_ipc_auto_msgmni(struct ctl_table *table, int write,
+static int proc_ipc_auto_msgmni(const struct ctl_table *table, int write,
 		void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct ctl_table ipc_table;
@@ -48,7 +48,7 @@ static int proc_ipc_auto_msgmni(struct ctl_table *table, int write,
 	return proc_dointvec_minmax(&ipc_table, write, buffer, lenp, ppos);
 }
 
-static int proc_ipc_sem_dointvec(struct ctl_table *table, int write,
+static int proc_ipc_sem_dointvec(const struct ctl_table *table, int write,
 	void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct ipc_namespace *ns =
@@ -178,7 +178,6 @@ static struct ctl_table ipc_sysctls[] = {
 		.extra2		= SYSCTL_INT_MAX,
 	},
 #endif
-	{}
 };
 
 static struct ctl_table_set *set_lookup(struct ctl_table_root *root)
@@ -204,7 +203,7 @@ static void ipc_set_ownership(struct ctl_table_header *head,
 	*gid = gid_valid(ns_root_gid) ? ns_root_gid : GLOBAL_ROOT_GID;
 }
 
-static int ipc_permissions(struct ctl_table_header *head, struct ctl_table *table)
+static int ipc_permissions(struct ctl_table_header *head, const struct ctl_table *table)
 {
 	int mode = table->mode;
 
@@ -291,8 +290,7 @@ bool setup_ipc_sysctls(struct ipc_namespace *ns)
 				tbl[i].data = NULL;
 		}
 
-		ns->ipc_sysctls = __register_sysctl_table(&ns->ipc_set,
-							  "kernel", tbl,
+		ns->ipc_sysctls = __register_sysctl_table(&ns->ipc_set, "kernel", tbl,
 							  ARRAY_SIZE(ipc_sysctls));
 	}
 	if (!ns->ipc_sysctls) {
@@ -306,7 +304,7 @@ bool setup_ipc_sysctls(struct ipc_namespace *ns)
 
 void retire_ipc_sysctls(struct ipc_namespace *ns)
 {
-	struct ctl_table *tbl;
+	const struct ctl_table *tbl;
 
 	tbl = ns->ipc_sysctls->ctl_table_arg;
 	unregister_sysctl_table(ns->ipc_sysctls);

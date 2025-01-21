@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0
-OBJECT_FILES_NON_STANDARD := y
 
 purgatory-y := purgatory.o stack.o setup-x86_$(BITS).o sha256.o entry64.o string.o
 
@@ -30,14 +29,6 @@ LDFLAGS_purgatory.ro := -r $(PURGATORY_LDFLAGS)
 LDFLAGS_purgatory.chk := $(PURGATORY_LDFLAGS)
 targets += purgatory.ro purgatory.chk
 
-# Sanitizer, etc. runtimes are unavailable and cannot be linked here.
-GCOV_PROFILE	:= n
-KASAN_SANITIZE	:= n
-UBSAN_SANITIZE	:= n
-KCSAN_SANITIZE	:= n
-KMSAN_SANITIZE	:= n
-KCOV_INSTRUMENT := n
-
 # These are adjustments to the compiler flags used for objects that
 # make up the standalone purgatory.ro
 
@@ -62,7 +53,7 @@ ifdef CONFIG_STACKPROTECTOR_STRONG
 PURGATORY_CFLAGS_REMOVE		+= -fstack-protector-strong
 endif
 
-ifdef CONFIG_RETPOLINE
+ifdef CONFIG_MITIGATION_RETPOLINE
 PURGATORY_CFLAGS_REMOVE		+= $(RETPOLINE_CFLAGS)
 endif
 

@@ -49,7 +49,7 @@
  * but there is still a cushion vs. the RSB depth. The algorithm does not
  * claim to be perfect and it can be speculated around by the CPU, but it
  * is considered that it obfuscates the problem enough to make exploitation
- * extremly difficult.
+ * extremely difficult.
  */
 #define RET_DEPTH_SHIFT			5
 #define RSB_RET_STUFF_LOOPS		16
@@ -59,13 +59,13 @@
 
 #ifdef CONFIG_CALL_THUNKS_DEBUG
 # define CALL_THUNKS_DEBUG_INC_CALLS				\
-	incq	%gs:__x86_call_count;
+	incq	PER_CPU_VAR(__x86_call_count);
 # define CALL_THUNKS_DEBUG_INC_RETS				\
-	incq	%gs:__x86_ret_count;
+	incq	PER_CPU_VAR(__x86_ret_count);
 # define CALL_THUNKS_DEBUG_INC_STUFFS				\
-	incq	%gs:__x86_stuffs_count;
+	incq	PER_CPU_VAR(__x86_stuffs_count);
 # define CALL_THUNKS_DEBUG_INC_CTXSW				\
-	incq	%gs:__x86_ctxsw_count;
+	incq	PER_CPU_VAR(__x86_ctxsw_count);
 #else
 # define CALL_THUNKS_DEBUG_INC_CALLS
 # define CALL_THUNKS_DEBUG_INC_RETS
@@ -73,14 +73,11 @@
 # define CALL_THUNKS_DEBUG_INC_CTXSW
 #endif
 
-#if defined(CONFIG_CALL_DEPTH_TRACKING) && !defined(COMPILE_OFFSETS)
+#if defined(CONFIG_MITIGATION_CALL_DEPTH_TRACKING) && !defined(COMPILE_OFFSETS)
 
 #include <asm/asm-offsets.h>
 
 #define CREDIT_CALL_DEPTH					\
-	movq	$-1, PER_CPU_VAR(pcpu_hot + X86_call_depth);
-
-#define ASM_CREDIT_CALL_DEPTH					\
 	movq	$-1, PER_CPU_VAR(pcpu_hot + X86_call_depth);
 
 #define RESET_CALL_DEPTH					\
@@ -95,20 +92,14 @@
 	CALL_THUNKS_DEBUG_INC_CALLS
 
 #define INCREMENT_CALL_DEPTH					\
-	sarq	$5, %gs:pcpu_hot + X86_call_depth;		\
-	CALL_THUNKS_DEBUG_INC_CALLS
-
-#define ASM_INCREMENT_CALL_DEPTH				\
 	sarq	$5, PER_CPU_VAR(pcpu_hot + X86_call_depth);	\
 	CALL_THUNKS_DEBUG_INC_CALLS
 
 #else
 #define CREDIT_CALL_DEPTH
-#define ASM_CREDIT_CALL_DEPTH
 #define RESET_CALL_DEPTH
-#define INCREMENT_CALL_DEPTH
-#define ASM_INCREMENT_CALL_DEPTH
 #define RESET_CALL_DEPTH_FROM_CALL
+#define INCREMENT_CALL_DEPTH
 #endif
 
 /*
@@ -158,7 +149,7 @@
 	jnz	771b;					\
 	/* barrier for jnz misprediction */		\
 	lfence;						\
-	ASM_CREDIT_CALL_DEPTH				\
+	CREDIT_CALL_DEPTH				\
 	CALL_THUNKS_DEBUG_INC_CTXSW
 #else
 /*
@@ -208,11 +199,11 @@
 
 /*
  * Abuse ANNOTATE_RETPOLINE_SAFE on a NOP to indicate UNRET_END, should
- * eventually turn into it's own annotation.
+ * eventually turn into its own annotation.
  */
 .macro VALIDATE_UNRET_END
 #if defined(CONFIG_NOINSTR_VALIDATION) && \
-	(defined(CONFIG_CPU_UNRET_ENTRY) || defined(CONFIG_CPU_SRSO))
+	(defined(CONFIG_MITIGATION_UNRET_ENTRY) || defined(CONFIG_MITIGATION_SRSO))
 	ANNOTATE_RETPOLINE_SAFE
 	nop
 #endif
@@ -241,7 +232,7 @@
  * instruction irrespective of kCFI.
  */
 .macro JMP_NOSPEC reg:req
-#ifdef CONFIG_RETPOLINE
+#ifdef CONFIG_MITIGATION_RETPOLINE
 	__CS_PREFIX \reg
 	jmp	__x86_indirect_thunk_\reg
 #else
@@ -251,7 +242,7 @@
 .endm
 
 .macro CALL_NOSPEC reg:req
-#ifdef CONFIG_RETPOLINE
+#ifdef CONFIG_MITIGATION_RETPOLINE
 	__CS_PREFIX \reg
 	call	__x86_indirect_thunk_\reg
 #else
@@ -280,7 +271,7 @@
  * kernel can support nested alternatives with arbitrary nesting.
  */
 .macro CALL_UNTRAIN_RET
-#if defined(CONFIG_CPU_UNRET_ENTRY) || defined(CONFIG_CPU_SRSO)
+#if defined(CONFIG_MITIGATION_UNRET_ENTRY) || defined(CONFIG_MITIGATION_SRSO)
 	ALTERNATIVE_2 "", "call entry_untrain_ret", X86_FEATURE_UNRET, \
 		          "call srso_alias_untrain_ret", X86_FEATURE_SRSO_ALIAS
 #endif
@@ -298,7 +289,7 @@
  * where we have a stack but before any RET instruction.
  */
 .macro __UNTRAIN_RET ibpb_feature, call_depth_insns
-#if defined(CONFIG_RETHUNK) || defined(CONFIG_CPU_IBPB_ENTRY)
+#if defined(CONFIG_MITIGATION_RETHUNK) || defined(CONFIG_MITIGATION_IBPB_ENTRY)
 	VALIDATE_UNRET_END
 	CALL_UNTRAIN_RET
 	ALTERNATIVE_2 "",						\
@@ -318,9 +309,9 @@
 
 
 .macro CALL_DEPTH_ACCOUNT
-#ifdef CONFIG_CALL_DEPTH_TRACKING
+#ifdef CONFIG_MITIGATION_CALL_DEPTH_TRACKING
 	ALTERNATIVE "",							\
-		    __stringify(ASM_INCREMENT_CALL_DEPTH), X86_FEATURE_CALL_DEPTH
+		    __stringify(INCREMENT_CALL_DEPTH), X86_FEATURE_CALL_DEPTH
 #endif
 .endm
 
@@ -370,13 +361,13 @@ extern retpoline_thunk_t __x86_indirect_thunk_array[];
 extern retpoline_thunk_t __x86_indirect_call_thunk_array[];
 extern retpoline_thunk_t __x86_indirect_jump_thunk_array[];
 
-#ifdef CONFIG_RETHUNK
+#ifdef CONFIG_MITIGATION_RETHUNK
 extern void __x86_return_thunk(void);
 #else
 static inline void __x86_return_thunk(void) {}
 #endif
 
-#ifdef CONFIG_CPU_UNRET_ENTRY
+#ifdef CONFIG_MITIGATION_UNRET_ENTRY
 extern void retbleed_return_thunk(void);
 #else
 static inline void retbleed_return_thunk(void) {}
@@ -384,7 +375,7 @@ static inline void retbleed_return_thunk(void) {}
 
 extern void srso_alias_untrain_ret(void);
 
-#ifdef CONFIG_CPU_SRSO
+#ifdef CONFIG_MITIGATION_SRSO
 extern void srso_return_thunk(void);
 extern void srso_alias_return_thunk(void);
 #else
@@ -396,10 +387,6 @@ extern void retbleed_return_thunk(void);
 extern void srso_return_thunk(void);
 extern void srso_alias_return_thunk(void);
 
-extern void retbleed_untrain_ret(void);
-extern void srso_untrain_ret(void);
-extern void srso_alias_untrain_ret(void);
-
 extern void entry_untrain_ret(void);
 extern void entry_ibpb(void);
 
@@ -409,13 +396,10 @@ extern void clear_bhb_loop(void);
 
 extern void (*x86_return_thunk)(void);
 
-#ifdef CONFIG_CALL_DEPTH_TRACKING
-extern void __x86_return_skl(void);
+extern void __warn_thunk(void);
 
-static inline void x86_set_skl_return_thunk(void)
-{
-	x86_return_thunk = &__x86_return_skl;
-}
+#ifdef CONFIG_MITIGATION_CALL_DEPTH_TRACKING
+extern void call_depth_return_thunk(void);
 
 #define CALL_DEPTH_ACCOUNT					\
 	ALTERNATIVE("",						\
@@ -428,14 +412,14 @@ DECLARE_PER_CPU(u64, __x86_ret_count);
 DECLARE_PER_CPU(u64, __x86_stuffs_count);
 DECLARE_PER_CPU(u64, __x86_ctxsw_count);
 #endif
-#else
-static inline void x86_set_skl_return_thunk(void) {}
+#else /* !CONFIG_MITIGATION_CALL_DEPTH_TRACKING */
 
+static inline void call_depth_return_thunk(void) {}
 #define CALL_DEPTH_ACCOUNT ""
 
-#endif
+#endif /* CONFIG_MITIGATION_CALL_DEPTH_TRACKING */
 
-#ifdef CONFIG_RETPOLINE
+#ifdef CONFIG_MITIGATION_RETPOLINE
 
 #define GEN(reg) \
 	extern retpoline_thunk_t __x86_indirect_thunk_ ## reg;
@@ -456,7 +440,7 @@ static inline void x86_set_skl_return_thunk(void) {}
 
 /*
  * Inline asm uses the %V modifier which is only in newer GCC
- * which is ensured when CONFIG_RETPOLINE is defined.
+ * which is ensured when CONFIG_MITIGATION_RETPOLINE is defined.
  */
 # define CALL_NOSPEC						\
 	ALTERNATIVE_2(						\

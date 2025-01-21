@@ -276,6 +276,10 @@ parisc_cache_init(void)
 	icache_stride = CAFL_STRIDE(cache_info.ic_conf);
 #undef CAFL_STRIDE
 
+	/* stride needs to be non-zero, otherwise cache flushes will not work */
+	WARN_ON(cache_info.dc_size && dcache_stride == 0);
+	WARN_ON(cache_info.ic_size && icache_stride == 0);
+
 	if ((boot_cpu_data.pdc.capabilities & PDC_MODEL_NVA_MASK) ==
 						PDC_MODEL_NVA_UNSUPPORTED) {
 		printk(KERN_WARNING "parisc_cache_init: Only equivalent aliasing supported!\n");
@@ -607,11 +611,7 @@ void __init parisc_setup_cache_timing(void)
 		threshold/1024);
 
 set_tlb_threshold:
-	if (threshold > FLUSH_TLB_THRESHOLD)
-		parisc_tlb_flush_threshold = threshold;
-	else
-		parisc_tlb_flush_threshold = FLUSH_TLB_THRESHOLD;
-
+	parisc_tlb_flush_threshold = max(threshold, FLUSH_TLB_THRESHOLD);
 	printk(KERN_INFO "TLB flush threshold set to %lu KiB\n",
 		parisc_tlb_flush_threshold/1024);
 }

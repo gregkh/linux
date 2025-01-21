@@ -136,10 +136,10 @@ const void *i2c_get_match_data(const struct i2c_client *client)
 }
 EXPORT_SYMBOL(i2c_get_match_data);
 
-static int i2c_device_match(struct device *dev, struct device_driver *drv)
+static int i2c_device_match(struct device *dev, const struct device_driver *drv)
 {
 	struct i2c_client	*client = i2c_verify_client(dev);
-	struct i2c_driver	*driver;
+	const struct i2c_driver	*driver;
 
 
 	/* Attempt an OF style match */
@@ -692,7 +692,7 @@ static struct attribute *i2c_dev_attrs[] = {
 };
 ATTRIBUTE_GROUPS(i2c_dev);
 
-struct bus_type i2c_bus_type = {
+const struct bus_type i2c_bus_type = {
 	.name		= "i2c",
 	.match		= i2c_device_match,
 	.probe		= i2c_device_probe,
@@ -701,7 +701,7 @@ struct bus_type i2c_bus_type = {
 };
 EXPORT_SYMBOL_GPL(i2c_bus_type);
 
-struct device_type i2c_client_type = {
+const struct device_type i2c_client_type = {
 	.groups		= i2c_dev_groups,
 	.uevent		= i2c_device_uevent,
 	.release	= i2c_client_dev_release,
@@ -1094,9 +1094,9 @@ EXPORT_SYMBOL(i2c_find_device_by_fwnode);
 
 
 static const struct i2c_device_id dummy_id[] = {
-	{ "dummy", 0 },
-	{ "smbus_host_notify", 0 },
-	{ },
+	{ "dummy", },
+	{ "smbus_host_notify", },
+	{ }
 };
 
 static int dummy_probe(struct i2c_client *client)
@@ -1226,9 +1226,11 @@ static void i2c_adapter_dev_release(struct device *dev)
 unsigned int i2c_adapter_depth(struct i2c_adapter *adapter)
 {
 	unsigned int depth = 0;
+	struct device *parent;
 
-	while ((adapter = i2c_parent_is_i2c_adapter(adapter)))
-		depth++;
+	for (parent = adapter->dev.parent; parent; parent = parent->parent)
+		if (parent->type == &i2c_adapter_type)
+			depth++;
 
 	WARN_ONCE(depth >= MAX_LOCKDEP_SUBCLASSES,
 		  "adapter depth exceeds lockdep subclass limit\n");
@@ -1370,7 +1372,7 @@ static struct attribute *i2c_adapter_attrs[] = {
 };
 ATTRIBUTE_GROUPS(i2c_adapter);
 
-struct device_type i2c_adapter_type = {
+const struct device_type i2c_adapter_type = {
 	.groups		= i2c_adapter_groups,
 	.release	= i2c_adapter_dev_release,
 };
@@ -1392,10 +1394,6 @@ struct i2c_adapter *i2c_verify_adapter(struct device *dev)
 			: NULL;
 }
 EXPORT_SYMBOL(i2c_verify_adapter);
-
-#ifdef CONFIG_I2C_COMPAT
-static struct class_compat *i2c_adapter_compat_class;
-#endif
 
 static void i2c_scan_static_board_info(struct i2c_adapter *adapter)
 {
@@ -1495,6 +1493,8 @@ int i2c_handle_smbus_host_notify(struct i2c_adapter *adap, unsigned short addr)
 	if (!adap)
 		return -EINVAL;
 
+	dev_dbg(&adap->dev, "Detected HostNotify from address 0x%02x", addr);
+
 	irq = irq_find_mapping(adap->host_notify_domain, addr);
 	if (irq <= 0)
 		return -ENXIO;
@@ -1548,7 +1548,18 @@ static int i2c_register_adapter(struct i2c_adapter *adap)
 	dev_set_name(&adap->dev, "i2c-%d", adap->nr);
 	adap->dev.bus = &i2c_bus_type;
 	adap->dev.type = &i2c_adapter_type;
-	res = device_register(&adap->dev);
+	device_initialize(&adap->dev);
+
+	/*
+	 * This adapter can be used as a parent immediately after device_add(),
+	 * setup runtime-pm (especially ignore-children) before hand.
+	 */
+	device_enable_async_suspend(&adap->dev);
+	pm_runtime_no_callbacks(&adap->dev);
+	pm_suspend_ignore_children(&adap->dev, true);
+	pm_runtime_enable(&adap->dev);
+
+	res = device_add(&adap->dev);
 	if (res) {
 		pr_err("adapter '%s': can't register device (%d)\n", adap->name, res);
 		goto out_list;
@@ -1560,24 +1571,11 @@ static int i2c_register_adapter(struct i2c_adapter *adap)
 	if (res)
 		goto out_reg;
 
-	device_enable_async_suspend(&adap->dev);
-	pm_runtime_no_callbacks(&adap->dev);
-	pm_suspend_ignore_children(&adap->dev, true);
-	pm_runtime_enable(&adap->dev);
-
 	res = i2c_init_recovery(adap);
 	if (res == -EPROBE_DEFER)
 		goto out_reg;
 
 	dev_dbg(&adap->dev, "adapter [%s] registered\n", adap->name);
-
-#ifdef CONFIG_I2C_COMPAT
-	res = class_compat_create_link(i2c_adapter_compat_class, &adap->dev,
-				       adap->dev.parent);
-	if (res)
-		dev_warn(&adap->dev,
-			 "Failed to create compatibility class link\n");
-#endif
 
 	/* create pre-declared device nodes */
 	of_i2c_register_devices(adap);
@@ -1784,11 +1782,6 @@ void i2c_del_adapter(struct i2c_adapter *adap)
 	 * them up properly, so we give them a chance to do that first. */
 	device_for_each_child(&adap->dev, NULL, __unregister_client);
 	device_for_each_child(&adap->dev, NULL, __unregister_dummy);
-
-#ifdef CONFIG_I2C_COMPAT
-	class_compat_remove_link(i2c_adapter_compat_class, &adap->dev,
-				 adap->dev.parent);
-#endif
 
 	/* device name is gone after device_unregister */
 	dev_dbg(&adap->dev, "adapter [%s] unregistered\n", adap->name);
@@ -2098,13 +2091,6 @@ static int __init i2c_init(void)
 
 	i2c_debugfs_root = debugfs_create_dir("i2c", NULL);
 
-#ifdef CONFIG_I2C_COMPAT
-	i2c_adapter_compat_class = class_compat_register("i2c-adapter");
-	if (!i2c_adapter_compat_class) {
-		retval = -ENOMEM;
-		goto bus_err;
-	}
-#endif
 	retval = i2c_add_driver(&dummy_driver);
 	if (retval)
 		goto class_err;
@@ -2117,10 +2103,6 @@ static int __init i2c_init(void)
 	return 0;
 
 class_err:
-#ifdef CONFIG_I2C_COMPAT
-	class_compat_unregister(i2c_adapter_compat_class);
-bus_err:
-#endif
 	is_registered = false;
 	bus_unregister(&i2c_bus_type);
 	return retval;
@@ -2133,9 +2115,6 @@ static void __exit i2c_exit(void)
 	if (IS_ENABLED(CONFIG_OF_DYNAMIC))
 		WARN_ON(of_reconfig_notifier_unregister(&i2c_of_notifier));
 	i2c_del_driver(&dummy_driver);
-#ifdef CONFIG_I2C_COMPAT
-	class_compat_unregister(i2c_adapter_compat_class);
-#endif
 	debugfs_remove_recursive(i2c_debugfs_root);
 	bus_unregister(&i2c_bus_type);
 	tracepoint_synchronize_unregister();

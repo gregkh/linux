@@ -277,6 +277,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 {
 	struct mtd_blktrans_ops *tr = new->tr;
 	struct mtd_blktrans_dev *d;
+	struct queue_limits lim = { };
 	int last_devnum = -1;
 	struct gendisk *gd;
 	int ret;
@@ -331,9 +332,15 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 			BLK_MQ_F_SHOULD_MERGE | BLK_MQ_F_BLOCKING);
 	if (ret)
 		goto out_kfree_tag_set;
+	
+	lim.logical_block_size = tr->blksize;
+	if (tr->discard)
+		lim.max_hw_discard_sectors = UINT_MAX;
+	if (tr->flush)
+		lim.features |= BLK_FEAT_WRITE_CACHE;
 
 	/* Create gendisk */
-	gd = blk_mq_alloc_disk(new->tag_set, new);
+	gd = blk_mq_alloc_disk(new->tag_set, &lim, new);
 	if (IS_ERR(gd)) {
 		ret = PTR_ERR(gd);
 		goto out_free_tag_set;
@@ -367,20 +374,6 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	/* Create the request queue */
 	spin_lock_init(&new->queue_lock);
 	INIT_LIST_HEAD(&new->rq_list);
-
-	if (tr->flush)
-		blk_queue_write_cache(new->rq, true, false);
-
-	blk_queue_logical_block_size(new->rq, tr->blksize);
-
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, new->rq);
-	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, new->rq);
-
-	if (tr->discard) {
-		blk_queue_max_discard_sectors(new->rq, UINT_MAX);
-		new->rq->limits.discard_granularity = tr->blksize;
-	}
-
 	gd->queue = new->rq;
 
 	if (new->readonly)

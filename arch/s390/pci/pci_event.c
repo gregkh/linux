@@ -59,9 +59,16 @@ static inline bool ers_result_indicates_abort(pci_ers_result_t ers_res)
 	}
 }
 
-static bool is_passed_through(struct zpci_dev *zdev)
+static bool is_passed_through(struct pci_dev *pdev)
 {
-	return zdev->s390_domain;
+	struct zpci_dev *zdev = to_zpci(pdev);
+	bool ret;
+
+	mutex_lock(&zdev->kzdev_lock);
+	ret = !!zdev->kzdev;
+	mutex_unlock(&zdev->kzdev_lock);
+
+	return ret;
 }
 
 static bool is_driver_supported(struct pci_driver *driver)
@@ -176,7 +183,7 @@ static pci_ers_result_t zpci_event_attempt_error_recovery(struct pci_dev *pdev)
 	}
 	pdev->error_state = pci_channel_io_frozen;
 
-	if (is_passed_through(to_zpci(pdev))) {
+	if (is_passed_through(pdev)) {
 		pr_info("%s: Cannot be recovered in the host because it is a pass-through device\n",
 			pci_name(pdev));
 		goto out_unlock;
@@ -239,7 +246,7 @@ static void zpci_event_io_failure(struct pci_dev *pdev, pci_channel_state_t es)
 	 * we will inject the error event and let the guest recover the device
 	 * itself.
 	 */
-	if (is_passed_through(to_zpci(pdev)))
+	if (is_passed_through(pdev))
 		goto out;
 	driver = to_pci_driver(pdev->dev.driver);
 	if (driver && driver->err_handler && driver->err_handler->error_detected)
@@ -260,6 +267,7 @@ static void __zpci_event_error(struct zpci_ccdf_err *ccdf)
 	zpci_err_hex(ccdf, sizeof(*ccdf));
 
 	if (zdev) {
+		mutex_lock(&zdev->state_lock);
 		zpci_update_fh(zdev, ccdf->fh);
 		if (zdev->zbus->bus)
 			pdev = pci_get_slot(zdev->zbus->bus, zdev->devfn);
@@ -288,6 +296,8 @@ static void __zpci_event_error(struct zpci_ccdf_err *ccdf)
 	}
 	pci_dev_put(pdev);
 no_pdev:
+	if (zdev)
+		mutex_unlock(&zdev->state_lock);
 	zpci_zdev_put(zdev);
 }
 
@@ -307,8 +317,6 @@ static void zpci_event_hard_deconfigured(struct zpci_dev *zdev, u32 fh)
 	/* Even though the device is already gone we still
 	 * need to free zPCI resources as part of the disable.
 	 */
-	if (zdev->dma_table)
-		zpci_dma_exit_device(zdev);
 	if (zdev_enabled(zdev))
 		zpci_disable_device(zdev);
 	zdev->state = ZPCI_FN_STATE_STANDBY;
@@ -322,12 +330,20 @@ static void __zpci_event_availability(struct zpci_ccdf_avail *ccdf)
 
 	zpci_dbg(3, "avl fid:%x, fh:%x, pec:%x\n",
 		 ccdf->fid, ccdf->fh, ccdf->pec);
+
+	if (existing_zdev)
+		mutex_lock(&zdev->state_lock);
+
 	switch (ccdf->pec) {
 	case 0x0301: /* Reserved|Standby -> Configured */
 		if (!zdev) {
 			zdev = zpci_create_device(ccdf->fid, ccdf->fh, ZPCI_FN_STATE_CONFIGURED);
 			if (IS_ERR(zdev))
 				break;
+			if (zpci_add_device(zdev)) {
+				kfree(zdev);
+				break;
+			}
 		} else {
 			/* the configuration request may be stale */
 			if (zdev->state != ZPCI_FN_STATE_STANDBY)
@@ -337,14 +353,21 @@ static void __zpci_event_availability(struct zpci_ccdf_avail *ccdf)
 		zpci_scan_configured_device(zdev, ccdf->fh);
 		break;
 	case 0x0302: /* Reserved -> Standby */
-		if (!zdev)
-			zpci_create_device(ccdf->fid, ccdf->fh, ZPCI_FN_STATE_STANDBY);
-		else
+		if (!zdev) {
+			zdev = zpci_create_device(ccdf->fid, ccdf->fh, ZPCI_FN_STATE_STANDBY);
+			if (IS_ERR(zdev))
+				break;
+			if (zpci_add_device(zdev)) {
+				kfree(zdev);
+				break;
+			}
+		} else {
 			zpci_update_fh(zdev, ccdf->fh);
+		}
 		break;
 	case 0x0303: /* Deconfiguration requested */
 		if (zdev) {
-			/* The event may have been queued before we confirgured
+			/* The event may have been queued before we configured
 			 * the device.
 			 */
 			if (zdev->state != ZPCI_FN_STATE_CONFIGURED)
@@ -355,7 +378,7 @@ static void __zpci_event_availability(struct zpci_ccdf_avail *ccdf)
 		break;
 	case 0x0304: /* Configured -> Standby|Reserved */
 		if (zdev) {
-			/* The event may have been queued before we confirgured
+			/* The event may have been queued before we configured
 			 * the device.:
 			 */
 			if (zdev->state == ZPCI_FN_STATE_CONFIGURED)
@@ -369,7 +392,7 @@ static void __zpci_event_availability(struct zpci_ccdf_avail *ccdf)
 		break;
 	case 0x0306: /* 0x308 or 0x302 for multiple devices */
 		zpci_remove_reserved_devices();
-		clp_scan_pci_devices();
+		zpci_scan_devices();
 		break;
 	case 0x0308: /* Standby -> Reserved */
 		if (!zdev)
@@ -379,8 +402,10 @@ static void __zpci_event_availability(struct zpci_ccdf_avail *ccdf)
 	default:
 		break;
 	}
-	if (existing_zdev)
+	if (existing_zdev) {
+		mutex_unlock(&zdev->state_lock);
 		zpci_zdev_put(zdev);
+	}
 }
 
 void zpci_event_availability(void *data)

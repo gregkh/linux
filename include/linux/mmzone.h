@@ -22,19 +22,20 @@
 #include <linux/mm_types.h>
 #include <linux/page-flags.h>
 #include <linux/local_lock.h>
+#include <linux/zswap.h>
 #include <asm/page.h>
 
 /* Free memory management - zoned buddy allocator.  */
 #ifndef CONFIG_ARCH_FORCE_MAX_ORDER
-#define MAX_ORDER 10
+#define MAX_PAGE_ORDER 10
 #else
-#define MAX_ORDER CONFIG_ARCH_FORCE_MAX_ORDER
+#define MAX_PAGE_ORDER CONFIG_ARCH_FORCE_MAX_ORDER
 #endif
-#define MAX_ORDER_NR_PAGES (1 << MAX_ORDER)
+#define MAX_ORDER_NR_PAGES (1 << MAX_PAGE_ORDER)
 
 #define IS_MAX_ORDER_ALIGNED(pfn) IS_ALIGNED(pfn, MAX_ORDER_NR_PAGES)
 
-#define NR_PAGE_ORDERS (MAX_ORDER + 1)
+#define NR_PAGE_ORDERS (MAX_PAGE_ORDER + 1)
 
 /*
  * PAGE_ALLOC_COSTLY_ORDER is the order at which allocations are deemed
@@ -75,9 +76,12 @@ extern const char * const migratetype_names[MIGRATE_TYPES];
 #ifdef CONFIG_CMA
 #  define is_migrate_cma(migratetype) unlikely((migratetype) == MIGRATE_CMA)
 #  define is_migrate_cma_page(_page) (get_pageblock_migratetype(_page) == MIGRATE_CMA)
+#  define is_migrate_cma_folio(folio, pfn)	(MIGRATE_CMA ==		\
+	get_pfnblock_flags_mask(&folio->page, pfn, MIGRATETYPE_MASK))
 #else
 #  define is_migrate_cma(migratetype) false
 #  define is_migrate_cma_page(_page) false
+#  define is_migrate_cma_folio(folio, pfn) false
 #endif
 
 static inline bool is_migrate_movable(int mt)
@@ -201,7 +205,10 @@ enum node_stat_item {
 	NR_KERNEL_SCS_KB,	/* measured in KiB */
 #endif
 	NR_PAGETABLE,		/* used for pagetables */
-	NR_SECONDARY_PAGETABLE, /* secondary pagetables, e.g. KVM pagetables */
+	NR_SECONDARY_PAGETABLE, /* secondary pagetables, KVM & IOMMU */
+#ifdef CONFIG_IOMMU_SUPPORT
+	NR_IOMMU_PAGES,		/* # of pages allocated by IOMMU */
+#endif
 #ifdef CONFIG_SWAP
 	NR_SWAPCACHE,
 #endif
@@ -209,6 +216,10 @@ enum node_stat_item {
 	PGPROMOTE_SUCCESS,	/* promote successfully */
 	PGPROMOTE_CANDIDATE,	/* candidate pages to promote */
 #endif
+	/* PGDEMOTE_*: pages demoted */
+	PGDEMOTE_KSWAPD,
+	PGDEMOTE_DIRECT,
+	PGDEMOTE_KHUGEPAGED,
 	NR_VM_NODE_STAT_ITEMS
 };
 
@@ -437,21 +448,17 @@ struct lru_gen_folio {
 	atomic_long_t refaulted[NR_HIST_GENS][ANON_AND_FILE][MAX_NR_TIERS];
 	/* whether the multi-gen LRU is enabled */
 	bool enabled;
-#ifdef CONFIG_MEMCG
 	/* the memcg generation this lru_gen_folio belongs to */
 	u8 gen;
 	/* the list segment this lru_gen_folio belongs to */
 	u8 seg;
 	/* per-node lru_gen_folio list for global reclaim */
 	struct hlist_nulls_node list;
-#endif
 };
 
 enum {
 	MM_LEAF_TOTAL,		/* total leaf entries */
-	MM_LEAF_OLD,		/* old leaf entries */
 	MM_LEAF_YOUNG,		/* young leaf entries */
-	MM_NONLEAF_TOTAL,	/* total non-leaf entries */
 	MM_NONLEAF_FOUND,	/* non-leaf entries found in Bloom filters */
 	MM_NONLEAF_ADDED,	/* non-leaf entries added to Bloom filters */
 	NR_MM_STATS
@@ -461,7 +468,7 @@ enum {
 #define NR_BLOOM_FILTERS	2
 
 struct lru_gen_mm_state {
-	/* set to max_seq after each iteration */
+	/* synced with max_seq after each iteration */
 	unsigned long seq;
 	/* where the current iteration continues after */
 	struct list_head *head;
@@ -476,8 +483,8 @@ struct lru_gen_mm_state {
 struct lru_gen_mm_walk {
 	/* the lruvec under reclaim */
 	struct lruvec *lruvec;
-	/* unstable max_seq from lru_gen_folio */
-	unsigned long max_seq;
+	/* max_seq from lru_gen_folio: can be out of date */
+	unsigned long seq;
 	/* the next address within an mm to scan */
 	unsigned long next_addr;
 	/* to batch promoted pages */
@@ -489,11 +496,6 @@ struct lru_gen_mm_walk {
 	bool can_swap;
 	bool force_scan;
 };
-
-void lru_gen_init_lruvec(struct lruvec *lruvec);
-void lru_gen_look_around(struct page_vma_mapped_walk *pvmw);
-
-#ifdef CONFIG_MEMCG
 
 /*
  * For each node, memcgs are divided into two generations: the old and the
@@ -552,6 +554,8 @@ struct lru_gen_memcg {
 };
 
 void lru_gen_init_pgdat(struct pglist_data *pgdat);
+void lru_gen_init_lruvec(struct lruvec *lruvec);
+bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw);
 
 void lru_gen_init_memcg(struct mem_cgroup *memcg);
 void lru_gen_exit_memcg(struct mem_cgroup *memcg);
@@ -559,19 +563,6 @@ void lru_gen_online_memcg(struct mem_cgroup *memcg);
 void lru_gen_offline_memcg(struct mem_cgroup *memcg);
 void lru_gen_release_memcg(struct mem_cgroup *memcg);
 void lru_gen_soft_reclaim(struct mem_cgroup *memcg, int nid);
-
-#else /* !CONFIG_MEMCG */
-
-#define MEMCG_NR_GENS	1
-
-struct lru_gen_memcg {
-};
-
-static inline void lru_gen_init_pgdat(struct pglist_data *pgdat)
-{
-}
-
-#endif /* CONFIG_MEMCG */
 
 #else /* !CONFIG_LRU_GEN */
 
@@ -583,11 +574,10 @@ static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
 {
 }
 
-static inline void lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
+static inline bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
 {
+	return false;
 }
-
-#ifdef CONFIG_MEMCG
 
 static inline void lru_gen_init_memcg(struct mem_cgroup *memcg)
 {
@@ -613,8 +603,6 @@ static inline void lru_gen_soft_reclaim(struct mem_cgroup *memcg, int nid)
 {
 }
 
-#endif /* CONFIG_MEMCG */
-
 #endif /* CONFIG_LRU_GEN */
 
 struct lruvec {
@@ -637,16 +625,17 @@ struct lruvec {
 #ifdef CONFIG_LRU_GEN
 	/* evictable pages divided into generations */
 	struct lru_gen_folio		lrugen;
+#ifdef CONFIG_LRU_GEN_WALKS_MMU
 	/* to concurrently iterate lru_gen_mm_list */
 	struct lru_gen_mm_state		mm_state;
 #endif
+#endif /* CONFIG_LRU_GEN */
 #ifdef CONFIG_MEMCG
 	struct pglist_data *pgdat;
 #endif
+	struct zswap_lruvec_state zswap_lruvec_state;
 };
 
-/* Isolate unmapped pages */
-#define ISOLATE_UNMAPPED	((__force isolate_mode_t)0x2)
 /* Isolate for asynchronous migration */
 #define ISOLATE_ASYNC_MIGRATE	((__force isolate_mode_t)0x4)
 /* Isolate unevictable pages */
@@ -676,20 +665,34 @@ enum zone_watermarks {
 #define NR_LOWORDER_PCP_LISTS (MIGRATE_PCPTYPES * (PAGE_ALLOC_COSTLY_ORDER + 1))
 #define NR_PCP_LISTS (NR_LOWORDER_PCP_LISTS + NR_PCP_THP)
 
-#define min_wmark_pages(z) (z->_watermark[WMARK_MIN] + z->watermark_boost)
-#define low_wmark_pages(z) (z->_watermark[WMARK_LOW] + z->watermark_boost)
-#define high_wmark_pages(z) (z->_watermark[WMARK_HIGH] + z->watermark_boost)
-#define wmark_pages(z, i) (z->_watermark[i] + z->watermark_boost)
+/*
+ * Flags used in pcp->flags field.
+ *
+ * PCPF_PREV_FREE_HIGH_ORDER: a high-order page is freed in the
+ * previous page freeing.  To avoid to drain PCP for an accident
+ * high-order page freeing.
+ *
+ * PCPF_FREE_HIGH_BATCH: preserve "pcp->batch" pages in PCP before
+ * draining PCP for consecutive high-order pages freeing without
+ * allocation if data cache slice of CPU is large enough.  To reduce
+ * zone lock contention and keep cache-hot pages reusing.
+ */
+#define	PCPF_PREV_FREE_HIGH_ORDER	BIT(0)
+#define	PCPF_FREE_HIGH_BATCH		BIT(1)
 
 struct per_cpu_pages {
 	spinlock_t lock;	/* Protects lists field */
 	int count;		/* number of pages in the list */
 	int high;		/* high watermark, emptying needed */
+	int high_min;		/* min high watermark */
+	int high_max;		/* max high watermark */
 	int batch;		/* chunk size for buddy add/remove */
-	short free_factor;	/* batch scaling factor during free */
+	u8 flags;		/* protected by pcp->lock */
+	u8 alloc_factor;	/* batch scaling factor during allocate */
 #ifdef CONFIG_NUMA
-	short expire;		/* When 0, remote pagesets are drained */
+	u8 expire;		/* When 0, remote pagesets are drained */
 #endif
+	short free_count;	/* consecutive free count */
 
 	/* Lists of pages, one per migrate type stored on the pcp-lists */
 	struct list_head lists[NR_PCP_LISTS];
@@ -820,6 +823,7 @@ struct zone {
 	unsigned long watermark_boost;
 
 	unsigned long nr_reserved_highatomic;
+	unsigned long nr_free_highatomic;
 
 	/*
 	 * We don't know if the memory that we're going to allocate will be
@@ -842,7 +846,8 @@ struct zone {
 	 * the high and batch values are copied to individual pagesets for
 	 * faster access
 	 */
-	int pageset_high;
+	int pageset_high_min;
+	int pageset_high_max;
 	int pageset_batch;
 
 #ifndef CONFIG_SPARSEMEM
@@ -933,7 +938,7 @@ struct zone {
 	struct free_area	free_area[NR_PAGE_ORDERS];
 
 #ifdef CONFIG_UNACCEPTED_MEMORY
-	/* Pages to be accepted. All pages on the list are MAX_ORDER */
+	/* Pages to be accepted. All pages on the list are MAX_PAGE_ORDER */
 	struct list_head	unaccepted_pages;
 #endif
 
@@ -1003,7 +1008,34 @@ enum zone_flags {
 					 * Cleared when kswapd is woken.
 					 */
 	ZONE_RECLAIM_ACTIVE,		/* kswapd may be scanning the zone. */
+	ZONE_BELOW_HIGH,		/* zone is below high watermark. */
 };
+
+static inline unsigned long wmark_pages(const struct zone *z,
+					enum zone_watermarks w)
+{
+	return z->_watermark[w] + z->watermark_boost;
+}
+
+static inline unsigned long min_wmark_pages(const struct zone *z)
+{
+	return wmark_pages(z, WMARK_MIN);
+}
+
+static inline unsigned long low_wmark_pages(const struct zone *z)
+{
+	return wmark_pages(z, WMARK_LOW);
+}
+
+static inline unsigned long high_wmark_pages(const struct zone *z)
+{
+	return wmark_pages(z, WMARK_HIGH);
+}
+
+static inline unsigned long promo_wmark_pages(const struct zone *z)
+{
+	return wmark_pages(z, WMARK_PROMO);
+}
 
 static inline unsigned long zone_managed_pages(struct zone *zone)
 {
@@ -1677,7 +1709,7 @@ static inline struct zoneref *first_zones_zonelist(struct zonelist *zonelist,
 			zone = zonelist_zone(z))
 
 #define for_next_zone_zonelist_nodemask(zone, z, highidx, nodemask) \
-	for (zone = z->zone;	\
+	for (zone = zonelist_zone(z);	\
 		zone;							\
 		z = next_zones_zonelist(++z, highidx, nodemask),	\
 			zone = zonelist_zone(z))
@@ -1713,7 +1745,7 @@ static inline bool movable_only_nodes(nodemask_t *nodes)
 	nid = first_node(*nodes);
 	zonelist = &NODE_DATA(nid)->node_zonelists[ZONELIST_FALLBACK];
 	z = first_zones_zonelist(zonelist, ZONE_NORMAL,	nodes);
-	return (!z->zone) ? true : false;
+	return (!zonelist_zone(z)) ? true : false;
 }
 
 
@@ -1742,8 +1774,8 @@ static inline bool movable_only_nodes(nodemask_t *nodes)
 #define SECTION_BLOCKFLAGS_BITS \
 	((1UL << (PFN_SECTION_SHIFT - pageblock_order)) * NR_PAGEBLOCK_BITS)
 
-#if (MAX_ORDER + PAGE_SHIFT) > SECTION_SIZE_BITS
-#error Allocator MAX_ORDER exceeds SECTION_SIZE
+#if (MAX_PAGE_ORDER + PAGE_SHIFT) > SECTION_SIZE_BITS
+#error Allocator MAX_PAGE_ORDER exceeds SECTION_SIZE
 #endif
 
 static inline unsigned long pfn_to_section_nr(unsigned long pfn)

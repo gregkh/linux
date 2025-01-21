@@ -15,8 +15,7 @@
 #include <linux/mfd/intel_soc_pmic.h>
 #include <linux/mfd/intel_soc_pmic_bxtwc.h>
 #include <linux/module.h>
-
-#include <asm/intel_scu_ipc.h>
+#include <linux/platform_data/x86/intel_scu_ipc.h>
 
 /* PMIC device registers */
 #define REG_ADDR_MASK		GENMASK(15, 8)
@@ -138,7 +137,7 @@ static const struct regmap_irq bxtwc_regmap_irqs_crit[] = {
 	REGMAP_IRQ_REG(BXTWC_CRIT_IRQ, 0, GENMASK(1, 0)),
 };
 
-static struct regmap_irq_chip bxtwc_regmap_irq_chip = {
+static const struct regmap_irq_chip bxtwc_regmap_irq_chip = {
 	.name = "bxtwc_irq_chip",
 	.status_base = BXTWC_IRQLVL1,
 	.mask_base = BXTWC_MIRQLVL1,
@@ -147,8 +146,9 @@ static struct regmap_irq_chip bxtwc_regmap_irq_chip = {
 	.num_regs = 1,
 };
 
-static struct regmap_irq_chip bxtwc_regmap_irq_chip_pwrbtn = {
+static const struct regmap_irq_chip bxtwc_regmap_irq_chip_pwrbtn = {
 	.name = "bxtwc_irq_chip_pwrbtn",
+	.domain_suffix = "PWRBTN",
 	.status_base = BXTWC_PWRBTNIRQ,
 	.mask_base = BXTWC_MPWRBTNIRQ,
 	.irqs = bxtwc_regmap_irqs_pwrbtn,
@@ -156,8 +156,9 @@ static struct regmap_irq_chip bxtwc_regmap_irq_chip_pwrbtn = {
 	.num_regs = 1,
 };
 
-static struct regmap_irq_chip bxtwc_regmap_irq_chip_tmu = {
+static const struct regmap_irq_chip bxtwc_regmap_irq_chip_tmu = {
 	.name = "bxtwc_irq_chip_tmu",
+	.domain_suffix = "TMU",
 	.status_base = BXTWC_TMUIRQ,
 	.mask_base = BXTWC_MTMUIRQ,
 	.irqs = bxtwc_regmap_irqs_tmu,
@@ -165,8 +166,9 @@ static struct regmap_irq_chip bxtwc_regmap_irq_chip_tmu = {
 	.num_regs = 1,
 };
 
-static struct regmap_irq_chip bxtwc_regmap_irq_chip_bcu = {
+static const struct regmap_irq_chip bxtwc_regmap_irq_chip_bcu = {
 	.name = "bxtwc_irq_chip_bcu",
+	.domain_suffix = "BCU",
 	.status_base = BXTWC_BCUIRQ,
 	.mask_base = BXTWC_MBCUIRQ,
 	.irqs = bxtwc_regmap_irqs_bcu,
@@ -174,8 +176,9 @@ static struct regmap_irq_chip bxtwc_regmap_irq_chip_bcu = {
 	.num_regs = 1,
 };
 
-static struct regmap_irq_chip bxtwc_regmap_irq_chip_adc = {
+static const struct regmap_irq_chip bxtwc_regmap_irq_chip_adc = {
 	.name = "bxtwc_irq_chip_adc",
+	.domain_suffix = "ADC",
 	.status_base = BXTWC_ADCIRQ,
 	.mask_base = BXTWC_MADCIRQ,
 	.irqs = bxtwc_regmap_irqs_adc,
@@ -183,8 +186,9 @@ static struct regmap_irq_chip bxtwc_regmap_irq_chip_adc = {
 	.num_regs = 1,
 };
 
-static struct regmap_irq_chip bxtwc_regmap_irq_chip_chgr = {
+static const struct regmap_irq_chip bxtwc_regmap_irq_chip_chgr = {
 	.name = "bxtwc_irq_chip_chgr",
+	.domain_suffix = "CHGR",
 	.status_base = BXTWC_CHGR0IRQ,
 	.mask_base = BXTWC_MCHGR0IRQ,
 	.irqs = bxtwc_regmap_irqs_chgr,
@@ -192,8 +196,9 @@ static struct regmap_irq_chip bxtwc_regmap_irq_chip_chgr = {
 	.num_regs = 2,
 };
 
-static struct regmap_irq_chip bxtwc_regmap_irq_chip_crit = {
+static const struct regmap_irq_chip bxtwc_regmap_irq_chip_crit = {
 	.name = "bxtwc_irq_chip_crit",
+	.domain_suffix = "CRIT",
 	.status_base = BXTWC_CRITIRQ,
 	.mask_base = BXTWC_MCRITIRQ,
 	.irqs = bxtwc_regmap_irqs_crit,
@@ -613,5 +618,6 @@ static struct platform_driver bxtwc_driver = {
 
 module_platform_driver(bxtwc_driver);
 
+MODULE_DESCRIPTION("Intel Broxton Whiskey Cove PMIC MFD core driver");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Qipeng Zha <qipeng.zha@intel.com>");

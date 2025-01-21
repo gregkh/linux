@@ -147,7 +147,7 @@ static int tpm_tis_spi_transfer_full(struct tpm_tis_data *data, u32 addr,
 	struct spi_transfer spi_xfer;
 	u8 transfer_len;
 
-	spi_bus_lock(phy->spi_device->master);
+	spi_bus_lock(phy->spi_device->controller);
 
 	while (len) {
 		transfer_len = min_t(u16, len, MAX_SPI_FRAMESIZE);
@@ -211,7 +211,7 @@ exit:
 		spi_sync_locked(phy->spi_device, &m);
 	}
 
-	spi_bus_unlock(phy->spi_device->master);
+	spi_bus_unlock(phy->spi_device->controller);
 	return ret;
 }
 
@@ -318,6 +318,7 @@ static void tpm_tis_spi_remove(struct spi_device *dev)
 }
 
 static const struct spi_device_id tpm_tis_spi_id[] = {
+	{ "attpm20p", (unsigned long)tpm_tis_spi_probe },
 	{ "st33htpm-spi", (unsigned long)tpm_tis_spi_probe },
 	{ "slb9670", (unsigned long)tpm_tis_spi_probe },
 	{ "tpm_tis_spi", (unsigned long)tpm_tis_spi_probe },
@@ -328,6 +329,7 @@ static const struct spi_device_id tpm_tis_spi_id[] = {
 MODULE_DEVICE_TABLE(spi, tpm_tis_spi_id);
 
 static const struct of_device_id of_tis_spi_match[] __maybe_unused = {
+	{ .compatible = "atmel,attpm20p", .data = tpm_tis_spi_probe },
 	{ .compatible = "st,st33htpm-spi", .data = tpm_tis_spi_probe },
 	{ .compatible = "infineon,slb9670", .data = tpm_tis_spi_probe },
 	{ .compatible = "tcg,tpm_tis-spi", .data = tpm_tis_spi_probe },

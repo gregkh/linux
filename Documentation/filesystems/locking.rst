@@ -29,7 +29,7 @@ prototypes::
 	char *(*d_dname)((struct dentry *dentry, char *buffer, int buflen);
 	struct vfsmount *(*d_automount)(struct path *path);
 	int (*d_manage)(const struct path *, bool);
-	struct dentry *(*d_real)(struct dentry *, const struct inode *);
+	struct dentry *(*d_real)(struct dentry *, enum d_real_type type);
 
 locking rules:
 
@@ -251,10 +251,10 @@ prototypes::
 	void (*readahead)(struct readahead_control *);
 	int (*write_begin)(struct file *, struct address_space *mapping,
 				loff_t pos, unsigned len,
-				struct page **pagep, void **fsdata);
+				struct folio **foliop, void **fsdata);
 	int (*write_end)(struct file *, struct address_space *mapping,
 				loff_t pos, unsigned len, unsigned copied,
-				struct page *page, void *fsdata);
+				struct folio *folio, void *fsdata);
 	sector_t (*bmap)(struct address_space *, sector_t);
 	void (*invalidate_folio) (struct folio *, size_t start, size_t len);
 	bool (*release_folio)(struct folio *, gfp_t);
@@ -264,7 +264,7 @@ prototypes::
 			struct folio *src, enum migrate_mode);
 	int (*launder_folio)(struct folio *);
 	bool (*is_partially_uptodate)(struct folio *, size_t from, size_t count);
-	int (*error_remove_page)(struct address_space *, struct page *);
+	int (*error_remove_folio)(struct address_space *, struct folio *);
 	int (*swap_activate)(struct swap_info_struct *sis, struct file *f, sector_t *span)
 	int (*swap_deactivate)(struct file *);
 	int (*swap_rw)(struct kiocb *iocb, struct iov_iter *iter);
@@ -280,7 +280,7 @@ read_folio:		yes, unlocks				shared
 writepages:
 dirty_folio:		maybe
 readahead:		yes, unlocks				shared
-write_begin:		locks the page		 exclusive
+write_begin:		locks the folio		 exclusive
 write_end:		yes, unlocks		 exclusive
 bmap:
 invalidate_folio:	yes					exclusive
@@ -290,7 +290,7 @@ direct_IO:
 migrate_folio:		yes (both)
 launder_folio:		yes
 is_partially_uptodate:	yes
-error_remove_page:	yes
+error_remove_folio:	yes
 swap_activate:		no
 swap_deactivate:	no
 swap_rw:		yes, unlocks

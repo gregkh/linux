@@ -109,7 +109,7 @@ static int _ecdsa_verify(struct ecc_ctx *ctx, const u64 *hash, const u64 *r, con
 
 	/* res.x = res.x mod n (if res.x > order) */
 	if (unlikely(vli_cmp(res.x, curve->n, ndigits) == 1))
-		/* faster alternative for NIST p384, p256 & p192 */
+		/* faster alternative for NIST p521, p384, p256 & p192 */
 		vli_sub(res.x, res.x, curve->n, ndigits);
 
 	if (!vli_cmp(res.x, r, ndigits))
@@ -129,10 +129,8 @@ static int ecdsa_verify(struct akcipher_request *req)
 	struct ecdsa_signature_ctx sig_ctx = {
 		.curve = ctx->curve,
 	};
-	u8 rawhash[ECC_MAX_BYTES];
 	u64 hash[ECC_MAX_DIGITS];
 	unsigned char *buffer;
-	ssize_t diff;
 	int ret;
 
 	if (unlikely(!ctx->pub_key_set))
@@ -151,18 +149,11 @@ static int ecdsa_verify(struct akcipher_request *req)
 	if (ret < 0)
 		goto error;
 
-	/* if the hash is shorter then we will add leading zeros to fit to ndigits */
-	diff = bufsize - req->dst_len;
-	if (diff >= 0) {
-		if (diff)
-			memset(rawhash, 0, diff);
-		memcpy(&rawhash[diff], buffer + req->src_len, req->dst_len);
-	} else if (diff < 0) {
-		/* given hash is longer, we take the left-most bytes */
-		memcpy(&rawhash, buffer + req->src_len, bufsize);
-	}
+	if (bufsize > req->dst_len)
+		bufsize = req->dst_len;
 
-	ecc_swap_digits((u64 *)rawhash, hash, ctx->curve->g.ndigits);
+	ecc_digits_from_bytes(buffer + req->src_len, bufsize,
+			      hash, ctx->curve->g.ndigits);
 
 	ret = _ecdsa_verify(ctx, hash, sig_ctx.r, sig_ctx.s);
 
@@ -202,9 +193,8 @@ static int ecdsa_ecc_ctx_reset(struct ecc_ctx *ctx)
 }
 
 /*
- * Set the public key given the raw uncompressed key data from an X509
- * certificate. The key data contain the concatenated X and Y coordinates of
- * the public key.
+ * Set the public ECC key as defined by RFC5480 section 2.2 "Subject Public
+ * Key". Only the uncompressed format is supported.
  */
 static int ecdsa_set_pub_key(struct crypto_akcipher *tfm, const void *key, unsigned int keylen)
 {
@@ -217,7 +207,7 @@ static int ecdsa_set_pub_key(struct crypto_akcipher *tfm, const void *key, unsig
 	if (ret < 0)
 		return ret;
 
-	if (keylen < 1 || (((keylen - 1) >> 1) % sizeof(u64)) != 0)
+	if (keylen < 1 || ((keylen - 1) & 1) != 0)
 		return -EINVAL;
 	/* we only accept uncompressed format indicated by '4' */
 	if (d[0] != 4)
@@ -253,8 +243,30 @@ static unsigned int ecdsa_max_size(struct crypto_akcipher *tfm)
 {
 	struct ecc_ctx *ctx = akcipher_tfm_ctx(tfm);
 
-	return ctx->pub_key.ndigits << ECC_DIGITS_TO_BYTES_SHIFT;
+	return DIV_ROUND_UP(ctx->curve->nbits, 8);
 }
+
+static int ecdsa_nist_p521_init_tfm(struct crypto_akcipher *tfm)
+{
+	struct ecc_ctx *ctx = akcipher_tfm_ctx(tfm);
+
+	return ecdsa_ecc_ctx_init(ctx, ECC_CURVE_NIST_P521);
+}
+
+static struct akcipher_alg ecdsa_nist_p521 = {
+	.verify = ecdsa_verify,
+	.set_pub_key = ecdsa_set_pub_key,
+	.max_size = ecdsa_max_size,
+	.init = ecdsa_nist_p521_init_tfm,
+	.exit = ecdsa_exit_tfm,
+	.base = {
+		.cra_name = "ecdsa-nist-p521",
+		.cra_driver_name = "ecdsa-nist-p521-generic",
+		.cra_priority = 100,
+		.cra_module = THIS_MODULE,
+		.cra_ctxsize = sizeof(struct ecc_ctx),
+	},
+};
 
 static int ecdsa_nist_p384_init_tfm(struct crypto_akcipher *tfm)
 {
@@ -339,7 +351,14 @@ static int __init ecdsa_init(void)
 	if (ret)
 		goto nist_p384_error;
 
+	ret = crypto_register_akcipher(&ecdsa_nist_p521);
+	if (ret)
+		goto nist_p521_error;
+
 	return 0;
+
+nist_p521_error:
+	crypto_unregister_akcipher(&ecdsa_nist_p384);
 
 nist_p384_error:
 	crypto_unregister_akcipher(&ecdsa_nist_p256);
@@ -356,6 +375,7 @@ static void __exit ecdsa_exit(void)
 		crypto_unregister_akcipher(&ecdsa_nist_p192);
 	crypto_unregister_akcipher(&ecdsa_nist_p256);
 	crypto_unregister_akcipher(&ecdsa_nist_p384);
+	crypto_unregister_akcipher(&ecdsa_nist_p521);
 }
 
 subsys_initcall(ecdsa_init);
@@ -367,4 +387,5 @@ MODULE_DESCRIPTION("ECDSA generic algorithm");
 MODULE_ALIAS_CRYPTO("ecdsa-nist-p192");
 MODULE_ALIAS_CRYPTO("ecdsa-nist-p256");
 MODULE_ALIAS_CRYPTO("ecdsa-nist-p384");
+MODULE_ALIAS_CRYPTO("ecdsa-nist-p521");
 MODULE_ALIAS_CRYPTO("ecdsa-generic");

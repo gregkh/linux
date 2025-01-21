@@ -121,7 +121,7 @@ extern struct mid_q_entry *cifs_setup_async_request(struct TCP_Server_Info *,
 extern int cifs_check_receive(struct mid_q_entry *mid,
 			struct TCP_Server_Info *server, bool log_error);
 extern int cifs_wait_mtu_credits(struct TCP_Server_Info *server,
-				 unsigned int size, unsigned int *num,
+				 size_t size, size_t *num,
 				 struct cifs_credits *credits);
 extern int SendReceive2(const unsigned int /* xid */ , struct cifs_ses *,
 			struct kvec *, int /* nvec to send */,
@@ -148,6 +148,8 @@ extern bool is_size_safe_to_change(struct cifsInodeInfo *cifsInode, __u64 eof,
 				   bool from_readdir);
 extern void cifs_update_eof(struct cifsInodeInfo *cifsi, loff_t offset,
 			    unsigned int bytes_written);
+void cifs_write_subrequest_terminated(struct cifs_io_subrequest *wdata, ssize_t result,
+				      bool was_async);
 extern struct cifsFileInfo *find_writable_file(struct cifsInodeInfo *, int);
 extern int cifs_get_writable_file(struct cifsInodeInfo *cifs_inode,
 				  int flags,
@@ -252,10 +254,6 @@ extern int cifs_read_from_socket(struct TCP_Server_Info *server, char *buf,
 			         unsigned int to_read);
 extern ssize_t cifs_discard_from_socket(struct TCP_Server_Info *server,
 					size_t to_read);
-extern int cifs_read_page_from_socket(struct TCP_Server_Info *server,
-					struct page *page,
-					unsigned int page_offset,
-					unsigned int to_read);
 int cifs_read_iter_from_socket(struct TCP_Server_Info *server,
 			       struct iov_iter *iter,
 			       unsigned int to_read);
@@ -601,15 +599,11 @@ void __cifs_put_smb_ses(struct cifs_ses *ses);
 extern struct cifs_ses *
 cifs_get_smb_ses(struct TCP_Server_Info *server, struct smb3_fs_context *ctx);
 
-void cifs_readdata_release(struct kref *refcount);
-int cifs_async_readv(struct cifs_readdata *rdata);
+int cifs_async_readv(struct cifs_io_subrequest *rdata);
 int cifs_readv_receive(struct TCP_Server_Info *server, struct mid_q_entry *mid);
 
-int cifs_async_writev(struct cifs_writedata *wdata,
-		      void (*release)(struct kref *kref));
+void cifs_async_writev(struct cifs_io_subrequest *wdata);
 void cifs_writev_complete(struct work_struct *work);
-struct cifs_writedata *cifs_writedata_alloc(work_func_t complete);
-void cifs_writedata_release(struct kref *refcount);
 int cifs_query_mf_symlink(unsigned int xid, struct cifs_tcon *tcon,
 			  struct cifs_sb_info *cifs_sb,
 			  const unsigned char *path, char *pbuf,
@@ -623,14 +617,10 @@ int __cifs_calc_signature(struct smb_rqst *rqst,
 			struct shash_desc *shash);
 enum securityEnum cifs_select_sectype(struct TCP_Server_Info *,
 					enum securityEnum);
-struct cifs_aio_ctx *cifs_aio_ctx_alloc(void);
-void cifs_aio_ctx_release(struct kref *refcount);
 
 int cifs_alloc_hash(const char *name, struct shash_desc **sdesc);
 void cifs_free_hash(struct shash_desc **sdesc);
 
-struct cifs_chan *
-cifs_ses_find_chan(struct cifs_ses *ses, struct TCP_Server_Info *server);
 int cifs_try_adding_channels(struct cifs_ses *ses);
 bool is_server_using_iface(struct TCP_Server_Info *server,
 			   struct cifs_server_iface *iface);
@@ -646,9 +636,6 @@ cifs_chan_set_in_reconnect(struct cifs_ses *ses,
 void
 cifs_chan_clear_in_reconnect(struct cifs_ses *ses,
 			       struct TCP_Server_Info *server);
-bool
-cifs_chan_in_reconnect(struct cifs_ses *ses,
-			  struct TCP_Server_Info *server);
 void
 cifs_chan_set_need_reconnect(struct cifs_ses *ses,
 			     struct TCP_Server_Info *server);
@@ -683,6 +670,10 @@ int parse_reparse_point(struct reparse_data_buffer *buf,
 			u32 plen, struct cifs_sb_info *cifs_sb,
 			const char *full_path,
 			bool unicode, struct cifs_open_info_data *data);
+int __cifs_sfu_make_node(unsigned int xid, struct inode *inode,
+			 struct dentry *dentry, struct cifs_tcon *tcon,
+			 const char *full_path, umode_t mode, dev_t dev,
+			 const char *symname);
 int cifs_sfu_make_node(unsigned int xid, struct inode *inode,
 		       struct dentry *dentry, struct cifs_tcon *tcon,
 		       const char *full_path, umode_t mode, dev_t dev);
@@ -728,15 +719,9 @@ static inline int cifs_create_options(struct cifs_sb_info *cifs_sb, int options)
 
 int cifs_wait_for_server_reconnect(struct TCP_Server_Info *server, bool retry);
 
-/* Put references of @ses and its children */
 static inline void cifs_put_smb_ses(struct cifs_ses *ses)
 {
-	struct cifs_ses *next;
-
-	do {
-		next = ses->dfs_root_ses;
-		__cifs_put_smb_ses(ses);
-	} while ((ses = next));
+	__cifs_put_smb_ses(ses);
 }
 
 /* Get an active reference of @ses and its children.
@@ -750,9 +735,7 @@ static inline void cifs_put_smb_ses(struct cifs_ses *ses)
 static inline void cifs_smb_ses_inc_refcount(struct cifs_ses *ses)
 {
 	lockdep_assert_held(&cifs_tcp_ses_lock);
-
-	for (; ses; ses = ses->dfs_root_ses)
-		ses->ses_count++;
+	ses->ses_count++;
 }
 
 static inline bool dfs_src_pathname_equal(const char *s1, const char *s2)

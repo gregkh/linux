@@ -15,7 +15,7 @@
 #include <linux/ctype.h>
 #include <linux/random.h>
 #include <linux/nvme-auth.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "nvmet.h"
 
@@ -25,6 +25,18 @@ int nvmet_auth_set_key(struct nvmet_host *host, const char *secret,
 	unsigned char key_hash;
 	char *dhchap_secret;
 
+	if (!strlen(secret)) {
+		if (set_ctrl) {
+			kfree(host->dhchap_ctrl_secret);
+			host->dhchap_ctrl_secret = NULL;
+			host->dhchap_ctrl_key_hash = 0;
+		} else {
+			kfree(host->dhchap_secret);
+			host->dhchap_secret = NULL;
+			host->dhchap_key_hash = 0;
+		}
+		return 0;
+	}
 	if (sscanf(secret, "DHHC-1:%hhd:%*s", &key_hash) != 1)
 		return -EINVAL;
 	if (key_hash > 3) {
@@ -44,6 +56,7 @@ int nvmet_auth_set_key(struct nvmet_host *host, const char *secret,
 	dhchap_secret = kstrdup(secret, GFP_KERNEL);
 	if (!dhchap_secret)
 		return -ENOMEM;
+	down_write(&nvmet_config_sem);
 	if (set_ctrl) {
 		kfree(host->dhchap_ctrl_secret);
 		host->dhchap_ctrl_secret = strim(dhchap_secret);
@@ -53,6 +66,7 @@ int nvmet_auth_set_key(struct nvmet_host *host, const char *secret,
 		host->dhchap_secret = strim(dhchap_secret);
 		host->dhchap_key_hash = key_hash;
 	}
+	up_write(&nvmet_config_sem);
 	return 0;
 }
 
@@ -125,12 +139,11 @@ int nvmet_setup_dhgroup(struct nvmet_ctrl *ctrl, u8 dhgroup_id)
 	return ret;
 }
 
-int nvmet_setup_auth(struct nvmet_ctrl *ctrl)
+u8 nvmet_setup_auth(struct nvmet_ctrl *ctrl)
 {
 	int ret = 0;
 	struct nvmet_host_link *p;
 	struct nvmet_host *host = NULL;
-	const char *hash_name;
 
 	down_read(&nvmet_config_sem);
 	if (nvmet_is_disc_subsys(ctrl->subsys))
@@ -148,13 +161,16 @@ int nvmet_setup_auth(struct nvmet_ctrl *ctrl)
 	}
 	if (!host) {
 		pr_debug("host %s not found\n", ctrl->hostnqn);
-		ret = -EPERM;
+		ret = NVME_AUTH_DHCHAP_FAILURE_FAILED;
 		goto out_unlock;
 	}
 
 	ret = nvmet_setup_dhgroup(ctrl, host->dhchap_dhgroup_id);
-	if (ret < 0)
+	if (ret < 0) {
 		pr_warn("Failed to setup DH group");
+		ret = NVME_AUTH_DHCHAP_FAILURE_DHGROUP_UNUSABLE;
+		goto out_unlock;
+	}
 
 	if (!host->dhchap_secret) {
 		pr_debug("No authentication provided\n");
@@ -165,12 +181,6 @@ int nvmet_setup_auth(struct nvmet_ctrl *ctrl)
 		pr_debug("Re-use existing hash ID %d\n",
 			 ctrl->shash_id);
 	} else {
-		hash_name = nvme_auth_hmac_name(host->dhchap_hash_id);
-		if (!hash_name) {
-			pr_warn("Hash ID %d invalid\n", host->dhchap_hash_id);
-			ret = -EINVAL;
-			goto out_unlock;
-		}
 		ctrl->shash_id = host->dhchap_hash_id;
 	}
 
@@ -179,7 +189,7 @@ int nvmet_setup_auth(struct nvmet_ctrl *ctrl)
 	ctrl->host_key = nvme_auth_extract_key(host->dhchap_secret + 10,
 					       host->dhchap_key_hash);
 	if (IS_ERR(ctrl->host_key)) {
-		ret = PTR_ERR(ctrl->host_key);
+		ret = NVME_AUTH_DHCHAP_FAILURE_NOT_USABLE;
 		ctrl->host_key = NULL;
 		goto out_free_hash;
 	}
@@ -197,7 +207,7 @@ int nvmet_setup_auth(struct nvmet_ctrl *ctrl)
 	ctrl->ctrl_key = nvme_auth_extract_key(host->dhchap_ctrl_secret + 10,
 					       host->dhchap_ctrl_key_hash);
 	if (IS_ERR(ctrl->ctrl_key)) {
-		ret = PTR_ERR(ctrl->ctrl_key);
+		ret = NVME_AUTH_DHCHAP_FAILURE_NOT_USABLE;
 		ctrl->ctrl_key = NULL;
 		goto out_free_hash;
 	}
@@ -268,7 +278,8 @@ int nvmet_auth_host_hash(struct nvmet_req *req, u8 *response,
 	struct shash_desc *shash;
 	struct nvmet_ctrl *ctrl = req->sq->ctrl;
 	const char *hash_name;
-	u8 *challenge = req->sq->dhchap_c1, *host_response;
+	u8 *challenge = req->sq->dhchap_c1;
+	struct nvme_dhchap_key *transformed_key;
 	u8 buf[4];
 	int ret;
 
@@ -292,14 +303,15 @@ int nvmet_auth_host_hash(struct nvmet_req *req, u8 *response,
 		goto out_free_tfm;
 	}
 
-	host_response = nvme_auth_transform_key(ctrl->host_key, ctrl->hostnqn);
-	if (IS_ERR(host_response)) {
-		ret = PTR_ERR(host_response);
+	transformed_key = nvme_auth_transform_key(ctrl->host_key,
+						  ctrl->hostnqn);
+	if (IS_ERR(transformed_key)) {
+		ret = PTR_ERR(transformed_key);
 		goto out_free_tfm;
 	}
 
-	ret = crypto_shash_setkey(shash_tfm, host_response,
-				  ctrl->host_key->len);
+	ret = crypto_shash_setkey(shash_tfm, transformed_key->key,
+				  transformed_key->len);
 	if (ret)
 		goto out_free_response;
 
@@ -367,7 +379,7 @@ out_free_challenge:
 	if (challenge != req->sq->dhchap_c1)
 		kfree(challenge);
 out_free_response:
-	kfree_sensitive(host_response);
+	nvme_auth_free_key(transformed_key);
 out_free_tfm:
 	crypto_free_shash(shash_tfm);
 	return ret;
@@ -380,7 +392,8 @@ int nvmet_auth_ctrl_hash(struct nvmet_req *req, u8 *response,
 	struct shash_desc *shash;
 	struct nvmet_ctrl *ctrl = req->sq->ctrl;
 	const char *hash_name;
-	u8 *challenge = req->sq->dhchap_c2, *ctrl_response;
+	u8 *challenge = req->sq->dhchap_c2;
+	struct nvme_dhchap_key *transformed_key;
 	u8 buf[4];
 	int ret;
 
@@ -404,15 +417,15 @@ int nvmet_auth_ctrl_hash(struct nvmet_req *req, u8 *response,
 		goto out_free_tfm;
 	}
 
-	ctrl_response = nvme_auth_transform_key(ctrl->ctrl_key,
+	transformed_key = nvme_auth_transform_key(ctrl->ctrl_key,
 						ctrl->subsysnqn);
-	if (IS_ERR(ctrl_response)) {
-		ret = PTR_ERR(ctrl_response);
+	if (IS_ERR(transformed_key)) {
+		ret = PTR_ERR(transformed_key);
 		goto out_free_tfm;
 	}
 
-	ret = crypto_shash_setkey(shash_tfm, ctrl_response,
-				  ctrl->ctrl_key->len);
+	ret = crypto_shash_setkey(shash_tfm, transformed_key->key,
+				  transformed_key->len);
 	if (ret)
 		goto out_free_response;
 
@@ -477,10 +490,10 @@ out_free_challenge:
 	if (challenge != req->sq->dhchap_c2)
 		kfree(challenge);
 out_free_response:
-	kfree_sensitive(ctrl_response);
+	nvme_auth_free_key(transformed_key);
 out_free_tfm:
 	crypto_free_shash(shash_tfm);
-	return 0;
+	return ret;
 }
 
 int nvmet_auth_ctrl_exponential(struct nvmet_req *req,

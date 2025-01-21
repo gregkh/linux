@@ -61,7 +61,7 @@ struct tls_decrypt_arg {
 
 struct tls_decrypt_ctx {
 	struct sock *sk;
-	u8 iv[MAX_IV_SIZE];
+	u8 iv[TLS_MAX_IV_SIZE];
 	u8 aad[TLS_MAX_AAD_SIZE];
 	u8 tail;
 	bool free_sgout;
@@ -1201,7 +1201,7 @@ trim_sgl:
 
 	if (!num_async) {
 		goto send_end;
-	} else if (num_zc) {
+	} else if (num_zc || eor) {
 		int err;
 
 		/* Wait for pending encryptions to get completed */
@@ -2147,7 +2147,6 @@ recv_end:
 		if (ret) {
 			if (err >= 0 || err == -EINPROGRESS)
 				err = ret;
-			decrypted = 0;
 			goto end;
 		}
 
@@ -2360,7 +2359,7 @@ int tls_rx_msg_size(struct tls_strparser *strp, struct sk_buff *skb)
 {
 	struct tls_context *tls_ctx = tls_get_ctx(strp->sk);
 	struct tls_prot_info *prot = &tls_ctx->prot_info;
-	char header[TLS_HEADER_SIZE + MAX_IV_SIZE];
+	char header[TLS_HEADER_SIZE + TLS_MAX_IV_SIZE];
 	size_t cipher_overhead;
 	size_t data_len = 0;
 	int ret;
@@ -2500,9 +2499,6 @@ void tls_sw_release_resources_rx(struct sock *sk)
 {
 	struct tls_context *tls_ctx = tls_get_ctx(sk);
 	struct tls_sw_context_rx *ctx = tls_sw_ctx_rx(tls_ctx);
-
-	kfree(tls_ctx->rx.rec_seq);
-	kfree(tls_ctx->rx.iv);
 
 	if (ctx->aead_recv) {
 		__skb_queue_purge(&ctx->rx_list);
@@ -2657,25 +2653,53 @@ static struct tls_sw_context_rx *init_ctx_rx(struct tls_context *ctx)
 	return sw_ctx_rx;
 }
 
-int tls_set_sw_offload(struct sock *sk, struct tls_context *ctx, int tx)
+int init_prot_info(struct tls_prot_info *prot,
+		   const struct tls_crypto_info *crypto_info,
+		   const struct tls_cipher_desc *cipher_desc)
 {
-	struct tls_context *tls_ctx = tls_get_ctx(sk);
-	struct tls_prot_info *prot = &tls_ctx->prot_info;
-	struct tls_crypto_info *crypto_info;
+	u16 nonce_size = cipher_desc->nonce;
+
+	if (crypto_info->version == TLS_1_3_VERSION) {
+		nonce_size = 0;
+		prot->aad_size = TLS_HEADER_SIZE;
+		prot->tail_size = 1;
+	} else {
+		prot->aad_size = TLS_AAD_SPACE_SIZE;
+		prot->tail_size = 0;
+	}
+
+	/* Sanity-check the sizes for stack allocations. */
+	if (nonce_size > TLS_MAX_IV_SIZE || prot->aad_size > TLS_MAX_AAD_SIZE)
+		return -EINVAL;
+
+	prot->version = crypto_info->version;
+	prot->cipher_type = crypto_info->cipher_type;
+	prot->prepend_size = TLS_HEADER_SIZE + nonce_size;
+	prot->tag_size = cipher_desc->tag;
+	prot->overhead_size = prot->prepend_size + prot->tag_size + prot->tail_size;
+	prot->iv_size = cipher_desc->iv;
+	prot->salt_size = cipher_desc->salt;
+	prot->rec_seq_size = cipher_desc->rec_seq;
+
+	return 0;
+}
+
+int tls_set_sw_offload(struct sock *sk, int tx)
+{
 	struct tls_sw_context_tx *sw_ctx_tx = NULL;
 	struct tls_sw_context_rx *sw_ctx_rx = NULL;
-	struct cipher_context *cctx;
-	struct crypto_aead **aead;
-	struct crypto_tfm *tfm;
-	char *iv, *rec_seq, *key, *salt;
 	const struct tls_cipher_desc *cipher_desc;
-	u16 nonce_size;
+	struct tls_crypto_info *crypto_info;
+	char *iv, *rec_seq, *key, *salt;
+	struct cipher_context *cctx;
+	struct tls_prot_info *prot;
+	struct crypto_aead **aead;
+	struct tls_context *ctx;
+	struct crypto_tfm *tfm;
 	int rc = 0;
 
-	if (!ctx) {
-		rc = -EINVAL;
-		goto out;
-	}
+	ctx = tls_get_ctx(sk);
+	prot = &ctx->prot_info;
 
 	if (tx) {
 		ctx->priv_ctx_tx = init_ctx_tx(ctx, sk);
@@ -2703,58 +2727,25 @@ int tls_set_sw_offload(struct sock *sk, struct tls_context *ctx, int tx)
 		goto free_priv;
 	}
 
-	nonce_size = cipher_desc->nonce;
+	rc = init_prot_info(prot, crypto_info, cipher_desc);
+	if (rc)
+		goto free_priv;
 
 	iv = crypto_info_iv(crypto_info, cipher_desc);
 	key = crypto_info_key(crypto_info, cipher_desc);
 	salt = crypto_info_salt(crypto_info, cipher_desc);
 	rec_seq = crypto_info_rec_seq(crypto_info, cipher_desc);
 
-	if (crypto_info->version == TLS_1_3_VERSION) {
-		nonce_size = 0;
-		prot->aad_size = TLS_HEADER_SIZE;
-		prot->tail_size = 1;
-	} else {
-		prot->aad_size = TLS_AAD_SPACE_SIZE;
-		prot->tail_size = 0;
-	}
-
-	/* Sanity-check the sizes for stack allocations. */
-	if (nonce_size > MAX_IV_SIZE || prot->aad_size > TLS_MAX_AAD_SIZE) {
-		rc = -EINVAL;
-		goto free_priv;
-	}
-
-	prot->version = crypto_info->version;
-	prot->cipher_type = crypto_info->cipher_type;
-	prot->prepend_size = TLS_HEADER_SIZE + nonce_size;
-	prot->tag_size = cipher_desc->tag;
-	prot->overhead_size = prot->prepend_size +
-			      prot->tag_size + prot->tail_size;
-	prot->iv_size = cipher_desc->iv;
-	prot->salt_size = cipher_desc->salt;
-	cctx->iv = kmalloc(cipher_desc->iv + cipher_desc->salt, GFP_KERNEL);
-	if (!cctx->iv) {
-		rc = -ENOMEM;
-		goto free_priv;
-	}
-	/* Note: 128 & 256 bit salt are the same size */
-	prot->rec_seq_size = cipher_desc->rec_seq;
 	memcpy(cctx->iv, salt, cipher_desc->salt);
 	memcpy(cctx->iv + cipher_desc->salt, iv, cipher_desc->iv);
-
-	cctx->rec_seq = kmemdup(rec_seq, cipher_desc->rec_seq, GFP_KERNEL);
-	if (!cctx->rec_seq) {
-		rc = -ENOMEM;
-		goto free_iv;
-	}
+	memcpy(cctx->rec_seq, rec_seq, cipher_desc->rec_seq);
 
 	if (!*aead) {
 		*aead = crypto_alloc_aead(cipher_desc->cipher_name, 0, 0);
 		if (IS_ERR(*aead)) {
 			rc = PTR_ERR(*aead);
 			*aead = NULL;
-			goto free_rec_seq;
+			goto free_priv;
 		}
 	}
 
@@ -2786,12 +2777,6 @@ int tls_set_sw_offload(struct sock *sk, struct tls_context *ctx, int tx)
 free_aead:
 	crypto_free_aead(*aead);
 	*aead = NULL;
-free_rec_seq:
-	kfree(cctx->rec_seq);
-	cctx->rec_seq = NULL;
-free_iv:
-	kfree(cctx->iv);
-	cctx->iv = NULL;
 free_priv:
 	if (tx) {
 		kfree(ctx->priv_ctx_tx);

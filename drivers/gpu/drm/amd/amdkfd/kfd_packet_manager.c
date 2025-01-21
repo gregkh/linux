@@ -247,7 +247,8 @@ int pm_init(struct packet_manager *pm, struct device_queue_manager *dqm)
 		break;
 	default:
 		if (KFD_GC_VERSION(dqm->dev) == IP_VERSION(9, 4, 2) ||
-		    KFD_GC_VERSION(dqm->dev) == IP_VERSION(9, 4, 3))
+		    KFD_GC_VERSION(dqm->dev) == IP_VERSION(9, 4, 3) ||
+		    KFD_GC_VERSION(dqm->dev) == IP_VERSION(9, 4, 4))
 			pm->pmf = &kfd_aldebaran_pm_funcs;
 		else if (KFD_GC_VERSION(dqm->dev) >= IP_VERSION(9, 0, 1))
 			pm->pmf = &kfd_v9_pm_funcs;
@@ -270,10 +271,10 @@ int pm_init(struct packet_manager *pm, struct device_queue_manager *dqm)
 	return 0;
 }
 
-void pm_uninit(struct packet_manager *pm, bool hanging)
+void pm_uninit(struct packet_manager *pm)
 {
 	mutex_destroy(&pm->lock);
-	kernel_queue_uninit(pm->priv_queue, hanging);
+	kernel_queue_uninit(pm->priv_queue);
 	pm->priv_queue = NULL;
 }
 
@@ -298,7 +299,7 @@ int pm_send_set_resources(struct packet_manager *pm,
 
 	retval = pm->pmf->set_resources(pm, buffer, res);
 	if (!retval)
-		kq_submit_packet(pm->priv_queue);
+		retval = kq_submit_packet(pm->priv_queue);
 	else
 		kq_rollback_packet(pm->priv_queue);
 
@@ -335,7 +336,7 @@ int pm_send_runlist(struct packet_manager *pm, struct list_head *dqm_queues)
 	if (retval)
 		goto fail_create_runlist;
 
-	kq_submit_packet(pm->priv_queue);
+	retval = kq_submit_packet(pm->priv_queue);
 
 	mutex_unlock(&pm->lock);
 
@@ -373,7 +374,7 @@ int pm_send_query_status(struct packet_manager *pm, uint64_t fence_address,
 
 	retval = pm->pmf->query_status(pm, buffer, fence_address, fence_value);
 	if (!retval)
-		kq_submit_packet(pm->priv_queue);
+		retval = kq_submit_packet(pm->priv_queue);
 	else
 		kq_rollback_packet(pm->priv_queue);
 
@@ -407,7 +408,7 @@ int pm_update_grace_period(struct packet_manager *pm, uint32_t grace_period)
 
 		retval = pm->pmf->set_grace_period(pm, buffer, grace_period);
 		if (!retval)
-			kq_submit_packet(pm->priv_queue);
+			retval = kq_submit_packet(pm->priv_queue);
 		else
 			kq_rollback_packet(pm->priv_queue);
 	}
@@ -438,7 +439,7 @@ int pm_send_unmap_queue(struct packet_manager *pm,
 
 	retval = pm->pmf->unmap_queues(pm, buffer, filter, filter_param, reset);
 	if (!retval)
-		kq_submit_packet(pm->priv_queue);
+		retval = kq_submit_packet(pm->priv_queue);
 	else
 		kq_rollback_packet(pm->priv_queue);
 

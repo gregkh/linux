@@ -8,7 +8,9 @@
 #include <linux/phy.h>
 #include <linux/if_vlan.h>
 #include <linux/kfifo.h>
+
 #include <net/devlink.h>
+#include <net/ipv6.h>
 
 #include "hclge_cmd.h"
 #include "hclge_ptp.h"
@@ -185,15 +187,25 @@ enum HLCGE_PORT_TYPE {
 #define HCLGE_SUPPORT_1G_BIT		BIT(0)
 #define HCLGE_SUPPORT_10G_BIT		BIT(1)
 #define HCLGE_SUPPORT_25G_BIT		BIT(2)
-#define HCLGE_SUPPORT_50G_BIT		BIT(3)
-#define HCLGE_SUPPORT_100G_BIT		BIT(4)
+#define HCLGE_SUPPORT_50G_R2_BIT	BIT(3)
+#define HCLGE_SUPPORT_100G_R4_BIT	BIT(4)
 /* to be compatible with exsit board */
 #define HCLGE_SUPPORT_40G_BIT		BIT(5)
 #define HCLGE_SUPPORT_100M_BIT		BIT(6)
 #define HCLGE_SUPPORT_10M_BIT		BIT(7)
-#define HCLGE_SUPPORT_200G_BIT		BIT(8)
+#define HCLGE_SUPPORT_200G_R4_EXT_BIT	BIT(8)
+#define HCLGE_SUPPORT_50G_R1_BIT	BIT(9)
+#define HCLGE_SUPPORT_100G_R2_BIT	BIT(10)
+#define HCLGE_SUPPORT_200G_R4_BIT	BIT(11)
+
 #define HCLGE_SUPPORT_GE \
 	(HCLGE_SUPPORT_1G_BIT | HCLGE_SUPPORT_100M_BIT | HCLGE_SUPPORT_10M_BIT)
+#define HCLGE_SUPPORT_50G_BITS \
+	(HCLGE_SUPPORT_50G_R2_BIT | HCLGE_SUPPORT_50G_R1_BIT)
+#define HCLGE_SUPPORT_100G_BITS \
+	(HCLGE_SUPPORT_100G_R4_BIT | HCLGE_SUPPORT_100G_R2_BIT)
+#define HCLGE_SUPPORT_200G_BITS \
+	(HCLGE_SUPPORT_200G_R4_EXT_BIT | HCLGE_SUPPORT_200G_R4_BIT)
 
 enum HCLGE_DEV_STATE {
 	HCLGE_STATE_REINITING,
@@ -244,6 +256,12 @@ enum HCLGE_MAC_SPEED {
 enum HCLGE_MAC_DUPLEX {
 	HCLGE_MAC_HALF,
 	HCLGE_MAC_FULL
+};
+
+/* hilink version */
+enum hclge_hilink_version {
+	HCLGE_HILINK_H32 = 0,
+	HCLGE_HILINK_H60 = 1,
 };
 
 #define QUERY_SFP_SPEED		0
@@ -702,15 +720,15 @@ struct hclge_fd_cfg {
 };
 
 #define IPV4_INDEX	3
-#define IPV6_SIZE	4
+
 struct hclge_fd_rule_tuples {
 	u8 src_mac[ETH_ALEN];
 	u8 dst_mac[ETH_ALEN];
 	/* Be compatible for ip address of both ipv4 and ipv6.
 	 * For ipv4 address, we store it in src/dst_ip[3].
 	 */
-	u32 src_ip[IPV6_SIZE];
-	u32 dst_ip[IPV6_SIZE];
+	u32 src_ip[IPV6_ADDR_WORDS];
+	u32 dst_ip[IPV6_ADDR_WORDS];
 	u16 src_port;
 	u16 dst_port;
 	u16 vlan_tag1;
@@ -1079,6 +1097,11 @@ struct hclge_mac_speed_map {
 	u32 speed_fw; /* speed defined in firmware */
 };
 
+struct hclge_link_mode_bmap {
+	u16 support_bit;
+	enum ethtool_link_mode_bit_indices link_mode;
+};
+
 int hclge_set_vport_promisc_mode(struct hclge_vport *vport, bool en_uc_pmc,
 				 bool en_mc_pmc, bool en_bc_pmc);
 int hclge_add_uc_addr_common(struct hclge_vport *vport,
@@ -1149,4 +1172,7 @@ int hclge_dbg_dump_rst_info(struct hclge_dev *hdev, char *buf, int len);
 int hclge_push_vf_link_status(struct hclge_vport *vport);
 int hclge_enable_vport_vlan_filter(struct hclge_vport *vport, bool request_en);
 int hclge_mac_update_stats(struct hclge_dev *hdev);
+struct hclge_vport *hclge_get_vf_vport(struct hclge_dev *hdev, int vf);
+int hclge_inform_vf_reset(struct hclge_vport *vport, u16 reset_type);
+int hclge_query_scc_version(struct hclge_dev *hdev, u32 *scc_version);
 #endif

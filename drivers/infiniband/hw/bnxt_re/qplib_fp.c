@@ -54,6 +54,10 @@
 #include "qplib_rcfw.h"
 #include "qplib_sp.h"
 #include "qplib_fp.h"
+#include <rdma/ib_addr.h>
+#include "bnxt_ulp.h"
+#include "bnxt_re.h"
+#include "ib_verbs.h"
 
 static void __clean_cq(struct bnxt_qplib_cq *cq, u64 qp);
 
@@ -323,6 +327,7 @@ static void bnxt_qplib_service_nq(struct tasklet_struct *t)
 		case NQ_BASE_TYPE_CQ_NOTIFICATION:
 		{
 			struct nq_cn *nqcne = (struct nq_cn *)nqe;
+			struct bnxt_re_cq *cq_p;
 
 			q_handle = le32_to_cpu(nqcne->cq_handle_low);
 			q_handle |= (u64)le32_to_cpu(nqcne->cq_handle_high)
@@ -330,6 +335,13 @@ static void bnxt_qplib_service_nq(struct tasklet_struct *t)
 			cq = (struct bnxt_qplib_cq *)(unsigned long)q_handle;
 			if (!cq)
 				break;
+			cq->toggle = (le16_to_cpu(nqe->info10_type) &
+					NQ_CN_TOGGLE_MASK) >> NQ_CN_TOGGLE_SFT;
+			cq->dbinfo.toggle = cq->toggle;
+			cq_p = container_of(cq, struct bnxt_re_cq, qplib_cq);
+			if (cq_p->uctx_cq_page)
+				*((u32 *)cq_p->uctx_cq_page) = cq->toggle;
+
 			bnxt_qplib_armen_db(&cq->dbinfo,
 					    DBC_DBC_TYPE_CQ_ARMENA);
 			spin_lock_bh(&cq->compl_lock);
@@ -344,6 +356,7 @@ static void bnxt_qplib_service_nq(struct tasklet_struct *t)
 		case NQ_BASE_TYPE_SRQ_EVENT:
 		{
 			struct bnxt_qplib_srq *srq;
+			struct bnxt_re_srq *srq_p;
 			struct nq_srq_event *nqsrqe =
 						(struct nq_srq_event *)nqe;
 
@@ -351,6 +364,12 @@ static void bnxt_qplib_service_nq(struct tasklet_struct *t)
 			q_handle |= (u64)le32_to_cpu(nqsrqe->srq_handle_high)
 				     << 32;
 			srq = (struct bnxt_qplib_srq *)q_handle;
+			srq->toggle = (le16_to_cpu(nqe->info10_type) & NQ_CN_TOGGLE_MASK)
+				      >> NQ_CN_TOGGLE_SFT;
+			srq->dbinfo.toggle = srq->toggle;
+			srq_p = container_of(srq, struct bnxt_re_srq, qplib_srq);
+			if (srq_p->uctx_srq_page)
+				*((u32 *)srq_p->uctx_srq_page) = srq->toggle;
 			bnxt_qplib_armen_db(&srq->dbinfo,
 					    DBC_DBC_TYPE_SRQ_ARMENA);
 			if (nq->srqn_handler(nq,
@@ -2194,6 +2213,8 @@ int bnxt_qplib_create_cq(struct bnxt_qplib_res *res, struct bnxt_qplib_cq *cq)
 	cq->dbinfo.xid = cq->id;
 	cq->dbinfo.db = cq->dpi->dbr;
 	cq->dbinfo.priv_db = res->dpi_tbl.priv_db;
+	cq->dbinfo.flags = 0;
+	cq->dbinfo.toggle = 0;
 
 	bnxt_qplib_armen_db(&cq->dbinfo, DBC_DBC_TYPE_CQ_ARMENA);
 
@@ -2479,6 +2500,32 @@ out:
 	return rc;
 }
 
+static int bnxt_qplib_get_cqe_sq_cons(struct bnxt_qplib_q *sq, u32 cqe_slot)
+{
+	struct bnxt_qplib_hwq *sq_hwq;
+	struct bnxt_qplib_swq *swq;
+	int cqe_sq_cons = -1;
+	u32 start, last;
+
+	sq_hwq = &sq->hwq;
+
+	start = sq->swq_start;
+	last = sq->swq_last;
+
+	while (last != start) {
+		swq = &sq->swq[last];
+		if (swq->slot_idx  == cqe_slot) {
+			cqe_sq_cons = swq->next_idx;
+			dev_err(&sq_hwq->pdev->dev, "%s: Found cons wqe = %d slot = %d\n",
+				__func__, cqe_sq_cons, cqe_slot);
+			break;
+		}
+
+		last = swq->next_idx;
+	}
+	return cqe_sq_cons;
+}
+
 static int bnxt_qplib_cq_process_req(struct bnxt_qplib_cq *cq,
 				     struct cq_req *hwcqe,
 				     struct bnxt_qplib_cqe **pcqe, int *budget,
@@ -2486,9 +2533,10 @@ static int bnxt_qplib_cq_process_req(struct bnxt_qplib_cq *cq,
 {
 	struct bnxt_qplib_swq *swq;
 	struct bnxt_qplib_cqe *cqe;
+	u32 cqe_sq_cons, slot_num;
 	struct bnxt_qplib_qp *qp;
 	struct bnxt_qplib_q *sq;
-	u32 cqe_sq_cons;
+	int cqe_cons;
 	int rc = 0;
 
 	qp = (struct bnxt_qplib_qp *)((unsigned long)
@@ -2506,6 +2554,20 @@ static int bnxt_qplib_cq_process_req(struct bnxt_qplib_cq *cq,
 			"%s: QP in Flush QP = %p\n", __func__, qp);
 		goto done;
 	}
+
+	if (__is_err_cqe_for_var_wqe(qp, hwcqe->status)) {
+		slot_num = le16_to_cpu(hwcqe->sq_cons_idx);
+		cqe_cons = bnxt_qplib_get_cqe_sq_cons(sq, slot_num);
+		if (cqe_cons < 0) {
+			dev_err(&cq->hwq.pdev->dev, "%s: Wrong SQ cons cqe_slot_indx = %d\n",
+				__func__, slot_num);
+			goto done;
+		}
+		cqe_sq_cons = cqe_cons;
+		dev_err(&cq->hwq.pdev->dev, "%s: cqe_sq_cons = %d swq_last = %d swq_start = %d\n",
+			__func__, cqe_sq_cons, sq->swq_last, sq->swq_start);
+	}
+
 	/* Require to walk the sq's swq to fabricate CQEs for all previously
 	 * signaled SWQEs due to CQE aggregation from the current sq cons
 	 * to the cqe_sq_cons
@@ -3090,6 +3152,7 @@ exit:
 
 void bnxt_qplib_req_notify_cq(struct bnxt_qplib_cq *cq, u32 arm_type)
 {
+	cq->dbinfo.toggle = cq->toggle;
 	if (arm_type)
 		bnxt_qplib_ring_db(&cq->dbinfo, arm_type);
 	/* Using cq->arm_state variable to track whether to issue cq handler */

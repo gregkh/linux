@@ -529,9 +529,6 @@ static struct dm_buffer *list_to_buffer(struct list_head *l)
 {
 	struct lru_entry *le = list_entry(l, struct lru_entry, list);
 
-	if (!le)
-		return NULL;
-
 	return le_to_buffer(le);
 }
 
@@ -1001,7 +998,7 @@ struct dm_bufio_client {
 
 	sector_t start;
 
-	struct shrinker shrinker;
+	struct shrinker *shrinker;
 	struct work_struct shrink_work;
 	atomic_long_t need_shrink;
 
@@ -1170,7 +1167,7 @@ static void __cache_size_refresh(void)
  * If the allocation may fail we use __get_free_pages. Memory fragmentation
  * won't have a fatal effect here, but it just causes flushes of some other
  * buffers and more I/O will be performed. Don't use __get_free_pages if it
- * always fails (i.e. order > MAX_ORDER).
+ * always fails (i.e. order > MAX_PAGE_ORDER).
  *
  * If the allocation shouldn't fail we use __vmalloc. This is only for the
  * initial reserve allocation, so there's no risk of wasting all vmalloc
@@ -1292,7 +1289,8 @@ static void dmio_complete(unsigned long error, void *context)
 }
 
 static void use_dmio(struct dm_buffer *b, enum req_op op, sector_t sector,
-		     unsigned int n_sectors, unsigned int offset)
+		     unsigned int n_sectors, unsigned int offset,
+		     unsigned short ioprio)
 {
 	int r;
 	struct dm_io_request io_req = {
@@ -1315,7 +1313,7 @@ static void use_dmio(struct dm_buffer *b, enum req_op op, sector_t sector,
 		io_req.mem.ptr.vma = (char *)b->data + offset;
 	}
 
-	r = dm_io(&io_req, 1, &region, NULL, IOPRIO_DEFAULT);
+	r = dm_io(&io_req, 1, &region, NULL, ioprio);
 	if (unlikely(r))
 		b->end_io(b, errno_to_blk_status(r));
 }
@@ -1331,7 +1329,8 @@ static void bio_complete(struct bio *bio)
 }
 
 static void use_bio(struct dm_buffer *b, enum req_op op, sector_t sector,
-		    unsigned int n_sectors, unsigned int offset)
+		    unsigned int n_sectors, unsigned int offset,
+		    unsigned short ioprio)
 {
 	struct bio *bio;
 	char *ptr;
@@ -1339,13 +1338,14 @@ static void use_bio(struct dm_buffer *b, enum req_op op, sector_t sector,
 
 	bio = bio_kmalloc(1, GFP_NOWAIT | __GFP_NORETRY | __GFP_NOWARN);
 	if (!bio) {
-		use_dmio(b, op, sector, n_sectors, offset);
+		use_dmio(b, op, sector, n_sectors, offset, ioprio);
 		return;
 	}
 	bio_init(bio, b->c->bdev, bio->bi_inline_vecs, 1, op);
 	bio->bi_iter.bi_sector = sector;
 	bio->bi_end_io = bio_complete;
 	bio->bi_private = b;
+	bio->bi_ioprio = ioprio;
 
 	ptr = (char *)b->data + offset;
 	len = n_sectors << SECTOR_SHIFT;
@@ -1368,7 +1368,7 @@ static inline sector_t block_to_sector(struct dm_bufio_client *c, sector_t block
 	return sector;
 }
 
-static void submit_io(struct dm_buffer *b, enum req_op op,
+static void submit_io(struct dm_buffer *b, enum req_op op, unsigned short ioprio,
 		      void (*end_io)(struct dm_buffer *, blk_status_t))
 {
 	unsigned int n_sectors;
@@ -1398,9 +1398,9 @@ static void submit_io(struct dm_buffer *b, enum req_op op,
 	}
 
 	if (b->data_mode != DATA_MODE_VMALLOC)
-		use_bio(b, op, sector, n_sectors, offset);
+		use_bio(b, op, sector, n_sectors, offset, ioprio);
 	else
-		use_dmio(b, op, sector, n_sectors, offset);
+		use_dmio(b, op, sector, n_sectors, offset, ioprio);
 }
 
 /*
@@ -1456,7 +1456,7 @@ static void __write_dirty_buffer(struct dm_buffer *b,
 	b->write_end = b->dirty_end;
 
 	if (!write_list)
-		submit_io(b, REQ_OP_WRITE, write_endio);
+		submit_io(b, REQ_OP_WRITE, IOPRIO_DEFAULT, write_endio);
 	else
 		list_add_tail(&b->write_list, write_list);
 }
@@ -1470,7 +1470,7 @@ static void __flush_write_list(struct list_head *write_list)
 		struct dm_buffer *b =
 			list_entry(write_list->next, struct dm_buffer, write_list);
 		list_del(&b->write_list);
-		submit_io(b, REQ_OP_WRITE, write_endio);
+		submit_io(b, REQ_OP_WRITE, IOPRIO_DEFAULT, write_endio);
 		cond_resched();
 	}
 	blk_finish_plug(&plug);
@@ -1852,7 +1852,8 @@ static void read_endio(struct dm_buffer *b, blk_status_t status)
  * and uses dm_bufio_mark_buffer_dirty to write new data back).
  */
 static void *new_read(struct dm_bufio_client *c, sector_t block,
-		      enum new_flag nf, struct dm_buffer **bp)
+		      enum new_flag nf, struct dm_buffer **bp,
+		      unsigned short ioprio)
 {
 	int need_submit = 0;
 	struct dm_buffer *b;
@@ -1905,7 +1906,7 @@ static void *new_read(struct dm_bufio_client *c, sector_t block,
 		return NULL;
 
 	if (need_submit)
-		submit_io(b, REQ_OP_READ, read_endio);
+		submit_io(b, REQ_OP_READ, ioprio, read_endio);
 
 	if (nf != NF_GET)	/* we already tested this condition above */
 		wait_on_bit_io(&b->state, B_READING, TASK_UNINTERRUPTIBLE);
@@ -1926,19 +1927,32 @@ static void *new_read(struct dm_bufio_client *c, sector_t block,
 void *dm_bufio_get(struct dm_bufio_client *c, sector_t block,
 		   struct dm_buffer **bp)
 {
-	return new_read(c, block, NF_GET, bp);
+	return new_read(c, block, NF_GET, bp, IOPRIO_DEFAULT);
 }
 EXPORT_SYMBOL_GPL(dm_bufio_get);
 
-void *dm_bufio_read(struct dm_bufio_client *c, sector_t block,
-		    struct dm_buffer **bp)
+static void *__dm_bufio_read(struct dm_bufio_client *c, sector_t block,
+			struct dm_buffer **bp, unsigned short ioprio)
 {
 	if (WARN_ON_ONCE(dm_bufio_in_request()))
 		return ERR_PTR(-EINVAL);
 
-	return new_read(c, block, NF_READ, bp);
+	return new_read(c, block, NF_READ, bp, ioprio);
+}
+
+void *dm_bufio_read(struct dm_bufio_client *c, sector_t block,
+		    struct dm_buffer **bp)
+{
+	return __dm_bufio_read(c, block, bp, IOPRIO_DEFAULT);
 }
 EXPORT_SYMBOL_GPL(dm_bufio_read);
+
+void *dm_bufio_read_with_ioprio(struct dm_bufio_client *c, sector_t block,
+				struct dm_buffer **bp, unsigned short ioprio)
+{
+	return __dm_bufio_read(c, block, bp, ioprio);
+}
+EXPORT_SYMBOL_GPL(dm_bufio_read_with_ioprio);
 
 void *dm_bufio_new(struct dm_bufio_client *c, sector_t block,
 		   struct dm_buffer **bp)
@@ -1946,12 +1960,13 @@ void *dm_bufio_new(struct dm_bufio_client *c, sector_t block,
 	if (WARN_ON_ONCE(dm_bufio_in_request()))
 		return ERR_PTR(-EINVAL);
 
-	return new_read(c, block, NF_FRESH, bp);
+	return new_read(c, block, NF_FRESH, bp, IOPRIO_DEFAULT);
 }
 EXPORT_SYMBOL_GPL(dm_bufio_new);
 
-void dm_bufio_prefetch(struct dm_bufio_client *c,
-		       sector_t block, unsigned int n_blocks)
+static void __dm_bufio_prefetch(struct dm_bufio_client *c,
+			sector_t block, unsigned int n_blocks,
+			unsigned short ioprio)
 {
 	struct blk_plug plug;
 
@@ -1987,7 +2002,7 @@ void dm_bufio_prefetch(struct dm_bufio_client *c,
 			dm_bufio_unlock(c);
 
 			if (need_submit)
-				submit_io(b, REQ_OP_READ, read_endio);
+				submit_io(b, REQ_OP_READ, ioprio, read_endio);
 			dm_bufio_release(b);
 
 			cond_resched();
@@ -2002,7 +2017,19 @@ void dm_bufio_prefetch(struct dm_bufio_client *c,
 flush_plug:
 	blk_finish_plug(&plug);
 }
+
+void dm_bufio_prefetch(struct dm_bufio_client *c, sector_t block, unsigned int n_blocks)
+{
+	return __dm_bufio_prefetch(c, block, n_blocks, IOPRIO_DEFAULT);
+}
 EXPORT_SYMBOL_GPL(dm_bufio_prefetch);
+
+void dm_bufio_prefetch_with_ioprio(struct dm_bufio_client *c, sector_t block,
+				unsigned int n_blocks, unsigned short ioprio)
+{
+	return __dm_bufio_prefetch(c, block, n_blocks, ioprio);
+}
+EXPORT_SYMBOL_GPL(dm_bufio_prefetch_with_ioprio);
 
 void dm_bufio_release(struct dm_buffer *b)
 {
@@ -2405,7 +2432,7 @@ static unsigned long dm_bufio_shrink_scan(struct shrinker *shrink, struct shrink
 {
 	struct dm_bufio_client *c;
 
-	c = container_of(shrink, struct dm_bufio_client, shrinker);
+	c = shrink->private_data;
 	atomic_long_add(sc->nr_to_scan, &c->need_shrink);
 	queue_work(dm_bufio_wq, &c->shrink_work);
 
@@ -2414,7 +2441,7 @@ static unsigned long dm_bufio_shrink_scan(struct shrinker *shrink, struct shrink
 
 static unsigned long dm_bufio_shrink_count(struct shrinker *shrink, struct shrink_control *sc)
 {
-	struct dm_bufio_client *c = container_of(shrink, struct dm_bufio_client, shrinker);
+	struct dm_bufio_client *c = shrink->private_data;
 	unsigned long count = cache_total(&c->cache);
 	unsigned long retain_target = get_retain_buffers(c);
 	unsigned long queued_for_cleanup = atomic_long_read(&c->need_shrink);
@@ -2531,14 +2558,20 @@ struct dm_bufio_client *dm_bufio_client_create(struct block_device *bdev, unsign
 	INIT_WORK(&c->shrink_work, shrink_work);
 	atomic_long_set(&c->need_shrink, 0);
 
-	c->shrinker.count_objects = dm_bufio_shrink_count;
-	c->shrinker.scan_objects = dm_bufio_shrink_scan;
-	c->shrinker.seeks = 1;
-	c->shrinker.batch = 0;
-	r = register_shrinker(&c->shrinker, "dm-bufio:(%u:%u)",
-			      MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev));
-	if (r)
+	c->shrinker = shrinker_alloc(0, "dm-bufio:(%u:%u)",
+				     MAJOR(bdev->bd_dev), MINOR(bdev->bd_dev));
+	if (!c->shrinker) {
+		r = -ENOMEM;
 		goto bad;
+	}
+
+	c->shrinker->count_objects = dm_bufio_shrink_count;
+	c->shrinker->scan_objects = dm_bufio_shrink_scan;
+	c->shrinker->seeks = 1;
+	c->shrinker->batch = 0;
+	c->shrinker->private_data = c;
+
+	shrinker_register(c->shrinker);
 
 	mutex_lock(&dm_bufio_clients_lock);
 	dm_bufio_client_count++;
@@ -2578,7 +2611,7 @@ void dm_bufio_client_destroy(struct dm_bufio_client *c)
 
 	drop_buffers(c);
 
-	unregister_shrinker(&c->shrinker);
+	shrinker_free(c->shrinker);
 	flush_work(&c->shrink_work);
 
 	mutex_lock(&dm_bufio_clients_lock);
@@ -2966,6 +2999,6 @@ MODULE_PARM_DESC(allocated_vmalloc_bytes, "Memory allocated with vmalloc");
 module_param_named(current_allocated_bytes, dm_bufio_current_allocated, ulong, 0444);
 MODULE_PARM_DESC(current_allocated_bytes, "Memory currently used by the cache");
 
-MODULE_AUTHOR("Mikulas Patocka <dm-devel@redhat.com>");
+MODULE_AUTHOR("Mikulas Patocka <dm-devel@lists.linux.dev>");
 MODULE_DESCRIPTION(DM_NAME " buffered I/O library");
 MODULE_LICENSE("GPL");

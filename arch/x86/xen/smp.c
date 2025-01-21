@@ -9,7 +9,6 @@
 
 #include <xen/hvc-console.h>
 #include "xen-ops.h"
-#include "smp.h"
 
 static DEFINE_PER_CPU(struct xen_common_irq, xen_resched_irq) = { .irq = -1 };
 static DEFINE_PER_CPU(struct xen_common_irq, xen_callfunc_irq) = { .irq = -1 };
@@ -135,8 +134,6 @@ void __init xen_smp_cpus_done(unsigned int max_cpus)
 {
 	if (xen_hvm_domain())
 		native_smp_cpus_done(max_cpus);
-	else
-		calculate_max_logical_packages();
 }
 
 void xen_smp_send_reschedule(int cpu)

@@ -71,7 +71,7 @@ static const char *const lvds0_sels[] = {
 	"clk_dummy",
 	"clk_dummy",
 	"clk_dummy",
-	"mipi0_lvds_bypass_clk",
+	"lvds0_bypass_clk",
 };
 
 static const char *const lvds1_sels[] = {
@@ -79,7 +79,7 @@ static const char *const lvds1_sels[] = {
 	"clk_dummy",
 	"clk_dummy",
 	"clk_dummy",
-	"mipi1_lvds_bypass_clk",
+	"lvds1_bypass_clk",
 };
 
 static const char * const mipi_sels[] = {
@@ -88,6 +88,22 @@ static const char * const mipi_sels[] = {
 	"mipi_pll_div2_clk",
 	"clk_dummy",
 	"clk_dummy",
+};
+
+static const char * const mipi0_phy_sels[] = {
+	"clk_dummy",
+	"clk_dummy",
+	"mipi_pll_div2_clk",
+	"clk_dummy",
+	"mipi0_bypass_clk",
+};
+
+static const char * const mipi1_phy_sels[] = {
+	"clk_dummy",
+	"clk_dummy",
+	"mipi_pll_div2_clk",
+	"clk_dummy",
+	"mipi1_bypass_clk",
 };
 
 static const char * const lcd_sels[] = {
@@ -105,6 +121,11 @@ static const char * const pi_pll0_sels[] = {
 	"clk_dummy",
 	"clk_dummy",
 };
+
+static inline bool clk_on_imx8dxl(struct device_node *node)
+{
+	return of_device_is_compatible(node, "fsl,imx8dxl-clk");
+}
 
 static int imx8qxp_clk_probe(struct platform_device *pdev)
 {
@@ -185,13 +206,15 @@ static int imx8qxp_clk_probe(struct platform_device *pdev)
 	imx_clk_mux_gpr_scu("enet0_rgmii_txc_sel", enet0_rgmii_txc_sels, ARRAY_SIZE(enet0_rgmii_txc_sels), IMX_SC_R_ENET_0, IMX_SC_C_TXCLK);
 	imx_clk_scu("enet0_bypass_clk", IMX_SC_R_ENET_0, IMX_SC_PM_CLK_BYPASS);
 	imx_clk_gate_gpr_scu("enet0_ref_50_clk", "clk_dummy", IMX_SC_R_ENET_0, IMX_SC_C_DISABLE_50, true);
-	imx_clk_scu("enet0_rgmii_rx_clk", IMX_SC_R_ENET_0, IMX_SC_PM_CLK_MISC0);
+	if (!clk_on_imx8dxl(ccm_node)) {
+		imx_clk_scu("enet0_rgmii_rx_clk", IMX_SC_R_ENET_0, IMX_SC_PM_CLK_MISC0);
+		imx_clk_scu("enet1_rgmii_rx_clk", IMX_SC_R_ENET_1, IMX_SC_PM_CLK_MISC0);
+	}
 	imx_clk_scu("enet1_root_clk", IMX_SC_R_ENET_1, IMX_SC_PM_CLK_PER);
 	imx_clk_divider_gpr_scu("enet1_ref_div", "enet1_root_clk", IMX_SC_R_ENET_1, IMX_SC_C_CLKDIV);
 	imx_clk_mux_gpr_scu("enet1_rgmii_txc_sel", enet1_rgmii_txc_sels, ARRAY_SIZE(enet1_rgmii_txc_sels), IMX_SC_R_ENET_1, IMX_SC_C_TXCLK);
 	imx_clk_scu("enet1_bypass_clk", IMX_SC_R_ENET_1, IMX_SC_PM_CLK_BYPASS);
 	imx_clk_gate_gpr_scu("enet1_ref_50_clk", "clk_dummy", IMX_SC_R_ENET_1, IMX_SC_C_DISABLE_50, true);
-	imx_clk_scu("enet1_rgmii_rx_clk", IMX_SC_R_ENET_1, IMX_SC_PM_CLK_MISC0);
 	imx_clk_scu("gpmi_io_clk", IMX_SC_R_NAND, IMX_SC_PM_CLK_MST_BUS);
 	imx_clk_scu("gpmi_bch_clk", IMX_SC_R_NAND, IMX_SC_PM_CLK_PER);
 	imx_clk_scu("usb3_aclk_div", IMX_SC_R_USB_2, IMX_SC_PM_CLK_PER);
@@ -215,26 +238,25 @@ static int imx8qxp_clk_probe(struct platform_device *pdev)
 
 	/* MIPI-LVDS SS */
 	imx_clk_scu("mipi0_bypass_clk", IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_BYPASS);
-	imx_clk_scu("mipi0_pixel_clk", IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_PER);
-	imx_clk_scu("mipi0_lvds_bypass_clk", IMX_SC_R_LVDS_0, IMX_SC_PM_CLK_BYPASS);
-	imx_clk_scu2("mipi0_lvds_pixel_clk", lvds0_sels, ARRAY_SIZE(lvds0_sels), IMX_SC_R_LVDS_0, IMX_SC_PM_CLK_MISC2);
-	imx_clk_scu2("mipi0_lvds_phy_clk", lvds0_sels, ARRAY_SIZE(lvds0_sels), IMX_SC_R_LVDS_0, IMX_SC_PM_CLK_MISC3);
+	imx_clk_scu2("mipi0_pixel_clk", mipi0_phy_sels, ARRAY_SIZE(mipi0_phy_sels), IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("lvds0_bypass_clk", IMX_SC_R_LVDS_0, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_scu2("lvds0_pixel_clk", lvds0_sels, ARRAY_SIZE(lvds0_sels), IMX_SC_R_LVDS_0, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu2("lvds0_phy_clk", lvds0_sels, ARRAY_SIZE(lvds0_sels), IMX_SC_R_LVDS_0, IMX_SC_PM_CLK_MISC3);
 	imx_clk_scu2("mipi0_dsi_tx_esc_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_MST_BUS);
 	imx_clk_scu2("mipi0_dsi_rx_esc_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_SLV_BUS);
-	imx_clk_scu2("mipi0_dsi_phy_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_PHY);
+	imx_clk_scu2("mipi0_dsi_phy_clk", mipi0_phy_sels, ARRAY_SIZE(mipi0_phy_sels), IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_PHY);
 	imx_clk_scu("mipi0_i2c0_clk", IMX_SC_R_MIPI_0_I2C_0, IMX_SC_PM_CLK_MISC2);
 	imx_clk_scu("mipi0_i2c1_clk", IMX_SC_R_MIPI_0_I2C_1, IMX_SC_PM_CLK_MISC2);
 	imx_clk_scu("mipi0_pwm0_clk", IMX_SC_R_MIPI_0_PWM_0, IMX_SC_PM_CLK_PER);
 
 	imx_clk_scu("mipi1_bypass_clk", IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_BYPASS);
-	imx_clk_scu("mipi1_pixel_clk", IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_PER);
-	imx_clk_scu("mipi1_lvds_bypass_clk", IMX_SC_R_LVDS_1, IMX_SC_PM_CLK_BYPASS);
-	imx_clk_scu2("mipi1_lvds_pixel_clk", lvds1_sels, ARRAY_SIZE(lvds1_sels), IMX_SC_R_LVDS_1, IMX_SC_PM_CLK_MISC2);
-	imx_clk_scu2("mipi1_lvds_phy_clk", lvds1_sels, ARRAY_SIZE(lvds1_sels), IMX_SC_R_LVDS_1, IMX_SC_PM_CLK_MISC3);
-
+	imx_clk_scu2("mipi1_pixel_clk", mipi1_phy_sels, ARRAY_SIZE(mipi1_phy_sels), IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("lvds1_bypass_clk", IMX_SC_R_LVDS_1, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_scu2("lvds1_pixel_clk", lvds1_sels, ARRAY_SIZE(lvds1_sels), IMX_SC_R_LVDS_1, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu2("lvds1_phy_clk", lvds1_sels, ARRAY_SIZE(lvds1_sels), IMX_SC_R_LVDS_1, IMX_SC_PM_CLK_MISC3);
 	imx_clk_scu2("mipi1_dsi_tx_esc_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_MST_BUS);
 	imx_clk_scu2("mipi1_dsi_rx_esc_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_SLV_BUS);
-	imx_clk_scu2("mipi1_dsi_phy_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_PHY);
+	imx_clk_scu2("mipi1_dsi_phy_clk", mipi1_phy_sels, ARRAY_SIZE(mipi1_phy_sels), IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_PHY);
 	imx_clk_scu("mipi1_i2c0_clk", IMX_SC_R_MIPI_1_I2C_0, IMX_SC_PM_CLK_MISC2);
 	imx_clk_scu("mipi1_i2c1_clk", IMX_SC_R_MIPI_1_I2C_1, IMX_SC_PM_CLK_MISC2);
 	imx_clk_scu("mipi1_pwm0_clk", IMX_SC_R_MIPI_1_PWM_0, IMX_SC_PM_CLK_PER);

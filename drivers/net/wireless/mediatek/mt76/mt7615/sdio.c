@@ -87,6 +87,7 @@ static int mt7663s_probe(struct sdio_func *func,
 		.sta_add = mt7615_mac_sta_add,
 		.sta_remove = mt7615_mac_sta_remove,
 		.update_survey = mt7615_update_channel,
+		.set_channel = mt7615_set_channel,
 	};
 	static const struct mt76_bus_ops mt7663s_ops = {
 		.rr = mt76s_rr,
@@ -253,4 +254,5 @@ module_sdio_driver(mt7663s_driver);
 
 MODULE_AUTHOR("Sean Wang <sean.wang@mediatek.com>");
 MODULE_AUTHOR("Lorenzo Bianconi <lorenzo@kernel.org>");
+MODULE_DESCRIPTION("MediaTek MT7663S (SDIO) wireless driver");
 MODULE_LICENSE("Dual BSD/GPL");

@@ -130,7 +130,6 @@ struct mt_application {
 				 * > 1 means hybrid (multitouch) protocol
 				 */
 
-	__s32 dev_time;		/* the scan time provided by the device */
 	unsigned long jiffies;	/* the frame's jiffies */
 	int timestamp;		/* the timestamp to be sent */
 	int prev_scantime;		/* scantime reported previously */
@@ -213,6 +212,7 @@ static void mt_post_parse(struct mt_device *td, struct mt_application *app);
 #define MT_CLS_GOOGLE				0x0111
 #define MT_CLS_RAZER_BLADE_STEALTH		0x0112
 #define MT_CLS_SMART_TECH			0x0113
+#define MT_CLS_SIS				0x0457
 
 #define MT_DEFAULT_MAXCONTACT	10
 #define MT_MAX_MAXCONTACT	250
@@ -396,6 +396,11 @@ static const struct mt_class mt_classes[] = {
 			MT_QUIRK_IGNORE_DUPLICATES |
 			MT_QUIRK_CONTACT_CNT_ACCURATE |
 			MT_QUIRK_SEPARATE_APP_REPORT,
+	},
+	{ .name = MT_CLS_SIS,
+		.quirks = MT_QUIRK_NOT_SEEN_MEANS_UP |
+			MT_QUIRK_ALWAYS_VALID |
+			MT_QUIRK_CONTACT_CNT_ACCURATE,
 	},
 	{ }
 };
@@ -1442,7 +1447,7 @@ static int mt_event(struct hid_device *hid, struct hid_field *field,
 	return 0;
 }
 
-static __u8 *mt_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+static const __u8 *mt_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 			     unsigned int *size)
 {
 	if (hdev->vendor == I2C_VENDOR_ID_GOODIX &&
@@ -1813,6 +1818,9 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	if (mtclass->quirks & MT_QUIRK_FIX_CONST_CONTACT_ID)
 		mt_fix_const_fields(hdev, HID_DG_CONTACTID);
 
+	if (hdev->vendor == USB_VENDOR_ID_SIS_TOUCH)
+		hdev->quirks |= HID_QUIRK_NOGET;
+
 	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
 	if (ret)
 		return ret;
@@ -1827,7 +1835,6 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	return 0;
 }
 
-#ifdef CONFIG_PM
 static int mt_suspend(struct hid_device *hdev, pm_message_t state)
 {
 	struct mt_device *td = hid_get_drvdata(hdev);
@@ -1861,7 +1868,6 @@ static int mt_resume(struct hid_device *hdev)
 
 	return 0;
 }
-#endif
 
 static void mt_remove(struct hid_device *hdev)
 {
@@ -2301,6 +2307,11 @@ static const struct hid_device_id mt_devices[] = {
 		HID_DEVICE(BUS_USB, HID_GROUP_MULTITOUCH_WIN_8, USB_VENDOR_ID_GOOGLE,
 			USB_DEVICE_ID_GOOGLE_WHISKERS) },
 
+	/* sis */
+	{ .driver_data = MT_CLS_SIS,
+		HID_DEVICE(HID_BUS_ANY, HID_GROUP_ANY, USB_VENDOR_ID_SIS_TOUCH,
+			HID_ANY_ID) },
+
 	/* Generic MT device */
 	{ HID_DEVICE(HID_BUS_ANY, HID_GROUP_MULTITOUCH, HID_ANY_ID, HID_ANY_ID) },
 
@@ -2330,10 +2341,8 @@ static struct hid_driver mt_driver = {
 	.event = mt_event,
 	.report_fixup = mt_report_fixup,
 	.report = mt_report,
-#ifdef CONFIG_PM
-	.suspend = mt_suspend,
-	.reset_resume = mt_reset_resume,
-	.resume = mt_resume,
-#endif
+	.suspend = pm_ptr(mt_suspend),
+	.reset_resume = pm_ptr(mt_reset_resume),
+	.resume = pm_ptr(mt_resume),
 };
 module_hid_driver(mt_driver);

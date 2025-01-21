@@ -493,11 +493,7 @@ static void snd_ump_proc_read(struct snd_info_entry *entry,
 			    ump->info.manufacturer_id);
 		snd_iprintf(buffer, "Family ID: 0x%04x\n", ump->info.family_id);
 		snd_iprintf(buffer, "Model ID: 0x%04x\n", ump->info.model_id);
-		snd_iprintf(buffer, "SW Revision: 0x%02x%02x%02x%02x\n",
-			    ump->info.sw_revision[0],
-			    ump->info.sw_revision[1],
-			    ump->info.sw_revision[2],
-			    ump->info.sw_revision[3]);
+		snd_iprintf(buffer, "SW Revision: 0x%4phN\n", ump->info.sw_revision);
 	}
 	snd_iprintf(buffer, "Static Blocks: %s\n",
 		    (ump->info.flags & SNDRV_UMP_EP_INFO_STATIC_BLOCKS) ? "Yes" : "No");
@@ -542,6 +538,7 @@ void snd_ump_update_group_attrs(struct snd_ump_endpoint *ump)
 		group->active = 0;
 		group->group = i;
 		group->valid = false;
+		group->is_midi1 = false;
 	}
 
 	list_for_each_entry(fb, &ump->block_list, list) {
@@ -552,6 +549,8 @@ void snd_ump_update_group_attrs(struct snd_ump_endpoint *ump)
 			group->valid = true;
 			if (fb->info.active)
 				group->active = 1;
+			if (fb->info.flags & SNDRV_UMP_BLOCK_IS_MIDI1)
+				group->is_midi1 = true;
 			switch (fb->info.direction) {
 			case SNDRV_UMP_DIR_INPUT:
 				group->dir_bits |= (1 << SNDRV_RAWMIDI_STREAM_INPUT);
@@ -659,6 +658,17 @@ static int ump_append_string(struct snd_ump_endpoint *ump, char *dest,
 		format == UMP_STREAM_MSG_FORMAT_END);
 }
 
+/* Choose the default protocol */
+static void choose_default_protocol(struct snd_ump_endpoint *ump)
+{
+	if (ump->info.protocol & SNDRV_UMP_EP_INFO_PROTO_MIDI_MASK)
+		return;
+	if (ump->info.protocol_caps & SNDRV_UMP_EP_INFO_PROTO_MIDI2)
+		ump->info.protocol |= SNDRV_UMP_EP_INFO_PROTO_MIDI2;
+	else
+		ump->info.protocol |= SNDRV_UMP_EP_INFO_PROTO_MIDI1;
+}
+
 /* handle EP info stream message; update the UMP attributes */
 static int ump_handle_ep_info_msg(struct snd_ump_endpoint *ump,
 				  const union snd_ump_stream_msg *buf)
@@ -680,6 +690,10 @@ static int ump_handle_ep_info_msg(struct snd_ump_endpoint *ump,
 
 	ump_dbg(ump, "EP info: version=%x, num_blocks=%x, proto_caps=%x\n",
 		ump->info.version, ump->info.num_blocks, ump->info.protocol_caps);
+
+	ump->info.protocol &= ump->info.protocol_caps;
+	choose_default_protocol(ump);
+
 	return 1; /* finished */
 }
 
@@ -696,14 +710,11 @@ static int ump_handle_device_info_msg(struct snd_ump_endpoint *ump,
 	ump->info.sw_revision[1] = (buf->device_info.sw_revision >> 16) & 0x7f;
 	ump->info.sw_revision[2] = (buf->device_info.sw_revision >> 8) & 0x7f;
 	ump->info.sw_revision[3] = buf->device_info.sw_revision & 0x7f;
-	ump_dbg(ump, "EP devinfo: manid=%08x, family=%04x, model=%04x, sw=%02x%02x%02x%02x\n",
+	ump_dbg(ump, "EP devinfo: manid=%08x, family=%04x, model=%04x, sw=%4phN\n",
 		ump->info.manufacturer_id,
 		ump->info.family_id,
 		ump->info.model_id,
-		ump->info.sw_revision[0],
-		ump->info.sw_revision[1],
-		ump->info.sw_revision[2],
-		ump->info.sw_revision[3]);
+		ump->info.sw_revision);
 	return 1; /* finished */
 }
 
@@ -1047,12 +1058,7 @@ int snd_ump_parse_endpoint(struct snd_ump_endpoint *ump)
 		ump_dbg(ump, "Unable to get UMP EP stream config\n");
 
 	/* If no protocol is set by some reason, assume the valid one */
-	if (!(ump->info.protocol & SNDRV_UMP_EP_INFO_PROTO_MIDI_MASK)) {
-		if (ump->info.protocol_caps & SNDRV_UMP_EP_INFO_PROTO_MIDI2)
-			ump->info.protocol |= SNDRV_UMP_EP_INFO_PROTO_MIDI2;
-		else if (ump->info.protocol_caps & SNDRV_UMP_EP_INFO_PROTO_MIDI1)
-			ump->info.protocol |= SNDRV_UMP_EP_INFO_PROTO_MIDI1;
-	}
+	choose_default_protocol(ump);
 
 	/* Query and create blocks from Function Blocks */
 	for (blk = 0; blk < ump->info.num_blocks; blk++) {
@@ -1168,6 +1174,7 @@ static int process_legacy_output(struct snd_ump_endpoint *ump,
 	struct snd_rawmidi_substream *substream;
 	struct ump_cvt_to_ump *ctx;
 	const int dir = SNDRV_RAWMIDI_STREAM_OUTPUT;
+	unsigned int protocol;
 	unsigned char c;
 	int group, size = 0;
 
@@ -1180,9 +1187,13 @@ static int process_legacy_output(struct snd_ump_endpoint *ump,
 		if (!substream)
 			continue;
 		ctx = &ump->out_cvts[group];
+		protocol = ump->info.protocol;
+		if ((protocol & SNDRV_UMP_EP_INFO_PROTO_MIDI2) &&
+		    ump->groups[group].is_midi1)
+			protocol = SNDRV_UMP_EP_INFO_PROTO_MIDI1;
 		while (!ctx->ump_bytes &&
 		       snd_rawmidi_transmit(substream, &c, 1) > 0)
-			snd_ump_convert_to_ump(ctx, group, ump->info.protocol, c);
+			snd_ump_convert_to_ump(ctx, group, protocol, c);
 		if (ctx->ump_bytes && ctx->ump_bytes <= count) {
 			size = ctx->ump_bytes;
 			memcpy(buffer, ctx->ump, size);

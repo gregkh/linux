@@ -98,7 +98,7 @@ enum i3c_dcr {
 
 /**
  * struct i3c_device_info - I3C device information
- * @pid: Provisional ID
+ * @pid: Provisioned ID
  * @bcr: Bus Characteristic Register
  * @dcr: Device Characteristic Register
  * @static_addr: static/I2C address
@@ -183,10 +183,7 @@ struct i3c_driver {
 	const struct i3c_device_id *id_table;
 };
 
-static inline struct i3c_driver *drv_to_i3cdrv(struct device_driver *drv)
-{
-	return container_of(drv, struct i3c_driver, driver);
-}
+#define drv_to_i3cdrv(__drv)	container_of_const(__drv, struct i3c_driver, driver)
 
 struct device *i3cdev_to_dev(struct i3c_device *i3cdev);
 

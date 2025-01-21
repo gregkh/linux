@@ -111,7 +111,6 @@ static struct ctl_table iwcm_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 	},
-	{ }
 };
 
 /*
@@ -144,8 +143,8 @@ static struct iwcm_work *get_work(struct iwcm_id_private *cm_id_priv)
 
 	if (list_empty(&cm_id_priv->work_free_list))
 		return NULL;
-	work = list_entry(cm_id_priv->work_free_list.next, struct iwcm_work,
-			  free_list);
+	work = list_first_entry(&cm_id_priv->work_free_list, struct iwcm_work,
+				free_list);
 	list_del_init(&work->free_list);
 	return work;
 }
@@ -207,17 +206,17 @@ static void free_cm_id(struct iwcm_id_private *cm_id_priv)
 
 /*
  * Release a reference on cm_id. If the last reference is being
- * released, free the cm_id and return 1.
+ * released, free the cm_id and return 'true'.
  */
-static int iwcm_deref_id(struct iwcm_id_private *cm_id_priv)
+static bool iwcm_deref_id(struct iwcm_id_private *cm_id_priv)
 {
 	if (refcount_dec_and_test(&cm_id_priv->refcount)) {
 		BUG_ON(!list_empty(&cm_id_priv->work_list));
 		free_cm_id(cm_id_priv);
-		return 1;
+		return true;
 	}
 
-	return 0;
+	return false;
 }
 
 static void add_ref(struct iw_cm_id *cm_id)
@@ -1021,16 +1020,13 @@ static void cm_work_handler(struct work_struct *_work)
 	struct iw_cm_event levent;
 	struct iwcm_id_private *cm_id_priv = work->cm_id;
 	unsigned long flags;
-	int empty;
 	int ret = 0;
 
 	spin_lock_irqsave(&cm_id_priv->lock, flags);
-	empty = list_empty(&cm_id_priv->work_list);
-	while (!empty) {
-		work = list_entry(cm_id_priv->work_list.next,
-				  struct iwcm_work, list);
+	while (!list_empty(&cm_id_priv->work_list)) {
+		work = list_first_entry(&cm_id_priv->work_list,
+					struct iwcm_work, list);
 		list_del_init(&work->list);
-		empty = list_empty(&cm_id_priv->work_list);
 		levent = work->event;
 		put_work(work);
 		spin_unlock_irqrestore(&cm_id_priv->lock, flags);
@@ -1042,8 +1038,6 @@ static void cm_work_handler(struct work_struct *_work)
 		} else
 			pr_debug("dropping event %d\n", levent.event);
 		if (iwcm_deref_id(cm_id_priv))
-			return;
-		if (empty)
 			return;
 		spin_lock_irqsave(&cm_id_priv->lock, flags);
 	}
@@ -1097,11 +1091,8 @@ static int cm_event_handler(struct iw_cm_id *cm_id,
 	}
 
 	refcount_inc(&cm_id_priv->refcount);
-	if (list_empty(&cm_id_priv->work_list)) {
-		list_add_tail(&work->list, &cm_id_priv->work_list);
-		queue_work(iwcm_wq, &work->work);
-	} else
-		list_add_tail(&work->list, &cm_id_priv->work_list);
+	list_add_tail(&work->list, &cm_id_priv->work_list);
+	queue_work(iwcm_wq, &work->work);
 out:
 	spin_unlock_irqrestore(&cm_id_priv->lock, flags);
 	return ret;

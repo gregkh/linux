@@ -29,7 +29,7 @@ struct mt7915_mcu_thermal_ctrl {
 } __packed;
 
 struct mt7915_mcu_thermal_notify {
-	struct mt76_connac2_mcu_rxd rxd;
+	struct mt76_connac2_mcu_rxd_hdr rxd;
 
 	struct mt7915_mcu_thermal_ctrl ctrl;
 	__le32 temperature;
@@ -37,7 +37,7 @@ struct mt7915_mcu_thermal_notify {
 } __packed;
 
 struct mt7915_mcu_csa_notify {
-	struct mt76_connac2_mcu_rxd rxd;
+	struct mt76_connac2_mcu_rxd_hdr rxd;
 
 	u8 omac_idx;
 	u8 csa_count;
@@ -46,7 +46,7 @@ struct mt7915_mcu_csa_notify {
 } __packed;
 
 struct mt7915_mcu_bcc_notify {
-	struct mt76_connac2_mcu_rxd rxd;
+	struct mt76_connac2_mcu_rxd_hdr rxd;
 
 	u8 band_idx;
 	u8 omac_idx;
@@ -55,7 +55,7 @@ struct mt7915_mcu_bcc_notify {
 } __packed;
 
 struct mt7915_mcu_rdd_report {
-	struct mt76_connac2_mcu_rxd rxd;
+	struct mt76_connac2_mcu_rxd_hdr rxd;
 
 	u8 band_idx;
 	u8 long_detected;
@@ -519,7 +519,7 @@ static inline s8
 mt7915_get_power_bound(struct mt7915_phy *phy, s8 txpower)
 {
 	struct mt76_phy *mphy = phy->mt76;
-	int n_chains = hweight8(mphy->antenna_mask);
+	int n_chains = hweight16(mphy->chainmask);
 
 	txpower = mt76_get_sar_power(mphy, mphy->chandef.chan, txpower * 2);
 	txpower -= mt76_tx_power_nss_delta(n_chains);

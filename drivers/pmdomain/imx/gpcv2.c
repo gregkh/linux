@@ -393,6 +393,17 @@ static int imx_pgc_power_up(struct generic_pm_domain *genpd)
 		 * automatically there. Just add a delay and suppose the handshake finish
 		 * after that.
 		 */
+
+		/*
+		 * For some BLK-CTL module (eg. AudioMix on i.MX8MP) doesn't have BUS
+		 * clk-en bit, it is better to add delay here, as the BLK-CTL module
+		 * doesn't need to care about how it is powered up.
+		 *
+		 * regmap_read_bypassed() is to make sure the above write IO transaction
+		 * already reaches target before udelay()
+		 */
+		regmap_read_bypassed(domain->regmap, domain->regs->hsk, &reg_val);
+		udelay(10);
 	}
 
 	/* Disable reset clocks for all devices in the domain */
@@ -1373,7 +1384,7 @@ out_domain_unmap:
 	return ret;
 }
 
-static int imx_pgc_domain_remove(struct platform_device *pdev)
+static void imx_pgc_domain_remove(struct platform_device *pdev)
 {
 	struct imx_pgc_domain *domain = pdev->dev.platform_data;
 
@@ -1385,8 +1396,6 @@ static int imx_pgc_domain_remove(struct platform_device *pdev)
 				   domain->bits.map, 0);
 
 	pm_runtime_disable(domain->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1430,7 +1439,7 @@ static struct platform_driver imx_pgc_domain_driver = {
 		.pm = &imx_pgc_domain_pm_ops,
 	},
 	.probe    = imx_pgc_domain_probe,
-	.remove   = imx_pgc_domain_remove,
+	.remove_new = imx_pgc_domain_remove,
 	.id_table = imx_pgc_domain_id,
 };
 builtin_platform_driver(imx_pgc_domain_driver)

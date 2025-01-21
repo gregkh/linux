@@ -39,6 +39,18 @@ struct sas_phy_data {
 	struct sas_work enable_work;
 };
 
+void sas_hash_addr(u8 *hashed, const u8 *sas_addr);
+
+int sas_discover_root_expander(struct domain_device *dev);
+
+int sas_ex_revalidate_domain(struct domain_device *dev);
+void sas_unregister_domain_devices(struct asd_sas_port *port, int gone);
+void sas_init_disc(struct sas_discovery *disc, struct asd_sas_port *port);
+void sas_discover_event(struct asd_sas_port *port, enum discover_event ev);
+
+void sas_init_dev(struct domain_device *dev);
+void sas_unregister_dev(struct asd_sas_port *port, struct domain_device *dev);
+
 void sas_scsi_recover_host(struct Scsi_Host *shost);
 
 int  sas_register_phys(struct sas_ha_struct *sas_ha);
@@ -189,21 +201,6 @@ static inline void sas_phy_set_target(struct asd_sas_phy *p, struct domain_devic
 		phy->identify.device_type = SAS_PHY_UNUSED;
 		phy->identify.target_port_protocols = 0;
 	}
-}
-
-static inline void sas_add_parent_port(struct domain_device *dev, int phy_id)
-{
-	struct expander_device *ex = &dev->ex_dev;
-	struct ex_phy *ex_phy = &ex->ex_phy[phy_id];
-
-	if (!ex->parent_port) {
-		ex->parent_port = sas_port_alloc(&dev->rphy->dev, phy_id);
-		/* FIXME: error handling */
-		BUG_ON(!ex->parent_port);
-		BUG_ON(sas_port_add(ex->parent_port));
-		sas_port_mark_backlink(ex->parent_port);
-	}
-	sas_port_add_phy(ex->parent_port, ex_phy->phy);
 }
 
 static inline struct domain_device *sas_alloc_device(void)

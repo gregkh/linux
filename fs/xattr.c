@@ -16,7 +16,6 @@
 #include <linux/mount.h>
 #include <linux/namei.h>
 #include <linux/security.h>
-#include <linux/evm.h>
 #include <linux/syscalls.h>
 #include <linux/export.h>
 #include <linux/fsnotify.h>
@@ -56,7 +55,7 @@ strcmp_prefix(const char *a, const char *a_prefix)
 static const struct xattr_handler *
 xattr_resolve_name(struct inode *inode, const char **name)
 {
-	const struct xattr_handler **handlers = inode->i_sb->s_xattr;
+	const struct xattr_handler * const *handlers = inode->i_sb->s_xattr;
 	const struct xattr_handler *handler;
 
 	if (!(inode->i_opflags & IOP_XATTR)) {
@@ -162,7 +161,7 @@ xattr_permission(struct mnt_idmap *idmap, struct inode *inode,
 int
 xattr_supports_user_prefix(struct inode *inode)
 {
-	const struct xattr_handler **handlers = inode->i_sb->s_xattr;
+	const struct xattr_handler * const *handlers = inode->i_sb->s_xattr;
 	const struct xattr_handler *handler;
 
 	if (!(inode->i_opflags & IOP_XATTR)) {
@@ -552,11 +551,11 @@ __vfs_removexattr_locked(struct mnt_idmap *idmap,
 		goto out;
 
 	error = __vfs_removexattr(idmap, dentry, name);
+	if (error)
+		return error;
 
-	if (!error) {
-		fsnotify_xattr(dentry);
-		evm_inode_post_removexattr(dentry, name);
-	}
+	fsnotify_xattr(dentry);
+	security_inode_post_removexattr(dentry, name);
 
 out:
 	return error;
@@ -698,19 +697,19 @@ SYSCALL_DEFINE5(fsetxattr, int, fd, const char __user *, name,
 	int error;
 
 	CLASS(fd, f)(fd);
-	if (!f.file)
+	if (!fd_file(f))
 		return -EBADF;
 
-	audit_file(f.file);
+	audit_file(fd_file(f));
 	error = setxattr_copy(name, &ctx);
 	if (error)
 		return error;
 
-	error = mnt_want_write_file(f.file);
+	error = mnt_want_write_file(fd_file(f));
 	if (!error) {
-		error = do_setxattr(file_mnt_idmap(f.file),
-				    f.file->f_path.dentry, &ctx);
-		mnt_drop_write_file(f.file);
+		error = do_setxattr(file_mnt_idmap(fd_file(f)),
+				    fd_file(f)->f_path.dentry, &ctx);
+		mnt_drop_write_file(fd_file(f));
 	}
 	kvfree(ctx.kvalue);
 	return error;
@@ -813,10 +812,10 @@ SYSCALL_DEFINE4(fgetxattr, int, fd, const char __user *, name,
 	struct fd f = fdget(fd);
 	ssize_t error = -EBADF;
 
-	if (!f.file)
+	if (!fd_file(f))
 		return error;
-	audit_file(f.file);
-	error = getxattr(file_mnt_idmap(f.file), f.file->f_path.dentry,
+	audit_file(fd_file(f));
+	error = getxattr(file_mnt_idmap(fd_file(f)), fd_file(f)->f_path.dentry,
 			 name, value, size);
 	fdput(f);
 	return error;
@@ -889,10 +888,10 @@ SYSCALL_DEFINE3(flistxattr, int, fd, char __user *, list, size_t, size)
 	struct fd f = fdget(fd);
 	ssize_t error = -EBADF;
 
-	if (!f.file)
+	if (!fd_file(f))
 		return error;
-	audit_file(f.file);
-	error = listxattr(f.file->f_path.dentry, list, size);
+	audit_file(fd_file(f));
+	error = listxattr(fd_file(f)->f_path.dentry, list, size);
 	fdput(f);
 	return error;
 }
@@ -955,9 +954,9 @@ SYSCALL_DEFINE2(fremovexattr, int, fd, const char __user *, name)
 	char kname[XATTR_NAME_MAX + 1];
 	int error = -EBADF;
 
-	if (!f.file)
+	if (!fd_file(f))
 		return error;
-	audit_file(f.file);
+	audit_file(fd_file(f));
 
 	error = strncpy_from_user(kname, name, sizeof(kname));
 	if (error == 0 || error == sizeof(kname))
@@ -965,11 +964,11 @@ SYSCALL_DEFINE2(fremovexattr, int, fd, const char __user *, name)
 	if (error < 0)
 		return error;
 
-	error = mnt_want_write_file(f.file);
+	error = mnt_want_write_file(fd_file(f));
 	if (!error) {
-		error = removexattr(file_mnt_idmap(f.file),
-				    f.file->f_path.dentry, kname);
-		mnt_drop_write_file(f.file);
+		error = removexattr(file_mnt_idmap(fd_file(f)),
+				    fd_file(f)->f_path.dentry, kname);
+		mnt_drop_write_file(fd_file(f));
 	}
 	fdput(f);
 	return error;
@@ -1004,7 +1003,7 @@ int xattr_list_one(char **buffer, ssize_t *remaining_size, const char *name)
 ssize_t
 generic_listxattr(struct dentry *dentry, char *buffer, size_t buffer_size)
 {
-	const struct xattr_handler *handler, **handlers = dentry->d_sb->s_xattr;
+	const struct xattr_handler *handler, * const *handlers = dentry->d_sb->s_xattr;
 	ssize_t remaining_size = buffer_size;
 	int err = 0;
 

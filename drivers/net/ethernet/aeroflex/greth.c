@@ -1526,7 +1526,7 @@ error1:
 	return err;
 }
 
-static int greth_of_remove(struct platform_device *of_dev)
+static void greth_of_remove(struct platform_device *of_dev)
 {
 	struct net_device *ndev = platform_get_drvdata(of_dev);
 	struct greth_private *greth = netdev_priv(ndev);
@@ -1545,8 +1545,6 @@ static int greth_of_remove(struct platform_device *of_dev)
 	of_iounmap(&of_dev->resource[0], greth->regs, resource_size(&of_dev->resource[0]));
 
 	free_netdev(ndev);
-
-	return 0;
 }
 
 static const struct of_device_id greth_of_match[] = {
@@ -1567,7 +1565,7 @@ static struct platform_driver greth_of_driver = {
 		.of_match_table = greth_of_match,
 	},
 	.probe = greth_of_probe,
-	.remove = greth_of_remove,
+	.remove_new = greth_of_remove,
 };
 
 module_platform_driver(greth_of_driver);

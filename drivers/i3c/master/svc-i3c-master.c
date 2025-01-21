@@ -127,6 +127,8 @@
 
 /* This parameter depends on the implementation and may be tuned */
 #define SVC_I3C_FIFO_SIZE 16
+#define SVC_I3C_PPBAUD_MAX 15
+#define SVC_I3C_QUICK_I2C_CLK 4170000
 
 #define SVC_I3C_EVENT_IBI	GENMASK(7, 0)
 #define SVC_I3C_EVENT_HOTJOIN	BIT(31)
@@ -148,7 +150,7 @@ struct svc_i3c_xfer {
 	int ret;
 	unsigned int type;
 	unsigned int ncmds;
-	struct svc_i3c_cmd cmds[];
+	struct svc_i3c_cmd cmds[] __counted_by(ncmds);
 };
 
 struct svc_i3c_regs_save {
@@ -585,6 +587,7 @@ static int svc_i3c_master_bus_init(struct i3c_master_controller *m)
 	struct i3c_bus *bus = i3c_master_get_bus(m);
 	struct i3c_device_info info = {};
 	unsigned long fclk_rate, fclk_period_ns;
+	unsigned long i2c_period_ns, i2c_scl_rate, i3c_scl_rate;
 	unsigned int high_period_ns, od_low_period_ns;
 	u32 ppbaud, pplow, odhpp, odbaud, odstop, i2cbaud, reg;
 	int ret;
@@ -605,12 +608,15 @@ static int svc_i3c_master_bus_init(struct i3c_master_controller *m)
 	}
 
 	fclk_period_ns = DIV_ROUND_UP(1000000000, fclk_rate);
+	i2c_period_ns = DIV_ROUND_UP(1000000000, bus->scl_rate.i2c);
+	i2c_scl_rate = bus->scl_rate.i2c;
+	i3c_scl_rate = bus->scl_rate.i3c;
 
 	/*
 	 * Using I3C Push-Pull mode, target is 12.5MHz/80ns period.
 	 * Simplest configuration is using a 50% duty-cycle of 40ns.
 	 */
-	ppbaud = DIV_ROUND_UP(40, fclk_period_ns) - 1;
+	ppbaud = DIV_ROUND_UP(fclk_rate / 2, i3c_scl_rate) - 1;
 	pplow = 0;
 
 	/*
@@ -620,7 +626,7 @@ static int svc_i3c_master_bus_init(struct i3c_master_controller *m)
 	 */
 	odhpp = 1;
 	high_period_ns = (ppbaud + 1) * fclk_period_ns;
-	odbaud = DIV_ROUND_UP(240 - high_period_ns, high_period_ns) - 1;
+	odbaud = DIV_ROUND_UP(fclk_rate, SVC_I3C_QUICK_I2C_CLK * (1 + ppbaud)) - 2;
 	od_low_period_ns = (odbaud + 1) * high_period_ns;
 
 	switch (bus->mode) {
@@ -629,20 +635,27 @@ static int svc_i3c_master_bus_init(struct i3c_master_controller *m)
 		odstop = 0;
 		break;
 	case I3C_BUS_MODE_MIXED_FAST:
-	case I3C_BUS_MODE_MIXED_LIMITED:
 		/*
 		 * Using I2C Fm+ mode, target is 1MHz/1000ns, the difference
 		 * between the high and low period does not really matter.
 		 */
-		i2cbaud = DIV_ROUND_UP(1000, od_low_period_ns) - 2;
+		i2cbaud = DIV_ROUND_UP(i2c_period_ns, od_low_period_ns) - 2;
 		odstop = 1;
 		break;
+	case I3C_BUS_MODE_MIXED_LIMITED:
 	case I3C_BUS_MODE_MIXED_SLOW:
-		/*
-		 * Using I2C Fm mode, target is 0.4MHz/2500ns, with the same
-		 * constraints as the FM+ mode.
-		 */
-		i2cbaud = DIV_ROUND_UP(2500, od_low_period_ns) - 2;
+		/* I3C PP + I3C OP + I2C OP both use i2c clk rate */
+		if (ppbaud > SVC_I3C_PPBAUD_MAX) {
+			ppbaud = SVC_I3C_PPBAUD_MAX;
+			pplow =  DIV_ROUND_UP(fclk_rate, i3c_scl_rate) - (2 + 2 * ppbaud);
+		}
+
+		high_period_ns = (ppbaud + 1) * fclk_period_ns;
+		odhpp = 0;
+		odbaud = DIV_ROUND_UP(fclk_rate, i2c_scl_rate * (2 + 2 * ppbaud)) - 1;
+
+		od_low_period_ns = (odbaud + 1) * high_period_ns;
+		i2cbaud = DIV_ROUND_UP(i2c_period_ns, od_low_period_ns) - 2;
 		odstop = 1;
 		break;
 	default:
@@ -841,7 +854,20 @@ static int svc_i3c_master_do_daa_locked(struct svc_i3c_master *master,
 	int ret, i;
 
 	while (true) {
-		/* Enter/proceed with DAA */
+		/* SVC_I3C_MCTRL_REQUEST_PROC_DAA have two mode, ENTER DAA or PROCESS DAA.
+		 *
+		 * ENTER DAA:
+		 *   1 will issue START, 7E, ENTDAA, and then emits 7E/R to process first target.
+		 *   2 Stops just before the new Dynamic Address (DA) is to be emitted.
+		 *
+		 * PROCESS DAA:
+		 *   1 The DA is written using MWDATAB or ADDR bits 6:0.
+		 *   2 ProcessDAA is requested again to write the new address, and then starts the
+		 *     next (START, 7E, ENTDAA)  unless marked to STOP; an MSTATUS indicating NACK
+		 *     means DA was not accepted (e.g. parity error). If PROCESSDAA is NACKed on the
+		 *     7E/R, which means no more Slaves need a DA, then a COMPLETE will be signaled
+		 *     (along with DONE), and a STOP issued automatically.
+		 */
 		writel(SVC_I3C_MCTRL_REQUEST_PROC_DAA |
 		       SVC_I3C_MCTRL_TYPE_I3C |
 		       SVC_I3C_MCTRL_IBIRESP_NACK |
@@ -858,19 +884,19 @@ static int svc_i3c_master_do_daa_locked(struct svc_i3c_master *master,
 						SVC_I3C_MSTATUS_MCTRLDONE(reg),
 						1, 1000);
 		if (ret)
-			return ret;
+			break;
 
 		if (SVC_I3C_MSTATUS_RXPEND(reg)) {
 			u8 data[6];
 
 			/*
-			 * We only care about the 48-bit provisional ID yet to
+			 * We only care about the 48-bit provisioned ID yet to
 			 * be sure a device does not nack an address twice.
 			 * Otherwise, we would just need to flush the RX FIFO.
 			 */
 			ret = svc_i3c_master_readb(master, data, 6);
 			if (ret)
-				return ret;
+				break;
 
 			for (i = 0; i < 6; i++)
 				prov_id[dev_nb] |= (u64)(data[i]) << (8 * (5 - i));
@@ -878,7 +904,7 @@ static int svc_i3c_master_do_daa_locked(struct svc_i3c_master *master,
 			/* We do not care about the BCR and DCR yet */
 			ret = svc_i3c_master_readb(master, data, 2);
 			if (ret)
-				return ret;
+				break;
 		} else if (SVC_I3C_MSTATUS_MCTRLDONE(reg)) {
 			if (SVC_I3C_MSTATUS_STATE_IDLE(reg) &&
 			    SVC_I3C_MSTATUS_COMPLETE(reg)) {
@@ -886,12 +912,23 @@ static int svc_i3c_master_do_daa_locked(struct svc_i3c_master *master,
 				 * All devices received and acked they dynamic
 				 * address, this is the natural end of the DAA
 				 * procedure.
+				 *
+				 * Hardware will auto emit STOP at this case.
 				 */
-				break;
+				*count = dev_nb;
+				return 0;
+
 			} else if (SVC_I3C_MSTATUS_NACKED(reg)) {
 				/* No I3C devices attached */
-				if (dev_nb == 0)
+				if (dev_nb == 0) {
+					/*
+					 * Hardware can't treat first NACK for ENTAA as normal
+					 * COMPLETE. So need manual emit STOP.
+					 */
+					ret = 0;
+					*count = 0;
 					break;
+				}
 
 				/*
 				 * A slave device nacked the address, this is
@@ -900,8 +937,10 @@ static int svc_i3c_master_do_daa_locked(struct svc_i3c_master *master,
 				 * answer again immediately and shall ack the
 				 * address this time.
 				 */
-				if (prov_id[dev_nb] == nacking_prov_id)
-					return -EIO;
+				if (prov_id[dev_nb] == nacking_prov_id) {
+					ret = -EIO;
+					break;
+				}
 
 				dev_nb--;
 				nacking_prov_id = prov_id[dev_nb];
@@ -909,7 +948,7 @@ static int svc_i3c_master_do_daa_locked(struct svc_i3c_master *master,
 
 				continue;
 			} else {
-				return -EIO;
+				break;
 			}
 		}
 
@@ -921,12 +960,12 @@ static int svc_i3c_master_do_daa_locked(struct svc_i3c_master *master,
 						SVC_I3C_MSTATUS_BETWEEN(reg),
 						0, 1000);
 		if (ret)
-			return ret;
+			break;
 
 		/* Give the slave device a suitable dynamic address */
 		ret = i3c_master_get_free_addr(&master->base, last_addr + 1);
 		if (ret < 0)
-			return ret;
+			break;
 
 		addrs[dev_nb] = ret;
 		dev_dbg(master->dev, "DAA: device %d assigned to 0x%02x\n",
@@ -936,9 +975,9 @@ static int svc_i3c_master_do_daa_locked(struct svc_i3c_master *master,
 		last_addr = addrs[dev_nb++];
 	}
 
-	*count = dev_nb;
-
-	return 0;
+	/* Need manual issue STOP except for Complete condition */
+	svc_i3c_master_emit_stop(master);
+	return ret;
 }
 
 static int svc_i3c_update_ibirules(struct svc_i3c_master *master)
@@ -1012,11 +1051,10 @@ static int svc_i3c_master_do_daa(struct i3c_master_controller *m)
 	spin_lock_irqsave(&master->xferqueue.lock, flags);
 	ret = svc_i3c_master_do_daa_locked(master, addrs, &dev_nb);
 	spin_unlock_irqrestore(&master->xferqueue.lock, flags);
-	if (ret) {
-		svc_i3c_master_emit_stop(master);
-		svc_i3c_master_clear_merrwarn(master);
+
+	svc_i3c_master_clear_merrwarn(master);
+	if (ret)
 		goto rpm_out;
-	}
 
 	/*
 	 * Register all devices who participated to the core
@@ -1417,7 +1455,7 @@ static int svc_i3c_master_send_direct_ccc_cmd(struct svc_i3c_master *master,
 	cmd->addr = ccc->dests[0].addr;
 	cmd->rnw = ccc->rnw;
 	cmd->in = ccc->rnw ? ccc->dests[0].payload.data : NULL;
-	cmd->out = ccc->rnw ? NULL : ccc->dests[0].payload.data,
+	cmd->out = ccc->rnw ? NULL : ccc->dests[0].payload.data;
 	cmd->len = xfer_len;
 	cmd->actual_len = actual_len;
 	cmd->continued = false;
@@ -1872,7 +1910,7 @@ static const struct dev_pm_ops svc_i3c_pm_ops = {
 };
 
 static const struct of_device_id svc_i3c_master_of_match_tbl[] = {
-	{ .compatible = "silvaco,i3c-master" },
+	{ .compatible = "silvaco,i3c-master-v1"},
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, svc_i3c_master_of_match_tbl);

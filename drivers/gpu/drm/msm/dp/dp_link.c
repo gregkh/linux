@@ -36,7 +36,6 @@ struct dp_link_request {
 
 struct dp_link_private {
 	u32 prev_sink_count;
-	struct device *dev;
 	struct drm_device *drm_dev;
 	struct drm_dp_aux *aux;
 	struct dp_link dp_link;
@@ -713,49 +712,17 @@ end:
 	return ret;
 }
 
-/**
- * dp_link_parse_sink_count() - parses the sink count
- * @dp_link: pointer to link module data
- *
- * Parses the DPCD to check if there is an update to the sink count
- * (Byte 0x200), and whether all the sink devices connected have Content
- * Protection enabled.
- */
-static int dp_link_parse_sink_count(struct dp_link *dp_link)
-{
-	ssize_t rlen;
-	bool cp_ready;
-
-	struct dp_link_private *link = container_of(dp_link,
-			struct dp_link_private, dp_link);
-
-	rlen = drm_dp_dpcd_readb(link->aux, DP_SINK_COUNT,
-				 &link->dp_link.sink_count);
-	if (rlen < 0) {
-		DRM_ERROR("sink count read failed. rlen=%zd\n", rlen);
-		return rlen;
-	}
-
-	cp_ready = link->dp_link.sink_count & DP_SINK_CP_READY;
-
-	link->dp_link.sink_count =
-		DP_GET_SINK_COUNT(link->dp_link.sink_count);
-
-	drm_dbg_dp(link->drm_dev, "sink_count = 0x%x, cp_ready = 0x%x\n",
-				link->dp_link.sink_count, cp_ready);
-	return 0;
-}
-
 static int dp_link_parse_sink_status_field(struct dp_link_private *link)
 {
-	int len = 0;
+	int len;
 
 	link->prev_sink_count = link->dp_link.sink_count;
-	len = dp_link_parse_sink_count(&link->dp_link);
+	len = drm_dp_read_sink_count(link->aux);
 	if (len < 0) {
 		DRM_ERROR("DP parse sink count failed\n");
 		return len;
 	}
+	link->dp_link.sink_count = len;
 
 	len = drm_dp_dpcd_read_link_status(link->aux,
 		link->link_status);
@@ -836,8 +803,6 @@ int dp_link_psm_config(struct dp_link *dp_link,
 	if (ret)
 		DRM_ERROR("Failed to %s low power mode\n", enable ?
 							"enter" : "exit");
-	else
-		dp_link->psm_enabled = enable;
 
 	mutex_unlock(&link->psm_mutex);
 	return ret;
@@ -1258,7 +1223,6 @@ struct dp_link *dp_link_get(struct device *dev, struct drm_dp_aux *aux)
 	if (!link)
 		return ERR_PTR(-ENOMEM);
 
-	link->dev   = dev;
 	link->aux   = aux;
 
 	mutex_init(&link->psm_mutex);

@@ -44,6 +44,8 @@ static void audit_mnt_flags(struct audit_buffer *ab, unsigned long flags)
 		audit_log_format(ab, ", mand");
 	if (flags & MS_DIRSYNC)
 		audit_log_format(ab, ", dirsync");
+	if (flags & MS_NOSYMFOLLOW)
+		audit_log_format(ab, ", nosymfollow");
 	if (flags & MS_NOATIME)
 		audit_log_format(ab, ", noatime");
 	if (flags & MS_NODIRATIME)
@@ -332,8 +334,8 @@ static int match_mnt_path_str(const struct cred *subj_cred,
 	}
 
 	error = -EACCES;
-	pos = do_match_mnt(&rules->policy,
-			   rules->policy.start[AA_CLASS_MOUNT],
+	pos = do_match_mnt(rules->policy,
+			   rules->policy->start[AA_CLASS_MOUNT],
 			   mntpnt, devname, type, flags, data, binary, &perms);
 	if (pos) {
 		info = mnt_info_table[pos];
@@ -620,10 +622,10 @@ static int profile_umount(const struct cred *subj_cred,
 	if (error)
 		goto audit;
 
-	state = aa_dfa_match(rules->policy.dfa,
-			     rules->policy.start[AA_CLASS_MOUNT],
+	state = aa_dfa_match(rules->policy->dfa,
+			     rules->policy->start[AA_CLASS_MOUNT],
 			     name);
-	perms = *aa_lookup_perms(&rules->policy, state);
+	perms = *aa_lookup_perms(rules->policy, state);
 	if (AA_MAY_UMOUNT & ~perms.allow)
 		error = -EACCES;
 
@@ -694,12 +696,12 @@ static struct aa_label *build_pivotroot(const struct cred *subj_cred,
 		goto audit;
 
 	error = -EACCES;
-	state = aa_dfa_match(rules->policy.dfa,
-			     rules->policy.start[AA_CLASS_MOUNT],
+	state = aa_dfa_match(rules->policy->dfa,
+			     rules->policy->start[AA_CLASS_MOUNT],
 			     new_name);
-	state = aa_dfa_null_transition(rules->policy.dfa, state);
-	state = aa_dfa_match(rules->policy.dfa, state, old_name);
-	perms = *aa_lookup_perms(&rules->policy, state);
+	state = aa_dfa_null_transition(rules->policy->dfa, state);
+	state = aa_dfa_match(rules->policy->dfa, state, old_name);
+	perms = *aa_lookup_perms(rules->policy, state);
 
 	if (AA_MAY_PIVOTROOT & perms.allow)
 		error = 0;

@@ -133,9 +133,9 @@ static int regcache_maple_drop(struct regmap *map, unsigned int min,
 			lower_index = mas.index;
 			lower_last = min -1;
 
-			lower = kmemdup(entry, ((min - mas.index) *
-						sizeof(unsigned long)),
-					map->alloc_flags);
+			lower = kmemdup_array(entry,
+					      min - mas.index, sizeof(*lower),
+					      map->alloc_flags);
 			if (!lower) {
 				ret = -ENOMEM;
 				goto out_unlocked;
@@ -146,10 +146,9 @@ static int regcache_maple_drop(struct regmap *map, unsigned int min,
 			upper_index = max + 1;
 			upper_last = mas.last;
 
-			upper = kmemdup(&entry[max - mas.index + 1],
-					((mas.last - max) *
-					 sizeof(unsigned long)),
-					map->alloc_flags);
+			upper = kmemdup_array(&entry[max - mas.index + 1],
+					      mas.last - max, sizeof(*upper),
+					      map->alloc_flags);
 			if (!upper) {
 				ret = -ENOMEM;
 				goto out_unlocked;
@@ -295,7 +294,7 @@ static int regcache_maple_exit(struct regmap *map)
 {
 	struct maple_tree *mt = map->cache;
 	MA_STATE(mas, mt, 0, UINT_MAX);
-	unsigned int *entry;;
+	unsigned int *entry;
 
 	/* if we've already been called then just return */
 	if (!mt)
@@ -349,7 +348,7 @@ static int regcache_maple_init(struct regmap *map)
 	int ret;
 	int range_start;
 
-	mt = kmalloc(sizeof(*mt), GFP_KERNEL);
+	mt = kmalloc(sizeof(*mt), map->alloc_flags);
 	if (!mt)
 		return -ENOMEM;
 	map->cache = mt;

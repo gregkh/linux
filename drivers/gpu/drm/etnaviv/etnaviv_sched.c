@@ -72,7 +72,7 @@ static enum drm_gpu_sched_stat etnaviv_sched_timedout_job(struct drm_sched_job
 
 	drm_sched_resubmit_jobs(&gpu->sched);
 
-	drm_sched_start(&gpu->sched, true);
+	drm_sched_start(&gpu->sched);
 	return DRM_GPU_SCHED_STAT_NOMINAL;
 
 out_no_timeout:
@@ -133,7 +133,8 @@ int etnaviv_sched_init(struct etnaviv_gpu *gpu)
 {
 	int ret;
 
-	ret = drm_sched_init(&gpu->sched, &etnaviv_sched_ops,
+	ret = drm_sched_init(&gpu->sched, &etnaviv_sched_ops, NULL,
+			     DRM_SCHED_PRIORITY_COUNT,
 			     etnaviv_hw_jobs_limit, etnaviv_job_hang_limit,
 			     msecs_to_jiffies(500), NULL, NULL,
 			     dev_name(gpu->dev), gpu->dev);

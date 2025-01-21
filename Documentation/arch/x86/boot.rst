@@ -71,13 +71,13 @@ Protocol 2.13	(Kernel 3.14) Support 32- and 64-bit flags being set in
 
 Protocol 2.14	BURNT BY INCORRECT COMMIT
                 ae7e1238e68f2a472a125673ab506d49158c1889
-		(x86/boot: Add ACPI RSDP address to setup_header)
+		("x86/boot: Add ACPI RSDP address to setup_header")
 		DO NOT USE!!! ASSUME SAME AS 2.13.
 
 Protocol 2.15	(Kernel 5.5) Added the kernel_info and kernel_info.setup_type_max.
 =============	============================================================
 
-.. note::
+  .. note::
      The protocol version number should be changed only if the setup header
      is changed. There is no need to update the version number if boot_params
      or kernel_info are changed. Additionally, it is recommended to use
@@ -878,7 +878,8 @@ Protocol:	2.10+
   address if possible.
 
   A non-relocatable kernel will unconditionally move itself and to run
-  at this address.
+  at this address. A relocatable kernel will move itself to this address if it
+  loaded below this address.
 
 ============	=======
 Field name:	init_size
@@ -895,10 +896,19 @@ Offset/size:	0x260/4
 
   The kernel runtime start address is determined by the following algorithm::
 
-	if (relocatable_kernel)
-	runtime_start = align_up(load_address, kernel_alignment)
-	else
-	runtime_start = pref_address
+   	if (relocatable_kernel) {
+   		if (load_address < pref_address)
+   			load_address = pref_address;
+   		runtime_start = align_up(load_address, kernel_alignment);
+   	} else {
+   		runtime_start = pref_address;
+   	}
+
+Hence the necessary memory window location and size can be estimated by
+a boot loader as::
+
+   	memory_window_start = runtime_start;
+   	memory_window_size = init_size;
 
 ============	===============
 Field name:	handover_offset

@@ -3,8 +3,15 @@
 #ifndef BTRFS_BLOCK_RSV_H
 #define BTRFS_BLOCK_RSV_H
 
+#include <linux/types.h>
+#include <linux/compiler.h>
+#include <linux/spinlock.h>
+
 struct btrfs_trans_handle;
 struct btrfs_root;
+struct btrfs_space_info;
+struct btrfs_block_rsv;
+struct btrfs_fs_info;
 enum btrfs_reserve_flush_enum;
 
 /*
@@ -82,7 +89,7 @@ void btrfs_release_global_block_rsv(struct btrfs_fs_info *fs_info);
 struct btrfs_block_rsv *btrfs_use_block_rsv(struct btrfs_trans_handle *trans,
 					    struct btrfs_root *root,
 					    u32 blocksize);
-int btrfs_check_trunc_cache_free_space(struct btrfs_fs_info *fs_info,
+int btrfs_check_trunc_cache_free_space(const struct btrfs_fs_info *fs_info,
 				       struct btrfs_block_rsv *rsv);
 static inline void btrfs_unuse_block_rsv(struct btrfs_fs_info *fs_info,
 					 struct btrfs_block_rsv *block_rsv,

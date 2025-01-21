@@ -27,7 +27,6 @@
 #include <drm/drm_managed.h>
 #include <drm/drm_mode_config.h>
 #include <drm/drm_plane.h>
-#include <drm/drm_plane_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
@@ -121,9 +120,13 @@ static void zynqmp_dpsub_plane_atomic_update(struct drm_plane *plane,
 		zynqmp_disp_blend_set_global_alpha(dpsub->disp, true,
 						   plane->state->alpha >> 8);
 
-	/* Enable or re-enable the plane if the format has changed. */
-	if (format_changed)
-		zynqmp_disp_layer_enable(layer, ZYNQMP_DPSUB_LAYER_NONLIVE);
+	/*
+	 * Unconditionally enable the layer, as it may have been disabled
+	 * previously either explicitly to reconfigure layer format, or
+	 * implicitly after DPSUB reset during display mode change. DRM
+	 * framework calls this callback for enabled planes only.
+	 */
+	zynqmp_disp_layer_enable(layer);
 }
 
 static const struct drm_plane_helper_funcs zynqmp_dpsub_plane_helper_funcs = {

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
+TARGETS += acct
 TARGETS += alsa
 TARGETS += amd-pstate
 TARGETS += arm64
@@ -13,11 +14,17 @@ TARGETS += core
 TARGETS += cpufreq
 TARGETS += cpu-hotplug
 TARGETS += damon
+TARGETS += devices/error_logs
+TARGETS += devices/probe
 TARGETS += dmabuf-heaps
 TARGETS += drivers/dma-buf
 TARGETS += drivers/s390x/uvdevice
+TARGETS += drivers/net
 TARGETS += drivers/net/bonding
 TARGETS += drivers/net/team
+TARGETS += drivers/net/virtio_net
+TARGETS += drivers/platform/x86/intel/ifs
+TARGETS += dt
 TARGETS += efivarfs
 TARGETS += exec
 TARGETS += fchmodat2
@@ -25,6 +32,8 @@ TARGETS += filesystems
 TARGETS += filesystems/binderfs
 TARGETS += filesystems/epoll
 TARGETS += filesystems/fat
+TARGETS += filesystems/overlayfs
+TARGETS += filesystems/statmount
 TARGETS += firmware
 TARGETS += fpu
 TARGETS += ftrace
@@ -42,6 +51,7 @@ TARGETS += landlock
 TARGETS += lib
 TARGETS += livepatch
 TARGETS += lkdtm
+TARGETS += lsm
 TARGETS += membarrier
 TARGETS += memfd
 TARGETS += memory-hotplug
@@ -56,12 +66,16 @@ TARGETS += net/af_unix
 TARGETS += net/forwarding
 TARGETS += net/hsr
 TARGETS += net/mptcp
+TARGETS += net/netfilter
 TARGETS += net/openvswitch
-TARGETS += netfilter
+TARGETS += net/packetdrill
+TARGETS += net/rds
+TARGETS += net/tcp_ao
 TARGETS += nsfs
 TARGETS += perf_events
 TARGETS += pidfd
 TARGETS += pid_namespace
+TARGETS += power_supply
 TARGETS += powerpc
 TARGETS += prctl
 TARGETS += proc
@@ -73,6 +87,8 @@ TARGETS += riscv
 TARGETS += rlimits
 TARGETS += rseq
 TARGETS += rtc
+TARGETS += rust
+TARGETS += sched_ext
 TARGETS += seccomp
 TARGETS += sgx
 TARGETS += sigaltstack
@@ -85,6 +101,8 @@ TARGETS += syscall_user_dispatch
 TARGETS += sysctl
 TARGETS += tc-testing
 TARGETS += tdx
+TARGETS += thermal/intel/power_floor
+TARGETS += thermal/intel/workload_hint
 TARGETS += timens
 ifneq (1, $(quicktest))
 TARGETS += timers
@@ -93,7 +111,6 @@ TARGETS += tmpfs
 TARGETS += tpm2
 TARGETS += tty
 TARGETS += uevent
-TARGETS += user
 TARGETS += user_events
 TARGETS += vDSO
 TARGETS += mm
@@ -106,10 +123,17 @@ TARGETS += zram
 TARGETS_HOTPLUG = cpu-hotplug
 TARGETS_HOTPLUG += memory-hotplug
 
-# User can optionally provide a TARGETS skiplist.  By default we skip
-# BPF since it has cutting edge build time dependencies which require
-# more effort to install.
-SKIP_TARGETS ?= bpf
+# Networking tests want the net/lib target, include it automatically
+ifneq ($(filter net drivers/net drivers/net/hw,$(TARGETS)),)
+ifeq ($(filter net/lib,$(TARGETS)),)
+	INSTALL_DEP_TARGETS := net/lib
+endif
+endif
+
+# User can optionally provide a TARGETS skiplist. By default we skip
+# targets using BPF since it has cutting edge build time dependencies
+# which require more effort to install.
+SKIP_TARGETS ?= bpf sched_ext
 ifneq ($(SKIP_TARGETS),)
 	TMP := $(filter-out $(SKIP_TARGETS), $(TARGETS))
 	override TARGETS := $(TMP)
@@ -231,10 +255,12 @@ ifdef INSTALL_PATH
 	install -m 744 kselftest/module.sh $(INSTALL_PATH)/kselftest/
 	install -m 744 kselftest/runner.sh $(INSTALL_PATH)/kselftest/
 	install -m 744 kselftest/prefix.pl $(INSTALL_PATH)/kselftest/
+	install -m 744 kselftest/ktap_helpers.sh $(INSTALL_PATH)/kselftest/
+	install -m 744 kselftest/ksft.py $(INSTALL_PATH)/kselftest/
 	install -m 744 run_kselftest.sh $(INSTALL_PATH)/
 	rm -f $(TEST_LIST)
 	@ret=1;	\
-	for TARGET in $(TARGETS); do \
+	for TARGET in $(TARGETS) $(INSTALL_DEP_TARGETS); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		$(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET install \
 				INSTALL_PATH=$(INSTALL_PATH)/$$TARGET \

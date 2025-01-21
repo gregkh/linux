@@ -5,6 +5,7 @@
 #ifndef _VC4_DRV_H_
 #define _VC4_DRV_H_
 
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/of.h>
 #include <linux/refcount.h>
@@ -76,14 +77,19 @@ struct vc4_perfmon {
 	 * Note that counter values can't be reset, but you can fake a reset by
 	 * destroying the perfmon and creating a new one.
 	 */
-	u64 counters[];
+	u64 counters[] __counted_by(ncounters);
+};
+
+enum vc4_gen {
+	VC4_GEN_4,
+	VC4_GEN_5,
 };
 
 struct vc4_dev {
 	struct drm_device base;
 	struct device *dev;
 
-	bool is_vc5;
+	enum vc4_gen gen;
 
 	unsigned int irq;
 

@@ -13,7 +13,7 @@
 #include <linux/kfifo.h>
 #include <linux/delay.h>
 #include <linux/usb.h> /* For to_usb_interface for kvm extra intf check */
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "hid-ids.h"
 
 #define DJ_MAX_PAIRED_DEVICES			7
@@ -2047,6 +2047,7 @@ static struct hid_driver logi_djreceiver_driver = {
 
 module_hid_driver(logi_djreceiver_driver);
 
+MODULE_DESCRIPTION("HID driver for Logitech receivers");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Logitech");
 MODULE_AUTHOR("Nestor Lopez Casado");

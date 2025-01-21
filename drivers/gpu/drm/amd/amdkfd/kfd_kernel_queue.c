@@ -32,6 +32,7 @@
 #include "kfd_device_queue_manager.h"
 #include "kfd_pm4_headers.h"
 #include "kfd_pm4_opcodes.h"
+#include "amdgpu_reset.h"
 
 #define PM4_COUNT_ZERO (((1 << 15) - 1) << 16)
 
@@ -197,15 +198,17 @@ err_get_kernel_doorbell:
 }
 
 /* Uninitialize a kernel queue and free all its memory usages. */
-static void kq_uninitialize(struct kernel_queue *kq, bool hanging)
+static void kq_uninitialize(struct kernel_queue *kq)
 {
-	if (kq->queue->properties.type == KFD_QUEUE_TYPE_HIQ && !hanging)
+	if (kq->queue->properties.type == KFD_QUEUE_TYPE_HIQ && down_read_trylock(&kq->dev->adev->reset_domain->sem)) {
 		kq->mqd_mgr->destroy_mqd(kq->mqd_mgr,
 					kq->queue->mqd,
 					KFD_PREEMPT_TYPE_WAVEFRONT_RESET,
 					KFD_UNMAP_LATENCY_MS,
 					kq->queue->pipe,
 					kq->queue->queue);
+		up_read(&kq->dev->adev->reset_domain->sem);
+	}
 	else if (kq->queue->properties.type == KFD_QUEUE_TYPE_DIQ)
 		kfd_gtt_sa_free(kq->dev, kq->fence_mem_obj);
 
@@ -287,7 +290,7 @@ err_no_space:
 	return -ENOMEM;
 }
 
-void kq_submit_packet(struct kernel_queue *kq)
+int kq_submit_packet(struct kernel_queue *kq)
 {
 #ifdef DEBUG
 	int i;
@@ -299,6 +302,10 @@ void kq_submit_packet(struct kernel_queue *kq)
 	}
 	pr_debug("\n");
 #endif
+	/* Fatal err detected, packet submission won't go through */
+	if (amdgpu_amdkfd_is_fed(kq->dev->adev))
+		return -EIO;
+
 	if (kq->dev->kfd->device_info.doorbell_size == 8) {
 		*kq->wptr64_kernel = kq->pending_wptr64;
 		write_kernel_doorbell64(kq->queue->properties.doorbell_ptr,
@@ -308,6 +315,8 @@ void kq_submit_packet(struct kernel_queue *kq)
 		write_kernel_doorbell(kq->queue->properties.doorbell_ptr,
 					kq->pending_wptr);
 	}
+
+	return 0;
 }
 
 void kq_rollback_packet(struct kernel_queue *kq)
@@ -339,9 +348,9 @@ struct kernel_queue *kernel_queue_init(struct kfd_node *dev,
 	return NULL;
 }
 
-void kernel_queue_uninit(struct kernel_queue *kq, bool hanging)
+void kernel_queue_uninit(struct kernel_queue *kq)
 {
-	kq_uninitialize(kq, hanging);
+	kq_uninitialize(kq);
 	kfree(kq);
 }
 

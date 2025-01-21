@@ -9,7 +9,9 @@ KVM Lock Overview
 
 The acquisition orders for mutexes are as follows:
 
-- cpus_read_lock() is taken outside kvm_lock and kvm_usage_lock
+- cpus_read_lock() is taken outside kvm_lock
+
+- kvm_usage_lock is taken outside cpus_read_lock()
 
 - kvm->lock is taken outside vcpu->mutex
 
@@ -50,10 +52,9 @@ On x86:
 
 - vcpu->mutex is taken outside kvm->arch.hyperv.hv_lock and kvm->arch.xen.xen_lock
 
-- kvm->arch.mmu_lock is an rwlock.  kvm->arch.tdp_mmu_pages_lock and
-  kvm->arch.mmu_unsync_pages_lock are taken inside kvm->arch.mmu_lock, and
-  cannot be taken without already holding kvm->arch.mmu_lock (typically with
-  ``read_lock`` for the TDP MMU, thus the need for additional spinlocks).
+- kvm->arch.mmu_lock is an rwlock; critical sections for
+  kvm->arch.tdp_mmu_pages_lock and kvm->arch.mmu_unsync_pages_lock must
+  also take kvm->arch.mmu_lock
 
 Everything else is a leaf: no other lock is taken inside the critical
 sections.
@@ -135,7 +136,7 @@ For direct sp, we can easily avoid it since the spte of direct sp is fixed
 to gfn.  For indirect sp, we disabled fast page fault for simplicity.
 
 A solution for indirect sp could be to pin the gfn, for example via
-kvm_vcpu_gfn_to_pfn_atomic, before the cmpxchg.  After the pinning:
+gfn_to_pfn_memslot_atomic, before the cmpxchg.  After the pinning:
 
 - We have held the refcount of pfn; that means the pfn can not be freed and
   be reused for another gfn.
@@ -243,9 +244,8 @@ time it will be set using the Dirty tracking mechanism described above.
 :Arch:		any
 :Protects:	- kvm_usage_count
 		- hardware virtualization enable/disable
-:Comment:	Exists because using kvm_lock leads to deadlock (see earlier comment
-		on cpus_read_lock() vs kvm_lock).  Note, KVM also disables CPU hotplug via
-		cpus_read_lock() when enabling/disabling virtualization.
+:Comment:	Exists to allow taking cpus_read_lock() while kvm_usage_count is
+		protected, which simplifies the virtualization enabling logic.
 
 ``kvm->mn_invalidate_lock``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -12,7 +12,7 @@
 // Copyright (c) 2019 Martin Sperl <kernel@martin.sperl.org>
 //
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/device.h>
@@ -840,7 +840,7 @@ static int __mcp251xfd_get_berr_counter(const struct net_device *ndev,
 		return err;
 
 	if (trec & MCP251XFD_REG_TREC_TXBO)
-		bec->txerr = 256;
+		bec->txerr = CAN_BUS_OFF_THRESHOLD;
 	else
 		bec->txerr = FIELD_GET(MCP251XFD_REG_TREC_TEC_MASK, trec);
 	bec->rxerr = FIELD_GET(MCP251XFD_REG_TREC_REC_MASK, trec);
@@ -1138,7 +1138,7 @@ mcp251xfd_handle_modif(const struct mcp251xfd_priv *priv, bool *set_normal_mode)
 		return 0;
 	}
 
-	/* According to MCP2517FD errata DS80000792B 1., during a TX
+	/* According to MCP2517FD errata DS80000792C 1., during a TX
 	 * MAB underflow, the controller will transition to Restricted
 	 * Operation Mode or Listen Only Mode (depending on SERR2LOM).
 	 *
@@ -1183,7 +1183,7 @@ static int mcp251xfd_handle_serrif(struct mcp251xfd_priv *priv)
 
 	/* TX MAB underflow
 	 *
-	 * According to MCP2517FD Errata DS80000792B 1. a TX MAB
+	 * According to MCP2517FD Errata DS80000792C 1. a TX MAB
 	 * underflow is indicated by SERRIF and MODIF.
 	 *
 	 * In addition to the effects mentioned in the Errata, there
@@ -1227,7 +1227,7 @@ static int mcp251xfd_handle_serrif(struct mcp251xfd_priv *priv)
 
 	/* RX MAB overflow
 	 *
-	 * According to MCP2517FD Errata DS80000792B 1. a RX MAB
+	 * According to MCP2517FD Errata DS80000792C 1. a RX MAB
 	 * overflow is indicated by SERRIF.
 	 *
 	 * In addition to the effects mentioned in the Errata, (most
@@ -1334,7 +1334,8 @@ mcp251xfd_handle_eccif(struct mcp251xfd_priv *priv, bool set_normal_mode)
 		return err;
 
 	/* Errata Reference:
-	 * mcp2517fd: DS80000789B, mcp2518fd: DS80000792C 2.
+	 * mcp2517fd: DS80000789C 3., mcp2518fd: DS80000792E 2.,
+	 * mcp251863: DS80000984A 2.
 	 *
 	 * ECC single error correction does not work in all cases:
 	 *
@@ -2003,7 +2004,6 @@ MODULE_DEVICE_TABLE(spi, mcp251xfd_id_table);
 
 static int mcp251xfd_probe(struct spi_device *spi)
 {
-	const void *match;
 	struct net_device *ndev;
 	struct mcp251xfd_priv *priv;
 	struct gpio_desc *rx_int;
@@ -2095,16 +2095,11 @@ static int mcp251xfd_probe(struct spi_device *spi)
 	priv->pll_enable = pll_enable;
 	priv->reg_vdd = reg_vdd;
 	priv->reg_xceiver = reg_xceiver;
-
-	match = device_get_match_data(&spi->dev);
-	if (match)
-		priv->devtype_data = *(struct mcp251xfd_devtype_data *)match;
-	else
-		priv->devtype_data = *(struct mcp251xfd_devtype_data *)
-			spi_get_device_id(spi)->driver_data;
+	priv->devtype_data = *(struct mcp251xfd_devtype_data *)spi_get_device_match_data(spi);
 
 	/* Errata Reference:
-	 * mcp2517fd: DS80000792C 5., mcp2518fd: DS80000789C 4.
+	 * mcp2517fd: DS80000792C 5., mcp2518fd: DS80000789E 4.,
+	 * mcp251863: DS80000984A 4.
 	 *
 	 * The SPI can write corrupted data to the RAM at fast SPI
 	 * speeds:

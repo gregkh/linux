@@ -9,13 +9,12 @@
 #include "inode-item.h"
 #include "disk-io.h"
 #include "transaction.h"
-#include "print-tree.h"
 #include "space-info.h"
 #include "accessors.h"
 #include "extent-tree.h"
 #include "file-item.h"
 
-struct btrfs_inode_ref *btrfs_find_name_in_backref(struct extent_buffer *leaf,
+struct btrfs_inode_ref *btrfs_find_name_in_backref(const struct extent_buffer *leaf,
 						   int slot,
 						   const struct fscrypt_str *name)
 {
@@ -43,7 +42,7 @@ struct btrfs_inode_ref *btrfs_find_name_in_backref(struct extent_buffer *leaf,
 }
 
 struct btrfs_inode_extref *btrfs_find_name_in_ext_backref(
-		struct extent_buffer *leaf, int slot, u64 ref_objectid,
+		const struct extent_buffer *leaf, int slot, u64 ref_objectid,
 		const struct fscrypt_str *name)
 {
 	struct btrfs_inode_extref *extref;
@@ -142,8 +141,8 @@ static int btrfs_del_inode_extref(struct btrfs_trans_handle *trans,
 	extref = btrfs_find_name_in_ext_backref(path->nodes[0], path->slots[0],
 						ref_objectid, name);
 	if (!extref) {
-		btrfs_handle_fs_error(root->fs_info, -ENOENT, NULL);
-		ret = -EROFS;
+		btrfs_abort_transaction(trans, -ENOENT);
+		ret = -ENOENT;
 		goto out;
 	}
 
@@ -247,7 +246,7 @@ out:
 }
 
 /*
- * btrfs_insert_inode_extref() - Inserts an extended inode ref into a tree.
+ * Insert an extended inode ref into a tree.
  *
  * The caller must have checked against BTRFS_LINK_MAX already.
  */
@@ -424,9 +423,9 @@ int btrfs_lookup_inode(struct btrfs_trans_handle *trans, struct btrfs_root
 	return ret;
 }
 
-static inline void btrfs_trace_truncate(struct btrfs_inode *inode,
-					struct extent_buffer *leaf,
-					struct btrfs_file_extent_item *fi,
+static inline void btrfs_trace_truncate(const struct btrfs_inode *inode,
+					const struct extent_buffer *leaf,
+					const struct btrfs_file_extent_item *fi,
 					u64 offset, int extent_type, int slot)
 {
 	if (!inode)
@@ -671,15 +670,18 @@ delete:
 		}
 
 		if (del_item && extent_start != 0 && !control->skip_ref_updates) {
-			struct btrfs_ref ref = { 0 };
+			struct btrfs_ref ref = {
+				.action = BTRFS_DROP_DELAYED_REF,
+				.bytenr = extent_start,
+				.num_bytes = extent_num_bytes,
+				.owning_root = btrfs_root_id(root),
+				.ref_root = btrfs_header_owner(leaf),
+			};
 
 			bytes_deleted += extent_num_bytes;
 
-			btrfs_init_generic_ref(&ref, BTRFS_DROP_DELAYED_REF,
-					extent_start, extent_num_bytes, 0);
-			btrfs_init_data_ref(&ref, btrfs_header_owner(leaf),
-					control->ino, extent_offset,
-					root->root_key.objectid, false);
+			btrfs_init_data_ref(&ref, control->ino, extent_offset,
+					    btrfs_root_id(root), false);
 			ret = btrfs_free_extent(trans, &ref);
 			if (ret) {
 				btrfs_abort_transaction(trans, ret);

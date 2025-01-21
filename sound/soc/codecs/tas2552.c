@@ -12,8 +12,6 @@
 #include <linux/errno.h>
 #include <linux/device.h>
 #include <linux/i2c.h>
-#include <linux/gpio.h>
-#include <linux/of_gpio.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -753,7 +751,7 @@ static void tas2552_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tas2552_id[] = {
-	{ "tas2552", 0 },
+	{ "tas2552" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tas2552_id);

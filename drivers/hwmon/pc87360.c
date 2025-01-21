@@ -1315,7 +1315,7 @@ static void pc87360_init_device(struct platform_device *pdev,
 				    (reg & 0xC0) | 0x11);
 	}
 
-	nr = data->innr < 11 ? data->innr : 11;
+	nr = min(data->innr, 11);
 	for (i = 0; i < nr; i++) {
 		reg = pc87360_read_value(data, LD_IN, i,
 					 PC87365_REG_IN_STATUS);
@@ -1590,14 +1590,12 @@ error:
 	return err;
 }
 
-static int pc87360_remove(struct platform_device *pdev)
+static void pc87360_remove(struct platform_device *pdev)
 {
 	struct pc87360_data *data = platform_get_drvdata(pdev);
 
 	hwmon_device_unregister(data->hwmon_dev);
 	pc87360_remove_files(&pdev->dev);
-
-	return 0;
 }
 
 /*
@@ -1608,7 +1606,7 @@ static struct platform_driver pc87360_driver = {
 		.name	= DRIVER_NAME,
 	},
 	.probe		= pc87360_probe,
-	.remove		= pc87360_remove,
+	.remove_new	= pc87360_remove,
 };
 
 /*

@@ -51,6 +51,7 @@ struct dpu_hw_intf_status {
 
 struct dpu_hw_intf_cmd_mode_cfg {
 	u8 data_compress;	/* enable data compress between dpu and dsi */
+	u8 wide_bus_en;		/* enable databus widen mode */
 };
 
 /**
@@ -80,7 +81,8 @@ struct dpu_hw_intf_cmd_mode_cfg {
 struct dpu_hw_intf_ops {
 	void (*setup_timing_gen)(struct dpu_hw_intf *intf,
 			const struct dpu_hw_intf_timing_params *p,
-			const struct dpu_format *fmt);
+			const struct msm_format *fmt,
+			const struct dpu_mdss_version *mdss_ver);
 
 	void (*setup_prg_fetch)(struct dpu_hw_intf *intf,
 			const struct dpu_hw_intf_prog_fetch *fetch);
@@ -106,7 +108,7 @@ struct dpu_hw_intf_ops {
 
 	int (*connect_external_te)(struct dpu_hw_intf *intf, bool enable_external_te);
 
-	void (*vsync_sel)(struct dpu_hw_intf *intf, u32 vsync_source);
+	void (*vsync_sel)(struct dpu_hw_intf *intf, enum dpu_vsync_source vsync_source);
 
 	/**
 	 * Disable autorefresh if enabled
@@ -131,17 +133,14 @@ struct dpu_hw_intf {
 /**
  * dpu_hw_intf_init() - Initializes the INTF driver for the passed
  * interface catalog entry.
+ * @dev:  Corresponding device for devres management
  * @cfg:  interface catalog entry for which driver object is required
  * @addr: mapped register io address of MDP
  * @mdss_rev: dpu core's major and minor versions
  */
-struct dpu_hw_intf *dpu_hw_intf_init(const struct dpu_intf_cfg *cfg,
-		void __iomem *addr, const struct dpu_mdss_version *mdss_rev);
-
-/**
- * dpu_hw_intf_destroy(): Destroys INTF driver context
- * @intf:   Pointer to INTF driver context
- */
-void dpu_hw_intf_destroy(struct dpu_hw_intf *intf);
+struct dpu_hw_intf *dpu_hw_intf_init(struct drm_device *dev,
+				     const struct dpu_intf_cfg *cfg,
+				     void __iomem *addr,
+				     const struct dpu_mdss_version *mdss_rev);
 
 #endif /*_DPU_HW_INTF_H */

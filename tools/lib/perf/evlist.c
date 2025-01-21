@@ -39,7 +39,7 @@ static void __perf_evlist__propagate_maps(struct perf_evlist *evlist,
 	if (evsel->system_wide) {
 		/* System wide: set the cpu map of the evsel to all online CPUs. */
 		perf_cpu_map__put(evsel->cpus);
-		evsel->cpus = perf_cpu_map__new(NULL);
+		evsel->cpus = perf_cpu_map__new_online_cpus();
 	} else if (evlist->has_user_cpus && evsel->is_pmu_core) {
 		/*
 		 * User requested CPUs on a core PMU, ensure the requested CPUs
@@ -47,6 +47,20 @@ static void __perf_evlist__propagate_maps(struct perf_evlist *evlist,
 		 */
 		perf_cpu_map__put(evsel->cpus);
 		evsel->cpus = perf_cpu_map__intersect(evlist->user_requested_cpus, evsel->own_cpus);
+
+		/*
+		 * Empty cpu lists would eventually get opened as "any" so remove
+		 * genuinely empty ones before they're opened in the wrong place.
+		 */
+		if (perf_cpu_map__is_empty(evsel->cpus)) {
+			struct perf_evsel *next = perf_evlist__next(evlist, evsel);
+
+			perf_evlist__remove(evlist, evsel);
+			/* Keep idx contiguous */
+			if (next)
+				list_for_each_entry_from(next, &evlist->entries, node)
+					next->idx--;
+		}
 	} else if (!evsel->own_cpus || evlist->has_user_cpus ||
 		(!evsel->requires_cpu && perf_cpu_map__has_any_cpu(evlist->user_requested_cpus))) {
 		/*
@@ -80,11 +94,11 @@ static void __perf_evlist__propagate_maps(struct perf_evlist *evlist,
 
 static void perf_evlist__propagate_maps(struct perf_evlist *evlist)
 {
-	struct perf_evsel *evsel;
+	struct perf_evsel *evsel, *n;
 
 	evlist->needs_map_propagation = true;
 
-	perf_evlist__for_each_evsel(evlist, evsel)
+	list_for_each_entry_safe(evsel, n, &evlist->entries, node)
 		__perf_evlist__propagate_maps(evlist, evsel);
 }
 
@@ -625,7 +639,7 @@ static int perf_evlist__nr_mmaps(struct perf_evlist *evlist)
 
 	/* One for each CPU */
 	nr_mmaps = perf_cpu_map__nr(evlist->all_cpus);
-	if (perf_cpu_map__empty(evlist->all_cpus)) {
+	if (perf_cpu_map__has_any_cpu_or_is_empty(evlist->all_cpus)) {
 		/* Plus one for each thread */
 		nr_mmaps += perf_thread_map__nr(evlist->threads);
 		/* Minus the per-thread CPU (-1) */
@@ -659,7 +673,7 @@ int perf_evlist__mmap_ops(struct perf_evlist *evlist,
 	if (evlist->pollfd.entries == NULL && perf_evlist__alloc_pollfd(evlist) < 0)
 		return -ENOMEM;
 
-	if (perf_cpu_map__empty(cpus))
+	if (perf_cpu_map__has_any_cpu_or_is_empty(cpus))
 		return mmap_per_thread(evlist, ops, mp);
 
 	return mmap_per_cpu(evlist, ops, mp);

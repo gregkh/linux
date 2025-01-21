@@ -288,22 +288,21 @@ int attr_make_nonresident(struct ntfs_inode *ni, struct ATTRIB *attr,
 			if (err)
 				goto out2;
 		} else if (!page) {
-			char *kaddr;
+			struct address_space *mapping = ni->vfs_inode.i_mapping;
+			struct folio *folio;
 
-			page = grab_cache_page(ni->vfs_inode.i_mapping, 0);
-			if (!page) {
-				err = -ENOMEM;
+			folio = __filemap_get_folio(
+				mapping, 0, FGP_LOCK | FGP_ACCESSED | FGP_CREAT,
+				mapping_gfp_mask(mapping));
+			if (IS_ERR(folio)) {
+				err = PTR_ERR(folio);
 				goto out2;
 			}
-			kaddr = kmap_atomic(page);
-			memcpy(kaddr, data, rsize);
-			memset(kaddr + rsize, 0, PAGE_SIZE - rsize);
-			kunmap_atomic(kaddr);
-			flush_dcache_page(page);
-			SetPageUptodate(page);
-			set_page_dirty(page);
-			unlock_page(page);
-			put_page(page);
+			folio_fill_tail(folio, 0, data, rsize);
+			folio_mark_uptodate(folio);
+			folio_mark_dirty(folio);
+			folio_unlock(folio);
+			folio_put(folio);
 		}
 	}
 
@@ -1242,11 +1241,12 @@ undo1:
 	goto out;
 }
 
-int attr_data_read_resident(struct ntfs_inode *ni, struct page *page)
+int attr_data_read_resident(struct ntfs_inode *ni, struct folio *folio)
 {
 	u64 vbo;
 	struct ATTRIB *attr;
 	u32 data_size;
+	size_t len;
 
 	attr = ni_find_attr(ni, NULL, NULL, ATTR_DATA, NULL, 0, NULL, NULL);
 	if (!attr)
@@ -1255,30 +1255,20 @@ int attr_data_read_resident(struct ntfs_inode *ni, struct page *page)
 	if (attr->non_res)
 		return E_NTFS_NONRESIDENT;
 
-	vbo = page->index << PAGE_SHIFT;
+	vbo = folio->index << PAGE_SHIFT;
 	data_size = le32_to_cpu(attr->res.data_size);
-	if (vbo < data_size) {
-		const char *data = resident_data(attr);
-		char *kaddr = kmap_atomic(page);
-		u32 use = data_size - vbo;
+	if (vbo > data_size)
+		len = 0;
+	else
+		len = min(data_size - vbo, folio_size(folio));
 
-		if (use > PAGE_SIZE)
-			use = PAGE_SIZE;
-
-		memcpy(kaddr, data + vbo, use);
-		memset(kaddr + use, 0, PAGE_SIZE - use);
-		kunmap_atomic(kaddr);
-		flush_dcache_page(page);
-		SetPageUptodate(page);
-	} else if (!PageUptodate(page)) {
-		zero_user_segment(page, 0, PAGE_SIZE);
-		SetPageUptodate(page);
-	}
+	folio_fill_tail(folio, 0, resident_data(attr) + vbo, len);
+	folio_mark_uptodate(folio);
 
 	return 0;
 }
 
-int attr_data_write_resident(struct ntfs_inode *ni, struct page *page)
+int attr_data_write_resident(struct ntfs_inode *ni, struct folio *folio)
 {
 	u64 vbo;
 	struct mft_inode *mi;
@@ -1294,17 +1284,13 @@ int attr_data_write_resident(struct ntfs_inode *ni, struct page *page)
 		return E_NTFS_NONRESIDENT;
 	}
 
-	vbo = page->index << PAGE_SHIFT;
+	vbo = folio->index << PAGE_SHIFT;
 	data_size = le32_to_cpu(attr->res.data_size);
 	if (vbo < data_size) {
 		char *data = resident_data(attr);
-		char *kaddr = kmap_atomic(page);
-		u32 use = data_size - vbo;
+		size_t len = min(data_size - vbo, folio_size(folio));
 
-		if (use > PAGE_SIZE)
-			use = PAGE_SIZE;
-		memcpy(data + vbo, kaddr, use);
-		kunmap_atomic(kaddr);
+		memcpy_from_folio(data + vbo, folio, 0, len);
 		mi->dirty = true;
 	}
 	ni->i_valid = data_size;
@@ -1397,7 +1383,7 @@ int attr_wof_frame_info(struct ntfs_inode *ni, struct ATTRIB *attr,
 	u32 voff;
 	u8 bytes_per_off;
 	char *addr;
-	struct page *page;
+	struct folio *folio;
 	int i, err;
 	__le32 *off32;
 	__le64 *off64;
@@ -1442,18 +1428,18 @@ int attr_wof_frame_info(struct ntfs_inode *ni, struct ATTRIB *attr,
 
 	wof_size = le64_to_cpu(attr->nres.data_size);
 	down_write(&ni->file.run_lock);
-	page = ni->file.offs_page;
-	if (!page) {
-		page = alloc_page(GFP_KERNEL);
-		if (!page) {
+	folio = ni->file.offs_folio;
+	if (!folio) {
+		folio = folio_alloc(GFP_KERNEL, 0);
+		if (!folio) {
 			err = -ENOMEM;
 			goto out;
 		}
-		page->index = -1;
-		ni->file.offs_page = page;
+		folio->index = -1;
+		ni->file.offs_folio = folio;
 	}
-	lock_page(page);
-	addr = page_address(page);
+	folio_lock(folio);
+	addr = folio_address(folio);
 
 	if (vbo[1]) {
 		voff = vbo[1] & (PAGE_SIZE - 1);
@@ -1469,7 +1455,8 @@ int attr_wof_frame_info(struct ntfs_inode *ni, struct ATTRIB *attr,
 	do {
 		pgoff_t index = vbo[i] >> PAGE_SHIFT;
 
-		if (index != page->index) {
+		if (index != folio->index) {
+			struct page *page = &folio->page;
 			u64 from = vbo[i] & ~(u64)(PAGE_SIZE - 1);
 			u64 to = min(from + PAGE_SIZE, wof_size);
 
@@ -1482,10 +1469,10 @@ int attr_wof_frame_info(struct ntfs_inode *ni, struct ATTRIB *attr,
 			err = ntfs_bio_pages(sbi, run, &page, 1, from,
 					     to - from, REQ_OP_READ);
 			if (err) {
-				page->index = -1;
+				folio->index = -1;
 				goto out1;
 			}
-			page->index = index;
+			folio->index = index;
 		}
 
 		if (i) {
@@ -1523,7 +1510,7 @@ int attr_wof_frame_info(struct ntfs_inode *ni, struct ATTRIB *attr,
 	*ondisk_size = off[1] - off[0];
 
 out1:
-	unlock_page(page);
+	folio_unlock(folio);
 out:
 	up_write(&ni->file.run_lock);
 	return err;
@@ -2378,8 +2365,13 @@ int attr_insert_range(struct ntfs_inode *ni, u64 vbo, u64 bytes)
 		mask = (sbi->cluster_size << attr_b->nres.c_unit) - 1;
 	}
 
-	if (vbo > data_size) {
-		/* Insert range after the file size is not allowed. */
+	if (vbo >= data_size) {
+		/*
+		 * Insert range after the file size is not allowed.
+		 * If the offset is equal to or greater than the end of
+		 * file, an error is returned.  For such operations (i.e., inserting
+		 * a hole at the end of file), ftruncate(2) should be used.
+		 */
 		return -EINVAL;
 	}
 
@@ -2579,4 +2571,107 @@ undo_insert_range:
 	}
 
 	goto out;
+}
+
+/*
+ * attr_force_nonresident
+ *
+ * Convert default data attribute into non resident form.
+ */
+int attr_force_nonresident(struct ntfs_inode *ni)
+{
+	int err;
+	struct ATTRIB *attr;
+	struct ATTR_LIST_ENTRY *le = NULL;
+	struct mft_inode *mi;
+
+	attr = ni_find_attr(ni, NULL, &le, ATTR_DATA, NULL, 0, NULL, &mi);
+	if (!attr) {
+		ntfs_bad_inode(&ni->vfs_inode, "no data attribute");
+		return -ENOENT;
+	}
+
+	if (attr->non_res) {
+		/* Already non resident. */
+		return 0;
+	}
+
+	down_write(&ni->file.run_lock);
+	err = attr_make_nonresident(ni, attr, le, mi,
+				    le32_to_cpu(attr->res.data_size),
+				    &ni->file.run, &attr, NULL);
+	up_write(&ni->file.run_lock);
+
+	return err;
+}
+
+/*
+ * Change the compression of data attribute
+ */
+int attr_set_compress(struct ntfs_inode *ni, bool compr)
+{
+	struct ATTRIB *attr;
+	struct mft_inode *mi;
+
+	attr = ni_find_attr(ni, NULL, NULL, ATTR_DATA, NULL, 0, NULL, &mi);
+	if (!attr)
+		return -ENOENT;
+
+	if (is_attr_compressed(attr) == !!compr) {
+		/* Already required compressed state. */
+		return 0;
+	}
+
+	if (attr->non_res) {
+		u16 run_off;
+		u32 run_size;
+		char *run;
+
+		if (attr->nres.data_size) {
+			/*
+			 * There are rare cases when it possible to change
+			 * compress state without big changes.
+			 * TODO: Process these cases.
+			 */
+			return -EOPNOTSUPP;
+		}
+
+		run_off = le16_to_cpu(attr->nres.run_off);
+		run_size = le32_to_cpu(attr->size) - run_off;
+		run = Add2Ptr(attr, run_off);
+
+		if (!compr) {
+			/* remove field 'attr->nres.total_size'. */
+			memmove(run - 8, run, run_size);
+			run_off -= 8;
+		}
+
+		if (!mi_resize_attr(mi, attr, compr ? +8 : -8)) {
+			/*
+			 * Ignore rare case when there are no 8 bytes in record with attr.
+			 * TODO: split attribute.
+			 */
+			return -EOPNOTSUPP;
+		}
+
+		if (compr) {
+			/* Make a gap for 'attr->nres.total_size'. */
+			memmove(run + 8, run, run_size);
+			run_off += 8;
+			attr->nres.total_size = attr->nres.alloc_size;
+		}
+		attr->nres.run_off = cpu_to_le16(run_off);
+	}
+
+	/* Update data attribute flags. */
+	if (compr) {
+		attr->flags |= ATTR_FLAG_COMPRESSED;
+		attr->nres.c_unit = NTFS_LZNT_CUNIT;
+	} else {
+		attr->flags &= ~ATTR_FLAG_COMPRESSED;
+		attr->nres.c_unit = 0;
+	}
+	mi->dirty = true;
+
+	return 0;
 }

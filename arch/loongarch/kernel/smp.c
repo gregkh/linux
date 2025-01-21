@@ -13,6 +13,7 @@
 #include <linux/cpumask.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/irq_work.h>
 #include <linux/profile.h>
 #include <linux/seq_file.h>
 #include <linux/smp.h>
@@ -29,6 +30,7 @@
 #include <asm/loongson.h>
 #include <asm/mmu_context.h>
 #include <asm/numa.h>
+#include <asm/paravirt.h>
 #include <asm/processor.h>
 #include <asm/setup.h>
 #include <asm/time.h>
@@ -66,14 +68,11 @@ static cpumask_t cpu_core_setup_map;
 struct secondary_data cpuboot_data;
 static DEFINE_PER_CPU(int, cpu_state);
 
-enum ipi_msg_type {
-	IPI_RESCHEDULE,
-	IPI_CALL_FUNCTION,
-};
-
 static const char *ipi_types[NR_IPI] __tracepoint_string = {
 	[IPI_RESCHEDULE] = "Rescheduling interrupts",
 	[IPI_CALL_FUNCTION] = "Function call interrupts",
+	[IPI_IRQ_WORK] = "IRQ work interrupts",
+	[IPI_CLEAR_VECTOR] = "Clear vector interrupts",
 };
 
 void show_ipi_list(struct seq_file *p, int prec)
@@ -190,24 +189,19 @@ static u32 ipi_read_clear(int cpu)
 
 static void ipi_write_action(int cpu, u32 action)
 {
-	unsigned int irq = 0;
+	uint32_t val;
 
-	while ((irq = ffs(action))) {
-		uint32_t val = IOCSR_IPI_SEND_BLOCKING;
-
-		val |= (irq - 1);
-		val |= (cpu << IOCSR_IPI_SEND_CPU_SHIFT);
-		iocsr_write32(val, LOONGARCH_IOCSR_IPI_SEND);
-		action &= ~BIT(irq - 1);
-	}
+	val = IOCSR_IPI_SEND_BLOCKING | action;
+	val |= (cpu << IOCSR_IPI_SEND_CPU_SHIFT);
+	iocsr_write32(val, LOONGARCH_IOCSR_IPI_SEND);
 }
 
-void loongson_send_ipi_single(int cpu, unsigned int action)
+static void loongson_send_ipi_single(int cpu, unsigned int action)
 {
 	ipi_write_action(cpu_logical_map(cpu), (u32)action);
 }
 
-void loongson_send_ipi_mask(const struct cpumask *mask, unsigned int action)
+static void loongson_send_ipi_mask(const struct cpumask *mask, unsigned int action)
 {
 	unsigned int i;
 
@@ -222,11 +216,18 @@ void loongson_send_ipi_mask(const struct cpumask *mask, unsigned int action)
  */
 void arch_smp_send_reschedule(int cpu)
 {
-	loongson_send_ipi_single(cpu, SMP_RESCHEDULE);
+	mp_ops.send_ipi_single(cpu, ACTION_RESCHEDULE);
 }
 EXPORT_SYMBOL_GPL(arch_smp_send_reschedule);
 
-irqreturn_t loongson_ipi_interrupt(int irq, void *dev)
+#ifdef CONFIG_IRQ_WORK
+void arch_irq_work_raise(void)
+{
+	mp_ops.send_ipi_single(smp_processor_id(), ACTION_IRQ_WORK);
+}
+#endif
+
+static irqreturn_t loongson_ipi_interrupt(int irq, void *dev)
 {
 	unsigned int action;
 	unsigned int cpu = smp_processor_id();
@@ -243,8 +244,38 @@ irqreturn_t loongson_ipi_interrupt(int irq, void *dev)
 		per_cpu(irq_stat, cpu).ipi_irqs[IPI_CALL_FUNCTION]++;
 	}
 
+	if (action & SMP_IRQ_WORK) {
+		irq_work_run();
+		per_cpu(irq_stat, cpu).ipi_irqs[IPI_IRQ_WORK]++;
+	}
+
+	if (action & SMP_CLEAR_VECTOR) {
+		complete_irq_moving();
+		per_cpu(irq_stat, cpu).ipi_irqs[IPI_CLEAR_VECTOR]++;
+	}
+
 	return IRQ_HANDLED;
 }
+
+static void loongson_init_ipi(void)
+{
+	int r, ipi_irq;
+
+	ipi_irq = get_percpu_irq(INT_IPI);
+	if (ipi_irq < 0)
+		panic("IPI IRQ mapping failed\n");
+
+	irq_set_percpu_devid(ipi_irq);
+	r = request_percpu_irq(ipi_irq, loongson_ipi_interrupt, "IPI", &irq_stat);
+	if (r < 0)
+		panic("IPI IRQ request failed\n");
+}
+
+struct smp_ops mp_ops = {
+	.init_ipi		= loongson_init_ipi,
+	.send_ipi_single	= loongson_send_ipi_single,
+	.send_ipi_mask		= loongson_send_ipi_mask,
+};
 
 static void __init fdt_smp_setup(void)
 {
@@ -260,11 +291,10 @@ static void __init fdt_smp_setup(void)
 		if (cpuid >= nr_cpu_ids)
 			continue;
 
-		if (cpuid == loongson_sysconf.boot_cpu_id) {
+		if (cpuid == loongson_sysconf.boot_cpu_id)
 			cpu = 0;
-		} else {
-			cpu = cpumask_next_zero(-1, cpu_present_mask);
-		}
+		else
+			cpu = find_first_zero_bit(cpumask_bits(cpu_present_mask), NR_CPUS);
 
 		num_processors++;
 		set_cpu_possible(cpu, true);
@@ -277,7 +307,7 @@ static void __init fdt_smp_setup(void)
 	}
 
 	loongson_sysconf.nr_cpus = num_processors;
-	set_bit(0, &(loongson_sysconf.cores_io_master));
+	set_bit(0, loongson_sysconf.cores_io_master);
 #endif
 }
 
@@ -285,9 +315,13 @@ void __init loongson_smp_setup(void)
 {
 	fdt_smp_setup();
 
+	if (loongson_sysconf.cores_per_package == 0)
+		loongson_sysconf.cores_per_package = num_processors;
+
 	cpu_data[0].core = cpu_logical_map(0) % loongson_sysconf.cores_per_package;
 	cpu_data[0].package = cpu_logical_map(0) / loongson_sysconf.cores_per_package;
 
+	pv_ipi_init();
 	iocsr_write32(0xffffffff, LOONGARCH_IOCSR_IPI_EN);
 	pr_info("Detected %i available CPU(s)\n", loongson_sysconf.nr_cpus);
 }
@@ -297,11 +331,11 @@ void __init loongson_prepare_cpus(unsigned int max_cpus)
 	int i = 0;
 
 	parse_acpi_topology();
+	cpu_data[0].global_id = cpu_logical_map(0);
 
 	for (i = 0; i < loongson_sysconf.nr_cpus; i++) {
 		set_cpu_present(i, true);
 		csr_mail_send(0, __cpu_logical_map[i], 0);
-		cpu_data[i].global_id = __cpu_logical_map[i];
 	}
 
 	per_cpu(cpu_state, smp_processor_id()) = CPU_ONLINE;
@@ -322,7 +356,7 @@ void loongson_boot_secondary(int cpu, struct task_struct *idle)
 
 	csr_mail_send(entry, cpu_logical_map(cpu), 0);
 
-	loongson_send_ipi_single(cpu, SMP_BOOT_CPU);
+	loongson_send_ipi_single(cpu, ACTION_BOOT_CPU);
 }
 
 /*
@@ -332,7 +366,7 @@ void loongson_init_secondary(void)
 {
 	unsigned int cpu = smp_processor_id();
 	unsigned int imask = ECFGF_IP0 | ECFGF_IP1 | ECFGF_IP2 |
-			     ECFGF_IPI | ECFGF_PMC | ECFGF_TIMER;
+			     ECFGF_IPI | ECFGF_PMC | ECFGF_TIMER | ECFGF_SIP0;
 
 	change_csr_ecfg(ECFG0_IM, imask);
 
@@ -346,6 +380,7 @@ void loongson_init_secondary(void)
 		     cpu_logical_map(cpu) / loongson_sysconf.cores_per_package;
 	cpu_data[cpu].core = pptt_enabled ? cpu_data[cpu].core :
 		     cpu_logical_map(cpu) % loongson_sysconf.cores_per_package;
+	cpu_data[cpu].global_id = cpu_logical_map(cpu);
 }
 
 void loongson_smp_finish(void)
@@ -448,7 +483,7 @@ core_initcall(ipi_pm_init);
 #endif
 
 /* Preload SMP state for boot cpu */
-void smp_prepare_boot_cpu(void)
+void __init smp_prepare_boot_cpu(void)
 {
 	unsigned int cpu, node, rr_node;
 
@@ -481,6 +516,8 @@ void smp_prepare_boot_cpu(void)
 			rr_node = next_node_in(rr_node, node_online_map);
 		}
 	}
+
+	pv_spinlock_init();
 }
 
 /* called from main before smp_init() */

@@ -15,7 +15,8 @@
 
 #include "smc.h"
 
-#define SMC_VIRTUAL_ISM_CHID_MASK	0xFF00
+#define SMC_EMULATED_ISM_CHID_MASK	0xFF00
+#define SMC_ISM_IDENT_MASK		0x00FFFF
 
 struct smcd_dev_list {	/* List of SMCD devices */
 	struct list_head list;
@@ -28,6 +29,12 @@ struct smc_ism_vlanid {			/* VLAN id set on ISM device */
 	struct list_head list;
 	unsigned short vlanid;		/* Vlan id */
 	refcount_t refcnt;		/* Reference count */
+};
+
+struct smc_ism_seid {
+	u8 seid_string[24];
+	u8 serial_number[4];
+	u8 type[4];
 };
 
 struct smcd_dev;
@@ -49,6 +56,7 @@ int smc_ism_signal_shutdown(struct smc_link_group *lgr);
 void smc_ism_get_system_eid(u8 **eid);
 u16 smc_ism_get_chid(struct smcd_dev *dev);
 bool smc_ism_is_v2_capable(void);
+void smc_ism_set_v2_capable(void);
 int smc_ism_init(void);
 void smc_ism_exit(void);
 int smcd_nl_get_device(struct sk_buff *skb, struct netlink_callback *cb);
@@ -63,10 +71,10 @@ static inline int smc_ism_write(struct smcd_dev *smcd, u64 dmb_tok,
 	return rc < 0 ? rc : 0;
 }
 
-static inline bool __smc_ism_is_virtual(u16 chid)
+static inline bool __smc_ism_is_emulated(u16 chid)
 {
 	/* CHIDs in range of 0xFF00 to 0xFFFF are reserved
-	 * for virtual ISM device.
+	 * for Emulated-ISM device.
 	 *
 	 * loopback-ism:	0xFFFF
 	 * virtio-ism:		0xFF00 ~ 0xFFFE
@@ -74,11 +82,16 @@ static inline bool __smc_ism_is_virtual(u16 chid)
 	return ((chid & 0xFF00) == 0xFF00);
 }
 
-static inline bool smc_ism_is_virtual(struct smcd_dev *smcd)
+static inline bool smc_ism_is_emulated(struct smcd_dev *smcd)
 {
 	u16 chid = smcd->ops->get_chid(smcd);
 
-	return __smc_ism_is_virtual(chid);
+	return __smc_ism_is_emulated(chid);
+}
+
+static inline bool smc_ism_is_loopback(struct smcd_dev *smcd)
+{
+	return (smcd->ops->get_chid(smcd) == 0xFFFF);
 }
 
 #endif

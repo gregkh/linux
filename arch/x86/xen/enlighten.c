@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 
-#ifdef CONFIG_XEN_BALLOON_MEMORY_HOTPLUG
-#include <linux/memblock.h>
-#endif
 #include <linux/console.h>
 #include <linux/cpu.h>
 #include <linux/instrumentation.h>
@@ -24,8 +21,6 @@
 #include <asm/setup.h>
 
 #include "xen-ops.h"
-#include "smp.h"
-#include "pmu.h"
 
 DEFINE_STATIC_CALL(xen_hypercall, xen_hypercall_hvm);
 EXPORT_STATIC_CALL_TRAMP(xen_hypercall);
@@ -113,7 +108,6 @@ noinstr void *__xen_hypercall_setfunc(void)
 	 * dependency chain: it is being called via the xen_hypercall static
 	 * call when running as a PVH or HVM guest. Hypercalls need to be
 	 * noinstr due to PV guests using hypercalls in noinstr code. So we
-	 * can safely tag the function body as "instrumentation ok", since
 	 * the PV guest requirement is not of interest here (xen_get_vendor()
 	 * calls noinstr functions, and static_call_update_early() might do
 	 * so, too).

@@ -789,7 +789,7 @@ static int audit_compare_rule(struct audit_krule *a, struct audit_krule *b)
 static inline int audit_dupe_lsm_field(struct audit_field *df,
 					   struct audit_field *sf)
 {
-	int ret = 0;
+	int ret;
 	char *lsm_str;
 
 	/* our own copy of lsm_str */
@@ -1344,7 +1344,7 @@ int audit_filter(int msgtype, unsigned int listtype)
 
 			switch (f->type) {
 			case AUDIT_PID:
-				pid = task_pid_nr(current);
+				pid = task_tgid_nr(current);
 				result = audit_comparator(pid, f->op, f->val);
 				break;
 			case AUDIT_UID:

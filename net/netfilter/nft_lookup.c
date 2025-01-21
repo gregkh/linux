@@ -24,7 +24,7 @@ struct nft_lookup {
 	struct nft_set_binding		binding;
 };
 
-#ifdef CONFIG_RETPOLINE
+#ifdef CONFIG_MITIGATION_RETPOLINE
 bool nft_set_do_lookup(const struct net *net, const struct nft_set *set,
 		       const u32 *key, const struct nft_set_ext **ext)
 {
@@ -113,7 +113,7 @@ static int nft_lookup_init(const struct nft_ctx *ctx,
 	if (IS_ERR(set))
 		return PTR_ERR(set);
 
-	err = nft_parse_register_load(tb[NFTA_LOOKUP_SREG], &priv->sreg,
+	err = nft_parse_register_load(ctx, tb[NFTA_LOOKUP_SREG], &priv->sreg,
 				      set->klen);
 	if (err < 0)
 		return err;
@@ -206,8 +206,7 @@ nla_put_failure:
 }
 
 static int nft_lookup_validate(const struct nft_ctx *ctx,
-			       const struct nft_expr *expr,
-			       const struct nft_data **d)
+			       const struct nft_expr *expr)
 {
 	const struct nft_lookup *priv = nft_expr_priv(expr);
 	struct nft_set_iter iter;

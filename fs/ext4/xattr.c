@@ -98,7 +98,7 @@ static const struct xattr_handler * const ext4_xattr_handler_map[] = {
 	[EXT4_XATTR_INDEX_HURD]		     = &ext4_xattr_hurd_handler,
 };
 
-const struct xattr_handler *ext4_xattr_handlers[] = {
+const struct xattr_handler * const ext4_xattr_handlers[] = {
 	&ext4_xattr_user_handler,
 	&ext4_xattr_trusted_handler,
 #ifdef CONFIG_EXT4_FS_SECURITY
@@ -2034,8 +2034,13 @@ clone_block:
 
 inserted:
 	if (!IS_LAST_ENTRY(s->first)) {
-		new_bh = ext4_xattr_block_cache_find(inode, header(s->base),
-						     &ce);
+		new_bh = ext4_xattr_block_cache_find(inode, header(s->base), &ce);
+		if (IS_ERR(new_bh)) {
+			error = PTR_ERR(new_bh);
+			new_bh = NULL;
+			goto cleanup;
+		}
+
 		if (new_bh) {
 			/* We found an identical block in the cache. */
 			if (new_bh == bs->bh)
@@ -2875,33 +2880,31 @@ ext4_expand_inode_array(struct ext4_xattr_inode_array **ea_inode_array,
 	if (*ea_inode_array == NULL) {
 		/*
 		 * Start with 15 inodes, so it fits into a power-of-two size.
-		 * If *ea_inode_array is NULL, this is essentially offsetof()
 		 */
-		(*ea_inode_array) =
-			kmalloc(offsetof(struct ext4_xattr_inode_array,
-					 inodes[EIA_MASK]),
-				GFP_NOFS);
+		(*ea_inode_array) = kmalloc(
+			struct_size(*ea_inode_array, inodes, EIA_MASK),
+			GFP_NOFS);
 		if (*ea_inode_array == NULL)
 			return -ENOMEM;
 		(*ea_inode_array)->count = 0;
 	} else if (((*ea_inode_array)->count & EIA_MASK) == EIA_MASK) {
 		/* expand the array once all 15 + n * 16 slots are full */
 		struct ext4_xattr_inode_array *new_array = NULL;
-		int count = (*ea_inode_array)->count;
 
-		/* if new_array is NULL, this is essentially offsetof() */
 		new_array = kmalloc(
-				offsetof(struct ext4_xattr_inode_array,
-					 inodes[count + EIA_INCR]),
-				GFP_NOFS);
+			struct_size(*ea_inode_array, inodes,
+				    (*ea_inode_array)->count + EIA_INCR),
+			GFP_NOFS);
 		if (new_array == NULL)
 			return -ENOMEM;
 		memcpy(new_array, *ea_inode_array,
-		       offsetof(struct ext4_xattr_inode_array, inodes[count]));
+		       struct_size(*ea_inode_array, inodes,
+				   (*ea_inode_array)->count));
 		kfree(*ea_inode_array);
 		*ea_inode_array = new_array;
 	}
-	(*ea_inode_array)->inodes[(*ea_inode_array)->count++] = inode;
+	(*ea_inode_array)->count++;
+	(*ea_inode_array)->inodes[(*ea_inode_array)->count - 1] = inode;
 	return 0;
 }
 
@@ -3032,8 +3035,6 @@ void ext4_xattr_inode_array_free(struct ext4_xattr_inode_array *ea_inode_array)
  *
  * Create a new entry in the extended attribute block cache, and insert
  * it unless such an entry is already in the cache.
- *
- * Returns 0, or a negative error number on failure.
  */
 static void
 ext4_xattr_block_cache_insert(struct mb_cache *ea_block_cache,
@@ -3061,8 +3062,7 @@ ext4_xattr_block_cache_insert(struct mb_cache *ea_block_cache,
  *
  * Compare two extended attribute blocks for equality.
  *
- * Returns 0 if the blocks are equal, 1 if they differ, and
- * a negative error number on errors.
+ * Returns 0 if the blocks are equal, 1 if they differ.
  */
 static int
 ext4_xattr_cmp(struct ext4_xattr_header *header1,
@@ -3101,8 +3101,8 @@ ext4_xattr_cmp(struct ext4_xattr_header *header1,
  *
  * Find an identical extended attribute block.
  *
- * Returns a pointer to the block found, or NULL if such a block was
- * not found or an error occurred.
+ * Returns a pointer to the block found, or NULL if such a block was not
+ * found, or an error pointer if an error occurred while reading ea block.
  */
 static struct buffer_head *
 ext4_xattr_block_cache_find(struct inode *inode,
@@ -3124,13 +3124,11 @@ ext4_xattr_block_cache_find(struct inode *inode,
 
 		bh = ext4_sb_bread(inode->i_sb, ce->e_value, REQ_PRIO);
 		if (IS_ERR(bh)) {
-			if (PTR_ERR(bh) == -ENOMEM) {
-				mb_cache_entry_put(ea_block_cache, ce);
-				return NULL;
-			}
-			bh = NULL;
-			EXT4_ERROR_INODE(inode, "block %lu read error",
-					 (unsigned long)ce->e_value);
+			if (PTR_ERR(bh) != -ENOMEM)
+				EXT4_ERROR_INODE(inode, "block %lu read error",
+						 (unsigned long)ce->e_value);
+			mb_cache_entry_put(ea_block_cache, ce);
+			return bh;
 		} else if (ext4_xattr_cmp(header, BHDR(bh)) == 0) {
 			*pce = ce;
 			return bh;

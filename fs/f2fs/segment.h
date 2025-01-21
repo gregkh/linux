@@ -77,21 +77,21 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 #define TOTAL_SEGS(sbi)							\
 	(SM_I(sbi) ? SM_I(sbi)->segment_count : 				\
 		le32_to_cpu(F2FS_RAW_SUPER(sbi)->segment_count))
-#define TOTAL_BLKS(sbi)	(TOTAL_SEGS(sbi) << (sbi)->log_blocks_per_seg)
+#define TOTAL_BLKS(sbi)	(SEGS_TO_BLKS(sbi, TOTAL_SEGS(sbi)))
 
 #define MAX_BLKADDR(sbi)	(SEG0_BLKADDR(sbi) + TOTAL_BLKS(sbi))
 #define SEGMENT_SIZE(sbi)	(1ULL << ((sbi)->log_blocksize +	\
 					(sbi)->log_blocks_per_seg))
 
 #define START_BLOCK(sbi, segno)	(SEG0_BLKADDR(sbi) +			\
-	 (GET_R2L_SEGNO(FREE_I(sbi), segno) << (sbi)->log_blocks_per_seg))
+	 (SEGS_TO_BLKS(sbi, GET_R2L_SEGNO(FREE_I(sbi), segno))))
 
 #define NEXT_FREE_BLKADDR(sbi, curseg)					\
 	(START_BLOCK(sbi, (curseg)->segno) + (curseg)->next_blkoff)
 
 #define GET_SEGOFF_FROM_SEG0(sbi, blk_addr)	((blk_addr) - SEG0_BLKADDR(sbi))
 #define GET_SEGNO_FROM_SEG0(sbi, blk_addr)				\
-	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) >> (sbi)->log_blocks_per_seg)
+	(BLKS_TO_SEGS(sbi, GET_SEGOFF_FROM_SEG0(sbi, blk_addr)))
 #define GET_BLKOFF_FROM_SEG0(sbi, blk_addr)				\
 	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) & (BLKS_PER_SEG(sbi) - 1))
 
@@ -100,11 +100,10 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 	NULL_SEGNO : GET_L2R_SEGNO(FREE_I(sbi),			\
 		GET_SEGNO_FROM_SEG0(sbi, blk_addr)))
 #define CAP_BLKS_PER_SEC(sbi)					\
-	(SEGS_PER_SEC(sbi) * BLKS_PER_SEG(sbi) -		\
-	 (sbi)->unusable_blocks_per_sec)
+	(BLKS_PER_SEC(sbi) - (sbi)->unusable_blocks_per_sec)
 #define CAP_SEGS_PER_SEC(sbi)					\
-	(SEGS_PER_SEC(sbi) - ((sbi)->unusable_blocks_per_sec >>	\
-	(sbi)->log_blocks_per_seg))
+	(SEGS_PER_SEC(sbi) -					\
+	BLKS_TO_SEGS(sbi, (sbi)->unusable_blocks_per_sec))
 #define GET_SEC_FROM_SEG(sbi, segno)				\
 	(((segno) == -1) ? -1 : (segno) / SEGS_PER_SEC(sbi))
 #define GET_SEG_FROM_SEC(sbi, secno)				\
@@ -189,6 +188,7 @@ struct victim_sel_policy {
 	unsigned int min_segno;		/* segment # having min. cost */
 	unsigned long long age;		/* mtime of GCed section*/
 	unsigned long long age_threshold;/* age threshold */
+	bool one_time_gc;		/* one time GC */
 };
 
 struct seg_entry {
@@ -431,7 +431,7 @@ static inline void __set_free(struct f2fs_sb_info *sbi, unsigned int segno)
 	unsigned int secno = GET_SEC_FROM_SEG(sbi, segno);
 	unsigned int start_segno = GET_SEG_FROM_SEC(sbi, secno);
 	unsigned int next;
-	unsigned int usable_segs = f2fs_usable_segs_in_sec(sbi, segno);
+	unsigned int usable_segs = f2fs_usable_segs_in_sec(sbi);
 
 	spin_lock(&free_i->segmap_lock);
 	clear_bit(segno, free_i->free_segmap);
@@ -465,7 +465,7 @@ static inline void __set_test_and_free(struct f2fs_sb_info *sbi,
 	unsigned int secno = GET_SEC_FROM_SEG(sbi, segno);
 	unsigned int start_segno = GET_SEG_FROM_SEC(sbi, secno);
 	unsigned int next;
-	unsigned int usable_segs = f2fs_usable_segs_in_sec(sbi, segno);
+	unsigned int usable_segs = f2fs_usable_segs_in_sec(sbi);
 
 	spin_lock(&free_i->segmap_lock);
 	if (test_and_clear_bit(segno, free_i->free_segmap)) {
@@ -920,7 +920,7 @@ static inline int nr_pages_to_skip(struct f2fs_sb_info *sbi, int type)
 	if (type == DATA)
 		return BLKS_PER_SEG(sbi);
 	else if (type == NODE)
-		return 8 * BLKS_PER_SEG(sbi);
+		return SEGS_TO_BLKS(sbi, 8);
 	else if (type == META)
 		return 8 * BIO_MAX_VECS;
 	else

@@ -90,11 +90,13 @@ bool f2fs_is_compressed_page(struct page *page)
 static void f2fs_set_compressed_page(struct page *page,
 		struct inode *inode, pgoff_t index, void *data)
 {
-	attach_page_private(page, (void *)data);
+	struct folio *folio = page_folio(page);
+
+	folio_attach_private(folio, (void *)data);
 
 	/* i_crypto_info and iv index */
-	page->index = index;
-	page->mapping = inode->i_mapping;
+	folio->index = index;
+	folio->mapping = inode->i_mapping;
 }
 
 static void f2fs_drop_rpages(struct compress_ctx *cc, int len, bool unlock)
@@ -160,17 +162,17 @@ void f2fs_destroy_compress_ctx(struct compress_ctx *cc, bool reuse)
 		cc->cluster_idx = NULL_CLUSTER;
 }
 
-void f2fs_compress_ctx_add_page(struct compress_ctx *cc, struct page *page)
+void f2fs_compress_ctx_add_page(struct compress_ctx *cc, struct folio *folio)
 {
 	unsigned int cluster_ofs;
 
-	if (!f2fs_cluster_can_merge_page(cc, page->index))
+	if (!f2fs_cluster_can_merge_page(cc, folio->index))
 		f2fs_bug_on(F2FS_I_SB(cc->inode), 1);
 
-	cluster_ofs = offset_in_cluster(cc, page->index);
-	cc->rpages[cluster_ofs] = page;
+	cluster_ofs = offset_in_cluster(cc, folio->index);
+	cc->rpages[cluster_ofs] = folio_page(folio, 0);
 	cc->nr_rpages++;
-	cc->cluster_idx = cluster_idx(cc, page->index);
+	cc->cluster_idx = cluster_idx(cc, folio->index);
 }
 
 #ifdef CONFIG_F2FS_FS_LZO
@@ -879,7 +881,7 @@ static bool cluster_has_invalid_data(struct compress_ctx *cc)
 		f2fs_bug_on(F2FS_I_SB(cc->inode), !page);
 
 		/* beyond EOF */
-		if (page->index >= nr_pages)
+		if (page_folio(page)->index >= nr_pages)
 			return true;
 	}
 	return false;
@@ -1045,6 +1047,31 @@ static void set_cluster_writeback(struct compress_ctx *cc)
 	}
 }
 
+static void cancel_cluster_writeback(struct compress_ctx *cc,
+			struct compress_io_ctx *cic, int submitted)
+{
+	int i;
+
+	/* Wait for submitted IOs. */
+	if (submitted > 1) {
+		f2fs_submit_merged_write(F2FS_I_SB(cc->inode), DATA);
+		while (atomic_read(&cic->pending_pages) !=
+					(cc->valid_nr_cpages - submitted + 1))
+			f2fs_io_schedule_timeout(DEFAULT_IO_TIMEOUT);
+	}
+
+	/* Cancel writeback and stay locked. */
+	for (i = 0; i < cc->cluster_size; i++) {
+		if (i < submitted) {
+			inode_inc_dirty_pages(cc->inode);
+			lock_page(cc->rpages[i]);
+		}
+		clear_page_private_gcing(cc->rpages[i]);
+		if (folio_test_writeback(page_folio(cc->rpages[i])))
+			end_page_writeback(cc->rpages[i]);
+	}
+}
+
 static void set_cluster_dirty(struct compress_ctx *cc)
 {
 	int i;
@@ -1088,14 +1115,14 @@ retry:
 		if (PageUptodate(page))
 			f2fs_put_page(page, 1);
 		else
-			f2fs_compress_ctx_add_page(cc, page);
+			f2fs_compress_ctx_add_page(cc, page_folio(page));
 	}
 
 	if (!f2fs_cluster_is_empty(cc)) {
 		struct bio *bio = NULL;
 
 		ret = f2fs_read_multi_pages(cc, &bio, cc->cluster_size,
-					&last_block_in_bio, false, true);
+					&last_block_in_bio, NULL, true);
 		f2fs_put_rpages(cc);
 		f2fs_destroy_compress_ctx(cc, true);
 		if (ret)
@@ -1118,7 +1145,7 @@ retry:
 		}
 
 		f2fs_wait_on_page_writeback(page, DATA, true, true);
-		f2fs_compress_ctx_add_page(cc, page);
+		f2fs_compress_ctx_add_page(cc, page_folio(page));
 
 		if (!PageUptodate(page)) {
 release_and_retry:
@@ -1246,7 +1273,6 @@ static int f2fs_write_compressed_pages(struct compress_ctx *cc,
 		.page = NULL,
 		.encrypted_page = NULL,
 		.compressed_page = NULL,
-		.submitted = 0,
 		.io_type = io_type,
 		.io_wbc = wbc,
 		.encrypted = fscrypt_inode_uses_fs_layer_crypto(cc->inode) ?
@@ -1372,7 +1398,16 @@ static int f2fs_write_compressed_pages(struct compress_ctx *cc,
 			fio.compressed_page = cc->cpages[i - 1];
 
 		cc->cpages[i - 1] = NULL;
+		fio.submitted = 0;
 		f2fs_outplace_write_data(&dn, &fio);
+		if (unlikely(!fio.submitted)) {
+			cancel_cluster_writeback(cc, cic, i);
+
+			/* To call fscrypt_finalize_bounce_page */
+			i = cc->valid_nr_cpages;
+			*submitted = 0;
+			goto out_destroy_crypt;
+		}
 		(*submitted)++;
 unlock_continue:
 		inode_dec_dirty_pages(cc->inode);
@@ -1406,8 +1441,11 @@ unlock_continue:
 out_destroy_crypt:
 	page_array_free(cc->inode, cic->rpages, cc->cluster_size);
 
-	for (--i; i >= 0; i--)
+	for (--i; i >= 0; i--) {
+		if (!cc->cpages[i])
+			continue;
 		fscrypt_finalize_bounce_page(&cc->cpages[i]);
+	}
 out_put_cic:
 	kmem_cache_free(cic_entry_slab, cic);
 out_put_dnode:
@@ -1498,7 +1536,7 @@ continue_unlock:
 		if (!PageDirty(cc->rpages[i]))
 			goto continue_unlock;
 
-		if (PageWriteback(cc->rpages[i])) {
+		if (folio_test_writeback(page_folio(cc->rpages[i]))) {
 			if (wbc->sync_mode == WB_SYNC_NONE)
 				goto continue_unlock;
 			f2fs_wait_on_page_writeback(cc->rpages[i], DATA, true, true);
@@ -1507,7 +1545,8 @@ continue_unlock:
 		if (!clear_page_dirty_for_io(cc->rpages[i]))
 			goto continue_unlock;
 
-		ret = f2fs_write_single_data_page(cc->rpages[i], &submitted,
+		ret = f2fs_write_single_data_page(page_folio(cc->rpages[i]),
+						&submitted,
 						NULL, NULL, wbc, io_type,
 						compr_blocks, false);
 		if (ret) {
@@ -1905,12 +1944,8 @@ void f2fs_cache_compressed_page(struct f2fs_sb_info *sbi, struct page *page,
 
 	set_page_private_data(cpage, ino);
 
-	if (!f2fs_is_valid_blkaddr(sbi, blkaddr, DATA_GENERIC_ENHANCE_READ))
-		goto out;
-
 	memcpy(page_address(cpage), page_address(page), PAGE_SIZE);
 	SetPageUptodate(cpage);
-out:
 	f2fs_put_page(cpage, 1);
 }
 
@@ -1971,7 +2006,7 @@ void f2fs_invalidate_compress_pages(struct f2fs_sb_info *sbi, nid_t ino)
 				continue;
 			}
 
-			generic_error_remove_page(mapping, &folio->page);
+			generic_error_remove_folio(mapping, folio);
 			folio_unlock(folio);
 		}
 		folio_batch_release(&fbatch);

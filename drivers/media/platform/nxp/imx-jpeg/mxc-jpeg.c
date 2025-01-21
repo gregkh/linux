@@ -1373,6 +1373,8 @@ static bool mxc_jpeg_source_change(struct mxc_jpeg_ctx *ctx,
 		q_data_cap->crop.top = 0;
 		q_data_cap->crop.width = jpeg_src_buf->w;
 		q_data_cap->crop.height = jpeg_src_buf->h;
+		q_data_cap->bytesperline[0] = 0;
+		q_data_cap->bytesperline[1] = 0;
 
 		/*
 		 * align up the resolution for CAST IP,
@@ -1755,6 +1757,14 @@ static u32 mxc_jpeg_get_image_format(struct device *dev,
 
 static void mxc_jpeg_bytesperline(struct mxc_jpeg_q_data *q, u32 precision)
 {
+	u32 bytesperline[2];
+
+	bytesperline[0] = q->bytesperline[0];
+	bytesperline[1] = q->bytesperline[0];	/*imx-jpeg only support the same line pitch*/
+	v4l_bound_align_image(&bytesperline[0], 0, MXC_JPEG_MAX_LINE, 2,
+			      &bytesperline[1], 0, MXC_JPEG_MAX_LINE, 2,
+			      0);
+
 	/* Bytes distance between the leftmost pixels in two adjacent lines */
 	if (q->fmt->fourcc == V4L2_PIX_FMT_JPEG) {
 		/* bytesperline unused for compressed formats */
@@ -1777,6 +1787,12 @@ static void mxc_jpeg_bytesperline(struct mxc_jpeg_q_data *q, u32 precision)
 		/* grayscale */
 		q->bytesperline[0] = q->w_adjusted * DIV_ROUND_UP(precision, 8);
 		q->bytesperline[1] = 0;
+	}
+
+	if (q->fmt->fourcc != V4L2_PIX_FMT_JPEG) {
+		q->bytesperline[0] = max(q->bytesperline[0], bytesperline[0]);
+		if (q->fmt->mem_planes > 1)
+			q->bytesperline[1] = max(q->bytesperline[1], bytesperline[1]);
 	}
 }
 
@@ -1827,17 +1843,6 @@ static int mxc_jpeg_parse(struct mxc_jpeg_ctx *ctx, struct vb2_buffer *vb)
 
 	q_data_out = mxc_jpeg_get_q_data(ctx,
 					 V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
-	if (q_data_out->w == 0 && q_data_out->h == 0) {
-		dev_warn(dev, "Invalid user resolution 0x0");
-		dev_warn(dev, "Keeping resolution from JPEG: %dx%d",
-			 header.frame.width, header.frame.height);
-	} else if (header.frame.width != q_data_out->w ||
-		   header.frame.height != q_data_out->h) {
-		dev_err(dev,
-			"Resolution mismatch: %dx%d (JPEG) versus %dx%d(user)",
-			header.frame.width, header.frame.height,
-			q_data_out->w, q_data_out->h);
-	}
 	q_data_out->w = header.frame.width;
 	q_data_out->h = header.frame.height;
 	if (header.frame.width > MXC_JPEG_MAX_WIDTH ||
@@ -2799,7 +2804,7 @@ static int mxc_jpeg_probe(struct platform_device *pdev)
 	ret = mxc_jpeg_attach_pm_domains(jpeg);
 	if (ret < 0) {
 		dev_err(dev, "failed to attach power domains %d\n", ret);
-		return ret;
+		goto err_clk;
 	}
 
 	/* v4l2 */

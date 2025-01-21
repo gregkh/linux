@@ -58,7 +58,7 @@ nv10_bo_update_tile_region(struct drm_device *dev, struct nouveau_drm_tile *reg,
 {
 	struct nouveau_drm *drm = nouveau_drm(dev);
 	int i = reg - drm->tile.reg;
-	struct nvkm_fb *fb = nvxx_fb(&drm->client.device);
+	struct nvkm_fb *fb = nvxx_fb(drm);
 	struct nvkm_fb_tile *tile = &fb->tile.region[i];
 
 	nouveau_fence_unref(&reg->fence);
@@ -109,7 +109,7 @@ nv10_bo_set_tiling(struct drm_device *dev, u32 addr,
 		   u32 size, u32 pitch, u32 zeta)
 {
 	struct nouveau_drm *drm = nouveau_drm(dev);
-	struct nvkm_fb *fb = nvxx_fb(&drm->client.device);
+	struct nvkm_fb *fb = nvxx_fb(drm);
 	struct nouveau_drm_tile *tile, *found = NULL;
 	int i;
 
@@ -148,10 +148,17 @@ nouveau_bo_del_ttm(struct ttm_buffer_object *bo)
 	 * If nouveau_bo_new() allocated this buffer, the GEM object was never
 	 * initialized, so don't attempt to release it.
 	 */
-	if (bo->base.dev)
+	if (bo->base.dev) {
+		/* Gem objects not being shared with other VMs get their
+		 * dma_resv from a root GEM object.
+		 */
+		if (nvbo->no_share)
+			drm_gem_object_put(nvbo->r_obj);
+
 		drm_gem_object_release(&bo->base);
-	else
+	} else {
 		dma_resv_fini(&bo->base._resv);
+	}
 
 	kfree(nvbo);
 }
@@ -392,27 +399,6 @@ nouveau_bo_new(struct nouveau_cli *cli, u64 size, int align,
 }
 
 static void
-set_placement_list(struct ttm_place *pl, unsigned *n, uint32_t domain)
-{
-	*n = 0;
-
-	if (domain & NOUVEAU_GEM_DOMAIN_VRAM) {
-		pl[*n].mem_type = TTM_PL_VRAM;
-		pl[*n].flags = 0;
-		(*n)++;
-	}
-	if (domain & NOUVEAU_GEM_DOMAIN_GART) {
-		pl[*n].mem_type = TTM_PL_TT;
-		pl[*n].flags = 0;
-		(*n)++;
-	}
-	if (domain & NOUVEAU_GEM_DOMAIN_CPU) {
-		pl[*n].mem_type = TTM_PL_SYSTEM;
-		pl[(*n)++].flags = 0;
-	}
-}
-
-static void
 set_placement_range(struct nouveau_bo *nvbo, uint32_t domain)
 {
 	struct nouveau_drm *drm = nouveau_bdev(nvbo->bo.bdev);
@@ -439,10 +425,6 @@ set_placement_range(struct nouveau_bo *nvbo, uint32_t domain)
 			nvbo->placements[i].fpfn = fpfn;
 			nvbo->placements[i].lpfn = lpfn;
 		}
-		for (i = 0; i < nvbo->placement.num_busy_placement; ++i) {
-			nvbo->busy_placements[i].fpfn = fpfn;
-			nvbo->busy_placements[i].lpfn = lpfn;
-		}
 	}
 }
 
@@ -450,29 +432,43 @@ void
 nouveau_bo_placement_set(struct nouveau_bo *nvbo, uint32_t domain,
 			 uint32_t busy)
 {
-	struct ttm_placement *pl = &nvbo->placement;
+	unsigned int *n = &nvbo->placement.num_placement;
+	struct ttm_place *pl = nvbo->placements;
 
-	pl->placement = nvbo->placements;
-	set_placement_list(nvbo->placements, &pl->num_placement, domain);
+	domain |= busy;
 
-	pl->busy_placement = nvbo->busy_placements;
-	set_placement_list(nvbo->busy_placements, &pl->num_busy_placement,
-			   domain | busy);
+	*n = 0;
+	if (domain & NOUVEAU_GEM_DOMAIN_VRAM) {
+		pl[*n].mem_type = TTM_PL_VRAM;
+		pl[*n].flags = busy & NOUVEAU_GEM_DOMAIN_VRAM ?
+			TTM_PL_FLAG_FALLBACK : 0;
+		(*n)++;
+	}
+	if (domain & NOUVEAU_GEM_DOMAIN_GART) {
+		pl[*n].mem_type = TTM_PL_TT;
+		pl[*n].flags = busy & NOUVEAU_GEM_DOMAIN_GART ?
+			TTM_PL_FLAG_FALLBACK : 0;
+		(*n)++;
+	}
+	if (domain & NOUVEAU_GEM_DOMAIN_CPU) {
+		pl[*n].mem_type = TTM_PL_SYSTEM;
+		pl[*n].flags = busy & NOUVEAU_GEM_DOMAIN_CPU ?
+			TTM_PL_FLAG_FALLBACK : 0;
+		(*n)++;
+	}
 
+	nvbo->placement.placement = nvbo->placements;
 	set_placement_range(nvbo, domain);
 }
 
-int
-nouveau_bo_pin(struct nouveau_bo *nvbo, uint32_t domain, bool contig)
+int nouveau_bo_pin_locked(struct nouveau_bo *nvbo, uint32_t domain, bool contig)
 {
 	struct nouveau_drm *drm = nouveau_bdev(nvbo->bo.bdev);
 	struct ttm_buffer_object *bo = &nvbo->bo;
 	bool force = false, evict = false;
-	int ret;
+	int ret = 0;
 
-	ret = ttm_bo_reserve(bo, false, false, NULL);
-	if (ret)
-		return ret;
+	dma_resv_assert_held(bo->base.resv);
 
 	if (drm->client.device.info.family >= NV_DEVICE_INFO_V0_TESLA &&
 	    domain == NOUVEAU_GEM_DOMAIN_VRAM && contig) {
@@ -535,20 +531,15 @@ nouveau_bo_pin(struct nouveau_bo *nvbo, uint32_t domain, bool contig)
 out:
 	if (force && ret)
 		nvbo->contig = false;
-	ttm_bo_unreserve(bo);
 	return ret;
 }
 
-int
-nouveau_bo_unpin(struct nouveau_bo *nvbo)
+void nouveau_bo_unpin_locked(struct nouveau_bo *nvbo)
 {
 	struct nouveau_drm *drm = nouveau_bdev(nvbo->bo.bdev);
 	struct ttm_buffer_object *bo = &nvbo->bo;
-	int ret;
 
-	ret = ttm_bo_reserve(bo, false, false, NULL);
-	if (ret)
-		return ret;
+	dma_resv_assert_held(bo->base.resv);
 
 	ttm_bo_unpin(&nvbo->bo);
 	if (!nvbo->bo.pin_count) {
@@ -563,8 +554,33 @@ nouveau_bo_unpin(struct nouveau_bo *nvbo)
 			break;
 		}
 	}
+}
 
+int nouveau_bo_pin(struct nouveau_bo *nvbo, uint32_t domain, bool contig)
+{
+	struct ttm_buffer_object *bo = &nvbo->bo;
+	int ret;
+
+	ret = ttm_bo_reserve(bo, false, false, NULL);
+	if (ret)
+		return ret;
+	ret = nouveau_bo_pin_locked(nvbo, domain, contig);
 	ttm_bo_unreserve(bo);
+
+	return ret;
+}
+
+int nouveau_bo_unpin(struct nouveau_bo *nvbo)
+{
+	struct ttm_buffer_object *bo = &nvbo->bo;
+	int ret;
+
+	ret = ttm_bo_reserve(bo, false, false, NULL);
+	if (ret)
+		return ret;
+	nouveau_bo_unpin_locked(nvbo);
+	ttm_bo_unreserve(bo);
+
 	return 0;
 }
 
@@ -1049,10 +1065,10 @@ nouveau_bo_move(struct ttm_buffer_object *bo, bool evict,
 {
 	struct nouveau_drm *drm = nouveau_bdev(bo->bdev);
 	struct nouveau_bo *nvbo = nouveau_bo(bo);
+	struct drm_gem_object *obj = &bo->base;
 	struct ttm_resource *old_reg = bo->resource;
 	struct nouveau_drm_tile *new_tile = NULL;
 	int ret = 0;
-
 
 	if (new_reg->mem_type == TTM_PL_TT) {
 		ret = nouveau_ttm_tt_bind(bo->bdev, bo->ttm, new_reg);
@@ -1060,6 +1076,7 @@ nouveau_bo_move(struct ttm_buffer_object *bo, bool evict,
 			return ret;
 	}
 
+	drm_gpuvm_bo_gem_evict(obj, evict);
 	nouveau_bo_move_ntfy(bo, new_reg);
 	ret = ttm_bo_wait_ctx(bo, ctx);
 	if (ret)
@@ -1124,6 +1141,7 @@ out:
 out_ntfy:
 	if (ret) {
 		nouveau_bo_move_ntfy(bo, bo->resource);
+		drm_gpuvm_bo_gem_evict(obj, !evict);
 	}
 	return ret;
 }
@@ -1153,7 +1171,7 @@ static int
 nouveau_ttm_io_mem_reserve(struct ttm_device *bdev, struct ttm_resource *reg)
 {
 	struct nouveau_drm *drm = nouveau_bdev(bdev);
-	struct nvkm_device *device = nvxx_device(&drm->client.device);
+	struct nvkm_device *device = nvxx_device(drm);
 	struct nouveau_mem *mem = nouveau_mem(reg);
 	struct nvif_mmu *mmu = &drm->client.mmu;
 	int ret;
@@ -1273,7 +1291,7 @@ vm_fault_t nouveau_ttm_fault_reserve_notify(struct ttm_buffer_object *bo)
 {
 	struct nouveau_drm *drm = nouveau_bdev(bo->bdev);
 	struct nouveau_bo *nvbo = nouveau_bo(bo);
-	struct nvkm_device *device = nvxx_device(&drm->client.device);
+	struct nvkm_device *device = nvxx_device(drm);
 	u32 mappable = device->func->resource_size(device, 1) >> PAGE_SHIFT;
 	int i, ret;
 
@@ -1299,11 +1317,6 @@ vm_fault_t nouveau_ttm_fault_reserve_notify(struct ttm_buffer_object *bo)
 		for (i = 0; i < nvbo->placement.num_placement; ++i) {
 			nvbo->placements[i].fpfn = 0;
 			nvbo->placements[i].lpfn = mappable;
-		}
-
-		for (i = 0; i < nvbo->placement.num_busy_placement; ++i) {
-			nvbo->busy_placements[i].fpfn = 0;
-			nvbo->busy_placements[i].lpfn = mappable;
 		}
 
 		nouveau_bo_placement_set(nvbo, NOUVEAU_GEM_DOMAIN_VRAM, 0);

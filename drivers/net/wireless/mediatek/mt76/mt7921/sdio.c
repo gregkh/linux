@@ -100,9 +100,10 @@ static int mt7921s_probe(struct sdio_func *func,
 		.rx_skb = mt7921_queue_rx_skb,
 		.rx_check = mt7921_rx_check,
 		.sta_add = mt7921_mac_sta_add,
-		.sta_assoc = mt7921_mac_sta_assoc,
+		.sta_event = mt7921_mac_sta_event,
 		.sta_remove = mt7921_mac_sta_remove,
 		.update_survey = mt792x_update_channel,
+		.set_channel = mt7921_set_channel,
 	};
 	static const struct mt76_bus_ops mt7921s_ops = {
 		.rr = mt76s_rr,
@@ -216,6 +217,8 @@ static int mt7921s_suspend(struct device *__dev)
 	cancel_delayed_work_sync(&pm->ps_work);
 	cancel_work_sync(&pm->wake_work);
 
+	mt7921_roc_abort_sync(dev);
+
 	err = mt792x_mcu_drv_pmctrl(dev);
 	if (err < 0)
 		goto restore_suspend;
@@ -323,5 +326,6 @@ static struct sdio_driver mt7921s_driver = {
 	.drv.pm		= pm_sleep_ptr(&mt7921s_pm_ops),
 };
 module_sdio_driver(mt7921s_driver);
+MODULE_DESCRIPTION("MediaTek MT7921S (SDIO) wireless driver");
 MODULE_AUTHOR("Sean Wang <sean.wang@mediatek.com>");
 MODULE_LICENSE("Dual BSD/GPL");

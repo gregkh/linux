@@ -96,10 +96,10 @@ static int mt7996_pci_probe(struct pci_dev *pdev,
 			    const struct pci_device_id *id)
 {
 	struct pci_dev *hif2_dev;
-	struct mt7996_dev *dev;
-	struct mt76_dev *mdev;
 	struct mt7996_hif *hif2;
-	int irq, ret;
+	struct mt7996_dev *dev;
+	int irq, hif2_irq, ret;
+	struct mt76_dev *mdev;
 
 	ret = pcim_enable_device(pdev);
 	if (ret)
@@ -111,7 +111,11 @@ static int mt7996_pci_probe(struct pci_dev *pdev,
 
 	pci_set_master(pdev);
 
-	ret = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
+	ret = dma_set_mask(&pdev->dev, DMA_BIT_MASK(36));
+	if (ret)
+		return ret;
+
+	ret = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32));
 	if (ret)
 		return ret;
 
@@ -129,15 +133,22 @@ static int mt7996_pci_probe(struct pci_dev *pdev,
 	mt7996_wfsys_reset(dev);
 	hif2 = mt7996_pci_init_hif2(pdev);
 
-	ret = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_ALL_TYPES);
+	ret = mt7996_mmio_wed_init(dev, pdev, false, &irq);
 	if (ret < 0)
-		goto free_device;
+		goto free_wed_or_irq_vector;
 
-	irq = pdev->irq;
+	if (!ret) {
+		ret = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_ALL_TYPES);
+		if (ret < 0)
+			goto free_device;
+
+		irq = pdev->irq;
+	}
+
 	ret = devm_request_irq(mdev->dev, irq, mt7996_irq_handler,
 			       IRQF_SHARED, KBUILD_MODNAME, dev);
 	if (ret)
-		goto free_irq_vector;
+		goto free_wed_or_irq_vector;
 
 	mt76_wr(dev, MT_INT_MASK_CSR, 0);
 	/* master switch of PCIe tnterrupt enable */
@@ -147,16 +158,25 @@ static int mt7996_pci_probe(struct pci_dev *pdev,
 		hif2_dev = container_of(hif2->dev, struct pci_dev, dev);
 		dev->hif2 = hif2;
 
-		ret = pci_alloc_irq_vectors(hif2_dev, 1, 1, PCI_IRQ_ALL_TYPES);
+		ret = mt7996_mmio_wed_init(dev, hif2_dev, true, &hif2_irq);
 		if (ret < 0)
-			goto free_hif2;
+			goto free_hif2_wed_irq_vector;
 
-		dev->hif2->irq = hif2_dev->irq;
-		ret = devm_request_irq(mdev->dev, dev->hif2->irq,
-				       mt7996_irq_handler, IRQF_SHARED,
-				       KBUILD_MODNAME "-hif", dev);
+		if (!ret) {
+			ret = pci_alloc_irq_vectors(hif2_dev, 1, 1,
+						    PCI_IRQ_ALL_TYPES);
+			if (ret < 0)
+				goto free_hif2;
+
+			dev->hif2->irq = hif2_dev->irq;
+			hif2_irq = dev->hif2->irq;
+		}
+
+		ret = devm_request_irq(mdev->dev, hif2_irq, mt7996_irq_handler,
+				       IRQF_SHARED, KBUILD_MODNAME "-hif",
+				       dev);
 		if (ret)
-			goto free_hif2_irq_vector;
+			goto free_hif2_wed_irq_vector;
 
 		mt76_wr(dev, MT_INT1_MASK_CSR, 0);
 		/* master switch of PCIe tnterrupt enable */
@@ -171,16 +191,23 @@ static int mt7996_pci_probe(struct pci_dev *pdev,
 
 free_hif2_irq:
 	if (dev->hif2)
-		devm_free_irq(mdev->dev, dev->hif2->irq, dev);
-free_hif2_irq_vector:
-	if (dev->hif2)
-		pci_free_irq_vectors(hif2_dev);
+		devm_free_irq(mdev->dev, hif2_irq, dev);
+free_hif2_wed_irq_vector:
+	if (dev->hif2) {
+		if (mtk_wed_device_active(&dev->mt76.mmio.wed_hif2))
+			mtk_wed_device_detach(&dev->mt76.mmio.wed_hif2);
+		else
+			pci_free_irq_vectors(hif2_dev);
+	}
 free_hif2:
 	if (dev->hif2)
 		put_device(dev->hif2->dev);
 	devm_free_irq(mdev->dev, irq, dev);
-free_irq_vector:
-	pci_free_irq_vectors(pdev);
+free_wed_or_irq_vector:
+	if (mtk_wed_device_active(&dev->mt76.mmio.wed))
+		mtk_wed_device_detach(&dev->mt76.mmio.wed);
+	else
+		pci_free_irq_vectors(pdev);
 free_device:
 	mt76_free_device(&dev->mt76);
 
@@ -225,3 +252,7 @@ MODULE_FIRMWARE(MT7996_FIRMWARE_WA);
 MODULE_FIRMWARE(MT7996_FIRMWARE_WM);
 MODULE_FIRMWARE(MT7996_FIRMWARE_DSP);
 MODULE_FIRMWARE(MT7996_ROM_PATCH);
+MODULE_FIRMWARE(MT7992_FIRMWARE_WA);
+MODULE_FIRMWARE(MT7992_FIRMWARE_WM);
+MODULE_FIRMWARE(MT7992_FIRMWARE_DSP);
+MODULE_FIRMWARE(MT7992_ROM_PATCH);

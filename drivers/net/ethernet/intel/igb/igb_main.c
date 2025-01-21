@@ -107,8 +107,6 @@ static int igb_setup_all_rx_resources(struct igb_adapter *);
 static void igb_free_all_tx_resources(struct igb_adapter *);
 static void igb_free_all_rx_resources(struct igb_adapter *);
 static void igb_setup_mrqc(struct igb_adapter *);
-static int igb_probe(struct pci_dev *, const struct pci_device_id *);
-static void igb_remove(struct pci_dev *pdev);
 static void igb_init_queue_configuration(struct igb_adapter *adapter);
 static int igb_sw_init(struct igb_adapter *);
 int igb_open(struct net_device *);
@@ -179,20 +177,6 @@ static int igb_vf_configure(struct igb_adapter *adapter, int vf);
 static int igb_disable_sriov(struct pci_dev *dev, bool reinit);
 #endif
 
-static int igb_suspend(struct device *);
-static int igb_resume(struct device *);
-static int igb_runtime_suspend(struct device *dev);
-static int igb_runtime_resume(struct device *dev);
-static int igb_runtime_idle(struct device *dev);
-#ifdef CONFIG_PM
-static const struct dev_pm_ops igb_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(igb_suspend, igb_resume)
-	SET_RUNTIME_PM_OPS(igb_runtime_suspend, igb_runtime_resume,
-			igb_runtime_idle)
-};
-#endif
-static void igb_shutdown(struct pci_dev *);
-static int igb_pci_sriov_configure(struct pci_dev *dev, int num_vfs);
 #ifdef CONFIG_IGB_DCA
 static int igb_notify_dca(struct notifier_block *, unsigned long, void *);
 static struct notifier_block dca_notifier = {
@@ -203,7 +187,7 @@ static struct notifier_block dca_notifier = {
 #endif
 #ifdef CONFIG_PCI_IOV
 static unsigned int max_vfs;
-module_param(max_vfs, uint, 0);
+module_param(max_vfs, uint, 0444);
 MODULE_PARM_DESC(max_vfs, "Maximum number of virtual functions to allocate per physical function");
 #endif /* CONFIG_PCI_IOV */
 
@@ -220,20 +204,6 @@ static const struct pci_error_handlers igb_err_handler = {
 
 static void igb_init_dmac(struct igb_adapter *adapter, u32 pba);
 
-static struct pci_driver igb_driver = {
-	.name     = igb_driver_name,
-	.id_table = igb_pci_tbl,
-	.probe    = igb_probe,
-	.remove   = igb_remove,
-#ifdef CONFIG_PM
-	.driver.pm = &igb_pm_ops,
-#endif
-	.shutdown = igb_shutdown,
-	.sriov_configure = igb_pci_sriov_configure,
-	.err_handler = &igb_err_handler
-};
-
-MODULE_AUTHOR("Intel Corporation, <e1000-devel@lists.sourceforge.net>");
 MODULE_DESCRIPTION("Intel(R) Gigabit Ethernet Network Driver");
 MODULE_LICENSE("GPL v2");
 
@@ -647,6 +617,8 @@ struct net_device *igb_get_hw_dev(struct e1000_hw *hw)
 	struct igb_adapter *adapter = hw->back;
 	return adapter->netdev;
 }
+
+static struct pci_driver igb_driver;
 
 /**
  *  igb_init_module - Driver Registration Routine
@@ -2543,7 +2515,7 @@ igb_features_check(struct sk_buff *skb, struct net_device *dev,
 	unsigned int network_hdr_len, mac_hdr_len;
 
 	/* Make certain the headers can be described by a context descriptor */
-	mac_hdr_len = skb_network_header(skb) - skb->data;
+	mac_hdr_len = skb_network_offset(skb);
 	if (unlikely(mac_hdr_len > IGB_MAX_MAC_HDR_LEN))
 		return features & ~(NETIF_F_HW_CSUM |
 				    NETIF_F_SCTP_CRC |
@@ -2628,6 +2600,9 @@ static int igb_parse_cls_flower(struct igb_adapter *adapter,
 				   "Unsupported key used, only BASIC, CONTROL, ETH_ADDRS and VLAN are supported");
 		return -EOPNOTSUPP;
 	}
+
+	if (flow_rule_match_has_control_flags(rule, extack))
+		return -EOPNOTSUPP;
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_ETH_ADDRS)) {
 		struct flow_match_eth_addrs match;
@@ -3093,7 +3068,7 @@ void igb_set_fw_version(struct igb_adapter *adapter)
 		}
 		fallthrough;
 	default:
-		/* if option is rom valid, display its version too */
+		/* if option rom is valid, display its version too */
 		if (fw.or_valid) {
 			snprintf(adapter->fw_version,
 				 sizeof(adapter->fw_version),
@@ -3103,14 +3078,14 @@ void igb_set_fw_version(struct igb_adapter *adapter)
 		/* no option rom */
 		} else if (fw.etrack_id != 0X0000) {
 			snprintf(adapter->fw_version,
-			    sizeof(adapter->fw_version),
-			    "%d.%d, 0x%08x",
-			    fw.eep_major, fw.eep_minor, fw.etrack_id);
+				 sizeof(adapter->fw_version),
+				 "%d.%d, 0x%08x",
+				 fw.eep_major, fw.eep_minor, fw.etrack_id);
 		} else {
-		snprintf(adapter->fw_version,
-		    sizeof(adapter->fw_version),
-		    "%d.%d.%d",
-		    fw.eep_major, fw.eep_minor, fw.eep_build);
+			snprintf(adapter->fw_version,
+				 sizeof(adapter->fw_version),
+				 "%d.%d.%d",
+				 fw.eep_major, fw.eep_minor, fw.eep_build);
 		}
 		break;
 	}
@@ -3272,7 +3247,7 @@ static int igb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	igb_set_ethtool_ops(netdev);
 	netdev->watchdog_timeo = 5 * HZ;
 
-	strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
+	strscpy(netdev->name, pci_name(pdev), sizeof(netdev->name));
 
 	netdev->mem_start = pci_resource_start(pdev, 0);
 	netdev->mem_end = pci_resource_end(pdev, 0);
@@ -6677,7 +6652,7 @@ static int igb_change_mtu(struct net_device *netdev, int new_mtu)
 
 	netdev_dbg(netdev, "changing MTU from %d to %d\n",
 		   netdev->mtu, new_mtu);
-	netdev->mtu = new_mtu;
+	WRITE_ONCE(netdev->mtu, new_mtu);
 
 	if (netif_running(netdev))
 		igb_up(adapter);
@@ -7863,8 +7838,8 @@ static int igb_set_vf_mac_filter(struct igb_adapter *adapter, const int vf,
 {
 	struct pci_dev *pdev = adapter->pdev;
 	struct vf_data_storage *vf_data = &adapter->vf_data[vf];
-	struct list_head *pos;
-	struct vf_mac_filter *entry = NULL;
+	struct vf_mac_filter *entry;
+	bool found = false;
 	int ret = 0;
 
 	if ((vf_data->flags & IGB_VF_FLAG_PF_SET_MAC) &&
@@ -7884,8 +7859,7 @@ static int igb_set_vf_mac_filter(struct igb_adapter *adapter, const int vf,
 	switch (info) {
 	case E1000_VF_MAC_FILTER_CLR:
 		/* remove all unicast MAC filters related to the current VF */
-		list_for_each(pos, &adapter->vf_macs.l) {
-			entry = list_entry(pos, struct vf_mac_filter, l);
+		list_for_each_entry(entry, &adapter->vf_macs.l, l) {
 			if (entry->vf == vf) {
 				entry->vf = -1;
 				entry->free = true;
@@ -7895,13 +7869,14 @@ static int igb_set_vf_mac_filter(struct igb_adapter *adapter, const int vf,
 		break;
 	case E1000_VF_MAC_FILTER_ADD:
 		/* try to find empty slot in the list */
-		list_for_each(pos, &adapter->vf_macs.l) {
-			entry = list_entry(pos, struct vf_mac_filter, l);
-			if (entry->free)
+		list_for_each_entry(entry, &adapter->vf_macs.l, l) {
+			if (entry->free) {
+				found = true;
 				break;
+			}
 		}
 
-		if (entry && entry->free) {
+		if (found) {
 			entry->free = false;
 			entry->vf = vf;
 			ether_addr_copy(entry->vf_mac, addr);
@@ -9187,6 +9162,10 @@ static int igb_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 			return -EIO;
 		break;
 	case SIOCSMIIREG:
+		if (igb_write_phy_reg(&adapter->hw, data->reg_num & 0x1F,
+				      data->val_in))
+			return -EIO;
+		break;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -9477,12 +9456,12 @@ static void igb_deliver_wake_packet(struct net_device *netdev)
 	netif_rx(skb);
 }
 
-static int __maybe_unused igb_suspend(struct device *dev)
+static int igb_suspend(struct device *dev)
 {
 	return __igb_shutdown(to_pci_dev(dev), NULL, 0);
 }
 
-static int __maybe_unused __igb_resume(struct device *dev, bool rpm)
+static int __igb_resume(struct device *dev, bool rpm)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct net_device *netdev = pci_get_drvdata(pdev);
@@ -9538,12 +9517,12 @@ static int __maybe_unused __igb_resume(struct device *dev, bool rpm)
 	return err;
 }
 
-static int __maybe_unused igb_resume(struct device *dev)
+static int igb_resume(struct device *dev)
 {
 	return __igb_resume(dev, false);
 }
 
-static int __maybe_unused igb_runtime_idle(struct device *dev)
+static int igb_runtime_idle(struct device *dev)
 {
 	struct net_device *netdev = dev_get_drvdata(dev);
 	struct igb_adapter *adapter = netdev_priv(netdev);
@@ -9554,12 +9533,12 @@ static int __maybe_unused igb_runtime_idle(struct device *dev)
 	return -EBUSY;
 }
 
-static int __maybe_unused igb_runtime_suspend(struct device *dev)
+static int igb_runtime_suspend(struct device *dev)
 {
 	return __igb_shutdown(to_pci_dev(dev), NULL, 1);
 }
 
-static int __maybe_unused igb_runtime_resume(struct device *dev)
+static int igb_runtime_resume(struct device *dev)
 {
 	return __igb_resume(dev, true);
 }
@@ -9826,8 +9805,7 @@ static void igb_set_vf_rate_limit(struct e1000_hw *hw, int vf, int tx_rate,
 			 tx_rate;
 
 		bcnrc_val = E1000_RTTBCNRC_RS_ENA;
-		bcnrc_val |= ((rf_int << E1000_RTTBCNRC_RF_INT_SHIFT) &
-			      E1000_RTTBCNRC_RF_INT_MASK);
+		bcnrc_val |= FIELD_PREP(E1000_RTTBCNRC_RF_INT_MASK, rf_int);
 		bcnrc_val |= (rf_dec & E1000_RTTBCNRC_RF_DEC_MASK);
 	} else {
 		bcnrc_val = 0;
@@ -10016,8 +9994,7 @@ static void igb_init_dmac(struct igb_adapter *adapter, u32 pba)
 			hwm = 64 * (pba - 6);
 			reg = rd32(E1000_FCRTC);
 			reg &= ~E1000_FCRTC_RTH_COAL_MASK;
-			reg |= ((hwm << E1000_FCRTC_RTH_COAL_SHIFT)
-				& E1000_FCRTC_RTH_COAL_MASK);
+			reg |= FIELD_PREP(E1000_FCRTC_RTH_COAL_MASK, hwm);
 			wr32(E1000_FCRTC, reg);
 
 			/* Set the DMA Coalescing Rx threshold to PBA - 2 * max
@@ -10026,8 +10003,7 @@ static void igb_init_dmac(struct igb_adapter *adapter, u32 pba)
 			dmac_thr = pba - 10;
 			reg = rd32(E1000_DMACR);
 			reg &= ~E1000_DMACR_DMACTHR_MASK;
-			reg |= ((dmac_thr << E1000_DMACR_DMACTHR_SHIFT)
-				& E1000_DMACR_DMACTHR_MASK);
+			reg |= FIELD_PREP(E1000_DMACR_DMACTHR_MASK, dmac_thr);
 
 			/* transition to L0x or L1 if available..*/
 			reg |= (E1000_DMACR_DMAC_EN | E1000_DMACR_DMAC_LX_MASK);
@@ -10188,4 +10164,20 @@ static void igb_nfc_filter_restore(struct igb_adapter *adapter)
 
 	spin_unlock(&adapter->nfc_lock);
 }
+
+static _DEFINE_DEV_PM_OPS(igb_pm_ops, igb_suspend, igb_resume,
+			  igb_runtime_suspend, igb_runtime_resume,
+			  igb_runtime_idle);
+
+static struct pci_driver igb_driver = {
+	.name     = igb_driver_name,
+	.id_table = igb_pci_tbl,
+	.probe    = igb_probe,
+	.remove   = igb_remove,
+	.driver.pm = pm_ptr(&igb_pm_ops),
+	.shutdown = igb_shutdown,
+	.sriov_configure = igb_pci_sriov_configure,
+	.err_handler = &igb_err_handler
+};
+
 /* igb_main.c */

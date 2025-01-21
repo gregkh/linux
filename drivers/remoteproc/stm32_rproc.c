@@ -712,9 +712,9 @@ static int stm32_rproc_parse_dt(struct platform_device *pdev,
 	unsigned int tzen;
 	int err, irq;
 
-	irq = platform_get_irq(pdev, 0);
+	irq = platform_get_irq_optional(pdev, 0);
 	if (irq == -EPROBE_DEFER)
-		return dev_err_probe(dev, irq, "failed to get interrupt\n");
+		return irq;
 
 	if (irq > 0) {
 		err = devm_request_irq(dev, irq, stm32_rproc_wdg, 0,
@@ -843,7 +843,7 @@ static int stm32_rproc_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	rproc = rproc_alloc(dev, np->name, &st_rproc_ops, NULL, sizeof(*ddata));
+	rproc = devm_rproc_alloc(dev, np->name, &st_rproc_ops, NULL, sizeof(*ddata));
 	if (!rproc)
 		return -ENOMEM;
 
@@ -897,7 +897,6 @@ free_rproc:
 		dev_pm_clear_wake_irq(dev);
 		device_init_wakeup(dev, false);
 	}
-	rproc_free(rproc);
 	return ret;
 }
 
@@ -918,7 +917,6 @@ static void stm32_rproc_remove(struct platform_device *pdev)
 		dev_pm_clear_wake_irq(dev);
 		device_init_wakeup(dev, false);
 	}
-	rproc_free(rproc);
 }
 
 static int stm32_rproc_suspend(struct device *dev)

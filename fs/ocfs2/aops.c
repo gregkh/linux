@@ -388,21 +388,18 @@ out_unlock:
 /* Note: Because we don't support holes, our allocation has
  * already happened (allocation writes zeros to the file data)
  * so we don't have to worry about ordered writes in
- * ocfs2_writepage.
+ * ocfs2_writepages.
  *
- * ->writepage is called during the process of invalidating the page cache
+ * ->writepages is called during the process of invalidating the page cache
  * during blocked lock processing.  It can't block on any cluster locks
  * to during block mapping.  It's relying on the fact that the block
  * mapping can't have disappeared under the dirty pages that it is
  * being asked to write back.
  */
-static int ocfs2_writepage(struct page *page, struct writeback_control *wbc)
+static int ocfs2_writepages(struct address_space *mapping,
+		struct writeback_control *wbc)
 {
-	trace_ocfs2_writepage(
-		(unsigned long long)OCFS2_I(page->mapping->host)->ip_blkno,
-		page->index);
-
-	return block_write_full_page(page, ocfs2_get_block, wbc);
+	return mpage_writepages(mapping, wbc, ocfs2_get_block);
 }
 
 /* Taken from ext3. We don't necessarily need the full blown
@@ -567,10 +564,10 @@ static void ocfs2_clear_page_regions(struct page *page,
  * read-in the blocks at the tail of our file. Avoid reading them by
  * testing i_size against each block offset.
  */
-static int ocfs2_should_read_blk(struct inode *inode, struct page *page,
+static int ocfs2_should_read_blk(struct inode *inode, struct folio *folio,
 				 unsigned int block_start)
 {
-	u64 offset = page_offset(page) + block_start;
+	u64 offset = folio_pos(folio) + block_start;
 
 	if (ocfs2_sparse_alloc(OCFS2_SB(inode->i_sb)))
 		return 1;
@@ -592,15 +589,16 @@ int ocfs2_map_page_blocks(struct page *page, u64 *p_blkno,
 			  struct inode *inode, unsigned int from,
 			  unsigned int to, int new)
 {
+	struct folio *folio = page_folio(page);
 	int ret = 0;
 	struct buffer_head *head, *bh, *wait[2], **wait_bh = wait;
 	unsigned int block_end, block_start;
 	unsigned int bsize = i_blocksize(inode);
 
-	if (!page_has_buffers(page))
-		create_empty_buffers(page, bsize, 0);
+	head = folio_buffers(folio);
+	if (!head)
+		head = create_empty_buffers(folio, bsize, 0);
 
-	head = page_buffers(page);
 	for (bh = head, block_start = 0; bh != head || !block_start;
 	     bh = bh->b_this_page, block_start += bsize) {
 		block_end = block_start + bsize;
@@ -612,7 +610,7 @@ int ocfs2_map_page_blocks(struct page *page, u64 *p_blkno,
 		 * they may belong to unallocated clusters.
 		 */
 		if (block_start >= to || block_end <= from) {
-			if (PageUptodate(page))
+			if (folio_test_uptodate(folio))
 				set_buffer_uptodate(bh);
 			continue;
 		}
@@ -629,11 +627,11 @@ int ocfs2_map_page_blocks(struct page *page, u64 *p_blkno,
 			clean_bdev_bh_alias(bh);
 		}
 
-		if (PageUptodate(page)) {
+		if (folio_test_uptodate(folio)) {
 			set_buffer_uptodate(bh);
 		} else if (!buffer_uptodate(bh) && !buffer_delay(bh) &&
 			   !buffer_new(bh) &&
-			   ocfs2_should_read_blk(inode, page, block_start) &&
+			   ocfs2_should_read_blk(inode, folio, block_start) &&
 			   (block_start < from || block_end > to)) {
 			bh_read_nowait(bh, 0);
 			*wait_bh++=bh;
@@ -667,7 +665,7 @@ int ocfs2_map_page_blocks(struct page *page, u64 *p_blkno,
 		if (block_start >= to)
 			break;
 
-		zero_user(page, block_start, bh->b_size);
+		folio_zero_range(folio, block_start, bh->b_size);
 		set_buffer_uptodate(bh);
 		mark_buffer_dirty(bh);
 
@@ -1188,7 +1186,7 @@ static int ocfs2_write_cluster(struct address_space *mapping,
 
 		/* This is the direct io target page. */
 		if (wc->w_pages[i] == NULL) {
-			p_blkno++;
+			p_blkno += (1 << (PAGE_SHIFT - inode->i_sb->s_blocksize_bits));
 			continue;
 		}
 
@@ -1644,7 +1642,7 @@ static int ocfs2_zero_tail(struct inode *inode, struct buffer_head *di_bh,
 
 int ocfs2_write_begin_nolock(struct address_space *mapping,
 			     loff_t pos, unsigned len, ocfs2_write_type_t type,
-			     struct page **pagep, void **fsdata,
+			     struct folio **foliop, void **fsdata,
 			     struct buffer_head *di_bh, struct page *mmap_page)
 {
 	int ret, cluster_of_pages, credits = OCFS2_INODE_UPDATE_CREDITS;
@@ -1827,8 +1825,8 @@ try_again:
 		ocfs2_free_alloc_context(meta_ac);
 
 success:
-	if (pagep)
-		*pagep = wc->w_target_page;
+	if (foliop)
+		*foliop = page_folio(wc->w_target_page);
 	*fsdata = wc;
 	return 0;
 out_quota:
@@ -1880,7 +1878,7 @@ out:
 
 static int ocfs2_write_begin(struct file *file, struct address_space *mapping,
 			     loff_t pos, unsigned len,
-			     struct page **pagep, void **fsdata)
+			     struct folio **foliop, void **fsdata)
 {
 	int ret;
 	struct buffer_head *di_bh = NULL;
@@ -1902,7 +1900,7 @@ static int ocfs2_write_begin(struct file *file, struct address_space *mapping,
 	down_write(&OCFS2_I(inode)->ip_alloc_sem);
 
 	ret = ocfs2_write_begin_nolock(mapping, pos, len, OCFS2_WRITE_BUFFER,
-				       pagep, fsdata, di_bh, NULL);
+				       foliop, fsdata, di_bh, NULL);
 	if (ret) {
 		mlog_errno(ret);
 		goto out_fail;
@@ -2077,7 +2075,7 @@ out:
 
 static int ocfs2_write_end(struct file *file, struct address_space *mapping,
 			   loff_t pos, unsigned len, unsigned copied,
-			   struct page *page, void *fsdata)
+			   struct folio *folio, void *fsdata)
 {
 	int ret;
 	struct inode *inode = mapping->host;
@@ -2284,8 +2282,6 @@ unlock:
 	ocfs2_inode_unlock(inode, 1);
 	brelse(di_bh);
 out:
-	if (ret < 0)
-		ret = -EIO;
 	return ret;
 }
 
@@ -2474,7 +2470,7 @@ const struct address_space_operations ocfs2_aops = {
 	.dirty_folio		= block_dirty_folio,
 	.read_folio		= ocfs2_read_folio,
 	.readahead		= ocfs2_readahead,
-	.writepage		= ocfs2_writepage,
+	.writepages		= ocfs2_writepages,
 	.write_begin		= ocfs2_write_begin,
 	.write_end		= ocfs2_write_end,
 	.bmap			= ocfs2_bmap,
@@ -2483,5 +2479,5 @@ const struct address_space_operations ocfs2_aops = {
 	.release_folio		= ocfs2_release_folio,
 	.migrate_folio		= buffer_migrate_folio,
 	.is_partially_uptodate	= block_is_partially_uptodate,
-	.error_remove_page	= generic_error_remove_page,
+	.error_remove_folio	= generic_error_remove_folio,
 };

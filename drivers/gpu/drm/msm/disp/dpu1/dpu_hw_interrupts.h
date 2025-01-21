@@ -36,9 +36,9 @@ enum dpu_hw_intr_reg {
 
 #define MDP_INTFn_INTR(intf)	(MDP_INTF0_INTR + (intf - INTF_0))
 
-#define DPU_IRQ_IDX(reg_idx, offset)	(reg_idx * 32 + offset)
-#define DPU_IRQ_REG(irq_idx)	(irq_idx / 32)
-#define DPU_IRQ_BIT(irq_idx)	(irq_idx % 32)
+#define DPU_IRQ_IDX(reg_idx, offset)	(1 + reg_idx * 32 + offset)
+#define DPU_IRQ_REG(irq_idx)	((irq_idx - 1) / 32)
+#define DPU_IRQ_BIT(irq_idx)	((irq_idx - 1) % 32)
 
 #define DPU_NUM_IRQS		(MDP_INTR_MAX * 32)
 
@@ -70,15 +70,12 @@ struct dpu_hw_intr {
 
 /**
  * dpu_hw_intr_init(): Initializes the interrupts hw object
+ * @dev:  Corresponding device for devres management
  * @addr: mapped register io address of MDP
  * @m:    pointer to MDSS catalog data
  */
-struct dpu_hw_intr *dpu_hw_intr_init(void __iomem *addr,
-		const struct dpu_mdss_cfg *m);
+struct dpu_hw_intr *dpu_hw_intr_init(struct drm_device *dev,
+				     void __iomem *addr,
+				     const struct dpu_mdss_cfg *m);
 
-/**
- * dpu_hw_intr_destroy(): Cleanup interrutps hw object
- * @intr: pointer to interrupts hw object
- */
-void dpu_hw_intr_destroy(struct dpu_hw_intr *intr);
 #endif

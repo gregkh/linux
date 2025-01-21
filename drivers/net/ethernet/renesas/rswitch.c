@@ -17,6 +17,7 @@
 #include <linux/of_net.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/pm_runtime.h>
 #include <linux/rtnetlink.h>
 #include <linux/slab.h>
@@ -666,6 +667,8 @@ static int rswitch_gwca_hw_init(struct rswitch_private *priv)
 	iowrite32(upper_32_bits(priv->gwca.linkfix_table_dma), priv->addr + GWDCBAC0);
 	iowrite32(lower_32_bits(priv->gwca.ts_queue.ring_dma), priv->addr + GWTDCAC10);
 	iowrite32(upper_32_bits(priv->gwca.ts_queue.ring_dma), priv->addr + GWTDCAC00);
+	iowrite32(GWMDNC_TSDMN(1) | GWMDNC_TXDMN(0x1e) | GWMDNC_RXDMN(0x1f),
+		  priv->addr + GWMDNC);
 	iowrite32(GWCA_TS_IRQ_BIT, priv->addr + GWTSDCC0);
 
 	iowrite32(GWTPC_PPPL(GWCA_IPV_NUM), priv->addr + GWTPC0);
@@ -710,6 +713,80 @@ static int rswitch_gwca_halt(struct rswitch_private *priv)
 	return err;
 }
 
+static struct sk_buff *rswitch_rx_handle_desc(struct net_device *ndev,
+					      struct rswitch_gwca_queue *gq,
+					      struct rswitch_ext_ts_desc *desc)
+{
+	dma_addr_t dma_addr = rswitch_desc_get_dptr(&desc->desc);
+	u16 pkt_len = le16_to_cpu(desc->desc.info_ds) & RX_DS;
+	u8 die_dt = desc->desc.die_dt & DT_MASK;
+	struct sk_buff *skb = NULL;
+
+	dma_unmap_single(ndev->dev.parent, dma_addr, RSWITCH_MAP_BUF_SIZE,
+			 DMA_FROM_DEVICE);
+
+	/* The RX descriptor order will be one of the following:
+	 * - FSINGLE
+	 * - FSTART -> FEND
+	 * - FSTART -> FMID -> FEND
+	 */
+
+	/* Check whether the descriptor is unexpected order */
+	switch (die_dt) {
+	case DT_FSTART:
+	case DT_FSINGLE:
+		if (gq->skb_fstart) {
+			dev_kfree_skb_any(gq->skb_fstart);
+			gq->skb_fstart = NULL;
+			ndev->stats.rx_dropped++;
+		}
+		break;
+	case DT_FMID:
+	case DT_FEND:
+		if (!gq->skb_fstart) {
+			ndev->stats.rx_dropped++;
+			return NULL;
+		}
+		break;
+	default:
+		break;
+	}
+
+	/* Handle the descriptor */
+	switch (die_dt) {
+	case DT_FSTART:
+	case DT_FSINGLE:
+		skb = build_skb(gq->rx_bufs[gq->cur], RSWITCH_BUF_SIZE);
+		if (skb) {
+			skb_reserve(skb, RSWITCH_HEADROOM);
+			skb_put(skb, pkt_len);
+			gq->pkt_len = pkt_len;
+			if (die_dt == DT_FSTART) {
+				gq->skb_fstart = skb;
+				skb = NULL;
+			}
+		}
+		break;
+	case DT_FMID:
+	case DT_FEND:
+		skb_add_rx_frag(gq->skb_fstart, skb_shinfo(gq->skb_fstart)->nr_frags,
+				virt_to_page(gq->rx_bufs[gq->cur]),
+				offset_in_page(gq->rx_bufs[gq->cur]) + RSWITCH_HEADROOM,
+				pkt_len, RSWITCH_BUF_SIZE);
+		if (die_dt == DT_FEND) {
+			skb = gq->skb_fstart;
+			gq->skb_fstart = NULL;
+		}
+		gq->pkt_len += pkt_len;
+		break;
+	default:
+		netdev_err(ndev, "%s: unexpected value (%x)\n", __func__, die_dt);
+		break;
+	}
+
+	return skb;
+}
+
 static bool rswitch_rx(struct net_device *ndev, int *quota)
 {
 	struct rswitch_device *rdev = netdev_priv(ndev);
@@ -717,9 +794,7 @@ static bool rswitch_rx(struct net_device *ndev, int *quota)
 	struct rswitch_ext_ts_desc *desc;
 	int limit, boguscnt, ret;
 	struct sk_buff *skb;
-	dma_addr_t dma_addr;
 	unsigned int num;
-	u16 pkt_len;
 	u32 get_ts;
 
 	if (*quota <= 0)
@@ -731,15 +806,9 @@ static bool rswitch_rx(struct net_device *ndev, int *quota)
 	desc = &gq->rx_ring[gq->cur];
 	while ((desc->desc.die_dt & DT_MASK) != DT_FEMPTY) {
 		dma_rmb();
-		pkt_len = le16_to_cpu(desc->desc.info_ds) & RX_DS;
-		dma_addr = rswitch_desc_get_dptr(&desc->desc);
-		dma_unmap_single(ndev->dev.parent, dma_addr,
-				 RSWITCH_MAP_BUF_SIZE, DMA_FROM_DEVICE);
-		skb = build_skb(gq->rx_bufs[gq->cur], RSWITCH_BUF_SIZE);
+		skb = rswitch_rx_handle_desc(ndev, gq, desc);
 		if (!skb)
 			goto out;
-		skb_reserve(skb, RSWITCH_HEADROOM);
-		skb_put(skb, pkt_len);
 
 		get_ts = rdev->priv->ptp_priv->tstamp_rx_ctrl & RCAR_GEN4_RXTSTAMP_TYPE_V2_L2_EVENT;
 		if (get_ts) {
@@ -755,7 +824,7 @@ static bool rswitch_rx(struct net_device *ndev, int *quota)
 		skb->protocol = eth_type_trans(skb, ndev);
 		napi_gro_receive(&rdev->napi, skb);
 		rdev->ndev->stats.rx_packets++;
-		rdev->ndev->stats.rx_bytes += pkt_len;
+		rdev->ndev->stats.rx_bytes += gq->pkt_len;
 
 out:
 		gq->rx_bufs[gq->cur] = NULL;
@@ -1356,6 +1425,7 @@ static int rswitch_phy_device_init(struct rswitch_device *rdev)
 	if (!phydev)
 		goto out;
 	__set_bit(rdev->etha->phy_interface, phydev->host_interfaces);
+	phydev->mac_managed_pm = true;
 
 	phydev = of_phy_connect(rdev->ndev, phy, rswitch_adjust_link, 0,
 				rdev->etha->phy_interface);
@@ -1446,7 +1516,8 @@ static void rswitch_ether_port_deinit_one(struct rswitch_device *rdev)
 
 static int rswitch_ether_port_init_all(struct rswitch_private *priv)
 {
-	int i, err;
+	unsigned int i;
+	int err;
 
 	rswitch_for_each_enabled_port(priv, i) {
 		err = rswitch_ether_port_init_one(priv->rdev[i]);
@@ -1762,14 +1833,12 @@ static const struct net_device_ops rswitch_netdev_ops = {
 	.ndo_set_mac_address = eth_mac_addr,
 };
 
-static int rswitch_get_ts_info(struct net_device *ndev, struct ethtool_ts_info *info)
+static int rswitch_get_ts_info(struct net_device *ndev, struct kernel_ethtool_ts_info *info)
 {
 	struct rswitch_device *rdev = netdev_priv(ndev);
 
 	info->phc_index = ptp_clock_index(rdev->priv->ptp_priv->clock);
 	info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
-				SOF_TIMESTAMPING_RX_SOFTWARE |
-				SOF_TIMESTAMPING_SOFTWARE |
 				SOF_TIMESTAMPING_TX_HARDWARE |
 				SOF_TIMESTAMPING_RX_HARDWARE |
 				SOF_TIMESTAMPING_RAW_HARDWARE;
@@ -1836,6 +1905,8 @@ static int rswitch_device_alloc(struct rswitch_private *priv, unsigned int index
 	snprintf(ndev->name, IFNAMSIZ, "tsn%d", index);
 	ndev->netdev_ops = &rswitch_netdev_ops;
 	ndev->ethtool_ops = &rswitch_ethtool_ops;
+	ndev->max_mtu = RSWITCH_MAX_MTU;
+	ndev->min_mtu = ETH_MIN_MTU;
 
 	netif_napi_add(ndev, &rdev->napi, rswitch_poll);
 
@@ -1892,7 +1963,8 @@ static void rswitch_device_free(struct rswitch_private *priv, unsigned int index
 
 static int rswitch_init(struct rswitch_private *priv)
 {
-	int i, err;
+	unsigned int i;
+	int err;
 
 	for (i = 0; i < RSWITCH_NUM_PORTS; i++)
 		rswitch_etha_init(priv, i);
@@ -1922,7 +1994,7 @@ static int rswitch_init(struct rswitch_private *priv)
 	for (i = 0; i < RSWITCH_NUM_PORTS; i++) {
 		err = rswitch_device_alloc(priv, i);
 		if (err < 0) {
-			for (i--; i >= 0; i--)
+			for (; i-- > 0; )
 				rswitch_device_free(priv, i);
 			goto err_device_alloc;
 		}
@@ -1930,8 +2002,8 @@ static int rswitch_init(struct rswitch_private *priv)
 
 	rswitch_fwd_init(priv);
 
-	err = rcar_gen4_ptp_register(priv->ptp_priv, RCAR_GEN4_PTP_REG_LAYOUT_S4,
-				     RCAR_GEN4_PTP_CLOCK_S4);
+	err = rcar_gen4_ptp_register(priv->ptp_priv, RCAR_GEN4_PTP_REG_LAYOUT,
+				     clk_get_rate(priv->clk));
 	if (err < 0)
 		goto err_ptp_register;
 
@@ -2065,7 +2137,7 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 
 static void rswitch_deinit(struct rswitch_private *priv)
 {
-	int i;
+	unsigned int i;
 
 	rswitch_gwca_hw_deinit(priv);
 	rcar_gen4_ptp_unregister(priv->ptp_priv);
@@ -2087,7 +2159,7 @@ static void rswitch_deinit(struct rswitch_private *priv)
 	rswitch_clock_disable(priv);
 }
 
-static int renesas_eth_sw_remove(struct platform_device *pdev)
+static void renesas_eth_sw_remove(struct platform_device *pdev)
 {
 	struct rswitch_private *priv = platform_get_drvdata(pdev);
 
@@ -2097,15 +2169,54 @@ static int renesas_eth_sw_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	platform_set_drvdata(pdev, NULL);
+}
+
+static int renesas_eth_sw_suspend(struct device *dev)
+{
+	struct rswitch_private *priv = dev_get_drvdata(dev);
+	struct net_device *ndev;
+	unsigned int i;
+
+	rswitch_for_each_enabled_port(priv, i) {
+		ndev = priv->rdev[i]->ndev;
+		if (netif_running(ndev)) {
+			netif_device_detach(ndev);
+			rswitch_stop(ndev);
+		}
+		if (priv->rdev[i]->serdes->init_count)
+			phy_exit(priv->rdev[i]->serdes);
+	}
 
 	return 0;
 }
 
+static int renesas_eth_sw_resume(struct device *dev)
+{
+	struct rswitch_private *priv = dev_get_drvdata(dev);
+	struct net_device *ndev;
+	unsigned int i;
+
+	rswitch_for_each_enabled_port(priv, i) {
+		phy_init(priv->rdev[i]->serdes);
+		ndev = priv->rdev[i]->ndev;
+		if (netif_running(ndev)) {
+			rswitch_open(ndev);
+			netif_device_attach(ndev);
+		}
+	}
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(renesas_eth_sw_pm_ops, renesas_eth_sw_suspend,
+				renesas_eth_sw_resume);
+
 static struct platform_driver renesas_eth_sw_driver_platform = {
 	.probe = renesas_eth_sw_probe,
-	.remove = renesas_eth_sw_remove,
+	.remove_new = renesas_eth_sw_remove,
 	.driver = {
 		.name = "renesas_eth_sw",
+		.pm = pm_sleep_ptr(&renesas_eth_sw_pm_ops),
 		.of_match_table = renesas_eth_sw_of_table,
 	}
 };

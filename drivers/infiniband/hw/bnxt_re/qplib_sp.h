@@ -110,7 +110,7 @@ struct bnxt_qplib_ah {
 struct bnxt_qplib_mrw {
 	struct bnxt_qplib_pd		*pd;
 	int				type;
-	u32				flags;
+	u32				access_flags;
 #define BNXT_QPLIB_FR_PMR		0x80000000
 	u32				lkey;
 	u32				rkey;
@@ -118,6 +118,7 @@ struct bnxt_qplib_mrw {
 	u64				va;
 	u64				total_size;
 	u32				npages;
+	u16				flags;
 	u64				mr_handle;
 	struct bnxt_qplib_hwq		hwq;
 };

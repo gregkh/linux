@@ -39,7 +39,7 @@ static DEFINE_PER_CPU(struct kprobe, saved_next_opcode2);
 
 int __kprobes arch_prepare_kprobe(struct kprobe *p)
 {
-	kprobe_opcode_t opcode = *(kprobe_opcode_t *) (p->addr);
+	kprobe_opcode_t opcode = *p->addr;
 
 	if (OPCODE_RTE(opcode))
 		return -EFAULT;	/* Bad breakpoint */
@@ -248,7 +248,7 @@ static int __kprobes kprobe_handler(struct pt_regs *regs)
 	p = get_kprobe(addr);
 	if (!p) {
 		/* Not one of ours: let kernel handle it */
-		if (*(kprobe_opcode_t *)addr != BREAKPOINT_INSTRUCTION) {
+		if (*addr != BREAKPOINT_INSTRUCTION) {
 			/*
 			 * The breakpoint instruction was removed right
 			 * after we hit it. Another cpu has removed
@@ -296,7 +296,7 @@ static void __used kretprobe_trampoline_holder(void)
 /*
  * Called when we hit the probe point at __kretprobe_trampoline
  */
-int __kprobes trampoline_probe_handler(struct kprobe *p, struct pt_regs *regs)
+static int __kprobes trampoline_probe_handler(struct kprobe *p, struct pt_regs *regs)
 {
 	regs->pc = __kretprobe_trampoline_handler(regs, NULL);
 

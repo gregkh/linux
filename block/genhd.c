@@ -342,7 +342,7 @@ EXPORT_SYMBOL_GPL(disk_uevent);
 
 int disk_scan_partitions(struct gendisk *disk, blk_mode_t mode)
 {
-	struct block_device *bdev;
+	struct file *file;
 	int ret = 0;
 
 	if (!disk_has_partscan(disk))
@@ -364,12 +364,12 @@ int disk_scan_partitions(struct gendisk *disk, blk_mode_t mode)
 	}
 
 	set_bit(GD_NEED_PART_SCAN, &disk->state);
-	bdev = blkdev_get_by_dev(disk_devt(disk), mode & ~BLK_OPEN_EXCL, NULL,
-				 NULL);
-	if (IS_ERR(bdev))
-		ret =  PTR_ERR(bdev);
+	file = bdev_file_open_by_dev(disk_devt(disk), mode & ~BLK_OPEN_EXCL,
+				     NULL, NULL);
+	if (IS_ERR(file))
+		ret = PTR_ERR(file);
 	else
-		blkdev_put(bdev, NULL);
+		fput(file);
 
 	/*
 	 * If blkdev_get_by_dev() failed early, GD_NEED_PART_SCAN is still set,
@@ -411,7 +411,8 @@ int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
 	elevator_init_mq(disk->queue);
 
 	/* Mark bdev as having a submit_bio, if needed */
-	disk->part0->bd_has_submit_bio = disk->fops->submit_bio != NULL;
+	if (disk->fops->submit_bio)
+		bdev_set_flag(disk->part0, BD_HAS_SUBMIT_BIO);
 
 	/*
 	 * If the driver provides an explicit major number it also must provide
@@ -523,7 +524,7 @@ int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
 		disk->part0->bd_dev = MKDEV(disk->major, disk->first_minor);
 	}
 
-	disk_update_readahead(disk);
+	blk_apply_bdi_limits(disk->bdi, &disk->queue->limits);
 	disk_add_events(disk);
 	set_bit(GD_ADDED, &disk->state);
 	return 0;
@@ -559,6 +560,13 @@ static void blk_report_disk_dead(struct gendisk *disk, bool surprise)
 	struct block_device *bdev;
 	unsigned long idx;
 
+	/*
+	 * On surprise disk removal, bdev_mark_dead() may call into file
+	 * systems below. Make it clear that we're expecting to not hold
+	 * disk->open_mutex.
+	 */
+	lockdep_assert_not_held(&disk->open_mutex);
+
 	rcu_read_lock();
 	xa_for_each(&disk->part_tbl, idx, bdev) {
 		if (!kobject_get_unless_zero(&bdev->bd_device.kobj))
@@ -573,13 +581,13 @@ static void blk_report_disk_dead(struct gendisk *disk, bool surprise)
 	rcu_read_unlock();
 }
 
-static void __blk_mark_disk_dead(struct gendisk *disk)
+static bool __blk_mark_disk_dead(struct gendisk *disk)
 {
 	/*
 	 * Fail any new I/O.
 	 */
 	if (test_and_set_bit(GD_DEAD, &disk->state))
-		return;
+		return false;
 
 	if (test_bit(GD_OWNS_QUEUE, &disk->state))
 		blk_queue_flag_set(QUEUE_FLAG_DYING, disk->queue);
@@ -592,7 +600,7 @@ static void __blk_mark_disk_dead(struct gendisk *disk)
 	/*
 	 * Prevent new I/O from crossing bio_queue_enter().
 	 */
-	blk_queue_start_drain(disk->queue);
+	return blk_queue_start_drain(disk->queue);
 }
 
 /**
@@ -633,6 +641,7 @@ void del_gendisk(struct gendisk *disk)
 	struct request_queue *q = disk->queue;
 	struct block_device *part;
 	unsigned long idx;
+	bool start_drain, queue_dying;
 
 	might_sleep();
 
@@ -646,7 +655,7 @@ void del_gendisk(struct gendisk *disk)
 	 */
 	mutex_lock(&disk->open_mutex);
 	xa_for_each(&disk->part_tbl, idx, part)
-		remove_inode_hash(part->bd_inode);
+		bdev_unhash(part);
 	mutex_unlock(&disk->open_mutex);
 
 	/*
@@ -660,7 +669,10 @@ void del_gendisk(struct gendisk *disk)
 	 * Drop all partitions now that the disk is marked dead.
 	 */
 	mutex_lock(&disk->open_mutex);
-	__blk_mark_disk_dead(disk);
+	start_drain = __blk_mark_disk_dead(disk);
+	queue_dying = blk_queue_dying(q);
+	if (start_drain)
+		blk_freeze_acquire_lock(q, true, queue_dying);
 	xa_for_each_start(&disk->part_tbl, idx, part, 1)
 		drop_partition(part);
 	mutex_unlock(&disk->open_mutex);
@@ -710,13 +722,13 @@ void del_gendisk(struct gendisk *disk)
 	 * If the disk does not own the queue, allow using passthrough requests
 	 * again.  Else leave the queue frozen to fail all I/O.
 	 */
-	if (!test_bit(GD_OWNS_QUEUE, &disk->state)) {
-		blk_queue_flag_clear(QUEUE_FLAG_INIT_DONE, q);
+	if (!test_bit(GD_OWNS_QUEUE, &disk->state))
 		__blk_mq_unfreeze_queue(q, true);
-	} else {
-		if (queue_is_mq(q))
-			blk_mq_exit_queue(q);
-	}
+	else if (queue_is_mq(q))
+		blk_mq_exit_queue(q);
+
+	if (start_drain)
+		blk_unfreeze_release_lock(q, true, queue_dying);
 }
 EXPORT_SYMBOL(del_gendisk);
 
@@ -735,7 +747,7 @@ void invalidate_disk(struct gendisk *disk)
 	struct block_device *bdev = disk->part0;
 
 	invalidate_bdev(bdev);
-	bdev->bd_inode->i_mapping->wb_err = 0;
+	bdev->bd_mapping->wb_err = 0;
 	set_capacity(disk, 0);
 }
 EXPORT_SYMBOL(invalidate_disk);
@@ -944,15 +956,10 @@ ssize_t part_stat_show(struct device *dev,
 		       struct device_attribute *attr, char *buf)
 {
 	struct block_device *bdev = dev_to_bdev(dev);
-	struct request_queue *q = bdev_get_queue(bdev);
 	struct disk_stats stat;
 	unsigned int inflight;
 
-	if (queue_is_mq(q))
-		inflight = blk_mq_in_flight(q, bdev);
-	else
-		inflight = part_in_flight(bdev);
-
+	inflight = part_in_flight(bdev);
 	if (inflight) {
 		part_stat_lock();
 		update_io_ticks(bdev, jiffies, true);
@@ -1062,7 +1069,8 @@ static DEVICE_ATTR(partscan, 0444, partscan_show, NULL);
 ssize_t part_fail_show(struct device *dev,
 		       struct device_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%d\n", dev_to_bdev(dev)->bd_make_it_fail);
+	return sprintf(buf, "%d\n",
+		       bdev_test_flag(dev_to_bdev(dev), BD_MAKE_IT_FAIL));
 }
 
 ssize_t part_fail_store(struct device *dev,
@@ -1071,9 +1079,12 @@ ssize_t part_fail_store(struct device *dev,
 {
 	int i;
 
-	if (count > 0 && sscanf(buf, "%d", &i) > 0)
-		dev_to_bdev(dev)->bd_make_it_fail = i;
-
+	if (count > 0 && sscanf(buf, "%d", &i) > 0) {
+		if (i)
+			bdev_set_flag(dev_to_bdev(dev), BD_MAKE_IT_FAIL);
+		else
+			bdev_clear_flag(dev_to_bdev(dev), BD_MAKE_IT_FAIL);
+	}
 	return count;
 }
 
@@ -1180,7 +1191,7 @@ static void disk_release(struct device *dev)
 
 	disk_release_events(disk);
 	kfree(disk->random);
-	disk_free_zone_bitmaps(disk);
+	disk_free_zone_resources(disk);
 	xa_destroy(&disk->part_tbl);
 
 	disk->queue->disk = NULL;
@@ -1189,7 +1200,7 @@ static void disk_release(struct device *dev)
 	if (test_bit(GD_ADDED, &disk->state) && disk->fops->free_disk)
 		disk->fops->free_disk(disk);
 
-	iput(disk->part0->bd_inode);	/* frees the disk */
+	bdev_drop(disk->part0);	/* frees the disk */
 }
 
 static int block_uevent(const struct device *dev, struct kobj_uevent_env *env)
@@ -1199,7 +1210,7 @@ static int block_uevent(const struct device *dev, struct kobj_uevent_env *env)
 	return add_uevent_var(env, "DISKSEQ=%llu", disk->diskseq);
 }
 
-struct class block_class = {
+const struct class block_class = {
 	.name		= "block",
 	.dev_uevent	= block_uevent,
 };
@@ -1249,11 +1260,8 @@ static int diskstats_show(struct seq_file *seqf, void *v)
 	xa_for_each(&gp->part_tbl, idx, hd) {
 		if (bdev_is_partition(hd) && !bdev_nr_sectors(hd))
 			continue;
-		if (queue_is_mq(gp->queue))
-			inflight = blk_mq_in_flight(gp->queue, hd);
-		else
-			inflight = part_in_flight(hd);
 
+		inflight = part_in_flight(hd);
 		if (inflight) {
 			part_stat_lock();
 			update_io_ticks(hd, jiffies, true);
@@ -1362,6 +1370,7 @@ struct gendisk *__alloc_disk_node(struct request_queue *q, int node_id,
 	if (blkcg_init_disk(disk))
 		goto out_erase_part0;
 
+	disk_init_zone_resources(disk);
 	rand_initialize_disk(disk);
 	disk_to_dev(disk)->class = &block_class;
 	disk_to_dev(disk)->type = &disk_type;
@@ -1379,7 +1388,7 @@ out_erase_part0:
 out_destroy_part_tbl:
 	xa_destroy(&disk->part_tbl);
 	disk->part0->bd_disk = NULL;
-	iput(disk->part0->bd_inode);
+	bdev_drop(disk->part0);
 out_free_bdi:
 	bdi_put(disk->bdi);
 out_free_bioset:
@@ -1389,19 +1398,21 @@ out_free_disk:
 	return NULL;
 }
 
-struct gendisk *__blk_alloc_disk(int node, struct lock_class_key *lkclass)
+struct gendisk *__blk_alloc_disk(struct queue_limits *lim, int node,
+		struct lock_class_key *lkclass)
 {
+	struct queue_limits default_lim = { };
 	struct request_queue *q;
 	struct gendisk *disk;
 
-	q = blk_alloc_queue(node);
-	if (!q)
-		return NULL;
+	q = blk_alloc_queue(lim ? lim : &default_lim, node);
+	if (IS_ERR(q))
+		return ERR_CAST(q);
 
 	disk = __alloc_disk_node(q, node, lkclass);
 	if (!disk) {
 		blk_put_queue(q);
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 	}
 	set_bit(GD_OWNS_QUEUE, &disk->state);
 	return disk;

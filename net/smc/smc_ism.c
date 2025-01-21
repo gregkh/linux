@@ -43,6 +43,27 @@ static struct ism_client smc_ism_client = {
 };
 #endif
 
+static void smc_ism_create_system_eid(void)
+{
+	struct smc_ism_seid *seid =
+		(struct smc_ism_seid *)smc_ism_v2_system_eid;
+#if IS_ENABLED(CONFIG_S390)
+	struct cpuid id;
+	u16 ident_tail;
+	char tmp[5];
+
+	memcpy(seid->seid_string, "IBM-SYSZ-ISMSEID00000000", 24);
+	get_cpu_id(&id);
+	ident_tail = (u16)(id.ident & SMC_ISM_IDENT_MASK);
+	snprintf(tmp, 5, "%04X", ident_tail);
+	memcpy(seid->serial_number, tmp, 4);
+	snprintf(tmp, 5, "%04X", id.machine);
+	memcpy(seid->type, tmp, 4);
+#else
+	memset(seid, 0, SMC_MAX_EID_LEN);
+#endif
+}
+
 /* Test if an ISM communication is possible - same CPC */
 int smc_ism_cantalk(struct smcd_gid *peer_gid, unsigned short vlan_id,
 		    struct smcd_dev *smcd)
@@ -68,6 +89,11 @@ u16 smc_ism_get_chid(struct smcd_dev *smcd)
 bool smc_ism_is_v2_capable(void)
 {
 	return smc_ism_v2_capable;
+}
+
+void smc_ism_set_v2_capable(void)
+{
+	smc_ism_v2_capable = true;
 }
 
 /* Set a connection using this DMBE. */
@@ -205,7 +231,6 @@ int smc_ism_unregister_dmb(struct smcd_dev *smcd, struct smc_buf_desc *dmb_desc)
 int smc_ism_register_dmb(struct smc_link_group *lgr, int dmb_len,
 			 struct smc_buf_desc *dmb_desc)
 {
-#if IS_ENABLED(CONFIG_ISM)
 	struct smcd_dmb dmb;
 	int rc;
 
@@ -214,7 +239,7 @@ int smc_ism_register_dmb(struct smc_link_group *lgr, int dmb_len,
 	dmb.sba_idx = dmb_desc->sba_idx;
 	dmb.vlan_id = lgr->vlan_id;
 	dmb.rgid = lgr->peer_gid.gid;
-	rc = lgr->smcd->ops->register_dmb(lgr->smcd, &dmb, &smc_ism_client);
+	rc = lgr->smcd->ops->register_dmb(lgr->smcd, &dmb, lgr->smcd->client);
 	if (!rc) {
 		dmb_desc->sba_idx = dmb.sba_idx;
 		dmb_desc->token = dmb.dmb_tok;
@@ -223,9 +248,6 @@ int smc_ism_register_dmb(struct smc_link_group *lgr, int dmb_len,
 		dmb_desc->len = dmb.dmb_len;
 	}
 	return rc;
-#else
-	return 0;
-#endif
 }
 
 bool smc_ism_support_dmb_nocopy(struct smcd_dev *smcd)
@@ -345,6 +367,8 @@ static void smc_nl_prep_smcd_dev(struct smcd_dev_list *dev_list,
 	list_for_each_entry(smcd, &dev_list->list, list) {
 		if (num < snum)
 			goto next;
+		if (smc_ism_is_loopback(smcd))
+			goto next;
 		if (smc_nl_handle_smcd_dev(smcd, skb, cb))
 			goto errout;
 next:
@@ -460,7 +484,7 @@ static struct smcd_dev *smcd_alloc_dev(struct device *parent, const char *name,
 static void smcd_register_dev(struct ism_dev *ism)
 {
 	const struct smcd_ops *ops = ism_get_smcd_ops();
-	struct smcd_dev *smcd;
+	struct smcd_dev *smcd, *fentry;
 
 	if (!ops)
 		return;
@@ -470,26 +494,28 @@ static void smcd_register_dev(struct ism_dev *ism)
 	if (!smcd)
 		return;
 	smcd->priv = ism;
+	smcd->client = &smc_ism_client;
 	ism_set_priv(ism, &smc_ism_client, smcd);
 	if (smc_pnetid_by_dev_port(&ism->pdev->dev, 0, smcd->pnetid))
 		smc_pnetid_by_table_smcd(smcd);
 
+	if (smcd->ops->supports_v2())
+		smc_ism_set_v2_capable();
 	mutex_lock(&smcd_dev_list.mutex);
-	if (list_empty(&smcd_dev_list.list)) {
-		u8 *system_eid = NULL;
-
-		system_eid = smcd->ops->get_system_eid();
-		if (smcd->ops->supports_v2()) {
-			smc_ism_v2_capable = true;
-			memcpy(smc_ism_v2_system_eid, system_eid,
-			       SMC_MAX_EID_LEN);
-		}
-	}
-	/* sort list: devices without pnetid before devices with pnetid */
-	if (smcd->pnetid[0])
+	/* sort list:
+	 * - devices without pnetid before devices with pnetid;
+	 * - loopback-ism always at the very beginning;
+	 */
+	if (!smcd->pnetid[0]) {
+		fentry = list_first_entry_or_null(&smcd_dev_list.list,
+						  struct smcd_dev, list);
+		if (fentry && smc_ism_is_loopback(fentry))
+			list_add(&smcd->list, &fentry->list);
+		else
+			list_add(&smcd->list, &smcd_dev_list.list);
+	} else {
 		list_add_tail(&smcd->list, &smcd_dev_list.list);
-	else
-		list_add(&smcd->list, &smcd_dev_list.list);
+	}
 	mutex_unlock(&smcd_dev_list.mutex);
 
 	pr_warn_ratelimited("smc: adding smcd device %s with pnetid %.16s%s\n",
@@ -589,10 +615,10 @@ int smc_ism_init(void)
 {
 	int rc = 0;
 
-#if IS_ENABLED(CONFIG_ISM)
 	smc_ism_v2_capable = false;
-	memset(smc_ism_v2_system_eid, 0, SMC_MAX_EID_LEN);
+	smc_ism_create_system_eid();
 
+#if IS_ENABLED(CONFIG_ISM)
 	rc = ism_register_client(&smc_ism_client);
 #endif
 	return rc;

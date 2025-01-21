@@ -15,6 +15,8 @@
 
 static int interleave_arithmetic;
 
+#define FAKE_QTG_ID	42
+
 #define NR_CXL_HOST_BRIDGES 2
 #define NR_CXL_SINGLE_HOST 1
 #define NR_CXL_RCH 1
@@ -68,15 +70,19 @@ static struct acpi_device acpi0017_mock;
 static struct acpi_device host_bridge[NR_BRIDGES] = {
 	[0] = {
 		.handle = &host_bridge[0],
+		.pnp.unique_id = "0",
 	},
 	[1] = {
 		.handle = &host_bridge[1],
+		.pnp.unique_id = "1",
 	},
 	[2] = {
 		.handle = &host_bridge[2],
+		.pnp.unique_id = "2",
 	},
 	[3] = {
 		.handle = &host_bridge[3],
+		.pnp.unique_id = "3",
 	},
 };
 
@@ -205,7 +211,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_VOLATILE,
-			.qtg_id = 0,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 4UL,
 		},
 		.target = { 0 },
@@ -220,7 +226,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_VOLATILE,
-			.qtg_id = 1,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 8UL,
 		},
 		.target = { 0, 1, },
@@ -235,7 +241,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 2,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 4UL,
 		},
 		.target = { 0 },
@@ -250,7 +256,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 3,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 8UL,
 		},
 		.target = { 0, 1, },
@@ -265,7 +271,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 4,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 4UL,
 		},
 		.target = { 2 },
@@ -280,7 +286,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_VOLATILE,
-			.qtg_id = 5,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M,
 		},
 		.target = { 3 },
@@ -297,7 +303,7 @@ static struct {
 			.granularity = 4,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 0,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 8UL,
 		},
 		.target = { 0, },
@@ -313,7 +319,7 @@ static struct {
 			.granularity = 0,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 1,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 8UL,
 		},
 		.target = { 0, 1, },
@@ -329,7 +335,7 @@ static struct {
 			.granularity = 0,
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_TYPE3 |
 					ACPI_CEDT_CFMWS_RESTRICT_PMEM,
-			.qtg_id = 0,
+			.qtg_id = FAKE_QTG_ID,
 			.window_size = SZ_256M * 16UL,
 		},
 		.target = { 0, 1, 0, 1, },
@@ -972,6 +978,57 @@ static int mock_cxl_port_enumerate_dports(struct cxl_port *port)
 	return 0;
 }
 
+/*
+ * Faking the cxl_dpa_perf for the memdev when appropriate.
+ */
+static void dpa_perf_setup(struct cxl_port *endpoint, struct range *range,
+			   struct cxl_dpa_perf *dpa_perf)
+{
+	dpa_perf->qos_class = FAKE_QTG_ID;
+	dpa_perf->dpa_range = *range;
+	for (int i = 0; i < ACCESS_COORDINATE_MAX; i++) {
+		dpa_perf->coord[i].read_latency = 500;
+		dpa_perf->coord[i].write_latency = 500;
+		dpa_perf->coord[i].read_bandwidth = 1000;
+		dpa_perf->coord[i].write_bandwidth = 1000;
+	}
+}
+
+static void mock_cxl_endpoint_parse_cdat(struct cxl_port *port)
+{
+	struct cxl_root *cxl_root __free(put_cxl_root) =
+		find_cxl_root(port);
+	struct cxl_memdev *cxlmd = to_cxl_memdev(port->uport_dev);
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
+	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
+	struct access_coordinate ep_c[ACCESS_COORDINATE_MAX];
+	struct range pmem_range = {
+		.start = cxlds->pmem_res.start,
+		.end = cxlds->pmem_res.end,
+	};
+	struct range ram_range = {
+		.start = cxlds->ram_res.start,
+		.end = cxlds->ram_res.end,
+	};
+
+	if (!cxl_root)
+		return;
+
+	if (range_len(&ram_range))
+		dpa_perf_setup(port, &ram_range, &mds->ram_perf);
+
+	if (range_len(&pmem_range))
+		dpa_perf_setup(port, &pmem_range, &mds->pmem_perf);
+
+	cxl_memdev_update_perf(cxlmd);
+
+	/*
+	 * This function is here to only test the topology iterator. It serves
+	 * no other purpose.
+	 */
+	cxl_endpoint_get_perf_coordinates(port, ep_c);
+}
+
 static struct cxl_mock_ops cxl_mock_ops = {
 	.is_mock_adev = is_mock_adev,
 	.is_mock_bridge = is_mock_bridge,
@@ -985,6 +1042,7 @@ static struct cxl_mock_ops cxl_mock_ops = {
 	.devm_cxl_setup_hdm = mock_cxl_setup_hdm,
 	.devm_cxl_add_passthrough_decoder = mock_cxl_add_passthrough_decoder,
 	.devm_cxl_enumerate_decoders = mock_cxl_enumerate_decoders,
+	.cxl_endpoint_parse_cdat = mock_cxl_endpoint_parse_cdat,
 	.list = LIST_HEAD_INIT(cxl_mock_ops.list),
 };
 
@@ -1000,7 +1058,7 @@ static void mock_companion(struct acpi_device *adev, struct device *dev)
 #define SZ_64G (SZ_32G * 2)
 #endif
 
-static __init int cxl_rch_init(void)
+static __init int cxl_rch_topo_init(void)
 {
 	int rc, i;
 
@@ -1028,30 +1086,8 @@ static __init int cxl_rch_init(void)
 			goto err_bridge;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(cxl_rcd); i++) {
-		int idx = NR_MEM_MULTI + NR_MEM_SINGLE + i;
-		struct platform_device *rch = cxl_rch[i];
-		struct platform_device *pdev;
-
-		pdev = platform_device_alloc("cxl_rcd", idx);
-		if (!pdev)
-			goto err_mem;
-		pdev->dev.parent = &rch->dev;
-		set_dev_node(&pdev->dev, i % 2);
-
-		rc = platform_device_add(pdev);
-		if (rc) {
-			platform_device_put(pdev);
-			goto err_mem;
-		}
-		cxl_rcd[i] = pdev;
-	}
-
 	return 0;
 
-err_mem:
-	for (i = ARRAY_SIZE(cxl_rcd) - 1; i >= 0; i--)
-		platform_device_unregister(cxl_rcd[i]);
 err_bridge:
 	for (i = ARRAY_SIZE(cxl_rch) - 1; i >= 0; i--) {
 		struct platform_device *pdev = cxl_rch[i];
@@ -1065,12 +1101,10 @@ err_bridge:
 	return rc;
 }
 
-static void cxl_rch_exit(void)
+static void cxl_rch_topo_exit(void)
 {
 	int i;
 
-	for (i = ARRAY_SIZE(cxl_rcd) - 1; i >= 0; i--)
-		platform_device_unregister(cxl_rcd[i]);
 	for (i = ARRAY_SIZE(cxl_rch) - 1; i >= 0; i--) {
 		struct platform_device *pdev = cxl_rch[i];
 
@@ -1081,7 +1115,7 @@ static void cxl_rch_exit(void)
 	}
 }
 
-static __init int cxl_single_init(void)
+static __init int cxl_single_topo_init(void)
 {
 	int i, rc;
 
@@ -1166,29 +1200,8 @@ static __init int cxl_single_init(void)
 		cxl_swd_single[i] = pdev;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(cxl_mem_single); i++) {
-		struct platform_device *dport = cxl_swd_single[i];
-		struct platform_device *pdev;
-
-		pdev = platform_device_alloc("cxl_mem", NR_MEM_MULTI + i);
-		if (!pdev)
-			goto err_mem;
-		pdev->dev.parent = &dport->dev;
-		set_dev_node(&pdev->dev, i % 2);
-
-		rc = platform_device_add(pdev);
-		if (rc) {
-			platform_device_put(pdev);
-			goto err_mem;
-		}
-		cxl_mem_single[i] = pdev;
-	}
-
 	return 0;
 
-err_mem:
-	for (i = ARRAY_SIZE(cxl_mem_single) - 1; i >= 0; i--)
-		platform_device_unregister(cxl_mem_single[i]);
 err_dport:
 	for (i = ARRAY_SIZE(cxl_swd_single) - 1; i >= 0; i--)
 		platform_device_unregister(cxl_swd_single[i]);
@@ -1211,12 +1224,10 @@ err_bridge:
 	return rc;
 }
 
-static void cxl_single_exit(void)
+static void cxl_single_topo_exit(void)
 {
 	int i;
 
-	for (i = ARRAY_SIZE(cxl_mem_single) - 1; i >= 0; i--)
-		platform_device_unregister(cxl_mem_single[i]);
 	for (i = ARRAY_SIZE(cxl_swd_single) - 1; i >= 0; i--)
 		platform_device_unregister(cxl_swd_single[i]);
 	for (i = ARRAY_SIZE(cxl_swu_single) - 1; i >= 0; i--)
@@ -1231,6 +1242,91 @@ static void cxl_single_exit(void)
 		sysfs_remove_link(&pdev->dev.kobj, "physical_node");
 		platform_device_unregister(cxl_hb_single[i]);
 	}
+}
+
+static void cxl_mem_exit(void)
+{
+	int i;
+
+	for (i = ARRAY_SIZE(cxl_rcd) - 1; i >= 0; i--)
+		platform_device_unregister(cxl_rcd[i]);
+	for (i = ARRAY_SIZE(cxl_mem_single) - 1; i >= 0; i--)
+		platform_device_unregister(cxl_mem_single[i]);
+	for (i = ARRAY_SIZE(cxl_mem) - 1; i >= 0; i--)
+		platform_device_unregister(cxl_mem[i]);
+}
+
+static int cxl_mem_init(void)
+{
+	int i, rc;
+
+	for (i = 0; i < ARRAY_SIZE(cxl_mem); i++) {
+		struct platform_device *dport = cxl_switch_dport[i];
+		struct platform_device *pdev;
+
+		pdev = platform_device_alloc("cxl_mem", i);
+		if (!pdev)
+			goto err_mem;
+		pdev->dev.parent = &dport->dev;
+		set_dev_node(&pdev->dev, i % 2);
+
+		rc = platform_device_add(pdev);
+		if (rc) {
+			platform_device_put(pdev);
+			goto err_mem;
+		}
+		cxl_mem[i] = pdev;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(cxl_mem_single); i++) {
+		struct platform_device *dport = cxl_swd_single[i];
+		struct platform_device *pdev;
+
+		pdev = platform_device_alloc("cxl_mem", NR_MEM_MULTI + i);
+		if (!pdev)
+			goto err_single;
+		pdev->dev.parent = &dport->dev;
+		set_dev_node(&pdev->dev, i % 2);
+
+		rc = platform_device_add(pdev);
+		if (rc) {
+			platform_device_put(pdev);
+			goto err_single;
+		}
+		cxl_mem_single[i] = pdev;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(cxl_rcd); i++) {
+		int idx = NR_MEM_MULTI + NR_MEM_SINGLE + i;
+		struct platform_device *rch = cxl_rch[i];
+		struct platform_device *pdev;
+
+		pdev = platform_device_alloc("cxl_rcd", idx);
+		if (!pdev)
+			goto err_rcd;
+		pdev->dev.parent = &rch->dev;
+		set_dev_node(&pdev->dev, i % 2);
+
+		rc = platform_device_add(pdev);
+		if (rc) {
+			platform_device_put(pdev);
+			goto err_rcd;
+		}
+		cxl_rcd[i] = pdev;
+	}
+
+	return 0;
+
+err_rcd:
+	for (i = ARRAY_SIZE(cxl_rcd) - 1; i >= 0; i--)
+		platform_device_unregister(cxl_rcd[i]);
+err_single:
+	for (i = ARRAY_SIZE(cxl_mem_single) - 1; i >= 0; i--)
+		platform_device_unregister(cxl_mem_single[i]);
+err_mem:
+	for (i = ARRAY_SIZE(cxl_mem) - 1; i >= 0; i--)
+		platform_device_unregister(cxl_mem[i]);
+	return rc;
 }
 
 static __init int cxl_test_init(void)
@@ -1345,29 +1441,11 @@ static __init int cxl_test_init(void)
 		cxl_switch_dport[i] = pdev;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(cxl_mem); i++) {
-		struct platform_device *dport = cxl_switch_dport[i];
-		struct platform_device *pdev;
-
-		pdev = platform_device_alloc("cxl_mem", i);
-		if (!pdev)
-			goto err_mem;
-		pdev->dev.parent = &dport->dev;
-		set_dev_node(&pdev->dev, i % 2);
-
-		rc = platform_device_add(pdev);
-		if (rc) {
-			platform_device_put(pdev);
-			goto err_mem;
-		}
-		cxl_mem[i] = pdev;
-	}
-
-	rc = cxl_single_init();
+	rc = cxl_single_topo_init();
 	if (rc)
-		goto err_mem;
+		goto err_dport;
 
-	rc = cxl_rch_init();
+	rc = cxl_rch_topo_init();
 	if (rc)
 		goto err_single;
 
@@ -1380,19 +1458,20 @@ static __init int cxl_test_init(void)
 
 	rc = platform_device_add(cxl_acpi);
 	if (rc)
-		goto err_add;
+		goto err_root;
+
+	rc = cxl_mem_init();
+	if (rc)
+		goto err_root;
 
 	return 0;
 
-err_add:
+err_root:
 	platform_device_put(cxl_acpi);
 err_rch:
-	cxl_rch_exit();
+	cxl_rch_topo_exit();
 err_single:
-	cxl_single_exit();
-err_mem:
-	for (i = ARRAY_SIZE(cxl_mem) - 1; i >= 0; i--)
-		platform_device_unregister(cxl_mem[i]);
+	cxl_single_topo_exit();
 err_dport:
 	for (i = ARRAY_SIZE(cxl_switch_dport) - 1; i >= 0; i--)
 		platform_device_unregister(cxl_switch_dport[i]);
@@ -1424,11 +1503,10 @@ static __exit void cxl_test_exit(void)
 {
 	int i;
 
+	cxl_mem_exit();
 	platform_device_unregister(cxl_acpi);
-	cxl_rch_exit();
-	cxl_single_exit();
-	for (i = ARRAY_SIZE(cxl_mem) - 1; i >= 0; i--)
-		platform_device_unregister(cxl_mem[i]);
+	cxl_rch_topo_exit();
+	cxl_single_topo_exit();
 	for (i = ARRAY_SIZE(cxl_switch_dport) - 1; i >= 0; i--)
 		platform_device_unregister(cxl_switch_dport[i]);
 	for (i = ARRAY_SIZE(cxl_switch_uport) - 1; i >= 0; i--)

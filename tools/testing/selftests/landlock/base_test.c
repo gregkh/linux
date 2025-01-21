@@ -76,7 +76,7 @@ TEST(abi_version)
 	const struct landlock_ruleset_attr ruleset_attr = {
 		.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE,
 	};
-	ASSERT_EQ(3, landlock_create_ruleset(NULL, 0,
+	ASSERT_EQ(6, landlock_create_ruleset(NULL, 0,
 					     LANDLOCK_CREATE_RULESET_VERSION));
 
 	ASSERT_EQ(-1, landlock_create_ruleset(&ruleset_attr, 0,
@@ -308,7 +308,7 @@ TEST(ruleset_fd_transfer)
 		dir_fd = open("/tmp", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 		ASSERT_LE(0, dir_fd);
 		ASSERT_EQ(0, close(dir_fd));
-		_exit(_metadata->passed ? EXIT_SUCCESS : EXIT_FAILURE);
+		_exit(_metadata->exit_code);
 		return;
 	}
 
@@ -387,7 +387,7 @@ TEST(cred_transfer)
 		EXPECT_EQ(-1, open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
 		EXPECT_EQ(EACCES, errno);
 
-		_exit(_metadata->passed ? EXIT_SUCCESS : EXIT_FAILURE);
+		_exit(_metadata->exit_code);
 		return;
 	}
 

@@ -55,8 +55,6 @@ static int mpls_xmit(struct sk_buff *skb)
 	out_dev = dst->dev;
 	net = dev_net(out_dev);
 
-	skb_orphan(skb);
-
 	if (!mpls_output_possible(out_dev) ||
 	    !dst->lwtstate || skb_warn_if_lro(skb))
 		goto drop;
@@ -83,7 +81,7 @@ static int mpls_xmit(struct sk_buff *skb)
 			ttl = net->mpls.default_ttl;
 		else
 			ttl = ip_hdr(skb)->ttl;
-		rt = (struct rtable *)dst;
+		rt = dst_rtable(dst);
 	} else if (dst->ops->family == AF_INET6) {
 		if (tun_encap_info->ttl_propagate == MPLS_TTL_PROP_DISABLED)
 			ttl = tun_encap_info->default_ttl;
@@ -108,7 +106,7 @@ static int mpls_xmit(struct sk_buff *skb)
 		hh_len = 0;
 
 	/* Ensure there is enough space for the headers in the skb */
-	if (skb_cow(skb, hh_len + new_header_size))
+	if (skb_cow_head(skb, hh_len + new_header_size))
 		goto drop;
 
 	skb_set_inner_protocol(skb, skb->protocol);

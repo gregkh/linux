@@ -93,9 +93,6 @@ static void cros_ec_lpc_mec_emi_write_address(u16 addr,
  */
 int cros_ec_lpc_mec_in_range(unsigned int offset, unsigned int length)
 {
-	if (length == 0)
-		return -EINVAL;
-
 	if (WARN_ON(mec_emi_base == 0 || mec_emi_end == 0))
 		return -EINVAL;
 
@@ -119,17 +116,21 @@ int cros_ec_lpc_mec_in_range(unsigned int offset, unsigned int length)
  * @length:  Number of bytes to read / write
  * @buf:     Destination / source buffer
  *
- * Return: 8-bit checksum of all bytes read / written
+ * @return:  A negative error code on error, or 8-bit checksum of all
+ *           bytes read / written
  */
-u8 cros_ec_lpc_io_bytes_mec(enum cros_ec_lpc_mec_io_type io_type,
-			    unsigned int offset, unsigned int length,
-			    u8 *buf)
+int cros_ec_lpc_io_bytes_mec(enum cros_ec_lpc_mec_io_type io_type,
+			     unsigned int offset, unsigned int length,
+			     u8 *buf)
 {
 	int i = 0;
 	int io_addr;
 	u8 sum = 0;
 	enum cros_ec_lpc_mec_emi_access_mode access, new_access;
 	int ret;
+
+	if (length == 0)
+		return 0;
 
 	/* Return checksum of 0 if window is not initialized */
 	WARN_ON(mec_emi_base == 0 || mec_emi_end == 0);

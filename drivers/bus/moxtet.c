@@ -83,10 +83,10 @@ static const struct attribute_group *moxtet_dev_groups[] = {
 	NULL,
 };
 
-static int moxtet_match(struct device *dev, struct device_driver *drv)
+static int moxtet_match(struct device *dev, const struct device_driver *drv)
 {
 	struct moxtet_device *mdev = to_moxtet_device(dev);
-	struct moxtet_driver *tdrv = to_moxtet_driver(drv);
+	const struct moxtet_driver *tdrv = to_moxtet_driver(drv);
 	const enum turris_mox_module_id *t;
 
 	if (of_driver_match_device(dev, drv))
@@ -102,7 +102,7 @@ static int moxtet_match(struct device *dev, struct device_driver *drv)
 	return 0;
 }
 
-static struct bus_type moxtet_bus_type = {
+static const struct bus_type moxtet_bus_type = {
 	.name		= "moxtet",
 	.dev_groups	= moxtet_dev_groups,
 	.match		= moxtet_match,
@@ -484,7 +484,6 @@ static const struct file_operations input_fops = {
 	.owner	= THIS_MODULE,
 	.open	= moxtet_debug_open,
 	.read	= input_read,
-	.llseek	= no_llseek,
 };
 
 static ssize_t output_read(struct file *file, char __user *buf, size_t len,
@@ -549,7 +548,6 @@ static const struct file_operations output_fops = {
 	.open	= moxtet_debug_open,
 	.read	= output_read,
 	.write	= output_write,
-	.llseek	= no_llseek,
 };
 
 static int moxtet_register_debugfs(struct moxtet *moxtet)

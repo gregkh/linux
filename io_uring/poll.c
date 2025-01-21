@@ -14,7 +14,9 @@
 #include <uapi/linux/io_uring.h>
 
 #include "io_uring.h"
+#include "alloc_cache.h"
 #include "refs.h"
+#include "napi.h"
 #include "opdef.h"
 #include "kbuf.h"
 #include "poll.h"
@@ -231,11 +233,16 @@ enum {
 
 static void __io_poll_execute(struct io_kiocb *req, int mask)
 {
+	unsigned flags = 0;
+
 	io_req_set_res(req, mask, 0);
 	req->io_task_work.func = io_poll_task_func;
 
 	trace_io_uring_task_add(req, mask);
-	io_req_task_work_add(req);
+
+	if (!(req->flags & REQ_F_POLL_NO_LAZY))
+		flags = IOU_F_TWQ_LAZY_WAKE;
+	__io_req_task_work_add(req, flags);
 }
 
 static inline void io_poll_execute(struct io_kiocb *req, int res)
@@ -316,8 +323,7 @@ static int io_poll_check_events(struct io_kiocb *req, struct io_tw_state *ts)
 			__poll_t mask = mangle_poll(req->cqe.res &
 						    req->apoll_events);
 
-			if (!io_fill_cqe_req_aux(req, ts->locked, mask,
-						 IORING_CQE_F_MORE)) {
+			if (!io_req_post_cqe(req, mask, IORING_CQE_F_MORE)) {
 				io_req_set_res(req, mask, 0);
 				return IOU_POLL_REMOVE_POLL_USE_RES;
 			}
@@ -338,9 +344,10 @@ static int io_poll_check_events(struct io_kiocb *req, struct io_tw_state *ts)
 		 * Release all references, retry if someone tried to restart
 		 * task_work while we were executing it.
 		 */
-	} while (atomic_sub_return(v & IO_POLL_REF_MASK, &req->poll_refs) &
-					IO_POLL_REF_MASK);
+		v &= IO_POLL_REF_MASK;
+	} while (atomic_sub_return(v, &req->poll_refs) & IO_POLL_REF_MASK);
 
+	io_napi_add(req);
 	return IOU_POLL_NO_ACTION;
 }
 
@@ -533,10 +540,11 @@ static void __io_queue_proc(struct io_poll *poll, struct io_poll_table *pt,
 	poll->head = head;
 	poll->wait.private = (void *) wqe_private;
 
-	if (poll->events & EPOLLEXCLUSIVE)
+	if (poll->events & EPOLLEXCLUSIVE) {
 		add_wait_queue_exclusive(head, &poll->wait);
-	else
+	} else {
 		add_wait_queue(head, &poll->wait);
+	}
 }
 
 static void io_poll_queue_proc(struct file *file, struct wait_queue_head *head,
@@ -574,10 +582,7 @@ static int __io_arm_poll_handler(struct io_kiocb *req,
 				 struct io_poll_table *ipt, __poll_t mask,
 				 unsigned issue_flags)
 {
-	struct io_ring_ctx *ctx = req->ctx;
-
 	INIT_HLIST_NODE(&req->hash_node);
-	req->work.cancel_seq = atomic_read(&ctx->cancel_seq);
 	io_init_poll_iocb(poll, mask);
 	poll->file = req->file;
 	req->apoll_events = poll->events;
@@ -603,6 +608,17 @@ static int __io_arm_poll_handler(struct io_kiocb *req,
 	/* io-wq doesn't hold uring_lock */
 	if (issue_flags & IO_URING_F_UNLOCKED)
 		req->flags &= ~REQ_F_HASH_LOCKED;
+
+
+	/*
+	 * Exclusive waits may only wake a limited amount of entries
+	 * rather than all of them, this may interfere with lazy
+	 * wake if someone does wait(events > 1). Ensure we don't do
+	 * lazy wake for those, as we need to process each one as they
+	 * come in.
+	 */
+	if (poll->events & EPOLLEXCLUSIVE)
+		req->flags |= REQ_F_POLL_NO_LAZY;
 
 	mask = vfs_poll(req->file, &ipt->pt) & poll->events;
 
@@ -638,6 +654,7 @@ static int __io_arm_poll_handler(struct io_kiocb *req,
 		__io_poll_execute(req, mask);
 		return 0;
 	}
+	io_napi_add(req);
 
 	if (ipt->owning) {
 		/*
@@ -671,17 +688,15 @@ static struct async_poll *io_req_alloc_apoll(struct io_kiocb *req,
 					     unsigned issue_flags)
 {
 	struct io_ring_ctx *ctx = req->ctx;
-	struct io_cache_entry *entry;
 	struct async_poll *apoll;
 
 	if (req->flags & REQ_F_POLLED) {
 		apoll = req->apoll;
 		kfree(apoll->double_poll);
 	} else if (!(issue_flags & IO_URING_F_UNLOCKED)) {
-		entry = io_alloc_cache_get(&ctx->apoll_cache);
-		if (entry == NULL)
+		apoll = io_alloc_cache_get(&ctx->apoll_cache);
+		if (!apoll)
 			goto alloc_apoll;
-		apoll = container_of(entry, struct async_poll, cache);
 		apoll->poll.retries = APOLL_MAX_RETRY;
 	} else {
 alloc_apoll:
@@ -713,7 +728,7 @@ int io_arm_poll_handler(struct io_kiocb *req, unsigned issue_flags)
 
 	if (!def->pollin && !def->pollout)
 		return IO_APOLL_ABORTED;
-	if (!file_can_poll(req->file))
+	if (!io_file_can_poll(req))
 		return IO_APOLL_ABORTED;
 	if (!(req->flags & REQ_F_APOLL_MULTISHOT))
 		mask |= EPOLLONESHOT;
@@ -804,9 +819,8 @@ static struct io_kiocb *io_poll_find(struct io_ring_ctx *ctx, bool poll_only,
 		if (poll_only && req->opcode != IORING_OP_POLL_ADD)
 			continue;
 		if (cd->flags & IORING_ASYNC_CANCEL_ALL) {
-			if (cd->seq == req->work.cancel_seq)
+			if (io_cancel_match_sequence(req, cd->seq))
 				continue;
-			req->work.cancel_seq = cd->seq;
 		}
 		*out_bucket = hb;
 		return req;
@@ -1040,9 +1054,4 @@ out:
 	/* complete update request, we're done with it */
 	io_req_set_res(req, ret, 0);
 	return IOU_OK;
-}
-
-void io_apoll_cache_free(struct io_cache_entry *entry)
-{
-	kfree(container_of(entry, struct async_poll, cache));
 }

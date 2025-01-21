@@ -21,7 +21,7 @@
 
 #define list_for_each_table_entry(entry, header)	\
 	entry = header->ctl_table;			\
-	for (size_t i = 0 ; i < header->ctl_table_size && entry->procname; ++i, entry++)
+	for (size_t i = 0 ; i < header->ctl_table_size; ++i, entry++)
 
 static const struct dentry_operations proc_sys_dentry_operations;
 static const struct file_operations proc_sys_file_operations;
@@ -29,9 +29,12 @@ static const struct inode_operations proc_sys_inode_operations;
 static const struct file_operations proc_sys_dir_file_operations;
 static const struct inode_operations proc_sys_dir_operations;
 
-/* Support for permanently empty directories */
+/*
+ * Support for permanently empty directories.
+ * Must be non-empty to avoid sharing an address with other tables.
+ */
 static struct ctl_table sysctl_mount_point[] = {
-	{.type = SYSCTL_TABLE_TYPE_PERMANENTLY_EMPTY }
+	{ }
 };
 
 /**
@@ -44,18 +47,16 @@ static struct ctl_table sysctl_mount_point[] = {
  */
 struct ctl_table_header *register_sysctl_mount_point(const char *path)
 {
-	return register_sysctl(path, sysctl_mount_point);
+	return register_sysctl_sz(path, sysctl_mount_point, 0);
 }
 EXPORT_SYMBOL(register_sysctl_mount_point);
 
-#define sysctl_is_perm_empty_ctl_table(tptr)		\
-	(tptr[0].type == SYSCTL_TABLE_TYPE_PERMANENTLY_EMPTY)
 #define sysctl_is_perm_empty_ctl_header(hptr)		\
-	(sysctl_is_perm_empty_ctl_table(hptr->ctl_table))
+	(hptr->type == SYSCTL_TABLE_TYPE_PERMANENTLY_EMPTY)
 #define sysctl_set_perm_empty_ctl_header(hptr)		\
-	(hptr->ctl_table[0].type = SYSCTL_TABLE_TYPE_PERMANENTLY_EMPTY)
+	(hptr->type = SYSCTL_TABLE_TYPE_PERMANENTLY_EMPTY)
 #define sysctl_clear_perm_empty_ctl_header(hptr)	\
-	(hptr->ctl_table[0].type = SYSCTL_TABLE_TYPE_DEFAULT)
+	(hptr->type = SYSCTL_TABLE_TYPE_DEFAULT)
 
 void proc_sys_poll_notify(struct ctl_table_poll *poll)
 {
@@ -71,7 +72,6 @@ static struct ctl_table root_table[] = {
 		.procname = "",
 		.mode = S_IFDIR|S_IRUGO|S_IXUGO,
 	},
-	{ }
 };
 static struct ctl_table_root sysctl_table_root = {
 	.default_set.dir.header = {
@@ -211,6 +211,8 @@ static void init_header(struct ctl_table_header *head,
 			node++;
 		}
 	}
+	if (table == sysctl_mount_point)
+		sysctl_set_perm_empty_ctl_header(head);
 }
 
 static void erase_header(struct ctl_table_header *head)
@@ -233,8 +235,7 @@ static int insert_header(struct ctl_dir *dir, struct ctl_table_header *header)
 		return -EROFS;
 
 	/* Am I creating a permanently empty directory? */
-	if (header->ctl_table_size > 0 &&
-	    sysctl_is_perm_empty_ctl_table(header->ctl_table)) {
+	if (sysctl_is_perm_empty_ctl_header(header)) {
 		if (!RB_EMPTY_ROOT(&dir->root))
 			return -EINVAL;
 		sysctl_set_perm_empty_ctl_header(dir_h);
@@ -466,7 +467,7 @@ static struct inode *proc_sys_make_inode(struct super_block *sb,
 	head->count++;
 	spin_unlock(&sysctl_lock);
 
-	inode->i_mtime = inode->i_atime = inode_set_ctime_current(inode);
+	simple_inode_init_ts(inode);
 	inode->i_mode = table->mode;
 	if (!S_ISDIR(table->mode)) {
 		inode->i_mode |= S_IFREG;
@@ -533,13 +534,8 @@ static struct dentry *proc_sys_lookup(struct inode *dir, struct dentry *dentry,
 			goto out;
 	}
 
-	inode = proc_sys_make_inode(dir->i_sb, h ? h : head, p);
-	if (IS_ERR(inode)) {
-		err = ERR_CAST(inode);
-		goto out;
-	}
-
 	d_set_d_op(dentry, &proc_sys_dentry_operations);
+	inode = proc_sys_make_inode(dir->i_sb, h ? h : head, p);
 	err = d_splice_alias(inode, dentry);
 
 out:
@@ -697,13 +693,8 @@ static bool proc_sys_fill_cache(struct file *file,
 			return false;
 		if (d_in_lookup(child)) {
 			struct dentry *res;
-			inode = proc_sys_make_inode(dir->d_sb, head, table);
-			if (IS_ERR(inode)) {
-				d_lookup_done(child);
-				dput(child);
-				return false;
-			}
 			d_set_d_op(child, &proc_sys_dentry_operations);
+			inode = proc_sys_make_inode(dir->d_sb, head, table);
 			res = d_splice_alias(inode, child);
 			d_lookup_done(child);
 			if (unlikely(res)) {
@@ -963,14 +954,14 @@ static struct ctl_dir *new_dir(struct ctl_table_set *set,
 	char *new_name;
 
 	new = kzalloc(sizeof(*new) + sizeof(struct ctl_node) +
-		      sizeof(struct ctl_table)*2 +  namelen + 1,
+		      sizeof(struct ctl_table) +  namelen + 1,
 		      GFP_KERNEL);
 	if (!new)
 		return NULL;
 
 	node = (struct ctl_node *)(new + 1);
 	table = (struct ctl_table *)(node + 1);
-	new_name = (char *)(table + 2);
+	new_name = (char *)(table + 1);
 	memcpy(new_name, name, namelen);
 	table[0].procname = new_name;
 	table[0].mode = S_IFDIR|S_IRUGO|S_IXUGO;
@@ -1105,6 +1096,7 @@ static int sysctl_err(const char *path, struct ctl_table *table, char *fmt, ...)
 
 static int sysctl_check_table_array(const char *path, struct ctl_table *table)
 {
+	unsigned int extra;
 	int err = 0;
 
 	if ((table->proc_handler == proc_douintvec) ||
@@ -1116,6 +1108,19 @@ static int sysctl_check_table_array(const char *path, struct ctl_table *table)
 	if (table->proc_handler == proc_dou8vec_minmax) {
 		if (table->maxlen != sizeof(u8))
 			err |= sysctl_err(path, table, "array not allowed");
+
+		if (table->extra1) {
+			extra = *(unsigned int *) table->extra1;
+			if (extra > 255U)
+				err |= sysctl_err(path, table,
+						"range value too large for proc_dou8vec_minmax");
+		}
+		if (table->extra2) {
+			extra = *(unsigned int *) table->extra2;
+			if (extra > 255U)
+				err |= sysctl_err(path, table,
+						"range value too large for proc_dou8vec_minmax");
+		}
 	}
 
 	if (table->proc_handler == proc_dobool) {
@@ -1131,6 +1136,8 @@ static int sysctl_check_table(const char *path, struct ctl_table_header *header)
 	struct ctl_table *entry;
 	int err = 0;
 	list_for_each_table_entry(entry, header) {
+		if (!entry->procname)
+			err |= sysctl_err(path, entry, "procname is null");
 		if ((entry->proc_handler == proc_dostring) ||
 		    (entry->proc_handler == proc_dobool) ||
 		    (entry->proc_handler == proc_dointvec) ||
@@ -1166,18 +1173,16 @@ static struct ctl_table_header *new_links(struct ctl_dir *dir, struct ctl_table_
 	struct ctl_table_header *links;
 	struct ctl_node *node;
 	char *link_name;
-	int nr_entries, name_bytes;
+	int name_bytes;
 
 	name_bytes = 0;
-	nr_entries = 0;
 	list_for_each_table_entry(entry, head) {
-		nr_entries++;
 		name_bytes += strlen(entry->procname) + 1;
 	}
 
 	links = kzalloc(sizeof(struct ctl_table_header) +
-			sizeof(struct ctl_node)*nr_entries +
-			sizeof(struct ctl_table)*(nr_entries + 1) +
+			sizeof(struct ctl_node)*head->ctl_table_size +
+			sizeof(struct ctl_table)*head->ctl_table_size +
 			name_bytes,
 			GFP_KERNEL);
 
@@ -1185,8 +1190,8 @@ static struct ctl_table_header *new_links(struct ctl_dir *dir, struct ctl_table_
 		return NULL;
 
 	node = (struct ctl_node *)(links + 1);
-	link_table = (struct ctl_table *)(node + nr_entries);
-	link_name = (char *)&link_table[nr_entries + 1];
+	link_table = (struct ctl_table *)(node + head->ctl_table_size);
+	link_name = (char *)(link_table + head->ctl_table_size);
 	link = link_table;
 
 	list_for_each_table_entry(entry, head) {
@@ -1200,7 +1205,7 @@ static struct ctl_table_header *new_links(struct ctl_dir *dir, struct ctl_table_
 	}
 	init_header(links, dir->header.root, dir->header.set, node, link_table,
 		    head->ctl_table_size);
-	links->nreg = nr_entries;
+	links->nreg = head->ctl_table_size;
 
 	return links;
 }
@@ -1213,7 +1218,7 @@ static bool get_links(struct ctl_dir *dir,
 	struct ctl_table *entry, *link;
 
 	if (header->ctl_table_size == 0 ||
-	    sysctl_is_perm_empty_ctl_table(header->ctl_table))
+	    sysctl_is_perm_empty_ctl_header(header))
 		return true;
 
 	/* Are there links available for every entry in table? */
@@ -1312,28 +1317,23 @@ static struct ctl_dir *sysctl_mkdir_p(struct ctl_dir *dir, const char *path)
  * __register_sysctl_table - register a leaf sysctl table
  * @set: Sysctl tree to register on
  * @path: The path to the directory the sysctl table is in.
- * @table: the top-level table structure without any child. This table
- * 	 should not be free'd after registration. So it should not be
- * 	 used on stack. It can either be a global or dynamically allocated
- * 	 by the caller and free'd later after sysctl unregistration.
+ *
+ * @table: the top-level table structure. This table should not be free'd
+ *         after registration. So it should not be used on stack. It can either
+ *         be a global or dynamically allocated by the caller and free'd later
+ *         after sysctl unregistration.
  * @table_size : The number of elements in table
  *
  * Register a sysctl table hierarchy. @table should be a filled in ctl_table
- * array. A completely 0 filled entry terminates the table.
+ * array.
  *
  * The members of the &struct ctl_table structure are used as follows:
- *
  * procname - the name of the sysctl file under /proc/sys. Set to %NULL to not
  *            enter a sysctl file
- *
- * data - a pointer to data for use by proc_handler
- *
- * maxlen - the maximum size in bytes of the data
- *
- * mode - the file permissions for the /proc/sys file
- *
- * child - must be %NULL.
- *
+ * data     - a pointer to data for use by proc_handler
+ * maxlen   - the maximum size in bytes of the data
+ * mode     - the file permissions for the /proc/sys file
+ * type     - Defines the target type (described in struct definition)
  * proc_handler - the text handler routine (described below)
  *
  * extra1, extra2 - extra pointers usable by the proc handler routines
@@ -1341,8 +1341,7 @@ static struct ctl_dir *sysctl_mkdir_p(struct ctl_dir *dir, const char *path)
  * [0] https://lkml.kernel.org/87zgpte9o4.fsf@email.froward.int.ebiederm.org
  *
  * Leaf nodes in the sysctl tree will be represented by a single file
- * under /proc; non-leaf nodes (where child is not NULL) are not allowed,
- * sysctl_check_table() verifies this.
+ * under /proc; non-leaf nodes are not allowed.
  *
  * There must be a proc_handler routine for any terminal nodes.
  * Several default handlers are available to cover common cases -

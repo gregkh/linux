@@ -29,7 +29,7 @@ static void tidss_atomic_commit_tail(struct drm_atomic_state *old_state)
 	tidss_runtime_get(tidss);
 
 	drm_atomic_helper_commit_modeset_disables(ddev, old_state);
-	drm_atomic_helper_commit_planes(ddev, old_state, 0);
+	drm_atomic_helper_commit_planes(ddev, old_state, DRM_PLANE_COMMIT_ACTIVE_ONLY);
 	drm_atomic_helper_commit_modeset_enables(ddev, old_state);
 
 	drm_atomic_helper_commit_hw_done(old_state);
@@ -135,8 +135,7 @@ static int tidss_dispc_modeset_init(struct tidss_device *tidss)
 			dev_dbg(dev, "no panel/bridge for port %d\n", i);
 			continue;
 		} else if (ret) {
-			dev_dbg(dev, "port %d probe returned %d\n", i, ret);
-			return ret;
+			return dev_err_probe(dev, ret, "port %d probe failed\n", i);
 		}
 
 		if (panel) {

@@ -323,8 +323,7 @@ static int qed_init_pci(struct qed_dev *cdev, struct pci_dev *pdev)
 		goto err2;
 	}
 
-	cdev->pci_params.pm_cap = pci_find_capability(pdev, PCI_CAP_ID_PM);
-	if (IS_PF(cdev) && !cdev->pci_params.pm_cap)
+	if (IS_PF(cdev) && !pdev->pm_cap)
 		DP_NOTICE(cdev, "Cannot find power management capability\n");
 
 	rc = dma_set_mask_and_coherent(&cdev->pdev->dev, DMA_BIT_MASK(64));
@@ -1350,7 +1349,7 @@ static int qed_slowpath_start(struct qed_dev *cdev,
 				      (params->drv_rev << 8) |
 				      (params->drv_eng);
 		strscpy(drv_version.name, params->name,
-			MCP_DRV_VER_STR_SIZE - 4);
+			sizeof(drv_version.name));
 		rc = qed_mcp_send_drv_version(hwfn, hwfn->p_main_ptt,
 					      &drv_version);
 		if (rc) {

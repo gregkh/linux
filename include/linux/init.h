@@ -103,10 +103,6 @@
 #define __INITRODATA	.section	".init.rodata","a",%progbits
 #define __FINITDATA	.previous
 
-#define __MEMINIT        .section	".meminit.text", "ax"
-#define __MEMINITDATA    .section	".meminit.data", "aw"
-#define __MEMINITRODATA  .section	".meminit.rodata", "a"
-
 /* silence warnings when references are OK */
 #define __REF            .section       ".ref.text", "ax"
 #define __REFDATA        .section       ".ref.data", "aw"
@@ -172,16 +168,19 @@ extern initcall_entry_t __initcall_end[];
 
 extern struct file_system_type rootfs_fs_type;
 
-#if defined(CONFIG_STRICT_KERNEL_RWX) || defined(CONFIG_STRICT_MODULE_RWX)
 extern bool rodata_enabled;
-#endif
-#ifdef CONFIG_STRICT_KERNEL_RWX
 void mark_rodata_ro(void);
-#endif
 
 extern void (*late_time_init)(void);
 
 extern bool initcall_debug;
+
+#ifdef MODULE
+extern struct module __this_module;
+#define THIS_MODULE (&__this_module)
+#else
+#define THIS_MODULE ((struct module *)0)
+#endif
 
 #endif
   

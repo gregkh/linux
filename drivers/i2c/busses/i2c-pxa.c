@@ -32,6 +32,7 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/i2c-pxa.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 
 /* I2C register field definitions */
@@ -217,7 +218,7 @@ static const struct platform_device_id i2c_pxa_id_table[] = {
 	{ "ce4100-i2c",		REGS_CE4100 },
 	{ "pxa910-i2c",		REGS_PXA910 },
 	{ "armada-3700-i2c",	REGS_A3700  },
-	{ },
+	{ }
 };
 MODULE_DEVICE_TABLE(platform, i2c_pxa_id_table);
 
@@ -323,6 +324,7 @@ static void decode_ISR(unsigned int val)
 	decode_bits(KERN_DEBUG "ISR", isr_bits, ARRAY_SIZE(isr_bits), val);
 }
 
+#ifdef CONFIG_I2C_PXA_SLAVE
 static const struct bits icr_bits[] = {
 	PXA_BIT(ICR_START,  "START",	NULL),
 	PXA_BIT(ICR_STOP,   "STOP",	NULL),
@@ -341,7 +343,6 @@ static const struct bits icr_bits[] = {
 	PXA_BIT(ICR_UR,     "UR",		"ur"),
 };
 
-#ifdef CONFIG_I2C_PXA_SLAVE
 static void decode_ICR(unsigned int val)
 {
 	decode_bits(KERN_DEBUG "ICR", icr_bits, ARRAY_SIZE(icr_bits), val);
@@ -825,7 +826,7 @@ static inline void i2c_pxa_stop_message(struct pxa_i2c *i2c)
 static int i2c_pxa_send_mastercode(struct pxa_i2c *i2c)
 {
 	u32 icr;
-	long timeout;
+	long time_left;
 
 	spin_lock_irq(&i2c->lock);
 	i2c->highmode_enter = true;
@@ -836,12 +837,12 @@ static int i2c_pxa_send_mastercode(struct pxa_i2c *i2c)
 	writel(icr, _ICR(i2c));
 
 	spin_unlock_irq(&i2c->lock);
-	timeout = wait_event_timeout(i2c->wait,
-			i2c->highmode_enter == false, HZ * 1);
+	time_left = wait_event_timeout(i2c->wait,
+				       i2c->highmode_enter == false, HZ * 1);
 
 	i2c->highmode_enter = false;
 
-	return (timeout == 0) ? I2C_RETRY : 0;
+	return (time_left == 0) ? I2C_RETRY : 0;
 }
 
 /*
@@ -1049,7 +1050,7 @@ static irqreturn_t i2c_pxa_handler(int this_irq, void *dev_id)
  */
 static int i2c_pxa_do_xfer(struct pxa_i2c *i2c, struct i2c_msg *msg, int num)
 {
-	long timeout;
+	long time_left;
 	int ret;
 
 	/*
@@ -1094,7 +1095,7 @@ static int i2c_pxa_do_xfer(struct pxa_i2c *i2c, struct i2c_msg *msg, int num)
 	/*
 	 * The rest of the processing occurs in the interrupt handler.
 	 */
-	timeout = wait_event_timeout(i2c->wait, i2c->msg_num == 0, HZ * 5);
+	time_left = wait_event_timeout(i2c->wait, i2c->msg_num == 0, HZ * 5);
 	i2c_pxa_stop_message(i2c);
 
 	/*
@@ -1102,7 +1103,7 @@ static int i2c_pxa_do_xfer(struct pxa_i2c *i2c, struct i2c_msg *msg, int num)
 	 */
 	ret = i2c->msg_idx;
 
-	if (!timeout && i2c->msg_num) {
+	if (!time_left && i2c->msg_num) {
 		i2c_pxa_scream_blue_murder(i2c, "timeout with active message");
 		i2c_recover_bus(&i2c->adap);
 		ret = I2C_RETRY;
@@ -1255,10 +1256,8 @@ static int i2c_pxa_probe_dt(struct platform_device *pdev, struct pxa_i2c *i2c,
 			    enum pxa_i2c_types *i2c_types)
 {
 	struct device_node *np = pdev->dev.of_node;
-	const struct of_device_id *of_id =
-			of_match_device(i2c_pxa_dt_ids, &pdev->dev);
 
-	if (!of_id)
+	if (!pdev->dev.of_node)
 		return 1;
 
 	/* For device tree we always use the dynamic or alias-assigned ID */
@@ -1267,7 +1266,7 @@ static int i2c_pxa_probe_dt(struct platform_device *pdev, struct pxa_i2c *i2c,
 	i2c->use_pio = of_property_read_bool(np, "mrvl,i2c-polling");
 	i2c->fast_mode = of_property_read_bool(np, "mrvl,i2c-fast-mode");
 
-	*i2c_types = (enum pxa_i2c_types)(of_id->data);
+	*i2c_types = (enum pxa_i2c_types)device_get_match_data(&pdev->dev);
 
 	return 0;
 }
@@ -1594,6 +1593,7 @@ static void __exit i2c_adap_pxa_exit(void)
 	platform_driver_unregister(&i2c_pxa_driver);
 }
 
+MODULE_DESCRIPTION("Intel PXA2XX I2C adapter");
 MODULE_LICENSE("GPL");
 
 subsys_initcall(i2c_adap_pxa_init);

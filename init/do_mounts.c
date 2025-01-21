@@ -159,8 +159,7 @@ static int __init do_mount_root(const char *name, const char *fs,
 		if (!p)
 			return -ENOMEM;
 		data_page = page_address(p);
-		/* zero-pad. init_mount() will make sure it's terminated */
-		strncpy(data_page, data, PAGE_SIZE);
+		strscpy_pad(data_page, data, PAGE_SIZE);
 	}
 
 	ret = init_mount(name, "/root", fs, flags, data_page);
@@ -208,6 +207,9 @@ retry:
 				goto out;
 			case -EACCES:
 			case -EINVAL:
+#ifdef CONFIG_BLOCK
+				init_flush_fput();
+#endif
 				continue;
 		}
 	        /*
@@ -244,7 +246,7 @@ retry:
 	for (i = 0, p = fs_names; i < num_fs; i++, p += strlen(p)+1)
 		printk(" %s", p);
 	printk("\n");
-	panic("VFS: Unable to mount root fs on %s", b);
+	panic("VFS: Unable to mount root fs on \"%s\" or %s", pretty_name, b);
 out:
 	put_page(page);
 }

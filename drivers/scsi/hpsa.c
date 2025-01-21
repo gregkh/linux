@@ -51,7 +51,7 @@
 #include <linux/jiffies.h>
 #include <linux/percpu-defs.h>
 #include <linux/percpu.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/div64.h>
 #include "hpsa_cmd.h"
 #include "hpsa.h"
@@ -7509,7 +7509,7 @@ fallback:
  */
 static int hpsa_interrupt_mode(struct ctlr_info *h)
 {
-	unsigned int flags = PCI_IRQ_LEGACY;
+	unsigned int flags = PCI_IRQ_INTX;
 	int ret;
 
 	/* Some boards advertise MSI but don't really support it */

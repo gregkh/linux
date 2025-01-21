@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
+/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /* Copyright (c) 2015 - 2021 Intel Corporation */
 #ifndef IRDMA_MAIN_H
 #define IRDMA_MAIN_H
@@ -239,7 +239,7 @@ struct irdma_qv_info {
 
 struct irdma_qvlist_info {
 	u32 num_vectors;
-	struct irdma_qv_info qv_info[];
+	struct irdma_qv_info qv_info[] __counted_by(num_vectors);
 };
 
 struct irdma_gen_ops {

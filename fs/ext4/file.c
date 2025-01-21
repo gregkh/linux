@@ -174,7 +174,7 @@ static int ext4_release_file(struct inode *inode, struct file *filp)
 			(atomic_read(&inode->i_writecount) == 1) &&
 			!EXT4_I(inode)->i_reserved_data_blocks) {
 		down_write(&EXT4_I(inode)->i_data_sem);
-		ext4_discard_preallocations(inode, 0);
+		ext4_discard_preallocations(inode);
 		up_write(&EXT4_I(inode)->i_data_sem);
 	}
 	if (is_dx(inode) && filp->private_data)
@@ -306,7 +306,7 @@ out:
 }
 
 static ssize_t ext4_handle_inode_extension(struct inode *inode, loff_t offset,
-					   ssize_t count)
+					   ssize_t written, ssize_t count)
 {
 	handle_t *handle;
 
@@ -315,7 +315,7 @@ static ssize_t ext4_handle_inode_extension(struct inode *inode, loff_t offset,
 	if (IS_ERR(handle))
 		return PTR_ERR(handle);
 
-	if (ext4_update_inode_size(inode, offset + count)) {
+	if (ext4_update_inode_size(inode, offset + written)) {
 		int ret = ext4_mark_inode_dirty(handle, inode);
 		if (unlikely(ret)) {
 			ext4_journal_stop(handle);
@@ -323,11 +323,11 @@ static ssize_t ext4_handle_inode_extension(struct inode *inode, loff_t offset,
 		}
 	}
 
-	if (inode->i_nlink)
+	if ((written == count) && inode->i_nlink)
 		ext4_orphan_del(handle, inode);
 	ext4_journal_stop(handle);
 
-	return count;
+	return written;
 }
 
 /*
@@ -393,7 +393,7 @@ static int ext4_dio_write_end_io(struct kiocb *iocb, ssize_t size,
 	if (pos + size <= READ_ONCE(EXT4_I(inode)->i_disksize) &&
 	    pos + size <= i_size_read(inode))
 		return size;
-	return ext4_handle_inode_extension(inode, pos, size);
+	return ext4_handle_inode_extension(inode, pos, size, size);
 }
 
 static const struct iomap_dio_ops ext4_dio_write_ops = {
@@ -669,7 +669,7 @@ ext4_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	ret = dax_iomap_rw(iocb, from, &ext4_iomap_ops);
 
 	if (extend) {
-		ret = ext4_handle_inode_extension(inode, offset, ret);
+		ret = ext4_handle_inode_extension(inode, offset, ret, count);
 		ext4_inode_extension_cleanup(inode, ret < (ssize_t)count);
 	}
 out:
@@ -844,8 +844,7 @@ static int ext4_sample_last_mounted(struct super_block *sb,
 	if (err)
 		goto out_journal;
 	lock_buffer(sbi->s_sbh);
-	strncpy(sbi->s_es->s_last_mounted, cp,
-		sizeof(sbi->s_es->s_last_mounted));
+	strtomem_pad(sbi->s_es->s_last_mounted, cp, 0);
 	ext4_superblock_csum_set(sb);
 	unlock_buffer(sbi->s_sbh);
 	ext4_handle_dirty_metadata(handle, NULL, sbi->s_sbh);
@@ -885,8 +884,7 @@ static int ext4_file_open(struct inode *inode, struct file *filp)
 			return ret;
 	}
 
-	filp->f_mode |= FMODE_NOWAIT | FMODE_BUF_RASYNC |
-			FMODE_DIO_PARALLEL_WRITE;
+	filp->f_mode |= FMODE_NOWAIT | FMODE_CAN_ODIRECT;
 	return dquot_file_open(inode, filp);
 }
 
@@ -938,7 +936,6 @@ const struct file_operations ext4_file_operations = {
 	.compat_ioctl	= ext4_compat_ioctl,
 #endif
 	.mmap		= ext4_file_mmap,
-	.mmap_supported_flags = MAP_SYNC,
 	.open		= ext4_file_open,
 	.release	= ext4_release_file,
 	.fsync		= ext4_sync_file,
@@ -946,6 +943,8 @@ const struct file_operations ext4_file_operations = {
 	.splice_read	= ext4_file_splice_read,
 	.splice_write	= iter_file_splice_write,
 	.fallocate	= ext4_fallocate,
+	.fop_flags	= FOP_MMAP_SYNC | FOP_BUFFER_RASYNC |
+			  FOP_DIO_PARALLEL_WRITE,
 };
 
 const struct inode_operations ext4_file_inode_operations = {

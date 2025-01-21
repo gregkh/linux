@@ -24,6 +24,7 @@
 #include <asm/pci_x86.h>
 #include <asm/setup.h>
 #include <asm/i8259.h>
+#include <asm/numa.h>
 #include <asm/prom.h>
 
 __initdata u64 initial_dtb;
@@ -136,7 +137,8 @@ static void __init dtb_cpu_setup(void)
 			pr_warn("%pOF: missing local APIC ID\n", dn);
 			continue;
 		}
-		generic_processor_info(apic_id);
+		topology_register_apic(apic_id, CPU_ACPIID_INVALID, true);
+		set_apicid_to_node(apic_id, of_node_to_nid(dn));
 	}
 }
 
@@ -277,9 +279,18 @@ static void __init dtb_apic_setup(void)
 	dtb_ioapic_setup();
 }
 
-#ifdef CONFIG_OF_EARLY_FLATTREE
-static void __init x86_flattree_get_config(void)
+static void __init x86_dtb_parse_smp_config(void)
 {
+	if (!of_have_populated_dt())
+		return;
+
+	dtb_setup_hpet();
+	dtb_apic_setup();
+}
+
+void __init x86_flattree_get_config(void)
+{
+#ifdef CONFIG_OF_EARLY_FLATTREE
 	u32 size, map_len;
 	void *dt;
 
@@ -301,18 +312,7 @@ static void __init x86_flattree_get_config(void)
 
 	if (initial_dtb)
 		early_memunmap(dt, map_len);
-}
-#else
-static inline void x86_flattree_get_config(void) { }
 #endif
-
-void __init x86_dtb_init(void)
-{
-	x86_flattree_get_config();
-
-	if (!of_have_populated_dt())
-		return;
-
-	dtb_setup_hpet();
-	dtb_apic_setup();
+	if (of_have_populated_dt())
+		x86_init.mpparse.parse_smp_cfg = x86_dtb_parse_smp_config;
 }

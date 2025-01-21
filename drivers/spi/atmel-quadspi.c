@@ -272,7 +272,7 @@ static int atmel_qspi_find_mode(const struct spi_mem_op *op)
 		if (atmel_qspi_is_compatible(op, &atmel_qspi_modes[i]))
 			return i;
 
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 
 static bool atmel_qspi_supports_op(struct spi_mem *mem,
@@ -603,20 +603,17 @@ static int atmel_qspi_probe(struct platform_device *pdev)
 	aq->pdev = pdev;
 
 	/* Map the registers */
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "qspi_base");
-	aq->regs = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(aq->regs)) {
-		dev_err(&pdev->dev, "missing registers\n");
-		return PTR_ERR(aq->regs);
-	}
+	aq->regs = devm_platform_ioremap_resource_byname(pdev, "qspi_base");
+	if (IS_ERR(aq->regs))
+		return dev_err_probe(&pdev->dev, PTR_ERR(aq->regs),
+				     "missing registers\n");
 
 	/* Map the AHB memory */
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "qspi_mmap");
 	aq->mem = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(aq->mem)) {
-		dev_err(&pdev->dev, "missing AHB memory\n");
-		return PTR_ERR(aq->mem);
-	}
+	if (IS_ERR(aq->mem))
+		return dev_err_probe(&pdev->dev, PTR_ERR(aq->mem),
+				     "missing AHB memory\n");
 
 	aq->mmap_size = resource_size(res);
 
@@ -625,17 +622,15 @@ static int atmel_qspi_probe(struct platform_device *pdev)
 	if (IS_ERR(aq->pclk))
 		aq->pclk = devm_clk_get(&pdev->dev, NULL);
 
-	if (IS_ERR(aq->pclk)) {
-		dev_err(&pdev->dev, "missing peripheral clock\n");
-		return PTR_ERR(aq->pclk);
-	}
+	if (IS_ERR(aq->pclk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(aq->pclk),
+				     "missing peripheral clock\n");
 
 	/* Enable the peripheral clock */
 	err = clk_prepare_enable(aq->pclk);
-	if (err) {
-		dev_err(&pdev->dev, "failed to enable the peripheral clock\n");
-		return err;
-	}
+	if (err)
+		return dev_err_probe(&pdev->dev, err,
+				     "failed to enable the peripheral clock\n");
 
 	aq->caps = of_device_get_match_data(&pdev->dev);
 	if (!aq->caps) {

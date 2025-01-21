@@ -1354,14 +1354,12 @@ struct radeon_dpm_thermal {
 	bool               high_to_low;
 };
 
-enum radeon_clk_action
-{
+enum radeon_clk_action {
 	RADEON_SCLK_UP = 1,
 	RADEON_SCLK_DOWN
 };
 
-struct radeon_blacklist_clocks
-{
+struct radeon_blacklist_clocks {
 	u32 sclk;
 	u32 mclk;
 	enum radeon_clk_action action;
@@ -2299,7 +2297,7 @@ typedef void (*radeon_wreg_t)(struct radeon_device*, uint32_t, uint32_t);
 
 struct radeon_device {
 	struct device			*dev;
-	struct drm_device		*ddev;
+	struct drm_device		ddev;
 	struct pci_dev			*pdev;
 #ifdef __alpha__
 	struct pci_controller		*hose;
@@ -2480,7 +2478,7 @@ void cik_mm_wdoorbell(struct radeon_device *rdev, u32 index, u32 v);
 
 static inline struct drm_device *rdev_to_drm(struct radeon_device *rdev)
 {
-	return rdev->ddev;
+	return &rdev->ddev;
 }
 
 /*

@@ -67,7 +67,7 @@ MODULE_PARM_DESC(hw_changes_brightness,
 static bool device_id_scheme = false;
 module_param(device_id_scheme, bool, 0444);
 
-static int only_lcd = -1;
+static int only_lcd;
 module_param(only_lcd, int, 0444);
 
 static bool may_report_brightness_keys;
@@ -612,7 +612,7 @@ acpi_video_device_lcd_get_level_current(struct acpi_video_device *device,
 
 static int
 acpi_video_device_EDID(struct acpi_video_device *device,
-		       union acpi_object **edid, ssize_t length)
+		       union acpi_object **edid, int length)
 {
 	int status;
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
@@ -625,12 +625,10 @@ acpi_video_device_EDID(struct acpi_video_device *device,
 
 	if (!device)
 		return -ENODEV;
-	if (length == 128)
-		arg0.integer.value = 1;
-	else if (length == 256)
-		arg0.integer.value = 2;
-	else
+	if (!length || (length % 128))
 		return -EINVAL;
+
+	arg0.integer.value = length / 128;
 
 	status = acpi_evaluate_object(device->dev->handle, "_DDC", &args, &buffer);
 	if (ACPI_FAILURE(status))
@@ -641,7 +639,8 @@ acpi_video_device_EDID(struct acpi_video_device *device,
 	if (obj && obj->type == ACPI_TYPE_BUFFER)
 		*edid = obj;
 	else {
-		acpi_handle_info(device->dev->handle, "Invalid _DDC data\n");
+		acpi_handle_debug(device->dev->handle,
+				 "Invalid _DDC data for length %d\n", length);
 		status = -EFAULT;
 		kfree(obj);
 	}
@@ -1129,8 +1128,8 @@ static int acpi_video_bus_get_one_device(struct acpi_device *device, void *arg)
 		return -ENOMEM;
 	}
 
-	strcpy(acpi_device_name(device), ACPI_VIDEO_DEVICE_NAME);
-	strcpy(acpi_device_class(device), ACPI_VIDEO_CLASS);
+	strscpy(acpi_device_name(device), ACPI_VIDEO_DEVICE_NAME);
+	strscpy(acpi_device_class(device), ACPI_VIDEO_CLASS);
 
 	data->device_id = device_id;
 	data->video = video;
@@ -1447,7 +1446,6 @@ int acpi_video_get_edid(struct acpi_device *device, int type, int device_id,
 
 	for (i = 0; i < video->attached_count; i++) {
 		video_device = video->attached_array[i].bind_info;
-		length = 256;
 
 		if (!video_device)
 			continue;
@@ -1478,18 +1476,14 @@ int acpi_video_get_edid(struct acpi_device *device, int type, int device_id,
 			continue;
 		}
 
-		status = acpi_video_device_EDID(video_device, &buffer, length);
-
-		if (ACPI_FAILURE(status) || !buffer ||
-		    buffer->type != ACPI_TYPE_BUFFER) {
-			length = 128;
+		for (length = 512; length > 0; length -= 128) {
 			status = acpi_video_device_EDID(video_device, &buffer,
 							length);
-			if (ACPI_FAILURE(status) || !buffer ||
-			    buffer->type != ACPI_TYPE_BUFFER) {
-				continue;
-			}
+			if (ACPI_SUCCESS(status))
+				break;
 		}
+		if (!length)
+			continue;
 
 		*edid = buffer->buffer.pointer;
 		return length;
@@ -2016,8 +2010,8 @@ static int acpi_video_bus_add(struct acpi_device *device)
 	}
 
 	video->device = device;
-	strcpy(acpi_device_name(device), ACPI_VIDEO_BUS_NAME);
-	strcpy(acpi_device_class(device), ACPI_VIDEO_CLASS);
+	strscpy(acpi_device_name(device), ACPI_VIDEO_BUS_NAME);
+	strscpy(acpi_device_class(device), ACPI_VIDEO_CLASS);
 	device->driver_data = video;
 
 	acpi_video_bus_find_cap(video);
@@ -2067,7 +2061,7 @@ static int acpi_video_bus_add(struct acpi_device *device)
 		goto err_del;
 
 	error = acpi_dev_install_notify_handler(device, ACPI_DEVICE_NOTIFY,
-						acpi_video_bus_notify);
+						acpi_video_bus_notify, device);
 	if (error)
 		goto err_remove;
 
@@ -2146,57 +2140,6 @@ static int __init intel_opregion_present(void)
 	return opregion;
 }
 
-/* Check if the chassis-type indicates there is no builtin LCD panel */
-static bool dmi_is_desktop(void)
-{
-	const char *chassis_type;
-	unsigned long type;
-
-	chassis_type = dmi_get_system_info(DMI_CHASSIS_TYPE);
-	if (!chassis_type)
-		return false;
-
-	if (kstrtoul(chassis_type, 10, &type) != 0)
-		return false;
-
-	switch (type) {
-	case 0x03: /* Desktop */
-	case 0x04: /* Low Profile Desktop */
-	case 0x05: /* Pizza Box */
-	case 0x06: /* Mini Tower */
-	case 0x07: /* Tower */
-	case 0x10: /* Lunch Box */
-	case 0x11: /* Main Server Chassis */
-		return true;
-	}
-
-	return false;
-}
-
-/*
- * We're seeing a lot of bogus backlight interfaces on newer machines
- * without a LCD such as desktops, servers and HDMI sticks. Checking the
- * lcd flag fixes this, enable this by default on any machines which are:
- * 1.  Win8 ready (where we also prefer the native backlight driver, so
- *     normally the acpi_video code should not register there anyways); *and*
- * 2.1 Report a desktop/server DMI chassis-type, or
- * 2.2 Are an ACPI-reduced-hardware platform (and thus won't use the EC for
-       backlight control)
- */
-static bool should_check_lcd_flag(void)
-{
-	if (!acpi_osi_is_win8())
-		return false;
-
-	if (dmi_is_desktop())
-		return true;
-
-	if (acpi_reduced_hardware())
-		return true;
-
-	return false;
-}
-
 int acpi_video_register(void)
 {
 	int ret = 0;
@@ -2209,9 +2152,6 @@ int acpi_video_register(void)
 		 */
 		goto leave;
 	}
-
-	if (only_lcd == -1)
-		only_lcd = should_check_lcd_flag();
 
 	dmi_check_system(video_dmi_table);
 

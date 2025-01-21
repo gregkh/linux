@@ -51,8 +51,6 @@ COND_SYSCALL_COMPAT(io_pgetevents_time64);
 COND_SYSCALL(io_uring_setup);
 COND_SYSCALL(io_uring_enter);
 COND_SYSCALL(io_uring_register);
-COND_SYSCALL(lookup_dcookie);
-COND_SYSCALL_COMPAT(lookup_dcookie);
 COND_SYSCALL(eventfd2);
 COND_SYSCALL(epoll_create1);
 COND_SYSCALL(epoll_ctl);
@@ -78,8 +76,6 @@ COND_SYSCALL(timerfd_gettime32);
 COND_SYSCALL(acct);
 COND_SYSCALL(capget);
 COND_SYSCALL(capset);
-/* __ARCH_WANT_SYS_CLONE3 */
-COND_SYSCALL(clone3);
 COND_SYSCALL(futex);
 COND_SYSCALL(futex_time32);
 COND_SYSCALL(set_robust_list);
@@ -87,6 +83,9 @@ COND_SYSCALL_COMPAT(set_robust_list);
 COND_SYSCALL(get_robust_list);
 COND_SYSCALL_COMPAT(get_robust_list);
 COND_SYSCALL(futex_waitv);
+COND_SYSCALL(futex_wake);
+COND_SYSCALL(futex_wait);
+COND_SYSCALL(futex_requeue);
 COND_SYSCALL(kexec_load);
 COND_SYSCALL_COMPAT(kexec_load);
 COND_SYSCALL(init_module);
@@ -170,6 +169,9 @@ COND_SYSCALL(landlock_add_rule);
 COND_SYSCALL(landlock_restrict_self);
 COND_SYSCALL(fadvise64_64);
 COND_SYSCALL_COMPAT(fadvise64_64);
+COND_SYSCALL(lsm_get_self_attr);
+COND_SYSCALL(lsm_set_self_attr);
+COND_SYSCALL(lsm_list_modules);
 
 /* CONFIG_MMU only */
 COND_SYSCALL(swapon);
@@ -192,6 +194,7 @@ COND_SYSCALL(migrate_pages);
 COND_SYSCALL(move_pages);
 COND_SYSCALL(set_mempolicy_home_node);
 COND_SYSCALL(cachestat);
+COND_SYSCALL(mseal);
 
 COND_SYSCALL(perf_event_open);
 COND_SYSCALL(accept4);
@@ -387,3 +390,5 @@ COND_SYSCALL(setuid16);
 
 /* restartable sequence */
 COND_SYSCALL(rseq);
+
+COND_SYSCALL(uretprobe);

@@ -451,13 +451,6 @@ static int reiserfs_add_entry(struct reiserfs_transaction_handle *th,
 
 	BUG_ON(!th->t_trans_id);
 
-	/* cannot allow items to be added into a busy deleted directory */
-	if (!namelen)
-		return -EINVAL;
-
-	if (namelen > REISERFS_MAX_NAME(dir->i_sb->s_blocksize))
-		return -ENAMETOOLONG;
-
 	/* each entry has unique key. compose it */
 	make_cpu_key(&entry_key, dir,
 		     get_third_component(dir->i_sb, name, namelen),
@@ -572,7 +565,7 @@ static int reiserfs_add_entry(struct reiserfs_transaction_handle *th,
 	}
 
 	dir->i_size += paste_size;
-	dir->i_mtime = inode_set_ctime_current(dir);
+	inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
 	if (!S_ISDIR(inode->i_mode) && visible)
 		/* reiserfs_mkdir or reiserfs_rename will do that by itself */
 		reiserfs_update_sd(th, dir);
@@ -966,8 +959,8 @@ static int reiserfs_rmdir(struct inode *dir, struct dentry *dentry)
 			       inode->i_nlink);
 
 	clear_nlink(inode);
-	dir->i_mtime = inode_set_ctime_to_ts(dir,
-					     inode_set_ctime_current(inode));
+	inode_set_mtime_to_ts(dir,
+			      inode_set_ctime_to_ts(dir, inode_set_ctime_current(inode)));
 	reiserfs_update_sd(&th, inode);
 
 	DEC_DIR_INODE_NLINK(dir)
@@ -1075,7 +1068,7 @@ static int reiserfs_unlink(struct inode *dir, struct dentry *dentry)
 	reiserfs_update_sd(&th, inode);
 
 	dir->i_size -= (de.de_entrylen + DEH_SIZE);
-	dir->i_mtime = inode_set_ctime_current(dir);
+	inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
 	reiserfs_update_sd(&th, dir);
 
 	if (!savelink)

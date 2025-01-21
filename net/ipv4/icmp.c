@@ -93,6 +93,9 @@
 #include <net/ip_fib.h>
 #include <net/l3mdev.h>
 #include <net/addrconf.h>
+#include <net/inet_dscp.h>
+#define CREATE_TRACE_POINTS
+#include <trace/events/icmp.h>
 
 /*
  *	Build xmit assembly blocks
@@ -218,22 +221,15 @@ static inline void icmp_xmit_unlock(struct sock *sk)
 	spin_unlock(&sk->sk_lock.slock);
 }
 
-int sysctl_icmp_msgs_per_sec __read_mostly = 1000;
-int sysctl_icmp_msgs_burst __read_mostly = 50;
-
-static struct {
-	atomic_t	credit;
-	u32		stamp;
-} icmp_global;
-
 /**
  * icmp_global_allow - Are we allowed to send one more ICMP message ?
+ * @net: network namespace
  *
  * Uses a token bucket to limit our ICMP messages to ~sysctl_icmp_msgs_per_sec.
  * Returns false if we reached the limit and can not send another packet.
  * Works in tandem with icmp_global_consume().
  */
-bool icmp_global_allow(void)
+bool icmp_global_allow(struct net *net)
 {
 	u32 delta, now, oldstamp;
 	int incr, new, old;
@@ -242,36 +238,36 @@ bool icmp_global_allow(void)
 	 * Then later icmp_global_consume() could consume more credits,
 	 * this is an acceptable race.
 	 */
-	if (atomic_read(&icmp_global.credit) > 0)
+	if (atomic_read(&net->ipv4.icmp_global_credit) > 0)
 		return true;
 
 	now = jiffies;
-	oldstamp = READ_ONCE(icmp_global.stamp);
+	oldstamp = READ_ONCE(net->ipv4.icmp_global_stamp);
 	delta = min_t(u32, now - oldstamp, HZ);
 	if (delta < HZ / 50)
 		return false;
 
-	incr = READ_ONCE(sysctl_icmp_msgs_per_sec) * delta / HZ;
+	incr = READ_ONCE(net->ipv4.sysctl_icmp_msgs_per_sec) * delta / HZ;
 	if (!incr)
 		return false;
 
-	if (cmpxchg(&icmp_global.stamp, oldstamp, now) == oldstamp) {
-		old = atomic_read(&icmp_global.credit);
+	if (cmpxchg(&net->ipv4.icmp_global_stamp, oldstamp, now) == oldstamp) {
+		old = atomic_read(&net->ipv4.icmp_global_credit);
 		do {
-			new = min(old + incr, READ_ONCE(sysctl_icmp_msgs_burst));
-		} while (!atomic_try_cmpxchg(&icmp_global.credit, &old, new));
+			new = min(old + incr, READ_ONCE(net->ipv4.sysctl_icmp_msgs_burst));
+		} while (!atomic_try_cmpxchg(&net->ipv4.icmp_global_credit, &old, new));
 	}
 	return true;
 }
 EXPORT_SYMBOL(icmp_global_allow);
 
-void icmp_global_consume(void)
+void icmp_global_consume(struct net *net)
 {
 	int credits = get_random_u32_below(3);
 
 	/* Note: this might make icmp_global.credit negative. */
 	if (credits)
-		atomic_sub(credits, &icmp_global.credit);
+		atomic_sub(credits, &net->ipv4.icmp_global_credit);
 }
 EXPORT_SYMBOL(icmp_global_consume);
 
@@ -297,7 +293,7 @@ static bool icmpv4_global_allow(struct net *net, int type, int code,
 	if (icmpv4_mask_allow(net, type, code))
 		return true;
 
-	if (icmp_global_allow()) {
+	if (icmp_global_allow(net)) {
 		*apply_ratelimit = true;
 		return true;
 	}
@@ -335,7 +331,7 @@ out:
 	if (!rc)
 		__ICMP_INC_STATS(net, ICMP_MIB_RATELIMITHOST);
 	else
-		icmp_global_consume();
+		icmp_global_consume(net);
 	return rc;
 }
 
@@ -449,7 +445,7 @@ static void icmp_reply(struct icmp_bxm *icmp_param, struct sk_buff *skb)
 	fl4.saddr = saddr;
 	fl4.flowi4_mark = mark;
 	fl4.flowi4_uid = sock_net_uid(net, NULL);
-	fl4.flowi4_tos = RT_TOS(ip_hdr(skb)->tos);
+	fl4.flowi4_tos = ip_hdr(skb)->tos & INET_DSCP_MASK;
 	fl4.flowi4_proto = IPPROTO_ICMP;
 	fl4.flowi4_oif = l3mdev_master_ifindex(skb->dev);
 	security_skb_classify_flow(skb, flowi4_to_flowi_common(&fl4));
@@ -491,6 +487,7 @@ static struct rtable *icmp_route_lookup(struct net *net,
 					struct icmp_bxm *param)
 {
 	struct net_device *route_lookup_dev;
+	struct dst_entry *dst, *dst2;
 	struct rtable *rt, *rt2;
 	struct flowi4 fl4_dec;
 	int err;
@@ -501,7 +498,7 @@ static struct rtable *icmp_route_lookup(struct net *net,
 	fl4->saddr = saddr;
 	fl4->flowi4_mark = mark;
 	fl4->flowi4_uid = sock_net_uid(net, NULL);
-	fl4->flowi4_tos = RT_TOS(tos);
+	fl4->flowi4_tos = tos & INET_DSCP_MASK;
 	fl4->flowi4_proto = IPPROTO_ICMP;
 	fl4->fl4_icmp_type = type;
 	fl4->fl4_icmp_code = code;
@@ -516,17 +513,21 @@ static struct rtable *icmp_route_lookup(struct net *net,
 	/* No need to clone since we're just using its address. */
 	rt2 = rt;
 
-	rt = (struct rtable *) xfrm_lookup(net, &rt->dst,
-					   flowi4_to_flowi(fl4), NULL, 0);
-	if (!IS_ERR(rt)) {
+	dst = xfrm_lookup(net, &rt->dst,
+			  flowi4_to_flowi(fl4), NULL, 0);
+	rt = dst_rtable(dst);
+	if (!IS_ERR(dst)) {
 		if (rt != rt2)
 			return rt;
-	} else if (PTR_ERR(rt) == -EPERM) {
+		if (inet_addr_type_dev_table(net, route_lookup_dev,
+					     fl4->daddr) == RTN_LOCAL)
+			return rt;
+	} else if (PTR_ERR(dst) == -EPERM) {
 		rt = NULL;
-	} else
+	} else {
 		return rt;
-
-	err = xfrm_decode_session_reverse(skb_in, flowi4_to_flowi(&fl4_dec), AF_INET);
+	}
+	err = xfrm_decode_session_reverse(net, skb_in, flowi4_to_flowi(&fl4_dec), AF_INET);
 	if (err)
 		goto relookup_failed;
 
@@ -549,7 +550,7 @@ static struct rtable *icmp_route_lookup(struct net *net,
 		orefdst = skb_in->_skb_refdst; /* save old refdst */
 		skb_dst_set(skb_in, NULL);
 		err = ip_route_input(skb_in, fl4_dec.daddr, fl4_dec.saddr,
-				     RT_TOS(tos), rt2->dst.dev);
+				     tos, rt2->dst.dev);
 
 		dst_release(&rt2->dst);
 		rt2 = skb_rtable(skb_in);
@@ -559,19 +560,19 @@ static struct rtable *icmp_route_lookup(struct net *net,
 	if (err)
 		goto relookup_failed;
 
-	rt2 = (struct rtable *) xfrm_lookup(net, &rt2->dst,
-					    flowi4_to_flowi(&fl4_dec), NULL,
-					    XFRM_LOOKUP_ICMP);
-	if (!IS_ERR(rt2)) {
+	dst2 = xfrm_lookup(net, &rt2->dst, flowi4_to_flowi(&fl4_dec), NULL,
+			   XFRM_LOOKUP_ICMP);
+	rt2 = dst_rtable(dst2);
+	if (!IS_ERR(dst2)) {
 		dst_release(&rt->dst);
 		memcpy(fl4, &fl4_dec, sizeof(*fl4));
 		rt = rt2;
-	} else if (PTR_ERR(rt2) == -EPERM) {
+	} else if (PTR_ERR(dst2) == -EPERM) {
 		if (rt)
 			dst_release(&rt->dst);
 		return rt2;
 	} else {
-		err = PTR_ERR(rt2);
+		err = PTR_ERR(dst2);
 		goto relookup_failed;
 	}
 	return rt;
@@ -776,6 +777,8 @@ void __icmp_send(struct sk_buff *skb_in, int type, int code, __be32 info,
 	 */
 	if (!fl4.saddr)
 		fl4.saddr = htonl(INADDR_DUMMY);
+
+	trace_icmp_send(skb_in, type, code);
 
 	icmp_push_reply(sk, &icmp_param, &fl4, &ipc, &rt);
 ende:
@@ -1490,6 +1493,8 @@ static int __net_init icmp_sk_init(struct net *net)
 	net->ipv4.sysctl_icmp_ratelimit = 1 * HZ;
 	net->ipv4.sysctl_icmp_ratemask = 0x1818;
 	net->ipv4.sysctl_icmp_errors_use_inbound_ifaddr = 0;
+	net->ipv4.sysctl_icmp_msgs_per_sec = 1000;
+	net->ipv4.sysctl_icmp_msgs_burst = 50;
 
 	return 0;
 }

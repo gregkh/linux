@@ -14,13 +14,14 @@
 #include <linux/cache.h>
 #include <linux/spinlock.h>
 #include <linux/threads.h>
-#include <linux/cpumask.h>
+#include <linux/cpumask_types.h>
 #include <linux/seqlock.h>
 #include <linux/lockdep.h>
 #include <linux/completion.h>
 #include <linux/debugobjects.h>
 #include <linux/bug.h>
 #include <linux/compiler.h>
+#include <linux/hrtimer.h>
 
 /* Definitions for a non-string torture-test module parameter. */
 #define torture_param(type, name, init, msg) \
@@ -121,10 +122,15 @@ void _torture_stop_kthread(char *m, struct task_struct **tp);
 #define torture_stop_kthread(n, tp) \
 	_torture_stop_kthread("Stopping " #n " task", &(tp))
 
+/* Scheduler-related definitions. */
 #ifdef CONFIG_PREEMPTION
 #define torture_preempt_schedule() __preempt_schedule()
 #else
 #define torture_preempt_schedule()	do { } while (0)
+#endif
+
+#if IS_ENABLED(CONFIG_RCU_TORTURE_TEST) || IS_MODULE(CONFIG_RCU_TORTURE_TEST) || IS_ENABLED(CONFIG_LOCK_TORTURE_TEST) || IS_MODULE(CONFIG_LOCK_TORTURE_TEST)
+long torture_sched_setaffinity(pid_t pid, const struct cpumask *in_mask);
 #endif
 
 #endif /* __LINUX_TORTURE_H */

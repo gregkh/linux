@@ -7,7 +7,6 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
-#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of.h>
@@ -55,7 +54,7 @@ static int dsi_get_version(const void __iomem *base, u32 *major, u32 *minor)
 	 * scratch register which we never touch)
 	 */
 
-	ver = msm_readl(base + REG_DSI_VERSION);
+	ver = readl(base + REG_DSI_VERSION);
 	if (ver) {
 		/* older dsi host, there is no register shift */
 		ver = FIELD(ver, DSI_VERSION_MAJOR);
@@ -73,12 +72,12 @@ static int dsi_get_version(const void __iomem *base, u32 *major, u32 *minor)
 		 * registers are shifted down, read DSI_VERSION again with
 		 * the shifted offset
 		 */
-		ver = msm_readl(base + DSI_6G_REG_SHIFT + REG_DSI_VERSION);
+		ver = readl(base + DSI_6G_REG_SHIFT + REG_DSI_VERSION);
 		ver = FIELD(ver, DSI_VERSION_MAJOR);
 		if (ver == MSM_DSI_VER_MAJOR_6G) {
 			/* 6G version */
 			*major = ver;
-			*minor = msm_readl(base + REG_DSI_6G_HW_VERSION);
+			*minor = readl(base + REG_DSI_6G_HW_VERSION);
 			return 0;
 		} else {
 			return -EINVAL;
@@ -130,9 +129,6 @@ struct msm_dsi_host {
 
 	unsigned long src_clk_rate;
 
-	struct gpio_desc *disp_en_gpio;
-	struct gpio_desc *te_gpio;
-
 	const struct msm_dsi_cfg_handler *cfg_hnd;
 
 	struct completion dma_comp;
@@ -183,24 +179,14 @@ struct msm_dsi_host {
 	int irq;
 };
 
-static u32 dsi_get_bpp(const enum mipi_dsi_pixel_format fmt)
-{
-	switch (fmt) {
-	case MIPI_DSI_FMT_RGB565:		return 16;
-	case MIPI_DSI_FMT_RGB666_PACKED:	return 18;
-	case MIPI_DSI_FMT_RGB666:
-	case MIPI_DSI_FMT_RGB888:
-	default:				return 24;
-	}
-}
 
 static inline u32 dsi_read(struct msm_dsi_host *msm_host, u32 reg)
 {
-	return msm_readl(msm_host->ctrl_base + reg);
+	return readl(msm_host->ctrl_base + reg);
 }
 static inline void dsi_write(struct msm_dsi_host *msm_host, u32 reg, u32 data)
 {
-	msm_writel(data, msm_host->ctrl_base + reg);
+	writel(data, msm_host->ctrl_base + reg);
 }
 
 static const struct msm_dsi_cfg_handler *dsi_get_config(
@@ -529,6 +515,25 @@ void dsi_link_clk_disable_v2(struct msm_dsi_host *msm_host)
 	clk_disable_unprepare(msm_host->byte_clk);
 }
 
+/**
+ * dsi_adjust_pclk_for_compression() - Adjust the pclk rate for compression case
+ * @mode: The selected mode for the DSI output
+ * @dsc: DRM DSC configuration for this DSI output
+ *
+ * Adjust the pclk rate by calculating a new hdisplay proportional to
+ * the compression ratio such that:
+ *     new_hdisplay = old_hdisplay * compressed_bpp / uncompressed_bpp
+ *
+ * Porches do not need to be adjusted:
+ * - For VIDEO mode they are not compressed by DSC and are passed as is.
+ * - For CMD mode there are no actual porches. Instead these fields
+ *   currently represent the overhead to the image data transfer. As such, they
+ *   are calculated for the final mode parameters (after the compression) and
+ *   are not to be adjusted too.
+ *
+ *  FIXME: Reconsider this if/when CMD mode handling is rewritten to use
+ *  transfer time and data overhead as a starting point of the calculations.
+ */
 static unsigned long dsi_adjust_pclk_for_compression(const struct drm_display_mode *mode,
 		const struct drm_dsc_config *dsc)
 {
@@ -567,7 +572,7 @@ unsigned long dsi_byte_clk_get_rate(struct mipi_dsi_host *host, bool is_bonded_d
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
 	u8 lanes = msm_host->lanes;
-	u32 bpp = dsi_get_bpp(msm_host->format);
+	u32 bpp = mipi_dsi_pixel_format_to_bpp(msm_host->format);
 	unsigned long pclk_rate = dsi_get_pclk_rate(mode, msm_host->dsc, is_bonded_dsi);
 	unsigned long pclk_bpp;
 
@@ -610,7 +615,7 @@ int dsi_calc_clk_rate_6g(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 
 int dsi_calc_clk_rate_v2(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 {
-	u32 bpp = dsi_get_bpp(msm_host->format);
+	u32 bpp = mipi_dsi_pixel_format_to_bpp(msm_host->format);
 	unsigned int esc_mhz, esc_div;
 	unsigned long byte_mhz;
 
@@ -711,6 +716,15 @@ static void dsi_ctrl_disable(struct msm_dsi_host *msm_host)
 	dsi_write(msm_host, REG_DSI_CTRL, 0);
 }
 
+bool msm_dsi_host_is_wide_bus_enabled(struct mipi_dsi_host *host)
+{
+	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+
+	return msm_host->dsc &&
+		(msm_host->cfg_hnd->major == MSM_DSI_VER_MAJOR_6G &&
+		 msm_host->cfg_hnd->minor >= MSM_DSI_6G_VER_MINOR_V2_5_0);
+}
+
 static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 			struct msm_dsi_phy_shared_timings *phy_shared_timings, struct msm_dsi_phy *phy)
 {
@@ -736,6 +750,8 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 		data |= DSI_VID_CFG0_TRAFFIC_MODE(dsi_get_traffic_mode(flags));
 		data |= DSI_VID_CFG0_DST_FORMAT(dsi_get_vid_fmt(mipi_fmt));
 		data |= DSI_VID_CFG0_VIRT_CHANNEL(msm_host->channel);
+		if (msm_dsi_host_is_wide_bus_enabled(&msm_host->base))
+			data |= DSI_VID_CFG0_DATABUS_WIDEN;
 		dsi_write(msm_host, REG_DSI_VID_CFG0, data);
 
 		/* Do not swap RGB colors */
@@ -754,10 +770,15 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 		data |= DSI_CMD_CFG1_INSERT_DCS_COMMAND;
 		dsi_write(msm_host, REG_DSI_CMD_CFG1, data);
 
-		if (msm_host->cfg_hnd->major == MSM_DSI_VER_MAJOR_6G &&
-		    msm_host->cfg_hnd->minor >= MSM_DSI_6G_VER_MINOR_V1_3) {
+		if (cfg_hnd->major == MSM_DSI_VER_MAJOR_6G) {
 			data = dsi_read(msm_host, REG_DSI_CMD_MODE_MDP_CTRL2);
-			data |= DSI_CMD_MODE_MDP_CTRL2_BURST_MODE;
+
+			if (cfg_hnd->minor >= MSM_DSI_6G_VER_MINOR_V1_3)
+				data |= DSI_CMD_MODE_MDP_CTRL2_BURST_MODE;
+
+			if (msm_dsi_host_is_wide_bus_enabled(&msm_host->base))
+				data |= DSI_CMD_MODE_MDP_CTRL2_DATABUS_WIDEN;
+
 			dsi_write(msm_host, REG_DSI_CMD_MODE_MDP_CTRL2, data);
 		}
 	}
@@ -860,7 +881,11 @@ static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mod
 	/* DSI_VIDEO_COMPRESSION_MODE & DSI_COMMAND_COMPRESSION_MODE
 	 * registers have similar offsets, so for below common code use
 	 * DSI_VIDEO_COMPRESSION_MODE_XXXX for setting bits
+	 *
+	 * pkt_per_line is log2 encoded, >>1 works for supported values (1,2,4)
 	 */
+	if (pkt_per_line > 4)
+		drm_warn_once(msm_host->dev, "pkt_per_line too big");
 	reg |= DSI_VIDEO_COMPRESSION_MODE_CTRL_PKT_PER_LINE(pkt_per_line >> 1);
 	reg |= DSI_VIDEO_COMPRESSION_MODE_CTRL_EOL_BYTE_NUM(eol_byte_num);
 	reg |= DSI_VIDEO_COMPRESSION_MODE_CTRL_EN;
@@ -898,6 +923,7 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 	u32 hdisplay = mode->hdisplay;
 	u32 wc;
 	int ret;
+	bool wide_bus_enabled = msm_dsi_host_is_wide_bus_enabled(&msm_host->base);
 
 	DBG("");
 
@@ -918,6 +944,7 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 
 	if (msm_host->dsc) {
 		struct drm_dsc_config *dsc = msm_host->dsc;
+		u32 bytes_per_pclk;
 
 		/* update dsc params with timing params */
 		if (!dsc || !mode->hdisplay || !mode->vdisplay) {
@@ -937,11 +964,27 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 		if (ret)
 			return;
 
-		/* Divide the display by 3 but keep back/font porch and
-		 * pulse width same
+		/*
+		 * DPU sends 3 bytes per pclk cycle to DSI. If widebus is
+		 * enabled, bus width is extended to 6 bytes.
+		 *
+		 * Calculate the number of pclks needed to transmit one line of
+		 * the compressed data.
+
+		 * The back/font porch and pulse width are kept intact. For
+		 * VIDEO mode they represent timing parameters rather than
+		 * actual data transfer, see the documentation for
+		 * dsi_adjust_pclk_for_compression(). For CMD mode they are
+		 * unused anyway.
 		 */
 		h_total -= hdisplay;
-		hdisplay = DIV_ROUND_UP(msm_dsc_get_bytes_per_line(msm_host->dsc), 3);
+		if (wide_bus_enabled && !(msm_host->mode_flags & MIPI_DSI_MODE_VIDEO))
+			bytes_per_pclk = 6;
+		else
+			bytes_per_pclk = 3;
+
+		hdisplay = DIV_ROUND_UP(msm_dsc_get_bytes_per_line(msm_host->dsc), bytes_per_pclk);
+
 		h_total += hdisplay;
 		ha_end = ha_start + hdisplay;
 	}
@@ -973,7 +1016,7 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 
 		/* image data and 1 byte write_memory_start cmd */
 		if (!msm_host->dsc)
-			wc = hdisplay * dsi_get_bpp(msm_host->format) / 8 + 1;
+			wc = hdisplay * mipi_dsi_pixel_format_to_bpp(msm_host->format) / 8 + 1;
 		else
 			/*
 			 * When DSC is enabled, WC = slice_chunk_size * slice_per_pkt + 1.
@@ -1393,7 +1436,7 @@ static int dsi_cmds2buf_tx(struct msm_dsi_host *msm_host,
 {
 	int len, ret;
 	int bllp_len = msm_host->mode->hdisplay *
-			dsi_get_bpp(msm_host->format) / 8;
+			mipi_dsi_pixel_format_to_bpp(msm_host->format) / 8;
 
 	len = dsi_cmd_dma_add(msm_host, msg);
 	if (len < 0) {
@@ -1574,28 +1617,6 @@ static irqreturn_t dsi_host_irq(int irq, void *ptr)
 	return IRQ_HANDLED;
 }
 
-static int dsi_host_init_panel_gpios(struct msm_dsi_host *msm_host,
-			struct device *panel_device)
-{
-	msm_host->disp_en_gpio = devm_gpiod_get_optional(panel_device,
-							 "disp-enable",
-							 GPIOD_OUT_LOW);
-	if (IS_ERR(msm_host->disp_en_gpio)) {
-		DBG("cannot get disp-enable-gpios %ld",
-				PTR_ERR(msm_host->disp_en_gpio));
-		return PTR_ERR(msm_host->disp_en_gpio);
-	}
-
-	msm_host->te_gpio = devm_gpiod_get_optional(panel_device, "disp-te",
-								GPIOD_IN);
-	if (IS_ERR(msm_host->te_gpio)) {
-		DBG("cannot get disp-te-gpios %ld", PTR_ERR(msm_host->te_gpio));
-		return PTR_ERR(msm_host->te_gpio);
-	}
-
-	return 0;
-}
-
 static int dsi_host_attach(struct mipi_dsi_host *host,
 					struct mipi_dsi_device *dsi)
 {
@@ -1611,11 +1632,6 @@ static int dsi_host_attach(struct mipi_dsi_host *host,
 	msm_host->mode_flags = dsi->mode_flags;
 	if (dsi->dsc)
 		msm_host->dsc = dsi->dsc;
-
-	/* Some gpios defined in panel DT need to be controlled by host */
-	ret = dsi_host_init_panel_gpios(msm_host, &dsi->dev);
-	if (ret)
-		return ret;
 
 	ret = dsi_dev_attach(msm_host->pdev);
 	if (ret)
@@ -1778,9 +1794,11 @@ static int dsi_populate_dsc_params(struct msm_dsi_host *msm_host, struct drm_dsc
 
 static int dsi_host_parse_dt(struct msm_dsi_host *msm_host)
 {
+	struct msm_dsi *msm_dsi = platform_get_drvdata(msm_host->pdev);
 	struct device *dev = &msm_host->pdev->dev;
 	struct device_node *np = dev->of_node;
 	struct device_node *endpoint;
+	const char *te_source;
 	int ret = 0;
 
 	/*
@@ -1802,6 +1820,16 @@ static int dsi_host_parse_dt(struct msm_dsi_host *msm_host)
 		ret = -EINVAL;
 		goto err;
 	}
+
+	ret = of_property_read_string(endpoint, "qcom,te-source", &te_source);
+	if (ret && ret != -EINVAL) {
+		DRM_DEV_ERROR(dev, "%s: invalid TE source configuration %d\n",
+			__func__, ret);
+		goto err;
+	}
+	if (!ret)
+		msm_dsi->te_source = devm_kstrdup(dev, te_source, GFP_KERNEL);
+	ret = 0;
 
 	if (of_property_read_bool(np, "syscon-sfpb")) {
 		msm_host->sfpb = syscon_regmap_lookup_by_phandle(np,
@@ -2383,9 +2411,6 @@ int msm_dsi_host_power_on(struct mipi_dsi_host *host,
 	dsi_sw_reset(msm_host);
 	dsi_ctrl_enable(msm_host, phy_shared_timings, phy);
 
-	if (msm_host->disp_en_gpio)
-		gpiod_set_value(msm_host->disp_en_gpio, 1);
-
 	msm_host->power_on = true;
 	mutex_unlock(&msm_host->dev_mutex);
 
@@ -2414,9 +2439,6 @@ int msm_dsi_host_power_off(struct mipi_dsi_host *host)
 	}
 
 	dsi_ctrl_disable(msm_host);
-
-	if (msm_host->disp_en_gpio)
-		gpiod_set_value(msm_host->disp_en_gpio, 0);
 
 	pinctrl_pm_select_sleep_state(&msm_host->pdev->dev);
 

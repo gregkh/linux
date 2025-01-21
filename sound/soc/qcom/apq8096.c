@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2018, Linaro Limited
 
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/of_device.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/pcm.h>
@@ -142,4 +142,4 @@ static struct platform_driver msm_snd_apq8096_driver = {
 module_platform_driver(msm_snd_apq8096_driver);
 MODULE_AUTHOR("Srinivas Kandagatla <srinivas.kandagatla@linaro.org");
 MODULE_DESCRIPTION("APQ8096 ASoC Machine Driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

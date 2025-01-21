@@ -19,8 +19,11 @@ static const u8 lacp_train_pkt[LACP_TRAIN_PKT_LEN] = { 0, 0, 0, 0, 0, 0,
 static const u8 ice_dflt_vsi_rcp[ICE_RECIPE_LEN] = {
 	0x05, 0, 0, 0, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	0x85, 0, 0x01, 0, 0, 0, 0xff, 0xff, 0x08, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0x30, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	0, 0, 0, 0, 0, 0, 0x30 };
+static const u8 ice_lport_rcp[ICE_RECIPE_LEN] = {
+	0x05, 0, 0, 0, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0x85, 0, 0x16, 0, 0, 0, 0xff, 0xff, 0x07, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0x30 };
 
 /**
  * ice_lag_set_primary - set PF LAG state as Primary
@@ -149,6 +152,27 @@ ice_lag_find_hw_by_lport(struct ice_lag *lag, u8 lport)
 }
 
 /**
+ * ice_pkg_has_lport_extract - check if lport extraction supported
+ * @hw: HW struct
+ */
+static bool ice_pkg_has_lport_extract(struct ice_hw *hw)
+{
+	int i;
+
+	for (i = 0; i < hw->blk[ICE_BLK_SW].es.count; i++) {
+		u16 offset;
+		u8 fv_prot;
+
+		ice_find_prot_off(hw, ICE_BLK_SW, ICE_SW_DEFAULT_PROFILE, i,
+				  &fv_prot, &offset);
+		if (fv_prot == ICE_FV_PROT_MDID &&
+		    offset == ICE_LP_EXT_BUF_OFFSET)
+			return true;
+	}
+	return false;
+}
+
+/**
  * ice_lag_find_primary - returns pointer to primary interfaces lag struct
  * @lag: local interfaces lag struct
  */
@@ -173,18 +197,23 @@ static struct ice_lag *ice_lag_find_primary(struct ice_lag *lag)
 }
 
 /**
- * ice_lag_cfg_dflt_fltr - Add/Remove default VSI rule for LAG
+ * ice_lag_cfg_fltr - Add/Remove rule for LAG
  * @lag: lag struct for local interface
+ * @act: rule action
+ * @recipe_id: recipe id for the new rule
+ * @rule_idx: pointer to rule index
+ * @direction: ICE_FLTR_RX or ICE_FLTR_TX
  * @add: boolean on whether we are adding filters
  */
 static int
-ice_lag_cfg_dflt_fltr(struct ice_lag *lag, bool add)
+ice_lag_cfg_fltr(struct ice_lag *lag, u32 act, u16 recipe_id, u16 *rule_idx,
+		 u8 direction, bool add)
 {
 	struct ice_sw_rule_lkup_rx_tx *s_rule;
 	u16 s_rule_sz, vsi_num;
 	struct ice_hw *hw;
-	u32 act, opc;
 	u8 *eth_hdr;
+	u32 opc;
 	int err;
 
 	hw = &lag->pf->hw;
@@ -193,7 +222,7 @@ ice_lag_cfg_dflt_fltr(struct ice_lag *lag, bool add)
 	s_rule_sz = ICE_SW_RULE_RX_TX_ETH_HDR_SIZE(s_rule);
 	s_rule = kzalloc(s_rule_sz, GFP_KERNEL);
 	if (!s_rule) {
-		dev_err(ice_pf_to_dev(lag->pf), "error allocating rule for LAG default VSI\n");
+		dev_err(ice_pf_to_dev(lag->pf), "error allocating rule for LAG\n");
 		return -ENOMEM;
 	}
 
@@ -201,19 +230,23 @@ ice_lag_cfg_dflt_fltr(struct ice_lag *lag, bool add)
 		eth_hdr = s_rule->hdr_data;
 		ice_fill_eth_hdr(eth_hdr);
 
-		act = (vsi_num << ICE_SINGLE_ACT_VSI_ID_S) &
-			ICE_SINGLE_ACT_VSI_ID_M;
-		act |= ICE_SINGLE_ACT_VSI_FORWARDING |
-			ICE_SINGLE_ACT_VALID_BIT | ICE_SINGLE_ACT_LAN_ENABLE;
+		act |= FIELD_PREP(ICE_SINGLE_ACT_VSI_ID_M, vsi_num);
 
-		s_rule->hdr.type = cpu_to_le16(ICE_AQC_SW_RULES_T_LKUP_RX);
-		s_rule->recipe_id = cpu_to_le16(lag->pf_recipe);
-		s_rule->src = cpu_to_le16(hw->port_info->lport);
+		s_rule->recipe_id = cpu_to_le16(recipe_id);
+		if (direction == ICE_FLTR_RX) {
+			s_rule->hdr.type =
+				cpu_to_le16(ICE_AQC_SW_RULES_T_LKUP_RX);
+			s_rule->src = cpu_to_le16(hw->port_info->lport);
+		} else {
+			s_rule->hdr.type =
+				cpu_to_le16(ICE_AQC_SW_RULES_T_LKUP_TX);
+			s_rule->src = cpu_to_le16(vsi_num);
+		}
 		s_rule->act = cpu_to_le32(act);
 		s_rule->hdr_len = cpu_to_le16(DUMMY_ETH_HDR_LEN);
 		opc = ice_aqc_opc_add_sw_rules;
 	} else {
-		s_rule->index = cpu_to_le16(lag->pf_rule_id);
+		s_rule->index = cpu_to_le16(*rule_idx);
 		opc = ice_aqc_opc_remove_sw_rules;
 	}
 
@@ -222,13 +255,62 @@ ice_lag_cfg_dflt_fltr(struct ice_lag *lag, bool add)
 		goto dflt_fltr_free;
 
 	if (add)
-		lag->pf_rule_id = le16_to_cpu(s_rule->index);
+		*rule_idx = le16_to_cpu(s_rule->index);
 	else
-		lag->pf_rule_id = 0;
+		*rule_idx = 0;
 
 dflt_fltr_free:
 	kfree(s_rule);
 	return err;
+}
+
+/**
+ * ice_lag_cfg_dflt_fltr - Add/Remove default VSI rule for LAG
+ * @lag: lag struct for local interface
+ * @add: boolean on whether to add filter
+ */
+static int
+ice_lag_cfg_dflt_fltr(struct ice_lag *lag, bool add)
+{
+	u32 act = ICE_SINGLE_ACT_VSI_FORWARDING |
+		ICE_SINGLE_ACT_VALID_BIT | ICE_SINGLE_ACT_LAN_ENABLE;
+	int err;
+
+	err = ice_lag_cfg_fltr(lag, act, lag->pf_recipe, &lag->pf_rx_rule_id,
+			       ICE_FLTR_RX, add);
+	if (err)
+		goto err_rx;
+
+	act = ICE_SINGLE_ACT_VSI_FORWARDING | ICE_SINGLE_ACT_VALID_BIT |
+	      ICE_SINGLE_ACT_LB_ENABLE;
+	err = ice_lag_cfg_fltr(lag, act, lag->pf_recipe, &lag->pf_tx_rule_id,
+			       ICE_FLTR_TX, add);
+	if (err)
+		goto err_tx;
+
+	return 0;
+
+err_tx:
+	ice_lag_cfg_fltr(lag, act, lag->pf_recipe, &lag->pf_rx_rule_id,
+			 ICE_FLTR_RX, !add);
+err_rx:
+	return err;
+}
+
+/**
+ * ice_lag_cfg_drop_fltr - Add/Remove lport drop rule
+ * @lag: lag struct for local interface
+ * @add: boolean on whether to add filter
+ */
+static int
+ice_lag_cfg_drop_fltr(struct ice_lag *lag, bool add)
+{
+	u32 act = ICE_SINGLE_ACT_VSI_FORWARDING |
+		  ICE_SINGLE_ACT_VALID_BIT |
+		  ICE_SINGLE_ACT_DROP;
+
+	return ice_lag_cfg_fltr(lag, act, lag->lport_recipe,
+				&lag->lport_rule_idx, ICE_FLTR_RX, add);
 }
 
 /**
@@ -254,16 +336,21 @@ ice_lag_cfg_pf_fltrs(struct ice_lag *lag, void *ptr)
 	dev = ice_pf_to_dev(lag->pf);
 
 	/* interface not active - remove old default VSI rule */
-	if (bonding_info->slave.state && lag->pf_rule_id) {
+	if (bonding_info->slave.state && lag->pf_rx_rule_id) {
 		if (ice_lag_cfg_dflt_fltr(lag, false))
 			dev_err(dev, "Error removing old default VSI filter\n");
+		if (ice_lag_cfg_drop_fltr(lag, true))
+			dev_err(dev, "Error adding new drop filter\n");
 		return;
 	}
 
 	/* interface becoming active - add new default VSI rule */
-	if (!bonding_info->slave.state && !lag->pf_rule_id)
+	if (!bonding_info->slave.state && !lag->pf_rx_rule_id) {
 		if (ice_lag_cfg_dflt_fltr(lag, true))
 			dev_err(dev, "Error adding new default VSI filter\n");
+		if (lag->lport_rule_idx && ice_lag_cfg_drop_fltr(lag, false))
+			dev_err(dev, "Error removing old drop filter\n");
+	}
 }
 
 /**
@@ -430,10 +517,11 @@ static void
 ice_lag_move_vf_node_tc(struct ice_lag *lag, u8 oldport, u8 newport,
 			u16 vsi_num, u8 tc)
 {
-	u16 numq, valq, buf_size, num_moved, qbuf_size;
+	DEFINE_RAW_FLEX(struct ice_aqc_move_elem, buf, teid, 1);
 	struct device *dev = ice_pf_to_dev(lag->pf);
+	u16 numq, valq, num_moved, qbuf_size;
+	u16 buf_size = __struct_size(buf);
 	struct ice_aqc_cfg_txqs_buf *qbuf;
-	struct ice_aqc_move_elem *buf;
 	struct ice_sched_node *n_prt;
 	struct ice_hw *new_hw = NULL;
 	__le32 teid, parent_teid;
@@ -505,26 +593,17 @@ qbuf_none:
 		goto resume_traffic;
 
 	/* Move Vf's VSI node for this TC to newport's scheduler tree */
-	buf_size = struct_size(buf, teid, 1);
-	buf = kzalloc(buf_size, GFP_KERNEL);
-	if (!buf) {
-		dev_warn(dev, "Failure to alloc memory for VF node failover\n");
-		goto resume_traffic;
-	}
-
 	buf->hdr.src_parent_teid = parent_teid;
 	buf->hdr.dest_parent_teid = n_prt->info.node_teid;
 	buf->hdr.num_elems = cpu_to_le16(1);
 	buf->hdr.mode = ICE_AQC_MOVE_ELEM_MODE_KEEP_OWN;
 	buf->teid[0] = teid;
 
-	if (ice_aq_move_sched_elems(&lag->pf->hw, 1, buf, buf_size, &num_moved,
-				    NULL))
+	if (ice_aq_move_sched_elems(&lag->pf->hw, buf, buf_size, &num_moved))
 		dev_warn(dev, "Failure to move VF nodes for failover\n");
 	else
 		ice_sched_update_parent(n_prt, ctx->sched.vsi_node[tc]);
 
-	kfree(buf);
 	goto resume_traffic;
 
 qbuf_err:
@@ -661,8 +740,7 @@ static void ice_lag_move_vf_nodes(struct ice_lag *lag, u8 oldport, u8 newport)
 
 	pf = lag->pf;
 	ice_for_each_vsi(pf, i)
-		if (pf->vsi[i] && (pf->vsi[i]->type == ICE_VSI_VF ||
-				   pf->vsi[i]->type == ICE_VSI_SWITCHDEV_CTRL))
+		if (pf->vsi[i] && pf->vsi[i]->type == ICE_VSI_VF)
 			ice_lag_move_single_vf_nodes(lag, oldport, newport, i);
 }
 
@@ -721,9 +799,7 @@ ice_lag_cfg_cp_fltr(struct ice_lag *lag, bool add)
 		s_rule->act = cpu_to_le32(ICE_FWD_TO_VSI |
 					  ICE_SINGLE_ACT_LAN_ENABLE |
 					  ICE_SINGLE_ACT_VALID_BIT |
-					  ((vsi->vsi_num <<
-					    ICE_SINGLE_ACT_VSI_ID_S) &
-					   ICE_SINGLE_ACT_VSI_ID_M));
+					  FIELD_PREP(ICE_SINGLE_ACT_VSI_ID_M, vsi->vsi_num));
 		s_rule->hdr_len = cpu_to_le16(ICE_LAG_SRIOV_TRAIN_PKT_LEN);
 		memcpy(s_rule->hdr_data, lacp_train_pkt, LACP_TRAIN_PKT_LEN);
 		opc = ice_aqc_opc_add_sw_rules;
@@ -798,10 +874,11 @@ static void
 ice_lag_reclaim_vf_tc(struct ice_lag *lag, struct ice_hw *src_hw, u16 vsi_num,
 		      u8 tc)
 {
-	u16 numq, valq, buf_size, num_moved, qbuf_size;
+	DEFINE_RAW_FLEX(struct ice_aqc_move_elem, buf, teid, 1);
 	struct device *dev = ice_pf_to_dev(lag->pf);
+	u16 numq, valq, num_moved, qbuf_size;
+	u16 buf_size = __struct_size(buf);
 	struct ice_aqc_cfg_txqs_buf *qbuf;
-	struct ice_aqc_move_elem *buf;
 	struct ice_sched_node *n_prt;
 	__le32 teid, parent_teid;
 	struct ice_vsi_ctx *ctx;
@@ -863,26 +940,17 @@ reclaim_none:
 		goto resume_reclaim;
 
 	/* Move node to new parent */
-	buf_size = struct_size(buf, teid, 1);
-	buf = kzalloc(buf_size, GFP_KERNEL);
-	if (!buf) {
-		dev_warn(dev, "Failure to alloc memory for VF node failover\n");
-		goto resume_reclaim;
-	}
-
 	buf->hdr.src_parent_teid = parent_teid;
 	buf->hdr.dest_parent_teid = n_prt->info.node_teid;
 	buf->hdr.num_elems = cpu_to_le16(1);
 	buf->hdr.mode = ICE_AQC_MOVE_ELEM_MODE_KEEP_OWN;
 	buf->teid[0] = teid;
 
-	if (ice_aq_move_sched_elems(&lag->pf->hw, 1, buf, buf_size, &num_moved,
-				    NULL))
+	if (ice_aq_move_sched_elems(&lag->pf->hw, buf, buf_size, &num_moved))
 		dev_warn(dev, "Failure to move VF nodes for LAG reclaim\n");
 	else
 		ice_sched_update_parent(n_prt, ctx->sched.vsi_node[tc]);
 
-	kfree(buf);
 	goto resume_reclaim;
 
 reclaim_qerr:
@@ -910,8 +978,7 @@ ice_lag_reclaim_vf_nodes(struct ice_lag *lag, struct ice_hw *src_hw)
 
 	pf = lag->pf;
 	ice_for_each_vsi(pf, i)
-		if (pf->vsi[i] && (pf->vsi[i]->type == ICE_VSI_VF ||
-				   pf->vsi[i]->type == ICE_VSI_SWITCHDEV_CTRL))
+		if (pf->vsi[i] && pf->vsi[i]->type == ICE_VSI_VF)
 			ice_for_each_traffic_class(tc)
 				ice_lag_reclaim_vf_tc(lag, src_hw, i, tc);
 }
@@ -1184,7 +1251,7 @@ static void ice_lag_del_prune_list(struct ice_lag *lag, struct ice_pf *event_pf)
 }
 
 /**
- * ice_lag_init_feature_support_flag - Check for NVM support for LAG
+ * ice_lag_init_feature_support_flag - Check for package and NVM support for LAG
  * @pf: PF struct
  */
 static void ice_lag_init_feature_support_flag(struct ice_pf *pf)
@@ -1197,7 +1264,7 @@ static void ice_lag_init_feature_support_flag(struct ice_pf *pf)
 	else
 		ice_clear_feature_support(pf, ICE_F_ROCE_LAG);
 
-	if (caps->sriov_lag)
+	if (caps->sriov_lag && ice_pkg_has_lport_extract(&pf->hw))
 		ice_set_feature_support(pf, ICE_F_SRIOV_LAG);
 	else
 		ice_clear_feature_support(pf, ICE_F_SRIOV_LAG);
@@ -1238,6 +1305,7 @@ static void ice_lag_changeupper_event(struct ice_lag *lag, void *ptr)
 			swid = primary_lag->pf->hw.port_info->sw_id;
 			ice_lag_set_swid(swid, lag, true);
 			ice_lag_add_prune_list(primary_lag, lag->pf);
+			ice_lag_cfg_drop_fltr(lag, true);
 		}
 		/* add filter for primary control packets */
 		ice_lag_cfg_cp_fltr(lag, true);
@@ -1829,10 +1897,11 @@ static void
 ice_lag_move_vf_nodes_tc_sync(struct ice_lag *lag, struct ice_hw *dest_hw,
 			      u16 vsi_num, u8 tc)
 {
-	u16 numq, valq, buf_size, num_moved, qbuf_size;
+	DEFINE_RAW_FLEX(struct ice_aqc_move_elem, buf, teid, 1);
 	struct device *dev = ice_pf_to_dev(lag->pf);
+	u16 numq, valq, num_moved, qbuf_size;
+	u16 buf_size = __struct_size(buf);
 	struct ice_aqc_cfg_txqs_buf *qbuf;
-	struct ice_aqc_move_elem *buf;
 	struct ice_sched_node *n_prt;
 	__le32 teid, parent_teid;
 	struct ice_vsi_ctx *ctx;
@@ -1890,26 +1959,17 @@ sync_none:
 		goto resume_sync;
 
 	/* Move node to new parent */
-	buf_size = struct_size(buf, teid, 1);
-	buf = kzalloc(buf_size, GFP_KERNEL);
-	if (!buf) {
-		dev_warn(dev, "Failure to alloc for VF node move in reset rebuild\n");
-		goto resume_sync;
-	}
-
 	buf->hdr.src_parent_teid = parent_teid;
 	buf->hdr.dest_parent_teid = n_prt->info.node_teid;
 	buf->hdr.num_elems = cpu_to_le16(1);
 	buf->hdr.mode = ICE_AQC_MOVE_ELEM_MODE_KEEP_OWN;
 	buf->teid[0] = teid;
 
-	if (ice_aq_move_sched_elems(&lag->pf->hw, 1, buf, buf_size, &num_moved,
-				    NULL))
+	if (ice_aq_move_sched_elems(&lag->pf->hw, buf, buf_size, &num_moved))
 		dev_warn(dev, "Failure to move VF nodes for LAG reset rebuild\n");
 	else
 		ice_sched_update_parent(n_prt, ctx->sched.vsi_node[tc]);
 
-	kfree(buf);
 	goto resume_sync;
 
 sync_qerr:
@@ -1940,8 +2000,7 @@ ice_lag_move_vf_nodes_sync(struct ice_lag *lag, struct ice_hw *dest_hw)
 
 	pf = lag->pf;
 	ice_for_each_vsi(pf, i)
-		if (pf->vsi[i] && (pf->vsi[i]->type == ICE_VSI_VF ||
-				   pf->vsi[i]->type == ICE_VSI_SWITCHDEV_CTRL))
+		if (pf->vsi[i] && pf->vsi[i]->type == ICE_VSI_VF)
 			ice_for_each_traffic_class(tc)
 				ice_lag_move_vf_nodes_tc_sync(lag, dest_hw, i,
 							      tc);
@@ -1992,10 +2051,15 @@ int ice_init_lag(struct ice_pf *pf)
 		goto lag_error;
 	}
 
-	err = ice_create_lag_recipe(&pf->hw, &lag->pf_recipe, ice_dflt_vsi_rcp,
-				    1);
+	err = ice_create_lag_recipe(&pf->hw, &lag->pf_recipe,
+				    ice_dflt_vsi_rcp, 1);
 	if (err)
 		goto lag_error;
+
+	err = ice_create_lag_recipe(&pf->hw, &lag->lport_recipe,
+				    ice_lport_rcp, 3);
+	if (err)
+		goto free_rcp_res;
 
 	/* associate recipes to profiles */
 	for (n = 0; n < ICE_PROFID_IPV6_GTPU_IPV6_TCP_INNER; n++) {
@@ -2005,7 +2069,8 @@ int ice_init_lag(struct ice_pf *pf)
 			continue;
 
 		if (recipe_bits & BIT(ICE_SW_LKUP_DFLT)) {
-			recipe_bits |= BIT(lag->pf_recipe);
+			recipe_bits |= BIT(lag->pf_recipe) |
+				       BIT(lag->lport_recipe);
 			ice_aq_map_recipe_to_profile(&pf->hw, n,
 						     recipe_bits, NULL);
 		}
@@ -2016,6 +2081,9 @@ int ice_init_lag(struct ice_pf *pf)
 	dev_dbg(dev, "INIT LAG complete\n");
 	return 0;
 
+free_rcp_res:
+	ice_free_hw_res(&pf->hw, ICE_AQC_RES_TYPE_RECIPE, 1,
+			&pf->lag->pf_recipe);
 lag_error:
 	kfree(lag);
 	pf->lag = NULL;
@@ -2045,6 +2113,8 @@ void ice_deinit_lag(struct ice_pf *pf)
 
 	ice_free_hw_res(&pf->hw, ICE_AQC_RES_TYPE_RECIPE, 1,
 			&pf->lag->pf_recipe);
+	ice_free_hw_res(&pf->hw, ICE_AQC_RES_TYPE_RECIPE, 1,
+			&pf->lag->lport_recipe);
 
 	kfree(lag);
 
@@ -2102,7 +2172,7 @@ void ice_lag_rebuild(struct ice_pf *pf)
 
 	ice_lag_cfg_cp_fltr(lag, true);
 
-	if (lag->pf_rule_id)
+	if (lag->pf_rx_rule_id)
 		if (ice_lag_cfg_dflt_fltr(lag, true))
 			dev_err(ice_pf_to_dev(pf), "Error adding default VSI rule in rebuild\n");
 

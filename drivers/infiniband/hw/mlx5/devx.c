@@ -2498,7 +2498,7 @@ static void dispatch_event_fd(struct list_head *fd_list,
 
 	list_for_each_entry_rcu(item, fd_list, xa_list) {
 		if (item->eventfd)
-			eventfd_signal(item->eventfd, 1);
+			eventfd_signal(item->eventfd);
 		else
 			deliver_event(item, data);
 	}
@@ -2673,7 +2673,6 @@ static const struct file_operations devx_async_cmd_event_fops = {
 	.read	 = devx_async_cmd_event_read,
 	.poll    = devx_async_cmd_event_poll,
 	.release = uverbs_uobject_fd_release,
-	.llseek	 = no_llseek,
 };
 
 static ssize_t devx_async_event_read(struct file *filp, char __user *buf,
@@ -2788,7 +2787,6 @@ static const struct file_operations devx_async_event_fops = {
 	.read	 = devx_async_event_read,
 	.poll    = devx_async_event_poll,
 	.release = uverbs_uobject_fd_release,
-	.llseek	 = no_llseek,
 };
 
 static void devx_async_cmd_event_destroy_uobj(struct ib_uobject *uobj,

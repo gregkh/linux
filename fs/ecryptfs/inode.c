@@ -21,7 +21,7 @@
 #include <linux/posix_acl.h>
 #include <linux/posix_acl_xattr.h>
 #include <linux/fileattr.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "ecryptfs_kernel.h"
 
 static int lock_parent(struct dentry *dentry,
@@ -607,6 +607,8 @@ ecryptfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 	target_inode = d_inode(new_dentry);
 
 	trap = lock_rename(lower_old_dir_dentry, lower_new_dir_dentry);
+	if (IS_ERR(trap))
+		return PTR_ERR(trap);
 	dget(lower_new_dentry);
 	rc = -EINVAL;
 	if (lower_old_dentry->d_parent != lower_old_dir_dentry)
@@ -1226,7 +1228,7 @@ static const struct xattr_handler ecryptfs_xattr_handler = {
 	.set = ecryptfs_xattr_set,
 };
 
-const struct xattr_handler *ecryptfs_xattr_handlers[] = {
+const struct xattr_handler * const ecryptfs_xattr_handlers[] = {
 	&ecryptfs_xattr_handler,
 	NULL
 };

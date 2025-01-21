@@ -134,6 +134,16 @@ static unsigned int tb_available_credits(const struct tb_port *port,
 	return credits > 0 ? credits : 0;
 }
 
+static void tb_init_pm_support(struct tb_path_hop *hop)
+{
+	struct tb_port *out_port = hop->out_port;
+	struct tb_port *in_port = hop->in_port;
+
+	if (tb_port_is_null(in_port) && tb_port_is_null(out_port) &&
+	    usb4_switch_version(in_port->sw) >= 2)
+		hop->pm_support = true;
+}
+
 static struct tb_tunnel *tb_tunnel_alloc(struct tb *tb, size_t npaths,
 					 enum tb_tunnel_type type)
 {
@@ -163,16 +173,28 @@ static int tb_pci_set_ext_encapsulation(struct tb_tunnel *tunnel, bool enable)
 	int ret;
 
 	/* Only supported of both routers are at least USB4 v2 */
-	if (tb_port_get_link_generation(port) < 4)
+	if ((usb4_switch_version(tunnel->src_port->sw) < 2) ||
+	   (usb4_switch_version(tunnel->dst_port->sw) < 2))
+		return 0;
+
+	if (enable && tb_port_get_link_generation(port) < 4)
 		return 0;
 
 	ret = usb4_pci_port_set_ext_encapsulation(tunnel->src_port, enable);
 	if (ret)
 		return ret;
 
+	/*
+	 * Downstream router could be unplugged so disable of encapsulation
+	 * in upstream router is still possible.
+	 */
 	ret = usb4_pci_port_set_ext_encapsulation(tunnel->dst_port, enable);
-	if (ret)
-		return ret;
+	if (ret) {
+		if (enable)
+			return ret;
+		if (ret != -ENODEV)
+			return ret;
+	}
 
 	tb_tunnel_dbg(tunnel, "extended encapsulation %s\n",
 		      str_enabled_disabled(enable));
@@ -189,14 +211,21 @@ static int tb_pci_activate(struct tb_tunnel *tunnel, bool activate)
 			return res;
 	}
 
-	res = tb_pci_port_enable(tunnel->src_port, activate);
+	if (activate)
+		res = tb_pci_port_enable(tunnel->dst_port, activate);
+	else
+		res = tb_pci_port_enable(tunnel->src_port, activate);
 	if (res)
 		return res;
 
-	if (tb_port_is_pcie_up(tunnel->dst_port)) {
-		res = tb_pci_port_enable(tunnel->dst_port, activate);
+
+	if (activate) {
+		res = tb_pci_port_enable(tunnel->src_port, activate);
 		if (res)
 			return res;
+	} else {
+		/* Downstream router could be unplugged */
+		tb_pci_port_enable(tunnel->dst_port, activate);
 	}
 
 	return activate ? 0 : tb_pci_set_ext_encapsulation(tunnel, activate);
@@ -677,7 +706,7 @@ static int tb_dp_xchg_caps(struct tb_tunnel *tunnel)
 		      "DP OUT maximum supported bandwidth %u Mb/s x%u = %u Mb/s\n",
 		      out_rate, out_lanes, bw);
 
-	if (tb_port_path_direction_downstream(in, out))
+	if (tb_tunnel_direction_downstream(tunnel))
 		max_bw = tunnel->max_down;
 	else
 		max_bw = tunnel->max_up;
@@ -802,7 +831,7 @@ static int tb_dp_bandwidth_alloc_mode_enable(struct tb_tunnel *tunnel)
 	 * max_up/down fields. For discovery we just read what the
 	 * estimation was set to.
 	 */
-	if (tb_port_path_direction_downstream(in, out))
+	if (tb_tunnel_direction_downstream(tunnel))
 		estimated_bw = tunnel->max_down;
 	else
 		estimated_bw = tunnel->max_up;
@@ -897,12 +926,18 @@ static int tb_dp_activate(struct tb_tunnel *tunnel, bool active)
 	return 0;
 }
 
-/* max_bw is rounded up to next granularity */
+/**
+ * tb_dp_bandwidth_mode_maximum_bandwidth() - Maximum possible bandwidth
+ * @tunnel: DP tunnel to check
+ * @max_bw_rounded: Maximum bandwidth in Mb/s rounded up to the next granularity
+ *
+ * Returns maximum possible bandwidth for this tunnel in Mb/s.
+ */
 static int tb_dp_bandwidth_mode_maximum_bandwidth(struct tb_tunnel *tunnel,
-						  int *max_bw)
+						  int *max_bw_rounded)
 {
 	struct tb_port *in = tunnel->src_port;
-	int ret, rate, lanes, nrd_bw;
+	int ret, rate, lanes, max_bw;
 	u32 cap;
 
 	/*
@@ -918,41 +953,26 @@ static int tb_dp_bandwidth_mode_maximum_bandwidth(struct tb_tunnel *tunnel,
 		return ret;
 
 	rate = tb_dp_cap_get_rate_ext(cap);
-	if (tb_dp_is_uhbr_rate(rate)) {
-		/*
-		 * When UHBR is used there is no reduction in lanes so
-		 * we can use this directly.
-		 */
-		lanes = tb_dp_cap_get_lanes(cap);
-	} else {
-		/*
-		 * If there is no UHBR supported then check the
-		 * non-reduced rate and lanes.
-		 */
-		ret = usb4_dp_port_nrd(in, &rate, &lanes);
-		if (ret)
-			return ret;
-	}
+	lanes = tb_dp_cap_get_lanes(cap);
 
-	nrd_bw = tb_dp_bandwidth(rate, lanes);
+	max_bw = tb_dp_bandwidth(rate, lanes);
 
-	if (max_bw) {
+	if (max_bw_rounded) {
 		ret = usb4_dp_port_granularity(in);
 		if (ret < 0)
 			return ret;
-		*max_bw = roundup(nrd_bw, ret);
+		*max_bw_rounded = roundup(max_bw, ret);
 	}
 
-	return nrd_bw;
+	return max_bw;
 }
 
 static int tb_dp_bandwidth_mode_consumed_bandwidth(struct tb_tunnel *tunnel,
 						   int *consumed_up,
 						   int *consumed_down)
 {
-	struct tb_port *out = tunnel->dst_port;
 	struct tb_port *in = tunnel->src_port;
-	int ret, allocated_bw, max_bw;
+	int ret, allocated_bw, max_bw_rounded;
 
 	if (!usb4_dp_port_bandwidth_mode_enabled(in))
 		return -EOPNOTSUPP;
@@ -966,13 +986,13 @@ static int tb_dp_bandwidth_mode_consumed_bandwidth(struct tb_tunnel *tunnel,
 		return ret;
 	allocated_bw = ret;
 
-	ret = tb_dp_bandwidth_mode_maximum_bandwidth(tunnel, &max_bw);
+	ret = tb_dp_bandwidth_mode_maximum_bandwidth(tunnel, &max_bw_rounded);
 	if (ret < 0)
 		return ret;
-	if (allocated_bw == max_bw)
+	if (allocated_bw == max_bw_rounded)
 		allocated_bw = ret;
 
-	if (tb_port_path_direction_downstream(in, out)) {
+	if (tb_tunnel_direction_downstream(tunnel)) {
 		*consumed_up = 0;
 		*consumed_down = allocated_bw;
 	} else {
@@ -986,7 +1006,6 @@ static int tb_dp_bandwidth_mode_consumed_bandwidth(struct tb_tunnel *tunnel,
 static int tb_dp_allocated_bandwidth(struct tb_tunnel *tunnel, int *allocated_up,
 				     int *allocated_down)
 {
-	struct tb_port *out = tunnel->dst_port;
 	struct tb_port *in = tunnel->src_port;
 
 	/*
@@ -994,20 +1013,21 @@ static int tb_dp_allocated_bandwidth(struct tb_tunnel *tunnel, int *allocated_up
 	 * Otherwise we read it from the DPRX.
 	 */
 	if (usb4_dp_port_bandwidth_mode_enabled(in) && tunnel->bw_mode) {
-		int ret, allocated_bw, max_bw;
+		int ret, allocated_bw, max_bw_rounded;
 
 		ret = usb4_dp_port_allocated_bandwidth(in);
 		if (ret < 0)
 			return ret;
 		allocated_bw = ret;
 
-		ret = tb_dp_bandwidth_mode_maximum_bandwidth(tunnel, &max_bw);
+		ret = tb_dp_bandwidth_mode_maximum_bandwidth(tunnel,
+							     &max_bw_rounded);
 		if (ret < 0)
 			return ret;
-		if (allocated_bw == max_bw)
+		if (allocated_bw == max_bw_rounded)
 			allocated_bw = ret;
 
-		if (tb_port_path_direction_downstream(in, out)) {
+		if (tb_tunnel_direction_downstream(tunnel)) {
 			*allocated_up = 0;
 			*allocated_down = allocated_bw;
 		} else {
@@ -1024,26 +1044,25 @@ static int tb_dp_allocated_bandwidth(struct tb_tunnel *tunnel, int *allocated_up
 static int tb_dp_alloc_bandwidth(struct tb_tunnel *tunnel, int *alloc_up,
 				 int *alloc_down)
 {
-	struct tb_port *out = tunnel->dst_port;
 	struct tb_port *in = tunnel->src_port;
-	int max_bw, ret, tmp;
+	int max_bw_rounded, ret, tmp;
 
 	if (!usb4_dp_port_bandwidth_mode_enabled(in))
 		return -EOPNOTSUPP;
 
-	ret = tb_dp_bandwidth_mode_maximum_bandwidth(tunnel, &max_bw);
+	ret = tb_dp_bandwidth_mode_maximum_bandwidth(tunnel, &max_bw_rounded);
 	if (ret < 0)
 		return ret;
 
-	if (tb_port_path_direction_downstream(in, out)) {
-		tmp = min(*alloc_down, max_bw);
+	if (tb_tunnel_direction_downstream(tunnel)) {
+		tmp = min(*alloc_down, max_bw_rounded);
 		ret = usb4_dp_port_allocate_bandwidth(in, tmp);
 		if (ret)
 			return ret;
 		*alloc_down = tmp;
 		*alloc_up = 0;
 	} else {
-		tmp = min(*alloc_up, max_bw);
+		tmp = min(*alloc_up, max_bw_rounded);
 		ret = usb4_dp_port_allocate_bandwidth(in, tmp);
 		if (ret)
 			return ret;
@@ -1057,8 +1076,7 @@ static int tb_dp_alloc_bandwidth(struct tb_tunnel *tunnel, int *alloc_up,
 	return 0;
 }
 
-static int tb_dp_read_dprx(struct tb_tunnel *tunnel, u32 *rate, u32 *lanes,
-			   int timeout_msec)
+static int tb_dp_wait_dprx(struct tb_tunnel *tunnel, int timeout_msec)
 {
 	ktime_t timeout = ktime_add_ms(ktime_get(), timeout_msec);
 	struct tb_port *in = tunnel->src_port;
@@ -1077,15 +1095,13 @@ static int tb_dp_read_dprx(struct tb_tunnel *tunnel, u32 *rate, u32 *lanes,
 			return ret;
 
 		if (val & DP_COMMON_CAP_DPRX_DONE) {
-			*rate = tb_dp_cap_get_rate(val);
-			*lanes = tb_dp_cap_get_lanes(val);
-
 			tb_tunnel_dbg(tunnel, "DPRX read done\n");
 			return 0;
 		}
 		usleep_range(100, 150);
 	} while (ktime_before(ktime_get(), timeout));
 
+	tb_tunnel_dbg(tunnel, "DPRX read timeout\n");
 	return -ETIMEDOUT;
 }
 
@@ -1100,6 +1116,7 @@ static int tb_dp_read_cap(struct tb_tunnel *tunnel, unsigned int cap, u32 *rate,
 	switch (cap) {
 	case DP_LOCAL_CAP:
 	case DP_REMOTE_CAP:
+	case DP_COMMON_CAP:
 		break;
 
 	default:
@@ -1123,17 +1140,16 @@ static int tb_dp_read_cap(struct tb_tunnel *tunnel, unsigned int cap, u32 *rate,
 static int tb_dp_maximum_bandwidth(struct tb_tunnel *tunnel, int *max_up,
 				   int *max_down)
 {
-	struct tb_port *in = tunnel->src_port;
 	int ret;
 
-	if (!usb4_dp_port_bandwidth_mode_enabled(in))
+	if (!usb4_dp_port_bandwidth_mode_enabled(tunnel->src_port))
 		return -EOPNOTSUPP;
 
 	ret = tb_dp_bandwidth_mode_maximum_bandwidth(tunnel, NULL);
 	if (ret < 0)
 		return ret;
 
-	if (tb_port_path_direction_downstream(in, tunnel->dst_port)) {
+	if (tb_tunnel_direction_downstream(tunnel)) {
 		*max_up = 0;
 		*max_down = ret;
 	} else {
@@ -1147,8 +1163,7 @@ static int tb_dp_maximum_bandwidth(struct tb_tunnel *tunnel, int *max_up,
 static int tb_dp_consumed_bandwidth(struct tb_tunnel *tunnel, int *consumed_up,
 				    int *consumed_down)
 {
-	struct tb_port *in = tunnel->src_port;
-	const struct tb_switch *sw = in->sw;
+	const struct tb_switch *sw = tunnel->src_port->sw;
 	u32 rate = 0, lanes = 0;
 	int ret;
 
@@ -1169,17 +1184,16 @@ static int tb_dp_consumed_bandwidth(struct tb_tunnel *tunnel, int *consumed_up,
 		/*
 		 * Then see if the DPRX negotiation is ready and if yes
 		 * return that bandwidth (it may be smaller than the
-		 * reduced one). Otherwise return the remote (possibly
-		 * reduced) caps.
+		 * reduced one). According to VESA spec, the DPRX
+		 * negotiation shall compete in 5 seconds after tunnel
+		 * established. We give it 100ms extra just in case.
 		 */
-		ret = tb_dp_read_dprx(tunnel, &rate, &lanes, 150);
-		if (ret) {
-			if (ret == -ETIMEDOUT)
-				ret = tb_dp_read_cap(tunnel, DP_REMOTE_CAP,
-						     &rate, &lanes);
-			if (ret)
-				return ret;
-		}
+		ret = tb_dp_wait_dprx(tunnel, 5100);
+		if (ret)
+			return ret;
+		ret = tb_dp_read_cap(tunnel, DP_COMMON_CAP, &rate, &lanes);
+		if (ret)
+			return ret;
 	} else if (sw->generation >= 2) {
 		ret = tb_dp_read_cap(tunnel, DP_REMOTE_CAP, &rate, &lanes);
 		if (ret)
@@ -1191,7 +1205,7 @@ static int tb_dp_consumed_bandwidth(struct tb_tunnel *tunnel, int *consumed_up,
 		return 0;
 	}
 
-	if (tb_port_path_direction_downstream(in, tunnel->dst_port)) {
+	if (tb_tunnel_direction_downstream(tunnel)) {
 		*consumed_up = 0;
 		*consumed_down = tb_dp_bandwidth(rate, lanes);
 	} else {
@@ -1213,7 +1227,7 @@ static void tb_dp_init_aux_credits(struct tb_path_hop *hop)
 		hop->initial_credits = 1;
 }
 
-static void tb_dp_init_aux_path(struct tb_path *path)
+static void tb_dp_init_aux_path(struct tb_path *path, bool pm_support)
 {
 	struct tb_path_hop *hop;
 
@@ -1224,8 +1238,11 @@ static void tb_dp_init_aux_path(struct tb_path *path)
 	path->priority = TB_DP_AUX_PRIORITY;
 	path->weight = TB_DP_AUX_WEIGHT;
 
-	tb_path_for_each_hop(path, hop)
+	tb_path_for_each_hop(path, hop) {
 		tb_dp_init_aux_credits(hop);
+		if (pm_support)
+			tb_init_pm_support(hop);
+	}
 }
 
 static int tb_dp_init_video_credits(struct tb_path_hop *hop)
@@ -1257,7 +1274,7 @@ static int tb_dp_init_video_credits(struct tb_path_hop *hop)
 	return 0;
 }
 
-static int tb_dp_init_video_path(struct tb_path *path)
+static int tb_dp_init_video_path(struct tb_path *path, bool pm_support)
 {
 	struct tb_path_hop *hop;
 
@@ -1274,6 +1291,8 @@ static int tb_dp_init_video_path(struct tb_path *path)
 		ret = tb_dp_init_video_credits(hop);
 		if (ret)
 			return ret;
+		if (pm_support)
+			tb_init_pm_support(hop);
 	}
 
 	return 0;
@@ -1297,8 +1316,6 @@ static void tb_dp_dump(struct tb_tunnel *tunnel)
 	tb_tunnel_dbg(tunnel,
 		      "DP IN maximum supported bandwidth %u Mb/s x%u = %u Mb/s\n",
 		      rate, lanes, tb_dp_bandwidth(rate, lanes));
-
-	out = tunnel->dst_port;
 
 	if (tb_port_read(out, &dp_cap, TB_CFG_PORT,
 			 out->cap_adap + DP_LOCAL_CAP, 1))
@@ -1365,7 +1382,7 @@ struct tb_tunnel *tb_tunnel_discover_dp(struct tb *tb, struct tb_port *in,
 		goto err_free;
 	}
 	tunnel->paths[TB_DP_VIDEO_PATH_OUT] = path;
-	if (tb_dp_init_video_path(tunnel->paths[TB_DP_VIDEO_PATH_OUT]))
+	if (tb_dp_init_video_path(tunnel->paths[TB_DP_VIDEO_PATH_OUT], false))
 		goto err_free;
 
 	path = tb_path_discover(in, TB_DP_AUX_TX_HOPID, NULL, -1, NULL, "AUX TX",
@@ -1373,14 +1390,14 @@ struct tb_tunnel *tb_tunnel_discover_dp(struct tb *tb, struct tb_port *in,
 	if (!path)
 		goto err_deactivate;
 	tunnel->paths[TB_DP_AUX_PATH_OUT] = path;
-	tb_dp_init_aux_path(tunnel->paths[TB_DP_AUX_PATH_OUT]);
+	tb_dp_init_aux_path(tunnel->paths[TB_DP_AUX_PATH_OUT], false);
 
 	path = tb_path_discover(tunnel->dst_port, -1, in, TB_DP_AUX_RX_HOPID,
 				&port, "AUX RX", alloc_hopid);
 	if (!path)
 		goto err_deactivate;
 	tunnel->paths[TB_DP_AUX_PATH_IN] = path;
-	tb_dp_init_aux_path(tunnel->paths[TB_DP_AUX_PATH_IN]);
+	tb_dp_init_aux_path(tunnel->paths[TB_DP_AUX_PATH_IN], false);
 
 	/* Validate that the tunnel is complete */
 	if (!tb_port_is_dpout(tunnel->dst_port)) {
@@ -1418,10 +1435,10 @@ err_free:
  * @in: DP in adapter port
  * @out: DP out adapter port
  * @link_nr: Preferred lane adapter when the link is not bonded
- * @max_up: Maximum available upstream bandwidth for the DP tunnel (%0
- *	    if not limited)
- * @max_down: Maximum available downstream bandwidth for the DP tunnel
- *	      (%0 if not limited)
+ * @max_up: Maximum available upstream bandwidth for the DP tunnel.
+ *	    %0 if no available bandwidth.
+ * @max_down: Maximum available downstream bandwidth for the DP tunnel.
+ *	      %0 if no available bandwidth.
  *
  * Allocates a tunnel between @in and @out that is capable of tunneling
  * Display Port traffic.
@@ -1435,6 +1452,7 @@ struct tb_tunnel *tb_tunnel_alloc_dp(struct tb *tb, struct tb_port *in,
 	struct tb_tunnel *tunnel;
 	struct tb_path **paths;
 	struct tb_path *path;
+	bool pm_support;
 
 	if (WARN_ON(!in->cap_adap || !out->cap_adap))
 		return NULL;
@@ -1456,26 +1474,27 @@ struct tb_tunnel *tb_tunnel_alloc_dp(struct tb *tb, struct tb_port *in,
 	tunnel->max_down = max_down;
 
 	paths = tunnel->paths;
+	pm_support = usb4_switch_version(in->sw) >= 2;
 
 	path = tb_path_alloc(tb, in, TB_DP_VIDEO_HOPID, out, TB_DP_VIDEO_HOPID,
 			     link_nr, "Video");
 	if (!path)
 		goto err_free;
-	tb_dp_init_video_path(path);
+	tb_dp_init_video_path(path, pm_support);
 	paths[TB_DP_VIDEO_PATH_OUT] = path;
 
 	path = tb_path_alloc(tb, in, TB_DP_AUX_TX_HOPID, out,
 			     TB_DP_AUX_TX_HOPID, link_nr, "AUX TX");
 	if (!path)
 		goto err_free;
-	tb_dp_init_aux_path(path);
+	tb_dp_init_aux_path(path, pm_support);
 	paths[TB_DP_AUX_PATH_OUT] = path;
 
 	path = tb_path_alloc(tb, out, TB_DP_AUX_RX_HOPID, in,
 			     TB_DP_AUX_RX_HOPID, link_nr, "AUX RX");
 	if (!path)
 		goto err_free;
-	tb_dp_init_aux_path(path);
+	tb_dp_init_aux_path(path, pm_support);
 	paths[TB_DP_AUX_PATH_IN] = path;
 
 	return tunnel;
@@ -1842,17 +1861,10 @@ static void tb_usb3_reclaim_available_bandwidth(struct tb_tunnel *tunnel,
 {
 	int ret, max_rate, allocate_up, allocate_down;
 
-	ret = usb4_usb3_port_actual_link_rate(tunnel->src_port);
+	ret = tb_usb3_max_link_rate(tunnel->dst_port, tunnel->src_port);
 	if (ret < 0) {
-		tb_tunnel_warn(tunnel, "failed to read actual link rate\n");
+		tb_tunnel_warn(tunnel, "failed to read maximum link rate\n");
 		return;
-	} else if (!ret) {
-		/* Use maximum link rate if the link valid is not set */
-		ret = tb_usb3_max_link_rate(tunnel->dst_port, tunnel->src_port);
-		if (ret < 0) {
-			tb_tunnel_warn(tunnel, "failed to read maximum link rate\n");
-			return;
-		}
 	}
 
 	/*
@@ -2036,10 +2048,10 @@ err_free:
  * @tb: Pointer to the domain structure
  * @up: USB3 upstream adapter port
  * @down: USB3 downstream adapter port
- * @max_up: Maximum available upstream bandwidth for the USB3 tunnel (%0
- *	    if not limited).
- * @max_down: Maximum available downstream bandwidth for the USB3 tunnel
- *	      (%0 if not limited).
+ * @max_up: Maximum available upstream bandwidth for the USB3 tunnel.
+ *	    %0 if no available bandwidth.
+ * @max_down: Maximum available downstream bandwidth for the USB3 tunnel.
+ *	      %0 if no available bandwidth.
  *
  * Allocate an USB3 tunnel. The ports must be of type @TB_TYPE_USB3_UP and
  * @TB_TYPE_USB3_DOWN.
@@ -2054,24 +2066,19 @@ struct tb_tunnel *tb_tunnel_alloc_usb3(struct tb *tb, struct tb_port *up,
 	struct tb_path *path;
 	int max_rate = 0;
 
-	/*
-	 * Check that we have enough bandwidth available for the new
-	 * USB3 tunnel.
-	 */
-	if (max_up > 0 || max_down > 0) {
+	if (!tb_route(down->sw) && (max_up > 0 || max_down > 0)) {
+		/*
+		 * For USB3 isochronous transfers, we allow bandwidth which is
+		 * not higher than 90% of maximum supported bandwidth by USB3
+		 * adapters.
+		 */
 		max_rate = tb_usb3_max_link_rate(down, up);
 		if (max_rate < 0)
 			return NULL;
 
-		/* Only 90% can be allocated for USB3 isochronous transfers */
 		max_rate = max_rate * 90 / 100;
-		tb_port_dbg(up, "required bandwidth for USB3 tunnel %d Mb/s\n",
+		tb_port_dbg(up, "maximum required bandwidth for USB3 tunnel %d Mb/s\n",
 			    max_rate);
-
-		if (max_rate > max_up || max_rate > max_down) {
-			tb_port_warn(up, "not enough bandwidth for USB3 tunnel\n");
-			return NULL;
-		}
 	}
 
 	tunnel = tb_tunnel_alloc(tb, 2, TB_TUNNEL_USB3);
@@ -2103,8 +2110,8 @@ struct tb_tunnel *tb_tunnel_alloc_usb3(struct tb *tb, struct tb_port *up,
 	tunnel->paths[TB_USB3_PATH_UP] = path;
 
 	if (!tb_route(down->sw)) {
-		tunnel->allocated_up = max_rate;
-		tunnel->allocated_down = max_rate;
+		tunnel->allocated_up = min(max_rate, max_up);
+		tunnel->allocated_down = min(max_rate, max_down);
 
 		tunnel->init = tb_usb3_init;
 		tunnel->consumed_bandwidth = tb_usb3_consumed_bandwidth;

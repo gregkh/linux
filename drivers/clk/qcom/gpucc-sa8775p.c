@@ -599,7 +599,7 @@ static int gpu_cc_sa8775p_probe(struct platform_device *pdev)
 	clk_lucid_evo_pll_configure(&gpu_cc_pll0, regmap, &gpu_cc_pll0_config);
 	clk_lucid_evo_pll_configure(&gpu_cc_pll1, regmap, &gpu_cc_pll1_config);
 
-	return qcom_cc_really_probe(pdev, &gpu_cc_sa8775p_desc, regmap);
+	return qcom_cc_really_probe(&pdev->dev, &gpu_cc_sa8775p_desc, regmap);
 }
 
 static struct platform_driver gpu_cc_sa8775p_driver = {
@@ -610,17 +610,7 @@ static struct platform_driver gpu_cc_sa8775p_driver = {
 	},
 };
 
-static int __init gpu_cc_sa8775p_init(void)
-{
-	return platform_driver_register(&gpu_cc_sa8775p_driver);
-}
-subsys_initcall(gpu_cc_sa8775p_init);
-
-static void __exit gpu_cc_sa8775p_exit(void)
-{
-	platform_driver_unregister(&gpu_cc_sa8775p_driver);
-}
-module_exit(gpu_cc_sa8775p_exit);
+module_platform_driver(gpu_cc_sa8775p_driver);
 
 MODULE_DESCRIPTION("SA8775P GPUCC driver");
 MODULE_LICENSE("GPL");

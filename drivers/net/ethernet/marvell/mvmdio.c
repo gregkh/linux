@@ -53,6 +53,13 @@
 #define  MVMDIO_XSMI_BUSY		BIT(30)
 #define MVMDIO_XSMI_ADDR_REG		0x8
 
+#define MVMDIO_XSMI_CFG_REG		0xc
+#define  MVMDIO_XSMI_CLKDIV_MASK	0x3
+#define  MVMDIO_XSMI_CLKDIV_256		0x0
+#define  MVMDIO_XSMI_CLKDIV_64		0x1
+#define  MVMDIO_XSMI_CLKDIV_32		0x2
+#define  MVMDIO_XSMI_CLKDIV_8		0x3
+
 /*
  * SMI Timeout measurements:
  * - Kirkwood 88F6281 (Globalscale Dreamplug): 45us to 95us (Interrupt)
@@ -97,7 +104,7 @@ static int orion_mdio_wait_ready(const struct orion_mdio_ops *ops,
 			return 0;
 	} else {
 		/* wait_event_timeout does not guarantee a delay of at
-		 * least one whole jiffie, so timeout must be no less
+		 * least one whole jiffy, so timeout must be no less
 		 * than two.
 		 */
 		timeout = max(usecs_to_jiffies(MVMDIO_SMI_TIMEOUT), 2);
@@ -225,6 +232,40 @@ static int orion_mdio_xsmi_write_c45(struct mii_bus *bus, int mii_id,
 	return 0;
 }
 
+static void orion_mdio_xsmi_set_mdc_freq(struct mii_bus *bus)
+{
+	struct orion_mdio_dev *dev = bus->priv;
+	struct clk *mg_core;
+	u32 div, freq, cfg;
+
+	if (device_property_read_u32(bus->parent, "clock-frequency", &freq))
+		return;
+
+	mg_core = of_clk_get_by_name(bus->parent->of_node, "mg_core_clk");
+	if (IS_ERR(mg_core)) {
+		dev_err(bus->parent,
+			"MG core clock unknown, not changing MDC frequency");
+		return;
+	}
+
+	div = clk_get_rate(mg_core) / (freq + 1) + 1;
+	clk_put(mg_core);
+
+	if (div <= 8)
+		div = MVMDIO_XSMI_CLKDIV_8;
+	else if (div <= 32)
+		div = MVMDIO_XSMI_CLKDIV_32;
+	else if (div <= 64)
+		div = MVMDIO_XSMI_CLKDIV_64;
+	else
+		div = MVMDIO_XSMI_CLKDIV_256;
+
+	cfg = readl(dev->regs + MVMDIO_XSMI_CFG_REG);
+	cfg &= ~MVMDIO_XSMI_CLKDIV_MASK;
+	cfg |= div;
+	writel(cfg, dev->regs + MVMDIO_XSMI_CFG_REG);
+}
+
 static irqreturn_t orion_mdio_err_irq(int irq, void *dev_id)
 {
 	struct orion_mdio_dev *dev = dev_id;
@@ -303,6 +344,9 @@ static int orion_mdio_probe(struct platform_device *pdev)
 			dev_warn(&pdev->dev,
 				 "unsupported number of clocks, limiting to the first "
 				 __stringify(ARRAY_SIZE(dev->clk)) "\n");
+
+		if (type == BUS_TYPE_XSMI)
+			orion_mdio_xsmi_set_mdc_freq(bus);
 	} else {
 		dev->clk[0] = clk_get(&pdev->dev, NULL);
 		if (PTR_ERR(dev->clk[0]) == -EPROBE_DEFER) {
@@ -367,7 +411,7 @@ out_clk:
 	return ret;
 }
 
-static int orion_mdio_remove(struct platform_device *pdev)
+static void orion_mdio_remove(struct platform_device *pdev)
 {
 	struct mii_bus *bus = platform_get_drvdata(pdev);
 	struct orion_mdio_dev *dev = bus->priv;
@@ -383,8 +427,6 @@ static int orion_mdio_remove(struct platform_device *pdev)
 		clk_disable_unprepare(dev->clk[i]);
 		clk_put(dev->clk[i]);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id orion_mdio_match[] = {
@@ -405,7 +447,7 @@ MODULE_DEVICE_TABLE(acpi, orion_mdio_acpi_match);
 
 static struct platform_driver orion_mdio_driver = {
 	.probe = orion_mdio_probe,
-	.remove = orion_mdio_remove,
+	.remove_new = orion_mdio_remove,
 	.driver = {
 		.name = "orion-mdio",
 		.of_match_table = orion_mdio_match,

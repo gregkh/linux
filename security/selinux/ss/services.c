@@ -633,8 +633,7 @@ static void context_struct_compute_av(struct policydb *policydb,
 	}
 
 	if (unlikely(!tclass || tclass > policydb->p_classes.nprim)) {
-		if (printk_ratelimit())
-			pr_warn("SELinux:  Invalid class %hu\n", tclass);
+		pr_warn_ratelimited("SELinux:  Invalid class %u\n", tclass);
 		return;
 	}
 
@@ -1326,8 +1325,19 @@ static int security_sid_to_context_core(u32 sid, char **scontext,
 	if (!selinux_initialized()) {
 		if (sid <= SECINITSID_NUM) {
 			char *scontextp;
-			const char *s = initial_sid_to_string[sid];
+			const char *s;
 
+			/*
+			 * Before the policy is loaded, translate
+			 * SECINITSID_INIT to "kernel", because systemd and
+			 * libselinux < 2.6 take a getcon_raw() result that is
+			 * both non-null and not "kernel" to mean that a policy
+			 * is already loaded.
+			 */
+			if (sid == SECINITSID_INIT)
+				sid = SECINITSID_KERNEL;
+
+			s = initial_sid_to_string[sid];
 			if (!s)
 				return -EINVAL;
 			*scontext_len = strlen(s) + 1;
@@ -1798,22 +1808,9 @@ retry:
 			newcontext.role = OBJECT_R_VAL;
 	}
 
-	/* Set the type to default values. */
-	if (cladatum && cladatum->default_type == DEFAULT_SOURCE) {
-		newcontext.type = scontext->type;
-	} else if (cladatum && cladatum->default_type == DEFAULT_TARGET) {
-		newcontext.type = tcontext->type;
-	} else {
-		if ((tclass == policydb->process_class) || sock) {
-			/* Use the type of process. */
-			newcontext.type = scontext->type;
-		} else {
-			/* Use the type of the related object. */
-			newcontext.type = tcontext->type;
-		}
-	}
-
-	/* Look for a type transition/member/change rule. */
+	/* Set the type.
+	 * Look for a type transition/member/change rule.
+	 */
 	avkey.source_type = scontext->type;
 	avkey.target_type = tcontext->type;
 	avkey.target_class = tclass;
@@ -1831,9 +1828,24 @@ retry:
 		}
 	}
 
+	/* If a permanent rule is found, use the type from
+	 * the type transition/member/change rule. Otherwise,
+	 * set the type to its default values.
+	 */
 	if (avnode) {
-		/* Use the type from the type transition/member/change rule. */
 		newcontext.type = avnode->datum.u.data;
+	} else if (cladatum && cladatum->default_type == DEFAULT_SOURCE) {
+		newcontext.type = scontext->type;
+	} else if (cladatum && cladatum->default_type == DEFAULT_TARGET) {
+		newcontext.type = tcontext->type;
+	} else {
+		if ((tclass == policydb->process_class) || sock) {
+			/* Use the type of process. */
+			newcontext.type = scontext->type;
+		} else {
+			/* Use the type of the related object. */
+			newcontext.type = tcontext->type;
+		}
 	}
 
 	/* if we have a objname this is a file trans check so check those rules */

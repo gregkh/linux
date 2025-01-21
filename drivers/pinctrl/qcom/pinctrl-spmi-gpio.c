@@ -1185,12 +1185,11 @@ err_range:
 	return ret;
 }
 
-static int pmic_gpio_remove(struct platform_device *pdev)
+static void pmic_gpio_remove(struct platform_device *pdev)
 {
 	struct pmic_gpio_state *state = platform_get_drvdata(pdev);
 
 	gpiochip_remove(&state->chip);
-	return 0;
 }
 
 static const struct of_device_id pmic_gpio_of_match[] = {
@@ -1203,6 +1202,7 @@ static const struct of_device_id pmic_gpio_of_match[] = {
 	{ .compatible = "qcom,pm6150-gpio", .data = (void *) 10 },
 	{ .compatible = "qcom,pm6150l-gpio", .data = (void *) 12 },
 	{ .compatible = "qcom,pm6350-gpio", .data = (void *) 9 },
+	{ .compatible = "qcom,pm6450-gpio", .data = (void *) 9 },
 	{ .compatible = "qcom,pm7250b-gpio", .data = (void *) 12 },
 	{ .compatible = "qcom,pm7325-gpio", .data = (void *) 10 },
 	{ .compatible = "qcom,pm7550ba-gpio", .data = (void *) 8},
@@ -1236,10 +1236,13 @@ static const struct of_device_id pmic_gpio_of_match[] = {
 	{ .compatible = "qcom,pm8994-gpio", .data = (void *) 22 },
 	{ .compatible = "qcom,pm8998-gpio", .data = (void *) 26 },
 	{ .compatible = "qcom,pma8084-gpio", .data = (void *) 22 },
+	{ .compatible = "qcom,pmc8380-gpio", .data = (void *) 10 },
+	{ .compatible = "qcom,pmd8028-gpio", .data = (void *) 4 },
 	{ .compatible = "qcom,pmi632-gpio", .data = (void *) 8 },
 	{ .compatible = "qcom,pmi8950-gpio", .data = (void *) 2 },
 	{ .compatible = "qcom,pmi8994-gpio", .data = (void *) 10 },
 	{ .compatible = "qcom,pmi8998-gpio", .data = (void *) 14 },
+	{ .compatible = "qcom,pmih0108-gpio", .data = (void *) 18 },
 	{ .compatible = "qcom,pmk8350-gpio", .data = (void *) 4 },
 	{ .compatible = "qcom,pmk8550-gpio", .data = (void *) 6 },
 	{ .compatible = "qcom,pmm8155au-gpio", .data = (void *) 10 },
@@ -1255,6 +1258,7 @@ static const struct of_device_id pmic_gpio_of_match[] = {
 	{ .compatible = "qcom,pmx55-gpio", .data = (void *) 11 },
 	{ .compatible = "qcom,pmx65-gpio", .data = (void *) 16 },
 	{ .compatible = "qcom,pmx75-gpio", .data = (void *) 16 },
+	{ .compatible = "qcom,pmxr2230-gpio", .data = (void *) 12 },
 	{ },
 };
 
@@ -1266,7 +1270,7 @@ static struct platform_driver pmic_gpio_driver = {
 		   .of_match_table = pmic_gpio_of_match,
 	},
 	.probe	= pmic_gpio_probe,
-	.remove = pmic_gpio_remove,
+	.remove_new = pmic_gpio_remove,
 };
 
 module_platform_driver(pmic_gpio_driver);

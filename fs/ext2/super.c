@@ -213,8 +213,7 @@ static int __init init_inodecache(void)
 {
 	ext2_inode_cachep = kmem_cache_create_usercopy("ext2_inode_cache",
 				sizeof(struct ext2_inode_info), 0,
-				(SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD|
-					SLAB_ACCOUNT),
+				SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,
 				offsetof(struct ext2_inode_info, i_data),
 				sizeof_field(struct ext2_inode_info, i_data),
 				init_once);
@@ -397,6 +396,7 @@ static struct dentry *ext2_fh_to_parent(struct super_block *sb, struct fid *fid,
 }
 
 static const struct export_operations ext2_export_ops = {
+	.encode_fh = generic_encode_ino32_fh,
 	.fh_to_dentry = ext2_fh_to_dentry,
 	.fh_to_parent = ext2_fh_to_parent,
 	.get_parent = ext2_get_parent,
@@ -1572,7 +1572,7 @@ out:
 	if (inode->i_size < off+len-towrite)
 		i_size_write(inode, off+len-towrite);
 	inode_inc_iversion(inode);
-	inode->i_mtime = inode_set_ctime_current(inode);
+	inode_set_mtime_to_ts(inode, inode_set_ctime_current(inode));
 	mark_inode_dirty(inode);
 	return len - towrite;
 }

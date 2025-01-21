@@ -152,6 +152,7 @@ void ksmbd_session_destroy(struct ksmbd_session *sess)
 
 	ksmbd_tree_conn_session_logoff(sess);
 	ksmbd_destroy_file_table(&sess->file_table);
+	ksmbd_launch_ksmbd_durable_scavenger();
 	ksmbd_session_rpc_clear_list(sess);
 	free_channel_list(sess);
 	kfree(sess->Preauth_HashValue);
@@ -355,9 +356,11 @@ void destroy_previous_session(struct ksmbd_conn *conn,
 		ksmbd_all_conn_set_status(id, KSMBD_SESS_NEED_NEGOTIATE);
 		goto out;
 	}
+
 	ksmbd_destroy_file_table(&prev_sess->file_table);
 	prev_sess->state = SMB2_SESSION_EXPIRED;
 	ksmbd_all_conn_set_status(id, KSMBD_SESS_NEED_NEGOTIATE);
+	ksmbd_launch_ksmbd_durable_scavenger();
 out:
 	up_write(&conn->session_lock);
 	up_write(&sessions_table_lock);

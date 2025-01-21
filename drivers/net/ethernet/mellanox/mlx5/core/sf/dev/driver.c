@@ -8,6 +8,20 @@
 #include "dev.h"
 #include "devlink.h"
 
+static int mlx5_core_peer_devlink_set(struct mlx5_sf_dev *sf_dev, struct devlink *devlink)
+{
+	struct mlx5_sf_peer_devlink_event_ctx event_ctx = {
+		.fn_id = sf_dev->fn_id,
+		.devlink = devlink,
+	};
+	int ret;
+
+	ret = mlx5_blocking_notifier_call_chain(sf_dev->parent_mdev,
+						MLX5_DRIVER_EVENT_SF_PEER_DEVLINK,
+						&event_ctx);
+	return ret == NOTIFY_OK ? event_ctx.err : 0;
+}
+
 static int mlx5_sf_dev_probe(struct auxiliary_device *adev, const struct auxiliary_device_id *id)
 {
 	struct mlx5_sf_dev *sf_dev = container_of(adev, struct mlx5_sf_dev, adev);
@@ -46,6 +60,13 @@ static int mlx5_sf_dev_probe(struct auxiliary_device *adev, const struct auxilia
 		goto remap_err;
 	}
 
+	/* Peer devlink logic expects to work on unregistered devlink instance. */
+	err = mlx5_core_peer_devlink_set(sf_dev, devlink);
+	if (err) {
+		mlx5_core_warn(mdev, "mlx5_core_peer_devlink_set err=%d\n", err);
+		goto peer_devlink_set_err;
+	}
+
 	if (MLX5_ESWITCH_MANAGER(sf_dev->parent_mdev))
 		err = mlx5_init_one_light(mdev);
 	else
@@ -54,10 +75,11 @@ static int mlx5_sf_dev_probe(struct auxiliary_device *adev, const struct auxilia
 		mlx5_core_warn(mdev, "mlx5_init_one err=%d\n", err);
 		goto init_one_err;
 	}
-	devlink_register(devlink);
+
 	return 0;
 
 init_one_err:
+peer_devlink_set_err:
 	iounmap(mdev->iseg);
 remap_err:
 	mlx5_mdev_uninit(mdev);

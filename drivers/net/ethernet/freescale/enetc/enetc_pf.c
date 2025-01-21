@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /* Copyright 2017-2019 NXP */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/mdio.h>
 #include <linux/module.h>
 #include <linux/fsl/enetc_mdio.h>
@@ -911,6 +911,7 @@ static void enetc_imdio_remove(struct enetc_pf *pf)
 static bool enetc_port_has_pcs(struct enetc_pf *pf)
 {
 	return (pf->if_mode == PHY_INTERFACE_MODE_SGMII ||
+		pf->if_mode == PHY_INTERFACE_MODE_1000BASEX ||
 		pf->if_mode == PHY_INTERFACE_MODE_2500BASEX ||
 		pf->if_mode == PHY_INTERFACE_MODE_USXGMII);
 }
@@ -1106,6 +1107,8 @@ static int enetc_phylink_create(struct enetc_ndev_priv *priv,
 	__set_bit(PHY_INTERFACE_MODE_INTERNAL,
 		  pf->phylink_config.supported_interfaces);
 	__set_bit(PHY_INTERFACE_MODE_SGMII,
+		  pf->phylink_config.supported_interfaces);
+	__set_bit(PHY_INTERFACE_MODE_1000BASEX,
 		  pf->phylink_config.supported_interfaces);
 	__set_bit(PHY_INTERFACE_MODE_2500BASEX,
 		  pf->phylink_config.supported_interfaces);

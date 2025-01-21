@@ -868,10 +868,11 @@ err_out:
 	return rc;
 }
 
-int hisi_sas_slave_configure(struct scsi_device *sdev)
+int hisi_sas_device_configure(struct scsi_device *sdev,
+		struct queue_limits *lim)
 {
 	struct domain_device *dev = sdev_to_domain_dev(sdev);
-	int ret = sas_slave_configure(sdev);
+	int ret = sas_device_configure(sdev, lim);
 
 	if (ret)
 		return ret;
@@ -880,7 +881,7 @@ int hisi_sas_slave_configure(struct scsi_device *sdev)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(hisi_sas_slave_configure);
+EXPORT_SYMBOL_GPL(hisi_sas_device_configure);
 
 void hisi_sas_scan_start(struct Scsi_Host *shost)
 {
@@ -1507,7 +1508,12 @@ void hisi_sas_controller_reset_prepare(struct hisi_hba *hisi_hba)
 	scsi_block_requests(shost);
 	hisi_hba->hw->wait_cmds_complete_timeout(hisi_hba, 100, 5000);
 
-	del_timer_sync(&hisi_hba->timer);
+	/*
+	 * hisi_hba->timer is only used for v1/v2 hw, and check hw->sht
+	 * which is also only used for v1/v2 hw to skip it for v3 hw
+	 */
+	if (hisi_hba->hw->sht)
+		del_timer_sync(&hisi_hba->timer);
 
 	set_bit(HISI_SAS_REJECT_CMD_BIT, &hisi_hba->flags);
 }
@@ -2302,7 +2308,8 @@ int hisi_sas_alloc(struct hisi_hba *hisi_hba)
 
 	hisi_hba->last_slot_index = 0;
 
-	hisi_hba->wq = create_singlethread_workqueue(dev_name(dev));
+	hisi_hba->wq =
+		alloc_ordered_workqueue("%s", WQ_MEM_RECLAIM, dev_name(dev));
 	if (!hisi_hba->wq) {
 		dev_err(dev, "sas_alloc: failed to create workqueue\n");
 		goto err_out;
@@ -2631,7 +2638,8 @@ static __exit void hisi_sas_exit(void)
 {
 	sas_release_transport(hisi_sas_stt);
 
-	debugfs_remove(hisi_sas_debugfs_dir);
+	if (hisi_sas_debugfs_enable)
+		debugfs_remove(hisi_sas_debugfs_dir);
 }
 
 module_init(hisi_sas_init);

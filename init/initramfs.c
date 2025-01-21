@@ -16,8 +16,10 @@
 #include <linux/mm.h>
 #include <linux/namei.h>
 #include <linux/init_syscalls.h>
-#include <linux/task_work.h>
 #include <linux/umh.h>
+#include <linux/security.h>
+
+#include "do_mounts.h"
 
 static __initdata bool csum_present;
 static __initdata u32 io_csum;
@@ -375,7 +377,7 @@ static int __init do_name(void)
 	if (S_ISREG(mode)) {
 		int ml = maybe_link();
 		if (ml >= 0) {
-			int openflags = O_WRONLY|O_CREAT;
+			int openflags = O_WRONLY|O_CREAT|O_LARGEFILE;
 			if (ml != 1)
 				openflags |= O_TRUNC;
 			wfile = filp_open(collected, openflags, mode);
@@ -589,6 +591,8 @@ extern unsigned long __initramfs_size;
 #include <linux/initrd.h>
 #include <linux/kexec.h>
 
+static BIN_ATTR(initrd, 0440, sysfs_bin_attr_simple_read, NULL, 0);
+
 void __init reserve_initrd_mem(void)
 {
 	phys_addr_t start;
@@ -647,7 +651,7 @@ void __weak __init free_initrd_mem(unsigned long start, unsigned long end)
 			"initrd");
 }
 
-#ifdef CONFIG_KEXEC_CORE
+#ifdef CONFIG_CRASH_RESERVE
 static bool __init kexec_free_initrd(void)
 {
 	unsigned long crashk_start = (unsigned long)__va(crashk_res.start);
@@ -683,8 +687,6 @@ static void __init populate_initrd_image(char *err)
 	ssize_t written;
 	struct file *file;
 	loff_t pos = 0;
-
-	unpack_to_rootfs(__initramfs_start, __initramfs_size);
 
 	printk(KERN_INFO "rootfs image is not initramfs (%s); looks like an initrd\n",
 			err);
@@ -726,17 +728,24 @@ static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 	}
 
 done:
+	security_initramfs_populated();
+
 	/*
 	 * If the initrd region is overlapped with crashkernel reserved region,
 	 * free only memory that is not part of crashkernel region.
 	 */
-	if (!do_retain_initrd && initrd_start && !kexec_free_initrd())
+	if (!do_retain_initrd && initrd_start && !kexec_free_initrd()) {
 		free_initrd_mem(initrd_start, initrd_end);
+	} else if (do_retain_initrd && initrd_start) {
+		bin_attr_initrd.size = initrd_end - initrd_start;
+		bin_attr_initrd.private = (void *)initrd_start;
+		if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
+			pr_err("Failed to create initrd sysfs file");
+	}
 	initrd_start = 0;
 	initrd_end = 0;
 
-	flush_delayed_fput();
-	task_work_run();
+	init_flush_fput();
 }
 
 static ASYNC_DOMAIN_EXCLUSIVE(initramfs_domain);

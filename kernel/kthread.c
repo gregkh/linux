@@ -315,6 +315,7 @@ void __noreturn kthread_exit(long result)
 	kthread->result = result;
 	do_exit(0);
 }
+EXPORT_SYMBOL(kthread_exit);
 
 /**
  * kthread_complete_and_exit - Exit the current kthread.
@@ -1497,7 +1498,6 @@ void kthread_unuse_mm(struct mm_struct *mm)
 	 * clearing tsk->mm.
 	 */
 	smp_mb__after_spinlock();
-	sync_mm_rss(mm);
 	local_irq_disable();
 	tsk->mm = NULL;
 	membarrier_update_current_mm(NULL);

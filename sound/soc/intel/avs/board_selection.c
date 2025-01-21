@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2021-2022 Intel Corporation. All rights reserved.
+// Copyright(c) 2021-2022 Intel Corporation
 //
 // Authors: Cezary Rojewski <cezary.rojewski@intel.com>
 //          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
@@ -10,10 +10,10 @@
 #include <linux/module.h>
 #include <linux/dmi.h>
 #include <linux/pci.h>
+#include <acpi/nhlt.h>
 #include <linux/platform_device.h>
 #include <sound/hda_codec.h>
 #include <sound/hda_register.h>
-#include <sound/intel-nhlt.h>
 #include <sound/soc-acpi.h>
 #include <sound/soc-component.h>
 #include "avs.h"
@@ -136,6 +136,15 @@ static struct snd_soc_acpi_mach avs_kbl_i2s_machines[] = {
 		.tplg_filename = "max98927-tplg.bin",
 	},
 	{
+		.id = "10EC5514",
+		.drv_name = "avs_rt5514",
+		.mach_params = {
+			.i2s_link_mask = AVS_SSP(0),
+		},
+		.pdata = (unsigned long[]){ 0x2, 0, 0, 0, 0, 0 }, /* SSP0 TDMs */
+		.tplg_filename = "rt5514-tplg.bin",
+	},
+	{
 		.id = "10EC5663",
 		.drv_name = "avs_rt5663",
 		.mach_params = {
@@ -193,7 +202,7 @@ static struct snd_soc_acpi_mach avs_apl_i2s_machines[] = {
 		.mach_params = {
 			.i2s_link_mask = AVS_SSP_RANGE(0, 5),
 		},
-		.pdata = (unsigned long[]){ 0, 0, 0x14, 0, 0, 0 }, /* SSP2 TDMs */
+		.pdata = (unsigned long[]){ 0x1, 0x1, 0x14, 0x1, 0x1, 0x1 }, /* SSP2 TDMs */
 		.tplg_filename = "tdf8532-tplg.bin",
 	},
 	{
@@ -425,8 +434,7 @@ static int avs_register_dmic_board(struct avs_dev *adev)
 	struct snd_soc_acpi_mach mach = {{0}};
 	int ret;
 
-	if (!adev->nhlt ||
-	    !intel_nhlt_has_endpoint_type(adev->nhlt, NHLT_LINK_DMIC)) {
+	if (!acpi_nhlt_find_endpoint(ACPI_NHLT_LINKTYPE_PDM, -1, -1, -1)) {
 		dev_dbg(adev->dev, "no DMIC endpoints present\n");
 		return 0;
 	}
@@ -514,7 +522,7 @@ static int avs_register_i2s_boards(struct avs_dev *adev)
 	struct snd_soc_acpi_mach *mach;
 	int ret;
 
-	if (!adev->nhlt || !intel_nhlt_has_endpoint_type(adev->nhlt, NHLT_LINK_SSP)) {
+	if (!acpi_nhlt_find_endpoint(ACPI_NHLT_LINKTYPE_SSP, -1, -1, -1)) {
 		dev_dbg(adev->dev, "no I2S endpoints present\n");
 		return 0;
 	}

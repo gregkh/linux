@@ -97,27 +97,19 @@ static int smb_open(struct inode *inode, struct file *file)
 {
 	struct smb_drv_data *drvdata = container_of(file->private_data,
 					struct smb_drv_data, miscdev);
-	int ret = 0;
 
-	spin_lock(&drvdata->spinlock);
+	guard(spinlock)(&drvdata->spinlock);
 
-	if (drvdata->reading) {
-		ret = -EBUSY;
-		goto out;
-	}
+	if (drvdata->reading)
+		return -EBUSY;
 
-	if (atomic_read(&drvdata->csdev->refcnt)) {
-		ret = -EBUSY;
-		goto out;
-	}
+	if (drvdata->csdev->refcnt)
+		return -EBUSY;
 
 	smb_update_data_size(drvdata);
-
 	drvdata->reading = true;
-out:
-	spin_unlock(&drvdata->spinlock);
 
-	return ret;
+	return 0;
 }
 
 static ssize_t smb_read(struct file *file, char __user *data, size_t len,
@@ -160,9 +152,8 @@ static int smb_release(struct inode *inode, struct file *file)
 	struct smb_drv_data *drvdata = container_of(file->private_data,
 					struct smb_drv_data, miscdev);
 
-	spin_lock(&drvdata->spinlock);
+	guard(spinlock)(&drvdata->spinlock);
 	drvdata->reading = false;
-	spin_unlock(&drvdata->spinlock);
 
 	return 0;
 }
@@ -172,7 +163,6 @@ static const struct file_operations smb_fops = {
 	.open		= smb_open,
 	.read		= smb_read,
 	.release	= smb_release,
-	.llseek		= no_llseek,
 };
 
 static ssize_t buf_size_show(struct device *dev, struct device_attribute *attr,
@@ -216,11 +206,11 @@ static void smb_enable_sysfs(struct coresight_device *csdev)
 {
 	struct smb_drv_data *drvdata = dev_get_drvdata(csdev->dev.parent);
 
-	if (drvdata->mode != CS_MODE_DISABLED)
+	if (coresight_get_mode(csdev) != CS_MODE_DISABLED)
 		return;
 
 	smb_enable_hw(drvdata);
-	drvdata->mode = CS_MODE_SYSFS;
+	coresight_set_mode(csdev, CS_MODE_SYSFS);
 }
 
 static int smb_enable_perf(struct coresight_device *csdev, void *data)
@@ -243,7 +233,7 @@ static int smb_enable_perf(struct coresight_device *csdev, void *data)
 	if (drvdata->pid == -1) {
 		smb_enable_hw(drvdata);
 		drvdata->pid = pid;
-		drvdata->mode = CS_MODE_PERF;
+		coresight_set_mode(csdev, CS_MODE_PERF);
 	}
 
 	return 0;
@@ -255,19 +245,16 @@ static int smb_enable(struct coresight_device *csdev, enum cs_mode mode,
 	struct smb_drv_data *drvdata = dev_get_drvdata(csdev->dev.parent);
 	int ret = 0;
 
-	spin_lock(&drvdata->spinlock);
+	guard(spinlock)(&drvdata->spinlock);
 
 	/* Do nothing, the trace data is reading by other interface now */
-	if (drvdata->reading) {
-		ret = -EBUSY;
-		goto out;
-	}
+	if (drvdata->reading)
+		return -EBUSY;
 
 	/* Do nothing, the SMB is already enabled as other mode */
-	if (drvdata->mode != CS_MODE_DISABLED && drvdata->mode != mode) {
-		ret = -EBUSY;
-		goto out;
-	}
+	if (coresight_get_mode(csdev) != CS_MODE_DISABLED &&
+	    coresight_get_mode(csdev) != mode)
+		return -EBUSY;
 
 	switch (mode) {
 	case CS_MODE_SYSFS:
@@ -281,13 +268,10 @@ static int smb_enable(struct coresight_device *csdev, enum cs_mode mode,
 	}
 
 	if (ret)
-		goto out;
+		return ret;
 
-	atomic_inc(&csdev->refcnt);
-
+	csdev->refcnt++;
 	dev_dbg(&csdev->dev, "Ultrasoc SMB enabled\n");
-out:
-	spin_unlock(&drvdata->spinlock);
 
 	return ret;
 }
@@ -295,34 +279,27 @@ out:
 static int smb_disable(struct coresight_device *csdev)
 {
 	struct smb_drv_data *drvdata = dev_get_drvdata(csdev->dev.parent);
-	int ret = 0;
 
-	spin_lock(&drvdata->spinlock);
+	guard(spinlock)(&drvdata->spinlock);
 
-	if (drvdata->reading) {
-		ret = -EBUSY;
-		goto out;
-	}
+	if (drvdata->reading)
+		return -EBUSY;
 
-	if (atomic_dec_return(&csdev->refcnt)) {
-		ret = -EBUSY;
-		goto out;
-	}
+	csdev->refcnt--;
+	if (csdev->refcnt)
+		return -EBUSY;
 
 	/* Complain if we (somehow) got out of sync */
-	WARN_ON_ONCE(drvdata->mode == CS_MODE_DISABLED);
+	WARN_ON_ONCE(coresight_get_mode(csdev) == CS_MODE_DISABLED);
 
 	smb_disable_hw(drvdata);
 
 	/* Dissociate from the target process. */
 	drvdata->pid = -1;
-	drvdata->mode = CS_MODE_DISABLED;
-
+	coresight_set_mode(csdev, CS_MODE_DISABLED);
 	dev_dbg(&csdev->dev, "Ultrasoc SMB disabled\n");
-out:
-	spin_unlock(&drvdata->spinlock);
 
-	return ret;
+	return 0;
 }
 
 static void *smb_alloc_buffer(struct coresight_device *csdev,
@@ -395,17 +372,17 @@ static unsigned long smb_update_buffer(struct coresight_device *csdev,
 	struct smb_drv_data *drvdata = dev_get_drvdata(csdev->dev.parent);
 	struct smb_data_buffer *sdb = &drvdata->sdb;
 	struct cs_buffers *buf = sink_config;
-	unsigned long data_size = 0;
+	unsigned long data_size;
 	bool lost = false;
 
 	if (!buf)
 		return 0;
 
-	spin_lock(&drvdata->spinlock);
+	guard(spinlock)(&drvdata->spinlock);
 
 	/* Don't do anything if another tracer is using this sink. */
-	if (atomic_read(&csdev->refcnt) != 1)
-		goto out;
+	if (csdev->refcnt != 1)
+		return 0;
 
 	smb_disable_hw(drvdata);
 	smb_update_data_size(drvdata);
@@ -424,8 +401,6 @@ static unsigned long smb_update_buffer(struct coresight_device *csdev,
 	smb_sync_perf_buffer(drvdata, buf, handle->head);
 	if (!buf->snapshot && lost)
 		perf_aux_output_flag(handle, PERF_AUX_FLAG_TRUNCATED);
-out:
-	spin_unlock(&drvdata->spinlock);
 
 	return data_size;
 }
@@ -601,20 +576,18 @@ static int smb_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int smb_remove(struct platform_device *pdev)
+static void smb_remove(struct platform_device *pdev)
 {
 	struct smb_drv_data *drvdata = platform_get_drvdata(pdev);
 
 	smb_unregister_sink(drvdata);
 
 	smb_config_inport(&pdev->dev, false);
-
-	return 0;
 }
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id ultrasoc_smb_acpi_match[] = {
-	{"HISI03A1", 0},
+	{"HISI03A1", 0, 0, 0},
 	{}
 };
 MODULE_DEVICE_TABLE(acpi, ultrasoc_smb_acpi_match);
@@ -627,7 +600,7 @@ static struct platform_driver smb_driver = {
 		.suppress_bind_attrs = true,
 	},
 	.probe = smb_probe,
-	.remove = smb_remove,
+	.remove_new = smb_remove,
 };
 module_platform_driver(smb_driver);
 

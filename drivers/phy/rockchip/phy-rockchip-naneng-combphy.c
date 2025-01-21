@@ -248,13 +248,13 @@ static int rockchip_combphy_exit(struct phy *phy)
 	return 0;
 }
 
-static const struct phy_ops rochchip_combphy_ops = {
+static const struct phy_ops rockchip_combphy_ops = {
 	.init = rockchip_combphy_init,
 	.exit = rockchip_combphy_exit,
 	.owner = THIS_MODULE,
 };
 
-static struct phy *rockchip_combphy_xlate(struct device *dev, struct of_phandle_args *args)
+static struct phy *rockchip_combphy_xlate(struct device *dev, const struct of_phandle_args *args)
 {
 	struct rockchip_combphy_priv *priv = dev_get_drvdata(dev);
 
@@ -364,7 +364,7 @@ static int rockchip_combphy_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	priv->phy = devm_phy_create(dev, NULL, &rochchip_combphy_ops);
+	priv->phy = devm_phy_create(dev, NULL, &rockchip_combphy_ops);
 	if (IS_ERR(priv->phy)) {
 		dev_err(dev, "failed to create combphy\n");
 		return PTR_ERR(priv->phy);

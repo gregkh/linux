@@ -42,6 +42,8 @@ int ena_xdp_xmit_frame(struct ena_ring *tx_ring,
 int ena_xdp_xmit(struct net_device *dev, int n,
 		 struct xdp_frame **frames, u32 flags);
 int ena_xdp(struct net_device *netdev, struct netdev_bpf *bpf);
+int ena_xdp_register_rxq_info(struct ena_ring *rx_ring);
+void ena_xdp_unregister_rxq_info(struct ena_ring *rx_ring);
 
 enum ena_xdp_errors_t {
 	ENA_XDP_ALLOWED = 0,
@@ -86,9 +88,6 @@ static inline int ena_xdp_execute(struct ena_ring *rx_ring, struct xdp_buff *xdp
 	u64 *xdp_stat;
 
 	xdp_prog = READ_ONCE(rx_ring->xdp_bpf_prog);
-
-	if (!xdp_prog)
-		return verdict;
 
 	verdict = bpf_prog_run_xdp(xdp_prog, xdp);
 

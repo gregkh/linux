@@ -68,6 +68,8 @@ static int spi_mux_select(struct spi_device *spi)
 
 	priv->current_cs = spi_get_chipselect(spi, 0);
 
+	spi_setup(priv->spi);
+
 	return 0;
 }
 
@@ -129,7 +131,7 @@ static int spi_mux_probe(struct spi_device *spi)
 	struct spi_mux_priv *priv;
 	int ret;
 
-	ctlr = spi_alloc_master(&spi->dev, sizeof(*priv));
+	ctlr = spi_alloc_host(&spi->dev, sizeof(*priv));
 	if (!ctlr)
 		return -ENOMEM;
 
@@ -163,6 +165,7 @@ static int spi_mux_probe(struct spi_device *spi)
 	ctlr->bus_num = -1;
 	ctlr->dev.of_node = spi->dev.of_node;
 	ctlr->must_async = true;
+	ctlr->defer_optimize_message = true;
 
 	ret = devm_spi_register_controller(&spi->dev, ctlr);
 	if (ret)

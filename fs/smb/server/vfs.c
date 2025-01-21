@@ -337,18 +337,18 @@ static int check_lock_range(struct file *filp, loff_t start, loff_t end,
 		return 0;
 
 	spin_lock(&ctx->flc_lock);
-	list_for_each_entry(flock, &ctx->flc_posix, fl_list) {
+	for_each_file_lock(flock, &ctx->flc_posix) {
 		/* check conflict locks */
 		if (flock->fl_end >= start && end >= flock->fl_start) {
-			if (flock->fl_type == F_RDLCK) {
+			if (lock_is_read(flock)) {
 				if (type == WRITE) {
 					pr_err("not allow write by shared lock\n");
 					error = 1;
 					goto out;
 				}
-			} else if (flock->fl_type == F_WRLCK) {
+			} else if (lock_is_write(flock)) {
 				/* check owner in lock */
-				if (flock->fl_file != filp) {
+				if (flock->c.flc_file != filp) {
 					error = 1;
 					pr_err("not allow rw access by exclusive lock from other opens\n");
 					goto out;
@@ -720,6 +720,10 @@ retry:
 		goto out2;
 
 	trap = lock_rename_child(old_child, new_path.dentry);
+	if (IS_ERR(trap)) {
+		err = PTR_ERR(trap);
+		goto out_drop_write;
+	}
 
 	old_parent = dget(old_child->d_parent);
 	if (d_unhashed(old_child)) {
@@ -787,6 +791,7 @@ out4:
 out3:
 	dput(old_parent);
 	unlock_rename(old_parent, new_path.dentry);
+out_drop_write:
 	mnt_drop_write(old_path->mnt);
 out2:
 	path_put(&new_path);
@@ -1848,13 +1853,13 @@ int ksmbd_vfs_copy_file_ranges(struct ksmbd_work *work,
 
 void ksmbd_vfs_posix_lock_wait(struct file_lock *flock)
 {
-	wait_event(flock->fl_wait, !flock->fl_blocker);
+	wait_event(flock->c.flc_wait, !flock->c.flc_blocker);
 }
 
 int ksmbd_vfs_posix_lock_wait_timeout(struct file_lock *flock, long timeout)
 {
-	return wait_event_interruptible_timeout(flock->fl_wait,
-						!flock->fl_blocker,
+	return wait_event_interruptible_timeout(flock->c.flc_wait,
+						!flock->c.flc_blocker,
 						timeout);
 }
 

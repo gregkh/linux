@@ -210,7 +210,7 @@ static void smbalert_remove(struct i2c_client *ara)
 }
 
 static const struct i2c_device_id smbalert_ids[] = {
-	{ "smbus_alert", 0 },
+	{ "smbus_alert" },
 	{ /* LIST END */ }
 };
 MODULE_DEVICE_TABLE(i2c, smbalert_ids);
@@ -358,8 +358,8 @@ EXPORT_SYMBOL_GPL(i2c_free_slave_host_notify_device);
  * target systems are the same.
  * Restrictions to automatic SPD instantiation:
  *  - Only works if all filled slots have the same memory type
- *  - Only works for DDR2, DDR3 and DDR4 for now
- *  - Only works on systems with 1 to 4 memory slots
+ *  - Only works for (LP)DDR memory types up to DDR5
+ *  - Only works on systems with 1 to 8 memory slots
  */
 #if IS_ENABLED(CONFIG_DMI)
 void i2c_register_spd(struct i2c_adapter *adap)
@@ -401,14 +401,12 @@ void i2c_register_spd(struct i2c_adapter *adap)
 	if (!dimm_count)
 		return;
 
-	dev_info(&adap->dev, "%d/%d memory slots populated (from DMI)\n",
-		 dimm_count, slot_count);
-
-	if (slot_count > 4) {
-		dev_warn(&adap->dev,
-			 "Systems with more than 4 memory slots not supported yet, not instantiating SPD\n");
-		return;
-	}
+	/*
+	 * The max number of SPD EEPROMs that can be addressed per bus is 8.
+	 * If more slots are present either muxed or multiple busses are
+	 * necessary or the additional slots are ignored.
+	 */
+	slot_count = min(slot_count, 8);
 
 	/*
 	 * Memory types could be found at section 7.18.2 (Memory Device — Type), table 78
@@ -426,6 +424,10 @@ void i2c_register_spd(struct i2c_adapter *adap)
 	case 0x1A:	/* DDR4 */
 	case 0x1E:	/* LPDDR4 */
 		name = "ee1004";
+		break;
+	case 0x22:	/* DDR5 */
+	case 0x23:	/* LPDDR5 */
+		name = "spd5118";
 		break;
 	default:
 		dev_info(&adap->dev,
