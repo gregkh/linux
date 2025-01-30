@@ -365,9 +365,12 @@ do_encap:
 				goto drop;
 			}
 
-			local_bh_disable();
-			dst_cache_set_ip6(&ilwt->cache, dst, &fl6.saddr);
-			local_bh_enable();
+			/* cache only if we don't create a dst reference loop */
+			if (skb_dst(skb)->lwtstate != dst->lwtstate) {
+				local_bh_disable();
+				dst_cache_set_ip6(&ilwt->cache, dst, &fl6.saddr);
+				local_bh_enable();
+			}
 		}
 
 		skb_dst_drop(skb);
