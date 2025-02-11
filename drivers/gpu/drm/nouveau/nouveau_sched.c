@@ -429,15 +429,19 @@ static const struct drm_sched_backend_ops nouveau_sched_ops = {
 int nouveau_sched_init(struct nouveau_drm *drm)
 {
 	struct drm_gpu_scheduler *sched = &drm->sched;
-	long job_hang_limit = msecs_to_jiffies(NOUVEAU_SCHED_JOB_TIMEOUT_MS);
+	struct drm_sched_init_args args = {
+		.ops = &nouveau_sched_ops,
+		.hw_submission = NOUVEAU_SCHED_HW_SUBMISSIONS,
+		.timeout = msecs_to_jiffies(NOUVEAU_SCHED_JOB_TIMEOUT_MS),
+		.name = "nouveau_sched",
+		.dev = drm->dev->dev,
+	};
 
 	drm->sched_wq = create_singlethread_workqueue("nouveau_sched_wq");
 	if (!drm->sched_wq)
 		return -ENOMEM;
 
-	return drm_sched_init(sched, &nouveau_sched_ops,
-			      NOUVEAU_SCHED_HW_SUBMISSIONS, 0, job_hang_limit,
-			      NULL, NULL, "nouveau_sched", drm->dev->dev);
+	return drm_sched_init(sched, &args);
 }
 
 void nouveau_sched_fini(struct nouveau_drm *drm)
