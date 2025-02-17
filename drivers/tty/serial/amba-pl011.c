@@ -2209,7 +2209,7 @@ static int pl011_verify_port(struct uart_port *port, struct serial_struct *ser)
 
 	if (ser->type != PORT_UNKNOWN && ser->type != PORT_AMBA)
 		ret = -EINVAL;
-	if (ser->irq < 0 || ser->irq >= nr_irqs)
+	if (ser->irq < 0 || ser->irq >= irq_get_nr_irqs())
 		ret = -EINVAL;
 	if (ser->baud_base < 9600)
 		ret = -EINVAL;
@@ -2944,7 +2944,7 @@ MODULE_DEVICE_TABLE(acpi, sbsa_uart_acpi_match);
 
 static struct platform_driver arm_sbsa_uart_platform_driver = {
 	.probe		= sbsa_uart_probe,
-	.remove_new	= sbsa_uart_remove,
+	.remove		= sbsa_uart_remove,
 	.driver	= {
 		.name	= "sbsa-uart",
 		.pm	= &pl011_dev_pm_ops,

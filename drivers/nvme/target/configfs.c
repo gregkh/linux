@@ -769,6 +769,32 @@ static ssize_t nvmet_ns_revalidate_size_store(struct config_item *item,
 
 CONFIGFS_ATTR_WO(nvmet_ns_, revalidate_size);
 
+static ssize_t nvmet_ns_resv_enable_show(struct config_item *item, char *page)
+{
+	return sysfs_emit(page, "%d\n", to_nvmet_ns(item)->pr.enable);
+}
+
+static ssize_t nvmet_ns_resv_enable_store(struct config_item *item,
+		const char *page, size_t count)
+{
+	struct nvmet_ns *ns = to_nvmet_ns(item);
+	bool val;
+
+	if (kstrtobool(page, &val))
+		return -EINVAL;
+
+	mutex_lock(&ns->subsys->lock);
+	if (ns->enabled) {
+		pr_err("the ns:%d is already enabled.\n", ns->nsid);
+		mutex_unlock(&ns->subsys->lock);
+		return -EINVAL;
+	}
+	ns->pr.enable = val;
+	mutex_unlock(&ns->subsys->lock);
+	return count;
+}
+CONFIGFS_ATTR(nvmet_ns_, resv_enable);
+
 static struct configfs_attribute *nvmet_ns_attrs[] = {
 	&nvmet_ns_attr_device_path,
 	&nvmet_ns_attr_device_nguid,
@@ -777,23 +803,12 @@ static struct configfs_attribute *nvmet_ns_attrs[] = {
 	&nvmet_ns_attr_enable,
 	&nvmet_ns_attr_buffered_io,
 	&nvmet_ns_attr_revalidate_size,
+	&nvmet_ns_attr_resv_enable,
 #ifdef CONFIG_PCI_P2PDMA
 	&nvmet_ns_attr_p2pmem,
 #endif
 	NULL,
 };
-
-bool nvmet_subsys_nsid_exists(struct nvmet_subsys *subsys, u32 nsid)
-{
-	struct config_item *ns_item;
-	char name[12];
-
-	snprintf(name, sizeof(name), "%u", nsid);
-	mutex_lock(&subsys->namespaces_group.cg_subsys->su_mutex);
-	ns_item = config_group_find_item(&subsys->namespaces_group, name);
-	mutex_unlock(&subsys->namespaces_group.cg_subsys->su_mutex);
-	return ns_item != NULL;
-}
 
 static void nvmet_ns_release(struct config_item *item)
 {

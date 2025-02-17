@@ -1829,6 +1829,13 @@ static bool iso_match_big(struct sock *sk, void *data)
 	return ev->handle == iso_pi(sk)->qos.bcast.big;
 }
 
+static bool iso_match_big_hcon(struct sock *sk, void *data)
+{
+	struct hci_conn *hcon = data;
+
+	return hcon->iso_qos.bcast.big == iso_pi(sk)->qos.bcast.big;
+}
+
 static bool iso_match_pa_sync_flag(struct sock *sk, void *data)
 {
 	return test_bit(BT_SK_PA_SYNC, &iso_pi(sk)->flags);
@@ -1852,8 +1859,16 @@ static void iso_conn_ready(struct iso_conn *conn)
 		if (!hcon)
 			return;
 
-		if (test_bit(HCI_CONN_BIG_SYNC, &hcon->flags) ||
-		    test_bit(HCI_CONN_BIG_SYNC_FAILED, &hcon->flags)) {
+		if (test_bit(HCI_CONN_BIG_SYNC, &hcon->flags)) {
+			/* A BIS slave hcon is notified to the ISO layer
+			 * after the Command Complete for the LE Setup
+			 * ISO Data Path command is received. Get the
+			 * parent socket that matches the hcon BIG handle.
+			 */
+			parent = iso_get_sock(&hcon->src, &hcon->dst,
+					      BT_LISTEN, iso_match_big_hcon,
+					      hcon);
+		} else if (test_bit(HCI_CONN_BIG_SYNC_FAILED, &hcon->flags)) {
 			ev = hci_recv_event_data(hcon->hdev,
 						 HCI_EVT_LE_BIG_SYNC_ESTABILISHED);
 
@@ -1920,7 +1935,6 @@ static void iso_conn_ready(struct iso_conn *conn)
 		if (!bacmp(&hcon->dst, BDADDR_ANY)) {
 			bacpy(&hcon->dst, &iso_pi(parent)->dst);
 			hcon->dst_type = iso_pi(parent)->dst_type;
-			hcon->sync_handle = iso_pi(parent)->sync_handle;
 		}
 
 		if (ev3) {

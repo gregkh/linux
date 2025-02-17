@@ -43,7 +43,7 @@ Tenete presente che per via dell'espansione delle macro questo argomento deve
 essere un simbolo di preprocessore. Per esempio per esportare il
 simbolo ``usb_stor_suspend`` nello spazio dei nomi ``USB_STORAGE`` usate::
 
-	EXPORT_SYMBOL_NS(usb_stor_suspend, USB_STORAGE);
+	EXPORT_SYMBOL_NS(usb_stor_suspend, "USB_STORAGE");
 
 Di conseguenza, nella tabella dei simboli del kernel ci sarà una voce
 rappresentata dalla struttura ``kernel_symbol`` che avrà il campo
@@ -94,7 +94,7 @@ dei nomi che contiene i simboli desiderati. Per esempio un modulo che
 usa il simbolo usb_stor_suspend deve importare lo spazio dei nomi
 USB_STORAGE usando la seguente dichiarazione::
 
-	MODULE_IMPORT_NS(USB_STORAGE);
+	MODULE_IMPORT_NS("USB_STORAGE");
 
 Questo creerà un'etichetta ``modinfo`` per ogni spazio dei nomi
 importato. Un risvolto di questo fatto è che gli spazi dei

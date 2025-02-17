@@ -27,15 +27,21 @@ MODULE_PARM_DESC(size_limit_mb, "Max size of a dmabuf, in megabytes. Default is 
 struct udmabuf {
 	pgoff_t pagecount;
 	struct folio **folios;
+
+	/**
+	 * Unlike folios, pinned_folios is only used for unpin.
+	 * So, nr_pinned is not the same to pagecount, the pinned_folios
+	 * only set each folio which already pinned when udmabuf_create.
+	 * Note that, since a folio may be pinned multiple times, each folio
+	 * can be added to pinned_folios multiple times, depending on how many
+	 * times the folio has been pinned when create.
+	 */
+	pgoff_t nr_pinned;
+	struct folio **pinned_folios;
+
 	struct sg_table *sg;
 	struct miscdevice *device;
 	pgoff_t *offsets;
-	struct list_head unpin_list;
-};
-
-struct udmabuf_folio {
-	struct folio *folio;
-	struct list_head list;
 };
 
 static vm_fault_t udmabuf_vm_fault(struct vm_fault *vmf)
@@ -43,7 +49,8 @@ static vm_fault_t udmabuf_vm_fault(struct vm_fault *vmf)
 	struct vm_area_struct *vma = vmf->vma;
 	struct udmabuf *ubuf = vma->vm_private_data;
 	pgoff_t pgoff = vmf->pgoff;
-	unsigned long pfn;
+	unsigned long addr, pfn;
+	vm_fault_t ret;
 
 	if (pgoff >= ubuf->pagecount)
 		return VM_FAULT_SIGBUS;
@@ -51,7 +58,35 @@ static vm_fault_t udmabuf_vm_fault(struct vm_fault *vmf)
 	pfn = folio_pfn(ubuf->folios[pgoff]);
 	pfn += ubuf->offsets[pgoff] >> PAGE_SHIFT;
 
-	return vmf_insert_pfn(vma, vmf->address, pfn);
+	ret = vmf_insert_pfn(vma, vmf->address, pfn);
+	if (ret & VM_FAULT_ERROR)
+		return ret;
+
+	/* pre fault */
+	pgoff = vma->vm_pgoff;
+	addr = vma->vm_start;
+
+	for (; addr < vma->vm_end; pgoff++, addr += PAGE_SIZE) {
+		if (addr == vmf->address)
+			continue;
+
+		if (WARN_ON(pgoff >= ubuf->pagecount))
+			break;
+
+		pfn = folio_pfn(ubuf->folios[pgoff]);
+		pfn += ubuf->offsets[pgoff] >> PAGE_SHIFT;
+
+		/**
+		 * If the below vmf_insert_pfn() fails, we do not return an
+		 * error here during this pre-fault step. However, an error
+		 * will be returned if the failure occurs when the addr is
+		 * truly accessed.
+		 */
+		if (vmf_insert_pfn(vma, addr, pfn) & VM_FAULT_ERROR)
+			break;
+	}
+
+	return ret;
 }
 
 static const struct vm_operations_struct udmabuf_vm_ops = {
@@ -167,32 +202,40 @@ static void unmap_udmabuf(struct dma_buf_attachment *at,
 	return put_sg_table(at->dev, sg, direction);
 }
 
-static void unpin_all_folios(struct list_head *unpin_list)
+static void unpin_all_folios(struct udmabuf *ubuf)
 {
-	struct udmabuf_folio *ubuf_folio;
+	pgoff_t i;
 
-	while (!list_empty(unpin_list)) {
-		ubuf_folio = list_first_entry(unpin_list,
-					      struct udmabuf_folio, list);
-		unpin_folio(ubuf_folio->folio);
+	for (i = 0; i < ubuf->nr_pinned; ++i)
+		unpin_folio(ubuf->pinned_folios[i]);
 
-		list_del(&ubuf_folio->list);
-		kfree(ubuf_folio);
-	}
+	kvfree(ubuf->pinned_folios);
 }
 
-static int add_to_unpin_list(struct list_head *unpin_list,
-			     struct folio *folio)
+static __always_inline int init_udmabuf(struct udmabuf *ubuf, pgoff_t pgcnt)
 {
-	struct udmabuf_folio *ubuf_folio;
-
-	ubuf_folio = kzalloc(sizeof(*ubuf_folio), GFP_KERNEL);
-	if (!ubuf_folio)
+	ubuf->folios = kvmalloc_array(pgcnt, sizeof(*ubuf->folios), GFP_KERNEL);
+	if (!ubuf->folios)
 		return -ENOMEM;
 
-	ubuf_folio->folio = folio;
-	list_add_tail(&ubuf_folio->list, unpin_list);
+	ubuf->offsets = kvcalloc(pgcnt, sizeof(*ubuf->offsets), GFP_KERNEL);
+	if (!ubuf->offsets)
+		return -ENOMEM;
+
+	ubuf->pinned_folios = kvmalloc_array(pgcnt,
+					     sizeof(*ubuf->pinned_folios),
+					     GFP_KERNEL);
+	if (!ubuf->pinned_folios)
+		return -ENOMEM;
+
 	return 0;
+}
+
+static __always_inline void deinit_udmabuf(struct udmabuf *ubuf)
+{
+	unpin_all_folios(ubuf);
+	kvfree(ubuf->offsets);
+	kvfree(ubuf->folios);
 }
 
 static void release_udmabuf(struct dma_buf *buf)
@@ -203,9 +246,7 @@ static void release_udmabuf(struct dma_buf *buf)
 	if (ubuf->sg)
 		put_sg_table(dev, ubuf->sg, DMA_BIDIRECTIONAL);
 
-	unpin_all_folios(&ubuf->unpin_list);
-	kvfree(ubuf->offsets);
-	kvfree(ubuf->folios);
+	deinit_udmabuf(ubuf);
 	kfree(ubuf);
 }
 
@@ -291,35 +332,27 @@ static struct dma_buf *export_udmabuf(struct udmabuf *ubuf,
 }
 
 static long udmabuf_pin_folios(struct udmabuf *ubuf, struct file *memfd,
-			       loff_t start, loff_t size)
+			       loff_t start, loff_t size, struct folio **folios)
 {
-	pgoff_t pgoff, pgcnt, upgcnt = ubuf->pagecount;
-	struct folio **folios = NULL;
+	pgoff_t nr_pinned = ubuf->nr_pinned;
+	pgoff_t upgcnt = ubuf->pagecount;
 	u32 cur_folio, cur_pgcnt;
+	pgoff_t pgoff, pgcnt;
 	long nr_folios;
-	long ret = 0;
 	loff_t end;
 
 	pgcnt = size >> PAGE_SHIFT;
-	folios = kvmalloc_array(pgcnt, sizeof(*folios), GFP_KERNEL);
-	if (!folios)
-		return -ENOMEM;
-
 	end = start + (pgcnt << PAGE_SHIFT) - 1;
 	nr_folios = memfd_pin_folios(memfd, start, end, folios, pgcnt, &pgoff);
-	if (nr_folios <= 0) {
-		ret = nr_folios ? nr_folios : -EINVAL;
-		goto end;
-	}
+	if (nr_folios <= 0)
+		return nr_folios ? nr_folios : -EINVAL;
 
 	cur_pgcnt = 0;
 	for (cur_folio = 0; cur_folio < nr_folios; ++cur_folio) {
 		pgoff_t subpgoff = pgoff;
 		size_t fsize = folio_size(folios[cur_folio]);
 
-		ret = add_to_unpin_list(&ubuf->unpin_list, folios[cur_folio]);
-		if (ret < 0)
-			goto end;
+		ubuf->pinned_folios[nr_pinned++] = folios[cur_folio];
 
 		for (; subpgoff < fsize; subpgoff += PAGE_SIZE) {
 			ubuf->folios[upgcnt] = folios[cur_folio];
@@ -340,14 +373,16 @@ static long udmabuf_pin_folios(struct udmabuf *ubuf, struct file *memfd,
 	}
 end:
 	ubuf->pagecount = upgcnt;
-	kvfree(folios);
-	return ret;
+	ubuf->nr_pinned = nr_pinned;
+	return 0;
 }
 
 static long udmabuf_create(struct miscdevice *device,
 			   struct udmabuf_create_list *head,
 			   struct udmabuf_create_item *list)
 {
+	unsigned long max_nr_folios = 0;
+	struct folio **folios = NULL;
 	pgoff_t pgcnt = 0, pglimit;
 	struct udmabuf *ubuf;
 	struct dma_buf *dmabuf;
@@ -358,30 +393,32 @@ static long udmabuf_create(struct miscdevice *device,
 	if (!ubuf)
 		return -ENOMEM;
 
-	INIT_LIST_HEAD(&ubuf->unpin_list);
 	pglimit = (size_limit_mb * 1024 * 1024) >> PAGE_SHIFT;
 	for (i = 0; i < head->count; i++) {
-		if (!PAGE_ALIGNED(list[i].offset))
-			goto err;
-		if (!PAGE_ALIGNED(list[i].size))
-			goto err;
+		pgoff_t subpgcnt;
 
-		pgcnt += list[i].size >> PAGE_SHIFT;
+		if (!PAGE_ALIGNED(list[i].offset))
+			goto err_noinit;
+		if (!PAGE_ALIGNED(list[i].size))
+			goto err_noinit;
+
+		subpgcnt = list[i].size >> PAGE_SHIFT;
+		pgcnt += subpgcnt;
 		if (pgcnt > pglimit)
-			goto err;
+			goto err_noinit;
+
+		max_nr_folios = max_t(unsigned long, subpgcnt, max_nr_folios);
 	}
 
 	if (!pgcnt)
+		goto err_noinit;
+
+	ret = init_udmabuf(ubuf, pgcnt);
+	if (ret)
 		goto err;
 
-	ubuf->folios = kvmalloc_array(pgcnt, sizeof(*ubuf->folios), GFP_KERNEL);
-	if (!ubuf->folios) {
-		ret = -ENOMEM;
-		goto err;
-	}
-
-	ubuf->offsets = kvcalloc(pgcnt, sizeof(*ubuf->offsets), GFP_KERNEL);
-	if (!ubuf->offsets) {
+	folios = kvmalloc_array(max_nr_folios, sizeof(*folios), GFP_KERNEL);
+	if (!folios) {
 		ret = -ENOMEM;
 		goto err;
 	}
@@ -404,7 +441,7 @@ static long udmabuf_create(struct miscdevice *device,
 			goto out_unlock;
 
 		ret = udmabuf_pin_folios(ubuf, memfd, list[i].offset,
-					 list[i].size);
+					 list[i].size, folios);
 out_unlock:
 		inode_unlock_shared(file_inode(memfd));
 		fput(memfd);
@@ -428,13 +465,14 @@ out_unlock:
 	if (ret < 0)
 		dma_buf_put(dmabuf);
 
+	kvfree(folios);
 	return ret;
 
 err:
-	unpin_all_folios(&ubuf->unpin_list);
-	kvfree(ubuf->offsets);
-	kvfree(ubuf->folios);
+	deinit_udmabuf(ubuf);
+err_noinit:
 	kfree(ubuf);
+	kvfree(folios);
 	return ret;
 }
 

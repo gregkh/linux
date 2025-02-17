@@ -108,6 +108,11 @@ static void ipmr_expire_process(struct timer_list *t);
 				lockdep_rtnl_is_held() || \
 				list_empty(&net->ipv6.mr6_tables))
 
+static bool ip6mr_can_free_table(struct net *net)
+{
+	return !check_net(net) || !net_initialized(net);
+}
+
 static struct mr_table *ip6mr_mr_table_iter(struct net *net,
 					    struct mr_table *mrt)
 {
@@ -286,7 +291,7 @@ static int ip6mr_rules_dump(struct net *net, struct notifier_block *nb,
 	return fib_rules_dump(net, nb, RTNL_FAMILY_IP6MR, extack);
 }
 
-static unsigned int ip6mr_rules_seq_read(struct net *net)
+static unsigned int ip6mr_rules_seq_read(const struct net *net)
 {
 	return fib_rules_seq_read(net, RTNL_FAMILY_IP6MR);
 }
@@ -300,6 +305,11 @@ EXPORT_SYMBOL(ip6mr_rule_default);
 #else
 #define ip6mr_for_each_table(mrt, net) \
 	for (mrt = net->ipv6.mrt6; mrt; mrt = NULL)
+
+static bool ip6mr_can_free_table(struct net *net)
+{
+	return !check_net(net);
+}
 
 static struct mr_table *ip6mr_mr_table_iter(struct net *net,
 					    struct mr_table *mrt)
@@ -347,7 +357,7 @@ static int ip6mr_rules_dump(struct net *net, struct notifier_block *nb,
 	return 0;
 }
 
-static unsigned int ip6mr_rules_seq_read(struct net *net)
+static unsigned int ip6mr_rules_seq_read(const struct net *net)
 {
 	return 0;
 }
@@ -404,6 +414,10 @@ static struct mr_table *ip6mr_new_table(struct net *net, u32 id)
 
 static void ip6mr_free_table(struct mr_table *mrt)
 {
+	struct net *net = read_pnet(&mrt->net);
+
+	WARN_ON_ONCE(!ip6mr_can_free_table(net));
+
 	timer_shutdown_sync(&mrt->ipmr_expire_timer);
 	mroute_clean_tables(mrt, MRT6_FLUSH_MIFS | MRT6_FLUSH_MIFS_STATIC |
 				 MRT6_FLUSH_MFC | MRT6_FLUSH_MFC_STATIC);
@@ -1274,11 +1288,9 @@ static int ip6mr_device_event(struct notifier_block *this,
 	return NOTIFY_DONE;
 }
 
-static unsigned int ip6mr_seq_read(struct net *net)
+static unsigned int ip6mr_seq_read(const struct net *net)
 {
-	ASSERT_RTNL();
-
-	return net->ipv6.ipmr_seq + ip6mr_rules_seq_read(net);
+	return READ_ONCE(net->ipv6.ipmr_seq) + ip6mr_rules_seq_read(net);
 }
 
 static int ip6mr_dump(struct net *net, struct notifier_block *nb,
@@ -1383,6 +1395,12 @@ static struct pernet_operations ip6mr_net_ops = {
 	.exit_batch = ip6mr_net_exit_batch,
 };
 
+static const struct rtnl_msg_handler ip6mr_rtnl_msg_handlers[] __initconst_or_module = {
+	{.owner = THIS_MODULE, .protocol = RTNL_FAMILY_IP6MR,
+	 .msgtype = RTM_GETROUTE,
+	 .doit = ip6mr_rtm_getroute, .dumpit = ip6mr_rtm_dumproute},
+};
+
 int __init ip6_mr_init(void)
 {
 	int err;
@@ -1405,9 +1423,8 @@ int __init ip6_mr_init(void)
 		goto add_proto_fail;
 	}
 #endif
-	err = rtnl_register_module(THIS_MODULE, RTNL_FAMILY_IP6MR, RTM_GETROUTE,
-				   ip6mr_rtm_getroute, ip6mr_rtm_dumproute, 0);
-	if (err == 0)
+	err = rtnl_register_many(ip6mr_rtnl_msg_handlers);
+	if (!err)
 		return 0;
 
 #ifdef CONFIG_IPV6_PIMSM_V2
@@ -1422,9 +1439,9 @@ reg_pernet_fail:
 	return err;
 }
 
-void ip6_mr_cleanup(void)
+void __init ip6_mr_cleanup(void)
 {
-	rtnl_unregister(RTNL_FAMILY_IP6MR, RTM_GETROUTE);
+	rtnl_unregister_many(ip6mr_rtnl_msg_handlers);
 #ifdef CONFIG_IPV6_PIMSM_V2
 	inet6_del_protocol(&pim6_protocol, IPPROTO_PIM);
 #endif
@@ -2573,7 +2590,7 @@ static int ip6mr_rtm_getroute(struct sk_buff *in_skb, struct nlmsghdr *nlh,
 		src = nla_get_in6_addr(tb[RTA_SRC]);
 	if (tb[RTA_DST])
 		grp = nla_get_in6_addr(tb[RTA_DST]);
-	tableid = tb[RTA_TABLE] ? nla_get_u32(tb[RTA_TABLE]) : 0;
+	tableid = nla_get_u32_default(tb[RTA_TABLE], 0);
 
 	mrt = __ip6mr_get_table(net, tableid ?: RT_TABLE_DEFAULT);
 	if (!mrt) {

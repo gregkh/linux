@@ -69,6 +69,8 @@ STATIC size_t
 xchk_superblock_ondisk_size(
 	struct xfs_mount	*mp)
 {
+	if (xfs_has_metadir(mp))
+		return offsetofend(struct xfs_dsb, sb_pad);
 	if (xfs_has_metauuid(mp))
 		return offsetofend(struct xfs_dsb, sb_meta_uuid);
 	if (xfs_has_crc(mp))
@@ -169,11 +171,19 @@ xchk_superblock(
 	if (sb->sb_rootino != cpu_to_be64(mp->m_sb.sb_rootino))
 		xchk_block_set_preen(sc, bp);
 
-	if (sb->sb_rbmino != cpu_to_be64(mp->m_sb.sb_rbmino))
-		xchk_block_set_preen(sc, bp);
+	if (xfs_has_metadir(sc->mp)) {
+		if (sb->sb_rbmino != cpu_to_be64(0))
+			xchk_block_set_corrupt(sc, bp);
 
-	if (sb->sb_rsumino != cpu_to_be64(mp->m_sb.sb_rsumino))
-		xchk_block_set_preen(sc, bp);
+		if (sb->sb_rsumino != cpu_to_be64(0))
+			xchk_block_set_corrupt(sc, bp);
+	} else {
+		if (sb->sb_rbmino != cpu_to_be64(mp->m_sb.sb_rbmino))
+			xchk_block_set_preen(sc, bp);
+
+		if (sb->sb_rsumino != cpu_to_be64(mp->m_sb.sb_rsumino))
+			xchk_block_set_preen(sc, bp);
+	}
 
 	if (sb->sb_rextsize != cpu_to_be32(mp->m_sb.sb_rextsize))
 		xchk_block_set_corrupt(sc, bp);
@@ -249,11 +259,19 @@ xchk_superblock(
 	 * sb_icount, sb_ifree, sb_fdblocks, sb_frexents
 	 */
 
-	if (sb->sb_uquotino != cpu_to_be64(mp->m_sb.sb_uquotino))
-		xchk_block_set_preen(sc, bp);
+	if (xfs_has_metadir(mp)) {
+		if (sb->sb_uquotino != cpu_to_be64(0))
+			xchk_block_set_corrupt(sc, bp);
 
-	if (sb->sb_gquotino != cpu_to_be64(mp->m_sb.sb_gquotino))
-		xchk_block_set_preen(sc, bp);
+		if (sb->sb_gquotino != cpu_to_be64(0))
+			xchk_block_set_preen(sc, bp);
+	} else {
+		if (sb->sb_uquotino != cpu_to_be64(mp->m_sb.sb_uquotino))
+			xchk_block_set_preen(sc, bp);
+
+		if (sb->sb_gquotino != cpu_to_be64(mp->m_sb.sb_gquotino))
+			xchk_block_set_preen(sc, bp);
+	}
 
 	/*
 	 * Skip the quota flags since repair will force quotacheck.
@@ -362,8 +380,13 @@ xchk_superblock(
 		if (sb->sb_spino_align != cpu_to_be32(mp->m_sb.sb_spino_align))
 			xchk_block_set_corrupt(sc, bp);
 
-		if (sb->sb_pquotino != cpu_to_be64(mp->m_sb.sb_pquotino))
-			xchk_block_set_preen(sc, bp);
+		if (xfs_has_metadir(mp)) {
+			if (sb->sb_pquotino != cpu_to_be64(0))
+				xchk_block_set_corrupt(sc, bp);
+		} else {
+			if (sb->sb_pquotino != cpu_to_be64(mp->m_sb.sb_pquotino))
+				xchk_block_set_preen(sc, bp);
+		}
 
 		/* Don't care about sb_lsn */
 	}
@@ -371,6 +394,23 @@ xchk_superblock(
 	if (xfs_has_metauuid(mp)) {
 		/* The metadata UUID must be the same for all supers */
 		if (!uuid_equal(&sb->sb_meta_uuid, &mp->m_sb.sb_meta_uuid))
+			xchk_block_set_corrupt(sc, bp);
+	}
+
+	if (xfs_has_metadir(mp)) {
+		if (sb->sb_metadirino != cpu_to_be64(mp->m_sb.sb_metadirino))
+			xchk_block_set_preen(sc, bp);
+
+		if (sb->sb_rgcount != cpu_to_be32(mp->m_sb.sb_rgcount))
+			xchk_block_set_corrupt(sc, bp);
+
+		if (sb->sb_rgextents != cpu_to_be32(mp->m_sb.sb_rgextents))
+			xchk_block_set_corrupt(sc, bp);
+
+		if (sb->sb_rgblklog != mp->m_sb.sb_rgblklog)
+			xchk_block_set_corrupt(sc, bp);
+
+		if (memchr_inv(sb->sb_pad, 0, sizeof(sb->sb_pad)))
 			xchk_block_set_corrupt(sc, bp);
 	}
 
@@ -577,7 +617,7 @@ xchk_agf(
 
 	/* Check the AG length */
 	eoag = be32_to_cpu(agf->agf_length);
-	if (eoag != pag->block_count)
+	if (eoag != pag_group(pag)->xg_block_count)
 		xchk_block_set_corrupt(sc, sc->sa.agf_bp);
 
 	/* Check the AGF btree roots and levels */
@@ -957,7 +997,7 @@ xchk_agi(
 
 	/* Check the AG length */
 	eoag = be32_to_cpu(agi->agi_length);
-	if (eoag != pag->block_count)
+	if (eoag != pag_group(pag)->xg_block_count)
 		xchk_block_set_corrupt(sc, sc->sa.agi_bp);
 
 	/* Check btree roots and levels */

@@ -234,7 +234,7 @@ const volatile void * __must_check_fn(const volatile void *val)
  * DEFINE_CLASS(fdget, struct fd, fdput(_T), fdget(fd), int fd)
  *
  *	CLASS(fdget, f)(fd);
- *	if (!fd_file(f))
+ *	if (fd_empty(f))
  *		return -EBADF;
  *
  *	// use 'f' without concern
@@ -343,6 +343,7 @@ _label:									\
 
 #define scoped_cond_guard(_name, _fail, args...)	\
 	__scoped_cond_guard(_name, _fail, __UNIQUE_ID(label), args)
+
 /*
  * Additional helper macros for generating lock guards with types, either for
  * locks that don't have a native type (eg. RCU, preempt) or those that need a

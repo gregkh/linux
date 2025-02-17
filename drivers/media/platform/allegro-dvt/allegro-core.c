@@ -2897,8 +2897,6 @@ static const struct vb2_ops allegro_queue_ops = {
 	.buf_queue = allegro_buf_queue,
 	.start_streaming = allegro_start_streaming,
 	.stop_streaming = allegro_stop_streaming,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish,
 };
 
 static int allegro_queue_init(void *priv,
@@ -4005,7 +4003,7 @@ static const struct dev_pm_ops allegro_pm_ops = {
 
 static struct platform_driver allegro_driver = {
 	.probe = allegro_probe,
-	.remove_new = allegro_remove,
+	.remove = allegro_remove,
 	.driver = {
 		.name = "allegro",
 		.of_match_table = allegro_dt_ids,

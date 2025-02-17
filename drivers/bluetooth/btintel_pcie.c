@@ -75,24 +75,6 @@ static inline void ipc_print_urbd1(struct hci_dev *hdev, struct urbd1 *urbd1,
 		   index, urbd1->frbd_tag, urbd1->status, urbd1->fixed);
 }
 
-static int btintel_pcie_poll_bit(struct btintel_pcie_data *data, u32 offset,
-				 u32 bits, u32 mask, int timeout_us)
-{
-	int t = 0;
-	u32 reg;
-
-	do {
-		reg = btintel_pcie_rd_reg32(data, offset);
-
-		if ((reg & mask) == (bits & mask))
-			return t;
-		udelay(POLL_INTERVAL_US);
-		t += POLL_INTERVAL_US;
-	} while (t < timeout_us);
-
-	return -ETIMEDOUT;
-}
-
 static struct btintel_pcie_data *btintel_pcie_get_data(struct msix_entry *entry)
 {
 	u8 queue = entry->entry;
@@ -248,10 +230,47 @@ static void btintel_pcie_reset_ia(struct btintel_pcie_data *data)
 	memset(data->ia.cr_tia, 0, sizeof(u16) * BTINTEL_PCIE_NUM_QUEUES);
 }
 
-static void btintel_pcie_reset_bt(struct btintel_pcie_data *data)
+static int btintel_pcie_reset_bt(struct btintel_pcie_data *data)
 {
-	btintel_pcie_wr_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG,
-			      BTINTEL_PCIE_CSR_FUNC_CTRL_SW_RESET);
+	u32 reg;
+	int retry = 3;
+
+	reg = btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG);
+
+	reg &= ~(BTINTEL_PCIE_CSR_FUNC_CTRL_FUNC_ENA |
+			BTINTEL_PCIE_CSR_FUNC_CTRL_MAC_INIT |
+			BTINTEL_PCIE_CSR_FUNC_CTRL_FUNC_INIT);
+	reg |= BTINTEL_PCIE_CSR_FUNC_CTRL_BUS_MASTER_DISCON;
+
+	btintel_pcie_wr_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG, reg);
+
+	do {
+		reg = btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG);
+		if (reg & BTINTEL_PCIE_CSR_FUNC_CTRL_BUS_MASTER_STS)
+			break;
+		usleep_range(10000, 12000);
+
+	} while (--retry > 0);
+	usleep_range(10000, 12000);
+
+	reg = btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG);
+
+	reg &= ~(BTINTEL_PCIE_CSR_FUNC_CTRL_FUNC_ENA |
+			BTINTEL_PCIE_CSR_FUNC_CTRL_MAC_INIT |
+			BTINTEL_PCIE_CSR_FUNC_CTRL_FUNC_INIT);
+	reg |= BTINTEL_PCIE_CSR_FUNC_CTRL_SW_RESET;
+	btintel_pcie_wr_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG, reg);
+	usleep_range(10000, 12000);
+
+	reg = btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG);
+	bt_dev_dbg(data->hdev, "csr register after reset: 0x%8.8x", reg);
+
+	reg = btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_BOOT_STAGE_REG);
+
+	/* If shared hardware reset is success then boot stage register shall be
+	 * set to 0
+	 */
+	return reg == 0 ? 0 : -ENODEV;
 }
 
 /* This function enables BT function by setting BTINTEL_PCIE_CSR_FUNC_CTRL_MAC_INIT bit in
@@ -263,6 +282,7 @@ static void btintel_pcie_reset_bt(struct btintel_pcie_data *data)
 static int btintel_pcie_enable_bt(struct btintel_pcie_data *data)
 {
 	int err;
+	u32 reg;
 
 	data->gp0_received = false;
 
@@ -278,22 +298,17 @@ static int btintel_pcie_enable_bt(struct btintel_pcie_data *data)
 	data->boot_stage_cache = 0x0;
 
 	/* Set MAC_INIT bit to start primary bootloader */
-	btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG);
+	reg = btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG);
+	reg &= ~(BTINTEL_PCIE_CSR_FUNC_CTRL_FUNC_INIT |
+			BTINTEL_PCIE_CSR_FUNC_CTRL_BUS_MASTER_DISCON |
+			BTINTEL_PCIE_CSR_FUNC_CTRL_SW_RESET);
+	reg |= (BTINTEL_PCIE_CSR_FUNC_CTRL_FUNC_ENA |
+			BTINTEL_PCIE_CSR_FUNC_CTRL_MAC_INIT);
 
-	btintel_pcie_set_reg_bits(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG,
-				  BTINTEL_PCIE_CSR_FUNC_CTRL_MAC_INIT);
-
-	/* Wait until MAC_ACCESS is granted */
-	err = btintel_pcie_poll_bit(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG,
-				    BTINTEL_PCIE_CSR_FUNC_CTRL_MAC_ACCESS_STS,
-				    BTINTEL_PCIE_CSR_FUNC_CTRL_MAC_ACCESS_STS,
-				    BTINTEL_DEFAULT_MAC_ACCESS_TIMEOUT_US);
-	if (err < 0)
-		return -ENODEV;
+	btintel_pcie_wr_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG, reg);
 
 	/* MAC is ready. Enable BT FUNC */
 	btintel_pcie_set_reg_bits(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG,
-				  BTINTEL_PCIE_CSR_FUNC_CTRL_FUNC_ENA |
 				  BTINTEL_PCIE_CSR_FUNC_CTRL_FUNC_INIT);
 
 	btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_FUNC_CTRL_REG);
@@ -376,7 +391,6 @@ static inline char *btintel_pcie_alivectxt_state2str(u32 alive_intr_ctxt)
 	default:
 		return "unknown";
 	}
-	return "null";
 }
 
 /* This function handles the MSI-X interrupt for gp0 cause (bit 0 in
@@ -738,10 +752,8 @@ static int btintel_pcie_submit_rx_work(struct btintel_pcie_data *data, u8 status
 	buf += sizeof(*rfh_hdr);
 
 	skb = alloc_skb(len, GFP_ATOMIC);
-	if (!skb) {
-		ret = -ENOMEM;
+	if (!skb)
 		goto resubmit;
-	}
 
 	skb_put_data(skb, buf, len);
 	skb_queue_tail(&data->rx_skb_q, skb);
@@ -956,13 +968,9 @@ static int btintel_pcie_config_pcie(struct pci_dev *pdev,
 			return err;
 	}
 
-	err = pcim_iomap_regions(pdev, BIT(0), KBUILD_MODNAME);
-	if (err)
-		return err;
-
-	data->base_addr = pcim_iomap_table(pdev)[0];
-	if (!data->base_addr)
-		return -ENODEV;
+	data->base_addr = pcim_iomap_region(pdev, 0, KBUILD_MODNAME);
+	if (IS_ERR(data->base_addr))
+		return PTR_ERR(data->base_addr);
 
 	err = btintel_pcie_setup_irq(data);
 	if (err)
@@ -1379,7 +1387,7 @@ static void btintel_pcie_release_hdev(struct btintel_pcie_data *data)
 	data->hdev = NULL;
 }
 
-static int btintel_pcie_setup(struct hci_dev *hdev)
+static int btintel_pcie_setup_internal(struct hci_dev *hdev)
 {
 	const u8 param[1] = { 0xFF };
 	struct intel_version_tlv ver_tlv;
@@ -1467,6 +1475,32 @@ static int btintel_pcie_setup(struct hci_dev *hdev)
 exit_error:
 	kfree_skb(skb);
 
+	return err;
+}
+
+static int btintel_pcie_setup(struct hci_dev *hdev)
+{
+	int err, fw_dl_retry = 0;
+	struct btintel_pcie_data *data = hci_get_drvdata(hdev);
+
+	while ((err = btintel_pcie_setup_internal(hdev)) && fw_dl_retry++ < 1) {
+		bt_dev_err(hdev, "Firmware download retry count: %d",
+			   fw_dl_retry);
+		err = btintel_pcie_reset_bt(data);
+		if (err) {
+			bt_dev_err(hdev, "Failed to do shr reset: %d", err);
+			break;
+		}
+		usleep_range(10000, 12000);
+		btintel_pcie_reset_ia(data);
+		btintel_pcie_config_msix(data);
+		err = btintel_pcie_enable_bt(data);
+		if (err) {
+			bt_dev_err(hdev, "Failed to enable hardware: %d", err);
+			break;
+		}
+		btintel_pcie_start_rx(data);
+	}
 	return err;
 }
 

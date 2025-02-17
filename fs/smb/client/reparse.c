@@ -378,8 +378,8 @@ static int wsl_set_xattrs(struct inode *inode, umode_t _mode,
 
 	memset(iov, 0, sizeof(*iov));
 
-	/* Exclude $LXDEV xattr for sockets and fifos */
-	if (S_ISSOCK(_mode) || S_ISFIFO(_mode))
+	/* Exclude $LXDEV xattr for non-device files */
+	if (!S_ISBLK(_mode) && !S_ISCHR(_mode))
 		num_xattrs = ARRAY_SIZE(xattrs) - 1;
 	else
 		num_xattrs = ARRAY_SIZE(xattrs);
@@ -547,6 +547,25 @@ int smb2_parse_native_symlink(char **target, const char *buf, unsigned int len,
 	int rc;
 	int i;
 
+	/* Check that length it valid for unicode/non-unicode mode */
+	if (!len || (unicode && (len % 2))) {
+		cifs_dbg(VFS, "srv returned malformed symlink buffer\n");
+		rc = -EIO;
+		goto out;
+	}
+
+	/*
+	 * Check that buffer does not contain UTF-16 null codepoint in unicode
+	 * mode or null byte in non-unicode mode because Linux cannot process
+	 * symlink with null byte.
+	 */
+	if ((unicode && UniStrnlen((wchar_t *)buf, len/2) != len/2) ||
+	    (!unicode && strnlen(buf, len) != len)) {
+		cifs_dbg(VFS, "srv returned null byte in native symlink target location\n");
+		rc = -EIO;
+		goto out;
+	}
+
 	smb_target = cifs_strndup_from_utf16(buf, len, unicode, cifs_sb->local_nls);
 	if (!smb_target) {
 		rc = -ENOMEM;
@@ -628,6 +647,52 @@ static int parse_reparse_symlink(struct reparse_symlink_data_buffer *sym,
 					 cifs_sb);
 }
 
+static int parse_reparse_wsl_symlink(struct reparse_wsl_symlink_data_buffer *buf,
+				     struct cifs_sb_info *cifs_sb,
+				     struct cifs_open_info_data *data)
+{
+	int len = le16_to_cpu(buf->ReparseDataLength);
+	int symname_utf8_len;
+	__le16 *symname_utf16;
+	int symname_utf16_len;
+
+	if (len <= sizeof(buf->Flags)) {
+		cifs_dbg(VFS, "srv returned malformed wsl symlink buffer\n");
+		return -EIO;
+	}
+
+	/* PathBuffer is in UTF-8 but without trailing null-term byte */
+	symname_utf8_len = len - sizeof(buf->Flags);
+	/*
+	 * Check that buffer does not contain null byte
+	 * because Linux cannot process symlink with null byte.
+	 */
+	if (strnlen(buf->PathBuffer, symname_utf8_len) != symname_utf8_len) {
+		cifs_dbg(VFS, "srv returned null byte in wsl symlink target location\n");
+		return -EIO;
+	}
+	symname_utf16 = kzalloc(symname_utf8_len * 2, GFP_KERNEL);
+	if (!symname_utf16)
+		return -ENOMEM;
+	symname_utf16_len = utf8s_to_utf16s(buf->PathBuffer, symname_utf8_len,
+					    UTF16_LITTLE_ENDIAN,
+					    (wchar_t *) symname_utf16, symname_utf8_len * 2);
+	if (symname_utf16_len < 0) {
+		kfree(symname_utf16);
+		return symname_utf16_len;
+	}
+	symname_utf16_len *= 2; /* utf8s_to_utf16s() returns number of u16 items, not byte length */
+
+	data->symlink_target = cifs_strndup_from_utf16((u8 *)symname_utf16,
+						       symname_utf16_len, true,
+						       cifs_sb->local_nls);
+	kfree(symname_utf16);
+	if (!data->symlink_target)
+		return -ENOMEM;
+
+	return 0;
+}
+
 int parse_reparse_point(struct reparse_data_buffer *buf,
 			u32 plen, struct cifs_sb_info *cifs_sb,
 			const char *full_path,
@@ -647,10 +712,18 @@ int parse_reparse_point(struct reparse_data_buffer *buf,
 			(struct reparse_symlink_data_buffer *)buf,
 			plen, unicode, cifs_sb, full_path, data);
 	case IO_REPARSE_TAG_LX_SYMLINK:
+		return parse_reparse_wsl_symlink(
+			(struct reparse_wsl_symlink_data_buffer *)buf,
+			cifs_sb, data);
 	case IO_REPARSE_TAG_AF_UNIX:
 	case IO_REPARSE_TAG_LX_FIFO:
 	case IO_REPARSE_TAG_LX_CHR:
 	case IO_REPARSE_TAG_LX_BLK:
+		if (le16_to_cpu(buf->ReparseDataLength) != 0) {
+			cifs_dbg(VFS, "srv returned malformed buffer for reparse point: 0x%08x\n",
+				 le32_to_cpu(buf->ReparseTag));
+			return -EIO;
+		}
 		break;
 	default:
 		cifs_tcon_dbg(VFS | ONCE, "unhandled reparse tag: 0x%08x\n",

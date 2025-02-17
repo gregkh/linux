@@ -338,10 +338,8 @@ static int rti_wdt_probe(struct platform_device *pdev)
 	watchdog_init_timeout(wdd, heartbeat, dev);
 
 	ret = watchdog_register_device(wdd);
-	if (ret) {
-		dev_err(dev, "cannot register watchdog device\n");
+	if (ret)
 		goto err_iomap;
-	}
 
 	if (last_ping)
 		watchdog_set_last_hw_keepalive(wdd, last_ping);
@@ -382,7 +380,7 @@ static struct platform_driver rti_wdt_driver = {
 		.of_match_table = rti_wdt_of_match,
 	},
 	.probe = rti_wdt_probe,
-	.remove_new = rti_wdt_remove,
+	.remove = rti_wdt_remove,
 };
 
 module_platform_driver(rti_wdt_driver);

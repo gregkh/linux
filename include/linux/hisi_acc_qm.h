@@ -280,13 +280,25 @@ struct hisi_qm_cap_info {
 	u32 v3_val;
 };
 
+struct hisi_qm_cap_query_info {
+	u32 type;
+	const char *name;
+	u32 offset;
+	u32 v1_val;
+	u32 v2_val;
+	u32 v3_val;
+};
+
 struct hisi_qm_cap_record {
 	u32 type;
+	const char *name;
 	u32 cap_val;
 };
 
 struct hisi_qm_cap_tables {
+	u32 qm_cap_size;
 	struct hisi_qm_cap_record *qm_cap_table;
+	u32 dev_cap_size;
 	struct hisi_qm_cap_record *dev_cap_table;
 };
 
@@ -442,37 +454,6 @@ struct hisi_qp {
 	struct uacce_queue *uacce_q;
 };
 
-static inline int q_num_set(const char *val, const struct kernel_param *kp,
-			    unsigned int device)
-{
-	struct pci_dev *pdev;
-	u32 n, q_num;
-	int ret;
-
-	if (!val)
-		return -EINVAL;
-
-	pdev = pci_get_device(PCI_VENDOR_ID_HUAWEI, device, NULL);
-	if (!pdev) {
-		q_num = min_t(u32, QM_QNUM_V1, QM_QNUM_V2);
-		pr_info("No device found currently, suppose queue number is %u\n",
-			q_num);
-	} else {
-		if (pdev->revision == QM_HW_V1)
-			q_num = QM_QNUM_V1;
-		else
-			q_num = QM_QNUM_V2;
-
-		pci_dev_put(pdev);
-	}
-
-	ret = kstrtou32(val, 10, &n);
-	if (ret || n < QM_MIN_QNUM || n > q_num)
-		return -EINVAL;
-
-	return param_set_int(val, kp);
-}
-
 static inline int vfs_num_set(const char *val, const struct kernel_param *kp)
 {
 	u32 n;
@@ -532,6 +513,8 @@ static inline void hisi_qm_del_list(struct hisi_qm *qm, struct hisi_qm_list *qm_
 	mutex_unlock(&qm_list->lock);
 }
 
+int hisi_qm_q_num_set(const char *val, const struct kernel_param *kp,
+		      unsigned int device);
 int hisi_qm_init(struct hisi_qm *qm);
 void hisi_qm_uninit(struct hisi_qm *qm);
 int hisi_qm_start(struct hisi_qm *qm);
@@ -588,6 +571,9 @@ void hisi_qm_put_dfx_access(struct hisi_qm *qm);
 void hisi_qm_regs_dump(struct seq_file *s, struct debugfs_regset32 *regset);
 u32 hisi_qm_get_hw_info(struct hisi_qm *qm,
 			const struct hisi_qm_cap_info *info_table,
+			u32 index, bool is_read);
+u32 hisi_qm_get_cap_value(struct hisi_qm *qm,
+			const struct hisi_qm_cap_query_info *info_table,
 			u32 index, bool is_read);
 int hisi_qm_set_algs(struct hisi_qm *qm, u64 alg_msk, const struct qm_dev_alg *dev_algs,
 		     u32 dev_algs_size);

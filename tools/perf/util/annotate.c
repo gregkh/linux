@@ -2102,6 +2102,57 @@ int symbol__annotate2(struct map_symbol *ms, struct evsel *evsel,
 	return 0;
 }
 
+const char * const perf_disassembler__strs[] = {
+	[PERF_DISASM_UNKNOWN]  = "unknown",
+	[PERF_DISASM_LLVM]     = "llvm",
+	[PERF_DISASM_CAPSTONE] = "capstone",
+	[PERF_DISASM_OBJDUMP]  = "objdump",
+};
+
+
+static void annotation_options__add_disassembler(struct annotation_options *options,
+						 enum perf_disassembler dis)
+{
+	for (u8 i = 0; i < ARRAY_SIZE(options->disassemblers); i++) {
+		if (options->disassemblers[i] == dis) {
+			/* Disassembler is already present then don't add again. */
+			return;
+		}
+		if (options->disassemblers[i] == PERF_DISASM_UNKNOWN) {
+			/* Found a free slot. */
+			options->disassemblers[i] = dis;
+			return;
+		}
+	}
+	pr_err("Failed to add disassembler %d\n", dis);
+}
+
+static int annotation_options__add_disassemblers_str(struct annotation_options *options,
+						const char *str)
+{
+	while (str && *str != '\0') {
+		const char *comma = strchr(str, ',');
+		int len = comma ? comma - str : (int)strlen(str);
+		bool match = false;
+
+		for (u8 i = 0; i < ARRAY_SIZE(perf_disassembler__strs); i++) {
+			const char *dis_str = perf_disassembler__strs[i];
+
+			if (len == (int)strlen(dis_str) && !strncmp(str, dis_str, len)) {
+				annotation_options__add_disassembler(options, i);
+				match = true;
+				break;
+			}
+		}
+		if (!match) {
+			pr_err("Invalid disassembler '%.*s'\n", len, str);
+			return -1;
+		}
+		str = comma ? comma + 1 : NULL;
+	}
+	return 0;
+}
+
 static int annotation__config(const char *var, const char *value, void *data)
 {
 	struct annotation_options *opt = data;
@@ -2116,6 +2167,11 @@ static int annotation__config(const char *var, const char *value, void *data)
 			opt->offset_level = ANNOTATION__MAX_OFFSET_LEVEL;
 		else if (opt->offset_level < ANNOTATION__MIN_OFFSET_LEVEL)
 			opt->offset_level = ANNOTATION__MIN_OFFSET_LEVEL;
+	} else if (!strcmp(var, "annotate.disassemblers")) {
+		int err = annotation_options__add_disassemblers_str(opt, value);
+
+		if (err)
+			return err;
 	} else if (!strcmp(var, "annotate.hide_src_code")) {
 		opt->hide_src_code = perf_config_bool("hide_src_code", value);
 	} else if (!strcmp(var, "annotate.jump_arrows")) {
@@ -2181,9 +2237,25 @@ void annotation_options__exit(void)
 	zfree(&annotate_opts.objdump_path);
 }
 
+static void annotation_options__default_init_disassemblers(struct annotation_options *options)
+{
+	if (options->disassemblers[0] != PERF_DISASM_UNKNOWN) {
+		/* Already initialized. */
+		return;
+	}
+#ifdef HAVE_LIBLLVM_SUPPORT
+	annotation_options__add_disassembler(options, PERF_DISASM_LLVM);
+#endif
+#ifdef HAVE_LIBCAPSTONE_SUPPORT
+	annotation_options__add_disassembler(options, PERF_DISASM_CAPSTONE);
+#endif
+	annotation_options__add_disassembler(options, PERF_DISASM_OBJDUMP);
+}
+
 void annotation_config__init(void)
 {
 	perf_config(annotation__config, &annotate_opts);
+	annotation_options__default_init_disassemblers(&annotate_opts);
 }
 
 static unsigned int parse_percent_type(char *str1, char *str2)
@@ -2292,7 +2364,7 @@ static int extract_reg_offset(struct arch *arch, const char *str,
 	if (regname == NULL)
 		return -1;
 
-	op_loc->reg1 = get_dwarf_regnum(regname, 0);
+	op_loc->reg1 = get_dwarf_regnum(regname, arch->e_machine, arch->e_flags);
 	free(regname);
 
 	/* Get the second register */
@@ -2305,7 +2377,7 @@ static int extract_reg_offset(struct arch *arch, const char *str,
 		if (regname == NULL)
 			return -1;
 
-		op_loc->reg2 = get_dwarf_regnum(regname, 0);
+		op_loc->reg2 = get_dwarf_regnum(regname, arch->e_machine, arch->e_flags);
 		free(regname);
 	}
 	return 0;
@@ -2405,7 +2477,7 @@ int annotate_get_insn_location(struct arch *arch, struct disasm_line *dl,
 				return -1;
 
 			if (*s == arch->objdump.register_char)
-				op_loc->reg1 = get_dwarf_regnum(s, 0);
+				op_loc->reg1 = get_dwarf_regnum(s, arch->e_machine, arch->e_flags);
 			else if (*s == arch->objdump.imm_char) {
 				op_loc->offset = strtol(s + 1, &p, 0);
 				if (p && p != s + 1)

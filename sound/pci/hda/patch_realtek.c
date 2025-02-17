@@ -6491,6 +6491,16 @@ static void alc285_fixup_speaker2_to_dac1(struct hda_codec *codec,
 	}
 }
 
+/* disable DAC3 (0x06) selection on NID 0x15 - share Speaker/Bass Speaker DAC 0x03 */
+static void alc294_fixup_bass_speaker_15(struct hda_codec *codec,
+					 const struct hda_fixup *fix, int action)
+{
+	if (action == HDA_FIXUP_ACT_PRE_PROBE) {
+		static const hda_nid_t conn[] = { 0x02, 0x03 };
+		snd_hda_override_conn_list(codec, 0x15, ARRAY_SIZE(conn), conn);
+	}
+}
+
 /* Hook to update amp GPIO4 for automute */
 static void alc280_hp_gpio4_automute_hook(struct hda_codec *codec,
 					  struct hda_jack_callback *jack)
@@ -7475,6 +7485,16 @@ static void alc287_fixup_lenovo_thinkpad_with_alc1318(struct hda_codec *codec,
 	spec->gen.pcm_playback_hook = alc287_alc1318_playback_pcm_hook;
 }
 
+/*
+ * Clear COEF 0x0d (PCBEEP passthrough) bit 0x40 where BIOS sets it wrongly
+ * at PM resume
+ */
+static void alc283_fixup_dell_hp_resume(struct hda_codec *codec,
+					const struct hda_fixup *fix, int action)
+{
+	if (action == HDA_FIXUP_ACT_INIT)
+		alc_write_coef_idx(codec, 0xd, 0x2800);
+}
 
 enum {
 	ALC269_FIXUP_GPIO2,
@@ -7774,6 +7794,8 @@ enum {
 	ALC245_FIXUP_CLEVO_NOISY_MIC,
 	ALC269_FIXUP_VAIO_VJFH52_MIC_NO_PRESENCE,
 	ALC233_FIXUP_MEDION_MTL_SPK,
+	ALC294_FIXUP_BASS_SPEAKER_15,
+	ALC283_FIXUP_DELL_HP_RESUME,
 };
 
 /* A special fixup for Lenovo C940 and Yoga Duet 7;
@@ -10102,6 +10124,14 @@ static const struct hda_fixup alc269_fixups[] = {
 			{ }
 		},
 	},
+	[ALC294_FIXUP_BASS_SPEAKER_15] = {
+		.type = HDA_FIXUP_FUNC,
+		.v.func = alc294_fixup_bass_speaker_15,
+	},
+	[ALC283_FIXUP_DELL_HP_RESUME] = {
+		.type = HDA_FIXUP_FUNC,
+		.v.func = alc283_fixup_dell_hp_resume,
+	},
 };
 
 static const struct hda_quirk alc269_fixup_tbl[] = {
@@ -10162,6 +10192,7 @@ static const struct hda_quirk alc269_fixup_tbl[] = {
 	SND_PCI_QUIRK(0x1028, 0x05f4, "Dell", ALC269_FIXUP_DELL1_MIC_NO_PRESENCE),
 	SND_PCI_QUIRK(0x1028, 0x05f5, "Dell", ALC269_FIXUP_DELL1_MIC_NO_PRESENCE),
 	SND_PCI_QUIRK(0x1028, 0x05f6, "Dell", ALC269_FIXUP_DELL1_MIC_NO_PRESENCE),
+	SND_PCI_QUIRK(0x1028, 0x0604, "Dell Venue 11 Pro 7130", ALC283_FIXUP_DELL_HP_RESUME),
 	SND_PCI_QUIRK(0x1028, 0x0615, "Dell Vostro 5470", ALC290_FIXUP_SUBWOOFER_HSJACK),
 	SND_PCI_QUIRK(0x1028, 0x0616, "Dell Vostro 5470", ALC290_FIXUP_SUBWOOFER_HSJACK),
 	SND_PCI_QUIRK(0x1028, 0x062c, "Dell Latitude E5550", ALC292_FIXUP_DELL_E7X),
@@ -10621,6 +10652,7 @@ static const struct hda_quirk alc269_fixup_tbl[] = {
 	SND_PCI_QUIRK(0x1043, 0x1d42, "ASUS Zephyrus G14 2022", ALC289_FIXUP_ASUS_GA401),
 	SND_PCI_QUIRK(0x1043, 0x1d4e, "ASUS TM420", ALC256_FIXUP_ASUS_HPE),
 	SND_PCI_QUIRK(0x1043, 0x1da2, "ASUS UP6502ZA/ZD", ALC245_FIXUP_CS35L41_SPI_2),
+	SND_PCI_QUIRK(0x1043, 0x1df3, "ASUS UM5606WA", ALC294_FIXUP_BASS_SPEAKER_15),
 	SND_PCI_QUIRK(0x1043, 0x1e02, "ASUS UX3402ZA", ALC245_FIXUP_CS35L41_SPI_2),
 	SND_PCI_QUIRK(0x1043, 0x1e11, "ASUS Zephyrus G15", ALC289_FIXUP_ASUS_GA502),
 	SND_PCI_QUIRK(0x1043, 0x1e12, "ASUS UM3402", ALC287_FIXUP_CS35L41_I2C_2),
@@ -13316,7 +13348,7 @@ MODULE_DEVICE_TABLE(hdaudio, snd_hda_id_realtek);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Realtek HD-audio codec");
-MODULE_IMPORT_NS(SND_HDA_SCODEC_COMPONENT);
+MODULE_IMPORT_NS("SND_HDA_SCODEC_COMPONENT");
 
 static struct hda_codec_driver realtek_driver = {
 	.id = snd_hda_id_realtek,

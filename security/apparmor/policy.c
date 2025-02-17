@@ -103,8 +103,7 @@ static void aa_free_pdb(struct aa_policydb *pdb)
 {
 	if (pdb) {
 		aa_put_dfa(pdb->dfa);
-		if (pdb->perms)
-			kvfree(pdb->perms);
+		kvfree(pdb->perms);
 		aa_free_str_table(&pdb->trans);
 		kfree(pdb);
 	}
@@ -578,11 +577,6 @@ struct aa_profile *aa_lookupn_profile(struct aa_ns *ns, const char *hname,
 
 	/* refcount released by caller */
 	return profile;
-}
-
-struct aa_profile *aa_lookup_profile(struct aa_ns *ns, const char *hname)
-{
-	return aa_lookupn_profile(ns, hname, strlen(hname));
 }
 
 struct aa_profile *aa_fqlookupn_profile(struct aa_label *base,

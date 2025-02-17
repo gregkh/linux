@@ -1040,7 +1040,7 @@ static int btintel_download_firmware_payload(struct hci_dev *hdev,
 		 * as needed.
 		 *
 		 * Send set of commands with 4 byte alignment from the
-		 * firmware data buffer as a single Data fragement.
+		 * firmware data buffer as a single Data fragment.
 		 */
 		if (!(frag_len % 4)) {
 			err = btintel_secure_send(hdev, 0x01, frag_len, fw_ptr);
@@ -1252,6 +1252,12 @@ static void btintel_reset_to_bootloader(struct hci_dev *hdev)
 	struct intel_reset params;
 	struct sk_buff *skb;
 
+	/* PCIe transport uses shared hardware reset mechanism for recovery
+	 * which gets triggered in pcie *setup* function on error.
+	 */
+	if (hdev->bus == HCI_PCI)
+		return;
+
 	/* Send Intel Reset command. This will result in
 	 * re-enumeration of BT controller.
 	 *
@@ -1267,6 +1273,7 @@ static void btintel_reset_to_bootloader(struct hci_dev *hdev)
 	 * boot_param:    Boot address
 	 *
 	 */
+
 	params.reset_type = 0x01;
 	params.patch_enable = 0x01;
 	params.ddc_reload = 0x01;
@@ -2740,20 +2747,32 @@ static int btintel_set_dsbr(struct hci_dev *hdev, struct intel_version_tlv *ver)
 
 	struct btintel_dsbr_cmd cmd;
 	struct sk_buff *skb;
+	u32 dsbr, cnvi;
 	u8 status;
-	u32 dsbr;
-	bool apply_dsbr;
 	int err;
 
-	/* DSBR command needs to be sent for BlazarI + B0 step product after
-	 * downloading IML image.
+	cnvi = ver->cnvi_top & 0xfff;
+	/* DSBR command needs to be sent for,
+	 * 1. BlazarI or BlazarIW + B0 step product in IML image.
+	 * 2. Gale Peak2 or BlazarU in OP image.
 	 */
-	apply_dsbr = (ver->img_type == BTINTEL_IMG_IML &&
-		((ver->cnvi_top & 0xfff) == BTINTEL_CNVI_BLAZARI) &&
-		INTEL_CNVX_TOP_STEP(ver->cnvi_top) == 0x01);
 
-	if (!apply_dsbr)
+	switch (cnvi) {
+	case BTINTEL_CNVI_BLAZARI:
+	case BTINTEL_CNVI_BLAZARIW:
+		if (ver->img_type == BTINTEL_IMG_IML &&
+		    INTEL_CNVX_TOP_STEP(ver->cnvi_top) == 0x01)
+			break;
 		return 0;
+	case BTINTEL_CNVI_GAP:
+	case BTINTEL_CNVI_BLAZARU:
+		if (ver->img_type == BTINTEL_IMG_OP &&
+		    hdev->bus == HCI_USB)
+			break;
+		return 0;
+	default:
+		return 0;
+	}
 
 	dsbr = 0;
 	err = btintel_uefi_get_dsbr(&dsbr);
@@ -2795,6 +2814,13 @@ int btintel_bootloader_setup_tlv(struct hci_dev *hdev,
 	 * command while downloading the firmware.
 	 */
 	boot_param = 0x00000000;
+
+	/* In case of PCIe, this function might get called multiple times with
+	 * same hdev instance if there is any error on firmware download.
+	 * Need to clear stale bits of previous firmware download attempt.
+	 */
+	for (int i = 0; i < __INTEL_NUM_FLAGS; i++)
+		btintel_clear_flag(hdev, i);
 
 	btintel_set_flag(hdev, INTEL_BOOTLOADER);
 
@@ -2882,7 +2908,7 @@ void btintel_set_msft_opcode(struct hci_dev *hdev, u8 hw_variant)
 	case 0x12:	/* ThP */
 	case 0x13:	/* HrP */
 	case 0x14:	/* CcP */
-	/* All Intel new genration controllers support the Microsoft vendor
+	/* All Intel new generation controllers support the Microsoft vendor
 	 * extension are using 0xFC1E for VsMsftOpCode.
 	 */
 	case 0x17:

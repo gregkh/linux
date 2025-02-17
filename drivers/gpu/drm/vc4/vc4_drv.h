@@ -15,6 +15,7 @@
 #include <drm/drm_debugfs.h>
 #include <drm/drm_device.h>
 #include <drm/drm_encoder.h>
+#include <drm/drm_fourcc.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mm.h>
@@ -400,7 +401,7 @@ struct vc4_plane_state {
 	 */
 	u32 pos0_offset;
 	u32 pos2_offset;
-	u32 ptr0_offset;
+	u32 ptr0_offset[DRM_FORMAT_MAX_PLANES];
 	u32 lbm_offset;
 
 	/* Offset where the plane's dlist was last stored in the
@@ -410,7 +411,7 @@ struct vc4_plane_state {
 
 	/* Clipped coordinates of the plane on the display. */
 	int crtc_x, crtc_y, crtc_w, crtc_h;
-	/* Clipped area being scanned from in the FB. */
+	/* Clipped area being scanned from in the FB in u16.16 format */
 	u32 src_x, src_y;
 
 	u32 src_w[2], src_h[2];
@@ -419,11 +420,6 @@ struct vc4_plane_state {
 	enum vc4_scaling_mode x_scaling[2], y_scaling[2];
 	bool is_unity;
 	bool is_yuv;
-
-	/* Offset to start scanning out from the start of the plane's
-	 * BO.
-	 */
-	u32 offsets[3];
 
 	/* Our allocation in LBM for temporary storage during scaling. */
 	struct drm_mm_node lbm;
@@ -604,12 +600,7 @@ struct vc4_crtc_state {
 	bool txp_armed;
 	unsigned int assigned_channel;
 
-	struct {
-		unsigned int left;
-		unsigned int right;
-		unsigned int top;
-		unsigned int bottom;
-	} margins;
+	struct drm_connector_tv_margins margins;
 
 	unsigned long hvs_load;
 
@@ -1008,7 +999,9 @@ void vc4_irq_reset(struct drm_device *dev);
 
 /* vc4_hvs.c */
 extern struct platform_driver vc4_hvs_driver;
-struct vc4_hvs *__vc4_hvs_alloc(struct vc4_dev *vc4, struct platform_device *pdev);
+struct vc4_hvs *__vc4_hvs_alloc(struct vc4_dev *vc4,
+				void __iomem *regs,
+				struct platform_device *pdev);
 void vc4_hvs_stop_channel(struct vc4_hvs *hvs, unsigned int output);
 int vc4_hvs_get_fifo_from_output(struct vc4_hvs *hvs, unsigned int output);
 u8 vc4_hvs_get_fifo_frame_count(struct vc4_hvs *hvs, unsigned int fifo);

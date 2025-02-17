@@ -1965,8 +1965,6 @@ static int mxc_jpeg_buf_prepare(struct vb2_buffer *vb)
 
 static const struct vb2_ops mxc_jpeg_qops = {
 	.queue_setup		= mxc_jpeg_queue_setup,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 	.buf_out_validate	= mxc_jpeg_buf_out_validate,
 	.buf_prepare		= mxc_jpeg_buf_prepare,
 	.start_streaming	= mxc_jpeg_start_streaming,
@@ -2891,7 +2889,6 @@ err_clk:
 	return ret;
 }
 
-#ifdef CONFIG_PM
 static int mxc_jpeg_runtime_resume(struct device *dev)
 {
 	struct mxc_jpeg_dev *jpeg = dev_get_drvdata(dev);
@@ -2914,9 +2911,7 @@ static int mxc_jpeg_runtime_suspend(struct device *dev)
 
 	return 0;
 }
-#endif
 
-#ifdef CONFIG_PM_SLEEP
 static int mxc_jpeg_suspend(struct device *dev)
 {
 	struct mxc_jpeg_dev *jpeg = dev_get_drvdata(dev);
@@ -2937,12 +2932,10 @@ static int mxc_jpeg_resume(struct device *dev)
 	v4l2_m2m_resume(jpeg->m2m_dev);
 	return ret;
 }
-#endif
 
 static const struct dev_pm_ops	mxc_jpeg_pm_ops = {
-	SET_RUNTIME_PM_OPS(mxc_jpeg_runtime_suspend,
-			   mxc_jpeg_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(mxc_jpeg_suspend, mxc_jpeg_resume)
+	RUNTIME_PM_OPS(mxc_jpeg_runtime_suspend, mxc_jpeg_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(mxc_jpeg_suspend, mxc_jpeg_resume)
 };
 
 static void mxc_jpeg_remove(struct platform_device *pdev)
@@ -2962,11 +2955,11 @@ MODULE_DEVICE_TABLE(of, mxc_jpeg_match);
 
 static struct platform_driver mxc_jpeg_driver = {
 	.probe = mxc_jpeg_probe,
-	.remove_new = mxc_jpeg_remove,
+	.remove = mxc_jpeg_remove,
 	.driver = {
 		.name = "mxc-jpeg",
 		.of_match_table = mxc_jpeg_match,
-		.pm = &mxc_jpeg_pm_ops,
+		.pm = pm_ptr(&mxc_jpeg_pm_ops),
 	},
 };
 module_platform_driver(mxc_jpeg_driver);

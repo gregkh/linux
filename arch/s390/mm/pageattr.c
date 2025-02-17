@@ -12,6 +12,7 @@
 #include <asm/pgalloc.h>
 #include <asm/kfence.h>
 #include <asm/page.h>
+#include <asm/asm.h>
 #include <asm/set_memory.h>
 
 static inline unsigned long sske_frame(unsigned long addr, unsigned char skey)
@@ -406,6 +407,18 @@ int set_direct_map_default_noflush(struct page *page)
 	return __set_memory((unsigned long)page_to_virt(page), 1, SET_MEMORY_DEF);
 }
 
+int set_direct_map_valid_noflush(struct page *page, unsigned nr, bool valid)
+{
+	unsigned long flags;
+
+	if (valid)
+		flags = SET_MEMORY_DEF;
+	else
+		flags = SET_MEMORY_INV;
+
+	return __set_memory((unsigned long)page_to_virt(page), nr, flags);
+}
+
 bool kernel_page_present(struct page *page)
 {
 	unsigned long addr;
@@ -414,11 +427,11 @@ bool kernel_page_present(struct page *page)
 	addr = (unsigned long)page_address(page);
 	asm volatile(
 		"	lra	%[addr],0(%[addr])\n"
-		"	ipm	%[cc]\n"
-		: [cc] "=d" (cc), [addr] "+a" (addr)
+		CC_IPM(cc)
+		: CC_OUT(cc, cc), [addr] "+a" (addr)
 		:
-		: "cc");
-	return (cc >> 28) == 0;
+		: CC_CLOBBER);
+	return CC_TRANSFORM(cc) == 0;
 }
 
 #if defined(CONFIG_DEBUG_PAGEALLOC) || defined(CONFIG_KFENCE)

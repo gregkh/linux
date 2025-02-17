@@ -48,7 +48,7 @@
 要是一个预处理器符号。例如，要把符号 ``usb_stor_suspend`` 导出到命名空间 ``USB_STORAGE``，
 请使用::
 
-       EXPORT_SYMBOL_NS(usb_stor_suspend, USB_STORAGE);
+       EXPORT_SYMBOL_NS(usb_stor_suspend, "USB_STORAGE");
 
 相应的 ksymtab 条目结构体 ``kernel_symbol`` 将有相应的成员 ``命名空间`` 集。
 导出时未指明命名空间的符号将指向 ``NULL`` 。如果没有定义命名空间，则默认没有。
@@ -88,7 +88,7 @@
 表示它所使用的命名空间的符号。例如，一个使用usb_stor_suspend符号的
 模块，需要使用如下语句导入命名空间USB_STORAGE::
 
-       MODULE_IMPORT_NS(USB_STORAGE);
+       MODULE_IMPORT_NS("USB_STORAGE");
 
 这将在模块中为每个导入的命名空间创建一个 ``modinfo`` 标签。这也顺带
 使得可以用modinfo检查模块已导入的命名空间::

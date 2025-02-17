@@ -3984,9 +3984,9 @@ static int drm_dp_mst_handle_down_rep(struct drm_dp_mst_topology_mgr *mgr)
 
 	/* find the message */
 	mutex_lock(&mgr->qlock);
+
 	txmsg = list_first_entry_or_null(&mgr->tx_msg_downq,
 					 struct drm_dp_sideband_msg_tx, next);
-	mutex_unlock(&mgr->qlock);
 
 	/* Were we actually expecting a response, and from this mstb? */
 	if (!txmsg || txmsg->dst != mstb) {
@@ -3995,11 +3995,17 @@ static int drm_dp_mst_handle_down_rep(struct drm_dp_mst_topology_mgr *mgr)
 		hdr = &msg->initial_hdr;
 		drm_dbg_kms(mgr->dev, "Got MST reply with no msg %p %d %d %02x %02x\n",
 			    mstb, hdr->seqno, hdr->lct, hdr->rad[0], msg->msg[0]);
+
+		mutex_unlock(&mgr->qlock);
+
 		goto out_clear_reply;
 	}
 
-	if (!verify_rx_request_type(mgr, txmsg, msg))
+	if (!verify_rx_request_type(mgr, txmsg, msg)) {
+		mutex_unlock(&mgr->qlock);
+
 		goto out_clear_reply;
+	}
 
 	drm_dp_sideband_parse_reply(mgr, msg, &txmsg->reply);
 
@@ -4013,20 +4019,15 @@ static int drm_dp_mst_handle_down_rep(struct drm_dp_mst_topology_mgr *mgr)
 			    txmsg->reply.u.nak.nak_data);
 	}
 
-	memset(msg, 0, sizeof(struct drm_dp_sideband_msg_rx));
-	drm_dp_mst_topology_put_mstb(mstb);
-
-	mutex_lock(&mgr->qlock);
 	txmsg->state = DRM_DP_SIDEBAND_TX_RX;
 	list_del(&txmsg->next);
+
 	mutex_unlock(&mgr->qlock);
 
 	wake_up_all(&mgr->tx_waitq);
 
-	return 0;
-
 out_clear_reply:
-	memset(msg, 0, sizeof(struct drm_dp_sideband_msg_rx));
+	reset_msg_rx_state(msg);
 out:
 	if (mstb)
 		drm_dp_mst_topology_put_mstb(mstb);
@@ -4109,6 +4110,7 @@ static int drm_dp_mst_handle_up_req(struct drm_dp_mst_topology_mgr *mgr)
 {
 	struct drm_dp_pending_up_req *up_req;
 	struct drm_dp_mst_branch *mst_primary;
+	int ret = 0;
 
 	if (!drm_dp_get_one_sb_msg(mgr, true, NULL))
 		goto out_clear_reply;
@@ -4117,8 +4119,10 @@ static int drm_dp_mst_handle_up_req(struct drm_dp_mst_topology_mgr *mgr)
 		return 0;
 
 	up_req = kzalloc(sizeof(*up_req), GFP_KERNEL);
-	if (!up_req)
-		return -ENOMEM;
+	if (!up_req) {
+		ret = -ENOMEM;
+		goto out_clear_reply;
+	}
 
 	INIT_LIST_HEAD(&up_req->next);
 
@@ -4184,8 +4188,8 @@ static int drm_dp_mst_handle_up_req(struct drm_dp_mst_topology_mgr *mgr)
 out_put_primary:
 	drm_dp_mst_topology_put_mstb(mst_primary);
 out_clear_reply:
-	memset(&mgr->up_req_recv, 0, sizeof(struct drm_dp_sideband_msg_rx));
-	return 0;
+	reset_msg_rx_state(&mgr->up_req_recv);
+	return ret;
 }
 
 static void update_msg_rx_state(struct drm_dp_mst_topology_mgr *mgr)

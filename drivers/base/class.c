@@ -412,7 +412,7 @@ int class_for_each_device(const struct class *class, const struct device *start,
 	if (!class)
 		return -EINVAL;
 	if (!sp) {
-		WARN(1, "%s called for class '%s' before it was initialized",
+		WARN(1, "%s called for class '%s' before it was registered",
 		     __func__, class->name);
 		return -EINVAL;
 	}
@@ -460,7 +460,7 @@ struct device *class_find_device(const struct class *class, const struct device 
 	if (!class)
 		return NULL;
 	if (!sp) {
-		WARN(1, "%s called for class '%s' before it was initialized",
+		WARN(1, "%s called for class '%s' before it was registered",
 		     __func__, class->name);
 		return NULL;
 	}

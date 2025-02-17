@@ -200,7 +200,7 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 			     struct netlink_ext_ack *extack)
 {
 	int err;
-	u8 sa_dir = attrs[XFRMA_SA_DIR] ? nla_get_u8(attrs[XFRMA_SA_DIR]) : 0;
+	u8 sa_dir = nla_get_u8_default(attrs[XFRMA_SA_DIR], 0);
 	u16 family = p->sel.family;
 
 	err = -EINVAL;
@@ -773,10 +773,8 @@ static void xfrm_smark_init(struct nlattr **attrs, struct xfrm_mark *m)
 {
 	if (attrs[XFRMA_SET_MARK]) {
 		m->v = nla_get_u32(attrs[XFRMA_SET_MARK]);
-		if (attrs[XFRMA_SET_MARK_MASK])
-			m->m = nla_get_u32(attrs[XFRMA_SET_MARK_MASK]);
-		else
-			m->m = 0xffffffff;
+		m->m = nla_get_u32_default(attrs[XFRMA_SET_MARK_MASK],
+					   0xffffffff);
 	} else {
 		m->v = m->m = 0;
 	}
@@ -1101,7 +1099,7 @@ static int copy_to_user_auth(struct xfrm_algo_auth *auth, struct sk_buff *skb)
 	if (!nla)
 		return -EMSGSIZE;
 	algo = nla_data(nla);
-	strncpy(algo->alg_name, auth->alg_name, sizeof(algo->alg_name));
+	strscpy_pad(algo->alg_name, auth->alg_name, sizeof(algo->alg_name));
 
 	if (redact_secret && auth->alg_key_len)
 		memset(algo->alg_key, 0, (auth->alg_key_len + 7) / 8);
@@ -3281,6 +3279,20 @@ static int xfrm_reject_unused_attr(int type, struct nlattr **attrs,
 			break;
 		default:
 			NL_SET_ERR_MSG(extack, "Invalid attribute SA_DIR");
+			return -EINVAL;
+		}
+	}
+
+	if (attrs[XFRMA_SA_PCPU]) {
+		switch (type) {
+		case XFRM_MSG_NEWSA:
+		case XFRM_MSG_UPDSA:
+		case XFRM_MSG_ALLOCSPI:
+		case XFRM_MSG_ACQUIRE:
+
+			break;
+		default:
+			NL_SET_ERR_MSG(extack, "Invalid attribute SA_PCPU");
 			return -EINVAL;
 		}
 	}

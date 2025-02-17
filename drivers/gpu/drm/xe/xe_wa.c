@@ -8,6 +8,7 @@
 #include <drm/drm_managed.h>
 #include <kunit/visibility.h>
 #include <linux/compiler_types.h>
+#include <linux/fault-inject.h>
 
 #include <generated/xe_wa_oob.h>
 
@@ -601,6 +602,11 @@ static const struct xe_rtp_entry_sr engine_was[] = {
 	  XE_RTP_RULES(GRAPHICS_VERSION_RANGE(3000, 3001), FUNC(xe_rtp_match_first_render_or_compute)),
 	  XE_RTP_ACTIONS(SET(HALF_SLICE_CHICKEN7, CLEAR_OPTIMIZATION_DISABLE))
 	},
+	{ XE_RTP_NAME("18034896535"),
+	  XE_RTP_RULES(GRAPHICS_VERSION(3000), GRAPHICS_STEP(A0, B0),
+		       FUNC(xe_rtp_match_first_render_or_compute)),
+	  XE_RTP_ACTIONS(SET(ROW_CHICKEN4, DISABLE_TDL_PUSH))
+	},
 
 	{}
 };
@@ -901,6 +907,7 @@ int xe_wa_init(struct xe_gt *gt)
 
 	return 0;
 }
+ALLOW_ERROR_INJECTION(xe_wa_init, ERRNO); /* See xe_pci_probe() */
 
 void xe_wa_dump(struct xe_gt *gt, struct drm_printer *p)
 {
@@ -938,11 +945,11 @@ void xe_wa_dump(struct xe_gt *gt, struct drm_printer *p)
  */
 void xe_wa_apply_tile_workarounds(struct xe_tile *tile)
 {
-	struct xe_gt *mmio = tile->primary_gt;
+	struct xe_mmio *mmio = &tile->mmio;
 
 	if (IS_SRIOV_VF(tile->xe))
 		return;
 
-	if (XE_WA(mmio, 22010954014))
+	if (XE_WA(tile->primary_gt, 22010954014))
 		xe_mmio_rmw32(mmio, XEHP_CLOCK_GATE_DIS, 0, SGSI_SIDECLK_DIS);
 }

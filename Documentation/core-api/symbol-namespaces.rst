@@ -46,7 +46,7 @@ Please note that due to macro expansion that argument needs to be a
 preprocessor symbol. E.g. to export the symbol ``usb_stor_suspend`` into the
 namespace ``USB_STORAGE``, use::
 
-	EXPORT_SYMBOL_NS(usb_stor_suspend, USB_STORAGE);
+	EXPORT_SYMBOL_NS(usb_stor_suspend, "USB_STORAGE");
 
 The corresponding ksymtab entry struct ``kernel_symbol`` will have the member
 ``namespace`` set accordingly. A symbol that is exported without a namespace will
@@ -94,7 +94,7 @@ for the namespaces it uses symbols from. E.g. a module using the
 usb_stor_suspend symbol from above, needs to import the namespace USB_STORAGE
 using a statement like::
 
-	MODULE_IMPORT_NS(USB_STORAGE);
+	MODULE_IMPORT_NS("USB_STORAGE");
 
 This will create a ``modinfo`` tag in the module for each imported namespace.
 This has the side effect, that the imported namespaces of a module can be

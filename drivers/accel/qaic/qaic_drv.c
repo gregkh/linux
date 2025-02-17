@@ -32,7 +32,7 @@
 #include "qaic_timesync.h"
 #include "sahara.h"
 
-MODULE_IMPORT_NS(DMA_BUF);
+MODULE_IMPORT_NS("DMA_BUF");
 
 #define PCI_DEV_AIC080			0xa080
 #define PCI_DEV_AIC100			0xa100
@@ -54,12 +54,12 @@ static void qaicm_wq_release(struct drm_device *dev, void *res)
 	destroy_workqueue(wq);
 }
 
-static struct workqueue_struct *qaicm_wq_init(struct drm_device *dev, const char *fmt)
+static struct workqueue_struct *qaicm_wq_init(struct drm_device *dev, const char *name)
 {
 	struct workqueue_struct *wq;
 	int ret;
 
-	wq = alloc_workqueue(fmt, WQ_UNBOUND, 0);
+	wq = alloc_workqueue("%s", WQ_UNBOUND, 0, name);
 	if (!wq)
 		return ERR_PTR(-ENOMEM);
 	ret = drmm_add_action_or_reset(dev, qaicm_wq_release, wq);

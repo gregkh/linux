@@ -483,7 +483,7 @@ static int ext4_map_query_blocks(handle_t *handle, struct inode *inode,
 	status = map->m_flags & EXT4_MAP_UNWRITTEN ?
 			EXTENT_STATUS_UNWRITTEN : EXTENT_STATUS_WRITTEN;
 	ext4_es_insert_extent(inode, map->m_lblk, map->m_len,
-			      map->m_pblk, status, 0);
+			      map->m_pblk, status, false);
 	return retval;
 }
 
@@ -563,8 +563,8 @@ static int ext4_map_create_blocks(handle_t *handle, struct inode *inode,
 
 	status = map->m_flags & EXT4_MAP_UNWRITTEN ?
 			EXTENT_STATUS_UNWRITTEN : EXTENT_STATUS_WRITTEN;
-	ext4_es_insert_extent(inode, map->m_lblk, map->m_len,
-			      map->m_pblk, status, flags);
+	ext4_es_insert_extent(inode, map->m_lblk, map->m_len, map->m_pblk,
+			      status, flags & EXT4_GET_BLOCKS_DELALLOC_RESERVE);
 
 	return retval;
 }
@@ -856,7 +856,14 @@ struct buffer_head *ext4_getblk(handle_t *handle, struct inode *inode,
 	if (nowait)
 		return sb_find_get_block(inode->i_sb, map.m_pblk);
 
-	bh = sb_getblk(inode->i_sb, map.m_pblk);
+	/*
+	 * Since bh could introduce extra ref count such as referred by
+	 * journal_head etc. Try to avoid using __GFP_MOVABLE here
+	 * as it may fail the migration when journal_head remains.
+	 */
+	bh = getblk_unmovable(inode->i_sb->s_bdev, map.m_pblk,
+				inode->i_sb->s_blocksize);
+
 	if (unlikely(!bh))
 		return ERR_PTR(-ENOMEM);
 	if (map.m_flags & EXT4_MAP_NEW) {
@@ -3452,17 +3459,34 @@ static int ext4_iomap_overwrite_begin(struct inode *inode, loff_t offset,
 	return ret;
 }
 
+static inline bool ext4_want_directio_fallback(unsigned flags, ssize_t written)
+{
+	/* must be a directio to fall back to buffered */
+	if ((flags & (IOMAP_WRITE | IOMAP_DIRECT)) !=
+		    (IOMAP_WRITE | IOMAP_DIRECT))
+		return false;
+
+	/* atomic writes are all-or-nothing */
+	if (flags & IOMAP_ATOMIC)
+		return false;
+
+	/* can only try again if we wrote nothing */
+	return written == 0;
+}
+
 static int ext4_iomap_end(struct inode *inode, loff_t offset, loff_t length,
 			  ssize_t written, unsigned flags, struct iomap *iomap)
 {
 	/*
 	 * Check to see whether an error occurred while writing out the data to
-	 * the allocated blocks. If so, return the magic error code so that we
-	 * fallback to buffered I/O and attempt to complete the remainder of
-	 * the I/O. Any blocks that may have been allocated in preparation for
-	 * the direct I/O will be reused during buffered I/O.
+	 * the allocated blocks. If so, return the magic error code for
+	 * non-atomic write so that we fallback to buffered I/O and attempt to
+	 * complete the remainder of the I/O.
+	 * For non-atomic writes, any blocks that may have been
+	 * allocated in preparation for the direct I/O will be reused during
+	 * buffered I/O. For atomic write, we never fallback to buffered-io.
 	 */
-	if (flags & (IOMAP_WRITE | IOMAP_DIRECT) && written == 0)
+	if (ext4_want_directio_fallback(flags, written))
 		return -ENOTBLK;
 
 	return 0;
@@ -5597,6 +5621,18 @@ int ext4_getattr(struct mnt_idmap *idmap, const struct path *path,
 			stat->dio_mem_align = dio_align;
 			stat->dio_offset_align = dio_align;
 		}
+	}
+
+	if ((request_mask & STATX_WRITE_ATOMIC) && S_ISREG(inode->i_mode)) {
+		struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+		unsigned int awu_min = 0, awu_max = 0;
+
+		if (ext4_inode_can_atomic_write(inode)) {
+			awu_min = sbi->s_awu_min;
+			awu_max = sbi->s_awu_max;
+		}
+
+		generic_fill_statx_atomic_writes(stat, awu_min, awu_max);
 	}
 
 	flags = ei->i_flags & EXT4_FL_USER_VISIBLE;

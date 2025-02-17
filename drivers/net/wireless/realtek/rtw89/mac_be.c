@@ -773,7 +773,7 @@ static int dmac_init_be(struct rtw89_dev *rtwdev, u8 mac_idx)
 		return ret;
 	}
 
-	ret = rtw89_mac_preload_init(rtwdev, RTW89_MAC_0, rtwdev->mac.qta_mode);
+	ret = rtw89_mac_preload_init(rtwdev, mac_idx, rtwdev->mac.qta_mode);
 	if (ret) {
 		rtw89_err(rtwdev, "[ERR]preload init %d\n", ret);
 		return ret;
@@ -2600,9 +2600,11 @@ const struct rtw89_mac_gen_def rtw89_mac_gen_be = {
 	.fwdl_enable_wcpu = rtw89_mac_fwdl_enable_wcpu_be,
 	.fwdl_get_status = fwdl_get_status_be,
 	.fwdl_check_path_ready = rtw89_fwdl_check_path_ready_be,
+	.fwdl_secure_idmem_share_mode = NULL,
 	.parse_efuse_map = rtw89_parse_efuse_map_be,
 	.parse_phycap_map = rtw89_parse_phycap_map_be,
 	.cnv_efuse_state = rtw89_cnv_efuse_state_be,
+	.efuse_read_fw_secure = rtw89_efuse_read_fw_secure_be,
 
 	.cfg_plt = rtw89_mac_cfg_plt_be,
 	.get_plt_cnt = rtw89_mac_get_plt_cnt_be,

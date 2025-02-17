@@ -386,6 +386,13 @@ static const struct j721e_pcie_data j784s4_pcie_ep_data = {
 	.max_lanes = 4,
 };
 
+static const struct j721e_pcie_data j722s_pcie_rc_data = {
+	.mode = PCI_MODE_RC,
+	.linkdown_irq_regfield = J7200_LINK_DOWN,
+	.byte_access_allowed = true,
+	.max_lanes = 1,
+};
+
 static const struct of_device_id of_j721e_pcie_match[] = {
 	{
 		.compatible = "ti,j721e-pcie-host",
@@ -418,6 +425,10 @@ static const struct of_device_id of_j721e_pcie_match[] = {
 	{
 		.compatible = "ti,j784s4-pcie-ep",
 		.data = &j784s4_pcie_ep_data,
+	},
+	{
+		.compatible = "ti,j722s-pcie-host",
+		.data = &j722s_pcie_rc_data,
 	},
 	{},
 };
@@ -710,7 +721,7 @@ static DEFINE_NOIRQ_DEV_PM_OPS(j721e_pcie_pm_ops,
 
 static struct platform_driver j721e_pcie_driver = {
 	.probe  = j721e_pcie_probe,
-	.remove_new = j721e_pcie_remove,
+	.remove = j721e_pcie_remove,
 	.driver = {
 		.name	= "j721e-pcie",
 		.of_match_table = of_j721e_pcie_match,

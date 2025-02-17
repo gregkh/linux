@@ -20,6 +20,10 @@ N: Thomas Abraham
 E: thomas.ab@samsung.com
 D: Samsung pin controller driver
 
+N: Jose Abreu
+E: jose.abreu@synopsys.com
+D: Synopsys DesignWare XPCS MDIO/PCS driver.
+
 N: Dragos Acostachioaie
 E: dragos@iname.com
 W: http://www.arbornet.org/~dragos
@@ -185,6 +189,11 @@ P: 1024/AF7B30C1 CF 97 C2 CC 6D AE A7 FE  C8 BA 9C FC 88 DE 32 C3
 D: Linux/MIPS port
 D: Linux/68k hacker
 D: AX25 maintainer
+D: EDAC-CAVIUM OCTEON maintainer
+D: IOC3 ETHERNET DRIVER maintainer
+D: NETROM NETWORK LAYER maintainer
+D: ROSE NETWORK LAYER maintainer
+D: TURBOCHANNEL SUBSYSTEM maintainer
 S: Hauptstrasse 19
 S: 79837 St. Blasien
 S: Germany
@@ -573,6 +582,9 @@ D: MD Maintainer 2001-2016
 N: Zach Brown
 E: zab@zabbo.net
 D: maestro pci sound
+
+N: Zefan Li
+D: Contribution to control group stuff
 
 N: David Brownell
 D: Kernel engineer, mentor, and friend.  Maintained USB EHCI and
@@ -1420,6 +1432,10 @@ S: 8124 Constitution Apt. 7
 S: Sterling Heights, Michigan 48313
 S: USA
 
+N: Andy Gospodarek
+E: andy@greyhouse.net
+D: Maintenance and contributions to the network interface bonding driver.
+
 N: Wolfgang Grandegger
 E: wg@grandegger.com
 D: Controller Area Network (device drivers)
@@ -1803,6 +1819,10 @@ D: Pentium III FXSR, SSE support
 D: Author/maintainer of most DRM drivers (especially ATI, MGA)
 D: Core DRM templates, general DRM and 3D-related hacking
 S: No fixed address
+
+N: Woojung Huh
+E: woojung.huh@microchip.com
+D: Microchip LAN78XX USB Ethernet driver
 
 N: Kenn Humborg
 E: kenn@wombat.ie
@@ -3794,6 +3814,10 @@ D: alpha rtc port, random appletalk fixes
 S: Department of Zoology, University of Washington
 S: Seattle, WA  98195-1800
 S: USA
+
+N: York Sun
+E: york.sun@nxp.com
+D: Freescale DDR EDAC
 
 N: Eugene Surovegin
 E: ebs@ebshome.net

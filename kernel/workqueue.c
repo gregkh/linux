@@ -2508,6 +2508,7 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 		return;
 	}
 
+	WARN_ON_ONCE(cpu != WORK_CPU_UNBOUND && !cpu_online(cpu));
 	dwork->wq = wq;
 	dwork->cpu = cpu;
 	timer->expires = jiffies + delay;
@@ -2532,6 +2533,12 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
  * @wq: workqueue to use
  * @dwork: work to queue
  * @delay: number of jiffies to wait before queueing
+ *
+ * We queue the delayed_work to a specific CPU, for non-zero delays the
+ * caller must ensure it is online and can't go away. Callers that fail
+ * to ensure this, may get @dwork->timer queued to an offlined CPU and
+ * this will prevent queueing of @dwork->work unless the offlined CPU
+ * becomes online again.
  *
  * Return: %false if @work was already on a queue, %true otherwise.  If
  * @delay is zero and @dwork is idle, it will be scheduled for immediate
@@ -3837,16 +3844,28 @@ static bool flush_workqueue_prep_pwqs(struct workqueue_struct *wq,
 {
 	bool wait = false;
 	struct pool_workqueue *pwq;
+	struct worker_pool *current_pool = NULL;
 
 	if (flush_color >= 0) {
 		WARN_ON_ONCE(atomic_read(&wq->nr_pwqs_to_flush));
 		atomic_set(&wq->nr_pwqs_to_flush, 1);
 	}
 
+	/*
+	 * For unbound workqueue, pwqs will map to only a few pools.
+	 * Most of the time, pwqs within the same pool will be linked
+	 * sequentially to wq->pwqs by cpu index. So in the majority
+	 * of pwq iters, the pool is the same, only doing lock/unlock
+	 * if the pool has changed. This can largely reduce expensive
+	 * lock operations.
+	 */
 	for_each_pwq(pwq, wq) {
-		struct worker_pool *pool = pwq->pool;
-
-		raw_spin_lock_irq(&pool->lock);
+		if (current_pool != pwq->pool) {
+			if (likely(current_pool))
+				raw_spin_unlock_irq(&current_pool->lock);
+			current_pool = pwq->pool;
+			raw_spin_lock_irq(&current_pool->lock);
+		}
 
 		if (flush_color >= 0) {
 			WARN_ON_ONCE(pwq->flush_color != -1);
@@ -3863,8 +3882,10 @@ static bool flush_workqueue_prep_pwqs(struct workqueue_struct *wq,
 			pwq->work_color = work_color;
 		}
 
-		raw_spin_unlock_irq(&pool->lock);
 	}
+
+	if (current_pool)
+		raw_spin_unlock_irq(&current_pool->lock);
 
 	if (flush_color >= 0 && atomic_dec_and_test(&wq->nr_pwqs_to_flush))
 		complete(&wq->first_flusher->done);

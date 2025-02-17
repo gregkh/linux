@@ -154,6 +154,13 @@ static int choose_best_symbol(struct symbol *syma, struct symbol *symb)
 	else if ((a == 0) && (b > 0))
 		return SYMBOL_B;
 
+	if (syma->type != symb->type) {
+		if (syma->type == STT_NOTYPE)
+			return SYMBOL_B;
+		if (symb->type == STT_NOTYPE)
+			return SYMBOL_A;
+	}
+
 	/* Prefer a non weak symbol over a weak one */
 	a = syma->binding == STB_WEAK;
 	b = symb->binding == STB_WEAK;

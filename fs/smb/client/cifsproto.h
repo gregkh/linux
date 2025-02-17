@@ -314,8 +314,7 @@ extern void cifs_move_llist(struct list_head *source, struct list_head *dest);
 extern void cifs_free_llist(struct list_head *llist);
 extern void cifs_del_lock_waiters(struct cifsLockInfo *lock);
 
-extern int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon,
-			     const struct nls_table *nlsc);
+int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon);
 
 extern int cifs_negotiate_protocol(const unsigned int xid,
 				   struct cifs_ses *ses,
@@ -551,13 +550,6 @@ extern int generate_smb311signingkey(struct cifs_ses *ses,
 				     struct TCP_Server_Info *server);
 
 #ifdef CONFIG_CIFS_ALLOW_INSECURE_LEGACY
-extern int CIFSSMBCopy(unsigned int xid,
-			struct cifs_tcon *source_tcon,
-			const char *fromName,
-			const __u16 target_tid,
-			const char *toName, const int flags,
-			const struct nls_table *nls_codepage,
-			int remap_special_chars);
 extern ssize_t CIFSSMBQAllEAs(const unsigned int xid, struct cifs_tcon *tcon,
 			const unsigned char *searchName,
 			const unsigned char *ea_name, char *EAData,
@@ -622,8 +614,6 @@ int cifs_alloc_hash(const char *name, struct shash_desc **sdesc);
 void cifs_free_hash(struct shash_desc **sdesc);
 
 int cifs_try_adding_channels(struct cifs_ses *ses);
-bool is_server_using_iface(struct TCP_Server_Info *server,
-			   struct cifs_server_iface *iface);
 bool is_ses_using_iface(struct cifs_ses *ses, struct cifs_server_iface *iface);
 void cifs_ses_mark_for_reconnect(struct cifs_ses *ses);
 

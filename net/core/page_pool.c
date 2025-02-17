@@ -950,6 +950,7 @@ netmem_ref page_pool_alloc_frag_netmem(struct page_pool *pool,
 	if (netmem && *offset + size > max_size) {
 		netmem = page_pool_drain_frag(pool, netmem);
 		if (netmem) {
+			recycle_stat_inc(pool, cached);
 			alloc_stat_inc(pool, fast);
 			goto frag_reset;
 		}
@@ -974,7 +975,6 @@ frag_reset:
 
 	pool->frag_users++;
 	pool->frag_offset = *offset + size;
-	alloc_stat_inc(pool, fast);
 	return netmem;
 }
 EXPORT_SYMBOL(page_pool_alloc_frag_netmem);
@@ -1108,7 +1108,9 @@ void page_pool_disable_direct_recycling(struct page_pool *pool)
 	WARN_ON(!test_bit(NAPI_STATE_SCHED, &pool->p.napi->state));
 	WARN_ON(READ_ONCE(pool->p.napi->list_owner) != -1);
 
+	mutex_lock(&page_pools_lock);
 	WRITE_ONCE(pool->p.napi, NULL);
+	mutex_unlock(&page_pools_lock);
 }
 EXPORT_SYMBOL(page_pool_disable_direct_recycling);
 

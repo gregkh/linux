@@ -1375,7 +1375,7 @@ static void ks_pcie_remove(struct platform_device *pdev)
 
 static struct platform_driver ks_pcie_driver = {
 	.probe  = ks_pcie_probe,
-	.remove_new = ks_pcie_remove,
+	.remove = ks_pcie_remove,
 	.driver = {
 		.name	= "keystone-pcie",
 		.of_match_table = ks_pcie_of_match,

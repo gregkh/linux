@@ -2250,7 +2250,7 @@ static int snd_pcm_link(struct snd_pcm_substream *substream, int fd)
 	bool nonatomic = substream->pcm->nonatomic;
 	CLASS(fd, f)(fd);
 
-	if (!fd_file(f))
+	if (fd_empty(f))
 		return -EBADFD;
 	if (!is_pcm_file(fd_file(f)))
 		return -EBADFD;
@@ -3772,6 +3772,26 @@ static int snd_pcm_mmap_control(struct snd_pcm_substream *substream, struct file
 	return -ENXIO;
 }
 #endif /* coherent mmap */
+
+/*
+ * snd_pcm_mmap_data_open - increase the mmap counter
+ */
+static void snd_pcm_mmap_data_open(struct vm_area_struct *area)
+{
+	struct snd_pcm_substream *substream = area->vm_private_data;
+
+	atomic_inc(&substream->mmap_count);
+}
+
+/*
+ * snd_pcm_mmap_data_close - decrease the mmap counter
+ */
+static void snd_pcm_mmap_data_close(struct vm_area_struct *area)
+{
+	struct snd_pcm_substream *substream = area->vm_private_data;
+
+	atomic_dec(&substream->mmap_count);
+}
 
 /*
  * fault callback for mmapping a RAM page

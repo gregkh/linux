@@ -130,7 +130,7 @@ void ipu6_dma_sync_single(struct ipu6_bus_device *sys, dma_addr_t dma_handle,
 	vaddr = info->vaddr + offset;
 	clflush_cache_range(vaddr, size);
 }
-EXPORT_SYMBOL_NS_GPL(ipu6_dma_sync_single, INTEL_IPU6);
+EXPORT_SYMBOL_NS_GPL(ipu6_dma_sync_single, "INTEL_IPU6");
 
 void ipu6_dma_sync_sg(struct ipu6_bus_device *sys, struct scatterlist *sglist,
 		      int nents)
@@ -139,15 +139,15 @@ void ipu6_dma_sync_sg(struct ipu6_bus_device *sys, struct scatterlist *sglist,
 	int i;
 
 	for_each_sg(sglist, sg, nents, i)
-		clflush_cache_range(page_to_virt(sg_page(sg)), sg->length);
+		clflush_cache_range(sg_virt(sg), sg->length);
 }
-EXPORT_SYMBOL_NS_GPL(ipu6_dma_sync_sg, INTEL_IPU6);
+EXPORT_SYMBOL_NS_GPL(ipu6_dma_sync_sg, "INTEL_IPU6");
 
 void ipu6_dma_sync_sgtable(struct ipu6_bus_device *sys, struct sg_table *sgt)
 {
 	ipu6_dma_sync_sg(sys, sgt->sgl, sgt->orig_nents);
 }
-EXPORT_SYMBOL_NS_GPL(ipu6_dma_sync_sgtable, INTEL_IPU6);
+EXPORT_SYMBOL_NS_GPL(ipu6_dma_sync_sgtable, "INTEL_IPU6");
 
 void *ipu6_dma_alloc(struct ipu6_bus_device *sys, size_t size,
 		     dma_addr_t *dma_handle, gfp_t gfp,
@@ -239,7 +239,7 @@ out_kfree:
 
 	return NULL;
 }
-EXPORT_SYMBOL_NS_GPL(ipu6_dma_alloc, INTEL_IPU6);
+EXPORT_SYMBOL_NS_GPL(ipu6_dma_alloc, "INTEL_IPU6");
 
 void ipu6_dma_free(struct ipu6_bus_device *sys, size_t size, void *vaddr,
 		   dma_addr_t dma_handle, unsigned long attrs)
@@ -292,7 +292,7 @@ void ipu6_dma_free(struct ipu6_bus_device *sys, size_t size, void *vaddr,
 
 	kfree(info);
 }
-EXPORT_SYMBOL_NS_GPL(ipu6_dma_free, INTEL_IPU6);
+EXPORT_SYMBOL_NS_GPL(ipu6_dma_free, "INTEL_IPU6");
 
 int ipu6_dma_mmap(struct ipu6_bus_device *sys, struct vm_area_struct *vma,
 		  void *addr, dma_addr_t iova, size_t size,
@@ -369,7 +369,7 @@ void ipu6_dma_unmap_sg(struct ipu6_bus_device *sys, struct scatterlist *sglist,
 	mmu->tlb_invalidate(mmu);
 	__free_iova(&mmu->dmap->iovad, iova);
 }
-EXPORT_SYMBOL_NS_GPL(ipu6_dma_unmap_sg, INTEL_IPU6);
+EXPORT_SYMBOL_NS_GPL(ipu6_dma_unmap_sg, "INTEL_IPU6");
 
 int ipu6_dma_map_sg(struct ipu6_bus_device *sys, struct scatterlist *sglist,
 		    int nents, enum dma_data_direction dir,
@@ -392,7 +392,7 @@ int ipu6_dma_map_sg(struct ipu6_bus_device *sys, struct scatterlist *sglist,
 	}
 
 	for_each_sg(sglist, sg, nents, i)
-		npages += PHYS_PFN(PAGE_ALIGN(sg_dma_len(sg)));
+		npages += PFN_UP(sg_dma_len(sg));
 
 	dev_dbg(dev, "dmamap trying to map %d ents %zu pages\n",
 		nents, npages);
@@ -422,7 +422,7 @@ int ipu6_dma_map_sg(struct ipu6_bus_device *sys, struct scatterlist *sglist,
 
 		sg_dma_address(sg) = PFN_PHYS(iova_addr);
 
-		iova_addr += PHYS_PFN(PAGE_ALIGN(sg_dma_len(sg)));
+		iova_addr += PFN_UP(sg_dma_len(sg));
 	}
 
 	dev_dbg(dev, "dmamap %d ents %zu pages mapped\n", nents, npages);
@@ -434,7 +434,7 @@ out_fail:
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(ipu6_dma_map_sg, INTEL_IPU6);
+EXPORT_SYMBOL_NS_GPL(ipu6_dma_map_sg, "INTEL_IPU6");
 
 int ipu6_dma_map_sgtable(struct ipu6_bus_device *sys, struct sg_table *sgt,
 			 enum dma_data_direction dir, unsigned long attrs)
@@ -449,14 +449,14 @@ int ipu6_dma_map_sgtable(struct ipu6_bus_device *sys, struct sg_table *sgt,
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(ipu6_dma_map_sgtable, INTEL_IPU6);
+EXPORT_SYMBOL_NS_GPL(ipu6_dma_map_sgtable, "INTEL_IPU6");
 
 void ipu6_dma_unmap_sgtable(struct ipu6_bus_device *sys, struct sg_table *sgt,
 			    enum dma_data_direction dir, unsigned long attrs)
 {
 	ipu6_dma_unmap_sg(sys, sgt->sgl, sgt->nents, dir, attrs);
 }
-EXPORT_SYMBOL_NS_GPL(ipu6_dma_unmap_sgtable, INTEL_IPU6);
+EXPORT_SYMBOL_NS_GPL(ipu6_dma_unmap_sgtable, "INTEL_IPU6");
 
 /*
  * Create scatter-list for the already allocated DMA buffer
@@ -481,7 +481,7 @@ int ipu6_dma_get_sgtable(struct ipu6_bus_device *sys, struct sg_table *sgt,
 	if (WARN_ON(!info->pages))
 		return -ENOMEM;
 
-	n_pages = PHYS_PFN(PAGE_ALIGN(size));
+	n_pages = PFN_UP(size);
 
 	ret = sg_alloc_table_from_pages(sgt, info->pages, n_pages, 0, size,
 					GFP_KERNEL);

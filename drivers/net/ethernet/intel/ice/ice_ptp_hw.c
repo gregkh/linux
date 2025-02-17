@@ -659,6 +659,29 @@ static int ice_cfg_cgu_pll_e825c(struct ice_hw *hw,
 	return 0;
 }
 
+#define ICE_ONE_PPS_OUT_AMP_MAX 3
+
+/**
+ * ice_cgu_cfg_pps_out - Configure 1PPS output from CGU
+ * @hw: pointer to the HW struct
+ * @enable: true to enable 1PPS output, false to disable it
+ *
+ * Return: 0 on success, other negative error code when CGU read/write failed
+ */
+int ice_cgu_cfg_pps_out(struct ice_hw *hw, bool enable)
+{
+	union nac_cgu_dword9 dw9;
+	int err;
+
+	err = ice_read_cgu_reg_e82x(hw, NAC_CGU_DWORD9, &dw9.val);
+	if (err)
+		return err;
+
+	dw9.one_pps_out_en = enable;
+	dw9.one_pps_out_amp = enable * ICE_ONE_PPS_OUT_AMP_MAX;
+	return ice_write_cgu_reg_e82x(hw, NAC_CGU_DWORD9, dw9.val);
+}
+
 /**
  * ice_cfg_cgu_pll_dis_sticky_bits_e82x - disable TS PLL sticky bits
  * @hw: pointer to the HW struct
@@ -5168,9 +5191,9 @@ ice_get_phy_tx_tstamp_ready_e810(struct ice_hw *hw, u8 port, u64 *tstamp_ready)
 	return 0;
 }
 
-/* E810T SMA functions
+/* E810 SMA functions
  *
- * The following functions operate specifically on E810T hardware and are used
+ * The following functions operate specifically on E810 hardware and are used
  * to access the extended GPIOs available.
  */
 
@@ -5237,14 +5260,14 @@ ice_get_pca9575_handle(struct ice_hw *hw, u16 *pca9575_handle)
 }
 
 /**
- * ice_read_sma_ctrl_e810t
+ * ice_read_sma_ctrl
  * @hw: pointer to the hw struct
  * @data: pointer to data to be read from the GPIO controller
  *
  * Read the SMA controller state. It is connected to pins 3-7 of Port 1 of the
  * PCA9575 expander, so only bits 3-7 in data are valid.
  */
-int ice_read_sma_ctrl_e810t(struct ice_hw *hw, u8 *data)
+int ice_read_sma_ctrl(struct ice_hw *hw, u8 *data)
 {
 	int status;
 	u16 handle;
@@ -5256,7 +5279,7 @@ int ice_read_sma_ctrl_e810t(struct ice_hw *hw, u8 *data)
 
 	*data = 0;
 
-	for (i = ICE_SMA_MIN_BIT_E810T; i <= ICE_SMA_MAX_BIT_E810T; i++) {
+	for (i = ICE_SMA_MIN_BIT; i <= ICE_SMA_MAX_BIT; i++) {
 		bool pin;
 
 		status = ice_aq_get_gpio(hw, handle, i + ICE_PCA9575_P1_OFFSET,
@@ -5270,14 +5293,14 @@ int ice_read_sma_ctrl_e810t(struct ice_hw *hw, u8 *data)
 }
 
 /**
- * ice_write_sma_ctrl_e810t
+ * ice_write_sma_ctrl
  * @hw: pointer to the hw struct
  * @data: data to be written to the GPIO controller
  *
  * Write the data to the SMA controller. It is connected to pins 3-7 of Port 1
  * of the PCA9575 expander, so only bits 3-7 in data are valid.
  */
-int ice_write_sma_ctrl_e810t(struct ice_hw *hw, u8 data)
+int ice_write_sma_ctrl(struct ice_hw *hw, u8 data)
 {
 	int status;
 	u16 handle;
@@ -5287,7 +5310,7 @@ int ice_write_sma_ctrl_e810t(struct ice_hw *hw, u8 data)
 	if (status)
 		return status;
 
-	for (i = ICE_SMA_MIN_BIT_E810T; i <= ICE_SMA_MAX_BIT_E810T; i++) {
+	for (i = ICE_SMA_MIN_BIT; i <= ICE_SMA_MAX_BIT; i++) {
 		bool pin;
 
 		pin = !(data & (1 << i));
@@ -5301,14 +5324,14 @@ int ice_write_sma_ctrl_e810t(struct ice_hw *hw, u8 data)
 }
 
 /**
- * ice_read_pca9575_reg_e810t
+ * ice_read_pca9575_reg
  * @hw: pointer to the hw struct
  * @offset: GPIO controller register offset
  * @data: pointer to data to be read from the GPIO controller
  *
  * Read the register from the GPIO controller
  */
-int ice_read_pca9575_reg_e810t(struct ice_hw *hw, u8 offset, u8 *data)
+int ice_read_pca9575_reg(struct ice_hw *hw, u8 offset, u8 *data)
 {
 	struct ice_aqc_link_topo_addr link_topo;
 	__le16 addr;
@@ -5329,6 +5352,66 @@ int ice_read_pca9575_reg_e810t(struct ice_hw *hw, u8 offset, u8 *data)
 	addr = cpu_to_le16((u16)offset);
 
 	return ice_aq_read_i2c(hw, link_topo, 0, addr, 1, data, NULL);
+}
+
+/**
+ * ice_ptp_read_sdp_ac - read SDP available connections section from NVM
+ * @hw: pointer to the HW struct
+ * @entries: returns the SDP available connections section from NVM
+ * @num_entries: returns the number of valid entries
+ *
+ * Return: 0 on success, negative error code if NVM read failed or section does
+ * not exist or is corrupted
+ */
+int ice_ptp_read_sdp_ac(struct ice_hw *hw, __le16 *entries, uint *num_entries)
+{
+	__le16 data;
+	u32 offset;
+	int err;
+
+	err = ice_acquire_nvm(hw, ICE_RES_READ);
+	if (err)
+		goto exit;
+
+	/* Read the offset of SDP_AC */
+	offset = ICE_AQC_NVM_SDP_AC_PTR_OFFSET;
+	err = ice_aq_read_nvm(hw, 0, offset, sizeof(data), &data, false, true,
+			      NULL);
+	if (err)
+		goto exit;
+
+	/* Check if section exist */
+	offset = FIELD_GET(ICE_AQC_NVM_SDP_AC_PTR_M, le16_to_cpu(data));
+	if (offset == ICE_AQC_NVM_SDP_AC_PTR_INVAL) {
+		err = -EINVAL;
+		goto exit;
+	}
+
+	if (offset & ICE_AQC_NVM_SDP_AC_PTR_TYPE_M) {
+		offset &= ICE_AQC_NVM_SDP_AC_PTR_M;
+		offset *= ICE_AQC_NVM_SECTOR_UNIT;
+	} else {
+		offset *= sizeof(data);
+	}
+
+	/* Skip reading section length and read the number of valid entries */
+	offset += sizeof(data);
+	err = ice_aq_read_nvm(hw, 0, offset, sizeof(data), &data, false, true,
+			      NULL);
+	if (err)
+		goto exit;
+	*num_entries = le16_to_cpu(data);
+
+	/* Read SDP configuration section */
+	offset += sizeof(data);
+	err = ice_aq_read_nvm(hw, 0, offset, *num_entries * sizeof(data),
+			      entries, false, true, NULL);
+
+exit:
+	if (err)
+		dev_dbg(ice_hw_to_dev(hw), "Failed to configure SDP connection section\n");
+	ice_release_nvm(hw);
+	return err;
 }
 
 /**

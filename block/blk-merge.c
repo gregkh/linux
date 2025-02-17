@@ -107,17 +107,18 @@ static unsigned int bio_allowed_max_sectors(const struct queue_limits *lim)
 
 static struct bio *bio_submit_split(struct bio *bio, int split_sectors)
 {
-	if (unlikely(split_sectors < 0)) {
-		bio->bi_status = errno_to_blk_status(split_sectors);
-		bio_endio(bio);
-		return NULL;
-	}
+	if (unlikely(split_sectors < 0))
+		goto error;
 
 	if (split_sectors) {
 		struct bio *split;
 
 		split = bio_split(bio, split_sectors, GFP_NOIO,
 				&bio->bi_bdev->bd_disk->bio_split);
+		if (IS_ERR(split)) {
+			split_sectors = PTR_ERR(split);
+			goto error;
+		}
 		split->bi_opf |= REQ_NOMERGE;
 		blkcg_bio_issue_init(split);
 		bio_chain(split, bio);
@@ -128,6 +129,10 @@ static struct bio *bio_submit_split(struct bio *bio, int split_sectors)
 	}
 
 	return bio;
+error:
+	bio->bi_status = errno_to_blk_status(split_sectors);
+	bio_endio(bio);
+	return NULL;
 }
 
 struct bio *bio_split_discard(struct bio *bio, const struct queue_limits *lim,
@@ -387,11 +392,10 @@ struct bio *bio_split_rw(struct bio *bio, const struct queue_limits *lim,
 struct bio *bio_split_zone_append(struct bio *bio,
 		const struct queue_limits *lim, unsigned *nr_segs)
 {
-	unsigned int max_sectors = queue_limits_max_zone_append_sectors(lim);
 	int split_sectors;
 
 	split_sectors = bio_split_rw_at(bio, lim, nr_segs,
-			max_sectors << SECTOR_SHIFT);
+			lim->max_zone_append_sectors << SECTOR_SHIFT);
 	if (WARN_ON_ONCE(split_sectors > 0))
 		split_sectors = -EINVAL;
 	return bio_submit_split(bio, split_sectors);
@@ -430,10 +434,9 @@ struct bio *bio_split_write_zeroes(struct bio *bio,
  */
 struct bio *bio_split_to_limits(struct bio *bio)
 {
-	const struct queue_limits *lim = &bdev_get_queue(bio->bi_bdev)->limits;
 	unsigned int nr_segs;
 
-	return __bio_split_to_limits(bio, lim, &nr_segs);
+	return __bio_split_to_limits(bio, bdev_limits(bio->bi_bdev), &nr_segs);
 }
 EXPORT_SYMBOL(bio_split_to_limits);
 
@@ -816,7 +819,7 @@ static inline void blk_update_mixed_merge(struct request *req,
 
 static void blk_account_io_merge_request(struct request *req)
 {
-	if (blk_do_io_stat(req)) {
+	if (req->rq_flags & RQF_IO_STAT) {
 		part_stat_lock();
 		part_stat_inc(req->part, merges[op_stat_group(req_op(req))]);
 		part_stat_local_dec(req->part,
@@ -861,16 +864,10 @@ static struct request *attempt_merge(struct request_queue *q,
 	if (req_op(req) != req_op(next))
 		return NULL;
 
-	if (rq_data_dir(req) != rq_data_dir(next))
+	if (req->bio->bi_write_hint != next->bio->bi_write_hint)
 		return NULL;
-
-	/* Don't merge requests with different write hints. */
-	if (req->write_hint != next->write_hint)
+	if (req->bio->bi_ioprio != next->bio->bi_ioprio)
 		return NULL;
-
-	if (req->ioprio != next->ioprio)
-		return NULL;
-
 	if (!blk_atomic_write_mergeable_rqs(req, next))
 		return NULL;
 
@@ -982,29 +979,16 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 	if (req_op(rq) != bio_op(bio))
 		return false;
 
-	/* different data direction or already started, don't merge */
-	if (bio_data_dir(bio) != rq_data_dir(rq))
-		return false;
-
-	/* don't merge across cgroup boundaries */
 	if (!blk_cgroup_mergeable(rq, bio))
 		return false;
-
-	/* only merge integrity protected bio into ditto rq */
 	if (blk_integrity_merge_bio(rq->q, rq, bio) == false)
 		return false;
-
-	/* Only merge if the crypt contexts are compatible */
 	if (!bio_crypt_rq_ctx_compatible(rq, bio))
 		return false;
-
-	/* Don't merge requests with different write hints. */
-	if (rq->write_hint != bio->bi_write_hint)
+	if (rq->bio->bi_write_hint != bio->bi_write_hint)
 		return false;
-
-	if (rq->ioprio != bio_prio(bio))
+	if (rq->bio->bi_ioprio != bio->bi_ioprio)
 		return false;
-
 	if (blk_atomic_write_mergeable_rq_bio(rq, bio) == false)
 		return false;
 
@@ -1024,12 +1008,11 @@ enum elv_merge blk_try_merge(struct request *rq, struct bio *bio)
 
 static void blk_account_io_merge_bio(struct request *req)
 {
-	if (!blk_do_io_stat(req))
-		return;
-
-	part_stat_lock();
-	part_stat_inc(req->part, merges[op_stat_group(req_op(req))]);
-	part_stat_unlock();
+	if (req->rq_flags & RQF_IO_STAT) {
+		part_stat_lock();
+		part_stat_inc(req->part, merges[op_stat_group(req_op(req))]);
+		part_stat_unlock();
+	}
 }
 
 enum bio_merge_status bio_attempt_back_merge(struct request *req,
@@ -1175,7 +1158,7 @@ bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 	struct blk_plug *plug = current->plug;
 	struct request *rq;
 
-	if (!plug || rq_list_empty(plug->mq_list))
+	if (!plug || rq_list_empty(&plug->mq_list))
 		return false;
 
 	rq_list_for_each(&plug->mq_list, rq) {

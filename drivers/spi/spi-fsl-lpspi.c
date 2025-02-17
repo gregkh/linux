@@ -92,6 +92,7 @@ struct lpspi_config {
 	u8 prescale;
 	u16 mode;
 	u32 speed_hz;
+	u32 effective_speed_hz;
 };
 
 struct fsl_lpspi_data {
@@ -351,7 +352,10 @@ static int fsl_lpspi_set_bitrate(struct fsl_lpspi_data *fsl_lpspi)
 	writel(scldiv | (scldiv << 8) | ((scldiv >> 1) << 16),
 					fsl_lpspi->base + IMX7ULP_CCR);
 
-	dev_dbg(fsl_lpspi->dev, "perclk=%d, speed=%d, prescale=%d, scldiv=%d\n",
+	fsl_lpspi->config.effective_speed_hz = perclk_rate / (scldiv + 2) *
+					       (1 << prescale);
+
+	dev_dbg(fsl_lpspi->dev, "perclk=%u, speed=%u, prescale=%u, scldiv=%d\n",
 		perclk_rate, config.speed_hz, prescale, scldiv);
 
 	return 0;
@@ -750,6 +754,8 @@ static int fsl_lpspi_transfer_one(struct spi_controller *controller,
 	if (ret < 0)
 		return ret;
 
+	t->effective_speed_hz = fsl_lpspi->config.effective_speed_hz;
+
 	fsl_lpspi_set_cmd(fsl_lpspi);
 	fsl_lpspi->is_first_byte = false;
 
@@ -1021,7 +1027,7 @@ static struct platform_driver fsl_lpspi_driver = {
 		.pm = pm_ptr(&fsl_lpspi_pm_ops),
 	},
 	.probe = fsl_lpspi_probe,
-	.remove_new = fsl_lpspi_remove,
+	.remove = fsl_lpspi_remove,
 };
 module_platform_driver(fsl_lpspi_driver);
 

@@ -216,10 +216,9 @@ static int
 smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon,
 	       struct TCP_Server_Info *server, bool from_reconnect)
 {
-	int rc = 0;
-	struct nls_table *nls_codepage = NULL;
 	struct cifs_ses *ses;
 	int xid;
+	int rc = 0;
 
 	/*
 	 * SMB2s NegProt, SessSetup, Logoff do not have tcon yet so
@@ -229,11 +228,7 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon,
 	if (tcon == NULL)
 		return 0;
 
-	/*
-	 * Need to also skip SMB2_IOCTL because it is used for checking nested dfs links in
-	 * cifs_tree_connect().
-	 */
-	if (smb2_command == SMB2_TREE_CONNECT || smb2_command == SMB2_IOCTL)
+	if (smb2_command == SMB2_TREE_CONNECT)
 		return 0;
 
 	spin_lock(&tcon->tc_lock);
@@ -334,8 +329,6 @@ again:
 	}
 	spin_unlock(&server->srv_lock);
 
-	nls_codepage = ses->local_nls;
-
 	/*
 	 * need to prevent multiple threads trying to simultaneously
 	 * reconnect the same SMB session
@@ -372,7 +365,7 @@ again:
 			}
 		}
 
-		rc = cifs_setup_session(0, ses, server, nls_codepage);
+		rc = cifs_setup_session(0, ses, server, ses->local_nls);
 		if ((rc == -EACCES) || (rc == -EKEYEXPIRED) || (rc == -EKEYREVOKED)) {
 			/*
 			 * Try alternate password for next reconnect (key rotation
@@ -406,7 +399,7 @@ skip_sess_setup:
 	if (tcon->use_persistent)
 		tcon->need_reopen_files = true;
 
-	rc = cifs_tree_connect(0, tcon, nls_codepage);
+	rc = cifs_tree_connect(0, tcon);
 
 	cifs_dbg(FYI, "reconnect tcon rc = %d\n", rc);
 	if (rc) {
@@ -494,6 +487,7 @@ out:
 	case SMB2_CHANGE_NOTIFY:
 	case SMB2_QUERY_INFO:
 	case SMB2_SET_INFO:
+	case SMB2_IOCTL:
 		rc = -EAGAIN;
 	}
 failed:
@@ -3315,15 +3309,6 @@ SMB2_ioctl_init(struct cifs_tcon *tcon, struct TCP_Server_Info *server,
 		return rc;
 
 	if (indatalen) {
-		unsigned int len;
-
-		if (WARN_ON_ONCE(smb3_encryption_required(tcon) &&
-				 (check_add_overflow(total_len - 1,
-						     ALIGN(indatalen, 8), &len) ||
-				  len > MAX_CIFS_SMALL_BUFFER_SIZE))) {
-			cifs_small_buf_release(req);
-			return -EIO;
-		}
 		/*
 		 * indatalen is usually small at a couple of bytes max, so
 		 * just allocate through generic pool
@@ -4630,6 +4615,7 @@ smb2_readv_callback(struct mid_q_entry *mid)
 			__set_bit(NETFS_SREQ_HIT_EOF, &rdata->subreq.flags);
 			rdata->result = 0;
 		}
+		__set_bit(NETFS_SREQ_MADE_PROGRESS, &rdata->subreq.flags);
 	}
 	trace_smb3_rw_credits(rreq_debug_id, subreq_debug_index, rdata->credits.value,
 			      server->credits, server->in_flight,
@@ -4857,10 +4843,12 @@ smb2_writev_callback(struct mid_q_entry *mid)
 
 		cifs_stats_bytes_written(tcon, written);
 
-		if (written < wdata->subreq.len)
+		if (written < wdata->subreq.len) {
 			wdata->result = -ENOSPC;
-		else
+		} else if (written > 0) {
 			wdata->subreq.len = written;
+			__set_bit(NETFS_SREQ_MADE_PROGRESS, &wdata->subreq.flags);
+		}
 		break;
 	case MID_REQUEST_SUBMITTED:
 	case MID_RETRY_NEEDED:
@@ -5029,7 +5017,7 @@ smb2_async_writev(struct cifs_io_subrequest *wdata)
 	}
 #endif
 
-	if (test_bit(NETFS_SREQ_RETRYING, &wdata->subreq.flags))
+	if (wdata->subreq.retry_count > 0)
 		smb2_set_replay(server, &rqst);
 
 	cifs_dbg(FYI, "async write at %llu %u bytes iter=%zx\n",
@@ -6222,7 +6210,7 @@ SMB2_lease_break(const unsigned int xid, struct cifs_tcon *tcon,
 	req->StructureSize = cpu_to_le16(36);
 	total_len += 12;
 
-	memcpy(req->LeaseKey, lease_key, 16);
+	memcpy(req->LeaseKey, lease_key, SMB2_LEASE_KEY_SIZE);
 	req->LeaseState = lease_state;
 
 	flags |= CIFS_NO_RSP_BUF;

@@ -374,19 +374,6 @@ fail:
 	return ret;
 }
 
-static inline bool disk_zone_is_conv(struct gendisk *disk, sector_t sector)
-{
-	unsigned long *bitmap;
-	bool is_conv;
-
-	rcu_read_lock();
-	bitmap = rcu_dereference(disk->conv_zones_bitmap);
-	is_conv = bitmap && test_bit(disk_zone_no(disk, sector), bitmap);
-	rcu_read_unlock();
-
-	return is_conv;
-}
-
 static bool disk_zone_is_last(struct gendisk *disk, struct blk_zone *zone)
 {
 	return zone->start + zone->len >= get_capacity(disk);
@@ -698,7 +685,7 @@ static bool blk_zone_wplug_handle_reset_or_finish(struct bio *bio,
 	unsigned long flags;
 
 	/* Conventional zones cannot be reset nor finished. */
-	if (disk_zone_is_conv(disk, sector)) {
+	if (!bdev_zone_is_seq(bio->bi_bdev, sector)) {
 		bio_io_error(bio);
 		return true;
 	}
@@ -1001,7 +988,7 @@ static bool blk_zone_wplug_handle_write(struct bio *bio, unsigned int nr_segs)
 	}
 
 	/* Conventional zones do not need write plugging. */
-	if (disk_zone_is_conv(disk, sector)) {
+	if (!bdev_zone_is_seq(bio->bi_bdev, sector)) {
 		/* Zone append to conventional zones is not allowed. */
 		if (bio_op(bio) == REQ_OP_ZONE_APPEND) {
 			bio_io_error(bio);
@@ -1459,7 +1446,6 @@ static int disk_update_zone_resources(struct gendisk *disk,
 	unsigned int nr_seq_zones, nr_conv_zones;
 	unsigned int pool_size;
 	struct queue_limits lim;
-	int ret;
 
 	disk->nr_zones = args->nr_zones;
 	disk->zone_capacity = args->zone_capacity;
@@ -1510,11 +1496,7 @@ static int disk_update_zone_resources(struct gendisk *disk,
 	}
 
 commit:
-	blk_mq_freeze_queue(q);
-	ret = queue_limits_commit_update(q, &lim);
-	blk_mq_unfreeze_queue(q);
-
-	return ret;
+	return queue_limits_commit_update_frozen(q, &lim);
 }
 
 static int blk_revalidate_conv_zone(struct blk_zone *zone, unsigned int idx,
@@ -1694,12 +1676,6 @@ int blk_revalidate_disk_zones(struct gendisk *disk)
 	if (!zone_sectors || !is_power_of_2(zone_sectors)) {
 		pr_warn("%s: Invalid non power of two zone size (%llu)\n",
 			disk->disk_name, zone_sectors);
-		return -ENODEV;
-	}
-
-	if (!queue_max_zone_append_sectors(q)) {
-		pr_warn("%s: Invalid 0 maximum zone append limit\n",
-			disk->disk_name);
 		return -ENODEV;
 	}
 

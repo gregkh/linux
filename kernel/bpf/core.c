@@ -21,7 +21,7 @@
 #include <linux/filter.h>
 #include <linux/skbuff.h>
 #include <linux/vmalloc.h>
-#include <linux/random.h>
+#include <linux/prandom.h>
 #include <linux/bpf.h>
 #include <linux/btf.h>
 #include <linux/objtool.h>
@@ -3045,6 +3045,11 @@ int __weak bpf_arch_text_invalidate(void *dst, size_t len)
 }
 
 bool __weak bpf_jit_supports_exceptions(void)
+{
+	return false;
+}
+
+bool __weak bpf_jit_supports_private_stack(void)
 {
 	return false;
 }
