@@ -5601,7 +5601,7 @@ static int btrfs_find_actor(struct inode *inode, void *opaque)
 		args->root == BTRFS_I(inode)->root;
 }
 
-static struct inode *btrfs_iget_locked(u64 ino, struct btrfs_root *root)
+static struct btrfs_inode *btrfs_iget_locked(u64 ino, struct btrfs_root *root)
 {
 	struct inode *inode;
 	struct btrfs_iget_args args;
@@ -5613,7 +5613,9 @@ static struct inode *btrfs_iget_locked(u64 ino, struct btrfs_root *root)
 	inode = iget5_locked_rcu(root->fs_info->sb, hashval, btrfs_find_actor,
 			     btrfs_init_locked_inode,
 			     (void *)&args);
-	return inode;
+	if (!inode)
+		return NULL;
+	return BTRFS_I(inode);
 }
 
 /*
@@ -5623,22 +5625,22 @@ static struct inode *btrfs_iget_locked(u64 ino, struct btrfs_root *root)
 struct inode *btrfs_iget_path(u64 ino, struct btrfs_root *root,
 			      struct btrfs_path *path)
 {
-	struct inode *inode;
+	struct btrfs_inode *inode;
 	int ret;
 
 	inode = btrfs_iget_locked(ino, root);
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 
-	if (!(inode->i_state & I_NEW))
-		return inode;
+	if (!(inode->vfs_inode.i_state & I_NEW))
+		return &inode->vfs_inode;
 
-	ret = btrfs_read_locked_inode(BTRFS_I(inode), path);
+	ret = btrfs_read_locked_inode(inode, path);
 	if (ret)
 		return ERR_PTR(ret);
 
-	unlock_new_inode(inode);
-	return inode;
+	unlock_new_inode(&inode->vfs_inode);
+	return &inode->vfs_inode;
 }
 
 /*
@@ -5646,7 +5648,7 @@ struct inode *btrfs_iget_path(u64 ino, struct btrfs_root *root,
  */
 struct inode *btrfs_iget(u64 ino, struct btrfs_root *root)
 {
-	struct inode *inode;
+	struct btrfs_inode *inode;
 	struct btrfs_path *path;
 	int ret;
 
@@ -5654,20 +5656,20 @@ struct inode *btrfs_iget(u64 ino, struct btrfs_root *root)
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 
-	if (!(inode->i_state & I_NEW))
-		return inode;
+	if (!(inode->vfs_inode.i_state & I_NEW))
+		return &inode->vfs_inode;
 
 	path = btrfs_alloc_path();
 	if (!path)
 		return ERR_PTR(-ENOMEM);
 
-	ret = btrfs_read_locked_inode(BTRFS_I(inode), path);
+	ret = btrfs_read_locked_inode(inode, path);
 	btrfs_free_path(path);
 	if (ret)
 		return ERR_PTR(ret);
 
-	unlock_new_inode(inode);
-	return inode;
+	unlock_new_inode(&inode->vfs_inode);
+	return &inode->vfs_inode;
 }
 
 static struct inode *new_simple_dir(struct inode *dir,
