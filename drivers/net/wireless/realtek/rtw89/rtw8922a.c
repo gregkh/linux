@@ -2763,6 +2763,7 @@ const struct rtw89_chip_info rtw8922a_chip_info = {
 	.support_ant_gain	= false,
 	.ul_tb_waveform_ctrl	= false,
 	.ul_tb_pwr_diff		= false,
+	.rx_freq_frome_ie	= false,
 	.hw_sec_hdr		= true,
 	.hw_mgmt_tx_encrypt	= true,
 	.rf_path_num		= 2,
