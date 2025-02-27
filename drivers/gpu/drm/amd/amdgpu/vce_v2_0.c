@@ -278,7 +278,7 @@ static int vce_v2_0_stop(struct amdgpu_device *adev)
 	int status;
 
 	if (vce_v2_0_lmi_clean(adev)) {
-		DRM_INFO("vce is not idle \n");
+		DRM_INFO("VCE is not idle \n");
 		return 0;
 	}
 
