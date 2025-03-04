@@ -281,12 +281,12 @@ static void mlx5e_ipsec_init_macs(struct mlx5e_ipsec_sa_entry *sa_entry,
 	case XFRM_DEV_OFFLOAD_IN:
 		src = attrs->dmac;
 		dst = attrs->smac;
-		pkey = &attrs->saddr.a4;
+		pkey = &attrs->addrs.saddr.a4;
 		break;
 	case XFRM_DEV_OFFLOAD_OUT:
 		src = attrs->smac;
 		dst = attrs->dmac;
-		pkey = &attrs->daddr.a4;
+		pkey = &attrs->addrs.daddr.a4;
 		break;
 	default:
 		return;
@@ -379,9 +379,10 @@ skip_replay_window:
 	attrs->spi = be32_to_cpu(x->id.spi);
 
 	/* source , destination ips */
-	memcpy(&attrs->saddr, x->props.saddr.a6, sizeof(attrs->saddr));
-	memcpy(&attrs->daddr, x->id.daddr.a6, sizeof(attrs->daddr));
-	attrs->family = x->props.family;
+	memcpy(&attrs->addrs.saddr, x->props.saddr.a6,
+	       sizeof(attrs->addrs.saddr));
+	memcpy(&attrs->addrs.daddr, x->id.daddr.a6, sizeof(attrs->addrs.daddr));
+	attrs->addrs.family = x->props.family;
 	attrs->type = x->xso.type;
 	attrs->reqid = x->props.reqid;
 	attrs->upspec.dport = ntohs(x->sel.dport);
@@ -433,7 +434,8 @@ static int mlx5e_xfrm_validate_state(struct mlx5_core_dev *mdev,
 	}
 	if (x->encap) {
 		if (!(mlx5_ipsec_device_caps(mdev) & MLX5_IPSEC_CAP_ESPINUDP)) {
-			NL_SET_ERR_MSG_MOD(extack, "Encapsulation is not supported");
+			NL_SET_ERR_MSG_MOD(extack,
+					   "Encapsulation is not supported");
 			return -EINVAL;
 		}
 
@@ -857,13 +859,13 @@ static int mlx5e_ipsec_netevent_event(struct notifier_block *nb,
 	xa_for_each_marked(&ipsec->sadb, idx, sa_entry, MLX5E_IPSEC_TUNNEL_SA) {
 		attrs = &sa_entry->attrs;
 
-		if (attrs->family == AF_INET) {
-			if (!neigh_key_eq32(n, &attrs->saddr.a4) &&
-			    !neigh_key_eq32(n, &attrs->daddr.a4))
+		if (attrs->addrs.family == AF_INET) {
+			if (!neigh_key_eq32(n, &attrs->addrs.saddr.a4) &&
+			    !neigh_key_eq32(n, &attrs->addrs.daddr.a4))
 				continue;
 		} else {
-			if (!neigh_key_eq128(n, &attrs->saddr.a4) &&
-			    !neigh_key_eq128(n, &attrs->daddr.a4))
+			if (!neigh_key_eq128(n, &attrs->addrs.saddr.a4) &&
+			    !neigh_key_eq128(n, &attrs->addrs.daddr.a4))
 				continue;
 		}
 
@@ -1037,7 +1039,7 @@ static void mlx5e_xfrm_update_stats(struct xfrm_state *x)
 	 * by removing always available headers.
 	 */
 	headers = sizeof(struct ethhdr);
-	if (sa_entry->attrs.family == AF_INET)
+	if (sa_entry->attrs.addrs.family == AF_INET)
 		headers += sizeof(struct iphdr);
 	else
 		headers += sizeof(struct ipv6hdr);
@@ -1118,9 +1120,9 @@ mlx5e_ipsec_build_accel_pol_attrs(struct mlx5e_ipsec_pol_entry *pol_entry,
 	sel = &x->selector;
 	memset(attrs, 0, sizeof(*attrs));
 
-	memcpy(&attrs->saddr, sel->saddr.a6, sizeof(attrs->saddr));
-	memcpy(&attrs->daddr, sel->daddr.a6, sizeof(attrs->daddr));
-	attrs->family = sel->family;
+	memcpy(&attrs->addrs.saddr, sel->saddr.a6, sizeof(attrs->addrs.saddr));
+	memcpy(&attrs->addrs.daddr, sel->daddr.a6, sizeof(attrs->addrs.daddr));
+	attrs->addrs.family = sel->family;
 	attrs->dir = x->xdo.dir;
 	attrs->action = x->action;
 	attrs->type = XFRM_DEV_OFFLOAD_PACKET;
