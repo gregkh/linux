@@ -329,6 +329,10 @@ static irqreturn_t pcc_mbox_irq(int irq, void *p)
 	struct mbox_chan *chan = p;
 
 	pchan = chan->con_priv;
+
+	if (pcc_chan_reg_read_modify_write(&pchan->plat_irq_ack))
+		return IRQ_NONE;
+
 	if (pchan->type == ACPI_PCCT_TYPE_EXT_PCC_MASTER_SUBSPACE &&
 	    !pchan->chan_in_use)
 		return IRQ_NONE;
@@ -337,9 +341,6 @@ static irqreturn_t pcc_mbox_irq(int irq, void *p)
 		return IRQ_NONE;
 
 	if (pcc_mbox_error_check_and_clear(pchan))
-		return IRQ_NONE;
-
-	if (pcc_chan_reg_read_modify_write(&pchan->plat_irq_ack))
 		return IRQ_NONE;
 
 	/*
