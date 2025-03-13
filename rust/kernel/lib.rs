@@ -15,7 +15,8 @@
 #![feature(arbitrary_self_types)]
 #![feature(coerce_unsized)]
 #![feature(dispatch_from_dyn)]
-#![feature(new_uninit)]
+#![feature(inline_const)]
+#![feature(lint_reasons)]
 #![feature(unsize)]
 
 // Ensure conditional compilation based on the kernel configuration works;
@@ -25,6 +26,8 @@ compile_error!("Missing kernel configuration for conditional compilation");
 
 // Allow proc-macros to refer to `::kernel` inside the `kernel` crate (this crate).
 extern crate self as kernel;
+
+pub use ffi;
 
 pub mod alloc;
 #[cfg(CONFIG_BLOCK)]
