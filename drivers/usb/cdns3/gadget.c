@@ -1920,6 +1920,7 @@ static int cdns3_gadget_ep_disable(struct usb_ep *ep)
 			  "%s is already disabled\n", priv_ep->name))
 		return 0;
 
+	local_bh_disable();
 	spin_lock_irqsave(&priv_dev->lock, flags);
 
 	trace_cdns3_gadget_ep_disable(priv_ep);
@@ -1976,6 +1977,7 @@ static int cdns3_gadget_ep_disable(struct usb_ep *ep)
 	priv_ep->flags &= ~EP_ENABLED;
 
 	spin_unlock_irqrestore(&priv_dev->lock, flags);
+	local_bh_enable();
 
 	return ret;
 }
