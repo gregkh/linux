@@ -9,6 +9,8 @@
 #include <nvhe/fixed_config.h>
 #include <nvhe/trap_handler.h>
 
+unsigned int kvm_host_sve_max_vl;
+
 /*
  * Set trap register values based on features in ID_AA64PFR0.
  */
