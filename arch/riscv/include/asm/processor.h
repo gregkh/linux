@@ -58,6 +58,7 @@ struct thread_struct {
 	struct __riscv_d_ext_state fstate;
 	unsigned long bad_cause;
 	unsigned long vstate_ctrl;
+	unsigned long status;
 	struct __riscv_v_ext_state vstate;
 };
 
