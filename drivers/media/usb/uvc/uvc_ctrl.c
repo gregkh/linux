@@ -1622,6 +1622,9 @@ void uvc_ctrl_status_event(struct uvc_video_chain *chain,
 
 	mutex_lock(&chain->ctrl_mutex);
 
+	/* Flush the control cache, the data might have changed. */
+	ctrl->loaded = 0;
+
 	handle = ctrl->handle;
 	if (handle)
 		uvc_ctrl_set_handle(handle, ctrl, NULL);
@@ -1980,6 +1983,8 @@ int uvc_ctrl_set(struct uvc_fh *handle,
 	s32 min;
 	s32 max;
 	int ret;
+
+	lockdep_assert_held(&chain->ctrl_mutex);
 
 	if (__uvc_query_v4l2_class(chain, xctrl->id, 0) >= 0)
 		return -EACCES;

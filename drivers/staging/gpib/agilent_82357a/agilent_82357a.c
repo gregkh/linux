@@ -23,7 +23,7 @@ MODULE_DESCRIPTION("GPIB driver for Agilent 82357A/B usb adapters");
 
 #define MAX_NUM_82357A_INTERFACES 128
 static struct usb_interface *agilent_82357a_driver_interfaces[MAX_NUM_82357A_INTERFACES];
-DEFINE_MUTEX(agilent_82357a_hotplug_lock); // protect board insertion and removal
+static DEFINE_MUTEX(agilent_82357a_hotplug_lock); // protect board insertion and removal
 
 static unsigned int agilent_82357a_update_status(gpib_board_t *board, unsigned int clear_mask);
 
@@ -1425,34 +1425,34 @@ static void agilent_82357a_detach(gpib_board_t *board)
 	mutex_unlock(&agilent_82357a_hotplug_lock);
 }
 
-gpib_interface_t agilent_82357a_gpib_interface = {
-name: "agilent_82357a",
-attach : agilent_82357a_attach,
-detach : agilent_82357a_detach,
-read : agilent_82357a_read,
-write : agilent_82357a_write,
-command : agilent_82357a_command,
-take_control : agilent_82357a_take_control,
-go_to_standby : agilent_82357a_go_to_standby,
-request_system_control : agilent_82357a_request_system_control,
-interface_clear : agilent_82357a_interface_clear,
-remote_enable : agilent_82357a_remote_enable,
-enable_eos : agilent_82357a_enable_eos,
-disable_eos : agilent_82357a_disable_eos,
-parallel_poll : agilent_82357a_parallel_poll,
-parallel_poll_configure : agilent_82357a_parallel_poll_configure,
-parallel_poll_response : agilent_82357a_parallel_poll_response,
-local_parallel_poll_mode : NULL, // XXX
-line_status : agilent_82357a_line_status,
-update_status : agilent_82357a_update_status,
-primary_address : agilent_82357a_primary_address,
-secondary_address : agilent_82357a_secondary_address,
-serial_poll_response : agilent_82357a_serial_poll_response,
-serial_poll_status : agilent_82357a_serial_poll_status,
-t1_delay : agilent_82357a_t1_delay,
-return_to_local : agilent_82357a_return_to_local,
-no_7_bit_eos : 1,
-skip_check_for_command_acceptors : 1
+static gpib_interface_t agilent_82357a_gpib_interface = {
+	.name = "agilent_82357a",
+	.attach = agilent_82357a_attach,
+	.detach = agilent_82357a_detach,
+	.read = agilent_82357a_read,
+	.write = agilent_82357a_write,
+	.command = agilent_82357a_command,
+	.take_control = agilent_82357a_take_control,
+	.go_to_standby = agilent_82357a_go_to_standby,
+	.request_system_control = agilent_82357a_request_system_control,
+	.interface_clear = agilent_82357a_interface_clear,
+	.remote_enable = agilent_82357a_remote_enable,
+	.enable_eos = agilent_82357a_enable_eos,
+	.disable_eos = agilent_82357a_disable_eos,
+	.parallel_poll = agilent_82357a_parallel_poll,
+	.parallel_poll_configure = agilent_82357a_parallel_poll_configure,
+	.parallel_poll_response = agilent_82357a_parallel_poll_response,
+	.local_parallel_poll_mode = NULL, // XXX
+	.line_status = agilent_82357a_line_status,
+	.update_status = agilent_82357a_update_status,
+	.primary_address = agilent_82357a_primary_address,
+	.secondary_address = agilent_82357a_secondary_address,
+	.serial_poll_response = agilent_82357a_serial_poll_response,
+	.serial_poll_status = agilent_82357a_serial_poll_status,
+	.t1_delay = agilent_82357a_t1_delay,
+	.return_to_local = agilent_82357a_return_to_local,
+	.no_7_bit_eos = 1,
+	.skip_check_for_command_acceptors = 1
 };
 
 // Table with the USB-devices: just now only testing IDs

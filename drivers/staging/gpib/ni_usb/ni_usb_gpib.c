@@ -773,8 +773,10 @@ static int ni_usb_write(gpib_board_t *board, uint8_t *buffer, size_t length,
 	}
 
 	in_data = kmalloc(in_data_length, GFP_KERNEL);
-	if (!in_data)
+	if (!in_data) {
+		mutex_unlock(&ni_priv->addressed_transfer_lock);
 		return -ENOMEM;
+	}
 	retval = ni_usb_receive_bulk_msg(ni_priv, in_data, in_data_length, &usb_bytes_read,
 					 ni_usb_timeout_msecs(board->usec_timeout), 1);
 
@@ -2360,33 +2362,33 @@ static void ni_usb_detach(gpib_board_t *board)
 	mutex_unlock(&ni_usb_hotplug_lock);
 }
 
-gpib_interface_t ni_usb_gpib_interface = {
-name: "ni_usb_b",
-attach : ni_usb_attach,
-detach : ni_usb_detach,
-read : ni_usb_read,
-write : ni_usb_write,
-command : ni_usb_command,
-take_control : ni_usb_take_control,
-go_to_standby : ni_usb_go_to_standby,
-request_system_control : ni_usb_request_system_control,
-interface_clear : ni_usb_interface_clear,
-remote_enable : ni_usb_remote_enable,
-enable_eos : ni_usb_enable_eos,
-disable_eos : ni_usb_disable_eos,
-parallel_poll : ni_usb_parallel_poll,
-parallel_poll_configure : ni_usb_parallel_poll_configure,
-parallel_poll_response : ni_usb_parallel_poll_response,
-local_parallel_poll_mode : NULL, // XXX
-line_status : ni_usb_line_status,
-update_status : ni_usb_update_status,
-primary_address : ni_usb_primary_address,
-secondary_address : ni_usb_secondary_address,
-serial_poll_response : ni_usb_serial_poll_response,
-serial_poll_status : ni_usb_serial_poll_status,
-t1_delay : ni_usb_t1_delay,
-return_to_local : ni_usb_return_to_local,
-skip_check_for_command_acceptors : 1
+static gpib_interface_t ni_usb_gpib_interface = {
+	.name = "ni_usb_b",
+	.attach = ni_usb_attach,
+	.detach = ni_usb_detach,
+	.read = ni_usb_read,
+	.write = ni_usb_write,
+	.command = ni_usb_command,
+	.take_control = ni_usb_take_control,
+	.go_to_standby = ni_usb_go_to_standby,
+	.request_system_control = ni_usb_request_system_control,
+	.interface_clear = ni_usb_interface_clear,
+	.remote_enable = ni_usb_remote_enable,
+	.enable_eos = ni_usb_enable_eos,
+	.disable_eos = ni_usb_disable_eos,
+	.parallel_poll = ni_usb_parallel_poll,
+	.parallel_poll_configure = ni_usb_parallel_poll_configure,
+	.parallel_poll_response = ni_usb_parallel_poll_response,
+	.local_parallel_poll_mode = NULL, // XXX
+	.line_status = ni_usb_line_status,
+	.update_status = ni_usb_update_status,
+	.primary_address = ni_usb_primary_address,
+	.secondary_address = ni_usb_secondary_address,
+	.serial_poll_response = ni_usb_serial_poll_response,
+	.serial_poll_status = ni_usb_serial_poll_status,
+	.t1_delay = ni_usb_t1_delay,
+	.return_to_local = ni_usb_return_to_local,
+	.skip_check_for_command_acceptors = 1
 };
 
 // Table with the USB-devices: just now only testing IDs

@@ -223,11 +223,11 @@ static void int3472_get_func_and_polarity(struct acpi_device *adev, u8 *type,
  * to create clocks and regulators via the usual frameworks.
  *
  * Return:
- * * 1		- To continue the loop
- * * 0		- When all resources found are handled properly.
- * * -EINVAL	- If the resource is not a GPIO IO resource
- * * -ENODEV	- If the resource has no corresponding _DSM entry
- * * -Other	- Errors propagated from one of the sub-functions.
+ * * 1		- Continue the loop without adding a copy of the resource to
+ * *		  the list passed to acpi_dev_get_resources()
+ * * 0		- Continue the loop after adding a copy of the resource to
+ * *		  the list passed to acpi_dev_get_resources()
+ * * -errno	- Error, break loop
  */
 static int skl_int3472_handle_gpio_resources(struct acpi_resource *ares,
 					     void *data)
@@ -265,10 +265,10 @@ static int skl_int3472_handle_gpio_resources(struct acpi_resource *ares,
 	int3472_get_func_and_polarity(int3472->sensor, &type, &func, &gpio_flags);
 
 	pin = FIELD_GET(INT3472_GPIO_DSM_PIN, obj->integer.value);
-	if (pin != agpio->pin_table[0])
-		dev_warn(int3472->dev, "%s %s pin number mismatch _DSM %d resource %d\n",
-			 func, agpio->resource_source.string_ptr, pin,
-			 agpio->pin_table[0]);
+	/* Pin field is not really used under Windows and wraps around at 8 bits */
+	if (pin != (agpio->pin_table[0] & 0xff))
+		dev_dbg(int3472->dev, FW_BUG "%s %s pin number mismatch _DSM %d resource %d\n",
+			func, agpio->resource_source.string_ptr, pin, agpio->pin_table[0]);
 
 	active_value = FIELD_GET(INT3472_GPIO_DSM_SENSOR_ON_VAL, obj->integer.value);
 	if (!active_value)
@@ -334,7 +334,8 @@ static int skl_int3472_handle_gpio_resources(struct acpi_resource *ares,
 	if (ret < 0)
 		return dev_err_probe(int3472->dev, ret, err_msg);
 
-	return ret;
+	/* Tell acpi_dev_get_resources() to not make a copy of the resource */
+	return 1;
 }
 
 static int skl_int3472_parse_crs(struct int3472_discrete_device *int3472)

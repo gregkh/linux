@@ -52,6 +52,8 @@ XDP_METADATA_KFUNC_xxx
 			xsk_features |= NETDEV_XSK_FLAGS_TX_TIMESTAMP;
 		if (netdev->xsk_tx_metadata_ops->tmo_request_checksum)
 			xsk_features |= NETDEV_XSK_FLAGS_TX_CHECKSUM;
+		if (netdev->xsk_tx_metadata_ops->tmo_request_launch_time)
+			xsk_features |= NETDEV_XSK_FLAGS_TX_LAUNCH_TIME_FIFO;
 	}
 
 	if (nla_put_u32(rsp, NETDEV_A_DEV_IFINDEX, netdev->ifindex) ||
@@ -167,7 +169,7 @@ netdev_nl_napi_fill_one(struct sk_buff *rsp, struct napi_struct *napi,
 	void *hdr;
 	pid_t pid;
 
-	if (!(napi->dev->flags & IFF_UP))
+	if (!napi->dev->up)
 		return 0;
 
 	hdr = genlmsg_iput(rsp, info);
@@ -229,19 +231,14 @@ int netdev_nl_napi_get_doit(struct sk_buff *skb, struct genl_info *info)
 	if (!rsp)
 		return -ENOMEM;
 
-	rtnl_lock();
-	rcu_read_lock();
-
-	napi = netdev_napi_by_id(genl_info_net(info), napi_id);
+	napi = netdev_napi_by_id_lock(genl_info_net(info), napi_id);
 	if (napi) {
 		err = netdev_nl_napi_fill_one(rsp, napi, info);
+		netdev_unlock(napi->dev);
 	} else {
 		NL_SET_BAD_ATTR(info->extack, info->attrs[NETDEV_A_NAPI_ID]);
 		err = -ENOENT;
 	}
-
-	rcu_read_unlock();
-	rtnl_unlock();
 
 	if (err) {
 		goto err_free_msg;
@@ -263,14 +260,21 @@ netdev_nl_napi_dump_one(struct net_device *netdev, struct sk_buff *rsp,
 			struct netdev_nl_dump_ctx *ctx)
 {
 	struct napi_struct *napi;
+	unsigned int prev_id;
 	int err = 0;
 
-	if (!(netdev->flags & IFF_UP))
+	if (!netdev->up)
 		return err;
 
+	prev_id = UINT_MAX;
 	list_for_each_entry(napi, &netdev->napi_list, dev_list) {
 		if (napi->napi_id < MIN_NAPI_ID)
 			continue;
+
+		/* Dump continuation below depends on the list being sorted */
+		WARN_ON_ONCE(napi->napi_id >= prev_id);
+		prev_id = napi->napi_id;
+
 		if (ctx->napi_id && napi->napi_id >= ctx->napi_id)
 			continue;
 
@@ -294,22 +298,22 @@ int netdev_nl_napi_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 	if (info->attrs[NETDEV_A_NAPI_IFINDEX])
 		ifindex = nla_get_u32(info->attrs[NETDEV_A_NAPI_IFINDEX]);
 
-	rtnl_lock();
 	if (ifindex) {
-		netdev = __dev_get_by_index(net, ifindex);
-		if (netdev)
+		netdev = netdev_get_by_index_lock(net, ifindex);
+		if (netdev) {
 			err = netdev_nl_napi_dump_one(netdev, skb, info, ctx);
-		else
+			netdev_unlock(netdev);
+		} else {
 			err = -ENODEV;
+		}
 	} else {
-		for_each_netdev_dump(net, netdev, ctx->ifindex) {
+		for_each_netdev_lock_scoped(net, netdev, ctx->ifindex) {
 			err = netdev_nl_napi_dump_one(netdev, skb, info, ctx);
 			if (err < 0)
 				break;
 			ctx->napi_id = 0;
 		}
 	}
-	rtnl_unlock();
 
 	return err;
 }
@@ -350,19 +354,14 @@ int netdev_nl_napi_set_doit(struct sk_buff *skb, struct genl_info *info)
 
 	napi_id = nla_get_u32(info->attrs[NETDEV_A_NAPI_ID]);
 
-	rtnl_lock();
-	rcu_read_lock();
-
-	napi = netdev_napi_by_id(genl_info_net(info), napi_id);
+	napi = netdev_napi_by_id_lock(genl_info_net(info), napi_id);
 	if (napi) {
 		err = netdev_nl_napi_set_config(napi, info);
+		netdev_unlock(napi->dev);
 	} else {
 		NL_SET_BAD_ATTR(info->extack, info->attrs[NETDEV_A_NAPI_ID]);
 		err = -ENOENT;
 	}
-
-	rcu_read_unlock();
-	rtnl_unlock();
 
 	return err;
 }
@@ -435,7 +434,7 @@ netdev_nl_queue_fill(struct sk_buff *rsp, struct net_device *netdev, u32 q_idx,
 {
 	int err;
 
-	if (!(netdev->flags & IFF_UP))
+	if (!netdev->up)
 		return -ENOENT;
 
 	err = netdev_nl_queue_validate(netdev, q_idx, q_type);
@@ -467,11 +466,13 @@ int netdev_nl_queue_get_doit(struct sk_buff *skb, struct genl_info *info)
 
 	rtnl_lock();
 
-	netdev = __dev_get_by_index(genl_info_net(info), ifindex);
-	if (netdev)
+	netdev = netdev_get_by_index_lock(genl_info_net(info), ifindex);
+	if (netdev) {
 		err = netdev_nl_queue_fill(rsp, netdev, q_id, q_type, info);
-	else
+		netdev_unlock(netdev);
+	} else {
 		err = -ENODEV;
+	}
 
 	rtnl_unlock();
 
@@ -492,7 +493,7 @@ netdev_nl_queue_dump_one(struct net_device *netdev, struct sk_buff *rsp,
 {
 	int err = 0;
 
-	if (!(netdev->flags & IFF_UP))
+	if (!netdev->up)
 		return err;
 
 	for (; ctx->rxq_idx < netdev->real_num_rx_queues; ctx->rxq_idx++) {
@@ -525,13 +526,15 @@ int netdev_nl_queue_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 
 	rtnl_lock();
 	if (ifindex) {
-		netdev = __dev_get_by_index(net, ifindex);
-		if (netdev)
+		netdev = netdev_get_by_index_lock(net, ifindex);
+		if (netdev) {
 			err = netdev_nl_queue_dump_one(netdev, skb, info, ctx);
-		else
+			netdev_unlock(netdev);
+		} else {
 			err = -ENODEV;
+		}
 	} else {
-		for_each_netdev_dump(net, netdev, ctx->ifindex) {
+		for_each_netdev_lock_scoped(net, netdev, ctx->ifindex) {
 			err = netdev_nl_queue_dump_one(netdev, skb, info, ctx);
 			if (err < 0)
 				break;

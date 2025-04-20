@@ -26,7 +26,6 @@
 #include <asm/debug-monitors.h>
 #include <asm/processor.h>
 
-#include <nvhe/fixed_config.h>
 #include <nvhe/mem_protect.h>
 
 /* Non-VHE specific context */
@@ -44,12 +43,12 @@ static void __activate_cptr_traps(struct kvm_vcpu *vcpu)
 		__activate_traps_fpsimd32(vcpu);
 
 	if (has_hvhe()) {
-		val |= CPACR_ELx_TTA;
+		val |= CPACR_EL1_TTA;
 
 		if (guest_owns_fp_regs()) {
-			val |= CPACR_ELx_FPEN;
+			val |= CPACR_EL1_FPEN;
 			if (vcpu_has_sve(vcpu))
-				val |= CPACR_ELx_ZEN;
+				val |= CPACR_EL1_ZEN;
 		}
 
 		write_sysreg(val, cpacr_el1);
@@ -75,12 +74,12 @@ static void __activate_cptr_traps(struct kvm_vcpu *vcpu)
 static void __deactivate_cptr_traps(struct kvm_vcpu *vcpu)
 {
 	if (has_hvhe()) {
-		u64 val = CPACR_ELx_FPEN;
+		u64 val = CPACR_EL1_FPEN;
 
 		if (cpus_have_final_cap(ARM64_SVE))
-			val |= CPACR_ELx_ZEN;
+			val |= CPACR_EL1_ZEN;
 		if (cpus_have_final_cap(ARM64_SME))
-			val |= CPACR_ELx_SMEN;
+			val |= CPACR_EL1_SMEN;
 
 		write_sysreg(val, cpacr_el1);
 	} else {

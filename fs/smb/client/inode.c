@@ -1239,6 +1239,11 @@ static int reparse_info_to_fattr(struct cifs_open_info_data *data,
 			if (rc == -EOPNOTSUPP)
 				rc = 0;
 		}
+
+		if (data->reparse.tag == IO_REPARSE_TAG_SYMLINK && !rc) {
+			bool directory = le32_to_cpu(data->fi.Attributes) & ATTR_DIRECTORY;
+			rc = smb2_fix_symlink_target_type(&data->symlink_target, directory, cifs_sb);
+		}
 		break;
 	}
 
@@ -2413,6 +2418,13 @@ cifs_do_rename(const unsigned int xid, struct dentry *from_dentry,
 #ifdef CONFIG_CIFS_ALLOW_INSECURE_LEGACY
 	/* open-file renames don't work across directories */
 	if (to_dentry->d_parent != from_dentry->d_parent)
+		goto do_rename_exit;
+
+	/*
+	 * CIFSSMBRenameOpenFile() uses SMB_SET_FILE_RENAME_INFORMATION
+	 * which is SMB PASSTHROUGH level.
+	 */
+	if (!(tcon->ses->capabilities & CAP_INFOLEVEL_PASSTHRU))
 		goto do_rename_exit;
 
 	oparms = (struct cifs_open_parms) {

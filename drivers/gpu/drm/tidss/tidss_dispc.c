@@ -792,8 +792,6 @@ void dispc_k3_clear_irqstatus(struct dispc_device *dispc, dispc_irq_t clearmask)
 		if (clearmask & DSS_IRQ_PLANE_MASK(i))
 			dispc_k3_vid_write_irqstatus(dispc, i, clearmask);
 	}
-	if (dispc->feat->subrev == DISPC_K2G)
-		return;
 
 	/* always clear the top level irqstatus */
 	dispc_write(dispc, DISPC_IRQSTATUS, dispc_read(dispc, DISPC_IRQSTATUS));
@@ -2771,10 +2769,10 @@ static void dispc_softreset_k2g(struct dispc_device *dispc)
 {
 	unsigned long flags;
 
-	spin_lock_irqsave(&dispc->tidss->wait_lock, flags);
+	spin_lock_irqsave(&dispc->tidss->irq_lock, flags);
 	dispc_set_irqenable(dispc, 0);
 	dispc_read_and_clear_irqstatus(dispc);
-	spin_unlock_irqrestore(&dispc->tidss->wait_lock, flags);
+	spin_unlock_irqrestore(&dispc->tidss->irq_lock, flags);
 
 	for (unsigned int vp_idx = 0; vp_idx < dispc->feat->num_vps; ++vp_idx)
 		VP_REG_FLD_MOD(dispc, vp_idx, DISPC_VP_CONTROL, 0, 0, 0);

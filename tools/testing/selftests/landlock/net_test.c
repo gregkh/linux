@@ -313,6 +313,17 @@ FIXTURE_VARIANT_ADD(protocol, no_sandbox_with_ipv4_tcp2) {
 };
 
 /* clang-format off */
+FIXTURE_VARIANT_ADD(protocol, no_sandbox_with_ipv4_mptcp) {
+	/* clang-format on */
+	.sandbox = NO_SANDBOX,
+	.prot = {
+		.domain = AF_INET,
+		.type = SOCK_STREAM,
+		.protocol = IPPROTO_MPTCP,
+	},
+};
+
+/* clang-format off */
 FIXTURE_VARIANT_ADD(protocol, no_sandbox_with_ipv6_tcp1) {
 	/* clang-format on */
 	.sandbox = NO_SANDBOX,
@@ -336,11 +347,11 @@ FIXTURE_VARIANT_ADD(protocol, no_sandbox_with_ipv6_tcp2) {
 };
 
 /* clang-format off */
-FIXTURE_VARIANT_ADD(protocol, no_sandbox_with_ipv4_mptcp) {
+FIXTURE_VARIANT_ADD(protocol, no_sandbox_with_ipv6_mptcp) {
 	/* clang-format on */
 	.sandbox = NO_SANDBOX,
 	.prot = {
-		.domain = AF_INET,
+		.domain = AF_INET6,
 		.type = SOCK_STREAM,
 		.protocol = IPPROTO_MPTCP,
 	},
@@ -363,17 +374,6 @@ FIXTURE_VARIANT_ADD(protocol, no_sandbox_with_ipv6_udp) {
 	.prot = {
 		.domain = AF_INET6,
 		.type = SOCK_DGRAM,
-	},
-};
-
-/* clang-format off */
-FIXTURE_VARIANT_ADD(protocol, no_sandbox_with_ipv6_mptcp) {
-	/* clang-format on */
-	.sandbox = NO_SANDBOX,
-	.prot = {
-		.domain = AF_INET6,
-		.type = SOCK_STREAM,
-		.protocol = IPPROTO_MPTCP,
 	},
 };
 
@@ -421,6 +421,17 @@ FIXTURE_VARIANT_ADD(protocol, tcp_sandbox_with_ipv4_tcp2) {
 };
 
 /* clang-format off */
+FIXTURE_VARIANT_ADD(protocol, tcp_sandbox_with_ipv4_mptcp) {
+	/* clang-format on */
+	.sandbox = TCP_SANDBOX,
+	.prot = {
+		.domain = AF_INET,
+		.type = SOCK_STREAM,
+		.protocol = IPPROTO_MPTCP,
+	},
+};
+
+/* clang-format off */
 FIXTURE_VARIANT_ADD(protocol, tcp_sandbox_with_ipv6_tcp1) {
 	/* clang-format on */
 	.sandbox = TCP_SANDBOX,
@@ -440,6 +451,17 @@ FIXTURE_VARIANT_ADD(protocol, tcp_sandbox_with_ipv6_tcp2) {
 		.domain = AF_INET6,
 		.type = SOCK_STREAM,
 		.protocol = IPPROTO_TCP,
+	},
+};
+
+/* clang-format off */
+FIXTURE_VARIANT_ADD(protocol, tcp_sandbox_with_ipv6_mptcp) {
+	/* clang-format on */
+	.sandbox = TCP_SANDBOX,
+	.prot = {
+		.domain = AF_INET6,
+		.type = SOCK_STREAM,
+		.protocol = IPPROTO_MPTCP,
 	},
 };
 
@@ -464,34 +486,12 @@ FIXTURE_VARIANT_ADD(protocol, tcp_sandbox_with_ipv6_udp) {
 };
 
 /* clang-format off */
-FIXTURE_VARIANT_ADD(protocol, tcp_sandbox_with_ipv4_mptcp) {
-	/* clang-format on */
-	.sandbox = TCP_SANDBOX,
-	.prot = {
-		.domain = AF_INET,
-		.type = SOCK_STREAM,
-		.protocol = IPPROTO_MPTCP,
-	},
-};
-
-/* clang-format off */
 FIXTURE_VARIANT_ADD(protocol, tcp_sandbox_with_unix_stream) {
 	/* clang-format on */
 	.sandbox = TCP_SANDBOX,
 	.prot = {
 		.domain = AF_UNIX,
 		.type = SOCK_STREAM,
-	},
-};
-
-/* clang-format off */
-FIXTURE_VARIANT_ADD(protocol, tcp_sandbox_with_ipv6_mptcp) {
-	/* clang-format on */
-	.sandbox = TCP_SANDBOX,
-	.prot = {
-		.domain = AF_INET6,
-		.type = SOCK_STREAM,
-		.protocol = IPPROTO_MPTCP,
 	},
 };
 

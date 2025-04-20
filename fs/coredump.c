@@ -996,7 +996,7 @@ static int proc_dostring_coredump(const struct ctl_table *table, int write,
 static const unsigned int core_file_note_size_min = CORE_FILE_NOTE_SIZE_DEFAULT;
 static const unsigned int core_file_note_size_max = CORE_FILE_NOTE_SIZE_MAX;
 
-static struct ctl_table coredump_sysctls[] = {
+static const struct ctl_table coredump_sysctls[] = {
 	{
 		.procname	= "core_uses_pid",
 		.data		= &core_uses_pid,
@@ -1016,7 +1016,9 @@ static struct ctl_table coredump_sysctls[] = {
 		.data		= &core_pipe_limit,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
-		.proc_handler	= proc_dointvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_INT_MAX,
 	},
 	{
 		.procname       = "core_file_note_size_limit",

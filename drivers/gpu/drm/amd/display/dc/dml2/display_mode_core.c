@@ -1736,7 +1736,7 @@ static void CalculateBytePerPixelAndBlockSizes(
 #endif
 } // CalculateBytePerPixelAndBlockSizes
 
-static dml_float_t CalculateTWait(
+static noinline_for_stack dml_float_t CalculateTWait(
 		dml_uint_t PrefetchMode,
 		enum dml_use_mall_for_pstate_change_mode UseMALLForPStateChange,
 		dml_bool_t SynchronizeDRRDisplaysForUCLKPStateChangeFinal,
@@ -4458,7 +4458,7 @@ static void CalculateSwathWidth(
 	}
 } // CalculateSwathWidth
 
-static  dml_float_t CalculateExtraLatency(
+static noinline_for_stack dml_float_t CalculateExtraLatency(
 		dml_uint_t RoundTripPingLatencyCycles,
 		dml_uint_t ReorderingBytes,
 		dml_float_t DCFCLK,
@@ -5915,7 +5915,7 @@ static dml_uint_t DSCDelayRequirement(
 	return DSCDelayRequirement_val;
 }
 
-static dml_bool_t CalculateVActiveBandwithSupport(dml_uint_t NumberOfActiveSurfaces,
+static noinline_for_stack dml_bool_t CalculateVActiveBandwithSupport(dml_uint_t NumberOfActiveSurfaces,
 										dml_float_t ReturnBW,
 										dml_bool_t NotUrgentLatencyHiding[],
 										dml_float_t ReadBandwidthLuma[],
@@ -6019,7 +6019,7 @@ static void CalculatePrefetchBandwithSupport(
 #endif
 }
 
-static dml_float_t CalculateBandwidthAvailableForImmediateFlip(
+static noinline_for_stack dml_float_t CalculateBandwidthAvailableForImmediateFlip(
 													dml_uint_t NumberOfActiveSurfaces,
 													dml_float_t ReturnBW,
 													dml_float_t ReadBandwidthLuma[],
@@ -6213,7 +6213,7 @@ static dml_uint_t CalculateMaxVStartup(
 	return max_vstartup_lines;
 }
 
-static void set_calculate_prefetch_schedule_params(struct display_mode_lib_st *mode_lib,
+static noinline_for_stack void set_calculate_prefetch_schedule_params(struct display_mode_lib_st *mode_lib,
 						   struct CalculatePrefetchSchedule_params_st *CalculatePrefetchSchedule_params,
 						   dml_uint_t j,
 						   dml_uint_t k)
@@ -6265,7 +6265,7 @@ static void set_calculate_prefetch_schedule_params(struct display_mode_lib_st *m
 				CalculatePrefetchSchedule_params->Tno_bw = &mode_lib->ms.Tno_bw[k];
 }
 
-static void dml_prefetch_check(struct display_mode_lib_st *mode_lib)
+static noinline_for_stack void dml_prefetch_check(struct display_mode_lib_st *mode_lib)
 {
 	struct dml_core_mode_support_locals_st *s = &mode_lib->scratch.dml_core_mode_support_locals;
 	struct CalculatePrefetchSchedule_params_st *CalculatePrefetchSchedule_params = &mode_lib->scratch.CalculatePrefetchSchedule_params;
@@ -8318,7 +8318,7 @@ void dml_core_mode_programming(struct display_mode_lib_st *mode_lib, const struc
 	if (clk_cfg->dcfclk_option != dml_use_override_freq)
 		locals->Dcfclk = mode_lib->ms.DCFCLK;
 	else
-		locals->Dcfclk = clk_cfg->dcfclk_freq_mhz;
+		locals->Dcfclk = clk_cfg->dcfclk_mhz;
 
 #ifdef __DML_VBA_DEBUG__
 	dml_print_dml_policy(&mode_lib->ms.policy);
@@ -8371,7 +8371,7 @@ void dml_core_mode_programming(struct display_mode_lib_st *mode_lib, const struc
 	if (clk_cfg->dispclk_option == dml_use_required_freq)
 		locals->Dispclk = locals->Dispclk_calculated;
 	else if (clk_cfg->dispclk_option == dml_use_override_freq)
-		locals->Dispclk = clk_cfg->dispclk_freq_mhz;
+		locals->Dispclk = clk_cfg->dispclk_mhz;
 	else
 		locals->Dispclk = mode_lib->ms.state.dispclk_mhz;
 #ifdef __DML_VBA_DEBUG__
@@ -8412,7 +8412,7 @@ void dml_core_mode_programming(struct display_mode_lib_st *mode_lib, const struc
 		if (clk_cfg->dppclk_option[k] == dml_use_required_freq)
 			locals->Dppclk[k] = locals->Dppclk_calculated[k];
 		else if (clk_cfg->dppclk_option[k] == dml_use_override_freq)
-			locals->Dppclk[k] = clk_cfg->dppclk_freq_mhz[k];
+			locals->Dppclk[k] = clk_cfg->dppclk_mhz[k];
 		else
 			locals->Dppclk[k] = mode_lib->ms.state.dppclk_mhz;
 #ifdef __DML_VBA_DEBUG__

@@ -401,6 +401,7 @@ void dcn35_update_clocks(struct clk_mgr *clk_mgr_base,
 		if (clk_mgr_base->clks.dtbclk_en && !new_clocks->dtbclk_en) {
 			if (clk_mgr->base.ctx->dc->config.allow_0_dtb_clk)
 				dcn35_smu_set_dtbclk(clk_mgr, false);
+
 			clk_mgr_base->clks.dtbclk_en = new_clocks->dtbclk_en;
 		}
 		/* check that we're not already in lower */
@@ -418,11 +419,17 @@ void dcn35_update_clocks(struct clk_mgr *clk_mgr_base,
 		}
 
 		if (!clk_mgr_base->clks.dtbclk_en && new_clocks->dtbclk_en) {
-			dcn35_smu_set_dtbclk(clk_mgr, true);
-			clk_mgr_base->clks.dtbclk_en = new_clocks->dtbclk_en;
+			int actual_dtbclk = 0;
 
 			dcn35_update_clocks_update_dtb_dto(clk_mgr, context, new_clocks->ref_dtbclk_khz);
-			clk_mgr_base->clks.ref_dtbclk_khz = new_clocks->ref_dtbclk_khz;
+			dcn35_smu_set_dtbclk(clk_mgr, true);
+
+			actual_dtbclk = REG_READ(CLK1_CLK4_CURRENT_CNT);
+
+			if (actual_dtbclk) {
+				clk_mgr_base->clks.ref_dtbclk_khz = new_clocks->ref_dtbclk_khz;
+				clk_mgr_base->clks.dtbclk_en = new_clocks->dtbclk_en;
+			}
 		}
 
 		/* check that we're not already in D0 */
@@ -584,12 +591,10 @@ static bool dcn35_is_spll_ssc_enabled(struct clk_mgr *clk_mgr_base)
 
 static void init_clk_states(struct clk_mgr *clk_mgr)
 {
-	struct clk_mgr_internal *clk_mgr_int = TO_CLK_MGR_INTERNAL(clk_mgr);
 	uint32_t ref_dtbclk = clk_mgr->clks.ref_dtbclk_khz;
+
 	memset(&(clk_mgr->clks), 0, sizeof(struct dc_clocks));
 
-	if (clk_mgr_int->smu_ver >= SMU_VER_THRESHOLD)
-		clk_mgr->clks.dtbclk_en = true; // request DTBCLK disable on first commit
 	clk_mgr->clks.ref_dtbclk_khz = ref_dtbclk;	// restore ref_dtbclk
 	clk_mgr->clks.p_state_change_support = true;
 	clk_mgr->clks.prev_p_state_change_support = true;
@@ -600,6 +605,7 @@ static void init_clk_states(struct clk_mgr *clk_mgr)
 void dcn35_init_clocks(struct clk_mgr *clk_mgr)
 {
 	struct clk_mgr_internal *clk_mgr_int = TO_CLK_MGR_INTERNAL(clk_mgr);
+
 	init_clk_states(clk_mgr);
 
 	// to adjust dp_dto reference clock if ssc is enable otherwise to apply dprefclk
@@ -694,6 +700,7 @@ static struct wm_table lpddr5_wm_table = {
 };
 
 static DpmClocks_t_dcn35 dummy_clocks;
+static DpmClocks_t_dcn351 dummy_clocks_dcn351;
 
 static struct dcn35_watermarks dummy_wms = { 0 };
 
@@ -817,6 +824,22 @@ static void dcn35_get_dpm_table_from_smu(struct clk_mgr_internal *clk_mgr,
 	dcn35_smu_transfer_dpm_table_smu_2_dram(clk_mgr);
 }
 
+static void dcn351_get_dpm_table_from_smu(struct clk_mgr_internal *clk_mgr,
+		struct dcn351_smu_dpm_clks *smu_dpm_clks)
+{
+	DpmClocks_t_dcn351 *table = smu_dpm_clks->dpm_clks;
+
+	if (!clk_mgr->smu_ver)
+		return;
+	if (!table || smu_dpm_clks->mc_address.quad_part == 0)
+		return;
+	memset(table, 0, sizeof(*table));
+	dcn35_smu_set_dram_addr_high(clk_mgr,
+			smu_dpm_clks->mc_address.high_part);
+	dcn35_smu_set_dram_addr_low(clk_mgr,
+			smu_dpm_clks->mc_address.low_part);
+	dcn35_smu_transfer_dpm_table_smu_2_dram(clk_mgr);
+}
 static uint32_t find_max_clk_value(const uint32_t clocks[], uint32_t num_clocks)
 {
 	uint32_t max = 0;
@@ -1155,6 +1178,57 @@ struct clk_mgr_funcs dcn35_fpga_funcs = {
 	.get_dtb_ref_clk_frequency = dcn31_get_dtb_ref_freq_khz,
 };
 
+static void translate_to_DpmClocks_t_dcn35(struct dcn351_smu_dpm_clks *smu_dpm_clks_a,
+		struct dcn35_smu_dpm_clks *smu_dpm_clks_b)
+{
+	/*translate two structures and only take need clock tables*/
+	uint8_t i;
+
+	if (smu_dpm_clks_a == NULL || smu_dpm_clks_b == NULL ||
+		smu_dpm_clks_a->dpm_clks == NULL || smu_dpm_clks_b->dpm_clks == NULL)
+		return;
+
+	for (i = 0; i < NUM_DCFCLK_DPM_LEVELS; i++)
+		smu_dpm_clks_b->dpm_clks->DcfClocks[i] = smu_dpm_clks_a->dpm_clks->DcfClocks[i];
+
+	for (i = 0; i < NUM_DISPCLK_DPM_LEVELS; i++)
+		smu_dpm_clks_b->dpm_clks->DispClocks[i] = smu_dpm_clks_a->dpm_clks->DispClocks[i];
+
+	for (i = 0; i < NUM_DPPCLK_DPM_LEVELS; i++)
+		smu_dpm_clks_b->dpm_clks->DppClocks[i] = smu_dpm_clks_a->dpm_clks->DppClocks[i];
+
+	for (i = 0; i < NUM_FCLK_DPM_LEVELS; i++) {
+		smu_dpm_clks_b->dpm_clks->FclkClocks_Freq[i] = smu_dpm_clks_a->dpm_clks->FclkClocks_Freq[i];
+		smu_dpm_clks_b->dpm_clks->FclkClocks_Voltage[i] = smu_dpm_clks_a->dpm_clks->FclkClocks_Voltage[i];
+	}
+	for (i = 0; i < NUM_MEM_PSTATE_LEVELS; i++) {
+		smu_dpm_clks_b->dpm_clks->MemPstateTable[i].MemClk =
+			smu_dpm_clks_a->dpm_clks->MemPstateTable[i].MemClk;
+		smu_dpm_clks_b->dpm_clks->MemPstateTable[i].UClk =
+			smu_dpm_clks_a->dpm_clks->MemPstateTable[i].UClk;
+		smu_dpm_clks_b->dpm_clks->MemPstateTable[i].Voltage =
+			smu_dpm_clks_a->dpm_clks->MemPstateTable[i].Voltage;
+		smu_dpm_clks_b->dpm_clks->MemPstateTable[i].WckRatio =
+			smu_dpm_clks_a->dpm_clks->MemPstateTable[i].WckRatio;
+	}
+	smu_dpm_clks_b->dpm_clks->MaxGfxClk = smu_dpm_clks_a->dpm_clks->MaxGfxClk;
+	smu_dpm_clks_b->dpm_clks->MinGfxClk = smu_dpm_clks_a->dpm_clks->MinGfxClk;
+	smu_dpm_clks_b->dpm_clks->NumDcfClkLevelsEnabled =
+		smu_dpm_clks_a->dpm_clks->NumDcfClkLevelsEnabled;
+	smu_dpm_clks_b->dpm_clks->NumDispClkLevelsEnabled =
+		smu_dpm_clks_a->dpm_clks->NumDispClkLevelsEnabled;
+	smu_dpm_clks_b->dpm_clks->NumFclkLevelsEnabled =
+		smu_dpm_clks_a->dpm_clks->NumFclkLevelsEnabled;
+	smu_dpm_clks_b->dpm_clks->NumMemPstatesEnabled =
+		smu_dpm_clks_a->dpm_clks->NumMemPstatesEnabled;
+	smu_dpm_clks_b->dpm_clks->NumSocClkLevelsEnabled =
+		smu_dpm_clks_a->dpm_clks->NumSocClkLevelsEnabled;
+
+	for (i = 0; i < NUM_SOC_VOLTAGE_LEVELS; i++) {
+		smu_dpm_clks_b->dpm_clks->SocClocks[i] = smu_dpm_clks_a->dpm_clks->SocClocks[i];
+		smu_dpm_clks_b->dpm_clks->SocVoltage[i] = smu_dpm_clks_a->dpm_clks->SocVoltage[i];
+	}
+}
 void dcn35_clk_mgr_construct(
 		struct dc_context *ctx,
 		struct clk_mgr_dcn35 *clk_mgr,
@@ -1162,6 +1236,7 @@ void dcn35_clk_mgr_construct(
 		struct dccg *dccg)
 {
 	struct dcn35_smu_dpm_clks smu_dpm_clks = { 0 };
+	struct dcn351_smu_dpm_clks smu_dpm_clks_dcn351 = { 0 };
 	clk_mgr->base.base.ctx = ctx;
 	clk_mgr->base.base.funcs = &dcn35_funcs;
 
@@ -1198,13 +1273,23 @@ void dcn35_clk_mgr_construct(
 				DC_MEM_ALLOC_TYPE_GART,
 				sizeof(DpmClocks_t_dcn35),
 				&smu_dpm_clks.mc_address.quad_part);
-
 	if (smu_dpm_clks.dpm_clks == NULL) {
 		smu_dpm_clks.dpm_clks = &dummy_clocks;
 		smu_dpm_clks.mc_address.quad_part = 0;
 	}
-
 	ASSERT(smu_dpm_clks.dpm_clks);
+
+	if (ctx->dce_version == DCN_VERSION_3_51) {
+		smu_dpm_clks_dcn351.dpm_clks = (DpmClocks_t_dcn351 *)dm_helpers_allocate_gpu_mem(
+				clk_mgr->base.base.ctx,
+				DC_MEM_ALLOC_TYPE_GART,
+				sizeof(DpmClocks_t_dcn351),
+				&smu_dpm_clks_dcn351.mc_address.quad_part);
+		if (smu_dpm_clks_dcn351.dpm_clks == NULL) {
+			smu_dpm_clks_dcn351.dpm_clks = &dummy_clocks_dcn351;
+			smu_dpm_clks_dcn351.mc_address.quad_part = 0;
+		}
+	}
 
 	clk_mgr->base.smu_ver = dcn35_smu_get_smu_version(&clk_mgr->base);
 
@@ -1234,7 +1319,11 @@ void dcn35_clk_mgr_construct(
 
 	if (clk_mgr->base.base.ctx->dc->debug.pstate_enabled) {
 		int i;
-		dcn35_get_dpm_table_from_smu(&clk_mgr->base, &smu_dpm_clks);
+		if (ctx->dce_version == DCN_VERSION_3_51) {
+			dcn351_get_dpm_table_from_smu(&clk_mgr->base, &smu_dpm_clks_dcn351);
+			translate_to_DpmClocks_t_dcn35(&smu_dpm_clks_dcn351, &smu_dpm_clks);
+		} else
+			dcn35_get_dpm_table_from_smu(&clk_mgr->base, &smu_dpm_clks);
 		DC_LOG_SMU("NumDcfClkLevelsEnabled: %d\n"
 				   "NumDispClkLevelsEnabled: %d\n"
 				   "NumSocClkLevelsEnabled: %d\n"
@@ -1294,6 +1383,10 @@ void dcn35_clk_mgr_construct(
 	if (smu_dpm_clks.dpm_clks && smu_dpm_clks.mc_address.quad_part != 0)
 		dm_helpers_free_gpu_mem(clk_mgr->base.base.ctx, DC_MEM_ALLOC_TYPE_GART,
 				smu_dpm_clks.dpm_clks);
+
+	if (smu_dpm_clks_dcn351.dpm_clks && smu_dpm_clks_dcn351.mc_address.quad_part != 0)
+		dm_helpers_free_gpu_mem(clk_mgr->base.base.ctx, DC_MEM_ALLOC_TYPE_GART,
+				smu_dpm_clks_dcn351.dpm_clks);
 
 	if (ctx->dc->config.disable_ips != DMUB_IPS_DISABLE_ALL) {
 		bool ips_support = false;

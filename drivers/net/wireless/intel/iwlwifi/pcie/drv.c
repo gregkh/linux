@@ -1302,6 +1302,9 @@ static int map_crf_id(struct iwl_trans *iwl_trans)
 	case REG_CRF_ID_TYPE_WHP:
 		iwl_trans->hw_rf_id = (IWL_CFG_RF_TYPE_WH << 12);
 		break;
+	case REG_CRF_ID_TYPE_PE:
+		iwl_trans->hw_rf_id = (IWL_CFG_RF_TYPE_PE << 12);
+		break;
 	default:
 		ret = -EIO;
 		IWL_ERR(iwl_trans,
@@ -1407,6 +1410,47 @@ iwl_pci_find_dev_info(u16 device, u16 subsystem_device,
 }
 EXPORT_SYMBOL_IF_IWLWIFI_KUNIT(iwl_pci_find_dev_info);
 
+static void iwl_pcie_recheck_me_status(struct work_struct *wk)
+{
+	struct iwl_trans *trans = container_of(wk, typeof(*trans),
+					       me_recheck_wk.work);
+	u32 val;
+
+	val = iwl_read32(trans, CSR_HW_IF_CONFIG_REG);
+	trans->me_present = !!(val & CSR_HW_IF_CONFIG_REG_IAMT_UP);
+}
+
+static void iwl_pcie_check_me_status(struct iwl_trans *trans)
+{
+	u32 val;
+
+	trans->me_present = -1;
+
+	INIT_DELAYED_WORK(&trans->me_recheck_wk,
+			  iwl_pcie_recheck_me_status);
+
+	/* we don't have a good way of determining this until BZ */
+	if (trans->trans_cfg->device_family < IWL_DEVICE_FAMILY_BZ)
+		return;
+
+	val = iwl_read_prph(trans, CNVI_SCU_REG_FOR_ECO_1);
+	if (val & CNVI_SCU_REG_FOR_ECO_1_WIAMT_KNOWN) {
+		trans->me_present =
+			!!(val & CNVI_SCU_REG_FOR_ECO_1_WIAMT_PRESENT);
+		return;
+	}
+
+	val = iwl_read32(trans, CSR_HW_IF_CONFIG_REG);
+	if (val & (CSR_HW_IF_CONFIG_REG_ME_OWN |
+		   CSR_HW_IF_CONFIG_REG_IAMT_UP)) {
+		trans->me_present = 1;
+		return;
+	}
+
+	/* recheck again later, ME might still be initializing */
+	schedule_delayed_work(&trans->me_recheck_wk, HZ);
+}
+
 static int iwl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	const struct iwl_cfg_trans_params *trans;
@@ -1435,6 +1479,9 @@ static int iwl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return PTR_ERR(iwl_trans);
 
 	trans_pcie = IWL_TRANS_GET_PCIE_TRANS(iwl_trans);
+
+	iwl_trans_pcie_check_product_reset_status(pdev);
+	iwl_trans_pcie_check_product_reset_mode(pdev);
 
 	/*
 	 * Let's try to grab NIC access early here. Sometimes, NICs may
@@ -1582,6 +1629,8 @@ static int iwl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	pci_set_drvdata(pdev, iwl_trans);
 
+	iwl_pcie_check_me_status(iwl_trans);
+
 	/* try to get ownership so that we'll know if we don't own it */
 	iwl_pcie_prepare_card_hw(iwl_trans);
 
@@ -1608,6 +1657,8 @@ static void iwl_pci_remove(struct pci_dev *pdev)
 
 	if (!trans)
 		return;
+
+	cancel_delayed_work_sync(&trans->me_recheck_wk);
 
 	iwl_drv_stop(trans->drv);
 

@@ -45,6 +45,8 @@ static void log_quirks(struct device *dev)
 		dev_dbg(dev, "quirk SOC_SDW_CODEC_SPKR enabled\n");
 	if (sof_sdw_quirk & SOC_SDW_SIDECAR_AMPS)
 		dev_dbg(dev, "quirk SOC_SDW_SIDECAR_AMPS enabled\n");
+	if (sof_sdw_quirk & SOC_SDW_CODEC_MIC)
+		dev_dbg(dev, "quirk SOC_SDW_CODEC_MIC enabled\n");
 }
 
 static int sof_sdw_quirk_cb(const struct dmi_system_id *id)
@@ -801,7 +803,9 @@ static int create_sdw_dailink(struct snd_soc_card *card,
 			      int *be_id, struct snd_soc_codec_conf **codec_conf)
 {
 	struct device *dev = card->dev;
+	struct snd_soc_acpi_mach *mach = dev_get_platdata(card->dev);
 	struct asoc_sdw_mc_private *ctx = snd_soc_card_get_drvdata(card);
+	struct snd_soc_acpi_mach_params *mach_params = &mach->mach_params;
 	struct intel_mc_ctx *intel_ctx = (struct intel_mc_ctx *)ctx->private;
 	struct asoc_sdw_endpoint *sof_end;
 	int stream;
@@ -898,6 +902,11 @@ static int create_sdw_dailink(struct snd_soc_card *card,
 
 			codecs[j].name = sof_end->codec_name;
 			codecs[j].dai_name = sof_end->dai_info->dai_name;
+			if (sof_end->dai_info->dai_type == SOC_SDW_DAI_TYPE_MIC &&
+			    mach_params->dmic_num > 0) {
+				dev_warn(dev,
+					 "Both SDW DMIC and PCH DMIC are present, if incorrect, please set kernel params snd_sof_intel_hda_generic dmic_num=0 to disable PCH DMIC\n");
+			}
 			j++;
 		}
 
@@ -1174,7 +1183,7 @@ static int sof_card_dai_links_create(struct snd_soc_card *card)
 
 	/* enable dmic01 & dmic16k */
 	if (ctx->ignore_internal_dmic) {
-		dev_warn(dev, "Ignoring internal DMIC\n");
+		dev_dbg(dev, "SoundWire DMIC is used, ignoring internal DMIC\n");
 		mach_params->dmic_num = 0;
 	} else if (mach_params->dmic_num) {
 		dmic_num = 2;
@@ -1190,7 +1199,7 @@ static int sof_card_dai_links_create(struct snd_soc_card *card)
 	if (sof_sdw_quirk & SOF_SSP_BT_OFFLOAD_PRESENT)
 		bt_num = 1;
 
-	dev_dbg(dev, "sdw %d, ssp %d, dmic %d, hdmi %d, bt: %d\n",
+	dev_dbg(dev, "DAI link numbers: sdw %d, ssp %d, dmic %d, hdmi %d, bt: %d\n",
 		sdw_be_num, ssp_num, dmic_num,
 		intel_ctx->hdmi.idisp_codec ? hdmi_num : 0, bt_num);
 
