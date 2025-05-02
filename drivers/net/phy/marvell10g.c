@@ -172,6 +172,8 @@ struct mv3310_chip {
 #endif
 };
 
+struct mv3310_ptp_priv;
+
 struct mv3310_priv {
 	DECLARE_BITMAP(supported_interfaces, PHY_INTERFACE_MODE_MAX);
 	const struct mv3310_mactype *mactype;
@@ -182,7 +184,29 @@ struct mv3310_priv {
 
 	struct device *hwmon_dev;
 	char *hwmon_name;
+
+	struct mv3310_ptp_priv *ptp_priv;
 };
+
+#ifdef CONFIG_MARVELL_10G_PHY_PTP
+struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
+int mv3310_ptp_power_up(struct phy_device *phydev);
+int mv3310_ptp_power_down(struct phy_device *phydev);
+#else
+static inline struct mv3310_ptp_priv *
+mv3310_ptp_probe(struct phy_device *phydev)
+{
+	return NULL;
+}
+static inline int mv3310_ptp_power_up(struct phy_device *phydev)
+{
+	return 0;
+}
+static inline int mv3310_ptp_power_down(struct phy_device *phydev)
+{
+	return 0;
+}
+#endif
 
 static const struct mv3310_chip *to_mv3310_chip(struct phy_device *phydev)
 {
@@ -334,6 +358,7 @@ static int mv3310_hwmon_probe(struct phy_device *phydev)
 
 static int mv3310_power_down(struct phy_device *phydev)
 {
+	mv3310_ptp_power_down(phydev);
 	return phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				MV_V2_PORT_CTRL_PWRDOWN);
 }
@@ -346,6 +371,10 @@ static int mv3310_power_up(struct phy_device *phydev)
 	int ret;
 
 	ret = mv3310_check_firmware(phydev);
+	if (ret < 0)
+		return ret;
+
+	ret = mv3310_ptp_power_up(phydev);
 	if (ret < 0)
 		return ret;
 
@@ -665,6 +694,7 @@ static int mv3310_probe(struct phy_device *phydev)
 	if (!priv)
 		return -ENOMEM;
 
+	priv->ptp_priv = mv3310_ptp_probe(phydev);
 	dev_set_drvdata(&phydev->mdio.dev, priv);
 
 	/* Powering down the port when not in use saves about 600mW */

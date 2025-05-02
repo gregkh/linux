@@ -245,6 +245,12 @@ config MARVELL_10G_PHY
 	help
 	  Support for the Marvell Alaska MV88X3310 and compatible PHYs.
 
+config MARVELL_10G_PHY_PTP
+	bool "Marvell Alaska 10Gbit PHYs PTP support"
+	depends on NETWORK_PHY_TIMESTAMPING
+	depends on (PTP_1588_CLOCK = y && MARVELL_10G_PHY = y) || \
+		   (PTP_1588_CLOCK && MARVELL_10G_PHY = m)
+
 config MARVELL_88Q2XXX_PHY
 	tristate "Marvell 88Q2XXX PHY"
 	depends on HWMON || HWMON=n
