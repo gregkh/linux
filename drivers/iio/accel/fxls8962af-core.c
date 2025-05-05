@@ -497,6 +497,7 @@ static int fxls8962af_set_watermark(struct iio_dev *indio_dev, unsigned val)
 			      BIT(IIO_CHAN_INFO_OFFSET),\
 	.scan_index = -1, \
 	.scan_type = { \
+		.sign = 's', \
 		.realbits = 8, \
 		.storagebits = 8, \
 	}, \
