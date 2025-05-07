@@ -21,6 +21,10 @@ enum {
 	MV_PMA_XG_EXT_STATUS_PTP_UNSUPP = BIT(12),
 
 	/* Vendor2 MMD registers */
+	MV_V2_SLC_CFG_GEN		= 0x8000,
+	MV_V2_SLC_CFG_GEN_DEF_VAL	= 0x7e50000f,
+	MV_V2_SLC_CFG_GEN_WMC_ANEG_EN	= BIT(23),
+	MV_V2_SLC_CFG_GEN_SMC_ANEG_EN	= BIT(24),
 	MV_V2_MODE_CFG 			= 0xf000,
 	MV_V2_MODE_CFG_M_UNIT_PWRUP 	= BIT(12),
 
@@ -140,12 +144,29 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 
 int mv3310_ptp_power_up(struct phy_device *phydev)
 {
+	int ret;
+
 	if (!mv3310_is_ptp_supported(phydev))
 		return 0;
 
 	/* Enable M unit used for PTP */
-	return phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
-				MV_V2_MODE_CFG_M_UNIT_PWRUP);
+	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
+			       MV_V2_MODE_CFG_M_UNIT_PWRUP);
+	if (ret < 0)
+		return ret;
+
+	/* PHY Errata section 4.4: after the M unit is powered up
+	   auto-negotiation is disabled by default. Enable:
+	   * WMC - auto negotiation for wire mac
+	   * SMC - auto negotiation for system mac */
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_SLC_CFG_GEN,
+				   MV_V2_SLC_CFG_GEN_DEF_VAL |
+					   MV_V2_SLC_CFG_GEN_WMC_ANEG_EN |
+					   MV_V2_SLC_CFG_GEN_SMC_ANEG_EN);
+	if (ret < 0)
+		return ret;
+
+	return 0;
 }
 
 int mv3310_ptp_power_down(struct phy_device *phydev)
