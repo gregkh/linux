@@ -337,6 +337,17 @@ static unsigned int sff_gpio_get_state(struct sfp *sfp)
 	return sfp_gpio_get_state(sfp) | SFP_F_PRESENT;
 }
 
+/**
+ * simulate_pull_up - simulate a pull-up on a GPIO
+ * @desc: GPIO descriptor
+ * 
+ * As a result, the SFP module may not be able to detect the change between 
+ * TX_DISABLE=1 to TX_DISABLE=0, and the other side will be see "link down".
+ */
+static void simulate_pull_up(struct gpio_desc *desc) {
+	gpiod_direction_output(desc, 1);
+}
+
 static void sfp_gpio_set_state(struct sfp *sfp, unsigned int state)
 {
 	if (state & SFP_F_PRESENT) {
@@ -350,7 +361,7 @@ static void sfp_gpio_set_state(struct sfp *sfp, unsigned int state)
 	} else {
 		/* Otherwise, let them float to the pull-ups */
 		if (sfp->gpio[GPIO_TX_DISABLE])
-			gpiod_direction_input(sfp->gpio[GPIO_TX_DISABLE]);
+			simulate_pull_up(sfp->gpio[GPIO_TX_DISABLE]);
 		if (state & SFP_F_RATE_SELECT)
 			gpiod_direction_input(sfp->gpio[GPIO_RATE_SELECT]);
 	}
