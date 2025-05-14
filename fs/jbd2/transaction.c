@@ -1419,7 +1419,6 @@ int jbd2_journal_dirty_metadata(handle_t *handle, struct buffer_head *bh)
 		goto out;
 	}
 
-	journal = transaction->t_journal;
 	jbd_lock_bh_state(bh);
 
 	if (is_handle_aborted(handle)) {
@@ -1433,6 +1432,8 @@ int jbd2_journal_dirty_metadata(handle_t *handle, struct buffer_head *bh)
 		ret = -EROFS;
 		goto out_unlock_bh;
 	}
+
+	journal = transaction->t_journal;
 
 	if (jh->b_modified == 0) {
 		/*
