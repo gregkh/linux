@@ -2226,6 +2226,7 @@ ice_ptp_get_syncdevicetime(ktime_t *device,
 			hh_ts = ((u64)hh_ts_hi << 32) | hh_ts_lo;
 			system->cycles = hh_ts;
 			system->cs_id = CSID_X86_ART;
+			system->use_nsecs = true;
 			/* Read Device source clock time */
 			hh_ts_lo = rd32(hw, GLTSYN_HHTIME_L(tmr_idx));
 			hh_ts_hi = rd32(hw, GLTSYN_HHTIME_H(tmr_idx));
