@@ -18,6 +18,7 @@
 #include <linux/net_tstamp.h>
 
 #define MV_EXTTS_PERIOD_MS 95
+#define PAM_ADDR(base, offset) ((base) + ((offset) * 2))
 
 enum {
 	/* PMA/PMD MMD Registers */
@@ -40,6 +41,11 @@ enum {
 	MV_V2_INDIRECT_READ_DATA_LOW 	= 0x97fe,
 	MV_V2_INDIRECT_READ_DATA_HIGH 	= 0x97ff,
 
+	MV_V2_PTP_PR_EG_PAM_BASE	= 0xa000,
+	MV_V2_PTP_PR_IG_PAM_BASE	= 0xa800,
+	MV_V2_PTP_UR_EG_PAM_BASE	= 0xa080,
+	MV_V2_PTP_UR_IG_PAM_BASE	= 0xa880,
+
 	MV_V2_PTP_CFG_GEN_EG		= 0xa100,
 	MV_V2_PTP_CFG_GEN_IG		= 0xa900,
 	MV_V2_PTP_CFG_GEN_H_ENABLE	= BIT(0),
@@ -56,6 +62,9 @@ enum {
 	MV_V2_PTP_PARSER_IG_UDATA	= 0xaa00,
 	MV_V2_PTP_UPDATER_IG_UDATA	= 0xac00,
 	MV_V2_PTP_UDATA_EMPTY		= 0x30000,
+
+	MV_V2_PTP_EG_STATS_BASE		= 0xa180,
+	MV_V2_PTP_IG_STATS_BASE		= 0xa980,
 
 	MV_V2_PTP_TOD_LOAD_NSEC_FRAC 	= 0xbc2a,
 	MV_V2_PTP_TOD_LOAD_NSEC 	= 0xbc2c,
@@ -86,11 +95,45 @@ struct mv3310_ptp_priv {
 	bool extts_enabled;
 };
 
+struct mv3310_ptp_counter {
+	u32 regnum;
+	const char string[ETH_GSTRING_LEN];
+};
+
+static const struct mv3310_ptp_counter mv3310_ptp_stats[] = {
+	{ MV_V2_PTP_EG_STATS_BASE + 0x0c, "tx_ptp_drop" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x0e, "tx_ptp_update_res" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x18, "tx_ptp_v2" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x28, "tx_ptp_v1" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x36, "tx_ptp_parser_err" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x1a, "tx_udp" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x1c, "tx_ipv4" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x1e, "tx_ipv6" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x2a, "tx_dot1q" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x2c, "tx_stag" },
+
+	{ MV_V2_PTP_IG_STATS_BASE + 0x0c, "rx_ptp_drop" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x10, "rx_ptp_ini_piggyback" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x18, "rx_ptp_v2" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x28, "rx_ptp_v1" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x36, "rx_ptp_parser_err" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x1a, "rx_udp" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x1c, "rx_ipv4" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x1e, "rx_ipv6" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x2a, "rx_dot1q" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x2c, "rx_stag" },
+};
+
 /* Public functions */
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
+/* Get statistics from the PHY using ethtool */
+int mv3310_ptp_get_sset_count(struct phy_device *dev);
+void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data);
+void mv3310_ptp_get_stats(struct phy_device *dev, struct ethtool_stats *stats,
+			  u64 *data, struct mv3310_ptp_priv *priv);
 
 /* Helper functions */
 static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
@@ -117,6 +160,7 @@ static int mv3310_verify(struct ptp_clock_info *ptp, unsigned int pin,
 static long mv3310_do_aux_work(struct ptp_clock_info *ptp);
 
 /* PTP functions */
+static int mv3310_ptp_set_pam(struct mv3310_ptp_priv *priv);
 static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
 				size_t udata_len, u32 baseaddr);
 static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv);
@@ -246,6 +290,12 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 	if (!mv3310_is_ptp_supported(phydev))
 		return 0;
 
+	ret = mv3310_ptp_set_pam(priv);
+	if (ret < 0) {
+		dev_err(&phydev->mdio.dev, "failed to set PTP PAM: %d\n", ret);
+		return ret;
+	}
+
 	ret = mv3310_ptp_check_ucode(priv);
 	if (ret < 0) {
 		dev_err(&phydev->mdio.dev, "failed to load PTP microcode: %d\n",
@@ -274,6 +324,48 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 unlock_out:
 	mutex_unlock(&priv->lock);
 	return ret;
+}
+
+int mv3310_ptp_get_sset_count(struct phy_device *dev)
+{
+	if (!mv3310_is_ptp_supported(dev))
+		return 0;
+
+	return ARRAY_SIZE(mv3310_ptp_stats);
+}
+
+void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(mv3310_ptp_stats); i++) {
+		strscpy(data, mv3310_ptp_stats[i].string, ETH_GSTRING_LEN);
+		data += ETH_GSTRING_LEN;
+	}
+}
+
+void mv3310_ptp_get_stats(struct phy_device *dev, struct ethtool_stats *stats,
+			  u64 *data, struct mv3310_ptp_priv *priv)
+{
+	int i, ret;
+	u32 regval;
+
+	mutex_lock(&priv->lock);
+
+	for (i = 0; i < ARRAY_SIZE(mv3310_ptp_stats); i++) {
+		ret = mv3310_read_ptp_reg(dev, mv3310_ptp_stats[i].regnum,
+					  &regval);
+		if (ret < 0) {
+			dev_err(&dev->mdio.dev,
+				"failed to read PTP stat %s: %d\n",
+				mv3310_ptp_stats[i].string, ret);
+			data[i] = 0;
+		} else {
+			data[i] = regval;
+		}
+	}
+
+	mutex_unlock(&priv->lock);
 }
 
 static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
@@ -611,6 +703,108 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 	return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
 }
 
+/* Configure Parser/Update PAM Range, except for settings pertaining to TST
+ * header, which is not used as this driver configures piggyback. Without this
+ * PAM configuration the parser will not identify, e.g., IPv4 packets. */
+static int mv3310_ptp_set_pam(struct mv3310_ptp_priv *priv)
+{
+	/* Mask used to obtain the IPv4 length in words */
+	const u32 IPV4_LEN_MASK = 0x0f00;
+	/* If Ethertype is <= this value, the packet's type is LLC/SNAP */
+	const u32 SAPLEN = 1500;
+	/* Bits [3:0] of Ethernet-over-MPLS tunnel label */
+	const u32 MPLS_LABEL_3_0 = 0x3000;
+	/* Mask used to obtain bits [3:0] of the MPLS label */
+	const u32 MPLS_LABEL_MASK = 0xf000;
+	/* Bits [23:8] of the LLC<DSAP-SSAP-CTRL> field of an LLC/SNAP packet */
+	const u32 DSAP_SSAP_23_8 = 0xaaaa;
+	/* Bits [7:0] of the LLC<DSAP-SSAP-CTRL> field of an LLC/SNAP packet */
+	const u32 DSAP_SSAP_7_0 = 0x0300;
+	/* Mask used to obtain bits [7:0] of the LLC<DSAP-SSAP-CTRL> field on an LLC/SNAP packet */
+	const u32 DSAP_SSAP_MASK = 0xff00;
+	/* Bits [15:0] of one-second constant */
+	const u32 ONESECOND_LO = 0xca00;
+	/* Bits [31:16] of one-second constant */
+	const u32 ONESECOND_HI = 0x3b9a;
+	/* EtherType for Y1731 */
+	const u32 UDP_Y131_ETYPE = 0x8902;
+	/* UDP Port # for PTP */
+	const u32 UDP_PORT_PTP = 320;
+	/* Values for hardware internal use */
+	const u32 ALL_ONE = 0xffff;
+	const u32 ONE = 0x0001;
+
+	int ret = 0;
+	struct phy_device *dev = priv->phydev;
+
+	mutex_lock(&priv->lock);
+
+	/* TX Parser */
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 16),
+				    IPV4_LEN_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 18),
+				    SAPLEN);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 20),
+				    MPLS_LABEL_3_0);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 21),
+				    MPLS_LABEL_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 22),
+				    DSAP_SSAP_23_8);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 23),
+				    DSAP_SSAP_7_0);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 24),
+				    DSAP_SSAP_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 25),
+				    ONESECOND_LO);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 26),
+				    ONESECOND_HI);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 30),
+				    UDP_Y131_ETYPE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 31),
+				    UDP_PORT_PTP);
+
+	/* RX Parser */
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 16),
+				    IPV4_LEN_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 18),
+				    SAPLEN);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 20),
+				    MPLS_LABEL_3_0);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 21),
+				    MPLS_LABEL_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 22),
+				    DSAP_SSAP_23_8);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 23),
+				    DSAP_SSAP_7_0);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 24),
+				    DSAP_SSAP_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 30),
+				    UDP_Y131_ETYPE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 31),
+				    UDP_PORT_PTP);
+
+	/* TX Update */
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_EG_PAM_BASE, 25),
+				    ALL_ONE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_EG_PAM_BASE, 26),
+				    ONE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_EG_PAM_BASE, 30),
+				    ONESECOND_LO);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_EG_PAM_BASE, 31),
+				    ONESECOND_HI);
+
+	/* RX Update */
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_IG_PAM_BASE, 25),
+				    ALL_ONE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_IG_PAM_BASE, 30),
+				    ONESECOND_LO);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_IG_PAM_BASE, 31),
+				    ONESECOND_HI);
+
+	mutex_unlock(&priv->lock);
+	return ret;
+}
+
 static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
 				size_t udata_len, u32 baseaddr)
 {
@@ -710,26 +904,32 @@ static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv)
 	return mv3310_ptp_load_ucode(priv);
 }
 
+/*
+ * Match PTPv2 event messages (Sync, Delay_Req, Pdelay_Req, Pdelay_Resp) in the
+ * Ingress/Egress LUT. Only these messages require an accurate timestamp.
+*/
 static int mv3310_ptp_set_lut(struct phy_device *phydev)
 {
 	int ret;
 
 	/* Set Ingress/Egress LUT Match Key.
-	 * TRANSPORTSPECIFIC   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
-	 *      0000              0000      0000 0010                    1
-	 *      PTPv2        Sync/Delay_Req     2                      PTPv2
-	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (value) = 000* (use 0 as *).
-	 * Ignore FLAGFIELD, DOMAINNUMBER. */
+	 *   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
+	 *      0000      0000 0010                    1
+	 *     Event          2                      PTPv2
+	 * Sync = 0000, Delay_Req = 0001, Pdelay_Req = 0010, Pdelay_Resp = 0011
+	 * => MESSAGETYPE (value) = 00** (use 0 as *).
+	 * Ignore TRANSPORTSPECIFIC, FLAGFIELD, DOMAINNUMBER. */
 	const u32 PTP_V2_LUT_MATCH_KEY = 0x00020001;
 
 	/* Set Ingress/Egress LUT Match Enable. This is mask. Set to 1 bit positions
 	 * from LUT Match Key above.
-	 * Check TRANSPORTSPECIFIC, MESSAGETYPE, VERSIONPTP and FLAGPTPV2:
-	 * TRANSPORTSPECIFIC   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
-	 *      1111               1110      0000 1111                    1
-	 *      PTPv2        Sync/Delay_Req      2                      PTPv2
-	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (mask) = 1110. */
-	const u32 PTP_V2_LUT_MATCH_ENABLE = 0xfe0f0001;
+	 * Check MESSAGETYPE, VERSIONPTP and FLAGPTPV2:
+	 *   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
+	 *       1100      0000 1111                    1
+	 *      Event          2                      PTPv2
+	 * Sync = 0000, Delay_Req = 0001, Pdelay_Req = 0010, Pdelay_Resp = 0011
+	 * => MESSAGETYPE (mask) = 1100. */
+	const u32 PTP_V2_LUT_MATCH_ENABLE = 0x0c0f0001;
 
 	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_EG_BASE,
 				       PTP_V2_LUT_MATCH_KEY);
