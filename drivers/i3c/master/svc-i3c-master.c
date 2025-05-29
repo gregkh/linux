@@ -511,6 +511,8 @@ static void svc_i3c_master_ibi_work(struct work_struct *work)
 			queue_work(master->base.wq, &master->hj_work);
 		break;
 	case SVC_I3C_MSTATUS_IBITYPE_MASTER_REQUEST:
+		svc_i3c_master_emit_stop(master);
+		break;
 	default:
 		break;
 	}
@@ -858,6 +860,8 @@ static int svc_i3c_master_do_daa_locked(struct svc_i3c_master *master,
 	unsigned int dev_nb = 0, last_addr = 0;
 	u32 reg;
 	int ret, i;
+
+	svc_i3c_master_flush_fifo(master);
 
 	while (true) {
 		/* SVC_I3C_MCTRL_REQUEST_PROC_DAA have two mode, ENTER DAA or PROCESS DAA.
