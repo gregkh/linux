@@ -121,6 +121,10 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_get_sset_count(struct phy_device *dev);
+void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data);
+void mv3310_ptp_get_stats(struct phy_device *dev, struct ethtool_stats *stats,
+			  u64 *data, struct mv3310_ptp_priv *priv);
 #else
 static inline struct mv3310_ptp_priv *
 mv3310_ptp_probe(struct phy_device *phydev)
@@ -139,7 +143,25 @@ static inline int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 {
 	return 0;
 }
+static inline int mv3310_ptp_get_sset_count(struct phy_device *dev)
+{
+	return 0;
+}
+static inline void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data)
+{
+}
+static inline void mv3310_ptp_get_stats(struct phy_device *dev,
+					struct ethtool_stats *stats, u64 *data,
+					struct mv3310_ptp_priv *priv)
+{
+}
 #endif
+
+/* Get statistics from the PHY using ethtool */
+static int mv3310_get_sset_count(struct phy_device *dev);
+static void mv3310_get_strings(struct phy_device *dev, u8 *data);
+static void mv3310_get_stats(struct phy_device *dev,
+			     struct ethtool_stats *stats, u64 *data);
 
 #ifdef CONFIG_HWMON
 static umode_t mv3310_hwmon_is_visible(const void *data,
@@ -963,6 +985,23 @@ static int mv3310_set_tunable(struct phy_device *phydev,
 	}
 }
 
+static int mv3310_get_sset_count(struct phy_device *dev)
+{
+	return mv3310_ptp_get_sset_count(dev);
+}
+
+static void mv3310_get_strings(struct phy_device *dev, u8 *data)
+{
+	mv3310_ptp_get_strings(dev, data);
+}
+
+static void mv3310_get_stats(struct phy_device *dev,
+			     struct ethtool_stats *stats, u64 *data)
+{
+	struct mv3310_priv *priv = dev_get_drvdata(&dev->mdio.dev);
+	mv3310_ptp_get_stats(dev, stats, data, priv->ptp_priv);
+}
+
 static struct phy_driver mv3310_drivers[] = {
 	{
 		.phy_id		= MARVELL_PHY_ID_88X3310,
@@ -980,6 +1019,9 @@ static struct phy_driver mv3310_drivers[] = {
 		.get_tunable	= mv3310_get_tunable,
 		.set_tunable	= mv3310_set_tunable,
 		.remove		= mv3310_remove,
+		.get_sset_count	= mv3310_get_sset_count,
+		.get_strings	= mv3310_get_strings,
+		.get_stats	= mv3310_get_stats,
 	},
 	{
 		.phy_id		= MARVELL_PHY_ID_88E2110,
@@ -996,6 +1038,9 @@ static struct phy_driver mv3310_drivers[] = {
 		.get_tunable	= mv3310_get_tunable,
 		.set_tunable	= mv3310_set_tunable,
 		.remove		= mv3310_remove,
+		.get_sset_count	= mv3310_get_sset_count,
+		.get_strings	= mv3310_get_strings,
+		.get_stats	= mv3310_get_stats,
 	},
 };
 
