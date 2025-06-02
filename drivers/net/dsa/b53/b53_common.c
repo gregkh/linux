@@ -2268,7 +2268,11 @@ EXPORT_SYMBOL(b53_eee_enable_set);
  */
 int b53_eee_init(struct dsa_switch *ds, int port, struct phy_device *phy)
 {
+	struct b53_device *dev = ds->priv;
 	int ret;
+
+	if (is5325(dev) || is5365(dev) || is63xx(dev))
+		return 0;
 
 	ret = phy_init_eee(phy, false);
 	if (ret)
@@ -2286,7 +2290,7 @@ int b53_get_mac_eee(struct dsa_switch *ds, int port, struct ethtool_eee *e)
 	struct ethtool_eee *p = &dev->ports[port].eee;
 	u16 reg;
 
-	if (is5325(dev) || is5365(dev))
+	if (is5325(dev) || is5365(dev) || is63xx(dev))
 		return -EOPNOTSUPP;
 
 	b53_read16(dev, B53_EEE_PAGE, B53_EEE_LPI_INDICATE, &reg);
@@ -2302,7 +2306,7 @@ int b53_set_mac_eee(struct dsa_switch *ds, int port, struct ethtool_eee *e)
 	struct b53_device *dev = ds->priv;
 	struct ethtool_eee *p = &dev->ports[port].eee;
 
-	if (is5325(dev) || is5365(dev))
+	if (is5325(dev) || is5365(dev) || is63xx(dev))
 		return -EOPNOTSUPP;
 
 	p->eee_enabled = e->eee_enabled;
