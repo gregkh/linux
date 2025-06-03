@@ -1778,15 +1778,19 @@ attribute-sets:
       -
         name: iflags
         type: u16
+        byte-order: big-endian
       -
         name: oflags
         type: u16
+        byte-order: big-endian
       -
         name: ikey
         type: u32
+        byte-order: big-endian
       -
         name: okey
         type: u32
+        byte-order: big-endian
       -
         name: local
         type: binary
@@ -1810,6 +1814,7 @@ attribute-sets:
       -
         name: flowinfo
         type: u32
+        byte-order: big-endian
       -
         name: flags
         type: u32
@@ -1822,9 +1827,11 @@ attribute-sets:
       -
         name: encap-sport
         type: u16
+        byte-order: big-endian
       -
         name: encap-dport
         type: u16
+        byte-order: big-endian
       -
         name: collect-metadata
         type: flag
@@ -1856,9 +1863,11 @@ attribute-sets:
       -
         name: ikey
         type: u32
+        byte-order: big-endian
       -
         name: okey
         type: u32
+        byte-order: big-endian
       -
         name: local
         type: binary
@@ -1908,6 +1917,7 @@ attribute-sets:
       -
         name: port
         type: u16
+        byte-order: big-endian
       -
         name: collect-metadata
         type: flag
@@ -1927,6 +1937,7 @@ attribute-sets:
       -
         name: label
         type: u32
+        byte-order: big-endian
       -
         name: ttl-inherit
         type: u8
@@ -1967,9 +1978,11 @@ attribute-sets:
       -
         name: flowinfo
         type: u32
+        byte-order: big-endian
       -
         name: flags
         type: u16
+        byte-order: big-endian
       -
         name: proto
         type: u8
@@ -1999,9 +2012,11 @@ attribute-sets:
       -
         name: encap-sport
         type: u16
+        byte-order: big-endian
       -
         name: encap-dport
         type: u16
+        byte-order: big-endian
       -
         name: collect-metadata
         type: flag
