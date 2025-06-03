@@ -632,6 +632,8 @@ void do_secure_storage_access(struct pt_regs *regs)
 		}
 		fallthrough;
 	case USER_FAULT:
+		if (faulthandler_disabled())
+			return do_fault_error(regs, VM_FAULT_BADMAP);
 		mm = current->mm;
 		mmap_read_lock(mm);
 		vma = find_vma(mm, addr);
