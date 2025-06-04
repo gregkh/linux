@@ -27,6 +27,7 @@ enum {
 
 	/* Vendor2 MMD registers */
 	MV_V2_SLC_CFG_GEN		= 0x8000,
+	MV_V2_SLC_CFG_GEN_EGR_SF_EN	= BIT(2),
 	MV_V2_SLC_CFG_GEN_WMC_ADD_CRC	= BIT(8),
 	MV_V2_SLC_CFG_GEN_SMC_ADD_CRC	= BIT(9),
 	MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC	= BIT(10),
@@ -144,6 +145,8 @@ static int mv3310_write_ptp_lut_reg(struct phy_device *phydev, u32 regnum,
 				    u32 regval);
 static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 				   u32 bits);
+static int mv3310_clear_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
+				     u32 bits);
 
 /* TOD functions */
 static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm);
@@ -268,6 +271,11 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 					      MV_V2_SLC_CFG_GEN_SMC_ADD_CRC |
 					      MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC |
 					      MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC);
+	/* Disable store-and-forward mode for egress drop FIFO. Without this
+	   setting there are time error spikes of up to 1200ns when performing
+	   1588TC accuracy measurements. */
+	ret |= mv3310_clear_ptp_reg_bits(phydev, MV_V2_SLC_CFG_GEN,
+					 MV_V2_SLC_CFG_GEN_EGR_SF_EN);
 unlock_out:
 	mutex_unlock(&priv->lock);
 	return ret;
@@ -399,8 +407,9 @@ static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
 	if (ret < 0)
 		return ret;
 	if (ret != regnum) {
-		pr_err("Indirect read address mismatch: %04x != %04x\n", ret,
-		       regnum);
+		dev_err(&phydev->mdio.dev,
+			"Indirect read address mismatch: %04x != %04x\n", ret,
+			regnum);
 		return -EINVAL;
 	}
 
@@ -470,6 +479,23 @@ static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 		return ret;
 
 	ret = mv3310_write_ptp_reg(phydev, regnum, regval | bits);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int mv3310_clear_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
+				     u32 bits)
+{
+	int ret;
+	u32 regval;
+
+	ret = mv3310_read_ptp_reg(phydev, regnum, &regval);
+	if (ret < 0)
+		return ret;
+
+	ret = mv3310_write_ptp_reg(phydev, regnum, regval & ~bits);
 	if (ret < 0)
 		return ret;
 
