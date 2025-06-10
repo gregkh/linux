@@ -1336,7 +1336,8 @@ static int hci_set_ext_adv_data_sync(struct hci_dev *hdev, u8 instance)
 		}
 	}
 
-	len = eir_create_adv_data(hdev, instance, pdu.data);
+	len = eir_create_adv_data(hdev, instance, pdu.data,
+				  sizeof(pdu.data));
 
 	pdu.cp.length = len;
 	pdu.cp.handle = instance;
@@ -1378,7 +1379,7 @@ static int hci_set_adv_data_sync(struct hci_dev *hdev, u8 instance)
 
 	memset(&cp, 0, sizeof(cp));
 
-	len = eir_create_adv_data(hdev, instance, cp.data);
+	len = eir_create_adv_data(hdev, instance, cp.data, sizeof(cp.data));
 
 	/* There's nothing to do if the data hasn't changed */
 	if (hdev->adv_data_len == len &&
