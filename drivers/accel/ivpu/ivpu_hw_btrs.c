@@ -606,6 +606,14 @@ u32 ivpu_hw_btrs_dpu_max_freq_get(struct ivpu_device *vdev)
 	return pll_ratio_to_dpu_freq(vdev, vdev->hw->pll.max_ratio);
 }
 
+u32 ivpu_hw_btrs_dpu_freq_get(struct ivpu_device *vdev)
+{
+	if (ivpu_hw_btrs_gen(vdev) == IVPU_HW_BTRS_MTL)
+		return pll_ratio_to_dpu_freq_mtl(pll_config_get_mtl(vdev));
+	else
+		return pll_ratio_to_dpu_freq_lnl(pll_config_get_lnl(vdev));
+}
+
 /* Handler for IRQs from Buttress core (irqB) */
 bool ivpu_hw_btrs_irq_handler_mtl(struct ivpu_device *vdev, int irq)
 {
@@ -872,4 +880,11 @@ void ivpu_hw_btrs_diagnose_failure(struct ivpu_device *vdev)
 		return diagnose_failure_mtl(vdev);
 	else
 		return diagnose_failure_lnl(vdev);
+}
+
+int ivpu_hw_btrs_platform_read(struct ivpu_device *vdev)
+{
+	u32 reg = REGB_RD32(VPU_HW_BTRS_LNL_VPU_STATUS);
+
+	return REG_GET_FLD(VPU_HW_BTRS_LNL_VPU_STATUS, PLATFORM, reg);
 }

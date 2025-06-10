@@ -190,13 +190,10 @@ bool arch_tlbbatch_should_defer(struct mm_struct *mm)
 }
 
 void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *batch,
-			       struct mm_struct *mm,
-			       unsigned long uaddr)
+		struct mm_struct *mm, unsigned long start, unsigned long end)
 {
-	unsigned long start = uaddr & PAGE_MASK;
-
 	cpumask_or(&batch->cpumask, &batch->cpumask, mm_cpumask(mm));
-	mmu_notifier_arch_invalidate_secondary_tlbs(mm, start, start + PAGE_SIZE);
+	mmu_notifier_arch_invalidate_secondary_tlbs(mm, start, end);
 }
 
 void arch_flush_tlb_batched_pending(struct mm_struct *mm)

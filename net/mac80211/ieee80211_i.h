@@ -5,7 +5,7 @@
  * Copyright 2006-2007	Jiri Benc <jbenc@suse.cz>
  * Copyright 2007-2010	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2015  Intel Mobile Communications GmbH
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  */
 
 #ifndef IEEE80211_I_H
@@ -444,8 +444,6 @@ struct ieee80211_mgd_assoc_data {
 	const u8 *supp_rates;
 	u8 supp_rates_len;
 
-	unsigned long userspace_selectors[BITS_TO_LONGS(128)];
-
 	unsigned long timeout;
 	int tries;
 
@@ -461,6 +459,8 @@ struct ieee80211_mgd_assoc_data {
 	bool spp_amsdu;
 
 	s8 assoc_link_id;
+
+	__le16 ext_mld_capa_ops;
 
 	u8 fils_nonces[2 * FILS_NONCE_LEN];
 	u8 fils_kek[FILS_MAX_KEK_LEN];
@@ -521,6 +521,8 @@ struct ieee80211_if_managed {
 
 	struct ieee80211_mgd_auth_data *auth_data;
 	struct ieee80211_mgd_assoc_data *assoc_data;
+
+	unsigned long userspace_selectors[BITS_TO_LONGS(128)];
 
 	bool powersave; /* powersave requested for this iface */
 	bool broken_ap; /* AP is broken -- turn off powersave */
@@ -613,6 +615,12 @@ struct ieee80211_if_managed {
 		u16 added_links;
 		u8 dialog_token;
 	} reconf;
+
+	/* Support for epcs */
+	struct {
+		bool enabled;
+		u8 dialog_token;
+	} epcs;
 };
 
 struct ieee80211_if_ibss {
@@ -2771,14 +2779,19 @@ void ieee80211_process_neg_ttlm_res(struct ieee80211_sub_if_data *sdata,
 				    struct ieee80211_mgmt *mgmt, size_t len);
 int ieee80211_req_neg_ttlm(struct ieee80211_sub_if_data *sdata,
 			   struct cfg80211_ttlm_params *params);
+void ieee80211_process_ttlm_teardown(struct ieee80211_sub_if_data *sdata);
 
 void ieee80211_check_wbrf_support(struct ieee80211_local *local);
 void ieee80211_add_wbrf(struct ieee80211_local *local, struct cfg80211_chan_def *chandef);
 void ieee80211_remove_wbrf(struct ieee80211_local *local, struct cfg80211_chan_def *chandef);
+int ieee80211_mgd_set_epcs(struct ieee80211_sub_if_data *sdata, bool enable);
+void ieee80211_process_epcs_ena_resp(struct ieee80211_sub_if_data *sdata,
+				     struct ieee80211_mgmt *mgmt, size_t len);
+void ieee80211_process_epcs_teardown(struct ieee80211_sub_if_data *sdata,
+				     struct ieee80211_mgmt *mgmt, size_t len);
 
 int ieee80211_mgd_assoc_ml_reconf(struct ieee80211_sub_if_data *sdata,
-				  struct cfg80211_assoc_link *add_links,
-				  u16 rem_links);
+				  struct cfg80211_ml_reconf_req *req);
 
 void ieee80211_process_ml_reconf_resp(struct ieee80211_sub_if_data *sdata,
 				      struct ieee80211_mgmt *mgmt, size_t len);
@@ -2792,6 +2805,13 @@ int ieee80211_calc_chandef_subchan_offset(const struct cfg80211_chan_def *ap,
 void ieee80211_rearrange_tpe_psd(struct ieee80211_parsed_tpe_psd *psd,
 				 const struct cfg80211_chan_def *ap,
 				 const struct cfg80211_chan_def *used);
+struct ieee802_11_elems *
+ieee80211_determine_chan_mode(struct ieee80211_sub_if_data *sdata,
+			      struct ieee80211_conn_settings *conn,
+			      struct cfg80211_bss *cbss, int link_id,
+			      struct ieee80211_chan_req *chanreq,
+			      struct cfg80211_chan_def *ap_chandef,
+			      unsigned long *userspace_selectors);
 #else
 #define EXPORT_SYMBOL_IF_MAC80211_KUNIT(sym)
 #define VISIBLE_IF_MAC80211_KUNIT static

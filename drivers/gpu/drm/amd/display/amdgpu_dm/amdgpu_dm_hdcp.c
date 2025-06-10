@@ -466,7 +466,6 @@ static bool enable_assr(void *handle, struct dc_link *link)
 	struct mod_hdcp hdcp = hdcp_work->hdcp;
 	struct psp_context *psp = hdcp.config.psp.handle;
 	struct ta_dtm_shared_memory *dtm_cmd;
-	bool res = true;
 
 	if (!psp->dtm_context.context.initialized) {
 		DRM_INFO("Failed to enable ASSR, DTM TA is not initialized.");
@@ -487,10 +486,10 @@ static bool enable_assr(void *handle, struct dc_link *link)
 
 	if (dtm_cmd->dtm_status != TA_DTM_STATUS__SUCCESS) {
 		DRM_INFO("Failed to enable ASSR");
-		res = false;
+		return false;
 	}
 
-	return res;
+	return true;
 }
 
 static void update_config(void *handle, struct cp_psp_stream_config *config)
@@ -611,7 +610,7 @@ static void update_config(void *handle, struct cp_psp_stream_config *config)
  *	incorrect/corrupted and we should correct our SRM by getting it from PSP
  */
 static ssize_t srm_data_write(struct file *filp, struct kobject *kobj,
-			      struct bin_attribute *bin_attr, char *buffer,
+			      const struct bin_attribute *bin_attr, char *buffer,
 			      loff_t pos, size_t count)
 {
 	struct hdcp_workqueue *work;
@@ -635,7 +634,7 @@ static ssize_t srm_data_write(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t srm_data_read(struct file *filp, struct kobject *kobj,
-			     struct bin_attribute *bin_attr, char *buffer,
+			     const struct bin_attribute *bin_attr, char *buffer,
 			     loff_t pos, size_t count)
 {
 	struct hdcp_workqueue *work;
@@ -695,8 +694,8 @@ ret:
 static const struct bin_attribute data_attr = {
 	.attr = {.name = "hdcp_srm", .mode = 0664},
 	.size = PSP_HDCP_SRM_FIRST_GEN_MAX_SIZE, /* Limit SRM size */
-	.write = srm_data_write,
-	.read = srm_data_read,
+	.write_new = srm_data_write,
+	.read_new = srm_data_read,
 };
 
 struct hdcp_workqueue *hdcp_create_workqueue(struct amdgpu_device *adev,
@@ -739,6 +738,7 @@ struct hdcp_workqueue *hdcp_create_workqueue(struct amdgpu_device *adev,
 		    dc->ctx->dce_version == DCN_VERSION_3_15 ||
 		    dc->ctx->dce_version == DCN_VERSION_3_5 ||
 		    dc->ctx->dce_version == DCN_VERSION_3_51 ||
+		    dc->ctx->dce_version == DCN_VERSION_3_6 ||
 		    dc->ctx->dce_version == DCN_VERSION_3_16)
 			hdcp_work[i].hdcp.config.psp.caps.dtm_v3_supported = 1;
 		hdcp_work[i].hdcp.config.ddc.handle = dc_get_link_at_index(dc, i);

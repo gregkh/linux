@@ -169,8 +169,8 @@ struct em_perf_domain *em_pd_get(struct device *dev);
 int em_dev_update_perf_domain(struct device *dev,
 			      struct em_perf_table *new_table);
 int em_dev_register_perf_domain(struct device *dev, unsigned int nr_states,
-				struct em_data_callback *cb, cpumask_t *span,
-				bool microwatts);
+				const struct em_data_callback *cb,
+				const cpumask_t *cpus, bool microwatts);
 void em_dev_unregister_perf_domain(struct device *dev);
 struct em_perf_table *em_table_alloc(struct em_perf_domain *pd);
 void em_table_free(struct em_perf_table *table);
@@ -240,9 +240,7 @@ static inline unsigned long em_cpu_energy(struct em_perf_domain *pd,
 	struct em_perf_state *ps;
 	int i;
 
-#ifdef CONFIG_SCHED_DEBUG
 	WARN_ONCE(!rcu_read_lock_held(), "EM: rcu read lock needed\n");
-#endif
 
 	if (!sum_util)
 		return 0;
@@ -346,8 +344,8 @@ struct em_data_callback {};
 
 static inline
 int em_dev_register_perf_domain(struct device *dev, unsigned int nr_states,
-				struct em_data_callback *cb, cpumask_t *span,
-				bool microwatts)
+				const struct em_data_callback *cb,
+				const cpumask_t *cpus, bool microwatts)
 {
 	return -EINVAL;
 }

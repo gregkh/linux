@@ -2236,7 +2236,7 @@ int dm_bufio_issue_discard(struct dm_bufio_client *c, sector_t block, sector_t c
 }
 EXPORT_SYMBOL_GPL(dm_bufio_issue_discard);
 
-static bool forget_buffer(struct dm_bufio_client *c, sector_t block)
+static void forget_buffer(struct dm_bufio_client *c, sector_t block)
 {
 	struct dm_buffer *b;
 
@@ -2251,8 +2251,6 @@ static bool forget_buffer(struct dm_bufio_client *c, sector_t block)
 			cache_put_and_wake(c, b);
 		}
 	}
-
-	return b ? true : false;
 }
 
 /*

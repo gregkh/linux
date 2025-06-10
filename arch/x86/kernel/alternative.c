@@ -127,6 +127,10 @@ const unsigned char * const x86_nops[ASM_NOP_MAX+1] =
 #endif
 };
 
+#ifdef CONFIG_FINEIBT
+static bool cfi_paranoid __ro_after_init;
+#endif
+
 #ifdef CONFIG_MITIGATION_ITS
 
 #ifdef CONFIG_MODULES
@@ -139,7 +143,24 @@ static unsigned int its_offset;
 static void *its_init_thunk(void *thunk, int reg)
 {
 	u8 *bytes = thunk;
+	int offset = 0;
 	int i = 0;
+
+#ifdef CONFIG_FINEIBT
+	if (cfi_paranoid) {
+		/*
+		 * When ITS uses indirect branch thunk the fineibt_paranoid
+		 * caller sequence doesn't fit in the caller site. So put the
+		 * remaining part of the sequence (<ea> + JNE) into the ITS
+		 * thunk.
+		 */
+		bytes[i++] = 0xea; /* invalid instruction */
+		bytes[i++] = 0x75; /* JNE */
+		bytes[i++] = 0xfd;
+
+		offset = 1;
+	}
+#endif
 
 	if (reg >= 8) {
 		bytes[i++] = 0x41; /* REX.B prefix */
@@ -149,7 +170,7 @@ static void *its_init_thunk(void *thunk, int reg)
 	bytes[i++] = 0xe0 + reg; /* jmp *reg */
 	bytes[i++] = 0xcc;
 
-	return thunk;
+	return thunk + offset;
 }
 
 #ifdef CONFIG_MODULES
@@ -176,7 +197,7 @@ void its_fini_mod(struct module *mod)
 
 	for (int i = 0; i < mod->its_num_pages; i++) {
 		void *page = mod->its_page_array[i];
-		set_memory_rox((unsigned long)page, 1);
+		execmem_restore_rox(page, PAGE_SIZE);
 	}
 }
 
@@ -210,6 +231,8 @@ static void *its_alloc(void)
 
 		its_mod->its_page_array = tmp;
 		its_mod->its_page_array[its_mod->its_num_pages++] = page;
+
+		execmem_make_temp_rw(page, PAGE_SIZE);
 	}
 #endif /* CONFIG_MODULES */
 
@@ -220,6 +243,17 @@ static void *its_allocate_thunk(int reg)
 {
 	int size = 3 + (reg / 8);
 	void *thunk;
+
+#ifdef CONFIG_FINEIBT
+	/*
+	 * The ITS thunk contains an indirect jump and an int3 instruction so
+	 * its size is 3 or 4 bytes depending on the register used. If CFI
+	 * paranoid is used then 3 extra bytes are added in the ITS thunk to
+	 * complete the fineibt_paranoid caller sequence.
+	 */
+	if (cfi_paranoid)
+		size += 3;
+#endif
 
 	if (!its_page || (its_offset + size - 1) >= PAGE_SIZE) {
 		its_page = its_alloc();
@@ -241,17 +275,18 @@ static void *its_allocate_thunk(int reg)
 	thunk = its_page + its_offset;
 	its_offset += size;
 
-	set_memory_rw((unsigned long)its_page, 1);
-	thunk = its_init_thunk(thunk, reg);
-	set_memory_rox((unsigned long)its_page, 1);
-
-	return thunk;
+	return its_init_thunk(thunk, reg);
 }
 
 u8 *its_static_thunk(int reg)
 {
 	u8 *thunk = __x86_indirect_its_thunk_array[reg];
 
+#ifdef CONFIG_FINEIBT
+	/* Paranoid thunk starts 2 bytes before */
+	if (cfi_paranoid)
+		return thunk - 2;
+#endif
 	return thunk;
 }
 
@@ -525,10 +560,8 @@ EXPORT_SYMBOL(BUG_func);
  * Rewrite the "call BUG_func" replacement to point to the target of the
  * indirect pv_ops call "call *disp(%ip)".
  */
-static int alt_replace_call(u8 *instr, u8 *insn_buff, struct alt_instr *a,
-			    struct module *mod)
+static int alt_replace_call(u8 *instr, u8 *insn_buff, struct alt_instr *a)
 {
-	u8 *wr_instr = module_writable_address(mod, instr);
 	void *target, *bug = &BUG_func;
 	s32 disp;
 
@@ -538,14 +571,14 @@ static int alt_replace_call(u8 *instr, u8 *insn_buff, struct alt_instr *a,
 	}
 
 	if (a->instrlen != 6 ||
-	    wr_instr[0] != CALL_RIP_REL_OPCODE ||
-	    wr_instr[1] != CALL_RIP_REL_MODRM) {
+	    instr[0] != CALL_RIP_REL_OPCODE ||
+	    instr[1] != CALL_RIP_REL_MODRM) {
 		pr_err("ALT_FLAG_DIRECT_CALL set for unrecognized indirect call\n");
 		BUG();
 	}
 
 	/* Skip CALL_RIP_REL_OPCODE and CALL_RIP_REL_MODRM */
-	disp = *(s32 *)(wr_instr + 2);
+	disp = *(s32 *)(instr + 2);
 #ifdef CONFIG_X86_64
 	/* ff 15 00 00 00 00   call   *0x0(%rip) */
 	/* target address is stored at "next instruction + disp". */
@@ -583,8 +616,7 @@ static inline u8 * instr_va(struct alt_instr *i)
  * to refetch changed I$ lines.
  */
 void __init_or_module noinline apply_alternatives(struct alt_instr *start,
-						  struct alt_instr *end,
-						  struct module *mod)
+						  struct alt_instr *end)
 {
 	u8 insn_buff[MAX_PATCH_LEN];
 	u8 *instr, *replacement;
@@ -613,7 +645,6 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 	 */
 	for (a = start; a < end; a++) {
 		int insn_buff_sz = 0;
-		u8 *wr_instr, *wr_replacement;
 
 		/*
 		 * In case of nested ALTERNATIVE()s the outer alternative might
@@ -627,11 +658,7 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 		}
 
 		instr = instr_va(a);
-		wr_instr = module_writable_address(mod, instr);
-
 		replacement = (u8 *)&a->repl_offset + a->repl_offset;
-		wr_replacement = module_writable_address(mod, replacement);
-
 		BUG_ON(a->instrlen > sizeof(insn_buff));
 		BUG_ON(a->cpuid >= (NCAPINTS + NBUGINTS) * 32);
 
@@ -642,9 +669,9 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 		 *   patch if feature is *NOT* present.
 		 */
 		if (!boot_cpu_has(a->cpuid) == !(a->flags & ALT_FLAG_NOT)) {
-			memcpy(insn_buff, wr_instr, a->instrlen);
+			memcpy(insn_buff, instr, a->instrlen);
 			optimize_nops(instr, insn_buff, a->instrlen);
-			text_poke_early(wr_instr, insn_buff, a->instrlen);
+			text_poke_early(instr, insn_buff, a->instrlen);
 			continue;
 		}
 
@@ -654,12 +681,11 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 			instr, instr, a->instrlen,
 			replacement, a->replacementlen, a->flags);
 
-		memcpy(insn_buff, wr_replacement, a->replacementlen);
+		memcpy(insn_buff, replacement, a->replacementlen);
 		insn_buff_sz = a->replacementlen;
 
 		if (a->flags & ALT_FLAG_DIRECT_CALL) {
-			insn_buff_sz = alt_replace_call(instr, insn_buff, a,
-							mod);
+			insn_buff_sz = alt_replace_call(instr, insn_buff, a);
 			if (insn_buff_sz < 0)
 				continue;
 		}
@@ -669,11 +695,11 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 
 		apply_relocation(insn_buff, instr, a->instrlen, replacement, a->replacementlen);
 
-		DUMP_BYTES(ALT, wr_instr, a->instrlen, "%px:   old_insn: ", instr);
+		DUMP_BYTES(ALT, instr, a->instrlen, "%px:   old_insn: ", instr);
 		DUMP_BYTES(ALT, replacement, a->replacementlen, "%px:   rpl_insn: ", replacement);
 		DUMP_BYTES(ALT, insn_buff, insn_buff_sz, "%px: final_insn: ", instr);
 
-		text_poke_early(wr_instr, insn_buff, insn_buff_sz);
+		text_poke_early(instr, insn_buff, insn_buff_sz);
 	}
 
 	kasan_enable_current();
@@ -799,7 +825,16 @@ static bool cpu_wants_indirect_its_thunk_at(unsigned long addr, int reg)
 	/* Lower-half of the cacheline? */
 	return !(addr & 0x20);
 }
+#else /* CONFIG_MITIGATION_ITS */
+
+#ifdef CONFIG_FINEIBT
+static bool cpu_wants_indirect_its_thunk_at(unsigned long addr, int reg)
+{
+	return false;
+}
 #endif
+
+#endif /* CONFIG_MITIGATION_ITS */
 
 /*
  * Rewrite the compiler generated retpoline thunk calls.
@@ -907,20 +942,19 @@ static int patch_retpoline(void *addr, struct insn *insn, u8 *bytes)
 /*
  * Generated by 'objtool --retpoline'.
  */
-void __init_or_module noinline apply_retpolines(s32 *start, s32 *end,
-						struct module *mod)
+void __init_or_module noinline apply_retpolines(s32 *start, s32 *end)
 {
 	s32 *s;
 
 	for (s = start; s < end; s++) {
 		void *addr = (void *)s + *s;
-		void *wr_addr = module_writable_address(mod, addr);
 		struct insn insn;
 		int len, ret;
 		u8 bytes[16];
 		u8 op1, op2;
+		u8 *dest;
 
-		ret = insn_decode_kernel(&insn, wr_addr);
+		ret = insn_decode_kernel(&insn, addr);
 		if (WARN_ON_ONCE(ret < 0))
 			continue;
 
@@ -928,8 +962,19 @@ void __init_or_module noinline apply_retpolines(s32 *start, s32 *end,
 		op2 = insn.opcode.bytes[1];
 
 		switch (op1) {
+		case 0x70 ... 0x7f:	/* Jcc.d8 */
+			/* See cfi_paranoid. */
+			WARN_ON_ONCE(cfi_mode != CFI_FINEIBT);
+			continue;
+
 		case CALL_INSN_OPCODE:
 		case JMP32_INSN_OPCODE:
+			/* Check for cfi_paranoid + ITS */
+			dest = addr + insn.length + insn.immediate.value;
+			if (dest[-1] == 0xea && (dest[0] & 0xf0) == 0x70) {
+				WARN_ON_ONCE(cfi_mode != CFI_FINEIBT);
+				continue;
+			}
 			break;
 
 		case 0x0f: /* escape */
@@ -948,9 +993,9 @@ void __init_or_module noinline apply_retpolines(s32 *start, s32 *end,
 		len = patch_retpoline(addr, &insn, bytes);
 		if (len == insn.length) {
 			optimize_nops(addr, bytes, len);
-			DUMP_BYTES(RETPOLINE, ((u8*)wr_addr),  len, "%px: orig: ", addr);
+			DUMP_BYTES(RETPOLINE, ((u8*)addr),  len, "%px: orig: ", addr);
 			DUMP_BYTES(RETPOLINE, ((u8*)bytes), len, "%px: repl: ", addr);
-			text_poke_early(wr_addr, bytes, len);
+			text_poke_early(addr, bytes, len);
 		}
 	}
 }
@@ -1001,8 +1046,7 @@ static int patch_return(void *addr, struct insn *insn, u8 *bytes)
 	return i;
 }
 
-void __init_or_module noinline apply_returns(s32 *start, s32 *end,
-					     struct module *mod)
+void __init_or_module noinline apply_returns(s32 *start, s32 *end)
 {
 	s32 *s;
 
@@ -1011,13 +1055,12 @@ void __init_or_module noinline apply_returns(s32 *start, s32 *end,
 
 	for (s = start; s < end; s++) {
 		void *dest = NULL, *addr = (void *)s + *s;
-		void *wr_addr = module_writable_address(mod, addr);
 		struct insn insn;
 		int len, ret;
 		u8 bytes[16];
 		u8 op;
 
-		ret = insn_decode_kernel(&insn, wr_addr);
+		ret = insn_decode_kernel(&insn, addr);
 		if (WARN_ON_ONCE(ret < 0))
 			continue;
 
@@ -1037,41 +1080,59 @@ void __init_or_module noinline apply_returns(s32 *start, s32 *end,
 
 		len = patch_return(addr, &insn, bytes);
 		if (len == insn.length) {
-			DUMP_BYTES(RET, ((u8*)wr_addr),  len, "%px: orig: ", addr);
+			DUMP_BYTES(RET, ((u8*)addr),  len, "%px: orig: ", addr);
 			DUMP_BYTES(RET, ((u8*)bytes), len, "%px: repl: ", addr);
-			text_poke_early(wr_addr, bytes, len);
+			text_poke_early(addr, bytes, len);
 		}
 	}
 }
-#else
-void __init_or_module noinline apply_returns(s32 *start, s32 *end,
-					     struct module *mod) { }
-#endif /* CONFIG_MITIGATION_RETHUNK */
+#else /* !CONFIG_MITIGATION_RETHUNK: */
+void __init_or_module noinline apply_returns(s32 *start, s32 *end) { }
+#endif /* !CONFIG_MITIGATION_RETHUNK */
 
 #else /* !CONFIG_MITIGATION_RETPOLINE || !CONFIG_OBJTOOL */
 
-void __init_or_module noinline apply_retpolines(s32 *start, s32 *end,
-						struct module *mod) { }
-void __init_or_module noinline apply_returns(s32 *start, s32 *end,
-					     struct module *mod) { }
+void __init_or_module noinline apply_retpolines(s32 *start, s32 *end) { }
+void __init_or_module noinline apply_returns(s32 *start, s32 *end) { }
 
-#endif /* CONFIG_MITIGATION_RETPOLINE && CONFIG_OBJTOOL */
+#endif /* !CONFIG_MITIGATION_RETPOLINE || !CONFIG_OBJTOOL */
 
 #ifdef CONFIG_X86_KERNEL_IBT
 
-static void poison_cfi(void *addr, void *wr_addr);
-
-static void __init_or_module poison_endbr(void *addr, void *wr_addr, bool warn)
+__noendbr bool is_endbr(u32 *val)
 {
-	u32 endbr, poison = gen_endbr_poison();
+	u32 endbr;
 
-	if (WARN_ON_ONCE(get_kernel_nofault(endbr, wr_addr)))
-		return;
+	__get_kernel_nofault(&endbr, val, u32, Efault);
+	return __is_endbr(endbr);
 
-	if (!is_endbr(endbr)) {
-		WARN_ON_ONCE(warn);
+Efault:
+	return false;
+}
+
+#ifdef CONFIG_FINEIBT
+
+static __noendbr bool exact_endbr(u32 *val)
+{
+	u32 endbr;
+
+	__get_kernel_nofault(&endbr, val, u32, Efault);
+	return endbr == gen_endbr();
+
+Efault:
+	return false;
+}
+
+#endif
+
+static void poison_cfi(void *addr);
+
+static void __init_or_module poison_endbr(void *addr)
+{
+	u32 poison = gen_endbr_poison();
+
+	if (WARN_ON_ONCE(!is_endbr(addr)))
 		return;
-	}
 
 	DPRINTK(ENDBR, "ENDBR at: %pS (%px)", addr, addr);
 
@@ -1080,7 +1141,7 @@ static void __init_or_module poison_endbr(void *addr, void *wr_addr, bool warn)
 	 */
 	DUMP_BYTES(ENDBR, ((u8*)addr), 4, "%px: orig: ", addr);
 	DUMP_BYTES(ENDBR, ((u8*)&poison), 4, "%px: repl: ", addr);
-	text_poke_early(wr_addr, &poison, 4);
+	text_poke_early(addr, &poison, 4);
 }
 
 /*
@@ -1089,35 +1150,38 @@ static void __init_or_module poison_endbr(void *addr, void *wr_addr, bool warn)
  * Seal the functions for indirect calls by clobbering the ENDBR instructions
  * and the kCFI hash value.
  */
-void __init_or_module noinline apply_seal_endbr(s32 *start, s32 *end, struct module *mod)
+void __init_or_module noinline apply_seal_endbr(s32 *start, s32 *end)
 {
 	s32 *s;
 
 	for (s = start; s < end; s++) {
 		void *addr = (void *)s + *s;
-		void *wr_addr = module_writable_address(mod, addr);
 
-		poison_endbr(addr, wr_addr, true);
+		poison_endbr(addr);
 		if (IS_ENABLED(CONFIG_FINEIBT))
-			poison_cfi(addr - 16, wr_addr - 16);
+			poison_cfi(addr - 16);
 	}
 }
 
-#else
+#else /* !CONFIG_X86_KERNEL_IBT: */
 
-void __init_or_module apply_seal_endbr(s32 *start, s32 *end, struct module *mod) { }
+void __init_or_module apply_seal_endbr(s32 *start, s32 *end) { }
 
-#endif /* CONFIG_X86_KERNEL_IBT */
+#endif /* !CONFIG_X86_KERNEL_IBT */
 
 #ifdef CONFIG_CFI_AUTO_DEFAULT
-#define __CFI_DEFAULT	CFI_AUTO
+# define __CFI_DEFAULT CFI_AUTO
 #elif defined(CONFIG_CFI_CLANG)
-#define __CFI_DEFAULT	CFI_KCFI
+# define __CFI_DEFAULT CFI_KCFI
 #else
-#define __CFI_DEFAULT	CFI_OFF
+# define __CFI_DEFAULT CFI_OFF
 #endif
 
 enum cfi_mode cfi_mode __ro_after_init = __CFI_DEFAULT;
+
+#ifdef CONFIG_FINEIBT_BHI
+bool cfi_bhi __ro_after_init = false;
+#endif
 
 #ifdef CONFIG_CFI_CLANG
 struct bpf_insn;
@@ -1126,11 +1190,7 @@ struct bpf_insn;
 extern unsigned int __bpf_prog_runX(const void *ctx,
 				    const struct bpf_insn *insn);
 
-/*
- * Force a reference to the external symbol so the compiler generates
- * __kcfi_typid.
- */
-__ADDRESSABLE(__bpf_prog_runX);
+KCFI_REFERENCE(__bpf_prog_runX);
 
 /* u32 __ro_after_init cfi_bpf_hash = __kcfi_typeid___bpf_prog_runX; */
 asm (
@@ -1147,7 +1207,7 @@ asm (
 /* Must match bpf_callback_t */
 extern u64 __bpf_callback_fn(u64, u64, u64, u64, u64);
 
-__ADDRESSABLE(__bpf_callback_fn);
+KCFI_REFERENCE(__bpf_callback_fn);
 
 /* u32 __ro_after_init cfi_bpf_subprog_hash = __kcfi_typeid___bpf_callback_fn; */
 asm (
@@ -1182,6 +1242,21 @@ u32 cfi_get_func_hash(void *func)
 
 	return hash;
 }
+
+int cfi_get_func_arity(void *func)
+{
+	bhi_thunk *target;
+	s32 disp;
+
+	if (cfi_mode != CFI_FINEIBT && !cfi_bhi)
+		return 0;
+
+	if (get_kernel_nofault(disp, func - 4))
+		return 0;
+
+	target = func + disp;
+	return target - __bhi_args;
+}
 #endif
 
 #ifdef CONFIG_FINEIBT
@@ -1196,7 +1271,7 @@ static u32  cfi_seed __ro_after_init;
 static u32 cfi_rehash(u32 hash)
 {
 	hash ^= cfi_seed;
-	while (unlikely(is_endbr(hash) || is_endbr(-hash))) {
+	while (unlikely(__is_endbr(hash) || __is_endbr(-hash))) {
 		bool lsb = hash & 1;
 		hash >>= 1;
 		if (lsb)
@@ -1228,6 +1303,25 @@ static __init int cfi_parse_cmdline(char *str)
 			cfi_mode = CFI_FINEIBT;
 		} else if (!strcmp(str, "norand")) {
 			cfi_rand = false;
+		} else if (!strcmp(str, "warn")) {
+			pr_alert("CFI mismatch non-fatal!\n");
+			cfi_warn = true;
+		} else if (!strcmp(str, "paranoid")) {
+			if (cfi_mode == CFI_FINEIBT) {
+				cfi_paranoid = true;
+			} else {
+				pr_err("Ignoring paranoid; depends on fineibt.\n");
+			}
+		} else if (!strcmp(str, "bhi")) {
+#ifdef CONFIG_FINEIBT_BHI
+			if (cfi_mode == CFI_FINEIBT) {
+				cfi_bhi = true;
+			} else {
+				pr_err("Ignoring bhi; depends on fineibt.\n");
+			}
+#else
+			pr_err("Ignoring bhi; depends on FINEIBT_BHI=y.\n");
+#endif
 		} else {
 			pr_err("Ignoring unknown cfi option (%s).", str);
 		}
@@ -1245,9 +1339,9 @@ early_param("cfi", cfi_parse_cmdline);
  * __cfi_\func:					__cfi_\func:
  *	movl   $0x12345678,%eax		// 5	     endbr64			// 4
  *	nop					     subl   $0x12345678,%r10d   // 7
- *	nop					     jz     1f			// 2
- *	nop					     ud2			// 2
- *	nop					1:   nop			// 1
+ *	nop					     jne    __cfi_\func+6	// 2
+ *	nop					     nop3			// 3
+ *	nop
  *	nop
  *	nop
  *	nop
@@ -1259,37 +1353,53 @@ early_param("cfi", cfi_parse_cmdline);
  *
  * caller:					caller:
  *	movl	$(-0x12345678),%r10d	 // 6	     movl   $0x12345678,%r10d	// 6
- *	addl	$-15(%r11),%r10d	 // 4	     sub    $16,%r11		// 4
+ *	addl	$-15(%r11),%r10d	 // 4	     lea    -0x10(%r11),%r11	// 4
  *	je	1f			 // 2	     nop4			// 4
  *	ud2				 // 2
- * 1:	call	__x86_indirect_thunk_r11 // 5	     call   *%r11; nop2;	// 5
+ * 1:	cs call	__x86_indirect_thunk_r11 // 6	     call   *%r11; nop3;	// 6
  *
  */
 
-asm(	".pushsection .rodata			\n"
-	"fineibt_preamble_start:		\n"
-	"	endbr64				\n"
-	"	subl	$0x12345678, %r10d	\n"
-	"	je	fineibt_preamble_end	\n"
-	"fineibt_preamble_ud2:			\n"
-	"	ud2				\n"
-	"	nop				\n"
-	"fineibt_preamble_end:			\n"
+/*
+ * <fineibt_preamble_start>:
+ *  0:   f3 0f 1e fa             endbr64
+ *  4:   41 81 <ea> 78 56 34 12  sub    $0x12345678, %r10d
+ *  b:   75 f9                   jne    6 <fineibt_preamble_start+0x6>
+ *  d:   0f 1f 00                nopl   (%rax)
+ *
+ * Note that the JNE target is the 0xEA byte inside the SUB, this decodes as
+ * (bad) on x86_64 and raises #UD.
+ */
+asm(	".pushsection .rodata				\n"
+	"fineibt_preamble_start:			\n"
+	"	endbr64					\n"
+	"	subl	$0x12345678, %r10d		\n"
+	"fineibt_preamble_bhi:				\n"
+	"	jne	fineibt_preamble_start+6	\n"
+	ASM_NOP3
+	"fineibt_preamble_end:				\n"
 	".popsection\n"
 );
 
 extern u8 fineibt_preamble_start[];
-extern u8 fineibt_preamble_ud2[];
+extern u8 fineibt_preamble_bhi[];
 extern u8 fineibt_preamble_end[];
 
 #define fineibt_preamble_size (fineibt_preamble_end - fineibt_preamble_start)
-#define fineibt_preamble_ud2  (fineibt_preamble_ud2 - fineibt_preamble_start)
+#define fineibt_preamble_bhi  (fineibt_preamble_bhi - fineibt_preamble_start)
+#define fineibt_preamble_ud   6
 #define fineibt_preamble_hash 7
 
+/*
+ * <fineibt_caller_start>:
+ *  0:   41 ba 78 56 34 12       mov    $0x12345678, %r10d
+ *  6:   4d 8d 5b f0             lea    -0x10(%r11), %r11
+ *  a:   0f 1f 40 00             nopl   0x0(%rax)
+ */
 asm(	".pushsection .rodata			\n"
 	"fineibt_caller_start:			\n"
 	"	movl	$0x12345678, %r10d	\n"
-	"	sub	$16, %r11		\n"
+	"	lea	-0x10(%r11), %r11	\n"
 	ASM_NOP4
 	"fineibt_caller_end:			\n"
 	".popsection				\n"
@@ -1303,13 +1413,62 @@ extern u8 fineibt_caller_end[];
 
 #define fineibt_caller_jmp (fineibt_caller_size - 2)
 
-static u32 decode_preamble_hash(void *addr)
+/*
+ * Since FineIBT does hash validation on the callee side it is prone to
+ * circumvention attacks where a 'naked' ENDBR instruction exists that
+ * is not part of the fineibt_preamble sequence.
+ *
+ * Notably the x86 entry points must be ENDBR and equally cannot be
+ * fineibt_preamble.
+ *
+ * The fineibt_paranoid caller sequence adds additional caller side
+ * hash validation. This stops such circumvention attacks dead, but at the cost
+ * of adding a load.
+ *
+ * <fineibt_paranoid_start>:
+ *  0:   41 ba 78 56 34 12       mov    $0x12345678, %r10d
+ *  6:   45 3b 53 f7             cmp    -0x9(%r11), %r10d
+ *  a:   4d 8d 5b <f0>           lea    -0x10(%r11), %r11
+ *  e:   75 fd                   jne    d <fineibt_paranoid_start+0xd>
+ * 10:   41 ff d3                call   *%r11
+ * 13:   90                      nop
+ *
+ * Notably LEA does not modify flags and can be reordered with the CMP,
+ * avoiding a dependency. Again, using a non-taken (backwards) branch
+ * for the failure case, abusing LEA's immediate 0xf0 as LOCK prefix for the
+ * Jcc.d8, causing #UD.
+ */
+asm(	".pushsection .rodata				\n"
+	"fineibt_paranoid_start:			\n"
+	"	movl	$0x12345678, %r10d		\n"
+	"	cmpl	-9(%r11), %r10d			\n"
+	"	lea	-0x10(%r11), %r11		\n"
+	"	jne	fineibt_paranoid_start+0xd	\n"
+	"fineibt_paranoid_ind:				\n"
+	"	call	*%r11				\n"
+	"	nop					\n"
+	"fineibt_paranoid_end:				\n"
+	".popsection					\n"
+);
+
+extern u8 fineibt_paranoid_start[];
+extern u8 fineibt_paranoid_ind[];
+extern u8 fineibt_paranoid_end[];
+
+#define fineibt_paranoid_size (fineibt_paranoid_end - fineibt_paranoid_start)
+#define fineibt_paranoid_ind  (fineibt_paranoid_ind - fineibt_paranoid_start)
+#define fineibt_paranoid_ud   0xd
+
+static u32 decode_preamble_hash(void *addr, int *reg)
 {
 	u8 *p = addr;
 
-	/* b8 78 56 34 12          mov    $0x12345678,%eax */
-	if (p[0] == 0xb8)
+	/* b8+reg 78 56 34 12          movl    $0x12345678,\reg */
+	if (p[0] >= 0xb8 && p[0] < 0xc0) {
+		if (reg)
+			*reg = p[0] - 0xb8;
 		return *(u32 *)(addr + 1);
+	}
 
 	return 0; /* invalid hash value */
 }
@@ -1318,11 +1477,11 @@ static u32 decode_caller_hash(void *addr)
 {
 	u8 *p = addr;
 
-	/* 41 ba 78 56 34 12       mov    $0x12345678,%r10d */
+	/* 41 ba 88 a9 cb ed       mov    $(-0x12345678),%r10d */
 	if (p[0] == 0x41 && p[1] == 0xba)
 		return -*(u32 *)(addr + 2);
 
-	/* e8 0c 78 56 34 12	   jmp.d8  +12 */
+	/* e8 0c 88 a9 cb ed	   jmp.d8  +12 */
 	if (p[0] == JMP8_INSN_OPCODE && p[1] == fineibt_caller_jmp)
 		return -*(u32 *)(addr + 2);
 
@@ -1330,7 +1489,7 @@ static u32 decode_caller_hash(void *addr)
 }
 
 /* .retpoline_sites */
-static int cfi_disable_callers(s32 *start, s32 *end, struct module *mod)
+static int cfi_disable_callers(s32 *start, s32 *end)
 {
 	/*
 	 * Disable kCFI by patching in a JMP.d8, this leaves the hash immediate
@@ -1342,23 +1501,20 @@ static int cfi_disable_callers(s32 *start, s32 *end, struct module *mod)
 
 	for (s = start; s < end; s++) {
 		void *addr = (void *)s + *s;
-		void *wr_addr;
 		u32 hash;
 
 		addr -= fineibt_caller_size;
-		wr_addr = module_writable_address(mod, addr);
-		hash = decode_caller_hash(wr_addr);
-
+		hash = decode_caller_hash(addr);
 		if (!hash) /* nocfi callers */
 			continue;
 
-		text_poke_early(wr_addr, jmp, 2);
+		text_poke_early(addr, jmp, 2);
 	}
 
 	return 0;
 }
 
-static int cfi_enable_callers(s32 *start, s32 *end, struct module *mod)
+static int cfi_enable_callers(s32 *start, s32 *end)
 {
 	/*
 	 * Re-enable kCFI, undo what cfi_disable_callers() did.
@@ -1368,126 +1524,230 @@ static int cfi_enable_callers(s32 *start, s32 *end, struct module *mod)
 
 	for (s = start; s < end; s++) {
 		void *addr = (void *)s + *s;
-		void *wr_addr;
 		u32 hash;
 
 		addr -= fineibt_caller_size;
-		wr_addr = module_writable_address(mod, addr);
-		hash = decode_caller_hash(wr_addr);
+		hash = decode_caller_hash(addr);
 		if (!hash) /* nocfi callers */
 			continue;
 
-		text_poke_early(wr_addr, mov, 2);
+		text_poke_early(addr, mov, 2);
 	}
 
 	return 0;
 }
 
 /* .cfi_sites */
-static int cfi_rand_preamble(s32 *start, s32 *end, struct module *mod)
+static int cfi_rand_preamble(s32 *start, s32 *end)
 {
 	s32 *s;
 
 	for (s = start; s < end; s++) {
 		void *addr = (void *)s + *s;
-		void *wr_addr = module_writable_address(mod, addr);
 		u32 hash;
 
-		hash = decode_preamble_hash(wr_addr);
+		hash = decode_preamble_hash(addr, NULL);
 		if (WARN(!hash, "no CFI hash found at: %pS %px %*ph\n",
 			 addr, addr, 5, addr))
 			return -EINVAL;
 
 		hash = cfi_rehash(hash);
-		text_poke_early(wr_addr + 1, &hash, 4);
+		text_poke_early(addr + 1, &hash, 4);
 	}
 
 	return 0;
 }
 
-static int cfi_rewrite_preamble(s32 *start, s32 *end, struct module *mod)
+static void cfi_fineibt_bhi_preamble(void *addr, int arity)
+{
+	if (!arity)
+		return;
+
+	if (!cfi_warn && arity == 1) {
+		/*
+		 * Crazy scheme to allow arity-1 inline:
+		 *
+		 * __cfi_foo:
+		 *  0: f3 0f 1e fa             endbr64
+		 *  4: 41 81 <ea> 78 56 34 12  sub     0x12345678, %r10d
+		 *  b: 49 0f 45 fa             cmovne  %r10, %rdi
+		 *  f: 75 f5                   jne     __cfi_foo+6
+		 * 11: 0f 1f 00                nopl    (%rax)
+		 *
+		 * Code that direct calls to foo()+0, decodes the tail end as:
+		 *
+		 * foo:
+		 *  0: f5                      cmc
+		 *  1: 0f 1f 00                nopl    (%rax)
+		 *
+		 * which clobbers CF, but does not affect anything ABI
+		 * wise.
+		 *
+		 * Notably, this scheme is incompatible with permissive CFI
+		 * because the CMOVcc is unconditional and RDI will have been
+		 * clobbered.
+		 */
+		const u8 magic[9] = {
+			0x49, 0x0f, 0x45, 0xfa,
+			0x75, 0xf5,
+			BYTES_NOP3,
+		};
+
+		text_poke_early(addr + fineibt_preamble_bhi, magic, 9);
+
+		return;
+	}
+
+	text_poke_early(addr + fineibt_preamble_bhi,
+			text_gen_insn(CALL_INSN_OPCODE,
+				      addr + fineibt_preamble_bhi,
+				      __bhi_args[arity]),
+			CALL_INSN_SIZE);
+}
+
+static int cfi_rewrite_preamble(s32 *start, s32 *end)
 {
 	s32 *s;
 
 	for (s = start; s < end; s++) {
 		void *addr = (void *)s + *s;
-		void *wr_addr = module_writable_address(mod, addr);
+		int arity;
 		u32 hash;
 
-		hash = decode_preamble_hash(wr_addr);
+		/*
+		 * When the function doesn't start with ENDBR the compiler will
+		 * have determined there are no indirect calls to it and we
+		 * don't need no CFI either.
+		 */
+		if (!is_endbr(addr + 16))
+			continue;
+
+		hash = decode_preamble_hash(addr, &arity);
 		if (WARN(!hash, "no CFI hash found at: %pS %px %*ph\n",
 			 addr, addr, 5, addr))
 			return -EINVAL;
 
-		text_poke_early(wr_addr, fineibt_preamble_start, fineibt_preamble_size);
-		WARN_ON(*(u32 *)(wr_addr + fineibt_preamble_hash) != 0x12345678);
-		text_poke_early(wr_addr + fineibt_preamble_hash, &hash, 4);
+		text_poke_early(addr, fineibt_preamble_start, fineibt_preamble_size);
+		WARN_ON(*(u32 *)(addr + fineibt_preamble_hash) != 0x12345678);
+		text_poke_early(addr + fineibt_preamble_hash, &hash, 4);
+
+		WARN_ONCE(!IS_ENABLED(CONFIG_FINEIBT_BHI) && arity,
+			  "kCFI preamble has wrong register at: %pS %*ph\n",
+			  addr, 5, addr);
+
+		if (cfi_bhi)
+			cfi_fineibt_bhi_preamble(addr, arity);
 	}
 
 	return 0;
 }
 
-static void cfi_rewrite_endbr(s32 *start, s32 *end, struct module *mod)
+static void cfi_rewrite_endbr(s32 *start, s32 *end)
 {
 	s32 *s;
 
 	for (s = start; s < end; s++) {
 		void *addr = (void *)s + *s;
-		void *wr_addr = module_writable_address(mod, addr);
 
-		poison_endbr(addr + 16, wr_addr + 16, false);
+		if (!exact_endbr(addr + 16))
+			continue;
+
+		poison_endbr(addr + 16);
 	}
 }
 
 /* .retpoline_sites */
-static int cfi_rand_callers(s32 *start, s32 *end, struct module *mod)
+static int cfi_rand_callers(s32 *start, s32 *end)
 {
 	s32 *s;
 
 	for (s = start; s < end; s++) {
 		void *addr = (void *)s + *s;
-		void *wr_addr;
 		u32 hash;
 
 		addr -= fineibt_caller_size;
-		wr_addr = module_writable_address(mod, addr);
-		hash = decode_caller_hash(wr_addr);
+		hash = decode_caller_hash(addr);
 		if (hash) {
 			hash = -cfi_rehash(hash);
-			text_poke_early(wr_addr + 2, &hash, 4);
+			text_poke_early(addr + 2, &hash, 4);
 		}
 	}
 
 	return 0;
 }
 
-static int cfi_rewrite_callers(s32 *start, s32 *end, struct module *mod)
+static int emit_paranoid_trampoline(void *addr, struct insn *insn, int reg, u8 *bytes)
+{
+	u8 *thunk = (void *)__x86_indirect_its_thunk_array[reg] - 2;
+
+#ifdef CONFIG_MITIGATION_ITS
+	u8 *tmp = its_allocate_thunk(reg);
+	if (tmp)
+		thunk = tmp;
+#endif
+
+	return __emit_trampoline(addr, insn, bytes, thunk, thunk);
+}
+
+static int cfi_rewrite_callers(s32 *start, s32 *end)
 {
 	s32 *s;
 
+	BUG_ON(fineibt_paranoid_size != 20);
+
 	for (s = start; s < end; s++) {
 		void *addr = (void *)s + *s;
-		void *wr_addr;
+		struct insn insn;
+		u8 bytes[20];
 		u32 hash;
+		int ret;
+		u8 op;
 
 		addr -= fineibt_caller_size;
-		wr_addr = module_writable_address(mod, addr);
-		hash = decode_caller_hash(wr_addr);
-		if (hash) {
-			text_poke_early(wr_addr, fineibt_caller_start, fineibt_caller_size);
-			WARN_ON(*(u32 *)(wr_addr + fineibt_caller_hash) != 0x12345678);
-			text_poke_early(wr_addr + fineibt_caller_hash, &hash, 4);
+		hash = decode_caller_hash(addr);
+		if (!hash)
+			continue;
+
+		if (!cfi_paranoid) {
+			text_poke_early(addr, fineibt_caller_start, fineibt_caller_size);
+			WARN_ON(*(u32 *)(addr + fineibt_caller_hash) != 0x12345678);
+			text_poke_early(addr + fineibt_caller_hash, &hash, 4);
+			/* rely on apply_retpolines() */
+			continue;
 		}
-		/* rely on apply_retpolines() */
+
+		/* cfi_paranoid */
+		ret = insn_decode_kernel(&insn, addr + fineibt_caller_size);
+		if (WARN_ON_ONCE(ret < 0))
+			continue;
+
+		op = insn.opcode.bytes[0];
+		if (op != CALL_INSN_OPCODE && op != JMP32_INSN_OPCODE) {
+			WARN_ON_ONCE(1);
+			continue;
+		}
+
+		memcpy(bytes, fineibt_paranoid_start, fineibt_paranoid_size);
+		memcpy(bytes + fineibt_caller_hash, &hash, 4);
+
+		if (cpu_wants_indirect_its_thunk_at((unsigned long)addr + fineibt_paranoid_ind, 11)) {
+			emit_paranoid_trampoline(addr + fineibt_caller_size,
+						 &insn, 11, bytes + fineibt_caller_size);
+		} else {
+			ret = emit_indirect(op, 11, bytes + fineibt_paranoid_ind);
+			if (WARN_ON_ONCE(ret != 3))
+				continue;
+		}
+
+		text_poke_early(addr, bytes, fineibt_paranoid_size);
 	}
 
 	return 0;
 }
 
 static void __apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
-			    s32 *start_cfi, s32 *end_cfi, struct module *mod)
+			    s32 *start_cfi, s32 *end_cfi, bool builtin)
 {
-	bool builtin = mod ? false : true;
 	int ret;
 
 	if (WARN_ONCE(fineibt_preamble_size != 16,
@@ -1496,8 +1756,15 @@ static void __apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
 
 	if (cfi_mode == CFI_AUTO) {
 		cfi_mode = CFI_KCFI;
-		if (HAS_KERNEL_IBT && cpu_feature_enabled(X86_FEATURE_IBT))
+		if (HAS_KERNEL_IBT && cpu_feature_enabled(X86_FEATURE_IBT)) {
+			/*
+			 * FRED has much saner context on exception entry and
+			 * is less easy to take advantage of.
+			 */
+			if (!cpu_feature_enabled(X86_FEATURE_FRED))
+				cfi_paranoid = true;
 			cfi_mode = CFI_FINEIBT;
+		}
 	}
 
 	/*
@@ -1505,7 +1772,7 @@ static void __apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
 	 * rewrite them. This disables all CFI. If this succeeds but any of the
 	 * later stages fails, we're without CFI.
 	 */
-	ret = cfi_disable_callers(start_retpoline, end_retpoline, mod);
+	ret = cfi_disable_callers(start_retpoline, end_retpoline);
 	if (ret)
 		goto err;
 
@@ -1516,11 +1783,11 @@ static void __apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
 			cfi_bpf_subprog_hash = cfi_rehash(cfi_bpf_subprog_hash);
 		}
 
-		ret = cfi_rand_preamble(start_cfi, end_cfi, mod);
+		ret = cfi_rand_preamble(start_cfi, end_cfi);
 		if (ret)
 			goto err;
 
-		ret = cfi_rand_callers(start_retpoline, end_retpoline, mod);
+		ret = cfi_rand_callers(start_retpoline, end_retpoline);
 		if (ret)
 			goto err;
 	}
@@ -1532,7 +1799,7 @@ static void __apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
 		return;
 
 	case CFI_KCFI:
-		ret = cfi_enable_callers(start_retpoline, end_retpoline, mod);
+		ret = cfi_enable_callers(start_retpoline, end_retpoline);
 		if (ret)
 			goto err;
 
@@ -1542,20 +1809,23 @@ static void __apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
 
 	case CFI_FINEIBT:
 		/* place the FineIBT preamble at func()-16 */
-		ret = cfi_rewrite_preamble(start_cfi, end_cfi, mod);
+		ret = cfi_rewrite_preamble(start_cfi, end_cfi);
 		if (ret)
 			goto err;
 
 		/* rewrite the callers to target func()-16 */
-		ret = cfi_rewrite_callers(start_retpoline, end_retpoline, mod);
+		ret = cfi_rewrite_callers(start_retpoline, end_retpoline);
 		if (ret)
 			goto err;
 
 		/* now that nobody targets func()+0, remove ENDBR there */
-		cfi_rewrite_endbr(start_cfi, end_cfi, mod);
+		cfi_rewrite_endbr(start_cfi, end_cfi);
 
-		if (builtin)
-			pr_info("Using FineIBT CFI\n");
+		if (builtin) {
+			pr_info("Using %sFineIBT%s CFI\n",
+				cfi_paranoid ? "paranoid " : "",
+				cfi_bhi ? "+BHI" : "");
+		}
 		return;
 
 	default:
@@ -1571,10 +1841,24 @@ static inline void poison_hash(void *addr)
 	*(u32 *)addr = 0;
 }
 
-static void poison_cfi(void *addr, void *wr_addr)
+static void poison_cfi(void *addr)
 {
+	/*
+	 * Compilers manage to be inconsistent with ENDBR vs __cfi prefixes,
+	 * some (static) functions for which they can determine the address
+	 * is never taken do not get a __cfi prefix, but *DO* get an ENDBR.
+	 *
+	 * As such, these functions will get sealed, but we need to be careful
+	 * to not unconditionally scribble the previous function.
+	 */
 	switch (cfi_mode) {
 	case CFI_FINEIBT:
+		/*
+		 * FineIBT prefix should start with an ENDBR.
+		 */
+		if (!is_endbr(addr))
+			break;
+
 		/*
 		 * __cfi_\func:
 		 *	osp nopl (%rax)
@@ -1583,17 +1867,23 @@ static void poison_cfi(void *addr, void *wr_addr)
 		 *	ud2
 		 * 1:	nop
 		 */
-		poison_endbr(addr, wr_addr, false);
-		poison_hash(wr_addr + fineibt_preamble_hash);
+		poison_endbr(addr);
+		poison_hash(addr + fineibt_preamble_hash);
 		break;
 
 	case CFI_KCFI:
+		/*
+		 * kCFI prefix should start with a valid hash.
+		 */
+		if (!decode_preamble_hash(addr, NULL))
+			break;
+
 		/*
 		 * __cfi_\func:
 		 *	movl	$0, %eax
 		 *	.skip	11, 0x90
 		 */
-		poison_hash(wr_addr + 1);
+		poison_hash(addr + 1);
 		break;
 
 	default:
@@ -1602,19 +1892,18 @@ static void poison_cfi(void *addr, void *wr_addr)
 }
 
 /*
- * regs->ip points to a UD2 instruction, return true and fill out target and
- * type when this UD2 is from a FineIBT preamble.
+ * When regs->ip points to a 0xEA byte in the FineIBT preamble,
+ * return true and fill out target and type.
  *
  * We check the preamble by checking for the ENDBR instruction relative to the
- * UD2 instruction.
+ * 0xEA instruction.
  */
-bool decode_fineibt_insn(struct pt_regs *regs, unsigned long *target, u32 *type)
+static bool decode_fineibt_preamble(struct pt_regs *regs, unsigned long *target, u32 *type)
 {
-	unsigned long addr = regs->ip - fineibt_preamble_ud2;
-	u32 endbr, hash;
+	unsigned long addr = regs->ip - fineibt_preamble_ud;
+	u32 hash;
 
-	__get_kernel_nofault(&endbr, addr, u32, Efault);
-	if (endbr != gen_endbr())
+	if (!exact_endbr((void *)addr))
 		return false;
 
 	*target = addr + fineibt_preamble_size;
@@ -1622,30 +1911,152 @@ bool decode_fineibt_insn(struct pt_regs *regs, unsigned long *target, u32 *type)
 	__get_kernel_nofault(&hash, addr + fineibt_preamble_hash, u32, Efault);
 	*type = (u32)regs->r10 + hash;
 
+	/*
+	 * Since regs->ip points to the middle of an instruction; it cannot
+	 * continue with the normal fixup.
+	 */
+	regs->ip = *target;
+
 	return true;
 
 Efault:
 	return false;
 }
 
-#else
+/*
+ * regs->ip points to one of the UD2 in __bhi_args[].
+ */
+static bool decode_fineibt_bhi(struct pt_regs *regs, unsigned long *target, u32 *type)
+{
+	unsigned long addr;
+	u32 hash;
+
+	if (!cfi_bhi)
+		return false;
+
+	if (regs->ip < (unsigned long)__bhi_args ||
+	    regs->ip >= (unsigned long)__bhi_args_end)
+		return false;
+
+	/*
+	 * Fetch the return address from the stack, this points to the
+	 * FineIBT preamble. Since the CALL instruction is in the 5 last
+	 * bytes of the preamble, the return address is in fact the target
+	 * address.
+	 */
+	__get_kernel_nofault(&addr, regs->sp, unsigned long, Efault);
+	*target = addr;
+
+	addr -= fineibt_preamble_size;
+	if (!exact_endbr((void *)addr))
+		return false;
+
+	__get_kernel_nofault(&hash, addr + fineibt_preamble_hash, u32, Efault);
+	*type = (u32)regs->r10 + hash;
+
+	/*
+	 * The UD2 sites are constructed with a RET immediately following,
+	 * as such the non-fatal case can use the regular fixup.
+	 */
+	return true;
+
+Efault:
+	return false;
+}
+
+static bool is_paranoid_thunk(unsigned long addr)
+{
+	u32 thunk;
+
+	__get_kernel_nofault(&thunk, (u32 *)addr, u32, Efault);
+	return (thunk & 0x00FFFFFF) == 0xfd75ea;
+
+Efault:
+	return false;
+}
+
+/*
+ * regs->ip points to a LOCK Jcc.d8 instruction from the fineibt_paranoid_start[]
+ * sequence, or to an invalid instruction (0xea) + Jcc.d8 for cfi_paranoid + ITS
+ * thunk.
+ */
+static bool decode_fineibt_paranoid(struct pt_regs *regs, unsigned long *target, u32 *type)
+{
+	unsigned long addr = regs->ip - fineibt_paranoid_ud;
+
+	if (!cfi_paranoid)
+		return false;
+
+	if (is_cfi_trap(addr + fineibt_caller_size - LEN_UD2)) {
+		*target = regs->r11 + fineibt_preamble_size;
+		*type = regs->r10;
+
+		/*
+		 * Since the trapping instruction is the exact, but LOCK prefixed,
+		 * Jcc.d8 that got us here, the normal fixup will work.
+		 */
+		return true;
+	}
+
+	/*
+	 * The cfi_paranoid + ITS thunk combination results in:
+	 *
+	 *  0:   41 ba 78 56 34 12       mov    $0x12345678, %r10d
+	 *  6:   45 3b 53 f7             cmp    -0x9(%r11), %r10d
+	 *  a:   4d 8d 5b f0             lea    -0x10(%r11), %r11
+	 *  e:   2e e8 XX XX XX XX	 cs call __x86_indirect_paranoid_thunk_r11
+	 *
+	 * Where the paranoid_thunk looks like:
+	 *
+	 *  1d:  <ea>                    (bad)
+	 *  __x86_indirect_paranoid_thunk_r11:
+	 *  1e:  75 fd                   jne 1d
+	 *  __x86_indirect_its_thunk_r11:
+	 *  20:  41 ff eb                jmp *%r11
+	 *  23:  cc                      int3
+	 *
+	 */
+	if (is_paranoid_thunk(regs->ip)) {
+		*target = regs->r11 + fineibt_preamble_size;
+		*type = regs->r10;
+
+		regs->ip = *target;
+		return true;
+	}
+
+	return false;
+}
+
+bool decode_fineibt_insn(struct pt_regs *regs, unsigned long *target, u32 *type)
+{
+	if (decode_fineibt_paranoid(regs, target, type))
+		return true;
+
+	if (decode_fineibt_bhi(regs, target, type))
+		return true;
+
+	return decode_fineibt_preamble(regs, target, type);
+}
+
+#else /* !CONFIG_FINEIBT: */
 
 static void __apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
-			    s32 *start_cfi, s32 *end_cfi, struct module *mod)
+			    s32 *start_cfi, s32 *end_cfi, bool builtin)
 {
 }
 
 #ifdef CONFIG_X86_KERNEL_IBT
-static void poison_cfi(void *addr, void *wr_addr) { }
+static void poison_cfi(void *addr) { }
 #endif
 
-#endif
+#endif /* !CONFIG_FINEIBT */
 
 void apply_fineibt(s32 *start_retpoline, s32 *end_retpoline,
-		   s32 *start_cfi, s32 *end_cfi, struct module *mod)
+		   s32 *start_cfi, s32 *end_cfi)
 {
 	return __apply_fineibt(start_retpoline, end_retpoline,
-			       start_cfi, end_cfi, mod);
+			       start_cfi, end_cfi,
+			       /* .builtin = */ false);
 }
 
 #ifdef CONFIG_SMP
@@ -1947,27 +2358,27 @@ void __init alternative_instructions(void)
 	ibt = ibt_save(/*disable*/ true);
 
 	__apply_fineibt(__retpoline_sites, __retpoline_sites_end,
-			__cfi_sites, __cfi_sites_end, NULL);
+			__cfi_sites, __cfi_sites_end, true);
 
 	/*
 	 * Rewrite the retpolines, must be done before alternatives since
 	 * those can rewrite the retpoline thunks.
 	 */
-	apply_retpolines(__retpoline_sites, __retpoline_sites_end, NULL);
-	apply_returns(__return_sites, __return_sites_end, NULL);
-
-	apply_alternatives(__alt_instructions, __alt_instructions_end, NULL);
+	apply_retpolines(__retpoline_sites, __retpoline_sites_end);
+	apply_returns(__return_sites, __return_sites_end);
 
 	/*
-	 * Now all calls are established. Apply the call thunks if
-	 * required.
+	 * Adjust all CALL instructions to point to func()-10, including
+	 * those in .altinstr_replacement.
 	 */
 	callthunks_patch_builtin_calls();
+
+	apply_alternatives(__alt_instructions, __alt_instructions_end);
 
 	/*
 	 * Seal all functions that do not have their address taken.
 	 */
-	apply_seal_endbr(__ibt_endbr_seal, __ibt_endbr_seal_end, NULL);
+	apply_seal_endbr(__ibt_endbr_seal, __ibt_endbr_seal_end);
 
 	ibt_restore(ibt);
 

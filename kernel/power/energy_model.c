@@ -227,7 +227,7 @@ static void em_init_performance(struct device *dev, struct em_perf_domain *pd,
 }
 
 static int em_compute_costs(struct device *dev, struct em_perf_state *table,
-			    struct em_data_callback *cb, int nr_states,
+			    const struct em_data_callback *cb, int nr_states,
 			    unsigned long flags)
 {
 	unsigned long prev_cost = ULONG_MAX;
@@ -330,7 +330,7 @@ EXPORT_SYMBOL_GPL(em_dev_update_perf_domain);
 
 static int em_create_perf_table(struct device *dev, struct em_perf_domain *pd,
 				struct em_perf_state *table,
-				struct em_data_callback *cb,
+				const struct em_data_callback *cb,
 				unsigned long flags)
 {
 	unsigned long power, freq, prev_freq = 0;
@@ -385,7 +385,8 @@ static int em_create_perf_table(struct device *dev, struct em_perf_domain *pd,
 }
 
 static int em_create_pd(struct device *dev, int nr_states,
-			struct em_data_callback *cb, cpumask_t *cpus,
+			const struct em_data_callback *cb,
+			const cpumask_t *cpus,
 			unsigned long flags)
 {
 	struct em_perf_table *em_table;
@@ -545,8 +546,8 @@ EXPORT_SYMBOL_GPL(em_cpu_get);
  * Return 0 on success
  */
 int em_dev_register_perf_domain(struct device *dev, unsigned int nr_states,
-				struct em_data_callback *cb, cpumask_t *cpus,
-				bool microwatts)
+				const struct em_data_callback *cb,
+				const cpumask_t *cpus, bool microwatts)
 {
 	struct em_perf_table *em_table;
 	unsigned long cap, prev_cap = 0;
@@ -721,8 +722,7 @@ free_em_table:
  * are correctly calculated.
  */
 static void em_adjust_new_capacity(struct device *dev,
-				   struct em_perf_domain *pd,
-				   u64 max_cap)
+				   struct em_perf_domain *pd)
 {
 	struct em_perf_table *em_table;
 
@@ -768,7 +768,8 @@ static void em_check_capacity_update(void)
 		}
 		cpufreq_cpu_put(policy);
 
-		pd = em_cpu_get(cpu);
+		dev = get_cpu_device(cpu);
+		pd = em_pd_get(dev);
 		if (!pd || em_is_artificial(pd))
 			continue;
 
@@ -792,8 +793,7 @@ static void em_check_capacity_update(void)
 		pr_debug("updating cpu%d cpu_cap=%lu old capacity=%lu\n",
 			 cpu, cpu_capacity, em_max_perf);
 
-		dev = get_cpu_device(cpu);
-		em_adjust_new_capacity(dev, pd, cpu_capacity);
+		em_adjust_new_capacity(dev, pd);
 	}
 
 	free_cpumask_var(cpu_done_mask);

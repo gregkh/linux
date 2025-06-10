@@ -34,6 +34,7 @@
 #include "dc_state_priv.h"
 
 #define NUM_ELEMENTS(a) (sizeof(a) / sizeof((a)[0]))
+#define MAX_NUM_MCACHE 8
 
 /* used as index in array of black_color_format */
 enum black_color_format {
@@ -553,6 +554,53 @@ void get_cursor_visual_confirm_color(
 	}
 }
 
+void get_dcc_visual_confirm_color(
+	struct dc *dc,
+	struct pipe_ctx *pipe_ctx,
+	struct tg_color *color)
+{
+	const uint32_t MCACHE_ID_UNASSIGNED = 0xF;
+
+	if (!pipe_ctx->plane_state->dcc.enable) {
+		color->color_r_cr = 0; /* black - DCC disabled */
+		color->color_g_y = 0;
+		color->color_b_cb = 0;
+		return;
+	}
+
+	if (dc->ctx->dce_version < DCN_VERSION_4_01) {
+		color->color_r_cr = MAX_TG_COLOR_VALUE; /* red - DCC enabled */
+		color->color_g_y = 0;
+		color->color_b_cb = 0;
+		return;
+	}
+
+	uint32_t first_id = pipe_ctx->mcache_regs.main.p0.mcache_id_first;
+	uint32_t second_id = pipe_ctx->mcache_regs.main.p0.mcache_id_second;
+
+	if (first_id != MCACHE_ID_UNASSIGNED && second_id != MCACHE_ID_UNASSIGNED && first_id != second_id) {
+		color->color_r_cr = MAX_TG_COLOR_VALUE/2; /* grey - 2 mcache */
+		color->color_g_y = MAX_TG_COLOR_VALUE/2;
+		color->color_b_cb = MAX_TG_COLOR_VALUE/2;
+	}
+
+	else if (first_id != MCACHE_ID_UNASSIGNED || second_id != MCACHE_ID_UNASSIGNED) {
+		const struct tg_color id_colors[MAX_NUM_MCACHE] = {
+		{0, MAX_TG_COLOR_VALUE, 0}, /* green */
+		{0, 0, MAX_TG_COLOR_VALUE}, /* blue */
+		{MAX_TG_COLOR_VALUE, MAX_TG_COLOR_VALUE, 0}, /* yellow */
+		{MAX_TG_COLOR_VALUE, 0, MAX_TG_COLOR_VALUE}, /* magenta */
+		{0, MAX_TG_COLOR_VALUE, MAX_TG_COLOR_VALUE}, /* cyan */
+		{MAX_TG_COLOR_VALUE, MAX_TG_COLOR_VALUE, MAX_TG_COLOR_VALUE}, /* white */
+		{MAX_TG_COLOR_VALUE/2, 0, 0}, /* dark red */
+		{0, MAX_TG_COLOR_VALUE/2, 0}, /* dark green */
+		};
+
+		uint32_t assigned_id = (first_id != MCACHE_ID_UNASSIGNED) ? first_id : second_id;
+		*color = id_colors[assigned_id];
+	}
+}
+
 void set_p_state_switch_method(
 		struct dc *dc,
 		struct dc_state *context,
@@ -769,7 +817,14 @@ void hwss_build_fast_sequence(struct dc *dc,
 				block_sequence[*num_steps].func = DPP_SET_OUTPUT_TRANSFER_FUNC;
 				(*num_steps)++;
 			}
-
+			if (dc->debug.visual_confirm != VISUAL_CONFIRM_DISABLE &&
+				dc->hwss.update_visual_confirm_color) {
+				block_sequence[*num_steps].params.update_visual_confirm_params.dc = dc;
+				block_sequence[*num_steps].params.update_visual_confirm_params.pipe_ctx = current_mpc_pipe;
+				block_sequence[*num_steps].params.update_visual_confirm_params.mpcc_id = current_mpc_pipe->plane_res.hubp->inst;
+				block_sequence[*num_steps].func = MPC_UPDATE_VISUAL_CONFIRM;
+				(*num_steps)++;
+			}
 			if (current_mpc_pipe->stream->update_flags.bits.out_csc) {
 				block_sequence[*num_steps].params.power_on_mpc_mem_pwr_params.mpc = dc->res_pool->mpc;
 				block_sequence[*num_steps].params.power_on_mpc_mem_pwr_params.mpcc_id = current_mpc_pipe->plane_res.hubp->inst;

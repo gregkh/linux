@@ -796,12 +796,15 @@ static int svm_ir_list_add(struct vcpu_svm *svm, struct amd_iommu_pi_data *pi)
 	struct amd_svm_iommu_ir *ir;
 	u64 entry;
 
+	if (WARN_ON_ONCE(!pi->ir_data))
+		return -EINVAL;
+
 	/**
 	 * In some cases, the existing irte is updated and re-set,
 	 * so we need to check here if it's already been * added
 	 * to the ir_list.
 	 */
-	if (pi->ir_data && (pi->prev_ga_tag != 0)) {
+	if (pi->prev_ga_tag) {
 		struct kvm *kvm = svm->vcpu.kvm;
 		u32 vcpu_id = AVIC_GATAG_TO_VCPUID(pi->prev_ga_tag);
 		struct kvm_vcpu *prev_vcpu = kvm_get_vcpu_by_id(kvm, vcpu_id);
@@ -899,8 +902,7 @@ int avic_pi_update_irte(struct kvm *kvm, unsigned int host_irq,
 	bool enable_remapped_mode = true;
 	int idx, ret = 0;
 
-	if (!kvm_arch_has_assigned_device(kvm) ||
-	    !irq_remapping_cap(IRQ_POSTING_CAP))
+	if (!kvm_arch_has_assigned_device(kvm) || !kvm_arch_has_irq_bypass())
 		return 0;
 
 	pr_debug("SVM: %s: host_irq=%#x, guest_irq=%#x, set=%#x\n",

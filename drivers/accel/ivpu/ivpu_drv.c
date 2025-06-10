@@ -127,20 +127,18 @@ void ivpu_file_priv_put(struct ivpu_file_priv **link)
 	kref_put(&file_priv->ref, file_priv_release);
 }
 
-static int ivpu_get_capabilities(struct ivpu_device *vdev, struct drm_ivpu_param *args)
+bool ivpu_is_capable(struct ivpu_device *vdev, u32 capability)
 {
-	switch (args->index) {
+	switch (capability) {
 	case DRM_IVPU_CAP_METRIC_STREAMER:
-		args->value = 1;
-		break;
+		return true;
 	case DRM_IVPU_CAP_DMA_MEMORY_RANGE:
-		args->value = 1;
-		break;
+		return true;
+	case DRM_IVPU_CAP_MANAGE_CMDQ:
+		return vdev->fw->sched_mode == VPU_SCHEDULING_MODE_HW;
 	default:
-		return -EINVAL;
+		return false;
 	}
-
-	return 0;
 }
 
 static int ivpu_get_param_ioctl(struct drm_device *dev, void *data, struct drm_file *file)
@@ -200,7 +198,7 @@ static int ivpu_get_param_ioctl(struct drm_device *dev, void *data, struct drm_f
 		args->value = vdev->hw->sku;
 		break;
 	case DRM_IVPU_PARAM_CAPABILITIES:
-		ret = ivpu_get_capabilities(vdev, args);
+		args->value = ivpu_is_capable(vdev, args->index);
 		break;
 	default:
 		ret = -EINVAL;
@@ -309,6 +307,9 @@ static const struct drm_ioctl_desc ivpu_drm_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(IVPU_METRIC_STREAMER_GET_DATA, ivpu_ms_get_data_ioctl, 0),
 	DRM_IOCTL_DEF_DRV(IVPU_METRIC_STREAMER_STOP, ivpu_ms_stop_ioctl, 0),
 	DRM_IOCTL_DEF_DRV(IVPU_METRIC_STREAMER_GET_INFO, ivpu_ms_get_info_ioctl, 0),
+	DRM_IOCTL_DEF_DRV(IVPU_CMDQ_CREATE, ivpu_cmdq_create_ioctl, 0),
+	DRM_IOCTL_DEF_DRV(IVPU_CMDQ_DESTROY, ivpu_cmdq_destroy_ioctl, 0),
+	DRM_IOCTL_DEF_DRV(IVPU_CMDQ_SUBMIT, ivpu_cmdq_submit_ioctl, 0),
 };
 
 static int ivpu_wait_for_ready(struct ivpu_device *vdev)
@@ -455,7 +456,7 @@ static const struct drm_driver driver = {
 	.postclose = ivpu_postclose,
 
 	.gem_create_object = ivpu_gem_create_object,
-	.gem_prime_import_sg_table = drm_gem_shmem_prime_import_sg_table,
+	.gem_prime_import = ivpu_gem_prime_import,
 
 	.ioctls = ivpu_drm_ioctls,
 	.num_ioctls = ARRAY_SIZE(ivpu_drm_ioctls),

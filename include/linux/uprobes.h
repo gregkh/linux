@@ -145,6 +145,7 @@ struct uprobe_task {
 
 	struct uprobe			*active_uprobe;
 	unsigned long			xol_vaddr;
+	bool				signal_denied;
 
 	struct arch_uprobe              *auprobe;
 };

@@ -906,7 +906,7 @@ void ath11k_peer_frags_flush(struct ath11k *ar, struct ath11k_peer *peer)
 		rx_tid = &peer->rx_tid[i];
 
 		spin_unlock_bh(&ar->ab->base_lock);
-		del_timer_sync(&rx_tid->frag_timer);
+		timer_delete_sync(&rx_tid->frag_timer);
 		spin_lock_bh(&ar->ab->base_lock);
 
 		ath11k_dp_rx_frags_cleanup(rx_tid, true);
@@ -927,7 +927,7 @@ void ath11k_peer_rx_tid_cleanup(struct ath11k *ar, struct ath11k_peer *peer)
 		ath11k_dp_rx_frags_cleanup(rx_tid, true);
 
 		spin_unlock_bh(&ar->ab->base_lock);
-		del_timer_sync(&rx_tid->frag_timer);
+		timer_delete_sync(&rx_tid->frag_timer);
 		spin_lock_bh(&ar->ab->base_lock);
 	}
 }
@@ -2822,8 +2822,6 @@ static void ath11k_dp_rx_update_peer_stats(struct ath11k_sta *arsta,
 	rx_stats->dcm_count += ppdu_info->dcm;
 	rx_stats->ru_alloc_cnt[ppdu_info->ru_alloc] += num_msdu;
 
-	arsta->rssi_comb = ppdu_info->rssi_comb;
-
 	BUILD_BUG_ON(ARRAY_SIZE(arsta->chain_signal) >
 			     ARRAY_SIZE(ppdu_info->rssi_chain_pri20));
 
@@ -3712,7 +3710,7 @@ static int ath11k_dp_rx_frag_h_mpdu(struct ath11k *ar,
 	}
 
 	spin_unlock_bh(&ab->base_lock);
-	del_timer_sync(&rx_tid->frag_timer);
+	timer_delete_sync(&rx_tid->frag_timer);
 	spin_lock_bh(&ab->base_lock);
 
 	peer = ath11k_peer_find_by_id(ab, peer_id);
@@ -5783,7 +5781,7 @@ int ath11k_dp_rx_pktlog_stop(struct ath11k_base *ab, bool stop_timer)
 	int ret;
 
 	if (stop_timer)
-		del_timer_sync(&ab->mon_reap_timer);
+		timer_delete_sync(&ab->mon_reap_timer);
 
 	/* reap all the monitor related rings */
 	ret = ath11k_dp_purge_mon_ring(ab);

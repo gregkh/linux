@@ -207,6 +207,15 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	head = folio_buffers(folio);
 	if (!head)
 		goto out_unlock;
+	/*
+	 * Upon a noref migration, the folio lock serializes here;
+	 * otherwise bail.
+	 */
+	if (test_bit_acquire(BH_Migrate, &head->b_state)) {
+		WARN_ON(!atomic);
+		goto out_unlock;
+	}
+
 	bh = head;
 	do {
 		if (!buffer_mapped(bh))
@@ -288,7 +297,6 @@ static void end_buffer_async_read(struct buffer_head *bh, int uptodate)
 
 still_busy:
 	spin_unlock_irqrestore(&first->b_uptodate_lock, flags);
-	return;
 }
 
 struct postprocess_bh_ctx {
@@ -413,7 +421,6 @@ static void end_buffer_async_write(struct buffer_head *bh, int uptodate)
 
 still_busy:
 	spin_unlock_irqrestore(&first->b_uptodate_lock, flags);
-	return;
 }
 
 /*
@@ -1113,6 +1120,8 @@ static struct buffer_head *
 __getblk_slow(struct block_device *bdev, sector_t block,
 	     unsigned size, gfp_t gfp)
 {
+	bool blocking = gfpflags_allow_blocking(gfp);
+
 	/* Size must be multiple of hard sectorsize */
 	if (unlikely(size & (bdev_logical_block_size(bdev)-1) ||
 			(size < 512 || size > PAGE_SIZE))) {
@@ -1128,12 +1137,15 @@ __getblk_slow(struct block_device *bdev, sector_t block,
 	for (;;) {
 		struct buffer_head *bh;
 
-		bh = __find_get_block(bdev, block, size);
-		if (bh)
-			return bh;
-
 		if (!grow_buffers(bdev, block, size, gfp))
 			return NULL;
+
+		if (blocking)
+			bh = __find_get_block_nonatomic(bdev, block, size);
+		else
+			bh = __find_get_block(bdev, block, size);
+		if (bh)
+			return bh;
 	}
 }
 
@@ -1211,10 +1223,8 @@ void mark_buffer_write_io_error(struct buffer_head *bh)
 	/* FIXME: do we need to set this in both places? */
 	if (bh->b_folio && bh->b_folio->mapping)
 		mapping_set_error(bh->b_folio->mapping, -EIO);
-	if (bh->b_assoc_map) {
+	if (bh->b_assoc_map)
 		mapping_set_error(bh->b_assoc_map, -EIO);
-		errseq_set(&bh->b_assoc_map->host->i_sb->s_wb_err, -EIO);
-	}
 }
 EXPORT_SYMBOL(mark_buffer_write_io_error);
 
@@ -1390,7 +1400,8 @@ lookup_bh_lru(struct block_device *bdev, sector_t block, unsigned size)
 /*
  * Perform a pagecache lookup for the matching buffer.  If it's there, refresh
  * it in the LRU and mark it as accessed.  If it is not present then return
- * NULL
+ * NULL. Atomic context callers may also return NULL if the buffer is being
+ * migrated; similarly the page is not marked accessed either.
  */
 static struct buffer_head *
 find_get_block_common(struct block_device *bdev, sector_t block,
@@ -1603,8 +1614,8 @@ static void discard_buffer(struct buffer_head * bh)
 	bh->b_bdev = NULL;
 	b_state = READ_ONCE(bh->b_state);
 	do {
-	} while (!try_cmpxchg(&bh->b_state, &b_state,
-			      b_state & ~BUFFER_FLAGS_DISCARD));
+	} while (!try_cmpxchg_relaxed(&bh->b_state, &b_state,
+				      b_state & ~BUFFER_FLAGS_DISCARD));
 	unlock_buffer(bh);
 }
 
@@ -1669,7 +1680,6 @@ void block_invalidate_folio(struct folio *folio, size_t offset, size_t length)
 		filemap_release_folio(folio, 0);
 out:
 	folio_clear_mappedtodisk(folio);
-	return;
 }
 EXPORT_SYMBOL(block_invalidate_folio);
 
@@ -2191,7 +2201,7 @@ int __block_write_begin(struct folio *folio, loff_t pos, unsigned len,
 }
 EXPORT_SYMBOL(__block_write_begin);
 
-static void __block_commit_write(struct folio *folio, size_t from, size_t to)
+void block_commit_write(struct folio *folio, size_t from, size_t to)
 {
 	size_t block_start, block_end;
 	bool partial = false;
@@ -2229,6 +2239,7 @@ static void __block_commit_write(struct folio *folio, size_t from, size_t to)
 	if (!partial)
 		folio_mark_uptodate(folio);
 }
+EXPORT_SYMBOL(block_commit_write);
 
 /*
  * block_write_begin takes care of the basic task of block allocation and
@@ -2287,7 +2298,7 @@ int block_write_end(struct file *file, struct address_space *mapping,
 	flush_dcache_folio(folio);
 
 	/* This could be a short (even 0-length) commit */
-	__block_commit_write(folio, start, start + copied);
+	block_commit_write(folio, start, start + copied);
 
 	return copied;
 }
@@ -2386,9 +2397,8 @@ int block_read_full_folio(struct folio *folio, get_block_t *get_block)
 {
 	struct inode *inode = folio->mapping->host;
 	sector_t iblock, lblock;
-	struct buffer_head *bh, *head, *arr[MAX_BUF_PER_PAGE];
+	struct buffer_head *bh, *head, *prev = NULL;
 	size_t blocksize;
-	int nr, i;
 	int fully_mapped = 1;
 	bool page_error = false;
 	loff_t limit = i_size_read(inode);
@@ -2397,16 +2407,12 @@ int block_read_full_folio(struct folio *folio, get_block_t *get_block)
 	if (IS_ENABLED(CONFIG_FS_VERITY) && IS_VERITY(inode))
 		limit = inode->i_sb->s_maxbytes;
 
-	VM_BUG_ON_FOLIO(folio_test_large(folio), folio);
-
 	head = folio_create_buffers(folio, inode, 0);
 	blocksize = head->b_size;
 
 	iblock = div_u64(folio_pos(folio), blocksize);
 	lblock = div_u64(limit + blocksize - 1, blocksize);
 	bh = head;
-	nr = 0;
-	i = 0;
 
 	do {
 		if (buffer_uptodate(bh))
@@ -2423,7 +2429,7 @@ int block_read_full_folio(struct folio *folio, get_block_t *get_block)
 					page_error = true;
 			}
 			if (!buffer_mapped(bh)) {
-				folio_zero_range(folio, i * blocksize,
+				folio_zero_range(folio, bh_offset(bh),
 						blocksize);
 				if (!err)
 					set_buffer_uptodate(bh);
@@ -2436,40 +2442,33 @@ int block_read_full_folio(struct folio *folio, get_block_t *get_block)
 			if (buffer_uptodate(bh))
 				continue;
 		}
-		arr[nr++] = bh;
-	} while (i++, iblock++, (bh = bh->b_this_page) != head);
+
+		lock_buffer(bh);
+		if (buffer_uptodate(bh)) {
+			unlock_buffer(bh);
+			continue;
+		}
+
+		mark_buffer_async_read(bh);
+		if (prev)
+			submit_bh(REQ_OP_READ, prev);
+		prev = bh;
+	} while (iblock++, (bh = bh->b_this_page) != head);
 
 	if (fully_mapped)
 		folio_set_mappedtodisk(folio);
 
-	if (!nr) {
-		/*
-		 * All buffers are uptodate or get_block() returned an
-		 * error when trying to map them - we can finish the read.
-		 */
-		folio_end_read(folio, !page_error);
-		return 0;
-	}
-
-	/* Stage two: lock the buffers */
-	for (i = 0; i < nr; i++) {
-		bh = arr[i];
-		lock_buffer(bh);
-		mark_buffer_async_read(bh);
-	}
-
 	/*
-	 * Stage 3: start the IO.  Check for uptodateness
-	 * inside the buffer lock in case another process reading
-	 * the underlying blockdev brought it uptodate (the sct fix).
+	 * All buffers are uptodate or get_block() returned an error
+	 * when trying to map them - we must finish the read because
+	 * end_buffer_async_read() will never be called on any buffer
+	 * in this folio.
 	 */
-	for (i = 0; i < nr; i++) {
-		bh = arr[i];
-		if (buffer_uptodate(bh))
-			end_buffer_async_read(bh, 1);
-		else
-			submit_bh(REQ_OP_READ, bh);
-	}
+	if (prev)
+		submit_bh(REQ_OP_READ, prev);
+	else
+		folio_end_read(folio, !page_error);
+
 	return 0;
 }
 EXPORT_SYMBOL(block_read_full_folio);
@@ -2603,13 +2602,6 @@ int cont_write_begin(struct file *file, struct address_space *mapping,
 }
 EXPORT_SYMBOL(cont_write_begin);
 
-void block_commit_write(struct page *page, unsigned from, unsigned to)
-{
-	struct folio *folio = page_folio(page);
-	__block_commit_write(folio, from, to);
-}
-EXPORT_SYMBOL(block_commit_write);
-
 /*
  * block_page_mkwrite() is not allowed to change the file size as it gets
  * called from a page fault handler when a page is first dirtied. Hence we must
@@ -2655,7 +2647,7 @@ int block_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf,
 	if (unlikely(ret))
 		goto out_unlock;
 
-	__block_commit_write(folio, 0, end);
+	block_commit_write(folio, 0, end);
 
 	folio_mark_dirty(folio);
 	folio_wait_stable(folio);

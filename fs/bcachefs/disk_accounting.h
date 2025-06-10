@@ -33,10 +33,12 @@ static inline bool bch2_accounting_key_is_zero(struct bkey_s_c_accounting a)
 static inline void bch2_accounting_accumulate(struct bkey_i_accounting *dst,
 					      struct bkey_s_c_accounting src)
 {
-	EBUG_ON(dst->k.u64s != src.k->u64s);
-
-	for (unsigned i = 0; i < bch2_accounting_counters(&dst->k); i++)
+	for (unsigned i = 0;
+	     i < min(bch2_accounting_counters(&dst->k),
+		     bch2_accounting_counters(src.k));
+	     i++)
 		dst->v.d[i] += src.v->d[i];
+
 	if (bversion_cmp(dst->k.bversion, src.k->bversion) < 0)
 		dst->k.bversion = src.k->bversion;
 }
@@ -85,6 +87,24 @@ static inline struct bpos disk_accounting_pos_to_bpos(struct disk_accounting_pos
 
 int bch2_disk_accounting_mod(struct btree_trans *, struct disk_accounting_pos *,
 			     s64 *, unsigned, bool);
+
+#define disk_accounting_key_init(_k, _type, ...)			\
+do {									\
+	memset(&(_k), 0, sizeof(_k));					\
+	(_k).type	= BCH_DISK_ACCOUNTING_##_type;			\
+	(_k)._type	= (struct bch_acct_##_type) { __VA_ARGS__ };	\
+} while (0)
+
+#define bch2_disk_accounting_mod2_nr(_trans, _gc, _v, _nr, ...)		\
+({									\
+	struct disk_accounting_pos pos;					\
+	disk_accounting_key_init(pos, __VA_ARGS__);			\
+	bch2_disk_accounting_mod(trans, &pos, _v, _nr, _gc);		\
+})
+
+#define bch2_disk_accounting_mod2(_trans, _gc, _v, ...)			\
+	bch2_disk_accounting_mod2_nr(_trans, _gc, _v, ARRAY_SIZE(_v), __VA_ARGS__)
+
 int bch2_mod_dev_cached_sectors(struct btree_trans *, unsigned, s64, bool);
 
 int bch2_accounting_validate(struct bch_fs *, struct bkey_s_c,
@@ -116,6 +136,7 @@ enum bch_accounting_mode {
 };
 
 int bch2_accounting_mem_insert(struct bch_fs *, struct bkey_s_c_accounting, enum bch_accounting_mode);
+int bch2_accounting_mem_insert_locked(struct bch_fs *, struct bkey_s_c_accounting, enum bch_accounting_mode);
 void bch2_accounting_mem_gc(struct bch_fs *);
 
 static inline bool bch2_accounting_is_mem(struct disk_accounting_pos acc)
@@ -130,7 +151,8 @@ static inline bool bch2_accounting_is_mem(struct disk_accounting_pos acc)
  */
 static inline int bch2_accounting_mem_mod_locked(struct btree_trans *trans,
 						 struct bkey_s_c_accounting a,
-						 enum bch_accounting_mode mode)
+						 enum bch_accounting_mode mode,
+						 bool write_locked)
 {
 	struct bch_fs *c = trans->c;
 	struct bch_accounting_mem *acc = &c->accounting;
@@ -169,7 +191,11 @@ static inline int bch2_accounting_mem_mod_locked(struct btree_trans *trans,
 
 	while ((idx = eytzinger0_find(acc->k.data, acc->k.nr, sizeof(acc->k.data[0]),
 				      accounting_pos_cmp, &a.k->p)) >= acc->k.nr) {
-		int ret = bch2_accounting_mem_insert(c, a, mode);
+		int ret = 0;
+		if (unlikely(write_locked))
+			ret = bch2_accounting_mem_insert_locked(c, a, mode);
+		else
+			ret = bch2_accounting_mem_insert(c, a, mode);
 		if (ret)
 			return ret;
 	}
@@ -186,7 +212,7 @@ static inline int bch2_accounting_mem_mod_locked(struct btree_trans *trans,
 static inline int bch2_accounting_mem_add(struct btree_trans *trans, struct bkey_s_c_accounting a, bool gc)
 {
 	percpu_down_read(&trans->c->mark_lock);
-	int ret = bch2_accounting_mem_mod_locked(trans, a, gc ? BCH_ACCOUNTING_gc : BCH_ACCOUNTING_normal);
+	int ret = bch2_accounting_mem_mod_locked(trans, a, gc ? BCH_ACCOUNTING_gc : BCH_ACCOUNTING_normal, false);
 	percpu_up_read(&trans->c->mark_lock);
 	return ret;
 }
@@ -239,7 +265,7 @@ static inline int bch2_accounting_trans_commit_hook(struct btree_trans *trans,
 	EBUG_ON(bversion_zero(a->k.bversion));
 
 	return likely(!(commit_flags & BCH_TRANS_COMMIT_skip_accounting_apply))
-		? bch2_accounting_mem_mod_locked(trans, accounting_i_to_s_c(a), BCH_ACCOUNTING_normal)
+		? bch2_accounting_mem_mod_locked(trans, accounting_i_to_s_c(a), BCH_ACCOUNTING_normal, false)
 		: 0;
 }
 
@@ -251,7 +277,7 @@ static inline void bch2_accounting_trans_commit_revert(struct btree_trans *trans
 		struct bkey_s_accounting a = accounting_i_to_s(a_i);
 
 		bch2_accounting_neg(a);
-		bch2_accounting_mem_mod_locked(trans, a.c, BCH_ACCOUNTING_normal);
+		bch2_accounting_mem_mod_locked(trans, a.c, BCH_ACCOUNTING_normal, false);
 		bch2_accounting_neg(a);
 	}
 }

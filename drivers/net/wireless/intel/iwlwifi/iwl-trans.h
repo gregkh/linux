@@ -888,6 +888,7 @@ struct iwl_txq {
  * @trans_specific: data for the specific transport this is allocated for/with
  * @dsbr_urm_fw_dependent: switch to URM based on fw settings
  * @dsbr_urm_permanent: switch to URM permanently
+ * @ext_32khz_clock_valid: if true, the external 32 KHz clock can be used
  */
 struct iwl_trans {
 	bool csme_own;
@@ -914,6 +915,8 @@ struct iwl_trans {
 
 	u8 dsbr_urm_fw_dependent:1,
 	   dsbr_urm_permanent:1;
+
+	bool ext_32khz_clock_valid;
 
 	u8 rx_mpdu_cmd, rx_mpdu_cmd_hdr_size;
 
@@ -1264,6 +1267,7 @@ enum iwl_reset_mode {
 };
 
 void iwl_trans_pcie_reset(struct iwl_trans *trans, enum iwl_reset_mode mode);
+void iwl_trans_pcie_fw_reset_handshake(struct iwl_trans *trans);
 
 int iwl_trans_pcie_send_hcmd(struct iwl_trans *trans,
 			     struct iwl_host_cmd *cmd);

@@ -343,8 +343,7 @@ struct pmu {
 	 */
 	unsigned int			scope;
 
-	int __percpu			*pmu_disable_count;
-	struct perf_cpu_pmu_context __percpu *cpu_pmu_context;
+	struct perf_cpu_pmu_context * __percpu *cpu_pmu_context;
 	atomic_t			exclusive_cnt; /* < 0: cpu; > 0: tsk */
 	int				task_ctx_nr;
 	int				hrtimer_interval_ms;
@@ -501,16 +500,6 @@ struct pmu {
 	 * Kmem cache of PMU specific data
 	 */
 	struct kmem_cache		*task_ctx_cache;
-
-	/*
-	 * PMU specific parts of task perf event context (i.e. ctx->task_ctx_data)
-	 * can be synchronized using this function. See Intel LBR callstack support
-	 * implementation and Perf core context switch handling callbacks for usage
-	 * examples.
-	 */
-	void (*swap_task_ctx)		(struct perf_event_pmu_context *prev_epc,
-					 struct perf_event_pmu_context *next_epc);
-					/* optional */
 
 	/*
 	 * Set up pmu-private data structures for an AUX area
@@ -677,11 +666,12 @@ struct swevent_hlist {
 #define PERF_ATTACH_GROUP	0x0002
 #define PERF_ATTACH_TASK	0x0004
 #define PERF_ATTACH_TASK_DATA	0x0008
-#define PERF_ATTACH_ITRACE	0x0010
+#define PERF_ATTACH_GLOBAL_DATA	0x0010
 #define PERF_ATTACH_SCHED_CB	0x0020
 #define PERF_ATTACH_CHILD	0x0040
 #define PERF_ATTACH_EXCLUSIVE	0x0080
 #define PERF_ATTACH_CALLCHAIN	0x0100
+#define PERF_ATTACH_ITRACE	0x0200
 
 struct bpf_prog;
 struct perf_cgroup;
@@ -922,7 +912,7 @@ struct perf_event_pmu_context {
 	struct list_head		pinned_active;
 	struct list_head		flexible_active;
 
-	/* Used to avoid freeing per-cpu perf_event_pmu_context */
+	/* Used to identify the per-cpu perf_event_pmu_context */
 	unsigned int			embedded : 1;
 
 	unsigned int			nr_events;
@@ -932,7 +922,6 @@ struct perf_event_pmu_context {
 	atomic_t			refcount; /* event <-> epc */
 	struct rcu_head			rcu_head;
 
-	void				*task_ctx_data; /* pmu specific data */
 	/*
 	 * Set when one or more (plausibly active) event can't be scheduled
 	 * due to pmu overcommit or pmu constraints, except tolerant to
@@ -980,7 +969,6 @@ struct perf_event_context {
 	int				nr_user;
 	int				is_active;
 
-	int				nr_task_data;
 	int				nr_stat;
 	int				nr_freq;
 	int				rotate_disable;
@@ -1065,6 +1053,7 @@ struct perf_cpu_pmu_context {
 
 	int				active_oncpu;
 	int				exclusive;
+	int				pmu_disable_count;
 
 	raw_spinlock_t			hrtimer_lock;
 	struct hrtimer			hrtimer;
@@ -1381,6 +1370,9 @@ static inline void perf_sample_save_brstack(struct perf_sample_data *data,
 
 	if (branch_sample_hw_index(event))
 		size += sizeof(u64);
+
+	brs->nr = min_t(u16, event->attr.sample_max_stack, brs->nr);
+
 	size += brs->nr * sizeof(struct perf_branch_entry);
 
 	/*
@@ -1688,18 +1680,9 @@ static inline int perf_callchain_store(struct perf_callchain_entry_ctx *ctx, u64
 }
 
 extern int sysctl_perf_event_paranoid;
-extern int sysctl_perf_event_mlock;
 extern int sysctl_perf_event_sample_rate;
-extern int sysctl_perf_cpu_time_max_percent;
 
 extern void perf_sample_event_took(u64 sample_len_ns);
-
-int perf_event_max_sample_rate_handler(const struct ctl_table *table, int write,
-		void *buffer, size_t *lenp, loff_t *ppos);
-int perf_cpu_time_max_percent_handler(const struct ctl_table *table, int write,
-		void *buffer, size_t *lenp, loff_t *ppos);
-int perf_event_max_stack_handler(const struct ctl_table *table, int write,
-		void *buffer, size_t *lenp, loff_t *ppos);
 
 /* Access to perf_event_open(2) syscall. */
 #define PERF_SECURITY_OPEN		0
@@ -1714,22 +1697,22 @@ static inline int perf_is_paranoid(void)
 	return sysctl_perf_event_paranoid > -1;
 }
 
-int perf_allow_kernel(struct perf_event_attr *attr);
+int perf_allow_kernel(void);
 
-static inline int perf_allow_cpu(struct perf_event_attr *attr)
+static inline int perf_allow_cpu(void)
 {
 	if (sysctl_perf_event_paranoid > 0 && !perfmon_capable())
 		return -EACCES;
 
-	return security_perf_event_open(attr, PERF_SECURITY_CPU);
+	return security_perf_event_open(PERF_SECURITY_CPU);
 }
 
-static inline int perf_allow_tracepoint(struct perf_event_attr *attr)
+static inline int perf_allow_tracepoint(void)
 {
 	if (sysctl_perf_event_paranoid > -1 && !perfmon_capable())
 		return -EPERM;
 
-	return security_perf_event_open(attr, PERF_SECURITY_TRACEPOINT);
+	return security_perf_event_open(PERF_SECURITY_TRACEPOINT);
 }
 
 extern int perf_exclude_event(struct perf_event *event, struct pt_regs *regs);

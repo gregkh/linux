@@ -635,7 +635,7 @@ static int kvaser_pciefd_bus_on(struct kvaser_pciefd_can *can)
 	u32 mode;
 	unsigned long irq;
 
-	del_timer(&can->bec_poll_timer);
+	timer_delete(&can->bec_poll_timer);
 	if (!completion_done(&can->flush_comp))
 		kvaser_pciefd_start_controller_flush(can);
 
@@ -749,7 +749,7 @@ static int kvaser_pciefd_stop(struct net_device *netdev)
 		ret = -ETIMEDOUT;
 	} else {
 		iowrite32(0, can->reg_base + KVASER_PCIEFD_KCAN_IEN_REG);
-		del_timer(&can->bec_poll_timer);
+		timer_delete(&can->bec_poll_timer);
 	}
 	can->can.state = CAN_STATE_STOPPED;
 	netdev_reset_queue(netdev);
@@ -1884,7 +1884,7 @@ static void kvaser_pciefd_remove(struct pci_dev *pdev)
 		struct kvaser_pciefd_can *can = pcie->can[i];
 
 		unregister_candev(can->can.dev);
-		del_timer(&can->bec_poll_timer);
+		timer_delete(&can->bec_poll_timer);
 		kvaser_pciefd_pwm_stop(can);
 	}
 

@@ -24,6 +24,7 @@
 #include "raid10.h"
 #include "raid0.h"
 #include "md-bitmap.h"
+#include "md-cluster.h"
 
 /*
  * RAID10 provides a combination of RAID0 and RAID1 functionality.
@@ -1347,9 +1348,9 @@ static void raid10_write_request(struct mddev *mddev, struct bio *bio,
 	int error;
 
 	if ((mddev_is_clustered(mddev) &&
-	     md_cluster_ops->area_resyncing(mddev, WRITE,
-					    bio->bi_iter.bi_sector,
-					    bio_end_sector(bio)))) {
+	     mddev->cluster_ops->area_resyncing(mddev, WRITE,
+						bio->bi_iter.bi_sector,
+						bio_end_sector(bio)))) {
 		DEFINE_WAIT(w);
 		/* Bail out if REQ_NOWAIT is set for the bio */
 		if (bio->bi_opf & REQ_NOWAIT) {
@@ -1359,7 +1360,7 @@ static void raid10_write_request(struct mddev *mddev, struct bio *bio,
 		for (;;) {
 			prepare_to_wait(&conf->wait_barrier,
 					&w, TASK_IDLE);
-			if (!md_cluster_ops->area_resyncing(mddev, WRITE,
+			if (!mddev->cluster_ops->area_resyncing(mddev, WRITE,
 				 bio->bi_iter.bi_sector, bio_end_sector(bio)))
 				break;
 			schedule();
@@ -2778,7 +2779,7 @@ static void fix_read_error(struct r10conf *conf, struct mddev *mddev, struct r10
 	}
 }
 
-static int narrow_write_error(struct r10bio *r10_bio, int i)
+static bool narrow_write_error(struct r10bio *r10_bio, int i)
 {
 	struct bio *bio = r10_bio->master_bio;
 	struct mddev *mddev = r10_bio->mddev;
@@ -2799,10 +2800,10 @@ static int narrow_write_error(struct r10bio *r10_bio, int i)
 	sector_t sector;
 	int sectors;
 	int sect_to_write = r10_bio->sectors;
-	int ok = 1;
+	bool ok = true;
 
 	if (rdev->badblocks.shift < 0)
-		return 0;
+		return false;
 
 	block_sectors = roundup(1 << rdev->badblocks.shift,
 				bdev_logical_block_size(rdev->bdev) >> 9);
@@ -3708,7 +3709,7 @@ static sector_t raid10_sync_request(struct mddev *mddev, sector_t sector_nr,
 			conf->cluster_sync_low = mddev->curr_resync_completed;
 			raid10_set_cluster_sync_high(conf);
 			/* Send resync message */
-			md_cluster_ops->resync_info_update(mddev,
+			mddev->cluster_ops->resync_info_update(mddev,
 						conf->cluster_sync_low,
 						conf->cluster_sync_high);
 		}
@@ -3741,7 +3742,7 @@ static sector_t raid10_sync_request(struct mddev *mddev, sector_t sector_nr,
 		}
 		if (broadcast_msg) {
 			raid10_set_cluster_sync_high(conf);
-			md_cluster_ops->resync_info_update(mddev,
+			mddev->cluster_ops->resync_info_update(mddev,
 						conf->cluster_sync_low,
 						conf->cluster_sync_high);
 		}
@@ -4533,7 +4534,7 @@ static int raid10_start_reshape(struct mddev *mddev)
 		if (ret)
 			goto abort;
 
-		ret = md_cluster_ops->resize_bitmaps(mddev, newsize, oldsize);
+		ret = mddev->cluster_ops->resize_bitmaps(mddev, newsize, oldsize);
 		if (ret) {
 			mddev->bitmap_ops->resize(mddev, oldsize, 0, false);
 			goto abort;
@@ -4824,7 +4825,7 @@ read_more:
 				conf->cluster_sync_low = sb_reshape_pos;
 		}
 
-		md_cluster_ops->resync_info_update(mddev, conf->cluster_sync_low,
+		mddev->cluster_ops->resync_info_update(mddev, conf->cluster_sync_low,
 							  conf->cluster_sync_high);
 	}
 
@@ -4969,7 +4970,7 @@ static void raid10_update_reshape_pos(struct mddev *mddev)
 	struct r10conf *conf = mddev->private;
 	sector_t lo, hi;
 
-	md_cluster_ops->resync_info_get(mddev, &lo, &hi);
+	mddev->cluster_ops->resync_info_get(mddev, &lo, &hi);
 	if (((mddev->reshape_position <= hi) && (mddev->reshape_position >= lo))
 	    || mddev->reshape_position == MaxSector)
 		conf->reshape_progress = mddev->reshape_position;
@@ -5115,9 +5116,13 @@ static void raid10_finish_reshape(struct mddev *mddev)
 
 static struct md_personality raid10_personality =
 {
-	.name		= "raid10",
-	.level		= 10,
-	.owner		= THIS_MODULE,
+	.head = {
+		.type	= MD_PERSONALITY,
+		.id	= ID_RAID10,
+		.name	= "raid10",
+		.owner	= THIS_MODULE,
+	},
+
 	.make_request	= raid10_make_request,
 	.run		= raid10_run,
 	.free		= raid10_free,
@@ -5137,18 +5142,18 @@ static struct md_personality raid10_personality =
 	.update_reshape_pos = raid10_update_reshape_pos,
 };
 
-static int __init raid_init(void)
+static int __init raid10_init(void)
 {
-	return register_md_personality(&raid10_personality);
+	return register_md_submodule(&raid10_personality.head);
 }
 
-static void raid_exit(void)
+static void __exit raid10_exit(void)
 {
-	unregister_md_personality(&raid10_personality);
+	unregister_md_submodule(&raid10_personality.head);
 }
 
-module_init(raid_init);
-module_exit(raid_exit);
+module_init(raid10_init);
+module_exit(raid10_exit);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("RAID10 (striped mirror) personality for MD");
 MODULE_ALIAS("md-personality-9"); /* RAID10 */

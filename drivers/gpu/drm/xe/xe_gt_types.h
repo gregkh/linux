@@ -121,6 +121,8 @@ struct xe_gt {
 		enum xe_gt_type type;
 		/** @info.reference_clock: clock frequency */
 		u32 reference_clock;
+		/** @info.timestamp_base: GT timestamp base */
+		u32 timestamp_base;
 		/**
 		 * @info.engine_mask: mask of engines present on GT. Some of
 		 * them may be reserved in runtime and not available for user.
@@ -139,7 +141,7 @@ struct xe_gt {
 	/** @stats: GT stats */
 	struct {
 		/** @stats.counters: counters for various GT stats */
-		atomic_t counters[__XE_GT_STATS_NUM_IDS];
+		atomic64_t counters[__XE_GT_STATS_NUM_IDS];
 	} stats;
 #endif
 
@@ -440,6 +442,9 @@ struct xe_gt {
 
 	/** @oa: oa observation subsystem per gt info */
 	struct xe_oa_gt oa;
+
+	/** @eu_stall: EU stall counters subsystem per gt info */
+	struct xe_eu_stall_gt *eu_stall;
 };
 
 #endif

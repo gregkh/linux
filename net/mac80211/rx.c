@@ -1242,7 +1242,7 @@ static void ieee80211_sta_reorder_release(struct ieee80211_sub_if_data *sdata,
 				  tid_agg_rx->reorder_time[j] + 1 +
 				  HT_RX_REORDER_BUF_TIMEOUT);
 	} else {
-		del_timer(&tid_agg_rx->reorder_timer);
+		timer_delete(&tid_agg_rx->reorder_timer);
 	}
 }
 
@@ -3811,6 +3811,14 @@ ieee80211_rx_h_action(struct ieee80211_rx_data *rx)
 					      u.action.u.ttlm_res))
 				goto invalid;
 			goto queue;
+		case WLAN_PROTECTED_EHT_ACTION_TTLM_TEARDOWN:
+			if (sdata->vif.type != NL80211_IFTYPE_STATION)
+				break;
+
+			if (len < offsetofend(typeof(*mgmt),
+					      u.action.u.ttlm_tear_down))
+				goto invalid;
+			goto queue;
 		case WLAN_PROTECTED_EHT_ACTION_LINK_RECONFIG_RESP:
 			if (sdata->vif.type != NL80211_IFTYPE_STATION)
 				break;
@@ -3821,6 +3829,23 @@ ieee80211_rx_h_action(struct ieee80211_rx_data *rx)
 			if (len <
 			    offsetofend(typeof(*mgmt),
 					u.action.u.ml_reconf_resp) + 3)
+				goto invalid;
+			goto queue;
+		case WLAN_PROTECTED_EHT_ACTION_EPCS_ENABLE_RESP:
+			if (sdata->vif.type != NL80211_IFTYPE_STATION)
+				break;
+
+			if (len < offsetofend(typeof(*mgmt),
+					      u.action.u.epcs) +
+			    IEEE80211_EPCS_ENA_RESP_BODY_LEN)
+				goto invalid;
+			goto queue;
+		case WLAN_PROTECTED_EHT_ACTION_EPCS_ENABLE_TEARDOWN:
+			if (sdata->vif.type != NL80211_IFTYPE_STATION)
+				break;
+
+			if (len < offsetofend(typeof(*mgmt),
+					      u.action.u.epcs))
 				goto invalid;
 			goto queue;
 		default:

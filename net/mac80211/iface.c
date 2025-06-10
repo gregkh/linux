@@ -526,7 +526,7 @@ static void ieee80211_do_stop(struct ieee80211_sub_if_data *sdata, bool going_do
 		netif_addr_unlock_bh(sdata->dev);
 	}
 
-	del_timer_sync(&local->dynamic_ps_timer);
+	timer_delete_sync(&local->dynamic_ps_timer);
 	wiphy_work_cancel(local->hw.wiphy, &local->dynamic_ps_enable_work);
 
 	WARN(ieee80211_vif_is_mld(&sdata->vif),
@@ -1563,9 +1563,20 @@ static void ieee80211_iface_process_skb(struct ieee80211_local *local,
 				ieee80211_process_neg_ttlm_res(sdata, mgmt,
 							       skb->len);
 				break;
+			case WLAN_PROTECTED_EHT_ACTION_TTLM_TEARDOWN:
+				ieee80211_process_ttlm_teardown(sdata);
+				break;
 			case WLAN_PROTECTED_EHT_ACTION_LINK_RECONFIG_RESP:
 				ieee80211_process_ml_reconf_resp(sdata, mgmt,
 								 skb->len);
+				break;
+			case WLAN_PROTECTED_EHT_ACTION_EPCS_ENABLE_RESP:
+				ieee80211_process_epcs_ena_resp(sdata, mgmt,
+								skb->len);
+				break;
+			case WLAN_PROTECTED_EHT_ACTION_EPCS_ENABLE_TEARDOWN:
+				ieee80211_process_epcs_teardown(sdata, mgmt,
+								skb->len);
 				break;
 			default:
 				break;

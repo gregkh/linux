@@ -383,10 +383,6 @@ static unsigned int crypto_ctxsize(struct crypto_alg *alg, u32 type, u32 mask)
 	case CRYPTO_ALG_TYPE_CIPHER:
 		len += crypto_cipher_ctxsize(alg);
 		break;
-
-	case CRYPTO_ALG_TYPE_COMPRESS:
-		len += crypto_compress_ctxsize(alg);
-		break;
 	}
 
 	return len;
@@ -706,6 +702,16 @@ void crypto_req_done(void *data, int err)
 	complete(&wait->completion);
 }
 EXPORT_SYMBOL_GPL(crypto_req_done);
+
+void crypto_destroy_alg(struct crypto_alg *alg)
+{
+	if (alg->cra_type && alg->cra_type->destroy)
+		alg->cra_type->destroy(alg);
+
+	if (alg->cra_destroy)
+		alg->cra_destroy(alg);
+}
+EXPORT_SYMBOL_GPL(crypto_destroy_alg);
 
 MODULE_DESCRIPTION("Cryptographic core API");
 MODULE_LICENSE("GPL");

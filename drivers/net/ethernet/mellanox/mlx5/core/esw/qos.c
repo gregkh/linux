@@ -90,15 +90,30 @@ struct mlx5_esw_sched_node {
 	struct list_head children;
 	/* Valid only if this node is associated with a vport. */
 	struct mlx5_vport *vport;
+	/* Level in the hierarchy. The root node level is 1. */
+	u8 level;
 };
+
+static void esw_qos_node_attach_to_parent(struct mlx5_esw_sched_node *node)
+{
+	if (!node->parent) {
+		/* Root children are assigned a depth level of 2. */
+		node->level = 2;
+		list_add_tail(&node->entry, &node->esw->qos.domain->nodes);
+	} else {
+		node->level = node->parent->level + 1;
+		list_add_tail(&node->entry, &node->parent->children);
+	}
+}
 
 static void
 esw_qos_node_set_parent(struct mlx5_esw_sched_node *node, struct mlx5_esw_sched_node *parent)
 {
 	list_del_init(&node->entry);
 	node->parent = parent;
-	list_add_tail(&node->entry, &parent->children);
-	node->esw = parent->esw;
+	if (parent)
+		node->esw = parent->esw;
+	esw_qos_node_attach_to_parent(node);
 }
 
 void mlx5_esw_qos_vport_qos_free(struct mlx5_vport *vport)
@@ -361,7 +376,6 @@ static struct mlx5_esw_sched_node *
 __esw_qos_alloc_node(struct mlx5_eswitch *esw, u32 tsar_ix, enum sched_node_type type,
 		     struct mlx5_esw_sched_node *parent)
 {
-	struct list_head *parent_children;
 	struct mlx5_esw_sched_node *node;
 
 	node = kzalloc(sizeof(*node), GFP_KERNEL);
@@ -373,8 +387,7 @@ __esw_qos_alloc_node(struct mlx5_eswitch *esw, u32 tsar_ix, enum sched_node_type
 	node->type = type;
 	node->parent = parent;
 	INIT_LIST_HEAD(&node->children);
-	parent_children = parent ? &parent->children : &esw->qos.domain->nodes;
-	list_add_tail(&node->entry, parent_children);
+	esw_qos_node_attach_to_parent(node);
 
 	return node;
 }
@@ -991,10 +1004,10 @@ int mlx5_esw_qos_vport_update_parent(struct mlx5_vport *vport, struct mlx5_esw_s
 	return err;
 }
 
-int mlx5_esw_devlink_rate_parent_set(struct devlink_rate *devlink_rate,
-				     struct devlink_rate *parent,
-				     void *priv, void *parent_priv,
-				     struct netlink_ext_ack *extack)
+int mlx5_esw_devlink_rate_leaf_parent_set(struct devlink_rate *devlink_rate,
+					  struct devlink_rate *parent,
+					  void *priv, void *parent_priv,
+					  struct netlink_ext_ack *extack)
 {
 	struct mlx5_esw_sched_node *node;
 	struct mlx5_vport *vport = priv;
@@ -1004,4 +1017,106 @@ int mlx5_esw_devlink_rate_parent_set(struct devlink_rate *devlink_rate,
 
 	node = parent_priv;
 	return mlx5_esw_qos_vport_update_parent(vport, node, extack);
+}
+
+static int
+mlx5_esw_qos_node_validate_set_parent(struct mlx5_esw_sched_node *node,
+				      struct mlx5_esw_sched_node *parent,
+				      struct netlink_ext_ack *extack)
+{
+	u8 new_level, max_level;
+
+	if (parent && parent->esw != node->esw) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Cannot assign node to another E-Switch");
+		return -EOPNOTSUPP;
+	}
+
+	if (!list_empty(&node->children)) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Cannot reassign a node that contains rate objects");
+		return -EOPNOTSUPP;
+	}
+
+	new_level = parent ? parent->level + 1 : 2;
+	max_level = 1 << MLX5_CAP_QOS(node->esw->dev, log_esw_max_sched_depth);
+	if (new_level > max_level) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Node hierarchy depth exceeds the maximum supported level");
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
+static int esw_qos_vports_node_update_parent(struct mlx5_esw_sched_node *node,
+					     struct mlx5_esw_sched_node *parent,
+					     struct netlink_ext_ack *extack)
+{
+	struct mlx5_esw_sched_node *curr_parent = node->parent;
+	struct mlx5_eswitch *esw = node->esw;
+	u32 parent_ix;
+	int err;
+
+	parent_ix = parent ? parent->ix : node->esw->qos.root_tsar_ix;
+	mlx5_destroy_scheduling_element_cmd(esw->dev,
+					    SCHEDULING_HIERARCHY_E_SWITCH,
+					    node->ix);
+	err = esw_qos_create_node_sched_elem(esw->dev, parent_ix,
+					     node->max_rate, 0, &node->ix);
+	if (err) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Failed to create a node under the new hierarchy.");
+		if (esw_qos_create_node_sched_elem(esw->dev, curr_parent->ix,
+						   node->max_rate,
+						   node->bw_share,
+						   &node->ix))
+			esw_warn(esw->dev, "Node restore QoS failed\n");
+
+		return err;
+	}
+	esw_qos_node_set_parent(node, parent);
+
+	return 0;
+}
+
+static int mlx5_esw_qos_node_update_parent(struct mlx5_esw_sched_node *node,
+					   struct mlx5_esw_sched_node *parent,
+					   struct netlink_ext_ack *extack)
+{
+	struct mlx5_esw_sched_node *curr_parent;
+	struct mlx5_eswitch *esw = node->esw;
+	int err;
+
+	err = mlx5_esw_qos_node_validate_set_parent(node, parent, extack);
+	if (err)
+		return err;
+
+	esw_qos_lock(esw);
+	curr_parent = node->parent;
+	err = esw_qos_vports_node_update_parent(node, parent, extack);
+	if (err)
+		goto out;
+
+	esw_qos_normalize_min_rate(esw, curr_parent, extack);
+	esw_qos_normalize_min_rate(esw, parent, extack);
+
+out:
+	esw_qos_unlock(esw);
+
+	return err;
+}
+
+int mlx5_esw_devlink_rate_node_parent_set(struct devlink_rate *devlink_rate,
+					  struct devlink_rate *parent,
+					  void *priv, void *parent_priv,
+					  struct netlink_ext_ack *extack)
+{
+	struct mlx5_esw_sched_node *node = priv, *parent_node;
+
+	if (!parent)
+		return mlx5_esw_qos_node_update_parent(node, NULL, extack);
+
+	parent_node = parent_priv;
+	return mlx5_esw_qos_node_update_parent(node, parent_node, extack);
 }

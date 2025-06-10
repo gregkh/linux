@@ -242,7 +242,7 @@ int cifs_try_adding_channels(struct cifs_ses *ses)
 
 			iface->num_channels++;
 			iface->weight_fulfilled++;
-			cifs_dbg(VFS, "successfully opened new channel on iface:%pIS\n",
+			cifs_info("successfully opened new channel on iface:%pIS\n",
 				 &iface->sockaddr);
 			break;
 		}
@@ -501,6 +501,7 @@ cifs_ses_add_channel(struct cifs_ses *ses,
 	ctx->password = ses->password;
 	ctx->sectype = ses->sectype;
 	ctx->sign = ses->sign;
+	ctx->unicode = ses->unicode;
 
 	/* UNC and paths */
 	/* XXX: Use ses->server->hostname? */

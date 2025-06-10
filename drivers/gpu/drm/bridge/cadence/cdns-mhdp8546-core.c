@@ -1619,7 +1619,7 @@ bool cdns_mhdp_bandwidth_ok(struct cdns_mhdp_device *mhdp,
 
 static
 enum drm_mode_status cdns_mhdp_mode_valid(struct drm_connector *conn,
-					  struct drm_display_mode *mode)
+					  const struct drm_display_mode *mode)
 {
 	struct cdns_mhdp_device *mhdp = connector_to_mhdp(conn);
 
@@ -1979,10 +1979,9 @@ static void cdns_mhdp_sst_enable(struct cdns_mhdp_device *mhdp,
 }
 
 static void cdns_mhdp_atomic_enable(struct drm_bridge *bridge,
-				    struct drm_bridge_state *bridge_state)
+				    struct drm_atomic_state *state)
 {
 	struct cdns_mhdp_device *mhdp = bridge_to_mhdp(bridge);
-	struct drm_atomic_state *state = bridge_state->base.state;
 	struct cdns_mhdp_bridge_state *mhdp_state;
 	struct drm_crtc_state *crtc_state;
 	struct drm_connector *connector;
@@ -2070,7 +2069,7 @@ out:
 }
 
 static void cdns_mhdp_atomic_disable(struct drm_bridge *bridge,
-				     struct drm_bridge_state *bridge_state)
+				     struct drm_atomic_state *state)
 {
 	struct cdns_mhdp_device *mhdp = bridge_to_mhdp(bridge);
 	u32 resp;

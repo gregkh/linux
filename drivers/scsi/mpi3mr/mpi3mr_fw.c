@@ -449,9 +449,12 @@ int mpi3mr_process_admin_reply_q(struct mpi3mr_ioc *mrioc)
 	u16 threshold_comps = 0;
 	struct mpi3_default_reply_descriptor *reply_desc;
 
-	if (!atomic_add_unless(&mrioc->admin_reply_q_in_use, 1, 1))
+	if (!atomic_add_unless(&mrioc->admin_reply_q_in_use, 1, 1)) {
+		atomic_inc(&mrioc->admin_pend_isr);
 		return 0;
+	}
 
+	atomic_set(&mrioc->admin_pend_isr, 0);
 	reply_desc = (struct mpi3_default_reply_descriptor *)mrioc->admin_reply_base +
 	    admin_reply_ci;
 
@@ -1305,7 +1308,7 @@ static int mpi3mr_issue_and_process_mur(struct mpi3mr_ioc *mrioc,
 	      (ioc_config & MPI3_SYSIF_IOC_CONFIG_ENABLE_IOC)))
 		retval = 0;
 
-	ioc_info(mrioc, "Base IOC Sts/Config after %s MUR is (0x%x)/(0x%x)\n",
+	ioc_info(mrioc, "Base IOC Sts/Config after %s MUR is (0x%08x)/(0x%08x)\n",
 	    (!retval) ? "successful" : "failed", ioc_status, ioc_config);
 	return retval;
 }
@@ -1357,6 +1360,19 @@ mpi3mr_revalidate_factsdata(struct mpi3mr_ioc *mrioc)
 		    "critical error: multipath capability is enabled at the\n"
 		    "\tcontroller while sas transport support is enabled at the\n"
 		    "\tdriver, please reboot the system or reload the driver\n");
+
+	if (mrioc->seg_tb_support) {
+		if (!(mrioc->facts.ioc_capabilities &
+		     MPI3_IOCFACTS_CAPABILITY_SEG_DIAG_TRACE_SUPPORTED)) {
+			ioc_err(mrioc,
+			    "critical error: previously enabled segmented trace\n"
+			    " buffer capability is disabled after reset. Please\n"
+			    " update the firmware or reboot the system or\n"
+			    " reload the driver to enable trace diag buffer\n");
+			mrioc->diag_buffers[0].disabled_after_reset = true;
+		} else
+			mrioc->diag_buffers[0].disabled_after_reset = false;
+	}
 
 	if (mrioc->facts.max_devhandle > mrioc->dev_handle_bitmap_bits) {
 		removepend_bitmap = bitmap_zalloc(mrioc->facts.max_devhandle,
@@ -1720,7 +1736,7 @@ static int mpi3mr_issue_reset(struct mpi3mr_ioc *mrioc, u16 reset_type,
 	ioc_config = readl(&mrioc->sysif_regs->ioc_configuration);
 	ioc_status = readl(&mrioc->sysif_regs->ioc_status);
 	ioc_info(mrioc,
-	    "ioc_status/ioc_onfig after %s reset is (0x%x)/(0x%x)\n",
+	    "ioc_status/ioc_config after %s reset is (0x%08x)/(0x%08x)\n",
 	    (!retval)?"successful":"failed", ioc_status,
 	    ioc_config);
 	if (retval)
@@ -2747,6 +2763,12 @@ static void mpi3mr_watchdog_work(struct work_struct *work)
 		return;
 	}
 
+	if (atomic_read(&mrioc->admin_pend_isr)) {
+		ioc_err(mrioc, "Unprocessed admin ISR instance found\n"
+				"flush admin replies\n");
+		mpi3mr_process_admin_reply_q(mrioc);
+	}
+
 	if (!(mrioc->facts.ioc_capabilities &
 		MPI3_IOCFACTS_CAPABILITY_NON_SUPERVISOR_IOC) &&
 		(mrioc->ts_update_counter++ >= mrioc->ts_update_interval)) {
@@ -2907,6 +2929,7 @@ static int mpi3mr_setup_admin_qpair(struct mpi3mr_ioc *mrioc)
 	mrioc->admin_reply_ci = 0;
 	mrioc->admin_reply_ephase = 1;
 	atomic_set(&mrioc->admin_reply_q_in_use, 0);
+	atomic_set(&mrioc->admin_pend_isr, 0);
 
 	if (!mrioc->admin_req_base) {
 		mrioc->admin_req_base = dma_alloc_coherent(&mrioc->pdev->dev,
@@ -4244,6 +4267,10 @@ retry_init:
 	if (mrioc->facts.max_req_limit)
 		mrioc->prevent_reply_qfull = true;
 
+	if (mrioc->facts.ioc_capabilities &
+		MPI3_IOCFACTS_CAPABILITY_SEG_DIAG_TRACE_SUPPORTED)
+		mrioc->seg_tb_support = true;
+
 	mrioc->reply_sz = mrioc->facts.reply_sz;
 
 	retval = mpi3mr_check_reset_dma_mask(mrioc);
@@ -4631,6 +4658,7 @@ void mpi3mr_memset_buffers(struct mpi3mr_ioc *mrioc)
 	if (mrioc->admin_reply_base)
 		memset(mrioc->admin_reply_base, 0, mrioc->admin_reply_q_sz);
 	atomic_set(&mrioc->admin_reply_q_in_use, 0);
+	atomic_set(&mrioc->admin_pend_isr, 0);
 
 	if (mrioc->init_cmds.reply) {
 		memset(mrioc->init_cmds.reply, 0, sizeof(*mrioc->init_cmds.reply));
@@ -4702,7 +4730,7 @@ void mpi3mr_memset_buffers(struct mpi3mr_ioc *mrioc)
  */
 void mpi3mr_free_mem(struct mpi3mr_ioc *mrioc)
 {
-	u16 i;
+	u16 i, j;
 	struct mpi3mr_intr_info *intr_info;
 	struct diag_buffer_desc *diag_buffer;
 
@@ -4837,6 +4865,26 @@ void mpi3mr_free_mem(struct mpi3mr_ioc *mrioc)
 
 	for (i = 0; i < MPI3MR_MAX_NUM_HDB; i++) {
 		diag_buffer = &mrioc->diag_buffers[i];
+		if ((i == 0) && mrioc->seg_tb_support) {
+			if (mrioc->trace_buf_pool) {
+				for (j = 0; j < mrioc->num_tb_segs; j++) {
+					if (mrioc->trace_buf[j].segment) {
+						dma_pool_free(mrioc->trace_buf_pool,
+						    mrioc->trace_buf[j].segment,
+						    mrioc->trace_buf[j].segment_dma);
+						mrioc->trace_buf[j].segment = NULL;
+					}
+
+					mrioc->trace_buf[j].segment = NULL;
+				}
+				dma_pool_destroy(mrioc->trace_buf_pool);
+				mrioc->trace_buf_pool = NULL;
+			}
+
+			kfree(mrioc->trace_buf);
+			mrioc->trace_buf = NULL;
+			diag_buffer->size = sizeof(u64) * mrioc->num_tb_segs;
+		}
 		if (diag_buffer->addr) {
 			dma_free_coherent(&mrioc->pdev->dev,
 			    diag_buffer->size, diag_buffer->addr,
@@ -4914,7 +4962,7 @@ static void mpi3mr_issue_ioc_shutdown(struct mpi3mr_ioc *mrioc)
 	}
 
 	ioc_info(mrioc,
-	    "Base IOC Sts/Config after %s shutdown is (0x%x)/(0x%x)\n",
+	    "Base IOC Sts/Config after %s shutdown is (0x%08x)/(0x%08x)\n",
 	    (!retval) ? "successful" : "failed", ioc_status,
 	    ioc_config);
 }

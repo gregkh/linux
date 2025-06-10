@@ -168,7 +168,7 @@ int bch2_xattr_set(struct btree_trans *trans, subvol_inum inum,
 		   int type, int flags)
 {
 	struct bch_fs *c = trans->c;
-	struct btree_iter inode_iter = { NULL };
+	struct btree_iter inode_iter = {};
 	int ret;
 
 	ret   = bch2_subvol_is_ro_trans(trans, inum.subvol) ?:
@@ -473,6 +473,12 @@ static int inode_opt_set_fn(struct btree_trans *trans,
 {
 	struct inode_opt_set *s = p;
 
+	if (s->id == Inode_opt_casefold) {
+		int ret = bch2_inode_set_casefold(trans, inode_inum(inode), bi, s->v);
+		if (ret)
+			return ret;
+	}
+
 	if (s->defined)
 		bi->bi_fields_set |= 1U << s->id;
 	else
@@ -523,7 +529,7 @@ static int bch2_xattr_bcachefs_set(const struct xattr_handler *handler,
 		if (ret < 0)
 			goto err_class_exit;
 
-		ret = bch2_opt_check_may_set(c, opt_id, v);
+		ret = bch2_opt_check_may_set(c, NULL, opt_id, v);
 		if (ret < 0)
 			goto err_class_exit;
 

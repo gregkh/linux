@@ -168,7 +168,7 @@ static struct iio_buffer *axi_dac_request_buffer(struct iio_backend *back,
 static void axi_dac_free_buffer(struct iio_backend *back,
 				struct iio_buffer *buffer)
 {
-	iio_dmaengine_buffer_free(buffer);
+	iio_dmaengine_buffer_teardown(buffer);
 }
 
 enum {
@@ -727,6 +727,9 @@ static int axi_dac_bus_set_io_mode(struct iio_backend *back,
 {
 	struct axi_dac_state *st = iio_backend_get_priv(back);
 	int ival, ret;
+
+	if (mode > AD3552R_IO_MODE_QSPI)
+		return -EINVAL;
 
 	guard(mutex)(&st->lock);
 

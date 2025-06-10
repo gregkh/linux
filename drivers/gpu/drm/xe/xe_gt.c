@@ -19,6 +19,7 @@
 #include "xe_bb.h"
 #include "xe_bo.h"
 #include "xe_device.h"
+#include "xe_eu_stall.h"
 #include "xe_exec_queue.h"
 #include "xe_execlist.h"
 #include "xe_force_wake.h"
@@ -139,26 +140,6 @@ static void xe_gt_disable_host_l2_vram(struct xe_gt *gt)
 	xe_gt_mcr_multicast_write(gt, XE2_GAMREQSTRM_CTRL, reg);
 
 	xe_force_wake_put(gt_to_fw(gt), fw_ref);
-}
-
-/**
- * xe_gt_remove() - Clean up the GT structures before driver removal
- * @gt: the GT object
- *
- * This function should only act on objects/structures that must be cleaned
- * before the driver removal callback is complete and therefore can't be
- * deferred to a drmm action.
- */
-void xe_gt_remove(struct xe_gt *gt)
-{
-	int i;
-
-	xe_uc_remove(&gt->uc);
-
-	for (i = 0; i < XE_ENGINE_CLASS_MAX; ++i)
-		xe_hw_fence_irq_finish(&gt->fence_irq[i]);
-
-	xe_gt_disable_host_l2_vram(gt);
 }
 
 static void gt_reset_worker(struct work_struct *w);
@@ -411,13 +392,11 @@ static void dump_pat_on_error(struct xe_gt *gt)
 static int gt_fw_domain_init(struct xe_gt *gt)
 {
 	unsigned int fw_ref;
-	int err, i;
+	int err;
 
 	fw_ref = xe_force_wake_get(gt_to_fw(gt), XE_FW_GT);
-	if (!fw_ref) {
-		err = -ETIMEDOUT;
-		goto err_hw_fence_irq;
-	}
+	if (!fw_ref)
+		return -ETIMEDOUT;
 
 	if (!xe_gt_is_media_type(gt)) {
 		err = xe_ggtt_init(gt_to_tile(gt)->mem.ggtt);
@@ -458,9 +437,6 @@ static int gt_fw_domain_init(struct xe_gt *gt)
 err_force_wake:
 	dump_pat_on_error(gt);
 	xe_force_wake_put(gt_to_fw(gt), fw_ref);
-err_hw_fence_irq:
-	for (i = 0; i < XE_ENGINE_CLASS_MAX; ++i)
-		xe_hw_fence_irq_finish(&gt->fence_irq[i]);
 
 	return err;
 }
@@ -468,7 +444,7 @@ err_hw_fence_irq:
 static int all_fw_domain_init(struct xe_gt *gt)
 {
 	unsigned int fw_ref;
-	int err, i;
+	int err;
 
 	fw_ref = xe_force_wake_get(gt_to_fw(gt), XE_FORCEWAKE_ALL);
 	if (!xe_force_wake_ref_has_domain(fw_ref, XE_FORCEWAKE_ALL)) {
@@ -548,8 +524,6 @@ static int all_fw_domain_init(struct xe_gt *gt)
 
 err_force_wake:
 	xe_force_wake_put(gt_to_fw(gt), fw_ref);
-	for (i = 0; i < XE_ENGINE_CLASS_MAX; ++i)
-		xe_hw_fence_irq_finish(&gt->fence_irq[i]);
 
 	return err;
 }
@@ -587,6 +561,17 @@ out_fw:
 	return err;
 }
 
+static void xe_gt_fini(void *arg)
+{
+	struct xe_gt *gt = arg;
+	int i;
+
+	for (i = 0; i < XE_ENGINE_CLASS_MAX; ++i)
+		xe_hw_fence_irq_finish(&gt->fence_irq[i]);
+
+	xe_gt_disable_host_l2_vram(gt);
+}
+
 int xe_gt_init(struct xe_gt *gt)
 {
 	int err;
@@ -598,6 +583,10 @@ int xe_gt_init(struct xe_gt *gt)
 		gt->ring_ops[i] = xe_ring_ops_get(gt, i);
 		xe_hw_fence_irq_init(&gt->fence_irq[i]);
 	}
+
+	err = devm_add_action_or_reset(gt_to_xe(gt)->drm.dev, xe_gt_fini, gt);
+	if (err)
+		return err;
 
 	err = xe_gt_pagefault_init(gt);
 	if (err)
@@ -629,6 +618,10 @@ int xe_gt_init(struct xe_gt *gt)
 
 	xe_gt_record_user_engines(gt);
 
+	err = xe_eu_stall_init(gt);
+	if (err)
+		return err;
+
 	return 0;
 }
 
@@ -642,10 +635,9 @@ int xe_gt_init(struct xe_gt *gt)
 void xe_gt_mmio_init(struct xe_gt *gt)
 {
 	struct xe_tile *tile = gt_to_tile(gt);
+	struct xe_device *xe = tile_to_xe(tile);
 
-	gt->mmio.regs = tile->mmio.regs;
-	gt->mmio.regs_size = tile->mmio.regs_size;
-	gt->mmio.tile = tile;
+	xe_mmio_init(&gt->mmio, tile, tile->mmio.regs, tile->mmio.regs_size);
 
 	if (gt->info.type == XE_GT_TYPE_MEDIA) {
 		gt->mmio.adj_offset = MEDIA_GT_GSI_OFFSET;
@@ -655,7 +647,7 @@ void xe_gt_mmio_init(struct xe_gt *gt)
 		gt->mmio.adj_limit = 0;
 	}
 
-	if (IS_SRIOV_VF(gt_to_xe(gt)))
+	if (IS_SRIOV_VF(xe))
 		gt->mmio.sriov_vf_gt = gt;
 }
 

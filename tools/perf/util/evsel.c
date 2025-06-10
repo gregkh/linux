@@ -237,6 +237,16 @@ set_methods:
 	return 0;
 }
 
+const char *evsel__pmu_name(const struct evsel *evsel)
+{
+	struct perf_pmu *pmu = evsel__find_pmu(evsel);
+
+	if (pmu)
+		return pmu->name;
+
+	return event_type(evsel->core.attr.type);
+}
+
 #define FD(e, x, y) (*(int *)xyarray__entry(e->core.fd, x, y))
 
 int __evsel__sample_size(u64 sample_type)
@@ -3156,17 +3166,19 @@ int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
 	}
 
 	if (type & PERF_SAMPLE_REGS_USER) {
+		struct regs_dump *regs = perf_sample__user_regs(data);
+
 		OVERFLOW_CHECK_u64(array);
-		data->user_regs.abi = *array;
+		regs->abi = *array;
 		array++;
 
-		if (data->user_regs.abi) {
+		if (regs->abi) {
 			u64 mask = evsel->core.attr.sample_regs_user;
 
 			sz = hweight64(mask) * sizeof(u64);
 			OVERFLOW_CHECK(array, sz, max_size);
-			data->user_regs.mask = mask;
-			data->user_regs.regs = (u64 *)array;
+			regs->mask = mask;
+			regs->regs = (u64 *)array;
 			array = (void *)array + sz;
 		}
 	}
@@ -3210,19 +3222,20 @@ int evsel__parse_sample(struct evsel *evsel, union perf_event *event,
 		array++;
 	}
 
-	data->intr_regs.abi = PERF_SAMPLE_REGS_ABI_NONE;
 	if (type & PERF_SAMPLE_REGS_INTR) {
+		struct regs_dump *regs = perf_sample__intr_regs(data);
+
 		OVERFLOW_CHECK_u64(array);
-		data->intr_regs.abi = *array;
+		regs->abi = *array;
 		array++;
 
-		if (data->intr_regs.abi != PERF_SAMPLE_REGS_ABI_NONE) {
+		if (regs->abi != PERF_SAMPLE_REGS_ABI_NONE) {
 			u64 mask = evsel->core.attr.sample_regs_intr;
 
 			sz = hweight64(mask) * sizeof(u64);
 			OVERFLOW_CHECK(array, sz, max_size);
-			data->intr_regs.mask = mask;
-			data->intr_regs.regs = (u64 *)array;
+			regs->mask = mask;
+			regs->regs = (u64 *)array;
 			array = (void *)array + sz;
 		}
 	}
@@ -3848,10 +3861,10 @@ void evsel__zero_per_pkg(struct evsel *evsel)
  */
 bool evsel__is_hybrid(const struct evsel *evsel)
 {
-	if (perf_pmus__num_core_pmus() == 1)
+	if (!evsel->core.is_pmu_core)
 		return false;
 
-	return evsel->core.is_pmu_core;
+	return perf_pmus__num_core_pmus() > 1;
 }
 
 struct evsel *evsel__leader(const struct evsel *evsel)

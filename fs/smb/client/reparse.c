@@ -1099,18 +1099,13 @@ int parse_reparse_point(struct reparse_data_buffer *buf,
 	}
 }
 
-int smb2_parse_reparse_point(struct cifs_sb_info *cifs_sb,
-			     const char *full_path,
-			     struct kvec *rsp_iov,
-			     struct cifs_open_info_data *data)
+struct reparse_data_buffer *smb2_get_reparse_point_buffer(const struct kvec *rsp_iov,
+							  u32 *plen)
 {
-	struct reparse_data_buffer *buf;
 	struct smb2_ioctl_rsp *io = rsp_iov->iov_base;
-	u32 plen = le32_to_cpu(io->OutputCount);
-
-	buf = (struct reparse_data_buffer *)((u8 *)io +
-					     le32_to_cpu(io->OutputOffset));
-	return parse_reparse_point(buf, plen, cifs_sb, full_path, data);
+	*plen = le32_to_cpu(io->OutputCount);
+	return (struct reparse_data_buffer *)((u8 *)io +
+					      le32_to_cpu(io->OutputOffset));
 }
 
 static bool wsl_to_fattr(struct cifs_open_info_data *data,
@@ -1236,16 +1231,6 @@ bool cifs_reparse_point_to_fattr(struct cifs_sb_info *cifs_sb,
 	bool ok;
 
 	switch (tag) {
-	case IO_REPARSE_TAG_INTERNAL:
-		if (!(fattr->cf_cifsattrs & ATTR_DIRECTORY))
-			return false;
-		fallthrough;
-	case IO_REPARSE_TAG_DFS:
-	case IO_REPARSE_TAG_DFSR:
-	case IO_REPARSE_TAG_MOUNT_POINT:
-		/* See cifs_create_junction_fattr() */
-		fattr->cf_mode = S_IFDIR | 0711;
-		break;
 	case IO_REPARSE_TAG_LX_SYMLINK:
 	case IO_REPARSE_TAG_LX_FIFO:
 	case IO_REPARSE_TAG_AF_UNIX:
@@ -1265,7 +1250,14 @@ bool cifs_reparse_point_to_fattr(struct cifs_sb_info *cifs_sb,
 		fattr->cf_mode |= S_IFLNK;
 		break;
 	default:
-		return false;
+		if (!(fattr->cf_cifsattrs & ATTR_DIRECTORY))
+			return false;
+		if (!IS_REPARSE_TAG_NAME_SURROGATE(tag) &&
+		    tag != IO_REPARSE_TAG_INTERNAL)
+			return false;
+		/* See cifs_create_junction_fattr() */
+		fattr->cf_mode = S_IFDIR | 0711;
+		break;
 	}
 
 	fattr->cf_dtype = S_DT(fattr->cf_mode);

@@ -36,6 +36,11 @@ struct ivpu_hw_info {
 		u8 pn_ratio;
 		u32 profiling_freq;
 	} pll;
+	struct {
+		u32 grace_period[VPU_HWS_NUM_PRIORITY_BANDS];
+		u32 process_quantum[VPU_HWS_NUM_PRIORITY_BANDS];
+		u32 process_grace_period[VPU_HWS_NUM_PRIORITY_BANDS];
+	} hws;
 	u32 tile_fuse;
 	u32 sku;
 	u16 config;
@@ -80,6 +85,11 @@ static inline u64 ivpu_hw_range_size(const struct ivpu_addr_range *range)
 static inline u32 ivpu_hw_dpu_max_freq_get(struct ivpu_device *vdev)
 {
 	return ivpu_hw_btrs_dpu_max_freq_get(vdev);
+}
+
+static inline u32 ivpu_hw_dpu_freq_get(struct ivpu_device *vdev)
+{
+	return ivpu_hw_btrs_dpu_freq_get(vdev);
 }
 
 static inline void ivpu_hw_irq_clear(struct ivpu_device *vdev)

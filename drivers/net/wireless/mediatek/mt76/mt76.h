@@ -1228,6 +1228,8 @@ struct mt76_phy *mt76_alloc_phy(struct mt76_dev *dev, unsigned int size,
 				u8 band_idx);
 int mt76_register_phy(struct mt76_phy *phy, bool vht,
 		      struct ieee80211_rate *rates, int n_rates);
+struct mt76_phy *mt76_vif_phy(struct ieee80211_hw *hw,
+			      struct ieee80211_vif *vif);
 
 struct dentry *mt76_register_debugfs_fops(struct mt76_phy *phy,
 					  const struct file_operations *ops);
@@ -1485,6 +1487,8 @@ void mt76_sta_pre_rcu_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			     struct ieee80211_sta *sta);
 
 int mt76_get_min_avg_rssi(struct mt76_dev *dev, u8 phy_idx);
+
+s8 mt76_get_power_bound(struct mt76_phy *phy, s8 txpower);
 
 int mt76_get_txpower(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		     unsigned int link_id, int *dbm);

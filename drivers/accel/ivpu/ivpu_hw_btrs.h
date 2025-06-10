@@ -32,6 +32,7 @@ void ivpu_hw_btrs_profiling_freq_reg_set_lnl(struct ivpu_device *vdev);
 void ivpu_hw_btrs_ats_print_lnl(struct ivpu_device *vdev);
 void ivpu_hw_btrs_clock_relinquish_disable_lnl(struct ivpu_device *vdev);
 u32 ivpu_hw_btrs_dpu_max_freq_get(struct ivpu_device *vdev);
+u32 ivpu_hw_btrs_dpu_freq_get(struct ivpu_device *vdev);
 bool ivpu_hw_btrs_irq_handler_mtl(struct ivpu_device *vdev, int irq);
 bool ivpu_hw_btrs_irq_handler_lnl(struct ivpu_device *vdev, int irq);
 int ivpu_hw_btrs_dct_get_request(struct ivpu_device *vdev, bool *enable);
@@ -44,5 +45,6 @@ void ivpu_hw_btrs_global_int_disable(struct ivpu_device *vdev);
 void ivpu_hw_btrs_irq_enable(struct ivpu_device *vdev);
 void ivpu_hw_btrs_irq_disable(struct ivpu_device *vdev);
 void ivpu_hw_btrs_diagnose_failure(struct ivpu_device *vdev);
+int ivpu_hw_btrs_platform_read(struct ivpu_device *vdev);
 
 #endif /* __IVPU_HW_BTRS_H__ */

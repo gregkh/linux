@@ -2686,7 +2686,7 @@ svm_range_best_restore_location(struct svm_range *prange,
 		return -1;
 	}
 
-	if (node->adev->flags & AMD_IS_APU)
+	if (node->adev->apu_prefer_gtt)
 		return 0;
 
 	if (prange->preferred_loc == gpuid ||
@@ -3438,7 +3438,7 @@ svm_range_best_prefetch_location(struct svm_range *prange)
 		goto out;
 	}
 
-	if (bo_node->adev->flags & AMD_IS_APU) {
+	if (bo_node->adev->apu_prefer_gtt) {
 		best_loc = 0;
 		goto out;
 	}

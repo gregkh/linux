@@ -14,6 +14,8 @@
 #include "cifspdu.h"
 #include "cifs_unicode.h"
 #include "fs_context.h"
+#include "nterr.h"
+#include "smberr.h"
 
 /*
  * An NT cancel request header looks just like the original request except:
@@ -430,7 +432,7 @@ cifs_negotiate(const unsigned int xid,
 }
 
 static unsigned int
-cifs_negotiate_wsize(struct cifs_tcon *tcon, struct smb3_fs_context *ctx)
+smb1_negotiate_wsize(struct cifs_tcon *tcon, struct smb3_fs_context *ctx)
 {
 	__u64 unix_cap = le64_to_cpu(tcon->fsUnixInfo.Capability);
 	struct TCP_Server_Info *server = tcon->ses->server;
@@ -465,7 +467,7 @@ cifs_negotiate_wsize(struct cifs_tcon *tcon, struct smb3_fs_context *ctx)
 }
 
 static unsigned int
-cifs_negotiate_rsize(struct cifs_tcon *tcon, struct smb3_fs_context *ctx)
+smb1_negotiate_rsize(struct cifs_tcon *tcon, struct smb3_fs_context *ctx)
 {
 	__u64 unix_cap = le64_to_cpu(tcon->fsUnixInfo.Capability);
 	struct TCP_Server_Info *server = tcon->ses->server;
@@ -1185,18 +1187,13 @@ static int cifs_query_symlink(const unsigned int xid,
 	return rc;
 }
 
-static int cifs_parse_reparse_point(struct cifs_sb_info *cifs_sb,
-				    const char *full_path,
-				    struct kvec *rsp_iov,
-				    struct cifs_open_info_data *data)
+static struct reparse_data_buffer *cifs_get_reparse_point_buffer(const struct kvec *rsp_iov,
+								 u32 *plen)
 {
-	struct reparse_data_buffer *buf;
 	TRANSACT_IOCTL_RSP *io = rsp_iov->iov_base;
-	u32 plen = le16_to_cpu(io->ByteCount);
-
-	buf = (struct reparse_data_buffer *)((__u8 *)&io->hdr.Protocol +
-					     le32_to_cpu(io->DataOffset));
-	return parse_reparse_point(buf, plen, cifs_sb, full_path, data);
+	*plen = le16_to_cpu(io->ByteCount);
+	return (struct reparse_data_buffer *)((__u8 *)&io->hdr.Protocol +
+					      le32_to_cpu(io->DataOffset));
 }
 
 static bool
@@ -1279,6 +1276,47 @@ cifs_make_node(unsigned int xid, struct inode *inode,
 				  full_path, mode, dev);
 }
 
+static bool
+cifs_is_network_name_deleted(char *buf, struct TCP_Server_Info *server)
+{
+	struct smb_hdr *shdr = (struct smb_hdr *)buf;
+	struct TCP_Server_Info *pserver;
+	struct cifs_ses *ses;
+	struct cifs_tcon *tcon;
+
+	if (shdr->Flags2 & SMBFLG2_ERR_STATUS) {
+		if (shdr->Status.CifsError != cpu_to_le32(NT_STATUS_NETWORK_NAME_DELETED))
+			return false;
+	} else {
+		if (shdr->Status.DosError.ErrorClass != ERRSRV ||
+		    shdr->Status.DosError.Error != cpu_to_le16(ERRinvtid))
+			return false;
+	}
+
+	/* If server is a channel, select the primary channel */
+	pserver = SERVER_IS_CHAN(server) ? server->primary_server : server;
+
+	spin_lock(&cifs_tcp_ses_lock);
+	list_for_each_entry(ses, &pserver->smb_ses_list, smb_ses_list) {
+		if (cifs_ses_exiting(ses))
+			continue;
+		list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+			if (tcon->tid == shdr->Tid) {
+				spin_lock(&tcon->tc_lock);
+				tcon->need_reconnect = true;
+				spin_unlock(&tcon->tc_lock);
+				spin_unlock(&cifs_tcp_ses_lock);
+				pr_warn_once("Server share %s deleted.\n",
+					     tcon->tree_name);
+				return true;
+			}
+		}
+	}
+	spin_unlock(&cifs_tcp_ses_lock);
+
+	return false;
+}
+
 struct smb_version_operations smb1_operations = {
 	.send_cancel = send_nt_cancel,
 	.compare_fids = cifs_compare_fids,
@@ -1304,8 +1342,8 @@ struct smb_version_operations smb1_operations = {
 	.check_trans2 = cifs_check_trans2,
 	.need_neg = cifs_need_neg,
 	.negotiate = cifs_negotiate,
-	.negotiate_wsize = cifs_negotiate_wsize,
-	.negotiate_rsize = cifs_negotiate_rsize,
+	.negotiate_wsize = smb1_negotiate_wsize,
+	.negotiate_rsize = smb1_negotiate_rsize,
 	.sess_setup = CIFS_SessSetup,
 	.logoff = CIFSSMBLogoff,
 	.tree_connect = CIFSTCon,
@@ -1331,7 +1369,7 @@ struct smb_version_operations smb1_operations = {
 	.rename = CIFSSMBRename,
 	.create_hardlink = CIFSCreateHardLink,
 	.query_symlink = cifs_query_symlink,
-	.parse_reparse_point = cifs_parse_reparse_point,
+	.get_reparse_point_buffer = cifs_get_reparse_point_buffer,
 	.open = cifs_open_file,
 	.set_fid = cifs_set_fid,
 	.close = cifs_close_file,
@@ -1363,6 +1401,7 @@ struct smb_version_operations smb1_operations = {
 	.get_acl_by_fid = get_cifs_acl_by_fid,
 	.set_acl = set_cifs_acl,
 	.make_node = cifs_make_node,
+	.is_network_name_deleted = cifs_is_network_name_deleted,
 };
 
 struct smb_version_values smb1_values = {
@@ -1380,6 +1419,7 @@ struct smb_version_values smb1_values = {
 	.cap_unix = CAP_UNIX,
 	.cap_nt_find = CAP_NT_SMBS | CAP_NT_FIND,
 	.cap_large_files = CAP_LARGE_FILES,
+	.cap_unicode = CAP_UNICODE,
 	.signing_enabled = SECMODE_SIGN_ENABLED,
 	.signing_required = SECMODE_SIGN_REQUIRED,
 };

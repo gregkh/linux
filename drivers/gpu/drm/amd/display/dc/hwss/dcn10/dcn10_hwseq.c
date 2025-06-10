@@ -415,7 +415,8 @@ void dcn10_log_hw_state(struct dc *dc,
 		struct timing_generator *tg = pool->timing_generators[i];
 		struct dcn_otg_state s = {0};
 		/* Read shared OTG state registers for all DCNx */
-		optc1_read_otg_state(DCN10TG_FROM_TG(tg), &s);
+		if (tg->funcs->read_otg_state)
+			tg->funcs->read_otg_state(tg, &s);
 
 		/*
 		 * For DCN2 and greater, a register on the OPP is used to
@@ -3915,4 +3916,33 @@ void dcn10_get_dcc_en_bits(struct dc *dc, int *dcc_en_bits)
 		if (!s->blank_en)
 			dcc_en_bits[i] = s->dcc_en ? 1 : 0;
 	}
+}
+
+/**
+ * dcn10_reset_surface_dcc_and_tiling - Set DCC and tiling in DCN to their disable mode.
+ *
+ * @pipe_ctx: Pointer to the pipe context structure.
+ * @plane_state: Surface state
+ * @clear_tiling: If true set tiling to Linear, otherwise does not change tiling
+ *
+ * This function is responsible for call the HUBP block to disable DCC and set
+ * tiling to the linear mode.
+ */
+void dcn10_reset_surface_dcc_and_tiling(struct pipe_ctx *pipe_ctx,
+					struct dc_plane_state *plane_state,
+					bool clear_tiling)
+{
+	struct hubp *hubp = pipe_ctx->plane_res.hubp;
+
+	if (!hubp)
+		return;
+
+	/* if framebuffer is tiled, disable tiling */
+	if (clear_tiling && hubp->funcs->hubp_clear_tiling)
+		hubp->funcs->hubp_clear_tiling(hubp);
+
+	/* force page flip to see the new content of the framebuffer */
+	hubp->funcs->hubp_program_surface_flip_and_addr(hubp,
+							&plane_state->address,
+							true);
 }

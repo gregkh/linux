@@ -154,14 +154,9 @@ int amdgpu_mes_init(struct amdgpu_device *adev)
 		adev->mes.gfx_hqd_mask[i] = i ? 0 : 0xfffffffe;
 
 	for (i = 0; i < AMDGPU_MES_MAX_SDMA_PIPES; i++) {
-		if (amdgpu_ip_version(adev, SDMA0_HWIP, 0) <
-		    IP_VERSION(6, 0, 0))
-			adev->mes.sdma_hqd_mask[i] = i ? 0 : 0x3fc;
-		/* zero sdma_hqd_mask for non-existent engine */
-		else if (adev->sdma.num_instances == 1)
-			adev->mes.sdma_hqd_mask[i] = i ? 0 : 0xfc;
-		else
-			adev->mes.sdma_hqd_mask[i] = 0xfc;
+		if (i >= adev->sdma.num_instances)
+			break;
+		adev->mes.sdma_hqd_mask[i] = 0xfc;
 	}
 
 	for (i = 0; i < AMDGPU_MAX_MES_PIPES; i++) {
@@ -1244,7 +1239,7 @@ void amdgpu_mes_remove_ring(struct amdgpu_device *adev,
 		return;
 
 	amdgpu_mes_remove_hw_queue(adev, ring->hw_queue_id);
-	del_timer_sync(&ring->fence_drv.fallback_timer);
+	timer_delete_sync(&ring->fence_drv.fallback_timer);
 	amdgpu_ring_fini(ring);
 	kfree(ring);
 }

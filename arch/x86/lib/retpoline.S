@@ -326,6 +326,7 @@ SYM_FUNC_END(retbleed_untrain_ret)
 #if defined(CONFIG_MITIGATION_UNRET_ENTRY) || defined(CONFIG_MITIGATION_SRSO)
 
 SYM_FUNC_START(entry_untrain_ret)
+	ANNOTATE_NOENDBR
 	ALTERNATIVE JMP_RETBLEED_UNTRAIN_RET, JMP_SRSO_UNTRAIN_RET, X86_FEATURE_SRSO
 SYM_FUNC_END(entry_untrain_ret)
 __EXPORT_THUNK(entry_untrain_ret)
@@ -342,7 +343,7 @@ SYM_FUNC_START(call_depth_return_thunk)
 	 * case.
 	 */
 	CALL_THUNKS_DEBUG_INC_RETS
-	shlq	$5, PER_CPU_VAR(pcpu_hot + X86_call_depth)
+	shlq	$5, PER_CPU_VAR(__x86_call_depth)
 	jz	1f
 	ANNOTATE_UNRET_SAFE
 	ret
@@ -370,6 +371,15 @@ SYM_FUNC_END(call_depth_return_thunk)
 
 .macro ITS_THUNK reg
 
+/*
+ * If CFI paranoid is used then the ITS thunk starts with opcodes (0xea; jne 1b)
+ * that complete the fineibt_paranoid caller sequence.
+ */
+1:	.byte 0xea
+SYM_INNER_LABEL(__x86_indirect_paranoid_thunk_\reg, SYM_L_GLOBAL)
+	UNWIND_HINT_UNDEFINED
+	ANNOTATE_NOENDBR
+	jne 1b
 SYM_INNER_LABEL(__x86_indirect_its_thunk_\reg, SYM_L_GLOBAL)
 	UNWIND_HINT_UNDEFINED
 	ANNOTATE_NOENDBR
@@ -377,19 +387,19 @@ SYM_INNER_LABEL(__x86_indirect_its_thunk_\reg, SYM_L_GLOBAL)
 	jmp *%\reg
 	int3
 	.align 32, 0xcc		/* fill to the end of the line */
-	.skip  32, 0xcc		/* skip to the next upper half */
+	.skip  32 - (__x86_indirect_its_thunk_\reg - 1b), 0xcc /* skip to the next upper half */
 .endm
 
 /* ITS mitigation requires thunks be aligned to upper half of cacheline */
 .align 64, 0xcc
-.skip 32, 0xcc
-SYM_CODE_START(__x86_indirect_its_thunk_array)
+.skip 29, 0xcc
 
 #define GEN(reg) ITS_THUNK reg
 #include <asm/GEN-for-each-reg.h>
 #undef GEN
 
 	.align 64, 0xcc
+SYM_FUNC_ALIAS(__x86_indirect_its_thunk_array, __x86_indirect_its_thunk_rax)
 SYM_CODE_END(__x86_indirect_its_thunk_array)
 
 .align 64, 0xcc

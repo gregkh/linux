@@ -168,11 +168,11 @@ static void __noreturn tdx_panic(const char *msg)
 		/* Define register order according to the GHCI */
 		struct { u64 r14, r15, rbx, rdi, rsi, r8, r9, rdx; };
 
-		char str[64];
+		char bytes[64] __nonstring;
 	} message;
 
 	/* VMM assumes '\0' in byte 65, if the message took all 64 bytes */
-	strtomem_pad(message.str, msg, '\0');
+	strtomem_pad(message.bytes, msg, '\0');
 
 	args.r8  = message.r8;
 	args.r9  = message.r9;
@@ -392,6 +392,14 @@ static u64 __cpuidle __halt(const bool irq_disabled)
 static int handle_halt(struct ve_info *ve)
 {
 	const bool irq_disabled = irqs_disabled();
+
+	/*
+	 * HLT with IRQs enabled is unsafe, as an IRQ that is intended to be a
+	 * wake event may be consumed before requesting HLT emulation, leaving
+	 * the vCPU blocking indefinitely.
+	 */
+	if (WARN_ONCE(!irq_disabled, "HLT emulation with IRQs enabled"))
+		return -EIO;
 
 	if (__halt(irq_disabled))
 		return -EIO;

@@ -98,6 +98,21 @@ def generate_crates(srctree, objtree, sysroot_src, external_src, cfgs):
     )
 
     append_crate(
+        "pin_init_internal",
+        srctree / "rust" / "pin-init" / "internal" / "src" / "lib.rs",
+        [],
+        cfg=["kernel"],
+        is_proc_macro=True,
+    )
+
+    append_crate(
+        "pin_init",
+        srctree / "rust" / "pin-init" / "src" / "lib.rs",
+        ["core", "pin_init_internal", "macros"],
+        cfg=["kernel"],
+    )
+
+    append_crate(
         "ffi",
         srctree / "rust" / "ffi.rs",
         ["core", "compiler_builtins"],
@@ -124,7 +139,7 @@ def generate_crates(srctree, objtree, sysroot_src, external_src, cfgs):
 
     append_crate_with_generated("bindings", ["core", "ffi"])
     append_crate_with_generated("uapi", ["core", "ffi"])
-    append_crate_with_generated("kernel", ["core", "macros", "build_error", "ffi", "bindings", "uapi"])
+    append_crate_with_generated("kernel", ["core", "macros", "build_error", "pin_init", "ffi", "bindings", "uapi"])
 
     def is_root_crate(build_file, target):
         try:

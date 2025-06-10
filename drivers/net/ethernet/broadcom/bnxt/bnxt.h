@@ -1240,6 +1240,11 @@ struct bnxt_irq {
 	u8		have_cpumask:1;
 	char		name[IFNAMSIZ + BNXT_IRQ_NAME_EXTRA];
 	cpumask_var_t	cpu_mask;
+
+	struct bnxt	*bp;
+	int		msix_nr;
+	int		ring_nr;
+	struct irq_affinity_notify affinity_notify;
 };
 
 #define HWRM_RING_ALLOC_TX	0x1
@@ -2416,6 +2421,8 @@ struct bnxt {
 	u8			max_q;
 	u8			num_tc;
 
+	u8			tph_mode;
+
 	unsigned int		current_interval;
 #define BNXT_TIMER_INTERVAL	HZ
 
@@ -2607,6 +2614,7 @@ struct bnxt {
 #define BNXT_FW_RESET_STATE_POLL_FW	4
 #define BNXT_FW_RESET_STATE_OPENING	5
 #define BNXT_FW_RESET_STATE_POLL_FW_DOWN	6
+#define BNXT_FW_RESET_STATE_ABORT	7
 
 	u16			fw_reset_min_dsecs;
 #define BNXT_DFLT_FW_RST_MIN_DSECS	20
@@ -2696,6 +2704,7 @@ struct bnxt {
 #define BNXT_DUMP_LIVE		0
 #define BNXT_DUMP_CRASH		1
 #define BNXT_DUMP_DRIVER	2
+#define BNXT_DUMP_LIVE_WITH_CTX_L1_CACHE	3
 
 	struct bpf_prog		*xdp_prog;
 

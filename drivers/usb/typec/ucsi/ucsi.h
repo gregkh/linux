@@ -111,7 +111,7 @@ void ucsi_connector_change(struct ucsi *ucsi, u8 num);
 #define UCSI_GET_CAPABILITY_SIZE		128
 #define UCSI_GET_CONNECTOR_CAPABILITY		0x07
 #define UCSI_GET_CONNECTOR_CAPABILITY_SIZE	32
-#define UCSI_SET_UOM				0x08
+#define UCSI_SET_CCOM				0x08
 #define UCSI_SET_UOR				0x09
 #define UCSI_SET_PDM				0x0a
 #define UCSI_SET_PDR				0x0b
@@ -126,7 +126,9 @@ void ucsi_connector_change(struct ucsi *ucsi, u8 num);
 #define UCSI_GET_CONNECTOR_STATUS_SIZE		152
 #define UCSI_GET_ERROR_STATUS			0x13
 #define UCSI_GET_PD_MESSAGE			0x15
+#define UCSI_GET_CAM_CS			0x18
 #define UCSI_SET_SINK_PATH			0x1c
+#define UCSI_GET_LPM_PPM_INFO			0x22
 
 #define UCSI_CONNECTOR_NUMBER(_num_)		((u64)(_num_) << 16)
 #define UCSI_COMMAND(_cmd_)			((_cmd_) & 0xff)

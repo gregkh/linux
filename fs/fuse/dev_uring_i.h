@@ -143,6 +143,7 @@ int fuse_uring_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags);
 void fuse_uring_queue_fuse_req(struct fuse_iqueue *fiq, struct fuse_req *req);
 bool fuse_uring_queue_bq_req(struct fuse_req *req);
 bool fuse_uring_remove_pending_req(struct fuse_req *req);
+bool fuse_uring_request_expired(struct fuse_conn *fc);
 
 static inline void fuse_uring_abort(struct fuse_conn *fc)
 {
@@ -173,12 +174,6 @@ static inline bool fuse_uring_ready(struct fuse_conn *fc)
 
 #else /* CONFIG_FUSE_IO_URING */
 
-struct fuse_ring;
-
-static inline void fuse_uring_create(struct fuse_conn *fc)
-{
-}
-
 static inline void fuse_uring_destruct(struct fuse_conn *fc)
 {
 }
@@ -202,6 +197,11 @@ static inline bool fuse_uring_ready(struct fuse_conn *fc)
 }
 
 static inline bool fuse_uring_remove_pending_req(struct fuse_req *req)
+{
+	return false;
+}
+
+static inline bool fuse_uring_request_expired(struct fuse_conn *fc)
 {
 	return false;
 }

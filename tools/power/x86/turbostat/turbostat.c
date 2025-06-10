@@ -153,7 +153,7 @@ struct msr_counter bic[] = {
 	{ 0x0, "TSC_MHz", NULL, 0, 0, 0, NULL, 0 },
 	{ 0x0, "IRQ", NULL, 0, 0, 0, NULL, 0 },
 	{ 0x0, "SMI", NULL, 32, 0, FORMAT_DELTA, NULL, 0 },
-	{ 0x0, "sysfs", NULL, 0, 0, 0, NULL, 0 },
+	{ 0x0, "cpuidle", NULL, 0, 0, 0, NULL, 0 },
 	{ 0x0, "CPU%c1", NULL, 0, 0, 0, NULL, 0 },
 	{ 0x0, "CPU%c3", NULL, 0, 0, 0, NULL, 0 },
 	{ 0x0, "CPU%c6", NULL, 0, 0, 0, NULL, 0 },
@@ -206,6 +206,7 @@ struct msr_counter bic[] = {
 	{ 0x0, "Sys_J", NULL, 0, 0, 0, NULL, 0 },
 	{ 0x0, "NMI", NULL, 0, 0, 0, NULL, 0 },
 	{ 0x0, "CPU%c1e", NULL, 0, 0, 0, NULL, 0 },
+	{ 0x0, "pct_idle", NULL, 0, 0, 0, NULL, 0 },
 };
 
 #define MAX_BIC (sizeof(bic) / sizeof(struct msr_counter))
@@ -219,7 +220,7 @@ struct msr_counter bic[] = {
 #define	BIC_TSC_MHz	(1ULL << 7)
 #define	BIC_IRQ		(1ULL << 8)
 #define	BIC_SMI		(1ULL << 9)
-#define	BIC_sysfs	(1ULL << 10)
+#define	BIC_cpuidle	(1ULL << 10)
 #define	BIC_CPU_c1	(1ULL << 11)
 #define	BIC_CPU_c3	(1ULL << 12)
 #define	BIC_CPU_c6	(1ULL << 13)
@@ -272,17 +273,20 @@ struct msr_counter bic[] = {
 #define	BIC_Sys_J		(1ULL << 60)
 #define	BIC_NMI			(1ULL << 61)
 #define	BIC_CPU_c1e		(1ULL << 62)
+#define	BIC_pct_idle		(1ULL << 63)
 
-#define BIC_TOPOLOGY (BIC_Package | BIC_Node | BIC_CoreCnt | BIC_PkgCnt | BIC_Core | BIC_CPU | BIC_Die)
-#define BIC_THERMAL_PWR (BIC_CoreTmp | BIC_PkgTmp | BIC_PkgWatt | BIC_CorWatt | BIC_GFXWatt | BIC_RAMWatt | BIC_PKG__ | BIC_RAM__ | BIC_SysWatt)
-#define BIC_FREQUENCY (BIC_Avg_MHz | BIC_Busy | BIC_Bzy_MHz | BIC_TSC_MHz | BIC_GFXMHz | BIC_GFXACTMHz | BIC_SAMMHz | BIC_SAMACTMHz | BIC_UNCORE_MHZ)
-#define BIC_IDLE (BIC_Busy | BIC_sysfs | BIC_CPU_c1 | BIC_CPU_c3 | BIC_CPU_c6 | BIC_CPU_c7 | BIC_GFX_rc6 | BIC_Pkgpc2 | BIC_Pkgpc3 | BIC_Pkgpc6 | BIC_Pkgpc7 | BIC_Pkgpc8 | BIC_Pkgpc9 | BIC_Pkgpc10 | BIC_CPU_LPI | BIC_SYS_LPI | BIC_Mod_c6 | BIC_Totl_c0 | BIC_Any_c0 | BIC_GFX_c0 | BIC_CPUGFX | BIC_SAM_mc6 | BIC_Diec6)
+#define BIC_GROUP_TOPOLOGY (BIC_Package | BIC_Node | BIC_CoreCnt | BIC_PkgCnt | BIC_Core | BIC_CPU | BIC_Die)
+#define BIC_GROUP_THERMAL_PWR (BIC_CoreTmp | BIC_PkgTmp | BIC_PkgWatt | BIC_CorWatt | BIC_GFXWatt | BIC_RAMWatt | BIC_PKG__ | BIC_RAM__ | BIC_SysWatt)
+#define BIC_GROUP_FREQUENCY (BIC_Avg_MHz | BIC_Busy | BIC_Bzy_MHz | BIC_TSC_MHz | BIC_GFXMHz | BIC_GFXACTMHz | BIC_SAMMHz | BIC_SAMACTMHz | BIC_UNCORE_MHZ)
+#define BIC_GROUP_HW_IDLE (BIC_Busy | BIC_CPU_c1 | BIC_CPU_c3 | BIC_CPU_c6 | BIC_CPU_c7 | BIC_GFX_rc6 | BIC_Pkgpc2 | BIC_Pkgpc3 | BIC_Pkgpc6 | BIC_Pkgpc7 | BIC_Pkgpc8 | BIC_Pkgpc9 | BIC_Pkgpc10 | BIC_CPU_LPI | BIC_SYS_LPI | BIC_Mod_c6 | BIC_Totl_c0 | BIC_Any_c0 | BIC_GFX_c0 | BIC_CPUGFX | BIC_SAM_mc6 | BIC_Diec6)
+#define BIC_GROUP_SW_IDLE (BIC_Busy | BIC_cpuidle | BIC_pct_idle )
+#define BIC_GROUP_IDLE (BIC_GROUP_HW_IDLE | BIC_pct_idle) 
 #define BIC_OTHER (BIC_IRQ | BIC_NMI | BIC_SMI | BIC_ThreadC | BIC_CoreTmp | BIC_IPC)
 
-#define BIC_DISABLED_BY_DEFAULT	(BIC_USEC | BIC_TOD | BIC_APIC | BIC_X2APIC)
+#define BIC_DISABLED_BY_DEFAULT	(BIC_USEC | BIC_TOD | BIC_APIC | BIC_X2APIC | BIC_cpuidle)
 
 unsigned long long bic_enabled = (0xFFFFFFFFFFFFFFFFULL & ~BIC_DISABLED_BY_DEFAULT);
-unsigned long long bic_present = BIC_USEC | BIC_TOD | BIC_sysfs | BIC_APIC | BIC_X2APIC;
+unsigned long long bic_present = BIC_USEC | BIC_TOD | BIC_cpuidle | BIC_pct_idle | BIC_APIC | BIC_X2APIC;
 
 #define DO_BIC(COUNTER_NAME) (bic_enabled & bic_present & COUNTER_NAME)
 #define DO_BIC_READ(COUNTER_NAME) (bic_present & COUNTER_NAME)
@@ -1056,7 +1060,7 @@ static const struct platform_data turbostat_pdata[] = {
 	 * Missing support for
 	 * INTEL_ICELAKE
 	 * INTEL_ATOM_SILVERMONT_MID
-	 * INTEL_ATOM_AIRMONT_MID
+	 * INTEL_ATOM_SILVERMONT_MID2
 	 * INTEL_ATOM_AIRMONT_NP
 	 */
 	{ 0, NULL },
@@ -1121,7 +1125,7 @@ end:
 int backwards_count;
 char *progname;
 
-#define CPU_SUBSET_MAXCPUS	1024	/* need to use before probe... */
+#define CPU_SUBSET_MAXCPUS	8192	/* need to use before probe... */
 cpu_set_t *cpu_present_set, *cpu_possible_set, *cpu_effective_set, *cpu_allowed_set, *cpu_affinity_set, *cpu_subset;
 size_t cpu_present_setsize, cpu_possible_setsize, cpu_effective_setsize, cpu_allowed_setsize, cpu_affinity_setsize, cpu_subset_size;
 #define MAX_ADDED_THREAD_COUNTERS 24
@@ -2354,16 +2358,25 @@ unsigned long long bic_lookup(char *name_list, enum show_hide_mode mode)
 				retval |= ~0;
 				break;
 			} else if (!strcmp(name_list, "topology")) {
-				retval |= BIC_TOPOLOGY;
+				retval |= BIC_GROUP_TOPOLOGY;
 				break;
 			} else if (!strcmp(name_list, "power")) {
-				retval |= BIC_THERMAL_PWR;
+				retval |= BIC_GROUP_THERMAL_PWR;
 				break;
 			} else if (!strcmp(name_list, "idle")) {
-				retval |= BIC_IDLE;
+				retval |= BIC_GROUP_IDLE;
+				break;
+			} else if (!strcmp(name_list, "swidle")) {
+				retval |= BIC_GROUP_SW_IDLE;
+				break;
+			} else if (!strcmp(name_list, "sysfs")) {	/* legacy compatibility */
+				retval |= BIC_GROUP_SW_IDLE;
+				break;
+			} else if (!strcmp(name_list, "hwidle")) {
+				retval |= BIC_GROUP_HW_IDLE;
 				break;
 			} else if (!strcmp(name_list, "frequency")) {
-				retval |= BIC_FREQUENCY;
+				retval |= BIC_GROUP_FREQUENCY;
 				break;
 			} else if (!strcmp(name_list, "other")) {
 				retval |= BIC_OTHER;
@@ -2372,6 +2385,7 @@ unsigned long long bic_lookup(char *name_list, enum show_hide_mode mode)
 
 		}
 		if (i == MAX_BIC) {
+			fprintf(stderr, "deferred %s\n", name_list);
 			if (mode == SHOW_LIST) {
 				deferred_add_names[deferred_add_index++] = name_list;
 				if (deferred_add_index >= MAX_DEFERRED) {
@@ -9580,7 +9594,7 @@ int get_and_dump_counters(void)
 
 void print_version()
 {
-	fprintf(outf, "turbostat version 2025.02.02 - Len Brown <lenb@kernel.org>\n");
+	fprintf(outf, "turbostat version 2025.04.06 - Len Brown <lenb@kernel.org>\n");
 }
 
 #define COMMAND_LINE_SIZE 2048
@@ -9613,7 +9627,7 @@ struct msr_counter *find_msrp_by_name(struct msr_counter *head, char *name)
 	for (mp = head; mp; mp = mp->next) {
 		if (debug)
 			fprintf(stderr, "%s: %s %s\n", __func__, name, mp->name);
-		if (!strncmp(name, mp->name, strlen(mp->name)))
+		if (!strcmp(name, mp->name))
 			return mp;
 	}
 	return NULL;
@@ -10260,13 +10274,17 @@ int is_deferred_skip(char *name)
 	return 0;
 }
 
-void probe_sysfs(void)
+void probe_cpuidle_residency(void)
 {
 	char path[64];
 	char name_buf[16];
 	FILE *input;
 	int state;
+	int min_state = 1024, max_state = 0;
 	char *sp;
+
+	if (!DO_BIC(BIC_pct_idle))
+		return;
 
 	for (state = 10; state >= 0; --state) {
 
@@ -10290,14 +10308,32 @@ void probe_sysfs(void)
 
 		sprintf(path, "cpuidle/state%d/time", state);
 
-		if (!DO_BIC(BIC_sysfs) && !is_deferred_add(name_buf))
+		if (!DO_BIC(BIC_pct_idle) && !is_deferred_add(name_buf))
 			continue;
 
 		if (is_deferred_skip(name_buf))
 			continue;
 
 		add_counter(0, path, name_buf, 64, SCOPE_CPU, COUNTER_USEC, FORMAT_PERCENT, SYSFS_PERCPU, 0);
+
+		if (state > max_state)
+			max_state = state;
+		if (state < min_state)
+			min_state = state;
 	}
+}
+
+void probe_cpuidle_counts(void)
+{
+	char path[64];
+	char name_buf[16];
+	FILE *input;
+	int state;
+	int min_state = 1024, max_state = 0;
+	char *sp;
+
+	if (!DO_BIC(BIC_cpuidle))
+		return;
 
 	for (state = 10; state >= 0; --state) {
 
@@ -10307,26 +10343,52 @@ void probe_sysfs(void)
 			continue;
 		if (!fgets(name_buf, sizeof(name_buf), input))
 			err(1, "%s: failed to read file", path);
-		/* truncate "C1-HSW\n" to "C1", or truncate "C1\n" to "C1" */
-		sp = strchr(name_buf, '-');
-		if (!sp)
-			sp = strchrnul(name_buf, '\n');
-		*sp = '\0';
 		fclose(input);
 
 		remove_underbar(name_buf);
 
-		sprintf(path, "cpuidle/state%d/usage", state);
-
-		if (!DO_BIC(BIC_sysfs) && !is_deferred_add(name_buf))
+		if (!DO_BIC(BIC_cpuidle) && !is_deferred_add(name_buf))
 			continue;
 
 		if (is_deferred_skip(name_buf))
 			continue;
 
-		add_counter(0, path, name_buf, 64, SCOPE_CPU, COUNTER_ITEMS, FORMAT_DELTA, SYSFS_PERCPU, 0);
-	}
+		/* truncate "C1-HSW\n" to "C1", or truncate "C1\n" to "C1" */
+		sp = strchr(name_buf, '-');
+		if (!sp)
+			sp = strchrnul(name_buf, '\n');
 
+		/*
+		 * The 'below' sysfs file always contains 0 for the deepest state (largest index),
+		 * do not add it.
+		 */
+		if (state != max_state) {
+			/*
+			 * Add 'C1+' for C1, and so on. The 'below' sysfs file always contains 0 for
+			 * the last state, so do not add it.
+			 */
+
+			*sp = '+';
+			*(sp + 1) = '\0';
+			sprintf(path, "cpuidle/state%d/below", state);
+			add_counter(0, path, name_buf, 64, SCOPE_CPU, COUNTER_ITEMS, FORMAT_DELTA, SYSFS_PERCPU, 0);
+		}
+
+		*sp = '\0';
+		sprintf(path, "cpuidle/state%d/usage", state);
+		add_counter(0, path, name_buf, 64, SCOPE_CPU, COUNTER_ITEMS, FORMAT_DELTA, SYSFS_PERCPU, 0);
+
+		/*
+		 * The 'above' sysfs file always contains 0 for the shallowest state (smallest
+		 * index), do not add it.
+		 */
+		if (state != min_state) {
+			*sp = '-';
+			*(sp + 1) = '\0';
+			sprintf(path, "cpuidle/state%d/above", state);
+			add_counter(0, path, name_buf, 64, SCOPE_CPU, COUNTER_ITEMS, FORMAT_DELTA, SYSFS_PERCPU, 0);
+		}
+	}
 }
 
 /*
@@ -10570,7 +10632,8 @@ skip_cgroup_setting:
 		print_bootcmd();
 	}
 
-	probe_sysfs();
+	probe_cpuidle_residency();
+	probe_cpuidle_counts();
 
 	if (!getuid())
 		set_rlimit();

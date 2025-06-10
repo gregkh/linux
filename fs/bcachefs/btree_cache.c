@@ -610,6 +610,7 @@ void bch2_fs_btree_cache_exit(struct bch_fs *c)
 		       btree_node_write_in_flight(b));
 
 		btree_node_data_free(bc, b);
+		cond_resched();
 	}
 
 	BUG_ON(!bch2_journal_error(&c->journal) &&
@@ -851,7 +852,6 @@ out:
 	b->sib_u64s[1]		= 0;
 	b->whiteout_u64s	= 0;
 	bch2_btree_keys_init(b);
-	set_btree_node_accessed(b);
 
 	bch2_time_stats_update(&c->times[BCH_TIME_btree_node_mem_alloc],
 			       start_time);
@@ -1285,6 +1285,10 @@ lock_node:
 			six_unlock_read(&b->c.lock);
 			goto retry;
 		}
+
+		/* avoid atomic set bit if it's not needed: */
+		if (!btree_node_accessed(b))
+			set_btree_node_accessed(b);
 	}
 
 	/* XXX: waiting on IO with btree locks held: */
@@ -1299,10 +1303,6 @@ lock_node:
 		prefetch(p + L1_CACHE_BYTES * 1);
 		prefetch(p + L1_CACHE_BYTES * 2);
 	}
-
-	/* avoid atomic set bit if it's not needed: */
-	if (!btree_node_accessed(b))
-		set_btree_node_accessed(b);
 
 	if (unlikely(btree_node_read_error(b))) {
 		six_unlock_read(&b->c.lock);
@@ -1416,7 +1416,7 @@ void __bch2_btree_pos_to_text(struct printbuf *out, struct bch_fs *c,
 		prt_printf(out, "%u", r->level);
 	else
 		prt_printf(out, "(unknown)");
-	prt_printf(out, "\n  ");
+	prt_newline(out);
 
 	bch2_bkey_val_to_text(out, c, k);
 }

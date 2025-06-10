@@ -160,10 +160,10 @@ static int cifs_prepare_read(struct netfs_io_subrequest *subreq)
 	server = cifs_pick_channel(tlink_tcon(req->cfile->tlink)->ses);
 	rdata->server = server;
 
-	if (cifs_sb->ctx->rsize == 0)
-		cifs_sb->ctx->rsize =
-			server->ops->negotiate_rsize(tlink_tcon(req->cfile->tlink),
-						     cifs_sb->ctx);
+	if (cifs_sb->ctx->rsize == 0) {
+		cifs_negotiate_rsize(server, cifs_sb->ctx,
+				     tlink_tcon(req->cfile->tlink));
+	}
 
 	rc = server->ops->wait_mtu_credits(server, cifs_sb->ctx->rsize,
 					   &size, &rdata->credits);
@@ -388,7 +388,7 @@ cifs_mark_open_files_invalid(struct cifs_tcon *tcon)
 	spin_unlock(&tcon->tc_lock);
 
 	/*
-	 * BB Add call to invalidate_inodes(sb) for all superblocks mounted
+	 * BB Add call to evict_inodes(sb) for all superblocks mounted
 	 * to this tcon.
 	 */
 }
@@ -3110,7 +3110,7 @@ void cifs_oplock_break(struct work_struct *work)
 		cinode->oplock = 0;
 	}
 
-	if (inode && S_ISREG(inode->i_mode)) {
+	if (S_ISREG(inode->i_mode)) {
 		if (CIFS_CACHE_READ(cinode))
 			break_lease(inode, O_RDONLY);
 		else

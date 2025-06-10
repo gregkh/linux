@@ -702,6 +702,7 @@ struct ieee80211_parsed_tpe {
  * @tpe: transmit power envelope information
  * @pwr_reduction: power constraint of BSS.
  * @eht_support: does this BSS support EHT
+ * @epcs_support: does this BSS support EPCS
  * @csa_active: marks whether a channel switch is going on.
  * @mu_mimo_owner: indicates interface owns MU-MIMO capability
  * @chanctx_conf: The channel context this interface is assigned to, or %NULL
@@ -823,7 +824,7 @@ struct ieee80211_bss_conf {
 
 	u8 pwr_reduction;
 	bool eht_support;
-
+	bool epcs_support;
 	bool csa_active;
 
 	bool mu_mimo_owner;
@@ -6664,6 +6665,31 @@ void ieee80211_iter_keys_rcu(struct ieee80211_hw *hw,
  * or not.
  */
 void ieee80211_iter_chan_contexts_atomic(
+	struct ieee80211_hw *hw,
+	void (*iter)(struct ieee80211_hw *hw,
+		     struct ieee80211_chanctx_conf *chanctx_conf,
+		     void *data),
+	void *iter_data);
+
+/**
+ * ieee80211_iter_chan_contexts_mtx - iterate channel contexts
+ * @hw: pointer obtained from ieee80211_alloc_hw().
+ * @iter: iterator function
+ * @iter_data: data passed to iterator function
+ *
+ * Iterate all active channel contexts. This function can only be used while
+ * holding the wiphy mutex.
+ *
+ * The iterator will not find a context that's being added (during
+ * the driver callback to add it) but will find it while it's being
+ * removed.
+ *
+ * Note that during hardware restart, all contexts that existed
+ * before the restart are considered already present so will be
+ * found while iterating, whether they've been re-added already
+ * or not.
+ */
+void ieee80211_iter_chan_contexts_mtx(
 	struct ieee80211_hw *hw,
 	void (*iter)(struct ieee80211_hw *hw,
 		     struct ieee80211_chanctx_conf *chanctx_conf,

@@ -197,7 +197,7 @@ loop:
 	if (journal->j_commit_sequence != journal->j_commit_request) {
 		jbd2_debug(1, "OK, requests differ\n");
 		write_unlock(&journal->j_state_lock);
-		del_timer_sync(&journal->j_commit_timer);
+		timer_delete_sync(&journal->j_commit_timer);
 		jbd2_journal_commit_transaction(journal);
 		write_lock(&journal->j_state_lock);
 		goto loop;
@@ -246,7 +246,7 @@ loop:
 	goto loop;
 
 end_loop:
-	del_timer_sync(&journal->j_commit_timer);
+	timer_delete_sync(&journal->j_commit_timer);
 	journal->j_task = NULL;
 	wake_up(&journal->j_wait_done_commit);
 	jbd2_debug(1, "Journal thread exiting.\n");
@@ -957,7 +957,7 @@ int jbd2_journal_bmap(journal_t *journal, unsigned long blocknr,
  * descriptor blocks we do need to generate bona fide buffers.
  *
  * After the caller of jbd2_journal_get_descriptor_buffer() has finished modifying
- * the buffer's contents they really should run flush_dcache_page(bh->b_page).
+ * the buffer's contents they really should run flush_dcache_folio(bh->b_folio).
  * But we don't bother doing that, so there will be coherency problems with
  * mmaps of blockdevs which hold live JBD-controlled filesystems.
  */
@@ -1371,7 +1371,7 @@ static int journal_check_superblock(journal_t *journal)
 		return err;
 	}
 
-	if (jbd2_journal_has_csum_v2or3_feature(journal) &&
+	if (jbd2_journal_has_csum_v2or3(journal) &&
 	    jbd2_has_feature_checksum(journal)) {
 		/* Can't have checksum v1 and v2 on at the same time! */
 		printk(KERN_ERR "JBD2: Can't enable checksumming v1 and v2/3 "
@@ -1379,7 +1379,7 @@ static int journal_check_superblock(journal_t *journal)
 		return err;
 	}
 
-	if (jbd2_journal_has_csum_v2or3_feature(journal)) {
+	if (jbd2_journal_has_csum_v2or3(journal)) {
 		if (sb->s_checksum_type != JBD2_CRC32C_CHKSUM) {
 			printk(KERN_ERR "JBD2: Unknown checksum type\n");
 			return err;

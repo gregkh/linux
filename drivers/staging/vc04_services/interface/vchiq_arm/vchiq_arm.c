@@ -97,13 +97,6 @@ struct vchiq_arm_state {
 	 * tracked separately with the state.
 	 */
 	int peer_use_count;
-
-	/*
-	 * Flag to indicate that the first vchiq connect has made it through.
-	 * This means that both sides should be fully ready, and we should
-	 * be able to suspend after this point.
-	 */
-	int first_connect;
 };
 
 static int
@@ -271,7 +264,7 @@ static int vchiq_platform_init(struct platform_device *pdev, struct vchiq_state 
 		return -ENXIO;
 	}
 
-	dev_dbg(&pdev->dev, "arm: vchiq_init - done (slots %pK, phys %pad)\n",
+	dev_dbg(&pdev->dev, "arm: vchiq_init - done (slots %p, phys %pad)\n",
 		vchiq_slot_zero, &slot_phys);
 
 	mutex_init(&drv_mgmt->connected_mutex);
@@ -359,7 +352,7 @@ void free_bulk_waiter(struct vchiq_instance *instance)
 				 &instance->bulk_waiter_list, list) {
 		list_del(&waiter->list);
 		dev_dbg(instance->state->dev,
-			"arm: bulk_waiter - cleaned up %pK for pid %d\n",
+			"arm: bulk_waiter - cleaned up %p for pid %d\n",
 			waiter, waiter->pid);
 		kfree(waiter);
 	}
@@ -613,7 +606,7 @@ vchiq_blocking_bulk_transfer(struct vchiq_instance *instance, unsigned int handl
 		mutex_lock(&instance->bulk_waiter_list_mutex);
 		list_add(&waiter->list, &instance->bulk_waiter_list);
 		mutex_unlock(&instance->bulk_waiter_list_mutex);
-		dev_dbg(instance->state->dev, "arm: saved bulk_waiter %pK for pid %d\n",
+		dev_dbg(instance->state->dev, "arm: saved bulk_waiter %p for pid %d\n",
 			waiter, current->pid);
 	}
 
@@ -1336,26 +1329,19 @@ out:
 	return ret;
 }
 
+void vchiq_platform_connected(struct vchiq_state *state)
+{
+	struct vchiq_arm_state *arm_state = vchiq_platform_get_arm_state(state);
+
+	wake_up_process(arm_state->ka_thread);
+}
+
 void vchiq_platform_conn_state_changed(struct vchiq_state *state,
 				       enum vchiq_connstate oldstate,
 				       enum vchiq_connstate newstate)
 {
-	struct vchiq_arm_state *arm_state = vchiq_platform_get_arm_state(state);
-
 	dev_dbg(state->dev, "suspend: %d: %s->%s\n",
 		state->id, get_conn_state_name(oldstate), get_conn_state_name(newstate));
-	if (state->conn_state != VCHIQ_CONNSTATE_CONNECTED)
-		return;
-
-	write_lock_bh(&arm_state->susp_res_lock);
-	if (arm_state->first_connect) {
-		write_unlock_bh(&arm_state->susp_res_lock);
-		return;
-	}
-
-	arm_state->first_connect = 1;
-	write_unlock_bh(&arm_state->susp_res_lock);
-	wake_up_process(arm_state->ka_thread);
 }
 
 static const struct of_device_id vchiq_of_match[] = {

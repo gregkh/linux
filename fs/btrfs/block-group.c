@@ -191,21 +191,21 @@ static int btrfs_bg_start_cmp(const struct rb_node *new,
 /*
  * This adds the block group to the fs_info rb tree for the block group cache
  */
-static int btrfs_add_block_group_cache(struct btrfs_fs_info *info,
-				       struct btrfs_block_group *block_group)
+static int btrfs_add_block_group_cache(struct btrfs_block_group *block_group)
 {
+	struct btrfs_fs_info *fs_info = block_group->fs_info;
 	struct rb_node *exist;
 	int ret = 0;
 
 	ASSERT(block_group->length != 0);
 
-	write_lock(&info->block_group_cache_lock);
+	write_lock(&fs_info->block_group_cache_lock);
 
 	exist = rb_find_add_cached(&block_group->cache_node,
-			&info->block_group_cache_tree, btrfs_bg_start_cmp);
+			&fs_info->block_group_cache_tree, btrfs_bg_start_cmp);
 	if (exist)
 		ret = -EEXIST;
-	write_unlock(&info->block_group_cache_lock);
+	write_unlock(&fs_info->block_group_cache_lock);
 
 	return ret;
 }
@@ -584,7 +584,7 @@ static int sample_block_group_extent_item(struct btrfs_caching_control *caching_
 	struct btrfs_root *extent_root;
 	u64 search_offset;
 	u64 search_end = block_group->start + block_group->length;
-	struct btrfs_path *path;
+	BTRFS_PATH_AUTO_FREE(path);
 	struct btrfs_key search_key;
 	int ret = 0;
 
@@ -626,7 +626,6 @@ static int sample_block_group_extent_item(struct btrfs_caching_control *caching_
 
 	lockdep_assert_held(&caching_ctl->mutex);
 	lockdep_assert_held_read(&fs_info->commit_root_sem);
-	btrfs_free_path(path);
 	return ret;
 }
 
@@ -738,8 +737,8 @@ static int load_extent_tree_free(struct btrfs_caching_control *caching_ctl)
 	path->reada = READA_FORWARD;
 
 	key.objectid = last;
-	key.offset = 0;
 	key.type = BTRFS_EXTENT_ITEM_KEY;
+	key.offset = 0;
 
 next:
 	ret = btrfs_search_slot(NULL, extent_root, &key, path, 0, 0);
@@ -785,8 +784,8 @@ next:
 
 		if (key.objectid < last) {
 			key.objectid = last;
-			key.offset = 0;
 			key.type = BTRFS_EXTENT_ITEM_KEY;
+			key.offset = 0;
 			btrfs_release_path(path);
 			goto next;
 		}
@@ -1457,6 +1456,32 @@ out:
 }
 
 /*
+ * Link the block_group to a list via bg_list.
+ *
+ * @bg:       The block_group to link to the list.
+ * @list:     The list to link it to.
+ *
+ * Use this rather than list_add_tail() directly to ensure proper respect
+ * to locking and refcounting.
+ *
+ * Returns: true if the bg was linked with a refcount bump and false otherwise.
+ */
+static bool btrfs_link_bg_list(struct btrfs_block_group *bg, struct list_head *list)
+{
+	struct btrfs_fs_info *fs_info = bg->fs_info;
+	bool added = false;
+
+	spin_lock(&fs_info->unused_bgs_lock);
+	if (list_empty(&bg->bg_list)) {
+		btrfs_get_block_group(bg);
+		list_add_tail(&bg->bg_list, list);
+		added = true;
+	}
+	spin_unlock(&fs_info->unused_bgs_lock);
+	return added;
+}
+
+/*
  * Process the unused_bgs list and remove any that don't have any allocated
  * space inside of them.
  */
@@ -1571,8 +1596,7 @@ void btrfs_delete_unused_bgs(struct btrfs_fs_info *fs_info)
 			 * drop under the "next" label for the
 			 * fs_info->unused_bgs list.
 			 */
-			btrfs_get_block_group(block_group);
-			list_add_tail(&block_group->bg_list, &retry_list);
+			btrfs_link_bg_list(block_group, &retry_list);
 
 			trace_btrfs_skip_unused_block_group(block_group);
 			spin_unlock(&block_group->lock);
@@ -1969,20 +1993,8 @@ void btrfs_reclaim_bgs_work(struct work_struct *work)
 		spin_unlock(&space_info->lock);
 
 next:
-		if (ret && !READ_ONCE(space_info->periodic_reclaim)) {
-			/* Refcount held by the reclaim_bgs list after splice. */
-			spin_lock(&fs_info->unused_bgs_lock);
-			/*
-			 * This block group might be added to the unused list
-			 * during the above process. Move it back to the
-			 * reclaim list otherwise.
-			 */
-			if (list_empty(&bg->bg_list)) {
-				btrfs_get_block_group(bg);
-				list_add_tail(&bg->bg_list, &retry_list);
-			}
-			spin_unlock(&fs_info->unused_bgs_lock);
-		}
+		if (ret && !READ_ONCE(space_info->periodic_reclaim))
+			btrfs_link_bg_list(bg, &retry_list);
 		btrfs_put_block_group(bg);
 
 		mutex_unlock(&fs_info->reclaim_bgs_lock);
@@ -2022,13 +2034,8 @@ void btrfs_mark_bg_to_reclaim(struct btrfs_block_group *bg)
 {
 	struct btrfs_fs_info *fs_info = bg->fs_info;
 
-	spin_lock(&fs_info->unused_bgs_lock);
-	if (list_empty(&bg->bg_list)) {
-		btrfs_get_block_group(bg);
+	if (btrfs_link_bg_list(bg, &fs_info->reclaim_bgs))
 		trace_btrfs_add_reclaim_block_group(bg);
-		list_add_tail(&bg->bg_list, &fs_info->reclaim_bgs);
-	}
-	spin_unlock(&fs_info->unused_bgs_lock);
 }
 
 static int read_bg_from_eb(struct btrfs_fs_info *fs_info, const struct btrfs_key *key,
@@ -2439,7 +2446,7 @@ static int read_one_block_group(struct btrfs_fs_info *info,
 			goto error;
 	}
 
-	ret = btrfs_add_block_group_cache(info, cache);
+	ret = btrfs_add_block_group_cache(cache);
 	if (ret) {
 		btrfs_remove_free_space_cache(cache);
 		goto error;
@@ -2488,7 +2495,7 @@ static int fill_dummy_bgs(struct btrfs_fs_info *fs_info)
 		bg->cached = BTRFS_CACHE_FINISHED;
 		bg->used = map->chunk_len;
 		bg->flags = map->type;
-		ret = btrfs_add_block_group_cache(fs_info, bg);
+		ret = btrfs_add_block_group_cache(bg);
 		/*
 		 * We may have some valid block group cache added already, in
 		 * that case we skip to the next one.
@@ -2538,8 +2545,8 @@ int btrfs_read_block_groups(struct btrfs_fs_info *info)
 		return fill_dummy_bgs(info);
 
 	key.objectid = 0;
-	key.offset = 0;
 	key.type = BTRFS_BLOCK_GROUP_ITEM_KEY;
+	key.offset = 0;
 	path = btrfs_alloc_path();
 	if (!path)
 		return -ENOMEM;
@@ -2670,7 +2677,7 @@ static int insert_dev_extent(struct btrfs_trans_handle *trans,
 {
 	struct btrfs_fs_info *fs_info = device->fs_info;
 	struct btrfs_root *root = fs_info->dev_root;
-	struct btrfs_path *path;
+	BTRFS_PATH_AUTO_FREE(path);
 	struct btrfs_dev_extent *extent;
 	struct extent_buffer *leaf;
 	struct btrfs_key key;
@@ -2687,7 +2694,7 @@ static int insert_dev_extent(struct btrfs_trans_handle *trans,
 	key.offset = start;
 	ret = btrfs_insert_empty_item(trans, root, path, &key, sizeof(*extent));
 	if (ret)
-		goto out;
+		return ret;
 
 	leaf = path->nodes[0];
 	extent = btrfs_item_ptr(leaf, path->slots[0], struct btrfs_dev_extent);
@@ -2695,10 +2702,8 @@ static int insert_dev_extent(struct btrfs_trans_handle *trans,
 	btrfs_set_dev_extent_chunk_objectid(leaf, extent,
 					    BTRFS_FIRST_CHUNK_TREE_OBJECTID);
 	btrfs_set_dev_extent_chunk_offset(leaf, extent, chunk_offset);
-
 	btrfs_set_dev_extent_length(leaf, extent, num_bytes);
-out:
-	btrfs_free_path(path);
+
 	return ret;
 }
 
@@ -2804,6 +2809,7 @@ next:
 		spin_lock(&fs_info->unused_bgs_lock);
 		list_del_init(&block_group->bg_list);
 		clear_bit(BLOCK_GROUP_FLAG_NEW, &block_group->runtime_flags);
+		btrfs_put_block_group(block_group);
 		spin_unlock(&fs_info->unused_bgs_lock);
 
 		/*
@@ -2920,7 +2926,7 @@ struct btrfs_block_group *btrfs_make_block_group(struct btrfs_trans_handle *tran
 	cache->space_info = btrfs_find_space_info(fs_info, cache->flags);
 	ASSERT(cache->space_info);
 
-	ret = btrfs_add_block_group_cache(fs_info, cache);
+	ret = btrfs_add_block_group_cache(cache);
 	if (ret) {
 		btrfs_remove_free_space_cache(cache);
 		btrfs_put_block_group(cache);
@@ -2942,7 +2948,7 @@ struct btrfs_block_group *btrfs_make_block_group(struct btrfs_trans_handle *tran
 	}
 #endif
 
-	list_add_tail(&cache->bg_list, &trans->new_bgs);
+	btrfs_link_bg_list(cache, &trans->new_bgs);
 	btrfs_inc_delayed_refs_rsv_bg_inserts(fs_info);
 
 	set_avail_alloc_bits(fs_info, type);
@@ -3338,7 +3344,7 @@ int btrfs_setup_space_cache(struct btrfs_trans_handle *trans)
 	struct btrfs_fs_info *fs_info = trans->fs_info;
 	struct btrfs_block_group *cache, *tmp;
 	struct btrfs_transaction *cur_trans = trans->transaction;
-	struct btrfs_path *path;
+	BTRFS_PATH_AUTO_FREE(path);
 
 	if (list_empty(&cur_trans->dirty_bgs) ||
 	    !btrfs_test_opt(fs_info, SPACE_CACHE))
@@ -3355,7 +3361,6 @@ int btrfs_setup_space_cache(struct btrfs_trans_handle *trans)
 			cache_save_setup(cache, trans, path);
 	}
 
-	btrfs_free_path(path);
 	return 0;
 }
 
@@ -3378,7 +3383,7 @@ int btrfs_start_dirty_block_groups(struct btrfs_trans_handle *trans)
 	struct btrfs_transaction *cur_trans = trans->transaction;
 	int ret = 0;
 	int should_put;
-	struct btrfs_path *path = NULL;
+	BTRFS_PATH_AUTO_FREE(path);
 	LIST_HEAD(dirty);
 	struct list_head *io = &cur_trans->io_bgs;
 	int loops = 0;
@@ -3533,7 +3538,6 @@ out:
 		btrfs_cleanup_dirty_bgs(cur_trans, fs_info);
 	}
 
-	btrfs_free_path(path);
 	return ret;
 }
 
@@ -3544,7 +3548,7 @@ int btrfs_write_dirty_block_groups(struct btrfs_trans_handle *trans)
 	struct btrfs_transaction *cur_trans = trans->transaction;
 	int ret = 0;
 	int should_put;
-	struct btrfs_path *path;
+	BTRFS_PATH_AUTO_FREE(path);
 	struct list_head *io = &cur_trans->io_bgs;
 
 	path = btrfs_alloc_path();
@@ -3656,7 +3660,6 @@ int btrfs_write_dirty_block_groups(struct btrfs_trans_handle *trans)
 		btrfs_put_block_group(cache);
 	}
 
-	btrfs_free_path(path);
 	return ret;
 }
 

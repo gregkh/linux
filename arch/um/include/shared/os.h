@@ -224,6 +224,11 @@ extern int run_helper_thread(int (*proc)(void *), void *arg,
 			     unsigned int flags, unsigned long *stack_out);
 extern int helper_wait(int pid);
 
+struct os_helper_thread;
+int os_run_helper_thread(struct os_helper_thread **td_out,
+			 void *(*routine)(void *), void *arg);
+void os_kill_helper_thread(struct os_helper_thread *td);
+void os_fix_helper_thread_signals(void);
 
 /* umid.c */
 extern int umid_file_name(char *name, char *buf, int len);
@@ -309,7 +314,7 @@ extern void um_irqs_resume(void);
 extern int add_sigio_fd(int fd);
 extern int ignore_sigio_fd(int fd);
 extern void maybe_sigio_broken(int fd);
-extern void sigio_broken(int fd);
+extern void sigio_broken(void);
 /*
  * unlocked versions for IRQ controller code.
  *

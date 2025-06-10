@@ -718,8 +718,7 @@ mkey_cache_ent_from_rb_key(struct mlx5_ib_dev *dev,
 }
 
 static struct mlx5_ib_mr *_mlx5_mr_cache_alloc(struct mlx5_ib_dev *dev,
-					struct mlx5_cache_ent *ent,
-					int access_flags)
+					       struct mlx5_cache_ent *ent)
 {
 	struct mlx5_ib_mr *mr;
 	int err;
@@ -794,7 +793,7 @@ struct mlx5_ib_mr *mlx5_mr_cache_alloc(struct mlx5_ib_dev *dev,
 	if (!ent)
 		return ERR_PTR(-EOPNOTSUPP);
 
-	return _mlx5_mr_cache_alloc(dev, ent, access_flags);
+	return _mlx5_mr_cache_alloc(dev, ent);
 }
 
 static void mlx5_mkey_cache_debugfs_cleanup(struct mlx5_ib_dev *dev)
@@ -1027,7 +1026,7 @@ void mlx5_mkey_cache_cleanup(struct mlx5_ib_dev *dev)
 	mlx5r_destroy_cache_entries(dev);
 
 	destroy_workqueue(dev->cache.wq);
-	del_timer_sync(&dev->delay_timer);
+	timer_delete_sync(&dev->delay_timer);
 }
 
 struct ib_mr *mlx5_ib_get_dma_mr(struct ib_pd *pd, int acc)
@@ -1155,7 +1154,7 @@ static struct mlx5_ib_mr *alloc_cacheable_mr(struct ib_pd *pd,
 		return mr;
 	}
 
-	mr = _mlx5_mr_cache_alloc(dev, ent, access_flags);
+	mr = _mlx5_mr_cache_alloc(dev, ent);
 	if (IS_ERR(mr))
 		return mr;
 
@@ -1968,7 +1967,6 @@ static int cache_ent_find_and_store(struct mlx5_ib_dev *dev,
 
 	if (mr->mmkey.cache_ent) {
 		spin_lock_irq(&mr->mmkey.cache_ent->mkeys_queue.lock);
-		mr->mmkey.cache_ent->in_use--;
 		goto end;
 	}
 
@@ -2036,6 +2034,7 @@ static int mlx5_revoke_mr(struct mlx5_ib_mr *mr)
 	bool is_odp = is_odp_mr(mr);
 	bool is_odp_dma_buf = is_dmabuf_mr(mr) &&
 			!to_ib_umem_dmabuf(mr->umem)->pinned;
+	bool from_cache = !!ent;
 	int ret = 0;
 
 	if (is_odp)
@@ -2048,6 +2047,8 @@ static int mlx5_revoke_mr(struct mlx5_ib_mr *mr)
 		ent = mr->mmkey.cache_ent;
 		/* upon storing to a clean temp entry - schedule its cleanup */
 		spin_lock_irq(&ent->mkeys_queue.lock);
+		if (from_cache)
+			ent->in_use--;
 		if (ent->is_tmp && !ent->tmp_cleanup_scheduled) {
 			mod_delayed_work(ent->dev->cache.wq, &ent->dwork,
 					 msecs_to_jiffies(30 * 1000));

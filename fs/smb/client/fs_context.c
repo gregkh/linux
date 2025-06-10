@@ -134,6 +134,8 @@ const struct fs_parameter_spec smb3_fs_parameters[] = {
 	fsparam_flag("compress", Opt_compress),
 	fsparam_flag("witness", Opt_witness),
 	fsparam_flag_no("nativesocket", Opt_nativesocket),
+	fsparam_flag_no("unicode", Opt_unicode),
+	fsparam_flag_no("nbsessinit", Opt_nbsessinit),
 
 	/* Mount options which take uid or gid */
 	fsparam_uid("backupuid", Opt_backupuid),
@@ -963,6 +965,14 @@ static int smb3_verify_reconfigure_ctx(struct fs_context *fc,
 		cifs_errorf(fc, "can not change iocharset during remount\n");
 		return -EINVAL;
 	}
+	if (new_ctx->unicode != old_ctx->unicode) {
+		cifs_errorf(fc, "can not change unicode during remount\n");
+		return -EINVAL;
+	}
+	if (new_ctx->rfc1001_sessinit != old_ctx->rfc1001_sessinit) {
+		cifs_errorf(fc, "can not change nbsessinit during remount\n");
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -1011,6 +1021,7 @@ static int smb3_reconfigure(struct fs_context *fc)
 	struct dentry *root = fc->root;
 	struct cifs_sb_info *cifs_sb = CIFS_SB(root->d_sb);
 	struct cifs_ses *ses = cifs_sb_master_tcon(cifs_sb)->ses;
+	unsigned int rsize = ctx->rsize, wsize = ctx->wsize;
 	char *new_password = NULL, *new_password2 = NULL;
 	bool need_recon = false;
 	int rc;
@@ -1093,11 +1104,8 @@ static int smb3_reconfigure(struct fs_context *fc)
 	STEAL_STRING(cifs_sb, ctx, iocharset);
 
 	/* if rsize or wsize not passed in on remount, use previous values */
-	if (ctx->rsize == 0)
-		ctx->rsize = cifs_sb->ctx->rsize;
-	if (ctx->wsize == 0)
-		ctx->wsize = cifs_sb->ctx->wsize;
-
+	ctx->rsize = rsize ? CIFS_ALIGN_RSIZE(fc, rsize) : cifs_sb->ctx->rsize;
+	ctx->wsize = wsize ? CIFS_ALIGN_WSIZE(fc, wsize) : cifs_sb->ctx->wsize;
 
 	smb3_cleanup_fs_context_contents(cifs_sb->ctx);
 	rc = smb3_fs_context_dup(cifs_sb->ctx, ctx);
@@ -1302,7 +1310,7 @@ static int smb3_fs_context_parse_param(struct fs_context *fc,
 				__func__);
 			goto cifs_parse_mount_err;
 		}
-		ctx->bsize = result.uint_32;
+		ctx->bsize = CIFS_ALIGN_BSIZE(fc, result.uint_32);
 		ctx->got_bsize = true;
 		break;
 	case Opt_rasize:
@@ -1326,24 +1334,13 @@ static int smb3_fs_context_parse_param(struct fs_context *fc,
 		ctx->rasize = result.uint_32;
 		break;
 	case Opt_rsize:
-		ctx->rsize = result.uint_32;
+		ctx->rsize = CIFS_ALIGN_RSIZE(fc, result.uint_32);
 		ctx->got_rsize = true;
 		ctx->vol_rsize = ctx->rsize;
 		break;
 	case Opt_wsize:
-		ctx->wsize = result.uint_32;
+		ctx->wsize = CIFS_ALIGN_WSIZE(fc, result.uint_32);
 		ctx->got_wsize = true;
-		if (ctx->wsize % PAGE_SIZE != 0) {
-			ctx->wsize = round_down(ctx->wsize, PAGE_SIZE);
-			if (ctx->wsize == 0) {
-				ctx->wsize = PAGE_SIZE;
-				cifs_dbg(VFS, "wsize too small, reset to minimum %ld\n", PAGE_SIZE);
-			} else {
-				cifs_dbg(VFS,
-					 "wsize rounded down to %d to multiple of PAGE_SIZE %ld\n",
-					 ctx->wsize, PAGE_SIZE);
-			}
-		}
 		ctx->vol_wsize = ctx->wsize;
 		break;
 	case Opt_acregmax:
@@ -1604,6 +1601,10 @@ static int smb3_fs_context_parse_param(struct fs_context *fc,
 		if (i == RFC1001_NAME_LEN && param->string[i] != 0)
 			pr_warn("server netbiosname longer than 15 truncated\n");
 		break;
+	case Opt_nbsessinit:
+		ctx->rfc1001_sessinit = !result.negated;
+		cifs_dbg(FYI, "rfc1001_sessinit set to %d\n", ctx->rfc1001_sessinit);
+		break;
 	case Opt_ver:
 		/* version of mount userspace tools, not dialect */
 		/* If interface changes in mount.cifs bump to new ver */
@@ -1644,6 +1645,10 @@ static int smb3_fs_context_parse_param(struct fs_context *fc,
 #endif
 		ctx->witness = true;
 		pr_warn_once("Witness protocol support is experimental\n");
+		break;
+	case Opt_unicode:
+		ctx->unicode = !result.negated;
+		cifs_dbg(FYI, "unicode set to %d\n", ctx->unicode);
 		break;
 	case Opt_rootfs:
 #ifndef CONFIG_CIFS_ROOT
@@ -1887,13 +1892,16 @@ int smb3_init_fs_context(struct fs_context *fc)
 	memset(ctx->source_rfc1001_name, 0x20, RFC1001_NAME_LEN);
 	for (i = 0; i < strnlen(nodename, RFC1001_NAME_LEN); i++)
 		ctx->source_rfc1001_name[i] = toupper(nodename[i]);
-
 	ctx->source_rfc1001_name[RFC1001_NAME_LEN] = 0;
+
 	/*
 	 * null target name indicates to use *SMBSERVR default called name
 	 *  if we end up sending RFC1001 session initialize
 	 */
 	ctx->target_rfc1001_name[0] = 0;
+
+	ctx->rfc1001_sessinit = -1; /* autodetect based on port number */
+
 	ctx->cred_uid = current_uid();
 	ctx->linux_uid = current_uid();
 	ctx->linux_gid = current_gid();
@@ -1945,6 +1953,8 @@ int smb3_init_fs_context(struct fs_context *fc)
 	ctx->reparse_type = CIFS_REPARSE_TYPE_DEFAULT;
 	ctx->symlink_type = CIFS_SYMLINK_TYPE_DEFAULT;
 	ctx->nonativesocket = 0;
+
+	ctx->unicode = -1; /* autodetect, but prefer UNICODE mode */
 
 /*
  *	short int override_uid = -1;

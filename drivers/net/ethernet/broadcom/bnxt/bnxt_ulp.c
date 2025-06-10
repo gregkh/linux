@@ -20,6 +20,7 @@
 #include <asm/byteorder.h>
 #include <linux/bitmap.h>
 #include <linux/auxiliary_bus.h>
+#include <net/netdev_lock.h>
 
 #include "bnxt_hsi.h"
 #include "bnxt.h"
@@ -112,7 +113,7 @@ int bnxt_register_dev(struct bnxt_en_dev *edev,
 	struct bnxt_ulp *ulp;
 	int rc = 0;
 
-	rtnl_lock();
+	netdev_lock(dev);
 	mutex_lock(&edev->en_dev_lock);
 	if (!bp->irq_tbl) {
 		rc = -ENODEV;
@@ -138,7 +139,7 @@ int bnxt_register_dev(struct bnxt_en_dev *edev,
 	edev->flags |= BNXT_EN_FLAG_MSIX_REQUESTED;
 exit:
 	mutex_unlock(&edev->en_dev_lock);
-	rtnl_unlock();
+	netdev_unlock(dev);
 	return rc;
 }
 EXPORT_SYMBOL(bnxt_register_dev);
@@ -151,7 +152,7 @@ void bnxt_unregister_dev(struct bnxt_en_dev *edev)
 	int i = 0;
 
 	ulp = edev->ulp_tbl;
-	rtnl_lock();
+	netdev_lock(dev);
 	mutex_lock(&edev->en_dev_lock);
 	if (ulp->msix_requested)
 		edev->flags &= ~BNXT_EN_FLAG_MSIX_REQUESTED;
@@ -169,7 +170,7 @@ void bnxt_unregister_dev(struct bnxt_en_dev *edev)
 		i++;
 	}
 	mutex_unlock(&edev->en_dev_lock);
-	rtnl_unlock();
+	netdev_unlock(dev);
 	return;
 }
 EXPORT_SYMBOL(bnxt_unregister_dev);
@@ -309,7 +310,7 @@ void bnxt_ulp_irq_stop(struct bnxt *bp)
 		if (!ulp->msix_requested)
 			return;
 
-		ops = rtnl_dereference(ulp->ulp_ops);
+		ops = netdev_lock_dereference(ulp->ulp_ops, bp->dev);
 		if (!ops || !ops->ulp_irq_stop)
 			return;
 		if (test_bit(BNXT_STATE_FW_RESET_DET, &bp->state))
@@ -333,7 +334,7 @@ void bnxt_ulp_irq_restart(struct bnxt *bp, int err)
 		if (!ulp->msix_requested)
 			return;
 
-		ops = rtnl_dereference(ulp->ulp_ops);
+		ops = netdev_lock_dereference(ulp->ulp_ops, bp->dev);
 		if (!ops || !ops->ulp_irq_restart)
 			return;
 
