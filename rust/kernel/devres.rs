@@ -12,12 +12,10 @@ use crate::{
     error::{Error, Result},
     ffi::c_void,
     prelude::*,
-    revocable::Revocable,
-    sync::{Arc, Completion},
+    revocable::{Revocable, RevocableGuard},
+    sync::{rcu, Arc, Completion},
     types::ARef,
 };
-
-use core::ops::Deref;
 
 #[pin_data]
 struct DevresInner<T> {
@@ -196,13 +194,15 @@ impl<T> Devres<T> {
 
         Ok(())
     }
-}
 
-impl<T> Deref for Devres<T> {
-    type Target = Revocable<T>;
+    /// [`Devres`] accessor for [`Revocable::try_access`].
+    pub fn try_access(&self) -> Option<RevocableGuard<'_, T>> {
+        self.0.data.try_access()
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.0.data
+    /// [`Devres`] accessor for [`Revocable::try_access_with_guard`].
+    pub fn try_access_with_guard<'a>(&'a self, guard: &'a rcu::Guard) -> Option<&'a T> {
+        self.0.data.try_access_with_guard(guard)
     }
 }
 
@@ -210,7 +210,7 @@ impl<T> Drop for Devres<T> {
     fn drop(&mut self) {
         // SAFETY: When `drop` runs, it is guaranteed that nobody is accessing the revocable data
         // anymore, hence it is safe not to wait for the grace period to finish.
-        if unsafe { self.revoke_nosync() } {
+        if unsafe { self.0.data.revoke_nosync() } {
             // We revoked `self.0.data` before the devres action did, hence try to remove it.
             if !DevresInner::remove_action(&self.0) {
                 // We could not remove the devres action, which means that it now runs concurrently,
