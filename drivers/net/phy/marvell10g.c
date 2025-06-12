@@ -193,10 +193,10 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
-int mv3310_ptp_get_sset_count(struct phy_device *dev);
-void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data);
-void mv3310_ptp_get_stats(struct phy_device *dev, struct ethtool_stats *stats,
-			  u64 *data, struct mv3310_ptp_priv *priv);
+int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
+void mv3310_ptp_get_strings(u8 *data);
+void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
+			  struct ethtool_stats *stats, u64 *data);
 #else
 static inline struct mv3310_ptp_priv *
 mv3310_ptp_probe(struct phy_device *phydev)
@@ -215,16 +215,15 @@ static inline int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 {
 	return 0;
 }
-static inline int mv3310_ptp_get_sset_count(struct phy_device *dev)
+static inline int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv)
 {
 	return 0;
 }
-static inline void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data)
+static inline void mv3310_ptp_get_strings(u8 *data)
 {
 }
-static inline void mv3310_ptp_get_stats(struct phy_device *dev,
-					struct ethtool_stats *stats, u64 *data,
-					struct mv3310_ptp_priv *priv)
+static inline void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
+					struct ethtool_stats *stats, u64 *data)
 {
 }
 #endif
@@ -723,7 +722,6 @@ static int mv3310_probe(struct phy_device *phydev)
 	if (!priv)
 		return -ENOMEM;
 
-	priv->ptp_priv = mv3310_ptp_probe(phydev);
 	dev_set_drvdata(&phydev->mdio.dev, priv);
 
 	/* Powering down the port when not in use saves about 600mW */
@@ -752,10 +750,15 @@ static int mv3310_suspend(struct phy_device *phydev)
 
 static int mv3310_resume(struct phy_device *phydev)
 {
+	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
 	int ret;
 
 	ret = mv3310_power_up(phydev);
 	if (ret)
+		return ret;
+
+	ret = mv3310_ptp_start(priv->ptp_priv);
+	if (ret < 0)
 		return ret;
 
 	return mv3310_hwmon_config(phydev, true);
@@ -776,9 +779,13 @@ static int mv3310_start(struct phy_device *phydev)
 	if (ret < 0)
 		return ret;
 
-	ret = mv3310_ptp_start(priv->ptp_priv);
-	if (ret < 0)
-		return ret;
+	/* Probe PTP support.
+	   Ideally it should have been performed under .probe, but PTP
+	   support can only be checked upon completion of reset. */
+	if (!priv->ptp_priv)
+	{
+		priv->ptp_priv = mv3310_ptp_probe(phydev);
+	}
 
 	return 0;
 }
@@ -1618,19 +1625,20 @@ static int mv3110_set_wol(struct phy_device *phydev,
 
 static int mv3310_get_sset_count(struct phy_device *dev)
 {
-	return mv3310_ptp_get_sset_count(dev);
+	struct mv3310_priv *priv = dev_get_drvdata(&dev->mdio.dev);
+	return mv3310_ptp_get_sset_count(priv->ptp_priv);
 }
 
 static void mv3310_get_strings(struct phy_device *dev, u8 *data)
 {
-	mv3310_ptp_get_strings(dev, data);
+	mv3310_ptp_get_strings(data);
 }
 
 static void mv3310_get_stats(struct phy_device *dev,
 			     struct ethtool_stats *stats, u64 *data)
 {
 	struct mv3310_priv *priv = dev_get_drvdata(&dev->mdio.dev);
-	mv3310_ptp_get_stats(dev, stats, data, priv->ptp_priv);
+	mv3310_ptp_get_stats(priv->ptp_priv, stats, data);
 }
 
 static struct phy_driver mv3310_drivers[] = {
