@@ -6265,10 +6265,12 @@ struct dc_power_profile dc_get_power_profile_for_dc_state(const struct dc_state 
  */
 bool dc_get_host_router_index(const struct dc_link *link, unsigned int *host_router_index)
 {
-	struct dc *dc = link->ctx->dc;
+	struct dc *dc;
 
-	if (link->ep_type != DISPLAY_ENDPOINT_USB4_DPIA)
+	if (!link || !host_router_index || link->ep_type != DISPLAY_ENDPOINT_USB4_DPIA)
 		return false;
+
+	dc = link->ctx->dc;
 
 	if (link->link_index < dc->lowest_dpia_link_index)
 		return false;
