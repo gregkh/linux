@@ -34,6 +34,11 @@ enum {
 	MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC	= BIT(11),
 	MV_V2_SLC_CFG_GEN_WMC_ANEG_EN	= BIT(23),
 	MV_V2_SLC_CFG_GEN_SMC_ANEG_EN	= BIT(24),
+
+	MV_V2_LINK_RESET_CFG		= 0x80b0,
+	MV_V2_LINK_RESET_CFG_DEF_VAL	= 0x3900,
+	MV_V2_LINK_RESET_CFG_LINK_DOWN	= BIT(0),
+
 	MV_V2_MODE_CFG 			= 0xf000,
 	MV_V2_MODE_CFG_M_UNIT_PWRUP 	= BIT(12),
 
@@ -195,6 +200,17 @@ static bool mv3310_is_ptp_supported(struct phy_device *phydev)
 	}
 
 	return !(ret & MV_PMA_XG_EXT_STATUS_PTP_UNSUPP);
+}
+
+static bool mv3310_is_ptp_powered_up(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG);
+	if (ret < 0)
+		return false;
+
+	return !!(ret & MV_V2_MODE_CFG_M_UNIT_PWRUP);
 }
 
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
@@ -402,42 +418,71 @@ static int mv3310_verify(struct ptp_clock_info *ptp, unsigned int pin,
 	return -EOPNOTSUPP;
 }
 
+/*
+  Workaround for PTP register lockup issue. When link down reset bit is set, it
+  holds the PTP table registers in reset for a couple of cycles whenever there
+  is a link down event, causing register access failure. To avoid this side
+  effect, clear the reset bit before any PTP register access, then restore it.
+*/
+static void mv3310_ptp_reg_lockup_wa(struct phy_device *phydev, bool enable)
+{
+	u16 val = MV_V2_LINK_RESET_CFG_DEF_VAL;
+
+	if (!enable)
+		val |= MV_V2_LINK_RESET_CFG_LINK_DOWN;
+
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, MV_V2_LINK_RESET_CFG, val);
+	phy_write_mmd(phydev, MDIO_MMD_VEND2, MV_V2_LINK_RESET_CFG + 1, 0);
+}
+
 static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
 			       u32 *regval)
 {
 	int ret;
 
+	/* If the M unit is powered down its registers are not accessible */
+	if (!mv3310_is_ptp_powered_up(phydev))
+		return -EAGAIN;
+
+	/* Enable workaround for potential PTP register lockup issue */
+	mv3310_ptp_reg_lockup_wa(phydev, true);
+
 	/* Read register address */
 	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, regnum);
 	if (ret < 0)
-		return ret;
+		goto disable_wa;
 
 	/* Read that Indirect_read_address gives requested address */
 	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, MV_V2_INDIRECT_READ_ADDR);
 	if (ret < 0)
-		return ret;
+		goto disable_wa;
 	if (ret != regnum) {
-		dev_err(&phydev->mdio.dev,
+		dev_err_ratelimited(
+			&phydev->mdio.dev,
 			"Indirect read address mismatch: %04x != %04x\n", ret,
 			regnum);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto disable_wa;
 	}
 
 	/* Read Indirect_read_data_low provides lower 16-bits (15:0) of data */
 	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2,
 			   MV_V2_INDIRECT_READ_DATA_LOW);
 	if (ret < 0)
-		return ret;
+		goto disable_wa;
 	*regval = ret & 0xffff;
 
 	/* Read Indirect_read_data_high provides upper 16-bits (31:16) of data */
 	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2,
 			   MV_V2_INDIRECT_READ_DATA_HIGH);
 	if (ret < 0)
-		return ret;
+		goto disable_wa;
 	*regval += ((ret & 0xffff) << 16);
 
-	return 0;
+	ret = 0;
+disable_wa:
+	mv3310_ptp_reg_lockup_wa(phydev, false);
+	return ret;
 }
 
 static int mv3310_write_ptp_reg(struct phy_device *phydev, u32 regnum,
@@ -445,15 +490,24 @@ static int mv3310_write_ptp_reg(struct phy_device *phydev, u32 regnum,
 {
 	int ret;
 
+	if (!mv3310_is_ptp_powered_up(phydev))
+		return -EAGAIN;
+
+	/* Enable workaround for potential PTP register lockup issue */
+	mv3310_ptp_reg_lockup_wa(phydev, true);
+
 	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, regnum, regval);
 	if (ret < 0)
-		return ret;
+		goto disable_wa;
 
 	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, regnum + 1, regval >> 16U);
 	if (ret < 0)
-		return ret;
+		goto disable_wa;
 
-	return 0;
+	ret = 0;
+disable_wa:
+	mv3310_ptp_reg_lockup_wa(phydev, false);
+	return ret;
 }
 
 /* The Lookup Action/Match registers need 96-bit write operation */
