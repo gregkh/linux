@@ -28,6 +28,13 @@ properties:
     description: Indicates a falling edge assert, when present. Rising edge if absent.
     type: boolean
 
+  capture-clear:
+    description: When present, report also PPS clear events, which is the
+                 opposite of the assert edge (if assert is rising-edge then
+                 clear is falling-edge and if assert is falling-edge then
+                 clear is rising-edge).
+    type: boolean
+
 required:
   - compatible
   - gpios
