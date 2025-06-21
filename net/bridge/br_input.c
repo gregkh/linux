@@ -331,6 +331,13 @@ static rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
 	if (unlikely(skb->pkt_type == PACKET_LOOPBACK))
 		return RX_HANDLER_PASS;
 
+        int ethertype = ntohs(eth_hdr(skb)->h_proto);
+        if (ethertype == 0x88B5) {
+            printk(KERN_INFO "br_handle_frame: bypassing bridge for ethertype 0x88B5\n");
+            /* Bypass the bridge logic: pass to upper layers */
+            return RX_HANDLER_PASS;
+        }
+
 	if (!is_valid_ether_addr(eth_hdr(skb)->h_source))
 		goto drop;
 

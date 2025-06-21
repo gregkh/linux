@@ -160,6 +160,8 @@
 #include <net/rps.h>
 #include <linux/phy_link_topology.h>
 
+#include <linux/netlink_custom_hook.h>
+
 #include "dev.h"
 #include "devmem.h"
 #include "net-sysfs.h"
@@ -5736,6 +5738,10 @@ static int __netif_receive_skb_one_core(struct sk_buff *skb, bool pfmemalloc)
 	struct packet_type *pt_prev = NULL;
 	int ret;
 
+        printk(KERN_EMERG "pkt rx in __netif_receive_skb_one_core");
+        printk(KERN_EMERG "ONE_CORE: proto=0x%04x dev=%s len=%u\n",
+       skb->protocol, skb->dev ? skb->dev->name : "(null)", skb->len);
+
 	ret = __netif_receive_skb_core(&skb, pfmemalloc, &pt_prev);
 	if (pt_prev)
 		ret = INDIRECT_CALL_INET(pt_prev->func, ipv6_rcv, ip_rcv, skb,
@@ -5994,6 +6000,16 @@ int netif_receive_skb(struct sk_buff *skb)
 {
 	int ret;
 
+        printk(KERN_EMERG "nethook debug: proto=0x%04x pkt_type=%d dev=%s len=%u\n",
+            ntohs(skb->protocol), skb->pkt_type, skb->dev->name, skb->len);
+        printk(KERN_EMERG "custom_net_hook=%px\n", custom_net_hook);
+
+        if (custom_net_hook && custom_net_hook(skb))
+        {
+            printk(KERN_INFO "We fired the nethook successfully.");
+            return NET_RX_SUCCESS; // custom handler consumed packet
+        }
+
 	trace_netif_receive_skb_entry(skb);
 
 	ret = netif_receive_skb_internal(skb);
@@ -6013,6 +6029,8 @@ EXPORT_SYMBOL(netif_receive_skb);
  *	This function may only be called from softirq context and interrupts
  *	should be enabled.
  */
+
+#if 0
 void netif_receive_skb_list(struct list_head *head)
 {
 	struct sk_buff *skb;
@@ -6024,8 +6042,42 @@ void netif_receive_skb_list(struct list_head *head)
 			trace_netif_receive_skb_list_entry(skb);
 	}
 	netif_receive_skb_list_internal(head);
+
 	trace_netif_receive_skb_list_exit(0);
 }
+#endif
+void netif_receive_skb_list(struct list_head *head)
+{
+	struct sk_buff *skb, *tmp;
+	LIST_HEAD(pass_head);
+
+	if (list_empty(head))
+		return;
+	if (trace_netif_receive_skb_list_entry_enabled()) {
+		list_for_each_entry(skb, head, list)
+			trace_netif_receive_skb_list_entry(skb);
+	}
+
+	// Iterate, call custom hook, build a list of unhandled skbs
+	list_for_each_entry_safe(skb, tmp, head, list) {
+		list_del_init(&skb->list);
+        printk(KERN_EMERG "nethook debug: proto=0x%04x pkt_type=%d dev=%s len=%u\n",
+            ntohs(skb->protocol), skb->pkt_type, skb->dev->name, skb->len);
+        printk(KERN_EMERG "cKERN_EMERGustom_net_hook=%px\n", custom_net_hook);
+		if (custom_net_hook && custom_net_hook(skb)) {
+			// Consumed, don't pass down
+			continue;
+		}
+		// Not handled, append to new list
+		list_add_tail(&skb->list, &pass_head);
+	}
+	// Pass only unhandled skbs to normal stack
+	if (!list_empty(&pass_head))
+		netif_receive_skb_list_internal(&pass_head);
+
+	trace_netif_receive_skb_list_exit(0);
+}
+
 EXPORT_SYMBOL(netif_receive_skb_list);
 
 static DEFINE_PER_CPU(struct work_struct, flush_works);

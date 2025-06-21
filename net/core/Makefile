@@ -7,6 +7,8 @@ obj-y := sock.o request_sock.o skbuff.o datagram.o stream.o scm.o \
 	 gen_stats.o gen_estimator.o net_namespace.o secure_seq.o \
 	 flow_dissector.o
 
+obj-y += custom_net_hook.o
+
 obj-$(CONFIG_SYSCTL) += sysctl_net_core.o
 
 obj-y		     += dev.o dev_addr_lists.o dst.o netevent.o \
@@ -14,6 +16,7 @@ obj-y		     += dev.o dev_addr_lists.o dst.o netevent.o \
 			sock_diag.o dev_ioctl.o tso.o sock_reuseport.o \
 			fib_notifier.o xdp.o flow_offload.o gro.o \
 			netdev-genl.o netdev-genl-gen.o gso.o
+obj-y += custom_net_hook.o
 
 obj-$(CONFIG_NETDEV_ADDR_LIST_TEST) += dev_addr_lists_test.o
 
