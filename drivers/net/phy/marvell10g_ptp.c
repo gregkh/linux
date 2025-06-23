@@ -173,9 +173,8 @@ static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
 				size_t udata_len, u32 baseaddr);
 static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv);
 static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv);
-static int mv3310_ptp_set_lut(struct phy_device *phydev);
-static int mv3310_ptp_set_lut_actions(struct phy_device *phydev, bool enable_tx,
-				      bool enable_rx);
+static int mv3310_ptp_set_lut(struct phy_device *phydev, bool enable_tx,
+			      bool enable_rx, bool enable_peer_delay);
 
 /* Timestamping callbacks */
 static int mv3310_ts_hwtstamp(struct mii_timestamper *mii_ts,
@@ -342,18 +341,11 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 				       MV_V2_PTP_CFG_GEN_H_ENABLE);
 	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_IG_MODE,
 				       MV_V2_PTP_CFG_IG_MODE_ENABLE);
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(&phydev->mdio.dev, "failed to enable PTP core: %d\n",
 			ret);
-		goto unlock_out;
-	}
-
-	ret = mv3310_ptp_set_lut(phydev);
-	if (ret < 0)
-		dev_err(&phydev->mdio.dev, "failed to set PTP LUT: %d\n", ret);
-
-unlock_out:
 	mutex_unlock(&priv->lock);
+
 	return ret;
 }
 
@@ -998,7 +990,8 @@ static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv)
  * Match PTPv2 event messages (Sync, Delay_Req, Pdelay_Req, Pdelay_Resp) in the
  * Ingress/Egress LUT. Only these messages require an accurate timestamp.
 */
-static int mv3310_ptp_set_lut(struct phy_device *phydev)
+static int mv3310_ptp_set_lut(struct phy_device *phydev, bool enable_tx,
+			      bool enable_rx, bool enable_peer_delay)
 {
 	int ret;
 
@@ -1019,35 +1012,27 @@ static int mv3310_ptp_set_lut(struct phy_device *phydev)
 	 *      Event          2                      PTPv2
 	 * Sync = 0000, Delay_Req = 0001, Pdelay_Req = 0010, Pdelay_Resp = 0011
 	 * => MESSAGETYPE (mask) = 1100. */
-	const u32 PTP_V2_LUT_MATCH_ENABLE = 0x0c0f0001;
+	const u32 PTP_V2_LUT_MATCH_ENABLE = enable_peer_delay ? 0x0c0f0001 : 0x0e0f0001;
 
 	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_EG_BASE,
-				       PTP_V2_LUT_MATCH_KEY);
+				       enable_tx ? PTP_V2_LUT_MATCH_KEY : 0);
 	if (ret < 0)
 		return ret;
 
 	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_EG_BASE + 8,
-				       PTP_V2_LUT_MATCH_ENABLE);
+				       enable_tx ? PTP_V2_LUT_MATCH_ENABLE : 0);
 	if (ret < 0)
 		return ret;
 
 	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_IG_BASE,
-				       PTP_V2_LUT_MATCH_KEY);
+				       enable_rx ? PTP_V2_LUT_MATCH_KEY : 0);
 	if (ret < 0)
 		return ret;
 
 	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_IG_BASE + 8,
-				       PTP_V2_LUT_MATCH_ENABLE);
+				       enable_rx ? PTP_V2_LUT_MATCH_ENABLE : 0);
 	if (ret < 0)
 		return ret;
-
-	return 0;
-}
-
-static int mv3310_ptp_set_lut_actions(struct phy_device *phydev, bool enable_tx,
-				      bool enable_rx)
-{
-	int ret;
 
 	/* Set Ingress (RX) LUT Action: INIPIGGYBACK
 	   Set Egress  (TX) LUT Action: UPDATERESIDENCE */
@@ -1069,7 +1054,7 @@ static int mv3310_ts_hwtstamp(struct mii_timestamper *mii_ts,
 			      struct netlink_ext_ack *extack)
 {
 	int ret;
-	bool enable_tx, enable_rx;
+	bool enable_tx = false, enable_rx = false, enable_peer_delay = false;
 	struct mv3310_ptp_priv *priv =
 		container_of(mii_ts, struct mv3310_ptp_priv, mii_ts);
 
@@ -1088,38 +1073,50 @@ static int mv3310_ts_hwtstamp(struct mii_timestamper *mii_ts,
 		return -ERANGE;
 	}
 
+	/* Consider HWTSTAMP_FILTER_PTP_V2_DELAY_REQ = Sync + Delay_req
+	   Consider HWTSTAMP_FILTER_PTP_V2_EVENT = Sync + Delay_Req + Pdelay_Req + Pdelay_Resp
+	   Always enable for all layers, not just L2 or L4 */
 	switch (cfg->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		enable_rx = false;
 		break;
+
 	case HWTSTAMP_FILTER_ALL:
 	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
 	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
 	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
 		return -ERANGE;
+
 	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_EVENT:
+		enable_rx = true;
+		enable_peer_delay = true;
+		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+		break;
+
 	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
-	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
-	case HWTSTAMP_FILTER_PTP_V2_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
 		enable_rx = true;
-		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V2_DELAY_REQ;
 		break;
+
 	default:
 		return -ERANGE;
 	}
 
 	mutex_lock(&priv->lock);
-	ret = mv3310_ptp_set_lut_actions(priv->phydev, enable_tx, enable_rx);
+	ret = mv3310_ptp_set_lut(priv->phydev, enable_tx, enable_rx,
+				 enable_peer_delay);
 	mutex_unlock(&priv->lock);
 
 	if (ret < 0) {
 		dev_err(&priv->phydev->mdio.dev,
-			"failed to set PTP LUT actions: %d\n", ret);
+			"failed to set PTP LUT: %d\n", ret);
 	}
 
 	return 0;
