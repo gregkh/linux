@@ -773,10 +773,28 @@ static int dspi_transfer_one_message(struct spi_controller *ctlr,
 		trans_mode = dspi->devtype_data->trans_mode;
 		switch (trans_mode) {
 		case DSPI_EOQ_MODE:
+			/*
+			 * Reinitialize the completion before transferring data
+			 * to avoid the case where it might remain in the done
+			 * state due to a spurious interrupt from a previous
+			 * transfer. This could falsely signal that the current
+			 * transfer has completed.
+			 */
+			if (dspi->irq)
+				reinit_completion(&dspi->xfer_done);
 			regmap_write(dspi->regmap, SPI_RSER, SPI_RSER_EOQFE);
 			dspi_eoq_write(dspi);
 			break;
 		case DSPI_TCFQ_MODE:
+			/*
+			 * Reinitialize the completion before transferring data
+			 * to avoid the case where it might remain in the done
+			 * state due to a spurious interrupt from a previous
+			 * transfer. This could falsely signal that the current
+			 * transfer has completed.
+			 */
+			if (dspi->irq)
+				reinit_completion(&dspi->xfer_done);
 			regmap_write(dspi->regmap, SPI_RSER, SPI_RSER_TCFQE);
 			dspi_tcfq_write(dspi);
 			break;
@@ -796,7 +814,6 @@ static int dspi_transfer_one_message(struct spi_controller *ctlr,
 		if (trans_mode != DSPI_DMA_MODE) {
 			if (dspi->irq) {
 				wait_for_completion(&dspi->xfer_done);
-				reinit_completion(&dspi->xfer_done);
 			} else {
 				do {
 					status = dspi_poll(dspi);
