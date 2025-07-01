@@ -383,6 +383,11 @@ static int netfs_collect_in_app(struct netfs_io_request *rreq,
 {
 	bool need_collect = false, inactive = true, done = true;
 
+	if (!test_bit(NETFS_RREQ_IN_PROGRESS, &rreq->flags)) {
+		trace_netfs_rreq(rreq, netfs_rreq_trace_recollect);
+		return 1; /* Done */
+	}
+
 	for (int i = 0; i < NR_IO_STREAMS; i++) {
 		struct netfs_io_subrequest *subreq;
 		struct netfs_io_stream *stream = &rreq->io_streams[i];
@@ -442,7 +447,7 @@ static ssize_t netfs_wait_for_in_progress(struct netfs_io_request *rreq,
 			case 1:
 				goto all_collected;
 			case 2:
-				if (!netfs_check_rreq_in_progress(rreq))
+				if (!test_bit(NETFS_RREQ_IN_PROGRESS, &rreq->flags))
 					break;
 				cond_resched();
 				continue;
@@ -512,7 +517,7 @@ static void netfs_wait_for_pause(struct netfs_io_request *rreq,
 			case 1:
 				goto all_collected;
 			case 2:
-				if (!netfs_check_rreq_in_progress(rreq) ||
+				if (!test_bit(NETFS_RREQ_IN_PROGRESS, &rreq->flags) ||
 				    !test_bit(NETFS_RREQ_PAUSE, &rreq->flags))
 					break;
 				cond_resched();
