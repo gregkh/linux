@@ -12,6 +12,10 @@
 #include <linux/phy.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/mutex.h>
+#include <linux/sched.h>
+#include <linux/firmware.h>
+#include <linux/netdevice.h>
+#include <linux/net_tstamp.h>
 
 #define MV_EXTTS_PERIOD_MS 95
 
@@ -22,7 +26,10 @@ enum {
 
 	/* Vendor2 MMD registers */
 	MV_V2_SLC_CFG_GEN		= 0x8000,
-	MV_V2_SLC_CFG_GEN_DEF_VAL	= 0x7e50000f,
+	MV_V2_SLC_CFG_GEN_WMC_ADD_CRC	= BIT(8),
+	MV_V2_SLC_CFG_GEN_SMC_ADD_CRC	= BIT(9),
+	MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC	= BIT(10),
+	MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC	= BIT(11),
 	MV_V2_SLC_CFG_GEN_WMC_ANEG_EN	= BIT(23),
 	MV_V2_SLC_CFG_GEN_SMC_ANEG_EN	= BIT(24),
 	MV_V2_MODE_CFG 			= 0xf000,
@@ -32,6 +39,23 @@ enum {
 	MV_V2_INDIRECT_READ_ADDR 	= 0x97fd,
 	MV_V2_INDIRECT_READ_DATA_LOW 	= 0x97fe,
 	MV_V2_INDIRECT_READ_DATA_HIGH 	= 0x97ff,
+
+	MV_V2_PTP_CFG_GEN_EG		= 0xa100,
+	MV_V2_PTP_CFG_GEN_IG		= 0xa900,
+	MV_V2_PTP_CFG_GEN_H_ENABLE	= BIT(0),
+	MV_V2_PTP_CFG_IG_MODE		= 0xa938,
+	MV_V2_PTP_CFG_IG_MODE_ENABLE	= BIT(10),
+
+	MV_V2_PTP_LUT_KEY_EG_BASE	= 0xa700,
+	MV_V2_PTP_LUT_KEY_IG_BASE	= 0xaf00,
+	MV_V2_PTP_LUT_ACTION_EG_BASE	= 0xa600,
+	MV_V2_PTP_LUT_ACTION_IG_BASE	= 0xae00,
+
+	MV_V2_PTP_PARSER_EG_UDATA	= 0xa200,
+	MV_V2_PTP_UPDATER_EG_UDATA	= 0xa400,
+	MV_V2_PTP_PARSER_IG_UDATA	= 0xaa00,
+	MV_V2_PTP_UPDATER_IG_UDATA	= 0xac00,
+	MV_V2_PTP_UDATA_EMPTY		= 0x30000,
 
 	MV_V2_PTP_TOD_LOAD_NSEC_FRAC 	= 0xbc2a,
 	MV_V2_PTP_TOD_LOAD_NSEC 	= 0xbc2c,
@@ -58,18 +82,27 @@ struct mv3310_ptp_priv {
 	struct ptp_clock_info caps;
 	struct ptp_clock *clock;
 	struct mutex lock; /* Protects against concurrent MDIO register access */
+	struct mii_timestamper mii_ts;
 	bool extts_enabled;
 };
 
+/* Public functions */
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
-int mv3310_ptp_power_up(struct phy_device *phydev);
-int mv3310_ptp_power_down(struct phy_device *phydev);
+int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
 
+/* Helper functions */
 static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
 			       u32 *regval);
 static int mv3310_write_ptp_reg(struct phy_device *phydev, u32 regnum,
 				u32 regval);
+static int mv3310_write_ptp_lut_reg(struct phy_device *phydev, u32 regnum,
+				    u32 regval);
+static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
+				   u32 bits);
 
+/* TOD functions */
 static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm);
 static int mv3310_adjphase(struct ptp_clock_info *ptp, s32 phase);
 static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta);
@@ -82,6 +115,22 @@ static int mv3310_enable(struct ptp_clock_info *ptp,
 static int mv3310_verify(struct ptp_clock_info *ptp, unsigned int pin,
 			 enum ptp_pin_function func, unsigned int chan);
 static long mv3310_do_aux_work(struct ptp_clock_info *ptp);
+
+/* PTP functions */
+static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
+				size_t udata_len, u32 baseaddr);
+static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv);
+static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv);
+static int mv3310_ptp_set_lut(struct phy_device *phydev);
+static int mv3310_ptp_set_lut_actions(struct phy_device *phydev, bool enable_tx,
+				      bool enable_rx);
+
+/* Timestamping callbacks */
+static int mv3310_ts_hwtstamp(struct mii_timestamper *mii_ts,
+			      struct kernel_hwtstamp_config *cfg,
+			      struct netlink_ext_ack *extack);
+static int mv3310_ts_info(struct mii_timestamper *mii_ts,
+			  struct kernel_ethtool_ts_info *ts_info);
 
 static bool mv3310_is_ptp_supported(struct phy_device *phydev)
 {
@@ -110,6 +159,12 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	priv->phydev = phydev;
 	mutex_init(&priv->lock);
 	priv->extts_enabled = false;
+
+	/* Setup timestamping */
+	priv->mii_ts.hwtstamp = mv3310_ts_hwtstamp;
+	priv->mii_ts.ts_info = mv3310_ts_info;
+	priv->mii_ts.device = &phydev->mdio.dev;
+	priv->phydev->mii_ts = &priv->mii_ts;
 
 	priv->caps.owner = THIS_MODULE;
 	strscpy(priv->caps.name, "mv10g-phy-phc", sizeof(priv->caps.name));
@@ -142,40 +197,83 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	return priv;
 }
 
-int mv3310_ptp_power_up(struct phy_device *phydev)
+int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 {
 	int ret;
+	struct phy_device *phydev = priv->phydev;
 
 	if (!mv3310_is_ptp_supported(phydev))
 		return 0;
 
+	mutex_lock(&priv->lock);
 	/* Enable M unit used for PTP */
 	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
 			       MV_V2_MODE_CFG_M_UNIT_PWRUP);
 	if (ret < 0)
-		return ret;
+		goto unlock_out;
 
 	/* PHY Errata section 4.4: after the M unit is powered up
 	   auto-negotiation is disabled by default. Enable:
 	   * WMC - auto negotiation for wire mac
 	   * SMC - auto negotiation for system mac */
-	ret = mv3310_write_ptp_reg(phydev, MV_V2_SLC_CFG_GEN,
-				   MV_V2_SLC_CFG_GEN_DEF_VAL |
-					   MV_V2_SLC_CFG_GEN_WMC_ANEG_EN |
-					   MV_V2_SLC_CFG_GEN_SMC_ANEG_EN);
-	if (ret < 0)
-		return ret;
-
-	return 0;
+	/* LinkCrypt MAC Configuration: enable remove crc at rx and add back to tx */
+	ret = mv3310_set_ptp_reg_bits(phydev, MV_V2_SLC_CFG_GEN,
+				      MV_V2_SLC_CFG_GEN_WMC_ANEG_EN |
+					      MV_V2_SLC_CFG_GEN_SMC_ANEG_EN |
+					      MV_V2_SLC_CFG_GEN_WMC_ADD_CRC |
+					      MV_V2_SLC_CFG_GEN_SMC_ADD_CRC |
+					      MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC |
+					      MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC);
+unlock_out:
+	mutex_unlock(&priv->lock);
+	return ret;
 }
 
-int mv3310_ptp_power_down(struct phy_device *phydev)
+int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv)
 {
+	if (!mv3310_is_ptp_supported(priv->phydev))
+		return 0;
+
+	return phy_clear_bits_mmd(priv->phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
+				  MV_V2_MODE_CFG_M_UNIT_PWRUP);
+}
+
+int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
+{
+	int ret;
+	struct phy_device *phydev = priv->phydev;
+
 	if (!mv3310_is_ptp_supported(phydev))
 		return 0;
 
-	return phy_clear_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
-				  MV_V2_MODE_CFG_M_UNIT_PWRUP);
+	ret = mv3310_ptp_check_ucode(priv);
+	if (ret < 0) {
+		dev_err(&phydev->mdio.dev, "failed to load PTP microcode: %d\n",
+			ret);
+		return ret;
+	}
+
+	mutex_lock(&priv->lock);
+	ret = 0;
+	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_GEN_EG,
+				       MV_V2_PTP_CFG_GEN_H_ENABLE);
+	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_GEN_IG,
+				       MV_V2_PTP_CFG_GEN_H_ENABLE);
+	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_IG_MODE,
+				       MV_V2_PTP_CFG_IG_MODE_ENABLE);
+	if (ret < 0) {
+		dev_err(&phydev->mdio.dev, "failed to enable PTP core: %d\n",
+			ret);
+		goto unlock_out;
+	}
+
+	ret = mv3310_ptp_set_lut(phydev);
+	if (ret < 0)
+		dev_err(&phydev->mdio.dev, "failed to set PTP LUT: %d\n", ret);
+
+unlock_out:
+	mutex_unlock(&priv->lock);
+	return ret;
 }
 
 static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
@@ -241,6 +339,45 @@ static int mv3310_write_ptp_reg(struct phy_device *phydev, u32 regnum,
 		return ret;
 
 	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, regnum + 1, regval >> 16U);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+/* The Lookup Action/Match registers need 96-bit write operation */
+static int mv3310_write_ptp_lut_reg(struct phy_device *phydev, u32 regnum,
+				    u32 regval)
+{
+	int ret;
+
+	ret = mv3310_write_ptp_reg(phydev, regnum, regval);
+	if (ret < 0)
+		return ret;
+
+	/* The following writes are mandatory (although registers are already 0) */
+	ret = mv3310_write_ptp_reg(phydev, regnum + 2, 0);
+	if (ret < 0)
+		return ret;
+
+	ret = mv3310_write_ptp_reg(phydev, regnum + 4, 0);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
+				   u32 bits)
+{
+	int ret;
+	u32 regval;
+
+	ret = mv3310_read_ptp_reg(phydev, regnum, &regval);
+	if (ret < 0)
+		return ret;
+
+	ret = mv3310_write_ptp_reg(phydev, regnum, regval | bits);
 	if (ret < 0)
 		return ret;
 
@@ -473,3 +610,246 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 
 	return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
 }
+
+static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
+				size_t udata_len, u32 baseaddr)
+{
+	int ret, i;
+	u32 regval;
+	struct phy_device *phydev = priv->phydev;
+
+	mutex_lock(&priv->lock);
+
+	for (i = 0; i < udata_len / sizeof(u32); i++) {
+		memcpy(&regval, udata + (i * sizeof(u32)), sizeof(u32));
+		ret = mv3310_write_ptp_reg(phydev, baseaddr + (i * 2), regval);
+		if (ret < 0) {
+				dev_err(&phydev->mdio.dev,
+					"Failed to write PTP microcode address: %x\n",
+					baseaddr + (i * 2));
+				break;
+		}
+	}
+
+	mutex_unlock(&priv->lock);
+	return ret;
+}
+
+static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv)
+{
+	struct phy_device *phydev = priv->phydev;
+	const struct firmware *pr_entry;
+	const struct firmware *ur_entry;
+	const char *parser_ucode = "mrvl/x3310uc_pr.hdr";
+	const char *updater_ucode = "mrvl/x3310uc_ur.hdr";
+	int ret = 0;
+
+	ret = request_firmware(&pr_entry, parser_ucode, &phydev->mdio.dev);
+	if (ret < 0)
+		return ret;
+
+	ret = request_firmware(&ur_entry, updater_ucode, &phydev->mdio.dev);
+	if (ret < 0)
+		goto out_release_pr;
+
+	/* Microcode size must be word-aligned */
+	if (((pr_entry->size % sizeof(u32)) != 0) ||
+	    ((ur_entry->size % sizeof(u32)) != 0)) {
+		dev_err(&phydev->mdio.dev, "firmware file invalid");
+		ret = -EINVAL;
+		goto out_release_all;
+	}
+
+	ret = 0;
+	ret |= mv3310_ptp_set_udata(priv, pr_entry->data, pr_entry->size,
+				    MV_V2_PTP_PARSER_EG_UDATA);
+	cond_resched();
+	ret |= mv3310_ptp_set_udata(priv, ur_entry->data, ur_entry->size,
+				    MV_V2_PTP_UPDATER_EG_UDATA);
+	cond_resched();
+	ret |= mv3310_ptp_set_udata(priv, pr_entry->data, pr_entry->size,
+				    MV_V2_PTP_PARSER_IG_UDATA);
+	cond_resched();
+	ret |= mv3310_ptp_set_udata(priv, ur_entry->data, ur_entry->size,
+				    MV_V2_PTP_UPDATER_IG_UDATA);
+
+out_release_all:
+	release_firmware(ur_entry);
+out_release_pr:
+	release_firmware(pr_entry);
+	return ret;
+}
+
+static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv)
+{
+	struct phy_device *phydev = priv->phydev;
+	u32 ig_parser_check = 0;
+	u32 eg_parser_check = 0;
+	u32 ig_updater_check = 0;
+	u32 eg_updater_check = 0;
+
+	/* Check if the microcode is already loaded */
+	mutex_lock(&priv->lock);
+	mv3310_read_ptp_reg(phydev, MV_V2_PTP_PARSER_EG_UDATA,
+			    &eg_parser_check);
+	mv3310_read_ptp_reg(phydev, MV_V2_PTP_UPDATER_EG_UDATA,
+			    &eg_updater_check);
+	mv3310_read_ptp_reg(phydev, MV_V2_PTP_PARSER_IG_UDATA,
+			    &ig_parser_check);
+	mv3310_read_ptp_reg(phydev, MV_V2_PTP_UPDATER_IG_UDATA,
+			    &ig_updater_check);
+	mutex_unlock(&priv->lock);
+
+	if ((eg_parser_check != MV_V2_PTP_UDATA_EMPTY) &&
+	    (eg_updater_check != MV_V2_PTP_UDATA_EMPTY) &&
+	    (ig_parser_check != MV_V2_PTP_UDATA_EMPTY) &&
+	    (ig_updater_check != MV_V2_PTP_UDATA_EMPTY))
+		return 0;
+
+	dev_info(&phydev->mdio.dev, "loading PTP parser & updater microcode\n");
+	return mv3310_ptp_load_ucode(priv);
+}
+
+static int mv3310_ptp_set_lut(struct phy_device *phydev)
+{
+	int ret;
+
+	/* Set Ingress/Egress LUT Match Key.
+	 * TRANSPORTSPECIFIC   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
+	 *      0000              0000      0000 0010                    1
+	 *      PTPv2        Sync/Delay_Req     2                      PTPv2
+	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (value) = 000* (use 0 as *).
+	 * Ignore FLAGFIELD, DOMAINNUMBER. */
+	const u32 PTP_V2_LUT_MATCH_KEY = 0x00020001;
+
+	/* Set Ingress/Egress LUT Match Enable. This is mask. Set to 1 bit positions
+	 * from LUT Match Key above.
+	 * Check TRANSPORTSPECIFIC, MESSAGETYPE, VERSIONPTP and FLAGPTPV2:
+	 * TRANSPORTSPECIFIC   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
+	 *      1111               1110      0000 1111                    1
+	 *      PTPv2        Sync/Delay_Req      2                      PTPv2
+	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (mask) = 1110. */
+	const u32 PTP_V2_LUT_MATCH_ENABLE = 0xfe0f0001;
+
+	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_EG_BASE,
+				       PTP_V2_LUT_MATCH_KEY);
+	if (ret < 0)
+		return ret;
+
+	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_EG_BASE + 8,
+				       PTP_V2_LUT_MATCH_ENABLE);
+	if (ret < 0)
+		return ret;
+
+	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_IG_BASE,
+				       PTP_V2_LUT_MATCH_KEY);
+	if (ret < 0)
+		return ret;
+
+	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_IG_BASE + 8,
+				       PTP_V2_LUT_MATCH_ENABLE);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int mv3310_ptp_set_lut_actions(struct phy_device *phydev, bool enable_tx,
+				      bool enable_rx)
+{
+	int ret;
+
+	/* Set Ingress (RX) LUT Action: INIPIGGYBACK
+	   Set Egress  (TX) LUT Action: UPDATERESIDENCE */
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_LUT_ACTION_IG_BASE,
+				   enable_rx ? BIT(12) : 0);
+	if (ret < 0)
+		return ret;
+
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_LUT_ACTION_EG_BASE,
+				   enable_tx ? BIT(11) : 0);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int mv3310_ts_hwtstamp(struct mii_timestamper *mii_ts,
+			      struct kernel_hwtstamp_config *cfg,
+			      struct netlink_ext_ack *extack)
+{
+	int ret;
+	bool enable_tx, enable_rx;
+	struct mv3310_ptp_priv *priv =
+		container_of(mii_ts, struct mv3310_ptp_priv, mii_ts);
+
+	/* reserved for future extensions */
+	if (cfg->flags)
+		return -EINVAL;
+
+	switch (cfg->tx_type) {
+	case HWTSTAMP_TX_OFF:
+		enable_tx = false;
+		break;
+	case HWTSTAMP_TX_ON:
+		enable_tx = true;
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	switch (cfg->rx_filter) {
+	case HWTSTAMP_FILTER_NONE:
+		enable_rx = false;
+		break;
+	case HWTSTAMP_FILTER_ALL:
+	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
+		return -ERANGE;
+	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
+		enable_rx = true;
+		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	mutex_lock(&priv->lock);
+	ret = mv3310_ptp_set_lut_actions(priv->phydev, enable_tx, enable_rx);
+	mutex_unlock(&priv->lock);
+
+	if (ret < 0) {
+		dev_err(&priv->phydev->mdio.dev,
+			"failed to set PTP LUT actions: %d\n", ret);
+	}
+
+	return 0;
+}
+
+static int mv3310_ts_info(struct mii_timestamper *mii_ts,
+			  struct kernel_ethtool_ts_info *ts_info)
+{
+	struct mv3310_ptp_priv *priv =
+		container_of(mii_ts, struct mv3310_ptp_priv, mii_ts);
+
+	ts_info->so_timestamping =
+		SOF_TIMESTAMPING_TX_HARDWARE | SOF_TIMESTAMPING_RX_HARDWARE;
+	ts_info->phc_index = ptp_clock_index(priv->clock);
+	ts_info->tx_types = BIT(HWTSTAMP_TX_OFF) | BIT(HWTSTAMP_TX_ON);
+	ts_info->rx_filters =
+		BIT(HWTSTAMP_FILTER_NONE) | BIT(HWTSTAMP_FILTER_PTP_V2_EVENT);
+
+	return 0;
+}
+
+MODULE_FIRMWARE("mrvl/x3310uc_pr.hdr");
+MODULE_FIRMWARE("mrvl/x3310uc_ur.hdr");

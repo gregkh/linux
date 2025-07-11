@@ -190,19 +190,24 @@ struct mv3310_priv {
 
 #ifdef CONFIG_MARVELL_10G_PHY_PTP
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
-int mv3310_ptp_power_up(struct phy_device *phydev);
-int mv3310_ptp_power_down(struct phy_device *phydev);
+int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
 #else
 static inline struct mv3310_ptp_priv *
 mv3310_ptp_probe(struct phy_device *phydev)
 {
 	return NULL;
 }
-static inline int mv3310_ptp_power_up(struct phy_device *phydev)
+static inline int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 {
 	return 0;
 }
-static inline int mv3310_ptp_power_down(struct phy_device *phydev)
+static inline int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv)
+{
+	return 0;
+}
+static inline int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 {
 	return 0;
 }
@@ -358,7 +363,9 @@ static int mv3310_hwmon_probe(struct phy_device *phydev)
 
 static int mv3310_power_down(struct phy_device *phydev)
 {
-	mv3310_ptp_power_down(phydev);
+	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
+
+	mv3310_ptp_power_down(priv->ptp_priv);
 	return phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				MV_V2_PORT_CTRL_PWRDOWN);
 }
@@ -374,7 +381,7 @@ static int mv3310_power_up(struct phy_device *phydev)
 	if (ret < 0)
 		return ret;
 
-	ret = mv3310_ptp_power_up(phydev);
+	ret = mv3310_ptp_power_up(priv->ptp_priv);
 	if (ret < 0)
 		return ret;
 
@@ -744,6 +751,10 @@ static int mv3310_start(struct phy_device *phydev)
 	}
 
 	ret = mv3310_check_firmware(phydev);
+	if (ret < 0)
+		return ret;
+
+	ret = mv3310_ptp_start(priv->ptp_priv);
 	if (ret < 0)
 		return ret;
 

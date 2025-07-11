@@ -5317,16 +5317,18 @@ static int mvpp2_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
 	struct mvpp2_port *port = netdev_priv(dev);
 
-	switch (cmd) {
-	case SIOCSHWTSTAMP:
-		if (port->hwtstamp)
-			return mvpp2_set_ts_config(port, ifr);
-		break;
+	if (!phy_has_hwtstamp(dev->phydev)) {
+		switch (cmd) {
+		case SIOCSHWTSTAMP:
+			if (port->hwtstamp)
+				return mvpp2_set_ts_config(port, ifr);
+			break;
 
-	case SIOCGHWTSTAMP:
-		if (port->hwtstamp)
-			return mvpp2_get_ts_config(port, ifr);
-		break;
+		case SIOCGHWTSTAMP:
+			if (port->hwtstamp)
+				return mvpp2_get_ts_config(port, ifr);
+			break;
+		}
 	}
 
 	if (!port->phylink)
