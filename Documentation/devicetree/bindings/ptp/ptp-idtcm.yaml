@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/ptp/ptp-idtcm.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: IDT ClockMatrix (TM) PTP Clock
+title: IDT ClockMatrix (TM) PTP Clock Device Tree Bindings
 
 maintainers:
   - Vincent Cheng <vincent.cheng.xh@renesas.com>
@@ -55,11 +55,11 @@ required:
   - compatible
   - reg
 
-additionalProperties: false
-
 examples:
   - |
-    i2c {
+    i2c@1 {
+        compatible = "abc,acme-1234";
+        reg = <0x01 0x400>;
         #address-cells = <1>;
         #size-cells = <0>;
         phc@5b {

@@ -10,12 +10,17 @@
 /* GLOBAL */
 #define SOFT_RESET_CTRL		(0x15) /* Specific to FC3W */
 #define MISC_CTRL		(0x14) /* Specific to FC3A */
+#define SOFT_RESET		BIT(0)
 #define APLL_REINIT		BIT(1)
 #define APLL_REINIT_VFC3A	BIT(2)
 
 #define DEVICE_ID		(0x2)
 #define DEVICE_ID_MASK		(0x1000) /* Bit 12 is 1 if FC3W and 0 if FC3A */
 #define DEVICE_ID_SHIFT		(12)
+
+/* APLL */
+#define APLL_STS	(0xBD)
+#define IDET_LOCK_STS	BIT(0)
 
 /* FOD */
 #define FOD_0		(0x300)
@@ -72,12 +77,18 @@ enum lpf_mode {
 #define LPF_CTRL_VFC3A	(0x718)
 #define LPF_EN		BIT(0)
 
+#define LPF_DIS_CTRL	(0xa99)
+#define LPF_FILTER_DIS	BIT(0)
+
 #define LPF_BW_CNFG	(0xa81)
 #define LPF_BW_SHIFT	GENMASK(7, 3)
 #define LPF_BW_MULT		GENMASK(2, 0)
-#define LPF_BW_SHIFT_DEFAULT	(0xb)
-#define LPF_BW_MULT_DEFAULT		(0x0)
-#define LPF_BW_SHIFT_1PPS		(0x5)
+/* 100mHz */
+#define LPF_BW_SHIFT_DEFAULT	(0x6)
+#define LPF_BW_MULT_DEFAULT		(0x4)
+/* 20mHz */
+#define LPF_BW_SHIFT_1PPS		(0x4)
+#define LPF_BW_MULT_1PPS		(0x2)
 
 #define LPF_WR_PHASE_CTRL	(0xaa8)
 #define LPF_WR_PHASE_CTRL_VFC3A	(0x728)
@@ -129,11 +140,18 @@ enum tdc_meas_mode {
 #define TDC_FIFO_EVENT		(0xB39)
 #define FIFO_OVERRUN		BIT(1)
 
-/* DPLL */
-#define MAX_REFERENCE_INDEX	(3)
+/* INPUTS */
+#define MAX_INPUT_CLOCK_INDEX	(7)
 #define MAX_NUM_REF_PRIORITY	(4)
+#define MAX_REF_INDEX		(3)
+#define REF_SEL_CNFG		(0x410)
+#define REF_SEL_CNFG_VFC3A	(0x80)
+#define REF_MUX_SEL_MASK	(0x7)
+#define REF_MUX_SEL_SHIFT	(3)
 
-#define MAX_DPLL_INDEX	(2)
+/* DPLL */
+#define MAX_DPLL_INDEX		(2)
+#define MAX_DPLL_INDEX_VFC3A	(0)
 
 #define DPLL_STS		(0x580)
 #define DPLL_STS_VFC3A		(0x571)
@@ -141,6 +159,7 @@ enum tdc_meas_mode {
 #define DPLL_STATE_STS_SHIFT	(4)
 #define DPLL_REF_SEL_STS_MASK	(0x6)
 #define DPLL_REF_SEL_STS_SHIFT	(1)
+#define DPLL_LOCK_STS	BIT(0)
 
 #define DPLL_REF_PRIORITY_CNFG			(0x502)
 #define DPLL_REFX_PRIORITY_DISABLE_MASK		(0xf)
@@ -187,33 +206,22 @@ enum dpll_state {
 
 /* Firmware interface */
 #define TIME_CLK_FREQ_ADDR	(0xffa0)
-#define XTAL_FREQ_ADDR		(0xffa1)
+#define TDC_REF_FREQ_ADDR	(0xffa1)
 
 /*
  * Return register address and field mask based on passed in firmware version
  */
 #define IDTFC3_FW_REG(FW, VER, REG)	(((FW) < (VER)) ? (REG) : (REG##_##VER))
 #define IDTFC3_FW_FIELD(FW, VER, FIELD)	(((FW) < (VER)) ? (FIELD) : (FIELD##_##VER))
+#define IDTFC3_FW_MACRO(FW, VER, MACRO)	(((FW) < (VER)) ? (MACRO) : (MACRO##_##VER))
 enum fw_version {
 	V_DEFAULT = 0,
 	VFC3W     = 1,
 	VFC3A     = 2
 };
 
-/* XTAL_FREQ_ADDR/TIME_CLK_FREQ_ADDR */
-enum {
-	FREQ_MIN     = 0,
-	FREQ_25M     = 1,
-	FREQ_49_152M = 2,
-	FREQ_50M     = 3,
-	FREQ_100M    = 4,
-	FREQ_125M    = 5,
-	FREQ_250M    = 6,
-	FREQ_MAX
-};
-
 struct idtfc3_hw_param {
-	u32 xtal_freq;
+	u32 tdc_ref_freq;
 	u32 time_clk_freq;
 };
 
@@ -226,45 +234,24 @@ struct idtfc3_fwrc {
 
 static inline void idtfc3_default_hw_param(struct idtfc3_hw_param *hw_param)
 {
-	hw_param->xtal_freq = 49152000;
+	hw_param->tdc_ref_freq = 49152000;
 	hw_param->time_clk_freq = 25000000;
 }
 
 static inline int idtfc3_set_hw_param(struct idtfc3_hw_param *hw_param,
-				      u16 addr, u8 val)
+				      u16 addr, u32 val)
 {
-	if (addr == XTAL_FREQ_ADDR)
-		switch (val) {
-		case FREQ_49_152M:
-			hw_param->xtal_freq = 49152000;
-			break;
-		case FREQ_50M:
-			hw_param->xtal_freq = 50000000;
-			break;
-		default:
+	if (addr == TDC_REF_FREQ_ADDR) {
+		/* The supported frequency range is 10MHz to 80MHz */
+		if (val > 80000000 || val < 10000000)
 			return -EINVAL;
-		}
-	else if (addr == TIME_CLK_FREQ_ADDR)
-		switch (val) {
-		case FREQ_25M:
-			hw_param->time_clk_freq = 25000000;
-			break;
-		case FREQ_50M:
-			hw_param->time_clk_freq = 50000000;
-			break;
-		case FREQ_100M:
-			hw_param->time_clk_freq = 100000000;
-			break;
-		case FREQ_125M:
-			hw_param->time_clk_freq = 125000000;
-			break;
-		case FREQ_250M:
-			hw_param->time_clk_freq = 250000000;
-			break;
-		default:
+		hw_param->tdc_ref_freq = val;
+	} else if (addr == TIME_CLK_FREQ_ADDR) {
+		/* Time clock period must be whole nanoseconds */
+		if (NSEC_PER_SEC % val)
 			return -EINVAL;
-		}
-	else
+		hw_param->time_clk_freq = val;
+	} else
 		return -EFAULT;
 
 	return 0;

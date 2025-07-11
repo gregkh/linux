@@ -72,3 +72,5 @@ obj-$(CONFIG_TPS6594_PFSM)	+= tps6594-pfsm.o
 obj-$(CONFIG_NSM)		+= nsm.o
 obj-$(CONFIG_MARVELL_CN10K_DPI)	+= mrvl_cn10k_dpi.o
 obj-y				+= keba/
+rsmu-objs			:= rsmu_cdev.o rsmu_cm.o rsmu_sabre.o rsmu_fc3.o
+obj-$(CONFIG_RSMU)		+= rsmu.o

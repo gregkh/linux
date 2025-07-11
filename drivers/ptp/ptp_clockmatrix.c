@@ -41,8 +41,8 @@ module_param(firmware, charp, 0);
 static int _idtcm_adjfine(struct idtcm_channel *channel, long scaled_ppm);
 
 static inline int idtcm_read(struct idtcm *idtcm,
-			     u16 module,
-			     u16 regaddr,
+			     u32 module,
+			     u32 regaddr,
 			     u8 *buf,
 			     u16 count)
 {
@@ -50,8 +50,8 @@ static inline int idtcm_read(struct idtcm *idtcm,
 }
 
 static inline int idtcm_write(struct idtcm *idtcm,
-			      u16 module,
-			      u16 regaddr,
+			      u32 module,
+			      u32 regaddr,
 			      u8 *buf,
 			      u16 count)
 {
@@ -62,7 +62,8 @@ static int contains_full_configuration(struct idtcm *idtcm,
 				       const struct firmware *fw)
 {
 	struct idtcm_fwrc *rec = (struct idtcm_fwrc *)fw->data;
-	u16 scratch = IDTCM_FW_REG(idtcm->fw_ver, V520, SCRATCH);
+	u16 scratch = SCSR_ADDR(IDTCM_FW_REG(idtcm->fw_ver, V520, SCRATCH));
+	u16 gpio_control = SCSR_ADDR(GPIO_USER_CONTROL);
 	s32 full_count;
 	s32 count = 0;
 	u16 regaddr;
@@ -70,8 +71,8 @@ static int contains_full_configuration(struct idtcm *idtcm,
 	s32 len;
 
 	/* 4 bytes skipped every 0x80 */
-	full_count = (scratch - GPIO_USER_CONTROL) -
-		     ((scratch >> 7) - (GPIO_USER_CONTROL >> 7)) * 4;
+	full_count = (scratch - gpio_control) -
+		     ((scratch >> 7) - (gpio_control >> 7)) * 4;
 
 	/* If the firmware contains 'full configuration' SM_RESET can be used
 	 * to ensure proper configuration.
@@ -88,7 +89,7 @@ static int contains_full_configuration(struct idtcm *idtcm,
 		rec++;
 
 		/* Top (status registers) and bottom are read-only */
-		if (regaddr < GPIO_USER_CONTROL || regaddr >= scratch)
+		if (regaddr < gpio_control || regaddr >= scratch)
 			continue;
 
 		/* Page size 128, last 4 bytes of page skipped */
@@ -506,8 +507,8 @@ static int _sync_pll_output(struct idtcm *idtcm,
 {
 	int err;
 	u8 val;
-	u16 sync_ctrl0;
-	u16 sync_ctrl1;
+	u32 sync_ctrl0;
+	u32 sync_ctrl1;
 	u8 temp;
 
 	if (qn == 0 && qn_plus_1 == 0)
@@ -553,11 +554,11 @@ static int _sync_pll_output(struct idtcm *idtcm,
 	val = SYNCTRL1_MASTER_SYNC_RST;
 
 	/* Place master sync in reset */
-	err = idtcm_write(idtcm, 0, sync_ctrl1, &val, sizeof(val));
+	err = idtcm_write(idtcm, sync_ctrl1, 0, &val, sizeof(val));
 	if (err)
 		return err;
 
-	err = idtcm_write(idtcm, 0, sync_ctrl0, &sync_src, sizeof(sync_src));
+	err = idtcm_write(idtcm, sync_ctrl0, 0, &sync_src, sizeof(sync_src));
 	if (err)
 		return err;
 
@@ -570,27 +571,27 @@ static int _sync_pll_output(struct idtcm *idtcm,
 	if (qn_plus_1)
 		val |= SYNCTRL1_Q1_DIV_SYNC_TRIG;
 
-	err = idtcm_write(idtcm, 0, sync_ctrl1, &val, sizeof(val));
+	err = idtcm_write(idtcm, sync_ctrl1, 0, &val, sizeof(val));
 	if (err)
 		return err;
 
 	/* PLL5 can have OUT8 as second additional output. */
 	if (pll == 5 && qn_plus_1 != 0) {
-		err = idtcm_read(idtcm, 0, HW_Q8_CTRL_SPARE,
+		err = idtcm_read(idtcm, HW_Q8_CTRL_SPARE, 0,
 				 &temp, sizeof(temp));
 		if (err)
 			return err;
 
 		temp &= ~(Q9_TO_Q8_SYNC_TRIG);
 
-		err = idtcm_write(idtcm, 0, HW_Q8_CTRL_SPARE,
+		err = idtcm_write(idtcm, HW_Q8_CTRL_SPARE, 0,
 				  &temp, sizeof(temp));
 		if (err)
 			return err;
 
 		temp |= Q9_TO_Q8_SYNC_TRIG;
 
-		err = idtcm_write(idtcm, 0, HW_Q8_CTRL_SPARE,
+		err = idtcm_write(idtcm, HW_Q8_CTRL_SPARE, 0,
 				  &temp, sizeof(temp));
 		if (err)
 			return err;
@@ -598,21 +599,21 @@ static int _sync_pll_output(struct idtcm *idtcm,
 
 	/* PLL6 can have OUT11 as second additional output. */
 	if (pll == 6 && qn_plus_1 != 0) {
-		err = idtcm_read(idtcm, 0, HW_Q11_CTRL_SPARE,
+		err = idtcm_read(idtcm, HW_Q11_CTRL_SPARE, 0,
 				 &temp, sizeof(temp));
 		if (err)
 			return err;
 
 		temp &= ~(Q10_TO_Q11_SYNC_TRIG);
 
-		err = idtcm_write(idtcm, 0, HW_Q11_CTRL_SPARE,
+		err = idtcm_write(idtcm, HW_Q11_CTRL_SPARE, 0,
 				  &temp, sizeof(temp));
 		if (err)
 			return err;
 
 		temp |= Q10_TO_Q11_SYNC_TRIG;
 
-		err = idtcm_write(idtcm, 0, HW_Q11_CTRL_SPARE,
+		err = idtcm_write(idtcm, HW_Q11_CTRL_SPARE, 0,
 				  &temp, sizeof(temp));
 		if (err)
 			return err;
@@ -620,7 +621,7 @@ static int _sync_pll_output(struct idtcm *idtcm,
 
 	/* Place master sync out of reset */
 	val &= ~(SYNCTRL1_MASTER_SYNC_RST);
-	err = idtcm_write(idtcm, 0, sync_ctrl1, &val, sizeof(val));
+	err = idtcm_write(idtcm, sync_ctrl1, 0, &val, sizeof(val));
 
 	return err;
 }
@@ -637,7 +638,7 @@ static int idtcm_sync_pps_output(struct idtcm_channel *channel)
 	u8 temp;
 	u16 output_mask = channel->output_mask;
 
-	err = idtcm_read(idtcm, 0, HW_Q8_CTRL_SPARE,
+	err = idtcm_read(idtcm, HW_Q8_CTRL_SPARE, 0,
 			 &temp, sizeof(temp));
 	if (err)
 		return err;
@@ -646,7 +647,7 @@ static int idtcm_sync_pps_output(struct idtcm_channel *channel)
 	    Q9_TO_Q8_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK)
 		out8_mux = 1;
 
-	err = idtcm_read(idtcm, 0, HW_Q11_CTRL_SPARE,
+	err = idtcm_read(idtcm, HW_Q11_CTRL_SPARE, 0,
 			 &temp, sizeof(temp));
 	if (err)
 		return err;
@@ -1037,7 +1038,7 @@ static int _idtcm_adjtime_deprecated(struct idtcm_channel *channel, s64 delta)
 	s64 now;
 
 	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS_DEPRECATED) {
-		err = channel->do_phase_pull_in(channel, delta, 0);
+		err = channel->do_phase_pull_in(channel, delta, channel->caps.max_adj);
 	} else {
 		idtcm->calculate_overhead_flag = 1;
 
@@ -1253,7 +1254,7 @@ static void display_pll_and_masks(struct idtcm *idtcm)
 static int idtcm_load_firmware(struct idtcm *idtcm,
 			       struct device *dev)
 {
-	u16 scratch = IDTCM_FW_REG(idtcm->fw_ver, V520, SCRATCH);
+	u16 scratch = SCSR_ADDR(IDTCM_FW_REG(idtcm->fw_ver, V520, SCRATCH));
 	char fname[128] = FW_FILENAME;
 	const struct firmware *fw;
 	struct idtcm_fwrc *rec;
@@ -1303,14 +1304,14 @@ static int idtcm_load_firmware(struct idtcm *idtcm,
 			err = 0;
 
 			/* Top (status registers) and bottom are read-only */
-			if (regaddr < GPIO_USER_CONTROL || regaddr >= scratch)
+			if (regaddr < SCSR_ADDR(GPIO_USER_CONTROL) || regaddr >= scratch)
 				continue;
 
 			/* Page size 128, last 4 bytes of page skipped */
 			if ((loaddr > 0x7b && loaddr <= 0x7f) || loaddr > 0xfb)
 				continue;
 
-			err = idtcm_write(idtcm, regaddr, 0, &val, sizeof(val));
+			err = idtcm_write(idtcm, SCSR_BASE, regaddr, &val, sizeof(val));
 		}
 
 		if (err)
@@ -1340,7 +1341,7 @@ static int idtcm_output_enable(struct idtcm_channel *channel,
 		return base;
 	}
 
-	err = idtcm_read(idtcm, (u16)base, OUT_CTRL_1, &val, sizeof(val));
+	err = idtcm_read(idtcm, (u32)base, OUT_CTRL_1, &val, sizeof(val));
 	if (err)
 		return err;
 
@@ -1349,7 +1350,7 @@ static int idtcm_output_enable(struct idtcm_channel *channel,
 	else
 		val &= ~SQUELCH_DISABLE;
 
-	return idtcm_write(idtcm, (u16)base, OUT_CTRL_1, &val, sizeof(val));
+	return idtcm_write(idtcm, (u32)base, OUT_CTRL_1, &val, sizeof(val));
 }
 
 static int idtcm_perout_enable(struct idtcm_channel *channel,
@@ -1395,6 +1396,20 @@ static int idtcm_set_pll_mode(struct idtcm_channel *channel,
 	struct idtcm *idtcm = channel->idtcm;
 	int err;
 	u8 dpll_mode;
+	u8 buf[2] = {0};
+
+	/* Setup WF/WP timer for phase pull-in to work correctly */
+	err = idtcm_write(idtcm, channel->dpll_n, DPLL_WF_TIMER,
+			  buf, sizeof(buf));
+	if (err)
+		return err;
+
+	if (mode == PLL_MODE_WRITE_PHASE)
+		buf[0] = 160;
+	err = idtcm_write(idtcm, channel->dpll_n, DPLL_WP_TIMER,
+			  buf, sizeof(buf));
+	if (err)
+		return err;
 
 	err = idtcm_read(idtcm, channel->dpll_n,
 			 IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_MODE),
@@ -1579,7 +1594,7 @@ static int do_phase_pull_in_sw(struct idtcm_channel *channel,
 	if (abs(delta_ns) < PHASE_PULL_IN_MIN_THRESHOLD_NS)
 		return 0;
 
-	if (max_ffo_ppb == 0)
+	if (max_ffo_ppb == 0 || max_ffo_ppb > PHASE_PULL_IN_MAX_PPB)
 		max_ffo_ppb = PHASE_PULL_IN_MAX_PPB;
 
 	/* For most cases, keep phase pull-in duration 1 second */
@@ -1692,31 +1707,23 @@ static int initialize_dco_operating_mode(struct idtcm_channel *channel)
 /* PTP Hardware Clock interface */
 
 /*
- * Maximum absolute value for write phase offset in nanoseconds
- *
- * Destination signed register is 32-bit register in resolution of 50ps
- *
- * 0x7fffffff * 50 =  2147483647 * 50 = 107374182350 ps
- * Represent 107374182350 ps as 107374182 ns
- */
-static s32 idtcm_getmaxphase(struct ptp_clock_info *ptp __always_unused)
-{
-	return MAX_ABS_WRITE_PHASE_NANOSECONDS;
-}
-
-/*
- * Internal function for implementing support for write phase offset
+ * Maximum absolute value for write phase offset in picoseconds
  *
  * @channel:  channel
  * @delta_ns: delta in nanoseconds
+ *
+ * Destination signed register is 32-bit register in resolution of 50ps
+ *
+ * 0x7fffffff * 50 =  2147483647 * 50 = 107374182350
  */
 static int _idtcm_adjphase(struct idtcm_channel *channel, s32 delta_ns)
 {
 	struct idtcm *idtcm = channel->idtcm;
-	int err;
-	u8 i;
 	u8 buf[4] = {0};
 	s32 phase_50ps;
+	s64 offset_ps;
+	int err;
+	u8 i;
 
 	if (channel->mode != PTP_PLL_MODE_WRITE_PHASE) {
 		err = channel->configure_write_phase(channel);
@@ -1724,7 +1731,19 @@ static int _idtcm_adjphase(struct idtcm_channel *channel, s32 delta_ns)
 			return err;
 	}
 
-	phase_50ps = div_s64((s64)delta_ns * 1000, 50);
+	offset_ps = (s64)delta_ns * 1000;
+
+	/*
+	 * Check for 32-bit signed max * 50:
+	 *
+	 * 0x7fffffff * 50 =  2147483647 * 50 = 107374182350
+	 */
+	if (offset_ps > MAX_ABS_WRITE_PHASE_PICOSECONDS)
+		offset_ps = MAX_ABS_WRITE_PHASE_PICOSECONDS;
+	else if (offset_ps < -MAX_ABS_WRITE_PHASE_PICOSECONDS)
+		offset_ps = -MAX_ABS_WRITE_PHASE_PICOSECONDS;
+
+	phase_50ps = div_s64(offset_ps, 50);
 
 	for (i = 0; i < 4; i++) {
 		buf[i] = phase_50ps & 0xff;
@@ -1865,7 +1884,7 @@ static int idtcm_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	mutex_lock(idtcm->lock);
 
 	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS) {
-		err = channel->do_phase_pull_in(channel, delta, 0);
+		err = channel->do_phase_pull_in(channel, delta, channel->caps.max_adj);
 	} else {
 		if (delta >= 0) {
 			ts = ns_to_timespec64(delta);
@@ -1910,9 +1929,6 @@ static int idtcm_adjfine(struct ptp_clock_info *ptp,  long scaled_ppm)
 	int err;
 
 	if (channel->phase_pull_in == true)
-		return 0;
-
-	if (scaled_ppm == channel->current_freq_scaled_ppm)
 		return 0;
 
 	mutex_lock(idtcm->lock);
@@ -2039,12 +2055,11 @@ static struct ptp_pin_desc pin_config[MAX_TOD][MAX_REF_CLK];
 
 static const struct ptp_clock_info idtcm_caps = {
 	.owner		= THIS_MODULE,
-	.max_adj	= 244000,
+	.max_adj	= MAX_FFO_PPB,
 	.n_per_out	= 12,
 	.n_ext_ts	= MAX_TOD,
 	.n_pins		= MAX_REF_CLK,
 	.adjphase	= &idtcm_adjphase,
-	.getmaxphase	= &idtcm_getmaxphase,
 	.adjfine	= &idtcm_adjfine,
 	.adjtime	= &idtcm_adjtime,
 	.gettime64	= &idtcm_gettime,
@@ -2056,12 +2071,11 @@ static const struct ptp_clock_info idtcm_caps = {
 
 static const struct ptp_clock_info idtcm_caps_deprecated = {
 	.owner		= THIS_MODULE,
-	.max_adj	= 244000,
+	.max_adj	= MAX_FFO_PPB,
 	.n_per_out	= 12,
 	.n_ext_ts	= MAX_TOD,
 	.n_pins		= MAX_REF_CLK,
 	.adjphase	= &idtcm_adjphase,
-	.getmaxphase    = &idtcm_getmaxphase,
 	.adjfine	= &idtcm_adjfine,
 	.adjtime	= &idtcm_adjtime_deprecated,
 	.gettime64	= &idtcm_gettime,
@@ -2150,7 +2164,7 @@ static int configure_channel_pll(struct idtcm_channel *channel)
 
 /*
  * Compensate for the PTP DCO input-to-output delay.
- * This delay is 18 FOD cycles.
+ * This delay is 20 FOD cycles + 8ns.
  */
 static u32 idtcm_get_dco_delay(struct idtcm_channel *channel)
 {
@@ -2181,7 +2195,7 @@ static u32 idtcm_get_dco_delay(struct idtcm_channel *channel)
 	fodFreq = (u32)div_u64(m, n);
 
 	if (fodFreq >= 500000000)
-		return (u32)div_u64(18 * (u64)NSEC_PER_SEC, fodFreq);
+		return (u32)div_u64(20 * (u64)NSEC_PER_SEC, fodFreq) + 8;
 
 	return 0;
 }
@@ -2223,6 +2237,25 @@ static int configure_channel_tod(struct idtcm_channel *channel, u32 index)
 	default:
 		return -EINVAL;
 	}
+
+	return 0;
+}
+
+static int initialize_max_adj(struct idtcm_channel *channel)
+{
+	struct idtcm *idtcm = channel->idtcm;
+	u8 ffo_ppm;
+	int err;
+
+	err = idtcm_read(idtcm, channel->dpll_n, DPLL_MAX_FREQ_OFFSET,
+			 &ffo_ppm, sizeof(ffo_ppm));
+	if (err)
+		return err;
+
+	if (ffo_ppm && ffo_ppm <= (MAX_FFO_PPB / 1000))
+		channel->caps.max_adj = ffo_ppm * 1000;
+	else
+		channel->caps.max_adj = MAX_FFO_PPB;
 
 	return 0;
 }
@@ -2269,6 +2302,10 @@ static int idtcm_enable_channel(struct idtcm *idtcm, u32 index)
 		ppd->func = PTP_PF_NONE;
 		ppd->chan = index;
 	}
+
+	err = initialize_max_adj(channel);
+	if (err)
+		return err;
 
 	err = initialize_dco_operating_mode(channel);
 	if (err)
@@ -2422,8 +2459,13 @@ static int idtcm_probe(struct platform_device *pdev)
 
 	err = idtcm_load_firmware(idtcm, &pdev->dev);
 
-	if (err)
+	if (err) {
+		if (err == -ENOENT) {
+			mutex_unlock(idtcm->lock);
+			return -EPROBE_DEFER;
+		}
 		dev_warn(idtcm->dev, "loading firmware failed with %d", err);
+	}
 
 	wait_for_chip_ready(idtcm);
 
@@ -2471,7 +2513,7 @@ static struct platform_driver idtcm_driver = {
 		.name = "8a3400x-phc",
 	},
 	.probe = idtcm_probe,
-	.remove_new = idtcm_remove,
+	.remove	= idtcm_remove,
 };
 
 module_platform_driver(idtcm_driver);
