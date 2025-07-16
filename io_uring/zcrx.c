@@ -152,12 +152,29 @@ static int io_zcrx_map_area_dmabuf(struct io_zcrx_ifq *ifq, struct io_zcrx_area 
 	return niov_idx;
 }
 
+static unsigned long io_count_account_pages(struct page **pages, unsigned nr_pages)
+{
+	struct folio *last_folio = NULL;
+	unsigned long res = 0;
+	int i;
+
+	for (i = 0; i < nr_pages; i++) {
+		struct folio *folio = page_folio(pages[i]);
+
+		if (folio == last_folio)
+			continue;
+		last_folio = folio;
+		res += 1UL << folio_order(folio);
+	}
+	return res;
+}
+
 static int io_import_umem(struct io_zcrx_ifq *ifq,
 			  struct io_zcrx_mem *mem,
 			  struct io_uring_zcrx_area_reg *area_reg)
 {
 	struct page **pages;
-	int nr_pages;
+	int nr_pages, ret;
 
 	if (area_reg->dmabuf_fd)
 		return -EINVAL;
@@ -167,6 +184,13 @@ static int io_import_umem(struct io_zcrx_ifq *ifq,
 				   &nr_pages);
 	if (IS_ERR(pages))
 		return PTR_ERR(pages);
+
+	mem->account_pages = io_count_account_pages(pages, nr_pages);
+	ret = io_account_mem(ifq->ctx, mem->account_pages);
+	if (ret < 0) {
+		mem->account_pages = 0;
+		return ret;
+	}
 
 	mem->pages = pages;
 	mem->nr_folios = nr_pages;
@@ -373,6 +397,9 @@ static void io_zcrx_free_area(struct io_zcrx_area *area)
 	if (area->ifq)
 		io_zcrx_unmap_area(area->ifq, area);
 	io_release_area_mem(&area->mem);
+
+	if (area->mem.account_pages)
+		io_unaccount_mem(area->ifq->ctx, area->mem.account_pages);
 
 	kvfree(area->freelist);
 	kvfree(area->nia.niovs);
