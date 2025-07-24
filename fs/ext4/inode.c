@@ -4009,7 +4009,7 @@ int ext4_punch_hole(struct file *file, loff_t offset, loff_t length)
 		max_end = EXT4_SB(sb)->s_bitmap_maxbytes - sb->s_blocksize;
 
 	/* No need to punch hole beyond i_size */
-	if (offset >= inode->i_size)
+	if (offset >= inode->i_size || offset >= max_end)
 		return 0;
 
 	/*
