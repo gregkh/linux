@@ -1519,6 +1519,16 @@ out:
 	return ret;
 }
 
+#define MAX_INSNS   65536
+static int check_insnlist_len(struct comedi_device *dev, unsigned int n_insns)
+{
+	if (n_insns > MAX_INSNS) {
+		dev_dbg(dev->class_dev, "insnlist length too large\n");
+		return -EINVAL;
+	}
+	return 0;
+}
+
 /*
  * COMEDI_INSNLIST ioctl
  * synchronous instruction list
@@ -1551,6 +1561,9 @@ static int do_insnlist_ioctl(struct comedi_device *dev,
 	if (copy_from_user(&insnlist, arg, sizeof(insnlist)))
 		return -EFAULT;
 
+	ret = check_insnlist_len(dev, insnlist.n_insns);
+	if (ret)
+		return ret;
 	insns = kcalloc(insnlist.n_insns, sizeof(*insns), GFP_KERNEL);
 	if (!insns) {
 		ret = -ENOMEM;
