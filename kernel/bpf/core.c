@@ -1837,7 +1837,9 @@ static bool __bpf_prog_map_compatible(struct bpf_map *map,
 {
 	enum bpf_prog_type prog_type = fp->aux->dst_prog ? fp->aux->dst_prog->type : fp->type;
 	struct bpf_prog_aux *aux = fp->aux;
+	enum bpf_cgroup_storage_type i;
 	bool ret = false;
+	u64 cookie;
 
 	if (fp->kprobe_override)
 		return ret;
@@ -1853,12 +1855,25 @@ static bool __bpf_prog_map_compatible(struct bpf_map *map,
 		/* Note: xdp_has_frags doesn't exist in aux yet in our branch */
 		/* map->owner->xdp_has_frags = aux->xdp_has_frags; */
 		map->owner->attach_func_proto = aux->attach_func_proto;
+		for_each_cgroup_storage_type(i) {
+			map->owner->storage_cookie[i] =
+				aux->cgroup_storage[i] ?
+				aux->cgroup_storage[i]->cookie : 0;
+		}
 		ret = true;
 	} else {
 		ret = map->owner->type  == prog_type &&
 		      map->owner->jited == fp->jited;
 		/* Note: xdp_has_frags check would go here when available */
 		/* && map->owner->xdp_has_frags == aux->xdp_has_frags; */
+		for_each_cgroup_storage_type(i) {
+			if (!ret)
+				break;
+			cookie = aux->cgroup_storage[i] ?
+				 aux->cgroup_storage[i]->cookie : 0;
+			ret = map->owner->storage_cookie[i] == cookie ||
+			      !cookie;
+		}
 		if (ret &&
 		    map->owner->attach_func_proto != aux->attach_func_proto) {
 			switch (prog_type) {
