@@ -7,6 +7,7 @@
 #include <asm/debugreg.h>
 #include <asm/mmu_context.h>
 
+#include "x86.h"
 #include "cpuid.h"
 #include "hyperv.h"
 #include "mmu.h"
@@ -16,7 +17,6 @@
 #include "sgx.h"
 #include "trace.h"
 #include "vmx.h"
-#include "x86.h"
 #include "smm.h"
 
 static bool __read_mostly enable_shadow_vmcs = 1;
@@ -3020,8 +3020,8 @@ static int nested_vmx_check_host_state(struct kvm_vcpu *vcpu,
 	    CC(!kvm_vcpu_is_legal_cr3(vcpu, vmcs12->host_cr3)))
 		return -EINVAL;
 
-	if (CC(is_noncanonical_address(vmcs12->host_ia32_sysenter_esp, vcpu)) ||
-	    CC(is_noncanonical_address(vmcs12->host_ia32_sysenter_eip, vcpu)))
+	if (CC(is_noncanonical_msr_address(vmcs12->host_ia32_sysenter_esp, vcpu)) ||
+	    CC(is_noncanonical_msr_address(vmcs12->host_ia32_sysenter_eip, vcpu)))
 		return -EINVAL;
 
 	if ((vmcs12->vm_exit_controls & VM_EXIT_LOAD_IA32_PAT) &&
@@ -3055,12 +3055,12 @@ static int nested_vmx_check_host_state(struct kvm_vcpu *vcpu,
 	    CC(vmcs12->host_ss_selector == 0 && !ia32e))
 		return -EINVAL;
 
-	if (CC(is_noncanonical_address(vmcs12->host_fs_base, vcpu)) ||
-	    CC(is_noncanonical_address(vmcs12->host_gs_base, vcpu)) ||
-	    CC(is_noncanonical_address(vmcs12->host_gdtr_base, vcpu)) ||
-	    CC(is_noncanonical_address(vmcs12->host_idtr_base, vcpu)) ||
-	    CC(is_noncanonical_address(vmcs12->host_tr_base, vcpu)) ||
-	    CC(is_noncanonical_address(vmcs12->host_rip, vcpu)))
+	if (CC(is_noncanonical_base_address(vmcs12->host_fs_base, vcpu)) ||
+	    CC(is_noncanonical_base_address(vmcs12->host_gs_base, vcpu)) ||
+	    CC(is_noncanonical_base_address(vmcs12->host_gdtr_base, vcpu)) ||
+	    CC(is_noncanonical_base_address(vmcs12->host_idtr_base, vcpu)) ||
+	    CC(is_noncanonical_base_address(vmcs12->host_tr_base, vcpu)) ||
+	    CC(is_noncanonical_address(vmcs12->host_rip, vcpu, 0)))
 		return -EINVAL;
 
 	/*
@@ -3178,7 +3178,7 @@ static int nested_vmx_check_guest_state(struct kvm_vcpu *vcpu,
 	}
 
 	if ((vmcs12->vm_entry_controls & VM_ENTRY_LOAD_BNDCFGS) &&
-	    (CC(is_noncanonical_address(vmcs12->guest_bndcfgs & PAGE_MASK, vcpu)) ||
+	    (CC(is_noncanonical_msr_address(vmcs12->guest_bndcfgs & PAGE_MASK, vcpu)) ||
 	     CC((vmcs12->guest_bndcfgs & MSR_IA32_BNDCFGS_RSVD))))
 		return -EINVAL;
 
@@ -5172,7 +5172,7 @@ int get_vmx_mem_address(struct kvm_vcpu *vcpu, unsigned long exit_qualification,
 		 * non-canonical form. This is the only check on the memory
 		 * destination for long mode!
 		 */
-		exn = is_noncanonical_address(*ret, vcpu);
+		exn = is_noncanonical_address(*ret, vcpu, 0);
 	} else {
 		/*
 		 * When not in long mode, the virtual/linear address is
@@ -5983,7 +5983,7 @@ static int handle_invvpid(struct kvm_vcpu *vcpu)
 		 * invalidation.
 		 */
 		if (!operand.vpid ||
-		    is_noncanonical_address(operand.gla, vcpu))
+		    is_noncanonical_invlpg_address(operand.gla, vcpu))
 			return nested_vmx_fail(vcpu,
 				VMXERR_INVALID_OPERAND_TO_INVEPT_INVVPID);
 		vpid_sync_vcpu_addr(vpid02, operand.gla);

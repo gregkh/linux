@@ -1810,7 +1810,6 @@ static struct bin_attribute chan_attr_ring_buffer = {
 		.name = "ring",
 		.mode = 0600,
 	},
-	.size = 2 * SZ_2M,
 	.mmap = hv_mmap_ring_buffer_wrapper,
 };
 static struct attribute *vmbus_chan_attrs[] = {
@@ -1866,6 +1865,7 @@ static umode_t vmbus_chan_bin_attr_is_visible(struct kobject *kobj,
 	/* Hide ring attribute if channel's ring_sysfs_visible is set to false */
 	if (attr ==  &chan_attr_ring_buffer && !channel->ring_sysfs_visible)
 		return 0;
+	attr->size = channel->ringbuffer_pagecount << PAGE_SHIFT;
 
 	return attr->attr.mode;
 }
