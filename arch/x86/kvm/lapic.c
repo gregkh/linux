@@ -589,6 +589,9 @@ int kvm_pv_send_ipi(struct kvm *kvm, unsigned long ipi_bitmap_low,
 
 	if (min > map->max_apic_id)
 		goto out;
+
+	min = array_index_nospec(min, map->max_apic_id + 1);
+
 	/* Bits above cluster_size are masked in the caller.  */
 	for_each_set_bit(i, &ipi_bitmap_low,
 		min((u32)BITS_PER_LONG, (map->max_apic_id - min + 1))) {
