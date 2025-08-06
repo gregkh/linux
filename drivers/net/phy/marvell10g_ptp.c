@@ -39,6 +39,11 @@ enum {
 	MV_V2_LINK_RESET_CFG_DEF_VAL	= 0x3900,
 	MV_V2_LINK_RESET_CFG_LINK_DOWN	= BIT(0),
 
+	MV_V2_SMC_1G_MRU_CTRL_REG	= 0x8c00,
+	MV_V2_WMC_1G_MRU_CTRL_REG	= 0x8e00,
+	MV_V2_SMC_XG_MRU_CTRL_REG	= 0x8c02,
+	MV_V2_WMC_XG_MRU_CTRL_REG	= 0x8e02,
+
 	MV_V2_MODE_CFG 			= 0xf000,
 	MV_V2_MODE_CFG_M_UNIT_PWRUP 	= BIT(12),
 
@@ -98,6 +103,7 @@ struct mv3310_ptp_priv {
 	struct ptp_clock *clock;
 	struct mutex lock; /* Protects against concurrent MDIO register access */
 	struct mii_timestamper mii_ts;
+	int old_speed; /* Last speed used to set MRU */
 	bool extts_enabled;
 };
 
@@ -135,11 +141,15 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_update(struct mv3310_ptp_priv *priv);
 /* Get statistics from the PHY using ethtool */
 int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
 void mv3310_ptp_get_strings(u8 *data);
 void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
 			  struct ethtool_stats *stats, u64 *data);
+
+/* General configuration functions */
+static int mv3310_set_mac_mru(struct mv3310_ptp_priv *priv, int speed);
 
 /* Helper functions */
 static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
@@ -227,6 +237,7 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 
 	priv->phydev = phydev;
 	mutex_init(&priv->lock);
+	priv->old_speed = SPEED_UNKNOWN;
 	priv->extts_enabled = false;
 
 	/* Setup timestamping */
@@ -269,10 +280,12 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 {
 	int ret;
-	struct phy_device *phydev = priv->phydev;
+	struct phy_device *phydev;
 
 	if (!priv)
 		return 0;
+	
+	phydev = priv->phydev;
 
 	mutex_lock(&priv->lock);
 	/* Enable M unit used for PTP */
@@ -293,6 +306,10 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 					      MV_V2_SLC_CFG_GEN_SMC_ADD_CRC |
 					      MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC |
 					      MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC);
+
+	/* Increase the MRU for the default mode (XG) */
+	ret |= mv3310_set_mac_mru(priv, SPEED_10000);
+
 	/* Disable store-and-forward mode for egress drop FIFO. Without this
 	   setting there are time error spikes of up to 1200ns when performing
 	   1588TC accuracy measurements. */
@@ -315,10 +332,12 @@ int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv)
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 {
 	int ret;
-	struct phy_device *phydev = priv->phydev;
+	struct phy_device *phydev;
 
 	if (!priv)
 		return 0;
+
+	phydev = priv->phydev;
 
 	ret = mv3310_ptp_set_pam(priv);
 	if (ret < 0) {
@@ -345,6 +364,57 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 		dev_err(&phydev->mdio.dev, "failed to enable PTP core: %d\n",
 			ret);
 	mutex_unlock(&priv->lock);
+
+	return ret;
+}
+
+int mv3310_ptp_update(struct mv3310_ptp_priv *priv)
+{
+	int ret;
+
+	if (!priv)
+		return 0;
+
+	mutex_lock(&priv->lock);
+	ret = mv3310_set_mac_mru(priv, priv->phydev->speed);
+	mutex_unlock(&priv->lock);
+	return ret;
+}
+
+static int mv3310_set_mac_mru(struct mv3310_ptp_priv *priv, int speed)
+{
+	const u32 MAX_MRU = 0x1fff; /* 16382 bytes */
+	int ret = 0;
+	struct phy_device *phydev = priv->phydev;
+
+	if ((priv->old_speed != SPEED_UNKNOWN) &&
+	    ((speed < SPEED_5000 && priv->old_speed < SPEED_5000) ||
+	     (speed >= SPEED_5000 && priv->old_speed >= SPEED_5000))) {
+		/* No need to change the MRU if the new speed is in the same speed class */
+		priv->old_speed = speed;
+		return 0;
+	}
+
+	if (speed < SPEED_5000) {
+		/* Configuration registers for 1/2.5G mode */
+		ret |= mv3310_set_ptp_reg_bits(
+			phydev, MV_V2_SMC_1G_MRU_CTRL_REG, MAX_MRU << 2U);
+		ret |= mv3310_set_ptp_reg_bits(
+			phydev, MV_V2_WMC_1G_MRU_CTRL_REG, MAX_MRU << 2U);
+	} else {
+		/* Configuration registers for XG mode */
+		ret |= mv3310_write_ptp_reg(phydev, MV_V2_SMC_XG_MRU_CTRL_REG,
+					    MAX_MRU);
+		ret |= mv3310_write_ptp_reg(phydev, MV_V2_WMC_XG_MRU_CTRL_REG,
+					    MAX_MRU);
+	}
+
+	if (ret < 0)
+		dev_err_ratelimited(&phydev->mdio.dev,
+				    "failed to set MRU for speed=%d (%d)\n",
+				    speed, ret);
+	else
+		priv->old_speed = speed;
 
 	return ret;
 }

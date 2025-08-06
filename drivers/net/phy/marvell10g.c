@@ -193,6 +193,7 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_update(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
 void mv3310_ptp_get_strings(u8 *data);
 void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
@@ -212,6 +213,10 @@ static inline int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv)
 	return 0;
 }
 static inline int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
+{
+	return 0;
+}
+static inline int mv3310_ptp_update(struct mv3310_ptp_priv *priv)
 {
 	return 0;
 }
@@ -1356,8 +1361,11 @@ static int mv3310_read_status(struct phy_device *phydev)
 	if (err < 0)
 		return err;
 
-	if (phydev->link)
+	if (phydev->link) {
+		struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
 		mv3310_update_interface(phydev);
+		mv3310_ptp_update(priv->ptp_priv);
+	}
 
 	return 0;
 }
