@@ -2506,11 +2506,10 @@ int m_can_class_suspend(struct device *dev)
 		}
 
 		m_can_clk_stop(cdev);
+		cdev->can.state = CAN_STATE_SLEEPING;
 	}
 
 	pinctrl_pm_select_sleep_state(dev);
-
-	cdev->can.state = CAN_STATE_SLEEPING;
 
 	return ret;
 }
@@ -2523,8 +2522,6 @@ int m_can_class_resume(struct device *dev)
 	int ret = 0;
 
 	pinctrl_pm_select_default_state(dev);
-
-	cdev->can.state = CAN_STATE_ERROR_ACTIVE;
 
 	if (netif_running(ndev)) {
 		ret = m_can_clk_start(cdev);
@@ -2542,6 +2539,8 @@ int m_can_class_resume(struct device *dev)
 
 			if (cdev->ops->init)
 				ret = cdev->ops->init(cdev);
+
+			cdev->can.state = m_can_state_get_by_psr(cdev);
 
 			m_can_write(cdev, M_CAN_IE, cdev->active_interrupts);
 		} else {
