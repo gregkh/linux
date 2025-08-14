@@ -3453,6 +3453,9 @@ static void __init hugetlb_hstate_alloc_pages(struct hstate *h)
 		initialized = true;
 	}
 
+	if (!h->max_huge_pages)
+		return;
+
 	/* do node specific alloc */
 	if (hugetlb_hstate_alloc_pages_specific_nodes(h))
 		return;
