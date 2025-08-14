@@ -10024,6 +10024,15 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	static_call(kvm_x86_handle_exit_irqoff)(vcpu);
 
 	/*
+	 * Mark this CPU as needing a branch predictor flush before running
+	 * userspace. Must be done before enabling preemption to ensure it gets
+	 * set for the CPU that actually ran the guest, and not the CPU that it
+	 * may migrate to.
+	 */
+	if (cpu_feature_enabled(X86_FEATURE_IBPB_EXIT_TO_USER))
+		this_cpu_write(x86_ibpb_exit_to_user, true);
+
+	/*
 	 * Consume any pending interrupts, including the possible source of
 	 * VM-Exit on SVM and any ticks that occur between VM-Exit and now.
 	 * An instruction is required after local_irq_enable() to fully unblock
