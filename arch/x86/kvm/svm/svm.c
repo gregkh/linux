@@ -3964,6 +3964,9 @@ static fastpath_t svm_exit_handlers_fastpath(struct kvm_vcpu *vcpu)
 {
 	struct vmcb_control_area *control = &to_svm(vcpu)->vmcb->control;
 
+	if (is_guest_mode(vcpu))
+		return EXIT_FASTPATH_NONE;
+
 	/*
 	 * Note, the next RIP must be provided as SRCU isn't held, i.e. KVM
 	 * can't read guest memory (dereference memslots) to decode the WRMSR.
@@ -4126,9 +4129,6 @@ static __no_kcsan fastpath_t svm_vcpu_run(struct kvm_vcpu *vcpu,
 		svm_handle_mce(vcpu);
 
 	svm_complete_interrupts(vcpu);
-
-	if (is_guest_mode(vcpu))
-		return EXIT_FASTPATH_NONE;
 
 	return svm_exit_handlers_fastpath(vcpu);
 }
