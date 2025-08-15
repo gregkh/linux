@@ -869,7 +869,6 @@ static void __flush_addrs(struct pm_nl_pernet *pernet)
 static void __reset_counters(struct pm_nl_pernet *pernet)
 {
 	pernet->add_addr_signal_max = 0;
-	pernet->add_addr_accept_max = 0;
 	pernet->local_addr_max = 0;
 	pernet->addrs = 0;
 }
