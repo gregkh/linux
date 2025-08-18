@@ -648,6 +648,7 @@ int register_ftrace_graph(struct fgraph_ops *gops)
 	ret = start_graph_tracing();
 	if (ret) {
 		ftrace_graph_active--;
+		unregister_pm_notifier(&ftrace_suspend_notifier);
 		goto out;
 	}
 
