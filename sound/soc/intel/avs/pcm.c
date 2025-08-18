@@ -1178,7 +1178,10 @@ int avs_soc_component_register(struct device *dev, const char *name,
 		return ret;
 
 	/* force name change after ASoC is done with its init */
-	acomp->base.name = name;
+	acomp->base.name = devm_kstrdup(dev, name, GFP_KERNEL);
+	if (!acomp->base.name)
+		return -ENOMEM;
+
 	INIT_LIST_HEAD(&acomp->node);
 
 	return snd_soc_add_component(&acomp->base, cpu_dais, num_cpu_dais);
