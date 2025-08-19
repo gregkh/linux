@@ -3921,6 +3921,11 @@ static void fill_inode_item(struct btrfs_trans_handle *trans,
 	btrfs_set_token_timespec_nsec(&token, &item->ctime,
 				      inode->i_ctime.tv_nsec);
 
+	btrfs_set_token_timespec_sec(&token, &item->otime,
+				     BTRFS_I(inode)->i_otime.tv_sec);
+	btrfs_set_token_timespec_nsec(&token, &item->otime,
+				      BTRFS_I(inode)->i_otime.tv_nsec);
+
 	btrfs_set_token_inode_nbytes(&token, item, inode_get_bytes(inode));
 
 	btrfs_set_token_inode_sequence(&token, item, inode_peek_iversion(inode));
