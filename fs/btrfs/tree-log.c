@@ -3953,6 +3953,11 @@ static void fill_inode_item(struct btrfs_trans_handle *trans,
 	btrfs_set_token_timespec_nsec(leaf, &item->ctime,
 				      inode->i_ctime.tv_nsec, &token);
 
+	btrfs_set_token_timespec_sec(leaf, &item->otime,
+				     BTRFS_I(inode)->i_otime.tv_sec, &token);
+	btrfs_set_token_timespec_nsec(leaf, &item->otime,
+				      BTRFS_I(inode)->i_otime.tv_nsec, &token);
+
 	btrfs_set_token_inode_nbytes(leaf, item, inode_get_bytes(inode),
 				     &token);
 
