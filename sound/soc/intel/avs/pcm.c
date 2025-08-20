@@ -18,6 +18,7 @@
 #include "path.h"
 #include "pcm.h"
 #include "topology.h"
+#include "utils.h"
 #include "../../codecs/hda.h"
 
 struct avs_dma_data {
@@ -548,7 +549,6 @@ static const struct snd_soc_dai_ops avs_dai_hda_be_ops = {
 	.trigger = avs_dai_hda_be_trigger,
 };
 
-__maybe_unused
 static const struct snd_soc_dai_ops avs_dai_i2shda_be_ops = {
 	.startup = avs_dai_i2shda_be_startup,
 	.shutdown = avs_dai_althda_be_shutdown,
@@ -558,7 +558,6 @@ static const struct snd_soc_dai_ops avs_dai_i2shda_be_ops = {
 	.trigger = avs_dai_hda_be_trigger,
 };
 
-__maybe_unused
 static const struct snd_soc_dai_ops avs_dai_dmichda_be_ops = {
 	.startup = avs_dai_dmichda_be_startup,
 	.shutdown = avs_dai_althda_be_shutdown,
@@ -1367,7 +1366,7 @@ static int avs_component_construct(struct snd_soc_component *component,
 	return 0;
 }
 
-static const struct snd_soc_component_driver avs_component_driver = {
+static struct snd_soc_component_driver avs_component_driver = {
 	.name			= "avs-pcm",
 	.probe			= avs_component_probe,
 	.remove			= avs_component_remove,
@@ -1382,7 +1381,7 @@ static const struct snd_soc_component_driver avs_component_driver = {
 };
 
 int avs_soc_component_register(struct device *dev, const char *name,
-			       const struct snd_soc_component_driver *drv,
+			       struct snd_soc_component_driver *drv,
 			       struct snd_soc_dai_driver *cpu_dais, int num_cpu_dais)
 {
 	struct avs_soc_component *acomp;
@@ -1400,13 +1399,14 @@ int avs_soc_component_register(struct device *dev, const char *name,
 	acomp->base.name = name;
 	INIT_LIST_HEAD(&acomp->node);
 
+	drv->use_dai_pcm_id = !obsolete_card_names;
+
 	return snd_soc_add_component(&acomp->base, cpu_dais, num_cpu_dais);
 }
 
 static struct snd_soc_dai_driver dmic_cpu_dais[] = {
 {
 	.name = "DMIC Pin",
-	.ops = &avs_dai_nonhda_be_ops,
 	.capture = {
 		.stream_name	= "DMIC Rx",
 		.channels_min	= 1,
@@ -1417,7 +1417,6 @@ static struct snd_soc_dai_driver dmic_cpu_dais[] = {
 },
 {
 	.name = "DMIC WoV Pin",
-	.ops = &avs_dai_nonhda_be_ops,
 	.capture = {
 		.stream_name	= "DMIC WoV Rx",
 		.channels_min	= 1,
@@ -1430,15 +1429,23 @@ static struct snd_soc_dai_driver dmic_cpu_dais[] = {
 
 int avs_dmic_platform_register(struct avs_dev *adev, const char *name)
 {
+	const struct snd_soc_dai_ops *ops;
+
+	if (avs_platattr_test(adev, ALTHDA))
+		ops = &avs_dai_dmichda_be_ops;
+	else
+		ops = &avs_dai_nonhda_be_ops;
+
+	dmic_cpu_dais[0].ops = ops;
+	dmic_cpu_dais[1].ops = ops;
 	return avs_soc_component_register(adev->dev, name, &avs_component_driver, dmic_cpu_dais,
 					  ARRAY_SIZE(dmic_cpu_dais));
 }
 
 static const struct snd_soc_dai_driver i2s_dai_template = {
-	.ops = &avs_dai_nonhda_be_ops,
 	.playback = {
 		.channels_min	= 1,
-		.channels_max	= 8,
+		.channels_max	= AVS_CHANNELS_MAX,
 		.rates		= SNDRV_PCM_RATE_8000_192000 |
 				  SNDRV_PCM_RATE_12000 |
 				  SNDRV_PCM_RATE_24000 |
@@ -1451,7 +1458,7 @@ static const struct snd_soc_dai_driver i2s_dai_template = {
 	},
 	.capture = {
 		.channels_min	= 1,
-		.channels_max	= 8,
+		.channels_max	= AVS_CHANNELS_MAX,
 		.rates		= SNDRV_PCM_RATE_8000_192000 |
 				  SNDRV_PCM_RATE_12000 |
 				  SNDRV_PCM_RATE_24000 |
@@ -1468,10 +1475,15 @@ int avs_i2s_platform_register(struct avs_dev *adev, const char *name, unsigned l
 			      unsigned long *tdms)
 {
 	struct snd_soc_dai_driver *cpus, *dai;
+	const struct snd_soc_dai_ops *ops;
 	size_t ssp_count, cpu_count;
 	int i, j;
 
 	ssp_count = adev->hw_cfg.i2s_caps.ctrl_count;
+	if (avs_platattr_test(adev, ALTHDA))
+		ops = &avs_dai_i2shda_be_ops;
+	else
+		ops = &avs_dai_nonhda_be_ops;
 
 	cpu_count = 0;
 	for_each_set_bit(i, &port_mask, ssp_count)
@@ -1499,6 +1511,7 @@ int avs_i2s_platform_register(struct avs_dev *adev, const char *name, unsigned l
 
 			if (!dai->name || !dai->playback.stream_name || !dai->capture.stream_name)
 				return -ENOMEM;
+			dai->ops = ops;
 			dai++;
 		}
 	}
@@ -1507,7 +1520,7 @@ int avs_i2s_platform_register(struct avs_dev *adev, const char *name, unsigned l
 		goto plat_register;
 
 	for_each_set_bit(i, &port_mask, ssp_count) {
-		for_each_set_bit(j, &tdms[i], ssp_count) {
+		for_each_set_bit(j, &tdms[i], AVS_CHANNELS_MAX) {
 			memcpy(dai, &i2s_dai_template, sizeof(*dai));
 
 			dai->name =
@@ -1519,6 +1532,7 @@ int avs_i2s_platform_register(struct avs_dev *adev, const char *name, unsigned l
 
 			if (!dai->name || !dai->playback.stream_name || !dai->capture.stream_name)
 				return -ENOMEM;
+			dai->ops = ops;
 			dai++;
 		}
 	}
@@ -1532,7 +1546,7 @@ static const struct snd_soc_dai_driver hda_cpu_dai = {
 	.ops = &avs_dai_hda_be_ops,
 	.playback = {
 		.channels_min	= 1,
-		.channels_max	= 8,
+		.channels_max	= AVS_CHANNELS_MAX,
 		.rates		= SNDRV_PCM_RATE_8000_192000,
 		.formats	= SNDRV_PCM_FMTBIT_S16_LE |
 				  SNDRV_PCM_FMTBIT_S32_LE,
@@ -1542,7 +1556,7 @@ static const struct snd_soc_dai_driver hda_cpu_dai = {
 	},
 	.capture = {
 		.channels_min	= 1,
-		.channels_max	= 8,
+		.channels_max	= AVS_CHANNELS_MAX,
 		.rates		= SNDRV_PCM_RATE_8000_192000,
 		.formats	= SNDRV_PCM_FMTBIT_S16_LE |
 				  SNDRV_PCM_FMTBIT_S32_LE,
@@ -1556,11 +1570,13 @@ static void avs_component_hda_unregister_dais(struct snd_soc_component *componen
 {
 	struct snd_soc_acpi_mach *mach;
 	struct snd_soc_dai *dai, *save;
+	struct avs_mach_pdata *pdata;
 	struct hda_codec *codec;
 	char name[32];
 
 	mach = dev_get_platdata(component->card->dev);
-	codec = mach->pdata;
+	pdata = mach->pdata;
+	codec = pdata->codec;
 	snprintf(name, sizeof(name), "%s-cpu", dev_name(&codec->core.dev));
 
 	for_each_component_dais_safe(component, dai, save) {
@@ -1581,6 +1597,7 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 	struct snd_soc_dapm_context *dapm;
 	struct snd_soc_dai_driver *dais;
 	struct snd_soc_acpi_mach *mach;
+	struct avs_mach_pdata *pdata;
 	struct hda_codec *codec;
 	struct hda_pcm *pcm;
 	const char *cname;
@@ -1590,7 +1607,8 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 	if (!mach)
 		return -EINVAL;
 
-	codec = mach->pdata;
+	pdata = mach->pdata;
+	codec = pdata->codec;
 	if (list_empty(&codec->pcm_list_head))
 		return -EINVAL;
 	list_for_each_entry(pcm, &codec->pcm_list_head, list)
@@ -1724,7 +1742,7 @@ static int avs_component_hda_open(struct snd_soc_component *component,
 	return 0;
 }
 
-static const struct snd_soc_component_driver avs_hda_component_driver = {
+static struct snd_soc_component_driver avs_hda_component_driver = {
 	.name			= "avs-hda-pcm",
 	.probe			= avs_component_hda_probe,
 	.remove			= avs_component_hda_remove,

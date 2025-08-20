@@ -2564,7 +2564,7 @@ nfsd4_decode_compound(struct nfsd4_compoundargs *argp)
 	/* Sessions make the DRC unnecessary: */
 	if (argp->minorversion)
 		cachethis = false;
-	svc_reserve(argp->rqstp, max_reply + readbytes);
+	svc_reserve_auth(argp->rqstp, max_reply + readbytes);
 	argp->rqstp->rq_cachetype = cachethis ? RC_REPLBUFF : RC_NOCACHE;
 
 	argp->splice_ok = nfsd_read_splice_ok(argp->rqstp);
@@ -3829,7 +3829,9 @@ nfsd4_encode_entry4_fattr(struct nfsd4_readdir *cd, const char *name,
 	__be32 nfserr;
 	int ignore_crossmnt = 0;
 
-	dentry = lookup_positive_unlocked(name, cd->rd_fhp->fh_dentry, namlen);
+	dentry = lookup_one_positive_unlocked(&nop_mnt_idmap,
+					      &QSTR_LEN(name, namlen),
+					      cd->rd_fhp->fh_dentry);
 	if (IS_ERR(dentry))
 		return nfserrno(PTR_ERR(dentry));
 

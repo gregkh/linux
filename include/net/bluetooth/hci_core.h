@@ -33,6 +33,7 @@
 #include <linux/srcu.h>
 
 #include <net/bluetooth/hci.h>
+#include <net/bluetooth/hci_drv.h>
 #include <net/bluetooth/hci_sync.h>
 #include <net/bluetooth/hci_sock.h>
 #include <net/bluetooth/coredump.h>
@@ -244,6 +245,7 @@ struct adv_info {
 	__u8	mesh;
 	__u8	instance;
 	__u8	handle;
+	__u8	sid;
 	__u32	flags;
 	__u16	timeout;
 	__u16	remaining_time;
@@ -617,6 +619,8 @@ struct hci_dev {
 
 	struct list_head	monitored_devices;
 	bool			advmon_pend_notify;
+
+	struct hci_drv		*hci_drv;
 
 #if IS_ENABLED(CONFIG_BT_LEDS)
 	struct led_trigger	*power_led;
@@ -1560,13 +1564,14 @@ struct hci_conn *hci_connect_sco(struct hci_dev *hdev, int type, bdaddr_t *dst,
 				 u16 timeout);
 struct hci_conn *hci_bind_cis(struct hci_dev *hdev, bdaddr_t *dst,
 			      __u8 dst_type, struct bt_iso_qos *qos);
-struct hci_conn *hci_bind_bis(struct hci_dev *hdev, bdaddr_t *dst,
+struct hci_conn *hci_bind_bis(struct hci_dev *hdev, bdaddr_t *dst, __u8 sid,
 			      struct bt_iso_qos *qos,
 			      __u8 base_len, __u8 *base);
 struct hci_conn *hci_connect_cis(struct hci_dev *hdev, bdaddr_t *dst,
 				 __u8 dst_type, struct bt_iso_qos *qos);
 struct hci_conn *hci_connect_bis(struct hci_dev *hdev, bdaddr_t *dst,
-				 __u8 dst_type, struct bt_iso_qos *qos,
+				 __u8 dst_type, __u8 sid,
+				 struct bt_iso_qos *qos,
 				 __u8 data_len, __u8 *data);
 struct hci_conn *hci_pa_create_sync(struct hci_dev *hdev, bdaddr_t *dst,
 		       __u8 dst_type, __u8 sid, struct bt_iso_qos *qos);
@@ -1841,6 +1846,7 @@ int hci_remove_remote_oob_data(struct hci_dev *hdev, bdaddr_t *bdaddr,
 
 void hci_adv_instances_clear(struct hci_dev *hdev);
 struct adv_info *hci_find_adv_instance(struct hci_dev *hdev, u8 instance);
+struct adv_info *hci_find_adv_sid(struct hci_dev *hdev, u8 sid);
 struct adv_info *hci_get_next_instance(struct hci_dev *hdev, u8 instance);
 struct adv_info *hci_add_adv_instance(struct hci_dev *hdev, u8 instance,
 				      u32 flags, u16 adv_data_len, u8 *adv_data,
@@ -1848,7 +1854,7 @@ struct adv_info *hci_add_adv_instance(struct hci_dev *hdev, u8 instance,
 				      u16 timeout, u16 duration, s8 tx_power,
 				      u32 min_interval, u32 max_interval,
 				      u8 mesh_handle);
-struct adv_info *hci_add_per_instance(struct hci_dev *hdev, u8 instance,
+struct adv_info *hci_add_per_instance(struct hci_dev *hdev, u8 instance, u8 sid,
 				      u32 flags, u8 data_len, u8 *data,
 				      u32 min_interval, u32 max_interval);
 int hci_set_adv_instance_data(struct hci_dev *hdev, u8 instance,

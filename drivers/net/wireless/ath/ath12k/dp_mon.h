@@ -10,6 +10,7 @@
 #include "core.h"
 
 #define ATH12K_MON_RX_DOT11_OFFSET	5
+#define ATH12K_MON_RX_PKT_OFFSET	8
 
 enum dp_monitor_mode {
 	ATH12K_DP_TX_MONITOR_MODE,
@@ -84,6 +85,9 @@ ath12k_dp_mon_rx_parse_mon_status(struct ath12k *ar,
 int ath12k_dp_mon_buf_replenish(struct ath12k_base *ab,
 				struct dp_rxdma_mon_ring *buf_ring,
 				int req_entries);
+int ath12k_dp_mon_status_bufs_replenish(struct ath12k_base *ab,
+					struct dp_rxdma_mon_ring *rx_ring,
+					int req_entries);
 int ath12k_dp_mon_process_ring(struct ath12k_base *ab, int mac_id,
 			       struct napi_struct *napi, int budget,
 			       enum dp_monitor_mode monitor_mode);

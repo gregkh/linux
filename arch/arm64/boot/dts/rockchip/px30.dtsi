@@ -985,6 +985,12 @@
 		resets = <&cru SRST_GMAC_A>;
 		reset-names = "stmmaceth";
 		status = "disabled";
+
+		mdio: mdio {
+			compatible = "snps,dwmac-mdio";
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
 	};
 
 	sdmmc: mmc@ff370000 {
@@ -1265,8 +1271,6 @@
 
 			port@0 {
 				reg = <0>;
-				#address-cells = <1>;
-				#size-cells = <0>;
 			};
 		};
 	};

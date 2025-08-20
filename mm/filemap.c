@@ -142,7 +142,7 @@ static void page_cache_delete(struct address_space *mapping,
 	xas_init_marks(&xas);
 
 	folio->mapping = NULL;
-	/* Leave page->index set: truncation lookup relies upon it */
+	/* Leave folio->index set: truncation lookup relies upon it */
 	mapping->nrpages -= nr;
 }
 
@@ -949,7 +949,7 @@ unlock:
 	return 0;
 error:
 	folio->mapping = NULL;
-	/* Leave page->index set: truncation relies upon it */
+	/* Leave folio->index set: truncation relies upon it */
 	folio_put_refs(folio, nr);
 	return xas_error(&xas);
 }
@@ -1595,7 +1595,11 @@ static void filemap_end_dropbehind(struct folio *folio)
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 
-	if (mapping && !folio_test_writeback(folio) && !folio_test_dirty(folio))
+	if (folio_test_writeback(folio) || folio_test_dirty(folio))
+		return;
+	if (!folio_test_clear_dropbehind(folio))
+		return;
+	if (mapping)
 		folio_unmap_invalidate(mapping, folio, 0);
 }
 
@@ -1604,8 +1608,11 @@ static void filemap_end_dropbehind(struct folio *folio)
  * completes. Do that now. If we fail, it's likely because of a big folio -
  * just reset dropbehind for that case and latter completions should invalidate.
  */
-static void folio_end_dropbehind_write(struct folio *folio)
+static void filemap_end_dropbehind_write(struct folio *folio)
 {
+	if (!folio_test_dropbehind(folio))
+		return;
+
 	/*
 	 * Hitting !in_task() should not happen off RWF_DONTCACHE writeback,
 	 * but can happen if normal writeback just happens to find dirty folios
@@ -1629,8 +1636,6 @@ static void folio_end_dropbehind_write(struct folio *folio)
  */
 void folio_end_writeback(struct folio *folio)
 {
-	bool folio_dropbehind = false;
-
 	VM_BUG_ON_FOLIO(!folio_test_writeback(folio), folio);
 
 	/*
@@ -1652,14 +1657,11 @@ void folio_end_writeback(struct folio *folio)
 	 * reused before the folio_wake_bit().
 	 */
 	folio_get(folio);
-	if (!folio_test_dirty(folio))
-		folio_dropbehind = folio_test_clear_dropbehind(folio);
 	if (__folio_end_writeback(folio))
 		folio_wake_bit(folio, PG_writeback);
-	acct_reclaim_writeback(folio);
 
-	if (folio_dropbehind)
-		folio_end_dropbehind_write(folio);
+	filemap_end_dropbehind_write(folio);
+	acct_reclaim_writeback(folio);
 	folio_put(folio);
 }
 EXPORT_SYMBOL(folio_end_writeback);
@@ -2651,8 +2653,7 @@ static void filemap_end_dropbehind_read(struct folio *folio)
 	if (folio_test_writeback(folio) || folio_test_dirty(folio))
 		return;
 	if (folio_trylock(folio)) {
-		if (folio_test_clear_dropbehind(folio))
-			filemap_end_dropbehind(folio);
+		filemap_end_dropbehind(folio);
 		folio_unlock(folio);
 	}
 }
@@ -3541,7 +3542,7 @@ static bool filemap_map_pmd(struct vm_fault *vmf, struct folio *folio,
 
 	if (pmd_none(*vmf->pmd) && folio_test_pmd_mappable(folio)) {
 		struct page *page = folio_file_page(folio, start);
-		vm_fault_t ret = do_set_pmd(vmf, page);
+		vm_fault_t ret = do_set_pmd(vmf, folio, page);
 		if (!ret) {
 			/* The page is mapped successfully, reference consumed. */
 			folio_unlock(folio);

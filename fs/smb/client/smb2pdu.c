@@ -36,6 +36,7 @@
 #include "smb2glob.h"
 #include "cifspdu.h"
 #include "cifs_spnego.h"
+#include "../common/smbdirect/smbdirect.h"
 #include "smbdirect.h"
 #include "trace.h"
 #ifdef CONFIG_CIFS_DFS_UPCALL
@@ -2405,11 +2406,16 @@ static int
 add_lease_context(struct TCP_Server_Info *server,
 		  struct smb2_create_req *req,
 		  struct kvec *iov,
-		  unsigned int *num_iovec, u8 *lease_key, __u8 *oplock)
+		  unsigned int *num_iovec,
+		  u8 *lease_key,
+		  __u8 *oplock,
+		  u8 *parent_lease_key,
+		  __le32 flags)
 {
 	unsigned int num = *num_iovec;
 
-	iov[num].iov_base = server->ops->create_lease_buf(lease_key, *oplock);
+	iov[num].iov_base = server->ops->create_lease_buf(lease_key, *oplock,
+							  parent_lease_key, flags);
 	if (iov[num].iov_base == NULL)
 		return -ENOMEM;
 	iov[num].iov_len = server->vals->create_lease_size;
@@ -3082,7 +3088,9 @@ SMB2_open_init(struct cifs_tcon *tcon, struct TCP_Server_Info *server,
 		req->RequestedOplockLevel = *oplock; /* no srv lease support */
 	else {
 		rc = add_lease_context(server, req, iov, &n_iov,
-				       oparms->fid->lease_key, oplock);
+				       oparms->fid->lease_key, oplock,
+				       oparms->fid->parent_lease_key,
+				       oparms->lease_flags);
 		if (rc)
 			return rc;
 	}
@@ -4453,10 +4461,10 @@ smb2_new_read_req(void **buf, unsigned int *total_len,
 #ifdef CONFIG_CIFS_SMB_DIRECT
 	/*
 	 * If we want to do a RDMA write, fill in and append
-	 * smbd_buffer_descriptor_v1 to the end of read request
+	 * smbdirect_buffer_descriptor_v1 to the end of read request
 	 */
 	if (rdata && smb3_use_rdma_offload(io_parms)) {
-		struct smbd_buffer_descriptor_v1 *v1;
+		struct smbdirect_buffer_descriptor_v1 *v1;
 		bool need_invalidate = server->dialect == SMB30_PROT_ID;
 
 		rdata->mr = smbd_register_mr(server->smbd_conn, &rdata->subreq.io_iter,
@@ -4470,8 +4478,8 @@ smb2_new_read_req(void **buf, unsigned int *total_len,
 		req->ReadChannelInfoOffset =
 			cpu_to_le16(offsetof(struct smb2_read_req, Buffer));
 		req->ReadChannelInfoLength =
-			cpu_to_le16(sizeof(struct smbd_buffer_descriptor_v1));
-		v1 = (struct smbd_buffer_descriptor_v1 *) &req->Buffer[0];
+			cpu_to_le16(sizeof(struct smbdirect_buffer_descriptor_v1));
+		v1 = (struct smbdirect_buffer_descriptor_v1 *) &req->Buffer[0];
 		v1->offset = cpu_to_le64(rdata->mr->mr->iova);
 		v1->token = cpu_to_le32(rdata->mr->mr->rkey);
 		v1->length = cpu_to_le32(rdata->mr->mr->length);
@@ -4557,7 +4565,11 @@ smb2_readv_callback(struct mid_q_entry *mid)
 		cifs_stats_bytes_read(tcon, rdata->got_bytes);
 		break;
 	case MID_REQUEST_SUBMITTED:
+		trace_netfs_sreq(&rdata->subreq, netfs_sreq_trace_io_req_submitted);
+		goto do_retry;
 	case MID_RETRY_NEEDED:
+		trace_netfs_sreq(&rdata->subreq, netfs_sreq_trace_io_retry_needed);
+do_retry:
 		__set_bit(NETFS_SREQ_NEED_RETRY, &rdata->subreq.flags);
 		rdata->result = -EAGAIN;
 		if (server->sign && rdata->got_bytes)
@@ -4568,11 +4580,15 @@ smb2_readv_callback(struct mid_q_entry *mid)
 		cifs_stats_bytes_read(tcon, rdata->got_bytes);
 		break;
 	case MID_RESPONSE_MALFORMED:
+		trace_netfs_sreq(&rdata->subreq, netfs_sreq_trace_io_malformed);
 		credits.value = le16_to_cpu(shdr->CreditRequest);
 		credits.instance = server->reconnect_instance;
-		fallthrough;
-	default:
 		rdata->result = -EIO;
+		break;
+	default:
+		trace_netfs_sreq(&rdata->subreq, netfs_sreq_trace_io_unknown);
+		rdata->result = -EIO;
+		break;
 	}
 #ifdef CONFIG_CIFS_SMB_DIRECT
 	/*
@@ -4825,11 +4841,14 @@ smb2_writev_callback(struct mid_q_entry *mid)
 
 	switch (mid->mid_state) {
 	case MID_RESPONSE_RECEIVED:
+		trace_netfs_sreq(&wdata->subreq, netfs_sreq_trace_io_progress);
 		credits.value = le16_to_cpu(rsp->hdr.CreditRequest);
 		credits.instance = server->reconnect_instance;
 		result = smb2_check_receive(mid, server, 0);
-		if (result != 0)
+		if (result != 0) {
+			trace_netfs_sreq(&wdata->subreq, netfs_sreq_trace_io_bad);
 			break;
+		}
 
 		written = le32_to_cpu(rsp->DataLength);
 		/*
@@ -4851,15 +4870,23 @@ smb2_writev_callback(struct mid_q_entry *mid)
 		}
 		break;
 	case MID_REQUEST_SUBMITTED:
+		trace_netfs_sreq(&wdata->subreq, netfs_sreq_trace_io_req_submitted);
+		__set_bit(NETFS_SREQ_NEED_RETRY, &wdata->subreq.flags);
+		result = -EAGAIN;
+		break;
 	case MID_RETRY_NEEDED:
+		trace_netfs_sreq(&wdata->subreq, netfs_sreq_trace_io_retry_needed);
 		__set_bit(NETFS_SREQ_NEED_RETRY, &wdata->subreq.flags);
 		result = -EAGAIN;
 		break;
 	case MID_RESPONSE_MALFORMED:
+		trace_netfs_sreq(&wdata->subreq, netfs_sreq_trace_io_malformed);
 		credits.value = le16_to_cpu(rsp->hdr.CreditRequest);
 		credits.instance = server->reconnect_instance;
-		fallthrough;
+		result = -EIO;
+		break;
 	default:
+		trace_netfs_sreq(&wdata->subreq, netfs_sreq_trace_io_unknown);
 		result = -EIO;
 		break;
 	}
@@ -4899,7 +4926,6 @@ smb2_writev_callback(struct mid_q_entry *mid)
 			      server->credits, server->in_flight,
 			      0, cifs_trace_rw_credits_write_response_clear);
 	wdata->credits.value = 0;
-	trace_netfs_sreq(&wdata->subreq, netfs_sreq_trace_io_progress);
 	cifs_write_subrequest_terminated(wdata, result ?: written);
 	release_mid(mid);
 	trace_smb3_rw_credits(rreq_debug_id, subreq_debug_index, 0,
@@ -4980,10 +5006,10 @@ smb2_async_writev(struct cifs_io_subrequest *wdata)
 #ifdef CONFIG_CIFS_SMB_DIRECT
 	/*
 	 * If we want to do a server RDMA read, fill in and append
-	 * smbd_buffer_descriptor_v1 to the end of write request
+	 * smbdirect_buffer_descriptor_v1 to the end of write request
 	 */
 	if (smb3_use_rdma_offload(io_parms)) {
-		struct smbd_buffer_descriptor_v1 *v1;
+		struct smbdirect_buffer_descriptor_v1 *v1;
 		bool need_invalidate = server->dialect == SMB30_PROT_ID;
 
 		wdata->mr = smbd_register_mr(server->smbd_conn, &wdata->subreq.io_iter,
@@ -5002,8 +5028,8 @@ smb2_async_writev(struct cifs_io_subrequest *wdata)
 		req->WriteChannelInfoOffset =
 			cpu_to_le16(offsetof(struct smb2_write_req, Buffer));
 		req->WriteChannelInfoLength =
-			cpu_to_le16(sizeof(struct smbd_buffer_descriptor_v1));
-		v1 = (struct smbd_buffer_descriptor_v1 *) &req->Buffer[0];
+			cpu_to_le16(sizeof(struct smbdirect_buffer_descriptor_v1));
+		v1 = (struct smbdirect_buffer_descriptor_v1 *) &req->Buffer[0];
 		v1->offset = cpu_to_le64(wdata->mr->mr->iova);
 		v1->token = cpu_to_le32(wdata->mr->mr->rkey);
 		v1->length = cpu_to_le32(wdata->mr->mr->length);
@@ -5919,71 +5945,6 @@ replay_again:
 		copy_posix_fs_info_to_kstatfs(info, fsdata);
 
 posix_qfsinf_exit:
-	free_rsp_buf(resp_buftype, rsp_iov.iov_base);
-
-	if (is_replayable_error(rc) &&
-	    smb2_should_replay(tcon, &retries, &cur_sleep))
-		goto replay_again;
-
-	return rc;
-}
-
-int
-SMB2_QFS_info(const unsigned int xid, struct cifs_tcon *tcon,
-	      u64 persistent_fid, u64 volatile_fid, struct kstatfs *fsdata)
-{
-	struct smb_rqst rqst;
-	struct smb2_query_info_rsp *rsp = NULL;
-	struct kvec iov;
-	struct kvec rsp_iov;
-	int rc = 0;
-	int resp_buftype;
-	struct cifs_ses *ses = tcon->ses;
-	struct TCP_Server_Info *server;
-	struct smb2_fs_full_size_info *info = NULL;
-	int flags = 0;
-	int retries = 0, cur_sleep = 1;
-
-replay_again:
-	/* reinitialize for possible replay */
-	flags = 0;
-	server = cifs_pick_channel(ses);
-
-	rc = build_qfs_info_req(&iov, tcon, server,
-				FS_FULL_SIZE_INFORMATION,
-				sizeof(struct smb2_fs_full_size_info),
-				persistent_fid, volatile_fid);
-	if (rc)
-		return rc;
-
-	if (smb3_encryption_required(tcon))
-		flags |= CIFS_TRANSFORM_REQ;
-
-	memset(&rqst, 0, sizeof(struct smb_rqst));
-	rqst.rq_iov = &iov;
-	rqst.rq_nvec = 1;
-
-	if (retries)
-		smb2_set_replay(server, &rqst);
-
-	rc = cifs_send_recv(xid, ses, server,
-			    &rqst, &resp_buftype, flags, &rsp_iov);
-	free_qfs_info_req(&iov);
-	if (rc) {
-		cifs_stats_fail_inc(tcon, SMB2_QUERY_INFO_HE);
-		goto qfsinf_exit;
-	}
-	rsp = (struct smb2_query_info_rsp *)rsp_iov.iov_base;
-
-	info = (struct smb2_fs_full_size_info *)(
-		le16_to_cpu(rsp->OutputBufferOffset) + (char *)rsp);
-	rc = smb2_validate_iov(le16_to_cpu(rsp->OutputBufferOffset),
-			       le32_to_cpu(rsp->OutputBufferLength), &rsp_iov,
-			       sizeof(struct smb2_fs_full_size_info));
-	if (!rc)
-		smb2_copy_fs_info_to_kstatfs(info, fsdata);
-
-qfsinf_exit:
 	free_rsp_buf(resp_buftype, rsp_iov.iov_base);
 
 	if (is_replayable_error(rc) &&

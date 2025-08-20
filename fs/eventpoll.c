@@ -2190,9 +2190,7 @@ static int ep_loop_check_proc(struct eventpoll *ep, int depth)
 	return result;
 }
 
-/**
- * ep_get_upwards_depth_proc - determine depth of @ep when traversed upwards
- */
+/* ep_get_upwards_depth_proc - determine depth of @ep when traversed upwards */
 static int ep_get_upwards_depth_proc(struct eventpoll *ep, int depth)
 {
 	int result = 0;

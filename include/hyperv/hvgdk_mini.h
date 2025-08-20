@@ -1013,7 +1013,7 @@ enum hv_register_name {
 
 /*
  * To support arch-generic code calling hv_set/get_register:
- * - On x86, HV_MSR_ indicates an MSR accessed via rdmsrl/wrmsrl
+ * - On x86, HV_MSR_ indicates an MSR accessed via rdmsrq/wrmsrq
  * - On ARM, HV_MSR_ indicates a VP register accessed via hypercall
  */
 #define HV_MSR_CRASH_P0		(HV_X64_MSR_CRASH_P0)
@@ -1228,7 +1228,7 @@ struct hv_send_ipi {	 /* HV_INPUT_SEND_SYNTHETIC_CLUSTER_IPI */
 	u64 cpu_mask;
 } __packed;
 
-#define	HV_X64_VTL_MASK			GENMASK(3, 0)
+#define	HV_VTL_MASK			GENMASK(3, 0)
 
 /* Hyper-V memory host visibility */
 enum hv_mem_host_visibility {

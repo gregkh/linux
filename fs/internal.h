@@ -66,6 +66,7 @@ int do_linkat(int olddfd, struct filename *old, int newdfd,
 int vfs_tmpfile(struct mnt_idmap *idmap,
 		const struct path *parentpath,
 		struct file *file, umode_t mode);
+struct dentry *d_hash_and_lookup(struct dentry *, struct qstr *);
 
 /*
  * namespace.c
@@ -343,6 +344,7 @@ static inline bool path_mounted(const struct path *path)
 void file_f_owner_release(struct file *file);
 bool file_seek_cur_needs_f_lock(struct file *file);
 int statmount_mnt_idmap(struct mnt_idmap *idmap, struct seq_file *seq, bool uid_map);
+struct dentry *find_next_child(struct dentry *parent, struct dentry *prev);
 int anon_inode_getattr(struct mnt_idmap *idmap, const struct path *path,
 		       struct kstat *stat, u32 request_mask,
 		       unsigned int query_flags);

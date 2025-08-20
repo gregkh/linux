@@ -80,7 +80,45 @@
 #define MCACOD_EXT_MEM_ERR	0x280
 
 /* Max RRL register sets per {,sub-,pseudo-}channel. */
-#define NUM_RRL_SET		3
+#define NUM_RRL_SET		4
+/* Max RRL registers per set. */
+#define NUM_RRL_REG		6
+/* Max correctable error count registers. */
+#define NUM_CECNT_REG		8
+
+/* Modes of RRL register set. */
+enum rrl_mode {
+	/* Last read error from patrol scrub. */
+	LRE_SCRUB,
+	/* Last read error from demand. */
+	LRE_DEMAND,
+	/* First read error from patrol scrub. */
+	FRE_SCRUB,
+	/* First read error from demand. */
+	FRE_DEMAND,
+};
+
+/* RRL registers per {,sub-,pseudo-}channel. */
+struct reg_rrl {
+	/* RRL register parts. */
+	int set_num, reg_num;
+	enum rrl_mode modes[NUM_RRL_SET];
+	u32 offsets[NUM_RRL_SET][NUM_RRL_REG];
+	/* RRL register widths in byte per set. */
+	u8 widths[NUM_RRL_REG];
+	/* RRL control bits of the first register per set. */
+	u32 v_mask;
+	u32 uc_mask;
+	u32 over_mask;
+	u32 en_patspr_mask;
+	u32 noover_mask;
+	u32 en_mask;
+
+	/* CORRERRCNT register parts. */
+	int cecnt_num;
+	u32 cecnt_offsets[NUM_CECNT_REG];
+	u8 cecnt_widths[NUM_CECNT_REG];
+};
 
 /*
  * Each cpu socket contains some pci devices that provide global
@@ -237,14 +275,10 @@ struct res_config {
 	/* HBM mdev device BDF */
 	struct pci_bdf hbm_mdev_bdf;
 	int sad_all_offset;
-	/* Offsets of retry_rd_err_log registers */
-	u32 *offsets_scrub;
-	u32 *offsets_scrub_hbm0;
-	u32 *offsets_scrub_hbm1;
-	u32 *offsets_demand;
-	u32 *offsets_demand2;
-	u32 *offsets_demand_hbm0;
-	u32 *offsets_demand_hbm1;
+	/* RRL register sets per DDR channel */
+	struct reg_rrl *reg_rrl_ddr;
+	/* RRL register sets per HBM channel */
+	struct reg_rrl *reg_rrl_hbm[2];
 };
 
 typedef int (*get_dimm_config_f)(struct mem_ctl_info *mci,

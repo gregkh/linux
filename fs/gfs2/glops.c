@@ -607,14 +607,13 @@ static int freeze_go_xmote_bh(struct gfs2_glock *gl)
 	if (test_bit(SDF_JOURNAL_LIVE, &sdp->sd_flags)) {
 		j_gl->gl_ops->go_inval(j_gl, DIO_METADATA);
 
-		error = gfs2_find_jhead(sdp->sd_jdesc, &head, false);
+		error = gfs2_find_jhead(sdp->sd_jdesc, &head);
 		if (gfs2_assert_withdraw_delayed(sdp, !error))
 			return error;
 		if (gfs2_assert_withdraw_delayed(sdp, head.lh_flags &
 						 GFS2_LOG_HEAD_UNMOUNT))
 			return -EIO;
-		sdp->sd_log_sequence = head.lh_sequence + 1;
-		gfs2_log_pointers_init(sdp, head.lh_blkno);
+		gfs2_log_pointers_init(sdp, &head);
 	}
 	return 0;
 }

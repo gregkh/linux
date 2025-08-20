@@ -717,7 +717,7 @@ static int usbhs_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto probe_end_fifo_exit;
 
-	/* dev_set_drvdata should be called after usbhs_mod_init */
+	/* platform_set_drvdata() should be called after usbhs_mod_probe() */
 	platform_set_drvdata(pdev, priv);
 
 	ret = reset_control_deassert(priv->rsts);
@@ -725,7 +725,7 @@ static int usbhs_probe(struct platform_device *pdev)
 		goto probe_fail_rst;
 
 	/*
-	 * deviece reset here because
+	 * device reset here because
 	 * USB device might be used in boot loader.
 	 */
 	usbhs_sys_clock_ctrl(priv, 0);

@@ -419,7 +419,8 @@ int xe_guc_ads_init(struct xe_guc_ads *ads)
 	bo = xe_managed_bo_create_pin_map(xe, tile, guc_ads_size(ads) + MAX_GOLDEN_LRC_SIZE,
 					  XE_BO_FLAG_SYSTEM |
 					  XE_BO_FLAG_GGTT |
-					  XE_BO_FLAG_GGTT_INVALIDATE);
+					  XE_BO_FLAG_GGTT_INVALIDATE |
+					  XE_BO_FLAG_PINNED_NORESTORE);
 	if (IS_ERR(bo))
 		return PTR_ERR(bo);
 
@@ -715,8 +716,8 @@ static int guc_capture_prep_lists(struct xe_guc_ads *ads)
 	}
 
 	if (ads->capture_size != PAGE_ALIGN(total_size))
-		xe_gt_dbg(gt, "ADS capture alloc size changed from %d to %d\n",
-			  ads->capture_size, PAGE_ALIGN(total_size));
+		xe_gt_dbg(gt, "Updated ADS capture size %d (was %d)\n",
+			  PAGE_ALIGN(total_size), ads->capture_size);
 	return PAGE_ALIGN(total_size);
 }
 

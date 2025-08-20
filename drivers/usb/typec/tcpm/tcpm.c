@@ -67,6 +67,7 @@
 						\
 	S(ACC_UNATTACHED),			\
 	S(DEBUG_ACC_ATTACHED),			\
+	S(DEBUG_ACC_DEBOUNCE),			\
 	S(AUDIO_ACC_ATTACHED),			\
 	S(AUDIO_ACC_DEBOUNCE),			\
 						\
@@ -312,6 +313,10 @@ struct pd_data {
 	struct usb_power_delivery_capabilities_desc sink_desc;
 	unsigned int operating_snk_mw;
 };
+
+#define PD_CAP_REV10	0x1
+#define PD_CAP_REV20	0x2
+#define PD_CAP_REV30	0x3
 
 struct pd_revision_info {
 	u8 rev_major;
@@ -630,7 +635,8 @@ static const char * const pd_rev[] = {
 	  !tcpm_cc_is_source((port)->cc1)))
 
 #define tcpm_port_is_debug(port) \
-	(tcpm_cc_is_source((port)->cc1) && tcpm_cc_is_source((port)->cc2))
+	((tcpm_cc_is_source((port)->cc1) && tcpm_cc_is_source((port)->cc2)) || \
+	 (tcpm_cc_is_sink((port)->cc1) && tcpm_cc_is_sink((port)->cc2)))
 
 #define tcpm_port_is_audio(port) \
 	(tcpm_cc_is_audio((port)->cc1) && tcpm_cc_is_audio((port)->cc2))
@@ -4730,6 +4736,25 @@ static void tcpm_set_initial_svdm_version(struct tcpm_port *port)
 	}
 }
 
+static void tcpm_set_initial_negotiated_rev(struct tcpm_port *port)
+{
+	switch (port->pd_rev.rev_major) {
+	case PD_CAP_REV10:
+		port->negotiated_rev = PD_REV10;
+		break;
+	case PD_CAP_REV20:
+		port->negotiated_rev = PD_REV20;
+		break;
+	case PD_CAP_REV30:
+		port->negotiated_rev = PD_REV30;
+		break;
+	default:
+		port->negotiated_rev = PD_MAX_REV;
+		break;
+	}
+	port->negotiated_rev_prime = port->negotiated_rev;
+}
+
 static void run_state_machine(struct tcpm_port *port)
 {
 	int ret;
@@ -4847,8 +4872,7 @@ static void run_state_machine(struct tcpm_port *port)
 		typec_set_pwr_opmode(port->typec_port, opmode);
 		port->pwr_opmode = TYPEC_PWR_MODE_USB;
 		port->caps_count = 0;
-		port->negotiated_rev = PD_MAX_REV;
-		port->negotiated_rev_prime = PD_MAX_REV;
+		tcpm_set_initial_negotiated_rev(port);
 		port->message_id = 0;
 		port->message_id_prime = 0;
 		port->rx_msgid = -1;
@@ -5029,7 +5053,13 @@ static void run_state_machine(struct tcpm_port *port)
 			tcpm_set_state(port, SRC_UNATTACHED, PD_T_DRP_SRC);
 		break;
 	case SNK_ATTACH_WAIT:
-		if ((port->cc1 == TYPEC_CC_OPEN &&
+		if (tcpm_port_is_debug(port))
+			tcpm_set_state(port, DEBUG_ACC_ATTACHED,
+				       PD_T_CC_DEBOUNCE);
+		else if (tcpm_port_is_audio(port))
+			tcpm_set_state(port, AUDIO_ACC_ATTACHED,
+				       PD_T_CC_DEBOUNCE);
+		else if ((port->cc1 == TYPEC_CC_OPEN &&
 		     port->cc2 != TYPEC_CC_OPEN) ||
 		    (port->cc1 != TYPEC_CC_OPEN &&
 		     port->cc2 == TYPEC_CC_OPEN))
@@ -5043,6 +5073,12 @@ static void run_state_machine(struct tcpm_port *port)
 		if (tcpm_port_is_disconnected(port))
 			tcpm_set_state(port, SNK_UNATTACHED,
 				       PD_T_PD_DEBOUNCE);
+		else if (tcpm_port_is_debug(port))
+			tcpm_set_state(port, DEBUG_ACC_ATTACHED,
+				       PD_T_CC_DEBOUNCE);
+		else if (tcpm_port_is_audio(port))
+			tcpm_set_state(port, AUDIO_ACC_ATTACHED,
+				       PD_T_CC_DEBOUNCE);
 		else if (port->vbus_present)
 			tcpm_set_state(port,
 				       tcpm_try_src(port) ? SRC_TRY
@@ -5113,8 +5149,7 @@ static void run_state_machine(struct tcpm_port *port)
 					      port->cc2 : port->cc1);
 		typec_set_pwr_opmode(port->typec_port, opmode);
 		port->pwr_opmode = TYPEC_PWR_MODE_USB;
-		port->negotiated_rev = PD_MAX_REV;
-		port->negotiated_rev_prime = PD_MAX_REV;
+		tcpm_set_initial_negotiated_rev(port);
 		port->message_id = 0;
 		port->message_id_prime = 0;
 		port->rx_msgid = -1;
@@ -5341,7 +5376,10 @@ static void run_state_machine(struct tcpm_port *port)
 	/* Accessory states */
 	case ACC_UNATTACHED:
 		tcpm_acc_detach(port);
-		tcpm_set_state(port, SRC_UNATTACHED, 0);
+		if (port->port_type == TYPEC_PORT_SRC)
+			tcpm_set_state(port, SRC_UNATTACHED, 0);
+		else
+			tcpm_set_state(port, SNK_UNATTACHED, 0);
 		break;
 	case DEBUG_ACC_ATTACHED:
 	case AUDIO_ACC_ATTACHED:
@@ -5349,6 +5387,7 @@ static void run_state_machine(struct tcpm_port *port)
 		if (ret < 0)
 			tcpm_set_state(port, ACC_UNATTACHED, 0);
 		break;
+	case DEBUG_ACC_DEBOUNCE:
 	case AUDIO_ACC_DEBOUNCE:
 		tcpm_set_state(port, ACC_UNATTACHED, port->timings.cc_debounce_time);
 		break;
@@ -5940,7 +5979,8 @@ static void _tcpm_cc_change(struct tcpm_port *port, enum typec_cc_status cc1,
 		}
 		break;
 	case SNK_UNATTACHED:
-		if (tcpm_port_is_sink(port))
+		if (tcpm_port_is_debug(port) || tcpm_port_is_audio(port) ||
+		    tcpm_port_is_sink(port))
 			tcpm_set_state(port, SNK_ATTACH_WAIT, 0);
 		break;
 	case SNK_ATTACH_WAIT:
@@ -6003,7 +6043,12 @@ static void _tcpm_cc_change(struct tcpm_port *port, enum typec_cc_status cc1,
 
 	case DEBUG_ACC_ATTACHED:
 		if (cc1 == TYPEC_CC_OPEN || cc2 == TYPEC_CC_OPEN)
-			tcpm_set_state(port, ACC_UNATTACHED, 0);
+			tcpm_set_state(port, DEBUG_ACC_DEBOUNCE, 0);
+		break;
+
+	case DEBUG_ACC_DEBOUNCE:
+		if (tcpm_port_is_debug(port))
+			tcpm_set_state(port, DEBUG_ACC_ATTACHED, 0);
 		break;
 
 	case SNK_TRY:
@@ -7231,7 +7276,7 @@ static void tcpm_fw_get_timings(struct tcpm_port *port, struct fwnode_handle *fw
 
 static int tcpm_fw_get_caps(struct tcpm_port *port, struct fwnode_handle *fwnode)
 {
-	struct fwnode_handle *capabilities, *child, *caps = NULL;
+	struct fwnode_handle *capabilities, *caps = NULL;
 	unsigned int nr_src_pdo, nr_snk_pdo;
 	const char *opmode_str;
 	u32 *src_pdo, *snk_pdo;
@@ -7297,9 +7342,7 @@ static int tcpm_fw_get_caps(struct tcpm_port *port, struct fwnode_handle *fwnode
 	if (!capabilities) {
 		port->pd_count = 1;
 	} else {
-		fwnode_for_each_child_node(capabilities, child)
-			port->pd_count++;
-
+		port->pd_count = fwnode_get_child_node_count(capabilities);
 		if (!port->pd_count) {
 			ret = -ENODATA;
 			goto put_capabilities;

@@ -11,6 +11,7 @@
 #include "rx_desc.h"
 
 struct ath12k_base;
+#define HAL_CE_REMAP_REG_BASE	(ab->ce_remap_base_addr)
 
 #define HAL_LINK_DESC_SIZE			(32 << 2)
 #define HAL_LINK_DESC_ALIGN			128
@@ -43,6 +44,7 @@ struct ath12k_base;
 #define HAL_REO_QDESC_MAX_PEERID		8191
 
 /* WCSS Relative address */
+#define HAL_SEQ_WCSS_CMEM_OFFSET		0x00100000
 #define HAL_SEQ_WCSS_UMAC_OFFSET		0x00a00000
 #define HAL_SEQ_WCSS_UMAC_REO_REG		0x00a38000
 #define HAL_SEQ_WCSS_UMAC_TCL_REG		0x00a44000
@@ -378,6 +380,9 @@ struct ath12k_base;
  * ath12k_hal_rx_desc_get_err().
  */
 
+#define HAL_IPQ5332_CE_WFSS_REG_BASE	0x740000
+#define HAL_IPQ5332_CE_SIZE		0x100000
+
 enum hal_srng_ring_id {
 	HAL_SRNG_RING_ID_REO2SW0 = 0,
 	HAL_SRNG_RING_ID_REO2SW1,
@@ -493,6 +498,7 @@ enum hal_srng_ring_id {
 
 	HAL_SRNG_RING_ID_WMAC1_SW2RXMON_BUF0 = HAL_SRNG_RING_ID_PMAC1_ID_START,
 
+	HAL_SRNG_RING_ID_WMAC1_SW2RXDMA1_STATBUF,
 	HAL_SRNG_RING_ID_WMAC1_RXDMA2SW0,
 	HAL_SRNG_RING_ID_WMAC1_RXDMA2SW1,
 	HAL_SRNG_RING_ID_WMAC1_RXMON2SW0 = HAL_SRNG_RING_ID_WMAC1_RXDMA2SW1,
@@ -579,7 +585,8 @@ enum hal_reo_cmd_type {
  *			 or cache was blocked
  * @HAL_REO_CMD_FAILED: Command execution failed, could be due to
  *			invalid queue desc
- * @HAL_REO_CMD_RESOURCE_BLOCKED:
+ * @HAL_REO_CMD_RESOURCE_BLOCKED: Command could not be executed because
+ *				  one or more descriptors were blocked
  * @HAL_REO_CMD_DRAIN:
  */
 enum hal_reo_cmd_status {
@@ -1138,12 +1145,15 @@ void ath12k_hal_srng_get_params(struct ath12k_base *ab, struct hal_srng *srng,
 				struct hal_srng_params *params);
 void *ath12k_hal_srng_dst_get_next_entry(struct ath12k_base *ab,
 					 struct hal_srng *srng);
+void *ath12k_hal_srng_src_peek(struct ath12k_base *ab, struct hal_srng *srng);
 void *ath12k_hal_srng_dst_peek(struct ath12k_base *ab, struct hal_srng *srng);
 int ath12k_hal_srng_dst_num_free(struct ath12k_base *ab, struct hal_srng *srng,
 				 bool sync_hw_ptr);
 void *ath12k_hal_srng_src_get_next_reaped(struct ath12k_base *ab,
 					  struct hal_srng *srng);
 void *ath12k_hal_srng_src_reap_next(struct ath12k_base *ab,
+				    struct hal_srng *srng);
+void *ath12k_hal_srng_src_next_peek(struct ath12k_base *ab,
 				    struct hal_srng *srng);
 void *ath12k_hal_srng_src_get_next_entry(struct ath12k_base *ab,
 					 struct hal_srng *srng);
@@ -1166,4 +1176,5 @@ int ath12k_hal_srng_update_shadow_config(struct ath12k_base *ab,
 void ath12k_hal_srng_shadow_config(struct ath12k_base *ab);
 void ath12k_hal_srng_shadow_update_hp_tp(struct ath12k_base *ab,
 					 struct hal_srng *srng);
+void ath12k_hal_reo_shared_qaddr_cache_clear(struct ath12k_base *ab);
 #endif

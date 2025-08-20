@@ -30,7 +30,7 @@ static inline void ivpu_dbg_bo(struct ivpu_device *vdev, struct ivpu_bo *bo, con
 		 "%6s: bo %8p vpu_addr %9llx size %8zu ctx %d has_pages %d dma_mapped %d mmu_mapped %d wc %d imported %d\n",
 		 action, bo, bo->vpu_addr, ivpu_bo_size(bo), bo->ctx_id,
 		 (bool)bo->base.pages, (bool)bo->base.sgt, bo->mmu_mapped, bo->base.map_wc,
-		 (bool)bo->base.base.import_attach);
+		 (bool)drm_gem_is_imported(&bo->base.base));
 }
 
 static inline int ivpu_bo_lock(struct ivpu_bo *bo)
@@ -130,7 +130,7 @@ static void ivpu_bo_unbind_locked(struct ivpu_bo *bo)
 		bo->ctx = NULL;
 	}
 
-	if (bo->base.base.import_attach)
+	if (drm_gem_is_imported(&bo->base.base))
 		return;
 
 	if (bo->base.sgt) {
@@ -294,7 +294,7 @@ static void ivpu_gem_bo_free(struct drm_gem_object *obj)
 	drm_WARN_ON(&vdev->drm, bo->mmu_mapped);
 	drm_WARN_ON(&vdev->drm, bo->ctx);
 
-	drm_WARN_ON(obj->dev, bo->base.pages_use_count > 1);
+	drm_WARN_ON(obj->dev, refcount_read(&bo->base.pages_use_count) > 1);
 	drm_gem_shmem_free(&bo->base);
 }
 
@@ -377,7 +377,7 @@ ivpu_bo_create(struct ivpu_device *vdev, struct ivpu_mmu_context *ctx,
 
 	if (flags & DRM_IVPU_BO_MAPPABLE) {
 		ivpu_bo_lock(bo);
-		ret = drm_gem_shmem_vmap(&bo->base, &map);
+		ret = drm_gem_shmem_vmap_locked(&bo->base, &map);
 		ivpu_bo_unlock(bo);
 
 		if (ret)
@@ -402,7 +402,7 @@ void ivpu_bo_free(struct ivpu_bo *bo)
 
 	if (bo->flags & DRM_IVPU_BO_MAPPABLE) {
 		ivpu_bo_lock(bo);
-		drm_gem_shmem_vunmap(&bo->base, &map);
+		drm_gem_shmem_vunmap_locked(&bo->base, &map);
 		ivpu_bo_unlock(bo);
 	}
 
@@ -476,7 +476,7 @@ static void ivpu_bo_print_info(struct ivpu_bo *bo, struct drm_printer *p)
 	if (bo->mmu_mapped)
 		drm_printf(p, " mmu_mapped");
 
-	if (bo->base.base.import_attach)
+	if (drm_gem_is_imported(&bo->base.base))
 		drm_printf(p, " imported");
 
 	drm_printf(p, "\n");

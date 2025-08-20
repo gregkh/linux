@@ -1724,6 +1724,7 @@ int lan743x_rx_set_tstamp_mode(struct lan743x_adapter *adapter,
 	default:
 			return -ERANGE;
 	}
+	adapter->rx_tstamp_filter = rx_filter;
 	return 0;
 }
 
@@ -2494,8 +2495,7 @@ static int lan743x_rx_process_buffer(struct lan743x_rx *rx)
 
 	/* save existing skb, allocate new skb and map to dma */
 	skb = buffer_info->skb;
-	if (lan743x_rx_init_ring_element(rx, rx->last_head,
-					 GFP_ATOMIC | GFP_DMA)) {
+	if (lan743x_rx_init_ring_element(rx, rx->last_head, GFP_ATOMIC)) {
 		/* failed to allocate next skb.
 		 * Memory is very low.
 		 * Drop this packet and reuse buffer.
@@ -3347,8 +3347,6 @@ static int lan743x_netdev_ioctl(struct net_device *netdev,
 
 	if (!netif_running(netdev))
 		return -EINVAL;
-	if (cmd == SIOCSHWTSTAMP)
-		return lan743x_ptp_ioctl(netdev, ifr, cmd);
 
 	return phylink_mii_ioctl(adapter->phylink, ifr, cmd);
 }
@@ -3443,6 +3441,8 @@ static const struct net_device_ops lan743x_netdev_ops = {
 	.ndo_change_mtu		= lan743x_netdev_change_mtu,
 	.ndo_get_stats64	= lan743x_netdev_get_stats64,
 	.ndo_set_mac_address	= lan743x_netdev_set_mac_address,
+	.ndo_hwtstamp_get	= lan743x_ptp_hwtstamp_get,
+	.ndo_hwtstamp_set	= lan743x_ptp_hwtstamp_set,
 };
 
 static void lan743x_hardware_cleanup(struct lan743x_adapter *adapter)

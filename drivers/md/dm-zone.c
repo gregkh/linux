@@ -347,11 +347,15 @@ int dm_set_zones_restrictions(struct dm_table *t, struct request_queue *q,
 
 	/*
 	 * Check if zone append is natively supported, and if not, set the
-	 * mapped device queue as needing zone append emulation.
+	 * mapped device queue as needing zone append emulation. If zone
+	 * append is natively supported, make sure that
+	 * max_hw_zone_append_sectors is not set to 0.
 	 */
 	WARN_ON_ONCE(queue_is_mq(q));
 	if (!dm_table_supports_zone_append(t))
 		lim->max_hw_zone_append_sectors = 0;
+	else if (lim->max_hw_zone_append_sectors == 0)
+		lim->max_hw_zone_append_sectors = lim->max_zone_append_sectors;
 
 	/*
 	 * Determine the max open and max active zone limits for the mapped
@@ -459,9 +463,9 @@ void dm_zone_endio(struct dm_io *io, struct bio *clone)
 	 */
 	if (clone->bi_status == BLK_STS_OK &&
 	    bio_op(clone) == REQ_OP_ZONE_APPEND) {
-		sector_t mask = bdev_zone_sectors(disk->part0) - 1;
-
-		orig_bio->bi_iter.bi_sector += clone->bi_iter.bi_sector & mask;
+		orig_bio->bi_iter.bi_sector +=
+			bdev_offset_from_zone_start(disk->part0,
+						    clone->bi_iter.bi_sector);
 	}
 
 	return;

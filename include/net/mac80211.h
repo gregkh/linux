@@ -682,6 +682,9 @@ struct ieee80211_parsed_tpe {
  *	responder functionality.
  * @ftmr_params: configurable lci/civic parameter when enabling FTM responder.
  * @nontransmitted: this BSS is a nontransmitted BSS profile
+ * @tx_bss_conf: Pointer to the BSS configuration of transmitting interface
+ *	if MBSSID is enabled. This pointer is RCU-protected due to CSA finish
+ *	and BSS color change flows accessing it.
  * @transmitter_bssid: the address of transmitter AP
  * @bssid_index: index inside the multiple BSSID set
  * @bssid_indicator: 2^bssid_indicator is the maximum number of APs in set
@@ -741,6 +744,7 @@ struct ieee80211_parsed_tpe {
  * @eht_80mhz_full_bw_ul_mumimo: in AP-mode, does this BSS support the
  *	reception of an EHT TB PPDU on an RU that spans the entire PPDU
  *	bandwidth
+ * @eht_disable_mcs15: disable EHT-MCS 15 reception capability.
  * @bss_param_ch_cnt: in BSS-mode, the BSS params change count. This
  *	information is the latest known value. It can come from this link's
  *	beacon or from a beacon sent by another link.
@@ -804,6 +808,7 @@ struct ieee80211_bss_conf {
 	struct ieee80211_ftm_responder_params *ftmr_params;
 	/* Multiple BSSID data */
 	bool nontransmitted;
+	struct ieee80211_bss_conf __rcu *tx_bss_conf;
 	u8 transmitter_bssid[ETH_ALEN];
 	u8 bssid_index;
 	u8 bssid_indicator;
@@ -848,6 +853,8 @@ struct ieee80211_bss_conf {
 	bool eht_su_beamformee;
 	bool eht_mu_beamformer;
 	bool eht_80mhz_full_bw_ul_mumimo;
+	bool eht_disable_mcs15;
+
 	u8 bss_param_ch_cnt;
 	u8 bss_param_ch_cnt_link_id;
 };
@@ -2023,7 +2030,6 @@ enum ieee80211_neg_ttlm_res {
  * @txq: the multicast data TX queue
  * @offload_flags: 802.3 -> 802.11 enapsulation offload flags, see
  *	&enum ieee80211_offload_flags.
- * @mbssid_tx_vif: Pointer to the transmitting interface if MBSSID is enabled.
  */
 struct ieee80211_vif {
 	enum nl80211_iftype type;
@@ -2051,8 +2057,6 @@ struct ieee80211_vif {
 
 	bool probe_req_reg;
 	bool rx_mcast_action_reg;
-
-	struct ieee80211_vif *mbssid_tx_vif;
 
 	/* must be last */
 	u8 drv_priv[] __aligned(sizeof(void *));
@@ -2488,6 +2492,7 @@ struct ieee80211_link_sta {
  * @max_amsdu_subframes: indicates the maximal number of MSDUs in a single
  *	A-MSDU. Taken from the Extended Capabilities element. 0 means
  *	unlimited.
+ * @eml_cap: EML capabilities of this MLO station
  * @cur: currently valid data as aggregated from the active links
  *	For non MLO STA it will point to the deflink data. For MLO STA
  *	ieee80211_sta_recalc_aggregates() must be called to update it.
@@ -2522,6 +2527,7 @@ struct ieee80211_sta {
 	bool mlo;
 	bool spp_amsdu;
 	u8 max_amsdu_subframes;
+	u16 eml_cap;
 
 	struct ieee80211_sta_aggregates *cur;
 

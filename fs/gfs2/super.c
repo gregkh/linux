@@ -134,27 +134,17 @@ int gfs2_make_fs_rw(struct gfs2_sbd *sdp)
 {
 	struct gfs2_inode *ip = GFS2_I(sdp->sd_jdesc->jd_inode);
 	struct gfs2_glock *j_gl = ip->i_gl;
-	struct gfs2_log_header_host head;
 	int error;
 
 	j_gl->gl_ops->go_inval(j_gl, DIO_METADATA);
 	if (gfs2_withdrawing_or_withdrawn(sdp))
 		return -EIO;
 
-	error = gfs2_find_jhead(sdp->sd_jdesc, &head, false);
-	if (error) {
-		gfs2_consist(sdp);
-		return error;
-	}
-
-	if (!(head.lh_flags & GFS2_LOG_HEAD_UNMOUNT)) {
-		gfs2_consist(sdp);
+	if (sdp->sd_log_sequence == 0) {
+		fs_err(sdp, "unknown status of our own journal jid %d",
+		       sdp->sd_lockstruct.ls_jid);
 		return -EIO;
 	}
-
-	/*  Initialize some head of the log stuff  */
-	sdp->sd_log_sequence = head.lh_sequence + 1;
-	gfs2_log_pointers_init(sdp, head.lh_blkno);
 
 	error = gfs2_quota_init(sdp);
 	if (!error && gfs2_withdrawing_or_withdrawn(sdp))
@@ -370,7 +360,7 @@ static int gfs2_lock_fs_check_clean(struct gfs2_sbd *sdp)
 		error = gfs2_jdesc_check(jd);
 		if (error)
 			break;
-		error = gfs2_find_jhead(jd, &lh, false);
+		error = gfs2_find_jhead(jd, &lh);
 		if (error)
 			break;
 		if (!(lh.lh_flags & GFS2_LOG_HEAD_UNMOUNT)) {
@@ -674,7 +664,7 @@ static int gfs2_sync_fs(struct super_block *sb, int wait)
 	return sdp->sd_log_error;
 }
 
-static int gfs2_do_thaw(struct gfs2_sbd *sdp, enum freeze_holder who)
+static int gfs2_do_thaw(struct gfs2_sbd *sdp, enum freeze_holder who, const void *freeze_owner)
 {
 	struct super_block *sb = sdp->sd_vfs;
 	int error;
@@ -682,7 +672,7 @@ static int gfs2_do_thaw(struct gfs2_sbd *sdp, enum freeze_holder who)
 	error = gfs2_freeze_lock_shared(sdp);
 	if (error)
 		goto fail;
-	error = thaw_super(sb, who);
+	error = thaw_super(sb, who, freeze_owner);
 	if (!error)
 		return 0;
 
@@ -703,14 +693,14 @@ void gfs2_freeze_func(struct work_struct *work)
 	if (test_bit(SDF_FROZEN, &sdp->sd_flags))
 		goto freeze_failed;
 
-	error = freeze_super(sb, FREEZE_HOLDER_USERSPACE);
+	error = freeze_super(sb, FREEZE_HOLDER_USERSPACE, NULL);
 	if (error)
 		goto freeze_failed;
 
 	gfs2_freeze_unlock(sdp);
 	set_bit(SDF_FROZEN, &sdp->sd_flags);
 
-	error = gfs2_do_thaw(sdp, FREEZE_HOLDER_USERSPACE);
+	error = gfs2_do_thaw(sdp, FREEZE_HOLDER_USERSPACE, NULL);
 	if (error)
 		goto out;
 
@@ -729,10 +719,12 @@ out:
  * gfs2_freeze_super - prevent further writes to the filesystem
  * @sb: the VFS structure for the filesystem
  * @who: freeze flags
+ * @freeze_owner: owner of the freeze
  *
  */
 
-static int gfs2_freeze_super(struct super_block *sb, enum freeze_holder who)
+static int gfs2_freeze_super(struct super_block *sb, enum freeze_holder who,
+			     const void *freeze_owner)
 {
 	struct gfs2_sbd *sdp = sb->s_fs_info;
 	int error;
@@ -745,7 +737,7 @@ static int gfs2_freeze_super(struct super_block *sb, enum freeze_holder who)
 	}
 
 	for (;;) {
-		error = freeze_super(sb, who);
+		error = freeze_super(sb, who, freeze_owner);
 		if (error) {
 			fs_info(sdp, "GFS2: couldn't freeze filesystem: %d\n",
 				error);
@@ -759,7 +751,7 @@ static int gfs2_freeze_super(struct super_block *sb, enum freeze_holder who)
 			break;
 		}
 
-		error = gfs2_do_thaw(sdp, who);
+		error = gfs2_do_thaw(sdp, who, freeze_owner);
 		if (error)
 			goto out;
 
@@ -798,10 +790,12 @@ static int gfs2_freeze_fs(struct super_block *sb)
  * gfs2_thaw_super - reallow writes to the filesystem
  * @sb: the VFS structure for the filesystem
  * @who: freeze flags
+ * @freeze_owner: owner of the freeze
  *
  */
 
-static int gfs2_thaw_super(struct super_block *sb, enum freeze_holder who)
+static int gfs2_thaw_super(struct super_block *sb, enum freeze_holder who,
+			   const void *freeze_owner)
 {
 	struct gfs2_sbd *sdp = sb->s_fs_info;
 	int error;
@@ -816,7 +810,7 @@ static int gfs2_thaw_super(struct super_block *sb, enum freeze_holder who)
 	atomic_inc(&sb->s_active);
 	gfs2_freeze_unlock(sdp);
 
-	error = gfs2_do_thaw(sdp, who);
+	error = gfs2_do_thaw(sdp, who, freeze_owner);
 
 	if (!error) {
 		clear_bit(SDF_FREEZE_INITIATOR, &sdp->sd_flags);

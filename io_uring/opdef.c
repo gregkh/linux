@@ -334,13 +334,13 @@ const struct io_issue_def io_issue_defs[] = {
 		.audit_skip		= 1,
 		.iopoll			= 1,
 		.prep			= io_provide_buffers_prep,
-		.issue			= io_provide_buffers,
+		.issue			= io_manage_buffers_legacy,
 	},
 	[IORING_OP_REMOVE_BUFFERS] = {
 		.audit_skip		= 1,
 		.iopoll			= 1,
 		.prep			= io_remove_buffers_prep,
-		.issue			= io_remove_buffers,
+		.issue			= io_manage_buffers_legacy,
 	},
 	[IORING_OP_TEE] = {
 		.needs_file		= 1,
@@ -569,6 +569,10 @@ const struct io_issue_def io_issue_defs[] = {
 		.async_size		= sizeof(struct io_async_rw),
 		.prep			= io_prep_writev_fixed,
 		.issue			= io_write,
+	},
+	[IORING_OP_PIPE] = {
+		.prep			= io_pipe_prep,
+		.issue			= io_pipe,
 	},
 };
 
@@ -815,6 +819,9 @@ const struct io_cold_def io_cold_defs[] = {
 		.name			= "WRITEV_FIXED",
 		.cleanup		= io_readv_writev_cleanup,
 		.fail			= io_rw_fail,
+	},
+	[IORING_OP_PIPE] = {
+		.name			= "PIPE",
 	},
 };
 

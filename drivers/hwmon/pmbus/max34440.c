@@ -12,9 +12,26 @@
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
+#include <linux/delay.h>
 #include "pmbus.h"
 
-enum chips { max34440, max34441, max34446, max34451, max34460, max34461 };
+enum chips {
+	adpm12160,
+	max34440,
+	max34441,
+	max34446,
+	max34451,
+	max34460,
+	max34461,
+};
+
+/*
+ * Firmware is sometimes not ready if we try and read the
+ * data from the page immediately after setting. Maxim
+ * recommends 50us delay due to the chip failing to clock
+ * stretch long enough here.
+ */
+#define MAX34440_PAGE_CHANGE_DELAY 50
 
 #define MAX34440_MFR_VOUT_PEAK		0xd4
 #define MAX34440_MFR_IOUT_PEAK		0xd5
@@ -80,7 +97,8 @@ static int max34440_read_word_data(struct i2c_client *client, int page,
 					   MAX34440_MFR_VOUT_PEAK);
 		break;
 	case PMBUS_VIRT_READ_IOUT_AVG:
-		if (data->id != max34446 && data->id != max34451)
+		if (data->id != max34446 && data->id != max34451 &&
+		    data->id != adpm12160)
 			return -ENXIO;
 		ret = pmbus_read_word_data(client, page, phase,
 					   MAX34446_MFR_IOUT_AVG);
@@ -164,7 +182,8 @@ static int max34440_write_word_data(struct i2c_client *client, int page,
 	case PMBUS_VIRT_RESET_IOUT_HISTORY:
 		ret = pmbus_write_word_data(client, page,
 					    MAX34440_MFR_IOUT_PEAK, 0);
-		if (!ret && (data->id == max34446 || data->id == max34451))
+		if (!ret && (data->id == max34446 || data->id == max34451 ||
+			     data->id == adpm12160))
 			ret = pmbus_write_word_data(client, page,
 					MAX34446_MFR_IOUT_AVG, 0);
 
@@ -262,6 +281,7 @@ static int max34451_set_supported_funcs(struct i2c_client *client,
 
 	for (page = 0; page < 16; page++) {
 		rv = i2c_smbus_write_byte_data(client, PMBUS_PAGE, page);
+		fsleep(MAX34440_PAGE_CHANGE_DELAY);
 		if (rv < 0)
 			return rv;
 
@@ -309,6 +329,41 @@ static int max34451_set_supported_funcs(struct i2c_client *client,
 }
 
 static struct pmbus_driver_info max34440_info[] = {
+	[adpm12160] = {
+		.pages = 19,
+		.format[PSC_VOLTAGE_IN] = direct,
+		.format[PSC_VOLTAGE_OUT] = direct,
+		.format[PSC_CURRENT_IN] = direct,
+		.format[PSC_CURRENT_OUT] = direct,
+		.format[PSC_TEMPERATURE] = direct,
+		.m[PSC_VOLTAGE_IN] = 1,
+		.b[PSC_VOLTAGE_IN] = 0,
+		.R[PSC_VOLTAGE_IN] = 0,
+		.m[PSC_VOLTAGE_OUT] = 1,
+		.b[PSC_VOLTAGE_OUT] = 0,
+		.R[PSC_VOLTAGE_OUT] = 0,
+		.m[PSC_CURRENT_IN] = 1,
+		.b[PSC_CURRENT_IN] = 0,
+		.R[PSC_CURRENT_IN] = 2,
+		.m[PSC_CURRENT_OUT] = 1,
+		.b[PSC_CURRENT_OUT] = 0,
+		.R[PSC_CURRENT_OUT] = 2,
+		.m[PSC_TEMPERATURE] = 1,
+		.b[PSC_TEMPERATURE] = 0,
+		.R[PSC_TEMPERATURE] = 2,
+		/* absent func below [18] are not for monitoring */
+		.func[2] = PMBUS_HAVE_VOUT | PMBUS_HAVE_STATUS_VOUT,
+		.func[4] = PMBUS_HAVE_IOUT | PMBUS_HAVE_STATUS_IOUT,
+		.func[5] = PMBUS_HAVE_IOUT | PMBUS_HAVE_STATUS_IOUT,
+		.func[6] = PMBUS_HAVE_IOUT | PMBUS_HAVE_STATUS_IOUT,
+		.func[7] = PMBUS_HAVE_IOUT | PMBUS_HAVE_STATUS_IOUT,
+		.func[8] = PMBUS_HAVE_IOUT | PMBUS_HAVE_STATUS_IOUT,
+		.func[9] = PMBUS_HAVE_VIN | PMBUS_HAVE_STATUS_INPUT,
+		.func[10] = PMBUS_HAVE_IIN | PMBUS_HAVE_STATUS_INPUT,
+		.func[18] = PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP,
+		.read_word_data = max34440_read_word_data,
+		.write_word_data = max34440_write_word_data,
+	},
 	[max34440] = {
 		.pages = 14,
 		.format[PSC_VOLTAGE_IN] = direct,
@@ -350,6 +405,7 @@ static struct pmbus_driver_info max34440_info[] = {
 		.read_byte_data = max34440_read_byte_data,
 		.read_word_data = max34440_read_word_data,
 		.write_word_data = max34440_write_word_data,
+		.page_change_delay = MAX34440_PAGE_CHANGE_DELAY,
 	},
 	[max34441] = {
 		.pages = 12,
@@ -393,6 +449,7 @@ static struct pmbus_driver_info max34440_info[] = {
 		.read_byte_data = max34440_read_byte_data,
 		.read_word_data = max34440_read_word_data,
 		.write_word_data = max34440_write_word_data,
+		.page_change_delay = MAX34440_PAGE_CHANGE_DELAY,
 	},
 	[max34446] = {
 		.pages = 7,
@@ -430,6 +487,7 @@ static struct pmbus_driver_info max34440_info[] = {
 		.read_byte_data = max34440_read_byte_data,
 		.read_word_data = max34440_read_word_data,
 		.write_word_data = max34440_write_word_data,
+		.page_change_delay = MAX34440_PAGE_CHANGE_DELAY,
 	},
 	[max34451] = {
 		.pages = 21,
@@ -453,6 +511,7 @@ static struct pmbus_driver_info max34440_info[] = {
 		.func[20] = PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP,
 		.read_word_data = max34440_read_word_data,
 		.write_word_data = max34440_write_word_data,
+		.page_change_delay = MAX34440_PAGE_CHANGE_DELAY,
 	},
 	[max34460] = {
 		.pages = 18,
@@ -483,6 +542,7 @@ static struct pmbus_driver_info max34440_info[] = {
 		.func[17] = PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP,
 		.read_word_data = max34440_read_word_data,
 		.write_word_data = max34440_write_word_data,
+		.page_change_delay = MAX34440_PAGE_CHANGE_DELAY,
 	},
 	[max34461] = {
 		.pages = 23,
@@ -518,6 +578,7 @@ static struct pmbus_driver_info max34440_info[] = {
 		.func[21] = PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP,
 		.read_word_data = max34440_read_word_data,
 		.write_word_data = max34440_write_word_data,
+		.page_change_delay = MAX34440_PAGE_CHANGE_DELAY,
 	},
 };
 
@@ -539,12 +600,16 @@ static int max34440_probe(struct i2c_client *client)
 		rv = max34451_set_supported_funcs(client, data);
 		if (rv)
 			return rv;
+	} else if (data->id == adpm12160) {
+		data->iout_oc_fault_limit = PMBUS_IOUT_OC_FAULT_LIMIT;
+		data->iout_oc_warn_limit = PMBUS_IOUT_OC_WARN_LIMIT;
 	}
 
 	return pmbus_do_probe(client, &data->info);
 }
 
 static const struct i2c_device_id max34440_id[] = {
+	{"adpm12160", adpm12160},
 	{"max34440", max34440},
 	{"max34441", max34441},
 	{"max34446", max34446},

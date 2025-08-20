@@ -1242,8 +1242,11 @@ static void nvmet_pci_epf_queue_response(struct nvmet_req *req)
 
 	iod->status = le16_to_cpu(req->cqe->status) >> 1;
 
-	/* If we have no data to transfer, directly complete the command. */
-	if (!iod->data_len || iod->dma_dir != DMA_TO_DEVICE) {
+	/*
+	 * If the command failed or we have no data to transfer, complete the
+	 * command immediately.
+	 */
+	if (iod->status || !iod->data_len || iod->dma_dir != DMA_TO_DEVICE) {
 		nvmet_pci_epf_complete_iod(iod);
 		return;
 	}
@@ -1354,15 +1357,17 @@ static u16 nvmet_pci_epf_delete_cq(struct nvmet_ctrl *tctrl, u16 cqid)
 	if (test_and_clear_bit(NVMET_PCI_EPF_Q_IRQ_ENABLED, &cq->flags))
 		nvmet_pci_epf_remove_irq_vector(ctrl, cq->vector);
 	nvmet_pci_epf_mem_unmap(ctrl->nvme_epf, &cq->pci_map);
+	nvmet_cq_put(&cq->nvme_cq);
 
 	return NVME_SC_SUCCESS;
 }
 
 static u16 nvmet_pci_epf_create_sq(struct nvmet_ctrl *tctrl,
-		u16 sqid, u16 flags, u16 qsize, u64 pci_addr)
+		u16 sqid, u16 cqid, u16 flags, u16 qsize, u64 pci_addr)
 {
 	struct nvmet_pci_epf_ctrl *ctrl = tctrl->drvdata;
 	struct nvmet_pci_epf_queue *sq = &ctrl->sq[sqid];
+	struct nvmet_pci_epf_queue *cq = &ctrl->cq[cqid];
 	u16 status;
 
 	if (test_bit(NVMET_PCI_EPF_Q_LIVE, &sq->flags))
@@ -1385,7 +1390,8 @@ static u16 nvmet_pci_epf_create_sq(struct nvmet_ctrl *tctrl,
 		sq->qes = ctrl->io_sqes;
 	sq->pci_size = sq->qes * sq->depth;
 
-	status = nvmet_sq_create(tctrl, &sq->nvme_sq, sqid, sq->depth);
+	status = nvmet_sq_create(tctrl, &sq->nvme_sq, &cq->nvme_cq, sqid,
+			sq->depth);
 	if (status != NVME_SC_SUCCESS)
 		return status;
 
@@ -1601,9 +1607,13 @@ static void nvmet_pci_epf_exec_iod_work(struct work_struct *work)
 		goto complete;
 	}
 
-	if (!nvmet_req_init(req, &iod->cq->nvme_cq, &iod->sq->nvme_sq,
-			    &nvmet_pci_epf_fabrics_ops))
-		goto complete;
+	/*
+	 * If nvmet_req_init() fails (e.g., unsupported opcode) it will call
+	 * __nvmet_req_complete() internally which will call
+	 * nvmet_pci_epf_queue_response() and will complete the command directly.
+	 */
+	if (!nvmet_req_init(req, &iod->sq->nvme_sq, &nvmet_pci_epf_fabrics_ops))
+		return;
 
 	iod->data_len = nvmet_req_transfer_len(req);
 	if (iod->data_len) {
@@ -1641,10 +1651,11 @@ static void nvmet_pci_epf_exec_iod_work(struct work_struct *work)
 
 	wait_for_completion(&iod->done);
 
-	if (iod->status == NVME_SC_SUCCESS) {
-		WARN_ON_ONCE(!iod->data_len || iod->dma_dir != DMA_TO_DEVICE);
-		nvmet_pci_epf_transfer_iod_data(iod);
-	}
+	if (iod->status != NVME_SC_SUCCESS)
+		return;
+
+	WARN_ON_ONCE(!iod->data_len || iod->dma_dir != DMA_TO_DEVICE);
+	nvmet_pci_epf_transfer_iod_data(iod);
 
 complete:
 	nvmet_pci_epf_complete_iod(iod);
@@ -1879,8 +1890,8 @@ static int nvmet_pci_epf_enable_ctrl(struct nvmet_pci_epf_ctrl *ctrl)
 
 	qsize = aqa & 0x00000fff;
 	pci_addr = asq & GENMASK_ULL(63, 12);
-	status = nvmet_pci_epf_create_sq(ctrl->tctrl, 0, NVME_QUEUE_PHYS_CONTIG,
-					 qsize, pci_addr);
+	status = nvmet_pci_epf_create_sq(ctrl->tctrl, 0, 0,
+			NVME_QUEUE_PHYS_CONTIG, qsize, pci_addr);
 	if (status != NVME_SC_SUCCESS) {
 		dev_err(ctrl->dev, "Failed to create admin submission queue\n");
 		nvmet_pci_epf_delete_cq(ctrl->tctrl, 0);

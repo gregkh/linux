@@ -682,6 +682,9 @@ static void tcp_rcv_rtt_update(struct tcp_sock *tp, u32 sample, int win_dep)
 		 */
 		if (win_dep)
 			return;
+		/* Do not use this sample if receive queue is not empty. */
+		if (tp->rcv_nxt != tp->copied_seq)
+			return;
 		new_sample = old_sample - (old_sample >> 3) + sample;
 	}
 
@@ -741,6 +744,32 @@ static inline void tcp_rcv_rtt_measure_ts(struct sock *sk,
 	}
 }
 
+static void tcp_rcvbuf_grow(struct sock *sk)
+{
+	const struct net *net = sock_net(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
+	int rcvwin, rcvbuf, cap;
+
+	if (!READ_ONCE(net->ipv4.sysctl_tcp_moderate_rcvbuf) ||
+	    (sk->sk_userlocks & SOCK_RCVBUF_LOCK))
+		return;
+
+	/* slow start: allow the sender to double its rate. */
+	rcvwin = tp->rcvq_space.space << 1;
+
+	if (!RB_EMPTY_ROOT(&tp->out_of_order_queue))
+		rcvwin += TCP_SKB_CB(tp->ooo_last_skb)->end_seq - tp->rcv_nxt;
+
+	cap = READ_ONCE(net->ipv4.sysctl_tcp_rmem[2]);
+
+	rcvbuf = min_t(u32, tcp_space_from_win(sk, rcvwin), cap);
+	if (rcvbuf > sk->sk_rcvbuf) {
+		WRITE_ONCE(sk->sk_rcvbuf, rcvbuf);
+		/* Make the window clamp follow along.  */
+		WRITE_ONCE(tp->window_clamp,
+			   tcp_win_from_space(sk, rcvbuf));
+	}
+}
 /*
  * This function should be called every time data is copied to user space.
  * It calculates the appropriate TCP receive buffer space.
@@ -765,41 +794,11 @@ void tcp_rcv_space_adjust(struct sock *sk)
 	if (copied <= tp->rcvq_space.space)
 		goto new_measure;
 
-	/* A bit of theory :
-	 * copied = bytes received in previous RTT, our base window
-	 * To cope with packet losses, we need a 2x factor
-	 * To cope with slow start, and sender growing its cwin by 100 %
-	 * every RTT, we need a 4x factor, because the ACK we are sending
-	 * now is for the next RTT, not the current one :
-	 * <prev RTT . ><current RTT .. ><next RTT .... >
-	 */
+	trace_tcp_rcvbuf_grow(sk, time);
 
-	if (READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_moderate_rcvbuf) &&
-	    !(sk->sk_userlocks & SOCK_RCVBUF_LOCK)) {
-		u64 rcvwin, grow;
-		int rcvbuf;
-
-		/* minimal window to cope with packet losses, assuming
-		 * steady state. Add some cushion because of small variations.
-		 */
-		rcvwin = ((u64)copied << 1) + 16 * tp->advmss;
-
-		/* Accommodate for sender rate increase (eg. slow start) */
-		grow = rcvwin * (copied - tp->rcvq_space.space);
-		do_div(grow, tp->rcvq_space.space);
-		rcvwin += (grow << 1);
-
-		rcvbuf = min_t(u64, tcp_space_from_win(sk, rcvwin),
-			       READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_rmem[2]));
-		if (rcvbuf > sk->sk_rcvbuf) {
-			WRITE_ONCE(sk->sk_rcvbuf, rcvbuf);
-
-			/* Make the window clamp follow along.  */
-			WRITE_ONCE(tp->window_clamp,
-				   tcp_win_from_space(sk, rcvbuf));
-		}
-	}
 	tp->rcvq_space.space = copied;
+
+	tcp_rcvbuf_grow(sk);
 
 new_measure:
 	tp->rcvq_space.seq = tp->copied_seq;
@@ -5184,6 +5183,9 @@ end:
 		skb_condense(skb);
 		skb_set_owner_r(skb, sk);
 	}
+	/* do not grow rcvbuf for not-yet-accepted or orphaned sockets. */
+	if (sk->sk_socket)
+		tcp_rcvbuf_grow(sk);
 }
 
 static int __must_check tcp_queue_rcv(struct sock *sk, struct sk_buff *skb,

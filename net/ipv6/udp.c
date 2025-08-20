@@ -46,6 +46,7 @@
 #include <net/tcp_states.h>
 #include <net/ip6_checksum.h>
 #include <net/ip6_tunnel.h>
+#include <net/udp_tunnel.h>
 #include <net/xfrm.h>
 #include <net/inet_hashtables.h>
 #include <net/inet6_hashtables.h>
@@ -749,7 +750,8 @@ int __udp6_lib_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	if (type == NDISC_REDIRECT) {
 		if (tunnel) {
 			ip6_redirect(skb, sock_net(sk), inet6_iif(skb),
-				     READ_ONCE(sk->sk_mark), sk->sk_uid);
+				     READ_ONCE(sk->sk_mark),
+				     sk_uid(sk));
 		} else {
 			ip6_sk_redirect(skb, sk);
 		}
@@ -1619,7 +1621,7 @@ do_udp_sendmsg:
 	if (!fl6->flowi6_oif)
 		fl6->flowi6_oif = np->sticky_pktinfo.ipi6_ifindex;
 
-	fl6->flowi6_uid = sk->sk_uid;
+	fl6->flowi6_uid = sk_uid(sk);
 
 	if (msg->msg_controllen) {
 		opt = &opt_space;
@@ -1825,6 +1827,7 @@ void udpv6_destroy_sock(struct sock *sk)
 		if (udp_test_bit(ENCAP_ENABLED, sk)) {
 			static_branch_dec(&udpv6_encap_needed_key);
 			udp_encap_disable();
+			udp_tunnel_cleanup_gro(sk);
 		}
 	}
 }

@@ -708,7 +708,7 @@ struct gpio_desc *of_find_gpio(struct device_node *np, const char *con_id,
 			       unsigned int idx, unsigned long *flags)
 {
 	char propname[32]; /* 32 is max size of property name */
-	enum of_gpio_flags of_flags;
+	enum of_gpio_flags of_flags = 0;
 	const of_find_gpio_quirk *q;
 	struct gpio_desc *desc;
 
@@ -1286,4 +1286,12 @@ int of_gpiochip_add(struct gpio_chip *chip)
 void of_gpiochip_remove(struct gpio_chip *chip)
 {
 	of_node_put(dev_of_node(&chip->gpiodev->dev));
+}
+
+bool of_gpiochip_instance_match(struct gpio_chip *gc, unsigned int index)
+{
+	if (gc->of_node_instance_match)
+		return gc->of_node_instance_match(gc, index);
+
+	return false;
 }

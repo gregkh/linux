@@ -18,6 +18,7 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 #include <linux/types.h>
+#include <linux/workqueue.h>
 
 #include "vsc-tp.h"
 
@@ -76,6 +77,7 @@ struct vsc_tp {
 
 	atomic_t assert_cnt;
 	wait_queue_head_t xfer_wait;
+	struct work_struct event_work;
 
 	vsc_tp_event_cb_t event_notify;
 	void *event_notify_context;
@@ -105,19 +107,19 @@ static irqreturn_t vsc_tp_isr(int irq, void *data)
 
 	wake_up(&tp->xfer_wait);
 
-	return IRQ_WAKE_THREAD;
+	schedule_work(&tp->event_work);
+
+	return IRQ_HANDLED;
 }
 
-static irqreturn_t vsc_tp_thread_isr(int irq, void *data)
+static void vsc_tp_event_work(struct work_struct *work)
 {
-	struct vsc_tp *tp = data;
+	struct vsc_tp *tp = container_of(work, struct vsc_tp, event_work);
 
 	guard(mutex)(&tp->event_notify_mutex);
 
 	if (tp->event_notify)
 		tp->event_notify(tp->event_notify_context);
-
-	return IRQ_HANDLED;
 }
 
 /* wakeup firmware and wait for response */
@@ -410,37 +412,6 @@ int vsc_tp_register_event_cb(struct vsc_tp *tp, vsc_tp_event_cb_t event_cb,
 EXPORT_SYMBOL_NS_GPL(vsc_tp_register_event_cb, "VSC_TP");
 
 /**
- * vsc_tp_request_irq - request irq for vsc_tp device
- * @tp: vsc_tp device handle
- */
-int vsc_tp_request_irq(struct vsc_tp *tp)
-{
-	struct spi_device *spi = tp->spi;
-	struct device *dev = &spi->dev;
-	int ret;
-
-	irq_set_status_flags(spi->irq, IRQ_DISABLE_UNLAZY);
-	ret = request_threaded_irq(spi->irq, vsc_tp_isr, vsc_tp_thread_isr,
-				   IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-				   dev_name(dev), tp);
-	if (ret)
-		return ret;
-
-	return 0;
-}
-EXPORT_SYMBOL_NS_GPL(vsc_tp_request_irq, "VSC_TP");
-
-/**
- * vsc_tp_free_irq - free irq for vsc_tp device
- * @tp: vsc_tp device handle
- */
-void vsc_tp_free_irq(struct vsc_tp *tp)
-{
-	free_irq(tp->spi->irq, tp);
-}
-EXPORT_SYMBOL_NS_GPL(vsc_tp_free_irq, "VSC_TP");
-
-/**
  * vsc_tp_intr_synchronize - synchronize vsc_tp interrupt
  * @tp: vsc_tp device handle
  */
@@ -526,7 +497,7 @@ static int vsc_tp_probe(struct spi_device *spi)
 	tp->spi = spi;
 
 	irq_set_status_flags(spi->irq, IRQ_DISABLE_UNLAZY);
-	ret = request_threaded_irq(spi->irq, vsc_tp_isr, vsc_tp_thread_isr,
+	ret = request_threaded_irq(spi->irq, NULL, vsc_tp_isr,
 				   IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 				   dev_name(dev), tp);
 	if (ret)
@@ -534,6 +505,7 @@ static int vsc_tp_probe(struct spi_device *spi)
 
 	mutex_init(&tp->mutex);
 	mutex_init(&tp->event_notify_mutex);
+	INIT_WORK(&tp->event_work, vsc_tp_event_work);
 
 	/* only one child acpi device */
 	ret = acpi_dev_for_each_child(ACPI_COMPANION(dev),
@@ -558,6 +530,7 @@ static int vsc_tp_probe(struct spi_device *spi)
 err_destroy_lock:
 	free_irq(spi->irq, tp);
 
+	cancel_work_sync(&tp->event_work);
 	mutex_destroy(&tp->event_notify_mutex);
 	mutex_destroy(&tp->mutex);
 
@@ -572,6 +545,7 @@ static void vsc_tp_remove(struct spi_device *spi)
 
 	free_irq(spi->irq, tp);
 
+	cancel_work_sync(&tp->event_work);
 	mutex_destroy(&tp->event_notify_mutex);
 	mutex_destroy(&tp->mutex);
 }

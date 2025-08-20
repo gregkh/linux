@@ -1104,7 +1104,7 @@ static void panthor_vm_bo_put(struct drm_gpuvm_bo *vm_bo)
 	/* If the vm_bo object was destroyed, release the pin reference that
 	 * was hold by this object.
 	 */
-	if (unpin && !bo->base.base.import_attach)
+	if (unpin && !drm_gem_is_imported(&bo->base.base))
 		drm_gem_shmem_unpin(&bo->base);
 
 	drm_gpuvm_put(vm);
@@ -1235,7 +1235,7 @@ static int panthor_vm_prepare_map_op_ctx(struct panthor_vm_op_ctx *op_ctx,
 	if (ret)
 		goto err_cleanup;
 
-	if (!bo->base.base.import_attach) {
+	if (!drm_gem_is_imported(&bo->base.base)) {
 		/* Pre-reserve the BO pages, so the map operation doesn't have to
 		 * allocate.
 		 */
@@ -1246,7 +1246,7 @@ static int panthor_vm_prepare_map_op_ctx(struct panthor_vm_op_ctx *op_ctx,
 
 	sgt = drm_gem_shmem_get_pages_sgt(&bo->base);
 	if (IS_ERR(sgt)) {
-		if (!bo->base.base.import_attach)
+		if (!drm_gem_is_imported(&bo->base.base))
 			drm_gem_shmem_unpin(&bo->base);
 
 		ret = PTR_ERR(sgt);
@@ -1257,7 +1257,7 @@ static int panthor_vm_prepare_map_op_ctx(struct panthor_vm_op_ctx *op_ctx,
 
 	preallocated_vm_bo = drm_gpuvm_bo_create(&vm->base, &bo->base.base);
 	if (!preallocated_vm_bo) {
-		if (!bo->base.base.import_attach)
+		if (!drm_gem_is_imported(&bo->base.base))
 			drm_gem_shmem_unpin(&bo->base);
 
 		ret = -ENOMEM;
@@ -1283,7 +1283,7 @@ static int panthor_vm_prepare_map_op_ctx(struct panthor_vm_op_ctx *op_ctx,
 	 * which will be released in panthor_vm_bo_put().
 	 */
 	if (preallocated_vm_bo != op_ctx->map.vm_bo &&
-	    !bo->base.base.import_attach)
+	    !drm_gem_is_imported(&bo->base.base))
 		drm_gem_shmem_unpin(&bo->base);
 
 	op_ctx->map.bo_offset = offset;
@@ -1709,6 +1709,13 @@ static void panthor_mmu_irq_handler(struct panthor_device *ptdev, u32 status)
 			exception_type, panthor_exception_name(ptdev, exception_type),
 			access_type, access_type_name(ptdev, fault_status),
 			source_id);
+
+		/* We don't handle VM faults at the moment, so let's just clear the
+		 * interrupt and let the writer/reader crash.
+		 * Note that COMPLETED irqs are never cleared, but this is fine
+		 * because they are always masked.
+		 */
+		gpu_write(ptdev, MMU_INT_CLEAR, mask);
 
 		/* Ignore MMU interrupts on this AS until it's been
 		 * re-enabled.

@@ -10,6 +10,7 @@
 #include <linux/filter.h>
 #include <linux/mm.h>
 #include <linux/pci.h>
+#include <linux/export.h>
 
 #include <net/checksum.h>
 #include <net/ip6_checksum.h>
@@ -921,7 +922,7 @@ static void mana_pf_deregister_filter(struct mana_port_context *apc)
 
 static int mana_query_device_cfg(struct mana_context *ac, u32 proto_major_ver,
 				 u32 proto_minor_ver, u32 proto_micro_ver,
-				 u16 *max_num_vports)
+				 u16 *max_num_vports, u8 *bm_hostmode)
 {
 	struct gdma_context *gc = ac->gdma_dev->gdma_context;
 	struct mana_query_device_cfg_resp resp = {};
@@ -932,7 +933,7 @@ static int mana_query_device_cfg(struct mana_context *ac, u32 proto_major_ver,
 	mana_gd_init_req_hdr(&req.hdr, MANA_QUERY_DEV_CONFIG,
 			     sizeof(req), sizeof(resp));
 
-	req.hdr.resp.msg_version = GDMA_MESSAGE_V2;
+	req.hdr.resp.msg_version = GDMA_MESSAGE_V3;
 
 	req.proto_major_ver = proto_major_ver;
 	req.proto_minor_ver = proto_minor_ver;
@@ -956,10 +957,15 @@ static int mana_query_device_cfg(struct mana_context *ac, u32 proto_major_ver,
 
 	*max_num_vports = resp.max_num_vports;
 
-	if (resp.hdr.response.msg_version == GDMA_MESSAGE_V2)
+	if (resp.hdr.response.msg_version >= GDMA_MESSAGE_V2)
 		gc->adapter_mtu = resp.adapter_mtu;
 	else
 		gc->adapter_mtu = ETH_FRAME_LEN;
+
+	if (resp.hdr.response.msg_version >= GDMA_MESSAGE_V3)
+		*bm_hostmode = resp.bm_hostmode;
+	else
+		*bm_hostmode = 0;
 
 	debugfs_create_u16("adapter-MTU", 0400, gc->mana_pci_debugfs, &gc->adapter_mtu);
 
@@ -1906,8 +1912,10 @@ static void mana_destroy_txq(struct mana_port_context *apc)
 		napi = &apc->tx_qp[i].tx_cq.napi;
 		if (apc->tx_qp[i].txq.napi_initialized) {
 			napi_synchronize(napi);
-			napi_disable(napi);
-			netif_napi_del(napi);
+			netdev_lock_ops_to_full(napi->dev);
+			napi_disable_locked(napi);
+			netif_napi_del_locked(napi);
+			netdev_unlock_full_to_ops(napi->dev);
 			apc->tx_qp[i].txq.napi_initialized = false;
 		}
 		mana_destroy_wq_obj(apc, GDMA_SQ, apc->tx_qp[i].tx_object);
@@ -2059,8 +2067,11 @@ static int mana_create_txq(struct mana_port_context *apc,
 
 		mana_create_txq_debugfs(apc, i);
 
-		netif_napi_add_tx(net, &cq->napi, mana_poll);
-		napi_enable(&cq->napi);
+		set_bit(NAPI_STATE_NO_BUSY_POLL, &cq->napi.state);
+		netdev_lock_ops_to_full(net);
+		netif_napi_add_locked(net, &cq->napi, mana_poll);
+		napi_enable_locked(&cq->napi);
+		netdev_unlock_full_to_ops(net);
 		txq->napi_initialized = true;
 
 		mana_gd_ring_cq(cq->gdma_cq, SET_ARM_BIT);
@@ -2096,9 +2107,10 @@ static void mana_destroy_rxq(struct mana_port_context *apc,
 	if (napi_initialized) {
 		napi_synchronize(napi);
 
-		napi_disable(napi);
-
-		netif_napi_del(napi);
+		netdev_lock_ops_to_full(napi->dev);
+		napi_disable_locked(napi);
+		netif_napi_del_locked(napi);
+		netdev_unlock_full_to_ops(napi->dev);
 	}
 	xdp_rxq_info_unreg(&rxq->xdp_rxq);
 
@@ -2349,14 +2361,18 @@ static struct mana_rxq *mana_create_rxq(struct mana_port_context *apc,
 
 	gc->cq_table[cq->gdma_id] = cq->gdma_cq;
 
-	netif_napi_add_weight(ndev, &cq->napi, mana_poll, 1);
+	netdev_lock_ops_to_full(ndev);
+	netif_napi_add_weight_locked(ndev, &cq->napi, mana_poll, 1);
+	netdev_unlock_full_to_ops(ndev);
 
 	WARN_ON(xdp_rxq_info_reg(&rxq->xdp_rxq, ndev, rxq_idx,
 				 cq->napi.napi_id));
 	WARN_ON(xdp_rxq_info_reg_mem_model(&rxq->xdp_rxq, MEM_TYPE_PAGE_POOL,
 					   rxq->page_pool));
 
-	napi_enable(&cq->napi);
+	netdev_lock_ops_to_full(ndev);
+	napi_enable_locked(&cq->napi);
+	netdev_unlock_full_to_ops(ndev);
 
 	mana_gd_ring_cq(cq->gdma_cq, SET_ARM_BIT);
 out:
@@ -2441,7 +2457,7 @@ static void mana_destroy_vport(struct mana_port_context *apc)
 	mana_destroy_txq(apc);
 	mana_uncfg_vport(apc);
 
-	if (gd->gdma_context->is_pf)
+	if (gd->gdma_context->is_pf && !apc->ac->bm_hostmode)
 		mana_pf_deregister_hw_vport(apc);
 }
 
@@ -2453,7 +2469,7 @@ static int mana_create_vport(struct mana_port_context *apc,
 
 	apc->default_rxobj = INVALID_MANA_HANDLE;
 
-	if (gd->gdma_context->is_pf) {
+	if (gd->gdma_context->is_pf && !apc->ac->bm_hostmode) {
 		err = mana_pf_register_hw_vport(apc);
 		if (err)
 			return err;
@@ -2689,7 +2705,7 @@ int mana_alloc_queues(struct net_device *ndev)
 		goto destroy_vport;
 	}
 
-	if (gd->gdma_context->is_pf) {
+	if (gd->gdma_context->is_pf && !apc->ac->bm_hostmode) {
 		err = mana_pf_register_filter(apc);
 		if (err)
 			goto destroy_vport;
@@ -2751,7 +2767,7 @@ static int mana_dealloc_queues(struct net_device *ndev)
 
 	mana_chn_setxdp(apc, NULL);
 
-	if (gd->gdma_context->is_pf)
+	if (gd->gdma_context->is_pf && !apc->ac->bm_hostmode)
 		mana_pf_deregister_filter(apc);
 
 	/* No packet can be transmitted now since apc->port_is_up is false.
@@ -2945,7 +2961,7 @@ static void remove_adev(struct gdma_dev *gd)
 	gd->adev = NULL;
 }
 
-static int add_adev(struct gdma_dev *gd)
+static int add_adev(struct gdma_dev *gd, const char *name)
 {
 	struct auxiliary_device *adev;
 	struct mana_adev *madev;
@@ -2961,7 +2977,7 @@ static int add_adev(struct gdma_dev *gd)
 		goto idx_fail;
 	adev->id = ret;
 
-	adev->name = "rdma";
+	adev->name = name;
 	adev->dev.parent = gd->gdma_context->dev;
 	adev->dev.release = adev_release;
 	madev->mdev = gd;
@@ -2993,11 +3009,76 @@ idx_fail:
 	return ret;
 }
 
+static void mana_rdma_service_handle(struct work_struct *work)
+{
+	struct mana_service_work *serv_work =
+		container_of(work, struct mana_service_work, work);
+	struct gdma_dev *gd = serv_work->gdma_dev;
+	struct device *dev = gd->gdma_context->dev;
+	int ret;
+
+	if (READ_ONCE(gd->rdma_teardown))
+		goto out;
+
+	switch (serv_work->event) {
+	case GDMA_SERVICE_TYPE_RDMA_SUSPEND:
+		if (!gd->adev || gd->is_suspended)
+			break;
+
+		remove_adev(gd);
+		gd->is_suspended = true;
+		break;
+
+	case GDMA_SERVICE_TYPE_RDMA_RESUME:
+		if (!gd->is_suspended)
+			break;
+
+		ret = add_adev(gd, "rdma");
+		if (ret)
+			dev_err(dev, "Failed to add adev on resume: %d\n", ret);
+		else
+			gd->is_suspended = false;
+		break;
+
+	default:
+		dev_warn(dev, "unknown adev service event %u\n",
+			 serv_work->event);
+		break;
+	}
+
+out:
+	kfree(serv_work);
+}
+
+int mana_rdma_service_event(struct gdma_context *gc, enum gdma_service_type event)
+{
+	struct gdma_dev *gd = &gc->mana_ib;
+	struct mana_service_work *serv_work;
+
+	if (gd->dev_id.type != GDMA_DEVICE_MANA_IB) {
+		/* RDMA device is not detected on pci */
+		return 0;
+	}
+
+	serv_work = kzalloc(sizeof(*serv_work), GFP_ATOMIC);
+	if (!serv_work)
+		return -ENOMEM;
+
+	serv_work->event = event;
+	serv_work->gdma_dev = gd;
+
+	INIT_WORK(&serv_work->work, mana_rdma_service_handle);
+	queue_work(gc->service_wq, &serv_work->work);
+
+	return 0;
+}
+
 int mana_probe(struct gdma_dev *gd, bool resuming)
 {
 	struct gdma_context *gc = gd->gdma_context;
 	struct mana_context *ac = gd->driver_data;
 	struct device *dev = gc->dev;
+	u8 bm_hostmode = 0;
 	u16 num_ports = 0;
 	int err;
 	int i;
@@ -3026,9 +3107,11 @@ int mana_probe(struct gdma_dev *gd, bool resuming)
 	}
 
 	err = mana_query_device_cfg(ac, MANA_MAJOR_VERSION, MANA_MINOR_VERSION,
-				    MANA_MICRO_VERSION, &num_ports);
+				    MANA_MICRO_VERSION, &num_ports, &bm_hostmode);
 	if (err)
 		goto out;
+
+	ac->bm_hostmode = bm_hostmode;
 
 	if (!resuming) {
 		ac->num_ports = num_ports;
@@ -3077,7 +3160,7 @@ int mana_probe(struct gdma_dev *gd, bool resuming)
 		}
 	}
 
-	err = add_adev(gd);
+	err = add_adev(gd, "eth");
 out:
 	if (err) {
 		mana_remove(gd, false);
@@ -3149,6 +3232,44 @@ out:
 	gd->gdma_context = NULL;
 	kfree(ac);
 	dev_dbg(dev, "%s succeeded\n", __func__);
+}
+
+int mana_rdma_probe(struct gdma_dev *gd)
+{
+	int err = 0;
+
+	if (gd->dev_id.type != GDMA_DEVICE_MANA_IB) {
+		/* RDMA device is not detected on pci */
+		return err;
+	}
+
+	err = mana_gd_register_device(gd);
+	if (err)
+		return err;
+
+	err = add_adev(gd, "rdma");
+	if (err)
+		mana_gd_deregister_device(gd);
+
+	return err;
+}
+
+void mana_rdma_remove(struct gdma_dev *gd)
+{
+	struct gdma_context *gc = gd->gdma_context;
+
+	if (gd->dev_id.type != GDMA_DEVICE_MANA_IB) {
+		/* RDMA device is not detected on pci */
+		return;
+	}
+
+	WRITE_ONCE(gd->rdma_teardown, true);
+	flush_workqueue(gc->service_wq);
+
+	if (gd->adev)
+		remove_adev(gd);
+
+	mana_gd_deregister_device(gd);
 }
 
 struct net_device *mana_get_primary_netdev(struct mana_context *ac,

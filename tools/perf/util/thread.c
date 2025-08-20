@@ -475,6 +475,7 @@ uint16_t thread__e_machine(struct thread *thread, struct machine *machine)
 
 		if (parent) {
 			e_machine = thread__e_machine(parent, machine);
+			thread__put(parent);
 			thread__set_e_machine(thread, e_machine);
 			return e_machine;
 		}

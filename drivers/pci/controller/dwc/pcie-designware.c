@@ -54,6 +54,14 @@ static const char * const dw_pcie_core_rsts[DW_PCIE_NUM_CORE_RSTS] = {
 	[DW_PCIE_PWR_RST] = "pwr",
 };
 
+static const struct dwc_pcie_vsec_id dwc_pcie_ptm_vsec_ids[] = {
+	{ .vendor_id = PCI_VENDOR_ID_QCOM, /* EP */
+	  .vsec_id = 0x03, .vsec_rev = 0x1 },
+	{ .vendor_id = PCI_VENDOR_ID_QCOM, /* RC */
+	  .vsec_id = 0x04, .vsec_rev = 0x1 },
+	{ }
+};
+
 static int dw_pcie_get_clocks(struct dw_pcie *pci)
 {
 	int i, ret;
@@ -329,6 +337,12 @@ u16 dw_pcie_find_rasdes_capability(struct dw_pcie *pci)
 	return dw_pcie_find_vsec_capability(pci, dwc_pcie_rasdes_vsec_ids);
 }
 EXPORT_SYMBOL_GPL(dw_pcie_find_rasdes_capability);
+
+u16 dw_pcie_find_ptm_capability(struct dw_pcie *pci)
+{
+	return dw_pcie_find_vsec_capability(pci, dwc_pcie_ptm_vsec_ids);
+}
+EXPORT_SYMBOL_GPL(dw_pcie_find_ptm_capability);
 
 int dw_pcie_read(void __iomem *addr, int size, u32 *val)
 {
@@ -711,7 +725,7 @@ int dw_pcie_wait_for_link(struct dw_pcie *pci)
 }
 EXPORT_SYMBOL_GPL(dw_pcie_wait_for_link);
 
-int dw_pcie_link_up(struct dw_pcie *pci)
+bool dw_pcie_link_up(struct dw_pcie *pci)
 {
 	u32 val;
 
@@ -779,6 +793,14 @@ static void dw_pcie_link_set_max_speed(struct dw_pcie *pci)
 	cap &= ~((u32)PCI_EXP_LNKCAP_SLS);
 	dw_pcie_writel_dbi(pci, offset + PCI_EXP_LNKCAP, cap | link_speed);
 
+}
+
+int dw_pcie_link_get_max_link_width(struct dw_pcie *pci)
+{
+	u8 cap = dw_pcie_find_capability(pci, PCI_CAP_ID_EXP);
+	u32 lnkcap = dw_pcie_readl_dbi(pci, cap + PCI_EXP_LNKCAP);
+
+	return FIELD_GET(PCI_EXP_LNKCAP_MLW, lnkcap);
 }
 
 static void dw_pcie_link_set_max_link_width(struct dw_pcie *pci, u32 num_lanes)

@@ -174,8 +174,12 @@ static void nbio_v7_9_vcn_doorbell_range(struct amdgpu_device *adev, bool use_do
 {
 	u32 doorbell_range = 0, doorbell_ctrl = 0;
 	u32 aid_id = instance;
+	u32 range_size;
 
 	if (use_doorbell) {
+		range_size = (amdgpu_ip_version(adev, GC_HWIP, 0) ==
+						IP_VERSION(9, 5, 0)) ?
+						0xb : 0x9;
 		doorbell_range = REG_SET_FIELD(doorbell_range,
 				DOORBELL0_CTRL_ENTRY_0,
 				BIF_DOORBELL0_RANGE_OFFSET_ENTRY,
@@ -183,7 +187,7 @@ static void nbio_v7_9_vcn_doorbell_range(struct amdgpu_device *adev, bool use_do
 		doorbell_range = REG_SET_FIELD(doorbell_range,
 				DOORBELL0_CTRL_ENTRY_0,
 				BIF_DOORBELL0_RANGE_SIZE_ENTRY,
-				0x9);
+				range_size);
 		if (aid_id)
 			doorbell_range = REG_SET_FIELD(doorbell_range,
 					DOORBELL0_CTRL_ENTRY_0,
@@ -201,7 +205,7 @@ static void nbio_v7_9_vcn_doorbell_range(struct amdgpu_device *adev, bool use_do
 				S2A_DOORBELL_PORT1_RANGE_OFFSET, 0x4);
 		doorbell_ctrl = REG_SET_FIELD(doorbell_ctrl,
 				S2A_DOORBELL_ENTRY_1_CTRL,
-				S2A_DOORBELL_PORT1_RANGE_SIZE, 0x9);
+				S2A_DOORBELL_PORT1_RANGE_SIZE, range_size);
 		doorbell_ctrl = REG_SET_FIELD(doorbell_ctrl,
 				S2A_DOORBELL_ENTRY_1_CTRL,
 				S2A_DOORBELL_PORT1_AWADDR_31_28_VALUE, 0x4);

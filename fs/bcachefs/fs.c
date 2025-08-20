@@ -124,8 +124,9 @@ retry:
 		goto err;
 
 	struct bch_extent_rebalance new_r = bch2_inode_rebalance_opts_get(c, &inode_u);
+	bool rebalance_changed = memcmp(&old_r, &new_r, sizeof(new_r));
 
-	if (memcmp(&old_r, &new_r, sizeof(new_r))) {
+	if (rebalance_changed) {
 		ret = bch2_set_rebalance_needs_scan_trans(trans, inode_u.bi_inum);
 		if (ret)
 			goto err;
@@ -145,6 +146,9 @@ err:
 
 	if (bch2_err_matches(ret, BCH_ERR_transaction_restart))
 		goto retry;
+
+	if (rebalance_changed)
+		bch2_rebalance_wakeup(c);
 
 	bch2_fs_fatal_err_on(bch2_err_matches(ret, ENOENT), c,
 			     "%s: inode %llu:%llu not found when updating",
@@ -189,11 +193,6 @@ int bch2_fs_quota_transfer(struct bch_fs *c,
 	mutex_unlock(&inode->ei_quota_lock);
 
 	return ret;
-}
-
-static bool subvol_inum_eq(subvol_inum a, subvol_inum b)
-{
-	return a.subvol == b.subvol && a.inum == b.inum;
 }
 
 static u32 bch2_vfs_inode_hash_fn(const void *data, u32 len, u32 seed)
@@ -352,9 +351,8 @@ repeat:
 			if (!trans) {
 				__wait_on_freeing_inode(c, inode, inum);
 			} else {
-				bch2_trans_unlock(trans);
-				__wait_on_freeing_inode(c, inode, inum);
-				int ret = bch2_trans_relock(trans);
+				int ret = drop_locks_do(trans,
+						(__wait_on_freeing_inode(c, inode, inum), 0));
 				if (ret)
 					return ERR_PTR(ret);
 			}
@@ -724,7 +722,6 @@ static struct dentry *bch2_lookup(struct inode *vdir, struct dentry *dentry,
 	if (IS_ERR(inode))
 		inode = NULL;
 
-#ifdef CONFIG_UNICODE
 	if (!inode && IS_CASEFOLDED(vdir)) {
 		/*
 		 * Do not cache a negative dentry in casefolded directories
@@ -739,7 +736,6 @@ static struct dentry *bch2_lookup(struct inode *vdir, struct dentry *dentry,
 		 */
 		return NULL;
 	}
-#endif
 
 	return d_splice_alias(&inode->v, dentry);
 }
@@ -1575,11 +1571,12 @@ static int bch2_vfs_readdir(struct file *file, struct dir_context *ctx)
 {
 	struct bch_inode_info *inode = file_bch_inode(file);
 	struct bch_fs *c = inode->v.i_sb->s_fs_info;
+	struct bch_hash_info hash = bch2_hash_info_init(c, &inode->ei_inode);
 
 	if (!dir_emit_dots(file, ctx))
 		return 0;
 
-	int ret = bch2_readdir(c, inode_inum(inode), ctx);
+	int ret = bch2_readdir(c, inode_inum(inode), &hash, ctx);
 
 	bch_err_fn(c, ret);
 	return bch2_err_class(ret);
@@ -1733,7 +1730,8 @@ static int bch2_fileattr_set(struct mnt_idmap *idmap,
 		bch2_write_inode(c, inode, fssetxattr_inode_update_fn, &s,
 			       ATTR_CTIME);
 	mutex_unlock(&inode->ei_update_lock);
-	return ret;
+
+	return bch2_err_class(ret);
 }
 
 static const struct file_operations bch_file_operations = {
@@ -2008,14 +2006,14 @@ retry:
 			goto err;
 
 		if (k.k->type != KEY_TYPE_dirent) {
-			ret = -BCH_ERR_ENOENT_dirent_doesnt_match_inode;
+			ret = bch_err_throw(c, ENOENT_dirent_doesnt_match_inode);
 			goto err;
 		}
 
 		d = bkey_s_c_to_dirent(k);
 		ret = bch2_dirent_read_target(trans, inode_inum(dir), d, &target);
 		if (ret > 0)
-			ret = -BCH_ERR_ENOENT_dirent_doesnt_match_inode;
+			ret = bch_err_throw(c, ENOENT_dirent_doesnt_match_inode);
 		if (ret)
 			goto err;
 
@@ -2334,7 +2332,8 @@ static int bch2_show_devname(struct seq_file *seq, struct dentry *root)
 	struct bch_fs *c = root->d_sb->s_fs_info;
 	bool first = true;
 
-	for_each_online_member(c, ca) {
+	guard(rcu)();
+	for_each_online_member_rcu(c, ca) {
 		if (!first)
 			seq_putc(seq, ':');
 		first = false;
@@ -2446,7 +2445,7 @@ static int bch2_fs_get_tree(struct fs_context *fc)
 	struct inode *vinode;
 	struct bch2_opts_parse *opts_parse = fc->fs_private;
 	struct bch_opts opts = opts_parse->opts;
-	darray_str devs;
+	darray_const_str devs;
 	darray_fs devs_to_fs = {};
 	int ret;
 
@@ -2470,7 +2469,7 @@ static int bch2_fs_get_tree(struct fs_context *fc)
 	if (!IS_ERR(sb))
 		goto got_sb;
 
-	c = bch2_fs_open(devs.data, devs.nr, opts);
+	c = bch2_fs_open(&devs, &opts);
 	ret = PTR_ERR_OR_ZERO(c);
 	if (ret)
 		goto err;
@@ -2489,6 +2488,14 @@ static int bch2_fs_get_tree(struct fs_context *fc)
 	ret = bch2_fs_start(c);
 	if (ret)
 		goto err_stop_fs;
+
+	/*
+	 * We might be doing a RO mount because other options required it, or we
+	 * have no alloc info and it's a small image with no room to regenerate
+	 * it
+	 */
+	if (c->opts.read_only)
+		fc->sb_flags |= SB_RDONLY;
 
 	sb = sget(fc->fs_type, NULL, bch2_set_super, fc->sb_flags|SB_NOSEC, c);
 	ret = PTR_ERR_OR_ZERO(sb);
@@ -2520,7 +2527,12 @@ got_sb:
 	sb->s_time_min		= div_s64(S64_MIN, c->sb.time_units_per_sec) + 1;
 	sb->s_time_max		= div_s64(S64_MAX, c->sb.time_units_per_sec);
 	super_set_uuid(sb, c->sb.user_uuid.b, sizeof(c->sb.user_uuid));
-	super_set_sysfs_name_uuid(sb);
+
+	if (c->sb.multi_device)
+		super_set_sysfs_name_uuid(sb);
+	else
+		strscpy(sb->s_sysfs_name, c->name, sizeof(sb->s_sysfs_name));
+
 	sb->s_shrink->seeks	= 0;
 	c->vfs_sb		= sb;
 	strscpy(sb->s_id, c->name, sizeof(sb->s_id));
@@ -2531,14 +2543,15 @@ got_sb:
 
 	sb->s_bdi->ra_pages		= VM_READAHEAD_PAGES;
 
-	for_each_online_member(c, ca) {
-		struct block_device *bdev = ca->disk_sb.bdev;
+	scoped_guard(rcu) {
+		for_each_online_member_rcu(c, ca) {
+			struct block_device *bdev = ca->disk_sb.bdev;
 
-		/* XXX: create an anonymous device for multi device filesystems */
-		sb->s_bdev	= bdev;
-		sb->s_dev	= bdev->bd_dev;
-		percpu_ref_put(&ca->io_ref[READ]);
-		break;
+			/* XXX: create an anonymous device for multi device filesystems */
+			sb->s_bdev	= bdev;
+			sb->s_dev	= bdev->bd_dev;
+			break;
+		}
 	}
 
 	c->dev = sb->s_dev;
@@ -2551,9 +2564,10 @@ got_sb:
 	sb->s_shrink->seeks = 0;
 
 #ifdef CONFIG_UNICODE
-	sb->s_encoding = c->cf_encoding;
-#endif
+	if (bch2_fs_casefold_enabled(c))
+		sb->s_encoding = c->cf_encoding;
 	generic_set_sb_d_ops(sb);
+#endif
 
 	vinode = bch2_vfs_inode_get(c, BCACHEFS_ROOT_SUBVOL_INUM);
 	ret = PTR_ERR_OR_ZERO(vinode);

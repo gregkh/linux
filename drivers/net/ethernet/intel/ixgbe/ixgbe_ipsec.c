@@ -480,7 +480,7 @@ static int ixgbe_ipsec_parse_proto_keys(struct net_device *dev,
 static int ixgbe_ipsec_check_mgmt_ip(struct net_device *dev,
 				     struct xfrm_state *xs)
 {
-	struct ixgbe_adapter *adapter = netdev_priv(dev);
+	struct ixgbe_adapter *adapter = ixgbe_from_netdev(dev);
 	struct ixgbe_hw *hw = &adapter->hw;
 	u32 mfval, manc, reg;
 	int num_filters = 4;
@@ -566,7 +566,7 @@ static int ixgbe_ipsec_add_sa(struct net_device *dev,
 			      struct xfrm_state *xs,
 			      struct netlink_ext_ack *extack)
 {
-	struct ixgbe_adapter *adapter = netdev_priv(dev);
+	struct ixgbe_adapter *adapter = ixgbe_from_netdev(dev);
 	struct ixgbe_ipsec *ipsec = adapter->ipsec;
 	struct ixgbe_hw *hw = &adapter->hw;
 	int checked, match, first;
@@ -760,7 +760,7 @@ static int ixgbe_ipsec_add_sa(struct net_device *dev,
  **/
 static void ixgbe_ipsec_del_sa(struct net_device *dev, struct xfrm_state *xs)
 {
-	struct ixgbe_adapter *adapter = netdev_priv(dev);
+	struct ixgbe_adapter *adapter = ixgbe_from_netdev(dev);
 	struct ixgbe_ipsec *ipsec = adapter->ipsec;
 	struct ixgbe_hw *hw = &adapter->hw;
 	u32 zerobuf[4] = {0, 0, 0, 0};
@@ -1057,7 +1057,7 @@ int ixgbe_ipsec_tx(struct ixgbe_ring *tx_ring,
 		   struct ixgbe_tx_buffer *first,
 		   struct ixgbe_ipsec_tx_data *itd)
 {
-	struct ixgbe_adapter *adapter = netdev_priv(tx_ring->netdev);
+	struct ixgbe_adapter *adapter = ixgbe_from_netdev(tx_ring->netdev);
 	struct ixgbe_ipsec *ipsec = adapter->ipsec;
 	struct xfrm_state *xs;
 	struct sec_path *sp;
@@ -1147,7 +1147,7 @@ void ixgbe_ipsec_rx(struct ixgbe_ring *rx_ring,
 		    union ixgbe_adv_rx_desc *rx_desc,
 		    struct sk_buff *skb)
 {
-	struct ixgbe_adapter *adapter = netdev_priv(rx_ring->netdev);
+	struct ixgbe_adapter *adapter = ixgbe_from_netdev(rx_ring->netdev);
 	__le16 pkt_info = rx_desc->wb.lower.lo_dword.hs_rss.pkt_info;
 	__le16 ipsec_pkt_types = cpu_to_le16(IXGBE_RXDADV_PKTTYPE_IPSEC_AH |
 					     IXGBE_RXDADV_PKTTYPE_IPSEC_ESP);

@@ -123,10 +123,15 @@ static void print_pll(struct device *dev, const struct ccs_pll *pll)
 		pll->pixel_rate_pixel_array);
 	dev_dbg(dev, "pixel rate on CSI-2 bus:\t%u\n",
 		pll->pixel_rate_csi);
+}
 
-	dev_dbg(dev, "flags%s%s%s%s%s%s%s%s%s\n",
+static void print_pll_flags(struct device *dev, struct ccs_pll *pll)
+{
+	dev_dbg(dev, "PLL flags%s%s%s%s%s%s%s%s%s%s%s\n",
+		pll->flags & PLL_FL(OP_PIX_CLOCK_PER_LANE) ? " op-pix-clock-per-lane" : "",
+		pll->flags & PLL_FL(EVEN_PLL_MULTIPLIER) ? " even-pll-multiplier" : "",
+		pll->flags & PLL_FL(NO_OP_CLOCKS) ? " no-op-clocks" : "",
 		pll->flags & PLL_FL(LANE_SPEED_MODEL) ? " lane-speed" : "",
-		pll->flags & PLL_FL(LINK_DECOUPLED) ? " link-decoupled" : "",
 		pll->flags & PLL_FL(EXT_IP_PLL_DIVIDER) ?
 		" ext-ip-pll-divider" : "",
 		pll->flags & PLL_FL(FLEXIBLE_OP_PIX_CLK_DIV) ?
@@ -311,6 +316,10 @@ __ccs_pll_calculate_vt_tree(struct device *dev,
 	more_mul *= DIV_ROUND_UP(lim_fr->min_pll_multiplier, mul * more_mul);
 	dev_dbg(dev, "more_mul2: %u\n", more_mul);
 
+	if (pll->flags & CCS_PLL_FLAG_EVEN_PLL_MULTIPLIER &&
+	    (mul & 1) && (more_mul & 1))
+		more_mul <<= 1;
+
 	pll_fr->pll_multiplier = mul * more_mul;
 	if (pll_fr->pll_multiplier > lim_fr->max_pll_multiplier) {
 		dev_dbg(dev, "pll multiplier %u too high\n",
@@ -318,12 +327,13 @@ __ccs_pll_calculate_vt_tree(struct device *dev,
 		return -EINVAL;
 	}
 
-	if (pll_fr->pll_multiplier * pll_fr->pll_ip_clk_freq_hz >
-	    lim_fr->max_pll_op_clk_freq_hz)
-		return -EINVAL;
-
 	pll_fr->pll_op_clk_freq_hz =
 		pll_fr->pll_ip_clk_freq_hz * pll_fr->pll_multiplier;
+	if (pll_fr->pll_op_clk_freq_hz > lim_fr->max_pll_op_clk_freq_hz) {
+		dev_dbg(dev, "too high OP clock %u\n",
+			pll_fr->pll_op_clk_freq_hz);
+		return -EINVAL;
+	}
 
 	vt_div = div * more_mul;
 
@@ -439,6 +449,7 @@ static int ccs_pll_calculate_vt_tree(struct device *dev,
 		return 0;
 	}
 
+	dev_dbg(dev, "unable to compute VT pre_pll divisor\n");
 	return -EINVAL;
 }
 
@@ -670,6 +681,10 @@ ccs_pll_calculate_op(struct device *dev, const struct ccs_pll_limits *lim,
 	if (!is_one_or_even(i))
 		i <<= 1;
 
+	if (pll->flags & CCS_PLL_FLAG_EVEN_PLL_MULTIPLIER &&
+	    mul & 1 && i & 1)
+		i <<= 1;
+
 	dev_dbg(dev, "final more_mul: %u\n", i);
 	if (i > more_mul_max) {
 		dev_dbg(dev, "final more_mul is bad, max %u\n", more_mul_max);
@@ -726,6 +741,8 @@ int ccs_pll_calculate(struct device *dev, const struct ccs_pll_limits *lim,
 		 pll->op_bits_per_lane >= pll->bits_per_pixel) ? 1 : 2;
 	u32 i;
 	int rval = -EINVAL;
+
+	print_pll_flags(dev, pll);
 
 	if (!(pll->flags & CCS_PLL_FLAG_LANE_SPEED_MODEL)) {
 		pll->op_lanes = 1;
@@ -872,8 +889,7 @@ int ccs_pll_calculate(struct device *dev, const struct ccs_pll_limits *lim,
 	}
 
 	if (rval) {
-		dev_dbg(dev, "unable to compute pre_pll divisor\n");
-
+		dev_dbg(dev, "unable to compute OP pre_pll divisor\n");
 		return rval;
 	}
 

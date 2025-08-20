@@ -67,11 +67,7 @@ struct netfs_io_request *netfs_alloc_request(struct address_space *mapping,
 		INIT_WORK(&rreq->work, netfs_write_collection_worker);
 	}
 
-	/* The IN_PROGRESS flag comes with a ref. */
 	__set_bit(NETFS_RREQ_IN_PROGRESS, &rreq->flags);
-
-	if (file && file->f_flags & O_NONBLOCK)
-		__set_bit(NETFS_RREQ_NONBLOCK, &rreq->flags);
 	if (rreq->netfs_ops->init_request) {
 		ret = rreq->netfs_ops->init_request(rreq, file);
 		if (ret < 0) {

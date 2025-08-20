@@ -1051,10 +1051,6 @@ static int mhi_pci_claim(struct mhi_controller *mhi_cntrl,
 	struct pci_dev *pdev = to_pci_dev(mhi_cntrl->cntrl_dev);
 	int err;
 
-	err = pci_assign_resource(pdev, bar_num);
-	if (err)
-		return err;
-
 	err = pcim_enable_device(pdev);
 	if (err) {
 		dev_err(&pdev->dev, "failed to enable pci device: %d\n", err);
@@ -1191,7 +1187,8 @@ err_try_reset:
 
 static void health_check(struct timer_list *t)
 {
-	struct mhi_pci_device *mhi_pdev = from_timer(mhi_pdev, t, health_check_timer);
+	struct mhi_pci_device *mhi_pdev = timer_container_of(mhi_pdev, t,
+							     health_check_timer);
 	struct mhi_controller *mhi_cntrl = &mhi_pdev->mhi_cntrl;
 
 	if (!test_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status) ||

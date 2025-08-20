@@ -16,7 +16,6 @@
 #include <kern_util.h>
 #include <os.h>
 #include <skas.h>
-#include <arch.h>
 
 /*
  * NOTE: UML does not have exception tables. As such, this is almost a copy

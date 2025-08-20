@@ -8,6 +8,7 @@
 
 #include <linux/if_vlan.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
@@ -16,6 +17,7 @@
 #include <linux/cache.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
+#include <linux/string_choices.h>
 
 #include <linux/spi/spi.h>
 #include <linux/of_net.h>
@@ -45,7 +47,6 @@
 
 struct mse102x_stats {
 	u64 xfer_err;
-	u64 invalid_cmd;
 	u64 invalid_ctr;
 	u64 invalid_dft;
 	u64 invalid_len;
@@ -56,7 +57,6 @@ struct mse102x_stats {
 
 static const char mse102x_gstrings_stats[][ETH_GSTRING_LEN] = {
 	"SPI transfer errors",
-	"Invalid command",
 	"Invalid CTR",
 	"Invalid DFT",
 	"Invalid frame length",
@@ -85,6 +85,8 @@ struct mse102x_net_spi {
 	struct spi_message	spi_msg;
 	struct spi_transfer	spi_xfer;
 
+	bool			valid_cmd_received;
+
 #ifdef CONFIG_DEBUG_FS
 	struct dentry		*device_root;
 #endif
@@ -98,16 +100,18 @@ static int mse102x_info_show(struct seq_file *s, void *what)
 {
 	struct mse102x_net_spi *mses = s->private;
 
-	seq_printf(s, "TX ring size        : %u\n",
+	seq_printf(s, "TX ring size            : %u\n",
 		   skb_queue_len(&mses->mse102x.txq));
 
-	seq_printf(s, "IRQ                 : %d\n",
+	seq_printf(s, "IRQ                     : %d\n",
 		   mses->spidev->irq);
 
-	seq_printf(s, "SPI effective speed : %lu\n",
+	seq_printf(s, "SPI effective speed     : %lu\n",
 		   (unsigned long)mses->spi_xfer.effective_speed_hz);
-	seq_printf(s, "SPI mode            : %x\n",
+	seq_printf(s, "SPI mode                : %x\n",
 		   mses->spidev->mode);
+	seq_printf(s, "Received valid CMD once : %s\n",
+		   str_yes_no(mses->valid_cmd_received));
 
 	return 0;
 }
@@ -194,10 +198,10 @@ static int mse102x_rx_cmd_spi(struct mse102x_net *mse, u8 *rxb)
 	} else if (*cmd != cpu_to_be16(DET_CMD)) {
 		net_dbg_ratelimited("%s: Unexpected response (0x%04x)\n",
 				    __func__, *cmd);
-		mse->stats.invalid_cmd++;
 		ret = -EIO;
 	} else {
 		memcpy(rxb, trx + 2, 2);
+		mses->valid_cmd_received = true;
 	}
 
 	return ret;
@@ -315,31 +319,20 @@ static irqreturn_t mse102x_rx_pkt_spi(struct mse102x_net *mse)
 	__be16 rx = 0;
 	u16 cmd_resp;
 	u8 *rxpkt;
-	int ret;
 
 	mse102x_tx_cmd_spi(mse, CMD_CTR);
-	ret = mse102x_rx_cmd_spi(mse, (u8 *)&rx);
-	cmd_resp = be16_to_cpu(rx);
-
-	if (ret || ((cmd_resp & CMD_MASK) != CMD_RTS)) {
+	if (mse102x_rx_cmd_spi(mse, (u8 *)&rx)) {
 		usleep_range(50, 100);
+		return IRQ_NONE;
+	}
 
-		mse102x_tx_cmd_spi(mse, CMD_CTR);
-		ret = mse102x_rx_cmd_spi(mse, (u8 *)&rx);
-		if (ret)
-			return IRQ_NONE;
-
-		cmd_resp = be16_to_cpu(rx);
-		if ((cmd_resp & CMD_MASK) != CMD_RTS) {
-			net_dbg_ratelimited("%s: Unexpected response (0x%04x)\n",
-					    __func__, cmd_resp);
-			mse->stats.invalid_rts++;
-			drop = true;
-			goto drop;
-		}
-
-		net_dbg_ratelimited("%s: Unexpected response to first CMD\n",
-				    __func__);
+	cmd_resp = be16_to_cpu(rx);
+	if ((cmd_resp & CMD_MASK) != CMD_RTS) {
+		net_dbg_ratelimited("%s: Unexpected response (0x%04x)\n",
+				    __func__, cmd_resp);
+		mse->stats.invalid_rts++;
+		drop = true;
+		goto drop;
 	}
 
 	rxlen = cmd_resp & LEN_MASK;
@@ -525,9 +518,24 @@ static irqreturn_t mse102x_irq(int irq, void *_mse)
 
 static int mse102x_net_open(struct net_device *ndev)
 {
+	struct irq_data *irq_data = irq_get_irq_data(ndev->irq);
 	struct mse102x_net *mse = netdev_priv(ndev);
 	struct mse102x_net_spi *mses = to_mse102x_spi(mse);
 	int ret;
+
+	if (!irq_data) {
+		netdev_err(ndev, "Invalid IRQ: %d\n", ndev->irq);
+		return -EINVAL;
+	}
+
+	switch (irqd_get_trigger_type(irq_data)) {
+	case IRQ_TYPE_LEVEL_HIGH:
+	case IRQ_TYPE_LEVEL_LOW:
+		break;
+	default:
+		netdev_warn_once(ndev, "Only IRQ type level recommended, please update your device tree firmware.\n");
+		break;
+	}
 
 	ret = request_threaded_irq(ndev->irq, NULL, mse102x_irq, IRQF_ONESHOT,
 				   ndev->name, mse);
@@ -546,7 +554,8 @@ static int mse102x_net_open(struct net_device *ndev)
 	 * So poll for possible packet(s) to re-arm the interrupt.
 	 */
 	mutex_lock(&mses->lock);
-	mse102x_rx_pkt_spi(mse);
+	if (mse102x_rx_pkt_spi(mse) == IRQ_NONE)
+		mse102x_rx_pkt_spi(mse);
 	mutex_unlock(&mses->lock);
 
 	netif_dbg(mse, ifup, ndev, "network device up\n");

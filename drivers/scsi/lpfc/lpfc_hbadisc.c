@@ -4698,9 +4698,7 @@ lpfc_nlp_unreg_node(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp)
 	if (ndlp->fc4_xpt_flags & NVME_XPT_REGD) {
 		vport->phba->nport_event_cnt++;
 		if (vport->phba->nvmet_support == 0) {
-			/* Start devloss if target. */
-			if (ndlp->nlp_type & NLP_NVME_TARGET)
-				lpfc_nvme_unregister_port(vport, ndlp);
+			lpfc_nvme_unregister_port(vport, ndlp);
 		} else {
 			/* NVMET has no upcall. */
 			lpfc_nlp_put(ndlp);
@@ -6062,7 +6060,7 @@ lpfc_cleanup_discovery_resources(struct lpfc_vport *vport)
 void
 lpfc_disc_timeout(struct timer_list *t)
 {
-	struct lpfc_vport *vport = from_timer(vport, t, fc_disctmo);
+	struct lpfc_vport *vport = timer_container_of(vport, t, fc_disctmo);
 	struct lpfc_hba   *phba = vport->phba;
 	uint32_t tmo_posted;
 	unsigned long flags = 0;

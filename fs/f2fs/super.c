@@ -47,6 +47,7 @@ const char *f2fs_fault_name[FAULT_MAX] = {
 	[FAULT_KVMALLOC]		= "kvmalloc",
 	[FAULT_PAGE_ALLOC]		= "page alloc",
 	[FAULT_PAGE_GET]		= "page get",
+	[FAULT_ALLOC_BIO]		= "alloc bio(obsolete)",
 	[FAULT_ALLOC_NID]		= "alloc nid",
 	[FAULT_ORPHAN]			= "orphan",
 	[FAULT_BLOCK]			= "no more block",
@@ -64,32 +65,35 @@ const char *f2fs_fault_name[FAULT_MAX] = {
 	[FAULT_BLKADDR_CONSISTENCE]	= "inconsistent blkaddr",
 	[FAULT_NO_SEGMENT]		= "no free segment",
 	[FAULT_INCONSISTENT_FOOTER]	= "inconsistent footer",
+	[FAULT_TIMEOUT]			= "timeout",
+	[FAULT_VMALLOC]			= "vmalloc",
 };
 
 int f2fs_build_fault_attr(struct f2fs_sb_info *sbi, unsigned long rate,
-							unsigned long type)
+				unsigned long type, enum fault_option fo)
 {
 	struct f2fs_fault_info *ffi = &F2FS_OPTION(sbi).fault_info;
 
-	if (rate) {
+	if (fo & FAULT_ALL) {
+		memset(ffi, 0, sizeof(struct f2fs_fault_info));
+		return 0;
+	}
+
+	if (fo & FAULT_RATE) {
 		if (rate > INT_MAX)
 			return -EINVAL;
 		atomic_set(&ffi->inject_ops, 0);
 		ffi->inject_rate = (int)rate;
+		f2fs_info(sbi, "build fault injection rate: %lu", rate);
 	}
 
-	if (type) {
+	if (fo & FAULT_TYPE) {
 		if (type >= BIT(FAULT_MAX))
 			return -EINVAL;
 		ffi->inject_type = (unsigned int)type;
+		f2fs_info(sbi, "build fault injection type: 0x%lx", type);
 	}
 
-	if (!rate && !type)
-		memset(ffi, 0, sizeof(struct f2fs_fault_info));
-	else
-		f2fs_info(sbi,
-			"build fault injection attr: rate: %lu, type: 0x%lx",
-								rate, type);
 	return 0;
 }
 #endif
@@ -896,8 +900,7 @@ static int parse_options(struct f2fs_sb_info *sbi, char *options, bool is_remoun
 		case Opt_fault_injection:
 			if (args->from && match_int(args, &arg))
 				return -EINVAL;
-			if (f2fs_build_fault_attr(sbi, arg,
-					F2FS_ALL_FAULT_TYPE))
+			if (f2fs_build_fault_attr(sbi, arg, 0, FAULT_RATE))
 				return -EINVAL;
 			set_opt(sbi, FAULT_INJECTION);
 			break;
@@ -905,7 +908,7 @@ static int parse_options(struct f2fs_sb_info *sbi, char *options, bool is_remoun
 		case Opt_fault_type:
 			if (args->from && match_int(args, &arg))
 				return -EINVAL;
-			if (f2fs_build_fault_attr(sbi, 0, arg))
+			if (f2fs_build_fault_attr(sbi, 0, arg, FAULT_TYPE))
 				return -EINVAL;
 			set_opt(sbi, FAULT_INJECTION);
 			break;
@@ -2216,7 +2219,7 @@ static void default_options(struct f2fs_sb_info *sbi, bool remount)
 	set_opt(sbi, POSIX_ACL);
 #endif
 
-	f2fs_build_fault_attr(sbi, 0, 0);
+	f2fs_build_fault_attr(sbi, 0, 0, FAULT_ALL);
 }
 
 #ifdef CONFIG_QUOTA
@@ -2697,12 +2700,9 @@ static ssize_t f2fs_quota_read(struct super_block *sb, int type, char *data,
 {
 	struct inode *inode = sb_dqopt(sb)->files[type];
 	struct address_space *mapping = inode->i_mapping;
-	block_t blkidx = F2FS_BYTES_TO_BLK(off);
-	int offset = off & (sb->s_blocksize - 1);
 	int tocopy;
 	size_t toread;
 	loff_t i_size = i_size_read(inode);
-	struct page *page;
 
 	if (off > i_size)
 		return 0;
@@ -2711,37 +2711,42 @@ static ssize_t f2fs_quota_read(struct super_block *sb, int type, char *data,
 		len = i_size - off;
 	toread = len;
 	while (toread > 0) {
-		tocopy = min_t(unsigned long, sb->s_blocksize - offset, toread);
+		struct folio *folio;
+		size_t offset;
+
 repeat:
-		page = read_cache_page_gfp(mapping, blkidx, GFP_NOFS);
-		if (IS_ERR(page)) {
-			if (PTR_ERR(page) == -ENOMEM) {
+		folio = mapping_read_folio_gfp(mapping, off >> PAGE_SHIFT,
+				GFP_NOFS);
+		if (IS_ERR(folio)) {
+			if (PTR_ERR(folio) == -ENOMEM) {
 				memalloc_retry_wait(GFP_NOFS);
 				goto repeat;
 			}
 			set_sbi_flag(F2FS_SB(sb), SBI_QUOTA_NEED_REPAIR);
-			return PTR_ERR(page);
+			return PTR_ERR(folio);
 		}
+		offset = offset_in_folio(folio, off);
+		tocopy = min(folio_size(folio) - offset, toread);
 
-		lock_page(page);
+		folio_lock(folio);
 
-		if (unlikely(page->mapping != mapping)) {
-			f2fs_put_page(page, 1);
+		if (unlikely(folio->mapping != mapping)) {
+			f2fs_folio_put(folio, true);
 			goto repeat;
 		}
-		if (unlikely(!PageUptodate(page))) {
-			f2fs_put_page(page, 1);
-			set_sbi_flag(F2FS_SB(sb), SBI_QUOTA_NEED_REPAIR);
-			return -EIO;
-		}
 
-		memcpy_from_page(data, page, offset, tocopy);
-		f2fs_put_page(page, 1);
+		/*
+		 * should never happen, just leave f2fs_bug_on() here to catch
+		 * any potential bug.
+		 */
+		f2fs_bug_on(F2FS_SB(sb), !folio_test_uptodate(folio));
 
-		offset = 0;
+		memcpy_from_folio(data, folio, offset, tocopy);
+		f2fs_folio_put(folio, true);
+
 		toread -= tocopy;
 		data += tocopy;
-		blkidx++;
+		off += tocopy;
 	}
 	return len;
 }
@@ -3440,7 +3445,7 @@ static int __f2fs_commit_super(struct f2fs_sb_info *sbi, struct folio *folio,
 	bio = bio_alloc(sbi->sb->s_bdev, 1, opf, GFP_NOFS);
 
 	/* it doesn't need to set crypto context for superblock update */
-	bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(folio_index(folio));
+	bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(folio->index);
 
 	if (!bio_add_folio(bio, folio, folio_size(folio), 0))
 		f2fs_bug_on(sbi, 1);
@@ -3567,7 +3572,7 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 			return -EFSCORRUPTED;
 		}
 		crc = le32_to_cpu(raw_super->crc);
-		if (!f2fs_crc_valid(sbi, crc, raw_super, crc_offset)) {
+		if (crc != f2fs_crc32(raw_super, crc_offset)) {
 			f2fs_info(sbi, "Invalid SB checksum value: %u", crc);
 			return -EFSCORRUPTED;
 		}
@@ -4123,7 +4128,7 @@ int f2fs_commit_super(struct f2fs_sb_info *sbi, bool recover)
 
 	/* we should update superblock crc here */
 	if (!recover && f2fs_sb_has_sb_chksum(sbi)) {
-		crc = f2fs_crc32(sbi, F2FS_RAW_SUPER(sbi),
+		crc = f2fs_crc32(F2FS_RAW_SUPER(sbi),
 				offsetof(struct f2fs_super_block, crc));
 		F2FS_RAW_SUPER(sbi)->crc = cpu_to_le32(crc);
 	}
@@ -4584,8 +4589,8 @@ try_onemore:
 
 	/* precompute checksum seed for metadata */
 	if (f2fs_sb_has_inode_chksum(sbi))
-		sbi->s_chksum_seed = f2fs_chksum(sbi, ~0, raw_super->uuid,
-						sizeof(raw_super->uuid));
+		sbi->s_chksum_seed = f2fs_chksum(~0, raw_super->uuid,
+						 sizeof(raw_super->uuid));
 
 	default_options(sbi, false);
 	/* parse mount options */

@@ -1603,6 +1603,19 @@ struct adv_info *hci_find_adv_instance(struct hci_dev *hdev, u8 instance)
 }
 
 /* This function requires the caller holds hdev->lock */
+struct adv_info *hci_find_adv_sid(struct hci_dev *hdev, u8 sid)
+{
+	struct adv_info *adv;
+
+	list_for_each_entry(adv, &hdev->adv_instances, list) {
+		if (adv->sid == sid)
+			return adv;
+	}
+
+	return NULL;
+}
+
+/* This function requires the caller holds hdev->lock */
 struct adv_info *hci_get_next_instance(struct hci_dev *hdev, u8 instance)
 {
 	struct adv_info *cur_instance;
@@ -1754,7 +1767,7 @@ struct adv_info *hci_add_adv_instance(struct hci_dev *hdev, u8 instance,
 }
 
 /* This function requires the caller holds hdev->lock */
-struct adv_info *hci_add_per_instance(struct hci_dev *hdev, u8 instance,
+struct adv_info *hci_add_per_instance(struct hci_dev *hdev, u8 instance, u8 sid,
 				      u32 flags, u8 data_len, u8 *data,
 				      u32 min_interval, u32 max_interval)
 {
@@ -1766,6 +1779,7 @@ struct adv_info *hci_add_per_instance(struct hci_dev *hdev, u8 instance,
 	if (IS_ERR(adv))
 		return adv;
 
+	adv->sid = sid;
 	adv->periodic = true;
 	adv->per_adv_data_len = data_len;
 
@@ -2937,6 +2951,8 @@ int hci_recv_frame(struct hci_dev *hdev, struct sk_buff *skb)
 		break;
 	case HCI_ISODATA_PKT:
 		break;
+	case HCI_DRV_PKT:
+		break;
 	default:
 		kfree_skb(skb);
 		return -EINVAL;
@@ -3043,6 +3059,15 @@ static int hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	if (!test_bit(HCI_RUNNING, &hdev->flags)) {
 		kfree_skb(skb);
 		return -EINVAL;
+	}
+
+	if (hci_skb_pkt_type(skb) == HCI_DRV_PKT) {
+		/* Intercept HCI Drv packet here and don't go with hdev->send
+		 * callback.
+		 */
+		err = hci_drv_process_cmd(hdev, skb);
+		kfree_skb(skb);
+		return err;
 	}
 
 	err = hdev->send(hdev, skb);

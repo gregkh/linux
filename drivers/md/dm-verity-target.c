@@ -682,7 +682,8 @@ static void verity_bh_work(struct work_struct *w)
 static inline bool verity_use_bh(unsigned int bytes, unsigned short ioprio)
 {
 	return ioprio <= IOPRIO_CLASS_IDLE &&
-		bytes <= READ_ONCE(dm_verity_use_bh_bytes[ioprio]);
+		bytes <= READ_ONCE(dm_verity_use_bh_bytes[ioprio]) &&
+		!need_resched();
 }
 
 static void verity_end_io(struct bio *bio)
@@ -993,7 +994,9 @@ static void verity_status(struct dm_target *ti, status_type_t type,
 	}
 }
 
-static int verity_prepare_ioctl(struct dm_target *ti, struct block_device **bdev)
+static int verity_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
+				unsigned int cmd, unsigned long arg,
+				bool *forward)
 {
 	struct dm_verity *v = ti->private;
 

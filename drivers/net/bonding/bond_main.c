@@ -1112,8 +1112,7 @@ static void bond_do_fail_over_mac(struct bonding *bond,
 			ss.ss_family = bond->dev->type;
 		}
 
-		rv = dev_set_mac_address(new_active->dev,
-					 (struct sockaddr *)&ss, NULL);
+		rv = dev_set_mac_address(new_active->dev, &ss, NULL);
 		if (rv) {
 			slave_err(bond->dev, new_active->dev, "Error %d setting MAC of new active slave\n",
 				  -rv);
@@ -1127,8 +1126,7 @@ static void bond_do_fail_over_mac(struct bonding *bond,
 				  new_active->dev->addr_len);
 		ss.ss_family = old_active->dev->type;
 
-		rv = dev_set_mac_address(old_active->dev,
-					 (struct sockaddr *)&ss, NULL);
+		rv = dev_set_mac_address(old_active->dev, &ss, NULL);
 		if (rv)
 			slave_err(bond->dev, old_active->dev, "Error %d setting MAC of old active slave\n",
 				  -rv);
@@ -2127,7 +2125,7 @@ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev,
 	}
 
 	ss.ss_family = slave_dev->type;
-	res = dev_set_mac_address(slave_dev, (struct sockaddr *)&ss, extack);
+	res = dev_set_mac_address(slave_dev, &ss, extack);
 	if (res) {
 		slave_err(bond_dev, slave_dev, "Error %d calling set_mac_address\n", res);
 		goto err_restore_mtu;
@@ -2455,7 +2453,7 @@ err_restore_mac:
 		bond_hw_addr_copy(ss.__data, new_slave->perm_hwaddr,
 				  new_slave->dev->addr_len);
 		ss.ss_family = slave_dev->type;
-		dev_set_mac_address(slave_dev, (struct sockaddr *)&ss, NULL);
+		dev_set_mac_address(slave_dev, &ss, NULL);
 	}
 
 err_restore_mtu:
@@ -2649,7 +2647,7 @@ static int __bond_release_one(struct net_device *bond_dev,
 		bond_hw_addr_copy(ss.__data, slave->perm_hwaddr,
 				  slave->dev->addr_len);
 		ss.ss_family = slave_dev->type;
-		dev_set_mac_address(slave_dev, (struct sockaddr *)&ss, NULL);
+		dev_set_mac_address(slave_dev, &ss, NULL);
 	}
 
 	if (unregister) {
@@ -4936,8 +4934,7 @@ unwind:
 		if (rollback_slave == slave)
 			break;
 
-		tmp_res = dev_set_mac_address(rollback_slave->dev,
-					      (struct sockaddr *)&tmp_ss, NULL);
+		tmp_res = dev_set_mac_address(rollback_slave->dev, &tmp_ss, NULL);
 		if (tmp_res) {
 			slave_dbg(bond_dev, rollback_slave->dev, "%s: unwind err %d\n",
 				   __func__, tmp_res);
@@ -6571,7 +6568,7 @@ static int __net_init bond_net_init(struct net *net)
 
 /* According to commit 69b0216ac255 ("bonding: fix bonding_masters
  * race condition in bond unloading") we need to remove sysfs files
- * before we remove our devices (done later in bond_net_exit_batch_rtnl())
+ * before we remove our devices (done later in bond_net_exit_rtnl())
  */
 static void __net_exit bond_net_pre_exit(struct net *net)
 {
@@ -6580,25 +6577,20 @@ static void __net_exit bond_net_pre_exit(struct net *net)
 	bond_destroy_sysfs(bn);
 }
 
-static void __net_exit bond_net_exit_batch_rtnl(struct list_head *net_list,
-						struct list_head *dev_kill_list)
+static void __net_exit bond_net_exit_rtnl(struct net *net,
+					  struct list_head *dev_kill_list)
 {
-	struct bond_net *bn;
-	struct net *net;
+	struct bond_net *bn = net_generic(net, bond_net_id);
+	struct bonding *bond, *tmp_bond;
 
 	/* Kill off any bonds created after unregistering bond rtnl ops */
-	list_for_each_entry(net, net_list, exit_list) {
-		struct bonding *bond, *tmp_bond;
-
-		bn = net_generic(net, bond_net_id);
-		list_for_each_entry_safe(bond, tmp_bond, &bn->dev_list, bond_list)
-			unregister_netdevice_queue(bond->dev, dev_kill_list);
-	}
+	list_for_each_entry_safe(bond, tmp_bond, &bn->dev_list, bond_list)
+		unregister_netdevice_queue(bond->dev, dev_kill_list);
 }
 
 /* According to commit 23fa5c2caae0 ("bonding: destroy proc directory
  * only after all bonds are gone") bond_destroy_proc_dir() is called
- * after bond_net_exit_batch_rtnl() has completed.
+ * after bond_net_exit_rtnl() has completed.
  */
 static void __net_exit bond_net_exit_batch(struct list_head *net_list)
 {
@@ -6614,7 +6606,7 @@ static void __net_exit bond_net_exit_batch(struct list_head *net_list)
 static struct pernet_operations bond_net_ops = {
 	.init = bond_net_init,
 	.pre_exit = bond_net_pre_exit,
-	.exit_batch_rtnl = bond_net_exit_batch_rtnl,
+	.exit_rtnl = bond_net_exit_rtnl,
 	.exit_batch = bond_net_exit_batch,
 	.id   = &bond_net_id,
 	.size = sizeof(struct bond_net),

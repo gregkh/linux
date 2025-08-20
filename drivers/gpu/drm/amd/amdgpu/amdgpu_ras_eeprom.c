@@ -418,6 +418,7 @@ static void amdgpu_ras_set_eeprom_table_version(struct amdgpu_ras_eeprom_control
 		hdr->version = RAS_TABLE_VER_V2_1;
 		return;
 	case IP_VERSION(12, 0, 0):
+	case IP_VERSION(12, 5, 0):
 		hdr->version = RAS_TABLE_VER_V3;
 		return;
 	default:
@@ -1394,6 +1395,12 @@ int amdgpu_ras_eeprom_init(struct amdgpu_ras_eeprom_control *control)
 
 	__decode_table_header_from_buf(hdr, buf);
 
+	if (hdr->header != RAS_TABLE_HDR_VAL &&
+	    hdr->header != RAS_TABLE_HDR_BAD) {
+		dev_info(adev->dev, "Creating a new EEPROM table");
+		return amdgpu_ras_eeprom_reset_table(control);
+	}
+
 	switch (hdr->version) {
 	case RAS_TABLE_VER_V2_1:
 	case RAS_TABLE_VER_V3:
@@ -1431,7 +1438,7 @@ int amdgpu_ras_eeprom_check(struct amdgpu_ras_eeprom_control *control)
 	struct amdgpu_device *adev = to_amdgpu_device(control);
 	struct amdgpu_ras_eeprom_table_header *hdr = &control->tbl_hdr;
 	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
-	int res;
+	int res = 0;
 
 	if (!__is_ras_eeprom_supported(adev))
 		return 0;
@@ -1512,10 +1519,6 @@ int amdgpu_ras_eeprom_check(struct amdgpu_ras_eeprom_control *control)
 					 "User defined threshold is set, runtime service will be halt when threshold is reached\n");
 			}
 		}
-	} else {
-		DRM_INFO("Creating a new EEPROM table");
-
-		res = amdgpu_ras_eeprom_reset_table(control);
 	}
 
 	return res < 0 ? res : 0;

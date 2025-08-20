@@ -339,7 +339,7 @@ static void snd_usbmidi_out_work(struct work_struct *work)
 /* called after transfers had been interrupted due to some USB error */
 static void snd_usbmidi_error_timer(struct timer_list *t)
 {
-	struct snd_usb_midi *umidi = from_timer(umidi, t, error_timer);
+	struct snd_usb_midi *umidi = timer_container_of(umidi, t, error_timer);
 	unsigned int i, j;
 
 	spin_lock(&umidi->disc_lock);
@@ -2089,7 +2089,7 @@ static int roland_load_get(struct snd_kcontrol *kcontrol,
 static int roland_load_put(struct snd_kcontrol *kcontrol,
 			   struct snd_ctl_elem_value *value)
 {
-	struct snd_usb_midi *umidi = kcontrol->private_data;
+	struct snd_usb_midi *umidi = snd_kcontrol_chip(kcontrol);
 	int changed;
 
 	if (value->value.enumerated.item[0] > 1)

@@ -1270,7 +1270,7 @@ void drm_gem_unpin(struct drm_gem_object *obj)
 	dma_resv_unlock(obj->resv);
 }
 
-int drm_gem_vmap(struct drm_gem_object *obj, struct iosys_map *map)
+int drm_gem_vmap_locked(struct drm_gem_object *obj, struct iosys_map *map)
 {
 	int ret;
 
@@ -1287,9 +1287,9 @@ int drm_gem_vmap(struct drm_gem_object *obj, struct iosys_map *map)
 
 	return 0;
 }
-EXPORT_SYMBOL(drm_gem_vmap);
+EXPORT_SYMBOL(drm_gem_vmap_locked);
 
-void drm_gem_vunmap(struct drm_gem_object *obj, struct iosys_map *map)
+void drm_gem_vunmap_locked(struct drm_gem_object *obj, struct iosys_map *map)
 {
 	dma_resv_assert_held(obj->resv);
 
@@ -1302,7 +1302,7 @@ void drm_gem_vunmap(struct drm_gem_object *obj, struct iosys_map *map)
 	/* Always set the mapping to NULL. Callers may rely on this. */
 	iosys_map_clear(map);
 }
-EXPORT_SYMBOL(drm_gem_vunmap);
+EXPORT_SYMBOL(drm_gem_vunmap_locked);
 
 void drm_gem_lock(struct drm_gem_object *obj)
 {
@@ -1316,25 +1316,25 @@ void drm_gem_unlock(struct drm_gem_object *obj)
 }
 EXPORT_SYMBOL(drm_gem_unlock);
 
-int drm_gem_vmap_unlocked(struct drm_gem_object *obj, struct iosys_map *map)
+int drm_gem_vmap(struct drm_gem_object *obj, struct iosys_map *map)
 {
 	int ret;
 
 	dma_resv_lock(obj->resv, NULL);
-	ret = drm_gem_vmap(obj, map);
+	ret = drm_gem_vmap_locked(obj, map);
 	dma_resv_unlock(obj->resv);
 
 	return ret;
 }
-EXPORT_SYMBOL(drm_gem_vmap_unlocked);
+EXPORT_SYMBOL(drm_gem_vmap);
 
-void drm_gem_vunmap_unlocked(struct drm_gem_object *obj, struct iosys_map *map)
+void drm_gem_vunmap(struct drm_gem_object *obj, struct iosys_map *map)
 {
 	dma_resv_lock(obj->resv, NULL);
-	drm_gem_vunmap(obj, map);
+	drm_gem_vunmap_locked(obj, map);
 	dma_resv_unlock(obj->resv);
 }
-EXPORT_SYMBOL(drm_gem_vunmap_unlocked);
+EXPORT_SYMBOL(drm_gem_vunmap);
 
 /**
  * drm_gem_lock_reservations - Sets up the ww context and acquires
@@ -1597,10 +1597,10 @@ tail:
 EXPORT_SYMBOL(drm_gem_lru_scan);
 
 /**
- * drm_gem_evict - helper to evict backing pages for a GEM object
+ * drm_gem_evict_locked - helper to evict backing pages for a GEM object
  * @obj: obj in question
  */
-int drm_gem_evict(struct drm_gem_object *obj)
+int drm_gem_evict_locked(struct drm_gem_object *obj)
 {
 	dma_resv_assert_held(obj->resv);
 
@@ -1612,4 +1612,4 @@ int drm_gem_evict(struct drm_gem_object *obj)
 
 	return 0;
 }
-EXPORT_SYMBOL(drm_gem_evict);
+EXPORT_SYMBOL(drm_gem_evict_locked);

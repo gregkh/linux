@@ -454,7 +454,7 @@ static int avs_pci_probe(struct pci_dev *pci, const struct pci_device_id *id)
 		return ret;
 	}
 
-	ret = pci_request_regions(pci, "AVS HDAudio");
+	ret = pcim_request_all_regions(pci, "AVS HDAudio");
 	if (ret < 0)
 		return ret;
 
@@ -462,8 +462,7 @@ static int avs_pci_probe(struct pci_dev *pci, const struct pci_device_id *id)
 	bus->remap_addr = pci_ioremap_bar(pci, 0);
 	if (!bus->remap_addr) {
 		dev_err(bus->dev, "ioremap error\n");
-		ret = -ENXIO;
-		goto err_remap_bar0;
+		return -ENXIO;
 	}
 
 	adev->dsp_ba = pci_ioremap_bar(pci, 4);
@@ -520,8 +519,6 @@ err_init_streams:
 	iounmap(adev->dsp_ba);
 err_remap_bar4:
 	iounmap(bus->remap_addr);
-err_remap_bar0:
-	pci_release_regions(pci);
 	return ret;
 }
 
@@ -592,7 +589,6 @@ static void avs_pci_remove(struct pci_dev *pci)
 	pci_free_irq_vectors(pci);
 	iounmap(bus->remap_addr);
 	iounmap(adev->dsp_ba);
-	pci_release_regions(pci);
 
 	/* Firmware is not needed anymore */
 	avs_release_firmwares(adev);
@@ -763,6 +759,11 @@ static const struct avs_sram_spec apl_sram_spec = {
 	.window_size = APL_ADSP_SRAM_WINDOW_SIZE,
 };
 
+static const struct avs_sram_spec mtl_sram_spec = {
+	.base_offset = MTL_ADSP_SRAM_BASE_OFFSET,
+	.window_size = MTL_ADSP_SRAM_WINDOW_SIZE,
+};
+
 static const struct avs_hipc_spec skl_hipc_spec = {
 	.req_offset = SKL_ADSP_REG_HIPCI,
 	.req_ext_offset = SKL_ADSP_REG_HIPCIE,
@@ -797,6 +798,18 @@ static const struct avs_hipc_spec cnl_hipc_spec = {
 	.rsp_busy_mask = CNL_ADSP_HIPCTDR_BUSY,
 	.ctl_offset = CNL_ADSP_REG_HIPCCTL,
 	.sts_offset = APL_ADSP_SRAM_BASE_OFFSET,
+};
+
+static const struct avs_hipc_spec lnl_hipc_spec = {
+	.req_offset = MTL_REG_HfIPCxIDR,
+	.req_ext_offset = MTL_REG_HfIPCxIDD,
+	.req_busy_mask = MTL_HfIPCxIDR_BUSY,
+	.ack_offset = MTL_REG_HfIPCxIDA,
+	.ack_done_mask = MTL_HfIPCxIDA_DONE,
+	.rsp_offset = MTL_REG_HfIPCxTDR,
+	.rsp_busy_mask = MTL_HfIPCxTDR_BUSY,
+	.ctl_offset = MTL_REG_HfIPCxCTL,
+	.sts_offset = LNL_REG_HfDFR(0),
 };
 
 static const struct avs_spec skl_desc = {
@@ -866,6 +879,16 @@ AVS_TGL_BASED_SPEC(ehl, 30);
 AVS_TGL_BASED_SPEC(adl, 35);
 AVS_TGL_BASED_SPEC(adl_n, 35);
 
+static const struct avs_spec fcl_desc = {
+	.name = "fcl",
+	.min_fw_version = { 0 },
+	.dsp_ops = &avs_ptl_dsp_ops,
+	.core_init_mask = 1,
+	.attributes = AVS_PLATATTR_IMR | AVS_PLATATTR_ACE | AVS_PLATATTR_ALTHDA,
+	.sram = &mtl_sram_spec,
+	.hipc = &lnl_hipc_spec,
+};
+
 static const struct pci_device_id avs_ids[] = {
 	{ PCI_DEVICE_DATA(INTEL, HDA_SKL_LP, &skl_desc) },
 	{ PCI_DEVICE_DATA(INTEL, HDA_SKL, &skl_desc) },
@@ -901,6 +924,7 @@ static const struct pci_device_id avs_ids[] = {
 	{ PCI_DEVICE_DATA(INTEL, HDA_RPL_P_1,	&adl_desc) },
 	{ PCI_DEVICE_DATA(INTEL, HDA_RPL_M,	&adl_desc) },
 	{ PCI_DEVICE_DATA(INTEL, HDA_RPL_PX,	&adl_desc) },
+	{ PCI_DEVICE_DATA(INTEL, HDA_FCL,	&fcl_desc) },
 	{ 0 }
 };
 MODULE_DEVICE_TABLE(pci, avs_ids);
@@ -932,3 +956,4 @@ MODULE_FIRMWARE("intel/avs/tgl/dsp_basefw.bin");
 MODULE_FIRMWARE("intel/avs/ehl/dsp_basefw.bin");
 MODULE_FIRMWARE("intel/avs/adl/dsp_basefw.bin");
 MODULE_FIRMWARE("intel/avs/adl_n/dsp_basefw.bin");
+MODULE_FIRMWARE("intel/fcl/dsp_basefw.bin");

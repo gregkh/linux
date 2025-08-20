@@ -1250,7 +1250,9 @@ static void append_filter_err(struct trace_array *tr,
 
 static inline struct event_filter *event_filter(struct trace_event_file *file)
 {
-	return file->filter;
+	return rcu_dereference_protected(file->filter,
+					 lockdep_is_held(&event_mutex));
+
 }
 
 /* caller must hold event_mutex */
@@ -1320,7 +1322,7 @@ void free_event_filter(struct event_filter *filter)
 static inline void __remove_filter(struct trace_event_file *file)
 {
 	filter_disable(file);
-	remove_filter_string(file->filter);
+	remove_filter_string(event_filter(file));
 }
 
 static void filter_free_subsystem_preds(struct trace_subsystem_dir *dir,
@@ -1417,7 +1419,7 @@ static void try_delay_free_filter(struct event_filter *filter)
 
 static inline void __free_subsystem_filter(struct trace_event_file *file)
 {
-	__free_filter(file->filter);
+	__free_filter(event_filter(file));
 	file->filter = NULL;
 }
 
@@ -1446,13 +1448,6 @@ static void filter_free_subsystem_filters(struct trace_subsystem_dir *dir,
 
 	INIT_LIST_HEAD(&head->list);
 
-	item = kmalloc(sizeof(*item), GFP_KERNEL);
-	if (!item)
-		goto free_now;
-
-	item->filter = filter;
-	list_add_tail(&item->list, &head->list);
-
 	list_for_each_entry(file, &tr->events, list) {
 		if (file->system != dir)
 			continue;
@@ -1463,6 +1458,13 @@ static void filter_free_subsystem_filters(struct trace_subsystem_dir *dir,
 		list_add_tail(&item->list, &head->list);
 		event_clear_filter(file);
 	}
+
+	item = kmalloc(sizeof(*item), GFP_KERNEL);
+	if (!item)
+		goto free_now;
+
+	item->filter = filter;
+	list_add_tail(&item->list, &head->list);
 
 	delay_free_filter(head);
 	return;
@@ -1475,7 +1477,7 @@ static void filter_free_subsystem_filters(struct trace_subsystem_dir *dir,
 	list_for_each_entry(file, &tr->events, list) {
 		if (file->system != dir || !file->filter)
 			continue;
-		__free_filter(file->filter);
+		__free_subsystem_filter(file);
 	}
 	__free_filter(filter);
 }

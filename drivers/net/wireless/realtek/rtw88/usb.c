@@ -920,6 +920,7 @@ static void rtw_usb_dynamic_rx_agg(struct rtw_dev *rtwdev, bool enable)
 	case RTW_CHIP_TYPE_8822C:
 	case RTW_CHIP_TYPE_8822B:
 	case RTW_CHIP_TYPE_8821C:
+	case RTW_CHIP_TYPE_8814A:
 		rtw_usb_dynamic_rx_agg_v1(rtwdev, enable);
 		break;
 	case RTW_CHIP_TYPE_8821A:
@@ -1003,7 +1004,6 @@ static void rtw_usb_deinit_rx(struct rtw_dev *rtwdev)
 
 	skb_queue_purge(&rtwusb->rx_queue);
 
-	flush_workqueue(rtwusb->rxwq);
 	destroy_workqueue(rtwusb->rxwq);
 
 	skb_queue_purge(&rtwusb->rx_free_queue);
@@ -1032,7 +1032,6 @@ static void rtw_usb_deinit_tx(struct rtw_dev *rtwdev)
 {
 	struct rtw_usb *rtwusb = rtw_get_usb_priv(rtwdev);
 
-	flush_workqueue(rtwusb->txwq);
 	destroy_workqueue(rtwusb->txwq);
 	rtw_usb_tx_queue_purge(rtwusb);
 }
@@ -1149,7 +1148,8 @@ static int rtw_usb_switch_mode_new(struct rtw_dev *rtwdev)
 
 static bool rtw_usb3_chip_old(u8 chip_id)
 {
-	return chip_id == RTW_CHIP_TYPE_8812A;
+	return chip_id == RTW_CHIP_TYPE_8812A ||
+	       chip_id == RTW_CHIP_TYPE_8814A;
 }
 
 static bool rtw_usb3_chip_new(u8 chip_id)

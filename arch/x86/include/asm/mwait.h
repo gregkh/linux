@@ -25,27 +25,29 @@
 #define TPAUSE_C01_STATE		1
 #define TPAUSE_C02_STATE		0
 
-static __always_inline void __monitor(const void *eax, unsigned long ecx,
-			     unsigned long edx)
+static __always_inline void __monitor(const void *eax, u32 ecx, u32 edx)
 {
-	/* "monitor %eax, %ecx, %edx;" */
-	asm volatile(".byte 0x0f, 0x01, 0xc8;"
+	/*
+	 * Use the instruction mnemonic with implicit operands, as the LLVM
+	 * assembler fails to assemble the mnemonic with explicit operands:
+	 */
+	asm volatile("monitor" :: "a" (eax), "c" (ecx), "d" (edx));
+}
+
+static __always_inline void __monitorx(const void *eax, u32 ecx, u32 edx)
+{
+	/* "monitorx %eax, %ecx, %edx" */
+	asm volatile(".byte 0x0f, 0x01, 0xfa"
 		     :: "a" (eax), "c" (ecx), "d"(edx));
 }
 
-static __always_inline void __monitorx(const void *eax, unsigned long ecx,
-			      unsigned long edx)
+static __always_inline void __mwait(u32 eax, u32 ecx)
 {
-	/* "monitorx %eax, %ecx, %edx;" */
-	asm volatile(".byte 0x0f, 0x01, 0xfa;"
-		     :: "a" (eax), "c" (ecx), "d"(edx));
-}
-
-static __always_inline void __mwait(unsigned long eax, unsigned long ecx)
-{
-	/* "mwait %eax, %ecx;" */
-	asm volatile(".byte 0x0f, 0x01, 0xc9;"
-		     :: "a" (eax), "c" (ecx));
+	/*
+	 * Use the instruction mnemonic with implicit operands, as the LLVM
+	 * assembler fails to assemble the mnemonic with explicit operands:
+	 */
+	asm volatile("mwait" :: "a" (eax), "c" (ecx));
 }
 
 /*
@@ -74,13 +76,12 @@ static __always_inline void __mwait(unsigned long eax, unsigned long ecx)
  * EAX                     (logical) address to monitor
  * ECX                     #GP if not zero
  */
-static __always_inline void __mwaitx(unsigned long eax, unsigned long ebx,
-				     unsigned long ecx)
+static __always_inline void __mwaitx(u32 eax, u32 ebx, u32 ecx)
 {
 	/* No need for TSA buffer clearing on AMD */
 
-	/* "mwaitx %eax, %ebx, %ecx;" */
-	asm volatile(".byte 0x0f, 0x01, 0xfb;"
+	/* "mwaitx %eax, %ebx, %ecx" */
+	asm volatile(".byte 0x0f, 0x01, 0xfb"
 		     :: "a" (eax), "b" (ebx), "c" (ecx));
 }
 
@@ -93,12 +94,10 @@ static __always_inline void __mwaitx(unsigned long eax, unsigned long ebx,
  * executing mwait, it would otherwise go unnoticed and the next tick
  * would not be reprogrammed accordingly before mwait ever wakes up.
  */
-static __always_inline void __sti_mwait(unsigned long eax, unsigned long ecx)
+static __always_inline void __sti_mwait(u32 eax, u32 ecx)
 {
 
-	/* "mwait %eax, %ecx;" */
-	asm volatile("sti; .byte 0x0f, 0x01, 0xc9;"
-		     :: "a" (eax), "c" (ecx));
+	asm volatile("sti; mwait" :: "a" (eax), "c" (ecx));
 }
 
 /*
@@ -111,7 +110,7 @@ static __always_inline void __sti_mwait(unsigned long eax, unsigned long ecx)
  * New with Core Duo processors, MWAIT can take some hints based on CPU
  * capability.
  */
-static __always_inline void mwait_idle_with_hints(unsigned long eax, unsigned long ecx)
+static __always_inline void mwait_idle_with_hints(u32 eax, u32 ecx)
 {
 	if (need_resched())
 		return;
@@ -147,16 +146,9 @@ out:
  */
 static inline void __tpause(u32 ecx, u32 edx, u32 eax)
 {
-	/* "tpause %ecx, %edx, %eax;" */
-	#ifdef CONFIG_AS_TPAUSE
-	asm volatile("tpause %%ecx\n"
-		     :
-		     : "c"(ecx), "d"(edx), "a"(eax));
-	#else
-	asm volatile(".byte 0x66, 0x0f, 0xae, 0xf1\t\n"
-		     :
-		     : "c"(ecx), "d"(edx), "a"(eax));
-	#endif
+	/* "tpause %ecx" */
+	asm volatile(".byte 0x66, 0x0f, 0xae, 0xf1"
+		     :: "c" (ecx), "d" (edx), "a" (eax));
 }
 
 #endif /* _ASM_X86_MWAIT_H */

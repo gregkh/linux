@@ -16,6 +16,7 @@
 #include <linux/rhashtable.h>
 #include <linux/average.h>
 #include <linux/firmware.h>
+#include <linux/suspend.h>
 
 #include "qmi.h"
 #include "htc.h"
@@ -1057,6 +1058,8 @@ struct ath11k_base {
 		DECLARE_BITMAP(fw_features, ATH11K_FW_FEATURE_COUNT);
 	} fw;
 
+	struct completion restart_completed;
+
 #ifdef CONFIG_NL80211_TESTMODE
 	struct {
 		u32 data_pos;
@@ -1066,6 +1069,8 @@ struct ath11k_base {
 #endif
 
 	enum ath11k_pm_policy pm_policy;
+	enum ath11k_pm_policy actual_pm_policy;
+	struct notifier_block pm_nb;
 
 	/* must be last */
 	u8 drv_priv[] __aligned(sizeof(void *));
@@ -1258,8 +1263,10 @@ void ath11k_core_free_bdf(struct ath11k_base *ab, struct ath11k_board_data *bd);
 int ath11k_core_check_dt(struct ath11k_base *ath11k);
 int ath11k_core_check_smbios(struct ath11k_base *ab);
 void ath11k_core_halt(struct ath11k *ar);
+int ath11k_core_resume_early(struct ath11k_base *ab);
 int ath11k_core_resume(struct ath11k_base *ab);
 int ath11k_core_suspend(struct ath11k_base *ab);
+int ath11k_core_suspend_late(struct ath11k_base *ab);
 void ath11k_core_pre_reconfigure_recovery(struct ath11k_base *ab);
 bool ath11k_core_coldboot_cal_support(struct ath11k_base *ab);
 
@@ -1330,5 +1337,7 @@ static inline const char *ath11k_bus_str(enum ath11k_bus bus)
 
 	return "unknown";
 }
+
+void ath11k_core_pm_notifier_unregister(struct ath11k_base *ab);
 
 #endif /* _CORE_H_ */

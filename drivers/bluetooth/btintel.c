@@ -889,7 +889,7 @@ int btintel_send_intel_reset(struct hci_dev *hdev, u32 boot_param)
 
 	params.boot_param = cpu_to_le32(boot_param);
 
-	skb = __hci_cmd_sync(hdev, 0xfc01, sizeof(params), &params,
+	skb = __hci_cmd_sync(hdev, BTINTEL_HCI_OP_RESET, sizeof(params), &params,
 			     HCI_INIT_TIMEOUT);
 	if (IS_ERR(skb)) {
 		bt_dev_err(hdev, "Failed to send Intel Reset command");
@@ -1287,7 +1287,7 @@ static void btintel_reset_to_bootloader(struct hci_dev *hdev)
 	params.boot_option = 0x00;
 	params.boot_param = cpu_to_le32(0x00000000);
 
-	skb = __hci_cmd_sync(hdev, 0xfc01, sizeof(params),
+	skb = __hci_cmd_sync(hdev, BTINTEL_HCI_OP_RESET, sizeof(params),
 			     &params, HCI_INIT_TIMEOUT);
 	if (IS_ERR(skb)) {
 		bt_dev_err(hdev, "FW download error recovery failed (%ld)",
@@ -3682,7 +3682,7 @@ int btintel_configure_setup(struct hci_dev *hdev, const char *driver_name)
 }
 EXPORT_SYMBOL_GPL(btintel_configure_setup);
 
-int btintel_diagnostics(struct hci_dev *hdev, struct sk_buff *skb)
+static int btintel_diagnostics(struct hci_dev *hdev, struct sk_buff *skb)
 {
 	struct intel_tlv *tlv = (void *)&skb->data[5];
 
@@ -3710,7 +3710,6 @@ int btintel_diagnostics(struct hci_dev *hdev, struct sk_buff *skb)
 recv_frame:
 	return hci_recv_frame(hdev, skb);
 }
-EXPORT_SYMBOL_GPL(btintel_diagnostics);
 
 int btintel_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
 {

@@ -498,6 +498,21 @@ static u32 get_cur_freq(struct xe_gt *gt)
 }
 
 /**
+ * xe_guc_pc_get_cur_freq_fw - With fw held, get requested frequency
+ * @pc: The GuC PC
+ *
+ * Returns: the requested frequency for that GT instance
+ */
+u32 xe_guc_pc_get_cur_freq_fw(struct xe_guc_pc *pc)
+{
+	struct xe_gt *gt = pc_to_gt(pc);
+
+	xe_force_wake_assert_held(gt_to_fw(gt), XE_FW_GT);
+
+	return get_cur_freq(gt);
+}
+
+/**
  * xe_guc_pc_get_cur_freq - Get Current requested frequency
  * @pc: The GuC PC
  * @freq: A pointer to a u32 where the freq value will be returned
@@ -1000,27 +1015,28 @@ void xe_guc_pc_remove_flush_freq_limit(struct xe_guc_pc *pc)
 
 static int pc_set_mert_freq_cap(struct xe_guc_pc *pc)
 {
-	int ret = 0;
+	int ret;
 
-	if (XE_WA(pc_to_gt(pc), 22019338487)) {
-		/*
-		 * Get updated min/max and stash them.
-		 */
-		ret = xe_guc_pc_get_min_freq(pc, &pc->stashed_min_freq);
-		if (!ret)
-			ret = xe_guc_pc_get_max_freq(pc, &pc->stashed_max_freq);
-		if (ret)
-			return ret;
+	if (!XE_WA(pc_to_gt(pc), 22019338487))
+		return 0;
 
-		/*
-		 * Ensure min and max are bound by MERT_FREQ_CAP until driver loads.
-		 */
-		mutex_lock(&pc->freq_lock);
-		ret = pc_set_min_freq(pc, min(pc->rpe_freq, pc_max_freq_cap(pc)));
-		if (!ret)
-			ret = pc_set_max_freq(pc, min(pc->rp0_freq, pc_max_freq_cap(pc)));
-		mutex_unlock(&pc->freq_lock);
-	}
+	guard(mutex)(&pc->freq_lock);
+
+	/*
+	 * Get updated min/max and stash them.
+	 */
+	ret = xe_guc_pc_get_min_freq_locked(pc, &pc->stashed_min_freq);
+	if (!ret)
+		ret = xe_guc_pc_get_max_freq_locked(pc, &pc->stashed_max_freq);
+	if (ret)
+		return ret;
+
+	/*
+	 * Ensure min and max are bound by MERT_FREQ_CAP until driver loads.
+	 */
+	ret = pc_set_min_freq(pc, min(pc->rpe_freq, pc_max_freq_cap(pc)));
+	if (!ret)
+		ret = pc_set_max_freq(pc, min(pc->rp0_freq, pc_max_freq_cap(pc)));
 
 	return ret;
 }
@@ -1315,7 +1331,8 @@ int xe_guc_pc_init(struct xe_guc_pc *pc)
 	bo = xe_managed_bo_create_pin_map(xe, tile, size,
 					  XE_BO_FLAG_VRAM_IF_DGFX(tile) |
 					  XE_BO_FLAG_GGTT |
-					  XE_BO_FLAG_GGTT_INVALIDATE);
+					  XE_BO_FLAG_GGTT_INVALIDATE |
+					  XE_BO_FLAG_PINNED_NORESTORE);
 	if (IS_ERR(bo))
 		return PTR_ERR(bo);
 

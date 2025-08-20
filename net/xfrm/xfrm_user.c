@@ -1206,7 +1206,7 @@ static int copy_to_user_auth(struct xfrm_algo_auth *auth, struct sk_buff *skb)
 	if (!nla)
 		return -EMSGSIZE;
 	algo = nla_data(nla);
-	strscpy_pad(algo->alg_name, auth->alg_name, sizeof(algo->alg_name));
+	strscpy_pad(algo->alg_name, auth->alg_name);
 
 	if (redact_secret && auth->alg_key_len)
 		memset(algo->alg_key, 0, (auth->alg_key_len + 7) / 8);
@@ -1219,7 +1219,7 @@ static int copy_to_user_auth(struct xfrm_algo_auth *auth, struct sk_buff *skb)
 	if (!nla)
 		return -EMSGSIZE;
 	ap = nla_data(nla);
-	strscpy_pad(ap->alg_name, auth->alg_name, sizeof(ap->alg_name));
+	strscpy_pad(ap->alg_name, auth->alg_name);
 	ap->alg_key_len = auth->alg_key_len;
 	ap->alg_trunc_len = auth->alg_trunc_len;
 	if (redact_secret && auth->alg_key_len)
@@ -1240,7 +1240,7 @@ static int copy_to_user_aead(struct xfrm_algo_aead *aead, struct sk_buff *skb)
 		return -EMSGSIZE;
 
 	ap = nla_data(nla);
-	strscpy_pad(ap->alg_name, aead->alg_name, sizeof(ap->alg_name));
+	strscpy_pad(ap->alg_name, aead->alg_name);
 	ap->alg_key_len = aead->alg_key_len;
 	ap->alg_icv_len = aead->alg_icv_len;
 
@@ -1262,7 +1262,7 @@ static int copy_to_user_ealg(struct xfrm_algo *ealg, struct sk_buff *skb)
 		return -EMSGSIZE;
 
 	ap = nla_data(nla);
-	strscpy_pad(ap->alg_name, ealg->alg_name, sizeof(ap->alg_name));
+	strscpy_pad(ap->alg_name, ealg->alg_name);
 	ap->alg_key_len = ealg->alg_key_len;
 
 	if (redact_secret && ealg->alg_key_len)
@@ -1283,7 +1283,7 @@ static int copy_to_user_calg(struct xfrm_algo *calg, struct sk_buff *skb)
 		return -EMSGSIZE;
 
 	ap = nla_data(nla);
-	strscpy_pad(ap->alg_name, calg->alg_name, sizeof(ap->alg_name));
+	strscpy_pad(ap->alg_name, calg->alg_name);
 	ap->alg_key_len = 0;
 
 	return 0;
@@ -2635,7 +2635,7 @@ static int xfrm_flush_sa(struct sk_buff *skb, struct nlmsghdr *nlh,
 	struct xfrm_usersa_flush *p = nlmsg_data(nlh);
 	int err;
 
-	err = xfrm_state_flush(net, p->proto, true, false);
+	err = xfrm_state_flush(net, p->proto, true);
 	if (err) {
 		if (err == -ESRCH) /* empty table */
 			return 0;
@@ -3102,6 +3102,7 @@ static int xfrm_do_migrate(struct sk_buff *skb, struct nlmsghdr *nlh,
 	int n = 0;
 	struct net *net = sock_net(skb->sk);
 	struct xfrm_encap_tmpl  *encap = NULL;
+	struct xfrm_user_offload *xuo = NULL;
 	u32 if_id = 0;
 
 	if (!attrs[XFRMA_MIGRATE]) {
@@ -3132,11 +3133,19 @@ static int xfrm_do_migrate(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (attrs[XFRMA_IF_ID])
 		if_id = nla_get_u32(attrs[XFRMA_IF_ID]);
 
+	if (attrs[XFRMA_OFFLOAD_DEV]) {
+		xuo = kmemdup(nla_data(attrs[XFRMA_OFFLOAD_DEV]),
+			      sizeof(*xuo), GFP_KERNEL);
+		if (!xuo) {
+			err = -ENOMEM;
+			goto error;
+		}
+	}
 	err = xfrm_migrate(&pi->sel, pi->dir, type, m, n, kmp, net, encap,
-			   if_id, extack);
-
+			   if_id, extack, xuo);
+error:
 	kfree(encap);
-
+	kfree(xuo);
 	return err;
 }
 #else

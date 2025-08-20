@@ -472,6 +472,8 @@ nl80211_mbssid_config_policy[NL80211_MBSSID_CONFIG_ATTR_MAX + 1] = {
 	[NL80211_MBSSID_CONFIG_ATTR_INDEX] = { .type = NLA_U8 },
 	[NL80211_MBSSID_CONFIG_ATTR_TX_IFINDEX] = { .type = NLA_U32 },
 	[NL80211_MBSSID_CONFIG_ATTR_EMA] = { .type = NLA_FLAG },
+	[NL80211_MBSSID_CONFIG_ATTR_TX_LINK_ID] =
+		NLA_POLICY_MAX(NLA_U8, IEEE80211_MLD_MAX_NUM_LINKS),
 };
 
 static const struct nla_policy
@@ -836,6 +838,7 @@ static const struct nla_policy nl80211_policy[NUM_NL80211_ATTR] = {
 	[NL80211_ATTR_MLD_ADDR] = NLA_POLICY_EXACT_LEN(ETH_ALEN),
 	[NL80211_ATTR_MLO_SUPPORT] = { .type = NLA_FLAG },
 	[NL80211_ATTR_MAX_NUM_AKM_SUITES] = { .type = NLA_REJECT },
+	[NL80211_ATTR_EML_CAPABILITY] = { .type = NLA_U16 },
 	[NL80211_ATTR_PUNCT_BITMAP] =
 		NLA_POLICY_FULL_RANGE(NLA_U32, &nl80211_punct_bitmap_range),
 
@@ -1583,7 +1586,7 @@ nl80211_parse_connkeys(struct cfg80211_registered_device *rdev,
 
 	return result;
  error:
-	kfree(result);
+	kfree_sensitive(result);
 	return ERR_PTR(err);
 }
 
@@ -5526,11 +5529,13 @@ static int validate_beacon_tx_rate(struct cfg80211_registered_device *rdev,
 
 static int nl80211_parse_mbssid_config(struct wiphy *wiphy,
 				       struct net_device *dev,
+				       unsigned int link_id,
 				       struct nlattr *attrs,
 				       struct cfg80211_mbssid_config *config,
 				       u8 num_elems)
 {
 	struct nlattr *tb[NL80211_MBSSID_CONFIG_ATTR_MAX + 1];
+	int tx_link_id = -1;
 
 	if (!wiphy->mbssid_max_interfaces)
 		return -EOPNOTSUPP;
@@ -5554,6 +5559,9 @@ static int nl80211_parse_mbssid_config(struct wiphy *wiphy,
 	    (!config->index && !num_elems))
 		return -EINVAL;
 
+	if (tb[NL80211_MBSSID_CONFIG_ATTR_TX_LINK_ID])
+		tx_link_id = nla_get_u8(tb[NL80211_MBSSID_CONFIG_ATTR_TX_LINK_ID]);
+
 	if (tb[NL80211_MBSSID_CONFIG_ATTR_TX_IFINDEX]) {
 		u32 tx_ifindex =
 			nla_get_u32(tb[NL80211_MBSSID_CONFIG_ATTR_TX_IFINDEX]);
@@ -5575,10 +5583,25 @@ static int nl80211_parse_mbssid_config(struct wiphy *wiphy,
 			}
 
 			config->tx_wdev = tx_netdev->ieee80211_ptr;
+			/* Caller should call dev_put(config->tx_wdev) from this point */
+
+			if (config->tx_wdev->valid_links) {
+				if (tx_link_id == -1 ||
+				    !(config->tx_wdev->valid_links & BIT(tx_link_id)))
+					return -ENOLINK;
+
+				config->tx_link_id = tx_link_id;
+			}
 		} else {
+			if (tx_link_id >= 0 && tx_link_id != link_id)
+				return -EINVAL;
+
 			config->tx_wdev = dev->ieee80211_ptr;
 		}
 	} else if (!config->index) {
+		if (tx_link_id >= 0 && tx_link_id != link_id)
+			return -EINVAL;
+
 		config->tx_wdev = dev->ieee80211_ptr;
 	} else {
 		return -EINVAL;
@@ -6328,7 +6351,7 @@ static int nl80211_start_ap(struct sk_buff *skb, struct genl_info *info)
 	}
 
 	if (info->attrs[NL80211_ATTR_MBSSID_CONFIG]) {
-		err = nl80211_parse_mbssid_config(&rdev->wiphy, dev,
+		err = nl80211_parse_mbssid_config(&rdev->wiphy, dev, link_id,
 						  info->attrs[NL80211_ATTR_MBSSID_CONFIG],
 						  &params->mbssid_config,
 						  params->beacon.mbssid_ies ?
@@ -7121,6 +7144,11 @@ int cfg80211_check_station_change(struct wiphy *wiphy,
 			return -EINVAL;
 	}
 
+	/* Accept EMLSR capabilities only for AP client before association */
+	if (statype != CFG80211_STA_AP_CLIENT_UNASSOC &&
+	    params->eml_cap_present)
+		return -EINVAL;
+
 	switch (statype) {
 	case CFG80211_STA_AP_MLME_CLIENT:
 		/* Use this only for authorizing/unauthorizing a station */
@@ -7476,6 +7504,12 @@ static int nl80211_set_station(struct sk_buff *skb, struct genl_info *info)
 		params.link_sta_params.he_6ghz_capa =
 			nla_data(info->attrs[NL80211_ATTR_HE_6GHZ_CAPABILITY]);
 
+	if (info->attrs[NL80211_ATTR_EML_CAPABILITY]) {
+		params.eml_cap_present = true;
+		params.eml_cap =
+			nla_get_u16(info->attrs[NL80211_ATTR_EML_CAPABILITY]);
+	}
+
 	if (info->attrs[NL80211_ATTR_AIRTIME_WEIGHT])
 		params.airtime_weight =
 			nla_get_u16(info->attrs[NL80211_ATTR_AIRTIME_WEIGHT]);
@@ -7632,6 +7666,12 @@ static int nl80211_new_station(struct sk_buff *skb, struct genl_info *info)
 							false))
 				return -EINVAL;
 		}
+	}
+
+	if (info->attrs[NL80211_ATTR_EML_CAPABILITY]) {
+		params.eml_cap_present = true;
+		params.eml_cap =
+			nla_get_u16(info->attrs[NL80211_ATTR_EML_CAPABILITY]);
 	}
 
 	if (info->attrs[NL80211_ATTR_HE_6GHZ_CAPABILITY])

@@ -427,7 +427,7 @@ static void am65_cpsw_nuss_ndo_host_tx_timeout(struct net_device *ndev,
 
 	if (netif_tx_queue_stopped(netif_txq)) {
 		/* try recover if stopped by us */
-		txq_trans_update(netif_txq);
+		txq_trans_update(ndev, netif_txq);
 		netif_tx_wake_queue(netif_txq);
 	}
 }
@@ -2760,7 +2760,7 @@ am65_cpsw_nuss_init_port_ndev(struct am65_cpsw_common *common, u32 port_idx)
 	mutex_init(&ndev_priv->mm_lock);
 	port->qos.link_speed = SPEED_UNKNOWN;
 	SET_NETDEV_DEV(port->ndev, dev);
-	port->ndev->dev.of_node = port->slave.port_np;
+	device_set_node(&port->ndev->dev, of_fwnode_handle(port->slave.port_np));
 
 	eth_hw_addr_set(port->ndev, port->slave.mac_addr);
 

@@ -268,7 +268,8 @@ static void gve_stats_report_schedule(struct gve_priv *priv)
 
 static void gve_stats_report_timer(struct timer_list *t)
 {
-	struct gve_priv *priv = from_timer(priv, t, stats_report_timer);
+	struct gve_priv *priv = timer_container_of(priv, t,
+						   stats_report_timer);
 
 	mod_timer(&priv->stats_report_timer,
 		  round_jiffies(jiffies +
@@ -1830,7 +1831,7 @@ static void gve_turndown(struct gve_priv *priv)
 	/* Stop tx queues */
 	netif_tx_disable(priv->dev);
 
-	xdp_features_clear_redirect_target(priv->dev);
+	xdp_features_clear_redirect_target_locked(priv->dev);
 
 	gve_clear_napi_enabled(priv);
 	gve_clear_report_stats(priv);
@@ -1902,7 +1903,7 @@ static void gve_turnup(struct gve_priv *priv)
 	}
 
 	if (priv->tx_cfg.num_xdp_queues && gve_supports_xdp_xmit(priv))
-		xdp_features_set_redirect_target(priv->dev, false);
+		xdp_features_set_redirect_target_locked(priv->dev, false);
 
 	gve_set_napi_enabled(priv);
 }
@@ -2192,7 +2193,7 @@ static void gve_set_netdev_xdp_features(struct gve_priv *priv)
 		xdp_features = 0;
 	}
 
-	xdp_set_features_flag(priv->dev, xdp_features);
+	xdp_set_features_flag_locked(priv->dev, xdp_features);
 }
 
 static int gve_init_priv(struct gve_priv *priv, bool skip_describe_device)
@@ -2665,6 +2666,9 @@ static int gve_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	err = gve_init_priv(priv, false);
 	if (err)
 		goto abort_with_wq;
+
+	if (!gve_is_gqi(priv) && !gve_is_qpl(priv))
+		dev->netmem_tx = true;
 
 	err = register_netdev(dev);
 	if (err)

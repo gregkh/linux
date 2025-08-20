@@ -25,6 +25,7 @@
 #include <linux/hrtimer.h>
 #include <linux/slab.h>
 #include <linux/hashtable.h>
+#include <linux/bpf.h>
 
 #include <net/netdev_lock.h>
 #include <net/net_namespace.h>
@@ -207,7 +208,7 @@ static struct Qdisc_ops *qdisc_lookup_default(const char *name)
 
 	for (q = qdisc_base; q; q = q->next) {
 		if (!strcmp(name, q->id)) {
-			if (!try_module_get(q->owner))
+			if (!bpf_try_module_get(q, q->owner))
 				q = NULL;
 			break;
 		}
@@ -237,7 +238,7 @@ int qdisc_set_default(const char *name)
 
 	if (ops) {
 		/* Set new default */
-		module_put(default_qdisc_ops->owner);
+		bpf_module_put(default_qdisc_ops, default_qdisc_ops->owner);
 		default_qdisc_ops = ops;
 	}
 	write_unlock(&qdisc_mod_lock);
@@ -364,7 +365,7 @@ static struct Qdisc_ops *qdisc_lookup_ops(struct nlattr *kind)
 		read_lock(&qdisc_mod_lock);
 		for (q = qdisc_base; q; q = q->next) {
 			if (nla_strcmp(kind, q->id) == 0) {
-				if (!try_module_get(q->owner))
+				if (!bpf_try_module_get(q, q->owner))
 					q = NULL;
 				break;
 			}
@@ -599,16 +600,6 @@ out:
 		pkt_len = 1;
 	qdisc_skb_cb(skb)->pkt_len = pkt_len;
 }
-
-void qdisc_warn_nonwc(const char *txt, struct Qdisc *qdisc)
-{
-	if (!(qdisc->flags & TCQ_F_WARN_NONWC)) {
-		pr_warn("%s: %s qdisc %X: is non-work-conserving?\n",
-			txt, qdisc->ops->id, qdisc->handle >> 16);
-		qdisc->flags |= TCQ_F_WARN_NONWC;
-	}
-}
-EXPORT_SYMBOL(qdisc_warn_nonwc);
 
 static enum hrtimer_restart qdisc_watchdog(struct hrtimer *timer)
 {
@@ -1366,7 +1357,7 @@ err_out3:
 	netdev_put(dev, &sch->dev_tracker);
 	qdisc_free(sch);
 err_out2:
-	module_put(ops->owner);
+	bpf_module_put(ops, ops->owner);
 err_out:
 	*errp = err;
 	return NULL;
@@ -1782,7 +1773,7 @@ static void request_qdisc_module(struct nlattr *kind)
 
 	ops = qdisc_lookup_ops(kind);
 	if (ops) {
-		module_put(ops->owner);
+		bpf_module_put(ops, ops->owner);
 		return;
 	}
 

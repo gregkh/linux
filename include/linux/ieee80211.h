@@ -1266,7 +1266,7 @@ struct ieee80211_ext {
 			u8 sa[ETH_ALEN];
 			__le32 timestamp;
 			u8 change_seq;
-			u8 variable[0];
+			u8 variable[];
 		} __packed s1g_beacon;
 	} u;
 } __packed __aligned(2);
@@ -1524,7 +1524,7 @@ struct ieee80211_mgmt {
 					u8 action_code;
 					u8 dialog_token;
 					__le16 capability;
-					u8 variable[0];
+					u8 variable[];
 				} __packed tdls_discover_resp;
 				struct {
 					u8 action_code;
@@ -1709,35 +1709,35 @@ struct ieee80211_tdls_data {
 		struct {
 			u8 dialog_token;
 			__le16 capability;
-			u8 variable[0];
+			u8 variable[];
 		} __packed setup_req;
 		struct {
 			__le16 status_code;
 			u8 dialog_token;
 			__le16 capability;
-			u8 variable[0];
+			u8 variable[];
 		} __packed setup_resp;
 		struct {
 			__le16 status_code;
 			u8 dialog_token;
-			u8 variable[0];
+			u8 variable[];
 		} __packed setup_cfm;
 		struct {
 			__le16 reason_code;
-			u8 variable[0];
+			u8 variable[];
 		} __packed teardown;
 		struct {
 			u8 dialog_token;
-			u8 variable[0];
+			u8 variable[];
 		} __packed discover_req;
 		struct {
 			u8 target_channel;
 			u8 oper_class;
-			u8 variable[0];
+			u8 variable[];
 		} __packed chan_switch_req;
 		struct {
 			__le16 status_code;
-			u8 variable[0];
+			u8 variable[];
 		} __packed chan_switch_resp;
 	} u;
 } __packed;
@@ -2372,6 +2372,7 @@ struct ieee80211_eht_cap_elem {
 #define IEEE80211_EHT_OPER_EHT_DEF_PE_DURATION	                0x04
 #define IEEE80211_EHT_OPER_GROUP_ADDRESSED_BU_IND_LIMIT         0x08
 #define IEEE80211_EHT_OPER_GROUP_ADDRESSED_BU_IND_EXP_MASK      0x30
+#define IEEE80211_EHT_OPER_MCS15_DISABLE                        0x40
 
 /**
  * struct ieee80211_eht_operation - eht operation element
@@ -4134,6 +4135,9 @@ enum ieee80211_tdls_actioncode {
 /* Defines support for enhanced multi-bssid advertisement*/
 #define WLAN_EXT_CAPA11_EMA_SUPPORT	BIT(3)
 
+/* Enable Beacon Protection */
+#define WLAN_EXT_CAPA11_BCN_PROTECT	BIT(4)
+
 /* TDLS specific payload type in the LLC/SNAP header */
 #define WLAN_TDLS_SNAP_RFTYPE	0x2
 
@@ -5693,6 +5697,80 @@ static inline bool ieee80211_tid_to_link_map_size_ok(const u8 *data, size_t len)
 	}
 
 	return len >= fixed + elem_len;
+}
+
+/**
+ * ieee80211_emlsr_pad_delay_in_us - Fetch the EMLSR Padding delay
+ *	in microseconds
+ * @eml_cap: EML capabilities field value from common info field of
+ *	the Multi-link element
+ * Return: the EMLSR Padding delay (in microseconds) encoded in the
+ *	EML Capabilities field
+ */
+
+static inline u32 ieee80211_emlsr_pad_delay_in_us(u16 eml_cap)
+{
+	/* IEEE Std 802.11be-2024 Table 9-417i—Encoding of the EMLSR
+	 * Padding Delay subfield.
+	 */
+	u32 pad_delay = u16_get_bits(eml_cap,
+				     IEEE80211_EML_CAP_EMLSR_PADDING_DELAY);
+
+	if (!pad_delay ||
+	    pad_delay > IEEE80211_EML_CAP_EMLSR_PADDING_DELAY_256US)
+		return 0;
+
+	return 32 * (1 << (pad_delay - 1));
+}
+
+/**
+ * ieee80211_emlsr_trans_delay_in_us - Fetch the EMLSR Transition
+ *	delay in microseconds
+ * @eml_cap: EML capabilities field value from common info field of
+ *	the Multi-link element
+ * Return: the EMLSR Transition delay (in microseconds) encoded in the
+ *	EML Capabilities field
+ */
+
+static inline u32 ieee80211_emlsr_trans_delay_in_us(u16 eml_cap)
+{
+	/* IEEE Std 802.11be-2024 Table 9-417j—Encoding of the EMLSR
+	 * Transition Delay subfield.
+	 */
+	u32 trans_delay =
+		u16_get_bits(eml_cap,
+			     IEEE80211_EML_CAP_EMLSR_TRANSITION_DELAY);
+
+	/* invalid values also just use 0 */
+	if (!trans_delay ||
+	    trans_delay > IEEE80211_EML_CAP_EMLSR_TRANSITION_DELAY_256US)
+		return 0;
+
+	return 16 * (1 << (trans_delay - 1));
+}
+
+/**
+ * ieee80211_eml_trans_timeout_in_us - Fetch the EMLSR Transition
+ *	timeout value in microseconds
+ * @eml_cap: EML capabilities field value from common info field of
+ *	the Multi-link element
+ * Return: the EMLSR Transition timeout (in microseconds) encoded in
+ *	the EML Capabilities field
+ */
+
+static inline u32 ieee80211_eml_trans_timeout_in_us(u16 eml_cap)
+{
+	/* IEEE Std 802.11be-2024 Table 9-417m—Encoding of the
+	 * Transition Timeout subfield.
+	 */
+	u8 timeout = u16_get_bits(eml_cap,
+				  IEEE80211_EML_CAP_TRANSITION_TIMEOUT);
+
+	/* invalid values also just use 0 */
+	if (!timeout || timeout > IEEE80211_EML_CAP_TRANSITION_TIMEOUT_128TU)
+		return 0;
+
+	return 128 * (1 << (timeout - 1));
 }
 
 #define for_each_mle_subelement(_elem, _data, _len)			\

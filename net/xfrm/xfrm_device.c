@@ -145,10 +145,6 @@ struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t featur
 		return NULL;
 	}
 
-	/* This skb was already validated on the upper/virtual dev */
-	if ((x->xso.dev != dev) && (x->xso.real_dev == dev))
-		return skb;
-
 	local_irq_save(flags);
 	sd = this_cpu_ptr(&softnet_data);
 	err = !skb_queue_empty(&sd->xfrm_backlog);
@@ -253,6 +249,11 @@ int xfrm_dev_state_add(struct net *net, struct xfrm_state *x,
 	if ((xuo->flags & XFRM_OFFLOAD_INBOUND && x->dir == XFRM_SA_DIR_OUT) ||
 	    (!(xuo->flags & XFRM_OFFLOAD_INBOUND) && x->dir == XFRM_SA_DIR_IN)) {
 		NL_SET_ERR_MSG(extack, "Mismatched SA and offload direction");
+		return -EINVAL;
+	}
+
+	if (xuo->flags & XFRM_OFFLOAD_INBOUND && x->if_id) {
+		NL_SET_ERR_MSG(extack, "XFRM if_id is not supported in RX path");
 		return -EINVAL;
 	}
 

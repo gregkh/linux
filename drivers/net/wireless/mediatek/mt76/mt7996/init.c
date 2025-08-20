@@ -317,8 +317,8 @@ static void __mt7996_init_txpower(struct mt7996_phy *phy,
 				  struct ieee80211_supported_band *sband)
 {
 	struct mt7996_dev *dev = phy->dev;
-	int i, nss = hweight16(phy->mt76->chainmask);
-	int nss_delta = mt76_tx_power_nss_delta(nss);
+	int i, n_chains = hweight16(phy->mt76->chainmask);
+	int path_delta = mt76_tx_power_path_delta(n_chains);
 	int pwr_delta = mt7996_eeprom_get_power_delta(dev, sband->band);
 	struct mt76_power_limits limits;
 
@@ -330,7 +330,7 @@ static void __mt7996_init_txpower(struct mt7996_phy *phy,
 		target_power = mt76_get_rate_power_limits(phy->mt76, chan,
 							  &limits,
 							  target_power);
-		target_power += nss_delta;
+		target_power += path_delta;
 		target_power = DIV_ROUND_UP(target_power, 2);
 		chan->max_power = min_t(int, chan->max_reg_power,
 					target_power);
@@ -443,6 +443,9 @@ mt7996_init_wiphy(struct ieee80211_hw *hw, struct mtk_wed_device *wed)
 	hw->queues = 4;
 	hw->max_rx_aggregation_subframes = max_subframes;
 	hw->max_tx_aggregation_subframes = max_subframes;
+	if (is_mt7990(mdev) && dev->has_eht)
+		hw->max_tx_aggregation_subframes = 512;
+
 	hw->netdev_features = NETIF_F_RXCSUM;
 	if (mtk_wed_device_active(wed))
 		hw->netdev_features |= NETIF_F_HW_TC;
@@ -475,7 +478,7 @@ mt7996_init_wiphy(struct ieee80211_hw *hw, struct mtk_wed_device *wed)
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_CAN_REPLACE_PTK0);
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_MU_MIMO_AIR_SNIFFER);
 
-	if (mt7996_has_background_radar(dev) &&
+	if (mt7996_eeprom_has_background_radar(dev) &&
 	    (!mdev->dev->of_node ||
 	     !of_property_read_bool(mdev->dev->of_node,
 				    "mediatek,disable-radar-background")))
@@ -932,19 +935,22 @@ static int mt7996_variant_type_init(struct mt7996_dev *dev)
 	u8 var_type;
 
 	switch (mt76_chip(&dev->mt76)) {
-	case 0x7990:
+	case MT7996_DEVICE_ID:
 		if (val & MT_PAD_GPIO_2ADIE_TBTC)
 			var_type = MT7996_VAR_TYPE_233;
 		else
 			var_type = MT7996_VAR_TYPE_444;
 		break;
-	case 0x7992:
+	case MT7992_DEVICE_ID:
 		if (val & MT_PAD_GPIO_ADIE_SINGLE)
 			var_type = MT7992_VAR_TYPE_23;
 		else if (u32_get_bits(val, MT_PAD_GPIO_ADIE_COMB_7992))
 			var_type = MT7992_VAR_TYPE_44;
 		else
 			return -EINVAL;
+		break;
+	case MT7990_DEVICE_ID:
+		var_type = MT7990_VAR_TYPE_23;
 		break;
 	default:
 		return -EINVAL;
@@ -1064,10 +1070,10 @@ void mt7996_set_stream_vht_txbf_caps(struct mt7996_phy *phy)
 	*cap |= IEEE80211_VHT_CAP_SU_BEAMFORMEE_CAPABLE |
 		IEEE80211_VHT_CAP_MU_BEAMFORMEE_CAPABLE;
 
-	if (is_mt7996(phy->mt76->dev))
-		*cap |= FIELD_PREP(IEEE80211_VHT_CAP_BEAMFORMEE_STS_MASK, 3);
-	else
+	if (is_mt7992(phy->mt76->dev))
 		*cap |= FIELD_PREP(IEEE80211_VHT_CAP_BEAMFORMEE_STS_MASK, 4);
+	else
+		*cap |= FIELD_PREP(IEEE80211_VHT_CAP_BEAMFORMEE_STS_MASK, 3);
 
 	*cap &= ~(IEEE80211_VHT_CAP_SOUNDING_DIMENSIONS_MASK |
 		  IEEE80211_VHT_CAP_SU_BEAMFORMER_CAPABLE |
@@ -1110,8 +1116,7 @@ mt7996_set_stream_he_txbf_caps(struct mt7996_phy *phy,
 	elem->phy_cap_info[7] &= ~IEEE80211_HE_PHY_CAP7_MAX_NC_MASK;
 
 	c = IEEE80211_HE_PHY_CAP2_NDP_4x_LTF_AND_3_2US |
-	    IEEE80211_HE_PHY_CAP2_UL_MU_FULL_MU_MIMO |
-	    IEEE80211_HE_PHY_CAP2_UL_MU_PARTIAL_MU_MIMO;
+	    IEEE80211_HE_PHY_CAP2_UL_MU_FULL_MU_MIMO;
 	elem->phy_cap_info[2] |= c;
 
 	c = IEEE80211_HE_PHY_CAP4_SU_BEAMFORMEE;
