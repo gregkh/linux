@@ -1627,7 +1627,7 @@ void set_pcie_hotplug_bridge(struct pci_dev *pdev)
 
 	pcie_capability_read_dword(pdev, PCI_EXP_SLTCAP, &reg32);
 	if (reg32 & PCI_EXP_SLTCAP_HPC)
-		pdev->is_hotplug_bridge = 1;
+		pdev->is_hotplug_bridge = pdev->is_pciehp = 1;
 }
 
 static void set_pcie_thunderbolt(struct pci_dev *dev)
@@ -1971,6 +1971,9 @@ int pci_setup_device(struct pci_dev *dev)
 	set_pcie_thunderbolt(dev);
 
 	set_pcie_untrusted(dev);
+
+	if (pci_is_pcie(dev))
+		dev->supported_speeds = pcie_get_supported_speeds(dev);
 
 	/* "Unknown power state" */
 	dev->current_state = PCI_UNKNOWN;
