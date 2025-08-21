@@ -2930,6 +2930,8 @@ bool evsel__is_hybrid(struct evsel *evsel)
 
 struct evsel *evsel__leader(struct evsel *evsel)
 {
+	if (evsel->core.leader == NULL)
+		return NULL;
 	return container_of(evsel->core.leader, struct evsel, core);
 }
 
