@@ -371,6 +371,8 @@ static inline __attribute__ ((const)) int fls(unsigned long x)
  */
 static inline __attribute__ ((const)) int __fls(unsigned long x)
 {
+	if (__builtin_constant_p(x))
+		return x ? BITS_PER_LONG - 1 - __builtin_clzl(x) : 0;
 	/* FLS insn has exactly same semantics as the API */
 	return	__builtin_arc_fls(x);
 }
