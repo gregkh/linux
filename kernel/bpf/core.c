@@ -1832,29 +1832,57 @@ static unsigned int __bpf_prog_ret0_warn(const void *ctx,
 }
 #endif
 
+static bool __bpf_prog_map_compatible(struct bpf_map *map,
+				      const struct bpf_prog *fp)
+{
+	enum bpf_prog_type prog_type = fp->aux->dst_prog ? fp->aux->dst_prog->type : fp->type;
+	struct bpf_prog_aux *aux = fp->aux;
+	bool ret = false;
+
+	if (fp->kprobe_override)
+		return ret;
+
+	spin_lock(&map->owner_lock);
+	/* There's no owner yet where we could check for compatibility. */
+	if (!map->owner) {
+		map->owner = bpf_map_owner_alloc(map);
+		if (!map->owner)
+			goto err;
+		map->owner->type  = prog_type;
+		map->owner->jited = fp->jited;
+		/* Note: xdp_has_frags doesn't exist in aux yet in our branch */
+		/* map->owner->xdp_has_frags = aux->xdp_has_frags; */
+		map->owner->attach_func_proto = aux->attach_func_proto;
+		ret = true;
+	} else {
+		ret = map->owner->type  == prog_type &&
+		      map->owner->jited == fp->jited;
+		/* Note: xdp_has_frags check would go here when available */
+		/* && map->owner->xdp_has_frags == aux->xdp_has_frags; */
+		if (ret &&
+		    map->owner->attach_func_proto != aux->attach_func_proto) {
+			switch (prog_type) {
+			case BPF_PROG_TYPE_TRACING:
+			case BPF_PROG_TYPE_LSM:
+			case BPF_PROG_TYPE_EXT:
+			case BPF_PROG_TYPE_STRUCT_OPS:
+				ret = false;
+				break;
+			default:
+				break;
+			}
+		}
+	}
+err:
+	spin_unlock(&map->owner_lock);
+	return ret;
+}
+
 bool bpf_prog_array_compatible(struct bpf_array *array,
 			       const struct bpf_prog *fp)
 {
-	bool ret;
-
-	if (fp->kprobe_override)
-		return false;
-
-	spin_lock(&array->aux->owner.lock);
-
-	if (!array->aux->owner.type) {
-		/* There's no owner yet where we could check for
-		 * compatibility.
-		 */
-		array->aux->owner.type  = fp->type;
-		array->aux->owner.jited = fp->jited;
-		ret = true;
-	} else {
-		ret = array->aux->owner.type  == fp->type &&
-		      array->aux->owner.jited == fp->jited;
-	}
-	spin_unlock(&array->aux->owner.lock);
-	return ret;
+	struct bpf_map *map = &array->map;
+	return __bpf_prog_map_compatible(map, fp);
 }
 
 static int bpf_check_tail_call(const struct bpf_prog *fp)
