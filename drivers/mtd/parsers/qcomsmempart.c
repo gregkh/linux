@@ -74,13 +74,6 @@ static int parse_qcomsmem_part(struct mtd_info *mtd,
 			&& mtd->type == MTD_NORFLASH)
 		block_size = 64 * 1024;
 
-	if (IS_ENABLED(CONFIG_MTD_SPI_NOR_USE_4K_SECTORS)
-			&& mtd->type == MTD_NORFLASH) {
-		pr_err("%s: SMEM partition parser is incompatible with 4K sectors\n",
-				mtd->name);
-		return -EINVAL;
-	}
-
 	pr_debug("Parsing partition table info from SMEM\n");
 	ptable = qcom_smem_get(SMEM_APPS, SMEM_AARM_PARTITION_TABLE, &len);
 	if (IS_ERR(ptable)) {
