@@ -352,6 +352,8 @@ nvkm_fifo_dtor(struct nvkm_engine *engine)
 	mutex_destroy(&fifo->userd.mutex);
 
 	nvkm_event_fini(&fifo->nonstall.event);
+	if (fifo->func->nonstall_dtor)
+		fifo->func->nonstall_dtor(fifo);
 	mutex_destroy(&fifo->mutex);
 
 	if (fifo->func->dtor)
