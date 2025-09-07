@@ -2184,7 +2184,7 @@ static bool page_make_device_exclusive(struct page *page, struct mm_struct *mm,
 	 * issues. Also tail pages shouldn't be passed to rmap_walk so skip
 	 * those.
 	 */
-	if (!PageAnon(page) || PageTail(page))
+	if (!PageAnon(page) || PageTail(page) || PageHuge(page))
 		return false;
 
 	rmap_walk(page, &rwc);
