@@ -42,14 +42,13 @@
 
 
 struct ipq_pwm_chip {
-	struct pwm_chip chip;
 	struct clk *clk;
 	void __iomem *mem;
 };
 
 static struct ipq_pwm_chip *ipq_pwm_from_chip(struct pwm_chip *chip)
 {
-	return container_of(chip, struct ipq_pwm_chip, chip);
+	return pwmchip_get_drvdata(chip);
 }
 
 static unsigned int ipq_pwm_reg_read(struct pwm_device *pwm, unsigned int reg)
@@ -209,15 +208,17 @@ static const struct pwm_ops ipq_pwm_ops = {
 
 static int ipq_pwm_probe(struct platform_device *pdev)
 {
+	struct pwm_chip *chip;
 	struct ipq_pwm_chip *pwm;
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	pwm = devm_kzalloc(dev, sizeof(*pwm), GFP_KERNEL);
-	if (!pwm)
-		return -ENOMEM;
+	chip = devm_pwmchip_alloc(dev, 4, sizeof(*pwm));
+	if (IS_ERR(chip))
+		return PTR_ERR(chip);
+	pwm = ipq_pwm_from_chip(chip);
 
-	platform_set_drvdata(pdev, pwm);
+	platform_set_drvdata(pdev, chip);
 
 	pwm->mem = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(pwm->mem))
@@ -233,11 +234,9 @@ static int ipq_pwm_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "clock enable failed");
 
-	pwm->chip.dev = *dev;
-	pwm->chip.ops = &ipq_pwm_ops;
-	pwm->chip.npwm = 4;
+	chip->ops = &ipq_pwm_ops;
 
-	ret = pwmchip_add(&pwm->chip);
+	ret = pwmchip_add(chip);
 	if (ret < 0) {
 		dev_err_probe(dev, ret, "pwmchip_add() failed\n");
 		clk_disable_unprepare(pwm->clk);
@@ -248,9 +247,10 @@ static int ipq_pwm_probe(struct platform_device *pdev)
 
 static void ipq_pwm_remove(struct platform_device *pdev)
 {
-	struct ipq_pwm_chip *pwm = platform_get_drvdata(pdev);
+	struct pwm_chip *chip = platform_get_drvdata(pdev);
+	struct ipq_pwm_chip *pwm = ipq_pwm_from_chip(chip);
 
-	pwmchip_remove(&pwm->chip);
+	pwmchip_remove(chip);
 	clk_disable_unprepare(pwm->clk);
 }
 
