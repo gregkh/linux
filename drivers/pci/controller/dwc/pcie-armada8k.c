@@ -21,6 +21,7 @@
 #include <linux/platform_device.h>
 #include <linux/resource.h>
 #include <linux/of_pci.h>
+#include <linux/of_platform.h>
 
 #include "pcie-designware.h"
 
@@ -270,6 +271,28 @@ static int armada8k_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct resource *base;
 	int ret;
+
+	struct device_node *dep_np;
+	struct platform_device *dep_pdev;
+
+	dep_np = of_parse_phandle(dev->of_node, "depends-on", 0);
+	if (dep_np) {
+		dep_pdev = of_find_device_by_node(dep_np);
+		of_node_put(dep_np);
+		if (dep_pdev) {
+			if (!platform_get_drvdata(dep_pdev)) {
+				dev_info(dev,
+					 "deferred probe: %pOF not ready\n",
+					 dep_pdev->dev.of_node);
+				return -EPROBE_DEFER;
+			}
+		} else {
+			dev_warn(
+				dev,
+				"deferred probe: depends-on node not available\n");
+			return -EPROBE_DEFER;
+		}
+	}
 
 	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
