@@ -143,7 +143,7 @@ static inline bool io_kbuf_commit(struct io_kiocb *req,
 		struct io_uring_buf *buf;
 
 		buf = io_ring_head_to_buf(bl->buf_ring, bl->head, bl->mask);
-		if (WARN_ON_ONCE(len > buf->len))
+		if (len > buf->len)
 			len = buf->len;
 		buf->len -= len;
 		if (buf->len) {
