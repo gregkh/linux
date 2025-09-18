@@ -241,7 +241,7 @@ static int io_poll_check_events(struct io_kiocb *req, bool *locked)
 	struct io_ring_ctx *ctx = req->ctx;
 	int v;
 
-	if (unlikely(io_should_terminate_tw()))
+	if (unlikely(io_should_terminate_tw(ctx)))
 		return -ECANCELED;
 
 	do {
