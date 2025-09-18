@@ -1249,8 +1249,7 @@ static void io_req_task_cancel(struct io_kiocb *req, bool *locked)
 void io_req_task_submit(struct io_kiocb *req, bool *locked)
 {
 	io_tw_lock(req->ctx, locked);
-	/* req->task == current here, checking PF_EXITING is safe */
-	if (likely(!(req->task->flags & PF_EXITING)))
+	if (likely(!io_should_terminate_tw()))
 		io_queue_sqe(req);
 	else
 		io_req_complete_failed(req, -EFAULT);
@@ -1773,7 +1772,7 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 int io_poll_issue(struct io_kiocb *req, bool *locked)
 {
 	io_tw_lock(req->ctx, locked);
-	if (unlikely(req->task->flags & PF_EXITING))
+	if (unlikely(io_should_terminate_tw()))
 		return -EFAULT;
 	return io_issue_sqe(req, IO_URING_F_NONBLOCK|IO_URING_F_MULTISHOT);
 }
