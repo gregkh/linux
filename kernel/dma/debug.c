@@ -39,6 +39,7 @@ enum {
 	dma_debug_sg,
 	dma_debug_coherent,
 	dma_debug_resource,
+	dma_debug_noncoherent,
 };
 
 enum map_err_types {
@@ -59,8 +60,7 @@ enum map_err_types {
  * @direction: enum dma_data_direction
  * @sg_call_ents: 'nents' from dma_map_sg
  * @sg_mapped_ents: 'mapped_ents' from dma_map_sg
- * @pfn: page frame of the start address
- * @offset: offset of mapping relative to pfn
+ * @paddr: physical start address of the mapping
  * @map_err_type: track whether dma_mapping_error() was checked
  * @stack_len: number of backtrace entries in @stack_entries
  * @stack_entries: stack of backtrace history
@@ -74,8 +74,7 @@ struct dma_debug_entry {
 	int              direction;
 	int		 sg_call_ents;
 	int		 sg_mapped_ents;
-	unsigned long	 pfn;
-	size_t		 offset;
+	phys_addr_t	 paddr;
 	enum map_err_types  map_err_type;
 #ifdef CONFIG_STACKTRACE
 	unsigned int	stack_len;
@@ -143,6 +142,7 @@ static const char *type2name[] = {
 	[dma_debug_sg] = "scatter-gather",
 	[dma_debug_coherent] = "coherent",
 	[dma_debug_resource] = "resource",
+	[dma_debug_noncoherent] = "noncoherent",
 };
 
 static const char *dir2name[] = {
@@ -389,14 +389,6 @@ static void hash_bucket_del(struct dma_debug_entry *entry)
 	list_del(&entry->list);
 }
 
-static unsigned long long phys_addr(struct dma_debug_entry *entry)
-{
-	if (entry->type == dma_debug_resource)
-		return __pfn_to_phys(entry->pfn) + entry->offset;
-
-	return page_to_phys(pfn_to_page(entry->pfn)) + entry->offset;
-}
-
 /*
  * For each mapping (initial cacheline in the case of
  * dma_alloc_coherent/dma_map_page, initial cacheline in each page of a
@@ -428,8 +420,8 @@ static DEFINE_SPINLOCK(radix_lock);
 
 static phys_addr_t to_cacheline_number(struct dma_debug_entry *entry)
 {
-	return (entry->pfn << CACHELINE_PER_PAGE_SHIFT) +
-		(entry->offset >> L1_CACHE_SHIFT);
+	return ((entry->paddr >> PAGE_SHIFT) << CACHELINE_PER_PAGE_SHIFT) +
+		(offset_in_page(entry->paddr) >> L1_CACHE_SHIFT);
 }
 
 static int active_cacheline_read_overlap(phys_addr_t cln)
@@ -538,11 +530,11 @@ void debug_dma_dump_mappings(struct device *dev)
 			if (!dev || dev == entry->dev) {
 				cln = to_cacheline_number(entry);
 				dev_info(entry->dev,
-					 "%s idx %d P=%llx N=%lx D=%llx L=%llx cln=%pa %s %s\n",
+					 "%s idx %d P=%pa D=%llx L=%llx cln=%pa %s %s\n",
 					 type2name[entry->type], idx,
-					 phys_addr(entry), entry->pfn,
-					 entry->dev_addr, entry->size,
-					 &cln, dir2name[entry->direction],
+					 &entry->paddr, entry->dev_addr,
+					 entry->size, &cln,
+					 dir2name[entry->direction],
 					 maperr2str[entry->map_err_type]);
 			}
 		}
@@ -569,13 +561,13 @@ static int dump_show(struct seq_file *seq, void *v)
 		list_for_each_entry(entry, &bucket->list, list) {
 			cln = to_cacheline_number(entry);
 			seq_printf(seq,
-				   "%s %s %s idx %d P=%llx N=%lx D=%llx L=%llx cln=%pa %s %s\n",
+				   "%s %s %s idx %d P=%pa D=%llx L=%llx cln=%pa %s %s\n",
 				   dev_driver_string(entry->dev),
 				   dev_name(entry->dev),
 				   type2name[entry->type], idx,
-				   phys_addr(entry), entry->pfn,
-				   entry->dev_addr, entry->size,
-				   &cln, dir2name[entry->direction],
+				   &entry->paddr, entry->dev_addr,
+				   entry->size, &cln,
+				   dir2name[entry->direction],
 				   maperr2str[entry->map_err_type]);
 		}
 		spin_unlock_irqrestore(&bucket->lock, flags);
@@ -1003,16 +995,17 @@ static void check_unmap(struct dma_debug_entry *ref)
 			   "[mapped as %s] [unmapped as %s]\n",
 			   ref->dev_addr, ref->size,
 			   type2name[entry->type], type2name[ref->type]);
-	} else if ((entry->type == dma_debug_coherent) &&
-		   (phys_addr(ref) != phys_addr(entry))) {
+	} else if ((entry->type == dma_debug_coherent ||
+		    entry->type == dma_debug_noncoherent) &&
+		   ref->paddr != entry->paddr) {
 		err_printk(ref->dev, entry, "device driver frees "
 			   "DMA memory with different CPU address "
 			   "[device address=0x%016llx] [size=%llu bytes] "
-			   "[cpu alloc address=0x%016llx] "
-			   "[cpu free address=0x%016llx]",
+			   "[cpu alloc address=0x%pa] "
+			   "[cpu free address=0x%pa]",
 			   ref->dev_addr, ref->size,
-			   phys_addr(entry),
-			   phys_addr(ref));
+			   &entry->paddr,
+			   &ref->paddr);
 	}
 
 	if (ref->sg_call_ents && ref->type == dma_debug_sg &&
@@ -1231,8 +1224,7 @@ void debug_dma_map_page(struct device *dev, struct page *page, size_t offset,
 
 	entry->dev       = dev;
 	entry->type      = dma_debug_single;
-	entry->pfn	 = page_to_pfn(page);
-	entry->offset	 = offset;
+	entry->paddr	 = page_to_phys(page) + offset;
 	entry->dev_addr  = dma_addr;
 	entry->size      = size;
 	entry->direction = direction;
@@ -1327,8 +1319,7 @@ void debug_dma_map_sg(struct device *dev, struct scatterlist *sg,
 
 		entry->type           = dma_debug_sg;
 		entry->dev            = dev;
-		entry->pfn	      = page_to_pfn(sg_page(s));
-		entry->offset	      = s->offset;
+		entry->paddr	      = sg_phys(s);
 		entry->size           = sg_dma_len(s);
 		entry->dev_addr       = sg_dma_address(s);
 		entry->direction      = direction;
@@ -1374,8 +1365,7 @@ void debug_dma_unmap_sg(struct device *dev, struct scatterlist *sglist,
 		struct dma_debug_entry ref = {
 			.type           = dma_debug_sg,
 			.dev            = dev,
-			.pfn		= page_to_pfn(sg_page(s)),
-			.offset		= s->offset,
+			.paddr		= sg_phys(s),
 			.dev_addr       = sg_dma_address(s),
 			.size           = sg_dma_len(s),
 			.direction      = dir,
@@ -1390,6 +1380,18 @@ void debug_dma_unmap_sg(struct device *dev, struct scatterlist *sglist,
 
 		check_unmap(&ref);
 	}
+}
+
+static phys_addr_t virt_to_paddr(void *virt)
+{
+	struct page *page;
+
+	if (is_vmalloc_addr(virt))
+		page = vmalloc_to_page(virt);
+	else
+		page = virt_to_page(virt);
+
+	return page_to_phys(page) + offset_in_page(virt);
 }
 
 void debug_dma_alloc_coherent(struct device *dev, size_t size,
@@ -1414,15 +1416,10 @@ void debug_dma_alloc_coherent(struct device *dev, size_t size,
 
 	entry->type      = dma_debug_coherent;
 	entry->dev       = dev;
-	entry->offset	 = offset_in_page(virt);
+	entry->paddr	 = virt_to_paddr(virt);
 	entry->size      = size;
 	entry->dev_addr  = dma_addr;
 	entry->direction = DMA_BIDIRECTIONAL;
-
-	if (is_vmalloc_addr(virt))
-		entry->pfn = vmalloc_to_pfn(virt);
-	else
-		entry->pfn = page_to_pfn(virt_to_page(virt));
 
 	add_dma_entry(entry, attrs);
 }
@@ -1433,7 +1430,6 @@ void debug_dma_free_coherent(struct device *dev, size_t size,
 	struct dma_debug_entry ref = {
 		.type           = dma_debug_coherent,
 		.dev            = dev,
-		.offset		= offset_in_page(virt),
 		.dev_addr       = dma_addr,
 		.size           = size,
 		.direction      = DMA_BIDIRECTIONAL,
@@ -1443,10 +1439,7 @@ void debug_dma_free_coherent(struct device *dev, size_t size,
 	if (!is_vmalloc_addr(virt) && !virt_addr_valid(virt))
 		return;
 
-	if (is_vmalloc_addr(virt))
-		ref.pfn = vmalloc_to_pfn(virt);
-	else
-		ref.pfn = page_to_pfn(virt_to_page(virt));
+	ref.paddr = virt_to_paddr(virt);
 
 	if (unlikely(dma_debug_disabled()))
 		return;
@@ -1469,8 +1462,7 @@ void debug_dma_map_resource(struct device *dev, phys_addr_t addr, size_t size,
 
 	entry->type		= dma_debug_resource;
 	entry->dev		= dev;
-	entry->pfn		= PHYS_PFN(addr);
-	entry->offset		= offset_in_page(addr);
+	entry->paddr		= addr;
 	entry->size		= size;
 	entry->dev_addr		= dma_addr;
 	entry->direction	= direction;
@@ -1547,8 +1539,7 @@ void debug_dma_sync_sg_for_cpu(struct device *dev, struct scatterlist *sg,
 		struct dma_debug_entry ref = {
 			.type           = dma_debug_sg,
 			.dev            = dev,
-			.pfn		= page_to_pfn(sg_page(s)),
-			.offset		= s->offset,
+			.paddr		= sg_phys(s),
 			.dev_addr       = sg_dma_address(s),
 			.size           = sg_dma_len(s),
 			.direction      = direction,
@@ -1579,8 +1570,7 @@ void debug_dma_sync_sg_for_device(struct device *dev, struct scatterlist *sg,
 		struct dma_debug_entry ref = {
 			.type           = dma_debug_sg,
 			.dev            = dev,
-			.pfn		= page_to_pfn(sg_page(s)),
-			.offset		= s->offset,
+			.paddr		= sg_phys(sg),
 			.dev_addr       = sg_dma_address(s),
 			.size           = sg_dma_len(s),
 			.direction      = direction,
@@ -1594,6 +1584,49 @@ void debug_dma_sync_sg_for_device(struct device *dev, struct scatterlist *sg,
 
 		check_sync(dev, &ref, false);
 	}
+}
+
+void debug_dma_alloc_pages(struct device *dev, struct page *page,
+			   size_t size, int direction,
+			   dma_addr_t dma_addr,
+			   unsigned long attrs)
+{
+	struct dma_debug_entry *entry;
+
+	if (unlikely(dma_debug_disabled()))
+		return;
+
+	entry = dma_entry_alloc();
+	if (!entry)
+		return;
+
+	entry->type      = dma_debug_noncoherent;
+	entry->dev       = dev;
+	entry->paddr	 = page_to_phys(page);
+	entry->size      = size;
+	entry->dev_addr  = dma_addr;
+	entry->direction = direction;
+
+	add_dma_entry(entry, attrs);
+}
+
+void debug_dma_free_pages(struct device *dev, struct page *page,
+			  size_t size, int direction,
+			  dma_addr_t dma_addr)
+{
+	struct dma_debug_entry ref = {
+		.type           = dma_debug_noncoherent,
+		.dev            = dev,
+		.paddr		= page_to_phys(page),
+		.dev_addr       = dma_addr,
+		.size           = size,
+		.direction      = direction,
+	};
+
+	if (unlikely(dma_debug_disabled()))
+		return;
+
+	check_unmap(&ref);
 }
 
 static int __init dma_debug_driver_setup(char *str)
