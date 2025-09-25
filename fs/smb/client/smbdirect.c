@@ -1075,8 +1075,10 @@ static int smbd_negotiate(struct smbd_connection *info)
 	log_rdma_event(INFO, "smbd_post_recv rc=%d iov.addr=0x%llx iov.length=%u iov.lkey=0x%x\n",
 		       rc, response->sge.addr,
 		       response->sge.length, response->sge.lkey);
-	if (rc)
+	if (rc) {
+		put_receive_buffer(info, response);
 		return rc;
+	}
 
 	init_completion(&info->negotiate_completion);
 	info->negotiate_done = false;
@@ -1307,6 +1309,9 @@ void smbd_destroy(struct TCP_Server_Info *server)
 			info->disconn_wait,
 			sc->status == SMBDIRECT_SOCKET_DISCONNECTED);
 	}
+
+	log_rdma_event(INFO, "cancelling post_send_credits_work\n");
+	disable_work_sync(&info->post_send_credits_work);
 
 	log_rdma_event(INFO, "destroying qp\n");
 	ib_drain_qp(sc->ib.qp);
