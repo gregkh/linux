@@ -825,7 +825,9 @@ int xe_guc_post_load_init(struct xe_guc *guc)
 			return ret;
 	}
 
-	return xe_guc_submit_enable(guc);
+	guc->submission_state.enabled = true;
+
+	return 0;
 }
 
 int xe_guc_reset(struct xe_guc *guc)
@@ -1519,7 +1521,7 @@ void xe_guc_sanitize(struct xe_guc *guc)
 {
 	xe_uc_fw_sanitize(&guc->fw);
 	xe_guc_ct_disable(&guc->ct);
-	xe_guc_submit_disable(guc);
+	guc->submission_state.enabled = false;
 }
 
 int xe_guc_reset_prepare(struct xe_guc *guc)
