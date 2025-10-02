@@ -591,14 +591,15 @@ static int rv3028_ioctl(struct device *dev, unsigned int cmd, unsigned long arg)
 		ret = regmap_read(rv3028->regmap, RV3028_STATUS, &status);
 		if (ret < 0)
 			return ret;
-
-		status = ret & RV3028_STATUS_PORF ? RTC_VL_DATA_INVALID : 0;
-		if (ret & RV3028_STATUS_BSF){
-			status |= RTC_VL_BACKUP_SWITCH;
+		
+		// will use ret for returning to userspace
+		ret = status & RV3028_STATUS_PORF ? RTC_VL_DATA_INVALID : 0;
+		if (status & RV3028_STATUS_BSF){
+			ret |= RTC_VL_BACKUP_SWITCH;
 		}
-		return put_user(status, (unsigned int __user *)arg);
+		return put_user(ret, (unsigned int __user *)arg);
 	case RTC_VL_CLR:
-		status = regmap_read(rv3028->regmap, RV3028_STATUS, &status);
+		ret = regmap_read(rv3028->regmap, RV3028_STATUS, &status);
 		if (ret < 0)
 			return ret;
 		
