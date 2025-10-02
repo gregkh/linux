@@ -458,7 +458,7 @@ static void xhci_dbc_ring_init(struct xhci_ring *ring)
 		trb->link.segment_ptr = cpu_to_le64(ring->first_seg->dma);
 		trb->link.control = cpu_to_le32(LINK_TOGGLE | TRB_TYPE(TRB_LINK));
 	}
-	xhci_initialize_ring_info(ring);
+	xhci_initialize_ring_info(ring, 1);
 }
 
 static int xhci_dbc_reinit_ep_rings(struct xhci_dbc *dbc)
