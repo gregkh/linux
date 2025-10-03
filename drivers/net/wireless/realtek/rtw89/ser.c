@@ -484,6 +484,7 @@ static void ser_l1_reset_pre_st_hdl(struct rtw89_ser *ser, u8 evt)
 static void ser_reset_trx_st_hdl(struct rtw89_ser *ser, u8 evt)
 {
 	struct rtw89_dev *rtwdev = container_of(ser, struct rtw89_dev, ser);
+	struct wiphy *wiphy = rtwdev->hw->wiphy;
 
 	switch (evt) {
 	case SER_EV_STATE_IN:
@@ -496,7 +497,9 @@ static void ser_reset_trx_st_hdl(struct rtw89_ser *ser, u8 evt)
 		}
 
 		drv_stop_rx(ser);
+		wiphy_lock(wiphy);
 		drv_trx_reset(ser);
+		wiphy_unlock(wiphy);
 
 		/* wait m3 */
 		hal_send_m2_event(ser);
