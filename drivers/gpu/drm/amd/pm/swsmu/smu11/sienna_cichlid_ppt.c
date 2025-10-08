@@ -1964,7 +1964,9 @@ static void sienna_cichlid_get_override_pcie_settings(struct smu_context *smu,
 	}
 }
 
+#ifndef MAX
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
+#endif
 
 static int sienna_cichlid_update_pcie_parameters(struct smu_context *smu,
 					 uint32_t pcie_gen_cap,
