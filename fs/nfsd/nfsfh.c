@@ -268,9 +268,6 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct net *net,
 				dentry);
 	}
 
-	fhp->fh_dentry = dentry;
-	fhp->fh_export = exp;
-
 	switch (fhp->fh_maxsize) {
 	case NFS4_FHSIZE:
 		if (dentry->d_sb->s_export_op->flags & EXPORT_OP_NOATOMIC_ATTR)
@@ -291,6 +288,9 @@ static __be32 nfsd_set_fh_dentry(struct svc_rqst *rqstp, struct net *net,
 		if (exp->ex_flags & NFSEXP_V4ROOT)
 			goto out;
 	}
+
+	fhp->fh_dentry = dentry;
+	fhp->fh_export = exp;
 
 	return 0;
 out:
