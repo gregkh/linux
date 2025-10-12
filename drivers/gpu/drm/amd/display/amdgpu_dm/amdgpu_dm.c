@@ -1758,10 +1758,11 @@ dm_dmub_send_vbios_gpint_command(struct amdgpu_device *adev,
 	return DMUB_STATUS_TIMEOUT;
 }
 
-static struct dml2_soc_bb *dm_dmub_get_vbios_bounding_box(struct amdgpu_device *adev)
+static void *dm_dmub_get_vbios_bounding_box(struct amdgpu_device *adev)
 {
-	struct dml2_soc_bb *bb;
+	void *bb;
 	long long addr;
+	unsigned int bb_size;
 	int i = 0;
 	uint16_t chunk;
 	enum dmub_gpint_command send_addrs[] = {
@@ -1774,6 +1775,7 @@ static struct dml2_soc_bb *dm_dmub_get_vbios_bounding_box(struct amdgpu_device *
 
 	switch (amdgpu_ip_version(adev, DCE_HWIP, 0)) {
 	case IP_VERSION(4, 0, 1):
+		bb_size = sizeof(struct dml2_soc_bb);
 		break;
 	default:
 		return NULL;
@@ -1781,7 +1783,7 @@ static struct dml2_soc_bb *dm_dmub_get_vbios_bounding_box(struct amdgpu_device *
 
 	bb =  dm_allocate_gpu_mem(adev,
 				  DC_MEM_ALLOC_TYPE_GART,
-				  sizeof(struct dml2_soc_bb),
+				  bb_size,
 				  &addr);
 	if (!bb)
 		return NULL;
@@ -1847,7 +1849,7 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 	mutex_init(&adev->dm.audio_lock);
 
 	if (amdgpu_dm_irq_init(adev)) {
-		drm_err(adev_to_drm(adev), "amdgpu: failed to initialize DM IRQ support.\n");
+		drm_err(adev_to_drm(adev), "failed to initialize DM IRQ support.\n");
 		goto error;
 	}
 
@@ -2039,7 +2041,7 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 
 	adev->dm.hpd_rx_offload_wq = hpd_rx_irq_create_workqueue(adev);
 	if (!adev->dm.hpd_rx_offload_wq) {
-		drm_err(adev_to_drm(adev), "amdgpu: failed to create hpd rx offload workqueue.\n");
+		drm_err(adev_to_drm(adev), "failed to create hpd rx offload workqueue.\n");
 		goto error;
 	}
 
@@ -2055,7 +2057,7 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 	adev->dm.freesync_module = mod_freesync_create(adev->dm.dc);
 	if (!adev->dm.freesync_module) {
 		drm_err(adev_to_drm(adev),
-		"amdgpu: failed to initialize freesync_module.\n");
+		"failed to initialize freesync_module.\n");
 	} else
 		drm_dbg_driver(adev_to_drm(adev), "amdgpu: freesync_module init done %p.\n",
 				adev->dm.freesync_module);
@@ -2066,7 +2068,7 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 		adev->dm.vblank_control_workqueue =
 			create_singlethread_workqueue("dm_vblank_control_workqueue");
 		if (!adev->dm.vblank_control_workqueue)
-			drm_err(adev_to_drm(adev), "amdgpu: failed to initialize vblank_workqueue.\n");
+			drm_err(adev_to_drm(adev), "failed to initialize vblank_workqueue.\n");
 	}
 
 	if (adev->dm.dc->caps.ips_support &&
@@ -2077,7 +2079,7 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 		adev->dm.hdcp_workqueue = hdcp_create_workqueue(adev, &init_params.cp_psp, adev->dm.dc);
 
 		if (!adev->dm.hdcp_workqueue)
-			drm_err(adev_to_drm(adev), "amdgpu: failed to initialize hdcp_workqueue.\n");
+			drm_err(adev_to_drm(adev), "failed to initialize hdcp_workqueue.\n");
 		else
 			drm_dbg_driver(adev_to_drm(adev), "amdgpu: hdcp_workqueue init done %p.\n", adev->dm.hdcp_workqueue);
 
@@ -2087,20 +2089,20 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 		init_completion(&adev->dm.dmub_aux_transfer_done);
 		adev->dm.dmub_notify = kzalloc(sizeof(struct dmub_notification), GFP_KERNEL);
 		if (!adev->dm.dmub_notify) {
-			drm_info(adev_to_drm(adev), "amdgpu: fail to allocate adev->dm.dmub_notify");
+			drm_info(adev_to_drm(adev), "fail to allocate adev->dm.dmub_notify");
 			goto error;
 		}
 
 		adev->dm.delayed_hpd_wq = create_singlethread_workqueue("amdgpu_dm_hpd_wq");
 		if (!adev->dm.delayed_hpd_wq) {
-			drm_err(adev_to_drm(adev), "amdgpu: failed to create hpd offload workqueue.\n");
+			drm_err(adev_to_drm(adev), "failed to create hpd offload workqueue.\n");
 			goto error;
 		}
 
 		amdgpu_dm_outbox_init(adev);
 		if (!register_dmub_notify_callback(adev, DMUB_NOTIFICATION_AUX_REPLY,
 			dmub_aux_setconfig_callback, false)) {
-			drm_err(adev_to_drm(adev), "amdgpu: fail to register dmub aux callback");
+			drm_err(adev_to_drm(adev), "fail to register dmub aux callback");
 			goto error;
 		}
 
@@ -2109,7 +2111,7 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 
 		if (!register_dmub_notify_callback(adev, DMUB_NOTIFICATION_FUSED_IO,
 			dmub_aux_fused_io_callback, false)) {
-			drm_err(adev_to_drm(adev), "amdgpu: fail to register dmub fused io callback");
+			drm_err(adev_to_drm(adev), "fail to register dmub fused io callback");
 			goto error;
 		}
 		/* Enable outbox notification only after IRQ handlers are registered and DMUB is alive.
@@ -2127,7 +2129,7 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 
 	if (amdgpu_dm_initialize_drm_device(adev)) {
 		drm_err(adev_to_drm(adev),
-		"amdgpu: failed to initialize sw for display support.\n");
+		"failed to initialize sw for display support.\n");
 		goto error;
 	}
 
@@ -2142,14 +2144,14 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 
 	if (drm_vblank_init(adev_to_drm(adev), adev->dm.display_indexes_num)) {
 		drm_err(adev_to_drm(adev),
-		"amdgpu: failed to initialize sw for display support.\n");
+		"failed to initialize sw for display support.\n");
 		goto error;
 	}
 
 #if defined(CONFIG_DRM_AMD_SECURE_DISPLAY)
 	amdgpu_dm_crtc_secure_display_create_contexts(adev);
 	if (!adev->dm.secure_display_ctx.crtc_ctx)
-		drm_err(adev_to_drm(adev), "amdgpu: failed to initialize secure display contexts.\n");
+		drm_err(adev_to_drm(adev), "failed to initialize secure display contexts.\n");
 
 	if (amdgpu_ip_version(adev, DCE_HWIP, 0) >= IP_VERSION(4, 0, 1))
 		adev->dm.secure_display_ctx.support_mul_roi = true;
@@ -2406,6 +2408,7 @@ static int dm_dmub_sw_init(struct amdgpu_device *adev)
 		DMUB_WINDOW_MEMORY_TYPE_FB,		//DMUB_WINDOW_5_TRACEBUFF
 		DMUB_WINDOW_MEMORY_TYPE_FB,		//DMUB_WINDOW_6_FW_STATE
 		DMUB_WINDOW_MEMORY_TYPE_FB,		//DMUB_WINDOW_7_SCRATCH_MEM
+		DMUB_WINDOW_MEMORY_TYPE_FB,		//DMUB_WINDOW_IB_MEM
 		DMUB_WINDOW_MEMORY_TYPE_FB,		//DMUB_WINDOW_SHARED_STATE
 	};
 	int r;
@@ -2572,7 +2575,7 @@ static int dm_sw_init(struct amdgpu_ip_block *ip_block)
 	adev->dm.cgs_device = amdgpu_cgs_create_device(adev);
 
 	if (!adev->dm.cgs_device) {
-		drm_err(adev_to_drm(adev), "amdgpu: failed to create cgs device.\n");
+		drm_err(adev_to_drm(adev), "failed to create cgs device.\n");
 		return -EINVAL;
 	}
 
@@ -4029,19 +4032,19 @@ static int register_hpd_handlers(struct amdgpu_device *adev)
 	if (dc_is_dmub_outbox_supported(adev->dm.dc)) {
 		if (!register_dmub_notify_callback(adev, DMUB_NOTIFICATION_HPD,
 			dmub_hpd_callback, true)) {
-			drm_err(adev_to_drm(adev), "amdgpu: fail to register dmub hpd callback");
+			drm_err(adev_to_drm(adev), "fail to register dmub hpd callback");
 			return -EINVAL;
 		}
 
 		if (!register_dmub_notify_callback(adev, DMUB_NOTIFICATION_HPD_IRQ,
 			dmub_hpd_callback, true)) {
-			drm_err(adev_to_drm(adev), "amdgpu: fail to register dmub hpd callback");
+			drm_err(adev_to_drm(adev), "fail to register dmub hpd callback");
 			return -EINVAL;
 		}
 
 		if (!register_dmub_notify_callback(adev, DMUB_NOTIFICATION_HPD_SENSE_NOTIFY,
 			dmub_hpd_sense_callback, true)) {
-			drm_err(adev_to_drm(adev), "amdgpu: fail to register dmub hpd sense callback");
+			drm_err(adev_to_drm(adev), "fail to register dmub hpd sense callback");
 			return -EINVAL;
 		}
 	}
@@ -4853,6 +4856,14 @@ static void amdgpu_dm_backlight_set_level(struct amdgpu_display_manager *dm,
 	if (dm->dc->caps.ips_support && dm->dc->ctx->dmub_srv->idle_allowed) {
 		dc_allow_idle_optimizations(dm->dc, false);
 		reallow_idle = true;
+	}
+
+	if (trace_amdgpu_dm_brightness_enabled()) {
+		trace_amdgpu_dm_brightness(__builtin_return_address(0),
+					   user_brightness,
+					   brightness,
+					   caps->aux_support,
+					   power_supply_is_system_supplied() > 0);
 	}
 
 	if (caps->aux_support) {
@@ -7561,7 +7572,7 @@ static enum dc_status dm_validate_stream_and_context(struct dc *dc,
 		dc_result = DC_FAIL_ATTACH_SURFACES;
 
 	if (dc_result == DC_OK)
-		dc_result = dc_validate_global_state(dc, dc_state, true);
+		dc_result = dc_validate_global_state(dc, dc_state, DC_VALIDATE_MODE_ONLY);
 
 cleanup:
 	if (dc_state)
@@ -7619,7 +7630,7 @@ create_validate_stream_for_sink(struct drm_connector *connector,
 			dc_result = dm_validate_stream_and_context(adev->dm.dc, stream);
 
 		if (dc_result != DC_OK) {
-			DRM_DEBUG_KMS("Mode %dx%d (clk %d) pixel_encoding:%s color_depth:%s failed validation -- %s\n",
+			DRM_DEBUG_KMS("Pruned mode %d x %d (clk %d) %s %s -- %s\n",
 				      drm_mode->hdisplay,
 				      drm_mode->vdisplay,
 				      drm_mode->clock,
@@ -7888,6 +7899,23 @@ static int dm_encoder_helper_atomic_check(struct drm_encoder *encoder,
 	enum dc_color_depth color_depth;
 	int clock, bpp = 0;
 	bool is_y420 = false;
+
+	if ((connector->connector_type == DRM_MODE_CONNECTOR_eDP) ||
+	    (connector->connector_type == DRM_MODE_CONNECTOR_LVDS)) {
+		struct amdgpu_encoder *amdgpu_encoder = to_amdgpu_encoder(encoder);
+		struct drm_display_mode *native_mode = &amdgpu_encoder->native_mode;
+		enum drm_mode_status result;
+
+		result = drm_crtc_helper_mode_valid_fixed(encoder->crtc, adjusted_mode, native_mode);
+		if (result != MODE_OK && dm_new_connector_state->scaling == RMX_OFF) {
+			drm_dbg_driver(encoder->dev,
+				       "mode %dx%d@%dHz is not native, enabling scaling\n",
+				       adjusted_mode->hdisplay, adjusted_mode->vdisplay,
+				       drm_mode_vrefresh(adjusted_mode));
+			dm_new_connector_state->scaling = RMX_FULL;
+		}
+		return 0;
+	}
 
 	if (!aconnector->mst_output_port)
 		return 0;
@@ -12224,7 +12252,7 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 			drm_dbg_atomic(dev, "MST drm_dp_mst_atomic_check() failed\n");
 			goto fail;
 		}
-		status = dc_validate_global_state(dc, dm_state->context, true);
+		status = dc_validate_global_state(dc, dm_state->context, DC_VALIDATE_MODE_ONLY);
 		if (status != DC_OK) {
 			drm_dbg_atomic(dev, "DC global validation failure: %s (%d)",
 				       dc_status_to_str(status), status);

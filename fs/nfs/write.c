@@ -237,59 +237,17 @@ static void nfs_mapping_set_error(struct folio *folio, int error)
 }
 
 /*
- * nfs_page_group_search_locked
- * @head - head request of page group
- * @page_offset - offset into page
+ * nfs_page_covers_folio
+ * @req: struct nfs_page
  *
- * Search page group with head @head to find a request that contains the
- * page offset @page_offset.
- *
- * Returns a pointer to the first matching nfs request, or NULL if no
- * match is found.
- *
- * Must be called with the page group lock held
- */
-static struct nfs_page *
-nfs_page_group_search_locked(struct nfs_page *head, unsigned int page_offset)
-{
-	struct nfs_page *req;
-
-	req = head;
-	do {
-		if (page_offset >= req->wb_pgbase &&
-		    page_offset < (req->wb_pgbase + req->wb_bytes))
-			return req;
-
-		req = req->wb_this_page;
-	} while (req != head);
-
-	return NULL;
-}
-
-/*
- * nfs_page_group_covers_page
- * @head - head request of page group
- *
- * Return true if the page group with head @head covers the whole page,
- * returns false otherwise
+ * Return true if the request covers the whole folio.
+ * Note that the caller should ensure all subrequests have been joined
  */
 static bool nfs_page_group_covers_page(struct nfs_page *req)
 {
 	unsigned int len = nfs_folio_length(nfs_page_to_folio(req));
-	struct nfs_page *tmp;
-	unsigned int pos = 0;
 
-	nfs_page_group_lock(req);
-
-	for (;;) {
-		tmp = nfs_page_group_search_locked(req->wb_head, pos);
-		if (!tmp)
-			break;
-		pos = tmp->wb_pgbase + tmp->wb_bytes;
-	}
-
-	nfs_page_group_unlock(req);
-	return pos >= len;
+	return req->wb_pgbase == 0 && req->wb_bytes == len;
 }
 
 /* We can set the PG_uptodate flag if we see that a write request
@@ -709,7 +667,7 @@ int nfs_writepages(struct address_space *mapping, struct writeback_control *wbc)
 	nfs_inc_stats(inode, NFSIOS_VFSWRITEPAGES);
 
 	if (!(mntflags & NFS_MOUNT_WRITE_EAGER) || wbc->for_kupdate ||
-	    wbc->for_background || wbc->for_sync || wbc->for_reclaim) {
+	    wbc->for_background || wbc->for_sync) {
 		ioc = nfs_io_completion_alloc(GFP_KERNEL);
 		if (ioc)
 			nfs_io_completion_init(ioc, nfs_io_completion_commit,
@@ -2105,8 +2063,12 @@ int nfs_migrate_folio(struct address_space *mapping, struct folio *dst,
 	 *        that we can safely release the inode reference while holding
 	 *        the folio lock.
 	 */
-	if (folio_test_private(src))
-		return -EBUSY;
+	if (folio_test_private(src)) {
+		if (mode == MIGRATE_SYNC)
+			nfs_wb_folio(src->mapping->host, src);
+		if (folio_test_private(src))
+			return -EBUSY;
+	}
 
 	if (folio_test_private_2(src)) { /* [DEPRECATED] */
 		if (mode == MIGRATE_ASYNC)

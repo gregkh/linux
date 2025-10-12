@@ -36,12 +36,14 @@ static inline struct raydium_rm67200 *to_raydium_rm67200(struct drm_panel *panel
 
 static void raydium_rm67200_reset(struct raydium_rm67200 *ctx)
 {
-	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
-	msleep(60);
-	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-	msleep(60);
-	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
-	msleep(60);
+	if (ctx->reset_gpio) {
+		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+		msleep(60);
+		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+		msleep(60);
+		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+		msleep(60);
+	}
 }
 
 static void raydium_rm67200_write(struct mipi_dsi_multi_context *ctx,
@@ -383,9 +385,11 @@ static int raydium_rm67200_probe(struct mipi_dsi_device *dsi)
 	struct raydium_rm67200 *ctx;
 	int ret = 0;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_panel_alloc(dev, struct raydium_rm67200, panel,
+				   &raydium_rm67200_funcs,
+				   DRM_MODE_CONNECTOR_DSI);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	ctx->panel_info = device_get_match_data(dev);
 	if (!ctx->panel_info)
@@ -399,7 +403,7 @@ static int raydium_rm67200_probe(struct mipi_dsi_device *dsi)
 	if (ret < 0)
 		return ret;
 
-	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
+	ctx->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(ctx->reset_gpio))
 		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
 				     "Failed to get reset-gpios\n");
@@ -412,9 +416,6 @@ static int raydium_rm67200_probe(struct mipi_dsi_device *dsi)
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_MODE_LPM;
 	ctx->panel.prepare_prev_first = true;
-
-	drm_panel_init(&ctx->panel, dev, &raydium_rm67200_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
 
 	ret = drm_panel_of_backlight(&ctx->panel);
 	if (ret)
@@ -463,6 +464,7 @@ static const struct raydium_rm67200_panel_info w552793baa_info = {
 		.vtotal = 1952,
 		.width_mm = 68, /* 68.04mm */
 		.height_mm = 121, /* 120.96mm */
+		.flags = DRM_MODE_FLAG_NVSYNC | DRM_MODE_FLAG_NHSYNC,
 		.type = DRM_MODE_TYPE_DRIVER,
 	},
 	.regulators = w552793baa_regulators,

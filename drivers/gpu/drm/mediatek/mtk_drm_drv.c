@@ -43,14 +43,13 @@ static const struct drm_mode_config_helper_funcs mtk_drm_mode_config_helpers = {
 static struct drm_framebuffer *
 mtk_drm_mode_fb_create(struct drm_device *dev,
 		       struct drm_file *file,
+		       const struct drm_format_info *info,
 		       const struct drm_mode_fb_cmd2 *cmd)
 {
-	const struct drm_format_info *info = drm_get_format_info(dev, cmd);
-
 	if (info->num_planes != 1)
 		return ERR_PTR(-EINVAL);
 
-	return drm_gem_fb_create(dev, file, cmd);
+	return drm_gem_fb_create(dev, file, info, cmd);
 }
 
 static const struct drm_mode_config_funcs mtk_drm_mode_config_funcs = {
@@ -395,12 +394,14 @@ static bool mtk_drm_get_all_drm_priv(struct device *dev)
 			continue;
 
 		drm_dev = device_find_child(&pdev->dev, NULL, mtk_drm_match);
+		put_device(&pdev->dev);
 		if (!drm_dev)
-			goto next_put_device_pdev_dev;
+			continue;
 
 		temp_drm_priv = dev_get_drvdata(drm_dev);
+		put_device(drm_dev);
 		if (!temp_drm_priv)
-			goto next_put_device_drm_dev;
+			continue;
 
 		if (temp_drm_priv->data->main_len)
 			all_drm_priv[CRTC_MAIN] = temp_drm_priv;
@@ -411,12 +412,6 @@ static bool mtk_drm_get_all_drm_priv(struct device *dev)
 
 		if (temp_drm_priv->mtk_drm_bound)
 			cnt++;
-
-next_put_device_drm_dev:
-		put_device(drm_dev);
-
-next_put_device_pdev_dev:
-		put_device(&pdev->dev);
 
 		if (cnt == MAX_CRTC) {
 			of_node_put(node);

@@ -9,7 +9,7 @@
 #define THREAD_SIZE_ORDER CONFIG_KERNEL_STACK_ORDER
 #define THREAD_SIZE ((1 << CONFIG_KERNEL_STACK_ORDER) * PAGE_SIZE)
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <asm/types.h>
 #include <asm/page.h>
@@ -43,6 +43,8 @@ struct thread_info {
 #define TIF_NOTIFY_RESUME	8
 #define TIF_SECCOMP		9	/* secure computing */
 #define TIF_SINGLESTEP		10	/* single stepping userspace */
+#define TIF_SYSCALL_TRACEPOINT	11	/* syscall tracepoint instrumentation */
+
 
 #define _TIF_SYSCALL_TRACE	(1 << TIF_SYSCALL_TRACE)
 #define _TIF_SIGPENDING		(1 << TIF_SIGPENDING)

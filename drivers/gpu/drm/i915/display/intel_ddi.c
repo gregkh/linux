@@ -50,6 +50,7 @@
 #include "intel_ddi_buf_trans.h"
 #include "intel_de.h"
 #include "intel_display_power.h"
+#include "intel_display_regs.h"
 #include "intel_display_types.h"
 #include "intel_dkl_phy.h"
 #include "intel_dkl_phy_regs.h"
@@ -72,11 +73,13 @@
 #include "intel_lspcon.h"
 #include "intel_mg_phy_regs.h"
 #include "intel_modeset_lock.h"
+#include "intel_panel.h"
 #include "intel_pfit.h"
 #include "intel_pps.h"
 #include "intel_psr.h"
 #include "intel_quirks.h"
 #include "intel_snps_phy.h"
+#include "intel_step.h"
 #include "intel_tc.h"
 #include "intel_vdsc.h"
 #include "intel_vdsc_regs.h"
@@ -236,7 +239,7 @@ static void intel_wait_ddi_buf_active(struct intel_encoder *encoder)
 			port_name(port));
 }
 
-static u32 hsw_pll_to_ddi_pll_sel(const struct intel_shared_dpll *pll)
+static u32 hsw_pll_to_ddi_pll_sel(const struct intel_dpll *pll)
 {
 	switch (pll->info->id) {
 	case DPLL_ID_WRPLL1:
@@ -260,7 +263,7 @@ static u32 hsw_pll_to_ddi_pll_sel(const struct intel_shared_dpll *pll)
 static u32 icl_pll_to_ddi_clk_sel(struct intel_encoder *encoder,
 				  const struct intel_crtc_state *crtc_state)
 {
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 	int clock = crtc_state->port_clock;
 	const enum intel_dpll_id id = pll->info->id;
 
@@ -1394,6 +1397,21 @@ static void tgl_dkl_phy_set_signal_levels(struct intel_encoder *encoder,
 	for (ln = 0; ln < 2; ln++) {
 		int level;
 
+		/* Wa_16011342517:adl-p */
+		if (display->platform.alderlake_p &&
+		    IS_DISPLAY_STEP(display, STEP_A0, STEP_D0)) {
+			if ((intel_encoder_is_hdmi(encoder) &&
+			     crtc_state->port_clock == 594000) ||
+			     (intel_encoder_is_dp(encoder) &&
+			      crtc_state->port_clock == 162000)) {
+				intel_dkl_phy_rmw(display, DKL_TX_DPCNTL2(tc_port, ln),
+						  LOADGEN_SHARING_PMD_DISABLE, 1);
+			} else {
+				intel_dkl_phy_rmw(display, DKL_TX_DPCNTL2(tc_port, ln),
+						  LOADGEN_SHARING_PMD_DISABLE, 0);
+			}
+		}
+
 		intel_dkl_phy_write(display, DKL_TX_PMD_LANE_SUS(tc_port, ln), 0);
 
 		level = intel_ddi_level(encoder, crtc_state, 2*ln+0);
@@ -1562,7 +1580,7 @@ static bool _icl_ddi_is_clock_enabled(struct intel_display *display, i915_reg_t 
 	return !(intel_de_read(display, reg) & clk_off);
 }
 
-static struct intel_shared_dpll *
+static struct intel_dpll *
 _icl_ddi_get_pll(struct intel_display *display, i915_reg_t reg,
 		 u32 clk_sel_mask, u32 clk_sel_shift)
 {
@@ -1570,14 +1588,14 @@ _icl_ddi_get_pll(struct intel_display *display, i915_reg_t reg,
 
 	id = (intel_de_read(display, reg) & clk_sel_mask) >> clk_sel_shift;
 
-	return intel_get_shared_dpll_by_id(display, id);
+	return intel_get_dpll_by_id(display, id);
 }
 
 static void adls_ddi_enable_clock(struct intel_encoder *encoder,
 				  const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 	enum phy phy = intel_encoder_to_phy(encoder);
 
 	if (drm_WARN_ON(display->drm, !pll))
@@ -1607,7 +1625,7 @@ static bool adls_ddi_is_clock_enabled(struct intel_encoder *encoder)
 					 ICL_DPCLKA_CFGCR0_DDI_CLK_OFF(phy));
 }
 
-static struct intel_shared_dpll *adls_ddi_get_pll(struct intel_encoder *encoder)
+static struct intel_dpll *adls_ddi_get_pll(struct intel_encoder *encoder)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	enum phy phy = intel_encoder_to_phy(encoder);
@@ -1621,7 +1639,7 @@ static void rkl_ddi_enable_clock(struct intel_encoder *encoder,
 				 const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 	enum phy phy = intel_encoder_to_phy(encoder);
 
 	if (drm_WARN_ON(display->drm, !pll))
@@ -1651,7 +1669,7 @@ static bool rkl_ddi_is_clock_enabled(struct intel_encoder *encoder)
 					 RKL_DPCLKA_CFGCR0_DDI_CLK_OFF(phy));
 }
 
-static struct intel_shared_dpll *rkl_ddi_get_pll(struct intel_encoder *encoder)
+static struct intel_dpll *rkl_ddi_get_pll(struct intel_encoder *encoder)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	enum phy phy = intel_encoder_to_phy(encoder);
@@ -1665,7 +1683,7 @@ static void dg1_ddi_enable_clock(struct intel_encoder *encoder,
 				 const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 	enum phy phy = intel_encoder_to_phy(encoder);
 
 	if (drm_WARN_ON(display->drm, !pll))
@@ -1704,7 +1722,7 @@ static bool dg1_ddi_is_clock_enabled(struct intel_encoder *encoder)
 					 DG1_DPCLKA_CFGCR0_DDI_CLK_OFF(phy));
 }
 
-static struct intel_shared_dpll *dg1_ddi_get_pll(struct intel_encoder *encoder)
+static struct intel_dpll *dg1_ddi_get_pll(struct intel_encoder *encoder)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	enum phy phy = intel_encoder_to_phy(encoder);
@@ -1724,14 +1742,14 @@ static struct intel_shared_dpll *dg1_ddi_get_pll(struct intel_encoder *encoder)
 	if (phy >= PHY_C)
 		id += DPLL_ID_DG1_DPLL2;
 
-	return intel_get_shared_dpll_by_id(display, id);
+	return intel_get_dpll_by_id(display, id);
 }
 
 static void icl_ddi_combo_enable_clock(struct intel_encoder *encoder,
 				       const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 	enum phy phy = intel_encoder_to_phy(encoder);
 
 	if (drm_WARN_ON(display->drm, !pll))
@@ -1761,7 +1779,7 @@ static bool icl_ddi_combo_is_clock_enabled(struct intel_encoder *encoder)
 					 ICL_DPCLKA_CFGCR0_DDI_CLK_OFF(phy));
 }
 
-struct intel_shared_dpll *icl_ddi_combo_get_pll(struct intel_encoder *encoder)
+struct intel_dpll *icl_ddi_combo_get_pll(struct intel_encoder *encoder)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	enum phy phy = intel_encoder_to_phy(encoder);
@@ -1775,7 +1793,7 @@ static void jsl_ddi_tc_enable_clock(struct intel_encoder *encoder,
 				    const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 	enum port port = encoder->port;
 
 	if (drm_WARN_ON(display->drm, !pll))
@@ -1818,7 +1836,7 @@ static void icl_ddi_tc_enable_clock(struct intel_encoder *encoder,
 				    const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 	enum tc_port tc_port = intel_encoder_to_tc(encoder);
 	enum port port = encoder->port;
 
@@ -1869,7 +1887,7 @@ static bool icl_ddi_tc_is_clock_enabled(struct intel_encoder *encoder)
 	return !(tmp & ICL_DPCLKA_CFGCR0_TC_CLK_OFF(tc_port));
 }
 
-static struct intel_shared_dpll *icl_ddi_tc_get_pll(struct intel_encoder *encoder)
+static struct intel_dpll *icl_ddi_tc_get_pll(struct intel_encoder *encoder)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	enum tc_port tc_port = intel_encoder_to_tc(encoder);
@@ -1896,10 +1914,10 @@ static struct intel_shared_dpll *icl_ddi_tc_get_pll(struct intel_encoder *encode
 		return NULL;
 	}
 
-	return intel_get_shared_dpll_by_id(display, id);
+	return intel_get_dpll_by_id(display, id);
 }
 
-static struct intel_shared_dpll *bxt_ddi_get_pll(struct intel_encoder *encoder)
+static struct intel_dpll *bxt_ddi_get_pll(struct intel_encoder *encoder)
 {
 	struct intel_display *display = to_intel_display(encoder->base.dev);
 	enum intel_dpll_id id;
@@ -1919,14 +1937,14 @@ static struct intel_shared_dpll *bxt_ddi_get_pll(struct intel_encoder *encoder)
 		return NULL;
 	}
 
-	return intel_get_shared_dpll_by_id(display, id);
+	return intel_get_dpll_by_id(display, id);
 }
 
 static void skl_ddi_enable_clock(struct intel_encoder *encoder,
 				 const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 	enum port port = encoder->port;
 
 	if (drm_WARN_ON(display->drm, !pll))
@@ -1968,7 +1986,7 @@ static bool skl_ddi_is_clock_enabled(struct intel_encoder *encoder)
 	return !(intel_de_read(display, DPLL_CTRL2) & DPLL_CTRL2_DDI_CLK_OFF(port));
 }
 
-static struct intel_shared_dpll *skl_ddi_get_pll(struct intel_encoder *encoder)
+static struct intel_dpll *skl_ddi_get_pll(struct intel_encoder *encoder)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	enum port port = encoder->port;
@@ -1987,14 +2005,14 @@ static struct intel_shared_dpll *skl_ddi_get_pll(struct intel_encoder *encoder)
 	id = (tmp & DPLL_CTRL2_DDI_CLK_SEL_MASK(port)) >>
 		DPLL_CTRL2_DDI_CLK_SEL_SHIFT(port);
 
-	return intel_get_shared_dpll_by_id(display, id);
+	return intel_get_dpll_by_id(display, id);
 }
 
 void hsw_ddi_enable_clock(struct intel_encoder *encoder,
 			  const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 	enum port port = encoder->port;
 
 	if (drm_WARN_ON(display->drm, !pll))
@@ -2019,7 +2037,7 @@ bool hsw_ddi_is_clock_enabled(struct intel_encoder *encoder)
 	return intel_de_read(display, PORT_CLK_SEL(port)) != PORT_CLK_SEL_NONE;
 }
 
-static struct intel_shared_dpll *hsw_ddi_get_pll(struct intel_encoder *encoder)
+static struct intel_dpll *hsw_ddi_get_pll(struct intel_encoder *encoder)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	enum port port = encoder->port;
@@ -2054,7 +2072,7 @@ static struct intel_shared_dpll *hsw_ddi_get_pll(struct intel_encoder *encoder)
 		return NULL;
 	}
 
-	return intel_get_shared_dpll_by_id(display, id);
+	return intel_get_dpll_by_id(display, id);
 }
 
 void intel_ddi_enable_clock(struct intel_encoder *encoder,
@@ -2761,7 +2779,7 @@ static void tgl_ddi_pre_enable_dp(struct intel_atomic_state *state,
 	 * 4. Enable the port PLL.
 	 *
 	 * The PLL enabling itself was already done before this function by
-	 * hsw_crtc_enable()->intel_enable_shared_dpll().  We need only
+	 * hsw_crtc_enable()->intel_enable_dpll().  We need only
 	 * configure the PLL to port mapping here.
 	 */
 	intel_ddi_enable_clock(encoder, crtc_state);
@@ -3355,6 +3373,8 @@ static void intel_ddi_enable_dp(struct intel_atomic_state *state,
 	drm_connector_update_privacy_screen(conn_state);
 	intel_edp_backlight_on(crtc_state, conn_state);
 
+	intel_panel_prepare(crtc_state, conn_state);
+
 	if (!intel_lspcon_active(dig_port) || intel_dp_has_hdmi_sink(&dig_port->dp))
 		intel_dp_set_infoframes(encoder, true, crtc_state, conn_state);
 
@@ -3552,6 +3572,7 @@ static void intel_ddi_disable_dp(struct intel_atomic_state *state,
 
 	intel_dp->link.active = false;
 
+	intel_panel_unprepare(old_conn_state);
 	intel_psr_disable(intel_dp, old_crtc_state);
 	intel_alpm_disable(intel_dp);
 	intel_edp_backlight_off(old_conn_state);
@@ -3648,7 +3669,7 @@ void intel_ddi_update_active_dpll(struct intel_atomic_state *state,
 
 	for_each_intel_crtc_in_pipe_mask(display->drm, pipe_crtc,
 					 intel_crtc_joined_pipe_mask(crtc_state))
-		intel_update_active_dpll(state, pipe_crtc, encoder);
+		intel_dpll_update_active(state, pipe_crtc, encoder);
 }
 
 /*
@@ -3741,6 +3762,18 @@ static void mtl_ddi_prepare_link_retrain(struct intel_dp *intel_dp,
 
 	intel_ddi_buf_enable(encoder, intel_dp->DP);
 	intel_dp->DP |= DDI_BUF_CTL_ENABLE;
+
+	/*
+	 * 6.k If AUX-Less ALPM is going to be enabled:
+	 *     i. Configure PORT_ALPM_CTL and PORT_ALPM_LFPS_CTL here
+	 */
+	intel_alpm_port_configure(intel_dp, crtc_state);
+
+	/*
+	 *     ii. Enable MAC Transmits LFPS in the "PHY Common Control 0" PIPE
+	 *         register
+	 */
+	intel_lnl_mac_transmit_lfps(encoder, crtc_state);
 }
 
 static void intel_ddi_prepare_link_retrain(struct intel_dp *intel_dp,
@@ -4185,7 +4218,7 @@ static void intel_ddi_get_config(struct intel_encoder *encoder,
 
 void intel_ddi_get_clock(struct intel_encoder *encoder,
 			 struct intel_crtc_state *crtc_state,
-			 struct intel_shared_dpll *pll)
+			 struct intel_dpll *pll)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	enum icl_port_dpll_id port_dpll_id = ICL_PORT_DPLL_DEFAULT;
@@ -4201,7 +4234,7 @@ void intel_ddi_get_clock(struct intel_encoder *encoder,
 
 	icl_set_active_port_dpll(crtc_state, port_dpll_id);
 
-	crtc_state->port_clock = intel_dpll_get_freq(display, crtc_state->shared_dpll,
+	crtc_state->port_clock = intel_dpll_get_freq(display, crtc_state->intel_dpll,
 						     &crtc_state->dpll_hw_state);
 }
 
@@ -4255,7 +4288,7 @@ static void icl_ddi_combo_get_config(struct intel_encoder *encoder,
 	intel_ddi_get_config(encoder, crtc_state);
 }
 
-static bool icl_ddi_tc_pll_is_tbt(const struct intel_shared_dpll *pll)
+static bool icl_ddi_tc_pll_is_tbt(const struct intel_dpll *pll)
 {
 	return pll->info->id == DPLL_ID_ICL_TBTPLL;
 }
@@ -4265,7 +4298,7 @@ icl_ddi_tc_port_pll_type(struct intel_encoder *encoder,
 			 const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	const struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const struct intel_dpll *pll = crtc_state->intel_dpll;
 
 	if (drm_WARN_ON(display->drm, !pll))
 		return ICL_PORT_DPLL_DEFAULT;
@@ -4288,7 +4321,7 @@ intel_ddi_port_pll_type(struct intel_encoder *encoder,
 
 static void icl_ddi_tc_get_clock(struct intel_encoder *encoder,
 				 struct intel_crtc_state *crtc_state,
-				 struct intel_shared_dpll *pll)
+				 struct intel_dpll *pll)
 {
 	struct intel_display *display = to_intel_display(encoder);
 	enum icl_port_dpll_id port_dpll_id;
@@ -4311,10 +4344,10 @@ static void icl_ddi_tc_get_clock(struct intel_encoder *encoder,
 
 	icl_set_active_port_dpll(crtc_state, port_dpll_id);
 
-	if (icl_ddi_tc_pll_is_tbt(crtc_state->shared_dpll))
+	if (icl_ddi_tc_pll_is_tbt(crtc_state->intel_dpll))
 		crtc_state->port_clock = icl_calc_tbt_pll_link(display, encoder->port);
 	else
-		crtc_state->port_clock = intel_dpll_get_freq(display, crtc_state->shared_dpll,
+		crtc_state->port_clock = intel_dpll_get_freq(display, crtc_state->intel_dpll,
 							     &crtc_state->dpll_hw_state);
 }
 

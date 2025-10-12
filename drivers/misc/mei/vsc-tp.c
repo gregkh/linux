@@ -537,6 +537,7 @@ err_destroy_lock:
 	return ret;
 }
 
+/* Note this is also used for shutdown */
 static void vsc_tp_remove(struct spi_device *spi)
 {
 	struct vsc_tp *tp = spi_get_drvdata(spi);
@@ -548,19 +549,6 @@ static void vsc_tp_remove(struct spi_device *spi)
 	cancel_work_sync(&tp->event_work);
 	mutex_destroy(&tp->event_notify_mutex);
 	mutex_destroy(&tp->mutex);
-}
-
-static void vsc_tp_shutdown(struct spi_device *spi)
-{
-	struct vsc_tp *tp = spi_get_drvdata(spi);
-
-	platform_device_unregister(tp->pdev);
-
-	mutex_destroy(&tp->mutex);
-
-	vsc_tp_reset(tp);
-
-	free_irq(spi->irq, tp);
 }
 
 static const struct acpi_device_id vsc_tp_acpi_ids[] = {
@@ -575,7 +563,7 @@ MODULE_DEVICE_TABLE(acpi, vsc_tp_acpi_ids);
 static struct spi_driver vsc_tp_driver = {
 	.probe = vsc_tp_probe,
 	.remove = vsc_tp_remove,
-	.shutdown = vsc_tp_shutdown,
+	.shutdown = vsc_tp_remove,
 	.driver = {
 		.name = "vsc-tp",
 		.acpi_match_table = vsc_tp_acpi_ids,

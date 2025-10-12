@@ -759,7 +759,7 @@ static int send_header(struct send_ctx *sctx)
 {
 	struct btrfs_stream_header hdr;
 
-	strcpy(hdr.magic, BTRFS_SEND_STREAM_MAGIC);
+	strscpy(hdr.magic, BTRFS_SEND_STREAM_MAGIC);
 	hdr.version = cpu_to_le32(sctx->proto);
 	return write_buf(sctx->send_filp, &hdr, sizeof(hdr),
 					&sctx->send_off);
@@ -1805,7 +1805,7 @@ static int gen_unique_name(struct send_ctx *sctx,
 				ino, gen, idx);
 		ASSERT(len < sizeof(tmp));
 		tmp_name.name = tmp;
-		tmp_name.len = strlen(tmp);
+		tmp_name.len = len;
 
 		di = btrfs_lookup_dir_item(NULL, sctx->send_root,
 				path, BTRFS_FIRST_FREE_OBJECTID,
@@ -1844,7 +1844,7 @@ static int gen_unique_name(struct send_ctx *sctx,
 		break;
 	}
 
-	ret = fs_path_add(dest, tmp, strlen(tmp));
+	ret = fs_path_add(dest, tmp, len);
 
 out:
 	btrfs_free_path(path);
@@ -4629,7 +4629,6 @@ static int rbtree_ref_comp(const void *k, const struct rb_node *node)
 {
 	const struct recorded_ref *data = k;
 	const struct recorded_ref *ref = rb_entry(node, struct recorded_ref, node);
-	int result;
 
 	if (data->dir > ref->dir)
 		return 1;
@@ -4643,12 +4642,7 @@ static int rbtree_ref_comp(const void *k, const struct rb_node *node)
 		return 1;
 	if (data->name_len < ref->name_len)
 		return -1;
-	result = strcmp(data->name, ref->name);
-	if (result > 0)
-		return 1;
-	if (result < 0)
-		return -1;
-	return 0;
+	return strcmp(data->name, ref->name);
 }
 
 static bool rbtree_ref_less(struct rb_node *node, const struct rb_node *parent)

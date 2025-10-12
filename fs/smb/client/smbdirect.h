@@ -33,16 +33,6 @@ enum keep_alive_status {
 	KEEP_ALIVE_SENT,
 };
 
-enum smbd_connection_status {
-	SMBD_CREATED,
-	SMBD_CONNECTING,
-	SMBD_CONNECTED,
-	SMBD_NEGOTIATE_FAILED,
-	SMBD_DISCONNECTING,
-	SMBD_DISCONNECTED,
-	SMBD_DESTROYED
-};
-
 /*
  * The context for the SMBDirect transport
  * Everything related to the transport is here. It has several logical parts
@@ -57,8 +47,7 @@ struct smbd_connection {
 
 	int ri_rc;
 	struct completion ri_done;
-	wait_queue_head_t conn_wait;
-	wait_queue_head_t disconn_wait;
+	wait_queue_head_t status_wait;
 
 	struct completion negotiate_completion;
 	bool negotiate_done;
@@ -75,7 +64,6 @@ struct smbd_connection {
 	atomic_t send_credits;
 	atomic_t receive_credits;
 	int receive_credit_target;
-	int fragment_reassembly_remaining;
 
 	/* Memory registrations */
 	/* Maximum number of RDMA read/write outstanding on this connection */
@@ -106,47 +94,15 @@ struct smbd_connection {
 	wait_queue_head_t wait_post_send;
 
 	/* Receive queue */
-	struct list_head receive_queue;
 	int count_receive_queue;
-	spinlock_t receive_queue_lock;
-
 	wait_queue_head_t wait_receive_queues;
-
-	/* Reassembly queue */
-	struct list_head reassembly_queue;
-	spinlock_t reassembly_queue_lock;
-	wait_queue_head_t wait_reassembly_queue;
-
-	/* total data length of reassembly queue */
-	int reassembly_data_length;
-	int reassembly_queue_length;
-	/* the offset to first buffer in reassembly queue */
-	int first_entry_offset;
 
 	bool send_immediate;
 
 	wait_queue_head_t wait_send_queue;
 
-	/*
-	 * Indicate if we have received a full packet on the connection
-	 * This is used to identify the first SMBD packet of a assembled
-	 * payload (SMB packet) in reassembly queue so we can return a
-	 * RFC1002 length to upper layer to indicate the length of the SMB
-	 * packet received
-	 */
-	bool full_packet_received;
-
 	struct workqueue_struct *workqueue;
 	struct delayed_work idle_timer_work;
-
-	/* Memory pool for preallocating buffers */
-	/* request pool for RDMA send */
-	struct kmem_cache *request_cache;
-	mempool_t *request_mempool;
-
-	/* response pool for RDMA receive */
-	struct kmem_cache *response_cache;
-	mempool_t *response_mempool;
 
 	/* for debug purposes */
 	unsigned int count_get_receive_buffer;
@@ -156,25 +112,6 @@ struct smbd_connection {
 	unsigned int count_dequeue_reassembly_queue;
 	unsigned int count_send_empty;
 };
-
-/* Maximum number of SGEs used by smbdirect.c in any send work request */
-#define SMBDIRECT_MAX_SEND_SGE	6
-
-/* The context for a SMBD request */
-struct smbd_request {
-	struct smbd_connection *info;
-	struct ib_cqe cqe;
-
-	/* the SGE entries for this work request */
-	struct ib_sge sge[SMBDIRECT_MAX_SEND_SGE];
-	int num_sge;
-
-	/* SMBD packet header follows this structure */
-	u8 packet[];
-};
-
-/* Maximum number of SGEs used by smbdirect.c in any receive work request */
-#define SMBDIRECT_MAX_RECV_SGE	1
 
 /* Create a SMBDirect session */
 struct smbd_connection *smbd_get_connection(

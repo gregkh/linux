@@ -19,6 +19,7 @@
 #include "strbuf.h"
 #include "thread_map.h"
 #include "trace-event.h"
+#include "metricgroup.h"
 #include "mmap.h"
 #include "util/sample.h"
 #include <internal/lib.h>
@@ -336,7 +337,6 @@ tracepoint_field(const struct pyrf_event *pe, struct tep_format_field *field)
 static PyObject*
 get_tracepoint_field(struct pyrf_event *pevent, PyObject *attr_name)
 {
-	const char *str = _PyUnicode_AsString(PyObject_Str(attr_name));
 	struct evsel *evsel = pevent->evsel;
 	struct tep_event *tp_format = evsel__tp_format(evsel);
 	struct tep_format_field *field;
@@ -344,7 +344,18 @@ get_tracepoint_field(struct pyrf_event *pevent, PyObject *attr_name)
 	if (IS_ERR_OR_NULL(tp_format))
 		return NULL;
 
+	PyObject *obj = PyObject_Str(attr_name);
+	if (obj == NULL)
+		return NULL;
+
+	const char *str = PyUnicode_AsUTF8(obj);
+	if (str == NULL) {
+		Py_DECREF(obj);
+		return NULL;
+	}
+
 	field = tep_find_any_field(tp_format, str);
+	Py_DECREF(obj);
 	return field ? tracepoint_field(pevent, field) : NULL;
 }
 #endif /* HAVE_LIBTRACEEVENT */
@@ -528,8 +539,10 @@ static PyObject *pyrf_cpu_map__item(PyObject *obj, Py_ssize_t i)
 {
 	struct pyrf_cpu_map *pcpus = (void *)obj;
 
-	if (i >= perf_cpu_map__nr(pcpus->cpus))
+	if (i >= perf_cpu_map__nr(pcpus->cpus)) {
+		PyErr_SetString(PyExc_IndexError, "Index out of range");
 		return NULL;
+	}
 
 	return Py_BuildValue("i", perf_cpu_map__cpu(pcpus->cpus, i).cpu);
 }
@@ -567,14 +580,14 @@ struct pyrf_thread_map {
 static int pyrf_thread_map__init(struct pyrf_thread_map *pthreads,
 				 PyObject *args, PyObject *kwargs)
 {
-	static char *kwlist[] = { "pid", "tid", "uid", NULL };
-	int pid = -1, tid = -1, uid = UINT_MAX;
+	static char *kwlist[] = { "pid", "tid", NULL };
+	int pid = -1, tid = -1;
 
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|iii",
-					 kwlist, &pid, &tid, &uid))
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|ii",
+					 kwlist, &pid, &tid))
 		return -1;
 
-	pthreads->threads = thread_map__new(pid, tid, uid);
+	pthreads->threads = thread_map__new(pid, tid);
 	if (pthreads->threads == NULL)
 		return -1;
 	return 0;
@@ -597,8 +610,10 @@ static PyObject *pyrf_thread_map__item(PyObject *obj, Py_ssize_t i)
 {
 	struct pyrf_thread_map *pthreads = (void *)obj;
 
-	if (i >= perf_thread_map__nr(pthreads->threads))
+	if (i >= perf_thread_map__nr(pthreads->threads)) {
+		PyErr_SetString(PyExc_IndexError, "Index out of range");
 		return NULL;
+	}
 
 	return Py_BuildValue("i", perf_thread_map__pid(pthreads->threads, i));
 }
@@ -965,10 +980,7 @@ static PyObject *pyrf_evsel__str(PyObject *self)
 	struct pyrf_evsel *pevsel = (void *)self;
 	struct evsel *evsel = &pevsel->evsel;
 
-	if (!evsel->pmu)
-		return PyUnicode_FromFormat("evsel(%s)", evsel__name(evsel));
-
-	return PyUnicode_FromFormat("evsel(%s/%s/)", evsel->pmu->name, evsel__name(evsel));
+	return PyUnicode_FromFormat("evsel(%s/%s/)", evsel__pmu_name(evsel), evsel__name(evsel));
 }
 
 static PyMethodDef pyrf_evsel__methods[] = {
@@ -1570,10 +1582,37 @@ static PyObject *pyrf_evsel__from_evsel(struct evsel *evsel)
 	return (PyObject *)pevsel;
 }
 
+static int evlist__pos(struct evlist *evlist, struct evsel *evsel)
+{
+	struct evsel *pos;
+	int idx = 0;
+
+	evlist__for_each_entry(evlist, pos) {
+		if (evsel == pos)
+			return idx;
+		idx++;
+	}
+	return -1;
+}
+
+static struct evsel *evlist__at(struct evlist *evlist, int idx)
+{
+	struct evsel *pos;
+	int idx2 = 0;
+
+	evlist__for_each_entry(evlist, pos) {
+		if (idx == idx2)
+			return pos;
+		idx2++;
+	}
+	return NULL;
+}
+
 static PyObject *pyrf_evlist__from_evlist(struct evlist *evlist)
 {
 	struct pyrf_evlist *pevlist = PyObject_New(struct pyrf_evlist, &pyrf_evlist__type);
 	struct evsel *pos;
+	struct rb_node *node;
 
 	if (!pevlist)
 		return NULL;
@@ -1584,6 +1623,39 @@ static PyObject *pyrf_evlist__from_evlist(struct evlist *evlist)
 		struct pyrf_evsel *pevsel = (void *)pyrf_evsel__from_evsel(pos);
 
 		evlist__add(&pevlist->evlist, &pevsel->evsel);
+	}
+	evlist__for_each_entry(&pevlist->evlist, pos) {
+		struct evsel *leader = evsel__leader(pos);
+
+		if (pos != leader) {
+			int idx = evlist__pos(evlist, leader);
+
+			if (idx >= 0)
+				evsel__set_leader(pos, evlist__at(&pevlist->evlist, idx));
+			else if (leader == NULL)
+				evsel__set_leader(pos, pos);
+		}
+	}
+	metricgroup__copy_metric_events(&pevlist->evlist, /*cgrp=*/NULL,
+					&pevlist->evlist.metric_events,
+					&evlist->metric_events);
+	for (node = rb_first_cached(&pevlist->evlist.metric_events.entries); node;
+	     node = rb_next(node)) {
+		struct metric_event *me = container_of(node, struct metric_event, nd);
+		struct list_head *mpos;
+		int idx = evlist__pos(evlist, me->evsel);
+
+		if (idx >= 0)
+			me->evsel = evlist__at(&pevlist->evlist, idx);
+		list_for_each(mpos, &me->head) {
+			struct metric_expr *e = container_of(mpos, struct metric_expr, nd);
+
+			for (int j = 0; e->metric_events[j]; j++) {
+				idx = evlist__pos(evlist, e->metric_events[j]);
+				if (idx >= 0)
+					e->metric_events[j] = evlist__at(&pevlist->evlist, idx);
+			}
+		}
 	}
 	return (PyObject *)pevlist;
 }

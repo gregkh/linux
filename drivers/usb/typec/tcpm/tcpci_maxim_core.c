@@ -563,18 +563,17 @@ static const struct i2c_device_id max_tcpci_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, max_tcpci_id);
 
-#ifdef CONFIG_OF
 static const struct of_device_id max_tcpci_of_match[] = {
 	{ .compatible = "maxim,max33359", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, max_tcpci_of_match);
-#endif
 
 static struct i2c_driver max_tcpci_i2c_driver = {
 	.driver = {
 		.name = "maxtcpc",
-		.of_match_table = of_match_ptr(max_tcpci_of_match),
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
+		.of_match_table = max_tcpci_of_match,
 		.pm = &max_tcpci_pm_ops,
 	},
 	.probe = max_tcpci_probe,

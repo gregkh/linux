@@ -13,6 +13,7 @@
 #include <linux/wait.h>
 #include <linux/pagemap.h>
 #include "bio.h"
+#include "fs.h"
 #include "messages.h"
 
 struct address_space;
@@ -77,12 +78,10 @@ struct compressed_bio {
 /* @range_end must be exclusive. */
 static inline u32 btrfs_calc_input_length(struct folio *folio, u64 range_end, u64 cur)
 {
-	const u64 folio_end = folio_pos(folio) + folio_size(folio);
-
 	/* @cur must be inside the folio. */
 	ASSERT(folio_pos(folio) <= cur);
-	ASSERT(cur < folio_end);
-	return min(range_end, folio_end) - cur;
+	ASSERT(cur < folio_end(folio));
+	return min(range_end, folio_end(folio)) - cur;
 }
 
 int __init btrfs_init_compress(void);
@@ -103,7 +102,7 @@ void btrfs_submit_compressed_write(struct btrfs_ordered_extent *ordered,
 				   bool writeback);
 void btrfs_submit_compressed_read(struct btrfs_bio *bbio);
 
-int btrfs_compress_str2level(unsigned int type, const char *str);
+int btrfs_compress_str2level(unsigned int type, const char *str, int *level_ret);
 
 struct folio *btrfs_alloc_compr_folio(void);
 void btrfs_free_compr_folio(struct folio *folio);
@@ -114,6 +113,8 @@ enum btrfs_compression_type {
 	BTRFS_COMPRESS_LZO   = 2,
 	BTRFS_COMPRESS_ZSTD  = 3,
 	BTRFS_NR_COMPRESS_TYPES = 4,
+
+	BTRFS_DEFRAG_DONT_COMPRESS,
 };
 
 struct workspace_manager {

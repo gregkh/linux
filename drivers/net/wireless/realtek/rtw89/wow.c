@@ -12,7 +12,7 @@
 #include "util.h"
 #include "wow.h"
 
-void rtw89_wow_parse_akm(struct rtw89_dev *rtwdev, struct sk_buff *skb)
+void __rtw89_wow_parse_akm(struct rtw89_dev *rtwdev, struct sk_buff *skb)
 {
 	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data;
 	struct rtw89_wow_param *rtw_wow = &rtwdev->wow;
@@ -619,9 +619,12 @@ static struct ieee80211_key_conf *rtw89_wow_gtk_rekey(struct rtw89_dev *rtwdev,
 	       flex_array_size(rekey_conf, key, cipher_info->len));
 
 	if (ieee80211_vif_is_mld(wow_vif))
-		key = ieee80211_gtk_rekey_add(wow_vif, rekey_conf, rtwvif_link->link_id);
+		key = ieee80211_gtk_rekey_add(wow_vif, keyidx, gtk,
+					      cipher_info->len,
+					      rtwvif_link->link_id);
 	else
-		key = ieee80211_gtk_rekey_add(wow_vif, rekey_conf, -1);
+		key = ieee80211_gtk_rekey_add(wow_vif, keyidx, gtk,
+					      cipher_info->len, -1);
 
 	kfree(rekey_conf);
 	if (IS_ERR(key)) {
@@ -1480,7 +1483,7 @@ static int rtw89_pno_scan_offload(struct rtw89_dev *rtwdev, bool enable)
 	opt.enable = enable;
 	opt.repeat = RTW89_SCAN_NORMAL;
 	opt.norm_pd = max(interval, 1) * 10; /* in unit of 100ms */
-	opt.delay = max(rtw_wow->nd_config->delay, 1);
+	opt.delay = max(rtw_wow->nd_config->delay, 1) * 1000;
 
 	if (rtwdev->chip->chip_gen == RTW89_CHIP_BE) {
 		opt.operation = enable ? RTW89_SCAN_OP_START : RTW89_SCAN_OP_STOP;
@@ -1492,7 +1495,7 @@ static int rtw89_pno_scan_offload(struct rtw89_dev *rtwdev, bool enable)
 		opt.opch_end = RTW89_CHAN_INVALID;
 	}
 
-	mac->scan_offload(rtwdev, &opt, rtwvif_link, true);
+	rtw89_mac_scan_offload(rtwdev, &opt, rtwvif_link, true);
 
 	return 0;
 }

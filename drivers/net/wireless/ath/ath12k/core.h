@@ -317,6 +317,7 @@ struct ath12k_link_vif {
 
 	int bank_id;
 	u8 vdev_id_check_en;
+	bool beacon_prot;
 
 	struct wmi_wmm_params_all_arg wmm_params;
 	struct list_head list;
@@ -350,6 +351,7 @@ struct ath12k_link_vif {
 	bool group_key_valid;
 	struct wmi_vdev_install_key_arg group_key;
 	bool pairwise_key_done;
+	u16 num_stations;
 };
 
 struct ath12k_vif {
@@ -385,9 +387,7 @@ struct ath12k_vif {
 	struct ath12k_link_vif __rcu *link[ATH12K_NUM_MAX_LINKS];
 	struct ath12k_vif_cache *cache[IEEE80211_MLD_MAX_NUM_LINKS];
 	/* indicates bitmap of link vif created in FW */
-	u16 links_map;
-	u8 last_scan_link;
-
+	u32 links_map;
 	/* Must be last - ends in a flexible-array member.
 	 *
 	 * FIXME: Driver should not copy struct ieee80211_chanctx_conf,
@@ -566,6 +566,8 @@ struct ath12k_link_sta {
 
 	 /* for firmware use only */
 	u8 link_idx;
+	u32 tx_retry_failed;
+	u32 tx_retry_count;
 };
 
 struct ath12k_reoq_buf {
@@ -675,6 +677,15 @@ struct ath12k_per_peer_tx_stats {
 	u32 mu_grpid;
 	u32 mu_pos;
 	bool is_ampdu;
+};
+
+struct ath12k_pdev_rssi_offsets {
+	s32 temp_offset;
+	s8 min_nf_dbm;
+	/* Cache the sum here to avoid calculating it every time in hot path
+	 * noise_floor = min_nf_dbm + temp_offset
+	 */
+	s32 noise_floor;
 };
 
 #define ATH12K_FLUSH_TIMEOUT (5 * HZ)
@@ -818,6 +829,7 @@ struct ath12k {
 	enum ath12k_11d_state state_11d;
 	u8 alpha2[REG_ALPHA2_LEN];
 	bool regdom_set_by_user;
+	struct completion regd_update_completed;
 
 	struct completion fw_stats_complete;
 	struct completion fw_stats_done;
@@ -829,6 +841,7 @@ struct ath12k {
 	unsigned long last_tx_power_update;
 
 	s8 max_allowed_tx_power;
+	struct ath12k_pdev_rssi_offsets rssi_info;
 };
 
 struct ath12k_hw {
@@ -886,6 +899,8 @@ struct ath12k_pdev_cap {
 	struct ath12k_band_cap band[NUM_NL80211_BANDS];
 	u32 eml_cap;
 	u32 mld_cap;
+	bool nss_ratio_enabled;
+	u8 nss_ratio_info;
 };
 
 struct mlo_timestamp {
@@ -995,6 +1010,22 @@ struct ath12k_hw_group {
 struct ath12k_wsi_info {
 	u32 index;
 	u32 hw_link_id_base;
+};
+
+struct ath12k_dp_profile_params {
+	u32 tx_comp_ring_size;
+	u32 rxdma_monitor_buf_ring_size;
+	u32 rxdma_monitor_dst_ring_size;
+	u32 num_pool_tx_desc;
+	u32 rx_desc_count;
+};
+
+struct ath12k_mem_profile_based_param {
+	u32 num_vdevs;
+	u32 max_client_single;
+	u32 max_client_dbs;
+	u32 max_client_dbs_sbs;
+	struct ath12k_dp_profile_params dp_params;
 };
 
 /* Master structure to hold the hw data which may be used in core module */
@@ -1200,6 +1231,8 @@ struct ath12k_base {
 	struct ath12k_reg_freq reg_freq_2ghz;
 	struct ath12k_reg_freq reg_freq_5ghz;
 	struct ath12k_reg_freq reg_freq_6ghz;
+	const struct ath12k_mem_profile_based_param *profile_param;
+	enum ath12k_qmi_mem_mode target_mem_mode;
 
 	/* must be last */
 	u8 drv_priv[] __aligned(sizeof(void *));
@@ -1326,7 +1359,6 @@ const struct firmware *ath12k_core_firmware_request(struct ath12k_base *ab,
 						    const char *filename);
 u32 ath12k_core_get_max_station_per_radio(struct ath12k_base *ab);
 u32 ath12k_core_get_max_peers_per_radio(struct ath12k_base *ab);
-u32 ath12k_core_get_max_num_tids(struct ath12k_base *ab);
 
 void ath12k_core_hw_group_set_mlo_capable(struct ath12k_hw_group *ag);
 void ath12k_fw_stats_init(struct ath12k *ar);
@@ -1335,6 +1367,7 @@ void ath12k_fw_stats_free(struct ath12k_fw_stats *stats);
 void ath12k_fw_stats_reset(struct ath12k *ar);
 struct reserved_mem *ath12k_core_get_reserved_mem(struct ath12k_base *ab,
 						  int index);
+enum ath12k_qmi_mem_mode ath12k_core_get_memory_mode(struct ath12k_base *ab);
 
 static inline const char *ath12k_scan_state_str(enum ath12k_scan_state state)
 {
@@ -1467,6 +1500,13 @@ static inline struct ath12k_base *ath12k_ag_to_ab(struct ath12k_hw_group *ag,
 						  u8 device_id)
 {
 	return ag->ab[device_id];
+}
+
+static inline s32 ath12k_pdev_get_noise_floor(struct ath12k *ar)
+{
+	lockdep_assert_held(&ar->data_lock);
+
+	return ar->rssi_info.noise_floor;
 }
 
 #endif /* _CORE_H_ */

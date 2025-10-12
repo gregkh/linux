@@ -73,7 +73,10 @@ static inline int rvu_pcifunc_pf_mask(struct pci_dev *pdev)
 		return ~(RVU_OTX2_PFVF_PF_MASK << RVU_OTX2_PFVF_PF_SHIFT);
 }
 
+#define RVU_AFPF           25
+
 #ifdef CONFIG_DEBUG_FS
+
 struct dump_ctx {
 	int	lf;
 	int	id;
@@ -471,6 +474,23 @@ struct mbox_wq_info {
 	struct workqueue_struct *mbox_wq;
 };
 
+struct rvu_irq_data {
+	u64 intr_status;
+	void (*rvu_queue_work_hdlr)(struct mbox_wq_info *mw, int first,
+				    int mdevs, u64 intr);
+	void (*afvf_queue_work_hdlr)(struct mbox_wq_info *mw, int first,
+				     int mdevs, u64 intr);
+	struct	rvu *rvu;
+	int vec_num;
+	int start;
+	int mdevs;
+};
+
+struct mbox_ops {
+	irqreturn_t (*pf_intr_handler)(int irq, void *rvu_irq);
+	irqreturn_t (*afvf_intr_handler)(int irq, void *rvu_irq);
+};
+
 struct channel_fwdata {
 	struct sdp_node_info info;
 	u8 valid;
@@ -636,6 +656,8 @@ struct rvu {
 	struct list_head	rep_evtq_head;
 	/* Representor event lock */
 	spinlock_t		rep_evtq_lock;
+
+	struct ng_rvu           *ng_rvu;
 };
 
 static inline void rvu_write64(struct rvu *rvu, u64 block, u64 offset, u64 val)
@@ -949,6 +971,10 @@ int rvu_mbox_handler_ ## fn_name(struct rvu *, struct req *, struct rsp *);
 MBOX_MESSAGES
 #undef M
 
+/* Mbox APIs */
+void rvu_queue_work(struct mbox_wq_info *mw, int first,
+		    int mdevs, u64 intr);
+
 int rvu_cgx_init(struct rvu *rvu);
 int rvu_cgx_exit(struct rvu *rvu);
 void *rvu_cgx_pdata(u8 cgx_id, struct rvu *rvu);
@@ -1003,7 +1029,8 @@ int rvu_nix_mcast_get_mce_index(struct rvu *rvu, u16 pcifunc,
 int rvu_nix_mcast_update_mcam_entry(struct rvu *rvu, u16 pcifunc,
 				    u32 mcast_grp_idx, u16 mcam_index);
 void rvu_nix_flr_free_bpids(struct rvu *rvu, u16 pcifunc);
-
+int rvu_alloc_cint_qint_mem(struct rvu *rvu, struct rvu_pfvf *pfvf,
+			    int blkaddr, int nixlf);
 /* NPC APIs */
 void rvu_npc_freemem(struct rvu *rvu);
 int rvu_npc_get_pkind(struct rvu *rvu, u16 pf);

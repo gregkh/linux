@@ -141,7 +141,7 @@ query_engine_cycles(struct xe_device *xe,
 		return -EINVAL;
 
 	eci = &resp.eci;
-	if (eci->gt_id >= XE_MAX_GT_PER_TILE)
+	if (eci->gt_id >= xe->info.max_gt_per_tile)
 		return -EINVAL;
 
 	gt = xe_device_get_gt(xe, eci->gt_id);
@@ -686,8 +686,8 @@ static int query_oa_units(struct xe_device *xe,
 			du->oa_timestamp_freq = xe_oa_timestamp_frequency(gt);
 			du->capabilities = DRM_XE_OA_CAPS_BASE | DRM_XE_OA_CAPS_SYNCS |
 					   DRM_XE_OA_CAPS_OA_BUFFER_SIZE |
-					   DRM_XE_OA_CAPS_WAIT_NUM_REPORTS;
-
+					   DRM_XE_OA_CAPS_WAIT_NUM_REPORTS |
+					   DRM_XE_OA_CAPS_OAM;
 			j = 0;
 			for_each_hw_engine(hwe, gt, hwe_id) {
 				if (!xe_hw_engine_is_reserved(hwe) &&

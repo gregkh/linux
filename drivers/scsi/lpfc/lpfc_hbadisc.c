@@ -1267,6 +1267,10 @@ lpfc_linkdown(struct lpfc_hba *phba)
 	}
 	phba->defer_flogi_acc.flag = false;
 
+	/* reinitialize initial HBA flag */
+	clear_bit(HBA_FLOGI_ISSUED, &phba->hba_flag);
+	clear_bit(HBA_RHBA_CMPL, &phba->hba_flag);
+
 	/* Clear external loopback plug detected flag */
 	phba->link_flag &= ~LS_EXTERNAL_LOOPBACK;
 
@@ -1436,10 +1440,6 @@ lpfc_linkup(struct lpfc_hba *phba)
 	spin_lock_irq(shost->host_lock);
 	phba->pport->rcv_flogi_cnt = 0;
 	spin_unlock_irq(shost->host_lock);
-
-	/* reinitialize initial HBA flag */
-	clear_bit(HBA_FLOGI_ISSUED, &phba->hba_flag);
-	clear_bit(HBA_RHBA_CMPL, &phba->hba_flag);
 
 	return 0;
 }

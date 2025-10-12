@@ -113,6 +113,8 @@ enum sysdata_feature {
 	SYSDATA_TASKNAME = BIT(1),
 	/* Kernel release/version as part of sysdata */
 	SYSDATA_RELEASE = BIT(2),
+	/* Include a per-target message ID as part of sysdata */
+	SYSDATA_MSGID = BIT(3),
 };
 
 /**
@@ -123,6 +125,7 @@ enum sysdata_feature {
  * @extradata_complete:	Cached, formatted string of append
  * @userdata_length:	String length of usedata in extradata_complete.
  * @sysdata_fields:	Sysdata features enabled.
+ * @msgcounter:	Message sent counter.
  * @stats:	Packet send stats for the target. Used for debugging.
  * @enabled:	On / off knob to enable / disable target.
  *		Visible from userspace (read-write).
@@ -153,6 +156,8 @@ struct netconsole_target {
 	size_t			userdata_length;
 	/* bit-wise with sysdata_feature bits */
 	u32			sysdata_fields;
+	/* protected by target_list_lock */
+	u32			msgcounter;
 #endif
 	struct netconsole_target_stats stats;
 	bool			enabled;
@@ -276,6 +281,23 @@ static void netconsole_process_cleanups_core(void)
 	}
 	WARN_ON_ONCE(!list_empty(&target_cleanup_list));
 	mutex_unlock(&target_cleanup_list_lock);
+}
+
+static void netconsole_print_banner(struct netpoll *np)
+{
+	np_info(np, "local port %d\n", np->local_port);
+	if (np->ipv6)
+		np_info(np, "local IPv6 address %pI6c\n", &np->local_ip.in6);
+	else
+		np_info(np, "local IPv4 address %pI4\n", &np->local_ip.ip);
+	np_info(np, "interface name '%s'\n", np->dev_name);
+	np_info(np, "local ethernet address '%pM'\n", np->dev_mac);
+	np_info(np, "remote port %d\n", np->remote_port);
+	if (np->ipv6)
+		np_info(np, "remote IPv6 address %pI6c\n", &np->remote_ip.in6);
+	else
+		np_info(np, "remote IPv4 address %pI4\n", &np->remote_ip.ip);
+	np_info(np, "remote ethernet address %pM\n", np->remote_mac);
 }
 
 #ifdef	CONFIG_NETCONSOLE_DYNAMIC
@@ -460,6 +482,46 @@ static ssize_t sysdata_release_enabled_show(struct config_item *item,
 	return sysfs_emit(buf, "%d\n", release_enabled);
 }
 
+/* Iterate in the list of target, and make sure we don't have any console
+ * register without targets of the same type
+ */
+static void unregister_netcons_consoles(void)
+{
+	struct netconsole_target *nt;
+	u32 console_type_needed = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&target_list_lock, flags);
+	list_for_each_entry(nt, &target_list, list) {
+		if (nt->extended)
+			console_type_needed |= CONS_EXTENDED;
+		else
+			console_type_needed |= CONS_BASIC;
+	}
+	spin_unlock_irqrestore(&target_list_lock, flags);
+
+	if (!(console_type_needed & CONS_EXTENDED) &&
+	    console_is_registered(&netconsole_ext))
+		unregister_console(&netconsole_ext);
+
+	if (!(console_type_needed & CONS_BASIC) &&
+	    console_is_registered(&netconsole))
+		unregister_console(&netconsole);
+}
+
+static ssize_t sysdata_msgid_enabled_show(struct config_item *item,
+					  char *buf)
+{
+	struct netconsole_target *nt = to_target(item->ci_parent);
+	bool msgid_enabled;
+
+	mutex_lock(&dynamic_netconsole_mutex);
+	msgid_enabled = !!(nt->sysdata_fields & SYSDATA_MSGID);
+	mutex_unlock(&dynamic_netconsole_mutex);
+
+	return sysfs_emit(buf, "%d\n", msgid_enabled);
+}
+
 /*
  * This one is special -- targets created through the configfs interface
  * are not enabled (and the corresponding netpoll activated) by default.
@@ -493,20 +555,24 @@ static ssize_t enabled_store(struct config_item *item,
 			goto out_unlock;
 		}
 
-		if (nt->extended && !console_is_registered(&netconsole_ext))
+		if (nt->extended && !console_is_registered(&netconsole_ext)) {
+			netconsole_ext.flags |= CON_ENABLED;
 			register_console(&netconsole_ext);
+		}
 
 		/* User might be enabling the basic format target for the very
 		 * first time, make sure the console is registered.
 		 */
-		if (!nt->extended && !console_is_registered(&netconsole))
+		if (!nt->extended && !console_is_registered(&netconsole)) {
+			netconsole.flags |= CON_ENABLED;
 			register_console(&netconsole);
+		}
 
 		/*
-		 * Skip netpoll_parse_options() -- all the attributes are
+		 * Skip netconsole_parser_cmdline() -- all the attributes are
 		 * already configured via configfs. Just print them out.
 		 */
-		netpoll_print_options(&nt->np);
+		netconsole_print_banner(&nt->np);
 
 		ret = netpoll_setup(&nt->np);
 		if (ret)
@@ -528,6 +594,10 @@ static ssize_t enabled_store(struct config_item *item,
 		list_move(&nt->list, &target_cleanup_list);
 		spin_unlock_irqrestore(&target_list_lock, flags);
 		mutex_unlock(&target_cleanup_list_lock);
+		/* Unregister consoles, whose the last target of that type got
+		 * disabled.
+		 */
+		unregister_netcons_consoles();
 	}
 
 	ret = strnlen(buf, count);
@@ -747,6 +817,8 @@ static size_t count_extradata_entries(struct netconsole_target *nt)
 		entries += 1;
 	if (nt->sysdata_fields & SYSDATA_RELEASE)
 		entries += 1;
+	if (nt->sysdata_fields & SYSDATA_MSGID)
+		entries += 1;
 
 	return entries;
 }
@@ -883,6 +955,40 @@ static void disable_sysdata_feature(struct netconsole_target *nt,
 	nt->extradata_complete[nt->userdata_length] = 0;
 }
 
+static ssize_t sysdata_msgid_enabled_store(struct config_item *item,
+					   const char *buf, size_t count)
+{
+	struct netconsole_target *nt = to_target(item->ci_parent);
+	bool msgid_enabled, curr;
+	ssize_t ret;
+
+	ret = kstrtobool(buf, &msgid_enabled);
+	if (ret)
+		return ret;
+
+	mutex_lock(&dynamic_netconsole_mutex);
+	curr = !!(nt->sysdata_fields & SYSDATA_MSGID);
+	if (msgid_enabled == curr)
+		goto unlock_ok;
+
+	if (msgid_enabled &&
+	    count_extradata_entries(nt) >= MAX_EXTRADATA_ITEMS) {
+		ret = -ENOSPC;
+		goto unlock;
+	}
+
+	if (msgid_enabled)
+		nt->sysdata_fields |= SYSDATA_MSGID;
+	else
+		disable_sysdata_feature(nt, SYSDATA_MSGID);
+
+unlock_ok:
+	ret = strnlen(buf, count);
+unlock:
+	mutex_unlock(&dynamic_netconsole_mutex);
+	return ret;
+}
+
 static ssize_t sysdata_release_enabled_store(struct config_item *item,
 					     const char *buf, size_t count)
 {
@@ -998,6 +1104,7 @@ CONFIGFS_ATTR(userdatum_, value);
 CONFIGFS_ATTR(sysdata_, cpu_nr_enabled);
 CONFIGFS_ATTR(sysdata_, taskname_enabled);
 CONFIGFS_ATTR(sysdata_, release_enabled);
+CONFIGFS_ATTR(sysdata_, msgid_enabled);
 
 static struct configfs_attribute *userdatum_attrs[] = {
 	&userdatum_attr_value,
@@ -1060,6 +1167,7 @@ static struct configfs_attribute *userdata_attrs[] = {
 	&sysdata_attr_cpu_nr_enabled,
 	&sysdata_attr_taskname_enabled,
 	&sysdata_attr_release_enabled,
+	&sysdata_attr_msgid_enabled,
 	NULL,
 };
 
@@ -1257,6 +1365,14 @@ static int sysdata_append_release(struct netconsole_target *nt, int offset)
 			 init_utsname()->release);
 }
 
+static int sysdata_append_msgid(struct netconsole_target *nt, int offset)
+{
+	wrapping_assign_add(nt->msgcounter, 1);
+	return scnprintf(&nt->extradata_complete[offset],
+			 MAX_EXTRADATA_ENTRY_LEN, " msgid=%u\n",
+			 nt->msgcounter);
+}
+
 /*
  * prepare_extradata - append sysdata at extradata_complete in runtime
  * @nt: target to send message to
@@ -1279,6 +1395,8 @@ static int prepare_extradata(struct netconsole_target *nt)
 		extradata_len += sysdata_append_taskname(nt, extradata_len);
 	if (nt->sysdata_fields & SYSDATA_RELEASE)
 		extradata_len += sysdata_append_release(nt, extradata_len);
+	if (nt->sysdata_fields & SYSDATA_MSGID)
+		extradata_len += sysdata_append_msgid(nt, extradata_len);
 
 	WARN_ON_ONCE(extradata_len >
 		     MAX_EXTRADATA_ENTRY_LEN * MAX_EXTRADATA_ITEMS);
@@ -1624,6 +1742,120 @@ static void write_msg(struct console *con, const char *msg, unsigned int len)
 	spin_unlock_irqrestore(&target_list_lock, flags);
 }
 
+static int netpoll_parse_ip_addr(const char *str, union inet_addr *addr)
+{
+	const char *end;
+
+	if (!strchr(str, ':') &&
+	    in4_pton(str, -1, (void *)addr, -1, &end) > 0) {
+		if (!*end)
+			return 0;
+	}
+	if (in6_pton(str, -1, addr->in6.s6_addr, -1, &end) > 0) {
+#if IS_ENABLED(CONFIG_IPV6)
+		if (!*end)
+			return 1;
+#else
+		return -1;
+#endif
+	}
+	return -1;
+}
+
+static int netconsole_parser_cmdline(struct netpoll *np, char *opt)
+{
+	bool ipversion_set = false;
+	char *cur = opt;
+	char *delim;
+	int ipv6;
+
+	if (*cur != '@') {
+		delim = strchr(cur, '@');
+		if (!delim)
+			goto parse_failed;
+		*delim = 0;
+		if (kstrtou16(cur, 10, &np->local_port))
+			goto parse_failed;
+		cur = delim;
+	}
+	cur++;
+
+	if (*cur != '/') {
+		ipversion_set = true;
+		delim = strchr(cur, '/');
+		if (!delim)
+			goto parse_failed;
+		*delim = 0;
+		ipv6 = netpoll_parse_ip_addr(cur, &np->local_ip);
+		if (ipv6 < 0)
+			goto parse_failed;
+		else
+			np->ipv6 = (bool)ipv6;
+		cur = delim;
+	}
+	cur++;
+
+	if (*cur != ',') {
+		/* parse out dev_name or dev_mac */
+		delim = strchr(cur, ',');
+		if (!delim)
+			goto parse_failed;
+		*delim = 0;
+
+		np->dev_name[0] = '\0';
+		eth_broadcast_addr(np->dev_mac);
+		if (!strchr(cur, ':'))
+			strscpy(np->dev_name, cur, sizeof(np->dev_name));
+		else if (!mac_pton(cur, np->dev_mac))
+			goto parse_failed;
+
+		cur = delim;
+	}
+	cur++;
+
+	if (*cur != '@') {
+		/* dst port */
+		delim = strchr(cur, '@');
+		if (!delim)
+			goto parse_failed;
+		*delim = 0;
+		if (*cur == ' ' || *cur == '\t')
+			np_info(np, "warning: whitespace is not allowed\n");
+		if (kstrtou16(cur, 10, &np->remote_port))
+			goto parse_failed;
+		cur = delim;
+	}
+	cur++;
+
+	/* dst ip */
+	delim = strchr(cur, '/');
+	if (!delim)
+		goto parse_failed;
+	*delim = 0;
+	ipv6 = netpoll_parse_ip_addr(cur, &np->remote_ip);
+	if (ipv6 < 0)
+		goto parse_failed;
+	else if (ipversion_set && np->ipv6 != (bool)ipv6)
+		goto parse_failed;
+	else
+		np->ipv6 = (bool)ipv6;
+	cur = delim + 1;
+
+	if (*cur != 0) {
+		/* MAC address */
+		if (!mac_pton(cur, np->remote_mac))
+			goto parse_failed;
+	}
+
+	netconsole_print_banner(np);
+
+	return 0;
+
+ parse_failed:
+	np_info(np, "couldn't parse config at '%s'!\n", cur);
+	return -1;
+}
+
 /* Allocate new target (from boot/module param) and setup netpoll for it */
 static struct netconsole_target *alloc_param_target(char *target_config,
 						    int cmdline_count)
@@ -1653,7 +1885,7 @@ static struct netconsole_target *alloc_param_target(char *target_config,
 	}
 
 	/* Parse parameters and setup netpoll */
-	err = netpoll_parse_options(&nt->np, target_config);
+	err = netconsole_parser_cmdline(&nt->np, target_config);
 	if (err)
 		goto fail;
 

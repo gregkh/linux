@@ -1555,7 +1555,7 @@ __sk_rmem_schedule(struct sock *sk, int size, bool pfmemalloc)
 }
 
 static inline bool
-sk_rmem_schedule(struct sock *sk, struct sk_buff *skb, int size)
+sk_rmem_schedule(struct sock *sk, const struct sk_buff *skb, int size)
 {
 	return __sk_rmem_schedule(sk, size, skb_pfmemalloc(skb));
 }
@@ -2606,12 +2606,12 @@ static inline gfp_t gfp_memcg_charge(void)
 
 static inline long sock_rcvtimeo(const struct sock *sk, bool noblock)
 {
-	return noblock ? 0 : sk->sk_rcvtimeo;
+	return noblock ? 0 : READ_ONCE(sk->sk_rcvtimeo);
 }
 
 static inline long sock_sndtimeo(const struct sock *sk, bool noblock)
 {
-	return noblock ? 0 : sk->sk_sndtimeo;
+	return noblock ? 0 : READ_ONCE(sk->sk_sndtimeo);
 }
 
 static inline int sock_rcvlowat(const struct sock *sk, int waitall, int len)
@@ -2692,6 +2692,10 @@ void __sock_recv_timestamp(struct msghdr *msg, struct sock *sk,
 			   struct sk_buff *skb);
 void __sock_recv_wifi_status(struct msghdr *msg, struct sock *sk,
 			     struct sk_buff *skb);
+
+bool skb_has_tx_timestamp(struct sk_buff *skb, const struct sock *sk);
+int skb_get_tx_timestamp(struct sk_buff *skb, struct sock *sk,
+			 struct timespec64 *ts);
 
 static inline void
 sock_recv_timestamp(struct msghdr *msg, struct sock *sk, struct sk_buff *skb)
@@ -2998,7 +3002,6 @@ void sock_set_timestamp(struct sock *sk, int optname, bool valbool);
 int sock_set_timestamping(struct sock *sk, int optname,
 			  struct so_timestamping timestamping);
 
-void sock_enable_timestamps(struct sock *sk);
 #if defined(CONFIG_CGROUP_BPF)
 void bpf_skops_tx_timestamping(struct sock *sk, struct sk_buff *skb, int op);
 #else

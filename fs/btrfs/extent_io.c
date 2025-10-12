@@ -75,8 +75,8 @@ void btrfs_extent_buffer_leak_debug_check(struct btrfs_fs_info *fs_info)
 	while (!list_empty(&fs_info->allocated_ebs)) {
 		eb = list_first_entry(&fs_info->allocated_ebs,
 				      struct extent_buffer, leak_list);
-		pr_err(
-	"BTRFS: buffer leak start %llu len %u refs %d bflags %lu owner %llu\n",
+		btrfs_err(fs_info,
+		       "buffer leak start %llu len %u refs %d bflags %lu owner %llu",
 		       eb->start, eb->len, refcount_read(&eb->refs), eb->bflags,
 		       btrfs_header_owner(eb));
 		list_del(&eb->leak_list);
@@ -285,8 +285,7 @@ static noinline int lock_delalloc_folios(struct inode *inode,
 				goto out;
 			}
 			range_start = max_t(u64, folio_pos(folio), start);
-			range_len = min_t(u64, folio_pos(folio) + folio_size(folio),
-					  end + 1) - range_start;
+			range_len = min_t(u64, folio_end(folio), end + 1) - range_start;
 			btrfs_folio_set_lock(fs_info, folio, range_start, range_len);
 
 			processed_end = range_start + range_len - 1;
@@ -340,7 +339,7 @@ noinline_for_stack bool find_lock_delalloc_range(struct inode *inode,
 	ASSERT(orig_end > orig_start);
 
 	/* The range should at least cover part of the folio */
-	ASSERT(!(orig_start >= folio_pos(locked_folio) + folio_size(locked_folio) ||
+	ASSERT(!(orig_start >= folio_end(locked_folio) ||
 		 orig_end <= folio_pos(locked_folio)));
 again:
 	/* step one, find a bunch of delalloc bytes starting at start */
@@ -438,7 +437,7 @@ static void end_folio_read(struct folio *folio, bool uptodate, u64 start, u32 le
 	struct btrfs_fs_info *fs_info = folio_to_fs_info(folio);
 
 	ASSERT(folio_pos(folio) <= start &&
-	       start + len <= folio_pos(folio) + folio_size(folio));
+	       start + len <= folio_end(folio));
 
 	if (uptodate && btrfs_verify_folio(folio, start, len))
 		btrfs_folio_set_uptodate(fs_info, folio, start, len);
@@ -1133,7 +1132,7 @@ static bool can_skip_one_ordered_range(struct btrfs_inode *inode,
 	 * finished our folio read and unlocked the folio.
 	 */
 	if (btrfs_folio_test_dirty(fs_info, folio, cur, blocksize)) {
-		u64 range_len = min(folio_pos(folio) + folio_size(folio),
+		u64 range_len = min(folio_end(folio),
 				    ordered->file_offset + ordered->num_bytes) - cur;
 
 		ret = true;
@@ -1155,7 +1154,7 @@ static bool can_skip_one_ordered_range(struct btrfs_inode *inode,
 	 * So we return true and update @next_ret to the OE/folio boundary.
 	 */
 	if (btrfs_folio_test_uptodate(fs_info, folio, cur, blocksize)) {
-		u64 range_len = min(folio_pos(folio) + folio_size(folio),
+		u64 range_len = min(folio_end(folio),
 				    ordered->file_offset + ordered->num_bytes) - cur;
 
 		/*
@@ -1639,8 +1638,12 @@ static noinline_for_stack int extent_writepage_io(struct btrfs_inode *inode,
 		folio_unlock(folio);
 		return 1;
 	}
-	if (ret < 0)
+	if (ret < 0) {
+		btrfs_folio_clear_dirty(fs_info, folio, start, len);
+		btrfs_folio_set_writeback(fs_info, folio, start, len);
+		btrfs_folio_clear_writeback(fs_info, folio, start, len);
 		return ret;
+	}
 
 	for (cur = start; cur < start + len; cur += fs_info->sectorsize)
 		set_bit((cur - folio_start) >> fs_info->sectorsize_bits, &range_bitmap);
@@ -1722,7 +1725,7 @@ static int extent_writepage(struct folio *folio, struct btrfs_bio_ctrl *bio_ctrl
 	int ret;
 	size_t pg_offset;
 	loff_t i_size = i_size_read(&inode->vfs_inode);
-	unsigned long end_index = i_size >> PAGE_SHIFT;
+	const pgoff_t end_index = i_size >> PAGE_SHIFT;
 	const unsigned int blocks_per_folio = btrfs_blocks_per_folio(fs_info, folio);
 
 	trace_extent_writepage(folio, &inode->vfs_inode, bio_ctrl->wbc);
@@ -1763,7 +1766,7 @@ static int extent_writepage(struct folio *folio, struct btrfs_bio_ctrl *bio_ctrl
 		WARN_ON(IS_ENABLED(CONFIG_BTRFS_DEBUG));
 		btrfs_err_rl(fs_info,
 	"root %lld ino %llu folio %llu is marked dirty without notifying the fs",
-			     inode->root->root_key.objectid,
+			     btrfs_root_id(inode->root),
 			     btrfs_ino(inode), folio_pos(folio));
 		ret = -EUCLEAN;
 		goto done;
@@ -1833,7 +1836,7 @@ static noinline_for_stack bool lock_extent_buffer_for_io(struct extent_buffer *e
 	 */
 	spin_lock(&eb->refs_lock);
 	if (test_and_clear_bit(EXTENT_BUFFER_DIRTY, &eb->bflags)) {
-		XA_STATE(xas, &fs_info->buffer_tree, eb->start >> fs_info->sectorsize_bits);
+		XA_STATE(xas, &fs_info->buffer_tree, eb->start >> fs_info->nodesize_bits);
 		unsigned long flags;
 
 		set_bit(EXTENT_BUFFER_WRITEBACK, &eb->bflags);
@@ -1843,6 +1846,7 @@ static noinline_for_stack bool lock_extent_buffer_for_io(struct extent_buffer *e
 		xas_load(&xas);
 		xas_set_mark(&xas, PAGECACHE_TAG_WRITEBACK);
 		xas_clear_mark(&xas, PAGECACHE_TAG_DIRTY);
+		xas_clear_mark(&xas, PAGECACHE_TAG_TOWRITE);
 		xas_unlock_irqrestore(&xas, flags);
 
 		btrfs_set_header_flag(eb, BTRFS_HEADER_FLAG_WRITTEN);
@@ -1933,7 +1937,7 @@ static void set_btree_ioerr(struct extent_buffer *eb)
 static void buffer_tree_set_mark(const struct extent_buffer *eb, xa_mark_t mark)
 {
 	struct btrfs_fs_info *fs_info = eb->fs_info;
-	XA_STATE(xas, &fs_info->buffer_tree, eb->start >> fs_info->sectorsize_bits);
+	XA_STATE(xas, &fs_info->buffer_tree, eb->start >> fs_info->nodesize_bits);
 	unsigned long flags;
 
 	xas_lock_irqsave(&xas, flags);
@@ -1945,7 +1949,7 @@ static void buffer_tree_set_mark(const struct extent_buffer *eb, xa_mark_t mark)
 static void buffer_tree_clear_mark(const struct extent_buffer *eb, xa_mark_t mark)
 {
 	struct btrfs_fs_info *fs_info = eb->fs_info;
-	XA_STATE(xas, &fs_info->buffer_tree, eb->start >> fs_info->sectorsize_bits);
+	XA_STATE(xas, &fs_info->buffer_tree, eb->start >> fs_info->nodesize_bits);
 	unsigned long flags;
 
 	xas_lock_irqsave(&xas, flags);
@@ -2045,7 +2049,7 @@ static unsigned int buffer_tree_get_ebs_tag(struct btrfs_fs_info *fs_info,
 	rcu_read_lock();
 	while ((eb = find_get_eb(&xas, end, tag)) != NULL) {
 		if (!eb_batch_add(batch, eb)) {
-			*start = ((eb->start + eb->len) >> fs_info->sectorsize_bits);
+			*start = ((eb->start + eb->len) >> fs_info->nodesize_bits);
 			goto out;
 		}
 	}
@@ -2067,7 +2071,7 @@ static struct extent_buffer *find_extent_buffer_nolock(
 		struct btrfs_fs_info *fs_info, u64 start)
 {
 	struct extent_buffer *eb;
-	unsigned long index = (start >> fs_info->sectorsize_bits);
+	unsigned long index = (start >> fs_info->nodesize_bits);
 
 	rcu_read_lock();
 	eb = xa_load(&fs_info->buffer_tree, index);
@@ -2090,10 +2094,7 @@ static void end_bbio_meta_write(struct btrfs_bio *bbio)
 	}
 
 	buffer_tree_clear_mark(eb, PAGECACHE_TAG_WRITEBACK);
-	clear_bit(EXTENT_BUFFER_WRITEBACK, &eb->bflags);
-	smp_mb__after_atomic();
-	wake_up_bit(&eb->bflags, EXTENT_BUFFER_WRITEBACK);
-
+	clear_and_wake_up_bit(EXTENT_BUFFER_WRITEBACK, &eb->bflags);
 	bio_put(&bbio->bio);
 }
 
@@ -2144,7 +2145,7 @@ static noinline_for_stack void write_one_eb(struct extent_buffer *eb,
 	for (int i = 0; i < num_extent_folios(eb); i++) {
 		struct folio *folio = eb->folios[i];
 		u64 range_start = max_t(u64, eb->start, folio_pos(folio));
-		u32 range_len = min_t(u64, folio_pos(folio) + folio_size(folio),
+		u32 range_len = min_t(u64, folio_end(folio),
 				      eb->start + eb->len) - range_start;
 
 		folio_lock(folio);
@@ -2173,8 +2174,8 @@ void btrfs_btree_wait_writeback_range(struct btrfs_fs_info *fs_info, u64 start,
 				      u64 end)
 {
 	struct eb_batch batch;
-	unsigned long start_index = (start >> fs_info->sectorsize_bits);
-	unsigned long end_index = (end >> fs_info->sectorsize_bits);
+	unsigned long start_index = (start >> fs_info->nodesize_bits);
+	unsigned long end_index = (end >> fs_info->nodesize_bits);
 
 	eb_batch_init(&batch);
 	while (start_index <= end_index) {
@@ -2210,7 +2211,7 @@ int btree_write_cache_pages(struct address_space *mapping,
 
 	eb_batch_init(&batch);
 	if (wbc->range_cyclic) {
-		index = ((mapping->writeback_index << PAGE_SHIFT) >> fs_info->sectorsize_bits);
+		index = ((mapping->writeback_index << PAGE_SHIFT) >> fs_info->nodesize_bits);
 		end = -1;
 
 		/*
@@ -2219,8 +2220,8 @@ int btree_write_cache_pages(struct address_space *mapping,
 		 */
 		scanned = (index == 0);
 	} else {
-		index = (wbc->range_start >> fs_info->sectorsize_bits);
-		end = (wbc->range_end >> fs_info->sectorsize_bits);
+		index = (wbc->range_start >> fs_info->nodesize_bits);
+		end = (wbc->range_end >> fs_info->nodesize_bits);
 
 		scanned = 1;
 	}
@@ -2548,7 +2549,7 @@ void extent_write_locked_range(struct inode *inode, const struct folio *locked_f
 			continue;
 		}
 
-		cur_end = min_t(u64, folio_pos(folio) + folio_size(folio) - 1, end);
+		cur_end = min_t(u64, folio_end(folio) - 1, end);
 		cur_len = cur_end + 1 - cur;
 
 		ASSERT(folio_test_locked(folio));
@@ -3100,7 +3101,7 @@ struct extent_buffer *alloc_test_extent_buffer(struct btrfs_fs_info *fs_info,
 	eb->fs_info = fs_info;
 again:
 	xa_lock_irq(&fs_info->buffer_tree);
-	exists = __xa_cmpxchg(&fs_info->buffer_tree, start >> fs_info->sectorsize_bits,
+	exists = __xa_cmpxchg(&fs_info->buffer_tree, start >> fs_info->nodesize_bits,
 			      NULL, eb, GFP_NOFS);
 	if (xa_is_err(exists)) {
 		ret = xa_err(exists);
@@ -3209,7 +3210,7 @@ static int attach_eb_folio_to_filemap(struct extent_buffer *eb, int i,
 
 	struct btrfs_fs_info *fs_info = eb->fs_info;
 	struct address_space *mapping = fs_info->btree_inode->i_mapping;
-	const unsigned long index = eb->start >> PAGE_SHIFT;
+	const pgoff_t index = eb->start >> PAGE_SHIFT;
 	struct folio *existing_folio;
 	int ret;
 
@@ -3416,7 +3417,7 @@ reallocate:
 again:
 	xa_lock_irq(&fs_info->buffer_tree);
 	existing_eb = __xa_cmpxchg(&fs_info->buffer_tree,
-				   start >> fs_info->sectorsize_bits, NULL, eb,
+				   start >> fs_info->nodesize_bits, NULL, eb,
 				   GFP_NOFS);
 	if (xa_is_err(existing_eb)) {
 		ret = xa_err(existing_eb);
@@ -3519,7 +3520,7 @@ static int release_extent_buffer(struct extent_buffer *eb)
 		 * in this case.
 		 */
 		xa_cmpxchg_irq(&fs_info->buffer_tree,
-			       eb->start >> fs_info->sectorsize_bits, eb, NULL,
+			       eb->start >> fs_info->nodesize_bits, eb, NULL,
 			       GFP_ATOMIC);
 
 		btrfs_leak_debug_del_eb(eb);
@@ -3711,9 +3712,7 @@ void set_extent_buffer_uptodate(struct extent_buffer *eb)
 
 static void clear_extent_buffer_reading(struct extent_buffer *eb)
 {
-	clear_bit(EXTENT_BUFFER_READING, &eb->bflags);
-	smp_mb__after_atomic();
-	wake_up_bit(&eb->bflags, EXTENT_BUFFER_READING);
+	clear_and_wake_up_bit(EXTENT_BUFFER_READING, &eb->bflags);
 }
 
 static void end_bbio_meta_read(struct btrfs_bio *bbio)
@@ -3790,7 +3789,7 @@ int read_extent_buffer_pages_nowait(struct extent_buffer *eb, int mirror_num,
 	for (int i = 0; i < num_extent_folios(eb); i++) {
 		struct folio *folio = eb->folios[i];
 		u64 range_start = max_t(u64, eb->start, folio_pos(folio));
-		u32 range_len = min_t(u64, folio_pos(folio) + folio_size(folio),
+		u32 range_len = min_t(u64, folio_end(folio),
 				      eb->start + eb->len) - range_start;
 
 		bio_add_folio_nofail(&bbio->bio, folio, range_len,
@@ -4169,8 +4168,8 @@ static inline void eb_bitmap_offset(const struct extent_buffer *eb,
  * @start:  offset of the bitmap item in the extent buffer
  * @nr:     bit number to test
  */
-int extent_buffer_test_bit(const struct extent_buffer *eb, unsigned long start,
-			   unsigned long nr)
+bool extent_buffer_test_bit(const struct extent_buffer *eb, unsigned long start,
+			    unsigned long nr)
 {
 	unsigned long i;
 	size_t offset;
@@ -4361,9 +4360,9 @@ static int try_release_subpage_extent_buffer(struct folio *folio)
 {
 	struct btrfs_fs_info *fs_info = folio_to_fs_info(folio);
 	struct extent_buffer *eb;
-	unsigned long start = (folio_pos(folio) >> fs_info->sectorsize_bits);
+	unsigned long start = (folio_pos(folio) >> fs_info->nodesize_bits);
 	unsigned long index = start;
-	unsigned long end = index + (PAGE_SIZE >> fs_info->sectorsize_bits) - 1;
+	unsigned long end = index + (PAGE_SIZE >> fs_info->nodesize_bits) - 1;
 	int ret;
 
 	rcu_read_lock();
