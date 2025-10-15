@@ -143,7 +143,7 @@
 		};
 	};
 
-	i2c21 {
+	i2c-21 {
 		compatible = "i2c-gpio";
 		sda-gpios = <&tlmm 127 GPIO_ACTIVE_HIGH>;
 		scl-gpios = <&tlmm 128 GPIO_ACTIVE_HIGH>;
