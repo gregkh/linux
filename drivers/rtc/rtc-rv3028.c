@@ -605,7 +605,7 @@ static int rv3028_ioctl(struct device *dev, unsigned int cmd, unsigned long arg)
 		
 		// set RV3028_STATUS_BSF to zero (reset backup switchower indication flag)
 		status &= ~RV3028_STATUS_BSF;
-		ret = regmap_write(rv3028->regmap, RV3028_STATUS, status)
+		ret = regmap_write(rv3028->regmap, RV3028_STATUS, status);
 		if (ret < 0)
 			return ret;
 
