@@ -1210,10 +1210,12 @@ EXPORT_SYMBOL_GPL(bind_interdomain_evtchn_to_irq_lateeoi);
 static int find_virq(unsigned int virq, unsigned int cpu)
 {
 	struct evtchn_status status;
-	int port, rc = -ENOENT;
+	int port;
 
 	memset(&status, 0, sizeof(status));
 	for (port = 0; port < xen_evtchn_max_channels(); port++) {
+		int rc;
+
 		status.dom = DOMID_SELF;
 		status.port = port;
 		rc = HYPERVISOR_event_channel_op(EVTCHNOP_status, &status);
@@ -1221,12 +1223,10 @@ static int find_virq(unsigned int virq, unsigned int cpu)
 			continue;
 		if (status.status != EVTCHNSTAT_virq)
 			continue;
-		if (status.u.virq == virq && status.vcpu == xen_vcpu_nr(cpu)) {
-			rc = port;
-			break;
-		}
+		if (status.u.virq == virq && status.vcpu == xen_vcpu_nr(cpu))
+			return port;
 	}
-	return rc;
+	return -ENOENT;
 }
 
 /**
