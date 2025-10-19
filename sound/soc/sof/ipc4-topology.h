@@ -58,10 +58,14 @@
 
 #define SOF_IPC4_DMA_DEVICE_MAX_COUNT 16
 
+#define SOF_IPC4_CHAIN_DMA_NODE_ID	0x7fffffff
 #define SOF_IPC4_INVALID_NODE_ID	0xffffffff
 
-/* FW requires minimum 2ms DMA buffer size */
-#define SOF_IPC4_MIN_DMA_BUFFER_SIZE	2
+/* FW requires minimum 4ms DMA buffer size */
+#define SOF_IPC4_MIN_DMA_BUFFER_SIZE	4
+
+/* ChainDMA in fw uses 5ms DMA buffer */
+#define SOF_IPC4_CHAIN_DMA_BUFFER_SIZE	5
 
 /*
  * The base of multi-gateways. Multi-gateways addressing starts from
@@ -245,6 +249,8 @@ struct sof_ipc4_dma_stream_ch_map {
 
 #define SOF_IPC4_DMA_METHOD_HDA   1
 #define SOF_IPC4_DMA_METHOD_GPDMA 2 /* defined for consistency but not used */
+
+#define SOF_IPC4_CHAIN_DMA_BUF_SIZE_MS 2
 
 /**
  * struct sof_ipc4_dma_config: DMA configuration
