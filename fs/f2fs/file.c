@@ -1800,7 +1800,7 @@ next_alloc:
 		f2fs_unlock_op(sbi);
 
 		map.m_seg_type = CURSEG_COLD_DATA_PINNED;
-		err = f2fs_map_blocks(inode, &map, 1, F2FS_GET_BLOCK_PRE_DIO);
+		err = f2fs_map_blocks(inode, &map, F2FS_GET_BLOCK_PRE_DIO);
 		file_dont_truncate(inode);
 
 		f2fs_up_write(&sbi->pin_sem);
@@ -1813,7 +1813,7 @@ next_alloc:
 
 		map.m_len = expanded;
 	} else {
-		err = f2fs_map_blocks(inode, &map, 1, F2FS_GET_BLOCK_PRE_AIO);
+		err = f2fs_map_blocks(inode, &map, F2FS_GET_BLOCK_PRE_AIO);
 		expanded = map.m_len;
 	}
 out_err:
@@ -2710,7 +2710,7 @@ static int f2fs_defragment_range(struct f2fs_sb_info *sbi,
 	 */
 	while (map.m_lblk < pg_end) {
 		map.m_len = pg_end - map.m_lblk;
-		err = f2fs_map_blocks(inode, &map, 0, F2FS_GET_BLOCK_DEFAULT);
+		err = f2fs_map_blocks(inode, &map, F2FS_GET_BLOCK_DEFAULT);
 		if (err)
 			goto out;
 
@@ -2757,7 +2757,7 @@ static int f2fs_defragment_range(struct f2fs_sb_info *sbi,
 
 do_map:
 		map.m_len = pg_end - map.m_lblk;
-		err = f2fs_map_blocks(inode, &map, 0, F2FS_GET_BLOCK_DEFAULT);
+		err = f2fs_map_blocks(inode, &map, F2FS_GET_BLOCK_DEFAULT);
 		if (err)
 			goto clear_out;
 
@@ -3352,7 +3352,7 @@ int f2fs_precache_extents(struct inode *inode)
 		map.m_len = end - map.m_lblk;
 
 		f2fs_down_write(&fi->i_gc_rwsem[WRITE]);
-		err = f2fs_map_blocks(inode, &map, 0, F2FS_GET_BLOCK_PRECACHE);
+		err = f2fs_map_blocks(inode, &map, F2FS_GET_BLOCK_PRECACHE);
 		f2fs_up_write(&fi->i_gc_rwsem[WRITE]);
 		if (err)
 			return err;
@@ -4635,7 +4635,7 @@ static int f2fs_preallocate_blocks(struct kiocb *iocb, struct iov_iter *iter,
 		flag = F2FS_GET_BLOCK_PRE_AIO;
 	}
 
-	ret = f2fs_map_blocks(inode, &map, 1, flag);
+	ret = f2fs_map_blocks(inode, &map, flag);
 	/* -ENOSPC|-EDQUOT are fine to report the number of allocated blocks. */
 	if (ret < 0 && !((ret == -ENOSPC || ret == -EDQUOT) && map.m_len > 0))
 		return ret;
