@@ -4513,6 +4513,8 @@ static int ath12k_mac_station_add(struct ath12k *ar,
 				    sta->addr, ret);
 			goto free_peer;
 		}
+
+		arsta->use_4addr_set = true;
 	//}
 
 	ret = ath12k_dp_peer_setup(ar, arvif->vdev_id, sta->addr);
@@ -5884,6 +5886,7 @@ static void ath12k_mac_op_tx(struct ieee80211_hw *hw,
 	struct ath12k *ar = arvif->ar;
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
 	struct ieee80211_key_conf *key = info->control.hw_key;
+	struct ath12k_sta *arsta = NULL;
 	u32 info_flags = info->flags;
 	bool is_prb_rsp;
 	int ret;
@@ -5914,7 +5917,10 @@ static void ath12k_mac_op_tx(struct ieee80211_hw *hw,
 	if (vif->type == NL80211_IFTYPE_AP && vif->p2p)
 		ath12k_mac_add_p2p_noa_ie(ar, vif, skb, is_prb_rsp);
 
-	ret = ath12k_dp_tx(ar, arvif, skb);
+	if (control->sta)
+		arsta = (struct ath12k_sta *)control->sta->drv_priv;
+
+	ret = ath12k_dp_tx(ar, arvif, arsta, skb);
 	if (ret) {
 		ath12k_warn(ar->ab, "failed to transmit frame %d\n", ret);
 		ieee80211_free_txskb(hw, skb);

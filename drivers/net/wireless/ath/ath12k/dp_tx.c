@@ -217,7 +217,7 @@ out:
 }
 
 int ath12k_dp_tx(struct ath12k *ar, struct ath12k_vif *arvif,
-		 struct sk_buff *skb)
+		 struct ath12k_sta *arsta, struct sk_buff *skb)
 {
 	struct ath12k_base *ab = ar->ab;
 	struct ath12k_dp *dp = &ab->dp;
@@ -272,7 +272,15 @@ tcl_ring_sel:
 		return -ENOMEM;
 
 	ti.bank_id = arvif->bank_id;
-	ti.meta_data_flags = arvif->tcl_metadata;
+
+	if (ieee80211_has_a4(hdr->frame_control) &&
+	    is_multicast_ether_addr(hdr->addr3) && arsta &&
+	    arsta->use_4addr_set) {
+		ti.meta_data_flags = arsta->tcl_metadata;
+		ti.flags0 |= u32_encode_bits(1, HAL_TCL_DATA_CMD_INFO2_TO_FW);
+	} else {
+		ti.meta_data_flags = arvif->tcl_metadata;
+	}
 
 	if (arvif->tx_encap_type == HAL_TCL_ENCAP_TYPE_RAW &&
 	    test_bit(ATH12K_FLAG_HW_CRYPTO_DISABLED, &ar->ab->dev_flags)) {
