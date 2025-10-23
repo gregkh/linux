@@ -36,7 +36,7 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
 		return;
 	}
 
-	ret = rtw89_core_tx_write(rtwdev, vif, sta, skb, &qsel);
+	ret = rtw89_core_tx_write(rtwdev, vif, sta, skb, &qsel, NULL);
 	if (ret) {
 		rtw89_err(rtwdev, "failed to transmit skb: %d\n", ret);
 		ieee80211_free_txskb(hw, skb);
