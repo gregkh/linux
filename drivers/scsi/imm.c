@@ -1269,6 +1269,7 @@ static void imm_detach(struct parport *pb)
 		if (dev->dev->port == pb) {
 			list_del_init(&dev->list);
 			scsi_remove_host(dev->host);
+			cancel_delayed_work_sync(&dev->imm_tq);
 			scsi_host_put(dev->host);
 			parport_unregister_device(dev->dev);
 			kfree(dev);
