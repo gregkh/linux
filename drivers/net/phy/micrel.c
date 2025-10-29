@@ -3870,6 +3870,8 @@ static int lan8814_ptp_probe_once(struct phy_device *phydev)
 {
 	struct lan8814_shared_priv *shared = phydev->shared->priv;
 
+	shared->phydev = phydev;
+
 	/* Initialise shared lock for clock*/
 	mutex_init(&shared->shared_lock);
 
@@ -3920,8 +3922,6 @@ static int lan8814_ptp_probe_once(struct phy_device *phydev)
 		return 0;
 
 	phydev_dbg(phydev, "successfully registered ptp clock\n");
-
-	shared->phydev = phydev;
 
 	/* The EP.4 is shared between all the PHYs in the package and also it
 	 * can be accessed by any of the PHYs
