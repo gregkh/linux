@@ -337,17 +337,17 @@ enum req_opf {
 	/* write the zero filled sector many times */
 	REQ_OP_WRITE_ZEROES	= 9,
 	/* Open a zone */
-	REQ_OP_ZONE_OPEN	= 10,
+	REQ_OP_ZONE_OPEN	= 11,
 	/* Close a zone */
-	REQ_OP_ZONE_CLOSE	= 11,
+	REQ_OP_ZONE_CLOSE	= 13,
 	/* Transition a zone to full */
-	REQ_OP_ZONE_FINISH	= 13,
-	/* write data at the current zone write pointer */
-	REQ_OP_ZONE_APPEND	= 15,
+	REQ_OP_ZONE_FINISH	= 15,
 	/* reset a zone write pointer */
 	REQ_OP_ZONE_RESET	= 17,
 	/* reset all the zone present on the device */
 	REQ_OP_ZONE_RESET_ALL	= 19,
+	/* write data at the current zone write pointer */
+	REQ_OP_ZONE_APPEND	= 21,
 
 	/* Driver private requests */
 	REQ_OP_DRV_IN		= 34,
