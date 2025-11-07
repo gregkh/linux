@@ -110,6 +110,7 @@ struct dbc_port {
 	struct kfifo			write_fifo;
 
 	bool				registered;
+	bool				tx_running;
 };
 
 struct dbc_driver {
