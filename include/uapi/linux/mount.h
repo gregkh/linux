@@ -186,7 +186,7 @@ struct statmount {
  */
 struct mnt_id_req {
 	__u32 size;
-	__u32 spare;
+	__u32 mnt_ns_fd;
 	__u64 mnt_id;
 	__u64 param;
 	__u64 mnt_ns_id;
