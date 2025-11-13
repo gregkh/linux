@@ -240,6 +240,7 @@ struct adv_info {
 	bool	enabled;
 	bool	pending;
 	bool	periodic;
+	bool	periodic_enabled;
 	__u8	mesh;
 	__u8	instance;
 	__u8	handle;
@@ -1315,7 +1316,17 @@ static inline struct hci_conn *hci_conn_hash_lookup_big(struct hci_dev *hdev,
 	rcu_read_lock();
 
 	list_for_each_entry_rcu(c, &h->list, list) {
-		if (bacmp(&c->dst, BDADDR_ANY) || c->type != ISO_LINK)
+		if (c->type != ISO_LINK)
+			continue;
+
+		/* An ISO_LINK hcon with BDADDR_ANY as destination
+		 * address is a Broadcast connection. A Broadcast
+		 * slave connection is associated with a PA train,
+		 * so the sync_handle can be used to differentiate
+		 * from unicast.
+		 */
+		if (bacmp(&c->dst, BDADDR_ANY) &&
+		    c->sync_handle == HCI_SYNC_HANDLE_INVALID)
 			continue;
 
 		if (handle == c->iso_qos.bcast.big) {
