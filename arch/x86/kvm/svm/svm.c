@@ -3053,11 +3053,17 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		if (data & DEBUGCTL_RESERVED_BITS)
 			return 1;
 
-		if (svm->vmcb->control.virt_ext & LBR_CTL_ENABLE_MASK)
+		if (svm->vmcb->control.virt_ext & LBR_CTL_ENABLE_MASK) {
+			if (svm->vmcb->save.dbgctl == data)
+				break;
 			svm->vmcb->save.dbgctl = data;
-		else
+		} else {
+			if (svm->vmcb01.ptr->save.dbgctl == data)
+				break;
 			svm->vmcb01.ptr->save.dbgctl = data;
+		}
 
+		vmcb_mark_dirty(svm->vmcb, VMCB_LBR);
 		svm_update_lbrv(vcpu);
 
 		break;
