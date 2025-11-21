@@ -1093,6 +1093,11 @@ int snd_usb_endpoint_set_params(struct snd_usb_endpoint *ep,
 	ep->sample_rem = rate % ep->pps;
 	ep->packsize[0] = rate / ep->pps;
 	ep->packsize[1] = (rate + (ep->pps - 1)) / ep->pps;
+	if (ep->packsize[1] > ep->maxpacksize) {
+		usb_audio_dbg(ep->chip, "Too small maxpacksize %u for rate %u / pps %u\n",
+			      ep->maxpacksize, rate, ep->pps);
+		return -EINVAL;
+	}
 
 	/* calculate the frequency in 16.16 format */
 	ep->freqm = ep->freqn;
