@@ -1212,6 +1212,7 @@ nfs4_update_changeattr_locked(struct inode *inode,
 		| cache_validity;
 
 	if (cinfo->atomic && cinfo->before == inode_peek_iversion_raw(inode)) {
+		nfsi->cache_validity &= ~NFS_INO_REVAL_PAGECACHE;
 		nfsi->attrtimeo_timestamp = jiffies;
 	} else {
 		if (S_ISDIR(inode->i_mode)) {
