@@ -2411,7 +2411,8 @@ static void __mptcp_close_subflow(struct mptcp_sock *msk)
 
 		if (ssk_state != TCP_CLOSE &&
 		    (ssk_state != TCP_CLOSE_WAIT ||
-		     inet_sk_state_load((struct sock *)ssk) != TCP_ESTABLISHED))
+		     inet_sk_state_load((struct sock *)ssk) != TCP_ESTABLISHED ||
+		     __mptcp_check_fallback(msk)))
 			continue;
 
 		/* 'subflow_data_ready' will re-sched once rx queue is empty */
