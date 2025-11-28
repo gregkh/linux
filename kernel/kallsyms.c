@@ -431,8 +431,8 @@ static const char *kallsyms_lookup_buildid(unsigned long addr,
 					 offset, modname, namebuf);
 
 	if (!ret)
-		ret = ftrace_mod_address_lookup(addr, symbolsize,
-						offset, modname, namebuf);
+		ret = ftrace_mod_address_lookup(addr, symbolsize, offset,
+						modname, modbuildid, namebuf);
 
 found:
 	cleanup_symbol_name(namebuf);
