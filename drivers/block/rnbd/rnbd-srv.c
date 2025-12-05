@@ -546,6 +546,8 @@ static void rnbd_srv_fill_msg_open_rsp(struct rnbd_msg_open_rsp *rsp,
 	struct rnbd_dev *rnbd_dev = sess_dev->rnbd_dev;
 	struct request_queue *q = bdev_get_queue(rnbd_dev->bdev);
 
+	memset(rsp, 0, sizeof(*rsp));
+
 	rsp->hdr.type = cpu_to_le16(RNBD_MSG_OPEN_RSP);
 	rsp->device_id =
 		cpu_to_le32(sess_dev->device_id);
@@ -663,6 +665,7 @@ static int process_msg_sess_info(struct rnbd_srv_session *srv_sess,
 		 srv_sess->sessname, srv_sess->ver,
 		 sess_info_msg->ver, RNBD_PROTO_VER_MAJOR);
 
+	memset(rsp, 0, sizeof(*rsp));
 	rsp->hdr.type = cpu_to_le16(RNBD_MSG_SESS_INFO_RSP);
 	rsp->ver = srv_sess->ver;
 
