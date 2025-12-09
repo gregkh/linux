@@ -638,6 +638,9 @@
 /* AMD Last Branch Record MSRs */
 #define MSR_AMD64_LBR_SELECT			0xc000010e
 
+#define MSR_ZEN4_BP_CFG			0xc001102e
+#define MSR_ZEN2_BP_CFG_BUG_FIX_BIT	33
+
 /* Fam 17h MSRs */
 #define MSR_F17H_IRPERF			0xc00000e9
 
