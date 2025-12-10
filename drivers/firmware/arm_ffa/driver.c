@@ -1832,6 +1832,7 @@ static int __init ffa_init(void)
 
 cleanup_notifs:
 	ffa_notifications_cleanup();
+	ffa_rxtx_unmap(drv_info->vm_id);
 free_pages:
 	if (drv_info->tx_buffer)
 		free_pages_exact(drv_info->tx_buffer, rxtx_bufsz);
