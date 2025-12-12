@@ -1441,8 +1441,10 @@ int asoc_sdw_parse_sdw_endpoints(struct device *dev,
 					 * endpoint check is not necessary
 					 */
 					if (dai_info->quirk &&
-					    !(dai_info->quirk_exclude ^ !!(dai_info->quirk & ctx->mc_quirk)))
+					    !(dai_info->quirk_exclude ^ !!(dai_info->quirk & ctx->mc_quirk))) {
+						(*num_devs)--;
 						continue;
+					}
 				} else {
 					/* Check SDCA codec endpoint if there is no matching quirk */
 					ret = is_sdca_endpoint_present(dev, codec_info, adr_link, i, j);
@@ -1450,8 +1452,10 @@ int asoc_sdw_parse_sdw_endpoints(struct device *dev,
 						return ret;
 
 					/* The endpoint is not present, skip */
-					if (!ret)
+					if (!ret) {
+						(*num_devs)--;
 						continue;
+					}
 				}
 
 				dev_dbg(dev,
