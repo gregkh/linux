@@ -48,6 +48,8 @@ patternProperties:
     description: Acme Systems srl
   "^actions,.*":
     description: Actions Semiconductor Co., Ltd.
+  "^actiontec,.*":
+    description: Actiontec Electronics, Inc
   "^active-semi,.*":
     description: Active-Semi International Inc
   "^ad,.*":
@@ -223,6 +225,8 @@ patternProperties:
     description: BeagleBoard.org Foundation
   "^belling,.*":
     description: Shanghai Belling Co., Ltd.
+  "^bestar,.*":
+    description: Shenzhen Bestar Electronic Technology Co., Ltd.
   "^bhf,.*":
     description: Beckhoff Automation GmbH & Co. KG
   "^bigtreetech,.*":
@@ -566,10 +570,14 @@ patternProperties:
     description: Foxconn Industrial Internet
   "^firefly,.*":
     description: Firefly
+  "^flipkart,.*":
+    description: Flipkart Inc.
   "^focaltech,.*":
     description: FocalTech Systems Co.,Ltd
   "^forlinx,.*":
     description: Baoding Forlinx Embedded Technology Co., Ltd.
+  "^foursemi,.*":
+    description: Shanghai FourSemi Semiconductor Co.,Ltd.
   "^foxlink,.*":
     description: Foxlink Group
   "^freebox,.*":
@@ -670,6 +678,8 @@ patternProperties:
     description: HiDeep Inc.
   "^himax,.*":
     description: Himax Technologies, Inc.
+  "^hinlink,.*":
+    description: Shenzhen HINLINK Technology Co., Ltd.
   "^hirschmann,.*":
     description: Hirschmann Automation and Control GmbH
   "^hisi,.*":
@@ -959,6 +969,8 @@ patternProperties:
     description: MaxLinear Inc.
   "^maxtor,.*":
     description: Maxtor Corporation
+  "^mayqueen,.*":
+    description: Mayqueen Technologies Ltd.
   "^mbvl,.*":
     description: Mobiveil Inc.
   "^mcube,.*":
@@ -1209,6 +1221,8 @@ patternProperties:
     description: Parade Technologies Inc.
   "^parallax,.*":
     description: Parallax Inc.
+  "^particle,.*":
+    description: Particle Industries, Inc.
   "^pda,.*":
     description: Precision Design Associates, Inc.
   "^pegatron,.*":
@@ -1554,6 +1568,9 @@ patternProperties:
     description: Sierra Wireless
   "^syna,.*":
     description: Synaptics Inc.
+  "^synaptics,.*":
+    description: Synaptics Inc.
+    deprecated: true
   "^synology,.*":
     description: Synology, Inc.
   "^synopsys,.*":
@@ -1861,7 +1878,7 @@ patternProperties:
 
   # Normal property name match without a comma
   # These should catch all node/property names without a prefix
-  "^[a-zA-Z0-9#_][a-zA-Z0-9+\\-._@]{0,63}$": true
+  "^[a-zA-Z0-9#_][a-zA-Z0-9#+\\-._@]{0,63}$": true
   "^[a-zA-Z0-9+\\-._]*@[0-9a-zA-Z,]*$": true
   "^#.*": true
 

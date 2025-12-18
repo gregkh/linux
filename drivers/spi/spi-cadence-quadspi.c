@@ -33,7 +33,7 @@
 #define CQSPI_NAME			"cadence-qspi"
 #define CQSPI_MAX_CHIPSELECT		4
 
-static_assert(CQSPI_MAX_CHIPSELECT <= SPI_CS_CNT_MAX);
+static_assert(CQSPI_MAX_CHIPSELECT <= SPI_DEVICE_CS_CNT_MAX);
 
 /* Quirks */
 #define CQSPI_NEEDS_WR_DELAY		BIT(0)
@@ -336,7 +336,7 @@ static bool cqspi_is_idle(struct cqspi_st *cqspi)
 {
 	u32 reg = readl(cqspi->iobase + CQSPI_REG_CONFIG);
 
-	return reg & (1UL << CQSPI_REG_CONFIG_IDLE_LSB);
+	return reg & BIT(CQSPI_REG_CONFIG_IDLE_LSB);
 }
 
 static u32 cqspi_get_rd_sram_level(struct cqspi_st *cqspi)
@@ -572,7 +572,7 @@ static int cqspi_command_read(struct cqspi_flash_pdata *f_pdata,
 		reg |= (dummy_clk & CQSPI_REG_CMDCTRL_DUMMY_MASK)
 		     << CQSPI_REG_CMDCTRL_DUMMY_LSB;
 
-	reg |= (0x1 << CQSPI_REG_CMDCTRL_RD_EN_LSB);
+	reg |= BIT(CQSPI_REG_CMDCTRL_RD_EN_LSB);
 
 	/* 0 means 1 byte. */
 	reg |= (((n_rx - 1) & CQSPI_REG_CMDCTRL_RD_BYTES_MASK)
@@ -580,7 +580,7 @@ static int cqspi_command_read(struct cqspi_flash_pdata *f_pdata,
 
 	/* setup ADDR BIT field */
 	if (op->addr.nbytes) {
-		reg |= (0x1 << CQSPI_REG_CMDCTRL_ADDR_EN_LSB);
+		reg |= BIT(CQSPI_REG_CMDCTRL_ADDR_EN_LSB);
 		reg |= ((op->addr.nbytes - 1) &
 			CQSPI_REG_CMDCTRL_ADD_BYTES_MASK)
 			<< CQSPI_REG_CMDCTRL_ADD_BYTES_LSB;
@@ -647,7 +647,7 @@ static int cqspi_command_write(struct cqspi_flash_pdata *f_pdata,
 	reg = opcode << CQSPI_REG_CMDCTRL_OPCODE_LSB;
 
 	if (op->addr.nbytes) {
-		reg |= (0x1 << CQSPI_REG_CMDCTRL_ADDR_EN_LSB);
+		reg |= BIT(CQSPI_REG_CMDCTRL_ADDR_EN_LSB);
 		reg |= ((op->addr.nbytes - 1) &
 			CQSPI_REG_CMDCTRL_ADD_BYTES_MASK)
 			<< CQSPI_REG_CMDCTRL_ADD_BYTES_LSB;
@@ -656,7 +656,7 @@ static int cqspi_command_write(struct cqspi_flash_pdata *f_pdata,
 	}
 
 	if (n_tx) {
-		reg |= (0x1 << CQSPI_REG_CMDCTRL_WR_EN_LSB);
+		reg |= BIT(CQSPI_REG_CMDCTRL_WR_EN_LSB);
 		reg |= ((n_tx - 1) & CQSPI_REG_CMDCTRL_WR_BYTES_MASK)
 			<< CQSPI_REG_CMDCTRL_WR_BYTES_LSB;
 		data = 0;
@@ -1192,7 +1192,7 @@ static void cqspi_chipselect(struct cqspi_flash_pdata *f_pdata)
 		 * CS2 to 4b'1011
 		 * CS3 to 4b'0111
 		 */
-		chip_select = 0xF & ~(1 << chip_select);
+		chip_select = 0xF & ~BIT(chip_select);
 	}
 
 	reg &= ~(CQSPI_REG_CONFIG_CHIPSELECT_MASK
@@ -1278,9 +1278,9 @@ static void cqspi_readdata_capture(struct cqspi_st *cqspi,
 	reg = readl(reg_base + CQSPI_REG_READCAPTURE);
 
 	if (bypass)
-		reg |= (1 << CQSPI_REG_READCAPTURE_BYPASS_LSB);
+		reg |= BIT(CQSPI_REG_READCAPTURE_BYPASS_LSB);
 	else
-		reg &= ~(1 << CQSPI_REG_READCAPTURE_BYPASS_LSB);
+		reg &= ~BIT(CQSPI_REG_READCAPTURE_BYPASS_LSB);
 
 	reg &= ~(CQSPI_REG_READCAPTURE_DELAY_MASK
 		 << CQSPI_REG_READCAPTURE_DELAY_LSB);

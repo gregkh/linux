@@ -103,6 +103,7 @@
 #include <linux/randomize_kstack.h>
 #include <linux/pidfs.h>
 #include <linux/ptdump.h>
+#include <linux/time_namespace.h>
 #include <net/net_namespace.h>
 
 #include <asm/io.h>
@@ -1084,6 +1085,7 @@ void start_kernel(void)
 	fork_init();
 	proc_caches_init();
 	uts_ns_init();
+	time_ns_init();
 	key_init();
 	security_init();
 	dbg_late_init();

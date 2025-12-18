@@ -169,6 +169,11 @@ static inline bool phy_interface_empty(const unsigned long *intf)
 	return bitmap_empty(intf, PHY_INTERFACE_MODE_MAX);
 }
 
+static inline void phy_interface_copy(unsigned long *d, const unsigned long *s)
+{
+	bitmap_copy(d, s, PHY_INTERFACE_MODE_MAX);
+}
+
 static inline unsigned int phy_interface_weight(const unsigned long *intf)
 {
 	return bitmap_weight(intf, PHY_INTERFACE_MODE_MAX);
@@ -292,7 +297,7 @@ static inline const char *phy_modes(phy_interface_t interface)
  *
  * Description: maps RGMII supported link speeds into the clock rates.
  * This can also be used for MII, GMII, and RMII interface modes as the
- * clock rates are indentical, but the caller must be aware that errors
+ * clock rates are identical, but the caller must be aware that errors
  * for unsupported clock rates will not be signalled.
  *
  * Returns: clock rate or negative errno
@@ -514,7 +519,7 @@ enum phy_state {
  * struct phy_c45_device_ids - 802.3-c45 Device Identifiers
  * @devices_in_package: IEEE 802.3 devices in package register value.
  * @mmds_present: bit vector of MMDs present.
- * @device_ids: The device identifer for each present device.
+ * @device_ids: The device identifier for each present device.
  */
 struct phy_c45_device_ids {
 	u32 devices_in_package;
@@ -1309,6 +1314,19 @@ static inline bool phy_id_compare_vendor(u32 id, u32 vendor_mask)
 }
 
 /**
+ * phy_id_compare_model - compare @id with @model mask
+ * @id: PHY ID
+ * @model_mask: PHY Model mask
+ *
+ * Return: true if the bits from @id match @model using the
+ *	   generic PHY Model mask.
+ */
+static inline bool phy_id_compare_model(u32 id, u32 model_mask)
+{
+	return phy_id_compare(id, model_mask, PHY_ID_MATCH_MODEL_MASK);
+}
+
+/**
  * phydev_id_compare - compare @id with the PHY's Clause 22 ID
  * @phydev: the PHY device
  * @id: the PHY ID to be matched
@@ -2015,9 +2033,7 @@ static inline int phy_read_status(struct phy_device *phydev)
 		return genphy_read_status(phydev);
 }
 
-void phy_driver_unregister(struct phy_driver *drv);
 void phy_drivers_unregister(struct phy_driver *drv, int n);
-int phy_driver_register(struct phy_driver *new_driver, struct module *owner);
 int phy_drivers_register(struct phy_driver *new_driver, int n,
 			 struct module *owner);
 void phy_error(struct phy_device *phydev);
@@ -2118,16 +2134,6 @@ int __phy_hwtstamp_set(struct phy_device *phydev,
 
 extern const struct bus_type mdio_bus_type;
 extern const struct class mdio_bus_class;
-
-struct mdio_board_info {
-	const char	*bus_id;
-	char		modalias[MDIO_NAME_SIZE];
-	int		mdio_addr;
-	const void	*platform_data;
-};
-
-int mdiobus_register_board_info(const struct mdio_board_info *info,
-				unsigned int n);
 
 /**
  * phy_module_driver() - Helper macro for registering PHY drivers

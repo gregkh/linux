@@ -52,6 +52,8 @@ static void intf_free(struct kref *ref);
 static bool initialized;
 static bool drvregistered;
 
+static struct timer_list ipmi_timer;
+
 /* Numbers in this enumerator should be mapped to ipmi_panic_event_str */
 enum ipmi_panic_event_op {
 	IPMI_SEND_PANIC_EVENT_NONE,
@@ -434,6 +436,7 @@ struct ipmi_smi {
 	atomic_t nr_users;
 	struct device_attribute nr_users_devattr;
 	struct device_attribute nr_msgs_devattr;
+	struct device_attribute maintenance_mode_devattr;
 
 
 	/* Used for wake ups at startup. */
@@ -541,7 +544,11 @@ struct ipmi_smi {
 
 	/* For handling of maintenance mode. */
 	int maintenance_mode;
-	bool maintenance_mode_enable;
+
+#define IPMI_MAINTENANCE_MODE_STATE_OFF		0
+#define IPMI_MAINTENANCE_MODE_STATE_FIRMWARE	1
+#define IPMI_MAINTENANCE_MODE_STATE_RESET	2
+	int maintenance_mode_state;
 	int auto_maintenance_timeout;
 	spinlock_t maintenance_mode_lock; /* Used in a timer... */
 
@@ -1530,8 +1537,15 @@ EXPORT_SYMBOL(ipmi_get_maintenance_mode);
 static void maintenance_mode_update(struct ipmi_smi *intf)
 {
 	if (intf->handlers->set_maintenance_mode)
+		/*
+		 * Lower level drivers only care about firmware mode
+		 * as it affects their timing.  They don't care about
+		 * reset, which disables all commands for a while.
+		 */
 		intf->handlers->set_maintenance_mode(
-			intf->send_info, intf->maintenance_mode_enable);
+			intf->send_info,
+			(intf->maintenance_mode_state ==
+			 IPMI_MAINTENANCE_MODE_STATE_FIRMWARE));
 }
 
 int ipmi_set_maintenance_mode(struct ipmi_user *user, int mode)
@@ -1548,16 +1562,17 @@ int ipmi_set_maintenance_mode(struct ipmi_user *user, int mode)
 	if (intf->maintenance_mode != mode) {
 		switch (mode) {
 		case IPMI_MAINTENANCE_MODE_AUTO:
-			intf->maintenance_mode_enable
-				= (intf->auto_maintenance_timeout > 0);
+			/* Just leave it alone. */
 			break;
 
 		case IPMI_MAINTENANCE_MODE_OFF:
-			intf->maintenance_mode_enable = false;
+			intf->maintenance_mode_state =
+				IPMI_MAINTENANCE_MODE_STATE_OFF;
 			break;
 
 		case IPMI_MAINTENANCE_MODE_ON:
-			intf->maintenance_mode_enable = true;
+			intf->maintenance_mode_state =
+				IPMI_MAINTENANCE_MODE_STATE_FIRMWARE;
 			break;
 
 		default:
@@ -1917,14 +1932,20 @@ static int i_ipmi_req_sysintf(struct ipmi_smi        *intf,
 
 	if (is_maintenance_mode_cmd(msg)) {
 		unsigned long flags;
+		int newst;
+
+		if (msg->netfn == IPMI_NETFN_FIRMWARE_REQUEST)
+			newst = IPMI_MAINTENANCE_MODE_STATE_FIRMWARE;
+		else
+			newst = IPMI_MAINTENANCE_MODE_STATE_RESET;
 
 		spin_lock_irqsave(&intf->maintenance_mode_lock, flags);
-		intf->auto_maintenance_timeout
-			= maintenance_mode_timeout_ms;
+		intf->auto_maintenance_timeout = maintenance_mode_timeout_ms;
 		if (!intf->maintenance_mode
-		    && !intf->maintenance_mode_enable) {
-			intf->maintenance_mode_enable = true;
+				&& intf->maintenance_mode_state < newst) {
+			intf->maintenance_mode_state = newst;
 			maintenance_mode_update(intf);
+			mod_timer(&ipmi_timer, jiffies + IPMI_TIMEOUT_JIFFIES);
 		}
 		spin_unlock_irqrestore(&intf->maintenance_mode_lock,
 				       flags);
@@ -1938,7 +1959,7 @@ static int i_ipmi_req_sysintf(struct ipmi_smi        *intf,
 	smi_msg->data[0] = (msg->netfn << 2) | (smi_addr->lun & 0x3);
 	smi_msg->data[1] = msg->cmd;
 	smi_msg->msgid = msgid;
-	smi_msg->user_data = recv_msg;
+	smi_msg->recv_msg = recv_msg;
 	if (msg->data_len > 0)
 		memcpy(&smi_msg->data[2], msg->data, msg->data_len);
 	smi_msg->data_size = msg->data_len + 2;
@@ -2019,7 +2040,7 @@ static int i_ipmi_req_ipmb(struct ipmi_smi        *intf,
 		 * Save the receive message so we can use it
 		 * to deliver the response.
 		 */
-		smi_msg->user_data = recv_msg;
+		smi_msg->recv_msg = recv_msg;
 	} else {
 		mutex_lock(&intf->seq_lock);
 
@@ -2132,7 +2153,7 @@ static int i_ipmi_req_ipmb_direct(struct ipmi_smi        *intf,
 	memcpy(smi_msg->data + 4, msg->data, msg->data_len);
 	smi_msg->data_size = msg->data_len + 4;
 
-	smi_msg->user_data = recv_msg;
+	smi_msg->recv_msg = recv_msg;
 
 	return 0;
 }
@@ -2195,7 +2216,7 @@ static int i_ipmi_req_lan(struct ipmi_smi        *intf,
 		 * Save the receive message so we can use it
 		 * to deliver the response.
 		 */
-		smi_msg->user_data = recv_msg;
+		smi_msg->recv_msg = recv_msg;
 	} else {
 		mutex_lock(&intf->seq_lock);
 
@@ -2305,6 +2326,11 @@ static int i_ipmi_request(struct ipmi_user     *user,
 
 	if (!run_to_completion)
 		mutex_lock(&intf->users_mutex);
+	if (intf->maintenance_mode_state == IPMI_MAINTENANCE_MODE_STATE_RESET) {
+		/* No messages while the BMC is in reset. */
+		rv = -EBUSY;
+		goto out_err;
+	}
 	if (intf->in_shutdown) {
 		rv = -ENODEV;
 		goto out_err;
@@ -2600,6 +2626,12 @@ retry_bmc_lock:
 	if (intf->in_bmc_register ||
 	    (bmc->dyn_id_set && time_is_after_jiffies(bmc->dyn_id_expiry)))
 		goto out_noprocessing;
+
+	/* Don't allow sysfs access when in maintenance mode. */
+	if (intf->maintenance_mode_state) {
+		rv = -EBUSY;
+		goto out_noprocessing;
+	}
 
 	prev_guid_set = bmc->dyn_guid_set;
 	__get_guid(intf);
@@ -3496,6 +3528,19 @@ static ssize_t nr_msgs_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(nr_msgs);
 
+static ssize_t maintenance_mode_show(struct device *dev,
+				     struct device_attribute *attr,
+				     char *buf)
+{
+	struct ipmi_smi *intf = container_of(attr,
+					     struct ipmi_smi,
+					     maintenance_mode_devattr);
+
+	return sysfs_emit(buf, "%u %d\n", intf->maintenance_mode_state,
+			  intf->auto_maintenance_timeout);
+}
+static DEVICE_ATTR_RO(maintenance_mode);
+
 static void redo_bmc_reg(struct work_struct *work)
 {
 	struct ipmi_smi *intf = container_of(work, struct ipmi_smi,
@@ -3632,6 +3677,14 @@ int ipmi_add_smi(struct module         *owner,
 		goto out_err_bmc_reg;
 	}
 
+	intf->maintenance_mode_devattr = dev_attr_maintenance_mode;
+	sysfs_attr_init(&intf->maintenance_mode_devattr.attr);
+	rv = device_create_file(intf->si_dev, &intf->maintenance_mode_devattr);
+	if (rv) {
+		device_remove_file(intf->si_dev, &intf->nr_users_devattr);
+		goto out_err_bmc_reg;
+	}
+
 	intf->intf_num = i;
 	mutex_unlock(&ipmi_interfaces_mutex);
 
@@ -3739,6 +3792,7 @@ void ipmi_unregister_smi(struct ipmi_smi *intf)
 	if (intf->handlers->shutdown)
 		intf->handlers->shutdown(intf->send_info);
 
+	device_remove_file(intf->si_dev, &intf->maintenance_mode_devattr);
 	device_remove_file(intf->si_dev, &intf->nr_msgs_devattr);
 	device_remove_file(intf->si_dev, &intf->nr_users_devattr);
 
@@ -4015,7 +4069,7 @@ static int handle_ipmb_direct_rcv_rsp(struct ipmi_smi *intf,
 	struct ipmi_recv_msg *recv_msg;
 	struct ipmi_ipmb_direct_addr *daddr;
 
-	recv_msg = msg->user_data;
+	recv_msg = msg->recv_msg;
 	if (recv_msg == NULL) {
 		dev_warn(intf->si_dev,
 			 "IPMI direct message received with no owner. This could be because of a malformed message, or because of a hardware error.  Contact your hardware vendor for assistance.\n");
@@ -4438,7 +4492,7 @@ static int handle_bmc_rsp(struct ipmi_smi *intf,
 	struct ipmi_recv_msg *recv_msg;
 	struct ipmi_system_interface_addr *smi_addr;
 
-	recv_msg = msg->user_data;
+	recv_msg = msg->recv_msg;
 	if (recv_msg == NULL) {
 		dev_warn(intf->si_dev,
 			 "IPMI SMI message received with no owner. This could be because of a malformed message, or because of a hardware error.  Contact your hardware vendor for assistance.\n");
@@ -4512,14 +4566,14 @@ return_unspecified:
 	} else if ((msg->data_size >= 2)
 	    && (msg->data[0] == (IPMI_NETFN_APP_REQUEST << 2))
 	    && (msg->data[1] == IPMI_SEND_MSG_CMD)
-	    && (msg->user_data == NULL)) {
+	    && (msg->recv_msg == NULL)) {
 
 		if (intf->in_shutdown || intf->run_to_completion)
 			goto out;
 
 		/*
 		 * This is the local response to a command send, start
-		 * the timer for these.  The user_data will not be
+		 * the timer for these.  The recv_msg will not be
 		 * NULL if this is a response send, and we will let
 		 * response sends just go through.
 		 */
@@ -4579,7 +4633,7 @@ return_unspecified:
 			requeue = handle_ipmb_direct_rcv_rsp(intf, msg);
 	} else if ((msg->rsp[0] == ((IPMI_NETFN_APP_REQUEST|1) << 2))
 		   && (msg->rsp[1] == IPMI_SEND_MSG_CMD)
-		   && (msg->user_data != NULL)) {
+		   && (msg->recv_msg != NULL)) {
 		/*
 		 * It's a response to a response we sent.  For this we
 		 * deliver a send message response to the user.
@@ -4596,7 +4650,7 @@ return_unspecified:
 		cc = msg->rsp[2];
 
 process_response_response:
-		recv_msg = msg->user_data;
+		recv_msg = msg->recv_msg;
 
 		requeue = 0;
 		if (!recv_msg)
@@ -4752,6 +4806,7 @@ static void smi_work(struct work_struct *t)
 	int run_to_completion = READ_ONCE(intf->run_to_completion);
 	struct ipmi_smi_msg *newmsg = NULL;
 	struct ipmi_recv_msg *msg, *msg2;
+	int cc;
 
 	/*
 	 * Start the next message if available.
@@ -4760,7 +4815,7 @@ static void smi_work(struct work_struct *t)
 	 * because the lower layer is allowed to hold locks while calling
 	 * message delivery.
 	 */
-
+restart:
 	if (!run_to_completion)
 		spin_lock_irqsave(&intf->xmit_msgs_lock, flags);
 	if (intf->curr_msg == NULL && !intf->in_shutdown) {
@@ -4781,8 +4836,17 @@ static void smi_work(struct work_struct *t)
 	if (!run_to_completion)
 		spin_unlock_irqrestore(&intf->xmit_msgs_lock, flags);
 
-	if (newmsg)
-		intf->handlers->sender(intf->send_info, newmsg);
+	if (newmsg) {
+		cc = intf->handlers->sender(intf->send_info, newmsg);
+		if (cc) {
+			if (newmsg->recv_msg)
+				deliver_err_response(intf,
+						     newmsg->recv_msg, cc);
+			else
+				ipmi_free_smi_msg(newmsg);
+			goto restart;
+		}
+	}
 
 	handle_new_recv_msgs(intf);
 
@@ -5031,7 +5095,9 @@ static bool ipmi_timeout_handler(struct ipmi_smi *intf,
 				-= timeout_period;
 			if (!intf->maintenance_mode
 			    && (intf->auto_maintenance_timeout <= 0)) {
-				intf->maintenance_mode_enable = false;
+				intf->maintenance_mode_state =
+					IPMI_MAINTENANCE_MODE_STATE_OFF;
+				intf->auto_maintenance_timeout = 0;
 				maintenance_mode_update(intf);
 			}
 		}
@@ -5047,14 +5113,12 @@ static bool ipmi_timeout_handler(struct ipmi_smi *intf,
 static void ipmi_request_event(struct ipmi_smi *intf)
 {
 	/* No event requests when in maintenance mode. */
-	if (intf->maintenance_mode_enable)
+	if (intf->maintenance_mode_state)
 		return;
 
 	if (!intf->in_shutdown)
 		intf->handlers->request_events(intf->send_info);
 }
-
-static struct timer_list ipmi_timer;
 
 static atomic_t stop_operation;
 
@@ -5079,6 +5143,8 @@ static void ipmi_timeout_work(struct work_struct *work)
 			}
 			need_timer = true;
 		}
+		if (intf->maintenance_mode_state)
+			need_timer = true;
 
 		need_timer |= ipmi_timeout_handler(intf, IPMI_TIMEOUT_TIME);
 	}
@@ -5122,7 +5188,7 @@ struct ipmi_smi_msg *ipmi_alloc_smi_msg(void)
 	rv = kmalloc(sizeof(struct ipmi_smi_msg), GFP_ATOMIC);
 	if (rv) {
 		rv->done = free_smi_msg;
-		rv->user_data = NULL;
+		rv->recv_msg = NULL;
 		rv->type = IPMI_SMI_MSG_TYPE_NORMAL;
 		atomic_inc(&smi_msg_inuse_count);
 	}

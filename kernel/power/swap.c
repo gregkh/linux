@@ -689,7 +689,7 @@ static int save_compressed_image(struct swap_map_handle *handle,
 	ktime_t start;
 	ktime_t stop;
 	size_t off;
-	unsigned thr, run_threads, nr_threads;
+	unsigned int thr, run_threads, nr_threads;
 	unsigned char *page = NULL;
 	struct cmp_data *data = NULL;
 	struct crc_data *crc = NULL;
@@ -712,7 +712,7 @@ static int save_compressed_image(struct swap_map_handle *handle,
 		goto out_clean;
 	}
 
-	data = vzalloc(array_size(nr_threads, sizeof(*data)));
+	data = vcalloc(nr_threads, sizeof(*data));
 	if (!data) {
 		pr_err("Failed to allocate %s data\n", hib_comp_algo);
 		ret = -ENOMEM;
@@ -902,7 +902,8 @@ out_clean:
 		}
 		vfree(data);
 	}
-	if (page) free_page((unsigned long)page);
+	if (page)
+		free_page((unsigned long)page);
 
 	return ret;
 }
@@ -1228,14 +1229,14 @@ static int load_compressed_image(struct swap_map_handle *handle,
 	nr_threads = num_online_cpus() - 1;
 	nr_threads = clamp_val(nr_threads, 1, CMP_THREADS);
 
-	page = vmalloc(array_size(CMP_MAX_RD_PAGES, sizeof(*page)));
+	page = vmalloc_array(CMP_MAX_RD_PAGES, sizeof(*page));
 	if (!page) {
 		pr_err("Failed to allocate %s page\n", hib_comp_algo);
 		ret = -ENOMEM;
 		goto out_clean;
 	}
 
-	data = vzalloc(array_size(nr_threads, sizeof(*data)));
+	data = vcalloc(nr_threads, sizeof(*data));
 	if (!data) {
 		pr_err("Failed to allocate %s data\n", hib_comp_algo);
 		ret = -ENOMEM;

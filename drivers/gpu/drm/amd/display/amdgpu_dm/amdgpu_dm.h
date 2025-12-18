@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Copyright (C) 2015-2020 Advanced Micro Devices, Inc. All rights reserved.
  *
@@ -58,6 +59,7 @@
 
 #define AMDGPU_HDR_MULT_DEFAULT (0x100000000LL)
 
+#define AMDGPU_DM_HDMI_HPD_DEBOUNCE_MS 1500
 /*
 #include "include/amdgpu_dal_power_if.h"
 #include "amdgpu_dm_irq.h"
@@ -214,6 +216,11 @@ struct amdgpu_dm_backlight_caps {
 	 * @aux_support: Describes if the display supports AUX backlight.
 	 */
 	bool aux_support;
+	/**
+	 * @brightness_mask: After deriving brightness, OR it with this mask.
+	 * Workaround for panels with issues with certain brightness values.
+	 */
+	u32 brightness_mask;
 	/**
 	 * @ac_level: the default brightness if booted on AC
 	 */
@@ -767,6 +774,9 @@ struct amdgpu_dm_connector {
 	uint16_t vc_full_pbn;
 	struct mutex handle_mst_msg_ready;
 
+	/* branch device specific data */
+	uint32_t branch_ieee_oui;
+
 	/* TODO see if we can merge with ddc_bus or make a dm_connector */
 	struct amdgpu_i2c_adapter *i2c;
 
@@ -810,6 +820,11 @@ struct amdgpu_dm_connector {
 	bool pack_sdp_v1_3;
 	enum adaptive_sync_type as_type;
 	struct amdgpu_hdmi_vsdb_info vsdb_info;
+
+	/* HDMI HPD debounce support */
+	unsigned int hdmi_hpd_debounce_delay_ms;
+	struct delayed_work hdmi_hpd_debounce_work;
+	struct dc_sink *hdmi_prev_sink;
 };
 
 static inline void amdgpu_dm_set_mst_status(uint8_t *status,

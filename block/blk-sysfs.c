@@ -71,9 +71,6 @@ queue_requests_store(struct gendisk *disk, const char *page, size_t count)
 	unsigned long nr;
 	int ret;
 
-	if (!queue_is_mq(q))
-		return -EINVAL;
-
 	ret = queue_var_store(&nr, page, count);
 	if (ret < 0)
 		return ret;
@@ -661,6 +658,11 @@ static ssize_t queue_wb_lat_store(struct gendisk *disk, const char *page,
 	if (val < -1)
 		return -EINVAL;
 
+	/*
+	 * Ensure that the queue is idled, in case the latency update
+	 * ends up either enabling or disabling wbt completely. We can't
+	 * have IO inflight if that happens.
+	 */
 	memflags = blk_mq_freeze_queue(q);
 
 	rqos = wbt_rq_qos(q);
@@ -679,11 +681,6 @@ static ssize_t queue_wb_lat_store(struct gendisk *disk, const char *page,
 	if (wbt_get_min_lat(q) == val)
 		goto out;
 
-	/*
-	 * Ensure that the queue is idled, in case the latency update
-	 * ends up either enabling or disabling wbt completely. We can't
-	 * have IO inflight if that happens.
-	 */
 	blk_mq_quiesce_queue(q);
 
 	mutex_lock(&disk->rqos_state_mutex);

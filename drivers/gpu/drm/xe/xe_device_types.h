@@ -14,6 +14,7 @@
 
 #include "xe_devcoredump_types.h"
 #include "xe_heci_gsc.h"
+#include "xe_late_bind_fw_types.h"
 #include "xe_lmtt_types.h"
 #include "xe_memirq_types.h"
 #include "xe_oa_types.h"
@@ -23,8 +24,10 @@
 #include "xe_sriov_pf_types.h"
 #include "xe_sriov_types.h"
 #include "xe_sriov_vf_types.h"
+#include "xe_sriov_vf_ccs_types.h"
 #include "xe_step_types.h"
 #include "xe_survivability_mode_types.h"
+#include "xe_validation.h"
 
 #if IS_ENABLED(CONFIG_DRM_XE_DEBUG)
 #define TEST_VM_OPS_ERROR
@@ -188,6 +191,9 @@ struct xe_tile {
 	/** @memirq: Memory Based Interrupts. */
 	struct xe_memirq memirq;
 
+	/** @csc_hw_error_work: worker to report CSC HW errors */
+	struct work_struct csc_hw_error_work;
+
 	/** @pcode: tile's PCODE */
 	struct {
 		/** @pcode.lock: protecting tile's PCODE mailbox data */
@@ -199,6 +205,9 @@ struct xe_tile {
 
 	/** @sysfs: sysfs' kobj used by xe_tile_sysfs */
 	struct kobject *sysfs;
+
+	/** @debugfs: debugfs directory associated with this tile */
+	struct dentry *debugfs;
 };
 
 /**
@@ -272,6 +281,8 @@ struct xe_device {
 		u8 has_heci_cscfi:1;
 		/** @info.has_heci_gscfi: device has heci gscfi */
 		u8 has_heci_gscfi:1;
+		/** @info.has_late_bind: Device has firmware late binding support */
+		u8 has_late_bind:1;
 		/** @info.has_llc: Device has a shared CPU+GPU last level cache */
 		u8 has_llc:1;
 		/** @info.has_mbx_power_limits: Device has support to manage power limits using
@@ -280,8 +291,8 @@ struct xe_device {
 		u8 has_mbx_power_limits:1;
 		/** @info.has_pxp: Device has PXP support */
 		u8 has_pxp:1;
-		/** @info.has_range_tlb_invalidation: Has range based TLB invalidations */
-		u8 has_range_tlb_invalidation:1;
+		/** @info.has_range_tlb_inval: Has range based TLB invalidations */
+		u8 has_range_tlb_inval:1;
 		/** @info.has_sriov: Supports SR-IOV */
 		u8 has_sriov:1;
 		/** @info.has_usm: Device has unified shared memory support */
@@ -420,7 +431,7 @@ struct xe_device {
 	/** @ordered_wq: used to serialize compute mode resume */
 	struct workqueue_struct *ordered_wq;
 
-	/** @unordered_wq: used to serialize unordered work, mostly display */
+	/** @unordered_wq: used to serialize unordered work */
 	struct workqueue_struct *unordered_wq;
 
 	/** @destroy_wq: used to serialize user destroy work, like queue */
@@ -525,6 +536,9 @@ struct xe_device {
 	/** @nvm: discrete graphics non-volatile memory */
 	struct intel_dg_nvm_dev *nvm;
 
+	/** @late_bind: xe mei late bind interface */
+	struct xe_late_bind late_bind;
+
 	/** @oa: oa observation subsystem */
 	struct xe_oa oa;
 
@@ -540,6 +554,8 @@ struct xe_device {
 		atomic_t flag;
 		/** @wedged.mode: Mode controlled by kernel parameter and debugfs */
 		int mode;
+		/** @wedged.method: Recovery method to be sent in the drm device wedged uevent */
+		unsigned long method;
 	} wedged;
 
 	/** @bo_device: Struct to control async free of BOs */
@@ -573,6 +589,23 @@ struct xe_device {
 	 * tracepoints
 	 */
 	atomic64_t global_total_pages;
+#endif
+	/** @val: The domain for exhaustive eviction, which is currently per device. */
+	struct xe_validation_device val;
+
+	/** @psmi: GPU debugging via additional validation HW */
+	struct {
+		/** @psmi.capture_obj: PSMI buffer for VRAM */
+		struct xe_bo *capture_obj[XE_MAX_TILES_PER_DEVICE + 1];
+		/** @psmi.region_mask: Mask of valid memory regions */
+		u8 region_mask;
+	} psmi;
+
+#if IS_ENABLED(CONFIG_DRM_XE_KUNIT_TEST)
+	/** @g2g_test_array: for testing G2G communications */
+	u32 *g2g_test_array;
+	/** @g2g_test_count: for testing G2G communications */
+	atomic_t g2g_test_count;
 #endif
 
 	/* private: */
@@ -608,7 +641,6 @@ struct xe_device {
 	struct {
 		unsigned int hpll_freq;
 		unsigned int czclk_freq;
-		unsigned int fsb_freq, mem_freq, is_ddr3;
 	};
 #endif
 };

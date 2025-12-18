@@ -697,7 +697,7 @@ static int jpeg_v5_0_1_set_clockgating_state(struct amdgpu_ip_block *ip_block,
 					     enum amd_clockgating_state state)
 {
 	struct amdgpu_device *adev = ip_block->adev;
-	bool enable = (state == AMD_CG_STATE_GATE) ? true : false;
+	bool enable = state == AMD_CG_STATE_GATE;
 
 	int i;
 
@@ -1025,8 +1025,9 @@ static int jpeg_v5_0_1_aca_bank_parser(struct aca_handle *handle, struct aca_ban
 
 /* reference to smu driver if header file */
 static int jpeg_v5_0_1_err_codes[] = {
-	16, 17, 18, 19, 20, 21, 22, 23, /* JPEG[0-7][S|D] */
-	24, 25, 26, 27, 28, 29, 30, 31
+	16, 17, 18, 19, 20, 21, 22, 23, /* JPEG[0-9][S|D] */
+	24, 25, 26, 27, 28, 29, 30, 31,
+	48, 49, 50, 51,
 };
 
 static bool jpeg_v5_0_1_aca_bank_is_valid(struct aca_handle *handle, struct aca_bank *bank,

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 
 import argparse
-import json
 import pathlib
 import pprint
 import sys
@@ -54,7 +53,7 @@ def print_field(reply, *desc):
     for spec in desc:
         try:
             field, name, tp = spec
-        except:
+        except ValueError:
             field, name = spec
             tp = 'int'
 
@@ -159,7 +158,6 @@ def main():
     global args
     args = parser.parse_args()
 
-    script_abs_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
     spec = os.path.join(spec_dir(), 'ethtool.yaml')
     schema = os.path.join(schema_dir(), 'genetlink-legacy.yaml')
 
@@ -258,14 +256,14 @@ def main():
         reply = dumpit(ynl, args, 'channels-get')
         print(f'Channel parameters for {args.device}:')
 
-        print(f'Pre-set maximums:')
+        print('Pre-set maximums:')
         print_field(reply,
             ('rx-max', 'RX'),
             ('tx-max', 'TX'),
             ('other-max', 'Other'),
             ('combined-max', 'Combined'))
 
-        print(f'Current hardware settings:')
+        print('Current hardware settings:')
         print_field(reply,
             ('rx-count', 'RX'),
             ('tx-count', 'TX'),
@@ -279,14 +277,14 @@ def main():
 
         print(f'Ring parameters for {args.device}:')
 
-        print(f'Pre-set maximums:')
+        print('Pre-set maximums:')
         print_field(reply,
             ('rx-max', 'RX'),
             ('rx-mini-max', 'RX Mini'),
             ('rx-jumbo-max', 'RX Jumbo'),
             ('tx-max', 'TX'))
 
-        print(f'Current hardware settings:')
+        print('Current hardware settings:')
         print_field(reply,
             ('rx', 'RX'),
             ('rx-mini', 'RX Mini'),
@@ -301,7 +299,7 @@ def main():
         return
 
     if args.statistics:
-        print(f'NIC statistics:')
+        print('NIC statistics:')
 
         # TODO: pass id?
         strset = dumpit(ynl, args, 'strset-get')

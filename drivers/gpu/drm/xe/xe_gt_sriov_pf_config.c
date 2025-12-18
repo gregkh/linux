@@ -1434,7 +1434,8 @@ fail:
 	return err;
 }
 
-static void pf_release_vf_config_lmem(struct xe_gt *gt, struct xe_gt_sriov_config *config)
+/* Return: %true if there was an LMEM provisioned, %false otherwise */
+static bool pf_release_vf_config_lmem(struct xe_gt *gt, struct xe_gt_sriov_config *config)
 {
 	xe_gt_assert(gt, IS_DGFX(gt_to_xe(gt)));
 	xe_gt_assert(gt, xe_gt_is_main_type(gt));
@@ -1443,7 +1444,9 @@ static void pf_release_vf_config_lmem(struct xe_gt *gt, struct xe_gt_sriov_confi
 	if (config->lmem_obj) {
 		xe_bo_unpin_map_no_vm(config->lmem_obj);
 		config->lmem_obj = NULL;
+		return true;
 	}
+	return false;
 }
 
 static int pf_provision_vf_lmem(struct xe_gt *gt, unsigned int vfid, u64 size)
@@ -1475,22 +1478,15 @@ static int pf_provision_vf_lmem(struct xe_gt *gt, unsigned int vfid, u64 size)
 		return 0;
 
 	xe_gt_assert(gt, pf_get_lmem_alignment(gt) == SZ_2M);
-	bo = xe_bo_create_locked(xe, tile, NULL,
-				 ALIGN(size, PAGE_SIZE),
-				 ttm_bo_type_kernel,
-				 XE_BO_FLAG_VRAM_IF_DGFX(tile) |
-				 XE_BO_FLAG_NEEDS_2M |
-				 XE_BO_FLAG_PINNED |
-				 XE_BO_FLAG_PINNED_LATE_RESTORE);
+	bo = xe_bo_create_pin_range_novm(xe, tile,
+					 ALIGN(size, PAGE_SIZE), 0, ~0ull,
+					 ttm_bo_type_kernel,
+					 XE_BO_FLAG_VRAM_IF_DGFX(tile) |
+					 XE_BO_FLAG_NEEDS_2M |
+					 XE_BO_FLAG_PINNED |
+					 XE_BO_FLAG_PINNED_LATE_RESTORE);
 	if (IS_ERR(bo))
 		return PTR_ERR(bo);
-
-	err = xe_bo_pin(bo);
-	xe_bo_unlock(bo);
-	if (unlikely(err)) {
-		xe_bo_put(bo);
-		return err;
-	}
 
 	config->lmem_obj = bo;
 
@@ -2020,12 +2016,13 @@ static void pf_release_vf_config(struct xe_gt *gt, unsigned int vfid)
 {
 	struct xe_gt_sriov_config *config = pf_pick_vf_config(gt, vfid);
 	struct xe_device *xe = gt_to_xe(gt);
+	bool released;
 
 	if (xe_gt_is_main_type(gt)) {
 		pf_release_vf_config_ggtt(gt, config);
 		if (IS_DGFX(xe)) {
-			pf_release_vf_config_lmem(gt, config);
-			if (xe_device_has_lmtt(xe))
+			released = pf_release_vf_config_lmem(gt, config);
+			if (released && xe_device_has_lmtt(xe))
 				pf_update_vf_lmtt(xe, vfid);
 		}
 	}

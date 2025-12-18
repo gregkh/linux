@@ -73,9 +73,9 @@ to_isi_m2m_buffer(struct vb2_v4l2_buffer *buf)
 	return container_of(buf, struct mxc_isi_m2m_buffer, buf.vb);
 }
 
-static inline struct mxc_isi_m2m_ctx *to_isi_m2m_ctx(struct v4l2_fh *fh)
+static inline struct mxc_isi_m2m_ctx *file_to_isi_m2m_ctx(struct file *filp)
 {
-	return container_of(fh, struct mxc_isi_m2m_ctx, fh);
+	return container_of(file_to_v4l2_fh(filp), struct mxc_isi_m2m_ctx, fh);
 }
 
 static inline struct mxc_isi_m2m_ctx_queue_data *
@@ -243,7 +243,6 @@ static int mxc_isi_m2m_vb2_prepare_streaming(struct vb2_queue *q)
 	const struct mxc_isi_format_info *cap_info = ctx->queues.cap.info;
 	const struct mxc_isi_format_info *out_info = ctx->queues.out.info;
 	struct mxc_isi_m2m *m2m = ctx->m2m;
-	bool bypass;
 	int ret;
 
 	guard(mutex)(&m2m->lock);
@@ -251,20 +250,24 @@ static int mxc_isi_m2m_vb2_prepare_streaming(struct vb2_queue *q)
 	if (m2m->usage_count == INT_MAX)
 		return -EOVERFLOW;
 
-	bypass = cap_pix->width == out_pix->width &&
-		 cap_pix->height == out_pix->height &&
-		 cap_info->encoding == out_info->encoding;
+	ret = pm_runtime_resume_and_get(m2m->isi->dev);
+	if (ret)
+		return ret;
 
 	/*
 	 * Acquire the pipe and initialize the channel with the first user of
 	 * the M2M device.
 	 */
 	if (m2m->usage_count == 0) {
+		bool bypass = cap_pix->width == out_pix->width &&
+			      cap_pix->height == out_pix->height &&
+			      cap_info->encoding == out_info->encoding;
+
 		ret = mxc_isi_channel_acquire(m2m->pipe,
 					      &mxc_isi_m2m_frame_write_done,
 					      bypass);
 		if (ret)
-			return ret;
+			goto err_pm;
 
 		mxc_isi_channel_get(m2m->pipe);
 	}
@@ -276,7 +279,7 @@ static int mxc_isi_m2m_vb2_prepare_streaming(struct vb2_queue *q)
 	 * buffer chaining.
 	 */
 	if (!ctx->chained && out_pix->width > MXC_ISI_MAX_WIDTH_UNCHAINED) {
-		ret = mxc_isi_channel_chain(m2m->pipe, bypass);
+		ret = mxc_isi_channel_chain(m2m->pipe);
 		if (ret)
 			goto err_deinit;
 
@@ -291,7 +294,8 @@ err_deinit:
 		mxc_isi_channel_put(m2m->pipe);
 		mxc_isi_channel_release(m2m->pipe);
 	}
-
+err_pm:
+	pm_runtime_put(m2m->isi->dev);
 	return ret;
 }
 
@@ -351,6 +355,8 @@ static void mxc_isi_m2m_vb2_unprepare_streaming(struct vb2_queue *q)
 	}
 
 	WARN_ON(m2m->usage_count < 0);
+
+	pm_runtime_put(m2m->isi->dev);
 }
 
 static const struct vb2_ops mxc_isi_m2m_vb2_qops = {
@@ -517,7 +523,7 @@ static int mxc_isi_m2m_try_fmt_vid(struct file *file, void *fh,
 	const enum mxc_isi_video_type type =
 		f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ?
 		MXC_ISI_VIDEO_M2M_OUT : MXC_ISI_VIDEO_M2M_CAP;
-	struct mxc_isi_m2m_ctx *ctx = to_isi_m2m_ctx(fh);
+	struct mxc_isi_m2m_ctx *ctx = file_to_isi_m2m_ctx(file);
 
 	__mxc_isi_m2m_try_fmt_vid(ctx, &f->fmt.pix_mp, type);
 
@@ -527,7 +533,7 @@ static int mxc_isi_m2m_try_fmt_vid(struct file *file, void *fh,
 static int mxc_isi_m2m_g_fmt_vid(struct file *file, void *fh,
 				 struct v4l2_format *f)
 {
-	struct mxc_isi_m2m_ctx *ctx = to_isi_m2m_ctx(fh);
+	struct mxc_isi_m2m_ctx *ctx = file_to_isi_m2m_ctx(file);
 	const struct mxc_isi_m2m_ctx_queue_data *qdata =
 		mxc_isi_m2m_ctx_qdata(ctx, f->type);
 
@@ -542,7 +548,7 @@ static int mxc_isi_m2m_s_fmt_vid(struct file *file, void *fh,
 	const enum mxc_isi_video_type type =
 		f->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ?
 		MXC_ISI_VIDEO_M2M_OUT : MXC_ISI_VIDEO_M2M_CAP;
-	struct mxc_isi_m2m_ctx *ctx = to_isi_m2m_ctx(fh);
+	struct mxc_isi_m2m_ctx *ctx = file_to_isi_m2m_ctx(file);
 	struct v4l2_pix_format_mplane *pix = &f->fmt.pix_mp;
 	const struct mxc_isi_format_info *info;
 	struct vb2_queue *vq;
@@ -628,7 +634,6 @@ static int mxc_isi_m2m_open(struct file *file)
 	mutex_init(&ctx->vb2_lock);
 
 	v4l2_fh_init(&ctx->fh, vdev);
-	file->private_data = &ctx->fh;
 
 	ctx->fh.m2m_ctx = v4l2_m2m_ctx_init(m2m->m2m_dev, ctx,
 					    &mxc_isi_m2m_queue_init);
@@ -645,16 +650,10 @@ static int mxc_isi_m2m_open(struct file *file)
 	if (ret)
 		goto err_ctx;
 
-	ret = pm_runtime_resume_and_get(m2m->isi->dev);
-	if (ret)
-		goto err_ctrls;
-
-	v4l2_fh_add(&ctx->fh);
+	v4l2_fh_add(&ctx->fh, file);
 
 	return 0;
 
-err_ctrls:
-	mxc_isi_m2m_ctx_ctrls_delete(ctx);
 err_ctx:
 	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
 err_fh:
@@ -666,19 +665,16 @@ err_fh:
 
 static int mxc_isi_m2m_release(struct file *file)
 {
-	struct mxc_isi_m2m *m2m = video_drvdata(file);
-	struct mxc_isi_m2m_ctx *ctx = to_isi_m2m_ctx(file->private_data);
+	struct mxc_isi_m2m_ctx *ctx = file_to_isi_m2m_ctx(file);
 
 	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
 	mxc_isi_m2m_ctx_ctrls_delete(ctx);
 
-	v4l2_fh_del(&ctx->fh);
+	v4l2_fh_del(&ctx->fh, file);
 	v4l2_fh_exit(&ctx->fh);
 
 	mutex_destroy(&ctx->vb2_lock);
 	kfree(ctx);
-
-	pm_runtime_put(m2m->isi->dev);
 
 	return 0;
 }
@@ -691,6 +687,40 @@ static const struct v4l2_file_operations mxc_isi_m2m_fops = {
 	.unlocked_ioctl	= video_ioctl2,
 	.mmap		= v4l2_m2m_fop_mmap,
 };
+
+/* -----------------------------------------------------------------------------
+ * Suspend & resume
+ */
+
+void mxc_isi_m2m_suspend(struct mxc_isi_m2m *m2m)
+{
+	if (m2m->usage_count == 0)
+		return;
+
+	v4l2_m2m_suspend(m2m->m2m_dev);
+
+	if (m2m->chained_count > 0)
+		mxc_isi_channel_unchain(m2m->pipe);
+
+	mxc_isi_channel_disable(m2m->pipe);
+	mxc_isi_channel_put(m2m->pipe);
+}
+
+int mxc_isi_m2m_resume(struct mxc_isi_m2m *m2m)
+{
+	if (m2m->usage_count == 0)
+		return 0;
+
+	mxc_isi_channel_get(m2m->pipe);
+
+	if (m2m->chained_count > 0)
+		mxc_isi_channel_chain(m2m->pipe);
+
+	m2m->last_ctx = NULL;
+	v4l2_m2m_resume(m2m->m2m_dev);
+
+	return 0;
+}
 
 /* -----------------------------------------------------------------------------
  * Registration

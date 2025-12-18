@@ -72,7 +72,9 @@ enum {
 
 #define AM62P5_EFUSE_O_MPU_OPP			15
 #define AM62P5_EFUSE_S_MPU_OPP			19
+#define AM62P5_EFUSE_T_MPU_OPP			20
 #define AM62P5_EFUSE_U_MPU_OPP			21
+#define AM62P5_EFUSE_V_MPU_OPP			22
 
 #define AM62P5_SUPPORT_O_MPU_OPP		BIT(0)
 #define AM62P5_SUPPORT_U_MPU_OPP		BIT(2)
@@ -153,7 +155,9 @@ static unsigned long am62p5_efuse_xlate(struct ti_cpufreq_data *opp_data,
 	unsigned long calculated_efuse = AM62P5_SUPPORT_O_MPU_OPP;
 
 	switch (efuse) {
+	case AM62P5_EFUSE_V_MPU_OPP:
 	case AM62P5_EFUSE_U_MPU_OPP:
+	case AM62P5_EFUSE_T_MPU_OPP:
 	case AM62P5_EFUSE_S_MPU_OPP:
 		calculated_efuse |= AM62P5_SUPPORT_U_MPU_OPP;
 		fallthrough;
@@ -307,10 +311,10 @@ static struct ti_cpufreq_soc_data am3517_soc_data = {
 };
 
 static const struct soc_device_attribute k3_cpufreq_soc[] = {
-	{ .family = "AM62X", .revision = "SR1.0" },
-	{ .family = "AM62AX", .revision = "SR1.0" },
-	{ .family = "AM62PX", .revision = "SR1.0" },
-	{ .family = "AM62DX", .revision = "SR1.0" },
+	{ .family = "AM62X", },
+	{ .family = "AM62AX", },
+	{ .family = "AM62PX", },
+	{ .family = "AM62DX", },
 	{ /* sentinel */ }
 };
 

@@ -10,6 +10,7 @@
 #include "xe_ggtt.h"
 #include "xe_mmio.h"
 
+#include "i915_vma.h"
 #include "intel_crtc.h"
 #include "intel_display.h"
 #include "intel_display_core.h"
@@ -122,7 +123,7 @@ initial_plane_bo(struct xe_device *xe,
 		phys_base = base;
 		flags |= XE_BO_FLAG_STOLEN;
 
-		if (XE_WA(xe_root_mmio_gt(xe), 22019338487_display))
+		if (XE_GT_WA(xe_root_mmio_gt(xe), 22019338487_display))
 			return NULL;
 
 		/*
@@ -139,8 +140,8 @@ initial_plane_bo(struct xe_device *xe,
 			page_size);
 	size -= base;
 
-	bo = xe_bo_create_pin_map_at(xe, tile0, NULL, size, phys_base,
-				     ttm_bo_type_kernel, flags);
+	bo = xe_bo_create_pin_map_at_novm(xe, tile0, size, phys_base,
+					  ttm_bo_type_kernel, flags, 0, false);
 	if (IS_ERR(bo)) {
 		drm_dbg(&xe->drm,
 			"Failed to create bo phys_base=%pa size %u with flags %x: %li\n",
@@ -235,6 +236,9 @@ intel_find_initial_plane_obj(struct intel_crtc *crtc,
 		goto nofb;
 
 	plane_state->ggtt_vma = vma;
+
+	plane_state->surf = i915_ggtt_offset(plane_state->ggtt_vma);
+
 	plane_state->uapi.src_x = 0;
 	plane_state->uapi.src_y = 0;
 	plane_state->uapi.src_w = fb->width << 16;

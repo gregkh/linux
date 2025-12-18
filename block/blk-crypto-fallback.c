@@ -18,7 +18,6 @@
 #include <linux/module.h>
 #include <linux/random.h>
 #include <linux/scatterlist.h>
-#include <trace/events/block.h>
 
 #include "blk-cgroup.h"
 #include "blk-crypto-internal.h"
@@ -168,8 +167,7 @@ static struct bio *blk_crypto_fallback_clone_bio(struct bio *bio_src)
 	bio = bio_kmalloc(nr_segs, GFP_NOIO);
 	if (!bio)
 		return NULL;
-	bio_init(bio, bio_src->bi_bdev, bio->bi_inline_vecs, nr_segs,
-		 bio_src->bi_opf);
+	bio_init_inline(bio, bio_src->bi_bdev, nr_segs, bio_src->bi_opf);
 	if (bio_flagged(bio_src, BIO_REMAPPED))
 		bio_set_flag(bio, BIO_REMAPPED);
 	bio->bi_ioprio		= bio_src->bi_ioprio;
@@ -223,20 +221,14 @@ static bool blk_crypto_fallback_split_bio_if_needed(struct bio **bio_ptr)
 		if (++i == BIO_MAX_VECS)
 			break;
 	}
+
 	if (num_sectors < bio_sectors(bio)) {
-		struct bio *split_bio;
-
-		split_bio = bio_split(bio, num_sectors, GFP_NOIO,
-				      &crypto_bio_split);
-		if (IS_ERR(split_bio)) {
-			bio->bi_status = BLK_STS_RESOURCE;
+		bio = bio_submit_split_bioset(bio, num_sectors,
+					      &crypto_bio_split);
+		if (!bio)
 			return false;
-		}
 
-		bio_chain(split_bio, bio);
-		trace_block_split(split_bio, bio->bi_iter.bi_sector);
-		submit_bio_noacct(bio);
-		*bio_ptr = split_bio;
+		*bio_ptr = bio;
 	}
 
 	return true;

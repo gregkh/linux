@@ -375,7 +375,6 @@ struct gfs2_glock {
 enum {
 	GIF_QD_LOCKED		= 1,
 	GIF_SW_PAGED		= 3,
-	GIF_FREE_VFS_INODE      = 5,
 	GIF_GLOP_PENDING	= 6,
 };
 
@@ -824,7 +823,6 @@ struct gfs2_sbd {
 	atomic_t sd_log_in_flight;
 	wait_queue_head_t sd_log_flush_wait;
 	int sd_log_error; /* First log error */
-	wait_queue_head_t sd_withdraw_wait;
 
 	unsigned int sd_log_tail;
 	unsigned int sd_log_flush_tail;

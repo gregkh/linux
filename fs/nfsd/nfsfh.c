@@ -403,9 +403,7 @@ __fh_verify(struct svc_rqst *rqstp,
 	if (error)
 		goto out;
 
-	/* During LOCALIO call to fh_verify will be called with a NULL rqstp */
-	if (rqstp)
-		svc_xprt_set_valid(rqstp->rq_xprt);
+	svc_xprt_set_valid(rqstp->rq_xprt);
 
 check_permissions:
 	/* Finally, check access permissions. */
@@ -682,6 +680,33 @@ out_negative:
 	printk(KERN_ERR "fh_update: %pd2 still negative!\n",
 		dentry);
 	return nfserr_serverfault;
+}
+
+/**
+ * fh_getattr - Retrieve attributes on a local file
+ * @fhp: File handle of target file
+ * @stat: Caller-supplied kstat buffer to be filled in
+ *
+ * Returns nfs_ok on success, otherwise an NFS status code is
+ * returned.
+ */
+__be32 fh_getattr(const struct svc_fh *fhp, struct kstat *stat)
+{
+	struct path p = {
+		.mnt		= fhp->fh_export->ex_path.mnt,
+		.dentry		= fhp->fh_dentry,
+	};
+	struct inode *inode = d_inode(p.dentry);
+	u32 request_mask = STATX_BASIC_STATS;
+
+	if (S_ISREG(inode->i_mode))
+		request_mask |= (STATX_DIOALIGN | STATX_DIO_READ_ALIGN);
+
+	if (fhp->fh_maxsize == NFS4_FHSIZE)
+		request_mask |= (STATX_BTIME | STATX_CHANGE_COOKIE);
+
+	return nfserrno(vfs_getattr(&p, stat, request_mask,
+				    AT_STATX_SYNC_AS_STAT));
 }
 
 /**

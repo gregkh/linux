@@ -152,9 +152,8 @@ void rsa_enable(struct uart_8250_port *up)
 		return;
 
 	if (up->port.uartclk != SERIAL_RSA_BAUD_BASE * 16) {
-		uart_port_lock_irq(&up->port);
+		guard(uart_port_lock_irq)(&up->port);
 		__rsa_enable(up);
-		uart_port_unlock_irq(&up->port);
 	}
 	if (up->port.uartclk == SERIAL_RSA_BAUD_BASE * 16)
 		serial_out(up, UART_RSA_FRR, 0);
@@ -176,7 +175,8 @@ void rsa_disable(struct uart_8250_port *up)
 	if (up->port.uartclk != SERIAL_RSA_BAUD_BASE * 16)
 		return;
 
-	uart_port_lock_irq(&up->port);
+	guard(uart_port_lock_irq)(&up->port);
+
 	mode = serial_in(up, UART_RSA_MSR);
 	result = !(mode & UART_RSA_MSR_FIFO);
 
@@ -188,7 +188,6 @@ void rsa_disable(struct uart_8250_port *up)
 
 	if (result)
 		up->port.uartclk = SERIAL_RSA_BAUD_BASE_LO * 16;
-	uart_port_unlock_irq(&up->port);
 }
 
 void rsa_autoconfig(struct uart_8250_port *up)

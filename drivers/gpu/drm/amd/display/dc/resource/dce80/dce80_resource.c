@@ -870,68 +870,6 @@ static void dce80_resource_destruct(struct dce110_resource_pool *pool)
 	}
 }
 
-static enum dc_status dce80_validate_bandwidth(
-	struct dc *dc,
-	struct dc_state *context,
-	enum dc_validate_mode validate_mode)
-{
-	int i;
-	bool at_least_one_pipe = false;
-	struct dc_stream_state *stream = NULL;
-	const uint32_t max_pix_clk_khz = max(dc->clk_mgr->clks.max_supported_dispclk_khz, 400000);
-
-	for (i = 0; i < dc->res_pool->pipe_count; i++) {
-		stream = context->res_ctx.pipe_ctx[i].stream;
-		if (stream) {
-			at_least_one_pipe = true;
-
-			if (stream->timing.pix_clk_100hz >= max_pix_clk_khz * 10)
-				return DC_FAIL_BANDWIDTH_VALIDATE;
-		}
-	}
-
-	if (at_least_one_pipe) {
-		/* TODO implement when needed but for now hardcode max value*/
-		context->bw_ctx.bw.dce.dispclk_khz = 681000;
-		context->bw_ctx.bw.dce.yclk_khz = 250000 * MEMORY_TYPE_MULTIPLIER_CZ;
-	} else {
-		context->bw_ctx.bw.dce.dispclk_khz = 0;
-		context->bw_ctx.bw.dce.yclk_khz = 0;
-	}
-
-	return DC_OK;
-}
-
-static bool dce80_validate_surface_sets(
-		struct dc_state *context)
-{
-	int i;
-
-	for (i = 0; i < context->stream_count; i++) {
-		if (context->stream_status[i].plane_count == 0)
-			continue;
-
-		if (context->stream_status[i].plane_count > 1)
-			return false;
-
-		if (context->stream_status[i].plane_states[0]->format
-				>= SURFACE_PIXEL_FORMAT_VIDEO_BEGIN)
-			return false;
-	}
-
-	return true;
-}
-
-static enum dc_status dce80_validate_global(
-		struct dc *dc,
-		struct dc_state *context)
-{
-	if (!dce80_validate_surface_sets(context))
-		return DC_FAIL_SURFACE_VALIDATE;
-
-	return DC_OK;
-}
-
 static void dce80_destroy_resource_pool(struct resource_pool **pool)
 {
 	struct dce110_resource_pool *dce110_pool = TO_DCE110_RES_POOL(*pool);
@@ -945,10 +883,10 @@ static const struct resource_funcs dce80_res_pool_funcs = {
 	.destroy = dce80_destroy_resource_pool,
 	.link_enc_create = dce80_link_encoder_create,
 	.panel_cntl_create = dce80_panel_cntl_create,
-	.validate_bandwidth = dce80_validate_bandwidth,
+	.validate_bandwidth = dce100_validate_bandwidth,
 	.validate_plane = dce100_validate_plane,
 	.add_stream_to_ctx = dce100_add_stream_to_ctx,
-	.validate_global = dce80_validate_global,
+	.validate_global = dce100_validate_global,
 	.find_first_free_match_stream_enc_for_link = dce100_find_first_free_match_stream_enc_for_link
 };
 

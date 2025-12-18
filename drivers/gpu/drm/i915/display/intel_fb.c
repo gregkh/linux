@@ -11,6 +11,7 @@
 #include <drm/drm_modeset_helper.h>
 
 #include "i915_drv.h"
+#include "i915_utils.h"
 #include "intel_bo.h"
 #include "intel_display.h"
 #include "intel_display_core.h"
@@ -19,6 +20,7 @@
 #include "intel_fb.h"
 #include "intel_fb_bo.h"
 #include "intel_frontbuffer.h"
+#include "intel_panic.h"
 #include "intel_plane.h"
 
 #define check_array_bounds(display, a, i) drm_WARN_ON((display)->drm, (i) >= ARRAY_SIZE(a))
@@ -2115,6 +2117,7 @@ static void intel_user_framebuffer_destroy(struct drm_framebuffer *fb)
 
 	intel_frontbuffer_put(intel_fb->frontbuffer);
 
+	kfree(intel_fb->panic);
 	kfree(intel_fb);
 }
 
@@ -2213,16 +2216,22 @@ int intel_framebuffer_init(struct intel_framebuffer *intel_fb,
 	struct intel_display *display = to_intel_display(obj->dev);
 	struct drm_framebuffer *fb = &intel_fb->base;
 	u32 max_stride;
-	int ret = -EINVAL;
+	int ret;
 	int i;
+
+	intel_fb->panic = intel_panic_alloc();
+	if (!intel_fb->panic)
+		return -ENOMEM;
 
 	/*
 	 * intel_frontbuffer_get() must be done before
 	 * intel_fb_bo_framebuffer_init() to avoid set_tiling vs. addfb race.
 	 */
 	intel_fb->frontbuffer = intel_frontbuffer_get(obj);
-	if (!intel_fb->frontbuffer)
-		return -ENOMEM;
+	if (!intel_fb->frontbuffer) {
+		ret = -ENOMEM;
+		goto err_free_panic;
+	}
 
 	ret = intel_fb_bo_framebuffer_init(fb, obj, mode_cmd);
 	if (ret)
@@ -2321,6 +2330,9 @@ err_bo_framebuffer_fini:
 	intel_fb_bo_framebuffer_fini(obj);
 err_frontbuffer_put:
 	intel_frontbuffer_put(intel_fb->frontbuffer);
+err_free_panic:
+	kfree(intel_fb->panic);
+
 	return ret;
 }
 
@@ -2344,6 +2356,17 @@ intel_user_framebuffer_create(struct drm_device *dev,
 	return fb;
 }
 
+struct intel_framebuffer *intel_framebuffer_alloc(void)
+{
+	struct intel_framebuffer *intel_fb;
+
+	intel_fb = kzalloc(sizeof(*intel_fb), GFP_KERNEL);
+	if (!intel_fb)
+		return NULL;
+
+	return intel_fb;
+}
+
 struct drm_framebuffer *
 intel_framebuffer_create(struct drm_gem_object *obj,
 			 const struct drm_format_info *info,
@@ -2352,7 +2375,7 @@ intel_framebuffer_create(struct drm_gem_object *obj,
 	struct intel_framebuffer *intel_fb;
 	int ret;
 
-	intel_fb = intel_bo_alloc_framebuffer();
+	intel_fb = intel_framebuffer_alloc();
 	if (!intel_fb)
 		return ERR_PTR(-ENOMEM);
 

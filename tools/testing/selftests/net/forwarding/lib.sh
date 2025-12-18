@@ -571,30 +571,6 @@ wait_for_dev()
         fi
 }
 
-cmd_jq()
-{
-	local cmd=$1
-	local jq_exp=$2
-	local jq_opts=$3
-	local ret
-	local output
-
-	output="$($cmd)"
-	# it the command fails, return error right away
-	ret=$?
-	if [[ $ret -ne 0 ]]; then
-		return $ret
-	fi
-	output=$(echo $output | jq -r $jq_opts "$jq_exp")
-	ret=$?
-	if [[ $ret -ne 0 ]]; then
-		return $ret
-	fi
-	echo $output
-	# return success only in case of non-empty output
-	[ ! -z "$output" ]
-}
-
 pre_cleanup()
 {
 	if [ "${PAUSE_ON_CLEANUP}" = "yes" ]; then
@@ -621,6 +597,12 @@ vrf_cleanup()
 	ip -6 rule del pref 32765
 	ip -4 rule add pref 0 table local
 	ip -4 rule del pref 32765
+}
+
+adf_vrf_prepare()
+{
+	vrf_prepare
+	defer vrf_cleanup
 }
 
 __last_tb_id=0
@@ -733,6 +715,12 @@ simple_if_fini()
 
 	__simple_if_fini $if_name "${array[@]}"
 	vrf_destroy $vrf_name
+}
+
+adf_simple_if_init()
+{
+	simple_if_init "$@"
+	defer simple_if_fini "$@"
 }
 
 tunnel_create()
@@ -1033,6 +1021,12 @@ forwarding_restore()
 {
 	sysctl_restore net.ipv6.conf.all.forwarding
 	sysctl_restore net.ipv4.conf.all.forwarding
+}
+
+adf_forwarding_enable()
+{
+	forwarding_enable
+	defer forwarding_restore
 }
 
 declare -A MTU_ORIG

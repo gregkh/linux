@@ -1152,7 +1152,9 @@ vet_deleg_attrs(struct nfsd4_setattr *setattr, struct nfs4_delegation *dp)
 	if (setattr->sa_bmval[2] & FATTR4_WORD2_TIME_DELEG_MODIFY) {
 		if (nfsd4_vet_deleg_time(&iattr->ia_mtime, &dp->dl_mtime, &now)) {
 			iattr->ia_ctime = iattr->ia_mtime;
-			if (!nfsd4_vet_deleg_time(&iattr->ia_ctime, &dp->dl_ctime, &now))
+			if (nfsd4_vet_deleg_time(&iattr->ia_ctime, &dp->dl_ctime, &now))
+				dp->dl_setattr = true;
+			else
 				iattr->ia_valid &= ~(ATTR_CTIME | ATTR_CTIME_SET);
 		} else {
 			iattr->ia_valid &= ~(ATTR_CTIME | ATTR_CTIME_SET |
@@ -1239,12 +1241,26 @@ out:
 	return status;
 }
 
+static void nfsd4_file_mark_deleg_written(struct nfs4_file *fi)
+{
+	spin_lock(&fi->fi_lock);
+	if (!list_empty(&fi->fi_delegations)) {
+		struct nfs4_delegation *dp = list_first_entry(&fi->fi_delegations,
+							      struct nfs4_delegation, dl_perfile);
+
+		if (dp->dl_type == OPEN_DELEGATE_WRITE_ATTRS_DELEG)
+			dp->dl_written = true;
+	}
+	spin_unlock(&fi->fi_lock);
+}
+
 static __be32
 nfsd4_write(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 	    union nfsd4_op_u *u)
 {
 	struct nfsd4_write *write = &u->write;
 	stateid_t *stateid = &write->wr_stateid;
+	struct nfs4_stid *stid = NULL;
 	struct nfsd_file *nf = NULL;
 	__be32 status = nfs_ok;
 	unsigned long cnt;
@@ -1257,9 +1273,14 @@ nfsd4_write(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 	trace_nfsd_write_start(rqstp, &cstate->current_fh,
 			       write->wr_offset, cnt);
 	status = nfs4_preprocess_stateid_op(rqstp, cstate, &cstate->current_fh,
-						stateid, WR_STATE, &nf, NULL);
+						stateid, WR_STATE, &nf, &stid);
 	if (status)
 		return status;
+
+	if (stid) {
+		nfsd4_file_mark_deleg_written(stid->sc_file);
+		nfs4_put_stid(stid);
+	}
 
 	write->wr_how_written = write->wr_stable_how;
 	status = nfsd_vfs_write(rqstp, &cstate->current_fh, nf,
@@ -2477,7 +2498,7 @@ nfsd4_layoutget(struct svc_rqst *rqstp,
 	if (atomic_read(&ls->ls_stid.sc_file->fi_lo_recalls))
 		goto out_put_stid;
 
-	nfserr = ops->proc_layoutget(d_inode(current_fh->fh_dentry),
+	nfserr = ops->proc_layoutget(rqstp, d_inode(current_fh->fh_dentry),
 				     current_fh, lgp);
 	if (nfserr)
 		goto out_put_stid;
@@ -2501,6 +2522,7 @@ static __be32
 nfsd4_layoutcommit(struct svc_rqst *rqstp,
 		struct nfsd4_compound_state *cstate, union nfsd4_op_u *u)
 {
+	struct net *net = SVC_NET(rqstp);
 	struct nfsd4_layoutcommit *lcp = &u->layoutcommit;
 	const struct nfsd4_layout_seg *seg = &lcp->lc_seg;
 	struct svc_fh *current_fh = &cstate->current_fh;
@@ -2536,22 +2558,34 @@ nfsd4_layoutcommit(struct svc_rqst *rqstp,
 		}
 	}
 
-	nfserr = nfsd4_preprocess_layout_stateid(rqstp, cstate, &lcp->lc_sid,
-						false, lcp->lc_layout_type,
-						&ls);
-	if (nfserr) {
-		trace_nfsd_layout_commit_lookup_fail(&lcp->lc_sid);
-		/* fixup error code as per RFC5661 */
-		if (nfserr == nfserr_bad_stateid)
-			nfserr = nfserr_badlayout;
+	nfserr = nfserr_grace;
+	if (locks_in_grace(net) && !lcp->lc_reclaim)
 		goto out;
+	nfserr = nfserr_no_grace;
+	if (!locks_in_grace(net) && lcp->lc_reclaim)
+		goto out;
+
+	if (!lcp->lc_reclaim) {
+		nfserr = nfsd4_preprocess_layout_stateid(rqstp, cstate,
+				&lcp->lc_sid, false, lcp->lc_layout_type, &ls);
+		if (nfserr) {
+			trace_nfsd_layout_commit_lookup_fail(&lcp->lc_sid);
+			/* fixup error code as per RFC5661 */
+			if (nfserr == nfserr_bad_stateid)
+				nfserr = nfserr_badlayout;
+			goto out;
+		}
+
+		/* LAYOUTCOMMIT does not require any serialization */
+		mutex_unlock(&ls->ls_mutex);
 	}
 
-	/* LAYOUTCOMMIT does not require any serialization */
-	mutex_unlock(&ls->ls_mutex);
-
 	nfserr = ops->proc_layoutcommit(inode, rqstp, lcp);
-	nfs4_put_stid(&ls->ls_stid);
+
+	if (!lcp->lc_reclaim) {
+		nfsd4_file_mark_deleg_written(ls->ls_stid.sc_file);
+		nfs4_put_stid(&ls->ls_stid);
+	}
 out:
 	return nfserr;
 }

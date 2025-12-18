@@ -6927,8 +6927,7 @@ static int ocfs2_grab_folios(struct inode *inode, loff_t start, loff_t end,
 
 out:
 	if (ret != 0) {
-		if (folios)
-			ocfs2_unlock_and_free_folios(folios, numfolios);
+		ocfs2_unlock_and_free_folios(folios, numfolios);
 		numfolios = 0;
 	}
 

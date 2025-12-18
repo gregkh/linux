@@ -37,7 +37,6 @@
 #include "xe_gt_sriov_pf.h"
 #include "xe_gt_sriov_vf.h"
 #include "xe_gt_sysfs.h"
-#include "xe_gt_tlb_invalidation.h"
 #include "xe_gt_topology.h"
 #include "xe_guc_exec_queue_types.h"
 #include "xe_guc_pc.h"
@@ -58,6 +57,7 @@
 #include "xe_sa.h"
 #include "xe_sched_job.h"
 #include "xe_sriov.h"
+#include "xe_tlb_inval.h"
 #include "xe_tuning.h"
 #include "xe_uc.h"
 #include "xe_uc_fw.h"
@@ -106,7 +106,7 @@ static void xe_gt_enable_host_l2_vram(struct xe_gt *gt)
 	unsigned int fw_ref;
 	u32 reg;
 
-	if (!XE_WA(gt, 16023588340))
+	if (!XE_GT_WA(gt, 16023588340))
 		return;
 
 	fw_ref = xe_force_wake_get(gt_to_fw(gt), XE_FW_GT);
@@ -128,7 +128,7 @@ static void xe_gt_disable_host_l2_vram(struct xe_gt *gt)
 	unsigned int fw_ref;
 	u32 reg;
 
-	if (!XE_WA(gt, 16023588340))
+	if (!XE_GT_WA(gt, 16023588340))
 		return;
 
 	if (xe_gt_is_media_type(gt))
@@ -400,7 +400,7 @@ int xe_gt_init_early(struct xe_gt *gt)
 
 	xe_reg_sr_init(&gt->reg_sr, "GT", gt_to_xe(gt));
 
-	err = xe_wa_init(gt);
+	err = xe_wa_gt_init(gt);
 	if (err)
 		return err;
 
@@ -408,12 +408,12 @@ int xe_gt_init_early(struct xe_gt *gt)
 	if (err)
 		return err;
 
-	xe_wa_process_oob(gt);
+	xe_wa_process_gt_oob(gt);
 
 	xe_force_wake_init_gt(gt, gt_to_fw(gt));
 	spin_lock_init(&gt->global_invl_lock);
 
-	err = xe_gt_tlb_invalidation_init_early(gt);
+	err = xe_gt_tlb_inval_init_early(gt);
 	if (err)
 		return err;
 
@@ -565,11 +565,9 @@ static int gt_init_with_all_forcewake(struct xe_gt *gt)
 	if (xe_gt_is_main_type(gt)) {
 		struct xe_tile *tile = gt_to_tile(gt);
 
-		tile->migrate = xe_migrate_init(tile);
-		if (IS_ERR(tile->migrate)) {
-			err = PTR_ERR(tile->migrate);
+		err = xe_migrate_init(tile->migrate);
+		if (err)
 			goto err_force_wake;
-		}
 	}
 
 	err = xe_uc_load_hw(&gt->uc);
@@ -604,8 +602,6 @@ static void xe_gt_fini(void *arg)
 {
 	struct xe_gt *gt = arg;
 	int i;
-
-	xe_gt_tlb_invalidation_fini(gt);
 
 	for (i = 0; i < XE_ENGINE_CLASS_MAX; ++i)
 		xe_hw_fence_irq_finish(&gt->fence_irq[i]);
@@ -807,6 +803,11 @@ static int do_gt_restart(struct xe_gt *gt)
 	return 0;
 }
 
+static int gt_wait_reset_unblock(struct xe_gt *gt)
+{
+	return xe_guc_wait_reset_unblock(&gt->uc.guc);
+}
+
 static int gt_reset(struct xe_gt *gt)
 {
 	unsigned int fw_ref;
@@ -824,6 +825,10 @@ static int gt_reset(struct xe_gt *gt)
 	}
 
 	xe_gt_info(gt, "reset started\n");
+
+	err = gt_wait_reset_unblock(gt);
+	if (!err)
+		xe_gt_warn(gt, "reset block failed to get lifted");
 
 	if (xe_fault_inject_gt_reset()) {
 		err = -ECANCELED;
@@ -847,7 +852,7 @@ static int gt_reset(struct xe_gt *gt)
 
 	xe_uc_stop(&gt->uc);
 
-	xe_gt_tlb_invalidation_reset(gt);
+	xe_tlb_inval_reset(&gt->tlb_inval);
 
 	err = do_gt_reset(gt);
 	if (err)
@@ -966,7 +971,7 @@ int xe_gt_sanitize_freq(struct xe_gt *gt)
 	if ((!xe_uc_fw_is_available(&gt->uc.gsc.fw) ||
 	     xe_uc_fw_is_loaded(&gt->uc.gsc.fw) ||
 	     xe_uc_fw_is_in_error_state(&gt->uc.gsc.fw)) &&
-	    XE_WA(gt, 22019338487))
+	    XE_GT_WA(gt, 22019338487))
 		ret = xe_guc_pc_restore_stashed_freq(&gt->uc.guc.pc);
 
 	return ret;
@@ -1064,5 +1069,5 @@ void xe_gt_declare_wedged(struct xe_gt *gt)
 	xe_gt_assert(gt, gt_to_xe(gt)->wedged.mode);
 
 	xe_uc_declare_wedged(&gt->uc);
-	xe_gt_tlb_invalidation_reset(gt);
+	xe_tlb_inval_reset(&gt->tlb_inval);
 }

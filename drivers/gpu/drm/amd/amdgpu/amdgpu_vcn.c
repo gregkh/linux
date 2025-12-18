@@ -185,16 +185,16 @@ int amdgpu_vcn_sw_init(struct amdgpu_device *adev, int i)
 		dec_ver = (le32_to_cpu(hdr->ucode_version) >> 24) & 0xf;
 		vep = (le32_to_cpu(hdr->ucode_version) >> 28) & 0xf;
 		dev_info(adev->dev,
-			 "Found VCN firmware Version ENC: %u.%u DEC: %u VEP: %u Revision: %u\n",
-			 enc_major, enc_minor, dec_ver, vep, fw_rev);
+			 "[VCN instance %d] Found VCN firmware Version ENC: %u.%u DEC: %u VEP: %u Revision: %u\n",
+			 i, enc_major, enc_minor, dec_ver, vep, fw_rev);
 	} else {
 		unsigned int version_major, version_minor, family_id;
 
 		family_id = le32_to_cpu(hdr->ucode_version) & 0xff;
 		version_major = (le32_to_cpu(hdr->ucode_version) >> 24) & 0xff;
 		version_minor = (le32_to_cpu(hdr->ucode_version) >> 8) & 0xff;
-		dev_info(adev->dev, "Found VCN firmware Version: %u.%u Family ID: %u\n",
-			 version_major, version_minor, family_id);
+		dev_info(adev->dev, "[VCN instance %d] Found VCN firmware Version: %u.%u Family ID: %u\n",
+			 i, version_major, version_minor, family_id);
 	}
 
 	bo_size = AMDGPU_VCN_STACK_SIZE + AMDGPU_VCN_CONTEXT_SIZE;
@@ -257,12 +257,12 @@ int amdgpu_vcn_sw_init(struct amdgpu_device *adev, int i)
 	return 0;
 }
 
-int amdgpu_vcn_sw_fini(struct amdgpu_device *adev, int i)
+void amdgpu_vcn_sw_fini(struct amdgpu_device *adev, int i)
 {
 	int j;
 
 	if (adev->vcn.harvest_config & (1 << i))
-		return 0;
+		return;
 
 	amdgpu_bo_free_kernel(
 		&adev->vcn.inst[i].dpg_sram_bo,
@@ -292,8 +292,6 @@ int amdgpu_vcn_sw_fini(struct amdgpu_device *adev, int i)
 
 	mutex_destroy(&adev->vcn.inst[i].vcn_pg_lock);
 	mutex_destroy(&adev->vcn.inst[i].vcn1_jpeg1_workaround);
-
-	return 0;
 }
 
 bool amdgpu_vcn_is_disabled_vcn(struct amdgpu_device *adev, enum vcn_ring_type type, uint32_t vcn_instance)
@@ -356,8 +354,6 @@ int amdgpu_vcn_suspend(struct amdgpu_device *adev, int i)
 
 	if (adev->vcn.harvest_config & (1 << i))
 		return 0;
-
-	cancel_delayed_work_sync(&adev->vcn.inst[i].idle_work);
 
 	/* err_event_athub and dpc recovery will corrupt VCPU buffer, so we need to
 	 * restore fw data and clear buffer in amdgpu_vcn_resume() */
@@ -630,7 +626,7 @@ static int amdgpu_vcn_dec_send_msg(struct amdgpu_ring *ring,
 
 	r = amdgpu_job_alloc_with_ib(ring->adev, NULL, NULL,
 				     64, AMDGPU_IB_POOL_DIRECT,
-				     &job);
+				     &job, AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST);
 	if (r)
 		goto err;
 
@@ -810,7 +806,7 @@ static int amdgpu_vcn_dec_sw_send_msg(struct amdgpu_ring *ring,
 
 	r = amdgpu_job_alloc_with_ib(ring->adev, NULL, NULL,
 				     ib_size_dw * 4, AMDGPU_IB_POOL_DIRECT,
-				     &job);
+				     &job, AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST);
 	if (r)
 		goto err;
 
@@ -940,7 +936,7 @@ static int amdgpu_vcn_enc_get_create_msg(struct amdgpu_ring *ring, uint32_t hand
 
 	r = amdgpu_job_alloc_with_ib(ring->adev, NULL, NULL,
 				     ib_size_dw * 4, AMDGPU_IB_POOL_DIRECT,
-				     &job);
+				     &job, AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST);
 	if (r)
 		return r;
 
@@ -1007,7 +1003,7 @@ static int amdgpu_vcn_enc_get_destroy_msg(struct amdgpu_ring *ring, uint32_t han
 
 	r = amdgpu_job_alloc_with_ib(ring->adev, NULL, NULL,
 				     ib_size_dw * 4, AMDGPU_IB_POOL_DIRECT,
-				     &job);
+				     &job, AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST);
 	if (r)
 		return r;
 
@@ -1161,7 +1157,7 @@ static ssize_t amdgpu_debugfs_vcn_fwlog_read(struct file *f, char __user *buf,
 {
 	struct amdgpu_vcn_inst *vcn;
 	void *log_buf;
-	volatile struct amdgpu_vcn_fwlog *plog;
+	struct amdgpu_vcn_fwlog *plog;
 	unsigned int read_pos, write_pos, available, i, read_bytes = 0;
 	unsigned int read_num[2] = {0};
 
@@ -1174,7 +1170,7 @@ static ssize_t amdgpu_debugfs_vcn_fwlog_read(struct file *f, char __user *buf,
 
 	log_buf = vcn->fw_shared.cpu_addr + vcn->fw_shared.mem_size;
 
-	plog = (volatile struct amdgpu_vcn_fwlog *)log_buf;
+	plog = (struct amdgpu_vcn_fwlog *)log_buf;
 	read_pos = plog->rptr;
 	write_pos = plog->wptr;
 
@@ -1241,11 +1237,11 @@ void amdgpu_debugfs_vcn_fwlog_init(struct amdgpu_device *adev, uint8_t i,
 void amdgpu_vcn_fwlog_init(struct amdgpu_vcn_inst *vcn)
 {
 #if defined(CONFIG_DEBUG_FS)
-	volatile uint32_t *flag = vcn->fw_shared.cpu_addr;
+	uint32_t *flag = vcn->fw_shared.cpu_addr;
 	void *fw_log_cpu_addr = vcn->fw_shared.cpu_addr + vcn->fw_shared.mem_size;
 	uint64_t fw_log_gpu_addr = vcn->fw_shared.gpu_addr + vcn->fw_shared.mem_size;
-	volatile struct amdgpu_vcn_fwlog *log_buf = fw_log_cpu_addr;
-	volatile struct amdgpu_fw_shared_fw_logging *fw_log = vcn->fw_shared.cpu_addr
+	struct amdgpu_vcn_fwlog *log_buf = fw_log_cpu_addr;
+	struct amdgpu_fw_shared_fw_logging *fw_log = vcn->fw_shared.cpu_addr
 							 + vcn->fw_shared.log_offset;
 	*flag |= cpu_to_le32(AMDGPU_VCN_FW_LOGGING_FLAG);
 	fw_log->is_enabled = 1;

@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/posix-clock.h>
 #include <linux/pps_kernel.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
@@ -247,6 +248,69 @@ static void ptp_aux_kworker(struct kthread_work *work)
 		kthread_queue_delayed_work(ptp->kworker, &ptp->aux_work, delay);
 }
 
+static ssize_t ptp_n_perout_loopback_read(struct file *filep,
+					  char __user *buffer,
+					  size_t count, loff_t *pos)
+{
+	struct ptp_clock *ptp = filep->private_data;
+	char buf[12] = {};
+
+	snprintf(buf, sizeof(buf), "%d\n", ptp->info->n_per_lp);
+
+	return simple_read_from_buffer(buffer, count, pos, buf, strlen(buf));
+}
+
+static const struct file_operations ptp_n_perout_loopback_fops = {
+	.owner	= THIS_MODULE,
+	.open	= simple_open,
+	.read	= ptp_n_perout_loopback_read,
+};
+
+static ssize_t ptp_perout_loopback_write(struct file *filep,
+					 const char __user *buffer,
+					 size_t count, loff_t *ppos)
+{
+	struct ptp_clock *ptp = filep->private_data;
+	struct ptp_clock_info *ops = ptp->info;
+	unsigned int index, enable;
+	int len, cnt, err;
+	char buf[32] = {};
+
+	if (*ppos || !count)
+		return -EINVAL;
+
+	if (count >= sizeof(buf))
+		return -ENOSPC;
+
+	len = simple_write_to_buffer(buf, sizeof(buf) - 1,
+				     ppos, buffer, count);
+	if (len < 0)
+		return len;
+
+	buf[len] = '\0';
+	cnt = sscanf(buf, "%u %u", &index, &enable);
+	if (cnt != 2)
+		return -EINVAL;
+
+	if (index >= ops->n_per_lp)
+		return -EINVAL;
+
+	if (enable != 0 && enable != 1)
+		return -EINVAL;
+
+	err = ops->perout_loopback(ops, index, enable);
+	if (err)
+		return err;
+
+	return count;
+}
+
+static const struct file_operations ptp_perout_loopback_ops = {
+	.owner   = THIS_MODULE,
+	.open    = simple_open,
+	.write	 = ptp_perout_loopback_write,
+};
+
 /* public interface */
 
 struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
@@ -388,6 +452,12 @@ struct ptp_clock *ptp_clock_register(struct ptp_clock_info *info,
 	/* Debugfs initialization */
 	snprintf(debugfsname, sizeof(debugfsname), "ptp%d", ptp->index);
 	ptp->debugfs_root = debugfs_create_dir(debugfsname, NULL);
+	if (info->n_per_lp > 0 && info->perout_loopback) {
+		debugfs_create_file("n_perout_loopback", 0400, ptp->debugfs_root,
+				    ptp, &ptp_n_perout_loopback_fops);
+		debugfs_create_file("perout_loopback", 0200, ptp->debugfs_root,
+				    ptp, &ptp_perout_loopback_ops);
+	}
 
 	return ptp;
 
@@ -428,8 +498,20 @@ int ptp_clock_unregister(struct ptp_clock *ptp)
 		device_for_each_child(&ptp->dev, NULL, unregister_vclock);
 	}
 
+	/* Get the device to stop posix_clock_unregister() doing the last put
+	 * and freeing the structure(s)
+	 */
+	get_device(&ptp->dev);
+
+	/* Wake up any userspace waiting for an event. */
 	ptp->defunct = 1;
 	wake_up_interruptible(&ptp->tsev_wq);
+
+	/* Tear down the POSIX clock, which removes the user interface. */
+	posix_clock_unregister(&ptp->clock);
+
+	/* Disable all sources of event generation. */
+	ptp_disable_all_events(ptp);
 
 	if (ptp->kworker) {
 		kthread_cancel_delayed_work_sync(&ptp->aux_work);
@@ -440,7 +522,8 @@ int ptp_clock_unregister(struct ptp_clock *ptp)
 	if (ptp->pps_source)
 		pps_unregister_source(ptp->pps_source);
 
-	posix_clock_unregister(&ptp->clock);
+	/* The final put, normally here, will invoke ptp_clock_release(). */
+	put_device(&ptp->dev);
 
 	return 0;
 }
@@ -487,6 +570,58 @@ int ptp_clock_index(struct ptp_clock *ptp)
 	return ptp->index;
 }
 EXPORT_SYMBOL(ptp_clock_index);
+
+static int ptp_clock_of_node_match(struct device *dev, const void *data)
+{
+	const struct device_node *parent_np = data;
+
+	return (dev->parent && dev_of_node(dev->parent) == parent_np);
+}
+
+int ptp_clock_index_by_of_node(struct device_node *np)
+{
+	struct ptp_clock *ptp;
+	struct device *dev;
+	int phc_index;
+
+	dev = class_find_device(&ptp_class, NULL, np,
+				ptp_clock_of_node_match);
+	if (!dev)
+		return -1;
+
+	ptp = dev_get_drvdata(dev);
+	phc_index = ptp_clock_index(ptp);
+	put_device(dev);
+
+	return phc_index;
+}
+EXPORT_SYMBOL_GPL(ptp_clock_index_by_of_node);
+
+static int ptp_clock_dev_match(struct device *dev, const void *data)
+{
+	const struct device *parent = data;
+
+	return dev->parent == parent;
+}
+
+int ptp_clock_index_by_dev(struct device *parent)
+{
+	struct ptp_clock *ptp;
+	struct device *dev;
+	int phc_index;
+
+	dev = class_find_device(&ptp_class, NULL, parent,
+				ptp_clock_dev_match);
+	if (!dev)
+		return -1;
+
+	ptp = dev_get_drvdata(dev);
+	phc_index = ptp_clock_index(ptp);
+	put_device(dev);
+
+	return phc_index;
+}
+EXPORT_SYMBOL_GPL(ptp_clock_index_by_dev);
 
 int ptp_find_pin(struct ptp_clock *ptp,
 		 enum ptp_pin_function func, unsigned int chan)

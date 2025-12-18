@@ -26,11 +26,11 @@
 #include "xe_gt_sriov_pf_control.h"
 #include "xe_gt_sriov_pf_monitor.h"
 #include "xe_gt_sriov_printk.h"
-#include "xe_gt_tlb_invalidation.h"
 #include "xe_guc.h"
 #include "xe_guc_log.h"
 #include "xe_guc_relay.h"
 #include "xe_guc_submit.h"
+#include "xe_guc_tlb_inval.h"
 #include "xe_map.h"
 #include "xe_pm.h"
 #include "xe_trace_guc.h"
@@ -226,6 +226,12 @@ int xe_guc_ct_init_noalloc(struct xe_guc_ct *ct)
 
 	xe_gt_assert(gt, !(guc_ct_size() % PAGE_SIZE));
 
+	err = drmm_mutex_init(&xe->drm, &ct->lock);
+	if (err)
+		return err;
+
+	primelockdep(ct);
+
 	ct->g2h_wq = alloc_ordered_workqueue("xe-g2h-wq", WQ_MEM_RECLAIM);
 	if (!ct->g2h_wq)
 		return -ENOMEM;
@@ -243,12 +249,6 @@ int xe_guc_ct_init_noalloc(struct xe_guc_ct *ct)
 #endif
 	init_waitqueue_head(&ct->wq);
 	init_waitqueue_head(&ct->g2h_fence_wq);
-
-	err = drmm_mutex_init(&xe->drm, &ct->lock);
-	if (err)
-		return err;
-
-	primelockdep(ct);
 
 	err = drmm_add_action_or_reset(&xe->drm, guc_ct_fini, ct);
 	if (err)
@@ -312,7 +312,7 @@ int xe_guc_ct_init_post_hwconfig(struct xe_guc_ct *ct)
 			return ret;
 	}
 
-	devm_release_action(xe->drm.dev, guc_action_disable_ct, ct);
+	devm_remove_action(xe->drm.dev, guc_action_disable_ct, ct);
 	return devm_add_action_or_reset(xe->drm.dev, guc_action_disable_ct, ct);
 }
 
@@ -1470,8 +1470,7 @@ static int process_g2h_msg(struct xe_guc_ct *ct, u32 *msg, u32 len)
 		ret = xe_guc_pagefault_handler(guc, payload, adj_len);
 		break;
 	case XE_GUC_ACTION_TLB_INVALIDATION_DONE:
-		ret = xe_guc_tlb_invalidation_done_handler(guc, payload,
-							   adj_len);
+		ret = xe_guc_tlb_inval_done_handler(guc, payload, adj_len);
 		break;
 	case XE_GUC_ACTION_ACCESS_COUNTER_NOTIFY:
 		ret = xe_guc_access_counter_notify_handler(guc, payload,
@@ -1493,6 +1492,11 @@ static int process_g2h_msg(struct xe_guc_ct *ct, u32 *msg, u32 len)
 	case XE_GUC_ACTION_NOTIFY_EXCEPTION:
 		ret = guc_crash_process_msg(ct, action);
 		break;
+#if IS_ENABLED(CONFIG_DRM_XE_KUNIT_TEST)
+	case XE_GUC_ACTION_TEST_G2G_RECV:
+		ret = xe_guc_g2g_test_notification(guc, payload, adj_len);
+		break;
+#endif
 	default:
 		xe_gt_err(gt, "unexpected G2H action 0x%04x\n", action);
 	}
@@ -1672,8 +1676,7 @@ static void g2h_fast_path(struct xe_guc_ct *ct, u32 *msg, u32 len)
 		break;
 	case XE_GUC_ACTION_TLB_INVALIDATION_DONE:
 		__g2h_release_space(ct, len);
-		ret = xe_guc_tlb_invalidation_done_handler(guc, payload,
-							   adj_len);
+		ret = xe_guc_tlb_inval_done_handler(guc, payload, adj_len);
 		break;
 	default:
 		xe_gt_warn(gt, "NOT_POSSIBLE");

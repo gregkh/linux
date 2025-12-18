@@ -27,6 +27,13 @@ MODULE_FIRMWARE("amdnpu/17f0_11/npu.sbin");
 MODULE_FIRMWARE("amdnpu/17f0_20/npu.sbin");
 
 /*
+ * 0.0: Initial version
+ * 0.1: Support getting all hardware contexts by DRM_IOCTL_AMDXDNA_GET_ARRAY
+ */
+#define AMDXDNA_DRIVER_MAJOR		0
+#define AMDXDNA_DRIVER_MINOR		1
+
+/*
  * Bind the driver base on (vendor_id, device_id) pair and later use the
  * (device_id, rev_id) pair as a key to select the devices. The devices with
  * same device_id have very similar interface to host driver.
@@ -81,7 +88,6 @@ static int amdxdna_drm_open(struct drm_device *ddev, struct drm_file *filp)
 		ret = -ENODEV;
 		goto unbind_sva;
 	}
-	mutex_init(&client->hwctx_lock);
 	init_srcu_struct(&client->hwctx_srcu);
 	xa_init_flags(&client->hwctx_xa, XA_FLAGS_ALLOC);
 	mutex_init(&client->mm_lock);
@@ -116,7 +122,6 @@ static void amdxdna_drm_close(struct drm_device *ddev, struct drm_file *filp)
 
 	xa_destroy(&client->hwctx_xa);
 	cleanup_srcu_struct(&client->hwctx_srcu);
-	mutex_destroy(&client->hwctx_lock);
 	mutex_destroy(&client->mm_lock);
 	if (client->dev_heap)
 		drm_gem_object_put(to_gobj(client->dev_heap));
@@ -142,8 +147,8 @@ static int amdxdna_flush(struct file *f, fl_owner_t id)
 
 	mutex_lock(&xdna->dev_lock);
 	list_del_init(&client->node);
-	mutex_unlock(&xdna->dev_lock);
 	amdxdna_hwctx_remove_all(client);
+	mutex_unlock(&xdna->dev_lock);
 
 	drm_dev_exit(idx);
 	return 0;
@@ -164,6 +169,23 @@ static int amdxdna_drm_get_info_ioctl(struct drm_device *dev, void *data, struct
 	ret = xdna->dev_info->ops->get_aie_info(client, args);
 	mutex_unlock(&xdna->dev_lock);
 	return ret;
+}
+
+static int amdxdna_drm_get_array_ioctl(struct drm_device *dev, void *data,
+				       struct drm_file *filp)
+{
+	struct amdxdna_client *client = filp->driver_priv;
+	struct amdxdna_dev *xdna = to_xdna_dev(dev);
+	struct amdxdna_drm_get_array *args = data;
+
+	if (!xdna->dev_info->ops->get_array)
+		return -EOPNOTSUPP;
+
+	if (args->pad || !args->num_element || !args->element_size)
+		return -EINVAL;
+
+	guard(mutex)(&xdna->dev_lock);
+	return xdna->dev_info->ops->get_array(client, args);
 }
 
 static int amdxdna_drm_set_state_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
@@ -197,6 +219,7 @@ static const struct drm_ioctl_desc amdxdna_drm_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(AMDXDNA_EXEC_CMD, amdxdna_drm_submit_cmd_ioctl, 0),
 	/* AIE hardware */
 	DRM_IOCTL_DEF_DRV(AMDXDNA_GET_INFO, amdxdna_drm_get_info_ioctl, 0),
+	DRM_IOCTL_DEF_DRV(AMDXDNA_GET_ARRAY, amdxdna_drm_get_array_ioctl, 0),
 	DRM_IOCTL_DEF_DRV(AMDXDNA_SET_STATE, amdxdna_drm_set_state_ioctl, DRM_ROOT_ONLY),
 };
 
@@ -220,6 +243,8 @@ const struct drm_driver amdxdna_drm_drv = {
 	.fops = &amdxdna_fops,
 	.name = "amdxdna_accel_driver",
 	.desc = "AMD XDNA DRM implementation",
+	.major = AMDXDNA_DRIVER_MAJOR,
+	.minor = AMDXDNA_DRIVER_MINOR,
 	.open = amdxdna_drm_open,
 	.postclose = amdxdna_drm_close,
 	.ioctls = amdxdna_drm_ioctls,
@@ -330,11 +355,8 @@ static void amdxdna_remove(struct pci_dev *pdev)
 					  struct amdxdna_client, node);
 	while (client) {
 		list_del_init(&client->node);
-		mutex_unlock(&xdna->dev_lock);
-
 		amdxdna_hwctx_remove_all(client);
 
-		mutex_lock(&xdna->dev_lock);
 		client = list_first_entry_or_null(&xdna->client_list,
 						  struct amdxdna_client, node);
 	}

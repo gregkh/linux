@@ -32,11 +32,11 @@
 #define IMX93_ADC_PCDR0		0x100
 #define IMX93_ADC_PCDR1		0x104
 #define IMX93_ADC_PCDR2		0x108
-#define IMX93_ADC_PCDR3		0x10c
+#define IMX93_ADC_PCDR3		0x10C
 #define IMX93_ADC_PCDR4		0x110
 #define IMX93_ADC_PCDR5		0x114
 #define IMX93_ADC_PCDR6		0x118
-#define IMX93_ADC_PCDR7		0x11c
+#define IMX93_ADC_PCDR7		0x11C
 #define IMX93_ADC_CALSTAT	0x39C
 #define IMX93_ADC_CALCFG0	0x3A0
 
@@ -260,7 +260,6 @@ static int imx93_adc_read_raw(struct iio_dev *indio_dev,
 		mutex_lock(&adc->lock);
 		ret = imx93_adc_read_channel_conversion(adc, chan->channel, val);
 		mutex_unlock(&adc->lock);
-		pm_runtime_mark_last_busy(dev);
 		pm_runtime_put_sync_autosuspend(dev);
 		if (ret < 0)
 			return ret;
@@ -320,8 +319,7 @@ static int imx93_adc_probe(struct platform_device *pdev)
 
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*adc));
 	if (!indio_dev)
-		return dev_err_probe(dev, -ENOMEM,
-				     "Failed allocating iio device\n");
+		return -ENOMEM;
 
 	adc = iio_priv(indio_dev);
 	adc->dev = dev;

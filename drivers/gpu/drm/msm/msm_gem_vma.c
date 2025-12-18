@@ -396,7 +396,14 @@ msm_gem_vma_new(struct drm_gpuvm *gpuvm, struct drm_gem_object *obj,
 	if (obj)
 		GEM_WARN_ON((range_end - range_start) > obj->size);
 
-	drm_gpuva_init(&vma->base, range_start, range_end - range_start, obj, offset);
+	struct drm_gpuva_op_map op_map = {
+		.va.addr = range_start,
+		.va.range = range_end - range_start,
+		.gem.obj = obj,
+		.gem.offset = offset,
+	};
+
+	drm_gpuva_init_from_op(&vma->base, &op_map);
 	vma->mapped = false;
 
 	ret = drm_gpuva_insert(&vm->base, &vma->base);
@@ -964,6 +971,7 @@ static int
 lookup_op(struct msm_vm_bind_job *job, const struct drm_msm_vm_bind_op *op)
 {
 	struct drm_device *dev = job->vm->drm;
+	struct msm_drm_private *priv = dev->dev_private;
 	int i = job->nr_ops++;
 	int ret = 0;
 
@@ -1008,6 +1016,11 @@ lookup_op(struct msm_vm_bind_job *job, const struct drm_msm_vm_bind_op *op)
 	default:
 		ret = UERR(EINVAL, dev, "invalid op: %u\n", op->op);
 		break;
+	}
+
+	if ((op->op == MSM_VM_BIND_OP_MAP_NULL) &&
+	    !adreno_smmu_has_prr(priv->gpu)) {
+		ret = UERR(EINVAL, dev, "PRR not supported\n");
 	}
 
 	return ret;
@@ -1219,11 +1232,17 @@ vm_bind_job_lock_objects(struct msm_vm_bind_job *job, struct drm_exec *exec)
 							      op->obj_offset);
 				break;
 			case MSM_VM_BIND_OP_MAP:
-			case MSM_VM_BIND_OP_MAP_NULL:
-				ret = drm_gpuvm_sm_map_exec_lock(job->vm, exec, 1,
-							    op->iova, op->range,
-							    op->obj, op->obj_offset);
+			case MSM_VM_BIND_OP_MAP_NULL: {
+				struct drm_gpuvm_map_req map_req = {
+					.map.va.addr = op->iova,
+					.map.va.range = op->range,
+					.map.gem.obj = op->obj,
+					.map.gem.offset = op->obj_offset,
+				};
+
+				ret = drm_gpuvm_sm_map_exec_lock(job->vm, exec, 1, &map_req);
 				break;
+			}
 			default:
 				/*
 				 * lookup_op() should have already thrown an error for
@@ -1331,10 +1350,17 @@ vm_bind_job_prepare(struct msm_vm_bind_job *job)
 			if (op->flags & MSM_VM_BIND_OP_DUMP)
 				arg.flags |= MSM_VMA_DUMP;
 			fallthrough;
-		case MSM_VM_BIND_OP_MAP_NULL:
-			ret = drm_gpuvm_sm_map(job->vm, &arg, op->iova,
-					       op->range, op->obj, op->obj_offset);
+		case MSM_VM_BIND_OP_MAP_NULL: {
+			struct drm_gpuvm_map_req map_req = {
+				.map.va.addr = op->iova,
+				.map.va.range = op->range,
+				.map.gem.obj = op->obj,
+				.map.gem.offset = op->obj_offset,
+			};
+
+			ret = drm_gpuvm_sm_map(job->vm, &arg, &map_req);
 			break;
+		}
 		default:
 			/*
 			 * lookup_op() should have already thrown an error for

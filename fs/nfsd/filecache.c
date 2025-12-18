@@ -113,7 +113,7 @@ static void
 nfsd_file_schedule_laundrette(void)
 {
 	if (test_bit(NFSD_FILE_CACHE_UP, &nfsd_file_flags))
-		queue_delayed_work(system_unbound_wq, &nfsd_filecache_laundrette,
+		queue_delayed_work(system_dfl_wq, &nfsd_filecache_laundrette,
 				   NFSD_LAUNDRETTE_DELAY);
 }
 
@@ -392,27 +392,6 @@ nfsd_file_put_local(struct nfsd_file __rcu **pnf)
 		nfsd_file_put(nf);
 	}
 	return net;
-}
-
-/**
- * nfsd_file_get_local - get nfsd_file reference and reference to net
- * @nf: nfsd_file of which to put the reference
- *
- * Get reference to both the nfsd_file and nf->nf_net.
- */
-struct nfsd_file *
-nfsd_file_get_local(struct nfsd_file *nf)
-{
-	struct net *net = nf->nf_net;
-
-	if (nfsd_net_try_get(net)) {
-		nf = nfsd_file_get(nf);
-		if (!nf)
-			nfsd_net_put(net);
-	} else {
-		nf = NULL;
-	}
-	return nf;
 }
 
 /**
