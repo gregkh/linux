@@ -1851,6 +1851,7 @@ static void mceusb_dev_disconnect(struct usb_interface *intf)
 	usb_free_urb(ir->urb_in);
 	usb_free_coherent(dev, ir->len_in, ir->buf_in, ir->dma_in);
 	usb_put_dev(dev);
+	rc_free_device(ir->rc);
 
 	kfree(ir);
 }

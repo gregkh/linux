@@ -81,7 +81,6 @@ struct lirc_fh {
 /**
  * struct rc_dev - represents a remote control device
  * @dev: driver model's view of this device
- * @managed_alloc: devm_rc_allocate_device was used to create rc_dev
  * @sysfs_groups: sysfs attribute groups
  * @device_name: name of the rc child device
  * @input_phys: physical path to the input child device
@@ -156,7 +155,6 @@ struct lirc_fh {
  */
 struct rc_dev {
 	struct device			dev;
-	bool				managed_alloc;
 	const struct attribute_group	*sysfs_groups[5];
 	const char			*device_name;
 	const char			*input_phys;
