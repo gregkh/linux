@@ -7,6 +7,7 @@
 #include <linux/bits.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
+#include <linux/cleanup.h>
 #include <linux/cpu.h>
 #include <linux/cpuidle.h>
 #include <linux/debugfs.h>
@@ -709,7 +710,7 @@ static ssize_t svs_enable_debug_write(struct file *filp,
 	struct svs_platform *svsp = dev_get_drvdata(svsb->dev);
 	unsigned long flags;
 	int enabled, ret;
-	char *buf = NULL;
+	char *buf __free(kfree) = NULL;
 
 	if (count >= PAGE_SIZE)
 		return -EINVAL;
@@ -734,8 +735,6 @@ static ssize_t svs_enable_debug_write(struct file *filp,
 		svsb->phase = SVSB_PHASE_ERROR;
 		svs_adjust_pm_opp_volts(svsb);
 	}
-
-	kfree(buf);
 
 	return count;
 }
