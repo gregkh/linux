@@ -191,6 +191,7 @@ static int apple_wdt_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id apple_wdt_of_match[] = {
+	{ .compatible = "apple,t8103-wdt" },
 	{ .compatible = "apple,wdt" },
 	{},
 };
