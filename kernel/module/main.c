@@ -3544,12 +3544,6 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	mutex_unlock(&module_mutex);
  free_module:
 	mod_stat_bump_invalid(info, flags);
-	/* Free lock-classes; relies on the preceding sync_rcu() */
-	for_class_mod_mem_type(type, core_data) {
-		lockdep_free_key_range(mod->mem[type].base,
-				       mod->mem[type].size);
-	}
-
 	module_memory_restore_rox(mod);
 	module_deallocate(mod, info);
  free_copy:
