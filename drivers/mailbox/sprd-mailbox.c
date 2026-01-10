@@ -167,6 +167,11 @@ static irqreturn_t sprd_mbox_inbox_isr(int irq, void *data)
 		return IRQ_NONE;
 	}
 
+	/* Clear FIFO delivery and overflow status first */
+	writel(fifo_sts &
+	       (SPRD_INBOX_FIFO_DELIVER_MASK | SPRD_INBOX_FIFO_OVERLOW_MASK),
+	       priv->inbox_base + SPRD_MBOX_FIFO_RST);
+
 	while (send_sts) {
 		id = __ffs(send_sts);
 		send_sts &= (send_sts - 1);
@@ -181,11 +186,6 @@ static irqreturn_t sprd_mbox_inbox_isr(int irq, void *data)
 		if (!(busy & BIT(id)))
 			mbox_chan_txdone(chan, 0);
 	}
-
-	/* Clear FIFO delivery and overflow status */
-	writel(fifo_sts &
-	       (SPRD_INBOX_FIFO_DELIVER_MASK | SPRD_INBOX_FIFO_OVERLOW_MASK),
-	       priv->inbox_base + SPRD_MBOX_FIFO_RST);
 
 	/* Clear irq status */
 	writel(SPRD_MBOX_IRQ_CLR, priv->inbox_base + SPRD_MBOX_IRQ_STS);
