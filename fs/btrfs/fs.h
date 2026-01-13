@@ -186,6 +186,12 @@ enum {
 	BTRFS_MOUNT_NODISCARD			= (1UL << 31),
 };
 
+/* These mount options require a full read-only fs, no new transaction is allowed. */
+#define BTRFS_MOUNT_FULL_RO_MASK		\
+	(BTRFS_MOUNT_NOLOGREPLAY |		\
+	 BTRFS_MOUNT_IGNOREBADROOTS |		\
+	 BTRFS_MOUNT_IGNOREDATACSUMS)
+
 /*
  * Compat flags that we support.  If any incompat flags are set other than the
  * ones specified below then we will fail to mount
