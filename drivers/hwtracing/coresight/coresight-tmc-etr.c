@@ -1213,6 +1213,15 @@ static int tmc_enable_etr_sink_sysfs(struct coresight_device *csdev)
 	spin_lock_irqsave(&drvdata->spinlock, flags);
 
 	/*
+	 * Since the sysfs buffer allocation and the hardware enablement is not
+	 * in the same critical region, it's possible to race with the perf.
+	 */
+	if (drvdata->mode == CS_MODE_PERF) {
+		spin_unlock_irqrestore(&drvdata->spinlock, flags);
+		return -EBUSY;
+	}
+
+	/*
 	 * In sysFS mode we can have multiple writers per sink.  Since this
 	 * sink is already enabled no memory is needed and the HW need not be
 	 * touched, even if the buffer size has changed.
