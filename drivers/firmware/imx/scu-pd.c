@@ -235,6 +235,7 @@ static void imx_sc_pd_get_console_rsrc(void)
 		return;
 
 	imx_con_rsrc = specs.args[0];
+	of_node_put(specs.np);
 }
 
 static int imx_sc_pd_power(struct generic_pm_domain *domain, bool power_on)
