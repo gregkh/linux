@@ -628,15 +628,14 @@ static int cxl_decoder_commit(struct cxl_decoder *cxld)
 	writel(ctrl, hdm + CXL_HDM_DECODER0_CTRL_OFFSET(id));
 	up_read(&cxl_dpa_rwsem);
 
-	port->commit_end++;
 	rc = cxld_await_commit(hdm, cxld->id);
 err:
 	if (rc) {
 		dev_dbg(&port->dev, "%s: error %d committing decoder\n",
 			dev_name(&cxld->dev), rc);
-		cxld->reset(cxld);
 		return rc;
 	}
+	port->commit_end++;
 	cxld->flags |= CXL_DECODER_F_ENABLE;
 
 	return 0;
