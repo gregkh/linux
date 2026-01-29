@@ -242,7 +242,7 @@ impl DmaGspMem {
             // to `rx`, minus one unit, belongs to the driver.
             if rx == 0 {
                 let last = after_tx.len() - 1;
-                (&mut after_tx[..last], &mut before_tx[0..0])
+                (&mut after_tx[..last], &mut [])
             } else {
                 (after_tx, &mut before_tx[..rx])
             }
@@ -251,7 +251,7 @@ impl DmaGspMem {
             //
             // PANIC: per the invariants of `cpu_write_ptr` and `gsp_read_ptr`, `rx` and `tx` are
             // `<= MSGQ_NUM_PAGES`, and the test above ensured that `rx > tx`.
-            (after_tx.split_at_mut(rx - tx).0, &mut before_tx[0..0])
+            (after_tx.split_at_mut(rx - tx).0, &mut [])
         }
     }
 
@@ -273,8 +273,8 @@ impl DmaGspMem {
         let (before_rx, after_rx) = gsp_mem.gspq.msgq.data.split_at(rx);
 
         match tx.cmp(&rx) {
-            cmp::Ordering::Equal => (&after_rx[0..0], &after_rx[0..0]),
-            cmp::Ordering::Greater => (&after_rx[..tx], &before_rx[0..0]),
+            cmp::Ordering::Equal => (&[], &[]),
+            cmp::Ordering::Greater => (&after_rx[..tx], &[]),
             cmp::Ordering::Less => (after_rx, &before_rx[..tx]),
         }
     }
