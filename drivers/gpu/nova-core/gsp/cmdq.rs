@@ -237,21 +237,27 @@ impl DmaGspMem {
         // PANIC: per the invariant of `cpu_write_ptr`, `tx` is `<= MSGQ_NUM_PAGES`.
         let (before_tx, after_tx) = gsp_mem.cpuq.msgq.data.split_at_mut(tx);
 
-        if rx <= tx {
-            // The area from `tx` up to the end of the ring, and from the beginning of the ring up
-            // to `rx`, minus one unit, belongs to the driver.
-            if rx == 0 {
-                let last = after_tx.len() - 1;
-                (&mut after_tx[..last], &mut [])
-            } else {
-                (after_tx, &mut before_tx[..rx])
-            }
+        // The area starting at `tx` and ending at `rx - 2` modulo MSGQ_NUM_PAGES, inclusive,
+        // belongs to the driver for writing.
+
+        if rx == 0 {
+            // Since `rx` is zero, leave an empty slot at end of the buffer.
+            let last = after_tx.len() - 1;
+            (&mut after_tx[..last], &mut [])
+        } else if rx <= tx {
+            // The area is discontiguous and we leave an empty slot before `rx`.
+            // PANIC:
+            // - The index `rx - 1` is non-negative because `rx != 0` in this branch.
+            // - The index does not exceed `before_tx.len()` (which equals `tx`) because
+            //   `rx <= tx` in this branch.
+            (after_tx, &mut before_tx[..(rx - 1)])
         } else {
-            // The area from `tx` to `rx`, minus one unit, belongs to the driver.
-            //
-            // PANIC: per the invariants of `cpu_write_ptr` and `gsp_read_ptr`, `rx` and `tx` are
-            // `<= MSGQ_NUM_PAGES`, and the test above ensured that `rx > tx`.
-            (after_tx.split_at_mut(rx - tx).0, &mut [])
+            // The area is contiguous and we leave an empty slot before `rx`.
+            // PANIC:
+            // - The index `rx - tx - 1` is non-negative because `rx > tx` in this branch.
+            // - The index does not exceed `after_tx.len()` (which is `MSGQ_NUM_PAGES - tx`)
+            //   because `rx < MSGQ_NUM_PAGES` by the `gsp_read_ptr` invariant.
+            (&mut after_tx[..(rx - tx - 1)], &mut [])
         }
     }
 
