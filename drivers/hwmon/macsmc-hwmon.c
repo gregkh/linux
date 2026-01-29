@@ -228,25 +228,22 @@ static int macsmc_hwmon_write_f32(struct apple_smc *smc, smc_key key, int value)
 {
 	u64 val;
 	u32 fval = 0;
-	int exp = 0, neg;
+	int exp, neg;
 
+	neg = value < 0;
 	val = abs(value);
-	neg = val != value;
 
 	if (val) {
-		int msb = __fls(val) - exp;
+		exp = __fls(val);
 
-		if (msb > 23) {
-			val >>= msb - FLT_MANT_BIAS;
-			exp -= msb - FLT_MANT_BIAS;
-		} else if (msb < 23) {
-			val <<= FLT_MANT_BIAS - msb;
-			exp += msb;
-		}
+		if (exp > 23)
+			val >>= exp - 23;
+		else
+			val <<= 23 - exp;
 
 		fval = FIELD_PREP(FLT_SIGN_MASK, neg) |
 		       FIELD_PREP(FLT_EXP_MASK, exp + FLT_EXP_BIAS) |
-		       FIELD_PREP(FLT_MANT_MASK, val);
+		       FIELD_PREP(FLT_MANT_MASK, val & FLT_MANT_MASK);
 	}
 
 	return apple_smc_write_u32(smc, key, fval);
@@ -663,8 +660,8 @@ static int macsmc_hwmon_populate_sensors(struct macsmc_hwmon *hwmon,
 		if (!hwmon->volt.sensors)
 			return -ENOMEM;
 
-		for_each_child_of_node_with_prefix(hwmon_node, key_node, "volt-") {
-			sensor = &hwmon->temp.sensors[hwmon->temp.count];
+		for_each_child_of_node_with_prefix(hwmon_node, key_node, "voltage-") {
+			sensor = &hwmon->volt.sensors[hwmon->volt.count];
 			if (!macsmc_hwmon_create_sensor(hwmon->dev, hwmon->smc, key_node, sensor)) {
 				sensor->attrs = HWMON_I_INPUT;
 
