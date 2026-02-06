@@ -908,6 +908,9 @@ void amdgpu_dm_hpd_init(struct amdgpu_device *adev)
 
 		const struct dc_link *dc_link = amdgpu_dm_connector->dc_link;
 
+		if (!dc_link)
+			continue;
+
 		/*
 		 * Get a base driver irq reference for hpd ints for the lifetime
 		 * of dm. Note that only hpd interrupt types are registered with
