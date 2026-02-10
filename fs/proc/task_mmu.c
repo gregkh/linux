@@ -581,7 +581,7 @@ static int do_procmap_query(struct proc_maps_private *priv, void __user *uarg)
 		} else {
 			if (karg.build_id_size < build_id_sz) {
 				err = -ENAMETOOLONG;
-				goto out;
+				goto out_file;
 			}
 			karg.build_id_size = build_id_sz;
 		}
@@ -609,6 +609,7 @@ static int do_procmap_query(struct proc_maps_private *priv, void __user *uarg)
 out:
 	query_vma_teardown(mm, vma);
 	mmput(mm);
+out_file:
 	if (vm_file)
 		fput(vm_file);
 	kfree(name_buf);
