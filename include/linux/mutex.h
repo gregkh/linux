@@ -146,7 +146,7 @@ static inline void __mutex_init(struct mutex *lock, const char *name,
 {
 	mutex_rt_init_generic(lock);
 }
-#endif /* !CONFIG_LOCKDEP */
+#endif /* !CONFIG_DEBUG_LOCK_ALLOC */
 #endif /* CONFIG_PREEMPT_RT */
 
 #ifdef CONFIG_DEBUG_MUTEXES
