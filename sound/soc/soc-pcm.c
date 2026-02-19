@@ -458,8 +458,8 @@ int dpcm_dapm_stream_event(struct snd_soc_pcm_runtime *fe, int dir,
 	return 0;
 }
 
-static void soc_pcm_set_dai_params(struct snd_soc_dai *dai,
-				   struct snd_pcm_hw_params *params)
+void soc_pcm_set_dai_params(struct snd_soc_dai *dai,
+			    struct snd_pcm_hw_params *params)
 {
 	if (params) {
 		dai->symmetric_rate	   = params_rate(params);
