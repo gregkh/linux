@@ -389,16 +389,7 @@ static int ad7768_scan_direct(struct iio_dev *indio_dev)
 	struct ad7768_state *st = iio_priv(indio_dev);
 	int readval, ret;
 
-	ret = ad7768_set_mode(st, AD7768_ONE_SHOT);
-	if (ret < 0)
-		return ret;
-
 	reinit_completion(&st->completion);
-
-	/* One-shot mode requires a SYNC pulse to generate a new sample */
-	ret = ad7768_send_sync_pulse(st);
-	if (ret)
-		return ret;
 
 	ret = wait_for_completion_timeout(&st->completion,
 					  msecs_to_jiffies(1000));
@@ -417,14 +408,6 @@ static int ad7768_scan_direct(struct iio_dev *indio_dev)
 	 */
 	if (st->oversampling_ratio == 8)
 		readval >>= 8;
-
-	/*
-	 * Any SPI configuration of the AD7768-1 can only be
-	 * performed in continuous conversion mode.
-	 */
-	ret = ad7768_set_mode(st, AD7768_CONTINUOUS);
-	if (ret < 0)
-		return ret;
 
 	return readval;
 }
@@ -1024,6 +1007,10 @@ static int ad7768_setup(struct iio_dev *indio_dev)
 		if (ret)
 			return ret;
 	}
+
+	ret = ad7768_set_mode(st, AD7768_CONTINUOUS);
+	if (ret)
+		return ret;
 
 	/* For backwards compatibility, try the adi,sync-in-gpios property */
 	st->gpio_sync_in = devm_gpiod_get_optional(&st->spi->dev, "adi,sync-in",
