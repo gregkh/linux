@@ -190,8 +190,10 @@ static int ls_extirq_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, -ENOMEM, "Failed to allocate memory\n");
 
 	priv->intpcr = devm_of_iomap(dev, node, 0, NULL);
-	if (!priv->intpcr)
-		return dev_err_probe(dev, -ENOMEM, "Cannot ioremap OF node %pOF\n", node);
+	if (IS_ERR(priv->intpcr)) {
+		return dev_err_probe(dev, PTR_ERR(priv->intpcr),
+				     "Cannot ioremap OF node %pOF\n", node);
+	}
 
 	ret = ls_extirq_parse_map(priv, node);
 	if (ret)
