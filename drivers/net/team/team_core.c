@@ -1359,7 +1359,7 @@ err_set_mtu:
 
 static void __team_port_change_port_removed(struct team_port *port);
 
-static int team_port_del(struct team *team, struct net_device *port_dev)
+static int team_port_del(struct team *team, struct net_device *port_dev, bool unregister)
 {
 	struct net_device *dev = team->dev;
 	struct team_port *port;
@@ -1397,7 +1397,10 @@ static int team_port_del(struct team *team, struct net_device *port_dev)
 	__team_port_change_port_removed(port);
 
 	team_port_set_orig_dev_addr(port);
-	dev_set_mtu(port_dev, port->orig.mtu);
+	if (unregister)
+		__dev_set_mtu(port_dev, port->orig.mtu);
+	else
+		dev_set_mtu(port_dev, port->orig.mtu);
 	kfree_rcu(port, rcu);
 	netdev_info(dev, "Port device %s removed\n", portname);
 	__team_compute_features(team);
@@ -1702,7 +1705,7 @@ static void team_uninit(struct net_device *dev)
 
 	mutex_lock(&team->lock);
 	list_for_each_entry_safe(port, tmp, &team->port_list, list)
-		team_port_del(team, port->dev);
+		team_port_del(team, port->dev, false);
 
 	__team_change_mode(team, NULL); /* cleanup */
 	__team_options_unregister(team, team_options, ARRAY_SIZE(team_options));
@@ -2019,7 +2022,29 @@ static int team_del_slave(struct net_device *dev, struct net_device *port_dev)
 	int err;
 
 	mutex_lock(&team->lock);
-	err = team_port_del(team, port_dev);
+	err = team_port_del(team, port_dev, false);
+	mutex_unlock(&team->lock);
+
+	if (err)
+		return err;
+
+	if (netif_is_team_master(port_dev)) {
+		lockdep_unregister_key(&team->team_lock_key);
+		lockdep_register_key(&team->team_lock_key);
+		lockdep_set_class(&team->lock, &team->team_lock_key);
+	}
+	netdev_change_features(dev);
+
+	return err;
+}
+
+static int team_del_slave_on_unregister(struct net_device *dev, struct net_device *port_dev)
+{
+	struct team *team = netdev_priv(dev);
+	int err;
+
+	mutex_lock(&team->lock);
+	err = team_port_del(team, port_dev, true);
 	mutex_unlock(&team->lock);
 
 	if (err)
@@ -3124,7 +3149,7 @@ static int team_device_event(struct notifier_block *unused,
 					       !!netif_oper_up(port->dev));
 		break;
 	case NETDEV_UNREGISTER:
-		team_del_slave(port->team->dev, dev);
+		team_del_slave_on_unregister(port->team->dev, dev);
 		break;
 	case NETDEV_FEAT_CHANGE:
 		if (!port->team->notifier_ctx) {
