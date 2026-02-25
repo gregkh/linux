@@ -257,7 +257,8 @@ static inline bool kvm_vcpu_mapped(struct kvm_host_map *map)
 struct kvm_mmio_fragment {
 	gpa_t gpa;
 	void *data;
-	unsigned len;
+	u64 val;
+	unsigned int len;
 };
 
 struct kvm_vcpu {
