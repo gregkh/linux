@@ -2865,6 +2865,10 @@ static long atomisp_vidioc_default(struct file *file, void *fh,
 	bool acc_node;
 	int err;
 
+	/* Disable all private IOCTLs for now! */
+	if (cmd)
+		return -EINVAL;
+
 	acc_node = !strcmp(vdev->name, "ATOMISP ISP ACC");
 	if (acc_node)
 		asd = atomisp_to_acc_pipe(vdev)->asd;
