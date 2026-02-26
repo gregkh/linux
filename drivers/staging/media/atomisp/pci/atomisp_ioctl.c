@@ -2456,6 +2456,10 @@ static long atomisp_vidioc_default(struct file *file, void *fh,
 	struct v4l2_subdev *motor;
 	int err;
 
+	/* Disable all private IOCTLs for now! */
+	if (cmd)
+		return -EINVAL;
+
 	if (!IS_ISP2401)
 		motor = isp->inputs[asd->input_curr].motor;
 	else
