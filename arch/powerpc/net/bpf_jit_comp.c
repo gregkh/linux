@@ -437,7 +437,7 @@ void bpf_jit_free(struct bpf_prog *fp)
 
 bool bpf_jit_supports_kfunc_call(void)
 {
-	return true;
+	return IS_ENABLED(CONFIG_PPC64);
 }
 
 bool bpf_jit_supports_arena(void)
