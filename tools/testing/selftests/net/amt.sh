@@ -73,8 +73,6 @@
 #       +------------------------+
 #==============================================================================
 
-source lib.sh
-
 readonly LISTENER=$(mktemp -u listener-XXXXXXXX)
 readonly GATEWAY=$(mktemp -u gateway-XXXXXXXX)
 readonly RELAY=$(mktemp -u relay-XXXXXXXX)
@@ -242,15 +240,14 @@ test_ipv6_forward()
 
 send_mcast4()
 {
-	sleep 5
-	wait_local_port_listen ${LISTENER} 4000 udp
+	sleep 2
 	ip netns exec "${SOURCE}" bash -c \
 		'printf "%s %128s" 172.17.0.2 | nc -w 1 -u 239.0.0.1 4000' &
 }
 
 send_mcast6()
 {
-	wait_local_port_listen ${LISTENER} 6000 udp
+	sleep 2
 	ip netns exec "${SOURCE}" bash -c \
 		'printf "%s %128s" 2001:db8:3::2 | nc -w 1 -u ff0e::5:6 6000' &
 }
