@@ -1473,6 +1473,9 @@ static const u32 msrs_to_save_base[] = {
 	MSR_IA32_UMWAIT_CONTROL,
 
 	MSR_IA32_XFD, MSR_IA32_XFD_ERR,
+	MSR_IA32_DEBUGCTLMSR,
+	MSR_IA32_LASTBRANCHFROMIP, MSR_IA32_LASTBRANCHTOIP,
+	MSR_IA32_LASTINTFROMIP, MSR_IA32_LASTINTTOIP,
 };
 
 static const u32 msrs_to_save_pmu[] = {
@@ -1913,6 +1916,16 @@ static int kvm_set_msr_ignored_check(struct kvm_vcpu *vcpu,
 				     u32 index, u64 data, bool host_initiated)
 {
 	int ret = __kvm_set_msr(vcpu, index, data, host_initiated);
+
+	if (ret == KVM_MSR_RET_UNSUPPORTED && host_initiated && !data) {
+		switch (index) {
+		case MSR_IA32_LASTBRANCHFROMIP:
+		case MSR_IA32_LASTBRANCHTOIP:
+		case MSR_IA32_LASTINTFROMIP:
+		case MSR_IA32_LASTINTTOIP:
+			return 0;
+		}
+	}
 
 	if (ret == KVM_MSR_RET_UNSUPPORTED)
 		if (kvm_msr_ignored_check(index, data, true))
