@@ -4,9 +4,20 @@
  */
 
 #include <linux/i2c.h>
+#include <linux/bitops.h>
 #include <linux/module.h>
+#include <linux/property.h>
 #include <linux/of_device.h>
 #include "pmbus.h"
+
+#define MPM82504_READ_TEMPERATURE_1_SIGN_POS	9
+
+enum chips { mpm82504, mpq8785 };
+
+static u16 voltage_scale_loop_max_val[] = {
+	[mpm82504] = GENMASK(9, 0),
+	[mpq8785] = GENMASK(10, 0),
+};
 
 static int mpq8785_identify(struct i2c_client *client,
 			    struct pmbus_driver_info *info)
@@ -34,6 +45,47 @@ static int mpq8785_identify(struct i2c_client *client,
 	return 0;
 };
 
+static int mpq8785_read_byte_data(struct i2c_client *client, int page, int reg)
+{
+	int ret;
+
+	switch (reg) {
+	case PMBUS_VOUT_MODE:
+		ret = pmbus_read_byte_data(client, page, reg);
+		if (ret < 0)
+			return ret;
+
+		if ((ret >> 5) == 1) {
+			/*
+			 * The MPQ8785 chip reports VOUT_MODE as VID mode, but the driver
+			 * treats VID as direct mode. Without this, identification would fail
+			 * due to mode mismatch.
+			 * This override ensures the reported mode matches the driver
+			 * configuration, allowing successful initialization.
+			 */
+			return PB_VOUT_MODE_DIRECT;
+		}
+
+		return ret;
+	default:
+		return -ENODATA;
+	}
+}
+
+static int mpm82504_read_word_data(struct i2c_client *client, int page,
+				   int phase, int reg)
+{
+	int ret;
+
+	ret = pmbus_read_word_data(client, page, phase, reg);
+
+	if (ret < 0 || reg != PMBUS_READ_TEMPERATURE_1)
+		return ret;
+
+	/* Fix PMBUS_READ_TEMPERATURE_1 signedness */
+	return sign_extend32(ret, MPM82504_READ_TEMPERATURE_1_SIGN_POS) & 0xffff;
+}
+
 static struct pmbus_driver_info mpq8785_info = {
 	.pages = 1,
 	.format[PSC_VOLTAGE_IN] = direct,
@@ -53,25 +105,68 @@ static struct pmbus_driver_info mpq8785_info = {
 		PMBUS_HAVE_VOUT | PMBUS_HAVE_STATUS_VOUT |
 		PMBUS_HAVE_IOUT | PMBUS_HAVE_STATUS_IOUT |
 		PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP,
-	.identify = mpq8785_identify,
-};
-
-static int mpq8785_probe(struct i2c_client *client)
-{
-	return pmbus_do_probe(client, &mpq8785_info);
 };
 
 static const struct i2c_device_id mpq8785_id[] = {
-	{ "mpq8785" },
+	{ "mpm82504", mpm82504 },
+	{ "mpq8785", mpq8785 },
 	{ },
 };
 MODULE_DEVICE_TABLE(i2c, mpq8785_id);
 
 static const struct of_device_id __maybe_unused mpq8785_of_match[] = {
-	{ .compatible = "mps,mpq8785" },
+	{ .compatible = "mps,mpm82504", .data = (void *)mpm82504 },
+	{ .compatible = "mps,mpq8785", .data = (void *)mpq8785 },
 	{}
 };
 MODULE_DEVICE_TABLE(of, mpq8785_of_match);
+
+static int mpq8785_probe(struct i2c_client *client)
+{
+	struct device *dev = &client->dev;
+	struct pmbus_driver_info *info;
+	enum chips chip_id;
+	u32 voltage_scale;
+	int ret;
+
+	info = devm_kmemdup(dev, &mpq8785_info, sizeof(*info), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+
+	if (dev->of_node)
+		chip_id = (kernel_ulong_t)of_device_get_match_data(dev);
+	else
+		chip_id = (kernel_ulong_t)i2c_get_match_data(client);
+
+	switch (chip_id) {
+	case mpm82504:
+		info->format[PSC_VOLTAGE_OUT] = direct;
+		info->m[PSC_VOLTAGE_OUT] = 8;
+		info->b[PSC_VOLTAGE_OUT] = 0;
+		info->R[PSC_VOLTAGE_OUT] = 2;
+		info->read_word_data = mpm82504_read_word_data;
+		break;
+	case mpq8785:
+		info->identify = mpq8785_identify;
+		info->read_byte_data = mpq8785_read_byte_data;
+		break;
+	default:
+		return -ENODEV;
+	}
+
+	if (!device_property_read_u32(dev, "mps,vout-fb-divider-ratio-permille",
+				      &voltage_scale)) {
+		if (voltage_scale > voltage_scale_loop_max_val[chip_id])
+			return -EINVAL;
+
+		ret = i2c_smbus_write_word_data(client, PMBUS_VOUT_SCALE_LOOP,
+						voltage_scale);
+		if (ret)
+			return ret;
+	}
+
+	return pmbus_do_probe(client, info);
+};
 
 static struct i2c_driver mpq8785_driver = {
 	.driver = {

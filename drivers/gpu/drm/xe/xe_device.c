@@ -783,6 +783,7 @@ err:
 static void xe_device_remove_display(struct xe_device *xe)
 {
 	xe_display_unregister(xe);
+	drm_dev_unregister(&xe->drm);
 
 	drm_dev_unplug(&xe->drm);
 	xe_display_driver_remove(xe);

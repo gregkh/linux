@@ -1164,9 +1164,12 @@ static void tx_ft_put_policy(struct mlx5e_ipsec *ipsec, u32 prio, int type)
 	mutex_unlock(&tx->ft.mutex);
 }
 
-static void setup_fte_addr4(struct mlx5_flow_spec *spec, __be32 *saddr,
-			    __be32 *daddr)
+static void setup_fte_addr4(struct mlx5_flow_spec *spec,
+			    struct mlx5e_ipsec_addr *addrs)
 {
+	__be32 *saddr = &addrs->saddr.a4;
+	__be32 *daddr = &addrs->daddr.a4;
+
 	if (!*saddr && !*daddr)
 		return;
 
@@ -1190,9 +1193,12 @@ static void setup_fte_addr4(struct mlx5_flow_spec *spec, __be32 *saddr,
 	}
 }
 
-static void setup_fte_addr6(struct mlx5_flow_spec *spec, __be32 *saddr,
-			    __be32 *daddr)
+static void setup_fte_addr6(struct mlx5_flow_spec *spec,
+			    struct mlx5e_ipsec_addr *addrs)
 {
+	__be32 *saddr = addrs->saddr.a6;
+	__be32 *daddr = addrs->daddr.a6;
+
 	if (addr6_all_zero(saddr) && addr6_all_zero(daddr))
 		return;
 
@@ -1401,7 +1407,7 @@ setup_pkt_tunnel_reformat(struct mlx5_core_dev *mdev,
 	if (attrs->dir == XFRM_DEV_OFFLOAD_OUT) {
 		bfflen += sizeof(*esp_hdr) + 8;
 
-		switch (attrs->family) {
+		switch (attrs->addrs.family) {
 		case AF_INET:
 			bfflen += sizeof(*iphdr);
 			break;
@@ -1418,7 +1424,7 @@ setup_pkt_tunnel_reformat(struct mlx5_core_dev *mdev,
 		return -ENOMEM;
 
 	eth_hdr = (struct ethhdr *)reformatbf;
-	switch (attrs->family) {
+	switch (attrs->addrs.family) {
 	case AF_INET:
 		eth_hdr->h_proto = htons(ETH_P_IP);
 		break;
@@ -1441,11 +1447,11 @@ setup_pkt_tunnel_reformat(struct mlx5_core_dev *mdev,
 		reformat_params->param_0 = attrs->authsize;
 
 		hdr = reformatbf + sizeof(*eth_hdr);
-		switch (attrs->family) {
+		switch (attrs->addrs.family) {
 		case AF_INET:
 			iphdr = (struct iphdr *)hdr;
-			memcpy(&iphdr->saddr, &attrs->saddr.a4, 4);
-			memcpy(&iphdr->daddr, &attrs->daddr.a4, 4);
+			memcpy(&iphdr->saddr, &attrs->addrs.saddr.a4, 4);
+			memcpy(&iphdr->daddr, &attrs->addrs.daddr.a4, 4);
 			iphdr->version = 4;
 			iphdr->ihl = 5;
 			iphdr->ttl = IPSEC_TUNNEL_DEFAULT_TTL;
@@ -1454,8 +1460,8 @@ setup_pkt_tunnel_reformat(struct mlx5_core_dev *mdev,
 			break;
 		case AF_INET6:
 			ipv6hdr = (struct ipv6hdr *)hdr;
-			memcpy(&ipv6hdr->saddr, &attrs->saddr.a6, 16);
-			memcpy(&ipv6hdr->daddr, &attrs->daddr.a6, 16);
+			memcpy(&ipv6hdr->saddr, &attrs->addrs.saddr.a6, 16);
+			memcpy(&ipv6hdr->daddr, &attrs->addrs.daddr.a6, 16);
 			ipv6hdr->nexthdr = IPPROTO_ESP;
 			ipv6hdr->version = 6;
 			ipv6hdr->hop_limit = IPSEC_TUNNEL_DEFAULT_TTL;
@@ -1489,7 +1495,7 @@ static int get_reformat_type(struct mlx5_accel_esp_xfrm_attrs *attrs)
 			return MLX5_REFORMAT_TYPE_DEL_ESP_TRANSPORT_OVER_UDP;
 		return MLX5_REFORMAT_TYPE_DEL_ESP_TRANSPORT;
 	case XFRM_DEV_OFFLOAD_OUT:
-		if (attrs->family == AF_INET) {
+		if (attrs->addrs.family == AF_INET) {
 			if (attrs->encap)
 				return MLX5_REFORMAT_TYPE_ADD_ESP_TRANSPORT_OVER_UDPV4;
 			return MLX5_REFORMAT_TYPE_ADD_ESP_TRANSPORT_OVER_IPV4;
@@ -1603,7 +1609,7 @@ static int rx_add_rule(struct mlx5e_ipsec_sa_entry *sa_entry)
 	struct mlx5_fc *counter;
 	int err = 0;
 
-	rx = rx_ft_get(mdev, ipsec, attrs->family, attrs->type);
+	rx = rx_ft_get(mdev, ipsec, attrs->addrs.family, attrs->type);
 	if (IS_ERR(rx))
 		return PTR_ERR(rx);
 
@@ -1613,10 +1619,10 @@ static int rx_add_rule(struct mlx5e_ipsec_sa_entry *sa_entry)
 		goto err_alloc;
 	}
 
-	if (attrs->family == AF_INET)
-		setup_fte_addr4(spec, &attrs->saddr.a4, &attrs->daddr.a4);
+	if (attrs->addrs.family == AF_INET)
+		setup_fte_addr4(spec, &attrs->addrs);
 	else
-		setup_fte_addr6(spec, attrs->saddr.a6, attrs->daddr.a6);
+		setup_fte_addr6(spec, &attrs->addrs);
 
 	setup_fte_spi(spec, attrs->spi, attrs->encap);
 	if (!attrs->encap)
@@ -1705,7 +1711,7 @@ err_pkt_reformat:
 err_mod_header:
 	kvfree(spec);
 err_alloc:
-	rx_ft_put(ipsec, attrs->family, attrs->type);
+	rx_ft_put(ipsec, attrs->addrs.family, attrs->type);
 	return err;
 }
 
@@ -1737,10 +1743,10 @@ static int tx_add_rule(struct mlx5e_ipsec_sa_entry *sa_entry)
 
 	switch (attrs->type) {
 	case XFRM_DEV_OFFLOAD_CRYPTO:
-		if (attrs->family == AF_INET)
-			setup_fte_addr4(spec, &attrs->saddr.a4, &attrs->daddr.a4);
+		if (attrs->addrs.family == AF_INET)
+			setup_fte_addr4(spec, &attrs->addrs);
 		else
-			setup_fte_addr6(spec, attrs->saddr.a6, attrs->daddr.a6);
+			setup_fte_addr6(spec, &attrs->addrs);
 		setup_fte_spi(spec, attrs->spi, false);
 		setup_fte_esp(spec);
 		setup_fte_reg_a(spec);
@@ -1824,10 +1830,10 @@ static int tx_add_policy(struct mlx5e_ipsec_pol_entry *pol_entry)
 	}
 
 	tx = ipsec_tx(ipsec, attrs->type);
-	if (attrs->family == AF_INET)
-		setup_fte_addr4(spec, &attrs->saddr.a4, &attrs->daddr.a4);
+	if (attrs->addrs.family == AF_INET)
+		setup_fte_addr4(spec, &attrs->addrs);
 	else
-		setup_fte_addr6(spec, attrs->saddr.a6, attrs->daddr.a6);
+		setup_fte_addr6(spec, &attrs->addrs);
 
 	setup_fte_no_frags(spec);
 	setup_fte_upper_proto_match(spec, &attrs->upspec);
@@ -1897,12 +1903,12 @@ static int rx_add_policy(struct mlx5e_ipsec_pol_entry *pol_entry)
 	struct mlx5e_ipsec_rx *rx;
 	int err, dstn = 0;
 
-	ft = rx_ft_get_policy(mdev, pol_entry->ipsec, attrs->family, attrs->prio,
-			      attrs->type);
+	ft = rx_ft_get_policy(mdev, pol_entry->ipsec, attrs->addrs.family,
+			      attrs->prio, attrs->type);
 	if (IS_ERR(ft))
 		return PTR_ERR(ft);
 
-	rx = ipsec_rx(pol_entry->ipsec, attrs->family, attrs->type);
+	rx = ipsec_rx(pol_entry->ipsec, attrs->addrs.family, attrs->type);
 
 	spec = kvzalloc(sizeof(*spec), GFP_KERNEL);
 	if (!spec) {
@@ -1910,10 +1916,10 @@ static int rx_add_policy(struct mlx5e_ipsec_pol_entry *pol_entry)
 		goto err_alloc;
 	}
 
-	if (attrs->family == AF_INET)
-		setup_fte_addr4(spec, &attrs->saddr.a4, &attrs->daddr.a4);
+	if (attrs->addrs.family == AF_INET)
+		setup_fte_addr4(spec, &attrs->addrs);
 	else
-		setup_fte_addr6(spec, attrs->saddr.a6, attrs->daddr.a6);
+		setup_fte_addr6(spec, &attrs->addrs);
 
 	setup_fte_no_frags(spec);
 	setup_fte_upper_proto_match(spec, &attrs->upspec);
@@ -1954,7 +1960,8 @@ static int rx_add_policy(struct mlx5e_ipsec_pol_entry *pol_entry)
 err_action:
 	kvfree(spec);
 err_alloc:
-	rx_ft_put_policy(pol_entry->ipsec, attrs->family, attrs->prio, attrs->type);
+	rx_ft_put_policy(pol_entry->ipsec, attrs->addrs.family, attrs->prio,
+			 attrs->type);
 	return err;
 }
 
@@ -2214,7 +2221,8 @@ void mlx5e_accel_ipsec_fs_del_rule(struct mlx5e_ipsec_sa_entry *sa_entry)
 		mlx5_fc_destroy(mdev, ipsec_rule->replay.fc);
 	}
 	mlx5_esw_ipsec_rx_id_mapping_remove(sa_entry);
-	rx_ft_put(sa_entry->ipsec, sa_entry->attrs.family, sa_entry->attrs.type);
+	rx_ft_put(sa_entry->ipsec, sa_entry->attrs.addrs.family,
+		  sa_entry->attrs.type);
 }
 
 int mlx5e_accel_ipsec_fs_add_pol(struct mlx5e_ipsec_pol_entry *pol_entry)
@@ -2250,7 +2258,8 @@ void mlx5e_accel_ipsec_fs_del_pol(struct mlx5e_ipsec_pol_entry *pol_entry)
 	mlx5e_ipsec_unblock_tc_offload(pol_entry->ipsec->mdev);
 
 	if (pol_entry->attrs.dir == XFRM_DEV_OFFLOAD_IN) {
-		rx_ft_put_policy(pol_entry->ipsec, pol_entry->attrs.family,
+		rx_ft_put_policy(pol_entry->ipsec,
+				 pol_entry->attrs.addrs.family,
 				 pol_entry->attrs.prio, pol_entry->attrs.type);
 		return;
 	}
@@ -2390,7 +2399,7 @@ bool mlx5e_ipsec_fs_tunnel_enabled(struct mlx5e_ipsec_sa_entry *sa_entry)
 	struct mlx5e_ipsec_rx *rx;
 	struct mlx5e_ipsec_tx *tx;
 
-	rx = ipsec_rx(sa_entry->ipsec, attrs->family, attrs->type);
+	rx = ipsec_rx(sa_entry->ipsec, attrs->addrs.family, attrs->type);
 	tx = ipsec_tx(sa_entry->ipsec, attrs->type);
 	if (sa_entry->attrs.dir == XFRM_DEV_OFFLOAD_OUT)
 		return tx->allow_tunnel_mode;

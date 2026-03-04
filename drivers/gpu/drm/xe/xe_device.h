@@ -9,6 +9,7 @@
 #include <drm/drm_util.h>
 
 #include "xe_device_types.h"
+#include "xe_gt_types.h"
 
 static inline struct xe_device *to_xe_device(const struct drm_device *dev)
 {
@@ -138,7 +139,7 @@ static inline bool xe_device_uc_enabled(struct xe_device *xe)
 
 static inline struct xe_force_wake *gt_to_fw(struct xe_gt *gt)
 {
-	return &gt->mmio.fw;
+	return &gt->pm.fw;
 }
 
 void xe_device_assert_mem_access(struct xe_device *xe);

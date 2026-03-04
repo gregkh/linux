@@ -371,6 +371,8 @@ void dcn401_init_hw(struct dc *dc)
 			for (i = 0; i < dc->link_count; i++) {
 				struct dc_link *link = dc->links[i];
 
+				if (link->ep_type != DISPLAY_ENDPOINT_PHY)
+					continue;
 				if (link->link_enc->funcs->is_dig_enabled &&
 						link->link_enc->funcs->is_dig_enabled(link->link_enc) &&
 						hws->funcs.power_down) {
@@ -965,10 +967,10 @@ static void dcn401_enable_stream_calc(
 			pipe_ctx->stream->link->cur_link_settings.lane_count;
 	uint32_t active_total_with_borders;
 
-	if (dc->link_srv->dp_is_128b_132b_signal(pipe_ctx))
+	if (dc->link_srv->dp_is_128b_132b_signal(pipe_ctx)) {
 		*dp_hpo_inst = pipe_ctx->stream_res.hpo_dp_stream_enc->inst;
-
-	*phyd32clk = get_phyd32clk_src(pipe_ctx->stream->link);
+		*phyd32clk = get_phyd32clk_src(pipe_ctx->stream->link);
+	}
 
 	if (dc_is_tmds_signal(pipe_ctx->stream->signal))
 		dcn401_calculate_dccg_tmds_div_value(pipe_ctx, tmds_div);

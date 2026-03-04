@@ -2151,6 +2151,7 @@ static void push_rt_tasks(struct rq *rq)
  */
 static int rto_next_cpu(struct root_domain *rd)
 {
+	int this_cpu = smp_processor_id();
 	int next;
 	int cpu;
 
@@ -2173,6 +2174,10 @@ static int rto_next_cpu(struct root_domain *rd)
 		cpu = cpumask_next(rd->rto_cpu, rd->rto_mask);
 
 		rd->rto_cpu = cpu;
+
+		/* Do not send IPI to self */
+		if (cpu == this_cpu)
+			continue;
 
 		if (cpu < nr_cpu_ids)
 			return cpu;
