@@ -2019,6 +2019,9 @@ int f2fs_gc_range(struct f2fs_sb_info *sbi,
 		if (!get_valid_blocks(sbi, segno, true))
 			continue;
 
+		if (IS_CURSEC(sbi, GET_SEC_FROM_SEG(sbi, segno)))
+			continue;
+
 		do_garbage_collect(sbi, segno, &gc_list, FG_GC,
 						dry_run_sections == 0);
 		put_gc_inode(&gc_list);
