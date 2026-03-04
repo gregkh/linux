@@ -591,6 +591,21 @@ zl3073x_dev_state_fetch(struct zl3073x_dev *zldev)
 	return rc;
 }
 
+static void
+zl3073x_dev_ref_status_update(struct zl3073x_dev *zldev)
+{
+	int i, rc;
+
+	for (i = 0; i < ZL3073X_NUM_REFS; i++) {
+		rc = zl3073x_read_u8(zldev, ZL_REG_REF_MON_STATUS(i),
+				     &zldev->ref[i].mon_status);
+		if (rc)
+			dev_warn(zldev->dev,
+				 "Failed to get REF%u status: %pe\n", i,
+				 ERR_PTR(rc));
+	}
+}
+
 /**
  * zl3073x_ref_phase_offsets_update - update reference phase offsets
  * @zldev: pointer to zl3073x_dev structure
@@ -709,6 +724,9 @@ zl3073x_dev_periodic_work(struct kthread_work *work)
 						 work.work);
 	struct zl3073x_dpll *zldpll;
 	int rc;
+
+	/* Update input references status */
+	zl3073x_dev_ref_status_update(zldev);
 
 	/* Update DPLL-to-connected-ref phase offsets registers */
 	rc = zl3073x_ref_phase_offsets_update(zldev, -1);
@@ -960,11 +978,7 @@ zl3073x_devm_dpll_init(struct zl3073x_dev *zldev, u8 num_dplls)
 	}
 
 	/* Add devres action to release DPLL related resources */
-	rc = devm_add_action_or_reset(zldev->dev, zl3073x_dev_dpll_fini, zldev);
-	if (rc)
-		goto error;
-
-	return 0;
+	return devm_add_action_or_reset(zldev->dev, zl3073x_dev_dpll_fini, zldev);
 
 error:
 	zl3073x_dev_dpll_fini(zldev);
@@ -1005,6 +1019,7 @@ int zl3073x_dev_probe(struct zl3073x_dev *zldev,
 				     "Unknown or non-match chip ID: 0x%0x\n",
 				     id);
 	}
+	zldev->chip_id = id;
 
 	/* Read revision, firmware version and custom config version */
 	rc = zl3073x_read_u16(zldev, ZL_REG_REVISION, &revision);
