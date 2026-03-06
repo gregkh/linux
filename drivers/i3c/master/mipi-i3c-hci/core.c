@@ -631,6 +631,8 @@ static int i3c_hci_init(struct i3c_hci *hci)
 	if (ret)
 		return ret;
 
+	spin_lock_init(&hci->lock);
+
 	/*
 	 * Now let's reset the hardware.
 	 * SOFT_RST must be clear before we write to it.
