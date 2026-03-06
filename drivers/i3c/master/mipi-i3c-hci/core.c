@@ -632,6 +632,7 @@ static int i3c_hci_init(struct i3c_hci *hci)
 		return ret;
 
 	spin_lock_init(&hci->lock);
+	mutex_init(&hci->control_mutex);
 
 	/*
 	 * Now let's reset the hardware.
