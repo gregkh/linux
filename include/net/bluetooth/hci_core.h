@@ -29,6 +29,8 @@
 #include <linux/leds.h>
 #include <linux/rculist.h>
 #include <linux/spinlock.h>
+#include <linux/srcu.h>
+
 #include <net/bluetooth/hci.h>
 #include <net/bluetooth/hci_sync.h>
 #include <net/bluetooth/hci_sock.h>
@@ -347,6 +349,7 @@ struct amp_assoc {
 
 struct hci_dev {
 	struct list_head list;
+	struct srcu_struct srcu;
 	struct mutex	lock;
 
 	const char	*name;
