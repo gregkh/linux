@@ -776,9 +776,6 @@ void mana_hwc_destroy_channel(struct gdma_context *gc)
 		gc->max_num_cqs = 0;
 	}
 
-	kfree(hwc->caller_ctx);
-	hwc->caller_ctx = NULL;
-
 	if (hwc->txq)
 		mana_hwc_destroy_wq(hwc, hwc->txq);
 
@@ -787,6 +784,9 @@ void mana_hwc_destroy_channel(struct gdma_context *gc)
 
 	if (hwc->cq)
 		mana_hwc_destroy_cq(hwc->gdma_dev->gdma_context, hwc->cq);
+
+	kfree(hwc->caller_ctx);
+	hwc->caller_ctx = NULL;
 
 	mana_gd_free_res_map(&hwc->inflight_msg_res);
 
