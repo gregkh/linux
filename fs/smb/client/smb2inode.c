@@ -21,7 +21,6 @@
 #include "cifs_unicode.h"
 #include "fscache.h"
 #include "smb2glob.h"
-#include "smb2pdu.h"
 #include "smb2proto.h"
 #include "cached_dir.h"
 #include "../common/smb2status.h"
@@ -31,16 +30,20 @@ static struct reparse_data_buffer *reparse_buf_ptr(struct kvec *iov)
 	struct reparse_data_buffer *buf;
 	struct smb2_ioctl_rsp *io = iov->iov_base;
 	u32 off, count, len;
+	u16 rdlen;
 
 	count = le32_to_cpu(io->OutputCount);
 	off = le32_to_cpu(io->OutputOffset);
 	if (check_add_overflow(off, count, &len) || len > iov->iov_len)
-		return ERR_PTR(-EIO);
+		return ERR_PTR(smb_EIO2(smb_eio_trace_reparse_overlong,
+					off, count));
 
 	buf = (struct reparse_data_buffer *)((u8 *)io + off);
 	len = sizeof(*buf);
-	if (count < len || count < le16_to_cpu(buf->ReparseDataLength) + len)
-		return ERR_PTR(-EIO);
+	rdlen = le16_to_cpu(buf->ReparseDataLength);
+
+	if (count < len || count < rdlen + len)
+		return ERR_PTR(smb_EIO2(smb_eio_trace_reparse_rdlen, count, rdlen));
 	return buf;
 }
 
@@ -50,7 +53,7 @@ static inline __u32 file_create_options(struct dentry *dentry)
 
 	if (dentry) {
 		ci = CIFS_I(d_inode(dentry));
-		if (ci->cifsAttrs & ATTR_REPARSE)
+		if (ci->cifsAttrs & ATTR_REPARSE_POINT)
 			return OPEN_REPARSE_POINT;
 	}
 	return 0;
@@ -322,7 +325,7 @@ replay_again:
 							  cfile->fid.volatile_fid,
 							  SMB_FIND_FILE_POSIX_INFO,
 							  SMB2_O_INFO_FILE, 0,
-							  sizeof(struct smb311_posix_qinfo *) +
+							  sizeof(struct smb311_posix_qinfo) +
 							  (PATH_MAX * 2) +
 							  (sizeof(struct smb_sid) * 2), 0, NULL);
 			} else {
@@ -332,7 +335,7 @@ replay_again:
 							  COMPOUND_FID,
 							  SMB_FIND_FILE_POSIX_INFO,
 							  SMB2_O_INFO_FILE, 0,
-							  sizeof(struct smb311_posix_qinfo *) +
+							  sizeof(struct smb311_posix_qinfo) +
 							  (PATH_MAX * 2) +
 							  (sizeof(struct smb_sid) * 2), 0, NULL);
 			}
@@ -1205,6 +1208,7 @@ again:
 	memset(resp_buftype, 0, sizeof(resp_buftype));
 	memset(rsp_iov, 0, sizeof(rsp_iov));
 
+	memset(open_iov, 0, sizeof(open_iov));
 	rqst[0].rq_iov = open_iov;
 	rqst[0].rq_nvec = ARRAY_SIZE(open_iov);
 
@@ -1229,14 +1233,15 @@ again:
 	creq = rqst[0].rq_iov[0].iov_base;
 	creq->ShareAccess = FILE_SHARE_DELETE_LE;
 
+	memset(&close_iov, 0, sizeof(close_iov));
 	rqst[1].rq_iov = &close_iov;
 	rqst[1].rq_nvec = 1;
 
 	rc = SMB2_close_init(tcon, server, &rqst[1],
 			     COMPOUND_FID, COMPOUND_FID, false);
-	smb2_set_related(&rqst[1]);
 	if (rc)
 		goto err_free;
+	smb2_set_related(&rqst[1]);
 
 	if (retries) {
 		for (int i = 0; i < ARRAY_SIZE(rqst);  i++)
@@ -1635,7 +1640,7 @@ int smb2_rename_pending_delete(const char *full_path,
 	} else {
 		cifs_tcon_dbg(FYI, "%s: failed to rename '%s' to '%s': %d\n",
 			      __func__, full_path, to_name, rc);
-		rc = -EIO;
+		rc = smb_EIO1(smb_eio_trace_pend_del_fail, rc);
 	}
 out:
 	cifs_put_tlink(tlink);

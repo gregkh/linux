@@ -564,10 +564,28 @@ int mlx5_rescan_drivers_locked(struct mlx5_core_dev *dev)
 
 bool mlx5_same_hw_devs(struct mlx5_core_dev *dev, struct mlx5_core_dev *peer_dev)
 {
-	u64 fsystem_guid, psystem_guid;
+	u8 fsystem_guid[MLX5_SW_IMAGE_GUID_MAX_BYTES];
+	u8 psystem_guid[MLX5_SW_IMAGE_GUID_MAX_BYTES];
+	u8 flen;
+	u8 plen;
 
-	fsystem_guid = mlx5_query_nic_system_image_guid(dev);
-	psystem_guid = mlx5_query_nic_system_image_guid(peer_dev);
+	mlx5_query_nic_sw_system_image_guid(dev, fsystem_guid, &flen);
+	mlx5_query_nic_sw_system_image_guid(peer_dev, psystem_guid, &plen);
 
-	return (fsystem_guid && psystem_guid && fsystem_guid == psystem_guid);
+	return plen && flen && flen == plen &&
+		!memcmp(fsystem_guid, psystem_guid, flen);
+}
+
+void mlx5_core_reps_aux_devs_remove(struct mlx5_core_dev *dev)
+{
+	struct mlx5_priv *priv = &dev->priv;
+
+	if (priv->adev[MLX5_INTERFACE_PROTOCOL_ETH])
+		device_lock_assert(&priv->adev[MLX5_INTERFACE_PROTOCOL_ETH]->adev.dev);
+	else
+		mlx5_core_err(dev, "ETH driver already removed\n");
+	if (priv->adev[MLX5_INTERFACE_PROTOCOL_IB_REP])
+		del_adev(&priv->adev[MLX5_INTERFACE_PROTOCOL_IB_REP]->adev);
+	if (priv->adev[MLX5_INTERFACE_PROTOCOL_ETH_REP])
+		del_adev(&priv->adev[MLX5_INTERFACE_PROTOCOL_ETH_REP]->adev);
 }

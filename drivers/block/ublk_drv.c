@@ -204,7 +204,7 @@ struct ublk_queue {
 	bool fail_io; /* copy of dev->state == UBLK_S_DEV_FAIL_IO */
 	spinlock_t		cancel_lock;
 	struct ublk_device *dev;
-	struct ublk_io ios[];
+	struct ublk_io ios[] __counted_by(q_depth);
 };
 
 struct ublk_device {
@@ -266,7 +266,7 @@ static inline bool ublk_dev_is_zoned(const struct ublk_device *ub)
 	return ub->dev_info.flags & UBLK_F_ZONED;
 }
 
-static inline bool ublk_queue_is_zoned(struct ublk_queue *ubq)
+static inline bool ublk_queue_is_zoned(const struct ublk_queue *ubq)
 {
 	return ubq->flags & UBLK_F_ZONED;
 }
@@ -369,7 +369,7 @@ static void *ublk_alloc_report_buffer(struct ublk_device *ublk,
 }
 
 static int ublk_report_zones(struct gendisk *disk, sector_t sector,
-		      unsigned int nr_zones, report_zones_cb cb, void *data)
+		      unsigned int nr_zones, struct blk_report_zones_args *args)
 {
 	struct ublk_device *ub = disk->private_data;
 	unsigned int zone_size_sectors = disk->queue->limits.chunk_sectors;
@@ -432,7 +432,7 @@ free_req:
 			if (!zone->len)
 				break;
 
-			ret = cb(zone, i, data);
+			ret = disk_report_zone(disk, zone, i, args);
 			if (ret)
 				goto out;
 
@@ -915,73 +915,6 @@ static const struct block_device_operations ub_fops = {
 	.report_zones =	ublk_report_zones,
 };
 
-#define UBLK_MAX_PIN_PAGES	32
-
-struct ublk_io_iter {
-	struct page *pages[UBLK_MAX_PIN_PAGES];
-	struct bio *bio;
-	struct bvec_iter iter;
-};
-
-/* return how many pages are copied */
-static void ublk_copy_io_pages(struct ublk_io_iter *data,
-		size_t total, size_t pg_off, int dir)
-{
-	unsigned done = 0;
-	unsigned pg_idx = 0;
-
-	while (done < total) {
-		struct bio_vec bv = bio_iter_iovec(data->bio, data->iter);
-		unsigned int bytes = min3(bv.bv_len, (unsigned)total - done,
-				(unsigned)(PAGE_SIZE - pg_off));
-		void *bv_buf = bvec_kmap_local(&bv);
-		void *pg_buf = kmap_local_page(data->pages[pg_idx]);
-
-		if (dir == ITER_DEST)
-			memcpy(pg_buf + pg_off, bv_buf, bytes);
-		else
-			memcpy(bv_buf, pg_buf + pg_off, bytes);
-
-		kunmap_local(pg_buf);
-		kunmap_local(bv_buf);
-
-		/* advance page array */
-		pg_off += bytes;
-		if (pg_off == PAGE_SIZE) {
-			pg_idx += 1;
-			pg_off = 0;
-		}
-
-		done += bytes;
-
-		/* advance bio */
-		bio_advance_iter_single(data->bio, &data->iter, bytes);
-		if (!data->iter.bi_size) {
-			data->bio = data->bio->bi_next;
-			if (data->bio == NULL)
-				break;
-			data->iter = data->bio->bi_iter;
-		}
-	}
-}
-
-static bool ublk_advance_io_iter(const struct request *req,
-		struct ublk_io_iter *iter, unsigned int offset)
-{
-	struct bio *bio = req->bio;
-
-	for_each_bio(bio) {
-		if (bio->bi_iter.bi_size > offset) {
-			iter->bio = bio;
-			iter->iter = bio->bi_iter;
-			bio_advance_iter(iter->bio, &iter->iter, offset);
-			return true;
-		}
-		offset -= bio->bi_iter.bi_size;
-	}
-	return false;
-}
-
 /*
  * Copy data between request pages and io_iter, and 'offset'
  * is the start point of linear offset of request.
@@ -989,34 +922,35 @@ static bool ublk_advance_io_iter(const struct request *req,
 static size_t ublk_copy_user_pages(const struct request *req,
 		unsigned offset, struct iov_iter *uiter, int dir)
 {
-	struct ublk_io_iter iter;
+	struct req_iterator iter;
+	struct bio_vec bv;
 	size_t done = 0;
 
-	if (!ublk_advance_io_iter(req, &iter, offset))
-		return 0;
+	rq_for_each_segment(bv, req, iter) {
+		unsigned len;
+		void *bv_buf;
+		size_t copied;
 
-	while (iov_iter_count(uiter) && iter.bio) {
-		unsigned nr_pages;
-		ssize_t len;
-		size_t off;
-		int i;
-
-		len = iov_iter_get_pages2(uiter, iter.pages,
-				iov_iter_count(uiter),
-				UBLK_MAX_PIN_PAGES, &off);
-		if (len <= 0)
-			return done;
-
-		ublk_copy_io_pages(&iter, len, off, dir);
-		nr_pages = DIV_ROUND_UP(len + off, PAGE_SIZE);
-		for (i = 0; i < nr_pages; i++) {
-			if (dir == ITER_DEST)
-				set_page_dirty(iter.pages[i]);
-			put_page(iter.pages[i]);
+		if (offset >= bv.bv_len) {
+			offset -= bv.bv_len;
+			continue;
 		}
-		done += len;
-	}
 
+		len = bv.bv_len - offset;
+		bv_buf = kmap_local_page(bv.bv_page) + bv.bv_offset + offset;
+		if (dir == ITER_DEST)
+			copied = copy_to_iter(bv_buf, len, uiter);
+		else
+			copied = copy_from_iter(bv_buf, len, uiter);
+
+		kunmap_local(bv_buf);
+
+		done += copied;
+		if (copied < len)
+			break;
+
+		offset = 0;
+	}
 	return done;
 }
 
@@ -1031,8 +965,9 @@ static inline bool ublk_need_unmap_req(const struct request *req)
 	       (req_op(req) == REQ_OP_READ || req_op(req) == REQ_OP_DRV_IN);
 }
 
-static int ublk_map_io(const struct ublk_queue *ubq, const struct request *req,
-		       const struct ublk_io *io)
+static unsigned int ublk_map_io(const struct ublk_queue *ubq,
+				const struct request *req,
+				const struct ublk_io *io)
 {
 	const unsigned int rq_bytes = blk_rq_bytes(req);
 
@@ -1054,7 +989,7 @@ static int ublk_map_io(const struct ublk_queue *ubq, const struct request *req,
 	return rq_bytes;
 }
 
-static int ublk_unmap_io(bool need_map,
+static unsigned int ublk_unmap_io(bool need_map,
 		const struct request *req,
 		const struct ublk_io *io)
 {
@@ -1347,10 +1282,9 @@ static bool ublk_start_io(const struct ublk_queue *ubq, struct request *req,
 	return true;
 }
 
-static void ublk_dispatch_req(struct ublk_queue *ubq,
-			      struct request *req,
-			      unsigned int issue_flags)
+static void ublk_dispatch_req(struct ublk_queue *ubq, struct request *req)
 {
+	unsigned int issue_flags = IO_URING_CMD_TASK_WORK_ISSUE_FLAGS;
 	int tag = req->tag;
 	struct ublk_io *io = &ubq->ios[tag];
 
@@ -1397,13 +1331,13 @@ static void ublk_dispatch_req(struct ublk_queue *ubq,
 	}
 }
 
-static void ublk_cmd_tw_cb(struct io_uring_cmd *cmd,
-			   unsigned int issue_flags)
+static void ublk_cmd_tw_cb(struct io_tw_req tw_req, io_tw_token_t tw)
 {
+	struct io_uring_cmd *cmd = io_uring_cmd_from_tw(tw_req);
 	struct ublk_uring_cmd_pdu *pdu = ublk_get_uring_cmd_pdu(cmd);
 	struct ublk_queue *ubq = pdu->ubq;
 
-	ublk_dispatch_req(ubq, pdu->req, issue_flags);
+	ublk_dispatch_req(ubq, pdu->req);
 }
 
 static void ublk_queue_cmd(struct ublk_queue *ubq, struct request *rq)
@@ -1415,9 +1349,9 @@ static void ublk_queue_cmd(struct ublk_queue *ubq, struct request *rq)
 	io_uring_cmd_complete_in_task(cmd, ublk_cmd_tw_cb);
 }
 
-static void ublk_cmd_list_tw_cb(struct io_uring_cmd *cmd,
-		unsigned int issue_flags)
+static void ublk_cmd_list_tw_cb(struct io_tw_req tw_req, io_tw_token_t tw)
 {
+	struct io_uring_cmd *cmd = io_uring_cmd_from_tw(tw_req);
 	struct ublk_uring_cmd_pdu *pdu = ublk_get_uring_cmd_pdu(cmd);
 	struct request *rq = pdu->req_list;
 	struct request *next;
@@ -1425,7 +1359,7 @@ static void ublk_cmd_list_tw_cb(struct io_uring_cmd *cmd,
 	do {
 		next = rq->rq_next;
 		rq->rq_next = NULL;
-		ublk_dispatch_req(rq->mq_hctx->driver_data, rq, issue_flags);
+		ublk_dispatch_req(rq->mq_hctx->driver_data, rq);
 		rq = next;
 	} while (rq);
 }
@@ -2345,10 +2279,31 @@ static int ublk_check_fetch_buf(const struct ublk_device *ub, __u64 buf_addr)
 	return 0;
 }
 
+static int __ublk_fetch(struct io_uring_cmd *cmd, struct ublk_device *ub,
+			struct ublk_io *io)
+{
+	/* UBLK_IO_FETCH_REQ is only allowed before dev is setup */
+	if (ublk_dev_ready(ub))
+		return -EBUSY;
+
+	/* allow each command to be FETCHed at most once */
+	if (io->flags & UBLK_IO_FLAG_ACTIVE)
+		return -EINVAL;
+
+	WARN_ON_ONCE(io->flags & UBLK_IO_FLAG_OWNED_BY_SRV);
+
+	ublk_fill_io_cmd(io, cmd);
+
+	WRITE_ONCE(io->task, get_task_struct(current));
+	ublk_mark_io_ready(ub);
+
+	return 0;
+}
+
 static int ublk_fetch(struct io_uring_cmd *cmd, struct ublk_device *ub,
 		      struct ublk_io *io, __u64 buf_addr)
 {
-	int ret = 0;
+	int ret;
 
 	/*
 	 * When handling FETCH command for setting up ublk uring queue,
@@ -2356,28 +2311,9 @@ static int ublk_fetch(struct io_uring_cmd *cmd, struct ublk_device *ub,
 	 * FETCH, so it is fine even for IO_URING_F_NONBLOCK.
 	 */
 	mutex_lock(&ub->mutex);
-	/* UBLK_IO_FETCH_REQ is only allowed before dev is setup */
-	if (ublk_dev_ready(ub)) {
-		ret = -EBUSY;
-		goto out;
-	}
-
-	/* allow each command to be FETCHed at most once */
-	if (io->flags & UBLK_IO_FLAG_ACTIVE) {
-		ret = -EINVAL;
-		goto out;
-	}
-
-	WARN_ON_ONCE(io->flags & UBLK_IO_FLAG_OWNED_BY_SRV);
-
-	ublk_fill_io_cmd(io, cmd);
-	ret = ublk_config_io_buf(ub, io, cmd, buf_addr, NULL);
-	if (ret)
-		goto out;
-
-	WRITE_ONCE(io->task, get_task_struct(current));
-	ublk_mark_io_ready(ub);
-out:
+	ret = __ublk_fetch(cmd, ub, io);
+	if (!ret)
+		ret = ublk_config_io_buf(ub, io, cmd, buf_addr, NULL);
 	mutex_unlock(&ub->mutex);
 	return ret;
 }
@@ -2596,9 +2532,10 @@ fail_put:
 	return NULL;
 }
 
-static void ublk_ch_uring_cmd_cb(struct io_uring_cmd *cmd,
-		unsigned int issue_flags)
+static void ublk_ch_uring_cmd_cb(struct io_tw_req tw_req, io_tw_token_t tw)
 {
+	unsigned int issue_flags = IO_URING_CMD_TASK_WORK_ISSUE_FLAGS;
+	struct io_uring_cmd *cmd = io_uring_cmd_from_tw(tw_req);
 	int ret = ublk_ch_uring_cmd_local(cmd, issue_flags);
 
 	if (ret != -EIOCBQUEUED)
@@ -2648,9 +2585,6 @@ static struct request *ublk_check_and_get_req(struct kiocb *iocb,
 	size_t buf_off;
 	u16 tag, q_id;
 
-	if (!ub)
-		return ERR_PTR(-EACCES);
-
 	if (!user_backed_iter(iter))
 		return ERR_PTR(-EACCES);
 
@@ -2675,9 +2609,6 @@ static struct request *ublk_check_and_get_req(struct kiocb *iocb,
 	req = __ublk_check_and_get_req(ub, q_id, tag, *io, buf_off);
 	if (!req)
 		return ERR_PTR(-EINVAL);
-
-	if (!req->mq_hctx || !req->mq_hctx->driver_data)
-		goto fail;
 
 	if (!ublk_check_ubuf_dir(req, dir))
 		goto fail;
@@ -2774,7 +2705,6 @@ static int ublk_get_queue_numa_node(struct ublk_device *ub, int q_id)
 static int ublk_init_queue(struct ublk_device *ub, int q_id)
 {
 	int depth = ub->dev_info.queue_depth;
-	int ubq_size = sizeof(struct ublk_queue) + depth * sizeof(struct ublk_io);
 	gfp_t gfp_flags = GFP_KERNEL | __GFP_ZERO;
 	struct ublk_queue *ubq;
 	struct page *page;
@@ -2785,7 +2715,8 @@ static int ublk_init_queue(struct ublk_device *ub, int q_id)
 	numa_node = ublk_get_queue_numa_node(ub, q_id);
 
 	/* Allocate queue structure on local NUMA node */
-	ubq = kvzalloc_node(ubq_size, GFP_KERNEL, numa_node);
+	ubq = kvzalloc_node(struct_size(ubq, ios, depth), GFP_KERNEL,
+			    numa_node);
 	if (!ubq)
 		return -ENOMEM;
 
@@ -3380,12 +3311,11 @@ static int ublk_ctrl_del_dev(struct ublk_device **p_ub, bool wait)
 	return 0;
 }
 
-static inline void ublk_ctrl_cmd_dump(struct io_uring_cmd *cmd)
+static inline void ublk_ctrl_cmd_dump(u32 cmd_op,
+				      const struct ublksrv_ctrl_cmd *header)
 {
-	const struct ublksrv_ctrl_cmd *header = io_uring_sqe_cmd(cmd->sqe);
-
 	pr_devel("%s: cmd_op %x, dev id %d qid %d data %llx buf %llx len %u\n",
-			__func__, cmd->cmd_op, header->dev_id, header->queue_id,
+			__func__, cmd_op, header->dev_id, header->queue_id,
 			header->data[0], header->addr, header->len);
 }
 
@@ -3754,9 +3684,8 @@ exit:
 }
 
 static int ublk_ctrl_uring_cmd_permission(struct ublk_device *ub,
-		struct io_uring_cmd *cmd)
+		u32 cmd_op, struct ublksrv_ctrl_cmd *header)
 {
-	struct ublksrv_ctrl_cmd *header = (struct ublksrv_ctrl_cmd *)io_uring_sqe_cmd(cmd->sqe);
 	bool unprivileged = ub->dev_info.flags & UBLK_F_UNPRIVILEGED_DEV;
 	void __user *argp = (void __user *)(unsigned long)header->addr;
 	char *dev_path = NULL;
@@ -3772,7 +3701,7 @@ static int ublk_ctrl_uring_cmd_permission(struct ublk_device *ub,
 		 * know if the specified device is created as unprivileged
 		 * mode.
 		 */
-		if (_IOC_NR(cmd->cmd_op) != UBLK_CMD_GET_DEV_INFO2)
+		if (_IOC_NR(cmd_op) != UBLK_CMD_GET_DEV_INFO2)
 			return 0;
 	}
 
@@ -3793,7 +3722,7 @@ static int ublk_ctrl_uring_cmd_permission(struct ublk_device *ub,
 		return PTR_ERR(dev_path);
 
 	ret = -EINVAL;
-	switch (_IOC_NR(cmd->cmd_op)) {
+	switch (_IOC_NR(cmd_op)) {
 	case UBLK_CMD_GET_DEV_INFO:
 	case UBLK_CMD_GET_DEV_INFO2:
 	case UBLK_CMD_GET_QUEUE_AFFINITY:
@@ -3822,7 +3751,7 @@ static int ublk_ctrl_uring_cmd_permission(struct ublk_device *ub,
 		header->addr += header->dev_path_len;
 	}
 	pr_devel("%s: dev id %d cmd_op %x uid %d gid %d path %s ret %d\n",
-			__func__, ub->ub_number, cmd->cmd_op,
+			__func__, ub->ub_number, cmd_op,
 			ub->dev_info.owner_uid, ub->dev_info.owner_gid,
 			dev_path, ret);
 exit:
@@ -3830,55 +3759,77 @@ exit:
 	return ret;
 }
 
+static bool ublk_ctrl_uring_cmd_may_sleep(u32 cmd_op)
+{
+	switch (_IOC_NR(cmd_op)) {
+	case UBLK_CMD_GET_QUEUE_AFFINITY:
+	case UBLK_CMD_GET_DEV_INFO:
+	case UBLK_CMD_GET_DEV_INFO2:
+	case _IOC_NR(UBLK_U_CMD_GET_FEATURES):
+		return false;
+	default:
+		return true;
+	}
+}
+
 static int ublk_ctrl_uring_cmd(struct io_uring_cmd *cmd,
 		unsigned int issue_flags)
 {
-	const struct ublksrv_ctrl_cmd *header = io_uring_sqe_cmd(cmd->sqe);
+	/* May point to userspace-mapped memory */
+	const struct ublksrv_ctrl_cmd *ub_src = io_uring_sqe_cmd(cmd->sqe);
+	struct ublksrv_ctrl_cmd header;
 	struct ublk_device *ub = NULL;
 	u32 cmd_op = cmd->cmd_op;
 	int ret = -EINVAL;
 
-	if (issue_flags & IO_URING_F_NONBLOCK)
+	if (ublk_ctrl_uring_cmd_may_sleep(cmd_op) &&
+	    issue_flags & IO_URING_F_NONBLOCK)
 		return -EAGAIN;
 
 	if (!(issue_flags & IO_URING_F_SQE128))
 		return -EINVAL;
 
-	ublk_ctrl_cmd_dump(cmd);
+	header.dev_id = READ_ONCE(ub_src->dev_id);
+	header.queue_id = READ_ONCE(ub_src->queue_id);
+	header.len = READ_ONCE(ub_src->len);
+	header.addr = READ_ONCE(ub_src->addr);
+	header.data[0] = READ_ONCE(ub_src->data[0]);
+	header.dev_path_len = READ_ONCE(ub_src->dev_path_len);
+	ublk_ctrl_cmd_dump(cmd_op, &header);
 
 	ret = ublk_check_cmd_op(cmd_op);
 	if (ret)
 		goto out;
 
 	if (cmd_op == UBLK_U_CMD_GET_FEATURES) {
-		ret = ublk_ctrl_get_features(header);
+		ret = ublk_ctrl_get_features(&header);
 		goto out;
 	}
 
 	if (_IOC_NR(cmd_op) != UBLK_CMD_ADD_DEV) {
 		ret = -ENODEV;
-		ub = ublk_get_device_from_id(header->dev_id);
+		ub = ublk_get_device_from_id(header.dev_id);
 		if (!ub)
 			goto out;
 
-		ret = ublk_ctrl_uring_cmd_permission(ub, cmd);
+		ret = ublk_ctrl_uring_cmd_permission(ub, cmd_op, &header);
 		if (ret)
 			goto put_dev;
 	}
 
 	switch (_IOC_NR(cmd_op)) {
 	case UBLK_CMD_START_DEV:
-		ret = ublk_ctrl_start_dev(ub, header);
+		ret = ublk_ctrl_start_dev(ub, &header);
 		break;
 	case UBLK_CMD_STOP_DEV:
 		ret = ublk_ctrl_stop_dev(ub);
 		break;
 	case UBLK_CMD_GET_DEV_INFO:
 	case UBLK_CMD_GET_DEV_INFO2:
-		ret = ublk_ctrl_get_dev_info(ub, header);
+		ret = ublk_ctrl_get_dev_info(ub, &header);
 		break;
 	case UBLK_CMD_ADD_DEV:
-		ret = ublk_ctrl_add_dev(header);
+		ret = ublk_ctrl_add_dev(&header);
 		break;
 	case UBLK_CMD_DEL_DEV:
 		ret = ublk_ctrl_del_dev(&ub, true);
@@ -3887,26 +3838,26 @@ static int ublk_ctrl_uring_cmd(struct io_uring_cmd *cmd,
 		ret = ublk_ctrl_del_dev(&ub, false);
 		break;
 	case UBLK_CMD_GET_QUEUE_AFFINITY:
-		ret = ublk_ctrl_get_queue_affinity(ub, header);
+		ret = ublk_ctrl_get_queue_affinity(ub, &header);
 		break;
 	case UBLK_CMD_GET_PARAMS:
-		ret = ublk_ctrl_get_params(ub, header);
+		ret = ublk_ctrl_get_params(ub, &header);
 		break;
 	case UBLK_CMD_SET_PARAMS:
-		ret = ublk_ctrl_set_params(ub, header);
+		ret = ublk_ctrl_set_params(ub, &header);
 		break;
 	case UBLK_CMD_START_USER_RECOVERY:
-		ret = ublk_ctrl_start_recovery(ub, header);
+		ret = ublk_ctrl_start_recovery(ub, &header);
 		break;
 	case UBLK_CMD_END_USER_RECOVERY:
-		ret = ublk_ctrl_end_recovery(ub, header);
+		ret = ublk_ctrl_end_recovery(ub, &header);
 		break;
 	case UBLK_CMD_UPDATE_SIZE:
-		ublk_ctrl_set_size(ub, header);
+		ublk_ctrl_set_size(ub, &header);
 		ret = 0;
 		break;
 	case UBLK_CMD_QUIESCE_DEV:
-		ret = ublk_ctrl_quiesce_dev(ub, header);
+		ret = ublk_ctrl_quiesce_dev(ub, &header);
 		break;
 	default:
 		ret = -EOPNOTSUPP;
@@ -3918,7 +3869,7 @@ static int ublk_ctrl_uring_cmd(struct io_uring_cmd *cmd,
 		ublk_put_device(ub);
  out:
 	pr_devel("%s: cmd done ret %d cmd_op %x, dev id %d qid %d\n",
-			__func__, ret, cmd->cmd_op, header->dev_id, header->queue_id);
+			__func__, ret, cmd_op, header.dev_id, header.queue_id);
 	return ret;
 }
 

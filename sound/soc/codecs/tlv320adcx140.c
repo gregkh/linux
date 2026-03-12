@@ -337,7 +337,7 @@ static const struct snd_kcontrol_new adcx140_dapm_ch4_dre_en_switch =
 	SOC_DAPM_SINGLE("Switch", ADCX140_CH4_CFG0, 0, 1, 0);
 
 static const struct snd_kcontrol_new adcx140_dapm_dre_en_switch =
-	SOC_DAPM_SINGLE("Switch", ADCX140_DSP_CFG1, 3, 1, 0);
+	SOC_DAPM_SINGLE("Switch", ADCX140_DSP_CFG1, 3, 1, 1);
 
 /* Output Mixer */
 static const struct snd_kcontrol_new adcx140_output_mixer_controls[] = {
@@ -611,8 +611,7 @@ static int adcx140_phase_calib_info(struct snd_kcontrol *kcontrol,
 static int adcx140_phase_calib_get(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *value)
 {
-	struct snd_soc_component *codec =
-		snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *codec = snd_kcontrol_chip(kcontrol);
 	struct adcx140_priv *adcx140 = snd_soc_component_get_drvdata(codec);
 
 	value->value.integer.value[0] = adcx140->phase_calib_on ? 1 : 0;
@@ -624,8 +623,7 @@ static int adcx140_phase_calib_get(struct snd_kcontrol *kcontrol,
 static int adcx140_phase_calib_put(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *value)
 {
-	struct snd_soc_component *codec
-		= snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *codec = snd_kcontrol_chip(kcontrol);
 	struct adcx140_priv *adcx140 = snd_soc_component_get_drvdata(codec);
 
 	bool v = value->value.integer.value[0] ? true : false;

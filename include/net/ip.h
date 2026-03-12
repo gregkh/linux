@@ -101,7 +101,7 @@ static inline void ipcm_init_sk(struct ipcm_cookie *ipcm,
 
 	ipcm->oif = READ_ONCE(inet->sk.sk_bound_dev_if);
 	ipcm->addr = inet->inet_saddr;
-	ipcm->protocol = inet->inet_num;
+	ipcm->protocol = READ_ONCE(inet->inet_num);
 }
 
 #define IPCB(skb) ((struct inet_skb_parm*)((skb)->cb))
@@ -261,8 +261,8 @@ static inline u8 ip_sendmsg_scope(const struct inet_sock *inet,
 }
 
 /* datagram.c */
-int __ip4_datagram_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len);
-int ip4_datagram_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len);
+int __ip4_datagram_connect(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len);
+int ip4_datagram_connect(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len);
 
 void ip4_datagram_release_cb(struct sock *sk);
 

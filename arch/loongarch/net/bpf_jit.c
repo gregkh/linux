@@ -1303,15 +1303,16 @@ void *bpf_arch_text_copy(void *dst, void *src, size_t len)
 	return ret ? ERR_PTR(-EINVAL) : dst;
 }
 
-int bpf_arch_text_poke(void *ip, enum bpf_text_poke_type poke_type,
-		       void *old_addr, void *new_addr)
+int bpf_arch_text_poke(void *ip, enum bpf_text_poke_type old_t,
+		       enum bpf_text_poke_type new_t, void *old_addr,
+		       void *new_addr)
 {
 	int ret;
+	bool is_call;
 	unsigned long size = 0;
 	unsigned long offset = 0;
 	void *image = NULL;
 	char namebuf[KSYM_NAME_LEN];
-	bool is_call = (poke_type == BPF_MOD_CALL);
 	u32 old_insns[LOONGARCH_LONG_JUMP_NINSNS] = {[0 ... 4] = INSN_NOP};
 	u32 new_insns[LOONGARCH_LONG_JUMP_NINSNS] = {[0 ... 4] = INSN_NOP};
 
@@ -1332,6 +1333,7 @@ int bpf_arch_text_poke(void *ip, enum bpf_text_poke_type poke_type,
 		ip = image + LOONGARCH_INSN_SIZE;
 	}
 
+	is_call = old_t == BPF_MOD_CALL;
 	ret = emit_jump_or_nops(old_addr, ip, old_insns, is_call);
 	if (ret)
 		return ret;
@@ -1339,6 +1341,7 @@ int bpf_arch_text_poke(void *ip, enum bpf_text_poke_type poke_type,
 	if (memcmp(ip, old_insns, LOONGARCH_LONG_JUMP_NBYTES))
 		return -EFAULT;
 
+	is_call = new_t == BPF_MOD_CALL;
 	ret = emit_jump_or_nops(new_addr, ip, new_insns, is_call);
 	if (ret)
 		return ret;

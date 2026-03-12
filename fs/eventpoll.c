@@ -2061,7 +2061,8 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
  * @ep: the &struct eventpoll to be currently checked.
  * @depth: Current depth of the path being checked.
  *
- * Return: depth of the subtree, or INT_MAX if we found a loop or went too deep.
+ * Return: depth of the subtree, or a value bigger than EP_MAX_NESTS if we found
+ * a loop or went too deep.
  */
 static int ep_loop_check_proc(struct eventpoll *ep, int depth)
 {
@@ -2080,7 +2081,7 @@ static int ep_loop_check_proc(struct eventpoll *ep, int depth)
 			struct eventpoll *ep_tovisit;
 			ep_tovisit = epi->ffd.file->private_data;
 			if (ep_tovisit == inserting_into || depth > EP_MAX_NESTS)
-				result = INT_MAX;
+				result = EP_MAX_NESTS+1;
 			else
 				result = max(result, ep_loop_check_proc(ep_tovisit, depth + 1) + 1);
 			if (result > EP_MAX_NESTS)
@@ -2165,9 +2166,8 @@ static void clear_tfile_check_list(void)
  */
 static int do_epoll_create(int flags)
 {
-	int error, fd;
-	struct eventpoll *ep = NULL;
-	struct file *file;
+	int error;
+	struct eventpoll *ep;
 
 	/* Check the EPOLL_* constant for consistency.  */
 	BUILD_BUG_ON(EPOLL_CLOEXEC != O_CLOEXEC);
@@ -2184,26 +2184,15 @@ static int do_epoll_create(int flags)
 	 * Creates all the items needed to setup an eventpoll file. That is,
 	 * a file structure and a free file descriptor.
 	 */
-	fd = get_unused_fd_flags(O_RDWR | (flags & O_CLOEXEC));
-	if (fd < 0) {
-		error = fd;
-		goto out_free_ep;
+	FD_PREPARE(fdf, O_RDWR | (flags & O_CLOEXEC),
+		   anon_inode_getfile("[eventpoll]", &eventpoll_fops, ep,
+				      O_RDWR | (flags & O_CLOEXEC)));
+	if (fdf.err) {
+		ep_clear_and_put(ep);
+		return fdf.err;
 	}
-	file = anon_inode_getfile("[eventpoll]", &eventpoll_fops, ep,
-				 O_RDWR | (flags & O_CLOEXEC));
-	if (IS_ERR(file)) {
-		error = PTR_ERR(file);
-		goto out_free_fd;
-	}
-	ep->file = file;
-	fd_install(fd, file);
-	return fd;
-
-out_free_fd:
-	put_unused_fd(fd);
-out_free_ep:
-	ep_clear_and_put(ep);
-	return error;
+	ep->file = fd_prepare_file(fdf);
+	return fd_publish(fdf);
 }
 
 SYSCALL_DEFINE1(epoll_create1, int, flags)

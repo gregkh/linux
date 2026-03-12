@@ -6,6 +6,25 @@
 #include "idpf_virtchnl.h"
 
 /**
+ * idpf_get_rx_ring_count - get RX ring count
+ * @netdev: network interface device structure
+ *
+ * Return: number of RX rings.
+ */
+static u32 idpf_get_rx_ring_count(struct net_device *netdev)
+{
+	struct idpf_vport *vport;
+	u32 num_rxq;
+
+	idpf_vport_ctrl_lock(netdev);
+	vport = idpf_netdev_to_vport(netdev);
+	num_rxq = vport->num_rxq;
+	idpf_vport_ctrl_unlock(netdev);
+
+	return num_rxq;
+}
+
+/**
  * idpf_get_rxnfc - command to get RX flow classification rules
  * @netdev: network interface device structure
  * @cmd: ethtool rxnfc command
@@ -30,9 +49,6 @@ static int idpf_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd,
 	user_config = &vport_config->user_config;
 
 	switch (cmd->cmd) {
-	case ETHTOOL_GRXRINGS:
-		cmd->data = vport->num_rxq;
-		break;
 	case ETHTOOL_GRXCLSRLCNT:
 		cmd->rule_cnt = user_config->num_fsteer_fltrs;
 		cmd->data = idpf_fsteer_max_rules(vport);
@@ -290,9 +306,6 @@ static int idpf_del_flow_steer(struct net_device *netdev,
 	vport = idpf_netdev_to_vport(netdev);
 	vport_config = vport->adapter->vport_config[np->vport_idx];
 	user_config = &vport_config->user_config;
-
-	if (!idpf_sideband_action_ena(vport, fsp))
-		return -EOPNOTSUPP;
 
 	rule = kzalloc(struct_size(rule, rule_info, 1), GFP_KERNEL);
 	if (!rule)
@@ -1791,6 +1804,7 @@ static const struct ethtool_ops idpf_ethtool_ops = {
 	.get_channels		= idpf_get_channels,
 	.get_rxnfc		= idpf_get_rxnfc,
 	.set_rxnfc		= idpf_set_rxnfc,
+	.get_rx_ring_count	= idpf_get_rx_ring_count,
 	.get_rxfh_key_size	= idpf_get_rxfh_key_size,
 	.get_rxfh_indir_size	= idpf_get_rxfh_indir_size,
 	.get_rxfh		= idpf_get_rxfh,

@@ -1225,7 +1225,8 @@ static int rtw89_wow_cfg_wake(struct rtw89_dev *rtwdev, bool wow)
 		}
 	}
 
-	ret = rtw89_fw_h2c_cam(rtwdev, rtwvif_link, rtwsta_link, NULL);
+	ret = rtw89_fw_h2c_cam(rtwdev, rtwvif_link, rtwsta_link, NULL,
+			       RTW89_ROLE_INFO_CHANGE);
 	if (ret) {
 		rtw89_warn(rtwdev, "failed to send h2c cam\n");
 		return ret;
@@ -1252,7 +1253,7 @@ static int rtw89_wow_check_fw_status(struct rtw89_dev *rtwdev, bool wow_enable)
 				       mac->wow_ctrl.addr, mac->wow_ctrl.mask);
 	if (ret)
 		rtw89_err(rtwdev, "failed to check wow status %s\n",
-			  wow_enable ? "enabled" : "disabled");
+			  str_enabled_disabled(wow_enable));
 	return ret;
 }
 
@@ -1322,7 +1323,8 @@ static int rtw89_wow_swap_fw(struct rtw89_dev *rtwdev, bool wow)
 		return ret;
 	}
 
-	ret = rtw89_fw_h2c_cam(rtwdev, rtwvif_link, rtwsta_link, NULL);
+	ret = rtw89_fw_h2c_cam(rtwdev, rtwvif_link, rtwsta_link, NULL,
+			       RTW89_ROLE_FW_RESTORE);
 	if (ret) {
 		rtw89_warn(rtwdev, "failed to send h2c cam\n");
 		return ret;

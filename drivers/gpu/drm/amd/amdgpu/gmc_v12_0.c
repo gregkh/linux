@@ -91,8 +91,10 @@ static int gmc_v12_0_process_interrupt(struct amdgpu_device *adev,
 				       struct amdgpu_iv_entry *entry)
 {
 	struct amdgpu_vmhub *hub;
-	bool retry_fault = !!(entry->src_data[1] & 0x80);
-	bool write_fault = !!(entry->src_data[1] & 0x20);
+	bool retry_fault = !!(entry->src_data[1] &
+			      AMDGPU_GMC9_FAULT_SOURCE_DATA_RETRY);
+	bool write_fault = !!(entry->src_data[1] &
+			      AMDGPU_GMC9_FAULT_SOURCE_DATA_WRITE);
 	uint32_t status = 0;
 	u64 addr;
 
@@ -339,9 +341,7 @@ static void gmc_v12_0_flush_gpu_tlb(struct amdgpu_device *adev, uint32_t vmid,
 		return;
 	}
 
-	mutex_lock(&adev->mman.gtt_window_lock);
 	gmc_v12_0_flush_vm_hub(adev, vmid, vmhub, 0);
-	mutex_unlock(&adev->mman.gtt_window_lock);
 	return;
 }
 

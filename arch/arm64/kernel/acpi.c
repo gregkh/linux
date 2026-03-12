@@ -133,7 +133,7 @@ static int __init acpi_fadt_sanity_check(void)
 
 	/*
 	 * FADT is required on arm64; retrieve it to check its presence
-	 * and carry out revision and ACPI HW reduced compliancy tests
+	 * and carry out revision and ACPI HW reduced compliance tests
 	 */
 	status = acpi_get_table(ACPI_SIG_FADT, 0, &table);
 	if (ACPI_FAILURE(status)) {
@@ -377,7 +377,7 @@ void __iomem *acpi_os_ioremap(acpi_physical_address phys, acpi_size size)
 				prot = __acpi_get_writethrough_mem_attribute();
 		}
 	}
-	return ioremap_prot(phys, size, prot);
+	return __ioremap_prot(phys, size, prot);
 }
 
 /*
@@ -423,7 +423,7 @@ int apei_claim_sea(struct pt_regs *regs)
 			irq_work_run();
 			__irq_exit();
 		} else {
-			pr_warn_ratelimited("APEI work queued but not completed");
+			pr_warn_ratelimited("APEI work queued but not completed\n");
 			err = -EINPROGRESS;
 		}
 	}

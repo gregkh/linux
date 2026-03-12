@@ -1994,6 +1994,11 @@ void timekeeping_resume(void)
 	timerfd_resume();
 }
 
+static void timekeeping_syscore_resume(void *data)
+{
+	timekeeping_resume();
+}
+
 int timekeeping_suspend(void)
 {
 	struct timekeeper *tks = &tk_core.shadow_timekeeper;
@@ -2061,15 +2066,24 @@ int timekeeping_suspend(void)
 	return 0;
 }
 
+static int timekeeping_syscore_suspend(void *data)
+{
+	return timekeeping_suspend();
+}
+
 /* sysfs resume/suspend bits for timekeeping */
-static struct syscore_ops timekeeping_syscore_ops = {
-	.resume		= timekeeping_resume,
-	.suspend	= timekeeping_suspend,
+static const struct syscore_ops timekeeping_syscore_ops = {
+	.resume		= timekeeping_syscore_resume,
+	.suspend	= timekeeping_syscore_suspend,
+};
+
+static struct syscore timekeeping_syscore = {
+	.ops = &timekeeping_syscore_ops,
 };
 
 static int __init timekeeping_init_ops(void)
 {
-	register_syscore_ops(&timekeeping_syscore_ops);
+	register_syscore(&timekeeping_syscore);
 	return 0;
 }
 device_initcall(timekeeping_init_ops);
@@ -2639,7 +2653,8 @@ static int timekeeping_validate_timex(const struct __kernel_timex *txc, bool aux
 
 	if (aux_clock) {
 		/* Auxiliary clocks are similar to TAI and do not have leap seconds */
-		if (txc->status & (STA_INS | STA_DEL))
+		if (txc->modes & ADJ_STATUS &&
+		    txc->status & (STA_INS | STA_DEL))
 			return -EINVAL;
 
 		/* No TAI offset setting */
@@ -2647,7 +2662,8 @@ static int timekeeping_validate_timex(const struct __kernel_timex *txc, bool aux
 			return -EINVAL;
 
 		/* No PPS support either */
-		if (txc->status & (STA_PPSFREQ | STA_PPSTIME))
+		if (txc->modes & ADJ_STATUS &&
+		    txc->status & (STA_PPSFREQ | STA_PPSTIME))
 			return -EINVAL;
 	}
 

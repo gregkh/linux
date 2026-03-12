@@ -17,6 +17,7 @@
 #include <linux/kdebug.h>
 #include <asm/processor.h>
 #include <asm/insn.h>
+#include <asm/insn-eval.h>
 #include <asm/mmu_context.h>
 #include <asm/nops.h>
 
@@ -258,9 +259,8 @@ static volatile u32 good_2byte_insns[256 / 32] = {
 static bool is_prefix_bad(struct insn *insn)
 {
 	insn_byte_t p;
-	int i;
 
-	for_each_insn_prefix(insn, i, p) {
+	for_each_insn_prefix(insn, p) {
 		insn_attr_t attr;
 
 		attr = inat_get_opcode_attribute(p);
@@ -1158,35 +1158,12 @@ unlock:
 	mmap_write_unlock(mm);
 }
 
-static bool insn_is_nop(struct insn *insn)
-{
-	return insn->opcode.nbytes == 1 && insn->opcode.bytes[0] == 0x90;
-}
-
-static bool insn_is_nopl(struct insn *insn)
-{
-	if (insn->opcode.nbytes != 2)
-		return false;
-
-	if (insn->opcode.bytes[0] != 0x0f || insn->opcode.bytes[1] != 0x1f)
-		return false;
-
-	if (!insn->modrm.nbytes)
-		return false;
-
-	if (X86_MODRM_REG(insn->modrm.bytes[0]) != 0)
-		return false;
-
-	/* 0f 1f /0 - NOPL */
-	return true;
-}
-
 static bool can_optimize(struct insn *insn, unsigned long vaddr)
 {
 	if (!insn->x86_64 || insn->length != 5)
 		return false;
 
-	if (!insn_is_nop(insn) && !insn_is_nopl(insn))
+	if (!insn_is_nop(insn))
 		return false;
 
 	/* We can't do cross page atomic writes yet. */
@@ -1426,19 +1403,14 @@ static int branch_setup_xol_ops(struct arch_uprobe *auprobe, struct insn *insn)
 {
 	u8 opc1 = OPCODE1(insn);
 	insn_byte_t p;
-	int i;
 
-	/* x86_nops[insn->length]; same as jmp with .offs = 0 */
-	if (insn->length <= ASM_NOP_MAX &&
-	    !memcmp(insn->kaddr, x86_nops[insn->length], insn->length))
+	if (insn_is_nop(insn))
 		goto setup;
 
 	switch (opc1) {
 	case 0xeb:	/* jmp 8 */
 	case 0xe9:	/* jmp 32 */
 		break;
-	case 0x90:	/* prefix* + nop; same as jmp with .offs = 0 */
-		goto setup;
 
 	case 0xe8:	/* call relative */
 		branch_clear_offset(auprobe, insn);
@@ -1463,7 +1435,7 @@ static int branch_setup_xol_ops(struct arch_uprobe *auprobe, struct insn *insn)
 	 * Intel and AMD behavior differ in 64-bit mode: Intel ignores 66 prefix.
 	 * No one uses these insns, reject any branch insns with such prefix.
 	 */
-	for_each_insn_prefix(insn, i, p) {
+	for_each_insn_prefix(insn, p) {
 		if (p == 0x66)
 			return -ENOTSUPP;
 	}
@@ -1819,3 +1791,59 @@ bool arch_uretprobe_is_alive(struct return_instance *ret, enum rp_check ctx,
 	else
 		return regs->sp <= ret->stack;
 }
+
+/*
+ * Heuristic-based check if uprobe is installed at the function entry.
+ *
+ * Under assumption of user code being compiled with frame pointers,
+ * `push %rbp/%ebp` is a good indicator that we indeed are.
+ *
+ * Similarly, `endbr64` (assuming 64-bit mode) is also a common pattern.
+ * If we get this wrong, captured stack trace might have one extra bogus
+ * entry, but the rest of stack trace will still be meaningful.
+ */
+bool is_uprobe_at_func_entry(struct pt_regs *regs)
+{
+	struct arch_uprobe *auprobe;
+
+	if (!current->utask)
+		return false;
+
+	auprobe = current->utask->auprobe;
+	if (!auprobe)
+		return false;
+
+	/* push %rbp/%ebp */
+	if (auprobe->insn[0] == 0x55)
+		return true;
+
+	/* endbr64 (64-bit only) */
+	if (user_64bit_mode(regs) && is_endbr((u32 *)auprobe->insn))
+		return true;
+
+	return false;
+}
+
+#ifdef CONFIG_IA32_EMULATION
+unsigned long arch_uprobe_get_xol_area(void)
+{
+	struct thread_info *ti = current_thread_info();
+	unsigned long vaddr;
+
+	/*
+	 * HACK: we are not in a syscall, but x86 get_unmapped_area() paths
+	 * ignore TIF_ADDR32 and rely on in_32bit_syscall() to calculate
+	 * vm_unmapped_area_info.high_limit.
+	 *
+	 * The #ifdef above doesn't cover the CONFIG_X86_X32_ABI=y case,
+	 * but in this case in_32bit_syscall() -> in_x32_syscall() always
+	 * (falsely) returns true because ->orig_ax == -1.
+	 */
+	if (test_thread_flag(TIF_ADDR32))
+		ti->status |= TS_COMPAT;
+	vaddr = get_unmapped_area(NULL, TASK_SIZE - PAGE_SIZE, PAGE_SIZE, 0, 0);
+	ti->status &= ~TS_COMPAT;
+
+	return vaddr;
+}
+#endif

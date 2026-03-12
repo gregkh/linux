@@ -233,8 +233,7 @@ int imx_scu_enable_general_irq_channel(struct device *dev)
 	if (IS_ERR(ch)) {
 		ret = PTR_ERR(ch);
 		dev_err(dev, "failed to request mbox chan gip3, ret %d\n", ret);
-		devm_kfree(dev, cl);
-		return ret;
+		goto free_cl;
 	}
 
 	/* Create directory under /sysfs/firmware */
@@ -255,7 +254,8 @@ int imx_scu_enable_general_irq_channel(struct device *dev)
 
 free_ch:
 	mbox_free_channel(ch);
+free_cl:
+	devm_kfree(dev, cl);
 
 	return ret;
 }
-EXPORT_SYMBOL(imx_scu_enable_general_irq_channel);

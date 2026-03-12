@@ -749,7 +749,7 @@ static void ucan_read_bulk_callback(struct urb *urb)
 		len = le16_to_cpu(m->len);
 
 		/* check sanity (length of content) */
-		if (urb->actual_length - pos < len) {
+		if ((len == 0) || (urb->actual_length - pos < len)) {
 			netdev_warn(up->netdev,
 				    "invalid message (short; no data; l:%d)\n",
 				    urb->actual_length);
@@ -1233,7 +1233,6 @@ static const struct net_device_ops ucan_netdev_ops = {
 	.ndo_open = ucan_open,
 	.ndo_stop = ucan_close,
 	.ndo_start_xmit = ucan_start_xmit,
-	.ndo_change_mtu = can_change_mtu,
 };
 
 static const struct ethtool_ops ucan_ethtool_ops = {

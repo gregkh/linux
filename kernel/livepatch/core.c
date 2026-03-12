@@ -223,14 +223,14 @@ static int klp_resolve_symbols(Elf_Shdr *sechdrs, const char *strtab,
 	for (i = 0; i < relasec->sh_size / sizeof(Elf_Rela); i++) {
 		sym = (Elf_Sym *)sechdrs[symndx].sh_addr + ELF_R_SYM(relas[i].r_info);
 		if (sym->st_shndx != SHN_LIVEPATCH) {
-			pr_err("symbol %s is not marked as a livepatch symbol\n",
-			       strtab + sym->st_name);
+			pr_err("symbol %s at rela sec %u idx %d is not marked as a livepatch symbol\n",
+			       strtab + sym->st_name, symndx, i);
 			return -EINVAL;
 		}
 
 		/* Format: .klp.sym.sym_objname.sym_name,sympos */
 		cnt = sscanf(strtab + sym->st_name,
-			     ".klp.sym.%55[^.].%511[^,],%lu",
+			     KLP_SYM_PREFIX "%55[^.].%511[^,],%lu",
 			     sym_objname, sym_name, &sympos);
 		if (cnt != 3) {
 			pr_err("symbol %s has an incorrectly formatted name\n",
@@ -309,7 +309,7 @@ static int klp_write_section_relocs(struct module *pmod, Elf_Shdr *sechdrs,
 	 * See comment in klp_resolve_symbols() for an explanation
 	 * of the selected field width value.
 	 */
-	cnt = sscanf(shstrtab + sec->sh_name, ".klp.rela.%55[^.]",
+	cnt = sscanf(shstrtab + sec->sh_name, KLP_RELOC_SEC_PREFIX "%55[^.]",
 		     sec_objname);
 	if (cnt != 1) {
 		pr_err("section %s has an incorrectly formatted name\n",
@@ -1355,6 +1355,25 @@ void klp_module_going(struct module *mod)
 
 	mutex_unlock(&klp_mutex);
 }
+
+void *klp_find_section_by_name(const struct module *mod, const char *name,
+			       size_t *sec_size)
+{
+	struct klp_modinfo *info = mod->klp_info;
+
+	for (int i = 1; i < info->hdr.e_shnum; i++) {
+		Elf_Shdr *shdr = &info->sechdrs[i];
+
+		if (!strcmp(info->secstrings + shdr->sh_name, name)) {
+			*sec_size = shdr->sh_size;
+			return (void *)shdr->sh_addr;
+		}
+	}
+
+	*sec_size = 0;
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(klp_find_section_by_name);
 
 static int __init klp_init(void)
 {

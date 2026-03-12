@@ -896,6 +896,7 @@ void tcp_rcvbuf_grow(struct sock *sk, u32 newval)
 	const struct net *net = sock_net(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 	u32 rcvwin, rcvbuf, cap, oldval;
+	u32 rtt_threshold, rtt_us;
 	u64 grow;
 
 	oldval = tp->rcvq_space.space;
@@ -908,10 +909,19 @@ void tcp_rcvbuf_grow(struct sock *sk, u32 newval)
 	/* DRS is always one RTT late. */
 	rcvwin = newval << 1;
 
-	/* slow start: allow the sender to double its rate. */
-	grow = (u64)rcvwin * (newval - oldval);
-	do_div(grow, oldval);
-	rcvwin += grow << 1;
+	rtt_us = tp->rcv_rtt_est.rtt_us >> 3;
+	rtt_threshold = READ_ONCE(net->ipv4.sysctl_tcp_rcvbuf_low_rtt);
+	if (rtt_us < rtt_threshold) {
+		/* For small RTT, we set @grow to rcvwin * rtt_us/rtt_threshold.
+		 * It might take few additional ms to reach 'line rate',
+		 * but will avoid sk_rcvbuf inflation and poor cache use.
+		 */
+		grow = div_u64((u64)rcvwin * rtt_us, rtt_threshold);
+	} else {
+		/* slow start: allow the sender to double its rate. */
+		grow = div_u64(((u64)rcvwin << 1) * (newval - oldval), oldval);
+	}
+	rcvwin += grow;
 
 	if (!RB_EMPTY_ROOT(&tp->out_of_order_queue))
 		rcvwin += TCP_SKB_CB(tp->ooo_last_skb)->end_seq - tp->rcv_nxt;
@@ -937,9 +947,15 @@ void tcp_rcv_space_adjust(struct sock *sk)
 
 	trace_tcp_rcv_space_adjust(sk);
 
-	tcp_mstamp_refresh(tp);
+	if (unlikely(!tp->rcv_rtt_est.rtt_us))
+		return;
+
+	/* We do not refresh tp->tcp_mstamp here.
+	 * Some platforms have expensive ktime_get() implementations.
+	 * Using the last cached value is enough for DRS.
+	 */
 	time = tcp_stamp_us_delta(tp->tcp_mstamp, tp->rcvq_space.time);
-	if (time < (tp->rcv_rtt_est.rtt_us >> 3) || tp->rcv_rtt_est.rtt_us == 0)
+	if (time < (tp->rcv_rtt_est.rtt_us >> 3))
 		return;
 
 	/* Number of bytes copied to user in last RTT */
@@ -1102,7 +1118,7 @@ static void tcp_rtt_estimator(struct sock *sk, long mrtt_us)
 	tp->srtt_us = max(1U, srtt);
 }
 
-static void tcp_update_pacing_rate(struct sock *sk)
+void tcp_update_pacing_rate(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	u64 rate;
@@ -1139,7 +1155,7 @@ static void tcp_update_pacing_rate(struct sock *sk)
 /* Calculate rto without backoff.  This is the second half of Van Jacobson's
  * routine referred to above.
  */
-static void tcp_set_rto(struct sock *sk)
+void tcp_set_rto(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	/* Old crap is replaced with new one. 8)
@@ -5100,25 +5116,11 @@ static void tcp_ofo_queue(struct sock *sk)
 static bool tcp_prune_ofo_queue(struct sock *sk, const struct sk_buff *in_skb);
 static int tcp_prune_queue(struct sock *sk, const struct sk_buff *in_skb);
 
-/* Check if this incoming skb can be added to socket receive queues
- * while satisfying sk->sk_rcvbuf limit.
- *
- * In theory we should use skb->truesize, but this can cause problems
- * when applications use too small SO_RCVBUF values.
- * When LRO / hw gro is used, the socket might have a high tp->scaling_ratio,
- * allowing RWIN to be close to available space.
- * Whenever the receive queue gets full, we can receive a small packet
- * filling RWIN, but with a high skb->truesize, because most NIC use 4K page
- * plus sk_buff metadata even when receiving less than 1500 bytes of payload.
- *
- * Note that we use skb->len to decide to accept or drop this packet,
- * but sk->sk_rmem_alloc is the sum of all skb->truesize.
- */
 static bool tcp_can_ingest(const struct sock *sk, const struct sk_buff *skb)
 {
 	unsigned int rmem = atomic_read(&sk->sk_rmem_alloc);
 
-	return rmem + skb->len <= sk->sk_rcvbuf;
+	return rmem <= sk->sk_rcvbuf;
 }
 
 static int tcp_try_rmem_schedule(struct sock *sk, const struct sk_buff *skb,
@@ -5151,7 +5153,7 @@ static void tcp_data_queue_ofo(struct sock *sk, struct sk_buff *skb)
 
 	if (unlikely(tcp_try_rmem_schedule(sk, skb, skb->truesize))) {
 		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPOFODROP);
-		sk->sk_data_ready(sk);
+		READ_ONCE(sk->sk_data_ready)(sk);
 		tcp_drop_reason(sk, skb, SKB_DROP_REASON_PROTO_MEM);
 		return;
 	}
@@ -5361,7 +5363,7 @@ err:
 void tcp_data_ready(struct sock *sk)
 {
 	if (tcp_epollin_ready(sk, sk->sk_rcvlowat) || sock_flag(sk, SOCK_DONE))
-		sk->sk_data_ready(sk);
+		READ_ONCE(sk->sk_data_ready)(sk);
 }
 
 static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
@@ -5417,7 +5419,7 @@ queue_and_out:
 			inet_csk(sk)->icsk_ack.pending |=
 					(ICSK_ACK_NOMEM | ICSK_ACK_NOW);
 			inet_csk_schedule_ack(sk);
-			sk->sk_data_ready(sk);
+			READ_ONCE(sk->sk_data_ready)(sk);
 
 			if (skb_queue_len(&sk->sk_receive_queue) && skb->len) {
 				reason = SKB_DROP_REASON_PROTO_MEM;
@@ -5859,7 +5861,9 @@ static void tcp_new_space(struct sock *sk)
 		tp->snd_cwnd_stamp = tcp_jiffies32;
 	}
 
-	INDIRECT_CALL_1(sk->sk_write_space, sk_stream_write_space, sk);
+	INDIRECT_CALL_1(READ_ONCE(sk->sk_write_space),
+			sk_stream_write_space,
+			sk);
 }
 
 /* Caller made space either from:
@@ -5896,7 +5900,9 @@ static inline void tcp_data_snd_check(struct sock *sk)
 static void __tcp_ack_snd_check(struct sock *sk, int ofo_possible)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	unsigned long rtt, delay;
+	struct net *net = sock_net(sk);
+	unsigned long rtt;
+	u64 delay;
 
 	    /* More than one full frame received... */
 	if (((tp->rcv_nxt - tp->rcv_wup) > inet_csk(sk)->icsk_ack.rcv_mss &&
@@ -5915,7 +5921,7 @@ static void __tcp_ack_snd_check(struct sock *sk, int ofo_possible)
 		 * Defer the ack until tcp_release_cb().
 		 */
 		if (sock_owned_by_user_nocheck(sk) &&
-		    READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_backlog_ack_defer)) {
+		    READ_ONCE(net->ipv4.sysctl_tcp_backlog_ack_defer)) {
 			set_bit(TCP_ACK_DEFERRED, &sk->sk_tsq_flags);
 			return;
 		}
@@ -5930,7 +5936,7 @@ send_now:
 	}
 
 	if (!tcp_is_sack(tp) ||
-	    tp->compressed_ack >= READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_comp_sack_nr))
+	    tp->compressed_ack >= READ_ONCE(net->ipv4.sysctl_tcp_comp_sack_nr))
 		goto send_now;
 
 	if (tp->compressed_ack_rcv_nxt != tp->rcv_nxt) {
@@ -5945,18 +5951,26 @@ send_now:
 	if (hrtimer_is_queued(&tp->compressed_ack_timer))
 		return;
 
-	/* compress ack timer : 5 % of rtt, but no more than tcp_comp_sack_delay_ns */
+	/* compress ack timer : comp_sack_rtt_percent of rtt,
+	 * but no more than tcp_comp_sack_delay_ns.
+	 */
 
 	rtt = tp->rcv_rtt_est.rtt_us;
 	if (tp->srtt_us && tp->srtt_us < rtt)
 		rtt = tp->srtt_us;
 
-	delay = min_t(unsigned long,
-		      READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_comp_sack_delay_ns),
-		      rtt * (NSEC_PER_USEC >> 3)/20);
+	/* delay = (rtt >> 3) * NSEC_PER_USEC * comp_sack_rtt_percent / 100
+	 * ->
+	 * delay = rtt * 1.25 * comp_sack_rtt_percent
+	 */
+	delay = (u64)(rtt + (rtt >> 2)) *
+		READ_ONCE(net->ipv4.sysctl_tcp_comp_sack_rtt_percent);
+
+	delay = min(delay, READ_ONCE(net->ipv4.sysctl_tcp_comp_sack_delay_ns));
+
 	sock_hold(sk);
 	hrtimer_start_range_ns(&tp->compressed_ack_timer, ns_to_ktime(delay),
-			       READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_comp_sack_slack_ns),
+			       READ_ONCE(net->ipv4.sysctl_tcp_comp_sack_slack_ns),
 			       HRTIMER_MODE_REL_PINNED_SOFT);
 }
 
@@ -6065,7 +6079,7 @@ static void tcp_urg(struct sock *sk, struct sk_buff *skb, const struct tcphdr *t
 				BUG();
 			WRITE_ONCE(tp->urg_data, TCP_URG_VALID | tmp);
 			if (!sock_flag(sk, SOCK_DEAD))
-				sk->sk_data_ready(sk);
+				READ_ONCE(sk->sk_data_ready)(sk);
 		}
 	}
 }
@@ -7397,6 +7411,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct net *net = sock_net(sk);
 	struct sock *fastopen_sk = NULL;
+	union tcp_seq_and_ts_off st;
 	struct request_sock *req;
 	bool want_cookie = false;
 	struct dst_entry *dst;
@@ -7466,9 +7481,12 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	if (!dst)
 		goto drop_and_free;
 
+	if (tmp_opt.tstamp_ok || (!want_cookie && !isn))
+		st = af_ops->init_seq_and_ts_off(net, skb);
+
 	if (tmp_opt.tstamp_ok) {
 		tcp_rsk(req)->req_usec_ts = dst_tcp_usec_ts(dst);
-		tcp_rsk(req)->ts_off = af_ops->init_ts_off(net, skb);
+		tcp_rsk(req)->ts_off = st.ts_off;
 	}
 	if (!want_cookie && !isn) {
 		int max_syn_backlog = READ_ONCE(net->ipv4.sysctl_max_syn_backlog);
@@ -7490,7 +7508,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 			goto drop_and_release;
 		}
 
-		isn = af_ops->init_seq(skb);
+		isn = st.seq;
 	}
 
 	tcp_ecn_create_request(req, skb, sk, dst);
@@ -7531,20 +7549,16 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 			sock_put(fastopen_sk);
 			goto drop_and_free;
 		}
-		sk->sk_data_ready(sk);
+		READ_ONCE(sk->sk_data_ready)(sk);
 		bh_unlock_sock(fastopen_sk);
 		sock_put(fastopen_sk);
 	} else {
 		tcp_rsk(req)->tfo_listener = false;
-		if (!want_cookie) {
-			req->timeout = tcp_timeout_init((struct sock *)req);
-			if (unlikely(!inet_csk_reqsk_queue_hash_add(sk, req,
-								    req->timeout))) {
-				reqsk_free(req);
-				dst_release(dst);
-				return 0;
-			}
-
+		if (!want_cookie &&
+		    unlikely(!inet_csk_reqsk_queue_hash_add(sk, req))) {
+			reqsk_free(req);
+			dst_release(dst);
+			return 0;
 		}
 		af_ops->send_synack(sk, dst, &fl, req, &foc,
 				    !want_cookie ? TCP_SYNACK_NORMAL :

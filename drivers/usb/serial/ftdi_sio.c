@@ -107,26 +107,24 @@ struct ftdi_quirk {
 };
 
 static int   ftdi_jtag_probe(struct usb_serial *serial);
-static int   ftdi_NDI_device_setup(struct usb_serial *serial);
 static int   ftdi_stmclite_probe(struct usb_serial *serial);
 static int   ftdi_8u2232c_probe(struct usb_serial *serial);
-static void  ftdi_USB_UIRT_setup(struct ftdi_private *priv);
-static void  ftdi_HE_TIRA1_setup(struct ftdi_private *priv);
+static void  ftdi_usb_uirt_setup(struct ftdi_private *priv);
+static void  ftdi_he_tira1_setup(struct ftdi_private *priv);
 
 static const struct ftdi_quirk ftdi_jtag_quirk = {
 	.probe	= ftdi_jtag_probe,
 };
 
-static const struct ftdi_quirk ftdi_NDI_device_quirk = {
-	.probe	= ftdi_NDI_device_setup,
+static const struct ftdi_quirk ftdi_ndi_quirk = {
 };
 
-static const struct ftdi_quirk ftdi_USB_UIRT_quirk = {
-	.port_probe = ftdi_USB_UIRT_setup,
+static const struct ftdi_quirk ftdi_usb_uirt_quirk = {
+	.port_probe = ftdi_usb_uirt_setup,
 };
 
-static const struct ftdi_quirk ftdi_HE_TIRA1_quirk = {
-	.port_probe = ftdi_HE_TIRA1_setup,
+static const struct ftdi_quirk ftdi_he_tira1_quirk = {
+	.port_probe = ftdi_he_tira1_setup,
 };
 
 static const struct ftdi_quirk ftdi_stmclite_quirk = {
@@ -590,9 +588,9 @@ static const struct usb_device_id id_table_combined[] = {
 	{ USB_DEVICE(OCT_VID, OCT_US101_PID) },
 	{ USB_DEVICE(OCT_VID, OCT_DK201_PID) },
 	{ USB_DEVICE(FTDI_VID, FTDI_HE_TIRA1_PID),
-		.driver_info = (kernel_ulong_t)&ftdi_HE_TIRA1_quirk },
+		.driver_info = (kernel_ulong_t)&ftdi_he_tira1_quirk },
 	{ USB_DEVICE(FTDI_VID, FTDI_USB_UIRT_PID),
-		.driver_info = (kernel_ulong_t)&ftdi_USB_UIRT_quirk },
+		.driver_info = (kernel_ulong_t)&ftdi_usb_uirt_quirk },
 	{ USB_DEVICE(FTDI_VID, PROTEGO_SPECIAL_1) },
 	{ USB_DEVICE(FTDI_VID, PROTEGO_R2X0) },
 	{ USB_DEVICE(FTDI_VID, PROTEGO_SPECIAL_3) },
@@ -792,17 +790,17 @@ static const struct usb_device_id id_table_combined[] = {
 	{ USB_DEVICE(FTDI_VID, FTDI_TACTRIX_OPENPORT_13U_PID) },
 	{ USB_DEVICE(ELEKTOR_VID, ELEKTOR_FT323R_PID) },
 	{ USB_DEVICE(FTDI_VID, FTDI_NDI_HUC_PID),
-		.driver_info = (kernel_ulong_t)&ftdi_NDI_device_quirk },
+		.driver_info = (kernel_ulong_t)&ftdi_ndi_quirk },
 	{ USB_DEVICE(FTDI_VID, FTDI_NDI_SPECTRA_SCU_PID),
-		.driver_info = (kernel_ulong_t)&ftdi_NDI_device_quirk },
+		.driver_info = (kernel_ulong_t)&ftdi_ndi_quirk },
 	{ USB_DEVICE(FTDI_VID, FTDI_NDI_FUTURE_2_PID),
-		.driver_info = (kernel_ulong_t)&ftdi_NDI_device_quirk },
+		.driver_info = (kernel_ulong_t)&ftdi_ndi_quirk },
 	{ USB_DEVICE(FTDI_VID, FTDI_NDI_FUTURE_3_PID),
-		.driver_info = (kernel_ulong_t)&ftdi_NDI_device_quirk },
+		.driver_info = (kernel_ulong_t)&ftdi_ndi_quirk },
 	{ USB_DEVICE(FTDI_VID, FTDI_NDI_AURORA_SCU_PID),
-		.driver_info = (kernel_ulong_t)&ftdi_NDI_device_quirk },
+		.driver_info = (kernel_ulong_t)&ftdi_ndi_quirk },
 	{ USB_DEVICE(FTDI_NDI_VID, FTDI_NDI_EMGUIDE_GEMINI_PID),
-		.driver_info = (kernel_ulong_t)&ftdi_NDI_device_quirk },
+		.driver_info = (kernel_ulong_t)&ftdi_ndi_quirk },
 	{ USB_DEVICE(TELLDUS_VID, TELLDUS_TELLSTICK_PID) },
 	{ USB_DEVICE(NOVITUS_VID, NOVITUS_BONO_E_PID) },
 	{ USB_DEVICE(FTDI_VID, RTSYSTEMS_USB_VX8_PID) },
@@ -1248,6 +1246,7 @@ static int update_mctrl(struct usb_serial_port *port, unsigned int set,
 static u32 get_ftdi_divisor(struct tty_struct *tty,
 						struct usb_serial_port *port)
 {
+	const struct ftdi_quirk *quirk = usb_get_serial_data(port->serial);
 	struct ftdi_private *priv = usb_get_serial_port_data(port);
 	struct device *dev = &port->dev;
 	u32 div_value = 0;
@@ -1307,16 +1306,8 @@ static u32 get_ftdi_divisor(struct tty_struct *tty,
 	case FT232R:
 	case FTX:
 		if (baud <= 3000000) {
-			u16 product_id = le16_to_cpu(
-				port->serial->dev->descriptor.idProduct);
-			if (((product_id == FTDI_NDI_HUC_PID)		||
-			     (product_id == FTDI_NDI_SPECTRA_SCU_PID)	||
-			     (product_id == FTDI_NDI_FUTURE_2_PID)	||
-			     (product_id == FTDI_NDI_FUTURE_3_PID)	||
-			     (product_id == FTDI_NDI_AURORA_SCU_PID))	&&
-			    (baud == 19200)) {
+			if (quirk == &ftdi_ndi_quirk && baud == 19200)
 				baud = 1200000;
-			}
 			div_value = ftdi_232bm_baud_to_divisor(baud);
 		} else {
 			dev_dbg(dev, "%s - Baud rate too high!\n", __func__);
@@ -2213,7 +2204,9 @@ static int ftdi_port_probe(struct usb_serial_port *port)
 		goto err_free;
 
 	ftdi_set_max_packet_size(port);
-	if (read_latency_timer(port) < 0)
+	if (quirk == &ftdi_ndi_quirk)
+		priv->latency = 1;
+	else if (read_latency_timer(port) < 0)
 		priv->latency = 16;
 	write_latency_timer(port);
 
@@ -2232,58 +2225,27 @@ err_free:
 	return result;
 }
 
-/* Setup for the USB-UIRT device, which requires hardwired
- * baudrate (38400 gets mapped to 312500) */
-/* Called from usbserial:serial_probe */
-static void ftdi_USB_UIRT_setup(struct ftdi_private *priv)
+/*
+ * Setup for the USB-UIRT device, which requires hardwired baudrate
+ * (38400 gets mapped to 312500).
+ */
+static void ftdi_usb_uirt_setup(struct ftdi_private *priv)
 {
 	priv->flags |= ASYNC_SPD_CUST;
 	priv->custom_divisor = 77;
 	priv->force_baud = 38400;
 }
 
-/* Setup for the HE-TIRA1 device, which requires hardwired
- * baudrate (38400 gets mapped to 100000) and RTS-CTS enabled.  */
-
-static void ftdi_HE_TIRA1_setup(struct ftdi_private *priv)
+/*
+ * Setup for the HE-TIRA1 device, which requires hardwired baudrate
+ * (38400 gets mapped to 100000) and RTS-CTS enabled.
+ */
+static void ftdi_he_tira1_setup(struct ftdi_private *priv)
 {
 	priv->flags |= ASYNC_SPD_CUST;
 	priv->custom_divisor = 240;
 	priv->force_baud = 38400;
 	priv->force_rtscts = 1;
-}
-
-/*
- * Module parameter to control latency timer for NDI FTDI-based USB devices.
- * If this value is not set in /etc/modprobe.d/ its value will be set
- * to 1ms.
- */
-static int ndi_latency_timer = 1;
-
-/* Setup for the NDI FTDI-based USB devices, which requires hardwired
- * baudrate (19200 gets mapped to 1200000).
- *
- * Called from usbserial:serial_probe.
- */
-static int ftdi_NDI_device_setup(struct usb_serial *serial)
-{
-	struct usb_device *udev = serial->dev;
-	int latency = ndi_latency_timer;
-
-	if (latency == 0)
-		latency = 1;
-	if (latency > 99)
-		latency = 99;
-
-	dev_dbg(&udev->dev, "%s setting NDI device latency to %d\n", __func__, latency);
-	dev_info(&udev->dev, "NDI device with a latency value of %d\n", latency);
-
-	/* FIXME: errors are not returned */
-	usb_control_msg(udev, usb_sndctrlpipe(udev, 0),
-				FTDI_SIO_SET_LATENCY_TIMER_REQUEST,
-				FTDI_SIO_SET_LATENCY_TIMER_REQUEST_TYPE,
-				latency, 0, NULL, 0, WDR_TIMEOUT);
-	return 0;
 }
 
 /*
@@ -2296,26 +2258,29 @@ static int ftdi_jtag_probe(struct usb_serial *serial)
 	struct usb_interface *intf = serial->interface;
 	int ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 
-	if (ifnum == 0) {
-		dev_info(&intf->dev, "Ignoring interface reserved for JTAG\n");
+	if (ifnum == 0)
 		return -ENODEV;
-	}
 
 	return 0;
 }
 
 static int ftdi_8u2232c_probe(struct usb_serial *serial)
 {
+	struct usb_interface *intf = serial->interface;
 	struct usb_device *udev = serial->dev;
+	int ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 
-	if (udev->manufacturer && !strcmp(udev->manufacturer, "CALAO Systems"))
-		return ftdi_jtag_probe(serial);
+	if (ifnum == 0) {
+		if (udev->manufacturer &&
+				!strcmp(udev->manufacturer, "CALAO Systems"))
+			return -ENODEV;
 
-	if (udev->product &&
-		(!strcmp(udev->product, "Arrow USB Blaster") ||
-		 !strcmp(udev->product, "BeagleBone/XDS100V2") ||
-		 !strcmp(udev->product, "SNAP Connect E10")))
-		return ftdi_jtag_probe(serial);
+		if (udev->product &&
+				(!strcmp(udev->product, "Arrow USB Blaster") ||
+				 !strcmp(udev->product, "BeagleBone/XDS100V2") ||
+				 !strcmp(udev->product, "SNAP Connect E10")))
+			return -ENODEV;
+	}
 
 	return 0;
 }
@@ -2332,10 +2297,8 @@ static int ftdi_stmclite_probe(struct usb_serial *serial)
 	struct usb_interface *intf = serial->interface;
 	int ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
 
-	if (ifnum < 2) {
-		dev_info(&intf->dev, "Ignoring interface reserved for JTAG\n");
+	if (ifnum < 2)
 		return -ENODEV;
-	}
 
 	return 0;
 }
@@ -2912,6 +2875,3 @@ module_usb_serial_driver(serial_drivers, id_table_combined);
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
-
-module_param(ndi_latency_timer, int, 0644);
-MODULE_PARM_DESC(ndi_latency_timer, "NDI device latency timer override");

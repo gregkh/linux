@@ -339,6 +339,7 @@ static int start_readonly;
  */
 static bool create_on_open = true;
 static bool legacy_async_del_gendisk = true;
+static bool check_new_feature = true;
 
 /*
  * We have a system wide 'event count' that is incremented
@@ -1851,9 +1852,13 @@ static int super_1_load(struct md_rdev *rdev, struct md_rdev *refdev, int minor_
 	}
 	if (sb->pad0 ||
 	    sb->pad3[0] ||
-	    memcmp(sb->pad3, sb->pad3+1, sizeof(sb->pad3) - sizeof(sb->pad3[1])))
-		/* Some padding is non-zero, might be a new feature */
-		return -EINVAL;
+	    memcmp(sb->pad3, sb->pad3+1, sizeof(sb->pad3) - sizeof(sb->pad3[1]))) {
+		pr_warn("Some padding is non-zero on %pg, might be a new feature\n",
+			rdev->bdev);
+		if (check_new_feature)
+			return -EINVAL;
+		pr_warn("check_new_feature is disabled, data corruption possible\n");
+	}
 
 	rdev->preferred_minor = 0xffff;
 	rdev->data_offset = le64_to_cpu(sb->data_offset);
@@ -2008,6 +2013,9 @@ static int super_1_validate(struct mddev *mddev, struct md_rdev *freshest, struc
 		memcpy(mddev->uuid, sb->set_uuid, 16);
 
 		mddev->max_disks =  (4096-256)/2;
+
+		if (!mddev->logical_block_size)
+			mddev->logical_block_size = le32_to_cpu(sb->logical_block_size);
 
 		if ((le32_to_cpu(sb->feature_map) & MD_FEATURE_BITMAP_OFFSET) &&
 		    mddev->bitmap_info.file == NULL) {
@@ -2203,6 +2211,7 @@ static void super_1_sync(struct mddev *mddev, struct md_rdev *rdev)
 	sb->chunksize = cpu_to_le32(mddev->chunk_sectors);
 	sb->level = cpu_to_le32(mddev->level);
 	sb->layout = cpu_to_le32(mddev->layout);
+	sb->logical_block_size = cpu_to_le32(mddev->logical_block_size);
 	if (test_bit(FailFast, &rdev->flags))
 		sb->devflags |= FailFast1;
 	else
@@ -2781,6 +2790,7 @@ void md_update_sb(struct mddev *mddev, int force_change)
 	if (!md_is_rdwr(mddev)) {
 		if (force_change)
 			set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
+		pr_err("%s: can't update sb for read-only array %s\n", __func__, mdname(mddev));
 		return;
 	}
 
@@ -5928,6 +5938,88 @@ static struct md_sysfs_entry md_serialize_policy =
 __ATTR(serialize_policy, S_IRUGO | S_IWUSR, serialize_policy_show,
        serialize_policy_store);
 
+static int mddev_set_logical_block_size(struct mddev *mddev,
+				unsigned int lbs)
+{
+	int err = 0;
+	struct queue_limits lim;
+
+	if (queue_logical_block_size(mddev->gendisk->queue) >= lbs) {
+		pr_err("%s: Cannot set LBS smaller than mddev LBS %u\n",
+		       mdname(mddev), lbs);
+		return -EINVAL;
+	}
+
+	lim = queue_limits_start_update(mddev->gendisk->queue);
+	lim.logical_block_size = lbs;
+	pr_info("%s: logical_block_size is changed, data may be lost\n",
+		mdname(mddev));
+	err = queue_limits_commit_update(mddev->gendisk->queue, &lim);
+	if (err)
+		return err;
+
+	mddev->logical_block_size = lbs;
+	/* New lbs will be written to superblock after array is running */
+	set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
+	return 0;
+}
+
+static ssize_t
+lbs_show(struct mddev *mddev, char *page)
+{
+	return sprintf(page, "%u\n", mddev->logical_block_size);
+}
+
+static ssize_t
+lbs_store(struct mddev *mddev, const char *buf, size_t len)
+{
+	unsigned int lbs;
+	int err = -EBUSY;
+
+	/* Only 1.x meta supports configurable LBS */
+	if (mddev->major_version == 0)
+		return -EINVAL;
+
+	err = kstrtouint(buf, 10, &lbs);
+	if (err < 0)
+		return -EINVAL;
+
+	if (mddev->pers) {
+		unsigned int curr_lbs;
+
+		if (mddev->logical_block_size)
+			return -EBUSY;
+		/*
+		 * To fix forward compatibility issues, LBS is not
+		 * configured for arrays from old kernels (<=6.18) by default.
+		 * If the user confirms no rollback to old kernels,
+		 * enable LBS by writing current LBS — to prevent data
+		 * loss from LBS changes.
+		 */
+		curr_lbs = queue_logical_block_size(mddev->gendisk->queue);
+		if (lbs != curr_lbs)
+			return -EINVAL;
+
+		mddev->logical_block_size = curr_lbs;
+		set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
+		pr_info("%s: logical block size configured successfully, array will not be assembled in old kernels (<= 6.18)\n",
+			mdname(mddev));
+		return len;
+	}
+
+	err = mddev_lock(mddev);
+	if (err)
+		goto unlock;
+
+	err = mddev_set_logical_block_size(mddev, lbs);
+
+unlock:
+	mddev_unlock(mddev);
+	return err ?: len;
+}
+
+static struct md_sysfs_entry md_logical_block_size =
+__ATTR(logical_block_size, 0644, lbs_show, lbs_store);
 
 static struct attribute *md_default_attrs[] = {
 	&md_level.attr,
@@ -5950,6 +6042,7 @@ static struct attribute *md_default_attrs[] = {
 	&md_consistency_policy.attr,
 	&md_fail_last_dev.attr,
 	&md_serialize_policy.attr,
+	&md_logical_block_size.attr,
 	NULL,
 };
 
@@ -6080,6 +6173,37 @@ int mddev_stack_rdev_limits(struct mddev *mddev, struct queue_limits *lim,
 			return -EINVAL;
 	}
 
+	/*
+	 * Before RAID adding folio support, the logical_block_size
+	 * should be smaller than the page size.
+	 */
+	if (lim->logical_block_size > PAGE_SIZE) {
+		pr_err("%s: logical_block_size must not larger than PAGE_SIZE\n",
+			mdname(mddev));
+		return -EINVAL;
+	}
+
+	/* Only 1.x meta needs to set logical block size */
+	if (mddev->major_version == 0)
+		return 0;
+
+	/*
+	 * Fix forward compatibility issue. Only set LBS by default for
+	 * new arrays, mddev->events == 0 indicates the array was just
+	 * created. When assembling an array, read LBS from the superblock
+	 * instead — LBS is 0 in superblocks created by old kernels.
+	 */
+	if (!mddev->events) {
+		pr_info("%s: array will not be assembled in old kernels that lack configurable LBS support (<= 6.18)\n",
+			mdname(mddev));
+		mddev->logical_block_size = lim->logical_block_size;
+	}
+
+	if (!mddev->logical_block_size)
+		pr_warn("%s: echo current LBS to md/logical_block_size to prevent data loss issues from LBS changes.\n"
+			"\tNote: After setting, array will not be assembled in old kernels (<= 6.18)\n",
+			mdname(mddev));
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mddev_stack_rdev_limits);
@@ -6091,6 +6215,13 @@ int mddev_stack_new_rdev(struct mddev *mddev, struct md_rdev *rdev)
 
 	if (mddev_is_dm(mddev))
 		return 0;
+
+	if (queue_logical_block_size(rdev->bdev->bd_disk->queue) >
+	    queue_logical_block_size(mddev->gendisk->queue)) {
+		pr_err("%s: incompatible logical_block_size, can not add\n",
+		       mdname(mddev));
+		return -EINVAL;
+	}
 
 	lim = queue_limits_start_update(mddev->gendisk->queue);
 	queue_limits_stack_bdev(&lim, rdev->bdev, rdev->data_offset,
@@ -6684,6 +6815,7 @@ static void md_clean(struct mddev *mddev)
 	mddev->chunk_sectors = 0;
 	mddev->ctime = mddev->utime = 0;
 	mddev->layout = 0;
+	mddev->logical_block_size = 0;
 	mddev->max_disks = 0;
 	mddev->events = 0;
 	mddev->can_decrease_events = 0;
@@ -9979,6 +10111,52 @@ static void unregister_sync_thread(struct mddev *mddev)
 	md_reap_sync_thread(mddev);
 }
 
+static bool md_should_do_recovery(struct mddev *mddev)
+{
+	/*
+	 * As long as one of the following flags is set,
+	 * recovery needs to do or cleanup.
+	 */
+	if (test_bit(MD_RECOVERY_NEEDED, &mddev->recovery) ||
+	    test_bit(MD_RECOVERY_DONE, &mddev->recovery))
+		return true;
+
+	/*
+	 * If no flags are set and it is in read-only status,
+	 * there is nothing to do.
+	 */
+	if (!md_is_rdwr(mddev))
+		return false;
+
+	/*
+	 * MD_SB_CHANGE_PENDING indicates that the array is switching from clean to
+	 * active, and no action is needed for now.
+	 * All other MD_SB_* flags require to update the superblock.
+	 */
+	if (mddev->sb_flags & ~ (1<<MD_SB_CHANGE_PENDING))
+		return true;
+
+	/*
+	 * If the array is not using external metadata and there has been no data
+	 * written for some time, then the array's status needs to be set to
+	 * in_sync.
+	 */
+	if (mddev->external == 0 && mddev->safemode == 1)
+		return true;
+
+	/*
+	 * When the system is about to restart or the process receives an signal,
+	 * the array needs to be synchronized as soon as possible.
+	 * Once the data synchronization is completed, need to change the array
+	 * status to in_sync.
+	 */
+	if (mddev->safemode == 2 && !mddev->in_sync &&
+	    mddev->resync_offset == MaxSector)
+		return true;
+
+	return false;
+}
+
 /*
  * This routine is regularly called by all per-raid-array threads to
  * deal with generic issues like resync and super-block update.
@@ -10015,18 +10193,7 @@ void md_check_recovery(struct mddev *mddev)
 		flush_signals(current);
 	}
 
-	if (!md_is_rdwr(mddev) &&
-	    !test_bit(MD_RECOVERY_NEEDED, &mddev->recovery) &&
-	    !test_bit(MD_RECOVERY_DONE, &mddev->recovery))
-		return;
-	if ( ! (
-		(mddev->sb_flags & ~ (1<<MD_SB_CHANGE_PENDING)) ||
-		test_bit(MD_RECOVERY_NEEDED, &mddev->recovery) ||
-		test_bit(MD_RECOVERY_DONE, &mddev->recovery) ||
-		(mddev->external == 0 && mddev->safemode == 1) ||
-		(mddev->safemode == 2
-		 && !mddev->in_sync && mddev->resync_offset == MaxSector)
-		))
+	if (!md_should_do_recovery(mddev))
 		return;
 
 	if (mddev_trylock(mddev)) {
@@ -10282,7 +10449,6 @@ static int md_notify_reboot(struct notifier_block *this,
 			    unsigned long code, void *x)
 {
 	struct mddev *mddev;
-	int need_delay = 0;
 
 	spin_lock(&all_mddevs_lock);
 	list_for_each_entry(mddev, &all_mddevs, all_mddevs) {
@@ -10296,20 +10462,10 @@ static int md_notify_reboot(struct notifier_block *this,
 				mddev->safemode = 2;
 			mddev_unlock(mddev);
 		}
-		need_delay = 1;
 		spin_lock(&all_mddevs_lock);
 		mddev_put_locked(mddev);
 	}
 	spin_unlock(&all_mddevs_lock);
-
-	/*
-	 * certain more exotic SCSI devices are known to be
-	 * volatile wrt too early system reboots. While the
-	 * right place to handle this issue is the given
-	 * driver, we do want to have a safe RAID driver ...
-	 */
-	if (need_delay)
-		msleep(1000);
 
 	return NOTIFY_DONE;
 }
@@ -10698,6 +10854,7 @@ module_param(start_dirty_degraded, int, S_IRUGO|S_IWUSR);
 module_param_call(new_array, add_named_array, NULL, NULL, S_IWUSR);
 module_param(create_on_open, bool, S_IRUSR|S_IWUSR);
 module_param(legacy_async_del_gendisk, bool, 0600);
+module_param(check_new_feature, bool, 0600);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MD RAID framework");

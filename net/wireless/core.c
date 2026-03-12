@@ -34,6 +34,9 @@
 /* name for sysfs, %d is appended */
 #define PHY_NAME "phy"
 
+/* maximum length of radio debugfs directory name */
+#define RADIO_DEBUGFSDIR_MAX_LEN	8
+
 MODULE_AUTHOR("Johannes Berg");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("wireless configuration support");
@@ -428,7 +431,7 @@ static void cfg80211_wiphy_work(struct work_struct *work)
 	if (wk) {
 		list_del_init(&wk->entry);
 		if (!list_empty(&rdev->wiphy_work_list))
-			queue_work(system_unbound_wq, work);
+			queue_work(system_dfl_wq, work);
 		spin_unlock_irq(&rdev->wiphy_work_lock);
 
 		trace_wiphy_work_run(&rdev->wiphy, wk);
@@ -1038,6 +1041,18 @@ int wiphy_register(struct wiphy *wiphy)
 	/* add to debugfs */
 	rdev->wiphy.debugfsdir = debugfs_create_dir(wiphy_name(&rdev->wiphy),
 						    ieee80211_debugfs_dir);
+	if (wiphy->n_radio > 0) {
+		int idx;
+		char radio_name[RADIO_DEBUGFSDIR_MAX_LEN];
+
+		for (idx = 0; idx < wiphy->n_radio; idx++) {
+			scnprintf(radio_name, sizeof(radio_name), "radio%d",
+				  idx);
+			wiphy->radio_cfg[idx].radio_debugfsdir =
+				debugfs_create_dir(radio_name,
+						   rdev->wiphy.debugfsdir);
+		}
+	}
 
 	cfg80211_debugfs_rdev_add(rdev);
 	nl80211_notify_wiphy(rdev, NL80211_CMD_NEW_WIPHY);
@@ -1047,12 +1062,12 @@ int wiphy_register(struct wiphy *wiphy)
 	wiphy_regulatory_register(wiphy);
 
 	if (wiphy->regulatory_flags & REGULATORY_CUSTOM_REG) {
-		struct regulatory_request request;
-
-		request.wiphy_idx = get_wiphy_idx(wiphy);
-		request.initiator = NL80211_REGDOM_SET_BY_DRIVER;
-		request.alpha2[0] = '9';
-		request.alpha2[1] = '9';
+		struct regulatory_request request = {
+			.wiphy_idx = get_wiphy_idx(wiphy),
+			.initiator = NL80211_REGDOM_SET_BY_DRIVER,
+			.alpha2[0] = '9',
+			.alpha2[1] = '9',
+		};
 
 		nl80211_send_reg_change_event(&request);
 	}
@@ -1195,6 +1210,7 @@ void wiphy_unregister(struct wiphy *wiphy)
 	/* this has nothing to do now but make sure it's gone */
 	cancel_work_sync(&rdev->wiphy_work);
 
+	cancel_work_sync(&rdev->rfkill_block);
 	cancel_work_sync(&rdev->conn_work);
 	flush_work(&rdev->event_work);
 	cancel_delayed_work_sync(&rdev->dfs_update_channels_wk);
@@ -1697,7 +1713,7 @@ void wiphy_work_queue(struct wiphy *wiphy, struct wiphy_work *work)
 		list_add_tail(&work->entry, &rdev->wiphy_work_list);
 	spin_unlock_irqrestore(&rdev->wiphy_work_lock, flags);
 
-	queue_work(system_unbound_wq, &rdev->wiphy_work);
+	queue_work(system_dfl_wq, &rdev->wiphy_work);
 }
 EXPORT_SYMBOL_GPL(wiphy_work_queue);
 

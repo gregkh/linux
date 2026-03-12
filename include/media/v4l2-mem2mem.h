@@ -153,6 +153,9 @@ void *v4l2_m2m_get_curr_priv(struct v4l2_m2m_dev *m2m_dev);
  *
  * @m2m_ctx: m2m context assigned to the instance given by struct &v4l2_m2m_ctx
  * @type: type of the V4L2 buffer, as defined by enum &v4l2_buf_type
+ *
+ * This function returns the capture queue when @type is a capture type, and the
+ * output queue otherwise. It never returns a NULL pointer.
  */
 struct vb2_queue *v4l2_m2m_get_vq(struct v4l2_m2m_ctx *m2m_ctx,
 				       enum v4l2_buf_type type);
@@ -545,6 +548,27 @@ v4l2_m2m_register_media_controller(struct v4l2_m2m_dev *m2m_dev,
 void v4l2_m2m_release(struct v4l2_m2m_dev *m2m_dev);
 
 /**
+ * v4l2_m2m_get() - take a reference to the m2m_dev structure
+ *
+ * @m2m_dev: opaque pointer to the internal data to handle M2M context
+ *
+ * This is used to share the M2M device across multiple devices. This
+ * can be used to avoid scheduling two hardware nodes concurrently.
+ */
+void v4l2_m2m_get(struct v4l2_m2m_dev *m2m_dev);
+
+/**
+ * v4l2_m2m_put() - remove a reference to the m2m_dev structure
+ *
+ * @m2m_dev: opaque pointer to the internal data to handle M2M context
+ *
+ * Once the M2M device has no more references, v4l2_m2m_release() will be
+ * called automatically. Users of this method should never call
+ * v4l2_m2m_release() directly. See v4l2_m2m_get() for more details.
+ */
+void v4l2_m2m_put(struct v4l2_m2m_dev *m2m_dev);
+
+/**
  * v4l2_m2m_ctx_init() - allocate and initialize a m2m context
  *
  * @m2m_dev: opaque pointer to the internal data to handle M2M context
@@ -842,19 +866,13 @@ v4l2_m2m_dst_buf_remove_by_idx(struct v4l2_m2m_ctx *m2m_ctx, unsigned int idx)
  *
  * @out_vb: the output buffer that is the source of the metadata.
  * @cap_vb: the capture buffer that will receive the metadata.
- * @copy_frame_flags: copy the KEY/B/PFRAME flags as well.
  *
  * This helper function copies the timestamp, timecode (if the TIMECODE
- * buffer flag was set), field and the TIMECODE, KEYFRAME, BFRAME, PFRAME
- * and TSTAMP_SRC_MASK flags from @out_vb to @cap_vb.
- *
- * If @copy_frame_flags is false, then the KEYFRAME, BFRAME and PFRAME
- * flags are not copied. This is typically needed for encoders that
- * set this bits explicitly.
+ * buffer flag was set), field, and the TIMECODE and TSTAMP_SRC_MASK flags from
+ * @out_vb to @cap_vb.
  */
 void v4l2_m2m_buf_copy_metadata(const struct vb2_v4l2_buffer *out_vb,
-				struct vb2_v4l2_buffer *cap_vb,
-				bool copy_frame_flags);
+				struct vb2_v4l2_buffer *cap_vb);
 
 /* v4l2 request helper */
 

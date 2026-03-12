@@ -520,6 +520,8 @@ nvme_fc_free_rport(struct kref *ref)
 
 	WARN_ON(rport->remoteport.port_state != FC_OBJSTATE_DELETED);
 	WARN_ON(!list_empty(&rport->ctrl_list));
+	WARN_ON(!list_empty(&rport->ls_req_list));
+	WARN_ON(!list_empty(&rport->ls_rcv_list));
 
 	/* remove from lport list */
 	spin_lock_irqsave(&nvme_fc_lock, flags);
@@ -3363,6 +3365,7 @@ static const struct nvme_ctrl_ops nvme_fc_ctrl_ops = {
 	.submit_async_event	= nvme_fc_submit_async_event,
 	.delete_ctrl		= nvme_fc_delete_ctrl,
 	.get_address		= nvmf_get_address,
+	.get_virt_boundary	= nvmf_get_virt_boundary,
 };
 
 static void

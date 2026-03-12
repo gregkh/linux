@@ -6,7 +6,7 @@
  *
  * Author: Ivan Orlov <ivan.orlov0322@gmail.com>
  */
-#include "../kselftest_harness.h"
+#include "kselftest_harness.h"
 #include <sound/asound.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -141,7 +141,6 @@ TEST_F(timer_f, utimer) {
 TEST(wrong_timers_test) {
 	int timer_dev_fd;
 	int utimer_fd;
-	size_t i;
 	struct snd_timer_uinfo wrong_timer = {
 		.resolution = 0,
 		.id = UTIMER_DEFAULT_ID,

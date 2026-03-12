@@ -1208,7 +1208,7 @@ static int wcd937x_connect_port(struct wcd937x_sdw_priv *wcd, u8 port_idx, u8 ch
 static int wcd937x_rx_hph_mode_get(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = wcd937x->hph_mode;
@@ -1218,8 +1218,7 @@ static int wcd937x_rx_hph_mode_get(struct snd_kcontrol *kcontrol,
 static int wcd937x_rx_hph_mode_put(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component =
-				snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(component);
 	u32 mode_val;
 
@@ -1251,7 +1250,7 @@ static int wcd937x_rx_hph_mode_put(struct snd_kcontrol *kcontrol,
 static int wcd937x_get_compander(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(component);
 	struct soc_mixer_control *mc;
 	bool hphr;
@@ -1267,7 +1266,7 @@ static int wcd937x_get_compander(struct snd_kcontrol *kcontrol,
 static int wcd937x_set_compander(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(component);
 	struct wcd937x_sdw_priv *wcd = wcd937x->sdw_priv[AIF1_PB];
 	int value = ucontrol->value.integer.value[0];
@@ -1304,7 +1303,7 @@ static int wcd937x_get_swr_port(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
 	struct soc_mixer_control *mixer = (struct soc_mixer_control *)kcontrol->private_value;
-	struct snd_soc_component *comp = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(comp);
 	struct wcd937x_sdw_priv *wcd;
 	int dai_id = mixer->shift;
@@ -1323,7 +1322,7 @@ static int wcd937x_set_swr_port(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
 	struct soc_mixer_control *mixer = (struct soc_mixer_control *)kcontrol->private_value;
-	struct snd_soc_component *comp = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(comp);
 	struct wcd937x_sdw_priv *wcd;
 	int dai_id = mixer->shift;
@@ -1951,7 +1950,7 @@ static const struct wcd_mbhc_cb mbhc_cb = {
 static int wcd937x_get_hph_type(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = wcd_mbhc_get_hph_type(wcd937x->wcd_mbhc);
@@ -1965,8 +1964,7 @@ static int wcd937x_hph_impedance_get(struct snd_kcontrol *kcontrol,
 	u32 zl, zr;
 	bool hphr;
 	struct soc_mixer_control *mc;
-	struct snd_soc_component *component =
-					snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(component);
 
 	mc = (struct soc_mixer_control *)(kcontrol->private_value);
@@ -2475,7 +2473,7 @@ static int wcd937x_irq_init(struct wcd937x_priv *wcd, struct device *dev)
 
 static int wcd937x_soc_codec_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(component);
 	struct sdw_slave *tx_sdw_dev = wcd937x->tx_sdw_dev;
 	struct device *dev = component->dev;
@@ -2765,11 +2763,6 @@ static int wcd937x_bind(struct device *dev)
 	wcd937x->sdw_priv[AIF1_CAP] = dev_get_drvdata(wcd937x->txdev);
 	wcd937x->sdw_priv[AIF1_CAP]->wcd937x = wcd937x;
 	wcd937x->tx_sdw_dev = dev_to_sdw_dev(wcd937x->txdev);
-	if (!wcd937x->tx_sdw_dev) {
-		dev_err(dev, "could not get txslave with matching of dev\n");
-		ret = -EINVAL;
-		goto err_put_txdev;
-	}
 
 	/*
 	 * As TX is the main CSR reg interface, which should not be suspended first.
@@ -2868,7 +2861,7 @@ static int wcd937x_add_slave_components(struct wcd937x_priv *wcd937x,
 		dev_err(dev, "Couldn't parse phandle to qcom,rx-device!\n");
 		return -ENODEV;
 	}
-	of_node_get(wcd937x->rxnode);
+
 	component_match_add_release(dev, matchptr, component_release_of,
 				    component_compare_of, wcd937x->rxnode);
 
@@ -2877,7 +2870,7 @@ static int wcd937x_add_slave_components(struct wcd937x_priv *wcd937x,
 		dev_err(dev, "Couldn't parse phandle to qcom,tx-device\n");
 			return -ENODEV;
 	}
-	of_node_get(wcd937x->txnode);
+
 	component_match_add_release(dev, matchptr, component_release_of,
 				    component_compare_of, wcd937x->txnode);
 

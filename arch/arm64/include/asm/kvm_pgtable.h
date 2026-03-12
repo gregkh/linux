@@ -87,9 +87,17 @@ typedef u64 kvm_pte_t;
 
 #define KVM_PTE_LEAF_ATTR_HI_SW		GENMASK(58, 55)
 
-#define KVM_PTE_LEAF_ATTR_HI_S1_XN	BIT(54)
+#define __KVM_PTE_LEAF_ATTR_HI_S1_XN	BIT(54)
+#define __KVM_PTE_LEAF_ATTR_HI_S1_UXN	BIT(54)
+#define __KVM_PTE_LEAF_ATTR_HI_S1_PXN	BIT(53)
 
-#define KVM_PTE_LEAF_ATTR_HI_S2_XN	BIT(54)
+#define KVM_PTE_LEAF_ATTR_HI_S1_XN					\
+	({ cpus_have_final_cap(ARM64_KVM_HVHE) ?			\
+			(__KVM_PTE_LEAF_ATTR_HI_S1_UXN |		\
+			 __KVM_PTE_LEAF_ATTR_HI_S1_PXN) :		\
+			__KVM_PTE_LEAF_ATTR_HI_S1_XN; })
+
+#define KVM_PTE_LEAF_ATTR_HI_S2_XN	GENMASK(54, 53)
 
 #define KVM_PTE_LEAF_ATTR_HI_S1_GP	BIT(50)
 
@@ -240,7 +248,9 @@ enum kvm_pgtable_stage2_flags {
 
 /**
  * enum kvm_pgtable_prot - Page-table permissions and attributes.
- * @KVM_PGTABLE_PROT_X:		Execute permission.
+ * @KVM_PGTABLE_PROT_UX:	Unprivileged execute permission.
+ * @KVM_PGTABLE_PROT_PX:	Privileged execute permission.
+ * @KVM_PGTABLE_PROT_X:		Privileged and unprivileged execute permission.
  * @KVM_PGTABLE_PROT_W:		Write permission.
  * @KVM_PGTABLE_PROT_R:		Read permission.
  * @KVM_PGTABLE_PROT_DEVICE:	Device attributes.
@@ -251,12 +261,15 @@ enum kvm_pgtable_stage2_flags {
  * @KVM_PGTABLE_PROT_SW3:	Software bit 3.
  */
 enum kvm_pgtable_prot {
-	KVM_PGTABLE_PROT_X			= BIT(0),
-	KVM_PGTABLE_PROT_W			= BIT(1),
-	KVM_PGTABLE_PROT_R			= BIT(2),
+	KVM_PGTABLE_PROT_PX			= BIT(0),
+	KVM_PGTABLE_PROT_UX			= BIT(1),
+	KVM_PGTABLE_PROT_X			= KVM_PGTABLE_PROT_PX	|
+						  KVM_PGTABLE_PROT_UX,
+	KVM_PGTABLE_PROT_W			= BIT(2),
+	KVM_PGTABLE_PROT_R			= BIT(3),
 
-	KVM_PGTABLE_PROT_DEVICE			= BIT(3),
-	KVM_PGTABLE_PROT_NORMAL_NC		= BIT(4),
+	KVM_PGTABLE_PROT_DEVICE			= BIT(4),
+	KVM_PGTABLE_PROT_NORMAL_NC		= BIT(5),
 
 	KVM_PGTABLE_PROT_SW0			= BIT(55),
 	KVM_PGTABLE_PROT_SW1			= BIT(56),
@@ -288,8 +301,8 @@ typedef bool (*kvm_pgtable_force_pte_cb_t)(u64 addr, u64 end,
  *					children.
  * @KVM_PGTABLE_WALK_SHARED:		Indicates the page-tables may be shared
  *					with other software walkers.
- * @KVM_PGTABLE_WALK_HANDLE_FAULT:	Indicates the page-table walk was
- *					invoked from a fault handler.
+ * @KVM_PGTABLE_WALK_IGNORE_EAGAIN:	Don't terminate the walk early if
+ *					the walker returns -EAGAIN.
  * @KVM_PGTABLE_WALK_SKIP_BBM_TLBI:	Visit and update table entries
  *					without Break-before-make's
  *					TLB invalidation.
@@ -302,7 +315,7 @@ enum kvm_pgtable_walk_flags {
 	KVM_PGTABLE_WALK_TABLE_PRE		= BIT(1),
 	KVM_PGTABLE_WALK_TABLE_POST		= BIT(2),
 	KVM_PGTABLE_WALK_SHARED			= BIT(3),
-	KVM_PGTABLE_WALK_HANDLE_FAULT		= BIT(4),
+	KVM_PGTABLE_WALK_IGNORE_EAGAIN		= BIT(4),
 	KVM_PGTABLE_WALK_SKIP_BBM_TLBI		= BIT(5),
 	KVM_PGTABLE_WALK_SKIP_CMO		= BIT(6),
 };
@@ -355,6 +368,11 @@ static inline kvm_pte_t *kvm_dereference_pteref(struct kvm_pgtable_walker *walke
 	return pteref;
 }
 
+static inline kvm_pte_t *kvm_dereference_pteref_raw(kvm_pteref_t pteref)
+{
+	return pteref;
+}
+
 static inline int kvm_pgtable_walk_begin(struct kvm_pgtable_walker *walker)
 {
 	/*
@@ -382,6 +400,11 @@ static inline kvm_pte_t *kvm_dereference_pteref(struct kvm_pgtable_walker *walke
 						kvm_pteref_t pteref)
 {
 	return rcu_dereference_check(pteref, !(walker->flags & KVM_PGTABLE_WALK_SHARED));
+}
+
+static inline kvm_pte_t *kvm_dereference_pteref_raw(kvm_pteref_t pteref)
+{
+	return rcu_dereference_raw(pteref);
 }
 
 static inline int kvm_pgtable_walk_begin(struct kvm_pgtable_walker *walker)
@@ -550,6 +573,26 @@ static inline int kvm_pgtable_stage2_init(struct kvm_pgtable *pgt, struct kvm_s2
  * to freeing and therefore no TLB invalidation is performed.
  */
 void kvm_pgtable_stage2_destroy(struct kvm_pgtable *pgt);
+
+/**
+ * kvm_pgtable_stage2_destroy_range() - Destroy the unlinked range of addresses.
+ * @pgt:	Page-table structure initialised by kvm_pgtable_stage2_init*().
+ * @addr:      Intermediate physical address at which to place the mapping.
+ * @size:      Size of the mapping.
+ *
+ * The page-table is assumed to be unreachable by any hardware walkers prior
+ * to freeing and therefore no TLB invalidation is performed.
+ */
+void kvm_pgtable_stage2_destroy_range(struct kvm_pgtable *pgt,
+					u64 addr, u64 size);
+
+/**
+ * kvm_pgtable_stage2_destroy_pgd() - Destroy the PGD of guest stage-2 page-table.
+ * @pgt:       Page-table structure initialised by kvm_pgtable_stage2_init*().
+ *
+ * It is assumed that the rest of the page-table is freed before this operation.
+ */
+void kvm_pgtable_stage2_destroy_pgd(struct kvm_pgtable *pgt);
 
 /**
  * kvm_pgtable_stage2_free_unlinked() - Free an unlinked stage-2 paging structure.

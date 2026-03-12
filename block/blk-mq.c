@@ -377,6 +377,7 @@ void blk_rq_init(struct request_queue *q, struct request *rq)
 	INIT_LIST_HEAD(&rq->queuelist);
 	rq->q = q;
 	rq->__sector = (sector_t) -1;
+	rq->phys_gap_bit = 0;
 	INIT_HLIST_NODE(&rq->hash);
 	RB_CLEAR_NODE(&rq->rb_node);
 	rq->tag = BLK_MQ_NO_TAG;
@@ -468,21 +469,26 @@ __blk_mq_alloc_requests_batch(struct blk_mq_alloc_data *data)
 	unsigned long tag_mask;
 	int i, nr = 0;
 
-	tag_mask = blk_mq_get_tags(data, data->nr_tags, &tag_offset);
-	if (unlikely(!tag_mask))
-		return NULL;
+	do {
+		tag_mask = blk_mq_get_tags(data, data->nr_tags - nr, &tag_offset);
+		if (unlikely(!tag_mask)) {
+			if (nr == 0)
+				return NULL;
+			break;
+		}
+		tags = blk_mq_tags_from_data(data);
+		for (i = 0; tag_mask; i++) {
+			if (!(tag_mask & (1UL << i)))
+				continue;
+			tag = tag_offset + i;
+			prefetch(tags->static_rqs[tag]);
+			tag_mask &= ~(1UL << i);
+			rq = blk_mq_rq_ctx_init(data, tags, tag);
+			rq_list_add_head(data->cached_rqs, rq);
+			nr++;
+		}
+	} while (data->nr_tags > nr);
 
-	tags = blk_mq_tags_from_data(data);
-	for (i = 0; tag_mask; i++) {
-		if (!(tag_mask & (1UL << i)))
-			continue;
-		tag = tag_offset + i;
-		prefetch(tags->static_rqs[tag]);
-		tag_mask &= ~(1UL << i);
-		rq = blk_mq_rq_ctx_init(data, tags, tag);
-		rq_list_add_head(data->cached_rqs, rq);
-		nr++;
-	}
 	if (!(data->rq_flags & RQF_SCHED_TAGS))
 		blk_mq_add_active_requests(data->hctx, nr);
 	/* caller already holds a reference, add for remainder */
@@ -669,6 +675,7 @@ struct request *blk_mq_alloc_request(struct request_queue *q, blk_opf_t opf,
 			goto out_queue_exit;
 	}
 	rq->__data_len = 0;
+	rq->phys_gap_bit = 0;
 	rq->__sector = (sector_t) -1;
 	rq->bio = rq->biotail = NULL;
 	return rq;
@@ -724,7 +731,7 @@ struct request *blk_mq_alloc_request_hctx(struct request_queue *q,
 	 * If not tell the caller that it should skip this queue.
 	 */
 	ret = -EXDEV;
-	data.hctx = xa_load(&q->hctx_table, hctx_idx);
+	data.hctx = q->queue_hw_ctx[hctx_idx];
 	if (!blk_mq_hw_queue_mapped(data.hctx))
 		goto out_queue_exit;
 	cpu = cpumask_first_and(data.hctx->cpumask, cpu_online_mask);
@@ -749,6 +756,7 @@ struct request *blk_mq_alloc_request_hctx(struct request_queue *q,
 	rq = blk_mq_rq_ctx_init(&data, blk_mq_tags_from_data(&data), tag);
 	blk_mq_rq_time_init(rq, alloc_time_ns);
 	rq->__data_len = 0;
+	rq->phys_gap_bit = 0;
 	rq->__sector = (sector_t) -1;
 	rq->bio = rq->biotail = NULL;
 	return rq;
@@ -1472,7 +1480,7 @@ EXPORT_SYMBOL_GPL(blk_rq_is_poll);
 static void blk_rq_poll_completion(struct request *rq, struct completion *wait)
 {
 	do {
-		blk_hctx_poll(rq->q, rq->mq_hctx, NULL, 0);
+		blk_hctx_poll(rq->q, rq->mq_hctx, NULL, BLK_POLL_ONESHOT);
 		cond_resched();
 	} while (!completion_done(wait));
 }
@@ -2675,6 +2683,8 @@ static void blk_mq_bio_to_request(struct request *rq, struct bio *bio,
 	rq->bio = rq->biotail = bio;
 	rq->__sector = bio->bi_iter.bi_sector;
 	rq->__data_len = bio->bi_iter.bi_size;
+	rq->phys_gap_bit = bio->bi_bvec_gap_bit;
+
 	rq->nr_phys_segments = nr_segs;
 	if (bio_integrity(bio))
 		rq->nr_integrity_segments = blk_rq_count_integrity_sg(rq->q,
@@ -3381,6 +3391,7 @@ int blk_rq_prep_clone(struct request *rq, struct request *rq_src,
 	}
 	rq->nr_phys_segments = rq_src->nr_phys_segments;
 	rq->nr_integrity_segments = rq_src->nr_integrity_segments;
+	rq->phys_gap_bit = rq_src->phys_gap_bit;
 
 	if (rq->bio && blk_crypto_rq_bio_prep(rq, rq->bio, gfp_mask) < 0)
 		goto free_and_out;
@@ -3949,8 +3960,6 @@ static void blk_mq_exit_hctx(struct request_queue *q,
 			blk_free_flush_queue_callback);
 	hctx->fq = NULL;
 
-	xa_erase(&q->hctx_table, hctx_idx);
-
 	spin_lock(&q->unused_hctx_lock);
 	list_add(&hctx->hctx_list, &q->unused_hctx_list);
 	spin_unlock(&q->unused_hctx_lock);
@@ -3992,14 +4001,8 @@ static int blk_mq_init_hctx(struct request_queue *q,
 				hctx->numa_node))
 		goto exit_hctx;
 
-	if (xa_insert(&q->hctx_table, hctx_idx, hctx, GFP_KERNEL))
-		goto exit_flush_rq;
-
 	return 0;
 
- exit_flush_rq:
-	if (set->ops->exit_request)
-		set->ops->exit_request(set, hctx->fq->flush_rq, hctx_idx);
  exit_hctx:
 	if (set->ops->exit_hctx)
 		set->ops->exit_hctx(hctx, hctx_idx);
@@ -4387,7 +4390,7 @@ void blk_mq_release(struct request_queue *q)
 		kobject_put(&hctx->kobj);
 	}
 
-	xa_destroy(&q->hctx_table);
+	kfree(q->queue_hw_ctx);
 
 	/*
 	 * release .mq_kobj and sw queue's kobject now because
@@ -4531,26 +4534,48 @@ static struct blk_mq_hw_ctx *blk_mq_alloc_and_init_hctx(
 static void __blk_mq_realloc_hw_ctxs(struct blk_mq_tag_set *set,
 				     struct request_queue *q)
 {
-	struct blk_mq_hw_ctx *hctx;
-	unsigned long i, j;
+	int i, j, end;
+	struct blk_mq_hw_ctx **hctxs = q->queue_hw_ctx;
+
+	if (q->nr_hw_queues < set->nr_hw_queues) {
+		struct blk_mq_hw_ctx **new_hctxs;
+
+		new_hctxs = kcalloc_node(set->nr_hw_queues,
+				       sizeof(*new_hctxs), GFP_KERNEL,
+				       set->numa_node);
+		if (!new_hctxs)
+			return;
+		if (hctxs)
+			memcpy(new_hctxs, hctxs, q->nr_hw_queues *
+			       sizeof(*hctxs));
+		rcu_assign_pointer(q->queue_hw_ctx, new_hctxs);
+		/*
+		 * Make sure reading the old queue_hw_ctx from other
+		 * context concurrently won't trigger uaf.
+		 */
+		kfree_rcu_mightsleep(hctxs);
+		hctxs = new_hctxs;
+	}
 
 	for (i = 0; i < set->nr_hw_queues; i++) {
 		int old_node;
 		int node = blk_mq_get_hctx_node(set, i);
-		struct blk_mq_hw_ctx *old_hctx = xa_load(&q->hctx_table, i);
+		struct blk_mq_hw_ctx *old_hctx = hctxs[i];
 
 		if (old_hctx) {
 			old_node = old_hctx->numa_node;
 			blk_mq_exit_hctx(q, set, old_hctx, i);
 		}
 
-		if (!blk_mq_alloc_and_init_hctx(set, q, i, node)) {
+		hctxs[i] = blk_mq_alloc_and_init_hctx(set, q, i, node);
+		if (!hctxs[i]) {
 			if (!old_hctx)
 				break;
 			pr_warn("Allocate new hctx on node %d fails, fallback to previous one on node %d\n",
 					node, old_node);
-			hctx = blk_mq_alloc_and_init_hctx(set, q, i, old_node);
-			WARN_ON_ONCE(!hctx);
+			hctxs[i] = blk_mq_alloc_and_init_hctx(set, q, i,
+					old_node);
+			WARN_ON_ONCE(!hctxs[i]);
 		}
 	}
 	/*
@@ -4559,13 +4584,21 @@ static void __blk_mq_realloc_hw_ctxs(struct blk_mq_tag_set *set,
 	 */
 	if (i != set->nr_hw_queues) {
 		j = q->nr_hw_queues;
+		end = i;
 	} else {
 		j = i;
+		end = q->nr_hw_queues;
 		q->nr_hw_queues = set->nr_hw_queues;
 	}
 
-	xa_for_each_start(&q->hctx_table, j, hctx, j)
-		blk_mq_exit_hctx(q, set, hctx, j);
+	for (; j < end; j++) {
+		struct blk_mq_hw_ctx *hctx = hctxs[j];
+
+		if (hctx) {
+			blk_mq_exit_hctx(q, set, hctx, j);
+			hctxs[j] = NULL;
+		}
+	}
 }
 
 static void blk_mq_realloc_hw_ctxs(struct blk_mq_tag_set *set,
@@ -4600,8 +4633,6 @@ int blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 
 	INIT_LIST_HEAD(&q->unused_hctx_list);
 	spin_lock_init(&q->unused_hctx_lock);
-
-	xa_init(&q->hctx_table);
 
 	blk_mq_realloc_hw_ctxs(set, q);
 	if (!q->nr_hw_queues)
@@ -5160,27 +5191,19 @@ EXPORT_SYMBOL_GPL(blk_mq_update_nr_hw_queues);
 static int blk_hctx_poll(struct request_queue *q, struct blk_mq_hw_ctx *hctx,
 			 struct io_comp_batch *iob, unsigned int flags)
 {
-	long state = get_current_state();
 	int ret;
 
 	do {
 		ret = q->mq_ops->poll(hctx, iob);
-		if (ret > 0) {
-			__set_current_state(TASK_RUNNING);
+		if (ret > 0)
 			return ret;
-		}
-
-		if (signal_pending_state(state, current))
-			__set_current_state(TASK_RUNNING);
-		if (task_is_running(current))
+		if (task_sigpending(current))
 			return 1;
-
 		if (ret < 0 || (flags & BLK_POLL_ONESHOT))
 			break;
 		cpu_relax();
 	} while (!need_resched());
 
-	__set_current_state(TASK_RUNNING);
 	return 0;
 }
 
@@ -5189,7 +5212,7 @@ int blk_mq_poll(struct request_queue *q, blk_qc_t cookie,
 {
 	if (!blk_mq_can_poll(q))
 		return 0;
-	return blk_hctx_poll(q, xa_load(&q->hctx_table, cookie), iob, flags);
+	return blk_hctx_poll(q, q->queue_hw_ctx[cookie], iob, flags);
 }
 
 int blk_rq_poll(struct request *rq, struct io_comp_batch *iob,

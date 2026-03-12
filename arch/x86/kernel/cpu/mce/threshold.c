@@ -13,6 +13,19 @@
 
 #include "internal.h"
 
+static u32 mce_apei_thr_limit;
+
+void mce_save_apei_thr_limit(u32 thr_limit)
+{
+	mce_apei_thr_limit = thr_limit;
+	pr_info("HEST corrected error threshold limit: %u\n", thr_limit);
+}
+
+u32 mce_get_apei_thr_limit(void)
+{
+	return mce_apei_thr_limit;
+}
+
 static void default_threshold_interrupt(void)
 {
 	pr_err("Unexpected threshold interrupt at vector %x\n",
@@ -62,6 +75,9 @@ static void mce_handle_storm(unsigned int bank, bool on)
 	switch (boot_cpu_data.x86_vendor) {
 	case X86_VENDOR_INTEL:
 		mce_intel_handle_storm(bank, on);
+		break;
+	case X86_VENDOR_AMD:
+		mce_amd_handle_storm(bank, on);
 		break;
 	}
 }

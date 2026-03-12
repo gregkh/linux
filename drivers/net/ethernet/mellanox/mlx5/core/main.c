@@ -553,6 +553,7 @@ EXPORT_SYMBOL(mlx5_is_roce_on);
 
 static int handle_hca_cap_2(struct mlx5_core_dev *dev, void *set_ctx)
 {
+	bool do_set = false;
 	void *set_hca_cap;
 	int err;
 
@@ -563,17 +564,27 @@ static int handle_hca_cap_2(struct mlx5_core_dev *dev, void *set_ctx)
 	if (err)
 		return err;
 
-	if (!MLX5_CAP_GEN_2_MAX(dev, sw_vhca_id_valid) ||
-	    !(dev->priv.sw_vhca_id > 0))
-		return 0;
-
 	set_hca_cap = MLX5_ADDR_OF(set_hca_cap_in, set_ctx,
 				   capability);
 	memcpy(set_hca_cap, dev->caps.hca[MLX5_CAP_GENERAL_2]->cur,
 	       MLX5_ST_SZ_BYTES(cmd_hca_cap_2));
-	MLX5_SET(cmd_hca_cap_2, set_hca_cap, sw_vhca_id_valid, 1);
 
-	return set_caps(dev, set_ctx, MLX5_CAP_GENERAL_2);
+	if (MLX5_CAP_GEN_2_MAX(dev, sw_vhca_id_valid) &&
+	    dev->priv.sw_vhca_id > 0) {
+		MLX5_SET(cmd_hca_cap_2, set_hca_cap, sw_vhca_id_valid, 1);
+		do_set = true;
+	}
+
+	if (MLX5_CAP_GEN_2_MAX(dev, lag_per_mp_group)) {
+		MLX5_SET(cmd_hca_cap_2, set_hca_cap, lag_per_mp_group, 1);
+		do_set = true;
+	}
+
+	/* some FW versions that support querying MLX5_CAP_GENERAL_2
+	 * capabilities but don't support setting them.
+	 * Skip unnecessary update to hca_cap_2 when no changes were introduced
+	 */
+	return do_set ? set_caps(dev, set_ctx, MLX5_CAP_GENERAL_2) : 0;
 }
 
 static int handle_hca_cap(struct mlx5_core_dev *dev, void *set_ctx)
@@ -1366,12 +1377,6 @@ static int mlx5_load(struct mlx5_core_dev *dev)
 
 	mlx5_vhca_event_start(dev);
 
-	err = mlx5_sf_hw_table_create(dev);
-	if (err) {
-		mlx5_core_err(dev, "sf table create failed %d\n", err);
-		goto err_vhca;
-	}
-
 	err = mlx5_ec_init(dev);
 	if (err) {
 		mlx5_core_err(dev, "Failed to init embedded CPU\n");
@@ -1400,8 +1405,6 @@ err_sriov:
 	mlx5_lag_remove_mdev(dev);
 	mlx5_ec_cleanup(dev);
 err_ec:
-	mlx5_sf_hw_table_destroy(dev);
-err_vhca:
 	mlx5_vhca_event_stop(dev);
 err_set_hca:
 	mlx5_fs_core_cleanup(dev);
@@ -1427,12 +1430,12 @@ static void mlx5_unload(struct mlx5_core_dev *dev)
 {
 	mlx5_eswitch_disable(dev->priv.eswitch);
 	mlx5_devlink_traps_unregister(priv_to_devlink(dev));
+	mlx5_vhca_event_stop(dev);
 	mlx5_sf_dev_table_destroy(dev);
 	mlx5_sriov_detach(dev);
 	mlx5_lag_remove_mdev(dev);
 	mlx5_ec_cleanup(dev);
 	mlx5_sf_hw_table_destroy(dev);
-	mlx5_vhca_event_stop(dev);
 	mlx5_fs_core_cleanup(dev);
 	mlx5_fpga_device_stop(dev);
 	mlx5_rsc_dump_cleanup(dev);
@@ -1813,11 +1816,37 @@ static int mlx5_notifiers_init(struct mlx5_core_dev *dev)
 		return err;
 	}
 
+	BLOCKING_INIT_NOTIFIER_HEAD(&dev->priv.esw_n_head);
+	mlx5_vhca_state_notifier_init(dev);
+
+	err = mlx5_sf_hw_notifier_init(dev);
+	if (err)
+		goto err_sf_hw_notifier;
+
+	err = mlx5_sf_notifiers_init(dev);
+	if (err)
+		goto err_sf_notifiers;
+
+	err = mlx5_sf_dev_notifier_init(dev);
+	if (err)
+		goto err_sf_dev_notifier;
+
 	return 0;
+
+err_sf_dev_notifier:
+	mlx5_sf_notifiers_cleanup(dev);
+err_sf_notifiers:
+	mlx5_sf_hw_notifier_cleanup(dev);
+err_sf_hw_notifier:
+	mlx5_events_cleanup(dev);
+	return err;
 }
 
 static void mlx5_notifiers_cleanup(struct mlx5_core_dev *dev)
 {
+	mlx5_sf_dev_notifier_cleanup(dev);
+	mlx5_sf_notifiers_cleanup(dev);
+	mlx5_sf_hw_notifier_cleanup(dev);
 	mlx5_events_cleanup(dev);
 }
 

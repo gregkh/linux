@@ -2,6 +2,7 @@
 #include <linux/fs.h>
 #include <linux/security.h>
 #include <linux/fscrypt.h>
+#include <linux/fsnotify.h>
 #include <linux/fileattr.h>
 #include <linux/export.h>
 #include <linux/syscalls.h>
@@ -298,6 +299,7 @@ int vfs_fileattr_set(struct mnt_idmap *idmap, struct dentry *dentry,
 		err = inode->i_op->fileattr_set(idmap, dentry, fa);
 		if (err)
 			goto out;
+		fsnotify_xattr(dentry);
 	}
 
 out:
@@ -316,7 +318,6 @@ int ioctl_getflags(struct file *file, unsigned int __user *argp)
 		err = put_user(fa.flags, argp);
 	return err;
 }
-EXPORT_SYMBOL(ioctl_getflags);
 
 int ioctl_setflags(struct file *file, unsigned int __user *argp)
 {
@@ -337,7 +338,6 @@ int ioctl_setflags(struct file *file, unsigned int __user *argp)
 	}
 	return err;
 }
-EXPORT_SYMBOL(ioctl_setflags);
 
 int ioctl_fsgetxattr(struct file *file, void __user *argp)
 {
@@ -350,7 +350,6 @@ int ioctl_fsgetxattr(struct file *file, void __user *argp)
 
 	return err;
 }
-EXPORT_SYMBOL(ioctl_fsgetxattr);
 
 int ioctl_fssetxattr(struct file *file, void __user *argp)
 {
@@ -369,7 +368,6 @@ int ioctl_fssetxattr(struct file *file, void __user *argp)
 	}
 	return err;
 }
-EXPORT_SYMBOL(ioctl_fssetxattr);
 
 SYSCALL_DEFINE5(file_getattr, int, dfd, const char __user *, filename,
 		struct file_attr __user *, ufattr, size_t, usize,

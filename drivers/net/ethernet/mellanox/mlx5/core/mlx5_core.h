@@ -291,6 +291,7 @@ int mlx5_register_device(struct mlx5_core_dev *dev);
 void mlx5_unregister_device(struct mlx5_core_dev *dev);
 void mlx5_dev_set_lightweight(struct mlx5_core_dev *dev);
 bool mlx5_dev_is_lightweight(struct mlx5_core_dev *dev);
+void mlx5_core_reps_aux_devs_remove(struct mlx5_core_dev *dev);
 
 void mlx5_fw_reporters_create(struct mlx5_core_dev *dev);
 int mlx5_query_mtpps(struct mlx5_core_dev *dev, u32 *mtpps, u32 mtpps_size);
@@ -358,11 +359,11 @@ int mlx5_set_port_fcs(struct mlx5_core_dev *mdev, u8 enable);
 void mlx5_query_port_fcs(struct mlx5_core_dev *mdev, bool *supported,
 			 bool *enabled);
 int mlx5_query_module_eeprom(struct mlx5_core_dev *dev,
-			     u16 offset, u16 size, u8 *data);
+			     u16 offset, u16 size, u8 *data, u8 *status);
 int
 mlx5_query_module_eeprom_by_page(struct mlx5_core_dev *dev,
 				 struct mlx5_module_eeprom_query_params *params,
-				 u8 *data);
+				 u8 *data, u8 *status);
 
 int mlx5_query_port_dcbx_param(struct mlx5_core_dev *mdev, u32 *out);
 int mlx5_set_port_dcbx_param(struct mlx5_core_dev *mdev, u32 *in);
@@ -445,6 +446,8 @@ int mlx5_init_one_light(struct mlx5_core_dev *dev);
 void mlx5_uninit_one_light(struct mlx5_core_dev *dev);
 void mlx5_unload_one_light(struct mlx5_core_dev *dev);
 
+void mlx5_query_nic_sw_system_image_guid(struct mlx5_core_dev *mdev, u8 *buf,
+					 u8 *len);
 int mlx5_vport_set_other_func_cap(struct mlx5_core_dev *dev, const void *hca_cap, u16 vport,
 				  u16 opmod);
 #define mlx5_vport_get_other_func_general_cap(dev, vport, out)		\

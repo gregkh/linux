@@ -42,6 +42,7 @@
 #include <linux/memblock.h>
 #include <linux/err.h>
 #include <linux/sizes.h>
+#include <linux/dma-buf/heaps/cma.h>
 #include <linux/dma-map-ops.h>
 #include <linux/cma.h>
 #include <linux/nospec.h>
@@ -251,13 +252,21 @@ void __init dma_contiguous_reserve(phys_addr_t limit)
 	}
 
 	if (selected_size && !dma_contiguous_default_area) {
+		int ret;
+
 		pr_debug("%s: reserving %ld MiB for global area\n", __func__,
 			 (unsigned long)selected_size / SZ_1M);
 
-		dma_contiguous_reserve_area(selected_size, selected_base,
-					    selected_limit,
-					    &dma_contiguous_default_area,
-					    fixed);
+		ret = dma_contiguous_reserve_area(selected_size, selected_base,
+						  selected_limit,
+						  &dma_contiguous_default_area,
+						  fixed);
+		if (ret)
+			return;
+
+		ret = dma_heap_cma_register_heap(dma_contiguous_default_area);
+		if (ret)
+			pr_warn("Couldn't register default CMA heap.");
 	}
 }
 
@@ -496,6 +505,10 @@ static int __init rmem_cma_setup(struct reserved_mem *rmem)
 
 	pr_info("Reserved memory: created CMA memory pool at %pa, size %ld MiB\n",
 		&rmem->base, (unsigned long)rmem->size / SZ_1M);
+
+	err = dma_heap_cma_register_heap(cma);
+	if (err)
+		pr_warn("Couldn't register CMA heap.");
 
 	return 0;
 }

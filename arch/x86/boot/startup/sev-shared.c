@@ -12,7 +12,7 @@
 #include <asm/setup_data.h>
 
 #ifndef __BOOT_COMPRESSED
-#define has_cpuflag(f)			boot_cpu_has(f)
+#define has_cpuflag(f)			cpu_feature_enabled(f)
 #else
 #undef WARN
 #define WARN(condition, format...) (!!(condition))
@@ -31,7 +31,7 @@ static u32 cpuid_std_range_max __ro_after_init;
 static u32 cpuid_hyp_range_max __ro_after_init;
 static u32 cpuid_ext_range_max __ro_after_init;
 
-bool sev_snp_needs_sfw;
+bool sev_snp_needs_sfw __section(".data");
 
 void __noreturn
 sev_es_terminate(unsigned int set, unsigned int reason)

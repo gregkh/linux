@@ -14,6 +14,7 @@
 #include <linux/ctype.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/math.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -354,44 +355,6 @@ struct cs_dsp_alg_region_list_item {
 	struct cs_dsp_alg_region alg_region;
 };
 
-struct cs_dsp_buf {
-	struct list_head list;
-	void *buf;
-};
-
-static struct cs_dsp_buf *cs_dsp_buf_alloc(const void *src, size_t len,
-					   struct list_head *list)
-{
-	struct cs_dsp_buf *buf = kzalloc(sizeof(*buf), GFP_KERNEL);
-
-	if (buf == NULL)
-		return NULL;
-
-	buf->buf = vmalloc(len);
-	if (!buf->buf) {
-		kfree(buf);
-		return NULL;
-	}
-	memcpy(buf->buf, src, len);
-
-	if (list)
-		list_add_tail(&buf->list, list);
-
-	return buf;
-}
-
-static void cs_dsp_buf_free(struct list_head *list)
-{
-	while (!list_empty(list)) {
-		struct cs_dsp_buf *buf = list_first_entry(list,
-							  struct cs_dsp_buf,
-							  list);
-		list_del(&buf->list);
-		vfree(buf->buf);
-		kfree(buf);
-	}
-}
-
 /**
  * cs_dsp_mem_region_name() - Return a name string for a memory type
  * @type: the memory type to match
@@ -426,18 +389,14 @@ EXPORT_SYMBOL_NS_GPL(cs_dsp_mem_region_name, "FW_CS_DSP");
 #ifdef CONFIG_DEBUG_FS
 static void cs_dsp_debugfs_save_wmfwname(struct cs_dsp *dsp, const char *s)
 {
-	char *tmp = kasprintf(GFP_KERNEL, "%s\n", s);
-
 	kfree(dsp->wmfw_file_name);
-	dsp->wmfw_file_name = tmp;
+	dsp->wmfw_file_name = kstrdup(s, GFP_KERNEL);
 }
 
 static void cs_dsp_debugfs_save_binname(struct cs_dsp *dsp, const char *s)
 {
-	char *tmp = kasprintf(GFP_KERNEL, "%s\n", s);
-
 	kfree(dsp->bin_file_name);
-	dsp->bin_file_name = tmp;
+	dsp->bin_file_name = kstrdup(s, GFP_KERNEL);
 }
 
 static void cs_dsp_debugfs_clear(struct cs_dsp *dsp)
@@ -454,14 +413,22 @@ static ssize_t cs_dsp_debugfs_string_read(struct cs_dsp *dsp,
 					  const char **pstr)
 {
 	const char *str;
+	ssize_t ret = 0;
 
 	scoped_guard(mutex, &dsp->pwr_lock) {
-		str = *pstr;
-		if (!str)
-			return 0;
-
-		return simple_read_from_buffer(user_buf, count, ppos, str, strlen(str));
+		if (*pstr) {
+			str = kasprintf(GFP_KERNEL, "%s\n", *pstr);
+			if (str) {
+				ret = simple_read_from_buffer(user_buf, count,
+							      ppos, str, strlen(str));
+				kfree(str);
+			} else {
+				ret = -ENOMEM;
+			}
+		}
 	}
+
+	return ret;
 }
 
 static ssize_t cs_dsp_debugfs_wmfw_read(struct file *file,
@@ -513,9 +480,11 @@ static int cs_dsp_debugfs_read_controls_show(struct seq_file *s, void *ignored)
 	struct cs_dsp_coeff_ctl *ctl;
 	unsigned int reg;
 
+	guard(mutex)(&dsp->pwr_lock);
+
 	list_for_each_entry(ctl, &dsp->ctl_list, list) {
 		cs_dsp_coeff_base_reg(ctl, &reg, 0);
-		seq_printf(s, "%22.*s: %#8zx %s:%08x %#8x %s %#8x %#4x %c%c%c%c %s %s\n",
+		seq_printf(s, "%22.*s: %#8x %s:%08x %#8x %s %#8x %#4x %c%c%c%c %s %s\n",
 			   ctl->subname_len, ctl->subname, ctl->len,
 			   cs_dsp_mem_region_name(ctl->alg_region.type),
 			   ctl->offset, reg, ctl->fw_name, ctl->alg_region.alg, ctl->type,
@@ -1062,7 +1031,7 @@ static void cs_dsp_signal_event_controls(struct cs_dsp *dsp,
 
 static void cs_dsp_free_ctl_blk(struct cs_dsp_coeff_ctl *ctl)
 {
-	kfree(ctl->cache);
+	kvfree(ctl->cache);
 	kfree(ctl->subname);
 	kfree(ctl);
 }
@@ -1112,7 +1081,7 @@ static int cs_dsp_create_control(struct cs_dsp *dsp,
 	ctl->type = type;
 	ctl->offset = offset;
 	ctl->len = len;
-	ctl->cache = kzalloc(ctl->len, GFP_KERNEL);
+	ctl->cache = kvzalloc(ctl->len, GFP_KERNEL);
 	if (!ctl->cache) {
 		ret = -ENOMEM;
 		goto err_ctl_subname;
@@ -1130,7 +1099,7 @@ static int cs_dsp_create_control(struct cs_dsp *dsp,
 
 err_list_del:
 	list_del(&ctl->list);
-	kfree(ctl->cache);
+	kvfree(ctl->cache);
 err_ctl_subname:
 	kfree(ctl->subname);
 err_ctl:
@@ -1519,7 +1488,9 @@ static int cs_dsp_load(struct cs_dsp *dsp, const struct firmware *firmware,
 	const struct wmfw_region *region;
 	const struct cs_dsp_region *mem;
 	const char *region_name;
-	struct cs_dsp_buf *buf;
+	u8 *buf = NULL;
+	size_t buf_len = 0;
+	size_t region_len;
 	unsigned int reg;
 	int regions = 0;
 	int ret, offset, type;
@@ -1639,23 +1610,23 @@ static int cs_dsp_load(struct cs_dsp *dsp, const struct firmware *firmware,
 			   region_name);
 
 		if (reg) {
-			buf = cs_dsp_buf_alloc(region->data,
-					       le32_to_cpu(region->len),
-					       &buf_list);
-			if (!buf) {
-				cs_dsp_err(dsp, "Out of memory\n");
-				ret = -ENOMEM;
-				goto out_fw;
+			region_len = le32_to_cpu(region->len);
+			if (region_len > buf_len) {
+				buf_len = round_up(region_len, PAGE_SIZE);
+				kfree(buf);
+				buf = kmalloc(buf_len, GFP_KERNEL | GFP_DMA);
+				if (!buf) {
+					ret = -ENOMEM;
+					goto out_fw;
+				}
 			}
 
-			ret = regmap_raw_write(regmap, reg, buf->buf,
-					       le32_to_cpu(region->len));
+			memcpy(buf, region->data, region_len);
+			ret = regmap_raw_write(regmap, reg, buf, region_len);
 			if (ret != 0) {
 				cs_dsp_err(dsp,
-					   "%s.%d: Failed to write %d bytes at %d in %s: %d\n",
-					   file, regions,
-					   le32_to_cpu(region->len), offset,
-					   region_name, ret);
+					   "%s.%d: Failed to write %zu bytes at %d in %s: %d\n",
+					   file, regions, region_len, offset, region_name, ret);
 				goto out_fw;
 			}
 		}
@@ -1672,7 +1643,7 @@ static int cs_dsp_load(struct cs_dsp *dsp, const struct firmware *firmware,
 
 	ret = 0;
 out_fw:
-	cs_dsp_buf_free(&buf_list);
+	kfree(buf);
 
 	if (ret == -EOVERFLOW)
 		cs_dsp_err(dsp, "%s: file content overflows file data\n", file);
@@ -2205,7 +2176,9 @@ static int cs_dsp_load_coeff(struct cs_dsp *dsp, const struct firmware *firmware
 	struct cs_dsp_alg_region *alg_region;
 	const char *region_name;
 	int ret, pos, blocks, type, offset, reg, version;
-	struct cs_dsp_buf *buf;
+	u8 *buf = NULL;
+	size_t buf_len = 0;
+	size_t region_len;
 
 	if (!firmware)
 		return 0;
@@ -2347,20 +2320,22 @@ static int cs_dsp_load_coeff(struct cs_dsp *dsp, const struct firmware *firmware
 		}
 
 		if (reg) {
-			buf = cs_dsp_buf_alloc(blk->data,
-					       le32_to_cpu(blk->len),
-					       &buf_list);
-			if (!buf) {
-				cs_dsp_err(dsp, "Out of memory\n");
-				ret = -ENOMEM;
-				goto out_fw;
+			region_len = le32_to_cpu(blk->len);
+			if (region_len > buf_len) {
+				buf_len = round_up(region_len, PAGE_SIZE);
+				kfree(buf);
+				buf = kmalloc(buf_len, GFP_KERNEL | GFP_DMA);
+				if (!buf) {
+					ret = -ENOMEM;
+					goto out_fw;
+				}
 			}
 
-			cs_dsp_dbg(dsp, "%s.%d: Writing %d bytes at %x\n",
-				   file, blocks, le32_to_cpu(blk->len),
-				   reg);
-			ret = regmap_raw_write(regmap, reg, buf->buf,
-					       le32_to_cpu(blk->len));
+			memcpy(buf, blk->data, region_len);
+
+			cs_dsp_dbg(dsp, "%s.%d: Writing %zu bytes at %x\n",
+				   file, blocks, region_len, reg);
+			ret = regmap_raw_write(regmap, reg, buf, region_len);
 			if (ret != 0) {
 				cs_dsp_err(dsp,
 					   "%s.%d: Failed to write to %x in %s: %d\n",
@@ -2380,7 +2355,7 @@ static int cs_dsp_load_coeff(struct cs_dsp *dsp, const struct firmware *firmware
 
 	ret = 0;
 out_fw:
-	cs_dsp_buf_free(&buf_list);
+	kfree(buf);
 
 	if (ret == -EOVERFLOW)
 		cs_dsp_err(dsp, "%s: file content overflows file data\n", file);
@@ -2400,6 +2375,9 @@ static int cs_dsp_create_name(struct cs_dsp *dsp)
 	return 0;
 }
 
+static const struct cs_dsp_client_ops cs_dsp_default_client_ops = {
+};
+
 static int cs_dsp_common_init(struct cs_dsp *dsp)
 {
 	int ret;
@@ -2412,6 +2390,9 @@ static int cs_dsp_common_init(struct cs_dsp *dsp)
 	INIT_LIST_HEAD(&dsp->ctl_list);
 
 	mutex_init(&dsp->pwr_lock);
+
+	if (!dsp->client_ops)
+		dsp->client_ops = &cs_dsp_default_client_ops;
 
 #ifdef CONFIG_DEBUG_FS
 	/* Ensure this is invalid if client never provides a debugfs root */

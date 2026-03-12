@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0
 #
 # Translate stack dump function offsets.
@@ -75,6 +75,10 @@ READELF="${UTIL_PREFIX}readelf${UTIL_SUFFIX}"
 ADDR2LINE="${UTIL_PREFIX}addr2line${UTIL_SUFFIX}"
 AWK="awk"
 GREP="grep"
+
+# Enforce ASCII-only output from tools like readelf
+# ensuring sed processes strings correctly.
+export LANG=C
 
 command -v ${AWK} >/dev/null 2>&1 || die "${AWK} isn't installed"
 command -v ${READELF} >/dev/null 2>&1 || die "${READELF} isn't installed"

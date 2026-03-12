@@ -64,10 +64,10 @@
 #define QM_EQE_AEQE_SIZE		(2UL << 12)
 #define QM_EQC_PHASE_SHIFT		16
 
-#define QM_EQE_PHASE(eqe)		((le32_to_cpu((eqe)->dw0) >> 16) & 0x1)
+#define QM_EQE_PHASE(dw0)		(((dw0) >> 16) & 0x1)
 #define QM_EQE_CQN_MASK			GENMASK(15, 0)
 
-#define QM_AEQE_PHASE(aeqe)		((le32_to_cpu((aeqe)->dw0) >> 16) & 0x1)
+#define QM_AEQE_PHASE(dw0)		(((dw0) >> 16) & 0x1)
 #define QM_AEQE_TYPE_SHIFT		17
 #define QM_AEQE_TYPE_MASK		0xf
 #define QM_AEQE_CQN_MASK		GENMASK(15, 0)
@@ -980,23 +980,23 @@ static void qm_get_complete_eqe_num(struct hisi_qm *qm)
 {
 	struct qm_eqe *eqe = qm->eqe + qm->status.eq_head;
 	struct hisi_qm_poll_data *poll_data = NULL;
+	u32 dw0 = le32_to_cpu(eqe->dw0);
 	u16 eq_depth = qm->eq_depth;
 	u16 cqn, eqe_num = 0;
 
-	if (QM_EQE_PHASE(eqe) != qm->status.eqc_phase) {
+	if (QM_EQE_PHASE(dw0) != qm->status.eqc_phase) {
 		atomic64_inc(&qm->debug.dfx.err_irq_cnt);
 		qm_db(qm, 0, QM_DOORBELL_CMD_EQ, qm->status.eq_head, 0);
 		return;
 	}
 
-	cqn = le32_to_cpu(eqe->dw0) & QM_EQE_CQN_MASK;
+	cqn = dw0 & QM_EQE_CQN_MASK;
 	if (unlikely(cqn >= qm->qp_num))
 		return;
 	poll_data = &qm->poll_data[cqn];
 
-	while (QM_EQE_PHASE(eqe) == qm->status.eqc_phase) {
-		cqn = le32_to_cpu(eqe->dw0) & QM_EQE_CQN_MASK;
-		poll_data->qp_finish_id[eqe_num] = cqn;
+	do {
+		poll_data->qp_finish_id[eqe_num] = dw0 & QM_EQE_CQN_MASK;
 		eqe_num++;
 
 		if (qm->status.eq_head == eq_depth - 1) {
@@ -1008,9 +1008,10 @@ static void qm_get_complete_eqe_num(struct hisi_qm *qm)
 			qm->status.eq_head++;
 		}
 
-		if (eqe_num == (eq_depth >> 1) - 1)
+		dw0 = le32_to_cpu(eqe->dw0);
+		if (QM_EQE_PHASE(dw0) != qm->status.eqc_phase)
 			break;
-	}
+	} while (eqe_num < (eq_depth >> 1) - 1);
 
 	poll_data->eqe_num = eqe_num;
 	queue_work(qm->wq, &poll_data->work);
@@ -1102,15 +1103,15 @@ static irqreturn_t qm_aeq_thread(int irq, void *data)
 {
 	struct hisi_qm *qm = data;
 	struct qm_aeqe *aeqe = qm->aeqe + qm->status.aeq_head;
+	u32 dw0 = le32_to_cpu(aeqe->dw0);
 	u16 aeq_depth = qm->aeq_depth;
 	u32 type, qp_id;
 
 	atomic64_inc(&qm->debug.dfx.aeq_irq_cnt);
 
-	while (QM_AEQE_PHASE(aeqe) == qm->status.aeqc_phase) {
-		type = (le32_to_cpu(aeqe->dw0) >> QM_AEQE_TYPE_SHIFT) &
-			QM_AEQE_TYPE_MASK;
-		qp_id = le32_to_cpu(aeqe->dw0) & QM_AEQE_CQN_MASK;
+	while (QM_AEQE_PHASE(dw0) == qm->status.aeqc_phase) {
+		type = (dw0 >> QM_AEQE_TYPE_SHIFT) & QM_AEQE_TYPE_MASK;
+		qp_id = dw0 & QM_AEQE_CQN_MASK;
 
 		switch (type) {
 		case QM_EQ_OVERFLOW:
@@ -1138,6 +1139,7 @@ static irqreturn_t qm_aeq_thread(int irq, void *data)
 			aeqe++;
 			qm->status.aeq_head++;
 		}
+		dw0 = le32_to_cpu(aeqe->dw0);
 	}
 
 	qm_db(qm, 0, QM_DOORBELL_CMD_AEQ, qm->status.aeq_head, 0);
@@ -1286,6 +1288,13 @@ static void qm_vft_data_cfg(struct hisi_qm *qm, enum vft_type type, u32 base,
 				(QM_SHAPER_CBS_B << QM_SHAPER_FACTOR_CBS_B_SHIFT) |
 				(factor->cbs_s << QM_SHAPER_FACTOR_CBS_S_SHIFT);
 			}
+			break;
+		/*
+		 * Note: The current logic only needs to handle the above three types
+		 * If new types are added, they need to be supplemented here,
+		 * otherwise undefined behavior may occur.
+		 */
+		default:
 			break;
 		}
 	}
@@ -2665,10 +2674,10 @@ static int qm_hw_err_isolate(struct hisi_qm *qm)
 		}
 	}
 	list_add(&hw_err->list, &isolate->qm_hw_errs);
-	mutex_unlock(&isolate->isolate_lock);
 
 	if (count >= isolate->err_threshold)
 		isolate->is_isolate = true;
+	mutex_unlock(&isolate->isolate_lock);
 
 	return 0;
 }
@@ -2677,12 +2686,10 @@ static void qm_hw_err_destroy(struct hisi_qm *qm)
 {
 	struct qm_hw_err *err, *tmp;
 
-	mutex_lock(&qm->isolate_data.isolate_lock);
 	list_for_each_entry_safe(err, tmp, &qm->isolate_data.qm_hw_errs, list) {
 		list_del(&err->list);
 		kfree(err);
 	}
-	mutex_unlock(&qm->isolate_data.isolate_lock);
 }
 
 static enum uacce_dev_state hisi_qm_get_isolate_state(struct uacce_device *uacce)
@@ -2710,10 +2717,12 @@ static int hisi_qm_isolate_threshold_write(struct uacce_device *uacce, u32 num)
 	if (qm->isolate_data.is_isolate)
 		return -EPERM;
 
+	mutex_lock(&qm->isolate_data.isolate_lock);
 	qm->isolate_data.err_threshold = num;
 
 	/* After the policy is updated, need to reset the hardware err list */
 	qm_hw_err_destroy(qm);
+	mutex_unlock(&qm->isolate_data.isolate_lock);
 
 	return 0;
 }
@@ -2750,7 +2759,10 @@ static void qm_remove_uacce(struct hisi_qm *qm)
 	struct uacce_device *uacce = qm->uacce;
 
 	if (qm->use_sva) {
+		mutex_lock(&qm->isolate_data.isolate_lock);
 		qm_hw_err_destroy(qm);
+		mutex_unlock(&qm->isolate_data.isolate_lock);
+
 		uacce_remove(uacce);
 		qm->uacce = NULL;
 	}
@@ -3043,11 +3055,36 @@ static void qm_put_pci_res(struct hisi_qm *qm)
 	pci_release_mem_regions(pdev);
 }
 
+static void hisi_mig_region_clear(struct hisi_qm *qm)
+{
+	u32 val;
+
+	/* Clear migration region set of PF */
+	if (qm->fun_type == QM_HW_PF && qm->ver > QM_HW_V3) {
+		val = readl(qm->io_base + QM_MIG_REGION_SEL);
+		val &= ~QM_MIG_REGION_EN;
+		writel(val, qm->io_base + QM_MIG_REGION_SEL);
+	}
+}
+
+static void hisi_mig_region_enable(struct hisi_qm *qm)
+{
+	u32 val;
+
+	/* Select migration region of PF */
+	if (qm->fun_type == QM_HW_PF && qm->ver > QM_HW_V3) {
+		val = readl(qm->io_base + QM_MIG_REGION_SEL);
+		val |= QM_MIG_REGION_EN;
+		writel(val, qm->io_base + QM_MIG_REGION_SEL);
+	}
+}
+
 static void hisi_qm_pci_uninit(struct hisi_qm *qm)
 {
 	struct pci_dev *pdev = qm->pdev;
 
 	pci_free_irq_vectors(pdev);
+	hisi_mig_region_clear(qm);
 	qm_put_pci_res(qm);
 	pci_disable_device(pdev);
 }
@@ -5805,6 +5842,7 @@ int hisi_qm_init(struct hisi_qm *qm)
 		goto err_free_qm_memory;
 
 	qm_cmd_init(qm);
+	hisi_mig_region_enable(qm);
 
 	return 0;
 
@@ -5943,6 +5981,7 @@ static int qm_rebuild_for_resume(struct hisi_qm *qm)
 	}
 
 	qm_cmd_init(qm);
+	hisi_mig_region_enable(qm);
 	hisi_qm_dev_err_init(qm);
 	/* Set the doorbell timeout to QM_DB_TIMEOUT_CFG ns. */
 	writel(QM_DB_TIMEOUT_SET, qm->io_base + QM_DB_TIMEOUT_CFG);

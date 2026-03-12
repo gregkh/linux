@@ -333,7 +333,7 @@ static noinline int lock_delalloc_folios(struct inode *inode,
 				goto out;
 			}
 			range_start = max_t(u64, folio_pos(folio), start);
-			range_len = min_t(u64, folio_end(folio), end + 1) - range_start;
+			range_len = min_t(u64, folio_next_pos(folio), end + 1) - range_start;
 			btrfs_folio_set_lock(fs_info, folio, range_start, range_len);
 
 			processed_end = range_start + range_len - 1;
@@ -374,8 +374,7 @@ noinline_for_stack bool find_lock_delalloc_range(struct inode *inode,
 	struct extent_io_tree *tree = &BTRFS_I(inode)->io_tree;
 	const u64 orig_start = *start;
 	const u64 orig_end = *end;
-	/* The sanity tests may not set a valid fs_info. */
-	u64 max_bytes = fs_info ? fs_info->max_extent_size : BTRFS_MAX_EXTENT_SIZE;
+	u64 max_bytes = fs_info->max_extent_size;
 	u64 delalloc_start;
 	u64 delalloc_end;
 	bool found;
@@ -387,7 +386,7 @@ noinline_for_stack bool find_lock_delalloc_range(struct inode *inode,
 	ASSERT(orig_end > orig_start);
 
 	/* The range should at least cover part of the folio */
-	ASSERT(!(orig_start >= folio_end(locked_folio) ||
+	ASSERT(!(orig_start >= folio_next_pos(locked_folio) ||
 		 orig_end <= folio_pos(locked_folio)));
 again:
 	/* step one, find a bunch of delalloc bytes starting at start */
@@ -493,7 +492,7 @@ static void end_folio_read(struct folio *folio, bool uptodate, u64 start, u32 le
 	struct btrfs_fs_info *fs_info = folio_to_fs_info(folio);
 
 	ASSERT(folio_pos(folio) <= start &&
-	       start + len <= folio_end(folio));
+	       start + len <= folio_next_pos(folio));
 
 	if (uptodate && btrfs_verify_folio(folio, start, len))
 		btrfs_folio_set_uptodate(fs_info, folio, start, len);
@@ -1199,7 +1198,7 @@ static bool can_skip_one_ordered_range(struct btrfs_inode *inode,
 	 * finished our folio read and unlocked the folio.
 	 */
 	if (btrfs_folio_test_dirty(fs_info, folio, cur, blocksize)) {
-		u64 range_len = min(folio_end(folio),
+		u64 range_len = umin(folio_next_pos(folio),
 				    ordered->file_offset + ordered->num_bytes) - cur;
 
 		ret = true;
@@ -1221,7 +1220,7 @@ static bool can_skip_one_ordered_range(struct btrfs_inode *inode,
 	 * So we return true and update @next_ret to the OE/folio boundary.
 	 */
 	if (btrfs_folio_test_uptodate(fs_info, folio, cur, blocksize)) {
-		u64 range_len = min(folio_end(folio),
+		u64 range_len = umin(folio_next_pos(folio),
 				    ordered->file_offset + ordered->num_bytes) - cur;
 
 		/*
@@ -1697,7 +1696,9 @@ static noinline_for_stack int extent_writepage_io(struct btrfs_inode *inode,
 	int bit;
 	int ret = 0;
 
-	ASSERT(start >= folio_start && end <= folio_end);
+	ASSERT(start >= folio_start, "start=%llu folio_start=%llu", start, folio_start);
+	ASSERT(end <= folio_end, "start=%llu len=%u folio_start=%llu folio_size=%zu",
+	       start, len, folio_start, folio_size(folio));
 
 	ret = btrfs_writepage_cow_fixup(folio);
 	if (ret == -EAGAIN) {
@@ -1725,7 +1726,6 @@ static noinline_for_stack int extent_writepage_io(struct btrfs_inode *inode,
 
 		if (cur >= i_size) {
 			struct btrfs_ordered_extent *ordered;
-			unsigned long flags;
 
 			ordered = btrfs_lookup_first_ordered_range(inode, cur,
 								   fs_info->sectorsize);
@@ -1734,11 +1734,11 @@ static noinline_for_stack int extent_writepage_io(struct btrfs_inode *inode,
 			 * there must be an ordered extent.
 			 */
 			ASSERT(ordered != NULL);
-			spin_lock_irqsave(&inode->ordered_tree_lock, flags);
+			spin_lock(&inode->ordered_tree_lock);
 			set_bit(BTRFS_ORDERED_TRUNCATED, &ordered->flags);
 			ordered->truncated_len = min(ordered->truncated_len,
 						     cur - ordered->file_offset);
-			spin_unlock_irqrestore(&inode->ordered_tree_lock, flags);
+			spin_unlock(&inode->ordered_tree_lock);
 			btrfs_put_ordered_extent(ordered);
 
 			btrfs_mark_ordered_io_finished(inode, folio, cur,
@@ -1871,7 +1871,7 @@ static int extent_writepage(struct folio *folio, struct btrfs_bio_ctrl *bio_ctrl
 				  folio_size(folio), bio_ctrl, i_size);
 	if (ret == 1)
 		return 0;
-	if (ret < 0)
+	if (unlikely(ret < 0))
 		btrfs_err_rl(fs_info,
 "failed to submit blocks, root=%lld inode=%llu folio=%llu submit_bitmap=%*pbl: %d",
 			     btrfs_root_id(inode->root), btrfs_ino(inode),
@@ -2229,7 +2229,7 @@ static noinline_for_stack void write_one_eb(struct extent_buffer *eb,
 	for (int i = 0; i < num_extent_folios(eb); i++) {
 		struct folio *folio = eb->folios[i];
 		u64 range_start = max_t(u64, eb->start, folio_pos(folio));
-		u32 range_len = min_t(u64, folio_end(folio),
+		u32 range_len = min_t(u64, folio_next_pos(folio),
 				      eb->start + eb->len) - range_start;
 
 		folio_lock(folio);
@@ -2481,10 +2481,7 @@ static int extent_write_cache_pages(struct address_space *mapping,
 			       &BTRFS_I(inode)->runtime_flags))
 		wbc->tagged_writepages = 1;
 
-	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
-		tag = PAGECACHE_TAG_TOWRITE;
-	else
-		tag = PAGECACHE_TAG_DIRTY;
+	tag = wbc_to_tag(wbc);
 retry:
 	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
 		tag_pages_for_writeback(mapping, index, end);
@@ -2640,7 +2637,7 @@ void extent_write_locked_range(struct inode *inode, const struct folio *locked_f
 			continue;
 		}
 
-		cur_end = min_t(u64, folio_end(folio) - 1, end);
+		cur_end = min_t(u64, folio_next_pos(folio) - 1, end);
 		cur_len = cur_end + 1 - cur;
 
 		ASSERT(folio_test_locked(folio));
@@ -3880,7 +3877,7 @@ int read_extent_buffer_pages_nowait(struct extent_buffer *eb, int mirror_num,
 	for (int i = 0; i < num_extent_folios(eb); i++) {
 		struct folio *folio = eb->folios[i];
 		u64 range_start = max_t(u64, eb->start, folio_pos(folio));
-		u32 range_len = min_t(u64, folio_end(folio),
+		u32 range_len = min_t(u64, folio_next_pos(folio),
 				      eb->start + eb->len) - range_start;
 
 		bio_add_folio_nofail(&bbio->bio, folio, range_len,

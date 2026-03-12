@@ -33,6 +33,7 @@
 #include <linux/tcp.h>
 #include <linux/time_types.h>
 #include <linux/sockios.h>
+#include <linux/compiler.h>
 
 extern int optind;
 
@@ -140,7 +141,7 @@ static void die_usage(void)
 	exit(1);
 }
 
-static void xerror(const char *fmt, ...)
+static void __noreturn xerror(const char *fmt, ...)
 {
 	va_list ap;
 
@@ -1072,6 +1073,8 @@ static void check_getpeername_connect(int fd)
 	socklen_t salen = sizeof(ss);
 	char a[INET6_ADDRSTRLEN];
 	char b[INET6_ADDRSTRLEN];
+	const char *iface;
+	size_t len;
 
 	if (getpeername(fd, (struct sockaddr *)&ss, &salen) < 0) {
 		perror("getpeername");
@@ -1081,7 +1084,13 @@ static void check_getpeername_connect(int fd)
 	xgetnameinfo((struct sockaddr *)&ss, salen,
 		     a, sizeof(a), b, sizeof(b));
 
-	if (strcmp(cfg_host, a) || strcmp(cfg_port, b))
+	iface = strchr(cfg_host, '%');
+	if (iface)
+		len = iface - cfg_host;
+	else
+		len = strlen(cfg_host) + 1;
+
+	if (strncmp(cfg_host, a, len) || strcmp(cfg_port, b))
 		fprintf(stderr, "%s: %s vs %s, %s vs %s\n", __func__,
 			cfg_host, a, cfg_port, b);
 }

@@ -96,47 +96,52 @@ extern const char *f2fs_fault_name[FAULT_MAX];
 /*
  * For mount options
  */
-#define F2FS_MOUNT_DISABLE_ROLL_FORWARD	0x00000001
-#define F2FS_MOUNT_DISCARD		0x00000002
-#define F2FS_MOUNT_NOHEAP		0x00000004
-#define F2FS_MOUNT_XATTR_USER		0x00000008
-#define F2FS_MOUNT_POSIX_ACL		0x00000010
-#define F2FS_MOUNT_DISABLE_EXT_IDENTIFY	0x00000020
-#define F2FS_MOUNT_INLINE_XATTR		0x00000040
-#define F2FS_MOUNT_INLINE_DATA		0x00000080
-#define F2FS_MOUNT_INLINE_DENTRY	0x00000100
-#define F2FS_MOUNT_FLUSH_MERGE		0x00000200
-#define F2FS_MOUNT_NOBARRIER		0x00000400
-#define F2FS_MOUNT_FASTBOOT		0x00000800
-#define F2FS_MOUNT_READ_EXTENT_CACHE	0x00001000
-#define F2FS_MOUNT_DATA_FLUSH		0x00002000
-#define F2FS_MOUNT_FAULT_INJECTION	0x00004000
-#define F2FS_MOUNT_USRQUOTA		0x00008000
-#define F2FS_MOUNT_GRPQUOTA		0x00010000
-#define F2FS_MOUNT_PRJQUOTA		0x00020000
-#define F2FS_MOUNT_QUOTA		0x00040000
-#define F2FS_MOUNT_INLINE_XATTR_SIZE	0x00080000
-#define F2FS_MOUNT_RESERVE_ROOT		0x00100000
-#define F2FS_MOUNT_DISABLE_CHECKPOINT	0x00200000
-#define F2FS_MOUNT_NORECOVERY		0x00400000
-#define F2FS_MOUNT_ATGC			0x00800000
-#define F2FS_MOUNT_MERGE_CHECKPOINT	0x01000000
-#define	F2FS_MOUNT_GC_MERGE		0x02000000
-#define F2FS_MOUNT_COMPRESS_CACHE	0x04000000
-#define F2FS_MOUNT_AGE_EXTENT_CACHE	0x08000000
-#define F2FS_MOUNT_NAT_BITS		0x10000000
-#define F2FS_MOUNT_INLINECRYPT		0x20000000
-/*
- * Some f2fs environments expect to be able to pass the "lazytime" option
- * string rather than using the MS_LAZYTIME flag, so this must remain.
- */
-#define F2FS_MOUNT_LAZYTIME		0x40000000
-#define F2FS_MOUNT_RESERVE_NODE		0x80000000
+enum f2fs_mount_opt {
+	F2FS_MOUNT_DISABLE_ROLL_FORWARD,
+	F2FS_MOUNT_DISCARD,
+	F2FS_MOUNT_NOHEAP,
+	F2FS_MOUNT_XATTR_USER,
+	F2FS_MOUNT_POSIX_ACL,
+	F2FS_MOUNT_DISABLE_EXT_IDENTIFY,
+	F2FS_MOUNT_INLINE_XATTR,
+	F2FS_MOUNT_INLINE_DATA,
+	F2FS_MOUNT_INLINE_DENTRY,
+	F2FS_MOUNT_FLUSH_MERGE,
+	F2FS_MOUNT_NOBARRIER,
+	F2FS_MOUNT_FASTBOOT,
+	F2FS_MOUNT_READ_EXTENT_CACHE,
+	F2FS_MOUNT_DATA_FLUSH,
+	F2FS_MOUNT_FAULT_INJECTION,
+	F2FS_MOUNT_USRQUOTA,
+	F2FS_MOUNT_GRPQUOTA,
+	F2FS_MOUNT_PRJQUOTA,
+	F2FS_MOUNT_QUOTA,
+	F2FS_MOUNT_INLINE_XATTR_SIZE,
+	F2FS_MOUNT_RESERVE_ROOT,
+	F2FS_MOUNT_DISABLE_CHECKPOINT,
+	F2FS_MOUNT_NORECOVERY,
+	F2FS_MOUNT_ATGC,
+	F2FS_MOUNT_MERGE_CHECKPOINT,
+	F2FS_MOUNT_GC_MERGE,
+	F2FS_MOUNT_COMPRESS_CACHE,
+	F2FS_MOUNT_AGE_EXTENT_CACHE,
+	F2FS_MOUNT_NAT_BITS,
+	F2FS_MOUNT_INLINECRYPT,
+	/*
+	 * Some f2fs environments expect to be able to pass the "lazytime" option
+	 * string rather than using the MS_LAZYTIME flag, so this must remain.
+	 */
+	F2FS_MOUNT_LAZYTIME,
+	F2FS_MOUNT_RESERVE_NODE,
+};
 
 #define F2FS_OPTION(sbi)	((sbi)->mount_opt)
-#define clear_opt(sbi, option)	(F2FS_OPTION(sbi).opt &= ~F2FS_MOUNT_##option)
-#define set_opt(sbi, option)	(F2FS_OPTION(sbi).opt |= F2FS_MOUNT_##option)
-#define test_opt(sbi, option)	(F2FS_OPTION(sbi).opt & F2FS_MOUNT_##option)
+#define clear_opt(sbi, option)		\
+	(F2FS_OPTION(sbi).opt &= ~BIT(F2FS_MOUNT_##option))
+#define set_opt(sbi, option)		\
+	(F2FS_OPTION(sbi).opt |= BIT(F2FS_MOUNT_##option))
+#define test_opt(sbi, option)		\
+	(F2FS_OPTION(sbi).opt & BIT(F2FS_MOUNT_##option))
 
 #define ver_after(a, b)	(typecheck(unsigned long long, a) &&		\
 		typecheck(unsigned long long, b) &&			\
@@ -183,7 +188,7 @@ struct f2fs_rwsem {
 };
 
 struct f2fs_mount_info {
-	unsigned int opt;
+	unsigned long long opt;
 	block_t root_reserved_blocks;	/* root reserved blocks */
 	block_t root_reserved_nodes;	/* root reserved nodes */
 	kuid_t s_resuid;		/* reserved blocks for uid */
@@ -314,6 +319,12 @@ struct cp_control {
 	struct cp_stats stats;
 };
 
+enum f2fs_cp_phase {
+	CP_PHASE_START_BLOCK_OPS,
+	CP_PHASE_FINISH_BLOCK_OPS,
+	CP_PHASE_FINISH_CHECKPOINT,
+};
+
 /*
  * indicate meta/data type
  */
@@ -407,6 +418,8 @@ struct discard_entry {
 #define DEFAULT_DISCARD_GRANULARITY		16
 /* default maximum discard granularity of ordered discard, unit: block count */
 #define DEFAULT_MAX_ORDERED_DISCARD_GRANULARITY	16
+/* default interval of periodical discard submission */
+#define DEFAULT_DISCARD_INTERVAL	(msecs_to_jiffies(20))
 
 /* max discard pend list number */
 #define MAX_PLIST_NUM		512
@@ -660,8 +673,8 @@ enum {
 
 #define DEFAULT_RETRY_IO_COUNT	8	/* maximum retry read IO or flush count */
 
-/* congestion wait timeout value, default: 20ms */
-#define	DEFAULT_IO_TIMEOUT	(msecs_to_jiffies(20))
+/* IO/non-IO congestion wait timeout value, default: 1ms */
+#define	DEFAULT_SCHEDULE_TIMEOUT	(msecs_to_jiffies(1))
 
 /* timeout value injected, default: 1000ms */
 #define DEFAULT_FAULT_TIMEOUT	(msecs_to_jiffies(1000))
@@ -1682,6 +1695,7 @@ struct f2fs_sb_info {
 
 #ifdef CONFIG_BLK_DEV_ZONED
 	unsigned int blocks_per_blkz;		/* F2FS blocks per zone */
+	unsigned int unusable_blocks_per_sec;   /* unusable blocks per section */
 	unsigned int max_open_zones;		/* max open zone resources of the zoned device */
 	/* For adjust the priority writing position of data in zone UFS */
 	unsigned int blkzone_alloc_policy;
@@ -1753,7 +1767,6 @@ struct f2fs_sb_info {
 	unsigned int meta_ino_num;		/* meta inode number*/
 	unsigned int log_blocks_per_seg;	/* log2 blocks per segment */
 	unsigned int blocks_per_seg;		/* blocks per segment */
-	unsigned int unusable_blocks_per_sec;	/* unusable blocks per section */
 	unsigned int segs_per_sec;		/* segments per section */
 	unsigned int secs_per_zone;		/* sections per zone */
 	unsigned int total_sections;		/* total section count */
@@ -2123,7 +2136,7 @@ static inline struct f2fs_super_block *F2FS_RAW_SUPER(struct f2fs_sb_info *sbi)
 static inline struct f2fs_super_block *F2FS_SUPER_BLOCK(struct folio *folio,
 								pgoff_t index)
 {
-	pgoff_t idx_in_folio = index % (1 << folio_order(folio));
+	pgoff_t idx_in_folio = index % folio_nr_pages(folio);
 
 	return (struct f2fs_super_block *)
 		(page_address(folio_page(folio, idx_in_folio)) +
@@ -2996,16 +3009,6 @@ static inline struct folio *f2fs_filemap_get_folio(
 	return __filemap_get_folio(mapping, index, fgp_flags, gfp_mask);
 }
 
-static inline struct page *f2fs_pagecache_get_page(
-				struct address_space *mapping, pgoff_t index,
-				fgf_t fgp_flags, gfp_t gfp_mask)
-{
-	if (time_to_inject(F2FS_M_SB(mapping), FAULT_PAGE_GET))
-		return NULL;
-
-	return pagecache_get_page(mapping, index, fgp_flags, gfp_mask);
-}
-
 static inline void f2fs_folio_put(struct folio *folio, bool unlock)
 {
 	if (IS_ERR_OR_NULL(folio))
@@ -3018,7 +3021,7 @@ static inline void f2fs_folio_put(struct folio *folio, bool unlock)
 	folio_put(folio);
 }
 
-static inline void f2fs_put_page(struct page *page, int unlock)
+static inline void f2fs_put_page(struct page *page, bool unlock)
 {
 	if (!page)
 		return;
@@ -4224,6 +4227,7 @@ struct f2fs_stat_info {
 	int gc_secs[2][2];
 	int tot_blks, data_blks, node_blks;
 	int bg_data_blks, bg_node_blks;
+	int blkoff[NR_CURSEG_TYPE];
 	int curseg[NR_CURSEG_TYPE];
 	int cursec[NR_CURSEG_TYPE];
 	int curzone[NR_CURSEG_TYPE];
@@ -4803,6 +4807,18 @@ static inline bool f2fs_hw_support_discard(struct f2fs_sb_info *sbi)
 	return false;
 }
 
+static inline unsigned int f2fs_hw_discard_granularity(struct f2fs_sb_info *sbi)
+{
+	int i = 1;
+	unsigned int discard_granularity = bdev_discard_granularity(sbi->sb->s_bdev);
+
+	if (f2fs_is_multi_device(sbi))
+		for (; i < sbi->s_ndevs && !bdev_is_zoned(FDEV(i).bdev); i++)
+			discard_granularity = max_t(unsigned int, discard_granularity,
+						bdev_discard_granularity(FDEV(i).bdev));
+	return discard_granularity;
+}
+
 static inline bool f2fs_realtime_discard_enable(struct f2fs_sb_info *sbi)
 {
 	return (test_opt(sbi, DISCARD) && f2fs_hw_support_discard(sbi)) ||
@@ -4939,11 +4955,19 @@ static inline bool f2fs_block_unit_discard(struct f2fs_sb_info *sbi)
 	return F2FS_OPTION(sbi).discard_unit == DISCARD_UNIT_BLOCK;
 }
 
-static inline void f2fs_io_schedule_timeout(long timeout)
+static inline void __f2fs_schedule_timeout(long timeout, bool io)
 {
 	set_current_state(TASK_UNINTERRUPTIBLE);
-	io_schedule_timeout(timeout);
+	if (io)
+		io_schedule_timeout(timeout);
+	else
+		schedule_timeout(timeout);
 }
+
+#define f2fs_io_schedule_timeout(timeout)		\
+			__f2fs_schedule_timeout(timeout, true)
+#define f2fs_schedule_timeout(timeout)			\
+			__f2fs_schedule_timeout(timeout, false)
 
 static inline void f2fs_io_schedule_timeout_killable(long timeout)
 {
@@ -4951,10 +4975,10 @@ static inline void f2fs_io_schedule_timeout_killable(long timeout)
 		if (fatal_signal_pending(current))
 			return;
 		set_current_state(TASK_UNINTERRUPTIBLE);
-		io_schedule_timeout(DEFAULT_IO_TIMEOUT);
-		if (timeout <= DEFAULT_IO_TIMEOUT)
+		io_schedule_timeout(DEFAULT_SCHEDULE_TIMEOUT);
+		if (timeout <= DEFAULT_SCHEDULE_TIMEOUT)
 			return;
-		timeout -= DEFAULT_IO_TIMEOUT;
+		timeout -= DEFAULT_SCHEDULE_TIMEOUT;
 	}
 }
 

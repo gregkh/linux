@@ -52,7 +52,7 @@
 
 #ifndef CONFIG_BROKEN_GAS_INST
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 // The space separator is omitted so that __emit_inst(x) can be parsed as
 // either an assembler directive or an assembler macro argument.
 #define __emit_inst(x)			.inst(x)
@@ -71,11 +71,11 @@
 					 (((x) >> 24) & 0x000000ff))
 #endif	/* CONFIG_CPU_BIG_ENDIAN */
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 #define __emit_inst(x)			.long __INSTR_BSWAP(x)
-#else  /* __ASSEMBLY__ */
+#else  /* __ASSEMBLER__ */
 #define __emit_inst(x)			".long " __stringify(__INSTR_BSWAP(x)) "\n\t"
-#endif	/* __ASSEMBLY__ */
+#endif	/* __ASSEMBLER__ */
 
 #endif	/* CONFIG_BROKEN_GAS_INST */
 
@@ -91,7 +91,8 @@
  */
 #define pstate_field(op1, op2)		((op1) << Op1_shift | (op2) << Op2_shift)
 #define PSTATE_Imm_shift		CRm_shift
-#define SET_PSTATE(x, r)		__emit_inst(0xd500401f | PSTATE_ ## r | ((!!x) << PSTATE_Imm_shift))
+#define ENCODE_PSTATE(x, r)		(0xd500401f | PSTATE_ ## r | ((!!x) << PSTATE_Imm_shift))
+#define SET_PSTATE(x, r)		__emit_inst(ENCODE_PSTATE(x, r))
 
 #define PSTATE_PAN			pstate_field(0, 4)
 #define PSTATE_UAO			pstate_field(0, 3)
@@ -1129,9 +1130,7 @@
 #define gicr_insn(insn)			read_sysreg_s(GICV5_OP_GICR_##insn)
 #define gic_insn(v, insn)		write_sysreg_s(v, GICV5_OP_GIC_##insn)
 
-#define ARM64_FEATURE_FIELD_BITS	4
-
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 	.macro	mrs_s, rt, sreg
 	 __emit_inst(0xd5200000|(\sreg)|(.L__gpr_num_\rt))

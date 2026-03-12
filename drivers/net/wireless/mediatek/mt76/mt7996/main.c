@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (C) 2022 MediaTek Inc.
  */
@@ -954,6 +954,7 @@ mt7996_mac_sta_init_link(struct mt7996_dev *dev,
 
 		msta_link = &msta->deflink;
 		msta->deflink_id = link_id;
+		msta->seclink_id = msta->deflink_id;
 
 		for (i = 0; i < ARRAY_SIZE(sta->txq); i++) {
 			struct mt76_txq *mtxq;
@@ -968,6 +969,11 @@ mt7996_mac_sta_init_link(struct mt7996_dev *dev,
 		msta_link = kzalloc(sizeof(*msta_link), GFP_KERNEL);
 		if (!msta_link)
 			return -ENOMEM;
+
+		if (msta->seclink_id == msta->deflink_id &&
+		    (sta->valid_links & ~BIT(msta->deflink_id)))
+			msta->seclink_id = __ffs(sta->valid_links &
+						 ~BIT(msta->deflink_id));
 	}
 
 	INIT_LIST_HEAD(&msta_link->rc_list);
@@ -1042,6 +1048,8 @@ mt7996_mac_sta_remove_links(struct mt7996_dev *dev, struct ieee80211_vif *vif,
 		if (msta->deflink_id == link_id) {
 			msta->deflink_id = IEEE80211_LINK_UNSPECIFIED;
 			continue;
+		} else if (msta->seclink_id == link_id) {
+			msta->seclink_id = IEEE80211_LINK_UNSPECIFIED;
 		}
 
 		kfree_rcu(msta_link, rcu_head);
@@ -1137,6 +1145,7 @@ mt7996_mac_sta_add(struct mt7996_dev *dev, struct ieee80211_vif *vif,
 	mutex_lock(&dev->mt76.mutex);
 
 	msta->deflink_id = IEEE80211_LINK_UNSPECIFIED;
+	msta->seclink_id = IEEE80211_LINK_UNSPECIFIED;
 	msta->vif = mvif;
 	err = mt7996_mac_sta_add_links(dev, vif, sta, links);
 
@@ -2155,7 +2164,6 @@ out:
 	return ret;
 }
 
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
 static int
 mt7996_net_fill_forward_path(struct ieee80211_hw *hw,
 			     struct ieee80211_vif *vif,
@@ -2163,15 +2171,14 @@ mt7996_net_fill_forward_path(struct ieee80211_hw *hw,
 			     struct net_device_path_ctx *ctx,
 			     struct net_device_path *path)
 {
-	struct mt7996_vif *mvif = (struct mt7996_vif *)vif->drv_priv;
 	struct mt7996_sta *msta = (struct mt7996_sta *)sta->drv_priv;
 	struct mt7996_dev *dev = mt7996_hw_dev(hw);
 	struct mtk_wed_device *wed = &dev->mt76.mmio.wed;
 	struct mt7996_sta_link *msta_link;
-	struct mt76_vif_link *mlink;
+	struct mt7996_vif_link *link;
 
-	mlink = rcu_dereference(mvif->mt76.link[msta->deflink_id]);
-	if (!mlink)
+	link = mt7996_vif_link(dev, vif, msta->deflink_id);
+	if (!link)
 		return -EIO;
 
 	msta_link = rcu_dereference(msta->link[msta->deflink_id]);
@@ -2186,13 +2193,19 @@ mt7996_net_fill_forward_path(struct ieee80211_hw *hw,
 	     (is_mt7992(&dev->mt76) && msta_link->wcid.phy_idx == MT_BAND1)))
 		wed = &dev->mt76.mmio.wed_hif2;
 
-	if (!mtk_wed_device_active(wed))
+	if (!mtk_wed_device_active(wed) &&
+	    !mt76_npu_device_active(&dev->mt76))
 		return -ENODEV;
 
 	path->type = DEV_PATH_MTK_WDMA;
 	path->dev = ctx->dev;
-	path->mtk_wdma.wdma_idx = wed->wdma_idx;
-	path->mtk_wdma.bss = mlink->idx;
+#ifdef CONFIG_NET_MEDIATEK_SOC_WED
+	if (mtk_wed_device_active(wed))
+		path->mtk_wdma.wdma_idx = wed->wdma_idx;
+	else
+#endif
+		path->mtk_wdma.wdma_idx = link->mt76.band_idx;
+	path->mtk_wdma.bss = link->mt76.idx;
 	path->mtk_wdma.queue = 0;
 	path->mtk_wdma.wcid = msta_link->wcid.idx;
 
@@ -2205,8 +2218,6 @@ mt7996_net_fill_forward_path(struct ieee80211_hw *hw,
 
 	return 0;
 }
-
-#endif
 
 static int
 mt7996_change_vif_links(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
@@ -2314,11 +2325,14 @@ const struct ieee80211_ops mt7996_ops = {
 	.twt_teardown_request = mt7996_twt_teardown_request,
 #ifdef CONFIG_MAC80211_DEBUGFS
 	.sta_add_debugfs = mt7996_sta_add_debugfs,
+	.link_sta_add_debugfs = mt7996_link_sta_add_debugfs,
 #endif
 	.set_radar_background = mt7996_set_radar_background,
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
 	.net_fill_forward_path = mt7996_net_fill_forward_path,
+#ifdef CONFIG_NET_MEDIATEK_SOC_WED
 	.net_setup_tc = mt76_wed_net_setup_tc,
+#elif defined(CONFIG_MT7996_NPU)
+	.net_setup_tc = mt76_npu_net_setup_tc,
 #endif
 	.change_vif_links = mt7996_change_vif_links,
 	.change_sta_links = mt7996_mac_sta_change_links,

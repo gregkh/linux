@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (C) 2022 MediaTek Inc.
  */
@@ -317,6 +317,9 @@ mt7996_mcu_send_message(struct mt76_dev *mdev, struct sk_buff *skb,
 			uni_txd->option = MCU_CMD_UNI_QUERY_ACK;
 		else
 			uni_txd->option = MCU_CMD_UNI_EXT_ACK;
+
+		if (mcu_cmd == MCU_UNI_CMD_SDO)
+			uni_txd->option &= ~MCU_CMD_ACK;
 
 		if ((cmd & __MCU_CMD_FIELD_WA) && (cmd & __MCU_CMD_FIELD_WM))
 			uni_txd->s2d_index = MCU_S2D_H2CN;
@@ -2391,8 +2394,8 @@ mt7996_mcu_sta_mld_setup_tlv(struct mt7996_dev *dev, struct sk_buff *skb,
 	mld_setup->primary_id = cpu_to_le16(msta_link->wcid.idx);
 
 	if (nlinks > 1) {
-		link_id = __ffs(sta->valid_links & ~BIT(msta->deflink_id));
-		msta_link = mt76_dereference(msta->link[link_id], &dev->mt76);
+		msta_link = mt76_dereference(msta->link[msta->seclink_id],
+					     &dev->mt76);
 		if (!msta_link)
 			return;
 	}

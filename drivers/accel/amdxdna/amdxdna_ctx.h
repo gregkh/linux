@@ -13,9 +13,12 @@
 struct amdxdna_hwctx_priv;
 
 enum ert_cmd_opcode {
-	ERT_START_CU      = 0,
-	ERT_CMD_CHAIN     = 19,
-	ERT_START_NPU     = 20,
+	ERT_START_CU = 0,
+	ERT_CMD_CHAIN = 19,
+	ERT_START_NPU = 20,
+	ERT_START_NPU_PREEMPT = 21,
+	ERT_START_NPU_PREEMPT_ELF = 22,
+	ERT_INVALID_CMD	= ~0U,
 };
 
 enum ert_cmd_state {
@@ -54,6 +57,21 @@ struct amdxdna_cmd_chain {
 	u64 data[] __counted_by(command_count);
 };
 
+/*
+ * Interpretation of the beginning of data payload for ERT_START_NPU_PREEMPT in
+ * amdxdna_cmd. The rest of the payload in amdxdna_cmd is regular kernel args.
+ */
+struct amdxdna_cmd_preempt_data {
+	u64 inst_buf;	    /* instruction buffer address */
+	u64 save_buf;	    /* save buffer address */
+	u64 restore_buf;    /* restore buffer address */
+	u32 inst_size;	    /* size of instruction buffer in bytes */
+	u32 save_size;	    /* size of save buffer in bytes */
+	u32 restore_size;   /* size of restore buffer in bytes */
+	u32 inst_prop_cnt;  /* properties count */
+	u32 prop_args[];    /* properties and regular kernel arguments */
+};
+
 /* Exec buffer command header format */
 #define AMDXDNA_CMD_STATE		GENMASK(3, 0)
 #define AMDXDNA_CMD_EXTRA_CU_MASK	GENMASK(11, 10)
@@ -63,6 +81,8 @@ struct amdxdna_cmd {
 	u32 header;
 	u32 data[];
 };
+
+#define INVALID_CU_IDX		(~0U)
 
 struct amdxdna_hwctx {
 	struct amdxdna_client		*client;
@@ -78,11 +98,7 @@ struct amdxdna_hwctx {
 	u32				*col_list;
 	u32				start_col;
 	u32				num_col;
-#define HWCTX_STAT_INIT  0
-#define HWCTX_STAT_READY 1
-#define HWCTX_STAT_STOP  2
-	u32				status;
-	u32				old_status;
+	u32				num_unused_col;
 
 	struct amdxdna_qos_info		     qos;
 	struct amdxdna_hwctx_param_config_cu *cus;
@@ -94,6 +110,17 @@ struct amdxdna_hwctx {
 
 #define drm_job_to_xdna_job(j) \
 	container_of(j, struct amdxdna_sched_job, base)
+
+enum amdxdna_job_opcode {
+	SYNC_DEBUG_BO,
+	ATTACH_DEBUG_BO,
+	DETACH_DEBUG_BO,
+};
+
+struct amdxdna_drv_cmd {
+	enum amdxdna_job_opcode	opcode;
+	u32			result;
+};
 
 struct amdxdna_sched_job {
 	struct drm_sched_job	base;
@@ -107,6 +134,7 @@ struct amdxdna_sched_job {
 	bool			job_done;
 	bool			job_timeout;
 	u64			seq;
+	struct amdxdna_drv_cmd	*drv_cmd;
 	struct amdxdna_gem_obj	*cmd_bo;
 	size_t			bo_cnt;
 	struct drm_gem_object	*bos[] __counted_by(bo_cnt);
@@ -138,15 +166,20 @@ amdxdna_cmd_get_state(struct amdxdna_gem_obj *abo)
 }
 
 void *amdxdna_cmd_get_payload(struct amdxdna_gem_obj *abo, u32 *size);
-int amdxdna_cmd_get_cu_idx(struct amdxdna_gem_obj *abo);
+u32 amdxdna_cmd_get_cu_idx(struct amdxdna_gem_obj *abo);
+int amdxdna_cmd_set_error(struct amdxdna_gem_obj *abo,
+			  struct amdxdna_sched_job *job, u32 cmd_idx,
+			  enum ert_cmd_state error_state);
 
 void amdxdna_sched_job_cleanup(struct amdxdna_sched_job *job);
 void amdxdna_hwctx_remove_all(struct amdxdna_client *client);
 int amdxdna_hwctx_walk(struct amdxdna_client *client, void *arg,
 		       int (*walk)(struct amdxdna_hwctx *hwctx, void *arg));
+int amdxdna_hwctx_sync_debug_bo(struct amdxdna_client *client, u32 debug_bo_hdl);
 
 int amdxdna_cmd_submit(struct amdxdna_client *client,
-		       u32 cmd_bo_hdls, u32 *arg_bo_hdls, u32 arg_bo_cnt,
+		       struct amdxdna_drv_cmd *drv_cmd, u32 cmd_bo_hdls,
+		       u32 *arg_bo_hdls, u32 arg_bo_cnt,
 		       u32 hwctx_hdl, u64 *seq);
 
 int amdxdna_cmd_wait(struct amdxdna_client *client, u32 hwctx_hdl,

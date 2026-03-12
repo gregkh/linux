@@ -108,8 +108,8 @@ static ssize_t target_core_item_dbroot_store(struct config_item *item,
 					const char *page, size_t count)
 {
 	ssize_t read_bytes;
-	struct file *fp;
 	ssize_t r = -EINVAL;
+	struct path path = {};
 
 	mutex_lock(&target_devices_lock);
 	if (target_devices) {
@@ -131,17 +131,14 @@ static ssize_t target_core_item_dbroot_store(struct config_item *item,
 		db_root_stage[read_bytes - 1] = '\0';
 
 	/* validate new db root before accepting it */
-	fp = filp_open(db_root_stage, O_RDONLY, 0);
-	if (IS_ERR(fp)) {
+	r = kern_path(db_root_stage, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &path);
+	if (r) {
 		pr_err("db_root: cannot open: %s\n", db_root_stage);
+		if (r == -ENOTDIR)
+			pr_err("db_root: not a directory: %s\n", db_root_stage);
 		goto unlock;
 	}
-	if (!S_ISDIR(file_inode(fp)->i_mode)) {
-		filp_close(fp, NULL);
-		pr_err("db_root: not a directory: %s\n", db_root_stage);
-		goto unlock;
-	}
-	filp_close(fp, NULL);
+	path_put(&path);
 
 	strscpy(db_root, db_root_stage);
 	pr_debug("Target_Core_ConfigFS: db_root set to %s\n", db_root);
@@ -578,6 +575,11 @@ DEF_CONFIGFS_ATTRIB_SHOW(unmap_zeroes_data);
 DEF_CONFIGFS_ATTRIB_SHOW(max_write_same_len);
 DEF_CONFIGFS_ATTRIB_SHOW(emulate_rsoc);
 DEF_CONFIGFS_ATTRIB_SHOW(submit_type);
+DEF_CONFIGFS_ATTRIB_SHOW(atomic_max_len);
+DEF_CONFIGFS_ATTRIB_SHOW(atomic_alignment);
+DEF_CONFIGFS_ATTRIB_SHOW(atomic_granularity);
+DEF_CONFIGFS_ATTRIB_SHOW(atomic_max_with_boundary);
+DEF_CONFIGFS_ATTRIB_SHOW(atomic_max_boundary);
 
 #define DEF_CONFIGFS_ATTRIB_STORE_U32(_name)				\
 static ssize_t _name##_store(struct config_item *item, const char *page,\
@@ -1300,6 +1302,11 @@ CONFIGFS_ATTR(, max_write_same_len);
 CONFIGFS_ATTR(, alua_support);
 CONFIGFS_ATTR(, pgr_support);
 CONFIGFS_ATTR(, submit_type);
+CONFIGFS_ATTR_RO(, atomic_max_len);
+CONFIGFS_ATTR_RO(, atomic_alignment);
+CONFIGFS_ATTR_RO(, atomic_granularity);
+CONFIGFS_ATTR_RO(, atomic_max_with_boundary);
+CONFIGFS_ATTR_RO(, atomic_max_boundary);
 
 /*
  * dev_attrib attributes for devices using the target core SBC/SPC
@@ -1343,6 +1350,11 @@ struct configfs_attribute *sbc_attrib_attrs[] = {
 	&attr_pgr_support,
 	&attr_emulate_rsoc,
 	&attr_submit_type,
+	&attr_atomic_alignment,
+	&attr_atomic_max_len,
+	&attr_atomic_granularity,
+	&attr_atomic_max_with_boundary,
+	&attr_atomic_max_boundary,
 	NULL,
 };
 EXPORT_SYMBOL(sbc_attrib_attrs);
@@ -2758,32 +2770,24 @@ static ssize_t target_lu_gp_lu_gp_id_store(struct config_item *item,
 static ssize_t target_lu_gp_members_show(struct config_item *item, char *page)
 {
 	struct t10_alua_lu_gp *lu_gp = to_lu_gp(item);
-	struct se_device *dev;
-	struct se_hba *hba;
 	struct t10_alua_lu_gp_member *lu_gp_mem;
-	ssize_t len = 0, cur_len;
-	unsigned char buf[LU_GROUP_NAME_BUF] = { };
+	const char *const end = page + PAGE_SIZE;
+	char *cur = page;
 
 	spin_lock(&lu_gp->lu_gp_lock);
 	list_for_each_entry(lu_gp_mem, &lu_gp->lu_gp_mem_list, lu_gp_mem_list) {
-		dev = lu_gp_mem->lu_gp_mem_dev;
-		hba = dev->se_hba;
+		struct se_device *dev = lu_gp_mem->lu_gp_mem_dev;
+		struct se_hba *hba = dev->se_hba;
 
-		cur_len = snprintf(buf, LU_GROUP_NAME_BUF, "%s/%s\n",
+		cur += scnprintf(cur, end - cur, "%s/%s\n",
 			config_item_name(&hba->hba_group.cg_item),
 			config_item_name(&dev->dev_group.cg_item));
-
-		if ((cur_len + len) > PAGE_SIZE || cur_len > LU_GROUP_NAME_BUF) {
-			pr_warn("Ran out of lu_gp_show_attr"
-				"_members buffer\n");
+		if (WARN_ON_ONCE(cur >= end))
 			break;
-		}
-		memcpy(page+len, buf, cur_len);
-		len += cur_len;
 	}
 	spin_unlock(&lu_gp->lu_gp_lock);
 
-	return len;
+	return cur - page;
 }
 
 CONFIGFS_ATTR(target_lu_gp_, lu_gp_id);
@@ -3669,8 +3673,6 @@ static int __init target_core_init_configfs(void)
 {
 	struct configfs_subsystem *subsys = &target_core_fabrics;
 	struct t10_alua_lu_gp *lu_gp;
-	struct cred *kern_cred;
-	const struct cred *old_cred;
 	int ret;
 
 	pr_debug("TARGET_CORE[0]: Loading Generic Kernel Storage"
@@ -3747,16 +3749,8 @@ static int __init target_core_init_configfs(void)
 	if (ret < 0)
 		goto out;
 
-	/* We use the kernel credentials to access the target directory */
-	kern_cred = prepare_kernel_cred(&init_task);
-	if (!kern_cred) {
-		ret = -ENOMEM;
-		goto out;
-	}
-	old_cred = override_creds(kern_cred);
-	target_init_dbroot();
-	revert_creds(old_cred);
-	put_cred(kern_cred);
+	scoped_with_kernel_creds()
+		target_init_dbroot();
 
 	return 0;
 

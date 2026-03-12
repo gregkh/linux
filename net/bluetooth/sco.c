@@ -470,6 +470,7 @@ static void sco_sock_destruct(struct sock *sk)
 
 	skb_queue_purge(&sk->sk_receive_queue);
 	skb_queue_purge(&sk->sk_write_queue);
+	skb_queue_purge(&sk->sk_error_queue);
 }
 
 static void sco_sock_cleanup_listen(struct sock *parent)
@@ -605,7 +606,7 @@ static int sco_sock_create(struct net *net, struct socket *sock, int protocol,
 	return 0;
 }
 
-static int sco_sock_bind(struct socket *sock, struct sockaddr *addr,
+static int sco_sock_bind(struct socket *sock, struct sockaddr_unsized *addr,
 			 int addr_len)
 {
 	struct sockaddr_sco *sa = (struct sockaddr_sco *) addr;
@@ -639,7 +640,7 @@ done:
 	return err;
 }
 
-static int sco_sock_connect(struct socket *sock, struct sockaddr *addr, int alen, int flags)
+static int sco_sock_connect(struct socket *sock, struct sockaddr_unsized *addr, int alen, int flags)
 {
 	struct sockaddr_sco *sa = (struct sockaddr_sco *) addr;
 	struct sock *sk = sock->sk;

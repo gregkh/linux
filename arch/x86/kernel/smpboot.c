@@ -103,9 +103,6 @@ EXPORT_PER_CPU_SYMBOL(cpu_core_map);
 DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, cpu_die_map);
 EXPORT_PER_CPU_SYMBOL(cpu_die_map);
 
-/* CPUs which are the primary SMT threads */
-struct cpumask __cpu_primary_thread_mask __read_mostly;
-
 /* Representing CPUs for which sibling maps can be computed */
 static cpumask_var_t cpu_sibling_setup_mask;
 
@@ -471,13 +468,6 @@ static int x86_cluster_flags(void)
 }
 #endif
 
-/*
- * Set if a package/die has multiple NUMA nodes inside.
- * AMD Magny-Cours, Intel Cluster-on-Die, and Intel
- * Sub-NUMA Clustering have this.
- */
-static bool x86_has_numa_in_package;
-
 static struct sched_domain_topology_level x86_topology[] = {
 	SDTL_INIT(tl_smt_mask, cpu_smt_flags, SMT),
 #ifdef CONFIG_SCHED_CLUSTER
@@ -499,7 +489,7 @@ static void __init build_sched_topology(void)
 	 * PKG domain since the NUMA domains will auto-magically create the
 	 * right spanning domains based on the SLIT.
 	 */
-	if (x86_has_numa_in_package) {
+	if (topology_num_nodes_per_package() > 1) {
 		unsigned int pkgdom = ARRAY_SIZE(x86_topology) - 2;
 
 		memset(&x86_topology[pkgdom], 0, sizeof(x86_topology[pkgdom]));
@@ -514,6 +504,172 @@ static void __init build_sched_topology(void)
 
 	set_sched_topology(topology);
 }
+
+#ifdef CONFIG_NUMA
+/*
+ * Test if the on-trace cluster at (N,N) is symmetric.
+ * Uses upper triangle iteration to avoid obvious duplicates.
+ */
+static bool slit_cluster_symmetric(int N)
+{
+	int u = topology_num_nodes_per_package();
+
+	for (int k = 0; k < u; k++) {
+		for (int l = k; l < u; l++) {
+			if (node_distance(N + k, N + l) !=
+			    node_distance(N + l, N + k))
+				return false;
+		}
+	}
+
+	return true;
+}
+
+/*
+ * Return the package-id of the cluster, or ~0 if indeterminate.
+ * Each node in the on-trace cluster should have the same package-id.
+ */
+static u32 slit_cluster_package(int N)
+{
+	int u = topology_num_nodes_per_package();
+	u32 pkg_id = ~0;
+
+	for (int n = 0; n < u; n++) {
+		const struct cpumask *cpus = cpumask_of_node(N + n);
+		int cpu;
+
+		for_each_cpu(cpu, cpus) {
+			u32 id = topology_logical_package_id(cpu);
+
+			if (pkg_id == ~0)
+				pkg_id = id;
+			if (pkg_id != id)
+				return ~0;
+		}
+	}
+
+	return pkg_id;
+}
+
+/*
+ * Validate the SLIT table is of the form expected for SNC, specifically:
+ *
+ *  - each on-trace cluster should be symmetric,
+ *  - each on-trace cluster should have a unique package-id.
+ *
+ * If you NUMA_EMU on top of SNC, you get to keep the pieces.
+ */
+static bool slit_validate(void)
+{
+	int u = topology_num_nodes_per_package();
+	u32 pkg_id, prev_pkg_id = ~0;
+
+	for (int pkg = 0; pkg < topology_max_packages(); pkg++) {
+		int n = pkg * u;
+
+		/*
+		 * Ensure the on-trace cluster is symmetric and each cluster
+		 * has a different package id.
+		 */
+		if (!slit_cluster_symmetric(n))
+			return false;
+		pkg_id = slit_cluster_package(n);
+		if (pkg_id == ~0)
+			return false;
+		if (pkg && pkg_id == prev_pkg_id)
+			return false;
+
+		prev_pkg_id = pkg_id;
+	}
+
+	return true;
+}
+
+/*
+ * Compute a sanitized SLIT table for SNC; notably SNC-3 can end up with
+ * asymmetric off-trace clusters, reflecting physical assymmetries. However
+ * this leads to 'unfortunate' sched_domain configurations.
+ *
+ * For example dual socket GNR with SNC-3:
+ *
+ * node distances:
+ * node     0    1    2    3    4    5
+ *     0:   10   15   17   21   28   26
+ *     1:   15   10   15   23   26   23
+ *     2:   17   15   10   26   23   21
+ *     3:   21   28   26   10   15   17
+ *     4:   23   26   23   15   10   15
+ *     5:   26   23   21   17   15   10
+ *
+ * Fix things up by averaging out the off-trace clusters; resulting in:
+ *
+ * node     0    1    2    3    4    5
+ *     0:   10   15   17   24   24   24
+ *     1:   15   10   15   24   24   24
+ *     2:   17   15   10   24   24   24
+ *     3:   24   24   24   10   15   17
+ *     4:   24   24   24   15   10   15
+ *     5:   24   24   24   17   15   10
+ */
+static int slit_cluster_distance(int i, int j)
+{
+	static int slit_valid = -1;
+	int u = topology_num_nodes_per_package();
+	long d = 0;
+	int x, y;
+
+	if (slit_valid < 0) {
+		slit_valid = slit_validate();
+		if (!slit_valid)
+			pr_err(FW_BUG "SLIT table doesn't have the expected form for SNC -- fixup disabled!\n");
+		else
+			pr_info("Fixing up SNC SLIT table.\n");
+	}
+
+	/*
+	 * Is this a unit cluster on the trace?
+	 */
+	if ((i / u) == (j / u) || !slit_valid)
+		return node_distance(i, j);
+
+	/*
+	 * Off-trace cluster.
+	 *
+	 * Notably average out the symmetric pair of off-trace clusters to
+	 * ensure the resulting SLIT table is symmetric.
+	 */
+	x = i - (i % u);
+	y = j - (j % u);
+
+	for (i = x; i < x + u; i++) {
+		for (j = y; j < y + u; j++) {
+			d += node_distance(i, j);
+			d += node_distance(j, i);
+		}
+	}
+
+	return d / (2*u*u);
+}
+
+int arch_sched_node_distance(int from, int to)
+{
+	int d = node_distance(from, to);
+
+	switch (boot_cpu_data.x86_vfm) {
+	case INTEL_GRANITERAPIDS_X:
+	case INTEL_ATOM_DARKMONT_X:
+		if (topology_max_packages() == 1 ||
+		    topology_num_nodes_per_package() < 3)
+			return d;
+
+		/*
+		 * Handle SNC-3 asymmetries.
+		 */
+		return slit_cluster_distance(from, to);
+	}
+	return d;
+}
+#endif /* CONFIG_NUMA */
 
 void set_cpu_sibling_map(int cpu)
 {
@@ -539,7 +695,7 @@ void set_cpu_sibling_map(int cpu)
 		o = &cpu_data(i);
 
 		if (match_pkg(c, o) && !topology_same_node(c, o))
-			x86_has_numa_in_package = true;
+			WARN_ON_ONCE(topology_num_nodes_per_package() == 1);
 
 		if ((i == cpu) || (has_smt && match_smt(c, o)))
 			link_mask(topology_sibling_cpumask, cpu, i);
@@ -1328,11 +1484,7 @@ void __noreturn hlt_play_dead(void)
 		native_halt();
 }
 
-/*
- * native_play_dead() is essentially a __noreturn function, but it can't
- * be marked as such as the compiler may complain about it.
- */
-void native_play_dead(void)
+void __noreturn native_play_dead(void)
 {
 	if (cpu_feature_enabled(X86_FEATURE_KERNEL_IBRS))
 		__update_spec_ctrl(0);
@@ -1351,7 +1503,7 @@ int native_cpu_disable(void)
 	return -ENOSYS;
 }
 
-void native_play_dead(void)
+void __noreturn native_play_dead(void)
 {
 	BUG();
 }

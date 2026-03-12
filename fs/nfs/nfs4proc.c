@@ -4470,6 +4470,49 @@ out:
 	return status;
 }
 
+#if IS_ENABLED(CONFIG_NFS_V4_1)
+static bool should_request_dir_deleg(struct inode *inode)
+{
+	if (!directory_delegations)
+		return false;
+	if (!inode)
+		return false;
+	if (!S_ISDIR(inode->i_mode))
+		return false;
+	if (!nfs_server_capable(inode, NFS_CAP_DIR_DELEG))
+		return false;
+	if (!test_and_clear_bit(NFS_INO_REQ_DIR_DELEG, &(NFS_I(inode)->flags)))
+		return false;
+	if (nfs4_have_delegation(inode, FMODE_READ, 0))
+		return false;
+	return true;
+}
+#else
+static bool should_request_dir_deleg(struct inode *inode)
+{
+	return false;
+}
+#endif /* CONFIG_NFS_V4_1 */
+
+static void nfs4_call_getattr_prepare(struct rpc_task *task, void *calldata)
+{
+	struct nfs4_call_sync_data *data = calldata;
+	nfs4_setup_sequence(data->seq_server->nfs_client, data->seq_args,
+			    data->seq_res, task);
+}
+
+static void nfs4_call_getattr_done(struct rpc_task *task, void *calldata)
+{
+	struct nfs4_call_sync_data *data = calldata;
+
+	nfs4_sequence_process(task, data->seq_res);
+}
+
+static const struct rpc_call_ops nfs4_call_getattr_ops = {
+	.rpc_call_prepare = nfs4_call_getattr_prepare,
+	.rpc_call_done = nfs4_call_getattr_done,
+};
+
 static int _nfs4_proc_getattr(struct nfs_server *server, struct nfs_fh *fhandle,
 				struct nfs_fattr *fattr, struct inode *inode)
 {
@@ -4487,20 +4530,54 @@ static int _nfs4_proc_getattr(struct nfs_server *server, struct nfs_fh *fhandle,
 		.rpc_argp = &args,
 		.rpc_resp = &res,
 	};
-	unsigned short task_flags = 0;
+	struct nfs4_call_sync_data data = {
+		.seq_server = server,
+		.seq_args = &args.seq_args,
+		.seq_res = &res.seq_res,
+	};
+	struct rpc_task_setup task_setup = {
+		.rpc_client = server->client,
+		.rpc_message = &msg,
+		.callback_ops = &nfs4_call_getattr_ops,
+		.callback_data = &data,
+	};
+	struct nfs4_gdd_res gdd_res;
+	int status;
 
 	if (nfs4_has_session(server->nfs_client))
-		task_flags = RPC_TASK_MOVEABLE;
+		task_setup.flags = RPC_TASK_MOVEABLE;
 
 	/* Is this is an attribute revalidation, subject to softreval? */
 	if (inode && (server->flags & NFS_MOUNT_SOFTREVAL))
-		task_flags |= RPC_TASK_TIMEOUT;
+		task_setup.flags |= RPC_TASK_TIMEOUT;
+
+	args.get_dir_deleg = should_request_dir_deleg(inode);
+	if (args.get_dir_deleg)
+		res.gdd_res = &gdd_res;
 
 	nfs4_bitmap_copy_adjust(bitmask, nfs4_bitmask(server, fattr->label), inode, 0);
 	nfs_fattr_init(fattr);
 	nfs4_init_sequence(&args.seq_args, &res.seq_res, 0, 0);
-	return nfs4_do_call_sync(server->client, server, &msg,
-			&args.seq_args, &res.seq_res, task_flags);
+
+	status = nfs4_call_sync_custom(&task_setup);
+
+	if (args.get_dir_deleg) {
+		switch (status) {
+		case 0:
+			if (gdd_res.status != GDD4_OK)
+				break;
+			nfs_inode_set_delegation(inode, current_cred(),
+						 FMODE_READ, &gdd_res.deleg, 0,
+						 NFS4_OPEN_DELEGATE_READ);
+			break;
+		case -ENOTSUPP:
+		case -EOPNOTSUPP:
+			server->caps &= ~NFS_CAP_DIR_DELEG;
+		}
+	}
+
+	nfs4_sequence_free_slot(&res.seq_res);
+	return status;
 }
 
 int nfs4_proc_getattr(struct nfs_server *server, struct nfs_fh *fhandle,
@@ -4513,8 +4590,14 @@ int nfs4_proc_getattr(struct nfs_server *server, struct nfs_fh *fhandle,
 	do {
 		err = _nfs4_proc_getattr(server, fhandle, fattr, inode);
 		trace_nfs4_getattr(server, fhandle, fattr, err);
-		err = nfs4_handle_exception(server, err,
-				&exception);
+		switch (err) {
+		default:
+			err = nfs4_handle_exception(server, err, &exception);
+			break;
+		case -ENOTSUPP:
+		case -EOPNOTSUPP:
+			exception.retry = true;
+		}
 	} while (exception.retry);
 	return err;
 }
@@ -4778,6 +4861,7 @@ static int _nfs4_proc_access(struct inode *inode, struct nfs_access_entry *entry
 	int status = 0;
 
 	if (!nfs4_have_delegation(inode, FMODE_READ, 0)) {
+		nfs_request_directory_delegation(inode);
 		res.fattr = nfs_alloc_fattr();
 		if (res.fattr == NULL)
 			return -ENOMEM;
@@ -4885,6 +4969,8 @@ nfs4_proc_create(struct inode *dir, struct dentry *dentry, struct iattr *sattr,
 
 	ilabel = nfs4_label_init_security(dir, dentry, sattr, &l);
 
+	nfs_request_directory_delegation(dir);
+
 	if (!(server->attr_bitmask[2] & FATTR4_WORD2_MODE_UMASK))
 		sattr->ia_mode &= ~current_umask();
 	state = nfs4_do_open(dir, ctx, flags, sattr, ilabel, NULL);
@@ -4981,6 +5067,7 @@ static void nfs4_proc_unlink_setup(struct rpc_message *msg,
 	nfs4_init_sequence(&args->seq_args, &res->seq_res, 1, 0);
 
 	nfs_fattr_init(res->dir_attr);
+	nfs_request_directory_delegation(d_inode(dentry->d_parent));
 
 	if (inode) {
 		nfs4_inode_return_delegation(inode);
@@ -5015,7 +5102,8 @@ static int nfs4_proc_unlink_done(struct rpc_task *task, struct inode *dir)
 
 static void nfs4_proc_rename_setup(struct rpc_message *msg,
 		struct dentry *old_dentry,
-		struct dentry *new_dentry)
+		struct dentry *new_dentry,
+		struct inode *same_parent)
 {
 	struct nfs_renameargs *arg = msg->rpc_argp;
 	struct nfs_renameres *res = msg->rpc_resp;
@@ -5026,6 +5114,8 @@ static void nfs4_proc_rename_setup(struct rpc_message *msg,
 		nfs4_inode_make_writeable(old_inode);
 	if (new_inode)
 		nfs4_inode_return_delegation(new_inode);
+	if (same_parent)
+		nfs_request_directory_delegation(same_parent);
 	msg->rpc_proc = &nfs4_procedures[NFSPROC4_CLNT_RENAME];
 	res->server = NFS_SB(old_dentry->d_sb);
 	nfs4_init_sequence(&arg->seq_args, &res->seq_res, 1, 0);
@@ -10832,6 +10922,7 @@ static const struct nfs4_minor_version_ops nfs_v4_1_minor_ops = {
 	.minor_version = 1,
 	.init_caps = NFS_CAP_READDIRPLUS
 		| NFS_CAP_ATOMIC_OPEN
+		| NFS_CAP_DIR_DELEG
 		| NFS_CAP_POSIX_LOCK
 		| NFS_CAP_STATEID_NFSV41
 		| NFS_CAP_ATOMIC_OPEN_V1
@@ -10858,6 +10949,7 @@ static const struct nfs4_minor_version_ops nfs_v4_2_minor_ops = {
 	.minor_version = 2,
 	.init_caps = NFS_CAP_READDIRPLUS
 		| NFS_CAP_ATOMIC_OPEN
+		| NFS_CAP_DIR_DELEG
 		| NFS_CAP_POSIX_LOCK
 		| NFS_CAP_STATEID_NFSV41
 		| NFS_CAP_ATOMIC_OPEN_V1

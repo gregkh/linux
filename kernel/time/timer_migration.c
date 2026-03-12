@@ -10,6 +10,7 @@
 #include <linux/spinlock.h>
 #include <linux/timerqueue.h>
 #include <trace/events/ipi.h>
+#include <linux/sched/isolation.h>
 
 #include "timer_migration.h"
 #include "tick-internal.h"
@@ -424,12 +425,50 @@ static struct tmigr_group *tmigr_root;
 
 static DEFINE_PER_CPU(struct tmigr_cpu, tmigr_cpu);
 
+/*
+ * CPUs available for timer migration.
+ * Protected by cpuset_mutex (with cpus_read_lock held) or cpus_write_lock.
+ * Additionally tmigr_available_mutex serializes set/clear operations with each other.
+ */
+static cpumask_var_t tmigr_available_cpumask;
+static DEFINE_MUTEX(tmigr_available_mutex);
+
+/* Enabled during late initcall */
+static DEFINE_STATIC_KEY_FALSE(tmigr_exclude_isolated);
+
 #define TMIGR_NONE	0xFF
 #define BIT_CNT		8
 
 static inline bool tmigr_is_not_available(struct tmigr_cpu *tmc)
 {
-	return !(tmc->tmgroup && tmc->online);
+	return !(tmc->tmgroup && tmc->available);
+}
+
+/*
+ * Returns true if @cpu should be excluded from the hierarchy as isolated.
+ * Domain isolated CPUs don't participate in timer migration, nohz_full CPUs
+ * are still part of the hierarchy but become idle (from a tick and timer
+ * migration perspective) when they stop their tick. This lets the timekeeping
+ * CPU handle their global timers. Marking also isolated CPUs as idle would be
+ * too costly, hence they are completely excluded from the hierarchy.
+ * This check is necessary, for instance, to prevent offline isolated CPUs from
+ * being incorrectly marked as available once getting back online.
+ *
+ * This function returns false during early boot and the isolation logic is
+ * enabled only after isolated CPUs are marked as unavailable at late boot.
+ * The tick CPU can be isolated at boot, however we cannot mark it as
+ * unavailable to avoid having no global migrator for the nohz_full CPUs. This
+ * should be ensured by the callers of this function: implicitly from hotplug
+ * callbacks and explicitly in tmigr_init_isolation() and
+ * tmigr_isolated_exclude_cpumask().
+ */
+static inline bool tmigr_is_isolated(int cpu)
+{
+	if (!static_branch_unlikely(&tmigr_exclude_isolated))
+		return false;
+	return (!housekeeping_cpu(cpu, HK_TYPE_DOMAIN) ||
+		cpuset_cpu_is_isolated(cpu)) &&
+	       housekeeping_cpu(cpu, HK_TYPE_KERNEL_NOISE);
 }
 
 /*
@@ -504,11 +543,6 @@ static bool tmigr_check_lonely(struct tmigr_group *group)
  * @now:		timer base monotonic
  * @check:		is set if there is the need to handle remote timers;
  *			required in tmigr_requires_handle_remote() only
- * @tmc_active:		this flag indicates, whether the CPU which triggers
- *			the hierarchy walk is !idle in the timer migration
- *			hierarchy. When the CPU is idle and the whole hierarchy is
- *			idle, only the first event of the top level has to be
- *			considered.
  */
 struct tmigr_walk {
 	u64			nextexp;
@@ -519,7 +553,6 @@ struct tmigr_walk {
 	unsigned long		basej;
 	u64			now;
 	bool			check;
-	bool			tmc_active;
 };
 
 typedef bool (*up_f)(struct tmigr_group *, struct tmigr_group *, struct tmigr_walk *);
@@ -714,7 +747,7 @@ void tmigr_cpu_activate(void)
 /*
  * Returns true, if there is nothing to be propagated to the next level
  *
- * @data->firstexp is set to expiry of first gobal event of the (top level of
+ * @data->firstexp is set to expiry of first global event of the (top level of
  * the) hierarchy, but only when hierarchy is completely idle.
  *
  * The child and group states need to be read under the lock, to prevent a race
@@ -932,7 +965,7 @@ static void tmigr_handle_remote_cpu(unsigned int cpu, u64 now,
 	 * updated the event takes care when hierarchy is completely
 	 * idle. Otherwise the migrator does it as the event is enqueued.
 	 */
-	if (!tmc->online || tmc->remote || tmc->cpuevt.ignore ||
+	if (!tmc->available || tmc->remote || tmc->cpuevt.ignore ||
 	    now < tmc->cpuevt.nextevt.expires) {
 		raw_spin_unlock_irq(&tmc->lock);
 		return;
@@ -979,7 +1012,7 @@ static void tmigr_handle_remote_cpu(unsigned int cpu, u64 now,
 	 * (See also section "Required event and timerqueue update after a
 	 * remote expiry" in the documentation at the top)
 	 */
-	if (!tmc->online || !tmc->idle) {
+	if (!tmc->available || !tmc->idle) {
 		timer_unlock_remote_bases(cpu);
 		goto unlock;
 	}
@@ -1119,15 +1152,6 @@ static bool tmigr_requires_handle_remote_up(struct tmigr_group *group,
 	 */
 	if (!tmigr_check_migrator(group, childmask))
 		return true;
-
-	/*
-	 * When there is a parent group and the CPU which triggered the
-	 * hierarchy walk is not active, proceed the walk to reach the top level
-	 * group before reading the next_expiry value.
-	 */
-	if (group->parent && !data->tmc_active)
-		return false;
-
 	/*
 	 * The lock is required on 32bit architectures to read the variable
 	 * consistently with a concurrent writer. On 64bit the lock is not
@@ -1172,7 +1196,6 @@ bool tmigr_requires_handle_remote(void)
 	data.now = get_jiffies_update(&jif);
 	data.childmask = tmc->groupmask;
 	data.firstexp = KTIME_MAX;
-	data.tmc_active = !tmc->idle;
 	data.check = false;
 
 	/*
@@ -1438,38 +1461,43 @@ static long tmigr_trigger_active(void *unused)
 {
 	struct tmigr_cpu *tmc = this_cpu_ptr(&tmigr_cpu);
 
-	WARN_ON_ONCE(!tmc->online || tmc->idle);
+	WARN_ON_ONCE(!tmc->available || tmc->idle);
 
 	return 0;
 }
 
-static int tmigr_cpu_offline(unsigned int cpu)
+static int tmigr_clear_cpu_available(unsigned int cpu)
 {
 	struct tmigr_cpu *tmc = this_cpu_ptr(&tmigr_cpu);
 	int migrator;
 	u64 firstexp;
 
-	raw_spin_lock_irq(&tmc->lock);
-	tmc->online = false;
-	WRITE_ONCE(tmc->wakeup, KTIME_MAX);
+	guard(mutex)(&tmigr_available_mutex);
 
-	/*
-	 * CPU has to handle the local events on his own, when on the way to
-	 * offline; Therefore nextevt value is set to KTIME_MAX
-	 */
-	firstexp = __tmigr_cpu_deactivate(tmc, KTIME_MAX);
-	trace_tmigr_cpu_offline(tmc);
-	raw_spin_unlock_irq(&tmc->lock);
+	cpumask_clear_cpu(cpu, tmigr_available_cpumask);
+	scoped_guard(raw_spinlock_irq, &tmc->lock) {
+		if (!tmc->available)
+			return 0;
+		tmc->available = false;
+		WRITE_ONCE(tmc->wakeup, KTIME_MAX);
+
+		/*
+		 * CPU has to handle the local events on his own, when on the way to
+		 * offline; Therefore nextevt value is set to KTIME_MAX
+		 */
+		firstexp = __tmigr_cpu_deactivate(tmc, KTIME_MAX);
+		trace_tmigr_cpu_unavailable(tmc);
+	}
 
 	if (firstexp != KTIME_MAX) {
-		migrator = cpumask_any_but(cpu_online_mask, cpu);
+		migrator = cpumask_any(tmigr_available_cpumask);
 		work_on_cpu(migrator, tmigr_trigger_active, NULL);
 	}
 
 	return 0;
 }
 
-static int tmigr_cpu_online(unsigned int cpu)
+static int tmigr_set_cpu_available(unsigned int cpu)
 {
 	struct tmigr_cpu *tmc = this_cpu_ptr(&tmigr_cpu);
 
@@ -1477,15 +1505,122 @@ static int tmigr_cpu_online(unsigned int cpu)
 	if (WARN_ON_ONCE(!tmc->tmgroup))
 		return -EINVAL;
 
-	raw_spin_lock_irq(&tmc->lock);
-	trace_tmigr_cpu_online(tmc);
-	tmc->idle = timer_base_is_idle();
-	if (!tmc->idle)
-		__tmigr_cpu_activate(tmc);
-	tmc->online = true;
-	raw_spin_unlock_irq(&tmc->lock);
+	if (tmigr_is_isolated(cpu))
+		return 0;
+
+	guard(mutex)(&tmigr_available_mutex);
+
+	cpumask_set_cpu(cpu, tmigr_available_cpumask);
+	scoped_guard(raw_spinlock_irq, &tmc->lock) {
+		if (tmc->available)
+			return 0;
+		trace_tmigr_cpu_available(tmc);
+		tmc->idle = timer_base_is_idle();
+		if (!tmc->idle)
+			__tmigr_cpu_activate(tmc);
+		tmc->available = true;
+	}
 	return 0;
 }
+
+static void tmigr_cpu_isolate(struct work_struct *ignored)
+{
+	tmigr_clear_cpu_available(smp_processor_id());
+}
+
+static void tmigr_cpu_unisolate(struct work_struct *ignored)
+{
+	tmigr_set_cpu_available(smp_processor_id());
+}
+
+/**
+ * tmigr_isolated_exclude_cpumask - Exclude given CPUs from hierarchy
+ * @exclude_cpumask: the cpumask to be excluded from timer migration hierarchy
+ *
+ * This function can be called from cpuset code to provide the new set of
+ * isolated CPUs that should be excluded from the hierarchy.
+ * Online CPUs not present in exclude_cpumask but already excluded are brought
+ * back to the hierarchy.
+ * Functions to isolate/unisolate need to be called locally and can sleep.
+ */
+int tmigr_isolated_exclude_cpumask(struct cpumask *exclude_cpumask)
+{
+	struct work_struct __percpu *works __free(free_percpu) =
+		alloc_percpu(struct work_struct);
+	cpumask_var_t cpumask __free(free_cpumask_var) = CPUMASK_VAR_NULL;
+	int cpu;
+
+	lockdep_assert_cpus_held();
+
+	if (!works)
+		return -ENOMEM;
+	if (!alloc_cpumask_var(&cpumask, GFP_KERNEL))
+		return -ENOMEM;
+
+	/*
+	 * First set previously isolated CPUs as available (unisolate).
+	 * This cpumask contains only CPUs that switched to available now.
+	 */
+	cpumask_andnot(cpumask, cpu_online_mask, exclude_cpumask);
+	cpumask_andnot(cpumask, cpumask, tmigr_available_cpumask);
+
+	for_each_cpu(cpu, cpumask) {
+		struct work_struct *work = per_cpu_ptr(works, cpu);
+
+		INIT_WORK(work, tmigr_cpu_unisolate);
+		schedule_work_on(cpu, work);
+	}
+	for_each_cpu(cpu, cpumask)
+		flush_work(per_cpu_ptr(works, cpu));
+
+	/*
+	 * Then clear previously available CPUs (isolate).
+	 * This cpumask contains only CPUs that switched to not available now.
+	 * There cannot be overlap with the newly available ones.
+	 */
+	cpumask_and(cpumask, exclude_cpumask, tmigr_available_cpumask);
+	cpumask_and(cpumask, cpumask, housekeeping_cpumask(HK_TYPE_KERNEL_NOISE));
+	/*
+	 * Handle this here and not in the cpuset code because exclude_cpumask
+	 * might include also the tick CPU if included in isolcpus.
+	 */
+	for_each_cpu(cpu, cpumask) {
+		if (!tick_nohz_cpu_hotpluggable(cpu)) {
+			cpumask_clear_cpu(cpu, cpumask);
+			break;
+		}
+	}
+
+	for_each_cpu(cpu, cpumask) {
+		struct work_struct *work = per_cpu_ptr(works, cpu);
+
+		INIT_WORK(work, tmigr_cpu_isolate);
+		schedule_work_on(cpu, work);
+	}
+	for_each_cpu(cpu, cpumask)
+		flush_work(per_cpu_ptr(works, cpu));
+
+	return 0;
+}
+
+static int __init tmigr_init_isolation(void)
+{
+	cpumask_var_t cpumask __free(free_cpumask_var) = CPUMASK_VAR_NULL;
+
+	static_branch_enable(&tmigr_exclude_isolated);
+
+	if (!housekeeping_enabled(HK_TYPE_DOMAIN))
+		return 0;
+	if (!alloc_cpumask_var(&cpumask, GFP_KERNEL))
+		return -ENOMEM;
+
+	cpumask_andnot(cpumask, cpu_possible_mask, housekeeping_cpumask(HK_TYPE_DOMAIN));
+
+	/* Protect against RCU torture hotplug testing */
+	guard(cpus_read_lock)();
+	return tmigr_isolated_exclude_cpumask(cpumask);
+}
+late_initcall(tmigr_init_isolation);
 
 static void tmigr_init_group(struct tmigr_group *group, unsigned int lvl,
 			     int node)
@@ -1511,8 +1646,7 @@ static void tmigr_init_group(struct tmigr_group *group, unsigned int lvl,
 	group->groupevt.ignore = true;
 }
 
-static struct tmigr_group *tmigr_get_group(unsigned int cpu, int node,
-					   unsigned int lvl)
+static struct tmigr_group *tmigr_get_group(int node, unsigned int lvl)
 {
 	struct tmigr_group *tmp, *group = NULL;
 
@@ -1636,7 +1770,7 @@ static int tmigr_setup_groups(unsigned int cpu, unsigned int node,
 		root_mismatch = tmigr_root->numa_node != node;
 
 	for (i = start_lvl; i < tmigr_hierarchy_levels; i++) {
-		group = tmigr_get_group(cpu, node, i);
+		group = tmigr_get_group(node, i);
 		if (IS_ERR(group)) {
 			err = PTR_ERR(group);
 			i--;
@@ -1703,6 +1837,7 @@ static int tmigr_setup_groups(unsigned int cpu, unsigned int node,
 
 	if (activate) {
 		struct tmigr_walk data;
+		union tmigr_state state;
 
 		/*
 		 * To prevent inconsistent states, active children need to be active in
@@ -1726,6 +1861,8 @@ static int tmigr_setup_groups(unsigned int cpu, unsigned int node,
 		 *   the new childmask and parent to subsequent walkers through this
 		 *   @child. Therefore propagate active state unconditionally.
 		 */
+		state.state = atomic_read(&start->migr_state);
+		WARN_ON_ONCE(!state.active);
 		WARN_ON_ONCE(!start->parent);
 		data.childmask = start->groupmask;
 		__walk_groups_from(tmigr_active_up, &data, start, start->parent);
@@ -1768,6 +1905,11 @@ static int tmigr_add_cpu(unsigned int cpu)
 		 * active or not) and/or release an uninitialized childmask.
 		 */
 		WARN_ON_ONCE(cpu == raw_smp_processor_id());
+		/*
+		 * The (likely) current CPU is expected to be online in the hierarchy,
+		 * otherwise the old root may not be active as expected.
+		 */
+		WARN_ON_ONCE(!per_cpu_ptr(&tmigr_cpu, raw_smp_processor_id())->available);
 		ret = tmigr_setup_groups(-1, old_root->numa_node, old_root, true);
 	}
 
@@ -1813,6 +1955,11 @@ static int __init tmigr_init(void)
 	/* Nothing to do if running on UP */
 	if (ncpus == 1)
 		return 0;
+
+	if (!zalloc_cpumask_var(&tmigr_available_cpumask, GFP_KERNEL)) {
+		ret = -ENOMEM;
+		goto err;
+	}
 
 	/*
 	 * Calculate the required hierarchy levels. Unfortunately there is no
@@ -1863,7 +2010,7 @@ static int __init tmigr_init(void)
 		goto err;
 
 	ret = cpuhp_setup_state(CPUHP_AP_TMIGR_ONLINE, "tmigr:online",
-				tmigr_cpu_online, tmigr_cpu_offline);
+				tmigr_set_cpu_available, tmigr_clear_cpu_available);
 	if (ret)
 		goto err;
 

@@ -133,10 +133,10 @@ static int imx_pd_bridge_atomic_check(struct drm_bridge *bridge,
 	struct imx_crtc_state *imx_crtc_state = to_imx_crtc_state(crtc_state);
 	struct drm_display_info *di = &conn_state->connector->display_info;
 	struct drm_bridge_state *next_bridge_state = NULL;
-	struct drm_bridge *next_bridge;
 	u32 bus_flags, bus_fmt;
 
-	next_bridge = drm_bridge_get_next_bridge(bridge);
+	struct drm_bridge *next_bridge __free(drm_bridge_put) = drm_bridge_get_next_bridge(bridge);
+
 	if (next_bridge)
 		next_bridge_state = drm_atomic_get_new_bridge_state(crtc_state->state,
 								    next_bridge);
@@ -256,7 +256,9 @@ static int imx_pd_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, imxpd);
 
-	devm_drm_bridge_add(dev, &imxpd->bridge);
+	ret = devm_drm_bridge_add(dev, &imxpd->bridge);
+	if (ret)
+		return ret;
 
 	return component_add(dev, &imx_pd_ops);
 }
@@ -286,4 +288,3 @@ module_platform_driver(imx_pd_driver);
 MODULE_DESCRIPTION("i.MX parallel display driver");
 MODULE_AUTHOR("Sascha Hauer, Pengutronix");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("platform:imx-parallel-display");

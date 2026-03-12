@@ -15,7 +15,7 @@ and SB Temperature Sensor Interface (SB-TSI)).
 More details on the interface can be found in chapter
 "5 Advanced Platform Management Link (APML)" of the family/model PPR [1]_.
 
-.. [1] https://www.amd.com/content/dam/amd/en/documents/epyc-technical-docs/programmer-references/55898_B1_pub_0_50.zip
+.. [1] https://docs.amd.com/v/u/en-US/55898_B1_pub_0_50
 
 
 SBRMI device
@@ -28,8 +28,10 @@ MCAMSR and register xfer commands.
 Register sets is common across APML protocols. IOCTL is providing synchronization
 among protocols as transactions may create race condition.
 
-$ ls -al /dev/sbrmi-3c
-crw-------    1 root     root       10,  53 Jul 10 11:13 /dev/sbrmi-3c
+.. code-block:: bash
+
+   $ ls -al /dev/sbrmi-3c
+   crw-------    1 root     root       10,  53 Jul 10 11:13 /dev/sbrmi-3c
 
 apml_sbrmi driver registers hwmon sensors for monitoring power_cap_max,
 current power consumption and managing power_cap.

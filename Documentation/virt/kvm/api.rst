@@ -7286,6 +7286,41 @@ exit, even without calls to ``KVM_ENABLE_CAP`` or similar.  In this case,
 it will enter with output fields already valid; in the common case, the
 ``unknown.ret`` field of the union will be ``TDVMCALL_STATUS_SUBFUNC_UNSUPPORTED``.
 Userspace need not do anything if it does not wish to support a TDVMCALL.
+
+::
+
+		/* KVM_EXIT_ARM_SEA */
+		struct {
+  #define KVM_EXIT_ARM_SEA_FLAG_GPA_VALID   (1ULL << 0)
+			__u64 flags;
+			__u64 esr;
+			__u64 gva;
+			__u64 gpa;
+		} arm_sea;
+
+Used on arm64 systems. When the VM capability ``KVM_CAP_ARM_SEA_TO_USER`` is
+enabled, a KVM exits to userspace if a guest access causes a synchronous
+external abort (SEA) and the host APEI fails to handle the SEA.
+
+``esr`` is set to a sanitized value of ESR_EL2 from the exception taken to KVM,
+consisting of the following fields:
+
+ - ``ESR_EL2.EC``
+ - ``ESR_EL2.IL``
+ - ``ESR_EL2.FnV``
+ - ``ESR_EL2.EA``
+ - ``ESR_EL2.CM``
+ - ``ESR_EL2.WNR``
+ - ``ESR_EL2.FSC``
+ - ``ESR_EL2.SET`` (when FEAT_RAS is implemented for the VM)
+
+``gva`` is set to the value of FAR_EL2 from the exception taken to KVM when
+``ESR_EL2.FnV == 0``. Otherwise, the value of ``gva`` is unknown.
+
+``gpa`` is set to the faulting IPA from the exception taken to KVM when
+the ``KVM_EXIT_ARM_SEA_FLAG_GPA_VALID`` flag is set. Otherwise, the value of
+``gpa`` is unknown.
+
 ::
 
 		/* Fix the size of the union. */
@@ -7800,8 +7835,10 @@ Will return -EBUSY if a VCPU has already been created.
 
 Valid feature flags in args[0] are::
 
-  #define KVM_X2APIC_API_USE_32BIT_IDS            (1ULL << 0)
-  #define KVM_X2APIC_API_DISABLE_BROADCAST_QUIRK  (1ULL << 1)
+  #define KVM_X2APIC_API_USE_32BIT_IDS                          (1ULL << 0)
+  #define KVM_X2APIC_API_DISABLE_BROADCAST_QUIRK                (1ULL << 1)
+  #define KVM_X2APIC_ENABLE_SUPPRESS_EOI_BROADCAST              (1ULL << 2)
+  #define KVM_X2APIC_DISABLE_SUPPRESS_EOI_BROADCAST             (1ULL << 3)
 
 Enabling KVM_X2APIC_API_USE_32BIT_IDS changes the behavior of
 KVM_SET_GSI_ROUTING, KVM_SIGNAL_MSI, KVM_SET_LAPIC, and KVM_GET_LAPIC,
@@ -7814,13 +7851,35 @@ as a broadcast even in x2APIC mode in order to support physical x2APIC
 without interrupt remapping.  This is undesirable in logical mode,
 where 0xff represents CPUs 0-7 in cluster 0.
 
+Setting KVM_X2APIC_ENABLE_SUPPRESS_EOI_BROADCAST instructs KVM to enable
+Suppress EOI Broadcasts.  KVM will advertise support for Suppress EOI
+Broadcast to the guest and suppress LAPIC EOI broadcasts when the guest
+sets the Suppress EOI Broadcast bit in the SPIV register.  This flag is
+supported only when using a split IRQCHIP.
+
+Setting KVM_X2APIC_DISABLE_SUPPRESS_EOI_BROADCAST disables support for
+Suppress EOI Broadcasts entirely, i.e. instructs KVM to NOT advertise
+support to the guest.
+
+Modern VMMs should either enable KVM_X2APIC_ENABLE_SUPPRESS_EOI_BROADCAST
+or KVM_X2APIC_DISABLE_SUPPRESS_EOI_BROADCAST.  If not, legacy quirky
+behavior will be used by KVM: in split IRQCHIP mode, KVM will advertise
+support for Suppress EOI Broadcasts but not actually suppress EOI
+broadcasts; for in-kernel IRQCHIP mode, KVM will not advertise support for
+Suppress EOI Broadcasts.
+
+Setting both KVM_X2APIC_ENABLE_SUPPRESS_EOI_BROADCAST and
+KVM_X2APIC_DISABLE_SUPPRESS_EOI_BROADCAST will fail with an EINVAL error,
+as will setting KVM_X2APIC_ENABLE_SUPPRESS_EOI_BROADCAST without a split
+IRCHIP.
+
 7.8 KVM_CAP_S390_USER_INSTR0
 ----------------------------
 
 :Architectures: s390
 :Parameters: none
 
-With this capability enabled, all illegal instructions 0x0000 (2 bytes) will
+With this capability enabled, the illegal instruction 0x0000 (2 bytes) will
 be intercepted and forwarded to user space. User space can use this
 mechanism e.g. to realize 2-byte software breakpoints. The kernel will
 not inject an operating exception for these instructions, user space has
@@ -8028,7 +8087,7 @@ will be initialized to 1 when created.  This also improves performance because
 dirty logging can be enabled gradually in small chunks on the first call
 to KVM_CLEAR_DIRTY_LOG.  KVM_DIRTY_LOG_INITIALLY_SET depends on
 KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE (it is also only available on
-x86 and arm64 for now).
+x86, arm64 and riscv for now).
 
 KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2 was previously available under the name
 KVM_CAP_MANUAL_DIRTY_LOG_PROTECT, but the implementation had bugs that make
@@ -8524,7 +8583,7 @@ Therefore, the ioctl must be called *before* reading the content of
 the dirty pages.
 
 The dirty ring can get full.  When it happens, the KVM_RUN of the
-vcpu will return with exit reason KVM_EXIT_DIRTY_LOG_FULL.
+vcpu will return with exit reason KVM_EXIT_DIRTY_RING_FULL.
 
 The dirty ring interface has a major difference comparing to the
 KVM_GET_DIRTY_LOG interface in that, when reading the dirty ring from
@@ -8692,7 +8751,7 @@ given VM.
 When this capability is enabled, KVM resets the VCPU when setting
 MP_STATE_INIT_RECEIVED through IOCTL.  The original MP_STATE is preserved.
 
-7.43 KVM_CAP_ARM_CACHEABLE_PFNMAP_SUPPORTED
+7.44 KVM_CAP_ARM_CACHEABLE_PFNMAP_SUPPORTED
 -------------------------------------------
 
 :Architectures: arm64
@@ -8702,6 +8761,33 @@ MP_STATE_INIT_RECEIVED through IOCTL.  The original MP_STATE is preserved.
 This capability indicate to the userspace whether a PFNMAP memory region
 can be safely mapped as cacheable. This relies on the presence of
 force write back (FWB) feature support on the hardware.
+
+7.45 KVM_CAP_ARM_SEA_TO_USER
+----------------------------
+
+:Architecture: arm64
+:Target: VM
+:Parameters: none
+:Returns: 0 on success, -EINVAL if unsupported.
+
+When this capability is enabled, KVM may exit to userspace for SEAs taken to
+EL2 resulting from a guest access. See ``KVM_EXIT_ARM_SEA`` for more
+information.
+
+7.46 KVM_CAP_S390_USER_OPEREXEC
+-------------------------------
+
+:Architectures: s390
+:Parameters: none
+
+When this capability is enabled KVM forwards all operation exceptions
+that it doesn't handle itself to user space. This also includes the
+0x0000 instructions managed by KVM_CAP_S390_USER_INSTR0. This is
+helpful if user space wants to emulate instructions which are not
+(yet) implemented in hardware.
+
+This capability can be enabled dynamically even if VCPUs were already
+created and are running.
 
 8. Other capabilities.
 ======================

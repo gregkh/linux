@@ -42,6 +42,15 @@ early_param("stress_slb", parse_stress_slb);
 
 __ro_after_init DEFINE_STATIC_KEY_FALSE(stress_slb_key);
 
+bool no_slb_preload __initdata;
+static int __init parse_no_slb_preload(char *p)
+{
+	no_slb_preload = true;
+	return 0;
+}
+early_param("no_slb_preload", parse_no_slb_preload);
+__ro_after_init DEFINE_STATIC_KEY_FALSE(no_slb_preload_key);
+
 static void assert_slb_presence(bool present, unsigned long ea)
 {
 #ifdef CONFIG_DEBUG_VM
@@ -294,10 +303,13 @@ static bool preload_hit(struct thread_info *ti, unsigned long esid)
 	return false;
 }
 
-static bool preload_add(struct thread_info *ti, unsigned long ea)
+static void preload_add(struct thread_info *ti, unsigned long ea)
 {
 	unsigned char idx;
 	unsigned long esid;
+
+	if (slb_preload_disabled())
+		return;
 
 	if (mmu_has_feature(MMU_FTR_1T_SEGMENT)) {
 		/* EAs are stored >> 28 so 256MB segments don't need clearing */
@@ -308,7 +320,7 @@ static bool preload_add(struct thread_info *ti, unsigned long ea)
 	esid = ea >> SID_SHIFT;
 
 	if (preload_hit(ti, esid))
-		return false;
+		return;
 
 	idx = (ti->slb_preload_tail + ti->slb_preload_nr) % SLB_PRELOAD_NR;
 	ti->slb_preload_esid[idx] = esid;
@@ -316,8 +328,6 @@ static bool preload_add(struct thread_info *ti, unsigned long ea)
 		ti->slb_preload_tail = (ti->slb_preload_tail + 1) % SLB_PRELOAD_NR;
 	else
 		ti->slb_preload_nr++;
-
-	return true;
 }
 
 static void preload_age(struct thread_info *ti)
@@ -413,6 +423,9 @@ void switch_slb(struct task_struct *tsk, struct mm_struct *mm)
 	get_paca()->slb_used_bitmap = get_paca()->slb_kern_bitmap;
 
 	copy_mm_to_paca(mm);
+
+	if (slb_preload_disabled())
+		return;
 
 	/*
 	 * We gradually age out SLBs after a number of context switches to

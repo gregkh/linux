@@ -17,6 +17,7 @@
 #include <linux/crash_dump.h>
 #include <linux/trace_events.h>
 #include <linux/trace.h>
+#include <linux/irq.h>
 
 #include <scsi/scsi_tcq.h>
 #include <scsi/scsicam.h>
@@ -1894,7 +1895,7 @@ __qla2x00_abort_all_cmds(struct qla_qpair *qp, int res)
 				 * Currently, only ABTS response gets on the
 				 * outstanding_cmds[]
 				 */
-				ha->tgt.tgt_ops->free_mcmd(
+				qlt_free_ul_mcmd(ha,
 					(struct qla_tgt_mgmt_cmd *) sp);
 				break;
 			default:
@@ -3408,7 +3409,7 @@ qla2x00_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	    "req->req_q_in=%p req->req_q_out=%p rsp->rsp_q_in=%p rsp->rsp_q_out=%p.\n",
 	    req->req_q_in, req->req_q_out, rsp->rsp_q_in, rsp->rsp_q_out);
 
-	ha->wq = alloc_workqueue("qla2xxx_wq", WQ_MEM_RECLAIM, 0);
+	ha->wq = alloc_workqueue("qla2xxx_wq", WQ_MEM_RECLAIM | WQ_PERCPU, 0);
 	if (unlikely(!ha->wq)) {
 		ret = -ENOMEM;
 		goto probe_failed;
@@ -5285,7 +5286,7 @@ void qla24xx_sched_upd_fcport(fc_port_t *fcport)
 	qla2x00_set_fcport_disc_state(fcport, DSC_UPD_FCPORT);
 	spin_unlock_irqrestore(&fcport->vha->work_lock, flags);
 
-	queue_work(system_unbound_wq, &fcport->reg_work);
+	queue_work(system_dfl_wq, &fcport->reg_work);
 }
 
 static
@@ -7249,6 +7250,7 @@ qla2xxx_wake_dpc(struct scsi_qla_host *vha)
 	if (!test_bit(UNLOADING, &vha->dpc_flags) && t)
 		wake_up_process(t);
 }
+EXPORT_SYMBOL(qla2xxx_wake_dpc);
 
 /*
 *  qla2x00_rst_aen
@@ -7776,6 +7778,31 @@ static void qla_pci_error_cleanup(scsi_qla_host_t *vha)
 }
 
 
+/**
+ * qla2xxx_set_affinity_nobalance
+ * @pdev: pci_dev struct for a qla2xxx device
+ * @flag: bool
+ * true: enable "IRQ_NO_BALANCING" bit for msix interrupt
+ * false: disable "IRQ_NO_BALANCING" bit for msix interrupt
+ * Description: This function will be called to disable/enable
+ * "IRQ_NO_BALANCING" to avoid irqbalance daemon
+ * kicking in during adapter reset.
+ **/
+
+static void qla2xxx_set_affinity_nobalance(struct pci_dev *pdev, bool flag)
+{
+	int irq, i;
+
+	for (i = 0; i < QLA_BASE_VECTORS; i++) {
+		irq = pci_irq_vector(pdev, i);
+
+		if (flag)
+			irq_set_status_flags(irq, IRQ_NO_BALANCING);
+		else
+			irq_clear_status_flags(irq, IRQ_NO_BALANCING);
+	}
+}
+
 static pci_ers_result_t
 qla2xxx_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
 {
@@ -7793,6 +7820,8 @@ qla2xxx_pci_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
 		ret = PCI_ERS_RESULT_NEED_RESET;
 		goto out;
 	}
+
+	qla2xxx_set_affinity_nobalance(pdev, false);
 
 	switch (state) {
 	case pci_channel_io_normal:
@@ -7929,6 +7958,8 @@ qla2xxx_pci_slot_reset(struct pci_dev *pdev)
 exit_slot_reset:
 	ql_dbg(ql_dbg_aer, base_vha, 0x900e,
 	    "Slot Reset returning %x.\n", ret);
+
+	qla2xxx_set_affinity_nobalance(pdev, true);
 
 	return ret;
 }

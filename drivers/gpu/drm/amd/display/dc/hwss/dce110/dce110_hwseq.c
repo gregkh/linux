@@ -689,6 +689,7 @@ void dce110_enable_stream(struct pipe_ctx *pipe_ctx)
 		early_control = lane_count;
 
 	tg->funcs->set_early_control(tg, early_control);
+
 }
 
 static enum bp_result link_transmitter_control(
@@ -1086,6 +1087,9 @@ void dce110_enable_audio_stream(struct pipe_ctx *pipe_ctx)
 	if (!pipe_ctx->stream)
 		return;
 
+	if (dc_is_rgb_signal(pipe_ctx->stream->signal))
+		return;
+
 	dc = pipe_ctx->stream->ctx->dc;
 	clk_mgr = dc->clk_mgr;
 	link_hwss = get_link_hwss(pipe_ctx->stream->link, &pipe_ctx->link_res);
@@ -1120,6 +1124,9 @@ void dce110_disable_audio_stream(struct pipe_ctx *pipe_ctx)
 	const struct link_hwss *link_hwss;
 
 	if (!pipe_ctx || !pipe_ctx->stream)
+		return;
+
+	if (dc_is_rgb_signal(pipe_ctx->stream->signal))
 		return;
 
 	dc = pipe_ctx->stream->ctx->dc;
@@ -1921,6 +1928,7 @@ void dce110_enable_accelerated_mode(struct dc *dc, struct dc_state *context)
 	bool can_apply_edp_fast_boot = false;
 	bool can_apply_seamless_boot = false;
 	bool keep_edp_vdd_on = false;
+	bool should_clean_dsc_block = true;
 	struct dc_bios *dcb = dc->ctx->dc_bios;
 	DC_LOGGER_INIT();
 
@@ -2013,9 +2021,15 @@ void dce110_enable_accelerated_mode(struct dc *dc, struct dc_state *context)
 		power_down_all_hw_blocks(dc);
 
 		/* DSC could be enabled on eDP during VBIOS post.
-		 * To clean up dsc blocks if eDP is in link but not active.
+		 * To clean up dsc blocks if all eDP dpms_off is true.
 		 */
-		if (edp_link_with_sink && (edp_stream_num == 0))
+		for (i = 0; i < edp_stream_num; i++) {
+			if (!edp_streams[i]->dpms_off) {
+				should_clean_dsc_block = false;
+			}
+		}
+
+		if (should_clean_dsc_block)
 			clean_up_dsc_blocks(dc);
 
 		disable_vga_and_power_gate_all_controllers(dc);
@@ -3267,6 +3281,15 @@ void dce110_enable_tmds_link_output(struct dc_link *link,
 	link->phy_state.symclk_state = SYMCLK_ON_TX_ON;
 }
 
+static void dce110_enable_analog_link_output(
+		struct dc_link *link,
+		uint32_t pix_clk_100hz)
+{
+	link->link_enc->funcs->enable_analog_output(
+			link->link_enc,
+			pix_clk_100hz);
+}
+
 void dce110_enable_dp_link_output(
 		struct dc_link *link,
 		const struct link_resource *link_res,
@@ -3404,6 +3427,7 @@ static const struct hw_sequencer_funcs dce110_funcs = {
 	.enable_lvds_link_output = dce110_enable_lvds_link_output,
 	.enable_tmds_link_output = dce110_enable_tmds_link_output,
 	.enable_dp_link_output = dce110_enable_dp_link_output,
+	.enable_analog_link_output = dce110_enable_analog_link_output,
 	.disable_link_output = dce110_disable_link_output,
 };
 

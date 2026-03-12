@@ -350,24 +350,6 @@ static enum transmitter translate_encoder_to_transmitter(
 			return TRANSMITTER_UNKNOWN;
 		}
 	break;
-	case ENCODER_ID_EXTERNAL_NUTMEG:
-		switch (encoder.enum_id) {
-		case ENUM_ID_1:
-			return TRANSMITTER_NUTMEG_CRT;
-		default:
-			return TRANSMITTER_UNKNOWN;
-		}
-	break;
-	case ENCODER_ID_EXTERNAL_TRAVIS:
-		switch (encoder.enum_id) {
-		case ENUM_ID_1:
-			return TRANSMITTER_TRAVIS_CRT;
-		case ENUM_ID_2:
-			return TRANSMITTER_TRAVIS_LCD;
-		default:
-			return TRANSMITTER_UNKNOWN;
-		}
-	break;
 	default:
 		return TRANSMITTER_UNKNOWN;
 	}
@@ -451,6 +433,38 @@ static enum channel_id get_ddc_line(struct dc_link *link)
 	return channel;
 }
 
+static enum engine_id find_analog_engine(struct dc_link *link, struct graphics_object_id *enc)
+{
+	struct dc_bios *bp = link->ctx->dc_bios;
+	enum bp_result bp_result = BP_RESULT_OK;
+	int i;
+
+	for (i = 0; i < 3; i++) {
+		bp_result = bp->funcs->get_src_obj(bp, link->link_id, i, enc);
+
+		if (bp_result != BP_RESULT_OK)
+			return ENGINE_ID_UNKNOWN;
+
+		switch (enc->id) {
+		case ENCODER_ID_INTERNAL_DAC1:
+		case ENCODER_ID_INTERNAL_KLDSCP_DAC1:
+			return ENGINE_ID_DACA;
+		case ENCODER_ID_INTERNAL_DAC2:
+		case ENCODER_ID_INTERNAL_KLDSCP_DAC2:
+			return ENGINE_ID_DACB;
+		}
+	}
+
+	memset(enc, 0, sizeof(*enc));
+	return ENGINE_ID_UNKNOWN;
+}
+
+static bool analog_engine_supported(const enum engine_id engine_id)
+{
+	return engine_id == ENGINE_ID_DACA ||
+		engine_id == ENGINE_ID_DACB;
+}
+
 static bool construct_phy(struct dc_link *link,
 			      const struct link_init_data *init_params)
 {
@@ -462,6 +476,9 @@ static bool construct_phy(struct dc_link *link,
 	struct dc_bios *bios = init_params->dc->ctx->dc_bios;
 	const struct dc_vbios_funcs *bp_funcs = bios->funcs;
 	struct bp_disp_connector_caps_info disp_connect_caps_info = { 0 };
+	struct graphics_object_id link_encoder = { 0 };
+	enum transmitter transmitter_from_encoder;
+	enum engine_id link_analog_engine;
 
 	DC_LOGGER_INIT(dc_ctx->logger);
 
@@ -485,6 +502,19 @@ static bool construct_phy(struct dc_link *link,
 	link->ep_type = DISPLAY_ENDPOINT_PHY;
 
 	DC_LOG_DC("BIOS object table - link_id: %d", link->link_id.id);
+
+	/* Determine early if the link has any supported encoders,
+	 * so that we avoid initializing DDC and HPD, etc.
+	 */
+	bp_funcs->get_src_obj(bios, link->link_id, 0, &link_encoder);
+	transmitter_from_encoder = translate_encoder_to_transmitter(link_encoder);
+	link_analog_engine = find_analog_engine(link, &enc_init_data.analog_encoder);
+
+	if (transmitter_from_encoder == TRANSMITTER_UNKNOWN &&
+	    !analog_engine_supported(link_analog_engine)) {
+		DC_LOG_WARNING("link_id %d has unsupported encoder\n", link->link_id.id);
+		goto create_fail;
+	}
 
 	if (bios->funcs->get_disp_connector_caps_info) {
 		bios->funcs->get_disp_connector_caps_info(bios, link->link_id, &disp_connect_caps_info);
@@ -529,6 +559,9 @@ static bool construct_phy(struct dc_link *link,
 	case CONNECTOR_ID_DUAL_LINK_DVID:
 	case CONNECTOR_ID_DUAL_LINK_DVII:
 		link->connector_signal = SIGNAL_TYPE_DVI_DUAL_LINK;
+		break;
+	case CONNECTOR_ID_VGA:
+		link->connector_signal = SIGNAL_TYPE_RGB;
 		break;
 	case CONNECTOR_ID_DISPLAY_PORT:
 	case CONNECTOR_ID_MXM:
@@ -611,16 +644,15 @@ static bool construct_phy(struct dc_link *link,
 		dal_ddc_get_line(get_ddc_pin(link->ddc));
 
 	enc_init_data.ctx = dc_ctx;
-	bp_funcs->get_src_obj(dc_ctx->dc_bios, link->link_id, 0,
-			      &enc_init_data.encoder);
 	enc_init_data.connector = link->link_id;
 	enc_init_data.channel = get_ddc_line(link);
 	enc_init_data.hpd_source = get_hpd_line(link);
+	enc_init_data.transmitter = transmitter_from_encoder;
+	enc_init_data.encoder = link_encoder;
+	enc_init_data.analog_engine = link_analog_engine;
 
 	link->hpd_src = enc_init_data.hpd_source;
 
-	enc_init_data.transmitter =
-		translate_encoder_to_transmitter(enc_init_data.encoder);
 	link->link_enc =
 		link->dc->res_pool->funcs->link_enc_create(dc_ctx, &enc_init_data);
 
@@ -735,6 +767,7 @@ static bool construct_phy(struct dc_link *link,
 
 	link->psr_settings.psr_vtotal_control_support = false;
 	link->psr_settings.psr_version = DC_PSR_VERSION_UNSUPPORTED;
+	link->replay_settings.config.replay_version = DC_REPLAY_VERSION_UNSUPPORTED;
 
 	DC_LOG_DC("BIOS object table - %s finished successfully.\n", __func__);
 	return true;
@@ -816,9 +849,7 @@ static bool construct_dpia(struct dc_link *link,
 	/* TODO: Create link encoder */
 
 	link->psr_settings.psr_version = DC_PSR_VERSION_UNSUPPORTED;
-
-	/* Some docks seem to NAK I2C writes to segment pointer with mot=0. */
-	link->wa_flags.dp_mot_reset_segment = true;
+	link->replay_settings.config.replay_version = DC_REPLAY_VERSION_UNSUPPORTED;
 
 	return true;
 

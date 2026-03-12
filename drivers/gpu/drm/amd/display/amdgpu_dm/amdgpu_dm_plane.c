@@ -37,6 +37,7 @@
 #include "amdgpu_display.h"
 #include "amdgpu_dm_trace.h"
 #include "amdgpu_dm_plane.h"
+#include "amdgpu_dm_colorop.h"
 #include "gc/gc_11_0_0_offset.h"
 #include "gc/gc_11_0_0_sh_mask.h"
 
@@ -1255,6 +1256,14 @@ static int amdgpu_dm_plane_atomic_check(struct drm_plane *plane,
 	if (ret)
 		return ret;
 
+	/* Reject commits that attempt to use both COLOR_PIPELINE and CRTC DEGAMMA_LUT */
+	if (new_plane_state->color_pipeline && new_crtc_state->degamma_lut) {
+		drm_dbg_atomic(plane->dev,
+			       "[PLANE:%d:%s] COLOR_PIPELINE and CRTC DEGAMMA_LUT cannot be enabled simultaneously\n",
+			       plane->base.id, plane->name);
+		return -EINVAL;
+	}
+
 	ret = amdgpu_dm_plane_fill_dc_scaling_info(adev, new_plane_state, &scaling_info);
 	if (ret)
 		return ret;
@@ -1787,6 +1796,44 @@ dm_atomic_plane_get_property(struct drm_plane *plane,
 
 	return 0;
 }
+#else
+
+#define MAX_COLOR_PIPELINES 5
+
+static int
+dm_plane_init_colorops(struct drm_plane *plane)
+{
+	struct drm_prop_enum_list pipelines[MAX_COLOR_PIPELINES] = {};
+	struct drm_device *dev = plane->dev;
+	struct amdgpu_device *adev = drm_to_adev(dev);
+	struct dc *dc = adev->dm.dc;
+	int len = 0;
+	int ret = 0;
+	int i;
+
+	if (plane->type == DRM_PLANE_TYPE_CURSOR)
+		return 0;
+
+	/* initialize pipeline */
+	if (dc->ctx->dce_version >= DCN_VERSION_3_0) {
+		ret = amdgpu_dm_initialize_default_pipeline(plane, &pipelines[len]);
+		if (ret) {
+			drm_err(plane->dev, "Failed to create color pipeline for plane %d: %d\n",
+				plane->base.id, ret);
+			goto out;
+		}
+		len++;
+
+		/* Create COLOR_PIPELINE property and attach */
+		drm_plane_create_color_pipeline_property(plane, pipelines, len);
+	}
+
+out:
+	for (i = 0; i < len; i++)
+		kfree(pipelines[i].name);
+
+	return ret;
+}
 #endif
 
 static const struct drm_plane_funcs dm_plane_funcs = {
@@ -1895,7 +1942,12 @@ int amdgpu_dm_plane_init(struct amdgpu_display_manager *dm,
 
 #ifdef AMD_PRIVATE_COLOR
 	dm_atomic_plane_attach_color_mgmt_properties(dm, plane);
+#else
+	res = dm_plane_init_colorops(plane);
+	if (res)
+		return res;
 #endif
+
 	/* Create (reset) the plane state */
 	if (plane->funcs->reset)
 		plane->funcs->reset(plane);

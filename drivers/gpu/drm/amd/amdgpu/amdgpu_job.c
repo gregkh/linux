@@ -135,7 +135,7 @@ static enum drm_gpu_sched_stat amdgpu_job_timedout(struct drm_sched_job *s_job)
 	    ring->funcs->reset) {
 		dev_err(adev->dev, "Starting %s ring reset\n",
 			s_job->sched->name);
-		r = amdgpu_ring_reset(ring, job->vmid, &job->hw_fence);
+		r = amdgpu_ring_reset(ring, job->vmid, job->hw_fence);
 		if (!r) {
 			atomic_inc(&ring->adev->gpu_reset_counter);
 			dev_err(adev->dev, "Ring %s reset succeeded\n",
@@ -185,12 +185,29 @@ int amdgpu_job_alloc(struct amdgpu_device *adev, struct amdgpu_vm *vm,
 		     unsigned int num_ibs, struct amdgpu_job **job,
 		     u64 drm_client_id)
 {
+	struct amdgpu_fence *af;
+	int r;
+
 	if (num_ibs == 0)
 		return -EINVAL;
 
 	*job = kzalloc(struct_size(*job, ibs, num_ibs), GFP_KERNEL);
 	if (!*job)
 		return -ENOMEM;
+
+	af = kzalloc(sizeof(struct amdgpu_fence), GFP_KERNEL);
+	if (!af) {
+		r = -ENOMEM;
+		goto err_job;
+	}
+	(*job)->hw_fence = af;
+
+	af = kzalloc(sizeof(struct amdgpu_fence), GFP_KERNEL);
+	if (!af) {
+		r = -ENOMEM;
+		goto err_fence;
+	}
+	(*job)->hw_vm_fence = af;
 
 	(*job)->vm = vm;
 
@@ -201,8 +218,19 @@ int amdgpu_job_alloc(struct amdgpu_device *adev, struct amdgpu_vm *vm,
 	if (!entity)
 		return 0;
 
-	return drm_sched_job_init(&(*job)->base, entity, 1, owner,
-				  drm_client_id);
+	r = drm_sched_job_init(&(*job)->base, entity, 1, owner, drm_client_id);
+	if (!r)
+		return 0;
+
+	kfree((*job)->hw_vm_fence);
+
+err_fence:
+	kfree((*job)->hw_fence);
+err_job:
+	kfree(*job);
+	*job = NULL;
+
+	return r;
 }
 
 int amdgpu_job_alloc_with_ib(struct amdgpu_device *adev,
@@ -222,7 +250,10 @@ int amdgpu_job_alloc_with_ib(struct amdgpu_device *adev,
 	if (r) {
 		if (entity)
 			drm_sched_job_cleanup(&(*job)->base);
+		kfree((*job)->hw_vm_fence);
+		kfree((*job)->hw_fence);
 		kfree(*job);
+		*job = NULL;
 	}
 
 	return r;
@@ -250,11 +281,11 @@ void amdgpu_job_free_resources(struct amdgpu_job *job)
 	struct dma_fence *f;
 	unsigned i;
 
-	/* Check if any fences where initialized */
+	/* Check if any fences were initialized */
 	if (job->base.s_fence && job->base.s_fence->finished.ops)
 		f = &job->base.s_fence->finished;
-	else if (job->hw_fence.base.ops)
-		f = &job->hw_fence.base;
+	else if (job->hw_fence && job->hw_fence->base.ops)
+		f = &job->hw_fence->base;
 	else
 		f = NULL;
 
@@ -270,11 +301,16 @@ static void amdgpu_job_free_cb(struct drm_sched_job *s_job)
 
 	amdgpu_sync_free(&job->explicit_sync);
 
-	/* only put the hw fence if has embedded fence */
-	if (!job->hw_fence.base.ops)
-		kfree(job);
+	if (job->hw_fence->base.ops)
+		dma_fence_put(&job->hw_fence->base);
 	else
-		dma_fence_put(&job->hw_fence.base);
+		kfree(job->hw_fence);
+	if (job->hw_vm_fence->base.ops)
+		dma_fence_put(&job->hw_vm_fence->base);
+	else
+		kfree(job->hw_vm_fence);
+
+	kfree(job);
 }
 
 void amdgpu_job_set_gang_leader(struct amdgpu_job *job,
@@ -303,10 +339,16 @@ void amdgpu_job_free(struct amdgpu_job *job)
 	if (job->gang_submit != &job->base.s_fence->scheduled)
 		dma_fence_put(job->gang_submit);
 
-	if (!job->hw_fence.base.ops)
-		kfree(job);
+	if (job->hw_fence->base.ops)
+		dma_fence_put(&job->hw_fence->base);
 	else
-		dma_fence_put(&job->hw_fence.base);
+		kfree(job->hw_fence);
+	if (job->hw_vm_fence->base.ops)
+		dma_fence_put(&job->hw_vm_fence->base);
+	else
+		kfree(job->hw_vm_fence);
+
+	kfree(job);
 }
 
 struct dma_fence *amdgpu_job_submit(struct amdgpu_job *job)

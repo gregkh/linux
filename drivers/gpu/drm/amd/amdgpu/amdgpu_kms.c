@@ -1477,7 +1477,6 @@ error_pasid:
 	kfree(fpriv);
 
 out_suspend:
-	pm_runtime_mark_last_busy(dev->dev);
 pm_put:
 	pm_runtime_put_autosuspend(dev->dev);
 
@@ -1545,7 +1544,6 @@ void amdgpu_driver_postclose_kms(struct drm_device *dev,
 	kfree(fpriv);
 	file_priv->driver_priv = NULL;
 
-	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 }
 

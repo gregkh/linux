@@ -14,7 +14,8 @@
 #include <linux/swapops.h>
 #include <linux/mm_inline.h>
 #include <linux/iommu.h>
-#include <asm/pgalloc.h>
+#include <linux/pgalloc.h>
+
 #include <asm/tlb.h>
 
 /*
@@ -291,7 +292,7 @@ pte_t *___pte_offset_map(pmd_t *pmd, unsigned long addr, pmd_t *pmdvalp)
 
 	if (pmdvalp)
 		*pmdvalp = pmdval;
-	if (unlikely(pmd_none(pmdval) || is_pmd_migration_entry(pmdval)))
+	if (unlikely(pmd_none(pmdval) || !pmd_present(pmdval)))
 		goto nomap;
 	if (unlikely(pmd_trans_huge(pmdval)))
 		goto nomap;

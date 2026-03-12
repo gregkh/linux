@@ -451,7 +451,7 @@ struct cxl_root_decoder {
 	void *platform_data;
 	struct mutex range_lock;
 	int qos_class;
-	struct cxl_rd_ops *ops;
+	struct cxl_rd_ops ops;
 	struct cxl_switch_decoder cxlsd;
 };
 
@@ -517,6 +517,14 @@ enum cxl_partition_mode {
  */
 #define CXL_REGION_F_NEEDS_RESET 1
 
+/*
+ * Indicate whether this region is locked due to 1 or more decoders that have
+ * been locked. The approach of all or nothing is taken with regard to the
+ * locked attribute. CXL_REGION_F_NEEDS_RESET should not be set if this flag is
+ * set.
+ */
+#define CXL_REGION_F_LOCK 2
+
 /**
  * struct cxl_region - CXL region
  * @dev: This region's device
@@ -555,11 +563,16 @@ struct cxl_nvdimm_bridge {
 
 #define CXL_DEV_ID_LEN 19
 
+enum {
+	CXL_NVD_F_INVALIDATED = 0,
+};
+
 struct cxl_nvdimm {
 	struct device dev;
 	struct cxl_memdev *cxlmd;
 	u8 dev_id[CXL_DEV_ID_LEN]; /* for nvdimm, string of 'serial' */
 	u64 dirty_shutdowns;
+	unsigned long flags;
 };
 
 struct cxl_pmem_region_mapping {
@@ -738,6 +751,25 @@ static inline bool is_cxl_root(struct cxl_port *port)
 	return port->uport_dev == port->dev.parent;
 }
 
+/* Address translation functions exported to cxl_translate test module only */
+int cxl_validate_translation_params(u8 eiw, u16 eig, int pos);
+u64 cxl_calculate_hpa_offset(u64 dpa_offset, int pos, u8 eiw, u16 eig);
+u64 cxl_calculate_dpa_offset(u64 hpa_offset, u8 eiw, u16 eig);
+int cxl_calculate_position(u64 hpa_offset, u8 eiw, u16 eig);
+struct cxl_cxims_data {
+	int nr_maps;
+	u64 xormaps[] __counted_by(nr_maps);
+};
+
+#if IS_ENABLED(CONFIG_CXL_ACPI)
+u64 cxl_do_xormap_calc(struct cxl_cxims_data *cximsd, u64 addr, int hbiw);
+#else
+static inline u64 cxl_do_xormap_calc(struct cxl_cxims_data *cximsd, u64 addr, int hbiw)
+{
+	return ULLONG_MAX;
+}
+#endif
+
 int cxl_num_decoders_committed(struct cxl_port *port);
 bool is_cxl_port(const struct device *dev);
 struct cxl_port *to_cxl_port(const struct device *dev);
@@ -866,6 +898,8 @@ void cxl_driver_unregister(struct cxl_driver *cxl_drv);
 struct cxl_nvdimm_bridge *to_cxl_nvdimm_bridge(struct device *dev);
 struct cxl_nvdimm_bridge *devm_cxl_add_nvdimm_bridge(struct device *host,
 						     struct cxl_port *port);
+struct cxl_nvdimm_bridge *__devm_cxl_add_nvdimm_bridge(struct device *host,
+						       struct cxl_port *port);
 struct cxl_nvdimm *to_cxl_nvdimm(struct device *dev);
 bool is_cxl_nvdimm(struct device *dev);
 int devm_cxl_add_nvdimm(struct cxl_port *parent_port, struct cxl_memdev *cxlmd);

@@ -18,13 +18,6 @@ struct btrfs_inode;
 
 #define BTRFS_BIO_INLINE_CSUM_SIZE	64
 
-/*
- * Maximum number of sectors for a single bio to limit the size of the
- * checksum array.  This matches the number of bio_vecs per bio and thus the
- * I/O size for buffered I/O.
- */
-#define BTRFS_MAX_BIO_SECTORS		(256)
-
 typedef void (*btrfs_bio_end_io_t)(struct btrfs_bio *bbio);
 
 /*
@@ -59,6 +52,7 @@ struct btrfs_bio {
 		 * - pointer to the checksums for this bio
 		 * - original physical address from the allocator
 		 *   (for zone append only)
+		 * - original logical address, used for checksumming fscrypt bios
 		 */
 		struct {
 			struct btrfs_ordered_extent *ordered;
@@ -67,6 +61,7 @@ struct btrfs_bio {
 			struct completion csum_done;
 			struct bvec_iter csum_saved_iter;
 			u64 orig_physical;
+			u64 orig_logical;
 		};
 
 		/* For metadata reads: parentness verification. */
@@ -127,7 +122,8 @@ void btrfs_bio_end_io(struct btrfs_bio *bbio, blk_status_t status);
 
 void btrfs_submit_bbio(struct btrfs_bio *bbio, int mirror_num);
 void btrfs_submit_repair_write(struct btrfs_bio *bbio, int mirror_num, bool dev_replace);
-int btrfs_repair_io_failure(struct btrfs_fs_info *fs_info, u64 ino, u64 start,
-			    u64 length, u64 logical, phys_addr_t paddr, int mirror_num);
+int btrfs_repair_io_failure(struct btrfs_fs_info *fs_info, u64 ino, u64 fileoff,
+			    u32 length, u64 logical, const phys_addr_t paddrs[],
+			    unsigned int step, int mirror_num);
 
 #endif

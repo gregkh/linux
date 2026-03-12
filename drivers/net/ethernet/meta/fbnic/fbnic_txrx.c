@@ -653,7 +653,8 @@ static void fbnic_clean_twq1(struct fbnic_napi_vector *nv, bool pp_allow_direct,
 				 FBNIC_TWD_TYPE_AL;
 		total_bytes += FIELD_GET(FBNIC_TWD_LEN_MASK, twd);
 
-		page_pool_put_page(page->pp, page, -1, pp_allow_direct);
+		page_pool_put_page(pp_page_to_nmdesc(page)->pp, page, -1,
+				   pp_allow_direct);
 next_desc:
 		head++;
 		head &= ring->size_mask;
@@ -887,6 +888,7 @@ static void fbnic_bd_prep(struct fbnic_ring *bdq, u16 id, netmem_ref netmem)
 		*bdq_desc = cpu_to_le64(bd);
 		bd += FIELD_PREP(FBNIC_BD_DESC_ADDR_MASK, 1) |
 		      FIELD_PREP(FBNIC_BD_DESC_ID_MASK, 1);
+		bdq_desc++;
 	} while (--i);
 }
 
@@ -1806,7 +1808,7 @@ int fbnic_alloc_napi_vectors(struct fbnic_net *fbn)
 free_vectors:
 	fbnic_free_napi_vectors(fbn);
 
-	return -ENOMEM;
+	return err;
 }
 
 static void fbnic_free_ring_resources(struct device *dev,

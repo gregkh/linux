@@ -438,21 +438,12 @@ struct virtnet_info {
 	/* Packet virtio header size */
 	u8 hdr_len;
 
-	/* Work struct for delayed refilling if we run low on memory. */
-	struct delayed_work refill;
-
 	/* UDP tunnel support */
 	bool tx_tnl;
 
 	bool rx_tnl;
 
 	bool rx_tnl_csum;
-
-	/* Is delayed refill enabled? */
-	bool refill_enabled;
-
-	/* The lock to synchronize the access to refill_enabled */
-	spinlock_t refill_lock;
 
 	/* Work struct for config space updates */
 	struct work_struct config_work;
@@ -726,20 +717,6 @@ static void virtnet_rq_free_buf(struct virtnet_info *vi,
 		put_page(virt_to_head_page(buf));
 }
 
-static void enable_delayed_refill(struct virtnet_info *vi)
-{
-	spin_lock_bh(&vi->refill_lock);
-	vi->refill_enabled = true;
-	spin_unlock_bh(&vi->refill_lock);
-}
-
-static void disable_delayed_refill(struct virtnet_info *vi)
-{
-	spin_lock_bh(&vi->refill_lock);
-	vi->refill_enabled = false;
-	spin_unlock_bh(&vi->refill_lock);
-}
-
 static void enable_rx_mode_work(struct virtnet_info *vi)
 {
 	rtnl_lock();
@@ -781,10 +758,26 @@ static bool virtqueue_napi_complete(struct napi_struct *napi,
 	return false;
 }
 
+static void virtnet_tx_wake_queue(struct virtnet_info *vi,
+				struct send_queue *sq)
+{
+	unsigned int index = vq2txq(sq->vq);
+	struct netdev_queue *txq = netdev_get_tx_queue(vi->dev, index);
+
+	if (netif_tx_queue_stopped(txq)) {
+		u64_stats_update_begin(&sq->stats.syncp);
+		u64_stats_inc(&sq->stats.wake);
+		u64_stats_update_end(&sq->stats.syncp);
+		netif_tx_wake_queue(txq);
+	}
+}
+
 static void skb_xmit_done(struct virtqueue *vq)
 {
 	struct virtnet_info *vi = vq->vdev->priv;
-	struct napi_struct *napi = &vi->sq[vq2txq(vq)].napi;
+	unsigned int index = vq2txq(vq);
+	struct send_queue *sq = &vi->sq[index];
+	struct napi_struct *napi = &sq->napi;
 
 	/* Suppress further interrupts. */
 	virtqueue_disable_cb(vq);
@@ -792,8 +785,7 @@ static void skb_xmit_done(struct virtqueue *vq)
 	if (napi->weight)
 		virtqueue_napi_schedule(napi, vq);
 	else
-		/* We were probably waiting for more output buffers. */
-		netif_wake_subqueue(vi->dev, vq2txq(vq));
+		virtnet_tx_wake_queue(vi, sq);
 }
 
 #define MRG_CTX_HEADER_SHIFT 22
@@ -2939,42 +2931,6 @@ static void virtnet_napi_disable(struct receive_queue *rq)
 	napi_disable(napi);
 }
 
-static void refill_work(struct work_struct *work)
-{
-	struct virtnet_info *vi =
-		container_of(work, struct virtnet_info, refill.work);
-	bool still_empty;
-	int i;
-
-	for (i = 0; i < vi->curr_queue_pairs; i++) {
-		struct receive_queue *rq = &vi->rq[i];
-
-		/*
-		 * When queue API support is added in the future and the call
-		 * below becomes napi_disable_locked, this driver will need to
-		 * be refactored.
-		 *
-		 * One possible solution would be to:
-		 *   - cancel refill_work with cancel_delayed_work (note:
-		 *     non-sync)
-		 *   - cancel refill_work with cancel_delayed_work_sync in
-		 *     virtnet_remove after the netdev is unregistered
-		 *   - wrap all of the work in a lock (perhaps the netdev
-		 *     instance lock)
-		 *   - check netif_running() and return early to avoid a race
-		 */
-		napi_disable(&rq->napi);
-		still_empty = !try_fill_recv(vi, rq, GFP_KERNEL);
-		virtnet_napi_do_enable(rq->vq, &rq->napi);
-
-		/* In theory, this can happen: if we don't get any buffers in
-		 * we will *never* try to fill again.
-		 */
-		if (still_empty)
-			schedule_delayed_work(&vi->refill, HZ/2);
-	}
-}
-
 static int virtnet_receive_xsk_bufs(struct virtnet_info *vi,
 				    struct receive_queue *rq,
 				    int budget,
@@ -3086,13 +3042,8 @@ static void virtnet_poll_cleantx(struct receive_queue *rq, int budget)
 			free_old_xmit(sq, txq, !!budget);
 		} while (unlikely(!virtqueue_enable_cb_delayed(sq->vq)));
 
-		if (sq->vq->num_free >= MAX_SKB_FRAGS + 2 &&
-		    netif_tx_queue_stopped(txq)) {
-			u64_stats_update_begin(&sq->stats.syncp);
-			u64_stats_inc(&sq->stats.wake);
-			u64_stats_update_end(&sq->stats.syncp);
-			netif_tx_wake_queue(txq);
-		}
+		if (sq->vq->num_free >= MAX_SKB_FRAGS + 2)
+			virtnet_tx_wake_queue(vi, sq);
 
 		__netif_tx_unlock(txq);
 	}
@@ -3222,8 +3173,6 @@ static int virtnet_open(struct net_device *dev)
 	struct virtnet_info *vi = netdev_priv(dev);
 	int i, err;
 
-	enable_delayed_refill(vi);
-
 	for (i = 0; i < vi->max_queue_pairs; i++) {
 		if (i < vi->curr_queue_pairs)
 			/* Pre-fill rq agressively, to make sure we are ready to
@@ -3248,9 +3197,6 @@ static int virtnet_open(struct net_device *dev)
 	return 0;
 
 err_enable_qp:
-	disable_delayed_refill(vi);
-	cancel_delayed_work_sync(&vi->refill);
-
 	for (i--; i >= 0; i--) {
 		virtnet_disable_queue_pair(vi, i);
 		virtnet_cancel_dim(vi, &vi->rq[i].dim);
@@ -3283,13 +3229,8 @@ static int virtnet_poll_tx(struct napi_struct *napi, int budget)
 	else
 		free_old_xmit(sq, txq, !!budget);
 
-	if (sq->vq->num_free >= MAX_SKB_FRAGS + 2 &&
-	    netif_tx_queue_stopped(txq)) {
-		u64_stats_update_begin(&sq->stats.syncp);
-		u64_stats_inc(&sq->stats.wake);
-		u64_stats_update_end(&sq->stats.syncp);
-		netif_tx_wake_queue(txq);
-	}
+	if (sq->vq->num_free >= MAX_SKB_FRAGS + 2)
+		virtnet_tx_wake_queue(vi, sq);
 
 	if (xsk_done >= budget) {
 		__netif_tx_unlock(txq);
@@ -3434,8 +3375,8 @@ static netdev_tx_t start_xmit(struct sk_buff *skb, struct net_device *dev)
 	return NETDEV_TX_OK;
 }
 
-static void __virtnet_rx_pause(struct virtnet_info *vi,
-			       struct receive_queue *rq)
+static void virtnet_rx_pause(struct virtnet_info *vi,
+			     struct receive_queue *rq)
 {
 	bool running = netif_running(vi->dev);
 
@@ -3449,30 +3390,13 @@ static void virtnet_rx_pause_all(struct virtnet_info *vi)
 {
 	int i;
 
-	/*
-	 * Make sure refill_work does not run concurrently to
-	 * avoid napi_disable race which leads to deadlock.
-	 */
-	disable_delayed_refill(vi);
-	cancel_delayed_work_sync(&vi->refill);
 	for (i = 0; i < vi->max_queue_pairs; i++)
-		__virtnet_rx_pause(vi, &vi->rq[i]);
+		virtnet_rx_pause(vi, &vi->rq[i]);
 }
 
-static void virtnet_rx_pause(struct virtnet_info *vi, struct receive_queue *rq)
-{
-	/*
-	 * Make sure refill_work does not run concurrently to
-	 * avoid napi_disable race which leads to deadlock.
-	 */
-	disable_delayed_refill(vi);
-	cancel_delayed_work_sync(&vi->refill);
-	__virtnet_rx_pause(vi, rq);
-}
-
-static void __virtnet_rx_resume(struct virtnet_info *vi,
-				struct receive_queue *rq,
-				bool refill)
+static void virtnet_rx_resume(struct virtnet_info *vi,
+			      struct receive_queue *rq,
+			      bool refill)
 {
 	if (netif_running(vi->dev)) {
 		/* Pre-fill rq agressively, to make sure we are ready to get
@@ -3489,19 +3413,12 @@ static void virtnet_rx_resume_all(struct virtnet_info *vi)
 {
 	int i;
 
-	enable_delayed_refill(vi);
 	for (i = 0; i < vi->max_queue_pairs; i++) {
 		if (i < vi->curr_queue_pairs)
-			__virtnet_rx_resume(vi, &vi->rq[i], true);
+			virtnet_rx_resume(vi, &vi->rq[i], true);
 		else
-			__virtnet_rx_resume(vi, &vi->rq[i], false);
+			virtnet_rx_resume(vi, &vi->rq[i], false);
 	}
-}
-
-static void virtnet_rx_resume(struct virtnet_info *vi, struct receive_queue *rq)
-{
-	enable_delayed_refill(vi);
-	__virtnet_rx_resume(vi, rq, true);
 }
 
 static int virtnet_rx_resize(struct virtnet_info *vi,
@@ -3517,7 +3434,7 @@ static int virtnet_rx_resize(struct virtnet_info *vi,
 	if (err)
 		netdev_err(vi->dev, "resize rx fail: rx queue index: %d err: %d\n", qindex, err);
 
-	virtnet_rx_resume(vi, rq);
+	virtnet_rx_resume(vi, rq, true);
 	return err;
 }
 
@@ -3544,6 +3461,9 @@ static void virtnet_tx_pause(struct virtnet_info *vi, struct send_queue *sq)
 
 	/* Prevent the upper layer from trying to send packets. */
 	netif_stop_subqueue(vi->dev, qindex);
+	u64_stats_update_begin(&sq->stats.syncp);
+	u64_stats_inc(&sq->stats.stop);
+	u64_stats_update_end(&sq->stats.syncp);
 
 	__netif_tx_unlock_bh(txq);
 }
@@ -3560,7 +3480,7 @@ static void virtnet_tx_resume(struct virtnet_info *vi, struct send_queue *sq)
 
 	__netif_tx_lock_bh(txq);
 	sq->reset = false;
-	netif_tx_wake_queue(txq);
+	virtnet_tx_wake_queue(vi, sq);
 	__netif_tx_unlock_bh(txq);
 
 	if (running)
@@ -3783,7 +3703,7 @@ static int virtnet_set_queues(struct virtnet_info *vi, u16 queue_pairs)
 	 * (2) no user configuration.
 	 *
 	 * During rss command processing, device updates queue_pairs using rss.max_tx_vq. That is,
-	 * the device updates queue_pairs together with rss, so we can skip the sperate queue_pairs
+	 * the device updates queue_pairs together with rss, so we can skip the separate queue_pairs
 	 * update (VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET below) and return directly.
 	 */
 	if (vi->has_rss && !netif_is_rxfh_configured(dev)) {
@@ -3842,10 +3762,6 @@ static int virtnet_close(struct net_device *dev)
 	struct virtnet_info *vi = netdev_priv(dev);
 	int i;
 
-	/* Make sure NAPI doesn't schedule refill work */
-	disable_delayed_refill(vi);
-	/* Make sure refill_work doesn't re-enable napi! */
-	cancel_delayed_work_sync(&vi->refill);
 	/* Prevent the config change callback from changing carrier
 	 * after close
 	 */
@@ -5801,7 +5717,6 @@ static int virtnet_restore_up(struct virtio_device *vdev)
 
 	virtio_device_ready(vdev);
 
-	enable_delayed_refill(vi);
 	enable_rx_mode_work(vi);
 
 	if (netif_running(vi->dev)) {
@@ -5891,7 +5806,7 @@ static int virtnet_rq_bind_xsk_pool(struct virtnet_info *vi, struct receive_queu
 
 	rq->xsk_pool = pool;
 
-	virtnet_rx_resume(vi, rq);
+	virtnet_rx_resume(vi, rq, true);
 
 	if (pool)
 		return 0;
@@ -6558,7 +6473,6 @@ static int virtnet_alloc_queues(struct virtnet_info *vi)
 	if (!vi->rq)
 		goto err_rq;
 
-	INIT_DELAYED_WORK(&vi->refill, refill_work);
 	for (i = 0; i < vi->max_queue_pairs; i++) {
 		vi->rq[i].pages = NULL;
 		netif_napi_add_config(vi->dev, &vi->rq[i].napi, virtnet_poll,
@@ -6900,7 +6814,6 @@ static int virtnet_probe(struct virtio_device *vdev)
 
 	INIT_WORK(&vi->config_work, virtnet_config_changed_work);
 	INIT_WORK(&vi->rx_mode_work, virtnet_rx_mode_work);
-	spin_lock_init(&vi->refill_lock);
 
 	if (virtio_has_feature(vdev, VIRTIO_NET_F_MRG_RXBUF)) {
 		vi->mergeable_rx_bufs = true;
@@ -7164,7 +7077,6 @@ free_failover:
 	net_failover_destroy(vi->failover);
 free_vqs:
 	virtio_reset_device(vdev);
-	cancel_delayed_work_sync(&vi->refill);
 	free_receive_page_frags(vi);
 	virtnet_del_vqs(vi);
 free:

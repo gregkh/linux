@@ -55,7 +55,7 @@ static void rtw89_usb_vendorreq(struct rtw89_dev *rtwdev, u32 addr,
 		else if (ret < 0)
 			rtw89_warn(rtwdev,
 				   "usb %s%u 0x%x fail ret=%d value=0x%x attempt=%d\n",
-				   reqtype == RTW89_USB_VENQT_READ ? "read" : "write",
+				   str_read_write(reqtype == RTW89_USB_VENQT_READ),
 				   len * 8, addr, ret,
 				   le32_to_cpup(rtwusb->vendor_req_buf),
 				   attempt);
@@ -167,27 +167,6 @@ rtw89_usb_ops_check_and_reclaim_tx_resource(struct rtw89_dev *rtwdev,
 	return 42; /* TODO some kind of calculation? */
 }
 
-static u8 rtw89_usb_get_bulkout_id(u8 ch_dma)
-{
-	switch (ch_dma) {
-	case RTW89_DMA_ACH0:
-		return 3;
-	case RTW89_DMA_ACH1:
-		return 4;
-	case RTW89_DMA_ACH2:
-		return 5;
-	case RTW89_DMA_ACH3:
-		return 6;
-	default:
-	case RTW89_DMA_B0MG:
-		return 0;
-	case RTW89_DMA_B0HI:
-		return 1;
-	case RTW89_DMA_H2C:
-		return 2;
-	}
-}
-
 static void rtw89_usb_write_port_complete(struct urb *urb)
 {
 	struct rtw89_usb_tx_ctrl_block *txcb = urb->context;
@@ -214,6 +193,15 @@ static void rtw89_usb_write_port_complete(struct urb *urb)
 			txdesc_size += rtwdev->chip->txwd_info_size;
 
 		skb_pull(skb, txdesc_size);
+
+		if (rtw89_is_tx_rpt_skb(rtwdev, skb)) {
+			if (urb->status == 0)
+				rtw89_tx_rpt_skb_add(rtwdev, skb);
+			else
+				rtw89_tx_rpt_tx_status(rtwdev, skb,
+						       RTW89_TX_MACID_DROP);
+			continue;
+		}
 
 		info = IEEE80211_SKB_CB(skb);
 		ieee80211_tx_info_clear_status(info);
@@ -242,16 +230,16 @@ static void rtw89_usb_write_port_complete(struct urb *urb)
 	}
 
 	kfree(txcb);
-	usb_free_urb(urb);
 }
 
 static int rtw89_usb_write_port(struct rtw89_dev *rtwdev, u8 ch_dma,
 				void *data, int len, void *context)
 {
 	struct rtw89_usb *rtwusb = rtw89_usb_priv(rtwdev);
+	const struct rtw89_usb_info *info = rtwusb->info;
 	struct usb_device *usbd = rtwusb->udev;
 	struct urb *urb;
-	u8 bulkout_id = rtw89_usb_get_bulkout_id(ch_dma);
+	u8 bulkout_id = info->bulkout_id[ch_dma];
 	unsigned int pipe;
 	int ret;
 
@@ -267,15 +255,31 @@ static int rtw89_usb_write_port(struct rtw89_dev *rtwdev, u8 ch_dma,
 	usb_fill_bulk_urb(urb, usbd, pipe, data, len,
 			  rtw89_usb_write_port_complete, context);
 	urb->transfer_flags |= URB_ZERO_PACKET;
-	ret = usb_submit_urb(urb, GFP_ATOMIC);
+	usb_anchor_urb(urb, &rtwusb->tx_submitted);
 
+	ret = usb_submit_urb(urb, GFP_ATOMIC);
 	if (ret)
-		usb_free_urb(urb);
+		usb_unanchor_urb(urb);
+
+	/* release our reference to this URB, USB core will eventually free it
+	 * on its own after the completion callback finishes (or URB is
+	 * immediately freed here if its submission has failed)
+	 */
+	usb_free_urb(urb);
 
 	if (ret == -ENODEV)
 		set_bit(RTW89_FLAG_UNPLUGGED, rtwdev->flags);
 
 	return ret;
+}
+
+static void rtw89_usb_tx_free_skb(struct rtw89_dev *rtwdev, u8 txch,
+				  struct sk_buff *skb)
+{
+	if (txch == RTW89_TXCH_CH12)
+		dev_kfree_skb_any(skb);
+	else
+		ieee80211_free_txskb(rtwdev->hw, skb);
 }
 
 static void rtw89_usb_ops_tx_kick_off(struct rtw89_dev *rtwdev, u8 txch)
@@ -292,7 +296,7 @@ static void rtw89_usb_ops_tx_kick_off(struct rtw89_dev *rtwdev, u8 txch)
 
 		txcb = kmalloc(sizeof(*txcb), GFP_ATOMIC);
 		if (!txcb) {
-			dev_kfree_skb_any(skb);
+			rtw89_usb_tx_free_skb(rtwdev, txch, skb);
 			continue;
 		}
 
@@ -311,7 +315,7 @@ static void rtw89_usb_ops_tx_kick_off(struct rtw89_dev *rtwdev, u8 txch)
 
 			skb_dequeue(&txcb->tx_ack_queue);
 			kfree(txcb);
-			dev_kfree_skb_any(skb);
+			rtw89_usb_tx_free_skb(rtwdev, txch, skb);
 		}
 	}
 }
@@ -363,6 +367,7 @@ static int rtw89_usb_ops_tx_write(struct rtw89_dev *rtwdev,
 {
 	struct rtw89_tx_desc_info *desc_info = &tx_req->desc_info;
 	struct rtw89_usb *rtwusb = rtw89_usb_priv(rtwdev);
+	struct rtw89_tx_skb_data *skb_data;
 	struct sk_buff *skb = tx_req->skb;
 	struct rtw89_txwd_body *txdesc;
 	u32 txdesc_size;
@@ -388,6 +393,12 @@ static int rtw89_usb_ops_tx_write(struct rtw89_dev *rtwdev,
 	rtw89_chip_fill_txdesc(rtwdev, desc_info, txdesc);
 
 	le32p_replace_bits(&txdesc->dword0, 1, RTW89_TXWD_BODY0_STF_MODE);
+
+	skb_data = RTW89_TX_SKB_CB(skb);
+	if (tx_req->desc_info.sn)
+		skb_data->tx_rpt_sn = tx_req->desc_info.sn;
+	if (tx_req->desc_info.tx_cnt_lmt)
+		skb_data->tx_pkt_cnt_lmt = tx_req->desc_info.tx_cnt_lmt;
 
 	skb_queue_tail(&rtwusb->tx_queue[desc_info->ch_dma], skb);
 
@@ -568,6 +579,11 @@ static void rtw89_usb_cancel_rx_bufs(struct rtw89_usb *rtwusb)
 	}
 }
 
+static void rtw89_usb_cancel_tx_bufs(struct rtw89_usb *rtwusb)
+{
+	usb_kill_anchored_urbs(&rtwusb->tx_submitted);
+}
+
 static void rtw89_usb_free_rx_bufs(struct rtw89_usb *rtwusb)
 {
 	struct rtw89_usb_rx_ctrl_block *rxcb;
@@ -669,7 +685,10 @@ static void rtw89_usb_deinit_tx(struct rtw89_dev *rtwdev)
 
 static void rtw89_usb_ops_reset(struct rtw89_dev *rtwdev)
 {
-	/* TODO: anything to do here? */
+	struct rtw89_usb *rtwusb = rtw89_usb_priv(rtwdev);
+
+	rtw89_usb_cancel_tx_bufs(rtwusb);
+	rtw89_tx_rpt_skbs_purge(rtwdev);
 }
 
 static int rtw89_usb_ops_start(struct rtw89_dev *rtwdev)
@@ -699,20 +718,23 @@ static int rtw89_usb_ops_deinit(struct rtw89_dev *rtwdev)
 
 static int rtw89_usb_ops_mac_pre_init(struct rtw89_dev *rtwdev)
 {
+	struct rtw89_usb *rtwusb = rtw89_usb_priv(rtwdev);
+	const struct rtw89_usb_info *info = rtwusb->info;
 	u32 val32;
 
-	rtw89_write32_set(rtwdev, R_AX_USB_HOST_REQUEST_2, B_AX_R_USBIO_MODE);
+	rtw89_write32_set(rtwdev, info->usb_host_request_2,
+			  B_AX_R_USBIO_MODE);
 
 	/* fix USB IO hang suggest by chihhanli@realtek.com */
-	rtw89_write32_clr(rtwdev, R_AX_USB_WLAN0_1,
+	rtw89_write32_clr(rtwdev, info->usb_wlan0_1,
 			  B_AX_USBRX_RST | B_AX_USBTX_RST);
 
-	val32 = rtw89_read32(rtwdev, R_AX_HCI_FUNC_EN);
+	val32 = rtw89_read32(rtwdev, info->hci_func_en);
 	val32 &= ~(B_AX_HCI_RXDMA_EN | B_AX_HCI_TXDMA_EN);
-	rtw89_write32(rtwdev, R_AX_HCI_FUNC_EN, val32);
+	rtw89_write32(rtwdev, info->hci_func_en, val32);
 
 	val32 |= B_AX_HCI_RXDMA_EN | B_AX_HCI_TXDMA_EN;
-	rtw89_write32(rtwdev, R_AX_HCI_FUNC_EN, val32);
+	rtw89_write32(rtwdev, info->hci_func_en, val32);
 	/* fix USB TRX hang suggest by chihhanli@realtek.com */
 
 	return 0;
@@ -726,10 +748,11 @@ static int rtw89_usb_ops_mac_pre_deinit(struct rtw89_dev *rtwdev)
 static int rtw89_usb_ops_mac_post_init(struct rtw89_dev *rtwdev)
 {
 	struct rtw89_usb *rtwusb = rtw89_usb_priv(rtwdev);
+	const struct rtw89_usb_info *info = rtwusb->info;
 	enum usb_device_speed speed;
 	u32 ep;
 
-	rtw89_write32_clr(rtwdev, R_AX_USB3_MAC_NPI_CONFIG_INTF_0,
+	rtw89_write32_clr(rtwdev, info->usb3_mac_npi_config_intf_0,
 			  B_AX_SSPHY_LFPS_FILTER);
 
 	speed = rtwusb->udev->speed;
@@ -745,9 +768,9 @@ static int rtw89_usb_ops_mac_post_init(struct rtw89_dev *rtwdev)
 		if (ep == 8)
 			continue;
 
-		rtw89_write8_mask(rtwdev, R_AX_USB_ENDPOINT_0,
+		rtw89_write8_mask(rtwdev, info->usb_endpoint_0,
 				  B_AX_EP_IDX, ep);
-		rtw89_write8(rtwdev, R_AX_USB_ENDPOINT_2 + 1, NUMP);
+		rtw89_write8(rtwdev, info->usb_endpoint_2 + 1, NUMP);
 	}
 
 	return 0;
@@ -902,6 +925,8 @@ static int rtw89_usb_intf_init(struct rtw89_dev *rtwdev,
 	struct rtw89_usb *rtwusb = rtw89_usb_priv(rtwdev);
 	int ret;
 
+	init_usb_anchor(&rtwusb->tx_submitted);
+
 	ret = rtw89_usb_parse(rtwdev, intf);
 	if (ret)
 		return ret;
@@ -950,9 +975,11 @@ int rtw89_usb_probe(struct usb_interface *intf,
 
 	rtwusb = rtw89_usb_priv(rtwdev);
 	rtwusb->rtwdev = rtwdev;
+	rtwusb->info = info->bus.usb;
 
 	rtwdev->hci.ops = &rtw89_usb_ops;
 	rtwdev->hci.type = RTW89_HCI_TYPE_USB;
+	rtwdev->hci.tx_rpt_enabled = true;
 
 	ret = rtw89_usb_intf_init(rtwdev, intf);
 	if (ret) {
@@ -1027,6 +1054,7 @@ void rtw89_usb_disconnect(struct usb_interface *intf)
 	rtwusb = rtw89_usb_priv(rtwdev);
 
 	rtw89_usb_cancel_rx_bufs(rtwusb);
+	rtw89_usb_cancel_tx_bufs(rtwusb);
 
 	rtw89_core_unregister(rtwdev);
 	rtw89_core_deinit(rtwdev);

@@ -303,7 +303,9 @@ static void mtk_iommu_v1_domain_free(struct iommu_domain *domain)
 	kfree(to_mtk_domain(domain));
 }
 
-static int mtk_iommu_v1_attach_device(struct iommu_domain *domain, struct device *dev)
+static int mtk_iommu_v1_attach_device(struct iommu_domain *domain,
+				      struct device *dev,
+				      struct iommu_domain *old)
 {
 	struct mtk_iommu_v1_data *data = dev_iommu_priv_get(dev);
 	struct mtk_iommu_v1_domain *dom = to_mtk_domain(domain);
@@ -329,7 +331,8 @@ static int mtk_iommu_v1_attach_device(struct iommu_domain *domain, struct device
 }
 
 static int mtk_iommu_v1_identity_attach(struct iommu_domain *identity_domain,
-					struct device *dev)
+					struct device *dev,
+					struct iommu_domain *old)
 {
 	struct mtk_iommu_v1_data *data = dev_iommu_priv_get(dev);
 
@@ -642,6 +645,9 @@ static int mtk_iommu_v1_probe(struct platform_device *pdev)
 					     "mediatek,larbs", NULL);
 	if (larb_nr < 0)
 		return larb_nr;
+
+	if (larb_nr > MTK_LARB_NR_MAX)
+		return -EINVAL;
 
 	for (i = 0; i < larb_nr; i++) {
 		struct device_node *larbnode;

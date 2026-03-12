@@ -167,26 +167,32 @@ static int xsk_rcv_zc(struct xdp_sock *xs, struct xdp_buff *xdp, u32 len)
 	struct xdp_buff_xsk *pos, *tmp;
 	struct list_head *xskb_list;
 	u32 contd = 0;
+	u32 num_desc;
 	int err;
 
-	if (frags)
-		contd = XDP_PKT_CONTD;
-
-	err = __xsk_rcv_zc(xs, xskb, len, contd);
-	if (err)
-		goto err;
-	if (likely(!frags))
+	if (likely(!frags)) {
+		err = __xsk_rcv_zc(xs, xskb, len, contd);
+		if (err)
+			goto err;
 		return 0;
+	}
 
+	contd = XDP_PKT_CONTD;
+	num_desc = xdp_get_shared_info_from_buff(xdp)->nr_frags + 1;
+	if (xskq_prod_nb_free(xs->rx, num_desc) < num_desc) {
+		xs->rx_queue_full++;
+		err = -ENOBUFS;
+		goto err;
+	}
+
+	__xsk_rcv_zc(xs, xskb, len, contd);
 	xskb_list = &xskb->pool->xskb_list;
 	list_for_each_entry_safe(pos, tmp, xskb_list, list_node) {
 		if (list_is_singular(xskb_list))
 			contd = 0;
 		len = pos->xdp.data_end - pos->xdp.data;
-		err = __xsk_rcv_zc(xs, pos, len, contd);
-		if (err)
-			goto err;
-		list_del(&pos->list_node);
+		__xsk_rcv_zc(xs, pos, len, contd);
+		list_del_init(&pos->list_node);
 	}
 
 	return 0;
@@ -541,12 +547,11 @@ static int xsk_wakeup(struct xdp_sock *xs, u8 flags)
 
 static int xsk_cq_reserve_locked(struct xsk_buff_pool *pool)
 {
-	unsigned long flags;
 	int ret;
 
-	spin_lock_irqsave(&pool->cq_lock, flags);
+	spin_lock(&pool->cq_cached_prod_lock);
 	ret = xskq_prod_reserve(pool->cq);
-	spin_unlock_irqrestore(&pool->cq_lock, flags);
+	spin_unlock(&pool->cq_cached_prod_lock);
 
 	return ret;
 }
@@ -597,7 +602,7 @@ static void xsk_cq_submit_addr_locked(struct xsk_buff_pool *pool,
 	unsigned long flags;
 	u32 idx, i;
 
-	spin_lock_irqsave(&pool->cq_lock, flags);
+	spin_lock_irqsave(&pool->cq_prod_lock, flags);
 	idx = xskq_get_prod(pool->cq);
 
 	if (unlikely(num_descs > 1)) {
@@ -615,19 +620,18 @@ static void xsk_cq_submit_addr_locked(struct xsk_buff_pool *pool,
 		descs_processed++;
 	}
 	xskq_prod_submit_n(pool->cq, descs_processed);
-	spin_unlock_irqrestore(&pool->cq_lock, flags);
+	spin_unlock_irqrestore(&pool->cq_prod_lock, flags);
 }
 
 static void xsk_cq_cancel_locked(struct xsk_buff_pool *pool, u32 n)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&pool->cq_lock, flags);
+	spin_lock(&pool->cq_cached_prod_lock);
 	xskq_prod_cancel_n(pool->cq, n);
-	spin_unlock_irqrestore(&pool->cq_lock, flags);
+	spin_unlock(&pool->cq_cached_prod_lock);
 }
 
-static void xsk_destruct_skb(struct sk_buff *skb)
+INDIRECT_CALLABLE_SCOPE
+void xsk_destruct_skb(struct sk_buff *skb)
 {
 	struct xsk_tx_metadata_compl *compl = &skb_shinfo(skb)->xsk_meta;
 
@@ -1274,7 +1278,7 @@ static bool xsk_validate_queues(struct xdp_sock *xs)
 	return xs->fq_tmp && xs->cq_tmp;
 }
 
-static int xsk_bind(struct socket *sock, struct sockaddr *addr, int addr_len)
+static int xsk_bind(struct socket *sock, struct sockaddr_unsized *addr, int addr_len)
 {
 	struct sockaddr_xdp *sxdp = (struct sockaddr_xdp *)addr;
 	struct sock *sk = sock->sk;

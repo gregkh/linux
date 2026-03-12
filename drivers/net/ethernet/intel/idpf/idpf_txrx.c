@@ -134,7 +134,7 @@ static void idpf_compl_desc_rel(struct idpf_compl_queue *complq)
 {
 	idpf_xsk_clear_queue(complq, VIRTCHNL2_QUEUE_TYPE_TX_COMPLETION);
 
-	if (!complq->comp)
+	if (!complq->desc_ring)
 		return;
 
 	dma_free_coherent(complq->netdev->dev.parent, complq->size,
@@ -924,8 +924,8 @@ static int idpf_rx_desc_alloc_all(struct idpf_vport *vport)
 			err = idpf_rx_desc_alloc(vport, q);
 			if (err) {
 				pci_err(vport->adapter->pdev,
-					"Memory allocation for Rx Queue %u failed\n",
-					i);
+					"Memory allocation for Rx queue %u from queue group %u failed\n",
+					j, i);
 				goto err_out;
 			}
 		}
@@ -941,8 +941,8 @@ static int idpf_rx_desc_alloc_all(struct idpf_vport *vport)
 			err = idpf_bufq_desc_alloc(vport, q);
 			if (err) {
 				pci_err(vport->adapter->pdev,
-					"Memory allocation for Rx Buffer Queue %u failed\n",
-					i);
+					"Memory allocation for Rx Buffer Queue %u from queue group %u failed\n",
+					j, i);
 				goto err_out;
 			}
 		}
@@ -2326,7 +2326,7 @@ void idpf_wait_for_sw_marker_completion(const struct idpf_tx_queue *txq)
 
 	do {
 		struct idpf_splitq_4b_tx_compl_desc *tx_desc;
-		struct idpf_tx_queue *target;
+		struct idpf_tx_queue *target = NULL;
 		u32 ctype_gen, id;
 
 		tx_desc = flow ? &complq->comp[ntc].common :
@@ -2346,14 +2346,14 @@ void idpf_wait_for_sw_marker_completion(const struct idpf_tx_queue *txq)
 		target = complq->txq_grp->txqs[id];
 
 		idpf_queue_clear(SW_MARKER, target);
-		if (target == txq)
-			break;
 
 next:
 		if (unlikely(++ntc == complq->desc_count)) {
 			ntc = 0;
 			gen_flag = !gen_flag;
 		}
+		if (target == txq)
+			break;
 	} while (time_before(jiffies, timeout));
 
 	idpf_queue_assign(GEN_CHK, complq, gen_flag);
@@ -4038,7 +4038,7 @@ static int idpf_vport_intr_req_irq(struct idpf_vport *vport)
 			continue;
 
 		name = kasprintf(GFP_KERNEL, "%s-%s-%s-%d", drv_name, if_name,
-				 vec_name, vidx);
+				 vec_name, vector);
 
 		err = request_irq(irq_num, idpf_vport_intr_clean_queues, 0,
 				  name, q_vector);

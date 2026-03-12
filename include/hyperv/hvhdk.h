@@ -376,6 +376,46 @@ struct hv_input_set_partition_property {
 	u64 property_value;
 } __packed;
 
+union hv_partition_property_arg {
+	u64 as_uint64;
+	struct {
+		union {
+			u32 arg;
+			u32 vp_index;
+		};
+		u16 reserved0;
+		u8 reserved1;
+		u8 object_type;
+	} __packed;
+};
+
+struct hv_input_get_partition_property_ex {
+	u64 partition_id;
+	u32 property_code; /* enum hv_partition_property_code */
+	u32 padding;
+	union {
+		union hv_partition_property_arg arg_data;
+		u64 arg;
+	};
+} __packed;
+
+/*
+ * NOTE: Should use hv_input_set_partition_property_ex_header to compute this
+ * size, but hv_input_get_partition_property_ex is identical so it suffices
+ */
+#define HV_PARTITION_PROPERTY_EX_MAX_VAR_SIZE \
+	(HV_HYP_PAGE_SIZE - sizeof(struct hv_input_get_partition_property_ex))
+
+union hv_partition_property_ex {
+	u8 buffer[HV_PARTITION_PROPERTY_EX_MAX_VAR_SIZE];
+	struct hv_partition_property_vmm_capabilities vmm_capabilities;
+	/* More fields to be filled in when needed */
+};
+
+struct hv_output_get_partition_property_ex {
+	union hv_partition_property_ex property_value;
+} __packed;
+
 enum hv_vp_state_page_type {
 	HV_VP_STATE_PAGE_REGISTERS = 0,
 	HV_VP_STATE_PAGE_INTERCEPT_MESSAGE = 1,
@@ -539,9 +579,15 @@ union hv_interrupt_control {
 	u64 as_uint64;
 	struct {
 		u32 interrupt_type; /* enum hv_interrupt_type */
+#if IS_ENABLED(CONFIG_X86)
 		u32 level_triggered : 1;
 		u32 logical_dest_mode : 1;
 		u32 rsvd : 30;
+#elif IS_ENABLED(CONFIG_ARM64)
+		u32 rsvd1 : 2;
+		u32 asserted : 1;
+		u32 rsvd2 : 29;
+#endif
 	} __packed;
 };
 
@@ -753,6 +799,53 @@ struct hv_x64_memory_intercept_message {
 	u64 guest_physical_address;
 	u8 instruction_bytes[16];
 } __packed;
+
+#if IS_ENABLED(CONFIG_ARM64)
+union hv_arm64_vp_execution_state {
+	u16 as_uint16;
+	struct {
+		u16 cpl:2; /* Exception Level (EL) */
+		u16 debug_active:1;
+		u16 interruption_pending:1;
+		u16 vtl:4;
+		u16 virtualization_fault_active:1;
+		u16 reserved:7;
+	} __packed;
+};
+
+struct hv_arm64_intercept_message_header {
+	u32 vp_index;
+	u8 instruction_length;
+	u8 intercept_access_type;
+	union hv_arm64_vp_execution_state execution_state;
+	u64 pc;
+	u64 cpsr;
+} __packed;
+
+union hv_arm64_memory_access_info {
+	u8 as_uint8;
+	struct {
+		u8 gva_valid:1;
+		u8 gva_gpa_valid:1;
+		u8 hypercall_output_pending:1;
+		u8 reserved:5;
+	} __packed;
+};
+
+struct hv_arm64_memory_intercept_message {
+	struct hv_arm64_intercept_message_header header;
+	u32 cache_type; /* enum hv_cache_type */
+	u8 instruction_byte_count;
+	union hv_arm64_memory_access_info memory_access_info;
+	u16 reserved1;
+	u8 instruction_bytes[4];
+	u32 reserved2;
+	u64 guest_virtual_address;
+	u64 guest_physical_address;
+	u64 syndrome;
+} __packed;
+
+#endif /* CONFIG_ARM64 */
 
 /*
  * Dispatch state for the VP communicated by the hypervisor to the

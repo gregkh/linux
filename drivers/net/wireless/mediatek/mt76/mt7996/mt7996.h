@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: ISC */
+/* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (C) 2022 MediaTek Inc.
  */
@@ -243,6 +243,7 @@ struct mt7996_sta {
 	struct mt7996_sta_link deflink; /* must be first */
 	struct mt7996_sta_link __rcu *link[IEEE80211_MLD_MAX_NUM_LINKS];
 	u8 deflink_id;
+	u8 seclink_id;
 
 	struct mt7996_vif *vif;
 };
@@ -863,6 +864,9 @@ int mt7996_mcu_cp_support(struct mt7996_dev *dev, u8 mode);
 #ifdef CONFIG_MAC80211_DEBUGFS
 void mt7996_sta_add_debugfs(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			    struct ieee80211_sta *sta, struct dentry *dir);
+void mt7996_link_sta_add_debugfs(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+				 struct ieee80211_link_sta *link_sta,
+				 struct dentry *dir);
 #endif
 int mt7996_mmio_wed_init(struct mt7996_dev *dev, void *pdev_ptr,
 			 bool hif2, int *irq);
@@ -873,5 +877,26 @@ int mt7996_mtk_init_debugfs(struct mt7996_phy *phy, struct dentry *dir);
 #endif
 
 int mt7996_dma_rro_init(struct mt7996_dev *dev);
+
+#ifdef CONFIG_MT7996_NPU
+int mt7996_npu_hw_init(struct mt7996_dev *dev);
+int mt7996_npu_hw_stop(struct mt7996_dev *dev);
+int mt7996_npu_rx_queues_init(struct mt7996_dev *dev);
+#else
+static inline int mt7996_npu_hw_init(struct mt7996_dev *dev)
+{
+	return 0;
+}
+
+static inline int mt7996_npu_hw_stop(struct mt7996_dev *dev)
+{
+	return 0;
+}
+
+static inline int mt7996_npu_rx_queues_init(struct mt7996_dev *dev)
+{
+	return 0;
+}
+#endif /* CONFIG_MT7996_NPU */
 
 #endif

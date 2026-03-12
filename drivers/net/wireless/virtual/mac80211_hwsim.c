@@ -4112,14 +4112,14 @@ static int mac80211_hwsim_stop_nan(struct ieee80211_hw *hw,
 	hrtimer_cancel(&data->nan_timer);
 	data->nan_device_vif = NULL;
 
-	spin_lock(&hwsim_radio_lock);
+	spin_lock_bh(&hwsim_radio_lock);
 	list_for_each_entry(data2, &hwsim_radios, list) {
 		if (data2->nan_device_vif) {
 			nan_cluster_running = true;
 			break;
 		}
 	}
-	spin_unlock(&hwsim_radio_lock);
+	spin_unlock_bh(&hwsim_radio_lock);
 
 	if (!nan_cluster_running)
 		memset(hwsim_nan_cluster_id, 0, ETH_ALEN);
@@ -5799,6 +5799,7 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 		ieee80211_hw_set(hw, NO_AUTO_VIF);
 
 	wiphy_ext_feature_set(hw->wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);
+	wiphy_ext_feature_set(hw->wiphy, NL80211_EXT_FEATURE_PUNCT);
 
 	for (i = 0; i < ARRAY_SIZE(data->link_data); i++) {
 		hrtimer_setup(&data->link_data[i].beacon_timer, mac80211_hwsim_beacon,

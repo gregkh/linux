@@ -200,7 +200,7 @@ static bool inet_bind2_bucket_addr_match(const struct inet_bind2_bucket *tb2,
 void inet_bind_hash(struct sock *sk, struct inet_bind_bucket *tb,
 		    struct inet_bind2_bucket *tb2, unsigned short port)
 {
-	inet_sk(sk)->inet_num = port;
+	WRITE_ONCE(inet_sk(sk)->inet_num, port);
 	inet_csk(sk)->icsk_bind_hash = tb;
 	inet_csk(sk)->icsk_bind2_hash = tb2;
 	sk_add_bind_node(sk, &tb2->owners);
@@ -224,7 +224,7 @@ static void __inet_put_port(struct sock *sk)
 	spin_lock(&head->lock);
 	tb = inet_csk(sk)->icsk_bind_hash;
 	inet_csk(sk)->icsk_bind_hash = NULL;
-	inet_sk(sk)->inet_num = 0;
+	WRITE_ONCE(inet_sk(sk)->inet_num, 0);
 	sk->sk_userlocks &= ~SOCK_CONNECT_BIND;
 
 	spin_lock(&head2->lock);
@@ -352,7 +352,7 @@ static inline int compute_score(struct sock *sk, const struct net *net,
 {
 	int score = -1;
 
-	if (net_eq(sock_net(sk), net) && sk->sk_num == hnum &&
+	if (net_eq(sock_net(sk), net) && READ_ONCE(sk->sk_num) == hnum &&
 			!ipv6_only_sock(sk)) {
 		if (sk->sk_rcv_saddr != daddr)
 			return -1;
@@ -720,8 +720,11 @@ bool inet_ehash_insert(struct sock *sk, struct sock *osk, bool *found_dup_sk)
 	spin_lock(lock);
 	if (osk) {
 		WARN_ON_ONCE(sk->sk_hash != osk->sk_hash);
-		ret = sk_nulls_del_node_init_rcu(osk);
-	} else if (found_dup_sk) {
+		ret = sk_nulls_replace_node_init_rcu(osk, sk);
+		goto unlock;
+	}
+
+	if (found_dup_sk) {
 		*found_dup_sk = inet_ehash_lookup_by_sk(sk, list);
 		if (*found_dup_sk)
 			ret = false;
@@ -730,6 +733,7 @@ bool inet_ehash_insert(struct sock *sk, struct sock *osk, bool *found_dup_sk)
 	if (ret)
 		__sk_nulls_add_node_rcu(sk, list);
 
+unlock:
 	spin_unlock(lock);
 
 	return ret;
@@ -1202,7 +1206,7 @@ error:
 
 		sk->sk_hash = 0;
 		inet_sk(sk)->inet_sport = 0;
-		inet_sk(sk)->inet_num = 0;
+		WRITE_ONCE(inet_sk(sk)->inet_num, 0);
 
 		if (tw)
 			inet_twsk_bind_unhash(tw, hinfo);

@@ -1089,6 +1089,8 @@ static int ath12k_dp_prepare_reo_update_elem(struct ath12k_dp *dp,
 {
 	struct dp_reo_update_rx_queue_elem *elem;
 
+	lockdep_assert_held(&dp->ab->base_lock);
+
 	elem = kzalloc(sizeof(*elem), GFP_ATOMIC);
 	if (!elem)
 		return -ENOMEM;
@@ -3789,6 +3791,8 @@ static int ath12k_dp_h_msdu_buffer_type(struct ath12k_base *ab,
 	struct ath12k_skb_rxcb *rxcb;
 	struct sk_buff *msdu;
 	u64 desc_va;
+
+	ab->device_stats.reo_excep_msdu_buf_type++;
 
 	desc_va = (u64)le32_to_cpu(desc->buf_va_hi) << 32 |
 		  le32_to_cpu(desc->buf_va_lo);

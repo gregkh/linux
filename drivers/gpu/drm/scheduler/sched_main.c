@@ -361,6 +361,7 @@ static void drm_sched_run_free_queue(struct drm_gpu_scheduler *sched)
 /**
  * drm_sched_job_done - complete a job
  * @s_job: pointer to the job which is done
+ * @result: 0 on success, -ERRNO on error
  *
  * Finish the job's fence and resubmit the work items.
  */
@@ -1237,8 +1238,13 @@ static void drm_sched_run_job_work(struct work_struct *w)
 
 	/* Find entity with a ready job */
 	entity = drm_sched_select_entity(sched);
-	if (!entity)
-		return;	/* No more work */
+	if (!entity) {
+		/*
+		 * Either no more work to do, or the next ready job needs more
+		 * credits than the scheduler has currently available.
+		 */
+		return;
+	}
 
 	sched_job = drm_sched_entity_pop_job(entity);
 	if (!sched_job) {
@@ -1315,7 +1321,7 @@ int drm_sched_init(struct drm_gpu_scheduler *sched, const struct drm_sched_init_
 	sched->name = args->name;
 	sched->timeout = args->timeout;
 	sched->hang_limit = args->hang_limit;
-	sched->timeout_wq = args->timeout_wq ? args->timeout_wq : system_wq;
+	sched->timeout_wq = args->timeout_wq ? args->timeout_wq : system_percpu_wq;
 	sched->score = args->score ? args->score : &sched->_score;
 	sched->dev = args->dev;
 
@@ -1420,7 +1426,7 @@ void drm_sched_fini(struct drm_gpu_scheduler *sched)
 		struct drm_sched_rq *rq = sched->sched_rq[i];
 
 		spin_lock(&rq->lock);
-		list_for_each_entry(s_entity, &rq->entities, list)
+		list_for_each_entry(s_entity, &rq->entities, list) {
 			/*
 			 * Prevents reinsertion and marks job_queue as idle,
 			 * it will be removed from the rq in drm_sched_entity_fini()
@@ -1441,8 +1447,15 @@ void drm_sched_fini(struct drm_gpu_scheduler *sched)
 			 * For now, this remains a potential race in all
 			 * drivers that keep entities alive for longer than
 			 * the scheduler.
+			 *
+			 * The READ_ONCE() is there to make the lockless read
+			 * (warning about the lockless write below) slightly
+			 * less broken...
 			 */
+			if (!READ_ONCE(s_entity->stopped))
+				dev_warn(sched->dev, "Tearing down scheduler with active entities!\n");
 			s_entity->stopped = true;
+		}
 		spin_unlock(&rq->lock);
 		kfree(sched->sched_rq[i]);
 	}

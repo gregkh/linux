@@ -562,7 +562,7 @@ static void z_erofs_bind_cache(struct z_erofs_frontend *fe)
 			 * Allocate a managed folio for cached I/O, or it may be
 			 * then filled with a file-backed folio for in-place I/O
 			 */
-			newfolio = filemap_alloc_folio(gfp, 0);
+			newfolio = filemap_alloc_folio(gfp, 0, NULL);
 			if (!newfolio)
 				continue;
 			newfolio->private = Z_EROFS_PREALLOCATED_FOLIO;
@@ -1269,12 +1269,13 @@ static int z_erofs_decompress_pcluster(struct z_erofs_backend *be, bool eio)
 	struct erofs_sb_info *const sbi = EROFS_SB(be->sb);
 	struct z_erofs_pcluster *pcl = be->pcl;
 	unsigned int pclusterpages = z_erofs_pclusterpages(pcl);
-	const struct z_erofs_decompressor *decomp =
+	const struct z_erofs_decompressor *alg =
 				z_erofs_decomp[pcl->algorithmformat];
 	bool try_free = true;
 	int i, j, jtop, err2, err = eio ? -EIO : 0;
 	struct page *page;
 	bool overlapped;
+	const char *reason;
 
 	mutex_lock(&pcl->lock);
 	be->nr_pages = PAGE_ALIGN(pcl->length + pcl->pageofs_out) >> PAGE_SHIFT;
@@ -1306,8 +1307,8 @@ static int z_erofs_decompress_pcluster(struct z_erofs_backend *be, bool eio)
 	err2 = z_erofs_parse_in_bvecs(be, &overlapped);
 	if (err2)
 		err = err2;
-	if (!err)
-		err = decomp->decompress(&(struct z_erofs_decompress_req) {
+	if (!err) {
+		reason = alg->decompress(&(struct z_erofs_decompress_req) {
 					.sb = be->sb,
 					.in = be->compressed_pages,
 					.out = be->decompressed_pages,
@@ -1324,6 +1325,19 @@ static int z_erofs_decompress_pcluster(struct z_erofs_backend *be, bool eio)
 					.gfp = pcl->besteffort ? GFP_KERNEL :
 						GFP_NOWAIT | __GFP_NORETRY
 				 }, be->pagepool);
+		if (IS_ERR(reason)) {
+			if (pcl->besteffort || reason != ERR_PTR(-ENOMEM))
+				erofs_err(be->sb, "failed to decompress (%s) %pe @ pa %llu size %u => %u",
+					  alg->name, reason, pcl->pos,
+					  pcl->pclustersize, pcl->length);
+			err = PTR_ERR(reason);
+		} else if (unlikely(reason)) {
+			erofs_err(be->sb, "failed to decompress (%s) %s @ pa %llu size %u => %u",
+				  alg->name, reason, pcl->pos,
+				  pcl->pclustersize, pcl->length);
+			err = -EFSCORRUPTED;
+		}
+	}
 
 	/* must handle all compressed pages before actual file pages */
 	if (pcl->from_meta) {

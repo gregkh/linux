@@ -456,10 +456,12 @@ err_name:
 	return ERR_PTR(error);
 }
 
-static struct file *alloc_file(const char *name, unsigned int flags)
+struct file *memfd_alloc_file(const char *name, unsigned int flags)
 {
 	unsigned int *file_seals;
 	struct file *file;
+	struct inode *inode;
+	int err = 0;
 
 	if (flags & MFD_HUGETLB) {
 		file = hugetlb_file_setup(name, 0, VM_NORESERVE,
@@ -471,12 +473,20 @@ static struct file *alloc_file(const char *name, unsigned int flags)
 	}
 	if (IS_ERR(file))
 		return file;
+
+	inode = file_inode(file);
+	err = security_inode_init_security_anon(inode,
+			&QSTR(MEMFD_ANON_NAME), NULL);
+	if (err) {
+		fput(file);
+		file = ERR_PTR(err);
+		return file;
+	}
+
 	file->f_mode |= FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
 	file->f_flags |= O_LARGEFILE;
 
 	if (flags & MFD_NOEXEC_SEAL) {
-		struct inode *inode = file_inode(file);
-
 		inode->i_mode &= ~0111;
 		file_seals = memfd_file_seals_ptr(file);
 		if (file_seals) {
@@ -497,9 +507,9 @@ SYSCALL_DEFINE2(memfd_create,
 		const char __user *, uname,
 		unsigned int, flags)
 {
-	struct file *file;
-	int fd, error;
-	char *name;
+	char *name __free(kfree) = NULL;
+	unsigned int fd_flags;
+	int error;
 
 	error = sanitize_flags(&flags);
 	if (error < 0)
@@ -509,25 +519,6 @@ SYSCALL_DEFINE2(memfd_create,
 	if (IS_ERR(name))
 		return PTR_ERR(name);
 
-	fd = get_unused_fd_flags((flags & MFD_CLOEXEC) ? O_CLOEXEC : 0);
-	if (fd < 0) {
-		error = fd;
-		goto err_free_name;
-	}
-
-	file = alloc_file(name, flags);
-	if (IS_ERR(file)) {
-		error = PTR_ERR(file);
-		goto err_free_fd;
-	}
-
-	fd_install(fd, file);
-	kfree(name);
-	return fd;
-
-err_free_fd:
-	put_unused_fd(fd);
-err_free_name:
-	kfree(name);
-	return error;
+	fd_flags = (flags & MFD_CLOEXEC) ? O_CLOEXEC : 0;
+	return FD_ADD(fd_flags, memfd_alloc_file(name, flags));
 }

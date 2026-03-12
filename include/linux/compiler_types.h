@@ -11,6 +11,10 @@
 #define __has_builtin(x) (0)
 #endif
 
+/* Indirect macros required for expanded argument pasting, eg. __LINE__. */
+#define ___PASTE(a, b) a##b
+#define __PASTE(a, b) ___PASTE(a, b)
+
 #ifndef __ASSEMBLY__
 
 /*
@@ -91,10 +95,6 @@ static inline void __chk_io_ptr(const volatile void __iomem *ptr) { }
 # define ACCESS_PRIVATE(p, member) ((p)->member)
 # define __builtin_warning(x, y...) (1)
 #endif /* __CHECKER__ */
-
-/* Indirect macros required for expanded argument pasting, eg. __LINE__. */
-#define ___PASTE(a,b) a##b
-#define __PASTE(a,b) ___PASTE(a,b)
 
 #ifdef __KERNEL__
 
@@ -415,6 +415,21 @@ struct ftrace_likely_data {
 #define __counted_by_be(member)	__counted_by(member)
 #endif
 
+/*
+ * This designates the minimum number of elements a passed array parameter must
+ * have. For example:
+ *
+ *     void some_function(u8 param[at_least 7]);
+ *
+ * If a caller passes an array with fewer than 7 elements, the compiler will
+ * emit a warning.
+ */
+#ifndef __CHECKER__
+#define at_least static
+#else
+#define at_least
+#endif
+
 /* Do not trap wrapping arithmetic within an annotated function. */
 #ifdef CONFIG_UBSAN_INTEGER_WRAP
 # define __signed_wrap __attribute__((no_sanitize("signed-integer-overflow")))
@@ -542,11 +557,12 @@ struct ftrace_likely_data {
 
 /*
  * Clang has trouble with constraints with multiple
- * alternative behaviors (mainly "g" and "rm").
+ * alternative behaviors ("g" , "rm" and "=rm").
  */
 #ifndef ASM_INPUT_G
   #define ASM_INPUT_G "g"
   #define ASM_INPUT_RM "rm"
+  #define ASM_OUTPUT_RM "=rm"
 #endif
 
 #ifdef CONFIG_CC_HAS_ASM_INLINE

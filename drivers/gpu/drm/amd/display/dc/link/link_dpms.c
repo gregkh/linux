@@ -841,6 +841,7 @@ void link_set_dsc_on_stream(struct pipe_ctx *pipe_ctx, bool enable)
 		dsc_cfg.dc_dsc_cfg = stream->timing.dsc_cfg;
 		ASSERT(dsc_cfg.dc_dsc_cfg.num_slices_h % opp_cnt == 0);
 		dsc_cfg.dc_dsc_cfg.num_slices_h /= opp_cnt;
+		dsc_cfg.dsc_padding = 0;
 
 		if (should_use_dto_dscclk)
 			dccg->funcs->set_dto_dscclk(dccg, dsc->inst, dsc_cfg.dc_dsc_cfg.num_slices_h);
@@ -856,6 +857,7 @@ void link_set_dsc_on_stream(struct pipe_ctx *pipe_ctx, bool enable)
 		}
 		dsc_cfg.dc_dsc_cfg.num_slices_h *= opp_cnt;
 		dsc_cfg.pic_width *= opp_cnt;
+		dsc_cfg.dsc_padding = pipe_ctx->dsc_padding_params.dsc_hactive_padding;
 
 		optc_dsc_mode = dsc_optc_cfg.is_pixel_format_444 ? OPTC_DSC_ENABLED_444 : OPTC_DSC_ENABLED_NATIVE_SUBSAMPLED;
 
@@ -970,6 +972,7 @@ bool link_set_dsc_pps_packet(struct pipe_ctx *pipe_ctx, bool enable, bool immedi
 		dsc_cfg.color_depth = stream->timing.display_color_depth;
 		dsc_cfg.is_odm = pipe_ctx->next_odm_pipe ? true : false;
 		dsc_cfg.dc_dsc_cfg = stream->timing.dsc_cfg;
+		dsc_cfg.dsc_padding = pipe_ctx->dsc_padding_params.dsc_hactive_padding;
 
 		dsc->funcs->dsc_get_packed_pps(dsc, &dsc_cfg, &dsc_packed_pps[0]);
 		memcpy(&stream->dsc_packed_pps[0], &dsc_packed_pps[0], sizeof(stream->dsc_packed_pps));
@@ -2211,6 +2214,18 @@ static enum dc_status enable_link_dp_mst(
 	return enable_link_dp(state, pipe_ctx);
 }
 
+static enum dc_status enable_link_analog(
+		struct dc_state *state,
+		struct pipe_ctx *pipe_ctx)
+{
+	struct dc_link *link = pipe_ctx->stream->link;
+
+	link->dc->hwss.enable_analog_link_output(
+		link, pipe_ctx->stream->timing.pix_clk_100hz);
+
+	return DC_OK;
+}
+
 static enum dc_status enable_link_virtual(struct pipe_ctx *pipe_ctx)
 {
 	struct dc_link *link = pipe_ctx->stream->link;
@@ -2229,7 +2244,11 @@ static enum dc_status enable_link(
 {
 	enum dc_status status = DC_ERROR_UNEXPECTED;
 	struct dc_stream_state *stream = pipe_ctx->stream;
-	struct dc_link *link = stream->link;
+	struct dc_link *link = NULL;
+
+	if (stream == NULL)
+		return DC_ERROR_UNEXPECTED;
+	link = stream->link;
 
 	/* There's some scenarios where driver is unloaded with display
 	 * still enabled. When driver is reloaded, it may cause a display
@@ -2260,6 +2279,9 @@ static enum dc_status enable_link(
 	case SIGNAL_TYPE_LVDS:
 		enable_link_lvds(pipe_ctx);
 		status = DC_OK;
+		break;
+	case SIGNAL_TYPE_RGB:
+		status = enable_link_analog(state, pipe_ctx);
 		break;
 	case SIGNAL_TYPE_VIRTUAL:
 		status = enable_link_virtual(pipe_ctx);

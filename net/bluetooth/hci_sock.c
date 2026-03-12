@@ -1185,7 +1185,7 @@ static int hci_sock_compat_ioctl(struct socket *sock, unsigned int cmd,
 }
 #endif
 
-static int hci_sock_bind(struct socket *sock, struct sockaddr *addr,
+static int hci_sock_bind(struct socket *sock, struct sockaddr_unsized *addr,
 			 int addr_len)
 {
 	struct sockaddr_hci haddr;
@@ -2166,6 +2166,7 @@ static void hci_sock_destruct(struct sock *sk)
 	mgmt_cleanup(sk);
 	skb_queue_purge(&sk->sk_receive_queue);
 	skb_queue_purge(&sk->sk_write_queue);
+	skb_queue_purge(&sk->sk_error_queue);
 }
 
 static const struct proto_ops hci_sock_ops = {

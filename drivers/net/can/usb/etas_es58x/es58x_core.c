@@ -1461,12 +1461,18 @@ static void es58x_read_bulk_callback(struct urb *urb)
 	}
 
  resubmit_urb:
+	usb_anchor_urb(urb, &es58x_dev->rx_urbs);
 	ret = usb_submit_urb(urb, GFP_ATOMIC);
+	if (!ret)
+		return;
+
+	usb_unanchor_urb(urb);
+
 	if (ret == -ENODEV) {
 		for (i = 0; i < es58x_dev->num_can_ch; i++)
 			if (es58x_dev->netdev[i])
 				netif_device_detach(es58x_dev->netdev[i]);
-	} else if (ret)
+	} else
 		dev_err_ratelimited(dev,
 				    "Failed resubmitting read bulk urb: %pe\n",
 				    ERR_PTR(ret));
@@ -1976,8 +1982,8 @@ static const struct net_device_ops es58x_netdev_ops = {
 	.ndo_open = es58x_open,
 	.ndo_stop = es58x_stop,
 	.ndo_start_xmit = es58x_start_xmit,
-	.ndo_eth_ioctl = can_eth_ioctl_hwts,
-	.ndo_change_mtu = can_change_mtu,
+	.ndo_hwtstamp_get = can_hwtstamp_get,
+	.ndo_hwtstamp_set = can_hwtstamp_set,
 };
 
 static const struct ethtool_ops es58x_ethtool_ops = {

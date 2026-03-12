@@ -270,8 +270,6 @@ snd_seq_midisynth_probe(struct device *_dev)
 	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct seq_midisynth_client *client;
 	struct seq_midisynth *msynth, *ms;
-	struct snd_seq_port_info *port __free(kfree) = NULL;
-	struct snd_rawmidi_info *info __free(kfree) = NULL;
 	struct snd_rawmidi *rmidi = dev->private_data;
 	int newclient = 0;
 	unsigned int p, ports;
@@ -282,7 +280,9 @@ snd_seq_midisynth_probe(struct device *_dev)
 
 	if (snd_BUG_ON(!card || device < 0 || device >= SNDRV_RAWMIDI_DEVICES))
 		return -EINVAL;
-	info = kmalloc(sizeof(*info), GFP_KERNEL);
+
+	struct snd_rawmidi_info *info __free(kfree) =
+		kmalloc(sizeof(*info), GFP_KERNEL);
 	if (! info)
 		return -ENOMEM;
 	info->device = device;
@@ -320,7 +320,9 @@ snd_seq_midisynth_probe(struct device *_dev)
 	}
 
 	msynth = kcalloc(ports, sizeof(struct seq_midisynth), GFP_KERNEL);
-	port = kmalloc(sizeof(*port), GFP_KERNEL);
+
+	struct snd_seq_port_info *port __free(kfree) =
+		kmalloc(sizeof(*port), GFP_KERNEL);
 	if (msynth == NULL || port == NULL)
 		goto __nomem;
 

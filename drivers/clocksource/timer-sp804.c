@@ -21,6 +21,10 @@
 #include <linux/of_irq.h>
 #include <linux/sched_clock.h>
 
+#ifdef CONFIG_ARM
+#include <linux/delay.h>
+#endif
+
 #include "timer-sp.h"
 
 /* Hisilicon 64-bit timer(a variant of ARM SP804) */
@@ -102,6 +106,27 @@ static u64 notrace sp804_read(void)
 	return ~readl_relaxed(sched_clkevt->value);
 }
 
+/* Register delay timer backed by the hardware counter */
+#ifdef CONFIG_ARM
+static struct delay_timer delay;
+static struct sp804_clkevt *delay_clkevt;
+
+static unsigned long sp804_read_delay_timer_read(void)
+{
+	return ~readl_relaxed(delay_clkevt->value);
+}
+
+static void sp804_register_delay_timer(struct sp804_clkevt *clk, int freq)
+{
+	delay_clkevt = clk;
+	delay.freq = freq;
+	delay.read_current_timer = sp804_read_delay_timer_read;
+	register_current_timer_delay(&delay);
+}
+#else
+static inline void sp804_register_delay_timer(struct sp804_clkevt *clk, int freq) {}
+#endif
+
 static int __init sp804_clocksource_and_sched_clock_init(void __iomem *base,
 							 const char *name,
 							 struct clk *clk,
@@ -128,6 +153,8 @@ static int __init sp804_clocksource_and_sched_clock_init(void __iomem *base,
 
 	clocksource_mmio_init(clkevt->value, name,
 		rate, 200, 32, clocksource_mmio_readl_down);
+
+	sp804_register_delay_timer(clkevt, rate);
 
 	if (use_sched_clock) {
 		sched_clkevt = clkevt;
@@ -318,6 +345,7 @@ static int __init sp804_of_init(struct device_node *np, struct sp804_timer *time
 		if (ret)
 			goto err;
 	}
+
 	initialized = true;
 
 	return 0;

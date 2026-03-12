@@ -1060,10 +1060,6 @@ struct zone {
 } ____cacheline_internodealigned_in_smp;
 
 enum pgdat_flags {
-	PGDAT_DIRTY,			/* reclaim scanning has recently found
-					 * many dirty file pages at the tail
-					 * of the LRU.
-					 */
 	PGDAT_WRITEBACK,		/* reclaim scanning has recently found
 					 * many pages under writeback
 					 */
@@ -1652,14 +1648,15 @@ static inline int is_highmem(const struct zone *zone)
 	return is_highmem_idx(zone_idx(zone));
 }
 
-#ifdef CONFIG_ZONE_DMA
-bool has_managed_dma(void);
-#else
+bool has_managed_zone(enum zone_type zone);
 static inline bool has_managed_dma(void)
 {
+#ifdef CONFIG_ZONE_DMA
+	return has_managed_zone(ZONE_DMA);
+#else
 	return false;
-}
 #endif
+}
 
 
 #ifndef CONFIG_NUMA
@@ -2293,7 +2290,7 @@ void sparse_init(void);
 #else
 #define sparse_init()	do {} while (0)
 #define sparse_index_init(_sec, _nid)  do {} while (0)
-#define sparse_vmemmap_init_nid_early(_nid, _use) do {} while (0)
+#define sparse_vmemmap_init_nid_early(_nid) do {} while (0)
 #define sparse_vmemmap_init_nid_late(_nid) do {} while (0)
 #define pfn_in_present_section pfn_valid
 #define subsection_map_init(_pfn, _nr_pages) do {} while (0)

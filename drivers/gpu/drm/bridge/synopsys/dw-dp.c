@@ -2049,6 +2049,10 @@ struct dw_dp *dw_dp_bind(struct device *dev, struct drm_encoder *encoder,
 	bridge->type = DRM_MODE_CONNECTOR_DisplayPort;
 	bridge->ycbcr_420_allowed = true;
 
+	ret = devm_drm_bridge_add(dev, bridge);
+	if (ret)
+		return ERR_PTR(ret);
+
 	dp->aux.dev = dev;
 	dp->aux.drm_dev = encoder->dev;
 	dp->aux.name = dev_name(dev);

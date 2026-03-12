@@ -183,26 +183,33 @@ static int btrfs_repair_eb_io_failure(const struct extent_buffer *eb,
 				      int mirror_num)
 {
 	struct btrfs_fs_info *fs_info = eb->fs_info;
+	const u32 step = min(fs_info->nodesize, PAGE_SIZE);
+	const u32 nr_steps = eb->len / step;
+	phys_addr_t paddrs[BTRFS_MAX_BLOCKSIZE / PAGE_SIZE];
 	int ret = 0;
 
 	if (sb_rdonly(fs_info->sb))
 		return -EROFS;
 
-	for (int i = 0; i < num_extent_folios(eb); i++) {
+	for (int i = 0; i < num_extent_pages(eb); i++) {
 		struct folio *folio = eb->folios[i];
-		u64 start = max_t(u64, eb->start, folio_pos(folio));
-		u64 end = min_t(u64, eb->start + eb->len,
-				folio_pos(folio) + eb->folio_size);
-		u32 len = end - start;
-		phys_addr_t paddr = PFN_PHYS(folio_pfn(folio)) +
-				    offset_in_folio(folio, start);
 
-		ret = btrfs_repair_io_failure(fs_info, 0, start, len, start,
-					      paddr, mirror_num);
-		if (ret)
-			break;
+		/* No large folio support yet. */
+		ASSERT(folio_order(folio) == 0);
+		ASSERT(i < nr_steps);
+
+		/*
+		 * For nodesize < page size, there is just one paddr, with some
+		 * offset inside the page.
+		 *
+		 * For nodesize >= page size, it's one or more paddrs, and eb->start
+		 * must be aligned to page boundary.
+		 */
+		paddrs[i] = page_to_phys(&folio->page) + offset_in_page(eb->start);
 	}
 
+	ret = btrfs_repair_io_failure(fs_info, 0, eb->start, eb->len, eb->start,
+				      paddrs, step, mirror_num);
 	return ret;
 }
 
@@ -399,10 +406,10 @@ int btrfs_validate_extent_buffer(struct extent_buffer *eb,
 
 	if (memcmp(result, header_csum, csum_size) != 0) {
 		btrfs_warn_rl(fs_info,
-"checksum verify failed on logical %llu mirror %u wanted " CSUM_FMT " found " CSUM_FMT " level %d%s",
+"checksum verify failed on logical %llu mirror %u wanted " BTRFS_CSUM_FMT " found " BTRFS_CSUM_FMT " level %d%s",
 			      eb->start, eb->read_mirror,
-			      CSUM_FMT_VALUE(csum_size, header_csum),
-			      CSUM_FMT_VALUE(csum_size, result),
+			      BTRFS_CSUM_FMT_VALUE(csum_size, header_csum),
+			      BTRFS_CSUM_FMT_VALUE(csum_size, result),
 			      btrfs_header_level(eb),
 			      ignore_csum ? ", ignored" : "");
 		if (unlikely(!ignore_csum)) {
@@ -623,20 +630,10 @@ static struct btrfs_root *btrfs_alloc_root(struct btrfs_fs_info *fs_info,
 	if (!root)
 		return NULL;
 
-	memset(&root->root_key, 0, sizeof(root->root_key));
-	memset(&root->root_item, 0, sizeof(root->root_item));
-	memset(&root->defrag_progress, 0, sizeof(root->defrag_progress));
 	root->fs_info = fs_info;
 	root->root_key.objectid = objectid;
-	root->node = NULL;
-	root->commit_root = NULL;
-	root->state = 0;
 	RB_CLEAR_NODE(&root->rb_node);
 
-	btrfs_set_root_last_trans(root, 0);
-	root->free_objectid = 0;
-	root->nr_delalloc_inodes = 0;
-	root->nr_ordered_extents = 0;
 	xa_init(&root->inodes);
 	xa_init(&root->delayed_nodes);
 
@@ -670,10 +667,7 @@ static struct btrfs_root *btrfs_alloc_root(struct btrfs_fs_info *fs_info,
 	refcount_set(&root->refs, 1);
 	atomic_set(&root->snapshot_force_cow, 0);
 	atomic_set(&root->nr_swapfiles, 0);
-	btrfs_set_root_log_transid(root, 0);
 	root->log_transid_committed = -1;
-	btrfs_set_root_last_log_commit(root, 0);
-	root->anon_dev = 0;
 	if (!btrfs_is_testing(fs_info)) {
 		btrfs_extent_io_tree_init(fs_info, &root->dirty_log_pages,
 					  IO_TREE_ROOT_DIRTY_LOG_PAGES);
@@ -1752,8 +1746,6 @@ static void btrfs_stop_all_workers(struct btrfs_fs_info *fs_info)
 		destroy_workqueue(fs_info->endio_workers);
 	if (fs_info->rmw_workers)
 		destroy_workqueue(fs_info->rmw_workers);
-	if (fs_info->compressed_write_workers)
-		destroy_workqueue(fs_info->compressed_write_workers);
 	btrfs_destroy_workqueue(fs_info->endio_write_workers);
 	btrfs_destroy_workqueue(fs_info->endio_freespace_worker);
 	btrfs_destroy_workqueue(fs_info->delayed_workers);
@@ -1965,8 +1957,6 @@ static int btrfs_init_workqueues(struct btrfs_fs_info *fs_info)
 	fs_info->endio_write_workers =
 		btrfs_alloc_workqueue(fs_info, "endio-write", flags,
 				      max_active, 2);
-	fs_info->compressed_write_workers =
-		alloc_workqueue("btrfs-compressed-write", flags, max_active);
 	fs_info->endio_freespace_worker =
 		btrfs_alloc_workqueue(fs_info, "freespace-write", flags,
 				      max_active, 0);
@@ -1982,7 +1972,6 @@ static int btrfs_init_workqueues(struct btrfs_fs_info *fs_info)
 	if (!(fs_info->workers &&
 	      fs_info->delalloc_workers && fs_info->flush_workers &&
 	      fs_info->endio_workers && fs_info->endio_meta_workers &&
-	      fs_info->compressed_write_workers &&
 	      fs_info->endio_write_workers &&
 	      fs_info->endio_freespace_worker && fs_info->rmw_workers &&
 	      fs_info->caching_workers && fs_info->fixup_workers &&
@@ -2244,6 +2233,7 @@ static int btrfs_read_roots(struct btrfs_fs_info *fs_info)
 				 BTRFS_DATA_RELOC_TREE_OBJECTID, true);
 	if (IS_ERR(root)) {
 		if (!btrfs_test_opt(fs_info, IGNOREBADROOTS)) {
+			location.objectid = BTRFS_DATA_RELOC_TREE_OBJECTID;
 			ret = PTR_ERR(root);
 			goto out;
 		}
@@ -3160,7 +3150,7 @@ int btrfs_check_features(struct btrfs_fs_info *fs_info, bool is_rw_mount)
 	if (incompat & ~BTRFS_FEATURE_INCOMPAT_SUPP) {
 		btrfs_err(fs_info,
 		"cannot mount because of unknown incompat features (0x%llx)",
-		    incompat);
+		    incompat & ~BTRFS_FEATURE_INCOMPAT_SUPP);
 		return -EINVAL;
 	}
 
@@ -3192,7 +3182,7 @@ int btrfs_check_features(struct btrfs_fs_info *fs_info, bool is_rw_mount)
 	if (compat_ro_unsupp && is_rw_mount) {
 		btrfs_err(fs_info,
 	"cannot mount read-write because of unknown compat_ro features (0x%llx)",
-		       compat_ro);
+		       compat_ro_unsupp);
 		return -EINVAL;
 	}
 
@@ -3205,7 +3195,7 @@ int btrfs_check_features(struct btrfs_fs_info *fs_info, bool is_rw_mount)
 	    !btrfs_test_opt(fs_info, NOLOGREPLAY)) {
 		btrfs_err(fs_info,
 "cannot replay dirty log with unsupported compat_ro features (0x%llx), try rescue=nologreplay",
-			  compat_ro);
+			  compat_ro_unsupp);
 		return -EINVAL;
 	}
 
@@ -3232,12 +3222,6 @@ int btrfs_check_features(struct btrfs_fs_info *fs_info, bool is_rw_mount)
 		btrfs_warn(fs_info,
 	"v1 space cache is not supported for page size %lu with sectorsize %u",
 			   PAGE_SIZE, fs_info->sectorsize);
-		return -EINVAL;
-	}
-	if (fs_info->sectorsize > PAGE_SIZE && btrfs_fs_incompat(fs_info, RAID56)) {
-		btrfs_err(fs_info,
-		"RAID56 is not supported for page size %lu with sectorsize %u",
-			  PAGE_SIZE, fs_info->sectorsize);
 		return -EINVAL;
 	}
 
@@ -3496,6 +3480,10 @@ int __cold open_ctree(struct super_block *sb, struct btrfs_fs_devices *fs_device
 	    fs_info->generation == btrfs_super_uuid_tree_generation(disk_super))
 		set_bit(BTRFS_FS_UPDATE_UUID_TREE_GEN, &fs_info->flags);
 
+	if (unlikely(btrfs_verify_dev_items(fs_info))) {
+		ret = -EUCLEAN;
+		goto fail_block_groups;
+	}
 	ret = btrfs_verify_dev_extents(fs_info);
 	if (ret) {
 		btrfs_err(fs_info,
@@ -4282,7 +4270,7 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 
 	/*
 	 * When finishing a compressed write bio we schedule a work queue item
-	 * to finish an ordered extent - btrfs_finish_compressed_write_work()
+	 * to finish an ordered extent - end_bbio_compressed_write()
 	 * calls btrfs_finish_ordered_extent() which in turns does a call to
 	 * btrfs_queue_ordered_fn(), and that queues the ordered extent
 	 * completion either in the endio_write_workers work queue or in the
@@ -4290,7 +4278,7 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 	 * below, so before we flush them we must flush this queue for the
 	 * workers of compressed writes.
 	 */
-	flush_workqueue(fs_info->compressed_write_workers);
+	flush_workqueue(fs_info->endio_workers);
 
 	/*
 	 * After we parked the cleaner kthread, ordered extents may have

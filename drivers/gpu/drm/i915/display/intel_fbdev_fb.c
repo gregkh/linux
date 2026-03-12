@@ -5,25 +5,22 @@
 
 #include <linux/fb.h>
 
+#include <drm/drm_print.h>
+
 #include "gem/i915_gem_lmem.h"
 
 #include "i915_drv.h"
-#include "intel_display_core.h"
-#include "intel_display_types.h"
-#include "intel_fb.h"
 #include "intel_fbdev_fb.h"
 
-struct intel_framebuffer *intel_fbdev_fb_alloc(struct drm_device *drm,
-					       struct drm_mode_fb_cmd2 *mode_cmd)
+u32 intel_fbdev_fb_pitch_align(u32 stride)
 {
-	struct intel_display *display = to_intel_display(drm);
-	struct drm_i915_private *dev_priv = to_i915(drm);
-	struct drm_framebuffer *fb;
-	struct drm_i915_gem_object *obj;
-	int size;
+	return ALIGN(stride, 64);
+}
 
-	size = mode_cmd->pitches[0] * mode_cmd->height;
-	size = PAGE_ALIGN(size);
+struct drm_gem_object *intel_fbdev_fb_bo_create(struct drm_device *drm, int size)
+{
+	struct drm_i915_private *dev_priv = to_i915(drm);
+	struct drm_i915_gem_object *obj;
 
 	obj = ERR_PTR(-ENODEV);
 	if (HAS_LMEM(dev_priv)) {
@@ -38,7 +35,7 @@ struct intel_framebuffer *intel_fbdev_fb_alloc(struct drm_device *drm,
 		 *
 		 * Also skip stolen on MTL as Wa_22018444074 mitigation.
 		 */
-		if (!display->platform.meteorlake && size * 2 < dev_priv->dsm.usable_size)
+		if (!IS_METEORLAKE(dev_priv) && size * 2 < dev_priv->dsm.usable_size)
 			obj = i915_gem_object_create_stolen(dev_priv, size);
 		if (IS_ERR(obj))
 			obj = i915_gem_object_create_shmem(dev_priv, size);
@@ -49,27 +46,18 @@ struct intel_framebuffer *intel_fbdev_fb_alloc(struct drm_device *drm,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	fb = intel_framebuffer_create(intel_bo_to_drm_bo(obj),
-				      drm_get_format_info(drm,
-							  mode_cmd->pixel_format,
-							  mode_cmd->modifier[0]),
-				      mode_cmd);
-	if (IS_ERR(fb)) {
-		i915_gem_object_put(obj);
-		goto err;
-	}
-
-	i915_gem_object_put(obj);
-
-	return to_intel_framebuffer(fb);
-err:
-	return ERR_CAST(fb);
+	return &obj->base;
 }
 
-int intel_fbdev_fb_fill_info(struct intel_display *display, struct fb_info *info,
+void intel_fbdev_fb_bo_destroy(struct drm_gem_object *obj)
+{
+	drm_gem_object_put(obj);
+}
+
+int intel_fbdev_fb_fill_info(struct drm_device *drm, struct fb_info *info,
 			     struct drm_gem_object *_obj, struct i915_vma *vma)
 {
-	struct drm_i915_private *i915 = to_i915(display->drm);
+	struct drm_i915_private *i915 = to_i915(drm);
 	struct drm_i915_gem_object *obj = to_intel_bo(_obj);
 	struct i915_gem_ww_ctx ww;
 	void __iomem *vaddr;
@@ -101,7 +89,7 @@ int intel_fbdev_fb_fill_info(struct intel_display *display, struct fb_info *info
 
 		vaddr = i915_vma_pin_iomap(vma);
 		if (IS_ERR(vaddr)) {
-			drm_err(display->drm,
+			drm_err(drm,
 				"Failed to remap framebuffer into virtual memory (%pe)\n", vaddr);
 			ret = PTR_ERR(vaddr);
 			continue;
