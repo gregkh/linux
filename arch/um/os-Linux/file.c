@@ -106,21 +106,6 @@ int os_get_ifname(int fd, char* namebuf)
 	return 0;
 }
 
-int os_set_slip(int fd)
-{
-	int disc, sencap;
-
-	disc = N_SLIP;
-	if (ioctl(fd, TIOCSETD, &disc) < 0)
-		return -errno;
-
-	sencap = 0;
-	if (ioctl(fd, SIOCSIFENCAP, &sencap) < 0)
-		return -errno;
-
-	return 0;
-}
-
 int os_mode_fd(int fd, int mode)
 {
 	int err;
@@ -254,12 +239,6 @@ int os_dup_file(int fd)
 void os_close_file(int fd)
 {
 	close(fd);
-}
-int os_fsync_file(int fd)
-{
-	if (fsync(fd) < 0)
-	    return -errno;
-	return 0;
 }
 
 int os_seek_file(int fd, unsigned long long offset)

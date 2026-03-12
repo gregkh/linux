@@ -6,16 +6,27 @@
  */
 
 #include <linux/acpi.h>
+#include <linux/array_size.h>
 #include <linux/bits.h>
 #include <linux/delay.h>
+#include <linux/device.h>
 #include <linux/err.h>
+#include <linux/errno.h>
+#include <linux/gfp_types.h>
 #include <linux/interrupt.h>
-#include <linux/kernel.h>
+#include <linux/ioport.h>
+#include <linux/kstrtox.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/intel_soc_pmic.h>
 #include <linux/mfd/intel_soc_pmic_bxtwc.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_data/x86/intel_scu_ipc.h>
+#include <linux/platform_device.h>
+#include <linux/pm.h>
+#include <linux/regmap.h>
+#include <linux/sysfs.h>
+#include <linux/types.h>
 
 /* PMIC device registers */
 #define REG_ADDR_MASK		GENMASK(15, 8)
@@ -364,6 +375,7 @@ static ssize_t addr_store(struct device *dev,
 
 	return count;
 }
+static DEVICE_ATTR_ADMIN_RW(addr);
 
 static ssize_t val_show(struct device *dev,
 			struct device_attribute *attr, char *buf)
@@ -400,23 +412,14 @@ static ssize_t val_store(struct device *dev,
 	}
 	return count;
 }
-
-static DEVICE_ATTR_ADMIN_RW(addr);
 static DEVICE_ATTR_ADMIN_RW(val);
+
 static struct attribute *bxtwc_attrs[] = {
 	&dev_attr_addr.attr,
 	&dev_attr_val.attr,
 	NULL
 };
-
-static const struct attribute_group bxtwc_group = {
-	.attrs = bxtwc_attrs,
-};
-
-static const struct attribute_group *bxtwc_groups[] = {
-	&bxtwc_group,
-	NULL
-};
+ATTRIBUTE_GROUPS(bxtwc);
 
 static const struct regmap_config bxtwc_regmap_config = {
 	.reg_bits = 16,
@@ -431,15 +434,19 @@ static int bxtwc_add_chained_irq_chip(struct intel_soc_pmic *pmic,
 				const struct regmap_irq_chip *chip,
 				struct regmap_irq_chip_data **data)
 {
-	int irq;
+	struct device *dev = pmic->dev;
+	int irq, ret;
 
 	irq = regmap_irq_get_virq(pdata, pirq);
 	if (irq < 0)
-		return dev_err_probe(pmic->dev, irq, "Failed to get parent vIRQ(%d) for chip %s\n",
+		return dev_err_probe(dev, irq, "Failed to get parent vIRQ(%d) for chip %s\n",
 				     pirq, chip->name);
 
-	return devm_regmap_add_irq_chip(pmic->dev, pmic->regmap, irq, irq_flags,
-					0, chip, data);
+	ret = devm_regmap_add_irq_chip(dev, pmic->regmap, irq, irq_flags, 0, chip, data);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to add %s IRQ chip\n", chip->name);
+
+	return 0;
 }
 
 static int bxtwc_add_chained_devices(struct intel_soc_pmic *pmic,
@@ -455,7 +462,7 @@ static int bxtwc_add_chained_devices(struct intel_soc_pmic *pmic,
 
 	ret = bxtwc_add_chained_irq_chip(pmic, pdata, pirq, irq_flags, chip, data);
 	if (ret)
-		return dev_err_probe(dev, ret, "Failed to add %s IRQ chip\n", chip->name);
+		return ret;
 
 	domain = regmap_irq_get_domain(*data);
 
@@ -518,7 +525,7 @@ static int bxtwc_probe(struct platform_device *pdev)
 					 &bxtwc_regmap_irq_chip_pwrbtn,
 					 &pmic->irq_chip_data_pwrbtn);
 	if (ret)
-		return dev_err_probe(dev, ret, "Failed to add PWRBTN IRQ chip\n");
+		return ret;
 
 	ret = bxtwc_add_chained_devices(pmic, bxt_wc_bcu_dev, ARRAY_SIZE(bxt_wc_bcu_dev),
 					pmic->irq_chip_data,
@@ -554,7 +561,7 @@ static int bxtwc_probe(struct platform_device *pdev)
 					 &bxtwc_regmap_irq_chip_crit,
 					 &pmic->irq_chip_data_crit);
 	if (ret)
-		return dev_err_probe(dev, ret, "Failed to add CRIT IRQ chip\n");
+		return ret;
 
 	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE, bxt_wc_dev, ARRAY_SIZE(bxt_wc_dev),
 				   NULL, 0, NULL);
@@ -609,7 +616,7 @@ static struct platform_driver bxtwc_driver = {
 	.probe = bxtwc_probe,
 	.shutdown = bxtwc_shutdown,
 	.driver	= {
-		.name	= "BXTWC PMIC",
+		.name	= "intel_soc_pmic_bxtwc",
 		.pm     = pm_sleep_ptr(&bxtwc_pm_ops),
 		.acpi_match_table = bxtwc_acpi_ids,
 		.dev_groups = bxtwc_groups,

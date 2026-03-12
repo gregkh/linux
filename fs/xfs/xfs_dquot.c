@@ -303,6 +303,25 @@ xfs_qm_init_dquot_blk(
 		xfs_trans_log_buf(tp, bp, 0, BBTOB(q->qi_dqchunklen) - 1);
 }
 
+static void
+xfs_dquot_set_prealloc(
+	struct xfs_dquot_pre		*pre,
+	const struct xfs_dquot_res	*res)
+{
+	xfs_qcnt_t			space;
+
+	pre->q_prealloc_hi_wmark = res->hardlimit;
+	pre->q_prealloc_lo_wmark = res->softlimit;
+
+	space = div_u64(pre->q_prealloc_hi_wmark, 100);
+	if (!pre->q_prealloc_lo_wmark)
+		pre->q_prealloc_lo_wmark = space * 95;
+
+	pre->q_low_space[XFS_QLOWSP_1_PCNT] = space;
+	pre->q_low_space[XFS_QLOWSP_3_PCNT] = space * 3;
+	pre->q_low_space[XFS_QLOWSP_5_PCNT] = space * 5;
+}
+
 /*
  * Initialize the dynamic speculative preallocation thresholds. The lo/hi
  * watermarks correspond to the soft and hard limits by default. If a soft limit
@@ -311,22 +330,8 @@ xfs_qm_init_dquot_blk(
 void
 xfs_dquot_set_prealloc_limits(struct xfs_dquot *dqp)
 {
-	uint64_t space;
-
-	dqp->q_prealloc_hi_wmark = dqp->q_blk.hardlimit;
-	dqp->q_prealloc_lo_wmark = dqp->q_blk.softlimit;
-	if (!dqp->q_prealloc_lo_wmark) {
-		dqp->q_prealloc_lo_wmark = dqp->q_prealloc_hi_wmark;
-		do_div(dqp->q_prealloc_lo_wmark, 100);
-		dqp->q_prealloc_lo_wmark *= 95;
-	}
-
-	space = dqp->q_prealloc_hi_wmark;
-
-	do_div(space, 100);
-	dqp->q_low_space[XFS_QLOWSP_1_PCNT] = space;
-	dqp->q_low_space[XFS_QLOWSP_3_PCNT] = space * 3;
-	dqp->q_low_space[XFS_QLOWSP_5_PCNT] = space * 5;
+	xfs_dquot_set_prealloc(&dqp->q_blk_prealloc, &dqp->q_blk);
+	xfs_dquot_set_prealloc(&dqp->q_rtb_prealloc, &dqp->q_rtb);
 }
 
 /*
@@ -1009,6 +1014,7 @@ xfs_qm_dqget_inode(
 
 	xfs_assert_ilocked(ip, XFS_ILOCK_EXCL);
 	ASSERT(xfs_inode_dquot(ip, type) == NULL);
+	ASSERT(!xfs_is_metadir_inode(ip));
 
 	id = xfs_qm_id_for_quotatype(ip, type);
 
@@ -1178,11 +1184,10 @@ xfs_qm_dqflush_done(
 	 * holding the lock before removing the dquot from the AIL.
 	 */
 	if (test_bit(XFS_LI_IN_AIL, &lip->li_flags) &&
-	    ((lip->li_lsn == qlip->qli_flush_lsn) ||
+	    (lip->li_lsn == qlip->qli_flush_lsn ||
 	     test_bit(XFS_LI_FAILED, &lip->li_flags))) {
-
 		spin_lock(&ailp->ail_lock);
-		xfs_clear_li_failed(lip);
+		clear_bit(XFS_LI_FAILED, &lip->li_flags);
 		if (lip->li_lsn == qlip->qli_flush_lsn) {
 			/* xfs_ail_update_finish() drops the AIL lock */
 			tail_lsn = xfs_ail_delete_one(ailp, lip);
@@ -1193,13 +1198,9 @@ xfs_qm_dqflush_done(
 	}
 
 	/*
-	 * Release the dq's flush lock since we're done with it.
-	 */
-	xfs_dqfunlock(dqp);
-
-	/*
 	 * If this dquot hasn't been dirtied since initiating the last dqflush,
-	 * release the buffer reference.
+	 * release the buffer reference.  We already unlinked this dquot item
+	 * from the buffer.
 	 */
 	spin_lock(&qlip->qli_lock);
 	if (!qlip->qli_dirty) {
@@ -1209,6 +1210,11 @@ xfs_qm_dqflush_done(
 	spin_unlock(&qlip->qli_lock);
 	if (bp)
 		xfs_buf_rele(bp);
+
+	/*
+	 * Release the dq's flush lock since we're done with it.
+	 */
+	xfs_dqfunlock(dqp);
 }
 
 void
@@ -1221,18 +1227,6 @@ xfs_buf_dquot_iodone(
 		list_del_init(&lip->li_bio_list);
 		xfs_qm_dqflush_done(lip);
 	}
-}
-
-void
-xfs_buf_dquot_io_fail(
-	struct xfs_buf		*bp)
-{
-	struct xfs_log_item	*lip;
-
-	spin_lock(&bp->b_mount->m_ail->ail_lock);
-	list_for_each_entry(lip, &bp->b_li_list, li_bio_list)
-		set_bit(XFS_LI_FAILED, &lip->li_flags);
-	spin_unlock(&bp->b_mount->m_ail->ail_lock);
 }
 
 /* Check incore dquot for errors before we flush. */
@@ -1404,11 +1398,9 @@ xfs_qm_dqflush(
 
 	ASSERT(XFS_DQ_IS_LOCKED(dqp));
 	ASSERT(!completion_done(&dqp->q_flush));
+	ASSERT(atomic_read(&dqp->q_pincount) == 0);
 
 	trace_xfs_dqflush(dqp);
-
-	xfs_qm_dqunpin_wait(dqp);
-
 	fa = xfs_qm_dqflush_check(dqp);
 	if (fa) {
 		xfs_alert(mp, "corrupt dquot ID 0x%x in memory at %pS",
@@ -1456,7 +1448,7 @@ xfs_qm_dqflush(
 	 * Attach the dquot to the buffer so that we can remove this dquot from
 	 * the AIL and release the flush lock once the dquot is synced to disk.
 	 */
-	bp->b_flags |= _XBF_DQUOTS;
+	bp->b_iodone = xfs_buf_dquot_iodone;
 	list_add_tail(&lip->li_bio_list, &bp->b_li_list);
 
 	/*

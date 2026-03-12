@@ -159,7 +159,11 @@ static int gfs2_writepages(struct address_space *mapping,
 			   struct writeback_control *wbc)
 {
 	struct gfs2_sbd *sdp = gfs2_mapping2sbd(mapping);
-	struct iomap_writepage_ctx wpc = { };
+	struct iomap_writepage_ctx wpc = {
+		.inode		= mapping->host,
+		.wbc		= wbc,
+		.ops		= &gfs2_writeback_ops,
+	};
 	int ret;
 
 	/*
@@ -168,7 +172,7 @@ static int gfs2_writepages(struct address_space *mapping,
 	 * want balance_dirty_pages() to loop indefinitely trying to write out
 	 * pages held in the ail that it can't find.
 	 */
-	ret = iomap_writepages(mapping, wbc, &wpc, &gfs2_writeback_ops);
+	ret = iomap_writepages(&wpc);
 	if (ret == 0 && wbc->nr_to_write > 0)
 		set_bit(SDF_FORCE_AIL_FLUSH, &sdp->sd_flags);
 	return ret;
@@ -238,24 +242,16 @@ continue_unlock:
 
 		ret = __gfs2_jdata_write_folio(folio, wbc);
 		if (unlikely(ret)) {
-			if (ret == AOP_WRITEPAGE_ACTIVATE) {
-				folio_unlock(folio);
-				ret = 0;
-			} else {
-
-				/*
-				 * done_index is set past this page,
-				 * so media errors will not choke
-				 * background writeout for the entire
-				 * file. This has consequences for
-				 * range_cyclic semantics (ie. it may
-				 * not be suitable for data integrity
-				 * writeout).
-				 */
-				*done_index = folio_next_index(folio);
-				ret = 1;
-				break;
-			}
+			/*
+			 * done_index is set past this page, so media errors
+			 * will not choke background writeout for the entire
+			 * file. This has consequences for range_cyclic
+			 * semantics (ie. it may not be suitable for data
+			 * integrity writeout).
+			 */
+			*done_index = folio_next_index(folio);
+			ret = 1;
+			break;
 		}
 
 		/*
@@ -550,7 +546,7 @@ out:
 	gfs2_trans_end(sdp);
 }
 
-static bool jdata_dirty_folio(struct address_space *mapping,
+static bool gfs2_jdata_dirty_folio(struct address_space *mapping,
 		struct folio *folio)
 {
 	if (current->journal_info)
@@ -732,7 +728,7 @@ static const struct address_space_operations gfs2_jdata_aops = {
 	.writepages = gfs2_jdata_writepages,
 	.read_folio = gfs2_read_folio,
 	.readahead = gfs2_readahead,
-	.dirty_folio = jdata_dirty_folio,
+	.dirty_folio = gfs2_jdata_dirty_folio,
 	.bmap = gfs2_bmap,
 	.migrate_folio = buffer_migrate_folio,
 	.invalidate_folio = gfs2_invalidate_folio,

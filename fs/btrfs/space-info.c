@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 
-#include "linux/spinlock.h"
+#include <linux/spinlock.h>
 #include <linux/minmax.h>
 #include "misc.h"
 #include "ctree.h"
@@ -14,6 +14,8 @@
 #include "fs.h"
 #include "accessors.h"
 #include "extent-tree.h"
+#include "zoned.h"
+#include "delayed-inode.h"
 
 /*
  * HOW DOES SPACE RESERVATION WORK
@@ -49,11 +51,11 @@
  *   num_bytes we want to reserve.
  *
  *   ->reserve
- *     space_info->bytes_may_reserve += num_bytes
+ *     space_info->bytes_may_use += num_bytes
  *
  *   ->extent allocation
  *     Call btrfs_add_reserved_bytes() which does
- *     space_info->bytes_may_reserve -= num_bytes
+ *     space_info->bytes_may_use -= num_bytes
  *     space_info->bytes_reserved += extent_bytes
  *
  *   ->insert reference
@@ -126,6 +128,14 @@
  *     to reclaim space, but we want to hold this until the end because COW can
  *     churn a lot and we can avoid making some extent tree modifications if we
  *     are able to delay for as long as possible.
+ *
+ *   RESET_ZONES
+ *     This state works only for the zoned mode. On the zoned mode, we cannot
+ *     reuse once allocated then freed region until we reset the zone, due to
+ *     the sequential write zone requirement. The RESET_ZONES state resets the
+ *     zones of an unused block group and let us reuse the space. The reusing
+ *     is faster than removing the block group and allocating another block
+ *     group on the zones.
  *
  *   ALLOC_CHUNK
  *     We will skip this the first time through space reservation, because of
@@ -290,6 +300,11 @@ static int create_space_info(struct btrfs_fs_info *info, u64 flags)
 			ret = create_space_info_sub_group(space_info, flags,
 							  BTRFS_SUB_GROUP_DATA_RELOC,
 							  0);
+		else if (flags & BTRFS_BLOCK_GROUP_METADATA)
+			ret = create_space_info_sub_group(space_info, flags,
+							  BTRFS_SUB_GROUP_TREELOG,
+							  0);
+
 		if (ret)
 			goto out_free;
 	}
@@ -349,31 +364,29 @@ out:
 void btrfs_add_bg_to_space_info(struct btrfs_fs_info *info,
 				struct btrfs_block_group *block_group)
 {
-	struct btrfs_space_info *found;
+	struct btrfs_space_info *space_info = block_group->space_info;
 	int factor, index;
 
 	factor = btrfs_bg_type_to_factor(block_group->flags);
 
-	found = btrfs_find_space_info(info, block_group->flags);
-	ASSERT(found);
-	spin_lock(&found->lock);
-	found->total_bytes += block_group->length;
-	found->disk_total += block_group->length * factor;
-	found->bytes_used += block_group->used;
-	found->disk_used += block_group->used * factor;
-	found->bytes_readonly += block_group->bytes_super;
-	btrfs_space_info_update_bytes_zone_unusable(info, found, block_group->zone_unusable);
+	spin_lock(&space_info->lock);
+	space_info->total_bytes += block_group->length;
+	space_info->disk_total += block_group->length * factor;
+	space_info->bytes_used += block_group->used;
+	space_info->disk_used += block_group->used * factor;
+	space_info->bytes_readonly += block_group->bytes_super;
+	btrfs_space_info_update_bytes_zone_unusable(space_info, block_group->zone_unusable);
 	if (block_group->length > 0)
-		found->full = false;
-	btrfs_try_granting_tickets(info, found);
-	spin_unlock(&found->lock);
+		space_info->full = false;
+	btrfs_try_granting_tickets(space_info);
+	spin_unlock(&space_info->lock);
 
-	block_group->space_info = found;
+	block_group->space_info = space_info;
 
 	index = btrfs_bg_flags_to_raid_index(block_group->flags);
-	down_write(&found->groups_sem);
-	list_add_tail(&block_group->list, &found->block_groups[index]);
-	up_write(&found->groups_sem);
+	down_write(&space_info->groups_sem);
+	list_add_tail(&block_group->list, &space_info->block_groups[index]);
+	up_write(&space_info->groups_sem);
 }
 
 struct btrfs_space_info *btrfs_find_space_info(struct btrfs_fs_info *info,
@@ -471,7 +484,7 @@ static u64 calc_available_free_space(struct btrfs_fs_info *fs_info,
 
 	/*
 	 * On the zoned mode, we always allocate one zone as one chunk.
-	 * Returning non-zone size alingned bytes here will result in
+	 * Returning non-zone size aligned bytes here will result in
 	 * less pressure for the async metadata reclaim process, and it
 	 * will over-commit too much leading to ENOSPC. Align down to the
 	 * zone size to avoid that.
@@ -515,9 +528,9 @@ static void remove_ticket(struct btrfs_space_info *space_info,
  * This is for space we already have accounted in space_info->bytes_may_use, so
  * basically when we're returning space from block_rsv's.
  */
-void btrfs_try_granting_tickets(struct btrfs_fs_info *fs_info,
-				struct btrfs_space_info *space_info)
+void btrfs_try_granting_tickets(struct btrfs_space_info *space_info)
 {
+	struct btrfs_fs_info *fs_info = space_info->fs_info;
 	struct list_head *head;
 	enum btrfs_reserve_flush_enum flush = BTRFS_RESERVE_NO_FLUSH;
 
@@ -535,9 +548,7 @@ again:
 		if ((used + ticket->bytes <= space_info->total_bytes) ||
 		    btrfs_can_overcommit(fs_info, space_info, ticket->bytes,
 					 flush)) {
-			btrfs_space_info_update_bytes_may_use(fs_info,
-							      space_info,
-							      ticket->bytes);
+			btrfs_space_info_update_bytes_may_use(space_info, ticket->bytes);
 			remove_ticket(space_info, ticket);
 			ticket->bytes = 0;
 			space_info->tickets_id++;
@@ -609,7 +620,7 @@ static void __btrfs_dump_space_info(const struct btrfs_fs_info *fs_info,
 
 void btrfs_dump_space_info(struct btrfs_fs_info *fs_info,
 			   struct btrfs_space_info *info, u64 bytes,
-			   int dump_block_groups)
+			   bool dump_block_groups)
 {
 	struct btrfs_block_group *cache;
 	u64 total_avail = 0;
@@ -852,7 +863,7 @@ static void flush_space(struct btrfs_fs_info *fs_info,
 			ret = PTR_ERR(trans);
 			break;
 		}
-		ret = btrfs_chunk_alloc(trans,
+		ret = btrfs_chunk_alloc(trans, space_info,
 				btrfs_get_alloc_profile(fs_info, space_info->flags),
 				(state == ALLOC_CHUNK) ? CHUNK_ALLOC_NO_FORCE :
 					CHUNK_ALLOC_FORCE);
@@ -880,6 +891,9 @@ static void flush_space(struct btrfs_fs_info *fs_info,
 		 * (only for it to be unblocked, state TRANS_STATE_UNBLOCKED).
 		 */
 		ret = btrfs_commit_current_transaction(root);
+		break;
+	case RESET_ZONES:
+		ret = btrfs_reset_unused_block_groups(space_info, num_bytes);
 		break;
 	default:
 		ret = -ENOSPC;
@@ -1115,27 +1129,24 @@ static bool maybe_fail_all_tickets(struct btrfs_fs_info *fs_info,
 		 * the list.
 		 */
 		if (!aborted)
-			btrfs_try_granting_tickets(fs_info, space_info);
+			btrfs_try_granting_tickets(space_info);
 	}
 	return (tickets_id != space_info->tickets_id);
 }
 
-/*
- * This is for normal flushers, we can wait all goddamned day if we want to.  We
- * will loop and continuously try to flush as long as we are making progress.
- * We count progress as clearing off tickets each time we have to loop.
- */
-static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
+static void do_async_reclaim_metadata_space(struct btrfs_space_info *space_info)
 {
-	struct btrfs_fs_info *fs_info;
-	struct btrfs_space_info *space_info;
+	struct btrfs_fs_info *fs_info = space_info->fs_info;
 	u64 to_reclaim;
 	enum btrfs_flush_state flush_state;
 	int commit_cycles = 0;
 	u64 last_tickets_id;
+	enum btrfs_flush_state final_state;
 
-	fs_info = container_of(work, struct btrfs_fs_info, async_reclaim_work);
-	space_info = btrfs_find_space_info(fs_info, BTRFS_BLOCK_GROUP_METADATA);
+	if (btrfs_is_zoned(fs_info))
+		final_state = RESET_ZONES;
+	else
+		final_state = COMMIT_TRANS;
 
 	spin_lock(&space_info->lock);
 	to_reclaim = btrfs_calc_reclaim_metadata_size(fs_info, space_info);
@@ -1188,7 +1199,7 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		if (flush_state == ALLOC_CHUNK_FORCE && !commit_cycles)
 			flush_state++;
 
-		if (flush_state > COMMIT_TRANS) {
+		if (flush_state > final_state) {
 			commit_cycles++;
 			if (commit_cycles > 2) {
 				if (maybe_fail_all_tickets(fs_info, space_info)) {
@@ -1202,7 +1213,26 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 			}
 		}
 		spin_unlock(&space_info->lock);
-	} while (flush_state <= COMMIT_TRANS);
+	} while (flush_state <= final_state);
+}
+
+/*
+ * This is for normal flushers, it can wait as much time as needed. We will
+ * loop and continuously try to flush as long as we are making progress.  We
+ * count progress as clearing off tickets each time we have to loop.
+ */
+static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
+{
+	struct btrfs_fs_info *fs_info;
+	struct btrfs_space_info *space_info;
+
+	fs_info = container_of(work, struct btrfs_fs_info, async_reclaim_work);
+	space_info = btrfs_find_space_info(fs_info, BTRFS_BLOCK_GROUP_METADATA);
+	do_async_reclaim_metadata_space(space_info);
+	for (int i = 0; i < BTRFS_SPACE_INFO_SUB_GROUP_MAX; i++) {
+		if (space_info->sub_group[i])
+			do_async_reclaim_metadata_space(space_info->sub_group[i]);
+	}
 }
 
 /*
@@ -1326,12 +1356,16 @@ static void btrfs_preempt_reclaim_metadata_space(struct work_struct *work)
  *   If we are freeing inodes, we want to make sure all delayed iputs have
  *   completed, because they could have been on an inode with i_nlink == 0, and
  *   thus have been truncated and freed up space.  But again this space is not
- *   immediately re-usable, it comes in the form of a delayed ref, which must be
+ *   immediately reusable, it comes in the form of a delayed ref, which must be
  *   run and then the transaction must be committed.
  *
  * COMMIT_TRANS
  *   This is where we reclaim all of the pinned space generated by running the
  *   iputs
+ *
+ * RESET_ZONES
+ *   This state works only for the zoned mode. We scan the unused block group
+ *   list and reset the zones and reuse the block group.
  *
  * ALLOC_CHUNK_FORCE
  *   For data we start with alloc chunk force, however we could have been full
@@ -1342,18 +1376,15 @@ static const enum btrfs_flush_state data_flush_states[] = {
 	FLUSH_DELALLOC_FULL,
 	RUN_DELAYED_IPUTS,
 	COMMIT_TRANS,
+	RESET_ZONES,
 	ALLOC_CHUNK_FORCE,
 };
 
-static void btrfs_async_reclaim_data_space(struct work_struct *work)
+static void do_async_reclaim_data_space(struct btrfs_space_info *space_info)
 {
-	struct btrfs_fs_info *fs_info;
-	struct btrfs_space_info *space_info;
+	struct btrfs_fs_info *fs_info = space_info->fs_info;
 	u64 last_tickets_id;
 	enum btrfs_flush_state flush_state = 0;
-
-	fs_info = container_of(work, struct btrfs_fs_info, async_data_reclaim_work);
-	space_info = fs_info->data_sinfo;
 
 	spin_lock(&space_info->lock);
 	if (list_empty(&space_info->tickets)) {
@@ -1422,6 +1453,19 @@ aborted_fs:
 	spin_unlock(&space_info->lock);
 }
 
+static void btrfs_async_reclaim_data_space(struct work_struct *work)
+{
+	struct btrfs_fs_info *fs_info;
+	struct btrfs_space_info *space_info;
+
+	fs_info = container_of(work, struct btrfs_fs_info, async_data_reclaim_work);
+	space_info = fs_info->data_sinfo;
+	do_async_reclaim_data_space(space_info);
+	for (int i = 0; i < BTRFS_SPACE_INFO_SUB_GROUP_MAX; i++)
+		if (space_info->sub_group[i])
+			do_async_reclaim_data_space(space_info->sub_group[i]);
+}
+
 void btrfs_init_async_reclaim_work(struct btrfs_fs_info *fs_info)
 {
 	INIT_WORK(&fs_info->async_reclaim_work, btrfs_async_reclaim_metadata_space);
@@ -1433,6 +1477,7 @@ void btrfs_init_async_reclaim_work(struct btrfs_fs_info *fs_info)
 static const enum btrfs_flush_state priority_flush_states[] = {
 	FLUSH_DELAYED_ITEMS_NR,
 	FLUSH_DELAYED_ITEMS,
+	RESET_ZONES,
 	ALLOC_CHUNK,
 };
 
@@ -1446,6 +1491,7 @@ static const enum btrfs_flush_state evict_flush_states[] = {
 	FLUSH_DELALLOC_FULL,
 	ALLOC_CHUNK,
 	COMMIT_TRANS,
+	RESET_ZONES,
 };
 
 static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
@@ -1487,7 +1533,7 @@ static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
 	 * turned into error mode due to a transaction abort when flushing space
 	 * above, in that case fail with the abort error instead of returning
 	 * success to the caller if we can steal from the global rsv - this is
-	 * just to have caller fail immeditelly instead of later when trying to
+	 * just to have caller fail immediately instead of later when trying to
 	 * modify the fs, making it easier to debug -ENOSPC problems.
 	 */
 	if (BTRFS_FS_ERROR(fs_info)) {
@@ -1503,7 +1549,7 @@ static void priority_reclaim_metadata_space(struct btrfs_fs_info *fs_info,
 	 * ticket in front of a smaller ticket that can now be satisfied with
 	 * the available space.
 	 */
-	btrfs_try_granting_tickets(fs_info, space_info);
+	btrfs_try_granting_tickets(space_info);
 	spin_unlock(&space_info->lock);
 }
 
@@ -1531,12 +1577,11 @@ static void priority_reclaim_data_space(struct btrfs_fs_info *fs_info,
 
 	ticket->error = -ENOSPC;
 	remove_ticket(space_info, ticket);
-	btrfs_try_granting_tickets(fs_info, space_info);
+	btrfs_try_granting_tickets(space_info);
 	spin_unlock(&space_info->lock);
 }
 
-static void wait_reserve_ticket(struct btrfs_fs_info *fs_info,
-				struct btrfs_space_info *space_info,
+static void wait_reserve_ticket(struct btrfs_space_info *space_info,
 				struct reserve_ticket *ticket)
 
 {
@@ -1594,7 +1639,7 @@ static int handle_reserve_ticket(struct btrfs_fs_info *fs_info,
 	case BTRFS_RESERVE_FLUSH_DATA:
 	case BTRFS_RESERVE_FLUSH_ALL:
 	case BTRFS_RESERVE_FLUSH_ALL_STEAL:
-		wait_reserve_ticket(fs_info, space_info, ticket);
+		wait_reserve_ticket(space_info, ticket);
 		break;
 	case BTRFS_RESERVE_FLUSH_LIMIT:
 		priority_reclaim_metadata_space(fs_info, space_info, ticket,
@@ -1738,8 +1783,7 @@ static int __reserve_bytes(struct btrfs_fs_info *fs_info,
 	if (!pending_tickets &&
 	    ((used + orig_bytes <= space_info->total_bytes) ||
 	     btrfs_can_overcommit(fs_info, space_info, orig_bytes, flush))) {
-		btrfs_space_info_update_bytes_may_use(fs_info, space_info,
-						      orig_bytes);
+		btrfs_space_info_update_bytes_may_use(space_info, orig_bytes);
 		ret = 0;
 	}
 
@@ -1751,8 +1795,7 @@ static int __reserve_bytes(struct btrfs_fs_info *fs_info,
 	if (ret && unlikely(flush == BTRFS_RESERVE_FLUSH_EMERGENCY)) {
 		used = btrfs_space_info_used(space_info, false);
 		if (used + orig_bytes <= space_info->total_bytes) {
-			btrfs_space_info_update_bytes_may_use(fs_info, space_info,
-							      orig_bytes);
+			btrfs_space_info_update_bytes_may_use(space_info, orig_bytes);
 			ret = 0;
 		}
 	}
@@ -1792,7 +1835,7 @@ static int __reserve_bytes(struct btrfs_fs_info *fs_info,
 							  space_info->flags,
 							  orig_bytes, flush,
 							  "enospc");
-				queue_work(system_unbound_wq, async_work);
+				queue_work(system_dfl_wq, async_work);
 			}
 		} else {
 			list_add_tail(&ticket.list,
@@ -1809,7 +1852,7 @@ static int __reserve_bytes(struct btrfs_fs_info *fs_info,
 		    need_preemptive_reclaim(fs_info, space_info)) {
 			trace_btrfs_trigger_flush(fs_info, space_info->flags,
 						  orig_bytes, flush, "preempt");
-			queue_work(system_unbound_wq,
+			queue_work(system_dfl_wq,
 				   &fs_info->preempt_reclaim_work);
 		}
 	}
@@ -1849,7 +1892,7 @@ int btrfs_reserve_metadata_bytes(struct btrfs_fs_info *fs_info,
 					      space_info->flags, orig_bytes, 1);
 
 		if (btrfs_test_opt(fs_info, ENOSPC_DEBUG))
-			btrfs_dump_space_info(fs_info, space_info, orig_bytes, 0);
+			btrfs_dump_space_info(fs_info, space_info, orig_bytes, false);
 	}
 	return ret;
 }
@@ -1864,10 +1907,10 @@ int btrfs_reserve_metadata_bytes(struct btrfs_fs_info *fs_info,
  * This will reserve bytes from the data space info.  If there is not enough
  * space then we will attempt to flush space as specified by flush.
  */
-int btrfs_reserve_data_bytes(struct btrfs_fs_info *fs_info, u64 bytes,
+int btrfs_reserve_data_bytes(struct btrfs_space_info *space_info, u64 bytes,
 			     enum btrfs_reserve_flush_enum flush)
 {
-	struct btrfs_space_info *data_sinfo = fs_info->data_sinfo;
+	struct btrfs_fs_info *fs_info = space_info->fs_info;
 	int ret;
 
 	ASSERT(flush == BTRFS_RESERVE_FLUSH_DATA ||
@@ -1875,12 +1918,12 @@ int btrfs_reserve_data_bytes(struct btrfs_fs_info *fs_info, u64 bytes,
 	       flush == BTRFS_RESERVE_NO_FLUSH);
 	ASSERT(!current->journal_info || flush != BTRFS_RESERVE_FLUSH_DATA);
 
-	ret = __reserve_bytes(fs_info, data_sinfo, bytes, flush);
+	ret = __reserve_bytes(fs_info, space_info, bytes, flush);
 	if (ret == -ENOSPC) {
 		trace_btrfs_space_reservation(fs_info, "space_info:enospc",
-					      data_sinfo->flags, bytes, 1);
+					      space_info->flags, bytes, 1);
 		if (btrfs_test_opt(fs_info, ENOSPC_DEBUG))
-			btrfs_dump_space_info(fs_info, data_sinfo, bytes, 0);
+			btrfs_dump_space_info(fs_info, space_info, bytes, false);
 	}
 	return ret;
 }
@@ -1935,13 +1978,13 @@ u64 btrfs_account_ro_block_groups_free_space(struct btrfs_space_info *sinfo)
 
 static u64 calc_pct_ratio(u64 x, u64 y)
 {
-	int err;
+	int ret;
 
 	if (!y)
 		return 0;
 again:
-	err = check_mul_overflow(100, x, &x);
-	if (err)
+	ret = check_mul_overflow(100, x, &x);
+	if (ret)
 		goto lose_precision;
 	return div64_u64(x, y);
 lose_precision:
@@ -2031,12 +2074,11 @@ static bool is_reclaim_urgent(struct btrfs_space_info *space_info)
 	return unalloc < data_chunk_size;
 }
 
-static void do_reclaim_sweep(const struct btrfs_fs_info *fs_info,
-			     struct btrfs_space_info *space_info, int raid)
+static bool do_reclaim_sweep(struct btrfs_space_info *space_info, int raid)
 {
 	struct btrfs_block_group *bg;
 	int thresh_pct;
-	bool try_again = true;
+	bool will_reclaim = false;
 	bool urgent;
 
 	spin_lock(&space_info->lock);
@@ -2054,7 +2096,7 @@ again:
 		spin_lock(&bg->lock);
 		thresh = mult_perc(bg->length, thresh_pct);
 		if (bg->used < thresh && bg->reclaim_mark) {
-			try_again = false;
+			will_reclaim = true;
 			reclaim = true;
 		}
 		bg->reclaim_mark++;
@@ -2071,12 +2113,13 @@ again:
 	 * If we have any staler groups, we don't touch the fresher ones, but if we
 	 * really need a block group, do take a fresh one.
 	 */
-	if (try_again && urgent) {
-		try_again = false;
+	if (!will_reclaim && urgent) {
+		urgent = false;
 		goto again;
 	}
 
 	up_read(&space_info->groups_sem);
+	return will_reclaim;
 }
 
 void btrfs_space_info_update_reclaimable(struct btrfs_space_info *space_info, s64 bytes)
@@ -2086,7 +2129,8 @@ void btrfs_space_info_update_reclaimable(struct btrfs_space_info *space_info, s6
 	lockdep_assert_held(&space_info->lock);
 	space_info->reclaimable_bytes += bytes;
 
-	if (space_info->reclaimable_bytes >= chunk_sz)
+	if (space_info->reclaimable_bytes > 0 &&
+	    space_info->reclaimable_bytes >= chunk_sz)
 		btrfs_set_periodic_reclaim_ready(space_info, true);
 }
 
@@ -2102,7 +2146,7 @@ void btrfs_set_periodic_reclaim_ready(struct btrfs_space_info *space_info, bool 
 	}
 }
 
-bool btrfs_should_periodic_reclaim(struct btrfs_space_info *space_info)
+static bool btrfs_should_periodic_reclaim(struct btrfs_space_info *space_info)
 {
 	bool ret;
 
@@ -2113,7 +2157,6 @@ bool btrfs_should_periodic_reclaim(struct btrfs_space_info *space_info)
 
 	spin_lock(&space_info->lock);
 	ret = space_info->periodic_reclaim_ready;
-	btrfs_set_periodic_reclaim_ready(space_info, false);
 	spin_unlock(&space_info->lock);
 
 	return ret;
@@ -2127,7 +2170,38 @@ void btrfs_reclaim_sweep(const struct btrfs_fs_info *fs_info)
 	list_for_each_entry(space_info, &fs_info->space_info, list) {
 		if (!btrfs_should_periodic_reclaim(space_info))
 			continue;
-		for (raid = 0; raid < BTRFS_NR_RAID_TYPES; raid++)
-			do_reclaim_sweep(fs_info, space_info, raid);
+		for (raid = 0; raid < BTRFS_NR_RAID_TYPES; raid++) {
+			if (do_reclaim_sweep(space_info, raid))
+				btrfs_set_periodic_reclaim_ready(space_info, false);
+		}
 	}
+}
+
+void btrfs_return_free_space(struct btrfs_space_info *space_info, u64 len)
+{
+	struct btrfs_fs_info *fs_info = space_info->fs_info;
+	struct btrfs_block_rsv *global_rsv = &fs_info->global_block_rsv;
+
+	lockdep_assert_held(&space_info->lock);
+
+	/* Prioritize the global reservation to receive the freed space. */
+	if (global_rsv->space_info != space_info)
+		goto grant;
+
+	spin_lock(&global_rsv->lock);
+	if (!global_rsv->full) {
+		u64 to_add = min(len, global_rsv->size - global_rsv->reserved);
+
+		global_rsv->reserved += to_add;
+		btrfs_space_info_update_bytes_may_use(space_info, to_add);
+		if (global_rsv->reserved >= global_rsv->size)
+			global_rsv->full = 1;
+		len -= to_add;
+	}
+	spin_unlock(&global_rsv->lock);
+
+grant:
+	/* Add to any tickets we may have. */
+	if (len)
+		btrfs_try_granting_tickets(space_info);
 }

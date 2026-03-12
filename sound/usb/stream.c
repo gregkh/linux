@@ -545,9 +545,10 @@ static int __snd_usb_add_audio_stream(struct snd_usb_audio *chip,
 	pcm->private_free = snd_usb_audio_pcm_free;
 	pcm->info_flags = 0;
 	if (chip->pcm_devs > 0)
-		sprintf(pcm->name, "USB Audio #%d", chip->pcm_devs);
+		scnprintf(pcm->name, sizeof(pcm->name), "USB Audio #%d",
+			  chip->pcm_devs);
 	else
-		strcpy(pcm->name, "USB Audio");
+		strscpy(pcm->name, "USB Audio");
 
 	snd_usb_init_substream(as, stream, fp, pd);
 
@@ -1260,6 +1261,9 @@ static int __snd_usb_parse_audio_interface(struct snd_usb_audio *chip,
 			set_iface_first = true;
 
 		/* try to set the interface... */
+		if (chip->quirk_flags & QUIRK_FLAG_SKIP_IFACE_SETUP)
+			continue;
+
 		usb_set_interface(chip->dev, iface_no, 0);
 		if (set_iface_first)
 			usb_set_interface(chip->dev, iface_no, altno);

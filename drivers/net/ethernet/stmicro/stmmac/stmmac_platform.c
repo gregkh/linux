@@ -60,7 +60,7 @@ static int dwmac1000_validate_mcast_bins(struct device *dev, int mcast_bins)
  * Description:
  * This function validates the number of Unicast address entries supported
  * by a particular Synopsys 10/100/1000 controller. The Synopsys controller
- * supports 1..32, 64, or 128 Unicast filter entries for it's Unicast filter
+ * supports 1..32, 64, or 128 Unicast filter entries for its Unicast filter
  * logic. This function validates a valid, supported configuration is
  * selected, and defaults to 1 Unicast address if an unsupported
  * configuration is selected.
@@ -405,6 +405,18 @@ static int stmmac_of_get_mac_mode(struct device_node *np)
 	return -ENODEV;
 }
 
+/* Compatible string array for all gmac4 devices */
+static const char * const stmmac_gmac4_compats[] = {
+	"snps,dwmac-4.00",
+	"snps,dwmac-4.10a",
+	"snps,dwmac-4.20a",
+	"snps,dwmac-5.00a",
+	"snps,dwmac-5.10a",
+	"snps,dwmac-5.20",
+	"snps,dwmac-5.30a",
+	NULL
+};
+
 /**
  * stmmac_probe_config_dt - parse device-tree driver parameters
  * @pdev: platform_device structure
@@ -441,8 +453,12 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 		return ERR_PTR(phy_mode);
 
 	plat->phy_interface = phy_mode;
+
 	rc = stmmac_of_get_mac_mode(np);
-	plat->mac_interface = rc < 0 ? plat->phy_interface : rc;
+	if (rc >= 0 && rc != phy_mode)
+		dev_warn(&pdev->dev,
+			 "\"mac-mode\" property used for %s but differs to \"phy-mode\" of %s, and will be ignored. Please report.\n",
+			 phy_modes(rc), phy_modes(phy_mode));
 
 	/* Some wrapper drivers still rely on phy_node. Let's save it while
 	 * they are not converted to phylink. */
@@ -493,8 +509,11 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 	plat->force_sf_dma_mode =
 		of_property_read_bool(np, "snps,force_sf_dma_mode");
 
-	if (of_property_read_bool(np, "snps,en-tx-lpi-clockgating"))
+	if (of_property_read_bool(np, "snps,en-tx-lpi-clockgating")) {
+		dev_warn(&pdev->dev,
+			 "OF property snps,en-tx-lpi-clockgating is deprecated, please convert driver to use STMMAC_FLAG_EN_TX_LPI_CLK_PHY_CAP\n");
 		plat->flags |= STMMAC_FLAG_EN_TX_LPI_CLOCKGATING;
+	}
 
 	/* Set the maxmtu to a default of JUMBO_LEN in case the
 	 * parameter is not present in the device tree.
@@ -515,6 +534,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 	if (of_device_is_compatible(np, "st,spear600-gmac") ||
 		of_device_is_compatible(np, "snps,dwmac-3.50a") ||
 		of_device_is_compatible(np, "snps,dwmac-3.70a") ||
+		of_device_is_compatible(np, "snps,dwmac-3.72a") ||
 		of_device_is_compatible(np, "snps,dwmac")) {
 		/* Note that the max-frame-size parameter as defined in the
 		 * ePAPR v1.1 spec is defined as max-frame-size, it's
@@ -532,25 +552,20 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 				&pdev->dev, plat->unicast_filter_entries);
 		plat->multicast_filter_bins = dwmac1000_validate_mcast_bins(
 				&pdev->dev, plat->multicast_filter_bins);
-		plat->has_gmac = 1;
+		plat->core_type = DWMAC_CORE_GMAC;
 		plat->pmt = 1;
 	}
 
 	if (of_device_is_compatible(np, "snps,dwmac-3.40a")) {
-		plat->has_gmac = 1;
+		plat->core_type = DWMAC_CORE_GMAC;
 		plat->enh_desc = 1;
 		plat->tx_coe = 1;
 		plat->bugged_jumbo = 1;
 		plat->pmt = 1;
 	}
 
-	if (of_device_is_compatible(np, "snps,dwmac-4.00") ||
-	    of_device_is_compatible(np, "snps,dwmac-4.10a") ||
-	    of_device_is_compatible(np, "snps,dwmac-4.20a") ||
-	    of_device_is_compatible(np, "snps,dwmac-5.10a") ||
-	    of_device_is_compatible(np, "snps,dwmac-5.20")) {
-		plat->has_gmac4 = 1;
-		plat->has_gmac = 0;
+	if (of_device_compatible_match(np, stmmac_gmac4_compats)) {
+		plat->core_type = DWMAC_CORE_GMAC4;
 		plat->pmt = 1;
 		if (of_property_read_bool(np, "snps,tso"))
 			plat->flags |= STMMAC_FLAG_TSO_EN;
@@ -564,10 +579,12 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 	}
 
 	if (of_device_is_compatible(np, "snps,dwxgmac")) {
-		plat->has_xgmac = 1;
+		plat->core_type = DWMAC_CORE_XGMAC;
 		plat->pmt = 1;
 		if (of_property_read_bool(np, "snps,tso"))
 			plat->flags |= STMMAC_FLAG_TSO_EN;
+		of_property_read_u32(np, "snps,multicast-filter-bins",
+				     &plat->multicast_filter_bins);
 	}
 
 	dma_cfg = devm_kzalloc(&pdev->dev, sizeof(*dma_cfg),
@@ -632,7 +649,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 		dev_info(&pdev->dev, "PTP uses main clock\n");
 	} else {
 		plat->clk_ptp_rate = clk_get_rate(plat->clk_ptp_ref);
-		dev_dbg(&pdev->dev, "PTP rate %d\n", plat->clk_ptp_rate);
+		dev_dbg(&pdev->dev, "PTP rate %lu\n", plat->clk_ptp_rate);
 	}
 
 	plat->stmmac_rst = devm_reset_control_get_optional(&pdev->dev,
@@ -705,6 +722,17 @@ devm_stmmac_probe_config_dt(struct platform_device *pdev, u8 *mac)
 #endif /* CONFIG_OF */
 EXPORT_SYMBOL_GPL(devm_stmmac_probe_config_dt);
 
+struct clk *stmmac_pltfr_find_clk(struct plat_stmmacenet_data *plat_dat,
+				  const char *name)
+{
+	for (int i = 0; i < plat_dat->num_clks; i++)
+		if (strcmp(plat_dat->clks[i].id, name) == 0)
+			return plat_dat->clks[i].clk;
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(stmmac_pltfr_find_clk);
+
 int stmmac_get_platform_resources(struct platform_device *pdev,
 				  struct stmmac_resources *stmmac_res)
 {
@@ -731,14 +759,6 @@ int stmmac_get_platform_resources(struct platform_device *pdev,
 			return -EPROBE_DEFER;
 		dev_info(&pdev->dev, "IRQ eth_wake_irq not found\n");
 		stmmac_res->wol_irq = stmmac_res->irq;
-	}
-
-	stmmac_res->lpi_irq =
-		platform_get_irq_byname_optional(pdev, "eth_lpi");
-	if (stmmac_res->lpi_irq < 0) {
-		if (stmmac_res->lpi_irq == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-		dev_info(&pdev->dev, "IRQ eth_lpi not found\n");
 	}
 
 	stmmac_res->sfty_irq =
@@ -786,6 +806,22 @@ static void stmmac_pltfr_exit(struct platform_device *pdev,
 		plat->exit(pdev, plat->bsp_priv);
 }
 
+static int stmmac_plat_suspend(struct device *dev, void *bsp_priv)
+{
+	struct stmmac_priv *priv = netdev_priv(dev_get_drvdata(dev));
+
+	stmmac_pltfr_exit(to_platform_device(dev), priv->plat);
+
+	return 0;
+}
+
+static int stmmac_plat_resume(struct device *dev, void *bsp_priv)
+{
+	struct stmmac_priv *priv = netdev_priv(dev_get_drvdata(dev));
+
+	return stmmac_pltfr_init(to_platform_device(dev), priv->plat);
+}
+
 /**
  * stmmac_pltfr_probe
  * @pdev: platform device pointer
@@ -799,6 +835,11 @@ int stmmac_pltfr_probe(struct platform_device *pdev,
 		       struct stmmac_resources *res)
 {
 	int ret;
+
+	if (!plat->suspend && plat->exit)
+		plat->suspend = stmmac_plat_suspend;
+	if (!plat->resume && plat->init)
+		plat->resume = stmmac_plat_resume;
 
 	ret = stmmac_pltfr_init(pdev, plat);
 	if (ret)
@@ -861,45 +902,36 @@ void stmmac_pltfr_remove(struct platform_device *pdev)
 }
 EXPORT_SYMBOL_GPL(stmmac_pltfr_remove);
 
-/**
- * stmmac_pltfr_suspend
- * @dev: device pointer
- * Description: this function is invoked when suspend the driver and it direcly
- * call the main suspend function and then, if required, on some platform, it
- * can call an exit helper.
- */
-static int __maybe_unused stmmac_pltfr_suspend(struct device *dev)
+static int stmmac_bus_clks_config(struct stmmac_priv *priv, bool enabled)
 {
-	int ret;
-	struct net_device *ndev = dev_get_drvdata(dev);
-	struct stmmac_priv *priv = netdev_priv(ndev);
-	struct platform_device *pdev = to_platform_device(dev);
-
-	ret = stmmac_suspend(dev);
-	stmmac_pltfr_exit(pdev, priv->plat);
-
-	return ret;
-}
-
-/**
- * stmmac_pltfr_resume
- * @dev: device pointer
- * Description: this function is invoked when resume the driver before calling
- * the main resume function, on some platforms, it can call own init helper
- * if required.
- */
-static int __maybe_unused stmmac_pltfr_resume(struct device *dev)
-{
-	struct net_device *ndev = dev_get_drvdata(dev);
-	struct stmmac_priv *priv = netdev_priv(ndev);
-	struct platform_device *pdev = to_platform_device(dev);
+	struct plat_stmmacenet_data *plat_dat = priv->plat;
 	int ret;
 
-	ret = stmmac_pltfr_init(pdev, priv->plat);
-	if (ret)
-		return ret;
+	if (enabled) {
+		ret = clk_prepare_enable(plat_dat->stmmac_clk);
+		if (ret)
+			return ret;
+		ret = clk_prepare_enable(plat_dat->pclk);
+		if (ret) {
+			clk_disable_unprepare(plat_dat->stmmac_clk);
+			return ret;
+		}
+		if (plat_dat->clks_config) {
+			ret = plat_dat->clks_config(plat_dat->bsp_priv, enabled);
+			if (ret) {
+				clk_disable_unprepare(plat_dat->stmmac_clk);
+				clk_disable_unprepare(plat_dat->pclk);
+				return ret;
+			}
+		}
+	} else {
+		clk_disable_unprepare(plat_dat->stmmac_clk);
+		clk_disable_unprepare(plat_dat->pclk);
+		if (plat_dat->clks_config)
+			plat_dat->clks_config(plat_dat->bsp_priv, enabled);
+	}
 
-	return stmmac_resume(dev);
+	return 0;
 }
 
 static int __maybe_unused stmmac_runtime_suspend(struct device *dev)
@@ -929,7 +961,7 @@ static int __maybe_unused stmmac_pltfr_noirq_suspend(struct device *dev)
 	if (!netif_running(ndev))
 		return 0;
 
-	if (!device_may_wakeup(priv->device) || !priv->plat->pmt) {
+	if (!stmmac_wol_enabled_mac(priv)) {
 		/* Disable clock in case of PWM is off */
 		clk_disable_unprepare(priv->plat->clk_ptp_ref);
 
@@ -950,7 +982,7 @@ static int __maybe_unused stmmac_pltfr_noirq_resume(struct device *dev)
 	if (!netif_running(ndev))
 		return 0;
 
-	if (!device_may_wakeup(priv->device) || !priv->plat->pmt) {
+	if (!stmmac_wol_enabled_mac(priv)) {
 		/* enable the clk previously disabled */
 		ret = pm_runtime_force_resume(dev);
 		if (ret)
@@ -969,7 +1001,7 @@ static int __maybe_unused stmmac_pltfr_noirq_resume(struct device *dev)
 }
 
 const struct dev_pm_ops stmmac_pltfr_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(stmmac_pltfr_suspend, stmmac_pltfr_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(stmmac_suspend, stmmac_resume)
 	SET_RUNTIME_PM_OPS(stmmac_runtime_suspend, stmmac_runtime_resume, NULL)
 	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(stmmac_pltfr_noirq_suspend, stmmac_pltfr_noirq_resume)
 };

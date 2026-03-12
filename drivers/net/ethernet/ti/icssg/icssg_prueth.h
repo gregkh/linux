@@ -8,9 +8,12 @@
 #ifndef __NET_TI_ICSSG_PRUETH_H
 #define __NET_TI_ICSSG_PRUETH_H
 
+#include <linux/bpf.h>
+#include <linux/bpf_trace.h>
 #include <linux/etherdevice.h>
 #include <linux/genalloc.h>
 #include <linux/if_vlan.h>
+#include <linux/if_hsr.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
@@ -33,6 +36,8 @@
 #include <linux/dma/k3-udma-glue.h>
 
 #include <net/devlink.h>
+#include <net/xdp.h>
+#include <net/page_pool/helpers.h>
 
 #include "icssg_config.h"
 #include "icss_iep.h"
@@ -50,7 +55,7 @@
 
 #define ICSSG_MAX_RFLOWS	8	/* per slice */
 
-#define ICSSG_NUM_PA_STATS	4
+#define ICSSG_NUM_PA_STATS	32
 #define ICSSG_NUM_MIIG_STATS	60
 /* Number of ICSSG related stats */
 #define ICSSG_NUM_STATS (ICSSG_NUM_MIIG_STATS + ICSSG_NUM_PA_STATS)
@@ -82,6 +87,12 @@
 #define ICSS_CMD_DISABLE_VLAN 0x6
 #define ICSS_CMD_ADD_FILTER 0x7
 #define ICSS_CMD_ADD_MAC 0x8
+
+/* VLAN Filtering Related MACROs */
+#define PRUETH_DFLT_VLAN_HSR	1
+#define PRUETH_DFLT_VLAN_SW	1
+#define PRUETH_DFLT_VLAN_MAC	0
+#define MAX_VLAN_ID		256
 
 /* In switch mode there are 3 real ports i.e. 3 mac addrs.
  * however Linux sees only the host side port. The other 2 ports
@@ -125,6 +136,26 @@ struct prueth_rx_chn {
 	u32 descs_num;
 	unsigned int irq[ICSSG_MAX_RFLOWS];	/* separate irq per flow */
 	char name[32];
+	struct page_pool *pg_pool;
+	struct xdp_rxq_info xdp_rxq;
+};
+
+enum prueth_swdata_type {
+	PRUETH_SWDATA_INVALID = 0,
+	PRUETH_SWDATA_SKB,
+	PRUETH_SWDATA_PAGE,
+	PRUETH_SWDATA_CMD,
+	PRUETH_SWDATA_XDPF,
+};
+
+struct prueth_swdata {
+	enum prueth_swdata_type type;
+	union prueth_data {
+		struct sk_buff *skb;
+		struct page *page;
+		u32 cmd;
+		struct xdp_frame *xdpf;
+	} data;
 };
 
 /* There are 4 Tx DMA channels, but the highest priority is CH3 (thread 3)
@@ -133,6 +164,12 @@ struct prueth_rx_chn {
 #define PRUETH_MAX_TX_QUEUES	4
 
 #define PRUETH_MAX_TX_TS_REQUESTS	50 /* Max simultaneous TX_TS requests */
+
+/* XDP BPF state */
+#define ICSSG_XDP_PASS           0
+#define ICSSG_XDP_CONSUMED       BIT(0)
+#define ICSSG_XDP_TX             BIT(1)
+#define ICSSG_XDP_REDIR          BIT(2)
 
 /* Minimum coalesce time in usecs for both Tx and Rx */
 #define ICSSG_MIN_COALESCE_USECS 20
@@ -200,7 +237,15 @@ struct prueth_emac {
 	/* RX IRQ Coalescing Related */
 	struct hrtimer rx_hrtimer;
 	unsigned long rx_pace_timeout_ns;
+
+	struct netdev_hw_addr_list vlan_mcast_list[MAX_VLAN_ID];
+	struct bpf_prog *xdp_prog;
+	struct xdp_attachment_info xdpi;
 };
+
+/* The buf includes headroom compatible with both skb and xdpf */
+#define PRUETH_HEADROOM_NA (max(XDP_PACKET_HEADROOM, NET_SKB_PAD) + NET_IP_ALIGN)
+#define PRUETH_HEADROOM  ALIGN(PRUETH_HEADROOM_NA, sizeof(long))
 
 /**
  * struct prueth_pdata - PRUeth platform data
@@ -217,9 +262,9 @@ struct prueth_pdata {
 };
 
 struct icssg_firmwares {
-	char *pru;
-	char *rtu;
-	char *txpru;
+	const char *pru;
+	const char *rtu;
+	const char *txpru;
 };
 
 /**
@@ -248,6 +293,7 @@ struct icssg_firmwares {
  * @vlan_tbl: VLAN-FID table pointer
  * @hw_bridge_dev: pointer to HW bridge net device
  * @hsr_dev: pointer to the HSR net device
+ * @hsr_prp_version: enum to store the protocol version of hsr master
  * @br_members: bitmask of bridge member ports
  * @hsr_members: bitmask of hsr member ports
  * @prueth_netdevice_nb: netdevice notifier block
@@ -258,6 +304,10 @@ struct icssg_firmwares {
  * @is_switchmode_supported: indicates platform support for switch mode
  * @switch_id: ID for mapping switch ports to bridge
  * @default_vlan: Default VLAN for host
+ * @icssg_emac_firmwares: Firmware names for EMAC mode, indexed per MAC
+ * @icssg_switch_firmwares: Firmware names for SWITCH mode, indexed per MAC
+ * @icssg_hsr_firmwares: Firmware names for HSR mode, indexed per MAC
+ * @icssg_prp_firmwares: Firmware names for PRP mode, indexed per MAC
  */
 struct prueth {
 	struct device *dev;
@@ -287,6 +337,7 @@ struct prueth {
 
 	struct net_device *hw_bridge_dev;
 	struct net_device *hsr_dev;
+	enum hsr_version hsr_prp_version;
 	u8 br_members;
 	u8 hsr_members;
 	struct notifier_block prueth_netdevice_nb;
@@ -301,6 +352,10 @@ struct prueth {
 	spinlock_t vtbl_lock;
 	/** @stats_lock: Lock for reading icssg stats */
 	spinlock_t stats_lock;
+	struct icssg_firmwares icssg_emac_firmwares[PRUETH_NUM_MACS];
+	struct icssg_firmwares icssg_switch_firmwares[PRUETH_NUM_MACS];
+	struct icssg_firmwares icssg_hsr_firmwares[PRUETH_NUM_MACS];
+	struct icssg_firmwares icssg_prp_firmwares[PRUETH_NUM_MACS];
 };
 
 struct emac_tx_ts_response {
@@ -406,9 +461,10 @@ int prueth_init_rx_chns(struct prueth_emac *emac,
 			struct prueth_rx_chn *rx_chn,
 			char *name, u32 max_rflows,
 			u32 max_desc_num);
-int prueth_dma_rx_push(struct prueth_emac *emac,
-		       struct sk_buff *skb,
-		       struct prueth_rx_chn *rx_chn);
+int prueth_dma_rx_push_mapped(struct prueth_emac *emac,
+			      struct prueth_rx_chn *rx_chn,
+			      struct page *page, u32 buf_len);
+unsigned int prueth_rxbuf_total_len(unsigned int len);
 void emac_rx_timestamp(struct prueth_emac *emac,
 		       struct sk_buff *skb, u32 *psdata);
 enum netdev_tx icssg_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev);
@@ -437,5 +493,9 @@ void prueth_put_cores(struct prueth *prueth, int slice);
 
 /* Revision specific helper */
 u64 icssg_ts_to_ns(u32 hi_sw, u32 hi, u32 lo, u32 cycle_time_ns);
+u32 emac_xmit_xdp_frame(struct prueth_emac *emac,
+			struct xdp_frame *xdpf,
+			struct page *page,
+			unsigned int q_idx);
 
 #endif /* __NET_TI_ICSSG_PRUETH_H */

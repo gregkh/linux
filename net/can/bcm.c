@@ -359,6 +359,7 @@ static void bcm_send_to_user(struct bcm_op *op, struct bcm_msg_head *head,
 	unsigned int datalen = head->nframes * op->cfsiz;
 	int err;
 	unsigned int *pflags;
+	enum skb_drop_reason reason;
 
 	skb = alloc_skb(sizeof(*head) + datalen, gfp_any());
 	if (!skb)
@@ -413,11 +414,11 @@ static void bcm_send_to_user(struct bcm_op *op, struct bcm_msg_head *head,
 	addr->can_family  = AF_CAN;
 	addr->can_ifindex = op->rx_ifindex;
 
-	err = sock_queue_rcv_skb(sk, skb);
+	err = sock_queue_rcv_skb_reason(sk, skb, &reason);
 	if (err < 0) {
 		struct bcm_sock *bo = bcm_sk(sk);
 
-		kfree_skb(skb);
+		sk_skb_reason_drop(sk, skb, reason);
 		/* don't care about overflows in this statistic */
 		bo->dropped_usr_msgs++;
 	}
@@ -1057,13 +1058,12 @@ static int bcm_tx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		op->ifindex = ifindex;
 
 		/* initialize uninitialized (kzalloc) structure */
-		hrtimer_init(&op->timer, CLOCK_MONOTONIC,
-			     HRTIMER_MODE_REL_SOFT);
-		op->timer.function = bcm_tx_timeout_handler;
+		hrtimer_setup(&op->timer, bcm_tx_timeout_handler, CLOCK_MONOTONIC,
+			      HRTIMER_MODE_REL_SOFT);
 
 		/* currently unused in tx_ops */
-		hrtimer_init(&op->thrtimer, CLOCK_MONOTONIC,
-			     HRTIMER_MODE_REL_SOFT);
+		hrtimer_setup(&op->thrtimer, hrtimer_dummy_timeout, CLOCK_MONOTONIC,
+			      HRTIMER_MODE_REL_SOFT);
 
 		/* add this bcm_op to the list of the tx_ops */
 		list_add(&op->list, &bo->tx_ops);
@@ -1170,6 +1170,7 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		if (!op)
 			return -ENOMEM;
 
+		spin_lock_init(&op->bcm_tx_lock);
 		op->can_id = msg_head->can_id;
 		op->nframes = msg_head->nframes;
 		op->cfsiz = CFSIZ(msg_head->flags);
@@ -1221,13 +1222,10 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		op->rx_ifindex = ifindex;
 
 		/* initialize uninitialized (kzalloc) structure */
-		hrtimer_init(&op->timer, CLOCK_MONOTONIC,
-			     HRTIMER_MODE_REL_SOFT);
-		op->timer.function = bcm_rx_timeout_handler;
-
-		hrtimer_init(&op->thrtimer, CLOCK_MONOTONIC,
-			     HRTIMER_MODE_REL_SOFT);
-		op->thrtimer.function = bcm_rx_thr_handler;
+		hrtimer_setup(&op->timer, bcm_rx_timeout_handler, CLOCK_MONOTONIC,
+			      HRTIMER_MODE_REL_SOFT);
+		hrtimer_setup(&op->thrtimer, bcm_rx_thr_handler, CLOCK_MONOTONIC,
+			      HRTIMER_MODE_REL_SOFT);
 
 		/* add this bcm_op to the list of the rx_ops */
 		list_add(&op->list, &bo->rx_ops);
@@ -1654,6 +1652,7 @@ static int bcm_release(struct socket *sock)
 	sock->sk = NULL;
 
 	release_sock(sk);
+	sock_prot_inuse_add(net, sk->sk_prot, -1);
 	sock_put(sk);
 
 	return 0;

@@ -68,6 +68,7 @@
 #include <asm/vdso.h>
 #include <asm/tdx.h>
 #include <asm/cfi.h>
+#include <asm/msr.h>
 
 #ifdef CONFIG_X86_64
 #include <asm/x86_init.h>
@@ -96,6 +97,8 @@ __always_inline int is_valid_bugaddr(unsigned long addr)
  * Check for UD1 or UD2, accounting for Address Size Override Prefixes.
  * If it's a UD1, further decode to determine its use:
  *
+ * FineIBT:      d6                      udb
+ * FineIBT:      f0 75 f9                lock jne . - 6
  * UBSan{0}:     67 0f b9 00             ud1    (%eax),%eax
  * UBSan{10}:    67 0f b9 40 10          ud1    0x10(%eax),%eax
  * static_call:  0f b9 cc                ud1    %esp,%ecx
@@ -105,6 +108,7 @@ __always_inline int is_valid_bugaddr(unsigned long addr)
 __always_inline int decode_bug(unsigned long addr, s32 *imm, int *len)
 {
 	unsigned long start = addr;
+	bool lock = false;
 	u8 v;
 
 	if (addr < TASK_SIZE_MAX)
@@ -113,8 +117,29 @@ __always_inline int decode_bug(unsigned long addr, s32 *imm, int *len)
 	v = *(u8 *)(addr++);
 	if (v == INSN_ASOP)
 		v = *(u8 *)(addr++);
-	if (v != OPCODE_ESCAPE)
+
+	if (v == INSN_LOCK) {
+		lock = true;
+		v = *(u8 *)(addr++);
+	}
+
+	switch (v) {
+	case 0x70 ... 0x7f: /* Jcc.d8 */
+		addr += 1; /* d8 */
+		*len = addr - start;
+		WARN_ON_ONCE(!lock);
+		return BUG_LOCK;
+
+	case 0xd6:
+		*len = addr - start;
+		return BUG_UDB;
+
+	case OPCODE_ESCAPE:
+		break;
+
+	default:
 		return BUG_NONE;
+	}
 
 	v = *(u8 *)(addr++);
 	if (v == SECOND_BYTE_OPCODE_UD2) {
@@ -282,11 +307,12 @@ static inline void handle_invalid_op(struct pt_regs *regs)
 
 static noinstr bool handle_bug(struct pt_regs *regs)
 {
+	unsigned long addr = regs->ip;
 	bool handled = false;
 	int ud_type, ud_len;
 	s32 ud_imm;
 
-	ud_type = decode_bug(regs->ip, &ud_imm, &ud_len);
+	ud_type = decode_bug(addr, &ud_imm, &ud_len);
 	if (ud_type == BUG_NONE)
 		return handled;
 
@@ -309,23 +335,42 @@ static noinstr bool handle_bug(struct pt_regs *regs)
 
 	switch (ud_type) {
 	case BUG_UD2:
-		if (report_bug(regs->ip, regs) == BUG_TRAP_TYPE_WARN ||
-		    handle_cfi_failure(regs) == BUG_TRAP_TYPE_WARN) {
-			regs->ip += ud_len;
+		if (report_bug(regs->ip, regs) == BUG_TRAP_TYPE_WARN) {
 			handled = true;
+			break;
+		}
+		fallthrough;
+
+	case BUG_UDB:
+	case BUG_LOCK:
+		if (handle_cfi_failure(regs) == BUG_TRAP_TYPE_WARN) {
+			handled = true;
+			break;
 		}
 		break;
 
 	case BUG_UD1_UBSAN:
 		if (IS_ENABLED(CONFIG_UBSAN_TRAP)) {
 			pr_crit("%s at %pS\n",
-				report_ubsan_failure(regs, ud_imm),
+				report_ubsan_failure(ud_imm),
 				(void *)regs->ip);
 		}
 		break;
 
 	default:
 		break;
+	}
+
+	/*
+	 * When continuing, and regs->ip hasn't changed, move it to the next
+	 * instruction. When not continuing execution, restore the instruction
+	 * pointer.
+	 */
+	if (handled) {
+		if (regs->ip == addr)
+			regs->ip += ud_len;
+	} else {
+		regs->ip = addr;
 	}
 
 	if (regs->flags & X86_EFLAGS_IF)
@@ -705,7 +750,7 @@ static bool try_fixup_enqcmd_gp(void)
 	if (current->pasid_activated)
 		return false;
 
-	wrmsrl(MSR_IA32_PASID, pasid | MSR_IA32_PASID_VALID);
+	wrmsrq(MSR_IA32_PASID, pasid | MSR_IA32_PASID_VALID);
 	current->pasid_activated = 1;
 
 	return true;
@@ -838,16 +883,16 @@ static void do_int3_user(struct pt_regs *regs)
 DEFINE_IDTENTRY_RAW(exc_int3)
 {
 	/*
-	 * poke_int3_handler() is completely self contained code; it does (and
+	 * smp_text_poke_int3_handler() is completely self contained code; it does (and
 	 * must) *NOT* call out to anything, lest it hits upon yet another
 	 * INT3.
 	 */
-	if (poke_int3_handler(regs))
+	if (smp_text_poke_int3_handler(regs))
 		return;
 
 	/*
 	 * irqentry_enter_from_user_mode() uses static_branch_{,un}likely()
-	 * and therefore can trigger INT3, hence poke_int3_handler() must
+	 * and therefore can trigger INT3, hence smp_text_poke_int3_handler() must
 	 * be done before. If the entry came from kernel mode, then use
 	 * nmi_enter() because the INT3 could have been hit in any context
 	 * including NMI.
@@ -1084,9 +1129,9 @@ static noinstr void exc_debug_kernel(struct pt_regs *regs, unsigned long dr6)
 		 */
 		unsigned long debugctl;
 
-		rdmsrl(MSR_IA32_DEBUGCTLMSR, debugctl);
+		rdmsrq(MSR_IA32_DEBUGCTLMSR, debugctl);
 		debugctl |= DEBUGCTLMSR_BTF;
-		wrmsrl(MSR_IA32_DEBUGCTLMSR, debugctl);
+		wrmsrq(MSR_IA32_DEBUGCTLMSR, debugctl);
 	}
 
 	/*
@@ -1259,7 +1304,7 @@ DEFINE_IDTENTRY_RAW(exc_debug)
 static void math_error(struct pt_regs *regs, int trapnr)
 {
 	struct task_struct *task = current;
-	struct fpu *fpu = &task->thread.fpu;
+	struct fpu *fpu = x86_task_fpu(task);
 	int si_code;
 	char *str = (trapnr == X86_TRAP_MF) ? "fpu exception" :
 						"simd exception";
@@ -1350,11 +1395,11 @@ static bool handle_xfd_event(struct pt_regs *regs)
 	if (!IS_ENABLED(CONFIG_X86_64) || !cpu_feature_enabled(X86_FEATURE_XFD))
 		return false;
 
-	rdmsrl(MSR_IA32_XFD_ERR, xfd_err);
+	rdmsrq(MSR_IA32_XFD_ERR, xfd_err);
 	if (!xfd_err)
 		return false;
 
-	wrmsrl(MSR_IA32_XFD_ERR, 0);
+	wrmsrq(MSR_IA32_XFD_ERR, 0);
 
 	/* Die if that happens in kernel space */
 	if (WARN_ON(!user_mode(regs)))

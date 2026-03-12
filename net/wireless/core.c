@@ -5,7 +5,7 @@
  * Copyright 2006-2010		Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
  * Copyright 2015-2017	Intel Deutschland GmbH
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2025 Intel Corporation
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -143,10 +143,7 @@ int cfg80211_dev_rename(struct cfg80211_registered_device *rdev,
 	if (result)
 		return result;
 
-	if (!IS_ERR_OR_NULL(rdev->wiphy.debugfsdir))
-		debugfs_rename(rdev->wiphy.debugfsdir->d_parent,
-			       rdev->wiphy.debugfsdir,
-			       rdev->wiphy.debugfsdir->d_parent, newname);
+	debugfs_change_name(rdev->wiphy.debugfsdir, "%s", newname);
 
 	nl80211_notify_wiphy(rdev, NL80211_CMD_NEW_WIPHY);
 
@@ -165,11 +162,11 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
 		if (!wdev->netdev)
 			continue;
-		wdev->netdev->netns_local = false;
+		wdev->netdev->netns_immutable = false;
 		err = dev_change_net_namespace(wdev->netdev, net, "wlan%d");
 		if (err)
 			break;
-		wdev->netdev->netns_local = true;
+		wdev->netdev->netns_immutable = true;
 	}
 
 	if (err) {
@@ -181,17 +178,18 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 						     list) {
 			if (!wdev->netdev)
 				continue;
-			wdev->netdev->netns_local = false;
+			wdev->netdev->netns_immutable = false;
 			err = dev_change_net_namespace(wdev->netdev, net,
 							"wlan%d");
 			WARN_ON(err);
-			wdev->netdev->netns_local = true;
+			wdev->netdev->netns_immutable = true;
 		}
 
 		return err;
 	}
 
-	wiphy_lock(&rdev->wiphy);
+	guard(wiphy)(&rdev->wiphy);
+
 	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
 		if (!wdev->netdev)
 			continue;
@@ -212,7 +210,6 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 			continue;
 		nl80211_notify_iface(rdev, wdev, NL80211_CMD_NEW_INTERFACE);
 	}
-	wiphy_unlock(&rdev->wiphy);
 
 	return 0;
 }
@@ -221,9 +218,9 @@ static void cfg80211_rfkill_poll(struct rfkill *rfkill, void *data)
 {
 	struct cfg80211_registered_device *rdev = data;
 
-	wiphy_lock(&rdev->wiphy);
+	guard(wiphy)(&rdev->wiphy);
+
 	rdev_rfkill_poll(rdev);
-	wiphy_unlock(&rdev->wiphy);
 }
 
 void cfg80211_stop_p2p_device(struct cfg80211_registered_device *rdev,
@@ -242,7 +239,7 @@ void cfg80211_stop_p2p_device(struct cfg80211_registered_device *rdev,
 
 	rdev->opencount--;
 
-	if (rdev->scan_req && rdev->scan_req->wdev == wdev) {
+	if (rdev->scan_req && rdev->scan_req->req.wdev == wdev) {
 		if (WARN_ON(!rdev->scan_req->notified &&
 			    (!rdev->int_scan_req ||
 			     !rdev->int_scan_req->notified)))
@@ -283,7 +280,7 @@ void cfg80211_shutdown_all_interfaces(struct wiphy *wiphy)
 
 		/* otherwise, check iftype */
 
-		wiphy_lock(wiphy);
+		guard(wiphy)(wiphy);
 
 		switch (wdev->iftype) {
 		case NL80211_IFTYPE_P2P_DEVICE:
@@ -295,8 +292,6 @@ void cfg80211_shutdown_all_interfaces(struct wiphy *wiphy)
 		default:
 			break;
 		}
-
-		wiphy_unlock(wiphy);
 	}
 }
 EXPORT_SYMBOL_GPL(cfg80211_shutdown_all_interfaces);
@@ -331,9 +326,9 @@ static void cfg80211_event_work(struct work_struct *work)
 	rdev = container_of(work, struct cfg80211_registered_device,
 			    event_work);
 
-	wiphy_lock(&rdev->wiphy);
+	guard(wiphy)(&rdev->wiphy);
+
 	cfg80211_process_rdev_events(rdev);
-	wiphy_unlock(&rdev->wiphy);
 }
 
 void cfg80211_destroy_ifaces(struct cfg80211_registered_device *rdev)
@@ -347,10 +342,10 @@ void cfg80211_destroy_ifaces(struct cfg80211_registered_device *rdev)
 			if (wdev->netdev)
 				dev_close(wdev->netdev);
 
-			wiphy_lock(&rdev->wiphy);
+			guard(wiphy)(&rdev->wiphy);
+
 			cfg80211_leave(rdev, wdev);
 			cfg80211_remove_virtual_intf(rdev, wdev);
-			wiphy_unlock(&rdev->wiphy);
 		}
 	}
 }
@@ -423,9 +418,9 @@ static void cfg80211_wiphy_work(struct work_struct *work)
 
 	trace_wiphy_work_worker_start(&rdev->wiphy);
 
-	wiphy_lock(&rdev->wiphy);
+	guard(wiphy)(&rdev->wiphy);
 	if (rdev->suspended)
-		goto out;
+		return;
 
 	spin_lock_irq(&rdev->wiphy_work_lock);
 	wk = list_first_entry_or_null(&rdev->wiphy_work_list,
@@ -441,8 +436,6 @@ static void cfg80211_wiphy_work(struct work_struct *work)
 	} else {
 		spin_unlock_irq(&rdev->wiphy_work_lock);
 	}
-out:
-	wiphy_unlock(&rdev->wiphy);
 }
 
 /* exported functions */
@@ -796,6 +789,7 @@ int wiphy_register(struct wiphy *wiphy)
 				  BIT(NL80211_CHAN_WIDTH_80) |
 				  BIT(NL80211_CHAN_WIDTH_80P80) |
 				  BIT(NL80211_CHAN_WIDTH_160) |
+				  BIT(NL80211_CHAN_WIDTH_320) |
 				  BIT(NL80211_CHAN_WIDTH_5) |
 				  BIT(NL80211_CHAN_WIDTH_10))))
 			return -EINVAL;
@@ -997,10 +991,37 @@ int wiphy_register(struct wiphy *wiphy)
 		 wiphy->max_num_akm_suites > CFG80211_MAX_NUM_AKM_SUITES)
 		return -EINVAL;
 
+	/* Allocate radio configuration space for multi-radio wiphy */
+	if (wiphy->n_radio > 0) {
+		int idx;
+
+		wiphy->radio_cfg = kcalloc(wiphy->n_radio,
+					   sizeof(*wiphy->radio_cfg),
+					   GFP_KERNEL);
+		if (!wiphy->radio_cfg)
+			return -ENOMEM;
+		/*
+		 * Initialize wiphy radio parameters to IEEE 802.11
+		 * MIB default values. RTS threshold is disabled by
+		 * default with the special -1 value.
+		 */
+		for (idx = 0; idx < wiphy->n_radio; idx++)
+			wiphy->radio_cfg[idx].rts_threshold = (u32)-1;
+	}
+
 	/* check and set up bitrates */
 	ieee80211_set_bitrate_flags(wiphy);
 
 	rdev->wiphy.features |= NL80211_FEATURE_SCAN_FLUSH;
+
+	if (rdev->wiphy.bss_param_support & WIPHY_BSS_PARAM_P2P_CTWINDOW)
+		rdev->wiphy.features |= NL80211_FEATURE_P2P_GO_CTWIN;
+	else if (rdev->wiphy.features & NL80211_FEATURE_P2P_GO_CTWIN)
+		rdev->wiphy.bss_param_support |= WIPHY_BSS_PARAM_P2P_CTWINDOW;
+	if (rdev->wiphy.bss_param_support & WIPHY_BSS_PARAM_P2P_OPPPS)
+		rdev->wiphy.features |= NL80211_FEATURE_P2P_GO_OPPPS;
+	else if (rdev->wiphy.features & NL80211_FEATURE_P2P_GO_OPPPS)
+		rdev->wiphy.bss_param_support |= WIPHY_BSS_PARAM_P2P_OPPPS;
 
 	rtnl_lock();
 	wiphy_lock(&rdev->wiphy);
@@ -1174,6 +1195,7 @@ void wiphy_unregister(struct wiphy *wiphy)
 	/* this has nothing to do now but make sure it's gone */
 	cancel_work_sync(&rdev->wiphy_work);
 
+	cancel_work_sync(&rdev->rfkill_block);
 	cancel_work_sync(&rdev->conn_work);
 	flush_work(&rdev->event_work);
 	cancel_delayed_work_sync(&rdev->dfs_update_channels_wk);
@@ -1224,6 +1246,7 @@ void cfg80211_dev_free(struct cfg80211_registered_device *rdev)
 
 void wiphy_free(struct wiphy *wiphy)
 {
+	kfree(wiphy->radio_cfg);
 	put_device(&wiphy->dev);
 }
 EXPORT_SYMBOL(wiphy_free);
@@ -1437,6 +1460,8 @@ void cfg80211_init_wdev(struct wireless_dev *wdev)
 	/* allow mac80211 to determine the timeout */
 	wdev->ps_timeout = -1;
 
+	wdev->radio_mask = BIT(wdev->wiphy->n_radio) - 1;
+
 	if ((wdev->iftype == NL80211_IFTYPE_STATION ||
 	     wdev->iftype == NL80211_IFTYPE_P2P_CLIENT ||
 	     wdev->iftype == NL80211_IFTYPE_ADHOC) && !wdev->use_4addr)
@@ -1524,15 +1549,15 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 		SET_NETDEV_DEVTYPE(dev, &wiphy_type);
 		wdev->netdev = dev;
 		/* can only change netns with wiphy */
-		dev->netns_local = true;
+		dev->netns_immutable = true;
 
 		cfg80211_init_wdev(wdev);
 		break;
 	case NETDEV_REGISTER:
 		if (!wdev->registered) {
-			wiphy_lock(&rdev->wiphy);
+			guard(wiphy)(&rdev->wiphy);
+
 			cfg80211_register_wdev(rdev, wdev);
-			wiphy_unlock(&rdev->wiphy);
 		}
 		break;
 	case NETDEV_UNREGISTER:
@@ -1541,16 +1566,16 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 		 * so check wdev->registered.
 		 */
 		if (wdev->registered && !wdev->registering) {
-			wiphy_lock(&rdev->wiphy);
+			guard(wiphy)(&rdev->wiphy);
+
 			_cfg80211_unregister_wdev(wdev, false);
-			wiphy_unlock(&rdev->wiphy);
 		}
 		break;
 	case NETDEV_GOING_DOWN:
-		wiphy_lock(&rdev->wiphy);
-		cfg80211_leave(rdev, wdev);
-		cfg80211_remove_links(wdev);
-		wiphy_unlock(&rdev->wiphy);
+		scoped_guard(wiphy, &rdev->wiphy) {
+			cfg80211_leave(rdev, wdev);
+			cfg80211_remove_links(wdev);
+		}
 		/* since we just did cfg80211_leave() nothing to do there */
 		cancel_work_sync(&wdev->disconnect_wk);
 		cancel_work_sync(&wdev->pmsr_free_wk);
@@ -1558,7 +1583,7 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 	case NETDEV_DOWN:
 		wiphy_lock(&rdev->wiphy);
 		cfg80211_update_iface_num(rdev, wdev->iftype, -1);
-		if (rdev->scan_req && rdev->scan_req->wdev == wdev) {
+		if (rdev->scan_req && rdev->scan_req->req.wdev == wdev) {
 			if (WARN_ON(!rdev->scan_req->notified &&
 				    (!rdev->int_scan_req ||
 				     !rdev->int_scan_req->notified)))
@@ -1712,7 +1737,7 @@ EXPORT_SYMBOL_GPL(wiphy_work_flush);
 
 void wiphy_delayed_work_timer(struct timer_list *t)
 {
-	struct wiphy_delayed_work *dwork = from_timer(dwork, t, timer);
+	struct wiphy_delayed_work *dwork = timer_container_of(dwork, t, timer);
 
 	wiphy_work_queue(dwork->wiphy, &dwork->work);
 }
@@ -1725,7 +1750,7 @@ void wiphy_delayed_work_queue(struct wiphy *wiphy,
 	trace_wiphy_delayed_work_queue(wiphy, &dwork->work, delay);
 
 	if (!delay) {
-		del_timer(&dwork->timer);
+		timer_delete(&dwork->timer);
 		wiphy_work_queue(wiphy, &dwork->work);
 		return;
 	}
@@ -1740,7 +1765,7 @@ void wiphy_delayed_work_cancel(struct wiphy *wiphy,
 {
 	lockdep_assert_held(&wiphy->mtx);
 
-	del_timer_sync(&dwork->timer);
+	timer_delete_sync(&dwork->timer);
 	wiphy_work_cancel(wiphy, &dwork->work);
 }
 EXPORT_SYMBOL_GPL(wiphy_delayed_work_cancel);
@@ -1750,7 +1775,7 @@ void wiphy_delayed_work_flush(struct wiphy *wiphy,
 {
 	lockdep_assert_held(&wiphy->mtx);
 
-	del_timer_sync(&dwork->timer);
+	timer_delete_sync(&dwork->timer);
 	wiphy_work_flush(wiphy, &dwork->work);
 }
 EXPORT_SYMBOL_GPL(wiphy_delayed_work_flush);

@@ -1737,7 +1737,7 @@ static int spmi_pmic_arb_bus_init(struct platform_device *pdev,
 
 	dev_dbg(&pdev->dev, "adding irq domain for bus %d\n", bus_index);
 
-	bus->domain = irq_domain_add_tree(node, &pmic_arb_irq_domain_ops, bus);
+	bus->domain = irq_domain_create_tree(of_fwnode_handle(node), &pmic_arb_irq_domain_ops, bus);
 	if (!bus->domain) {
 		dev_err(&pdev->dev, "unable to create irq_domain\n");
 		return -ENOMEM;
@@ -1881,7 +1881,7 @@ MODULE_DEVICE_TABLE(of, spmi_pmic_arb_match_table);
 
 static struct platform_driver spmi_pmic_arb_driver = {
 	.probe		= spmi_pmic_arb_probe,
-	.remove_new	= spmi_pmic_arb_remove,
+	.remove		= spmi_pmic_arb_remove,
 	.driver		= {
 		.name	= "spmi_pmic_arb",
 		.of_match_table = spmi_pmic_arb_match_table,

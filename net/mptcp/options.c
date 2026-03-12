@@ -409,7 +409,7 @@ bool mptcp_syn_options(struct sock *sk, const struct sk_buff *skb,
 	subflow->snd_isn = TCP_SKB_CB(skb)->end_seq;
 	if (subflow->request_mptcp) {
 		if (unlikely(subflow_simultaneous_connect(sk))) {
-			WARN_ON_ONCE(!mptcp_try_fallback(sk));
+			WARN_ON_ONCE(!mptcp_try_fallback(sk, MPTCP_MIB_SIMULTCONNFALLBACK));
 
 			/* Ensure mptcp_finish_connect() will not process the
 			 * MPC handshake.
@@ -442,7 +442,6 @@ static void clear_3rdack_retransmission(struct sock *sk)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
 	sk_stop_timer(sk, &icsk->icsk_delack_timer);
-	icsk->icsk_ack.timeout = 0;
 	icsk->icsk_ack.ato = 0;
 	icsk->icsk_ack.pending &= ~(ICSK_ACK_SCHED | ICSK_ACK_TIMER);
 }
@@ -992,9 +991,10 @@ static bool check_fully_established(struct mptcp_sock *msk, struct sock *ssk,
 		if (subflow->mp_join)
 			goto reset;
 		subflow->mp_capable = 0;
-		if (!mptcp_try_fallback(ssk))
+		if (!mptcp_try_fallback(ssk, MPTCP_MIB_MPCAPABLEDATAFALLBACK)) {
+			MPTCP_INC_STATS(sock_net(ssk), MPTCP_MIB_FALLBACKFAILED);
 			goto reset;
-		pr_fallback(msk);
+		}
 		return false;
 	}
 

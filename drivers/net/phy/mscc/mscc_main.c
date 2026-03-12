@@ -17,6 +17,8 @@
 #include <linux/of.h>
 #include <linux/netdevice.h>
 #include <dt-bindings/net/mscc-phy-vsc8531.h>
+
+#include "../phylib.h"
 #include "mscc_serdes.h"
 #include "mscc.h"
 
@@ -139,8 +141,7 @@ static void vsc85xx_get_strings(struct phy_device *phydev, u8 *data)
 		return;
 
 	for (i = 0; i < priv->nstats; i++)
-		strscpy(data + i * ETH_GSTRING_LEN, priv->hw_stats[i].string,
-			ETH_GSTRING_LEN);
+		ethtool_puts(&data, priv->hw_stats[i].string);
 }
 
 static u64 vsc85xx_get_stat(struct phy_device *phydev, int i)
@@ -529,7 +530,6 @@ static int vsc85xx_update_rgmii_cntl(struct phy_device *phydev, u32 rgmii_cntl,
 	u16 rgmii_rx_delay_pos = ffs(rgmii_rx_delay_mask) - 1;
 	u16 rgmii_tx_delay_pos = ffs(rgmii_tx_delay_mask) - 1;
 	int delay_size = ARRAY_SIZE(vsc85xx_internal_delay);
-	struct device *dev = &phydev->mdio.dev;
 	u16 reg_val = 0;
 	u16 mask = 0;
 	s32 rx_delay;
@@ -548,7 +548,7 @@ static int vsc85xx_update_rgmii_cntl(struct phy_device *phydev, u32 rgmii_cntl,
 	if (phy_interface_is_rgmii(phydev))
 		mask |= rgmii_rx_delay_mask | rgmii_tx_delay_mask;
 
-	rx_delay = phy_get_internal_delay(phydev, dev, vsc85xx_internal_delay,
+	rx_delay = phy_get_internal_delay(phydev, vsc85xx_internal_delay,
 					  delay_size, true);
 	if (rx_delay < 0) {
 		if (phydev->interface == PHY_INTERFACE_MODE_RGMII_RXID ||
@@ -558,7 +558,7 @@ static int vsc85xx_update_rgmii_cntl(struct phy_device *phydev, u32 rgmii_cntl,
 			rx_delay = RGMII_CLK_DELAY_0_2_NS;
 	}
 
-	tx_delay = phy_get_internal_delay(phydev, dev, vsc85xx_internal_delay,
+	tx_delay = phy_get_internal_delay(phydev, vsc85xx_internal_delay,
 					  delay_size, false);
 	if (tx_delay < 0) {
 		if (phydev->interface == PHY_INTERFACE_MODE_RGMII_TXID ||
@@ -2202,6 +2202,28 @@ static int vsc85xx_read_status(struct phy_device *phydev)
 	return genphy_read_status(phydev);
 }
 
+static unsigned int vsc85xx_inband_caps(struct phy_device *phydev,
+					phy_interface_t interface)
+{
+	if (interface != PHY_INTERFACE_MODE_SGMII &&
+	    interface != PHY_INTERFACE_MODE_QSGMII)
+		return 0;
+
+	return LINK_INBAND_DISABLE | LINK_INBAND_ENABLE;
+}
+
+static int vsc85xx_config_inband(struct phy_device *phydev, unsigned int modes)
+{
+	u16 reg_val = 0;
+
+	if (modes == LINK_INBAND_ENABLE)
+		reg_val = MSCC_PHY_SERDES_ANEG;
+
+	return phy_modify_paged(phydev, MSCC_PHY_PAGE_EXTENDED_3,
+				MSCC_PHY_SERDES_PCS_CTRL, MSCC_PHY_SERDES_ANEG,
+				reg_val);
+}
+
 static int vsc8514_probe(struct phy_device *phydev)
 {
 	struct vsc8531_private *vsc8531;
@@ -2414,6 +2436,8 @@ static struct phy_driver vsc85xx_driver[] = {
 	.get_sset_count = &vsc85xx_get_sset_count,
 	.get_strings    = &vsc85xx_get_strings,
 	.get_stats      = &vsc85xx_get_stats,
+	.inband_caps    = vsc85xx_inband_caps,
+	.config_inband  = vsc85xx_config_inband,
 },
 {
 	.phy_id		= PHY_ID_VSC8514,
@@ -2437,6 +2461,8 @@ static struct phy_driver vsc85xx_driver[] = {
 	.get_sset_count = &vsc85xx_get_sset_count,
 	.get_strings    = &vsc85xx_get_strings,
 	.get_stats      = &vsc85xx_get_stats,
+	.inband_caps    = vsc85xx_inband_caps,
+	.config_inband  = vsc85xx_config_inband,
 },
 {
 	.phy_id		= PHY_ID_VSC8530,
@@ -2557,6 +2583,8 @@ static struct phy_driver vsc85xx_driver[] = {
 	.get_sset_count = &vsc85xx_get_sset_count,
 	.get_strings    = &vsc85xx_get_strings,
 	.get_stats      = &vsc85xx_get_stats,
+	.inband_caps    = vsc85xx_inband_caps,
+	.config_inband  = vsc85xx_config_inband,
 },
 {
 	.phy_id		= PHY_ID_VSC856X,
@@ -2579,6 +2607,8 @@ static struct phy_driver vsc85xx_driver[] = {
 	.get_sset_count = &vsc85xx_get_sset_count,
 	.get_strings    = &vsc85xx_get_strings,
 	.get_stats      = &vsc85xx_get_stats,
+	.inband_caps    = vsc85xx_inband_caps,
+	.config_inband  = vsc85xx_config_inband,
 },
 {
 	.phy_id		= PHY_ID_VSC8572,
@@ -2605,6 +2635,8 @@ static struct phy_driver vsc85xx_driver[] = {
 	.get_sset_count = &vsc85xx_get_sset_count,
 	.get_strings    = &vsc85xx_get_strings,
 	.get_stats      = &vsc85xx_get_stats,
+	.inband_caps    = vsc85xx_inband_caps,
+	.config_inband  = vsc85xx_config_inband,
 },
 {
 	.phy_id		= PHY_ID_VSC8574,
@@ -2631,6 +2663,8 @@ static struct phy_driver vsc85xx_driver[] = {
 	.get_sset_count = &vsc85xx_get_sset_count,
 	.get_strings    = &vsc85xx_get_strings,
 	.get_stats      = &vsc85xx_get_stats,
+	.inband_caps    = vsc85xx_inband_caps,
+	.config_inband  = vsc85xx_config_inband,
 },
 {
 	.phy_id		= PHY_ID_VSC8575,
@@ -2655,6 +2689,8 @@ static struct phy_driver vsc85xx_driver[] = {
 	.get_sset_count = &vsc85xx_get_sset_count,
 	.get_strings    = &vsc85xx_get_strings,
 	.get_stats      = &vsc85xx_get_stats,
+	.inband_caps    = vsc85xx_inband_caps,
+	.config_inband  = vsc85xx_config_inband,
 },
 {
 	.phy_id		= PHY_ID_VSC8582,
@@ -2679,6 +2715,8 @@ static struct phy_driver vsc85xx_driver[] = {
 	.get_sset_count = &vsc85xx_get_sset_count,
 	.get_strings    = &vsc85xx_get_strings,
 	.get_stats      = &vsc85xx_get_stats,
+	.inband_caps    = vsc85xx_inband_caps,
+	.config_inband  = vsc85xx_config_inband,
 },
 {
 	.phy_id		= PHY_ID_VSC8584,
@@ -2704,13 +2742,15 @@ static struct phy_driver vsc85xx_driver[] = {
 	.get_strings    = &vsc85xx_get_strings,
 	.get_stats      = &vsc85xx_get_stats,
 	.link_change_notify = &vsc85xx_link_change_notify,
+	.inband_caps    = vsc85xx_inband_caps,
+	.config_inband  = vsc85xx_config_inband,
 }
 
 };
 
 module_phy_driver(vsc85xx_driver);
 
-static struct mdio_device_id __maybe_unused vsc85xx_tbl[] = {
+static const struct mdio_device_id __maybe_unused vsc85xx_tbl[] = {
 	{ PHY_ID_MATCH_VENDOR(PHY_VENDOR_MSCC) },
 	{ }
 };

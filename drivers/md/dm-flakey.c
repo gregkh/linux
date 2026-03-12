@@ -128,8 +128,11 @@ static int parse_features(struct dm_arg_set *as, struct flakey_c *fc,
 		 * corrupt_bio_byte <Nth_byte> <direction> <value> <bio_flags>
 		 */
 		if (!strcasecmp(arg_name, "corrupt_bio_byte")) {
-			if (!argc) {
-				ti->error = "Feature corrupt_bio_byte requires parameters";
+			if (fc->corrupt_bio_byte) {
+				ti->error = "Feature corrupt_bio_byte duplicated";
+				return -EINVAL;
+			} else if (argc < 4) {
+				ti->error = "Feature corrupt_bio_byte requires 4 parameters";
 				return -EINVAL;
 			}
 
@@ -176,7 +179,10 @@ static int parse_features(struct dm_arg_set *as, struct flakey_c *fc,
 		}
 
 		if (!strcasecmp(arg_name, "random_read_corrupt")) {
-			if (!argc) {
+			if (fc->random_read_corrupt) {
+				ti->error = "Feature random_read_corrupt duplicated";
+				return -EINVAL;
+			} else if (!argc) {
 				ti->error = "Feature random_read_corrupt requires a parameter";
 				return -EINVAL;
 			}
@@ -189,7 +195,10 @@ static int parse_features(struct dm_arg_set *as, struct flakey_c *fc,
 		}
 
 		if (!strcasecmp(arg_name, "random_write_corrupt")) {
-			if (!argc) {
+			if (fc->random_write_corrupt) {
+				ti->error = "Feature random_write_corrupt duplicated";
+				return -EINVAL;
+			} else if (!argc) {
 				ti->error = "Feature random_write_corrupt requires a parameter";
 				return -EINVAL;
 			}
@@ -205,12 +214,21 @@ static int parse_features(struct dm_arg_set *as, struct flakey_c *fc,
 		return -EINVAL;
 	}
 
-	if (test_bit(DROP_WRITES, &fc->flags) && (fc->corrupt_bio_rw == WRITE)) {
-		ti->error = "drop_writes is incompatible with corrupt_bio_byte with the WRITE flag set";
+	if (test_bit(DROP_WRITES, &fc->flags) &&
+	    ((fc->corrupt_bio_byte && fc->corrupt_bio_rw == WRITE) ||
+	     fc->random_write_corrupt)) {
+		ti->error = "drop_writes is incompatible with random_write_corrupt or corrupt_bio_byte with the WRITE flag set";
 		return -EINVAL;
 
-	} else if (test_bit(ERROR_WRITES, &fc->flags) && (fc->corrupt_bio_rw == WRITE)) {
-		ti->error = "error_writes is incompatible with corrupt_bio_byte with the WRITE flag set";
+	} else if (test_bit(ERROR_WRITES, &fc->flags) &&
+		   ((fc->corrupt_bio_byte && fc->corrupt_bio_rw == WRITE) ||
+		    fc->random_write_corrupt)) {
+		ti->error = "error_writes is incompatible with random_write_corrupt or corrupt_bio_byte with the WRITE flag set";
+		return -EINVAL;
+	} else if (test_bit(ERROR_READS, &fc->flags) &&
+		   ((fc->corrupt_bio_byte && fc->corrupt_bio_rw == READ) ||
+		    fc->random_read_corrupt)) {
+		ti->error = "error_reads is incompatible with random_read_corrupt or corrupt_bio_byte with the READ flag set";
 		return -EINVAL;
 	}
 
@@ -279,7 +297,7 @@ static int flakey_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (r)
 		goto bad;
 
-	r = dm_read_arg(_args, &as, &fc->down_interval, &ti->error);
+	r = dm_read_arg(_args + 1, &as, &fc->down_interval, &ti->error);
 	if (r)
 		goto bad;
 
@@ -423,7 +441,7 @@ static struct bio *clone_bio(struct dm_target *ti, struct flakey_c *fc, struct b
 	if (!clone)
 		return NULL;
 
-	bio_init(clone, fc->dev->bdev, clone->bi_inline_vecs, nr_iovecs, bio->bi_opf);
+	bio_init_inline(clone, fc->dev->bdev, nr_iovecs, bio->bi_opf);
 
 	clone->bi_iter.bi_sector = flakey_map_sector(ti, bio->bi_iter.bi_sector);
 	clone->bi_private = bio;
@@ -494,8 +512,8 @@ static int flakey_map(struct dm_target *ti, struct bio *bio)
 		}
 
 		/*
-		 * Error reads if neither corrupt_bio_byte or drop_writes or error_writes are set.
-		 * Otherwise, flakey_end_io() will decide if the reads should be modified.
+		 * If ERROR_READS isn't set flakey_end_io() will decide if the
+		 * reads should be modified.
 		 */
 		if (bio_data_dir(bio) == READ) {
 			if (test_bit(ERROR_READS, &fc->flags))
@@ -577,13 +595,6 @@ static int flakey_end_io(struct dm_target *ti, struct bio *bio,
 			if (rem < fc->random_read_corrupt)
 				corrupt_bio_random(bio, pb->saved_iter);
 		}
-		if (test_bit(ERROR_READS, &fc->flags)) {
-			/*
-			 * Error read during the down_interval if drop_writes
-			 * and error_writes were not configured.
-			 */
-			*error = BLK_STS_IOERR;
-		}
 	}
 
 	return DM_ENDIO_DONE;
@@ -640,7 +651,9 @@ static void flakey_status(struct dm_target *ti, status_type_t type,
 	}
 }
 
-static int flakey_prepare_ioctl(struct dm_target *ti, struct block_device **bdev)
+static int flakey_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
+				unsigned int cmd, unsigned long arg,
+				bool *forward)
 {
 	struct flakey_c *fc = ti->private;
 

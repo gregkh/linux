@@ -963,6 +963,9 @@ static int pci_ite887x_init(struct pci_dev *dev)
 	struct resource *iobase = NULL;
 	u32 miscr, uartbar, ioport;
 
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(dev);
+
 	/* search for the base-ioport */
 	for (i = 0; i < ARRAY_SIZE(inta_addr); i++) {
 		iobase = request_region(inta_addr[i], ITE_887x_IOSIZE,
@@ -1513,6 +1516,9 @@ static int pci_quatech_init(struct pci_dev *dev)
 	const struct pci_device_id *match;
 	bool amcc = false;
 
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(dev);
+
 	match = pci_match_id(quatech_cards, dev);
 	if (match)
 		amcc = match->driver_data;
@@ -1537,6 +1543,9 @@ static int pci_quatech_setup(struct serial_private *priv,
 		  const struct pciserial_board *board,
 		  struct uart_8250_port *port, int idx)
 {
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(priv->dev);
+
 	/* Needed by pci_quatech calls below */
 	port->port.iobase = pci_resource_start(priv->dev, FL_GET_BASE(board->flags));
 	/* Set up the clocking */
@@ -1654,6 +1663,9 @@ static int pci_fintek_setup(struct serial_private *priv,
 	u8 config_base;
 	u16 iobase;
 
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(pdev);
+
 	config_base = 0x40 + 0x08 * idx;
 
 	/* Get the io address from configuration space */
@@ -1684,6 +1696,9 @@ static int pci_fintek_init(struct pci_dev *dev)
 	resource_size_t bar_data[3];
 	u8 config_base;
 	struct serial_private *priv = pci_get_drvdata(dev);
+
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(dev);
 
 	if (!(pci_resource_flags(dev, 5) & IORESOURCE_IO) ||
 			!(pci_resource_flags(dev, 4) & IORESOURCE_IO) ||
@@ -1741,7 +1756,7 @@ static int pci_fintek_init(struct pci_dev *dev)
 	return max_port;
 }
 
-static void f815xxa_mem_serial_out(struct uart_port *p, int offset, int value)
+static void f815xxa_mem_serial_out(struct uart_port *p, unsigned int offset, u32 value)
 {
 	struct f815xxa_data *data = p->private_data;
 	unsigned long flags;
@@ -1836,10 +1851,10 @@ static void kt_handle_break(struct uart_port *p)
 	serial8250_clear_and_reinit_fifos(up);
 }
 
-static unsigned int kt_serial_in(struct uart_port *p, int offset)
+static u32 kt_serial_in(struct uart_port *p, unsigned int offset)
 {
 	struct uart_8250_port *up = up_to_u8250p(p);
-	unsigned int val;
+	u32 val;
 
 	/*
 	 * When the Intel ME (management engine) gets reset its serial
@@ -1863,6 +1878,9 @@ static int kt_serial_setup(struct serial_private *priv,
 			   const struct pciserial_board *board,
 			   struct uart_8250_port *port, int idx)
 {
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(priv->dev);
+
 	port->port.flags |= UPF_BUG_THRE;
 	port->port.serial_in = kt_serial_in;
 	port->port.handle_break = kt_handle_break;
@@ -1883,6 +1901,9 @@ pci_wch_ch353_setup(struct serial_private *priv,
 		    const struct pciserial_board *board,
 		    struct uart_8250_port *port, int idx)
 {
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(priv->dev);
+
 	port->port.flags |= UPF_FIXED_TYPE;
 	port->port.type = PORT_16550A;
 	return pci_default_setup(priv, board, port, idx);
@@ -1893,6 +1914,9 @@ pci_wch_ch355_setup(struct serial_private *priv,
 		const struct pciserial_board *board,
 		struct uart_8250_port *port, int idx)
 {
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(priv->dev);
+
 	port->port.flags |= UPF_FIXED_TYPE;
 	port->port.type = PORT_16550A;
 	return pci_default_setup(priv, board, port, idx);
@@ -1903,6 +1927,9 @@ pci_wch_ch38x_setup(struct serial_private *priv,
 		    const struct pciserial_board *board,
 		    struct uart_8250_port *port, int idx)
 {
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(priv->dev);
+
 	port->port.flags |= UPF_FIXED_TYPE;
 	port->port.type = PORT_16850;
 	return pci_default_setup(priv, board, port, idx);
@@ -1917,6 +1944,8 @@ static int pci_wch_ch38x_init(struct pci_dev *dev)
 	int max_port;
 	unsigned long iobase;
 
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(dev);
 
 	switch (dev->device) {
 	case 0x3853: /* 8 ports */
@@ -1935,6 +1964,11 @@ static int pci_wch_ch38x_init(struct pci_dev *dev)
 static void pci_wch_ch38x_exit(struct pci_dev *dev)
 {
 	unsigned long iobase;
+
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT)) {
+		serial_8250_warn_need_ioport(dev);
+		return;
+	}
 
 	iobase = pci_resource_start(dev, 0);
 	outb(0x0, iobase + CH384_XINT_ENABLE_REG);
@@ -2051,6 +2085,9 @@ static int pci_moxa_init(struct pci_dev *dev)
 	unsigned int i, num_ports = moxa_get_nports(device);
 	u8 val, init_mode = MOXA_RS232;
 
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(dev);
+
 	if (!(pci_moxa_supported_rs(dev) & MOXA_SUPP_RS232)) {
 		init_mode = MOXA_RS422;
 	}
@@ -2082,6 +2119,9 @@ pci_moxa_setup(struct serial_private *priv,
 {
 	unsigned int bar = FL_GET_BASE(board->flags);
 	int offset;
+
+	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
+		return serial_8250_warn_need_ioport(priv->dev);
 
 	if (board->num_ports == 4 && idx == 3)
 		offset = 7 * board->uart_offset;
@@ -6175,7 +6215,6 @@ static pci_ers_result_t serial8250_io_slot_reset(struct pci_dev *dev)
 		return PCI_ERS_RESULT_DISCONNECT;
 
 	pci_restore_state(dev);
-	pci_save_state(dev);
 
 	return PCI_ERS_RESULT_RECOVERED;
 }
@@ -6217,4 +6256,4 @@ module_pci_driver(serial_pci_driver);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Generic 8250/16x50 PCI serial probe module");
 MODULE_DEVICE_TABLE(pci, serial_pci_tbl);
-MODULE_IMPORT_NS(SERIAL_8250_PCI);
+MODULE_IMPORT_NS("SERIAL_8250_PCI");

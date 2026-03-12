@@ -103,7 +103,6 @@ void adf_dev_restore(struct adf_accel_dev *accel_dev)
 			 accel_dev->accel_id);
 		hw_device->reset_device(accel_dev);
 		pci_restore_state(pdev);
-		pci_save_state(pdev);
 	}
 }
 
@@ -202,7 +201,6 @@ static pci_ers_result_t adf_slot_reset(struct pci_dev *pdev)
 	if (!pdev->is_busmaster)
 		pci_set_master(pdev);
 	pci_restore_state(pdev);
-	pci_save_state(pdev);
 	res = adf_dev_up(accel_dev, false);
 	if (res && res != -EALREADY)
 		return PCI_ERS_RESULT_DISCONNECT;
@@ -227,7 +225,7 @@ const struct pci_error_handlers adf_err_handler = {
 };
 EXPORT_SYMBOL_GPL(adf_err_handler);
 
-int adf_dev_autoreset(struct adf_accel_dev *accel_dev)
+static int adf_dev_autoreset(struct adf_accel_dev *accel_dev)
 {
 	if (accel_dev->autoreset_on_error)
 		return adf_dev_aer_schedule_reset(accel_dev, ADF_DEV_RESET_ASYNC);

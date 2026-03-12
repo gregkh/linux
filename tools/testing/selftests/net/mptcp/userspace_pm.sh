@@ -94,7 +94,7 @@ test_fail()
 }
 
 # This function is used in the cleanup trap
-#shellcheck disable=SC2317
+#shellcheck disable=SC2317,SC2329
 cleanup()
 {
 	print_title "Cleanup"
@@ -117,7 +117,36 @@ cleanup()
 trap cleanup EXIT
 
 # Create and configure network namespaces for testing
+print_title "Init"
 mptcp_lib_ns_init ns1 ns2
+
+# check path_manager and pm_type sysctl mapping
+if [ -f /proc/sys/net/mptcp/path_manager ]; then
+	ip netns exec "$ns1" sysctl -q net.mptcp.path_manager=userspace
+	pm_type="$(ip netns exec "$ns1" sysctl -n net.mptcp.pm_type)"
+	if [ "${pm_type}" != "1" ]; then
+		test_fail "unexpected pm_type: ${pm_type}"
+		mptcp_lib_result_print_all_tap
+		exit ${KSFT_FAIL}
+	fi
+
+	ip netns exec "$ns1" sysctl -q net.mptcp.path_manager=error 2>/dev/null
+	pm_type="$(ip netns exec "$ns1" sysctl -n net.mptcp.pm_type)"
+	if [ "${pm_type}" != "1" ]; then
+		test_fail "unexpected pm_type after error: ${pm_type}"
+		mptcp_lib_result_print_all_tap
+		exit ${KSFT_FAIL}
+	fi
+
+	ip netns exec "$ns1" sysctl -q net.mptcp.pm_type=0
+	pm_name="$(ip netns exec "$ns1" sysctl -n net.mptcp.path_manager)"
+	if [ "${pm_name}" != "kernel" ]; then
+		test_fail "unexpected path-manager: ${pm_name}"
+		mptcp_lib_result_print_all_tap
+		exit ${KSFT_FAIL}
+	fi
+fi
+
 for i in "$ns1" "$ns2" ;do
 	ip netns exec "$i" sysctl -q net.mptcp.pm_type=1
 done
@@ -152,7 +181,6 @@ mptcp_lib_events "${ns1}" "${server_evts}" server_evts_pid
 sleep 0.5
 mptcp_lib_subtests_last_ts_reset
 
-print_title "Init"
 print_test "Created network namespaces ns1, ns2"
 test_pass
 
@@ -213,7 +241,7 @@ make_connection()
 
 	print_test "Established IP${is_v6} MPTCP Connection ns2 => ns1"
 	if [ "${client_token}" != "" ] && [ "${server_token}" != "" ] &&
-	   [ "${client_serverside}" = 0 ] && [ "${server_serverside}" = 1 ] &&
+	   [ "${client_serverside:-0}" = 0 ] && [ "${server_serverside:-0}" = 1 ] &&
 	   [ "${client_nojoin:-0}" = 0 ] && [ "${server_nojoin:-0}" = 1 ]
 	then
 		test_pass

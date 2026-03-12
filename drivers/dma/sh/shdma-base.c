@@ -738,7 +738,7 @@ static struct dma_async_tx_descriptor *shdma_prep_dma_cyclic(
 	slave_addr = ops->slave_addr(schan);
 
 	/*
-	 * Allocate the sg list dynamically as it would consumer too much stack
+	 * Allocate the sg list dynamically as it would consume too much stack
 	 * space.
 	 */
 	sgl = kmalloc_array(sg_len, sizeof(*sgl), GFP_KERNEL);
@@ -974,7 +974,7 @@ void shdma_chan_probe(struct shdma_dev *sdev,
 
 	spin_lock_init(&schan->chan_lock);
 
-	/* Init descripter manage list */
+	/* Init descriptor manage list */
 	INIT_LIST_HEAD(&schan->ld_queue);
 	INIT_LIST_HEAD(&schan->ld_free);
 

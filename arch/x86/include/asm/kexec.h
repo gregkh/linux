@@ -9,21 +9,28 @@
 # define PA_SWAP_PAGE		3
 # define PAGES_NR		4
 #else
-# define PA_CONTROL_PAGE	0
-# define VA_CONTROL_PAGE	1
-# define PA_TABLE_PAGE		2
-# define PA_SWAP_PAGE		3
-# define PAGES_NR		4
+/* Size of each exception handler referenced by the IDT */
+# define KEXEC_DEBUG_EXC_HANDLER_SIZE	6 /* PUSHI, PUSHI, 2-byte JMP */
+#endif
+
+#ifdef CONFIG_X86_64
+
+#include <linux/bits.h>
+
+#define RELOC_KERNEL_PRESERVE_CONTEXT	BIT(0)
+#define RELOC_KERNEL_CACHE_INCOHERENT	BIT(1)
+
 #endif
 
 # define KEXEC_CONTROL_PAGE_SIZE	4096
 # define KEXEC_CONTROL_CODE_MAX_SIZE	2048
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #include <linux/string.h>
 #include <linux/kernel.h>
 
+#include <asm/asm.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
 
@@ -60,6 +67,14 @@ struct kimage;
 
 /* The native architecture */
 # define KEXEC_ARCH KEXEC_ARCH_X86_64
+
+extern unsigned long kexec_va_control_page;
+extern unsigned long kexec_pa_table_page;
+extern unsigned long kexec_pa_swap_page;
+extern gate_desc kexec_debug_idt[];
+extern unsigned char kexec_debug_exc_vectors[];
+extern uint16_t kexec_debug_8250_port;
+extern unsigned long kexec_debug_8250_mmio32;
 #endif
 
 /*
@@ -73,61 +88,51 @@ static inline void crash_setup_regs(struct pt_regs *newregs,
 	if (oldregs) {
 		memcpy(newregs, oldregs, sizeof(*newregs));
 	} else {
-#ifdef CONFIG_X86_32
-		asm volatile("movl %%ebx,%0" : "=m"(newregs->bx));
-		asm volatile("movl %%ecx,%0" : "=m"(newregs->cx));
-		asm volatile("movl %%edx,%0" : "=m"(newregs->dx));
-		asm volatile("movl %%esi,%0" : "=m"(newregs->si));
-		asm volatile("movl %%edi,%0" : "=m"(newregs->di));
-		asm volatile("movl %%ebp,%0" : "=m"(newregs->bp));
-		asm volatile("movl %%eax,%0" : "=m"(newregs->ax));
-		asm volatile("movl %%esp,%0" : "=m"(newregs->sp));
-		asm volatile("movl %%ss, %%eax;" :"=a"(newregs->ss));
-		asm volatile("movl %%cs, %%eax;" :"=a"(newregs->cs));
-		asm volatile("movl %%ds, %%eax;" :"=a"(newregs->ds));
-		asm volatile("movl %%es, %%eax;" :"=a"(newregs->es));
-		asm volatile("pushfl; popl %0" :"=m"(newregs->flags));
-#else
-		asm volatile("movq %%rbx,%0" : "=m"(newregs->bx));
-		asm volatile("movq %%rcx,%0" : "=m"(newregs->cx));
-		asm volatile("movq %%rdx,%0" : "=m"(newregs->dx));
-		asm volatile("movq %%rsi,%0" : "=m"(newregs->si));
-		asm volatile("movq %%rdi,%0" : "=m"(newregs->di));
-		asm volatile("movq %%rbp,%0" : "=m"(newregs->bp));
-		asm volatile("movq %%rax,%0" : "=m"(newregs->ax));
-		asm volatile("movq %%rsp,%0" : "=m"(newregs->sp));
-		asm volatile("movq %%r8,%0" : "=m"(newregs->r8));
-		asm volatile("movq %%r9,%0" : "=m"(newregs->r9));
-		asm volatile("movq %%r10,%0" : "=m"(newregs->r10));
-		asm volatile("movq %%r11,%0" : "=m"(newregs->r11));
-		asm volatile("movq %%r12,%0" : "=m"(newregs->r12));
-		asm volatile("movq %%r13,%0" : "=m"(newregs->r13));
-		asm volatile("movq %%r14,%0" : "=m"(newregs->r14));
-		asm volatile("movq %%r15,%0" : "=m"(newregs->r15));
-		asm volatile("movl %%ss, %%eax;" :"=a"(newregs->ss));
-		asm volatile("movl %%cs, %%eax;" :"=a"(newregs->cs));
-		asm volatile("pushfq; popq %0" :"=m"(newregs->flags));
+		asm volatile("mov %%" _ASM_BX ",%0" : "=m"(newregs->bx));
+		asm volatile("mov %%" _ASM_CX ",%0" : "=m"(newregs->cx));
+		asm volatile("mov %%" _ASM_DX ",%0" : "=m"(newregs->dx));
+		asm volatile("mov %%" _ASM_SI ",%0" : "=m"(newregs->si));
+		asm volatile("mov %%" _ASM_DI ",%0" : "=m"(newregs->di));
+		asm volatile("mov %%" _ASM_BP ",%0" : "=m"(newregs->bp));
+		asm volatile("mov %%" _ASM_AX ",%0" : "=m"(newregs->ax));
+		asm volatile("mov %%" _ASM_SP ",%0" : "=m"(newregs->sp));
+#ifdef CONFIG_X86_64
+		asm volatile("mov %%r8,%0" : "=m"(newregs->r8));
+		asm volatile("mov %%r9,%0" : "=m"(newregs->r9));
+		asm volatile("mov %%r10,%0" : "=m"(newregs->r10));
+		asm volatile("mov %%r11,%0" : "=m"(newregs->r11));
+		asm volatile("mov %%r12,%0" : "=m"(newregs->r12));
+		asm volatile("mov %%r13,%0" : "=m"(newregs->r13));
+		asm volatile("mov %%r14,%0" : "=m"(newregs->r14));
+		asm volatile("mov %%r15,%0" : "=m"(newregs->r15));
 #endif
+		asm volatile("mov %%ss,%k0" : "=a"(newregs->ss));
+		asm volatile("mov %%cs,%k0" : "=a"(newregs->cs));
+#ifdef CONFIG_X86_32
+		asm volatile("mov %%ds,%k0" : "=a"(newregs->ds));
+		asm volatile("mov %%es,%k0" : "=a"(newregs->es));
+#endif
+		asm volatile("pushf\n\t"
+			     "pop %0" : "=m"(newregs->flags));
 		newregs->ip = _THIS_IP_;
 	}
 }
 
 #ifdef CONFIG_X86_32
-asmlinkage unsigned long
-relocate_kernel(unsigned long indirection_page,
-		unsigned long control_page,
-		unsigned long start_address,
-		unsigned int has_pae,
-		unsigned int preserve_context);
+typedef asmlinkage unsigned long
+relocate_kernel_fn(unsigned long indirection_page,
+		   unsigned long control_page,
+		   unsigned long start_address,
+		   unsigned int has_pae,
+		   unsigned int preserve_context);
 #else
-unsigned long
-relocate_kernel(unsigned long indirection_page,
-		unsigned long page_list,
-		unsigned long start_address,
-		unsigned int preserve_context,
-		unsigned int host_mem_enc_active);
+typedef unsigned long
+relocate_kernel_fn(unsigned long indirection_page,
+		   unsigned long pa_control_page,
+		   unsigned long start_address,
+		   unsigned int flags);
 #endif
-
+extern relocate_kernel_fn relocate_kernel;
 #define ARCH_HAS_KIMAGE_ARCH
 
 #ifdef CONFIG_X86_32
@@ -227,6 +232,6 @@ unsigned int arch_crash_get_elfcorehdr_size(void);
 #define crash_get_elfcorehdr_size arch_crash_get_elfcorehdr_size
 #endif
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif /* _ASM_X86_KEXEC_H */

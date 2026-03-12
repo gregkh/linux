@@ -622,7 +622,7 @@ static void bcm2835_spi_dma_rx_done(void *data)
 	/* reset fifo and HW */
 	bcm2835_spi_reset_hw(bs);
 
-	/* and mark as completed */;
+	/* and mark as completed */
 	spi_finalize_current_transfer(ctlr);
 }
 
@@ -1449,7 +1449,7 @@ static struct platform_driver bcm2835_spi_driver = {
 		.of_match_table	= bcm2835_spi_match,
 	},
 	.probe		= bcm2835_spi_probe,
-	.remove_new	= bcm2835_spi_remove,
+	.remove		= bcm2835_spi_remove,
 	.shutdown	= bcm2835_spi_remove,
 };
 module_platform_driver(bcm2835_spi_driver);

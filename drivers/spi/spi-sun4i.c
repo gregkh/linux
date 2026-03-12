@@ -465,6 +465,7 @@ static int sun4i_spi_probe(struct platform_device *pdev)
 	sspi->host = host;
 	host->max_speed_hz = 100 * 1000 * 1000;
 	host->min_speed_hz = 3 * 1000;
+	host->use_gpio_descriptors = true;
 	host->set_cs = sun4i_spi_set_cs;
 	host->transfer_one = sun4i_spi_transfer_one;
 	host->num_chipselect = 4;
@@ -538,7 +539,7 @@ static const struct dev_pm_ops sun4i_spi_pm_ops = {
 
 static struct platform_driver sun4i_spi_driver = {
 	.probe	= sun4i_spi_probe,
-	.remove_new = sun4i_spi_remove,
+	.remove = sun4i_spi_remove,
 	.driver	= {
 		.name		= "sun4i-spi",
 		.of_match_table	= sun4i_spi_match,

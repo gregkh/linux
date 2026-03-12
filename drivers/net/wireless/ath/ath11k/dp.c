@@ -2,9 +2,11 @@
 /*
  * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
  * Copyright (c) 2021-2025 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <crypto/hash.h>
+#include <linux/export.h>
 #include "core.h"
 #include "dp_tx.h"
 #include "hal_tx.h"
@@ -223,7 +225,7 @@ int ath11k_dp_srng_setup(struct ath11k_base *ab, struct dp_srng *ring,
 			 enum hal_ring_type type, int ring_num,
 			 int mac_id, int num_entries)
 {
-	struct hal_srng_params params = { 0 };
+	struct hal_srng_params params = {};
 	int entry_sz = ath11k_hal_srng_get_entrysize(ab, type);
 	int max_entries = ath11k_hal_srng_get_max_entries(ab, type);
 	int ret;
@@ -875,7 +877,7 @@ void ath11k_dp_pdev_free(struct ath11k_base *ab)
 	struct ath11k *ar;
 	int i;
 
-	del_timer_sync(&ab->mon_reap_timer);
+	timer_delete_sync(&ab->mon_reap_timer);
 
 	for (i = 0; i < ab->num_radios; i++) {
 		ar = ab->pdevs[i].ar;
@@ -1117,8 +1119,9 @@ fail_link_desc_cleanup:
 
 static void ath11k_dp_shadow_timer_handler(struct timer_list *t)
 {
-	struct ath11k_hp_update_timer *update_timer = from_timer(update_timer,
-								 t, timer);
+	struct ath11k_hp_update_timer *update_timer = timer_container_of(update_timer,
+									 t,
+									 timer);
 	struct ath11k_base *ab = update_timer->ab;
 	struct hal_srng	*srng = &ab->hal.srng_list[update_timer->ring_id];
 
@@ -1170,7 +1173,7 @@ void ath11k_dp_shadow_stop_timer(struct ath11k_base *ab,
 	if (!update_timer->init)
 		return;
 
-	del_timer_sync(&update_timer->timer);
+	timer_delete_sync(&update_timer->timer);
 }
 
 void ath11k_dp_shadow_init_timer(struct ath11k_base *ab,

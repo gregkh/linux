@@ -38,6 +38,81 @@ Like ``clang-format`` for the rest of the kernel, ``rustfmt`` works on
 individual files, and does not require a kernel configuration. Sometimes it may
 even work with broken code.
 
+Imports
+~~~~~~~
+
+``rustfmt``, by default, formats imports in a way that is prone to conflicts
+while merging and rebasing, since in some cases it condenses several items into
+the same line. For instance:
+
+.. code-block:: rust
+
+	// Do not use this style.
+	use crate::{
+	    example1,
+	    example2::{example3, example4, example5},
+	    example6, example7,
+	    example8::example9,
+	};
+
+Instead, the kernel uses a vertical layout that looks like this:
+
+.. code-block:: rust
+
+	use crate::{
+	    example1,
+	    example2::{
+	        example3,
+	        example4,
+	        example5, //
+	    },
+	    example6,
+	    example7,
+	    example8::example9, //
+	};
+
+That is, each item goes into its own line, and braces are used as soon as there
+is more than one item in a list.
+
+The trailing empty comment allows to preserve this formatting. Not only that,
+``rustfmt`` will actually reformat imports vertically when the empty comment is
+added. That is, it is possible to easily reformat the original example into the
+expected style by running ``rustfmt`` on an input like:
+
+.. code-block:: rust
+
+	// Do not use this style.
+	use crate::{
+	    example1,
+	    example2::{example3, example4, example5, //
+	    },
+	    example6, example7,
+	    example8::example9, //
+	};
+
+The trailing empty comment works for nested imports, as shown above, as well as
+for single item imports -- this can be useful to minimize diffs within patch
+series:
+
+.. code-block:: rust
+
+	use crate::{
+	    example1, //
+	};
+
+The trailing empty comment works in any of the lines within the braces, but it
+is preferred to keep it in the last item, since it is reminiscent of the
+trailing comma in other formatters. Sometimes it may be simpler to avoid moving
+the comment several times within a patch series due to changes in the list.
+
+There may be cases where exceptions may need to be made, i.e. none of this is
+a hard rule. There is also code that is not migrated to this style yet, but
+please do not introduce code in other styles.
+
+Eventually, the goal is to get ``rustfmt`` to support this formatting style (or
+a similar one) automatically in a stable release without requiring the trailing
+empty comment. Thus, at some point, the goal is to remove those comments.
+
 
 Comments
 --------
@@ -84,6 +159,18 @@ written after the documentation, e.g.:
 	pub fn f(x: i32) -> Foo {
 	    // ...
 	}
+
+This applies to both public and private items. This increases consistency with
+public items, allows changes to visibility with less changes involved and will
+allow us to potentially generate the documentation for private items as well.
+In other words, if documentation is written for a private item, then ``///``
+should still be used. For instance:
+
+.. code-block:: rust
+
+	/// My private function.
+	// TODO: ...
+	fn f() {}
 
 One special kind of comments are the ``// SAFETY:`` comments. These must appear
 before every ``unsafe`` block, and they explain why the code inside the block is
@@ -189,6 +276,23 @@ or:
 .. code-block:: rust
 
 	/// [`struct mutex`]: srctree/include/linux/mutex.h
+
+
+C FFI types
+-----------
+
+Rust kernel code refers to C types, such as ``int``, using type aliases such as
+``c_int``, which are readily available from the ``kernel`` prelude. Please do
+not use the aliases from ``core::ffi`` -- they may not map to the correct types.
+
+These aliases should generally be referred directly by their identifier, i.e.
+as a single segment path. For instance:
+
+.. code-block:: rust
+
+	fn f(p: *const c_char) -> c_int {
+	    // ...
+	}
 
 
 Naming
@@ -373,3 +477,11 @@ triggered due to non-local changes (such as ``dead_code``).
 For more information about diagnostics in Rust, please see:
 
 	https://doc.rust-lang.org/stable/reference/attributes/diagnostics.html
+
+Error handling
+--------------
+
+For some background and guidelines about Rust for Linux specific error handling,
+please see:
+
+	https://rust.docs.kernel.org/kernel/error/type.Result.html#error-codes-in-c-and-rust

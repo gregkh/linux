@@ -524,10 +524,9 @@
 	status = "okay";
 
 	/* only port 1 is available */
-	/delete-node/ sata-port@0;
-
 	sata-port@1 {
 		phys = <&cp1_comphy3 1>;
+		status = "okay";
 	};
 };
 
@@ -571,7 +570,7 @@
 };
 
 &cp2_ethernet {
-	status =  "okay";
+	status = "okay";
 };
 
 /* SRDS #2 - 5GE */
@@ -584,7 +583,7 @@
 };
 
 &cp2_gpio1 {
-	pinctrl-names= "default";
+	pinctrl-names = "default";
 	pinctrl-0 = <&cp2_rsvd9_pins>;
 
 	/* J21 */
@@ -643,9 +642,8 @@
 	status = "okay";
 
 	/* only port 1 is available */
-	/delete-node/ sata-port@0;
-
 	sata-port@1 {
+		status = "okay";
 		phys = <&cp2_comphy3 1>;
 	};
 };

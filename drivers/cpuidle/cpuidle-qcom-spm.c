@@ -48,7 +48,7 @@ static int qcom_cpu_spc(struct spm_driver_data *drv)
 	ret = cpu_suspend(0, qcom_pm_collapse);
 	/*
 	 * ARM common code executes WFI without calling into our driver and
-	 * if the SPM mode is not reset, then we may accidently power down the
+	 * if the SPM mode is not reset, then we may accidentally power down the
 	 * cpu when we intended only to gate the cpu clock.
 	 * Ensure the state is set to standby before returning.
 	 */
@@ -86,9 +86,9 @@ static const struct of_device_id qcom_idle_state_match[] = {
 
 static int spm_cpuidle_register(struct device *cpuidle_dev, int cpu)
 {
-	struct platform_device *pdev = NULL;
+	struct platform_device *pdev;
 	struct device_node *cpu_node, *saw_node;
-	struct cpuidle_qcom_spm_data *data = NULL;
+	struct cpuidle_qcom_spm_data *data;
 	int ret;
 
 	cpu_node = of_cpu_device_node_get(cpu);
@@ -138,7 +138,7 @@ static int spm_cpuidle_drv_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "set warm boot addr failed");
 
-	for_each_possible_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		ret = spm_cpuidle_register(&pdev->dev, cpu);
 		if (ret && ret != -ENODEV) {
 			dev_err(&pdev->dev,

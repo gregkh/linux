@@ -201,7 +201,7 @@ int ivpu_jsm_dyndbg_control(struct ivpu_device *vdev, char *command, size_t size
 	strscpy(req.payload.dyndbg_control.dyndbg_cmd, command, VPU_DYNDBG_CMD_MAX_LEN);
 
 	ret = ivpu_ipc_send_receive(vdev, &req, VPU_JSM_MSG_DYNDBG_CONTROL_RSP, &resp,
-				    VPU_IPC_CHAN_ASYNC_CMD, vdev->timeout.jsm);
+				    VPU_IPC_CHAN_GEN_CMD, vdev->timeout.jsm);
 	if (ret)
 		ivpu_warn_ratelimited(vdev, "Failed to send command \"%s\": ret %d\n",
 				      command, ret);
@@ -400,8 +400,6 @@ int ivpu_jsm_hws_set_scheduling_log(struct ivpu_device *vdev, u32 engine_idx, u3
 	req.payload.hws_set_scheduling_log.host_ssid = host_ssid;
 	req.payload.hws_set_scheduling_log.vpu_log_buffer_va = vpu_log_buffer_va;
 	req.payload.hws_set_scheduling_log.notify_index = 0;
-	req.payload.hws_set_scheduling_log.enable_extra_events =
-		ivpu_test_mode & IVPU_TEST_MODE_HWS_EXTRA_EVENTS;
 
 	ret = ivpu_ipc_send_receive(vdev, &req, VPU_JSM_MSG_HWS_SET_SCHEDULING_LOG_RSP, &resp,
 				    VPU_IPC_CHAN_ASYNC_CMD, vdev->timeout.jsm);

@@ -14,7 +14,7 @@
 
 #define MCOUNT_INSN_SIZE 4		/* sizeof mcount call */
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #ifndef CONFIG_DYNAMIC_FTRACE
 
@@ -61,6 +61,12 @@ ftrace_regs_set_instruction_pointer(struct ftrace_regs *fregs, unsigned long ip)
 #define ftrace_regs_get_frame_pointer(fregs) \
 	(arch_ftrace_regs(fregs)->regs.regs[22])
 
+static __always_inline unsigned long
+ftrace_regs_get_return_address(struct ftrace_regs *fregs)
+{
+	return *(unsigned long *)(arch_ftrace_regs(fregs)->regs.regs[1]);
+}
+
 #define ftrace_graph_func ftrace_graph_func
 void ftrace_graph_func(unsigned long ip, unsigned long parent_ip,
 		       struct ftrace_ops *op, struct ftrace_regs *fregs);
@@ -78,7 +84,7 @@ __arch_ftrace_set_direct_caller(struct pt_regs *regs, unsigned long addr)
 
 #endif
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif /* CONFIG_FUNCTION_TRACER */
 

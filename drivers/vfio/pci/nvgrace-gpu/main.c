@@ -5,6 +5,8 @@
 
 #include <linux/sizes.h>
 #include <linux/vfio_pci_core.h>
+#include <linux/delay.h>
+#include <linux/jiffies.h>
 
 /*
  * The device memory usable to the workloads running in the VM is cached
@@ -24,6 +26,13 @@
 #define MIG_SUPPORTED_WITH_CACHED_RESMEM BIT(0)
 
 #define GPU_CAP_DVSEC_REGISTER 3
+
+#define C2C_LINK_BAR0_OFFSET 0x1498
+#define HBM_TRAINING_BAR0_OFFSET 0x200BC
+#define STATUS_READY 0xFF
+
+#define POLL_QUANTUM_MS 1000
+#define POLL_TIMEOUT_MS (30 * 1000)
 
 /*
  * The state of the two device memory region - resmem and usemem - is
@@ -251,7 +260,7 @@ nvgrace_gpu_ioctl_get_region_info(struct vfio_device *core_vdev,
 	info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
 	/*
 	 * The region memory size may not be power-of-2 aligned.
-	 * Given that the memory  as a BAR and may not be
+	 * Given that the memory is a BAR and may not be
 	 * aligned, roundup to the next power-of-2.
 	 */
 	info.size = memregion->bar_size;
@@ -687,6 +696,7 @@ static const struct vfio_device_ops nvgrace_gpu_pci_ops = {
 	.mmap		= nvgrace_gpu_mmap,
 	.request	= vfio_pci_core_request,
 	.match		= vfio_pci_core_match,
+	.match_token_uuid = vfio_pci_core_match_token_uuid,
 	.bind_iommufd	= vfio_iommufd_physical_bind,
 	.unbind_iommufd	= vfio_iommufd_physical_unbind,
 	.attach_ioas	= vfio_iommufd_physical_attach_ioas,
@@ -706,6 +716,7 @@ static const struct vfio_device_ops nvgrace_gpu_pci_core_ops = {
 	.mmap		= vfio_pci_core_mmap,
 	.request	= vfio_pci_core_request,
 	.match		= vfio_pci_core_match,
+	.match_token_uuid = vfio_pci_core_match_token_uuid,
 	.bind_iommufd	= vfio_iommufd_physical_bind,
 	.unbind_iommufd	= vfio_iommufd_physical_unbind,
 	.attach_ioas	= vfio_iommufd_physical_attach_ioas,
@@ -861,6 +872,65 @@ static bool nvgrace_gpu_has_mig_hw_bug(struct pci_dev *pdev)
 	return true;
 }
 
+/*
+ * To reduce the system bootup time, the HBM training has
+ * been moved out of the UEFI on the Grace-Blackwell systems.
+ *
+ * The onus of checking whether the HBM training has completed
+ * thus falls on the module. The HBM training status can be
+ * determined from a BAR0 register.
+ *
+ * Similarly, another BAR0 register exposes the status of the
+ * CPU-GPU chip-to-chip (C2C) cache coherent interconnect.
+ *
+ * Poll these register and check for 30s. If the HBM training is
+ * not complete or if the C2C link is not ready, fail the probe.
+ *
+ * While the wait is not required on Grace Hopper systems, it
+ * is beneficial to make the check to ensure the device is in an
+ * expected state.
+ *
+ * Ensure that the BAR0 region is enabled before accessing the
+ * registers.
+ */
+static int nvgrace_gpu_wait_device_ready(struct pci_dev *pdev)
+{
+	unsigned long timeout = jiffies + msecs_to_jiffies(POLL_TIMEOUT_MS);
+	void __iomem *io;
+	int ret = -ETIME;
+
+	ret = pci_enable_device(pdev);
+	if (ret)
+		return ret;
+
+	ret = pci_request_selected_regions(pdev, 1 << 0, KBUILD_MODNAME);
+	if (ret)
+		goto request_region_exit;
+
+	io = pci_iomap(pdev, 0, 0);
+	if (!io) {
+		ret = -ENOMEM;
+		goto iomap_exit;
+	}
+
+	do {
+		if ((ioread32(io + C2C_LINK_BAR0_OFFSET) == STATUS_READY) &&
+		    (ioread32(io + HBM_TRAINING_BAR0_OFFSET) == STATUS_READY)) {
+			ret = 0;
+			goto reg_check_exit;
+		}
+		msleep(POLL_QUANTUM_MS);
+	} while (!time_after(jiffies, timeout));
+
+reg_check_exit:
+	pci_iounmap(pdev, io);
+iomap_exit:
+	pci_release_selected_regions(pdev, 1 << 0);
+request_region_exit:
+	pci_disable_device(pdev);
+	return ret;
+}
+
 static int nvgrace_gpu_probe(struct pci_dev *pdev,
 			     const struct pci_device_id *id)
 {
@@ -868,6 +938,10 @@ static int nvgrace_gpu_probe(struct pci_dev *pdev,
 	struct nvgrace_gpu_pci_core_device *nvdev;
 	u64 memphys, memlength;
 	int ret;
+
+	ret = nvgrace_gpu_wait_device_ready(pdev);
+	if (ret)
+		return ret;
 
 	ret = nvgrace_gpu_fetch_memory_property(pdev, &memphys, &memlength);
 	if (!ret)
@@ -917,6 +991,12 @@ static const struct pci_device_id nvgrace_gpu_vfio_pci_table[] = {
 	{ PCI_DRIVER_OVERRIDE_DEVICE_VFIO(PCI_VENDOR_ID_NVIDIA, 0x2342) },
 	/* GH200 480GB */
 	{ PCI_DRIVER_OVERRIDE_DEVICE_VFIO(PCI_VENDOR_ID_NVIDIA, 0x2345) },
+	/* GH200 SKU */
+	{ PCI_DRIVER_OVERRIDE_DEVICE_VFIO(PCI_VENDOR_ID_NVIDIA, 0x2348) },
+	/* GB200 SKU */
+	{ PCI_DRIVER_OVERRIDE_DEVICE_VFIO(PCI_VENDOR_ID_NVIDIA, 0x2941) },
+	/* GB300 SKU */
+	{ PCI_DRIVER_OVERRIDE_DEVICE_VFIO(PCI_VENDOR_ID_NVIDIA, 0x31C2) },
 	{}
 };
 

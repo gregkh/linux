@@ -224,7 +224,7 @@ static int snd_sh_dac_pcm(struct snd_sh_dac *chip, int device)
 		return err;
 
 	pcm->private_data = chip;
-	strcpy(pcm->name, "SH_DAC PCM");
+	strscpy(pcm->name, "SH_DAC PCM");
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &snd_sh_dac_pcm_ops);
 
 	/* buffer size=48K */
@@ -312,8 +312,7 @@ static int snd_sh_dac_create(struct snd_card *card,
 
 	chip->card = card;
 
-	hrtimer_init(&chip->hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	chip->hrtimer.function = sh_dac_audio_timer;
+	hrtimer_setup(&chip->hrtimer, sh_dac_audio_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
 	dac_audio_reset(chip);
 	chip->rate = 8000;
@@ -359,8 +358,8 @@ static int snd_sh_dac_probe(struct platform_device *devptr)
 	if (err < 0)
 		goto probe_error;
 
-	strcpy(card->driver, "snd_sh_dac");
-	strcpy(card->shortname, "SuperH DAC audio driver");
+	strscpy(card->driver, "snd_sh_dac");
+	strscpy(card->shortname, "SuperH DAC audio driver");
 	dev_info(&devptr->dev, "%s %s\n", card->longname, card->shortname);
 
 	err = snd_card_register(card);
@@ -382,7 +381,7 @@ probe_error:
  */
 static struct platform_driver sh_dac_driver = {
 	.probe	= snd_sh_dac_probe,
-	.remove_new = snd_sh_dac_remove,
+	.remove = snd_sh_dac_remove,
 	.driver = {
 		.name = "dac_audio",
 	},

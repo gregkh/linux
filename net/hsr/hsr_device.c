@@ -33,14 +33,14 @@ static void hsr_set_operstate(struct hsr_port *master, bool has_carrier)
 	struct net_device *dev = master->dev;
 
 	if (!is_admin_up(dev)) {
-		netdev_set_operstate(dev, IF_OPER_DOWN);
+		netif_set_operstate(dev, IF_OPER_DOWN);
 		return;
 	}
 
 	if (has_carrier)
-		netdev_set_operstate(dev, IF_OPER_UP);
+		netif_set_operstate(dev, IF_OPER_UP);
 	else
-		netdev_set_operstate(dev, IF_OPER_LOWERLAYERDOWN);
+		netif_set_operstate(dev, IF_OPER_LOWERLAYERDOWN);
 }
 
 static bool hsr_check_carrier(struct hsr_port *master)
@@ -337,7 +337,7 @@ static void send_hsr_supervision_frame(struct hsr_port *port,
 	}
 
 	hsr_stag->tlv.HSR_TLV_type = type;
-	/* TODO: Why 12 in HSRv0? */
+	/* HSRv0 has 6 unused bytes after the MAC */
 	hsr_stag->tlv.HSR_TLV_length = hsr->prot_version ?
 				sizeof(struct hsr_sup_payload) : 12;
 
@@ -414,7 +414,7 @@ static void hsr_announce(struct timer_list *t)
 	struct hsr_port *master;
 	unsigned long interval;
 
-	hsr = from_timer(hsr, t, announce_timer);
+	hsr = timer_container_of(hsr, t, announce_timer);
 
 	rcu_read_lock();
 	master = hsr_port_get_hsr(hsr, HSR_PT_MASTER);
@@ -430,7 +430,8 @@ static void hsr_announce(struct timer_list *t)
  */
 static void hsr_proxy_announce(struct timer_list *t)
 {
-	struct hsr_priv *hsr = from_timer(hsr, t, announce_proxy_timer);
+	struct hsr_priv *hsr = timer_container_of(hsr, t,
+						  announce_proxy_timer);
 	struct hsr_port *interlink;
 	unsigned long interval = 0;
 	struct hsr_node *node;
@@ -651,7 +652,7 @@ void hsr_dev_setup(struct net_device *dev)
 	/* Not sure about this. Taken from bridge code. netdevice.h says
 	 * it means "Does not change network namespaces".
 	 */
-	dev->netns_local = true;
+	dev->netns_immutable = true;
 
 	dev->needs_free_netdev = true;
 
@@ -661,11 +662,6 @@ void hsr_dev_setup(struct net_device *dev)
 			   NETIF_F_HW_VLAN_CTAG_FILTER;
 
 	dev->features = dev->hw_features;
-
-	/* VLAN on top of HSR needs testing and probably some work on
-	 * hsr_header_create() etc.
-	 */
-	dev->features |= NETIF_F_VLAN_CHALLENGED;
 }
 
 /* Return true if dev is a HSR master; return false otherwise.
@@ -796,6 +792,11 @@ int hsr_dev_finalize(struct net_device *hsr_dev, struct net_device *slave[2],
 	res = hsr_add_port(hsr, slave[1], HSR_PT_SLAVE_B, extack);
 	if (res)
 		goto err_unregister;
+
+	if (protocol_version == PRP_V1) {
+		eth_hw_addr_set(slave[1], slave[0]->dev_addr);
+		call_netdevice_notifiers(NETDEV_CHANGEADDR, slave[1]);
+	}
 
 	if (interlink) {
 		res = hsr_add_port(hsr, interlink, HSR_PT_INTERLINK, extack);

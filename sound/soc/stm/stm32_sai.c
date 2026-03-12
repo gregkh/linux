@@ -19,26 +19,42 @@
 
 #include "stm32_sai.h"
 
+static int stm32_sai_get_parent_clk(struct stm32_sai_data *sai);
+
 static const struct stm32_sai_conf stm32_sai_conf_f4 = {
 	.version = STM_SAI_STM32F4,
 	.fifo_size = 8,
 	.has_spdif_pdm = false,
+	.get_sai_ck_parent = stm32_sai_get_parent_clk,
 };
 
 /*
- * Default settings for stm32 H7 socs and next.
+ * Default settings for STM32H7x socs and STM32MP1x.
  * These default settings will be overridden if the soc provides
  * support of hardware configuration registers.
+ * - STM32H7: rely on default settings
+ * - STM32MP1: retrieve settings from registers
  */
 static const struct stm32_sai_conf stm32_sai_conf_h7 = {
 	.version = STM_SAI_STM32H7,
 	.fifo_size = 8,
 	.has_spdif_pdm = true,
+	.get_sai_ck_parent = stm32_sai_get_parent_clk,
+};
+
+/*
+ * STM32MP2x:
+ * - do not use SAI parent clock source selection
+ * - do not use DMA burst mode
+ */
+static const struct stm32_sai_conf stm32_sai_conf_mp25 = {
+	.no_dma_burst = true,
 };
 
 static const struct of_device_id stm32_sai_ids[] = {
 	{ .compatible = "st,stm32f4-sai", .data = (void *)&stm32_sai_conf_f4 },
 	{ .compatible = "st,stm32h7-sai", .data = (void *)&stm32_sai_conf_h7 },
+	{ .compatible = "st,stm32mp25-sai", .data = (void *)&stm32_sai_conf_mp25 },
 	{}
 };
 
@@ -142,6 +158,23 @@ static int stm32_sai_set_sync(struct stm32_sai_data *sai_client,
 	return stm32_sai_sync_conf_provider(sai_provider, synco);
 }
 
+static int stm32_sai_get_parent_clk(struct stm32_sai_data *sai)
+{
+	struct device *dev = &sai->pdev->dev;
+
+	sai->clk_x8k = devm_clk_get(dev, "x8k");
+	if (IS_ERR(sai->clk_x8k))
+		return dev_err_probe(dev, PTR_ERR(sai->clk_x8k),
+				     "missing x8k parent clock\n");
+
+	sai->clk_x11k = devm_clk_get(dev, "x11k");
+	if (IS_ERR(sai->clk_x11k))
+		return dev_err_probe(dev, PTR_ERR(sai->clk_x11k),
+				     "missing x11k parent clock\n");
+
+	return 0;
+}
+
 static int stm32_sai_probe(struct platform_device *pdev)
 {
 	struct stm32_sai_data *sai;
@@ -153,6 +186,8 @@ static int stm32_sai_probe(struct platform_device *pdev)
 	sai = devm_kzalloc(&pdev->dev, sizeof(*sai), GFP_KERNEL);
 	if (!sai)
 		return -ENOMEM;
+
+	sai->pdev = pdev;
 
 	sai->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(sai->base))
@@ -172,15 +207,11 @@ static int stm32_sai_probe(struct platform_device *pdev)
 					     "missing bus clock pclk\n");
 	}
 
-	sai->clk_x8k = devm_clk_get(&pdev->dev, "x8k");
-	if (IS_ERR(sai->clk_x8k))
-		return dev_err_probe(&pdev->dev, PTR_ERR(sai->clk_x8k),
-				     "missing x8k parent clock\n");
-
-	sai->clk_x11k = devm_clk_get(&pdev->dev, "x11k");
-	if (IS_ERR(sai->clk_x11k))
-		return dev_err_probe(&pdev->dev, PTR_ERR(sai->clk_x11k),
-				     "missing x11k parent clock\n");
+	if (sai->conf.get_sai_ck_parent) {
+		ret = sai->conf.get_sai_ck_parent(sai);
+		if (ret)
+			return ret;
+	}
 
 	/* init irqs */
 	sai->irq = platform_get_irq(pdev, 0);
@@ -221,14 +252,12 @@ static int stm32_sai_probe(struct platform_device *pdev)
 	}
 	clk_disable_unprepare(sai->pclk);
 
-	sai->pdev = pdev;
 	sai->set_sync = &stm32_sai_set_sync;
 	platform_set_drvdata(pdev, sai);
 
 	return devm_of_platform_populate(&pdev->dev);
 }
 
-#ifdef CONFIG_PM_SLEEP
 /*
  * When pins are shared by two sai sub instances, pins have to be defined
  * in sai parent node. In this case, pins state is not managed by alsa fw.
@@ -263,10 +292,9 @@ static int stm32_sai_resume(struct device *dev)
 
 	return pinctrl_pm_select_default_state(dev);
 }
-#endif /* CONFIG_PM_SLEEP */
 
 static const struct dev_pm_ops stm32_sai_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(stm32_sai_suspend, stm32_sai_resume)
+	SYSTEM_SLEEP_PM_OPS(stm32_sai_suspend, stm32_sai_resume)
 };
 
 MODULE_DEVICE_TABLE(of, stm32_sai_ids);
@@ -275,7 +303,7 @@ static struct platform_driver stm32_sai_driver = {
 	.driver = {
 		.name = "st,stm32-sai",
 		.of_match_table = stm32_sai_ids,
-		.pm = &stm32_sai_pm_ops,
+		.pm = pm_ptr(&stm32_sai_pm_ops),
 	},
 	.probe = stm32_sai_probe,
 };

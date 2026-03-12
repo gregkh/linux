@@ -3,7 +3,7 @@
     file operation functions
     Copyright (C) 2003-2004  Kevin Thayer <nufan_wfk at yahoo.com>
     Copyright (C) 2004  Chris Kennedy <c@groovy.org>
-    Copyright (C) 2005-2007  Hans Verkuil <hverkuil@xs4all.nl>
+    Copyright (C) 2005-2007  Hans Verkuil <hverkuil@kernel.org>
 
  */
 
@@ -502,7 +502,7 @@ int ivtv_start_capture(struct ivtv_open_id *id)
 
 ssize_t ivtv_v4l2_read(struct file * filp, char __user *buf, size_t count, loff_t * pos)
 {
-	struct ivtv_open_id *id = fh2id(filp->private_data);
+	struct ivtv_open_id *id = file2id(filp);
 	struct ivtv *itv = id->itv;
 	struct ivtv_stream *s = &itv->streams[id->type];
 	ssize_t rc;
@@ -564,7 +564,7 @@ static int ivtv_schedule_dma(struct ivtv_stream *s)
 
 static ssize_t ivtv_write(struct file *filp, const char __user *user_buf, size_t count, loff_t *pos)
 {
-	struct ivtv_open_id *id = fh2id(filp->private_data);
+	struct ivtv_open_id *id = file2id(filp);
 	struct ivtv *itv = id->itv;
 	struct ivtv_stream *s = &itv->streams[id->type];
 	struct yuv_playback_info *yi = &itv->yuv_info;
@@ -719,7 +719,7 @@ retry:
 
 ssize_t ivtv_v4l2_write(struct file *filp, const char __user *user_buf, size_t count, loff_t *pos)
 {
-	struct ivtv_open_id *id = fh2id(filp->private_data);
+	struct ivtv_open_id *id = file2id(filp);
 	struct ivtv *itv = id->itv;
 	ssize_t res;
 
@@ -732,7 +732,7 @@ ssize_t ivtv_v4l2_write(struct file *filp, const char __user *user_buf, size_t c
 
 __poll_t ivtv_v4l2_dec_poll(struct file *filp, poll_table *wait)
 {
-	struct ivtv_open_id *id = fh2id(filp->private_data);
+	struct ivtv_open_id *id = file2id(filp);
 	struct ivtv *itv = id->itv;
 	struct ivtv_stream *s = &itv->streams[id->type];
 	__poll_t res = 0;
@@ -767,7 +767,7 @@ __poll_t ivtv_v4l2_dec_poll(struct file *filp, poll_table *wait)
 __poll_t ivtv_v4l2_enc_poll(struct file *filp, poll_table *wait)
 {
 	__poll_t req_events = poll_requested_events(wait);
-	struct ivtv_open_id *id = fh2id(filp->private_data);
+	struct ivtv_open_id *id = file2id(filp);
 	struct ivtv *itv = id->itv;
 	struct ivtv_stream *s = &itv->streams[id->type];
 	int eof = test_bit(IVTV_F_S_STREAMOFF, &s->s_flags);
@@ -877,8 +877,8 @@ static void ivtv_stop_decoding(struct ivtv_open_id *id, int flags, u64 pts)
 
 int ivtv_v4l2_close(struct file *filp)
 {
-	struct v4l2_fh *fh = filp->private_data;
-	struct ivtv_open_id *id = fh2id(fh);
+	struct v4l2_fh *fh = file_to_v4l2_fh(filp);
+	struct ivtv_open_id *id = file2id(filp);
 	struct ivtv *itv = id->itv;
 	struct ivtv_stream *s = &itv->streams[id->type];
 
@@ -911,7 +911,7 @@ int ivtv_v4l2_close(struct file *filp)
 		ivtv_unmute(itv);
 	}
 
-	v4l2_fh_del(fh);
+	v4l2_fh_del(fh, filp);
 	v4l2_fh_exit(fh);
 
 	/* Easy case first: this stream was never claimed by us */
@@ -998,9 +998,7 @@ static int ivtv_open(struct file *filp)
 	v4l2_fh_init(&item->fh, &s->vdev);
 	item->itv = itv;
 	item->type = s->type;
-
-	filp->private_data = &item->fh;
-	v4l2_fh_add(&item->fh);
+	v4l2_fh_add(&item->fh, filp);
 
 	if (item->type == IVTV_ENC_STREAM_TYPE_RAD &&
 			v4l2_fh_is_singular_file(filp)) {
@@ -1008,7 +1006,7 @@ static int ivtv_open(struct file *filp)
 			if (atomic_read(&itv->capturing) > 0) {
 				/* switching to radio while capture is
 				   in progress is not polite */
-				v4l2_fh_del(&item->fh);
+				v4l2_fh_del(&item->fh, filp);
 				v4l2_fh_exit(&item->fh);
 				kfree(item);
 				return -EBUSY;

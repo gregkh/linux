@@ -31,7 +31,8 @@ TRACE_DEFINE_ENUM(DMA_NONE);
 		{ DMA_ATTR_FORCE_CONTIGUOUS, "FORCE_CONTIGUOUS" }, \
 		{ DMA_ATTR_ALLOC_SINGLE_PAGES, "ALLOC_SINGLE_PAGES" }, \
 		{ DMA_ATTR_NO_WARN, "NO_WARN" }, \
-		{ DMA_ATTR_PRIVILEGED, "PRIVILEGED" })
+		{ DMA_ATTR_PRIVILEGED, "PRIVILEGED" }, \
+		{ DMA_ATTR_MMIO, "MMIO" })
 
 DECLARE_EVENT_CLASS(dma_map,
 	TP_PROTO(struct device *dev, phys_addr_t phys_addr, dma_addr_t dma_addr,
@@ -65,15 +66,13 @@ DECLARE_EVENT_CLASS(dma_map,
 		decode_dma_attrs(__entry->attrs))
 );
 
-DEFINE_EVENT(dma_map, dma_map_page,
-	TP_PROTO(struct device *dev, phys_addr_t phys_addr, dma_addr_t dma_addr,
-		 size_t size, enum dma_data_direction dir, unsigned long attrs),
-	TP_ARGS(dev, phys_addr, dma_addr, size, dir, attrs));
+#define DEFINE_MAP_EVENT(name) \
+DEFINE_EVENT(dma_map, name, \
+	TP_PROTO(struct device *dev, phys_addr_t phys_addr, dma_addr_t dma_addr, \
+		 size_t size, enum dma_data_direction dir, unsigned long attrs), \
+	TP_ARGS(dev, phys_addr, dma_addr, size, dir, attrs))
 
-DEFINE_EVENT(dma_map, dma_map_resource,
-	TP_PROTO(struct device *dev, phys_addr_t phys_addr, dma_addr_t dma_addr,
-		 size_t size, enum dma_data_direction dir, unsigned long attrs),
-	TP_ARGS(dev, phys_addr, dma_addr, size, dir, attrs));
+DEFINE_MAP_EVENT(dma_map_phys);
 
 DECLARE_EVENT_CLASS(dma_unmap,
 	TP_PROTO(struct device *dev, dma_addr_t addr, size_t size,
@@ -104,15 +103,13 @@ DECLARE_EVENT_CLASS(dma_unmap,
 		decode_dma_attrs(__entry->attrs))
 );
 
-DEFINE_EVENT(dma_unmap, dma_unmap_page,
-	TP_PROTO(struct device *dev, dma_addr_t addr, size_t size,
-		 enum dma_data_direction dir, unsigned long attrs),
-	TP_ARGS(dev, addr, size, dir, attrs));
+#define DEFINE_UNMAP_EVENT(name) \
+DEFINE_EVENT(dma_unmap, name, \
+	TP_PROTO(struct device *dev, dma_addr_t addr, size_t size, \
+		 enum dma_data_direction dir, unsigned long attrs), \
+	TP_ARGS(dev, addr, size, dir, attrs))
 
-DEFINE_EVENT(dma_unmap, dma_unmap_resource,
-	TP_PROTO(struct device *dev, dma_addr_t addr, size_t size,
-		 enum dma_data_direction dir, unsigned long attrs),
-	TP_ARGS(dev, addr, size, dir, attrs));
+DEFINE_UNMAP_EVENT(dma_unmap_phys);
 
 DECLARE_EVENT_CLASS(dma_alloc_class,
 	TP_PROTO(struct device *dev, void *virt_addr, dma_addr_t dma_addr,
@@ -430,15 +427,14 @@ DECLARE_EVENT_CLASS(dma_sync_single,
 		__entry->size)
 );
 
-DEFINE_EVENT(dma_sync_single, dma_sync_single_for_cpu,
-	TP_PROTO(struct device *dev, dma_addr_t dma_addr, size_t size,
-		 enum dma_data_direction dir),
-	TP_ARGS(dev, dma_addr, size, dir));
+#define DEFINE_SYNC_SINGLE_EVENT(name) \
+DEFINE_EVENT(dma_sync_single, name, \
+	TP_PROTO(struct device *dev, dma_addr_t dma_addr, size_t size, \
+		 enum dma_data_direction dir), \
+	TP_ARGS(dev, dma_addr, size, dir))
 
-DEFINE_EVENT(dma_sync_single, dma_sync_single_for_device,
-	TP_PROTO(struct device *dev, dma_addr_t dma_addr, size_t size,
-		 enum dma_data_direction dir),
-	TP_ARGS(dev, dma_addr, size, dir));
+DEFINE_SYNC_SINGLE_EVENT(dma_sync_single_for_cpu);
+DEFINE_SYNC_SINGLE_EVENT(dma_sync_single_for_device);
 
 DECLARE_EVENT_CLASS(dma_sync_sg,
 	TP_PROTO(struct device *dev, struct scatterlist *sgl, int nents,
@@ -477,15 +473,14 @@ DECLARE_EVENT_CLASS(dma_sync_sg,
 				sizeof(unsigned int), sizeof(unsigned int)))
 );
 
-DEFINE_EVENT(dma_sync_sg, dma_sync_sg_for_cpu,
-	TP_PROTO(struct device *dev, struct scatterlist *sg, int nents,
-		 enum dma_data_direction dir),
-	TP_ARGS(dev, sg, nents, dir));
+#define DEFINE_SYNC_SG_EVENT(name) \
+DEFINE_EVENT(dma_sync_sg, name, \
+	TP_PROTO(struct device *dev, struct scatterlist *sg, int nents, \
+		 enum dma_data_direction dir), \
+	TP_ARGS(dev, sg, nents, dir))
 
-DEFINE_EVENT(dma_sync_sg, dma_sync_sg_for_device,
-	TP_PROTO(struct device *dev, struct scatterlist *sg, int nents,
-		 enum dma_data_direction dir),
-	TP_ARGS(dev, sg, nents, dir));
+DEFINE_SYNC_SG_EVENT(dma_sync_sg_for_cpu);
+DEFINE_SYNC_SG_EVENT(dma_sync_sg_for_device);
 
 #endif /*  _TRACE_DMA_H */
 

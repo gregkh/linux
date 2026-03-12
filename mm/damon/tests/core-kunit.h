@@ -71,7 +71,7 @@ static void damon_test_target(struct kunit *test)
 	damon_add_target(c, t);
 	KUNIT_EXPECT_EQ(test, 1u, nr_damon_targets(c));
 
-	damon_destroy_target(t);
+	damon_destroy_target(t, c);
 	KUNIT_EXPECT_EQ(test, 0u, nr_damon_targets(c));
 
 	damon_destroy_ctx(c);
@@ -292,7 +292,7 @@ static void damon_test_split_regions_of(struct kunit *test)
 		kunit_skip(test, "region alloc fail");
 	}
 	damon_add_region(r, t);
-	damon_split_regions_of(t, 2);
+	damon_split_regions_of(t, 2, DAMON_MIN_REGION);
 	KUNIT_EXPECT_LE(test, damon_nr_regions(t), 2u);
 	damon_free_target(t);
 
@@ -308,7 +308,7 @@ static void damon_test_split_regions_of(struct kunit *test)
 		kunit_skip(test, "second region alloc fail");
 	}
 	damon_add_region(r, t);
-	damon_split_regions_of(t, 4);
+	damon_split_regions_of(t, 4, DAMON_MIN_REGION);
 	KUNIT_EXPECT_LE(test, damon_nr_regions(t), 4u);
 	damon_free_target(t);
 	damon_destroy_ctx(c);
@@ -390,14 +390,14 @@ static void damon_test_set_regions(struct kunit *test)
 
 	damon_add_region(r1, t);
 	damon_add_region(r2, t);
-	damon_set_regions(t, &range, 1);
+	damon_set_regions(t, &range, 1, DAMON_MIN_REGION);
 
 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 3);
 	damon_for_each_region(r, t) {
 		KUNIT_EXPECT_EQ(test, r->ar.start, expects[expect_idx++]);
 		KUNIT_EXPECT_EQ(test, r->ar.end, expects[expect_idx++]);
 	}
-	damon_destroy_target(t);
+	damon_destroy_target(t, NULL);
 }
 
 static void damon_test_nr_accesses_to_accesses_bp(struct kunit *test)
@@ -438,19 +438,19 @@ static void damon_test_update_monitoring_result(struct kunit *test)
 
 	new_attrs = (struct damon_attrs){
 		.sample_interval = 100, .aggr_interval = 10000,};
-	damon_update_monitoring_result(r, &old_attrs, &new_attrs);
+	damon_update_monitoring_result(r, &old_attrs, &new_attrs, false);
 	KUNIT_EXPECT_EQ(test, r->nr_accesses, 15);
 	KUNIT_EXPECT_EQ(test, r->age, 2);
 
 	new_attrs = (struct damon_attrs){
 		.sample_interval = 1, .aggr_interval = 1000};
-	damon_update_monitoring_result(r, &old_attrs, &new_attrs);
+	damon_update_monitoring_result(r, &old_attrs, &new_attrs, false);
 	KUNIT_EXPECT_EQ(test, r->nr_accesses, 150);
 	KUNIT_EXPECT_EQ(test, r->age, 2);
 
 	new_attrs = (struct damon_attrs){
 		.sample_interval = 1, .aggr_interval = 100};
-	damon_update_monitoring_result(r, &old_attrs, &new_attrs);
+	damon_update_monitoring_result(r, &old_attrs, &new_attrs, false);
 	KUNIT_EXPECT_EQ(test, r->nr_accesses, 150);
 	KUNIT_EXPECT_EQ(test, r->age, 20);
 
@@ -504,7 +504,7 @@ static void damos_test_new_filter(struct kunit *test)
 {
 	struct damos_filter *filter;
 
-	filter = damos_new_filter(DAMOS_FILTER_TYPE_ANON, true);
+	filter = damos_new_filter(DAMOS_FILTER_TYPE_ANON, true, false);
 	if (!filter)
 		kunit_skip(test, "filter alloc fail");
 	KUNIT_EXPECT_EQ(test, filter->type, DAMOS_FILTER_TYPE_ANON);
@@ -514,40 +514,76 @@ static void damos_test_new_filter(struct kunit *test)
 	damos_destroy_filter(filter);
 }
 
+static void damos_test_commit_filter(struct kunit *test)
+{
+	struct damos_filter *src_filter, *dst_filter;
+
+	src_filter = damos_new_filter(DAMOS_FILTER_TYPE_ANON, true, true);
+	if (!src_filter)
+		kunit_skip(test, "src filter alloc fail");
+	dst_filter = damos_new_filter(DAMOS_FILTER_TYPE_ACTIVE, false, false);
+	if (!dst_filter) {
+		damos_destroy_filter(src_filter);
+		kunit_skip(test, "dst filter alloc fail");
+	}
+	damos_commit_filter(dst_filter, src_filter);
+	KUNIT_EXPECT_EQ(test, dst_filter->type, src_filter->type);
+	KUNIT_EXPECT_EQ(test, dst_filter->matching, src_filter->matching);
+	KUNIT_EXPECT_EQ(test, dst_filter->allow, src_filter->allow);
+
+	damos_destroy_filter(src_filter);
+	damos_destroy_filter(dst_filter);
+}
+
 static void damos_test_filter_out(struct kunit *test)
 {
 	struct damon_target *t;
 	struct damon_region *r, *r2;
 	struct damos_filter *f;
 
-	f = damos_new_filter(DAMOS_FILTER_TYPE_ADDR, true);
+	f = damos_new_filter(DAMOS_FILTER_TYPE_ADDR, true, false);
+	if (!f)
+		kunit_skip(test, "filter alloc fail");
 	f->addr_range = (struct damon_addr_range){
 		.start = DAMON_MIN_REGION * 2, .end = DAMON_MIN_REGION * 6};
 
 	t = damon_new_target();
+	if (!t) {
+		damos_destroy_filter(f);
+		kunit_skip(test, "target alloc fail");
+	}
 	r = damon_new_region(DAMON_MIN_REGION * 3, DAMON_MIN_REGION * 5);
+	if (!r) {
+		damos_destroy_filter(f);
+		damon_free_target(t);
+		kunit_skip(test, "region alloc fail");
+	}
 	damon_add_region(r, t);
 
 	/* region in the range */
-	KUNIT_EXPECT_TRUE(test, __damos_filter_out(NULL, t, r, f));
+	KUNIT_EXPECT_TRUE(test,
+			damos_filter_match(NULL, t, r, f, DAMON_MIN_REGION));
 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1);
 
 	/* region before the range */
 	r->ar.start = DAMON_MIN_REGION * 1;
 	r->ar.end = DAMON_MIN_REGION * 2;
-	KUNIT_EXPECT_FALSE(test, __damos_filter_out(NULL, t, r, f));
+	KUNIT_EXPECT_FALSE(test,
+			damos_filter_match(NULL, t, r, f, DAMON_MIN_REGION));
 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1);
 
 	/* region after the range */
 	r->ar.start = DAMON_MIN_REGION * 6;
 	r->ar.end = DAMON_MIN_REGION * 8;
-	KUNIT_EXPECT_FALSE(test, __damos_filter_out(NULL, t, r, f));
+	KUNIT_EXPECT_FALSE(test,
+			damos_filter_match(NULL, t, r, f, DAMON_MIN_REGION));
 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1);
 
 	/* region started before the range */
 	r->ar.start = DAMON_MIN_REGION * 1;
 	r->ar.end = DAMON_MIN_REGION * 4;
-	KUNIT_EXPECT_FALSE(test, __damos_filter_out(NULL, t, r, f));
+	KUNIT_EXPECT_FALSE(test,
+			damos_filter_match(NULL, t, r, f, DAMON_MIN_REGION));
 	/* filter should have split the region */
 	KUNIT_EXPECT_EQ(test, r->ar.start, DAMON_MIN_REGION * 1);
 	KUNIT_EXPECT_EQ(test, r->ar.end, DAMON_MIN_REGION * 2);
@@ -560,7 +596,8 @@ static void damos_test_filter_out(struct kunit *test)
 	/* region started in the range */
 	r->ar.start = DAMON_MIN_REGION * 2;
 	r->ar.end = DAMON_MIN_REGION * 8;
-	KUNIT_EXPECT_TRUE(test, __damos_filter_out(NULL, t, r, f));
+	KUNIT_EXPECT_TRUE(test,
+			damos_filter_match(NULL, t, r, f, DAMON_MIN_REGION));
 	/* filter should have split the region */
 	KUNIT_EXPECT_EQ(test, r->ar.start, DAMON_MIN_REGION * 2);
 	KUNIT_EXPECT_EQ(test, r->ar.end, DAMON_MIN_REGION * 6);
@@ -605,6 +642,84 @@ static void damon_test_feed_loop_next_input(struct kunit *test)
 			damon_feed_loop_next_input(last_input, 2000));
 }
 
+static void damon_test_set_filters_default_reject(struct kunit *test)
+{
+	struct damos scheme;
+	struct damos_filter *target_filter, *anon_filter;
+
+	INIT_LIST_HEAD(&scheme.filters);
+	INIT_LIST_HEAD(&scheme.ops_filters);
+
+	damos_set_filters_default_reject(&scheme);
+	/*
+	 * No filter is installed.  Allow by default on both core and ops layer
+	 * filtering stages, since there are no filters at all.
+	 */
+	KUNIT_EXPECT_EQ(test, scheme.core_filters_default_reject, false);
+	KUNIT_EXPECT_EQ(test, scheme.ops_filters_default_reject, false);
+
+	target_filter = damos_new_filter(DAMOS_FILTER_TYPE_TARGET, true, true);
+	if (!target_filter)
+		kunit_skip(test, "filter alloc fail");
+	damos_add_filter(&scheme, target_filter);
+	damos_set_filters_default_reject(&scheme);
+	/*
+	 * A core-handled allow-filter is installed.
+	 * Rejct by default on core layer filtering stage due to the last
+	 * core-layer-filter's behavior.
+	 * Allow by default on ops layer filtering stage due to the absence of
+	 * ops layer filters.
+	 */
+	KUNIT_EXPECT_EQ(test, scheme.core_filters_default_reject, true);
+	KUNIT_EXPECT_EQ(test, scheme.ops_filters_default_reject, false);
+
+	target_filter->allow = false;
+	damos_set_filters_default_reject(&scheme);
+	/*
+	 * A core-handled reject-filter is installed.
+	 * Allow by default on core layer filtering stage due to the last
+	 * core-layer-filter's behavior.
+	 * Allow by default on ops layer filtering stage due to the absence of
+	 * ops layer filters.
+	 */
+	KUNIT_EXPECT_EQ(test, scheme.core_filters_default_reject, false);
+	KUNIT_EXPECT_EQ(test, scheme.ops_filters_default_reject, false);
+
+	anon_filter = damos_new_filter(DAMOS_FILTER_TYPE_ANON, true, true);
+	if (!anon_filter) {
+		damos_free_filter(target_filter);
+		kunit_skip(test, "anon_filter alloc fail");
+	}
+	damos_add_filter(&scheme, anon_filter);
+
+	damos_set_filters_default_reject(&scheme);
+	/*
+	 * A core-handled reject-filter and ops-handled allow-filter are installed.
+	 * Allow by default on core layer filtering stage due to the existence
+	 * of the ops-handled filter.
+	 * Reject by default on ops layer filtering stage due to the last
+	 * ops-layer-filter's behavior.
+	 */
+	KUNIT_EXPECT_EQ(test, scheme.core_filters_default_reject, false);
+	KUNIT_EXPECT_EQ(test, scheme.ops_filters_default_reject, true);
+
+	target_filter->allow = true;
+	damos_set_filters_default_reject(&scheme);
+	/*
+	 * A core-handled allow-filter and ops-handled allow-filter are
+	 * installed.
+	 * Allow by default on core layer filtering stage due to the existence
+	 * of the ops-handled filter.
+	 * Reject by default on ops layer filtering stage due to the last
+	 * ops-layer-filter's behavior.
+	 */
+	KUNIT_EXPECT_EQ(test, scheme.core_filters_default_reject, false);
+	KUNIT_EXPECT_EQ(test, scheme.ops_filters_default_reject, true);
+
+	damos_free_filter(anon_filter);
+	damos_free_filter(target_filter);
+}
+
 static struct kunit_case damon_test_cases[] = {
 	KUNIT_CASE(damon_test_target),
 	KUNIT_CASE(damon_test_regions),
@@ -620,8 +735,10 @@ static struct kunit_case damon_test_cases[] = {
 	KUNIT_CASE(damon_test_set_attrs),
 	KUNIT_CASE(damon_test_moving_sum),
 	KUNIT_CASE(damos_test_new_filter),
+	KUNIT_CASE(damos_test_commit_filter),
 	KUNIT_CASE(damos_test_filter_out),
 	KUNIT_CASE(damon_test_feed_loop_next_input),
+	KUNIT_CASE(damon_test_set_filters_default_reject),
 	{},
 };
 

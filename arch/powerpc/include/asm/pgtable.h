@@ -2,7 +2,7 @@
 #ifndef _ASM_POWERPC_PGTABLE_H
 #define _ASM_POWERPC_PGTABLE_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <linux/mmdebug.h>
 #include <linux/mmzone.h>
 #include <asm/processor.h>		/* For TASK_SIZE */
@@ -12,7 +12,7 @@
 
 struct mm_struct;
 
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 #ifdef CONFIG_PPC_BOOK3S
 #include <asm/book3s/pgtable.h>
@@ -27,7 +27,7 @@ struct mm_struct;
 #define PAGE_AGP		(PAGE_KERNEL_NC)
 #define HAVE_PAGE_AGP
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 #define PFN_PTE_SHIFT		PTE_RPN_SHIFT
 
@@ -41,9 +41,8 @@ void set_ptes(struct mm_struct *mm, unsigned long addr, pte_t *ptep,
 #define MAX_PTRS_PER_PGD PTRS_PER_PGD
 #endif
 
-/* Keep these as a macros to avoid include dependency mess */
+/* Keep this as a macro to avoid include dependency mess */
 #define pte_page(x)		pfn_to_page(pte_pfn(x))
-#define mk_pte(page, pgprot)	pfn_pte(page_to_pfn(page), (pgprot))
 
 static inline unsigned long pte_pfn(pte_t pte)
 {
@@ -203,6 +202,6 @@ static inline bool arch_supports_memmap_on_memory(unsigned long vmemmap_size)
 
 #endif /* CONFIG_PPC64 */
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 #endif /* _ASM_POWERPC_PGTABLE_H */

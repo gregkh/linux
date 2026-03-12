@@ -40,7 +40,7 @@ static void gfs2_ail_error(struct gfs2_glock *gl, const struct buffer_head *bh)
 	       "AIL buffer %p: blocknr %llu state 0x%08lx mapping %p page "
 	       "state 0x%lx\n",
 	       bh, (unsigned long long)bh->b_blocknr, bh->b_state,
-	       bh->b_folio->mapping, bh->b_folio->flags);
+	       bh->b_folio->mapping, bh->b_folio->flags.f);
 	fs_err(sdp, "AIL glock %u:%llu mapping %p\n",
 	       gl->gl_name.ln_type, gl->gl_name.ln_number,
 	       gfs2_glock2aspace(gl));
@@ -476,7 +476,7 @@ static int gfs2_dinode_in(struct gfs2_inode *ip, const void *buf)
  * Returns: errno
  */
 
-int gfs2_inode_refresh(struct gfs2_inode *ip)
+static int gfs2_inode_refresh(struct gfs2_inode *ip)
 {
 	struct buffer_head *dibh;
 	int error;
@@ -607,14 +607,13 @@ static int freeze_go_xmote_bh(struct gfs2_glock *gl)
 	if (test_bit(SDF_JOURNAL_LIVE, &sdp->sd_flags)) {
 		j_gl->gl_ops->go_inval(j_gl, DIO_METADATA);
 
-		error = gfs2_find_jhead(sdp->sd_jdesc, &head, false);
+		error = gfs2_find_jhead(sdp->sd_jdesc, &head);
 		if (gfs2_assert_withdraw_delayed(sdp, !error))
 			return error;
 		if (gfs2_assert_withdraw_delayed(sdp, head.lh_flags &
 						 GFS2_LOG_HEAD_UNMOUNT))
 			return -EIO;
-		sdp->sd_log_sequence = head.lh_sequence + 1;
-		gfs2_log_pointers_init(sdp, head.lh_blkno);
+		gfs2_log_pointers_init(sdp, &head);
 	}
 	return 0;
 }

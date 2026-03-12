@@ -1084,11 +1084,11 @@ static u32 rcar_i2c_func(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm rcar_i2c_algo = {
-	.master_xfer	= rcar_i2c_master_xfer,
-	.master_xfer_atomic = rcar_i2c_master_xfer_atomic,
-	.functionality	= rcar_i2c_func,
-	.reg_slave	= rcar_reg_slave,
-	.unreg_slave	= rcar_unreg_slave,
+	.xfer = rcar_i2c_master_xfer,
+	.xfer_atomic = rcar_i2c_master_xfer_atomic,
+	.functionality = rcar_i2c_func,
+	.reg_slave = rcar_reg_slave,
+	.unreg_slave = rcar_unreg_slave,
 };
 
 static const struct i2c_adapter_quirks rcar_i2c_quirks = {
@@ -1281,7 +1281,7 @@ static struct platform_driver rcar_i2c_driver = {
 		.pm	= pm_sleep_ptr(&rcar_i2c_pm_ops),
 	},
 	.probe		= rcar_i2c_probe,
-	.remove_new	= rcar_i2c_remove,
+	.remove		= rcar_i2c_remove,
 };
 
 module_platform_driver(rcar_i2c_driver);

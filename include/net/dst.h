@@ -243,9 +243,9 @@ static inline void dst_hold(struct dst_entry *dst)
 
 static inline void dst_use_noref(struct dst_entry *dst, unsigned long time)
 {
-	if (unlikely(time != dst->lastuse)) {
+	if (unlikely(time != READ_ONCE(dst->lastuse))) {
 		dst->__use++;
-		dst->lastuse = time;
+		WRITE_ONCE(dst->lastuse, time);
 	}
 }
 
@@ -310,7 +310,7 @@ static inline bool dst_hold_safe(struct dst_entry *dst)
  * @skb: buffer
  *
  * If dst is not yet refcounted and not destroyed, grab a ref on it.
- * Returns true if dst is refcounted.
+ * Returns: true if dst is refcounted.
  */
 static inline bool skb_dst_force(struct sk_buff *skb)
 {
@@ -434,13 +434,15 @@ static inline void dst_link_failure(struct sk_buff *skb)
 
 static inline void dst_set_expires(struct dst_entry *dst, int timeout)
 {
-	unsigned long expires = jiffies + timeout;
+	unsigned long old, expires = jiffies + timeout;
 
 	if (expires == 0)
 		expires = 1;
 
-	if (dst->expires == 0 || time_before(expires, dst->expires))
-		dst->expires = expires;
+	old = READ_ONCE(dst->expires);
+
+	if (!old || time_before(expires, old))
+		WRITE_ONCE(dst->expires, expires);
 }
 
 static inline unsigned int dst_dev_overhead(struct dst_entry *dst,
@@ -479,7 +481,7 @@ INDIRECT_CALLABLE_DECLARE(struct dst_entry *ipv4_dst_check(struct dst_entry *,
 							   u32));
 static inline struct dst_entry *dst_check(struct dst_entry *dst, u32 cookie)
 {
-	if (dst->obsolete)
+	if (READ_ONCE(dst->obsolete))
 		dst = INDIRECT_CALL_INET(dst->ops->check, ip6_dst_check,
 					 ipv4_dst_check, dst, cookie);
 	return dst;

@@ -74,7 +74,7 @@ SECTIONS
 	. = ALIGN(4);
 	__ex_table : AT(ADDR(__ex_table) - LOAD_OFFSET) {
 		__start___ex_table = .;
-		ARM_MMU_KEEP(KEEP(*(__ex_table)))
+		ARM_MMU_KEEP(*(__ex_table))
 		__stop___ex_table = .;
 	}
 
@@ -153,6 +153,7 @@ SECTIONS
 
 	STABS_DEBUG
 	DWARF_DEBUG
+	MODINFO
 	ARM_DETAILS
 
 	ARM_ASSERTS

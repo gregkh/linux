@@ -18,7 +18,7 @@
 /// let a = 2;
 /// # #[expect(clippy::disallowed_macros)]
 /// let b = dbg!(a * 2) + 1;
-/// //      ^-- prints: [src/main.rs:2] a * 2 = 4
+/// //      ^-- prints: [src/main.rs:3:9] a * 2 = 4
 /// assert_eq!(b, 5);
 /// ```
 ///
@@ -67,14 +67,13 @@
 /// This prints to the kernel log:
 ///
 /// ```text,ignore
-/// [src/main.rs:4] n.checked_sub(4) = None
+/// [src/main.rs:3:8] n.checked_sub(4) = None
 /// ```
 ///
 /// Naive factorial implementation:
 ///
 /// ```rust
-/// # #[expect(clippy::disallowed_macros)]
-/// # {
+/// # #![expect(clippy::disallowed_macros)]
 /// fn factorial(n: u32) -> u32 {
 ///     if dbg!(n <= 1) {
 ///         dbg!(1)
@@ -84,21 +83,20 @@
 /// }
 ///
 /// dbg!(factorial(4));
-/// # }
 /// ```
 ///
 /// This prints to the kernel log:
 ///
 /// ```text,ignore
-/// [src/main.rs:3] n <= 1 = false
-/// [src/main.rs:3] n <= 1 = false
-/// [src/main.rs:3] n <= 1 = false
-/// [src/main.rs:3] n <= 1 = true
-/// [src/main.rs:4] 1 = 1
-/// [src/main.rs:5] n * factorial(n - 1) = 2
-/// [src/main.rs:5] n * factorial(n - 1) = 6
-/// [src/main.rs:5] n * factorial(n - 1) = 24
-/// [src/main.rs:11] factorial(4) = 24
+/// [src/main.rs:3:8] n <= 1 = false
+/// [src/main.rs:3:8] n <= 1 = false
+/// [src/main.rs:3:8] n <= 1 = false
+/// [src/main.rs:3:8] n <= 1 = true
+/// [src/main.rs:4:9] 1 = 1
+/// [src/main.rs:5:9] n * factorial(n - 1) = 2
+/// [src/main.rs:5:9] n * factorial(n - 1) = 6
+/// [src/main.rs:5:9] n * factorial(n - 1) = 24
+/// [src/main.rs:11:1] factorial(4) = 24
 /// ```
 ///
 /// The `dbg!(..)` macro moves the input:
@@ -129,11 +127,9 @@
 /// invocations. You can use a 1-tuple directly if you need one:
 ///
 /// ```
-/// # #[expect(clippy::disallowed_macros)]
-/// # {
+/// # #![expect(clippy::disallowed_macros)]
 /// assert_eq!(1, dbg!(1u32,)); // trailing comma ignored
 /// assert_eq!((1,), dbg!((1u32,))); // 1-tuple
-/// # }
 /// ```
 ///
 /// [`std::dbg`]: https://doc.rust-lang.org/std/macro.dbg.html
@@ -152,7 +148,7 @@ macro_rules! dbg {
     };
     ($val:expr $(,)?) => {
         // Use of `match` here is intentional because it affects the lifetimes
-        // of temporaries - https://stackoverflow.com/a/48732525/1063961
+        // of temporaries - <https://stackoverflow.com/a/48732525/1063961>
         match $val {
             tmp => {
                 $crate::pr_info!("[{}:{}:{}] {} = {:#?}\n",

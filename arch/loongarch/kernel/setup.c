@@ -197,6 +197,16 @@ static int __init early_parse_mem(char *p)
 		return -EINVAL;
 	}
 
+	start = 0;
+	size = memparse(p, &p);
+	if (*p == '@')	/* Every mem=... should contain '@' */
+		start = memparse(p + 1, &p);
+	else {		/* Only one mem=... is allowed if no '@' */
+		usermem = 1;
+		memblock_enforce_memory_limit(size);
+		return 0;
+	}
+
 	/*
 	 * If a user specifies memory size, we
 	 * blow away any automatically generated
@@ -206,14 +216,6 @@ static int __init early_parse_mem(char *p)
 		usermem = 1;
 		memblock_remove(memblock_start_of_DRAM(),
 			memblock_end_of_DRAM() - memblock_start_of_DRAM());
-	}
-	start = 0;
-	size = memparse(p, &p);
-	if (*p == '@')
-		start = memparse(p + 1, &p);
-	else {
-		pr_err("Invalid format!\n");
-		return -EINVAL;
 	}
 
 	if (!IS_ENABLED(CONFIG_NUMA))
@@ -265,18 +267,17 @@ static void __init arch_reserve_crashkernel(void)
 	int ret;
 	unsigned long long low_size = 0;
 	unsigned long long crash_base, crash_size;
-	char *cmdline = boot_command_line;
 	bool high = false;
 
 	if (!IS_ENABLED(CONFIG_CRASH_RESERVE))
 		return;
 
-	ret = parse_crashkernel(cmdline, memblock_phys_mem_size(),
-				&crash_size, &crash_base, &low_size, &high);
+	ret = parse_crashkernel(boot_command_line, memblock_phys_mem_size(),
+				&crash_size, &crash_base, &low_size, NULL, &high);
 	if (ret)
 		return;
 
-	reserve_crashkernel_generic(cmdline, crash_size, crash_base, low_size, high);
+	reserve_crashkernel_generic(crash_size, crash_base, low_size, high);
 }
 
 static void __init fdt_setup(void)
@@ -299,8 +300,6 @@ static void __init fdt_setup(void)
 
 	early_init_dt_scan(fdt_pointer, __pa(fdt_pointer));
 	early_init_fdt_reserve_self();
-
-	max_low_pfn = PFN_PHYS(memblock_end_of_DRAM());
 #endif
 }
 
@@ -395,7 +394,8 @@ static void __init check_kernel_sections_mem(void)
 static void __init arch_mem_init(char **cmdline_p)
 {
 	/* Recalculate max_low_pfn for "mem=xxx" */
-	max_pfn = max_low_pfn = PHYS_PFN(memblock_end_of_DRAM());
+	max_pfn = PFN_DOWN(memblock_end_of_DRAM());
+	max_low_pfn = min(PFN_DOWN(HIGHMEM_START), max_pfn);
 
 	if (usermem)
 		pr_info("User-defined physical RAM map overwrite\n");
@@ -442,7 +442,7 @@ static void __init resource_init(void)
 
 	num_standard_resources = memblock.memory.cnt;
 	res_size = num_standard_resources * sizeof(*standard_resources);
-	standard_resources = memblock_alloc(res_size, SMP_CACHE_BYTES);
+	standard_resources = memblock_alloc_or_panic(res_size, SMP_CACHE_BYTES);
 
 	for_each_mem_region(region) {
 		res = &standard_resources[i++];

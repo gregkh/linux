@@ -15,8 +15,9 @@
 #include <linux/bpf.h>
 #include <linux/bpf_trace.h>
 #include <linux/filter.h>
+#include <net/netdev_lock.h>
 #include <net/page_pool/helpers.h>
-#include "bnxt_hsi.h"
+#include <linux/bnxt/hsi.h>
 #include "bnxt.h"
 #include "bnxt_xdp.h"
 
@@ -48,8 +49,7 @@ struct bnxt_sw_tx_bd *bnxt_xmit_bd(struct bnxt *bp,
 		tx_buf->page = virt_to_head_page(xdp->data);
 
 	txbd = &txr->tx_desc_ring[TX_RING(bp, prod)][TX_IDX(prod)];
-	flags = (len << TX_BD_LEN_SHIFT) |
-		((num_frags + 1) << TX_BD_FLAGS_BD_CNT_SHIFT) |
+	flags = (len << TX_BD_LEN_SHIFT) | TX_BD_CNT(num_frags + 1) |
 		bnxt_lhint_arr[len >> 9];
 	txbd->tx_bd_len_flags_type = cpu_to_le32(flags);
 	txbd->tx_bd_opaque = SET_TX_OPAQUE(bp, txr, prod, 1 + num_frags);
@@ -381,17 +381,22 @@ int bnxt_xdp_xmit(struct net_device *dev, int num_frames,
 	return nxmit;
 }
 
-/* Under rtnl_lock */
 static int bnxt_xdp_set(struct bnxt *bp, struct bpf_prog *prog)
 {
 	struct net_device *dev = bp->dev;
 	int tx_xdp = 0, tx_cp, rc, tc;
 	struct bpf_prog *old;
 
+	netdev_assert_locked(dev);
+
 	if (prog && !prog->aux->xdp_has_frags &&
 	    bp->dev->mtu > BNXT_MAX_PAGE_MODE_MTU) {
 		netdev_warn(dev, "MTU %d larger than %d without XDP frag support.\n",
 			    bp->dev->mtu, BNXT_MAX_PAGE_MODE_MTU);
+		return -EOPNOTSUPP;
+	}
+	if (prog && bp->flags & BNXT_FLAG_HDS) {
+		netdev_warn(dev, "XDP is disallowed when HDS is enabled.\n");
 		return -EOPNOTSUPP;
 	}
 	if (!(bp->flags & BNXT_FLAG_SHARED_RINGS)) {
@@ -419,9 +424,9 @@ static int bnxt_xdp_set(struct bnxt *bp, struct bpf_prog *prog)
 
 	if (prog) {
 		bnxt_set_rx_skb_mode(bp, true);
-		xdp_features_set_redirect_target(dev, true);
+		xdp_features_set_redirect_target_locked(dev, true);
 	} else {
-		xdp_features_clear_redirect_target(dev);
+		xdp_features_clear_redirect_target_locked(dev);
 		bnxt_set_rx_skb_mode(bp, false);
 	}
 	bp->tx_nr_rings_xdp = tx_xdp;
@@ -462,9 +467,8 @@ bnxt_xdp_build_skb(struct bnxt *bp, struct sk_buff *skb, u8 num_frags,
 	if (!skb)
 		return NULL;
 
-	xdp_update_skb_shared_info(skb, num_frags,
-				   sinfo->xdp_frags_size,
-				   BNXT_RX_PAGE_SIZE * num_frags,
-				   xdp_buff_is_frag_pfmemalloc(xdp));
+	xdp_update_skb_frags_info(skb, num_frags, sinfo->xdp_frags_size,
+				  BNXT_RX_PAGE_SIZE * num_frags,
+				  xdp_buff_get_skb_flags(xdp));
 	return skb;
 }

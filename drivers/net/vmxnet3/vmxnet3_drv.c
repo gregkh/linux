@@ -27,6 +27,10 @@
 #include <linux/module.h>
 #include <net/ip6_checksum.h>
 
+#ifdef CONFIG_X86
+#include <asm/msr.h>
+#endif
+
 #include "vmxnet3_int.h"
 #include "vmxnet3_xdp.h"
 
@@ -201,6 +205,14 @@ vmxnet3_check_link(struct vmxnet3_adapter *adapter, bool affectTxQueue)
 
 	adapter->link_speed = ret >> 16;
 	if (ret & 1) { /* Link is up. */
+		/*
+		 * From vmxnet3 v9, the hypervisor reports the speed in Gbps.
+		 * Convert the speed to Mbps before rporting it to the kernel.
+		 * Max link speed supported is 10000G.
+		 */
+		if (VMXNET3_VERSION_GE_9(adapter) &&
+		    adapter->link_speed < 10000)
+			adapter->link_speed = adapter->link_speed * 1000;
 		netdev_info(adapter->netdev, "NIC Link is Up %d Mbps\n",
 			    adapter->link_speed);
 		netif_carrier_on(adapter->netdev);

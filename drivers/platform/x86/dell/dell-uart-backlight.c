@@ -159,7 +159,7 @@ static int dell_uart_set_bl_power(struct dell_uart_backlight *dell_bl, int power
 
 	set_power[0] = DELL_SOF(SET_CMD_LEN);
 	set_power[1] = CMD_SET_BL_POWER;
-	set_power[2] = (power == FB_BLANK_UNBLANK) ? 1 : 0;
+	set_power[2] = (power == BACKLIGHT_POWER_ON) ? 1 : 0;
 	set_power[3] = dell_uart_checksum(set_power, 3);
 
 	ret = dell_uart_bl_command(dell_bl, set_power, SET_CMD_LEN, resp, SET_RESP_LEN);
@@ -305,7 +305,7 @@ static int dell_uart_bl_serdev_probe(struct serdev_device *serdev)
 	dev_dbg(dev, "Firmware version: %.*s\n", resp[RESP_LEN] - 3, resp + RESP_DATA);
 
 	/* Initialize bl_power to a known value */
-	ret = dell_uart_set_bl_power(dell_bl, FB_BLANK_UNBLANK);
+	ret = dell_uart_set_bl_power(dell_bl, BACKLIGHT_POWER_ON);
 	if (ret)
 		return ret;
 
@@ -394,7 +394,7 @@ static void dell_uart_bl_pdev_remove(struct platform_device *pdev)
 
 static struct platform_driver dell_uart_bl_pdev_driver = {
 	.probe = dell_uart_bl_pdev_probe,
-	.remove_new = dell_uart_bl_pdev_remove,
+	.remove = dell_uart_bl_pdev_remove,
 	.driver = {
 		.name = "dell-uart-backlight",
 	},

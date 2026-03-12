@@ -40,8 +40,6 @@ static pgd_t kasan_pg_dir[PTRS_PER_PGD] __initdata __aligned(PAGE_SIZE);
 #define __pte_none(early, pte) (early ? pte_none(pte) : \
 ((pte_val(pte) & _PFN_MASK) == (unsigned long)__pa(kasan_early_shadow_page)))
 
-bool kasan_early_stage = true;
-
 static void *mem_to_shadow(const void *addr)
 {
 	unsigned long offset = 0;
@@ -75,7 +73,7 @@ static void *mem_to_shadow(const void *addr)
 
 void *kasan_mem_to_shadow(const void *addr)
 {
-	if (kasan_arch_is_ready())
+	if (kasan_enabled())
 		return mem_to_shadow(addr);
 	else
 		return (void *)(kasan_early_shadow_page);
@@ -331,6 +329,5 @@ void __init kasan_init(void)
 
 	/* At this point kasan is fully initialized. Enable error messages */
 	init_task.kasan_depth = 0;
-	kasan_early_stage = false;
-	pr_info("KernelAddressSanitizer initialized.\n");
+	kasan_init_generic();
 }

@@ -19,6 +19,7 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regulator/consumer.h>
+#include <linux/string_choices.h>
 #include <linux/usb/role.h>
 #include <linux/idr.h>
 
@@ -115,7 +116,7 @@ static void usb_conn_detect_cable(struct work_struct *work)
 
 	if (info->vbus)
 		dev_dbg(info->dev, "vbus regulator is %s\n",
-			regulator_is_enabled(info->vbus) ? "enabled" : "disabled");
+			str_enabled_disabled(regulator_is_enabled(info->vbus)));
 
 	power_supply_changed(info->charger);
 }
@@ -161,7 +162,7 @@ static int usb_conn_psy_register(struct usb_conn_info *info)
 	struct device *dev = info->dev;
 	struct power_supply_desc *desc = &info->desc;
 	struct power_supply_config cfg = {
-		.of_node = dev->of_node,
+		.fwnode = dev_fwnode(dev),
 	};
 
 	info->conn_id = ida_alloc(&usb_conn_ida, GFP_KERNEL);
@@ -359,7 +360,7 @@ MODULE_DEVICE_TABLE(of, usb_conn_dt_match);
 
 static struct platform_driver usb_conn_driver = {
 	.probe		= usb_conn_probe,
-	.remove_new	= usb_conn_remove,
+	.remove		= usb_conn_remove,
 	.driver		= {
 		.name	= "usb-conn-gpio",
 		.pm	= &usb_conn_pm_ops,

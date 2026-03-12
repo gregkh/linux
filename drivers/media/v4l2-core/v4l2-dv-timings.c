@@ -1018,6 +1018,42 @@ v4l2_hdmi_rx_colorimetry(const struct hdmi_avi_infoframe *avi,
 EXPORT_SYMBOL_GPL(v4l2_hdmi_rx_colorimetry);
 
 /**
+ * v4l2_num_edid_blocks() - return the number of EDID blocks
+ *
+ * @edid:	pointer to the EDID data
+ * @max_blocks:	maximum number of supported EDID blocks
+ *
+ * Return: the number of EDID blocks based on the contents of the EDID.
+ *	   This supports the HDMI Forum EDID Extension Override Data Block.
+ */
+unsigned int v4l2_num_edid_blocks(const u8 *edid, unsigned int max_blocks)
+{
+	unsigned int blocks;
+
+	if (!edid || !max_blocks)
+		return 0;
+
+	// The number of extension blocks is recorded at byte 126 of the
+	// first 128-byte block in the EDID.
+	//
+	// If there is an HDMI Forum EDID Extension Override Data Block
+	// present, then it is in bytes 4-6 of the first CTA-861 extension
+	// block of the EDID.
+	blocks = edid[126] + 1;
+	// Check for HDMI Forum EDID Extension Override Data Block
+	if (blocks >= 2 &&	// The EDID must be at least 2 blocks
+	    max_blocks >= 3 &&  // The caller supports at least 3 blocks
+	    edid[128] == 2 &&	// The first extension block is type CTA-861
+	    edid[133] == 0x78 && // Identifier for the EEODB
+	    (edid[132] & 0xe0) == 0xe0 && // Tag Code == 7
+	    (edid[132] & 0x1f) >= 2 &&	// Length >= 2
+	    edid[134] > 1)	// Number of extension blocks is sane
+		blocks = edid[134] + 1;
+	return blocks > max_blocks ? max_blocks : blocks;
+}
+EXPORT_SYMBOL_GPL(v4l2_num_edid_blocks);
+
+/**
  * v4l2_get_edid_phys_addr() - find and return the physical address
  *
  * @edid:	pointer to the EDID data
@@ -1166,3 +1202,74 @@ int v4l2_phys_addr_validate(u16 phys_addr, u16 *parent, u16 *port)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(v4l2_phys_addr_validate);
+
+#ifdef CONFIG_DEBUG_FS
+
+#define DEBUGFS_FOPS(type, flag)					\
+static ssize_t								\
+infoframe_read_##type(struct file *filp,				\
+		      char __user *ubuf, size_t count, loff_t *ppos)	\
+{									\
+	struct v4l2_debugfs_if *infoframes = filp->private_data;	\
+									\
+	return infoframes->if_read((flag), infoframes->priv, filp,	\
+				   ubuf, count, ppos);			\
+}									\
+									\
+static const struct file_operations infoframe_##type##_fops = {		\
+	.owner   = THIS_MODULE,						\
+	.open    = simple_open,						\
+	.read    = infoframe_read_##type,				\
+}
+
+DEBUGFS_FOPS(avi, V4L2_DEBUGFS_IF_AVI);
+DEBUGFS_FOPS(audio, V4L2_DEBUGFS_IF_AUDIO);
+DEBUGFS_FOPS(spd, V4L2_DEBUGFS_IF_SPD);
+DEBUGFS_FOPS(hdmi, V4L2_DEBUGFS_IF_HDMI);
+DEBUGFS_FOPS(drm, V4L2_DEBUGFS_IF_DRM);
+
+struct v4l2_debugfs_if *v4l2_debugfs_if_alloc(struct dentry *root, u32 if_types,
+					      void *priv,
+					      v4l2_debugfs_if_read_t if_read)
+{
+	struct v4l2_debugfs_if *infoframes;
+
+	if (IS_ERR_OR_NULL(root) || !if_types || !if_read)
+		return NULL;
+
+	infoframes = kzalloc(sizeof(*infoframes), GFP_KERNEL);
+	if (!infoframes)
+		return NULL;
+
+	infoframes->if_dir = debugfs_create_dir("infoframes", root);
+	infoframes->priv = priv;
+	infoframes->if_read = if_read;
+	if (if_types & V4L2_DEBUGFS_IF_AVI)
+		debugfs_create_file("avi", 0400, infoframes->if_dir,
+				    infoframes, &infoframe_avi_fops);
+	if (if_types & V4L2_DEBUGFS_IF_AUDIO)
+		debugfs_create_file("audio", 0400, infoframes->if_dir,
+				    infoframes, &infoframe_audio_fops);
+	if (if_types & V4L2_DEBUGFS_IF_SPD)
+		debugfs_create_file("spd", 0400, infoframes->if_dir,
+				    infoframes, &infoframe_spd_fops);
+	if (if_types & V4L2_DEBUGFS_IF_HDMI)
+		debugfs_create_file("hdmi", 0400, infoframes->if_dir,
+				    infoframes, &infoframe_hdmi_fops);
+	if (if_types & V4L2_DEBUGFS_IF_DRM)
+		debugfs_create_file("hdr_drm", 0400, infoframes->if_dir,
+				    infoframes, &infoframe_drm_fops);
+	return infoframes;
+}
+EXPORT_SYMBOL_GPL(v4l2_debugfs_if_alloc);
+
+void v4l2_debugfs_if_free(struct v4l2_debugfs_if *infoframes)
+{
+	if (infoframes) {
+		debugfs_remove_recursive(infoframes->if_dir);
+		kfree(infoframes);
+	}
+}
+EXPORT_SYMBOL_GPL(v4l2_debugfs_if_free);
+
+#endif

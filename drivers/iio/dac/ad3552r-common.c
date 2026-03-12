@@ -11,23 +11,21 @@
 
 #include "ad3552r.h"
 
-const s32 ad3552r_ch_ranges[AD3552R_MAX_RANGES][2] = {
+static const s32 ad3552r_ch_ranges[AD3552R_MAX_RANGES][2] = {
 	[AD3552R_CH_OUTPUT_RANGE_0__2P5V]	= { 0, 2500 },
 	[AD3552R_CH_OUTPUT_RANGE_0__5V]		= { 0, 5000 },
 	[AD3552R_CH_OUTPUT_RANGE_0__10V]	= { 0, 10000 },
 	[AD3552R_CH_OUTPUT_RANGE_NEG_5__5V]	= { -5000, 5000 },
 	[AD3552R_CH_OUTPUT_RANGE_NEG_10__10V]	= { -10000, 10000 }
 };
-EXPORT_SYMBOL_NS_GPL(ad3552r_ch_ranges, IIO_AD3552R);
 
-const s32 ad3542r_ch_ranges[AD3542R_MAX_RANGES][2] = {
+static const s32 ad3542r_ch_ranges[AD3542R_MAX_RANGES][2] = {
 	[AD3542R_CH_OUTPUT_RANGE_0__2P5V]	= { 0, 2500 },
 	[AD3542R_CH_OUTPUT_RANGE_0__5V]		= { 0, 5000 },
 	[AD3542R_CH_OUTPUT_RANGE_0__10V]	= { 0, 10000 },
 	[AD3542R_CH_OUTPUT_RANGE_NEG_5__5V]	= { -5000, 5000 },
 	[AD3542R_CH_OUTPUT_RANGE_NEG_2P5__7P5V]	= { -2500, 7500 }
 };
-EXPORT_SYMBOL_NS_GPL(ad3542r_ch_ranges, IIO_AD3552R);
 
 /* Gain * AD3552R_GAIN_SCALE */
 static const s32 gains_scaling_table[] = {
@@ -37,6 +35,54 @@ static const s32 gains_scaling_table[] = {
 	[AD3552R_CH_GAIN_SCALING_0_125]		= 125
 };
 
+const struct ad3552r_model_data ad3541r_model_data = {
+	.model_name = "ad3541r",
+	.chip_id = AD3541R_ID,
+	.num_hw_channels = 1,
+	.ranges_table = ad3542r_ch_ranges,
+	.num_ranges = ARRAY_SIZE(ad3542r_ch_ranges),
+	.requires_output_range = true,
+	.num_spi_data_lanes = 2,
+	.max_reg_addr = 0x46,
+};
+EXPORT_SYMBOL_NS_GPL(ad3541r_model_data, "IIO_AD3552R");
+
+const struct ad3552r_model_data ad3542r_model_data = {
+	.model_name = "ad3542r",
+	.chip_id = AD3542R_ID,
+	.num_hw_channels = 2,
+	.ranges_table = ad3542r_ch_ranges,
+	.num_ranges = ARRAY_SIZE(ad3542r_ch_ranges),
+	.requires_output_range = true,
+	.num_spi_data_lanes = 2,
+	.max_reg_addr = 0x49,
+};
+EXPORT_SYMBOL_NS_GPL(ad3542r_model_data, "IIO_AD3552R");
+
+const struct ad3552r_model_data ad3551r_model_data = {
+	.model_name = "ad3551r",
+	.chip_id = AD3551R_ID,
+	.num_hw_channels = 1,
+	.ranges_table = ad3552r_ch_ranges,
+	.num_ranges = ARRAY_SIZE(ad3552r_ch_ranges),
+	.requires_output_range = false,
+	.num_spi_data_lanes = 4,
+	.max_reg_addr = 0x46,
+};
+EXPORT_SYMBOL_NS_GPL(ad3551r_model_data, "IIO_AD3552R");
+
+const struct ad3552r_model_data ad3552r_model_data = {
+	.model_name = "ad3552r",
+	.chip_id = AD3552R_ID,
+	.num_hw_channels = 2,
+	.ranges_table = ad3552r_ch_ranges,
+	.num_ranges = ARRAY_SIZE(ad3552r_ch_ranges),
+	.requires_output_range = false,
+	.num_spi_data_lanes = 4,
+	.max_reg_addr = 0x49,
+};
+EXPORT_SYMBOL_NS_GPL(ad3552r_model_data, "IIO_AD3552R");
+
 u16 ad3552r_calc_custom_gain(u8 p, u8 n, s16 goffs)
 {
 	return FIELD_PREP(AD3552R_MASK_CH_RANGE_OVERRIDE, 1) |
@@ -45,7 +91,7 @@ u16 ad3552r_calc_custom_gain(u8 p, u8 n, s16 goffs)
 	       FIELD_PREP(AD3552R_MASK_CH_OFFSET_BIT_8, abs(goffs)) |
 	       FIELD_PREP(AD3552R_MASK_CH_OFFSET_POLARITY, goffs < 0);
 }
-EXPORT_SYMBOL_NS_GPL(ad3552r_calc_custom_gain, IIO_AD3552R);
+EXPORT_SYMBOL_NS_GPL(ad3552r_calc_custom_gain, "IIO_AD3552R");
 
 static void ad3552r_get_custom_range(struct ad3552r_ch_data *ch_data,
 				     s32 *v_min, s32 *v_max)
@@ -107,7 +153,7 @@ void ad3552r_calc_gain_and_offset(struct ad3552r_ch_data *ch_data,
 	tmp = (s64)rem * 1000000;
 	ch_data->offset_dec = div_s64(tmp, span);
 }
-EXPORT_SYMBOL_NS_GPL(ad3552r_calc_gain_and_offset, IIO_AD3552R);
+EXPORT_SYMBOL_NS_GPL(ad3552r_calc_gain_and_offset, "IIO_AD3552R");
 
 int ad3552r_get_ref_voltage(struct device *dev, u32 *val)
 {
@@ -137,7 +183,7 @@ int ad3552r_get_ref_voltage(struct device *dev, u32 *val)
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(ad3552r_get_ref_voltage, IIO_AD3552R);
+EXPORT_SYMBOL_NS_GPL(ad3552r_get_ref_voltage, "IIO_AD3552R");
 
 int ad3552r_get_drive_strength(struct device *dev, u32 *val)
 {
@@ -159,7 +205,7 @@ int ad3552r_get_drive_strength(struct device *dev, u32 *val)
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(ad3552r_get_drive_strength, IIO_AD3552R);
+EXPORT_SYMBOL_NS_GPL(ad3552r_get_drive_strength, "IIO_AD3552R");
 
 int ad3552r_get_custom_gain(struct device *dev, struct fwnode_handle *child,
 			    u8 *gs_p, u8 *gs_n, u16 *rfb, s16 *goffs)
@@ -200,7 +246,7 @@ int ad3552r_get_custom_gain(struct device *dev, struct fwnode_handle *child,
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(ad3552r_get_custom_gain, IIO_AD3552R);
+EXPORT_SYMBOL_NS_GPL(ad3552r_get_custom_gain, "IIO_AD3552R");
 
 static int ad3552r_find_range(const struct ad3552r_model_data *model_info,
 			      s32 *vals)
@@ -242,7 +288,7 @@ int ad3552r_get_output_range(struct device *dev,
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(ad3552r_get_output_range, IIO_AD3552R);
+EXPORT_SYMBOL_NS_GPL(ad3552r_get_output_range, "IIO_AD3552R");
 
 MODULE_DESCRIPTION("ad3552r common functions");
 MODULE_LICENSE("GPL");

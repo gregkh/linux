@@ -16,6 +16,8 @@
 #include <linux/rhashtable.h>
 #include <linux/average.h>
 #include <linux/firmware.h>
+#include <linux/suspend.h>
+#include <linux/of.h>
 
 #include "qmi.h"
 #include "htc.h"
@@ -32,6 +34,7 @@
 #include "spectral.h"
 #include "wow.h"
 #include "fw.h"
+#include "coredump.h"
 
 #define SM(_v, _f) (((_v) << _f##_LSB) & _f##_MASK)
 
@@ -148,6 +151,7 @@ enum ath11k_hw_rev {
 	ATH11K_HW_WCN6750_HW10,
 	ATH11K_HW_IPQ5018_HW10,
 	ATH11K_HW_QCA2066_HW21,
+	ATH11K_HW_QCA6698AQ_HW21,
 };
 
 enum ath11k_firmware_mode {
@@ -340,7 +344,6 @@ struct ath11k_chan_power_info {
  * @ap_power_type: type of power (SP/LPI/VLP)
  * @num_pwr_levels: number of power levels
  * @reg_max: Array of maximum TX power (dBm) per PSD value
- * @ap_constraint_power: AP constraint power (dBm)
  * @tpe: TPE values processed from TPE IE
  * @chan_power_info: power info to send to firmware
  */
@@ -350,7 +353,6 @@ struct ath11k_reg_tpc_power_info {
 	enum wmi_reg_6ghz_ap_type ap_power_type;
 	u8 num_pwr_levels;
 	u8 reg_max[ATH11K_NUM_PWR_LEVELS];
-	u8 ap_constraint_power;
 	s8 tpe[ATH11K_NUM_PWR_LEVELS];
 	struct ath11k_chan_power_info chan_power_info[ATH11K_NUM_PWR_LEVELS];
 };
@@ -370,7 +372,6 @@ struct ath11k_vif {
 	struct ath11k *ar;
 	struct ieee80211_vif *vif;
 
-	u16 tx_seq_no;
 	struct wmi_wmm_params_all_arg wmm_params;
 	struct wmi_wmm_params_all_arg muedca_params;
 	struct list_head list;
@@ -915,6 +916,10 @@ struct ath11k_base {
 	/* HW channel counters frequency value in hertz common to all MACs */
 	u32 cc_freq_hz;
 
+	struct ath11k_dump_file_data *dump_data;
+	size_t ath11k_coredump_len;
+	struct work_struct dump_work;
+
 	struct ath11k_htc htc;
 
 	struct ath11k_dp dp;
@@ -1056,6 +1061,8 @@ struct ath11k_base {
 		DECLARE_BITMAP(fw_features, ATH11K_FW_FEATURE_COUNT);
 	} fw;
 
+	struct completion restart_completed;
+
 #ifdef CONFIG_NL80211_TESTMODE
 	struct {
 		u32 data_pos;
@@ -1065,6 +1072,8 @@ struct ath11k_base {
 #endif
 
 	enum ath11k_pm_policy pm_policy;
+	enum ath11k_pm_policy actual_pm_policy;
+	struct notifier_block pm_nb;
 
 	/* must be last */
 	u8 drv_priv[] __aligned(sizeof(void *));
@@ -1257,13 +1266,16 @@ void ath11k_core_free_bdf(struct ath11k_base *ab, struct ath11k_board_data *bd);
 int ath11k_core_check_dt(struct ath11k_base *ath11k);
 int ath11k_core_check_smbios(struct ath11k_base *ab);
 void ath11k_core_halt(struct ath11k *ar);
+int ath11k_core_resume_early(struct ath11k_base *ab);
 int ath11k_core_resume(struct ath11k_base *ab);
 int ath11k_core_suspend(struct ath11k_base *ab);
+int ath11k_core_suspend_late(struct ath11k_base *ab);
 void ath11k_core_pre_reconfigure_recovery(struct ath11k_base *ab);
 bool ath11k_core_coldboot_cal_support(struct ath11k_base *ab);
 
 const struct firmware *ath11k_core_firmware_request(struct ath11k_base *ab,
 						    const char *filename);
+const char *ath11k_core_get_usecase_firmware(struct ath11k_base *ab);
 
 static inline const char *ath11k_scan_state_str(enum ath11k_scan_state state)
 {
@@ -1314,8 +1326,19 @@ static inline void ath11k_core_create_firmware_path(struct ath11k_base *ab,
 						    const char *filename,
 						    void *buf, size_t buf_len)
 {
-	snprintf(buf, buf_len, "%s/%s/%s", ATH11K_FW_DIR,
-		 ab->hw_params.fw.dir, filename);
+	const char *fw_name = NULL;
+
+	of_property_read_string(ab->dev->of_node, "firmware-name", &fw_name);
+
+	if (!fw_name)
+		fw_name = ath11k_core_get_usecase_firmware(ab);
+
+	if (fw_name && strncmp(filename, "board", 5))
+		snprintf(buf, buf_len, "%s/%s/%s/%s", ATH11K_FW_DIR,
+			 ab->hw_params.fw.dir, fw_name, filename);
+	else
+		snprintf(buf, buf_len, "%s/%s/%s", ATH11K_FW_DIR,
+			 ab->hw_params.fw.dir, filename);
 }
 
 static inline const char *ath11k_bus_str(enum ath11k_bus bus)
@@ -1329,5 +1352,7 @@ static inline const char *ath11k_bus_str(enum ath11k_bus bus)
 
 	return "unknown";
 }
+
+void ath11k_core_pm_notifier_unregister(struct ath11k_base *ab);
 
 #endif /* _CORE_H_ */

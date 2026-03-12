@@ -26,6 +26,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/usb/otg.h>
 #include <linux/usb/phy.h>
 #include <linux/usb/role.h>
@@ -154,6 +155,8 @@
 #define FW_IOCTL_TYPE_SHIFT			24
 #define FW_IOCTL_CFGTBL_READ		17
 
+#define WAKE_IRQ_START_INDEX			2
+
 struct tegra_xusb_fw_header {
 	__le32 boot_loadaddr_in_imem;
 	__le32 boot_codedfi_offset;
@@ -227,6 +230,7 @@ struct tegra_xusb_soc {
 	unsigned int num_supplies;
 	const struct tegra_xusb_phy_type *phy_types;
 	unsigned int num_types;
+	unsigned int max_num_wakes;
 	const struct tegra_xusb_context_soc *context;
 
 	struct {
@@ -262,6 +266,7 @@ struct tegra_xusb {
 	int xhci_irq;
 	int mbox_irq;
 	int padctl_irq;
+	int *wake_irqs;
 
 	void __iomem *ipfs_base;
 	void __iomem *fpci_base;
@@ -312,6 +317,7 @@ struct tegra_xusb {
 	bool suspended;
 	struct tegra_xusb_context context;
 	u8 lp0_utmi_pad_mask;
+	int num_wakes;
 };
 
 static struct hc_driver __read_mostly tegra_xhci_hc_driver;
@@ -724,7 +730,7 @@ static void tegra_xusb_mbox_handle(struct tegra_xusb *tegra,
 		if (err < 0) {
 			dev_err(dev,
 				"failed to %s LFPS detection on USB3#%u: %d\n",
-				enable ? "enable" : "disable", port, err);
+				str_enable_disable(enable), port, err);
 			rsp.cmd = MBOX_CMD_NAK;
 		} else {
 			rsp.cmd = MBOX_CMD_ACK;
@@ -1349,7 +1355,7 @@ static void tegra_xhci_id_work(struct work_struct *work)
 	u32 status;
 	int ret;
 
-	dev_dbg(tegra->dev, "host mode %s\n", tegra->host_mode ? "on" : "off");
+	dev_dbg(tegra->dev, "host mode %s\n", str_on_off(tegra->host_mode));
 
 	mutex_lock(&tegra->lock);
 
@@ -1481,7 +1487,7 @@ static int tegra_xhci_id_notify(struct notifier_block *nb,
 
 	tegra->otg_usb2_port = tegra_xusb_get_usb2_port(tegra, usbphy);
 
-	tegra->host_mode = (usbphy->last_event == USB_EVENT_ID) ? true : false;
+	tegra->host_mode = usbphy->last_event == USB_EVENT_ID;
 
 	schedule_work(&tegra->id_work);
 
@@ -1536,6 +1542,47 @@ static void tegra_xusb_deinit_usb_phy(struct tegra_xusb *tegra)
 			otg_set_host(tegra->usbphy[i]->otg, NULL);
 }
 
+static int tegra_xusb_setup_wakeup(struct platform_device *pdev, struct tegra_xusb *tegra)
+{
+	unsigned int i;
+
+	if (tegra->soc->max_num_wakes == 0)
+		return 0;
+
+	tegra->wake_irqs = devm_kcalloc(tegra->dev,
+					tegra->soc->max_num_wakes,
+					sizeof(*tegra->wake_irqs), GFP_KERNEL);
+	if (!tegra->wake_irqs)
+		return -ENOMEM;
+
+	/*
+	 * USB wake events are independent of each other, so it is not necessary for a platform
+	 * to utilize all wake-up events supported for a given device. The USB host can operate
+	 * even if wake-up events are not defined or fail to be configured. Therefore, we only
+	 * return critical errors, such as -ENOMEM.
+	 */
+	for (i = 0; i < tegra->soc->max_num_wakes; i++) {
+		struct irq_data *data;
+
+		tegra->wake_irqs[i] = platform_get_irq_optional(pdev, i + WAKE_IRQ_START_INDEX);
+		if (tegra->wake_irqs[i] < 0)
+			break;
+
+		data = irq_get_irq_data(tegra->wake_irqs[i]);
+		if (!data) {
+			dev_warn(tegra->dev, "get wake event %d irq data fail\n", i);
+			break;
+		}
+
+		irq_set_irq_type(tegra->wake_irqs[i], irqd_get_trigger_type(data));
+	}
+
+	tegra->num_wakes = i;
+	dev_dbg(tegra->dev, "setup %d wake events\n", tegra->num_wakes);
+
+	return 0;
+}
+
 static int tegra_xusb_probe(struct platform_device *pdev)
 {
 	struct tegra_xusb *tegra;
@@ -1585,6 +1632,10 @@ static int tegra_xusb_probe(struct platform_device *pdev)
 	tegra->mbox_irq = platform_get_irq(pdev, 1);
 	if (tegra->mbox_irq < 0)
 		return tegra->mbox_irq;
+
+	err = tegra_xusb_setup_wakeup(pdev, tegra);
+	if (err)
+		return err;
 
 	tegra->padctl = tegra_xusb_padctl_get(&pdev->dev);
 	if (IS_ERR(tegra->padctl))
@@ -1670,7 +1721,7 @@ static int tegra_xusb_probe(struct platform_device *pdev)
 		goto put_padctl;
 	}
 
-	if (!of_property_read_bool(pdev->dev.of_node, "power-domains")) {
+	if (!of_property_present(pdev->dev.of_node, "power-domains")) {
 		tegra->host_rst = devm_reset_control_get(&pdev->dev,
 							 "xusb_host");
 		if (IS_ERR(tegra->host_rst)) {
@@ -2164,11 +2215,11 @@ static void tegra_xhci_program_utmi_power_lp0_exit(struct tegra_xusb *tegra)
 	}
 }
 
-static int tegra_xusb_enter_elpg(struct tegra_xusb *tegra, bool runtime)
+static int tegra_xusb_enter_elpg(struct tegra_xusb *tegra, bool is_auto_resume)
 {
 	struct xhci_hcd *xhci = hcd_to_xhci(tegra->hcd);
 	struct device *dev = tegra->dev;
-	bool wakeup = runtime ? true : device_may_wakeup(dev);
+	bool wakeup = is_auto_resume ? true : device_may_wakeup(dev);
 	unsigned int i;
 	int err;
 	u32 usbcmd;
@@ -2234,11 +2285,11 @@ out:
 	return err;
 }
 
-static int tegra_xusb_exit_elpg(struct tegra_xusb *tegra, bool runtime)
+static int tegra_xusb_exit_elpg(struct tegra_xusb *tegra, bool is_auto_resume)
 {
 	struct xhci_hcd *xhci = hcd_to_xhci(tegra->hcd);
 	struct device *dev = tegra->dev;
-	bool wakeup = runtime ? true : device_may_wakeup(dev);
+	bool wakeup = is_auto_resume ? true : device_may_wakeup(dev);
 	unsigned int i;
 	u32 usbcmd;
 	int err;
@@ -2289,7 +2340,7 @@ static int tegra_xusb_exit_elpg(struct tegra_xusb *tegra, bool runtime)
 	if (wakeup)
 		tegra_xhci_disable_phy_sleepwalk(tegra);
 
-	err = xhci_resume(xhci, runtime ? PMSG_AUTO_RESUME : PMSG_RESUME);
+	err = xhci_resume(xhci, false, is_auto_resume);
 	if (err < 0) {
 		dev_err(tegra->dev, "failed to resume XHCI: %d\n", err);
 		goto disable_phy;
@@ -2354,8 +2405,13 @@ out:
 		pm_runtime_disable(dev);
 
 		if (device_may_wakeup(dev)) {
+			unsigned int i;
+
 			if (enable_irq_wake(tegra->padctl_irq))
 				dev_err(dev, "failed to enable padctl wakes\n");
+
+			for (i = 0; i < tegra->num_wakes; i++)
+				enable_irq_wake(tegra->wake_irqs[i]);
 		}
 	}
 
@@ -2383,8 +2439,13 @@ static __maybe_unused int tegra_xusb_resume(struct device *dev)
 	}
 
 	if (device_may_wakeup(dev)) {
+		unsigned int i;
+
 		if (disable_irq_wake(tegra->padctl_irq))
 			dev_err(dev, "failed to disable padctl wakes\n");
+
+		for (i = 0; i < tegra->num_wakes; i++)
+			disable_irq_wake(tegra->wake_irqs[i]);
 	}
 	tegra->suspended = false;
 	mutex_unlock(&tegra->lock);
@@ -2635,6 +2696,7 @@ static const struct tegra_xusb_soc tegra234_soc = {
 	.num_supplies = ARRAY_SIZE(tegra194_supply_names),
 	.phy_types = tegra194_phy_types,
 	.num_types = ARRAY_SIZE(tegra194_phy_types),
+	.max_num_wakes = 7,
 	.context = &tegra186_xusb_context,
 	.ports = {
 		.usb3 = { .offset = 0, .count = 4, },
@@ -2667,7 +2729,7 @@ MODULE_DEVICE_TABLE(of, tegra_xusb_of_match);
 
 static struct platform_driver tegra_xusb_driver = {
 	.probe = tegra_xusb_probe,
-	.remove_new = tegra_xusb_remove,
+	.remove = tegra_xusb_remove,
 	.shutdown = tegra_xusb_shutdown,
 	.driver = {
 		.name = "tegra-xusb",

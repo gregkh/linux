@@ -403,8 +403,7 @@ static bool parse_cipher_name(char *essiv_cipher_name, const char *cra_name)
 	if (len >= CRYPTO_MAX_ALG_NAME)
 		return false;
 
-	memcpy(essiv_cipher_name, p, len);
-	essiv_cipher_name[len] = '\0';
+	strscpy(essiv_cipher_name, p, len + 1);
 	return true;
 }
 
@@ -547,8 +546,7 @@ static int essiv_create(struct crypto_template *tmpl, struct rtattr **tb)
 	}
 
 	/* record the driver name so we can instantiate this exact algo later */
-	strscpy(ictx->shash_driver_name, hash_alg->base.cra_driver_name,
-		CRYPTO_MAX_ALG_NAME);
+	strscpy(ictx->shash_driver_name, hash_alg->base.cra_driver_name);
 
 	/* Instance fields */
 
@@ -641,10 +639,10 @@ static void __exit essiv_module_exit(void)
 	crypto_unregister_template(&essiv_tmpl);
 }
 
-subsys_initcall(essiv_module_init);
+module_init(essiv_module_init);
 module_exit(essiv_module_exit);
 
 MODULE_DESCRIPTION("ESSIV skcipher/aead wrapper for block encryption");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS_CRYPTO("essiv");
-MODULE_IMPORT_NS(CRYPTO_INTERNAL);
+MODULE_IMPORT_NS("CRYPTO_INTERNAL");

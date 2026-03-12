@@ -118,6 +118,22 @@ enum {
 	REG_MAX_COUNT,
 };
 
+static const struct reg_field mvflash_3ch_pmi8998_regs[REG_MAX_COUNT] = {
+	[REG_STATUS1]		= REG_FIELD(0x08, 0, 5),
+	[REG_STATUS2]		= REG_FIELD(0x09, 0, 7),
+	[REG_STATUS3]		= REG_FIELD(0x0a, 0, 7),
+	[REG_CHAN_TIMER]	= REG_FIELD_ID(0x40, 0, 7, 3, 1),
+	[REG_ITARGET]		= REG_FIELD_ID(0x43, 0, 6, 3, 1),
+	[REG_MODULE_EN]		= REG_FIELD(0x46, 7, 7),
+	[REG_IRESOLUTION]	= REG_FIELD(0x47, 0, 5),
+	[REG_CHAN_STROBE]	= REG_FIELD_ID(0x49, 0, 2, 3, 1),
+	[REG_CHAN_EN]		= REG_FIELD(0x4c, 0, 2),
+	[REG_THERM_THRSH1]	= REG_FIELD(0x56, 0, 2),
+	[REG_THERM_THRSH2]	= REG_FIELD(0x57, 0, 2),
+	[REG_THERM_THRSH3]	= REG_FIELD(0x58, 0, 2),
+	[REG_TORCH_CLAMP]	= REG_FIELD(0xea, 0, 6),
+};
+
 static const struct reg_field mvflash_3ch_regs[REG_MAX_COUNT] = {
 	[REG_STATUS1]		= REG_FIELD(0x08, 0, 7),
 	[REG_STATUS2]		= REG_FIELD(0x09, 0, 7),
@@ -823,7 +839,6 @@ static int qcom_flash_led_probe(struct platform_device *pdev)
 {
 	struct qcom_flash_data *flash_data;
 	struct qcom_flash_led *led;
-	struct fwnode_handle *child;
 	struct device *dev = &pdev->dev;
 	struct regmap *regmap;
 	struct reg_field *regs;
@@ -863,11 +878,18 @@ static int qcom_flash_led_probe(struct platform_device *pdev)
 		return rc;
 	}
 
-	if (val == FLASH_SUBTYPE_3CH_PM8150_VAL || val == FLASH_SUBTYPE_3CH_PMI8998_VAL) {
+	if (val == FLASH_SUBTYPE_3CH_PM8150_VAL) {
 		flash_data->hw_type = QCOM_MVFLASH_3CH;
 		flash_data->max_channels = 3;
 		regs = devm_kmemdup(dev, mvflash_3ch_regs, sizeof(mvflash_3ch_regs),
 				    GFP_KERNEL);
+		if (!regs)
+			return -ENOMEM;
+	} else if (val == FLASH_SUBTYPE_3CH_PMI8998_VAL) {
+		flash_data->hw_type = QCOM_MVFLASH_3CH;
+		flash_data->max_channels = 3;
+		regs = devm_kmemdup(dev, mvflash_3ch_pmi8998_regs,
+				    sizeof(mvflash_3ch_pmi8998_regs), GFP_KERNEL);
 		if (!regs)
 			return -ENOMEM;
 	} else if (val == FLASH_SUBTYPE_4CH_VAL) {
@@ -914,7 +936,7 @@ static int qcom_flash_led_probe(struct platform_device *pdev)
 	if (!flash_data->v4l2_flash)
 		return -ENOMEM;
 
-	device_for_each_child_node(dev, child) {
+	device_for_each_child_node_scoped(dev, child) {
 		led = devm_kzalloc(dev, sizeof(*led), GFP_KERNEL);
 		if (!led) {
 			rc = -ENOMEM;
@@ -931,7 +953,6 @@ static int qcom_flash_led_probe(struct platform_device *pdev)
 
 	return regmap_field_write(flash_data->r_fields[REG_TORCH_CLAMP], flash_data->torch_clamp);
 release:
-	fwnode_handle_put(child);
 	while (flash_data->v4l2_flash[flash_data->leds_count] && flash_data->leds_count)
 		v4l2_flash_release(flash_data->v4l2_flash[flash_data->leds_count--]);
 	return rc;
@@ -959,7 +980,7 @@ static struct platform_driver qcom_flash_led_driver = {
 		.of_match_table = qcom_flash_led_match_table,
 	},
 	.probe = qcom_flash_led_probe,
-	.remove_new = qcom_flash_led_remove,
+	.remove = qcom_flash_led_remove,
 };
 
 module_platform_driver(qcom_flash_led_driver);

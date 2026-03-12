@@ -28,7 +28,6 @@ struct idxd_cdev_context {
  * global to avoid conflict file names.
  */
 static DEFINE_IDA(file_ida);
-static DEFINE_MUTEX(ida_lock);
 
 /*
  * ictx is an array based off of accelerator types. enum idxd_type
@@ -123,9 +122,7 @@ static void idxd_file_dev_release(struct device *dev)
 	struct idxd_device *idxd = wq->idxd;
 	int rc;
 
-	mutex_lock(&ida_lock);
 	ida_free(&file_ida, ctx->id);
-	mutex_unlock(&ida_lock);
 
 	/* Wait for in-flight operations to complete. */
 	if (wq_shared(wq)) {
@@ -284,9 +281,7 @@ static int idxd_cdev_open(struct inode *inode, struct file *filp)
 	}
 
 	idxd_cdev = wq->idxd_cdev;
-	mutex_lock(&ida_lock);
 	ctx->id = ida_alloc(&file_ida, GFP_KERNEL);
-	mutex_unlock(&ida_lock);
 	if (ctx->id < 0) {
 		dev_warn(dev, "ida alloc failure\n");
 		goto failed_ida;
@@ -449,10 +444,12 @@ static int idxd_submit_user_descriptor(struct idxd_user_context *ctx,
 	 * DSA devices are capable of indirect ("batch") command submission.
 	 * On devices where direct user submissions are not safe, we cannot
 	 * allow this since there is no good way for us to verify these
-	 * indirect commands.
+	 * indirect commands. Narrow the restriction of operations with the
+	 * BATCH opcode to only DSA version 1 devices.
 	 */
 	if (is_dsa_dev(idxd_dev) && descriptor.opcode == DSA_OPCODE_BATCH &&
-		!wq->idxd->user_submission_safe)
+	    wq->idxd->hw.version == DEVICE_VERSION_1 &&
+	    !wq->idxd->user_submission_safe)
 		return -EINVAL;
 	/*
 	 * As per the programming specification, the completion address must be

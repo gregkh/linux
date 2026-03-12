@@ -87,7 +87,7 @@ struct rcar_gen4_pcie {
 #define to_rcar_gen4_pcie(_dw)	container_of(_dw, struct rcar_gen4_pcie, dw)
 
 /* Common */
-static int rcar_gen4_pcie_link_up(struct dw_pcie *dw)
+static bool rcar_gen4_pcie_link_up(struct dw_pcie *dw)
 {
 	struct rcar_gen4_pcie *rcar = to_rcar_gen4_pcie(dw);
 	u32 val, mask;
@@ -420,9 +420,7 @@ static int rcar_gen4_pcie_ep_raise_irq(struct dw_pcie_ep *ep, u8 func_no,
 }
 
 static const struct pci_epc_features rcar_gen4_pcie_epc_features = {
-	.linkup_notifier = false,
 	.msi_capable = true,
-	.msix_capable = false,
 	.bar[BAR_1] = { .type = BAR_RESERVED, },
 	.bar[BAR_3] = { .type = BAR_RESERVED, },
 	.bar[BAR_4] = { .type = BAR_FIXED, .fixed_size = 256 },
@@ -798,7 +796,7 @@ static struct platform_driver rcar_gen4_pcie_driver = {
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = rcar_gen4_pcie_probe,
-	.remove_new = rcar_gen4_pcie_remove,
+	.remove = rcar_gen4_pcie_remove,
 };
 module_platform_driver(rcar_gen4_pcie_driver);
 

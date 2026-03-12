@@ -41,6 +41,15 @@
 #define SOF_IPC4_FW_MAX_PAGE_COUNT 20
 #define SOF_IPC4_FW_MAX_QUEUE_COUNT 8
 
+/* IPC4 sample types */
+#define SOF_IPC4_TYPE_MSB_INTEGER 0
+#define SOF_IPC4_TYPE_LSB_INTEGER 1
+#define SOF_IPC4_TYPE_SIGNED_INTEGER 2
+#define SOF_IPC4_TYPE_UNSIGNED_INTEGER 3
+#define SOF_IPC4_TYPE_FLOAT 4
+#define SOF_IPC4_TYPE_A_LAW 5
+#define SOF_IPC4_TYPE_MU_LAW 6
+
 /* Node index and mask applicable for host copier and ALH/HDA type DAI copiers */
 #define SOF_IPC4_NODE_INDEX_MASK	0xFF
 #define SOF_IPC4_NODE_INDEX(x)	((x) & SOF_IPC4_NODE_INDEX_MASK)
@@ -110,6 +119,13 @@ enum sof_ipc4_copier_module_config_params {
  * is connected to Gateway
  */
 	SOF_IPC4_COPIER_MODULE_CFG_ATTENUATION,
+};
+
+/* Scheduling domain, unset, Low Latency, or Data Processing */
+enum sof_comp_domain {
+	SOF_COMP_DOMAIN_UNSET = 0,	/* Take domain value from manifest */
+	SOF_COMP_DOMAIN_LL,		/* Low Latency scheduling domain */
+	SOF_COMP_DOMAIN_DP,		/* Data Processing scheduling domain */
 };
 
 struct sof_ipc4_copier_config_set_sink_format {
@@ -437,6 +453,30 @@ struct sof_ipc4_src_data {
  */
 struct sof_ipc4_src {
 	struct sof_ipc4_src_data data;
+	struct sof_ipc4_available_audio_format available_fmt;
+	struct sof_ipc4_msg msg;
+};
+
+/*
+ * struct sof_ipc4_asrc_data - IPC data for ASRC
+ * @base_config: IPC base config data
+ * @out_freq: Output rate for sink module, passed as such from topology to FW.
+ * @asrc_mode: Control for ASRC features with bit-fields, passed as such from topolgy to FW.
+ */
+struct sof_ipc4_asrc_data {
+	struct sof_ipc4_base_module_cfg base_config;
+	uint32_t out_freq;
+	uint32_t asrc_mode;
+} __packed __aligned(4);
+
+/**
+ * struct sof_ipc4_asrc - ASRC config data
+ * @data: IPC base config data
+ * @available_fmt: Available audio format
+ * @msg: IPC4 message struct containing header and data info
+ */
+struct sof_ipc4_asrc {
+	struct sof_ipc4_asrc_data data;
 	struct sof_ipc4_available_audio_format available_fmt;
 	struct sof_ipc4_msg msg;
 };

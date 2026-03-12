@@ -269,7 +269,7 @@ struct node_footer {
 /* Node IDs in an Indirect Block */
 #define NIDS_PER_BLOCK		((F2FS_BLKSIZE - sizeof(struct node_footer)) / sizeof(__le32))
 
-#define ADDRS_PER_PAGE(page, inode)	(addrs_per_page(inode, IS_INODE(page)))
+#define ADDRS_PER_PAGE(folio, inode)	(addrs_per_page(inode, IS_INODE(folio)))
 
 #define	NODE_DIR1_BLOCK		(DEF_ADDRS_PER_INODE + 1)
 #define	NODE_DIR2_BLOCK		(DEF_ADDRS_PER_INODE + 2)
@@ -441,10 +441,8 @@ struct f2fs_sit_block {
  * from node's page's beginning to get a data block address.
  * ex) data_blkaddr = (block_t)(nodepage_start_address + ofs_in_node)
  */
-#define ENTRIES_IN_SUM		(F2FS_BLKSIZE / 8)
 #define	SUMMARY_SIZE		(7)	/* sizeof(struct f2fs_summary) */
 #define	SUM_FOOTER_SIZE		(5)	/* sizeof(struct summary_footer) */
-#define SUM_ENTRY_SIZE		(SUMMARY_SIZE * ENTRIES_IN_SUM)
 
 /* a summary entry for a block in a segment */
 struct f2fs_summary {
@@ -467,22 +465,6 @@ struct summary_footer {
 	__le32 check_sum;		/* summary checksum */
 } __packed;
 
-#define SUM_JOURNAL_SIZE	(F2FS_BLKSIZE - SUM_FOOTER_SIZE -\
-				SUM_ENTRY_SIZE)
-#define NAT_JOURNAL_ENTRIES	((SUM_JOURNAL_SIZE - 2) /\
-				sizeof(struct nat_journal_entry))
-#define NAT_JOURNAL_RESERVED	((SUM_JOURNAL_SIZE - 2) %\
-				sizeof(struct nat_journal_entry))
-#define SIT_JOURNAL_ENTRIES	((SUM_JOURNAL_SIZE - 2) /\
-				sizeof(struct sit_journal_entry))
-#define SIT_JOURNAL_RESERVED	((SUM_JOURNAL_SIZE - 2) %\
-				sizeof(struct sit_journal_entry))
-
-/* Reserved area should make size of f2fs_extra_info equals to
- * that of nat_journal and sit_journal.
- */
-#define EXTRA_INFO_RESERVED	(SUM_JOURNAL_SIZE - 2 - 8)
-
 /*
  * frequently updated NAT/SIT entries can be stored in the spare area in
  * summary blocks
@@ -497,9 +479,16 @@ struct nat_journal_entry {
 	struct f2fs_nat_entry ne;
 } __packed;
 
+/*
+ * The nat_journal structure is a placeholder whose actual size varies depending
+ * on the use of packed_ssa. Therefore, it must always be accessed only through
+ * specific sets of macros and fields, and size calculations should use
+ * size-related macros instead of sizeof().
+ * Relevant macros: sbi->nat_journal_entries, nat_in_journal(),
+ * nid_in_journal(), MAX_NAT_JENTRIES().
+ */
 struct nat_journal {
-	struct nat_journal_entry entries[NAT_JOURNAL_ENTRIES];
-	__u8 reserved[NAT_JOURNAL_RESERVED];
+	struct nat_journal_entry entries[0];
 } __packed;
 
 struct sit_journal_entry {
@@ -507,14 +496,21 @@ struct sit_journal_entry {
 	struct f2fs_sit_entry se;
 } __packed;
 
+/*
+ * The sit_journal structure is a placeholder whose actual size varies depending
+ * on the use of packed_ssa. Therefore, it must always be accessed only through
+ * specific sets of macros and fields, and size calculations should use
+ * size-related macros instead of sizeof().
+ * Relevant macros: sbi->sit_journal_entries, sit_in_journal(),
+ * segno_in_journal(), MAX_SIT_JENTRIES().
+ */
 struct sit_journal {
-	struct sit_journal_entry entries[SIT_JOURNAL_ENTRIES];
-	__u8 reserved[SIT_JOURNAL_RESERVED];
+	struct sit_journal_entry entries[0];
 } __packed;
 
 struct f2fs_extra_info {
 	__le64 kbytes_written;
-	__u8 reserved[EXTRA_INFO_RESERVED];
+	__u8 reserved[];
 } __packed;
 
 struct f2fs_journal {
@@ -530,11 +526,33 @@ struct f2fs_journal {
 	};
 } __packed;
 
-/* Block-sized summary block structure */
+/*
+ * Block-sized summary block structure
+ *
+ * The f2fs_summary_block structure is a placeholder whose actual size varies
+ * depending on the use of packed_ssa. Therefore, it must always be accessed
+ * only through specific sets of macros and fields, and size calculations should
+ * use size-related macros instead of sizeof().
+ * Relevant macros: sbi->sum_blocksize, sbi->entries_in_sum,
+ * sbi->sum_entry_size, sum_entries(), sum_journal(), sum_footer().
+ *
+ * Summary Block Layout
+ *
+ * +-----------------------+ <--- Block Start
+ * | struct f2fs_summary   |
+ * | entries[0]            |
+ * | ...                   |
+ * | entries[N-1]          |
+ * +-----------------------+
+ * | struct f2fs_journal   |
+ * +-----------------------+
+ * | struct summary_footer |
+ * +-----------------------+ <--- Block End
+ */
 struct f2fs_summary_block {
-	struct f2fs_summary entries[ENTRIES_IN_SUM];
-	struct f2fs_journal journal;
-	struct summary_footer footer;
+	struct f2fs_summary entries[0];
+	// struct f2fs_journal journal;
+	// struct summary_footer footer;
 } __packed;
 
 /*

@@ -77,7 +77,7 @@ static int omap_cf_ss_init(struct pcmcia_socket *s)
 /* the timer is primarily to kick this socket's pccardd */
 static void omap_cf_timer(struct timer_list *t)
 {
-	struct omap_cf_socket	*cf = from_timer(cf, t, timer);
+	struct omap_cf_socket	*cf = timer_container_of(cf, t, timer);
 	unsigned		present = omap_cf_present();
 
 	if (present != cf->present) {
@@ -314,7 +314,7 @@ static struct platform_driver omap_cf_driver __refdata = {
 	.driver = {
 		.name	= driver_name,
 	},
-	.remove_new	= __exit_p(omap_cf_remove),
+	.remove		= __exit_p(omap_cf_remove),
 };
 
 static int __init omap_cf_init(void)

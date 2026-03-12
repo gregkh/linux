@@ -176,7 +176,7 @@ static int mhi_alloc_aligned_ring(struct mhi_controller *mhi_cntrl,
 	return 0;
 }
 
-void mhi_deinit_free_irq(struct mhi_controller *mhi_cntrl)
+static void mhi_deinit_free_irq(struct mhi_controller *mhi_cntrl)
 {
 	int i;
 	struct mhi_event *mhi_event = mhi_cntrl->mhi_event;
@@ -191,7 +191,7 @@ void mhi_deinit_free_irq(struct mhi_controller *mhi_cntrl)
 	free_irq(mhi_cntrl->irq[0], mhi_cntrl);
 }
 
-int mhi_init_irq_setup(struct mhi_controller *mhi_cntrl)
+static int mhi_init_irq_setup(struct mhi_controller *mhi_cntrl)
 {
 	struct mhi_event *mhi_event = mhi_cntrl->mhi_event;
 	unsigned long irq_flags = IRQF_SHARED | IRQF_NO_SUSPEND;
@@ -253,7 +253,7 @@ error_request:
 	return ret;
 }
 
-void mhi_deinit_dev_ctxt(struct mhi_controller *mhi_cntrl)
+static void mhi_deinit_dev_ctxt(struct mhi_controller *mhi_cntrl)
 {
 	int i;
 	struct mhi_ctxt *mhi_ctxt = mhi_cntrl->mhi_ctxt;
@@ -298,7 +298,7 @@ void mhi_deinit_dev_ctxt(struct mhi_controller *mhi_cntrl)
 	mhi_cntrl->mhi_ctxt = NULL;
 }
 
-int mhi_init_dev_ctxt(struct mhi_controller *mhi_cntrl)
+static int mhi_init_dev_ctxt(struct mhi_controller *mhi_cntrl)
 {
 	struct mhi_ctxt *mhi_ctxt;
 	struct mhi_chan_ctxt *chan_ctxt;
@@ -1143,7 +1143,7 @@ int mhi_prepare_for_power_up(struct mhi_controller *mhi_cntrl)
 	}
 	mhi_cntrl->bhi = mhi_cntrl->regs + bhi_off;
 
-	if (mhi_cntrl->fbc_download || mhi_cntrl->rddm_size) {
+	if (mhi_cntrl->fbc_download || mhi_cntrl->rddm_size || mhi_cntrl->seg_len) {
 		ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, BHIEOFF,
 				   &bhie_off);
 		if (ret) {

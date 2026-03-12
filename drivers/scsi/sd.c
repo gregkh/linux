@@ -106,7 +106,7 @@ static void sd_config_discard(struct scsi_disk *sdkp, struct queue_limits *lim,
 		unsigned int mode);
 static void sd_config_write_same(struct scsi_disk *sdkp,
 		struct queue_limits *lim);
-static int  sd_revalidate_disk(struct gendisk *);
+static void  sd_revalidate_disk(struct gendisk *);
 static void sd_unlock_native_capacity(struct gendisk *disk);
 static void sd_shutdown(struct device *);
 static void scsi_disk_release(struct device *cdev);
@@ -809,14 +809,14 @@ static unsigned char sd_setup_protect_cmnd(struct scsi_cmnd *scmd,
 		if (bio_integrity_flagged(bio, BIP_IP_CHECKSUM))
 			scmd->prot_flags |= SCSI_PROT_IP_CHECKSUM;
 
-		if (bio_integrity_flagged(bio, BIP_CTRL_NOCHECK) == false)
+		if (bio_integrity_flagged(bio, BIP_CHECK_GUARD))
 			scmd->prot_flags |= SCSI_PROT_GUARD_CHECK;
 	}
 
 	if (dif != T10_PI_TYPE3_PROTECTION) {	/* DIX/DIF Type 0, 1, 2 */
 		scmd->prot_flags |= SCSI_PROT_REF_INCREMENT;
 
-		if (bio_integrity_flagged(bio, BIP_CTRL_NOCHECK) == false)
+		if (bio_integrity_flagged(bio, BIP_CHECK_REFTAG))
 			scmd->prot_flags |= SCSI_PROT_REF_CHECK;
 	}
 
@@ -991,6 +991,7 @@ static void sd_config_atomic(struct scsi_disk *sdkp, struct queue_limits *lim)
 	lim->atomic_write_hw_boundary = 0;
 	lim->atomic_write_hw_unit_min = unit_min * logical_block_size;
 	lim->atomic_write_hw_unit_max = unit_max * logical_block_size;
+	lim->features |= BLK_FEAT_ATOMIC_WRITES;
 }
 
 static blk_status_t sd_setup_write_same16_cmnd(struct scsi_cmnd *cmd,
@@ -1140,6 +1141,11 @@ static void sd_config_write_same(struct scsi_disk *sdkp,
 out:
 	lim->max_write_zeroes_sectors =
 		sdkp->max_ws_blocks * (logical_block_size >> SECTOR_SHIFT);
+
+	if (sdkp->zeroing_mode == SD_ZERO_WS16_UNMAP ||
+	    sdkp->zeroing_mode == SD_ZERO_WS10_UNMAP)
+		lim->max_hw_wzeroes_unmap_sectors =
+				lim->max_write_zeroes_sectors;
 }
 
 static blk_status_t sd_setup_flush_cmnd(struct scsi_cmnd *cmd)
@@ -1593,9 +1599,9 @@ static void sd_release(struct gendisk *disk)
 	scsi_device_put(sdev);
 }
 
-static int sd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
+static int sd_getgeo(struct gendisk *disk, struct hd_geometry *geo)
 {
-	struct scsi_disk *sdkp = scsi_disk(bdev->bd_disk);
+	struct scsi_disk *sdkp = scsi_disk(disk);
 	struct scsi_device *sdp = sdkp->device;
 	struct Scsi_Host *host = sdp->host;
 	sector_t capacity = logical_to_sectors(sdp, sdkp->capacity);
@@ -1608,9 +1614,9 @@ static int sd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 
 	/* override with calculated, extended default, or driver values */
 	if (host->hostt->bios_param)
-		host->hostt->bios_param(sdp, bdev, capacity, diskinfo);
+		host->hostt->bios_param(sdp, disk, capacity, diskinfo);
 	else
-		scsicam_bios_param(bdev, capacity, diskinfo);
+		scsicam_bios_param(disk, capacity, diskinfo);
 
 	geo->heads = diskinfo[0];
 	geo->sectors = diskinfo[1];
@@ -3214,7 +3220,7 @@ static bool sd_is_perm_stream(struct scsi_disk *sdkp, unsigned int stream_id)
 		return false;
 	if (get_unaligned_be32(&buf.h.len) < sizeof(struct scsi_stream_status))
 		return false;
-	return buf.h.stream_status[0].perm;
+	return buf.s.perm;
 }
 
 static void sd_read_io_hints(struct scsi_disk *sdkp, unsigned char *buffer)
@@ -3458,19 +3464,14 @@ static void sd_read_write_same(struct scsi_disk *sdkp, unsigned char *buffer)
 	}
 
 	if (scsi_report_opcode(sdev, buffer, SD_BUF_SIZE, INQUIRY, 0) < 0) {
-		struct scsi_vpd *vpd;
-
 		sdev->no_report_opcodes = 1;
 
-		/* Disable WRITE SAME if REPORT SUPPORTED OPERATION
-		 * CODES is unsupported and the device has an ATA
-		 * Information VPD page (SAT).
+		/*
+		 * Disable WRITE SAME if REPORT SUPPORTED OPERATION CODES is
+		 * unsupported and this is an ATA device.
 		 */
-		rcu_read_lock();
-		vpd = rcu_dereference(sdev->vpd_pg89);
-		if (vpd)
+		if (sdev->is_ata)
 			sdev->no_write_same = 1;
-		rcu_read_unlock();
 	}
 
 	if (scsi_report_opcode(sdev, buffer, SD_BUF_SIZE, WRITE_SAME_16, 0) == 1)
@@ -3690,7 +3691,7 @@ static void sd_read_block_zero(struct scsi_disk *sdkp)
  *	performs disk spin up, read_capacity, etc.
  *	@disk: struct gendisk we care about
  **/
-static int sd_revalidate_disk(struct gendisk *disk)
+static void sd_revalidate_disk(struct gendisk *disk)
 {
 	struct scsi_disk *sdkp = scsi_disk(disk);
 	struct scsi_device *sdp = sdkp->device;
@@ -3698,7 +3699,7 @@ static int sd_revalidate_disk(struct gendisk *disk)
 	struct queue_limits *lim = NULL;
 	unsigned char *buffer = NULL;
 	unsigned int dev_max;
-	int err = 0;
+	int err;
 
 	SCSI_LOG_HLQUEUE(3, sd_printk(KERN_INFO, sdkp,
 				      "sd_revalidate_disk\n"));
@@ -3708,18 +3709,15 @@ static int sd_revalidate_disk(struct gendisk *disk)
 	 * of the other niceties.
 	 */
 	if (!scsi_device_online(sdp))
-		goto out;
+		return;
 
 	lim = kmalloc(sizeof(*lim), GFP_KERNEL);
 	if (!lim)
-		goto out;
+		return;
 
 	buffer = kmalloc(SD_BUF_SIZE, GFP_KERNEL);
-	if (!buffer) {
-		sd_printk(KERN_WARNING, sdkp, "sd_revalidate_disk: Memory "
-			  "allocation failure.\n");
+	if (!buffer)
 		goto out;
-	}
 
 	sd_spinup_disk(sdkp);
 
@@ -3825,7 +3823,6 @@ static int sd_revalidate_disk(struct gendisk *disk)
 	kfree(buffer);
 	kfree(lim);
 
-	return err;
 }
 
 /**

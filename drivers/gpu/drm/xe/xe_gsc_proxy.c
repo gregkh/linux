@@ -23,6 +23,7 @@
 #include "xe_map.h"
 #include "xe_mmio.h"
 #include "xe_pm.h"
+#include "xe_tile.h"
 
 /*
  * GSC proxy:
@@ -65,7 +66,7 @@ gsc_to_gt(struct xe_gsc *gsc)
 bool xe_gsc_proxy_init_done(struct xe_gsc *gsc)
 {
 	struct xe_gt *gt = gsc_to_gt(gsc);
-	u32 fwsts1 = xe_mmio_read32(gt, HECI_FWSTS1(MTL_GSC_HECI1_BASE));
+	u32 fwsts1 = xe_mmio_read32(&gt->mmio, HECI_FWSTS1(MTL_GSC_HECI1_BASE));
 
 	return REG_FIELD_GET(HECI1_FWSTS1_CURRENT_STATE, fwsts1) ==
 	       HECI1_FWSTS1_PROXY_STATE_NORMAL;
@@ -76,7 +77,7 @@ int xe_gsc_wait_for_proxy_init_done(struct xe_gsc *gsc)
 	struct xe_gt *gt = gsc_to_gt(gsc);
 
 	/* Proxy init can take up to 500ms, so wait double that for safety */
-	return xe_mmio_wait32(gt, HECI_FWSTS1(MTL_GSC_HECI1_BASE),
+	return xe_mmio_wait32(&gt->mmio, HECI_FWSTS1(MTL_GSC_HECI1_BASE),
 			      HECI1_FWSTS1_CURRENT_STATE,
 			      HECI1_FWSTS1_PROXY_STATE_NORMAL,
 			      USEC_PER_SEC, NULL, false);
@@ -89,7 +90,7 @@ static void __gsc_proxy_irq_rmw(struct xe_gsc *gsc, u32 clr, u32 set)
 	/* make sure we never accidentally write the RST bit */
 	clr |= HECI_H_CSR_RST;
 
-	xe_mmio_rmw32(gt, HECI_H_CSR(MTL_GSC_HECI2_BASE), clr, set);
+	xe_mmio_rmw32(&gt->mmio, HECI_H_CSR(MTL_GSC_HECI2_BASE), clr, set);
 }
 
 static void gsc_proxy_irq_clear(struct xe_gsc *gsc)
@@ -150,17 +151,29 @@ static int proxy_send_to_gsc(struct xe_gsc *gsc, u32 size)
 	return 0;
 }
 
-static int validate_proxy_header(struct xe_gsc_proxy_header *header,
+static int validate_proxy_header(struct xe_gt *gt,
+				 struct xe_gsc_proxy_header *header,
 				 u32 source, u32 dest, u32 max_size)
 {
 	u32 type = FIELD_GET(GSC_PROXY_TYPE, header->hdr);
 	u32 length = FIELD_GET(GSC_PROXY_PAYLOAD_LENGTH, header->hdr);
+	int ret = 0;
 
-	if (header->destination != dest || header->source != source)
-		return -ENOEXEC;
+	if (header->destination != dest || header->source != source) {
+		ret = -ENOEXEC;
+		goto out;
+	}
 
-	if (length + PROXY_HDR_SIZE > max_size)
-		return -E2BIG;
+	if (length + PROXY_HDR_SIZE > max_size) {
+		ret = -E2BIG;
+		goto out;
+	}
+
+	/* We only care about the status if this is a message for the driver */
+	if (dest == GSC_PROXY_ADDRESSING_KMD && header->status != 0) {
+		ret = -EIO;
+		goto out;
+	}
 
 	switch (type) {
 	case GSC_PROXY_MSG_TYPE_PROXY_PAYLOAD:
@@ -168,12 +181,20 @@ static int validate_proxy_header(struct xe_gsc_proxy_header *header,
 			break;
 		fallthrough;
 	case GSC_PROXY_MSG_TYPE_PROXY_INVALID:
-		return -EIO;
+		ret = -EIO;
+		break;
 	default:
 		break;
 	}
 
-	return 0;
+out:
+	if (ret)
+		xe_gt_err(gt,
+			  "GSC proxy error: s=0x%x[0x%x], d=0x%x[0x%x], t=%u, l=0x%x, st=0x%x\n",
+			  header->source, source, header->destination, dest,
+			  type, length, header->status);
+
+	return ret;
 }
 
 #define proxy_header_wr(xe_, map_, offset_, field_, val_) \
@@ -239,12 +260,17 @@ static int proxy_query(struct xe_gsc *gsc)
 		xe_map_memcpy_from(xe, to_csme_hdr, &gsc->proxy.from_gsc,
 				   reply_offset, PROXY_HDR_SIZE);
 
-		/* stop if this was the last message */
-		if (FIELD_GET(GSC_PROXY_TYPE, to_csme_hdr->hdr) == GSC_PROXY_MSG_TYPE_PROXY_END)
+		/* Check the status and stop if this was the last message */
+		if (FIELD_GET(GSC_PROXY_TYPE, to_csme_hdr->hdr) == GSC_PROXY_MSG_TYPE_PROXY_END) {
+			ret = validate_proxy_header(gt, to_csme_hdr,
+						    GSC_PROXY_ADDRESSING_GSC,
+						    GSC_PROXY_ADDRESSING_KMD,
+						    GSC_PROXY_BUFFER_SIZE - reply_offset);
 			break;
+		}
 
 		/* make sure the GSC-to-CSME proxy header is sane */
-		ret = validate_proxy_header(to_csme_hdr,
+		ret = validate_proxy_header(gt, to_csme_hdr,
 					    GSC_PROXY_ADDRESSING_GSC,
 					    GSC_PROXY_ADDRESSING_CSME,
 					    GSC_PROXY_BUFFER_SIZE - reply_offset);
@@ -273,7 +299,7 @@ static int proxy_query(struct xe_gsc *gsc)
 		}
 
 		/* make sure the CSME-to-GSC proxy header is sane */
-		ret = validate_proxy_header(gsc->proxy.from_csme,
+		ret = validate_proxy_header(gt, gsc->proxy.from_csme,
 					    GSC_PROXY_ADDRESSING_CSME,
 					    GSC_PROXY_ADDRESSING_GSC,
 					    GSC_PROXY_BUFFER_SIZE - reply_offset);
@@ -409,6 +435,54 @@ static int proxy_channel_alloc(struct xe_gsc *gsc)
 	return 0;
 }
 
+static void xe_gsc_proxy_stop(struct xe_gsc *gsc)
+{
+	struct xe_gt *gt = gsc_to_gt(gsc);
+	struct xe_device *xe = gt_to_xe(gt);
+	unsigned int fw_ref = 0;
+
+	/* disable HECI2 IRQs */
+	xe_pm_runtime_get(xe);
+	fw_ref = xe_force_wake_get(gt_to_fw(gt), XE_FW_GSC);
+	if (!fw_ref)
+		xe_gt_err(gt, "failed to get forcewake to disable GSC interrupts\n");
+
+	/* try do disable irq even if forcewake failed */
+	gsc_proxy_irq_toggle(gsc, false);
+
+	xe_force_wake_put(gt_to_fw(gt), fw_ref);
+	xe_pm_runtime_put(xe);
+
+	xe_gsc_wait_for_worker_completion(gsc);
+	gsc->proxy.started = false;
+}
+
+static void xe_gsc_proxy_remove(void *arg)
+{
+	struct xe_gsc *gsc = arg;
+	struct xe_gt *gt = gsc_to_gt(gsc);
+	struct xe_device *xe = gt_to_xe(gt);
+
+	if (!gsc->proxy.component_added)
+		return;
+
+	/*
+	 * GSC proxy start is an async process that can be ongoing during
+	 * Xe module load/unload. Using devm managed action to register
+	 * xe_gsc_proxy_stop could cause issues if Xe module unload has
+	 * already started when the action is registered, potentially leading
+	 * to the cleanup being called at the wrong time. Therefore, instead
+	 * of registering a separate devm action to undo what is done in
+	 * proxy start, we call it from here, but only if the start has
+	 * completed successfully (tracked with the 'started' flag).
+	 */
+	if (gsc->proxy.started)
+		xe_gsc_proxy_stop(gsc);
+
+	component_del(xe->drm.dev, &xe_gsc_proxy_component_ops);
+	gsc->proxy.component_added = false;
+}
+
 /**
  * xe_gsc_proxy_init() - init objects and MEI component required by GSC proxy
  * @gsc: the GSC uC
@@ -430,7 +504,7 @@ int xe_gsc_proxy_init(struct xe_gsc *gsc)
 	}
 
 	/* no multi-tile devices with this feature yet */
-	if (tile->id > 0) {
+	if (!xe_tile_is_root(tile)) {
 		xe_gt_err(gt, "unexpected GSC proxy init on tile %u\n", tile->id);
 		return -EINVAL;
 	}
@@ -448,41 +522,7 @@ int xe_gsc_proxy_init(struct xe_gsc *gsc)
 
 	gsc->proxy.component_added = true;
 
-	/* the component must be removed before unload, so can't use drmm for cleanup */
-
-	return 0;
-}
-
-/**
- * xe_gsc_proxy_remove() - remove the GSC proxy MEI component
- * @gsc: the GSC uC
- */
-void xe_gsc_proxy_remove(struct xe_gsc *gsc)
-{
-	struct xe_gt *gt = gsc_to_gt(gsc);
-	struct xe_device *xe = gt_to_xe(gt);
-	int err = 0;
-
-	if (!gsc->proxy.component_added)
-		return;
-
-	/* disable HECI2 IRQs */
-	xe_pm_runtime_get(xe);
-	err = xe_force_wake_get(gt_to_fw(gt), XE_FW_GSC);
-	if (err)
-		xe_gt_err(gt, "failed to get forcewake to disable GSC interrupts\n");
-
-	/* try do disable irq even if forcewake failed */
-	gsc_proxy_irq_toggle(gsc, false);
-
-	if (!err)
-		xe_force_wake_put(gt_to_fw(gt), XE_FW_GSC);
-	xe_pm_runtime_put(xe);
-
-	xe_gsc_wait_for_worker_completion(gsc);
-
-	component_del(xe->drm.dev, &xe_gsc_proxy_component_ops);
-	gsc->proxy.component_added = false;
+	return devm_add_action_or_reset(xe->drm.dev, xe_gsc_proxy_remove, gsc);
 }
 
 /**
@@ -493,6 +533,7 @@ void xe_gsc_proxy_remove(struct xe_gsc *gsc)
  */
 int xe_gsc_proxy_start(struct xe_gsc *gsc)
 {
+	struct xe_gt *gt = gsc_to_gt(gsc);
 	int err;
 
 	/* enable the proxy interrupt in the GSC shim layer */
@@ -504,12 +545,18 @@ int xe_gsc_proxy_start(struct xe_gsc *gsc)
 	 */
 	err = xe_gsc_proxy_request_handler(gsc);
 	if (err)
-		return err;
+		goto err_irq_disable;
 
 	if (!xe_gsc_proxy_init_done(gsc)) {
-		xe_gt_err(gsc_to_gt(gsc), "GSC FW reports proxy init not completed\n");
-		return -EIO;
+		xe_gt_err(gt, "GSC FW reports proxy init not completed\n");
+		err = -EIO;
+		goto err_irq_disable;
 	}
 
+	gsc->proxy.started = true;
 	return 0;
+
+err_irq_disable:
+	gsc_proxy_irq_toggle(gsc, false);
+	return err;
 }

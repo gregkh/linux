@@ -18,9 +18,9 @@ struct dma_fence_chain;
  * struct xe_job_ptrs - Per hw engine instance data
  */
 struct xe_job_ptrs {
-	/** @lrc_fence: Pre-allocated uinitialized lrc fence.*/
+	/** @lrc_fence: Pre-allocated uninitialized lrc fence.*/
 	struct dma_fence *lrc_fence;
-	/** @chain_fence: Pre-allocated ninitialized fence chain node. */
+	/** @chain_fence: Pre-allocated uninitialized fence chain node. */
 	struct dma_fence_chain *chain_fence;
 	/** @batch_addr: Batch buffer address. */
 	u64 batch_addr;
@@ -40,7 +40,6 @@ struct xe_sched_job {
 	 * @fence: dma fence to indicate completion. 1 way relationship - job
 	 * can safely reference fence, fence cannot safely reference job.
 	 */
-#define JOB_FLAG_SUBMIT		DMA_FENCE_FLAG_USER_BITS
 	struct dma_fence *fence;
 	/** @user_fence: write back value when BB is complete */
 	struct {
@@ -65,7 +64,7 @@ struct xe_sched_job {
 
 struct xe_sched_job_snapshot {
 	u16 batch_addr_len;
-	u64 batch_addr[];
+	u64 batch_addr[] __counted_by(batch_addr_len);
 };
 
 #endif

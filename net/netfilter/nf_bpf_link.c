@@ -43,7 +43,7 @@ get_proto_defrag_hook(struct bpf_nf_link *link,
 	hook = rcu_dereference(*ptr_global_hook);
 	if (!hook) {
 		rcu_read_unlock();
-		err = request_module(mod);
+		err = request_module("%s", mod);
 		if (err)
 			return ERR_PTR(err < 0 ? err : -EINVAL);
 
@@ -225,7 +225,8 @@ int bpf_nf_link_attach(const union bpf_attr *attr, struct bpf_prog *prog)
 	if (!link)
 		return -ENOMEM;
 
-	bpf_link_init(&link->link, BPF_LINK_TYPE_NETFILTER, &bpf_nf_link_lops, prog);
+	bpf_link_init(&link->link, BPF_LINK_TYPE_NETFILTER, &bpf_nf_link_lops, prog,
+		      attr->link_create.attach_type);
 
 	link->hook_ops.hook = nf_hook_run_bpf;
 	link->hook_ops.hook_ops_type = NF_HOOK_OP_BPF;

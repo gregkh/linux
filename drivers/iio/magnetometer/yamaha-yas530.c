@@ -236,7 +236,7 @@ struct yas5xx {
 	 */
 	struct {
 		s32 channels[4];
-		s64 ts __aligned(8);
+		aligned_s64 ts;
 	} scan;
 };
 
@@ -623,7 +623,6 @@ static int yas5xx_read_raw(struct iio_dev *indio_dev,
 	case IIO_CHAN_INFO_RAW:
 		pm_runtime_get_sync(yas5xx->dev);
 		ret = ci->get_measure(yas5xx, &t, &x, &y, &z);
-		pm_runtime_mark_last_busy(yas5xx->dev);
 		pm_runtime_put_autosuspend(yas5xx->dev);
 		if (ret)
 			return ret;
@@ -664,7 +663,6 @@ static void yas5xx_fill_buffer(struct iio_dev *indio_dev)
 
 	pm_runtime_get_sync(yas5xx->dev);
 	ret = ci->get_measure(yas5xx, &t, &x, &y, &z);
-	pm_runtime_mark_last_busy(yas5xx->dev);
 	pm_runtime_put_autosuspend(yas5xx->dev);
 	if (ret) {
 		dev_err(yas5xx->dev, "error refilling buffer\n");
@@ -674,8 +672,8 @@ static void yas5xx_fill_buffer(struct iio_dev *indio_dev)
 	yas5xx->scan.channels[1] = x;
 	yas5xx->scan.channels[2] = y;
 	yas5xx->scan.channels[3] = z;
-	iio_push_to_buffers_with_timestamp(indio_dev, &yas5xx->scan,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts(indio_dev, &yas5xx->scan, sizeof(yas5xx->scan),
+				    iio_get_time_ns(indio_dev));
 }
 
 static irqreturn_t yas5xx_handle_trigger(int irq, void *p)
@@ -1585,7 +1583,7 @@ static const struct i2c_device_id yas5xx_id[] = {
 	{"yas532", (kernel_ulong_t)&yas5xx_chip_info_tbl[yas532] },
 	{"yas533", (kernel_ulong_t)&yas5xx_chip_info_tbl[yas533] },
 	{"yas537", (kernel_ulong_t)&yas5xx_chip_info_tbl[yas537] },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, yas5xx_id);
 
@@ -1594,7 +1592,7 @@ static const struct of_device_id yas5xx_of_match[] = {
 	{ .compatible = "yamaha,yas532", &yas5xx_chip_info_tbl[yas532] },
 	{ .compatible = "yamaha,yas533", &yas5xx_chip_info_tbl[yas533] },
 	{ .compatible = "yamaha,yas537", &yas5xx_chip_info_tbl[yas537] },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, yas5xx_of_match);
 

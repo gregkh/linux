@@ -153,7 +153,7 @@ enum {
  * SHADOW_STACK_OFFSET:	The size in long words of the shadow stack
  * SHADOW_STACK_MAX_OFFSET: The max offset of the stack for a new frame to be added
  */
-#define SHADOW_STACK_SIZE	(PAGE_SIZE)
+#define SHADOW_STACK_SIZE	(4096)
 #define SHADOW_STACK_OFFSET	(SHADOW_STACK_SIZE / sizeof(long))
 /* Leave on a buffer at the end */
 #define SHADOW_STACK_MAX_OFFSET				\
@@ -171,6 +171,8 @@ enum {
 
 DEFINE_STATIC_KEY_FALSE(kill_ftrace_graph);
 int ftrace_graph_active;
+
+static struct kmem_cache *fgraph_stack_cachep;
 
 static struct fgraph_ops *fgraph_array[FGRAPH_ARRAY_SIZE];
 static unsigned long fgraph_array_bitmask;
@@ -290,13 +292,15 @@ static inline unsigned long make_data_type_val(int idx, int size, int offset)
 }
 
 /* ftrace_graph_entry set to this to tell some archs to run function graph */
-static int entry_run(struct ftrace_graph_ent *trace, struct fgraph_ops *ops)
+static int entry_run(struct ftrace_graph_ent *trace, struct fgraph_ops *ops,
+		     struct ftrace_regs *fregs)
 {
 	return 0;
 }
 
 /* ftrace_graph_return set to this to tell some archs to run function graph */
-static void return_run(struct ftrace_graph_ret *trace, struct fgraph_ops *ops)
+static void return_run(struct ftrace_graph_ret *trace, struct fgraph_ops *ops,
+		       struct ftrace_regs *fregs)
 {
 }
 
@@ -390,21 +394,7 @@ void *fgraph_reserve_data(int idx, int size_bytes)
  */
 void *fgraph_retrieve_data(int idx, int *size_bytes)
 {
-	int offset = current->curr_ret_stack - 1;
-	unsigned long val;
-
-	val = get_fgraph_entry(current, offset);
-	while (__get_type(val) == FGRAPH_TYPE_DATA) {
-		if (__get_data_index(val) == idx)
-			goto found;
-		offset -= __get_data_size(val) + 1;
-		val = get_fgraph_entry(current, offset);
-	}
-	return NULL;
-found:
-	if (size_bytes)
-		*size_bytes = __get_data_size(val) * sizeof(long);
-	return get_data_type_data(current, offset);
+	return fgraph_retrieve_parent_data(idx, size_bytes, 0);
 }
 
 /**
@@ -460,8 +450,56 @@ get_ret_stack(struct task_struct *t, int offset, int *frame_offset)
 	return RET_STACK(t, offset);
 }
 
+/**
+ * fgraph_retrieve_parent_data - get data from a parent function
+ * @idx: The index into the fgraph_array (fgraph_ops::idx)
+ * @size_bytes: A pointer to retrieved data size
+ * @depth: The depth to find the parent (0 is the current function)
+ *
+ * This is similar to fgraph_retrieve_data() but can be used to retrieve
+ * data from a parent caller function.
+ *
+ * Return: a pointer to the specified parent data or NULL if not found
+ */
+void *fgraph_retrieve_parent_data(int idx, int *size_bytes, int depth)
+{
+	struct ftrace_ret_stack *ret_stack = NULL;
+	int offset = current->curr_ret_stack;
+	unsigned long val;
+
+	if (offset <= 0)
+		return NULL;
+
+	for (;;) {
+		int next_offset;
+
+		ret_stack = get_ret_stack(current, offset, &next_offset);
+		if (!ret_stack || --depth < 0)
+			break;
+		offset = next_offset;
+	}
+
+	if (!ret_stack)
+		return NULL;
+
+	offset--;
+
+	val = get_fgraph_entry(current, offset);
+	while (__get_type(val) == FGRAPH_TYPE_DATA) {
+		if (__get_data_index(val) == idx)
+			goto found;
+		offset -= __get_data_size(val) + 1;
+		val = get_fgraph_entry(current, offset);
+	}
+	return NULL;
+found:
+	if (size_bytes)
+		*size_bytes = __get_data_size(val) * sizeof(long);
+	return get_data_type_data(current, offset);
+}
+
 /* Both enabled by default (can be cleared by function_graph tracer flags */
-static bool fgraph_sleep_time = true;
+bool fgraph_sleep_time = true;
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 /*
@@ -484,13 +522,15 @@ int __weak ftrace_disable_ftrace_graph_caller(void)
 #endif
 
 int ftrace_graph_entry_stub(struct ftrace_graph_ent *trace,
-			    struct fgraph_ops *gops)
+			    struct fgraph_ops *gops,
+			    struct ftrace_regs *fregs)
 {
 	return 0;
 }
 
 static void ftrace_graph_ret_stub(struct ftrace_graph_ret *trace,
-				  struct fgraph_ops *gops)
+				  struct fgraph_ops *gops,
+				  struct ftrace_regs *fregs)
 {
 }
 
@@ -528,7 +568,6 @@ ftrace_push_return_trace(unsigned long ret, unsigned long func,
 			 int fgraph_idx)
 {
 	struct ftrace_ret_stack *ret_stack;
-	unsigned long long calltime;
 	unsigned long val;
 	int offset;
 
@@ -557,8 +596,6 @@ ftrace_push_return_trace(unsigned long ret, unsigned long func,
 		atomic_inc(&current->trace_overrun);
 		return -EBUSY;
 	}
-
-	calltime = trace_clock_local();
 
 	offset = READ_ONCE(current->curr_ret_stack);
 	ret_stack = RET_STACK(current, offset);
@@ -593,7 +630,6 @@ ftrace_push_return_trace(unsigned long ret, unsigned long func,
 
 	ret_stack->ret = ret;
 	ret_stack->func = func;
-	ret_stack->calltime = calltime;
 #ifdef HAVE_FUNCTION_GRAPH_FP_TEST
 	ret_stack->fp = frame_pointer;
 #endif
@@ -616,13 +652,19 @@ ftrace_push_return_trace(unsigned long ret, unsigned long func,
 #endif
 
 /* If the caller does not use ftrace, call this function. */
-int function_graph_enter(unsigned long ret, unsigned long func,
-			 unsigned long frame_pointer, unsigned long *retp)
+int function_graph_enter_regs(unsigned long ret, unsigned long func,
+			      unsigned long frame_pointer, unsigned long *retp,
+			      struct ftrace_regs *fregs)
 {
 	struct ftrace_graph_ent trace;
 	unsigned long bitmap = 0;
 	int offset;
+	int bit;
 	int i;
+
+	bit = ftrace_test_recursion_trylock(func, ret);
+	if (bit < 0)
+		return -EBUSY;
 
 	trace.func = func;
 	trace.depth = ++current->curr_ret_depth;
@@ -635,7 +677,7 @@ int function_graph_enter(unsigned long ret, unsigned long func,
 	if (static_branch_likely(&fgraph_do_direct)) {
 		int save_curr_ret_stack = current->curr_ret_stack;
 
-		if (static_call(fgraph_func)(&trace, fgraph_direct_gops))
+		if (static_call(fgraph_func)(&trace, fgraph_direct_gops, fregs))
 			bitmap |= BIT(fgraph_direct_gops->idx);
 		else
 			/* Clear out any saved storage */
@@ -653,7 +695,7 @@ int function_graph_enter(unsigned long ret, unsigned long func,
 
 			save_curr_ret_stack = current->curr_ret_stack;
 			if (ftrace_ops_test(&gops->ops, func, NULL) &&
-			    gops->entryfunc(&trace, gops))
+			    gops->entryfunc(&trace, gops, fregs))
 				bitmap |= BIT(i);
 			else
 				/* Clear out any saved storage */
@@ -669,12 +711,13 @@ int function_graph_enter(unsigned long ret, unsigned long func,
 	 * flag, set that bit always.
 	 */
 	set_bitmap(current, offset, bitmap | BIT(0));
-
+	ftrace_test_recursion_unlock(bit);
 	return 0;
  out_ret:
 	current->curr_ret_stack -= FGRAPH_FRAME_OFFSET + 1;
  out:
 	current->curr_ret_depth--;
+	ftrace_test_recursion_unlock(bit);
 	return -EBUSY;
 }
 
@@ -727,7 +770,6 @@ ftrace_pop_return_trace(struct ftrace_graph_ret *trace, unsigned long *ret,
 	*offset += FGRAPH_FRAME_OFFSET;
 	*ret = ret_stack->ret;
 	trace->func = ret_stack->func;
-	trace->calltime = ret_stack->calltime;
 	trace->overrun = atomic_read(&current->trace_overrun);
 	trace->depth = current->curr_ret_depth;
 	/*
@@ -777,6 +819,7 @@ __ftrace_return_to_handler(struct ftrace_regs *fregs, unsigned long frame_pointe
 	unsigned long bitmap;
 	unsigned long ret;
 	int offset;
+	int bit;
 	int i;
 
 	ret_stack = ftrace_pop_return_trace(&trace, &ret, frame_pointer, &offset);
@@ -788,7 +831,18 @@ __ftrace_return_to_handler(struct ftrace_regs *fregs, unsigned long frame_pointe
 		return (unsigned long)panic;
 	}
 
-	trace.rettime = trace_clock_local();
+	if (fregs)
+		ftrace_regs_set_instruction_pointer(fregs, ret);
+
+	bit = ftrace_test_recursion_trylock(trace.func, ret);
+	/*
+	 * This can fail because ftrace_test_recursion_trylock() allows one nest
+	 * call. If we are already in a nested call, then we don't probe this and
+	 * just return the original return address.
+	 */
+	if (unlikely(bit < 0))
+		goto out;
+
 #ifdef CONFIG_FUNCTION_GRAPH_RETVAL
 	trace.retval = ftrace_regs_get_return_value(fregs);
 #endif
@@ -798,7 +852,7 @@ __ftrace_return_to_handler(struct ftrace_regs *fregs, unsigned long frame_pointe
 #ifdef CONFIG_HAVE_STATIC_CALL
 	if (!FGRAPH_NO_DIRECT && static_branch_likely(&fgraph_do_direct)) {
 		if (test_bit(fgraph_direct_gops->idx, &bitmap))
-			static_call(fgraph_retfunc)(&trace, fgraph_direct_gops);
+			static_call(fgraph_retfunc)(&trace, fgraph_direct_gops, fregs);
 	} else
 #endif
 	{
@@ -808,10 +862,12 @@ __ftrace_return_to_handler(struct ftrace_regs *fregs, unsigned long frame_pointe
 			if (gops == &fgraph_stub)
 				continue;
 
-			gops->retfunc(&trace, gops);
+			gops->retfunc(&trace, gops, fregs);
 		}
 	}
 
+	ftrace_test_recursion_unlock(bit);
+out:
 	/*
 	 * The ftrace_graph_return() may still access the current
 	 * ret_stack structure, we need to make sure the update of
@@ -825,7 +881,7 @@ __ftrace_return_to_handler(struct ftrace_regs *fregs, unsigned long frame_pointe
 }
 
 /*
- * After all architecures have selected HAVE_FUNCTION_GRAPH_FREGS, we can
+ * After all architectures have selected HAVE_FUNCTION_GRAPH_FREGS, we can
  * leave only ftrace_return_to_handler(fregs).
  */
 #ifdef CONFIG_HAVE_FUNCTION_GRAPH_FREGS
@@ -869,6 +925,29 @@ ftrace_graph_get_ret_stack(struct task_struct *task, int idx)
 }
 
 /**
+ * ftrace_graph_top_ret_addr - return the top return address in the shadow stack
+ * @task: The task to read the shadow stack from.
+ *
+ * Return the first return address on the shadow stack of the @task, which is
+ * not the fgraph's return_to_handler.
+ */
+unsigned long ftrace_graph_top_ret_addr(struct task_struct *task)
+{
+	unsigned long return_handler = (unsigned long)dereference_kernel_function_descriptor(return_to_handler);
+	struct ftrace_ret_stack *ret_stack = NULL;
+	int offset = task->curr_ret_stack;
+
+	if (offset < 0)
+		return 0;
+
+	do {
+		ret_stack = get_ret_stack(task, offset, &offset);
+	} while (ret_stack && ret_stack->ret == return_handler);
+
+	return ret_stack ? ret_stack->ret : 0;
+}
+
+/**
  * ftrace_graph_ret_addr - return the original value of the return address
  * @task: The task the unwinder is being executed on
  * @idx: An initialized pointer to the next stack index to use
@@ -893,7 +972,7 @@ unsigned long ftrace_graph_ret_addr(struct task_struct *task, int *idx,
 {
 	struct ftrace_ret_stack *ret_stack;
 	unsigned long return_handler = (unsigned long)dereference_kernel_function_descriptor(return_to_handler);
-	int i = task->curr_ret_stack;
+	int i;
 
 	if (ret != return_handler)
 		return ret;
@@ -958,7 +1037,8 @@ void ftrace_graph_sleep_time_control(bool enable)
  * Simply points to ftrace_stub, but with the proper protocol.
  * Defined by the linker script in linux/vmlinux.lds.h
  */
-void ftrace_stub_graph(struct ftrace_graph_ret *trace, struct fgraph_ops *gops);
+void ftrace_stub_graph(struct ftrace_graph_ret *trace, struct fgraph_ops *gops,
+		       struct ftrace_regs *fregs);
 
 /* The callbacks that hook a function */
 trace_func_graph_ret_t ftrace_graph_return = ftrace_stub_graph;
@@ -972,8 +1052,11 @@ static int alloc_retstack_tasklist(unsigned long **ret_stack_list)
 	int start = 0, end = FTRACE_RETSTACK_ALLOC_SIZE;
 	struct task_struct *g, *t;
 
+	if (WARN_ON_ONCE(!fgraph_stack_cachep))
+		return -ENOMEM;
+
 	for (i = 0; i < FTRACE_RETSTACK_ALLOC_SIZE; i++) {
-		ret_stack_list[i] = kmalloc(SHADOW_STACK_SIZE, GFP_KERNEL);
+		ret_stack_list[i] = kmem_cache_alloc(fgraph_stack_cachep, GFP_KERNEL);
 		if (!ret_stack_list[i]) {
 			start = 0;
 			end = i;
@@ -1004,7 +1087,7 @@ unlock:
 	rcu_read_unlock();
 free:
 	for (i = start; i < end; i++)
-		kfree(ret_stack_list[i]);
+		kmem_cache_free(fgraph_stack_cachep, ret_stack_list[i]);
 	return ret;
 }
 
@@ -1014,9 +1097,7 @@ ftrace_graph_probe_sched_switch(void *ignore, bool preempt,
 				struct task_struct *next,
 				unsigned int prev_state)
 {
-	struct ftrace_ret_stack *ret_stack;
 	unsigned long long timestamp;
-	int offset;
 
 	/*
 	 * Does the user want to count the time a function was asleep.
@@ -1033,17 +1114,7 @@ ftrace_graph_probe_sched_switch(void *ignore, bool preempt,
 	if (!next->ftrace_timestamp)
 		return;
 
-	/*
-	 * Update all the counters in next to make up for the
-	 * time next was sleeping.
-	 */
-	timestamp -= next->ftrace_timestamp;
-
-	for (offset = next->curr_ret_stack; offset > 0; ) {
-		ret_stack = get_ret_stack(next, offset, &offset);
-		if (ret_stack)
-			ret_stack->calltime += timestamp;
-	}
+	next->ftrace_sleeptime += timestamp - next->ftrace_timestamp;
 }
 
 static DEFINE_PER_CPU(unsigned long *, idle_ret_stack);
@@ -1079,9 +1150,12 @@ void ftrace_graph_init_idle_task(struct task_struct *t, int cpu)
 	if (ftrace_graph_active) {
 		unsigned long *ret_stack;
 
+		if (WARN_ON_ONCE(!fgraph_stack_cachep))
+			return;
+
 		ret_stack = per_cpu(idle_ret_stack, cpu);
 		if (!ret_stack) {
-			ret_stack = kmalloc(SHADOW_STACK_SIZE, GFP_KERNEL);
+			ret_stack = kmem_cache_alloc(fgraph_stack_cachep, GFP_KERNEL);
 			if (!ret_stack)
 				return;
 			per_cpu(idle_ret_stack, cpu) = ret_stack;
@@ -1101,7 +1175,10 @@ void ftrace_graph_init_task(struct task_struct *t)
 	if (ftrace_graph_active) {
 		unsigned long *ret_stack;
 
-		ret_stack = kmalloc(SHADOW_STACK_SIZE, GFP_KERNEL);
+		if (WARN_ON_ONCE(!fgraph_stack_cachep))
+			return;
+
+		ret_stack = kmem_cache_alloc(fgraph_stack_cachep, GFP_KERNEL);
 		if (!ret_stack)
 			return;
 		graph_init_task(t, ret_stack);
@@ -1116,12 +1193,17 @@ void ftrace_graph_exit_task(struct task_struct *t)
 	/* NULL must become visible to IRQs before we free it: */
 	barrier();
 
-	kfree(ret_stack);
+	if (ret_stack) {
+		if (WARN_ON_ONCE(!fgraph_stack_cachep))
+			return;
+		kmem_cache_free(fgraph_stack_cachep, ret_stack);
+	}
 }
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 static int fgraph_pid_func(struct ftrace_graph_ent *trace,
-			   struct fgraph_ops *gops)
+			   struct fgraph_ops *gops,
+			   struct ftrace_regs *fregs)
 {
 	struct trace_array *tr = gops->ops.private;
 	int pid;
@@ -1135,7 +1217,7 @@ static int fgraph_pid_func(struct ftrace_graph_ent *trace,
 			return 0;
 	}
 
-	return gops->saved_func(trace, gops);
+	return gops->saved_func(trace, gops, fregs);
 }
 
 void fgraph_update_pid_func(void)
@@ -1266,7 +1348,19 @@ int register_ftrace_graph(struct fgraph_ops *gops)
 	int ret = 0;
 	int i = -1;
 
+	if (WARN_ONCE(gops->ops.flags & FTRACE_OPS_FL_GRAPH,
+		      "function graph ops registered again"))
+		return -EBUSY;
+
 	guard(mutex)(&ftrace_lock);
+
+	if (!fgraph_stack_cachep) {
+		fgraph_stack_cachep = kmem_cache_create("fgraph_stack",
+							SHADOW_STACK_SIZE,
+							SHADOW_STACK_SIZE, 0, NULL);
+		if (!fgraph_stack_cachep)
+			return -ENOMEM;
+	}
 
 	if (!fgraph_initialized) {
 		ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "fgraph:online",
@@ -1320,6 +1414,8 @@ int register_ftrace_graph(struct fgraph_ops *gops)
 		init_task_vars(gops->idx);
 	}
 
+	gops->ops.flags |= FTRACE_OPS_FL_GRAPH;
+
 	ret = ftrace_startup_subops(&graph_ops, &gops->ops, command);
 	if (!ret)
 		fgraph_array[i] = gops;
@@ -1339,7 +1435,11 @@ void unregister_ftrace_graph(struct fgraph_ops *gops)
 {
 	int command = 0;
 
-	mutex_lock(&ftrace_lock);
+	if (WARN_ONCE(!(gops->ops.flags & FTRACE_OPS_FL_GRAPH),
+		      "function graph ops unregistered without registering"))
+		return;
+
+	guard(mutex)(&ftrace_lock);
 
 	if (unlikely(!ftrace_graph_active))
 		goto out;
@@ -1371,7 +1471,7 @@ void unregister_ftrace_graph(struct fgraph_ops *gops)
 		unregister_pm_notifier(&ftrace_suspend_notifier);
 		unregister_trace_sched_switch(ftrace_graph_probe_sched_switch, NULL);
 	}
- out:
 	gops->saved_func = NULL;
-	mutex_unlock(&ftrace_lock);
+ out:
+	gops->ops.flags &= ~FTRACE_OPS_FL_GRAPH;
 }

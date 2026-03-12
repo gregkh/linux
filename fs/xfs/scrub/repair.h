@@ -8,6 +8,7 @@
 
 #include "xfs_quota_defs.h"
 
+struct xfs_rtgroup;
 struct xchk_stats_run;
 
 static inline int xrep_notsupported(struct xfs_scrub *sc)
@@ -16,14 +17,6 @@ static inline int xrep_notsupported(struct xfs_scrub *sc)
 }
 
 #ifdef CONFIG_XFS_ONLINE_REPAIR
-
-/*
- * This is the maximum number of deferred extent freeing item extents (EFIs)
- * that we'll attach to a transaction without rolling the transaction to avoid
- * overrunning a tr_itruncate reservation.
- */
-#define XREP_MAX_ITRUNCATE_EFIS	(128)
-
 
 /* Repair helpers */
 
@@ -49,7 +42,9 @@ xrep_trans_commit(
 
 struct xbitmap;
 struct xagb_bitmap;
+struct xrgb_bitmap;
 struct xfsb_bitmap;
+struct xrtb_bitmap;
 
 int xrep_fix_freelist(struct xfs_scrub *sc, int alloc_flags);
 
@@ -96,6 +91,8 @@ int xrep_setup_parent(struct xfs_scrub *sc);
 int xrep_setup_nlinks(struct xfs_scrub *sc);
 int xrep_setup_symlink(struct xfs_scrub *sc, unsigned int *resblks);
 int xrep_setup_dirtree(struct xfs_scrub *sc);
+int xrep_setup_rtrmapbt(struct xfs_scrub *sc);
+int xrep_setup_rtrefcountbt(struct xfs_scrub *sc);
 
 /* Repair setup functions */
 int xrep_setup_ag_allocbt(struct xfs_scrub *sc);
@@ -106,6 +103,20 @@ int xrep_setup_inode(struct xfs_scrub *sc, const struct xfs_imap *imap);
 void xrep_ag_btcur_init(struct xfs_scrub *sc, struct xchk_ag *sa);
 int xrep_ag_init(struct xfs_scrub *sc, struct xfs_perag *pag,
 		struct xchk_ag *sa);
+#ifdef CONFIG_XFS_RT
+int xrep_rtgroup_init(struct xfs_scrub *sc, struct xfs_rtgroup *rtg,
+		struct xchk_rt *sr, unsigned int rtglock_flags);
+void xrep_rtgroup_btcur_init(struct xfs_scrub *sc, struct xchk_rt *sr);
+int xrep_require_rtext_inuse(struct xfs_scrub *sc, xfs_rgblock_t rgbno,
+		xfs_filblks_t len);
+xfs_extlen_t xrep_calc_rtgroup_resblks(struct xfs_scrub *sc);
+#else
+# define xrep_rtgroup_init(sc, rtg, sr, lockflags)	(-ENOSYS)
+# define xrep_calc_rtgroup_resblks(sc)			(0)
+#endif /* CONFIG_XFS_RT */
+
+int xrep_check_ino_btree_mapping(struct xfs_scrub *sc,
+		const struct xfs_rmap_irec *rec);
 
 /* Metadata revalidators */
 
@@ -134,13 +145,20 @@ int xrep_directory(struct xfs_scrub *sc);
 int xrep_parent(struct xfs_scrub *sc);
 int xrep_symlink(struct xfs_scrub *sc);
 int xrep_dirtree(struct xfs_scrub *sc);
+int xrep_metapath(struct xfs_scrub *sc);
 
 #ifdef CONFIG_XFS_RT
 int xrep_rtbitmap(struct xfs_scrub *sc);
 int xrep_rtsummary(struct xfs_scrub *sc);
+int xrep_rgsuperblock(struct xfs_scrub *sc);
+int xrep_rtrmapbt(struct xfs_scrub *sc);
+int xrep_rtrefcountbt(struct xfs_scrub *sc);
 #else
 # define xrep_rtbitmap			xrep_notsupported
 # define xrep_rtsummary			xrep_notsupported
+# define xrep_rgsuperblock		xrep_notsupported
+# define xrep_rtrmapbt			xrep_notsupported
+# define xrep_rtrefcountbt		xrep_notsupported
 #endif /* CONFIG_XFS_RT */
 
 #ifdef CONFIG_XFS_QUOTA
@@ -154,11 +172,9 @@ int xrep_quotacheck(struct xfs_scrub *sc);
 int xrep_reinit_pagf(struct xfs_scrub *sc);
 int xrep_reinit_pagi(struct xfs_scrub *sc);
 
-int xrep_trans_alloc_hook_dummy(struct xfs_mount *mp, void **cookiep,
-		struct xfs_trans **tpp);
-void xrep_trans_cancel_hook_dummy(void **cookiep, struct xfs_trans *tp);
-
 bool xrep_buf_verify_struct(struct xfs_buf *bp, const struct xfs_buf_ops *ops);
+void xrep_inode_set_nblocks(struct xfs_scrub *sc, int64_t new_blocks);
+int xrep_reset_metafile_resv(struct xfs_scrub *sc);
 
 #else
 
@@ -191,6 +207,8 @@ xrep_calc_ag_resblks(
 	return 0;
 }
 
+#define xrep_calc_rtgroup_resblks	xrep_calc_ag_resblks
+
 static inline int
 xrep_reset_perag_resv(
 	struct xfs_scrub	*sc)
@@ -217,6 +235,9 @@ xrep_setup_nothing(
 #define xrep_setup_parent		xrep_setup_nothing
 #define xrep_setup_nlinks		xrep_setup_nothing
 #define xrep_setup_dirtree		xrep_setup_nothing
+#define xrep_setup_metapath		xrep_setup_nothing
+#define xrep_setup_rtrmapbt		xrep_setup_nothing
+#define xrep_setup_rtrefcountbt		xrep_setup_nothing
 
 #define xrep_setup_inode(sc, imap)	((void)0)
 
@@ -252,6 +273,10 @@ static inline int xrep_setup_symlink(struct xfs_scrub *sc, unsigned int *x)
 #define xrep_parent			xrep_notsupported
 #define xrep_symlink			xrep_notsupported
 #define xrep_dirtree			xrep_notsupported
+#define xrep_metapath			xrep_notsupported
+#define xrep_rgsuperblock		xrep_notsupported
+#define xrep_rtrmapbt			xrep_notsupported
+#define xrep_rtrefcountbt		xrep_notsupported
 
 #endif /* CONFIG_XFS_ONLINE_REPAIR */
 

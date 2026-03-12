@@ -533,12 +533,7 @@ static int gpio_keys_setup_key(struct platform_device *pdev,
 		 * Legacy GPIO number, so request the GPIO here and
 		 * convert it to descriptor.
 		 */
-		unsigned flags = GPIOF_IN;
-
-		if (button->active_low)
-			flags |= GPIOF_ACTIVE_LOW;
-
-		error = devm_gpio_request_one(dev, button->gpio, flags, desc);
+		error = devm_gpio_request_one(dev, button->gpio, GPIOF_IN, desc);
 		if (error < 0) {
 			dev_err(dev, "Failed to request GPIO %d, error %d\n",
 				button->gpio, error);
@@ -548,6 +543,9 @@ static int gpio_keys_setup_key(struct platform_device *pdev,
 		bdata->gpiod = gpio_to_desc(button->gpio);
 		if (!bdata->gpiod)
 			return -EINVAL;
+
+		if (button->active_low ^ gpiod_is_active_low(bdata->gpiod))
+			gpiod_toggle_active_low(bdata->gpiod);
 	}
 
 	if (bdata->gpiod) {
@@ -594,9 +592,8 @@ static int gpio_keys_setup_key(struct platform_device *pdev,
 
 		INIT_DELAYED_WORK(&bdata->work, gpio_keys_gpio_work_func);
 
-		hrtimer_init(&bdata->debounce_timer,
-			     CLOCK_REALTIME, HRTIMER_MODE_REL);
-		bdata->debounce_timer.function = gpio_keys_debounce_timer;
+		hrtimer_setup(&bdata->debounce_timer, gpio_keys_debounce_timer,
+			      CLOCK_REALTIME, HRTIMER_MODE_REL);
 
 		isr = gpio_keys_gpio_isr;
 		irqflags = IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
@@ -632,9 +629,8 @@ static int gpio_keys_setup_key(struct platform_device *pdev,
 		}
 
 		bdata->release_delay = button->debounce_interval;
-		hrtimer_init(&bdata->release_timer,
-			     CLOCK_REALTIME, HRTIMER_MODE_REL);
-		bdata->release_timer.function = gpio_keys_irq_timer;
+		hrtimer_setup(&bdata->release_timer, gpio_keys_irq_timer,
+			      CLOCK_REALTIME, HRTIMER_MODE_REL);
 
 		isr = gpio_keys_irq_isr;
 		irqflags = 0;

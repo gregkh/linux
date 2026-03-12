@@ -2,13 +2,16 @@
 
 //! Kernel errors.
 //!
-//! C header: [`include/uapi/asm-generic/errno-base.h`](srctree/include/uapi/asm-generic/errno-base.h)
+//! C header: [`include/uapi/asm-generic/errno-base.h`](srctree/include/uapi/asm-generic/errno-base.h)\
+//! C header: [`include/uapi/asm-generic/errno.h`](srctree/include/uapi/asm-generic/errno.h)\
+//! C header: [`include/linux/errno.h`](srctree/include/linux/errno.h)
 
-use crate::{alloc::AllocError, str::CStr};
+use crate::{
+    alloc::{layout::LayoutError, AllocError},
+    fmt,
+    str::CStr,
+};
 
-use core::alloc::LayoutError;
-
-use core::fmt;
 use core::num::NonZeroI32;
 use core::num::TryFromIntError;
 use core::str::Utf8Error;
@@ -63,6 +66,8 @@ pub mod code {
     declare_err!(EPIPE, "Broken pipe.");
     declare_err!(EDOM, "Math argument out of domain of func.");
     declare_err!(ERANGE, "Math result not representable.");
+    declare_err!(EOVERFLOW, "Value too large for defined data type.");
+    declare_err!(ETIMEDOUT, "Connection timed out.");
     declare_err!(ERESTARTSYS, "Restart the system call.");
     declare_err!(ERESTARTNOINTR, "System call was interrupted by a signal and will be restarted.");
     declare_err!(ERESTARTNOHAND, "Restart if no handler.");
@@ -98,22 +103,34 @@ pub struct Error(NonZeroI32);
 impl Error {
     /// Creates an [`Error`] from a kernel error code.
     ///
-    /// It is a bug to pass an out-of-range `errno`. `EINVAL` would
-    /// be returned in such a case.
+    /// `errno` must be within error code range (i.e. `>= -MAX_ERRNO && < 0`).
+    ///
+    /// It is a bug to pass an out-of-range `errno`. [`code::EINVAL`] is returned in such a case.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(Error::from_errno(-1), EPERM);
+    /// assert_eq!(Error::from_errno(-2), ENOENT);
+    /// ```
+    ///
+    /// The following calls are considered a bug:
+    ///
+    /// ```
+    /// assert_eq!(Error::from_errno(0), EINVAL);
+    /// assert_eq!(Error::from_errno(-1000000), EINVAL);
+    /// ```
     pub fn from_errno(errno: crate::ffi::c_int) -> Error {
-        if errno < -(bindings::MAX_ERRNO as i32) || errno >= 0 {
+        if let Some(error) = Self::try_from_errno(errno) {
+            error
+        } else {
             // TODO: Make it a `WARN_ONCE` once available.
             crate::pr_warn!(
                 "attempted to create `Error` with out of range `errno`: {}\n",
                 errno
             );
-            return code::EINVAL;
+            code::EINVAL
         }
-
-        // INVARIANT: The check above ensures the type invariant
-        // will hold.
-        // SAFETY: `errno` is checked above to be in a valid range.
-        unsafe { Error::from_errno_unchecked(errno) }
     }
 
     /// Creates an [`Error`] from a kernel error code.
@@ -154,11 +171,11 @@ impl Error {
     /// Returns the error encoded as a pointer.
     pub fn to_ptr<T>(self) -> *mut T {
         // SAFETY: `self.0` is a valid error due to its invariant.
-        unsafe { bindings::ERR_PTR(self.0.get() as _) as *mut _ }
+        unsafe { bindings::ERR_PTR(self.0.get() as crate::ffi::c_long).cast() }
     }
 
     /// Returns a string representing the error, if one exists.
-    #[cfg(not(any(test, testlib)))]
+    #[cfg(not(testlib))]
     pub fn name(&self) -> Option<&'static CStr> {
         // SAFETY: Just an FFI call, there are no extra safety requirements.
         let ptr = unsafe { bindings::errname(-self.0.get()) };
@@ -175,7 +192,7 @@ impl Error {
     /// When `testlib` is configured, this always returns `None` to avoid the dependency on a
     /// kernel function so that tests that use this (e.g., by calling [`Result::unwrap`]) can still
     /// run in userspace.
-    #[cfg(any(test, testlib))]
+    #[cfg(testlib)]
     pub fn name(&self) -> Option<&'static CStr> {
         None
     }
@@ -189,7 +206,7 @@ impl fmt::Debug for Error {
             Some(name) => f
                 .debug_tuple(
                     // SAFETY: These strings are ASCII-only.
-                    unsafe { core::str::from_utf8_unchecked(name) },
+                    unsafe { core::str::from_utf8_unchecked(name.to_bytes()) },
                 )
                 .finish(),
         }
@@ -220,8 +237,8 @@ impl From<LayoutError> for Error {
     }
 }
 
-impl From<core::fmt::Error> for Error {
-    fn from(_: core::fmt::Error) -> Error {
+impl From<fmt::Error> for Error {
+    fn from(_: fmt::Error) -> Error {
         code::EINVAL
     }
 }
@@ -250,12 +267,168 @@ impl From<core::convert::Infallible> for Error {
 /// [`Error`] as its error type.
 ///
 /// Note that even if a function does not return anything when it succeeds,
-/// it should still be modeled as returning a `Result` rather than
+/// it should still be modeled as returning a [`Result`] rather than
 /// just an [`Error`].
+///
+/// Calling a function that returns [`Result`] forces the caller to handle
+/// the returned [`Result`].
+///
+/// This can be done "manually" by using [`match`]. Using [`match`] to decode
+/// the [`Result`] is similar to C where all the return value decoding and the
+/// error handling is done explicitly by writing handling code for each
+/// error to cover. Using [`match`] the error and success handling can be
+/// implemented in all detail as required. For example (inspired by
+/// [`samples/rust/rust_minimal.rs`]):
+///
+/// ```
+/// # #[allow(clippy::single_match)]
+/// fn example() -> Result {
+///     let mut numbers = KVec::new();
+///
+///     match numbers.push(72, GFP_KERNEL) {
+///         Err(e) => {
+///             pr_err!("Error pushing 72: {e:?}");
+///             return Err(e.into());
+///         }
+///         // Do nothing, continue.
+///         Ok(()) => (),
+///     }
+///
+///     match numbers.push(108, GFP_KERNEL) {
+///         Err(e) => {
+///             pr_err!("Error pushing 108: {e:?}");
+///             return Err(e.into());
+///         }
+///         // Do nothing, continue.
+///         Ok(()) => (),
+///     }
+///
+///     match numbers.push(200, GFP_KERNEL) {
+///         Err(e) => {
+///             pr_err!("Error pushing 200: {e:?}");
+///             return Err(e.into());
+///         }
+///         // Do nothing, continue.
+///         Ok(()) => (),
+///     }
+///
+///     Ok(())
+/// }
+/// # example()?;
+/// # Ok::<(), Error>(())
+/// ```
+///
+/// An alternative to be more concise is the [`if let`] syntax:
+///
+/// ```
+/// fn example() -> Result {
+///     let mut numbers = KVec::new();
+///
+///     if let Err(e) = numbers.push(72, GFP_KERNEL) {
+///         pr_err!("Error pushing 72: {e:?}");
+///         return Err(e.into());
+///     }
+///
+///     if let Err(e) = numbers.push(108, GFP_KERNEL) {
+///         pr_err!("Error pushing 108: {e:?}");
+///         return Err(e.into());
+///     }
+///
+///     if let Err(e) = numbers.push(200, GFP_KERNEL) {
+///         pr_err!("Error pushing 200: {e:?}");
+///         return Err(e.into());
+///     }
+///
+///     Ok(())
+/// }
+/// # example()?;
+/// # Ok::<(), Error>(())
+/// ```
+///
+/// Instead of these verbose [`match`]/[`if let`], the [`?`] operator can
+/// be used to handle the [`Result`]. Using the [`?`] operator is often
+/// the best choice to handle [`Result`] in a non-verbose way as done in
+/// [`samples/rust/rust_minimal.rs`]:
+///
+/// ```
+/// fn example() -> Result {
+///     let mut numbers = KVec::new();
+///
+///     numbers.push(72, GFP_KERNEL)?;
+///     numbers.push(108, GFP_KERNEL)?;
+///     numbers.push(200, GFP_KERNEL)?;
+///
+///     Ok(())
+/// }
+/// # example()?;
+/// # Ok::<(), Error>(())
+/// ```
+///
+/// Another possibility is to call [`unwrap()`](Result::unwrap) or
+/// [`expect()`](Result::expect). However, use of these functions is
+/// *heavily discouraged* in the kernel because they trigger a Rust
+/// [`panic!`] if an error happens, which may destabilize the system or
+/// entirely break it as a result -- just like the C [`BUG()`] macro.
+/// Please see the documentation for the C macro [`BUG()`] for guidance
+/// on when to use these functions.
+///
+/// Alternatively, depending on the use case, using [`unwrap_or()`],
+/// [`unwrap_or_else()`], [`unwrap_or_default()`] or [`unwrap_unchecked()`]
+/// might be an option, as well.
+///
+/// For even more details, please see the [Rust documentation].
+///
+/// [`match`]: https://doc.rust-lang.org/reference/expressions/match-expr.html
+/// [`samples/rust/rust_minimal.rs`]: srctree/samples/rust/rust_minimal.rs
+/// [`if let`]: https://doc.rust-lang.org/reference/expressions/if-expr.html#if-let-expressions
+/// [`?`]: https://doc.rust-lang.org/reference/expressions/operator-expr.html#the-question-mark-operator
+/// [`unwrap()`]: Result::unwrap
+/// [`expect()`]: Result::expect
+/// [`BUG()`]: https://docs.kernel.org/process/deprecated.html#bug-and-bug-on
+/// [`unwrap_or()`]: Result::unwrap_or
+/// [`unwrap_or_else()`]: Result::unwrap_or_else
+/// [`unwrap_or_default()`]: Result::unwrap_or_default
+/// [`unwrap_unchecked()`]: Result::unwrap_unchecked
+/// [Rust documentation]: https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html
 pub type Result<T = (), E = Error> = core::result::Result<T, E>;
 
-/// Converts an integer as returned by a C kernel function to an error if it's negative, and
-/// `Ok(())` otherwise.
+/// Converts an integer as returned by a C kernel function to a [`Result`].
+///
+/// If the integer is negative, an [`Err`] with an [`Error`] as given by [`Error::from_errno`] is
+/// returned. This means the integer must be `>= -MAX_ERRNO`.
+///
+/// Otherwise, it returns [`Ok`].
+///
+/// It is a bug to pass an out-of-range negative integer. `Err(EINVAL)` is returned in such a case.
+///
+/// # Examples
+///
+/// This function may be used to easily perform early returns with the [`?`] operator when working
+/// with C APIs within Rust abstractions:
+///
+/// ```
+/// # use kernel::error::to_result;
+/// # mod bindings {
+/// #     #![expect(clippy::missing_safety_doc)]
+/// #     use kernel::prelude::*;
+/// #     pub(super) unsafe fn f1() -> c_int { 0 }
+/// #     pub(super) unsafe fn f2() -> c_int { EINVAL.to_errno() }
+/// # }
+/// fn f() -> Result {
+///     // SAFETY: ...
+///     to_result(unsafe { bindings::f1() })?;
+///
+///     // SAFETY: ...
+///     to_result(unsafe { bindings::f2() })?;
+///
+///     // ...
+///
+///     Ok(())
+/// }
+/// # assert_eq!(f(), Err(EINVAL));
+/// ```
+///
+/// [`?`]: https://doc.rust-lang.org/reference/expressions/operator-expr.html#the-question-mark-operator
 pub fn to_result(err: crate::ffi::c_int) -> Result {
     if err < 0 {
         Err(Error::from_errno(err))

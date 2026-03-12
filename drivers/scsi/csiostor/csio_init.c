@@ -1093,7 +1093,6 @@ csio_pci_slot_reset(struct pci_dev *pdev)
 
 	pci_set_master(pdev);
 	pci_restore_state(pdev);
-	pci_save_state(pdev);
 
 	/* Bring HW s/m to ready state.
 	 * but don't resume IOs.
@@ -1162,7 +1161,7 @@ err_resume_exit:
 	dev_err(&pdev->dev, "resume of device failed: %d\n", rv);
 }
 
-static struct pci_error_handlers csio_err_handler = {
+static const struct pci_error_handlers csio_err_handler = {
 	.error_detected = csio_pci_error_detected,
 	.slot_reset	= csio_pci_slot_reset,
 	.resume		= csio_pci_resume,

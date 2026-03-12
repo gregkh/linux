@@ -68,6 +68,7 @@
 #define HCI_I2C		8
 #define HCI_SMD		9
 #define HCI_VIRTIO	10
+#define HCI_IPC		11
 
 /* HCI device quirks */
 enum {
@@ -206,6 +207,13 @@ enum {
 	 * This quirk must be set before hci_register_dev is called.
 	 */
 	HCI_QUIRK_WIDEBAND_SPEECH_SUPPORTED,
+
+	/* When this quirk is set consider Sync Flow Control as supported by
+	 * the driver.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_SYNC_FLOWCTL_SUPPORTED,
 
 	/* When this quirk is set, the LE states reported through the
 	 * HCI_LE_READ_SUPPORTED_STATES are invalid/broken.
@@ -369,6 +377,8 @@ enum {
 	 * This quirk must be set before hci_register_dev is called.
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
+
+	__HCI_NUM_QUIRKS,
 };
 
 /* HCI device flags */
@@ -448,13 +458,13 @@ enum {
 	HCI_WIDEBAND_SPEECH_ENABLED,
 	HCI_EVENT_FILTER_CONFIGURED,
 	HCI_PA_SYNC,
+	HCI_SCO_FLOWCTL,
 
 	HCI_DUT_MODE,
 	HCI_VENDOR_DIAG,
 	HCI_FORCE_BREDR_SMP,
 	HCI_FORCE_STATIC_ADDR,
 	HCI_LL_RPA_RESOLUTION,
-	HCI_ENABLE_LL_PRIVACY,
 	HCI_CMD_PENDING,
 	HCI_FORCE_NO_MITM,
 	HCI_QUALITY_REPORT,
@@ -479,6 +489,7 @@ enum {
 #define HCI_AUTO_OFF_TIMEOUT	msecs_to_jiffies(2000)	/* 2 seconds */
 #define HCI_ACL_CONN_TIMEOUT	msecs_to_jiffies(20000)	/* 20 seconds */
 #define HCI_LE_CONN_TIMEOUT	msecs_to_jiffies(20000)	/* 20 seconds */
+#define HCI_ISO_TX_TIMEOUT	usecs_to_jiffies(0x7fffff) /* 8388607 usecs */
 
 /* HCI data types */
 #define HCI_COMMAND_PKT		0x01
@@ -487,6 +498,7 @@ enum {
 #define HCI_EVENT_PKT		0x04
 #define HCI_ISODATA_PKT		0x05
 #define HCI_DIAG_PKT		0xf0
+#define HCI_DRV_PKT		0xf1
 #define HCI_VENDOR_PKT		0xff
 
 /* HCI packet types */
@@ -550,7 +562,9 @@ enum {
 #define ESCO_LINK	0x02
 /* Low Energy links do not have defined link type. Use invented one */
 #define LE_LINK		0x80
-#define ISO_LINK	0x82
+#define CIS_LINK	0x82
+#define BIS_LINK	0x83
+#define PA_LINK		0x84
 #define INVALID_LINK	0xff
 
 /* LMP features */
@@ -869,6 +883,11 @@ struct hci_cp_remote_name_req {
 
 #define HCI_OP_REMOTE_NAME_REQ_CANCEL	0x041a
 struct hci_cp_remote_name_req_cancel {
+	bdaddr_t bdaddr;
+} __packed;
+
+struct hci_rp_remote_name_req_cancel {
+	__u8     status;
 	bdaddr_t bdaddr;
 } __packed;
 
@@ -1543,6 +1562,11 @@ struct hci_rp_read_tx_power {
 	__u8     status;
 	__le16   handle;
 	__s8     tx_power;
+} __packed;
+
+#define HCI_OP_WRITE_SYNC_FLOWCTL	0x0c2f
+struct hci_cp_write_sync_flowctl {
+	__u8     enable;
 } __packed;
 
 #define HCI_OP_READ_PAGE_SCAN_TYPE	0x0c46
@@ -2759,6 +2783,11 @@ struct hci_ev_le_per_adv_report {
 	__u8     data[];
 } __packed;
 
+#define HCI_EV_LE_PA_SYNC_LOST		0x10
+struct hci_ev_le_pa_sync_lost {
+	__le16 handle;
+} __packed;
+
 #define LE_PA_DATA_COMPLETE	0x00
 #define LE_PA_DATA_MORE_TO_COME	0x01
 #define LE_PA_DATA_TRUNCATED	0x02
@@ -2817,7 +2846,7 @@ struct hci_evt_le_create_big_complete {
 } __packed;
 
 #define HCI_EVT_LE_BIG_SYNC_ESTABLISHED 0x1d
-struct hci_evt_le_big_sync_estabilished {
+struct hci_evt_le_big_sync_established {
 	__u8    status;
 	__u8    handle;
 	__u8    latency[3];
@@ -2829,6 +2858,12 @@ struct hci_evt_le_big_sync_estabilished {
 	__le16  interval;
 	__u8    num_bis;
 	__le16  bis[];
+} __packed;
+
+#define HCI_EVT_LE_BIG_SYNC_LOST 0x1e
+struct hci_evt_le_big_sync_lost {
+	__u8    handle;
+	__u8    reason;
 } __packed;
 
 #define HCI_EVT_LE_BIG_INFO_ADV_REPORT	0x22

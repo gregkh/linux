@@ -163,9 +163,11 @@ static const char *st_formats[] = {
 
 static int debugging = DEBUG;
 
+/* Setting these non-zero may risk recognizing resets */
 #define MAX_RETRIES 0
 #define MAX_WRITE_RETRIES 0
 #define MAX_READY_RETRIES 0
+
 #define NO_TAPE  NOT_READY
 
 #define ST_TIMEOUT (900 * HZ)
@@ -357,9 +359,17 @@ static int st_chk_result(struct scsi_tape *STp, struct st_request * SRpnt)
 {
 	int result = SRpnt->result;
 	u8 scode;
+	unsigned int ctr;
 	DEB(const char *stp;)
 	char *name = STp->name;
 	struct st_cmdstatus *cmdstatp;
+
+	ctr = scsi_get_ua_por_ctr(STp->device);
+	if (ctr != STp->por_ctr) {
+		STp->por_ctr = ctr;
+		STp->pos_unknown = 1; /* ASC => power on / reset */
+		st_printk(KERN_WARNING, STp, "Power on/reset recognized.");
+	}
 
 	if (!result)
 		return 0;
@@ -413,10 +423,11 @@ static int st_chk_result(struct scsi_tape *STp, struct st_request * SRpnt)
 	if (cmdstatp->have_sense &&
 	    cmdstatp->sense_hdr.asc == 0 && cmdstatp->sense_hdr.ascq == 0x17)
 		STp->cleaning_req = 1; /* ASC and ASCQ => cleaning requested */
-	if (cmdstatp->have_sense && scode == UNIT_ATTENTION && cmdstatp->sense_hdr.asc == 0x29)
+	if (cmdstatp->have_sense && scode == UNIT_ATTENTION &&
+		cmdstatp->sense_hdr.asc == 0x29 && !STp->pos_unknown) {
 		STp->pos_unknown = 1; /* ASC => power on / reset */
-
-	STp->pos_unknown |= STp->device->was_reset;
+		st_printk(KERN_WARNING, STp, "Power on/reset recognized.");
+	}
 
 	if (cmdstatp->have_sense &&
 	    scode == RECOVERED_ERROR
@@ -968,6 +979,7 @@ static int test_ready(struct scsi_tape *STp, int do_wait)
 {
 	int attentions, waits, max_wait, scode;
 	int retval = CHKRES_READY, new_session = 0;
+	unsigned int ctr;
 	unsigned char cmd[MAX_COMMAND_SIZE];
 	struct st_request *SRpnt = NULL;
 	struct st_cmdstatus *cmdstatp = &STp->buffer->cmdstat;
@@ -990,7 +1002,10 @@ static int test_ready(struct scsi_tape *STp, int do_wait)
 			scode = cmdstatp->sense_hdr.sense_key;
 
 			if (scode == UNIT_ATTENTION) { /* New media? */
-				new_session = 1;
+				if (cmdstatp->sense_hdr.asc == 0x28) { /* New media */
+					new_session = 1;
+					DEBC_printk(STp, "New tape session.");
+				}
 				if (attentions < MAX_ATTENTIONS) {
 					attentions++;
 					continue;
@@ -1019,6 +1034,13 @@ static int test_ready(struct scsi_tape *STp, int do_wait)
 					break;
 				}
 			}
+		}
+
+		ctr = scsi_get_ua_new_media_ctr(STp->device);
+		if (ctr != STp->new_media_ctr) {
+			STp->new_media_ctr = ctr;
+			new_session = 1;
+			DEBC_printk(STp, "New tape session.");
 		}
 
 		retval = (STp->buffer)->syscall_result;
@@ -3637,8 +3659,6 @@ static long st_ioctl(struct file *file, unsigned int cmd_in, unsigned long arg)
 				goto out;
 			}
 			reset_state(STp); /* Clears pos_unknown */
-			/* remove this when the midlevel properly clears was_reset */
-			STp->device->was_reset = 0;
 
 			/* Fix the device settings after reset, ignore errors */
 			if (mtc.mt_op == MTREW || mtc.mt_op == MTSEEK ||
@@ -4400,6 +4420,9 @@ static int st_probe(struct device *dev)
 		goto out_idr_remove;
 	}
 
+	tpnt->new_media_ctr = scsi_get_ua_new_media_ctr(SDp);
+	tpnt->por_ctr = scsi_get_ua_por_ctr(SDp);
+
 	dev_set_drvdata(dev, tpnt);
 
 
@@ -4681,6 +4704,24 @@ options_show(struct device *dev, struct device_attribute *attr, char *buf)
 }
 static DEVICE_ATTR_RO(options);
 
+/**
+ * position_lost_in_reset_show - Value 1 indicates that reads, writes, etc.
+ * are blocked because a device reset has occurred and no operation positioning
+ * the tape has been issued.
+ * @dev: struct device
+ * @attr: attribute structure
+ * @buf: buffer to return formatted data in
+ */
+static ssize_t position_lost_in_reset_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct st_modedef *STm = dev_get_drvdata(dev);
+	struct scsi_tape *STp = STm->tape;
+
+	return sprintf(buf, "%d", STp->pos_unknown);
+}
+static DEVICE_ATTR_RO(position_lost_in_reset);
+
 /* Support for tape stats */
 
 /**
@@ -4865,6 +4906,7 @@ static struct attribute *st_dev_attrs[] = {
 	&dev_attr_default_density.attr,
 	&dev_attr_default_compression.attr,
 	&dev_attr_options.attr,
+	&dev_attr_position_lost_in_reset.attr,
 	NULL,
 };
 

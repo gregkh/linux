@@ -11,8 +11,10 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 
+#include <net/netdev_lock.h>
 #include <net/netdev_rx_queue.h>
 #include <net/page_pool/helpers.h>
+#include <net/page_pool/memory_provider.h>
 #include <net/xdp.h>
 
 #include <linux/dma-direction.h>
@@ -202,6 +204,7 @@ static int page_pool_init(struct page_pool *pool,
 	memcpy(&pool->slow, &params->slow, sizeof(pool->slow));
 
 	pool->cpuid = cpuid;
+	pool->dma_sync_for_cpu = true;
 
 	/* Validate only known flags were used */
 	if (pool->slow.flags & ~PP_FLAG_ALL)
@@ -272,18 +275,25 @@ static int page_pool_init(struct page_pool *pool,
 	xa_init_flags(&pool->dma_mapped, XA_FLAGS_ALLOC1);
 
 	if (pool->slow.flags & PP_FLAG_ALLOW_UNREADABLE_NETMEM) {
-		/* We rely on rtnl_lock()ing to make sure netdev_rx_queue
-		 * configuration doesn't change while we're initializing
-		 * the page_pool.
-		 */
-		ASSERT_RTNL();
+		netdev_assert_locked(pool->slow.netdev);
 		rxq = __netif_get_rx_queue(pool->slow.netdev,
 					   pool->slow.queue_idx);
 		pool->mp_priv = rxq->mp_params.mp_priv;
+		pool->mp_ops = rxq->mp_params.mp_ops;
 	}
 
-	if (pool->mp_priv) {
-		err = mp_dmabuf_devmem_init(pool);
+	if (pool->mp_ops) {
+		if (!pool->dma_map || !pool->dma_sync) {
+			err = -EOPNOTSUPP;
+			goto free_ptr_ring;
+		}
+
+		if (WARN_ON(!is_kernel_rodata((unsigned long)pool->mp_ops))) {
+			err = -EFAULT;
+			goto free_ptr_ring;
+		}
+
+		err = pool->mp_ops->init(pool);
 		if (err) {
 			pr_warn("%s() mem-provider init failed %d\n", __func__,
 				err);
@@ -359,7 +369,7 @@ struct page_pool *page_pool_create(const struct page_pool_params *params)
 }
 EXPORT_SYMBOL(page_pool_create);
 
-static void page_pool_return_page(struct page_pool *pool, netmem_ref netmem);
+static void page_pool_return_netmem(struct page_pool *pool, netmem_ref netmem);
 
 static noinline netmem_ref page_pool_refill_alloc_cache(struct page_pool *pool)
 {
@@ -397,7 +407,7 @@ static noinline netmem_ref page_pool_refill_alloc_cache(struct page_pool *pool)
 			 * (2) break out to fallthrough to alloc_pages_node.
 			 * This limit stress on page buddy alloactor.
 			 */
-			page_pool_return_page(pool, netmem);
+			page_pool_return_netmem(pool, netmem);
 			alloc_stat_inc(pool, waive);
 			netmem = 0;
 			break;
@@ -573,8 +583,8 @@ static struct page *__page_pool_alloc_page_order(struct page_pool *pool,
 }
 
 /* slow path */
-static noinline netmem_ref __page_pool_alloc_pages_slow(struct page_pool *pool,
-							gfp_t gfp)
+static noinline netmem_ref __page_pool_alloc_netmems_slow(struct page_pool *pool,
+							  gfp_t gfp)
 {
 	const int bulk = PP_ALLOC_CACHE_REFILL;
 	unsigned int pp_order = pool->p.order;
@@ -596,12 +606,11 @@ static noinline netmem_ref __page_pool_alloc_pages_slow(struct page_pool *pool,
 	if (unlikely(pool->alloc.count > 0))
 		return pool->alloc.cache[--pool->alloc.count];
 
-	/* Mark empty alloc.cache slots "empty" for alloc_pages_bulk_array */
+	/* Mark empty alloc.cache slots "empty" for alloc_pages_bulk */
 	memset(&pool->alloc.cache, 0, sizeof(void *) * bulk);
 
-	nr_pages = alloc_pages_bulk_array_node(gfp,
-					       pool->p.nid, bulk,
-					       (struct page **)pool->alloc.cache);
+	nr_pages = alloc_pages_bulk_node(gfp, pool->p.nid, bulk,
+					 (struct page **)pool->alloc.cache);
 	if (unlikely(!nr_pages))
 		return 0;
 
@@ -638,7 +647,7 @@ static noinline netmem_ref __page_pool_alloc_pages_slow(struct page_pool *pool,
 /* For using page_pool replace: alloc_pages() API calls, but provide
  * synchronization guarantee for allocation side.
  */
-netmem_ref page_pool_alloc_netmem(struct page_pool *pool, gfp_t gfp)
+netmem_ref page_pool_alloc_netmems(struct page_pool *pool, gfp_t gfp)
 {
 	netmem_ref netmem;
 
@@ -648,20 +657,20 @@ netmem_ref page_pool_alloc_netmem(struct page_pool *pool, gfp_t gfp)
 		return netmem;
 
 	/* Slow-path: cache empty, do real allocation */
-	if (static_branch_unlikely(&page_pool_mem_providers) && pool->mp_priv)
-		netmem = mp_dmabuf_devmem_alloc_netmems(pool, gfp);
+	if (static_branch_unlikely(&page_pool_mem_providers) && pool->mp_ops)
+		netmem = pool->mp_ops->alloc_netmems(pool, gfp);
 	else
-		netmem = __page_pool_alloc_pages_slow(pool, gfp);
+		netmem = __page_pool_alloc_netmems_slow(pool, gfp);
 	return netmem;
 }
-EXPORT_SYMBOL(page_pool_alloc_netmem);
+EXPORT_SYMBOL(page_pool_alloc_netmems);
+ALLOW_ERROR_INJECTION(page_pool_alloc_netmems, NULL);
 
 struct page *page_pool_alloc_pages(struct page_pool *pool, gfp_t gfp)
 {
-	return netmem_to_page(page_pool_alloc_netmem(pool, gfp));
+	return netmem_to_page(page_pool_alloc_netmems(pool, gfp));
 }
 EXPORT_SYMBOL(page_pool_alloc_pages);
-ALLOW_ERROR_INJECTION(page_pool_alloc_pages, NULL);
 
 /* Calculate distance between two u32 values, valid if distance is below 2^(31)
  *  https://en.wikipedia.org/wiki/Serial_number_arithmetic#General_Solution
@@ -709,8 +718,8 @@ void page_pool_clear_pp_info(netmem_ref netmem)
 	netmem_set_pp(netmem, NULL);
 }
 
-static __always_inline void __page_pool_release_page_dma(struct page_pool *pool,
-							 netmem_ref netmem)
+static __always_inline void __page_pool_release_netmem_dma(struct page_pool *pool,
+							   netmem_ref netmem)
 {
 	dma_addr_t dma;
 
@@ -737,16 +746,16 @@ static __always_inline void __page_pool_release_page_dma(struct page_pool *pool,
  * a regular page (that will eventually be returned to the normal
  * page-allocator via put_page).
  */
-void page_pool_return_page(struct page_pool *pool, netmem_ref netmem)
+static void page_pool_return_netmem(struct page_pool *pool, netmem_ref netmem)
 {
 	int count;
 	bool put;
 
 	put = true;
-	if (static_branch_unlikely(&page_pool_mem_providers) && pool->mp_priv)
-		put = mp_dmabuf_devmem_release_page(pool, netmem);
+	if (static_branch_unlikely(&page_pool_mem_providers) && pool->mp_ops)
+		put = pool->mp_ops->release_netmem(pool, netmem);
 	else
-		__page_pool_release_page_dma(pool, netmem);
+		__page_pool_release_netmem_dma(pool, netmem);
 
 	/* This may be the last page returned, releasing the pool, so
 	 * it is not safe to reference pool afterwards.
@@ -851,7 +860,7 @@ __page_pool_put_page(struct page_pool *pool, netmem_ref netmem,
 	 * will be invoking put_page.
 	 */
 	recycle_stat_inc(pool, released_refcnt);
-	page_pool_return_page(pool, netmem);
+	page_pool_return_netmem(pool, netmem);
 
 	return 0;
 }
@@ -889,12 +898,12 @@ void page_pool_put_unrefed_netmem(struct page_pool *pool, netmem_ref netmem,
 	if (!allow_direct)
 		allow_direct = page_pool_napi_local(pool);
 
-	netmem =
-		__page_pool_put_page(pool, netmem, dma_sync_size, allow_direct);
+	netmem = __page_pool_put_page(pool, netmem, dma_sync_size,
+				      allow_direct);
 	if (netmem && !page_pool_recycle_in_ring(pool, netmem)) {
 		/* Cache full, fallback to free pages */
 		recycle_stat_inc(pool, ring_full);
-		page_pool_return_page(pool, netmem);
+		page_pool_return_netmem(pool, netmem);
 	}
 }
 EXPORT_SYMBOL(page_pool_put_unrefed_netmem);
@@ -907,69 +916,104 @@ void page_pool_put_unrefed_page(struct page_pool *pool, struct page *page,
 }
 EXPORT_SYMBOL(page_pool_put_unrefed_page);
 
-/**
- * page_pool_put_page_bulk() - release references on multiple pages
- * @pool:	pool from which pages were allocated
- * @data:	array holding page pointers
- * @count:	number of pages in @data
- *
- * Tries to refill a number of pages into the ptr_ring cache holding ptr_ring
- * producer lock. If the ptr_ring is full, page_pool_put_page_bulk()
- * will release leftover pages to the page allocator.
- * page_pool_put_page_bulk() is suitable to be run inside the driver NAPI tx
- * completion loop for the XDP_REDIRECT use case.
- *
- * Please note the caller must not use data area after running
- * page_pool_put_page_bulk(), as this function overwrites it.
- */
-void page_pool_put_page_bulk(struct page_pool *pool, void **data,
-			     int count)
+static void page_pool_recycle_ring_bulk(struct page_pool *pool,
+					netmem_ref *bulk,
+					u32 bulk_len)
 {
-	int i, bulk_len = 0;
-	bool allow_direct;
 	bool in_softirq;
+	u32 i;
 
-	allow_direct = page_pool_napi_local(pool);
-
-	for (i = 0; i < count; i++) {
-		netmem_ref netmem = page_to_netmem(virt_to_head_page(data[i]));
-
-		/* It is not the last user for the page frag case */
-		if (!page_pool_is_last_ref(netmem))
-			continue;
-
-		netmem = __page_pool_put_page(pool, netmem, -1, allow_direct);
-		/* Approved for bulk recycling in ptr_ring cache */
-		if (netmem)
-			data[bulk_len++] = (__force void *)netmem;
-	}
-
-	if (!bulk_len)
-		return;
-
-	/* Bulk producer into ptr_ring page_pool cache */
+	/* Bulk produce into ptr_ring page_pool cache */
 	in_softirq = page_pool_producer_lock(pool);
+
 	for (i = 0; i < bulk_len; i++) {
-		if (__ptr_ring_produce(&pool->ring, data[i])) {
+		if (__ptr_ring_produce(&pool->ring, (__force void *)bulk[i])) {
 			/* ring full */
 			recycle_stat_inc(pool, ring_full);
 			break;
 		}
 	}
-	recycle_stat_add(pool, ring, i);
-	page_pool_producer_unlock(pool, in_softirq);
 
-	/* Hopefully all pages was return into ptr_ring */
+	page_pool_producer_unlock(pool, in_softirq);
+	recycle_stat_add(pool, ring, i);
+
+	/* Hopefully all pages were returned into ptr_ring */
 	if (likely(i == bulk_len))
 		return;
 
-	/* ptr_ring cache full, free remaining pages outside producer lock
-	 * since put_page() with refcnt == 1 can be an expensive operation
+	/*
+	 * ptr_ring cache is full, free remaining pages outside producer lock
+	 * since put_page() with refcnt == 1 can be an expensive operation.
 	 */
 	for (; i < bulk_len; i++)
-		page_pool_return_page(pool, (__force netmem_ref)data[i]);
+		page_pool_return_netmem(pool, bulk[i]);
 }
-EXPORT_SYMBOL(page_pool_put_page_bulk);
+
+/**
+ * page_pool_put_netmem_bulk() - release references on multiple netmems
+ * @data:	array holding netmem references
+ * @count:	number of entries in @data
+ *
+ * Tries to refill a number of netmems into the ptr_ring cache holding ptr_ring
+ * producer lock. If the ptr_ring is full, page_pool_put_netmem_bulk()
+ * will release leftover netmems to the memory provider.
+ * page_pool_put_netmem_bulk() is suitable to be run inside the driver NAPI tx
+ * completion loop for the XDP_REDIRECT use case.
+ *
+ * Please note the caller must not use data area after running
+ * page_pool_put_netmem_bulk(), as this function overwrites it.
+ */
+void page_pool_put_netmem_bulk(netmem_ref *data, u32 count)
+{
+	u32 bulk_len = 0;
+
+	for (u32 i = 0; i < count; i++) {
+		netmem_ref netmem = netmem_compound_head(data[i]);
+
+		if (page_pool_unref_and_test(netmem))
+			data[bulk_len++] = netmem;
+	}
+
+	count = bulk_len;
+	while (count) {
+		netmem_ref bulk[XDP_BULK_QUEUE_SIZE];
+		struct page_pool *pool = NULL;
+		bool allow_direct;
+		u32 foreign = 0;
+
+		bulk_len = 0;
+
+		for (u32 i = 0; i < count; i++) {
+			struct page_pool *netmem_pp;
+			netmem_ref netmem = data[i];
+
+			netmem_pp = netmem_get_pp(netmem);
+			if (unlikely(!pool)) {
+				pool = netmem_pp;
+				allow_direct = page_pool_napi_local(pool);
+			} else if (netmem_pp != pool) {
+				/*
+				 * If the netmem belongs to a different
+				 * page_pool, save it for another round.
+				 */
+				data[foreign++] = netmem;
+				continue;
+			}
+
+			netmem = __page_pool_put_page(pool, netmem, -1,
+						      allow_direct);
+			/* Approved for bulk recycling in ptr_ring cache */
+			if (netmem)
+				bulk[bulk_len++] = netmem;
+		}
+
+		if (bulk_len)
+			page_pool_recycle_ring_bulk(pool, bulk, bulk_len);
+
+		count = foreign;
+	}
+}
+EXPORT_SYMBOL(page_pool_put_netmem_bulk);
 
 static netmem_ref page_pool_drain_frag(struct page_pool *pool,
 				       netmem_ref netmem)
@@ -985,7 +1029,7 @@ static netmem_ref page_pool_drain_frag(struct page_pool *pool,
 		return netmem;
 	}
 
-	page_pool_return_page(pool, netmem);
+	page_pool_return_netmem(pool, netmem);
 	return 0;
 }
 
@@ -999,7 +1043,7 @@ static void page_pool_free_frag(struct page_pool *pool)
 	if (!netmem || page_pool_unref_netmem(netmem, drain_count))
 		return;
 
-	page_pool_return_page(pool, netmem);
+	page_pool_return_netmem(pool, netmem);
 }
 
 netmem_ref page_pool_alloc_frag_netmem(struct page_pool *pool,
@@ -1018,13 +1062,14 @@ netmem_ref page_pool_alloc_frag_netmem(struct page_pool *pool,
 	if (netmem && *offset + size > max_size) {
 		netmem = page_pool_drain_frag(pool, netmem);
 		if (netmem) {
+			recycle_stat_inc(pool, cached);
 			alloc_stat_inc(pool, fast);
 			goto frag_reset;
 		}
 	}
 
 	if (!netmem) {
-		netmem = page_pool_alloc_netmem(pool, gfp);
+		netmem = page_pool_alloc_netmems(pool, gfp);
 		if (unlikely(!netmem)) {
 			pool->frag_page = 0;
 			return 0;
@@ -1042,7 +1087,6 @@ frag_reset:
 
 	pool->frag_users++;
 	pool->frag_offset = *offset + size;
-	alloc_stat_inc(pool, fast);
 	return netmem;
 }
 EXPORT_SYMBOL(page_pool_alloc_frag_netmem);
@@ -1066,7 +1110,7 @@ static void page_pool_empty_ring(struct page_pool *pool)
 			pr_crit("%s() page_pool refcnt %d violation\n",
 				__func__, netmem_ref_count(netmem));
 
-		page_pool_return_page(pool, netmem);
+		page_pool_return_netmem(pool, netmem);
 	}
 }
 
@@ -1078,8 +1122,8 @@ static void __page_pool_destroy(struct page_pool *pool)
 	page_pool_unlist(pool);
 	page_pool_uninit(pool);
 
-	if (pool->mp_priv) {
-		mp_dmabuf_devmem_destroy(pool);
+	if (pool->mp_ops) {
+		pool->mp_ops->destroy(pool);
 		static_branch_dec(&page_pool_mem_providers);
 	}
 
@@ -1099,7 +1143,7 @@ static void page_pool_empty_alloc_cache_once(struct page_pool *pool)
 	 */
 	while (pool->alloc.count) {
 		netmem = pool->alloc.cache[--pool->alloc.count];
-		page_pool_return_page(pool, netmem);
+		page_pool_return_netmem(pool, netmem);
 	}
 }
 
@@ -1126,7 +1170,7 @@ static void page_pool_scrub(struct page_pool *pool)
 		}
 
 		xa_for_each(&pool->dma_mapped, id, ptr)
-			__page_pool_release_page_dma(pool, page_to_netmem(ptr));
+			__page_pool_release_netmem_dma(pool, page_to_netmem((struct page *)ptr));
 	}
 
 	/* No more consumers should exist, but producers could still
@@ -1191,6 +1235,35 @@ void page_pool_use_xdp_mem(struct page_pool *pool, void (*disconnect)(void *),
 	pool->xdp_mem_id = mem->id;
 }
 
+/**
+ * page_pool_enable_direct_recycling() - mark page pool as owned by NAPI
+ * @pool: page pool to modify
+ * @napi: NAPI instance to associate the page pool with
+ *
+ * Associate a page pool with a NAPI instance for lockless page recycling.
+ * This is useful when a new page pool has to be added to a NAPI instance
+ * without disabling that NAPI instance, to mark the point at which control
+ * path "hands over" the page pool to the NAPI instance. In most cases driver
+ * can simply set the @napi field in struct page_pool_params, and does not
+ * have to call this helper.
+ *
+ * The function is idempotent, but does not implement any refcounting.
+ * Single page_pool_disable_direct_recycling() will disable recycling,
+ * no matter how many times enable was called.
+ */
+void page_pool_enable_direct_recycling(struct page_pool *pool,
+				       struct napi_struct *napi)
+{
+	if (READ_ONCE(pool->p.napi) == napi)
+		return;
+	WARN_ON(!napi || pool->p.napi);
+
+	mutex_lock(&page_pools_lock);
+	WRITE_ONCE(pool->p.napi, napi);
+	mutex_unlock(&page_pools_lock);
+}
+EXPORT_SYMBOL(page_pool_enable_direct_recycling);
+
 void page_pool_disable_direct_recycling(struct page_pool *pool)
 {
 	/* Disable direct recycling based on pool->cpuid.
@@ -1203,7 +1276,9 @@ void page_pool_disable_direct_recycling(struct page_pool *pool)
 
 	napi_assert_will_not_race(pool->p.napi);
 
+	mutex_lock(&page_pools_lock);
 	WRITE_ONCE(pool->p.napi, NULL);
+	mutex_unlock(&page_pools_lock);
 }
 EXPORT_SYMBOL(page_pool_disable_direct_recycling);
 
@@ -1241,7 +1316,35 @@ void page_pool_update_nid(struct page_pool *pool, int new_nid)
 	/* Flush pool alloc cache, as refill will check NUMA node */
 	while (pool->alloc.count) {
 		netmem = pool->alloc.cache[--pool->alloc.count];
-		page_pool_return_page(pool, netmem);
+		page_pool_return_netmem(pool, netmem);
 	}
 }
 EXPORT_SYMBOL(page_pool_update_nid);
+
+bool net_mp_niov_set_dma_addr(struct net_iov *niov, dma_addr_t addr)
+{
+	return page_pool_set_dma_addr_netmem(net_iov_to_netmem(niov), addr);
+}
+
+/* Associate a niov with a page pool. Should follow with a matching
+ * net_mp_niov_clear_page_pool()
+ */
+void net_mp_niov_set_page_pool(struct page_pool *pool, struct net_iov *niov)
+{
+	netmem_ref netmem = net_iov_to_netmem(niov);
+
+	page_pool_set_pp_info(pool, netmem);
+
+	pool->pages_state_hold_cnt++;
+	trace_page_pool_state_hold(pool, netmem, pool->pages_state_hold_cnt);
+}
+
+/* Disassociate a niov from a page pool. Should only be used in the
+ * ->release_netmem() path.
+ */
+void net_mp_niov_clear_page_pool(struct net_iov *niov)
+{
+	netmem_ref netmem = net_iov_to_netmem(niov);
+
+	page_pool_clear_pp_info(netmem);
+}

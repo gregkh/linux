@@ -13,6 +13,20 @@
 
 static __read_mostly DECLARE_BITMAP(exclusive_cmds, CXL_MEM_COMMAND_ID_MAX);
 
+/**
+ * devm_cxl_add_nvdimm_bridge() - add the root of a LIBNVDIMM topology
+ * @host: platform firmware root device
+ * @port: CXL port at the root of a CXL topology
+ *
+ * Return: bridge device that can host cxl_nvdimm objects
+ */
+struct cxl_nvdimm_bridge *devm_cxl_add_nvdimm_bridge(struct device *host,
+						     struct cxl_port *port)
+{
+	return __devm_cxl_add_nvdimm_bridge(host, port);
+}
+EXPORT_SYMBOL_NS_GPL(devm_cxl_add_nvdimm_bridge, "CXL");
+
 static void clear_exclusive(void *mds)
 {
 	clear_exclusive_cxl_commands(mds, exclusive_cmds);
@@ -42,21 +56,82 @@ static ssize_t id_show(struct device *dev, struct device_attribute *attr, char *
 }
 static DEVICE_ATTR_RO(id);
 
+static ssize_t dirty_shutdown_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct nvdimm *nvdimm = to_nvdimm(dev);
+	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
+
+	return sysfs_emit(buf, "%llu\n", cxl_nvd->dirty_shutdowns);
+}
+static DEVICE_ATTR_RO(dirty_shutdown);
+
 static struct attribute *cxl_dimm_attributes[] = {
 	&dev_attr_id.attr,
 	&dev_attr_provider.attr,
+	&dev_attr_dirty_shutdown.attr,
 	NULL
 };
+
+#define CXL_INVALID_DIRTY_SHUTDOWN_COUNT ULLONG_MAX
+static umode_t cxl_dimm_visible(struct kobject *kobj,
+				struct attribute *a, int n)
+{
+	if (a == &dev_attr_dirty_shutdown.attr) {
+		struct device *dev = kobj_to_dev(kobj);
+		struct nvdimm *nvdimm = to_nvdimm(dev);
+		struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
+
+		if (cxl_nvd->dirty_shutdowns ==
+		    CXL_INVALID_DIRTY_SHUTDOWN_COUNT)
+			return 0;
+	}
+
+	return a->mode;
+}
 
 static const struct attribute_group cxl_dimm_attribute_group = {
 	.name = "cxl",
 	.attrs = cxl_dimm_attributes,
+	.is_visible = cxl_dimm_visible
 };
 
 static const struct attribute_group *cxl_dimm_attribute_groups[] = {
 	&cxl_dimm_attribute_group,
 	NULL
 };
+
+static void cxl_nvdimm_arm_dirty_shutdown_tracking(struct cxl_nvdimm *cxl_nvd)
+{
+	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
+	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlds);
+	struct device *dev = &cxl_nvd->dev;
+	u32 count;
+
+	/*
+	 * Dirty tracking is enabled and exposed to the user, only when:
+	 *   - dirty shutdown on the device can be set, and,
+	 *   - the device has a Device GPF DVSEC (albeit unused), and,
+	 *   - the Get Health Info cmd can retrieve the device's dirty count.
+	 */
+	cxl_nvd->dirty_shutdowns = CXL_INVALID_DIRTY_SHUTDOWN_COUNT;
+
+	if (cxl_arm_dirty_shutdown(mds)) {
+		dev_warn(dev, "GPF: could not set dirty shutdown state\n");
+		return;
+	}
+
+	if (!cxl_gpf_get_dvsec(cxlds->dev))
+		return;
+
+	if (cxl_get_dirty_count(mds, &count)) {
+		dev_warn(dev, "GPF: could not retrieve dirty count\n");
+		return;
+	}
+
+	cxl_nvd->dirty_shutdowns = count;
+}
 
 static int cxl_nvdimm_probe(struct device *dev)
 {
@@ -68,6 +143,9 @@ static int cxl_nvdimm_probe(struct device *dev)
 	struct nvdimm *nvdimm;
 	int rc;
 
+	if (test_bit(CXL_NVD_F_INVALIDATED, &cxl_nvd->flags))
+		return -EBUSY;
+
 	set_exclusive_cxl_commands(mds, exclusive_cmds);
 	rc = devm_add_action_or_reset(dev, clear_exclusive, mds);
 	if (rc)
@@ -78,6 +156,14 @@ static int cxl_nvdimm_probe(struct device *dev)
 	set_bit(ND_CMD_GET_CONFIG_SIZE, &cmd_mask);
 	set_bit(ND_CMD_GET_CONFIG_DATA, &cmd_mask);
 	set_bit(ND_CMD_SET_CONFIG_DATA, &cmd_mask);
+
+	/*
+	 * Set dirty shutdown now, with the expectation that the device
+	 * clear it upon a successful GPF flow. The exception to this
+	 * is upon Viral detection, per CXL 3.2 section 12.4.2.
+	 */
+	cxl_nvdimm_arm_dirty_shutdown_tracking(cxl_nvd);
+
 	nvdimm = __nvdimm_create(cxl_nvb->nvdimm_bus, cxl_nvd,
 				 cxl_dimm_attribute_groups, flags,
 				 cmd_mask, 0, NULL, cxl_nvd->dev_id,
@@ -240,8 +326,10 @@ static int detach_nvdimm(struct device *dev, void *data)
 	scoped_guard(device, dev) {
 		if (dev->driver) {
 			cxl_nvd = to_cxl_nvdimm(dev);
-			if (cxl_nvd->cxlmd && cxl_nvd->cxlmd->cxl_nvb == data)
+			if (cxl_nvd->cxlmd && cxl_nvd->cxlmd->cxl_nvb == data) {
 				release = true;
+				set_bit(CXL_NVD_F_INVALIDATED, &cxl_nvd->flags);
+			}
 		}
 	}
 	if (release)
@@ -284,6 +372,7 @@ static struct cxl_driver cxl_nvdimm_bridge_driver = {
 	.probe = cxl_nvdimm_bridge_probe,
 	.id = CXL_DEVICE_NVDIMM_BRIDGE,
 	.drv = {
+		.probe_type = PROBE_FORCE_SYNCHRONOUS,
 		.suppress_bind_attrs = true,
 	},
 };
@@ -375,6 +464,16 @@ static int cxl_pmem_region_probe(struct device *dev)
 			goto out_nvd;
 		}
 
+		if (cxlds->serial == 0) {
+			/* include missing alongside invalid in this error message. */
+			dev_err(dev, "%s: invalid or missing serial number\n",
+				dev_name(&cxlmd->dev));
+			rc = -ENXIO;
+			goto out_nvd;
+		}
+		info[i].serial = cxlds->serial;
+		info[i].offset = m->start;
+
 		m->cxl_nvd = cxl_nvd;
 		mappings[i] = (struct nd_mapping_desc) {
 			.nvdimm = nvdimm,
@@ -382,8 +481,6 @@ static int cxl_pmem_region_probe(struct device *dev)
 			.size = m->size,
 			.position = i,
 		};
-		info[i].offset = m->start;
-		info[i].serial = cxlds->serial;
 	}
 	ndr_desc.num_mappings = cxlr_pmem->nr_mappings;
 	ndr_desc.mapping = mappings;
@@ -459,7 +556,7 @@ MODULE_DESCRIPTION("CXL PMEM: Persistent Memory Support");
 MODULE_LICENSE("GPL v2");
 module_init(cxl_pmem_init);
 module_exit(cxl_pmem_exit);
-MODULE_IMPORT_NS(CXL);
+MODULE_IMPORT_NS("CXL");
 MODULE_ALIAS_CXL(CXL_DEVICE_NVDIMM_BRIDGE);
 MODULE_ALIAS_CXL(CXL_DEVICE_NVDIMM);
 MODULE_ALIAS_CXL(CXL_DEVICE_PMEM_REGION);

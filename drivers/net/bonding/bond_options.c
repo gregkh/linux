@@ -79,6 +79,8 @@ static int bond_option_tlb_dynamic_lb_set(struct bonding *bond,
 				  const struct bond_opt_value *newval);
 static int bond_option_ad_actor_sys_prio_set(struct bonding *bond,
 					     const struct bond_opt_value *newval);
+static int bond_option_actor_port_prio_set(struct bonding *bond,
+					   const struct bond_opt_value *newval);
 static int bond_option_ad_actor_system_set(struct bonding *bond,
 					   const struct bond_opt_value *newval);
 static int bond_option_ad_user_port_key_set(struct bonding *bond,
@@ -86,6 +88,8 @@ static int bond_option_ad_user_port_key_set(struct bonding *bond,
 static int bond_option_missed_max_set(struct bonding *bond,
 				      const struct bond_opt_value *newval);
 static int bond_option_coupled_control_set(struct bonding *bond,
+					   const struct bond_opt_value *newval);
+static int bond_option_broadcast_neigh_set(struct bonding *bond,
 					   const struct bond_opt_value *newval);
 
 static const struct bond_opt_value bond_mode_tbl[] = {
@@ -158,10 +162,11 @@ static const struct bond_opt_value bond_lacp_rate_tbl[] = {
 };
 
 static const struct bond_opt_value bond_ad_select_tbl[] = {
-	{ "stable",    BOND_AD_STABLE,    BOND_VALFLAG_DEFAULT},
-	{ "bandwidth", BOND_AD_BANDWIDTH, 0},
-	{ "count",     BOND_AD_COUNT,     0},
-	{ NULL,        -1,                0},
+	{ "stable",          BOND_AD_STABLE,    BOND_VALFLAG_DEFAULT},
+	{ "bandwidth",       BOND_AD_BANDWIDTH, 0},
+	{ "count",           BOND_AD_COUNT,     0},
+	{ "actor_port_prio", BOND_AD_PRIO,      0},
+	{ NULL,              -1,                0},
 };
 
 static const struct bond_opt_value bond_num_peer_notif_tbl[] = {
@@ -185,7 +190,6 @@ static const struct bond_opt_value bond_primary_reselect_tbl[] = {
 };
 
 static const struct bond_opt_value bond_use_carrier_tbl[] = {
-	{ "off", 0,  0},
 	{ "on",  1,  BOND_VALFLAG_DEFAULT},
 	{ NULL,  -1, 0}
 };
@@ -238,6 +242,12 @@ static const struct bond_opt_value bond_coupled_control_tbl[] = {
 	{ "on",  1,  BOND_VALFLAG_DEFAULT},
 	{ "off", 0,  0},
 	{ NULL,  -1, 0},
+};
+
+static const struct bond_opt_value bond_broadcast_neigh_tbl[] = {
+	{ "off", 0, BOND_VALFLAG_DEFAULT},
+	{ "on",	 1, 0},
+	{ NULL,  -1, 0}
 };
 
 static const struct bond_option bond_opts[BOND_OPT_LAST] = {
@@ -362,7 +372,7 @@ static const struct bond_option bond_opts[BOND_OPT_LAST] = {
 	[BOND_OPT_AD_SELECT] = {
 		.id = BOND_OPT_AD_SELECT,
 		.name = "ad_select",
-		.desc = "803.ad aggregation selection logic",
+		.desc = "802.3ad aggregation selection logic",
 		.flags = BOND_OPTFLAG_IFDOWN,
 		.values = bond_ad_select_tbl,
 		.set = bond_option_ad_select_set
@@ -411,7 +421,7 @@ static const struct bond_option bond_opts[BOND_OPT_LAST] = {
 	[BOND_OPT_USE_CARRIER] = {
 		.id = BOND_OPT_USE_CARRIER,
 		.name = "use_carrier",
-		.desc = "Use netif_carrier_ok (vs MII ioctls) in miimon",
+		.desc = "option obsolete, use_carrier cannot be disabled",
 		.values = bond_use_carrier_tbl,
 		.set = bond_option_use_carrier_set
 	},
@@ -476,6 +486,13 @@ static const struct bond_option bond_opts[BOND_OPT_LAST] = {
 		.values = bond_ad_actor_sys_prio_tbl,
 		.set = bond_option_ad_actor_sys_prio_set,
 	},
+	[BOND_OPT_ACTOR_PORT_PRIO] = {
+		.id = BOND_OPT_ACTOR_PORT_PRIO,
+		.name = "actor_port_prio",
+		.unsuppmodes = BOND_MODE_ALL_EX(BIT(BOND_MODE_8023AD)),
+		.flags = BOND_OPTFLAG_RAWVAL,
+		.set = bond_option_actor_port_prio_set,
+	},
 	[BOND_OPT_AD_ACTOR_SYSTEM] = {
 		.id = BOND_OPT_AD_ACTOR_SYSTEM,
 		.name = "ad_actor_system",
@@ -513,6 +530,14 @@ static const struct bond_option bond_opts[BOND_OPT_LAST] = {
 		.flags = BOND_OPTFLAG_IFDOWN,
 		.values = bond_coupled_control_tbl,
 		.set = bond_option_coupled_control_set,
+	},
+	[BOND_OPT_BROADCAST_NEIGH] = {
+		.id = BOND_OPT_BROADCAST_NEIGH,
+		.name = "broadcast_neighbor",
+		.desc = "Broadcast neighbor packets to all active slaves",
+		.unsuppmodes = BOND_MODE_ALL_EX(BIT(BOND_MODE_8023AD)),
+		.values = bond_broadcast_neigh_tbl,
+		.set = bond_option_broadcast_neigh_set,
 	}
 };
 
@@ -894,6 +919,13 @@ static int bond_option_mode_set(struct bonding *bond,
 	bond->params.arp_validate = BOND_ARP_VALIDATE_NONE;
 	bond->params.mode = newval->value;
 
+	/* When changing mode, the bond device is down, we may reduce
+	 * the bond_bcast_neigh_enabled in bond_close() if broadcast_neighbor
+	 * enabled in 8023ad mode. Therefore, only clear broadcast_neighbor
+	 * to 0.
+	 */
+	bond->params.broadcast_neighbor = 0;
+
 	if (bond->dev->reg_state == NETREG_REGISTERED) {
 		bool update = false;
 
@@ -1068,10 +1100,6 @@ static int bond_option_peer_notif_delay_set(struct bonding *bond,
 static int bond_option_use_carrier_set(struct bonding *bond,
 				       const struct bond_opt_value *newval)
 {
-	netdev_dbg(bond->dev, "Setting use_carrier to %llu\n",
-		   newval->value);
-	bond->params.use_carrier = newval->value;
-
 	return 0;
 }
 
@@ -1546,6 +1574,8 @@ static int bond_option_fail_over_mac_set(struct bonding *bond,
 static int bond_option_xmit_hash_policy_set(struct bonding *bond,
 					    const struct bond_opt_value *newval)
 {
+	if (bond->xdp_prog && !__bond_xdp_check(BOND_MODE(bond), newval->value))
+		return -EOPNOTSUPP;
 	netdev_dbg(bond->dev, "Setting xmit hash policy to %s (%llu)\n",
 		   newval->string, newval->value);
 	bond->params.xmit_policy = newval->value;
@@ -1794,6 +1824,26 @@ static int bond_option_ad_actor_sys_prio_set(struct bonding *bond,
 	return 0;
 }
 
+static int bond_option_actor_port_prio_set(struct bonding *bond,
+					   const struct bond_opt_value *newval)
+{
+	struct slave *slave;
+
+	slave = bond_slave_get_rtnl(newval->slave_dev);
+	if (!slave) {
+		netdev_dbg(bond->dev, "%s called on NULL slave\n", __func__);
+		return -ENODEV;
+	}
+
+	netdev_dbg(newval->slave_dev, "Setting actor_port_prio to %llu\n",
+		   newval->value);
+
+	SLAVE_AD_INFO(slave)->port_priority = newval->value;
+	bond_3ad_update_ad_actor_settings(bond);
+
+	return 0;
+}
+
 static int bond_option_ad_actor_system_set(struct bonding *bond,
 					   const struct bond_opt_value *newval)
 {
@@ -1839,5 +1889,24 @@ static int bond_option_coupled_control_set(struct bonding *bond,
 		    newval->string, newval->value);
 
 	bond->params.coupled_control = newval->value;
+	return 0;
+}
+
+static int bond_option_broadcast_neigh_set(struct bonding *bond,
+					   const struct bond_opt_value *newval)
+{
+	if (bond->params.broadcast_neighbor == newval->value)
+		return 0;
+
+	bond->params.broadcast_neighbor = newval->value;
+	if (bond->dev->flags & IFF_UP) {
+		if (bond->params.broadcast_neighbor)
+			static_branch_inc(&bond_bcast_neigh_enabled);
+		else
+			static_branch_dec(&bond_bcast_neigh_enabled);
+	}
+
+	netdev_dbg(bond->dev, "Setting broadcast_neighbor to %s (%llu)\n",
+		   newval->string, newval->value);
 	return 0;
 }

@@ -23,7 +23,7 @@
 #include "gntdev-common.h"
 #include "gntdev-dmabuf.h"
 
-MODULE_IMPORT_NS(DMA_BUF);
+MODULE_IMPORT_NS("DMA_BUF");
 
 struct gntdev_dmabuf {
 	struct gntdev_dmabuf_priv *priv;
@@ -720,16 +720,15 @@ static void dmabuf_imp_release_all(struct gntdev_dmabuf_priv *priv)
 
 /* DMA buffer IOCTL support. */
 
-long gntdev_ioctl_dmabuf_exp_from_refs(struct gntdev_priv *priv, int use_ptemod,
+long gntdev_ioctl_dmabuf_exp_from_refs(struct gntdev_priv *priv,
 				       struct ioctl_gntdev_dmabuf_exp_from_refs __user *u)
 {
 	struct ioctl_gntdev_dmabuf_exp_from_refs op;
 	u32 *refs;
 	long ret;
 
-	if (use_ptemod) {
-		pr_debug("Cannot provide dma-buf: use_ptemode %d\n",
-			 use_ptemod);
+	if (xen_pv_domain()) {
+		pr_debug("Cannot provide dma-buf in a PV domain\n");
 		return -EINVAL;
 	}
 

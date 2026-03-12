@@ -588,6 +588,10 @@ int prp_register_frame_out(struct hsr_port *port, struct hsr_frame_info *frame)
 	return 0;
 }
 
+#if IS_MODULE(CONFIG_PRP_DUP_DISCARD_KUNIT_TEST)
+EXPORT_SYMBOL(prp_register_frame_out);
+#endif
+
 static struct hsr_port *get_late_port(struct hsr_priv *hsr,
 				      struct hsr_node *node)
 {
@@ -613,7 +617,7 @@ static struct hsr_port *get_late_port(struct hsr_priv *hsr,
  */
 void hsr_prune_nodes(struct timer_list *t)
 {
-	struct hsr_priv *hsr = from_timer(hsr, t, prune_timer);
+	struct hsr_priv *hsr = timer_container_of(hsr, t, prune_timer);
 	struct hsr_node *node;
 	struct hsr_node *tmp;
 	struct hsr_port *port;
@@ -681,7 +685,7 @@ void hsr_prune_nodes(struct timer_list *t)
 
 void hsr_prune_proxy_nodes(struct timer_list *t)
 {
-	struct hsr_priv *hsr = from_timer(hsr, t, prune_proxy_timer);
+	struct hsr_priv *hsr = timer_container_of(hsr, t, prune_proxy_timer);
 	unsigned long timestamp;
 	struct hsr_node *node;
 	struct hsr_node *tmp;

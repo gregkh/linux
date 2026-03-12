@@ -103,22 +103,18 @@ noinstr void *__xen_hypercall_setfunc(void)
 	void (*func)(void);
 
 	/*
-	 * Xen is supported only on CPUs with CPUID, so testing for
-	 * X86_FEATURE_CPUID is a test for early_cpu_init() having been
-	 * run.
-	 *
 	 * Note that __xen_hypercall_setfunc() is noinstr only due to a nasty
 	 * dependency chain: it is being called via the xen_hypercall static
 	 * call when running as a PVH or HVM guest. Hypercalls need to be
 	 * noinstr due to PV guests using hypercalls in noinstr code. So we
+	 * can safely tag the function body as "instrumentation ok", since
 	 * the PV guest requirement is not of interest here (xen_get_vendor()
 	 * calls noinstr functions, and static_call_update_early() might do
 	 * so, too).
 	 */
 	instrumentation_begin();
 
-	if (!boot_cpu_has(X86_FEATURE_CPUID))
-		xen_get_vendor();
+	xen_get_vendor();
 
 	if ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD ||
 	     boot_cpu_data.x86_vendor == X86_VENDOR_HYGON))

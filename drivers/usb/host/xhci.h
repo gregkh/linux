@@ -152,10 +152,6 @@ struct xhci_op_regs {
 #define XHCI_RESET_LONG_USEC		(10 * 1000 * 1000)
 #define XHCI_RESET_SHORT_USEC		(250 * 1000)
 
-/* IMAN - Interrupt Management Register */
-#define IMAN_IE		(1 << 1)
-#define IMAN_IP		(1 << 0)
-
 /* USBSTS - USB status - status bitmasks */
 /* HC not running - set to 1 when run/stop bit is cleared. */
 #define STS_HALT	XHCI_STS_HALT
@@ -184,23 +180,22 @@ struct xhci_op_regs {
  * notification type that matches a bit set in this bit field.
  */
 #define	DEV_NOTE_MASK		(0xffff)
-#define ENABLE_DEV_NOTE(x)	(1 << (x))
 /* Most of the device notification types should only be used for debug.
  * SW does need to pay attention to function wake notifications.
  */
-#define	DEV_NOTE_FWAKE		ENABLE_DEV_NOTE(1)
+#define	DEV_NOTE_FWAKE		(1 << 1)
 
 /* CRCR - Command Ring Control Register - cmd_ring bitmasks */
-/* bit 0 is the command ring cycle state */
+/* bit 0 - Cycle bit indicates the ownership of the command ring */
+#define CMD_RING_CYCLE		(1 << 0)
 /* stop ring operation after completion of the currently executing command */
 #define CMD_RING_PAUSE		(1 << 1)
 /* stop ring immediately - abort the currently executing command */
 #define CMD_RING_ABORT		(1 << 2)
 /* true: command ring is running */
 #define CMD_RING_RUNNING	(1 << 3)
-/* bits 4:5 reserved and should be preserved */
-/* Command Ring pointer - bit mask for the lower 32 bits. */
-#define CMD_RING_RSVD_BITS	(0x3f)
+/* bits 63:6 - Command Ring pointer */
+#define CMD_RING_PTR_MASK	GENMASK_ULL(63, 6)
 
 /* CONFIG - Configure Register - config_reg bitmasks */
 /* bits 0:7 - maximum number of device slots enabled (NumSlotsEn) */
@@ -215,14 +210,13 @@ struct xhci_op_regs {
 #define XHCI_PAGE_SIZE_MASK     0xffff
 
 /**
- * struct xhci_intr_reg - Interrupt Register Set
- * @irq_pending:	IMAN - Interrupt Management Register.  Used to enable
+ * struct xhci_intr_reg - Interrupt Register Set, v1.2 section 5.5.2.
+ * @iman:		IMAN - Interrupt Management Register. Used to enable
  *			interrupts and check for pending interrupts.
- * @irq_control:	IMOD - Interrupt Moderation Register.
- * 			Used to throttle interrupts.
- * @erst_size:		Number of segments in the Event Ring Segment Table (ERST).
- * @erst_base:		ERST base address.
- * @erst_dequeue:	Event ring dequeue pointer.
+ * @imod:		IMOD - Interrupt Moderation Register. Used to throttle interrupts.
+ * @erst_size:		ERSTSZ - Number of segments in the Event Ring Segment Table (ERST).
+ * @erst_base:		ERSTBA - Event ring segment table base address.
+ * @erst_dequeue:	ERDP - Event ring dequeue pointer.
  *
  * Each interrupter (defined by a MSI-X vector) has an event ring and an Event
  * Ring Segment Table (ERST) associated with it.  The event ring is comprised of
@@ -232,48 +226,51 @@ struct xhci_op_regs {
  * updates the dequeue pointer.
  */
 struct xhci_intr_reg {
-	__le32	irq_pending;
-	__le32	irq_control;
+	__le32	iman;
+	__le32	imod;
 	__le32	erst_size;
 	__le32	rsvd;
 	__le64	erst_base;
 	__le64	erst_dequeue;
 };
 
-/* irq_pending bitmasks */
-#define	ER_IRQ_PENDING(p)	((p) & 0x1)
-/* bits 2:31 need to be preserved */
-/* THIS IS BUGGY - FIXME - IP IS WRITE 1 TO CLEAR */
-#define	ER_IRQ_CLEAR(p)		((p) & 0xfffffffe)
-#define	ER_IRQ_ENABLE(p)	((ER_IRQ_CLEAR(p)) | 0x2)
-#define	ER_IRQ_DISABLE(p)	((ER_IRQ_CLEAR(p)) & ~(0x2))
+/* iman bitmasks */
+/* bit 0 - Interrupt Pending (IP), whether there is an interrupt pending. Write-1-to-clear. */
+#define	IMAN_IP			(1 << 0)
+/* bit 1 - Interrupt Enable (IE), whether the interrupter is capable of generating an interrupt */
+#define	IMAN_IE			(1 << 1)
 
-/* irq_control bitmasks */
-/* Minimum interval between interrupts (in 250ns intervals).  The interval
- * between interrupts will be longer if there are no events on the event ring.
- * Default is 4000 (1 ms).
+/* imod bitmasks */
+/*
+ * bits 15:0 - Interrupt Moderation Interval, the minimum interval between interrupts
+ * (in 250ns intervals). The interval between interrupts will be longer if there are no
+ * events on the event ring. Default is 4000 (1 ms).
  */
-#define ER_IRQ_INTERVAL_MASK	(0xffff)
-/* Counter used to count down the time to the next interrupt - HW use only */
-#define ER_IRQ_COUNTER_MASK	(0xffff << 16)
+#define IMODI_MASK		(0xffff)
+/* bits 31:16 - Interrupt Moderation Counter, used to count down the time to the next interrupt */
+#define IMODC_MASK		(0xffff << 16)
 
 /* erst_size bitmasks */
-/* Preserve bits 16:31 of erst_size */
-#define	ERST_SIZE_MASK		(0xffff << 16)
+/* bits 15:0 - Event Ring Segment Table Size, number of ERST entries */
+#define	ERST_SIZE_MASK		(0xffff)
 
 /* erst_base bitmasks */
-#define ERST_BASE_RSVDP		(GENMASK_ULL(5, 0))
+/* bits 63:6 - Event Ring Segment Table Base Address Register */
+#define ERST_BASE_ADDRESS_MASK	GENMASK_ULL(63, 6)
 
 /* erst_dequeue bitmasks */
-/* Dequeue ERST Segment Index (DESI) - Segment number (or alias)
- * where the current dequeue pointer lies.  This is an optional HW hint.
+/*
+ * bits 2:0 - Dequeue ERST Segment Index (DESI), is the segment number (or alias) where the
+ * current dequeue pointer lies. This is an optional HW hint.
  */
 #define ERST_DESI_MASK		(0x7)
-/* Event Handler Busy (EHB) - is the event ring scheduled to be serviced by
+/*
+ * bit 3 - Event Handler Busy (EHB), whether the event ring is scheduled to be serviced by
  * a work queue (or delayed service routine)?
  */
 #define ERST_EHB		(1 << 3)
-#define ERST_PTR_MASK		(GENMASK_ULL(63, 4))
+/* bits 63:4 - Event Ring Dequeue Pointer */
+#define ERST_PTR_MASK		GENMASK_ULL(63, 4)
 
 /**
  * struct xhci_run_regs
@@ -503,7 +500,8 @@ struct xhci_ep_ctx {
 
 /* deq bitmasks */
 #define EP_CTX_CYCLE_MASK		(1 << 0)
-#define SCTX_DEQ_MASK			(~0xfL)
+/* bits 63:4 - TR Dequeue Pointer */
+#define TR_DEQ_PTR_MASK			GENMASK_ULL(63, 4)
 
 
 /**
@@ -532,6 +530,7 @@ struct xhci_command {
 	/* Input context for changing device state */
 	struct xhci_container_ctx	*in_ctx;
 	u32				status;
+	u32				comp_param;
 	int				slot_id;
 	/* If completion is null, no one is waiting on this command
 	 * and the structure can be freed after the command completes.
@@ -557,6 +556,7 @@ struct xhci_stream_ctx {
 
 /* Stream Context Types (section 6.4.1) - bits 3:1 of stream ctx deq ptr */
 #define	SCT_FOR_CTX(p)		(((p) & 0x7) << 1)
+#define	CTX_TO_SCT(p)		(((p) >> 1) & 0x7)
 /* Secondary stream array type, dequeue pointer is to a transfer ring */
 #define	SCT_SEC_TR		0
 /* Primary stream array type, dequeue pointer is to a transfer ring */
@@ -587,6 +587,7 @@ struct xhci_stream_info {
 
 #define	SMALL_STREAM_ARRAY_SIZE		256
 #define	MEDIUM_STREAM_ARRAY_SIZE	1024
+#define	GET_PORT_BW_ARRAY_SIZE		256
 
 /* Some Intel xHCI host controllers need software to keep track of the bus
  * bandwidth.  Keep track of endpoint info here.  Each root port is allocated
@@ -698,6 +699,8 @@ struct xhci_virt_ep {
 	int			next_frame_id;
 	/* Use new Isoch TRB layout needed for extended TBC support */
 	bool			use_extended_tbc;
+	/* set if this endpoint is controlled via sideband access*/
+	struct xhci_sideband	*sideband;
 };
 
 enum xhci_overhead_type {
@@ -760,6 +763,8 @@ struct xhci_virt_device {
 	u16				current_mel;
 	/* Used for the debugfs interfaces. */
 	void				*debugfs_private;
+	/* set if this endpoint is controlled via sideband access*/
+	struct xhci_sideband	*sideband;
 };
 
 /*
@@ -961,6 +966,9 @@ struct xhci_event_cmd {
 	__le32 flags;
 };
 
+/* status bitmasks */
+#define COMP_PARAM(p)	((p) & 0xffffff) /* Command Completion Parameter */
+
 /* Address device - disable SetAddress */
 #define TRB_BSR		(1<<9)
 
@@ -997,6 +1005,9 @@ enum xhci_setup_dev {
 /* bits 16:23 are the virtual function ID */
 /* bits 24:31 are the slot ID */
 
+/* bits 19:16 are the dev speed */
+#define DEV_SPEED_FOR_TRB(p)    ((p) << 16)
+
 /* Stop Endpoint TRB - ep_index to endpoint ID for this TRB */
 #define SUSPEND_PORT_FOR_TRB(p)		(((p) & 1) << 23)
 #define TRB_TO_SUSPEND_PORT(p)		(((p) & (1 << 23)) >> 23)
@@ -1027,9 +1038,6 @@ enum xhci_setup_dev {
 /* Interrupter Target - which MSI-X vector to target the completion event at */
 #define TRB_INTR_TARGET(p)	(((p) & 0x3ff) << 22)
 #define GET_INTR_TARGET(p)	(((p) >> 22) & 0x3ff)
-/* Total burst count field, Rsvdz on xhci 1.1 with Extended TBC enabled (ETE) */
-#define TRB_TBC(p)		(((p) & 0x3) << 7)
-#define TRB_TLBPC(p)		(((p) & 0xf) << 16)
 
 /* Cycle bit - indicates TRB ownership by HC or HCD */
 #define TRB_CYCLE		(1<<0)
@@ -1063,6 +1071,12 @@ enum xhci_setup_dev {
 /* Isochronous TRB specific fields */
 #define TRB_SIA			(1<<31)
 #define TRB_FRAME_ID(p)		(((p) & 0x7ff) << 20)
+#define GET_FRAME_ID(p)		(((p) >> 20) & 0x7ff)
+/* Total burst count field, Rsvdz on xhci 1.1 with Extended TBC enabled (ETE) */
+#define TRB_TBC(p)		(((p) & 0x3) << 7)
+#define GET_TBC(p)		(((p) >> 7) & 0x3)
+#define TRB_TLBPC(p)		(((p) & 0xf) << 16)
+#define GET_TLBPC(p)		(((p) >> 16) & 0xf)
 
 /* TRB cache size for xHC with TRB cache */
 #define TRB_CACHE_SIZE_HS	8
@@ -1294,9 +1308,9 @@ struct xhci_td {
 	enum xhci_cancelled_td_status	cancel_status;
 	struct urb		*urb;
 	struct xhci_segment	*start_seg;
-	union xhci_trb		*first_trb;
-	union xhci_trb		*last_trb;
-	struct xhci_segment	*last_trb_seg;
+	union xhci_trb		*start_trb;
+	struct xhci_segment	*end_seg;
+	union xhci_trb		*end_trb;
 	struct xhci_segment	*bounce_seg;
 	/* actual_length of the URB has already been set */
 	bool			urb_length_set;
@@ -1439,8 +1453,8 @@ struct xhci_interrupter {
 	bool			ip_autoclear;
 	u32			isoc_bei_interval;
 	/* For interrupter registers save and restore over suspend/resume */
-	u32	s3_irq_pending;
-	u32	s3_irq_control;
+	u32	s3_iman;
+	u32	s3_imod;
 	u32	s3_erst_size;
 	u64	s3_erst_base;
 	u64	s3_erst_dequeue;
@@ -1546,6 +1560,7 @@ struct xhci_hcd {
 	struct dma_pool	*device_pool;
 	struct dma_pool	*segment_pool;
 	struct dma_pool	*small_streams_pool;
+	struct dma_pool	*port_bw_pool;
 	struct dma_pool	*medium_streams_pool;
 
 	/* Host controller watchdog timer structures */
@@ -1803,14 +1818,12 @@ void xhci_slot_copy(struct xhci_hcd *xhci,
 int xhci_endpoint_init(struct xhci_hcd *xhci, struct xhci_virt_device *virt_dev,
 		struct usb_device *udev, struct usb_host_endpoint *ep,
 		gfp_t mem_flags);
-struct xhci_ring *xhci_ring_alloc(struct xhci_hcd *xhci,
-		unsigned int num_segs, unsigned int cycle_state,
+struct xhci_ring *xhci_ring_alloc(struct xhci_hcd *xhci, unsigned int num_segs,
 		enum xhci_ring_type type, unsigned int max_packet, gfp_t flags);
 void xhci_ring_free(struct xhci_hcd *xhci, struct xhci_ring *ring);
 int xhci_ring_expansion(struct xhci_hcd *xhci, struct xhci_ring *ring,
 		unsigned int num_trbs, gfp_t flags);
-void xhci_initialize_ring_info(struct xhci_ring *ring,
-			unsigned int cycle_state);
+void xhci_initialize_ring_info(struct xhci_ring *ring);
 void xhci_free_endpoint_ring(struct xhci_hcd *xhci,
 		struct xhci_virt_device *virt_dev,
 		unsigned int ep_index);
@@ -1841,11 +1854,18 @@ struct xhci_container_ctx *xhci_alloc_container_ctx(struct xhci_hcd *xhci,
 		int type, gfp_t flags);
 void xhci_free_container_ctx(struct xhci_hcd *xhci,
 		struct xhci_container_ctx *ctx);
+struct xhci_container_ctx *xhci_alloc_port_bw_ctx(struct xhci_hcd *xhci,
+		gfp_t flags);
+void xhci_free_port_bw_ctx(struct xhci_hcd *xhci,
+		struct xhci_container_ctx *ctx);
 struct xhci_interrupter *
 xhci_create_secondary_interrupter(struct usb_hcd *hcd, unsigned int segs,
-				  u32 imod_interval);
+				  u32 imod_interval, unsigned int intr_num);
 void xhci_remove_secondary_interrupter(struct usb_hcd
 				       *hcd, struct xhci_interrupter *ir);
+void xhci_skip_sec_intr_events(struct xhci_hcd *xhci,
+			       struct xhci_ring *ring,
+			       struct xhci_interrupter *ir);
 
 /* xHCI host controller glue */
 typedef void (*xhci_get_quirks_t)(struct device *, struct xhci_hcd *);
@@ -1873,7 +1893,7 @@ int xhci_disable_and_free_slot(struct xhci_hcd *xhci, u32 slot_id);
 int xhci_ext_cap_init(struct xhci_hcd *xhci);
 
 int xhci_suspend(struct xhci_hcd *xhci, bool do_wakeup);
-int xhci_resume(struct xhci_hcd *xhci, pm_message_t msg);
+int xhci_resume(struct xhci_hcd *xhci, bool power_lost, bool is_auto_resume);
 
 irqreturn_t xhci_irq(struct usb_hcd *hcd);
 irqreturn_t xhci_msi_irq(int irq, void *hcd);
@@ -1885,12 +1905,10 @@ int xhci_alloc_tt_info(struct xhci_hcd *xhci,
 int xhci_set_interrupter_moderation(struct xhci_interrupter *ir,
 				    u32 imod_interval);
 int xhci_enable_interrupter(struct xhci_interrupter *ir);
-int xhci_disable_interrupter(struct xhci_interrupter *ir);
+int xhci_disable_interrupter(struct xhci_hcd *xhci, struct xhci_interrupter *ir);
 
 /* xHCI ring, segment, TRB, and TD functions */
 dma_addr_t xhci_trb_virt_to_dma(struct xhci_segment *seg, union xhci_trb *trb);
-struct xhci_segment *trb_in_td(struct xhci_hcd *xhci, struct xhci_td *td,
-			       dma_addr_t suspect_dma, bool debug);
 int xhci_is_vendor_info_code(struct xhci_hcd *xhci, unsigned int trb_comp_code);
 void xhci_ring_cmd_db(struct xhci_hcd *xhci);
 int xhci_queue_slot_control(struct xhci_hcd *xhci, struct xhci_command *cmd,
@@ -1912,6 +1930,11 @@ int xhci_queue_isoc_tx_prepare(struct xhci_hcd *xhci, gfp_t mem_flags,
 int xhci_queue_configure_endpoint(struct xhci_hcd *xhci,
 		struct xhci_command *cmd, dma_addr_t in_ctx_ptr, u32 slot_id,
 		bool command_must_succeed);
+int xhci_queue_get_port_bw(struct xhci_hcd *xhci,
+		struct xhci_command *cmd, dma_addr_t in_ctx_ptr,
+		u8 dev_speed, bool command_must_succeed);
+int xhci_get_port_bandwidth(struct xhci_hcd *xhci, struct xhci_container_ctx *ctx,
+		u8 dev_speed);
 int xhci_queue_evaluate_context(struct xhci_hcd *xhci, struct xhci_command *cmd,
 		dma_addr_t in_ctx_ptr, u32 slot_id, bool command_must_succeed);
 int xhci_queue_reset_ep(struct xhci_hcd *xhci, struct xhci_command *cmd,
@@ -1929,7 +1952,15 @@ void xhci_ring_doorbell_for_active_rings(struct xhci_hcd *xhci,
 void xhci_cleanup_command_queue(struct xhci_hcd *xhci);
 void inc_deq(struct xhci_hcd *xhci, struct xhci_ring *ring);
 unsigned int count_trbs(u64 addr, u64 len);
+int xhci_stop_endpoint_sync(struct xhci_hcd *xhci, struct xhci_virt_ep *ep,
+			    int suspend, gfp_t gfp_flags);
 void xhci_process_cancelled_tds(struct xhci_virt_ep *ep);
+void xhci_update_erst_dequeue(struct xhci_hcd *xhci,
+			      struct xhci_interrupter *ir,
+			      bool clear_ehb);
+void xhci_add_interrupter(struct xhci_hcd *xhci, unsigned int intr_num);
+int xhci_usb_endpoint_maxp(struct usb_device *udev,
+			   struct usb_host_endpoint *host_ep);
 
 /* xHCI roothub code */
 void xhci_set_link_state(struct xhci_hcd *xhci, struct xhci_port *port,
@@ -2087,7 +2118,6 @@ static inline const char *xhci_decode_trb(char *str, size_t size,
 				field3 & TRB_CYCLE ? 'C' : 'c');
 		break;
 	case TRB_NORMAL:
-	case TRB_ISOC:
 	case TRB_EVENT_DATA:
 	case TRB_TR_NOOP:
 		snprintf(str, size,
@@ -2104,7 +2134,25 @@ static inline const char *xhci_decode_trb(char *str, size_t size,
 			field3 & TRB_ENT ? 'E' : 'e',
 			field3 & TRB_CYCLE ? 'C' : 'c');
 		break;
-
+	case TRB_ISOC:
+		snprintf(str, size,
+			"Buffer %08x%08x length %d TD size/TBC %d intr %d type '%s' TBC %u TLBPC %u frame_id %u flags %c:%c:%c:%c:%c:%c:%c:%c:%c",
+			field1, field0, TRB_LEN(field2), GET_TD_SIZE(field2),
+			GET_INTR_TARGET(field2),
+			xhci_trb_type_string(type),
+			GET_TBC(field3),
+			GET_TLBPC(field3),
+			GET_FRAME_ID(field3),
+			field3 & TRB_SIA ? 'S' : 's',
+			field3 & TRB_BEI ? 'B' : 'b',
+			field3 & TRB_IDT ? 'I' : 'i',
+			field3 & TRB_IOC ? 'I' : 'i',
+			field3 & TRB_CHAIN ? 'C' : 'c',
+			field3 & TRB_NO_SNOOP ? 'S' : 's',
+			field3 & TRB_ISP ? 'I' : 'i',
+			field3 & TRB_ENT ? 'E' : 'e',
+			field3 & TRB_CYCLE ? 'C' : 'c');
+		break;
 	case TRB_CMD_NOOP:
 	case TRB_ENABLE_SLOT:
 		snprintf(str, size,

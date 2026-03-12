@@ -578,7 +578,6 @@ static void xen_set_p4d(p4d_t *ptr, p4d_t val)
 	xen_mc_issue(XEN_LAZY_MMU);
 }
 
-#if CONFIG_PGTABLE_LEVELS >= 5
 __visible p4dval_t xen_p4d_val(p4d_t p4d)
 {
 	return pte_mfn_to_pfn(p4d.p4d);
@@ -592,7 +591,6 @@ __visible p4d_t xen_make_p4d(p4dval_t p4d)
 	return native_make_p4d(p4d);
 }
 PV_CALLEE_SAVE_REGS_THUNK(xen_make_p4d);
-#endif  /* CONFIG_PGTABLE_LEVELS >= 5 */
 
 static void xen_pmd_walk(struct mm_struct *mm, pmd_t *pmd,
 			 void (*func)(struct mm_struct *mm, struct page *,
@@ -2189,7 +2187,6 @@ static const typeof(pv_ops) xen_mmu_ops __initconst = {
 		.flush_tlb_kernel = xen_flush_tlb,
 		.flush_tlb_one_user = xen_flush_tlb_one_user,
 		.flush_tlb_multi = xen_flush_tlb_multi,
-		.tlb_remove_table = tlb_remove_table,
 
 		.pgd_alloc = xen_pgd_alloc,
 		.pgd_free = xen_pgd_free,
@@ -2223,10 +2220,8 @@ static const typeof(pv_ops) xen_mmu_ops __initconst = {
 		.alloc_pud = xen_alloc_pmd_init,
 		.release_pud = xen_release_pmd_init,
 
-#if CONFIG_PGTABLE_LEVELS >= 5
 		.p4d_val = PV_CALLEE_SAVE(xen_p4d_val),
 		.make_p4d = PV_CALLEE_SAVE(xen_make_p4d),
-#endif
 
 		.enter_mmap = xen_enter_mmap,
 		.exit_mmap = xen_exit_mmap,

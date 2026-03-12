@@ -2961,7 +2961,7 @@ static int sky2_rx_hung(struct net_device *dev)
 
 static void sky2_watchdog(struct timer_list *t)
 {
-	struct sky2_hw *hw = from_timer(hw, t, watchdog_timer);
+	struct sky2_hw *hw = timer_container_of(hw, t, watchdog_timer);
 
 	/* Check for lost IRQ once a second */
 	if (sky2_read32(hw, B0_ISRC)) {
@@ -3801,8 +3801,7 @@ static void sky2_get_strings(struct net_device *dev, u32 stringset, u8 * data)
 	switch (stringset) {
 	case ETH_SS_STATS:
 		for (i = 0; i < ARRAY_SIZE(sky2_stats); i++)
-			memcpy(data + i * ETH_GSTRING_LEN,
-			       sky2_stats[i].name, ETH_GSTRING_LEN);
+			ethtool_puts(&data, sky2_stats[i].name);
 		break;
 	}
 }
@@ -4495,10 +4494,7 @@ static int sky2_device_event(struct notifier_block *unused,
 
 	switch (event) {
 	case NETDEV_CHANGENAME:
-		if (sky2->debugfs) {
-			sky2->debugfs = debugfs_rename(sky2_debug, sky2->debugfs,
-						       sky2_debug, dev->name);
-		}
+		debugfs_change_name(sky2->debugfs, "%s", dev->name);
 		break;
 
 	case NETDEV_GOING_DOWN:
@@ -5056,7 +5052,7 @@ static int sky2_suspend(struct device *dev)
 	if (!hw)
 		return 0;
 
-	del_timer_sync(&hw->watchdog_timer);
+	timer_delete_sync(&hw->watchdog_timer);
 	cancel_work_sync(&hw->restart_work);
 
 	rtnl_lock();

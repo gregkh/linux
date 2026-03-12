@@ -17,9 +17,12 @@
 #include "xe_force_wake.h"
 #include "xe_gt.h"
 #include "xe_gt_printk.h"
+#include "xe_guc_capture.h"
 #include "xe_guc_ct.h"
+#include "xe_guc_log.h"
 #include "xe_guc_submit.h"
 #include "xe_hw_engine.h"
+#include "xe_module.h"
 #include "xe_pm.h"
 #include "xe_sched_job.h"
 #include "xe_vm.h"
@@ -27,30 +30,39 @@
 /**
  * DOC: Xe device coredump
  *
- * Devices overview:
  * Xe uses dev_coredump infrastructure for exposing the crash errors in a
- * standardized way.
- * devcoredump exposes a temporary device under /sys/class/devcoredump/
- * which is linked with our card device directly.
- * The core dump can be accessed either from
- * /sys/class/drm/card<n>/device/devcoredump/ or from
- * /sys/class/devcoredump/devcd<m> where
- * /sys/class/devcoredump/devcd<m>/failing_device is a link to
- * /sys/class/drm/card<n>/device/.
+ * standardized way. Once a crash occurs, devcoredump exposes a temporary
+ * node under ``/sys/class/devcoredump/devcd<m>/``. The same node is also
+ * accessible in ``/sys/class/drm/card<n>/device/devcoredump/``. The
+ * ``failing_device`` symlink points to the device that crashed and created the
+ * coredump.
  *
- * Snapshot at hang:
- * The 'data' file is printed with a drm_printer pointer at devcoredump read
- * time. For this reason, we need to take snapshots from when the hang has
- * happened, and not only when the user is reading the file. Otherwise the
- * information is outdated since the resets might have happened in between.
+ * The following characteristics are observed by xe when creating a device
+ * coredump:
  *
- * 'First' failure snapshot:
- * In general, the first hang is the most critical one since the following hangs
- * can be a consequence of the initial hang. For this reason we only take the
- * snapshot of the 'first' failure and ignore subsequent calls of this function,
- * at least while the coredump device is alive. Dev_coredump has a delayed work
- * queue that will eventually delete the device and free all the dump
- * information.
+ * **Snapshot at hang**:
+ *   The 'data' file contains a snapshot of the HW and driver states at the time
+ *   the hang happened. Due to the driver recovering from resets/crashes, it may
+ *   not correspond to the state of the system when the file is read by
+ *   userspace.
+ *
+ * **Coredump release**:
+ *   After a coredump is generated, it stays in kernel memory until released by
+ *   userspace by writing anything to it, or after an internal timer expires. The
+ *   exact timeout may vary and should not be relied upon. Example to release
+ *   a coredump:
+ *
+ *   .. code-block:: shell
+ *
+ *	$ > /sys/class/drm/card0/device/devcoredump/data
+ *
+ * **First failure only**:
+ *   In general, the first hang is the most critical one since the following
+ *   hangs can be a consequence of the initial hang. For this reason a snapshot
+ *   is taken only for the first failure. Until the devcoredump is released by
+ *   userspace or kernel, all subsequent hangs do not override the snapshot nor
+ *   create new ones. Devcoredump has a delayed work queue that will eventually
+ *   delete the file node and free all the dump information.
  */
 
 #ifdef CONFIG_DEV_COREDUMP
@@ -68,7 +80,8 @@ static struct xe_guc *exec_queue_to_guc(struct xe_exec_queue *q)
 	return &q->gt->uc.guc;
 }
 
-static ssize_t __xe_devcoredump_read(char *buffer, size_t count,
+static ssize_t __xe_devcoredump_read(char *buffer, ssize_t count,
+				     ssize_t start,
 				     struct xe_devcoredump *coredump)
 {
 	struct xe_device *xe;
@@ -82,12 +95,13 @@ static ssize_t __xe_devcoredump_read(char *buffer, size_t count,
 	ss = &coredump->snapshot;
 
 	iter.data = buffer;
-	iter.start = 0;
+	iter.start = start;
 	iter.remain = count;
 
 	p = drm_coredump_printer(&iter);
 
 	drm_puts(&p, "**** Xe Device Coredump ****\n");
+	drm_printf(&p, "Reason: %s\n", ss->reason);
 	drm_puts(&p, "kernel: " UTS_RELEASE "\n");
 	drm_puts(&p, "module: " KBUILD_MODNAME "\n");
 
@@ -95,14 +109,16 @@ static ssize_t __xe_devcoredump_read(char *buffer, size_t count,
 	drm_printf(&p, "Snapshot time: %lld.%09ld\n", ts.tv_sec, ts.tv_nsec);
 	ts = ktime_to_timespec64(ss->boot_time);
 	drm_printf(&p, "Uptime: %lld.%09ld\n", ts.tv_sec, ts.tv_nsec);
-	drm_printf(&p, "Process: %s\n", ss->process_name);
+	drm_printf(&p, "Process: %s [%d]\n", ss->process_name, ss->pid);
 	xe_device_snapshot_print(xe, &p);
 
 	drm_printf(&p, "\n**** GT #%d ****\n", ss->gt->info.id);
 	drm_printf(&p, "\tTile: %d\n", ss->gt->tile->id);
 
+	drm_puts(&p, "\n**** GuC Log ****\n");
+	xe_guc_log_snapshot_print(ss->guc.log, &p);
 	drm_puts(&p, "\n**** GuC CT ****\n");
-	xe_guc_ct_snapshot_print(ss->ct, &p);
+	xe_guc_ct_snapshot_print(ss->guc.ct, &p);
 
 	drm_puts(&p, "\n**** Contexts ****\n");
 	xe_guc_exec_queue_snapshot_print(ss->ge, &p);
@@ -113,7 +129,7 @@ static ssize_t __xe_devcoredump_read(char *buffer, size_t count,
 	drm_puts(&p, "\n**** HW Engines ****\n");
 	for (i = 0; i < XE_NUM_HW_ENGINES; i++)
 		if (ss->hwe[i])
-			xe_hw_engine_snapshot_print(ss->hwe[i], &p);
+			xe_engine_snapshot_print(ss->hwe[i], &p);
 
 	drm_puts(&p, "\n**** VM state ****\n");
 	xe_vm_snapshot_print(ss->vm, &p);
@@ -125,8 +141,17 @@ static void xe_devcoredump_snapshot_free(struct xe_devcoredump_snapshot *ss)
 {
 	int i;
 
-	xe_guc_ct_snapshot_free(ss->ct);
-	ss->ct = NULL;
+	kfree(ss->reason);
+	ss->reason = NULL;
+
+	xe_guc_log_snapshot_free(ss->guc.log);
+	ss->guc.log = NULL;
+
+	xe_guc_ct_snapshot_free(ss->guc.ct);
+	ss->guc.ct = NULL;
+
+	xe_guc_capture_put_matched_nodes(&ss->gt->uc.guc);
+	ss->matched_node = NULL;
 
 	xe_guc_exec_queue_snapshot_free(ss->ge);
 	ss->ge = NULL;
@@ -144,12 +169,34 @@ static void xe_devcoredump_snapshot_free(struct xe_devcoredump_snapshot *ss)
 	ss->vm = NULL;
 }
 
+#define XE_DEVCOREDUMP_CHUNK_MAX	(SZ_512M + SZ_1G)
+
+/**
+ * xe_devcoredump_read() - Read data from the Xe device coredump snapshot
+ * @buffer: Destination buffer to copy the coredump data into
+ * @offset: Offset in the coredump data to start reading from
+ * @count: Number of bytes to read
+ * @data: Pointer to the xe_devcoredump structure
+ * @datalen: Length of the data (unused)
+ *
+ * Reads a chunk of the coredump snapshot data into the provided buffer.
+ * If the devcoredump is smaller than 1.5 GB (XE_DEVCOREDUMP_CHUNK_MAX),
+ * it is read directly from a pre-written buffer. For larger devcoredumps,
+ * the pre-written buffer must be periodically repopulated from the snapshot
+ * state due to kmalloc size limitations.
+ *
+ * Return: Number of bytes copied on success, or a negative error code on failure.
+ */
 static ssize_t xe_devcoredump_read(char *buffer, loff_t offset,
 				   size_t count, void *data, size_t datalen)
 {
 	struct xe_devcoredump *coredump = data;
 	struct xe_devcoredump_snapshot *ss;
-	ssize_t byte_copied;
+	ssize_t byte_copied = 0;
+	u32 chunk_offset;
+	ssize_t new_chunk_position;
+	bool pm_needed = false;
+	int ret = 0;
 
 	if (!coredump)
 		return -ENODEV;
@@ -159,17 +206,45 @@ static ssize_t xe_devcoredump_read(char *buffer, loff_t offset,
 	/* Ensure delayed work is captured before continuing */
 	flush_work(&ss->work);
 
-	if (!ss->read.buffer)
-		return -ENODEV;
+	pm_needed = ss->read.size > XE_DEVCOREDUMP_CHUNK_MAX;
+	if (pm_needed)
+		xe_pm_runtime_get(gt_to_xe(ss->gt));
+
+	mutex_lock(&coredump->lock);
+
+	if (!ss->read.buffer) {
+		ret = -ENODEV;
+		goto unlock;
+	}
 
 	if (offset >= ss->read.size)
-		return 0;
+		goto unlock;
+
+	new_chunk_position = div_u64_rem(offset,
+					 XE_DEVCOREDUMP_CHUNK_MAX,
+					 &chunk_offset);
+
+	if (offset >= ss->read.chunk_position + XE_DEVCOREDUMP_CHUNK_MAX ||
+	    offset < ss->read.chunk_position) {
+		ss->read.chunk_position = new_chunk_position *
+			XE_DEVCOREDUMP_CHUNK_MAX;
+
+		__xe_devcoredump_read(ss->read.buffer,
+				      XE_DEVCOREDUMP_CHUNK_MAX,
+				      ss->read.chunk_position, coredump);
+	}
 
 	byte_copied = count < ss->read.size - offset ? count :
 		ss->read.size - offset;
-	memcpy(buffer, ss->read.buffer + offset, byte_copied);
+	memcpy(buffer, ss->read.buffer + chunk_offset, byte_copied);
 
-	return byte_copied;
+unlock:
+	mutex_unlock(&coredump->lock);
+
+	if (pm_needed)
+		xe_pm_runtime_put(gt_to_xe(ss->gt));
+
+	return byte_copied ? byte_copied : ret;
 }
 
 static void xe_devcoredump_free(void *data)
@@ -182,6 +257,8 @@ static void xe_devcoredump_free(void *data)
 
 	cancel_work_sync(&coredump->snapshot.work);
 
+	mutex_lock(&coredump->lock);
+
 	xe_devcoredump_snapshot_free(&coredump->snapshot);
 	kvfree(coredump->snapshot.read.buffer);
 
@@ -190,6 +267,8 @@ static void xe_devcoredump_free(void *data)
 	coredump->captured = false;
 	drm_info(&coredump_to_xe(coredump)->drm,
 		 "Xe device coredump has been deleted.\n");
+
+	mutex_unlock(&coredump->lock);
 }
 
 static void xe_devcoredump_deferred_snap_work(struct work_struct *work)
@@ -197,10 +276,11 @@ static void xe_devcoredump_deferred_snap_work(struct work_struct *work)
 	struct xe_devcoredump_snapshot *ss = container_of(work, typeof(*ss), work);
 	struct xe_devcoredump *coredump = container_of(ss, typeof(*coredump), snapshot);
 	struct xe_device *xe = coredump_to_xe(coredump);
+	unsigned int fw_ref;
 
 	/*
 	 * NB: Despite passing a GFP_ flags parameter here, more allocations are done
-	 * internally using GFP_KERNEL expliictly. Hence this call must be in the worker
+	 * internally using GFP_KERNEL explicitly. Hence this call must be in the worker
 	 * thread and not in the initial capture call.
 	 */
 	dev_coredumpm_timeout(gt_to_xe(ss->gt)->drm.dev, THIS_MODULE, coredump, 0, GFP_KERNEL,
@@ -210,108 +290,122 @@ static void xe_devcoredump_deferred_snap_work(struct work_struct *work)
 	xe_pm_runtime_get(xe);
 
 	/* keep going if fw fails as we still want to save the memory and SW data */
-	if (xe_force_wake_get(gt_to_fw(ss->gt), XE_FORCEWAKE_ALL))
+	fw_ref = xe_force_wake_get(gt_to_fw(ss->gt), XE_FORCEWAKE_ALL);
+	if (!xe_force_wake_ref_has_domain(fw_ref, XE_FORCEWAKE_ALL))
 		xe_gt_info(ss->gt, "failed to get forcewake for coredump capture\n");
 	xe_vm_snapshot_capture_delayed(ss->vm);
 	xe_guc_exec_queue_snapshot_capture_delayed(ss->ge);
-	xe_force_wake_put(gt_to_fw(ss->gt), XE_FORCEWAKE_ALL);
+	xe_force_wake_put(gt_to_fw(ss->gt), fw_ref);
 
-	xe_pm_runtime_put(xe);
+	ss->read.chunk_position = 0;
 
 	/* Calculate devcoredump size */
-	ss->read.size = __xe_devcoredump_read(NULL, INT_MAX, coredump);
+	ss->read.size = __xe_devcoredump_read(NULL, LONG_MAX, 0, coredump);
 
-	ss->read.buffer = kvmalloc(ss->read.size, GFP_USER);
-	if (!ss->read.buffer)
-		return;
+	if (ss->read.size > XE_DEVCOREDUMP_CHUNK_MAX) {
+		ss->read.buffer = kvmalloc(XE_DEVCOREDUMP_CHUNK_MAX,
+					   GFP_USER);
+		if (!ss->read.buffer)
+			goto put_pm;
 
-	__xe_devcoredump_read(ss->read.buffer, ss->read.size, coredump);
-	xe_devcoredump_snapshot_free(ss);
+		__xe_devcoredump_read(ss->read.buffer,
+				      XE_DEVCOREDUMP_CHUNK_MAX,
+				      0, coredump);
+	} else {
+		ss->read.buffer = kvmalloc(ss->read.size, GFP_USER);
+		if (!ss->read.buffer)
+			goto put_pm;
+
+		__xe_devcoredump_read(ss->read.buffer, ss->read.size, 0,
+				      coredump);
+		xe_devcoredump_snapshot_free(ss);
+	}
+
+put_pm:
+	xe_pm_runtime_put(xe);
 }
 
 static void devcoredump_snapshot(struct xe_devcoredump *coredump,
+				 struct xe_exec_queue *q,
 				 struct xe_sched_job *job)
 {
 	struct xe_devcoredump_snapshot *ss = &coredump->snapshot;
-	struct xe_exec_queue *q = job->q;
 	struct xe_guc *guc = exec_queue_to_guc(q);
-	struct xe_hw_engine *hwe;
-	enum xe_hw_engine_id id;
-	u32 adj_logical_mask = q->logical_mask;
-	u32 width_mask = (0x1 << q->width) - 1;
 	const char *process_name = "no process";
-
-	int i;
+	unsigned int fw_ref;
 	bool cookie;
 
 	ss->snapshot_time = ktime_get_real();
 	ss->boot_time = ktime_get_boottime();
 
-	if (q->vm && q->vm->xef)
+	if (q->vm && q->vm->xef) {
 		process_name = q->vm->xef->process_name;
+		ss->pid = q->vm->xef->pid;
+	}
+
 	strscpy(ss->process_name, process_name);
 
 	ss->gt = q->gt;
 	INIT_WORK(&ss->work, xe_devcoredump_deferred_snap_work);
 
 	cookie = dma_fence_begin_signalling();
-	for (i = 0; q->width > 1 && i < XE_HW_ENGINE_MAX_INSTANCE;) {
-		if (adj_logical_mask & BIT(i)) {
-			adj_logical_mask |= width_mask << i;
-			i += q->width;
-		} else {
-			++i;
-		}
-	}
 
 	/* keep going if fw fails as we still want to save the memory and SW data */
-	if (xe_force_wake_get(gt_to_fw(q->gt), XE_FORCEWAKE_ALL))
-		xe_gt_info(ss->gt, "failed to get forcewake for coredump capture\n");
+	fw_ref = xe_force_wake_get(gt_to_fw(q->gt), XE_FORCEWAKE_ALL);
 
-	ss->ct = xe_guc_ct_snapshot_capture(&guc->ct, true);
+	ss->guc.log = xe_guc_log_snapshot_capture(&guc->log, true);
+	ss->guc.ct = xe_guc_ct_snapshot_capture(&guc->ct);
 	ss->ge = xe_guc_exec_queue_snapshot_capture(q);
-	ss->job = xe_sched_job_snapshot_capture(job);
+	if (job)
+		ss->job = xe_sched_job_snapshot_capture(job);
 	ss->vm = xe_vm_snapshot_capture(q->vm);
 
-	for_each_hw_engine(hwe, q->gt, id) {
-		if (hwe->class != q->hwe->class ||
-		    !(BIT(hwe->logical_instance) & adj_logical_mask)) {
-			ss->hwe[id] = NULL;
-			continue;
-		}
-		ss->hwe[id] = xe_hw_engine_snapshot_capture(hwe);
-	}
+	xe_engine_snapshot_capture_for_queue(q);
 
 	queue_work(system_unbound_wq, &ss->work);
 
-	xe_force_wake_put(gt_to_fw(q->gt), XE_FORCEWAKE_ALL);
+	xe_force_wake_put(gt_to_fw(q->gt), fw_ref);
 	dma_fence_end_signalling(cookie);
 }
 
 /**
  * xe_devcoredump - Take the required snapshots and initialize coredump device.
+ * @q: The faulty xe_exec_queue, where the issue was detected.
  * @job: The faulty xe_sched_job, where the issue was detected.
+ * @fmt: Printf format + args to describe the reason for the core dump
  *
  * This function should be called at the crash time within the serialized
  * gt_reset. It is skipped if we still have the core dump device available
  * with the information of the 'first' snapshot.
  */
-void xe_devcoredump(struct xe_sched_job *job)
+__printf(3, 4)
+void xe_devcoredump(struct xe_exec_queue *q, struct xe_sched_job *job, const char *fmt, ...)
 {
-	struct xe_device *xe = gt_to_xe(job->q->gt);
+	struct xe_device *xe = gt_to_xe(q->gt);
 	struct xe_devcoredump *coredump = &xe->devcoredump;
+	va_list varg;
+
+	mutex_lock(&coredump->lock);
 
 	if (coredump->captured) {
 		drm_dbg(&xe->drm, "Multiple hangs are occurring, but only the first snapshot was taken\n");
+		mutex_unlock(&coredump->lock);
 		return;
 	}
 
 	coredump->captured = true;
-	devcoredump_snapshot(coredump, job);
+
+	va_start(varg, fmt);
+	coredump->snapshot.reason = kvasprintf(GFP_ATOMIC, fmt, varg);
+	va_end(varg);
+
+	devcoredump_snapshot(coredump, q, job);
 
 	drm_info(&xe->drm, "Xe device coredump has been created\n");
 	drm_info(&xe->drm, "Check your /sys/class/drm/card%d/device/devcoredump/data\n",
 		 xe->drm.primary->index);
+
+	mutex_unlock(&coredump->lock);
 }
 
 static void xe_driver_devcoredump_fini(void *arg)
@@ -323,6 +417,18 @@ static void xe_driver_devcoredump_fini(void *arg)
 
 int xe_devcoredump_init(struct xe_device *xe)
 {
+	int err;
+
+	err = drmm_mutex_init(&xe->drm, &xe->devcoredump.lock);
+	if (err)
+		return err;
+
+	if (IS_ENABLED(CONFIG_LOCKDEP)) {
+		fs_reclaim_acquire(GFP_KERNEL);
+		might_lock(&xe->devcoredump.lock);
+		fs_reclaim_release(GFP_KERNEL);
+	}
+
 	return devm_add_action_or_reset(xe->drm.dev, xe_driver_devcoredump_fini, &xe->drm);
 }
 
@@ -363,11 +469,11 @@ void xe_print_blob_ascii85(struct drm_printer *p, const char *prefix, char suffi
 	if (size & 3)
 		drm_printf(p, "Size not word aligned: %zu", size);
 	if (offset & 3)
-		drm_printf(p, "Offset not word aligned: %zu", size);
+		drm_printf(p, "Offset not word aligned: %zu", offset);
 
-	line_buff = kzalloc(DMESG_MAX_LINE_LEN, GFP_KERNEL);
-	if (IS_ERR_OR_NULL(line_buff)) {
-		drm_printf(p, "Failed to allocate line buffer: %pe", line_buff);
+	line_buff = kzalloc(DMESG_MAX_LINE_LEN, GFP_ATOMIC);
+	if (!line_buff) {
+		drm_printf(p, "Failed to allocate line buffer\n");
 		return;
 	}
 

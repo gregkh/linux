@@ -18,9 +18,53 @@ void __blk_mq_sched_restart(struct blk_mq_hw_ctx *hctx);
 
 void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx);
 
-int blk_mq_init_sched(struct request_queue *q, struct elevator_type *e);
+int blk_mq_init_sched(struct request_queue *q, struct elevator_type *e,
+		struct elevator_resources *res);
 void blk_mq_exit_sched(struct request_queue *q, struct elevator_queue *e);
 void blk_mq_sched_free_rqs(struct request_queue *q);
+
+struct elevator_tags *blk_mq_alloc_sched_tags(struct blk_mq_tag_set *set,
+		unsigned int nr_hw_queues, unsigned int nr_requests);
+int blk_mq_alloc_sched_res(struct request_queue *q,
+		struct elevator_type *type,
+		struct elevator_resources *res,
+		unsigned int nr_hw_queues);
+int blk_mq_alloc_sched_res_batch(struct xarray *elv_tbl,
+		struct blk_mq_tag_set *set, unsigned int nr_hw_queues);
+int blk_mq_alloc_sched_ctx_batch(struct xarray *elv_tbl,
+		struct blk_mq_tag_set *set);
+void blk_mq_free_sched_ctx_batch(struct xarray *elv_tbl);
+void blk_mq_free_sched_tags(struct elevator_tags *et,
+		struct blk_mq_tag_set *set);
+void blk_mq_free_sched_res(struct elevator_resources *res,
+		struct elevator_type *type,
+		struct blk_mq_tag_set *set);
+void blk_mq_free_sched_res_batch(struct xarray *et_table,
+		struct blk_mq_tag_set *set);
+/*
+ * blk_mq_alloc_sched_data() - Allocates scheduler specific data
+ * Returns:
+ *         - Pointer to allocated data on success
+ *         - NULL if no allocation needed
+ *         - ERR_PTR(-ENOMEM) in case of failure
+ */
+static inline void *blk_mq_alloc_sched_data(struct request_queue *q,
+		struct elevator_type *e)
+{
+	void *sched_data;
+
+	if (!e || !e->ops.alloc_sched_data)
+		return NULL;
+
+	sched_data = e->ops.alloc_sched_data(q);
+	return (sched_data) ?: ERR_PTR(-ENOMEM);
+}
+
+static inline void blk_mq_free_sched_data(struct elevator_type *e, void *data)
+{
+	if (e && e->ops.free_sched_data)
+		e->ops.free_sched_data(data);
+}
 
 static inline void blk_mq_sched_restart(struct blk_mq_hw_ctx *hctx)
 {
@@ -80,6 +124,22 @@ static inline bool blk_mq_sched_has_work(struct blk_mq_hw_ctx *hctx)
 static inline bool blk_mq_sched_needs_restart(struct blk_mq_hw_ctx *hctx)
 {
 	return test_bit(BLK_MQ_S_SCHED_RESTART, &hctx->state);
+}
+
+static inline void blk_mq_set_min_shallow_depth(struct request_queue *q,
+						unsigned int depth)
+{
+	struct blk_mq_hw_ctx *hctx;
+	unsigned long i;
+
+	queue_for_each_hw_ctx(q, hctx, i)
+		sbitmap_queue_min_shallow_depth(&hctx->sched_tags->bitmap_tags,
+						depth);
+}
+
+static inline bool blk_mq_is_sync_read(blk_opf_t opf)
+{
+	return op_is_sync(opf) && !op_is_write(opf);
 }
 
 #endif

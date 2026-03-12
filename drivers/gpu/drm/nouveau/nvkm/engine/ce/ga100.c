@@ -46,7 +46,7 @@ ga100_ce_nonstall(struct nvkm_engine *engine)
 }
 
 int
-ga100_ce_fini(struct nvkm_engine *engine, bool suspend)
+ga100_ce_fini(struct nvkm_engine *engine, enum nvkm_suspend_state suspend)
 {
 	nvkm_inth_block(&engine->subdev.inth);
 	return 0;
@@ -90,7 +90,7 @@ ga100_ce_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
 	     struct nvkm_engine **pengine)
 {
 	if (nvkm_gsp_rm(device->gsp))
-		return r535_ce_new(&ga100_ce, device, type, inst, pengine);
+		return -ENODEV;
 
 	return nvkm_engine_new_(&ga100_ce, device, type, inst, true, pengine);
 }

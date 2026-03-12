@@ -87,6 +87,8 @@ static void test_xdp_adjust_tail_grow2(void)
 	/* SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) */
 #if defined(__s390x__)
 	int tailroom = 512;
+#elif defined(__powerpc__)
+	int tailroom = 384;
 #else
 	int tailroom = 320;
 #endif
@@ -249,14 +251,20 @@ static void test_xdp_adjust_frags_tail_grow_4k(void)
 	ASSERT_EQ(topts.retval, XDP_TX, "9Kb+10b retval");
 	ASSERT_EQ(topts.data_size_out, exp_size, "9Kb+10b size");
 
-	for (i = 0; i < 9000; i++)
-		ASSERT_EQ(buf[i], 1, "9Kb+10b-old");
+	for (i = 0; i < 9000; i++) {
+		if (buf[i] != 1)
+			ASSERT_EQ(buf[i], 1, "9Kb+10b-old");
+	}
 
-	for (i = 9000; i < 9010; i++)
-		ASSERT_EQ(buf[i], 0, "9Kb+10b-new");
+	for (i = 9000; i < 9010; i++) {
+		if (buf[i] != 0)
+			ASSERT_EQ(buf[i], 0, "9Kb+10b-new");
+	}
 
-	for (i = 9010; i < 16384; i++)
-		ASSERT_EQ(buf[i], 1, "9Kb+10b-untouched");
+	for (i = 9010; i < 16384; i++) {
+		if (buf[i] != 1)
+			ASSERT_EQ(buf[i], 1, "9Kb+10b-untouched");
+	}
 
 	/* Test a too large grow */
 	memset(buf, 1, 16384);

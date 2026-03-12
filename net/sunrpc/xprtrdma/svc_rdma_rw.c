@@ -765,7 +765,7 @@ static int svc_rdma_build_read_segment(struct svc_rqst *rqstp,
 		}
 		len -= seg_len;
 
-		if (len && ((head->rc_curpage + 1) > ARRAY_SIZE(rqstp->rq_pages)))
+		if (len && ((head->rc_curpage + 1) > rqstp->rq_maxpages))
 			goto out_overrun;
 	}
 
@@ -841,7 +841,7 @@ static int svc_rdma_copy_inline_range(struct svc_rqst *rqstp,
 	for (page_no = 0; page_no < numpages; page_no++) {
 		unsigned int page_len;
 
-		if (head->rc_curpage >= ARRAY_SIZE(rqstp->rq_pages))
+		if (head->rc_curpage >= rqstp->rq_maxpages)
 			return -EINVAL;
 
 		page_len = min_t(unsigned int, remaining,

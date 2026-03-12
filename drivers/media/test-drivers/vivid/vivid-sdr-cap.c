@@ -342,11 +342,9 @@ const struct vb2_ops vivid_sdr_cap_qops = {
 	.start_streaming	= sdr_cap_start_streaming,
 	.stop_streaming		= sdr_cap_stop_streaming,
 	.buf_request_complete	= sdr_cap_buf_request_complete,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
-int vivid_sdr_enum_freq_bands(struct file *file, void *fh,
+int vivid_sdr_enum_freq_bands(struct file *file, void *priv,
 		struct v4l2_frequency_band *band)
 {
 	switch (band->tuner) {
@@ -365,7 +363,7 @@ int vivid_sdr_enum_freq_bands(struct file *file, void *fh,
 	}
 }
 
-int vivid_sdr_g_frequency(struct file *file, void *fh,
+int vivid_sdr_g_frequency(struct file *file, void *priv,
 		struct v4l2_frequency *vf)
 {
 	struct vivid_dev *dev = video_drvdata(file);
@@ -384,7 +382,7 @@ int vivid_sdr_g_frequency(struct file *file, void *fh,
 	}
 }
 
-int vivid_sdr_s_frequency(struct file *file, void *fh,
+int vivid_sdr_s_frequency(struct file *file, void *priv,
 		const struct v4l2_frequency *vf)
 {
 	struct vivid_dev *dev = video_drvdata(file);
@@ -425,7 +423,7 @@ int vivid_sdr_s_frequency(struct file *file, void *fh,
 	}
 }
 
-int vivid_sdr_g_tuner(struct file *file, void *fh, struct v4l2_tuner *vt)
+int vivid_sdr_g_tuner(struct file *file, void *priv, struct v4l2_tuner *vt)
 {
 	switch (vt->index) {
 	case 0:
@@ -449,14 +447,14 @@ int vivid_sdr_g_tuner(struct file *file, void *fh, struct v4l2_tuner *vt)
 	}
 }
 
-int vivid_sdr_s_tuner(struct file *file, void *fh, const struct v4l2_tuner *vt)
+int vivid_sdr_s_tuner(struct file *file, void *priv, const struct v4l2_tuner *vt)
 {
 	if (vt->index > 1)
 		return -EINVAL;
 	return 0;
 }
 
-int vidioc_enum_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_fmtdesc *f)
+int vidioc_enum_fmt_sdr_cap(struct file *file, void *priv, struct v4l2_fmtdesc *f)
 {
 	if (f->index >= ARRAY_SIZE(formats))
 		return -EINVAL;
@@ -464,7 +462,7 @@ int vidioc_enum_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 	return 0;
 }
 
-int vidioc_g_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
+int vidioc_g_fmt_sdr_cap(struct file *file, void *priv, struct v4l2_format *f)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 
@@ -473,7 +471,7 @@ int vidioc_g_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
 	return 0;
 }
 
-int vidioc_s_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
+int vidioc_s_fmt_sdr_cap(struct file *file, void *priv, struct v4l2_format *f)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 	struct vb2_queue *q = &dev->vb_sdr_cap_q;
@@ -497,7 +495,7 @@ int vidioc_s_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
 	return 0;
 }
 
-int vidioc_try_fmt_sdr_cap(struct file *file, void *fh, struct v4l2_format *f)
+int vidioc_try_fmt_sdr_cap(struct file *file, void *priv, struct v4l2_format *f)
 {
 	int i;
 

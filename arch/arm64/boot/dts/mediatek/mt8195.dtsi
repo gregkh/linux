@@ -1430,6 +1430,31 @@
 			status = "disabled";
 		};
 
+		ufshci: ufshci@11270000 {
+			compatible = "mediatek,mt8195-ufshci";
+			reg = <0 0x11270000 0 0x2300>;
+			interrupts = <GIC_SPI 137 IRQ_TYPE_LEVEL_HIGH 0>;
+			phys = <&ufsphy>;
+			clocks = <&infracfg_ao CLK_INFRA_AO_AES_UFSFDE>,
+				 <&infracfg_ao CLK_INFRA_AO_AES>,
+				 <&infracfg_ao CLK_INFRA_AO_UFS_TICK>,
+				 <&infracfg_ao CLK_INFRA_AO_UNIPRO_SYS>,
+				 <&infracfg_ao CLK_INFRA_AO_UNIPRO_TICK>,
+				 <&infracfg_ao CLK_INFRA_AO_UFS_MP_SAP_B>,
+				 <&infracfg_ao CLK_INFRA_AO_UFS_TX_SYMBOL>,
+				 <&infracfg_ao CLK_INFRA_AO_PERI_UFS_MEM_SUB>;
+			clock-names = "ufs", "ufs_aes", "ufs_tick",
+					"unipro_sysclk", "unipro_tick",
+					"unipro_mp_bclk", "ufs_tx_symbol",
+					"ufs_mem_sub";
+			freq-table-hz = <0 0>, <0 0>, <0 0>,
+					<0 0>, <0 0>, <0 0>,
+					<0 0>, <0 0>;
+
+			mediatek,ufs-disable-mcq;
+			status = "disabled";
+		};
+
 		lvts_mcu: thermal-sensor@11278000 {
 			compatible = "mediatek,mt8195-lvts-mcu";
 			reg = <0 0x11278000 0 0x1000>;
@@ -3011,7 +3036,7 @@
 			#size-cells = <2>;
 		};
 
-		jpgdec-master {
+		jpeg-decoder@1a040000 {
 			compatible = "mediatek,mt8195-jpgdec";
 			power-domains = <&spm MT8195_POWER_DOMAIN_VDEC1>;
 			iommus = <&iommu_vdo M4U_PORT_L19_JPGDEC_WDMA0>,
@@ -3022,11 +3047,12 @@
 				 <&iommu_vdo M4U_PORT_L19_JPGDEC_BUFF_OFFSET0>;
 			#address-cells = <2>;
 			#size-cells = <2>;
-			ranges;
+			ranges = <0 0 0 0x1a040000 0 0x20000>,
+				 <1 0 0 0x1b040000 0 0x10000>;
 
-			jpgdec@1a040000 {
+			jpgdec@0,0 {
 				compatible = "mediatek,mt8195-jpgdec-hw";
-				reg = <0 0x1a040000 0 0x10000>;/* JPGDEC_C0 */
+				reg = <0 0 0 0x10000>;/* JPGDEC_C0 */
 				iommus = <&iommu_vdo M4U_PORT_L19_JPGDEC_WDMA0>,
 					 <&iommu_vdo M4U_PORT_L19_JPGDEC_BSDMA0>,
 					 <&iommu_vdo M4U_PORT_L19_JPGDEC_WDMA1>,
@@ -3039,9 +3065,9 @@
 				power-domains = <&spm MT8195_POWER_DOMAIN_VDEC0>;
 			};
 
-			jpgdec@1a050000 {
+			jpgdec@0,10000 {
 				compatible = "mediatek,mt8195-jpgdec-hw";
-				reg = <0 0x1a050000 0 0x10000>;/* JPGDEC_C1 */
+				reg = <0 0x10000 0 0x10000>;/* JPGDEC_C1 */
 				iommus = <&iommu_vdo M4U_PORT_L19_JPGDEC_WDMA0>,
 					 <&iommu_vdo M4U_PORT_L19_JPGDEC_BSDMA0>,
 					 <&iommu_vdo M4U_PORT_L19_JPGDEC_WDMA1>,
@@ -3054,9 +3080,9 @@
 				power-domains = <&spm MT8195_POWER_DOMAIN_VDEC1>;
 			};
 
-			jpgdec@1b040000 {
+			jpgdec@1,0 {
 				compatible = "mediatek,mt8195-jpgdec-hw";
-				reg = <0 0x1b040000 0 0x10000>;/* JPGDEC_C2 */
+				reg = <1 0 0 0x10000>;/* JPGDEC_C2 */
 				iommus = <&iommu_vpp M4U_PORT_L20_JPGDEC_WDMA0>,
 					 <&iommu_vpp M4U_PORT_L20_JPGDEC_BSDMA0>,
 					 <&iommu_vpp M4U_PORT_L20_JPGDEC_WDMA1>,
@@ -3085,7 +3111,7 @@
 		};
 
 
-		jpgenc-master {
+		jpeg-encoder@1a030000 {
 			compatible = "mediatek,mt8195-jpgenc";
 			power-domains = <&spm MT8195_POWER_DOMAIN_VENC_CORE1>;
 			iommus = <&iommu_vpp M4U_PORT_L20_JPGENC_Y_RDMA>,
@@ -3094,11 +3120,12 @@
 					<&iommu_vpp M4U_PORT_L20_JPGENC_BSDMA>;
 			#address-cells = <2>;
 			#size-cells = <2>;
-			ranges;
+			ranges = <0 0 0 0x1a030000 0 0x10000>,
+				 <1 0 0 0x1b030000 0 0x10000>;
 
-			jpgenc@1a030000 {
+			jpgenc@0,0 {
 				compatible = "mediatek,mt8195-jpgenc-hw";
-				reg = <0 0x1a030000 0 0x10000>;
+				reg = <0 0 0 0x10000>;
 				iommus = <&iommu_vdo M4U_PORT_L19_JPGENC_Y_RDMA>,
 						<&iommu_vdo M4U_PORT_L19_JPGENC_C_RDMA>,
 						<&iommu_vdo M4U_PORT_L19_JPGENC_Q_TABLE>,
@@ -3109,9 +3136,9 @@
 				power-domains = <&spm MT8195_POWER_DOMAIN_VENC>;
 			};
 
-			jpgenc@1b030000 {
+			jpgenc@1,0 {
 				compatible = "mediatek,mt8195-jpgenc-hw";
-				reg = <0 0x1b030000 0 0x10000>;
+				reg = <1 0 0 0x10000>;
 				iommus = <&iommu_vpp M4U_PORT_L20_JPGENC_Y_RDMA>,
 						<&iommu_vpp M4U_PORT_L20_JPGENC_C_RDMA>,
 						<&iommu_vpp M4U_PORT_L20_JPGENC_Q_TABLE>,
@@ -3143,6 +3170,23 @@
 			clocks = <&vdosys0 CLK_VDO0_DISP_OVL0>;
 			iommus = <&iommu_vdo M4U_PORT_L0_DISP_OVL0_RDMA0>;
 			mediatek,gce-client-reg = <&gce0 SUBSYS_1c00XXXX 0x0000 0x1000>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					ovl0_in: endpoint { };
+				};
+
+				port@1 {
+					reg = <1>;
+					ovl0_out: endpoint {
+						remote-endpoint = <&rdma0_in>;
+					};
+				};
+			};
 		};
 
 		rdma0: rdma@1c002000 {
@@ -3153,6 +3197,25 @@
 			clocks = <&vdosys0 CLK_VDO0_DISP_RDMA0>;
 			iommus = <&iommu_vdo M4U_PORT_L0_DISP_RDMA0>;
 			mediatek,gce-client-reg = <&gce0 SUBSYS_1c00XXXX 0x2000 0x1000>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					rdma0_in: endpoint {
+						remote-endpoint = <&ovl0_out>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					rdma0_out: endpoint {
+						remote-endpoint = <&color0_in>;
+					};
+				};
+			};
 		};
 
 		color0: color@1c003000 {
@@ -3162,6 +3225,25 @@
 			power-domains = <&spm MT8195_POWER_DOMAIN_VDOSYS0>;
 			clocks = <&vdosys0 CLK_VDO0_DISP_COLOR0>;
 			mediatek,gce-client-reg = <&gce0 SUBSYS_1c00XXXX 0x3000 0x1000>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					color0_in: endpoint {
+						remote-endpoint = <&rdma0_out>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					color0_out: endpoint {
+						remote-endpoint = <&ccorr0_in>;
+					};
+				};
+			};
 		};
 
 		ccorr0: ccorr@1c004000 {
@@ -3171,6 +3253,25 @@
 			power-domains = <&spm MT8195_POWER_DOMAIN_VDOSYS0>;
 			clocks = <&vdosys0 CLK_VDO0_DISP_CCORR0>;
 			mediatek,gce-client-reg = <&gce0 SUBSYS_1c00XXXX 0x4000 0x1000>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					ccorr0_in: endpoint {
+						remote-endpoint = <&color0_out>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					ccorr0_out: endpoint {
+						remote-endpoint = <&aal0_in>;
+					};
+				};
+			};
 		};
 
 		aal0: aal@1c005000 {
@@ -3180,6 +3281,25 @@
 			power-domains = <&spm MT8195_POWER_DOMAIN_VDOSYS0>;
 			clocks = <&vdosys0 CLK_VDO0_DISP_AAL0>;
 			mediatek,gce-client-reg = <&gce0 SUBSYS_1c00XXXX 0x5000 0x1000>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					aal0_in: endpoint {
+						remote-endpoint = <&ccorr0_out>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					aal0_out: endpoint {
+						remote-endpoint = <&gamma0_in>;
+					};
+				};
+			};
 		};
 
 		gamma0: gamma@1c006000 {
@@ -3189,6 +3309,25 @@
 			power-domains = <&spm MT8195_POWER_DOMAIN_VDOSYS0>;
 			clocks = <&vdosys0 CLK_VDO0_DISP_GAMMA0>;
 			mediatek,gce-client-reg = <&gce0 SUBSYS_1c00XXXX 0x6000 0x1000>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					gamma0_in: endpoint {
+						remote-endpoint = <&aal0_out>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					gamma0_out: endpoint {
+						remote-endpoint = <&dither0_in>;
+					};
+				};
+			};
 		};
 
 		dither0: dither@1c007000 {
@@ -3198,6 +3337,23 @@
 			power-domains = <&spm MT8195_POWER_DOMAIN_VDOSYS0>;
 			clocks = <&vdosys0 CLK_VDO0_DISP_DITHER0>;
 			mediatek,gce-client-reg = <&gce0 SUBSYS_1c00XXXX 0x7000 0x1000>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					dither0_in: endpoint {
+						remote-endpoint = <&gamma0_out>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					dither0_out: endpoint { };
+				};
+			};
 		};
 
 		dsi0: dsi@1c008000 {
@@ -3250,6 +3406,7 @@
 			compatible = "mediatek,mt8195-dp-intf";
 			reg = <0 0x1c015000 0 0x1000>;
 			interrupts = <GIC_SPI 657 IRQ_TYPE_LEVEL_HIGH 0>;
+			power-domains = <&spm MT8195_POWER_DOMAIN_VDOSYS0>;
 			clocks = <&vdosys0 CLK_VDO0_DP_INTF0_DP_INTF>,
 				 <&vdosys0  CLK_VDO0_DP_INTF0>,
 				 <&apmixedsys CLK_APMIXED_TVDPLL1>;

@@ -39,26 +39,26 @@ nvkm_pci_msi_rearm(struct nvkm_device *device)
 u32
 nvkm_pci_rd32(struct nvkm_pci *pci, u16 addr)
 {
-	return pci->func->rd32(pci, addr);
+	return nvkm_rd32(pci->subdev.device, pci->func->cfg.addr + addr);
 }
 
 void
 nvkm_pci_wr08(struct nvkm_pci *pci, u16 addr, u8 data)
 {
-	pci->func->wr08(pci, addr, data);
+	nvkm_wr08(pci->subdev.device, pci->func->cfg.addr + addr, data);
 }
 
 void
 nvkm_pci_wr32(struct nvkm_pci *pci, u16 addr, u32 data)
 {
-	pci->func->wr32(pci, addr, data);
+	nvkm_wr32(pci->subdev.device, pci->func->cfg.addr + addr, data);
 }
 
 u32
 nvkm_pci_mask(struct nvkm_pci *pci, u16 addr, u32 mask, u32 value)
 {
-	u32 data = pci->func->rd32(pci, addr);
-	pci->func->wr32(pci, addr, (data & ~mask) | value);
+	u32 data = nvkm_pci_rd32(pci, addr);
+	nvkm_pci_wr32(pci, addr, (data & ~mask) | value);
 	return data;
 }
 
@@ -74,7 +74,7 @@ nvkm_pci_rom_shadow(struct nvkm_pci *pci, bool shadow)
 }
 
 static int
-nvkm_pci_fini(struct nvkm_subdev *subdev, bool suspend)
+nvkm_pci_fini(struct nvkm_subdev *subdev, enum nvkm_suspend_state suspend)
 {
 	struct nvkm_pci *pci = nvkm_pci(subdev);
 

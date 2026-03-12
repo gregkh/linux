@@ -20,6 +20,7 @@
 #include <linux/debugfs.h>
 
 #include <asm/cpu_device_id.h>
+#include <asm/msr.h>
 
 #include "thermal_interrupt.h"
 
@@ -528,7 +529,7 @@ static void __exit pkg_temp_thermal_exit(void)
 }
 module_exit(pkg_temp_thermal_exit)
 
-MODULE_IMPORT_NS(INTEL_TCC);
+MODULE_IMPORT_NS("INTEL_TCC");
 MODULE_DESCRIPTION("X86 PKG TEMP Thermal Driver");
 MODULE_AUTHOR("Srinivas Pandruvada <srinivas.pandruvada@linux.intel.com>");
 MODULE_LICENSE("GPL v2");

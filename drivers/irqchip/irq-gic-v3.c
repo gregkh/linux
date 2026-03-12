@@ -190,12 +190,12 @@ static void __init gic_prio_init(void)
 
 	/*
 	 * How priority values are used by the GIC depends on two things:
-	 * the security state of the GIC (controlled by the GICD_CTRL.DS bit)
+	 * the security state of the GIC (controlled by the GICD_CTLR.DS bit)
 	 * and if Group 0 interrupts can be delivered to Linux in the non-secure
 	 * world as FIQs (controlled by the SCR_EL3.FIQ bit). These affect the
 	 * way priorities are presented in ICC_PMR_EL1 and in the distributor:
 	 *
-	 * GICD_CTRL.DS | SCR_EL3.FIQ | ICC_PMR_EL1 | Distributor
+	 * GICD_CTLR.DS | SCR_EL3.FIQ | ICC_PMR_EL1 | Distributor
 	 * -------------------------------------------------------
 	 *      1       |      -      |  unchanged  |  unchanged
 	 * -------------------------------------------------------
@@ -223,7 +223,7 @@ static void __init gic_prio_init(void)
 		dist_prio_nmi = __gicv3_prio_to_ns(dist_prio_nmi);
 	}
 
-	pr_info("GICD_CTRL.DS=%d, SCR_EL3.FIQ=%d\n",
+	pr_info("GICD_CTLR.DS=%d, SCR_EL3.FIQ=%d\n",
 		cpus_have_security_disabled,
 		!cpus_have_group0);
 }
@@ -841,7 +841,7 @@ static void gic_deactivate_unhandled(u32 irqnr)
  *     register state is not stale, as these may have been indirectly written
  *     *after* exception entry.
  *
- * (2) Deactivate the interrupt when EOI mode 1 is in use.
+ * (2) Execute an interrupt priority drop when EOI mode 1 is in use.
  */
 static inline void gic_complete_ack(u32 irqnr)
 {
@@ -1766,8 +1766,9 @@ static int gic_irq_domain_select(struct irq_domain *d,
 				 struct irq_fwspec *fwspec,
 				 enum irq_domain_bus_token bus_token)
 {
-	unsigned int type, ret, ppi_idx;
+	unsigned int type, ppi_idx;
 	irq_hw_number_t hwirq;
+	int ret;
 
 	/* Not for us */
 	if (fwspec->fwnode != d->fwnode)
@@ -1826,7 +1827,7 @@ static int partition_domain_translate(struct irq_domain *d,
 
 	ppi_idx = __gic_get_ppi_index(ppi_intid);
 	ret = partition_translate_id(gic_data.ppi_descs[ppi_idx],
-				     of_node_to_fwnode(np));
+				     of_fwnode_handle(np));
 	if (ret < 0)
 		return ret;
 
@@ -2192,7 +2193,7 @@ static void __init gic_populate_ppi_partitions(struct device_node *gic_node)
 
 		part = &parts[part_idx];
 
-		part->partition_id = of_node_to_fwnode(child_part);
+		part->partition_id = of_fwnode_handle(child_part);
 
 		pr_info("GIC: PPI partition %pOFn[%d] { ",
 			child_part, part_idx);

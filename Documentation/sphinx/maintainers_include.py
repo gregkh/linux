@@ -3,7 +3,7 @@
 # -*- coding: utf-8; mode: python -*-
 # pylint: disable=R0903, C0330, R0914, R0912, E0401
 
-u"""
+"""
     maintainers-include
     ~~~~~~~~~~~~~~~~~~~
 
@@ -39,7 +39,7 @@ def setup(app):
     )
 
 class MaintainersInclude(Include):
-    u"""MaintainersInclude (``maintainers-include``) directive"""
+    """MaintainersInclude (``maintainers-include``) directive"""
     required_arguments = 0
 
     def parse_maintainers(self, path):

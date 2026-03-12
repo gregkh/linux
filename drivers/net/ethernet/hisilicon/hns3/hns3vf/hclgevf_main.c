@@ -130,12 +130,10 @@ static int hclgevf_get_sset_count(struct hnae3_handle *handle, int strset)
 }
 
 static void hclgevf_get_strings(struct hnae3_handle *handle, u32 strset,
-				u8 *data)
+				u8 **data)
 {
-	u8 *p = (char *)data;
-
 	if (strset == ETH_SS_STATS)
-		p = hclge_comm_tqps_get_strings(handle, p);
+		hclge_comm_tqps_get_strings(handle, data);
 }
 
 static void hclgevf_get_stats(struct hnae3_handle *handle, u64 *data)
@@ -608,7 +606,7 @@ static int hclgevf_set_rss(struct hnae3_handle *handle, const u32 *indir,
 }
 
 static int hclgevf_set_rss_tuple(struct hnae3_handle *handle,
-				 struct ethtool_rxnfc *nfc)
+				 const struct ethtool_rxfh_fields *nfc)
 {
 	struct hclgevf_dev *hdev = hclgevf_ae_get_hdev(handle);
 	int ret;
@@ -626,7 +624,7 @@ static int hclgevf_set_rss_tuple(struct hnae3_handle *handle,
 }
 
 static int hclgevf_get_rss_tuple(struct hnae3_handle *handle,
-				 struct ethtool_rxnfc *nfc)
+				 struct ethtool_rxfh_fields *nfc)
 {
 	struct hclgevf_dev *hdev = hclgevf_ae_get_hdev(handle);
 	u8 tuple_sets;
@@ -2059,7 +2057,7 @@ static enum hclgevf_evt_cause hclgevf_check_evt_cause(struct hclgevf_dev *hdev,
 
 static void hclgevf_reset_timer(struct timer_list *t)
 {
-	struct hclgevf_dev *hdev = from_timer(hdev, t, reset_timer);
+	struct hclgevf_dev *hdev = timer_container_of(hdev, t, reset_timer);
 
 	hclgevf_clear_event_cause(hdev, HCLGEVF_VECTOR0_EVENT_RST);
 	hclgevf_reset_task_schedule(hdev);
@@ -2467,7 +2465,7 @@ static int hclgevf_init_nic_client_instance(struct hnae3_ae_dev *ae_dev,
 					    struct hnae3_client *client)
 {
 	struct hclgevf_dev *hdev = ae_dev->priv;
-	int rst_cnt = hdev->rst_stats.rst_cnt;
+	u32 rst_cnt = hdev->rst_stats.rst_cnt;
 	int ret;
 
 	ret = client->ops->init_instance(&hdev->nic);
@@ -2627,7 +2625,7 @@ static int hclgevf_pci_init(struct hclgevf_dev *hdev)
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (ret) {
-		dev_err(&pdev->dev, "can't set consistent PCI DMA, exiting");
+		dev_err(&pdev->dev, "can't set consistent PCI DMA, exiting\n");
 		goto err_disable_device;
 	}
 

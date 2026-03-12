@@ -47,7 +47,6 @@ static const struct regmap_bus gsc_hwmon_regmap_bus = {
 static const struct regmap_config gsc_hwmon_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.cache_type = REGCACHE_NONE,
 };
 
 static ssize_t pwm_auto_point_temp_show(struct device *dev,
@@ -231,15 +230,8 @@ gsc_hwmon_read_string(struct device *dev, enum hwmon_sensor_types type,
 	return 0;
 }
 
-static umode_t
-gsc_hwmon_is_visible(const void *_data, enum hwmon_sensor_types type, u32 attr,
-		     int ch)
-{
-	return 0444;
-}
-
 static const struct hwmon_ops gsc_hwmon_ops = {
-	.is_visible = gsc_hwmon_is_visible,
+	.visible = 0444,
 	.read = gsc_hwmon_read,
 	.read_string = gsc_hwmon_read_string,
 };

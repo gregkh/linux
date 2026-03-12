@@ -9,6 +9,7 @@
  *
  */
 #include <linux/fs.h>
+#include <linux/namei.h>
 #include <linux/pagemap.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
@@ -78,7 +79,7 @@ cifs_prime_dcache(struct dentry *parent, struct qstr *name,
 
 	cifs_dbg(FYI, "%s: for %s\n", __func__, name->name);
 
-	dentry = d_hash_and_lookup(parent, name);
+	dentry = try_lookup_noperm(name, parent);
 	if (!dentry) {
 		/*
 		 * If we know that the inode will need to be revalidated
@@ -873,39 +874,42 @@ static void finished_cached_dirents_count(struct cached_dirents *cde,
 	cde->is_valid = 1;
 }
 
-static void add_cached_dirent(struct cached_dirents *cde,
-			      struct dir_context *ctx,
-			      const char *name, int namelen,
-			      struct cifs_fattr *fattr,
-				  struct file *file)
+static bool add_cached_dirent(struct cached_dirents *cde,
+			      struct dir_context *ctx, const char *name,
+			      int namelen, struct cifs_fattr *fattr,
+			      struct file *file)
 {
 	struct cached_dirent *de;
 
 	if (cde->file != file)
-		return;
+		return false;
 	if (cde->is_valid || cde->is_failed)
-		return;
+		return false;
 	if (ctx->pos != cde->pos) {
 		cde->is_failed = 1;
-		return;
+		return false;
 	}
 	de = kzalloc(sizeof(*de), GFP_ATOMIC);
 	if (de == NULL) {
 		cde->is_failed = 1;
-		return;
+		return false;
 	}
 	de->namelen = namelen;
 	de->name = kstrndup(name, namelen, GFP_ATOMIC);
 	if (de->name == NULL) {
 		kfree(de);
 		cde->is_failed = 1;
-		return;
+		return false;
 	}
 	de->pos = ctx->pos;
 
 	memcpy(&de->fattr, fattr, sizeof(struct cifs_fattr));
 
 	list_add_tail(&de->entry, &cde->entries);
+	/* update accounting */
+	cde->entries_count++;
+	cde->bytes_used += sizeof(*de) + (size_t)namelen + 1;
+	return true;
 }
 
 static bool cifs_dir_emit(struct dir_context *ctx,
@@ -914,7 +918,8 @@ static bool cifs_dir_emit(struct dir_context *ctx,
 			  struct cached_fid *cfid,
 			  struct file *file)
 {
-	bool rc;
+	size_t delta_bytes = 0;
+	bool rc, added = false;
 	ino_t ino = cifs_uniqueid_to_ino_t(fattr->cf_uniqueid);
 
 	rc = dir_emit(ctx, name, namelen, ino, fattr->cf_dtype);
@@ -922,10 +927,20 @@ static bool cifs_dir_emit(struct dir_context *ctx,
 		return rc;
 
 	if (cfid) {
+		/* Cost of this entry */
+		delta_bytes = sizeof(struct cached_dirent) + (size_t)namelen + 1;
+
 		mutex_lock(&cfid->dirents.de_mutex);
-		add_cached_dirent(&cfid->dirents, ctx, name, namelen,
-				  fattr, file);
+		added = add_cached_dirent(&cfid->dirents, ctx, name, namelen,
+					  fattr, file);
 		mutex_unlock(&cfid->dirents.de_mutex);
+
+		if (added) {
+			/* per-tcon then global for consistency with free path */
+			atomic64_add((long long)delta_bytes, &cfid->cfids->total_dirents_bytes);
+			atomic_long_inc(&cfid->cfids->total_dirents_entries);
+			atomic64_add((long long)delta_bytes, &cifs_dircache_bytes_used);
+		}
 	}
 
 	return rc;

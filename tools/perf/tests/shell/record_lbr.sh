@@ -1,5 +1,5 @@
 #!/bin/bash
-# perf record LBR tests
+# perf record LBR tests (exclusive)
 # SPDX-License-Identifier: GPL-2.0
 
 set -e
@@ -99,7 +99,7 @@ lbr_test() {
     return
   fi
 
-  zero_nr=$(echo "$out" | grep -c 'branch stack: nr:0' || true)
+  zero_nr=$(echo "$out" | grep -A3 'branch stack: nr:0' | grep thread | grep -cv swapper || true)
   r=$(($zero_nr * 100 / $bs_nr))
   if [ $r -gt $threshold ]; then
     echo "$test [Failed empty br stack ratio exceed $threshold%: $r%]"

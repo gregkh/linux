@@ -19,6 +19,8 @@
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_kunit_helpers.h>
 
+MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");
+
 #define TEST_SIZE		SZ_1M
 #define TEST_BYTE		0xae
 
@@ -32,6 +34,9 @@ KUNIT_DEFINE_ACTION_WRAPPER(sg_free_table_wrapper, sg_free_table,
 			    struct sg_table *);
 
 KUNIT_DEFINE_ACTION_WRAPPER(drm_gem_shmem_free_wrapper, drm_gem_shmem_free,
+			    struct drm_gem_shmem_object *);
+
+KUNIT_DEFINE_ACTION_WRAPPER(drm_gem_shmem_unpin_wrapper, drm_gem_shmem_unpin,
 			    struct drm_gem_shmem_object *);
 
 /*
@@ -134,7 +139,7 @@ static void drm_gem_shmem_test_pin_pages(struct kunit *test)
 	shmem = drm_gem_shmem_create(drm_dev, TEST_SIZE);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, shmem);
 	KUNIT_EXPECT_NULL(test, shmem->pages);
-	KUNIT_EXPECT_EQ(test, shmem->pages_use_count, 0);
+	KUNIT_EXPECT_EQ(test, refcount_read(&shmem->pages_use_count), 0);
 
 	ret = kunit_add_action_or_reset(test, drm_gem_shmem_free_wrapper, shmem);
 	KUNIT_ASSERT_EQ(test, ret, 0);
@@ -142,14 +147,14 @@ static void drm_gem_shmem_test_pin_pages(struct kunit *test)
 	ret = drm_gem_shmem_pin(shmem);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_ASSERT_NOT_NULL(test, shmem->pages);
-	KUNIT_EXPECT_EQ(test, shmem->pages_use_count, 1);
+	KUNIT_EXPECT_EQ(test, refcount_read(&shmem->pages_use_count), 1);
 
 	for (i = 0; i < (shmem->base.size >> PAGE_SHIFT); i++)
 		KUNIT_ASSERT_NOT_NULL(test, shmem->pages[i]);
 
 	drm_gem_shmem_unpin(shmem);
 	KUNIT_EXPECT_NULL(test, shmem->pages);
-	KUNIT_EXPECT_EQ(test, shmem->pages_use_count, 0);
+	KUNIT_EXPECT_EQ(test, refcount_read(&shmem->pages_use_count), 0);
 }
 
 /*
@@ -168,7 +173,7 @@ static void drm_gem_shmem_test_vmap(struct kunit *test)
 	shmem = drm_gem_shmem_create(drm_dev, TEST_SIZE);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, shmem);
 	KUNIT_EXPECT_NULL(test, shmem->vaddr);
-	KUNIT_EXPECT_EQ(test, shmem->vmap_use_count, 0);
+	KUNIT_EXPECT_EQ(test, refcount_read(&shmem->vmap_use_count), 0);
 
 	ret = kunit_add_action_or_reset(test, drm_gem_shmem_free_wrapper, shmem);
 	KUNIT_ASSERT_EQ(test, ret, 0);
@@ -177,7 +182,7 @@ static void drm_gem_shmem_test_vmap(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_ASSERT_NOT_NULL(test, shmem->vaddr);
 	KUNIT_ASSERT_FALSE(test, iosys_map_is_null(&map));
-	KUNIT_EXPECT_EQ(test, shmem->vmap_use_count, 1);
+	KUNIT_EXPECT_EQ(test, refcount_read(&shmem->vmap_use_count), 1);
 
 	iosys_map_memset(&map, 0, TEST_BYTE, TEST_SIZE);
 	for (i = 0; i < TEST_SIZE; i++)
@@ -185,7 +190,7 @@ static void drm_gem_shmem_test_vmap(struct kunit *test)
 
 	drm_gem_shmem_vunmap(shmem, &map);
 	KUNIT_EXPECT_NULL(test, shmem->vaddr);
-	KUNIT_EXPECT_EQ(test, shmem->vmap_use_count, 0);
+	KUNIT_EXPECT_EQ(test, refcount_read(&shmem->vmap_use_count), 0);
 }
 
 /*
@@ -210,6 +215,9 @@ static void drm_gem_shmem_test_get_sg_table(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, ret, 0);
 
 	ret = drm_gem_shmem_pin(shmem);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+
+	ret = kunit_add_action_or_reset(test, drm_gem_shmem_unpin_wrapper, shmem);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 
 	sgt = drm_gem_shmem_get_sg_table(shmem);
@@ -254,7 +262,7 @@ static void drm_gem_shmem_test_get_pages_sgt(struct kunit *test)
 	sgt = drm_gem_shmem_get_pages_sgt(shmem);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, sgt);
 	KUNIT_ASSERT_NOT_NULL(test, shmem->pages);
-	KUNIT_EXPECT_EQ(test, shmem->pages_use_count, 1);
+	KUNIT_EXPECT_EQ(test, refcount_read(&shmem->pages_use_count), 1);
 	KUNIT_EXPECT_PTR_EQ(test, sgt, shmem->sgt);
 
 	for_each_sgtable_sg(sgt, sg, si) {
@@ -332,7 +340,9 @@ static void drm_gem_shmem_test_purge(struct kunit *test)
 	ret = drm_gem_shmem_is_purgeable(shmem);
 	KUNIT_EXPECT_TRUE(test, ret);
 
-	drm_gem_shmem_purge(shmem);
+	ret = drm_gem_shmem_purge(shmem);
+	KUNIT_ASSERT_EQ(test, ret, 0);
+
 	KUNIT_EXPECT_NULL(test, shmem->pages);
 	KUNIT_EXPECT_NULL(test, shmem->sgt);
 	KUNIT_EXPECT_EQ(test, shmem->madv, -1);

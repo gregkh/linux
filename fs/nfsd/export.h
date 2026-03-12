@@ -88,7 +88,7 @@ struct svc_expkey {
 	struct cache_head	h;
 
 	struct auth_domain *	ek_client;
-	int			ek_fsidtype;
+	u8			ek_fsidtype;
 	u32			ek_fsid[6];
 
 	struct path		ek_path;
@@ -114,7 +114,7 @@ int			nfsd_export_init(struct net *);
 void			nfsd_export_shutdown(struct net *);
 void			nfsd_export_flush(struct net *);
 struct svc_export *	rqst_exp_get_by_name(struct svc_rqst *,
-					     struct path *);
+					     const struct path *);
 struct svc_export *	rqst_exp_parent(struct svc_rqst *,
 					struct path *);
 struct svc_export *	rqst_find_fsidzero_export(struct svc_rqst *);

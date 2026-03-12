@@ -63,7 +63,7 @@ static void wacom_force_proxout(struct wacom_wac *wacom_wac)
 
 void wacom_idleprox_timeout(struct timer_list *list)
 {
-	struct wacom *wacom = from_timer(wacom, list, idleprox_timer);
+	struct wacom *wacom = timer_container_of(wacom, list, idleprox_timer);
 	struct wacom_wac *wacom_wac = &wacom->wacom_wac;
 
 	if (!wacom_wac->hid_data.sense_state) {
@@ -1202,11 +1202,9 @@ static void wacom_intuos_bt_process_data(struct wacom_wac *wacom,
 
 static int wacom_intuos_bt_irq(struct wacom_wac *wacom, size_t len)
 {
-	unsigned char data[WACOM_PKGLEN_MAX];
+	u8 *data = kmemdup(wacom->data, len, GFP_KERNEL);
 	int i = 1;
 	unsigned power_raw, battery_capacity, bat_charging, ps_connected;
-
-	memcpy(data, wacom->data, len);
 
 	switch (data[0]) {
 	case 0x04:
@@ -1231,8 +1229,10 @@ static int wacom_intuos_bt_irq(struct wacom_wac *wacom, size_t len)
 		dev_dbg(wacom->pen_input->dev.parent,
 				"Unknown report: %d,%d size:%zu\n",
 				data[0], data[1], len);
-		return 0;
+		break;
 	}
+
+	kfree(data);
 	return 0;
 }
 
@@ -2423,9 +2423,11 @@ static void wacom_wac_pen_event(struct hid_device *hdev, struct hid_field *field
 			wacom_wac->hid_data.sense_state = value;
 		return;
 	case HID_DG_INVERT:
-		wacom_wac->hid_data.invert_state = value;
+		wacom_wac->hid_data.eraser |= value;
 		return;
 	case HID_DG_ERASER:
+		wacom_wac->hid_data.eraser |= value;
+		fallthrough;
 	case HID_DG_TIPSWITCH:
 		wacom_wac->hid_data.tipswitch |= value;
 		return;
@@ -2566,7 +2568,7 @@ static void wacom_wac_pen_report(struct hid_device *hdev,
 
 	if (entering_range) { /* first in range */
 		/* Going into range select tool */
-		if (wacom_wac->hid_data.invert_state)
+		if (wacom_wac->hid_data.eraser)
 			wacom_wac->tool[0] = BTN_TOOL_RUBBER;
 		else if (wacom_wac->features.quirks & WACOM_QUIRK_AESPEN)
 			wacom_wac->tool[0] = BTN_TOOL_PEN;
@@ -2620,6 +2622,7 @@ static void wacom_wac_pen_report(struct hid_device *hdev,
 		}
 
 		wacom_wac->hid_data.tipswitch = false;
+		wacom_wac->hid_data.eraser = false;
 
 		input_sync(input);
 	}

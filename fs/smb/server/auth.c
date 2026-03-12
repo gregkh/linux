@@ -20,6 +20,7 @@
 #include "glob.h"
 
 #include <linux/fips.h>
+#include <crypto/arc4.h>
 #include <crypto/des.h>
 
 #include "server.h"
@@ -29,7 +30,6 @@
 #include "mgmt/user_config.h"
 #include "crypto_ctx.h"
 #include "transport_ipc.h"
-#include "../common/arc4.h"
 
 /*
  * Fixed format data defining GSS header and fixed string
@@ -365,10 +365,9 @@ int ksmbd_decode_ntlmssp_auth_blob(struct authenticate_message *authblob,
 		if (!ctx_arc4)
 			return -ENOMEM;
 
-		cifs_arc4_setkey(ctx_arc4, sess->sess_key,
-				 SMB2_NTLMV2_SESSKEY_SIZE);
-		cifs_arc4_crypt(ctx_arc4, sess->sess_key,
-				(char *)authblob + sess_key_off, sess_key_len);
+		arc4_setkey(ctx_arc4, sess->sess_key, SMB2_NTLMV2_SESSKEY_SIZE);
+		arc4_crypt(ctx_arc4, sess->sess_key,
+			   (char *)authblob + sess_key_off, sess_key_len);
 		kfree_sensitive(ctx_arc4);
 	}
 
@@ -970,40 +969,6 @@ int ksmbd_gen_preauth_integrity_hash(struct ksmbd_conn *conn, char *buf,
 	}
 
 	rc = crypto_shash_final(CRYPTO_SHA512(ctx), pi_hash);
-	if (rc) {
-		ksmbd_debug(AUTH, "Could not generate hash err : %d\n", rc);
-		goto out;
-	}
-out:
-	ksmbd_release_crypto_ctx(ctx);
-	return rc;
-}
-
-int ksmbd_gen_sd_hash(struct ksmbd_conn *conn, char *sd_buf, int len,
-		      __u8 *pi_hash)
-{
-	int rc;
-	struct ksmbd_crypto_ctx *ctx = NULL;
-
-	ctx = ksmbd_crypto_ctx_find_sha256();
-	if (!ctx) {
-		ksmbd_debug(AUTH, "could not alloc sha256\n");
-		return -ENOMEM;
-	}
-
-	rc = crypto_shash_init(CRYPTO_SHA256(ctx));
-	if (rc) {
-		ksmbd_debug(AUTH, "could not init shashn");
-		goto out;
-	}
-
-	rc = crypto_shash_update(CRYPTO_SHA256(ctx), sd_buf, len);
-	if (rc) {
-		ksmbd_debug(AUTH, "could not update with n\n");
-		goto out;
-	}
-
-	rc = crypto_shash_final(CRYPTO_SHA256(ctx), pi_hash);
 	if (rc) {
 		ksmbd_debug(AUTH, "Could not generate hash err : %d\n", rc);
 		goto out;

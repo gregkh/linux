@@ -220,12 +220,12 @@ static void prepare_frame_for_deferred_tx(struct ieee80211_sub_if_data *sdata,
 /**
  * mesh_path_error_tx - Sends a PERR mesh management frame
  *
+ * @sdata: local mesh subif
  * @ttl: allowed remaining hops
  * @target: broken destination
  * @target_sn: SN of the broken destination
  * @target_rcode: reason code for this PERR
  * @ra: node this frame is addressed to
- * @sdata: local mesh subif
  *
  * Note: This function may be called with driver locks taken that the driver
  * also acquires in the TX path.  To avoid a deadlock we don't transmit the
@@ -1145,8 +1145,8 @@ enddiscovery:
 /**
  * mesh_nexthop_resolve - lookup next hop; conditionally start path discovery
  *
- * @skb: 802.11 frame to be sent
  * @sdata: network subif the frame will be sent through
+ * @skb: 802.11 frame to be sent
  *
  * Lookup next hop for given skb and start path discovery if no
  * forwarding information is found.
@@ -1253,8 +1253,8 @@ void mesh_path_refresh(struct ieee80211_sub_if_data *sdata,
  * this function is considered "using" the associated mpath, so preempt a path
  * refresh if this mpath expires soon.
  *
- * @skb: 802.11 frame to be sent
  * @sdata: network subif the frame will be sent through
+ * @skb: 802.11 frame to be sent
  *
  * Returns: 0 if the next hop was found. Nonzero otherwise.
  */
@@ -1292,7 +1292,7 @@ int mesh_nexthop_lookup(struct ieee80211_sub_if_data *sdata,
 
 void mesh_path_timer(struct timer_list *t)
 {
-	struct mesh_path *mpath = from_timer(mpath, t, timer);
+	struct mesh_path *mpath = timer_container_of(mpath, t, timer);
 	struct ieee80211_sub_if_data *sdata = mpath->sdata;
 	int ret;
 

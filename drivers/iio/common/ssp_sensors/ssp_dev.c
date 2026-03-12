@@ -167,7 +167,7 @@ static void ssp_wdt_work_func(struct work_struct *work)
 
 static void ssp_wdt_timer_func(struct timer_list *t)
 {
-	struct ssp_data *data = from_timer(data, t, wdt_timer);
+	struct ssp_data *data = timer_container_of(data, t, wdt_timer);
 
 	switch (data->fw_dl_state) {
 	case SSP_FW_DL_STATE_FAIL:
@@ -190,7 +190,7 @@ static void ssp_enable_wdt_timer(struct ssp_data *data)
 
 static void ssp_disable_wdt_timer(struct ssp_data *data)
 {
-	del_timer_sync(&data->wdt_timer);
+	timer_delete_sync(&data->wdt_timer);
 	cancel_work_sync(&data->work_wdt);
 }
 
@@ -205,7 +205,7 @@ u32 ssp_get_sensor_delay(struct ssp_data *data, enum ssp_sensor_type type)
 {
 	return data->delay_buf[type];
 }
-EXPORT_SYMBOL_NS(ssp_get_sensor_delay, IIO_SSP_SENSORS);
+EXPORT_SYMBOL_NS(ssp_get_sensor_delay, "IIO_SSP_SENSORS");
 
 /**
  * ssp_enable_sensor() - enables data acquisition for sensor
@@ -267,7 +267,7 @@ int ssp_enable_sensor(struct ssp_data *data, enum ssp_sensor_type type,
 derror:
 	return ret;
 }
-EXPORT_SYMBOL_NS(ssp_enable_sensor, IIO_SSP_SENSORS);
+EXPORT_SYMBOL_NS(ssp_enable_sensor, "IIO_SSP_SENSORS");
 
 /**
  * ssp_change_delay() - changes data acquisition for sensor
@@ -298,7 +298,7 @@ int ssp_change_delay(struct ssp_data *data, enum ssp_sensor_type type,
 
 	return 0;
 }
-EXPORT_SYMBOL_NS(ssp_change_delay, IIO_SSP_SENSORS);
+EXPORT_SYMBOL_NS(ssp_change_delay, "IIO_SSP_SENSORS");
 
 /**
  * ssp_disable_sensor() - disables sensor
@@ -335,7 +335,7 @@ int ssp_disable_sensor(struct ssp_data *data, enum ssp_sensor_type type)
 
 	return 0;
 }
-EXPORT_SYMBOL_NS(ssp_disable_sensor, IIO_SSP_SENSORS);
+EXPORT_SYMBOL_NS(ssp_disable_sensor, "IIO_SSP_SENSORS");
 
 static irqreturn_t ssp_irq_thread_fn(int irq, void *dev_id)
 {
@@ -434,7 +434,7 @@ static const struct of_device_id ssp_of_match[] = {
 		.compatible	= "samsung,sensorhub-thermostat",
 		.data		= &ssp_thermostat_info,
 	},
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ssp_of_match);
 
@@ -478,7 +478,7 @@ void ssp_register_consumer(struct iio_dev *indio_dev, enum ssp_sensor_type type)
 
 	data->sensor_devs[type] = indio_dev;
 }
-EXPORT_SYMBOL_NS(ssp_register_consumer, IIO_SSP_SENSORS);
+EXPORT_SYMBOL_NS(ssp_register_consumer, "IIO_SSP_SENSORS");
 
 static int ssp_probe(struct spi_device *spi)
 {
@@ -591,7 +591,7 @@ static void ssp_remove(struct spi_device *spi)
 
 	free_irq(data->spi->irq, data);
 
-	del_timer_sync(&data->wdt_timer);
+	timer_delete_sync(&data->wdt_timer);
 	cancel_work_sync(&data->work_wdt);
 
 	mutex_destroy(&data->comm_lock);

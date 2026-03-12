@@ -164,9 +164,6 @@ struct mapped_device {
 #define DMF_EMULATE_ZONE_APPEND 9
 #define DMF_QUEUE_STOPPED 10
 
-void disable_discard(struct mapped_device *md);
-void disable_write_zeroes(struct mapped_device *md);
-
 static inline sector_t dm_get_size(struct mapped_device *md)
 {
 	return get_capacity(md->disk);
@@ -295,6 +292,7 @@ struct dm_io {
 	struct dm_io *next;
 	struct dm_stats_aux stats_aux;
 	blk_status_t status;
+	bool requeue_flush_with_data;
 	atomic_t io_count;
 	struct mapped_device *md;
 

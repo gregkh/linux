@@ -99,7 +99,7 @@ static int xts_xor_tweak(struct skcipher_request *req, bool second_pass,
 
 	while (w.nbytes) {
 		unsigned int avail = w.nbytes;
-		le128 *wsrc;
+		const le128 *wsrc;
 		le128 *wdst;
 
 		wsrc = w.src.virt.addr;
@@ -466,11 +466,11 @@ static void __exit xts_module_exit(void)
 	crypto_unregister_template(&xts_tmpl);
 }
 
-subsys_initcall(xts_module_init);
+module_init(xts_module_init);
 module_exit(xts_module_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("XTS block cipher mode");
 MODULE_ALIAS_CRYPTO("xts");
-MODULE_IMPORT_NS(CRYPTO_INTERNAL);
+MODULE_IMPORT_NS("CRYPTO_INTERNAL");
 MODULE_SOFTDEP("pre: ecb");

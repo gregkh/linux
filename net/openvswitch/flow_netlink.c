@@ -1901,7 +1901,7 @@ int ovs_nla_get_identifier(struct sw_flow_id *sfid, const struct nlattr *ufid,
 
 u32 ovs_nla_get_ufid_flags(const struct nlattr *attr)
 {
-	return attr ? nla_get_u32(attr) : 0;
+	return nla_get_u32_default(attr, 0);
 }
 
 /**
@@ -3008,7 +3008,8 @@ static int validate_userspace(const struct nlattr *attr)
 	struct nlattr *a[OVS_USERSPACE_ATTR_MAX + 1];
 	int error;
 
-	error = nla_parse_nested_deprecated(a, OVS_USERSPACE_ATTR_MAX, attr,
+	error = nla_parse_deprecated_strict(a, OVS_USERSPACE_ATTR_MAX,
+					    nla_data(attr), nla_len(attr),
 					    userspace_policy, NULL);
 	if (error)
 		return error;

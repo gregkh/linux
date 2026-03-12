@@ -69,7 +69,7 @@ int kvm_arch_vcpu_should_kick(struct kvm_vcpu *vcpu)
 
 /*
  * Common checks before entering the guest world.  Call with interrupts
- * disabled.
+ * enabled.
  *
  * returns:
  *
@@ -609,9 +609,6 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 				r = 8 | 4 | 2 | 1;
 		}
 		break;
-	case KVM_CAP_PPC_RMA:
-		r = 0;
-		break;
 	case KVM_CAP_PPC_HWRNG:
 		r = kvmppc_hwrng_present();
 		break;
@@ -766,8 +763,8 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 {
 	int err;
 
-	hrtimer_init(&vcpu->arch.dec_timer, CLOCK_REALTIME, HRTIMER_MODE_ABS);
-	vcpu->arch.dec_timer.function = kvmppc_decrementer_wakeup;
+	hrtimer_setup(&vcpu->arch.dec_timer, kvmppc_decrementer_wakeup, CLOCK_REALTIME,
+		      HRTIMER_MODE_ABS);
 
 #ifdef CONFIG_KVM_EXIT_TIMING
 	mutex_init(&vcpu->arch.exit_timing_lock);
@@ -1930,12 +1927,11 @@ static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
 #endif
 #ifdef CONFIG_KVM_MPIC
 	case KVM_CAP_IRQ_MPIC: {
-		struct fd f;
+		CLASS(fd, f)(cap->args[0]);
 		struct kvm_device *dev;
 
 		r = -EBADF;
-		f = fdget(cap->args[0]);
-		if (!fd_file(f))
+		if (fd_empty(f))
 			break;
 
 		r = -EPERM;
@@ -1943,18 +1939,16 @@ static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
 		if (dev)
 			r = kvmppc_mpic_connect_vcpu(dev, vcpu, cap->args[1]);
 
-		fdput(f);
 		break;
 	}
 #endif
 #ifdef CONFIG_KVM_XICS
 	case KVM_CAP_IRQ_XICS: {
-		struct fd f;
+		CLASS(fd, f)(cap->args[0]);
 		struct kvm_device *dev;
 
 		r = -EBADF;
-		f = fdget(cap->args[0]);
-		if (!fd_file(f))
+		if (fd_empty(f))
 			break;
 
 		r = -EPERM;
@@ -1965,34 +1959,27 @@ static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
 			else
 				r = kvmppc_xics_connect_vcpu(dev, vcpu, cap->args[1]);
 		}
-
-		fdput(f);
 		break;
 	}
 #endif /* CONFIG_KVM_XICS */
 #ifdef CONFIG_KVM_XIVE
 	case KVM_CAP_PPC_IRQ_XIVE: {
-		struct fd f;
+		CLASS(fd, f)(cap->args[0]);
 		struct kvm_device *dev;
 
 		r = -EBADF;
-		f = fdget(cap->args[0]);
-		if (!fd_file(f))
+		if (fd_empty(f))
 			break;
 
 		r = -ENXIO;
-		if (!xive_enabled()) {
-			fdput(f);
+		if (!xive_enabled())
 			break;
-		}
 
 		r = -EPERM;
 		dev = kvm_device_from_filp(fd_file(f));
 		if (dev)
 			r = kvmppc_xive_native_connect_vcpu(dev, vcpu,
 							    cap->args[1]);
-
-		fdput(f);
 		break;
 	}
 #endif /* CONFIG_KVM_XIVE */

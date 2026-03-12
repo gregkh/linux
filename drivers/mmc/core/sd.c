@@ -11,6 +11,7 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
+#include <linux/string.h>
 #include <linux/pm_runtime.h>
 #include <linux/random.h>
 #include <linux/scatterlist.h>
@@ -95,6 +96,9 @@ void mmc_decode_cid(struct mmc_card *card)
 	card->cid.month			= unstuff_bits(resp, 8, 4);
 
 	card->cid.year += 2000; /* SD cards year offset */
+
+	/* some product names may include trailing whitespace */
+	strim(card->cid.prod_name);
 }
 
 /*
@@ -200,7 +204,7 @@ static int mmc_decode_csd(struct mmc_card *card, bool is_sduc)
 /*
  * Given a 64-bit response, decode to our card SCR structure.
  */
-static int mmc_decode_scr(struct mmc_card *card)
+int mmc_decode_scr(struct mmc_card *card)
 {
 	struct sd_scr *scr = &card->scr;
 	unsigned int scr_struct;
@@ -355,7 +359,7 @@ static int mmc_read_switch(struct mmc_card *card)
 	}
 
 	if (status[13] & SD_MODE_HIGH_SPEED)
-		card->sw_caps.hs_max_dtr = HIGH_SPEED_MAX_DTR;
+		card->sw_caps.hs_max_dtr = card->host->max_sd_hs_hz ?: HIGH_SPEED_MAX_DTR;
 
 	if (card->scr.sda_spec3) {
 		card->sw_caps.sd3_bus_mode = status[13];
@@ -451,7 +455,7 @@ static void sd_update_bus_speed_mode(struct mmc_card *card)
 	 * If the host doesn't support any of the UHS-I modes, fallback on
 	 * default speed.
 	 */
-	if (!mmc_host_uhs(card->host)) {
+	if (!mmc_host_can_uhs(card->host)) {
 		card->sd_bus_speed = 0;
 		return;
 	}
@@ -852,15 +856,18 @@ try_again:
 	 * block-addressed SDHC cards.
 	 */
 	err = mmc_send_if_cond(host, ocr);
-	if (!err)
+	if (!err) {
 		ocr |= SD_OCR_CCS;
+		/* Set HO2T as well - SDUC card won't respond otherwise */
+		ocr |= SD_OCR_2T;
+	}
 
 	/*
 	 * If the host supports one of UHS-I modes, request the card
 	 * to switch to 1.8V signaling level. If the card has failed
 	 * repeatedly to switch however, skip this.
 	 */
-	if (retries && mmc_host_uhs(host))
+	if (retries && mmc_host_can_uhs(host))
 		ocr |= SD_OCR_S18R;
 
 	/*
@@ -916,7 +923,7 @@ int mmc_sd_get_csd(struct mmc_card *card, bool is_sduc)
 	return 0;
 }
 
-static int mmc_sd_get_ro(struct mmc_host *host)
+int mmc_sd_get_ro(struct mmc_host *host)
 {
 	int ro;
 
@@ -1464,7 +1471,10 @@ retry:
 	}
 
 	if (!oldcard) {
-		err = mmc_sd_get_csd(card, false);
+		u32 sduc_arg = SD_OCR_CCS | SD_OCR_2T;
+		bool is_sduc = (rocr & sduc_arg) == sduc_arg;
+
+		err = mmc_sd_get_csd(card, is_sduc);
 		if (err)
 			goto free_card;
 
@@ -1499,7 +1509,7 @@ retry:
 	 * signaling. Detect that situation and try to initialize a UHS-I (1.8V)
 	 * transfer mode.
 	 */
-	if (!v18_fixup_failed && !mmc_host_is_spi(host) && mmc_host_uhs(host) &&
+	if (!v18_fixup_failed && !mmc_host_is_spi(host) && mmc_host_can_uhs(host) &&
 	    mmc_sd_card_using_v18(card) &&
 	    host->ios.signal_voltage != MMC_SIGNAL_VOLTAGE_180) {
 		if (mmc_host_set_uhs_voltage(host) ||
@@ -1514,7 +1524,7 @@ retry:
 	}
 
 	/* Initialization sequence for UHS-I cards */
-	if (rocr & SD_ROCR_S18A && mmc_host_uhs(host)) {
+	if (rocr & SD_ROCR_S18A && mmc_host_can_uhs(host)) {
 		err = mmc_sd_init_uhs_card(card);
 		if (err)
 			goto free_card;
@@ -1574,7 +1584,7 @@ cont:
 			goto free_card;
 	}
 
-	if (host->cqe_ops && !host->cqe_enabled) {
+	if (!mmc_card_ult_capacity(card) && host->cqe_ops && !host->cqe_enabled) {
 		err = host->cqe_ops->cqe_enable(host, card);
 		if (!err) {
 			host->cqe_enabled = true;
@@ -1603,15 +1613,6 @@ free_card:
 }
 
 /*
- * Host is being removed. Free up the current card.
- */
-static void mmc_sd_remove(struct mmc_host *host)
-{
-	mmc_remove_card(host->card);
-	host->card = NULL;
-}
-
-/*
  * Card detection - card is alive.
  */
 static int mmc_sd_alive(struct mmc_host *host)
@@ -1636,7 +1637,8 @@ static void mmc_sd_detect(struct mmc_host *host)
 	mmc_put_card(host->card, NULL);
 
 	if (err) {
-		mmc_sd_remove(host);
+		mmc_remove_card(host->card);
+		host->card = NULL;
 
 		mmc_claim_host(host);
 		mmc_detach_bus(host);
@@ -1736,6 +1738,19 @@ out:
 	return err;
 }
 
+/*
+ * Host is being removed. Free up the current card and do a graceful power-off.
+ */
+static void mmc_sd_remove(struct mmc_host *host)
+{
+	get_device(&host->card->dev);
+	mmc_remove_card(host->card);
+
+	_mmc_sd_suspend(host);
+
+	put_device(&host->card->dev);
+	host->card = NULL;
+}
 /*
  * Callback for suspend
  */

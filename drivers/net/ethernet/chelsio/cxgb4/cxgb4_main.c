@@ -2191,18 +2191,6 @@ void cxgb4_get_tcp_stats(struct pci_dev *pdev, struct tp_tcp_stats *v4,
 }
 EXPORT_SYMBOL(cxgb4_get_tcp_stats);
 
-void cxgb4_iscsi_init(struct net_device *dev, unsigned int tag_mask,
-		      const unsigned int *pgsz_order)
-{
-	struct adapter *adap = netdev2adap(dev);
-
-	t4_write_reg(adap, ULP_RX_ISCSI_TAGMASK_A, tag_mask);
-	t4_write_reg(adap, ULP_RX_ISCSI_PSZ_A, HPZ0_V(pgsz_order[0]) |
-		     HPZ1_V(pgsz_order[1]) | HPZ2_V(pgsz_order[2]) |
-		     HPZ3_V(pgsz_order[3]));
-}
-EXPORT_SYMBOL(cxgb4_iscsi_init);
-
 int cxgb4_flush_eq_cache(struct net_device *dev)
 {
 	struct adapter *adap = netdev2adap(dev);
@@ -3309,7 +3297,7 @@ static int cxgb4_mgmt_set_vf_rate(struct net_device *dev, int vf,
 	}
 
 	if (max_tx_rate == 0) {
-		/* unbind VF to to any Traffic Class */
+		/* unbind VF to any Traffic Class */
 		fw_pfvf =
 		    (FW_PARAMS_MNEM_V(FW_PARAMS_MNEM_PFVF) |
 		     FW_PARAMS_PARAM_X_V(FW_PARAMS_PARAM_PFVF_SCHEDCLASS_ETH));
@@ -4828,7 +4816,7 @@ static int adap_init0(struct adapter *adap, int vpd_skip)
 			goto bye;
 		}
 
-		/* Get FW from from /lib/firmware/ */
+		/* Get FW from /lib/firmware/ */
 		ret = request_firmware(&fw, fw_info->fw_mod_name,
 				       adap->pdev_dev);
 		if (ret < 0) {
@@ -5468,7 +5456,6 @@ static pci_ers_result_t eeh_slot_reset(struct pci_dev *pdev)
 
 	if (!adap) {
 		pci_restore_state(pdev);
-		pci_save_state(pdev);
 		return PCI_ERS_RESULT_RECOVERED;
 	}
 
@@ -5483,7 +5470,6 @@ static pci_ers_result_t eeh_slot_reset(struct pci_dev *pdev)
 
 	pci_set_master(pdev);
 	pci_restore_state(pdev);
-	pci_save_state(pdev);
 
 	if (t4_wait_dev_ready(adap->regs) < 0)
 		return PCI_ERS_RESULT_DISCONNECT;
@@ -6492,10 +6478,11 @@ static const struct tlsdev_ops cxgb4_ktls_ops = {
 
 #if IS_ENABLED(CONFIG_CHELSIO_IPSEC_INLINE)
 
-static int cxgb4_xfrm_add_state(struct xfrm_state *x,
+static int cxgb4_xfrm_add_state(struct net_device *dev,
+				struct xfrm_state *x,
 				struct netlink_ext_ack *extack)
 {
-	struct adapter *adap = netdev2adap(x->xso.dev);
+	struct adapter *adap = netdev2adap(dev);
 	int ret;
 
 	if (!mutex_trylock(&uld_mutex)) {
@@ -6506,7 +6493,8 @@ static int cxgb4_xfrm_add_state(struct xfrm_state *x,
 	if (ret)
 		goto out_unlock;
 
-	ret = adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_add(x, extack);
+	ret = adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_add(dev, x,
+									extack);
 
 out_unlock:
 	mutex_unlock(&uld_mutex);
@@ -6514,9 +6502,9 @@ out_unlock:
 	return ret;
 }
 
-static void cxgb4_xfrm_del_state(struct xfrm_state *x)
+static void cxgb4_xfrm_del_state(struct net_device *dev, struct xfrm_state *x)
 {
-	struct adapter *adap = netdev2adap(x->xso.dev);
+	struct adapter *adap = netdev2adap(dev);
 
 	if (!mutex_trylock(&uld_mutex)) {
 		dev_dbg(adap->pdev_dev,
@@ -6526,15 +6514,15 @@ static void cxgb4_xfrm_del_state(struct xfrm_state *x)
 	if (chcr_offload_state(adap, CXGB4_XFRMDEV_OPS))
 		goto out_unlock;
 
-	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_delete(x);
+	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_delete(dev, x);
 
 out_unlock:
 	mutex_unlock(&uld_mutex);
 }
 
-static void cxgb4_xfrm_free_state(struct xfrm_state *x)
+static void cxgb4_xfrm_free_state(struct net_device *dev, struct xfrm_state *x)
 {
-	struct adapter *adap = netdev2adap(x->xso.dev);
+	struct adapter *adap = netdev2adap(dev);
 
 	if (!mutex_trylock(&uld_mutex)) {
 		dev_dbg(adap->pdev_dev,
@@ -6544,35 +6532,18 @@ static void cxgb4_xfrm_free_state(struct xfrm_state *x)
 	if (chcr_offload_state(adap, CXGB4_XFRMDEV_OPS))
 		goto out_unlock;
 
-	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_free(x);
+	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_free(dev, x);
 
 out_unlock:
 	mutex_unlock(&uld_mutex);
-}
-
-static bool cxgb4_ipsec_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
-{
-	struct adapter *adap = netdev2adap(x->xso.dev);
-	bool ret = false;
-
-	if (!mutex_trylock(&uld_mutex)) {
-		dev_dbg(adap->pdev_dev,
-			"crypto uld critical resource is under use\n");
-		return ret;
-	}
-	if (chcr_offload_state(adap, CXGB4_XFRMDEV_OPS))
-		goto out_unlock;
-
-	ret = adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_offload_ok(skb, x);
-
-out_unlock:
-	mutex_unlock(&uld_mutex);
-	return ret;
 }
 
 static void cxgb4_advance_esn_state(struct xfrm_state *x)
 {
 	struct adapter *adap = netdev2adap(x->xso.dev);
+
+	if (x->xso.dir != XFRM_DEV_OFFLOAD_IN)
+		return;
 
 	if (!mutex_trylock(&uld_mutex)) {
 		dev_dbg(adap->pdev_dev,
@@ -6592,7 +6563,6 @@ static const struct xfrmdev_ops cxgb4_xfrmdev_ops = {
 	.xdo_dev_state_add      = cxgb4_xfrm_add_state,
 	.xdo_dev_state_delete   = cxgb4_xfrm_del_state,
 	.xdo_dev_state_free     = cxgb4_xfrm_free_state,
-	.xdo_dev_offload_ok     = cxgb4_ipsec_offload_ok,
 	.xdo_dev_state_advance_esn = cxgb4_advance_esn_state,
 };
 

@@ -65,20 +65,9 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 	data = req->base.data;
 	info = req->iv;
 
-	if (req->src != req->dst) {
-		SYNC_SKCIPHER_REQUEST_ON_STACK(nreq, ctx->sknull);
-
-		skcipher_request_set_sync_tfm(nreq, ctx->sknull);
-		skcipher_request_set_callback(nreq, req->base.flags,
-					      NULL, NULL);
-		skcipher_request_set_crypt(nreq, req->src, req->dst,
-					   req->assoclen + req->cryptlen,
-					   NULL);
-
-		err = crypto_skcipher_encrypt(nreq);
-		if (err)
-			return err;
-	}
+	if (req->src != req->dst)
+		memcpy_sglist(req->dst, req->src,
+			      req->assoclen + req->cryptlen);
 
 	unaligned_info = !IS_ALIGNED((unsigned long)info,
 				     crypto_aead_alignmask(geniv) + 1);
@@ -181,7 +170,7 @@ static void __exit seqiv_module_exit(void)
 	crypto_unregister_template(&seqiv_tmpl);
 }
 
-subsys_initcall(seqiv_module_init);
+module_init(seqiv_module_init);
 module_exit(seqiv_module_exit);
 
 MODULE_LICENSE("GPL");

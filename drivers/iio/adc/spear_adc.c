@@ -275,8 +275,7 @@ static int spear_adc_probe(struct platform_device *pdev)
 
 	indio_dev = devm_iio_device_alloc(dev, sizeof(struct spear_adc_state));
 	if (!indio_dev)
-		return dev_err_probe(dev, -ENOMEM,
-				     "failed allocating iio device\n");
+		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
 	st->dev = dev;
@@ -346,7 +345,7 @@ static int spear_adc_probe(struct platform_device *pdev)
 
 static const struct of_device_id spear_adc_dt_ids[] = {
 	{ .compatible = "st,spear600-adc", },
-	{ /* sentinel */ }
+	{ }
 };
 MODULE_DEVICE_TABLE(of, spear_adc_dt_ids);
 

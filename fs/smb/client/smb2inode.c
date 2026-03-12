@@ -176,6 +176,7 @@ static int smb2_compound_op(const unsigned int xid, struct cifs_tcon *tcon,
 			    struct kvec *out_iov, int *out_buftype, struct dentry *dentry)
 {
 
+	struct smb2_create_rsp *create_rsp = NULL;
 	struct smb2_query_info_rsp *qi_rsp = NULL;
 	struct smb2_compound_vars *vars = NULL;
 	__u8 oplock = SMB2_OPLOCK_LEVEL_NONE;
@@ -267,7 +268,13 @@ replay_again:
 	num_rqst++;
 	rc = 0;
 
-	for (i = 0; i < num_cmds; i++) {
+	i = 0;
+
+	/* Skip the leading explicit OPEN operation */
+	if (num_cmds > 0 && cmds[0] == SMB2_OP_OPEN_QUERY)
+		i++;
+
+	for (; i < num_cmds; i++) {
 		/* Operation */
 		switch (cmds[i]) {
 		case SMB2_OP_QUERY_INFO:
@@ -315,7 +322,7 @@ replay_again:
 							  cfile->fid.volatile_fid,
 							  SMB_FIND_FILE_POSIX_INFO,
 							  SMB2_O_INFO_FILE, 0,
-							  sizeof(struct smb311_posix_qinfo *) +
+							  sizeof(struct smb311_posix_qinfo) +
 							  (PATH_MAX * 2) +
 							  (sizeof(struct smb_sid) * 2), 0, NULL);
 			} else {
@@ -325,7 +332,7 @@ replay_again:
 							  COMPOUND_FID,
 							  SMB_FIND_FILE_POSIX_INFO,
 							  SMB2_O_INFO_FILE, 0,
-							  sizeof(struct smb311_posix_qinfo *) +
+							  sizeof(struct smb311_posix_qinfo) +
 							  (PATH_MAX * 2) +
 							  (sizeof(struct smb_sid) * 2), 0, NULL);
 			}
@@ -339,9 +346,6 @@ replay_again:
 			trace_smb3_posix_query_info_compound_enter(xid, tcon->tid,
 								   ses->Suid, full_path);
 			break;
-		case SMB2_OP_DELETE:
-			trace_smb3_delete_enter(xid, tcon->tid, ses->Suid, full_path);
-			break;
 		case SMB2_OP_MKDIR:
 			/*
 			 * Directories are created through parameters in the
@@ -349,23 +353,40 @@ replay_again:
 			 */
 			trace_smb3_mkdir_enter(xid, tcon->tid, ses->Suid, full_path);
 			break;
-		case SMB2_OP_RMDIR:
-			rqst[num_rqst].rq_iov = &vars->si_iov[0];
+		case SMB2_OP_UNLINK:
+			rqst[num_rqst].rq_iov = vars->unlink_iov;
 			rqst[num_rqst].rq_nvec = 1;
 
 			size[0] = 1; /* sizeof __u8 See MS-FSCC section 2.4.11 */
 			data[0] = &delete_pending[0];
 
-			rc = SMB2_set_info_init(tcon, server,
-						&rqst[num_rqst], COMPOUND_FID,
-						COMPOUND_FID, current->tgid,
-						FILE_DISPOSITION_INFORMATION,
-						SMB2_O_INFO_FILE, 0, data, size);
-			if (rc)
+			if (cfile) {
+				rc = SMB2_set_info_init(tcon, server,
+							&rqst[num_rqst],
+							cfile->fid.persistent_fid,
+							cfile->fid.volatile_fid,
+							current->tgid,
+							FILE_DISPOSITION_INFORMATION,
+							SMB2_O_INFO_FILE, 0,
+							data, size);
+			} else {
+				rc = SMB2_set_info_init(tcon, server,
+							&rqst[num_rqst],
+							COMPOUND_FID,
+							COMPOUND_FID,
+							current->tgid,
+							FILE_DISPOSITION_INFORMATION,
+							SMB2_O_INFO_FILE, 0,
+							data, size);
+			}
+			if (!rc && (!cfile || num_rqst > 1)) {
+				smb2_set_next_command(tcon, &rqst[num_rqst]);
+				smb2_set_related(&rqst[num_rqst]);
+			} else if (rc) {
 				goto finished;
-			smb2_set_next_command(tcon, &rqst[num_rqst]);
-			smb2_set_related(&rqst[num_rqst++]);
-			trace_smb3_rmdir_enter(xid, tcon->tid, ses->Suid, full_path);
+			}
+			num_rqst++;
+			trace_smb3_unlink_enter(xid, tcon->tid, ses->Suid, full_path);
 			break;
 		case SMB2_OP_SET_EOF:
 			rqst[num_rqst].rq_iov = &vars->si_iov[0];
@@ -435,7 +456,7 @@ replay_again:
 							   ses->Suid, full_path);
 			break;
 		case SMB2_OP_RENAME:
-			rqst[num_rqst].rq_iov = &vars->si_iov[0];
+			rqst[num_rqst].rq_iov = vars->rename_iov;
 			rqst[num_rqst].rq_nvec = 2;
 
 			len = in_iov[i].iov_len;
@@ -586,6 +607,8 @@ replay_again:
 				goto finished;
 			}
 			num_rqst++;
+			trace_smb3_query_wsl_ea_compound_enter(xid, tcon->tid,
+							       ses->Suid, full_path);
 			break;
 		default:
 			cifs_dbg(VFS, "Invalid command\n");
@@ -640,6 +663,29 @@ finished:
 	}
 
 	tmp_rc = rc;
+
+	if (rc == 0 && num_cmds > 0 && cmds[0] == SMB2_OP_OPEN_QUERY) {
+		create_rsp = rsp_iov[0].iov_base;
+		idata = in_iov[0].iov_base;
+		idata->fi.CreationTime = create_rsp->CreationTime;
+		idata->fi.LastAccessTime = create_rsp->LastAccessTime;
+		idata->fi.LastWriteTime = create_rsp->LastWriteTime;
+		idata->fi.ChangeTime = create_rsp->ChangeTime;
+		idata->fi.Attributes = create_rsp->FileAttributes;
+		idata->fi.AllocationSize = create_rsp->AllocationSize;
+		idata->fi.EndOfFile = create_rsp->EndofFile;
+		if (le32_to_cpu(idata->fi.NumberOfLinks) == 0)
+			idata->fi.NumberOfLinks = cpu_to_le32(1); /* dummy value */
+		idata->fi.DeletePending = 0; /* successful open = not delete pending */
+		idata->fi.Directory = !!(le32_to_cpu(create_rsp->FileAttributes) & ATTR_DIRECTORY);
+
+		/* smb2_parse_contexts() fills idata->fi.IndexNumber */
+		rc = smb2_parse_contexts(server, &rsp_iov[0], &oparms->fid->epoch,
+					 oparms->fid->lease_key, &oplock, &idata->fi, NULL);
+		if (rc)
+			cifs_dbg(VFS, "rc: %d parsing context of compound op\n", rc);
+	}
+
 	for (i = 0; i < num_cmds; i++) {
 		char *buf = rsp_iov[i + 1].iov_base;
 
@@ -700,19 +746,6 @@ finished:
 				trace_smb3_posix_query_info_compound_done(xid, tcon->tid,
 									  ses->Suid);
 			break;
-		case SMB2_OP_DELETE:
-			if (rc)
-				trace_smb3_delete_err(xid, tcon->tid, ses->Suid, rc);
-			else {
-				/*
-				 * If dentry (hence, inode) is NULL, lease break is going to
-				 * take care of degrading leases on handles for deleted files.
-				 */
-				if (inode)
-					cifs_mark_open_handles_for_deleted_file(inode, full_path);
-				trace_smb3_delete_done(xid, tcon->tid, ses->Suid);
-			}
-			break;
 		case SMB2_OP_MKDIR:
 			if (rc)
 				trace_smb3_mkdir_err(xid, tcon->tid, ses->Suid, rc);
@@ -733,11 +766,11 @@ finished:
 				trace_smb3_rename_done(xid, tcon->tid, ses->Suid);
 			SMB2_set_info_free(&rqst[num_rqst++]);
 			break;
-		case SMB2_OP_RMDIR:
-			if (rc)
-				trace_smb3_rmdir_err(xid, tcon->tid, ses->Suid, rc);
+		case SMB2_OP_UNLINK:
+			if (!rc)
+				trace_smb3_unlink_done(xid, tcon->tid, ses->Suid);
 			else
-				trace_smb3_rmdir_done(xid, tcon->tid, ses->Suid);
+				trace_smb3_unlink_err(xid, tcon->tid, ses->Suid, rc);
 			SMB2_set_info_free(&rqst[num_rqst++]);
 			break;
 		case SMB2_OP_SET_EOF:
@@ -979,6 +1012,43 @@ int smb2_query_path_info(const unsigned int xid,
 	case 0:
 		rc = parse_create_response(data, cifs_sb, full_path, &out_iov[0]);
 		break;
+	case -EACCES:
+		/*
+		 * If SMB2_OP_QUERY_INFO (called when POSIX extensions are not used) failed with
+		 * STATUS_ACCESS_DENIED then it means that caller does not have permission to
+		 * open the path with FILE_READ_ATTRIBUTES access and therefore cannot issue
+		 * SMB2_OP_QUERY_INFO command.
+		 *
+		 * There is an alternative way how to query limited information about path but still
+		 * suitable for stat() syscall. SMB2 OPEN/CREATE operation returns in its successful
+		 * response subset of query information.
+		 *
+		 * So try to open the path without FILE_READ_ATTRIBUTES but with MAXIMUM_ALLOWED
+		 * access which will grant the maximum possible access to the file and the response
+		 * will contain required query information for stat() syscall.
+		 */
+
+		if (tcon->posix_extensions)
+			break;
+
+		num_cmds = 1;
+		cmds[0] = SMB2_OP_OPEN_QUERY;
+		in_iov[0].iov_base = data;
+		in_iov[0].iov_len = sizeof(*data);
+		oparms = CIFS_OPARMS(cifs_sb, tcon, full_path, MAXIMUM_ALLOWED,
+				     FILE_OPEN, create_options, ACL_NO_MODE);
+		free_rsp_iov(out_iov, out_buftype, ARRAY_SIZE(out_iov));
+		rc = smb2_compound_op(xid, tcon, cifs_sb, full_path,
+				      &oparms, in_iov, cmds, num_cmds,
+				      cfile, out_iov, out_buftype, NULL);
+
+		hdr = out_iov[0].iov_base;
+		if (!hdr || out_buftype[0] == CIFS_NO_BUFFER)
+			goto out;
+
+		if (!rc)
+			rc = parse_create_response(data, cifs_sb, full_path, &out_iov[0]);
+		break;
 	case -EOPNOTSUPP:
 		/*
 		 * BB TODO: When support for special files added to Samba
@@ -992,10 +1062,11 @@ int smb2_query_path_info(const unsigned int xid,
 		 * Skip SMB2_OP_GET_REPARSE if symlink already parsed in create
 		 * response.
 		 */
-		if (data->reparse.tag != IO_REPARSE_TAG_SYMLINK)
+		if (data->reparse.tag != IO_REPARSE_TAG_SYMLINK) {
 			cmds[num_cmds++] = SMB2_OP_GET_REPARSE;
-		if (!tcon->posix_extensions)
-			cmds[num_cmds++] = SMB2_OP_QUERY_WSL_EA;
+			if (!tcon->posix_extensions)
+				cmds[num_cmds++] = SMB2_OP_QUERY_WSL_EA;
+		}
 
 		oparms = CIFS_OPARMS(cifs_sb, tcon, full_path,
 				     FILE_READ_ATTRIBUTES |
@@ -1014,6 +1085,11 @@ int smb2_query_path_info(const unsigned int xid,
 				rc = 0;
 			else
 				rc = -EOPNOTSUPP;
+		}
+
+		if (data->reparse.tag == IO_REPARSE_TAG_SYMLINK && !rc) {
+			bool directory = le32_to_cpu(data->fi.Attributes) & ATTR_DIRECTORY;
+			rc = smb2_fix_symlink_target_type(&data->symlink_target, directory, cifs_sb);
 		}
 		break;
 	case -EREMOTE:
@@ -1091,7 +1167,7 @@ smb2_rmdir(const unsigned int xid, struct cifs_tcon *tcon, const char *name,
 			     FILE_OPEN, CREATE_NOT_FILE, ACL_NO_MODE);
 	return smb2_compound_op(xid, tcon, cifs_sb,
 				name, &oparms, NULL,
-				&(int){SMB2_OP_RMDIR}, 1,
+				&(int){SMB2_OP_UNLINK}, 1,
 				NULL, NULL, NULL, NULL);
 }
 
@@ -1099,21 +1175,109 @@ int
 smb2_unlink(const unsigned int xid, struct cifs_tcon *tcon, const char *name,
 	    struct cifs_sb_info *cifs_sb, struct dentry *dentry)
 {
+	struct kvec open_iov[SMB2_CREATE_IOV_SIZE];
+	__le16 *utf16_path __free(kfree) = NULL;
+	int retries = 0, cur_sleep = 1;
+	struct TCP_Server_Info *server;
 	struct cifs_open_parms oparms;
+	struct smb2_create_req *creq;
+	struct inode *inode = NULL;
+	struct smb_rqst rqst[2];
+	struct kvec rsp_iov[2];
+	struct kvec close_iov;
+	int resp_buftype[2];
+	struct cifs_fid fid;
+	int flags = 0;
+	__u8 oplock;
+	int rc;
 
-	oparms = CIFS_OPARMS(cifs_sb, tcon, name,
-			     DELETE, FILE_OPEN,
-			     CREATE_DELETE_ON_CLOSE | OPEN_REPARSE_POINT,
-			     ACL_NO_MODE);
-	int rc = smb2_compound_op(xid, tcon, cifs_sb, name, &oparms,
-				  NULL, &(int){SMB2_OP_DELETE}, 1,
-				  NULL, NULL, NULL, dentry);
-	if (rc == -EINVAL) {
-		cifs_dbg(FYI, "invalid lease key, resending request without lease");
-		rc = smb2_compound_op(xid, tcon, cifs_sb, name, &oparms,
-				      NULL, &(int){SMB2_OP_DELETE}, 1,
-				      NULL, NULL, NULL, NULL);
+	utf16_path = cifs_convert_path_to_utf16(name, cifs_sb);
+	if (!utf16_path)
+		return -ENOMEM;
+
+	if (smb3_encryption_required(tcon))
+		flags |= CIFS_TRANSFORM_REQ;
+again:
+	oplock = SMB2_OPLOCK_LEVEL_NONE;
+	server = cifs_pick_channel(tcon->ses);
+
+	memset(rqst, 0, sizeof(rqst));
+	memset(resp_buftype, 0, sizeof(resp_buftype));
+	memset(rsp_iov, 0, sizeof(rsp_iov));
+
+	memset(open_iov, 0, sizeof(open_iov));
+	rqst[0].rq_iov = open_iov;
+	rqst[0].rq_nvec = ARRAY_SIZE(open_iov);
+
+	oparms = CIFS_OPARMS(cifs_sb, tcon, name, DELETE | FILE_READ_ATTRIBUTES,
+			     FILE_OPEN, CREATE_DELETE_ON_CLOSE |
+			     OPEN_REPARSE_POINT, ACL_NO_MODE);
+	oparms.fid = &fid;
+
+	if (dentry) {
+		inode = d_inode(dentry);
+		if (CIFS_I(inode)->lease_granted && server->ops->get_lease_key) {
+			oplock = SMB2_OPLOCK_LEVEL_LEASE;
+			server->ops->get_lease_key(inode, &fid);
+		}
 	}
+
+	rc = SMB2_open_init(tcon, server,
+			    &rqst[0], &oplock, &oparms, utf16_path);
+	if (rc)
+		goto err_free;
+	smb2_set_next_command(tcon, &rqst[0]);
+	creq = rqst[0].rq_iov[0].iov_base;
+	creq->ShareAccess = FILE_SHARE_DELETE_LE;
+
+	memset(&close_iov, 0, sizeof(close_iov));
+	rqst[1].rq_iov = &close_iov;
+	rqst[1].rq_nvec = 1;
+
+	rc = SMB2_close_init(tcon, server, &rqst[1],
+			     COMPOUND_FID, COMPOUND_FID, false);
+	if (rc)
+		goto err_free;
+	smb2_set_related(&rqst[1]);
+
+	if (retries) {
+		for (int i = 0; i < ARRAY_SIZE(rqst);  i++)
+			smb2_set_replay(server, &rqst[i]);
+	}
+
+	rc = compound_send_recv(xid, tcon->ses, server, flags,
+				ARRAY_SIZE(rqst), rqst,
+				resp_buftype, rsp_iov);
+	SMB2_open_free(&rqst[0]);
+	SMB2_close_free(&rqst[1]);
+	free_rsp_buf(resp_buftype[0], rsp_iov[0].iov_base);
+	free_rsp_buf(resp_buftype[1], rsp_iov[1].iov_base);
+
+	if (is_replayable_error(rc) &&
+	    smb2_should_replay(tcon, &retries, &cur_sleep))
+		goto again;
+
+	/* Retry compound request without lease */
+	if (rc == -EINVAL && dentry) {
+		dentry = NULL;
+		retries = 0;
+		cur_sleep = 1;
+		goto again;
+	}
+	/*
+	 * If dentry (hence, inode) is NULL, lease break is going to
+	 * take care of degrading leases on handles for deleted files.
+	 */
+	if (!rc && inode)
+		cifs_mark_open_handles_for_deleted_file(inode, name);
+
+	return rc;
+
+err_free:
+	SMB2_open_free(&rqst[0]);
+	SMB2_close_free(&rqst[1]);
+	free_rsp_buf(resp_buftype[0], rsp_iov[0].iov_base);
+	free_rsp_buf(resp_buftype[1], rsp_iov[1].iov_base);
 	return rc;
 }
 
@@ -1253,7 +1417,7 @@ out:
 	return rc;
 }
 
-struct inode *smb2_get_reparse_inode(struct cifs_open_info_data *data,
+struct inode *smb2_create_reparse_inode(struct cifs_open_info_data *data,
 				     struct super_block *sb,
 				     const unsigned int xid,
 				     struct cifs_tcon *tcon,
@@ -1272,6 +1436,14 @@ struct inode *smb2_get_reparse_inode(struct cifs_open_info_data *data,
 	int cmds[2];
 	int rc;
 	int i;
+
+	/*
+	 * If server filesystem does not support reparse points then do not
+	 * attempt to create reparse point. This will prevent creating unusable
+	 * empty object on the server.
+	 */
+	if (!CIFS_REPARSE_SUPPORT(tcon))
+		return ERR_PTR(-EOPNOTSUPP);
 
 	oparms = CIFS_OPARMS(cifs_sb, tcon, full_path,
 			     SYNCHRONIZE | DELETE |
@@ -1360,5 +1532,115 @@ int smb2_query_reparse_point(const unsigned int xid,
 	data.reparse.io.buftype = CIFS_NO_BUFFER;
 out:
 	cifs_free_open_info(&data);
+	return rc;
+}
+
+static inline __le16 *utf16_smb2_path(struct cifs_sb_info *cifs_sb,
+				      const char *name, size_t namelen)
+{
+	int len;
+
+	if (*name == '\\' ||
+	    (cifs_sb_master_tlink(cifs_sb) &&
+	     cifs_sb_master_tcon(cifs_sb)->posix_extensions && *name == '/'))
+		name++;
+	return cifs_strndup_to_utf16(name, namelen, &len,
+				     cifs_sb->local_nls,
+				     cifs_remap(cifs_sb));
+}
+
+int smb2_rename_pending_delete(const char *full_path,
+			       struct dentry *dentry,
+			       const unsigned int xid)
+{
+	struct cifs_sb_info *cifs_sb = CIFS_SB(d_inode(dentry)->i_sb);
+	struct cifsInodeInfo *cinode = CIFS_I(d_inode(dentry));
+	__le16 *utf16_path __free(kfree) = NULL;
+	__u32 co = file_create_options(dentry);
+	int cmds[] = {
+		SMB2_OP_SET_INFO,
+		SMB2_OP_RENAME,
+		SMB2_OP_UNLINK,
+	};
+	const int num_cmds = ARRAY_SIZE(cmds);
+	char *to_name __free(kfree) = NULL;
+	__u32 attrs = cinode->cifsAttrs;
+	struct cifs_open_parms oparms;
+	static atomic_t sillycounter;
+	struct cifsFileInfo *cfile;
+	struct tcon_link *tlink;
+	struct cifs_tcon *tcon;
+	struct kvec iov[2];
+	const char *ppath;
+	void *page;
+	size_t len;
+	int rc;
+
+	tlink = cifs_sb_tlink(cifs_sb);
+	if (IS_ERR(tlink))
+		return PTR_ERR(tlink);
+	tcon = tlink_tcon(tlink);
+
+	page = alloc_dentry_path();
+
+	ppath = build_path_from_dentry(dentry->d_parent, page);
+	if (IS_ERR(ppath)) {
+		rc = PTR_ERR(ppath);
+		goto out;
+	}
+
+	len = strlen(ppath) + strlen("/.__smb1234") + 1;
+	to_name = kmalloc(len, GFP_KERNEL);
+	if (!to_name) {
+		rc = -ENOMEM;
+		goto out;
+	}
+
+	scnprintf(to_name, len, "%s%c.__smb%04X", ppath, CIFS_DIR_SEP(cifs_sb),
+		  atomic_inc_return(&sillycounter) & 0xffff);
+
+	utf16_path = utf16_smb2_path(cifs_sb, to_name, len);
+	if (!utf16_path) {
+		rc = -ENOMEM;
+		goto out;
+	}
+
+	drop_cached_dir_by_name(xid, tcon, full_path, cifs_sb);
+	oparms = CIFS_OPARMS(cifs_sb, tcon, full_path,
+			     DELETE | FILE_WRITE_ATTRIBUTES,
+			     FILE_OPEN, co, ACL_NO_MODE);
+
+	attrs &= ~ATTR_READONLY;
+	if (!attrs)
+		attrs = ATTR_NORMAL;
+	if (d_inode(dentry)->i_nlink <= 1)
+		attrs |= ATTR_HIDDEN;
+	iov[0].iov_base = &(FILE_BASIC_INFO) {
+		.Attributes = cpu_to_le32(attrs),
+	};
+	iov[0].iov_len = sizeof(FILE_BASIC_INFO);
+	iov[1].iov_base = utf16_path;
+	iov[1].iov_len = sizeof(*utf16_path) * UniStrlen((wchar_t *)utf16_path);
+
+	cifs_get_writable_path(tcon, full_path, FIND_WR_WITH_DELETE, &cfile);
+	rc = smb2_compound_op(xid, tcon, cifs_sb, full_path, &oparms, iov,
+			      cmds, num_cmds, cfile, NULL, NULL, dentry);
+	if (rc == -EINVAL) {
+		cifs_dbg(FYI, "invalid lease key, resending request without lease\n");
+		cifs_get_writable_path(tcon, full_path,
+				       FIND_WR_WITH_DELETE, &cfile);
+		rc = smb2_compound_op(xid, tcon, cifs_sb, full_path, &oparms, iov,
+				      cmds, num_cmds, cfile, NULL, NULL, NULL);
+	}
+	if (!rc) {
+		set_bit(CIFS_INO_DELETE_PENDING, &cinode->flags);
+	} else {
+		cifs_tcon_dbg(FYI, "%s: failed to rename '%s' to '%s': %d\n",
+			      __func__, full_path, to_name, rc);
+		rc = -EIO;
+	}
+out:
+	cifs_put_tlink(tlink);
+	free_dentry_path(page);
 	return rc;
 }

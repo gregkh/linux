@@ -101,7 +101,6 @@ static const struct regmap_config exynos_lpass_reg_conf = {
 	.reg_stride	= 4,
 	.val_bits	= 32,
 	.max_register	= 0xfc,
-	.fast_io	= true,
 };
 
 static void exynos_lpass_disable_lpass(void *data)
@@ -183,7 +182,7 @@ static const struct of_device_id exynos_lpass_of_match[] = {
 MODULE_DEVICE_TABLE(of, exynos_lpass_of_match);
 
 static struct platform_driver exynos_lpass_driver = {
-	.driver = {
+	.driver	= {
 		.name		= "exynos-lpass",
 		.pm		= &lpass_pm_ops,
 		.of_match_table	= exynos_lpass_of_match,

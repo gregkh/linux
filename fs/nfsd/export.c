@@ -82,8 +82,7 @@ static int expkey_parse(struct cache_detail *cd, char *mesg, int mlen)
 	int len;
 	struct auth_domain *dom = NULL;
 	int err;
-	int fsidtype;
-	char *ep;
+	u8 fsidtype;
 	struct svc_expkey key;
 	struct svc_expkey *ek = NULL;
 
@@ -109,10 +108,9 @@ static int expkey_parse(struct cache_detail *cd, char *mesg, int mlen)
 	err = -EINVAL;
 	if (qword_get(&mesg, buf, PAGE_SIZE) <= 0)
 		goto out;
-	fsidtype = simple_strtoul(buf, &ep, 10);
-	if (*ep)
+	if (kstrtou8(buf, 10, &fsidtype))
 		goto out;
-	dprintk("found fsidtype %d\n", fsidtype);
+	dprintk("found fsidtype %u\n", fsidtype);
 	if (key_len(fsidtype)==0) /* invalid type */
 		goto out;
 	if ((len=qword_get(&mesg, buf, PAGE_SIZE)) <= 0)
@@ -355,16 +353,25 @@ static void export_stats_destroy(struct export_stats *stats)
 					    EXP_STATS_COUNTERS_NUM);
 }
 
-static void svc_export_put(struct kref *ref)
+static void svc_export_release(struct rcu_head *rcu_head)
 {
-	struct svc_export *exp = container_of(ref, struct svc_export, h.ref);
-	path_put(&exp->ex_path);
-	auth_domain_put(exp->ex_client);
+	struct svc_export *exp = container_of(rcu_head, struct svc_export,
+			ex_rcu);
+
 	nfsd4_fslocs_free(&exp->ex_fslocs);
 	export_stats_destroy(exp->ex_stats);
 	kfree(exp->ex_stats);
 	kfree(exp->ex_uuid);
-	kfree_rcu(exp, ex_rcu);
+	kfree(exp);
+}
+
+static void svc_export_put(struct kref *ref)
+{
+	struct svc_export *exp = container_of(ref, struct svc_export, h.ref);
+
+	path_put(&exp->ex_path);
+	auth_domain_put(exp->ex_client);
+	call_rcu(&exp->ex_rcu, svc_export_release);
 }
 
 static int svc_export_upcall(struct cache_detail *cd, struct cache_head *h)
@@ -395,7 +402,7 @@ static struct svc_export *svc_export_update(struct svc_export *new,
 					    struct svc_export *old);
 static struct svc_export *svc_export_lookup(struct svc_export *);
 
-static int check_export(struct path *path, int *flags, unsigned char *uuid)
+static int check_export(const struct path *path, int *flags, unsigned char *uuid)
 {
 	struct inode *inode = d_inode(path->dentry);
 
@@ -1206,7 +1213,7 @@ __be32 check_nfsd_access(struct svc_export *exp, struct svc_rqst *rqstp,
  * use exp_get_by_name() or exp_find().
  */
 struct svc_export *
-rqst_exp_get_by_name(struct svc_rqst *rqstp, struct path *path)
+rqst_exp_get_by_name(struct svc_rqst *rqstp, const struct path *path)
 {
 	struct svc_export *gssexp, *exp = ERR_PTR(-ENOENT);
 	struct nfsd_net *nn = net_generic(SVC_NET(rqstp), nfsd_net_id);
@@ -1458,13 +1465,9 @@ static int e_show(struct seq_file *m, void *p)
 		return 0;
 	}
 
-	if (!cache_get_rcu(&exp->h))
+	if (cache_check_rcu(cd, &exp->h, NULL))
 		return 0;
 
-	if (cache_check(cd, &exp->h, NULL))
-		return 0;
-
-	exp_put(exp);
 	return svc_export_show(m, cd, cp);
 }
 

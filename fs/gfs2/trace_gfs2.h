@@ -52,7 +52,6 @@
 	{(1UL << GLF_DEMOTE_IN_PROGRESS),	"p" },		\
 	{(1UL << GLF_DIRTY),			"y" },		\
 	{(1UL << GLF_LFLUSH),			"f" },		\
-	{(1UL << GLF_INVALIDATE_IN_PROGRESS),	"i" },		\
 	{(1UL << GLF_PENDING_REPLY),		"R" },		\
 	{(1UL << GLF_HAVE_REPLY),		"r" },		\
 	{(1UL << GLF_INITIAL),			"a" },		\
@@ -65,7 +64,8 @@
 	{(1UL << GLF_INSTANTIATE_IN_PROG),	"N" },		\
 	{(1UL << GLF_TRY_TO_EVICT),		"e" },		\
 	{(1UL << GLF_VERIFY_DELETE),		"E" },		\
-	{(1UL << GLF_DEFER_DELETE),		"s" })
+	{(1UL << GLF_DEFER_DELETE),		"s" },		\
+	{(1UL << GLF_CANCELING),		"C" })
 
 #ifndef NUMPTY
 #define NUMPTY

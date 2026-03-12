@@ -486,6 +486,7 @@ static int lbs_add_wps_enrollee_tlv(u8 *tlv, const u8 *ie, size_t ie_len)
  */
 
 static int lbs_cfg_set_monitor_channel(struct wiphy *wiphy,
+				       struct net_device *dev,
 				       struct cfg80211_chan_def *chandef)
 {
 	struct lbs_private *priv = wiphy_priv(wiphy);
@@ -2148,8 +2149,8 @@ static void lbs_reg_notifier(struct wiphy *wiphy,
 }
 
 /*
- * This function get's called after lbs_setup_firmware() determined the
- * firmware capabities. So we can setup the wiphy according to our
+ * This function gets called after lbs_setup_firmware() determined the
+ * firmware capabilities. So we can setup the wiphy according to our
  * hardware/firmware.
  */
 int lbs_cfg_register(struct lbs_private *priv)

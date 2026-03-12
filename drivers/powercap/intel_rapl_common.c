@@ -28,6 +28,7 @@
 #include <asm/cpu_device_id.h>
 #include <asm/intel-family.h>
 #include <asm/iosf_mbi.h>
+#include <asm/msr.h>
 
 /* bitmasks for RAPL MSRs, used by primitive access functions */
 #define ENERGY_STATUS_MASK      0xffffffff
@@ -1276,11 +1277,16 @@ static const struct x86_cpu_id rapl_ids[] __initconst = {
 	X86_MATCH_VFM(INTEL_RAPTORLAKE,		&rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_RAPTORLAKE_P,        &rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_RAPTORLAKE_S,	&rapl_defaults_core),
+	X86_MATCH_VFM(INTEL_BARTLETTLAKE,	&rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_METEORLAKE,		&rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_METEORLAKE_L,	&rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_SAPPHIRERAPIDS_X,	&rapl_defaults_spr_server),
 	X86_MATCH_VFM(INTEL_EMERALDRAPIDS_X,	&rapl_defaults_spr_server),
 	X86_MATCH_VFM(INTEL_LUNARLAKE_M,	&rapl_defaults_core),
+	X86_MATCH_VFM(INTEL_PANTHERLAKE_L,	&rapl_defaults_core),
+	X86_MATCH_VFM(INTEL_WILDCATLAKE_L,	&rapl_defaults_core),
+	X86_MATCH_VFM(INTEL_NOVALAKE,		&rapl_defaults_core),
+	X86_MATCH_VFM(INTEL_NOVALAKE_L,		&rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_ARROWLAKE_H,	&rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_ARROWLAKE,		&rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_ARROWLAKE_U,	&rapl_defaults_core),
@@ -1289,7 +1295,7 @@ static const struct x86_cpu_id rapl_ids[] __initconst = {
 	X86_MATCH_VFM(INTEL_ATOM_SILVERMONT,	&rapl_defaults_byt),
 	X86_MATCH_VFM(INTEL_ATOM_AIRMONT,	&rapl_defaults_cht),
 	X86_MATCH_VFM(INTEL_ATOM_SILVERMONT_MID, &rapl_defaults_tng),
-	X86_MATCH_VFM(INTEL_ATOM_AIRMONT_MID,	&rapl_defaults_ann),
+	X86_MATCH_VFM(INTEL_ATOM_SILVERMONT_MID2,&rapl_defaults_ann),
 	X86_MATCH_VFM(INTEL_ATOM_GOLDMONT,	&rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_ATOM_GOLDMONT_PLUS,	&rapl_defaults_core),
 	X86_MATCH_VFM(INTEL_ATOM_GOLDMONT_D,	&rapl_defaults_core),
@@ -2079,8 +2085,7 @@ int rapl_package_add_pmu(struct rapl_package *rp)
 	raw_spin_lock_init(&data->lock);
 	INIT_LIST_HEAD(&data->active_list);
 	data->timer_interval = ms_to_ktime(rapl_pmu.timer_ms);
-	hrtimer_init(&data->hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	data->hrtimer.function = rapl_hrtimer_handle;
+	hrtimer_setup(&data->hrtimer, rapl_hrtimer_handle, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
 	return rapl_pmu_update(rp);
 }

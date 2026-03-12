@@ -29,6 +29,7 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/max77620.h>
 #include <linux/init.h>
+#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -707,3 +708,7 @@ static struct i2c_driver max77620_driver = {
 	.id_table = max77620_id,
 };
 builtin_i2c_driver(max77620_driver);
+
+MODULE_DESCRIPTION("Maxim Semiconductor MAX77620 and MAX20024 PMIC Support");
+MODULE_AUTHOR("Laxman Dewangan <ldewangan@nvidia.com>");
+MODULE_LICENSE("GPL");

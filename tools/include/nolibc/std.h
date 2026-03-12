@@ -13,12 +13,8 @@
  * syscall-specific stuff, as this file is expected to be included very early.
  */
 
-/* note: may already be defined */
-#ifndef NULL
-#define NULL ((void *)0)
-#endif
-
 #include "stdint.h"
+#include "stddef.h"
 
 #include <linux/types.h>
 

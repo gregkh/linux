@@ -823,17 +823,28 @@ static irqreturn_t max310x_ist(int irq, void *dev_id)
 	bool handled = false;
 
 	if (s->devtype->nr > 1) {
+		bool done;
+
 		do {
 			unsigned int val = ~0;
+			unsigned long irq;
+			unsigned int port;
+
+			done = true;
 
 			WARN_ON_ONCE(regmap_read(s->regmap,
 						 MAX310X_GLOBALIRQ_REG, &val));
-			val = ((1 << s->devtype->nr) - 1) & ~val;
-			if (!val)
-				break;
-			if (max310x_port_irq(s, fls(val) - 1) == IRQ_HANDLED)
-				handled = true;
-		} while (1);
+
+			irq = val;
+
+			for_each_clear_bit(port, &irq, s->devtype->nr) {
+				done = false;
+
+				if (max310x_port_irq(s, port) == IRQ_HANDLED)
+					handled = true;
+			}
+
+		} while (!done);
 	} else {
 		if (max310x_port_irq(s, 0) == IRQ_HANDLED)
 			handled = true;
@@ -1189,13 +1200,16 @@ static int max310x_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return !!((val >> 4) & (1 << (offset % 4)));
 }
 
-static void max310x_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static int max310x_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			    int value)
 {
 	struct max310x_port *s = gpiochip_get_data(chip);
 	struct uart_port *port = &s->p[offset / 4].port;
 
 	max310x_port_update(port, MAX310X_GPIODATA_REG, 1 << (offset % 4),
 			    value ? 1 << (offset % 4) : 0);
+
+	return 0;
 }
 
 static int max310x_gpio_direction_input(struct gpio_chip *chip, unsigned int offset)

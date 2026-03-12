@@ -245,7 +245,8 @@ static bool xennet_can_sg(struct net_device *dev)
 
 static void rx_refill_timeout(struct timer_list *t)
 {
-	struct netfront_queue *queue = from_timer(queue, t, rx_refill_timer);
+	struct netfront_queue *queue = timer_container_of(queue, t,
+							  rx_refill_timer);
 	napi_schedule(&queue->napi);
 }
 
@@ -1821,7 +1822,7 @@ static void xennet_disconnect_backend(struct netfront_info *info)
 	for (i = 0; i < num_queues && info->queues; ++i) {
 		struct netfront_queue *queue = &info->queues[i];
 
-		del_timer_sync(&queue->rx_refill_timer);
+		timer_delete_sync(&queue->rx_refill_timer);
 
 		if (queue->tx_irq && (queue->tx_irq == queue->rx_irq))
 			unbind_from_irqhandler(queue->tx_irq, queue);

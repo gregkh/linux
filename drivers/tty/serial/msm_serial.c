@@ -1102,7 +1102,7 @@ msm_find_best_baud(struct uart_port *port, unsigned int baud,
 
 			if (result == baud)
 				break;
-		} else if (entry->divisor > divisor) {
+		} else {
 			old = target;
 			target = clk_round_rate(msm_port->clk, old + 1);
 			/*
@@ -1900,7 +1900,7 @@ static const struct dev_pm_ops msm_serial_dev_pm_ops = {
 };
 
 static struct platform_driver msm_platform_driver = {
-	.remove_new = msm_serial_remove,
+	.remove = msm_serial_remove,
 	.probe = msm_serial_probe,
 	.driver = {
 		.name = "msm_serial",

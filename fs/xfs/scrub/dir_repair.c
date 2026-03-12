@@ -419,6 +419,12 @@ xrep_dir_salvage_entry(
 	if (error)
 		return 0;
 
+	/* Don't mix metadata and regular directory trees. */
+	if (xfs_is_metadir_inode(ip) != xfs_is_metadir_inode(rd->sc->ip)) {
+		xchk_irele(sc, ip);
+		return 0;
+	}
+
 	xname.type = xfs_mode_to_ftype(VFS_I(ip)->i_mode);
 	xchk_irele(sc, ip);
 
@@ -1274,7 +1280,7 @@ xrep_dir_scan_dirtree(
 	int			error;
 
 	/* Roots of directory trees are their own parents. */
-	if (sc->ip == sc->mp->m_rootip)
+	if (xchk_inode_is_dirtree_root(sc->ip))
 		xrep_findparent_scan_found(&rd->pscan, sc->ip->i_ino);
 
 	/*
@@ -1287,9 +1293,7 @@ xrep_dir_scan_dirtree(
 	if (sc->ilock_flags & (XFS_ILOCK_SHARED | XFS_ILOCK_EXCL))
 		xchk_iunlock(sc, sc->ilock_flags & (XFS_ILOCK_SHARED |
 						    XFS_ILOCK_EXCL));
-	error = xchk_trans_alloc_empty(sc);
-	if (error)
-		return error;
+	xchk_trans_alloc_empty(sc);
 
 	while ((error = xchk_iscan_iter(&rd->pscan.iscan, &ip)) == 1) {
 		bool		flush;
@@ -1315,9 +1319,7 @@ xrep_dir_scan_dirtree(
 			if (error)
 				break;
 
-			error = xchk_trans_alloc_empty(sc);
-			if (error)
-				break;
+			xchk_trans_alloc_empty(sc);
 		}
 
 		if (xchk_should_terminate(sc, &error))
@@ -1636,6 +1638,7 @@ xrep_dir_swap(
 	struct xrep_dir		*rd)
 {
 	struct xfs_scrub	*sc = rd->sc;
+	xfs_ino_t		ino;
 	bool			ip_local, temp_local;
 	int			error = 0;
 
@@ -1653,14 +1656,17 @@ xrep_dir_swap(
 
 	/*
 	 * Reset the temporary directory's '..' entry to point to the parent
-	 * that we found.  The temporary directory was created with the root
-	 * directory as the parent, so we can skip this if repairing a
-	 * subdirectory of the root.
+	 * that we found.  The dirent replace code asserts if the dirent
+	 * already points at the new inumber, so we look it up here.
 	 *
 	 * It's also possible that this replacement could also expand a sf
 	 * tempdir into block format.
 	 */
-	if (rd->pscan.parent_ino != sc->mp->m_rootip->i_ino) {
+	error = xchk_dir_lookup(sc, rd->sc->tempip, &xfs_name_dotdot, &ino);
+	if (error)
+		return error;
+
+	if (rd->pscan.parent_ino != ino) {
 		error = xrep_dir_replace(rd, rd->sc->tempip, &xfs_name_dotdot,
 				rd->pscan.parent_ino, rd->tx.req.resblks);
 		if (error)
@@ -1782,20 +1788,15 @@ xrep_dir_setup_scan(
 	struct xrep_dir		*rd)
 {
 	struct xfs_scrub	*sc = rd->sc;
-	char			*descr;
 	int			error;
 
 	/* Set up some staging memory for salvaging dirents. */
-	descr = xchk_xfile_ino_descr(sc, "directory entries");
-	error = xfarray_create(descr, 0, sizeof(struct xrep_dirent),
-			&rd->dir_entries);
-	kfree(descr);
+	error = xfarray_create("directory entries", 0,
+			sizeof(struct xrep_dirent), &rd->dir_entries);
 	if (error)
 		return error;
 
-	descr = xchk_xfile_ino_descr(sc, "directory entry names");
-	error = xfblob_create(descr, &rd->dir_names);
-	kfree(descr);
+	error = xfblob_create("directory entry names", &rd->dir_names);
 	if (error)
 		goto out_xfarray;
 

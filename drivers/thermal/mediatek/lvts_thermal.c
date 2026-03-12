@@ -350,7 +350,7 @@ static void lvts_update_irq_mask(struct lvts_ctrl *lvts_ctrl)
 
 	value = readl(LVTS_MONINT(lvts_ctrl->base));
 
-	for (i = 0; i < ARRAY_SIZE(high_offset_inten_masks); i++) {
+	lvts_for_each_valid_sensor(i, lvts_ctrl) {
 		if (lvts_ctrl->sensors[i].high_thresh == lvts_ctrl->high_thresh
 		    && lvts_ctrl->sensors[i].low_thresh == lvts_ctrl->low_thresh) {
 			/*
@@ -446,7 +446,7 @@ static irqreturn_t lvts_ctrl_irq_handler(struct lvts_ctrl *lvts_ctrl)
 {
 	irqreturn_t iret = IRQ_NONE;
 	u32 value;
-	u32 masks[] = {
+	static const u32 masks[] = {
 		LVTS_INT_SENSOR0,
 		LVTS_INT_SENSOR1,
 		LVTS_INT_SENSOR2,
@@ -575,7 +575,7 @@ static irqreturn_t lvts_irq_handler(int irq, void *data)
 	return iret;
 }
 
-static struct thermal_zone_device_ops lvts_ops = {
+static const struct thermal_zone_device_ops lvts_ops = {
 	.get_temp = lvts_get_temp,
 	.set_trips = lvts_set_trips,
 };
@@ -639,7 +639,7 @@ static int lvts_sensor_init(struct device *dev, struct lvts_ctrl *lvts_ctrl,
 
 		lvts_sensor[i].low_thresh = INT_MIN;
 		lvts_sensor[i].high_thresh = INT_MIN;
-	};
+	}
 
 	lvts_ctrl->valid_sensor_mask = lvts_ctrl_data->valid_sensor_mask;
 
@@ -1875,7 +1875,7 @@ static const struct dev_pm_ops lvts_pm_ops = {
 
 static struct platform_driver lvts_driver = {
 	.probe = lvts_probe,
-	.remove_new = lvts_remove,
+	.remove = lvts_remove,
 	.driver = {
 		.name = "mtk-lvts-thermal",
 		.of_match_table = lvts_of_match,

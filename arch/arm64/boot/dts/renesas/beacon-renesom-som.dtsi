@@ -130,8 +130,7 @@
 	pca9654_lte: gpio@21 {
 		compatible = "onnn,pca9654";
 		reg = <0x21>;
-		interrupt-parent = <&gpio5>;
-		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+		interrupts-extended = <&gpio5 25 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-controller;
 		#interrupt-cells = <2>;
 		gpio-controller;
@@ -165,6 +164,8 @@
 		#clock-cells = <1>;
 		clocks = <&x304_clk>;
 		clock-names = "xin";
+		idt,shutdown = <0>;
+		idt,output-enable-active = <0>;
 		/* du_dotclkin0, du_dotclkin2, usb_extal, avb_txcrefclk */
 		assigned-clocks = <&versaclock5 1>,
 				   <&versaclock5 2>,
@@ -281,6 +282,7 @@
 &scif2 {
 	pinctrl-0 = <&scif2_pins>;
 	pinctrl-names = "default";
+	bootph-all;
 	status = "okay";
 };
 
@@ -298,11 +300,10 @@
 	#address-cells = <1>;
 	#size-cells = <0>;
 
-	brcmf: bcrmf@1 {
+	brcmf: wifi@1 {
 		reg = <1>;
 		compatible = "brcm,bcm4329-fmac";
-		interrupt-parent = <&gpio1>;
-		interrupts = <27 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&gpio1 27 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "host-wake";
 	};
 };

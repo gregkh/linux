@@ -303,9 +303,6 @@ static void pwr_island_trickle_drive_40xx(struct ivpu_device *vdev, bool enable)
 		val = REG_CLR_FLD(VPU_40XX_HOST_SS_AON_PWR_ISLAND_TRICKLE_EN0, CSS_CPU, val);
 
 	REGV_WR32(VPU_40XX_HOST_SS_AON_PWR_ISLAND_TRICKLE_EN0, val);
-
-	if (enable)
-		ndelay(500);
 }
 
 static void pwr_island_drive_37xx(struct ivpu_device *vdev, bool enable)
@@ -318,9 +315,6 @@ static void pwr_island_drive_37xx(struct ivpu_device *vdev, bool enable)
 		val = REG_CLR_FLD(VPU_40XX_HOST_SS_AON_PWR_ISLAND_EN0, CSS_CPU, val);
 
 	REGV_WR32(VPU_40XX_HOST_SS_AON_PWR_ISLAND_EN0, val);
-
-	if (!enable)
-		ndelay(500);
 }
 
 static void pwr_island_drive_40xx(struct ivpu_device *vdev, bool enable)
@@ -339,9 +333,11 @@ static void pwr_island_enable(struct ivpu_device *vdev)
 {
 	if (ivpu_hw_ip_gen(vdev) == IVPU_HW_IP_37XX) {
 		pwr_island_trickle_drive_37xx(vdev, true);
+		ndelay(500);
 		pwr_island_drive_37xx(vdev, true);
 	} else {
 		pwr_island_trickle_drive_40xx(vdev, true);
+		ndelay(500);
 		pwr_island_drive_40xx(vdev, true);
 	}
 }
@@ -687,6 +683,7 @@ static void pwr_island_delay_set(struct ivpu_device *vdev)
 		return;
 
 	switch (ivpu_device_id(vdev)) {
+	case PCI_DEVICE_ID_WCL:
 	case PCI_DEVICE_ID_PTL_P:
 		post = high ? 18 : 0;
 		post1 = 0;
@@ -972,14 +969,14 @@ void ivpu_hw_ip_wdt_disable(struct ivpu_device *vdev)
 
 static u32 ipc_rx_count_get_37xx(struct ivpu_device *vdev)
 {
-	u32 count = REGV_RD32_SILENT(VPU_37XX_HOST_SS_TIM_IPC_FIFO_STAT);
+	u32 count = readl(vdev->regv + VPU_37XX_HOST_SS_TIM_IPC_FIFO_STAT);
 
 	return REG_GET_FLD(VPU_37XX_HOST_SS_TIM_IPC_FIFO_STAT, FILL_LEVEL, count);
 }
 
 static u32 ipc_rx_count_get_40xx(struct ivpu_device *vdev)
 {
-	u32 count = REGV_RD32_SILENT(VPU_40XX_HOST_SS_TIM_IPC_FIFO_STAT);
+	u32 count = readl(vdev->regv + VPU_40XX_HOST_SS_TIM_IPC_FIFO_STAT);
 
 	return REG_GET_FLD(VPU_40XX_HOST_SS_TIM_IPC_FIFO_STAT, FILL_LEVEL, count);
 }

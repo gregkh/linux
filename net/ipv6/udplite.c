@@ -16,10 +16,9 @@
 
 static int udplitev6_sk_init(struct sock *sk)
 {
-	udpv6_init_sock(sk);
 	pr_warn_once("UDP-Lite is deprecated and scheduled to be removed in 2025, "
 		     "please contact the netdev mailing list\n");
-	return 0;
+	return udpv6_init_sock(sk);
 }
 
 static int udplitev6_rcv(struct sk_buff *skb)
@@ -59,7 +58,7 @@ struct proto udplitev6_prot = {
 	.rehash		   = udp_v6_rehash,
 	.get_port	   = udp_v6_get_port,
 
-	.memory_allocated  = &udp_memory_allocated,
+	.memory_allocated  = &net_aligned_data.udp_memory_allocated,
 	.per_cpu_fw_alloc  = &udp_memory_per_cpu_fw_alloc,
 
 	.sysctl_mem	   = sysctl_udp_mem,

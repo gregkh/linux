@@ -740,8 +740,7 @@ static int svc_udp_sendto(struct svc_rqst *rqstp)
 	if (svc_xprt_is_dead(xprt))
 		goto out_notconn;
 
-	count = xdr_buf_to_bvec(rqstp->rq_bvec,
-				ARRAY_SIZE(rqstp->rq_bvec), xdr);
+	count = xdr_buf_to_bvec(rqstp->rq_bvec, rqstp->rq_maxpages, xdr);
 
 	iov_iter_bvec(&msg.msg_iter, ITER_SOURCE, rqstp->rq_bvec,
 		      count, rqstp->rq_res.len);
@@ -1226,7 +1225,7 @@ err_noclose:
  * that the pages backing @xdr are unchanging.
  */
 static int svc_tcp_sendmsg(struct svc_sock *svsk, struct svc_rqst *rqstp,
-			   rpc_fraghdr marker, unsigned int *sentp)
+			   rpc_fraghdr marker)
 {
 	struct msghdr msg = {
 		.msg_flags	= MSG_SPLICE_PAGES,
@@ -1234,8 +1233,6 @@ static int svc_tcp_sendmsg(struct svc_sock *svsk, struct svc_rqst *rqstp,
 	unsigned int count;
 	void *buf;
 	int ret;
-
-	*sentp = 0;
 
 	/* The stream record marker is copied into a temporary page
 	 * fragment buffer so that it can be included in rq_bvec.
@@ -1247,17 +1244,14 @@ static int svc_tcp_sendmsg(struct svc_sock *svsk, struct svc_rqst *rqstp,
 	memcpy(buf, &marker, sizeof(marker));
 	bvec_set_virt(rqstp->rq_bvec, buf, sizeof(marker));
 
-	count = xdr_buf_to_bvec(rqstp->rq_bvec + 1,
-				ARRAY_SIZE(rqstp->rq_bvec) - 1, &rqstp->rq_res);
+	count = xdr_buf_to_bvec(rqstp->rq_bvec + 1, rqstp->rq_maxpages,
+				&rqstp->rq_res);
 
 	iov_iter_bvec(&msg.msg_iter, ITER_SOURCE, rqstp->rq_bvec,
 		      1 + count, sizeof(marker) + rqstp->rq_res.len);
 	ret = sock_sendmsg(svsk->sk_sock, &msg);
 	page_frag_free(buf);
-	if (ret < 0)
-		return ret;
-	*sentp += ret;
-	return 0;
+	return ret;
 }
 
 /**
@@ -1276,8 +1270,7 @@ static int svc_tcp_sendto(struct svc_rqst *rqstp)
 	struct xdr_buf *xdr = &rqstp->rq_res;
 	rpc_fraghdr marker = cpu_to_be32(RPC_LAST_STREAM_FRAGMENT |
 					 (u32)xdr->len);
-	unsigned int sent;
-	int err;
+	int sent;
 
 	svc_tcp_release_ctxt(xprt, rqstp->rq_xprt_ctxt);
 	rqstp->rq_xprt_ctxt = NULL;
@@ -1285,9 +1278,9 @@ static int svc_tcp_sendto(struct svc_rqst *rqstp)
 	mutex_lock(&xprt->xpt_mutex);
 	if (svc_xprt_is_dead(xprt))
 		goto out_notconn;
-	err = svc_tcp_sendmsg(svsk, rqstp, marker, &sent);
-	trace_svcsock_tcp_send(xprt, err < 0 ? (long)err : sent);
-	if (err < 0 || sent != (xdr->len + sizeof(marker)))
+	sent = svc_tcp_sendmsg(svsk, rqstp, marker);
+	trace_svcsock_tcp_send(xprt, sent);
+	if (sent < 0 || sent != (xdr->len + sizeof(marker)))
 		goto out_close;
 	mutex_unlock(&xprt->xpt_mutex);
 	return sent;
@@ -1296,10 +1289,10 @@ out_notconn:
 	mutex_unlock(&xprt->xpt_mutex);
 	return -ENOTCONN;
 out_close:
-	pr_notice("rpc-srv/tcp: %s: %s %d when sending %d bytes - shutting down socket\n",
+	pr_notice("rpc-srv/tcp: %s: %s %d when sending %zu bytes - shutting down socket\n",
 		  xprt->xpt_server->sv_name,
-		  (err < 0) ? "got error" : "sent",
-		  (err < 0) ? err : sent, xdr->len);
+		  (sent < 0) ? "got error" : "sent",
+		  sent, xdr->len + sizeof(marker));
 	svc_xprt_deferred_close(xprt);
 	mutex_unlock(&xprt->xpt_mutex);
 	return -EAGAIN;
@@ -1369,7 +1362,8 @@ static void svc_tcp_init(struct svc_sock *svsk, struct svc_serv *serv)
 		svsk->sk_marker = xdr_zero;
 		svsk->sk_tcplen = 0;
 		svsk->sk_datalen = 0;
-		memset(&svsk->sk_pages[0], 0, sizeof(svsk->sk_pages));
+		memset(&svsk->sk_pages[0], 0,
+		       svsk->sk_maxpages * sizeof(struct page *));
 
 		tcp_sock_set_nodelay(sk);
 
@@ -1408,10 +1402,13 @@ static struct svc_sock *svc_setup_socket(struct svc_serv *serv,
 	struct svc_sock	*svsk;
 	struct sock	*inet;
 	int		pmap_register = !(flags & SVC_SOCK_ANONYMOUS);
+	unsigned long	pages;
 
-	svsk = kzalloc(sizeof(*svsk), GFP_KERNEL);
+	pages = svc_serv_maxpages(serv);
+	svsk = kzalloc(struct_size(svsk, sk_pages, pages), GFP_KERNEL);
 	if (!svsk)
 		return ERR_PTR(-ENOMEM);
+	svsk->sk_maxpages = pages;
 
 	inet = sock->sk;
 
@@ -1571,7 +1568,7 @@ static struct svc_xprt *svc_create_socket(struct svc_serv *serv,
 
 	if (protocol == IPPROTO_TCP) {
 		sk_net_refcnt_upgrade(sock->sk);
-		if ((error = kernel_listen(sock, 64)) < 0)
+		if ((error = kernel_listen(sock, SOMAXCONN)) < 0)
 			goto bummer;
 	}
 
@@ -1628,7 +1625,6 @@ static void svc_tcp_sock_detach(struct svc_xprt *xprt)
 static void svc_sock_free(struct svc_xprt *xprt)
 {
 	struct svc_sock *svsk = container_of(xprt, struct svc_sock, sk_xprt);
-	struct page_frag_cache *pfc = &svsk->sk_frag_cache;
 	struct socket *sock = svsk->sk_sock;
 
 	trace_svcsock_free(svsk, sock);
@@ -1638,8 +1634,7 @@ static void svc_sock_free(struct svc_xprt *xprt)
 		sockfd_put(sock);
 	else
 		sock_release(sock);
-	if (pfc->va)
-		__page_frag_cache_drain(virt_to_head_page(pfc->va),
-					pfc->pagecnt_bias);
+
+	page_frag_cache_drain(&svsk->sk_frag_cache);
 	kfree(svsk);
 }

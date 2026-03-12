@@ -253,7 +253,7 @@ enum
 	ID_CONTROLLER_DECK_STATE = 9
 };
 
-/* String attribute idenitifiers */
+/* String attribute identifiers */
 enum {
 	ATTRIB_STR_BOARD_SERIAL,
 	ATTRIB_STR_UNIT_SERIAL,
@@ -559,15 +559,13 @@ static void steam_set_lizard_mode(struct steam_device *steam, bool enable)
 	if (steam->gamepad_mode)
 		enable = false;
 
+	mutex_lock(&steam->report_mutex);
 	if (enable) {
-		mutex_lock(&steam->report_mutex);
 		/* enable esc, enter, cursors */
 		steam_send_report_byte(steam, ID_SET_DEFAULT_DIGITAL_MAPPINGS);
 		/* reset settings */
 		steam_send_report_byte(steam, ID_LOAD_DEFAULT_SETTINGS);
-		mutex_unlock(&steam->report_mutex);
 	} else {
-		mutex_lock(&steam->report_mutex);
 		/* disable esc, enter, cursor */
 		steam_send_report_byte(steam, ID_CLEAR_DIGITAL_MAPPINGS);
 
@@ -579,15 +577,14 @@ static void steam_set_lizard_mode(struct steam_device *steam, bool enable)
 				SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE, 0xFFFF, /* disable haptic click */
 				SETTING_STEAM_WATCHDOG_ENABLE, 0, /* disable watchdog that tests if Steam is active */
 				0);
-			mutex_unlock(&steam->report_mutex);
 		} else {
 			steam_write_settings(steam,
 				SETTING_LEFT_TRACKPAD_MODE, TRACKPAD_NONE, /* disable mouse */
 				SETTING_RIGHT_TRACKPAD_MODE, TRACKPAD_NONE, /* disable mouse */
 				0);
-			mutex_unlock(&steam->report_mutex);
 		}
 	}
+	mutex_unlock(&steam->report_mutex);
 }
 
 static int steam_input_open(struct input_dev *dev)
@@ -758,15 +755,12 @@ static int steam_input_register(struct steam_device *steam)
 	input_set_capability(input, EV_KEY, BTN_THUMBL);
 	input_set_capability(input, EV_KEY, BTN_THUMB);
 	input_set_capability(input, EV_KEY, BTN_THUMB2);
+	input_set_capability(input, EV_KEY, BTN_GRIPL);
+	input_set_capability(input, EV_KEY, BTN_GRIPR);
 	if (steam->quirks & STEAM_QUIRK_DECK) {
 		input_set_capability(input, EV_KEY, BTN_BASE);
-		input_set_capability(input, EV_KEY, BTN_TRIGGER_HAPPY1);
-		input_set_capability(input, EV_KEY, BTN_TRIGGER_HAPPY2);
-		input_set_capability(input, EV_KEY, BTN_TRIGGER_HAPPY3);
-		input_set_capability(input, EV_KEY, BTN_TRIGGER_HAPPY4);
-	} else {
-		input_set_capability(input, EV_KEY, BTN_GEAR_DOWN);
-		input_set_capability(input, EV_KEY, BTN_GEAR_UP);
+		input_set_capability(input, EV_KEY, BTN_GRIPL2);
+		input_set_capability(input, EV_KEY, BTN_GRIPR2);
 	}
 
 	input_set_abs_params(input, ABS_X, -32767, 32767, 0, 0);
@@ -1153,11 +1147,9 @@ static void steam_client_ll_close(struct hid_device *hdev)
 	struct steam_device *steam = hdev->driver_data;
 
 	unsigned long flags;
-	bool connected;
 
 	spin_lock_irqsave(&steam->lock, flags);
 	steam->client_opened--;
-	connected = steam->connected && !steam->client_opened;
 	spin_unlock_irqrestore(&steam->lock, flags);
 
 	schedule_work(&steam->unregister_work);
@@ -1424,8 +1416,8 @@ static inline s16 steam_le16(u8 *data)
  *  9.4  | BTN_SELECT | menu left
  *  9.5  | BTN_MODE   | steam logo
  *  9.6  | BTN_START  | menu right
- *  9.7  | BTN_GEAR_DOWN | left back lever
- * 10.0  | BTN_GEAR_UP   | right back lever
+ *  9.7  | BTN_GRIPL  | left back lever
+ * 10.0  | BTN_GRIPR  | right back lever
  * 10.1  | --         | left-pad clicked
  * 10.2  | BTN_THUMBR | right-pad clicked
  * 10.3  | BTN_THUMB  | left-pad touched (but see explanation below)
@@ -1490,8 +1482,8 @@ static void steam_do_input_event(struct steam_device *steam,
 	input_event(input, EV_KEY, BTN_SELECT, !!(b9 & BIT(4)));
 	input_event(input, EV_KEY, BTN_MODE, !!(b9 & BIT(5)));
 	input_event(input, EV_KEY, BTN_START, !!(b9 & BIT(6)));
-	input_event(input, EV_KEY, BTN_GEAR_DOWN, !!(b9 & BIT(7)));
-	input_event(input, EV_KEY, BTN_GEAR_UP, !!(b10 & BIT(0)));
+	input_event(input, EV_KEY, BTN_GRIPL, !!(b9 & BIT(7)));
+	input_event(input, EV_KEY, BTN_GRIPR, !!(b10 & BIT(0)));
 	input_event(input, EV_KEY, BTN_THUMBR, !!(b10 & BIT(2)));
 	input_event(input, EV_KEY, BTN_THUMBL, !!(b10 & BIT(6)));
 	input_event(input, EV_KEY, BTN_THUMB, lpad_touched || lpad_and_joy);
@@ -1552,8 +1544,8 @@ static void steam_do_input_event(struct steam_device *steam,
  *  9.4  | BTN_SELECT | menu left
  *  9.5  | BTN_MODE   | steam logo
  *  9.6  | BTN_START  | menu right
- *  9.7  | BTN_TRIGGER_HAPPY3 | left bottom grip button
- *  10.0 | BTN_TRIGGER_HAPPY4 | right bottom grip button
+ *  9.7  | BTN_GRIPL2 | left bottom grip button
+ *  10.0 | BTN_GRIPR2 | right bottom grip button
  *  10.1 | BTN_THUMB  | left pad pressed
  *  10.2 | BTN_THUMB2 | right pad pressed
  *  10.3 | --         | left pad touched
@@ -1578,8 +1570,8 @@ static void steam_do_input_event(struct steam_device *steam,
  *  12.6 | --         | unknown
  *  12.7 | --         | unknown
  *  13.0 | --         | unknown
- *  13.1 | BTN_TRIGGER_HAPPY1 | left top grip button
- *  13.2 | BTN_TRIGGER_HAPPY2 | right top grip button
+ *  13.1 | BTN_GRIPL  | left top grip button
+ *  13.2 | BTN_GRIPR  | right top grip button
  *  13.3 | --         | unknown
  *  13.4 | --         | unknown
  *  13.5 | --         | unknown
@@ -1664,8 +1656,8 @@ static void steam_do_deck_input_event(struct steam_device *steam,
 	input_event(input, EV_KEY, BTN_SELECT, !!(b9 & BIT(4)));
 	input_event(input, EV_KEY, BTN_MODE, !!(b9 & BIT(5)));
 	input_event(input, EV_KEY, BTN_START, !!(b9 & BIT(6)));
-	input_event(input, EV_KEY, BTN_TRIGGER_HAPPY3, !!(b9 & BIT(7)));
-	input_event(input, EV_KEY, BTN_TRIGGER_HAPPY4, !!(b10 & BIT(0)));
+	input_event(input, EV_KEY, BTN_GRIPL2, !!(b9 & BIT(7)));
+	input_event(input, EV_KEY, BTN_GRIPR2, !!(b10 & BIT(0)));
 	input_event(input, EV_KEY, BTN_THUMBL, !!(b10 & BIT(6)));
 	input_event(input, EV_KEY, BTN_THUMBR, !!(b11 & BIT(2)));
 	input_event(input, EV_KEY, BTN_DPAD_UP, !!(b9 & BIT(0)));
@@ -1674,8 +1666,8 @@ static void steam_do_deck_input_event(struct steam_device *steam,
 	input_event(input, EV_KEY, BTN_DPAD_DOWN, !!(b9 & BIT(3)));
 	input_event(input, EV_KEY, BTN_THUMB, !!(b10 & BIT(1)));
 	input_event(input, EV_KEY, BTN_THUMB2, !!(b10 & BIT(2)));
-	input_event(input, EV_KEY, BTN_TRIGGER_HAPPY1, !!(b13 & BIT(1)));
-	input_event(input, EV_KEY, BTN_TRIGGER_HAPPY2, !!(b13 & BIT(2)));
+	input_event(input, EV_KEY, BTN_GRIPL, !!(b13 & BIT(1)));
+	input_event(input, EV_KEY, BTN_GRIPR, !!(b13 & BIT(2)));
 	input_event(input, EV_KEY, BTN_BASE, !!(b14 & BIT(2)));
 
 	input_sync(input);

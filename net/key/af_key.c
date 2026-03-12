@@ -2630,7 +2630,7 @@ static int pfkey_migrate(struct sock *sk, struct sk_buff *skb,
 	}
 
 	return xfrm_migrate(&sel, dir, XFRM_POLICY_TYPE_MAIN, m, i,
-			    kma ? &k : NULL, net, NULL, 0, NULL);
+			    kma ? &k : NULL, net, NULL, 0, NULL, NULL);
 
  out:
 	return err;
@@ -3788,7 +3788,7 @@ static int pfkey_seq_show(struct seq_file *f, void *v)
 			       refcount_read(&s->sk_refcnt),
 			       sk_rmem_alloc_get(s),
 			       sk_wmem_alloc_get(s),
-			       from_kuid_munged(seq_user_ns(f), sock_i_uid(s)),
+			       from_kuid_munged(seq_user_ns(f), sk_uid(s)),
 			       sock_i_ino(s)
 			       );
 	return 0;

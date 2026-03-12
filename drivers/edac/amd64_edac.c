@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/ras.h>
+#include <linux/string_choices.h>
 #include "amd64_edac.h"
-#include <asm/amd_nb.h>
+#include <asm/amd/nb.h>
+#include <asm/amd/node.h>
 
 static struct edac_pci_ctl_info *pci_ctl;
 
@@ -1170,22 +1172,21 @@ static void debug_dump_dramcfg_low(struct amd64_pvt *pvt, u32 dclr, int chan)
 		edac_dbg(1, " LRDIMM %dx rank multiply\n", (dcsm & 0x3));
 	}
 
-	edac_dbg(1, "All DIMMs support ECC:%s\n",
-		    (dclr & BIT(19)) ? "yes" : "no");
+	edac_dbg(1, "All DIMMs support ECC: %s\n", str_yes_no(dclr & BIT(19)));
 
 
 	edac_dbg(1, "  PAR/ERR parity: %s\n",
-		 (dclr & BIT(8)) ?  "enabled" : "disabled");
+		 str_enabled_disabled(dclr & BIT(8)));
 
 	if (pvt->fam == 0x10)
 		edac_dbg(1, "  DCT 128bit mode width: %s\n",
 			 (dclr & BIT(11)) ?  "128b" : "64b");
 
 	edac_dbg(1, "  x4 logical DIMMs present: L0: %s L1: %s L2: %s L3: %s\n",
-		 (dclr & BIT(12)) ?  "yes" : "no",
-		 (dclr & BIT(13)) ?  "yes" : "no",
-		 (dclr & BIT(14)) ?  "yes" : "no",
-		 (dclr & BIT(15)) ?  "yes" : "no");
+		 str_yes_no(dclr & BIT(12)),
+		 str_yes_no(dclr & BIT(13)),
+		 str_yes_no(dclr & BIT(14)),
+		 str_yes_no(dclr & BIT(15)));
 }
 
 #define CS_EVEN_PRIMARY		BIT(0)
@@ -1366,14 +1367,14 @@ static void umc_dump_misc_regs(struct amd64_pvt *pvt)
 		edac_dbg(1, "UMC%d UMC cap high: 0x%x\n", i, umc->umc_cap_hi);
 
 		edac_dbg(1, "UMC%d ECC capable: %s, ChipKill ECC capable: %s\n",
-				i, (umc->umc_cap_hi & BIT(30)) ? "yes" : "no",
-				    (umc->umc_cap_hi & BIT(31)) ? "yes" : "no");
+				i, str_yes_no(umc->umc_cap_hi & BIT(30)),
+				    str_yes_no(umc->umc_cap_hi & BIT(31)));
 		edac_dbg(1, "UMC%d All DIMMs support ECC: %s\n",
-				i, (umc->umc_cfg & BIT(12)) ? "yes" : "no");
+				i, str_yes_no(umc->umc_cfg & BIT(12)));
 		edac_dbg(1, "UMC%d x4 DIMMs present: %s\n",
-				i, (umc->dimm_cfg & BIT(6)) ? "yes" : "no");
+				i, str_yes_no(umc->dimm_cfg & BIT(6)));
 		edac_dbg(1, "UMC%d x16 DIMMs present: %s\n",
-				i, (umc->dimm_cfg & BIT(7)) ? "yes" : "no");
+				i, str_yes_no(umc->dimm_cfg & BIT(7)));
 
 		umc_debug_display_dimm_sizes(pvt, i);
 	}
@@ -1384,11 +1385,11 @@ static void dct_dump_misc_regs(struct amd64_pvt *pvt)
 	edac_dbg(1, "F3xE8 (NB Cap): 0x%08x\n", pvt->nbcap);
 
 	edac_dbg(1, "  NB two channel DRAM capable: %s\n",
-		 (pvt->nbcap & NBCAP_DCT_DUAL) ? "yes" : "no");
+		 str_yes_no(pvt->nbcap & NBCAP_DCT_DUAL));
 
 	edac_dbg(1, "  ECC capable: %s, ChipKill ECC capable: %s\n",
-		 (pvt->nbcap & NBCAP_SECDED) ? "yes" : "no",
-		 (pvt->nbcap & NBCAP_CHIPKILL) ? "yes" : "no");
+		 str_yes_no(pvt->nbcap & NBCAP_SECDED),
+		 str_yes_no(pvt->nbcap & NBCAP_CHIPKILL));
 
 	debug_dump_dramcfg_low(pvt, pvt->dclr0, 0);
 
@@ -1411,7 +1412,7 @@ static void dct_dump_misc_regs(struct amd64_pvt *pvt)
 	if (!dct_ganging_enabled(pvt))
 		debug_dump_dramcfg_low(pvt, pvt->dclr1, 1);
 
-	edac_dbg(1, "  DramHoleValid: %s\n", dhar_valid(pvt) ? "yes" : "no");
+	edac_dbg(1, "  DramHoleValid: %s\n", str_yes_no(dhar_valid(pvt)));
 
 	amd64_info("using x%u syndromes.\n", pvt->ecc_sym_sz);
 }
@@ -2040,15 +2041,15 @@ static void read_dram_ctl_register(struct amd64_pvt *pvt)
 
 		if (!dct_ganging_enabled(pvt))
 			edac_dbg(0, "  Address range split per DCT: %s\n",
-				 (dct_high_range_enabled(pvt) ? "yes" : "no"));
+				 str_yes_no(dct_high_range_enabled(pvt)));
 
 		edac_dbg(0, "  data interleave for ECC: %s, DRAM cleared since last warm reset: %s\n",
-			 (dct_data_intlv_enabled(pvt) ? "enabled" : "disabled"),
-			 (dct_memory_cleared(pvt) ? "yes" : "no"));
+			 str_enabled_disabled(dct_data_intlv_enabled(pvt)),
+			 str_yes_no(dct_memory_cleared(pvt)));
 
 		edac_dbg(0, "  channel interleave: %s, "
 			 "interleave bits selector: 0x%x\n",
-			 (dct_interleave_enabled(pvt) ? "enabled" : "disabled"),
+			 str_enabled_disabled(dct_interleave_enabled(pvt)),
 			 dct_sel_interleave_addr(pvt));
 	}
 
@@ -2955,13 +2956,13 @@ static void dct_read_mc_regs(struct amd64_pvt *pvt)
 	 * Retrieve TOP_MEM and TOP_MEM2; no masking off of reserved bits since
 	 * those are Read-As-Zero.
 	 */
-	rdmsrl(MSR_K8_TOP_MEM1, pvt->top_mem);
+	rdmsrq(MSR_K8_TOP_MEM1, pvt->top_mem);
 	edac_dbg(0, "  TOP_MEM:  0x%016llx\n", pvt->top_mem);
 
 	/* Check first whether TOP_MEM2 is enabled: */
-	rdmsrl(MSR_AMD64_SYSCFG, msr_val);
+	rdmsrq(MSR_AMD64_SYSCFG, msr_val);
 	if (msr_val & BIT(21)) {
-		rdmsrl(MSR_K8_TOP_MEM2, pvt->top_mem2);
+		rdmsrq(MSR_K8_TOP_MEM2, pvt->top_mem2);
 		edac_dbg(0, "  TOP_MEM2: 0x%016llx\n", pvt->top_mem2);
 	} else {
 		edac_dbg(0, "  TOP_MEM2 disabled\n");
@@ -3221,8 +3222,7 @@ static bool nb_mce_bank_enabled_on_node(u16 nid)
 		nbe = reg->l & MSR_MCGCTL_NBE;
 
 		edac_dbg(0, "core: %u, MCG_CTL: 0x%llx, NB MSR is %s\n",
-			 cpu, reg->q,
-			 (nbe ? "enabled" : "disabled"));
+			 cpu, reg->q, str_enabled_disabled(nbe));
 
 		if (!nbe)
 			goto out;
@@ -3366,12 +3366,9 @@ static bool dct_ecc_enabled(struct amd64_pvt *pvt)
 		edac_dbg(0, "NB MCE bank disabled, set MSR 0x%08x[4] on node %d to enable.\n",
 			 MSR_IA32_MCG_CTL, nid);
 
-	edac_dbg(3, "Node %d: DRAM ECC %s.\n", nid, (ecc_en ? "enabled" : "disabled"));
+	edac_dbg(3, "Node %d: DRAM ECC %s.\n", nid, str_enabled_disabled(ecc_en));
 
-	if (!ecc_en || !nb_mce_en)
-		return false;
-	else
-		return true;
+	return ecc_en && nb_mce_en;
 }
 
 static bool umc_ecc_enabled(struct amd64_pvt *pvt)
@@ -3391,7 +3388,7 @@ static bool umc_ecc_enabled(struct amd64_pvt *pvt)
 		}
 	}
 
-	edac_dbg(3, "Node %d: DRAM ECC %s.\n", pvt->mc_node_id, (ecc_en ? "enabled" : "disabled"));
+	edac_dbg(3, "Node %d: DRAM ECC %s.\n", pvt->mc_node_id, str_enabled_disabled(ecc_en));
 
 	return ecc_en;
 }
@@ -3924,6 +3921,26 @@ static int per_family_init(struct amd64_pvt *pvt)
 			break;
 		case 0x40 ... 0x4f:
 			pvt->ctl_name           = "F1Ah_M40h";
+			pvt->flags.zn_regs_v2   = 1;
+			break;
+		case 0x50 ... 0x57:
+			pvt->ctl_name           = "F1Ah_M50h";
+			pvt->max_mcs            = 16;
+			pvt->flags.zn_regs_v2   = 1;
+			break;
+		case 0x90 ... 0x9f:
+			pvt->ctl_name           = "F1Ah_M90h";
+			pvt->max_mcs            = 8;
+			pvt->flags.zn_regs_v2   = 1;
+			break;
+		case 0xa0 ... 0xaf:
+			pvt->ctl_name           = "F1Ah_MA0h";
+			pvt->max_mcs            = 8;
+			pvt->flags.zn_regs_v2   = 1;
+			break;
+		case 0xc0 ... 0xc7:
+			pvt->ctl_name           = "F1Ah_MC0h";
+			pvt->max_mcs            = 16;
 			pvt->flags.zn_regs_v2   = 1;
 			break;
 		}

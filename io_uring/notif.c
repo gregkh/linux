@@ -11,7 +11,7 @@
 
 static const struct ubuf_info_ops io_ubuf_ops;
 
-static void io_notif_tw_complete(struct io_kiocb *notif, struct io_tw_state *ts)
+static void io_notif_tw_complete(struct io_kiocb *notif, io_tw_token_t tw)
 {
 	struct io_notif_data *nd = io_notif_to_data(notif);
 	struct io_ring_ctx *ctx = notif->ctx;
@@ -34,7 +34,7 @@ static void io_notif_tw_complete(struct io_kiocb *notif, struct io_tw_state *ts)
 		}
 
 		nd = nd->next;
-		io_req_task_complete(notif, ts);
+		io_req_task_complete(notif, tw);
 	} while (nd);
 }
 
@@ -94,7 +94,7 @@ static int io_link_skb(struct sk_buff *skb, struct ubuf_info *uarg)
 
 	/* make sure all noifications can be finished in the same task_work */
 	if (unlikely(notif->ctx != prev_notif->ctx ||
-		     notif->task != prev_notif->task))
+		     notif->tctx != prev_notif->tctx))
 		return -EEXIST;
 
 	nd->head = prev_nd->head;
@@ -117,12 +117,14 @@ struct io_kiocb *io_alloc_notif(struct io_ring_ctx *ctx)
 
 	if (unlikely(!io_alloc_req(ctx, &notif)))
 		return NULL;
+	notif->ctx = ctx;
 	notif->opcode = IORING_OP_NOP;
 	notif->flags = 0;
 	notif->file = NULL;
-	notif->task = current;
+	notif->tctx = current->io_uring;
 	io_get_task_refs(1);
-	notif->rsrc_node = NULL;
+	notif->file_node = NULL;
+	notif->buf_node = NULL;
 
 	nd = io_notif_to_data(notif);
 	nd->zc_report = false;

@@ -40,7 +40,6 @@ xfs_fill_statvfs_from_dquot(
 
 		statp->f_blocks = min(statp->f_blocks, limit);
 		statp->f_bfree = min(statp->f_bfree, remaining);
-		statp->f_bavail = min(statp->f_bavail, remaining);
 	}
 
 	limit = dqp->q_ino.softlimit ?
@@ -130,7 +129,11 @@ xfs_qm_newmount(
 	if (xfs_qm_validate_state_change(mp, uquotaondisk,
 			    gquotaondisk, pquotaondisk)) {
 
-		xfs_warn(mp, "please mount with%s%s%s%s.",
+		if (xfs_has_metadir(mp))
+			xfs_warn(mp,
+		"metadir enabled, please mount without any quota mount options");
+		else
+			xfs_warn(mp, "please mount with%s%s%s%s.",
 				(!quotaondisk ? "out quota" : ""),
 				(uquotaondisk ? " usrquota" : ""),
 				(gquotaondisk ? " grpquota" : ""),
@@ -166,4 +169,22 @@ xfs_qm_newmount(
 	}
 
 	return 0;
+}
+
+/*
+ * If the sysadmin didn't provide any quota mount options, restore the quota
+ * accounting and enforcement state from the ondisk superblock.  Only do this
+ * for metadir filesystems because this is a behavior change.
+ */
+void
+xfs_qm_resume_quotaon(
+	struct xfs_mount	*mp)
+{
+	if (!xfs_has_metadir(mp))
+		return;
+	if (xfs_has_norecovery(mp))
+		return;
+
+	mp->m_qflags = mp->m_sb.sb_qflags & (XFS_ALL_QUOTA_ACCT |
+					     XFS_ALL_QUOTA_ENFD);
 }

@@ -25,8 +25,8 @@
  *       minimum
  * If the temperature is lower than a trip point,
  *    a. if the trend is THERMAL_TREND_RAISING, do nothing
- *    b. if the trend is THERMAL_TREND_DROPPING, use lower cooling
- *       state for this trip point, if the cooling state already
+ *    b. if the trend is THERMAL_TREND_DROPPING, use the minimum applicable
+ *       cooling state for this trip point, or if the cooling state already
  *       equals lower limit, deactivate the thermal instance
  */
 static unsigned long get_target_state(struct thermal_instance *instance,
@@ -82,16 +82,14 @@ static void thermal_zone_trip_update(struct thermal_zone_device *tz,
 				     const struct thermal_trip_desc *td,
 				     int trip_threshold)
 {
+	bool throttle = tz->temperature >= trip_threshold;
 	const struct thermal_trip *trip = &td->trip;
 	enum thermal_trend trend = get_tz_trend(tz, trip);
 	int trip_id = thermal_zone_trip_id(tz, trip);
 	struct thermal_instance *instance;
-	bool throttle = false;
 
-	if (tz->temperature >= trip_threshold) {
-		throttle = true;
+	if (throttle)
 		trace_thermal_zone_trip(tz, trip_id, trip->type);
-	}
 
 	dev_dbg(&tz->device, "Trip%d[type=%d,temp=%d]:trend=%d,throttle=%d\n",
 		trip_id, trip->type, trip_threshold, trend, throttle);
@@ -110,9 +108,9 @@ static void thermal_zone_trip_update(struct thermal_zone_device *tz,
 
 		instance->initialized = true;
 
-		mutex_lock(&instance->cdev->lock);
-		instance->cdev->updated = false; /* cdev needs update */
-		mutex_unlock(&instance->cdev->lock);
+		scoped_guard(cooling_dev, instance->cdev) {
+			instance->cdev->updated = false; /* cdev needs update */
+		}
 	}
 }
 

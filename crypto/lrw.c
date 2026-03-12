@@ -167,7 +167,7 @@ static int lrw_xor_tweak(struct skcipher_request *req, bool second_pass)
 
 	while (w.nbytes) {
 		unsigned int avail = w.nbytes;
-		be128 *wsrc;
+		const be128 *wsrc;
 		be128 *wdst;
 
 		wsrc = w.src.virt.addr;
@@ -420,7 +420,7 @@ static void __exit lrw_module_exit(void)
 	crypto_unregister_template(&lrw_tmpl);
 }
 
-subsys_initcall(lrw_module_init);
+module_init(lrw_module_init);
 module_exit(lrw_module_exit);
 
 MODULE_LICENSE("GPL");

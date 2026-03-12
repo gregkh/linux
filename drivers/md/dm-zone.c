@@ -163,21 +163,21 @@ int dm_revalidate_zones(struct dm_table *t, struct request_queue *q)
 {
 	struct mapped_device *md = t->md;
 	struct gendisk *disk = md->disk;
+	unsigned int nr_zones = disk->nr_zones;
 	int ret;
 
 	if (!get_capacity(disk))
 		return 0;
 
-	/* Revalidate only if something changed. */
-	if (!disk->nr_zones || disk->nr_zones != md->nr_zones) {
-		DMINFO("%s using %s zone append",
-		       disk->disk_name,
-		       queue_emulates_zone_append(q) ? "emulated" : "native");
-		md->nr_zones = 0;
-	}
-
-	if (md->nr_zones)
+	/*
+	 * Do not revalidate if zone write plug resources have already
+	 * been allocated.
+	 */
+	if (dm_has_zone_plugs(md))
 		return 0;
+
+	DMINFO("%s using %s zone append", disk->disk_name,
+	       queue_emulates_zone_append(q) ? "emulated" : "native");
 
 	/*
 	 * Our table is not live yet. So the call to dm_get_live_table()
@@ -192,6 +192,7 @@ int dm_revalidate_zones(struct dm_table *t, struct request_queue *q)
 
 	if (ret) {
 		DMERR("Revalidate zones failed %d", ret);
+		disk->nr_zones = nr_zones;
 		return ret;
 	}
 
@@ -349,15 +350,15 @@ int dm_set_zones_restrictions(struct dm_table *t, struct request_queue *q,
 
 	/*
 	 * Check if zone append is natively supported, and if not, set the
-	 * mapped device queue as needing zone append emulation.
+	 * mapped device queue as needing zone append emulation. If zone
+	 * append is natively supported, make sure that
+	 * max_hw_zone_append_sectors is not set to 0.
 	 */
 	WARN_ON_ONCE(queue_is_mq(q));
-	if (dm_table_supports_zone_append(t)) {
-		clear_bit(DMF_EMULATE_ZONE_APPEND, &md->flags);
-	} else {
-		set_bit(DMF_EMULATE_ZONE_APPEND, &md->flags);
-		lim->max_zone_append_sectors = 0;
-	}
+	if (!dm_table_supports_zone_append(t))
+		lim->max_hw_zone_append_sectors = 0;
+	else if (lim->max_hw_zone_append_sectors == 0)
+		lim->max_hw_zone_append_sectors = lim->max_zone_append_sectors;
 
 	/*
 	 * Determine the max open and max active zone limits for the mapped
@@ -391,16 +392,29 @@ int dm_set_zones_restrictions(struct dm_table *t, struct request_queue *q,
 	if (!zlim.mapped_nr_seq_zones) {
 		lim->max_open_zones = 0;
 		lim->max_active_zones = 0;
+		lim->max_hw_zone_append_sectors = 0;
 		lim->max_zone_append_sectors = 0;
 		lim->zone_write_granularity = 0;
 		lim->chunk_sectors = 0;
 		lim->features &= ~BLK_FEAT_ZONED;
-		clear_bit(DMF_EMULATE_ZONE_APPEND, &md->flags);
-		md->nr_zones = 0;
-		disk->nr_zones = 0;
 		return 0;
 	}
 
+	if (get_capacity(disk) && dm_has_zone_plugs(t->md)) {
+		if (q->limits.chunk_sectors != lim->chunk_sectors) {
+			DMWARN("%s: device has zone write plug resources. "
+			       "Cannot change zone size",
+			       disk->disk_name);
+			return -EINVAL;
+		}
+		if (lim->max_hw_zone_append_sectors != 0 &&
+		    !dm_table_is_wildcard(t)) {
+			DMWARN("%s: device has zone write plug resources. "
+			       "New table must emulate zone append",
+			       disk->disk_name);
+			return -EINVAL;
+		}
+	}
 	/*
 	 * Warn once (when the capacity is not yet set) if the mapped device is
 	 * partially using zone resources of the target devices as that leads to
@@ -420,6 +434,23 @@ int dm_set_zones_restrictions(struct dm_table *t, struct request_queue *q,
 	return 0;
 }
 
+void dm_finalize_zone_settings(struct dm_table *t, struct queue_limits *lim)
+{
+	struct mapped_device *md = t->md;
+
+	if (lim->features & BLK_FEAT_ZONED) {
+		if (dm_table_supports_zone_append(t))
+			clear_bit(DMF_EMULATE_ZONE_APPEND, &md->flags);
+		else
+			set_bit(DMF_EMULATE_ZONE_APPEND, &md->flags);
+	} else {
+		clear_bit(DMF_EMULATE_ZONE_APPEND, &md->flags);
+		md->nr_zones = 0;
+		md->disk->nr_zones = 0;
+	}
+}
+
+
 /*
  * IO completion callback called from clone_endio().
  */
@@ -435,12 +466,10 @@ void dm_zone_endio(struct dm_io *io, struct bio *clone)
 	 */
 	if (clone->bi_status == BLK_STS_OK &&
 	    bio_op(clone) == REQ_OP_ZONE_APPEND) {
-		sector_t mask = bdev_zone_sectors(disk->part0) - 1;
-
-		orig_bio->bi_iter.bi_sector += clone->bi_iter.bi_sector & mask;
+		orig_bio->bi_iter.bi_sector +=
+			bdev_offset_from_zone_start(disk->part0,
+						    clone->bi_iter.bi_sector);
 	}
-
-	return;
 }
 
 static int dm_zone_need_reset_cb(struct blk_zone *zone, unsigned int idx,

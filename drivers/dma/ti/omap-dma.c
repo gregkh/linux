@@ -1919,7 +1919,7 @@ MODULE_DEVICE_TABLE(of, omap_dma_match);
 
 static struct platform_driver omap_dma_driver = {
 	.probe	= omap_dma_probe,
-	.remove_new = omap_dma_remove,
+	.remove = omap_dma_remove,
 	.driver = {
 		.name = "omap-dma-engine",
 		.of_match_table = omap_dma_match,

@@ -67,5 +67,11 @@ static inline void bpf_strlcpy(char *dst, const char *src, size_t sz)
 #define sys_gettid() syscall(SYS_gettid)
 #endif
 
+/* and poison usage to ensure it does not creep back in. */
+#pragma GCC poison gettid
+
+#ifndef ENOTSUPP
+#define ENOTSUPP 524
+#endif
 
 #endif /* __BPF_UTIL__ */

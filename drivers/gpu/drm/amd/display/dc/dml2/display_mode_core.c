@@ -32,6 +32,7 @@
 
 #define DML2_MAX_FMT_420_BUFFER_WIDTH 4096
 #define TB_BORROWED_MAX 400
+#define DML_MAX_VSTARTUP_START 1023
 
 // ---------------------------
 //  Declaration Begins
@@ -6210,6 +6211,7 @@ static dml_uint_t CalculateMaxVStartup(
 	dml_print("DML::%s: vblank_avail = %u\n", __func__, vblank_avail);
 	dml_print("DML::%s: max_vstartup_lines = %u\n", __func__, max_vstartup_lines);
 #endif
+	max_vstartup_lines = (dml_uint_t) dml_min(max_vstartup_lines, DML_MAX_VSTARTUP_START);
 	return max_vstartup_lines;
 }
 
@@ -8318,7 +8320,7 @@ void dml_core_mode_programming(struct display_mode_lib_st *mode_lib, const struc
 	if (clk_cfg->dcfclk_option != dml_use_override_freq)
 		locals->Dcfclk = mode_lib->ms.DCFCLK;
 	else
-		locals->Dcfclk = clk_cfg->dcfclk_freq_mhz;
+		locals->Dcfclk = clk_cfg->dcfclk_mhz;
 
 #ifdef __DML_VBA_DEBUG__
 	dml_print_dml_policy(&mode_lib->ms.policy);
@@ -8371,7 +8373,7 @@ void dml_core_mode_programming(struct display_mode_lib_st *mode_lib, const struc
 	if (clk_cfg->dispclk_option == dml_use_required_freq)
 		locals->Dispclk = locals->Dispclk_calculated;
 	else if (clk_cfg->dispclk_option == dml_use_override_freq)
-		locals->Dispclk = clk_cfg->dispclk_freq_mhz;
+		locals->Dispclk = clk_cfg->dispclk_mhz;
 	else
 		locals->Dispclk = mode_lib->ms.state.dispclk_mhz;
 #ifdef __DML_VBA_DEBUG__
@@ -8412,7 +8414,7 @@ void dml_core_mode_programming(struct display_mode_lib_st *mode_lib, const struc
 		if (clk_cfg->dppclk_option[k] == dml_use_required_freq)
 			locals->Dppclk[k] = locals->Dppclk_calculated[k];
 		else if (clk_cfg->dppclk_option[k] == dml_use_override_freq)
-			locals->Dppclk[k] = clk_cfg->dppclk_freq_mhz[k];
+			locals->Dppclk[k] = clk_cfg->dppclk_mhz[k];
 		else
 			locals->Dppclk[k] = mode_lib->ms.state.dppclk_mhz;
 #ifdef __DML_VBA_DEBUG__
@@ -10187,7 +10189,7 @@ dml_uint_t dml_mode_support_ex(struct dml_mode_support_ex_params_st *in_out_para
 	result = mode_support_pwr_states(&in_out_params->out_lowest_state_idx,
 		in_out_params->mode_lib,
 		in_out_params->in_display_cfg,
-		0,
+		in_out_params->in_start_state_idx,
 		in_out_params->mode_lib->states.num_states - 1);
 
 	if (result)

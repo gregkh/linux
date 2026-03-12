@@ -24,7 +24,7 @@
 bool caam_dpaa2;
 EXPORT_SYMBOL(caam_dpaa2);
 
-#ifdef CONFIG_CAAM_QI
+#ifdef CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_API_QI
 #include "qi.h"
 #endif
 
@@ -573,6 +573,7 @@ static const struct soc_device_attribute caam_imx_soc_table[] = {
 	{ .soc_id = "i.MX7*",  .data = &caam_imx7_data },
 	{ .soc_id = "i.MX8M*", .data = &caam_imx7_data },
 	{ .soc_id = "i.MX8ULP", .data = &caam_imx8ulp_data },
+	{ .soc_id = "i.MX8Q*", .data = &caam_imx8ulp_data },
 	{ .soc_id = "VF*",     .data = &caam_vf610_data },
 	{ .family = "Freescale i.MX" },
 	{ /* sentinel */ }
@@ -591,9 +592,9 @@ static int init_clocks(struct device *dev, const struct caam_imx_data *data)
 	int ret;
 
 	ctrlpriv->num_clks = data->num_clks;
-	ctrlpriv->clks = devm_kmemdup(dev, data->clks,
-				      data->num_clks * sizeof(data->clks[0]),
-				      GFP_KERNEL);
+	ctrlpriv->clks = devm_kmemdup_array(dev, data->clks,
+					    data->num_clks, sizeof(*data->clks),
+					    GFP_KERNEL);
 	if (!ctrlpriv->clks)
 		return -ENOMEM;
 
@@ -967,7 +968,7 @@ iomap_ctrl:
 	caam_dpaa2 = !!(comp_params & CTPR_MS_DPAA2);
 	ctrlpriv->qi_present = !!(comp_params & CTPR_MS_QI_MASK);
 
-#ifdef CONFIG_CAAM_QI
+#ifdef CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_API_QI
 	/* If (DPAA 1.x) QI present, check whether dependencies are available */
 	if (ctrlpriv->qi_present && !caam_dpaa2) {
 		ret = qman_is_probed();
@@ -1098,7 +1099,7 @@ set_dma_mask:
 		wr_reg32(&ctrlpriv->qi->qi_control_lo, QICTL_DQEN);
 
 		/* If QMAN driver is present, init CAAM-QI backend */
-#ifdef CONFIG_CAAM_QI
+#ifdef CONFIG_CRYPTO_DEV_FSL_CAAM_CRYPTO_API_QI
 		ret = caam_qi_init(pdev);
 		if (ret)
 			dev_err(dev, "caam qi i/f init failed: %d\n", ret);

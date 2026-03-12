@@ -28,6 +28,7 @@
 #include <linux/poll.h>
 #include <linux/security.h>
 #include <net/sock.h>
+#include <asm/machine.h>
 #include <asm/ebcdic.h>
 #include <asm/cpcmd.h>
 #include <linux/kmod.h>
@@ -1186,7 +1187,7 @@ static void iucv_process_message(struct sock *sk, struct sk_buff *skb,
 
 	IUCV_SKB_CB(skb)->offset = 0;
 	if (sk_filter(sk, skb)) {
-		atomic_inc(&sk->sk_drops);	/* skb rejected by filter */
+		sk_drops_inc(sk);	/* skb rejected by filter */
 		kfree_skb(skb);
 		return;
 	}
@@ -2010,7 +2011,7 @@ static int afiucv_hs_callback_rx(struct sock *sk, struct sk_buff *skb)
 	skb_reset_network_header(skb);
 	IUCV_SKB_CB(skb)->offset = 0;
 	if (sk_filter(sk, skb)) {
-		atomic_inc(&sk->sk_drops);	/* skb rejected by filter */
+		sk_drops_inc(sk);	/* skb rejected by filter */
 		kfree_skb(skb);
 		return NET_RX_SUCCESS;
 	}
@@ -2272,7 +2273,7 @@ static int __init afiucv_init(void)
 {
 	int err;
 
-	if (MACHINE_IS_VM && IS_ENABLED(CONFIG_IUCV)) {
+	if (machine_is_vm() && IS_ENABLED(CONFIG_IUCV)) {
 		cpcmd("QUERY USERID", iucv_userid, sizeof(iucv_userid), &err);
 		if (unlikely(err)) {
 			WARN_ON(err);

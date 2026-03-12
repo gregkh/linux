@@ -310,7 +310,7 @@ static int tegra_se_probe(struct platform_device *pdev)
 
 	se->engine = crypto_engine_alloc_init(dev, 0);
 	if (!se->engine)
-		return dev_err_probe(dev, -ENOMEM, "failed to init crypto engine\n");
+		return -ENOMEM;
 
 	ret = crypto_engine_start(se->engine);
 	if (ret) {
@@ -320,7 +320,6 @@ static int tegra_se_probe(struct platform_device *pdev)
 
 	ret = tegra_se_host1x_register(se);
 	if (ret) {
-		crypto_engine_stop(se->engine);
 		crypto_engine_exit(se->engine);
 		return dev_err_probe(dev, ret, "failed to init host1x params\n");
 	}
@@ -332,7 +331,6 @@ static void tegra_se_remove(struct platform_device *pdev)
 {
 	struct tegra_se *se = platform_get_drvdata(pdev);
 
-	crypto_engine_stop(se->engine);
 	crypto_engine_exit(se->engine);
 	host1x_client_unregister(&se->client);
 }
@@ -395,7 +393,7 @@ static struct platform_driver tegra_se_driver = {
 		.of_match_table = tegra_se_of_match,
 	},
 	.probe		= tegra_se_probe,
-	.remove_new	= tegra_se_remove,
+	.remove		= tegra_se_remove,
 };
 
 static int tegra_se_host1x_probe(struct host1x_device *dev)

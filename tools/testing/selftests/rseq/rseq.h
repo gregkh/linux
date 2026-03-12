@@ -129,6 +129,8 @@ static inline struct rseq_abi *rseq_get_abi(void)
 #include <rseq-s390.h>
 #elif defined(__riscv)
 #include <rseq-riscv.h>
+#elif defined(__or1k__)
+#include <rseq-or1k.h>
 #else
 #error unsupported target
 #endif
@@ -156,6 +158,11 @@ int32_t rseq_fallback_current_cpu(void);
  * Restartable sequence fallback for reading the current node number.
  */
 int32_t rseq_fallback_current_node(void);
+
+/*
+ * Returns true if rseq is supported.
+ */
+bool rseq_available(void);
 
 /*
  * Values returned can be either the current CPU number, -1 (rseq is

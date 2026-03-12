@@ -1461,12 +1461,18 @@ static void es58x_read_bulk_callback(struct urb *urb)
 	}
 
  resubmit_urb:
+	usb_anchor_urb(urb, &es58x_dev->rx_urbs);
 	ret = usb_submit_urb(urb, GFP_ATOMIC);
+	if (!ret)
+		return;
+
+	usb_unanchor_urb(urb);
+
 	if (ret == -ENODEV) {
 		for (i = 0; i < es58x_dev->num_can_ch; i++)
 			if (es58x_dev->netdev[i])
 				netif_device_detach(es58x_dev->netdev[i]);
-	} else if (ret)
+	} else
 		dev_err_ratelimited(dev,
 				    "Failed resubmitting read bulk urb: %pe\n",
 				    ERR_PTR(ret));
@@ -2060,8 +2066,8 @@ static int es58x_init_priv(struct es58x_device *es58x_dev,
 
 	can->bittiming_const = param->bittiming_const;
 	if (param->ctrlmode_supported & CAN_CTRLMODE_FD) {
-		can->data_bittiming_const = param->data_bittiming_const;
-		can->tdc_const = param->tdc_const;
+		can->fd.data_bittiming_const = param->data_bittiming_const;
+		can->fd.tdc_const = param->tdc_const;
 	}
 	can->bitrate_max = param->bitrate_max;
 	can->clock = param->clock;

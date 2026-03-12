@@ -274,7 +274,7 @@ static int ceph_parse_new_source(const char *dev_name, const char *dev_name_end,
 	struct ceph_options *opts = pctx->copts;
 	struct ceph_mount_options *fsopt = pctx->opts;
 	const char *name_start = dev_name;
-	char *fsid_start, *fs_name_start;
+	const char *fsid_start, *fs_name_start;
 
 	if (*dev_name_end != '=') {
 		dout("separator '=' missing in source");
@@ -848,7 +848,7 @@ static struct ceph_fs_client *create_fs_client(struct ceph_mount_options *fsopt,
 	fsc->inode_wq = alloc_workqueue("ceph-inode", WQ_UNBOUND, 0);
 	if (!fsc->inode_wq)
 		goto fail_client;
-	fsc->cap_wq = alloc_workqueue("ceph-cap", 0, 1);
+	fsc->cap_wq = alloc_workqueue("ceph-cap", WQ_PERCPU, 1);
 	if (!fsc->cap_wq)
 		goto fail_inode_wq;
 
@@ -1019,8 +1019,7 @@ void ceph_umount_begin(struct super_block *sb)
 	struct ceph_fs_client *fsc = ceph_sb_to_fs_client(sb);
 
 	doutc(fsc->client, "starting forced umount\n");
-	if (!fsc)
-		return;
+
 	fsc->mount_state = CEPH_MOUNT_SHUTDOWN;
 	__ceph_umount_begin(fsc);
 }
@@ -1029,7 +1028,7 @@ static const struct super_operations ceph_super_ops = {
 	.alloc_inode	= ceph_alloc_inode,
 	.free_inode	= ceph_free_inode,
 	.write_inode    = ceph_write_inode,
-	.drop_inode	= generic_delete_inode,
+	.drop_inode	= inode_just_drop,
 	.evict_inode	= ceph_evict_inode,
 	.sync_fs        = ceph_sync_fs,
 	.put_super	= ceph_put_super,
@@ -1150,7 +1149,7 @@ static struct dentry *ceph_real_mount(struct ceph_fs_client *fsc,
 		const char *path = fsc->mount_options->server_path ?
 				     fsc->mount_options->server_path + 1 : "";
 
-		err = __ceph_open_session(fsc->client, started);
+		err = __ceph_open_session(fsc->client);
 		if (err < 0)
 			goto out;
 
@@ -1206,7 +1205,7 @@ static int ceph_set_super(struct super_block *s, struct fs_context *fc)
 	fsc->max_file_size = 1ULL << 40; /* temp value until we get mdsmap */
 
 	s->s_op = &ceph_super_ops;
-	s->s_d_op = &ceph_dentry_ops;
+	set_default_d_op(s, &ceph_dentry_ops);
 	s->s_export_op = &ceph_export_ops;
 
 	s->s_time_gran = 1;
@@ -1549,6 +1548,17 @@ static void ceph_kill_sb(struct super_block *s)
 	 * evict the inodes later.
 	 */
 	sync_filesystem(s);
+
+	if (atomic64_read(&mdsc->dirty_folios) > 0) {
+		wait_queue_head_t *wq = &mdsc->flush_end_wq;
+		long timeleft = wait_event_killable_timeout(*wq,
+					atomic64_read(&mdsc->dirty_folios) <= 0,
+					fsc->client->options->mount_timeout);
+		if (!timeleft) /* timed out */
+			pr_warn_client(cl, "umount timed out, %ld\n", timeleft);
+		else if (timeleft < 0) /* killed */
+			pr_warn_client(cl, "umount was killed, %ld\n", timeleft);
+	}
 
 	spin_lock(&mdsc->stopping_lock);
 	mdsc->stopping = CEPH_MDSC_STOPPING_FLUSHING;

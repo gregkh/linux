@@ -184,6 +184,10 @@ void scsi_queue_insert(struct scsi_cmnd *cmd, int reason)
 	__scsi_queue_insert(cmd, reason, true);
 }
 
+/**
+ * scsi_failures_reset_retries - reset all failures to zero
+ * @failures: &struct scsi_failures with specific failure modes set
+ */
 void scsi_failures_reset_retries(struct scsi_failures *failures)
 {
 	struct scsi_failure *failure;
@@ -309,8 +313,7 @@ retry:
 		return PTR_ERR(req);
 
 	if (bufflen) {
-		ret = blk_rq_map_kern(sdev->request_queue, req,
-				      buffer, bufflen, GFP_NOIO);
+		ret = blk_rq_map_kern(req, buffer, bufflen, GFP_NOIO);
 		if (ret)
 			goto out;
 	}
@@ -1153,7 +1156,7 @@ blk_status_t scsi_alloc_sgtables(struct scsi_cmnd *cmd)
 	 * Next, walk the list, and fill in the addresses and sizes of
 	 * each segment.
 	 */
-	count = __blk_rq_map_sg(rq->q, rq, cmd->sdb.table.sgl, &last_sg);
+	count = __blk_rq_map_sg(rq, cmd->sdb.table.sgl, &last_sg);
 
 	if (blk_rq_bytes(rq) & rq->q->limits.dma_pad_mask) {
 		unsigned int pad_len =
@@ -1230,6 +1233,15 @@ static void scsi_initialize_rq(struct request *rq)
 	cmd->retries = 0;
 }
 
+/**
+ * scsi_alloc_request - allocate a block request and partially
+ *                      initialize its &scsi_cmnd
+ * @q: the device's request queue
+ * @opf: the request operation code
+ * @flags: block layer allocation flags
+ *
+ * Return: &struct request pointer on success or %NULL on failure
+ */
 struct request *scsi_alloc_request(struct request_queue *q, blk_opf_t opf,
 				   blk_mq_req_flags_t flags)
 {
@@ -1839,7 +1851,7 @@ static blk_status_t scsi_queue_rq(struct blk_mq_hw_ctx *hctx,
 	 * a function to initialize that data.
 	 */
 	if (shost->hostt->cmd_size && !shost->hostt->init_cmd_priv)
-		memset(cmd + 1, 0, shost->hostt->cmd_size);
+		memset(scsi_cmd_priv(cmd), 0, shost->hostt->cmd_size);
 
 	if (!(req->rq_flags & RQF_DONTPREP)) {
 		ret = scsi_prepare_cmd(req);
@@ -1999,9 +2011,6 @@ void scsi_init_limits(struct Scsi_Host *shost, struct queue_limits *lim)
 	lim->dma_alignment = max_t(unsigned int,
 		shost->dma_alignment, dma_get_cache_alignment() - 1);
 
-	if (shost->no_highmem)
-		lim->features |= BLK_FEAT_BOUNCE_HIGH;
-
 	/*
 	 * Propagate the DMA formation properties to the dma-mapping layer as
 	 * a courtesy service to the LLDDs.  This needs to check that the buses
@@ -2085,9 +2094,8 @@ int scsi_mq_setup_tags(struct Scsi_Host *shost)
 	tag_set->queue_depth = shost->can_queue;
 	tag_set->cmd_size = cmd_size;
 	tag_set->numa_node = dev_to_node(shost->dma_dev);
-	tag_set->flags = BLK_MQ_F_SHOULD_MERGE;
-	tag_set->flags |=
-		BLK_ALLOC_POLICY_TO_MQ_FLAG(shost->hostt->tag_alloc_policy);
+	if (shost->hostt->tag_alloc_policy_rr)
+		tag_set->flags |= BLK_MQ_F_TAG_RR;
 	if (shost->queuecommand_may_block)
 		tag_set->flags |= BLK_MQ_F_BLOCKING;
 	tag_set->driver_data = shost;
@@ -2741,6 +2749,7 @@ int
 scsi_device_quiesce(struct scsi_device *sdev)
 {
 	struct request_queue *q = sdev->request_queue;
+	unsigned int memflags;
 	int err;
 
 	/*
@@ -2755,7 +2764,7 @@ scsi_device_quiesce(struct scsi_device *sdev)
 
 	blk_set_pm_only(q);
 
-	blk_mq_freeze_queue(q);
+	memflags = blk_mq_freeze_queue(q);
 	/*
 	 * Ensure that the effect of blk_set_pm_only() will be visible
 	 * for percpu_ref_tryget() callers that occur after the queue
@@ -2763,7 +2772,7 @@ scsi_device_quiesce(struct scsi_device *sdev)
 	 * was called. See also https://lwn.net/Articles/573497/.
 	 */
 	synchronize_rcu();
-	blk_mq_unfreeze_queue(q);
+	blk_mq_unfreeze_queue(q, memflags);
 
 	mutex_lock(&sdev->state_mutex);
 	err = scsi_device_set_state(sdev, SDEV_QUIESCE);
@@ -3147,8 +3156,7 @@ void *scsi_kmap_atomic_sg(struct scatterlist *sgl, int sg_count,
 	/* Offset starting from the beginning of first page in this sg-entry */
 	*offset = *offset - len_complete + sg->offset;
 
-	/* Assumption: contiguous pages can be accessed as "page + i" */
-	page = nth_page(sg_page(sg), (*offset >> PAGE_SHIFT));
+	page = sg_page(sg) + (*offset >> PAGE_SHIFT);
 	*offset &= ~PAGE_MASK;
 
 	/* Bytes in this sg-entry from *offset to the end of the page */
@@ -3385,14 +3393,16 @@ int scsi_vpd_lun_id(struct scsi_device *sdev, char *id, size_t id_len)
 }
 EXPORT_SYMBOL(scsi_vpd_lun_id);
 
-/*
+/**
  * scsi_vpd_tpg_id - return a target port group identifier
  * @sdev: SCSI device
+ * @rel_id: pointer to return relative target port in if not %NULL
  *
  * Returns the Target Port Group identifier from the information
- * froom VPD page 0x83 of the device.
+ * from VPD page 0x83 of the device.
+ * Optionally sets @rel_id to the relative target port on success.
  *
- * Returns the identifier or error on failure.
+ * Return: the identifier or error on failure.
  */
 int scsi_vpd_tpg_id(struct scsi_device *sdev, int *rel_id)
 {

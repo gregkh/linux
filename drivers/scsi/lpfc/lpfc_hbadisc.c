@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2024 Broadcom. All Rights Reserved. The term *
+ * Copyright (C) 2017-2025 Broadcom. All Rights Reserved. The term *
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2004-2016 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
@@ -97,6 +97,12 @@ lpfc_rport_invalid(struct fc_rport *rport)
 
 	if (!rport) {
 		pr_err("**** %s: NULL rport, exit.\n", __func__);
+		return -EINVAL;
+	}
+
+	if (rport->flags & FC_RPORT_DEVLOSS_CALLBK_DONE) {
+		pr_info("**** %s: devloss_callbk_done rport x%px SID x%x\n",
+			__func__, rport, rport->scsi_target_id);
 		return -EINVAL;
 	}
 
@@ -417,12 +423,8 @@ void
 lpfc_check_nlp_post_devloss(struct lpfc_vport *vport,
 			    struct lpfc_nodelist *ndlp)
 {
-	unsigned long iflags;
-
-	spin_lock_irqsave(&ndlp->lock, iflags);
-	if (ndlp->save_flags & NLP_IN_RECOV_POST_DEV_LOSS) {
-		ndlp->save_flags &= ~NLP_IN_RECOV_POST_DEV_LOSS;
-		spin_unlock_irqrestore(&ndlp->lock, iflags);
+	if (test_and_clear_bit(NLP_IN_RECOV_POST_DEV_LOSS, &ndlp->save_flags)) {
+		clear_bit(NLP_DROPPED, &ndlp->nlp_flag);
 		lpfc_nlp_get(ndlp);
 		lpfc_printf_vlog(vport, KERN_INFO, LOG_DISCOVERY | LOG_NODE,
 				 "8438 Devloss timeout reversed on DID x%x "
@@ -430,9 +432,7 @@ lpfc_check_nlp_post_devloss(struct lpfc_vport *vport,
 				 "port_state = x%x\n",
 				 ndlp->nlp_DID, kref_read(&ndlp->kref), ndlp,
 				 ndlp->nlp_flag, vport->port_state);
-		return;
 	}
-	spin_unlock_irqrestore(&ndlp->lock, iflags);
 }
 
 /**
@@ -549,9 +549,7 @@ lpfc_dev_loss_tmo_handler(struct lpfc_nodelist *ndlp)
 					 ndlp->nlp_DID, kref_read(&ndlp->kref),
 					 ndlp, ndlp->nlp_flag,
 					 vport->port_state);
-			spin_lock_irqsave(&ndlp->lock, iflags);
-			ndlp->save_flags |= NLP_IN_RECOV_POST_DEV_LOSS;
-			spin_unlock_irqrestore(&ndlp->lock, iflags);
+			set_bit(NLP_IN_RECOV_POST_DEV_LOSS, &ndlp->save_flags);
 			return fcf_inuse;
 		} else if (ndlp->nlp_state == NLP_STE_UNMAPPED_NODE) {
 			/* Fabric node fully recovered before this dev_loss_tmo
@@ -569,7 +567,8 @@ lpfc_dev_loss_tmo_handler(struct lpfc_nodelist *ndlp)
 			return fcf_inuse;
 		}
 
-		lpfc_nlp_put(ndlp);
+		if (!test_and_set_bit(NLP_DROPPED, &ndlp->nlp_flag))
+			lpfc_nlp_put(ndlp);
 		return fcf_inuse;
 	}
 
@@ -1234,7 +1233,7 @@ lpfc_linkdown_port(struct lpfc_vport *vport)
 
 	/* Stop delayed Nport discovery */
 	clear_bit(FC_DISC_DELAYED, &vport->fc_flag);
-	del_timer_sync(&vport->delayed_disc_tmo);
+	timer_delete_sync(&vport->delayed_disc_tmo);
 
 	if (phba->sli_rev == LPFC_SLI_REV4 &&
 	    vport->port_type == LPFC_PHYSICAL_PORT &&
@@ -1269,6 +1268,10 @@ lpfc_linkdown(struct lpfc_hba *phba)
 		}
 	}
 	phba->defer_flogi_acc.flag = false;
+
+	/* reinitialize initial HBA flag */
+	clear_bit(HBA_FLOGI_ISSUED, &phba->hba_flag);
+	clear_bit(HBA_RHBA_CMPL, &phba->hba_flag);
 
 	/* Clear external loopback plug detected flag */
 	phba->link_flag &= ~LS_EXTERNAL_LOOPBACK;
@@ -1424,7 +1427,7 @@ lpfc_linkup(struct lpfc_hba *phba)
 
 	/* Unblock fabric iocbs if they are blocked */
 	clear_bit(FABRIC_COMANDS_BLOCKED, &phba->bit_flags);
-	del_timer_sync(&phba->fabric_block_timer);
+	timer_delete_sync(&phba->fabric_block_timer);
 
 	vports = lpfc_create_vport_work_array(phba);
 	if (vports != NULL)
@@ -1439,10 +1442,6 @@ lpfc_linkup(struct lpfc_hba *phba)
 	spin_lock_irq(shost->host_lock);
 	phba->pport->rcv_flogi_cnt = 0;
 	spin_unlock_irq(shost->host_lock);
-
-	/* reinitialize initial HBA flag */
-	clear_bit(HBA_FLOGI_ISSUED, &phba->hba_flag);
-	clear_bit(HBA_RHBA_CMPL, &phba->hba_flag);
 
 	return 0;
 }
@@ -3530,7 +3529,7 @@ lpfc_mbx_process_link_up(struct lpfc_hba *phba, struct lpfc_mbx_read_top *la)
 	if (phba->fc_topology &&
 	    phba->fc_topology != bf_get(lpfc_mbx_read_top_topology, la)) {
 		lpfc_printf_log(phba, KERN_WARNING, LOG_SLI,
-				"3314 Toplogy changed was 0x%x is 0x%x\n",
+				"3314 Topology changed was 0x%x is 0x%x\n",
 				phba->fc_topology,
 				bf_get(lpfc_mbx_read_top_topology, la));
 		phba->fc_topology_changed = 1;
@@ -4701,9 +4700,7 @@ lpfc_nlp_unreg_node(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp)
 	if (ndlp->fc4_xpt_flags & NVME_XPT_REGD) {
 		vport->phba->nport_event_cnt++;
 		if (vport->phba->nvmet_support == 0) {
-			/* Start devloss if target. */
-			if (ndlp->nlp_type & NLP_NVME_TARGET)
-				lpfc_nvme_unregister_port(vport, ndlp);
+			lpfc_nvme_unregister_port(vport, ndlp);
 		} else {
 			/* NVMET has no upcall. */
 			lpfc_nlp_put(ndlp);
@@ -4985,7 +4982,7 @@ lpfc_set_disctmo(struct lpfc_vport *vport)
 			tmo, vport->port_state, vport->fc_flag);
 	}
 
-	mod_timer(&vport->fc_disctmo, jiffies + msecs_to_jiffies(1000 * tmo));
+	mod_timer(&vport->fc_disctmo, jiffies + secs_to_jiffies(tmo));
 	set_bit(FC_DISC_TMO, &vport->fc_flag);
 
 	/* Start Discovery Timer state <hba_state> */
@@ -5016,7 +5013,7 @@ lpfc_can_disctmo(struct lpfc_vport *vport)
 	if (test_bit(FC_DISC_TMO, &vport->fc_flag) ||
 	    timer_pending(&vport->fc_disctmo)) {
 		clear_bit(FC_DISC_TMO, &vport->fc_flag);
-		del_timer_sync(&vport->fc_disctmo);
+		timer_delete_sync(&vport->fc_disctmo);
 		spin_lock_irqsave(&vport->work_port_lock, iflags);
 		vport->work_port_events &= ~WORKER_DISC_TMO;
 		spin_unlock_irqrestore(&vport->work_port_lock, iflags);
@@ -5507,7 +5504,7 @@ lpfc_cleanup_node(struct lpfc_vport *vport, struct lpfc_nodelist *ndlp)
 	clear_bit(NLP_DELAY_TMO, &ndlp->nlp_flag);
 
 	ndlp->nlp_last_elscmd = 0;
-	del_timer_sync(&ndlp->nlp_delayfunc);
+	timer_delete_sync(&ndlp->nlp_delayfunc);
 
 	list_del_init(&ndlp->els_retry_evt.evt_listp);
 	list_del_init(&ndlp->dev_loss_evt.evt_listp);
@@ -6065,7 +6062,7 @@ lpfc_cleanup_discovery_resources(struct lpfc_vport *vport)
 void
 lpfc_disc_timeout(struct timer_list *t)
 {
-	struct lpfc_vport *vport = from_timer(vport, t, fc_disctmo);
+	struct lpfc_vport *vport = timer_container_of(vport, t, fc_disctmo);
 	struct lpfc_hba   *phba = vport->phba;
 	uint32_t tmo_posted;
 	unsigned long flags = 0;

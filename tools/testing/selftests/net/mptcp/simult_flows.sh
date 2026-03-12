@@ -28,14 +28,14 @@ size=0
 
 usage() {
 	echo "Usage: $0 [ -b ] [ -c ] [ -d ] [ -i]"
-	echo -e "\t-b: bail out after first error, otherwise runs al testcases"
+	echo -e "\t-b: bail out after first error, otherwise runs all testcases"
 	echo -e "\t-c: capture packets for each test using tcpdump (default: no capture)"
 	echo -e "\t-d: debug this script"
 	echo -e "\t-i: use 'ip mptcp' instead of 'pm_nl_ctl'"
 }
 
 # This function is used in the cleanup trap
-#shellcheck disable=SC2317
+#shellcheck disable=SC2317,SC2329
 cleanup()
 {
 	rm -f "$cout" "$sout"
@@ -155,6 +155,11 @@ do_transfer()
 		sleep 1
 	fi
 
+	NSTAT_HISTORY=/tmp/${ns3}.nstat ip netns exec ${ns3} \
+		nstat -n
+	NSTAT_HISTORY=/tmp/${ns1}.nstat ip netns exec ${ns1} \
+		nstat -n
+
 	timeout ${timeout_test} \
 		ip netns exec ${ns3} \
 			./mptcp_connect -jt ${timeout_poll} -l -p $port -T $max_time \
@@ -180,25 +185,27 @@ do_transfer()
 		kill ${cappid_connector}
 	fi
 
+	NSTAT_HISTORY=/tmp/${ns3}.nstat ip netns exec ${ns3} \
+		nstat | grep Tcp > /tmp/${ns3}.out
+	NSTAT_HISTORY=/tmp/${ns1}.nstat ip netns exec ${ns1} \
+		nstat | grep Tcp > /tmp/${ns1}.out
+
 	cmp $sin $cout > /dev/null 2>&1
 	local cmps=$?
 	cmp $cin $sout > /dev/null 2>&1
 	local cmpc=$?
 
-	printf "%-16s" " max $max_time "
 	if [ $retc -eq 0 ] && [ $rets -eq 0 ] && \
 	   [ $cmpc -eq 0 ] && [ $cmps -eq 0 ]; then
+		printf "%-16s" " max $max_time "
 		mptcp_lib_pr_ok
 		cat "$capout"
 		return 0
 	fi
 
-	mptcp_lib_pr_fail
-	echo "client exit code $retc, server $rets" 1>&2
-	echo -e "\nnetns ${ns3} socket stat for $port:" 1>&2
-	ip netns exec ${ns3} ss -nita 1>&2 -o "sport = :$port"
-	echo -e "\nnetns ${ns1} socket stat for $port:" 1>&2
-	ip netns exec ${ns1} ss -nita 1>&2 -o "dport = :$port"
+	mptcp_lib_pr_fail "client exit code $retc, server $rets"
+	mptcp_lib_pr_err_stats "${ns3}" "${ns1}" "${port}" \
+		"/tmp/${ns3}.out" "/tmp/${ns1}.out"
 	ls -l $sin $cout
 	ls -l $cin $sout
 
@@ -226,10 +233,13 @@ run_test()
 	for dev in ns2eth1 ns2eth2; do
 		tc -n $ns2 qdisc del dev $dev root >/dev/null 2>&1
 	done
-	tc -n $ns1 qdisc add dev ns1eth1 root netem rate ${rate1}mbit $delay1
-	tc -n $ns1 qdisc add dev ns1eth2 root netem rate ${rate2}mbit $delay2
-	tc -n $ns2 qdisc add dev ns2eth1 root netem rate ${rate1}mbit $delay1
-	tc -n $ns2 qdisc add dev ns2eth2 root netem rate ${rate2}mbit $delay2
+
+	# keep the queued pkts number low, or the RTT estimator will see
+	# increasing latency over time.
+	tc -n $ns1 qdisc add dev ns1eth1 root netem rate ${rate1}mbit $delay1 limit 50
+	tc -n $ns1 qdisc add dev ns1eth2 root netem rate ${rate2}mbit $delay2 limit 50
+	tc -n $ns2 qdisc add dev ns2eth1 root netem rate ${rate1}mbit $delay1 limit 50
+	tc -n $ns2 qdisc add dev ns2eth2 root netem rate ${rate2}mbit $delay2 limit 50
 
 	# time is measured in ms, account for transfer size, aggregated link speed
 	# and header overhead (10%)

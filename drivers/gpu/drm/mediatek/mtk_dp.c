@@ -394,7 +394,7 @@ static const struct mtk_dp_efuse_fmt mt8195_dp_efuse_fmt[MTK_DP_CAL_MAX] = {
 	},
 };
 
-static struct regmap_config mtk_dp_regmap_config = {
+static const struct regmap_config mtk_dp_regmap_config = {
 	.reg_bits = 32,
 	.val_bits = 32,
 	.reg_stride = 4,
@@ -1138,6 +1138,18 @@ static void mtk_dp_digital_sw_reset(struct mtk_dp *mtk_dp)
 			   0, DP_TX_TRANSMITTER_4P_RESET_SW_DP_TRANS_P0);
 }
 
+static void mtk_dp_sdp_path_reset(struct mtk_dp *mtk_dp)
+{
+	mtk_dp_update_bits(mtk_dp, MTK_DP_ENC0_P0_3004,
+			   SDP_RESET_SW_DP_ENC0_P0,
+			   SDP_RESET_SW_DP_ENC0_P0);
+
+	/* Wait for sdp path reset to complete */
+	usleep_range(1000, 5000);
+	mtk_dp_update_bits(mtk_dp, MTK_DP_ENC0_P0_3004,
+			   0, SDP_RESET_SW_DP_ENC0_P0);
+}
+
 static void mtk_dp_set_lanes(struct mtk_dp *mtk_dp, int lanes)
 {
 	mtk_dp_update_bits(mtk_dp, MTK_DP_TRANS_P0_35F0,
@@ -1168,17 +1180,25 @@ static void mtk_dp_get_calibration_data(struct mtk_dp *mtk_dp)
 	buf = (u32 *)nvmem_cell_read(cell, &len);
 	nvmem_cell_put(cell);
 
-	if (IS_ERR(buf) || ((len / sizeof(u32)) != 4)) {
+	if (IS_ERR(buf)) {
 		dev_warn(dev, "Failed to read nvmem_cell_read\n");
-
-		if (!IS_ERR(buf))
-			kfree(buf);
-
 		goto use_default_val;
 	}
 
+	/* The cell length is in bytes. Convert it to be compatible with u32 buffer. */
+	len /= sizeof(u32);
+
 	for (i = 0; i < MTK_DP_CAL_MAX; i++) {
 		fmt = &mtk_dp->data->efuse_fmt[i];
+
+		if (fmt->idx >= len) {
+			dev_warn(mtk_dp->dev,
+				 "Out-of-bound efuse data access, fmt idx = %d, buf len = %zu\n",
+				 fmt->idx, len);
+			kfree(buf);
+			goto use_default_val;
+		}
+
 		cal_data[i] = (buf[fmt->idx] >> fmt->shift) & fmt->mask;
 
 		if (cal_data[i] < fmt->min_val || cal_data[i] > fmt->max_val) {
@@ -2099,7 +2119,8 @@ static void mtk_dp_update_plugged_status(struct mtk_dp *mtk_dp)
 	mutex_unlock(&mtk_dp->update_plugged_status_lock);
 }
 
-static enum drm_connector_status mtk_dp_bdg_detect(struct drm_bridge *bridge)
+static enum drm_connector_status
+mtk_dp_bdg_detect(struct drm_bridge *bridge, struct drm_connector *connector)
 {
 	struct mtk_dp *mtk_dp = mtk_dp_from_bridge(bridge);
 	enum drm_connector_status ret = connector_status_disconnected;
@@ -2268,6 +2289,7 @@ static void mtk_dp_poweroff(struct mtk_dp *mtk_dp)
 }
 
 static int mtk_dp_bridge_attach(struct drm_bridge *bridge,
+				struct drm_encoder *encoder,
 				enum drm_bridge_attach_flags flags)
 {
 	struct mtk_dp *mtk_dp = mtk_dp_from_bridge(bridge);
@@ -2291,7 +2313,7 @@ static int mtk_dp_bridge_attach(struct drm_bridge *bridge,
 		goto err_aux_register;
 
 	if (mtk_dp->next_bridge) {
-		ret = drm_bridge_attach(bridge->encoder, mtk_dp->next_bridge,
+		ret = drm_bridge_attach(encoder, mtk_dp->next_bridge,
 					&mtk_dp->bridge, flags);
 		if (ret) {
 			drm_warn(mtk_dp->drm_dev,
@@ -2331,12 +2353,12 @@ static void mtk_dp_bridge_detach(struct drm_bridge *bridge)
 }
 
 static void mtk_dp_bridge_atomic_enable(struct drm_bridge *bridge,
-					struct drm_bridge_state *old_state)
+					struct drm_atomic_state *state)
 {
 	struct mtk_dp *mtk_dp = mtk_dp_from_bridge(bridge);
 	int ret;
 
-	mtk_dp->conn = drm_atomic_get_new_connector_for_encoder(old_state->base.state,
+	mtk_dp->conn = drm_atomic_get_new_connector_for_encoder(state,
 								bridge->encoder);
 	if (!mtk_dp->conn) {
 		drm_err(mtk_dp->drm_dev,
@@ -2381,7 +2403,7 @@ power_off_aux:
 }
 
 static void mtk_dp_bridge_atomic_disable(struct drm_bridge *bridge,
-					 struct drm_bridge_state *old_state)
+					 struct drm_atomic_state *state)
 {
 	struct mtk_dp *mtk_dp = mtk_dp_from_bridge(bridge);
 
@@ -2399,6 +2421,9 @@ static void mtk_dp_bridge_atomic_disable(struct drm_bridge *bridge,
 	mtk_dp_update_bits(mtk_dp, MTK_DP_TOP_PWR_STATE,
 			   DP_PWR_STATE_BANDGAP_TPLL,
 			   DP_PWR_STATE_MASK);
+
+	/* SDP path reset sw*/
+	mtk_dp_sdp_path_reset(mtk_dp);
 
 	/* Ensure the sink is muted */
 	msleep(20);
@@ -2546,7 +2571,7 @@ static const struct drm_bridge_funcs mtk_dp_bridge_funcs = {
 
 static void mtk_dp_debounce_timer(struct timer_list *t)
 {
-	struct mtk_dp *mtk_dp = from_timer(mtk_dp, t, debounce_timer);
+	struct mtk_dp *mtk_dp = timer_container_of(mtk_dp, t, debounce_timer);
 
 	mtk_dp->need_debounce = true;
 }
@@ -2624,7 +2649,6 @@ static const struct hdmi_codec_ops mtk_dp_audio_codec_ops = {
 	.audio_shutdown = mtk_dp_audio_shutdown,
 	.get_eld = mtk_dp_audio_get_eld,
 	.hook_plugged_cb = mtk_dp_audio_hook_plugged_cb,
-	.no_capture_mute = 1,
 };
 
 static int mtk_dp_register_audio_driver(struct device *dev)
@@ -2635,6 +2659,7 @@ static int mtk_dp_register_audio_driver(struct device *dev)
 		.max_i2s_channels = 8,
 		.i2s = 1,
 		.data = mtk_dp,
+		.no_capture_mute = 1,
 	};
 
 	mtk_dp->audio_pdev = platform_device_register_data(dev,
@@ -2702,9 +2727,10 @@ static int mtk_dp_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	mtk_dp = devm_kzalloc(dev, sizeof(*mtk_dp), GFP_KERNEL);
-	if (!mtk_dp)
-		return -ENOMEM;
+	mtk_dp = devm_drm_bridge_alloc(dev, struct mtk_dp, bridge,
+				       &mtk_dp_bridge_funcs);
+	if (IS_ERR(mtk_dp))
+		return PTR_ERR(mtk_dp);
 
 	mtk_dp->dev = dev;
 	mtk_dp->data = (struct mtk_dp_data *)of_device_get_match_data(dev);
@@ -2762,7 +2788,6 @@ static int mtk_dp_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	mtk_dp->bridge.funcs = &mtk_dp_bridge_funcs;
 	mtk_dp->bridge.of_node = dev->of_node;
 	mtk_dp->bridge.type = mtk_dp->data->bridge_type;
 
@@ -2825,7 +2850,7 @@ static void mtk_dp_remove(struct platform_device *pdev)
 	pm_runtime_put(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 	if (mtk_dp->data->bridge_type != DRM_MODE_CONNECTOR_eDP)
-		del_timer_sync(&mtk_dp->debounce_timer);
+		timer_delete_sync(&mtk_dp->debounce_timer);
 	platform_device_unregister(mtk_dp->phy_dev);
 	if (mtk_dp->audio_pdev)
 		platform_device_unregister(mtk_dp->audio_pdev);
@@ -2908,7 +2933,7 @@ MODULE_DEVICE_TABLE(of, mtk_dp_of_match);
 
 static struct platform_driver mtk_dp_driver = {
 	.probe = mtk_dp_probe,
-	.remove_new = mtk_dp_remove,
+	.remove = mtk_dp_remove,
 	.driver = {
 		.name = "mediatek-drm-dp",
 		.of_match_table = mtk_dp_of_match,

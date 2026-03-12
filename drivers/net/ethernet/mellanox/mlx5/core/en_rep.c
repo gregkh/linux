@@ -33,6 +33,7 @@
 #include <linux/dim.h>
 #include <linux/debugfs.h>
 #include <linux/mlx5/fs.h>
+#include <net/netdev_lock.h>
 #include <net/switchdev.h>
 #include <net/pkt_cls.h>
 #include <net/act_api.h>
@@ -601,7 +602,8 @@ mlx5e_add_sqs_fwd_rules(struct mlx5e_priv *priv)
 			if (c->xdp)
 				sqs[num_sqs++] = c->rq_xdpsq.sqn;
 
-			sqs[num_sqs++] = c->xdpsq.sqn;
+			if (c->xdpsq)
+				sqs[num_sqs++] = c->xdpsq->sqn;
 		}
 	}
 	if (ptp_sq) {
@@ -802,6 +804,7 @@ static const struct net_device_ops mlx5e_netdev_ops_rep = {
 	.ndo_stop                = mlx5e_rep_close,
 	.ndo_start_xmit          = mlx5e_xmit,
 	.ndo_setup_tc            = mlx5e_rep_setup_tc,
+	.ndo_set_mac_address	 = eth_mac_addr,
 	.ndo_get_stats64         = mlx5e_rep_get_stats,
 	.ndo_has_offload_stats	 = mlx5e_rep_has_offload_stats,
 	.ndo_get_offload_stats	 = mlx5e_rep_get_offload_stats,
@@ -884,6 +887,8 @@ static void mlx5e_build_rep_netdev(struct net_device *netdev,
 {
 	SET_NETDEV_DEV(netdev, mdev->device);
 	netdev->netdev_ops = &mlx5e_netdev_ops_rep;
+	netdev->request_ops_lock = true;
+	netdev_lockdep_set_classes(netdev);
 	eth_hw_addr_random(netdev);
 	netdev->ethtool_ops = &mlx5e_rep_ethtool_ops;
 
@@ -904,7 +909,7 @@ static void mlx5e_build_rep_netdev(struct net_device *netdev,
 
 	netdev->features |= netdev->hw_features;
 
-	netdev->netns_local = true;
+	netdev->netns_immutable = true;
 }
 
 static int mlx5e_init_rep(struct mlx5_core_dev *mdev,
@@ -969,7 +974,7 @@ static int mlx5e_create_rep_ttc_table(struct mlx5e_priv *priv)
 						MLX5_FLOW_NAMESPACE_KERNEL), false);
 
 	/* The inner_ttc in the ttc params is intentionally not set */
-	mlx5e_set_ttc_params(priv->fs, priv->rx_res, &ttc_params, false);
+	mlx5e_set_ttc_params(priv->fs, priv->rx_res, &ttc_params, false, false);
 
 	if (rep->vport != MLX5_VPORT_UPLINK)
 		/* To give uplik rep TTC a lower level for chaining from root ft */
@@ -1343,9 +1348,11 @@ static void mlx5e_uplink_rep_enable(struct mlx5e_priv *priv)
 	netdev->wanted_features |= NETIF_F_HW_TC;
 
 	rtnl_lock();
+	netdev_lock(netdev);
 	if (netif_running(netdev))
 		mlx5e_open(netdev);
 	udp_tunnel_nic_reset_ntf(priv->netdev);
+	netdev_unlock(netdev);
 	netif_device_attach(netdev);
 	rtnl_unlock();
 }
@@ -1355,9 +1362,11 @@ static void mlx5e_uplink_rep_disable(struct mlx5e_priv *priv)
 	struct mlx5_core_dev *mdev = priv->mdev;
 
 	rtnl_lock();
+	netdev_lock(priv->netdev);
 	if (netif_running(priv->netdev))
 		mlx5e_close(priv->netdev);
 	netif_device_detach(priv->netdev);
+	netdev_unlock(priv->netdev);
 	rtnl_unlock();
 
 	mlx5e_rep_bridge_cleanup(priv);
@@ -1438,11 +1447,11 @@ static void mlx5e_rep_vnic_reporter_create(struct mlx5e_priv *priv,
 
 	reporter = devl_port_health_reporter_create(dl_port,
 						    &mlx5_rep_vnic_reporter_ops,
-						    0, rpriv);
+						    rpriv);
 	if (IS_ERR(reporter)) {
 		mlx5_core_err(priv->mdev,
-			      "Failed to create representor vnic reporter, err = %ld\n",
-			      PTR_ERR(reporter));
+			      "Failed to create representor vnic reporter, err = %pe\n",
+			      reporter);
 		return;
 	}
 

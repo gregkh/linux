@@ -817,8 +817,8 @@ static void rxe_qp_do_cleanup(struct work_struct *work)
 	 */
 	if (qp_type(qp) == IB_QPT_RC && qp->retrans_timer.function &&
 		qp->rnr_nak_timer.function) {
-		del_timer_sync(&qp->retrans_timer);
-		del_timer_sync(&qp->rnr_nak_timer);
+		timer_delete_sync(&qp->retrans_timer);
+		timer_delete_sync(&qp->rnr_nak_timer);
 	}
 
 	if (qp->recv_task.func)

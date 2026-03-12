@@ -372,6 +372,7 @@ static void vhost_vq_reset(struct vhost_dev *dev,
 	vq->avail = NULL;
 	vq->used = NULL;
 	vq->last_avail_idx = 0;
+	vq->next_avail_head = 0;
 	vq->avail_idx = 0;
 	vq->last_used_idx = 0;
 	vq->signalled_used = 0;
@@ -380,7 +381,7 @@ static void vhost_vq_reset(struct vhost_dev *dev,
 	vq->log_used = false;
 	vq->log_addr = -1ull;
 	vq->private_data = NULL;
-	vq->acked_features = 0;
+	virtio_features_zero(vq->acked_features_array);
 	vq->acked_backend_features = 0;
 	vq->log_base = NULL;
 	vq->error_ctx = NULL;
@@ -501,6 +502,8 @@ static void vhost_vq_free_iovecs(struct vhost_virtqueue *vq)
 	vq->log = NULL;
 	kfree(vq->heads);
 	vq->heads = NULL;
+	kfree(vq->nheads);
+	vq->nheads = NULL;
 }
 
 /* Helper to allocate iovec buffers for all vqs. */
@@ -518,7 +521,9 @@ static long vhost_dev_alloc_iovecs(struct vhost_dev *dev)
 					GFP_KERNEL);
 		vq->heads = kmalloc_array(dev->iov_limit, sizeof(*vq->heads),
 					  GFP_KERNEL);
-		if (!vq->indirect || !vq->log || !vq->heads)
+		vq->nheads = kmalloc_array(dev->iov_limit, sizeof(*vq->nheads),
+					   GFP_KERNEL);
+		if (!vq->indirect || !vq->log || !vq->heads || !vq->nheads)
 			goto err_nomem;
 	}
 	return 0;
@@ -610,6 +615,7 @@ void vhost_dev_init(struct vhost_dev *dev,
 		vq->log = NULL;
 		vq->indirect = NULL;
 		vq->heads = NULL;
+		vq->nheads = NULL;
 		vq->dev = dev;
 		mutex_init(&vq->mutex);
 		vhost_vq_reset(dev, vq);
@@ -681,10 +687,10 @@ static void vhost_attach_mm(struct vhost_dev *dev)
 	if (dev->use_worker) {
 		dev->mm = get_task_mm(current);
 	} else {
-		/* vDPA device does not use worker thead, so there's
-		 * no need to hold the address space for mm. This help
+		/* vDPA device does not use worker thread, so there's
+		 * no need to hold the address space for mm. This helps
 		 * to avoid deadlock in the case of mmap() which may
-		 * held the refcnt of the file and depends on release
+		 * hold the refcnt of the file and depends on release
 		 * method to remove vma.
 		 */
 		dev->mm = current->mm;
@@ -893,7 +899,7 @@ static void __vhost_vq_attach_worker(struct vhost_virtqueue *vq,
 	 * We don't want to call synchronize_rcu for every vq during setup
 	 * because it will slow down VM startup. If we haven't done
 	 * VHOST_SET_VRING_KICK and not done the driver specific
-	 * SET_ENDPOINT/RUNNUNG then we can skip the sync since there will
+	 * SET_ENDPOINT/RUNNING then we can skip the sync since there will
 	 * not be any works queued for scsi and net.
 	 */
 	mutex_lock(&vq->mutex);
@@ -2161,14 +2167,15 @@ long vhost_vring_ioctl(struct vhost_dev *d, unsigned int ioctl, void __user *arg
 			break;
 		}
 		if (vhost_has_feature(vq, VIRTIO_F_RING_PACKED)) {
-			vq->last_avail_idx = s.num & 0xffff;
+			vq->next_avail_head = vq->last_avail_idx =
+					      s.num & 0xffff;
 			vq->last_used_idx = (s.num >> 16) & 0xffff;
 		} else {
 			if (s.num > 0xffff) {
 				r = -EINVAL;
 				break;
 			}
-			vq->last_avail_idx = s.num;
+			vq->next_avail_head = vq->last_avail_idx = s.num;
 		}
 		/* Forget the cached index value. */
 		vq->avail_idx = vq->last_avail_idx;
@@ -2514,6 +2521,19 @@ static int log_used(struct vhost_virtqueue *vq, u64 used_offset, u64 len)
 	return 0;
 }
 
+/*
+ * vhost_log_write() - Log in dirty page bitmap
+ * @vq:      vhost virtqueue.
+ * @log:     Array of dirty memory in GPA.
+ * @log_num: Size of vhost_log arrary.
+ * @len:     The total length of memory buffer to log in the dirty bitmap.
+ *	     Some drivers may only partially use pages shared via the last
+ *	     vring descriptor (i.e. vhost-net RX buffer).
+ *	     Use (len == U64_MAX) to indicate the driver would log all
+ *           pages of vring descriptors.
+ * @iov:     Array of dirty memory in HVA.
+ * @count:   Size of iovec array.
+ */
 int vhost_log_write(struct vhost_virtqueue *vq, struct vhost_log *log,
 		    unsigned int log_num, u64 len, struct iovec *iov, int count)
 {
@@ -2537,15 +2557,14 @@ int vhost_log_write(struct vhost_virtqueue *vq, struct vhost_log *log,
 		r = log_write(vq->log_base, log[i].addr, l);
 		if (r < 0)
 			return r;
-		len -= l;
-		if (!len) {
-			if (vq->log_ctx)
-				eventfd_signal(vq->log_ctx);
-			return 0;
-		}
+
+		if (len != U64_MAX)
+			len -= l;
 	}
-	/* Length written exceeds what we have stored. This is a bug. */
-	BUG();
+
+	if (vq->log_ctx)
+		eventfd_signal(vq->log_ctx);
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(vhost_log_write);
@@ -2775,24 +2794,41 @@ static int get_indirect(struct vhost_virtqueue *vq,
 	return 0;
 }
 
-/* This looks in the virtqueue and for the first available buffer, and converts
- * it to an iovec for convenient access.  Since descriptors consist of some
- * number of output then some number of input descriptors, it's actually two
- * iovecs, but we pack them into one and note how many of each there were.
+/**
+ * vhost_get_vq_desc_n - Fetch the next available descriptor chain and build iovecs
+ * @vq: target virtqueue
+ * @iov: array that receives the scatter/gather segments
+ * @iov_size: capacity of @iov in elements
+ * @out_num: the number of output segments
+ * @in_num: the number of input segments
+ * @log: optional array to record addr/len for each writable segment; NULL if unused
+ * @log_num: optional output; number of entries written to @log when provided
+ * @ndesc: optional output; number of descriptors consumed from the available ring
+ *         (useful for rollback via vhost_discard_vq_desc)
  *
- * This function returns the descriptor number found, or vq->num (which is
- * never a valid descriptor number) if none was found.  A negative code is
- * returned on error. */
-int vhost_get_vq_desc(struct vhost_virtqueue *vq,
-		      struct iovec iov[], unsigned int iov_size,
-		      unsigned int *out_num, unsigned int *in_num,
-		      struct vhost_log *log, unsigned int *log_num)
+ * Extracts one available descriptor chain from @vq and translates guest addresses
+ * into host iovecs.
+ *
+ * On success, advances @vq->last_avail_idx by 1 and @vq->next_avail_head by the
+ * number of descriptors consumed (also stored via @ndesc when non-NULL).
+ *
+ * Return:
+ * - head index in [0, @vq->num) on success;
+ * - @vq->num if no descriptor is currently available;
+ * - negative errno on failure
+ */
+int vhost_get_vq_desc_n(struct vhost_virtqueue *vq,
+			struct iovec iov[], unsigned int iov_size,
+			unsigned int *out_num, unsigned int *in_num,
+			struct vhost_log *log, unsigned int *log_num,
+			unsigned int *ndesc)
 {
+	bool in_order = vhost_has_feature(vq, VIRTIO_F_IN_ORDER);
 	struct vring_desc desc;
 	unsigned int i, head, found = 0;
 	u16 last_avail_idx = vq->last_avail_idx;
 	__virtio16 ring_head;
-	int ret, access;
+	int ret, access, c = 0;
 
 	if (vq->avail_idx == vq->last_avail_idx) {
 		ret = vhost_get_avail_idx(vq);
@@ -2803,16 +2839,20 @@ int vhost_get_vq_desc(struct vhost_virtqueue *vq,
 			return vq->num;
 	}
 
-	/* Grab the next descriptor number they're advertising, and increment
-	 * the index we've seen. */
-	if (unlikely(vhost_get_avail_head(vq, &ring_head, last_avail_idx))) {
-		vq_err(vq, "Failed to read head: idx %d address %p\n",
-		       last_avail_idx,
-		       &vq->avail->ring[last_avail_idx % vq->num]);
-		return -EFAULT;
+	if (in_order)
+		head = vq->next_avail_head & (vq->num - 1);
+	else {
+		/* Grab the next descriptor number they're
+		 * advertising, and increment the index we've seen. */
+		if (unlikely(vhost_get_avail_head(vq, &ring_head,
+						  last_avail_idx))) {
+			vq_err(vq, "Failed to read head: idx %d address %p\n",
+				last_avail_idx,
+				&vq->avail->ring[last_avail_idx % vq->num]);
+			return -EFAULT;
+		}
+		head = vhost16_to_cpu(vq, ring_head);
 	}
-
-	head = vhost16_to_cpu(vq, ring_head);
 
 	/* If their number is silly, that's an error. */
 	if (unlikely(head >= vq->num)) {
@@ -2856,6 +2896,7 @@ int vhost_get_vq_desc(struct vhost_virtqueue *vq,
 						"in indirect descriptor at idx %d\n", i);
 				return ret;
 			}
+			++c;
 			continue;
 		}
 
@@ -2891,22 +2932,56 @@ int vhost_get_vq_desc(struct vhost_virtqueue *vq,
 			}
 			*out_num += ret;
 		}
+		++c;
 	} while ((i = next_desc(vq, &desc)) != -1);
 
 	/* On success, increment avail index. */
 	vq->last_avail_idx++;
+	vq->next_avail_head += c;
+
+	if (ndesc)
+		*ndesc = c;
 
 	/* Assume notifications from guest are disabled at this point,
 	 * if they aren't we would need to update avail_event index. */
 	BUG_ON(!(vq->used_flags & VRING_USED_F_NO_NOTIFY));
 	return head;
 }
+EXPORT_SYMBOL_GPL(vhost_get_vq_desc_n);
+
+/* This looks in the virtqueue and for the first available buffer, and converts
+ * it to an iovec for convenient access.  Since descriptors consist of some
+ * number of output then some number of input descriptors, it's actually two
+ * iovecs, but we pack them into one and note how many of each there were.
+ *
+ * This function returns the descriptor number found, or vq->num (which is
+ * never a valid descriptor number) if none was found.  A negative code is
+ * returned on error.
+ */
+int vhost_get_vq_desc(struct vhost_virtqueue *vq,
+		      struct iovec iov[], unsigned int iov_size,
+		      unsigned int *out_num, unsigned int *in_num,
+		      struct vhost_log *log, unsigned int *log_num)
+{
+	return vhost_get_vq_desc_n(vq, iov, iov_size, out_num, in_num,
+				   log, log_num, NULL);
+}
 EXPORT_SYMBOL_GPL(vhost_get_vq_desc);
 
-/* Reverse the effect of vhost_get_vq_desc. Useful for error handling. */
-void vhost_discard_vq_desc(struct vhost_virtqueue *vq, int n)
+/**
+ * vhost_discard_vq_desc - Reverse the effect of vhost_get_vq_desc_n()
+ * @vq: target virtqueue
+ * @nbufs: number of buffers to roll back
+ * @ndesc: number of descriptors to roll back
+ *
+ * Rewinds the internal consumer cursors after a failed attempt to use buffers
+ * returned by vhost_get_vq_desc_n().
+ */
+void vhost_discard_vq_desc(struct vhost_virtqueue *vq, int nbufs,
+			   unsigned int ndesc)
 {
-	vq->last_avail_idx -= n;
+	vq->next_avail_head -= ndesc;
+	vq->last_avail_idx -= nbufs;
 }
 EXPORT_SYMBOL_GPL(vhost_discard_vq_desc);
 
@@ -2918,8 +2993,9 @@ int vhost_add_used(struct vhost_virtqueue *vq, unsigned int head, int len)
 		cpu_to_vhost32(vq, head),
 		cpu_to_vhost32(vq, len)
 	};
+	u16 nheads = 1;
 
-	return vhost_add_used_n(vq, &heads, 1);
+	return vhost_add_used_n(vq, &heads, &nheads, 1);
 }
 EXPORT_SYMBOL_GPL(vhost_add_used);
 
@@ -2955,10 +3031,9 @@ static int __vhost_add_used_n(struct vhost_virtqueue *vq,
 	return 0;
 }
 
-/* After we've used one of their buffers, we tell them about it.  We'll then
- * want to notify the guest, using eventfd. */
-int vhost_add_used_n(struct vhost_virtqueue *vq, struct vring_used_elem *heads,
-		     unsigned count)
+static int vhost_add_used_n_ooo(struct vhost_virtqueue *vq,
+				struct vring_used_elem *heads,
+				unsigned count)
 {
 	int start, n, r;
 
@@ -2971,7 +3046,69 @@ int vhost_add_used_n(struct vhost_virtqueue *vq, struct vring_used_elem *heads,
 		heads += n;
 		count -= n;
 	}
-	r = __vhost_add_used_n(vq, heads, count);
+	return __vhost_add_used_n(vq, heads, count);
+}
+
+static int vhost_add_used_n_in_order(struct vhost_virtqueue *vq,
+				     struct vring_used_elem *heads,
+				     const u16 *nheads,
+				     unsigned count)
+{
+	vring_used_elem_t __user *used;
+	u16 old, new = vq->last_used_idx;
+	int start, i;
+
+	if (!nheads)
+		return -EINVAL;
+
+	start = vq->last_used_idx & (vq->num - 1);
+	used = vq->used->ring + start;
+
+	for (i = 0; i < count; i++) {
+		if (vhost_put_used(vq, &heads[i], start, 1)) {
+			vq_err(vq, "Failed to write used");
+			return -EFAULT;
+		}
+		start += nheads[i];
+		new += nheads[i];
+		if (start >= vq->num)
+			start -= vq->num;
+	}
+
+	if (unlikely(vq->log_used)) {
+		/* Make sure data is seen before log. */
+		smp_wmb();
+		/* Log used ring entry write. */
+		log_used(vq, ((void __user *)used - (void __user *)vq->used),
+			 (vq->num - start) * sizeof *used);
+		if (start + count > vq->num)
+			log_used(vq, 0,
+				 (start + count - vq->num) * sizeof *used);
+	}
+
+	old = vq->last_used_idx;
+	vq->last_used_idx = new;
+	/* If the driver never bothers to signal in a very long while,
+	 * used index might wrap around. If that happens, invalidate
+	 * signalled_used index we stored. TODO: make sure driver
+	 * signals at least once in 2^16 and remove this. */
+	if (unlikely((u16)(new - vq->signalled_used) < (u16)(new - old)))
+		vq->signalled_used_valid = false;
+	return 0;
+}
+
+/* After we've used one of their buffers, we tell them about it.  We'll then
+ * want to notify the guest, using eventfd. */
+int vhost_add_used_n(struct vhost_virtqueue *vq, struct vring_used_elem *heads,
+		     u16 *nheads, unsigned count)
+{
+	bool in_order = vhost_has_feature(vq, VIRTIO_F_IN_ORDER);
+	int r;
+
+	if (!in_order || !nheads)
+		r = vhost_add_used_n_ooo(vq, heads, count);
+	else
+		r = vhost_add_used_n_in_order(vq, heads, nheads, count);
 
 	if (r < 0)
 		return r;
@@ -3054,14 +3191,16 @@ EXPORT_SYMBOL_GPL(vhost_add_used_and_signal);
 /* multi-buffer version of vhost_add_used_and_signal */
 void vhost_add_used_and_signal_n(struct vhost_dev *dev,
 				 struct vhost_virtqueue *vq,
-				 struct vring_used_elem *heads, unsigned count)
+				 struct vring_used_elem *heads,
+				 u16 *nheads,
+				 unsigned count)
 {
-	vhost_add_used_n(vq, heads, count);
+	vhost_add_used_n(vq, heads, nheads, count);
 	vhost_signal(dev, vq);
 }
 EXPORT_SYMBOL_GPL(vhost_add_used_and_signal_n);
 
-/* return true if we're sure that avaiable ring is empty */
+/* return true if we're sure that available ring is empty */
 bool vhost_vq_avail_empty(struct vhost_dev *dev, struct vhost_virtqueue *vq)
 {
 	int r;

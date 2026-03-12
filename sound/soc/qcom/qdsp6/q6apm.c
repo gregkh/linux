@@ -230,7 +230,7 @@ int q6apm_map_memory_regions(struct q6apm_graph *graph, unsigned int dir, phys_a
 		return 0;
 	}
 
-	buf = kzalloc(((sizeof(struct audio_buffer)) * periods), GFP_KERNEL);
+	buf = kcalloc(periods, sizeof(struct audio_buffer), GFP_KERNEL);
 	if (!buf) {
 		mutex_unlock(&graph->lock);
 		return -ENOMEM;
@@ -353,6 +353,9 @@ int q6apm_set_real_module_id(struct device *dev, struct q6apm_graph *graph,
 		break;
 	case SND_AUDIOCODEC_FLAC:
 		module_id = MODULE_ID_FLAC_DEC;
+		break;
+	case SND_AUDIOCODEC_OPUS_RAW:
+		module_id = MODULE_ID_OPUS_DEC;
 		break;
 	default:
 		return -EINVAL;

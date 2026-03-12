@@ -289,9 +289,9 @@ static u64 mlx5e_xsk_fill_timestamp(void *_priv)
 	ts = get_cqe_ts(priv->cqe);
 
 	if (mlx5_is_real_time_rq(priv->cq->mdev) || mlx5_is_real_time_sq(priv->cq->mdev))
-		return mlx5_real_time_cyc2time(&priv->cq->mdev->clock, ts);
+		return mlx5_real_time_cyc2time(priv->cq->mdev->clock, ts);
 
-	return  mlx5_timecounter_cyc2time(&priv->cq->mdev->clock, ts);
+	return  mlx5_timecounter_cyc2time(priv->cq->mdev->clock, ts);
 }
 
 static void mlx5e_xsk_request_checksum(u16 csum_start, u16 csum_offset, void *priv)
@@ -390,6 +390,7 @@ static void mlx5e_xdp_mpwqe_session_start(struct mlx5e_xdpsq *sq)
 		.wqe = wqe,
 		.bytes_count = 0,
 		.ds_count = MLX5E_TX_WQE_EMPTY_DS_COUNT,
+		.ds_count_max = sq->max_sq_mpw_wqebbs * MLX5_SEND_WQEBB_NUM_DS,
 		.pkt_count = 0,
 		.inline_on = mlx5e_xdp_get_inline_state(sq, session->inline_on),
 	};
@@ -501,7 +502,7 @@ mlx5e_xmit_xdp_frame_mpwqe(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptx
 
 	mlx5e_xdp_mpwqe_add_dseg(sq, p, stats);
 
-	if (unlikely(mlx5e_xdp_mpwqe_is_full(session, sq->max_sq_mpw_wqebbs)))
+	if (unlikely(mlx5e_xdp_mpwqe_is_full(session)))
 		mlx5e_xdp_mpwqe_complete(sq);
 
 	stats->xmit++;
@@ -709,7 +710,8 @@ static void mlx5e_free_xdpsq_desc(struct mlx5e_xdpsq *sq,
 				/* No need to check page_pool_page_is_pp() as we
 				 * know this is a page_pool page.
 				 */
-				page_pool_recycle_direct(page->pp, page);
+				page_pool_recycle_direct(pp_page_to_nmdesc(page)->pp,
+							 page);
 			} while (++n < num);
 
 			break;
@@ -858,7 +860,7 @@ int mlx5e_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
 	if (unlikely(sq_num >= priv->channels.num))
 		return -ENXIO;
 
-	sq = &priv->channels.c[sq_num]->xdpsq;
+	sq = priv->channels.c[sq_num]->xdpsq;
 
 	for (i = 0; i < n; i++) {
 		struct mlx5e_xmit_data_frags xdptxdf = {};

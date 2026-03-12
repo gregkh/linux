@@ -83,9 +83,9 @@ const struct regmap_config inv_icm42600_regmap_config = {
 	.num_ranges = ARRAY_SIZE(inv_icm42600_regmap_ranges),
 	.volatile_table = inv_icm42600_regmap_volatile_accesses,
 	.rd_noinc_table = inv_icm42600_regmap_rd_noinc_accesses,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 };
-EXPORT_SYMBOL_NS_GPL(inv_icm42600_regmap_config, IIO_ICM42600);
+EXPORT_SYMBOL_NS_GPL(inv_icm42600_regmap_config, "IIO_ICM42600");
 
 /* define specific regmap for SPI not supporting burst write */
 const struct regmap_config inv_icm42600_spi_regmap_config = {
@@ -97,10 +97,10 @@ const struct regmap_config inv_icm42600_spi_regmap_config = {
 	.num_ranges = ARRAY_SIZE(inv_icm42600_regmap_ranges),
 	.volatile_table = inv_icm42600_regmap_volatile_accesses,
 	.rd_noinc_table = inv_icm42600_regmap_rd_noinc_accesses,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.use_single_write = true,
 };
-EXPORT_SYMBOL_NS_GPL(inv_icm42600_spi_regmap_config, IIO_ICM42600);
+EXPORT_SYMBOL_NS_GPL(inv_icm42600_spi_regmap_config, "IIO_ICM42600");
 
 struct inv_icm42600_hw {
 	u8 whoami;
@@ -404,22 +404,48 @@ int inv_icm42600_set_temp_conf(struct inv_icm42600_state *st, bool enable,
 					  sleep_ms);
 }
 
+int inv_icm42600_enable_wom(struct inv_icm42600_state *st)
+{
+	int ret;
+
+	/* enable WoM hardware */
+	ret = regmap_write(st->map, INV_ICM42600_REG_SMD_CONFIG,
+			   INV_ICM42600_SMD_CONFIG_SMD_MODE_WOM |
+			   INV_ICM42600_SMD_CONFIG_WOM_MODE);
+	if (ret)
+		return ret;
+
+	/* enable WoM interrupt */
+	return regmap_set_bits(st->map, INV_ICM42600_REG_INT_SOURCE1,
+			      INV_ICM42600_INT_SOURCE1_WOM_INT1_EN);
+}
+
+int inv_icm42600_disable_wom(struct inv_icm42600_state *st)
+{
+	int ret;
+
+	/* disable WoM interrupt */
+	ret = regmap_clear_bits(st->map, INV_ICM42600_REG_INT_SOURCE1,
+				INV_ICM42600_INT_SOURCE1_WOM_INT1_EN);
+	if (ret)
+		return ret;
+
+	/* disable WoM hardware */
+	return regmap_write(st->map, INV_ICM42600_REG_SMD_CONFIG,
+			    INV_ICM42600_SMD_CONFIG_SMD_MODE_OFF);
+}
+
 int inv_icm42600_debugfs_reg(struct iio_dev *indio_dev, unsigned int reg,
 			     unsigned int writeval, unsigned int *readval)
 {
 	struct inv_icm42600_state *st = iio_device_get_drvdata(indio_dev);
-	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	if (readval)
-		ret = regmap_read(st->map, reg, readval);
-	else
-		ret = regmap_write(st->map, reg, writeval);
+		return regmap_read(st->map, reg, readval);
 
-	mutex_unlock(&st->lock);
-
-	return ret;
+	return regmap_write(st->map, reg, writeval);
 }
 
 static int inv_icm42600_set_conf(struct inv_icm42600_state *st,
@@ -548,6 +574,19 @@ static irqreturn_t inv_icm42600_irq_handler(int irq, void *_data)
 
 	mutex_lock(&st->lock);
 
+	if (st->apex.on) {
+		unsigned int status2, status3;
+
+		/* read INT_STATUS2 and INT_STATUS3 in 1 operation */
+		ret = regmap_bulk_read(st->map, INV_ICM42600_REG_INT_STATUS2, st->buffer, 2);
+		if (ret)
+			goto out_unlock;
+		status2 = st->buffer[0];
+		status3 = st->buffer[1];
+		inv_icm42600_accel_handle_events(st->indio_accel, status2, status3,
+						 st->timestamp.accel);
+	}
+
 	ret = regmap_read(st->map, INV_ICM42600_REG_INT_STATUS, &status);
 	if (ret)
 		goto out_unlock;
@@ -653,17 +692,6 @@ static int inv_icm42600_enable_regulator_vddio(struct inv_icm42600_state *st)
 	return 0;
 }
 
-static void inv_icm42600_disable_vdd_reg(void *_data)
-{
-	struct inv_icm42600_state *st = _data;
-	const struct device *dev = regmap_get_device(st->map);
-	int ret;
-
-	ret = regulator_disable(st->vdd_supply);
-	if (ret)
-		dev_err(dev, "failed to disable vdd error %d\n", ret);
-}
-
 static void inv_icm42600_disable_vddio_reg(void *_data)
 {
 	struct inv_icm42600_state *st = _data;
@@ -675,13 +703,13 @@ static void inv_icm42600_disable_vddio_reg(void *_data)
 	regulator_disable(st->vddio_supply);
 }
 
-int inv_icm42600_core_probe(struct regmap *regmap, int chip, int irq,
+int inv_icm42600_core_probe(struct regmap *regmap, int chip,
 			    inv_icm42600_bus_setup bus_setup)
 {
 	struct device *dev = regmap_get_device(regmap);
+	struct fwnode_handle *fwnode = dev_fwnode(dev);
 	struct inv_icm42600_state *st;
-	struct irq_data *irq_desc;
-	int irq_type;
+	int irq, irq_type;
 	bool open_drain;
 	int ret;
 
@@ -690,14 +718,16 @@ int inv_icm42600_core_probe(struct regmap *regmap, int chip, int irq,
 		return -ENODEV;
 	}
 
-	/* get irq properties, set trigger falling by default */
-	irq_desc = irq_get_irq_data(irq);
-	if (!irq_desc) {
-		dev_err(dev, "could not find IRQ %d\n", irq);
-		return -EINVAL;
+	/* get INT1 only supported interrupt or fallback to first interrupt */
+	irq = fwnode_irq_get_byname(fwnode, "INT1");
+	if (irq < 0 && irq != -EPROBE_DEFER) {
+		dev_info(dev, "no INT1 interrupt defined, fallback to first interrupt\n");
+		irq = fwnode_irq_get(fwnode, 0);
 	}
+	if (irq < 0)
+		return dev_err_probe(dev, irq, "error missing INT1 interrupt\n");
 
-	irq_type = irqd_get_trigger_type(irq_desc);
+	irq_type = irq_get_trigger_type(irq);
 	if (!irq_type)
 		irq_type = IRQF_TRIGGER_FALLING;
 
@@ -711,6 +741,7 @@ int inv_icm42600_core_probe(struct regmap *regmap, int chip, int irq,
 	mutex_init(&st->lock);
 	st->chip = chip;
 	st->map = regmap;
+	st->irq = irq;
 
 	ret = iio_read_mount_matrix(dev, &st->orientation);
 	if (ret) {
@@ -718,22 +749,16 @@ int inv_icm42600_core_probe(struct regmap *regmap, int chip, int irq,
 		return ret;
 	}
 
-	st->vdd_supply = devm_regulator_get(dev, "vdd");
-	if (IS_ERR(st->vdd_supply))
-		return PTR_ERR(st->vdd_supply);
+	ret = devm_regulator_get_enable(dev, "vdd");
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "Failed to get vdd regulator\n");
+
+	msleep(INV_ICM42600_POWER_UP_TIME_MS);
 
 	st->vddio_supply = devm_regulator_get(dev, "vddio");
 	if (IS_ERR(st->vddio_supply))
 		return PTR_ERR(st->vddio_supply);
-
-	ret = regulator_enable(st->vdd_supply);
-	if (ret)
-		return ret;
-	msleep(INV_ICM42600_POWER_UP_TIME_MS);
-
-	ret = devm_add_action_or_reset(dev, inv_icm42600_disable_vdd_reg, st);
-	if (ret)
-		return ret;
 
 	ret = inv_icm42600_enable_regulator_vddio(st);
 	if (ret)
@@ -778,7 +803,7 @@ int inv_icm42600_core_probe(struct regmap *regmap, int chip, int irq,
 
 	return ret;
 }
-EXPORT_SYMBOL_NS_GPL(inv_icm42600_core_probe, IIO_ICM42600);
+EXPORT_SYMBOL_NS_GPL(inv_icm42600_core_probe, "IIO_ICM42600");
 
 /*
  * Suspend saves sensors state and turns everything off.
@@ -787,35 +812,55 @@ EXPORT_SYMBOL_NS_GPL(inv_icm42600_core_probe, IIO_ICM42600);
 static int inv_icm42600_suspend(struct device *dev)
 {
 	struct inv_icm42600_state *st = dev_get_drvdata(dev);
-	int ret = 0;
+	struct device *accel_dev;
+	bool wakeup;
+	int accel_conf;
+	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	st->suspended.gyro = st->conf.gyro.mode;
 	st->suspended.accel = st->conf.accel.mode;
 	st->suspended.temp = st->conf.temp_en;
 	if (pm_runtime_suspended(dev))
-		goto out_unlock;
+		return 0;
 
 	/* disable FIFO data streaming */
 	if (st->fifo.on) {
 		ret = regmap_write(st->map, INV_ICM42600_REG_FIFO_CONFIG,
 				   INV_ICM42600_FIFO_CONFIG_BYPASS);
 		if (ret)
-			goto out_unlock;
+			return ret;
+	}
+
+	/* keep chip on and wake-up capable if APEX and wakeup on */
+	accel_dev = &st->indio_accel->dev;
+	wakeup = st->apex.on && device_may_wakeup(accel_dev);
+	if (wakeup) {
+		/* keep accel on and setup irq for wakeup */
+		accel_conf = st->conf.accel.mode;
+		enable_irq_wake(st->irq);
+		disable_irq(st->irq);
+	} else {
+		/* disable APEX features and accel if wakeup disabled */
+		if (st->apex.wom.enable) {
+			ret = inv_icm42600_disable_wom(st);
+			if (ret)
+				return ret;
+		}
+		accel_conf = INV_ICM42600_SENSOR_MODE_OFF;
 	}
 
 	ret = inv_icm42600_set_pwr_mgmt0(st, INV_ICM42600_SENSOR_MODE_OFF,
-					 INV_ICM42600_SENSOR_MODE_OFF, false,
-					 NULL);
+					 accel_conf, false, NULL);
 	if (ret)
-		goto out_unlock;
+		return ret;
 
-	regulator_disable(st->vddio_supply);
+	/* disable vddio regulator if chip is sleeping */
+	if (!wakeup)
+		regulator_disable(st->vddio_supply);
 
-out_unlock:
-	mutex_unlock(&st->lock);
-	return ret;
+	return 0;
 }
 
 /*
@@ -827,23 +872,41 @@ static int inv_icm42600_resume(struct device *dev)
 	struct inv_icm42600_state *st = dev_get_drvdata(dev);
 	struct inv_icm42600_sensor_state *gyro_st = iio_priv(st->indio_gyro);
 	struct inv_icm42600_sensor_state *accel_st = iio_priv(st->indio_accel);
-	int ret = 0;
+	struct device *accel_dev;
+	bool wakeup;
+	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	if (pm_runtime_suspended(dev))
-		goto out_unlock;
+		return 0;
 
-	ret = inv_icm42600_enable_regulator_vddio(st);
-	if (ret)
-		goto out_unlock;
+	/* check wakeup capability */
+	accel_dev = &st->indio_accel->dev;
+	wakeup = st->apex.on && device_may_wakeup(accel_dev);
+	/* restore irq state or vddio if cut off */
+	if (wakeup) {
+		enable_irq(st->irq);
+		disable_irq_wake(st->irq);
+	} else {
+		ret = inv_icm42600_enable_regulator_vddio(st);
+		if (ret)
+			return ret;
+	}
 
 	/* restore sensors state */
 	ret = inv_icm42600_set_pwr_mgmt0(st, st->suspended.gyro,
 					 st->suspended.accel,
 					 st->suspended.temp, NULL);
 	if (ret)
-		goto out_unlock;
+		return ret;
+
+	/* restore APEX features if disabled */
+	if (!wakeup && st->apex.wom.enable) {
+		ret = inv_icm42600_enable_wom(st);
+		if (ret)
+			return ret;
+	}
 
 	/* restore FIFO data streaming */
 	if (st->fifo.on) {
@@ -853,9 +916,7 @@ static int inv_icm42600_resume(struct device *dev)
 				   INV_ICM42600_FIFO_CONFIG_STREAM);
 	}
 
-out_unlock:
-	mutex_unlock(&st->lock);
-	return ret;
+	return 0;
 }
 
 /* Runtime suspend will turn off sensors that are enabled by iio devices. */
@@ -864,34 +925,28 @@ static int inv_icm42600_runtime_suspend(struct device *dev)
 	struct inv_icm42600_state *st = dev_get_drvdata(dev);
 	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
 	/* disable all sensors */
 	ret = inv_icm42600_set_pwr_mgmt0(st, INV_ICM42600_SENSOR_MODE_OFF,
 					 INV_ICM42600_SENSOR_MODE_OFF, false,
 					 NULL);
 	if (ret)
-		goto error_unlock;
+		return ret;
 
 	regulator_disable(st->vddio_supply);
 
-error_unlock:
-	mutex_unlock(&st->lock);
-	return ret;
+	return 0;
 }
 
 /* Sensors are enabled by iio devices, no need to turn them back on here. */
 static int inv_icm42600_runtime_resume(struct device *dev)
 {
 	struct inv_icm42600_state *st = dev_get_drvdata(dev);
-	int ret;
 
-	mutex_lock(&st->lock);
+	guard(mutex)(&st->lock);
 
-	ret = inv_icm42600_enable_regulator_vddio(st);
-
-	mutex_unlock(&st->lock);
-	return ret;
+	return inv_icm42600_enable_regulator_vddio(st);
 }
 
 EXPORT_NS_GPL_DEV_PM_OPS(inv_icm42600_pm_ops, IIO_ICM42600) = {
@@ -903,4 +958,4 @@ EXPORT_NS_GPL_DEV_PM_OPS(inv_icm42600_pm_ops, IIO_ICM42600) = {
 MODULE_AUTHOR("InvenSense, Inc.");
 MODULE_DESCRIPTION("InvenSense ICM-426xx device driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(IIO_INV_SENSORS_TIMESTAMP);
+MODULE_IMPORT_NS("IIO_INV_SENSORS_TIMESTAMP");

@@ -19,6 +19,7 @@
 #include <linux/rculist.h>
 #include <linux/skbuff.h>
 #include <linux/socket.h>
+#include <linux/splice.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
 #include <linux/syscalls.h>
@@ -836,8 +837,7 @@ start:
 			if (!sk_wmem_schedule(sk, copy))
 				goto wait_for_memory;
 
-			err = skb_splice_from_iter(skb, &msg->msg_iter, copy,
-						   sk->sk_allocation);
+			err = skb_splice_from_iter(skb, &msg->msg_iter, copy);
 			if (err < 0) {
 				if (err == -EMSGSIZE)
 					goto wait_for_memory;
@@ -1046,6 +1046,11 @@ static ssize_t kcm_splice_read(struct socket *sock, loff_t *ppos,
 	int err = 0;
 	ssize_t copied;
 	struct sk_buff *skb;
+
+	if (sock->file->f_flags & O_NONBLOCK || flags & SPLICE_F_NONBLOCK)
+		flags = MSG_DONTWAIT;
+	else
+		flags = 0;
 
 	/* Only support splice for SOCKSEQPACKET */
 
@@ -1601,14 +1606,6 @@ static int kcm_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 	return err;
 }
 
-static void free_mux(struct rcu_head *rcu)
-{
-	struct kcm_mux *mux = container_of(rcu,
-	    struct kcm_mux, rcu);
-
-	kmem_cache_free(kcm_muxp, mux);
-}
-
 static void release_mux(struct kcm_mux *mux)
 {
 	struct kcm_net *knet = mux->knet;
@@ -1636,7 +1633,7 @@ static void release_mux(struct kcm_mux *mux)
 	knet->count--;
 	mutex_unlock(&knet->mutex);
 
-	call_rcu(&mux->rcu, free_mux);
+	kfree_rcu(mux, rcu);
 }
 
 static void kcm_done(struct kcm_sock *kcm)

@@ -273,7 +273,7 @@ static void kyber_resize_domain(struct kyber_queue_data *kqd,
 
 static void kyber_timer_fn(struct timer_list *t)
 {
-	struct kyber_queue_data *kqd = from_timer(kqd, t, timer);
+	struct kyber_queue_data *kqd = timer_container_of(kqd, t, timer);
 	unsigned int sched_domain;
 	int cpu;
 	bool bad = false;
@@ -399,20 +399,21 @@ err:
 	return ERR_PTR(ret);
 }
 
-static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
+static void kyber_depth_updated(struct request_queue *q)
+{
+	struct kyber_queue_data *kqd = q->elevator->elevator_data;
+
+	kqd->async_depth = q->nr_requests * KYBER_ASYNC_PERCENT / 100U;
+	blk_mq_set_min_shallow_depth(q, kqd->async_depth);
+}
+
+static int kyber_init_sched(struct request_queue *q, struct elevator_queue *eq)
 {
 	struct kyber_queue_data *kqd;
-	struct elevator_queue *eq;
-
-	eq = elevator_alloc(q, e);
-	if (!eq)
-		return -ENOMEM;
 
 	kqd = kyber_queue_data_alloc(q);
-	if (IS_ERR(kqd)) {
-		kobject_put(&eq->kobj);
+	if (IS_ERR(kqd))
 		return PTR_ERR(kqd);
-	}
 
 	blk_stat_enable_accounting(q);
 
@@ -420,6 +421,7 @@ static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
 
 	eq->elevator_data = kqd;
 	q->elevator = eq;
+	kyber_depth_updated(q);
 
 	return 0;
 }
@@ -445,15 +447,6 @@ static void kyber_ctx_queue_init(struct kyber_ctx_queue *kcq)
 	spin_lock_init(&kcq->lock);
 	for (i = 0; i < KYBER_NUM_DOMAINS; i++)
 		INIT_LIST_HEAD(&kcq->rq_list[i]);
-}
-
-static void kyber_depth_updated(struct blk_mq_hw_ctx *hctx)
-{
-	struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
-	struct blk_mq_tags *tags = hctx->sched_tags;
-
-	kqd->async_depth = hctx->queue->nr_requests * KYBER_ASYNC_PERCENT / 100U;
-	sbitmap_queue_min_shallow_depth(&tags->bitmap_tags, kqd->async_depth);
 }
 
 static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
@@ -500,7 +493,6 @@ static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 	khd->batching = 0;
 
 	hctx->sched_data = khd;
-	kyber_depth_updated(hctx);
 
 	return 0;
 
@@ -552,7 +544,7 @@ static void kyber_limit_depth(blk_opf_t opf, struct blk_mq_alloc_data *data)
 	 * We use the scheduler tags as per-hardware queue queueing tokens.
 	 * Async requests can be limited at this stage.
 	 */
-	if (!op_is_sync(opf)) {
+	if (!blk_mq_is_sync_read(opf)) {
 		struct kyber_queue_data *kqd = data->q->elevator->elevator_data;
 
 		data->shallow_depth = kqd->async_depth;
@@ -563,7 +555,7 @@ static bool kyber_bio_merge(struct request_queue *q, struct bio *bio,
 		unsigned int nr_segs)
 {
 	struct blk_mq_ctx *ctx = blk_mq_get_ctx(q);
-	struct blk_mq_hw_ctx *hctx = blk_mq_map_queue(q, bio->bi_opf, ctx);
+	struct blk_mq_hw_ctx *hctx = blk_mq_map_queue(bio->bi_opf, ctx);
 	struct kyber_hctx_data *khd = hctx->sched_data;
 	struct kyber_ctx_queue *kcq = &khd->kcqs[ctx->index_hw[hctx->type]];
 	unsigned int sched_domain = kyber_sched_domain(bio->bi_opf);
@@ -884,7 +876,7 @@ KYBER_LAT_SHOW_STORE(KYBER_WRITE, write);
 #undef KYBER_LAT_SHOW_STORE
 
 #define KYBER_LAT_ATTR(op) __ATTR(op##_lat_nsec, 0644, kyber_##op##_lat_show, kyber_##op##_lat_store)
-static struct elv_fs_entry kyber_sched_attrs[] = {
+static const struct elv_fs_entry kyber_sched_attrs[] = {
 	KYBER_LAT_ATTR(read),
 	KYBER_LAT_ATTR(write),
 	__ATTR_NULL

@@ -2,6 +2,10 @@
 // Copyright (C) 2017 Facebook
 // Author: Roman Gushchin <guro@fb.com>
 
+#undef GCC_VERSION
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #define _XOPEN_SOURCE 500
 #include <errno.h>
 #include <fcntl.h>
@@ -191,7 +195,7 @@ static int show_bpf_prog(int id, enum bpf_attach_type attach_type,
 		if (attach_btf_name)
 			printf(" %-15s", attach_btf_name);
 		else if (info.attach_btf_id)
-			printf(" attach_btf_obj_id=%d attach_btf_id=%d",
+			printf(" attach_btf_obj_id=%u attach_btf_id=%u",
 			       info.attach_btf_obj_id, info.attach_btf_id);
 		printf("\n");
 	}

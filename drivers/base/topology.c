@@ -23,7 +23,7 @@ static ssize_t name##_show(struct device *dev,				\
 
 #define define_siblings_read_func(name, mask)					\
 static ssize_t name##_read(struct file *file, struct kobject *kobj,		\
-			   struct bin_attribute *attr, char *buf,		\
+			   const struct bin_attribute *attr, char *buf,		\
 			   loff_t off, size_t count)				\
 {										\
 	struct device *dev = kobj_to_dev(kobj);                                 \
@@ -41,7 +41,7 @@ static ssize_t name##_read(struct file *file, struct kobject *kobj,		\
 }										\
 										\
 static ssize_t name##_list_read(struct file *file, struct kobject *kobj,	\
-				struct bin_attribute *attr, char *buf,		\
+				const struct bin_attribute *attr, char *buf,	\
 				loff_t off, size_t count)			\
 {										\
 	struct device *dev = kobj_to_dev(kobj);					\
@@ -78,50 +78,50 @@ define_id_show_func(ppin, "0x%llx");
 static DEVICE_ATTR_ADMIN_RO(ppin);
 
 define_siblings_read_func(thread_siblings, sibling_cpumask);
-static BIN_ATTR_RO(thread_siblings, CPUMAP_FILE_MAX_BYTES);
-static BIN_ATTR_RO(thread_siblings_list, CPULIST_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(thread_siblings, CPUMAP_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(thread_siblings_list, CPULIST_FILE_MAX_BYTES);
 
 define_siblings_read_func(core_cpus, sibling_cpumask);
-static BIN_ATTR_RO(core_cpus, CPUMAP_FILE_MAX_BYTES);
-static BIN_ATTR_RO(core_cpus_list, CPULIST_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(core_cpus, CPUMAP_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(core_cpus_list, CPULIST_FILE_MAX_BYTES);
 
 define_siblings_read_func(core_siblings, core_cpumask);
-static BIN_ATTR_RO(core_siblings, CPUMAP_FILE_MAX_BYTES);
-static BIN_ATTR_RO(core_siblings_list, CPULIST_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(core_siblings, CPUMAP_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(core_siblings_list, CPULIST_FILE_MAX_BYTES);
 
 #ifdef TOPOLOGY_CLUSTER_SYSFS
 define_siblings_read_func(cluster_cpus, cluster_cpumask);
-static BIN_ATTR_RO(cluster_cpus, CPUMAP_FILE_MAX_BYTES);
-static BIN_ATTR_RO(cluster_cpus_list, CPULIST_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(cluster_cpus, CPUMAP_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(cluster_cpus_list, CPULIST_FILE_MAX_BYTES);
 #endif
 
 #ifdef TOPOLOGY_DIE_SYSFS
 define_siblings_read_func(die_cpus, die_cpumask);
-static BIN_ATTR_RO(die_cpus, CPUMAP_FILE_MAX_BYTES);
-static BIN_ATTR_RO(die_cpus_list, CPULIST_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(die_cpus, CPUMAP_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(die_cpus_list, CPULIST_FILE_MAX_BYTES);
 #endif
 
 define_siblings_read_func(package_cpus, core_cpumask);
-static BIN_ATTR_RO(package_cpus, CPUMAP_FILE_MAX_BYTES);
-static BIN_ATTR_RO(package_cpus_list, CPULIST_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(package_cpus, CPUMAP_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(package_cpus_list, CPULIST_FILE_MAX_BYTES);
 
 #ifdef TOPOLOGY_BOOK_SYSFS
 define_id_show_func(book_id, "%d");
 static DEVICE_ATTR_RO(book_id);
 define_siblings_read_func(book_siblings, book_cpumask);
-static BIN_ATTR_RO(book_siblings, CPUMAP_FILE_MAX_BYTES);
-static BIN_ATTR_RO(book_siblings_list, CPULIST_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(book_siblings, CPUMAP_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(book_siblings_list, CPULIST_FILE_MAX_BYTES);
 #endif
 
 #ifdef TOPOLOGY_DRAWER_SYSFS
 define_id_show_func(drawer_id, "%d");
 static DEVICE_ATTR_RO(drawer_id);
 define_siblings_read_func(drawer_siblings, drawer_cpumask);
-static BIN_ATTR_RO(drawer_siblings, CPUMAP_FILE_MAX_BYTES);
-static BIN_ATTR_RO(drawer_siblings_list, CPULIST_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(drawer_siblings, CPUMAP_FILE_MAX_BYTES);
+static const BIN_ATTR_RO(drawer_siblings_list, CPULIST_FILE_MAX_BYTES);
 #endif
 
-static struct bin_attribute *bin_attrs[] = {
+static const struct bin_attribute *const bin_attrs[] = {
 	&bin_attr_core_cpus,
 	&bin_attr_core_cpus_list,
 	&bin_attr_thread_siblings,
@@ -208,3 +208,55 @@ static int __init topology_sysfs_init(void)
 }
 
 device_initcall(topology_sysfs_init);
+
+DEFINE_PER_CPU(unsigned long, cpu_scale) = SCHED_CAPACITY_SCALE;
+EXPORT_PER_CPU_SYMBOL_GPL(cpu_scale);
+
+void topology_set_cpu_scale(unsigned int cpu, unsigned long capacity)
+{
+	per_cpu(cpu_scale, cpu) = capacity;
+}
+
+static ssize_t cpu_capacity_show(struct device *dev,
+				 struct device_attribute *attr,
+				 char *buf)
+{
+	struct cpu *cpu = container_of(dev, struct cpu, dev);
+
+	return sysfs_emit(buf, "%lu\n", topology_get_cpu_scale(cpu->dev.id));
+}
+
+static DEVICE_ATTR_RO(cpu_capacity);
+
+static int cpu_capacity_sysctl_add(unsigned int cpu)
+{
+	struct device *cpu_dev = get_cpu_device(cpu);
+
+	if (!cpu_dev)
+		return -ENOENT;
+
+	device_create_file(cpu_dev, &dev_attr_cpu_capacity);
+
+	return 0;
+}
+
+static int cpu_capacity_sysctl_remove(unsigned int cpu)
+{
+	struct device *cpu_dev = get_cpu_device(cpu);
+
+	if (!cpu_dev)
+		return -ENOENT;
+
+	device_remove_file(cpu_dev, &dev_attr_cpu_capacity);
+
+	return 0;
+}
+
+static int register_cpu_capacity_sysctl(void)
+{
+	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "topology/cpu-capacity",
+			  cpu_capacity_sysctl_add, cpu_capacity_sysctl_remove);
+
+	return 0;
+}
+subsys_initcall(register_cpu_capacity_sysctl);

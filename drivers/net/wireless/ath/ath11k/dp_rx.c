@@ -308,7 +308,7 @@ static u8 *ath11k_dp_rxdesc_mpdu_start_addr2(struct ath11k_base *ab,
 
 static void ath11k_dp_service_mon_ring(struct timer_list *t)
 {
-	struct ath11k_base *ab = from_timer(ab, t, mon_reap_timer);
+	struct ath11k_base *ab = timer_container_of(ab, t, mon_reap_timer);
 	int i;
 
 	for (i = 0; i < ab->hw_params.num_rxdma_per_pdev; i++)
@@ -719,7 +719,7 @@ static void ath11k_dp_reo_cmd_free(struct ath11k_dp *dp, void *ctx,
 static void ath11k_dp_reo_cache_flush(struct ath11k_base *ab,
 				      struct dp_rx_tid *rx_tid)
 {
-	struct ath11k_hal_reo_cmd cmd = {0};
+	struct ath11k_hal_reo_cmd cmd = {};
 	unsigned long tot_desc_sz, desc_sz;
 	int ret;
 
@@ -811,7 +811,7 @@ free_desc:
 void ath11k_peer_rx_tid_delete(struct ath11k *ar,
 			       struct ath11k_peer *peer, u8 tid)
 {
-	struct ath11k_hal_reo_cmd cmd = {0};
+	struct ath11k_hal_reo_cmd cmd = {};
 	struct dp_rx_tid *rx_tid = &peer->rx_tid[tid];
 	int ret;
 
@@ -906,7 +906,7 @@ void ath11k_peer_frags_flush(struct ath11k *ar, struct ath11k_peer *peer)
 		rx_tid = &peer->rx_tid[i];
 
 		spin_unlock_bh(&ar->ab->base_lock);
-		del_timer_sync(&rx_tid->frag_timer);
+		timer_delete_sync(&rx_tid->frag_timer);
 		spin_lock_bh(&ar->ab->base_lock);
 
 		ath11k_dp_rx_frags_cleanup(rx_tid, true);
@@ -927,7 +927,7 @@ void ath11k_peer_rx_tid_cleanup(struct ath11k *ar, struct ath11k_peer *peer)
 		ath11k_dp_rx_frags_cleanup(rx_tid, true);
 
 		spin_unlock_bh(&ar->ab->base_lock);
-		del_timer_sync(&rx_tid->frag_timer);
+		timer_delete_sync(&rx_tid->frag_timer);
 		spin_lock_bh(&ar->ab->base_lock);
 	}
 }
@@ -938,7 +938,7 @@ static int ath11k_peer_rx_tid_reo_update(struct ath11k *ar,
 					 u32 ba_win_sz, u16 ssn,
 					 bool update_ssn)
 {
-	struct ath11k_hal_reo_cmd cmd = {0};
+	struct ath11k_hal_reo_cmd cmd = {};
 	int ret;
 
 	cmd.addr_lo = lower_32_bits(rx_tid->paddr);
@@ -1157,7 +1157,7 @@ int ath11k_dp_peer_rx_pn_replay_config(struct ath11k_vif *arvif,
 {
 	struct ath11k *ar = arvif->ar;
 	struct ath11k_base *ab = ar->ab;
-	struct ath11k_hal_reo_cmd cmd = {0};
+	struct ath11k_hal_reo_cmd cmd = {};
 	struct ath11k_peer *peer;
 	struct dp_rx_tid *rx_tid;
 	u8 tid;
@@ -2591,7 +2591,7 @@ static void ath11k_dp_rx_process_received_packets(struct ath11k_base *ab,
 {
 	struct sk_buff *msdu;
 	struct ath11k *ar;
-	struct ieee80211_rx_status rx_status = {0};
+	struct ieee80211_rx_status rx_status = {};
 	int ret;
 
 	if (skb_queue_empty(msdu_list))
@@ -2626,7 +2626,7 @@ int ath11k_dp_process_rx(struct ath11k_base *ab, int ring_id,
 {
 	struct ath11k_dp *dp = &ab->dp;
 	struct dp_rxdma_ring *rx_ring;
-	int num_buffs_reaped[MAX_RADIOS] = {0};
+	int num_buffs_reaped[MAX_RADIOS] = {};
 	struct sk_buff_head msdu_list[MAX_RADIOS];
 	struct ath11k_skb_rxcb *rxcb;
 	int total_msdu_reaped = 0;
@@ -2637,7 +2637,7 @@ int ath11k_dp_process_rx(struct ath11k_base *ab, int ring_id,
 	struct ath11k *ar;
 	struct hal_reo_dest_ring *desc;
 	enum hal_reo_dest_ring_push_reason push_reason;
-	u32 cookie, info0, rx_msdu_info0, rx_mpdu_info0;
+	u32 cookie;
 	int i;
 
 	for (i = 0; i < MAX_RADIOS; i++)
@@ -2654,7 +2654,7 @@ try_again:
 	      (struct hal_reo_dest_ring *)ath11k_hal_srng_dst_get_next_entry(ab,
 									     srng))) {
 		cookie = FIELD_GET(BUFFER_ADDR_INFO1_SW_COOKIE,
-				   READ_ONCE(desc->buf_addr_info.info1));
+				   desc->buf_addr_info.info1);
 		buf_id = FIELD_GET(DP_RXDMA_BUF_COOKIE_BUF_ID,
 				   cookie);
 		mac_id = FIELD_GET(DP_RXDMA_BUF_COOKIE_PDEV_ID, cookie);
@@ -2683,9 +2683,8 @@ try_again:
 
 		num_buffs_reaped[mac_id]++;
 
-		info0 = READ_ONCE(desc->info0);
 		push_reason = FIELD_GET(HAL_REO_DEST_RING_INFO0_PUSH_REASON,
-					info0);
+					desc->info0);
 		if (unlikely(push_reason !=
 			     HAL_REO_DEST_RING_PUSH_REASON_ROUTING_INSTRUCTION)) {
 			dev_kfree_skb_any(msdu);
@@ -2693,21 +2692,18 @@ try_again:
 			continue;
 		}
 
-		rx_msdu_info0 = READ_ONCE(desc->rx_msdu_info.info0);
-		rx_mpdu_info0 = READ_ONCE(desc->rx_mpdu_info.info0);
-
-		rxcb->is_first_msdu = !!(rx_msdu_info0 &
+		rxcb->is_first_msdu = !!(desc->rx_msdu_info.info0 &
 					 RX_MSDU_DESC_INFO0_FIRST_MSDU_IN_MPDU);
-		rxcb->is_last_msdu = !!(rx_msdu_info0 &
+		rxcb->is_last_msdu = !!(desc->rx_msdu_info.info0 &
 					RX_MSDU_DESC_INFO0_LAST_MSDU_IN_MPDU);
-		rxcb->is_continuation = !!(rx_msdu_info0 &
+		rxcb->is_continuation = !!(desc->rx_msdu_info.info0 &
 					   RX_MSDU_DESC_INFO0_MSDU_CONTINUATION);
 		rxcb->peer_id = FIELD_GET(RX_MPDU_DESC_META_DATA_PEER_ID,
-					  READ_ONCE(desc->rx_mpdu_info.meta_data));
+					  desc->rx_mpdu_info.meta_data);
 		rxcb->seq_no = FIELD_GET(RX_MPDU_DESC_INFO0_SEQ_NUM,
-					 rx_mpdu_info0);
+					 desc->rx_mpdu_info.info0);
 		rxcb->tid = FIELD_GET(HAL_REO_DEST_RING_INFO0_RX_QUEUE_NUM,
-				      info0);
+				      desc->info0);
 
 		rxcb->mac_id = mac_id;
 		__skb_queue_tail(&msdu_list[mac_id], msdu);
@@ -2825,8 +2821,6 @@ static void ath11k_dp_rx_update_peer_stats(struct ath11k_sta *arsta,
 	rx_stats->num_mpdu_fcs_err += ppdu_info->num_mpdu_fcs_err;
 	rx_stats->dcm_count += ppdu_info->dcm;
 	rx_stats->ru_alloc_cnt[ppdu_info->ru_alloc] += num_msdu;
-
-	arsta->rssi_comb = ppdu_info->rssi_comb;
 
 	BUILD_BUG_ON(ARRAY_SIZE(arsta->chain_signal) >
 			     ARRAY_SIZE(ppdu_info->rssi_chain_pri20));
@@ -3173,7 +3167,8 @@ move_next:
 
 static void ath11k_dp_rx_frag_timer(struct timer_list *timer)
 {
-	struct dp_rx_tid *rx_tid = from_timer(rx_tid, timer, frag_timer);
+	struct dp_rx_tid *rx_tid = timer_container_of(rx_tid, timer,
+						      frag_timer);
 
 	spin_lock_bh(&rx_tid->ab->base_lock);
 	if (rx_tid->last_frag_no &&
@@ -3229,7 +3224,7 @@ static int ath11k_dp_rx_h_michael_mic(struct crypto_shash *tfm, u8 *key,
 				      size_t data_len, u8 *mic)
 {
 	SHASH_DESC_ON_STACK(desc, tfm);
-	u8 mic_hdr[16] = {0};
+	u8 mic_hdr[16] = {};
 	u8 tid = 0;
 	int ret;
 
@@ -3716,7 +3711,7 @@ static int ath11k_dp_rx_frag_h_mpdu(struct ath11k *ar,
 	}
 
 	spin_unlock_bh(&ab->base_lock);
-	del_timer_sync(&rx_tid->frag_timer);
+	timer_delete_sync(&rx_tid->frag_timer);
 	spin_lock_bh(&ab->base_lock);
 
 	peer = ath11k_peer_find_by_id(ab, peer_id);
@@ -3823,7 +3818,7 @@ int ath11k_dp_process_rx_err(struct ath11k_base *ab, struct napi_struct *napi,
 	struct dp_link_desc_bank *link_desc_banks;
 	enum hal_rx_buf_return_buf_manager rbm;
 	int tot_n_bufs_reaped, quota, ret, i;
-	int n_bufs_reaped[MAX_RADIOS] = {0};
+	int n_bufs_reaped[MAX_RADIOS] = {};
 	struct dp_rxdma_ring *rx_ring;
 	struct dp_srng *reo_except;
 	u32 desc_bank, num_msdus;
@@ -4104,7 +4099,7 @@ static void ath11k_dp_rx_wbm_err(struct ath11k *ar,
 				 struct sk_buff_head *msdu_list)
 {
 	struct ath11k_skb_rxcb *rxcb = ATH11K_SKB_RXCB(msdu);
-	struct ieee80211_rx_status rxs = {0};
+	struct ieee80211_rx_status rxs = {};
 	bool drop = true;
 
 	switch (rxcb->err_rel_src) {
@@ -4140,7 +4135,7 @@ int ath11k_dp_rx_process_wbm_err(struct ath11k_base *ab,
 	struct ath11k_skb_rxcb *rxcb;
 	u32 *rx_desc;
 	int buf_id, mac_id;
-	int num_buffs_reaped[MAX_RADIOS] = {0};
+	int num_buffs_reaped[MAX_RADIOS] = {};
 	int total_num_buffs_reaped = 0;
 	int ret, i;
 
@@ -4620,7 +4615,6 @@ static void ath11k_hal_rx_msdu_list_get(struct ath11k *ar,
 			      msdu_details[i].buf_addr_info.info0) == 0) {
 			msdu_desc_info = &msdu_details[i - 1].rx_msdu_info;
 			msdu_desc_info->info0 |= last;
-			;
 			break;
 		}
 		msdu_desc_info = &msdu_details[i].rx_msdu_info;
@@ -4686,11 +4680,12 @@ static void ath11k_dp_mon_get_buf_len(struct hal_rx_msdu_desc_info *info,
 	}
 }
 
-static u32
-ath11k_dp_rx_mon_mpdu_pop(struct ath11k *ar, int mac_id,
-			  void *ring_entry, struct sk_buff **head_msdu,
-			  struct sk_buff **tail_msdu, u32 *npackets,
-			  u32 *ppdu_id)
+/* clang stack usage explodes if this is inlined */
+static noinline_for_stack
+u32 ath11k_dp_rx_mon_mpdu_pop(struct ath11k *ar, int mac_id,
+			      void *ring_entry, struct sk_buff **head_msdu,
+			      struct sk_buff **tail_msdu, u32 *npackets,
+			      u32 *ppdu_id)
 {
 	struct ath11k_pdev_dp *dp = &ar->dp;
 	struct ath11k_mon_data *pmon = (struct ath11k_mon_data *)&dp->mon_data;
@@ -5707,8 +5702,6 @@ static int ath11k_dp_rx_pdev_mon_status_attach(struct ath11k *ar)
 	struct ath11k_pdev_dp *dp = &ar->dp;
 	struct ath11k_mon_data *pmon = (struct ath11k_mon_data *)&dp->mon_data;
 
-	skb_queue_head_init(&pmon->rx_status_q);
-
 	pmon->mon_ppdu_status = DP_PPDU_STATUS_START;
 
 	memset(&pmon->rx_mon_stats, 0,
@@ -5788,7 +5781,7 @@ int ath11k_dp_rx_pktlog_stop(struct ath11k_base *ab, bool stop_timer)
 	int ret;
 
 	if (stop_timer)
-		del_timer_sync(&ab->mon_reap_timer);
+		timer_delete_sync(&ab->mon_reap_timer);
 
 	/* reap all the monitor related rings */
 	ret = ath11k_dp_purge_mon_ring(ab);

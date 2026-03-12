@@ -1818,6 +1818,12 @@ static const struct xlog_recover_item_ops *xlog_recover_item_ops[] = {
 	&xlog_attrd_item_ops,
 	&xlog_xmi_item_ops,
 	&xlog_xmd_item_ops,
+	&xlog_rtefi_item_ops,
+	&xlog_rtefd_item_ops,
+	&xlog_rtrui_item_ops,
+	&xlog_rtrud_item_ops,
+	&xlog_rtcui_item_ops,
+	&xlog_rtcud_item_ops,
 };
 
 static const struct xlog_recover_item_ops *
@@ -2125,15 +2131,15 @@ xlog_recover_add_to_cont_trans(
 	item = list_entry(trans->r_itemq.prev, struct xlog_recover_item,
 			  ri_list);
 
-	old_ptr = item->ri_buf[item->ri_cnt-1].i_addr;
-	old_len = item->ri_buf[item->ri_cnt-1].i_len;
+	old_ptr = item->ri_buf[item->ri_cnt-1].iov_base;
+	old_len = item->ri_buf[item->ri_cnt-1].iov_len;
 
 	ptr = kvrealloc(old_ptr, len + old_len, GFP_KERNEL);
 	if (!ptr)
 		return -ENOMEM;
 	memcpy(&ptr[old_len], dp, len);
-	item->ri_buf[item->ri_cnt-1].i_len += len;
-	item->ri_buf[item->ri_cnt-1].i_addr = ptr;
+	item->ri_buf[item->ri_cnt-1].iov_len += len;
+	item->ri_buf[item->ri_cnt-1].iov_base = ptr;
 	trace_xfs_log_recover_item_add_cont(log, trans, item, 0);
 	return 0;
 }
@@ -2217,7 +2223,7 @@ xlog_recover_add_to_trans(
 		}
 
 		item->ri_total = in_f->ilf_size;
-		item->ri_buf = kzalloc(item->ri_total * sizeof(xfs_log_iovec_t),
+		item->ri_buf = kcalloc(item->ri_total, sizeof(*item->ri_buf),
 				GFP_KERNEL | __GFP_NOFAIL);
 	}
 
@@ -2231,8 +2237,8 @@ xlog_recover_add_to_trans(
 	}
 
 	/* Description region is ri_buf[0] */
-	item->ri_buf[item->ri_cnt].i_addr = ptr;
-	item->ri_buf[item->ri_cnt].i_len  = len;
+	item->ri_buf[item->ri_cnt].iov_base = ptr;
+	item->ri_buf[item->ri_cnt].iov_len  = len;
 	item->ri_cnt++;
 	trace_xfs_log_recover_item_add(log, trans, item, 0);
 	return 0;
@@ -2256,7 +2262,7 @@ xlog_recover_free_trans(
 		/* Free the regions in the item. */
 		list_del(&item->ri_list);
 		for (i = 0; i < item->ri_cnt; i++)
-			kvfree(item->ri_buf[i].i_addr);
+			kvfree(item->ri_buf[i].iov_base);
 		/* Free the item itself */
 		kfree(item->ri_buf);
 		kfree(item);
@@ -2677,7 +2683,7 @@ xlog_recover_clear_agi_bucket(
 	struct xfs_perag	*pag,
 	int			bucket)
 {
-	struct xfs_mount	*mp = pag->pag_mount;
+	struct xfs_mount	*mp = pag_mount(pag);
 	struct xfs_trans	*tp;
 	struct xfs_agi		*agi;
 	struct xfs_buf		*agibp;
@@ -2708,7 +2714,7 @@ out_abort:
 	xfs_trans_cancel(tp);
 out_error:
 	xfs_warn(mp, "%s: failed to clear agi %d. Continuing.", __func__,
-			pag->pag_agno);
+			pag_agno(pag));
 	return;
 }
 
@@ -2718,7 +2724,7 @@ xlog_recover_iunlink_bucket(
 	struct xfs_agi		*agi,
 	int			bucket)
 {
-	struct xfs_mount	*mp = pag->pag_mount;
+	struct xfs_mount	*mp = pag_mount(pag);
 	struct xfs_inode	*prev_ip = NULL;
 	struct xfs_inode	*ip;
 	xfs_agino_t		prev_agino, agino;
@@ -2726,9 +2732,8 @@ xlog_recover_iunlink_bucket(
 
 	agino = be32_to_cpu(agi->agi_unlinked[bucket]);
 	while (agino != NULLAGINO) {
-		error = xfs_iget(mp, NULL,
-				XFS_AGINO_TO_INO(mp, pag->pag_agno, agino),
-				0, 0, &ip);
+		error = xfs_iget(mp, NULL, xfs_agino_to_ino(pag, agino), 0, 0,
+				&ip);
 		if (error)
 			break;
 
@@ -2846,10 +2851,9 @@ static void
 xlog_recover_process_iunlinks(
 	struct xlog	*log)
 {
-	struct xfs_perag	*pag;
-	xfs_agnumber_t		agno;
+	struct xfs_perag	*pag = NULL;
 
-	for_each_perag(log->l_mp, agno, pag)
+	while ((pag = xfs_perag_next(log->l_mp, pag)))
 		xlog_recover_iunlink_ag(pag);
 }
 
@@ -3390,7 +3394,7 @@ xlog_do_recover(
 	 */
 	xfs_buf_lock(bp);
 	xfs_buf_hold(bp);
-	error = _xfs_buf_read(bp, XBF_READ);
+	error = _xfs_buf_read(bp);
 	if (error) {
 		if (!xlog_is_shutdown(log)) {
 			xfs_buf_ioerror_alert(bp, __this_address);

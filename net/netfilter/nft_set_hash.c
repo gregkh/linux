@@ -30,6 +30,7 @@ struct nft_rhash {
 struct nft_rhash_elem {
 	struct nft_elem_priv		priv;
 	struct rhash_head		node;
+	struct llist_node		walk_node;
 	u32				wq_gc_seq;
 	struct nft_set_ext		ext;
 };
@@ -123,8 +124,6 @@ nft_rhash_get(const struct net *net, const struct nft_set *set,
 
 static const struct nft_set_ext *
 nft_rhash_update(struct nft_set *set, const u32 *key,
-		 struct nft_elem_priv *(*new)(struct nft_set *, const struct nft_expr *,
-		 struct nft_regs *regs),
 		 const struct nft_expr *expr, struct nft_regs *regs)
 {
 	struct nft_rhash *priv = nft_set_priv(set);
@@ -141,11 +140,12 @@ nft_rhash_update(struct nft_set *set, const u32 *key,
 	if (he != NULL)
 		goto out;
 
-	elem_priv = new(set, expr, regs);
+	elem_priv = nft_dynset_new(set, expr, regs);
 	if (!elem_priv)
 		goto err1;
 
 	he = nft_elem_priv_cast(elem_priv);
+	init_llist_node(&he->walk_node);
 	prev = rhashtable_lookup_get_insert_key(&priv->ht, &arg, &he->node,
 						nft_rhash_params);
 	if (IS_ERR(prev))
@@ -182,6 +182,7 @@ static int nft_rhash_insert(const struct net *net, const struct nft_set *set,
 	};
 	struct nft_rhash_elem *prev;
 
+	init_llist_node(&he->walk_node);
 	prev = rhashtable_lookup_get_insert_key(&priv->ht, &arg, &he->node,
 						nft_rhash_params);
 	if (IS_ERR(prev))
@@ -263,12 +264,12 @@ static bool nft_rhash_delete(const struct nft_set *set,
 	return true;
 }
 
-static void nft_rhash_walk(const struct nft_ctx *ctx, struct nft_set *set,
-			   struct nft_set_iter *iter)
+static void nft_rhash_walk_ro(const struct nft_ctx *ctx, struct nft_set *set,
+			      struct nft_set_iter *iter)
 {
 	struct nft_rhash *priv = nft_set_priv(set);
-	struct nft_rhash_elem *he;
 	struct rhashtable_iter hti;
+	struct nft_rhash_elem *he;
 
 	rhashtable_walk_enter(&priv->ht, &hti);
 	rhashtable_walk_start(&hti);
@@ -295,6 +296,98 @@ cont:
 	}
 	rhashtable_walk_stop(&hti);
 	rhashtable_walk_exit(&hti);
+}
+
+static void nft_rhash_walk_update(const struct nft_ctx *ctx,
+				  struct nft_set *set,
+				  struct nft_set_iter *iter)
+{
+	struct nft_rhash *priv = nft_set_priv(set);
+	struct nft_rhash_elem *he, *tmp;
+	struct llist_node *first_node;
+	struct rhashtable_iter hti;
+	LLIST_HEAD(walk_list);
+
+	lockdep_assert_held(&nft_pernet(ctx->net)->commit_mutex);
+
+	if (set->in_update_walk) {
+		/* This can happen with bogus rulesets during ruleset validation
+		 * when a verdict map causes a jump back to the same map.
+		 *
+		 * Without this extra check the walk_next loop below will see
+		 * elems on the callers walk_list and skip (not validate) them.
+		 */
+		iter->err = -EMLINK;
+		return;
+	}
+
+	/* walk happens under RCU.
+	 *
+	 * We create a snapshot list so ->iter callback can sleep.
+	 * commit_mutex is held, elements can ...
+	 * .. be added in parallel from dataplane (dynset)
+	 * .. be marked as dead in parallel from dataplane (dynset).
+	 * .. be queued for removal in parallel (gc timeout).
+	 * .. not be freed: transaction mutex is held.
+	 */
+	rhashtable_walk_enter(&priv->ht, &hti);
+	rhashtable_walk_start(&hti);
+
+	while ((he = rhashtable_walk_next(&hti))) {
+		if (IS_ERR(he)) {
+			if (PTR_ERR(he) != -EAGAIN) {
+				iter->err = PTR_ERR(he);
+				break;
+			}
+
+			continue;
+		}
+
+		/* rhashtable resized during walk, skip */
+		if (llist_on_list(&he->walk_node))
+			continue;
+
+		llist_add(&he->walk_node, &walk_list);
+	}
+	rhashtable_walk_stop(&hti);
+	rhashtable_walk_exit(&hti);
+
+	first_node = __llist_del_all(&walk_list);
+	set->in_update_walk = true;
+	llist_for_each_entry_safe(he, tmp, first_node, walk_node) {
+		if (iter->err == 0) {
+			iter->err = iter->fn(ctx, set, iter, &he->priv);
+			if (iter->err == 0)
+				iter->count++;
+		}
+
+		/* all entries must be cleared again, else next ->walk iteration
+		 * will skip entries.
+		 */
+		init_llist_node(&he->walk_node);
+	}
+	set->in_update_walk = false;
+}
+
+static void nft_rhash_walk(const struct nft_ctx *ctx, struct nft_set *set,
+			   struct nft_set_iter *iter)
+{
+	switch (iter->type) {
+	case NFT_ITER_UPDATE:
+	case NFT_ITER_UPDATE_CLONE:
+		/* only relevant for netlink dumps which use READ type */
+		WARN_ON_ONCE(iter->skip != 0);
+
+		nft_rhash_walk_update(ctx, set, iter);
+		break;
+	case NFT_ITER_READ:
+		nft_rhash_walk_ro(ctx, set, iter);
+		break;
+	default:
+		iter->err = -EINVAL;
+		WARN_ON_ONCE(1);
+		break;
+	}
 }
 
 static bool nft_rhash_expr_needs_gc_run(const struct nft_set *set,
@@ -663,7 +756,8 @@ static void nft_hash_walk(const struct nft_ctx *ctx, struct nft_set *set,
 	int i;
 
 	for (i = 0; i < priv->buckets; i++) {
-		hlist_for_each_entry_rcu(he, &priv->table[i], node) {
+		hlist_for_each_entry_rcu(he, &priv->table[i], node,
+					 lockdep_is_held(&nft_pernet(ctx->net)->commit_mutex)) {
 			if (iter->count < iter->skip)
 				goto cont;
 

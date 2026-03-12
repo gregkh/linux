@@ -828,7 +828,6 @@ omap_i2c_xfer_common(struct i2c_adapter *adap, struct i2c_msg msgs[], int num,
 		omap->set_mpu_wkup_lat(omap->dev, -1);
 
 out:
-	pm_runtime_mark_last_busy(omap->dev);
 	pm_runtime_put_autosuspend(omap->dev);
 	return r;
 }
@@ -1201,9 +1200,9 @@ omap_i2c_isr_thread(int this_irq, void *dev_id)
 }
 
 static const struct i2c_algorithm omap_i2c_algo = {
-	.master_xfer	= omap_i2c_xfer_irq,
-	.master_xfer_atomic	= omap_i2c_xfer_polling,
-	.functionality	= omap_i2c_func,
+	.xfer = omap_i2c_xfer_irq,
+	.xfer_atomic = omap_i2c_xfer_polling,
+	.functionality = omap_i2c_func,
 };
 
 static const struct i2c_adapter_quirks omap_i2c_quirks = {
@@ -1510,7 +1509,6 @@ omap_i2c_probe(struct platform_device *pdev)
 	dev_info(omap->dev, "bus %d rev%d.%d at %d kHz\n", adap->nr,
 		 major, minor, omap->speed);
 
-	pm_runtime_mark_last_busy(omap->dev);
 	pm_runtime_put_autosuspend(omap->dev);
 
 	return 0;
@@ -1521,9 +1519,9 @@ err_mux_state_deselect:
 	if (omap->mux_state)
 		mux_state_deselect(omap->mux_state);
 err_put_pm:
-	pm_runtime_dont_use_autosuspend(omap->dev);
 	pm_runtime_put_sync(omap->dev);
 err_disable_pm:
+	pm_runtime_dont_use_autosuspend(omap->dev);
 	pm_runtime_disable(&pdev->dev);
 
 	return r;
@@ -1605,7 +1603,6 @@ static int omap_i2c_suspend(struct device *dev)
 
 static int omap_i2c_resume(struct device *dev)
 {
-	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return 0;
@@ -1621,7 +1618,7 @@ static const struct dev_pm_ops omap_i2c_pm_ops = {
 
 static struct platform_driver omap_i2c_driver = {
 	.probe		= omap_i2c_probe,
-	.remove_new	= omap_i2c_remove,
+	.remove		= omap_i2c_remove,
 	.driver		= {
 		.name	= "omap_i2c",
 		.pm	= pm_ptr(&omap_i2c_pm_ops),

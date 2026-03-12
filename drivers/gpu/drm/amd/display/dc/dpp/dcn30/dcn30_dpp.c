@@ -578,9 +578,6 @@ static void dpp3_power_on_blnd_lut(
 			dpp_base->ctx->dc->optimized_required = true;
 			dpp_base->deferred_reg_writes.bits.disable_blnd_lut = true;
 		}
-	} else {
-		REG_SET(CM_MEM_PWR_CTRL, 0,
-				BLNDGAM_MEM_PWR_FORCE, power_on == true ? 0 : 1);
 	}
 }
 
@@ -790,8 +787,7 @@ static bool dpp3_program_blnd_lut(struct dpp *dpp_base,
 
 	if (params == NULL) {
 		REG_SET(CM_BLNDGAM_CONTROL, 0, CM_BLNDGAM_MODE, 0);
-		if (dpp_base->ctx->dc->debug.enable_mem_low_power.bits.cm)
-			dpp3_power_on_blnd_lut(dpp_base, false);
+		dpp3_power_on_blnd_lut(dpp_base, false);
 		return false;
 	}
 
@@ -1204,8 +1200,7 @@ static bool dpp3_program_shaper(struct dpp *dpp_base,
 
 	if (params == NULL) {
 		REG_SET(CM_SHAPER_CONTROL, 0, CM_SHAPER_LUT_MODE, 0);
-		if (dpp_base->ctx->dc->debug.enable_mem_low_power.bits.cm)
-			dpp3_power_on_shaper(dpp_base, false);
+		dpp3_power_on_shaper(dpp_base, false);
 		return false;
 	}
 
@@ -1399,8 +1394,7 @@ static bool dpp3_program_3dlut(struct dpp *dpp_base,
 
 	if (params == NULL) {
 		dpp3_set_3dlut_mode(dpp_base, LUT_BYPASS, false, false);
-		if (dpp_base->ctx->dc->debug.enable_mem_low_power.bits.cm)
-			dpp3_power_on_hdr3dlut(dpp_base, false);
+		dpp3_power_on_hdr3dlut(dpp_base, false);
 		return false;
 	}
 

@@ -303,13 +303,6 @@ static int do_aspeed_spi_exec_op(struct spi_mem *mem, const struct spi_mem_op *o
 	u32 ctl_val;
 	int ret = 0;
 
-	dev_dbg(aspi->dev,
-		"CE%d %s OP %#x mode:%d.%d.%d.%d naddr:%#x ndummies:%#x len:%#x",
-		chip->cs, op->data.dir == SPI_MEM_DATA_IN ? "read" : "write",
-		op->cmd.opcode, op->cmd.buswidth, op->addr.buswidth,
-		op->dummy.buswidth, op->data.buswidth,
-		op->addr.nbytes, op->dummy.nbytes, op->data.nbytes);
-
 	addr_mode = readl(aspi->regs + CE_CTRL_REG);
 	addr_mode_backup = addr_mode;
 
@@ -1191,7 +1184,7 @@ MODULE_DEVICE_TABLE(of, aspeed_spi_matches);
 
 static struct platform_driver aspeed_spi_driver = {
 	.probe			= aspeed_spi_probe,
-	.remove_new		= aspeed_spi_remove,
+	.remove			= aspeed_spi_remove,
 	.driver	= {
 		.name		= DEVICE_NAME,
 		.of_match_table = aspeed_spi_matches,

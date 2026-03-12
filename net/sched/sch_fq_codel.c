@@ -168,6 +168,7 @@ static unsigned int fq_codel_drop(struct Qdisc *sch, unsigned int max_packets,
 		skb = dequeue_head(flow);
 		len += qdisc_pkt_len(skb);
 		mem += get_codel_cb(skb)->mem_usage;
+		tcf_set_drop_reason(skb, SKB_DROP_REASON_QDISC_OVERLIMIT);
 		__qdisc_drop(skb, to_free);
 	} while (++i < max_packets && len < threshold);
 
@@ -274,7 +275,7 @@ static void drop_func(struct sk_buff *skb, void *ctx)
 {
 	struct Qdisc *sch = ctx;
 
-	kfree_skb(skb);
+	kfree_skb_reason(skb, SKB_DROP_REASON_QDISC_CONGESTED);
 	qdisc_qstats_drop(sch);
 }
 
@@ -365,6 +366,7 @@ static const struct nla_policy fq_codel_policy[TCA_FQ_CODEL_MAX + 1] = {
 static int fq_codel_change(struct Qdisc *sch, struct nlattr *opt,
 			   struct netlink_ext_ack *extack)
 {
+	unsigned int dropped_pkts = 0, dropped_bytes = 0;
 	struct fq_codel_sched_data *q = qdisc_priv(sch);
 	struct nlattr *tb[TCA_FQ_CODEL_MAX + 1];
 	u32 quantum = 0;
@@ -442,13 +444,14 @@ static int fq_codel_change(struct Qdisc *sch, struct nlattr *opt,
 	       q->memory_usage > q->memory_limit) {
 		struct sk_buff *skb = qdisc_dequeue_internal(sch, false);
 
-		q->cstats.drop_len += qdisc_pkt_len(skb);
+		if (!skb)
+			break;
+
+		dropped_pkts++;
+		dropped_bytes += qdisc_pkt_len(skb);
 		rtnl_kfree_skbs(skb, skb);
-		q->cstats.drop_count++;
 	}
-	qdisc_tree_reduce_backlog(sch, q->cstats.drop_count, q->cstats.drop_len);
-	q->cstats.drop_count = 0;
-	q->cstats.drop_len = 0;
+	qdisc_tree_reduce_backlog(sch, dropped_pkts, dropped_bytes);
 
 	sch_tree_unlock(sch);
 	return 0;

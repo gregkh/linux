@@ -33,7 +33,7 @@
 #define CQSPI_NAME			"cadence-qspi"
 #define CQSPI_MAX_CHIPSELECT		4
 
-static_assert(CQSPI_MAX_CHIPSELECT <= SPI_CS_CNT_MAX);
+static_assert(CQSPI_MAX_CHIPSELECT <= SPI_DEVICE_CS_CNT_MAX);
 
 /* Quirks */
 #define CQSPI_NEEDS_WR_DELAY		BIT(0)
@@ -43,10 +43,14 @@ static_assert(CQSPI_MAX_CHIPSELECT <= SPI_CS_CNT_MAX);
 #define CQSPI_SLOW_SRAM		BIT(4)
 #define CQSPI_NEEDS_APB_AHB_HAZARD_WAR	BIT(5)
 #define CQSPI_RD_NO_IRQ			BIT(6)
-#define CQSPI_DISABLE_STIG_MODE		BIT(7)
+#define CQSPI_DMA_SET_MASK		BIT(7)
+#define CQSPI_SUPPORT_DEVICE_RESET	BIT(8)
+#define CQSPI_DISABLE_STIG_MODE		BIT(9)
+#define CQSPI_DISABLE_RUNTIME_PM	BIT(10)
 
 /* Capabilities */
 #define CQSPI_SUPPORTS_OCTAL		BIT(0)
+#define CQSPI_SUPPORTS_QUAD		BIT(1)
 
 #define CQSPI_OP_WIDTH(part) ((part).nbytes ? ilog2((part).buswidth) : 0)
 
@@ -105,13 +109,15 @@ struct cqspi_st {
 
 	bool			is_jh7110; /* Flag for StarFive JH7110 SoC */
 	bool			disable_stig_mode;
+	refcount_t		refcount;
+	refcount_t		inflight_ops;
 
 	const struct cqspi_driver_platdata *ddata;
 };
 
 struct cqspi_driver_platdata {
 	u32 hwcaps_mask;
-	u8 quirks;
+	u16 quirks;
 	int (*indirect_read_dma)(struct cqspi_flash_pdata *f_pdata,
 				 u_char *rxbuf, loff_t from_addr, size_t n_rx);
 	u32 (*get_dma_status)(struct cqspi_st *cqspi);
@@ -146,6 +152,8 @@ struct cqspi_driver_platdata {
 #define CQSPI_REG_CONFIG_IDLE_LSB		31
 #define CQSPI_REG_CONFIG_CHIPSELECT_MASK	0xF
 #define CQSPI_REG_CONFIG_BAUD_MASK		0xF
+#define CQSPI_REG_CONFIG_RESET_PIN_FLD_MASK    BIT(5)
+#define CQSPI_REG_CONFIG_RESET_CFG_FLD_MASK    BIT(6)
 
 #define CQSPI_REG_RD_INSTR			0x04
 #define CQSPI_REG_RD_INSTR_OPCODE_LSB		0
@@ -328,7 +336,7 @@ static bool cqspi_is_idle(struct cqspi_st *cqspi)
 {
 	u32 reg = readl(cqspi->iobase + CQSPI_REG_CONFIG);
 
-	return reg & (1UL << CQSPI_REG_CONFIG_IDLE_LSB);
+	return reg & BIT(CQSPI_REG_CONFIG_IDLE_LSB);
 }
 
 static u32 cqspi_get_rd_sram_level(struct cqspi_st *cqspi)
@@ -564,7 +572,7 @@ static int cqspi_command_read(struct cqspi_flash_pdata *f_pdata,
 		reg |= (dummy_clk & CQSPI_REG_CMDCTRL_DUMMY_MASK)
 		     << CQSPI_REG_CMDCTRL_DUMMY_LSB;
 
-	reg |= (0x1 << CQSPI_REG_CMDCTRL_RD_EN_LSB);
+	reg |= BIT(CQSPI_REG_CMDCTRL_RD_EN_LSB);
 
 	/* 0 means 1 byte. */
 	reg |= (((n_rx - 1) & CQSPI_REG_CMDCTRL_RD_BYTES_MASK)
@@ -572,7 +580,7 @@ static int cqspi_command_read(struct cqspi_flash_pdata *f_pdata,
 
 	/* setup ADDR BIT field */
 	if (op->addr.nbytes) {
-		reg |= (0x1 << CQSPI_REG_CMDCTRL_ADDR_EN_LSB);
+		reg |= BIT(CQSPI_REG_CMDCTRL_ADDR_EN_LSB);
 		reg |= ((op->addr.nbytes - 1) &
 			CQSPI_REG_CMDCTRL_ADD_BYTES_MASK)
 			<< CQSPI_REG_CMDCTRL_ADD_BYTES_LSB;
@@ -639,7 +647,7 @@ static int cqspi_command_write(struct cqspi_flash_pdata *f_pdata,
 	reg = opcode << CQSPI_REG_CMDCTRL_OPCODE_LSB;
 
 	if (op->addr.nbytes) {
-		reg |= (0x1 << CQSPI_REG_CMDCTRL_ADDR_EN_LSB);
+		reg |= BIT(CQSPI_REG_CMDCTRL_ADDR_EN_LSB);
 		reg |= ((op->addr.nbytes - 1) &
 			CQSPI_REG_CMDCTRL_ADD_BYTES_MASK)
 			<< CQSPI_REG_CMDCTRL_ADD_BYTES_LSB;
@@ -648,7 +656,7 @@ static int cqspi_command_write(struct cqspi_flash_pdata *f_pdata,
 	}
 
 	if (n_tx) {
-		reg |= (0x1 << CQSPI_REG_CMDCTRL_WR_EN_LSB);
+		reg |= BIT(CQSPI_REG_CMDCTRL_WR_EN_LSB);
 		reg |= ((n_tx - 1) & CQSPI_REG_CMDCTRL_WR_BYTES_MASK)
 			<< CQSPI_REG_CMDCTRL_WR_BYTES_LSB;
 		data = 0;
@@ -730,6 +738,9 @@ static int cqspi_indirect_read_execute(struct cqspi_flash_pdata *f_pdata,
 	unsigned int bytes_to_read = 0;
 	u8 *rxbuf_end = rxbuf + n_rx;
 	int ret = 0;
+
+	if (!refcount_read(&cqspi->refcount))
+		return -ENODEV;
 
 	writel(from_addr, reg_base + CQSPI_REG_INDIRECTRDSTARTADDR);
 	writel(remaining, reg_base + CQSPI_REG_INDIRECTRDBYTES);
@@ -840,6 +851,25 @@ failrd:
 	writel(CQSPI_REG_INDIRECTRD_CANCEL_MASK,
 	       reg_base + CQSPI_REG_INDIRECTRD);
 	return ret;
+}
+
+static void cqspi_device_reset(struct cqspi_st *cqspi)
+{
+	u32 reg;
+
+	reg = readl(cqspi->iobase + CQSPI_REG_CONFIG);
+	reg |= CQSPI_REG_CONFIG_RESET_CFG_FLD_MASK;
+	writel(reg, cqspi->iobase + CQSPI_REG_CONFIG);
+	/*
+	 * NOTE: Delay timing implementation is derived from
+	 * spi_nor_hw_reset()
+	 */
+	writel(reg & ~CQSPI_REG_CONFIG_RESET_PIN_FLD_MASK, cqspi->iobase + CQSPI_REG_CONFIG);
+	usleep_range(1, 5);
+	writel(reg | CQSPI_REG_CONFIG_RESET_PIN_FLD_MASK, cqspi->iobase + CQSPI_REG_CONFIG);
+	usleep_range(100, 150);
+	writel(reg & ~CQSPI_REG_CONFIG_RESET_PIN_FLD_MASK, cqspi->iobase + CQSPI_REG_CONFIG);
+	usleep_range(1000, 1200);
 }
 
 static void cqspi_controller_enable(struct cqspi_st *cqspi, bool enable)
@@ -1058,6 +1088,9 @@ static int cqspi_indirect_write_execute(struct cqspi_flash_pdata *f_pdata,
 	unsigned int write_bytes;
 	int ret;
 
+	if (!refcount_read(&cqspi->refcount))
+		return -ENODEV;
+
 	writel(to_addr, reg_base + CQSPI_REG_INDIRECTWRSTARTADDR);
 	writel(remaining, reg_base + CQSPI_REG_INDIRECTWRBYTES);
 
@@ -1167,7 +1200,7 @@ static void cqspi_chipselect(struct cqspi_flash_pdata *f_pdata)
 		 * CS2 to 4b'1011
 		 * CS3 to 4b'0111
 		 */
-		chip_select = 0xF & ~(1 << chip_select);
+		chip_select = 0xF & ~BIT(chip_select);
 	}
 
 	reg &= ~(CQSPI_REG_CONFIG_CHIPSELECT_MASK
@@ -1253,9 +1286,9 @@ static void cqspi_readdata_capture(struct cqspi_st *cqspi,
 	reg = readl(reg_base + CQSPI_REG_READCAPTURE);
 
 	if (bypass)
-		reg |= (1 << CQSPI_REG_READCAPTURE_BYPASS_LSB);
+		reg |= BIT(CQSPI_REG_READCAPTURE_BYPASS_LSB);
 	else
-		reg &= ~(1 << CQSPI_REG_READCAPTURE_BYPASS_LSB);
+		reg &= ~BIT(CQSPI_REG_READCAPTURE_BYPASS_LSB);
 
 	reg &= ~(CQSPI_REG_READCAPTURE_DELAY_MASK
 		 << CQSPI_REG_READCAPTURE_DELAY_LSB);
@@ -1422,7 +1455,7 @@ static int cqspi_mem_process(struct spi_mem *mem, const struct spi_mem_op *op)
 	struct cqspi_flash_pdata *f_pdata;
 
 	f_pdata = &cqspi->f_pdata[spi_get_chipselect(mem->spi, 0)];
-	cqspi_configure(f_pdata, mem->spi->max_speed_hz);
+	cqspi_configure(f_pdata, op->max_freq);
 
 	if (op->data.dir == SPI_MEM_DATA_IN && op->data.buf.in) {
 	/*
@@ -1449,20 +1482,40 @@ static int cqspi_exec_mem_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	int ret;
 	struct cqspi_st *cqspi = spi_controller_get_devdata(mem->spi->controller);
 	struct device *dev = &cqspi->pdev->dev;
+	const struct cqspi_driver_platdata *ddata = of_device_get_match_data(dev);
 
-	ret = pm_runtime_resume_and_get(dev);
-	if (ret) {
-		dev_err(&mem->spi->dev, "resume failed with %d\n", ret);
-		return ret;
+	if (refcount_read(&cqspi->inflight_ops) == 0)
+		return -ENODEV;
+
+	if (!(ddata && (ddata->quirks & CQSPI_DISABLE_RUNTIME_PM))) {
+		ret = pm_runtime_resume_and_get(dev);
+		if (ret) {
+			dev_err(&mem->spi->dev, "resume failed with %d\n", ret);
+			return ret;
+		}
+	}
+
+	if (!refcount_read(&cqspi->refcount))
+		return -EBUSY;
+
+	refcount_inc(&cqspi->inflight_ops);
+
+	if (!refcount_read(&cqspi->refcount)) {
+		if (refcount_read(&cqspi->inflight_ops))
+			refcount_dec(&cqspi->inflight_ops);
+		return -EBUSY;
 	}
 
 	ret = cqspi_mem_process(mem, op);
 
-	pm_runtime_mark_last_busy(dev);
-	pm_runtime_put_autosuspend(dev);
+	if (!(ddata && (ddata->quirks & CQSPI_DISABLE_RUNTIME_PM)))
+		pm_runtime_put_autosuspend(dev);
 
 	if (ret)
 		dev_err(&mem->spi->dev, "operation failed with %d\n", ret);
+
+	if (refcount_read(&cqspi->inflight_ops) > 1)
+		refcount_dec(&cqspi->inflight_ops);
 
 	return ret;
 }
@@ -1677,6 +1730,7 @@ static const struct spi_controller_mem_ops cqspi_mem_ops = {
 
 static const struct spi_controller_mem_caps cqspi_mem_caps = {
 	.dtr = true,
+	.per_op_freq = true,
 };
 
 static int cqspi_setup_flash(struct cqspi_st *cqspi)
@@ -1799,6 +1853,12 @@ static int cqspi_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
+	ret = cqspi_setup_flash(cqspi);
+	if (ret) {
+		dev_err(dev, "failed to setup flash parameters %d\n", ret);
+		return ret;
+	}
+
 	/* Obtain QSPI clock. */
 	cqspi->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(cqspi->clk)) {
@@ -1887,6 +1947,8 @@ static int cqspi_probe(struct platform_device *pdev)
 						cqspi->master_ref_clk_hz);
 		if (ddata->hwcaps_mask & CQSPI_SUPPORTS_OCTAL)
 			host->mode_bits |= SPI_RX_OCTAL | SPI_TX_OCTAL;
+		if (ddata->hwcaps_mask & CQSPI_SUPPORTS_QUAD)
+			host->mode_bits |= SPI_TX_QUAD;
 		if (!(ddata->quirks & CQSPI_DISABLE_DAC_MODE)) {
 			cqspi->use_direct_mode = true;
 			cqspi->use_direct_mode_wr = true;
@@ -1908,13 +1970,15 @@ static int cqspi_probe(struct platform_device *pdev)
 		if (ddata->quirks & CQSPI_DISABLE_STIG_MODE)
 			cqspi->disable_stig_mode = true;
 
-		if (of_device_is_compatible(pdev->dev.of_node,
-					    "xlnx,versal-ospi-1.0")) {
+		if (ddata->quirks & CQSPI_DMA_SET_MASK) {
 			ret = dma_set_mask(&pdev->dev, DMA_BIT_MASK(64));
 			if (ret)
 				goto probe_reset_failed;
 		}
 	}
+
+	refcount_set(&cqspi->refcount, 1);
+	refcount_set(&cqspi->inflight_ops, 1);
 
 	ret = devm_request_irq(dev, irq, cqspi_irq_handler, 0,
 			       pdev->name, cqspi);
@@ -1931,13 +1995,17 @@ static int cqspi_probe(struct platform_device *pdev)
 	cqspi->current_cs = -1;
 	cqspi->sclk = 0;
 
-	ret = cqspi_setup_flash(cqspi);
-	if (ret) {
-		dev_err(dev, "failed to setup flash parameters %d\n", ret);
-		goto probe_setup_failed;
+	if (!(ddata && (ddata->quirks & CQSPI_DISABLE_RUNTIME_PM))) {
+		pm_runtime_enable(dev);
+		pm_runtime_set_autosuspend_delay(dev, CQSPI_AUTOSUSPEND_TIMEOUT);
+		pm_runtime_use_autosuspend(dev);
+		pm_runtime_get_noresume(dev);
 	}
 
 	host->num_chipselect = cqspi->num_chipselect;
+
+	if (ddata && (ddata->quirks & CQSPI_SUPPORT_DEVICE_RESET))
+		cqspi_device_reset(cqspi);
 
 	if (cqspi->use_direct_mode) {
 		ret = cqspi_request_mmap_dma(cqspi);
@@ -1945,25 +2013,22 @@ static int cqspi_probe(struct platform_device *pdev)
 			goto probe_setup_failed;
 	}
 
-	pm_runtime_enable(dev);
-
-	pm_runtime_set_autosuspend_delay(dev, CQSPI_AUTOSUSPEND_TIMEOUT);
-	pm_runtime_use_autosuspend(dev);
-	pm_runtime_get_noresume(dev);
-
 	ret = spi_register_controller(host);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register SPI ctlr %d\n", ret);
 		goto probe_setup_failed;
 	}
 
-	pm_runtime_mark_last_busy(dev);
-	pm_runtime_put_autosuspend(dev);
+	if (!(ddata && (ddata->quirks & CQSPI_DISABLE_RUNTIME_PM))) {
+		pm_runtime_mark_last_busy(dev);
+		pm_runtime_put_autosuspend(dev);
+	}
 
 	return 0;
 probe_setup_failed:
+	if (!(ddata && (ddata->quirks & CQSPI_DISABLE_RUNTIME_PM)))
+		pm_runtime_disable(dev);
 	cqspi_controller_enable(cqspi, 0);
-	pm_runtime_disable(dev);
 probe_reset_failed:
 	if (cqspi->is_jh7110)
 		cqspi_jh7110_disable_clk(pdev, cqspi);
@@ -1976,7 +2041,17 @@ probe_clk_failed:
 
 static void cqspi_remove(struct platform_device *pdev)
 {
+	const struct cqspi_driver_platdata *ddata;
 	struct cqspi_st *cqspi = platform_get_drvdata(pdev);
+	struct device *dev = &pdev->dev;
+	int ret = 0;
+
+	ddata = of_device_get_match_data(dev);
+
+	refcount_set(&cqspi->refcount, 0);
+
+	if (!refcount_dec_and_test(&cqspi->inflight_ops))
+		cqspi_wait_idle(cqspi);
 
 	spi_unregister_controller(cqspi->host);
 	cqspi_controller_enable(cqspi, 0);
@@ -1984,14 +2059,19 @@ static void cqspi_remove(struct platform_device *pdev)
 	if (cqspi->rx_chan)
 		dma_release_channel(cqspi->rx_chan);
 
-	if (pm_runtime_get_sync(&pdev->dev) >= 0)
+	if (!(ddata && (ddata->quirks & CQSPI_DISABLE_RUNTIME_PM)))
+		ret = pm_runtime_get_sync(&pdev->dev);
+
+	if (ret >= 0)
 		clk_disable(cqspi->clk);
 
 	if (cqspi->is_jh7110)
 		cqspi_jh7110_disable_clk(pdev, cqspi);
 
-	pm_runtime_put_sync(&pdev->dev);
-	pm_runtime_disable(&pdev->dev);
+	if (!(ddata && (ddata->quirks & CQSPI_DISABLE_RUNTIME_PM))) {
+		pm_runtime_put_sync(&pdev->dev);
+		pm_runtime_disable(&pdev->dev);
+	}
 }
 
 static int cqspi_runtime_suspend(struct device *dev)
@@ -2058,7 +2138,7 @@ static const struct cqspi_driver_platdata k2g_qspi = {
 };
 
 static const struct cqspi_driver_platdata am654_ospi = {
-	.hwcaps_mask = CQSPI_SUPPORTS_OCTAL,
+	.hwcaps_mask = CQSPI_SUPPORTS_OCTAL | CQSPI_SUPPORTS_QUAD,
 	.quirks = CQSPI_NEEDS_WR_DELAY,
 };
 
@@ -2070,12 +2150,23 @@ static const struct cqspi_driver_platdata socfpga_qspi = {
 	.quirks = CQSPI_DISABLE_DAC_MODE
 			| CQSPI_NO_SUPPORT_WR_COMPLETION
 			| CQSPI_SLOW_SRAM
-			| CQSPI_DISABLE_STIG_MODE,
+			| CQSPI_DISABLE_STIG_MODE
+			| CQSPI_DISABLE_RUNTIME_PM,
 };
 
 static const struct cqspi_driver_platdata versal_ospi = {
 	.hwcaps_mask = CQSPI_SUPPORTS_OCTAL,
-	.quirks = CQSPI_DISABLE_DAC_MODE | CQSPI_SUPPORT_EXTERNAL_DMA,
+	.quirks = CQSPI_DISABLE_DAC_MODE | CQSPI_SUPPORT_EXTERNAL_DMA
+			| CQSPI_DMA_SET_MASK,
+	.indirect_read_dma = cqspi_versal_indirect_read_dma,
+	.get_dma_status = cqspi_get_versal_dma_status,
+};
+
+static const struct cqspi_driver_platdata versal2_ospi = {
+	.hwcaps_mask = CQSPI_SUPPORTS_OCTAL,
+	.quirks = CQSPI_DISABLE_DAC_MODE | CQSPI_SUPPORT_EXTERNAL_DMA
+			| CQSPI_DMA_SET_MASK
+			| CQSPI_SUPPORT_DEVICE_RESET,
 	.indirect_read_dma = cqspi_versal_indirect_read_dma,
 	.get_dma_status = cqspi_get_versal_dma_status,
 };
@@ -2132,6 +2223,10 @@ static const struct of_device_id cqspi_dt_ids[] = {
 		.compatible = "mobileye,eyeq5-ospi",
 		.data = &mobileye_eyeq5_ospi,
 	},
+	{
+		.compatible = "amd,versal2-ospi",
+		.data = &versal2_ospi,
+	},
 	{ /* end of table */ }
 };
 
@@ -2139,7 +2234,7 @@ MODULE_DEVICE_TABLE(of, cqspi_dt_ids);
 
 static struct platform_driver cqspi_platform_driver = {
 	.probe = cqspi_probe,
-	.remove_new = cqspi_remove,
+	.remove = cqspi_remove,
 	.driver = {
 		.name = CQSPI_NAME,
 		.pm = pm_ptr(&cqspi_dev_pm_ops),

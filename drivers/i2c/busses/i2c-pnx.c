@@ -580,7 +580,7 @@ static u32 i2c_pnx_func(struct i2c_adapter *adapter)
 }
 
 static const struct i2c_algorithm pnx_algorithm = {
-	.master_xfer = i2c_pnx_xfer,
+	.xfer = i2c_pnx_xfer,
 	.functionality = i2c_pnx_func,
 };
 
@@ -733,7 +733,7 @@ static struct platform_driver i2c_pnx_driver = {
 		.pm = pm_sleep_ptr(&i2c_pnx_pm),
 	},
 	.probe = i2c_pnx_probe,
-	.remove_new = i2c_pnx_remove,
+	.remove = i2c_pnx_remove,
 };
 
 static int __init i2c_adap_pnx_init(void)

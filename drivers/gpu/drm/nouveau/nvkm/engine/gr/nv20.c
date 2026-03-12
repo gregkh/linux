@@ -27,7 +27,7 @@ nv20_gr_chan_init(struct nvkm_object *object)
 }
 
 int
-nv20_gr_chan_fini(struct nvkm_object *object, bool suspend)
+nv20_gr_chan_fini(struct nvkm_object *object, enum nvkm_suspend_state suspend)
 {
 	struct nv20_gr_chan *chan = nv20_gr_chan(object);
 	struct nv20_gr *gr = chan->gr;
@@ -297,7 +297,7 @@ nv20_gr_init(struct nvkm_gr *base)
 	nvkm_wr32(device, NV10_PGRAPH_SURFACE, tmp);
 
 	/* begin RAM config */
-	vramsz = device->func->resource_size(device, 1) - 1;
+	vramsz = device->func->resource_size(device, NVKM_BAR1_FB) - 1;
 	nvkm_wr32(device, 0x4009A4, nvkm_rd32(device, 0x100200));
 	nvkm_wr32(device, 0x4009A8, nvkm_rd32(device, 0x100204));
 	nvkm_wr32(device, NV10_PGRAPH_RDI_INDEX, 0x00EA0000);

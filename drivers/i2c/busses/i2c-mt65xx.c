@@ -868,7 +868,7 @@ static int mtk_i2c_calculate_speed(struct mtk_i2c *i2c, unsigned int clk_src,
 	return 0;
 }
 
-static int mtk_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
+static void mtk_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
 {
 	unsigned int clk_src;
 	unsigned int step_cnt;
@@ -938,9 +938,6 @@ static int mtk_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
 
 		break;
 	}
-
-
-	return 0;
 }
 
 static void i2c_dump_register(struct mtk_i2c *i2c)
@@ -1345,7 +1342,7 @@ static u32 mtk_i2c_functionality(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm mtk_i2c_algorithm = {
-	.master_xfer = mtk_i2c_transfer,
+	.xfer = mtk_i2c_transfer,
 	.functionality = mtk_i2c_functionality,
 };
 
@@ -1460,11 +1457,7 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 
 	strscpy(i2c->adap.name, I2C_DRV_NAME, sizeof(i2c->adap.name));
 
-	ret = mtk_i2c_set_speed(i2c, clk_get_rate(i2c->clocks[speed_clk].clk));
-	if (ret) {
-		dev_err(&pdev->dev, "Failed to set the speed.\n");
-		return -EINVAL;
-	}
+	mtk_i2c_set_speed(i2c, clk_get_rate(i2c->clocks[speed_clk].clk));
 
 	if (i2c->dev_comp->max_dma_support > 32) {
 		ret = dma_set_mask(&pdev->dev,
@@ -1553,7 +1546,7 @@ static const struct dev_pm_ops mtk_i2c_pm = {
 
 static struct platform_driver mtk_i2c_driver = {
 	.probe = mtk_i2c_probe,
-	.remove_new = mtk_i2c_remove,
+	.remove = mtk_i2c_remove,
 	.driver = {
 		.name = I2C_DRV_NAME,
 		.pm = pm_sleep_ptr(&mtk_i2c_pm),

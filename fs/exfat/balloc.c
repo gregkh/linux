@@ -7,6 +7,7 @@
 #include <linux/slab.h>
 #include <linux/bitmap.h>
 #include <linux/buffer_head.h>
+#include <linux/backing-dev.h>
 
 #include "exfat_raw.h"
 #include "exfat_fs.h"
@@ -73,9 +74,11 @@ static int exfat_allocate_bitmap(struct super_block *sb,
 		struct exfat_dentry *ep)
 {
 	struct exfat_sb_info *sbi = EXFAT_SB(sb);
+	struct blk_plug plug;
 	long long map_size;
 	unsigned int i, j, need_map_size;
 	sector_t sector;
+	unsigned int max_ra_count;
 
 	sbi->map_clu = le32_to_cpu(ep->dentry.bitmap.start_clu);
 	map_size = le64_to_cpu(ep->dentry.bitmap.size);
@@ -99,7 +102,17 @@ static int exfat_allocate_bitmap(struct super_block *sb,
 		return -ENOMEM;
 
 	sector = exfat_cluster_to_sector(sbi, sbi->map_clu);
+	max_ra_count = min(sb->s_bdi->ra_pages, sb->s_bdi->io_pages) <<
+		(PAGE_SHIFT - sb->s_blocksize_bits);
 	for (i = 0; i < sbi->map_sectors; i++) {
+		/* Trigger the next readahead in advance. */
+		if (max_ra_count && 0 == (i % max_ra_count)) {
+			blk_start_plug(&plug);
+			for (j = i; j < min(max_ra_count, sbi->map_sectors - i) + i; j++)
+				sb_breadahead(sb, sector + j);
+			blk_finish_plug(&plug);
+		}
+
 		sbi->vol_amap[i] = sb_bread(sb, sector + i);
 		if (!sbi->vol_amap[i])
 			goto err_out;
@@ -195,7 +208,6 @@ int exfat_clear_bitmap(struct inode *inode, unsigned int clu, bool sync)
 	unsigned int ent_idx;
 	struct super_block *sb = inode->i_sb;
 	struct exfat_sb_info *sbi = EXFAT_SB(sb);
-	struct exfat_mount_options *opts = &sbi->options;
 
 	if (!is_valid_cluster(sbi, clu))
 		return -EIO;
@@ -210,19 +222,6 @@ int exfat_clear_bitmap(struct inode *inode, unsigned int clu, bool sync)
 	clear_bit_le(b, sbi->vol_amap[i]->b_data);
 
 	exfat_update_bh(sbi->vol_amap[i], sync);
-
-	if (opts->discard) {
-		int ret_discard;
-
-		ret_discard = sb_issue_discard(sb,
-			exfat_cluster_to_sector(sbi, clu),
-			(1 << sbi->sect_per_clus_bits), GFP_NOFS, 0);
-
-		if (ret_discard == -EOPNOTSUPP) {
-			exfat_err(sb, "discard not supported by device, disabling");
-			opts->discard = 0;
-		}
-	}
 
 	return 0;
 }

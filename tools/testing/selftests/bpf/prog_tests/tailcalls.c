@@ -7,6 +7,7 @@
 #include "tailcall_bpf2bpf_hierarchy3.skel.h"
 #include "tailcall_freplace.skel.h"
 #include "tc_bpf2bpf.skel.h"
+#include "tailcall_fail.skel.h"
 
 /* test_tailcall_1 checks basic functionality by patching multiple locations
  * in a single program for a single tail call slot with nop->jmp, jmp->nop
@@ -1194,7 +1195,7 @@ static void test_tailcall_hierarchy_count(const char *which, bool test_fentry,
 					  bool test_fexit,
 					  bool test_fentry_entry)
 {
-	int err, map_fd, prog_fd, main_data_fd, fentry_data_fd, fexit_data_fd, i, val;
+	int err, map_fd, prog_fd, main_data_fd, fentry_data_fd = 0, fexit_data_fd = 0, i, val;
 	struct bpf_object *obj = NULL, *fentry_obj = NULL, *fexit_obj = NULL;
 	struct bpf_link *fentry_link = NULL, *fexit_link = NULL;
 	struct bpf_program *prog, *fentry_prog;
@@ -1647,6 +1648,11 @@ out:
 	tc_bpf2bpf__destroy(tc_skel);
 }
 
+static void test_tailcall_failure()
+{
+	RUN_TESTS(tailcall_fail);
+}
+
 void test_tailcalls(void)
 {
 	if (test__start_subtest("tailcall_1"))
@@ -1699,4 +1705,6 @@ void test_tailcalls(void)
 		test_tailcall_freplace();
 	if (test__start_subtest("tailcall_bpf2bpf_freplace"))
 		test_tailcall_bpf2bpf_freplace();
+	if (test__start_subtest("tailcall_failure"))
+		test_tailcall_failure();
 }

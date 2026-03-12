@@ -208,8 +208,8 @@ xrep_agf_init_header(
 	memset(agf, 0, BBTOB(agf_bp->b_length));
 	agf->agf_magicnum = cpu_to_be32(XFS_AGF_MAGIC);
 	agf->agf_versionnum = cpu_to_be32(XFS_AGF_VERSION);
-	agf->agf_seqno = cpu_to_be32(pag->pag_agno);
-	agf->agf_length = cpu_to_be32(pag->block_count);
+	agf->agf_seqno = cpu_to_be32(pag_agno(pag));
+	agf->agf_length = cpu_to_be32(pag_group(pag)->xg_block_count);
 	agf->agf_flfirst = old_agf->agf_flfirst;
 	agf->agf_fllast = old_agf->agf_fllast;
 	agf->agf_flcount = old_agf->agf_flcount;
@@ -384,7 +384,7 @@ xrep_agf(
 	 * was corrupt after xfs_alloc_read_agf failed with -EFSCORRUPTED.
 	 */
 	error = xfs_trans_read_buf(mp, sc->tp, mp->m_ddev_targp,
-			XFS_AG_DADDR(mp, sc->sa.pag->pag_agno,
+			XFS_AG_DADDR(mp, pag_agno(sc->sa.pag),
 						XFS_AGF_DADDR(mp)),
 			XFS_FSS_TO_BB(mp, 1), 0, &agf_bp, NULL);
 	if (error)
@@ -647,7 +647,7 @@ xrep_agfl_fill(
 	xfs_agblock_t		agbno = start;
 	int			error;
 
-	trace_xrep_agfl_insert(sc->sa.pag, agbno, len);
+	trace_xrep_agfl_insert(pag_group(sc->sa.pag), agbno, len);
 
 	while (agbno < start + len && af->fl_off < af->flcount)
 		af->agfl_bno[af->fl_off++] = cpu_to_be32(agbno++);
@@ -687,7 +687,7 @@ xrep_agfl_init_header(
 	agfl = XFS_BUF_TO_AGFL(agfl_bp);
 	memset(agfl, 0xFF, BBTOB(agfl_bp->b_length));
 	agfl->agfl_magicnum = cpu_to_be32(XFS_AGFL_MAGIC);
-	agfl->agfl_seqno = cpu_to_be32(sc->sa.pag->pag_agno);
+	agfl->agfl_seqno = cpu_to_be32(pag_agno(sc->sa.pag));
 	uuid_copy(&agfl->agfl_uuid, &mp->m_sb.sb_meta_uuid);
 
 	/*
@@ -741,7 +741,7 @@ xrep_agfl(
 	 * was corrupt after xfs_alloc_read_agfl failed with -EFSCORRUPTED.
 	 */
 	error = xfs_trans_read_buf(mp, sc->tp, mp->m_ddev_targp,
-			XFS_AG_DADDR(mp, sc->sa.pag->pag_agno,
+			XFS_AG_DADDR(mp, pag_agno(sc->sa.pag),
 						XFS_AGFL_DADDR(mp)),
 			XFS_FSS_TO_BB(mp, 1), 0, &agfl_bp, NULL);
 	if (error)
@@ -901,8 +901,8 @@ xrep_agi_init_header(
 	memset(agi, 0, BBTOB(agi_bp->b_length));
 	agi->agi_magicnum = cpu_to_be32(XFS_AGI_MAGIC);
 	agi->agi_versionnum = cpu_to_be32(XFS_AGI_VERSION);
-	agi->agi_seqno = cpu_to_be32(pag->pag_agno);
-	agi->agi_length = cpu_to_be32(pag->block_count);
+	agi->agi_seqno = cpu_to_be32(pag_agno(pag));
+	agi->agi_length = cpu_to_be32(pag_group(pag)->xg_block_count);
 	agi->agi_newino = cpu_to_be32(NULLAGINO);
 	agi->agi_dirino = cpu_to_be32(NULLAGINO);
 	if (xfs_has_crc(mp))
@@ -1042,12 +1042,10 @@ xrep_iunlink_reload_next(
 {
 	struct xfs_scrub	*sc = ragi->sc;
 	struct xfs_inode	*ip;
-	xfs_ino_t		ino;
 	xfs_agino_t		ret = NULLAGINO;
 	int			error;
 
-	ino = XFS_AGINO_TO_INO(sc->mp, sc->sa.pag->pag_agno, agino);
-	error = xchk_iget(ragi->sc, ino, &ip);
+	error = xchk_iget(ragi->sc, xfs_agino_to_ino(sc->sa.pag, agino), &ip);
 	if (error)
 		return ret;
 
@@ -1118,9 +1116,9 @@ xrep_iunlink_igrab(
 	struct xfs_perag	*pag,
 	struct xfs_inode	*ip)
 {
-	struct xfs_mount	*mp = pag->pag_mount;
+	struct xfs_mount	*mp = pag_mount(pag);
 
-	if (XFS_INO_TO_AGNO(mp, ip->i_ino) != pag->pag_agno)
+	if (XFS_INO_TO_AGNO(mp, ip->i_ino) != pag_agno(pag))
 		return false;
 
 	if (!xfs_inode_on_unlinked_list(ip))
@@ -1144,7 +1142,7 @@ xrep_iunlink_visit(
 	unsigned int		bucket;
 	int			error;
 
-	ASSERT(XFS_INO_TO_AGNO(mp, ip->i_ino) == ragi->sc->sa.pag->pag_agno);
+	ASSERT(XFS_INO_TO_AGNO(mp, ip->i_ino) == pag_agno(ragi->sc->sa.pag));
 	ASSERT(xfs_inode_on_unlinked_list(ip));
 
 	agino = XFS_INO_TO_AGINO(mp, ip->i_ino);
@@ -1175,7 +1173,7 @@ xrep_iunlink_mark_incore(
 	struct xrep_agi		*ragi)
 {
 	struct xfs_perag	*pag = ragi->sc->sa.pag;
-	struct xfs_mount	*mp = pag->pag_mount;
+	struct xfs_mount	*mp = pag_mount(pag);
 	uint32_t		first_index = 0;
 	bool			done = false;
 	unsigned int		nr_found = 0;
@@ -1215,7 +1213,7 @@ xrep_iunlink_mark_incore(
 			 * us to see this inode, so another lookup from the
 			 * same index will not find it again.
 			 */
-			if (XFS_INO_TO_AGNO(mp, ip->i_ino) != pag->pag_agno)
+			if (XFS_INO_TO_AGNO(mp, ip->i_ino) != pag_agno(pag))
 				continue;
 			first_index = XFS_INO_TO_AGINO(mp, ip->i_ino + 1);
 			if (first_index < XFS_INO_TO_AGINO(mp, ip->i_ino))
@@ -1282,9 +1280,7 @@ xrep_iunlink_mark_ondisk_rec(
 		 * on because we haven't actually scrubbed the inobt or the
 		 * inodes yet.
 		 */
-		error = xchk_iget(ragi->sc,
-				XFS_AGINO_TO_INO(mp, sc->sa.pag->pag_agno,
-						 agino),
+		error = xchk_iget(ragi->sc, xfs_agino_to_ino(sc->sa.pag, agino),
 				&ip);
 		if (error)
 			continue;
@@ -1543,15 +1539,13 @@ xrep_iunlink_relink_next(
 
 	ip = xfs_iunlink_lookup(pag, agino);
 	if (!ip) {
-		xfs_ino_t	ino;
 		xfs_agino_t	prev_agino;
 
 		/*
 		 * No inode exists in cache.  Load it off the disk so that we
 		 * can reinsert it into the incore unlinked list.
 		 */
-		ino = XFS_AGINO_TO_INO(sc->mp, pag->pag_agno, agino);
-		error = xchk_iget(sc, ino, &ip);
+		error = xchk_iget(sc, xfs_agino_to_ino(pag, agino), &ip);
 		if (error)
 			return -EFSCORRUPTED;
 
@@ -1605,15 +1599,13 @@ xrep_iunlink_relink_prev(
 
 	ip = xfs_iunlink_lookup(pag, agino);
 	if (!ip) {
-		xfs_ino_t	ino;
 		xfs_agino_t	next_agino;
 
 		/*
 		 * No inode exists in cache.  Load it off the disk so that we
 		 * can reinsert it into the incore unlinked list.
 		 */
-		ino = XFS_AGINO_TO_INO(sc->mp, pag->pag_agno, agino);
-		error = xchk_iget(sc, ino, &ip);
+		error = xchk_iget(sc, xfs_agino_to_ino(pag, agino), &ip);
 		if (error)
 			return -EFSCORRUPTED;
 
@@ -1720,7 +1712,6 @@ xrep_agi(
 {
 	struct xrep_agi		*ragi;
 	struct xfs_mount	*mp = sc->mp;
-	char			*descr;
 	unsigned int		i;
 	int			error;
 
@@ -1754,17 +1745,13 @@ xrep_agi(
 	xagino_bitmap_init(&ragi->iunlink_bmp);
 	sc->buf_cleanup = xrep_agi_buf_cleanup;
 
-	descr = xchk_xfile_ag_descr(sc, "iunlinked next pointers");
-	error = xfarray_create(descr, 0, sizeof(xfs_agino_t),
-			&ragi->iunlink_next);
-	kfree(descr);
+	error = xfarray_create("iunlinked next pointers", 0,
+			sizeof(xfs_agino_t), &ragi->iunlink_next);
 	if (error)
 		return error;
 
-	descr = xchk_xfile_ag_descr(sc, "iunlinked prev pointers");
-	error = xfarray_create(descr, 0, sizeof(xfs_agino_t),
-			&ragi->iunlink_prev);
-	kfree(descr);
+	error = xfarray_create("iunlinked prev pointers", 0,
+			sizeof(xfs_agino_t), &ragi->iunlink_prev);
 	if (error)
 		return error;
 
@@ -1773,7 +1760,7 @@ xrep_agi(
 	 * was corrupt after xfs_ialloc_read_agi failed with -EFSCORRUPTED.
 	 */
 	error = xfs_trans_read_buf(mp, sc->tp, mp->m_ddev_targp,
-			XFS_AG_DADDR(mp, sc->sa.pag->pag_agno,
+			XFS_AG_DADDR(mp, pag_agno(sc->sa.pag),
 						XFS_AGI_DADDR(mp)),
 			XFS_FSS_TO_BB(mp, 1), 0, &ragi->agi_bp, NULL);
 	if (error)

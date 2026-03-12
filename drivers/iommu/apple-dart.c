@@ -36,7 +36,7 @@
 
 #define DART_MAX_STREAMS 256
 #define DART_MAX_TTBR 4
-#define MAX_DARTS_PER_DEVICE 2
+#define MAX_DARTS_PER_DEVICE 3
 
 /* Common registers */
 
@@ -135,6 +135,7 @@
 #define DART_T8110_TCR                  0x1000
 #define DART_T8110_TCR_REMAP            GENMASK(11, 8)
 #define DART_T8110_TCR_REMAP_EN         BIT(7)
+#define DART_T8110_TCR_FOUR_LEVEL       BIT(3)
 #define DART_T8110_TCR_BYPASS_DAPF      BIT(2)
 #define DART_T8110_TCR_BYPASS_DART      BIT(1)
 #define DART_T8110_TCR_TRANSLATE_ENABLE BIT(0)
@@ -168,22 +169,23 @@ struct apple_dart_hw {
 
 	int max_sid_count;
 
-	u64 lock;
-	u64 lock_bit;
+	u32 lock;
+	u32 lock_bit;
 
-	u64 error;
+	u32 error;
 
-	u64 enable_streams;
+	u32 enable_streams;
 
-	u64 tcr;
-	u64 tcr_enabled;
-	u64 tcr_disabled;
-	u64 tcr_bypass;
+	u32 tcr;
+	u32 tcr_enabled;
+	u32 tcr_disabled;
+	u32 tcr_bypass;
+	u32 tcr_4level;
 
-	u64 ttbr;
-	u64 ttbr_valid;
-	u64 ttbr_addr_field_shift;
-	u64 ttbr_shift;
+	u32 ttbr;
+	u32 ttbr_valid;
+	u32 ttbr_addr_field_shift;
+	u32 ttbr_shift;
 	int ttbr_count;
 };
 
@@ -219,6 +221,7 @@ struct apple_dart {
 	u32 pgsize;
 	u32 num_streams;
 	u32 supports_bypass : 1;
+	u32 four_level : 1;
 
 	struct iommu_group *sid2group[DART_MAX_STREAMS];
 	struct iommu_device iommu;
@@ -279,6 +282,9 @@ struct apple_dart_domain {
  * @streams: streams for this device
  */
 struct apple_dart_master_cfg {
+	/* Intersection of DART capabilitles */
+	u32 supports_bypass : 1;
+
 	struct apple_dart_stream_map stream_maps[MAX_DARTS_PER_DEVICE];
 };
 
@@ -304,13 +310,19 @@ static struct apple_dart_domain *to_dart_domain(struct iommu_domain *dom)
 }
 
 static void
-apple_dart_hw_enable_translation(struct apple_dart_stream_map *stream_map)
+apple_dart_hw_enable_translation(struct apple_dart_stream_map *stream_map, int levels)
 {
 	struct apple_dart *dart = stream_map->dart;
+	u32 tcr = dart->hw->tcr_enabled;
 	int sid;
 
+	if (levels == 4)
+		tcr |= dart->hw->tcr_4level;
+
+	WARN_ON(levels != 3 && levels != 4);
+	WARN_ON(levels == 4 && !dart->four_level);
 	for_each_set_bit(sid, stream_map->sidmap, dart->num_streams)
-		writel(dart->hw->tcr_enabled, dart->regs + DART_TCR(dart, sid));
+		writel(tcr, dart->regs + DART_TCR(dart, sid));
 }
 
 static void apple_dart_hw_disable_dma(struct apple_dart_stream_map *stream_map)
@@ -568,7 +580,8 @@ apple_dart_setup_translation(struct apple_dart_domain *domain,
 	for (; i < stream_map->dart->hw->ttbr_count; ++i)
 		apple_dart_hw_clear_ttbr(stream_map, i);
 
-	apple_dart_hw_enable_translation(stream_map);
+	apple_dart_hw_enable_translation(stream_map,
+					 pgtbl_cfg->apple_dart_cfg.n_levels);
 	stream_map->dart->hw->invalidate_tlb(stream_map);
 }
 
@@ -613,7 +626,7 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 	dart_domain->domain.pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
 	dart_domain->domain.geometry.aperture_start = 0;
 	dart_domain->domain.geometry.aperture_end =
-		(dma_addr_t)DMA_BIT_MASK(dart->ias);
+		(dma_addr_t)DMA_BIT_MASK(pgtbl_cfg.ias);
 	dart_domain->domain.geometry.force_aperture = true;
 
 	dart_domain->finalized = true;
@@ -686,7 +699,7 @@ static int apple_dart_attach_dev_identity(struct iommu_domain *domain,
 	struct apple_dart_stream_map *stream_map;
 	int i;
 
-	if (!cfg->stream_maps[0].dart->supports_bypass)
+	if (!cfg->supports_bypass)
 		return -EINVAL;
 
 	for_each_stream_map(i, cfg, stream_map)
@@ -775,8 +788,7 @@ static void apple_dart_domain_free(struct iommu_domain *domain)
 {
 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
 
-	if (dart_domain->pgtbl_ops)
-		free_io_pgtable_ops(dart_domain->pgtbl_ops);
+	free_io_pgtable_ops(dart_domain->pgtbl_ops);
 
 	kfree(dart_domain);
 }
@@ -796,19 +808,24 @@ static int apple_dart_of_xlate(struct device *dev,
 		return -EINVAL;
 	sid = args->args[0];
 
-	if (!cfg)
+	if (!cfg) {
 		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
-	if (!cfg)
-		return -ENOMEM;
+		if (!cfg)
+			return -ENOMEM;
+		/* Will be ANDed with DART capabilities */
+		cfg->supports_bypass = true;
+	}
 	dev_iommu_priv_set(dev, cfg);
 
 	cfg_dart = cfg->stream_maps[0].dart;
 	if (cfg_dart) {
-		if (cfg_dart->supports_bypass != dart->supports_bypass)
-			return -EINVAL;
 		if (cfg_dart->pgsize != dart->pgsize)
 			return -EINVAL;
+		if (cfg_dart->ias != dart->ias)
+			return -EINVAL;
 	}
+
+	cfg->supports_bypass &= dart->supports_bypass;
 
 	for (i = 0; i < MAX_DARTS_PER_DEVICE; ++i) {
 		if (cfg->stream_maps[i].dart == dart) {
@@ -949,7 +966,7 @@ static int apple_dart_def_domain_type(struct device *dev)
 
 	if (cfg->stream_maps[0].dart->pgsize > PAGE_SIZE)
 		return IOMMU_DOMAIN_IDENTITY;
-	if (!cfg->stream_maps[0].dart->supports_bypass)
+	if (!cfg->supports_bypass)
 		return IOMMU_DOMAIN_DMA;
 
 	return 0;
@@ -990,7 +1007,6 @@ static const struct iommu_ops apple_dart_iommu_ops = {
 	.of_xlate = apple_dart_of_xlate,
 	.def_domain_type = apple_dart_def_domain_type,
 	.get_resv_regions = apple_dart_get_resv_regions,
-	.pgsize_bitmap = -1UL, /* Restricted during dart probe */
 	.owner = THIS_MODULE,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= apple_dart_attach_dev_paging,
@@ -1140,6 +1156,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 		dart->ias = FIELD_GET(DART_T8110_PARAMS3_VA_WIDTH, dart_params[2]);
 		dart->oas = FIELD_GET(DART_T8110_PARAMS3_PA_WIDTH, dart_params[2]);
 		dart->num_streams = FIELD_GET(DART_T8110_PARAMS4_NUM_SIDS, dart_params[3]);
+		dart->four_level = dart->ias > 36;
 		break;
 	}
 
@@ -1172,9 +1189,9 @@ static int apple_dart_probe(struct platform_device *pdev)
 
 	dev_info(
 		&pdev->dev,
-		"DART [pagesize %x, %d streams, bypass support: %d, bypass forced: %d] initialized\n",
+		"DART [pagesize %x, %d streams, bypass support: %d, bypass forced: %d, AS %d -> %d] initialized\n",
 		dart->pgsize, dart->num_streams, dart->supports_bypass,
-		dart->pgsize > PAGE_SIZE);
+		dart->pgsize > PAGE_SIZE, dart->ias, dart->oas);
 	return 0;
 
 err_sysfs_remove:
@@ -1295,6 +1312,7 @@ static const struct apple_dart_hw apple_dart_hw_t8110 = {
 	.tcr_enabled = DART_T8110_TCR_TRANSLATE_ENABLE,
 	.tcr_disabled = 0,
 	.tcr_bypass = DART_T8110_TCR_BYPASS_DAPF | DART_T8110_TCR_BYPASS_DART,
+	.tcr_4level = DART_T8110_TCR_FOUR_LEVEL,
 
 	.ttbr = DART_T8110_TTBR,
 	.ttbr_valid = DART_T8110_TTBR_VALID,
@@ -1359,7 +1377,7 @@ static struct platform_driver apple_dart_driver = {
 		.pm			= pm_sleep_ptr(&apple_dart_pm_ops),
 	},
 	.probe	= apple_dart_probe,
-	.remove_new = apple_dart_remove,
+	.remove = apple_dart_remove,
 };
 
 module_platform_driver(apple_dart_driver);

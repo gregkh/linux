@@ -31,11 +31,12 @@ void uml_dtb_init(void)
 
 static int __init uml_dtb_setup(char *line, int *add)
 {
+	*add = 0;
 	dtb = line;
 	return 0;
 }
 
 __uml_setup("dtb=", uml_dtb_setup,
 "dtb=<file>\n"
-"    Boot the kernel with the devicetree blob from the specified file.\n"
+"    Boot the kernel with the devicetree blob from the specified file.\n\n"
 );

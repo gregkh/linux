@@ -395,11 +395,7 @@ mt7925_mac_fill_rx(struct mt792x_dev *dev, struct sk_buff *skb)
 
 	if (status->wcid) {
 		mlink = container_of(status->wcid, struct mt792x_link_sta, wcid);
-		spin_lock_bh(&dev->mt76.sta_poll_lock);
-		if (list_empty(&mlink->wcid.poll_list))
-			list_add_tail(&mlink->wcid.poll_list,
-				      &dev->mt76.sta_poll_list);
-		spin_unlock_bh(&dev->mt76.sta_poll_lock);
+		mt76_wcid_add_poll(&dev->mt76, &mlink->wcid);
 	}
 
 	mt792x_get_status_freq_info(status, chfreq);
@@ -671,6 +667,7 @@ mt7925_mac_write_txwi_80211(struct mt76_dev *dev, __le32 *txwi,
 	u32 val;
 
 	if (ieee80211_is_action(fc) &&
+	    skb->len >= IEEE80211_MIN_ACTION_SIZE + 1 &&
 	    mgmt->u.action.category == WLAN_CATEGORY_BACK &&
 	    mgmt->u.action.u.addba_req.action_code == WLAN_ACTION_ADDBA_REQ)
 		tid = MT_TX_ADDBA;
@@ -734,7 +731,7 @@ mt7925_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
 	u8 p_fmt, q_idx, omac_idx = 0, wmm_idx = 0, band_idx = 0;
 	u32 val, sz_txd = mt76_is_mmio(dev) ? MT_TXD_SIZE : MT_SDIO_TXD_SIZE;
 	bool is_8023 = info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP;
-	struct mt76_vif *mvif;
+	struct mt76_vif_link *mvif;
 	bool beacon = !!(changed & (BSS_CHANGED_BEACON |
 				    BSS_CHANGED_BEACON_ENABLED));
 	bool inband_disc = !!(changed & (BSS_CHANGED_UNSOL_BCAST_PROBE_RESP |
@@ -743,7 +740,7 @@ mt7925_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
 
 	mconf = vif ? mt792x_vif_to_link((struct mt792x_vif *)vif->drv_priv,
 					 wcid->link_id) : NULL;
-	mvif = mconf ? (struct mt76_vif *)&mconf->mt76 : NULL;
+	mvif = mconf ? (struct mt76_vif_link *)&mconf->mt76 : NULL;
 
 	if (mvif) {
 		omac_idx = mvif->omac_idx;
@@ -1044,7 +1041,7 @@ void mt7925_mac_add_txs(struct mt792x_dev *dev, void *data)
 
 	rcu_read_lock();
 
-	wcid = rcu_dereference(dev->mt76.wcid[wcidx]);
+	wcid = mt76_wcid_ptr(dev, wcidx);
 	if (!wcid)
 		goto out;
 
@@ -1054,10 +1051,7 @@ void mt7925_mac_add_txs(struct mt792x_dev *dev, void *data)
 	if (!wcid->sta)
 		goto out;
 
-	spin_lock_bh(&dev->mt76.sta_poll_lock);
-	if (list_empty(&mlink->wcid.poll_list))
-		list_add_tail(&mlink->wcid.poll_list, &dev->mt76.sta_poll_list);
-	spin_unlock_bh(&dev->mt76.sta_poll_lock);
+	mt76_wcid_add_poll(&dev->mt76, &mlink->wcid);
 
 out:
 	rcu_read_unlock();
@@ -1129,17 +1123,13 @@ mt7925_mac_tx_free(struct mt792x_dev *dev, void *data, int len)
 			u16 idx;
 
 			idx = FIELD_GET(MT_TXFREE_INFO_WLAN_ID, info);
-			wcid = rcu_dereference(dev->mt76.wcid[idx]);
+			wcid = mt76_wcid_ptr(dev, idx);
 			sta = wcid_to_sta(wcid);
 			if (!sta)
 				continue;
 
 			mlink = container_of(wcid, struct mt792x_link_sta, wcid);
-			spin_lock_bh(&mdev->sta_poll_lock);
-			if (list_empty(&mlink->wcid.poll_list))
-				list_add_tail(&mlink->wcid.poll_list,
-					      &mdev->sta_poll_list);
-			spin_unlock_bh(&mdev->sta_poll_lock);
+			mt76_wcid_add_poll(&dev->mt76, &mlink->wcid);
 			continue;
 		}
 
@@ -1339,6 +1329,10 @@ void mt7925_mac_reset_work(struct work_struct *work)
 					    IEEE80211_IFACE_ITER_RESUME_ALL,
 					    mt7925_vif_connect_iter, NULL);
 	mt76_connac_power_save_sched(&dev->mt76.phy, pm);
+
+	mt792x_mutex_acquire(dev);
+	mt7925_mcu_set_clc(dev, "00", ENVIRON_INDOOR);
+	mt792x_mutex_release(dev);
 }
 
 void mt7925_coredump_work(struct work_struct *work)
@@ -1455,7 +1449,7 @@ void mt7925_usb_sdio_tx_complete_skb(struct mt76_dev *mdev,
 	u16 idx;
 
 	idx = le32_get_bits(txwi[1], MT_TXD1_WLAN_IDX);
-	wcid = rcu_dereference(mdev->wcid[idx]);
+	wcid = __mt76_wcid_ptr(mdev, idx);
 	sta = wcid_to_sta(wcid);
 
 	if (sta && likely(e->skb->protocol != cpu_to_be16(ETH_P_PAE)))

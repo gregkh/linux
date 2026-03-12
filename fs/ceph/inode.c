@@ -206,7 +206,7 @@ struct inode *ceph_get_inode(struct super_block *sb, struct ceph_vino vino,
 }
 
 /*
- * get/constuct snapdir inode for a given directory
+ * get/construct snapdir inode for a given directory
  */
 struct inode *ceph_get_snapdir(struct inode *parent)
 {
@@ -711,6 +711,7 @@ struct inode *ceph_alloc_inode(struct super_block *sb)
 	ci->i_work_mask = 0;
 	memset(&ci->i_btime, '\0', sizeof(ci->i_btime));
 #ifdef CONFIG_FS_ENCRYPTION
+	ci->i_crypt_info = NULL;
 	ci->fscrypt_auth = NULL;
 	ci->fscrypt_auth_len = 0;
 #endif
@@ -1793,6 +1794,11 @@ retry_lookup:
 			goto done;
 		}
 
+		if (unlikely(!in)) {
+			err = -EINVAL;
+			goto done;
+		}
+
 		/* attach proper inode */
 		if (d_really_is_negative(dn)) {
 			ceph_dir_clear_ordered(dir);
@@ -1828,6 +1834,12 @@ retry_lookup:
 		doutc(cl, " linking snapped dir %p to dn %p\n", in,
 		      req->r_dentry);
 		ceph_dir_clear_ordered(dir);
+
+		if (unlikely(!in)) {
+			err = -EINVAL;
+			goto done;
+		}
+
 		ihold(in);
 		err = splice_dentry(&req->r_dentry, in);
 		if (err < 0)
@@ -1902,10 +1914,9 @@ static int readdir_prepopulate_inodes_only(struct ceph_mds_request *req,
 
 void ceph_readdir_cache_release(struct ceph_readdir_cache_control *ctl)
 {
-	if (ctl->page) {
-		kunmap(ctl->page);
-		put_page(ctl->page);
-		ctl->page = NULL;
+	if (ctl->folio) {
+		folio_release_kmap(ctl->folio, ctl->dentries);
+		ctl->folio = NULL;
 	}
 }
 
@@ -1919,20 +1930,26 @@ static int fill_readdir_cache(struct inode *dir, struct dentry *dn,
 	unsigned idx = ctl->index % nsize;
 	pgoff_t pgoff = ctl->index / nsize;
 
-	if (!ctl->page || pgoff != ctl->page->index) {
+	if (!ctl->folio || pgoff != ctl->folio->index) {
 		ceph_readdir_cache_release(ctl);
+		fgf_t fgf = FGP_LOCK;
+
 		if (idx == 0)
-			ctl->page = grab_cache_page(&dir->i_data, pgoff);
-		else
-			ctl->page = find_lock_page(&dir->i_data, pgoff);
-		if (!ctl->page) {
+			fgf |= FGP_ACCESSED | FGP_CREAT;
+
+		ctl->folio = __filemap_get_folio(&dir->i_data, pgoff,
+				fgf, mapping_gfp_mask(&dir->i_data));
+		if (IS_ERR(ctl->folio)) {
+			int err = PTR_ERR(ctl->folio);
+
+			ctl->folio = NULL;
 			ctl->index = -1;
-			return idx == 0 ? -ENOMEM : 0;
+			return idx == 0 ? err : 0;
 		}
 		/* reading/filling the cache are serialized by
-		 * i_rwsem, no need to use page lock */
-		unlock_page(ctl->page);
-		ctl->dentries = kmap(ctl->page);
+		 * i_rwsem, no need to use folio lock */
+		folio_unlock(ctl->folio);
+		ctl->dentries = kmap_local_folio(ctl->folio, 0);
 		if (idx == 0)
 			memset(ctl->dentries, 0, PAGE_SIZE);
 	}
@@ -2488,8 +2505,7 @@ static int fill_fscrypt_truncate(struct inode *inode,
 		/* encrypt the last block */
 		ret = ceph_fscrypt_encrypt_block_inplace(inode, page,
 						    CEPH_FSCRYPT_BLOCK_SIZE,
-						    0, block,
-						    GFP_KERNEL);
+						    0, block);
 		if (ret)
 			goto out;
 	}

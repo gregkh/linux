@@ -34,6 +34,8 @@ static pgprot_t protection_map[16] __ro_after_init = {
 	[VM_SHARED | VM_EXEC | VM_WRITE | VM_READ]	= PAGE_SHARED_EXEC
 };
 
+static ptdesc_t gcs_page_prot __ro_after_init = _PAGE_GCS_RO;
+
 /*
  * You really shouldn't be using read() or write() on /dev/mem.  This might go
  * away in the future.
@@ -73,18 +75,27 @@ static int __init adjust_protection_map(void)
 		protection_map[VM_EXEC | VM_SHARED] = PAGE_EXECONLY;
 	}
 
-	if (lpa2_is_enabled())
+	if (lpa2_is_enabled()) {
 		for (int i = 0; i < ARRAY_SIZE(protection_map); i++)
 			pgprot_val(protection_map[i]) &= ~PTE_SHARED;
+		gcs_page_prot &= ~PTE_SHARED;
+	}
 
 	return 0;
 }
 arch_initcall(adjust_protection_map);
 
-pgprot_t vm_get_page_prot(unsigned long vm_flags)
+pgprot_t vm_get_page_prot(vm_flags_t vm_flags)
 {
-	pteval_t prot = pgprot_val(protection_map[vm_flags &
+	ptdesc_t prot;
+
+	/* Short circuit GCS to avoid bloating the table. */
+	if (system_supports_gcs() && (vm_flags & VM_SHADOW_STACK)) {
+		prot = gcs_page_prot;
+	} else {
+		prot = pgprot_val(protection_map[vm_flags &
 				   (VM_READ|VM_WRITE|VM_EXEC|VM_SHARED)]);
+	}
 
 	if (vm_flags & VM_ARM64_BTI)
 		prot |= PTE_GP;

@@ -214,30 +214,6 @@ int phy_pm_runtime_put_sync(struct phy *phy)
 }
 EXPORT_SYMBOL_GPL(phy_pm_runtime_put_sync);
 
-void phy_pm_runtime_allow(struct phy *phy)
-{
-	if (!phy)
-		return;
-
-	if (!pm_runtime_enabled(&phy->dev))
-		return;
-
-	pm_runtime_allow(&phy->dev);
-}
-EXPORT_SYMBOL_GPL(phy_pm_runtime_allow);
-
-void phy_pm_runtime_forbid(struct phy *phy)
-{
-	if (!phy)
-		return;
-
-	if (!pm_runtime_enabled(&phy->dev))
-		return;
-
-	pm_runtime_forbid(&phy->dev);
-}
-EXPORT_SYMBOL_GPL(phy_pm_runtime_forbid);
-
 /**
  * phy_init - phy internal initialization before phy operation
  * @phy: the phy returned by phy_get()
@@ -750,8 +726,8 @@ EXPORT_SYMBOL_GPL(devm_phy_put);
 
 /**
  * of_phy_simple_xlate() - returns the phy instance from phy provider
- * @dev: the PHY provider device
- * @args: of_phandle_args (not used here)
+ * @dev: the PHY provider device (not used here)
+ * @args: of_phandle_args
  *
  * Intended to be used by phy provider for the common case where #phy-cells is
  * 0. For other cases where #phy-cells is greater than '0', the phy provider
@@ -761,21 +737,14 @@ EXPORT_SYMBOL_GPL(devm_phy_put);
 struct phy *of_phy_simple_xlate(struct device *dev,
 				const struct of_phandle_args *args)
 {
-	struct phy *phy;
-	struct class_dev_iter iter;
+	struct device *target_dev;
 
-	class_dev_iter_init(&iter, &phy_class, NULL, NULL);
-	while ((dev = class_dev_iter_next(&iter))) {
-		phy = to_phy(dev);
-		if (args->np != phy->dev.of_node)
-			continue;
+	target_dev = class_find_device_by_of_node(&phy_class, args->np);
+	if (!target_dev)
+		return ERR_PTR(-ENODEV);
 
-		class_dev_iter_exit(&iter);
-		return phy;
-	}
-
-	class_dev_iter_exit(&iter);
-	return ERR_PTR(-ENODEV);
+	put_device(target_dev);
+	return to_phy(target_dev);
 }
 EXPORT_SYMBOL_GPL(of_phy_simple_xlate);
 
@@ -1025,7 +994,8 @@ struct phy *phy_create(struct device *dev, struct device_node *node,
 	}
 
 	device_initialize(&phy->dev);
-	mutex_init(&phy->mutex);
+	lockdep_register_key(&phy->lockdep_key);
+	mutex_init_with_key(&phy->mutex, &phy->lockdep_key);
 
 	phy->dev.class = &phy_class;
 	phy->dev.parent = dev;
@@ -1290,6 +1260,8 @@ static void phy_release(struct device *dev)
 	dev_vdbg(dev, "releasing '%s'\n", dev_name(dev));
 	debugfs_remove_recursive(phy->debugfs);
 	regulator_put(phy->pwr);
+	mutex_destroy(&phy->mutex);
+	lockdep_unregister_key(&phy->lockdep_key);
 	ida_free(&phy_ida, phy->id);
 	kfree(phy);
 }

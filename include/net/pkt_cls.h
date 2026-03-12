@@ -319,7 +319,7 @@ tcf_exts_hw_stats_update(const struct tcf_exts *exts,
  * tcf_exts_has_actions - check if at least one action is present
  * @exts: tc filter extensions handle
  *
- * Returns true if at least one action is present.
+ * Returns: true if at least one action is present.
  */
 static inline bool tcf_exts_has_actions(struct tcf_exts *exts)
 {
@@ -501,7 +501,7 @@ int __tcf_em_tree_match(struct sk_buff *, struct tcf_ematch_tree *,
  * through all ematches respecting their logic relations returning
  * as soon as the result is obvious.
  *
- * Returns 1 if the ematch tree as-one matches, no ematches are configured
+ * Returns: 1 if the ematch tree as-one matches, no ematches are configured
  * or ematch is not enabled in the kernel, otherwise 0 is returned.
  */
 static inline int tcf_em_tree_match(struct sk_buff *skb,
@@ -536,6 +536,8 @@ static inline unsigned char * tcf_get_base_ptr(struct sk_buff *skb, int layer)
 		case TCF_LAYER_NETWORK:
 			return skb_network_header(skb);
 		case TCF_LAYER_TRANSPORT:
+			if (!skb_transport_header_was_set(skb))
+				break;
 			return skb_transport_header(skb);
 	}
 
@@ -755,6 +757,7 @@ tc_cls_common_offload_init(struct flow_cls_common_offload *cls_common,
 	cls_common->chain_index = tp->chain->index;
 	cls_common->protocol = tp->protocol;
 	cls_common->prio = tp->prio >> 16;
+	cls_common->skip_sw = tc_skip_sw(flags);
 	if (tc_skip_sw(flags) || flags & TCA_CLS_FLAGS_VERBOSE)
 		cls_common->extack = extack;
 }

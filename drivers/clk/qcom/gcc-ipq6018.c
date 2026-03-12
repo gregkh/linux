@@ -4210,10 +4210,9 @@ static const struct alpha_pll_config ubi32_pll_config = {
 	.test_ctl_hi_val = 0x4000,
 };
 
+/* 1200 MHz configuration */
 static const struct alpha_pll_config nss_crypto_pll_config = {
 	.l = 0x32,
-	.alpha = 0x0,
-	.alpha_hi = 0x0,
 	.config_ctl_val = 0x4001055b,
 	.main_output_mask = BIT(0),
 	.pre_div_val = 0x0,
@@ -4222,7 +4221,6 @@ static const struct alpha_pll_config nss_crypto_pll_config = {
 	.post_div_mask = GENMASK(11, 8),
 	.vco_mask = GENMASK(21, 20),
 	.vco_val = 0x0,
-	.alpha_en_mask = BIT(24),
 };
 
 static struct clk_hw *gcc_ipq6018_hws[] = {

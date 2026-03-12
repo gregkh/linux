@@ -1471,13 +1471,6 @@ static int pac1934_prep_custom_attributes(struct pac1934_chip_info *info,
 	return 0;
 }
 
-static void pac1934_mutex_destroy(void *data)
-{
-	struct mutex *lock = data;
-
-	mutex_destroy(lock);
-}
-
 static const struct iio_info pac1934_info = {
 	.read_raw = pac1934_read_raw,
 	.write_raw = pac1934_write_raw,
@@ -1523,7 +1516,7 @@ static int pac1934_probe(struct i2c_client *client)
 		indio_dev->name = pac1934_chip_config[ret].name;
 	}
 
-	if (acpi_match_device(dev->driver->acpi_match_table, dev))
+	if (is_acpi_device_node(dev_fwnode(dev)))
 		ret = pac1934_acpi_parse_channel_config(client, info);
 	else
 		/*
@@ -1536,9 +1529,7 @@ static int pac1934_probe(struct i2c_client *client)
 		return dev_err_probe(dev, ret,
 				     "parameter parsing returned an error\n");
 
-	mutex_init(&info->lock);
-	ret = devm_add_action_or_reset(dev, pac1934_mutex_destroy,
-				       &info->lock);
+	ret = devm_mutex_init(dev, &info->lock);
 	if (ret < 0)
 		return ret;
 

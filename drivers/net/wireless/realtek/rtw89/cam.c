@@ -136,8 +136,8 @@ again:
 }
 
 static int rtw89_cam_get_addr_cam_key_idx(struct rtw89_addr_cam_entry *addr_cam,
-					  struct rtw89_sec_cam_entry *sec_cam,
-					  struct ieee80211_key_conf *key,
+					  const struct rtw89_sec_cam_entry *sec_cam,
+					  const struct ieee80211_key_conf *key,
 					  u8 *key_idx)
 {
 	u8 idx;
@@ -247,8 +247,8 @@ static int __rtw89_cam_detach_sec_cam(struct rtw89_dev *rtwdev,
 static int __rtw89_cam_attach_sec_cam(struct rtw89_dev *rtwdev,
 				      struct rtw89_vif_link *rtwvif_link,
 				      struct rtw89_sta_link *rtwsta_link,
-				      struct ieee80211_key_conf *key,
-				      struct rtw89_sec_cam_entry *sec_cam)
+				      const struct ieee80211_key_conf *key,
+				      const struct rtw89_sec_cam_entry *sec_cam)
 {
 	struct rtw89_addr_cam_entry *addr_cam;
 	u8 key_idx = 0;
@@ -287,6 +287,22 @@ static int __rtw89_cam_attach_sec_cam(struct rtw89_dev *rtwdev,
 	return 0;
 }
 
+int rtw89_cam_attach_link_sec_cam(struct rtw89_dev *rtwdev,
+				  struct rtw89_vif_link *rtwvif_link,
+				  struct rtw89_sta_link *rtwsta_link,
+				  u8 sec_cam_idx)
+{
+	struct rtw89_cam_info *cam_info = &rtwdev->cam_info;
+	const struct rtw89_sec_cam_entry *sec_cam;
+
+	sec_cam = cam_info->sec_entries[sec_cam_idx];
+	if (!sec_cam)
+		return -ENOENT;
+
+	return __rtw89_cam_attach_sec_cam(rtwdev, rtwvif_link, rtwsta_link,
+					  sec_cam->key_conf, sec_cam);
+}
+
 static int rtw89_cam_detach_sec_cam(struct rtw89_dev *rtwdev,
 				    struct ieee80211_vif *vif,
 				    struct ieee80211_sta *sta,
@@ -306,6 +322,9 @@ static int rtw89_cam_detach_sec_cam(struct rtw89_dev *rtwdev,
 	}
 
 	rtwvif = vif_to_rtwvif(vif);
+
+	if (rtwsta)
+		clear_bit(sec_cam->sec_cam_idx, rtwsta->pairwise_sec_cam_map);
 
 	rtw89_vif_for_each_link(rtwvif, rtwvif_link, link_id) {
 		rtwsta_link = rtwsta ? rtwsta->links[link_id] : NULL;
@@ -370,6 +389,8 @@ static int rtw89_cam_attach_sec_cam(struct rtw89_dev *rtwdev,
 			return ret;
 	}
 
+	set_bit(sec_cam->sec_cam_idx, rtwsta->pairwise_sec_cam_map);
+
 	return 0;
 }
 
@@ -411,6 +432,9 @@ static int rtw89_cam_sec_key_install(struct rtw89_dev *rtwdev,
 	sec_cam->len = RTW89_SEC_CAM_LEN;
 	sec_cam->ext_key = ext_key;
 	memcpy(sec_cam->key, key->key, key->keylen);
+
+	sec_cam->key_conf = key;
+
 	ret = rtw89_cam_send_sec_key_cmd(rtwdev, sec_cam);
 	if (ret) {
 		rtw89_err(rtwdev, "failed to send sec key cmd: %d\n", ret);
@@ -446,6 +470,10 @@ int rtw89_cam_sec_key_add(struct rtw89_dev *rtwdev,
 	bool ext_key = false;
 	int ret;
 
+	if (ieee80211_vif_is_mld(vif) && !chip->hw_mlo_bmc_crypto &&
+	    !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE))
+		return -EOPNOTSUPP;
+
 	switch (key->cipher) {
 	case WLAN_CIPHER_SUITE_WEP40:
 		rtw89_leave_ips_by_hwflags(rtwdev);
@@ -454,6 +482,12 @@ int rtw89_cam_sec_key_add(struct rtw89_dev *rtwdev,
 	case WLAN_CIPHER_SUITE_WEP104:
 		rtw89_leave_ips_by_hwflags(rtwdev);
 		hw_key_type = RTW89_SEC_KEY_TYPE_WEP104;
+		break;
+	case WLAN_CIPHER_SUITE_TKIP:
+		if (!chip->hw_tkip_crypto)
+			return -EOPNOTSUPP;
+		hw_key_type = RTW89_SEC_KEY_TYPE_TKIP;
+		key->flags |= IEEE80211_KEY_FLAG_GENERATE_MMIC;
 		break;
 	case WLAN_CIPHER_SUITE_CCMP:
 		hw_key_type = RTW89_SEC_KEY_TYPE_CCMP128;
@@ -964,15 +998,23 @@ void rtw89_cam_fill_dctl_sec_cam_info_v2(struct rtw89_dev *rtwdev,
 					 struct rtw89_sta_link *rtwsta_link,
 					 struct rtw89_h2c_dctlinfo_ud_v2 *h2c)
 {
+	struct ieee80211_sta *sta = rtwsta_link_to_sta_safe(rtwsta_link);
+	struct ieee80211_vif *vif = rtwvif_to_vif(rtwvif_link->rtwvif);
+	struct rtw89_vif *rtwvif = rtwvif_link->rtwvif;
 	struct rtw89_addr_cam_entry *addr_cam =
 		rtw89_get_addr_cam_of(rtwvif_link, rtwsta_link);
+	bool is_mld = sta ? sta->mlo : ieee80211_vif_is_mld(vif);
 	struct rtw89_wow_param *rtw_wow = &rtwdev->wow;
 	u8 *ptk_tx_iv = rtw_wow->key_info.ptk_tx_iv;
+	u8 *mld_sma, *mld_tma, *mld_bssid;
 
 	h2c->c0 = le32_encode_bits(rtwsta_link ? rtwsta_link->mac_id :
 						 rtwvif_link->mac_id,
 				   DCTLINFO_V2_C0_MACID) |
 		  le32_encode_bits(1, DCTLINFO_V2_C0_OP);
+
+	h2c->w2 = le32_encode_bits(is_mld, DCTLINFO_V2_W2_IS_MLD);
+	h2c->m2 = cpu_to_le32(DCTLINFO_V2_W2_IS_MLD);
 
 	h2c->w4 = le32_encode_bits(addr_cam->sec_ent_keyid[0],
 				   DCTLINFO_V2_W4_SEC_ENT0_KEYID) |
@@ -1039,4 +1081,47 @@ void rtw89_cam_fill_dctl_sec_cam_info_v2(struct rtw89_dev *rtwdev,
 					    DCTLINFO_V2_W4_SEC_KEY_ID);
 		h2c->m4 |= cpu_to_le32(DCTLINFO_V2_W4_SEC_KEY_ID);
 	}
+
+	if (!is_mld)
+		return;
+
+	if (rtwvif_link->net_type == RTW89_NET_TYPE_INFRA) {
+		mld_sma = rtwvif->mac_addr;
+		mld_tma = vif->cfg.ap_addr;
+		mld_bssid = vif->cfg.ap_addr;
+	} else if (rtwvif_link->net_type == RTW89_NET_TYPE_AP_MODE && sta) {
+		mld_sma = rtwvif->mac_addr;
+		mld_tma = sta->addr;
+		mld_bssid = rtwvif->mac_addr;
+	} else {
+		return;
+	}
+
+	h2c->w8 = le32_encode_bits(mld_sma[0], DCTLINFO_V2_W8_MLD_SMA_0) |
+		  le32_encode_bits(mld_sma[1], DCTLINFO_V2_W8_MLD_SMA_1) |
+		  le32_encode_bits(mld_sma[2], DCTLINFO_V2_W8_MLD_SMA_2) |
+		  le32_encode_bits(mld_sma[3], DCTLINFO_V2_W8_MLD_SMA_3);
+	h2c->m8 = cpu_to_le32(DCTLINFO_V2_W8_ALL);
+
+	h2c->w9 = le32_encode_bits(mld_sma[4], DCTLINFO_V2_W9_MLD_SMA_4) |
+		  le32_encode_bits(mld_sma[5], DCTLINFO_V2_W9_MLD_SMA_5) |
+		  le32_encode_bits(mld_tma[0], DCTLINFO_V2_W9_MLD_TMA_0) |
+		  le32_encode_bits(mld_tma[1], DCTLINFO_V2_W9_MLD_TMA_1);
+	h2c->m9 = cpu_to_le32(DCTLINFO_V2_W9_ALL);
+
+	h2c->w10 = le32_encode_bits(mld_tma[2], DCTLINFO_V2_W10_MLD_TMA_2) |
+		   le32_encode_bits(mld_tma[3], DCTLINFO_V2_W10_MLD_TMA_3) |
+		   le32_encode_bits(mld_tma[4], DCTLINFO_V2_W10_MLD_TMA_4) |
+		   le32_encode_bits(mld_tma[5], DCTLINFO_V2_W10_MLD_TMA_5);
+	h2c->m10 = cpu_to_le32(DCTLINFO_V2_W10_ALL);
+
+	h2c->w11 = le32_encode_bits(mld_bssid[0], DCTLINFO_V2_W11_MLD_BSSID_0) |
+		   le32_encode_bits(mld_bssid[1], DCTLINFO_V2_W11_MLD_BSSID_1) |
+		   le32_encode_bits(mld_bssid[2], DCTLINFO_V2_W11_MLD_BSSID_2) |
+		   le32_encode_bits(mld_bssid[3], DCTLINFO_V2_W11_MLD_BSSID_3);
+	h2c->m11 = cpu_to_le32(DCTLINFO_V2_W11_ALL);
+
+	h2c->w12 = le32_encode_bits(mld_bssid[4], DCTLINFO_V2_W12_MLD_BSSID_4) |
+		   le32_encode_bits(mld_bssid[5], DCTLINFO_V2_W12_MLD_BSSID_5);
+	h2c->m12 = cpu_to_le32(DCTLINFO_V2_W12_ALL);
 }

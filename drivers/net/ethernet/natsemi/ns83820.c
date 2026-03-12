@@ -1526,7 +1526,7 @@ static int ns83820_stop(struct net_device *ndev)
 	struct ns83820 *dev = PRIV(ndev);
 
 	/* FIXME: protect against interrupt handler? */
-	del_timer_sync(&dev->tx_watchdog);
+	timer_delete_sync(&dev->tx_watchdog);
 
 	ns83820_disable_interrupts(dev);
 
@@ -1586,7 +1586,7 @@ static void ns83820_tx_timeout(struct net_device *ndev, unsigned int txqueue)
 
 static void ns83820_tx_watch(struct timer_list *t)
 {
-	struct ns83820 *dev = from_timer(dev, t, tx_watchdog);
+	struct ns83820 *dev = timer_container_of(dev, t, tx_watchdog);
 	struct net_device *ndev = dev->ndev;
 
 #if defined(DEBUG)
@@ -2089,7 +2089,7 @@ static int ns83820_init_one(struct pci_dev *pci_dev,
 	 */
 	/* Ramit : 1024 DMA is not a good idea, it ends up banging
 	 * some DELL and COMPAQ SMP systems
-	 * Turn on ALP, only we are accpeting Jumbo Packets */
+	 * Turn on ALP, only we are accepting Jumbo Packets */
 	writel(RXCFG_AEP | RXCFG_ARP | RXCFG_AIRL | RXCFG_RX_FD
 		| RXCFG_STRIPCRC
 		//| RXCFG_ALP

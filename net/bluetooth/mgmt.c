@@ -132,6 +132,7 @@ static const u16 mgmt_commands[] = {
 	MGMT_OP_MESH_READ_FEATURES,
 	MGMT_OP_MESH_SEND,
 	MGMT_OP_MESH_SEND_CANCEL,
+	MGMT_OP_HCI_CMD_SYNC,
 };
 
 static const u16 mgmt_events[] = {
@@ -209,7 +210,7 @@ static const u16 mgmt_untrusted_events[] = {
 	MGMT_EV_EXP_FEATURE_CHANGED,
 };
 
-#define CACHE_TIMEOUT	msecs_to_jiffies(2 * 1000)
+#define CACHE_TIMEOUT	secs_to_jiffies(2)
 
 #define ZERO_KEY "\x00\x00\x00\x00\x00\x00\x00\x00" \
 		 "\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -463,7 +464,7 @@ static int read_index_list(struct sock *sk, struct hci_dev *hdev, void *data,
 		/* Devices marked as raw-only are neither configured
 		 * nor unconfigured controllers.
 		 */
-		if (test_bit(HCI_QUIRK_RAW_DEVICE, &d->quirks))
+		if (hci_test_quirk(d, HCI_QUIRK_RAW_DEVICE))
 			continue;
 
 		if (!hci_dev_test_flag(d, HCI_UNCONFIGURED)) {
@@ -521,7 +522,7 @@ static int read_unconf_index_list(struct sock *sk, struct hci_dev *hdev,
 		/* Devices marked as raw-only are neither configured
 		 * nor unconfigured controllers.
 		 */
-		if (test_bit(HCI_QUIRK_RAW_DEVICE, &d->quirks))
+		if (hci_test_quirk(d, HCI_QUIRK_RAW_DEVICE))
 			continue;
 
 		if (hci_dev_test_flag(d, HCI_UNCONFIGURED)) {
@@ -575,7 +576,7 @@ static int read_ext_index_list(struct sock *sk, struct hci_dev *hdev,
 		/* Devices marked as raw-only are neither configured
 		 * nor unconfigured controllers.
 		 */
-		if (test_bit(HCI_QUIRK_RAW_DEVICE, &d->quirks))
+		if (hci_test_quirk(d, HCI_QUIRK_RAW_DEVICE))
 			continue;
 
 		if (hci_dev_test_flag(d, HCI_UNCONFIGURED))
@@ -611,12 +612,12 @@ static int read_ext_index_list(struct sock *sk, struct hci_dev *hdev,
 
 static bool is_configured(struct hci_dev *hdev)
 {
-	if (test_bit(HCI_QUIRK_EXTERNAL_CONFIG, &hdev->quirks) &&
+	if (hci_test_quirk(hdev, HCI_QUIRK_EXTERNAL_CONFIG) &&
 	    !hci_dev_test_flag(hdev, HCI_EXT_CONFIGURED))
 		return false;
 
-	if ((test_bit(HCI_QUIRK_INVALID_BDADDR, &hdev->quirks) ||
-	     test_bit(HCI_QUIRK_USE_BDADDR_PROPERTY, &hdev->quirks)) &&
+	if ((hci_test_quirk(hdev, HCI_QUIRK_INVALID_BDADDR) ||
+	     hci_test_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY)) &&
 	    !bacmp(&hdev->public_addr, BDADDR_ANY))
 		return false;
 
@@ -627,12 +628,12 @@ static __le32 get_missing_options(struct hci_dev *hdev)
 {
 	u32 options = 0;
 
-	if (test_bit(HCI_QUIRK_EXTERNAL_CONFIG, &hdev->quirks) &&
+	if (hci_test_quirk(hdev, HCI_QUIRK_EXTERNAL_CONFIG) &&
 	    !hci_dev_test_flag(hdev, HCI_EXT_CONFIGURED))
 		options |= MGMT_OPTION_EXTERNAL_CONFIG;
 
-	if ((test_bit(HCI_QUIRK_INVALID_BDADDR, &hdev->quirks) ||
-	     test_bit(HCI_QUIRK_USE_BDADDR_PROPERTY, &hdev->quirks)) &&
+	if ((hci_test_quirk(hdev, HCI_QUIRK_INVALID_BDADDR) ||
+	     hci_test_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY)) &&
 	    !bacmp(&hdev->public_addr, BDADDR_ANY))
 		options |= MGMT_OPTION_PUBLIC_ADDRESS;
 
@@ -668,7 +669,7 @@ static int read_config_info(struct sock *sk, struct hci_dev *hdev,
 	memset(&rp, 0, sizeof(rp));
 	rp.manufacturer = cpu_to_le16(hdev->manufacturer);
 
-	if (test_bit(HCI_QUIRK_EXTERNAL_CONFIG, &hdev->quirks))
+	if (hci_test_quirk(hdev, HCI_QUIRK_EXTERNAL_CONFIG))
 		options |= MGMT_OPTION_EXTERNAL_CONFIG;
 
 	if (hdev->set_bdaddr)
@@ -827,8 +828,7 @@ static u32 get_supported_settings(struct hci_dev *hdev)
 		if (lmp_sc_capable(hdev))
 			settings |= MGMT_SETTING_SECURE_CONN;
 
-		if (test_bit(HCI_QUIRK_WIDEBAND_SPEECH_SUPPORTED,
-			     &hdev->quirks))
+		if (hci_test_quirk(hdev, HCI_QUIRK_WIDEBAND_SPEECH_SUPPORTED))
 			settings |= MGMT_SETTING_WIDEBAND_SPEECH;
 	}
 
@@ -840,8 +840,7 @@ static u32 get_supported_settings(struct hci_dev *hdev)
 		settings |= MGMT_SETTING_ADVERTISING;
 	}
 
-	if (test_bit(HCI_QUIRK_EXTERNAL_CONFIG, &hdev->quirks) ||
-	    hdev->set_bdaddr)
+	if (hci_test_quirk(hdev, HCI_QUIRK_EXTERNAL_CONFIG) || hdev->set_bdaddr)
 		settings |= MGMT_SETTING_CONFIGURATION;
 
 	if (cis_central_capable(hdev))
@@ -849,6 +848,15 @@ static u32 get_supported_settings(struct hci_dev *hdev)
 
 	if (cis_peripheral_capable(hdev))
 		settings |= MGMT_SETTING_CIS_PERIPHERAL;
+
+	if (bis_capable(hdev))
+		settings |= MGMT_SETTING_ISO_BROADCASTER;
+
+	if (sync_recv_capable(hdev))
+		settings |= MGMT_SETTING_ISO_SYNC_RECEIVER;
+
+	if (ll_privacy_capable(hdev))
+		settings |= MGMT_SETTING_LL_PRIVACY;
 
 	settings |= MGMT_SETTING_PHY_CONFIGURATION;
 
@@ -920,17 +928,20 @@ static u32 get_current_settings(struct hci_dev *hdev)
 	if (hci_dev_test_flag(hdev, HCI_WIDEBAND_SPEECH_ENABLED))
 		settings |= MGMT_SETTING_WIDEBAND_SPEECH;
 
-	if (cis_central_capable(hdev))
+	if (cis_central_enabled(hdev))
 		settings |= MGMT_SETTING_CIS_CENTRAL;
 
-	if (cis_peripheral_capable(hdev))
+	if (cis_peripheral_enabled(hdev))
 		settings |= MGMT_SETTING_CIS_PERIPHERAL;
 
-	if (bis_capable(hdev))
+	if (bis_enabled(hdev))
 		settings |= MGMT_SETTING_ISO_BROADCASTER;
 
-	if (sync_recv_capable(hdev))
+	if (sync_recv_enabled(hdev))
 		settings |= MGMT_SETTING_ISO_SYNC_RECEIVER;
+
+	if (ll_privacy_enabled(hdev))
+		settings |= MGMT_SETTING_LL_PRIVACY;
 
 	return settings;
 }
@@ -1530,7 +1541,7 @@ static void mgmt_set_discoverable_complete(struct hci_dev *hdev, void *data,
 
 	if (hci_dev_test_flag(hdev, HCI_DISCOVERABLE) &&
 	    hdev->discov_timeout > 0) {
-		int to = msecs_to_jiffies(hdev->discov_timeout * 1000);
+		int to = secs_to_jiffies(hdev->discov_timeout);
 		queue_delayed_work(hdev->req_workqueue, &hdev->discov_off, to);
 	}
 
@@ -1641,7 +1652,7 @@ static int set_discoverable(struct sock *sk, struct hci_dev *hdev, void *data,
 		hdev->discov_timeout = timeout;
 
 		if (cp->val && hdev->discov_timeout > 0) {
-			int to = msecs_to_jiffies(hdev->discov_timeout * 1000);
+			int to = secs_to_jiffies(hdev->discov_timeout);
 			queue_delayed_work(hdev->req_workqueue,
 					   &hdev->discov_off, to);
 		}
@@ -2603,6 +2614,65 @@ unlock:
 	return err;
 }
 
+static int send_hci_cmd_sync(struct hci_dev *hdev, void *data)
+{
+	struct mgmt_pending_cmd *cmd = data;
+	struct mgmt_cp_hci_cmd_sync *cp = cmd->param;
+	struct sk_buff *skb;
+
+	skb = __hci_cmd_sync_ev(hdev, le16_to_cpu(cp->opcode),
+				le16_to_cpu(cp->params_len), cp->params,
+				cp->event, cp->timeout ?
+				secs_to_jiffies(cp->timeout) :
+				HCI_CMD_TIMEOUT);
+	if (IS_ERR(skb)) {
+		mgmt_cmd_status(cmd->sk, hdev->id, MGMT_OP_HCI_CMD_SYNC,
+				mgmt_status(PTR_ERR(skb)));
+		goto done;
+	}
+
+	mgmt_cmd_complete(cmd->sk, hdev->id, MGMT_OP_HCI_CMD_SYNC, 0,
+			  skb->data, skb->len);
+
+	kfree_skb(skb);
+
+done:
+	mgmt_pending_free(cmd);
+
+	return 0;
+}
+
+static int mgmt_hci_cmd_sync(struct sock *sk, struct hci_dev *hdev,
+			     void *data, u16 len)
+{
+	struct mgmt_cp_hci_cmd_sync *cp = data;
+	struct mgmt_pending_cmd *cmd;
+	int err;
+
+	if (len != (offsetof(struct mgmt_cp_hci_cmd_sync, params) +
+		    le16_to_cpu(cp->params_len)))
+		return mgmt_cmd_status(sk, hdev->id, MGMT_OP_HCI_CMD_SYNC,
+				       MGMT_STATUS_INVALID_PARAMS);
+
+	hci_dev_lock(hdev);
+	cmd = mgmt_pending_new(sk, MGMT_OP_HCI_CMD_SYNC, hdev, data, len);
+	if (!cmd)
+		err = -ENOMEM;
+	else
+		err = hci_cmd_sync_queue(hdev, send_hci_cmd_sync, cmd, NULL);
+
+	if (err < 0) {
+		err = mgmt_cmd_status(sk, hdev->id, MGMT_OP_HCI_CMD_SYNC,
+				      MGMT_STATUS_FAILED);
+
+		if (cmd)
+			mgmt_pending_free(cmd);
+	}
+
+	hci_dev_unlock(hdev);
+	return err;
+}
+
 /* This is a helper function to test for pending mgmt commands that can
  * cause CoD or EIR HCI commands. We can only allow one such pending
  * mgmt command at a time since otherwise we cannot easily track what
@@ -3235,7 +3305,9 @@ failed:
 static u8 link_to_bdaddr(u8 link_type, u8 addr_type)
 {
 	switch (link_type) {
-	case ISO_LINK:
+	case CIS_LINK:
+	case BIS_LINK:
+	case PA_LINK:
 	case LE_LINK:
 		switch (addr_type) {
 		case ADDR_LE_DEV_PUBLIC:
@@ -4319,7 +4391,7 @@ static int set_wideband_speech(struct sock *sk, struct hci_dev *hdev,
 
 	bt_dev_dbg(hdev, "sock %p", sk);
 
-	if (!test_bit(HCI_QUIRK_WIDEBAND_SPEECH_SUPPORTED, &hdev->quirks))
+	if (!hci_test_quirk(hdev, HCI_QUIRK_WIDEBAND_SPEECH_SUPPORTED))
 		return mgmt_cmd_status(sk, hdev->id,
 				       MGMT_OP_SET_WIDEBAND_SPEECH,
 				       MGMT_STATUS_NOT_SUPPORTED);
@@ -4452,12 +4524,6 @@ static const u8 le_simultaneous_roles_uuid[16] = {
 	0x96, 0x46, 0xc0, 0x42, 0xb5, 0x10, 0x1b, 0x67,
 };
 
-/* 15c0a148-c273-11ea-b3de-0242ac130004 */
-static const u8 rpa_resolution_uuid[16] = {
-	0x04, 0x00, 0x13, 0xac, 0x42, 0x02, 0xde, 0xb3,
-	0xea, 0x11, 0x73, 0xc2, 0x48, 0xa1, 0xc0, 0x15,
-};
-
 /* 6fbaf188-05e0-496a-9885-d6ddfdb4e03e */
 static const u8 iso_socket_uuid[16] = {
 	0x3e, 0xe0, 0xb4, 0xfd, 0xdd, 0xd6, 0x85, 0x98,
@@ -4506,17 +4572,6 @@ static int read_exp_features_info(struct sock *sk, struct hci_dev *hdev,
 		idx++;
 	}
 
-	if (hdev && ll_privacy_capable(hdev)) {
-		if (hci_dev_test_flag(hdev, HCI_ENABLE_LL_PRIVACY))
-			flags = BIT(0) | BIT(1);
-		else
-			flags = BIT(1);
-
-		memcpy(rp->features[idx].uuid, rpa_resolution_uuid, 16);
-		rp->features[idx].flags = cpu_to_le32(flags);
-		idx++;
-	}
-
 	if (hdev && (aosp_has_quality_report(hdev) ||
 		     hdev->set_quality_report)) {
 		if (hci_dev_test_flag(hdev, HCI_QUALITY_REPORT))
@@ -4541,7 +4596,7 @@ static int read_exp_features_info(struct sock *sk, struct hci_dev *hdev,
 	}
 
 	if (IS_ENABLED(CONFIG_BT_LE)) {
-		flags = iso_enabled() ? BIT(0) : 0;
+		flags = iso_inited() ? BIT(0) : 0;
 		memcpy(rp->features[idx].uuid, iso_socket_uuid, 16);
 		rp->features[idx].flags = cpu_to_le32(flags);
 		idx++;
@@ -4571,27 +4626,6 @@ static int read_exp_features_info(struct sock *sk, struct hci_dev *hdev,
 
 	kfree(rp);
 	return status;
-}
-
-static int exp_ll_privacy_feature_changed(bool enabled, struct hci_dev *hdev,
-					  struct sock *skip)
-{
-	struct mgmt_ev_exp_feature_changed ev;
-
-	memset(&ev, 0, sizeof(ev));
-	memcpy(ev.uuid, rpa_resolution_uuid, 16);
-	ev.flags = cpu_to_le32((enabled ? BIT(0) : 0) | BIT(1));
-
-	// Do we need to be atomic with the conn_flags?
-	if (enabled && privacy_mode_capable(hdev))
-		hdev->conn_flags |= HCI_CONN_FLAG_DEVICE_PRIVACY;
-	else
-		hdev->conn_flags &= ~HCI_CONN_FLAG_DEVICE_PRIVACY;
-
-	return mgmt_limited_event(MGMT_EV_EXP_FEATURE_CHANGED, hdev,
-				  &ev, sizeof(ev),
-				  HCI_MGMT_EXP_FEATURE_EVENTS, skip);
-
 }
 
 static int exp_feature_changed(struct hci_dev *hdev, const u8 *uuid,
@@ -4633,16 +4667,6 @@ static int set_zero_key_func(struct sock *sk, struct hci_dev *hdev,
 			exp_feature_changed(NULL, ZERO_KEY, false, sk);
 	}
 #endif
-
-	if (hdev && use_ll_privacy(hdev) && !hdev_is_powered(hdev)) {
-		bool changed;
-
-		changed = hci_dev_test_and_clear_flag(hdev,
-						      HCI_ENABLE_LL_PRIVACY);
-		if (changed)
-			exp_feature_changed(hdev, rpa_resolution_uuid, false,
-					    sk);
-	}
 
 	hci_sock_set_flag(sk, HCI_MGMT_EXP_FEATURE_EVENTS);
 
@@ -4745,71 +4769,6 @@ static int set_mgmt_mesh_func(struct sock *sk, struct hci_dev *hdev,
 
 	if (changed)
 		exp_feature_changed(hdev, mgmt_mesh_uuid, val, sk);
-
-	return err;
-}
-
-static int set_rpa_resolution_func(struct sock *sk, struct hci_dev *hdev,
-				   struct mgmt_cp_set_exp_feature *cp,
-				   u16 data_len)
-{
-	struct mgmt_rp_set_exp_feature rp;
-	bool val, changed;
-	int err;
-	u32 flags;
-
-	/* Command requires to use the controller index */
-	if (!hdev)
-		return mgmt_cmd_status(sk, MGMT_INDEX_NONE,
-				       MGMT_OP_SET_EXP_FEATURE,
-				       MGMT_STATUS_INVALID_INDEX);
-
-	/* Changes can only be made when controller is powered down */
-	if (hdev_is_powered(hdev))
-		return mgmt_cmd_status(sk, hdev->id,
-				       MGMT_OP_SET_EXP_FEATURE,
-				       MGMT_STATUS_REJECTED);
-
-	/* Parameters are limited to a single octet */
-	if (data_len != MGMT_SET_EXP_FEATURE_SIZE + 1)
-		return mgmt_cmd_status(sk, hdev->id,
-				       MGMT_OP_SET_EXP_FEATURE,
-				       MGMT_STATUS_INVALID_PARAMS);
-
-	/* Only boolean on/off is supported */
-	if (cp->param[0] != 0x00 && cp->param[0] != 0x01)
-		return mgmt_cmd_status(sk, hdev->id,
-				       MGMT_OP_SET_EXP_FEATURE,
-				       MGMT_STATUS_INVALID_PARAMS);
-
-	val = !!cp->param[0];
-
-	if (val) {
-		changed = !hci_dev_test_and_set_flag(hdev,
-						     HCI_ENABLE_LL_PRIVACY);
-		hci_dev_clear_flag(hdev, HCI_ADVERTISING);
-
-		/* Enable LL privacy + supported settings changed */
-		flags = BIT(0) | BIT(1);
-	} else {
-		changed = hci_dev_test_and_clear_flag(hdev,
-						      HCI_ENABLE_LL_PRIVACY);
-
-		/* Disable LL privacy + supported settings changed */
-		flags = BIT(1);
-	}
-
-	memcpy(rp.uuid, rpa_resolution_uuid, 16);
-	rp.flags = cpu_to_le32(flags);
-
-	hci_sock_set_flag(sk, HCI_MGMT_EXP_FEATURE_EVENTS);
-
-	err = mgmt_cmd_complete(sk, hdev->id,
-				MGMT_OP_SET_EXP_FEATURE, 0,
-				&rp, sizeof(rp));
-
-	if (changed)
-		exp_ll_privacy_feature_changed(val, hdev, sk);
 
 	return err;
 }
@@ -5065,7 +5024,6 @@ static const struct mgmt_exp_feature {
 	EXP_FEAT(debug_uuid, set_debug_func),
 #endif
 	EXP_FEAT(mgmt_mesh_uuid, set_mgmt_mesh_func),
-	EXP_FEAT(rpa_resolution_uuid, set_rpa_resolution_func),
 	EXP_FEAT(quality_report_uuid, set_quality_report_func),
 	EXP_FEAT(offload_codecs_uuid, set_offload_codec_func),
 	EXP_FEAT(le_simultaneous_roles_uuid, set_le_simultaneous_roles_func),
@@ -5093,22 +5051,6 @@ static int set_exp_feature(struct sock *sk, struct hci_dev *hdev,
 	return mgmt_cmd_status(sk, hdev ? hdev->id : MGMT_INDEX_NONE,
 			       MGMT_OP_SET_EXP_FEATURE,
 			       MGMT_STATUS_NOT_SUPPORTED);
-}
-
-static u32 get_params_flags(struct hci_dev *hdev,
-			    struct hci_conn_params *params)
-{
-	u32 flags = hdev->conn_flags;
-
-	/* Devices using RPAs can only be programmed in the acceptlist if
-	 * LL Privacy has been enable otherwise they cannot mark
-	 * HCI_CONN_FLAG_REMOTE_WAKEUP.
-	 */
-	if ((flags & HCI_CONN_FLAG_REMOTE_WAKEUP) && !use_ll_privacy(hdev) &&
-	    hci_find_irk_by_addr(hdev, &params->addr, params->addr_type))
-		flags &= ~HCI_CONN_FLAG_REMOTE_WAKEUP;
-
-	return flags;
 }
 
 static int get_device_flags(struct sock *sk, struct hci_dev *hdev, void *data,
@@ -5145,7 +5087,6 @@ static int get_device_flags(struct sock *sk, struct hci_dev *hdev, void *data,
 		if (!params)
 			goto done;
 
-		supported_flags = get_params_flags(hdev, params);
 		current_flags = params->flags;
 	}
 
@@ -5225,7 +5166,7 @@ static int set_device_flags(struct sock *sk, struct hci_dev *hdev, void *data,
 		goto unlock;
 	}
 
-	supported_flags = get_params_flags(hdev, params);
+	supported_flags = hdev->conn_flags;
 
 	if ((supported_flags | current_flags) != supported_flags) {
 		bt_dev_warn(hdev, "Bad flag given (0x%x) vs supported (0x%0x)",
@@ -5915,29 +5856,6 @@ done:
 	return err;
 }
 
-void mgmt_start_discovery_complete(struct hci_dev *hdev, u8 status)
-{
-	struct mgmt_pending_cmd *cmd;
-
-	bt_dev_dbg(hdev, "status %u", status);
-
-	hci_dev_lock(hdev);
-
-	cmd = pending_find(MGMT_OP_START_DISCOVERY, hdev);
-	if (!cmd)
-		cmd = pending_find(MGMT_OP_START_SERVICE_DISCOVERY, hdev);
-
-	if (!cmd)
-		cmd = pending_find(MGMT_OP_START_LIMITED_DISCOVERY, hdev);
-
-	if (cmd) {
-		cmd->cmd_complete(cmd, mgmt_status(status));
-		mgmt_pending_remove(cmd);
-	}
-
-	hci_dev_unlock(hdev);
-}
-
 static bool discovery_type_is_valid(struct hci_dev *hdev, uint8_t type,
 				    uint8_t *mgmt_status)
 {
@@ -6186,23 +6104,6 @@ static int start_service_discovery(struct sock *sk, struct hci_dev *hdev,
 failed:
 	hci_dev_unlock(hdev);
 	return err;
-}
-
-void mgmt_stop_discovery_complete(struct hci_dev *hdev, u8 status)
-{
-	struct mgmt_pending_cmd *cmd;
-
-	bt_dev_dbg(hdev, "status %u", status);
-
-	hci_dev_lock(hdev);
-
-	cmd = pending_find(MGMT_OP_STOP_DISCOVERY, hdev);
-	if (cmd) {
-		cmd->cmd_complete(cmd, mgmt_status(status));
-		mgmt_pending_remove(cmd);
-	}
-
-	hci_dev_unlock(hdev);
 }
 
 static void stop_discovery_complete(struct hci_dev *hdev, void *data, int err)
@@ -8156,7 +8057,7 @@ static int set_external_config(struct sock *sk, struct hci_dev *hdev,
 		return mgmt_cmd_status(sk, hdev->id, MGMT_OP_SET_EXTERNAL_CONFIG,
 				         MGMT_STATUS_INVALID_PARAMS);
 
-	if (!test_bit(HCI_QUIRK_EXTERNAL_CONFIG, &hdev->quirks))
+	if (!hci_test_quirk(hdev, HCI_QUIRK_EXTERNAL_CONFIG))
 		return mgmt_cmd_status(sk, hdev->id, MGMT_OP_SET_EXTERNAL_CONFIG,
 				       MGMT_STATUS_NOT_SUPPORTED);
 
@@ -9548,13 +9449,14 @@ static const struct hci_mgmt_handler mgmt_handlers[] = {
 	{ mesh_send,               MGMT_MESH_SEND_SIZE,
 						HCI_MGMT_VAR_LEN },
 	{ mesh_send_cancel,        MGMT_MESH_SEND_CANCEL_SIZE },
+	{ mgmt_hci_cmd_sync,       MGMT_HCI_CMD_SYNC_SIZE, HCI_MGMT_VAR_LEN },
 };
 
 void mgmt_index_added(struct hci_dev *hdev)
 {
 	struct mgmt_ev_ext_index ev;
 
-	if (test_bit(HCI_QUIRK_RAW_DEVICE, &hdev->quirks))
+	if (hci_test_quirk(hdev, HCI_QUIRK_RAW_DEVICE))
 		return;
 
 	if (hci_dev_test_flag(hdev, HCI_UNCONFIGURED)) {
@@ -9578,7 +9480,7 @@ void mgmt_index_removed(struct hci_dev *hdev)
 	struct mgmt_ev_ext_index ev;
 	struct cmd_lookup match = { NULL, hdev, MGMT_STATUS_INVALID_INDEX };
 
-	if (test_bit(HCI_QUIRK_RAW_DEVICE, &hdev->quirks))
+	if (hci_test_quirk(hdev, HCI_QUIRK_RAW_DEVICE))
 		return;
 
 	mgmt_pending_foreach(0, hdev, true, cmd_complete_rsp, &match);
@@ -9923,7 +9825,9 @@ void mgmt_device_disconnected(struct hci_dev *hdev, bdaddr_t *bdaddr,
 	if (!mgmt_connected)
 		return;
 
-	if (link_type != ACL_LINK && link_type != LE_LINK)
+	if (link_type != ACL_LINK &&
+	    link_type != LE_LINK  &&
+	    link_type != BIS_LINK)
 		return;
 
 	bacpy(&ev.addr.bdaddr, bdaddr);
@@ -10306,7 +10210,7 @@ static bool is_filter_match(struct hci_dev *hdev, s8 rssi, u8 *eir,
 	if (hdev->discovery.rssi != HCI_RSSI_INVALID &&
 	    (rssi == HCI_RSSI_INVALID ||
 	    (rssi < hdev->discovery.rssi &&
-	     !test_bit(HCI_QUIRK_STRICT_DUPLICATE_FILTER, &hdev->quirks))))
+	     !hci_test_quirk(hdev, HCI_QUIRK_STRICT_DUPLICATE_FILTER))))
 		return  false;
 
 	if (hdev->discovery.uuid_count != 0) {
@@ -10324,7 +10228,7 @@ static bool is_filter_match(struct hci_dev *hdev, s8 rssi, u8 *eir,
 	/* If duplicate filtering does not report RSSI changes, then restart
 	 * scanning to ensure updated result with updated RSSI values.
 	 */
-	if (test_bit(HCI_QUIRK_STRICT_DUPLICATE_FILTER, &hdev->quirks)) {
+	if (hci_test_quirk(hdev, HCI_QUIRK_STRICT_DUPLICATE_FILTER)) {
 		/* Validate RSSI value against the RSSI threshold once more. */
 		if (hdev->discovery.rssi != HCI_RSSI_INVALID &&
 		    rssi < hdev->discovery.rssi)

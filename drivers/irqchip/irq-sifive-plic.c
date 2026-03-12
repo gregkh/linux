@@ -154,8 +154,13 @@ static void plic_irq_disable(struct irq_data *d)
 static void plic_irq_eoi(struct irq_data *d)
 {
 	struct plic_handler *handler = this_cpu_ptr(&plic_handlers);
+	u32 __iomem *reg;
+	bool enabled;
 
-	if (unlikely(irqd_irq_disabled(d))) {
+	reg = handler->enable_base + (d->hwirq / 32) * sizeof(u32);
+	enabled = readl(reg) & BIT(d->hwirq % 32);
+
+	if (unlikely(!enabled)) {
 		plic_toggle(handler, d->hwirq, 1);
 		writel(d->hwirq, handler->hart_base + CONTEXT_CLAIM);
 		plic_toggle(handler, d->hwirq, 0);
@@ -260,7 +265,7 @@ static int plic_irq_suspend(void)
 			     readl(priv->regs + PRIORITY_BASE + i * PRIORITY_PER_ID));
 	}
 
-	for_each_cpu(cpu, cpu_present_mask) {
+	for_each_present_cpu(cpu) {
 		struct plic_handler *handler = per_cpu_ptr(&plic_handlers, cpu);
 
 		if (!handler->present)
@@ -293,7 +298,7 @@ static void plic_irq_resume(void)
 		       priv->regs + PRIORITY_BASE + i * PRIORITY_PER_ID);
 	}
 
-	for_each_cpu(cpu, cpu_present_mask) {
+	for_each_present_cpu(cpu) {
 		struct plic_handler *handler = per_cpu_ptr(&plic_handlers, cpu);
 
 		if (!handler->present)

@@ -14,7 +14,7 @@ This section provides an overview of Linux tracing mechanisms
 and debugging approaches.
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
 
    debugging
    tracepoints
@@ -36,6 +36,7 @@ the Linux kernel.
    kprobes
    kprobetrace
    fprobetrace
+   eprobetrace
    fprobe
    ring-buffer-design
 

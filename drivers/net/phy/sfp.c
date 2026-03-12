@@ -17,7 +17,6 @@
 #include <linux/workqueue.h>
 
 #include "sfp.h"
-#include "swphy.h"
 
 enum {
 	GPIO_MODDEF0,
@@ -221,6 +220,8 @@ static const enum gpiod_flags gpio_flags[] = {
  */
 #define SFP_EEPROM_BLOCK_SIZE	16
 
+#define SFP_POLL_INTERVAL	msecs_to_jiffies(100)
+
 struct sff_data {
 	unsigned int gpios;
 	bool (*module_supported)(const struct sfp_eeprom_id *id);
@@ -234,6 +235,7 @@ struct sfp {
 	enum mdio_i2c_proto mdio_protocol;
 	struct phy_device *mod_phy;
 	const struct sff_data *type;
+	size_t i2c_max_block_size;
 	size_t i2c_block_size;
 	u32 max_power_mW;
 
@@ -297,6 +299,11 @@ struct sfp {
 	struct dentry *debugfs_dir;
 #endif
 };
+
+static void sfp_schedule_poll(struct sfp *sfp)
+{
+	mod_delayed_work(system_percpu_wq, &sfp->poll, SFP_POLL_INTERVAL);
+}
 
 static bool sff_module_supported(const struct sfp_eeprom_id *id)
 {
@@ -596,8 +603,6 @@ static const struct sfp_quirk *sfp_lookup_quirk(const struct sfp_eeprom_id *id)
 	return NULL;
 }
 
-static unsigned long poll_jiffies;
-
 static unsigned int sfp_gpio_get_state(struct sfp *sfp)
 {
 	unsigned int i, state, v;
@@ -722,14 +727,71 @@ static int sfp_i2c_write(struct sfp *sfp, bool a2, u8 dev_addr, void *buf,
 	return ret == ARRAY_SIZE(msgs) ? len : 0;
 }
 
+static int sfp_smbus_byte_read(struct sfp *sfp, bool a2, u8 dev_addr,
+			       void *buf, size_t len)
+{
+	union i2c_smbus_data smbus_data;
+	u8 bus_addr = a2 ? 0x51 : 0x50;
+	u8 *data = buf;
+	int ret;
+
+	while (len) {
+		ret = i2c_smbus_xfer(sfp->i2c, bus_addr, 0,
+				     I2C_SMBUS_READ, dev_addr,
+				     I2C_SMBUS_BYTE_DATA, &smbus_data);
+		if (ret < 0)
+			return ret;
+
+		*data = smbus_data.byte;
+
+		len--;
+		data++;
+		dev_addr++;
+	}
+
+	return data - (u8 *)buf;
+}
+
+static int sfp_smbus_byte_write(struct sfp *sfp, bool a2, u8 dev_addr,
+				void *buf, size_t len)
+{
+	union i2c_smbus_data smbus_data;
+	u8 bus_addr = a2 ? 0x51 : 0x50;
+	u8 *data = buf;
+	int ret;
+
+	while (len) {
+		smbus_data.byte = *data;
+		ret = i2c_smbus_xfer(sfp->i2c, bus_addr, 0,
+				     I2C_SMBUS_WRITE, dev_addr,
+				     I2C_SMBUS_BYTE_DATA, &smbus_data);
+		if (ret)
+			return ret;
+
+		len--;
+		data++;
+		dev_addr++;
+	}
+
+	return data - (u8 *)buf;
+}
+
 static int sfp_i2c_configure(struct sfp *sfp, struct i2c_adapter *i2c)
 {
-	if (!i2c_check_functionality(i2c, I2C_FUNC_I2C))
-		return -EINVAL;
-
 	sfp->i2c = i2c;
-	sfp->read = sfp_i2c_read;
-	sfp->write = sfp_i2c_write;
+
+	if (i2c_check_functionality(i2c, I2C_FUNC_I2C)) {
+		sfp->read = sfp_i2c_read;
+		sfp->write = sfp_i2c_write;
+		sfp->i2c_max_block_size = SFP_EEPROM_BLOCK_SIZE;
+	} else if (i2c_check_functionality(i2c, I2C_FUNC_SMBUS_BYTE_DATA)) {
+		sfp->read = sfp_smbus_byte_read;
+		sfp->write = sfp_smbus_byte_write;
+		sfp->i2c_max_block_size = 1;
+	} else {
+		sfp->i2c = NULL;
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -863,7 +925,7 @@ static void sfp_soft_start_poll(struct sfp *sfp)
 
 	if (sfp->state_soft_mask & (SFP_F_LOS | SFP_F_TX_FAULT) &&
 	    !sfp->need_poll)
-		mod_delayed_work(system_wq, &sfp->poll, poll_jiffies);
+		sfp_schedule_poll(sfp);
 	mutex_unlock(&sfp->st_mutex);
 }
 
@@ -1625,7 +1687,7 @@ static void sfp_hwmon_probe(struct work_struct *work)
 	 */
 	if (sfp->i2c_block_size < 2) {
 		dev_info(sfp->dev,
-			 "skipping hwmon device registration due to broken EEPROM\n");
+			 "skipping hwmon device registration\n");
 		dev_info(sfp->dev,
 			 "diagnostic EEPROM area cannot be read atomically to guarantee data coherency\n");
 		return;
@@ -1634,7 +1696,7 @@ static void sfp_hwmon_probe(struct work_struct *work)
 	err = sfp_read(sfp, true, 0, &sfp->diag, sizeof(sfp->diag));
 	if (err < 0) {
 		if (sfp->hwmon_tries--) {
-			mod_delayed_work(system_wq, &sfp->hwmon_probe,
+			mod_delayed_work(system_percpu_wq, &sfp->hwmon_probe,
 					 T_PROBE_RETRY_SLOW);
 		} else {
 			dev_warn(sfp->dev, "hwmon probe failed: %pe\n",
@@ -1661,7 +1723,7 @@ static void sfp_hwmon_probe(struct work_struct *work)
 static int sfp_hwmon_insert(struct sfp *sfp)
 {
 	if (sfp->have_a2 && sfp->id.ext.diagmon & SFP_DIAGMON_DDM) {
-		mod_delayed_work(system_wq, &sfp->hwmon_probe, 1);
+		mod_delayed_work(system_percpu_wq, &sfp->hwmon_probe, 1);
 		sfp->hwmon_tries = R_PROBE_RETRY_SLOW;
 	}
 
@@ -2232,7 +2294,7 @@ static int sfp_sm_mod_probe(struct sfp *sfp, bool report)
 	u8 check;
 	int ret;
 
-	sfp->i2c_block_size = SFP_EEPROM_BLOCK_SIZE;
+	sfp->i2c_block_size = sfp->i2c_max_block_size;
 
 	ret = sfp_read(sfp, false, 0, &id.base, sizeof(id.base));
 	if (ret < 0) {
@@ -2515,7 +2577,7 @@ static void sfp_sm_module(struct sfp *sfp, unsigned int event)
 		/* Force a poll to re-read the hardware signal state after
 		 * sfp_sm_mod_probe() changed state_hw_mask.
 		 */
-		mod_delayed_work(system_wq, &sfp->poll, 1);
+		mod_delayed_work(system_percpu_wq, &sfp->poll, 1);
 
 		err = sfp_hwmon_insert(sfp);
 		if (err)
@@ -2960,7 +3022,7 @@ static void sfp_poll(struct work_struct *work)
 	// it's unimportant if we race while reading this.
 	if (sfp->state_soft_mask & (SFP_F_LOS | SFP_F_TX_FAULT) ||
 	    sfp->need_poll)
-		mod_delayed_work(system_wq, &sfp->poll, poll_jiffies);
+		sfp_schedule_poll(sfp);
 }
 
 static struct sfp *sfp_alloc(struct device *dev)
@@ -2972,7 +3034,6 @@ static struct sfp *sfp_alloc(struct device *dev)
 		return ERR_PTR(-ENOMEM);
 
 	sfp->dev = dev;
-	sfp->i2c_block_size = SFP_EEPROM_BLOCK_SIZE;
 
 	mutex_init(&sfp->sm_mutex);
 	mutex_init(&sfp->st_mutex);
@@ -3131,7 +3192,7 @@ static int sfp_probe(struct platform_device *pdev)
 	}
 
 	if (sfp->need_poll)
-		mod_delayed_work(system_wq, &sfp->poll, poll_jiffies);
+		sfp_schedule_poll(sfp);
 
 	/* We could have an issue in cases no Tx disable pin is available or
 	 * wired as modules using a laser as their light source will continue to
@@ -3145,6 +3206,15 @@ static int sfp_probe(struct platform_device *pdev)
 	sfp->sfp_bus = sfp_register_socket(sfp->dev, sfp, &sfp_module_ops);
 	if (!sfp->sfp_bus)
 		return -ENOMEM;
+
+	if (sfp->i2c_max_block_size < 2)
+		dev_warn(sfp->dev,
+			 "Please note:\n"
+			 "This SFP cage is accessed via an SMBus only capable of single byte\n"
+			 "transactions. Some features are disabled, other may be unreliable or\n"
+			 "sporadically fail. Use with caution. There is nothing that the kernel\n"
+			 "or community can do to fix it, the kernel will try best efforts. Please\n"
+			 "verify any problems on hardware that supports multi-byte I2C transactions.\n");
 
 	sfp_debugfs_init(sfp);
 
@@ -3181,7 +3251,7 @@ static void sfp_shutdown(struct platform_device *pdev)
 
 static struct platform_driver sfp_driver = {
 	.probe = sfp_probe,
-	.remove_new = sfp_remove,
+	.remove = sfp_remove,
 	.shutdown = sfp_shutdown,
 	.driver = {
 		.name = "sfp",
@@ -3189,19 +3259,7 @@ static struct platform_driver sfp_driver = {
 	},
 };
 
-static int sfp_init(void)
-{
-	poll_jiffies = msecs_to_jiffies(100);
-
-	return platform_driver_register(&sfp_driver);
-}
-module_init(sfp_init);
-
-static void sfp_exit(void)
-{
-	platform_driver_unregister(&sfp_driver);
-}
-module_exit(sfp_exit);
+module_platform_driver(sfp_driver);
 
 MODULE_ALIAS("platform:sfp");
 MODULE_AUTHOR("Russell King");

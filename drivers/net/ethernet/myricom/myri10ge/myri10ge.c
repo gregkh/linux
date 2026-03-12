@@ -2500,7 +2500,7 @@ static int myri10ge_close(struct net_device *dev)
 	if (mgp->ss[0].tx.req_bytes == NULL)
 		return 0;
 
-	del_timer_sync(&mgp->watchdog_timer);
+	timer_delete_sync(&mgp->watchdog_timer);
 	mgp->running = MYRI10GE_ETH_STOPPING;
 	for (i = 0; i < mgp->num_slices; i++)
 		napi_disable(&mgp->ss[i].napi);
@@ -3442,10 +3442,6 @@ static void myri10ge_watchdog(struct work_struct *work)
 		 * nic was resumed from power saving mode.
 		 */
 		pci_restore_state(mgp->pdev);
-
-		/* save state again for accounting reasons */
-		pci_save_state(mgp->pdev);
-
 	} else {
 		/* if we get back -1's from our slot, perhaps somebody
 		 * powered off our card.  Don't try to reset it in
@@ -3504,7 +3500,7 @@ static void myri10ge_watchdog_timer(struct timer_list *t)
 	u32 rx_pause_cnt;
 	u16 cmd;
 
-	mgp = from_timer(mgp, t, watchdog_timer);
+	mgp = timer_container_of(mgp, t, watchdog_timer);
 
 	rx_pause_cnt = ntohl(mgp->ss[0].fw_stats->dropped_pause);
 	busy_slice_cnt = 0;

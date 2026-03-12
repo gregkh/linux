@@ -353,7 +353,7 @@ static void rxq_refill(struct net_device *dev)
 
 static inline void rxq_refill_timer_wrapper(struct timer_list *t)
 {
-	struct pxa168_eth_private *pep = from_timer(pep, t, timeout);
+	struct pxa168_eth_private *pep = timer_container_of(pep, t, timeout);
 	napi_schedule(&pep->napi);
 }
 
@@ -1175,7 +1175,7 @@ static int pxa168_eth_stop(struct net_device *dev)
 	/* Write to ICR to clear interrupts. */
 	wrl(pep, INT_W_CLEAR, 0);
 	napi_disable(&pep->napi);
-	del_timer_sync(&pep->timeout);
+	timer_delete_sync(&pep->timeout);
 	netif_carrier_off(dev);
 	free_irq(dev->irq, dev);
 	rxq_deinit(dev);
@@ -1229,9 +1229,9 @@ static int pxa168_rx_poll(struct napi_struct *napi, int budget)
 	int work_done = 0;
 
 	/*
-	 * We call txq_reclaim every time since in NAPI interupts are disabled
-	 * and due to this we miss the TX_DONE interrupt,which is not updated in
-	 * interrupt status register.
+	 * We call txq_reclaim every time since in NAPI interrupts are disabled
+	 * and due to this we miss the TX_DONE interrupt, which is not updated
+	 * in interrupt status register.
 	 */
 	txq_reclaim(dev, 0);
 	if (netif_queue_stopped(dev)
@@ -1573,7 +1573,7 @@ MODULE_DEVICE_TABLE(of, pxa168_eth_of_match);
 
 static struct platform_driver pxa168_eth_driver = {
 	.probe = pxa168_eth_probe,
-	.remove_new = pxa168_eth_remove,
+	.remove = pxa168_eth_remove,
 	.shutdown = pxa168_eth_shutdown,
 	.resume = pxa168_eth_resume,
 	.suspend = pxa168_eth_suspend,

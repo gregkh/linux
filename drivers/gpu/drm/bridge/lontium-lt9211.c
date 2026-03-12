@@ -99,11 +99,12 @@ static struct lt9211 *bridge_to_lt9211(struct drm_bridge *bridge)
 }
 
 static int lt9211_attach(struct drm_bridge *bridge,
+			 struct drm_encoder *encoder,
 			 enum drm_bridge_attach_flags flags)
 {
 	struct lt9211 *ctx = bridge_to_lt9211(bridge);
 
-	return drm_bridge_attach(bridge->encoder, ctx->panel_bridge,
+	return drm_bridge_attach(encoder, ctx->panel_bridge,
 				 &ctx->bridge, flags);
 }
 
@@ -454,10 +455,9 @@ static int lt9211_configure_tx(struct lt9211 *ctx, bool jeida,
 }
 
 static void lt9211_atomic_enable(struct drm_bridge *bridge,
-				 struct drm_bridge_state *old_bridge_state)
+				 struct drm_atomic_state *state)
 {
 	struct lt9211 *ctx = bridge_to_lt9211(bridge);
-	struct drm_atomic_state *state = old_bridge_state->base.state;
 	const struct drm_bridge_state *bridge_state;
 	const struct drm_crtc_state *crtc_state;
 	const struct drm_display_mode *mode;
@@ -552,7 +552,7 @@ static void lt9211_atomic_enable(struct drm_bridge *bridge,
 }
 
 static void lt9211_atomic_disable(struct drm_bridge *bridge,
-				  struct drm_bridge_state *old_bridge_state)
+				  struct drm_atomic_state *state)
 {
 	struct lt9211 *ctx = bridge_to_lt9211(bridge);
 	int ret;
@@ -726,9 +726,9 @@ static int lt9211_probe(struct i2c_client *client)
 	struct lt9211 *ctx;
 	int ret;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_bridge_alloc(dev, struct lt9211, bridge, &lt9211_funcs);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	ctx->dev = dev;
 
@@ -754,7 +754,6 @@ static int lt9211_probe(struct i2c_client *client)
 	dev_set_drvdata(dev, ctx);
 	i2c_set_clientdata(client, ctx);
 
-	ctx->bridge.funcs = &lt9211_funcs;
 	ctx->bridge.of_node = dev->of_node;
 	drm_bridge_add(&ctx->bridge);
 
@@ -772,7 +771,7 @@ static void lt9211_remove(struct i2c_client *client)
 	drm_bridge_remove(&ctx->bridge);
 }
 
-static struct i2c_device_id lt9211_id[] = {
+static const struct i2c_device_id lt9211_id[] = {
 	{ "lontium,lt9211" },
 	{},
 };

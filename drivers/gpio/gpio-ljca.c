@@ -144,8 +144,8 @@ static int ljca_gpio_get_value(struct gpio_chip *chip, unsigned int offset)
 	return ljca_gpio_read(ljca_gpio, offset);
 }
 
-static void ljca_gpio_set_value(struct gpio_chip *chip, unsigned int offset,
-				int val)
+static int ljca_gpio_set_value(struct gpio_chip *chip, unsigned int offset,
+			       int val)
 {
 	struct ljca_gpio_dev *ljca_gpio = gpiochip_get_data(chip);
 	int ret;
@@ -155,6 +155,8 @@ static void ljca_gpio_set_value(struct gpio_chip *chip, unsigned int offset,
 		dev_err(chip->parent,
 			"set value failed offset: %u val: %d ret: %d\n",
 			offset, val, ret);
+
+	return ret;
 }
 
 static int ljca_gpio_direction_input(struct gpio_chip *chip, unsigned int offset)
@@ -183,7 +185,10 @@ static int ljca_gpio_direction_output(struct gpio_chip *chip,
 	if (ret)
 		return ret;
 
-	ljca_gpio_set_value(chip, offset, val);
+	ret = ljca_gpio_set_value(chip, offset, val);
+	if (ret)
+		return ret;
+
 	set_bit(offset, ljca_gpio->output_enabled);
 
 	return 0;
@@ -412,8 +417,14 @@ static int ljca_gpio_probe(struct auxiliary_device *auxdev,
 	if (!ljca_gpio->connect_mode)
 		return -ENOMEM;
 
-	mutex_init(&ljca_gpio->irq_lock);
-	mutex_init(&ljca_gpio->trans_lock);
+	ret = devm_mutex_init(&auxdev->dev, &ljca_gpio->irq_lock);
+	if (ret)
+		return ret;
+
+	ret = devm_mutex_init(&auxdev->dev, &ljca_gpio->trans_lock);
+	if (ret)
+		return ret;
+
 	ljca_gpio->gc.direction_input = ljca_gpio_direction_input;
 	ljca_gpio->gc.direction_output = ljca_gpio_direction_output;
 	ljca_gpio->gc.get_direction = ljca_gpio_get_direction;
@@ -445,11 +456,8 @@ static int ljca_gpio_probe(struct auxiliary_device *auxdev,
 
 	INIT_WORK(&ljca_gpio->work, ljca_gpio_async);
 	ret = gpiochip_add_data(&ljca_gpio->gc, ljca_gpio);
-	if (ret) {
+	if (ret)
 		ljca_unregister_event_cb(ljca);
-		mutex_destroy(&ljca_gpio->irq_lock);
-		mutex_destroy(&ljca_gpio->trans_lock);
-	}
 
 	return ret;
 }
@@ -461,8 +469,6 @@ static void ljca_gpio_remove(struct auxiliary_device *auxdev)
 	gpiochip_remove(&ljca_gpio->gc);
 	ljca_unregister_event_cb(ljca_gpio->ljca);
 	cancel_work_sync(&ljca_gpio->work);
-	mutex_destroy(&ljca_gpio->irq_lock);
-	mutex_destroy(&ljca_gpio->trans_lock);
 }
 
 static const struct auxiliary_device_id ljca_gpio_id_table[] = {
@@ -483,4 +489,4 @@ MODULE_AUTHOR("Zhifeng Wang <zhifeng.wang@intel.com>");
 MODULE_AUTHOR("Lixu Zhang <lixu.zhang@intel.com>");
 MODULE_DESCRIPTION("Intel La Jolla Cove Adapter USB-GPIO driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(LJCA);
+MODULE_IMPORT_NS("LJCA");

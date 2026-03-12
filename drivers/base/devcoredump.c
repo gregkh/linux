@@ -115,7 +115,7 @@ static void devcd_del(struct work_struct *wk)
 }
 
 static ssize_t devcd_data_read(struct file *filp, struct kobject *kobj,
-			       struct bin_attribute *bin_attr,
+			       const struct bin_attribute *bin_attr,
 			       char *buffer, loff_t offset, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -125,7 +125,7 @@ static ssize_t devcd_data_read(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t devcd_data_write(struct file *filp, struct kobject *kobj,
-				struct bin_attribute *bin_attr,
+				const struct bin_attribute *bin_attr,
 				char *buffer, loff_t offset, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -141,14 +141,10 @@ static ssize_t devcd_data_write(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-static struct bin_attribute devcd_attr_data = {
-	.attr = { .name = "data", .mode = S_IRUSR | S_IWUSR, },
-	.size = 0,
-	.read = devcd_data_read,
-	.write = devcd_data_write,
-};
+static const struct bin_attribute devcd_attr_data =
+	__BIN_ATTR(data, 0600, devcd_data_read, devcd_data_write, 0);
 
-static struct bin_attribute *devcd_dev_bin_attrs[] = {
+static const struct bin_attribute *const devcd_dev_bin_attrs[] = {
 	&devcd_attr_data, NULL,
 };
 
@@ -302,6 +298,8 @@ static void devcd_free_sgtable(void *data)
  * @offset: start copy from @offset@ bytes from the head of the data
  *	in the given scatterlist
  * @data_len: the length of the data in the sg_table
+ *
+ * Returns: the number of bytes copied
  */
 static ssize_t devcd_read_from_sgtable(char *buffer, loff_t offset,
 				       size_t buf_len, void *data,

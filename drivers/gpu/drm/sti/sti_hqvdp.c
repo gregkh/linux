@@ -744,7 +744,7 @@ static bool sti_hqvdp_check_hw_scaling(struct sti_hqvdp *hqvdp,
 
 	inv_zy = DIV_ROUND_UP(src_h, dst_h);
 
-	return (inv_zy <= lfw) ? true : false;
+	return inv_zy <= lfw;
 }
 
 /**
@@ -1356,7 +1356,6 @@ static int sti_hqvdp_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *vtg_np;
 	struct sti_hqvdp *hqvdp;
-	struct resource *res;
 
 	DRM_DEBUG_DRIVER("\n");
 
@@ -1367,17 +1366,10 @@ static int sti_hqvdp_probe(struct platform_device *pdev)
 	}
 
 	hqvdp->dev = dev;
-
-	/* Get Memory resources */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		DRM_ERROR("Get memory resource failed\n");
-		return -ENXIO;
-	}
-	hqvdp->regs = devm_ioremap(dev, res->start, resource_size(res));
-	if (!hqvdp->regs) {
+	hqvdp->regs = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(hqvdp->regs)) {
 		DRM_ERROR("Register mapping failed\n");
-		return -ENXIO;
+		return PTR_ERR(hqvdp->regs);
 	}
 
 	/* Get clock resources */
@@ -1420,7 +1412,7 @@ struct platform_driver sti_hqvdp_driver = {
 		.of_match_table = hqvdp_of_match,
 	},
 	.probe = sti_hqvdp_probe,
-	.remove_new = sti_hqvdp_remove,
+	.remove = sti_hqvdp_remove,
 };
 
 MODULE_AUTHOR("Benjamin Gaignard <benjamin.gaignard@st.com>");

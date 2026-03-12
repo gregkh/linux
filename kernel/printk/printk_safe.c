@@ -12,6 +12,24 @@
 
 #include "internal.h"
 
+/* Context where printk messages are never suppressed */
+static atomic_t force_con;
+
+void printk_force_console_enter(void)
+{
+	atomic_inc(&force_con);
+}
+
+void printk_force_console_exit(void)
+{
+	atomic_dec(&force_con);
+}
+
+bool is_printk_force_console(void)
+{
+	return atomic_read(&force_con);
+}
+
 static DEFINE_PER_CPU(int, printk_context);
 
 /* Can be preempted by NMI. */
@@ -61,15 +79,6 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 	if (unlikely(kdb_trap_printk && kdb_printf_cpu < 0))
 		return vkdb_printf(KDB_MSGSRC_PRINTK, fmt, args);
 #endif
-
-	/*
-	 * Use the main logbuf even in NMI. But avoid calling console
-	 * drivers that might have their own locks.
-	 */
-	if (is_printk_legacy_deferred())
-		return vprintk_deferred(fmt, args);
-
-	/* No obstacles. */
 	return vprintk_default(fmt, args);
 }
 EXPORT_SYMBOL(vprintk);

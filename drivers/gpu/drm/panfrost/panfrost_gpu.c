@@ -236,6 +236,10 @@ static const struct panfrost_model gpu_models[] = {
 	 */
 	GPU_MODEL(g57, 0x9003,
 		GPU_REV(g57, 0, 0)),
+
+	/* MediaTek MT8188 Mali-G57 MC3 */
+	GPU_MODEL(g57, 0x9093,
+		GPU_REV(g57, 0, 0)),
 };
 
 static void panfrost_gpu_init_features(struct panfrost_device *pfdev)
@@ -375,6 +379,18 @@ unsigned long long panfrost_cycle_counter_read(struct panfrost_device *pfdev)
 		hi = gpu_read(pfdev, GPU_CYCLE_COUNT_HI);
 		lo = gpu_read(pfdev, GPU_CYCLE_COUNT_LO);
 	} while (hi != gpu_read(pfdev, GPU_CYCLE_COUNT_HI));
+
+	return ((u64)hi << 32) | lo;
+}
+
+unsigned long long panfrost_timestamp_read(struct panfrost_device *pfdev)
+{
+	u32 hi, lo;
+
+	do {
+		hi = gpu_read(pfdev, GPU_TIMESTAMP_HI);
+		lo = gpu_read(pfdev, GPU_TIMESTAMP_LO);
+	} while (hi != gpu_read(pfdev, GPU_TIMESTAMP_HI));
 
 	return ((u64)hi << 32) | lo;
 }

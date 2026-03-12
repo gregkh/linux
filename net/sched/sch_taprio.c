@@ -1003,7 +1003,7 @@ static const struct nla_policy entry_policy[TCA_TAPRIO_SCHED_ENTRY_MAX + 1] = {
 
 static const struct nla_policy taprio_tc_policy[TCA_TAPRIO_TC_ENTRY_MAX + 1] = {
 	[TCA_TAPRIO_TC_ENTRY_INDEX]	   = NLA_POLICY_MAX(NLA_U32,
-							    TC_QOPT_MAX_QUEUE),
+							    TC_QOPT_MAX_QUEUE - 1),
 	[TCA_TAPRIO_TC_ENTRY_MAX_SDU]	   = { .type = NLA_U32 },
 	[TCA_TAPRIO_TC_ENTRY_FP]	   = NLA_POLICY_RANGE(NLA_U32,
 							      TC_FP_EXPRESS,
@@ -1713,19 +1713,15 @@ static int taprio_parse_tc_entry(struct Qdisc *sch,
 	if (err < 0)
 		return err;
 
-	if (!tb[TCA_TAPRIO_TC_ENTRY_INDEX]) {
+	if (NL_REQ_ATTR_CHECK(extack, opt, tb, TCA_TAPRIO_TC_ENTRY_INDEX)) {
 		NL_SET_ERR_MSG_MOD(extack, "TC entry index missing");
 		return -EINVAL;
 	}
 
 	tc = nla_get_u32(tb[TCA_TAPRIO_TC_ENTRY_INDEX]);
-	if (tc >= TC_QOPT_MAX_QUEUE) {
-		NL_SET_ERR_MSG_MOD(extack, "TC entry index out of range");
-		return -ERANGE;
-	}
-
 	if (*seen_tcs & BIT(tc)) {
-		NL_SET_ERR_MSG_MOD(extack, "Duplicate TC entry");
+		NL_SET_ERR_MSG_ATTR(extack, tb[TCA_TAPRIO_TC_ENTRY_INDEX],
+				    "Duplicate tc entry");
 		return -EINVAL;
 	}
 
@@ -1845,7 +1841,7 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 	 * zero; (2) the 'flags' of a "running" taprio instance cannot be
 	 * changed.
 	 */
-	taprio_flags = tb[TCA_TAPRIO_ATTR_FLAGS] ? nla_get_u32(tb[TCA_TAPRIO_ATTR_FLAGS]) : 0;
+	taprio_flags = nla_get_u32_default(tb[TCA_TAPRIO_ATTR_FLAGS], 0);
 
 	/* txtime-assist and full offload are mutually exclusive */
 	if ((taprio_flags & TCA_TAPRIO_ATTR_FLAG_TXTIME_ASSIST) &&
@@ -1949,8 +1945,7 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 	if (!TXTIME_ASSIST_IS_ENABLED(q->flags) &&
 	    !FULL_OFFLOAD_IS_ENABLED(q->flags) &&
 	    !hrtimer_active(&q->advance_timer)) {
-		hrtimer_init(&q->advance_timer, q->clockid, HRTIMER_MODE_ABS);
-		q->advance_timer.function = advance_sched;
+		hrtimer_setup(&q->advance_timer, advance_sched, q->clockid, HRTIMER_MODE_ABS);
 	}
 
 	err = taprio_get_start_time(sch, new_admin, &start);
@@ -2073,8 +2068,7 @@ static int taprio_init(struct Qdisc *sch, struct nlattr *opt,
 
 	spin_lock_init(&q->current_entry_lock);
 
-	hrtimer_init(&q->advance_timer, CLOCK_TAI, HRTIMER_MODE_ABS);
-	q->advance_timer.function = advance_sched;
+	hrtimer_setup(&q->advance_timer, advance_sched, CLOCK_TAI, HRTIMER_MODE_ABS);
 
 	q->root = sch;
 

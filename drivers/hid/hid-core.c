@@ -661,7 +661,11 @@ static int hid_parser_main(struct hid_parser *parser, struct hid_item *item)
 		ret = hid_add_field(parser, HID_FEATURE_REPORT, data);
 		break;
 	default:
-		hid_warn(parser->device, "unknown main item tag 0x%x\n", item->tag);
+		if (item->tag >= HID_MAIN_ITEM_TAG_RESERVED_MIN &&
+			item->tag <= HID_MAIN_ITEM_TAG_RESERVED_MAX)
+			hid_warn_ratelimited(parser->device, "reserved main item tag 0x%x\n", item->tag);
+		else
+			hid_warn_ratelimited(parser->device, "unknown main item tag 0x%x\n", item->tag);
 		ret = 0;
 	}
 
@@ -717,7 +721,14 @@ static void hid_close_report(struct hid_device *device)
 		INIT_LIST_HEAD(&report_enum->report_list);
 	}
 
-	kfree(device->rdesc);
+	/*
+	 * If the HID driver had a rdesc_fixup() callback, dev->rdesc
+	 * will be allocated by hid-core and needs to be freed.
+	 * Otherwise, it is either equal to dev_rdesc or bpf_rdesc, in
+	 * which cases it'll be freed later on device removal or destroy.
+	 */
+	if (device->rdesc != device->dev_rdesc && device->rdesc != device->bpf_rdesc)
+		kfree(device->rdesc);
 	device->rdesc = NULL;
 	device->rsize = 0;
 
@@ -730,6 +741,14 @@ static void hid_close_report(struct hid_device *device)
 	device->status &= ~HID_STAT_PARSED;
 }
 
+static inline void hid_free_bpf_rdesc(struct hid_device *hdev)
+{
+	/* bpf_rdesc is either equal to dev_rdesc or allocated by call_hid_bpf_rdesc_fixup() */
+	if (hdev->bpf_rdesc != hdev->dev_rdesc)
+		kfree(hdev->bpf_rdesc);
+	hdev->bpf_rdesc = NULL;
+}
+
 /*
  * Free a device structure, all reports, and all fields.
  */
@@ -739,6 +758,7 @@ void hiddev_free(struct kref *ref)
 	struct hid_device *hid = container_of(ref, struct hid_device, ref);
 
 	hid_close_report(hid);
+	hid_free_bpf_rdesc(hid);
 	kfree(hid->dev_rdesc);
 	kfree(hid);
 }
@@ -786,35 +806,29 @@ static const u8 *fetch_item(const __u8 *start, const __u8 *end, struct hid_item 
 	}
 
 	item->format = HID_ITEM_FORMAT_SHORT;
-	item->size = b & 3;
+	item->size = BIT(b & 3) >> 1; /* 0, 1, 2, 3 -> 0, 1, 2, 4 */
+
+	if (end - start < item->size)
+		return NULL;
 
 	switch (item->size) {
 	case 0:
-		return start;
+		break;
 
 	case 1:
-		if ((end - start) < 1)
-			return NULL;
-		item->data.u8 = *start++;
-		return start;
+		item->data.u8 = *start;
+		break;
 
 	case 2:
-		if ((end - start) < 2)
-			return NULL;
 		item->data.u16 = get_unaligned_le16(start);
-		start = (__u8 *)((__le16 *)start + 1);
-		return start;
+		break;
 
-	case 3:
-		item->size++;
-		if ((end - start) < 4)
-			return NULL;
+	case 4:
 		item->data.u32 = get_unaligned_le32(start);
-		start = (__u8 *)((__le32 *)start + 1);
-		return start;
+		break;
 	}
 
-	return NULL;
+	return start + item->size;
 }
 
 static void hid_scan_input_usage(struct hid_parser *parser, u32 usage)
@@ -928,6 +942,15 @@ static int hid_scan_report(struct hid_device *hid)
 
 	parser->device = hid;
 	hid->group = HID_GROUP_GENERIC;
+
+	/*
+	 * In case we are re-scanning after a BPF has been loaded,
+	 * we need to use the bpf report descriptor, not the original one.
+	 */
+	if (hid->bpf_rdesc && hid->bpf_rsize) {
+		start = hid->bpf_rdesc;
+		end = start + hid->bpf_rsize;
+	}
 
 	/*
 	 * The parsing is simpler than the one in hid_open_report() as we should
@@ -1239,7 +1262,6 @@ int hid_open_report(struct hid_device *device)
 	struct hid_item item;
 	unsigned int size;
 	const __u8 *start;
-	__u8 *buf;
 	const __u8 *end;
 	const __u8 *next;
 	int ret;
@@ -1255,25 +1277,34 @@ int hid_open_report(struct hid_device *device)
 	if (WARN_ON(device->status & HID_STAT_PARSED))
 		return -EBUSY;
 
-	start = device->dev_rdesc;
+	start = device->bpf_rdesc;
 	if (WARN_ON(!start))
 		return -ENODEV;
-	size = device->dev_rsize;
+	size = device->bpf_rsize;
 
-	/* call_hid_bpf_rdesc_fixup() ensures we work on a copy of rdesc */
-	buf = call_hid_bpf_rdesc_fixup(device, start, &size);
-	if (buf == NULL)
-		return -ENOMEM;
+	if (device->driver->report_fixup) {
+		/*
+		 * device->driver->report_fixup() needs to work
+		 * on a copy of our report descriptor so it can
+		 * change it.
+		 */
+		__u8 *buf = kmemdup(start, size, GFP_KERNEL);
 
-	if (device->driver->report_fixup)
+		if (buf == NULL)
+			return -ENOMEM;
+
 		start = device->driver->report_fixup(device, buf, &size);
-	else
-		start = buf;
 
-	start = kmemdup(start, size, GFP_KERNEL);
-	kfree(buf);
-	if (start == NULL)
-		return -ENOMEM;
+		/*
+		 * The second kmemdup is required in case report_fixup() returns
+		 * a static read-only memory, but we have no idea if that memory
+		 * needs to be cleaned up or not at the end.
+		 */
+		start = kmemdup(start, size, GFP_KERNEL);
+		kfree(buf);
+		if (start == NULL)
+			return -ENOMEM;
+	}
 
 	device->rdesc = start;
 	device->rsize = size;
@@ -2171,9 +2202,9 @@ static bool hid_hiddev(struct hid_device *hdev)
 
 
 static ssize_t
-read_report_descriptor(struct file *filp, struct kobject *kobj,
-		struct bin_attribute *attr,
-		char *buf, loff_t off, size_t count)
+report_descriptor_read(struct file *filp, struct kobject *kobj,
+		       const struct bin_attribute *attr,
+		       char *buf, loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
 	struct hid_device *hdev = to_hid_device(dev);
@@ -2190,24 +2221,17 @@ read_report_descriptor(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t
-show_country(struct device *dev, struct device_attribute *attr,
-		char *buf)
+country_show(struct device *dev, struct device_attribute *attr,
+	     char *buf)
 {
 	struct hid_device *hdev = to_hid_device(dev);
 
 	return sprintf(buf, "%02x\n", hdev->country & 0xff);
 }
 
-static struct bin_attribute dev_bin_attr_report_desc = {
-	.attr = { .name = "report_descriptor", .mode = 0444 },
-	.read = read_report_descriptor,
-	.size = HID_MAX_DESCRIPTOR_SIZE,
-};
+static const BIN_ATTR_RO(report_descriptor, HID_MAX_DESCRIPTOR_SIZE);
 
-static const struct device_attribute dev_attr_country = {
-	.attr = { .name = "country", .mode = 0444 },
-	.show = show_country,
-};
+static const DEVICE_ATTR_RO(country);
 
 int hid_connect(struct hid_device *hdev, unsigned int connect_mask)
 {
@@ -2291,6 +2315,9 @@ int hid_connect(struct hid_device *hdev, unsigned int connect_mask)
 		break;
 	case BUS_I2C:
 		bus = "I2C";
+		break;
+	case BUS_SDW:
+		bus = "SOUNDWIRE";
 		break;
 	case BUS_VIRTUAL:
 		bus = "VIRTUAL";
@@ -2394,6 +2421,9 @@ int hid_hw_open(struct hid_device *hdev)
 		ret = hdev->ll_driver->open(hdev);
 		if (ret)
 			hdev->ll_open_count--;
+
+		if (hdev->driver->on_hid_hw_open)
+			hdev->driver->on_hid_hw_open(hdev);
 	}
 
 	mutex_unlock(&hdev->ll_open_lock);
@@ -2413,8 +2443,12 @@ EXPORT_SYMBOL_GPL(hid_hw_open);
 void hid_hw_close(struct hid_device *hdev)
 {
 	mutex_lock(&hdev->ll_open_lock);
-	if (!--hdev->ll_open_count)
+	if (!--hdev->ll_open_count) {
 		hdev->ll_driver->close(hdev);
+
+		if (hdev->driver->on_hid_hw_close)
+			hdev->driver->on_hid_hw_close(hdev);
+	}
 	mutex_unlock(&hdev->ll_open_lock);
 }
 EXPORT_SYMBOL_GPL(hid_hw_close);
@@ -2683,10 +2717,48 @@ static bool hid_check_device_match(struct hid_device *hdev,
 	return !hid_ignore_special_drivers && !(hdev->quirks & HID_QUIRK_IGNORE_SPECIAL_DRIVER);
 }
 
+static void hid_set_group(struct hid_device *hdev)
+{
+	int ret;
+
+	if (hid_ignore_special_drivers) {
+		hdev->group = HID_GROUP_GENERIC;
+	} else if (!hdev->group &&
+		   !(hdev->quirks & HID_QUIRK_HAVE_SPECIAL_DRIVER)) {
+		ret = hid_scan_report(hdev);
+		if (ret)
+			hid_warn(hdev, "bad device descriptor (%d)\n", ret);
+	}
+}
+
 static int __hid_device_probe(struct hid_device *hdev, struct hid_driver *hdrv)
 {
 	const struct hid_device_id *id;
 	int ret;
+
+	if (!hdev->bpf_rsize) {
+		/* we keep a reference to the currently scanned report descriptor */
+		const __u8  *original_rdesc = hdev->bpf_rdesc;
+
+		if (!original_rdesc)
+			original_rdesc = hdev->dev_rdesc;
+
+		/* in case a bpf program gets detached, we need to free the old one */
+		hid_free_bpf_rdesc(hdev);
+
+		/* keep this around so we know we called it once */
+		hdev->bpf_rsize = hdev->dev_rsize;
+
+		/* call_hid_bpf_rdesc_fixup will always return a valid pointer */
+		hdev->bpf_rdesc = call_hid_bpf_rdesc_fixup(hdev, hdev->dev_rdesc,
+							   &hdev->bpf_rsize);
+
+		/* the report descriptor changed, we need to re-scan it */
+		if (original_rdesc != hdev->bpf_rdesc) {
+			hdev->group = 0;
+			hid_set_group(hdev);
+		}
+	}
 
 	if (!hid_check_device_match(hdev, hdrv, &id))
 		return -ENODEV;
@@ -2776,7 +2848,7 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *a,
 {
 	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
 
-	return scnprintf(buf, PAGE_SIZE, "hid:b%04Xg%04Xv%08Xp%08X\n",
+	return sysfs_emit(buf, "hid:b%04Xg%04Xv%08Xp%08X\n",
 			 hdev->bus, hdev->group, hdev->vendor, hdev->product);
 }
 static DEVICE_ATTR_RO(modalias);
@@ -2785,8 +2857,8 @@ static struct attribute *hid_dev_attrs[] = {
 	&dev_attr_modalias.attr,
 	NULL,
 };
-static struct bin_attribute *hid_dev_bin_attrs[] = {
-	&dev_bin_attr_report_desc,
+static const struct bin_attribute *hid_dev_bin_attrs[] = {
+	&bin_attr_report_descriptor,
 	NULL
 };
 static const struct attribute_group hid_dev_group = {
@@ -2866,14 +2938,7 @@ int hid_add_device(struct hid_device *hdev)
 	/*
 	 * Scan generic devices for group information
 	 */
-	if (hid_ignore_special_drivers) {
-		hdev->group = HID_GROUP_GENERIC;
-	} else if (!hdev->group &&
-		   !(hdev->quirks & HID_QUIRK_HAVE_SPECIAL_DRIVER)) {
-		ret = hid_scan_report(hdev);
-		if (ret)
-			hid_warn(hdev, "bad device descriptor (%d)\n", ret);
-	}
+	hid_set_group(hdev);
 
 	hdev->id = atomic_inc_return(&id);
 
@@ -2944,9 +3009,11 @@ static void hid_remove_device(struct hid_device *hdev)
 		hid_debug_unregister(hdev);
 		hdev->status &= ~HID_STAT_ADDED;
 	}
+	hid_free_bpf_rdesc(hdev);
 	kfree(hdev->dev_rdesc);
 	hdev->dev_rdesc = NULL;
 	hdev->dev_rsize = 0;
+	hdev->bpf_rsize = 0;
 }
 
 /**
@@ -3047,7 +3114,7 @@ int hid_check_keys_pressed(struct hid_device *hid)
 EXPORT_SYMBOL_GPL(hid_check_keys_pressed);
 
 #ifdef CONFIG_HID_BPF
-static struct hid_ops __hid_ops = {
+static const struct hid_ops __hid_ops = {
 	.hid_get_report = hid_get_report,
 	.hid_hw_raw_request = __hid_hw_raw_request,
 	.hid_hw_output_report = __hid_hw_output_report,

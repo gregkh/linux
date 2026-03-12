@@ -18,6 +18,9 @@ extern void bonito_irq_init(void);
 extern void mach_prepare_reboot(void);
 extern void mach_prepare_shutdown(void);
 
+/* machine-specific PROM functions */
+extern void __init mach_prom_init_machtype(void);
+
 /* environment arguments from bootloader */
 extern u32 cpu_clock_freq;
 extern u32 memsize, highmemsize;
@@ -44,6 +47,12 @@ extern void __init bonito_irq_init(void);
 extern void __init mach_init_irq(void);
 extern void mach_irq_dispatch(unsigned int pending);
 extern int mach_i8259_irq(void);
+
+/* power management functions */
+extern void setup_wakeup_events(void);
+extern int wakeup_loongson(void);
+extern void __weak mach_suspend(void);
+extern void __weak mach_resume(void);
 
 /* We need this in some places... */
 #define delay() ({		\
@@ -314,5 +323,11 @@ extern unsigned long _loongson_addrwincfg_base;
 	LOONGSON_ADDRWIN_CFG(PCIDMA, DDR, win, src, dst, size)
 
 #endif	/* ! CONFIG_CPU_SUPPORTS_ADDRWINCFG */
+
+#ifdef CONFIG_PCI
+void loongson2ef_pcibios_init(void);
+#else
+static inline void loongson2ef_pcibios_init(void) { }
+#endif
 
 #endif /* __ASM_MACH_LOONGSON2EF_LOONGSON_H */

@@ -1288,7 +1288,7 @@ static void mlxbf_tmfifo_get_cfg_mac(u8 *mac)
 		ether_addr_copy(mac, mlxbf_tmfifo_net_default_mac);
 }
 
-/* Set TmFifo thresolds which is used to trigger interrupts. */
+/* Set TmFifo thresholds which is used to trigger interrupts. */
 static void mlxbf_tmfifo_set_threshold(struct mlxbf_tmfifo *fifo)
 {
 	u64 ctl;
@@ -1321,7 +1321,7 @@ static void mlxbf_tmfifo_cleanup(struct mlxbf_tmfifo *fifo)
 	int i;
 
 	fifo->is_ready = false;
-	del_timer_sync(&fifo->timer);
+	timer_delete_sync(&fifo->timer);
 	mlxbf_tmfifo_disable_irqs(fifo);
 	cancel_work_sync(&fifo->work);
 	for (i = 0; i < MLXBF_TMFIFO_VDEV_MAX; i++)
@@ -1447,7 +1447,7 @@ MODULE_DEVICE_TABLE(acpi, mlxbf_tmfifo_acpi_match);
 
 static struct platform_driver mlxbf_tmfifo_driver = {
 	.probe = mlxbf_tmfifo_probe,
-	.remove_new = mlxbf_tmfifo_remove,
+	.remove = mlxbf_tmfifo_remove,
 	.driver = {
 		.name = "bf-tmfifo",
 		.acpi_match_table = mlxbf_tmfifo_acpi_match,

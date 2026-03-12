@@ -1163,7 +1163,7 @@ static void rtl8xxxu_start_tx_beacon(struct rtl8xxxu_priv *priv)
 
 
 /*
- * The rtl8723a has 3 channel groups for it's efuse settings. It only
+ * The rtl8723a has 3 channel groups for its efuse settings. It only
  * supports the 2.4GHz band, so channels 1 - 14:
  *  group 0: channels 1 - 3
  *  group 1: channels 4 - 9
@@ -1898,6 +1898,27 @@ static void rtl8xxxu_dump_efuse(struct rtl8xxxu_priv *priv)
 
 	print_hex_dump(KERN_INFO, "", DUMP_PREFIX_OFFSET, 16, 1,
 		       priv->efuse_wifi.raw, EFUSE_MAP_LEN, true);
+}
+
+static ssize_t read_file_efuse(struct file *file, char __user *user_buf,
+			       size_t count, loff_t *ppos)
+{
+	struct rtl8xxxu_priv *priv = file_inode(file)->i_private;
+
+	return simple_read_from_buffer(user_buf, count, ppos,
+				       priv->efuse_wifi.raw, EFUSE_MAP_LEN);
+}
+
+static const struct debugfs_short_fops fops_efuse = {
+	.read = read_file_efuse,
+};
+
+static void rtl8xxxu_debugfs_init(struct rtl8xxxu_priv *priv)
+{
+	struct dentry *phydir;
+
+	phydir = debugfs_create_dir("rtl8xxxu", priv->hw->wiphy->debugfsdir);
+	debugfs_create_file("efuse", 0400, phydir, priv, &fops_efuse);
 }
 
 void rtl8xxxu_reset_8051(struct rtl8xxxu_priv *priv)
@@ -4551,7 +4572,8 @@ static void rtl8xxxu_cam_write(struct rtl8xxxu_priv *priv,
 }
 
 static
-int rtl8xxxu_get_antenna(struct ieee80211_hw *hw, u32 *tx_ant, u32 *rx_ant)
+int rtl8xxxu_get_antenna(struct ieee80211_hw *hw, int radio_idx, u32 *tx_ant,
+			 u32 *rx_ant)
 {
 	struct rtl8xxxu_priv *priv = hw->priv;
 
@@ -6838,7 +6860,7 @@ static void rtl8xxxu_remove_interface(struct ieee80211_hw *hw,
 	priv->vifs[rtlvif->port_num] = NULL;
 }
 
-static int rtl8xxxu_config(struct ieee80211_hw *hw, u32 changed)
+static int rtl8xxxu_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 {
 	struct rtl8xxxu_priv *priv = hw->priv;
 	struct device *dev = &priv->udev->dev;
@@ -6987,7 +7009,8 @@ static void rtl8xxxu_configure_filter(struct ieee80211_hw *hw,
 			 FIF_PROBE_REQ);
 }
 
-static int rtl8xxxu_set_rts_threshold(struct ieee80211_hw *hw, u32 rts)
+static int rtl8xxxu_set_rts_threshold(struct ieee80211_hw *hw, int radio_idx,
+				      u32 rts)
 {
 	if (rts > 2347 && rts != (u32)-1)
 		return -EINVAL;
@@ -7812,7 +7835,8 @@ static int rtl8xxxu_probe(struct usb_interface *interface,
 			untested = 0;
 		break;
 	case 0x2357:
-		if (id->idProduct == 0x0109 || id->idProduct == 0x0135)
+		if (id->idProduct == 0x0109 || id->idProduct == 0x010c ||
+		    id->idProduct == 0x0135)
 			untested = 0;
 		break;
 	case 0x0b05:
@@ -7972,6 +7996,7 @@ static int rtl8xxxu_probe(struct usb_interface *interface,
 	}
 
 	rtl8xxxu_init_led(priv);
+	rtl8xxxu_debugfs_init(priv);
 
 	return 0;
 

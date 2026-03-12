@@ -6,8 +6,12 @@
 
 #include "common.h"
 #include "stmmac.h"
+#include "stmmac_fpe.h"
 #include "stmmac_ptp.h"
 #include "stmmac_est.h"
+#include "stmmac_vlan.h"
+#include "dwmac4_descs.h"
+#include "dwxgmac2.h"
 
 static u32 stmmac_get_id(struct stmmac_priv *priv, u32 id_reg)
 {
@@ -96,15 +100,13 @@ int stmmac_reset(struct stmmac_priv *priv, void __iomem *ioaddr)
 		return -EINVAL;
 
 	if (plat && plat->fix_soc_reset)
-		return plat->fix_soc_reset(plat, ioaddr);
+		return plat->fix_soc_reset(priv, ioaddr);
 
 	return stmmac_do_callback(priv, dma, reset, ioaddr);
 }
 
 static const struct stmmac_hwif_entry {
-	bool gmac;
-	bool gmac4;
-	bool xgmac;
+	enum dwmac_core_type core_type;
 	u32 min_id;
 	u32 dev_id;
 	const struct stmmac_regs_off regs;
@@ -112,18 +114,18 @@ static const struct stmmac_hwif_entry {
 	const void *dma;
 	const void *mac;
 	const void *hwtimestamp;
+	const void *ptp;
 	const void *mode;
 	const void *tc;
 	const void *mmc;
 	const void *est;
+	const void *vlan;
 	int (*setup)(struct stmmac_priv *priv);
 	int (*quirks)(struct stmmac_priv *priv);
 } stmmac_hw[] = {
 	/* NOTE: New HW versions shall go to the end of this table */
 	{
-		.gmac = false,
-		.gmac4 = false,
-		.xgmac = false,
+		.core_type = DWMAC_CORE_MAC100,
 		.min_id = 0,
 		.regs = {
 			.ptp_off = PTP_GMAC3_X_OFFSET,
@@ -132,16 +134,15 @@ static const struct stmmac_hwif_entry {
 		.desc = NULL,
 		.dma = &dwmac100_dma_ops,
 		.mac = &dwmac100_ops,
-		.hwtimestamp = &stmmac_ptp,
+		.hwtimestamp = &dwmac1000_ptp,
+		.ptp = &dwmac1000_ptp_clock_ops,
 		.mode = NULL,
 		.tc = NULL,
 		.mmc = &dwmac_mmc_ops,
 		.setup = dwmac100_setup,
 		.quirks = stmmac_dwmac1_quirks,
 	}, {
-		.gmac = true,
-		.gmac4 = false,
-		.xgmac = false,
+		.core_type = DWMAC_CORE_GMAC,
 		.min_id = 0,
 		.regs = {
 			.ptp_off = PTP_GMAC3_X_OFFSET,
@@ -150,16 +151,15 @@ static const struct stmmac_hwif_entry {
 		.desc = NULL,
 		.dma = &dwmac1000_dma_ops,
 		.mac = &dwmac1000_ops,
-		.hwtimestamp = &stmmac_ptp,
+		.hwtimestamp = &dwmac1000_ptp,
+		.ptp = &dwmac1000_ptp_clock_ops,
 		.mode = NULL,
 		.tc = NULL,
 		.mmc = &dwmac_mmc_ops,
 		.setup = dwmac1000_setup,
 		.quirks = stmmac_dwmac1_quirks,
 	}, {
-		.gmac = false,
-		.gmac4 = true,
-		.xgmac = false,
+		.core_type = DWMAC_CORE_GMAC4,
 		.min_id = 0,
 		.regs = {
 			.ptp_off = PTP_GMAC4_OFFSET,
@@ -169,7 +169,9 @@ static const struct stmmac_hwif_entry {
 		.desc = &dwmac4_desc_ops,
 		.dma = &dwmac4_dma_ops,
 		.mac = &dwmac4_ops,
+		.vlan = &dwmac_vlan_ops,
 		.hwtimestamp = &stmmac_ptp,
+		.ptp = &stmmac_ptp_clock_ops,
 		.mode = NULL,
 		.tc = &dwmac4_tc_ops,
 		.mmc = &dwmac_mmc_ops,
@@ -177,19 +179,20 @@ static const struct stmmac_hwif_entry {
 		.setup = dwmac4_setup,
 		.quirks = stmmac_dwmac4_quirks,
 	}, {
-		.gmac = false,
-		.gmac4 = true,
-		.xgmac = false,
+		.core_type = DWMAC_CORE_GMAC4,
 		.min_id = DWMAC_CORE_4_00,
 		.regs = {
 			.ptp_off = PTP_GMAC4_OFFSET,
 			.mmc_off = MMC_GMAC4_OFFSET,
 			.est_off = EST_GMAC4_OFFSET,
+			.fpe_reg = &dwmac5_fpe_reg,
 		},
 		.desc = &dwmac4_desc_ops,
 		.dma = &dwmac4_dma_ops,
 		.mac = &dwmac410_ops,
+		.vlan = &dwmac_vlan_ops,
 		.hwtimestamp = &stmmac_ptp,
+		.ptp = &stmmac_ptp_clock_ops,
 		.mode = &dwmac4_ring_mode_ops,
 		.tc = &dwmac510_tc_ops,
 		.mmc = &dwmac_mmc_ops,
@@ -197,19 +200,20 @@ static const struct stmmac_hwif_entry {
 		.setup = dwmac4_setup,
 		.quirks = NULL,
 	}, {
-		.gmac = false,
-		.gmac4 = true,
-		.xgmac = false,
+		.core_type = DWMAC_CORE_GMAC4,
 		.min_id = DWMAC_CORE_4_10,
 		.regs = {
 			.ptp_off = PTP_GMAC4_OFFSET,
 			.mmc_off = MMC_GMAC4_OFFSET,
 			.est_off = EST_GMAC4_OFFSET,
+			.fpe_reg = &dwmac5_fpe_reg,
 		},
 		.desc = &dwmac4_desc_ops,
 		.dma = &dwmac410_dma_ops,
 		.mac = &dwmac410_ops,
+		.vlan = &dwmac_vlan_ops,
 		.hwtimestamp = &stmmac_ptp,
+		.ptp = &stmmac_ptp_clock_ops,
 		.mode = &dwmac4_ring_mode_ops,
 		.tc = &dwmac510_tc_ops,
 		.mmc = &dwmac_mmc_ops,
@@ -217,19 +221,20 @@ static const struct stmmac_hwif_entry {
 		.setup = dwmac4_setup,
 		.quirks = NULL,
 	}, {
-		.gmac = false,
-		.gmac4 = true,
-		.xgmac = false,
+		.core_type = DWMAC_CORE_GMAC4,
 		.min_id = DWMAC_CORE_5_10,
 		.regs = {
 			.ptp_off = PTP_GMAC4_OFFSET,
 			.mmc_off = MMC_GMAC4_OFFSET,
 			.est_off = EST_GMAC4_OFFSET,
+			.fpe_reg = &dwmac5_fpe_reg,
 		},
 		.desc = &dwmac4_desc_ops,
 		.dma = &dwmac410_dma_ops,
 		.mac = &dwmac510_ops,
+		.vlan = &dwmac_vlan_ops,
 		.hwtimestamp = &stmmac_ptp,
+		.ptp = &stmmac_ptp_clock_ops,
 		.mode = &dwmac4_ring_mode_ops,
 		.tc = &dwmac510_tc_ops,
 		.mmc = &dwmac_mmc_ops,
@@ -237,43 +242,45 @@ static const struct stmmac_hwif_entry {
 		.setup = dwmac4_setup,
 		.quirks = NULL,
 	}, {
-		.gmac = false,
-		.gmac4 = false,
-		.xgmac = true,
+		.core_type = DWMAC_CORE_XGMAC,
 		.min_id = DWXGMAC_CORE_2_10,
 		.dev_id = DWXGMAC_ID,
 		.regs = {
 			.ptp_off = PTP_XGMAC_OFFSET,
 			.mmc_off = MMC_XGMAC_OFFSET,
 			.est_off = EST_XGMAC_OFFSET,
+			.fpe_reg = &dwxgmac3_fpe_reg,
 		},
 		.desc = &dwxgmac210_desc_ops,
 		.dma = &dwxgmac210_dma_ops,
 		.mac = &dwxgmac210_ops,
+		.vlan = &dwxgmac210_vlan_ops,
 		.hwtimestamp = &stmmac_ptp,
+		.ptp = &stmmac_ptp_clock_ops,
 		.mode = NULL,
-		.tc = &dwxgmac_tc_ops,
+		.tc = &dwmac510_tc_ops,
 		.mmc = &dwxgmac_mmc_ops,
 		.est = &dwmac510_est_ops,
 		.setup = dwxgmac2_setup,
 		.quirks = NULL,
 	}, {
-		.gmac = false,
-		.gmac4 = false,
-		.xgmac = true,
+		.core_type = DWMAC_CORE_XGMAC,
 		.min_id = DWXLGMAC_CORE_2_00,
 		.dev_id = DWXLGMAC_ID,
 		.regs = {
 			.ptp_off = PTP_XGMAC_OFFSET,
 			.mmc_off = MMC_XGMAC_OFFSET,
 			.est_off = EST_XGMAC_OFFSET,
+			.fpe_reg = &dwxgmac3_fpe_reg,
 		},
 		.desc = &dwxgmac210_desc_ops,
 		.dma = &dwxgmac210_dma_ops,
 		.mac = &dwxlgmac2_ops,
+		.vlan = &dwxlgmac2_vlan_ops,
 		.hwtimestamp = &stmmac_ptp,
+		.ptp = &stmmac_ptp_clock_ops,
 		.mode = NULL,
-		.tc = &dwxgmac_tc_ops,
+		.tc = &dwmac510_tc_ops,
 		.mmc = &dwxgmac_mmc_ops,
 		.est = &dwmac510_est_ops,
 		.setup = dwxlgmac2_setup,
@@ -283,20 +290,18 @@ static const struct stmmac_hwif_entry {
 
 int stmmac_hwif_init(struct stmmac_priv *priv)
 {
-	bool needs_xgmac = priv->plat->has_xgmac;
-	bool needs_gmac4 = priv->plat->has_gmac4;
-	bool needs_gmac = priv->plat->has_gmac;
+	enum dwmac_core_type core_type = priv->plat->core_type;
 	const struct stmmac_hwif_entry *entry;
 	struct mac_device_info *mac;
 	bool needs_setup = true;
 	u32 id, dev_id = 0;
 	int i, ret;
 
-	if (needs_gmac) {
+	if (core_type == DWMAC_CORE_GMAC) {
 		id = stmmac_get_id(priv, GMAC_VERSION);
-	} else if (needs_gmac4 || needs_xgmac) {
+	} else if (dwmac_is_xmac(core_type)) {
 		id = stmmac_get_id(priv, GMAC4_VERSION);
-		if (needs_xgmac)
+		if (core_type == DWMAC_CORE_XGMAC)
 			dev_id = stmmac_get_dev_id(priv, GMAC4_VERSION);
 	} else {
 		id = 0;
@@ -306,14 +311,16 @@ int stmmac_hwif_init(struct stmmac_priv *priv)
 	priv->synopsys_id = id;
 
 	/* Lets assume some safe values first */
-	priv->ptpaddr = priv->ioaddr +
-		(needs_gmac4 ? PTP_GMAC4_OFFSET : PTP_GMAC3_X_OFFSET);
-	priv->mmcaddr = priv->ioaddr +
-		(needs_gmac4 ? MMC_GMAC4_OFFSET : MMC_GMAC3_X_OFFSET);
-	if (needs_gmac4)
+	if (core_type == DWMAC_CORE_GMAC4) {
+		priv->ptpaddr = priv->ioaddr + PTP_GMAC4_OFFSET;
+		priv->mmcaddr = priv->ioaddr + MMC_GMAC4_OFFSET;
 		priv->estaddr = priv->ioaddr + EST_GMAC4_OFFSET;
-	else if (needs_xgmac)
-		priv->estaddr = priv->ioaddr + EST_XGMAC_OFFSET;
+	} else {
+		priv->ptpaddr = priv->ioaddr + PTP_GMAC3_X_OFFSET;
+		priv->mmcaddr = priv->ioaddr + MMC_GMAC3_X_OFFSET;
+		if (core_type == DWMAC_CORE_XGMAC)
+			priv->estaddr = priv->ioaddr + EST_XGMAC_OFFSET;
+	}
 
 	/* Check for HW specific setup first */
 	if (priv->plat->setup) {
@@ -330,16 +337,12 @@ int stmmac_hwif_init(struct stmmac_priv *priv)
 	for (i = ARRAY_SIZE(stmmac_hw) - 1; i >= 0; i--) {
 		entry = &stmmac_hw[i];
 
-		if (needs_gmac ^ entry->gmac)
-			continue;
-		if (needs_gmac4 ^ entry->gmac4)
-			continue;
-		if (needs_xgmac ^ entry->xgmac)
+		if (core_type != entry->core_type)
 			continue;
 		/* Use synopsys_id var because some setups can override this */
 		if (priv->synopsys_id < entry->min_id)
 			continue;
-		if (needs_xgmac && (dev_id ^ entry->dev_id))
+		if (core_type == DWMAC_CORE_XGMAC && (dev_id ^ entry->dev_id))
 			continue;
 
 		/* Only use generic HW helpers if needed */
@@ -351,10 +354,14 @@ int stmmac_hwif_init(struct stmmac_priv *priv)
 		mac->tc = mac->tc ? : entry->tc;
 		mac->mmc = mac->mmc ? : entry->mmc;
 		mac->est = mac->est ? : entry->est;
+		mac->vlan = mac->vlan ? : entry->vlan;
 
 		priv->hw = mac;
+		priv->fpe_cfg.reg = entry->regs.fpe_reg;
 		priv->ptpaddr = priv->ioaddr + entry->regs.ptp_off;
 		priv->mmcaddr = priv->ioaddr + entry->regs.mmc_off;
+		memcpy(&priv->ptp_clock_ops, entry->ptp,
+		       sizeof(struct ptp_clock_info));
 		if (entry->est)
 			priv->estaddr = priv->ioaddr + entry->regs.est_off;
 
@@ -371,6 +378,7 @@ int stmmac_hwif_init(struct stmmac_priv *priv)
 	}
 
 	dev_err(priv->device, "Failed to find HW IF (id=0x%x, gmac=%d/%d)\n",
-			id, needs_gmac, needs_gmac4);
+		id, core_type == DWMAC_CORE_GMAC,
+		core_type == DWMAC_CORE_GMAC4);
 	return -EINVAL;
 }

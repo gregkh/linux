@@ -16,6 +16,8 @@
 #include <linux/netfilter_bridge.h>
 
 #include <linux/uaccess.h>
+#include <net/netdev_lock.h>
+
 #include "br_private.h"
 
 #define COMMON_FEATURES (NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_HIGHDMA | \
@@ -72,7 +74,7 @@ netdev_tx_t br_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	     eth_hdr(skb)->h_proto == htons(ETH_P_RARP)) &&
 	    br_opt_get(br, BROPT_NEIGH_SUPPRESS_ENABLED)) {
 		br_do_proxy_suppress_arp(skb, br, vid, NULL);
-	} else if (IS_ENABLED(CONFIG_IPV6) &&
+	} else if (ipv6_mod_enabled() &&
 		   skb->protocol == htons(ETH_P_IPV6) &&
 		   br_opt_get(br, BROPT_NEIGH_SUPPRESS_ENABLED) &&
 		   pskb_may_pull(skb, sizeof(struct ipv6hdr) +
@@ -328,7 +330,7 @@ int br_netpoll_enable(struct net_bridge_port *p)
 	return __br_netpoll_enable(p);
 }
 
-static int br_netpoll_setup(struct net_device *dev, struct netpoll_info *ni)
+static int br_netpoll_setup(struct net_device *dev)
 {
 	struct net_bridge *br = netdev_priv(dev);
 	struct net_bridge_port *p;
@@ -488,7 +490,7 @@ void br_dev_setup(struct net_device *dev)
 	SET_NETDEV_DEVTYPE(dev, &br_type);
 	dev->priv_flags = IFF_EBRIDGE | IFF_NO_QUEUE;
 	dev->lltx = true;
-	dev->netns_local = true;
+	dev->netns_immutable = true;
 
 	dev->features = COMMON_FEATURES | NETIF_F_HW_VLAN_CTAG_TX |
 			NETIF_F_HW_VLAN_STAG_TX;

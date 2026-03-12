@@ -53,6 +53,7 @@ struct svc_xprt {
 	struct svc_xprt_class	*xpt_class;
 	const struct svc_xprt_ops *xpt_ops;
 	struct kref		xpt_ref;
+	ktime_t			xpt_qtime;
 	struct list_head	xpt_list;
 	struct lwq_node		xpt_ready;
 	unsigned long		xpt_flags;
@@ -108,6 +109,12 @@ enum {
 				 */
 };
 
+/*
+ * Maximum number of "tmp" connections - those without XPT_PEER_VALID -
+ * permitted on any service.
+ */
+#define XPT_MAX_TMP_CONN	64
+
 static inline void svc_xprt_set_valid(struct svc_xprt *xpt)
 {
 	if (test_bit(XPT_TEMP, &xpt->xpt_flags) &&
@@ -161,7 +168,8 @@ int	svc_xprt_create(struct svc_serv *serv, const char *xprt_name,
 			struct net *net, const int family,
 			const unsigned short port, int flags,
 			const struct cred *cred);
-void	svc_xprt_destroy_all(struct svc_serv *serv, struct net *net);
+void	svc_xprt_destroy_all(struct svc_serv *serv, struct net *net,
+			     bool unregister);
 void	svc_xprt_received(struct svc_xprt *xprt);
 void	svc_xprt_enqueue(struct svc_xprt *xprt);
 void	svc_xprt_put(struct svc_xprt *xprt);

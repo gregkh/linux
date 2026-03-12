@@ -447,6 +447,8 @@ int of_phy_register_fixed_link(struct device_node *np)
 	/* Old binding */
 	if (of_property_read_u32_array(np, "fixed-link", fixed_link_prop,
 				       ARRAY_SIZE(fixed_link_prop)) == 0) {
+		pr_warn_once("%pOF uses deprecated array-style fixed-link binding!\n",
+			     np);
 		status.link = 1;
 		status.duplex = fixed_link_prop[1];
 		status.speed  = fixed_link_prop[2];
@@ -458,7 +460,7 @@ int of_phy_register_fixed_link(struct device_node *np)
 	return -ENODEV;
 
 register_phy:
-	return PTR_ERR_OR_ZERO(fixed_phy_register(PHY_POLL, &status, np));
+	return PTR_ERR_OR_ZERO(fixed_phy_register(&status, np));
 }
 EXPORT_SYMBOL(of_phy_register_fixed_link);
 

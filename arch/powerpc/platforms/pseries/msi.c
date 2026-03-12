@@ -7,16 +7,22 @@
 #include <linux/crash_dump.h>
 #include <linux/device.h>
 #include <linux/irq.h>
+#include <linux/irqchip/irq-msi-lib.h>
 #include <linux/irqdomain.h>
 #include <linux/msi.h>
+#include <linux/seq_file.h>
 
 #include <asm/rtas.h>
 #include <asm/hw_irq.h>
 #include <asm/ppc-pci.h>
 #include <asm/machdep.h>
-#include <asm/xive.h>
 
 #include "pseries.h"
+
+struct pseries_msi_device {
+	unsigned int msi_quota;
+	unsigned int msi_used;
+};
 
 static int query_token, change_token;
 
@@ -429,60 +435,53 @@ again:
 static int pseries_msi_ops_prepare(struct irq_domain *domain, struct device *dev,
 				   int nvec, msi_alloc_info_t *arg)
 {
+	struct msi_domain_info *info = domain->host_data;
 	struct pci_dev *pdev = to_pci_dev(dev);
-	int type = pdev->msix_enabled ? PCI_CAP_ID_MSIX : PCI_CAP_ID_MSI;
+	int type = (info->flags & MSI_FLAG_PCI_MSIX) ? PCI_CAP_ID_MSIX : PCI_CAP_ID_MSI;
+	int ret;
 
-	return rtas_prepare_msi_irqs(pdev, nvec, type, arg);
-}
+	struct pseries_msi_device *pseries_dev __free(kfree)
+		= kmalloc(sizeof(*pseries_dev), GFP_KERNEL);
+	if (!pseries_dev)
+		return -ENOMEM;
 
-/*
- * ->msi_free() is called before irq_domain_free_irqs_top() when the
- * handler data is still available. Use that to clear the XIVE
- * controller data.
- */
-static void pseries_msi_ops_msi_free(struct irq_domain *domain,
-				     struct msi_domain_info *info,
-				     unsigned int irq)
-{
-	if (xive_enabled())
-		xive_irq_free_data(irq);
+	while (1) {
+		ret = rtas_prepare_msi_irqs(pdev, nvec, type, arg);
+		if (!ret)
+			break;
+		else if (ret > 0)
+			nvec = ret;
+		else
+			return ret;
+	}
+
+	pseries_dev->msi_quota = nvec;
+	pseries_dev->msi_used = 0;
+
+	arg->scratchpad[0].ptr = no_free_ptr(pseries_dev);
+	return 0;
 }
 
 /*
  * RTAS can not disable one MSI at a time. It's all or nothing. Do it
  * at the end after all IRQs have been freed.
  */
-static void pseries_msi_post_free(struct irq_domain *domain, struct device *dev)
+static void pseries_msi_ops_teardown(struct irq_domain *domain, msi_alloc_info_t *arg)
 {
-	if (WARN_ON_ONCE(!dev_is_pci(dev)))
-		return;
+	struct pseries_msi_device *pseries_dev = arg->scratchpad[0].ptr;
+	struct pci_dev *pdev = to_pci_dev(domain->dev);
 
-	rtas_disable_msi(to_pci_dev(dev));
+	rtas_disable_msi(pdev);
+
+	WARN_ON(pseries_dev->msi_used);
+	kfree(pseries_dev);
 }
-
-static struct msi_domain_ops pseries_pci_msi_domain_ops = {
-	.msi_prepare	= pseries_msi_ops_prepare,
-	.msi_free	= pseries_msi_ops_msi_free,
-	.msi_post_free	= pseries_msi_post_free,
-};
 
 static void pseries_msi_shutdown(struct irq_data *d)
 {
 	d = d->parent_data;
 	if (d->chip->irq_shutdown)
 		d->chip->irq_shutdown(d);
-}
-
-static void pseries_msi_mask(struct irq_data *d)
-{
-	pci_msi_mask_irq(d);
-	irq_chip_mask_parent(d);
-}
-
-static void pseries_msi_unmask(struct irq_data *d)
-{
-	pci_msi_unmask_irq(d);
-	irq_chip_unmask_parent(d);
 }
 
 static void pseries_msi_write_msg(struct irq_data *data, struct msi_msg *msg)
@@ -499,27 +498,39 @@ static void pseries_msi_write_msg(struct irq_data *data, struct msi_msg *msg)
 	entry->msg = *msg;
 }
 
-static struct irq_chip pseries_pci_msi_irq_chip = {
-	.name		= "pSeries-PCI-MSI",
-	.irq_shutdown	= pseries_msi_shutdown,
-	.irq_mask	= pseries_msi_mask,
-	.irq_unmask	= pseries_msi_unmask,
-	.irq_eoi	= irq_chip_eoi_parent,
-	.irq_write_msi_msg	= pseries_msi_write_msg,
-};
+static bool pseries_init_dev_msi_info(struct device *dev, struct irq_domain *domain,
+				      struct irq_domain *real_parent, struct msi_domain_info *info)
+{
+	struct irq_chip *chip = info->chip;
 
+	if (!msi_lib_init_dev_msi_info(dev, domain, real_parent, info))
+		return false;
 
-/*
- * Set MSI_FLAG_MSIX_CONTIGUOUS as there is no way to express to
- * firmware to request a discontiguous or non-zero based range of
- * MSI-X entries. Core code will reject such setup attempts.
- */
-static struct msi_domain_info pseries_msi_domain_info = {
-	.flags = (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
-		  MSI_FLAG_MULTI_PCI_MSI  | MSI_FLAG_PCI_MSIX |
-		  MSI_FLAG_MSIX_CONTIGUOUS),
-	.ops   = &pseries_pci_msi_domain_ops,
-	.chip  = &pseries_pci_msi_irq_chip,
+	chip->irq_shutdown = pseries_msi_shutdown;
+	chip->irq_write_msi_msg	= pseries_msi_write_msg;
+
+	info->ops->msi_prepare = pseries_msi_ops_prepare;
+	info->ops->msi_teardown = pseries_msi_ops_teardown;
+
+	return true;
+}
+
+#define PSERIES_PCI_MSI_FLAGS_REQUIRED (MSI_FLAG_USE_DEF_DOM_OPS	| \
+					MSI_FLAG_USE_DEF_CHIP_OPS	| \
+					MSI_FLAG_PCI_MSI_MASK_PARENT)
+#define PSERIES_PCI_MSI_FLAGS_SUPPORTED (MSI_GENERIC_FLAGS_MASK		| \
+					 MSI_FLAG_PCI_MSIX		| \
+					 MSI_FLAG_MSIX_CONTIGUOUS	| \
+					 MSI_FLAG_MULTI_PCI_MSI)
+
+static const struct msi_parent_ops pseries_msi_parent_ops = {
+	.required_flags		= PSERIES_PCI_MSI_FLAGS_REQUIRED,
+	.supported_flags	= PSERIES_PCI_MSI_FLAGS_SUPPORTED,
+	.chip_flags		= MSI_CHIP_FLAG_SET_EOI,
+	.bus_select_token	= DOMAIN_BUS_NEXUS,
+	.bus_select_mask	= MATCH_PCI_MSI,
+	.prefix			= "pSeries-",
+	.init_dev_msi_info	= pseries_init_dev_msi_info,
 };
 
 static void pseries_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
@@ -564,11 +575,17 @@ static int pseries_irq_domain_alloc(struct irq_domain *domain, unsigned int virq
 				    unsigned int nr_irqs, void *arg)
 {
 	struct pci_controller *phb = domain->host_data;
+	struct pseries_msi_device *pseries_dev;
 	msi_alloc_info_t *info = arg;
 	struct msi_desc *desc = info->desc;
 	struct pci_dev *pdev = msi_desc_to_pci_dev(desc);
 	int hwirq;
 	int i, ret;
+
+	pseries_dev = info->scratchpad[0].ptr;
+
+	if (pseries_dev->msi_used + nr_irqs > pseries_dev->msi_quota)
+		return -ENOSPC;
 
 	hwirq = rtas_query_irq_number(pci_get_pdn(pdev), desc->msi_index);
 	if (hwirq < 0) {
@@ -585,9 +602,10 @@ static int pseries_irq_domain_alloc(struct irq_domain *domain, unsigned int virq
 			goto out;
 
 		irq_domain_set_hwirq_and_chip(domain, virq + i, hwirq + i,
-					      &pseries_msi_irq_chip, domain->host_data);
+					      &pseries_msi_irq_chip, pseries_dev);
 	}
 
+	pseries_dev->msi_used++;
 	return 0;
 
 out:
@@ -600,14 +618,16 @@ static void pseries_irq_domain_free(struct irq_domain *domain, unsigned int virq
 				    unsigned int nr_irqs)
 {
 	struct irq_data *d = irq_domain_get_irq_data(domain, virq);
-	struct pci_controller *phb = irq_data_get_irq_chip_data(d);
+	struct pseries_msi_device *pseries_dev = irq_data_get_irq_chip_data(d);
+	struct pci_controller *phb = domain->host_data;
 
 	pr_debug("%s bridge %pOF %d #%d\n", __func__, phb->dn, virq, nr_irqs);
-
-	/* XIVE domain data is cleared through ->msi_free() */
+	pseries_dev->msi_used -= nr_irqs;
+	irq_domain_free_irqs_parent(domain, virq, nr_irqs);
 }
 
 static const struct irq_domain_ops pseries_irq_domain_ops = {
+	.select	= msi_lib_irq_domain_select,
 	.alloc  = pseries_irq_domain_alloc,
 	.free   = pseries_irq_domain_free,
 };
@@ -615,31 +635,19 @@ static const struct irq_domain_ops pseries_irq_domain_ops = {
 static int __pseries_msi_allocate_domains(struct pci_controller *phb,
 					  unsigned int count)
 {
-	struct irq_domain *parent = irq_get_default_host();
+	struct irq_domain *parent = irq_get_default_domain();
+	struct irq_domain_info info = {
+		.fwnode		= of_fwnode_handle(phb->dn),
+		.ops		= &pseries_irq_domain_ops,
+		.host_data	= phb,
+		.size		= count,
+		.parent		= parent,
+	};
 
-	phb->fwnode = irq_domain_alloc_named_id_fwnode("pSeries-MSI",
-						       phb->global_number);
-	if (!phb->fwnode)
-		return -ENOMEM;
-
-	phb->dev_domain = irq_domain_create_hierarchy(parent, 0, count,
-						      phb->fwnode,
-						      &pseries_irq_domain_ops, phb);
+	phb->dev_domain = msi_create_parent_irq_domain(&info, &pseries_msi_parent_ops);
 	if (!phb->dev_domain) {
-		pr_err("PCI: failed to create IRQ domain bridge %pOF (domain %d)\n",
-		       phb->dn, phb->global_number);
-		irq_domain_free_fwnode(phb->fwnode);
-		return -ENOMEM;
-	}
-
-	phb->msi_domain = pci_msi_create_irq_domain(of_node_to_fwnode(phb->dn),
-						    &pseries_msi_domain_info,
-						    phb->dev_domain);
-	if (!phb->msi_domain) {
 		pr_err("PCI: failed to create MSI IRQ domain bridge %pOF (domain %d)\n",
 		       phb->dn, phb->global_number);
-		irq_domain_free_fwnode(phb->fwnode);
-		irq_domain_remove(phb->dev_domain);
 		return -ENOMEM;
 	}
 
@@ -661,12 +669,8 @@ int pseries_msi_allocate_domains(struct pci_controller *phb)
 
 void pseries_msi_free_domains(struct pci_controller *phb)
 {
-	if (phb->msi_domain)
-		irq_domain_remove(phb->msi_domain);
 	if (phb->dev_domain)
 		irq_domain_remove(phb->dev_domain);
-	if (phb->fwnode)
-		irq_domain_free_fwnode(phb->fwnode);
 }
 
 static void rtas_msi_pci_irq_fixup(struct pci_dev *pdev)

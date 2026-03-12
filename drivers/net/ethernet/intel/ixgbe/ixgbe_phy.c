@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright(c) 1999 - 2018 Intel Corporation. */
+/* Copyright(c) 1999 - 2024 Intel Corporation. */
 
 #include <linux/pci.h>
 #include <linux/delay.h>
@@ -1117,7 +1117,7 @@ int ixgbe_setup_phy_link_generic(struct ixgbe_hw *hw)
 	hw->phy.ops.read_reg(hw, IXGBE_MII_AUTONEG_VENDOR_PROVISION_1_REG,
 			     MDIO_MMD_AN, &autoneg_reg);
 
-	if (hw->mac.type == ixgbe_mac_X550) {
+	if (hw->mac.type == ixgbe_mac_X550 || hw->mac.type == ixgbe_mac_e610) {
 		/* Set or unset auto-negotiation 5G advertisement */
 		autoneg_reg &= ~IXGBE_MII_5GBASE_T_ADVERTISE;
 		if ((hw->phy.autoneg_advertised & IXGBE_LINK_SPEED_5GB_FULL) &&
@@ -1233,6 +1233,7 @@ static int ixgbe_get_copper_speeds_supported(struct ixgbe_hw *hw)
 
 	switch (hw->mac.type) {
 	case ixgbe_mac_X550:
+	case ixgbe_mac_e610:
 		hw->phy.speeds_supported |= IXGBE_LINK_SPEED_2_5GB_FULL;
 		hw->phy.speeds_supported |= IXGBE_LINK_SPEED_5GB_FULL;
 		break;
@@ -1322,7 +1323,7 @@ int ixgbe_check_phy_link_tnx(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
  *	@hw: pointer to hardware structure
  *
  *	Restart autonegotiation and PHY and waits for completion.
- *      This function always returns success, this is nessary since
+ *	This function always returns success, this is necessary since
  *	it is called via a function pointer that could call other
  *	functions that could return an error.
  **/

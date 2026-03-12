@@ -13,8 +13,8 @@
  *
  * @ctrl: Controller handle
  * @reply: Reply received from the device
- * @len: Length of the reply
  * @tid: Transaction ID received with which framework can associate reply.
+ * @len: Length of the reply
  *
  * Called by controller to inform framework about the response received.
  * This helps in making the API asynchronous, and controller-driver doesn't need
@@ -143,8 +143,6 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 
 		if (!txn->msg->comp)
 			txn->comp = &done;
-		else
-			txn->comp = txn->comp;
 	}
 
 	ret = ctrl->xfer_msg(ctrl, txn);
@@ -224,7 +222,7 @@ static u16 slim_slicesize(int code)
 /**
  * slim_xfer_msg() - Transfer a value info message on slim device
  *
- * @sbdev: slim device to which this msg has to be transfered
+ * @sbdev: slim device to which this msg has to be transferred
  * @msg: value info message pointer
  * @mc: message code of the message
  *

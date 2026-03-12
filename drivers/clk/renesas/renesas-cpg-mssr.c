@@ -40,7 +40,6 @@
 #define WARN_DEBUG(x)	do { } while (0)
 #endif
 
-
 /*
  * Module Standby and Software Reset register offets.
  *
@@ -79,6 +78,37 @@ static const u16 mstpcr_for_gen4[] = {
 	0x2D20, 0x2D24, 0x2D28, 0x2D2C, 0x2D30, 0x2D34, 0x2D38, 0x2D3C,
 	0x2D40, 0x2D44, 0x2D48, 0x2D4C, 0x2D50, 0x2D54, 0x2D58, 0x2D5C,
 	0x2D60, 0x2D64, 0x2D68, 0x2D6C, 0x2D70, 0x2D74,
+};
+
+/*
+ * Module Stop Control Register (RZ/T2H)
+ * RZ/T2H has 2 registers blocks,
+ * Bit 12 is used to differentiate them
+ */
+
+#define RZT2H_MSTPCR_BLOCK_SHIFT	12
+#define RZT2H_MSTPCR_OFFSET_MASK	GENMASK(11, 0)
+#define RZT2H_MSTPCR(block, offset)	(((block) << RZT2H_MSTPCR_BLOCK_SHIFT) | \
+					((offset) & RZT2H_MSTPCR_OFFSET_MASK))
+
+#define RZT2H_MSTPCR_BLOCK(x)		((x) >> RZT2H_MSTPCR_BLOCK_SHIFT)
+#define RZT2H_MSTPCR_OFFSET(x)		((x) & RZT2H_MSTPCR_OFFSET_MASK)
+
+static const u16 mstpcr_for_rzt2h[] = {
+	RZT2H_MSTPCR(0, 0x300), /* MSTPCRA */
+	RZT2H_MSTPCR(0, 0x304), /* MSTPCRB */
+	RZT2H_MSTPCR(0, 0x308), /* MSTPCRC */
+	RZT2H_MSTPCR(0, 0x30c),	/* MSTPCRD */
+	RZT2H_MSTPCR(0, 0x310), /* MSTPCRE */
+	0,
+	RZT2H_MSTPCR(1, 0x318), /* MSTPCRG */
+	0,
+	RZT2H_MSTPCR(1, 0x320), /* MSTPCRI */
+	RZT2H_MSTPCR(0, 0x324), /* MSTPCRJ */
+	RZT2H_MSTPCR(0, 0x328), /* MSTPCRK */
+	RZT2H_MSTPCR(0, 0x32c), /* MSTPCRL */
+	RZT2H_MSTPCR(0, 0x330), /* MSTPCRM */
+	RZT2H_MSTPCR(1, 0x334), /* MSTPCRN */
 };
 
 /*
@@ -189,6 +219,26 @@ struct mstp_clock {
 
 #define to_mstp_clock(_hw) container_of(_hw, struct mstp_clock, hw)
 
+static u32 cpg_rzt2h_mstp_read(struct clk_hw *hw, u16 offset)
+{
+	struct mstp_clock *clock = to_mstp_clock(hw);
+	struct cpg_mssr_priv *priv = clock->priv;
+	void __iomem *base =
+		RZT2H_MSTPCR_BLOCK(offset) ? priv->pub.base1 : priv->pub.base0;
+
+	return readl(base + RZT2H_MSTPCR_OFFSET(offset));
+}
+
+static void cpg_rzt2h_mstp_write(struct clk_hw *hw, u16 offset, u32 value)
+{
+	struct mstp_clock *clock = to_mstp_clock(hw);
+	struct cpg_mssr_priv *priv = clock->priv;
+	void __iomem *base =
+		RZT2H_MSTPCR_BLOCK(offset) ? priv->pub.base1 : priv->pub.base0;
+
+	writel(value, base + RZT2H_MSTPCR_OFFSET(offset));
+}
+
 static int cpg_mstp_clock_endisable(struct clk_hw *hw, bool enable)
 {
 	struct mstp_clock *clock = to_mstp_clock(hw);
@@ -217,6 +267,18 @@ static int cpg_mstp_clock_endisable(struct clk_hw *hw, bool enable)
 		readb(priv->pub.base0 + priv->control_regs[reg]);
 		barrier_data(priv->pub.base0 + priv->control_regs[reg]);
 
+	} else if (priv->reg_layout == CLK_REG_LAYOUT_RZ_T2H) {
+		value = cpg_rzt2h_mstp_read(hw,
+					    priv->control_regs[reg]);
+
+		if (enable)
+			value &= ~bitmask;
+		else
+			value |= bitmask;
+
+		cpg_rzt2h_mstp_write(hw,
+				     priv->control_regs[reg],
+				     value);
 	} else {
 		value = readl(priv->pub.base0 + priv->control_regs[reg]);
 		if (enable)
@@ -228,7 +290,8 @@ static int cpg_mstp_clock_endisable(struct clk_hw *hw, bool enable)
 
 	spin_unlock_irqrestore(&priv->pub.rmw_lock, flags);
 
-	if (!enable || priv->reg_layout == CLK_REG_LAYOUT_RZ_A)
+	if (!enable || priv->reg_layout == CLK_REG_LAYOUT_RZ_A ||
+	    priv->reg_layout == CLK_REG_LAYOUT_RZ_T2H)
 		return 0;
 
 	error = readl_poll_timeout_atomic(priv->pub.base0 + priv->status_regs[reg],
@@ -259,6 +322,9 @@ static int cpg_mstp_clock_is_enabled(struct clk_hw *hw)
 
 	if (priv->reg_layout == CLK_REG_LAYOUT_RZ_A)
 		value = readb(priv->pub.base0 + priv->control_regs[reg]);
+	else if (priv->reg_layout == CLK_REG_LAYOUT_RZ_T2H)
+		value = cpg_rzt2h_mstp_read(hw,
+					    priv->control_regs[reg]);
 	else
 		value = readl(priv->pub.base0 + priv->status_regs[reg]);
 
@@ -337,11 +403,6 @@ static void __init cpg_mssr_register_core_clk(const struct cpg_core_clk *core,
 
 	WARN_DEBUG(id >= priv->num_core_clks);
 	WARN_DEBUG(PTR_ERR(priv->clks[id]) != -ENOENT);
-
-	if (!core->name) {
-		/* Skip NULLified clock */
-		return;
-	}
 
 	switch (core->type) {
 	case CLK_TYPE_IN:
@@ -717,7 +778,6 @@ static inline int cpg_mssr_reset_controller_register(struct cpg_mssr_priv *priv)
 }
 #endif /* !CONFIG_RESET_CONTROLLER */
 
-
 static const struct of_device_id cpg_mssr_match[] = {
 #ifdef CONFIG_CLK_R7S9210
 	{
@@ -877,6 +937,18 @@ static const struct of_device_id cpg_mssr_match[] = {
 	{
 		.compatible = "renesas,r8a779h0-cpg-mssr",
 		.data = &r8a779h0_cpg_mssr_info,
+	},
+#endif
+#ifdef CONFIG_CLK_R9A09G077
+	{
+		.compatible = "renesas,r9a09g077-cpg-mssr",
+		.data = &r9a09g077_cpg_mssr_info,
+	},
+#endif
+#ifdef CONFIG_CLK_R9A09G087
+	{
+		.compatible = "renesas,r9a09g087-cpg-mssr",
+		.data = &r9a09g077_cpg_mssr_info,
 	},
 #endif
 	{ /* sentinel */ }
@@ -1078,6 +1150,13 @@ static int __init cpg_mssr_common_init(struct device *dev,
 		error = -ENOMEM;
 		goto out_err;
 	}
+	if (info->reg_layout == CLK_REG_LAYOUT_RZ_T2H) {
+		priv->pub.base1 = of_iomap(np, 1);
+		if (!priv->pub.base1) {
+			error = -ENOMEM;
+			goto out_err;
+		}
+	}
 
 	priv->num_core_clks = info->num_total_core_clks;
 	priv->num_mod_clks = info->num_hw_mod_clks;
@@ -1091,6 +1170,8 @@ static int __init cpg_mssr_common_init(struct device *dev,
 		priv->reset_clear_regs = srstclr;
 	} else if (priv->reg_layout == CLK_REG_LAYOUT_RZ_A) {
 		priv->control_regs = stbcr;
+	} else if (priv->reg_layout == CLK_REG_LAYOUT_RZ_T2H) {
+		priv->control_regs = mstpcr_for_rzt2h;
 	} else if (priv->reg_layout == CLK_REG_LAYOUT_RCAR_GEN4) {
 		priv->status_regs = mstpsr_for_gen4;
 		priv->control_regs = mstpcr_for_gen4;
@@ -1121,6 +1202,8 @@ reserve_err:
 out_err:
 	if (priv->pub.base0)
 		iounmap(priv->pub.base0);
+	if (priv->pub.base1)
+		iounmap(priv->pub.base1);
 	kfree(priv);
 
 	return error;
@@ -1185,7 +1268,8 @@ static int __init cpg_mssr_probe(struct platform_device *pdev)
 		goto reserve_exit;
 
 	/* Reset Controller not supported for Standby Control SoCs */
-	if (priv->reg_layout == CLK_REG_LAYOUT_RZ_A)
+	if (priv->reg_layout == CLK_REG_LAYOUT_RZ_A ||
+	    priv->reg_layout == CLK_REG_LAYOUT_RZ_T2H)
 		goto reserve_exit;
 
 	error = cpg_mssr_reset_controller_register(priv);

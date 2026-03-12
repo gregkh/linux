@@ -20,15 +20,22 @@
 #include "ivpu_mmu.h"
 #include "ivpu_ms.h"
 #include "ivpu_pm.h"
+#include "ivpu_trace.h"
 #include "vpu_boot_api.h"
 
 static bool ivpu_disable_recovery;
+#if IS_ENABLED(CONFIG_DRM_ACCEL_IVPU_DEBUG)
 module_param_named_unsafe(disable_recovery, ivpu_disable_recovery, bool, 0644);
 MODULE_PARM_DESC(disable_recovery, "Disables recovery when NPU hang is detected");
+#endif
 
 static unsigned long ivpu_tdr_timeout_ms;
 module_param_named(tdr_timeout_ms, ivpu_tdr_timeout_ms, ulong, 0644);
 MODULE_PARM_DESC(tdr_timeout_ms, "Timeout for device hang detection, in milliseconds, 0 - default");
+
+static unsigned long ivpu_inference_timeout_ms;
+module_param_named(inference_timeout_ms, ivpu_inference_timeout_ms, ulong, 0644);
+MODULE_PARM_DESC(inference_timeout_ms, "Inference maximum duration, in milliseconds, 0 - default");
 
 #define PM_RESCHEDULE_LIMIT     5
 
@@ -41,6 +48,7 @@ static void ivpu_pm_prepare_cold_boot(struct ivpu_device *vdev)
 	ivpu_fw_log_reset(vdev);
 	ivpu_fw_load(vdev);
 	fw->entry_point = fw->cold_boot_entry_point;
+	fw->last_heartbeat = 0;
 }
 
 static void ivpu_pm_prepare_warm_boot(struct ivpu_device *vdev)
@@ -174,16 +182,11 @@ void ivpu_pm_trigger_recovery(struct ivpu_device *vdev, const char *reason)
 		return;
 	}
 
-	if (ivpu_is_fpga(vdev)) {
-		ivpu_err(vdev, "Recovery not available on FPGA\n");
-		return;
-	}
-
 	/* Trigger recovery if it's not in progress */
 	if (atomic_cmpxchg(&vdev->pm->reset_pending, 0, 1) == 0) {
 		ivpu_hw_diagnose_failure(vdev);
 		ivpu_hw_irq_disable(vdev); /* Disable IRQ early to protect from IRQ storm */
-		queue_work(system_long_wq, &vdev->pm->recovery_work);
+		queue_work(system_unbound_wq, &vdev->pm->recovery_work);
 	}
 }
 
@@ -191,7 +194,30 @@ static void ivpu_job_timeout_work(struct work_struct *work)
 {
 	struct ivpu_pm_info *pm = container_of(work, struct ivpu_pm_info, job_timeout_work.work);
 	struct ivpu_device *vdev = pm->vdev;
+	unsigned long timeout_ms = ivpu_tdr_timeout_ms ? ivpu_tdr_timeout_ms : vdev->timeout.tdr;
+	unsigned long inference_timeout_ms = ivpu_inference_timeout_ms ? ivpu_inference_timeout_ms :
+					     vdev->timeout.inference;
+	u64 inference_max_retries;
+	u64 heartbeat;
 
+	if (ivpu_jsm_get_heartbeat(vdev, 0, &heartbeat) || heartbeat <= vdev->fw->last_heartbeat) {
+		ivpu_err(vdev, "Job timeout detected, heartbeat not progressed\n");
+		goto recovery;
+	}
+
+	inference_max_retries = DIV_ROUND_UP(inference_timeout_ms, timeout_ms);
+	if (atomic_fetch_inc(&vdev->job_timeout_counter) >= inference_max_retries) {
+		ivpu_err(vdev, "Job timeout detected, heartbeat limit (%lld) exceeded\n",
+			 inference_max_retries);
+		goto recovery;
+	}
+
+	vdev->fw->last_heartbeat = heartbeat;
+	ivpu_start_job_timeout_detection(vdev);
+	return;
+
+recovery:
+	atomic_set(&vdev->job_timeout_counter, 0);
 	ivpu_pm_trigger_recovery(vdev, "TDR");
 }
 
@@ -206,6 +232,7 @@ void ivpu_start_job_timeout_detection(struct ivpu_device *vdev)
 void ivpu_stop_job_timeout_detection(struct ivpu_device *vdev)
 {
 	cancel_delayed_work_sync(&vdev->pm->job_timeout_work);
+	atomic_set(&vdev->job_timeout_counter, 0);
 }
 
 int ivpu_pm_suspend_cb(struct device *dev)
@@ -214,6 +241,7 @@ int ivpu_pm_suspend_cb(struct device *dev)
 	struct ivpu_device *vdev = to_ivpu_device(drm);
 	unsigned long timeout;
 
+	trace_pm("suspend");
 	ivpu_dbg(vdev, PM, "Suspend..\n");
 
 	timeout = jiffies + msecs_to_jiffies(vdev->timeout.tdr);
@@ -231,6 +259,7 @@ int ivpu_pm_suspend_cb(struct device *dev)
 	ivpu_pm_prepare_warm_boot(vdev);
 
 	ivpu_dbg(vdev, PM, "Suspend done.\n");
+	trace_pm("suspend done");
 
 	return 0;
 }
@@ -241,6 +270,7 @@ int ivpu_pm_resume_cb(struct device *dev)
 	struct ivpu_device *vdev = to_ivpu_device(drm);
 	int ret;
 
+	trace_pm("resume");
 	ivpu_dbg(vdev, PM, "Resume..\n");
 
 	ret = ivpu_resume(vdev);
@@ -248,6 +278,7 @@ int ivpu_pm_resume_cb(struct device *dev)
 		ivpu_err(vdev, "Failed to resume: %d\n", ret);
 
 	ivpu_dbg(vdev, PM, "Resume done.\n");
+	trace_pm("resume done");
 
 	return ret;
 }
@@ -262,6 +293,7 @@ int ivpu_pm_runtime_suspend_cb(struct device *dev)
 	drm_WARN_ON(&vdev->drm, !xa_empty(&vdev->submitted_jobs_xa));
 	drm_WARN_ON(&vdev->drm, work_pending(&vdev->pm->recovery_work));
 
+	trace_pm("runtime suspend");
 	ivpu_dbg(vdev, PM, "Runtime suspend..\n");
 
 	ivpu_mmu_disable(vdev);
@@ -288,6 +320,7 @@ int ivpu_pm_runtime_suspend_cb(struct device *dev)
 	}
 
 	ivpu_dbg(vdev, PM, "Runtime suspend done.\n");
+	trace_pm("runtime suspend done");
 
 	return 0;
 }
@@ -298,6 +331,7 @@ int ivpu_pm_runtime_resume_cb(struct device *dev)
 	struct ivpu_device *vdev = to_ivpu_device(drm);
 	int ret;
 
+	trace_pm("runtime resume");
 	ivpu_dbg(vdev, PM, "Runtime resume..\n");
 
 	ret = ivpu_resume(vdev);
@@ -305,6 +339,7 @@ int ivpu_pm_runtime_resume_cb(struct device *dev)
 		ivpu_err(vdev, "Failed to set RESUME state: %d\n", ret);
 
 	ivpu_dbg(vdev, PM, "Runtime resume done.\n");
+	trace_pm("runtime resume done");
 
 	return ret;
 }
@@ -429,7 +464,7 @@ int ivpu_pm_dct_enable(struct ivpu_device *vdev, u8 active_percent)
 
 	ret = ivpu_jsm_dct_enable(vdev, active_us, inactive_us);
 	if (ret) {
-		ivpu_err_ratelimited(vdev, "Filed to enable DCT: %d\n", ret);
+		ivpu_err_ratelimited(vdev, "Failed to enable DCT: %d\n", ret);
 		return ret;
 	}
 
@@ -446,15 +481,16 @@ int ivpu_pm_dct_disable(struct ivpu_device *vdev)
 
 	ret = ivpu_jsm_dct_disable(vdev);
 	if (ret) {
-		ivpu_err_ratelimited(vdev, "Filed to disable DCT: %d\n", ret);
+		ivpu_err_ratelimited(vdev, "Failed to disable DCT: %d\n", ret);
 		return ret;
 	}
 
 	return 0;
 }
 
-void ivpu_pm_dct_irq_thread_handler(struct ivpu_device *vdev)
+void ivpu_pm_irq_dct_work_fn(struct work_struct *work)
 {
+	struct ivpu_device *vdev = container_of(work, struct ivpu_device, irq_dct_work);
 	bool enable;
 	int ret;
 

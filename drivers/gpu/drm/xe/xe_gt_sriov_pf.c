@@ -13,8 +13,10 @@
 #include "xe_gt_sriov_pf_config.h"
 #include "xe_gt_sriov_pf_control.h"
 #include "xe_gt_sriov_pf_helpers.h"
+#include "xe_gt_sriov_pf_migration.h"
 #include "xe_gt_sriov_pf_service.h"
 #include "xe_gt_sriov_printk.h"
+#include "xe_guc_submit.h"
 #include "xe_mmio.h"
 #include "xe_pm.h"
 
@@ -46,7 +48,19 @@ static int pf_alloc_metadata(struct xe_gt *gt)
 
 static void pf_init_workers(struct xe_gt *gt)
 {
+	xe_gt_assert(gt, IS_SRIOV_PF(gt_to_xe(gt)));
 	INIT_WORK(&gt->sriov.pf.workers.restart, pf_worker_restart_func);
+}
+
+static void pf_fini_workers(struct xe_gt *gt)
+{
+	xe_gt_assert(gt, IS_SRIOV_PF(gt_to_xe(gt)));
+
+	if (disable_work_sync(&gt->sriov.pf.workers.restart)) {
+		xe_gt_sriov_dbg_verbose(gt, "pending restart disabled!\n");
+		/* release an rpm reference taken on the worker's behalf */
+		xe_pm_runtime_put(gt_to_xe(gt));
+	}
 }
 
 /**
@@ -78,6 +92,48 @@ int xe_gt_sriov_pf_init_early(struct xe_gt *gt)
 	return 0;
 }
 
+static void pf_fini_action(void *arg)
+{
+	struct xe_gt *gt = arg;
+
+	pf_fini_workers(gt);
+}
+
+static int pf_init_late(struct xe_gt *gt)
+{
+	struct xe_device *xe = gt_to_xe(gt);
+
+	xe_gt_assert(gt, IS_SRIOV_PF(xe));
+	return devm_add_action_or_reset(xe->drm.dev, pf_fini_action, gt);
+}
+
+/**
+ * xe_gt_sriov_pf_init - Prepare SR-IOV PF data structures on PF.
+ * @gt: the &xe_gt to initialize
+ *
+ * Late one-time initialization of the PF data.
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int xe_gt_sriov_pf_init(struct xe_gt *gt)
+{
+	int err;
+
+	err = xe_gt_sriov_pf_config_init(gt);
+	if (err)
+		return err;
+
+	err = xe_gt_sriov_pf_migration_init(gt);
+	if (err)
+		return err;
+
+	err = pf_init_late(gt);
+	if (err)
+		return err;
+
+	return 0;
+}
+
 static bool pf_needs_enable_ggtt_guest_update(struct xe_device *xe)
 {
 	return GRAPHICS_VERx100(xe) == 1200;
@@ -85,7 +141,7 @@ static bool pf_needs_enable_ggtt_guest_update(struct xe_device *xe)
 
 static void pf_enable_ggtt_guest_update(struct xe_gt *gt)
 {
-	xe_mmio_write32(gt, VIRTUAL_CTRL_REG, GUEST_GTT_UPDATE_EN);
+	xe_mmio_write32(&gt->mmio, VIRTUAL_CTRL_REG, GUEST_GTT_UPDATE_EN);
 }
 
 /**
@@ -127,13 +183,13 @@ static void pf_clear_vf_scratch_regs(struct xe_gt *gt, unsigned int vfid)
 		count = MED_VF_SW_FLAG_COUNT;
 		for (n = 0; n < count; n++) {
 			scratch = xe_reg_vf_to_pf(MED_VF_SW_FLAG(n), vfid, stride);
-			xe_mmio_write32(gt, scratch, 0);
+			xe_mmio_write32(&gt->mmio, scratch, 0);
 		}
 	} else {
 		count = VF_SW_FLAG_COUNT;
 		for (n = 0; n < count; n++) {
 			scratch = xe_reg_vf_to_pf(VF_SW_FLAG(n), vfid, stride);
-			xe_mmio_write32(gt, scratch, 0);
+			xe_mmio_write32(&gt->mmio, scratch, 0);
 		}
 	}
 }
@@ -156,8 +212,11 @@ static void pf_cancel_restart(struct xe_gt *gt)
 {
 	xe_gt_assert(gt, IS_SRIOV_PF(gt_to_xe(gt)));
 
-	if (cancel_work_sync(&gt->sriov.pf.workers.restart))
+	if (cancel_work_sync(&gt->sriov.pf.workers.restart)) {
 		xe_gt_sriov_dbg_verbose(gt, "pending restart canceled!\n");
+		/* release an rpm reference taken on the worker's behalf */
+		xe_pm_runtime_put(gt_to_xe(gt));
+	}
 }
 
 /**
@@ -175,9 +234,12 @@ static void pf_restart(struct xe_gt *gt)
 {
 	struct xe_device *xe = gt_to_xe(gt);
 
-	xe_pm_runtime_get(xe);
+	xe_gt_assert(gt, !xe_pm_runtime_suspended(xe));
+
 	xe_gt_sriov_pf_config_restart(gt);
 	xe_gt_sriov_pf_control_restart(gt);
+
+	/* release an rpm reference taken on our behalf */
 	xe_pm_runtime_put(xe);
 
 	xe_gt_sriov_dbg(gt, "restart completed\n");
@@ -196,8 +258,13 @@ static void pf_queue_restart(struct xe_gt *gt)
 
 	xe_gt_assert(gt, IS_SRIOV_PF(xe));
 
-	if (!queue_work(xe->sriov.wq, &gt->sriov.pf.workers.restart))
+	/* take an rpm reference on behalf of the worker */
+	xe_pm_runtime_get_noresume(xe);
+
+	if (!queue_work(xe->sriov.wq, &gt->sriov.pf.workers.restart)) {
 		xe_gt_sriov_dbg(gt, "restart already in queue!\n");
+		xe_pm_runtime_put(xe);
+	}
 }
 
 /**
@@ -209,4 +276,28 @@ static void pf_queue_restart(struct xe_gt *gt)
 void xe_gt_sriov_pf_restart(struct xe_gt *gt)
 {
 	pf_queue_restart(gt);
+}
+
+static void pf_flush_restart(struct xe_gt *gt)
+{
+	xe_gt_assert(gt, IS_SRIOV_PF(gt_to_xe(gt)));
+	flush_work(&gt->sriov.pf.workers.restart);
+}
+
+/**
+ * xe_gt_sriov_pf_wait_ready() - Wait until per-GT PF SR-IOV support is ready.
+ * @gt: the &xe_gt
+ *
+ * This function can only be called on PF.
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int xe_gt_sriov_pf_wait_ready(struct xe_gt *gt)
+{
+	/* don't wait if there is another ongoing reset */
+	if (xe_guc_read_stopped(&gt->uc.guc))
+		return -EBUSY;
+
+	pf_flush_restart(gt);
+	return 0;
 }

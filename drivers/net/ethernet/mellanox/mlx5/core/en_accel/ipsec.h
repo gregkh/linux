@@ -81,11 +81,18 @@ struct mlx5e_ipsec_addr {
 		__be32 a4;
 		__be32 a6[4];
 	} saddr;
-
+	union {
+		__be32 m4;
+		__be32 m6[4];
+	} smask;
 	union {
 		__be32 a4;
 		__be32 a6[4];
 	} daddr;
+	union {
+		__be32 m4;
+		__be32 m6[4];
+	} dmask;
 	u8 family;
 };
 
@@ -130,6 +137,7 @@ struct mlx5e_ipsec_hw_stats {
 	u64 ipsec_rx_bytes;
 	u64 ipsec_rx_drop_pkts;
 	u64 ipsec_rx_drop_bytes;
+	u64 ipsec_rx_drop_mismatch_sa_sel;
 	u64 ipsec_tx_pkts;
 	u64 ipsec_tx_bytes;
 	u64 ipsec_tx_drop_pkts;
@@ -177,6 +185,7 @@ struct mlx5e_ipsec_rx_create_attr {
 	u32 family;
 	int prio;
 	int pol_level;
+	int pol_miss_level;
 	int sa_level;
 	int status_level;
 	enum mlx5_flow_namespace_type chains_ns;
@@ -186,6 +195,7 @@ struct mlx5e_ipsec_ft {
 	struct mutex mutex; /* Protect changes to this struct */
 	struct mlx5_flow_table *pol;
 	struct mlx5_flow_table *sa;
+	struct mlx5_flow_table *sa_sel;
 	struct mlx5_flow_table *status;
 	u32 refcnt;
 };
@@ -197,6 +207,8 @@ struct mlx5e_ipsec_drop {
 
 struct mlx5e_ipsec_rule {
 	struct mlx5_flow_handle *rule;
+	struct mlx5_flow_handle *status_pass;
+	struct mlx5_flow_handle *sa_sel;
 	struct mlx5_modify_hdr *modify_hdr;
 	struct mlx5_pkt_reformat *pkt_reformat;
 	struct mlx5_fc *fc;
@@ -208,6 +220,7 @@ struct mlx5e_ipsec_rule {
 struct mlx5e_ipsec_miss {
 	struct mlx5_flow_group *group;
 	struct mlx5_flow_handle *rule;
+	struct mlx5_fc *fc;
 };
 
 struct mlx5e_ipsec_tx_create_attr {
@@ -306,7 +319,7 @@ void mlx5e_accel_ipsec_fs_del_rule(struct mlx5e_ipsec_sa_entry *sa_entry);
 int mlx5e_accel_ipsec_fs_add_pol(struct mlx5e_ipsec_pol_entry *pol_entry);
 void mlx5e_accel_ipsec_fs_del_pol(struct mlx5e_ipsec_pol_entry *pol_entry);
 void mlx5e_accel_ipsec_fs_modify(struct mlx5e_ipsec_sa_entry *sa_entry);
-bool mlx5e_ipsec_fs_tunnel_enabled(struct mlx5e_ipsec_sa_entry *sa_entry);
+bool mlx5e_ipsec_fs_tunnel_allowed(struct mlx5e_ipsec_sa_entry *sa_entry);
 
 int mlx5_ipsec_create_sa_ctx(struct mlx5e_ipsec_sa_entry *sa_entry);
 void mlx5_ipsec_free_sa_ctx(struct mlx5e_ipsec_sa_entry *sa_entry);

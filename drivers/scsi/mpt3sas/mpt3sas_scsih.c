@@ -2033,14 +2033,14 @@ scsih_target_destroy(struct scsi_target *starget)
 }
 
 /**
- * scsih_slave_alloc - device add routine
+ * scsih_sdev_init - device add routine
  * @sdev: scsi device struct
  *
  * Return: 0 if ok. Any other return is assumed to be an error and
  * the device is ignored.
  */
 static int
-scsih_slave_alloc(struct scsi_device *sdev)
+scsih_sdev_init(struct scsi_device *sdev)
 {
 	struct Scsi_Host *shost;
 	struct MPT3SAS_ADAPTER *ioc;
@@ -2115,11 +2115,11 @@ scsih_slave_alloc(struct scsi_device *sdev)
 }
 
 /**
- * scsih_slave_destroy - device destroy routine
+ * scsih_sdev_destroy - device destroy routine
  * @sdev: scsi device struct
  */
 static void
-scsih_slave_destroy(struct scsi_device *sdev)
+scsih_sdev_destroy(struct scsi_device *sdev)
 {
 	struct MPT3SAS_TARGET *sas_target_priv_data;
 	struct scsi_target *starget;
@@ -2504,7 +2504,7 @@ _scsih_enable_tlr(struct MPT3SAS_ADAPTER *ioc, struct scsi_device *sdev)
 }
 
 /**
- * scsih_device_configure - device configure routine.
+ * scsih_sdev_configure - device configure routine.
  * @sdev: scsi device struct
  * @lim: queue limits
  *
@@ -2512,7 +2512,7 @@ _scsih_enable_tlr(struct MPT3SAS_ADAPTER *ioc, struct scsi_device *sdev)
  * the device is ignored.
  */
 static int
-scsih_device_configure(struct scsi_device *sdev, struct queue_limits *lim)
+scsih_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
 {
 	struct Scsi_Host *shost = sdev->host;
 	struct MPT3SAS_ADAPTER *ioc = shost_priv(shost);
@@ -2711,7 +2711,7 @@ scsih_device_configure(struct scsi_device *sdev, struct queue_limits *lim)
 		ssp_target = 1;
 		if (sas_device->device_info &
 				MPI2_SAS_DEVICE_INFO_SEP) {
-			sdev_printk(KERN_WARNING, sdev,
+			sdev_printk(KERN_INFO, sdev,
 			"set ignore_delay_remove for handle(0x%04x)\n",
 			sas_device_priv_data->sas_target->handle);
 			sas_device_priv_data->ignore_delay_remove = 1;
@@ -2754,7 +2754,7 @@ scsih_device_configure(struct scsi_device *sdev, struct queue_limits *lim)
 /**
  * scsih_bios_param - fetch head, sector, cylinder info for a disk
  * @sdev: scsi device struct
- * @bdev: pointer to block device context
+ * @unused: pointer to gendisk
  * @capacity: device size (in 512 byte sectors)
  * @params: three element array to place output:
  *              params[0] number of heads (max 255)
@@ -2762,7 +2762,7 @@ scsih_device_configure(struct scsi_device *sdev, struct queue_limits *lim)
  *              params[2] number of cylinders
  */
 static int
-scsih_bios_param(struct scsi_device *sdev, struct block_device *bdev,
+scsih_bios_param(struct scsi_device *sdev, struct gendisk *unused,
 	sector_t capacity, int params[])
 {
 	int		heads;
@@ -11922,10 +11922,10 @@ static const struct scsi_host_template mpt2sas_driver_template = {
 	.proc_name			= MPT2SAS_DRIVER_NAME,
 	.queuecommand			= scsih_qcmd,
 	.target_alloc			= scsih_target_alloc,
-	.slave_alloc			= scsih_slave_alloc,
-	.device_configure		= scsih_device_configure,
+	.sdev_init			= scsih_sdev_init,
+	.sdev_configure			= scsih_sdev_configure,
 	.target_destroy			= scsih_target_destroy,
-	.slave_destroy			= scsih_slave_destroy,
+	.sdev_destroy			= scsih_sdev_destroy,
 	.scan_finished			= scsih_scan_finished,
 	.scan_start			= scsih_scan_start,
 	.change_queue_depth		= scsih_change_queue_depth,
@@ -11960,10 +11960,10 @@ static const struct scsi_host_template mpt3sas_driver_template = {
 	.proc_name			= MPT3SAS_DRIVER_NAME,
 	.queuecommand			= scsih_qcmd,
 	.target_alloc			= scsih_target_alloc,
-	.slave_alloc			= scsih_slave_alloc,
-	.device_configure		= scsih_device_configure,
+	.sdev_init			= scsih_sdev_init,
+	.sdev_configure			= scsih_sdev_configure,
 	.target_destroy			= scsih_target_destroy,
-	.slave_destroy			= scsih_slave_destroy,
+	.sdev_destroy			= scsih_sdev_destroy,
 	.scan_finished			= scsih_scan_finished,
 	.scan_start			= scsih_scan_start,
 	.change_queue_depth		= scsih_change_queue_depth,
@@ -12728,7 +12728,7 @@ static const struct pci_device_id mpt3sas_pci_table[] = {
 };
 MODULE_DEVICE_TABLE(pci, mpt3sas_pci_table);
 
-static struct pci_error_handlers _mpt3sas_err_handler = {
+static const struct pci_error_handlers _mpt3sas_err_handler = {
 	.error_detected	= scsih_pci_error_detected,
 	.mmio_enabled	= scsih_pci_mmio_enabled,
 	.slot_reset	= scsih_pci_slot_reset,

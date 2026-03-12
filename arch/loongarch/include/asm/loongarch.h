@@ -9,15 +9,15 @@
 #include <linux/linkage.h>
 #include <linux/types.h>
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <larchintrin.h>
 
 /* CPUCFG */
 #define read_cpucfg(reg) __cpucfg(reg)
 
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
-#ifdef __ASSEMBLY__
+#ifdef __ASSEMBLER__
 
 /* LoongArch Registers */
 #define REG_ZERO	0x0
@@ -53,7 +53,7 @@
 #define REG_S7		0x1e
 #define REG_S8		0x1f
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 /* Bit fields for CPUCFG registers */
 #define LOONGARCH_CPUCFG0		0x0
@@ -108,6 +108,12 @@
 #define  CPUCFG3_SPW_HG_HF		BIT(11)
 #define  CPUCFG3_RVA			BIT(12)
 #define  CPUCFG3_RVAMAX			GENMASK(16, 13)
+#define  CPUCFG3_ALDORDER_CAP		BIT(18) /* All address load ordered, capability */
+#define  CPUCFG3_ASTORDER_CAP		BIT(19) /* All address store ordered, capability */
+#define  CPUCFG3_ALDORDER_STA		BIT(20) /* All address load ordered, status */
+#define  CPUCFG3_ASTORDER_STA		BIT(21) /* All address store ordered, status */
+#define  CPUCFG3_SLDORDER_CAP		BIT(22) /* Same address load ordered, capability */
+#define  CPUCFG3_SLDORDER_STA		BIT(23) /* Same address load ordered, status */
 
 #define LOONGARCH_CPUCFG4		0x4
 #define  CPUCFG4_CCFREQ			GENMASK(31, 0)
@@ -122,6 +128,7 @@
 #define  CPUCFG6_PMNUM			GENMASK(7, 4)
 #define  CPUCFG6_PMNUM_SHIFT		4
 #define  CPUCFG6_PMBITS			GENMASK(13, 8)
+#define  CPUCFG6_PMBITS_SHIFT		8
 #define  CPUCFG6_UPM			BIT(14)
 
 #define LOONGARCH_CPUCFG16		0x10
@@ -165,7 +172,7 @@
  * SW emulation for KVM hypervirsor, see arch/loongarch/include/uapi/asm/kvm_para.h
  */
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 /* CSR */
 #define csr_read32(reg) __csrrd_w(reg)
@@ -181,7 +188,7 @@
 #define iocsr_write32(val, reg) __iocsrwr_w(val, reg)
 #define iocsr_write64(val, reg) __iocsrwr_d(val, reg)
 
-#endif /* !__ASSEMBLY__ */
+#endif /* !__ASSEMBLER__ */
 
 /* CSR register number */
 
@@ -405,8 +412,8 @@
 
 /* Config CSR registers */
 #define LOONGARCH_CSR_CPUID		0x20	/* CPU core id */
-#define  CSR_CPUID_COREID_WIDTH		9
-#define  CSR_CPUID_COREID		_ULCAST_(0x1ff)
+#define  CSR_CPUID_COREID_WIDTH		11
+#define  CSR_CPUID_COREID		_ULCAST_(0x7ff)
 
 #define LOONGARCH_CSR_PRCFG1		0x21	/* Config1 */
 #define  CSR_CONF1_VSMAX_SHIFT		12
@@ -445,6 +452,13 @@
 #define LOONGARCH_CSR_KS6		0x36
 #define LOONGARCH_CSR_KS7		0x37
 #define LOONGARCH_CSR_KS8		0x38
+#define LOONGARCH_CSR_KS9		0x39
+#define LOONGARCH_CSR_KS10		0x3a
+#define LOONGARCH_CSR_KS11		0x3b
+#define LOONGARCH_CSR_KS12		0x3c
+#define LOONGARCH_CSR_KS13		0x3d
+#define LOONGARCH_CSR_KS14		0x3e
+#define LOONGARCH_CSR_KS15		0x3f
 
 /* Exception allocated KS0, KS1 and KS2 statically */
 #define EXCEPTION_KS0			LOONGARCH_CSR_KS0
@@ -466,7 +480,6 @@
 
 #define LOONGARCH_CSR_TCFG		0x41	/* Timer config */
 #define  CSR_TCFG_VAL_SHIFT		2
-#define	 CSR_TCFG_VAL_WIDTH		48
 #define  CSR_TCFG_VAL			(_ULCAST_(0x3fffffffffff) << CSR_TCFG_VAL_SHIFT)
 #define  CSR_TCFG_PERIOD_SHIFT		1
 #define  CSR_TCFG_PERIOD		(_ULCAST_(0x1) << CSR_TCFG_PERIOD_SHIFT)
@@ -566,6 +579,15 @@
 
 /* Implement dependent */
 #define LOONGARCH_CSR_IMPCTL1		0x80	/* Loongson config1 */
+#define  CSR_LDSTORDER_SHIFT		28
+#define  CSR_LDSTORDER_WIDTH		3
+#define  CSR_LDSTORDER_MASK		(_ULCAST_(0x7) << CSR_LDSTORDER_SHIFT)
+#define  CSR_LDSTORDER_NLD_NST		(_ULCAST_(0x0) << CSR_LDSTORDER_SHIFT) /* 000 = No Load No Store */
+#define  CSR_LDSTORDER_ALD_NST		(_ULCAST_(0x1) << CSR_LDSTORDER_SHIFT) /* 001 = All Load No Store */
+#define  CSR_LDSTORDER_SLD_NST		(_ULCAST_(0x3) << CSR_LDSTORDER_SHIFT) /* 011 = Same Load No Store */
+#define  CSR_LDSTORDER_NLD_AST		(_ULCAST_(0x4) << CSR_LDSTORDER_SHIFT) /* 100 = No Load All Store */
+#define  CSR_LDSTORDER_ALD_AST		(_ULCAST_(0x5) << CSR_LDSTORDER_SHIFT) /* 101 = All Load All Store */
+#define  CSR_LDSTORDER_SLD_AST		(_ULCAST_(0x7) << CSR_LDSTORDER_SHIFT) /* 111 = Same Load All Store */
 #define  CSR_MISPEC_SHIFT		20
 #define  CSR_MISPEC_WIDTH		8
 #define  CSR_MISPEC			(_ULCAST_(0xff) << CSR_MISPEC_SHIFT)
@@ -1116,6 +1138,7 @@
 #define  IOCSRF_FLATMODE		BIT_ULL(10)
 #define  IOCSRF_VM			BIT_ULL(11)
 #define  IOCSRF_AVEC			BIT_ULL(15)
+#define  IOCSRF_REDIRECT		BIT_ULL(16)
 
 #define LOONGARCH_IOCSR_VENDOR		0x10
 
@@ -1181,7 +1204,7 @@
 #define LOONGARCH_IOCSR_EXTIOI_ROUTE_BASE	0x1c00
 #define IOCSR_EXTIOI_VECTOR_NUM			256
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 
 static __always_inline u64 drdtime(void)
 {
@@ -1343,7 +1366,7 @@ __BUILD_CSR_OP(tlbidx)
 #define clear_csr_estat(val)	\
 	csr_xchg32(~(val), val, LOONGARCH_CSR_ESTAT)
 
-#endif /* __ASSEMBLY__ */
+#endif /* __ASSEMBLER__ */
 
 /* Generic EntryLo bit definitions */
 #define ENTRYLO_V		(_ULCAST_(1) << 0)

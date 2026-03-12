@@ -20,18 +20,12 @@
 #include <linux/iomap.h>
 #include "erofs_fs.h"
 
-/* redefine pr_fmt "erofs: " */
-#undef pr_fmt
-#define pr_fmt(fmt) "erofs: " fmt
-
-__printf(3, 4) void _erofs_err(struct super_block *sb,
-			       const char *function, const char *fmt, ...);
+__printf(2, 3) void _erofs_printk(struct super_block *sb, const char *fmt, ...);
 #define erofs_err(sb, fmt, ...)	\
-	_erofs_err(sb, __func__, fmt "\n", ##__VA_ARGS__)
-__printf(3, 4) void _erofs_info(struct super_block *sb,
-			       const char *function, const char *fmt, ...);
+	_erofs_printk(sb, KERN_ERR fmt "\n", ##__VA_ARGS__)
 #define erofs_info(sb, fmt, ...) \
-	_erofs_info(sb, __func__, fmt "\n", ##__VA_ARGS__)
+	_erofs_printk(sb, KERN_INFO fmt "\n", ##__VA_ARGS__)
+
 #ifdef CONFIG_EROFS_FS_DEBUG
 #define DBG_BUGON               BUG_ON
 #else
@@ -43,18 +37,17 @@ __printf(3, 4) void _erofs_info(struct super_block *sb,
 
 typedef u64 erofs_nid_t;
 typedef u64 erofs_off_t;
-/* data type for filesystem-wide blocks number */
-typedef u32 erofs_blk_t;
+typedef u64 erofs_blk_t;
 
 struct erofs_device_info {
 	char *path;
 	struct erofs_fscache *fscache;
 	struct file *file;
 	struct dax_device *dax_dev;
-	u64 dax_part_off;
+	u64 fsoff, dax_part_off;
 
-	u32 blocks;
-	u32 mapped_blkaddr;
+	erofs_blk_t blocks;
+	erofs_blk_t uniaddr;
 };
 
 enum {
@@ -132,6 +125,7 @@ struct erofs_sb_info {
 	struct erofs_sb_lz4_info lz4;
 #endif	/* CONFIG_EROFS_FS_ZIP */
 	struct inode *packed_inode;
+	struct inode *metabox_inode;
 	struct erofs_dev_context *devs;
 	u64 total_blocks;
 
@@ -149,23 +143,24 @@ struct erofs_sb_info {
 	unsigned char blkszbits;	/* filesystem block size in bit shift */
 
 	u32 sb_size;			/* total superblock size */
-	u32 build_time_nsec;
-	u64 build_time;
+	u32 fixed_nsec;
+	s64 epoch;
 
 	/* what we really care is nid, rather than ino.. */
 	erofs_nid_t root_nid;
 	erofs_nid_t packed_nid;
+	erofs_nid_t metabox_nid;
 	/* used for statfs, f_files - f_favail */
 	u64 inos;
 
-	u8 uuid[16];                    /* 128-bit uuid for volume */
-	u8 volume_name[16];             /* volume name */
+	char *volume_name;
 	u32 feature_compat;
 	u32 feature_incompat;
 
 	/* sysfs support */
 	struct kobject s_kobj;		/* /sys/fs/erofs/<devname> */
 	struct completion s_kobj_unregister;
+	erofs_off_t dir_ra_bytes;
 
 	/* fscache support */
 	struct fscache_volume *volume;
@@ -205,22 +200,17 @@ enum {
 	EROFS_ZIP_CACHE_READAROUND
 };
 
-enum erofs_kmap_type {
-	EROFS_NO_KMAP,		/* don't map the buffer */
-	EROFS_KMAP,		/* use kmap_local_page() to map the buffer */
-};
-
 struct erofs_buf {
 	struct address_space *mapping;
 	struct file *file;
+	u64 off;
 	struct page *page;
 	void *base;
-	enum erofs_kmap_type kmap_type;
 };
 #define __EROFS_BUF_INITIALIZER	((struct erofs_buf){ .page = NULL })
 
-#define erofs_blknr(sb, addr)	((erofs_blk_t)((addr) >> (sb)->s_blocksize_bits))
-#define erofs_blkoff(sb, addr)	((addr) & ((sb)->s_blocksize - 1))
+#define erofs_blknr(sb, pos)	((erofs_blk_t)((pos) >> (sb)->s_blocksize_bits))
+#define erofs_blkoff(sb, pos)	((pos) & ((sb)->s_blocksize - 1))
 #define erofs_pos(sb, blk)	((erofs_off_t)(blk) << (sb)->s_blocksize_bits)
 #define erofs_iblks(i)	(round_up((i)->i_size, i_blocksize(i)) >> (i)->i_blkbits)
 
@@ -240,8 +230,29 @@ EROFS_FEATURE_FUNCS(ztailpacking, incompat, INCOMPAT_ZTAILPACKING)
 EROFS_FEATURE_FUNCS(fragments, incompat, INCOMPAT_FRAGMENTS)
 EROFS_FEATURE_FUNCS(dedupe, incompat, INCOMPAT_DEDUPE)
 EROFS_FEATURE_FUNCS(xattr_prefixes, incompat, INCOMPAT_XATTR_PREFIXES)
+EROFS_FEATURE_FUNCS(48bit, incompat, INCOMPAT_48BIT)
+EROFS_FEATURE_FUNCS(metabox, incompat, INCOMPAT_METABOX)
 EROFS_FEATURE_FUNCS(sb_chksum, compat, COMPAT_SB_CHKSUM)
 EROFS_FEATURE_FUNCS(xattr_filter, compat, COMPAT_XATTR_FILTER)
+EROFS_FEATURE_FUNCS(shared_ea_in_metabox, compat, COMPAT_SHARED_EA_IN_METABOX)
+EROFS_FEATURE_FUNCS(plain_xattr_pfx, compat, COMPAT_PLAIN_XATTR_PFX)
+
+static inline u64 erofs_nid_to_ino64(struct erofs_sb_info *sbi, erofs_nid_t nid)
+{
+	if (!erofs_sb_has_metabox(sbi))
+		return nid;
+
+	/*
+	 * When metadata compression is enabled, avoid generating excessively
+	 * large inode numbers for metadata-compressed inodes.  Shift NIDs in
+	 * the 31-62 bit range left by one and move the metabox flag to bit 31.
+	 *
+	 * Note: on-disk NIDs remain unchanged as they are primarily used for
+	 * compatibility with non-LFS 32-bit applications.
+	 */
+	return ((nid << 1) & GENMASK_ULL(63, 32)) | (nid & GENMASK(30, 0)) |
+		((nid >> EROFS_DIRENT_NID_METABOX_BIT) << 31);
+}
 
 /* atomic flag definitions */
 #define EROFS_I_EA_INITED_BIT	0
@@ -251,6 +262,9 @@ EROFS_FEATURE_FUNCS(xattr_filter, compat, COMPAT_XATTR_FILTER)
 #define EROFS_I_BL_XATTR_BIT	(BITS_PER_LONG - 1)
 #define EROFS_I_BL_Z_BIT	(BITS_PER_LONG - 2)
 
+/* default readahead size of directories */
+#define EROFS_DIR_RA_BYTES	16384
+
 struct erofs_inode {
 	erofs_nid_t nid;
 
@@ -259,6 +273,7 @@ struct erofs_inode {
 
 	unsigned char datalayout;
 	unsigned char inode_isize;
+	bool dot_omitted;
 	unsigned int xattr_isize;
 
 	unsigned int xattr_name_filter;
@@ -266,7 +281,7 @@ struct erofs_inode {
 	unsigned int *xattr_shared_xattrs;
 
 	union {
-		erofs_blk_t raw_blkaddr;
+		erofs_blk_t startblk;
 		struct {
 			unsigned short	chunkformat;
 			unsigned char	chunkbits;
@@ -275,8 +290,11 @@ struct erofs_inode {
 		struct {
 			unsigned short z_advise;
 			unsigned char  z_algorithmtype[2];
-			unsigned char  z_logical_clusterbits;
-			unsigned long  z_tailextent_headlcn;
+			unsigned char  z_lclusterbits;
+			union {
+				u64    z_tailextent_headlcn;
+				u64    z_extents;
+			};
 			erofs_off_t    z_fragmentoff;
 			unsigned short z_idata_size;
 		};
@@ -288,12 +306,20 @@ struct erofs_inode {
 
 #define EROFS_I(ptr)	container_of(ptr, struct erofs_inode, vfs_inode)
 
+static inline bool erofs_inode_in_metabox(struct inode *inode)
+{
+	return EROFS_I(inode)->nid & BIT_ULL(EROFS_DIRENT_NID_METABOX_BIT);
+}
+
 static inline erofs_off_t erofs_iloc(struct inode *inode)
 {
 	struct erofs_sb_info *sbi = EROFS_I_SB(inode);
+	erofs_nid_t nid_lo = EROFS_I(inode)->nid & EROFS_DIRENT_NID_MASK;
 
+	if (erofs_inode_in_metabox(inode))
+		return nid_lo << sbi->islotbits;
 	return erofs_pos(inode->i_sb, sbi->meta_blkaddr) +
-		(EROFS_I(inode)->nid << sbi->islotbits);
+		(nid_lo << sbi->islotbits);
 }
 
 static inline unsigned int erofs_inode_version(unsigned int ifmt)
@@ -391,11 +417,11 @@ void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 			  erofs_off_t *offset, int *lengthp);
 void erofs_unmap_metabuf(struct erofs_buf *buf);
 void erofs_put_metabuf(struct erofs_buf *buf);
-void *erofs_bread(struct erofs_buf *buf, erofs_off_t offset,
-		  enum erofs_kmap_type type);
-void erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb);
+void *erofs_bread(struct erofs_buf *buf, erofs_off_t offset, bool need_kmap);
+int erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb,
+		       bool in_metabox);
 void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
-			 erofs_off_t offset, enum erofs_kmap_type type);
+			 erofs_off_t offset, bool in_metabox);
 int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *dev);
 int erofs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 		 u64 start, u64 len);
@@ -443,6 +469,8 @@ static inline void erofs_pagepool_add(struct page **pagepool, struct page *page)
 void erofs_release_pages(struct page **pagepool);
 
 #ifdef CONFIG_EROFS_FS_ZIP
+#define MNGD_MAPPING(sbi)	((sbi)->managed_cache->i_mapping)
+
 extern atomic_long_t erofs_global_shrink_cnt;
 void erofs_shrinker_register(struct super_block *sb);
 void erofs_shrinker_unregister(struct super_block *sb);
@@ -508,6 +536,10 @@ static inline void erofs_fscache_unregister_cookie(struct erofs_fscache *fscache
 static inline struct bio *erofs_fscache_bio_alloc(struct erofs_map_dev *mdev) { return NULL; }
 static inline void erofs_fscache_submit_bio(struct bio *bio) {}
 #endif
+
+long erofs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
+long erofs_compat_ioctl(struct file *filp, unsigned int cmd,
+			unsigned long arg);
 
 #define EFSCORRUPTED    EUCLEAN         /* Filesystem is corrupted */
 

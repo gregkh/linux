@@ -227,7 +227,7 @@ static void em_init_performance(struct device *dev, struct em_perf_domain *pd,
 }
 
 static int em_compute_costs(struct device *dev, struct em_perf_state *table,
-			    struct em_data_callback *cb, int nr_states,
+			    const struct em_data_callback *cb, int nr_states,
 			    unsigned long flags)
 {
 	unsigned long prev_cost = ULONG_MAX;
@@ -334,7 +334,7 @@ EXPORT_SYMBOL_GPL(em_dev_update_perf_domain);
 
 static int em_create_perf_table(struct device *dev, struct em_perf_domain *pd,
 				struct em_perf_state *table,
-				struct em_data_callback *cb,
+				const struct em_data_callback *cb,
 				unsigned long flags)
 {
 	unsigned long power, freq, prev_freq = 0;
@@ -389,7 +389,8 @@ static int em_create_perf_table(struct device *dev, struct em_perf_domain *pd,
 }
 
 static int em_create_pd(struct device *dev, int nr_states,
-			struct em_data_callback *cb, cpumask_t *cpus,
+			const struct em_data_callback *cb,
+			const cpumask_t *cpus,
 			unsigned long flags)
 {
 	struct em_perf_table *em_table;
@@ -549,8 +550,32 @@ EXPORT_SYMBOL_GPL(em_cpu_get);
  * Return 0 on success
  */
 int em_dev_register_perf_domain(struct device *dev, unsigned int nr_states,
-				struct em_data_callback *cb, cpumask_t *cpus,
-				bool microwatts)
+				const struct em_data_callback *cb,
+				const cpumask_t *cpus, bool microwatts)
+{
+	int ret = em_dev_register_pd_no_update(dev, nr_states, cb, cpus, microwatts);
+
+	if (_is_cpu_device(dev))
+		em_check_capacity_update();
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(em_dev_register_perf_domain);
+
+/**
+ * em_dev_register_pd_no_update() - Register a perf domain for a device
+ * @dev : Device to register the PD for
+ * @nr_states : Number of performance states in the new PD
+ * @cb : Callback functions for populating the energy model
+ * @cpus : CPUs to include in the new PD (mandatory if @dev is a CPU device)
+ * @microwatts : Whether or not the power values in the EM will be in uW
+ *
+ * Like em_dev_register_perf_domain(), but does not trigger a CPU capacity
+ * update after registering the PD, even if @dev is a CPU device.
+ */
+int em_dev_register_pd_no_update(struct device *dev, unsigned int nr_states,
+				 const struct em_data_callback *cb,
+				 const cpumask_t *cpus, bool microwatts)
 {
 	struct em_perf_table *em_table;
 	unsigned long cap, prev_cap = 0;
@@ -622,6 +647,8 @@ int em_dev_register_perf_domain(struct device *dev, unsigned int nr_states,
 		goto unlock;
 
 	dev->em_pd->flags |= flags;
+	dev->em_pd->min_perf_state = 0;
+	dev->em_pd->max_perf_state = nr_states - 1;
 
 	em_table = rcu_dereference_protected(dev->em_pd->em_table,
 					     lockdep_is_held(&em_pd_mutex));
@@ -633,12 +660,9 @@ int em_dev_register_perf_domain(struct device *dev, unsigned int nr_states,
 unlock:
 	mutex_unlock(&em_pd_mutex);
 
-	if (_is_cpu_device(dev))
-		em_check_capacity_update();
-
 	return ret;
 }
-EXPORT_SYMBOL_GPL(em_dev_register_perf_domain);
+EXPORT_SYMBOL_GPL(em_dev_register_pd_no_update);
 
 /**
  * em_dev_unregister_perf_domain() - Unregister Energy Model (EM) for a device
@@ -699,10 +723,12 @@ static int em_recalc_and_update(struct device *dev, struct em_perf_domain *pd,
 {
 	int ret;
 
-	ret = em_compute_costs(dev, em_table->state, NULL, pd->nr_perf_states,
-			       pd->flags);
-	if (ret)
-		goto free_em_table;
+	if (!em_is_artificial(pd)) {
+		ret = em_compute_costs(dev, em_table->state, NULL,
+				       pd->nr_perf_states, pd->flags);
+		if (ret)
+			goto free_em_table;
+	}
 
 	ret = em_dev_update_perf_domain(dev, em_table);
 	if (ret)
@@ -750,6 +776,24 @@ static void em_adjust_new_capacity(unsigned int cpu, struct device *dev,
 	em_init_performance(dev, pd, em_table->state, pd->nr_perf_states);
 
 	em_recalc_and_update(dev, pd, em_table);
+}
+
+/**
+ * em_adjust_cpu_capacity() - Adjust the EM for a CPU after a capacity update.
+ * @cpu: Target CPU.
+ *
+ * Adjust the existing EM for @cpu after a capacity update under the assumption
+ * that the capacity has been updated in the same way for all of the CPUs in
+ * the same perf domain.
+ */
+void em_adjust_cpu_capacity(unsigned int cpu)
+{
+	struct device *dev = get_cpu_device(cpu);
+	struct em_perf_domain *pd;
+
+	pd = em_pd_get(dev);
+	if (pd)
+		em_adjust_new_capacity(cpu, dev, pd);
 }
 
 static void em_check_capacity_update(void)
@@ -847,3 +891,70 @@ int em_dev_update_chip_binning(struct device *dev)
 	return em_recalc_and_update(dev, pd, em_table);
 }
 EXPORT_SYMBOL_GPL(em_dev_update_chip_binning);
+
+
+/**
+ * em_update_performance_limits() - Update Energy Model with performance
+ *				limits information.
+ * @pd			: Performance Domain with EM that has to be updated.
+ * @freq_min_khz	: New minimum allowed frequency for this device.
+ * @freq_max_khz	: New maximum allowed frequency for this device.
+ *
+ * This function allows to update the EM with information about available
+ * performance levels. It takes the minimum and maximum frequency in kHz
+ * and does internal translation to performance levels.
+ * Returns 0 on success or -EINVAL when failed.
+ */
+int em_update_performance_limits(struct em_perf_domain *pd,
+		unsigned long freq_min_khz, unsigned long freq_max_khz)
+{
+	struct em_perf_state *table;
+	int min_ps = -1;
+	int max_ps = -1;
+	int i;
+
+	if (!pd)
+		return -EINVAL;
+
+	rcu_read_lock();
+	table = em_perf_state_from_pd(pd);
+
+	for (i = 0; i < pd->nr_perf_states; i++) {
+		if (freq_min_khz == table[i].frequency)
+			min_ps = i;
+		if (freq_max_khz == table[i].frequency)
+			max_ps = i;
+	}
+	rcu_read_unlock();
+
+	/* Only update when both are found and sane */
+	if (min_ps < 0 || max_ps < 0 || max_ps < min_ps)
+		return -EINVAL;
+
+
+	/* Guard simultaneous updates and make them atomic */
+	mutex_lock(&em_pd_mutex);
+	pd->min_perf_state = min_ps;
+	pd->max_perf_state = max_ps;
+	mutex_unlock(&em_pd_mutex);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(em_update_performance_limits);
+
+static void rebuild_sd_workfn(struct work_struct *work)
+{
+	rebuild_sched_domains_energy();
+}
+
+void em_rebuild_sched_domains(void)
+{
+	static DECLARE_WORK(rebuild_sd_work, rebuild_sd_workfn);
+
+	/*
+	 * When called from the cpufreq_register_driver() path, the
+	 * cpu_hotplug_lock is already held, so use a work item to
+	 * avoid nested locking in rebuild_sched_domains().
+	 */
+	schedule_work(&rebuild_sd_work);
+}

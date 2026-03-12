@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2021 - 2023 Intel Corporation
+ * Copyright (C) 2021 - 2023, 2025 Intel Corporation
  */
 
 #include "mvm.h"
@@ -220,6 +220,12 @@ static int iwl_mvm_ptp_gettime(struct ptp_clock_info *ptp,
 	return 0;
 }
 
+static int iwl_mvm_ptp_settime(struct ptp_clock_info *ptp,
+			       const struct timespec64 *ts)
+{
+	return -EOPNOTSUPP;
+}
+
 static int iwl_mvm_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
 	struct iwl_mvm *mvm = container_of(ptp, struct iwl_mvm,
@@ -281,6 +287,7 @@ void iwl_mvm_ptp_init(struct iwl_mvm *mvm)
 	mvm->ptp_data.ptp_clock_info.adjfine = iwl_mvm_ptp_adjfine;
 	mvm->ptp_data.ptp_clock_info.adjtime = iwl_mvm_ptp_adjtime;
 	mvm->ptp_data.ptp_clock_info.gettime64 = iwl_mvm_ptp_gettime;
+	mvm->ptp_data.ptp_clock_info.settime64 = iwl_mvm_ptp_settime;
 	mvm->ptp_data.scaled_freq = SCALE_FACTOR;
 
 	/* Give a short 'friendly name' to identify the PHC clock */
@@ -298,9 +305,9 @@ void iwl_mvm_ptp_init(struct iwl_mvm *mvm)
 			PTR_ERR(mvm->ptp_data.ptp_clock));
 		mvm->ptp_data.ptp_clock = NULL;
 	} else if (mvm->ptp_data.ptp_clock) {
-		IWL_INFO(mvm, "Registered PHC clock: %s, with index: %d\n",
-			 mvm->ptp_data.ptp_clock_info.name,
-			 ptp_clock_index(mvm->ptp_data.ptp_clock));
+		IWL_DEBUG_INFO(mvm, "Registered PHC clock: %s, with index: %d\n",
+			       mvm->ptp_data.ptp_clock_info.name,
+			       ptp_clock_index(mvm->ptp_data.ptp_clock));
 	}
 }
 
@@ -312,9 +319,9 @@ void iwl_mvm_ptp_init(struct iwl_mvm *mvm)
 void iwl_mvm_ptp_remove(struct iwl_mvm *mvm)
 {
 	if (mvm->ptp_data.ptp_clock) {
-		IWL_INFO(mvm, "Unregistering PHC clock: %s, with index: %d\n",
-			 mvm->ptp_data.ptp_clock_info.name,
-			 ptp_clock_index(mvm->ptp_data.ptp_clock));
+		IWL_DEBUG_INFO(mvm, "Unregistering PHC clock: %s, with index: %d\n",
+			       mvm->ptp_data.ptp_clock_info.name,
+			       ptp_clock_index(mvm->ptp_data.ptp_clock));
 
 		ptp_clock_unregister(mvm->ptp_data.ptp_clock);
 		mvm->ptp_data.ptp_clock = NULL;

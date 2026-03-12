@@ -43,6 +43,25 @@ impl<T> ArrayLayout<T> {
     /// # Errors
     ///
     /// When `len * size_of::<T>()` overflows or when `len * size_of::<T>() > isize::MAX`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use kernel::alloc::layout::{ArrayLayout, LayoutError};
+    /// let layout = ArrayLayout::<i32>::new(15)?;
+    /// assert_eq!(layout.len(), 15);
+    ///
+    /// // Errors because `len * size_of::<T>()` overflows.
+    /// let layout = ArrayLayout::<i32>::new(isize::MAX as usize);
+    /// assert!(layout.is_err());
+    ///
+    /// // Errors because `len * size_of::<i32>() > isize::MAX`,
+    /// // even though `len < isize::MAX`.
+    /// let layout = ArrayLayout::<i32>::new(isize::MAX as usize / 2);
+    /// assert!(layout.is_err());
+    ///
+    /// # Ok::<(), Error>(())
+    /// ```
     pub const fn new(len: usize) -> Result<Self, LayoutError> {
         match len.checked_mul(core::mem::size_of::<T>()) {
             Some(size) if size <= ISIZE_MAX => {
@@ -61,7 +80,7 @@ impl<T> ArrayLayout<T> {
     /// # Safety
     ///
     /// `len` must be a value, for which `len * size_of::<T>() <= isize::MAX` is true.
-    pub unsafe fn new_unchecked(len: usize) -> Self {
+    pub const unsafe fn new_unchecked(len: usize) -> Self {
         // INVARIANT: By the safety requirements of this function
         // `len * size_of::<T>() <= isize::MAX`.
         Self {
@@ -78,6 +97,11 @@ impl<T> ArrayLayout<T> {
     /// Returns `true` when no array elements are represented by this layout.
     pub const fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Returns the size of the [`ArrayLayout`] in bytes.
+    pub const fn size(&self) -> usize {
+        self.len() * core::mem::size_of::<T>()
     }
 }
 

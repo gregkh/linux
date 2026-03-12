@@ -73,6 +73,7 @@
 #include "nfs.h"
 #include "netns.h"
 #include "sysfs.h"
+#include "nfs4idmap.h"
 
 #define NFSDBG_FACILITY		NFSDBG_VFS
 
@@ -453,8 +454,12 @@ static void nfs_show_mount_options(struct seq_file *m, struct nfs_server *nfss,
 		{ NFS_MOUNT_NONLM, ",nolock", "" },
 		{ NFS_MOUNT_NOACL, ",noacl", "" },
 		{ NFS_MOUNT_NORDIRPLUS, ",nordirplus", "" },
+		{ NFS_MOUNT_FORCE_RDIRPLUS, ",rdirplus=force", "" },
 		{ NFS_MOUNT_UNSHARED, ",nosharecache", "" },
 		{ NFS_MOUNT_NORESVPORT, ",noresvport", "" },
+		{ NFS_MOUNT_NETUNREACH_FATAL,
+		  ",fatal_neterrors=ENETDOWN:ENETUNREACH",
+		  ",fatal_neterrors=none" },
 		{ 0, NULL, NULL }
 	};
 	const struct proc_nfs_info *nfs_infop;
@@ -1169,7 +1174,7 @@ static int nfs_set_super(struct super_block *s, struct fs_context *fc)
 	struct nfs_server *server = fc->s_fs_info;
 	int ret;
 
-	s->s_d_op = server->nfs_client->rpc_ops->dentry_ops;
+	set_default_d_op(s, server->nfs_client->rpc_ops->dentry_ops);
 	ret = set_anon_super(s, server);
 	if (ret == 0)
 		server->s_dev = s->s_dev;

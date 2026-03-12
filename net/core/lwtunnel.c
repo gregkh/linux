@@ -160,21 +160,14 @@ int lwtunnel_valid_encap_type(u16 encap_type, struct netlink_ext_ack *extack)
 		return ret;
 	}
 
-	rcu_read_lock();
-	ops = rcu_dereference(lwtun_encaps[encap_type]);
-	rcu_read_unlock();
+	ops = rcu_access_pointer(lwtun_encaps[encap_type]);
 #ifdef CONFIG_MODULES
 	if (!ops) {
 		const char *encap_type_str = lwtunnel_encap_str(encap_type);
 
 		if (encap_type_str) {
-			__rtnl_unlock();
 			request_module("rtnl-lwt-%s", encap_type_str);
-			rtnl_lock();
-
-			rcu_read_lock();
-			ops = rcu_dereference(lwtun_encaps[encap_type]);
-			rcu_read_unlock();
+			ops = rcu_access_pointer(lwtun_encaps[encap_type]);
 		}
 	}
 #endif
@@ -208,8 +201,7 @@ int lwtunnel_valid_encap_type_attr(struct nlattr *attr, int remaining,
 				}
 				encap_type = nla_get_u16(nla_entype);
 
-				if (lwtunnel_valid_encap_type(encap_type,
-							      extack) != 0)
+				if (lwtunnel_valid_encap_type(encap_type, extack))
 					return -EOPNOTSUPP;
 			}
 		}

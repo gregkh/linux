@@ -398,10 +398,13 @@ xqcheck_collect_inode(
 	bool			isreg = S_ISREG(VFS_I(ip)->i_mode);
 	int			error = 0;
 
-	if (xfs_is_quota_inode(&tp->t_mountp->m_sb, ip->i_ino)) {
+	if (xfs_is_metadir_inode(ip) ||
+	    xfs_is_quota_inode(&tp->t_mountp->m_sb, ip->i_ino)) {
 		/*
 		 * Quota files are never counted towards quota, so we do not
-		 * need to take the lock.
+		 * need to take the lock.  Files do not switch between the
+		 * metadata and regular directory trees without a reallocation,
+		 * so we do not need to ILOCK them either.
 		 */
 		xchk_iscan_mark_visited(&xqc->iscan, ip);
 		return 0;
@@ -502,9 +505,7 @@ xqcheck_collect_counts(
 	 * transactions do not take sb_internal.
 	 */
 	xchk_trans_cancel(sc);
-	error = xchk_trans_alloc_empty(sc);
-	if (error)
-		return error;
+	xchk_trans_alloc_empty(sc);
 
 	while ((error = xchk_iscan_iter(&xqc->iscan, &ip)) == 1) {
 		error = xqcheck_collect_inode(xqc, ip);
@@ -741,7 +742,6 @@ xqcheck_setup_scan(
 	struct xfs_scrub	*sc,
 	struct xqcheck		*xqc)
 {
-	char			*descr;
 	struct xfs_quotainfo	*qi = sc->mp->m_quotainfo;
 	unsigned long long	max_dquots = XFS_DQ_ID_MAX + 1ULL;
 	int			error;
@@ -756,28 +756,22 @@ xqcheck_setup_scan(
 
 	error = -ENOMEM;
 	if (xfs_this_quota_on(sc->mp, XFS_DQTYPE_USER)) {
-		descr = xchk_xfile_descr(sc, "user dquot records");
-		error = xfarray_create(descr, max_dquots,
+		error = xfarray_create("user dquot records", max_dquots,
 				sizeof(struct xqcheck_dquot), &xqc->ucounts);
-		kfree(descr);
 		if (error)
 			goto out_teardown;
 	}
 
 	if (xfs_this_quota_on(sc->mp, XFS_DQTYPE_GROUP)) {
-		descr = xchk_xfile_descr(sc, "group dquot records");
-		error = xfarray_create(descr, max_dquots,
+		error = xfarray_create("group dquot records", max_dquots,
 				sizeof(struct xqcheck_dquot), &xqc->gcounts);
-		kfree(descr);
 		if (error)
 			goto out_teardown;
 	}
 
 	if (xfs_this_quota_on(sc->mp, XFS_DQTYPE_PROJ)) {
-		descr = xchk_xfile_descr(sc, "project dquot records");
-		error = xfarray_create(descr, max_dquots,
+		error = xfarray_create("project dquot records", max_dquots,
 				sizeof(struct xqcheck_dquot), &xqc->pcounts);
-		kfree(descr);
 		if (error)
 			goto out_teardown;
 	}

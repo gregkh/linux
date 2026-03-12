@@ -9,10 +9,14 @@
 
 #include <linux/spinlock.h>
 
+#include <drm/drm_device.h>
+
 #define TIDSS_MAX_PORTS 4
 #define TIDSS_MAX_PLANES 4
+#define TIDSS_MAX_OLDI_TXES 2
 
 typedef u32 dispc_irq_t;
+struct tidss_oldi;
 
 struct tidss_device {
 	struct drm_device ddev;		/* DRM device for DSS */
@@ -20,6 +24,8 @@ struct tidss_device {
 
 	const struct dispc_features *feat;
 	struct dispc_device *dispc;
+	bool is_ext_vp_clk[TIDSS_MAX_PORTS];
+
 
 	unsigned int num_crtcs;
 	struct drm_crtc *crtcs[TIDSS_MAX_PORTS];
@@ -27,10 +33,14 @@ struct tidss_device {
 	unsigned int num_planes;
 	struct drm_plane *planes[TIDSS_MAX_PLANES];
 
+	unsigned int num_oldis;
+	struct tidss_oldi *oldis[TIDSS_MAX_OLDI_TXES];
+
 	unsigned int irq;
 
-	spinlock_t wait_lock;	/* protects the irq masks */
-	dispc_irq_t irq_mask;	/* enabled irqs in addition to wait_list */
+	/* protects the irq masks field and irqenable/irqstatus registers */
+	spinlock_t irq_lock;
+	dispc_irq_t irq_mask;	/* enabled irqs */
 };
 
 #define to_tidss(__dev) container_of(__dev, struct tidss_device, ddev)

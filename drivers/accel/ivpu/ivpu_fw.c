@@ -46,8 +46,10 @@
 #define IVPU_FOCUS_PRESENT_TIMER_MS 1000
 
 static char *ivpu_firmware;
+#if IS_ENABLED(CONFIG_DRM_ACCEL_IVPU_DEBUG)
 module_param_named_unsafe(firmware, ivpu_firmware, charp, 0644);
 MODULE_PARM_DESC(firmware, "NPU firmware binary in /lib/firmware/..");
+#endif
 
 static struct {
 	int gen;
@@ -143,7 +145,10 @@ ivpu_fw_sched_mode_select(struct ivpu_device *vdev, const struct vpu_firmware_he
 	if (ivpu_sched_mode != IVPU_SCHED_MODE_AUTO)
 		return ivpu_sched_mode;
 
-	return VPU_SCHEDULING_MODE_OS;
+	if (IVPU_FW_CHECK_API_VER_LT(vdev, fw_hdr, JSM, 3, 24))
+		return VPU_SCHEDULING_MODE_OS;
+
+	return VPU_SCHEDULING_MODE_HW;
 }
 
 static int ivpu_fw_parse(struct ivpu_device *vdev)
@@ -228,9 +233,19 @@ static int ivpu_fw_parse(struct ivpu_device *vdev)
 	fw->dvfs_mode = 0;
 
 	fw->sched_mode = ivpu_fw_sched_mode_select(vdev, fw_hdr);
-	fw->primary_preempt_buf_size = fw_hdr->preemption_buffer_1_size;
-	fw->secondary_preempt_buf_size = fw_hdr->preemption_buffer_2_size;
 	ivpu_info(vdev, "Scheduler mode: %s\n", fw->sched_mode ? "HW" : "OS");
+
+	if (fw_hdr->preemption_buffer_1_max_size)
+		fw->primary_preempt_buf_size = fw_hdr->preemption_buffer_1_max_size;
+	else
+		fw->primary_preempt_buf_size = fw_hdr->preemption_buffer_1_size;
+
+	if (fw_hdr->preemption_buffer_2_max_size)
+		fw->secondary_preempt_buf_size = fw_hdr->preemption_buffer_2_max_size;
+	else
+		fw->secondary_preempt_buf_size = fw_hdr->preemption_buffer_2_size;
+	ivpu_dbg(vdev, FW_BOOT, "Preemption buffer sizes: primary %u, secondary %u\n",
+		 fw->primary_preempt_buf_size, fw->secondary_preempt_buf_size);
 
 	if (fw_hdr->ro_section_start_address && !is_within_range(fw_hdr->ro_section_start_address,
 								 fw_hdr->ro_section_size,
@@ -529,6 +544,8 @@ static void ivpu_fw_boot_params_print(struct ivpu_device *vdev, struct vpu_boot_
 		 boot_params->d0i3_entry_vpu_ts);
 	ivpu_dbg(vdev, FW_BOOT, "boot_params.system_time_us = %llu\n",
 		 boot_params->system_time_us);
+	ivpu_dbg(vdev, FW_BOOT, "boot_params.power_profile = 0x%x\n",
+		 boot_params->power_profile);
 }
 
 void ivpu_fw_boot_params_setup(struct ivpu_device *vdev, struct vpu_boot_params *boot_params)
@@ -581,8 +598,10 @@ void ivpu_fw_boot_params_setup(struct ivpu_device *vdev, struct vpu_boot_params 
 	boot_params->ipc_payload_area_start = ipc_mem_rx->vpu_addr + ivpu_bo_size(ipc_mem_rx) / 2;
 	boot_params->ipc_payload_area_size = ivpu_bo_size(ipc_mem_rx) / 2;
 
-	boot_params->global_aliased_pio_base = vdev->hw->ranges.user.start;
-	boot_params->global_aliased_pio_size = ivpu_hw_range_size(&vdev->hw->ranges.user);
+	if (ivpu_hw_ip_gen(vdev) == IVPU_HW_IP_37XX) {
+		boot_params->global_aliased_pio_base = vdev->hw->ranges.user.start;
+		boot_params->global_aliased_pio_size = ivpu_hw_range_size(&vdev->hw->ranges.user);
+	}
 
 	/* Allow configuration for L2C_PAGE_TABLE with boot param value */
 	boot_params->autoconfig = 1;
@@ -626,6 +645,8 @@ void ivpu_fw_boot_params_setup(struct ivpu_device *vdev, struct vpu_boot_params 
 		boot_params->d0i3_delayed_entry = 1;
 	boot_params->d0i3_residency_time_us = 0;
 	boot_params->d0i3_entry_vpu_ts = 0;
+	if (IVPU_WA(disable_d0i2))
+		boot_params->power_profile |= BIT(1);
 
 	boot_params->system_time_us = ktime_to_us(ktime_get_real());
 	wmb(); /* Flush WC buffers after writing bootparams */

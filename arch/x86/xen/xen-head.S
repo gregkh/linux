@@ -31,16 +31,14 @@ SYM_CODE_START(startup_xen)
 
 	leaq	__top_init_kernel_stack(%rip), %rsp
 
-	/* Set up %gs.
-	 *
-	 * The base of %gs always points to fixed_percpu_data.  If the
-	 * stack protector canary is enabled, it is located at %gs:40.
+	/*
+	 * Set up GSBASE.
 	 * Note that, on SMP, the boot cpu uses init data section until
 	 * the per cpu areas are set up.
 	 */
 	movl	$MSR_GS_BASE,%ecx
-	movq	$INIT_PER_CPU_VAR(fixed_percpu_data),%rax
-	cdq
+	xorl	%eax, %eax
+	xorl	%edx, %edx
 	wrmsr
 
 	mov	%rsi, %rdi
@@ -100,9 +98,6 @@ SYM_FUNC_START(xen_hypercall_hvm)
 	push %r10
 	push %r9
 	push %r8
-#ifdef CONFIG_FRAME_POINTER
-	pushq $0	/* Dummy push for stack alignment. */
-#endif
 #endif
 	/* Set the vendor specific function. */
 	call __xen_hypercall_setfunc
@@ -119,9 +114,6 @@ SYM_FUNC_START(xen_hypercall_hvm)
 #else
 	lea xen_hypercall_amd(%rip), %rcx
 	cmp %rax, %rcx
-#ifdef CONFIG_FRAME_POINTER
-	pop %rax	/* Dummy pop. */
-#endif
 	pop %r8
 	pop %r9
 	pop %r10
@@ -139,11 +131,13 @@ SYM_FUNC_START(xen_hypercall_hvm)
 SYM_FUNC_END(xen_hypercall_hvm)
 
 SYM_FUNC_START(xen_hypercall_amd)
+	ANNOTATE_NOENDBR
 	vmmcall
 	RET
 SYM_FUNC_END(xen_hypercall_amd)
 
 SYM_FUNC_START(xen_hypercall_intel)
+	ANNOTATE_NOENDBR
 	vmcall
 	RET
 SYM_FUNC_END(xen_hypercall_intel)
@@ -156,7 +150,8 @@ SYM_FUNC_END(xen_hypercall_intel)
 	ELFNOTE(Xen, XEN_ELFNOTE_VIRT_BASE,      _ASM_PTR __START_KERNEL_map)
 	/* Map the p2m table to a 512GB-aligned user address. */
 	ELFNOTE(Xen, XEN_ELFNOTE_INIT_P2M,       .quad (PUD_SIZE * PTRS_PER_PUD))
-	ELFNOTE(Xen, XEN_ELFNOTE_ENTRY,          _ASM_PTR startup_xen)
+	ELFNOTE(Xen, XEN_ELFNOTE_ENTRY,          .globl xen_elfnote_entry;
+		xen_elfnote_entry: _ASM_PTR xen_elfnote_entry_value - .)
 	ELFNOTE(Xen, XEN_ELFNOTE_FEATURES,       .ascii "!writable_page_tables")
 	ELFNOTE(Xen, XEN_ELFNOTE_PAE_MODE,       .asciz "yes")
 	ELFNOTE(Xen, XEN_ELFNOTE_L1_MFN_VALID,

@@ -24,8 +24,49 @@
 
 #include <linux/uaccess.h>
 
+#include "internal.h"
+
 static struct vfsmount *anon_inode_mnt __ro_after_init;
 static struct inode *anon_inode_inode __ro_after_init;
+
+/*
+ * User space expects anonymous inodes to have no file type in st_mode.
+ *
+ * In particular, 'lsof' has this legacy logic:
+ *
+ *	type = s->st_mode & S_IFMT;
+ *	switch (type) {
+ *	  ...
+ *	case 0:
+ *		if (!strcmp(p, "anon_inode"))
+ *			Lf->ntype = Ntype = N_ANON_INODE;
+ *
+ * to detect our old anon_inode logic.
+ *
+ * Rather than mess with our internal sane inode data, just fix it
+ * up here in getattr() by masking off the format bits.
+ */
+int anon_inode_getattr(struct mnt_idmap *idmap, const struct path *path,
+		       struct kstat *stat, u32 request_mask,
+		       unsigned int query_flags)
+{
+	struct inode *inode = d_inode(path->dentry);
+
+	generic_fillattr(&nop_mnt_idmap, request_mask, inode, stat);
+	stat->mode &= ~S_IFMT;
+	return 0;
+}
+
+int anon_inode_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+		       struct iattr *attr)
+{
+	return -EOPNOTSUPP;
+}
+
+static const struct inode_operations anon_inode_operations = {
+	.getattr = anon_inode_getattr,
+	.setattr = anon_inode_setattr,
+};
 
 /*
  * anon_inodefs_dname() is called from d_path().
@@ -45,6 +86,8 @@ static int anon_inodefs_init_fs_context(struct fs_context *fc)
 	struct pseudo_fs_context *ctx = init_pseudo(fc, ANON_INODE_FS_MAGIC);
 	if (!ctx)
 		return -ENOMEM;
+	fc->s_iflags |= SB_I_NOEXEC;
+	fc->s_iflags |= SB_I_NODEV;
 	ctx->dops = &anon_inodefs_dentry_operations;
 	return 0;
 }
@@ -77,6 +120,7 @@ struct inode *anon_inode_make_secure_inode(struct super_block *sb, const char *n
 	if (IS_ERR(inode))
 		return inode;
 	inode->i_flags &= ~S_PRIVATE;
+	inode->i_op = &anon_inode_operations;
 	error =	security_inode_init_security_anon(inode, &QSTR(name),
 						  context_inode);
 	if (error) {
@@ -85,7 +129,7 @@ struct inode *anon_inode_make_secure_inode(struct super_block *sb, const char *n
 	}
 	return inode;
 }
-EXPORT_SYMBOL_GPL_FOR_MODULES(anon_inode_make_secure_inode, "kvm");
+EXPORT_SYMBOL_FOR_MODULES(anon_inode_make_secure_inode, "kvm");
 
 static struct file *__anon_inode_getfile(const char *name,
 					 const struct file_operations *fops,
@@ -326,6 +370,7 @@ static int __init anon_inode_init(void)
 	anon_inode_inode = alloc_anon_inode(anon_inode_mnt->mnt_sb);
 	if (IS_ERR(anon_inode_inode))
 		panic("anon_inode_init() inode allocation failed (%ld)\n", PTR_ERR(anon_inode_inode));
+	anon_inode_inode->i_op = &anon_inode_operations;
 
 	return 0;
 }

@@ -49,6 +49,7 @@
 #include <xen/hvc-console.h>
 #include <xen/acpi.h>
 
+#include <asm/cpuid/api.h>
 #include <asm/paravirt.h>
 #include <asm/apic.h>
 #include <asm/page.h>
@@ -60,6 +61,7 @@
 #include <asm/processor.h>
 #include <asm/proto.h>
 #include <asm/msr-index.h>
+#include <asm/msr.h>
 #include <asm/traps.h>
 #include <asm/setup.h>
 #include <asm/desc.h>
@@ -137,7 +139,6 @@ struct tls_descs {
 };
 
 DEFINE_PER_CPU(enum xen_lazy_mode, xen_lazy_mode) = XEN_LAZY_NONE;
-DEFINE_PER_CPU(unsigned int, xen_lazy_nesting);
 
 enum xen_lazy_mode xen_get_lazy_mode(void)
 {
@@ -269,7 +270,7 @@ static void xen_cpuid(unsigned int *ax, unsigned int *bx,
 		or_ebx = smp_processor_id() << 24;
 		break;
 
-	case CPUID_MWAIT_LEAF:
+	case CPUID_LEAF_MWAIT:
 		/* Synthesize the values.. */
 		*ax = 0;
 		*bx = 0;
@@ -339,7 +340,7 @@ static bool __init xen_check_mwait(void)
 	 * ecx and edx. The hypercall provides only partial information.
 	 */
 
-	ax = CPUID_MWAIT_LEAF;
+	ax = CPUID_LEAF_MWAIT;
 	bx = 0;
 	cx = 0;
 	dx = 0;
@@ -381,7 +382,6 @@ static bool __init xen_check_xsave(void)
 
 static void __init xen_init_capabilities(void)
 {
-	setup_force_cpu_cap(X86_FEATURE_XENPV);
 	setup_clear_cpu_cap(X86_FEATURE_DCA);
 	setup_clear_cpu_cap(X86_FEATURE_APERFMPERF);
 	setup_clear_cpu_cap(X86_FEATURE_MTRR);
@@ -1086,15 +1086,15 @@ static void xen_write_cr4(unsigned long cr4)
 	native_write_cr4(cr4);
 }
 
-static u64 xen_do_read_msr(unsigned int msr, int *err)
+static u64 xen_do_read_msr(u32 msr, int *err)
 {
 	u64 val = 0;	/* Avoid uninitialized value for safe variant. */
 
-	if (pmu_msr_read(msr, &val, err))
+	if (pmu_msr_chk_emulated(msr, &val, true))
 		return val;
 
 	if (err)
-		val = native_read_msr_safe(msr, err);
+		*err = native_read_msr_safe(msr, &val);
 	else
 		val = native_read_msr(msr);
 
@@ -1110,17 +1110,9 @@ static u64 xen_do_read_msr(unsigned int msr, int *err)
 	return val;
 }
 
-static void set_seg(unsigned int which, unsigned int low, unsigned int high,
-		    int *err)
+static void set_seg(u32 which, u64 base)
 {
-	u64 base = ((u64)high << 32) | low;
-
-	if (HYPERVISOR_set_segment_base(which, base) == 0)
-		return;
-
-	if (err)
-		*err = -EIO;
-	else
+	if (HYPERVISOR_set_segment_base(which, base))
 		WARN(1, "Xen set_segment_base(%u, %llx) failed\n", which, base);
 }
 
@@ -1129,20 +1121,19 @@ static void set_seg(unsigned int which, unsigned int low, unsigned int high,
  * With err == NULL write_msr() semantics are selected.
  * Supplying an err pointer requires err to be pre-initialized with 0.
  */
-static void xen_do_write_msr(unsigned int msr, unsigned int low,
-			     unsigned int high, int *err)
+static void xen_do_write_msr(u32 msr, u64 val, int *err)
 {
 	switch (msr) {
 	case MSR_FS_BASE:
-		set_seg(SEGBASE_FS, low, high, err);
+		set_seg(SEGBASE_FS, val);
 		break;
 
 	case MSR_KERNEL_GS_BASE:
-		set_seg(SEGBASE_GS_USER, low, high, err);
+		set_seg(SEGBASE_GS_USER, val);
 		break;
 
 	case MSR_GS_BASE:
-		set_seg(SEGBASE_GS_KERNEL, low, high, err);
+		set_seg(SEGBASE_GS_KERNEL, val);
 		break;
 
 	case MSR_STAR:
@@ -1158,42 +1149,45 @@ static void xen_do_write_msr(unsigned int msr, unsigned int low,
 		break;
 
 	default:
-		if (!pmu_msr_write(msr, low, high, err)) {
-			if (err)
-				*err = native_write_msr_safe(msr, low, high);
-			else
-				native_write_msr(msr, low, high);
-		}
+		if (pmu_msr_chk_emulated(msr, &val, false))
+			return;
+
+		if (err)
+			*err = native_write_msr_safe(msr, val);
+		else
+			native_write_msr(msr, val);
 	}
 }
 
-static u64 xen_read_msr_safe(unsigned int msr, int *err)
-{
-	return xen_do_read_msr(msr, err);
-}
-
-static int xen_write_msr_safe(unsigned int msr, unsigned int low,
-			      unsigned int high)
+static int xen_read_msr_safe(u32 msr, u64 *val)
 {
 	int err = 0;
 
-	xen_do_write_msr(msr, low, high, &err);
+	*val = xen_do_read_msr(msr, &err);
+	return err;
+}
+
+static int xen_write_msr_safe(u32 msr, u64 val)
+{
+	int err = 0;
+
+	xen_do_write_msr(msr, val, &err);
 
 	return err;
 }
 
-static u64 xen_read_msr(unsigned int msr)
+static u64 xen_read_msr(u32 msr)
 {
-	int err;
+	int err = 0;
 
 	return xen_do_read_msr(msr, xen_msr_safe ? &err : NULL);
 }
 
-static void xen_write_msr(unsigned int msr, unsigned low, unsigned high)
+static void xen_write_msr(u32 msr, u64 val)
 {
 	int err;
 
-	xen_do_write_msr(msr, low, high, xen_msr_safe ? &err : NULL);
+	xen_do_write_msr(msr, val, xen_msr_safe ? &err : NULL);
 }
 
 /* This is called once we have the cpu_possible_mask */
@@ -1229,8 +1223,6 @@ static const typeof(pv_ops) xen_cpu_ops __initconst = {
 		.write_cr0 = xen_write_cr0,
 
 		.write_cr4 = xen_write_cr4,
-
-		.wbinvd = pv_native_wbinvd,
 
 		.read_msr = xen_read_msr,
 		.write_msr = xen_write_msr,
@@ -1409,6 +1401,7 @@ asmlinkage __visible void __init xen_start_kernel(struct start_info *si)
 			JMP32_INSN_SIZE);
 
 	xen_domain_type = XEN_PV_DOMAIN;
+	setup_force_cpu_cap(X86_FEATURE_XENPV);
 	xen_start_flags = xen_start_info->flags;
 	/* Interrupts are guaranteed to be off initially. */
 	early_boot_irqs_disabled = true;

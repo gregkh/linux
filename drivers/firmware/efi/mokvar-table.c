@@ -85,7 +85,7 @@ static struct kobject *mokvar_kobj;
  * as an alternative to ordinary EFI variables, due to platform-dependent
  * limitations. The memory occupied by this table is marked as reserved.
  *
- * This routine must be called before efi_free_boot_services() in order
+ * This routine must be called before efi_unmap_boot_services() in order
  * to guarantee that it can mark the table as reserved.
  *
  * Implicit inputs:
@@ -99,12 +99,13 @@ static struct kobject *mokvar_kobj;
  */
 void __init efi_mokvar_table_init(void)
 {
+	struct efi_mokvar_table_entry __aligned(1) *mokvar_entry, *next_entry;
 	efi_memory_desc_t md;
 	void *va = NULL;
 	unsigned long cur_offset = 0;
 	unsigned long offset_limit;
 	unsigned long map_size_needed = 0;
-	struct efi_mokvar_table_entry *mokvar_entry;
+	unsigned long size;
 	int err;
 
 	if (!efi_enabled(EFI_MEMMAP))
@@ -141,7 +142,7 @@ void __init efi_mokvar_table_init(void)
 			return;
 		}
 		mokvar_entry = va;
-
+next:
 		/* Check for last sentinel entry */
 		if (mokvar_entry->name[0] == '\0') {
 			if (mokvar_entry->data_size != 0)
@@ -155,7 +156,19 @@ void __init efi_mokvar_table_init(void)
 		mokvar_entry->name[sizeof(mokvar_entry->name) - 1] = '\0';
 
 		/* Advance to the next entry */
-		cur_offset += sizeof(*mokvar_entry) + mokvar_entry->data_size;
+		size = sizeof(*mokvar_entry) + mokvar_entry->data_size;
+		cur_offset += size;
+
+		/*
+		 * Don't bother remapping if the current entry header and the
+		 * next one end on the same page.
+		 */
+		next_entry = (void *)((unsigned long)mokvar_entry + size);
+		if (((((unsigned long)(mokvar_entry + 1) - 1) ^
+		      ((unsigned long)(next_entry + 1) - 1)) & PAGE_MASK) == 0) {
+			mokvar_entry = next_entry;
+			goto next;
+		}
 	}
 
 	if (va)
@@ -250,7 +263,7 @@ struct efi_mokvar_table_entry *efi_mokvar_entry_find(const char *name)
  * amount of data in this mokvar config table entry.
  */
 static ssize_t efi_mokvar_sysfs_read(struct file *file, struct kobject *kobj,
-				 struct bin_attribute *bin_attr, char *buf,
+				 const struct bin_attribute *bin_attr, char *buf,
 				 loff_t off, size_t count)
 {
 	struct efi_mokvar_table_entry *mokvar_entry = bin_attr->private;

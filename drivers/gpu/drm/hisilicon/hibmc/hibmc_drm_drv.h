@@ -20,6 +20,11 @@
 
 #include <drm/drm_framebuffer.h>
 
+#include "dp/dp_hw.h"
+
+#define HIBMC_MIN_VECTORS	1
+#define HIBMC_MAX_VECTORS	2
+
 struct hibmc_vdac {
 	struct drm_device *dev;
 	struct drm_encoder encoder;
@@ -37,11 +42,17 @@ struct hibmc_drm_private {
 	struct drm_plane primary_plane;
 	struct drm_crtc crtc;
 	struct hibmc_vdac vdac;
+	struct hibmc_dp dp;
 };
 
 static inline struct hibmc_vdac *to_hibmc_vdac(struct drm_connector *connector)
 {
 	return container_of(connector, struct hibmc_vdac, connector);
+}
+
+static inline struct hibmc_dp *to_hibmc_dp(struct drm_connector *connector)
+{
+	return container_of(connector, struct hibmc_dp, connector);
 }
 
 static inline struct hibmc_drm_private *to_hibmc_drm_private(struct drm_device *dev)
@@ -59,5 +70,11 @@ int hibmc_vdac_init(struct hibmc_drm_private *priv);
 
 int hibmc_ddc_create(struct drm_device *drm_dev, struct hibmc_vdac *connector);
 void hibmc_ddc_del(struct hibmc_vdac *vdac);
+
+int hibmc_dp_init(struct hibmc_drm_private *priv);
+
+void hibmc_debugfs_init(struct drm_connector *connector, struct dentry *root);
+
+irqreturn_t hibmc_dp_hpd_isr(int irq, void *arg);
 
 #endif

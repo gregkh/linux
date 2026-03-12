@@ -524,7 +524,7 @@ static void omap_usb2_remove(struct platform_device *pdev)
 
 static struct platform_driver omap_usb2_driver = {
 	.probe		= omap_usb2_probe,
-	.remove_new	= omap_usb2_remove,
+	.remove		= omap_usb2_remove,
 	.driver		= {
 		.name	= "omap-usb2",
 		.of_match_table = omap_usb2_id_table,
@@ -533,7 +533,6 @@ static struct platform_driver omap_usb2_driver = {
 
 module_platform_driver(omap_usb2_driver);
 
-MODULE_ALIAS("platform:omap_usb2");
 MODULE_AUTHOR("Texas Instruments Inc.");
 MODULE_DESCRIPTION("OMAP USB2 phy driver");
 MODULE_LICENSE("GPL v2");

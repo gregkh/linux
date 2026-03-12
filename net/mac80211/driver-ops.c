@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2015 Intel Deutschland GmbH
- * Copyright (C) 2022-2024 Intel Corporation
+ * Copyright (C) 2022-2025 Intel Corporation
  */
 #include <net/mac80211.h>
 #include "ieee80211_i.h"
@@ -65,6 +65,7 @@ int drv_add_interface(struct ieee80211_local *local,
 	if (WARN_ON(sdata->vif.type == NL80211_IFTYPE_AP_VLAN ||
 		    (sdata->vif.type == NL80211_IFTYPE_MONITOR &&
 		     !ieee80211_hw_check(&local->hw, WANT_MONITOR_VIF) &&
+		     !ieee80211_hw_check(&local->hw, NO_VIRTUAL_MONITOR) &&
 		     !(sdata->u.mntr.flags & MONITOR_FLAG_ACTIVE))))
 		return -EINVAL;
 
@@ -187,9 +188,10 @@ int drv_sta_set_txpwr(struct ieee80211_local *local,
 	return ret;
 }
 
-void drv_sta_rc_update(struct ieee80211_local *local,
-		       struct ieee80211_sub_if_data *sdata,
-		       struct ieee80211_sta *sta, u32 changed)
+void drv_link_sta_rc_update(struct ieee80211_local *local,
+			    struct ieee80211_sub_if_data *sdata,
+			    struct ieee80211_link_sta *link_sta,
+			    u32 changed)
 {
 	sdata = get_bss_sdata(sdata);
 	if (!check_sdata_in_driver(sdata))
@@ -199,10 +201,10 @@ void drv_sta_rc_update(struct ieee80211_local *local,
 		(sdata->vif.type != NL80211_IFTYPE_ADHOC &&
 		 sdata->vif.type != NL80211_IFTYPE_MESH_POINT));
 
-	trace_drv_sta_rc_update(local, sdata, sta, changed);
-	if (local->ops->sta_rc_update)
-		local->ops->sta_rc_update(&local->hw, &sdata->vif,
-					  sta, changed);
+	trace_drv_link_sta_rc_update(local, sdata, link_sta, changed);
+	if (local->ops->link_sta_rc_update)
+		local->ops->link_sta_rc_update(&local->hw, &sdata->vif,
+					       link_sta, changed);
 
 	trace_drv_return_void(local);
 }
@@ -512,6 +514,9 @@ int drv_set_key(struct ieee80211_local *local,
 	if (WARN_ON(key->link_id >= 0 && sdata->vif.active_links &&
 		    !(sdata->vif.active_links & BIT(key->link_id))))
 		return -ENOLINK;
+
+	if (fips_enabled)
+		return -EOPNOTSUPP;
 
 	trace_drv_set_key(local, cmd, sdata, sta, key);
 	ret = local->ops->set_key(&local->hw, cmd, &sdata->vif, sta, key);

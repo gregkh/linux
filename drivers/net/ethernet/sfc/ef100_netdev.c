@@ -453,7 +453,6 @@ int ef100_probe_netdev(struct efx_probe_data *probe_data)
 	nic_data = efx->nic_data;
 	netif_set_tso_max_size(efx->net_dev, nic_data->tso_max_payload_len);
 	netif_set_tso_max_segs(efx->net_dev, nic_data->tso_max_payload_num_segs);
-	efx->mdio.dev = net_dev;
 
 	rc = efx_ef100_init_datapath_caps(efx);
 	if (rc < 0)

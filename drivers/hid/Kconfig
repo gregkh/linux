@@ -92,6 +92,17 @@ config HID_GENERIC
 
 	If unsure, say Y.
 
+config HID_HAPTIC
+	bool "Haptic touchpad support"
+	default n
+	help
+	Support for touchpads with force sensors and haptic actuators instead of a
+	traditional button.
+	Adds extra parsing and FF device for the hid multitouch driver.
+	It can be used for Elan 2703 haptic touchpad.
+
+	If unsure, say N.
+
 menu "Special HID drivers"
 
 config HID_A4TECH
@@ -147,6 +158,33 @@ config HID_APPLEIR
 	  prior to the 2010 model.
 
 	Say Y here if you want support for Apple infrared remote control.
+
+config HID_APPLETB_BL
+	tristate "Apple Touch Bar Backlight"
+	depends on BACKLIGHT_CLASS_DEVICE
+	depends on X86 || COMPILE_TEST
+	help
+	  Say Y here if you want support for the backlight of Touch Bars on x86
+	  MacBook Pros.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-appletb-bl.
+
+config HID_APPLETB_KBD
+	tristate "Apple Touch Bar Keyboard Mode"
+	depends on USB_HID
+	depends on BACKLIGHT_CLASS_DEVICE
+	depends on INPUT
+	depends on X86 || COMPILE_TEST
+	select INPUT_SPARSEKMAP
+	select HID_APPLETB_BL
+	help
+	  Say Y here if you want support for the keyboard mode (escape,
+	  function, media and brightness keys) of Touch Bars on x86 MacBook
+	  Pros.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-appletb-kbd.
 
 config HID_ASUS
 	tristate "Asus"
@@ -213,13 +251,16 @@ config HID_CHICONY
 config HID_CORSAIR
 	tristate "Corsair devices"
 	depends on USB_HID && LEDS_CLASS
+	select POWER_SUPPLY
 	help
 	Support for Corsair devices that are not fully compliant with the
 	HID standard.
+	Support for Corsair Void headsets.
 
 	Supported devices:
 	- Vengeance K90
 	- Scimitar PRO RGB
+	- Corsair Void headsets
 
 config HID_COUGAR
 	tristate "Cougar devices"
@@ -466,6 +507,15 @@ config HID_KYE
 	- MousePen i608X tablet
 	- EasyPen M610X tablet
 
+config HID_KYSONA
+	tristate "Kysona devices"
+	depends on USB_HID
+	help
+	Support for Kysona mice.
+
+	Say Y here if you have a Kysona M600 mouse
+	and want to be able to read its battery capacity.
+
 config HID_UCLOGIC
 	tristate "UC-Logic"
 	depends on USB_HID
@@ -590,6 +640,7 @@ config HID_LOGITECH
 	tristate "Logitech devices"
 	depends on USB_HID
 	depends on LEDS_CLASS
+	depends on LEDS_CLASS_MULTICOLOR
 	default !EXPERT
 	help
 	Support for Logitech devices that are not fully compliant with HID standard.
@@ -730,6 +781,7 @@ config HID_MULTITOUCH
 	  Say Y here if you have one of the following devices:
 	  - 3M PCT touch screens
 	  - ActionStar dual touch panels
+	  - Apple Touch Bar on x86 MacBook Pros
 	  - Atmel panels
 	  - Cando dual touch panels
 	  - Chunghwa panels
@@ -776,7 +828,7 @@ config HID_NINTENDO
 	Adds support for the Nintendo Switch Joy-Cons, NSO, Pro Controller.
 	All controllers support bluetooth, and the Pro Controller also supports
 	its USB mode. This also includes support for the Nintendo Switch Online
-	Controllers which include the Genesis, SNES, and N64 controllers.
+	Controllers which include the NES, Genesis, SNES, and N64 controllers.
 
 	To compile this driver as a module, choose M here: the
 	module will be called hid-nintendo.
@@ -1097,6 +1149,7 @@ config HID_RMI
 	select RMI4_F11
 	select RMI4_F12
 	select RMI4_F30
+	select RMI4_F3A
 	help
 	Support for Synaptics RMI4 touchpads.
 	Say Y here if you have a Synaptics RMI4 touchpads over i2c-hid or usbhid
@@ -1119,7 +1172,7 @@ config GREENASIA_FF
 
 config HID_HYPERV_MOUSE
 	tristate "Microsoft Hyper-V mouse driver"
-	depends on HYPERV
+	depends on HYPERV_VMBUS
 	help
 	Select this option to enable the Hyper-V mouse driver.
 
@@ -1200,7 +1253,7 @@ config HID_U2FZERO
 
 	  U2F Zero supports custom commands for blinking the LED
 	  and getting data from the internal hardware RNG.
-	  The internal hardware can be used to feed the enthropy pool.
+	  The internal hardware can be used to feed the entropy pool.
 
 	  U2F Zero only supports blinking its LED, so this driver doesn't
 	  allow setting the brightness to anything but 1, which will
@@ -1377,10 +1430,6 @@ endmenu
 
 source "drivers/hid/bpf/Kconfig"
 
-endif # HID
-
-source "drivers/hid/usbhid/Kconfig"
-
 source "drivers/hid/i2c-hid/Kconfig"
 
 source "drivers/hid/intel-ish-hid/Kconfig"
@@ -1388,5 +1437,13 @@ source "drivers/hid/intel-ish-hid/Kconfig"
 source "drivers/hid/amd-sfh-hid/Kconfig"
 
 source "drivers/hid/surface-hid/Kconfig"
+
+source "drivers/hid/intel-thc-hid/Kconfig"
+
+endif # HID
+
+# USB support may be used with HID disabled
+
+source "drivers/hid/usbhid/Kconfig"
 
 endif # HID_SUPPORT

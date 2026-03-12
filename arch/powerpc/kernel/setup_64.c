@@ -60,7 +60,7 @@
 #include <asm/xmon.h>
 #include <asm/udbg.h>
 #include <asm/kexec.h>
-#include <asm/code-patching.h>
+#include <asm/text-patching.h>
 #include <asm/ftrace.h>
 #include <asm/opal.h>
 #include <asm/cputhreads.h>
@@ -141,10 +141,7 @@ void __init check_smt_enabled(void)
 			smt_enabled_at_boot = 0;
 		else {
 			int smt;
-			int rc;
-
-			rc = kstrtoint(smt_enabled_cmdline, 10, &smt);
-			if (!rc)
+			if (!kstrtoint(smt_enabled_cmdline, 10, &smt))
 				smt_enabled_at_boot =
 					min(threads_per_core, smt);
 		}
@@ -892,7 +889,7 @@ unsigned long memory_block_size_bytes(void)
 }
 #endif
 
-#if defined(CONFIG_PPC_INDIRECT_PIO) || defined(CONFIG_PPC_INDIRECT_MMIO)
+#ifdef CONFIG_PPC_INDIRECT_PIO
 struct ppc_pci_io ppc_pci_io;
 EXPORT_SYMBOL(ppc_pci_io);
 #endif

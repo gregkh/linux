@@ -152,11 +152,8 @@ void devfreq_get_freq_range(struct devfreq *devfreq,
 				(unsigned long)HZ_PER_KHZ * qos_max_freq);
 
 	/* Apply constraints from OPP interface */
-	*min_freq = max(*min_freq, devfreq->scaling_min_freq);
-	*max_freq = min(*max_freq, devfreq->scaling_max_freq);
-
-	if (*min_freq > *max_freq)
-		*min_freq = *max_freq;
+	*max_freq = clamp(*max_freq, devfreq->scaling_min_freq, devfreq->scaling_max_freq);
+	*min_freq = clamp(*min_freq, devfreq->scaling_min_freq, *max_freq);
 }
 EXPORT_SYMBOL(devfreq_get_freq_range);
 
@@ -807,7 +804,6 @@ struct devfreq *devfreq_add_device(struct device *dev,
 {
 	struct devfreq *devfreq;
 	struct devfreq_governor *governor;
-	unsigned long min_freq, max_freq;
 	int err = 0;
 
 	if (!dev || !profile || !governor_name) {
@@ -835,6 +831,7 @@ struct devfreq *devfreq_add_device(struct device *dev,
 	mutex_lock(&devfreq->lock);
 	devfreq->dev.parent = dev;
 	devfreq->dev.class = devfreq_class;
+	devfreq->dev.groups = profile->dev_groups;
 	devfreq->dev.release = devfreq_dev_release;
 	INIT_LIST_HEAD(&devfreq->node);
 	devfreq->profile = profile;
@@ -874,8 +871,6 @@ struct devfreq *devfreq_add_device(struct device *dev,
 		err = -EINVAL;
 		goto err_dev;
 	}
-
-	devfreq_get_freq_range(devfreq, &min_freq, &max_freq);
 
 	devfreq->suspend_freq = dev_pm_opp_get_suspend_opp_freq(dev);
 	devfreq->opp_table = dev_pm_opp_get_opp_table(dev);

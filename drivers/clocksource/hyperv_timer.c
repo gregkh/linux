@@ -22,8 +22,9 @@
 #include <linux/irq.h>
 #include <linux/acpi.h>
 #include <linux/hyperv.h>
+#include <linux/export.h>
 #include <clocksource/hyperv_timer.h>
-#include <asm/hyperv-tlfs.h>
+#include <hyperv/hvhdk.h>
 #include <asm/mshyperv.h>
 
 static struct clock_event_device __percpu *hv_clock_event;
@@ -548,14 +549,22 @@ static void __init hv_init_tsc_clocksource(void)
 	union hv_reference_tsc_msr tsc_msr;
 
 	/*
+	 * When running as a guest partition:
+	 *
 	 * If Hyper-V offers TSC_INVARIANT, then the virtualized TSC correctly
 	 * handles frequency and offset changes due to live migration,
 	 * pause/resume, and other VM management operations.  So lower the
 	 * Hyper-V Reference TSC rating, causing the generic TSC to be used.
 	 * TSC_INVARIANT is not offered on ARM64, so the Hyper-V Reference
 	 * TSC will be preferred over the virtualized ARM64 arch counter.
+	 *
+	 * When running as the root partition:
+	 *
+	 * There is no HV_ACCESS_TSC_INVARIANT feature. Always lower the rating
+	 * of the Hyper-V Reference TSC.
 	 */
-	if (ms_hyperv.features & HV_ACCESS_TSC_INVARIANT) {
+	if ((ms_hyperv.features & HV_ACCESS_TSC_INVARIANT) ||
+	    hv_root_partition()) {
 		hyperv_cs_tsc.rating = 250;
 		hyperv_cs_msr.rating = 245;
 	}
@@ -582,7 +591,7 @@ static void __init hv_init_tsc_clocksource(void)
 	 * mapped.
 	 */
 	tsc_msr.as_uint64 = hv_get_msr(HV_MSR_REFERENCE_TSC);
-	if (hv_root_partition)
+	if (hv_root_partition())
 		tsc_pfn = tsc_msr.pfn;
 	else
 		tsc_pfn = HVPFN_DOWN(virt_to_phys(tsc_page));
@@ -627,7 +636,7 @@ void __init hv_remap_tsc_clocksource(void)
 	if (!(ms_hyperv.features & HV_MSR_REFERENCE_TSC_AVAILABLE))
 		return;
 
-	if (!hv_root_partition) {
+	if (!hv_root_partition()) {
 		WARN(1, "%s: attempt to remap TSC page in guest partition\n",
 		     __func__);
 		return;

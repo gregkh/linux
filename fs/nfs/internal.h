@@ -206,7 +206,6 @@ struct nfs_mount_request {
 };
 
 extern int nfs_mount(struct nfs_mount_request *info, int timeo, int retrans);
-extern void nfs_umount(const struct nfs_mount_request *info);
 
 /* client.c */
 extern const struct rpc_program nfs_program;
@@ -399,8 +398,8 @@ struct dentry *nfs_lookup(struct inode *, struct dentry *, unsigned int);
 void nfs_d_prune_case_insensitive_aliases(struct inode *inode);
 int nfs_create(struct mnt_idmap *, struct inode *, struct dentry *,
 	       umode_t, bool);
-int nfs_mkdir(struct mnt_idmap *, struct inode *, struct dentry *,
-	      umode_t);
+struct dentry *nfs_mkdir(struct mnt_idmap *, struct inode *, struct dentry *,
+			 umode_t);
 int nfs_rmdir(struct inode *, struct dentry *);
 int nfs_unlink(struct inode *, struct dentry *);
 int nfs_symlink(struct mnt_idmap *, struct inode *, struct dentry *,
@@ -431,12 +430,14 @@ loff_t nfs_file_llseek(struct file *, loff_t, int);
 ssize_t nfs_file_read(struct kiocb *, struct iov_iter *);
 ssize_t nfs_file_splice_read(struct file *in, loff_t *ppos, struct pipe_inode_info *pipe,
 			     size_t len, unsigned int flags);
-int nfs_file_mmap(struct file *, struct vm_area_struct *);
+int nfs_file_mmap_prepare(struct vm_area_desc *);
 ssize_t nfs_file_write(struct kiocb *, struct iov_iter *);
 int nfs_file_release(struct inode *, struct file *);
 int nfs_lock(struct file *, int, struct file_lock *);
 int nfs_flock(struct file *, int, struct file_lock *);
 int nfs_check_flags(int);
+void nfs_truncate_last_folio(struct address_space *mapping, loff_t from,
+			     loff_t to);
 
 /* inode.c */
 extern struct workqueue_struct *nfsiod_workqueue;
@@ -454,11 +455,22 @@ extern int nfs_wait_bit_killable(struct wait_bit_key *key, int mode);
 
 #if IS_ENABLED(CONFIG_NFS_LOCALIO)
 /* localio.c */
-extern void nfs_local_disable(struct nfs_client *);
-extern void nfs_local_probe(struct nfs_client *);
+struct nfs_local_dio {
+	u32 mem_align;
+	u32 offset_align;
+	loff_t middle_offset;
+	loff_t end_offset;
+	ssize_t	start_len;	/* Length for misaligned first extent */
+	ssize_t	middle_len;	/* Length for DIO-aligned middle extent */
+	ssize_t	end_len;	/* Length for misaligned last extent */
+};
+
+extern void nfs_local_probe_async(struct nfs_client *);
+extern void nfs_local_probe_async_work(struct work_struct *);
 extern struct nfsd_file *nfs_local_open_fh(struct nfs_client *,
 					   const struct cred *,
 					   struct nfs_fh *,
+					   struct nfs_file_localio *,
 					   const fmode_t);
 extern int nfs_local_doio(struct nfs_client *,
 			  struct nfsd_file *,
@@ -470,11 +482,12 @@ extern int nfs_local_commit(struct nfsd_file *,
 extern bool nfs_server_is_local(const struct nfs_client *clp);
 
 #else /* CONFIG_NFS_LOCALIO */
-static inline void nfs_local_disable(struct nfs_client *clp) {}
 static inline void nfs_local_probe(struct nfs_client *clp) {}
+static inline void nfs_local_probe_async(struct nfs_client *clp) {}
 static inline struct nfsd_file *
 nfs_local_open_fh(struct nfs_client *clp, const struct cred *cred,
-		  struct nfs_fh *fh, const fmode_t mode)
+		  struct nfs_fh *fh, struct nfs_file_localio *nfl,
+		  const fmode_t mode)
 {
 	return NULL;
 }

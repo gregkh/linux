@@ -106,7 +106,7 @@ static int hid_start_in(struct hid_device *hid)
 /* I/O retry timer routine */
 static void hid_retry_timeout(struct timer_list *t)
 {
-	struct usbhid_device *usbhid = from_timer(usbhid, t, io_retry);
+	struct usbhid_device *usbhid = timer_container_of(usbhid, t, io_retry);
 	struct hid_device *hid = usbhid->hid;
 
 	dev_dbg(&usbhid->intf->dev, "retrying intr urb\n");
@@ -1119,7 +1119,7 @@ static int usbhid_start(struct hid_device *hid)
 
 		interval = endpoint->bInterval;
 
-		/* Some vendors give fullspeed interval on highspeed devides */
+		/* Some vendors give fullspeed interval on highspeed devices */
 		if (hid->quirks & HID_QUIRK_FULLSPEED_INTERVAL &&
 		    dev->speed == USB_SPEED_HIGH) {
 			interval = fls(endpoint->bInterval*8);
@@ -1480,13 +1480,13 @@ static void usbhid_disconnect(struct usb_interface *intf)
 
 static void hid_cancel_delayed_stuff(struct usbhid_device *usbhid)
 {
-	del_timer_sync(&usbhid->io_retry);
+	timer_delete_sync(&usbhid->io_retry);
 	cancel_work_sync(&usbhid->reset_work);
 }
 
 static void hid_cease_io(struct usbhid_device *usbhid)
 {
-	del_timer_sync(&usbhid->io_retry);
+	timer_delete_sync(&usbhid->io_retry);
 	usb_kill_urb(usbhid->urbin);
 	usb_kill_urb(usbhid->urbctrl);
 	usb_kill_urb(usbhid->urbout);

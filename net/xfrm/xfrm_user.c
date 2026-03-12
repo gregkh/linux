@@ -244,7 +244,7 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 			     struct netlink_ext_ack *extack)
 {
 	int err;
-	u8 sa_dir = attrs[XFRMA_SA_DIR] ? nla_get_u8(attrs[XFRMA_SA_DIR]) : 0;
+	u8 sa_dir = nla_get_u8_default(attrs[XFRMA_SA_DIR], 0);
 	u16 family = p->sel.family;
 
 	err = -EINVAL;
@@ -345,6 +345,16 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 			NL_SET_ERR_MSG(extack, "TFC padding can only be used in tunnel mode");
 			goto out;
 		}
+		if ((attrs[XFRMA_IPTFS_DROP_TIME] ||
+		     attrs[XFRMA_IPTFS_REORDER_WINDOW] ||
+		     attrs[XFRMA_IPTFS_DONT_FRAG] ||
+		     attrs[XFRMA_IPTFS_INIT_DELAY] ||
+		     attrs[XFRMA_IPTFS_MAX_QSIZE] ||
+		     attrs[XFRMA_IPTFS_PKT_SIZE]) &&
+		    p->mode != XFRM_MODE_IPTFS) {
+			NL_SET_ERR_MSG(extack, "IP-TFS options can only be used in IP-TFS mode");
+			goto out;
+		}
 		break;
 
 	case IPPROTO_COMP:
@@ -417,6 +427,16 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 	case XFRM_MODE_ROUTEOPTIMIZATION:
 	case XFRM_MODE_BEET:
 		break;
+	case XFRM_MODE_IPTFS:
+		if (p->id.proto != IPPROTO_ESP) {
+			NL_SET_ERR_MSG(extack, "IP-TFS mode only supported with ESP");
+			goto out;
+		}
+		if (sa_dir == 0) {
+			NL_SET_ERR_MSG(extack, "IP-TFS mode requires in or out direction attribute");
+			goto out;
+		}
+		break;
 
 	default:
 		NL_SET_ERR_MSG(extack, "Unsupported mode");
@@ -465,6 +485,18 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 			goto out;
 		}
 
+		if (attrs[XFRMA_IPTFS_DROP_TIME]) {
+			NL_SET_ERR_MSG(extack, "IP-TFS drop time should not be set for output SA");
+			err = -EINVAL;
+			goto out;
+		}
+
+		if (attrs[XFRMA_IPTFS_REORDER_WINDOW]) {
+			NL_SET_ERR_MSG(extack, "IP-TFS reorder window should not be set for output SA");
+			err = -EINVAL;
+			goto out;
+		}
+
 		if (attrs[XFRMA_REPLAY_VAL]) {
 			struct xfrm_replay_state *replay;
 
@@ -502,6 +534,30 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 			}
 
 		}
+
+		if (attrs[XFRMA_IPTFS_DONT_FRAG]) {
+			NL_SET_ERR_MSG(extack, "IP-TFS don't fragment should not be set for input SA");
+			err = -EINVAL;
+			goto out;
+		}
+
+		if (attrs[XFRMA_IPTFS_INIT_DELAY]) {
+			NL_SET_ERR_MSG(extack, "IP-TFS initial delay should not be set for input SA");
+			err = -EINVAL;
+			goto out;
+		}
+
+		if (attrs[XFRMA_IPTFS_MAX_QSIZE]) {
+			NL_SET_ERR_MSG(extack, "IP-TFS max queue size should not be set for input SA");
+			err = -EINVAL;
+			goto out;
+		}
+
+		if (attrs[XFRMA_IPTFS_PKT_SIZE]) {
+			NL_SET_ERR_MSG(extack, "IP-TFS packet size should not be set for input SA");
+			err = -EINVAL;
+			goto out;
+		}
 	}
 
 	if (!sa_dir && attrs[XFRMA_SA_PCPU]) {
@@ -537,7 +593,7 @@ static int attach_one_algo(struct xfrm_algo **algpp, u8 *props,
 	if (!p)
 		return -ENOMEM;
 
-	strcpy(p->alg_name, algo->name);
+	strscpy(p->alg_name, algo->name);
 	*algpp = p;
 	return 0;
 }
@@ -564,7 +620,7 @@ static int attach_crypt(struct xfrm_state *x, struct nlattr *rta,
 	if (!p)
 		return -ENOMEM;
 
-	strcpy(p->alg_name, algo->name);
+	strscpy(p->alg_name, algo->name);
 	x->ealg = p;
 	x->geniv = algo->uinfo.encr.geniv;
 	return 0;
@@ -593,7 +649,7 @@ static int attach_auth(struct xfrm_algo_auth **algpp, u8 *props,
 	if (!p)
 		return -ENOMEM;
 
-	strcpy(p->alg_name, algo->name);
+	strscpy(p->alg_name, algo->name);
 	p->alg_key_len = ualg->alg_key_len;
 	p->alg_trunc_len = algo->uinfo.auth.icv_truncbits;
 	memcpy(p->alg_key, ualg->alg_key, (ualg->alg_key_len + 7) / 8);
@@ -628,7 +684,7 @@ static int attach_auth_trunc(struct xfrm_algo_auth **algpp, u8 *props,
 	if (!p)
 		return -ENOMEM;
 
-	strcpy(p->alg_name, algo->name);
+	strscpy(p->alg_name, algo->name);
 	if (!p->alg_trunc_len)
 		p->alg_trunc_len = algo->uinfo.auth.icv_truncbits;
 
@@ -658,7 +714,7 @@ static int attach_aead(struct xfrm_state *x, struct nlattr *rta,
 	if (!p)
 		return -ENOMEM;
 
-	strcpy(p->alg_name, algo->name);
+	strscpy(p->alg_name, algo->name);
 	x->aead = p;
 	x->geniv = algo->uinfo.aead.geniv;
 	return 0;
@@ -817,10 +873,8 @@ static void xfrm_smark_init(struct nlattr **attrs, struct xfrm_mark *m)
 {
 	if (attrs[XFRMA_SET_MARK]) {
 		m->v = nla_get_u32(attrs[XFRMA_SET_MARK]);
-		if (attrs[XFRMA_SET_MARK_MASK])
-			m->m = nla_get_u32(attrs[XFRMA_SET_MARK_MASK]);
-		else
-			m->m = 0xffffffff;
+		m->m = nla_get_u32_default(attrs[XFRMA_SET_MARK_MASK],
+					   0xffffffff);
 	} else {
 		m->v = m->m = 0;
 	}
@@ -900,7 +954,7 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
 		}
 	}
 
-	err = __xfrm_init_state(x, false, attrs[XFRMA_OFFLOAD_DEV], extack);
+	err = __xfrm_init_state(x, extack);
 	if (err)
 		goto error;
 
@@ -926,11 +980,18 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
 	/* override default values from above */
 	xfrm_update_ae_params(x, attrs, 0);
 
+	xfrm_set_type_offload(x, attrs[XFRMA_OFFLOAD_DEV]);
 	/* configure the hardware if offload is requested */
 	if (attrs[XFRMA_OFFLOAD_DEV]) {
 		err = xfrm_dev_state_add(net, x,
 					 nla_data(attrs[XFRMA_OFFLOAD_DEV]),
 					 extack);
+		if (err)
+			goto error;
+	}
+
+	if (x->mode_cbs && x->mode_cbs->user_init) {
+		err = x->mode_cbs->user_init(net, x, attrs, extack);
 		if (err)
 			goto error;
 	}
@@ -1148,7 +1209,7 @@ static int copy_to_user_auth(struct xfrm_algo_auth *auth, struct sk_buff *skb)
 	if (!nla)
 		return -EMSGSIZE;
 	algo = nla_data(nla);
-	strncpy(algo->alg_name, auth->alg_name, sizeof(algo->alg_name));
+	strscpy_pad(algo->alg_name, auth->alg_name);
 
 	if (redact_secret && auth->alg_key_len)
 		memset(algo->alg_key, 0, (auth->alg_key_len + 7) / 8);
@@ -1161,7 +1222,7 @@ static int copy_to_user_auth(struct xfrm_algo_auth *auth, struct sk_buff *skb)
 	if (!nla)
 		return -EMSGSIZE;
 	ap = nla_data(nla);
-	strscpy_pad(ap->alg_name, auth->alg_name, sizeof(ap->alg_name));
+	strscpy_pad(ap->alg_name, auth->alg_name);
 	ap->alg_key_len = auth->alg_key_len;
 	ap->alg_trunc_len = auth->alg_trunc_len;
 	if (redact_secret && auth->alg_key_len)
@@ -1182,7 +1243,7 @@ static int copy_to_user_aead(struct xfrm_algo_aead *aead, struct sk_buff *skb)
 		return -EMSGSIZE;
 
 	ap = nla_data(nla);
-	strscpy_pad(ap->alg_name, aead->alg_name, sizeof(ap->alg_name));
+	strscpy_pad(ap->alg_name, aead->alg_name);
 	ap->alg_key_len = aead->alg_key_len;
 	ap->alg_icv_len = aead->alg_icv_len;
 
@@ -1204,7 +1265,7 @@ static int copy_to_user_ealg(struct xfrm_algo *ealg, struct sk_buff *skb)
 		return -EMSGSIZE;
 
 	ap = nla_data(nla);
-	strscpy_pad(ap->alg_name, ealg->alg_name, sizeof(ap->alg_name));
+	strscpy_pad(ap->alg_name, ealg->alg_name);
 	ap->alg_key_len = ealg->alg_key_len;
 
 	if (redact_secret && ealg->alg_key_len)
@@ -1225,7 +1286,7 @@ static int copy_to_user_calg(struct xfrm_algo *calg, struct sk_buff *skb)
 		return -EMSGSIZE;
 
 	ap = nla_data(nla);
-	strscpy_pad(ap->alg_name, calg->alg_name, sizeof(ap->alg_name));
+	strscpy_pad(ap->alg_name, calg->alg_name);
 	ap->alg_key_len = 0;
 
 	return 0;
@@ -1350,6 +1411,10 @@ static int copy_to_user_state_extra(struct xfrm_state *x,
 		if (ret)
 			goto out;
 	}
+	if (x->mode_cbs && x->mode_cbs->copy_to_user)
+		ret = x->mode_cbs->copy_to_user(x, skb);
+	if (ret)
+		goto out;
 	if (x->mapping_maxage) {
 		ret = nla_put_u32(skb, XFRMA_MTIMER_THRESH, x->mapping_maxage);
 		if (ret)
@@ -2006,6 +2071,8 @@ static int validate_tmpl(int nr, struct xfrm_user_tmpl *ut, u16 family,
 				NL_SET_ERR_MSG(extack, "Mode in optional template not allowed in outbound policy");
 				return -EINVAL;
 			}
+			break;
+		case XFRM_MODE_IPTFS:
 			break;
 		default:
 			if (ut[i].family != prev_family) {
@@ -2971,6 +3038,9 @@ static int xfrm_add_acquire(struct sk_buff *skb, struct nlmsghdr *nlh,
 	}
 
 	xfrm_state_free(x);
+	xfrm_dev_policy_delete(xp);
+	xfrm_dev_policy_free(xp);
+	security_xfrm_policy_free(xp->security);
 	kfree(xp);
 
 	return 0;
@@ -3038,6 +3108,7 @@ static int xfrm_do_migrate(struct sk_buff *skb, struct nlmsghdr *nlh,
 	int n = 0;
 	struct net *net = sock_net(skb->sk);
 	struct xfrm_encap_tmpl  *encap = NULL;
+	struct xfrm_user_offload *xuo = NULL;
 	u32 if_id = 0;
 
 	if (!attrs[XFRMA_MIGRATE]) {
@@ -3068,11 +3139,19 @@ static int xfrm_do_migrate(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (attrs[XFRMA_IF_ID])
 		if_id = nla_get_u32(attrs[XFRMA_IF_ID]);
 
+	if (attrs[XFRMA_OFFLOAD_DEV]) {
+		xuo = kmemdup(nla_data(attrs[XFRMA_OFFLOAD_DEV]),
+			      sizeof(*xuo), GFP_KERNEL);
+		if (!xuo) {
+			err = -ENOMEM;
+			goto error;
+		}
+	}
 	err = xfrm_migrate(&pi->sel, pi->dir, type, m, n, kmp, net, encap,
-			   if_id, extack);
-
+			   if_id, extack, xuo);
+error:
 	kfree(encap);
-
+	kfree(xuo);
 	return err;
 }
 #else
@@ -3269,6 +3348,12 @@ const struct nla_policy xfrma_policy[XFRMA_MAX+1] = {
 	[XFRMA_SA_DIR]          = NLA_POLICY_RANGE(NLA_U8, XFRM_SA_DIR_IN, XFRM_SA_DIR_OUT),
 	[XFRMA_NAT_KEEPALIVE_INTERVAL] = { .type = NLA_U32 },
 	[XFRMA_SA_PCPU]		= { .type = NLA_U32 },
+	[XFRMA_IPTFS_DROP_TIME]		= { .type = NLA_U32 },
+	[XFRMA_IPTFS_REORDER_WINDOW]	= { .type = NLA_U16 },
+	[XFRMA_IPTFS_DONT_FRAG]		= { .type = NLA_FLAG },
+	[XFRMA_IPTFS_INIT_DELAY]	= { .type = NLA_U32 },
+	[XFRMA_IPTFS_MAX_QSIZE]		= { .type = NLA_U32 },
+	[XFRMA_IPTFS_PKT_SIZE]	= { .type = NLA_U32 },
 };
 EXPORT_SYMBOL_GPL(xfrma_policy);
 
@@ -3328,6 +3413,20 @@ static int xfrm_reject_unused_attr(int type, struct nlattr **attrs,
 			break;
 		default:
 			NL_SET_ERR_MSG(extack, "Invalid attribute SA_DIR");
+			return -EINVAL;
+		}
+	}
+
+	if (attrs[XFRMA_SA_PCPU]) {
+		switch (type) {
+		case XFRM_MSG_NEWSA:
+		case XFRM_MSG_UPDSA:
+		case XFRM_MSG_ALLOCSPI:
+		case XFRM_MSG_ACQUIRE:
+
+			break;
+		default:
+			NL_SET_ERR_MSG(extack, "Invalid attribute SA_PCPU");
 			return -EINVAL;
 		}
 	}
@@ -3588,6 +3687,9 @@ static inline unsigned int xfrm_sa_len(struct xfrm_state *x)
 
 	if (x->nat_keepalive_interval)
 		l += nla_total_size(sizeof(x->nat_keepalive_interval));
+
+	if (x->mode_cbs && x->mode_cbs->sa_len)
+		l += x->mode_cbs->sa_len(x);
 
 	return l;
 }

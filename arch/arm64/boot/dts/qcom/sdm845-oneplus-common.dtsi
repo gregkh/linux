@@ -7,6 +7,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/arm/qcom,ids.h>
 #include <dt-bindings/input/linux-event-codes.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
@@ -21,6 +22,9 @@
 /delete-node/ &rmtfs_mem;
 
 / {
+	chassis-type = "handset";
+	qcom,msm-id = <QCOM_ID_SDM845 0x20001>;
+
 	aliases {
 		serial0 = &uart9;
 		serial1 = &uart6;
@@ -246,14 +250,13 @@
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-			regulator-boot-on;
 		};
 
 		vreg_l14a_1p88: ldo14 {
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-			regulator-always-on;
+			regulator-boot-on;
 		};
 
 		vreg_l17a_1p3: ldo17 {
@@ -343,10 +346,6 @@
 				<GCC_QSPI_CNOC_PERIPH_AHB_CLK>,
 				<GCC_LPASS_Q6_AXI_CLK>,
 				<GCC_LPASS_SWAY_CLK>;
-};
-
-&gmu {
-	status = "okay";
 };
 
 &gpu {
@@ -521,27 +520,27 @@
 
 &q6asmdai {
 	dai@0 {
-		reg = <0>;
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
 	};
 
 	dai@1 {
-		reg = <1>;
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
 	};
 
 	dai@2 {
-		reg = <2>;
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
 	};
 
 	dai@3 {
-		reg = <3>;
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA4>;
 	};
 
 	dai@4 {
-		reg = <4>;
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA5>;
 	};
 
 	dai@5 {
-		reg = <5>;
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA6>;
 	};
 };
 

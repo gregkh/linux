@@ -24,6 +24,7 @@
 #include <linux/if_vlan.h>
 #include <linux/skb_array.h>
 #include <linux/if_macvlan.h>
+#include <linux/bpf.h>
 #include <net/sch_generic.h>
 #include <net/pkt_sched.h>
 #include <net/dst.h>
@@ -498,7 +499,7 @@ EXPORT_SYMBOL(netif_tx_unlock);
 
 static void dev_watchdog(struct timer_list *t)
 {
-	struct net_device *dev = from_timer(dev, t, watchdog_timer);
+	struct net_device *dev = timer_container_of(dev, t, watchdog_timer);
 	bool release = true;
 
 	spin_lock(&dev->tx_global_lock);
@@ -554,28 +555,23 @@ static void dev_watchdog(struct timer_list *t)
 		netdev_put(dev, &dev->watchdog_dev_tracker);
 }
 
-void __netdev_watchdog_up(struct net_device *dev)
+void netdev_watchdog_up(struct net_device *dev)
 {
-	if (dev->netdev_ops->ndo_tx_timeout) {
-		if (dev->watchdog_timeo <= 0)
-			dev->watchdog_timeo = 5*HZ;
-		if (!mod_timer(&dev->watchdog_timer,
-			       round_jiffies(jiffies + dev->watchdog_timeo)))
-			netdev_hold(dev, &dev->watchdog_dev_tracker,
-				    GFP_ATOMIC);
-	}
+	if (!dev->netdev_ops->ndo_tx_timeout)
+		return;
+	if (dev->watchdog_timeo <= 0)
+		dev->watchdog_timeo = 5*HZ;
+	if (!mod_timer(&dev->watchdog_timer,
+		       round_jiffies(jiffies + dev->watchdog_timeo)))
+		netdev_hold(dev, &dev->watchdog_dev_tracker,
+			    GFP_ATOMIC);
 }
-EXPORT_SYMBOL_GPL(__netdev_watchdog_up);
+EXPORT_SYMBOL_GPL(netdev_watchdog_up);
 
-static void dev_watchdog_up(struct net_device *dev)
-{
-	__netdev_watchdog_up(dev);
-}
-
-static void dev_watchdog_down(struct net_device *dev)
+static void netdev_watchdog_down(struct net_device *dev)
 {
 	netif_tx_lock_bh(dev);
-	if (del_timer(&dev->watchdog_timer))
+	if (timer_delete(&dev->watchdog_timer))
 		netdev_put(dev, &dev->watchdog_dev_tracker);
 	netif_tx_unlock_bh(dev);
 }
@@ -594,7 +590,7 @@ void netif_carrier_on(struct net_device *dev)
 		atomic_inc(&dev->carrier_up_count);
 		linkwatch_fire_event(dev);
 		if (netif_running(dev))
-			__netdev_watchdog_up(dev);
+			netdev_watchdog_up(dev);
 	}
 }
 EXPORT_SYMBOL(netif_carrier_on);
@@ -747,6 +743,8 @@ static int pfifo_fast_enqueue(struct sk_buff *skb, struct Qdisc *qdisc,
 	err = skb_array_produce(q, skb);
 
 	if (unlikely(err)) {
+		tcf_set_drop_reason(skb, SKB_DROP_REASON_QDISC_OVERLIMIT);
+
 		if (qdisc_is_percpu_stats(qdisc))
 			return qdisc_drop_cpu(skb, qdisc, to_free);
 		else
@@ -1009,14 +1007,14 @@ struct Qdisc *qdisc_create_dflt(struct netdev_queue *dev_queue,
 {
 	struct Qdisc *sch;
 
-	if (!try_module_get(ops->owner)) {
+	if (!bpf_try_module_get(ops, ops->owner)) {
 		NL_SET_ERR_MSG(extack, "Failed to increase module reference counter");
 		return NULL;
 	}
 
 	sch = qdisc_alloc(dev_queue, ops, extack);
 	if (IS_ERR(sch)) {
-		module_put(ops->owner);
+		bpf_module_put(ops, ops->owner);
 		return NULL;
 	}
 	sch->parent = parentid;
@@ -1086,7 +1084,7 @@ static void __qdisc_destroy(struct Qdisc *qdisc)
 		ops->destroy(qdisc);
 
 	lockdep_unregister_key(&qdisc->root_lock_key);
-	module_put(ops->owner);
+	bpf_module_put(ops, ops->owner);
 	netdev_put(dev, &qdisc->dev_tracker);
 
 	trace_qdisc_destroy(qdisc);
@@ -1270,7 +1268,7 @@ void dev_activate(struct net_device *dev)
 
 	if (need_watchdog) {
 		netif_trans_update(dev);
-		dev_watchdog_up(dev);
+		netdev_watchdog_up(dev);
 	}
 }
 EXPORT_SYMBOL(dev_activate);
@@ -1285,15 +1283,17 @@ static void qdisc_deactivate(struct Qdisc *qdisc)
 
 static void dev_deactivate_queue(struct net_device *dev,
 				 struct netdev_queue *dev_queue,
-				 void *_qdisc_default)
+				 void *_sync_needed)
 {
-	struct Qdisc *qdisc_default = _qdisc_default;
+	bool *sync_needed = _sync_needed;
 	struct Qdisc *qdisc;
 
 	qdisc = rtnl_dereference(dev_queue->qdisc);
 	if (qdisc) {
+		if (qdisc->enqueue)
+			*sync_needed = true;
 		qdisc_deactivate(qdisc);
-		rcu_assign_pointer(dev_queue->qdisc, qdisc_default);
+		rcu_assign_pointer(dev_queue->qdisc, &noop_qdisc);
 	}
 }
 
@@ -1360,24 +1360,22 @@ static bool some_qdisc_is_busy(struct net_device *dev)
  */
 void dev_deactivate_many(struct list_head *head)
 {
+	bool sync_needed = false;
 	struct net_device *dev;
 
 	list_for_each_entry(dev, head, close_list) {
 		netdev_for_each_tx_queue(dev, dev_deactivate_queue,
-					 &noop_qdisc);
+					 &sync_needed);
 		if (dev_ingress_queue(dev))
 			dev_deactivate_queue(dev, dev_ingress_queue(dev),
-					     &noop_qdisc);
+					     &sync_needed);
 
-		dev_watchdog_down(dev);
+		netdev_watchdog_down(dev);
 	}
 
-	/* Wait for outstanding qdisc-less dev_queue_xmit calls or
-	 * outstanding qdisc enqueuing calls.
-	 * This is avoided if all devices are in dismantle phase :
-	 * Caller will call synchronize_net() for us
-	 */
-	synchronize_net();
+	/* Wait for outstanding qdisc enqueuing calls. */
+	if (sync_needed)
+		synchronize_net();
 
 	list_for_each_entry(dev, head, close_list) {
 		netdev_for_each_tx_queue(dev, dev_reset_queue, NULL);

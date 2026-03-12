@@ -239,6 +239,76 @@ static inline bool __must_check __must_check_overflow(bool overflow)
 			      __overflows_type(n, T))
 
 /**
+ * range_overflows() - Check if a range is out of bounds
+ * @start: Start of the range.
+ * @size:  Size of the range.
+ * @max:   Exclusive upper boundary.
+ *
+ * A strict check to determine if the range [@start, @start + @size) is
+ * invalid with respect to the allowable range [0, @max). Any range
+ * starting at or beyond @max is considered an overflow, even if @size is 0.
+ *
+ * Returns: true if the range is out of bounds.
+ */
+#define range_overflows(start, size, max) ({ \
+	typeof(start) start__ = (start); \
+	typeof(size) size__ = (size); \
+	typeof(max) max__ = (max); \
+	(void)(&start__ == &size__); \
+	(void)(&start__ == &max__); \
+	start__ >= max__ || size__ > max__ - start__; \
+})
+
+/**
+ * range_overflows_t() - Check if a range is out of bounds
+ * @type:  Data type to use.
+ * @start: Start of the range.
+ * @size:  Size of the range.
+ * @max:   Exclusive upper boundary.
+ *
+ * Same as range_overflows() but forcing the parameters to @type.
+ *
+ * Returns: true if the range is out of bounds.
+ */
+#define range_overflows_t(type, start, size, max) \
+	range_overflows((type)(start), (type)(size), (type)(max))
+
+/**
+ * range_end_overflows() - Check if a range's endpoint is out of bounds
+ * @start: Start of the range.
+ * @size:  Size of the range.
+ * @max:   Exclusive upper boundary.
+ *
+ * Checks only if the endpoint of a range (@start + @size) exceeds @max.
+ * Unlike range_overflows(), a zero-sized range at the boundary (@start == @max)
+ * is not considered an overflow. Useful for iterator-style checks.
+ *
+ * Returns: true if the endpoint exceeds the boundary.
+ */
+#define range_end_overflows(start, size, max) ({ \
+	typeof(start) start__ = (start); \
+	typeof(size) size__ = (size); \
+	typeof(max) max__ = (max); \
+	(void)(&start__ == &size__); \
+	(void)(&start__ == &max__); \
+	start__ > max__ || size__ > max__ - start__; \
+})
+
+/**
+ * range_end_overflows_t() - Check if a range's endpoint is out of bounds
+ * @type:  Data type to use.
+ * @start: Start of the range.
+ * @size:  Size of the range.
+ * @max:   Exclusive upper boundary.
+ *
+ * Same as range_end_overflows() but forcing the parameters to @type.
+ *
+ * Returns: true if the endpoint exceeds the boundary.
+ */
+#define range_end_overflows_t(type, start, size, max) \
+	range_end_overflows((type)(start), (type)(size), (type)(max))
+
+/**
  * castable_to_type - like __same_type(), but also allows for casted literals
  *
  * @n: variable or constant value
@@ -432,6 +502,9 @@ static inline size_t __must_check size_sub(size_t minuend, size_t subtrahend)
  * Define a zeroed, on-stack, instance of @type structure with a trailing
  * flexible array member.
  * Use __struct_size(@name) to get compile-time size of it afterwards.
+ * Use __member_size(@name->member) to get compile-time size of @name members.
+ * Use STACK_FLEX_ARRAY_SIZE(@name, @member) to get compile-time number of
+ * elements in array @member.
  */
 #define DEFINE_RAW_FLEX(type, name, member, count)	\
 	__DEFINE_FLEX(type, name, member, count, = { })
@@ -449,8 +522,22 @@ static inline size_t __must_check size_sub(size_t minuend, size_t subtrahend)
  * Define a zeroed, on-stack, instance of @TYPE structure with a trailing
  * flexible array member.
  * Use __struct_size(@NAME) to get compile-time size of it afterwards.
+ * Use __member_size(@NAME->member) to get compile-time size of @NAME members.
+ * Use STACK_FLEX_ARRAY_SIZE(@name, @member) to get compile-time number of
+ * elements in array @member.
  */
 #define DEFINE_FLEX(TYPE, NAME, MEMBER, COUNTER, COUNT)	\
 	_DEFINE_FLEX(TYPE, NAME, MEMBER, COUNT, = { .COUNTER = COUNT, })
+
+/**
+ * STACK_FLEX_ARRAY_SIZE() - helper macro for DEFINE_FLEX() family.
+ * Returns the number of elements in @array.
+ *
+ * @name: Name for a variable defined in DEFINE_RAW_FLEX()/DEFINE_FLEX().
+ * @array: Name of the array member.
+ */
+#define STACK_FLEX_ARRAY_SIZE(name, array)						\
+	(__member_size((name)->array) / sizeof(*(name)->array) +			\
+						__must_be_array((name)->array))
 
 #endif /* __LINUX_OVERFLOW_H */

@@ -316,7 +316,7 @@ static inline void force_devcd_timeout(struct hci_dev *hdev,
 				       unsigned int timeout)
 {
 #ifdef CONFIG_DEV_COREDUMP
-	hdev->dump.timeout = msecs_to_jiffies(timeout * 1000);
+	hdev->dump.timeout = secs_to_jiffies(timeout);
 #endif
 }
 
@@ -437,15 +437,16 @@ static int __vhci_create_device(struct vhci_data *data, __u8 opcode)
 	hdev->get_codec_config_data = vhci_get_codec_config_data;
 	hdev->wakeup = vhci_wakeup;
 	hdev->setup = vhci_setup;
-	set_bit(HCI_QUIRK_NON_PERSISTENT_SETUP, &hdev->quirks);
+	hci_set_quirk(hdev, HCI_QUIRK_NON_PERSISTENT_SETUP);
+	hci_set_quirk(hdev, HCI_QUIRK_SYNC_FLOWCTL_SUPPORTED);
 
 	/* bit 6 is for external configuration */
 	if (opcode & 0x40)
-		set_bit(HCI_QUIRK_EXTERNAL_CONFIG, &hdev->quirks);
+		hci_set_quirk(hdev, HCI_QUIRK_EXTERNAL_CONFIG);
 
 	/* bit 7 is for raw device */
 	if (opcode & 0x80)
-		set_bit(HCI_QUIRK_RAW_DEVICE, &hdev->quirks);
+		hci_set_quirk(hdev, HCI_QUIRK_RAW_DEVICE);
 
 	if (hci_register_dev(hdev) < 0) {
 		BT_ERR("Can't register HCI device");
@@ -653,7 +654,7 @@ static int vhci_open(struct inode *inode, struct file *file)
 	file->private_data = data;
 	nonseekable_open(inode, file);
 
-	schedule_delayed_work(&data->open_timeout, msecs_to_jiffies(1000));
+	schedule_delayed_work(&data->open_timeout, secs_to_jiffies(1));
 
 	return 0;
 }

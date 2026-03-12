@@ -316,7 +316,7 @@ static struct dax_device *stripe_dax_pgoff(struct dm_target *ti, pgoff_t *pgoff)
 
 static long stripe_dax_direct_access(struct dm_target *ti, pgoff_t pgoff,
 		long nr_pages, enum dax_access_mode mode, void **kaddr,
-		pfn_t *pfn)
+		unsigned long *pfn)
 {
 	struct dax_device *dax_dev = stripe_dax_pgoff(ti, &pgoff);
 
@@ -405,7 +405,7 @@ static int stripe_end_io(struct dm_target *ti, struct bio *bio,
 		blk_status_t *error)
 {
 	unsigned int i;
-	char major_minor[16];
+	char major_minor[22];
 	struct stripe_c *sc = ti->private;
 
 	if (!*error)
@@ -417,8 +417,7 @@ static int stripe_end_io(struct dm_target *ti, struct bio *bio,
 	if (*error == BLK_STS_NOTSUPP)
 		return DM_ENDIO_DONE;
 
-	memset(major_minor, 0, sizeof(major_minor));
-	sprintf(major_minor, "%d:%d", MAJOR(bio_dev(bio)), MINOR(bio_dev(bio)));
+	format_dev_t(major_minor, bio_dev(bio));
 
 	/*
 	 * Test to see which stripe drive triggered the event
@@ -470,8 +469,9 @@ static void stripe_io_hints(struct dm_target *ti,
 
 static struct target_type stripe_target = {
 	.name   = "striped",
-	.version = {1, 6, 0},
-	.features = DM_TARGET_PASSES_INTEGRITY | DM_TARGET_NOWAIT,
+	.version = {1, 7, 0},
+	.features = DM_TARGET_PASSES_INTEGRITY | DM_TARGET_NOWAIT |
+		    DM_TARGET_ATOMIC_WRITES | DM_TARGET_PASSES_CRYPTO,
 	.module = THIS_MODULE,
 	.ctr    = stripe_ctr,
 	.dtr    = stripe_dtr,

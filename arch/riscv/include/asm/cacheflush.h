@@ -23,8 +23,8 @@ static inline void local_flush_icache_range(unsigned long start,
 
 static inline void flush_dcache_folio(struct folio *folio)
 {
-	if (test_bit(PG_dcache_clean, &folio->flags))
-		clear_bit(PG_dcache_clean, &folio->flags);
+	if (test_bit(PG_dcache_clean, &folio->flags.f))
+		clear_bit(PG_dcache_clean, &folio->flags.f);
 }
 #define flush_dcache_folio flush_dcache_folio
 #define ARCH_IMPLEMENTS_FLUSH_DCACHE_PAGE 1
@@ -85,6 +85,7 @@ static inline void flush_icache_range(unsigned long start, unsigned long end)
 
 extern unsigned int riscv_cbom_block_size;
 extern unsigned int riscv_cboz_block_size;
+extern unsigned int riscv_cbop_block_size;
 void riscv_init_cbo_blocksizes(void);
 
 #ifdef CONFIG_RISCV_DMA_NONCOHERENT

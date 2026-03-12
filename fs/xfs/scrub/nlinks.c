@@ -279,7 +279,7 @@ xchk_nlinks_collect_dirent(
 	 * determine the backref count.
 	 */
 	if (dotdot) {
-		if (dp == sc->mp->m_rootip)
+		if (xchk_inode_is_dirtree_root(dp))
 			error = xchk_nlinks_update_incore(xnc, ino, 1, 0, 0);
 		else if (!xfs_has_parent(sc->mp))
 			error = xchk_nlinks_update_incore(xnc, ino, 0, 1, 0);
@@ -583,9 +583,7 @@ xchk_nlinks_collect(
 	 * do not take sb_internal.
 	 */
 	xchk_trans_cancel(sc);
-	error = xchk_trans_alloc_empty(sc);
-	if (error)
-		return error;
+	xchk_trans_alloc_empty(sc);
 
 	while ((error = xchk_iscan_iter(&xnc->collect_iscan, &ip)) == 1) {
 		if (S_ISDIR(VFS_I(ip)->i_mode))
@@ -763,7 +761,7 @@ xchk_nlinks_compare_inode(
 		}
 	}
 
-	if (ip == sc->mp->m_rootip) {
+	if (xchk_inode_is_dirtree_root(ip)) {
 		/*
 		 * For the root of a directory tree, both the '.' and '..'
 		 * entries should point to the root directory.  The dotdot
@@ -908,9 +906,7 @@ xchk_nlinks_compare(
 	 * inactivation workqueue.
 	 */
 	xchk_trans_cancel(sc);
-	error = xchk_trans_alloc_empty(sc);
-	if (error)
-		return error;
+	xchk_trans_alloc_empty(sc);
 
 	/*
 	 * Use the inobt to walk all allocated inodes to compare the link
@@ -995,7 +991,6 @@ xchk_nlinks_setup_scan(
 	struct xchk_nlink_ctrs	*xnc)
 {
 	struct xfs_mount	*mp = sc->mp;
-	char			*descr;
 	unsigned long long	max_inos;
 	xfs_agnumber_t		last_agno = mp->m_sb.sb_agcount - 1;
 	xfs_agino_t		first_agino, last_agino;
@@ -1012,10 +1007,9 @@ xchk_nlinks_setup_scan(
 	 */
 	xfs_agino_range(mp, last_agno, &first_agino, &last_agino);
 	max_inos = XFS_AGINO_TO_INO(mp, last_agno, last_agino) + 1;
-	descr = xchk_xfile_descr(sc, "file link counts");
-	error = xfarray_create(descr, min(XFS_MAXINUMBER + 1, max_inos),
+	error = xfarray_create("file link counts",
+			min(XFS_MAXINUMBER + 1, max_inos),
 			sizeof(struct xchk_nlink), &xnc->nlinks);
-	kfree(descr);
 	if (error)
 		goto out_teardown;
 

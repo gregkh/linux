@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_COMPILER_TYPES_H
-#error "Please don't include <linux/compiler-clang.h> directly, include <linux/compiler.h> instead."
+#error "Please do not include <linux/compiler-clang.h> directly, include <linux/compiler.h> instead."
 #endif
 
 /* Compiler specific definitions for Clang compiler */
@@ -108,13 +108,11 @@
 #define __no_sanitize_coverage
 #endif
 
+/* Only Clang needs to disable the coverage sanitizer for kstack_erase. */
+#define __no_kstack_erase	__no_sanitize_coverage
+
 #if __has_feature(shadow_call_stack)
 # define __noscs	__attribute__((__no_sanitize__("shadow-call-stack")))
-#endif
-
-#if __has_feature(kcfi)
-/* Disable CFI checking inside a function. */
-#define __nocfi		__attribute__((__no_sanitize__("kcfi")))
 #endif
 
 /*
@@ -147,3 +145,11 @@
  */
 #define ASM_INPUT_G "ir"
 #define ASM_INPUT_RM "r"
+
+/*
+ * Declare compiler support for __typeof_unqual__() operator.
+ *
+ * Bindgen uses LLVM even if our C compiler is GCC, so we cannot
+ * rely on the auto-detected CONFIG_CC_HAS_TYPEOF_UNQUAL.
+ */
+#define CC_HAS_TYPEOF_UNQUAL (__clang_major__ > 19 || (__clang_major__ == 19 && __clang_minor__ > 0))

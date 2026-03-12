@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /* Copyright (c) 2019 Mellanox Technologies. */
 
+#include <net/netdev_lock.h>
+
 #include "health.h"
 #include "en/ptp.h"
 #include "en/devlink.h"
@@ -13,7 +15,6 @@ static const char * const sq_sw_state_type_name[] = {
 	[MLX5E_SQ_STATE_RECOVERING] = "recovering",
 	[MLX5E_SQ_STATE_IPSEC] = "ipsec",
 	[MLX5E_SQ_STATE_DIM] = "dim",
-	[MLX5E_SQ_STATE_VLAN_NEED_L2_INLINE] = "vlan_need_l2_inline",
 	[MLX5E_SQ_STATE_PENDING_XSK_TX] = "pending_xsk_tx",
 	[MLX5E_SQ_STATE_PENDING_TLS_RX_RESYNC] = "pending_tls_rx_resync",
 };
@@ -79,6 +80,18 @@ static int mlx5e_tx_reporter_err_cqe_recover(void *ctx)
 	if (!test_bit(MLX5E_SQ_STATE_RECOVERING, &sq->state))
 		return 0;
 
+	/* Recovering queues means re-enabling NAPI, which requires the netdev
+	 * instance lock. However, SQ closing flows have to wait for work tasks
+	 * to finish while also holding the netdev instance lock. So either get
+	 * the lock or find that the SQ is no longer enabled and thus this work
+	 * is not relevant anymore.
+	 */
+	while (!netdev_trylock(dev)) {
+		if (!test_bit(MLX5E_SQ_STATE_ENABLED, &sq->state))
+			return 0;
+		msleep(20);
+	}
+
 	err = mlx5_core_query_sq_state(mdev, sq->sqn, &state);
 	if (err) {
 		netdev_err(dev, "Failed to query SQ 0x%x state. err = %d\n",
@@ -107,18 +120,18 @@ static int mlx5e_tx_reporter_err_cqe_recover(void *ctx)
 	mlx5e_reset_txqsq_cc_pc(sq);
 	sq->stats->recover++;
 	clear_bit(MLX5E_SQ_STATE_RECOVERING, &sq->state);
-	rtnl_lock();
 	mlx5e_activate_txqsq(sq);
-	rtnl_unlock();
 
 	if (sq->channel)
 		mlx5e_trigger_napi_icosq(sq->channel);
 	else
 		mlx5e_trigger_napi_sched(sq->cq.napi);
 
+	netdev_unlock(dev);
 	return 0;
 out:
 	clear_bit(MLX5E_SQ_STATE_RECOVERING, &sq->state);
+	netdev_unlock(dev);
 	return err;
 }
 
@@ -139,10 +152,24 @@ static int mlx5e_tx_reporter_timeout_recover(void *ctx)
 	sq = to_ctx->sq;
 	eq = sq->cq.mcq.eq;
 	priv = sq->priv;
+
+	/* Recovering the TX queues implies re-enabling NAPI, which requires
+	 * the netdev instance lock.
+	 * However, channel closing flows have to wait for this work to finish
+	 * while holding the same lock. So either get the lock or find that
+	 * channels are being closed for other reason and this work is not
+	 * relevant anymore.
+	 */
+	while (!netdev_trylock(sq->netdev)) {
+		if (!test_bit(MLX5E_STATE_CHANNELS_ACTIVE, &priv->state))
+			return 0;
+		msleep(20);
+	}
+
 	err = mlx5e_health_channel_eq_recover(sq->netdev, eq, sq->cq.ch_stats);
 	if (!err) {
 		to_ctx->status = 0; /* this sq recovered */
-		return err;
+		goto out;
 	}
 
 	mutex_lock(&priv->state_lock);
@@ -150,7 +177,7 @@ static int mlx5e_tx_reporter_timeout_recover(void *ctx)
 	mutex_unlock(&priv->state_lock);
 	if (!err) {
 		to_ctx->status = 1; /* all channels recovered */
-		return err;
+		goto out;
 	}
 
 	to_ctx->status = err;
@@ -158,7 +185,8 @@ static int mlx5e_tx_reporter_timeout_recover(void *ctx)
 	netdev_err(priv->netdev,
 		   "mlx5e_safe_reopen_channels failed recovering from a tx_timeout, err(%d).\n",
 		   err);
-
+out:
+	netdev_unlock(sq->netdev);
 	return err;
 }
 
@@ -175,11 +203,22 @@ static int mlx5e_tx_reporter_ptpsq_unhealthy_recover(void *ctx)
 		return 0;
 
 	priv = ptpsq->txqsq.priv;
+	netdev = priv->netdev;
 
-	rtnl_lock();
+	/* Recovering the PTP SQ means re-enabling NAPI, which requires the
+	 * netdev instance lock. However, SQ closing has to wait for this work
+	 * task to finish while also holding the same lock. So either get the
+	 * lock or find that the SQ is no longer enabled and thus this work is
+	 * not relevant anymore.
+	 */
+	while (!netdev_trylock(netdev)) {
+		if (!test_bit(MLX5E_SQ_STATE_ENABLED, &ptpsq->txqsq.state))
+			return 0;
+		msleep(20);
+	}
+
 	mutex_lock(&priv->state_lock);
 	chs = &priv->channels;
-	netdev = priv->netdev;
 
 	carrier_ok = netif_carrier_ok(netdev);
 	netif_carrier_off(netdev);
@@ -196,7 +235,7 @@ static int mlx5e_tx_reporter_ptpsq_unhealthy_recover(void *ctx)
 		netif_carrier_on(netdev);
 
 	mutex_unlock(&priv->state_lock);
-	rtnl_unlock();
+	netdev_unlock(netdev);
 
 	return err;
 }
@@ -316,6 +355,30 @@ out:
 	mlx5e_health_fmsg_named_obj_nest_end(fmsg);
 }
 
+static void
+mlx5e_tx_reporter_diagnose_tis_config(struct devlink_health_reporter *reporter,
+				      struct devlink_fmsg *fmsg)
+{
+	struct mlx5e_priv *priv = devlink_health_reporter_priv(reporter);
+	u8 num_tc = mlx5e_get_dcb_num_tc(&priv->channels.params);
+	u32 tc, i, tisn;
+
+	devlink_fmsg_arr_pair_nest_start(fmsg, "TIS Config");
+	for (i = 0; i < mlx5e_get_num_lag_ports(priv->mdev); i++) {
+		for (tc = 0; tc < num_tc; tc++) {
+			tisn = mlx5e_profile_get_tisn(priv->mdev, priv,
+						      priv->profile, i, tc);
+
+			devlink_fmsg_obj_nest_start(fmsg);
+			devlink_fmsg_u32_pair_put(fmsg, "lag port", i);
+			devlink_fmsg_u32_pair_put(fmsg, "tc", tc);
+			devlink_fmsg_u32_pair_put(fmsg, "tisn", tisn);
+			devlink_fmsg_obj_nest_end(fmsg);
+		}
+	}
+	devlink_fmsg_arr_pair_nest_end(fmsg);
+}
+
 static int mlx5e_tx_reporter_diagnose(struct devlink_health_reporter *reporter,
 				      struct devlink_fmsg *fmsg,
 				      struct netlink_ext_ack *extack)
@@ -331,6 +394,7 @@ static int mlx5e_tx_reporter_diagnose(struct devlink_health_reporter *reporter,
 		goto unlock;
 
 	mlx5e_tx_reporter_diagnose_common_config(reporter, fmsg);
+	mlx5e_tx_reporter_diagnose_tis_config(reporter, fmsg);
 	devlink_fmsg_arr_pair_nest_start(fmsg, "SQs");
 
 	for (i = 0; i < priv->channels.num; i++) {
@@ -519,26 +583,30 @@ void mlx5e_reporter_tx_ptpsq_unhealthy(struct mlx5e_ptpsq *ptpsq)
 	mlx5e_health_report(priv, priv->tx_reporter, err_str, &err_ctx);
 }
 
+#define MLX5E_REPORTER_TX_GRACEFUL_PERIOD 500
+#define MLX5E_REPORTER_TX_BURST_PERIOD 500
+
 static const struct devlink_health_reporter_ops mlx5_tx_reporter_ops = {
 		.name = "tx",
 		.recover = mlx5e_tx_reporter_recover,
 		.diagnose = mlx5e_tx_reporter_diagnose,
 		.dump = mlx5e_tx_reporter_dump,
+		.default_graceful_period = MLX5E_REPORTER_TX_GRACEFUL_PERIOD,
+		.default_burst_period = MLX5E_REPORTER_TX_BURST_PERIOD,
 };
-
-#define MLX5_REPORTER_TX_GRACEFUL_PERIOD 500
 
 void mlx5e_reporter_tx_create(struct mlx5e_priv *priv)
 {
+	struct devlink_port *port = priv->netdev->devlink_port;
 	struct devlink_health_reporter *reporter;
 
-	reporter = devlink_port_health_reporter_create(priv->netdev->devlink_port,
+	reporter = devlink_port_health_reporter_create(port,
 						       &mlx5_tx_reporter_ops,
-						       MLX5_REPORTER_TX_GRACEFUL_PERIOD, priv);
+						       priv);
 	if (IS_ERR(reporter)) {
 		netdev_warn(priv->netdev,
-			    "Failed to create tx reporter, err = %ld\n",
-			    PTR_ERR(reporter));
+			    "Failed to create tx reporter, err = %pe\n",
+			    reporter);
 		return;
 	}
 	priv->tx_reporter = reporter;

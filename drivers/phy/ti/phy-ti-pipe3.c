@@ -933,7 +933,7 @@ MODULE_DEVICE_TABLE(of, ti_pipe3_id_table);
 
 static struct platform_driver ti_pipe3_driver = {
 	.probe		= ti_pipe3_probe,
-	.remove_new	= ti_pipe3_remove,
+	.remove		= ti_pipe3_remove,
 	.driver		= {
 		.name	= "ti-pipe3",
 		.of_match_table = ti_pipe3_id_table,
@@ -942,7 +942,6 @@ static struct platform_driver ti_pipe3_driver = {
 
 module_platform_driver(ti_pipe3_driver);
 
-MODULE_ALIAS("platform:ti_pipe3");
 MODULE_AUTHOR("Texas Instruments Inc.");
 MODULE_DESCRIPTION("TI PIPE3 phy driver");
 MODULE_LICENSE("GPL v2");

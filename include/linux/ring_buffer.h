@@ -92,10 +92,10 @@ __ring_buffer_alloc(unsigned long size, unsigned flags, struct lock_class_key *k
 struct trace_buffer *__ring_buffer_alloc_range(unsigned long size, unsigned flags,
 					       int order, unsigned long start,
 					       unsigned long range_size,
+					       unsigned long scratch_size,
 					       struct lock_class_key *key);
 
-bool ring_buffer_last_boot_delta(struct trace_buffer *buffer, long *text,
-				 long *data);
+void *ring_buffer_meta_scratch(struct trace_buffer *buffer, unsigned int *size);
 
 /*
  * Because the ring buffer is generic, if other users of the ring buffer get
@@ -113,11 +113,11 @@ bool ring_buffer_last_boot_delta(struct trace_buffer *buffer, long *text,
  * traced by ftrace, it can produce lockdep warnings. We need to keep each
  * ring buffer's lock class separate.
  */
-#define ring_buffer_alloc_range(size, flags, order, start, range_size)	\
+#define ring_buffer_alloc_range(size, flags, order, start, range_size, s_size)	\
 ({									\
 	static struct lock_class_key __key;				\
 	__ring_buffer_alloc_range((size), (flags), (order), (start),	\
-				  (range_size), &__key);		\
+				  (range_size), (s_size), &__key);	\
 })
 
 typedef bool (*ring_buffer_cond_fn)(void *data);
@@ -143,6 +143,9 @@ int ring_buffer_write(struct trace_buffer *buffer,
 
 void ring_buffer_nest_start(struct trace_buffer *buffer);
 void ring_buffer_nest_end(struct trace_buffer *buffer);
+
+DEFINE_GUARD(ring_buffer_nest, struct trace_buffer *,
+	     ring_buffer_nest_start(_T), ring_buffer_nest_end(_T))
 
 struct ring_buffer_event *
 ring_buffer_peek(struct trace_buffer *buffer, int cpu, u64 *ts,
@@ -190,6 +193,7 @@ void ring_buffer_record_off(struct trace_buffer *buffer);
 void ring_buffer_record_on(struct trace_buffer *buffer);
 bool ring_buffer_record_is_on(struct trace_buffer *buffer);
 bool ring_buffer_record_is_set_on(struct trace_buffer *buffer);
+bool ring_buffer_record_is_on_cpu(struct trace_buffer *buffer, int cpu);
 void ring_buffer_record_disable_cpu(struct trace_buffer *buffer, int cpu);
 void ring_buffer_record_enable_cpu(struct trace_buffer *buffer, int cpu);
 
@@ -244,6 +248,7 @@ int trace_rb_cpu_prepare(unsigned int cpu, struct hlist_node *node);
 
 int ring_buffer_map(struct trace_buffer *buffer, int cpu,
 		    struct vm_area_struct *vma);
+void ring_buffer_map_dup(struct trace_buffer *buffer, int cpu);
 int ring_buffer_unmap(struct trace_buffer *buffer, int cpu);
 int ring_buffer_map_get_reader(struct trace_buffer *buffer, int cpu);
 #endif /* _LINUX_RING_BUFFER_H */

@@ -54,6 +54,20 @@ ice_build_ctob(u64 td_cmd, u64 td_offset, unsigned int size, u64 td_tag)
 }
 
 /**
+ * ice_build_tstamp_desc - build Tx time stamp descriptor
+ * @tx_desc: Tx LAN descriptor index
+ * @tstamp: time stamp
+ *
+ * Return: Tx time stamp descriptor
+ */
+static inline __le32
+ice_build_tstamp_desc(u16 tx_desc, u32 tstamp)
+{
+	return cpu_to_le32(FIELD_PREP(ICE_TXTIME_TX_DESC_IDX_M, tx_desc) |
+			   FIELD_PREP(ICE_TXTIME_STAMP_M, tstamp));
+}
+
+/**
  * ice_get_vlan_tci - get VLAN TCI from Rx flex descriptor
  * @rx_desc: Rx 32b flex descriptor with RXDID=2
  *
@@ -111,7 +125,6 @@ static inline u32 ice_set_rs_bit(const struct ice_tx_ring *xdp_ring)
 }
 
 void ice_finalize_xdp_rx(struct ice_tx_ring *xdp_ring, unsigned int xdp_res, u32 first_idx);
-int ice_xmit_xdp_buff(struct xdp_buff *xdp, struct ice_tx_ring *xdp_ring);
 int __ice_xmit_xdp_ring(struct xdp_buff *xdp, struct ice_tx_ring *xdp_ring,
 			bool frame);
 void ice_release_rx_desc(struct ice_rx_ring *rx_ring, u16 val);

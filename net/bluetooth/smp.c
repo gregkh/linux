@@ -55,7 +55,7 @@
 /* Keys which are not distributed with Secure Connections */
 #define SMP_SC_NO_DIST (SMP_DIST_ENC_KEY | SMP_DIST_LINK_KEY)
 
-#define SMP_TIMEOUT	msecs_to_jiffies(30000)
+#define SMP_TIMEOUT	secs_to_jiffies(30)
 
 #define ID_ADDR_TIMEOUT	msecs_to_jiffies(200)
 
@@ -608,7 +608,7 @@ static void smp_send_cmd(struct l2cap_conn *conn, u8 code, u16 len, void *data)
 
 	iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, iv, 2, 1 + len);
 
-	l2cap_chan_send(chan, &msg, 1 + len);
+	l2cap_chan_send(chan, &msg, 1 + len, NULL);
 
 	if (!chan->data)
 		return;
@@ -3172,7 +3172,7 @@ static void smp_ready_cb(struct l2cap_chan *chan)
 	/* No need to call l2cap_chan_hold() here since we already own
 	 * the reference taken in smp_new_conn_cb(). This is just the
 	 * first time that we tie it to a specific pointer. The code in
-	 * l2cap_core.c ensures that there's no risk this function wont
+	 * l2cap_core.c ensures that there's no risk this function won't
 	 * get called if smp_new_conn_cb was previously called.
 	 */
 	conn->smp = chan;

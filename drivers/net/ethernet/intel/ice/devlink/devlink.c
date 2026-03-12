@@ -6,7 +6,7 @@
 #include "ice.h"
 #include "ice_lib.h"
 #include "devlink.h"
-#include "devlink_port.h"
+#include "port.h"
 #include "ice_eswitch.h"
 #include "ice_fw_update.h"
 #include "ice_dcb_lib.h"
@@ -293,7 +293,7 @@ static int ice_devlink_info_get(struct devlink *devlink,
 	err = ice_discover_dev_caps(hw, &ctx->dev_caps);
 	if (err) {
 		dev_dbg(dev, "Failed to discover device capabilities, status %d aq_err %s\n",
-			err, ice_aq_str(hw->adminq.sq_last_status));
+			err, libie_aq_str(hw->adminq.sq_last_status));
 		NL_SET_ERR_MSG_MOD(extack, "Unable to discover device capabilities");
 		goto out_free_ctx;
 	}
@@ -302,7 +302,7 @@ static int ice_devlink_info_get(struct devlink *devlink,
 		err = ice_get_inactive_orom_ver(hw, &ctx->pending_orom);
 		if (err) {
 			dev_dbg(dev, "Unable to read inactive Option ROM version data, status %d aq_err %s\n",
-				err, ice_aq_str(hw->adminq.sq_last_status));
+				err, libie_aq_str(hw->adminq.sq_last_status));
 
 			/* disable display of pending Option ROM */
 			ctx->dev_caps.common_cap.nvm_update_pending_orom = false;
@@ -313,7 +313,7 @@ static int ice_devlink_info_get(struct devlink *devlink,
 		err = ice_get_inactive_nvm_ver(hw, &ctx->pending_nvm);
 		if (err) {
 			dev_dbg(dev, "Unable to read inactive NVM version data, status %d aq_err %s\n",
-				err, ice_aq_str(hw->adminq.sq_last_status));
+				err, libie_aq_str(hw->adminq.sq_last_status));
 
 			/* disable display of pending Option ROM */
 			ctx->dev_caps.common_cap.nvm_update_pending_nvm = false;
@@ -324,7 +324,7 @@ static int ice_devlink_info_get(struct devlink *devlink,
 		err = ice_get_inactive_netlist_ver(hw, &ctx->pending_netlist);
 		if (err) {
 			dev_dbg(dev, "Unable to read inactive Netlist version data, status %d aq_err %s\n",
-				err, ice_aq_str(hw->adminq.sq_last_status));
+				err, libie_aq_str(hw->adminq.sq_last_status));
 
 			/* disable display of pending Option ROM */
 			ctx->dev_caps.common_cap.nvm_update_pending_netlist = false;
@@ -368,14 +368,18 @@ static int ice_devlink_info_get(struct devlink *devlink,
 			}
 			break;
 		case ICE_VERSION_RUNNING:
-			err = devlink_info_version_running_put(req, key, ctx->buf);
+			err = devlink_info_version_running_put_ext(req, key,
+								   ctx->buf,
+								   DEVLINK_INFO_VERSION_TYPE_COMPONENT);
 			if (err) {
 				NL_SET_ERR_MSG_MOD(extack, "Unable to set running version");
 				goto out_free_ctx;
 			}
 			break;
 		case ICE_VERSION_STORED:
-			err = devlink_info_version_stored_put(req, key, ctx->buf);
+			err = devlink_info_version_stored_put_ext(req, key,
+								  ctx->buf,
+								  DEVLINK_INFO_VERSION_TYPE_COMPONENT);
 			if (err) {
 				NL_SET_ERR_MSG_MOD(extack, "Unable to set stored version");
 				goto out_free_ctx;
@@ -436,7 +440,7 @@ ice_devlink_reload_empr_start(struct ice_pf *pf,
 	err = ice_aq_nvm_update_empr(hw);
 	if (err) {
 		dev_err(dev, "Failed to trigger EMP device reset to reload firmware, err %d aq_err %s\n",
-			err, ice_aq_str(hw->adminq.sq_last_status));
+			err, libie_aq_str(hw->adminq.sq_last_status));
 		NL_SET_ERR_MSG_MOD(extack, "Failed to trigger EMP device reset to reload firmware");
 		return err;
 	}
@@ -455,6 +459,8 @@ static void ice_devlink_reinit_down(struct ice_pf *pf)
 	rtnl_lock();
 	ice_vsi_decfg(ice_get_main_vsi(pf));
 	rtnl_unlock();
+	ice_deinit_pf(pf);
+	ice_deinit_hw(&pf->hw);
 	ice_deinit_dev(pf);
 }
 
@@ -1201,6 +1207,25 @@ static int ice_devlink_set_parent(struct devlink_rate *devlink_rate,
 	return status;
 }
 
+static void ice_set_min_max_msix(struct ice_pf *pf)
+{
+	struct devlink *devlink = priv_to_devlink(pf);
+	union devlink_param_value val;
+	int err;
+
+	err = devl_param_driverinit_value_get(devlink,
+					      DEVLINK_PARAM_GENERIC_ID_MSIX_VEC_PER_PF_MIN,
+					      &val);
+	if (!err)
+		pf->msix.min = val.vu32;
+
+	err = devl_param_driverinit_value_get(devlink,
+					      DEVLINK_PARAM_GENERIC_ID_MSIX_VEC_PER_PF_MAX,
+					      &val);
+	if (!err)
+		pf->msix.max = val.vu32;
+}
+
 /**
  * ice_devlink_reinit_up - do reinit of the given PF
  * @pf: pointer to the PF struct
@@ -1208,11 +1233,28 @@ static int ice_devlink_set_parent(struct devlink_rate *devlink_rate,
 static int ice_devlink_reinit_up(struct ice_pf *pf)
 {
 	struct ice_vsi *vsi = ice_get_main_vsi(pf);
+	struct device *dev = ice_pf_to_dev(pf);
+	bool need_dev_deinit = false;
 	int err;
+
+	err = ice_init_hw(&pf->hw);
+	if (err) {
+		dev_err(dev, "ice_init_hw failed: %d\n", err);
+		return err;
+	}
+
+	/* load MSI-X values */
+	ice_set_min_max_msix(pf);
 
 	err = ice_init_dev(pf);
 	if (err)
-		return err;
+		goto unroll_hw_init;
+
+	err = ice_init_pf(pf);
+	if (err) {
+		dev_err(dev, "ice_init_pf failed: %d\n", err);
+		goto unroll_dev_init;
+	}
 
 	vsi->flags = ICE_VSI_FLAG_INIT;
 
@@ -1220,7 +1262,7 @@ static int ice_devlink_reinit_up(struct ice_pf *pf)
 	err = ice_vsi_cfg(vsi);
 	rtnl_unlock();
 	if (err)
-		goto err_vsi_cfg;
+		goto unroll_pf_init;
 
 	/* No need to take devl_lock, it's already taken by devlink API */
 	err = ice_load(pf);
@@ -1233,8 +1275,14 @@ err_load:
 	rtnl_lock();
 	ice_vsi_decfg(vsi);
 	rtnl_unlock();
-err_vsi_cfg:
-	ice_deinit_dev(pf);
+unroll_pf_init:
+	ice_deinit_pf(pf);
+unroll_dev_init:
+	need_dev_deinit = true;
+unroll_hw_init:
+	ice_deinit_hw(&pf->hw);
+	if (need_dev_deinit)
+		ice_deinit_dev(pf);
 	return err;
 }
 
@@ -1305,8 +1353,13 @@ ice_devlink_enable_roce_get(struct devlink *devlink, u32 id,
 			    struct devlink_param_gset_ctx *ctx)
 {
 	struct ice_pf *pf = devlink_priv(devlink);
+	struct iidc_rdma_core_dev_info *cdev;
 
-	ctx->val.vbool = pf->rdma_mode & IIDC_RDMA_PROTOCOL_ROCEV2 ? true : false;
+	cdev = pf->cdev_info;
+	if (!cdev)
+		return -ENODEV;
+
+	ctx->val.vbool = !!(cdev->rdma_protocol & IIDC_RDMA_PROTOCOL_ROCEV2);
 
 	return 0;
 }
@@ -1316,19 +1369,24 @@ static int ice_devlink_enable_roce_set(struct devlink *devlink, u32 id,
 				       struct netlink_ext_ack *extack)
 {
 	struct ice_pf *pf = devlink_priv(devlink);
+	struct iidc_rdma_core_dev_info *cdev;
 	bool roce_ena = ctx->val.vbool;
 	int ret;
 
+	cdev = pf->cdev_info;
+	if (!cdev)
+		return -ENODEV;
+
 	if (!roce_ena) {
 		ice_unplug_aux_dev(pf);
-		pf->rdma_mode &= ~IIDC_RDMA_PROTOCOL_ROCEV2;
+		cdev->rdma_protocol &= ~IIDC_RDMA_PROTOCOL_ROCEV2;
 		return 0;
 	}
 
-	pf->rdma_mode |= IIDC_RDMA_PROTOCOL_ROCEV2;
+	cdev->rdma_protocol |= IIDC_RDMA_PROTOCOL_ROCEV2;
 	ret = ice_plug_aux_dev(pf);
 	if (ret)
-		pf->rdma_mode &= ~IIDC_RDMA_PROTOCOL_ROCEV2;
+		cdev->rdma_protocol &= ~IIDC_RDMA_PROTOCOL_ROCEV2;
 
 	return ret;
 }
@@ -1339,11 +1397,16 @@ ice_devlink_enable_roce_validate(struct devlink *devlink, u32 id,
 				 struct netlink_ext_ack *extack)
 {
 	struct ice_pf *pf = devlink_priv(devlink);
+	struct iidc_rdma_core_dev_info *cdev;
+
+	cdev = pf->cdev_info;
+	if (!cdev)
+		return -ENODEV;
 
 	if (!test_bit(ICE_FLAG_RDMA_ENA, pf->flags))
 		return -EOPNOTSUPP;
 
-	if (pf->rdma_mode & IIDC_RDMA_PROTOCOL_IWARP) {
+	if (cdev->rdma_protocol & IIDC_RDMA_PROTOCOL_IWARP) {
 		NL_SET_ERR_MSG_MOD(extack, "iWARP is currently enabled. This device cannot enable iWARP and RoCEv2 simultaneously");
 		return -EOPNOTSUPP;
 	}
@@ -1356,8 +1419,13 @@ ice_devlink_enable_iw_get(struct devlink *devlink, u32 id,
 			  struct devlink_param_gset_ctx *ctx)
 {
 	struct ice_pf *pf = devlink_priv(devlink);
+	struct iidc_rdma_core_dev_info *cdev;
 
-	ctx->val.vbool = pf->rdma_mode & IIDC_RDMA_PROTOCOL_IWARP;
+	cdev = pf->cdev_info;
+	if (!cdev)
+		return -ENODEV;
+
+	ctx->val.vbool = !!(cdev->rdma_protocol & IIDC_RDMA_PROTOCOL_IWARP);
 
 	return 0;
 }
@@ -1367,19 +1435,24 @@ static int ice_devlink_enable_iw_set(struct devlink *devlink, u32 id,
 				     struct netlink_ext_ack *extack)
 {
 	struct ice_pf *pf = devlink_priv(devlink);
+	struct iidc_rdma_core_dev_info *cdev;
 	bool iw_ena = ctx->val.vbool;
 	int ret;
 
+	cdev = pf->cdev_info;
+	if (!cdev)
+		return -ENODEV;
+
 	if (!iw_ena) {
 		ice_unplug_aux_dev(pf);
-		pf->rdma_mode &= ~IIDC_RDMA_PROTOCOL_IWARP;
+		cdev->rdma_protocol &= ~IIDC_RDMA_PROTOCOL_IWARP;
 		return 0;
 	}
 
-	pf->rdma_mode |= IIDC_RDMA_PROTOCOL_IWARP;
+	cdev->rdma_protocol |= IIDC_RDMA_PROTOCOL_IWARP;
 	ret = ice_plug_aux_dev(pf);
 	if (ret)
-		pf->rdma_mode &= ~IIDC_RDMA_PROTOCOL_IWARP;
+		cdev->rdma_protocol &= ~IIDC_RDMA_PROTOCOL_IWARP;
 
 	return ret;
 }
@@ -1394,7 +1467,7 @@ ice_devlink_enable_iw_validate(struct devlink *devlink, u32 id,
 	if (!test_bit(ICE_FLAG_RDMA_ENA, pf->flags))
 		return -EOPNOTSUPP;
 
-	if (pf->rdma_mode & IIDC_RDMA_PROTOCOL_ROCEV2) {
+	if (pf->cdev_info->rdma_protocol & IIDC_RDMA_PROTOCOL_ROCEV2) {
 		NL_SET_ERR_MSG_MOD(extack, "RoCEv2 is currently enabled. This device cannot enable iWARP and RoCEv2 simultaneously");
 		return -EOPNOTSUPP;
 	}
@@ -1521,6 +1594,43 @@ static int ice_devlink_local_fwd_validate(struct devlink *devlink, u32 id,
 	return 0;
 }
 
+static int
+ice_devlink_msix_max_pf_validate(struct devlink *devlink, u32 id,
+				 union devlink_param_value val,
+				 struct netlink_ext_ack *extack)
+{
+	struct ice_pf *pf = devlink_priv(devlink);
+
+	if (val.vu32 > pf->hw.func_caps.common_cap.num_msix_vectors)
+		return -EINVAL;
+
+	return 0;
+}
+
+static int
+ice_devlink_msix_min_pf_validate(struct devlink *devlink, u32 id,
+				 union devlink_param_value val,
+				 struct netlink_ext_ack *extack)
+{
+	if (val.vu32 < ICE_MIN_MSIX)
+		return -EINVAL;
+
+	return 0;
+}
+
+static int ice_devlink_enable_rdma_validate(struct devlink *devlink, u32 id,
+					    union devlink_param_value val,
+					    struct netlink_ext_ack *extack)
+{
+	struct ice_pf *pf = devlink_priv(devlink);
+	bool new_state = val.vbool;
+
+	if (new_state && !test_bit(ICE_FLAG_RDMA_ENA, pf->flags))
+		return -EOPNOTSUPP;
+
+	return 0;
+}
+
 enum ice_param_id {
 	ICE_DEVLINK_PARAM_ID_BASE = DEVLINK_PARAM_GENERIC_ID_MAX,
 	ICE_DEVLINK_PARAM_ID_TX_SCHED_LAYERS,
@@ -1536,6 +1646,17 @@ static const struct devlink_param ice_dvl_rdma_params[] = {
 			      ice_devlink_enable_iw_get,
 			      ice_devlink_enable_iw_set,
 			      ice_devlink_enable_iw_validate),
+	DEVLINK_PARAM_GENERIC(ENABLE_RDMA, BIT(DEVLINK_PARAM_CMODE_DRIVERINIT),
+			      NULL, NULL, ice_devlink_enable_rdma_validate),
+};
+
+static const struct devlink_param ice_dvl_msix_params[] = {
+	DEVLINK_PARAM_GENERIC(MSIX_VEC_PER_PF_MAX,
+			      BIT(DEVLINK_PARAM_CMODE_DRIVERINIT),
+			      NULL, NULL, ice_devlink_msix_max_pf_validate),
+	DEVLINK_PARAM_GENERIC(MSIX_VEC_PER_PF_MIN,
+			      BIT(DEVLINK_PARAM_CMODE_DRIVERINIT),
+			      NULL, NULL, ice_devlink_msix_min_pf_validate),
 };
 
 static const struct devlink_param ice_dvl_sched_params[] = {
@@ -1639,6 +1760,7 @@ void ice_devlink_unregister(struct ice_pf *pf)
 int ice_devlink_register_params(struct ice_pf *pf)
 {
 	struct devlink *devlink = priv_to_devlink(pf);
+	union devlink_param_value value;
 	struct ice_hw *hw = &pf->hw;
 	int status;
 
@@ -1647,10 +1769,39 @@ int ice_devlink_register_params(struct ice_pf *pf)
 	if (status)
 		return status;
 
+	status = devl_params_register(devlink, ice_dvl_msix_params,
+				      ARRAY_SIZE(ice_dvl_msix_params));
+	if (status)
+		goto unregister_rdma_params;
+
 	if (hw->func_caps.common_cap.tx_sched_topo_comp_mode_en)
 		status = devl_params_register(devlink, ice_dvl_sched_params,
 					      ARRAY_SIZE(ice_dvl_sched_params));
+	if (status)
+		goto unregister_msix_params;
 
+	value.vu32 = pf->msix.max;
+	devl_param_driverinit_value_set(devlink,
+					DEVLINK_PARAM_GENERIC_ID_MSIX_VEC_PER_PF_MAX,
+					value);
+	value.vu32 = pf->msix.min;
+	devl_param_driverinit_value_set(devlink,
+					DEVLINK_PARAM_GENERIC_ID_MSIX_VEC_PER_PF_MIN,
+					value);
+
+	value.vbool = test_bit(ICE_FLAG_RDMA_ENA, pf->flags);
+	devl_param_driverinit_value_set(devlink,
+					DEVLINK_PARAM_GENERIC_ID_ENABLE_RDMA,
+					value);
+
+	return 0;
+
+unregister_msix_params:
+	devl_params_unregister(devlink, ice_dvl_msix_params,
+			       ARRAY_SIZE(ice_dvl_msix_params));
+unregister_rdma_params:
+	devl_params_unregister(devlink, ice_dvl_rdma_params,
+			       ARRAY_SIZE(ice_dvl_rdma_params));
 	return status;
 }
 
@@ -1661,6 +1812,8 @@ void ice_devlink_unregister_params(struct ice_pf *pf)
 
 	devl_params_unregister(devlink, ice_dvl_rdma_params,
 			       ARRAY_SIZE(ice_dvl_rdma_params));
+	devl_params_unregister(devlink, ice_dvl_msix_params,
+			       ARRAY_SIZE(ice_dvl_msix_params));
 
 	if (hw->func_caps.common_cap.tx_sched_topo_comp_mode_en)
 		devl_params_unregister(devlink, ice_dvl_sched_params,

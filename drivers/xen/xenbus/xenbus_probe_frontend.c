@@ -511,4 +511,5 @@ static int __init boot_wait_for_devices(void)
 late_initcall(boot_wait_for_devices);
 #endif
 
+MODULE_DESCRIPTION("Xen PV-device frontend support");
 MODULE_LICENSE("GPL");

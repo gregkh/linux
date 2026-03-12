@@ -1118,8 +1118,8 @@ struct snd_timer_system_private {
 
 static void snd_timer_s_function(struct timer_list *t)
 {
-	struct snd_timer_system_private *priv = from_timer(priv, t,
-								tlist);
+	struct snd_timer_system_private *priv = timer_container_of(priv, t,
+								   tlist);
 	struct snd_timer *timer = priv->snd_timer;
 	unsigned long jiff = jiffies;
 	if (time_after(jiff, priv->last_expires))
@@ -1152,7 +1152,7 @@ static int snd_timer_s_stop(struct snd_timer * timer)
 	unsigned long jiff;
 
 	priv = (struct snd_timer_system_private *) timer->private_data;
-	del_timer(&priv->tlist);
+	timer_delete(&priv->tlist);
 	jiff = jiffies;
 	if (time_before(jiff, priv->last_expires))
 		timer->sticks = priv->last_expires - jiff;
@@ -1167,7 +1167,7 @@ static int snd_timer_s_close(struct snd_timer *timer)
 	struct snd_timer_system_private *priv;
 
 	priv = (struct snd_timer_system_private *)timer->private_data;
-	del_timer_sync(&priv->tlist);
+	timer_delete_sync(&priv->tlist);
 	return 0;
 }
 
@@ -1195,7 +1195,7 @@ static int snd_timer_register_system(void)
 	err = snd_timer_global_new("system", SNDRV_TIMER_GLOBAL_SYSTEM, &timer);
 	if (err < 0)
 		return err;
-	strcpy(timer->name, "system timer");
+	strscpy(timer->name, "system timer");
 	timer->hw = snd_timer_system;
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (priv == NULL) {

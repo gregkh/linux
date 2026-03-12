@@ -357,17 +357,18 @@ static int axp20x_battery_get_prop(struct power_supply *psy,
 		if (ret)
 			return ret;
 
+		/* IIO framework gives mA but Power Supply framework gives uA */
 		if (reg & AXP20X_PWR_STATUS_BAT_CHARGING) {
-			ret = iio_read_channel_processed(axp20x_batt->batt_chrg_i, &val->intval);
+			ret = iio_read_channel_processed_scale(axp20x_batt->batt_chrg_i,
+							       &val->intval, 1000);
 		} else {
-			ret = iio_read_channel_processed(axp20x_batt->batt_dischrg_i, &val1);
+			ret = iio_read_channel_processed_scale(axp20x_batt->batt_dischrg_i,
+							       &val1, 1000);
 			val->intval = -val1;
 		}
 		if (ret)
 			return ret;
 
-		/* IIO framework gives mA but Power Supply framework gives uA */
-		val->intval *= 1000;
 		break;
 
 	case POWER_SUPPLY_PROP_CAPACITY:
@@ -409,13 +410,12 @@ static int axp20x_battery_get_prop(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		ret = iio_read_channel_processed(axp20x_batt->batt_v,
-						 &val->intval);
+		/* IIO framework gives mV but Power Supply framework gives uV */
+		ret = iio_read_channel_processed_scale(axp20x_batt->batt_v,
+						 &val->intval, 1000);
 		if (ret)
 			return ret;
 
-		/* IIO framework gives mV but Power Supply framework gives uV */
-		val->intval *= 1000;
 		break;
 
 	default:
@@ -521,13 +521,15 @@ static int axp717_battery_get_prop(struct power_supply *psy,
 		 * The offset of this value is currently unknown and is
 		 * not documented in the datasheet. Based on
 		 * observation it's assumed to be somewhere around
-		 * 450ma. I will leave the value raw for now.
+		 * 450ma. I will leave the value raw for now. Note that
+		 * IIO framework gives mA but Power Supply framework
+		 * gives uA.
 		 */
-		ret = iio_read_channel_processed(axp20x_batt->batt_chrg_i, &val->intval);
+		ret = iio_read_channel_processed_scale(axp20x_batt->batt_chrg_i,
+						       &val->intval, 1000);
 		if (ret)
 			return ret;
-		/* IIO framework gives mA but Power Supply framework gives uA */
-		val->intval *= 1000;
+
 		return 0;
 
 	case POWER_SUPPLY_PROP_CAPACITY:
@@ -566,13 +568,12 @@ static int axp717_battery_get_prop(struct power_supply *psy,
 		return 0;
 
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		ret = iio_read_channel_processed(axp20x_batt->batt_v,
-						 &val->intval);
+		/* IIO framework gives mV but Power Supply framework gives uV */
+		ret = iio_read_channel_processed_scale(axp20x_batt->batt_v,
+						       &val->intval, 1000);
 		if (ret)
 			return ret;
 
-		/* IIO framework gives mV but Power Supply framework gives uV */
-		val->intval *= 1000;
 		return 0;
 
 	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
@@ -1110,7 +1111,7 @@ static int axp20x_power_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, axp20x_batt);
 
 	psy_cfg.drv_data = axp20x_batt;
-	psy_cfg.of_node = pdev->dev.of_node;
+	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
 
 	axp20x_batt->data = (struct axp_data *)of_device_get_match_data(dev);
 

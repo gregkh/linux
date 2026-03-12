@@ -88,7 +88,7 @@ static int virtio_transport_init_zcopy_skb(struct vsock_sock *vsk,
 
 		uarg = msg_zerocopy_realloc(sk_vsock(vsk),
 					    iter->count,
-					    NULL);
+					    NULL, false);
 		if (!uarg)
 			return -1;
 
@@ -110,8 +110,7 @@ static int virtio_transport_fill_skb(struct sk_buff *skb,
 
 	if (zcopy)
 		return __zerocopy_sg_from_iter(msg, NULL, skb,
-					       &msg->msg_iter,
-					       len);
+					       &msg->msg_iter, len, NULL);
 
 	virtio_vsock_skb_put(skb, len);
 	return skb_copy_datagram_from_iter_full(skb, 0, &msg->msg_iter, len);
@@ -1211,23 +1210,6 @@ static void virtio_transport_remove_sock(struct vsock_sock *vsk)
 	vsock_remove_sock(vsk);
 }
 
-static void virtio_transport_wait_close(struct sock *sk, long timeout)
-{
-	if (timeout) {
-		DEFINE_WAIT_FUNC(wait, woken_wake_function);
-
-		add_wait_queue(sk_sleep(sk), &wait);
-
-		do {
-			if (sk_wait_event(sk, &timeout,
-					  sock_flag(sk, SOCK_DONE), &wait))
-				break;
-		} while (!signal_pending(current) && timeout);
-
-		remove_wait_queue(sk_sleep(sk), &wait);
-	}
-}
-
 static void virtio_transport_cancel_close_work(struct vsock_sock *vsk,
 					       bool cancel_timeout)
 {
@@ -1297,8 +1279,8 @@ static bool virtio_transport_close(struct vsock_sock *vsk)
 	if ((sk->sk_shutdown & SHUTDOWN_MASK) != SHUTDOWN_MASK)
 		(void)virtio_transport_shutdown(vsk, SHUTDOWN_MASK);
 
-	if (sock_flag(sk, SOCK_LINGER) && !(current->flags & PF_EXITING))
-		virtio_transport_wait_close(sk, sk->sk_lingertime);
+	if (!(current->flags & PF_EXITING))
+		vsock_linger(sk);
 
 	if (sock_flag(sk, SOCK_DONE)) {
 		return true;

@@ -28,6 +28,9 @@ struct tegra_aes_ctx {
 	u32 ivsize;
 	u32 key1_id;
 	u32 key2_id;
+	u32 keylen;
+	u8 key1[AES_MAX_KEY_SIZE];
+	u8 key2[AES_MAX_KEY_SIZE];
 };
 
 struct tegra_aes_reqctx {
@@ -43,8 +46,9 @@ struct tegra_aead_ctx {
 	struct tegra_se *se;
 	unsigned int authsize;
 	u32 alg;
-	u32 keylen;
 	u32 key_id;
+	u32 keylen;
+	u8 key[AES_MAX_KEY_SIZE];
 };
 
 struct tegra_aead_reqctx {
@@ -56,8 +60,8 @@ struct tegra_aead_reqctx {
 	unsigned int cryptlen;
 	unsigned int authsize;
 	bool encrypt;
-	u32 config;
 	u32 crypto_config;
+	u32 config;
 	u32 key_id;
 	u32 iv[4];
 	u8 authdata[16];
@@ -67,6 +71,8 @@ struct tegra_cmac_ctx {
 	struct tegra_se *se;
 	unsigned int alg;
 	u32 key_id;
+	u32 keylen;
+	u8 key[AES_MAX_KEY_SIZE];
 	struct crypto_shash *fallback_tfm;
 };
 
@@ -260,11 +266,13 @@ static int tegra_aes_do_one_req(struct crypto_engine *engine, void *areq)
 	struct tegra_aes_ctx *ctx = crypto_skcipher_ctx(crypto_skcipher_reqtfm(req));
 	struct tegra_aes_reqctx *rctx = skcipher_request_ctx(req);
 	struct tegra_se *se = ctx->se;
-	unsigned int cmdlen;
+	unsigned int cmdlen, key1_id, key2_id;
 	int ret;
 
 	rctx->iv = (ctx->alg == SE_ALG_ECB) ? NULL : (u32 *)req->iv;
 	rctx->len = req->cryptlen;
+	key1_id = ctx->key1_id;
+	key2_id = ctx->key2_id;
 
 	/* Pad input to AES Block size */
 	if (ctx->alg != SE_ALG_XTS) {
@@ -275,10 +283,35 @@ static int tegra_aes_do_one_req(struct crypto_engine *engine, void *areq)
 	rctx->datbuf.size = rctx->len;
 	rctx->datbuf.buf = dma_alloc_coherent(se->dev, rctx->datbuf.size,
 					      &rctx->datbuf.addr, GFP_KERNEL);
-	if (!rctx->datbuf.buf)
-		return -ENOMEM;
+	if (!rctx->datbuf.buf) {
+		ret = -ENOMEM;
+		goto out_finalize;
+	}
 
 	scatterwalk_map_and_copy(rctx->datbuf.buf, req->src, 0, req->cryptlen, 0);
+
+	rctx->config = tegra234_aes_cfg(ctx->alg, rctx->encrypt);
+	rctx->crypto_config = tegra234_aes_crypto_cfg(ctx->alg, rctx->encrypt);
+
+	if (!key1_id) {
+		ret = tegra_key_submit_reserved_aes(ctx->se, ctx->key1,
+						    ctx->keylen, ctx->alg, &key1_id);
+		if (ret)
+			goto out;
+	}
+
+	rctx->crypto_config |= SE_AES_KEY_INDEX(key1_id);
+
+	if (ctx->alg == SE_ALG_XTS) {
+		if (!key2_id) {
+			ret = tegra_key_submit_reserved_xts(ctx->se, ctx->key2,
+							    ctx->keylen, ctx->alg, &key2_id);
+			if (ret)
+				goto out;
+		}
+
+		rctx->crypto_config |= SE_AES_KEY2_INDEX(key2_id);
+	}
 
 	/* Prepare the command and submit for execution */
 	cmdlen = tegra_aes_prep_cmd(ctx, rctx);
@@ -288,10 +321,18 @@ static int tegra_aes_do_one_req(struct crypto_engine *engine, void *areq)
 	tegra_aes_update_iv(req, ctx);
 	scatterwalk_map_and_copy(rctx->datbuf.buf, req->dst, 0, req->cryptlen, 1);
 
+out:
 	/* Free the buffer */
 	dma_free_coherent(ctx->se->dev, rctx->datbuf.size,
 			  rctx->datbuf.buf, rctx->datbuf.addr);
 
+	if (tegra_key_is_reserved(key1_id))
+		tegra_key_invalidate_reserved(ctx->se, key1_id, ctx->alg);
+
+	if (tegra_key_is_reserved(key2_id))
+		tegra_key_invalidate_reserved(ctx->se, key2_id, ctx->alg);
+
+out_finalize:
 	crypto_finalize_skcipher_request(se->engine, req, ret);
 
 	return 0;
@@ -313,6 +354,7 @@ static int tegra_aes_cra_init(struct crypto_skcipher *tfm)
 	ctx->se = se_alg->se_dev;
 	ctx->key1_id = 0;
 	ctx->key2_id = 0;
+	ctx->keylen = 0;
 
 	algname = crypto_tfm_alg_name(&tfm->base);
 	ret = se_algname_to_algid(algname);
@@ -341,13 +383,20 @@ static int tegra_aes_setkey(struct crypto_skcipher *tfm,
 			    const u8 *key, u32 keylen)
 {
 	struct tegra_aes_ctx *ctx = crypto_skcipher_ctx(tfm);
+	int ret;
 
 	if (aes_check_keylen(keylen)) {
 		dev_dbg(ctx->se->dev, "invalid key length (%d)\n", keylen);
 		return -EINVAL;
 	}
 
-	return tegra_key_submit(ctx->se, key, keylen, ctx->alg, &ctx->key1_id);
+	ret = tegra_key_submit(ctx->se, key, keylen, ctx->alg, &ctx->key1_id);
+	if (ret) {
+		ctx->keylen = keylen;
+		memcpy(ctx->key1, key, keylen);
+	}
+
+	return 0;
 }
 
 static int tegra_xts_setkey(struct crypto_skcipher *tfm,
@@ -365,11 +414,17 @@ static int tegra_xts_setkey(struct crypto_skcipher *tfm,
 
 	ret = tegra_key_submit(ctx->se, key, len,
 			       ctx->alg, &ctx->key1_id);
-	if (ret)
-		return ret;
+	if (ret) {
+		ctx->keylen = len;
+		memcpy(ctx->key1, key, len);
+	}
 
-	return tegra_key_submit(ctx->se, key + len, len,
+	ret = tegra_key_submit(ctx->se, key + len, len,
 			       ctx->alg, &ctx->key2_id);
+	if (ret) {
+		ctx->keylen = len;
+		memcpy(ctx->key2, key + len, len);
+	}
 
 	return 0;
 }
@@ -444,12 +499,6 @@ static int tegra_aes_crypt(struct skcipher_request *req, bool encrypt)
 		return 0;
 
 	rctx->encrypt = encrypt;
-	rctx->config = tegra234_aes_cfg(ctx->alg, encrypt);
-	rctx->crypto_config = tegra234_aes_crypto_cfg(ctx->alg, encrypt);
-	rctx->crypto_config |= SE_AES_KEY_INDEX(ctx->key1_id);
-
-	if (ctx->key2_id)
-		rctx->crypto_config |= SE_AES_KEY2_INDEX(ctx->key2_id);
 
 	return crypto_transfer_skcipher_request_to_engine(ctx->se->engine, req);
 }
@@ -715,7 +764,7 @@ static int tegra_gcm_do_gmac(struct tegra_aead_ctx *ctx, struct tegra_aead_reqct
 
 	rctx->config = tegra234_aes_cfg(SE_ALG_GMAC, rctx->encrypt);
 	rctx->crypto_config = tegra234_aes_crypto_cfg(SE_ALG_GMAC, rctx->encrypt) |
-			      SE_AES_KEY_INDEX(ctx->key_id);
+			      SE_AES_KEY_INDEX(rctx->key_id);
 
 	cmdlen = tegra_gmac_prep_cmd(ctx, rctx);
 
@@ -732,7 +781,7 @@ static int tegra_gcm_do_crypt(struct tegra_aead_ctx *ctx, struct tegra_aead_reqc
 
 	rctx->config = tegra234_aes_cfg(SE_ALG_GCM, rctx->encrypt);
 	rctx->crypto_config = tegra234_aes_crypto_cfg(SE_ALG_GCM, rctx->encrypt) |
-			      SE_AES_KEY_INDEX(ctx->key_id);
+			      SE_AES_KEY_INDEX(rctx->key_id);
 
 	/* Prepare command and submit */
 	cmdlen = tegra_gcm_crypt_prep_cmd(ctx, rctx);
@@ -755,7 +804,7 @@ static int tegra_gcm_do_final(struct tegra_aead_ctx *ctx, struct tegra_aead_reqc
 
 	rctx->config = tegra234_aes_cfg(SE_ALG_GCM_FINAL, rctx->encrypt);
 	rctx->crypto_config = tegra234_aes_crypto_cfg(SE_ALG_GCM_FINAL, rctx->encrypt) |
-			      SE_AES_KEY_INDEX(ctx->key_id);
+			      SE_AES_KEY_INDEX(rctx->key_id);
 
 	/* Prepare command and submit */
 	cmdlen = tegra_gcm_prep_final_cmd(se, cpuvaddr, rctx);
@@ -886,7 +935,7 @@ static int tegra_ccm_do_cbcmac(struct tegra_aead_ctx *ctx, struct tegra_aead_req
 	rctx->config = tegra234_aes_cfg(SE_ALG_CBC_MAC, rctx->encrypt);
 	rctx->crypto_config = tegra234_aes_crypto_cfg(SE_ALG_CBC_MAC,
 						      rctx->encrypt) |
-						      SE_AES_KEY_INDEX(ctx->key_id);
+						      SE_AES_KEY_INDEX(rctx->key_id);
 
 	/* Prepare command and submit */
 	cmdlen = tegra_cbcmac_prep_cmd(ctx, rctx);
@@ -1073,7 +1122,7 @@ static int tegra_ccm_do_ctr(struct tegra_aead_ctx *ctx, struct tegra_aead_reqctx
 
 	rctx->config = tegra234_aes_cfg(SE_ALG_CTR, rctx->encrypt);
 	rctx->crypto_config = tegra234_aes_crypto_cfg(SE_ALG_CTR, rctx->encrypt) |
-			      SE_AES_KEY_INDEX(ctx->key_id);
+			      SE_AES_KEY_INDEX(rctx->key_id);
 
 	/* Copy authdata in the top of buffer for encryption/decryption */
 	if (rctx->encrypt)
@@ -1152,21 +1201,30 @@ static int tegra_ccm_do_one_req(struct crypto_engine *engine, void *areq)
 
 	ret = tegra_ccm_crypt_init(req, se, rctx);
 	if (ret)
-		return ret;
+		goto out_finalize;
+
+	rctx->key_id = ctx->key_id;
 
 	/* Allocate buffers required */
 	rctx->inbuf.size = rctx->assoclen + rctx->authsize + rctx->cryptlen + 100;
 	rctx->inbuf.buf = dma_alloc_coherent(ctx->se->dev, rctx->inbuf.size,
 					     &rctx->inbuf.addr, GFP_KERNEL);
 	if (!rctx->inbuf.buf)
-		return -ENOMEM;
+		goto out_finalize;
 
 	rctx->outbuf.size = rctx->assoclen + rctx->authsize + rctx->cryptlen + 100;
 	rctx->outbuf.buf = dma_alloc_coherent(ctx->se->dev, rctx->outbuf.size,
 					      &rctx->outbuf.addr, GFP_KERNEL);
 	if (!rctx->outbuf.buf) {
 		ret = -ENOMEM;
-		goto outbuf_err;
+		goto out_free_inbuf;
+	}
+
+	if (!ctx->key_id) {
+		ret = tegra_key_submit_reserved_aes(ctx->se, ctx->key,
+						    ctx->keylen, ctx->alg, &rctx->key_id);
+		if (ret)
+			goto out;
 	}
 
 	if (rctx->encrypt) {
@@ -1195,10 +1253,14 @@ out:
 	dma_free_coherent(ctx->se->dev, rctx->inbuf.size,
 			  rctx->outbuf.buf, rctx->outbuf.addr);
 
-outbuf_err:
+out_free_inbuf:
 	dma_free_coherent(ctx->se->dev, rctx->outbuf.size,
 			  rctx->inbuf.buf, rctx->inbuf.addr);
 
+	if (tegra_key_is_reserved(rctx->key_id))
+		tegra_key_invalidate_reserved(ctx->se, rctx->key_id, ctx->alg);
+
+out_finalize:
 	crypto_finalize_aead_request(ctx->se->engine, req, ret);
 
 	return 0;
@@ -1225,19 +1287,30 @@ static int tegra_gcm_do_one_req(struct crypto_engine *engine, void *areq)
 	memcpy(rctx->iv, req->iv, GCM_AES_IV_SIZE);
 	rctx->iv[3] = (1 << 24);
 
+	rctx->key_id = ctx->key_id;
+
 	/* Allocate buffers required */
 	rctx->inbuf.size = rctx->assoclen + rctx->authsize + rctx->cryptlen;
 	rctx->inbuf.buf = dma_alloc_coherent(ctx->se->dev, rctx->inbuf.size,
 					     &rctx->inbuf.addr, GFP_KERNEL);
-	if (!rctx->inbuf.buf)
-		return -ENOMEM;
+	if (!rctx->inbuf.buf) {
+		ret = -ENOMEM;
+		goto out_finalize;
+	}
 
 	rctx->outbuf.size = rctx->assoclen + rctx->authsize + rctx->cryptlen;
 	rctx->outbuf.buf = dma_alloc_coherent(ctx->se->dev, rctx->outbuf.size,
 					      &rctx->outbuf.addr, GFP_KERNEL);
 	if (!rctx->outbuf.buf) {
 		ret = -ENOMEM;
-		goto outbuf_err;
+		goto out_free_inbuf;
+	}
+
+	if (!ctx->key_id) {
+		ret = tegra_key_submit_reserved_aes(ctx->se, ctx->key,
+						    ctx->keylen, ctx->alg, &rctx->key_id);
+		if (ret)
+			goto out;
 	}
 
 	/* If there is associated data perform GMAC operation */
@@ -1266,11 +1339,14 @@ out:
 	dma_free_coherent(ctx->se->dev, rctx->outbuf.size,
 			  rctx->outbuf.buf, rctx->outbuf.addr);
 
-outbuf_err:
+out_free_inbuf:
 	dma_free_coherent(ctx->se->dev, rctx->inbuf.size,
 			  rctx->inbuf.buf, rctx->inbuf.addr);
 
-	/* Finalize the request if there are no errors */
+	if (tegra_key_is_reserved(rctx->key_id))
+		tegra_key_invalidate_reserved(ctx->se, rctx->key_id, ctx->alg);
+
+out_finalize:
 	crypto_finalize_aead_request(ctx->se->engine, req, ret);
 
 	return 0;
@@ -1292,6 +1368,7 @@ static int tegra_aead_cra_init(struct crypto_aead *tfm)
 
 	ctx->se = se_alg->se_dev;
 	ctx->key_id = 0;
+	ctx->keylen = 0;
 
 	ret = se_algname_to_algid(algname);
 	if (ret < 0) {
@@ -1373,13 +1450,20 @@ static int tegra_aead_setkey(struct crypto_aead *tfm,
 			     const u8 *key, u32 keylen)
 {
 	struct tegra_aead_ctx *ctx = crypto_aead_ctx(tfm);
+	int ret;
 
 	if (aes_check_keylen(keylen)) {
 		dev_dbg(ctx->se->dev, "invalid key length (%d)\n", keylen);
 		return -EINVAL;
 	}
 
-	return tegra_key_submit(ctx->se, key, keylen, ctx->alg, &ctx->key_id);
+	ret = tegra_key_submit(ctx->se, key, keylen, ctx->alg, &ctx->key_id);
+	if (ret) {
+		ctx->keylen = keylen;
+		memcpy(ctx->key, key, keylen);
+	}
+
+	return 0;
 }
 
 static unsigned int tegra_cmac_prep_cmd(struct tegra_cmac_ctx *ctx,
@@ -1453,6 +1537,35 @@ static void tegra_cmac_paste_result(struct tegra_se *se, struct tegra_cmac_reqct
 		       se->base + se->hw->regs->result + (i * 4));
 }
 
+static int tegra_cmac_do_init(struct ahash_request *req)
+{
+	struct tegra_cmac_reqctx *rctx = ahash_request_ctx(req);
+	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
+	struct tegra_cmac_ctx *ctx = crypto_ahash_ctx(tfm);
+	struct tegra_se *se = ctx->se;
+	int i;
+
+	rctx->total_len = 0;
+	rctx->datbuf.size = 0;
+	rctx->residue.size = 0;
+	rctx->key_id = ctx->key_id;
+	rctx->task |= SHA_FIRST;
+	rctx->blk_size = crypto_ahash_blocksize(tfm);
+
+	rctx->residue.buf = dma_alloc_coherent(se->dev, rctx->blk_size * 2,
+					       &rctx->residue.addr, GFP_KERNEL);
+	if (!rctx->residue.buf)
+		return -ENOMEM;
+
+	rctx->residue.size = 0;
+
+	/* Clear any previous result */
+	for (i = 0; i < CMAC_RESULT_REG_COUNT; i++)
+		writel(0, se->base + se->hw->regs->result + (i * 4));
+
+	return 0;
+}
+
 static int tegra_cmac_do_update(struct ahash_request *req)
 {
 	struct tegra_cmac_reqctx *rctx = ahash_request_ctx(req);
@@ -1480,7 +1593,7 @@ static int tegra_cmac_do_update(struct ahash_request *req)
 	rctx->datbuf.size = (req->nbytes + rctx->residue.size) - nresidue;
 	rctx->total_len += rctx->datbuf.size;
 	rctx->config = tegra234_aes_cfg(SE_ALG_CMAC, 0);
-	rctx->crypto_config = SE_AES_KEY_INDEX(ctx->key_id);
+	rctx->crypto_config = SE_AES_KEY_INDEX(rctx->key_id);
 
 	/*
 	 * Keep one block and residue bytes in residue and
@@ -1598,6 +1711,21 @@ static int tegra_cmac_do_one_req(struct crypto_engine *engine, void *areq)
 	struct tegra_se *se = ctx->se;
 	int ret = 0;
 
+	if (rctx->task & SHA_INIT) {
+		ret = tegra_cmac_do_init(req);
+		if (ret)
+			goto out;
+
+		rctx->task &= ~SHA_INIT;
+	}
+
+	if (!ctx->key_id) {
+		ret = tegra_key_submit_reserved_aes(ctx->se, ctx->key,
+						    ctx->keylen, ctx->alg, &rctx->key_id);
+		if (ret)
+			goto out;
+	}
+
 	if (rctx->task & SHA_UPDATE) {
 		ret = tegra_cmac_do_update(req);
 		if (ret)
@@ -1614,6 +1742,9 @@ static int tegra_cmac_do_one_req(struct crypto_engine *engine, void *areq)
 		rctx->task &= ~SHA_FINAL;
 	}
 out:
+	if (tegra_key_is_reserved(rctx->key_id))
+		tegra_key_invalidate_reserved(ctx->se, rctx->key_id, ctx->alg);
+
 	crypto_finalize_hash_request(se->engine, req, ret);
 
 	return 0;
@@ -1654,6 +1785,7 @@ static int tegra_cmac_cra_init(struct crypto_tfm *tfm)
 
 	ctx->se = se_alg->se_dev;
 	ctx->key_id = 0;
+	ctx->keylen = 0;
 
 	ret = se_algname_to_algid(algname);
 	if (ret < 0) {
@@ -1678,38 +1810,11 @@ static void tegra_cmac_cra_exit(struct crypto_tfm *tfm)
 	tegra_key_invalidate(ctx->se, ctx->key_id, ctx->alg);
 }
 
-static int tegra_cmac_init(struct ahash_request *req)
-{
-	struct tegra_cmac_reqctx *rctx = ahash_request_ctx(req);
-	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
-	struct tegra_cmac_ctx *ctx = crypto_ahash_ctx(tfm);
-	struct tegra_se *se = ctx->se;
-	int i;
-
-	rctx->total_len = 0;
-	rctx->datbuf.size = 0;
-	rctx->residue.size = 0;
-	rctx->task = SHA_FIRST;
-	rctx->blk_size = crypto_ahash_blocksize(tfm);
-
-	rctx->residue.buf = dma_alloc_coherent(se->dev, rctx->blk_size * 2,
-					       &rctx->residue.addr, GFP_KERNEL);
-	if (!rctx->residue.buf)
-		return -ENOMEM;
-
-	rctx->residue.size = 0;
-
-	/* Clear any previous result */
-	for (i = 0; i < CMAC_RESULT_REG_COUNT; i++)
-		writel(0, se->base + se->hw->regs->result + (i * 4));
-
-	return 0;
-}
-
 static int tegra_cmac_setkey(struct crypto_ahash *tfm, const u8 *key,
 			     unsigned int keylen)
 {
 	struct tegra_cmac_ctx *ctx = crypto_ahash_ctx(tfm);
+	int ret;
 
 	if (aes_check_keylen(keylen)) {
 		dev_dbg(ctx->se->dev, "invalid key length (%d)\n", keylen);
@@ -1719,7 +1824,24 @@ static int tegra_cmac_setkey(struct crypto_ahash *tfm, const u8 *key,
 	if (ctx->fallback_tfm)
 		crypto_shash_setkey(ctx->fallback_tfm, key, keylen);
 
-	return tegra_key_submit(ctx->se, key, keylen, ctx->alg, &ctx->key_id);
+	ret = tegra_key_submit(ctx->se, key, keylen, ctx->alg, &ctx->key_id);
+	if (ret) {
+		ctx->keylen = keylen;
+		memcpy(ctx->key, key, keylen);
+	}
+
+	return 0;
+}
+
+static int tegra_cmac_init(struct ahash_request *req)
+{
+	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
+	struct tegra_cmac_ctx *ctx = crypto_ahash_ctx(tfm);
+	struct tegra_cmac_reqctx *rctx = ahash_request_ctx(req);
+
+	rctx->task = SHA_INIT;
+
+	return crypto_transfer_hash_request_to_engine(ctx->se->engine, req);
 }
 
 static int tegra_cmac_update(struct ahash_request *req)
@@ -1760,13 +1882,9 @@ static int tegra_cmac_digest(struct ahash_request *req)
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	struct tegra_cmac_ctx *ctx = crypto_ahash_ctx(tfm);
 	struct tegra_cmac_reqctx *rctx = ahash_request_ctx(req);
-	int ret;
 
-	ret = tegra_cmac_init(req);
-	if (ret)
-		return ret;
+	rctx->task |= SHA_INIT | SHA_UPDATE | SHA_FINAL;
 
-	rctx->task |= SHA_UPDATE | SHA_FINAL;
 	return crypto_transfer_hash_request_to_engine(ctx->se->engine, req);
 }
 

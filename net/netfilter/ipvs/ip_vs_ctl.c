@@ -848,7 +848,7 @@ static void ip_vs_trash_cleanup(struct netns_ipvs *ipvs)
 {
 	struct ip_vs_dest *dest, *nxt;
 
-	del_timer_sync(&ipvs->dest_trash_timer);
+	timer_delete_sync(&ipvs->dest_trash_timer);
 	/* No need to use dest_trash_lock */
 	list_for_each_entry_safe(dest, nxt, &ipvs->dest_trash, t_list) {
 		list_del(&dest->t_list);
@@ -1331,7 +1331,8 @@ ip_vs_del_dest(struct ip_vs_service *svc, struct ip_vs_dest_user_kern *udest)
 
 static void ip_vs_dest_trash_expire(struct timer_list *t)
 {
-	struct netns_ipvs *ipvs = from_timer(ipvs, t, dest_trash_timer);
+	struct netns_ipvs *ipvs = timer_container_of(ipvs, t,
+						     dest_trash_timer);
 	struct ip_vs_dest *dest, *next;
 	unsigned long now = jiffies;
 
@@ -3662,10 +3663,7 @@ static int ip_vs_genl_parse_dest(struct ip_vs_dest_user_kern *udest,
 	nla_memcpy(&udest->addr, nla_addr, sizeof(udest->addr));
 	udest->port = nla_get_be16(nla_port);
 
-	if (nla_addr_family)
-		udest->af = nla_get_u16(nla_addr_family);
-	else
-		udest->af = 0;
+	udest->af = nla_get_u16_default(nla_addr_family, 0);
 
 	/* If a full entry was requested, check for the additional fields */
 	if (full_entry) {

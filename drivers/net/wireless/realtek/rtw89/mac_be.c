@@ -29,6 +29,7 @@ static const u32 rtw89_mac_mem_base_addrs_be[RTW89_MAC_MEM_NUM] = {
 	[RTW89_MAC_MEM_CPU_LOCAL]	= CPU_LOCAL_BASE_ADDR_BE,
 	[RTW89_MAC_MEM_BSSID_CAM]	= BSSID_CAM_BASE_ADDR_BE,
 	[RTW89_MAC_MEM_WD_PAGE]		= WD_PAGE_BASE_ADDR_BE,
+	[RTW89_MAC_MEM_MLD_TBL]		= MLD_TBL_BASE_ADDR_BE,
 };
 
 static const struct rtw89_port_reg rtw89_port_base_be = {
@@ -55,6 +56,7 @@ static const struct rtw89_port_reg rtw89_port_base_be = {
 	.ptcl_dbg = R_BE_PTCL_DBG,
 	.ptcl_dbg_info = R_BE_PTCL_DBG_INFO,
 	.bcn_drop_all = R_BE_BCN_DROP_ALL0,
+	.bcn_psr_rpt = R_BE_BCN_PSR_RPT_P0,
 	.hiq_win = {R_BE_P0MB_HGQ_WINDOW_CFG_0, R_BE_PORT_HGQ_WINDOW_CFG,
 		    R_BE_PORT_HGQ_WINDOW_CFG + 1, R_BE_PORT_HGQ_WINDOW_CFG + 2,
 		    R_BE_PORT_HGQ_WINDOW_CFG + 3},
@@ -708,8 +710,8 @@ static int sec_eng_init_be(struct rtw89_dev *rtwdev)
 	val32 |= B_BE_CLK_EN_CGCMP | B_BE_CLK_EN_WAPI | B_BE_CLK_EN_WEP_TKIP |
 		 B_BE_SEC_TX_ENC | B_BE_SEC_RX_DEC |
 		 B_BE_MC_DEC | B_BE_BC_DEC |
-		 B_BE_BMC_MGNT_DEC | B_BE_UC_MGNT_DEC;
-	val32 &= ~B_BE_SEC_PRE_ENQUE_TX;
+		 B_BE_BMC_MGNT_DEC | B_BE_UC_MGNT_DEC |
+		 B_BE_SEC_PRE_ENQUE_TX;
 	rtw89_write32(rtwdev, R_BE_SEC_ENG_CTRL, val32);
 
 	rtw89_write32_set(rtwdev, R_BE_SEC_MPDU_PROC, B_BE_APPEND_ICV | B_BE_APPEND_MIC);
@@ -773,7 +775,7 @@ static int dmac_init_be(struct rtw89_dev *rtwdev, u8 mac_idx)
 		return ret;
 	}
 
-	ret = rtw89_mac_preload_init(rtwdev, RTW89_MAC_0, rtwdev->mac.qta_mode);
+	ret = rtw89_mac_preload_init(rtwdev, mac_idx, rtwdev->mac.qta_mode);
 	if (ret) {
 		rtw89_err(rtwdev, "[ERR]preload init %d\n", ret);
 		return ret;
@@ -1865,7 +1867,7 @@ int rtw89_mac_cfg_ctrl_path_v2(struct rtw89_dev *rtwdev, bool wl)
 	if (wl)
 		return 0;
 
-	for (i = 0; i < RTW89_PHY_MAX; i++) {
+	for (i = 0; i < RTW89_PHY_NUM; i++) {
 		g[i].gnt_bt_sw_en = 1;
 		g[i].gnt_bt = 1;
 		g[i].gnt_wl_sw_en = 1;
@@ -1987,6 +1989,20 @@ int rtw89_mac_resume_sch_tx_v2(struct rtw89_dev *rtwdev, u8 mac_idx, u32 tx_en)
 	return 0;
 }
 EXPORT_SYMBOL(rtw89_mac_resume_sch_tx_v2);
+
+void rtw89_mac_cfg_phy_rpt_be(struct rtw89_dev *rtwdev, u8 mac_idx, bool enable)
+{
+	u32 reg, val;
+
+	reg = rtw89_mac_reg_by_idx(rtwdev, R_BE_RCR, mac_idx);
+	val = enable ? MAC_AX_PHY_RPT_SIZE_8 : MAC_AX_PHY_RPT_SIZE_0;
+	rtw89_write32_mask(rtwdev, reg, B_BE_PHY_RPT_SZ_MASK, val);
+	rtw89_write32_mask(rtwdev, reg, B_BE_HDR_CNV_SZ_MASK, MAC_AX_HDR_CNV_SIZE_0);
+
+	reg = rtw89_mac_reg_by_idx(rtwdev, R_BE_DRV_INFO_OPTION, mac_idx);
+	rtw89_write32_mask(rtwdev, reg, B_BE_DRV_INFO_PHYRPT_EN, enable);
+}
+EXPORT_SYMBOL(rtw89_mac_cfg_phy_rpt_be);
 
 static
 int rtw89_mac_cfg_ppdu_status_be(struct rtw89_dev *rtwdev, u8 mac_idx, bool enable)
@@ -2552,6 +2568,7 @@ const struct rtw89_mac_gen_def rtw89_mac_gen_be = {
 	.filter_model_addr = R_BE_FILTER_MODEL_ADDR,
 	.indir_access_addr = R_BE_INDIR_ACCESS_ENTRY,
 	.mem_base_addrs = rtw89_mac_mem_base_addrs_be,
+	.mem_page_size = MAC_MEM_DUMP_PAGE_SIZE_BE,
 	.rx_fltr = R_BE_RX_FLTR_OPT,
 	.port_base = &rtw89_port_base_be,
 	.agg_len_ht = R_BE_AGG_LEN_HT_0,
@@ -2571,6 +2588,8 @@ const struct rtw89_mac_gen_def rtw89_mac_gen_be = {
 		.mask = B_BE_RXTRIG_RU26_DIS,
 	},
 	.wow_ctrl = {.addr = R_BE_WOW_CTRL, .mask = B_BE_WOW_WOWEN,},
+	.agg_limit = {.addr = R_BE_AMPDU_AGG_LIMIT, .mask = B_BE_AMPDU_MAX_TIME_MASK,},
+	.txcnt_limit = {.addr = R_BE_TXCNT, .mask = B_BE_L_TXCNT_LMT_MASK,},
 
 	.check_mac_en = rtw89_mac_check_mac_en_be,
 	.sys_init = sys_init_be,
@@ -2584,6 +2603,7 @@ const struct rtw89_mac_gen_def rtw89_mac_gen_be = {
 
 	.typ_fltr_opt = rtw89_mac_typ_fltr_opt_be,
 	.cfg_ppdu_status = rtw89_mac_cfg_ppdu_status_be,
+	.cfg_phy_rpt = rtw89_mac_cfg_phy_rpt_be,
 
 	.dle_mix_cfg = dle_mix_cfg_be,
 	.chk_dle_rdy = chk_dle_rdy_be,
@@ -2601,9 +2621,11 @@ const struct rtw89_mac_gen_def rtw89_mac_gen_be = {
 	.fwdl_enable_wcpu = rtw89_mac_fwdl_enable_wcpu_be,
 	.fwdl_get_status = fwdl_get_status_be,
 	.fwdl_check_path_ready = rtw89_fwdl_check_path_ready_be,
+	.fwdl_secure_idmem_share_mode = NULL,
 	.parse_efuse_map = rtw89_parse_efuse_map_be,
 	.parse_phycap_map = rtw89_parse_phycap_map_be,
 	.cnv_efuse_state = rtw89_cnv_efuse_state_be,
+	.efuse_read_fw_secure = rtw89_efuse_read_fw_secure_be,
 
 	.cfg_plt = rtw89_mac_cfg_plt_be,
 	.get_plt_cnt = rtw89_mac_get_plt_cnt_be,
@@ -2618,6 +2640,8 @@ const struct rtw89_mac_gen_def rtw89_mac_gen_be = {
 
 	.is_txq_empty = mac_is_txq_empty_be,
 
+	.prep_chan_list = rtw89_hw_scan_prep_chan_list_be,
+	.free_chan_list = rtw89_hw_scan_free_chan_list_be,
 	.add_chan_list = rtw89_hw_scan_add_chan_list_be,
 	.add_chan_list_pno = rtw89_pno_scan_add_chan_list_be,
 	.scan_offload = rtw89_fw_h2c_scan_offload_be,

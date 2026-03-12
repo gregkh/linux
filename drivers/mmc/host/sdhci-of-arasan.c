@@ -605,7 +605,6 @@ static const struct sdhci_pltfm_data sdhci_arasan_cqe_pdata = {
 			SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN,
 };
 
-#ifdef CONFIG_PM_SLEEP
 /**
  * sdhci_arasan_suspend - Suspend method for the driver
  * @dev:	Address of the device structure
@@ -699,10 +698,9 @@ static int sdhci_arasan_resume(struct device *dev)
 
 	return 0;
 }
-#endif /* ! CONFIG_PM_SLEEP */
 
-static SIMPLE_DEV_PM_OPS(sdhci_arasan_dev_pm_ops, sdhci_arasan_suspend,
-			 sdhci_arasan_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(sdhci_arasan_dev_pm_ops, sdhci_arasan_suspend,
+				sdhci_arasan_resume);
 
 /**
  * sdhci_arasan_sdcardclk_recalc_rate - Return the card clock rate
@@ -1910,34 +1908,26 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 		sdhci_arasan->soc_ctl_base = syscon_node_to_regmap(node);
 		of_node_put(node);
 
-		if (IS_ERR(sdhci_arasan->soc_ctl_base)) {
-			ret = dev_err_probe(dev,
+		if (IS_ERR(sdhci_arasan->soc_ctl_base))
+			return dev_err_probe(dev,
 					    PTR_ERR(sdhci_arasan->soc_ctl_base),
 					    "Can't get syscon\n");
-			goto err_pltfm_free;
-		}
 	}
 
 	sdhci_get_of_property(pdev);
 
 	sdhci_arasan->clk_ahb = devm_clk_get(dev, "clk_ahb");
-	if (IS_ERR(sdhci_arasan->clk_ahb)) {
-		ret = dev_err_probe(dev, PTR_ERR(sdhci_arasan->clk_ahb),
+	if (IS_ERR(sdhci_arasan->clk_ahb))
+		return dev_err_probe(dev, PTR_ERR(sdhci_arasan->clk_ahb),
 				    "clk_ahb clock not found.\n");
-		goto err_pltfm_free;
-	}
 
 	clk_xin = devm_clk_get(dev, "clk_xin");
-	if (IS_ERR(clk_xin)) {
-		ret = dev_err_probe(dev, PTR_ERR(clk_xin), "clk_xin clock not found.\n");
-		goto err_pltfm_free;
-	}
+	if (IS_ERR(clk_xin))
+		return dev_err_probe(dev, PTR_ERR(clk_xin), "clk_xin clock not found.\n");
 
 	ret = clk_prepare_enable(sdhci_arasan->clk_ahb);
-	if (ret) {
-		dev_err(dev, "Unable to enable AHB clock.\n");
-		goto err_pltfm_free;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "Unable to enable AHB clock.\n");
 
 	/* If clock-frequency property is set, use the provided value */
 	if (pltfm_host->clock &&
@@ -2058,8 +2048,6 @@ clk_disable_all:
 	clk_disable_unprepare(clk_xin);
 clk_dis_ahb:
 	clk_disable_unprepare(sdhci_arasan->clk_ahb);
-err_pltfm_free:
-	sdhci_pltfm_free(pdev);
 	return ret;
 }
 
@@ -2090,10 +2078,10 @@ static struct platform_driver sdhci_arasan_driver = {
 		.name = "sdhci-arasan",
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = sdhci_arasan_of_match,
-		.pm = &sdhci_arasan_dev_pm_ops,
+		.pm = pm_sleep_ptr(&sdhci_arasan_dev_pm_ops),
 	},
 	.probe = sdhci_arasan_probe,
-	.remove_new = sdhci_arasan_remove,
+	.remove = sdhci_arasan_remove,
 };
 
 module_platform_driver(sdhci_arasan_driver);

@@ -45,6 +45,7 @@ struct efi __read_mostly efi = {
 	.esrt			= EFI_INVALID_TABLE_ADDR,
 	.tpm_log		= EFI_INVALID_TABLE_ADDR,
 	.tpm_final_log		= EFI_INVALID_TABLE_ADDR,
+	.ovmf_debug_log         = EFI_INVALID_TABLE_ADDR,
 #ifdef CONFIG_LOAD_UEFI_KEYS
 	.mokvar_table		= EFI_INVALID_TABLE_ADDR,
 #endif
@@ -73,6 +74,9 @@ struct mm_struct efi_mm = {
 	.page_table_lock	= __SPIN_LOCK_UNLOCKED(efi_mm.page_table_lock),
 	.mmlist			= LIST_HEAD_INIT(efi_mm.mmlist),
 	.cpu_bitmap		= { [BITS_TO_LONGS(NR_CPUS)] = 0},
+#ifdef CONFIG_SCHED_MM_CID
+	.cpus_allowed_lock	= __RAW_SPIN_LOCK_UNLOCKED(efi_mm.cpus_allowed_lock),
+#endif
 };
 
 struct workqueue_struct *efi_rts_wq;
@@ -147,9 +151,6 @@ static ssize_t systab_show(struct kobject *kobj,
 		str += sprintf(str, "SMBIOS3=0x%lx\n", efi.smbios3);
 	if (efi.smbios != EFI_INVALID_TABLE_ADDR)
 		str += sprintf(str, "SMBIOS=0x%lx\n", efi.smbios);
-
-	if (IS_ENABLED(CONFIG_X86))
-		str = efi_systab_show_arch(str);
 
 	return str - buf;
 }
@@ -273,6 +274,7 @@ static __init int efivar_ssdt_load(void)
 	efi_char16_t *name = NULL;
 	efi_status_t status;
 	efi_guid_t guid;
+	int ret = 0;
 
 	if (!efivar_ssdt[0])
 		return 0;
@@ -294,8 +296,8 @@ static __init int efivar_ssdt_load(void)
 			efi_char16_t *name_tmp =
 				krealloc(name, name_size, GFP_KERNEL);
 			if (!name_tmp) {
-				kfree(name);
-				return -ENOMEM;
+				ret = -ENOMEM;
+				goto out;
 			}
 			name = name_tmp;
 			continue;
@@ -309,26 +311,38 @@ static __init int efivar_ssdt_load(void)
 		pr_info("loading SSDT from variable %s-%pUl\n", efivar_ssdt, &guid);
 
 		status = efi.get_variable(name, &guid, NULL, &data_size, NULL);
-		if (status != EFI_BUFFER_TOO_SMALL || !data_size)
-			return -EIO;
+		if (status != EFI_BUFFER_TOO_SMALL || !data_size) {
+			ret = -EIO;
+			goto out;
+		}
 
 		data = kmalloc(data_size, GFP_KERNEL);
-		if (!data)
-			return -ENOMEM;
+		if (!data) {
+			ret = -ENOMEM;
+			goto out;
+		}
 
 		status = efi.get_variable(name, &guid, NULL, &data_size, data);
 		if (status == EFI_SUCCESS) {
-			acpi_status ret = acpi_load_table(data, NULL);
-			if (ret)
-				pr_err("failed to load table: %u\n", ret);
-			else
+			acpi_status acpi_ret = acpi_load_table(data, NULL);
+			if (ACPI_FAILURE(acpi_ret)) {
+				pr_err("efivar_ssdt: failed to load table: %u\n",
+				       acpi_ret);
+			} else {
+				/*
+				 * The @data will be in use by ACPI engine,
+				 * do not free it!
+				 */
 				continue;
+			}
 		} else {
-			pr_err("failed to get var data: 0x%lx\n", status);
+			pr_err("efivar_ssdt: failed to get var data: 0x%lx\n", status);
 		}
 		kfree(data);
 	}
-	return 0;
+out:
+	kfree(name);
+	return ret;
 }
 #else
 static inline int efivar_ssdt_load(void) { return 0; }
@@ -433,7 +447,9 @@ static int __init efisubsys_init(void)
 		error = generic_ops_register();
 		if (error)
 			goto err_put;
-		efivar_ssdt_load();
+		error = efivar_ssdt_load();
+		if (error)
+			pr_err("efi: failed to load SSDT, error %d.\n", error);
 		platform_device_register_simple("efivars", 0, NULL, 0);
 	}
 
@@ -460,6 +476,10 @@ static int __init efisubsys_init(void)
 	if (efi.coco_secret != EFI_INVALID_TABLE_ADDR)
 		platform_device_register_simple("efi_secret", 0, NULL, 0);
 #endif
+
+	if (IS_ENABLED(CONFIG_OVMF_DEBUG_LOG) &&
+	    efi.ovmf_debug_log != EFI_INVALID_TABLE_ADDR)
+		ovmf_log_probe(efi.ovmf_debug_log);
 
 	return 0;
 
@@ -546,6 +566,7 @@ int __efi_mem_desc_lookup(u64 phys_addr, efi_memory_desc_t *out_md)
 
 extern int efi_mem_desc_lookup(u64 phys_addr, efi_memory_desc_t *out_md)
 	__weak __alias(__efi_mem_desc_lookup);
+EXPORT_SYMBOL_GPL(efi_mem_desc_lookup);
 
 /*
  * Calculate the highest address of an efi memory descriptor.
@@ -604,6 +625,9 @@ static const efi_config_table_type_t common_tables[] __initconst = {
 	{LINUX_EFI_MEMRESERVE_TABLE_GUID,	&mem_reserve,		"MEMRESERVE"	},
 	{LINUX_EFI_INITRD_MEDIA_GUID,		&initrd,		"INITRD"	},
 	{EFI_RT_PROPERTIES_TABLE_GUID,		&rt_prop,		"RTPROP"	},
+#ifdef CONFIG_OVMF_DEBUG_LOG
+	{OVMF_MEMORY_LOG_TABLE_GUID,		&efi.ovmf_debug_log,	"OvmfDebugLog"	},
+#endif
 #ifdef CONFIG_EFI_RCI2_TABLE
 	{DELLEMC_EFI_RCI2_TABLE_GUID,		&rci2_table_phys			},
 #endif

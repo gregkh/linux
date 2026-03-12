@@ -31,6 +31,10 @@ static void mt7925e_unregister_device(struct mt792x_dev *dev)
 {
 	int i;
 	struct mt76_connac_pm *pm = &dev->pm;
+	struct ieee80211_hw *hw = mt76_hw(dev);
+
+	if (dev->phy.chip_cap & MT792x_CHIP_CAP_WF_RF_PIN_CTRL_EVT_EN)
+		wiphy_rfkill_stop_polling(hw->wiphy);
 
 	cancel_work_sync(&dev->init_work);
 	mt76_unregister_device(&dev->mt76);
@@ -525,7 +529,7 @@ restore_suspend:
 	return err;
 }
 
-static int mt7925_pci_resume(struct device *device)
+static int _mt7925_pci_resume(struct device *device, bool restore)
 {
 	struct pci_dev *pdev = to_pci_dev(device);
 	struct mt76_dev *mdev = pci_get_drvdata(pdev);
@@ -553,14 +557,20 @@ static int mt7925_pci_resume(struct device *device)
 
 	mt76_worker_enable(&mdev->tx_worker);
 
-	local_bh_disable();
 	mt76_for_each_q_rx(mdev, i) {
 		napi_enable(&mdev->napi[i]);
-		napi_schedule(&mdev->napi[i]);
 	}
 	napi_enable(&mdev->tx_napi);
+
+	local_bh_disable();
+	mt76_for_each_q_rx(mdev, i) {
+		napi_schedule(&mdev->napi[i]);
+	}
 	napi_schedule(&mdev->tx_napi);
 	local_bh_enable();
+
+	if (restore)
+		goto failed;
 
 	mt76_connac_mcu_set_hif_suspend(mdev, false, false);
 	ret = wait_event_timeout(dev->wait,
@@ -578,7 +588,7 @@ static int mt7925_pci_resume(struct device *device)
 failed:
 	pm->suspended = false;
 
-	if (err < 0)
+	if (err < 0 || restore)
 		mt792x_reset(&dev->mt76);
 
 	return err;
@@ -589,7 +599,24 @@ static void mt7925_pci_shutdown(struct pci_dev *pdev)
 	mt7925_pci_remove(pdev);
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(mt7925_pm_ops, mt7925_pci_suspend, mt7925_pci_resume);
+static int mt7925_pci_resume(struct device *device)
+{
+	return _mt7925_pci_resume(device, false);
+}
+
+static int mt7925_pci_restore(struct device *device)
+{
+	return _mt7925_pci_resume(device, true);
+}
+
+static const struct dev_pm_ops mt7925_pm_ops = {
+	.suspend = pm_sleep_ptr(mt7925_pci_suspend),
+	.resume  = pm_sleep_ptr(mt7925_pci_resume),
+	.freeze = pm_sleep_ptr(mt7925_pci_suspend),
+	.thaw = pm_sleep_ptr(mt7925_pci_resume),
+	.poweroff = pm_sleep_ptr(mt7925_pci_suspend),
+	.restore = pm_sleep_ptr(mt7925_pci_restore),
+};
 
 static struct pci_driver mt7925_pci_driver = {
 	.name		= KBUILD_MODNAME,

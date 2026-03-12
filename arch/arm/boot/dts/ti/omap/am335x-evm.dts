@@ -23,7 +23,7 @@
 	};
 
 	chosen {
-		stdout-path = &uart0;
+		stdout-path = "serial0:115200n8";
 	};
 
 	vbat: fixedregulator0 {
@@ -388,7 +388,7 @@
 &uart0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart0_pins>;
-
+	wakeup-source;
 	status = "okay";
 };
 

@@ -474,6 +474,8 @@ static struct phy_driver microchip_phy_driver[] = {
 	/* This mask (0xfffffff2) is to differentiate from
 	 * LAN8742 (phy_id 0x0007c130 and 0x0007c131)
 	 * and allows future phy_id revisions.
+	 * These PHYs are integrated in LAN7800 and LAN7850 USB/Ethernet
+	 * controllers.
 	 */
 	.phy_id_mask	= 0xfffffff2,
 	.name		= "Microchip LAN88xx",
@@ -509,7 +511,7 @@ static struct phy_driver microchip_phy_driver[] = {
 
 module_phy_driver(microchip_phy_driver);
 
-static struct mdio_device_id __maybe_unused microchip_tbl[] = {
+static const struct mdio_device_id __maybe_unused microchip_tbl[] = {
 	{ 0x0007c132, 0xfffffff2 },
 	{ PHY_ID_MATCH_MODEL(PHY_ID_LAN937X_TX) },
 	{ }

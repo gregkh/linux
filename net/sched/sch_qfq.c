@@ -426,10 +426,7 @@ static int qfq_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 	if (err < 0)
 		return err;
 
-	if (tb[TCA_QFQ_WEIGHT])
-		weight = nla_get_u32(tb[TCA_QFQ_WEIGHT]);
-	else
-		weight = 1;
+	weight = nla_get_u32_default(tb[TCA_QFQ_WEIGHT], 1);
 
 	if (tb[TCA_QFQ_LMAX]) {
 		lmax = nla_get_u32(tb[TCA_QFQ_LMAX]);
@@ -459,7 +456,7 @@ static int qfq_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 
 	if (q->wsum + delta_w > QFQ_MAX_WSUM) {
 		NL_SET_ERR_MSG_FMT_MOD(extack,
-				       "total weight out of range (%d + %u)\n",
+				       "total weight out of range (%d + %u)",
 				       delta_w, q->wsum);
 		return -EINVAL;
 	}

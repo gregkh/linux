@@ -60,7 +60,7 @@ void inet_peer_base_init(struct inet_peer_base *bp)
 	seqlock_init(&bp->lock);
 	bp->total = 0;
 }
-EXPORT_SYMBOL_GPL(inet_peer_base_init);
+EXPORT_IPV6_MOD_GPL(inet_peer_base_init);
 
 #define PEER_MAX_GC 32
 
@@ -130,11 +130,6 @@ static struct inet_peer *lookup(const struct inetpeer_addr *daddr,
 	return NULL;
 }
 
-static void inetpeer_free_rcu(struct rcu_head *head)
-{
-	kmem_cache_free(peer_cachep, container_of(head, struct inet_peer, rcu));
-}
-
 /* perform garbage collect on all items stacked during a lookup */
 static void inet_peer_gc(struct inet_peer_base *base,
 			 struct inet_peer *gc_stack[],
@@ -167,7 +162,7 @@ static void inet_peer_gc(struct inet_peer_base *base,
 		if (p) {
 			rb_erase(&p->rb_node, &base->rb_root);
 			base->total--;
-			call_rcu(&p->rcu, inetpeer_free_rcu);
+			kfree_rcu(p, rcu);
 		}
 	}
 }
@@ -223,12 +218,12 @@ struct inet_peer *inet_getpeer(struct inet_peer_base *base,
 
 	return p;
 }
-EXPORT_SYMBOL_GPL(inet_getpeer);
+EXPORT_IPV6_MOD_GPL(inet_getpeer);
 
 void inet_putpeer(struct inet_peer *p)
 {
 	if (refcount_dec_and_test(&p->refcnt))
-		call_rcu(&p->rcu, inetpeer_free_rcu);
+		kfree_rcu(p, rcu);
 }
 
 /*
@@ -251,26 +246,30 @@ void inet_putpeer(struct inet_peer *p)
 #define XRLIM_BURST_FACTOR 6
 bool inet_peer_xrlim_allow(struct inet_peer *peer, int timeout)
 {
-	unsigned long now, token;
+	unsigned long now, token, otoken, delta;
 	bool rc = false;
 
 	if (!peer)
 		return true;
 
-	token = peer->rate_tokens;
+	token = otoken = READ_ONCE(peer->rate_tokens);
 	now = jiffies;
-	token += now - peer->rate_last;
-	peer->rate_last = now;
-	if (token > XRLIM_BURST_FACTOR * timeout)
-		token = XRLIM_BURST_FACTOR * timeout;
+	delta = now - READ_ONCE(peer->rate_last);
+	if (delta) {
+		WRITE_ONCE(peer->rate_last, now);
+		token += delta;
+		if (token > XRLIM_BURST_FACTOR * timeout)
+			token = XRLIM_BURST_FACTOR * timeout;
+	}
 	if (token >= timeout) {
 		token -= timeout;
 		rc = true;
 	}
-	peer->rate_tokens = token;
+	if (token != otoken)
+		WRITE_ONCE(peer->rate_tokens, token);
 	return rc;
 }
-EXPORT_SYMBOL(inet_peer_xrlim_allow);
+EXPORT_IPV6_MOD(inet_peer_xrlim_allow);
 
 void inetpeer_invalidate_tree(struct inet_peer_base *base)
 {
@@ -287,4 +286,4 @@ void inetpeer_invalidate_tree(struct inet_peer_base *base)
 
 	base->total = 0;
 }
-EXPORT_SYMBOL(inetpeer_invalidate_tree);
+EXPORT_IPV6_MOD(inetpeer_invalidate_tree);

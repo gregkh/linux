@@ -322,24 +322,6 @@ static inline bool arch_tlbbatch_should_defer(struct mm_struct *mm)
 	return true;
 }
 
-static inline void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *batch,
-					     struct mm_struct *mm,
-					     unsigned long uaddr)
-{
-	__flush_tlb_page_nosync(mm, uaddr);
-}
-
-/*
- * If mprotect/munmap/etc occurs during TLB batched flushing, we need to ensure
- * all the previously issued TLBIs targeting mm have completed. But since we
- * can be executing on a remote CPU, a DSB cannot guarantee this like it can
- * for arch_tlbbatch_flush(). Our only option is to flush the entire mm.
- */
-static inline void arch_flush_tlb_batched_pending(struct mm_struct *mm)
-{
-	flush_tlb_mm(mm);
-}
-
 /*
  * To support TLB batched flush for multiple pages unmapping, we only send
  * the TLBI for each page in arch_tlbbatch_add_pending() and wait for the
@@ -434,7 +416,24 @@ do {									\
 #define __flush_s2_tlb_range_op(op, start, pages, stride, tlb_level) \
 	__flush_tlb_range_op(op, start, pages, stride, 0, tlb_level, false, kvm_lpa2_is_enabled());
 
-static inline void __flush_tlb_range_nosync(struct vm_area_struct *vma,
+static inline bool __flush_tlb_range_limit_excess(unsigned long start,
+		unsigned long end, unsigned long pages, unsigned long stride)
+{
+	/*
+	 * When the system does not support TLB range based flush
+	 * operation, (MAX_DVM_OPS - 1) pages can be handled. But
+	 * with TLB range based operation, MAX_TLBI_RANGE_PAGES
+	 * pages can be handled.
+	 */
+	if ((!system_supports_tlb_range() &&
+	     (end - start) >= (MAX_DVM_OPS * stride)) ||
+	    pages > MAX_TLBI_RANGE_PAGES)
+		return true;
+
+	return false;
+}
+
+static inline void __flush_tlb_range_nosync(struct mm_struct *mm,
 				     unsigned long start, unsigned long end,
 				     unsigned long stride, bool last_level,
 				     int tlb_level)
@@ -445,21 +444,13 @@ static inline void __flush_tlb_range_nosync(struct vm_area_struct *vma,
 	end = round_up(end, stride);
 	pages = (end - start) >> PAGE_SHIFT;
 
-	/*
-	 * When not uses TLB range ops, we can handle up to
-	 * (MAX_DVM_OPS - 1) pages;
-	 * When uses TLB range ops, we can handle up to
-	 * MAX_TLBI_RANGE_PAGES pages.
-	 */
-	if ((!system_supports_tlb_range() &&
-	     (end - start) >= (MAX_DVM_OPS * stride)) ||
-	    pages > MAX_TLBI_RANGE_PAGES) {
-		flush_tlb_mm(vma->vm_mm);
+	if (__flush_tlb_range_limit_excess(start, end, pages, stride)) {
+		flush_tlb_mm(mm);
 		return;
 	}
 
 	dsb(ishst);
-	asid = ASID(vma->vm_mm);
+	asid = ASID(mm);
 
 	if (last_level)
 		__flush_tlb_range_op(vale1is, start, pages, stride, asid,
@@ -468,7 +459,7 @@ static inline void __flush_tlb_range_nosync(struct vm_area_struct *vma,
 		__flush_tlb_range_op(vae1is, start, pages, stride, asid,
 				     tlb_level, true, lpa2_is_enabled());
 
-	mmu_notifier_arch_invalidate_secondary_tlbs(vma->vm_mm, start, end);
+	mmu_notifier_arch_invalidate_secondary_tlbs(mm, start, end);
 }
 
 static inline void __flush_tlb_range(struct vm_area_struct *vma,
@@ -476,7 +467,7 @@ static inline void __flush_tlb_range(struct vm_area_struct *vma,
 				     unsigned long stride, bool last_level,
 				     int tlb_level)
 {
-	__flush_tlb_range_nosync(vma, start, end, stride,
+	__flush_tlb_range_nosync(vma->vm_mm, start, end, stride,
 				 last_level, tlb_level);
 	dsb(ish);
 }
@@ -495,19 +486,21 @@ static inline void flush_tlb_range(struct vm_area_struct *vma,
 
 static inline void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 {
-	unsigned long addr;
+	const unsigned long stride = PAGE_SIZE;
+	unsigned long pages;
 
-	if ((end - start) > (MAX_DVM_OPS * PAGE_SIZE)) {
+	start = round_down(start, stride);
+	end = round_up(end, stride);
+	pages = (end - start) >> PAGE_SHIFT;
+
+	if (__flush_tlb_range_limit_excess(start, end, pages, stride)) {
 		flush_tlb_all();
 		return;
 	}
 
-	start = __TLBI_VADDR(start, 0);
-	end = __TLBI_VADDR(end, 0);
-
 	dsb(ishst);
-	for (addr = start; addr < end; addr += 1 << (PAGE_SHIFT - 12))
-		__tlbi(vaale1is, addr);
+	__flush_tlb_range_op(vaale1is, start, pages, stride, 0,
+			     TLBI_TTL_UNKNOWN, false, lpa2_is_enabled());
 	dsb(ish);
 	isb();
 }
@@ -524,6 +517,12 @@ static inline void __flush_tlb_kernel_pgtable(unsigned long kaddr)
 	__tlbi(vaae1is, addr);
 	dsb(ish);
 	isb();
+}
+
+static inline void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *batch,
+		struct mm_struct *mm, unsigned long start, unsigned long end)
+{
+	__flush_tlb_range_nosync(mm, start, end, PAGE_SIZE, true, 3);
 }
 #endif
 

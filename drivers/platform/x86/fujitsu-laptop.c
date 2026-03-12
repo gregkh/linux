@@ -180,14 +180,18 @@ static ssize_t charge_control_end_threshold_store(struct device *dev,
 				const char *buf, size_t count)
 {
 	int cc_end_value, s006_cc_return;
-	int value, ret;
+	unsigned int value;
+	int ret;
 
 	ret = kstrtouint(buf, 10, &value);
 	if (ret)
 		return ret;
 
-	if (value < 50 || value > 100)
+	if (value > 100)
 		return -EINVAL;
+
+	if (value < 50)
+		value = 50;
 
 	cc_end_value = value * 0x100 + 0x20;
 	s006_cc_return = call_fext_func(fext, FUNC_S006_METHOD,
@@ -509,8 +513,8 @@ static int acpi_fujitsu_bl_add(struct acpi_device *device)
 		return -ENOMEM;
 
 	fujitsu_bl = priv;
-	strcpy(acpi_device_name(device), ACPI_FUJITSU_BL_DEVICE_NAME);
-	strcpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
+	strscpy(acpi_device_name(device), ACPI_FUJITSU_BL_DEVICE_NAME);
+	strscpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
 	device->driver_data = priv;
 
 	pr_info("ACPI: %s [%s]\n",
@@ -916,8 +920,8 @@ static int acpi_fujitsu_laptop_add(struct acpi_device *device)
 	WARN_ONCE(fext, "More than one FUJ02E3 ACPI device was found.  Driver may not work as intended.");
 	fext = device;
 
-	strcpy(acpi_device_name(device), ACPI_FUJITSU_LAPTOP_DEVICE_NAME);
-	strcpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
+	strscpy(acpi_device_name(device), ACPI_FUJITSU_LAPTOP_DEVICE_NAME);
+	strscpy(acpi_device_class(device), ACPI_FUJITSU_CLASS);
 	device->driver_data = priv;
 
 	/* kfifo */

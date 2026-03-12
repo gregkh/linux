@@ -1595,7 +1595,7 @@ static int temac_probe(struct platform_device *pdev)
 	if (temac_np) {
 		lp->phy_node = of_parse_phandle(temac_np, "phy-handle", 0);
 		if (lp->phy_node)
-			dev_dbg(lp->dev, "using PHY node %pOF\n", temac_np);
+			dev_dbg(lp->dev, "using PHY node %pOF\n", lp->phy_node);
 	} else if (pdata) {
 		snprintf(lp->phy_name, sizeof(lp->phy_name),
 			 PHY_ID_FMT, lp->mii_bus->id, pdata->phy_addr);
@@ -1649,7 +1649,7 @@ MODULE_DEVICE_TABLE(of, temac_of_match);
 
 static struct platform_driver temac_driver = {
 	.probe = temac_probe,
-	.remove_new = temac_remove,
+	.remove = temac_remove,
 	.driver = {
 		.name = "xilinx_temac",
 		.of_match_table = temac_of_match,

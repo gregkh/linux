@@ -1029,17 +1029,7 @@ static int vsock_getname(struct socket *sock,
 		vm_addr = &vsk->local_addr;
 	}
 
-	if (!vm_addr) {
-		err = -EINVAL;
-		goto out;
-	}
-
-	/* sys_getsockname() and sys_getpeername() pass us a
-	 * MAX_SOCK_ADDR-sized buffer and don't set addr_len.  Unfortunately
-	 * that macro is defined in socket.c instead of .h, so we hardcode its
-	 * value here.
-	 */
-	BUILD_BUG_ON(sizeof(*vm_addr) > 128);
+	BUILD_BUG_ON(sizeof(*vm_addr) > sizeof(struct sockaddr_storage));
 	memcpy(addr, vm_addr, sizeof(*vm_addr));
 	err = sizeof(*vm_addr);
 
@@ -1047,6 +1037,39 @@ out:
 	release_sock(sk);
 	return err;
 }
+
+void vsock_linger(struct sock *sk)
+{
+	DEFINE_WAIT_FUNC(wait, woken_wake_function);
+	ssize_t (*unsent)(struct vsock_sock *vsk);
+	struct vsock_sock *vsk = vsock_sk(sk);
+	long timeout;
+
+	if (!sock_flag(sk, SOCK_LINGER))
+		return;
+
+	timeout = sk->sk_lingertime;
+	if (!timeout)
+		return;
+
+	/* Transports must implement `unsent_bytes` if they want to support
+	 * SOCK_LINGER through `vsock_linger()` since we use it to check when
+	 * the socket can be closed.
+	 */
+	unsent = vsk->transport->unsent_bytes;
+	if (!unsent)
+		return;
+
+	add_wait_queue(sk_sleep(sk), &wait);
+
+	do {
+		if (sk_wait_event(sk, &timeout, unsent(vsk) == 0, &wait))
+			break;
+	} while (!signal_pending(current) && timeout);
+
+	remove_wait_queue(sk_sleep(sk), &wait);
+}
+EXPORT_SYMBOL_GPL(vsock_linger);
 
 static int vsock_shutdown(struct socket *sock, int mode)
 {
@@ -1391,6 +1414,28 @@ static int vsock_do_ioctl(struct socket *sock, unsigned int cmd,
 	vsk = vsock_sk(sk);
 
 	switch (cmd) {
+	case SIOCINQ: {
+		ssize_t n_bytes;
+
+		if (!vsk->transport) {
+			ret = -EOPNOTSUPP;
+			break;
+		}
+
+		if (sock_type_connectible(sk->sk_type) &&
+		    sk->sk_state == TCP_LISTEN) {
+			ret = -EINVAL;
+			break;
+		}
+
+		n_bytes = vsock_stream_has_data(vsk);
+		if (n_bytes < 0) {
+			ret = n_bytes;
+			break;
+		}
+		ret = put_user(n_bytes, arg);
+		break;
+	}
 	case SIOCOUTQ: {
 		ssize_t n_bytes;
 
@@ -1604,7 +1649,7 @@ static int vsock_connect(struct socket *sock, struct sockaddr *addr,
 			 * reschedule it, then ungrab the socket refcount to
 			 * keep it balanced.
 			 */
-			if (mod_delayed_work(system_wq, &vsk->connect_work,
+			if (mod_delayed_work(system_percpu_wq, &vsk->connect_work,
 					     timeout))
 				sock_put(sk);
 
@@ -2537,6 +2582,7 @@ static int vsock_create(struct net *net, struct socket *sock,
 	if (sock->type == SOCK_DGRAM) {
 		ret = vsock_assign_transport(vsk, NULL);
 		if (ret < 0) {
+			sock->sk = NULL;
 			sock_put(sk);
 			return ret;
 		}

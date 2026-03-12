@@ -45,7 +45,7 @@ static void __qla24xx_handle_gpdb_event(scsi_qla_host_t *, struct event_arg *);
 void
 qla2x00_sp_timeout(struct timer_list *t)
 {
-	srb_t *sp = from_timer(sp, t, u.iocb_cmd.timer);
+	srb_t *sp = timer_container_of(sp, t, u.iocb_cmd.timer);
 	struct srb_iocb *iocb;
 	scsi_qla_host_t *vha = sp->vha;
 
@@ -67,7 +67,7 @@ void qla2x00_sp_free(srb_t *sp)
 {
 	struct srb_iocb *iocb = &sp->u.iocb_cmd;
 
-	del_timer(&iocb->timer);
+	timer_delete(&iocb->timer);
 	qla2x00_rel_sp(sp);
 }
 
@@ -8609,8 +8609,6 @@ failed:
 	return QLA_SUCCESS;
 }
 
-#define QLA_FW_URL "http://ldriver.qlogic.com/firmware/"
-
 int
 qla2x00_load_risc(scsi_qla_host_t *vha, uint32_t *srisc_addr)
 {
@@ -8628,8 +8626,6 @@ qla2x00_load_risc(scsi_qla_host_t *vha, uint32_t *srisc_addr)
 	if (!blob) {
 		ql_log(ql_log_info, vha, 0x0083,
 		    "Firmware image unavailable.\n");
-		ql_log(ql_log_info, vha, 0x0084,
-		    "Firmware images can be retrieved from: "QLA_FW_URL ".\n");
 		return QLA_FUNCTION_FAILED;
 	}
 

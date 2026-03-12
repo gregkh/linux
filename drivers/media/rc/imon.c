@@ -39,11 +39,6 @@
 #define DISPLAY_MINOR_BASE	144
 #define DEVICE_NAME	"lcd%d"
 
-#define BUF_CHUNK_SIZE	8
-#define BUF_SIZE	128
-
-#define BIT_DURATION	250	/* each bit received is 250us */
-
 #define IMON_CLOCK_ENABLE_PACKETS	2
 
 /*** P R O T O T Y P E S ***/
@@ -600,6 +595,8 @@ static int send_packet(struct imon_context *ictx)
 	int retval = 0;
 	struct usb_ctrlrequest *control_req = NULL;
 
+	lockdep_assert_held(&ictx->lock);
+
 	if (ictx->disconnected)
 		return -ENODEV;
 
@@ -1103,7 +1100,7 @@ static void usb_tx_callback(struct urb *urb)
  */
 static void imon_touch_display_timeout(struct timer_list *t)
 {
-	struct imon_context *ictx = from_timer(ictx, t, ttimer);
+	struct imon_context *ictx = timer_container_of(ictx, t, ttimer);
 
 	if (ictx->display_type != IMON_DISPLAY_TYPE_VGA)
 		return;
@@ -1133,7 +1130,7 @@ static int imon_ir_change_protocol(struct rc_dev *rc, u64 *rc_proto)
 	int retval;
 	struct imon_context *ictx = rc->priv;
 	struct device *dev = ictx->dev;
-	bool unlock = false;
+	const bool unlock = mutex_trylock(&ictx->lock);
 	unsigned char ir_proto_packet[] = {
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86 };
 
@@ -1159,8 +1156,6 @@ static int imon_ir_change_protocol(struct rc_dev *rc, u64 *rc_proto)
 	}
 
 	memcpy(ictx->usb_tx_buf, &ir_proto_packet, sizeof(ir_proto_packet));
-
-	unlock = mutex_trylock(&ictx->lock);
 
 	retval = send_packet(ictx);
 	if (retval)
@@ -2560,7 +2555,7 @@ static void imon_disconnect(struct usb_interface *interface)
 		ictx->dev_present_intf1 = false;
 		usb_kill_urb(ictx->rx_urb_intf1);
 		if (ictx->display_type == IMON_DISPLAY_TYPE_VGA) {
-			del_timer_sync(&ictx->ttimer);
+			timer_delete_sync(&ictx->ttimer);
 			input_unregister_device(ictx->touch);
 		}
 		usb_put_dev(ictx->usbdev_intf1);

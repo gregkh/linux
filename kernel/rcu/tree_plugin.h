@@ -29,7 +29,7 @@ static bool rcu_rdp_is_offloaded(struct rcu_data *rdp)
 		  (IS_ENABLED(CONFIG_HOTPLUG_CPU) && lockdep_is_cpus_held()) ||
 		  lockdep_is_held(&rdp->nocb_lock) ||
 		  lockdep_is_held(&rcu_state.nocb_mutex) ||
-		  (!(IS_ENABLED(CONFIG_PREEMPT_COUNT) && preemptible()) &&
+		  ((!(IS_ENABLED(CONFIG_PREEMPT_COUNT) && preemptible()) || softirq_count()) &&
 		   rdp == this_cpu_ptr(&rcu_data)) ||
 		  rcu_current_is_nocb_kthread(rdp)),
 		"Unsafe read of RCU_NOCB offloaded state"
@@ -183,9 +183,9 @@ static void rcu_preempt_ctxt_queue(struct rcu_node *rnp, struct rcu_data *rdp)
 	switch (blkd_state) {
 	case 0:
 	case                RCU_EXP_TASKS:
-	case                RCU_EXP_TASKS + RCU_GP_BLKD:
+	case                RCU_EXP_TASKS | RCU_GP_BLKD:
 	case RCU_GP_TASKS:
-	case RCU_GP_TASKS + RCU_EXP_TASKS:
+	case RCU_GP_TASKS | RCU_EXP_TASKS:
 
 		/*
 		 * Blocking neither GP, or first task blocking the normal
@@ -198,10 +198,10 @@ static void rcu_preempt_ctxt_queue(struct rcu_node *rnp, struct rcu_data *rdp)
 
 	case                                              RCU_EXP_BLKD:
 	case                                RCU_GP_BLKD:
-	case                                RCU_GP_BLKD + RCU_EXP_BLKD:
-	case RCU_GP_TASKS +                               RCU_EXP_BLKD:
-	case RCU_GP_TASKS +                 RCU_GP_BLKD + RCU_EXP_BLKD:
-	case RCU_GP_TASKS + RCU_EXP_TASKS + RCU_GP_BLKD + RCU_EXP_BLKD:
+	case                                RCU_GP_BLKD | RCU_EXP_BLKD:
+	case RCU_GP_TASKS |                               RCU_EXP_BLKD:
+	case RCU_GP_TASKS |                 RCU_GP_BLKD | RCU_EXP_BLKD:
+	case RCU_GP_TASKS | RCU_EXP_TASKS | RCU_GP_BLKD | RCU_EXP_BLKD:
 
 		/*
 		 * First task arriving that blocks either GP, or first task
@@ -214,9 +214,9 @@ static void rcu_preempt_ctxt_queue(struct rcu_node *rnp, struct rcu_data *rdp)
 		list_add_tail(&t->rcu_node_entry, &rnp->blkd_tasks);
 		break;
 
-	case                RCU_EXP_TASKS +               RCU_EXP_BLKD:
-	case                RCU_EXP_TASKS + RCU_GP_BLKD + RCU_EXP_BLKD:
-	case RCU_GP_TASKS + RCU_EXP_TASKS +               RCU_EXP_BLKD:
+	case                RCU_EXP_TASKS |               RCU_EXP_BLKD:
+	case                RCU_EXP_TASKS | RCU_GP_BLKD | RCU_EXP_BLKD:
+	case RCU_GP_TASKS | RCU_EXP_TASKS |               RCU_EXP_BLKD:
 
 		/*
 		 * Second or subsequent task blocking the expedited GP.
@@ -227,8 +227,8 @@ static void rcu_preempt_ctxt_queue(struct rcu_node *rnp, struct rcu_data *rdp)
 		list_add(&t->rcu_node_entry, rnp->exp_tasks);
 		break;
 
-	case RCU_GP_TASKS +                 RCU_GP_BLKD:
-	case RCU_GP_TASKS + RCU_EXP_TASKS + RCU_GP_BLKD:
+	case RCU_GP_TASKS |                 RCU_GP_BLKD:
+	case RCU_GP_TASKS | RCU_EXP_TASKS | RCU_GP_BLKD:
 
 		/*
 		 * Second or subsequent task blocking the normal GP.
@@ -275,6 +275,7 @@ static void rcu_preempt_ctxt_queue(struct rcu_node *rnp, struct rcu_data *rdp)
 		rcu_report_exp_rdp(rdp);
 	else
 		WARN_ON_ONCE(rdp->cpu_no_qs.b.exp);
+	ASSERT_EXCLUSIVE_WRITER_SCOPED(rdp->cpu_no_qs.b.exp);
 }
 
 /*
@@ -536,7 +537,6 @@ rcu_preempt_deferred_qs_irqrestore(struct task_struct *t, unsigned long flags)
 		WARN_ON_ONCE(rnp->completedqs == rnp->gp_seq &&
 			     (!empty_norm || rnp->qsmask));
 		empty_exp = sync_rcu_exp_done(rnp);
-		smp_mb(); /* ensure expedited fastpath sees end of RCU c-s. */
 		np = rcu_next_node_entry(t, rnp);
 		list_del_init(&t->rcu_node_entry);
 		t->rcu_blocked_node = NULL;
@@ -1316,14 +1316,11 @@ static void rcu_spawn_one_boost_kthread(struct rcu_node *rnp)
 	raw_spin_lock_irqsave_rcu_node(rnp, flags);
 	rnp->boost_kthread_task = t;
 	raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+
 	sp.sched_priority = kthread_prio;
 	sched_setscheduler_nocheck(t, SCHED_FIFO, &sp);
+	rcu_thread_affine_rnp(t, rnp);
 	wake_up_process(t); /* get to TASK_INTERRUPTIBLE quickly. */
-}
-
-static struct task_struct *rcu_boost_task(struct rcu_node *rnp)
-{
-	return READ_ONCE(rnp->boost_kthread_task);
 }
 
 #else /* #ifdef CONFIG_RCU_BOOST */
@@ -1342,10 +1339,6 @@ static void rcu_spawn_one_boost_kthread(struct rcu_node *rnp)
 {
 }
 
-static struct task_struct *rcu_boost_task(struct rcu_node *rnp)
-{
-	return NULL;
-}
 #endif /* #else #ifdef CONFIG_RCU_BOOST */
 
 /*

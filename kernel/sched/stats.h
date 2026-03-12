@@ -112,10 +112,10 @@ void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 		     bool sleep);
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
 void psi_account_irqtime(struct rq *rq, struct task_struct *curr, struct task_struct *prev);
-#else
+#else /* !CONFIG_IRQ_TIME_ACCOUNTING: */
 static inline void psi_account_irqtime(struct rq *rq, struct task_struct *curr,
 				       struct task_struct *prev) {}
-#endif /*CONFIG_IRQ_TIME_ACCOUNTING */
+#endif /* !CONFIG_IRQ_TIME_ACCOUNTING */
 /*
  * PSI tracks state that persists across sleeps, such as iowaits and
  * memory stalls. As a result, it has to distinguish between sleeps,
@@ -144,7 +144,7 @@ static inline void psi_enqueue(struct task_struct *p, int flags)
 
 	if (p->se.sched_delayed) {
 		/* CPU migration of "sleeping" task */
-		SCHED_WARN_ON(!(flags & ENQUEUE_MIGRATED));
+		WARN_ON_ONCE(!(flags & ENQUEUE_MIGRATED));
 		if (p->in_memstall)
 			set |= TSK_MEMSTALL;
 		if (p->in_iowait)
@@ -180,8 +180,13 @@ static inline void psi_dequeue(struct task_struct *p, int flags)
 	 * avoid walking all ancestors twice, psi_task_switch() handles
 	 * TSK_RUNNING and TSK_IOWAIT for us when it moves TSK_ONCPU.
 	 * Do nothing here.
+	 *
+	 * In the SCHED_PROXY_EXECUTION case we may do sleeping
+	 * dequeues that are not followed by a task switch, so check
+	 * TSK_ONCPU is set to ensure the task switch is imminent.
+	 * Otherwise clear the flags as usual.
 	 */
-	if (flags & DEQUEUE_SLEEP)
+	if ((flags & DEQUEUE_SLEEP) && (p->psi_flags & TSK_ONCPU))
 		return;
 
 	/*
@@ -220,7 +225,7 @@ static inline void psi_sched_switch(struct task_struct *prev,
 	psi_task_switch(prev, next, sleep);
 }
 
-#else /* CONFIG_PSI */
+#else /* !CONFIG_PSI: */
 static inline void psi_enqueue(struct task_struct *p, bool migrate) {}
 static inline void psi_dequeue(struct task_struct *p, bool migrate) {}
 static inline void psi_ttwu_dequeue(struct task_struct *p) {}
@@ -229,7 +234,7 @@ static inline void psi_sched_switch(struct task_struct *prev,
 				    bool sleep) {}
 static inline void psi_account_irqtime(struct rq *rq, struct task_struct *curr,
 				       struct task_struct *prev) {}
-#endif /* CONFIG_PSI */
+#endif /* !CONFIG_PSI */
 
 #ifdef CONFIG_SCHED_INFO
 /*
@@ -248,7 +253,10 @@ static inline void sched_info_dequeue(struct rq *rq, struct task_struct *t)
 	delta = rq_clock(rq) - t->sched_info.last_queued;
 	t->sched_info.last_queued = 0;
 	t->sched_info.run_delay += delta;
-
+	if (delta > t->sched_info.max_run_delay)
+		t->sched_info.max_run_delay = delta;
+	if (delta && (!t->sched_info.min_run_delay || delta < t->sched_info.min_run_delay))
+		t->sched_info.min_run_delay = delta;
 	rq_sched_info_dequeue(rq, delta);
 }
 
@@ -270,6 +278,10 @@ static void sched_info_arrive(struct rq *rq, struct task_struct *t)
 	t->sched_info.run_delay += delta;
 	t->sched_info.last_arrival = now;
 	t->sched_info.pcount++;
+	if (delta > t->sched_info.max_run_delay)
+		t->sched_info.max_run_delay = delta;
+	if (delta && (!t->sched_info.min_run_delay || delta < t->sched_info.min_run_delay))
+		t->sched_info.min_run_delay = delta;
 
 	rq_sched_info_arrive(rq, delta);
 }
@@ -327,6 +339,6 @@ sched_info_switch(struct rq *rq, struct task_struct *prev, struct task_struct *n
 # define sched_info_enqueue(rq, t)	do { } while (0)
 # define sched_info_dequeue(rq, t)	do { } while (0)
 # define sched_info_switch(rq, t, next)	do { } while (0)
-#endif /* CONFIG_SCHED_INFO */
+#endif /* !CONFIG_SCHED_INFO */
 
 #endif /* _KERNEL_STATS_H */

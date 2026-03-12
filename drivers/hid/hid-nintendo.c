@@ -457,24 +457,20 @@ static const struct joycon_ctlr_button_mapping snescon_button_mappings[] = {
 	{ /* sentinel */ },
 };
 
-/*
- * "A", "B", and "C" are mapped positionally, rather than by label (e.g., "A"
- * gets assigned to BTN_EAST instead of BTN_A).
- */
 static const struct joycon_ctlr_button_mapping gencon_button_mappings[] = {
-	{ BTN_SOUTH,	JC_BTN_A,	},
-	{ BTN_EAST,	JC_BTN_B,	},
-	{ BTN_WEST,	JC_BTN_R,	},
-	{ BTN_SELECT,	JC_BTN_ZR,	},
+	{ BTN_WEST,	JC_BTN_A,	}, /* A */
+	{ BTN_SOUTH,	JC_BTN_B,	}, /* B */
+	{ BTN_EAST,	JC_BTN_R,	}, /* C */
+	{ BTN_TL,	JC_BTN_X,	}, /* X MD/GEN 6B Only */
+	{ BTN_NORTH,	JC_BTN_Y,	}, /* Y MD/GEN 6B Only */
+	{ BTN_TR,	JC_BTN_L,	}, /* Z MD/GEN 6B Only */
+	{ BTN_SELECT,	JC_BTN_ZR,	}, /* Mode */
 	{ BTN_START,	JC_BTN_PLUS,	},
 	{ BTN_MODE,	JC_BTN_HOME,	},
 	{ BTN_Z,	JC_BTN_CAP,	},
 	{ /* sentinel */ },
 };
 
-/*
- * N64's C buttons get assigned to d-pad directions and registered as buttons.
- */
 static const struct joycon_ctlr_button_mapping n64con_button_mappings[] = {
 	{ BTN_A,		JC_BTN_A,	},
 	{ BTN_B,		JC_BTN_B,	},
@@ -1459,10 +1455,10 @@ static void joycon_parse_imu_report(struct joycon_ctlr *ctlr,
 				ctlr->imu_avg_delta_ms;
 		ctlr->imu_timestamp_us += 1000 * ctlr->imu_avg_delta_ms;
 		if (dropped_pkts > JC_IMU_DROPPED_PKT_WARNING) {
-			hid_warn(ctlr->hdev,
+			hid_warn_ratelimited(ctlr->hdev,
 				 "compensating for %u dropped IMU reports\n",
 				 dropped_pkts);
-			hid_warn(ctlr->hdev,
+			hid_warn_ratelimited(ctlr->hdev,
 				 "delta=%u avg_delta=%u\n",
 				 delta, ctlr->imu_avg_delta_ms);
 		}

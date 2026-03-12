@@ -6,7 +6,7 @@
 #include <trace/events/erofs.h>
 
 struct erofs_fileio_rq {
-	struct bio_vec bvecs[BIO_MAX_VECS];
+	struct bio_vec bvecs[16];
 	struct bio bio;
 	struct kiocb iocb;
 	struct super_block *sb;
@@ -45,6 +45,7 @@ static void erofs_fileio_ki_complete(struct kiocb *iocb, long ret)
 
 static void erofs_fileio_rq_submit(struct erofs_fileio_rq *rq)
 {
+	const struct cred *old_cred;
 	struct iov_iter iter;
 	ssize_t ret;
 
@@ -58,7 +59,9 @@ static void erofs_fileio_rq_submit(struct erofs_fileio_rq *rq)
 		rq->iocb.ki_flags = IOCB_DIRECT;
 	iov_iter_bvec(&iter, ITER_DEST, rq->bvecs, rq->bio.bi_vcnt,
 		      rq->bio.bi_iter.bi_size);
+	old_cred = override_creds(rq->iocb.ki_filp->f_cred);
 	ret = vfs_iocb_iter_read(rq->iocb.ki_filp, &rq->iocb, &iter);
+	revert_creds(old_cred);
 	if (ret != -EIOCBQUEUED)
 		erofs_fileio_ki_complete(&rq->iocb, ret);
 	if (refcount_dec_and_test(&rq->ref))
@@ -70,7 +73,7 @@ static struct erofs_fileio_rq *erofs_fileio_rq_alloc(struct erofs_map_dev *mdev)
 	struct erofs_fileio_rq *rq = kzalloc(sizeof(*rq),
 					     GFP_KERNEL | __GFP_NOFAIL);
 
-	bio_init(&rq->bio, NULL, rq->bvecs, BIO_MAX_VECS, REQ_OP_READ);
+	bio_init(&rq->bio, NULL, rq->bvecs, ARRAY_SIZE(rq->bvecs), REQ_OP_READ);
 	rq->iocb.ki_filp = mdev->m_dif->file;
 	rq->sb = mdev->m_sb;
 	refcount_set(&rq->ref, 2);
@@ -94,8 +97,6 @@ static int erofs_fileio_scan_folio(struct erofs_fileio *io, struct folio *folio)
 	struct erofs_map_blocks *map = &io->map;
 	unsigned int cur = 0, end = folio_size(folio), len, attached = 0;
 	loff_t pos = folio_pos(folio), ofs;
-	struct iov_iter iter;
-	struct bio_vec bv;
 	int err = 0;
 
 	erofs_onlinefolio_init(folio);
@@ -115,18 +116,12 @@ static int erofs_fileio_scan_folio(struct erofs_fileio *io, struct folio *folio)
 			void *src;
 
 			src = erofs_read_metabuf(&buf, inode->i_sb,
-						 map->m_pa + ofs, EROFS_KMAP);
+				map->m_pa + ofs, erofs_inode_in_metabox(inode));
 			if (IS_ERR(src)) {
 				err = PTR_ERR(src);
 				break;
 			}
-			bvec_set_folio(&bv, folio, len, cur);
-			iov_iter_bvec(&iter, ITER_DEST, &bv, 1, len);
-			if (copy_to_iter(src, len, &iter) != len) {
-				erofs_put_metabuf(&buf);
-				err = -EIO;
-				break;
-			}
+			memcpy_to_folio(folio, cur, src, len);
 			erofs_put_metabuf(&buf);
 		} else if (!(map->m_flags & EROFS_MAP_MAPPED)) {
 			folio_zero_segment(folio, cur, cur + len);
@@ -148,7 +143,8 @@ io_retry:
 				if (err)
 					break;
 				io->rq = erofs_fileio_rq_alloc(&io->dev);
-				io->rq->bio.bi_iter.bi_sector = io->dev.m_pa >> 9;
+				io->rq->bio.bi_iter.bi_sector =
+					(io->dev.m_dif->fsoff + io->dev.m_pa) >> 9;
 				attached = 0;
 			}
 			if (!bio_add_folio(&io->rq->bio, folio, len, cur))

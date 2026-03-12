@@ -40,6 +40,7 @@ SECTIONS
 		*(.rodata.*)
 		_erodata = . ;
 	}
+	EXCEPTION_TABLE(16)
 	.got : {
 		*(.got)
 	}
@@ -136,6 +137,15 @@ SECTIONS
 	}
 	_end = .;
 
+	/* Sections to be discarded */
+	/DISCARD/ : {
+		COMMON_DISCARDS
+		*(.eh_frame)
+		*(*__ksymtab*)
+		*(___kcrctab*)
+		*(.modinfo)
+	}
+
 	DWARF_DEBUG
 	ELF_DETAILS
 
@@ -160,13 +170,4 @@ SECTIONS
 		*(.rela.*) *(.rela_*)
 	}
 	ASSERT(SIZEOF(.rela.dyn) == 0, "Unexpected run-time relocations (.rela) detected!")
-
-	/* Sections to be discarded */
-	/DISCARD/ : {
-		COMMON_DISCARDS
-		*(.eh_frame)
-		*(__ex_table)
-		*(*__ksymtab*)
-		*(___kcrctab*)
-	}
 }

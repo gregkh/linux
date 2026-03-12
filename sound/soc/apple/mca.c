@@ -638,7 +638,7 @@ static int mca_fe_hw_params(struct snd_pcm_substream *substream,
 			tdm_slot_width = 32;
 
 		if (tdm_slot_width < params_width(params)) {
-			dev_err(dev, "TDM slots too narrow (tdm=%d params=%d)\n",
+			dev_err(dev, "TDM slots too narrow (tdm=%u params=%d)\n",
 				tdm_slot_width, params_width(params));
 			return -EINVAL;
 		}
@@ -1191,6 +1191,7 @@ static void apple_mca_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id apple_mca_of_match[] = {
+	{ .compatible = "apple,t8103-mca", },
 	{ .compatible = "apple,mca", },
 	{}
 };

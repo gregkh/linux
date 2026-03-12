@@ -12,6 +12,7 @@
 #include <linux/export.h>
 #include <net/secure_seq.h>
 #include <net/tcp.h>
+#include <net/tcp_ecn.h>
 #include <net/route.h>
 
 static siphash_aligned_key_t syncookie_secret[2];
@@ -202,7 +203,7 @@ struct sock *tcp_get_cookie_sock(struct sock *sk, struct sk_buff *skb,
 	bool own_req;
 
 	child = icsk->icsk_af_ops->syn_recv_sock(sk, skb, req, dst,
-						 NULL, &own_req);
+						 NULL, &own_req, NULL);
 	if (child) {
 		refcount_set(&req->rsk_refcnt, 1);
 		sock_rps_save_rxhash(child, skb);
@@ -222,7 +223,7 @@ struct sock *tcp_get_cookie_sock(struct sock *sk, struct sk_buff *skb,
 
 	return NULL;
 }
-EXPORT_SYMBOL(tcp_get_cookie_sock);
+EXPORT_IPV6_MOD(tcp_get_cookie_sock);
 
 /*
  * when syncookies are in effect and tcp timestamps are enabled we stored
@@ -259,7 +260,7 @@ bool cookie_timestamp_decode(const struct net *net,
 
 	return READ_ONCE(net->ipv4.sysctl_tcp_window_scaling) != 0;
 }
-EXPORT_SYMBOL(cookie_timestamp_decode);
+EXPORT_IPV6_MOD(cookie_timestamp_decode);
 
 static int cookie_tcp_reqsk_init(struct sock *sk, struct sk_buff *skb,
 				 struct request_sock *req)
@@ -279,6 +280,7 @@ static int cookie_tcp_reqsk_init(struct sock *sk, struct sk_buff *skb,
 		ireq->smc_ok = 0;
 
 	treq->snt_synack = 0;
+	treq->snt_tsval_first = 0;
 	treq->tfo_listener = false;
 	treq->txhash = net_tx_rndhash();
 	treq->rcv_isn = ntohl(th->seq) - 1;
@@ -310,7 +312,7 @@ struct request_sock *cookie_bpf_check(struct sock *sk, struct sk_buff *skb)
 
 	return req;
 }
-EXPORT_SYMBOL_GPL(cookie_bpf_check);
+EXPORT_IPV6_MOD_GPL(cookie_bpf_check);
 #endif
 
 struct request_sock *cookie_tcp_reqsk_alloc(const struct request_sock_ops *ops,
@@ -351,7 +353,7 @@ struct request_sock *cookie_tcp_reqsk_alloc(const struct request_sock_ops *ops,
 
 	return req;
 }
-EXPORT_SYMBOL_GPL(cookie_tcp_reqsk_alloc);
+EXPORT_IPV6_MOD_GPL(cookie_tcp_reqsk_alloc);
 
 static struct request_sock *cookie_tcp_check(struct net *net, struct sock *sk,
 					     struct sk_buff *skb)
@@ -376,9 +378,14 @@ static struct request_sock *cookie_tcp_check(struct net *net, struct sock *sk,
 	tcp_parse_options(net, skb, &tcp_opt, 0, NULL);
 
 	if (tcp_opt.saw_tstamp && tcp_opt.rcv_tsecr) {
-		tsoff = secure_tcp_ts_off(net,
-					  ip_hdr(skb)->daddr,
-					  ip_hdr(skb)->saddr);
+		union tcp_seq_and_ts_off st;
+
+		st = secure_tcp_seq_and_ts_off(net,
+					       ip_hdr(skb)->daddr,
+					       ip_hdr(skb)->saddr,
+					       tcp_hdr(skb)->dest,
+					       tcp_hdr(skb)->source);
+		tsoff = st.ts_off;
 		tcp_opt.rcv_tsecr -= tsoff;
 	}
 
@@ -402,6 +409,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct inet_request_sock *ireq;
 	struct net *net = sock_net(sk);
+	struct tcp_request_sock *treq;
 	struct request_sock *req;
 	struct sock *ret = sk;
 	struct flowi4 fl4;
@@ -427,6 +435,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 	}
 
 	ireq = inet_rsk(req);
+	treq = tcp_rsk(req);
 
 	sk_rcv_saddr_set(req_to_sk(req), ip_hdr(skb)->daddr);
 	sk_daddr_set(req_to_sk(req), ip_hdr(skb)->saddr);
@@ -453,7 +462,8 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 			   ip_sock_rt_tos(sk), ip_sock_rt_scope(sk),
 			   IPPROTO_TCP, inet_sk_flowi_flags(sk),
 			   opt->srr ? opt->faddr : ireq->ir_rmt_addr,
-			   ireq->ir_loc_addr, th->source, th->dest, sk->sk_uid);
+			   ireq->ir_loc_addr, th->source, th->dest,
+			   sk_uid(sk));
 	security_req_classify_flow(req, flowi4_to_flowi_common(&fl4));
 	rt = ip_route_output_key(net, &fl4);
 	if (IS_ERR(rt)) {
@@ -481,6 +491,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 	if (!req->syncookie)
 		ireq->rcv_wscale = rcv_wscale;
 	ireq->ecn_ok &= cookie_ecn_ok(net, &rt->dst);
+	treq->accecn_ok = ireq->ecn_ok && cookie_accecn_ok(th);
 
 	ret = tcp_get_cookie_sock(sk, skb, req, &rt->dst);
 	/* ip_queue_xmit() depends on our flow being setup

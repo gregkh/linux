@@ -88,13 +88,11 @@ TC_INDIRECT_SCOPE int tcf_ctinfo_act(struct sk_buff *skb,
 	struct tcf_ctinfo_params *cp;
 	struct nf_conn *ct;
 	int proto, wlen;
-	int action;
 
 	cp = rcu_dereference_bh(ca->params);
 
 	tcf_lastuse_update(&ca->tcf_tm);
 	tcf_action_update_bstats(&ca->common, skb);
-	action = READ_ONCE(ca->tcf_action);
 
 	wlen = skb_network_offset(skb);
 	switch (skb_protocol(skb, true)) {
@@ -141,7 +139,7 @@ TC_INDIRECT_SCOPE int tcf_ctinfo_act(struct sk_buff *skb,
 	if (thash)
 		nf_ct_put(ct);
 out:
-	return action;
+	return cp->action;
 }
 
 static const struct nla_policy ctinfo_policy[TCA_CTINFO_MAX + 1] = {
@@ -197,8 +195,9 @@ static int tcf_ctinfo_init(struct net *net, struct nlattr *nla,
 					    "dscp mask must be 6 contiguous bits");
 			return -EINVAL;
 		}
-		dscpstatemask = tb[TCA_CTINFO_PARMS_DSCP_STATEMASK] ?
-			nla_get_u32(tb[TCA_CTINFO_PARMS_DSCP_STATEMASK]) : 0;
+		dscpstatemask =
+			nla_get_u32_default(tb[TCA_CTINFO_PARMS_DSCP_STATEMASK],
+					    0);
 		/* mask & statemask must not overlap */
 		if (dscpmask & dscpstatemask) {
 			NL_SET_ERR_MSG_ATTR(extack,
@@ -243,8 +242,7 @@ static int tcf_ctinfo_init(struct net *net, struct nlattr *nla,
 	}
 
 	cp_new->net = net;
-	cp_new->zone = tb[TCA_CTINFO_ZONE] ?
-			nla_get_u16(tb[TCA_CTINFO_ZONE]) : 0;
+	cp_new->zone = nla_get_u16_default(tb[TCA_CTINFO_ZONE], 0);
 	if (dscpmask) {
 		cp_new->dscpmask = dscpmask;
 		cp_new->dscpmaskshift = dscpmaskshift;
@@ -257,6 +255,8 @@ static int tcf_ctinfo_init(struct net *net, struct nlattr *nla,
 				nla_get_u32(tb[TCA_CTINFO_PARMS_CPMARK_MASK]);
 		cp_new->mode |= CTINFO_MODE_CPMARK;
 	}
+
+	cp_new->action = actparm->action;
 
 	spin_lock_bh(&ci->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(*a, actparm->action, goto_ch);
@@ -282,25 +282,24 @@ release_idr:
 static int tcf_ctinfo_dump(struct sk_buff *skb, struct tc_action *a,
 			   int bind, int ref)
 {
-	struct tcf_ctinfo *ci = to_ctinfo(a);
+	const struct tcf_ctinfo *ci = to_ctinfo(a);
+	unsigned char *b = skb_tail_pointer(skb);
+	const struct tcf_ctinfo_params *cp;
 	struct tc_ctinfo opt = {
 		.index   = ci->tcf_index,
 		.refcnt  = refcount_read(&ci->tcf_refcnt) - ref,
 		.bindcnt = atomic_read(&ci->tcf_bindcnt) - bind,
 	};
-	unsigned char *b = skb_tail_pointer(skb);
-	struct tcf_ctinfo_params *cp;
 	struct tcf_t t;
 
-	spin_lock_bh(&ci->tcf_lock);
-	cp = rcu_dereference_protected(ci->params,
-				       lockdep_is_held(&ci->tcf_lock));
+	rcu_read_lock();
+	cp = rcu_dereference(ci->params);
 
 	tcf_tm_dump(&t, &ci->tcf_tm);
 	if (nla_put_64bit(skb, TCA_CTINFO_TM, sizeof(t), &t, TCA_CTINFO_PAD))
 		goto nla_put_failure;
 
-	opt.action = ci->tcf_action;
+	opt.action = cp->action;
 	if (nla_put(skb, TCA_CTINFO_ACT, sizeof(opt), &opt))
 		goto nla_put_failure;
 
@@ -337,11 +336,11 @@ static int tcf_ctinfo_dump(struct sk_buff *skb, struct tc_action *a,
 			      TCA_CTINFO_PAD))
 		goto nla_put_failure;
 
-	spin_unlock_bh(&ci->tcf_lock);
+	rcu_read_unlock();
 	return skb->len;
 
 nla_put_failure:
-	spin_unlock_bh(&ci->tcf_lock);
+	rcu_read_unlock();
 	nlmsg_trim(skb, b);
 	return -1;
 }

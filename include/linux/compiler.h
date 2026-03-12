@@ -191,7 +191,72 @@ void ftrace_likely_update(struct ftrace_likely_data *f, int val,
 	__v;								\
 })
 
+#ifdef __CHECKER__
+#define __BUILD_BUG_ON_ZERO_MSG(e, msg, ...) (0)
+#else /* __CHECKER__ */
+#define __BUILD_BUG_ON_ZERO_MSG(e, msg, ...) ((int)sizeof(struct {_Static_assert(!(e), msg);}))
+#endif /* __CHECKER__ */
+
+/* &a[0] degrades to a pointer: a different type from an array */
+#define __is_array(a)		(!__same_type((a), &(a)[0]))
+#define __must_be_array(a)	__BUILD_BUG_ON_ZERO_MSG(!__is_array(a), \
+							"must be array")
+
+#define __is_byte_array(a)	(__is_array(a) && sizeof((a)[0]) == 1)
+#define __must_be_byte_array(a)	__BUILD_BUG_ON_ZERO_MSG(!__is_byte_array(a), \
+							"must be byte array")
+
+/*
+ * If the "nonstring" attribute isn't available, we have to return true
+ * so the __must_*() checks pass when "nonstring" isn't supported.
+ */
+#if __has_attribute(__nonstring__) && defined(__annotated)
+#define __is_cstr(a)		(!__annotated(a, nonstring))
+#define __is_noncstr(a)		(__annotated(a, nonstring))
+#else
+#define __is_cstr(a)		(true)
+#define __is_noncstr(a)		(true)
+#endif
+
+/* Require C Strings (i.e. NUL-terminated) lack the "nonstring" attribute. */
+#define __must_be_cstr(p) \
+	__BUILD_BUG_ON_ZERO_MSG(!__is_cstr(p), \
+				"must be C-string (NUL-terminated)")
+#define __must_be_noncstr(p) \
+	__BUILD_BUG_ON_ZERO_MSG(!__is_noncstr(p), \
+				"must be non-C-string (not NUL-terminated)")
+
+/*
+ * Use __typeof_unqual__() when available.
+ *
+ * XXX: Remove test for __CHECKER__ once
+ * sparse learns about __typeof_unqual__().
+ */
+#if CC_HAS_TYPEOF_UNQUAL && !defined(__CHECKER__)
+# define USE_TYPEOF_UNQUAL 1
+#endif
+
+/*
+ * Define TYPEOF_UNQUAL() to use __typeof_unqual__() as typeof
+ * operator when available, to return an unqualified type of the exp.
+ */
+#if defined(USE_TYPEOF_UNQUAL)
+# define TYPEOF_UNQUAL(exp) __typeof_unqual__(exp)
+#else
+# define TYPEOF_UNQUAL(exp) __typeof__(exp)
+#endif
+
 #endif /* __KERNEL__ */
+
+#if defined(CONFIG_CFI) && !defined(__DISABLE_EXPORTS) && !defined(BUILD_VDSO)
+/*
+ * Force a reference to the external symbol so the compiler generates
+ * __kcfi_typid.
+ */
+#define KCFI_REFERENCE(sym) __ADDRESSABLE(sym)
+#else
+#define KCFI_REFERENCE(sym)
+#endif
 
 /**
  * offset_to_ptr - convert a relative memory offset to an absolute pointer
@@ -222,12 +287,6 @@ static inline void *offset_to_ptr(const int *off)
 
 #define __ADDRESSABLE(sym) \
 	___ADDRESSABLE(sym, __section(".discard.addressable"))
-
-/* &a[0] degrades to a pointer: a different type from an array */
-#define __must_be_array(a)	BUILD_BUG_ON_ZERO(__same_type((a), &(a)[0]))
-
-/* Require C Strings (i.e. NUL-terminated) lack the "nonstring" attribute. */
-#define __must_be_cstr(p)	BUILD_BUG_ON_ZERO(__annotated(p, nonstring))
 
 /*
  * This returns a constant expression while determining if an argument is
@@ -291,6 +350,28 @@ static inline void *offset_to_ptr(const int *off)
  * values to determine that the condition is statically true.
  */
 #define statically_true(x) (__builtin_constant_p(x) && (x))
+
+/*
+ * Similar to statically_true() but produces a constant expression
+ *
+ * To be used in conjunction with macros, such as BUILD_BUG_ON_ZERO(),
+ * which require their input to be a constant expression and for which
+ * statically_true() would otherwise fail.
+ *
+ * This is a trade-off: const_true() requires all its operands to be
+ * compile time constants. Else, it would always returns false even on
+ * the most trivial cases like:
+ *
+ *   true || non_const_var
+ *
+ * On the opposite, statically_true() is able to fold more complex
+ * tautologies and will return true on expressions such as:
+ *
+ *   !(non_const_var * 8 % 4)
+ *
+ * For the general case, statically_true() is better.
+ */
+#define const_true(x) __builtin_choose_expr(__is_constexpr(x), x, false)
 
 /*
  * This is needed in functions which generate the stack canary, see

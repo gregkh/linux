@@ -33,7 +33,9 @@
 #define	STMMAC_CSR_20_35M	0x2	/* MDC = clk_scr_i/16 */
 #define	STMMAC_CSR_35_60M	0x3	/* MDC = clk_scr_i/26 */
 #define	STMMAC_CSR_150_250M	0x4	/* MDC = clk_scr_i/102 */
-#define	STMMAC_CSR_250_300M	0x5	/* MDC = clk_scr_i/122 */
+#define	STMMAC_CSR_250_300M	0x5	/* MDC = clk_scr_i/124 */
+#define	STMMAC_CSR_300_500M	0x6	/* MDC = clk_scr_i/204 */
+#define	STMMAC_CSR_500_800M	0x7	/* MDC = clk_scr_i/324 */
 
 /* MTL algorithms identifiers */
 #define MTL_TX_ALGORITHM_WRR	0x0
@@ -76,6 +78,7 @@
 			| DMA_AXI_BLEN_32 | DMA_AXI_BLEN_64 \
 			| DMA_AXI_BLEN_128 | DMA_AXI_BLEN_256)
 
+struct clk;
 struct stmmac_priv;
 
 /* Platfrom data for platform device structure's platform_data field */
@@ -168,7 +171,13 @@ struct dwmac4_addrs {
 	u32 mtl_low_cred_offset;
 };
 
-#define STMMAC_FLAG_HAS_INTEGRATED_PCS		BIT(0)
+enum dwmac_core_type {
+	DWMAC_CORE_MAC100,
+	DWMAC_CORE_GMAC,
+	DWMAC_CORE_GMAC4,
+	DWMAC_CORE_XGMAC,
+};
+
 #define STMMAC_FLAG_SPH_DISABLE			BIT(1)
 #define STMMAC_FLAG_USE_PHY_WOL			BIT(2)
 #define STMMAC_FLAG_HAS_SUN8I			BIT(3)
@@ -180,24 +189,35 @@ struct dwmac4_addrs {
 #define STMMAC_FLAG_INT_SNAPSHOT_EN		BIT(9)
 #define STMMAC_FLAG_RX_CLK_RUNS_IN_LPI		BIT(10)
 #define STMMAC_FLAG_EN_TX_LPI_CLOCKGATING	BIT(11)
-#define STMMAC_FLAG_HWTSTAMP_CORRECT_LATENCY	BIT(12)
+#define STMMAC_FLAG_EN_TX_LPI_CLK_PHY_CAP	BIT(12)
+#define STMMAC_FLAG_HWTSTAMP_CORRECT_LATENCY	BIT(13)
 
 struct plat_stmmacenet_data {
+	enum dwmac_core_type core_type;
 	int bus_id;
 	int phy_addr;
 	/* MAC ----- optional PCS ----- SerDes ----- optional PHY ----- Media
-	 *       ^                               ^
-	 * mac_interface                   phy_interface
+	 *                                       ^
+	 *                                  phy_interface
 	 *
-	 * mac_interface is the MAC-side interface, which may be the same
-	 * as phy_interface if there is no intervening PCS. If there is a
-	 * PCS, then mac_interface describes the interface mode between the
-	 * MAC and PCS, and phy_interface describes the interface mode
-	 * between the PCS and PHY.
-	 */
-	phy_interface_t mac_interface;
-	/* phy_interface is the PHY-side interface - the interface used by
-	 * an attached PHY.
+	 * The Synopsys dwmac core only covers the MAC and an optional
+	 * integrated PCS. Where the integrated PCS is used with a SerDes,
+	 * e.g. for 1000base-X or Cisco SGMII, the connection between the
+	 * PCS and SerDes will be TBI.
+	 *
+	 * Where the Synopsys dwmac core has been instantiated with multiple
+	 * interface modes, these are selected via core-external configuration
+	 * which is sampled when the dwmac core is reset. How this is done is
+	 * platform glue specific, but this defines the interface used from
+	 * the Synopsys dwmac core to the rest of the SoC.
+	 *
+	 * Where PCS other than the optional integrated Synopsys dwmac PCS
+	 * is used, this counts as "the rest of the SoC" in the above
+	 * paragraph.
+	 *
+	 * phy_interface is the PHY-side interface - the interface used by
+	 * an attached PHY or SFP etc. This is equivalent to the interface
+	 * that phylink uses.
 	 */
 	phy_interface_t phy_interface;
 	struct stmmac_mdio_bus_data *mdio_bus_data;
@@ -207,7 +227,6 @@ struct plat_stmmacenet_data {
 	struct stmmac_dma_cfg *dma_cfg;
 	struct stmmac_safety_feature_cfg *safety_feat_cfg;
 	int clk_csr;
-	int has_gmac;
 	int enh_desc;
 	int tx_coe;
 	int rx_coe;
@@ -229,14 +248,23 @@ struct plat_stmmacenet_data {
 	u8 tx_sched_algorithm;
 	struct stmmac_rxq_cfg rx_queues_cfg[MTL_MAX_RX_QUEUES];
 	struct stmmac_txq_cfg tx_queues_cfg[MTL_MAX_TX_QUEUES];
-	void (*fix_mac_speed)(void *priv, unsigned int speed, unsigned int mode);
-	int (*fix_soc_reset)(void *priv, void __iomem *ioaddr);
+	void (*get_interfaces)(struct stmmac_priv *priv, void *bsp_priv,
+			       unsigned long *interfaces);
+	int (*set_clk_tx_rate)(void *priv, struct clk *clk_tx_i,
+			       phy_interface_t interface, int speed);
+	void (*fix_mac_speed)(void *priv, int speed, unsigned int mode);
+	int (*fix_soc_reset)(struct stmmac_priv *priv, void __iomem *ioaddr);
 	int (*serdes_powerup)(struct net_device *ndev, void *priv);
 	void (*serdes_powerdown)(struct net_device *ndev, void *priv);
-	void (*speed_mode_2500)(struct net_device *ndev, void *priv);
+	int (*mac_finish)(struct net_device *ndev,
+			  void *priv,
+			  unsigned int mode,
+			  phy_interface_t interface);
 	void (*ptp_clk_freq_config)(struct stmmac_priv *priv);
 	int (*init)(struct platform_device *pdev, void *priv);
 	void (*exit)(struct platform_device *pdev, void *priv);
+	int (*suspend)(struct device *dev, void *priv);
+	int (*resume)(struct device *dev, void *priv);
 	struct mac_device_info *(*setup)(void *priv);
 	int (*clks_config)(void *priv, bool enabled);
 	int (*crosststamp)(ktime_t *device, struct system_counterval_t *system,
@@ -250,25 +278,24 @@ struct plat_stmmacenet_data {
 	struct clk *stmmac_clk;
 	struct clk *pclk;
 	struct clk *clk_ptp_ref;
-	unsigned int clk_ptp_rate;
-	unsigned int clk_ref_rate;
+	struct clk *clk_tx_i;		/* clk_tx_i to MAC core */
+	unsigned long clk_ptp_rate;
+	unsigned long clk_ref_rate;
+	struct clk_bulk_data *clks;
+	int num_clks;
 	unsigned int mult_fact_100ns;
 	s32 ptp_max_adj;
 	u32 cdc_error_adj;
 	struct reset_control *stmmac_rst;
 	struct reset_control *stmmac_ahb_rst;
 	struct stmmac_axi *axi;
-	int has_gmac4;
 	int rss_en;
 	int mac_port_sel_speed;
-	int has_xgmac;
 	u8 vlan_fail_q;
-	unsigned int eee_usecs_rate;
 	struct pci_dev *pdev;
 	int int_snapshot_num;
 	int msi_mac_vec;
 	int msi_wol_vec;
-	int msi_lpi_vec;
 	int msi_sfty_ce_vec;
 	int msi_sfty_ue_vec;
 	int msi_rx_base_vec;

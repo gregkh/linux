@@ -54,11 +54,13 @@ struct tc_action;
 #define DSA_TAG_PROTO_RZN1_A5PSW_VALUE		26
 #define DSA_TAG_PROTO_LAN937X_VALUE		27
 #define DSA_TAG_PROTO_VSC73XX_8021Q_VALUE	28
+#define DSA_TAG_PROTO_BRCM_LEGACY_FCS_VALUE	29
 
 enum dsa_tag_protocol {
 	DSA_TAG_PROTO_NONE		= DSA_TAG_PROTO_NONE_VALUE,
 	DSA_TAG_PROTO_BRCM		= DSA_TAG_PROTO_BRCM_VALUE,
 	DSA_TAG_PROTO_BRCM_LEGACY	= DSA_TAG_PROTO_BRCM_LEGACY_VALUE,
+	DSA_TAG_PROTO_BRCM_LEGACY_FCS	= DSA_TAG_PROTO_BRCM_LEGACY_FCS_VALUE,
 	DSA_TAG_PROTO_BRCM_PREPEND	= DSA_TAG_PROTO_BRCM_PREPEND_VALUE,
 	DSA_TAG_PROTO_DSA		= DSA_TAG_PROTO_DSA_VALUE,
 	DSA_TAG_PROTO_EDSA		= DSA_TAG_PROTO_EDSA_VALUE,
@@ -296,6 +298,7 @@ struct dsa_port {
 	struct devlink_port	devlink_port;
 	struct phylink		*pl;
 	struct phylink_config	pl_config;
+	netdevice_tracker	conduit_tracker;
 	struct dsa_lag		*lag;
 	struct net_device	*hsr_dev;
 
@@ -885,21 +888,6 @@ struct dsa_switch_ops {
 	 */
 	void	(*phylink_get_caps)(struct dsa_switch *ds, int port,
 				    struct phylink_config *config);
-	struct phylink_pcs *(*phylink_mac_select_pcs)(struct dsa_switch *ds,
-						      int port,
-						      phy_interface_t iface);
-	void	(*phylink_mac_config)(struct dsa_switch *ds, int port,
-				      unsigned int mode,
-				      const struct phylink_link_state *state);
-	void	(*phylink_mac_link_down)(struct dsa_switch *ds, int port,
-					 unsigned int mode,
-					 phy_interface_t interface);
-	void	(*phylink_mac_link_up)(struct dsa_switch *ds, int port,
-				       unsigned int mode,
-				       phy_interface_t interface,
-				       struct phy_device *phydev,
-				       int speed, int duplex,
-				       bool tx_pause, bool rx_pause);
 	void	(*phylink_fixed_state)(struct dsa_switch *ds, int port,
 				       struct phylink_link_state *state);
 	/*
@@ -921,6 +909,8 @@ struct dsa_switch_ops {
 	void	(*get_rmon_stats)(struct dsa_switch *ds, int port,
 				  struct ethtool_rmon_stats *rmon_stats,
 				  const struct ethtool_rmon_hist_range **ranges);
+	void	(*get_ts_stats)(struct dsa_switch *ds, int port,
+				struct ethtool_ts_stats *ts_stats);
 	void	(*get_stats64)(struct dsa_switch *ds, int port,
 				   struct rtnl_link_stats64 *s);
 	void	(*get_pause_stats)(struct dsa_switch *ds, int port,
@@ -1005,8 +995,6 @@ struct dsa_switch_ops {
 	 */
 	bool	(*support_eee)(struct dsa_switch *ds, int port);
 	int	(*set_mac_eee)(struct dsa_switch *ds, int port,
-			       struct ethtool_keee *e);
-	int	(*get_mac_eee)(struct dsa_switch *ds, int port,
 			       struct ethtool_keee *e);
 
 	/* EEPROM access */
@@ -1146,9 +1134,10 @@ struct dsa_switch_ops {
 	 * PTP functionality
 	 */
 	int	(*port_hwtstamp_get)(struct dsa_switch *ds, int port,
-				     struct ifreq *ifr);
+				     struct kernel_hwtstamp_config *config);
 	int	(*port_hwtstamp_set)(struct dsa_switch *ds, int port,
-				     struct ifreq *ifr);
+				     struct kernel_hwtstamp_config *config,
+				     struct netlink_ext_ack *extack);
 	void	(*port_txtstamp)(struct dsa_switch *ds, int port,
 				 struct sk_buff *skb);
 	bool	(*port_rxtstamp)(struct dsa_switch *ds, int port,

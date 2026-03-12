@@ -162,6 +162,9 @@ static int rfkill_gpio_probe(struct platform_device *pdev)
 	if (!rfkill->rfkill_dev)
 		return -ENOMEM;
 
+	if (device_property_present(&pdev->dev, "default-blocked"))
+		rfkill_init_sw_state(rfkill->rfkill_dev, true);
+
 	ret = rfkill_register(rfkill->rfkill_dev);
 	if (ret < 0)
 		goto err_destroy;
@@ -203,7 +206,7 @@ MODULE_DEVICE_TABLE(of, rfkill_of_match);
 
 static struct platform_driver rfkill_gpio_driver = {
 	.probe = rfkill_gpio_probe,
-	.remove_new = rfkill_gpio_remove,
+	.remove = rfkill_gpio_remove,
 	.driver = {
 		.name = "rfkill_gpio",
 		.acpi_match_table = ACPI_PTR(rfkill_acpi_match),

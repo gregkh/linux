@@ -80,6 +80,12 @@ static const struct dmi_system_id dell_wmi_smbios_list[] __initconst = {
 static const struct key_entry dell_wmi_keymap_type_0000[] = {
 	{ KE_IGNORE, 0x003a, { KEY_CAPSLOCK } },
 
+	/* Audio mute toggle */
+	{ KE_KEY,    0x0109, { KEY_MUTE } },
+
+	/* Mic mute toggle */
+	{ KE_KEY,    0x0150, { KEY_MICMUTE } },
+
 	/* Meta key lock */
 	{ KE_IGNORE, 0xe000, { KEY_RIGHTMETA } },
 
@@ -365,6 +371,13 @@ static const struct key_entry dell_wmi_keymap_type_0012[] = {
 	/* Backlight brightness change event */
 	{ KE_IGNORE, 0x0003, { KEY_RESERVED } },
 
+	/*
+	 * Electronic privacy screen toggled, extended data gives state,
+	 * separate entries for on/off see handling in dell_wmi_process_key().
+	 */
+	{ KE_KEY, 0x000c, { KEY_EPRIVACY_SCREEN_OFF } },
+	{ KE_KEY, 0x000c, { KEY_EPRIVACY_SCREEN_ON } },
+
 	/* Ultra-performance mode switch request */
 	{ KE_IGNORE, 0x000d, { KEY_RESERVED } },
 
@@ -435,6 +448,11 @@ static int dell_wmi_process_key(struct wmi_device *wdev, int type, int code, u16
 				      "Dell tablet mode switch",
 				      SW_TABLET_MODE, !buffer[0]);
 		return 1;
+	} else if (type == 0x0012 && code == 0x000c && remaining > 0) {
+		/* Eprivacy toggle, switch to "on" key entry for on events */
+		if (buffer[0] == 2)
+			key++;
+		used = 1;
 	} else if (type == 0x0012 && code == 0x000d && remaining > 0) {
 		value = (buffer[2] == 2);
 		used = 1;

@@ -20,11 +20,10 @@
 #include <acpi/processor.h>
 #ifdef CONFIG_X86
 #include <asm/cpufeature.h>
+#include <asm/msr.h>
 #endif
 
 #define ACPI_PROCESSOR_FILE_PERFORMANCE	"performance"
-
-static DEFINE_MUTEX(performance_mutex);
 
 /*
  * _PPC support is implemented as a CPUfreq policy notifier:
@@ -220,6 +219,10 @@ void acpi_processor_ppc_exit(struct cpufreq_policy *policy)
 	}
 }
 
+#ifdef CONFIG_X86
+
+static DEFINE_MUTEX(performance_mutex);
+
 static int acpi_processor_get_performance_control(struct acpi_processor *pr)
 {
 	int result = 0;
@@ -278,7 +281,6 @@ end:
 	return result;
 }
 
-#ifdef CONFIG_X86
 /*
  * Some AMDs have 50MHz frequency multiples, but only provide 100MHz rounding
  * in their ACPI data. Calculate the real values and fix up the _PSS data.
@@ -309,9 +311,6 @@ static void amd_fixup_frequency(struct acpi_processor_px *px, int i)
 			px->core_frequency = (100 * (fid + 8)) >> did;
 	}
 }
-#else
-static void amd_fixup_frequency(struct acpi_processor_px *px, int i) {};
-#endif
 
 static int acpi_processor_get_performance_states(struct acpi_processor *pr)
 {
@@ -451,13 +450,11 @@ int acpi_processor_get_performance_info(struct acpi_processor *pr)
 	 * the BIOS is older than the CPU and does not know its frequencies
 	 */
  update_bios:
-#ifdef CONFIG_X86
 	if (acpi_has_method(pr->handle, "_PPC")) {
 		if(boot_cpu_has(X86_FEATURE_EST))
 			pr_warn(FW_BUG "BIOS needs update for CPU "
 			       "frequency support\n");
 	}
-#endif
 	return result;
 }
 EXPORT_SYMBOL_GPL(acpi_processor_get_performance_info);
@@ -799,3 +796,4 @@ unlock:
 	mutex_unlock(&performance_mutex);
 }
 EXPORT_SYMBOL(acpi_processor_unregister_performance);
+#endif

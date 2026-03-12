@@ -27,11 +27,13 @@
 
 #define ERROR_CHECK_TIMEOUT		100
 #define CHECK_DELAY_TIME		100
+#define QM_RESET_WAIT_TIMEOUT  60000
 
 #define QM_SQC_VFT_BASE_SHIFT_V2	28
 #define QM_SQC_VFT_BASE_MASK_V2		GENMASK(15, 0)
 #define QM_SQC_VFT_NUM_SHIFT_V2		45
 #define QM_SQC_VFT_NUM_MASK_V2		GENMASK(9, 0)
+#define QM_MB_CMD_NOT_READY	0xffffffff
 
 /* RW regs */
 #define QM_REGS_MAX_LEN		7
@@ -109,6 +111,14 @@ struct hisi_acc_vf_migration_file {
 struct hisi_acc_vf_core_device {
 	struct vfio_pci_core_device core_device;
 	u8 match_done;
+	bool set_reset_flag;
+	/*
+	 * io_base is only valid when dev_opened is true,
+	 * which is protected by open_mutex.
+	 */
+	bool dev_opened;
+	/* Ensure the accuracy of dev_opened operation */
+	struct mutex open_mutex;
 
 	/* For migration state */
 	struct mutex state_mutex;
@@ -117,9 +127,20 @@ struct hisi_acc_vf_core_device {
 	struct pci_dev *vf_dev;
 	struct hisi_qm *pf_qm;
 	struct hisi_qm vf_qm;
+	/*
+	 * vf_qm_state represents the QM_VF_STATE register value.
+	 * It is set by Guest driver for the ACC VF dev indicating
+	 * the driver has loaded and configured the dev correctly.
+	 */
 	u32 vf_qm_state;
 	int vf_id;
 	struct hisi_acc_vf_migration_file *resuming_migf;
 	struct hisi_acc_vf_migration_file *saving_migf;
+
+	/*
+	 * It holds migration data corresponding to the last migration
+	 * and is used by the debugfs interface to report it.
+	 */
+	struct hisi_acc_vf_migration_file *debug_migf;
 };
 #endif /* HISI_ACC_VFIO_PCI_H */
