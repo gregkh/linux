@@ -458,13 +458,19 @@ cmd:
 
 	ret = __sev_do_cmd_locked(SEV_CMD_PEK_CSR, &data, &argp->error);
 
-	 /* If we query the CSR length, FW responded with expected data. */
+	/*
+	 * Firmware will returns the length of the CSR blob (either the minimum
+	 * required length or the actual length written), return it to the user.
+	 */
 	input.length = data.len;
 
 	if (copy_to_user((void __user *)argp->data, &input, sizeof(input))) {
 		ret = -EFAULT;
 		goto e_free_blob;
 	}
+
+	if (ret || WARN_ON_ONCE(argp->error))
+		goto e_free_blob;
 
 	if (blob) {
 		if (copy_to_user(input_address, blob, input.length))
