@@ -2784,7 +2784,6 @@ static void airoha_remove(struct platform_device *pdev)
 		if (!port)
 			continue;
 
-		airoha_dev_stop(port->dev);
 		unregister_netdev(port->dev);
 	}
 	free_netdev(eth->napi_dev);
