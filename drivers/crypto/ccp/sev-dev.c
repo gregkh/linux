@@ -927,6 +927,9 @@ static int sev_ioctl_do_get_id2(struct sev_issue_cmd *argp)
 		goto e_free;
 	}
 
+	if (ret || WARN_ON_ONCE(argp->error))
+		goto e_free;
+
 	if (id_blob) {
 		if (copy_to_user(input_address, id_blob, data.len)) {
 			ret = -EFAULT;
