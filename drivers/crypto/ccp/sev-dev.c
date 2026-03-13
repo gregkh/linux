@@ -817,7 +817,10 @@ static int sev_ioctl_do_pdh_export(struct sev_issue_cmd *argp, bool writable)
 cmd:
 	ret = __sev_do_cmd_locked(SEV_CMD_PDH_CERT_EXPORT, &data, &argp->error);
 
-	/* If we query the length, FW responded with expected data. */
+	/*
+	 * Firmware will return the length of the blobs (either the minimum
+	 * required length or the actual length written), return 'em to the user.
+	 */
 	input.cert_chain_len = data.cert_chain_len;
 	input.pdh_cert_len = data.pdh_cert_len;
 
@@ -825,6 +828,9 @@ cmd:
 		ret = -EFAULT;
 		goto e_free_cert;
 	}
+
+	if (ret || WARN_ON_ONCE(argp->error))
+		goto e_free_cert;
 
 	if (pdh_blob) {
 		if (copy_to_user(input_pdh_cert_address,
