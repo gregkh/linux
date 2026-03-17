@@ -897,7 +897,8 @@ static int kfence_init_late(void)
 #ifdef CONFIG_CONTIG_ALLOC
 	struct page *pages;
 
-	pages = alloc_contig_pages(nr_pages, GFP_KERNEL, first_online_node, NULL);
+	pages = alloc_contig_pages(nr_pages, GFP_KERNEL | __GFP_SKIP_KASAN_UNPOISON |
+				   __GFP_SKIP_KASAN_POISON, first_online_node, NULL);
 	if (!pages)
 		return -ENOMEM;
 	__kfence_pool = page_to_virt(pages);
@@ -906,7 +907,9 @@ static int kfence_init_late(void)
 		pr_warn("KFENCE_NUM_OBJECTS too large for buddy allocator\n");
 		return -EINVAL;
 	}
-	__kfence_pool = alloc_pages_exact(KFENCE_POOL_SIZE, GFP_KERNEL);
+	__kfence_pool = alloc_pages_exact(KFENCE_POOL_SIZE, GFP_KERNEL |
+					  __GFP_SKIP_KASAN_UNPOISON |
+					  __GFP_SKIP_KASAN_POISON);
 	if (!__kfence_pool)
 		return -ENOMEM;
 #endif
