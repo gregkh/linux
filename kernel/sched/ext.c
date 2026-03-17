@@ -4775,14 +4775,29 @@ static void schedule_scx_ops_disable_work(void)
 		kthread_queue_work(helper, &scx_ops_disable_work);
 }
 
-static void scx_ops_disable(enum scx_exit_kind kind)
+/*
+ * Claim the exit. The caller must ensure that the helper kthread work
+ * is kicked before the current task can be preempted. Once exit_kind is
+ * claimed, scx_error() can no longer trigger, so if the current task gets
+ * preempted and the BPF scheduler fails to schedule it back, the helper work
+ * will never be kicked and the whole system can wedge.
+ */
+static bool scx_claim_exit(enum scx_exit_kind kind)
 {
 	int none = SCX_EXIT_NONE;
 
+	lockdep_assert_preemption_disabled();
+
+	return atomic_try_cmpxchg(&scx_exit_kind, &none, kind);
+}
+
+static void scx_ops_disable(enum scx_exit_kind kind)
+{
 	if (WARN_ON_ONCE(kind == SCX_EXIT_NONE || kind == SCX_EXIT_DONE))
 		kind = SCX_EXIT_ERROR;
 
-	atomic_try_cmpxchg(&scx_exit_kind, &none, kind);
+	guard(preempt)();
+	scx_claim_exit(kind);
 
 	schedule_scx_ops_disable_work();
 }
@@ -5082,10 +5097,11 @@ static __printf(3, 4) void scx_ops_exit_kind(enum scx_exit_kind kind,
 					     const char *fmt, ...)
 {
 	struct scx_exit_info *ei = scx_exit_info;
-	int none = SCX_EXIT_NONE;
 	va_list args;
 
-	if (!atomic_try_cmpxchg(&scx_exit_kind, &none, kind))
+	guard(preempt)();
+
+	if (!scx_claim_exit(kind))
 		return;
 
 	ei->exit_code = exit_code;
