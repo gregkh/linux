@@ -377,6 +377,7 @@ out_unlock:
 static int inv_icm42600_buffer_postdisable(struct iio_dev *indio_dev)
 {
 	struct inv_icm42600_state *st = iio_device_get_drvdata(indio_dev);
+	struct inv_icm42600_timestamp *ts = iio_priv(indio_dev);
 	struct device *dev = regmap_get_device(st->map);
 	unsigned int sensor;
 	unsigned int *watermark;
@@ -397,6 +398,8 @@ static int inv_icm42600_buffer_postdisable(struct iio_dev *indio_dev)
 	}
 
 	mutex_lock(&st->lock);
+
+	inv_icm42600_timestamp_apply_odr(ts, 0, 0, 0);
 
 	ret = inv_icm42600_buffer_set_fifo_en(st, st->fifo.en & ~sensor);
 	if (ret)
