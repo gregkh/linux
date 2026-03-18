@@ -1160,6 +1160,10 @@ get_more_pages:
 					/* better not fail on first page! */
 					BUG_ON(locked_pages == 0);
 					pages[locked_pages] = NULL;
+					/* Did we just begin a new contiguous op? Nevermind! */
+					if (len == 0)
+						num_ops--;
+
 					redirty_page_for_writepage(wbc, page);
 					unlock_page(page);
 					break;
