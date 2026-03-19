@@ -7749,6 +7749,10 @@ static void l2cap_chan_le_send_credits(struct l2cap_chan *chan)
 
 	return_credits = (chan->imtu / chan->mps) + 1;
 
+	if (chan->mode != L2CAP_MODE_LE_FLOWCTL &&
+	    chan->mode != L2CAP_MODE_EXT_FLOWCTL)
+		return;
+
 	if (chan->rx_credits >= return_credits)
 		return;
 
