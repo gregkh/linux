@@ -1330,7 +1330,6 @@ int ceph_process_folio_batch(struct address_space *mapping,
 		} else if (rc == -E2BIG) {
 			rc = 0;
 			folio_unlock(folio);
-			ceph_wbc->fbatch.folios[i] = NULL;
 			break;
 		}
 
