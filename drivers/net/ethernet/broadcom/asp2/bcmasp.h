@@ -371,7 +371,6 @@ struct bcmasp_hw_info {
 struct bcmasp_plat_data {
 	void (*init_wol)(struct bcmasp_priv *priv);
 	void (*enable_wol)(struct bcmasp_intf *intf, bool en);
-	void (*destroy_wol)(struct bcmasp_priv *priv);
 	struct bcmasp_hw_info		*hw_info;
 };
 
@@ -389,7 +388,6 @@ struct bcmasp_priv {
 
 	void (*init_wol)(struct bcmasp_priv *priv);
 	void (*enable_wol)(struct bcmasp_intf *intf, bool en);
-	void (*destroy_wol)(struct bcmasp_priv *priv);
 
 	void __iomem			*base;
 	struct	bcmasp_hw_info		*hw_info;

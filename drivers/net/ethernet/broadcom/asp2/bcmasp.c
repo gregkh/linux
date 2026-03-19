@@ -1118,12 +1118,6 @@ static void bcmasp_enable_wol_shared(struct bcmasp_intf *intf, bool en)
 	}
 }
 
-static void bcmasp_wol_irq_destroy_shared(struct bcmasp_priv *priv)
-{
-	if (priv->wol_irq > 0)
-		free_irq(priv->wol_irq, priv);
-}
-
 static void bcmasp_init_wol_per_intf(struct bcmasp_priv *priv)
 {
 	struct platform_device *pdev = priv->pdev;
@@ -1156,16 +1150,6 @@ static void bcmasp_enable_wol_per_intf(struct bcmasp_intf *intf, bool en)
 	device_set_wakeup_enable(dev, en);
 }
 
-static void bcmasp_wol_irq_destroy_per_intf(struct bcmasp_priv *priv)
-{
-	struct bcmasp_intf *intf;
-
-	list_for_each_entry(intf, &priv->intfs, list) {
-		if (intf->wol_irq > 0)
-			free_irq(intf->wol_irq, priv);
-	}
-}
-
 static struct bcmasp_hw_info v20_hw_info = {
 	.rx_ctrl_flush = ASP_RX_CTRL_FLUSH,
 	.umac2fb = UMAC2FB_OFFSET,
@@ -1177,7 +1161,6 @@ static struct bcmasp_hw_info v20_hw_info = {
 static const struct bcmasp_plat_data v20_plat_data = {
 	.init_wol = bcmasp_init_wol_per_intf,
 	.enable_wol = bcmasp_enable_wol_per_intf,
-	.destroy_wol = bcmasp_wol_irq_destroy_per_intf,
 	.hw_info = &v20_hw_info,
 };
 
@@ -1193,7 +1176,6 @@ static struct bcmasp_hw_info v21_hw_info = {
 static const struct bcmasp_plat_data v21_plat_data = {
 	.init_wol = bcmasp_init_wol_shared,
 	.enable_wol = bcmasp_enable_wol_shared,
-	.destroy_wol = bcmasp_wol_irq_destroy_shared,
 	.hw_info = &v21_hw_info,
 };
 
@@ -1267,7 +1249,6 @@ static int bcmasp_probe(struct platform_device *pdev)
 
 	priv->init_wol = pdata->init_wol;
 	priv->enable_wol = pdata->enable_wol;
-	priv->destroy_wol = pdata->destroy_wol;
 	priv->hw_info = pdata->hw_info;
 
 	/* Enable all clocks to ensure successful probing */
@@ -1331,7 +1312,6 @@ static int bcmasp_probe(struct platform_device *pdev)
 		if (ret) {
 			netdev_err(intf->ndev,
 				   "failed to register net_device: %d\n", ret);
-			priv->destroy_wol(priv);
 			bcmasp_remove_intfs(priv);
 			goto of_put_exit;
 		}
@@ -1352,7 +1332,6 @@ static int bcmasp_remove(struct platform_device *pdev)
 	if (!priv)
 		return 0;
 
-	priv->destroy_wol(priv);
 	bcmasp_remove_intfs(priv);
 
 	return 0;
