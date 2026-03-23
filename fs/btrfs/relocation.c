@@ -4182,6 +4182,12 @@ static int move_existing_remap(struct btrfs_fs_info *fs_info,
 		return ret;
 	}
 
+	if (ins.offset < length) {
+		spin_lock(&sinfo->lock);
+		btrfs_space_info_update_bytes_may_use(sinfo, ins.offset - length);
+		spin_unlock(&sinfo->lock);
+	}
+
 	dest_addr = ins.objectid;
 	dest_length = ins.offset;
 
