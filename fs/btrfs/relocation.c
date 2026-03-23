@@ -5014,6 +5014,12 @@ static int do_remap_reloc_trans(struct btrfs_fs_info *fs_info,
 		return ret;
 	}
 
+	if (ins.offset < remap_length) {
+		spin_lock(&sinfo->lock);
+		btrfs_space_info_update_bytes_may_use(sinfo, ins.offset - remap_length);
+		spin_unlock(&sinfo->lock);
+	}
+
 	made_reservation = true;
 
 	new_addr = ins.objectid;
