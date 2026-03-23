@@ -3884,7 +3884,7 @@ static int add_remap_tree_entries(struct btrfs_trans_handle *trans, struct btrfs
 		ret = btrfs_insert_empty_items(trans, fs_info->remap_root, path, &batch);
 		btrfs_release_path(path);
 
-		if (num_entries <= max_items)
+		if (ret || num_entries <= max_items)
 			break;
 
 		num_entries -= max_items;
