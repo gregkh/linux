@@ -23,7 +23,7 @@ double math_mod(const double arg1, const double arg2)
 		return arg2;
 	if (isNaN(arg2))
 		return arg1;
-	return arg1 - arg1 * ((int)(arg1 / arg2));
+	return arg1 - arg2 * ((int)(arg1 / arg2));
 }
 
 double math_min2(const double arg1, const double arg2)
