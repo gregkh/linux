@@ -859,7 +859,7 @@ gen11_dsi_set_transcoder_timings(struct intel_encoder *encoder,
 	 * non-compressed link speeds, and simplifies down to the ratio between
 	 * compressed and non-compressed bpp.
 	 */
-	if (crtc_state->dsc.compression_enable) {
+	if (is_vid_mode(intel_dsi) && crtc_state->dsc.compression_enable) {
 		mul = crtc_state->dsc.compressed_bpp;
 		div = mipi_dsi_pixel_format_to_bpp(intel_dsi->pixel_format);
 	}
@@ -1458,7 +1458,7 @@ static void gen11_dsi_get_timings(struct intel_encoder *encoder,
 	struct drm_display_mode *adjusted_mode =
 					&pipe_config->hw.adjusted_mode;
 
-	if (pipe_config->dsc.compressed_bpp) {
+	if (is_vid_mode(intel_dsi) && pipe_config->dsc.compressed_bpp) {
 		int div = pipe_config->dsc.compressed_bpp;
 		int mul = mipi_dsi_pixel_format_to_bpp(intel_dsi->pixel_format);
 
