@@ -569,6 +569,9 @@ static int nxp_sar_adc_write_raw(struct iio_dev *indio_dev, struct iio_chan_spec
 
 	switch (mask) {
 	case IIO_CHAN_INFO_SAMP_FREQ:
+		if (val <= 0)
+			return -EINVAL;
+
 		/*
 		 * Configures the sample period duration in terms of the SAR
 		 * controller clock. The minimum acceptable value is 8.
@@ -577,7 +580,11 @@ static int nxp_sar_adc_write_raw(struct iio_dev *indio_dev, struct iio_chan_spec
 		 * sampling timing which gives us the number of cycles expected.
 		 * The value is 8-bit wide, consequently the max value is 0xFF.
 		 */
-		inpsamp = clk_get_rate(info->clk) / val - NXP_SAR_ADC_CONV_TIME;
+		inpsamp = clk_get_rate(info->clk) / val;
+		if (inpsamp < NXP_SAR_ADC_CONV_TIME)
+			return -EINVAL;
+
+		inpsamp -= NXP_SAR_ADC_CONV_TIME;
 		nxp_sar_adc_conversion_timing_set(info, inpsamp);
 		return 0;
 
