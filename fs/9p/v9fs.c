@@ -413,7 +413,11 @@ static void v9fs_apply_options(struct v9fs_session_info *v9ses,
 	/*
 	 * Note that we must |= flags here as session_init already
 	 * set basic flags. This adds in flags from parsed options.
+	 * Default access flags must be cleared if session options
+	 * changes them to avoid mangling the setting.
 	 */
+	if (ctx->session_opts.flags & V9FS_ACCESS_MASK)
+		v9ses->flags &= ~V9FS_ACCESS_MASK;
 	v9ses->flags |= ctx->session_opts.flags;
 #ifdef CONFIG_9P_FSCACHE
 	v9ses->cachetag = ctx->session_opts.cachetag;
