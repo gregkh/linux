@@ -219,6 +219,7 @@ allOf:
           - required:
               - "#sound-dai-cells"
       else:
+        $ref: /schemas/sound/dai-common.yaml#
         properties:
           aux-bus: false
         required:
