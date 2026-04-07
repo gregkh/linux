@@ -1577,6 +1577,7 @@ static void damos_set_effective_quota(struct damos_quota *quota)
 			esz = min(throughput * quota->ms, esz);
 		else
 			esz = throughput * quota->ms;
+		esz = max(DAMON_MIN_REGION, esz);
 	}
 
 	if (quota->sz && quota->sz < esz)
