@@ -1440,7 +1440,7 @@ static void nvmet_ctrl_free(struct kref *ref)
 
 	nvmet_stop_keep_alive_timer(ctrl);
 
-	flush_work(&ctrl->async_event_work);
+	cancel_work_sync(&ctrl->async_event_work);
 	cancel_work_sync(&ctrl->fatal_err_work);
 
 	ida_simple_remove(&cntlid_ida, ctrl->cntlid);
