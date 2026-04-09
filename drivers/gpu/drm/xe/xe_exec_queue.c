@@ -1574,7 +1574,7 @@ void xe_exec_queue_tlb_inval_last_fence_put(struct xe_exec_queue *q,
 void xe_exec_queue_tlb_inval_last_fence_put_unlocked(struct xe_exec_queue *q,
 						     unsigned int type)
 {
-	xe_assert(q->vm->xe, type == XE_EXEC_QUEUE_TLB_INVAL_MEDIA_GT ||
+	xe_assert(gt_to_xe(q->gt), type == XE_EXEC_QUEUE_TLB_INVAL_MEDIA_GT ||
 		  type == XE_EXEC_QUEUE_TLB_INVAL_PRIMARY_GT);
 
 	dma_fence_put(q->tlb_inval[type].last_fence);
