@@ -1271,8 +1271,6 @@ static __always_inline int validate_range(struct mm_struct *mm,
 		return -EINVAL;
 	if (!len)
 		return -EINVAL;
-	if (start < mmap_min_addr)
-		return -EINVAL;
 	if (start >= task_size)
 		return -EINVAL;
 	if (len > task_size - start)
