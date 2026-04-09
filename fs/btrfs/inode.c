@@ -4826,6 +4826,8 @@ static int btrfs_rmdir(struct inode *vfs_dir, struct dentry *dentry)
 	if (ret)
 		goto out;
 
+	btrfs_record_unlink_dir(trans, dir, inode, false);
+
 	/* now the directory is empty */
 	ret = btrfs_unlink_inode(trans, dir, inode, &fname.disk_name);
 	if (!ret)
