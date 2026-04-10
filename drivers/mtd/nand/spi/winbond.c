@@ -99,7 +99,7 @@ static SPINAND_OP_VARIANTS(update_cache_variants,
 
 #define SPINAND_WINBOND_WRITE_VCR_8D_8D_8D(reg, buf)			\
 	SPI_MEM_OP(SPI_MEM_DTR_OP_RPT_CMD(0x81, 8),			\
-		   SPI_MEM_DTR_OP_ADDR(4, reg, 8),			\
+		   SPI_MEM_DTR_OP_ADDR(4, reg << 8, 8),			\
 		   SPI_MEM_OP_NO_DUMMY,					\
 		   SPI_MEM_DTR_OP_DATA_OUT(2, buf, 8))
 
