@@ -158,6 +158,8 @@ void cpu_probe(void)
 		cpu_set_fpu_opts(c);
 	else
 		cpu_set_nofpu_opts(c);
+
+	c->vmbits = 31;
 }
 
 void cpu_report(void)
