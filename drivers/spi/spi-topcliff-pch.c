@@ -1410,9 +1410,6 @@ static void pch_spi_pd_remove(struct platform_device *plat_dev)
 
 	spi_unregister_controller(data->host);
 
-	if (use_dma)
-		pch_free_dma_buf(board_dat, data);
-
 	/* check for any pending messages; no action is taken if the queue
 	 * is still full; but at least we tried.  Unload anyway */
 	count = 500;
@@ -1435,6 +1432,9 @@ static void pch_spi_pd_remove(struct platform_device *plat_dev)
 		data->irq_reg_sts = false;
 		free_irq(board_dat->pdev->irq, data);
 	}
+
+	if (use_dma)
+		pch_free_dma_buf(board_dat, data);
 
 	pci_iounmap(board_dat->pdev, data->io_remap_addr);
 
