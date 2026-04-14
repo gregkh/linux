@@ -1387,6 +1387,10 @@ static int snd_ctl_elem_init_enum_names(struct user_element *ue)
 	buf_len = ue->info.value.enumerated.names_length;
 	p = names;
 	for (i = 0; i < ue->info.value.enumerated.items; ++i) {
+		if (buf_len == 0) {
+			kvfree(names);
+			return -EINVAL;
+		}
 		name_len = strnlen(p, buf_len);
 		if (name_len == 0 || name_len >= 64 || name_len == buf_len) {
 			kvfree(names);
