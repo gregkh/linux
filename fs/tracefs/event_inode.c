@@ -576,7 +576,6 @@ static int eventfs_iterate(struct file *file, struct dir_context *ctx)
 	struct eventfs_inode *ei;
 	const char *name;
 	umode_t mode;
-	int ret = -EINVAL;
 	int ino;
 	int i, r, c;
 
@@ -601,7 +600,6 @@ static int eventfs_iterate(struct file *file, struct dir_context *ctx)
 	 * Need to create the dentries and inodes to have a consistent
 	 * inode number.
 	 */
-	ret = 0;
 
 	/* Start at 'c' to jump over already read entries */
 	for (i = c; i < ei->nr_entries; i++, ctx->pos++) {
