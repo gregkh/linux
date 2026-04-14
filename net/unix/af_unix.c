@@ -3604,6 +3604,7 @@ static int bpf_iter_unix_seq_show(struct seq_file *seq, void *v)
 		return 0;
 
 	lock_sock(sk);
+	unix_state_lock(sk);
 
 	if (unlikely(sock_flag(sk, SOCK_DEAD))) {
 		ret = SEQ_SKIP;
@@ -3615,6 +3616,7 @@ static int bpf_iter_unix_seq_show(struct seq_file *seq, void *v)
 	prog = bpf_iter_get_info(&meta, false);
 	ret = unix_prog_seq_show(prog, &meta, v, uid);
 unlock:
+	unix_state_unlock(sk);
 	release_sock(sk);
 	return ret;
 }
