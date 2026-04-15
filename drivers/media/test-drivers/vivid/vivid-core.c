@@ -2125,8 +2125,10 @@ static int __init vivid_init(void)
 	int ret;
 
 	ret = platform_device_register(&vivid_pdev);
-	if (ret)
+	if (ret) {
+		platform_device_put(&vivid_pdev);
 		return ret;
+	}
 
 	ret = platform_driver_register(&vivid_pdrv);
 	if (ret)
