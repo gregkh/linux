@@ -496,7 +496,7 @@ void tcp_init_metrics(struct sock *sk)
 	}
 	val = tcp_metric_get(tm, TCP_METRIC_REORDERING);
 	if (val && tp->reordering != val)
-		tp->reordering = val;
+		WRITE_ONCE(tp->reordering, val);
 
 	crtt = tcp_metric_get(tm, TCP_METRIC_RTT);
 	rcu_read_unlock();
