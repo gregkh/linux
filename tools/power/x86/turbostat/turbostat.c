@@ -2427,11 +2427,17 @@ char *sys_lpi_file_debugfs = "/sys/kernel/debug/pmc_core/slp_s0_residency_usec";
 
 int cpu_is_not_present(int cpu)
 {
+	if (cpu < 0)
+		return 1;
+
 	return !CPU_ISSET_S(cpu, cpu_present_setsize, cpu_present_set);
 }
 
 int cpu_is_not_allowed(int cpu)
 {
+	if (cpu < 0)
+		return 1;
+
 	return !CPU_ISSET_S(cpu, cpu_allowed_setsize, cpu_allowed_set);
 }
 
@@ -2473,9 +2479,12 @@ int for_all_cpus(int (func) (struct thread_data *, struct core_data *, struct pk
 		int i;
 
 		for (i = MAX_HT_ID; i > 0; --i) {	/* ht_id 0 is self */
-			if (cpus[cpu].ht_sibling_cpu_id[i] <= 0)
+			int sibling_cpu_id = cpus[cpu].ht_sibling_cpu_id[i];
+
+			if (cpu_is_not_allowed(sibling_cpu_id))
 				continue;
-			t = &thread_base[cpus[cpu].ht_sibling_cpu_id[i]];
+
+			t = &thread_base[sibling_cpu_id];
 
 			retval |= func(t, c, p);
 		}
@@ -6252,10 +6261,13 @@ int for_all_cpus_2(int (func) (struct thread_data *, struct core_data *,
 		int i;
 
 		for (i = MAX_HT_ID; i > 0; --i) {	/* ht_id 0 is self */
-			if (cpus[cpu].ht_sibling_cpu_id[i] <= 0)
+			int sibling_cpu_id = cpus[cpu].ht_sibling_cpu_id[i];
+
+			if (cpu_is_not_allowed(sibling_cpu_id))
 				continue;
-			t = &thread_base[cpus[cpu].ht_sibling_cpu_id[i]];
-			t2 = &thread_base2[cpus[cpu].ht_sibling_cpu_id[i]];
+
+			t = &thread_base[sibling_cpu_id];
+			t2 = &thread_base2[sibling_cpu_id];
 
 			retval |= func(t, c, p, t2, c2, p2);
 		}
