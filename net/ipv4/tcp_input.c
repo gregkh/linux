@@ -1294,8 +1294,9 @@ static void tcp_check_sack_reordering(struct sock *sk, const u32 low_seq,
 			 tp->sacked_out,
 			 tp->undo_marker ? tp->undo_retrans : 0);
 #endif
-		tp->reordering = min_t(u32, (metric + mss - 1) / mss,
-				       READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_max_reordering));
+		WRITE_ONCE(tp->reordering,
+			   min_t(u32, (metric + mss - 1) / mss,
+				 READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_max_reordering)));
 	}
 
 	/* This exciting event is worth to be remembered. 8) */
@@ -2440,8 +2441,9 @@ static void tcp_check_reno_reordering(struct sock *sk, const int addend)
 	if (!tcp_limit_reno_sacked(tp))
 		return;
 
-	tp->reordering = min_t(u32, tp->packets_out + addend,
-			       READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_max_reordering));
+	WRITE_ONCE(tp->reordering,
+		   min_t(u32, tp->packets_out + addend,
+			 READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_max_reordering)));
 	tp->reord_seen++;
 	NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPRENOREORDER);
 }
@@ -2580,8 +2582,8 @@ void tcp_enter_loss(struct sock *sk)
 	reordering = READ_ONCE(net->ipv4.sysctl_tcp_reordering);
 	if (icsk->icsk_ca_state <= TCP_CA_Disorder &&
 	    tp->sacked_out >= reordering)
-		tp->reordering = min_t(unsigned int, tp->reordering,
-				       reordering);
+		WRITE_ONCE(tp->reordering,
+			   min_t(unsigned int, tp->reordering, reordering));
 
 	tcp_set_ca_state(sk, TCP_CA_Loss);
 	tp->high_seq = tp->snd_nxt;
