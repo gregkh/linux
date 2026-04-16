@@ -2348,7 +2348,7 @@ void tcp_enter_loss(struct sock *sk)
 	    (icsk->icsk_ca_state == TCP_CA_Loss && !icsk->icsk_retransmits)) {
 		tp->prior_ssthresh = tcp_current_ssthresh(sk);
 		tp->prior_cwnd = tcp_snd_cwnd(tp);
-		tp->snd_ssthresh = icsk->icsk_ca_ops->ssthresh(sk);
+		WRITE_ONCE(tp->snd_ssthresh, icsk->icsk_ca_ops->ssthresh(sk));
 		tcp_ca_event(sk, CA_EVENT_LOSS);
 		tcp_init_undo(tp);
 	}
@@ -2641,7 +2641,7 @@ static void tcp_undo_cwnd_reduction(struct sock *sk, bool unmark_loss)
 		tcp_snd_cwnd_set(tp, icsk->icsk_ca_ops->undo_cwnd(sk));
 
 		if (tp->prior_ssthresh > tp->snd_ssthresh) {
-			tp->snd_ssthresh = tp->prior_ssthresh;
+			WRITE_ONCE(tp->snd_ssthresh, tp->prior_ssthresh);
 			tcp_ecn_withdraw_cwr(tp);
 		}
 	}
@@ -2759,7 +2759,7 @@ static void tcp_init_cwnd_reduction(struct sock *sk)
 	tp->prior_cwnd = tcp_snd_cwnd(tp);
 	tp->prr_delivered = 0;
 	tp->prr_out = 0;
-	tp->snd_ssthresh = inet_csk(sk)->icsk_ca_ops->ssthresh(sk);
+	WRITE_ONCE(tp->snd_ssthresh, inet_csk(sk)->icsk_ca_ops->ssthresh(sk));
 	tcp_ecn_queue_cwr(tp);
 }
 
@@ -2901,7 +2901,7 @@ static void tcp_non_congestion_loss_retransmit(struct sock *sk)
 
 	if (icsk->icsk_ca_state != TCP_CA_Loss) {
 		tp->high_seq = tp->snd_nxt;
-		tp->snd_ssthresh = tcp_current_ssthresh(sk);
+		WRITE_ONCE(tp->snd_ssthresh, tcp_current_ssthresh(sk));
 		tp->prior_ssthresh = 0;
 		tp->undo_marker = 0;
 		tcp_set_ca_state(sk, TCP_CA_Loss);
