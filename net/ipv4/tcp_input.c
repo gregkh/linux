@@ -476,14 +476,14 @@ static bool tcp_accecn_process_option(struct tcp_sock *tp,
 
 static void tcp_count_delivered_ce(struct tcp_sock *tp, u32 ecn_count)
 {
-	tp->delivered_ce += ecn_count;
+	WRITE_ONCE(tp->delivered_ce, tp->delivered_ce + ecn_count);
 }
 
 /* Updates the delivered and delivered_ce counts */
 static void tcp_count_delivered(struct tcp_sock *tp, u32 delivered,
 				bool ece_ack)
 {
-	tp->delivered += delivered;
+	WRITE_ONCE(tp->delivered, tp->delivered + delivered);
 	if (tcp_ecn_mode_rfc3168(tp) && ece_ack)
 		tcp_count_delivered_ce(tp, delivered);
 }
@@ -6838,7 +6838,7 @@ static bool tcp_rcv_fastopen_synack(struct sock *sk, struct sk_buff *synack,
 		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPFASTOPENACTIVE);
 		/* SYN-data is counted as two separate packets in tcp_ack() */
 		if (tp->delivered > 1)
-			--tp->delivered;
+			WRITE_ONCE(tp->delivered, tp->delivered - 1);
 	}
 
 	tcp_fastopen_add_skb(sk, synack);
@@ -7269,7 +7269,7 @@ tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 	SKB_DR_SET(reason, NOT_SPECIFIED);
 	switch (sk->sk_state) {
 	case TCP_SYN_RECV:
-		tp->delivered++; /* SYN-ACK delivery isn't tracked in tcp_ack */
+		WRITE_ONCE(tp->delivered, tp->delivered + 1); /* SYN-ACK delivery isn't tracked in tcp_ack */
 		if (!tp->srtt_us)
 			tcp_synack_rtt_meas(sk, req);
 

@@ -4487,8 +4487,8 @@ struct sk_buff *tcp_get_timestamping_opt_stats(const struct sock *sk,
 		   READ_ONCE(inet_csk(sk)->icsk_retransmits));
 	nla_put_u8(stats, TCP_NLA_DELIVERY_RATE_APP_LMT, data_race(!!tp->rate_app_limited));
 	nla_put_u32(stats, TCP_NLA_SND_SSTHRESH, READ_ONCE(tp->snd_ssthresh));
-	nla_put_u32(stats, TCP_NLA_DELIVERED, tp->delivered);
-	nla_put_u32(stats, TCP_NLA_DELIVERED_CE, tp->delivered_ce);
+	nla_put_u32(stats, TCP_NLA_DELIVERED, READ_ONCE(tp->delivered));
+	nla_put_u32(stats, TCP_NLA_DELIVERED_CE, READ_ONCE(tp->delivered_ce));
 
 	nla_put_u32(stats, TCP_NLA_SNDQ_SIZE, tp->write_seq - tp->snd_una);
 	nla_put_u8(stats, TCP_NLA_CA_STATE, inet_csk(sk)->icsk_ca_state);
