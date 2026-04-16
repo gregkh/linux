@@ -5397,7 +5397,7 @@ static int bpf_sol_tcp_setsockopt(struct sock *sk, int optname,
 		if (val <= 0)
 			return -EINVAL;
 		tp->snd_cwnd_clamp = val;
-		tp->snd_ssthresh = val;
+		WRITE_ONCE(tp->snd_ssthresh, val);
 		break;
 	case TCP_BPF_DELACK_MAX:
 		timeout = usecs_to_jiffies(val);
