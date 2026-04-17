@@ -1594,6 +1594,9 @@ exit:
 	{
 		u64 val = (u32)imm | (u64)insn[1].imm << 32;
 
+		if (insn->src_reg == BPF_PSEUDO_FUNC)
+			goto notyet;
+
 		emit_a32_mov_i64(dst, val, ctx);
 
 		return 1;
@@ -1784,6 +1787,9 @@ go_jmp:
 		const s8 *r4 = bpf2a32[BPF_REG_4];
 		const s8 *r5 = bpf2a32[BPF_REG_5];
 		const u32 func = (u32)__bpf_call_base + (u32)imm;
+
+		if (insn->src_reg == BPF_PSEUDO_CALL)
+			goto notyet;
 
 		emit_a32_mov_r64(true, r0, r1, ctx);
 		emit_a32_mov_r64(true, r1, r2, ctx);
