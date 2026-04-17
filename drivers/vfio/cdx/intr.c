@@ -177,6 +177,10 @@ static int vfio_cdx_set_msi_trigger(struct vfio_cdx_device *vdev,
 		return ret;
 	}
 
+	/* Ensure MSI is configured before accessing cdx_irqs */
+	if (!vdev->config_msi)
+		return -EINVAL;
+
 	for (i = start; i < start + count; i++) {
 		if (!vdev->cdx_irqs[i].trigger)
 			continue;
