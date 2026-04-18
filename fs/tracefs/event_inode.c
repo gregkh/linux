@@ -250,6 +250,8 @@ static void eventfs_set_attrs(struct eventfs_inode *ei, bool update_uid, kuid_t 
 {
 	struct eventfs_inode *ei_child;
 
+	lockdep_assert_held(&eventfs_mutex);
+
 	/* Update events/<system>/<event> */
 	if (WARN_ON_ONCE(level > 3))
 		return;
@@ -911,4 +913,16 @@ void eventfs_remove_events_dir(struct eventfs_inode *ei)
 	 */
 	d_invalidate(dentry);
 	d_make_discardable(dentry);
+}
+
+int eventfs_remount_lock(void)
+{
+	mutex_lock(&eventfs_mutex);
+	return srcu_read_lock(&eventfs_srcu);
+}
+
+void eventfs_remount_unlock(int srcu_idx)
+{
+	srcu_read_unlock(&eventfs_srcu, srcu_idx);
+	mutex_unlock(&eventfs_mutex);
 }
