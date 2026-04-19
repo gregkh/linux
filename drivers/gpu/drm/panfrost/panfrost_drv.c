@@ -319,6 +319,8 @@ panfrost_ioctl_wait_bo(struct drm_device *dev, void *data,
 	ret = dma_resv_wait_timeout(gem_obj->resv, true, true, timeout);
 	if (!ret)
 		ret = timeout ? -ETIMEDOUT : -EBUSY;
+	else if (ret > 0)
+		ret = 0;
 
 	drm_gem_object_put(gem_obj);
 
