@@ -440,13 +440,13 @@ static int appletb_kbd_probe(struct hid_device *hdev, const struct hid_device_id
 unregister_handler:
 	input_unregister_handler(&kbd->inp_handler);
 close_hw:
-	if (kbd->backlight_dev) {
-		put_device(&kbd->backlight_dev->dev);
-		timer_delete_sync(&kbd->inactivity_timer);
-	}
 	hid_hw_close(hdev);
 stop_hw:
 	hid_hw_stop(hdev);
+	if (kbd->backlight_dev) {
+		timer_delete_sync(&kbd->inactivity_timer);
+		put_device(&kbd->backlight_dev->dev);
+	}
 	return ret;
 }
 
@@ -457,13 +457,13 @@ static void appletb_kbd_remove(struct hid_device *hdev)
 	appletb_kbd_set_mode(kbd, APPLETB_KBD_MODE_OFF);
 
 	input_unregister_handler(&kbd->inp_handler);
-	if (kbd->backlight_dev) {
-		put_device(&kbd->backlight_dev->dev);
-		timer_delete_sync(&kbd->inactivity_timer);
-	}
-
 	hid_hw_close(hdev);
 	hid_hw_stop(hdev);
+
+	if (kbd->backlight_dev) {
+		timer_delete_sync(&kbd->inactivity_timer);
+		put_device(&kbd->backlight_dev->dev);
+	}
 }
 
 static int appletb_kbd_suspend(struct hid_device *hdev, pm_message_t msg)
