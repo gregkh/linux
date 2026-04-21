@@ -2169,6 +2169,35 @@ int ice_start_phy_timer_eth56g(struct ice_hw *hw, u8 port)
 }
 
 /**
+ * ice_check_phy_tx_tstamp_ready_eth56g - Check Tx memory status for all ports
+ * @hw: pointer to the HW struct
+ *
+ * Check the PHY_REG_TX_MEMORY_STATUS for all ports. A set bit indicates
+ * a waiting timestamp.
+ *
+ * Return: 1 if any port has at least one timestamp ready bit set,
+ * 0 otherwise, and a negative error code if unable to read the bitmap.
+ */
+static int ice_check_phy_tx_tstamp_ready_eth56g(struct ice_hw *hw)
+{
+	int port;
+
+	for (port = 0; port < hw->ptp.num_lports; port++) {
+		u64 tstamp_ready;
+		int err;
+
+		err = ice_get_phy_tx_tstamp_ready(hw, port, &tstamp_ready);
+		if (err)
+			return err;
+
+		if (tstamp_ready)
+			return 1;
+	}
+
+	return 0;
+}
+
+/**
  * ice_ptp_read_tx_hwtstamp_status_eth56g - Get TX timestamp status
  * @hw: pointer to the HW struct
  * @ts_status: the timestamp mask pointer
@@ -4319,6 +4348,35 @@ ice_get_phy_tx_tstamp_ready_e82x(struct ice_hw *hw, u8 quad, u64 *tstamp_ready)
 }
 
 /**
+ * ice_check_phy_tx_tstamp_ready_e82x - Check Tx memory status for all quads
+ * @hw: pointer to the HW struct
+ *
+ * Check the Q_REG_TX_MEMORY_STATUS for all quads. A set bit indicates
+ * a waiting timestamp.
+ *
+ * Return: 1 if any quad has at least one timestamp ready bit set,
+ * 0 otherwise, and a negative error value if unable to read the bitmap.
+ */
+static int ice_check_phy_tx_tstamp_ready_e82x(struct ice_hw *hw)
+{
+	int quad;
+
+	for (quad = 0; quad < ICE_GET_QUAD_NUM(hw->ptp.num_lports); quad++) {
+		u64 tstamp_ready;
+		int err;
+
+		err = ice_get_phy_tx_tstamp_ready(hw, quad, &tstamp_ready);
+		if (err)
+			return err;
+
+		if (tstamp_ready)
+			return 1;
+	}
+
+	return 0;
+}
+
+/**
  * ice_phy_cfg_intr_e82x - Configure TX timestamp interrupt
  * @hw: pointer to the HW struct
  * @quad: the timestamp quad
@@ -4871,6 +4929,23 @@ ice_get_phy_tx_tstamp_ready_e810(struct ice_hw *hw, u8 port, u64 *tstamp_ready)
 	return 0;
 }
 
+/**
+ * ice_check_phy_tx_tstamp_ready_e810 - Check Tx memory status register
+ * @hw: pointer to the HW struct
+ *
+ * The E810 devices do not have a Tx memory status register. Note this is
+ * intentionally different behavior from ice_get_phy_tx_tstamp_ready_e810
+ * which always says that all bits are ready. This function is called in cases
+ * where code will trigger interrupts if timestamps are waiting, and should
+ * not be called for E810 hardware.
+ *
+ * Return: 0.
+ */
+static int ice_check_phy_tx_tstamp_ready_e810(struct ice_hw *hw)
+{
+	return 0;
+}
+
 /* E810 SMA functions
  *
  * The following functions operate specifically on E810 hardware and are used
@@ -5123,6 +5198,21 @@ static void ice_get_phy_tx_tstamp_ready_e830(const struct ice_hw *hw, u8 port,
 	*tstamp_ready = rd32(hw, E830_PRTMAC_TS_TX_MEM_VALID_H);
 	*tstamp_ready <<= 32;
 	*tstamp_ready |= rd32(hw, E830_PRTMAC_TS_TX_MEM_VALID_L);
+}
+
+/**
+ * ice_check_phy_tx_tstamp_ready_e830 - Check Tx memory status register
+ * @hw: pointer to the HW struct
+ *
+ * Return: 1 if the device has waiting timestamps, 0 otherwise.
+ */
+static int ice_check_phy_tx_tstamp_ready_e830(struct ice_hw *hw)
+{
+	u64 tstamp_ready;
+
+	ice_get_phy_tx_tstamp_ready_e830(hw, 0, &tstamp_ready);
+
+	return !!tstamp_ready;
 }
 
 /**
@@ -5712,6 +5802,33 @@ int ice_get_phy_tx_tstamp_ready(struct ice_hw *hw, u8 block, u64 *tstamp_ready)
 	case ICE_MAC_GENERIC_3K_E825:
 		return ice_get_phy_tx_tstamp_ready_eth56g(hw, block,
 							  tstamp_ready);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+/**
+ * ice_check_phy_tx_tstamp_ready - Check PHY Tx timestamp memory status
+ * @hw: pointer to the HW struct
+ *
+ * Check the PHY for Tx timestamp memory status on all ports. If you need to
+ * see individual timestamp status for each index, use
+ * ice_get_phy_tx_tstamp_ready() instead.
+ *
+ * Return: 1 if any port has timestamps available, 0 if there are no timestamps
+ * available, and a negative error code on failure.
+ */
+int ice_check_phy_tx_tstamp_ready(struct ice_hw *hw)
+{
+	switch (hw->mac_type) {
+	case ICE_MAC_E810:
+		return ice_check_phy_tx_tstamp_ready_e810(hw);
+	case ICE_MAC_E830:
+		return ice_check_phy_tx_tstamp_ready_e830(hw);
+	case ICE_MAC_GENERIC:
+		return ice_check_phy_tx_tstamp_ready_e82x(hw);
+	case ICE_MAC_GENERIC_3K_E825:
+		return ice_check_phy_tx_tstamp_ready_eth56g(hw);
 	default:
 		return -EOPNOTSUPP;
 	}
