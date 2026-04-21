@@ -5155,7 +5155,7 @@ static inline int get_rapl_num_domains(void)
 	if (!platform->has_per_core_rapl)
 		return topo.num_packages;
 
-	return topo.num_cores;
+	return GLOBAL_CORE_ID(topo.max_core_id, topo.num_packages) + 1;
 }
 
 static inline int get_rapl_domain_id(int cpu)
