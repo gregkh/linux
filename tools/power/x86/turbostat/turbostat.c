@@ -2449,6 +2449,22 @@ int cpu_is_not_allowed(int cpu)
 
 #define PER_THREAD_PARAMS  struct thread_data *t, struct core_data *c, struct pkg_data *p
 
+int has_allowed_lower_ht_sibling(int cpu)
+{
+	int i;
+
+	for (i = 0; i <= cpus[cpu].ht_id; ++i) {
+		int sibling_cpu_id = cpus[cpu].ht_sibling_cpu_id[i];
+
+		if (sibling_cpu_id == cpu)
+			return 0;
+
+		if (!cpu_is_not_allowed(sibling_cpu_id))
+			return 1;
+	}
+	return 0;
+}
+
 int for_all_cpus(int (func) (struct thread_data *, struct core_data *, struct pkg_data *),
 		 struct thread_data *thread_base, struct core_data *core_base, struct pkg_data *pkg_base)
 {
@@ -2466,7 +2482,7 @@ int for_all_cpus(int (func) (struct thread_data *, struct core_data *, struct pk
 		if (cpu_is_not_allowed(cpu))
 			continue;
 
-		if (cpus[cpu].ht_id > 0)	/* skip HT sibling */
+		if (has_allowed_lower_ht_sibling(cpu))	/* skip HT sibling */
 			continue;
 
 		t = &thread_base[cpu];
@@ -2475,11 +2491,17 @@ int for_all_cpus(int (func) (struct thread_data *, struct core_data *, struct pk
 
 		retval |= func(t, c, p);
 
-		/* Handle HT sibling now */
+		/* Handle other HT siblings now */
 		int i;
 
-		for (i = MAX_HT_ID; i > 0; --i) {	/* ht_id 0 is self */
+		for (i = 0; i <= MAX_HT_ID; ++i) {
 			int sibling_cpu_id = cpus[cpu].ht_sibling_cpu_id[i];
+
+			if (sibling_cpu_id < 0)
+				break;
+
+			if (sibling_cpu_id == cpu)
+				continue;
 
 			if (cpu_is_not_allowed(sibling_cpu_id))
 				continue;
@@ -6178,11 +6200,11 @@ int set_thread_siblings(struct cpu_topology *thiscpu)
 	int cpu = thiscpu->cpu_id;
 	int offset = topo.max_cpu_num + 1;
 	size_t size;
-	int thread_id = 0;
+	int ht_id = 0;
 
 	thiscpu->put_ids = CPU_ALLOC((topo.max_cpu_num + 1));
 	if (thiscpu->ht_id < 0)
-		thiscpu->ht_id = thread_id++;
+		thiscpu->ht_id = 0;	/* first CPU in core */
 	if (!thiscpu->put_ids)
 		return -1;
 
@@ -6206,13 +6228,9 @@ int set_thread_siblings(struct cpu_topology *thiscpu)
 				sib_core = get_core_id(so);
 				if (sib_core == thiscpu->core_id) {
 					CPU_SET_S(so, size, thiscpu->put_ids);
-					if ((so != cpu) && (cpus[so].ht_id < 0)) {
-						cpus[so].ht_id = thread_id;
-						cpus[cpu].ht_sibling_cpu_id[thread_id] = so;
-						if (debug)
-							fprintf(stderr, "%s: cpu%d.ht_sibling_cpu_id[%d] = %d\n", __func__, cpu, thread_id, so);
-						thread_id += 1;
-					}
+					cpus[so].ht_id = ht_id;
+					cpus[cpu].ht_sibling_cpu_id[ht_id] = so;
+					ht_id += 1;
 				}
 			}
 		}
@@ -6245,7 +6263,7 @@ int for_all_cpus_2(int (func) (struct thread_data *, struct core_data *,
 		if (cpu_is_not_allowed(cpu))
 			continue;
 
-		if (cpus[cpu].ht_id > 0)	/* skip HT sibling */
+		if (has_allowed_lower_ht_sibling(cpu))	/* skip HT sibling */
 			continue;
 
 		t = &thread_base[cpu];
@@ -6260,8 +6278,14 @@ int for_all_cpus_2(int (func) (struct thread_data *, struct core_data *,
 		/* Handle HT sibling now */
 		int i;
 
-		for (i = MAX_HT_ID; i > 0; --i) {	/* ht_id 0 is self */
+		for (i = 0; i <= MAX_HT_ID; ++i) {
 			int sibling_cpu_id = cpus[cpu].ht_sibling_cpu_id[i];
+
+			if (sibling_cpu_id < 0)
+				break;
+
+			if (sibling_cpu_id == cpu)
+				continue;
 
 			if (cpu_is_not_allowed(sibling_cpu_id))
 				continue;
@@ -9517,6 +9541,8 @@ void topology_probe(bool startup)
 	cpu_present_setsize = CPU_ALLOC_SIZE((topo.max_cpu_num + 1));
 	CPU_ZERO_S(cpu_present_setsize, cpu_present_set);
 	for_all_proc_cpus(mark_cpu_present);
+	if (debug)
+		print_cpu_set("present set", cpu_present_set);
 
 	/*
 	 * Allocate and initialize cpu_possible_set
@@ -9527,6 +9553,8 @@ void topology_probe(bool startup)
 	cpu_possible_setsize = CPU_ALLOC_SIZE((topo.max_cpu_num + 1));
 	CPU_ZERO_S(cpu_possible_setsize, cpu_possible_set);
 	initialize_cpu_set_from_sysfs(cpu_possible_set, "/sys/devices/system/cpu", "possible");
+	if (debug)
+		print_cpu_set("possible set", cpu_possible_set);
 
 	/*
 	 * Allocate and initialize cpu_effective_set
@@ -9537,6 +9565,8 @@ void topology_probe(bool startup)
 	cpu_effective_setsize = CPU_ALLOC_SIZE((topo.max_cpu_num + 1));
 	CPU_ZERO_S(cpu_effective_setsize, cpu_effective_set);
 	update_effective_set(startup);
+	if (debug)
+		print_cpu_set("effective set", cpu_effective_set);
 
 	/*
 	 * Allocate and initialize cpu_allowed_set
@@ -9580,6 +9610,8 @@ void topology_probe(bool startup)
 
 		CPU_SET_S(i, cpu_allowed_setsize, cpu_allowed_set);
 	}
+	if (debug)
+		print_cpu_set("allowed set", cpu_allowed_set);
 
 	if (!CPU_COUNT_S(cpu_allowed_setsize, cpu_allowed_set))
 		err(-ENODEV, "No valid cpus found");
@@ -9683,12 +9715,18 @@ void topology_probe(bool startup)
 		return;
 
 	for (i = 0; i <= topo.max_cpu_num; ++i) {
+		int ht_id;
+
 		if (cpu_is_not_present(i))
 			continue;
 		fprintf(outf,
-			"cpu %d pkg %d die %d l3 %d node %d lnode %d core %d thread %d\n",
+			"cpu %d pkg %d die %d l3 %d node %d lnode %d core %d ht_id %d",
 			i, cpus[i].package_id, cpus[i].die_id, cpus[i].l3_id,
 			cpus[i].physical_node_id, cpus[i].logical_node_id, cpus[i].core_id, cpus[i].ht_id);
+		fprintf(outf, " siblings");
+		for (ht_id = 0; ht_id <= MAX_HT_ID; ++ht_id)
+			fprintf(outf, " %d", cpus[i].ht_sibling_cpu_id[ht_id]);
+		fprintf(outf, "\n");
 	}
 
 }
@@ -9829,6 +9867,8 @@ void topology_update(void)
 	topo.allowed_cores = 0;
 	topo.allowed_packages = 0;
 	for_all_cpus(update_topo, ODD_COUNTERS);
+	if (debug)
+		fprintf(stderr, "allowed_cpus %d allowed_cores %d allowed_packages %d\n", topo.allowed_cpus, topo.allowed_cores, topo.allowed_packages);
 }
 
 void setup_all_buffers(bool startup)
