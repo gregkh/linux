@@ -2066,7 +2066,7 @@ static int snd_microii_spdif_switch_put(struct snd_kcontrol *kcontrol,
 	int err;
 
 	reg = ucontrol->value.integer.value[0] ? 0x28 : 0x2a;
-	if (reg != list->kctl->private_value)
+	if (reg == list->kctl->private_value)
 		return 0;
 
 	kcontrol->private_value = reg;
