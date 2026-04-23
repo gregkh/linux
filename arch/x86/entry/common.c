@@ -2,6 +2,7 @@
 
 #include <linux/entry-common.h>
 #include <linux/kvm_types.h>
+#include <linux/hrtimer_rearm.h>
 #include <asm/fred.h>
 #include <asm/desc.h>
 
@@ -27,6 +28,18 @@ noinstr void x86_entry_from_kvm(unsigned int event_type, unsigned int vector)
 #else
 		idt_entry_from_kvm(vector);
 #endif
+		/*
+		 * Strictly speaking, only the NMI path requires noinstr.
+		 */
+		instrumentation_begin();
+		/*
+		 * KVM/VMX will dispatch from IRQ-disabled but for a context
+		 * that will have IRQs-enabled. This confuses the entry code
+		 * and it will not have reprogrammed the timer. Do so now.
+		 */
+		hrtimer_rearm_deferred();
+		instrumentation_end();
+
 		return;
 	}
 
