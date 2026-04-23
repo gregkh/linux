@@ -245,6 +245,7 @@ int rxgk_extract_token(struct rxrpc_connection *conn, struct sk_buff *skb,
 		if (ret != -ENOMEM)
 			return rxrpc_abort_conn(conn, skb, ec, ret,
 						rxgk_abort_resp_tok_dec);
+		return ret;
 	}
 
 	ret = conn->security->default_decode_ticket(conn, skb, ticket_offset,
