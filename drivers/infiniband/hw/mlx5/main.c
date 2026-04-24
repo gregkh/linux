@@ -3181,6 +3181,7 @@ int mlx5_ib_dev_res_srq_init(struct mlx5_ib_dev *dev)
 			    "Couldn't create SRQ 1 for res init, err=%pe\n",
 			    s1);
 		ib_destroy_srq(s0);
+		goto unlock;
 	}
 
 	devr->s0 = s0;
