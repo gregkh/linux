@@ -688,7 +688,25 @@ static void active_io_release(struct percpu_ref *ref)
 
 static void no_op(struct percpu_ref *r) {}
 
-static bool mddev_set_bitmap_ops(struct mddev *mddev)
+static void md_bitmap_sysfs_add(struct mddev *mddev)
+{
+	if (sysfs_create_group(&mddev->kobj, mddev->bitmap_ops->group))
+		pr_warn("md: cannot register extra bitmap attributes for %s\n",
+			mdname(mddev));
+	else
+		/*
+		 * Inform user with KOBJ_CHANGE about new bitmap
+		 * attributes.
+		 */
+		kobject_uevent(&mddev->kobj, KOBJ_CHANGE);
+}
+
+static void md_bitmap_sysfs_del(struct mddev *mddev)
+{
+	sysfs_remove_group(&mddev->kobj, mddev->bitmap_ops->group);
+}
+
+static bool mddev_set_bitmap_ops_nosysfs(struct mddev *mddev)
 {
 	struct bitmap_operations *old = mddev->bitmap_ops;
 	struct md_submodule_head *head;
@@ -712,32 +730,11 @@ static bool mddev_set_bitmap_ops(struct mddev *mddev)
 
 	mddev->bitmap_ops = (void *)head;
 	xa_unlock(&md_submodule);
-
-	if (!mddev_is_dm(mddev) && mddev->bitmap_ops->group) {
-		if (sysfs_create_group(&mddev->kobj, mddev->bitmap_ops->group))
-			pr_warn("md: cannot register extra bitmap attributes for %s\n",
-				mdname(mddev));
-		else
-			/*
-			 * Inform user with KOBJ_CHANGE about new bitmap
-			 * attributes.
-			 */
-			kobject_uevent(&mddev->kobj, KOBJ_CHANGE);
-	}
 	return true;
 
 err:
 	xa_unlock(&md_submodule);
 	return false;
-}
-
-static void mddev_clear_bitmap_ops(struct mddev *mddev)
-{
-	if (!mddev_is_dm(mddev) && mddev->bitmap_ops &&
-	    mddev->bitmap_ops->group)
-		sysfs_remove_group(&mddev->kobj, mddev->bitmap_ops->group);
-
-	mddev->bitmap_ops = NULL;
 }
 
 int mddev_init(struct mddev *mddev)
@@ -6540,7 +6537,7 @@ out:
 	return id;
 }
 
-static int md_bitmap_create(struct mddev *mddev)
+static int md_bitmap_create_nosysfs(struct mddev *mddev)
 {
 	enum md_submodule_id orig_id = mddev->bitmap_id;
 	enum md_submodule_id sb_id;
@@ -6549,7 +6546,7 @@ static int md_bitmap_create(struct mddev *mddev)
 	if (mddev->bitmap_id == ID_BITMAP_NONE)
 		return -EINVAL;
 
-	if (!mddev_set_bitmap_ops(mddev))
+	if (!mddev_set_bitmap_ops_nosysfs(mddev))
 		return -ENOENT;
 
 	err = mddev->bitmap_ops->create(mddev);
@@ -6561,7 +6558,7 @@ static int md_bitmap_create(struct mddev *mddev)
 	 * doesn't match, and mdadm is not the latest version to set
 	 * bitmap_type, set bitmap_ops based on the disk version.
 	 */
-	mddev_clear_bitmap_ops(mddev);
+	mddev->bitmap_ops = NULL;
 
 	sb_id = md_bitmap_get_id_from_sb(mddev);
 	if (sb_id == ID_BITMAP_NONE || sb_id == orig_id)
@@ -6571,27 +6568,50 @@ static int md_bitmap_create(struct mddev *mddev)
 		mdname(mddev), orig_id, sb_id);
 
 	mddev->bitmap_id = sb_id;
-	if (!mddev_set_bitmap_ops(mddev)) {
+	if (!mddev_set_bitmap_ops_nosysfs(mddev)) {
 		mddev->bitmap_id = orig_id;
 		return -ENOENT;
 	}
 
 	err = mddev->bitmap_ops->create(mddev);
 	if (err) {
-		mddev_clear_bitmap_ops(mddev);
+		mddev->bitmap_ops = NULL;
 		mddev->bitmap_id = orig_id;
 	}
 
 	return err;
 }
 
-static void md_bitmap_destroy(struct mddev *mddev)
+static int md_bitmap_create(struct mddev *mddev)
+{
+	int err;
+
+	err = md_bitmap_create_nosysfs(mddev);
+	if (err)
+		return err;
+
+	if (!mddev_is_dm(mddev) && mddev->bitmap_ops->group)
+		md_bitmap_sysfs_add(mddev);
+
+	return 0;
+}
+
+static void md_bitmap_destroy_nosysfs(struct mddev *mddev)
 {
 	if (!md_bitmap_registered(mddev))
 		return;
 
 	mddev->bitmap_ops->destroy(mddev);
-	mddev_clear_bitmap_ops(mddev);
+	mddev->bitmap_ops = NULL;
+}
+
+static void md_bitmap_destroy(struct mddev *mddev)
+{
+	if (!mddev_is_dm(mddev) && mddev->bitmap_ops &&
+	    mddev->bitmap_ops->group)
+		md_bitmap_sysfs_del(mddev);
+
+	md_bitmap_destroy_nosysfs(mddev);
 }
 
 int md_run(struct mddev *mddev)
