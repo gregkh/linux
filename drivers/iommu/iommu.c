@@ -82,6 +82,7 @@ struct group_device {
 	 *  - Device is undergoing a reset
 	 */
 	bool blocked;
+	unsigned int reset_depth;
 };
 
 /* Iterate over each struct group_device in a struct iommu_group */
@@ -4015,20 +4016,23 @@ int pci_dev_reset_iommu_prepare(struct pci_dev *pdev)
 	if (WARN_ON(!gdev))
 		return -ENODEV;
 
-	/* Re-entry is not allowed */
-	if (WARN_ON(gdev->blocked))
-		return -EBUSY;
+	if (gdev->reset_depth++)
+		return 0;
 
 	ret = __iommu_group_alloc_blocking_domain(group);
-	if (ret)
+	if (ret) {
+		gdev->reset_depth--;
 		return ret;
+	}
 
 	/* Stage RID domain at blocking_domain while retaining group->domain */
 	if (group->domain != group->blocking_domain) {
 		ret = __iommu_attach_device(group->blocking_domain, &pdev->dev,
 					    group->domain);
-		if (ret)
+		if (ret) {
+			gdev->reset_depth--;
 			return ret;
+		}
 	}
 
 	/*
@@ -4088,7 +4092,10 @@ void pci_dev_reset_iommu_done(struct pci_dev *pdev)
 	if (WARN_ON(!gdev))
 		return;
 
-	if (!gdev->blocked)
+	/* Unbalanced done() calls would underflow the counter */
+	if (WARN_ON(gdev->reset_depth == 0))
+		return;
+	if (--gdev->reset_depth)
 		return;
 
 	if (WARN_ON(!group->blocking_domain))
