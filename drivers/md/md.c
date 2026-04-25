@@ -690,7 +690,7 @@ static void no_op(struct percpu_ref *r) {}
 
 static void md_bitmap_sysfs_add(struct mddev *mddev)
 {
-	if (sysfs_create_group(&mddev->kobj, mddev->bitmap_ops->group))
+	if (sysfs_update_groups(&mddev->kobj, mddev->bitmap_ops->groups))
 		pr_warn("md: cannot register extra bitmap attributes for %s\n",
 			mdname(mddev));
 	else
@@ -703,16 +703,23 @@ static void md_bitmap_sysfs_add(struct mddev *mddev)
 
 static void md_bitmap_sysfs_del(struct mddev *mddev)
 {
-	sysfs_remove_group(&mddev->kobj, mddev->bitmap_ops->group);
+	int nr_groups = 0;
+
+	for (nr_groups = 0; mddev->bitmap_ops->groups[nr_groups]; nr_groups++)
+		;
+
+	while (--nr_groups >= 1)
+		sysfs_unmerge_group(&mddev->kobj,
+				    mddev->bitmap_ops->groups[nr_groups]);
+	sysfs_remove_group(&mddev->kobj, mddev->bitmap_ops->groups[0]);
 }
 
 static bool mddev_set_bitmap_ops_nosysfs(struct mddev *mddev)
 {
-	struct bitmap_operations *old = mddev->bitmap_ops;
 	struct md_submodule_head *head;
 
-	if (mddev->bitmap_id == ID_BITMAP_NONE ||
-	    (old && old->head.id == mddev->bitmap_id))
+	if (mddev->bitmap_ops &&
+	    mddev->bitmap_ops->head.id == mddev->bitmap_id)
 		return true;
 
 	xa_lock(&md_submodule);
@@ -6590,7 +6597,7 @@ static int md_bitmap_create(struct mddev *mddev)
 	if (err)
 		return err;
 
-	if (!mddev_is_dm(mddev) && mddev->bitmap_ops->group)
+	if (!mddev_is_dm(mddev) && mddev->bitmap_ops->groups)
 		md_bitmap_sysfs_add(mddev);
 
 	return 0;
@@ -6608,7 +6615,7 @@ static void md_bitmap_destroy_nosysfs(struct mddev *mddev)
 static void md_bitmap_destroy(struct mddev *mddev)
 {
 	if (!mddev_is_dm(mddev) && mddev->bitmap_ops &&
-	    mddev->bitmap_ops->group)
+	    mddev->bitmap_ops->groups)
 		md_bitmap_sysfs_del(mddev);
 
 	md_bitmap_destroy_nosysfs(mddev);

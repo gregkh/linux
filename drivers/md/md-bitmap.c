@@ -2955,8 +2955,12 @@ static struct md_sysfs_entry max_backlog_used =
 __ATTR(max_backlog_used, S_IRUGO | S_IWUSR,
        behind_writes_used_show, behind_writes_used_reset);
 
-static struct attribute *md_bitmap_attrs[] = {
+static struct attribute *md_bitmap_common_attrs[] = {
 	&bitmap_location.attr,
+	NULL
+};
+
+static struct attribute *md_bitmap_internal_attrs[] = {
 	&bitmap_space.attr,
 	&bitmap_timeout.attr,
 	&bitmap_backlog.attr,
@@ -2967,9 +2971,20 @@ static struct attribute *md_bitmap_attrs[] = {
 	NULL
 };
 
-static struct attribute_group md_bitmap_group = {
+static struct attribute_group md_bitmap_common_group = {
 	.name = "bitmap",
-	.attrs = md_bitmap_attrs,
+	.attrs = md_bitmap_common_attrs,
+};
+
+static struct attribute_group md_bitmap_internal_group = {
+	.name = "bitmap",
+	.attrs = md_bitmap_internal_attrs,
+};
+
+static const struct attribute_group *bitmap_groups[] = {
+	&md_bitmap_common_group,
+	&md_bitmap_internal_group,
+	NULL,
 };
 
 static struct bitmap_operations bitmap_ops = {
@@ -3013,7 +3028,7 @@ static struct bitmap_operations bitmap_ops = {
 	.set_pages		= bitmap_set_pages,
 	.free			= md_bitmap_free,
 
-	.group			= &md_bitmap_group,
+	.groups			= bitmap_groups,
 };
 
 int md_bitmap_init(void)
