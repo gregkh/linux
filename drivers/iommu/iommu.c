@@ -4035,8 +4035,13 @@ void pci_dev_reset_iommu_done(struct pci_dev *pdev)
 	if (WARN_ON(!group->blocking_domain))
 		return;
 
-	/* Re-attach RID domain back to group->domain */
-	if (group->domain != group->blocking_domain) {
+	/*
+	 * Re-attach RID domain back to group->domain
+	 *
+	 * Leave the device parked in the blocking_domain if group->domain isn't
+	 * initialized yet
+	 */
+	if (group->domain && group->domain != group->blocking_domain) {
 		WARN_ON(__iommu_attach_device(group->domain, &pdev->dev,
 					      group->blocking_domain));
 	}
