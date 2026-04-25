@@ -15,7 +15,7 @@ LDLIBS += -lpthread -ldl
 OVERRIDE_TARGETS = 1
 
 TEST_GEN_PROGS = basic_test basic_percpu_ops_test basic_percpu_ops_mm_cid_test \
-		 param_test_benchmark param_test_mm_cid_benchmark slice_test
+		 param_test_benchmark param_test_mm_cid_benchmark
 
 TEST_GEN_PROGS_EXTENDED = librseq.so \
 	param_test \
@@ -23,9 +23,11 @@ TEST_GEN_PROGS_EXTENDED = librseq.so \
 	param_test_mm_cid \
 	param_test_mm_cid_compare_twice \
 	syscall_errors_test \
-	legacy_check
+	legacy_check \
+	slice_test \
+	check_optimized
 
-TEST_PROGS = run_param_test.sh run_syscall_errors_test.sh run_legacy_check.sh
+TEST_PROGS = run_param_test.sh run_syscall_errors_test.sh run_legacy_check.sh run_timeslice_test.sh
 
 TEST_FILES := settings
 
@@ -65,4 +67,7 @@ $(OUTPUT)/syscall_errors_test: syscall_errors_test.c $(TEST_GEN_PROGS_EXTENDED) 
 	$(CC) $(CFLAGS) $< $(LDLIBS) -lrseq -o $@
 
 $(OUTPUT)/slice_test: slice_test.c $(TEST_GEN_PROGS_EXTENDED) rseq.h rseq-*.h
+	$(CC) $(CFLAGS) $< $(LDLIBS) -lrseq -o $@
+
+$(OUTPUT)/check_optimized: check_optimized.c $(TEST_GEN_PROGS_EXTENDED) rseq.h rseq-*.h
 	$(CC) $(CFLAGS) $< $(LDLIBS) -lrseq -o $@
