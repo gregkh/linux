@@ -581,7 +581,7 @@ static u32 rzv2h_rspi_setup_clock(struct rzv2h_rspi_priv *rspi, u32 hz)
 					   RSPI_SPBR_SPR_MAX, &best_clock);
 
 	if (!best_clock.clk_rate)
-		return -EINVAL;
+		return 0;
 
 	ret = clk_set_rate(best_clock.clk, best_clock.clk_rate);
 	if (ret)
