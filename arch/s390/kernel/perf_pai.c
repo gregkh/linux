@@ -651,7 +651,7 @@ static void pai_have_sample(struct perf_event *event, struct pai_map *cpump)
 	rawsize = pai_copy(cpump->save, cpump->area, pp,
 			   (unsigned long *)PAI_SAVE_AREA(event),
 			   event->attr.exclude_user,
-			   event->attr.exclude_kernel);
+			   !pp->kernel_offset ? true : event->attr.exclude_kernel);
 	if (rawsize)			/* No incremented counters */
 		pai_push_sample(rawsize, cpump, event);
 }
