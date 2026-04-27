@@ -1079,6 +1079,7 @@ static ssize_t userdatum_value_store(struct config_item *item, const char *buf,
 				     size_t count)
 {
 	struct userdatum *udm = to_userdatum(item);
+	char old_value[MAX_EXTRADATA_VALUE_LEN];
 	struct netconsole_target *nt;
 	struct userdata *ud;
 	ssize_t ret;
@@ -1088,6 +1089,8 @@ static ssize_t userdatum_value_store(struct config_item *item, const char *buf,
 
 	mutex_lock(&netconsole_subsys.su_mutex);
 	dynamic_netconsole_mutex_lock();
+	/* Snapshot for rollback if update_userdata() fails below */
+	strscpy(old_value, udm->value, sizeof(old_value));
 	/* count is bounded above, so strscpy() cannot truncate here */
 	strscpy(udm->value, buf, sizeof(udm->value));
 	trim_newline(udm->value, sizeof(udm->value));
@@ -1095,8 +1098,11 @@ static ssize_t userdatum_value_store(struct config_item *item, const char *buf,
 	ud = to_userdata(item->ci_parent);
 	nt = userdata_to_target(ud);
 	ret = update_userdata(nt);
-	if (ret < 0)
+	if (ret < 0) {
+		/* Restore the previous value so it matches the live payload */
+		strscpy(udm->value, old_value, sizeof(udm->value));
 		goto out_unlock;
+	}
 	ret = count;
 out_unlock:
 	dynamic_netconsole_mutex_unlock();
