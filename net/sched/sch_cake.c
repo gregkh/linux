@@ -813,7 +813,7 @@ skip_hash:
 		     i++, k = (k + 1) % CAKE_SET_WAYS) {
 			if (q->tags[outer_hash + k] == flow_hash) {
 				if (i)
-					q->way_hits++;
+					WRITE_ONCE(q->way_hits, q->way_hits + 1);
 
 				if (!q->flows[outer_hash + k].set) {
 					/* need to increment host refcnts */
@@ -831,7 +831,7 @@ skip_hash:
 		for (i = 0; i < CAKE_SET_WAYS;
 			 i++, k = (k + 1) % CAKE_SET_WAYS) {
 			if (!q->flows[outer_hash + k].set) {
-				q->way_misses++;
+				WRITE_ONCE(q->way_misses, q->way_misses + 1);
 				allocate_src = cake_dsrc(flow_mode);
 				allocate_dst = cake_ddst(flow_mode);
 				goto found;
@@ -841,7 +841,7 @@ skip_hash:
 		/* With no empty queues, default to the original
 		 * queue, accept the collision, update the host tags.
 		 */
-		q->way_collisions++;
+		WRITE_ONCE(q->way_collisions, q->way_collisions + 1);
 		allocate_src = cake_dsrc(flow_mode);
 		allocate_dst = cake_ddst(flow_mode);
 
@@ -1917,11 +1917,11 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		if (!flow->set) {
 			list_add_tail(&flow->flowchain, &b->new_flows);
 		} else {
-			b->decaying_flow_count--;
+			WRITE_ONCE(b->decaying_flow_count, b->decaying_flow_count - 1);
 			list_move_tail(&flow->flowchain, &b->new_flows);
 		}
 		flow->set = CAKE_SET_SPARSE;
-		b->sparse_flow_count++;
+		WRITE_ONCE(b->sparse_flow_count, b->sparse_flow_count + 1);
 
 		flow->deficit = cake_get_flow_quantum(b, flow, q->config->flow_mode);
 	} else if (flow->set == CAKE_SET_SPARSE_WAIT) {
@@ -1929,7 +1929,7 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		 * in the bulk rotation.
 		 */
 		flow->set = CAKE_SET_BULK;
-		b->sparse_flow_count--;
+		WRITE_ONCE(b->sparse_flow_count, b->sparse_flow_count - 1);
 		b->bulk_flow_count++;
 
 		cake_inc_srchost_bulk_flow_count(b, flow, q->config->flow_mode);
@@ -2149,7 +2149,7 @@ retry:
 		 */
 		if (flow->set == CAKE_SET_SPARSE) {
 			if (flow->head) {
-				b->sparse_flow_count--;
+				WRITE_ONCE(b->sparse_flow_count, b->sparse_flow_count - 1);
 				b->bulk_flow_count++;
 
 				cake_inc_srchost_bulk_flow_count(b, flow, q->config->flow_mode);
@@ -2192,27 +2192,27 @@ retry:
 					cake_dec_srchost_bulk_flow_count(b, flow, q->config->flow_mode);
 					cake_dec_dsthost_bulk_flow_count(b, flow, q->config->flow_mode);
 
-					b->decaying_flow_count++;
+					WRITE_ONCE(b->decaying_flow_count, b->decaying_flow_count + 1);
 				} else if (flow->set == CAKE_SET_SPARSE ||
 					   flow->set == CAKE_SET_SPARSE_WAIT) {
-					b->sparse_flow_count--;
-					b->decaying_flow_count++;
+					WRITE_ONCE(b->sparse_flow_count, b->sparse_flow_count - 1);
+					WRITE_ONCE(b->decaying_flow_count, b->decaying_flow_count + 1);
 				}
 				flow->set = CAKE_SET_DECAYING;
 			} else {
 				/* remove empty queue from the flowchain */
 				list_del_init(&flow->flowchain);
 				if (flow->set == CAKE_SET_SPARSE ||
-				    flow->set == CAKE_SET_SPARSE_WAIT)
-					b->sparse_flow_count--;
-				else if (flow->set == CAKE_SET_BULK) {
+				    flow->set == CAKE_SET_SPARSE_WAIT) {
+					WRITE_ONCE(b->sparse_flow_count, b->sparse_flow_count - 1);
+				} else if (flow->set == CAKE_SET_BULK) {
 					b->bulk_flow_count--;
 
 					cake_dec_srchost_bulk_flow_count(b, flow, q->config->flow_mode);
 					cake_dec_dsthost_bulk_flow_count(b, flow, q->config->flow_mode);
-				} else
-					b->decaying_flow_count--;
-
+				} else {
+					WRITE_ONCE(b->decaying_flow_count, b->decaying_flow_count - 1);
+				}
 				flow->set = CAKE_SET_NONE;
 			}
 			goto begin;
@@ -3050,12 +3050,12 @@ static int cake_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 		PUT_TSTAT_U32(BASE_DELAY_US,
 			      ktime_to_us(ns_to_ktime(b->base_delay)));
 
-		PUT_TSTAT_U32(WAY_INDIRECT_HITS, b->way_hits);
-		PUT_TSTAT_U32(WAY_MISSES, b->way_misses);
-		PUT_TSTAT_U32(WAY_COLLISIONS, b->way_collisions);
+		PUT_TSTAT_U32(WAY_INDIRECT_HITS, READ_ONCE(b->way_hits));
+		PUT_TSTAT_U32(WAY_MISSES, READ_ONCE(b->way_misses));
+		PUT_TSTAT_U32(WAY_COLLISIONS, READ_ONCE(b->way_collisions));
 
-		PUT_TSTAT_U32(SPARSE_FLOWS, b->sparse_flow_count +
-					    b->decaying_flow_count);
+		PUT_TSTAT_U32(SPARSE_FLOWS, READ_ONCE(b->sparse_flow_count) +
+					    READ_ONCE(b->decaying_flow_count));
 		PUT_TSTAT_U32(BULK_FLOWS, b->bulk_flow_count);
 		PUT_TSTAT_U32(UNRESPONSIVE_FLOWS, b->unresponsive_flow_count);
 		PUT_TSTAT_U32(MAX_SKBLEN, b->max_skblen);
