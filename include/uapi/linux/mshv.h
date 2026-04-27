@@ -357,7 +357,7 @@ struct mshv_vtl_sint_post_msg {
 
 struct mshv_vtl_ram_disposition {
 	__u64 start_pfn;
-	__u64 last_pfn;
+	__u64 last_pfn; /* last_pfn is excluded from the range [start_pfn, last_pfn) */
 };
 
 struct mshv_vtl_set_poll_file {
