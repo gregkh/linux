@@ -1076,15 +1076,13 @@ static ssize_t userdatum_value_store(struct config_item *item, const char *buf,
 	struct userdata *ud;
 	ssize_t ret;
 
-	if (count > MAX_EXTRADATA_VALUE_LEN)
+	if (count >= MAX_EXTRADATA_VALUE_LEN)
 		return -EMSGSIZE;
 
 	mutex_lock(&netconsole_subsys.su_mutex);
 	dynamic_netconsole_mutex_lock();
-
-	ret = strscpy(udm->value, buf, sizeof(udm->value));
-	if (ret < 0)
-		goto out_unlock;
+	/* count is bounded above, so strscpy() cannot truncate here */
+	strscpy(udm->value, buf, sizeof(udm->value));
 	trim_newline(udm->value, sizeof(udm->value));
 
 	ud = to_userdata(item->ci_parent);
