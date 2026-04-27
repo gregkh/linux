@@ -558,6 +558,6 @@ pvr_fw_trace_debugfs_init(struct pvr_device *pvr_dev, struct dentry *dir)
 				    &pvr_fw_trace_fops);
 	}
 
-	debugfs_create_file("trace_mask", 0600, dir, fw_trace,
+	debugfs_create_file("trace_mask", 0600, dir, pvr_dev,
 			    &pvr_fw_trace_mask_fops);
 }
