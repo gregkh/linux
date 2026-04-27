@@ -1590,7 +1590,8 @@ static unsigned int cake_drop(struct Qdisc *sch, struct sk_buff **to_free)
 	}
 
 	if (cobalt_queue_full(&flow->cvars, &b->cparams, now))
-		b->unresponsive_flow_count++;
+		WRITE_ONCE(b->unresponsive_flow_count,
+			   b->unresponsive_flow_count + 1);
 
 	len = qdisc_pkt_len(skb);
 	q->buffer_used      -= skb->truesize;
@@ -1795,7 +1796,7 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	}
 
 	if (unlikely(len > b->max_skblen))
-		b->max_skblen = len;
+		WRITE_ONCE(b->max_skblen, len);
 
 	if (qdisc_pkt_segs(skb) > 1 && q->config->rate_flags & CAKE_FLAG_SPLIT_GSO) {
 		struct sk_buff *segs, *nskb;
@@ -1930,7 +1931,7 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		 */
 		flow->set = CAKE_SET_BULK;
 		WRITE_ONCE(b->sparse_flow_count, b->sparse_flow_count - 1);
-		b->bulk_flow_count++;
+		WRITE_ONCE(b->bulk_flow_count, b->bulk_flow_count + 1);
 
 		cake_inc_srchost_bulk_flow_count(b, flow, q->config->flow_mode);
 		cake_inc_dsthost_bulk_flow_count(b, flow, q->config->flow_mode);
@@ -2150,7 +2151,7 @@ retry:
 		if (flow->set == CAKE_SET_SPARSE) {
 			if (flow->head) {
 				WRITE_ONCE(b->sparse_flow_count, b->sparse_flow_count - 1);
-				b->bulk_flow_count++;
+				WRITE_ONCE(b->bulk_flow_count, b->bulk_flow_count + 1);
 
 				cake_inc_srchost_bulk_flow_count(b, flow, q->config->flow_mode);
 				cake_inc_dsthost_bulk_flow_count(b, flow, q->config->flow_mode);
@@ -2177,7 +2178,8 @@ retry:
 		if (!skb) {
 			/* this queue was actually empty */
 			if (cobalt_queue_empty(&flow->cvars, &b->cparams, now))
-				b->unresponsive_flow_count--;
+				WRITE_ONCE(b->unresponsive_flow_count,
+					   b->unresponsive_flow_count - 1);
 
 			if (flow->cvars.p_drop || flow->cvars.count ||
 			    ktime_before(now, flow->cvars.drop_next)) {
@@ -2187,7 +2189,7 @@ retry:
 				list_move_tail(&flow->flowchain,
 					       &b->decaying_flows);
 				if (flow->set == CAKE_SET_BULK) {
-					b->bulk_flow_count--;
+					WRITE_ONCE(b->bulk_flow_count, b->bulk_flow_count - 1);
 
 					cake_dec_srchost_bulk_flow_count(b, flow, q->config->flow_mode);
 					cake_dec_dsthost_bulk_flow_count(b, flow, q->config->flow_mode);
@@ -2206,7 +2208,7 @@ retry:
 				    flow->set == CAKE_SET_SPARSE_WAIT) {
 					WRITE_ONCE(b->sparse_flow_count, b->sparse_flow_count - 1);
 				} else if (flow->set == CAKE_SET_BULK) {
-					b->bulk_flow_count--;
+					WRITE_ONCE(b->bulk_flow_count, b->bulk_flow_count - 1);
 
 					cake_dec_srchost_bulk_flow_count(b, flow, q->config->flow_mode);
 					cake_dec_dsthost_bulk_flow_count(b, flow, q->config->flow_mode);
@@ -2329,9 +2331,9 @@ static void cake_set_rate(struct cake_tin_data *b, u64 rate, u32 mtu,
 	u8  rate_shft = 0;
 	u64 rate_ns = 0;
 
-	b->flow_quantum = 1514;
 	if (rate) {
-		b->flow_quantum = max(min(rate >> 12, 1514ULL), 300ULL);
+		WRITE_ONCE(b->flow_quantum,
+			   max(min(rate >> 12, 1514ULL), 300ULL));
 		rate_shft = 34;
 		rate_ns = ((u64)NSEC_PER_SEC) << rate_shft;
 		rate_ns = div64_u64(rate_ns, max(MIN_RATE, rate));
@@ -2339,8 +2341,10 @@ static void cake_set_rate(struct cake_tin_data *b, u64 rate, u32 mtu,
 			rate_ns >>= 1;
 			rate_shft--;
 		}
-	} /* else unlimited, ie. zero delay */
-
+	} else {
+		/* else unlimited, ie. zero delay */
+		WRITE_ONCE(b->flow_quantum, 1514);
+	}
 	b->tin_rate_bps  = rate;
 	b->tin_rate_ns   = rate_ns;
 	b->tin_rate_shft = rate_shft;
@@ -3056,11 +3060,11 @@ static int cake_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 
 		PUT_TSTAT_U32(SPARSE_FLOWS, READ_ONCE(b->sparse_flow_count) +
 					    READ_ONCE(b->decaying_flow_count));
-		PUT_TSTAT_U32(BULK_FLOWS, b->bulk_flow_count);
-		PUT_TSTAT_U32(UNRESPONSIVE_FLOWS, b->unresponsive_flow_count);
-		PUT_TSTAT_U32(MAX_SKBLEN, b->max_skblen);
+		PUT_TSTAT_U32(BULK_FLOWS, READ_ONCE(b->bulk_flow_count));
+		PUT_TSTAT_U32(UNRESPONSIVE_FLOWS, READ_ONCE(b->unresponsive_flow_count));
+		PUT_TSTAT_U32(MAX_SKBLEN, READ_ONCE(b->max_skblen));
 
-		PUT_TSTAT_U32(FLOW_QUANTUM, b->flow_quantum);
+		PUT_TSTAT_U32(FLOW_QUANTUM, READ_ONCE(b->flow_quantum));
 		nla_nest_end(d->skb, ts);
 	}
 
