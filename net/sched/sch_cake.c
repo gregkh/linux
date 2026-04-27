@@ -1379,9 +1379,9 @@ static u32 cake_calc_overhead(struct cake_sched_data *qd, u32 len, u32 off)
 		len -= off;
 
 	if (qd->max_netlen < len)
-		qd->max_netlen = len;
+		WRITE_ONCE(qd->max_netlen, len);
 	if (qd->min_netlen > len)
-		qd->min_netlen = len;
+		WRITE_ONCE(qd->min_netlen, len);
 
 	len += q->rate_overhead;
 
@@ -1401,9 +1401,9 @@ static u32 cake_calc_overhead(struct cake_sched_data *qd, u32 len, u32 off)
 	}
 
 	if (qd->max_adjlen < len)
-		qd->max_adjlen = len;
+		WRITE_ONCE(qd->max_adjlen, len);
 	if (qd->min_adjlen > len)
-		qd->min_adjlen = len;
+		WRITE_ONCE(qd->min_adjlen, len);
 
 	return len;
 }
@@ -1416,7 +1416,7 @@ static u32 cake_overhead(struct cake_sched_data *q, const struct sk_buff *skb)
 	u16 segs = qdisc_pkt_segs(skb);
 	u32 len = qdisc_pkt_len(skb);
 
-	q->avg_netoff = cake_ewma(q->avg_netoff, off << 16, 8);
+	WRITE_ONCE(q->avg_netoff, cake_ewma(q->avg_netoff, off << 16, 8));
 
 	if (segs == 1)
 		return cake_calc_overhead(q, len, off);
@@ -1596,7 +1596,7 @@ static unsigned int cake_drop(struct Qdisc *sch, struct sk_buff **to_free)
 	len = qdisc_pkt_len(skb);
 	q->buffer_used      -= skb->truesize;
 	b->backlogs[idx]    -= len;
-	b->tin_backlog      -= len;
+	WRITE_ONCE(b->tin_backlog, b->tin_backlog - len);
 	sch->qstats.backlog -= len;
 
 	flow->dropped++;
@@ -1824,11 +1824,11 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		}
 
 		/* stats */
-		b->bytes	    += slen;
 		b->backlogs[idx]    += slen;
-		b->tin_backlog      += slen;
 		sch->qstats.backlog += slen;
 		q->avg_window_bytes += slen;
+		WRITE_ONCE(b->bytes, b->bytes + slen);
+		WRITE_ONCE(b->tin_backlog, b->tin_backlog + slen);
 
 		qdisc_tree_reduce_backlog(sch, 1-numsegs, len-slen);
 		consume_skb(skb);
@@ -1847,7 +1847,7 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			WRITE_ONCE(b->ack_drops, b->ack_drops + 1);
 			sch->qstats.drops++;
 			ack_pkt_len = qdisc_pkt_len(ack);
-			b->bytes += ack_pkt_len;
+			WRITE_ONCE(b->bytes, b->bytes + ack_pkt_len);
 			q->buffer_used += skb->truesize - ack->truesize;
 			if (q->config->rate_flags & CAKE_FLAG_INGRESS)
 				cake_advance_shaper(q, b, ack, now, true);
@@ -1861,11 +1861,11 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 		/* stats */
 		WRITE_ONCE(b->packets, b->packets + 1);
-		b->bytes	    += len - ack_pkt_len;
 		b->backlogs[idx]    += len - ack_pkt_len;
-		b->tin_backlog      += len - ack_pkt_len;
 		sch->qstats.backlog += len - ack_pkt_len;
 		q->avg_window_bytes += len - ack_pkt_len;
+		WRITE_ONCE(b->bytes, b->bytes + len - ack_pkt_len);
+		WRITE_ONCE(b->tin_backlog, b->tin_backlog + len - ack_pkt_len);
 	}
 
 	if (q->overflow_timeout)
@@ -1895,9 +1895,9 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			u64 b = q->avg_window_bytes * (u64)NSEC_PER_SEC;
 
 			b = div64_u64(b, window_interval);
-			q->avg_peak_bandwidth =
-				cake_ewma(q->avg_peak_bandwidth, b,
-					  b > q->avg_peak_bandwidth ? 2 : 8);
+			WRITE_ONCE(q->avg_peak_bandwidth,
+				   cake_ewma(q->avg_peak_bandwidth, b,
+					     b > q->avg_peak_bandwidth ? 2 : 8));
 			q->avg_window_bytes = 0;
 			q->avg_window_begin = now;
 
@@ -1938,7 +1938,7 @@ static s32 cake_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	}
 
 	if (q->buffer_used > q->buffer_max_used)
-		q->buffer_max_used = q->buffer_used;
+		WRITE_ONCE(q->buffer_max_used, q->buffer_used);
 
 	if (q->buffer_used <= q->buffer_limit)
 		return NET_XMIT_SUCCESS;
@@ -1978,7 +1978,7 @@ static struct sk_buff *cake_dequeue_one(struct Qdisc *sch)
 		skb = dequeue_head(flow);
 		len = qdisc_pkt_len(skb);
 		b->backlogs[q->cur_flow] -= len;
-		b->tin_backlog		 -= len;
+		WRITE_ONCE(b->tin_backlog, b->tin_backlog - len);
 		sch->qstats.backlog      -= len;
 		q->buffer_used		 -= skb->truesize;
 		sch->q.qlen--;
@@ -2043,7 +2043,7 @@ static struct sk_buff *cake_dequeue(struct Qdisc *sch)
 
 		cake_configure_rates(sch, new_rate, true);
 		q->last_checked_active = now;
-		q->active_queues = num_active_qs;
+		WRITE_ONCE(q->active_queues, num_active_qs);
 	}
 
 begin:
@@ -2347,7 +2347,7 @@ static void cake_set_rate(struct cake_tin_data *b, u64 rate, u32 mtu,
 		/* else unlimited, ie. zero delay */
 		WRITE_ONCE(b->flow_quantum, 1514);
 	}
-	b->tin_rate_bps  = rate;
+	WRITE_ONCE(b->tin_rate_bps, rate);
 	b->tin_rate_ns   = rate_ns;
 	b->tin_rate_shft = rate_shft;
 
@@ -2617,25 +2617,27 @@ static void cake_reconfigure(struct Qdisc *sch)
 {
 	struct cake_sched_data *qd = qdisc_priv(sch);
 	struct cake_sched_config *q = qd->config;
+	u32 buffer_limit;
 
 	cake_configure_rates(sch, qd->config->rate_bps, false);
 
 	if (q->buffer_config_limit) {
-		qd->buffer_limit = q->buffer_config_limit;
+		buffer_limit = q->buffer_config_limit;
 	} else if (q->rate_bps) {
 		u64 t = q->rate_bps * q->interval;
 
 		do_div(t, USEC_PER_SEC / 4);
-		qd->buffer_limit = max_t(u32, t, 4U << 20);
+		buffer_limit = max_t(u32, t, 4U << 20);
 	} else {
-		qd->buffer_limit = ~0;
+		buffer_limit = ~0;
 	}
 
 	sch->flags &= ~TCQ_F_CAN_BYPASS;
 
-	qd->buffer_limit = min(qd->buffer_limit,
-			       max(sch->limit * psched_mtu(qdisc_dev(sch)),
-				   q->buffer_config_limit));
+	WRITE_ONCE(qd->buffer_limit,
+		   min(buffer_limit,
+		       max(sch->limit * psched_mtu(qdisc_dev(sch)),
+			   q->buffer_config_limit)));
 }
 
 static int cake_config_change(struct cake_sched_config *q, struct nlattr *opt,
@@ -2780,10 +2782,10 @@ static int cake_change(struct Qdisc *sch, struct nlattr *opt,
 		return ret;
 
 	if (overhead_changed) {
-		qd->max_netlen = 0;
-		qd->max_adjlen = 0;
-		qd->min_netlen = ~0;
-		qd->min_adjlen = ~0;
+		WRITE_ONCE(qd->max_netlen, 0);
+		WRITE_ONCE(qd->max_adjlen, 0);
+		WRITE_ONCE(qd->min_netlen, ~0);
+		WRITE_ONCE(qd->min_adjlen, ~0);
 	}
 
 	if (qd->tins) {
@@ -3001,15 +3003,15 @@ static int cake_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 			goto nla_put_failure;			       \
 	} while (0)
 
-	PUT_STAT_U64(CAPACITY_ESTIMATE64, q->avg_peak_bandwidth);
-	PUT_STAT_U32(MEMORY_LIMIT, q->buffer_limit);
-	PUT_STAT_U32(MEMORY_USED, q->buffer_max_used);
-	PUT_STAT_U32(AVG_NETOFF, ((q->avg_netoff + 0x8000) >> 16));
-	PUT_STAT_U32(MAX_NETLEN, q->max_netlen);
-	PUT_STAT_U32(MAX_ADJLEN, q->max_adjlen);
-	PUT_STAT_U32(MIN_NETLEN, q->min_netlen);
-	PUT_STAT_U32(MIN_ADJLEN, q->min_adjlen);
-	PUT_STAT_U32(ACTIVE_QUEUES, q->active_queues);
+	PUT_STAT_U64(CAPACITY_ESTIMATE64, READ_ONCE(q->avg_peak_bandwidth));
+	PUT_STAT_U32(MEMORY_LIMIT, READ_ONCE(q->buffer_limit));
+	PUT_STAT_U32(MEMORY_USED, READ_ONCE(q->buffer_max_used));
+	PUT_STAT_U32(AVG_NETOFF, ((READ_ONCE(q->avg_netoff) + 0x8000) >> 16));
+	PUT_STAT_U32(MAX_NETLEN, READ_ONCE(q->max_netlen));
+	PUT_STAT_U32(MAX_ADJLEN, READ_ONCE(q->max_adjlen));
+	PUT_STAT_U32(MIN_NETLEN, READ_ONCE(q->min_netlen));
+	PUT_STAT_U32(MIN_ADJLEN, READ_ONCE(q->min_adjlen));
+	PUT_STAT_U32(ACTIVE_QUEUES, READ_ONCE(q->active_queues));
 
 #undef PUT_STAT_U32
 #undef PUT_STAT_U64
@@ -3035,9 +3037,9 @@ static int cake_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 		if (!ts)
 			goto nla_put_failure;
 
-		PUT_TSTAT_U64(THRESHOLD_RATE64, b->tin_rate_bps);
-		PUT_TSTAT_U64(SENT_BYTES64, b->bytes);
-		PUT_TSTAT_U32(BACKLOG_BYTES, b->tin_backlog);
+		PUT_TSTAT_U64(THRESHOLD_RATE64, READ_ONCE(b->tin_rate_bps));
+		PUT_TSTAT_U64(SENT_BYTES64, READ_ONCE(b->bytes));
+		PUT_TSTAT_U32(BACKLOG_BYTES, READ_ONCE(b->tin_backlog));
 
 		PUT_TSTAT_U32(TARGET_US,
 			      ktime_to_us(ns_to_ktime(b->cparams.target)));
@@ -3304,10 +3306,10 @@ static int cake_mq_change(struct Qdisc *sch, struct nlattr *opt,
 		struct cake_sched_data *qd = qdisc_priv(chld);
 
 		if (overhead_changed) {
-			qd->max_netlen = 0;
-			qd->max_adjlen = 0;
-			qd->min_netlen = ~0;
-			qd->min_adjlen = ~0;
+			WRITE_ONCE(qd->max_netlen, 0);
+			WRITE_ONCE(qd->max_adjlen, 0);
+			WRITE_ONCE(qd->min_netlen, ~0);
+			WRITE_ONCE(qd->min_adjlen, ~0);
 		}
 
 		if (qd->tins) {
