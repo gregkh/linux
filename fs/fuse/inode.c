@@ -1548,6 +1548,7 @@ int fuse_send_init(struct fuse_mount *fm)
 	int err;
 
 	if (fm->fc->sync_init) {
+		ia->args.abort_on_kill = true;
 		err = fuse_simple_request(fm, &ia->args);
 		/* Ignore size of init reply */
 		if (err > 0)

@@ -798,6 +798,7 @@ static void print_rq(struct seq_file *m, struct rq *rq, int rq_cpu)
 void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 {
 	s64 left_vruntime = -1, zero_vruntime, right_vruntime = -1, left_deadline = -1, spread;
+	u64 avruntime;
 	struct sched_entity *last, *first, *root;
 	struct rq *rq = cpu_rq(cpu);
 	unsigned long flags;
@@ -821,6 +822,7 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 	if (last)
 		right_vruntime = last->vruntime;
 	zero_vruntime = cfs_rq->zero_vruntime;
+	avruntime = avg_vruntime(cfs_rq);
 	raw_spin_rq_unlock_irqrestore(rq, flags);
 
 	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "left_deadline",
@@ -830,7 +832,7 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "zero_vruntime",
 			SPLIT_NS(zero_vruntime));
 	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "avg_vruntime",
-			SPLIT_NS(avg_vruntime(cfs_rq)));
+			SPLIT_NS(avruntime));
 	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "right_vruntime",
 			SPLIT_NS(right_vruntime));
 	spread = right_vruntime - left_vruntime;
