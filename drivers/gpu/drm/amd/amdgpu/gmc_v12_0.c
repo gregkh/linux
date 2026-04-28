@@ -814,6 +814,7 @@ static int gmc_v12_0_sw_init(struct amdgpu_ip_block *ip_block)
 {
 	int r, vram_width = 0, vram_type = 0, vram_vendor = 0;
 	struct amdgpu_device *adev = ip_block->adev;
+	uint64_t pte_addr_mask = 0;
 	int i;
 
 	adev->mmhub.funcs->init(adev);
@@ -843,6 +844,7 @@ static int gmc_v12_0_sw_init(struct amdgpu_ip_block *ip_block)
 		 * block size 512 (9bit)
 		 */
 		amdgpu_vm_adjust_size(adev, 256 * 1024, 9, 3, 48);
+		pte_addr_mask = 0x0000FFFFFFFFF000ULL; /* 48 bit PA */
 		break;
 	case IP_VERSION(12, 1, 0):
 		bitmap_set(adev->vmhubs_mask, AMDGPU_GFXHUB(0),
@@ -855,6 +857,7 @@ static int gmc_v12_0_sw_init(struct amdgpu_ip_block *ip_block)
 		 * block size 512 (9bit)
 		 */
 		amdgpu_vm_adjust_size(adev, 128 * 1024 * 1024, 9, 4, 57);
+		pte_addr_mask = 0x000FFFFFFFFFF000ULL; /* 52 bit PA */
 		break;
 	default:
 		break;
@@ -911,6 +914,7 @@ static int gmc_v12_0_sw_init(struct amdgpu_ip_block *ip_block)
 	 * internal address space.
 	 */
 	adev->gmc.mc_mask = AMDGPU_GMC_HOLE_MASK;
+	adev->gmc.pte_addr_mask = pte_addr_mask;
 
 	r = dma_set_mask_and_coherent(adev->dev, DMA_BIT_MASK(44));
 	if (r) {
