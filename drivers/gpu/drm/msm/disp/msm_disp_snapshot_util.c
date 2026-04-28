@@ -5,7 +5,7 @@
 
 #define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 
-#include <generated/utsrelease.h>
+#include <linux/utsname.h>
 
 #include "msm_disp_snapshot.h"
 
@@ -79,7 +79,7 @@ void msm_disp_state_print(struct msm_disp_state *state, struct drm_printer *p)
 	}
 
 	drm_printf(p, "---\n");
-	drm_printf(p, "kernel: " UTS_RELEASE "\n");
+	drm_printf(p, "kernel: %s\n", init_utsname()->release);
 	drm_printf(p, "module: " KBUILD_MODNAME "\n");
 	drm_printf(p, "dpu devcoredump\n");
 	drm_printf(p, "time: %ptSp\n", &state->time);
