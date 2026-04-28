@@ -2,7 +2,17 @@
 #ifndef SELFTEST_KVM_SYSCALLS_H
 #define SELFTEST_KVM_SYSCALLS_H
 
+/*
+ * Include both the kernel and libc versions of mman.h.  The kernel provides
+ * the most up-to-date flags and definitions, while libc provides the syscall
+ * wrappers tests expect.
+ */
+#include <linux/mman.h>
+
+#include <sys/mman.h>
 #include <sys/syscall.h>
+
+#include <test_util.h>
 
 #define MAP_ARGS0(m,...)
 #define MAP_ARGS1(m,t,a,...) m(t,a)

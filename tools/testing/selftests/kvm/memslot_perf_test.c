@@ -15,7 +15,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -23,6 +22,7 @@
 #include <linux/sizes.h>
 
 #include <test_util.h>
+#include <kvm_syscalls.h>
 #include <kvm_util.h>
 #include <processor.h>
 #include <ucall_common.h>
