@@ -855,6 +855,7 @@ static int cs35l56_hda_read_acpi(struct cs35l56_hda *cs35l56, int id)
 			return -ENODEV;
 		}
 		ACPI_COMPANION_SET(cs35l56->base.dev, adev);
+		acpi_dev_put(adev);
 	}
 
 	property = "cirrus,dev-index";
