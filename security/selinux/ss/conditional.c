@@ -165,7 +165,7 @@ void cond_policydb_destroy(struct policydb *p)
 int cond_init_bool_indexes(struct policydb *p)
 {
 	kfree(p->bool_val_to_struct);
-	p->bool_val_to_struct = kmalloc_objs(*p->bool_val_to_struct,
+	p->bool_val_to_struct = kzalloc_objs(*p->bool_val_to_struct,
 					     p->p_bools.nprim);
 	if (!p->bool_val_to_struct)
 		return -ENOMEM;
@@ -705,7 +705,7 @@ static int duplicate_policydb_bools(struct policydb *newdb,
 	struct cond_bool_datum **cond_bool_array;
 	int rc;
 
-	cond_bool_array = kmalloc_objs(*orig->bool_val_to_struct,
+	cond_bool_array = kzalloc_objs(*orig->bool_val_to_struct,
 				       orig->p_bools.nprim);
 	if (!cond_bool_array)
 		return -ENOMEM;
