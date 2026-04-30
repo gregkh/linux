@@ -771,7 +771,7 @@ void efi_crash_gracefully_on_page_fault(unsigned long phys_addr,
 	 * If we get an interrupt/NMI while processing an EFI runtime service
 	 * then this is a regular OOPS, not an EFI failure.
 	 */
-	if (in_interrupt())
+	if (!in_task())
 		return;
 
 	/*
