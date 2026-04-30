@@ -833,7 +833,7 @@ static bool ntfs_may_write_mft_record(struct ntfs_volume *vol, const u64 mft_no,
 		vi = igrab(mft_vi);
 		WARN_ON(vi != mft_vi);
 	} else {
-		vi = find_inode_nowait(sb, mft_no, ntfs_test_inode_wb, &na);
+		vi = find_inode_nowait(sb, na.mft_no, ntfs_test_inode_wb, &na);
 		if (na.state == NI_BeingDeleted || na.state == NI_BeingCreated)
 			return false;
 	}
