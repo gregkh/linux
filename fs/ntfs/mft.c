@@ -2843,9 +2843,13 @@ flush_bio:
 			}
 			prev_mft_ofs = mft_ofs;
 
-			if (mft_no < vol->mftmirr_size)
-				ntfs_sync_mft_mirror(vol, mft_no,
+			if (mft_no < vol->mftmirr_size) {
+				int sub_err = ntfs_sync_mft_mirror(vol, mft_no,
 						(struct mft_record *)(kaddr + mft_ofs));
+
+				if (unlikely(sub_err) && !err)
+					err = sub_err;
+			}
 		} else if (ref_inos[nr_ref_inos])
 			nr_ref_inos++;
 	}
