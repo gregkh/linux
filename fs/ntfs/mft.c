@@ -2721,8 +2721,11 @@ static int ntfs_write_mft_block(struct folio *folio, struct writeback_control *w
 	ntfs_debug("Entering for inode 0x%llx, attribute type 0x%x, folio index 0x%lx.",
 			ni->mft_no, ni->type, folio->index);
 
-	if (!locked_nis || !ref_inos)
+	if (!locked_nis || !ref_inos) {
+		folio_redirty_for_writepage(wbc, folio);
+		folio_unlock(folio);
 		return -ENOMEM;
+	}
 
 	/* We have to zero every time due to mmap-at-end-of-file. */
 	if (folio->index >= (i_size >> folio_shift(folio)))
