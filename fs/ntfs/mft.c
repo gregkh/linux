@@ -449,7 +449,7 @@ static void ntfs_bio_end_io(struct bio *bio)
 int ntfs_sync_mft_mirror(struct ntfs_volume *vol, const u64 mft_no,
 		struct mft_record *m)
 {
-	u8 *kmirr = NULL;
+	u8 *kmirr;
 	struct folio *folio;
 	unsigned int folio_ofs, lcn_folio_off = 0;
 	int err = 0;
@@ -479,6 +479,7 @@ int ntfs_sync_mft_mirror(struct ntfs_volume *vol, const u64 mft_no,
 	kmirr = kmap_local_folio(folio, 0) + folio_ofs;
 	/* Copy the mst protected mft record to the mirror. */
 	memcpy(kmirr, m, vol->mft_record_size);
+	kunmap_local(kmirr);
 
 	if (vol->cluster_size_bits > PAGE_SHIFT) {
 		lcn_folio_off = folio->index << PAGE_SHIFT;
@@ -490,20 +491,22 @@ int ntfs_sync_mft_mirror(struct ntfs_volume *vol, const u64 mft_no,
 		NTFS_B_TO_SECTOR(vol, NTFS_CLU_TO_B(vol, vol->mftmirr_lcn) +
 				 lcn_folio_off + folio_ofs);
 
-	if (!bio_add_folio(bio, folio, vol->mft_record_size, folio_ofs)) {
+	if (bio_add_folio(bio, folio, vol->mft_record_size, folio_ofs))
+		err = submit_bio_wait(bio);
+	else
 		err = -EIO;
-		bio_put(bio);
-		goto unlock_folio;
-	}
+	bio_put(bio);
 
-	bio->bi_end_io = ntfs_bio_end_io;
-	submit_bio(bio);
-	/* Current state: all buffers are clean, unlocked, and uptodate. */
+	/*
+	 * The in-memory mirror is now valid because we just memcpy()'d the
+	 * mst-protected mft record into it.  Mark the folio uptodate even on
+	 * write error so a subsequent read_mapping_folio() does not refetch
+	 * the stale on-disk mirror and overwrite this copy.  The error is
+	 * propagated to the caller via @err.
+	 */
 	folio_mark_uptodate(folio);
 
-unlock_folio:
 	folio_unlock(folio);
-	kunmap_local(kmirr);
 	folio_put(folio);
 	if (likely(!err)) {
 		ntfs_debug("Done.");
@@ -588,20 +591,36 @@ int write_mft_record_nolock(struct ntfs_inode *ni, struct mft_record *m, int syn
 		}
 
 		/* Synchronize the mft mirror now if not @sync. */
-		if (!sync && ni->mft_no < vol->mftmirr_size)
-			ntfs_sync_mft_mirror(vol, ni->mft_no, fixup_m);
+		if (!sync && ni->mft_no < vol->mftmirr_size) {
+			int sub_err = ntfs_sync_mft_mirror(vol, ni->mft_no,
+							   fixup_m);
+			if (unlikely(sub_err) && !err)
+				err = sub_err;
+		}
 
-		folio_get(folio);
-		bio->bi_private = folio;
-		bio->bi_end_io = ntfs_bio_end_io;
-		submit_bio(bio);
+		if (sync) {
+			int sub_err = submit_bio_wait(bio);
+
+			bio_put(bio);
+			if (unlikely(sub_err) && !err)
+				err = sub_err;
+		} else {
+			folio_get(folio);
+			bio->bi_private = folio;
+			bio->bi_end_io = ntfs_bio_end_io;
+			submit_bio(bio);
+		}
 		offset += vol->cluster_size;
 		i++;
 	}
 
 	/* If @sync, now synchronize the mft mirror. */
-	if (sync && ni->mft_no < vol->mftmirr_size)
-		ntfs_sync_mft_mirror(vol, ni->mft_no, fixup_m);
+	if (sync && ni->mft_no < vol->mftmirr_size) {
+		int sub_err = ntfs_sync_mft_mirror(vol, ni->mft_no, fixup_m);
+
+		if (unlikely(sub_err) && !err)
+			err = sub_err;
+	}
 	kunmap_local(kaddr);
 	if (unlikely(err)) {
 		/* I/O error during writing.  This is really bad! */
@@ -617,10 +636,10 @@ put_bio_out:
 	bio_put(bio);
 err_out:
 	/*
-	 * Current state: all buffers are clean, unlocked, and uptodate.
-	 * The caller should mark the base inode as bad so that no more i/o
-	 * happens.  ->drop_inode() will still be invoked so all extent inodes
-	 * and other allocated memory will be freed.
+	 * The caller should mark the base inode as bad so no more I/O
+	 * happens. ->drop_inode() will still be invoked so all extent inodes
+	 * and other allocated memory will be freed. ENOMEM is retried by
+	 * redirtying the mft record below.
 	 */
 	if (err == -ENOMEM) {
 		ntfs_error(vol->sb,
