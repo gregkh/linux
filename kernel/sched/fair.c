@@ -8922,9 +8922,10 @@ pick:
 
 	/*
 	 * Because p is enqueued, nse being null can only mean that we
-	 * dequeued a delayed task.
+	 * dequeued a delayed task. If there are still entities queued in
+	 * cfs, check if the next one will be p.
 	 */
-	if (!nse)
+	if (!nse && cfs_rq->nr_queued)
 		goto pick;
 
 	if (sched_feat(RUN_TO_PARITY))
