@@ -3361,7 +3361,9 @@ F:	drivers/irqchip/irq-rda-intc.c
 F:	drivers/tty/serial/rda-uart.c
 
 ARM/REALTEK ARCHITECTURE
-M:	Andreas Färber <afaerber@suse.de>
+M:	James Tai <james.tai@realtek.com>
+M:	Yu-Chun Lin <eleanor.lin@realtek.com>
+R:	Andreas Färber <afaerber@suse.com>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 L:	linux-realtek-soc@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
