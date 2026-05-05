@@ -1671,7 +1671,7 @@ iput_attrdef_err_out:
 iput_upcase_err_out:
 	vol->upcase_len = 0;
 	mutex_lock(&ntfs_lock);
-	if (vol->upcase == default_upcase) {
+	if (vol->upcase && vol->upcase == default_upcase) {
 		ntfs_nr_upcase_users--;
 		vol->upcase = NULL;
 	}
@@ -1701,7 +1701,7 @@ static void ntfs_volume_free(struct ntfs_volume *vol)
 	 * the number of upcase users if we are a user.
 	 */
 	mutex_lock(&ntfs_lock);
-	if (vol->upcase == default_upcase) {
+	if (vol->upcase && vol->upcase == default_upcase) {
 		ntfs_nr_upcase_users--;
 		vol->upcase = NULL;
 	}
@@ -2494,7 +2494,7 @@ static int ntfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	}
 	vol->upcase_len = 0;
 	mutex_lock(&ntfs_lock);
-	if (vol->upcase == default_upcase) {
+	if (vol->upcase && vol->upcase == default_upcase) {
 		ntfs_nr_upcase_users--;
 		vol->upcase = NULL;
 	}
