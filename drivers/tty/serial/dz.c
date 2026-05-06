@@ -40,6 +40,7 @@
 #include <linux/kernel.h>
 #include <linux/major.h>
 #include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/serial.h>
 #include <linux/serial_core.h>
 #include <linux/sysrq.h>
@@ -48,14 +49,6 @@
 
 #include <linux/atomic.h>
 #include <linux/io.h>
-#include <asm/bootinfo.h>
-
-#include <asm/dec/interrupts.h>
-#include <asm/dec/kn01.h>
-#include <asm/dec/kn02.h>
-#include <asm/dec/machtype.h>
-#include <asm/dec/prom.h>
-#include <asm/dec/system.h>
 
 #include "dz.h"
 
@@ -65,7 +58,9 @@ MODULE_LICENSE("GPL");
 
 
 static char dz_name[] __initdata = "DECstation DZ serial driver version ";
-static char dz_version[] __initdata = "1.04";
+static char dz_version[] __initdata = "1.05";
+
+#define DZ_IO_SIZE 0x20			/* IOMEM space size.  */
 
 struct dz_port {
 	struct dz_mux		*mux;
@@ -81,6 +76,7 @@ struct dz_mux {
 };
 
 static struct dz_mux dz_mux;
+static struct uart_driver dz_reg;
 
 static inline struct dz_port *to_dport(struct uart_port *uport)
 {
@@ -564,7 +560,7 @@ static void dz_reset(struct dz_port *dport)
 			iob();
 			udelay(2);		/* 1.4us TRDY recovery.  */
 		}
-		udelay(1200);			/* Transmitter drain.  */
+		fsleep(1200);			/* Transmitter drain.  */
 	}
 
 	dz_out(dport, DZ_CSR, DZ_CLR);
@@ -681,14 +677,13 @@ static void dz_release_port(struct uart_port *uport)
 
 	map_guard = atomic_add_return(-1, &mux->map_guard);
 	if (!map_guard)
-		release_mem_region(uport->mapbase, dec_kn_slot_size);
+		release_mem_region(uport->mapbase, DZ_IO_SIZE);
 }
 
 static int dz_map_port(struct uart_port *uport)
 {
 	if (!uport->membase)
-		uport->membase = ioremap(uport->mapbase,
-						 dec_kn_slot_size);
+		uport->membase = ioremap(uport->mapbase, DZ_IO_SIZE);
 	if (!uport->membase) {
 		printk(KERN_ERR "dz: Cannot map MMIO\n");
 		return -ENOMEM;
@@ -704,8 +699,7 @@ static int dz_request_port(struct uart_port *uport)
 
 	map_guard = atomic_add_return(1, &mux->map_guard);
 	if (map_guard == 1) {
-		if (!request_mem_region(uport->mapbase, dec_kn_slot_size,
-					"dz")) {
+		if (!request_mem_region(uport->mapbase, DZ_IO_SIZE, "dz")) {
 			atomic_add(-1, &mux->map_guard);
 			printk(KERN_ERR
 			       "dz: Unable to reserve MMIO resource\n");
@@ -716,7 +710,7 @@ static int dz_request_port(struct uart_port *uport)
 	if (ret) {
 		map_guard = atomic_add_return(-1, &mux->map_guard);
 		if (!map_guard)
-			release_mem_region(uport->mapbase, dec_kn_slot_size);
+			release_mem_region(uport->mapbase, DZ_IO_SIZE);
 		return ret;
 	}
 	return 0;
@@ -768,20 +762,15 @@ static const struct uart_ops dz_ops = {
 	.verify_port	= dz_verify_port,
 };
 
-static void __init dz_init_ports(void)
+static int __init dz_probe(struct platform_device *pdev)
 {
-	static int first = 1;
-	unsigned long base;
+	struct resource *mem_resource, *irq_resource;
 	int line;
 
-	if (!first)
-		return;
-	first = 0;
-
-	if (mips_machtype == MACH_DS23100 || mips_machtype == MACH_DS5100)
-		base = dec_kn_slot_base + KN01_DZ11;
-	else
-		base = dec_kn_slot_base + KN02_DZ11;
+	mem_resource = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	irq_resource = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+	if (!mem_resource || !irq_resource)
+		return -ENODEV;
 
 	for (line = 0; line < DZ_NB_PORT; line++) {
 		struct dz_port *dport = &dz_mux.dport[line];
@@ -789,14 +778,33 @@ static void __init dz_init_ports(void)
 
 		dport->mux	= &dz_mux;
 
-		uport->irq	= dec_interrupt[DEC_IRQ_DZ11];
+		uport->dev	= &pdev->dev;
+		uport->irq	= irq_resource->start;
 		uport->fifosize	= 1;
 		uport->iotype	= UPIO_MEM;
 		uport->flags	= UPF_BOOT_AUTOCONF;
 		uport->ops	= &dz_ops;
 		uport->line	= line;
-		uport->mapbase	= base;
+		uport->mapbase	= mem_resource->start;
 		uport->has_sysrq = IS_ENABLED(CONFIG_SERIAL_DZ_CONSOLE);
+
+		if (uart_add_one_port(&dz_reg, uport))
+			uport->dev = NULL;
+	}
+
+	return 0;
+}
+
+static void __exit dz_remove(struct platform_device *pdev)
+{
+	int line;
+
+	for (line = DZ_NB_PORT - 1; line >= 0; line--) {
+		struct dz_port *dport = &dz_mux.dport[line];
+		struct uart_port *uport = &dport->port;
+
+		if (uport->dev)
+			uart_remove_one_port(&dz_reg, uport);
 	}
 }
 
@@ -879,21 +887,14 @@ static int __init dz_console_setup(struct console *co, char *options)
 	int bits = 8;
 	int parity = 'n';
 	int flow = 'n';
-	int ret;
 
-	ret = dz_map_port(uport);
-	if (ret)
-		return ret;
-
-	dz_reset(dport);
-
+	if (!dport->mux)
+		return -ENODEV;
 	if (options)
 		uart_parse_options(options, &baud, &parity, &bits, &flow);
-
-	return uart_set_options(&dport->port, co, baud, parity, bits, flow);
+	return uart_set_options(uport, co, baud, parity, bits, flow);
 }
 
-static struct uart_driver dz_reg;
 static struct console dz_console = {
 	.name	= "ttyS",
 	.write	= dz_console_print,
@@ -903,18 +904,6 @@ static struct console dz_console = {
 	.index	= -1,
 	.data	= &dz_reg,
 };
-
-static int __init dz_serial_console_init(void)
-{
-	if (!IOASIC) {
-		dz_init_ports();
-		register_console(&dz_console);
-		return 0;
-	} else
-		return -ENXIO;
-}
-
-console_initcall(dz_serial_console_init);
 
 #define SERIAL_DZ_CONSOLE	&dz_console
 #else
@@ -931,25 +920,32 @@ static struct uart_driver dz_reg = {
 	.cons			= SERIAL_DZ_CONSOLE,
 };
 
+static struct platform_driver dz_driver = {
+	.remove = __exit_p(dz_remove),
+	.driver = { .name = "dz" },
+};
+
 static int __init dz_init(void)
 {
-	int ret, i;
-
-	if (IOASIC)
-		return -ENXIO;
+	int ret;
 
 	printk("%s%s\n", dz_name, dz_version);
-
-	dz_init_ports();
 
 	ret = uart_register_driver(&dz_reg);
 	if (ret)
 		return ret;
+	ret = platform_driver_probe(&dz_driver, dz_probe);
+	if (ret)
+		uart_unregister_driver(&dz_reg);
 
-	for (i = 0; i < DZ_NB_PORT; i++)
-		uart_add_one_port(&dz_reg, &dz_mux.dport[i].port);
+	return ret;
+}
 
-	return 0;
+static void __exit dz_exit(void)
+{
+	platform_driver_unregister(&dz_driver);
+	uart_unregister_driver(&dz_reg);
 }
 
 module_init(dz_init);
+module_exit(dz_exit);
