@@ -1583,6 +1583,35 @@ void *xt_unregister_table(struct xt_table *table)
 	return private;
 }
 EXPORT_SYMBOL_GPL(xt_unregister_table);
+
+/**
+ * xt_unregister_table_pre_exit - pre-shutdown unregister of a table
+ * @net: network namespace
+ * @af: address family (e.g., NFPROTO_IPV4, NFPROTO_IPV6)
+ * @name: name of the table to unregister
+ *
+ * Unregisters the specified netfilter table from the given network namespace
+ * and also unregisters the hooks from netfilter core: no new packets will be
+ * processed.
+ */
+void xt_unregister_table_pre_exit(struct net *net, u8 af, const char *name)
+{
+	struct xt_pernet *xt_net = net_generic(net, xt_pernet_id);
+	struct xt_table *t;
+
+	mutex_lock(&xt[af].mutex);
+	list_for_each_entry(t, &xt_net->tables[af], list) {
+		if (strcmp(t->name, name) == 0) {
+			mutex_unlock(&xt[af].mutex);
+
+			if (t->ops) /* nat table registers with nat core, t->ops is NULL. */
+				nf_unregister_net_hooks(net, t->ops, hweight32(t->valid_hooks));
+			return;
+		}
+	}
+	mutex_unlock(&xt[af].mutex);
+}
+EXPORT_SYMBOL(xt_unregister_table_pre_exit);
 #endif
 
 #ifdef CONFIG_PROC_FS

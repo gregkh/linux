@@ -49,7 +49,7 @@ static int ip6table_security_table_init(struct net *net)
 
 static void __net_exit ip6table_security_net_pre_exit(struct net *net)
 {
-	ip6t_unregister_table_pre_exit(net, "security");
+	xt_unregister_table_pre_exit(net, NFPROTO_IPV6, "security");
 }
 
 static void __net_exit ip6table_security_net_exit(struct net *net)

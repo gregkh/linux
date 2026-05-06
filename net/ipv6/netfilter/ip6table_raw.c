@@ -52,7 +52,7 @@ static int ip6table_raw_table_init(struct net *net)
 
 static void __net_exit ip6table_raw_net_pre_exit(struct net *net)
 {
-	ip6t_unregister_table_pre_exit(net, "raw");
+	xt_unregister_table_pre_exit(net, NFPROTO_IPV6, "raw");
 }
 
 static void __net_exit ip6table_raw_net_exit(struct net *net)
