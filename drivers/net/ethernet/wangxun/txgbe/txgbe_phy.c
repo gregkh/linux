@@ -820,7 +820,9 @@ err_unregister_swnode:
 void txgbe_remove_phy(struct txgbe *txgbe)
 {
 	if (txgbe->wx->media_type == sp_media_copper) {
+		rtnl_lock();
 		phylink_disconnect_phy(txgbe->phylink);
+		rtnl_unlock();
 		phylink_destroy(txgbe->phylink);
 		return;
 	}
