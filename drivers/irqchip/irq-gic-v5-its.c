@@ -937,6 +937,7 @@ static int gicv5_its_irq_domain_alloc(struct irq_domain *domain, unsigned int vi
 	int ret, i;
 
 	its_dev = info->scratchpad[0].ptr;
+	device_id = its_dev->device_id;
 
 	ret = gicv5_its_alloc_eventid(its_dev, info, nr_irqs, &event_id_base);
 	if (ret)
@@ -946,14 +947,11 @@ static int gicv5_its_irq_domain_alloc(struct irq_domain *domain, unsigned int vi
 	if (ret)
 		goto out_eventid;
 
-	device_id = its_dev->device_id;
+	ret = irq_domain_alloc_irqs_parent(domain, virq, nr_irqs, NULL);
+	if (ret)
+		goto out_eventid;
 
 	for (i = 0; i < nr_irqs; i++) {
-		ret = irq_domain_alloc_irqs_parent(domain, virq + i, 1, NULL);
-		if (ret) {
-			goto out_free_irqs;
-		}
-
 		/*
 		 * Store eventid and deviceid into the hwirq for later use.
 		 *
@@ -972,12 +970,6 @@ static int gicv5_its_irq_domain_alloc(struct irq_domain *domain, unsigned int vi
 
 	return 0;
 
-out_free_irqs:
-	while (--i >= 0) {
-		irqd = irq_domain_get_irq_data(domain, virq + i);
-		irq_domain_reset_irq_data(irqd);
-		irq_domain_free_irqs_parent(domain, virq + i, 1);
-	}
 out_eventid:
 	gicv5_its_free_eventid(its_dev, event_id_base, nr_irqs);
 	return ret;
@@ -1000,13 +992,13 @@ static void gicv5_its_irq_domain_free(struct irq_domain *domain, unsigned int vi
 	bitmap_release_region(its_dev->event_map, event_id_base,
 			      get_count_order(nr_irqs));
 
-	/*  Hierarchically free irq data */
 	for (i = 0; i < nr_irqs; i++) {
 		d = irq_domain_get_irq_data(domain, virq + i);
-
 		irq_domain_reset_irq_data(d);
-		irq_domain_free_irqs_parent(domain, virq + i, 1);
 	}
+
+	/*  Hierarchically free irq data */
+	irq_domain_free_irqs_parent(domain, virq, nr_irqs);
 
 	gicv5_its_syncr(its, its_dev);
 	gicv5_irs_syncr();
