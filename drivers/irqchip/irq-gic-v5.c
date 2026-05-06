@@ -59,16 +59,6 @@ static void release_lpi(u32 lpi)
 	ida_free(&lpi_ida, lpi);
 }
 
-int gicv5_alloc_lpi(void)
-{
-	return alloc_lpi();
-}
-
-void gicv5_free_lpi(u32 lpi)
-{
-	release_lpi(lpi);
-}
-
 static void gicv5_ppi_priority_init(void)
 {
 	write_sysreg_s(REPEAT_BYTE(GICV5_IRQ_PRI_MI), SYS_ICC_PPI_PRIORITYR0_EL1);
@@ -788,18 +778,36 @@ static void gicv5_lpi_config_reset(struct irq_data *d)
 	gicv5_lpi_irq_write_pending_state(d, false);
 }
 
+static void gicv5_irq_lpi_domain_free(struct irq_domain *domain, unsigned int virq,
+				      unsigned int nr_irqs)
+{
+	struct irq_data *d;
+
+	if (WARN_ON_ONCE(nr_irqs != 1))
+		return;
+
+	d = irq_domain_get_irq_data(domain, virq);
+
+	release_lpi(d->hwirq);
+
+	irq_set_handler(virq, NULL);
+	irq_domain_reset_irq_data(d);
+}
+
 static int gicv5_irq_lpi_domain_alloc(struct irq_domain *domain, unsigned int virq,
 				      unsigned int nr_irqs, void *arg)
 {
 	irq_hw_number_t hwirq;
 	struct irq_data *irqd;
-	u32 *lpi = arg;
 	int ret;
 
 	if (WARN_ON_ONCE(nr_irqs != 1))
 		return -EINVAL;
 
-	hwirq = *lpi;
+	ret = alloc_lpi();
+	if (ret < 0)
+		return ret;
+	hwirq = ret;
 
 	irqd = irq_domain_get_irq_data(domain, virq);
 
@@ -808,8 +816,10 @@ static int gicv5_irq_lpi_domain_alloc(struct irq_domain *domain, unsigned int vi
 	irqd_set_single_target(irqd);
 
 	ret = gicv5_irs_iste_alloc(hwirq);
-	if (ret < 0)
+	if (ret < 0) {
+		release_lpi(hwirq);
 		return ret;
+	}
 
 	gicv5_hwirq_init(hwirq, GICV5_IRQ_PRI_MI, GICV5_HWIRQ_TYPE_LPI);
 	gicv5_lpi_config_reset(irqd);
@@ -819,7 +829,7 @@ static int gicv5_irq_lpi_domain_alloc(struct irq_domain *domain, unsigned int vi
 
 static const struct irq_domain_ops gicv5_irq_lpi_domain_ops = {
 	.alloc	= gicv5_irq_lpi_domain_alloc,
-	.free	= gicv5_irq_domain_free,
+	.free	= gicv5_irq_lpi_domain_free,
 };
 
 void __init gicv5_init_lpi_domain(void)
@@ -841,20 +851,11 @@ static int gicv5_irq_ipi_domain_alloc(struct irq_domain *domain, unsigned int vi
 {
 	struct irq_data *irqd;
 	int ret, i;
-	u32 lpi;
 
 	for (i = 0; i < nr_irqs; i++) {
-		ret = gicv5_alloc_lpi();
-		if (ret < 0)
+		ret = irq_domain_alloc_irqs_parent(domain, virq + i, 1, NULL);
+		if (ret)
 			return ret;
-
-		lpi = ret;
-
-		ret = irq_domain_alloc_irqs_parent(domain, virq + i, 1, &lpi);
-		if (ret) {
-			gicv5_free_lpi(lpi);
-			return ret;
-		}
 
 		irqd = irq_domain_get_irq_data(domain, virq + i);
 
@@ -880,8 +881,6 @@ static void gicv5_irq_ipi_domain_free(struct irq_domain *domain, unsigned int vi
 
 		if (!d)
 			return;
-
-		gicv5_free_lpi(d->parent_data->hwirq);
 
 		irq_set_handler(virq + i, NULL);
 		irq_domain_reset_irq_data(d);
