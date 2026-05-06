@@ -55,6 +55,9 @@ static struct list_head xt_templates[NFPROTO_NUMPROTO];
 
 struct xt_pernet {
 	struct list_head tables[NFPROTO_NUMPROTO];
+
+	/* stash area used during netns exit */
+	struct list_head dead_tables[NFPROTO_NUMPROTO];
 };
 
 struct compat_delta {
@@ -1522,23 +1525,6 @@ out:
 }
 EXPORT_SYMBOL_GPL(xt_register_table);
 
-void *xt_unregister_table(struct xt_table *table)
-{
-	struct xt_table_info *private;
-
-	mutex_lock(&xt[table->af].mutex);
-	private = table->private;
-	list_del(&table->list);
-	mutex_unlock(&xt[table->af].mutex);
-	audit_log_nfcfg(table->name, table->af, private->number,
-			AUDIT_XT_OP_UNREGISTER, GFP_KERNEL);
-	kfree(table->ops);
-	kfree(table);
-
-	return private;
-}
-EXPORT_SYMBOL_GPL(xt_unregister_table);
-
 /**
  * xt_unregister_table_pre_exit - pre-shutdown unregister of a table
  * @net: network namespace
@@ -1548,6 +1534,14 @@ EXPORT_SYMBOL_GPL(xt_unregister_table);
  * Unregisters the specified netfilter table from the given network namespace
  * and also unregisters the hooks from netfilter core: no new packets will be
  * processed.
+ *
+ * This must be called prior to xt_unregister_table_exit() from the pernet
+ * .pre_exit callback.  After this call, the table is no longer visible to
+ * the get/setsockopt path.  In case of rmmod, module exit path must have
+ * called xt_unregister_template() prior to unregistering pernet ops to
+ * prevent re-instantiation of the table.
+ *
+ * See also: xt_unregister_table_exit()
  */
 void xt_unregister_table_pre_exit(struct net *net, u8 af, const char *name)
 {
@@ -1557,6 +1551,7 @@ void xt_unregister_table_pre_exit(struct net *net, u8 af, const char *name)
 	mutex_lock(&xt[af].mutex);
 	list_for_each_entry(t, &xt_net->tables[af], list) {
 		if (strcmp(t->name, name) == 0) {
+			list_move(&t->list, &xt_net->dead_tables[af]);
 			mutex_unlock(&xt[af].mutex);
 
 			if (t->ops) /* nat table registers with nat core, t->ops is NULL. */
@@ -1567,6 +1562,50 @@ void xt_unregister_table_pre_exit(struct net *net, u8 af, const char *name)
 	mutex_unlock(&xt[af].mutex);
 }
 EXPORT_SYMBOL(xt_unregister_table_pre_exit);
+
+/**
+ * xt_unregister_table_exit - remove a table during namespace teardown
+ * @net: the network namespace from which to unregister the table
+ * @af: address family (e.g., NFPROTO_IPV4, NFPROTO_IPV6)
+ * @name: name of the table to unregister
+ *
+ * Completes the unregister process for a table. This must be called from
+ * the pernet ops .exit callback. This is the second stage after
+ * xt_unregister_table_pre_exit().
+ *
+ * pair with xt_unregister_table_pre_exit() during namespace shutdown.
+ *
+ * Return: the unregistered table or NULL if the table was never
+ *         instantiated. The caller needs to kfree() the table after it
+ *         has removed the family specific matches/targets.
+ */
+struct xt_table *xt_unregister_table_exit(struct net *net, u8 af, const char *name)
+{
+	struct xt_pernet *xt_net = net_generic(net, xt_pernet_id);
+	struct xt_table *table;
+
+	mutex_lock(&xt[af].mutex);
+	list_for_each_entry(table, &xt_net->dead_tables[af], list) {
+		struct nf_hook_ops *ops = NULL;
+
+		if (strcmp(table->name, name) != 0)
+			continue;
+
+		list_del(&table->list);
+
+		audit_log_nfcfg(table->name, table->af, table->private->number,
+				AUDIT_XT_OP_UNREGISTER, GFP_KERNEL);
+		swap(table->ops, ops);
+		mutex_unlock(&xt[af].mutex);
+
+		kfree(ops);
+		return table;
+	}
+	mutex_unlock(&xt[af].mutex);
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(xt_unregister_table_exit);
 #endif
 
 #ifdef CONFIG_PROC_FS
@@ -2013,8 +2052,10 @@ static int __net_init xt_net_init(struct net *net)
 	struct xt_pernet *xt_net = net_generic(net, xt_pernet_id);
 	int i;
 
-	for (i = 0; i < NFPROTO_NUMPROTO; i++)
+	for (i = 0; i < NFPROTO_NUMPROTO; i++) {
 		INIT_LIST_HEAD(&xt_net->tables[i]);
+		INIT_LIST_HEAD(&xt_net->dead_tables[i]);
+	}
 	return 0;
 }
 
@@ -2023,8 +2064,10 @@ static void __net_exit xt_net_exit(struct net *net)
 	struct xt_pernet *xt_net = net_generic(net, xt_pernet_id);
 	int i;
 
-	for (i = 0; i < NFPROTO_NUMPROTO; i++)
+	for (i = 0; i < NFPROTO_NUMPROTO; i++) {
 		WARN_ON_ONCE(!list_empty(&xt_net->tables[i]));
+		WARN_ON_ONCE(!list_empty(&xt_net->dead_tables[i]));
+	}
 }
 
 static struct pernet_operations xt_net_ops = {

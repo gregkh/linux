@@ -121,8 +121,11 @@ static int ip6table_nat_table_init(struct net *net)
 	}
 
 	ret = ip6t_nat_register_lookups(net);
-	if (ret < 0)
+	if (ret < 0) {
+		xt_unregister_table_pre_exit(net, NFPROTO_IPV6, "nat");
+		synchronize_rcu();
 		ip6t_unregister_table_exit(net, "nat");
+	}
 
 	kfree(repl);
 	return ret;
