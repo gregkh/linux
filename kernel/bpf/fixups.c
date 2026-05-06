@@ -1416,7 +1416,12 @@ int bpf_fixup_call_args(struct bpf_verifier_env *env)
 		depth = get_callee_stack_depth(env, insn, i);
 		if (depth < 0)
 			return depth;
-		bpf_patch_call_args(insn, depth);
+		err = bpf_patch_call_args(insn, depth);
+		if (err) {
+			verbose(env, "stack depth %d exceeds interpreter stack depth limit\n",
+				depth);
+			return err;
+		}
 	}
 	err = 0;
 #endif
