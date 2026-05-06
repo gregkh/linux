@@ -2913,11 +2913,11 @@ int ntfs_attr_open(struct ntfs_inode *ni, const __le32 type,
 	struct ntfs_inode *base_ni;
 	int err;
 
-	ntfs_debug("Entering for inode %lld, attr 0x%x.\n",
-			(unsigned long long)ni->mft_no, type);
-
 	if (!ni || !ni->vol)
 		return -EINVAL;
+
+	ntfs_debug("Entering for inode %lld, attr 0x%x.\n",
+			ni->mft_no, type);
 
 	if (NInoAttr(ni))
 		base_ni = ni->ext.base_ntfs_ino;
