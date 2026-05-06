@@ -60,7 +60,7 @@ static int __net_init ip6table_filter_net_init(struct net *net)
 
 static void __net_exit ip6table_filter_net_pre_exit(struct net *net)
 {
-	ip6t_unregister_table_pre_exit(net, "filter");
+	xt_unregister_table_pre_exit(net, NFPROTO_IPV6, "filter");
 }
 
 static void __net_exit ip6table_filter_net_exit(struct net *net)

@@ -129,6 +129,7 @@ static int iptable_nat_table_init(struct net *net)
 static void __net_exit iptable_nat_net_pre_exit(struct net *net)
 {
 	ipt_nat_unregister_lookups(net);
+	xt_unregister_table_pre_exit(net, NFPROTO_IPV4, "nat");
 }
 
 static void __net_exit iptable_nat_net_exit(struct net *net)
