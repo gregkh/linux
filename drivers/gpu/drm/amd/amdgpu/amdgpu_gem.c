@@ -31,6 +31,7 @@
 #include <linux/pci.h>
 #include <linux/dma-buf.h>
 #include <linux/dma-fence-unwrap.h>
+#include <linux/uaccess.h>
 
 #include <drm/amdgpu_drm.h>
 #include <drm/drm_drv.h>
@@ -507,6 +508,9 @@ int amdgpu_gem_userptr_ioctl(struct drm_device *dev, void *data,
 
 	if (offset_in_page(args->addr | args->size))
 		return -EINVAL;
+
+	if (!access_ok((void __user *)(uintptr_t)args->addr, args->size))
+		return -EFAULT;
 
 	/* reject unknown flag values */
 	if (args->flags & ~(AMDGPU_GEM_USERPTR_READONLY |
