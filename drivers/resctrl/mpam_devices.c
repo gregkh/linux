@@ -632,7 +632,7 @@ static struct mpam_msc_ris *mpam_get_or_create_ris(struct mpam_msc *msc,
  * Try and see what values stick in this bit. If we can write either value,
  * its probably not implemented by hardware.
  */
-static bool _mpam_ris_hw_probe_hw_nrdy(struct mpam_msc_ris *ris, u32 mon_reg)
+static bool mpam_ris_hw_probe_csu_nrdy(struct mpam_msc_ris *ris)
 {
 	u32 now;
 	u32 mon_sel;
@@ -646,20 +646,17 @@ static bool _mpam_ris_hw_probe_hw_nrdy(struct mpam_msc_ris *ris, u32 mon_reg)
 		  FIELD_PREP(MSMON_CFG_MON_SEL_RIS, ris->ris_idx);
 	mpam_write_monsel_reg(msc, CFG_MON_SEL, mon_sel);
 
-	_mpam_write_monsel_reg(msc, mon_reg, MSMON___NRDY);
-	now = _mpam_read_monsel_reg(msc, mon_reg);
+	_mpam_write_monsel_reg(msc, MSMON_CSU, MSMON___NRDY);
+	now = _mpam_read_monsel_reg(msc, MSMON_CSU);
 	can_set = now & MSMON___NRDY;
 
-	_mpam_write_monsel_reg(msc, mon_reg, 0);
-	now = _mpam_read_monsel_reg(msc, mon_reg);
+	_mpam_write_monsel_reg(msc, MSMON_CSU, 0);
+	now = _mpam_read_monsel_reg(msc, MSMON_CSU);
 	can_clear = !(now & MSMON___NRDY);
 	mpam_mon_sel_unlock(msc);
 
 	return (!can_set || !can_clear);
 }
-
-#define mpam_ris_hw_probe_hw_nrdy(_ris, _mon_reg)			\
-	_mpam_ris_hw_probe_hw_nrdy(_ris, MSMON_##_mon_reg)
 
 static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 {
@@ -770,20 +767,18 @@ static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 					mpam_set_feature(mpam_feat_msmon_csu_xcl, props);
 
 				/* Is NRDY hardware managed? */
-				hw_managed = mpam_ris_hw_probe_hw_nrdy(ris, CSU);
-				if (hw_managed)
-					mpam_set_feature(mpam_feat_msmon_csu_hw_nrdy, props);
-			}
+				hw_managed = mpam_ris_hw_probe_csu_nrdy(ris);
 
-			/*
-			 * Accept the missing firmware property if NRDY appears
-			 * un-implemented.
-			 */
-			if (err && mpam_has_feature(mpam_feat_msmon_csu_hw_nrdy, props))
-				dev_err_once(dev, "Counters are not usable because not-ready timeout was not provided by firmware.");
+				/*
+				 * Accept the missing firmware property if NRDY appears
+				 * un-implemented.
+				 */
+				if (err && hw_managed)
+					dev_err_once(dev, "Counters are not usable because not-ready timeout was not provided by firmware.");
+			}
 		}
 		if (FIELD_GET(MPAMF_MSMON_IDR_MSMON_MBWU, msmon_features)) {
-			bool has_long, hw_managed;
+			bool has_long;
 			u32 mbwumon_idr = mpam_read_partsel_reg(msc, MBWUMON_IDR);
 
 			props->num_mbwu_mon = FIELD_GET(MPAMF_MBWUMON_IDR_NUM_MON, mbwumon_idr);
@@ -802,16 +797,6 @@ static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 				} else {
 					mpam_set_feature(mpam_feat_msmon_mbwu_31counter, props);
 				}
-
-				/* Is NRDY hardware managed? */
-				hw_managed = mpam_ris_hw_probe_hw_nrdy(ris, MBWU);
-				if (hw_managed)
-					mpam_set_feature(mpam_feat_msmon_mbwu_hw_nrdy, props);
-
-				/*
-				 * Don't warn about any missing firmware property for
-				 * MBWU NRDY - it doesn't make any sense!
-				 */
 			}
 		}
 	}
@@ -1078,7 +1063,6 @@ static void __ris_msmon_read(void *arg)
 	bool reset_on_next_read = false;
 	struct mpam_msc_ris *ris = m->ris;
 	struct msmon_mbwu_state *mbwu_state;
-	struct mpam_props *rprops = &ris->props;
 	struct mpam_msc *msc = m->ris->vmsc->msc;
 	u32 mon_sel, ctl_val, flt_val, cur_ctl, cur_flt;
 
@@ -1134,8 +1118,7 @@ static void __ris_msmon_read(void *arg)
 	switch (m->type) {
 	case mpam_feat_msmon_csu:
 		now = mpam_read_monsel_reg(msc, CSU);
-		if (mpam_has_feature(mpam_feat_msmon_csu_hw_nrdy, rprops))
-			nrdy = now & MSMON___NRDY;
+		nrdy = now & MSMON___NRDY;
 		now = FIELD_GET(MSMON___VALUE, now);
 		break;
 	case mpam_feat_msmon_mbwu_31counter:
@@ -1143,8 +1126,7 @@ static void __ris_msmon_read(void *arg)
 	case mpam_feat_msmon_mbwu_63counter:
 		if (m->type != mpam_feat_msmon_mbwu_31counter) {
 			now = mpam_msc_read_mbwu_l(msc);
-			if (mpam_has_feature(mpam_feat_msmon_mbwu_hw_nrdy, rprops))
-				nrdy = now & MSMON___L_NRDY;
+			nrdy = now & MSMON___L_NRDY;
 
 			if (m->type == mpam_feat_msmon_mbwu_63counter)
 				now = FIELD_GET(MSMON___LWD_VALUE, now);
@@ -1152,8 +1134,7 @@ static void __ris_msmon_read(void *arg)
 				now = FIELD_GET(MSMON___L_VALUE, now);
 		} else {
 			now = mpam_read_monsel_reg(msc, MBWU);
-			if (mpam_has_feature(mpam_feat_msmon_mbwu_hw_nrdy, rprops))
-				nrdy = now & MSMON___NRDY;
+			nrdy = now & MSMON___NRDY;
 			now = FIELD_GET(MSMON___VALUE, now);
 		}
 
