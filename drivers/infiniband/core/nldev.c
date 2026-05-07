@@ -51,6 +51,7 @@
  * a controlled QKEY.
  */
 static bool privileged_qkey;
+static DEFINE_MUTEX(nldev_dellink_mutex);
 
 typedef int (*res_fill_func_t)(struct sk_buff*, bool,
 			       struct rdma_restrack_entry*, uint32_t);
@@ -1846,7 +1847,9 @@ static int nldev_dellink(struct sk_buff *skb, struct nlmsghdr *nlh,
 	 * implicitly scoped to the driver supporting dynamic link deletion like RXE.
 	 */
 	if (device->link_ops && device->link_ops->dellink) {
+		mutex_lock(&nldev_dellink_mutex);
 		err = device->link_ops->dellink(device);
+		mutex_unlock(&nldev_dellink_mutex);
 		if (err)
 			return err;
 	}
