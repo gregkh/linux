@@ -18,6 +18,7 @@
 #include <linux/sizes.h>
 #include <linux/user.h>
 #include <linux/syscalls.h>
+#include <linux/highmem.h>
 #include <asm/msr.h>
 #include <asm/fpu/xstate.h>
 #include <asm/fpu/types.h>
@@ -262,11 +263,29 @@ static int put_shstk_data(u64 __user *addr, u64 data)
 	return 0;
 }
 
+/* Copy from aligned address in userspace without risk of page fault. */
+static int shstk_copy_user_gup(unsigned long *ldata, unsigned long __user *addr)
+{
+	struct page *page;
+	void *kaddr;
+
+	mmap_assert_locked(current->mm);
+	if (get_user_pages((unsigned long)addr, 1, 0, &page) != 1)
+		return -EFAULT;
+
+	kaddr = kmap_local_page(page);
+	*ldata = *(unsigned long *)(kaddr + offset_in_page(addr));
+	kunmap_local(kaddr);
+	put_page(page);
+
+	return 0;
+}
+
 static int get_shstk_data(unsigned long *data, unsigned long __user *addr)
 {
 	unsigned long ldata;
 
-	if (unlikely(get_user(ldata, addr)))
+	if (shstk_copy_user_gup(&ldata, addr))
 		return -EFAULT;
 
 	if (!(ldata & SHSTK_DATA_BIT))
@@ -296,7 +315,6 @@ static int shstk_pop_sigframe(unsigned long *ssp)
 {
 	struct vm_area_struct *vma;
 	unsigned long token_addr;
-	bool need_to_check_vma;
 	int err = 1;
 
 	/*
@@ -308,25 +326,20 @@ static int shstk_pop_sigframe(unsigned long *ssp)
 	if (!IS_ALIGNED(*ssp, 8))
 		return -EINVAL;
 
-	need_to_check_vma = PAGE_ALIGN(*ssp) == *ssp;
-
-	if (need_to_check_vma)
-		if (mmap_read_lock_killable(current->mm))
-			return -EINTR;
+	if (mmap_read_lock_killable(current->mm))
+		return -EINTR;
 
 	err = get_shstk_data(&token_addr, (unsigned long __user *)*ssp);
 	if (unlikely(err))
 		goto out_err;
 
-	if (need_to_check_vma) {
-		vma = find_vma(current->mm, *ssp);
-		if (!vma || !(vma->vm_flags & VM_SHADOW_STACK)) {
-			err = -EFAULT;
-			goto out_err;
-		}
-
-		mmap_read_unlock(current->mm);
+	vma = find_vma(current->mm, *ssp);
+	if (!vma || !(vma->vm_flags & VM_SHADOW_STACK)) {
+		err = -EFAULT;
+		goto out_err;
 	}
+
+	mmap_read_unlock(current->mm);
 
 	/* Restore SSP aligned? */
 	if (unlikely(!IS_ALIGNED(token_addr, 8)))
@@ -340,8 +353,7 @@ static int shstk_pop_sigframe(unsigned long *ssp)
 
 	return 0;
 out_err:
-	if (need_to_check_vma)
-		mmap_read_unlock(current->mm);
+	mmap_read_unlock(current->mm);
 	return err;
 }
 
