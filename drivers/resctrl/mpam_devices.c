@@ -634,8 +634,7 @@ static struct mpam_msc_ris *mpam_get_or_create_ris(struct mpam_msc *msc,
  */
 static bool mpam_ris_hw_probe_csu_nrdy(struct mpam_msc_ris *ris)
 {
-	u32 now;
-	u32 mon_sel;
+	u32 now, mon_sel, ctl_val;
 	bool can_set, can_clear;
 	struct mpam_msc *msc = ris->vmsc->msc;
 
@@ -646,11 +645,21 @@ static bool mpam_ris_hw_probe_csu_nrdy(struct mpam_msc_ris *ris)
 		  FIELD_PREP(MSMON_CFG_MON_SEL_RIS, ris->ris_idx);
 	mpam_write_monsel_reg(msc, CFG_MON_SEL, mon_sel);
 
+	/* Hardware might ignore nrdy if it's not enabled */
+	ctl_val = MSMON_CFG_CSU_CTL_TYPE_CSU;
+	ctl_val |= MSMON_CFG_x_CTL_MATCH_PARTID;
+	ctl_val |= MSMON_CFG_x_CTL_MATCH_PMG;
+	ctl_val |= MSMON_CFG_x_CTL_EN;
+	mpam_write_monsel_reg(msc, CFG_CSU_FLT, 0);
+	mpam_write_monsel_reg(msc, CFG_CSU_CTL, ctl_val);
+
 	_mpam_write_monsel_reg(msc, MSMON_CSU, MSMON___NRDY);
 	now = _mpam_read_monsel_reg(msc, MSMON_CSU);
 	can_set = now & MSMON___NRDY;
 
 	_mpam_write_monsel_reg(msc, MSMON_CSU, 0);
+	/* Configuration change to try and coax hardware into setting nrdy */
+	mpam_write_monsel_reg(msc, CFG_CSU_FLT, 0x1);
 	now = _mpam_read_monsel_reg(msc, MSMON_CSU);
 	can_clear = !(now & MSMON___NRDY);
 	mpam_mon_sel_unlock(msc);
