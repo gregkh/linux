@@ -517,8 +517,11 @@ static int sysfs_group_attrs_change_owner(struct kobject *kobj,
 		struct attribute *const *attr;
 
 		for (i = 0, attr = grp->attrs; *attr; i++, attr++) {
-			if (grp->is_visible) {
-				mode = grp->is_visible(kobj, *attr, i);
+			if (grp->is_visible || grp->is_visible_const) {
+				if (grp->is_visible)
+					mode = grp->is_visible(kobj, *attr, i);
+				else
+					mode = grp->is_visible_const(kobj, *attr, i);
 				if (mode & SYSFS_GROUP_INVISIBLE)
 					break;
 				if (!mode)
