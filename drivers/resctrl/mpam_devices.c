@@ -635,7 +635,7 @@ static struct mpam_msc_ris *mpam_get_or_create_ris(struct mpam_msc *msc,
 static bool _mpam_ris_hw_probe_hw_nrdy(struct mpam_msc_ris *ris, u32 mon_reg)
 {
 	u32 now;
-	u64 mon_sel;
+	u32 mon_sel;
 	bool can_set, can_clear;
 	struct mpam_msc *msc = ris->vmsc->msc;
 
@@ -644,7 +644,7 @@ static bool _mpam_ris_hw_probe_hw_nrdy(struct mpam_msc_ris *ris, u32 mon_reg)
 
 	mon_sel = FIELD_PREP(MSMON_CFG_MON_SEL_MON_SEL, 0) |
 		  FIELD_PREP(MSMON_CFG_MON_SEL_RIS, ris->ris_idx);
-	_mpam_write_monsel_reg(msc, mon_reg, mon_sel);
+	mpam_write_monsel_reg(msc, CFG_MON_SEL, mon_sel);
 
 	_mpam_write_monsel_reg(msc, mon_reg, MSMON___NRDY);
 	now = _mpam_read_monsel_reg(msc, mon_reg);
