@@ -7165,7 +7165,7 @@ static ssize_t do_rbd_add(const char *buf, size_t count)
 
 	rc = device_add_disk(&rbd_dev->dev, rbd_dev->disk, NULL);
 	if (rc)
-		goto err_out_cleanup_disk;
+		goto err_out_device;
 
 	spin_lock(&rbd_dev_list_lock);
 	list_add_tail(&rbd_dev->node, &rbd_dev_list);
@@ -7179,8 +7179,8 @@ out:
 	module_put(THIS_MODULE);
 	return rc;
 
-err_out_cleanup_disk:
-	rbd_free_disk(rbd_dev);
+err_out_device:
+	device_del(&rbd_dev->dev);
 err_out_image_lock:
 	rbd_dev_image_unlock(rbd_dev);
 	rbd_dev_device_release(rbd_dev);

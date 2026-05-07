@@ -4787,6 +4787,9 @@ static __init int hugetlb_add_param(char *s, int (*setup)(char *))
 	size_t len;
 	char *p;
 
+	if (!s)
+		return -EINVAL;
+
 	if (hugetlb_param_index >= HUGE_MAX_CMDLINE_ARGS)
 		return -EINVAL;
 

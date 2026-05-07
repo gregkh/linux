@@ -97,6 +97,7 @@ static int loongarch_jump__parse(struct arch *arch, struct ins_operands *ops, st
 }
 
 static struct ins_ops loongarch_jump_ops = {
+	.free	   = jump__delete,
 	.parse	   = loongarch_jump__parse,
 	.scnprintf = jump__scnprintf,
 };
