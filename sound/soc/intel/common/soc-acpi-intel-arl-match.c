@@ -8,6 +8,7 @@
 #include <sound/soc-acpi.h>
 #include <sound/soc-acpi-intel-match.h>
 #include <sound/soc-acpi-intel-ssp-common.h>
+#include "soc-acpi-intel-sdca-quirks.h"
 #include "sof-function-topology-lib.h"
 
 static const struct snd_soc_acpi_endpoint single_endpoint = {
@@ -237,6 +238,15 @@ static const struct snd_soc_acpi_adr_device rt722_0_agg_adr[] = {
 	}
 };
 
+static const struct snd_soc_acpi_adr_device rt712_0_agg_adr[] = {
+	{
+		.adr = 0x000030025D071201ull,
+		.num_endpoints = ARRAY_SIZE(jack_amp_g1_dmic_endpoints),
+		.endpoints = jack_amp_g1_dmic_endpoints,
+		.name_prefix = "rt712"
+	}
+};
+
 static const struct snd_soc_acpi_adr_device rt1316_3_single_adr[] = {
 	{
 		.adr = 0x000330025D131601ull,
@@ -251,6 +261,15 @@ static const struct snd_soc_acpi_adr_device rt1320_2_single_adr[] = {
 		.adr = 0x000230025D132001ull,
 		.num_endpoints = 1,
 		.endpoints = &single_endpoint,
+		.name_prefix = "rt1320-1"
+	}
+};
+
+static const struct snd_soc_acpi_adr_device rt1320_3_group1_adr[] = {
+	{
+		.adr = 0x000330025D132001ull,
+		.num_endpoints = 1,
+		.endpoints = &spk_r_endpoint,
 		.name_prefix = "rt1320-1"
 	}
 };
@@ -404,6 +423,20 @@ static const struct snd_soc_acpi_link_adr arl_rt722_l0_rt1320_l2[] = {
 	{}
 };
 
+static const struct snd_soc_acpi_link_adr arl_rt712_l0_rt1320_l3[] = {
+	{
+		.mask = BIT(0),
+		.num_adr = ARRAY_SIZE(rt712_0_agg_adr),
+		.adr_d = rt712_0_agg_adr,
+	},
+	{
+		.mask = BIT(3),
+		.num_adr = ARRAY_SIZE(rt1320_3_group1_adr),
+		.adr_d = rt1320_3_group1_adr,
+	},
+	{}
+};
+
 static const struct snd_soc_acpi_codecs arl_essx_83x6 = {
 	.num_codecs = 3,
 	.codecs = { "ESSX8316", "ESSX8326", "ESSX8336"},
@@ -494,6 +527,14 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_arl_sdw_machines[] = {
 		.links = arl_rt711_l0_rt1316_l3,
 		.drv_name = "sof_sdw",
 		.sof_tplg_filename = "sof-arl-rt711-l0-rt1316-l3.tplg",
+	},
+	{
+		.link_mask = BIT(0) | BIT(3),
+		.links = arl_rt712_l0_rt1320_l3,
+		.drv_name = "sof_sdw",
+		.machine_check = snd_soc_acpi_intel_sdca_is_device_rt712_vb,
+		.sof_tplg_filename = "sof-arl-rt712-l0-rt1320-l3.tplg",
+		.get_function_tplg_files = sof_sdw_get_tplg_files,
 	},
 	{
 		.link_mask = BIT(2) | BIT(3),
