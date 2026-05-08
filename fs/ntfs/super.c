@@ -413,6 +413,7 @@ int ntfs_write_volume_label(struct ntfs_volume *vol, char *label)
 {
 	struct ntfs_inode *vol_ni = NTFS_I(vol->vol_ino);
 	struct ntfs_attr_search_ctx *ctx;
+	char *new_label;
 	__le16 *uname;
 	int uname_len, ret;
 
@@ -425,7 +426,7 @@ int ntfs_write_volume_label(struct ntfs_volume *vol, char *label)
 		return uname_len;
 	}
 
-	if (uname_len  > NTFS_MAX_LABEL_LEN) {
+	if (uname_len > NTFS_MAX_LABEL_LEN) {
 		ntfs_error(vol->sb,
 			   "Volume label is too long (max %d characters).",
 			   NTFS_MAX_LABEL_LEN);
@@ -433,11 +434,22 @@ int ntfs_write_volume_label(struct ntfs_volume *vol, char *label)
 		return -EINVAL;
 	}
 
+	/*
+	 * Allocate the in-memory label copy up front. If kstrdup() fails we
+	 * bail out before touching on-disk metadata, so the in-memory label
+	 * and the on-disk label stay in sync.
+	 */
+	new_label = kstrdup(label, GFP_KERNEL);
+	if (!new_label) {
+		kvfree(uname);
+		return -ENOMEM;
+	}
+
 	mutex_lock(&vol_ni->mrec_lock);
 	ctx = ntfs_attr_get_search_ctx(vol_ni, NULL);
 	if (!ctx) {
 		ret = -ENOMEM;
-		goto  out;
+		goto out;
 	}
 
 	if (!ntfs_attr_lookup(AT_VOLUME_NAME, NULL, 0, 0, 0, NULL, 0,
@@ -450,12 +462,14 @@ int ntfs_write_volume_label(struct ntfs_volume *vol, char *label)
 out:
 	mutex_unlock(&vol_ni->mrec_lock);
 	kvfree(uname);
-	mark_inode_dirty_sync(vol->vol_ino);
 
 	if (ret >= 0) {
 		kfree(vol->volume_label);
-		vol->volume_label = kstrdup(label, GFP_KERNEL);
+		vol->volume_label = new_label;
+		mark_inode_dirty_sync(vol->vol_ino);
 		ret = 0;
+	} else {
+		kfree(new_label);
 	}
 	return ret;
 }
