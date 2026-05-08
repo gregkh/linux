@@ -641,7 +641,7 @@ static void um_pci_virtio_remove(struct virtio_device *vdev)
 	}
 
 	/* Stop all virtqueues */
-	virtio_reset_device(vdev);
+	vdev->config->reset(vdev);
 	dev->cmd_vq = NULL;
 	dev->irq_vq = NULL;
 	vdev->config->del_vqs(vdev);
