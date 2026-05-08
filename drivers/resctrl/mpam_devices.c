@@ -148,11 +148,17 @@ static void mpam_free_garbage(void)
 /*
  * Once mpam is enabled, new requestors cannot further reduce the available
  * partid. Assert that the size is fixed, and new requestors will be turned
- * away.
+ * away. This is needed when walking over structures sized by PARTID.
+ *
+ * During mpam_disable() these structures are not fixed, but the MSC state
+ * is still reset using whatever sizes have been discovered so far. As only
+ * PARTID 0 will be used after mpam_disable(), any race would be benign.
+ * Skip the check if a mpam_disable_reason has been set.
  */
 static void mpam_assert_partid_sizes_fixed(void)
 {
-	WARN_ON_ONCE(!partid_max_published);
+	if (!mpam_disable_reason)
+		WARN_ON_ONCE(!partid_max_published);
 }
 
 static u32 __mpam_read_reg(struct mpam_msc *msc, u16 reg)
