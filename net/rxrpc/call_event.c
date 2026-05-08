@@ -456,8 +456,27 @@ bool rxrpc_input_call_event(struct rxrpc_call *call, struct sk_buff *skb)
 		resend = true;
 	}
 
-	if (skb)
-		rxrpc_input_call_packet(call, skb);
+	if (skb) {
+		struct rxrpc_skb_priv *sp = rxrpc_skb(skb);
+
+		if (sp->hdr.securityIndex != 0 && skb_cloned(skb)) {
+			/* Unshare the packet so that it can be modified by
+			 * in-place decryption.
+			 */
+			struct sk_buff *nskb = skb_copy(skb, GFP_ATOMIC);
+
+			if (nskb) {
+				rxrpc_new_skb(nskb, rxrpc_skb_new_unshared);
+				rxrpc_input_call_packet(call, nskb);
+				rxrpc_free_skb(nskb, rxrpc_skb_put_input);
+			} else {
+				/* OOM - Drop the packet. */
+				rxrpc_see_skb(skb, rxrpc_skb_see_unshare_nomem);
+			}
+		} else {
+			rxrpc_input_call_packet(call, skb);
+		}
+	}
 
 	rxrpc_transmit_some_data(call);
 
