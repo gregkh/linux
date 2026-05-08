@@ -633,7 +633,7 @@ again:
 							 trans->transid);
 			btrfs_set_file_extent_num_bytes(leaf, fi,
 							end - other_start);
-			return 0;
+			goto mark_dirty;
 		}
 	}
 
@@ -661,7 +661,7 @@ again:
 							other_end - start);
 			btrfs_set_file_extent_offset(leaf, fi,
 						     start - orig_offset);
-			return 0;
+			goto mark_dirty;
 		}
 	}
 
@@ -788,7 +788,12 @@ again:
 		}
 	}
 
-	return 0;
+mark_dirty:
+	ret = btrfs_inode_set_file_extent_range(inode, start, end - start);
+	if (ret)
+		btrfs_abort_transaction(trans, ret);
+
+	return ret;
 }
 
 /*
