@@ -1832,8 +1832,9 @@ static ssize_t dynamic_epp_store(struct device *a, struct device_attribute *b,
 		return -EINVAL;
 	}
 
+	/* Nothing to do */
 	if (dynamic_epp == enabled)
-		return -EINVAL;
+		return count;
 
 	/* reinitialize with desired dynamic EPP value */
 	dynamic_epp = enabled;
