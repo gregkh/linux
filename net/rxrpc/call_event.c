@@ -459,7 +459,9 @@ bool rxrpc_input_call_event(struct rxrpc_call *call, struct sk_buff *skb)
 	if (skb) {
 		struct rxrpc_skb_priv *sp = rxrpc_skb(skb);
 
-		if (sp->hdr.securityIndex != 0 && skb_cloned(skb)) {
+		if (sp->hdr.type == RXRPC_PACKET_TYPE_DATA &&
+		    sp->hdr.securityIndex != 0 &&
+		    skb_cloned(skb)) {
 			/* Unshare the packet so that it can be modified by
 			 * in-place decryption.
 			 */
