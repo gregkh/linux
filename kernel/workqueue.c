@@ -4683,7 +4683,9 @@ static int alloc_and_link_pwqs(struct workqueue_struct *wq)
 	if (ret)
 		kthread_flush_worker(pwq_release_worker);
 
-	return ret;
+	if (ret)
+		goto enomem;
+	return 0;
 
 enomem:
 	if (wq->cpu_pwq) {
