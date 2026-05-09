@@ -99,6 +99,7 @@ struct mcp2221 {
 	u8 *rxbuf;
 	u8 txbuf[64];
 	int rxbuf_idx;
+	int rxbuf_size;
 	int status;
 	u8 cur_i2c_clk_div;
 	struct gpio_chip *gc;
@@ -307,12 +308,14 @@ static int mcp_i2c_smbus_read(struct mcp2221 *mcp,
 		mcp->txbuf[3] = (u8)(msg->addr << 1);
 		total_len = msg->len;
 		mcp->rxbuf = msg->buf;
+		mcp->rxbuf_size = msg->len;
 	} else {
 		mcp->txbuf[1] = smbus_len;
 		mcp->txbuf[2] = 0;
 		mcp->txbuf[3] = (u8)(smbus_addr << 1);
 		total_len = smbus_len;
 		mcp->rxbuf = smbus_buf;
+		mcp->rxbuf_size = smbus_len;
 	}
 
 	ret = mcp_send_data_req_status(mcp, mcp->txbuf, 4);
@@ -522,6 +525,7 @@ static int mcp_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 
 			mcp->rxbuf_idx = 0;
 			mcp->rxbuf = data->block;
+			mcp->rxbuf_size = sizeof(data->block);
 			mcp->txbuf[0] = MCP2221_I2C_GET_DATA;
 			ret = mcp_send_data_req_status(mcp, mcp->txbuf, 1);
 			if (ret)
@@ -545,6 +549,7 @@ static int mcp_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 
 			mcp->rxbuf_idx = 0;
 			mcp->rxbuf = data->block;
+			mcp->rxbuf_size = sizeof(data->block);
 			mcp->txbuf[0] = MCP2221_I2C_GET_DATA;
 			ret = mcp_send_data_req_status(mcp, mcp->txbuf, 1);
 			if (ret)
@@ -824,6 +829,10 @@ static int mcp2221_raw_event(struct hid_device *hdev,
 					break;
 				}
 				if (4 + data[3] > size) {
+					mcp->status = -EINVAL;
+					break;
+				}
+				if (mcp->rxbuf_idx + data[3] > mcp->rxbuf_size) {
 					mcp->status = -EINVAL;
 					break;
 				}
