@@ -30,6 +30,8 @@ int ntfs_mft_record_check(const struct ntfs_volume *vol, struct mft_record *m,
 {
 	struct attr_record *a;
 	struct super_block *sb = vol->sb;
+	u16 attrs_offset;
+	u32 bytes_in_use;
 
 	if (!ntfs_is_file_record(m->magic)) {
 		ntfs_error(sb, "Record %llu has no FILE magic (0x%x)\n",
@@ -65,7 +67,16 @@ int ntfs_mft_record_check(const struct ntfs_volume *vol, struct mft_record *m,
 		goto err_out;
 	}
 
-	a = (struct attr_record *)((char *)m + le16_to_cpu(m->attrs_offset));
+	attrs_offset = le16_to_cpu(m->attrs_offset);
+	bytes_in_use = le32_to_cpu(m->bytes_in_use);
+
+	if (attrs_offset > bytes_in_use ||
+	    bytes_in_use - attrs_offset < sizeof_field(struct attr_record, type)) {
+		ntfs_error(sb, "Record %llu has corrupt attribute offset\n", mft_no);
+		goto err_out;
+	}
+
+	a = (struct attr_record *)((char *)m + attrs_offset);
 	if ((char *)a < (char *)m || (char *)a > (char *)m + vol->mft_record_size) {
 		ntfs_error(sb, "Record %llu is corrupt\n", mft_no);
 		goto err_out;
