@@ -1064,7 +1064,7 @@ static s64 ntfs_mft_bitmap_find_and_alloc_free_rec_nolock(struct ntfs_volume *vo
 				b = ffz((unsigned long)*byte);
 				if (b < 8 && b >= (bit & 7)) {
 					ll = data_pos + (bit & ~7ull) + b;
-					if (unlikely(ll > (1ll << 32))) {
+					if (unlikely(ll >= (1ll << 32))) {
 						folio_unlock(folio);
 						kunmap_local(buf);
 						folio_put(folio);
