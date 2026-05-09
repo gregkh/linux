@@ -1292,6 +1292,8 @@ static int z_erofs_decompress_pcluster(struct z_erofs_backend *be, bool eio)
 					.sb = be->sb,
 					.in = be->compressed_pages,
 					.out = be->decompressed_pages,
+					.inpages = pclusterpages,
+					.outpages = be->nr_pages,
 					.pageofs_in = pcl->pageofs_in,
 					.pageofs_out = pcl->pageofs_out,
 					.inputsize = pcl->pclustersize,
