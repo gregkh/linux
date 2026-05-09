@@ -167,6 +167,7 @@ struct cpuset {
 	 */
 	int nr_deadline_tasks;
 	int nr_migrate_dl_tasks;
+	/* DL bandwidth that needs destination reservation for this attach. */
 	u64 sum_migrate_dl_bw;
 	/*
 	 * CPU used for temporary DL bandwidth allocation during attach;
