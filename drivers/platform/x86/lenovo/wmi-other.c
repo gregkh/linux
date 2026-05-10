@@ -36,7 +36,6 @@
 
 #include "wmi-capdata01.h"
 #include "wmi-events.h"
-#include "wmi-gamezone.h"
 #include "wmi-helpers.h"
 #include "wmi-other.h"
 #include "../firmware_attributes_class.h"
