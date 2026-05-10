@@ -993,6 +993,13 @@ mft_unmap_out:
 			    ntfs_is_baad_recordp((__le32 *)kmirr))
 				bytes = vol->mft_record_size;
 		}
+		/* Compare the two records. */
+		if (memcmp(kmft, kmirr, bytes)) {
+			ntfs_error(sb,
+				   "$MFT and $MFTMirr record %i do not match.  Run chkdsk.",
+				   i);
+			goto mm_unmap_out;
+		}
 		kmft += vol->mft_record_size;
 		kmirr += vol->mft_record_size;
 	} while (++i < vol->mftmirr_size);
