@@ -564,6 +564,12 @@ fsmount_tbls := $(srctree)/tools/perf/trace/beauty/fsmount.sh
 $(fsmount_arrays): $(beauty_uapi_linux_dir)/mount.h $(fsmount_tbls)
 	$(Q)$(SHELL) '$(fsmount_tbls)' $(beauty_uapi_linux_dir) > $@
 
+fsmount_attr_arrays := $(beauty_outdir)/fsmount_attr_arrays.c
+fsmount_attr_tbls := $(srctree)/tools/perf/trace/beauty/fsmount_attr.sh
+
+$(fsmount_attr_arrays): $(beauty_uapi_linux_dir)/mount.h $(fsmount_attr_tbls)
+	$(Q)$(SHELL) '$(fsmount_attr_tbls)' $(beauty_uapi_linux_dir) > $@
+
 fspick_arrays := $(beauty_outdir)/fspick_arrays.c
 fspick_tbls := $(srctree)/tools/perf/trace/beauty/fspick.sh
 
@@ -854,6 +860,7 @@ prepare: $(OUTPUT)PERF-VERSION-FILE archheaders \
 	$(fadvise_advice_array) \
 	$(fsconfig_arrays) \
 	$(fsmount_arrays) \
+	$(fsmount_attr_arrays) \
 	$(fspick_arrays) \
 	$(pkey_alloc_access_rights_array) \
 	$(sndrv_pcm_ioctl_array) \
@@ -1301,6 +1308,7 @@ clean:: $(LIBAPI)-clean $(LIBBPF)-clean $(LIBSUBCMD)-clean $(LIBSYMBOL)-clean $(
 		$(OUTPUT)$(fadvise_advice_array) \
 		$(OUTPUT)$(fsconfig_arrays) \
 		$(OUTPUT)$(fsmount_arrays) \
+		$(OUTPUT)$(fsmount_attr_arrays) \
 		$(OUTPUT)$(fspick_arrays) \
 		$(OUTPUT)$(madvise_behavior_array) \
 		$(OUTPUT)$(mmap_flags_array) \
