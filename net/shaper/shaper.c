@@ -480,6 +480,12 @@ static int net_shaper_parse_handle(const struct nlattr *attr,
 	else if (handle->scope == NET_SHAPER_SCOPE_NODE)
 		id = NET_SHAPER_ID_UNSPEC;
 
+	if (id && handle->scope == NET_SHAPER_SCOPE_NETDEV) {
+		NL_SET_ERR_MSG_ATTR(info->extack, id_attr,
+				    "Netdev scope is a singleton, must use ID 0");
+		return -EINVAL;
+	}
+
 	handle->id = id;
 	return 0;
 }
