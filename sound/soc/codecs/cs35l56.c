@@ -867,11 +867,16 @@ static void cs35l56_dsp_work(struct work_struct *work)
 	if (!cs35l56->base.init_done)
 		return;
 
-	pm_runtime_get_sync(cs35l56->base.dev);
+	PM_RUNTIME_ACQUIRE(cs35l56->base.dev, pm);
+	ret = PM_RUNTIME_ACQUIRE_ERR(&pm);
+	if (ret) {
+		dev_err(cs35l56->base.dev, "dsp_work failed to runtime-resume: %d\n", ret);
+		return;
+	}
 
 	ret = cs35l56_read_prot_status(&cs35l56->base, &firmware_missing, &firmware_version);
 	if (ret)
-		goto err;
+		return;
 
 	/* Populate fw file qualifier with the revision and security state */
 	kfree(cs35l56->dsp.fwf_name);
@@ -887,7 +892,7 @@ static void cs35l56_dsp_work(struct work_struct *work)
 	}
 
 	if (!cs35l56->dsp.fwf_name)
-		goto err;
+		return;
 
 	dev_dbg(cs35l56->base.dev, "DSP fwf name: '%s' system name: '%s'\n",
 		cs35l56->dsp.fwf_name, cs35l56->dsp.system_name);
@@ -905,8 +910,6 @@ static void cs35l56_dsp_work(struct work_struct *work)
 		cs35l56_patch(cs35l56, firmware_missing);
 
 	cs35l56_log_tuning(&cs35l56->base, &cs35l56->dsp.cs_dsp);
-err:
-	pm_runtime_put_autosuspend(cs35l56->base.dev);
 }
 
 static struct snd_soc_dapm_context *cs35l56_power_up_for_cal(struct cs35l56_private *cs35l56)
