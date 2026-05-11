@@ -4967,8 +4967,19 @@ int btrfs_record_squota_delta(struct btrfs_fs_info *fs_info,
 	list_for_each_entry(qg, &qgroup_list, iterator) {
 		struct btrfs_qgroup_list *glist;
 
-		qg->excl += num_bytes * sign;
-		qg->rfer += num_bytes * sign;
+		ASSERT(qg->excl == qg->rfer);
+		if (WARN_ON_ONCE(sign < 0 && qg->excl < num_bytes)) {
+			btrfs_warn(fs_info,
+				   "squota underflow qg %hu/%llu excl %llu num_bytes %llu",
+				   btrfs_qgroup_level(qg->qgroupid),
+				   btrfs_qgroup_subvolid(qg->qgroupid),
+				   qg->excl, num_bytes);
+			qg->excl = 0;
+			qg->rfer = 0;
+		} else {
+			qg->excl += num_bytes * sign;
+			qg->rfer += num_bytes * sign;
+		}
 		qgroup_dirty(fs_info, qg);
 
 		list_for_each_entry(glist, &qg->groups, next_group)
