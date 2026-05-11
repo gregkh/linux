@@ -36,6 +36,9 @@
 #include "amdgpu_ras.h"
 #include "amdgpu_umc.h"
 #include "amdgpu_reset.h"
+#if IS_ENABLED(CONFIG_HSA_AMD)
+#include "kfd_priv.h"
+#endif
 
 /* Total memory size in system memory and all GPU VRAM. Used to
  * estimate worst case amount of memory to reserve for page tables
@@ -318,6 +321,28 @@ void amdgpu_amdkfd_gpu_reset(struct amdgpu_device *adev)
 {
 	if (amdgpu_device_should_recover_gpu(adev))
 		(void)amdgpu_reset_domain_schedule(adev->reset_domain, &adev->kfd.reset_work);
+}
+
+void amdgpu_amdkfd_clear_kfd_mapping(struct amdgpu_device *adev)
+{
+#if IS_ENABLED(CONFIG_HSA_AMD)
+	struct kfd_dev *kfd = adev->kfd.dev;
+	unsigned int i;
+
+	if (!kfd)
+		return;
+
+	for (i = 0; i < kfd->num_nodes; i++) {
+		struct kfd_node *node = kfd->nodes[i];
+
+		kfd_dev_unmap_mapping_range(KFD_MMAP_TYPE_DOORBELL |
+					    KFD_MMAP_GPU_ID(node->id),
+					    kfd_doorbell_process_slice(kfd));
+		kfd_dev_unmap_mapping_range(KFD_MMAP_TYPE_MMIO |
+					    KFD_MMAP_GPU_ID(node->id),
+					    PAGE_SIZE);
+	}
+#endif
 }
 
 int amdgpu_amdkfd_alloc_kernel_mem(struct amdgpu_device *adev, size_t size,
