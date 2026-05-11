@@ -2917,7 +2917,13 @@ int bpf_check_uarg_tail_zero(bpfptr_t uaddr, size_t expected_size,
 int bpf_check(struct bpf_prog **fp, union bpf_attr *attr, bpfptr_t uattr, u32 uattr_size);
 
 #ifndef CONFIG_BPF_JIT_ALWAYS_ON
-void bpf_patch_call_args(struct bpf_insn *insn, u32 stack_depth);
+int bpf_patch_call_args(struct bpf_insn *insn, u32 stack_depth);
+s32 bpf_call_args_imm(s16 idx);
+#else
+static inline s32 bpf_call_args_imm(s16 idx)
+{
+	return 0;
+}
 #endif
 
 struct btf *bpf_get_btf_vmlinux(void);
