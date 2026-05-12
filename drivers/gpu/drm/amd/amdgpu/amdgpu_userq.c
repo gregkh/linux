@@ -1346,6 +1346,14 @@ void amdgpu_userq_mgr_fini(struct amdgpu_userq_mgr *userq_mgr)
 	}
 
 	xa_destroy(&userq_mgr->userq_xa);
+
+	/*
+	 * Drain any in-flight reset_work. By this point all queues are freed
+	 * and userq_count is 0, so if reset_work starts now it exits early.
+	 * We still need to wait in case it was already executing gpu_recover.
+	 */
+	cancel_work_sync(&userq_mgr->reset_work);
+
 	mutex_destroy(&userq_mgr->userq_mutex);
 }
 
