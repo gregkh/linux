@@ -87,11 +87,7 @@ static struct cpufreq_driver amd_pstate_driver;
 static struct cpufreq_driver amd_pstate_epp_driver;
 static int cppc_state = AMD_PSTATE_UNDEFINED;
 static bool amd_pstate_prefcore = true;
-#ifdef CONFIG_X86_AMD_PSTATE_DYNAMIC_EPP
-static bool dynamic_epp = CONFIG_X86_AMD_PSTATE_DYNAMIC_EPP;
-#else
 static bool dynamic_epp;
-#endif
 static struct quirk_entry *quirks;
 
 /*
