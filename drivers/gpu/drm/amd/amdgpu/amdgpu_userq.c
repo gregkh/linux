@@ -303,13 +303,14 @@ static bool amdgpu_userq_buffer_vas_mapped(struct amdgpu_usermode_queue *queue)
 static void amdgpu_userq_buffer_va_list_del(struct amdgpu_bo_va_mapping *mapping,
 					    struct amdgpu_userq_va_cursor *va_cursor)
 {
-	atomic_set(&mapping->bo_va->userq_va_mapped, 0);
+	if (mapping)
+		atomic_set(&mapping->bo_va->userq_va_mapped, 0);
 	list_del(&va_cursor->list);
 	kfree(va_cursor);
 }
 
-static int amdgpu_userq_buffer_vas_list_cleanup(struct amdgpu_device *adev,
-						struct amdgpu_usermode_queue *queue)
+static void amdgpu_userq_buffer_vas_list_cleanup(struct amdgpu_device *adev,
+						 struct amdgpu_usermode_queue *queue)
 {
 	struct amdgpu_userq_va_cursor *va_cursor, *tmp;
 	struct amdgpu_bo_va_mapping *mapping;
@@ -319,15 +320,11 @@ static int amdgpu_userq_buffer_vas_list_cleanup(struct amdgpu_device *adev,
 
 	list_for_each_entry_safe(va_cursor, tmp, &queue->userq_va_list, list) {
 		mapping = amdgpu_vm_bo_lookup_mapping(queue->vm, va_cursor->gpu_addr);
-		if (!mapping) {
-			return -EINVAL;
-		}
-		dev_dbg(adev->dev, "delete the userq:%p va:%llx\n",
-			queue, va_cursor->gpu_addr);
+		if (mapping)
+			dev_dbg(adev->dev, "delete the userq:%p va:%llx\n",
+				queue, va_cursor->gpu_addr);
 		amdgpu_userq_buffer_va_list_del(mapping, va_cursor);
 	}
-
-	return 0;
 }
 
 static int amdgpu_userq_preempt_helper(struct amdgpu_usermode_queue *queue)
