@@ -288,8 +288,15 @@ void netfs_unlock_abandoned_read_pages(struct netfs_io_request *rreq)
 			struct folio *folio = folioq_folio(p, slot);
 
 			if (folio && !folioq_is_marked2(p, slot)) {
-				trace_netfs_folio(folio, netfs_folio_trace_abandon);
-				folio_unlock(folio);
+				if (folio->index == rreq->no_unlock_folio &&
+				    test_bit(NETFS_RREQ_NO_UNLOCK_FOLIO,
+					     &rreq->flags)) {
+					_debug("no unlock");
+				} else {
+					trace_netfs_folio(folio,
+						netfs_folio_trace_abandon);
+					folio_unlock(folio);
+				}
 			}
 		}
 	}
