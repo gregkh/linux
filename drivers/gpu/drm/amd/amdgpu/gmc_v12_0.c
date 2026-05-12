@@ -812,7 +812,7 @@ static int gmc_v12_0_gart_init(struct amdgpu_device *adev)
 
 static int gmc_v12_0_sw_init(struct amdgpu_ip_block *ip_block)
 {
-	int r, vram_width = 0, vram_type = 0, vram_vendor = 0;
+	int r, vram_width = 0, vram_type = 0, vram_vendor = 0, dma_addr_bits;
 	struct amdgpu_device *adev = ip_block->adev;
 	uint64_t pte_addr_mask = 0;
 	int i;
@@ -845,6 +845,7 @@ static int gmc_v12_0_sw_init(struct amdgpu_ip_block *ip_block)
 		 */
 		amdgpu_vm_adjust_size(adev, 256 * 1024, 9, 3, 48);
 		pte_addr_mask = 0x0000FFFFFFFFF000ULL; /* 48 bit PA */
+		dma_addr_bits = 44;
 		break;
 	case IP_VERSION(12, 1, 0):
 		bitmap_set(adev->vmhubs_mask, AMDGPU_GFXHUB(0),
@@ -858,9 +859,12 @@ static int gmc_v12_0_sw_init(struct amdgpu_ip_block *ip_block)
 		 */
 		amdgpu_vm_adjust_size(adev, 128 * 1024 * 1024, 9, 4, 57);
 		pte_addr_mask = 0x000FFFFFFFFFF000ULL; /* 52 bit PA */
+		dma_addr_bits = 52;
 		break;
 	default:
-		break;
+		dev_warn(adev->dev, "Unrecognized GC IP version: 0x%08x\n",
+			 amdgpu_ip_version(adev, GC_HWIP, 0));
+		return -EINVAL;
 	}
 
 	/* This interrupt is VMC page fault.*/
@@ -916,13 +920,13 @@ static int gmc_v12_0_sw_init(struct amdgpu_ip_block *ip_block)
 	adev->gmc.mc_mask = AMDGPU_GMC_HOLE_MASK;
 	adev->gmc.pte_addr_mask = pte_addr_mask;
 
-	r = dma_set_mask_and_coherent(adev->dev, DMA_BIT_MASK(44));
+	r = dma_set_mask_and_coherent(adev->dev, DMA_BIT_MASK(dma_addr_bits));
 	if (r) {
 		drm_warn(adev_to_drm(adev), "No suitable DMA available.\n");
 		return r;
 	}
 
-	adev->need_swiotlb = drm_need_swiotlb(44);
+	adev->need_swiotlb = drm_need_swiotlb(dma_addr_bits);
 
 	r = gmc_v12_0_mc_init(adev);
 	if (r)
