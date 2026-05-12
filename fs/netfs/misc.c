@@ -307,10 +307,10 @@ bool netfs_release_folio(struct folio *folio, gfp_t gfp)
 		return false;
 
 	netfs_read_sizes(inode, &i_size, &remote_i_size, &zero_point);
-	end = umin(folio_next_pos(folio), i_size);
+	end = folio_next_pos(folio);
 	if (end > zero_point) {
 		spin_lock(&inode->i_lock);
-		end = umin(folio_next_pos(folio), inode->i_size);
+		end = umin(end, ctx->_remote_i_size);
 		if (end > ctx->_zero_point)
 			netfs_write_zero_point(inode, end);
 		spin_unlock(&inode->i_lock);
