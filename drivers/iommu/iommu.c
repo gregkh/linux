@@ -2709,7 +2709,7 @@ int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
 		return 0;
 	}
 	ret = __iommu_map_domain_pgtbl(domain, iova, paddr, size, prot, gfp);
-	if (!ret)
+	if (ret)
 		return ret;
 
 	trace_map(iova, paddr, size);
