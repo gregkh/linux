@@ -4957,8 +4957,9 @@ int btrfs_record_squota_delta(struct btrfs_fs_info *fs_info,
 
 	spin_lock(&fs_info->qgroup_lock);
 	qgroup = find_qgroup_rb(fs_info, root);
-	if (!qgroup) {
-		ret = -ENOENT;
+	if (WARN_ON_ONCE(!qgroup)) {
+		btrfs_warn(fs_info, "squota failed to find qgroup for root %llu", root);
+		ret = 0;
 		goto out;
 	}
 
