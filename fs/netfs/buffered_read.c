@@ -156,9 +156,8 @@ static void netfs_read_cache_to_pagecache(struct netfs_io_request *rreq,
 			netfs_cache_read_terminated, subreq);
 }
 
-static void netfs_queue_read(struct netfs_io_request *rreq,
-			     struct netfs_io_subrequest *subreq,
-			     bool last_subreq)
+void netfs_queue_read(struct netfs_io_request *rreq,
+		      struct netfs_io_subrequest *subreq)
 {
 	struct netfs_io_stream *stream = &rreq->io_streams[0];
 
@@ -176,11 +175,6 @@ static void netfs_queue_read(struct netfs_io_request *rreq,
 			/* Store list pointers before active flag */
 			smp_store_release(&stream->active, true);
 		}
-	}
-
-	if (last_subreq) {
-		smp_wmb(); /* Write lists before ALL_QUEUED. */
-		set_bit(NETFS_RREQ_ALL_QUEUED, &rreq->flags);
 	}
 
 	spin_unlock(&rreq->lock);
@@ -233,6 +227,8 @@ static void netfs_read_to_pagecache(struct netfs_io_request *rreq,
 		subreq->start	= start;
 		subreq->len	= size;
 
+		netfs_queue_read(rreq, subreq);
+
 		source = netfs_cache_prepare_read(rreq, subreq, rreq->i_size);
 		subreq->source = source;
 		if (source == NETFS_DOWNLOAD_FROM_SERVER) {
@@ -253,6 +249,7 @@ static void netfs_read_to_pagecache(struct netfs_io_request *rreq,
 				       rreq->debug_id, subreq->debug_index,
 				       subreq->len, size,
 				       subreq->start, ictx->zero_point, rreq->i_size);
+				netfs_cancel_read(subreq, ret);
 				break;
 			}
 			subreq->len = len;
@@ -261,12 +258,7 @@ static void netfs_read_to_pagecache(struct netfs_io_request *rreq,
 			if (rreq->netfs_ops->prepare_read) {
 				ret = rreq->netfs_ops->prepare_read(subreq);
 				if (ret < 0) {
-					subreq->error = ret;
-					/* Not queued - release both refs. */
-					netfs_put_subrequest(subreq,
-							     netfs_sreq_trace_put_cancel);
-					netfs_put_subrequest(subreq,
-							     netfs_sreq_trace_put_cancel);
+					netfs_cancel_read(subreq, ret);
 					break;
 				}
 				trace_netfs_sreq(subreq, netfs_sreq_trace_prepare);
@@ -289,23 +281,23 @@ static void netfs_read_to_pagecache(struct netfs_io_request *rreq,
 
 		pr_err("Unexpected read source %u\n", source);
 		WARN_ON_ONCE(1);
+		netfs_cancel_read(subreq, ret);
 		break;
 
 	issue:
 		slice = netfs_prepare_read_iterator(subreq, ractl);
 		if (slice < 0) {
 			ret = slice;
-			subreq->error = ret;
-			trace_netfs_sreq(subreq, netfs_sreq_trace_cancel);
-			/* Not queued - release both refs. */
-			netfs_put_subrequest(subreq, netfs_sreq_trace_put_cancel);
-			netfs_put_subrequest(subreq, netfs_sreq_trace_put_cancel);
+			netfs_cancel_read(subreq, ret);
 			break;
 		}
-		size -= slice;
 		start += slice;
+		size -= slice;
+		if (size <= 0) {
+			smp_wmb(); /* Write lists before ALL_QUEUED. */
+			set_bit(NETFS_RREQ_ALL_QUEUED, &rreq->flags);
+		}
 
-		netfs_queue_read(rreq, subreq, size <= 0);
 		netfs_issue_read(rreq, subreq);
 		cond_resched();
 	} while (size > 0);

@@ -576,6 +576,17 @@ skip_error_checks:
 EXPORT_SYMBOL(netfs_read_subreq_terminated);
 
 /*
+ * Cancel a read subrequest due to preparation failure.
+ */
+void netfs_cancel_read(struct netfs_io_subrequest *subreq, int error)
+{
+	trace_netfs_sreq(subreq, netfs_sreq_trace_cancel);
+	subreq->error = error;
+	__set_bit(NETFS_SREQ_FAILED, &subreq->flags);
+	netfs_read_subreq_terminated(subreq);
+}
+
+/*
  * Handle termination of a read from the cache.
  */
 void netfs_cache_read_terminated(void *priv, ssize_t transferred_or_error)
