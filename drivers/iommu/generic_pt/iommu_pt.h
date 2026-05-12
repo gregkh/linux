@@ -909,8 +909,8 @@ static int NS(map_range)(struct pt_iommu *iommu_table, dma_addr_t iova,
 		return ret;
 
 	/* Calculate target page size and level for the leaves */
-	if (pt_has_system_page_size(common) && len == PAGE_SIZE) {
-		PT_WARN_ON(!(pgsize_bitmap & PAGE_SIZE));
+	if (pt_has_system_page_size(common) && len == PAGE_SIZE &&
+		likely(pgsize_bitmap & PAGE_SIZE)) {
 		if (log2_mod(iova | paddr, PAGE_SHIFT))
 			return -ENXIO;
 		map.leaf_pgsize_lg2 = PAGE_SHIFT;
