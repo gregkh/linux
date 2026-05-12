@@ -2507,8 +2507,8 @@ static int __init uniwill_init(void)
 	}
 
 	if (force) {
-		/* Assume that the device supports all features */
-		device_descriptor.features = UINT_MAX;
+		/* Assume that the device supports all features except the charge limit */
+		device_descriptor.features = UINT_MAX & ~UNIWILL_FEATURE_BATTERY;
 		pr_warn("Enabling potentially unsupported features\n");
 	}
 
