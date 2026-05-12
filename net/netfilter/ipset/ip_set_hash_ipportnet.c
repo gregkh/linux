@@ -273,7 +273,7 @@ hash_ipportnet4_uadt(struct ip_set *set, struct nlattr *tb[],
 		p = port;
 		ip2 = ip2_from;
 	}
-	for (; ip <= ip_to; ip++) {
+	for (; ip <= ip_to;) {
 		e.ip = htonl(ip);
 		for (; p <= port_to; p++) {
 			e.port = htons(p);
@@ -297,6 +297,9 @@ hash_ipportnet4_uadt(struct ip_set *set, struct nlattr *tb[],
 			ip2 = ip2_from;
 		}
 		p = port;
+		if (ip == ip_to)
+			break;
+		ip++;
 	}
 	return ret;
 }
