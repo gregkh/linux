@@ -2189,8 +2189,6 @@ static int __init uniwill_init(void)
 		if (!force)
 			return -ENODEV;
 
-		/* Assume that the device supports all features */
-		device_descriptor.features = UINT_MAX;
 		pr_warn("Loading on a potentially unsupported device\n");
 	} else {
 		/*
@@ -2206,6 +2204,12 @@ static int __init uniwill_init(void)
 
 		descriptor = id->driver_data;
 		device_descriptor = *descriptor;
+	}
+
+	if (force) {
+		/* Assume that the device supports all features */
+		device_descriptor.features = UINT_MAX;
+		pr_warn("Enabling potentially unsupported features\n");
 	}
 
 	ret = platform_driver_register(&uniwill_driver);
