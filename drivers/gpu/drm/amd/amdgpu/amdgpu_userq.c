@@ -802,6 +802,9 @@ amdgpu_userq_create(struct drm_file *filp, union drm_amdgpu_userq *args)
 		goto clean_fence_driver;
 	}
 
+	/* Update VM owner at userq submit-time for page-fault attribution. */
+	amdgpu_vm_set_task_info(&fpriv->vm);
+
 	amdgpu_userq_ensure_ev_fence(&fpriv->userq_mgr, &fpriv->evf_mgr);
 
 	/* don't map the queue if scheduling is halted */
