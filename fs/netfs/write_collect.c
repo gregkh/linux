@@ -57,7 +57,8 @@ static void netfs_dump_request(const struct netfs_io_request *rreq)
 int netfs_folio_written_back(struct folio *folio)
 {
 	enum netfs_folio_trace why = netfs_folio_trace_clear;
-	struct netfs_inode *ictx = netfs_inode(folio->mapping->host);
+	struct inode *inode = folio_inode(folio);
+	struct netfs_inode *ictx = netfs_inode(inode);
 	struct netfs_folio *finfo;
 	struct netfs_group *group = NULL;
 	int gcount = 0;
@@ -69,8 +70,10 @@ int netfs_folio_written_back(struct folio *folio)
 		unsigned long long fend;
 
 		fend = folio_pos(folio) + finfo->dirty_offset + finfo->dirty_len;
-		if (fend > ictx->zero_point)
-			ictx->zero_point = fend;
+		spin_lock(&ictx->inode.i_lock);
+		if (fend > ictx->_zero_point)
+			netfs_write_zero_point(inode, fend);
+		spin_unlock(&ictx->inode.i_lock);
 
 		folio_detach_private(folio);
 		group = finfo->netfs_group;

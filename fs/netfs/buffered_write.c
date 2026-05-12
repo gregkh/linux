@@ -230,7 +230,7 @@ ssize_t netfs_perform_write(struct kiocb *iocb, struct iov_iter *iter,
 		 * server would just return a block of zeros or a short read if
 		 * we try to read it.
 		 */
-		if (fpos >= ctx->zero_point) {
+		if (fpos >= netfs_read_zero_point(inode)) {
 			folio_zero_segment(folio, 0, offset);
 			copied = copy_folio_from_iter_atomic(folio, offset, part, iter);
 			if (unlikely(copied == 0))
