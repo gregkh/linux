@@ -430,7 +430,7 @@ int simple_ring_buffer_init_mm(struct simple_rb_per_cpu *cpu_buffer,
 
 	if (ret) {
 		for (i--; i >= 0; i--)
-			unload_page((void *)desc->page_va[i]);
+			unload_page(bpages[i].page);
 		unload_page(cpu_buffer->meta);
 
 		return ret;
