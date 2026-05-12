@@ -2615,12 +2615,11 @@ out_set_count:
 
 static int __iommu_map_domain_pgtbl(struct iommu_domain *domain,
 				    unsigned long iova, phys_addr_t paddr,
-				    size_t size, int prot, gfp_t gfp)
+				    size_t size, int prot, gfp_t gfp,
+				    size_t *mapped)
 {
 	const struct iommu_domain_ops *ops = domain->ops;
-	unsigned long orig_iova = iova;
 	unsigned int min_pagesz;
-	size_t orig_size = size;
 	int ret = 0;
 
 	if (WARN_ON(!ops->map_pages))
@@ -2643,31 +2642,25 @@ static int __iommu_map_domain_pgtbl(struct iommu_domain *domain,
 	pr_debug("map: iova 0x%lx pa %pa size 0x%zx\n", iova, &paddr, size);
 
 	while (size) {
-		size_t pgsize, count, mapped = 0;
+		size_t pgsize, count, op_mapped = 0;
 
 		pgsize = iommu_pgsize(domain, iova, paddr, size, &count);
 
 		pr_debug("mapping: iova 0x%lx pa %pa pgsize 0x%zx count %zu\n",
 			 iova, &paddr, pgsize, count);
 		ret = ops->map_pages(domain, iova, paddr, pgsize, count, prot,
-				     gfp, &mapped);
+				     gfp, &op_mapped);
 		/*
 		 * Some pages may have been mapped, even if an error occurred,
 		 * so we should account for those so they can be unmapped.
 		 */
-		size -= mapped;
-
+		*mapped += op_mapped;
 		if (ret)
-			break;
+			return ret;
 
-		iova += mapped;
-		paddr += mapped;
-	}
-
-	/* unroll mapping in case something went wrong */
-	if (ret) {
-		iommu_unmap(domain, orig_iova, orig_size - size);
-		return ret;
+		size -= op_mapped;
+		iova += op_mapped;
+		paddr += op_mapped;
 	}
 	return 0;
 }
@@ -2685,6 +2678,7 @@ int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
 		phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
 {
 	struct pt_iommu *pt = iommupt_from_domain(domain);
+	size_t mapped = 0;
 	int ret;
 
 	might_sleep_if(gfpflags_allow_blocking(gfp));
@@ -2696,24 +2690,19 @@ int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
 				 __GFP_HIGHMEM))))
 		return -EINVAL;
 
-	if (pt) {
-		size_t mapped = 0;
-
+	if (pt)
 		ret = pt->ops->map_range(pt, iova, paddr, size, prot, gfp,
 					 &mapped);
-		if (ret) {
-			iommu_unmap(domain, iova, mapped);
-			return ret;
-		}
-	} else {
+	else
 		ret = __iommu_map_domain_pgtbl(domain, iova, paddr, size, prot,
-					       gfp);
-		if (ret)
-			return ret;
-	}
+					       gfp, &mapped);
 
-	trace_map(iova, paddr, size);
-	iommu_debug_map(domain, paddr, size);
+	trace_map(iova, paddr, mapped);
+	iommu_debug_map(domain, paddr, mapped);
+	if (ret) {
+		iommu_unmap(domain, iova, mapped);
+		return ret;
+	}
 	return 0;
 }
 
