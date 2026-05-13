@@ -42,9 +42,10 @@
 #include "oss/oss_1_0_d.h"
 #include "oss/oss_1_0_sh_mask.h"
 
+#define VCE_V1_0_ALIGNMENT	(32 * 1024)
 #define VCE_V1_0_FW_SIZE	(256 * 1024)
 #define VCE_V1_0_STACK_SIZE	(64 * 1024)
-#define VCE_V1_0_DATA_SIZE	(7808 * (AMDGPU_MAX_VCE_HANDLES + 1))
+#define VCE_V1_0_DATA_SIZE	(ALIGN(7808 * (AMDGPU_MAX_VCE_HANDLES + 1), VCE_V1_0_ALIGNMENT))
 #define VCE_STATUS_VCPU_REPORT_FW_LOADED_MASK	0x02
 
 static void vce_v1_0_set_ring_funcs(struct amdgpu_device *adev);
@@ -189,16 +190,21 @@ static int vce_v1_0_load_fw_signature(struct amdgpu_device *adev)
 {
 	const struct common_firmware_header *hdr;
 	struct vce_v1_0_fw_signature *sign;
-	unsigned int ucode_offset;
+	u32 ucode_offset;
+	u32 ucode_size;
 	uint32_t chip_id;
 	u32 *cpu_addr;
 	int i;
 
 	hdr = (const struct common_firmware_header *)adev->vce.fw->data;
 	ucode_offset = le32_to_cpu(hdr->ucode_array_offset_bytes);
+	ucode_size = hdr->ucode_size_bytes - sizeof(struct vce_v1_0_fw_signature *);
 	cpu_addr = adev->vce.cpu_addr;
 
 	sign = (void *)adev->vce.fw->data + ucode_offset;
+
+	if (ucode_size > VCE_V1_0_FW_SIZE - AMDGPU_VCE_FIRMWARE_OFFSET)
+		return -EINVAL;
 
 	switch (adev->asic_type) {
 	case CHIP_TAHITI:
@@ -231,7 +237,7 @@ static int vce_v1_0_load_fw_signature(struct amdgpu_device *adev)
 	cpu_addr[4] = cpu_to_le32(le32_to_cpu(sign->length) + 64);
 
 	memset_io(&cpu_addr[5], 0, 44);
-	memcpy_toio(&cpu_addr[16], &sign[1], hdr->ucode_size_bytes - sizeof(*sign));
+	memcpy_toio(&cpu_addr[16], &sign[1], ucode_size);
 
 	cpu_addr += (le32_to_cpu(sign->length) + 64) / 4;
 	memcpy_toio(&cpu_addr[0], &sign->val[i].sigval[0], 16);
@@ -312,17 +318,22 @@ static int vce_v1_0_mc_resume(struct amdgpu_device *adev)
 	WREG32(mmVCE_VCPU_SCRATCH7, AMDGPU_MAX_VCE_HANDLES);
 
 	offset =  adev->vce.gpu_addr + AMDGPU_VCE_FIRMWARE_OFFSET;
-	size = VCE_V1_0_FW_SIZE;
+	size = VCE_V1_0_FW_SIZE - AMDGPU_VCE_FIRMWARE_OFFSET;
 	WREG32(mmVCE_VCPU_CACHE_OFFSET0, offset);
 	WREG32(mmVCE_VCPU_CACHE_SIZE0, size);
 
 	offset += size;
 	size = VCE_V1_0_STACK_SIZE;
+	WARN_ON(!IS_ALIGNED(offset, VCE_V1_0_ALIGNMENT));
+	WARN_ON(!IS_ALIGNED(size, VCE_V1_0_ALIGNMENT));
 	WREG32(mmVCE_VCPU_CACHE_OFFSET1, offset);
 	WREG32(mmVCE_VCPU_CACHE_SIZE1, size);
 
 	offset += size;
 	size = VCE_V1_0_DATA_SIZE;
+	WARN_ON(!IS_ALIGNED(offset, VCE_V1_0_ALIGNMENT));
+	WARN_ON(!IS_ALIGNED(size, VCE_V1_0_ALIGNMENT));
+	WARN_ON((offset + size - adev->vce.gpu_addr) > amdgpu_bo_size(adev->vce.vcpu_bo));
 	WREG32(mmVCE_VCPU_CACHE_OFFSET2, offset);
 	WREG32(mmVCE_VCPU_CACHE_SIZE2, size);
 
