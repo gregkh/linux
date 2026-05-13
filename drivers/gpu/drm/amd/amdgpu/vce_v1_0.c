@@ -542,6 +542,9 @@ static int vce_v1_0_ensure_vcpu_bo_32bit_addr(struct amdgpu_device *adev)
 	u64 vce_gart_start_offs;
 	int r;
 
+	if (adev->gmc.vram_start < adev->gmc.gart_start)
+		return amdgpu_bo_gpu_offset(adev->vce.vcpu_bo) <= max_vcpu_bo_addr ? 0 : -EINVAL;
+
 	r = amdgpu_gtt_mgr_alloc_entries(&adev->mman.gtt_mgr,
 					 &adev->vce.gart_node, num_pages,
 					 DRM_MM_INSERT_LOW);
