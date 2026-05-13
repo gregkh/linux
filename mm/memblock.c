@@ -989,13 +989,15 @@ void __init_memblock memblock_free(void *ptr, size_t size)
 int __init_memblock memblock_phys_free(phys_addr_t base, phys_addr_t size)
 {
 	phys_addr_t end = base + size - 1;
-	int ret;
+	int ret = 0;
 
 	memblock_dbg("%s: [%pa-%pa] %pS\n", __func__,
 		     &base, &end, (void *)_RET_IP_);
 
 	kmemleak_free_part_phys(base, size);
-	ret = memblock_remove_range(&memblock.reserved, base, size);
+
+	if (!slab_is_available() || IS_ENABLED(CONFIG_ARCH_KEEP_MEMBLOCK))
+		ret = memblock_remove_range(&memblock.reserved, base, size);
 
 	if (slab_is_available())
 		__free_reserved_area(base, base + size, -1);
