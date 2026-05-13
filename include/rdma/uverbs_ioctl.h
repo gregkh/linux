@@ -635,6 +635,7 @@ struct uverbs_attr_bundle {
 		struct ib_uverbs_file *ufile;
 		struct ib_ucontext *context;
 		struct ib_uobject *uobject;
+		const struct uverbs_api_ioctl_method *method_elm;
 		DECLARE_BITMAP(attr_present, UVERBS_API_ATTR_BKEY_LEN);
 	);
 	struct uverbs_attr attrs[];

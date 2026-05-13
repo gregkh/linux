@@ -422,12 +422,10 @@ uverbs_api_ioctl_handler_fn uverbs_get_handler_fn(struct ib_udata *udata)
 {
 	struct uverbs_attr_bundle *bundle =
 		rdma_udata_to_uverbs_attr_bundle(udata);
-	struct bundle_priv *pbundle =
-		container_of(&bundle->hdr, struct bundle_priv, bundle);
 
 	lockdep_assert_held(&bundle->ufile->device->disassociate_srcu);
 
-	return srcu_dereference(pbundle->method_elm->handler,
+	return srcu_dereference(bundle->method_elm->handler,
 				&bundle->ufile->device->disassociate_srcu);
 }
 

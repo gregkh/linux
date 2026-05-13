@@ -244,7 +244,6 @@ struct bundle_priv {
 	size_t internal_used;
 
 	struct radix_tree_root *radix;
-	const struct uverbs_api_ioctl_method *method_elm;
 	void __rcu **radix_slots;
 	unsigned long radix_slots_len;
 	u32 method_key;
