@@ -178,7 +178,7 @@ static void vce_v1_0_init_cg(struct amdgpu_device *adev)
 }
 
 /**
- * vce_v1_0_load_fw_signature - load firmware signature into VCPU BO
+ * vce_v1_0_load_fw() - load firmware signature into VCPU BO
  *
  * @adev: amdgpu_device pointer
  *
@@ -186,7 +186,7 @@ static void vce_v1_0_init_cg(struct amdgpu_device *adev)
  * This function finds the signature appropriate for the current
  * ASIC and writes that into the VCPU BO.
  */
-static int vce_v1_0_load_fw_signature(struct amdgpu_device *adev)
+static int vce_v1_0_load_fw(struct amdgpu_device *adev)
 {
 	const struct common_firmware_header *hdr;
 	struct vce_v1_0_fw_signature *sign;
@@ -231,6 +231,8 @@ static int vce_v1_0_load_fw_signature(struct amdgpu_device *adev)
 			chip_id, amdgpu_asic_name[adev->asic_type]);
 		return -EINVAL;
 	}
+
+	memset_io(&cpu_addr[0], 0, amdgpu_bo_size(adev->vce.vcpu_bo));
 
 	cpu_addr += (256 - 64) / 4;
 	memcpy_toio(&cpu_addr[0], &sign->val[i].nonce[0], 16);
@@ -592,10 +594,7 @@ static int vce_v1_0_sw_init(struct amdgpu_ip_block *ip_block)
 	if (r)
 		return r;
 
-	r = amdgpu_vce_resume(adev);
-	if (r)
-		return r;
-	r = vce_v1_0_load_fw_signature(adev);
+	r = vce_v1_0_load_fw(adev);
 	if (r)
 		return r;
 	r = vce_v1_0_ensure_vcpu_bo_32bit_addr(adev);
@@ -714,10 +713,7 @@ static int vce_v1_0_resume(struct amdgpu_ip_block *ip_block)
 	struct amdgpu_device *adev = ip_block->adev;
 	int r;
 
-	r = amdgpu_vce_resume(adev);
-	if (r)
-		return r;
-	r = vce_v1_0_load_fw_signature(adev);
+	r = vce_v1_0_load_fw(adev);
 	if (r)
 		return r;
 	r = vce_v1_0_ensure_vcpu_bo_32bit_addr(adev);
