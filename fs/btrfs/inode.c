@@ -1060,6 +1060,12 @@ again:
 			mapping_set_error(mapping, -EIO);
 		return;
 	}
+	/*
+	 * If a single block at file offset 0 cannot be inlined, fall back to
+	 * regular writes without marking the file incompressible.
+	 */
+	if (start == 0 && end <= blocksize)
+		goto cleanup_and_bail_uncompressed;
 
 	/*
 	 * We aren't doing an inline extent. Round the compressed size up to a
@@ -4960,6 +4966,8 @@ static int btrfs_rmdir(struct inode *vfs_dir, struct dentry *dentry)
 	ret = btrfs_orphan_add(trans, inode);
 	if (ret)
 		goto out;
+
+	btrfs_record_unlink_dir(trans, dir, inode, false);
 
 	/* now the directory is empty */
 	ret = btrfs_unlink_inode(trans, dir, inode, &fname.disk_name);
