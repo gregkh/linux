@@ -1660,8 +1660,9 @@ static void ata_qc_done(struct ata_queued_cmd *qc)
 
 void ata_scsi_deferred_qc_work(struct work_struct *work)
 {
-	struct ata_port *ap =
-		container_of(work, struct ata_port, deferred_qc_work);
+	struct ata_link *link =
+		container_of(work, struct ata_link, deferred_qc_work);
+	struct ata_port *ap = link->ap;
 	struct ata_queued_cmd *qc;
 	unsigned long flags;
 
@@ -1672,10 +1673,10 @@ void ata_scsi_deferred_qc_work(struct work_struct *work)
 	 * such case, we should not need any more deferring the qc, so warn if
 	 * qc_defer() says otherwise.
 	 */
-	qc = ap->deferred_qc;
+	qc = link->deferred_qc;
 	if (qc && !ata_port_eh_scheduled(ap)) {
 		WARN_ON_ONCE(ap->ops->qc_defer(qc));
-		ap->deferred_qc = NULL;
+		link->deferred_qc = NULL;
 		ata_qc_issue(qc);
 	}
 
@@ -1684,8 +1685,7 @@ void ata_scsi_deferred_qc_work(struct work_struct *work)
 
 void ata_scsi_requeue_deferred_qc(struct ata_port *ap)
 {
-	struct ata_queued_cmd *qc = ap->deferred_qc;
-	struct scsi_cmnd *scmd;
+	struct ata_link *link;
 
 	lockdep_assert_held(ap->lock);
 
@@ -1694,20 +1694,25 @@ void ata_scsi_requeue_deferred_qc(struct ata_port *ap)
 	 * do not try to be smart about what to do with this deferred command
 	 * and simply requeue it by completing it with DID_REQUEUE.
 	 */
-	if (!qc)
-		return;
+	ata_for_each_link(link, ap, PMP_FIRST) {
+		struct ata_queued_cmd *qc = link->deferred_qc;
+		struct scsi_cmnd *scmd;
 
-	scmd = qc->scsicmd;
-	ap->deferred_qc = NULL;
-	cancel_work(&ap->deferred_qc_work);
-	ata_qc_free(qc);
-	scmd->result = (DID_REQUEUE << 16);
-	scsi_done(scmd);
+		if (qc) {
+			scmd = qc->scsicmd;
+			link->deferred_qc = NULL;
+			cancel_work(&link->deferred_qc_work);
+			ata_qc_free(qc);
+			scmd->result = (DID_REQUEUE << 16);
+			scsi_done(scmd);
+		}
+	}
 }
 
-static void ata_scsi_schedule_deferred_qc(struct ata_port *ap)
+static void ata_scsi_schedule_deferred_qc(struct ata_link *link)
 {
-	struct ata_queued_cmd *qc = ap->deferred_qc;
+	struct ata_queued_cmd *qc = link->deferred_qc;
+	struct ata_port *ap = link->ap;
 
 	lockdep_assert_held(ap->lock);
 
@@ -1724,12 +1729,12 @@ static void ata_scsi_schedule_deferred_qc(struct ata_port *ap)
 		return;
 	}
 	if (!ap->ops->qc_defer(qc))
-		queue_work(system_highpri_wq, &ap->deferred_qc_work);
+		queue_work(system_highpri_wq, &link->deferred_qc_work);
 }
 
 static void ata_scsi_qc_complete(struct ata_queued_cmd *qc)
 {
-	struct ata_port *ap = qc->ap;
+	struct ata_link *link = qc->dev->link;
 	struct scsi_cmnd *cmd = qc->scsicmd;
 	u8 *cdb = cmd->cmnd;
 	bool have_sense = qc->flags & ATA_QCFLAG_SENSE_VALID;
@@ -1760,11 +1765,12 @@ static void ata_scsi_qc_complete(struct ata_queued_cmd *qc)
 
 	ata_qc_done(qc);
 
-	ata_scsi_schedule_deferred_qc(ap);
+	ata_scsi_schedule_deferred_qc(link);
 }
 
 static int ata_scsi_qc_issue(struct ata_port *ap, struct ata_queued_cmd *qc)
 {
+	struct ata_link *link = qc->dev->link;
 	int ret;
 
 	if (!ap->ops->qc_defer)
@@ -1775,7 +1781,7 @@ static int ata_scsi_qc_issue(struct ata_port *ap, struct ata_queued_cmd *qc)
 	 * requeue and defer all incoming commands until the deferred qc is
 	 * processed, once all on-going commands complete.
 	 */
-	if (ap->deferred_qc) {
+	if (link->deferred_qc) {
 		ata_qc_free(qc);
 		return SCSI_MLQUEUE_DEVICE_BUSY;
 	}
@@ -1791,8 +1797,8 @@ static int ata_scsi_qc_issue(struct ata_port *ap, struct ata_queued_cmd *qc)
 	case ATA_DEFER_LINK_EXCL:
 		/*
 		 * Drivers making use of ap->excl_link cannot store the QC in
-		 * ap->deferred_qc, because the ap->excl_link handling is
-		 * incompatible with the ap->deferred_qc workqueue handling.
+		 * link->deferred_qc, because the ap->excl_link handling is
+		 * incompatible with the link->deferred_qc workqueue handling.
 		 */
 		ret = SCSI_MLQUEUE_DEVICE_BUSY;
 		goto free_qc;
@@ -1818,7 +1824,7 @@ defer_qc:
 	 * commands complete.
 	 */
 	if (!ata_is_ncq(qc->tf.protocol)) {
-		ap->deferred_qc = qc;
+		link->deferred_qc = qc;
 		return 0;
 	}
 
