@@ -2708,7 +2708,7 @@ static int call_action_complete(struct mmap_state *map,
 {
 	int err;
 
-	err = mmap_action_complete(vma, action);
+	err = mmap_action_complete(vma, action, /*is_compat=*/false);
 
 	/* If we held the file rmap we need to release it. */
 	if (map->hold_file_rmap_lock) {
@@ -2778,7 +2778,6 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
 
 	if (have_mmap_prepare && allocated_new) {
 		error = call_action_complete(&map, &desc.action, vma);
-
 		if (error)
 			return error;
 	}
