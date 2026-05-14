@@ -1613,6 +1613,7 @@ dump_last:
 		    ((dump_type == DUMP_ALL) ==
 		     !!(set->type->features & IPSET_DUMP_LAST))) {
 			write_unlock_bh(&ip_set_ref_lock);
+			set = NULL;
 			continue;
 		}
 		pr_debug("List set: %s\n", set->name);
