@@ -493,6 +493,7 @@ static int tracefs_fill_super(struct super_block *sb, struct fs_context *fc)
 		return err;
 
 	sb->s_op = &tracefs_super_operations;
+	tracefs_apply_options(sb, false);
 	sb->s_d_op = &tracefs_dentry_operations;
 
 	return 0;
