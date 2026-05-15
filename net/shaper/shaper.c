@@ -306,31 +306,24 @@ static void net_shaper_default_parent(const struct net_shaper_handle *handle,
 	parent->id = 0;
 }
 
-/* MARK_0 is already in use due to XA_FLAGS_ALLOC. The VALID mark is set on
- * an entry only after the device-side configuration has completed
- * successfully (see net_shaper_commit()). Lookups and dumps must filter on
- * this mark to avoid exposing tentative entries inserted by
- * net_shaper_pre_insert() while the driver call is still in flight.
- */
-#define NET_SHAPER_VALID	XA_MARK_1
-
 static struct net_shaper *
 net_shaper_lookup(struct net_shaper_binding *binding,
 		  const struct net_shaper_handle *handle)
 {
 	u32 index = net_shaper_handle_to_index(handle);
 	struct net_shaper_hierarchy *hierarchy;
+	struct net_shaper *cur;
 
 	hierarchy = net_shaper_hierarchy_rcu(binding);
-	if (!hierarchy || !xa_get_mark(&hierarchy->shapers, index,
-				       NET_SHAPER_VALID))
+	if (!hierarchy)
 		return NULL;
 
-	/* Pairs with smp_wmb() in net_shaper_commit(): if the entry is
-	 * valid, its contents must be visible too.
-	 */
-	smp_rmb();
-	return xa_load(&hierarchy->shapers, index);
+	cur = xa_load(&hierarchy->shapers, index);
+	/* Check valid before reading fields */
+	if (!cur || !smp_load_acquire(&cur->valid))
+		return NULL;
+
+	return cur;
 }
 
 /* Allocate on demand the per device shaper's hierarchy container.
@@ -444,12 +437,10 @@ static void net_shaper_commit(struct net_shaper_binding *binding,
 		if (WARN_ON_ONCE(!cur))
 			continue;
 
-		/* Successful update: drop the tentative mark
-		 * and update the hierarchy container.
-		 */
+		/* Successful update: update the hierarchy container... */
 		net_shaper_copy(cur, &shapers[i]);
-		smp_wmb();
-		__xa_set_mark(&hierarchy->shapers, index, NET_SHAPER_VALID);
+		/* ... publish to lockless readers. */
+		smp_store_release(&cur->valid, true);
 	}
 	xa_unlock(&hierarchy->shapers);
 }
@@ -466,10 +457,10 @@ static void net_shaper_rollback(struct net_shaper_binding *binding)
 
 	xa_lock(&hierarchy->shapers);
 	xa_for_each(&hierarchy->shapers, index, cur) {
-		if (xa_get_mark(&hierarchy->shapers, index, NET_SHAPER_VALID))
+		if (cur->valid)
 			continue;
 		__xa_erase(&hierarchy->shapers, index);
-		kfree(cur);
+		kfree_rcu(cur, rcu);
 	}
 	xa_unlock(&hierarchy->shapers);
 }
@@ -882,12 +873,12 @@ int net_shaper_nl_get_dumpit(struct sk_buff *skb,
 		goto out_unlock;
 
 	for (; (shaper = xa_find(&hierarchy->shapers, &ctx->start_index,
-				 U32_MAX, NET_SHAPER_VALID));
+				 U32_MAX, XA_PRESENT));
 	     ctx->start_index++) {
-		/* Pairs with smp_wmb() in net_shaper_commit(): the entry
-		 * is marked VALID, so its contents must be visible too.
-		 */
-		smp_rmb();
+		/* Check valid before reading fields */
+		if (!smp_load_acquire(&shaper->valid))
+			continue;
+
 		ret = net_shaper_fill_one(skb, binding, shaper, info);
 		if (ret)
 			break;
