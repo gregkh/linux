@@ -11263,7 +11263,11 @@ BTF_ID(func, bpf_task_work_schedule_resume)
 BTF_ID(func, bpf_arena_alloc_pages)
 BTF_ID(func, bpf_arena_free_pages)
 BTF_ID(func, bpf_arena_reserve_pages)
+#ifdef CONFIG_BPF_EVENTS
 BTF_ID(func, bpf_session_is_return)
+#else
+BTF_ID_UNUSED
+#endif
 BTF_ID(func, bpf_stream_vprintk)
 BTF_ID(func, bpf_stream_print_stack)
 
