@@ -1461,6 +1461,9 @@ static int hid_gos_probe(struct hid_device *hdev,
 {
 	int ret, ep;
 
+	if (!hid_is_usb(hdev))
+		return -EINVAL;
+
 	ret = hid_parse(hdev);
 	if (ret) {
 		hid_err(hdev, "Parse failed\n");

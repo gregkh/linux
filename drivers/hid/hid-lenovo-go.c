@@ -2419,6 +2419,9 @@ static int hid_go_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int ret, ep;
 
+	if (!hid_is_usb(hdev))
+		return -EINVAL;
+
 	hdev->quirks |= HID_QUIRK_INPUT_PER_APP | HID_QUIRK_MULTI_INPUT;
 
 	ret = hid_parse(hdev);
