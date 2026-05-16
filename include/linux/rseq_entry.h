@@ -238,7 +238,6 @@ static __always_inline bool rseq_grant_slice_extension(bool work_pending) { retu
 #endif /* !CONFIG_RSEQ_SLICE_EXTENSION */
 
 bool rseq_debug_update_user_cs(struct task_struct *t, struct pt_regs *regs, unsigned long csaddr);
-bool rseq_debug_validate_ids(struct task_struct *t);
 
 static __always_inline void rseq_note_user_irq_entry(void)
 {
@@ -358,43 +357,6 @@ efault:
 	return false;
 }
 
-/*
- * On debug kernels validate that user space did not mess with it if the
- * debug branch is enabled.
- */
-bool rseq_debug_validate_ids(struct task_struct *t)
-{
-	struct rseq __user *rseq = t->rseq.usrptr;
-	u32 cpu_id, uval, node_id;
-
-	/*
-	 * On the first exit after registering the rseq region CPU ID is
-	 * RSEQ_CPU_ID_UNINITIALIZED and node_id in user space is 0!
-	 */
-	node_id = t->rseq.ids.cpu_id != RSEQ_CPU_ID_UNINITIALIZED ?
-		  cpu_to_node(t->rseq.ids.cpu_id) : 0;
-
-	scoped_user_read_access(rseq, efault) {
-		unsafe_get_user(cpu_id, &rseq->cpu_id_start, efault);
-		if (cpu_id != t->rseq.ids.cpu_id)
-			goto die;
-		unsafe_get_user(uval, &rseq->cpu_id, efault);
-		if (uval != cpu_id)
-			goto die;
-		unsafe_get_user(uval, &rseq->node_id, efault);
-		if (uval != node_id)
-			goto die;
-		unsafe_get_user(uval, &rseq->mm_cid, efault);
-		if (uval != t->rseq.ids.mm_cid)
-			goto die;
-	}
-	return true;
-die:
-	t->rseq.event.fatal = true;
-efault:
-	return false;
-}
-
 #endif /* RSEQ_BUILD_SLOW_PATH */
 
 /*
@@ -504,20 +466,32 @@ efault:
  * faults in task context are fatal too.
  */
 static rseq_inline
-bool rseq_set_ids_get_csaddr(struct task_struct *t, struct rseq_ids *ids,
-			     u32 node_id, u64 *csaddr)
+bool rseq_set_ids_get_csaddr(struct task_struct *t, struct rseq_ids *ids, u64 *csaddr)
 {
 	struct rseq __user *rseq = t->rseq.usrptr;
 
-	if (static_branch_unlikely(&rseq_debug_enabled)) {
-		if (!rseq_debug_validate_ids(t))
-			return false;
-	}
-
 	scoped_user_rw_access(rseq, efault) {
+		/* Validate the R/O fields for debug and optimized mode */
+		if (static_branch_unlikely(&rseq_debug_enabled) || rseq_v2(t)) {
+			u32 cpu_id, uval;
+
+			unsafe_get_user(cpu_id, &rseq->cpu_id_start, efault);
+			if (cpu_id != t->rseq.ids.cpu_id)
+				goto die;
+			unsafe_get_user(uval, &rseq->cpu_id, efault);
+			if (uval != cpu_id)
+				goto die;
+			unsafe_get_user(uval, &rseq->node_id, efault);
+			if (uval != t->rseq.ids.node_id)
+				goto die;
+			unsafe_get_user(uval, &rseq->mm_cid, efault);
+			if (uval != t->rseq.ids.mm_cid)
+				goto die;
+		}
+
 		unsafe_put_user(ids->cpu_id, &rseq->cpu_id_start, efault);
 		unsafe_put_user(ids->cpu_id, &rseq->cpu_id, efault);
-		unsafe_put_user(node_id, &rseq->node_id, efault);
+		unsafe_put_user(ids->node_id, &rseq->node_id, efault);
 		unsafe_put_user(ids->mm_cid, &rseq->mm_cid, efault);
 		if (csaddr)
 			unsafe_get_user(*csaddr, &rseq->rseq_cs, efault);
@@ -529,10 +503,13 @@ bool rseq_set_ids_get_csaddr(struct task_struct *t, struct rseq_ids *ids,
 
 	rseq_slice_clear_grant(t);
 	/* Cache the new values */
-	t->rseq.ids.cpu_cid = ids->cpu_cid;
+	t->rseq.ids = *ids;
 	rseq_stat_inc(rseq_stats.ids);
 	rseq_trace_update(t, ids);
 	return true;
+
+die:
+	t->rseq.event.fatal = true;
 efault:
 	return false;
 }
@@ -542,11 +519,11 @@ efault:
  * is in a critical section.
  */
 static rseq_inline bool rseq_update_usr(struct task_struct *t, struct pt_regs *regs,
-					struct rseq_ids *ids, u32 node_id)
+					struct rseq_ids *ids)
 {
 	u64 csaddr;
 
-	if (!rseq_set_ids_get_csaddr(t, ids, node_id, &csaddr))
+	if (!rseq_set_ids_get_csaddr(t, ids, &csaddr))
 		return false;
 
 	/*
@@ -649,12 +626,12 @@ static __always_inline bool rseq_exit_user_update(struct pt_regs *regs, struct t
 	}
 
 	struct rseq_ids ids = {
-		.cpu_id = task_cpu(t),
-		.mm_cid = task_mm_cid(t),
+		.cpu_id	 = task_cpu(t),
+		.mm_cid	 = task_mm_cid(t),
+		.node_id = cpu_to_node(ids.cpu_id),
 	};
-	u32 node_id = cpu_to_node(ids.cpu_id);
 
-	return rseq_update_usr(t, regs, &ids, node_id);
+	return rseq_update_usr(t, regs, &ids);
 efault:
 	return false;
 }

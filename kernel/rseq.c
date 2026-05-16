@@ -263,7 +263,6 @@ static void rseq_slowpath_update_usr(struct pt_regs *regs)
 	};
 	struct task_struct *t = current;
 	struct rseq_ids ids;
-	u32 node_id;
 	bool event;
 
 	if (unlikely(t->flags & PF_EXITING))
@@ -299,9 +298,9 @@ static void rseq_slowpath_update_usr(struct pt_regs *regs)
 	if (!event)
 		return;
 
-	node_id = cpu_to_node(ids.cpu_id);
+	ids.node_id = cpu_to_node(ids.cpu_id);
 
-	if (unlikely(!rseq_update_usr(t, regs, &ids, node_id))) {
+	if (unlikely(!rseq_update_usr(t, regs, &ids))) {
 		/*
 		 * Clear the errors just in case this might survive magically, but
 		 * leave the rest intact.
