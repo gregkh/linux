@@ -348,6 +348,29 @@ struct power_data {
 static const struct dmi_system_id power_limits[] = {
 	{
 		.matches = {
+			DMI_MATCH(DMI_BOARD_NAME, "FA401EA"),
+		},
+		.driver_data = &(struct power_data) {
+			.ac_data = &(struct power_limits) {
+				.ppt_pl1_spl_min = 15,
+				.ppt_pl1_spl_max = 95,
+				.ppt_pl2_sppt_min = 35,
+				.ppt_pl2_sppt_max = 100,
+				.ppt_pl3_fppt_min = 35,
+				.ppt_pl3_fppt_max = 115,
+			},
+			.dc_data = &(struct power_limits) {
+				.ppt_pl1_spl_min = 15,
+				.ppt_pl1_spl_max = 71,
+				.ppt_pl2_sppt_min = 35,
+				.ppt_pl2_sppt_max = 71,
+				.ppt_pl3_fppt_min = 35,
+				.ppt_pl3_fppt_max = 71,
+			},
+		},
+	},
+	{
+		.matches = {
 			DMI_MATCH(DMI_BOARD_NAME, "FA401UM"),
 		},
 		.driver_data = &(struct power_data) {
