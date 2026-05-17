@@ -582,10 +582,12 @@ static int iris_release_internal_buffers(struct iris_inst *inst,
 			continue;
 		if (!(buffer->attr & BUF_ATTR_QUEUED))
 			continue;
-		ret = hfi_ops->session_release_buf(inst, buffer);
-		if (ret)
-			return ret;
 		buffer->attr |= BUF_ATTR_PENDING_RELEASE;
+		ret = hfi_ops->session_release_buf(inst, buffer);
+		if (ret) {
+			buffer->attr &= ~BUF_ATTR_PENDING_RELEASE;
+			return ret;
+		}
 	}
 
 	return 0;

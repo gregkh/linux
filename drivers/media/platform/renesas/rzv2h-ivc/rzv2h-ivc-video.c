@@ -149,24 +149,26 @@ static void rzv2h_ivc_transfer_buffer(struct work_struct *work)
 					     buffers.work);
 	struct rzv2h_ivc_buf *buf;
 
+	guard(spinlock_irqsave)(&ivc->spinlock);
+
+	if (ivc->vvalid_ifp)
+		return;
+
 	/* Setup buffers */
 	scoped_guard(spinlock_irqsave, &ivc->buffers.lock) {
 		buf = list_first_entry_or_null(&ivc->buffers.queue,
 					       struct rzv2h_ivc_buf, queue);
+		if (!buf)
+			return;
+
+		list_del(&buf->queue);
+		ivc->buffers.curr = buf;
 	}
 
-	if (!buf)
-		return;
-
-	list_del(&buf->queue);
-
-	ivc->buffers.curr = buf;
 	buf->addr = vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, 0);
 	rzv2h_ivc_write(ivc, RZV2H_IVC_REG_AXIRX_SADDL_P0, buf->addr);
 
-	scoped_guard(spinlock_irqsave, &ivc->spinlock) {
-		ivc->vvalid_ifp = 2;
-	}
+	ivc->vvalid_ifp = 2;
 	rzv2h_ivc_write(ivc, RZV2H_IVC_REG_FM_FRCON, 0x1);
 }
 
@@ -201,7 +203,7 @@ static void rzv2h_ivc_buf_queue(struct vb2_buffer *vb)
 	}
 
 	scoped_guard(spinlock_irq, &ivc->spinlock) {
-		if (vb2_is_streaming(vb->vb2_queue) && !ivc->vvalid_ifp)
+		if (vb2_is_streaming(vb->vb2_queue))
 			queue_work(ivc->buffers.async_wq, &ivc->buffers.work);
 	}
 }
@@ -215,10 +217,10 @@ static void rzv2h_ivc_format_configure(struct rzv2h_ivc *ivc)
 
 	/* Currently only CRU packed pixel formats are supported */
 	rzv2h_ivc_write(ivc, RZV2H_IVC_REG_AXIRX_PXFMT,
-			RZV2H_IVC_INPUT_FMT_CRU_PACKED);
-
-	rzv2h_ivc_update_bits(ivc, RZV2H_IVC_REG_AXIRX_PXFMT,
-			      RZV2H_IVC_PXFMT_DTYPE, fmt->dtype);
+			FIELD_PREP(RZV2H_IVC_AXIRX_PXFMT_FIELD_DTYPE,
+				   fmt->dtype) |
+			FIELD_PREP(RZV2H_IVC_AXIRX_PXFMT_FIELD_CLFMT,
+				   RZV2H_IVC_CLFMT_CRU_PACKED));
 
 	rzv2h_ivc_write(ivc, RZV2H_IVC_REG_AXIRX_HSIZE, pix->width);
 	rzv2h_ivc_write(ivc, RZV2H_IVC_REG_AXIRX_VSIZE, pix->height);
@@ -297,9 +299,10 @@ static void rzv2h_ivc_stop_streaming(struct vb2_queue *q)
 	struct rzv2h_ivc *ivc = vb2_get_drv_priv(q);
 	u32 val = 0;
 
-	rzv2h_ivc_write(ivc, RZV2H_IVC_REG_FM_STOP, 0x1);
+	rzv2h_ivc_write(ivc, RZV2H_IVC_REG_FM_STOP, RZV2H_IVC_REG_FM_STOP_FSTOP);
 	readl_poll_timeout(ivc->base + RZV2H_IVC_REG_FM_STOP,
-			   val, !val, 10 * USEC_PER_MSEC, 250 * USEC_PER_MSEC);
+			   val, !(val & RZV2H_IVC_REG_FM_STOP_FSTOP),
+			   10 * USEC_PER_MSEC, 250 * USEC_PER_MSEC);
 
 	rzv2h_ivc_return_buffers(ivc, VB2_BUF_STATE_ERROR);
 	video_device_pipeline_stop(&ivc->vdev.dev);
