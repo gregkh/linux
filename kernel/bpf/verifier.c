@@ -442,7 +442,6 @@ static bool is_dynptr_ref_function(enum bpf_func_id func_id)
 static bool is_sync_callback_calling_kfunc(u32 btf_id);
 static bool is_async_callback_calling_kfunc(u32 btf_id);
 static bool is_callback_calling_kfunc(u32 btf_id);
-static bool is_bpf_throw_kfunc(struct bpf_insn *insn);
 
 static bool is_bpf_wq_set_callback_kfunc(u32 btf_id);
 static bool is_task_work_add_kfunc(u32 func_id);
@@ -5405,7 +5404,7 @@ continue_func:
 		if (bpf_pseudo_kfunc_call(insn + i) && !insn[i].off) {
 			bool err = false;
 
-			if (!is_bpf_throw_kfunc(insn + i))
+			if (!bpf_is_throw_kfunc(insn + i))
 				continue;
 			for (tmp = idx; tmp >= 0 && !err; tmp = dinfo[tmp].caller) {
 				if (subprog[tmp].is_cb) {
@@ -9499,6 +9498,9 @@ static int push_callback_call(struct bpf_verifier_env *env, struct bpf_insn *ins
 	return 0;
 }
 
+static int process_bpf_exit_full(struct bpf_verifier_env *env,
+				 bool *do_print_state, bool exception_exit);
+
 static int check_func_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 			   int *insn_idx)
 {
@@ -9550,6 +9552,17 @@ static int check_func_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 		if (!subprog_returns_void(env, subprog)) {
 			mark_reg_unknown(env, caller->regs, BPF_REG_0);
 			caller->regs[BPF_REG_0].subreg_def = DEF_NOT_SUBREG;
+		}
+
+		if (env->subprog_info[subprog].might_throw) {
+			struct bpf_verifier_state *branch;
+
+			branch = push_stack(env, *insn_idx + 1, *insn_idx, false);
+			if (IS_ERR(branch)) {
+				verbose(env, "failed to push state for global subprog exception path\n");
+				return PTR_ERR(branch);
+			}
+			return process_bpf_exit_full(env, NULL, true);
 		}
 
 		/* continue with next insn after call */
@@ -11782,7 +11795,7 @@ static bool is_async_callback_calling_kfunc(u32 btf_id)
 	       is_task_work_add_kfunc(btf_id);
 }
 
-static bool is_bpf_throw_kfunc(struct bpf_insn *insn)
+bool bpf_is_throw_kfunc(struct bpf_insn *insn)
 {
 	return bpf_pseudo_kfunc_call(insn) && insn->off == 0 &&
 	       insn->imm == special_kfunc_list[KF_bpf_throw];
@@ -12972,8 +12985,6 @@ static int check_special_kfunc(struct bpf_verifier_env *env, struct bpf_kfunc_ca
 }
 
 static int check_return_code(struct bpf_verifier_env *env, int regno, const char *reg_name);
-static int process_bpf_exit_full(struct bpf_verifier_env *env,
-				 bool *do_print_state, bool exception_exit);
 
 static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 			    int *insn_idx_p)
@@ -13354,7 +13365,7 @@ static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 	if (meta.func_id == special_kfunc_list[KF_bpf_session_cookie])
 		env->prog->call_session_cookie = true;
 
-	if (is_bpf_throw_kfunc(insn))
+	if (bpf_is_throw_kfunc(insn))
 		return process_bpf_exit_full(env, NULL, true);
 
 	return 0;
