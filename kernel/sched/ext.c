@@ -4946,10 +4946,30 @@ static const struct kset_uevent_ops scx_uevent_ops = {
  */
 bool task_should_scx(int policy)
 {
-	if (!scx_enabled() || unlikely(scx_enable_state() == SCX_DISABLING))
+	/* if disabled, nothing should be on it */
+	if (!scx_enabled())
 		return false;
+
+	/* scx is taking over all SCHED_OTHER and SCHED_EXT tasks */
 	if (READ_ONCE(scx_switching_all))
 		return true;
+
+	/*
+	 * scx is tearing down - keep new SCHED_EXT tasks out.
+	 *
+	 * Must come after scx_switching_all test, which serves as a proxy
+	 * for __scx_switched_all. While __scx_switched_all is set, we must
+	 * return true via the branch above: a fork routed to fair would
+	 * stall because next_active_class() skips fair.
+	 *
+	 * This can develop into a deadlock - scx holds scx_enable_mutex across
+	 * kthread_create() in scx_alloc_and_add_sched(); if the new kthread is
+	 * the stalled task, the disable path can never grab the mutex to clear
+	 * scx_switching_all.
+	 */
+	if (unlikely(scx_enable_state() == SCX_DISABLING))
+		return false;
+
 	return policy == SCHED_EXT;
 }
 
