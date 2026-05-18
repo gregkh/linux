@@ -472,6 +472,7 @@ xfs_buf_find_insert(
 	/* The new buffer keeps the perag reference until it is freed. */
 	new_bp->b_pag = pag;
 
+retry:
 	rcu_read_lock();
 	bp = rhashtable_lookup_get_insert_fast(&btp->bt_hash,
 			&new_bp->b_rhash_head, xfs_buf_hash_params);
@@ -480,8 +481,16 @@ xfs_buf_find_insert(
 		error = PTR_ERR(bp);
 		goto out_free_buf;
 	}
-	if (bp && lockref_get_not_dead(&bp->b_lockref)) {
-		/* found an existing buffer */
+	if (bp) {
+		/*
+		 * If there is an existing buffer with a dead lockref, retry
+		 * until the new buffer is added, or a usable buffer is found.
+		 */
+		if (!lockref_get_not_dead(&bp->b_lockref)) {
+			rcu_read_unlock();
+			cpu_relax();
+			goto retry;
+		}
 		rcu_read_unlock();
 		error = xfs_buf_find_lock(bp, flags);
 		if (error)
@@ -820,15 +829,20 @@ xfs_buf_destroy(
 	ASSERT(__lockref_is_dead(&bp->b_lockref));
 	ASSERT(!(bp->b_flags & _XBF_DELWRI_Q));
 
+	if (bp->b_pag)
+		xfs_perag_put(bp->b_pag);
+	xfs_buf_free(bp);
+}
+
+static inline void
+xfs_buf_kill(
+	struct xfs_buf		*bp)
+{
+	lockref_mark_dead(&bp->b_lockref);
 	if (!xfs_buf_is_uncached(bp)) {
 		rhashtable_remove_fast(&bp->b_target->bt_hash,
 				&bp->b_rhash_head, xfs_buf_hash_params);
-
-		if (bp->b_pag)
-			xfs_perag_put(bp->b_pag);
 	}
-
-	xfs_buf_free(bp);
 }
 
 /*
@@ -851,7 +865,7 @@ xfs_buf_rele(
 	return;
 
 kill:
-	lockref_mark_dead(&bp->b_lockref);
+	xfs_buf_kill(bp);
 	list_lru_del_obj(&bp->b_target->bt_lru, &bp->b_lru);
 	spin_unlock(&bp->b_lockref.lock);
 
@@ -1433,7 +1447,7 @@ xfs_buftarg_drain_rele(
 		return LRU_SKIP;
 	}
 
-	lockref_mark_dead(&bp->b_lockref);
+	xfs_buf_kill(bp);
 	list_lru_isolate_move(lru, item, dispose);
 	spin_unlock(&bp->b_lockref.lock);
 	return LRU_REMOVED;
@@ -1545,7 +1559,7 @@ xfs_buftarg_isolate(
 		return LRU_ROTATE;
 	}
 
-	lockref_mark_dead(&bp->b_lockref);
+	xfs_buf_kill(bp);
 	list_lru_isolate_move(lru, item, dispose);
 	spin_unlock(&bp->b_lockref.lock);
 	return LRU_REMOVED;
