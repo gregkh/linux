@@ -102,7 +102,7 @@ out_unlock:
 }
 
 static bool
-purge(struct drm_gem_object *obj, struct ww_acquire_ctx *)
+purge(struct drm_gem_object *obj, struct ww_acquire_ctx *unused)
 {
 	if (!is_purgeable(to_msm_bo(obj)))
 		return false;
@@ -114,7 +114,7 @@ purge(struct drm_gem_object *obj, struct ww_acquire_ctx *)
 }
 
 static bool
-evict(struct drm_gem_object *obj, struct ww_acquire_ctx *)
+evict(struct drm_gem_object *obj, struct ww_acquire_ctx *unused)
 {
 	if (is_unevictable(to_msm_bo(obj)))
 		return false;
