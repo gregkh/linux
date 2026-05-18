@@ -427,8 +427,6 @@ static void amdgpu_userq_cleanup(struct amdgpu_usermode_queue *queue)
 	xa_erase_irq(&adev->userq_doorbell_xa, queue->doorbell_index);
 	amdgpu_userq_fence_driver_free(queue);
 	queue->fence_drv = NULL;
-	queue->userq_mgr = NULL;
-	list_del(&queue->userq_va_list);
 
 	up_read(&adev->reset_domain->sem);
 }
@@ -619,11 +617,6 @@ amdgpu_userq_destroy(struct amdgpu_userq_mgr *uq_mgr, struct amdgpu_usermode_que
 
 	/* Cancel any pending hang detection work and cleanup */
 	cancel_delayed_work_sync(&queue->hang_detect_work);
-
-	amdgpu_bo_reserve(vm->root.bo, true);
-	amdgpu_userq_buffer_vas_list_cleanup(adev, queue);
-	amdgpu_bo_unreserve(vm->root.bo);
-
 	mutex_lock(&uq_mgr->userq_mutex);
 	amdgpu_userq_wait_for_last_fence(queue);
 
@@ -634,6 +627,13 @@ amdgpu_userq_destroy(struct amdgpu_userq_mgr *uq_mgr, struct amdgpu_usermode_que
 	atomic_dec(&uq_mgr->userq_count[queue->queue_type]);
 	amdgpu_userq_cleanup(queue);
 	mutex_unlock(&uq_mgr->userq_mutex);
+
+	cancel_delayed_work_sync(&queue->hang_detect_work);
+	amdgpu_bo_reserve(vm->root.bo, true);
+	amdgpu_userq_buffer_vas_list_cleanup(adev, queue);
+	amdgpu_bo_unreserve(vm->root.bo);
+	list_del(&queue->userq_va_list);
+	queue->userq_mgr = NULL;
 
 	amdgpu_bo_reserve(queue->db_obj.obj, true);
 	amdgpu_bo_unpin(queue->db_obj.obj);
