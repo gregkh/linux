@@ -81,7 +81,7 @@ mes_userq_create_wptr_mapping(struct amdgpu_device *adev,
 	ret = amdgpu_ttm_alloc_gart(&wptr_obj->obj->tbo);
 	if (ret) {
 		DRM_ERROR("Failed to bind bo to GART. ret %d\n", ret);
-		goto fail_map;
+		goto fail_alloc_gart;
 	}
 
 	queue->wptr_obj.gpu_addr = amdgpu_bo_gpu_offset(wptr_obj->obj);
@@ -89,6 +89,8 @@ mes_userq_create_wptr_mapping(struct amdgpu_device *adev,
 	drm_exec_fini(&exec);
 	return 0;
 
+fail_alloc_gart:
+	amdgpu_bo_unpin(wptr_obj->obj);
 fail_map:
 	amdgpu_bo_unref(&wptr_obj->obj);
 fail_lock:
