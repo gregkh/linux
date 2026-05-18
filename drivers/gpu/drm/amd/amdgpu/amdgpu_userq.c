@@ -620,11 +620,7 @@ amdgpu_userq_destroy(struct amdgpu_userq_mgr *uq_mgr, struct amdgpu_usermode_que
 	/* Cancel any pending hang detection work and cleanup */
 	cancel_delayed_work_sync(&queue->hang_detect_work);
 
-	r = amdgpu_bo_reserve(vm->root.bo, false);
-	if (r) {
-		drm_file_err(uq_mgr->file, "Failed to reserve root bo during userqueue destroy\n");
-		return r;
-	}
+	amdgpu_bo_reserve(vm->root.bo, true);
 	amdgpu_userq_buffer_vas_list_cleanup(adev, queue);
 	amdgpu_bo_unreserve(vm->root.bo);
 
