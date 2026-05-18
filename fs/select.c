@@ -708,6 +708,17 @@ static int kern_select(int n, fd_set __user *inp, fd_set __user *outp,
 		if (copy_from_user(&tv, tvp, sizeof(tv)))
 			return -EFAULT;
 
+		/*
+		 * Reject negative components before normalisation. The seconds
+		 * sum below is performed in signed long and a crafted negative
+		 * timeval can wrap to a positive value that passes
+		 * timespec64_valid() and turns into an effectively-infinite
+		 * deadline via timespec64_add_safe()'s saturation, instead of
+		 * the -EINVAL POSIX requires for negative timeouts.
+		 */
+		if (tv.tv_sec < 0 || tv.tv_usec < 0)
+			return -EINVAL;
+
 		to = &end_time;
 		if (poll_select_set_timeout(to,
 				tv.tv_sec + (tv.tv_usec / USEC_PER_SEC),
