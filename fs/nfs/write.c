@@ -927,7 +927,7 @@ static void nfs_write_completion(struct nfs_pgio_header *hdr)
 		}
 		if (nfs_write_need_commit(hdr)) {
 			struct nfs_open_context *ctx =
-				hdr->req->wb_lock_context->open_context;
+				req->wb_lock_context->open_context;
 
 			/* Reset wb_nio, since the write was successful. */
 			req->wb_nio = 0;
