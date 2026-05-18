@@ -46,7 +46,11 @@ struct eic7700_qos_priv {
 	u32 eth_axi_lp_ctrl_offset;
 	u32 eth_phy_ctrl_offset;
 	u32 eth_clk_offset;
+	u32 eth_txd_offset;
+	u32 eth_rxd_offset;
 	u32 eth_clk_dly_param;
+	bool has_txd_offset;
+	bool has_rxd_offset;
 };
 
 static int eic7700_clks_config(void *priv, bool enabled)
@@ -83,6 +87,12 @@ static int eic7700_dwmac_init(struct device *dev, void *priv)
 
 	regmap_write(dwc->eic7700_hsp_regmap, dwc->eth_axi_lp_ctrl_offset,
 		     EIC7700_ETH_CSYSREQ_VAL);
+
+	if (dwc->has_txd_offset)
+		regmap_write(dwc->eic7700_hsp_regmap, dwc->eth_txd_offset, 0);
+
+	if (dwc->has_rxd_offset)
+		regmap_write(dwc->eic7700_hsp_regmap, dwc->eth_rxd_offset, 0);
 
 	regmap_write(dwc->eic7700_hsp_regmap, dwc->eth_clk_offset,
 		     dwc->eth_clk_dly_param);
@@ -189,6 +199,18 @@ static int eic7700_dwmac_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,
 				     "can't get eth_clk_offset\n");
+
+	ret = of_property_read_u32_index(pdev->dev.of_node,
+					 "eswin,hsp-sp-csr",
+					 4, &dwc_priv->eth_txd_offset);
+	if (!ret)
+		dwc_priv->has_txd_offset = true;
+
+	ret = of_property_read_u32_index(pdev->dev.of_node,
+					 "eswin,hsp-sp-csr",
+					 5, &dwc_priv->eth_rxd_offset);
+	if (!ret)
+		dwc_priv->has_rxd_offset = true;
 
 	plat_dat->num_clks = ARRAY_SIZE(eic7700_clk_names);
 	plat_dat->clks = devm_kcalloc(&pdev->dev,
