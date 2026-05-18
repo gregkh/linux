@@ -536,12 +536,13 @@ void amdgpu_userq_destroy_object(struct amdgpu_userq_mgr *uq_mgr,
 	amdgpu_bo_unref(&userq_obj->obj);
 }
 
-uint64_t
+static int
 amdgpu_userq_get_doorbell_index(struct amdgpu_userq_mgr *uq_mgr,
 				struct amdgpu_db_info *db_info,
-				struct drm_file *filp)
+				struct drm_file *filp,
+				u64 *index)
 {
-	uint64_t index;
+	u64 doorbell_index;
 	struct drm_gem_object *gobj;
 	struct amdgpu_userq_obj *db_obj = db_info->db_obj;
 	int r, db_size;
@@ -588,12 +589,13 @@ amdgpu_userq_get_doorbell_index(struct amdgpu_userq_mgr *uq_mgr,
 		goto unpin_bo;
 	}
 
-	index = amdgpu_doorbell_index_on_bar(uq_mgr->adev, db_obj->obj,
-					     db_info->doorbell_offset, db_size);
+	doorbell_index = amdgpu_doorbell_index_on_bar(uq_mgr->adev, db_obj->obj,
+						      db_info->doorbell_offset, db_size);
 	drm_dbg_driver(adev_to_drm(uq_mgr->adev),
-		       "[Usermode queues] doorbell index=%lld\n", index);
+		       "[Usermode queues] doorbell index=%lld\n", doorbell_index);
 	amdgpu_bo_unreserve(db_obj->obj);
-	return index;
+	*index = doorbell_index;
+	return 0;
 
 unpin_bo:
 	amdgpu_bo_unpin(db_obj->obj);
@@ -776,10 +778,9 @@ amdgpu_userq_create(struct drm_file *filp, union drm_amdgpu_userq *args)
 	db_info.doorbell_handle = queue->doorbell_handle;
 	db_info.db_obj = &queue->db_obj;
 	db_info.doorbell_offset = args->in.doorbell_offset;
-	index = amdgpu_userq_get_doorbell_index(uq_mgr, &db_info, filp);
-	if (index == (uint64_t)-EINVAL) {
+	r = amdgpu_userq_get_doorbell_index(uq_mgr, &db_info, filp, &index);
+	if (r) {
 		drm_file_err(uq_mgr->file, "Failed to get doorbell for queue\n");
-		r = -EINVAL;
 		goto clean_mapping;
 	}
 
