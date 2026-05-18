@@ -24,6 +24,9 @@ static int mana_ib_cfg_vport_steering(struct mana_ib_dev *dev,
 	mdev = dev->gdma_dev;
 	gc = mdev->gdma_context;
 
+	if (rx_hash_key_len > sizeof(req->hashkey))
+		return -EINVAL;
+
 	req_buf_size =
 		sizeof(*req) + sizeof(mana_handle_t) * MANA_INDIRECT_TABLE_SIZE;
 	req = kzalloc(req_buf_size, GFP_KERNEL);
