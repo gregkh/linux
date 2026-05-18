@@ -1304,7 +1304,7 @@ static loff_t cifs_remap_file_range(struct file *src_file, loff_t off,
 	struct cifsFileInfo *smb_file_src = src_file->private_data;
 	struct cifsFileInfo *smb_file_target = dst_file->private_data;
 	struct cifs_tcon *target_tcon, *src_tcon;
-	unsigned long long i_size, old_size, new_size, zero_point;
+	unsigned long long i_size, new_size;
 	unsigned long long destend, fstart, fend;
 	unsigned int xid;
 	int rc;
@@ -1372,7 +1372,7 @@ static loff_t cifs_remap_file_range(struct file *src_file, loff_t off,
 		goto unlock;
 
 	spin_lock(&target_inode->i_lock);
-	if (fend > zero_point)
+	if (fend > target_cifsi->netfs._zero_point)
 		netfs_write_zero_point(target_inode, fend + 1);
 	i_size = target_inode->i_size;
 	spin_unlock(&target_inode->i_lock);
@@ -1387,7 +1387,7 @@ static loff_t cifs_remap_file_range(struct file *src_file, loff_t off,
 	if (target_tcon->ses->server->ops->duplicate_extents) {
 		rc = target_tcon->ses->server->ops->duplicate_extents(xid,
 			smb_file_src, smb_file_target, off, len, destoff);
-		if (rc == 0 && new_size > old_size) {
+		if (rc == 0 && new_size > i_size) {
 			truncate_setsize(target_inode, new_size);
 			fscache_resize_cookie(cifs_inode_cookie(target_inode),
 					      new_size);
