@@ -590,9 +590,12 @@ struct sk_buff *__udp_gso_segment(struct sk_buff *gso_skb,
 		uh = udp_hdr(seg);
 	}
 
-	/* last packet can be partial gso_size, account for that in checksum */
-	newlen = htons(skb_tail_pointer(seg) - skb_transport_header(seg) +
-		       seg->data_len);
+	/* Unless skb fits perfectly as GSO_PARTIAL, the trailing
+	 * segment may not be full MSS, account for that in the checksum
+	 */
+	if (!skb_is_gso(seg))
+		newlen = htons(skb_tail_pointer(seg) -
+			       skb_transport_header(seg) + seg->data_len);
 	check = csum16_add(csum16_sub(uh->check, uh->len), newlen);
 
 	uh->len = newlen;
