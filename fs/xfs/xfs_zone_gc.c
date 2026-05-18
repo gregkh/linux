@@ -400,7 +400,7 @@ retry:
 		/*
 		 * If the inode was already deleted, skip over it.
 		 */
-		if (error == -ENOENT) {
+		if (error == -ENOENT || error == -EINVAL) {
 			iter->rec_idx++;
 			goto retry;
 		}
