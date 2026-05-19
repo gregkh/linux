@@ -1394,8 +1394,8 @@ zl3073x_dpll_pin_register(struct zl3073x_dpll_pin *pin, u32 index)
 
 err_register:
 	dpll_pin_put(pin->dpll_pin, &pin->tracker);
-	pin->dpll_pin = NULL;
 err_pin_get:
+	pin->dpll_pin = NULL;
 	fwnode_handle_put(pin->fwnode);
 	pin->fwnode = NULL;
 	zl3073x_pin_props_put(props);
@@ -1563,8 +1563,10 @@ zl3073x_dpll_pins_register(struct zl3073x_dpll *zldpll)
 		}
 
 		rc = zl3073x_dpll_pin_register(pin, index);
-		if (rc)
+		if (rc) {
+			zl3073x_dpll_pin_free(pin);
 			goto error;
+		}
 
 		list_add(&pin->list, &zldpll->pins);
 	}
