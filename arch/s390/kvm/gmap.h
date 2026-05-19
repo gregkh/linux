@@ -220,6 +220,7 @@ static inline union pgste _gmap_ptep_xchg(struct gmap *gmap, union pte *ptep, un
 	}
 	if (!ptep->s.d && newpte.s.d && !newpte.s.s)
 		SetPageDirty(pfn_to_page(newpte.h.pfra));
+	pgste.zero = 0;
 	return __dat_ptep_xchg(ptep, pgste, newpte, gfn, gmap->asce, uses_skeys(gmap));
 }
 
