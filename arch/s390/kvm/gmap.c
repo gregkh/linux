@@ -1143,8 +1143,10 @@ void _gmap_handle_vsie_unshadow_event(struct gmap *parent, gfn_t gfn)
 		}
 		scoped_guard(spinlock, &sg->host_to_rmap_lock)
 			head = radix_tree_delete(&sg->host_to_rmap, gfn);
-		gmap_for_each_rmap_safe(rmap, rnext, head)
+		gmap_for_each_rmap_safe(rmap, rnext, head) {
 			gmap_unshadow_level(sg, rmap->r_gfn, rmap->level);
+			kfree(rmap);
+		}
 	}
 }
 
