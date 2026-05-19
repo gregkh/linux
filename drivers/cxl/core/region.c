@@ -2193,13 +2193,14 @@ static struct cxl_region *to_cxl_region(struct device *dev)
 	return container_of(dev, struct cxl_region, dev);
 }
 
-static void unregister_region(void *dev)
+static void unregister_region(struct cxl_region *cxlr)
 {
-	struct cxl_region *cxlr = to_cxl_region(dev);
+	struct cxl_root_decoder *cxlrd = to_cxl_root_decoder(cxlr->dev.parent);
 	struct cxl_region_params *p = &cxlr->params;
 	int i;
 
-	device_del(dev);
+	xa_erase(&cxlrd->regions, cxlr->id);
+	device_del(&cxlr->dev);
 
 	/*
 	 * Now that region sysfs is shutdown, the parameter block is now
@@ -2210,7 +2211,7 @@ static void unregister_region(void *dev)
 		detach_target(cxlr, i);
 
 	cxl_region_iomem_release(cxlr);
-	put_device(dev);
+	put_device(&cxlr->dev);
 }
 
 static struct lock_class_key cxl_region_key;
@@ -2241,6 +2242,19 @@ static struct cxl_region *cxl_region_alloc(struct cxl_root_decoder *cxlrd, int i
 	cxlr->id = id;
 
 	return cxlr;
+}
+
+/* unwind all remaining regions */
+void kill_regions(struct cxl_root_decoder *cxlrd)
+{
+	unsigned long index;
+	struct cxl_region *cxlr;
+
+	guard(mutex)(&cxlrd->regions_lock);
+	/* no more region creation */
+	cxlrd->dead = true;
+	xa_for_each(&cxlrd->regions, index, cxlr)
+		unregister_region(cxlr);
 }
 
 /**
@@ -2281,9 +2295,11 @@ static struct cxl_region *devm_cxl_add_region(struct cxl_root_decoder *cxlrd,
 	if (rc)
 		goto err;
 
-	rc = devm_add_action_or_reset(port->uport_dev, unregister_region, cxlr);
-	if (rc)
+	rc = xa_insert(&cxlrd->regions, cxlr->id, cxlr, GFP_KERNEL);
+	if (rc) {
+		unregister_region(cxlr);
 		return ERR_PTR(rc);
+	}
 
 	dev_dbg(port->uport_dev, "%s: created %s\n",
 		dev_name(&cxlrd->cxlsd.cxld.dev), dev_name(dev));
@@ -2315,6 +2331,9 @@ static struct cxl_region *__create_region(struct cxl_root_decoder *cxlrd,
 					  enum cxl_decoder_mode mode, int id)
 {
 	int rc;
+
+	if (cxlrd->dead)
+		return ERR_PTR(-ENXIO);
 
 	switch (mode) {
 	case CXL_DECODER_RAM:
@@ -2407,40 +2426,31 @@ static ssize_t region_show(struct device *dev, struct device_attribute *attr,
 }
 DEVICE_ATTR_RO(region);
 
-static struct cxl_region *
-cxl_find_region_by_name(struct cxl_root_decoder *cxlrd, const char *name)
-{
-	struct cxl_decoder *cxld = &cxlrd->cxlsd.cxld;
-	struct device *region_dev;
-
-	region_dev = device_find_child_by_name(&cxld->dev, name);
-	if (!region_dev)
-		return ERR_PTR(-ENODEV);
-
-	return to_cxl_region(region_dev);
-}
-
 static ssize_t delete_region_store(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf, size_t len)
 {
 	struct cxl_root_decoder *cxlrd = to_cxl_root_decoder(dev);
-	struct cxl_port *port = to_cxl_port(dev->parent);
 	struct cxl_region *cxlr;
-	int rc;
+	int rc, id;
 
 	rc = mutex_lock_interruptible(&cxlrd->regions_lock);
 	if (rc)
 		return rc;
 
-	cxlr = cxl_find_region_by_name(cxlrd, buf);
-	if (IS_ERR(cxlr)) {
+	rc = sscanf(buf, "region%d\n", &id);
+	if (rc != 1) {
 		mutex_unlock(&cxlrd->regions_lock);
-		return PTR_ERR(cxlr);
+		return -EINVAL;
 	}
 
-	devm_release_action(port->uport_dev, unregister_region, cxlr);
-	put_device(&cxlr->dev);
+	cxlr = xa_load(&cxlrd->regions, id);
+	if (!cxlr || !sysfs_streq(buf, dev_name(&cxlr->dev))) {
+		mutex_unlock(&cxlrd->regions_lock);
+		return -ENODEV;
+	}
+
+	unregister_region(cxlr);
 	mutex_unlock(&cxlrd->regions_lock);
 
 	return len;
@@ -2958,7 +2968,6 @@ static struct cxl_region *construct_region(struct cxl_root_decoder *cxlrd,
 					   struct cxl_endpoint_decoder *cxled)
 {
 	struct cxl_memdev *cxlmd = cxled_to_memdev(cxled);
-	struct cxl_port *port = cxlrd_to_port(cxlrd);
 	struct range *hpa = &cxled->cxld.hpa_range;
 	struct cxl_region_params *p;
 	struct cxl_region *cxlr;
@@ -3033,7 +3042,7 @@ static struct cxl_region *construct_region(struct cxl_root_decoder *cxlrd,
 
 err:
 	up_write(&cxl_region_rwsem);
-	devm_release_action(port->uport_dev, unregister_region, cxlr);
+	unregister_region(cxlr);
 	return ERR_PTR(rc);
 }
 

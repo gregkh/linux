@@ -442,6 +442,8 @@ typedef struct cxl_dport *(*cxl_calc_hb_fn)(struct cxl_root_decoder *cxlrd,
  * @calc_hb: which host bridge covers the n'th position by granularity
  * @platform_data: platform specific configuration data
  * @regions_lock: sync region discovery, construction, and deletion
+ * @regions: regions to remove at root decoder destruct time
+ * @dead: root decoder dead to region creation
  * @cxlsd: base cxl switch decoder
  */
 struct cxl_root_decoder {
@@ -450,6 +452,8 @@ struct cxl_root_decoder {
 	cxl_calc_hb_fn calc_hb;
 	void *platform_data;
 	struct mutex regions_lock;
+	struct xarray regions;
+	bool dead;
 	struct cxl_switch_decoder cxlsd;
 };
 

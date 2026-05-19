@@ -28,6 +28,7 @@ int cxl_region_init(void);
 void cxl_region_exit(void);
 int cxl_get_poison_by_endpoint(struct cxl_port *port);
 struct cxl_region *cxl_dpa_to_region(const struct cxl_memdev *cxlmd, u64 dpa);
+void kill_regions(struct cxl_root_decoder *cxlrd);
 
 #else
 static inline
@@ -42,6 +43,7 @@ static inline int cxl_get_poison_by_endpoint(struct cxl_port *port)
 static inline void cxl_decoder_kill_region(struct cxl_endpoint_decoder *cxled)
 {
 }
+static inline void kill_regions(struct cxl_root_decoder *cxlrd) { };
 static inline int cxl_region_init(void)
 {
 	return 0;
