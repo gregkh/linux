@@ -466,10 +466,6 @@ static int adm1266_probe(struct i2c_client *client)
 	crc8_populate_msb(pmbus_crc_table, 0x7);
 	mutex_init(&data->buf_mutex);
 
-	ret = adm1266_config_gpio(data);
-	if (ret < 0)
-		return ret;
-
 	ret = adm1266_set_rtc(data);
 	if (ret < 0)
 		return ret;
@@ -480,6 +476,10 @@ static int adm1266_probe(struct i2c_client *client)
 
 	ret = pmbus_do_probe(client, &data->info);
 	if (ret)
+		return ret;
+
+	ret = adm1266_config_gpio(data);
+	if (ret < 0)
 		return ret;
 
 	adm1266_init_debugfs(data);
