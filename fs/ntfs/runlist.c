@@ -2056,10 +2056,11 @@ struct runlist_element *ntfs_rl_collapse_range(struct runlist_element *dst_rl, i
 	 * consists of holes.
 	 */
 	merge_cnt = 0;
-	i = new_1st_cnt == 0 ? 1 : new_1st_cnt;
-	if (ntfs_rle_lcn_contiguous(&new_rl[i - 1], &new_rl[i])) {
-		/* Merge right and left */
-		s_rl =  &new_rl[new_1st_cnt - 1];
+	if (new_1st_cnt > 0 &&
+	    ntfs_rle_lcn_contiguous(&new_rl[new_1st_cnt - 1],
+				    &new_rl[new_1st_cnt])) {
+		/* Merge right and left. */
+		s_rl = &new_rl[new_1st_cnt - 1];
 		s_rl->length += s_rl[1].length;
 		merge_cnt = 1;
 	}

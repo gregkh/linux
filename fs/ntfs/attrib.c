@@ -583,24 +583,13 @@ static u32 ntfs_resident_attr_min_value_length(const __le32 type)
 	case AT_STANDARD_INFORMATION:
 		return offsetof(struct standard_information, ver) +
 		       sizeof(((struct standard_information *)0)->ver.v1.reserved12);
-	case AT_ATTRIBUTE_LIST:
-		return offsetof(struct attr_list_entry, name);
 	case AT_FILE_NAME:
-		return offsetof(struct file_name_attr, file_name);
-	case AT_OBJECT_ID:
-		return sizeof(struct guid);
-	case AT_SECURITY_DESCRIPTOR:
-		return sizeof(struct security_descriptor_relative);
+		return offsetof(struct file_name_attr, file_name) +
+			sizeof(__le16) * 1;
 	case AT_VOLUME_INFORMATION:
 		return sizeof(struct volume_information);
-	case AT_INDEX_ROOT:
-		return sizeof(struct index_root);
-	case AT_REPARSE_POINT:
-		return offsetof(struct reparse_point, reparse_data);
 	case AT_EA_INFORMATION:
 		return sizeof(struct ea_information);
-	case AT_EA:
-		return offsetof(struct ea_attr, ea_name) + 1;
 	default:
 		return 0;
 	}
@@ -672,6 +661,9 @@ static int ntfs_attr_find(const __le32 type, const __le16 *name,
 	__le16 *upcase = vol->upcase;
 	u32 upcase_len = vol->upcase_len;
 	unsigned int space;
+	u16 name_offset;
+	u32 attr_len;
+	u32 name_size;
 
 	/*
 	 * Iterate over attributes in mft record starting at @ctx->attr, or the
@@ -699,6 +691,20 @@ static int ntfs_attr_find(const __le32 type, const __le16 *name,
 			return -ENOENT;
 		if (unlikely(!a->length))
 			break;
+		if (a->name_length) {
+			name_offset = le16_to_cpu(a->name_offset);
+			attr_len = le32_to_cpu(a->length);
+			name_size = a->name_length * sizeof(__le16);
+
+			if (name_offset > attr_len ||
+			    attr_len - name_offset < name_size) {
+				ntfs_error(vol->sb,
+					   "Corrupt attribute name in MFT record %llu\n",
+					   ctx->ntfs_ino->mft_no);
+				break;
+			}
+		}
+
 		if (type == AT_UNUSED)
 			return 0;
 		if (a->type != type)
@@ -712,14 +718,6 @@ static int ntfs_attr_find(const __le32 type, const __le16 *name,
 			if (a->name_length)
 				return -ENOENT;
 		} else {
-			if (a->name_length && ((le16_to_cpu(a->name_offset) +
-					       a->name_length * sizeof(__le16)) >
-						le32_to_cpu(a->length))) {
-				ntfs_error(vol->sb, "Corrupt attribute name in MFT record %llu\n",
-					   ctx->ntfs_ino->mft_no);
-				break;
-			}
-
 			if (!ntfs_are_names_equal(name, name_len,
 					(__le16 *)((u8 *)a + le16_to_cpu(a->name_offset)),
 					a->name_length, ic, upcase, upcase_len)) {
@@ -2924,11 +2922,11 @@ int ntfs_attr_open(struct ntfs_inode *ni, const __le32 type,
 	struct ntfs_inode *base_ni;
 	int err;
 
-	ntfs_debug("Entering for inode %lld, attr 0x%x.\n",
-			(unsigned long long)ni->mft_no, type);
-
 	if (!ni || !ni->vol)
 		return -EINVAL;
+
+	ntfs_debug("Entering for inode %lld, attr 0x%x.\n",
+			ni->mft_no, type);
 
 	if (NInoAttr(ni))
 		base_ni = ni->ext.base_ntfs_ino;

@@ -2582,8 +2582,8 @@ int ntfs_inode_sync_filename(struct ntfs_inode *ni)
 
 		mutex_lock_nested(&index_ni->mrec_lock, NTFS_INODE_MUTEX_PARENT);
 		if (NInoBeingDeleted(ni)) {
-			iput(index_vi);
 			mutex_unlock(&index_ni->mrec_lock);
+			iput(index_vi);
 			continue;
 		}
 
@@ -2591,8 +2591,8 @@ int ntfs_inode_sync_filename(struct ntfs_inode *ni)
 		if (!ictx) {
 			ntfs_error(sb, "Failed to get index ctx, inode %llu",
 					index_ni->mft_no);
-			iput(index_vi);
 			mutex_unlock(&index_ni->mrec_lock);
+			iput(index_vi);
 			continue;
 		}
 
@@ -2601,8 +2601,8 @@ int ntfs_inode_sync_filename(struct ntfs_inode *ni)
 			ntfs_debug("Index lookup failed, inode %llu",
 					index_ni->mft_no);
 			ntfs_index_ctx_put(ictx);
-			iput(index_vi);
 			mutex_unlock(&index_ni->mrec_lock);
+			iput(index_vi);
 			continue;
 		}
 		/* Update flags and file size. */
