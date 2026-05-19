@@ -787,7 +787,7 @@ amdgpu_userq_create(struct drm_file *filp, union drm_amdgpu_userq *args)
 	r = uq_funcs->mqd_create(queue, &args->in);
 	if (r) {
 		drm_file_err(uq_mgr->file, "Failed to create Queue\n");
-		goto clean_mapping;
+		goto clean_doorbell_bo;
 	}
 
 	/* Update VM owner at userq submit-time for page-fault attribution. */
@@ -808,7 +808,7 @@ amdgpu_userq_create(struct drm_file *filp, union drm_amdgpu_userq *args)
 		if (r) {
 			drm_file_err(uq_mgr->file, "Failed to map Queue\n");
 			mutex_unlock(&uq_mgr->userq_mutex);
-			goto clean_doorbell;
+			goto erase_doorbell;
 		}
 	}
 
@@ -831,10 +831,15 @@ amdgpu_userq_create(struct drm_file *filp, union drm_amdgpu_userq *args)
 	args->out.queue_id = qid;
 	return 0;
 
-clean_doorbell:
+erase_doorbell:
 	xa_erase_irq(&adev->userq_doorbell_xa, index);
 clean_mqd:
 	uq_funcs->mqd_destroy(queue);
+clean_doorbell_bo:
+	amdgpu_bo_reserve(queue->db_obj.obj, true);
+	amdgpu_bo_unpin(queue->db_obj.obj);
+	amdgpu_bo_unreserve(queue->db_obj.obj);
+	amdgpu_bo_unref(&queue->db_obj.obj);
 clean_mapping:
 	amdgpu_bo_reserve(fpriv->vm.root.bo, true);
 	amdgpu_userq_buffer_vas_list_cleanup(adev, queue);
