@@ -1828,6 +1828,22 @@ chk_add_tx_nr()
 	fi
 }
 
+chk_add_drop_tx_nr()
+{
+	local drop_tx_nr=$1
+	local count
+
+	print_check "add addr tx drop"
+	count=$(mptcp_lib_get_counter ${ns1} "MPTcpExtAddAddrTxDrop")
+	if [ -z "$count" ]; then
+		print_skip
+	elif [ "$count" != "$drop_tx_nr" ]; then
+		fail_test "got $count ADD_ADDR drop[s] TX, expected $drop_tx_nr"
+	else
+		print_ok
+	fi
+}
+
 chk_rm_nr()
 {
 	local rm_addr_nr=$1
@@ -3277,6 +3293,21 @@ add_addr_ports_tests()
 		cond_stop_capture
 
 		chk_mpc_endp_attempt ${retl} 1
+	fi
+
+	# first signal address drops, second one still progresses
+	if reset "signal addr list progresses after tx drop"; then
+		pm_nl_set_limits $ns1 0 2
+		pm_nl_set_limits $ns2 1 0
+		ip netns exec $ns1 sysctl -q net.ipv4.tcp_timestamps=1
+		ip netns exec $ns2 sysctl -q net.ipv4.tcp_timestamps=1
+
+		pm_nl_add_endpoint $ns1 dead:beef:2::1 flags signal port 10100
+		pm_nl_add_endpoint $ns1 dead:beef:3::1 flags signal
+		run_tests $ns1 $ns2 dead:beef:1::1
+		chk_add_drop_tx_nr 1
+		chk_add_tx_nr 1 1
+		chk_add_nr 1 1 0
 	fi
 }
 
