@@ -4187,6 +4187,9 @@ cifs_umount(struct cifs_sb_info *cifs_sb)
 	}
 	spin_unlock(&cifs_sb->tlink_tree_lock);
 
+	flush_workqueue(serverclose_wq);
+	flush_workqueue(fileinfo_put_wq);
+
 	kfree(cifs_sb->prepath);
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	dfs_cache_put_refsrv_sessions(&cifs_sb->dfs_mount_id);
