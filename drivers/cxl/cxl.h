@@ -431,7 +431,7 @@ typedef struct cxl_dport *(*cxl_calc_hb_fn)(struct cxl_root_decoder *cxlrd,
  * @region_id: region id for next region provisioning event
  * @calc_hb: which host bridge covers the n'th position by granularity
  * @platform_data: platform specific configuration data
- * @range_lock: sync region autodiscovery by address range
+ * @regions_lock: sync region discovery, construction, and deletion
  * @cxlsd: base cxl switch decoder
  */
 struct cxl_root_decoder {
@@ -439,7 +439,7 @@ struct cxl_root_decoder {
 	atomic_t region_id;
 	cxl_calc_hb_fn calc_hb;
 	void *platform_data;
-	struct mutex range_lock;
+	struct mutex regions_lock;
 	struct cxl_switch_decoder cxlsd;
 };
 
