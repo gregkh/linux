@@ -1264,19 +1264,17 @@ int azx_codec_configure(struct azx *chip)
 }
 EXPORT_SYMBOL_GPL(azx_codec_configure);
 
-static int stream_direction(struct azx *chip, unsigned char index)
+void azx_add_stream(struct azx *chip, struct azx_dev *azx_dev, int idx, int tag)
 {
-	if (index >= chip->capture_index_offset &&
-	    index < chip->capture_index_offset + chip->capture_streams)
-		return SNDRV_PCM_STREAM_CAPTURE;
-	return SNDRV_PCM_STREAM_PLAYBACK;
+	snd_hdac_stream_init(azx_bus(chip), azx_stream(azx_dev), idx,
+			     azx_stream_direction(chip, idx), tag);
 }
+EXPORT_SYMBOL_GPL(azx_add_stream);
 
 /* initialize SD streams */
 int azx_init_streams(struct azx *chip)
 {
 	int i;
-	int stream_tags[2] = { 0, 0 };
 
 	/* initialize each stream (aka device)
 	 * assign the starting bdl address to each stream (device)
@@ -1284,24 +1282,10 @@ int azx_init_streams(struct azx *chip)
 	 */
 	for (i = 0; i < chip->num_streams; i++) {
 		struct azx_dev *azx_dev = kzalloc_obj(*azx_dev);
-		int dir, tag;
 
 		if (!azx_dev)
 			return -ENOMEM;
-
-		dir = stream_direction(chip, i);
-		/* stream tag must be unique throughout
-		 * the stream direction group,
-		 * valid values 1...15
-		 * use separate stream tag if the flag
-		 * AZX_DCAPS_SEPARATE_STREAM_TAG is used
-		 */
-		if (chip->driver_caps & AZX_DCAPS_SEPARATE_STREAM_TAG)
-			tag = ++stream_tags[dir];
-		else
-			tag = i + 1;
-		snd_hdac_stream_init(azx_bus(chip), azx_stream(azx_dev),
-				     i, dir, tag);
+		azx_add_stream(chip, azx_dev, i, i + 1);
 	}
 
 	return 0;
