@@ -97,6 +97,8 @@ static int azx_pcm_close(struct snd_pcm_substream *substream)
 
 	trace_azx_pcm_close(chip, azx_dev);
 	scoped_guard(mutex, &chip->open_mutex) {
+		if (chip->ops->pcm_close)
+			chip->ops->pcm_close(chip, azx_dev);
 		azx_release_device(azx_dev);
 		if (hinfo->ops.close)
 			hinfo->ops.close(hinfo, apcm->codec, substream);

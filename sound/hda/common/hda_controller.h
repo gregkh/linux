@@ -78,6 +78,8 @@ struct hda_controller_ops {
 	int (*position_check)(struct azx *chip, struct azx_dev *azx_dev);
 	/* enable/disable the link power */
 	int (*link_power)(struct azx *chip, bool enable);
+	/* additional hook for PCM */
+	void (*pcm_close)(struct azx *chip, struct azx_dev *azx_dev);
 };
 
 struct azx_pcm {

@@ -761,16 +761,27 @@ static void azx_irq_pending_work(struct work_struct *work)
 }
 
 /* clear irq_pending flags and assure no on-going workq */
+static void hda_intel_stream_clear_irq_pending(struct azx_dev *azx_dev)
+{
+	struct hda_intel_stream *istream = azx_dev_to_istream(azx_dev);
+
+	istream->irq_pending = false;
+	cancel_work_sync(&istream->irq_pending_work);
+}
+
+/* called at PCM close */
+static void hda_intel_pcm_close(struct azx *chip, struct azx_dev *azx_dev)
+{
+	hda_intel_stream_clear_irq_pending(azx_dev);
+}
+
 static void azx_clear_irq_pending(struct azx *chip)
 {
 	struct hdac_bus *bus = azx_bus(chip);
 	struct hdac_stream *s;
 
 	list_for_each_entry(s, &bus->stream_list, list) {
-		struct azx_dev *azx_dev = stream_to_azx_dev(s);
-		struct hda_intel_stream *istream = azx_dev_to_istream(azx_dev);
-		istream->irq_pending = false;
-		cancel_work_sync(&istream->irq_pending_work);
+		hda_intel_stream_clear_irq_pending(stream_to_azx_dev(s));
 	}
 }
 
@@ -2131,6 +2142,7 @@ static const struct dmi_system_id driver_denylist_dmi[] = {
 static const struct hda_controller_ops pci_hda_ops = {
 	.disable_msi_reset_irq = disable_msi_reset_irq,
 	.position_check = azx_position_check,
+	.pcm_close = hda_intel_pcm_close,
 };
 
 static DECLARE_BITMAP(probed_devs, SNDRV_CARDS);
