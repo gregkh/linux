@@ -748,12 +748,12 @@ amdgpu_userq_create(struct drm_file *filp, union drm_amdgpu_userq *args)
 	INIT_DELAYED_WORK(&queue->hang_detect_work,
 			  amdgpu_userq_hang_detect_work);
 
-	mutex_init(&queue->fence_drv_lock);
-	xa_init_flags(&queue->fence_drv_xa, XA_FLAGS_ALLOC);
 	r = amdgpu_userq_fence_driver_alloc(adev, &queue->fence_drv);
 	if (r)
 		goto free_queue;
 
+	xa_init_flags(&queue->fence_drv_xa, XA_FLAGS_ALLOC);
+	mutex_init(&queue->fence_drv_lock);
 	/* Make sure the queue can actually run with those virtual addresses. */
 	r = amdgpu_bo_reserve(fpriv->vm.root.bo, false);
 	if (r)
@@ -844,7 +844,6 @@ clean_mapping:
 	amdgpu_bo_reserve(fpriv->vm.root.bo, true);
 	amdgpu_userq_buffer_vas_list_cleanup(adev, queue);
 	amdgpu_bo_unreserve(fpriv->vm.root.bo);
-	mutex_destroy(&queue->fence_drv_lock);
 free_fence_drv:
 	amdgpu_userq_fence_driver_free(queue);
 free_queue:
