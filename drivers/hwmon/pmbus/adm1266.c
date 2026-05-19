@@ -477,12 +477,12 @@ static int adm1266_probe(struct i2c_client *client)
 	if (ret < 0)
 		return ret;
 
-	ret = adm1266_config_nvmem(data);
-	if (ret < 0)
-		return ret;
-
 	ret = pmbus_do_probe(client, &data->info);
 	if (ret)
+		return ret;
+
+	ret = adm1266_config_nvmem(data);
+	if (ret < 0)
 		return ret;
 
 	ret = adm1266_config_gpio(data);
