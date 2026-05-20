@@ -105,6 +105,7 @@ static int erofs_init_inode_xattrs(struct inode *inode)
 		it.kaddr = erofs_bread(&it.buf, erofs_blknr(sb, it.pos),
 				       EROFS_KMAP);
 		if (IS_ERR(it.kaddr)) {
+			erofs_put_metabuf(&it.buf);
 			kfree(vi->xattr_shared_xattrs);
 			vi->xattr_shared_xattrs = NULL;
 			ret = PTR_ERR(it.kaddr);
