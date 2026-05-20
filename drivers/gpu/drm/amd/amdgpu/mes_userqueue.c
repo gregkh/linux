@@ -318,8 +318,9 @@ static int mes_userq_mqd_create(struct amdgpu_usermode_queue *queue,
 			kfree(compute_mqd);
 			goto free_mqd;
 		}
-		r = amdgpu_userq_input_va_validate(adev, queue, compute_mqd->eop_va,
-						   2048);
+		r = amdgpu_userq_input_va_validate(adev, queue,
+						   compute_mqd->eop_va, 2048,
+						   &queue->userq_vas.va.eop);
 		amdgpu_bo_unreserve(queue->vm->root.bo);
 		if (r) {
 			kfree(compute_mqd);
@@ -368,7 +369,8 @@ static int mes_userq_mqd_create(struct amdgpu_usermode_queue *queue,
 			goto free_mqd;
 		}
 		r = amdgpu_userq_input_va_validate(adev, queue, mqd_gfx_v11->shadow_va,
-						   shadow_info.shadow_size);
+						   shadow_info.shadow_size,
+						   &queue->userq_vas.va.shadow);
 		if (r) {
 			amdgpu_bo_unreserve(queue->vm->root.bo);
 			kfree(mqd_gfx_v11);
@@ -376,7 +378,8 @@ static int mes_userq_mqd_create(struct amdgpu_usermode_queue *queue,
 		}
 
 		r = amdgpu_userq_input_va_validate(adev, queue, mqd_gfx_v11->csa_va,
-						   shadow_info.csa_size);
+						   shadow_info.csa_size,
+						   &queue->userq_vas.va.csa);
 		amdgpu_bo_unreserve(queue->vm->root.bo);
 		if (r) {
 			kfree(mqd_gfx_v11);
@@ -406,7 +409,8 @@ static int mes_userq_mqd_create(struct amdgpu_usermode_queue *queue,
 			goto free_mqd;
 		}
 		r = amdgpu_userq_input_va_validate(adev, queue, mqd_sdma_v11->csa_va,
-						   32);
+						   32,
+						   &queue->userq_vas.va.csa);
 		amdgpu_bo_unreserve(queue->vm->root.bo);
 		if (r) {
 			kfree(mqd_sdma_v11);
