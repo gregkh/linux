@@ -658,7 +658,7 @@ static struct qcom_ice *of_qcom_ice_get(struct device *dev)
 	struct device_node *node __free(device_node) = of_parse_phandle(dev->of_node,
 									"qcom,ice", 0);
 	if (!node)
-		return ERR_PTR(-ENODEV);
+		return ERR_PTR(-EOPNOTSUPP);
 
 	pdev = of_find_device_by_node(node);
 	if (!pdev) {
