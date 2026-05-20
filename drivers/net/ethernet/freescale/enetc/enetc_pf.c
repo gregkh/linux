@@ -494,8 +494,9 @@ static u16 enetc_msg_pf_set_vf_primary_mac_addr(struct enetc_pf *pf,
 
 	addr = cmd->mac.sa_data;
 	if (vf_state->flags & ENETC_VF_FLAG_PF_SET_MAC) {
-		dev_warn(dev, "Attempt to override PF set mac addr for VF%d\n",
-			 vf_id);
+		dev_err_ratelimited(dev,
+				    "VF%d attempted to override PF set MAC\n",
+				    vf_id);
 		return ENETC_MSG_CMD_STATUS_FAIL;
 	}
 
@@ -520,8 +521,9 @@ void enetc_msg_handle_rxmsg(struct enetc_pf *pf, int vf_id, u16 *status)
 		break;
 	default:
 		*status = ENETC_MSG_CMD_STATUS_FAIL;
-		dev_err(dev, "command not supported (cmd_type: 0x%x)\n",
-			cmd_type);
+		dev_err_ratelimited(dev,
+				    "command not supported (cmd_type: 0x%x)\n",
+				    cmd_type);
 	}
 }
 
