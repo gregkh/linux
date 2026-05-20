@@ -632,6 +632,7 @@ struct snd_soc_acpi_mach snd_soc_acpi_intel_ptl_sdw_machines[] = {
 		.link_mask = BIT(2) | BIT(3),
 		.links = ptl_cs42l43_agg_l3_cs35l56_l2,
 		.drv_name = "sof_sdw",
+		.machine_check = snd_soc_acpi_intel_no_function_topology,
 		.sof_tplg_filename = "sof-ptl-cs42l43-agg-l3-cs35l56-l2.tplg",
 	},
 	{
