@@ -170,7 +170,7 @@ static bool nft_fib6_info_nh_uses_dev(struct fib6_info *rt,
 	if (nft_fib6_info_nh_dev_match(nh_dev, dev))
 		return true;
 
-	list_for_each_entry(iter, &rt->fib6_siblings, fib6_siblings) {
+	list_for_each_entry_rcu(iter, &rt->fib6_siblings, fib6_siblings) {
 		nh_dev = fib6_info_nh_dev(iter);
 
 		if (nft_fib6_info_nh_dev_match(nh_dev, dev))
