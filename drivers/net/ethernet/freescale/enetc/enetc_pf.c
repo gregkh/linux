@@ -493,11 +493,13 @@ static u16 enetc_msg_pf_set_vf_primary_mac_addr(struct enetc_pf *pf,
 		return ENETC_MSG_CMD_STATUS_FAIL;
 
 	addr = cmd->mac.sa_data;
-	if (vf_state->flags & ENETC_VF_FLAG_PF_SET_MAC)
+	if (vf_state->flags & ENETC_VF_FLAG_PF_SET_MAC) {
 		dev_warn(dev, "Attempt to override PF set mac addr for VF%d\n",
 			 vf_id);
-	else
-		enetc_pf_set_primary_mac_addr(&pf->si->hw, vf_id + 1, addr);
+		return ENETC_MSG_CMD_STATUS_FAIL;
+	}
+
+	enetc_pf_set_primary_mac_addr(&pf->si->hw, vf_id + 1, addr);
 
 	return ENETC_MSG_CMD_STATUS_OK;
 }
@@ -509,7 +511,6 @@ void enetc_msg_handle_rxmsg(struct enetc_pf *pf, int vf_id, u16 *status)
 	struct enetc_msg_cmd_header *cmd_hdr;
 	u16 cmd_type;
 
-	*status = ENETC_MSG_CMD_STATUS_OK;
 	cmd_hdr = (struct enetc_msg_cmd_header *)msg->vaddr;
 	cmd_type = cmd_hdr->type;
 
@@ -518,6 +519,7 @@ void enetc_msg_handle_rxmsg(struct enetc_pf *pf, int vf_id, u16 *status)
 		*status = enetc_msg_pf_set_vf_primary_mac_addr(pf, vf_id);
 		break;
 	default:
+		*status = ENETC_MSG_CMD_STATUS_FAIL;
 		dev_err(dev, "command not supported (cmd_type: 0x%x)\n",
 			cmd_type);
 	}
