@@ -151,13 +151,6 @@ void amdgpu_userq_mgr_cancel_reset_work(struct amdgpu_device *adev);
 void amdgpu_userq_mgr_cancel_resume(struct amdgpu_userq_mgr *userq_mgr);
 void amdgpu_userq_mgr_fini(struct amdgpu_userq_mgr *userq_mgr);
 
-int amdgpu_userq_create_object(struct amdgpu_userq_mgr *uq_mgr,
-			       struct amdgpu_userq_obj *userq_obj,
-			       int size);
-
-void amdgpu_userq_destroy_object(struct amdgpu_userq_mgr *uq_mgr,
-				 struct amdgpu_userq_obj *userq_obj);
-
 void amdgpu_userq_evict(struct amdgpu_userq_mgr *uq_mgr);
 
 void amdgpu_userq_ensure_ev_fence(struct amdgpu_userq_mgr *userq_mgr,
