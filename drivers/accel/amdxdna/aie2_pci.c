@@ -511,6 +511,11 @@ static int aie2_init(struct amdxdna_dev *xdna)
 		return -EINVAL;
 	}
 
+	if (!xdna->group) {
+		XDNA_ERR(xdna, "Running without IOMMU not supported");
+		return -EINVAL;
+	}
+
 	ndev = drmm_kzalloc(&xdna->ddev, sizeof(*ndev), GFP_KERNEL);
 	if (!ndev)
 		return -ENOMEM;
