@@ -252,8 +252,12 @@ static int enetc_pf_set_vf_mac(struct net_device *ndev, int vf, u8 *mac)
 		return -EADDRNOTAVAIL;
 
 	vf_state = &pf->vf_state[vf];
+
+	mutex_lock(&vf_state->lock);
 	vf_state->flags |= ENETC_VF_FLAG_PF_SET_MAC;
 	enetc_pf_set_primary_mac_addr(&priv->si->hw, vf + 1, mac);
+	mutex_unlock(&vf_state->lock);
+
 	return 0;
 }
 
@@ -496,7 +500,9 @@ static u16 enetc_msg_pf_set_vf_primary_mac_addr(struct enetc_pf *pf,
 		return ENETC_MSG_CMD_STATUS_FAIL;
 	}
 
+	mutex_lock(&vf_state->lock);
 	if (vf_state->flags & ENETC_VF_FLAG_PF_SET_MAC) {
+		mutex_unlock(&vf_state->lock);
 		dev_err_ratelimited(dev,
 				    "VF%d attempted to override PF set MAC\n",
 				    vf_id);
@@ -504,6 +510,7 @@ static u16 enetc_msg_pf_set_vf_primary_mac_addr(struct enetc_pf *pf,
 	}
 
 	enetc_pf_set_primary_mac_addr(&pf->si->hw, vf_id + 1, addr);
+	mutex_unlock(&vf_state->lock);
 
 	return ENETC_MSG_CMD_STATUS_OK;
 }
@@ -989,6 +996,9 @@ static int enetc_pf_probe(struct pci_dev *pdev,
 			err = -ENOMEM;
 			goto err_alloc_vf_state;
 		}
+
+		for (int i = 0; i < pf->total_vfs; i++)
+			mutex_init(&pf->vf_state[i].lock);
 	}
 
 	err = enetc_setup_mac_addresses(node, pf);

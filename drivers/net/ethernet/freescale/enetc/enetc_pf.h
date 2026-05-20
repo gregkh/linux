@@ -14,6 +14,7 @@ enum enetc_vf_flags {
 };
 
 struct enetc_vf_state {
+	struct mutex lock; /* Prevent concurrent access */
 	enum enetc_vf_flags flags;
 };
 
