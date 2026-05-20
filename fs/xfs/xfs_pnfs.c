@@ -174,12 +174,15 @@ xfs_fs_map_blocks(
 	lock_flags = xfs_ilock_data_map_shared(ip);
 	error = xfs_bmapi_read(ip, offset_fsb, end_fsb - offset_fsb,
 				&imap, &nimaps, bmapi_flags);
+	if (error) {
+		xfs_iunlock(ip, lock_flags);
+		goto out_unlock;
+	}
 	seq = xfs_iomap_inode_sequence(ip, 0);
 
 	ASSERT(!nimaps || imap.br_startblock != DELAYSTARTBLOCK);
 
-	if (!error && write &&
-	    (!nimaps || imap.br_startblock == HOLESTARTBLOCK)) {
+	if (write && (!nimaps || imap.br_startblock == HOLESTARTBLOCK)) {
 		if (offset + length > XFS_ISIZE(ip))
 			end_fsb = xfs_iomap_eof_align_last_fsb(ip, end_fsb);
 		else if (nimaps && imap.br_startblock == HOLESTARTBLOCK)
