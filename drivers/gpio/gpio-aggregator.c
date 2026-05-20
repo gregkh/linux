@@ -969,8 +969,8 @@ static int gpio_aggregator_activate(struct gpio_aggregator *aggr)
 	return 0;
 
 err_remove_lookup_table:
-	kfree(aggr->lookups->dev_id);
 	gpiod_remove_lookup_table(aggr->lookups);
+	kfree(aggr->lookups->dev_id);
 err_remove_swnode:
 	fwnode_remove_software_node(swnode);
 err_remove_lookups:
