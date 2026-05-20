@@ -118,7 +118,6 @@ xfs_fs_map_blocks(
 	struct xfs_bmbt_irec	imap;
 	xfs_fileoff_t		offset_fsb, end_fsb;
 	loff_t			limit;
-	int			bmapi_flags = XFS_BMAPI_ENTIRE;
 	int			nimaps = 1;
 	uint			lock_flags;
 	int			error = 0;
@@ -172,8 +171,9 @@ xfs_fs_map_blocks(
 	offset_fsb = XFS_B_TO_FSBT(mp, offset);
 
 	lock_flags = xfs_ilock_data_map_shared(ip);
+	/* request mappings for the specified range only */
 	error = xfs_bmapi_read(ip, offset_fsb, end_fsb - offset_fsb,
-				&imap, &nimaps, bmapi_flags);
+				&imap, &nimaps, 0);
 	if (error) {
 		xfs_iunlock(ip, lock_flags);
 		goto out_unlock;
