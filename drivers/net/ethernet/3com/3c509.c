@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* 3c509.c: A 3c509 EtherLink3 ethernet driver for linux. */
 /*
 	Written 1993-2000 by Donald Becker.
