@@ -1099,6 +1099,7 @@ el3_netdev_set_ecmd(struct net_device *dev,
 		dev->if_port = 0;
 		break;
 	case PORT_AUI:
+		tmp &= ~(3<<14);
 		tmp |= (1<<14);
 		dev->if_port = 1;
 		break;
