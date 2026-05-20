@@ -96,12 +96,12 @@ static void enetc_msg_free_mbx(struct enetc_si *si, int idx)
 	struct enetc_hw *hw = &si->hw;
 	struct enetc_msg_swbd *msg;
 
+	enetc_wr(hw, ENETC_PSIVMSGRCVAR0(idx), 0);
+	enetc_wr(hw, ENETC_PSIVMSGRCVAR1(idx), 0);
+
 	msg = &pf->rxmsg[idx];
 	dma_free_coherent(&si->pdev->dev, msg->size, msg->vaddr, msg->dma);
 	memset(msg, 0, sizeof(*msg));
-
-	enetc_wr(hw, ENETC_PSIVMSGRCVAR0(idx), 0);
-	enetc_wr(hw, ENETC_PSIVMSGRCVAR1(idx), 0);
 }
 
 int enetc_msg_psi_init(struct enetc_pf *pf)
