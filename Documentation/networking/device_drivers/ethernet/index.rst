@@ -10,6 +10,7 @@ Contents:
 .. toctree::
    :maxdepth: 2
 
+   3com/3c509
    3com/vortex
    amazon/ena
    altera/altera_tse
