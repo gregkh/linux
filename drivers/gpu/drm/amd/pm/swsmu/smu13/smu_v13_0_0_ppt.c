@@ -2801,11 +2801,19 @@ static void smu_v13_0_0_i2c_control_fini(struct smu_context *smu)
 static int smu_v13_0_0_set_mp1_state(struct smu_context *smu,
 				     enum pp_mp1_state mp1_state)
 {
+	uint32_t param;
 	int ret;
 
 	switch (mp1_state) {
 	case PP_MP1_STATE_UNLOAD:
-		ret = smu_cmn_set_mp1_state(smu, mp1_state);
+		/*
+		 * NOTE: Param 0x55 comes from PMFW 80.31.0, ignored in older versions.
+		 * No PMFW version check required.
+		 */
+		param = amdgpu_ip_version(smu->adev, MP1_HWIP, 0) == IP_VERSION(13, 0, 10) ?
+			0x55 : 0x00;
+		ret = smu_cmn_send_smc_msg_with_param(smu, SMU_MSG_PrepareMp1ForUnload,
+						      param, NULL);
 		break;
 	default:
 		/* Ignore others */
