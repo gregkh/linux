@@ -212,14 +212,15 @@ static int hyp_trace_buffer_share_hyp(struct hyp_trace_buffer *trace_buffer)
 		}
 
 		if (ret) {
-			for (p--; p >= 0; p--)
+			while (--p >= 0)
 				__unshare_page(rb_desc->page_va[p]);
+			__unshare_page(rb_desc->meta_va);
 			break;
 		}
 	}
 
 	if (ret)
-		hyp_trace_buffer_unshare_hyp(trace_buffer, cpu--);
+		hyp_trace_buffer_unshare_hyp(trace_buffer, --cpu);
 
 	return ret;
 }
