@@ -3493,7 +3493,6 @@ struct sock *mptcp_sk_clone_init(const struct sock *sk,
 	 * uses the correct data
 	 */
 	mptcp_copy_inaddrs(nsk, ssk);
-	__mptcp_propagate_sndbuf(nsk, ssk);
 
 	mptcp_rcv_space_init(msk, ssk);
 	msk->rcvq_space.time = mptcp_stamp();
@@ -4100,6 +4099,8 @@ static int mptcp_stream_accept(struct socket *sock, struct socket *newsock,
 		set_bit(SOCK_CUSTOM_SOCKOPT, &newsock->flags);
 		msk = mptcp_sk(newsk);
 		msk->in_accept_queue = 0;
+
+		__mptcp_propagate_sndbuf(newsk, mptcp_subflow_tcp_sock(subflow));
 
 		/* set ssk->sk_socket of accept()ed flows to mptcp socket.
 		 * This is needed so NOSPACE flag can be set from tcp stack.
