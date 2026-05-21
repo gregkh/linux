@@ -3,18 +3,25 @@
 
 #include "enetc_pf.h"
 
-static void enetc_msg_disable_mr_int(struct enetc_hw *hw)
+static void enetc_msg_disable_mr_int(struct enetc_pf *pf)
 {
-	u32 psiier = enetc_rd(hw, ENETC_PSIIER);
+	struct enetc_hw *hw = &pf->si->hw;
+	u32 psiier;
+
+	psiier = enetc_rd(hw, ENETC_PSIIER) & ~ENETC_PSIMR_MASK(pf->num_vfs);
+
 	/* disable MR int source(s) */
-	enetc_wr(hw, ENETC_PSIIER, psiier & ~ENETC_PSIIER_MR_MASK);
+	enetc_wr(hw, ENETC_PSIIER, psiier);
 }
 
-static void enetc_msg_enable_mr_int(struct enetc_hw *hw)
+static void enetc_msg_enable_mr_int(struct enetc_pf *pf)
 {
-	u32 psiier = enetc_rd(hw, ENETC_PSIIER);
+	struct enetc_hw *hw = &pf->si->hw;
+	u32 psiier;
 
-	enetc_wr(hw, ENETC_PSIIER, psiier | ENETC_PSIIER_MR_MASK);
+	psiier = enetc_rd(hw, ENETC_PSIIER) | ENETC_PSIMR_MASK(pf->num_vfs);
+
+	enetc_wr(hw, ENETC_PSIIER, psiier);
 }
 
 static irqreturn_t enetc_msg_psi_msix(int irq, void *data)
@@ -22,7 +29,7 @@ static irqreturn_t enetc_msg_psi_msix(int irq, void *data)
 	struct enetc_si *si = (struct enetc_si *)data;
 	struct enetc_pf *pf = enetc_si_priv(si);
 
-	enetc_msg_disable_mr_int(&si->hw);
+	enetc_msg_disable_mr_int(pf);
 	schedule_work(&pf->msg_task);
 
 	return IRQ_HANDLED;
@@ -31,33 +38,35 @@ static irqreturn_t enetc_msg_psi_msix(int irq, void *data)
 static void enetc_msg_task(struct work_struct *work)
 {
 	struct enetc_pf *pf = container_of(work, struct enetc_pf, msg_task);
+	u32 mr_mask = ENETC_PSIMR_MASK(pf->num_vfs);
 	struct enetc_hw *hw = &pf->si->hw;
-	unsigned long mr_mask;
+	u32 mr_status;
 	int i;
 
-	for (;;) {
-		mr_mask = enetc_rd(hw, ENETC_PSIMSGRR) & ENETC_PSIMSGRR_MR_MASK;
-		if (!mr_mask) {
-			/* re-arm MR interrupts, w1c the IDR reg */
-			enetc_wr(hw, ENETC_PSIIDR, ENETC_PSIIER_MR_MASK);
-			enetc_msg_enable_mr_int(hw);
-			return;
-		}
+	mr_status = (enetc_rd(hw, ENETC_PSIMSGRR) & mr_mask) |
+		    (enetc_rd(hw, ENETC_PSIIDR) & mr_mask);
+	if (!mr_status)
+		goto out;
 
-		for (i = 0; i < pf->num_vfs; i++) {
-			u32 psimsgrr;
-			u16 msg_code;
+	for (i = 0; i < pf->num_vfs; i++) {
+		u32 psimsgrr;
+		u16 msg_code;
 
-			if (!(ENETC_PSIMSGRR_MR(i) & mr_mask))
-				continue;
+		if (!(ENETC_PSIMR_BIT(i) & mr_status))
+			continue;
 
-			enetc_msg_handle_rxmsg(pf, i, &msg_code);
+		enetc_msg_handle_rxmsg(pf, i, &msg_code);
 
-			psimsgrr = ENETC_SIMSGSR_SET_MC(msg_code);
-			psimsgrr |= ENETC_PSIMSGRR_MR(i); /* w1c */
-			enetc_wr(hw, ENETC_PSIMSGRR, psimsgrr);
-		}
+		/* w1c to clear the corresponding VF MR bit */
+		enetc_wr(hw, ENETC_PSIIDR, ENETC_PSIMR_BIT(i));
+
+		psimsgrr = ENETC_SIMSGSR_SET_MC(msg_code);
+		psimsgrr |= ENETC_PSIMR_BIT(i); /* w1c */
+		enetc_wr(hw, ENETC_PSIMSGRR, psimsgrr);
 	}
+
+out:
+	enetc_msg_enable_mr_int(pf);
 }
 
 /* Init */
@@ -96,18 +105,27 @@ static void enetc_msg_free_mbx(struct enetc_si *si, int idx)
 	struct enetc_hw *hw = &si->hw;
 	struct enetc_msg_swbd *msg;
 
+	enetc_wr(hw, ENETC_PSIVMSGRCVAR0(idx), 0);
+	enetc_wr(hw, ENETC_PSIVMSGRCVAR1(idx), 0);
+
 	msg = &pf->rxmsg[idx];
 	dma_free_coherent(&si->pdev->dev, msg->size, msg->vaddr, msg->dma);
 	memset(msg, 0, sizeof(*msg));
-
-	enetc_wr(hw, ENETC_PSIVMSGRCVAR0(idx), 0);
-	enetc_wr(hw, ENETC_PSIVMSGRCVAR1(idx), 0);
 }
 
 int enetc_msg_psi_init(struct enetc_pf *pf)
 {
 	struct enetc_si *si = pf->si;
 	int vector, i, err;
+
+	for (i = 0; i < pf->num_vfs; i++) {
+		err = enetc_msg_alloc_mbx(si, i);
+		if (err)
+			goto free_mbx;
+	}
+
+	/* initialize PSI mailbox */
+	INIT_WORK(&pf->msg_task, enetc_msg_task);
 
 	/* register message passing interrupt handler */
 	snprintf(pf->msg_int_name, sizeof(pf->msg_int_name), "%s-vfmsg",
@@ -117,31 +135,20 @@ int enetc_msg_psi_init(struct enetc_pf *pf)
 	if (err) {
 		dev_err(&si->pdev->dev,
 			"PSI messaging: request_irq() failed!\n");
-		return err;
+		goto free_mbx;
 	}
 
 	/* set one IRQ entry for PSI message receive notification (SI int) */
 	enetc_wr(&si->hw, ENETC_SIMSIVR, ENETC_SI_INT_IDX);
 
-	/* initialize PSI mailbox */
-	INIT_WORK(&pf->msg_task, enetc_msg_task);
-
-	for (i = 0; i < pf->num_vfs; i++) {
-		err = enetc_msg_alloc_mbx(si, i);
-		if (err)
-			goto err_init_mbx;
-	}
-
 	/* enable MR interrupts */
-	enetc_msg_enable_mr_int(&si->hw);
+	enetc_msg_enable_mr_int(pf);
 
 	return 0;
 
-err_init_mbx:
+free_mbx:
 	for (i--; i >= 0; i--)
 		enetc_msg_free_mbx(si, i);
-
-	free_irq(vector, si);
 
 	return err;
 }
@@ -151,14 +158,17 @@ void enetc_msg_psi_free(struct enetc_pf *pf)
 	struct enetc_si *si = pf->si;
 	int i;
 
-	cancel_work_sync(&pf->msg_task);
-
 	/* disable MR interrupts */
-	enetc_msg_disable_mr_int(&si->hw);
-
-	for (i = 0; i < pf->num_vfs; i++)
-		enetc_msg_free_mbx(si, i);
+	enetc_msg_disable_mr_int(pf);
 
 	/* de-register message passing interrupt handler */
 	free_irq(pci_irq_vector(si->pdev, ENETC_SI_INT_IDX), si);
+
+	cancel_work_sync(&pf->msg_task);
+
+	/* MR interrupts may be re-enabled by workqueue */
+	enetc_msg_disable_mr_int(pf);
+
+	for (i = 0; i < pf->num_vfs; i++)
+		enetc_msg_free_mbx(si, i);
 }
