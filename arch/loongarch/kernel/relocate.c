@@ -134,10 +134,22 @@ early_param("nokaslr", nokaslr);
 
 #define KASLR_DISABLED_MESSAGE "KASLR is disabled by %s in %s cmdline.\n"
 
+/*
+ * Note: strictly-defined KASLR means the kernel's final runtime address
+ * has a random offset from the kernel's load address, which is implemented
+ * in relocate.c; broadly-defined KALSR means the kernel's final runtime
+ * address has a random offset from the kernel's link address (a.k.a.
+ * VMLINUX_LOAD_ADDRESS), which also include the efistlub implementation,
+ * kexec_file implementation and QEMU direct kernel boot. kaslr_disabled()
+ * return true only means strictly-defined KASLR is disabled.
+ */
 static inline __init bool kaslr_disabled(void)
 {
 	char *str;
 	const char *builtin_cmdline = CONFIG_CMDLINE;
+
+	if (kaslr_offset())
+		return true; /* KASLR is performed during early boot. */
 
 	str = strstr(builtin_cmdline, "nokaslr");
 	if (str == builtin_cmdline || (str > builtin_cmdline && *(str - 1) == ' ')) {
