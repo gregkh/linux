@@ -118,7 +118,7 @@ static int cs_amp_read_cal_coeff(struct cs_dsp *dsp,
 	}
 
 	if (ret < 0) {
-		dev_err(dsp->dev, "Failed to write to '%s': %d\n", ctl_name, ret);
+		dev_err(dsp->dev, "Failed to read '%s': %d\n", ctl_name, ret);
 		return ret;
 	}
 
