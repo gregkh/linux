@@ -500,7 +500,7 @@ static int _cs_amp_set_efi_calibration_data(struct device *dev, int amp_index, i
 	 * must be set.
 	 */
 	if (data->count == 0)
-		data->count = (data->size - sizeof(data)) / sizeof(data->data[0]);
+		data->count = (data->size - struct_offset(data, data)) / sizeof(data->data[0]);
 
 	if (amp_index < 0) {
 		/* Is there already a slot for this target? */
