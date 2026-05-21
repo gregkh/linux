@@ -1273,15 +1273,20 @@ static int atk_probe(struct platform_device *pdev)
 	struct acpi_buffer buf;
 	union acpi_object *obj;
 	struct atk_data *data;
+	acpi_handle handle;
 
 	dev_dbg(&pdev->dev, "adding...\n");
+
+	handle = ACPI_HANDLE(&pdev->dev);
+	if (!handle)
+		return -ENODEV;
 
 	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
 	data->dev = &pdev->dev;
-	data->atk_handle = ACPI_HANDLE(&pdev->dev);
+	data->atk_handle = handle;
 	INIT_LIST_HEAD(&data->sensor_list);
 	data->disable_ec = false;
 

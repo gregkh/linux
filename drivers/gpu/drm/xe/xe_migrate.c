@@ -1524,23 +1524,9 @@ static void emit_clear_main_copy(struct xe_gt *gt, struct xe_bb *bb,
 	bb->len += len;
 }
 
-static bool has_service_copy_support(struct xe_gt *gt)
-{
-	/*
-	 * What we care about is whether the architecture was designed with
-	 * service copy functionality (specifically the new MEM_SET / MEM_COPY
-	 * instructions) so check the architectural engine list rather than the
-	 * actual list since these instructions are usable on BCS0 even if
-	 * all of the actual service copy engines (BCS1-BCS8) have been fused
-	 * off.
-	 */
-	return gt->info.engine_mask & GENMASK(XE_HW_ENGINE_BCS8,
-					      XE_HW_ENGINE_BCS1);
-}
-
 static u32 emit_clear_cmd_len(struct xe_gt *gt)
 {
-	if (has_service_copy_support(gt))
+	if (gt->info.has_xe2_blt_instructions)
 		return PVC_MEM_SET_CMD_LEN_DW;
 	else
 		return XY_FAST_COLOR_BLT_DW;
@@ -1549,7 +1535,7 @@ static u32 emit_clear_cmd_len(struct xe_gt *gt)
 static void emit_clear(struct xe_gt *gt, struct xe_bb *bb, u64 src_ofs,
 		       u32 size, u32 pitch, bool is_vram)
 {
-	if (has_service_copy_support(gt))
+	if (gt->info.has_xe2_blt_instructions)
 		emit_clear_link_copy(gt, bb, src_ofs, size, pitch);
 	else
 		emit_clear_main_copy(gt, bb, src_ofs, size, pitch,

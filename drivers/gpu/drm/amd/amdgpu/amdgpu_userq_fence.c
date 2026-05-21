@@ -121,6 +121,7 @@ amdgpu_userq_fence_driver_free(struct amdgpu_usermode_queue *userq)
 	userq->last_fence = NULL;
 	amdgpu_userq_walk_and_drop_fence_drv(&userq->fence_drv_xa);
 	xa_destroy(&userq->fence_drv_xa);
+	mutex_destroy(&userq->fence_drv_lock);
 	/* Drop the queue's ownership reference to fence_drv explicitly */
 	amdgpu_userq_fence_driver_put(userq->fence_drv);
 }
@@ -134,16 +135,20 @@ amdgpu_userq_fence_put_fence_drv_array(struct amdgpu_userq_fence *userq_fence)
 	userq_fence->fence_drv_array_count = 0;
 }
 
-void amdgpu_userq_fence_driver_process(struct amdgpu_userq_fence_driver *fence_drv)
+/*
+ * Returns:
+ * -ENOENT when no fences were processes
+ * 1 when more fences are pending
+ * 0 when no fences are pending any more
+ */
+int
+amdgpu_userq_fence_driver_process(struct amdgpu_userq_fence_driver *fence_drv)
 {
 	struct amdgpu_userq_fence *userq_fence, *tmp;
 	LIST_HEAD(to_be_signaled);
 	struct dma_fence *fence;
 	unsigned long flags;
 	u64 rptr;
-
-	if (!fence_drv)
-		return;
 
 	spin_lock_irqsave(&fence_drv->fence_list_lock, flags);
 	rptr = amdgpu_userq_fence_read(fence_drv);
@@ -157,6 +162,9 @@ void amdgpu_userq_fence_driver_process(struct amdgpu_userq_fence_driver *fence_d
 				&userq_fence->link);
 	spin_unlock_irqrestore(&fence_drv->fence_list_lock, flags);
 
+	if (list_empty(&to_be_signaled))
+		return -ENOENT;
+
 	list_for_each_entry_safe(userq_fence, tmp, &to_be_signaled, link) {
 		fence = &userq_fence->base;
 		list_del_init(&userq_fence->link);
@@ -168,6 +176,8 @@ void amdgpu_userq_fence_driver_process(struct amdgpu_userq_fence_driver *fence_d
 		dma_fence_put(fence);
 	}
 
+	/* That doesn't need to be accurate so no locking */
+	return list_empty(&fence_drv->fences) ? 0 : 1;
 }
 
 void amdgpu_userq_fence_driver_destroy(struct kref *ref)
@@ -209,80 +219,84 @@ void amdgpu_userq_fence_driver_put(struct amdgpu_userq_fence_driver *fence_drv)
 	kref_put(&fence_drv->refcount, amdgpu_userq_fence_driver_destroy);
 }
 
-static int amdgpu_userq_fence_alloc(struct amdgpu_userq_fence **userq_fence)
+static int amdgpu_userq_fence_alloc(struct amdgpu_usermode_queue *userq,
+				    struct amdgpu_userq_fence **pfence)
 {
-	*userq_fence = kmalloc(sizeof(**userq_fence), GFP_KERNEL);
-	return *userq_fence ? 0 : -ENOMEM;
+	struct amdgpu_userq_fence_driver *fence_drv = userq->fence_drv;
+	struct amdgpu_userq_fence *userq_fence;
+	void *entry;
+
+	userq_fence = kmalloc(sizeof(*userq_fence), GFP_KERNEL);
+	if (!userq_fence)
+		return -ENOMEM;
+
+	/*
+	 * Get the next unused entry, since we fill from the start this can be
+	 * used as size to allocate the array.
+	 */
+	mutex_lock(&userq->fence_drv_lock);
+	XA_STATE(xas, &userq->fence_drv_xa, 0);
+
+	rcu_read_lock();
+	do {
+		entry = xas_find_marked(&xas, ULONG_MAX, XA_FREE_MARK);
+	} while (xas_retry(&xas, entry));
+	rcu_read_unlock();
+
+	userq_fence->fence_drv_array = kvmalloc_array(xas.xa_index,
+						      sizeof(fence_drv),
+						      GFP_KERNEL);
+	if (!userq_fence->fence_drv_array) {
+		mutex_unlock(&userq->fence_drv_lock);
+		kfree(userq_fence);
+		return -ENOMEM;
+	}
+
+	userq_fence->fence_drv_array_count = xas.xa_index;
+	xa_extract(&userq->fence_drv_xa, (void **)userq_fence->fence_drv_array,
+		   0, ULONG_MAX, xas.xa_index, XA_PRESENT);
+	xa_destroy(&userq->fence_drv_xa);
+
+	mutex_unlock(&userq->fence_drv_lock);
+
+	amdgpu_userq_fence_driver_get(fence_drv);
+	userq_fence->fence_drv = fence_drv;
+
+	*pfence = userq_fence;
+	return 0;
 }
 
-static int amdgpu_userq_fence_create(struct amdgpu_usermode_queue *userq,
-				     struct amdgpu_userq_fence *userq_fence,
-				     u64 seq, struct dma_fence **f)
+static void amdgpu_userq_fence_init(struct amdgpu_usermode_queue *userq,
+				    struct amdgpu_userq_fence *fence,
+				    u64 seq)
 {
-	struct amdgpu_userq_fence_driver *fence_drv;
-	struct dma_fence *fence;
+	struct amdgpu_userq_fence_driver *fence_drv = userq->fence_drv;
 	unsigned long flags;
 	bool signaled = false;
 
-	fence_drv = userq->fence_drv;
-	if (!fence_drv)
-		return -EINVAL;
-
-	spin_lock_init(&userq_fence->lock);
-	INIT_LIST_HEAD(&userq_fence->link);
-	fence = &userq_fence->base;
-	userq_fence->fence_drv = fence_drv;
-
-	dma_fence_init64(fence, &amdgpu_userq_fence_ops, &userq_fence->lock,
+	spin_lock_init(&fence->lock);
+	dma_fence_init64(&fence->base, &amdgpu_userq_fence_ops, &fence->lock,
 			 fence_drv->context, seq);
 
-	amdgpu_userq_fence_driver_get(fence_drv);
-	dma_fence_get(fence);
+	/* Make sure the fence is visible to the hang detect worker */
+	dma_fence_put(userq->last_fence);
+	userq->last_fence = dma_fence_get(&fence->base);
 
-	if (!xa_empty(&userq->fence_drv_xa)) {
-		struct amdgpu_userq_fence_driver *stored_fence_drv;
-		unsigned long index, count = 0;
-		int i = 0;
-
-		xa_lock(&userq->fence_drv_xa);
-		xa_for_each(&userq->fence_drv_xa, index, stored_fence_drv)
-			count++;
-
-		userq_fence->fence_drv_array =
-			kvmalloc_objs(struct amdgpu_userq_fence_driver *, count,
-				      GFP_ATOMIC);
-
-		if (userq_fence->fence_drv_array) {
-			xa_for_each(&userq->fence_drv_xa, index, stored_fence_drv) {
-				userq_fence->fence_drv_array[i] = stored_fence_drv;
-				__xa_erase(&userq->fence_drv_xa, index);
-				i++;
-			}
-		}
-
-		userq_fence->fence_drv_array_count = i;
-		xa_unlock(&userq->fence_drv_xa);
-	} else {
-		userq_fence->fence_drv_array = NULL;
-		userq_fence->fence_drv_array_count = 0;
-	}
-
-	/* Check if hardware has already processed the job */
+	/* Check if hardware has already processed the fence */
 	spin_lock_irqsave(&fence_drv->fence_list_lock, flags);
-	if (!dma_fence_is_signaled(fence)) {
-		list_add_tail(&userq_fence->link, &fence_drv->fences);
+	if (!dma_fence_is_signaled(&fence->base)) {
+		dma_fence_get(&fence->base);
+		list_add_tail(&fence->link, &fence_drv->fences);
 	} else {
+		INIT_LIST_HEAD(&fence->link);
 		signaled = true;
-		dma_fence_put(fence);
 	}
 	spin_unlock_irqrestore(&fence_drv->fence_list_lock, flags);
 
 	if (signaled)
-		amdgpu_userq_fence_put_fence_drv_array(userq_fence);
-
-	*f = fence;
-
-	return 0;
+		amdgpu_userq_fence_put_fence_drv_array(fence);
+	else
+		amdgpu_userq_start_hang_detect_work(userq);
 }
 
 static const char *amdgpu_userq_fence_get_driver_name(struct dma_fence *f)
@@ -403,11 +417,6 @@ map_error:
 	return r;
 }
 
-static void amdgpu_userq_fence_cleanup(struct dma_fence *fence)
-{
-	dma_fence_put(fence);
-}
-
 static void
 amdgpu_userq_fence_driver_set_error(struct amdgpu_userq_fence *fence,
 				    int error)
@@ -451,13 +460,14 @@ int amdgpu_userq_signal_ioctl(struct drm_device *dev, void *data,
 	const unsigned int num_read_bo_handles = args->num_bo_read_handles;
 	struct amdgpu_fpriv *fpriv = filp->driver_priv;
 	struct amdgpu_userq_mgr *userq_mgr = &fpriv->userq_mgr;
+
 	struct drm_gem_object **gobj_write, **gobj_read;
 	u32 *syncobj_handles, num_syncobj_handles;
-	struct amdgpu_userq_fence *userq_fence;
-	struct amdgpu_usermode_queue *queue = NULL;
-	struct drm_syncobj **syncobj = NULL;
-	struct dma_fence *fence;
+	struct amdgpu_usermode_queue *queue;
+	struct amdgpu_userq_fence *fence;
+	struct drm_syncobj **syncobj;
 	struct drm_exec exec;
+	void __user *ptr;
 	int r, i, entry;
 	u64 wptr;
 
@@ -469,13 +479,14 @@ int amdgpu_userq_signal_ioctl(struct drm_device *dev, void *data,
 		return -EINVAL;
 
 	num_syncobj_handles = args->num_syncobj_handles;
-	syncobj_handles = memdup_array_user(u64_to_user_ptr(args->syncobj_handles),
-					    num_syncobj_handles, sizeof(u32));
+	ptr = u64_to_user_ptr(args->syncobj_handles);
+	syncobj_handles = memdup_array_user(ptr, num_syncobj_handles,
+					    sizeof(u32));
 	if (IS_ERR(syncobj_handles))
 		return PTR_ERR(syncobj_handles);
 
-	/* Array of pointers to the looked up syncobjs */
-	syncobj = kmalloc_array(num_syncobj_handles, sizeof(*syncobj), GFP_KERNEL);
+	syncobj = kmalloc_array(num_syncobj_handles, sizeof(*syncobj),
+				GFP_KERNEL);
 	if (!syncobj) {
 		r = -ENOMEM;
 		goto free_syncobj_handles;
@@ -489,21 +500,17 @@ int amdgpu_userq_signal_ioctl(struct drm_device *dev, void *data,
 		}
 	}
 
-	r = drm_gem_objects_lookup(filp,
-				   u64_to_user_ptr(args->bo_read_handles),
-				   num_read_bo_handles,
-				   &gobj_read);
+	ptr = u64_to_user_ptr(args->bo_read_handles);
+	r = drm_gem_objects_lookup(filp, ptr, num_read_bo_handles, &gobj_read);
 	if (r)
 		goto free_syncobj;
 
-	r = drm_gem_objects_lookup(filp,
-				   u64_to_user_ptr(args->bo_write_handles),
-				   num_write_bo_handles,
+	ptr = u64_to_user_ptr(args->bo_write_handles);
+	r = drm_gem_objects_lookup(filp, ptr, num_write_bo_handles,
 				   &gobj_write);
 	if (r)
 		goto put_gobj_read;
 
-	/* Retrieve the user queue */
 	queue = amdgpu_userq_get(userq_mgr, args->queue_id);
 	if (!queue) {
 		r = -ENOENT;
@@ -512,73 +519,61 @@ int amdgpu_userq_signal_ioctl(struct drm_device *dev, void *data,
 
 	r = amdgpu_userq_fence_read_wptr(adev, queue, &wptr);
 	if (r)
-		goto put_gobj_write;
+		goto put_queue;
 
-	r = amdgpu_userq_fence_alloc(&userq_fence);
+	r = amdgpu_userq_fence_alloc(queue, &fence);
 	if (r)
-		goto put_gobj_write;
+		goto put_queue;
 
 	/* We are here means UQ is active, make sure the eviction fence is valid */
 	amdgpu_userq_ensure_ev_fence(&fpriv->userq_mgr, &fpriv->evf_mgr);
 
-	/* Create a new fence */
-	r = amdgpu_userq_fence_create(queue, userq_fence, wptr, &fence);
-	if (r) {
-		mutex_unlock(&userq_mgr->userq_mutex);
-		kfree(userq_fence);
-		goto put_gobj_write;
-	}
+	/* Create the new fence */
+	amdgpu_userq_fence_init(queue, fence, wptr);
 
-	dma_fence_put(queue->last_fence);
-	queue->last_fence = dma_fence_get(fence);
-	amdgpu_userq_start_hang_detect_work(queue);
 	mutex_unlock(&userq_mgr->userq_mutex);
 
+	/*
+	 * This needs to come after the fence is created since
+	 * amdgpu_userq_ensure_ev_fence() can't be called while holding the resv
+	 * locks.
+	 */
 	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT,
 		      (num_read_bo_handles + num_write_bo_handles));
 
-	/* Lock all BOs with retry handling */
 	drm_exec_until_all_locked(&exec) {
-		r = drm_exec_prepare_array(&exec, gobj_read, num_read_bo_handles, 1);
+		r = drm_exec_prepare_array(&exec, gobj_read,
+					   num_read_bo_handles, 1);
 		drm_exec_retry_on_contention(&exec);
-		if (r) {
-			amdgpu_userq_fence_cleanup(fence);
+		if (r)
 			goto exec_fini;
-		}
 
-		r = drm_exec_prepare_array(&exec, gobj_write, num_write_bo_handles, 1);
+		r = drm_exec_prepare_array(&exec, gobj_write,
+					   num_write_bo_handles, 1);
 		drm_exec_retry_on_contention(&exec);
-		if (r) {
-			amdgpu_userq_fence_cleanup(fence);
+		if (r)
 			goto exec_fini;
-		}
 	}
 
-	for (i = 0; i < num_read_bo_handles; i++) {
-		if (!gobj_read || !gobj_read[i]->resv)
-			continue;
-
-		dma_resv_add_fence(gobj_read[i]->resv, fence,
+	/* And publish the new fence in the BOs and syncobj */
+	for (i = 0; i < num_read_bo_handles; i++)
+		dma_resv_add_fence(gobj_read[i]->resv, &fence->base,
 				   DMA_RESV_USAGE_READ);
-	}
 
-	for (i = 0; i < num_write_bo_handles; i++) {
-		if (!gobj_write || !gobj_write[i]->resv)
-			continue;
-
-		dma_resv_add_fence(gobj_write[i]->resv, fence,
+	for (i = 0; i < num_write_bo_handles; i++)
+		dma_resv_add_fence(gobj_write[i]->resv, &fence->base,
 				   DMA_RESV_USAGE_WRITE);
-	}
 
-	/* Add the created fence to syncobj/BO's */
 	for (i = 0; i < num_syncobj_handles; i++)
-		drm_syncobj_replace_fence(syncobj[i], fence);
-
-	/* drop the reference acquired in fence creation function */
-	dma_fence_put(fence);
+		drm_syncobj_replace_fence(syncobj[i], &fence->base);
 
 exec_fini:
+	/* drop the reference acquired in fence creation function */
+	dma_fence_put(&fence->base);
+
 	drm_exec_fini(&exec);
+put_queue:
+	amdgpu_userq_put(queue);
 put_gobj_write:
 	for (i = 0; i < num_write_bo_handles; i++)
 		drm_gem_object_put(gobj_write[i]);
@@ -589,14 +584,10 @@ put_gobj_read:
 	kvfree(gobj_read);
 free_syncobj:
 	while (entry-- > 0)
-		if (syncobj[entry])
-			drm_syncobj_put(syncobj[entry]);
+		drm_syncobj_put(syncobj[entry]);
 	kfree(syncobj);
 free_syncobj_handles:
 	kfree(syncobj_handles);
-
-	if (queue)
-		amdgpu_userq_put(queue);
 
 	return r;
 }
@@ -872,8 +863,10 @@ amdgpu_userq_wait_return_fence_info(struct drm_file *filp,
 		 * Otherwise, we would gather those references until we don't
 		 * have any more space left and crash.
 		 */
+		mutex_lock(&waitq->fence_drv_lock);
 		r = xa_alloc(&waitq->fence_drv_xa, &index, fence_drv,
 			     xa_limit_32b, GFP_KERNEL);
+		mutex_unlock(&waitq->fence_drv_lock);
 		if (r)
 			goto put_waitq;
 

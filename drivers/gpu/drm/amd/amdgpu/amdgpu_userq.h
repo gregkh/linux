@@ -66,6 +66,18 @@ struct amdgpu_usermode_queue {
 	struct amdgpu_userq_obj	db_obj;
 	struct amdgpu_userq_obj fw_obj;
 	struct amdgpu_userq_obj wptr_obj;
+
+	/**
+	 * @fence_drv_lock: Protecting @fence_drv_xa.
+	 */
+	struct mutex		fence_drv_lock;
+
+	/**
+	 * @fence_drv_xa:
+	 *
+	 * References to the external fence drivers returned by wait_ioctl.
+	 * Dropped on the next signaled dma_fence or queue destruction.
+	 */
 	struct xarray		fence_drv_xa;
 	struct amdgpu_userq_fence_driver *fence_drv;
 	struct dma_fence	*last_fence;
@@ -73,7 +85,6 @@ struct amdgpu_usermode_queue {
 	int			priority;
 	struct dentry		*debugfs_queue;
 	struct delayed_work hang_detect_work;
-	struct dma_fence *hang_detect_fence;
 	struct kref		refcount;
 
 	struct list_head	userq_va_list;

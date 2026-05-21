@@ -1699,6 +1699,9 @@ int snd_hda_ctl_add(struct hda_codec *codec, hda_nid_t nid,
 	unsigned short flags = 0;
 	struct hda_nid_item *item;
 
+	if (!kctl)
+		return -EINVAL;
+
 	if (kctl->id.subdevice & HDA_SUBDEV_AMP_FLAG) {
 		flags |= HDA_NID_ITEM_AMP;
 		if (nid == 0)

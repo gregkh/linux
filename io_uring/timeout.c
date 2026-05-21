@@ -284,6 +284,10 @@ static struct io_kiocb *__io_disarm_linked_timeout(struct io_kiocb *req,
 	struct io_timeout *timeout = io_kiocb_to_cmd(link, struct io_timeout);
 
 	io_remove_next_linked(req);
+
+	/* If this is NULL, then timer already claimed it and will complete it */
+	if (!timeout->head)
+		return NULL;
 	timeout->head = NULL;
 	if (hrtimer_try_to_cancel(&io->timer) != -1) {
 		list_del(&timeout->list);
@@ -367,6 +371,14 @@ static void io_req_task_link_timeout(struct io_tw_req tw_req, io_tw_token_t tw)
 	int ret;
 
 	if (prev) {
+		/*
+		 * splice the linked timeout out of prev's chain if the regular
+		 * completion path didn't already do it.
+		 */
+		if (prev->link == req)
+			prev->link = req->link;
+		req->link = NULL;
+
 		if (!tw.cancel) {
 			struct io_cancel_data cd = {
 				.ctx		= req->ctx,
@@ -401,10 +413,10 @@ static enum hrtimer_restart io_link_timeout_fn(struct hrtimer *timer)
 
 	/*
 	 * We don't expect the list to be empty, that will only happen if we
-	 * race with the completion of the linked work.
+	 * race with the completion of the linked work. Splice of prev is
+	 * done in io_req_task_link_timeout(), if needed.
 	 */
 	if (prev) {
-		io_remove_next_linked(prev);
 		if (!req_ref_inc_not_zero(prev))
 			prev = NULL;
 	}

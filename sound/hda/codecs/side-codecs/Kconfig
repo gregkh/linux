@@ -94,7 +94,6 @@ menu "CS35L56 driver options"
 
 config SND_HDA_SCODEC_CS35L56_CAL_DEBUGFS
 	bool "CS35L56 create debugfs for factory calibration"
-	default N
 	depends on DEBUG_FS
 	select SND_SOC_CS35L56_CAL_DEBUGFS_COMMON
 	help

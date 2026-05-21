@@ -14,6 +14,7 @@
 #include <linux/average.h>
 #include <linux/bitops.h>
 #include <linux/compiler.h>
+#include <linux/completion.h>
 #include <linux/if.h>
 #include <linux/if_ether.h>
 #include <linux/kref.h>
@@ -1327,6 +1328,9 @@ struct batadv_tp_vars {
 
 	/** @finish_work: work item for the finishing procedure */
 	struct delayed_work finish_work;
+
+	/** @finished: completion signaled when a sender thread exits */
+	struct completion finished;
 
 	/** @test_length: test length in milliseconds */
 	u32 test_length;

@@ -2168,7 +2168,7 @@ static ssize_t smbdirect_map_sges_from_iter(struct iov_iter *iter, size_t len,
 
 	if (ret < 0) {
 		while (state->num_sge > before) {
-			struct ib_sge *sge = &state->sge[state->num_sge--];
+			struct ib_sge *sge = &state->sge[--state->num_sge];
 
 			ib_dma_unmap_page(state->device,
 					  sge->addr,

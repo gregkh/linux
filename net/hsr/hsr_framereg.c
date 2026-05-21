@@ -889,7 +889,10 @@ int hsr_get_node_data(struct hsr_priv *hsr,
 
 	if (node->addr_B_port != HSR_PT_NONE) {
 		port = hsr_port_get_hsr(hsr, node->addr_B_port);
-		*addr_b_ifindex = port->dev->ifindex;
+		if (port)
+			*addr_b_ifindex = port->dev->ifindex;
+		else
+			*addr_b_ifindex = -1;
 	} else {
 		*addr_b_ifindex = -1;
 	}

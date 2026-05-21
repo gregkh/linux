@@ -106,8 +106,9 @@ int cg_read_strcmp(const char *cgroup, const char *control,
 	/* Handle the case of comparing against empty string */
 	if (!expected)
 		return -1;
-	else
-		size = strlen(expected) + 1;
+
+	/* needs size > 1, otherwise cg_read() reads 0 bytes */
+	size = (expected[0] == '\0') ? 2 : strlen(expected) + 1;
 
 	buf = malloc(size);
 	if (!buf)

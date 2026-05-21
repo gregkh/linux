@@ -913,7 +913,15 @@ static void grow_ple_window(struct kvm_vcpu *vcpu)
 	struct vmcb_control_area *control = &svm->vmcb->control;
 	int old = control->pause_filter_count;
 
-	if (kvm_pause_in_guest(vcpu->kvm))
+	/* Adjusting pause_filter_count makes no sense if PLE is disabled.  */
+	WARN_ON_ONCE(kvm_pause_in_guest(vcpu->kvm));
+
+	/*
+	 * While running L2, KVM should intercept PAUSE if and only if L1 wants
+	 * to intercept PAUSE, and L1's intercept should take priority, i.e.
+	 * KVM should never handle a PAUSE intercept from L2.
+	 */
+	if (WARN_ON_ONCE(is_guest_mode(vcpu)))
 		return;
 
 	control->pause_filter_count = __grow_ple_window(old,
@@ -934,7 +942,10 @@ static void shrink_ple_window(struct kvm_vcpu *vcpu)
 	struct vmcb_control_area *control = &svm->vmcb->control;
 	int old = control->pause_filter_count;
 
-	if (kvm_pause_in_guest(vcpu->kvm))
+	/* Adjusting pause_filter_count makes no sense if PLE is disabled.  */
+	WARN_ON_ONCE(kvm_pause_in_guest(vcpu->kvm));
+
+	if (is_guest_mode(vcpu))
 		return;
 
 	control->pause_filter_count =

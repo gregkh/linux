@@ -1199,10 +1199,21 @@ xfs_trans_alloc_icreate(
 {
 	struct xfs_trans	*tp;
 	bool			retried = false;
+	bool			flushed = false;
 	int			error;
 
 retry:
 	error = xfs_trans_alloc(mp, resv, dblocks, 0, 0, &tp);
+	if (error == -ENOSPC && !flushed) {
+		/*
+		 * Flush all delalloc blocks to reclaim space from speculative
+		 * preallocation.  This is similar to the quota retry below
+		 * but targets FS-wide ENOSPC.
+		 */
+		xfs_flush_inodes(mp);
+		flushed = true;
+		goto retry;
+	}
 	if (error)
 		return error;
 

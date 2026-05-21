@@ -101,24 +101,27 @@ enum scx_ent_flags {
 	SCX_TASK_DEQD_FOR_SLEEP	= 1 << 3, /* last dequeue was for SLEEP */
 	SCX_TASK_SUB_INIT	= 1 << 4, /* task being initialized for a sub sched */
 	SCX_TASK_IMMED		= 1 << 5, /* task is on local DSQ with %SCX_ENQ_IMMED */
-	SCX_TASK_OFF_TASKS	= 1 << 6, /* removed from scx_tasks by sched_ext_dead() */
 
 	/*
-	 * Bits 8 and 9 are used to carry task state:
+	 * Bits 8 to 10 are used to carry task state:
 	 *
 	 * NONE		ops.init_task() not called yet
+	 * INIT_BEGIN	ops.init_task() in flight; see sched_ext_dead()
 	 * INIT		ops.init_task() succeeded, but task can be cancelled
 	 * READY	fully initialized, but not in sched_ext
 	 * ENABLED	fully initialized and in sched_ext
+	 * DEAD		terminal state set by sched_ext_dead()
 	 */
-	SCX_TASK_STATE_SHIFT	= 8,	  /* bits 8 and 9 are used to carry task state */
-	SCX_TASK_STATE_BITS	= 2,
+	SCX_TASK_STATE_SHIFT	= 8,
+	SCX_TASK_STATE_BITS	= 3,
 	SCX_TASK_STATE_MASK	= ((1 << SCX_TASK_STATE_BITS) - 1) << SCX_TASK_STATE_SHIFT,
 
 	SCX_TASK_NONE		= 0 << SCX_TASK_STATE_SHIFT,
-	SCX_TASK_INIT		= 1 << SCX_TASK_STATE_SHIFT,
-	SCX_TASK_READY		= 2 << SCX_TASK_STATE_SHIFT,
-	SCX_TASK_ENABLED	= 3 << SCX_TASK_STATE_SHIFT,
+	SCX_TASK_INIT_BEGIN	= 1 << SCX_TASK_STATE_SHIFT,
+	SCX_TASK_INIT		= 2 << SCX_TASK_STATE_SHIFT,
+	SCX_TASK_READY		= 3 << SCX_TASK_STATE_SHIFT,
+	SCX_TASK_ENABLED	= 4 << SCX_TASK_STATE_SHIFT,
+	SCX_TASK_DEAD		= 5 << SCX_TASK_STATE_SHIFT,
 
 	/*
 	 * Bits 12 and 13 are used to carry reenqueue reason. In addition to

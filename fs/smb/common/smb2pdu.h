@@ -1566,6 +1566,10 @@ struct validate_negotiate_info_rsp {
 #define FILE_STANDARD_LINK_INFORMATION	54
 #define FILE_ID_INFORMATION		59
 #define FILE_ID_EXTD_DIRECTORY_INFORMATION 60	/* also for QUERY_DIR */
+#define FileId64ExtdDirectoryInformation 78	/* also for QUERY_DIR */
+#define FileId64ExtdBothDirectoryInformation 79 /* also for QUERY_DIR */
+#define FileIdAllExtdDirectoryInformation 80	/* also for QUERY_DIR */
+#define FileIdAllExtdBothDirectoryInformation 81 /* also for QUERY_DIR */
 /* Used for Query Info and Find File POSIX Info for SMB3.1.1 and SMB1 */
 #define SMB_FIND_FILE_POSIX_INFO	0x064
 

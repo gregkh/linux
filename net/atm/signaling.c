@@ -179,6 +179,7 @@ as_indicate_complete:
 		break;
 	default:
 		pr_alert("bad message type %d\n", (int)msg->type);
+		dev_kfree_skb(skb);
 		/* Paired with find_get_vcc(msg->vcc) above */
 		sock_put(sk);
 		return -EINVAL;

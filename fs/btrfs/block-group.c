@@ -2412,29 +2412,25 @@ static struct btrfs_block_group *btrfs_create_block_group(
  */
 static int check_chunk_block_group_mappings(struct btrfs_fs_info *fs_info)
 {
-	u64 start = 0;
+	struct rb_node *node;
 	int ret = 0;
 
-	while (1) {
+	/*
+	 * This is called during mount from btrfs_read_block_groups(), before
+	 * any background threads are started, so no concurrent writers can
+	 * modify the mapping_tree. No lock is needed here.
+	 */
+	for (node = rb_first_cached(&fs_info->mapping_tree); node; node = rb_next(node)) {
 		struct btrfs_chunk_map *map;
 		struct btrfs_block_group *bg;
 
-		/*
-		 * btrfs_find_chunk_map() will return the first chunk map
-		 * intersecting the range, so setting @length to 1 is enough to
-		 * get the first chunk.
-		 */
-		map = btrfs_find_chunk_map(fs_info, start, 1);
-		if (!map)
-			break;
-
+		map = rb_entry(node, struct btrfs_chunk_map, rb_node);
 		bg = btrfs_lookup_block_group(fs_info, map->start);
 		if (unlikely(!bg)) {
 			btrfs_err(fs_info,
 	"chunk start=%llu len=%llu doesn't have corresponding block group",
 				     map->start, map->chunk_len);
 			ret = -EUCLEAN;
-			btrfs_free_chunk_map(map);
 			break;
 		}
 		if (unlikely(bg->start != map->start || bg->length != map->chunk_len ||
@@ -2447,12 +2443,9 @@ static int check_chunk_block_group_mappings(struct btrfs_fs_info *fs_info)
 				bg->start, bg->length,
 				bg->flags & BTRFS_BLOCK_GROUP_TYPE_MASK);
 			ret = -EUCLEAN;
-			btrfs_free_chunk_map(map);
 			btrfs_put_block_group(bg);
 			break;
 		}
-		start = map->start + map->chunk_len;
-		btrfs_free_chunk_map(map);
 		btrfs_put_block_group(bg);
 	}
 	return ret;

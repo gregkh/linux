@@ -297,7 +297,6 @@ static void scx_set_task_sched(struct task_struct *p, struct scx_sched *sch)
 #else	/* CONFIG_EXT_SUB_SCHED */
 static struct scx_sched *scx_parent(struct scx_sched *sch) { return NULL; }
 static struct scx_sched *scx_next_descendant_pre(struct scx_sched *pos, struct scx_sched *root) { return pos ? NULL : root; }
-static struct scx_sched *scx_find_sub_sched(u64 cgroup_id) { return NULL; }
 static void scx_set_task_sched(struct task_struct *p, struct scx_sched *sch) {}
 #endif	/* CONFIG_EXT_SUB_SCHED */
 
@@ -712,6 +711,51 @@ struct bpf_iter_scx_dsq {
 } __attribute__((aligned(8)));
 
 
+static u32 scx_get_task_state(const struct task_struct *p)
+{
+	return p->scx.flags & SCX_TASK_STATE_MASK;
+}
+
+static void scx_set_task_state(struct task_struct *p, u32 state)
+{
+	u32 prev_state = scx_get_task_state(p);
+	bool warn = false;
+
+	switch (state) {
+	case SCX_TASK_NONE:
+		warn = prev_state == SCX_TASK_DEAD;
+		break;
+	case SCX_TASK_INIT_BEGIN:
+		warn = prev_state != SCX_TASK_NONE;
+		break;
+	case SCX_TASK_INIT:
+		warn = prev_state != SCX_TASK_INIT_BEGIN;
+		p->scx.flags |= SCX_TASK_RESET_RUNNABLE_AT;
+		break;
+	case SCX_TASK_READY:
+		warn = !(prev_state == SCX_TASK_INIT ||
+			 prev_state == SCX_TASK_ENABLED);
+		break;
+	case SCX_TASK_ENABLED:
+		warn = prev_state != SCX_TASK_READY;
+		break;
+	case SCX_TASK_DEAD:
+		warn = !(prev_state == SCX_TASK_NONE ||
+			 prev_state == SCX_TASK_INIT_BEGIN);
+		break;
+	default:
+		WARN_ONCE(1, "sched_ext: Invalid task state %d -> %d for %s[%d]",
+			  prev_state, state, p->comm, p->pid);
+		return;
+	}
+
+	WARN_ONCE(warn, "sched_ext: Invalid task state transition 0x%x -> 0x%x for %s[%d]",
+		  prev_state, state, p->comm, p->pid);
+
+	p->scx.flags &= ~SCX_TASK_STATE_MASK;
+	p->scx.flags |= state;
+}
+
 /*
  * SCX task iterator.
  */
@@ -937,11 +981,11 @@ static struct task_struct *scx_task_iter_next_locked(struct scx_task_iter *iter)
 		/*
 		 * cgroup_task_dead() removes the dead tasks from cset->tasks
 		 * after sched_ext_dead() and cgroup iteration may see tasks
-		 * which already finished sched_ext_dead(). %SCX_TASK_OFF_TASKS
-		 * is set by sched_ext_dead() under @p's rq lock. Test it to
+		 * which already finished sched_ext_dead(). %SCX_TASK_DEAD is
+		 * set by sched_ext_dead() under @p's rq lock. Test it to
 		 * avoid visiting tasks which are already dead from SCX POV.
 		 */
-		if (p->scx.flags & SCX_TASK_OFF_TASKS) {
+		if (scx_get_task_state(p) == SCX_TASK_DEAD) {
 			__scx_task_iter_rq_unlock(iter);
 			continue;
 		}
@@ -3500,41 +3544,6 @@ static struct cgroup *tg_cgrp(struct task_group *tg)
 
 #endif	/* CONFIG_EXT_GROUP_SCHED */
 
-static u32 scx_get_task_state(const struct task_struct *p)
-{
-	return p->scx.flags & SCX_TASK_STATE_MASK;
-}
-
-static void scx_set_task_state(struct task_struct *p, u32 state)
-{
-	u32 prev_state = scx_get_task_state(p);
-	bool warn = false;
-
-	switch (state) {
-	case SCX_TASK_NONE:
-		break;
-	case SCX_TASK_INIT:
-		warn = prev_state != SCX_TASK_NONE;
-		break;
-	case SCX_TASK_READY:
-		warn = prev_state == SCX_TASK_NONE;
-		break;
-	case SCX_TASK_ENABLED:
-		warn = prev_state != SCX_TASK_READY;
-		break;
-	default:
-		WARN_ONCE(1, "sched_ext: Invalid task state %d -> %d for %s[%d]",
-			  prev_state, state, p->comm, p->pid);
-		return;
-	}
-
-	WARN_ONCE(warn, "sched_ext: Invalid task state transition 0x%x -> 0x%x for %s[%d]",
-		  prev_state, state, p->comm, p->pid);
-
-	p->scx.flags &= ~SCX_TASK_STATE_MASK;
-	p->scx.flags |= state;
-}
-
 static int __scx_init_task(struct scx_sched *sch, struct task_struct *p, bool fork)
 {
 	int ret;
@@ -3584,22 +3593,6 @@ static int __scx_init_task(struct scx_sched *sch, struct task_struct *p, bool fo
 	}
 
 	return 0;
-}
-
-static int scx_init_task(struct scx_sched *sch, struct task_struct *p, bool fork)
-{
-	int ret;
-
-	ret = __scx_init_task(sch, p, fork);
-	if (!ret) {
-		/*
-		 * While @p's rq is not locked. @p is not visible to the rest of
-		 * SCX yet and it's safe to update the flags and state.
-		 */
-		p->scx.flags |= SCX_TASK_RESET_RUNNABLE_AT;
-		scx_set_task_state(p, SCX_TASK_INIT);
-	}
-	return ret;
 }
 
 static void __scx_enable_task(struct scx_sched *sch, struct task_struct *p)
@@ -3716,7 +3709,8 @@ static void scx_disable_and_exit_task(struct scx_sched *sch,
 	 * If set, @p exited between __scx_init_task() and scx_enable_task() in
 	 * scx_sub_enable() and is initialized for both the associated sched and
 	 * its parent. Exit for the child too - scx_enable_task() never ran for
-	 * it, so undo only init_task.
+	 * it, so undo only init_task. The flag is only set on the sub-enable
+	 * path, so it's always clear when @p arrives here in %SCX_TASK_NONE.
 	 */
 	if (p->scx.flags & SCX_TASK_SUB_INIT) {
 		if (!WARN_ON_ONCE(!scx_enabling_sub_sched))
@@ -3764,10 +3758,14 @@ int scx_fork(struct task_struct *p, struct kernel_clone_args *kargs)
 #else
 		struct scx_sched *sch = scx_root;
 #endif
-		ret = scx_init_task(sch, p, true);
-		if (!ret)
-			scx_set_task_sched(p, sch);
-		return ret;
+		scx_set_task_state(p, SCX_TASK_INIT_BEGIN);
+		ret = __scx_init_task(sch, p, true);
+		if (unlikely(ret)) {
+			scx_set_task_state(p, SCX_TASK_NONE);
+			return ret;
+		}
+		scx_set_task_state(p, SCX_TASK_INIT);
+		scx_set_task_sched(p, sch);
 	}
 
 	return 0;
@@ -3862,18 +3860,23 @@ void sched_ext_dead(struct task_struct *p)
 	 * @p is off scx_tasks and wholly ours. scx_root_enable()'s READY ->
 	 * ENABLED transitions can't race us. Disable ops for @p.
 	 *
-	 * %SCX_TASK_OFF_TASKS synchronizes against cgroup task iteration - see
+	 * %SCX_TASK_DEAD synchronizes against cgroup task iteration - see
 	 * scx_task_iter_next_locked(). NONE tasks need no marking: cgroup
 	 * iteration is only used from sub-sched paths, which require root
 	 * enabled. Root enable transitions every live task to at least READY.
+	 *
+	 * %INIT_BEGIN means ops.init_task() is running for @p. Don't call
+	 * into ops; transition to %DEAD so the post-init recheck unwinds
+	 * via scx_sub_init_cancel_task().
 	 */
 	if (scx_get_task_state(p) != SCX_TASK_NONE) {
 		struct rq_flags rf;
 		struct rq *rq;
 
 		rq = task_rq_lock(p, &rf);
-		scx_disable_and_exit_task(scx_task_sched(p), p);
-		p->scx.flags |= SCX_TASK_OFF_TASKS;
+		if (scx_get_task_state(p) != SCX_TASK_INIT_BEGIN)
+			scx_disable_and_exit_task(scx_task_sched(p), p);
+		scx_set_task_state(p, SCX_TASK_DEAD);
 		task_rq_unlock(rq, p, &rf);
 	}
 }
@@ -3917,6 +3920,16 @@ static void switching_to_scx(struct rq *rq, struct task_struct *p)
 static void switched_from_scx(struct rq *rq, struct task_struct *p)
 {
 	if (task_dead_and_done(p))
+		return;
+
+	/*
+	 * %NONE means SCX is no longer tracking @p at the task level (e.g.
+	 * scx_fail_parent() handed @p back to the parent at NONE pending the
+	 * parent's own teardown). There is nothing to disable; calling
+	 * scx_disable_task() would WARN on the non-%ENABLED state and trigger a
+	 * NONE -> READY validation failure.
+	 */
+	if (scx_get_task_state(p) == SCX_TASK_NONE)
 		return;
 
 	scx_disable_task(scx_task_sched(p), p);
@@ -4808,6 +4821,8 @@ static void scx_sched_free_rcu_work(struct work_struct *work)
 	kfree(sch->cgrp_path);
 	if (sch_cgroup(sch))
 		cgroup_put(sch_cgroup(sch));
+	if (sch->sub_kset)
+		kobject_put(&sch->sub_kset->kobj);
 #endif	/* CONFIG_EXT_SUB_SCHED */
 
 	for_each_possible_cpu(cpu) {
@@ -5585,10 +5600,12 @@ static void refresh_watchdog(void)
 
 static s32 scx_link_sched(struct scx_sched *sch)
 {
+	const char *err_msg = "";
+	s32 ret = 0;
+
 	scoped_guard(raw_spinlock_irq, &scx_sched_lock) {
 #ifdef CONFIG_EXT_SUB_SCHED
 		struct scx_sched *parent = scx_parent(sch);
-		s32 ret;
 
 		if (parent) {
 			/*
@@ -5598,15 +5615,16 @@ static s32 scx_link_sched(struct scx_sched *sch)
 			 * parent can shoot us down.
 			 */
 			if (atomic_read(&parent->exit_kind) != SCX_EXIT_NONE) {
-				scx_error(sch, "parent disabled");
-				return -ENOENT;
+				err_msg = "parent disabled";
+				ret = -ENOENT;
+				break;
 			}
 
 			ret = rhashtable_lookup_insert_fast(&scx_sched_hash,
 					&sch->hash_node, scx_sched_hash_params);
 			if (ret) {
-				scx_error(sch, "failed to insert into scx_sched_hash (%d)", ret);
-				return ret;
+				err_msg = "failed to insert into scx_sched_hash";
+				break;
 			}
 
 			list_add_tail(&sch->sibling, &parent->children);
@@ -5614,6 +5632,15 @@ static s32 scx_link_sched(struct scx_sched *sch)
 #endif	/* CONFIG_EXT_SUB_SCHED */
 
 		list_add_tail_rcu(&sch->all, &scx_sched_all);
+	}
+
+	/*
+	 * scx_error() takes scx_sched_lock via scx_claim_exit(), so it must run after
+	 * the guard above is released.
+	 */
+	if (ret) {
+		scx_error(sch, "%s (%d)", err_msg, ret);
+		return ret;
 	}
 
 	refresh_watchdog();
@@ -5685,7 +5712,7 @@ static void scx_fail_parent(struct scx_sched *sch,
 
 		scoped_guard (sched_change, p, DEQUEUE_SAVE | DEQUEUE_MOVE) {
 			scx_disable_and_exit_task(sch, p);
-			rcu_assign_pointer(p->scx.sched, parent);
+			scx_set_task_sched(p, parent);
 		}
 	}
 	scx_task_iter_stop(&sti);
@@ -5763,6 +5790,21 @@ static void scx_sub_disable(struct scx_sched *sch)
 		}
 
 		rq = task_rq_lock(p, &rf);
+
+		if (scx_get_task_state(p) == SCX_TASK_DEAD) {
+			/*
+			 * sched_ext_dead() raced us between __scx_init_task()
+			 * and this rq lock and ran exit_task() on @sch (the
+			 * sched @p was on at that point), not on $parent.
+			 * $parent's just-completed init is owed an exit_task()
+			 * and we issue it here.
+			 */
+			scx_sub_init_cancel_task(parent, p);
+			task_rq_unlock(rq, p, &rf);
+			put_task_struct(p);
+			continue;
+		}
+
 		scoped_guard (sched_change, p, DEQUEUE_SAVE | DEQUEUE_MOVE) {
 			/*
 			 * $p is initialized for $parent and still attached to
@@ -5771,13 +5813,14 @@ static void scx_sub_disable(struct scx_sched *sch)
 			 * $p having already been initialized, and then enable.
 			 */
 			scx_disable_and_exit_task(sch, p);
+			scx_set_task_state(p, SCX_TASK_INIT_BEGIN);
 			scx_set_task_state(p, SCX_TASK_INIT);
-			rcu_assign_pointer(p->scx.sched, parent);
+			scx_set_task_sched(p, parent);
 			scx_set_task_state(p, SCX_TASK_READY);
 			scx_enable_task(parent, p);
 		}
-		task_rq_unlock(rq, p, &rf);
 
+		task_rq_unlock(rq, p, &rf);
 		put_task_struct(p);
 	}
 	scx_task_iter_stop(&sti);
@@ -5820,7 +5863,7 @@ static void scx_sub_disable(struct scx_sched *sch)
 	if (sch->ops.exit)
 		SCX_CALL_OP(sch, exit, NULL, sch->exit_info);
 	if (sch->sub_kset)
-		kset_unregister(sch->sub_kset);
+		kobject_del(&sch->sub_kset->kobj);
 	kobject_del(&sch->kobj);
 }
 #else	/* CONFIG_EXT_SUB_SCHED */
@@ -5954,7 +5997,7 @@ static void scx_root_disable(struct scx_sched *sch)
 	 */
 #ifdef CONFIG_EXT_SUB_SCHED
 	if (sch->sub_kset)
-		kset_unregister(sch->sub_kset);
+		kobject_del(&sch->sub_kset->kobj);
 #endif
 	kobject_del(&sch->kobj);
 
@@ -6578,7 +6621,7 @@ static struct scx_sched *scx_alloc_and_add_sched(struct sched_ext_ops *ops,
 
 	sch->slice_dfl = SCX_SLICE_DFL;
 	atomic_set(&sch->exit_kind, SCX_EXIT_NONE);
-	init_irq_work(&sch->disable_irq_work, scx_disable_irq_workfn);
+	sch->disable_irq_work = IRQ_WORK_INIT_HARD(scx_disable_irq_workfn);
 	kthread_init_work(&sch->disable_work, scx_disable_workfn);
 	timer_setup(&sch->bypass_lb_timer, scx_bypass_lb_timerfn, 0);
 
@@ -6594,6 +6637,7 @@ static struct scx_sched *scx_alloc_and_add_sched(struct sched_ext_ops *ops,
 	rcu_assign_pointer(ops->priv, sch);
 
 	sch->kobj.kset = scx_kset;
+	INIT_LIST_HEAD(&sch->all);
 
 #ifdef CONFIG_EXT_SUB_SCHED
 	char *buf = kzalloc(PATH_MAX, GFP_KERNEL);
@@ -6621,6 +6665,7 @@ static struct scx_sched *scx_alloc_and_add_sched(struct sched_ext_ops *ops,
 		ret = kobject_init_and_add(&sch->kobj, &scx_ktype, NULL, "root");
 
 	if (ret < 0) {
+		RCU_INIT_POINTER(ops->priv, NULL);
 		kobject_put(&sch->kobj);
 		return ERR_PTR(ret);
 	}
@@ -6628,6 +6673,7 @@ static struct scx_sched *scx_alloc_and_add_sched(struct sched_ext_ops *ops,
 	if (ops->sub_attach) {
 		sch->sub_kset = kset_create_and_add("sub", NULL, &sch->kobj);
 		if (!sch->sub_kset) {
+			RCU_INIT_POINTER(ops->priv, NULL);
 			kobject_put(&sch->kobj);
 			return ERR_PTR(-ENOMEM);
 		}
@@ -6635,14 +6681,18 @@ static struct scx_sched *scx_alloc_and_add_sched(struct sched_ext_ops *ops,
 #else	/* CONFIG_EXT_SUB_SCHED */
 	ret = kobject_init_and_add(&sch->kobj, &scx_ktype, NULL, "root");
 	if (ret < 0) {
+		RCU_INIT_POINTER(ops->priv, NULL);
 		kobject_put(&sch->kobj);
 		return ERR_PTR(ret);
 	}
 #endif	/* CONFIG_EXT_SUB_SCHED */
 	return sch;
 
+#ifdef CONFIG_EXT_SUB_SCHED
 err_free_lb_resched:
+	RCU_INIT_POINTER(ops->priv, NULL);
 	free_cpumask_var(sch->bypass_lb_resched_cpumask);
+#endif
 err_free_lb_cpumask:
 	free_cpumask_var(sch->bypass_lb_donee_cpumask);
 err_stop_helper:
@@ -6748,6 +6798,19 @@ static void scx_root_enable_workfn(struct kthread_work *work)
 	mutex_lock(&scx_enable_mutex);
 
 	if (scx_enable_state() != SCX_DISABLED) {
+		ret = -EBUSY;
+		goto err_unlock;
+	}
+
+	/*
+	 * @ops->priv binds @ops to its scx_sched instance. It is set here by
+	 * scx_alloc_and_add_sched() and cleared at the tail of bpf_scx_unreg(),
+	 * which runs after scx_root_disable() has dropped scx_enable_mutex. If
+	 * it's still non-NULL here, a previous attachment on @ops has not
+	 * finished tearing down; proceeding would let the in-flight unreg's
+	 * RCU_INIT_POINTER(NULL) clobber the @ops->priv we are about to assign.
+	 */
+	if (rcu_access_pointer(ops->priv)) {
 		ret = -EBUSY;
 		goto err_unlock;
 	}
@@ -6874,6 +6937,9 @@ static void scx_root_enable_workfn(struct kthread_work *work)
 
 	scx_task_iter_start(&sti, NULL);
 	while ((p = scx_task_iter_next_locked(&sti))) {
+		struct rq_flags rf;
+		struct rq *rq;
+
 		/*
 		 * @p may already be dead, have lost all its usages counts and
 		 * be waiting for RCU grace period before being freed. @p can't
@@ -6882,20 +6948,47 @@ static void scx_root_enable_workfn(struct kthread_work *work)
 		if (!tryget_task_struct(p))
 			continue;
 
+		/*
+		 * Set %INIT_BEGIN under the iter's rq lock so that a concurrent
+		 * sched_ext_dead() does not call ops.exit_task() on @p while
+		 * ops.init_task() is running. If sched_ext_dead() runs before
+		 * this store, it has already removed @p from scx_tasks and the
+		 * iter won't visit @p; if it runs after, it observes
+		 * %INIT_BEGIN and transitions to %DEAD without calling ops,
+		 * leaving the post-init recheck below to unwind.
+		 */
+		scx_set_task_state(p, SCX_TASK_INIT_BEGIN);
 		scx_task_iter_unlock(&sti);
 
-		ret = scx_init_task(sch, p, false);
-		if (ret) {
-			put_task_struct(p);
+		ret = __scx_init_task(sch, p, false);
+
+		rq = task_rq_lock(p, &rf);
+
+		if (unlikely(ret)) {
+			if (scx_get_task_state(p) != SCX_TASK_DEAD)
+				scx_set_task_state(p, SCX_TASK_NONE);
+			task_rq_unlock(rq, p, &rf);
 			scx_task_iter_stop(&sti);
 			scx_error(sch, "ops.init_task() failed (%d) for %s[%d]",
 				  ret, p->comm, p->pid);
+			put_task_struct(p);
 			goto err_disable_unlock_all;
 		}
 
-		scx_set_task_sched(p, sch);
-		scx_set_task_state(p, SCX_TASK_READY);
+		if (scx_get_task_state(p) == SCX_TASK_DEAD) {
+			/*
+			 * sched_ext_dead() observed %INIT_BEGIN and set %DEAD.
+			 * ops.exit_task() is owed to the sched __scx_init_task()
+			 * ran against; call it now.
+			 */
+			scx_sub_init_cancel_task(sch, p);
+		} else {
+			scx_set_task_state(p, SCX_TASK_INIT);
+			scx_set_task_sched(p, sch);
+			scx_set_task_state(p, SCX_TASK_READY);
+		}
 
+		task_rq_unlock(rq, p, &rf);
 		put_task_struct(p);
 	}
 	scx_task_iter_stop(&sti);
@@ -7039,6 +7132,12 @@ static void scx_sub_enable_workfn(struct kthread_work *work)
 		goto out_unlock;
 	}
 
+	/* See scx_root_enable_workfn() for the @ops->priv check. */
+	if (rcu_access_pointer(ops->priv)) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
 	cgrp = cgroup_get_from_id(ops->sub_cgroup_id);
 	if (IS_ERR(cgrp)) {
 		ret = PTR_ERR(cgrp);
@@ -7165,6 +7264,21 @@ static void scx_sub_enable_workfn(struct kthread_work *work)
 			goto abort;
 
 		rq = task_rq_lock(p, &rf);
+
+		if (scx_get_task_state(p) == SCX_TASK_DEAD) {
+			/*
+			 * sched_ext_dead() raced us between __scx_init_task()
+			 * and this rq lock and ran exit_task() on $parent (the
+			 * sched @p was on at that point), not on @sch. @sch's
+			 * just-completed init is owed an exit_task() and we
+			 * issue it here.
+			 */
+			scx_sub_init_cancel_task(sch, p);
+			task_rq_unlock(rq, p, &rf);
+			put_task_struct(p);
+			continue;
+		}
+
 		p->scx.flags |= SCX_TASK_SUB_INIT;
 		task_rq_unlock(rq, p, &rf);
 
@@ -7199,7 +7313,7 @@ static void scx_sub_enable_workfn(struct kthread_work *work)
 			 * $p is now only initialized for @sch and READY, which
 			 * is what we want. Assign it to @sch and enable.
 			 */
-			rcu_assign_pointer(p->scx.sched, sch);
+			scx_set_task_sched(p, sch);
 			scx_enable_task(sch, p);
 
 			p->scx.flags &= ~SCX_TASK_SUB_INIT;
@@ -7301,8 +7415,7 @@ static s32 scx_enable(struct sched_ext_ops *ops, struct bpf_link *link)
 	static DEFINE_MUTEX(helper_mutex);
 	struct scx_enable_cmd cmd;
 
-	if (!cpumask_equal(housekeeping_cpumask(HK_TYPE_DOMAIN),
-			   cpu_possible_mask)) {
+	if (housekeeping_enabled(HK_TYPE_DOMAIN_BOOT)) {
 		pr_err("sched_ext: Not compatible with \"isolcpus=\" domain isolation\n");
 		return -EINVAL;
 	}

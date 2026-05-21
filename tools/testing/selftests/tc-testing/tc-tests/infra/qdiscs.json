@@ -1284,5 +1284,46 @@
         "teardown": [
             "$TC qdisc del dev $DUMMY handle 1: root"
         ]
+    },
+    {
+        "id": "3a62",
+        "name": "Try to create a qlen underflow with QFQ/CBS",
+        "category": [
+            "qdisc",
+            "qfq",
+            "cbs"
+        ],
+        "plugins": {
+            "requires": "nsPlugin"
+        },
+        "setup": [
+            "$IP link set dev $DUMMY up || true",
+            "$IP addr add 10.10.10.10/24 dev $DUMMY || true",
+            "$TC qdisc add dev $DUMMY root handle 1: qfq",
+            "$TC class add dev $DUMMY classid 1:1 parent 1: qfq",
+            "$TC class add dev $DUMMY classid 1:2 parent 1: qfq",
+            "$TC qdisc add dev $DUMMY handle 2: parent 1:1 cbs",
+            "$TC qdisc add dev $DUMMY handle 3: parent 2: netem delay 5000000000",
+            "$TC filter add dev $DUMMY parent 1: prio 1 u32 match ip dst 10.10.10.1 classid 1:1 action ok",
+            "$TC filter add dev $DUMMY parent 1: prio 2 u32 match ip dst 10.10.10.2 classid 1:2 action ok",
+            "ping -c 1 10.10.10.1 -W0.01 -I$DUMMY || true",
+            "$IP l set $DUMMY down",
+            "$IP l set $DUMMY up",
+            "$TC qdisc replace dev $DUMMY handle 4: parent 2: pfifo"
+        ],
+        "cmdUnderTest": "ping -c 1 10.10.10.2 -W0.01 -I$DUMMY",
+        "expExitCode": "1",
+        "verifyCmd": "$TC -s -j qdisc ls dev $DUMMY parent 1:1",
+        "matchJSON": [
+            {
+                "kind": "cbs",
+                "handle": "2:",
+                "bytes": 0,
+                "packets": 0
+            }
+        ],
+        "teardown": [
+            "$TC qdisc del dev $DUMMY handle 1: root"
+        ]
     }
 ]

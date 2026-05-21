@@ -454,7 +454,12 @@ xchk_da_btree_block(
 			}
 		}
 
-		/* XXX: Check hdr3.pad32 once we know how to fix it. */
+		if (xfs_has_crc(ip->i_mount)) {
+			struct xfs_da3_node_hdr *nodehdr3 = blk->bp->b_addr;
+
+			if (nodehdr3->__pad32)
+				xchk_da_set_preen(ds, level);
+		}
 		break;
 	default:
 		xchk_da_set_corrupt(ds, level);

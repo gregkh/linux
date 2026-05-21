@@ -243,6 +243,20 @@ static struct sk_buff *cbs_dequeue(struct Qdisc *sch)
 	return q->dequeue(sch);
 }
 
+static void cbs_reset(struct Qdisc *sch)
+{
+	struct cbs_sched_data *q = qdisc_priv(sch);
+
+	/* Nothing to do if we couldn't create the underlying qdisc */
+	if (!q->qdisc)
+		return;
+
+	qdisc_reset(q->qdisc);
+	qdisc_watchdog_cancel(&q->watchdog);
+	q->credits = 0;
+	q->last = 0;
+}
+
 static const struct nla_policy cbs_policy[TCA_CBS_MAX + 1] = {
 	[TCA_CBS_PARMS]	= { .len = sizeof(struct tc_cbs_qopt) },
 };
@@ -540,7 +554,7 @@ static struct Qdisc_ops cbs_qdisc_ops __read_mostly = {
 	.dequeue	=	cbs_dequeue,
 	.peek		=	qdisc_peek_dequeued,
 	.init		=	cbs_init,
-	.reset		=	qdisc_reset_queue,
+	.reset		=	cbs_reset,
 	.destroy	=	cbs_destroy,
 	.change		=	cbs_change,
 	.dump		=	cbs_dump,
