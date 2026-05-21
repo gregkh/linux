@@ -833,11 +833,18 @@ EXPORT_SYMBOL_NS_GPL(cs_amp_devm_get_vendor_specific_variant_id, "SND_SOC_CS_AMP
  */
 struct dentry *cs_amp_create_debugfs(struct device *dev)
 {
-	struct dentry *dir;
+	struct dentry *dir, *created;
 
+	/* debugfs_lookup() can return NULL or ERR_PTR on error */
 	dir = debugfs_lookup("cirrus_logic", NULL);
-	if (!dir)
-		dir = debugfs_create_dir("cirrus_logic", NULL);
+	if (!IS_ERR_OR_NULL(dir)) {
+		created = debugfs_create_dir(dev_name(dev), dir);
+		dput(dir);
+
+		return created;
+	}
+
+	dir = debugfs_create_dir("cirrus_logic", NULL);
 
 	return debugfs_create_dir(dev_name(dev), dir);
 }
