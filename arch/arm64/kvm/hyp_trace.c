@@ -249,6 +249,7 @@ static struct trace_buffer_desc *hyp_trace_load(unsigned long size, void *priv)
 		goto err_free_desc;
 
 	trace_buffer->desc = desc;
+	trace_buffer->desc_size = desc_size;
 
 	ret = hyp_trace_buffer_alloc_bpages_backing(trace_buffer, size);
 	if (ret)
@@ -298,6 +299,7 @@ static void hyp_trace_unload(struct trace_buffer_desc *desc, void *priv)
 	hyp_trace_buffer_free_bpages_backing(trace_buffer);
 	free_pages_exact(trace_buffer->desc, trace_buffer->desc_size);
 	trace_buffer->desc = NULL;
+	trace_buffer->desc_size = 0;
 }
 
 static int hyp_trace_enable_tracing(bool enable, void *priv)
