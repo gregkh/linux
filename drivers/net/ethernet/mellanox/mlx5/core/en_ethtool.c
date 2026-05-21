@@ -1574,8 +1574,11 @@ static int mlx5e_create_rxfh_context(struct net_device *dev,
 					rxfh->indir, rxfh->key,
 					hfunc == ETH_RSS_HASH_NO_CHANGE ? NULL : &hfunc,
 					rxfh->input_xfrm == RXH_XFRM_NO_CHANGE ? NULL : &symmetric);
-	if (err)
+	if (err) {
+		WARN_ON(mlx5e_rx_res_rss_destroy(priv->rx_res,
+						 rxfh->rss_context));
 		goto unlock;
+	}
 
 	mlx5e_rx_res_rss_get_rxfh(priv->rx_res, rxfh->rss_context,
 				  ethtool_rxfh_context_indir(ctx),
