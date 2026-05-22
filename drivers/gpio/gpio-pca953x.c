@@ -1411,7 +1411,7 @@ static int pca953x_resume(struct device *dev)
 		ret = regulator_enable(chip->regulator);
 		if (ret) {
 			dev_err(dev, "Failed to enable regulator: %d\n", ret);
-			return 0;
+			return ret;
 		}
 	}
 
