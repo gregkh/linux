@@ -118,6 +118,7 @@ config BITLAND_MIFS_WMI
 	depends on ACPI_WMI
 	depends on HWMON
 	depends on INPUT
+	depends on LEDS_CLASS
 	depends on POWER_SUPPLY
 	select ACPI_PLATFORM_PROFILE
 	select INPUT_SPARSEKMAP

@@ -981,10 +981,14 @@ static int acpi_pcc_hotkey_resume(struct device *dev)
 
 static int acpi_pcc_hotkey_probe(struct platform_device *pdev)
 {
-	struct acpi_device *device = ACPI_COMPANION(&pdev->dev);
 	struct backlight_properties props;
+	struct acpi_device *device;
 	struct pcc_acpi *pcc;
 	int num_sifr, result;
+
+	device = ACPI_COMPANION(&pdev->dev);
+	if (!device)
+		return -ENODEV;
 
 	num_sifr = acpi_pcc_get_sqty(device);
 
