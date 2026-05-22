@@ -5458,7 +5458,7 @@ static const struct hda_fixup alc269_fixups[] = {
 	[ALC299_FIXUP_PREDATOR_SPK] = {
 		.type = HDA_FIXUP_PINS,
 		.v.pins = (const struct hda_pintbl[]) {
-			{ 0x21, 0x90170150 }, /* use as headset mic, without its own jack detect */
+			{ 0x21, 0x90170150 }, /* use as internal speaker */
 			{ }
 		}
 	},
