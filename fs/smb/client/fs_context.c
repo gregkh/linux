@@ -420,7 +420,7 @@ static int parse_symlink_flavor(struct fs_context *fc, char *value,
 #define DUP_CTX_STR(field)						\
 do {									\
 	if (ctx->field) {						\
-		new_ctx->field = kstrdup(ctx->field, GFP_ATOMIC);	\
+		new_ctx->field = kstrdup(ctx->field, GFP_KERNEL);	\
 		if (new_ctx->field == NULL) {				\
 			smb3_cleanup_fs_context_contents(new_ctx);	\
 			return -ENOMEM;					\
