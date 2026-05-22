@@ -1370,6 +1370,31 @@ static int fsl_sai_check_version(struct device *dev)
 	return 0;
 }
 
+static int fsl_sai_reset_hw(struct device *dev)
+{
+	struct fsl_sai *sai = dev_get_drvdata(dev);
+	unsigned char ofs = sai->soc_data->reg_offset;
+	int ret;
+
+	/*
+	 * Clear TCSR/RCSR to reset SAI and disable all interrupts.
+	 * Bootloader may leave SAI running causing interrupt storm.
+	 */
+	ret = regmap_write(sai->regmap, FSL_SAI_TCSR(ofs), 0);
+	if (ret) {
+		dev_err(dev, "Failed to clear TCSR: %d\n", ret);
+		return ret;
+	}
+
+	ret = regmap_write(sai->regmap, FSL_SAI_RCSR(ofs), 0);
+	if (ret) {
+		dev_err(dev, "Failed to clear RCSR: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 /*
  * Calculate the offset between first two datalines, don't
  * different offset in one case.
@@ -1575,13 +1600,6 @@ static int fsl_sai_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	ret = devm_request_irq(dev, irq, fsl_sai_isr, IRQF_SHARED,
-			       np->name, sai);
-	if (ret) {
-		dev_err(dev, "failed to claim irq %u\n", irq);
-		return ret;
-	}
-
 	memcpy(&sai->cpu_dai_drv, fsl_sai_dai_template,
 	       sizeof(*fsl_sai_dai_template) * ARRAY_SIZE(fsl_sai_dai_template));
 
@@ -1656,6 +1674,10 @@ static int fsl_sai_probe(struct platform_device *pdev)
 	if (ret < 0)
 		dev_warn(dev, "Error reading SAI version: %d\n", ret);
 
+	ret = fsl_sai_reset_hw(dev);
+	if (ret < 0)
+		dev_warn(dev, "Failed to reset hardware: %d\n", ret);
+
 	/* Select MCLK direction */
 	if (sai->mclk_direction_output &&
 	    sai->soc_data->max_register >= FSL_SAI_MCTL) {
@@ -1666,6 +1688,13 @@ static int fsl_sai_probe(struct platform_device *pdev)
 	ret = pm_runtime_put_sync(dev);
 	if (ret < 0 && ret != -ENOSYS)
 		goto err_pm_get_sync;
+
+	ret = devm_request_irq(dev, irq, fsl_sai_isr, IRQF_SHARED,
+			       np->name, sai);
+	if (ret) {
+		dev_err(dev, "failed to claim irq %u\n", irq);
+		goto err_pm_get_sync;
+	}
 
 	if (of_device_is_compatible(np, "fsl,imx952-sai") &&
 	    !of_property_read_string(np, "fsl,sai-amix-mode", &str)) {
