@@ -2078,6 +2078,7 @@ static void ops_dequeue(struct rq *rq, struct task_struct *p, u64 deq_flags)
 	/* dequeue is always temporary, don't reset runnable_at */
 	clr_task_runnable(p, false);
 
+retry:
 	/* acquire ensures that we see the preceding updates on QUEUED */
 	opss = atomic_long_read_acquire(&p->scx.ops_state);
 
@@ -2091,8 +2092,20 @@ static void ops_dequeue(struct rq *rq, struct task_struct *p, u64 deq_flags)
 		 */
 		BUG();
 	case SCX_OPSS_QUEUED:
-		/* A queued task must always be in BPF scheduler's custody */
-		WARN_ON_ONCE(!(p->scx.flags & SCX_TASK_IN_CUSTODY));
+		/*
+		 * A queued task must always be in BPF scheduler's custody. If
+		 * SCX_TASK_IN_CUSTODY is clear, finish_dispatch() on another
+		 * CPU has already passed call_task_dequeue() (which clears the
+		 * flag), but has not yet written SCX_OPSS_NONE. That final
+		 * store does not require this rq's lock, so retrying with
+		 * cpu_relax() is bounded: we will observe NONE (or DISPATCHING,
+		 * handled by the fallthrough) on a subsequent iteration.
+		 */
+		if (unlikely(!(READ_ONCE(p->scx.flags) & SCX_TASK_IN_CUSTODY))) {
+			cpu_relax();
+			goto retry;
+		}
+
 		if (atomic_long_try_cmpxchg(&p->scx.ops_state, &opss,
 					    SCX_OPSS_NONE))
 			break;
@@ -4946,10 +4959,30 @@ static const struct kset_uevent_ops scx_uevent_ops = {
  */
 bool task_should_scx(int policy)
 {
-	if (!scx_enabled() || unlikely(scx_enable_state() == SCX_DISABLING))
+	/* if disabled, nothing should be on it */
+	if (!scx_enabled())
 		return false;
+
+	/* scx is taking over all SCHED_OTHER and SCHED_EXT tasks */
 	if (READ_ONCE(scx_switching_all))
 		return true;
+
+	/*
+	 * scx is tearing down - keep new SCHED_EXT tasks out.
+	 *
+	 * Must come after scx_switching_all test, which serves as a proxy
+	 * for __scx_switched_all. While __scx_switched_all is set, we must
+	 * return true via the branch above: a fork routed to fair would
+	 * stall because next_active_class() skips fair.
+	 *
+	 * This can develop into a deadlock - scx holds scx_enable_mutex across
+	 * kthread_create() in scx_alloc_and_add_sched(); if the new kthread is
+	 * the stalled task, the disable path can never grab the mutex to clear
+	 * scx_switching_all.
+	 */
+	if (unlikely(scx_enable_state() == SCX_DISABLING))
+		return false;
+
 	return policy == SCHED_EXT;
 }
 
