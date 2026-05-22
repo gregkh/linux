@@ -687,6 +687,7 @@ err_remove_fs:
 	acpi_button_remove_fs(button);
 err_free_button:
 	kfree(button);
+	memset(acpi_device_class(device), 0, sizeof(acpi_device_class));
 	return error;
 }
 
