@@ -53,6 +53,7 @@ struct kernel_clone_args;
 enum css_task_iter_flags {
 	CSS_TASK_ITER_PROCS    = (1U << 0),  /* walk only threadgroup leaders */
 	CSS_TASK_ITER_THREADED = (1U << 1),  /* walk all threaded css_sets in the domain */
+	CSS_TASK_ITER_WITH_DEAD = (1U << 2),  /* include exiting tasks */
 	CSS_TASK_ITER_SKIPPED  = (1U << 16), /* internal flags */
 };
 

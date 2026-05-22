@@ -1603,6 +1603,11 @@ static int create_raw_packet_qp(struct mlx5_ib_dev *dev, struct mlx5_ib_qp *qp,
 	}
 
 	if (qp->rq.wqe_cnt) {
+		if (!rq->base.ubuffer.umem) {
+			err = -EINVAL;
+			goto err_destroy_sq;
+		}
+
 		rq->base.container_mibqp = qp;
 
 		if (qp->flags & IB_QP_CREATE_CVLAN_STRIPPING)
@@ -4692,7 +4697,7 @@ int mlx5_ib_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 	struct mlx5_ib_dev *dev = to_mdev(ibqp->device);
 	struct mlx5_ib_modify_qp_resp resp = {};
 	struct mlx5_ib_qp *qp = to_mqp(ibqp);
-	struct mlx5_ib_modify_qp ucmd;
+	struct mlx5_ib_modify_qp ucmd = {};
 	enum ib_qp_type qp_type;
 	enum ib_qp_state cur_state, new_state;
 	int err = -EINVAL;

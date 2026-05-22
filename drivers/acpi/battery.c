@@ -1214,9 +1214,13 @@ static void sysfs_battery_cleanup(struct acpi_battery *battery)
 
 static int acpi_battery_probe(struct platform_device *pdev)
 {
-	struct acpi_device *device = ACPI_COMPANION(&pdev->dev);
 	struct acpi_battery *battery;
+	struct acpi_device *device;
 	int result;
+
+	device = ACPI_COMPANION(&pdev->dev);
+	if (!device)
+		return -ENODEV;
 
 	if (device->dep_unmet)
 		return -EPROBE_DEFER;

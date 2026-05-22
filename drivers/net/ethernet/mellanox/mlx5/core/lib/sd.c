@@ -18,6 +18,7 @@ struct mlx5_sd {
 	u8 host_buses;
 	struct mlx5_devcom_comp_dev *devcom;
 	struct dentry *dfs;
+	u8 state;
 	bool primary;
 	union {
 		struct { /* primary */
@@ -29,6 +30,11 @@ struct mlx5_sd {
 			u32 alias_obj_id;
 		};
 	};
+};
+
+enum mlx5_sd_state {
+	MLX5_SD_STATE_DOWN = 0,
+	MLX5_SD_STATE_UP,
 };
 
 static int mlx5_sd_get_host_buses(struct mlx5_core_dev *dev)
@@ -270,9 +276,6 @@ static void sd_unregister(struct mlx5_core_dev *dev)
 {
 	struct mlx5_sd *sd = mlx5_get_sd(dev);
 
-	mlx5_devcom_comp_lock(sd->devcom);
-	mlx5_devcom_comp_set_ready(sd->devcom, false);
-	mlx5_devcom_comp_unlock(sd->devcom);
 	mlx5_devcom_unregister_component(sd->devcom);
 }
 
@@ -426,6 +429,7 @@ int mlx5_sd_init(struct mlx5_core_dev *dev)
 	struct mlx5_core_dev *primary, *pos, *to;
 	struct mlx5_sd *sd = mlx5_get_sd(dev);
 	u8 alias_key[ACCESS_KEY_LEN];
+	struct mlx5_sd *primary_sd;
 	int err, i;
 
 	err = sd_init(dev);
@@ -440,10 +444,17 @@ int mlx5_sd_init(struct mlx5_core_dev *dev)
 	if (err)
 		goto err_sd_cleanup;
 
+	mlx5_devcom_comp_lock(sd->devcom);
 	if (!mlx5_devcom_comp_is_ready(sd->devcom))
-		return 0;
+		goto out;
 
 	primary = mlx5_sd_get_primary(dev);
+	if (!primary)
+		goto out;
+
+	primary_sd = mlx5_get_sd(primary);
+	if (primary_sd->state != MLX5_SD_STATE_DOWN)
+		goto out;
 
 	for (i = 0; i < ACCESS_KEY_LEN; i++)
 		alias_key[i] = get_random_u8();
@@ -452,9 +463,13 @@ int mlx5_sd_init(struct mlx5_core_dev *dev)
 	if (err)
 		goto err_sd_unregister;
 
-	sd->dfs = debugfs_create_dir("multi-pf", mlx5_debugfs_get_dev_root(primary));
-	debugfs_create_x32("group_id", 0400, sd->dfs, &sd->group_id);
-	debugfs_create_file("primary", 0400, sd->dfs, primary, &dev_fops);
+	primary_sd->dfs =
+		debugfs_create_dir("multi-pf",
+				   mlx5_debugfs_get_dev_root(primary));
+	debugfs_create_x32("group_id", 0400, primary_sd->dfs,
+			   &primary_sd->group_id);
+	debugfs_create_file("primary", 0400, primary_sd->dfs, primary,
+			    &dev_fops);
 
 	mlx5_sd_for_each_secondary(i, primary, pos) {
 		char name[32];
@@ -464,7 +479,8 @@ int mlx5_sd_init(struct mlx5_core_dev *dev)
 			goto err_unset_secondaries;
 
 		snprintf(name, sizeof(name), "secondary_%d", i - 1);
-		debugfs_create_file(name, 0400, sd->dfs, pos, &dev_fops);
+		debugfs_create_file(name, 0400, primary_sd->dfs, pos,
+				    &dev_fops);
 
 	}
 
@@ -472,6 +488,9 @@ int mlx5_sd_init(struct mlx5_core_dev *dev)
 		sd->group_id, mlx5_devcom_comp_get_size(sd->devcom));
 	sd_print_group(primary);
 
+	primary_sd->state = MLX5_SD_STATE_UP;
+out:
+	mlx5_devcom_comp_unlock(sd->devcom);
 	return 0;
 
 err_unset_secondaries:
@@ -479,8 +498,18 @@ err_unset_secondaries:
 	mlx5_sd_for_each_secondary_to(i, primary, to, pos)
 		sd_cmd_unset_secondary(pos);
 	sd_cmd_unset_primary(primary);
-	debugfs_remove_recursive(sd->dfs);
+	debugfs_remove_recursive(primary_sd->dfs);
+	primary_sd->dfs = NULL;
 err_sd_unregister:
+	mlx5_sd_for_each_secondary(i, primary, pos) {
+		struct mlx5_sd *peer_sd = mlx5_get_sd(pos);
+
+		primary_sd->secondaries[i - 1] = NULL;
+		peer_sd->primary_dev = NULL;
+	}
+	primary_sd->primary = false;
+	mlx5_devcom_comp_set_ready(sd->devcom, false);
+	mlx5_devcom_comp_unlock(sd->devcom);
 	sd_unregister(dev);
 err_sd_cleanup:
 	sd_cleanup(dev);
@@ -491,42 +520,97 @@ void mlx5_sd_cleanup(struct mlx5_core_dev *dev)
 {
 	struct mlx5_sd *sd = mlx5_get_sd(dev);
 	struct mlx5_core_dev *primary, *pos;
+	struct mlx5_sd *primary_sd;
 	int i;
 
 	if (!sd)
 		return;
 
+	mlx5_devcom_comp_lock(sd->devcom);
 	if (!mlx5_devcom_comp_is_ready(sd->devcom))
-		goto out;
+		goto out_unlock;
 
 	primary = mlx5_sd_get_primary(dev);
+	if (!primary)
+		goto out_ready_false;
+
+	primary_sd = mlx5_get_sd(primary);
+	if (primary_sd->state != MLX5_SD_STATE_UP)
+		goto out_clear_peers;
+
 	mlx5_sd_for_each_secondary(i, primary, pos)
 		sd_cmd_unset_secondary(pos);
 	sd_cmd_unset_primary(primary);
-	debugfs_remove_recursive(sd->dfs);
+	debugfs_remove_recursive(primary_sd->dfs);
+	primary_sd->dfs = NULL;
 
 	sd_info(primary, "group id %#x, uncombined\n", sd->group_id);
-out:
+	primary_sd->state = MLX5_SD_STATE_DOWN;
+out_clear_peers:
+	mlx5_sd_for_each_secondary(i, primary, pos) {
+		struct mlx5_sd *peer_sd = mlx5_get_sd(pos);
+
+		primary_sd->secondaries[i - 1] = NULL;
+		peer_sd->primary_dev = NULL;
+	}
+	primary_sd->primary = false;
+out_ready_false:
+	mlx5_devcom_comp_set_ready(sd->devcom, false);
+out_unlock:
+	mlx5_devcom_comp_unlock(sd->devcom);
 	sd_unregister(dev);
 	sd_cleanup(dev);
 }
 
+/* Lock order:
+ *   primary:   actual_adev_lock -> SD devcom comp lock
+ *   secondary: SD devcom comp lock -> (drop) -> actual_adev_lock
+ * The two locks are never held together, so no ABBA.
+ */
 struct auxiliary_device *mlx5_sd_get_adev(struct mlx5_core_dev *dev,
 					  struct auxiliary_device *adev,
 					  int idx)
 {
 	struct mlx5_sd *sd = mlx5_get_sd(dev);
 	struct mlx5_core_dev *primary;
+	struct mlx5_adev *primary_adev;
 
 	if (!sd)
 		return adev;
 
-	if (!mlx5_devcom_comp_is_ready(sd->devcom))
+	mlx5_devcom_comp_lock(sd->devcom);
+	if (!mlx5_devcom_comp_is_ready(sd->devcom)) {
+		mlx5_devcom_comp_unlock(sd->devcom);
 		return NULL;
+	}
 
 	primary = mlx5_sd_get_primary(dev);
-	if (dev == primary)
+	if (!primary || dev == primary) {
+		mlx5_devcom_comp_unlock(sd->devcom);
 		return adev;
+	}
 
-	return &primary->priv.adev[idx]->adev;
+	primary_adev = primary->priv.adev[idx];
+	get_device(&primary_adev->adev.dev);
+	mlx5_devcom_comp_unlock(sd->devcom);
+
+	device_lock(&primary_adev->adev.dev);
+	/* Primary may have completed remove between dropping devcom and
+	 * acquiring device_lock; recheck.
+	 */
+	if (!mlx5_devcom_comp_is_ready(sd->devcom)) {
+		device_unlock(&primary_adev->adev.dev);
+		put_device(&primary_adev->adev.dev);
+		return NULL;
+	}
+	return &primary_adev->adev;
+}
+
+void mlx5_sd_put_adev(struct auxiliary_device *actual_adev,
+		      struct auxiliary_device *adev)
+{
+	if (actual_adev != adev) {
+		device_unlock(&actual_adev->dev);
+		put_device(&actual_adev->dev);
+	}
 }

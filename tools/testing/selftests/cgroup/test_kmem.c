@@ -368,11 +368,15 @@ static int test_percpu_basic(const char *root)
 
 	for (i = 0; i < 1000; i++) {
 		child = cg_name_indexed(parent, "child", i);
-		if (!child)
-			return -1;
-
-		if (cg_create(child))
+		if (!child) {
+			ret = -1;
 			goto cleanup_children;
+		}
+
+		if (cg_create(child)) {
+			free(child);
+			goto cleanup_children;
+		}
 
 		free(child);
 	}

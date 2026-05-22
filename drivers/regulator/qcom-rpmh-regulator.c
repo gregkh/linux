@@ -1512,7 +1512,7 @@ static const struct rpmh_vreg_init_data pmh0101_vreg_data[] = {
 	RPMH_VREG("ldo13",  LDO, 13, &pmic5_pldo530_mvp150,     "vdd-l2-l13-l14"),
 	RPMH_VREG("ldo14",  LDO, 14, &pmic5_pldo530_mvp150,     "vdd-l2-l13-l14"),
 	RPMH_VREG("ldo15",  LDO, 15, &pmic5_nldo530,      "vdd-l15"),
-	RPMH_VREG("ldo16",  LDO, 15, &pmic5_pldo530_mvp600,      "vdd-l5-l16"),
+	RPMH_VREG("ldo16",  LDO, 16, &pmic5_pldo530_mvp600,      "vdd-l5-l16"),
 	RPMH_VREG("ldo17",  LDO, 17, &pmic5_pldo515_mv,   "vdd-l17"),
 	RPMH_VREG("ldo18",  LDO, 18, &pmic5_nldo530,      "vdd-l18"),
 	RPMH_VREG("bob1",   BOB, 1,  &pmic5_bob,          "vdd-bob1"),

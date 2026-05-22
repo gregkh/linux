@@ -667,13 +667,15 @@ bool __kvm_apic_update_irr(unsigned long *pir, void *regs, int *max_irr)
 	u32 *__pir = (void *)pir_vals;
 	u32 i, vec;
 	u32 irr_val, prev_irr_val;
-	int max_updated_irr;
+	int max_new_irr;
 
-	max_updated_irr = -1;
-	*max_irr = -1;
-
-	if (!pi_harvest_pir(pir, pir_vals))
+	if (!pi_harvest_pir(pir, pir_vals)) {
+		*max_irr = apic_find_highest_vector(regs + APIC_IRR);
 		return false;
+	}
+
+	max_new_irr = -1;
+	*max_irr = -1;
 
 	for (i = vec = 0; i <= 7; i++, vec += 32) {
 		u32 *p_irr = (u32 *)(regs + APIC_IRR + i * 0x10);
@@ -688,25 +690,25 @@ bool __kvm_apic_update_irr(unsigned long *pir, void *regs, int *max_irr)
 				 !try_cmpxchg(p_irr, &prev_irr_val, irr_val));
 
 			if (prev_irr_val != irr_val)
-				max_updated_irr = __fls(irr_val ^ prev_irr_val) + vec;
+				max_new_irr = __fls(irr_val ^ prev_irr_val) + vec;
 		}
 		if (irr_val)
 			*max_irr = __fls(irr_val) + vec;
 	}
 
-	return ((max_updated_irr != -1) &&
-		(max_updated_irr == *max_irr));
+	return max_new_irr != -1 && max_new_irr == *max_irr;
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(__kvm_apic_update_irr);
 
 bool kvm_apic_update_irr(struct kvm_vcpu *vcpu, unsigned long *pir, int *max_irr)
 {
 	struct kvm_lapic *apic = vcpu->arch.apic;
-	bool irr_updated = __kvm_apic_update_irr(pir, apic->regs, max_irr);
+	bool max_irr_is_from_pir;
 
-	if (unlikely(!apic->apicv_active && irr_updated))
+	max_irr_is_from_pir = __kvm_apic_update_irr(pir, apic->regs, max_irr);
+	if (unlikely(!apic->apicv_active && max_irr_is_from_pir))
 		apic->irr_pending = true;
-	return irr_updated;
+	return max_irr_is_from_pir;
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_apic_update_irr);
 

@@ -160,6 +160,16 @@ void nested_vmcb02_recalc_intercepts(struct vcpu_svm *svm)
 	if (!intercept_smi)
 		vmcb_clr_intercept(&vmcb02->control, INTERCEPT_SMI);
 
+	/*
+	 * Intercept PAUSE if and only if L1 wants to.  KVM intercepts PAUSE so
+	 * that a vCPU that may be spinning waiting for a lock can be scheduled
+	 * out in favor of the vCPU that holds said lock.  KVM doesn't support
+	 * yielding across L2 vCPUs, as KVM has limited visilibity into which
+	 * L2 vCPUs are in the same L2 VM, i.e. may be contending for locks.
+	 */
+	if (!vmcb12_is_intercept(&svm->nested.ctl, INTERCEPT_PAUSE))
+		vmcb_clr_intercept(&vmcb02->control, INTERCEPT_PAUSE);
+
 	if (nested_vmcb_needs_vls_intercept(svm)) {
 		/*
 		 * If the virtual VMLOAD/VMSAVE is not enabled for the L2,
@@ -819,7 +829,6 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm)
 	struct vmcb *vmcb02 = svm->nested.vmcb02.ptr;
 	struct vmcb *vmcb01 = svm->vmcb01.ptr;
 	struct kvm_vcpu *vcpu = &svm->vcpu;
-	u32 pause_count12, pause_thresh12;
 
 	nested_svm_transition_tlb_flush(vcpu);
 
@@ -947,31 +956,13 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm)
 		vmcb02->control.misc_ctl2 |= SVM_MISC2_ENABLE_V_VMLOAD_VMSAVE;
 
 	if (guest_cpu_cap_has(vcpu, X86_FEATURE_PAUSEFILTER))
-		pause_count12 = vmcb12_ctrl->pause_filter_count;
+		vmcb02->control.pause_filter_count = vmcb12_ctrl->pause_filter_count;
 	else
-		pause_count12 = 0;
+		vmcb02->control.pause_filter_count = 0;
 	if (guest_cpu_cap_has(vcpu, X86_FEATURE_PFTHRESHOLD))
-		pause_thresh12 = vmcb12_ctrl->pause_filter_thresh;
+		vmcb02->control.pause_filter_thresh = vmcb12_ctrl->pause_filter_thresh;
 	else
-		pause_thresh12 = 0;
-	if (kvm_pause_in_guest(svm->vcpu.kvm)) {
-		/* use guest values since host doesn't intercept PAUSE */
-		vmcb02->control.pause_filter_count = pause_count12;
-		vmcb02->control.pause_filter_thresh = pause_thresh12;
-
-	} else {
-		/* start from host values otherwise */
-		vmcb02->control.pause_filter_count = vmcb01->control.pause_filter_count;
-		vmcb02->control.pause_filter_thresh = vmcb01->control.pause_filter_thresh;
-
-		/* ... but ensure filtering is disabled if so requested.  */
-		if (vmcb12_is_intercept(vmcb12_ctrl, INTERCEPT_PAUSE)) {
-			if (!pause_count12)
-				vmcb02->control.pause_filter_count = 0;
-			if (!pause_thresh12)
-				vmcb02->control.pause_filter_thresh = 0;
-		}
-	}
+		vmcb02->control.pause_filter_thresh = 0;
 
 	/*
 	 * Take ALLOW_LARGER_RAP from vmcb12 even though it should be safe to
@@ -1297,12 +1288,6 @@ void nested_svm_vmexit(struct vcpu_svm *svm)
 
 	/* in case we halted in L2 */
 	kvm_set_mp_state(vcpu, KVM_MP_STATE_RUNNABLE);
-
-	if (!kvm_pause_in_guest(vcpu->kvm)) {
-		vmcb01->control.pause_filter_count = vmcb02->control.pause_filter_count;
-		vmcb_mark_dirty(vmcb01, VMCB_INTERCEPTS);
-
-	}
 
 	/*
 	 * Invalidate last_bus_lock_rip unless KVM is still waiting for the

@@ -1914,26 +1914,15 @@ int bpf_compute_subprog_arg_access(struct bpf_verifier_env *env)
 		return -ENOMEM;
 	}
 
-	instance = call_instance(env, NULL, 0, 0);
-	if (IS_ERR(instance)) {
-		err = PTR_ERR(instance);
-		goto out;
-	}
-	err = analyze_subprog(env, NULL, info, instance, callsites);
-	if (err)
-		goto out;
-
 	/*
-	 * Subprogs and callbacks that don't receive FP-derived arguments
-	 * cannot access ancestor stack frames, so they were skipped during
-	 * the recursive walk above.  Async callbacks (timer, workqueue) are
-	 * also not reachable from the main program's call graph.  Analyze
-	 * all unvisited subprogs as independent roots at depth 0.
+	 * Analyze every subprog in reverse topological order (callers
+	 * before callees) so that each subprog is analyzed before its
+	 * callees, allowing the recursive walk inside analyze_subprog()
+	 * to naturally reach callees that receive FP-derived args.
 	 *
-	 * Use reverse topological order (callers before callees) so that
-	 * each subprog is analyzed before its callees, allowing the
-	 * recursive walk inside analyze_subprog() to naturally
-	 * reach nested callees that also lack FP-derived args.
+	 * Subprogs and callbacks that don't receive FP-derived arguments
+	 * cannot access ancestor stack frames are analyzed independently.
+	 * Async callbacks (timer, workqueue) are handled the same way.
 	 */
 	for (k = env->subprog_cnt - 1; k >= 0; k--) {
 		int sub = env->subprog_topo_order[k];

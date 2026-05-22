@@ -248,11 +248,10 @@ bool do_aux(const struct vdso_time_data *vd, clockid_t clock, struct __kernel_ti
 	vc = &vd->aux_clock_data[idx];
 
 	do {
-		if (vdso_read_begin_timens(vc, &seq)) {
+		while (vdso_read_begin_timens(vc, &seq)) {
+			/* Re-read from the real time data page, reload seq by looping */
 			vd = __arch_get_vdso_u_timens_data(vd);
 			vc = &vd->aux_clock_data[idx];
-			/* Re-read from the real time data page */
-			continue;
 		}
 
 		/* Auxclock disabled? */

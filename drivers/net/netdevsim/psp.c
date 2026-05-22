@@ -19,6 +19,7 @@ nsim_do_psp(struct sk_buff *skb, struct netdevsim *ns,
 	    struct netdevsim *peer_ns, struct skb_ext **psp_ext)
 {
 	enum skb_drop_reason rc = 0;
+	struct psp_dev *peer_psd;
 	struct psp_assoc *pas;
 	struct net *net;
 	void **ptr;
@@ -48,7 +49,8 @@ nsim_do_psp(struct sk_buff *skb, struct netdevsim *ns,
 	}
 
 	/* Now pretend we just received this frame */
-	if (peer_ns->psp.dev->config.versions & (1 << pas->version)) {
+	peer_psd = rcu_dereference(peer_ns->psp.dev);
+	if (peer_psd && peer_psd->config.versions & (1 << pas->version)) {
 		bool strip_icv = false;
 		u8 generation;
 
@@ -61,8 +63,7 @@ nsim_do_psp(struct sk_buff *skb, struct netdevsim *ns,
 
 		skb_ext_reset(skb);
 		skb->mac_len = ETH_HLEN;
-		if (psp_dev_rcv(skb, peer_ns->psp.dev->id, generation,
-				strip_icv)) {
+		if (psp_dev_rcv(skb, peer_psd->id, generation, strip_icv)) {
 			rc = SKB_DROP_REASON_PSP_OUTPUT;
 			goto out_unlock;
 		}
@@ -209,11 +210,26 @@ static struct psp_dev_caps nsim_psp_caps = {
 	.assoc_drv_spc = sizeof(void *),
 };
 
+static void __nsim_psp_uninit(struct netdevsim *ns, bool teardown)
+{
+	struct psp_dev *psd;
+
+	psd = rcu_dereference_protected(ns->psp.dev,
+					teardown ||
+					lockdep_is_held(&ns->psp.rereg_lock));
+	if (psd) {
+		rcu_assign_pointer(ns->psp.dev, NULL);
+		synchronize_rcu();
+		psp_dev_unregister(psd);
+	}
+	WARN_ON(ns->psp.assoc_cnt);
+}
+
 void nsim_psp_uninit(struct netdevsim *ns)
 {
-	if (!IS_ERR(ns->psp.dev))
-		psp_dev_unregister(ns->psp.dev);
-	WARN_ON(ns->psp.assoc_cnt);
+	debugfs_remove(ns->psp.rereg);
+	mutex_destroy(&ns->psp.rereg_lock);
+	__nsim_psp_uninit(ns, true);
 }
 
 static ssize_t
@@ -221,14 +237,23 @@ nsim_psp_rereg_write(struct file *file, const char __user *data, size_t count,
 		     loff_t *ppos)
 {
 	struct netdevsim *ns = file->private_data;
-	int err;
+	struct psp_dev *psd;
+	ssize_t ret;
 
-	nsim_psp_uninit(ns);
+	mutex_lock(&ns->psp.rereg_lock);
+	__nsim_psp_uninit(ns, false);
 
-	ns->psp.dev = psp_dev_create(ns->netdev, &nsim_psp_ops,
-				     &nsim_psp_caps, ns);
-	err = PTR_ERR_OR_ZERO(ns->psp.dev);
-	return err ?: count;
+	psd = psp_dev_create(ns->netdev, &nsim_psp_ops, &nsim_psp_caps, ns);
+	if (IS_ERR(psd)) {
+		ret = PTR_ERR(psd);
+		goto out;
+	}
+
+	rcu_assign_pointer(ns->psp.dev, psd);
+	ret = count;
+out:
+	mutex_unlock(&ns->psp.rereg_lock);
+	return ret;
 }
 
 static const struct file_operations nsim_psp_rereg_fops = {
@@ -241,14 +266,16 @@ static const struct file_operations nsim_psp_rereg_fops = {
 int nsim_psp_init(struct netdevsim *ns)
 {
 	struct dentry *ddir = ns->nsim_dev_port->ddir;
-	int err;
+	struct psp_dev *psd;
 
-	ns->psp.dev = psp_dev_create(ns->netdev, &nsim_psp_ops,
-				     &nsim_psp_caps, ns);
-	err = PTR_ERR_OR_ZERO(ns->psp.dev);
-	if (err)
-		return err;
+	psd = psp_dev_create(ns->netdev, &nsim_psp_ops, &nsim_psp_caps, ns);
+	if (IS_ERR(psd))
+		return PTR_ERR(psd);
 
-	debugfs_create_file("psp_rereg", 0200, ddir, ns, &nsim_psp_rereg_fops);
+	rcu_assign_pointer(ns->psp.dev, psd);
+
+	mutex_init(&ns->psp.rereg_lock);
+	ns->psp.rereg = debugfs_create_file("psp_rereg", 0200, ddir, ns,
+					    &nsim_psp_rereg_fops);
 	return 0;
 }

@@ -111,10 +111,32 @@ struct xe_bo {
 	u64 min_align;
 
 	/**
-	 * @madv_purgeable: user space advise on BO purgeability, protected
-	 * by BO's dma-resv lock.
+	 * @purgeable: Purgeability state and accounting.
+	 *
+	 * All fields are protected by the BO's dma-resv lock.
 	 */
-	u32 madv_purgeable;
+	struct {
+		/**
+		 * @purgeable.state: BO purgeability state
+		 *                   (WILLNEED/DONTNEED/PURGED).
+		 */
+		u32 state;
+
+		/**
+		 * @purgeable.vma_count: Number of VMAs currently mapping this BO.
+		 */
+		u32 vma_count;
+
+		/**
+		 * @purgeable.willneed_count: Number of active WILLNEED holders.
+		 *
+		 * Counts WILLNEED VMAs plus active dma-buf exports for
+		 * non-imported BOs. The BO flips to DONTNEED on a 1->0
+		 * transition only when VMAs still exist; if the last VMA is
+		 * removed, the previous BO state is preserved.
+		 */
+		u32 willneed_count;
+	} purgeable;
 };
 
 #endif

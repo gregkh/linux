@@ -1170,7 +1170,7 @@ xfs_calc_open_zones(
 
 	if (bdev_open_zones && bdev_open_zones < mp->m_max_open_zones) {
 		mp->m_max_open_zones = bdev_open_zones;
-		xfs_info(mp, "limiting open zones to %u due to hardware limit.\n",
+		xfs_info(mp, "limiting open zones to %u due to hardware limit.",
 			bdev_open_zones);
 	}
 
@@ -1217,7 +1217,7 @@ xfs_alloc_zone_info(
 	return zi;
 
 out_free_bitmaps:
-	while (--i > 0)
+	while (--i >= 0)
 		kvfree(zi->zi_used_bucket_bitmap[i]);
 	kfree(zi);
 	return NULL;

@@ -1169,10 +1169,9 @@ static int sony_raw_event(struct hid_device *hdev, struct hid_report *report,
 		sixaxis_parse_report(sc, rd, size);
 	} else if ((sc->quirks & MOTION_CONTROLLER_BT) && rd[0] == 0x01 && size == 49) {
 		sixaxis_parse_report(sc, rd, size);
-	} else if ((sc->quirks & NAVIGATION_CONTROLLER) && rd[0] == 0x01 &&
-			size == 49) {
+	} else if ((sc->quirks & NAVIGATION_CONTROLLER) && rd[0] == 0x01 && size == 49) {
 		sixaxis_parse_report(sc, rd, size);
-	} else if ((sc->quirks & NSG_MRXU_REMOTE) && rd[0] == 0x02) {
+	} else if ((sc->quirks & NSG_MRXU_REMOTE) && rd[0] == 0x02 && size >= 12) {
 		nsg_mrxu_parse_report(sc, rd, size);
 		return 1;
 	} else if ((sc->quirks & RB4_GUITAR_PS4_USB) && rd[0] == 0x01 && size == 64) {
@@ -1189,7 +1188,7 @@ static int sony_raw_event(struct hid_device *hdev, struct hid_report *report,
 	/* Rock Band 3 PS3 Pro instruments set rd[24] to 0xE0 when they're
 	 * sending full reports, and 0x02 when only sending navigation.
 	 */
-	if ((sc->quirks & RB3_PRO_INSTRUMENT) && rd[24] == 0x02) {
+	if ((sc->quirks & RB3_PRO_INSTRUMENT) && size >= 25 && rd[24] == 0x02) {
 		/* Only attempt to enable full report every 8 seconds */
 		if (time_after(jiffies, sc->rb3_pro_poke_jiffies)) {
 			sc->rb3_pro_poke_jiffies = jiffies + secs_to_jiffies(8);
@@ -1639,9 +1638,6 @@ static int sony_leds_init(struct sony_sc *sc)
 						  "global" };
 	u8 max_brightness[MAX_LEDS] = { [0 ... (MAX_LEDS - 1)] = 1 };
 	u8 use_hw_blink[MAX_LEDS] = { 0 };
-
-	if (WARN_ON(!(sc->quirks & SONY_LED_SUPPORT)))
-		return -EINVAL;
 
 	if (sc->quirks & BUZZ_CONTROLLER) {
 		sc->led_count = 4;
@@ -2456,11 +2452,10 @@ static void sony_remove(struct hid_device *hdev)
 static int sony_suspend(struct hid_device *hdev, pm_message_t message)
 {
 #ifdef CONFIG_SONY_FF
+	struct sony_sc *sc = hid_get_drvdata(hdev);
 
 	/* On suspend stop any running force-feedback events */
-	if (SONY_FF_SUPPORT) {
-		struct sony_sc *sc = hid_get_drvdata(hdev);
-
+	if (sc->quirks & SONY_FF_SUPPORT) {
 		sc->left = sc->right = 0;
 		sony_send_output_report(sc);
 	}

@@ -1444,7 +1444,7 @@ static int npc_install_flow(struct rvu *rvu, int blkaddr, u16 target,
 	struct msg_rsp write_rsp;
 	struct mcam_entry *entry;
 	bool new = false;
-	u16 entry_index;
+	int entry_index;
 	int err;
 
 	installed_features = req->features;
@@ -1477,6 +1477,14 @@ static int npc_install_flow(struct rvu *rvu, int blkaddr, u16 target,
 	if (req->default_rule) {
 		entry_index = npc_get_nixlf_mcam_index(mcam, target, nixlf,
 						       NIXLF_UCAST_ENTRY);
+
+		if (entry_index < 0) {
+			dev_err(rvu->dev,
+				"%s: Error to get ucast entry for target=%#x\n",
+				__func__, target);
+			return -EINVAL;
+		}
+
 		enable = is_mcam_entry_enabled(rvu, mcam, blkaddr, entry_index);
 	}
 
@@ -1980,13 +1988,15 @@ static int npc_update_dmac_value(struct rvu *rvu, int npcblkaddr,
 
 	ether_addr_copy(rule->packet.dmac, pfvf->mac_addr);
 
-	if (is_cn20k(rvu->pdev))
-		npc_cn20k_read_mcam_entry(rvu, npcblkaddr, rule->entry,
-					  cn20k_entry, &intf,
-					  &enable, &hw_prio);
-	else
+	if (is_cn20k(rvu->pdev)) {
+		if (npc_cn20k_read_mcam_entry(rvu, npcblkaddr, rule->entry,
+					      cn20k_entry, &intf,
+					      &enable, &hw_prio))
+			return -EINVAL;
+	} else {
 		npc_read_mcam_entry(rvu, mcam, npcblkaddr, rule->entry,
 				    entry, &intf, &enable);
+	}
 
 	npc_update_entry(rvu, NPC_DMAC, &mdata,
 			 ether_addr_to_u64(pfvf->mac_addr), 0,
@@ -2038,8 +2048,12 @@ void npc_mcam_enable_flows(struct rvu *rvu, u16 target)
 				continue;
 			}
 
-			if (rule->vfvlan_cfg)
-				npc_update_dmac_value(rvu, blkaddr, rule, pfvf);
+			if (rule->vfvlan_cfg) {
+				if (npc_update_dmac_value(rvu, blkaddr, rule, pfvf))
+					dev_err(rvu->dev,
+						"Update dmac failed for %u, target=%#x\n",
+						rule->entry, target);
+			}
 
 			if (rule->rx_action.op == NIX_RX_ACTION_DEFAULT) {
 				if (!def_ucast_rule)

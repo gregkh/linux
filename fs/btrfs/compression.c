@@ -407,22 +407,18 @@ static noinline int add_ra_bio_pages(struct inode *inode,
 
 	end_index = (i_size_read(inode) - 1) >> PAGE_SHIFT;
 
-	/*
-	 * Avoid direct reclaim when the caller does not allow it.  Since
-	 * add_ra_bio_pages() is always speculative, suppress allocation warnings
-	 * in either case.
-	 */
+	/* Avoid direct reclaim when the caller does not allow it. */
+	constraint_gfp = ~__GFP_FS;
+	cache_gfp = GFP_NOFS | __GFP_NOWARN;
 	if (!direct_reclaim) {
-		constraint_gfp = ~(__GFP_FS | __GFP_DIRECT_RECLAIM) | __GFP_NOWARN;
-		cache_gfp = (GFP_NOFS & ~__GFP_DIRECT_RECLAIM) | __GFP_NOWARN;
-	} else {
-		constraint_gfp = (~__GFP_FS) | __GFP_NOWARN;
-		cache_gfp = GFP_NOFS | __GFP_NOWARN;
+		constraint_gfp &= ~__GFP_DIRECT_RECLAIM;
+		cache_gfp &= ~__GFP_DIRECT_RECLAIM;
 	}
 
 	while (cur < compressed_end) {
 		pgoff_t page_end;
 		pgoff_t pg_index = cur >> PAGE_SHIFT;
+		gfp_t masked_constraint_gfp;
 		u32 add_size;
 
 		if (pg_index > end_index)
@@ -449,8 +445,14 @@ static noinline int add_ra_bio_pages(struct inode *inode,
 			continue;
 		}
 
-		folio = filemap_alloc_folio(mapping_gfp_constraint(mapping, constraint_gfp),
-					    0, NULL);
+		/*
+		 * Since add_ra_bio_pages() is always speculative, suppress
+		 * allocation warnings.
+		 */
+		masked_constraint_gfp = mapping_gfp_constraint(mapping, constraint_gfp);
+		masked_constraint_gfp |= __GFP_NOWARN;
+
+		folio = filemap_alloc_folio(masked_constraint_gfp, 0, NULL);
 		if (!folio)
 			break;
 

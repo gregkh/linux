@@ -261,12 +261,28 @@ static void est_reload_work_handler(struct work_struct *work)
 		if (!kd)
 			continue;
 		/* New config ? Stop kthread tasks */
-		if (genid != genid_done)
-			ip_vs_est_kthread_stop(kd);
+		if (genid != genid_done) {
+			if (!id) {
+				/* Only we can stop kt 0 but not under mutex */
+				mutex_unlock(&ipvs->est_mutex);
+				ip_vs_est_kthread_stop(kd);
+				mutex_lock(&ipvs->est_mutex);
+				if (!READ_ONCE(ipvs->enable))
+					goto unlock;
+				/* kd for kt 0 is never destroyed */
+			} else {
+				ip_vs_est_kthread_stop(kd);
+			}
+		}
 		if (!kd->task && !ip_vs_est_stopped(ipvs)) {
+			bool start;
+
 			/* Do not start kthreads above 0 in calc phase */
-			if ((!id || !ipvs->est_calc_phase) &&
-			    ip_vs_est_kthread_start(ipvs, kd) < 0)
+			if (id)
+				start = !ipvs->est_calc_phase;
+			else
+				start = kd->needed;
+			if (start && ip_vs_est_kthread_start(ipvs, kd) < 0)
 				repeat = true;
 		}
 	}
@@ -1102,6 +1118,24 @@ out:
 	return dest;
 }
 
+/* Put destination in trash */
+static void ip_vs_trash_put_dest(struct netns_ipvs *ipvs,
+				 struct ip_vs_dest *dest, unsigned long istart,
+				 bool cleanup)
+{
+	spin_lock_bh(&ipvs->dest_trash_lock);
+	IP_VS_DBG_BUF(3, "Moving dest %s:%u into trash, dest->refcnt=%d\n",
+		      IP_VS_DBG_ADDR(dest->af, &dest->addr), ntohs(dest->port),
+		      refcount_read(&dest->refcnt));
+	if (list_empty(&ipvs->dest_trash) && !cleanup)
+		mod_timer(&ipvs->dest_trash_timer,
+			  jiffies + (IP_VS_DEST_TRASH_PERIOD >> 1));
+	/* dest lives in trash with reference */
+	list_add(&dest->t_list, &ipvs->dest_trash);
+	dest->idle_start = istart;
+	spin_unlock_bh(&ipvs->dest_trash_lock);
+}
+
 static void ip_vs_dest_rcu_free(struct rcu_head *head)
 {
 	struct ip_vs_dest *dest;
@@ -1461,9 +1495,12 @@ ip_vs_add_dest(struct ip_vs_service *svc, struct ip_vs_dest_user_kern *udest)
 			      ntohs(dest->vport));
 
 		ret = ip_vs_start_estimator(svc->ipvs, &dest->stats);
+		/* On error put back dest into the trash */
 		if (ret < 0)
-			return ret;
-		__ip_vs_update_dest(svc, dest, udest, 1);
+			ip_vs_trash_put_dest(svc->ipvs, dest, dest->idle_start,
+					     false);
+		else
+			__ip_vs_update_dest(svc, dest, udest, 1);
 	} else {
 		/*
 		 * Allocate and initialize the dest structure
@@ -1533,17 +1570,7 @@ static void __ip_vs_del_dest(struct netns_ipvs *ipvs, struct ip_vs_dest *dest,
 	 */
 	ip_vs_rs_unhash(dest);
 
-	spin_lock_bh(&ipvs->dest_trash_lock);
-	IP_VS_DBG_BUF(3, "Moving dest %s:%u into trash, dest->refcnt=%d\n",
-		      IP_VS_DBG_ADDR(dest->af, &dest->addr), ntohs(dest->port),
-		      refcount_read(&dest->refcnt));
-	if (list_empty(&ipvs->dest_trash) && !cleanup)
-		mod_timer(&ipvs->dest_trash_timer,
-			  jiffies + (IP_VS_DEST_TRASH_PERIOD >> 1));
-	/* dest lives in trash with reference */
-	list_add(&dest->t_list, &ipvs->dest_trash);
-	dest->idle_start = 0;
-	spin_unlock_bh(&ipvs->dest_trash_lock);
+	ip_vs_trash_put_dest(ipvs, dest, 0, cleanup);
 
 	/* Queue up delayed work to expire all no destination connections.
 	 * No-op when CONFIG_SYSCTL is disabled.
@@ -1812,11 +1839,16 @@ ip_vs_add_service(struct netns_ipvs *ipvs, struct ip_vs_service_user_kern *u,
 	*svc_p = svc;
 
 	if (!READ_ONCE(ipvs->enable)) {
+		mutex_lock(&ipvs->est_mutex);
+
 		/* Now there is a service - full throttle */
 		WRITE_ONCE(ipvs->enable, 1);
 
+		ipvs->est_max_threads = ip_vs_est_max_threads(ipvs);
+
 		/* Start estimation for first time */
-		ip_vs_est_reload_start(ipvs);
+		ip_vs_est_reload_start(ipvs, true);
+		mutex_unlock(&ipvs->est_mutex);
 	}
 
 	return 0;
@@ -2032,6 +2064,9 @@ static int ip_vs_del_service(struct ip_vs_service *svc)
 		cancel_delayed_work_sync(&ipvs->svc_resize_work);
 		if (t) {
 			rcu_assign_pointer(ipvs->svc_table, NULL);
+			/* Inform readers that table is removed */
+			smp_mb__before_atomic();
+			atomic_inc(&ipvs->svc_table_changes);
 			while (1) {
 				p = rcu_dereference_protected(t->new_tbl, 1);
 				call_rcu(&t->rcu_head, ip_vs_rht_rcu_free);
@@ -2078,6 +2113,9 @@ static int ip_vs_flush(struct netns_ipvs *ipvs, bool cleanup)
 	t = rcu_dereference_protected(ipvs->svc_table, 1);
 	if (t) {
 		rcu_assign_pointer(ipvs->svc_table, NULL);
+		/* Inform readers that table is removed */
+		smp_mb__before_atomic();
+		atomic_inc(&ipvs->svc_table_changes);
 		while (1) {
 			p = rcu_dereference_protected(t->new_tbl, 1);
 			call_rcu(&t->rcu_head, ip_vs_rht_rcu_free);
@@ -2086,6 +2124,11 @@ static int ip_vs_flush(struct netns_ipvs *ipvs, bool cleanup)
 			t = p;
 		}
 	}
+	/* Stop the tot_stats estimator early under service_mutex
+	 * to avoid locking it again later.
+	 */
+	if (cleanup)
+		ip_vs_stop_estimator_tot_stats(ipvs);
 	return 0;
 }
 
@@ -2331,7 +2374,7 @@ static int ipvs_proc_est_cpumask_set(const struct ctl_table *table,
 	/* est_max_threads may depend on cpulist size */
 	ipvs->est_max_threads = ip_vs_est_max_threads(ipvs);
 	ipvs->est_calc_phase = 1;
-	ip_vs_est_reload_start(ipvs);
+	ip_vs_est_reload_start(ipvs, true);
 
 unlock:
 	mutex_unlock(&ipvs->est_mutex);
@@ -2351,11 +2394,14 @@ static int ipvs_proc_est_cpumask_get(const struct ctl_table *table,
 
 	mutex_lock(&ipvs->est_mutex);
 
-	if (ipvs->est_cpulist_valid)
-		mask = *valp;
-	else
-		mask = (struct cpumask *)housekeeping_cpumask(HK_TYPE_KTHREAD);
-	ret = scnprintf(buffer, size, "%*pbl\n", cpumask_pr_args(mask));
+	/* HK_TYPE_KTHREAD cpumask needs RCU protection */
+	scoped_guard(rcu) {
+		if (ipvs->est_cpulist_valid)
+			mask = *valp;
+		else
+			mask = (struct cpumask *)housekeeping_cpumask(HK_TYPE_KTHREAD);
+		ret = scnprintf(buffer, size, "%*pbl\n", cpumask_pr_args(mask));
+	}
 
 	mutex_unlock(&ipvs->est_mutex);
 
@@ -2411,7 +2457,7 @@ static int ipvs_proc_est_nice(const struct ctl_table *table, int write,
 			mutex_lock(&ipvs->est_mutex);
 			if (*valp != val) {
 				*valp = val;
-				ip_vs_est_reload_start(ipvs);
+				ip_vs_est_reload_start(ipvs, true);
 			}
 			mutex_unlock(&ipvs->est_mutex);
 		}
@@ -2438,7 +2484,7 @@ static int ipvs_proc_run_estimation(const struct ctl_table *table, int write,
 		mutex_lock(&ipvs->est_mutex);
 		if (*valp != val) {
 			*valp = val;
-			ip_vs_est_reload_start(ipvs);
+			ip_vs_est_reload_start(ipvs, true);
 		}
 		mutex_unlock(&ipvs->est_mutex);
 	}
@@ -2463,7 +2509,7 @@ static int ipvs_proc_conn_lfactor(const struct ctl_table *table, int write,
 		if (val < -8 || val > 8) {
 			ret = -EINVAL;
 		} else {
-			*valp = val;
+			WRITE_ONCE(*valp, val);
 			if (rcu_access_pointer(ipvs->conn_tab))
 				mod_delayed_work(system_unbound_wq,
 						 &ipvs->conn_resize_work, 0);
@@ -2490,10 +2536,16 @@ static int ipvs_proc_svc_lfactor(const struct ctl_table *table, int write,
 		if (val < -8 || val > 8) {
 			ret = -EINVAL;
 		} else {
-			*valp = val;
-			if (rcu_access_pointer(ipvs->svc_table))
+			mutex_lock(&ipvs->service_mutex);
+			WRITE_ONCE(*valp, val);
+			/* Make sure the services are present */
+			if (rcu_access_pointer(ipvs->svc_table) &&
+			    READ_ONCE(ipvs->enable) &&
+			    !test_bit(IP_VS_WORK_SVC_NORESIZE,
+				      &ipvs->work_flags))
 				mod_delayed_work(system_unbound_wq,
 						 &ipvs->svc_resize_work, 0);
+			mutex_unlock(&ipvs->service_mutex);
 		}
 	}
 	return ret;
@@ -3004,7 +3056,8 @@ static int ip_vs_status_show(struct seq_file *seq, void *v)
 	int old_gen, new_gen;
 	u32 counts[8];
 	u32 bucket;
-	int count;
+	u32 count;
+	int loops;
 	u32 sum1;
 	u32 sum;
 	int i;
@@ -3020,6 +3073,7 @@ static int ip_vs_status_show(struct seq_file *seq, void *v)
 	if (!atomic_read(&ipvs->conn_count))
 		goto after_conns;
 	old_gen = atomic_read(&ipvs->conn_tab_changes);
+	loops = 0;
 
 repeat_conn:
 	smp_rmb(); /* ipvs->conn_tab and conn_tab_changes */
@@ -3032,8 +3086,11 @@ repeat_conn:
 			resched_score++;
 			ip_vs_rht_walk_bucket_rcu(t, bucket, head) {
 				count = 0;
-				hlist_bl_for_each_entry_rcu(hn, e, head, node)
+				hlist_bl_for_each_entry_rcu(hn, e, head, node) {
 					count++;
+					if (count >= ARRAY_SIZE(counts) - 1)
+						break;
+				}
 			}
 			resched_score += count;
 			if (resched_score >= 100) {
@@ -3042,37 +3099,41 @@ repeat_conn:
 				new_gen = atomic_read(&ipvs->conn_tab_changes);
 				/* New table installed ? */
 				if (old_gen != new_gen) {
+					/* Too many changes? */
+					if (++loops >= 5)
+						goto after_conns;
 					old_gen = new_gen;
 					goto repeat_conn;
 				}
 			}
-			counts[min(count, (int)ARRAY_SIZE(counts) - 1)]++;
+			counts[count]++;
 		}
 	}
 	for (sum = 0, i = 0; i < ARRAY_SIZE(counts); i++)
 		sum += counts[i];
 	sum1 = sum - counts[0];
-	seq_printf(seq, "Conn buckets empty:\t%u (%lu%%)\n",
-		   counts[0], (unsigned long)counts[0] * 100 / max(sum, 1U));
+	seq_printf(seq, "Conn buckets empty:\t%u (%llu%%)\n",
+		   counts[0], div_u64((u64)counts[0] * 100U, max(sum, 1U)));
 	for (i = 1; i < ARRAY_SIZE(counts); i++) {
 		if (!counts[i])
 			continue;
-		seq_printf(seq, "Conn buckets len-%d:\t%u (%lu%%)\n",
+		seq_printf(seq, "Conn buckets len-%d:\t%u (%llu%%)\n",
 			   i, counts[i],
-			   (unsigned long)counts[i] * 100 / max(sum1, 1U));
+			   div_u64((u64)counts[i] * 100U, max(sum1, 1U)));
 	}
 
 after_conns:
 	t = rcu_dereference(ipvs->svc_table);
 
 	count = ip_vs_get_num_services(ipvs);
-	seq_printf(seq, "Services:\t%d\n", count);
+	seq_printf(seq, "Services:\t%u\n", count);
 	seq_printf(seq, "Service buckets:\t%d (%d bits, lfactor %d)\n",
 		   t ? t->size : 0, t ? t->bits : 0, t ? t->lfactor : 0);
 
 	if (!count)
 		goto after_svc;
 	old_gen = atomic_read(&ipvs->svc_table_changes);
+	loops = 0;
 
 repeat_svc:
 	smp_rmb(); /* ipvs->svc_table and svc_table_changes */
@@ -3086,8 +3147,11 @@ repeat_svc:
 			ip_vs_rht_walk_bucket_rcu(t, bucket, head) {
 				count = 0;
 				hlist_bl_for_each_entry_rcu(svc, e, head,
-							    s_list)
+							    s_list) {
 					count++;
+					if (count >= ARRAY_SIZE(counts) - 1)
+						break;
+				}
 			}
 			resched_score += count;
 			if (resched_score >= 100) {
@@ -3096,24 +3160,27 @@ repeat_svc:
 				new_gen = atomic_read(&ipvs->svc_table_changes);
 				/* New table installed ? */
 				if (old_gen != new_gen) {
+					/* Too many changes? */
+					if (++loops >= 5)
+						goto after_svc;
 					old_gen = new_gen;
 					goto repeat_svc;
 				}
 			}
-			counts[min(count, (int)ARRAY_SIZE(counts) - 1)]++;
+			counts[count]++;
 		}
 	}
 	for (sum = 0, i = 0; i < ARRAY_SIZE(counts); i++)
 		sum += counts[i];
 	sum1 = sum - counts[0];
-	seq_printf(seq, "Service buckets empty:\t%u (%lu%%)\n",
-		   counts[0], (unsigned long)counts[0] * 100 / max(sum, 1U));
+	seq_printf(seq, "Service buckets empty:\t%u (%llu%%)\n",
+		   counts[0], div_u64((u64)counts[0] * 100U, max(sum, 1U)));
 	for (i = 1; i < ARRAY_SIZE(counts); i++) {
 		if (!counts[i])
 			continue;
-		seq_printf(seq, "Service buckets len-%d:\t%u (%lu%%)\n",
+		seq_printf(seq, "Service buckets len-%d:\t%u (%llu%%)\n",
 			   i, counts[i],
-			   (unsigned long)counts[i] * 100 / max(sum1, 1U));
+			   div_u64((u64)counts[i] * 100U, max(sum1, 1U)));
 	}
 
 after_svc:
@@ -4967,7 +5034,14 @@ static void __net_exit ip_vs_control_net_cleanup_sysctl(struct netns_ipvs *ipvs)
 	cancel_delayed_work_sync(&ipvs->defense_work);
 	cancel_work_sync(&ipvs->defense_work.work);
 	unregister_net_sysctl_table(ipvs->sysctl_hdr);
-	ip_vs_stop_estimator(ipvs, &ipvs->tot_stats->s);
+	if (ipvs->tot_stats->s.est.ktid != -2) {
+		/* Not stopped yet? This happens only on netns init error and
+		 * we even do not need to lock the service_mutex for this case.
+		 */
+		mutex_lock(&ipvs->service_mutex);
+		ip_vs_stop_estimator(ipvs, &ipvs->tot_stats->s);
+		mutex_unlock(&ipvs->service_mutex);
+	}
 
 	if (ipvs->est_cpulist_valid)
 		free_cpumask_var(ipvs->sysctl_est_cpulist);
@@ -5039,7 +5113,7 @@ int __net_init ip_vs_control_net_init(struct netns_ipvs *ipvs)
 				    ipvs->net->proc_net,
 				    ip_vs_stats_percpu_show, NULL))
 		goto err_percpu;
-	if (!proc_create_net_single("ip_vs_status", 0, ipvs->net->proc_net,
+	if (!proc_create_net_single("ip_vs_status", 0440, ipvs->net->proc_net,
 				    ip_vs_status_show, NULL))
 		goto err_status;
 #endif

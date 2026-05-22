@@ -534,10 +534,12 @@ static int __map_range_leaf(struct pt_range *range, void *arg,
 	struct pt_state pts = pt_init(range, level, table);
 	struct pt_iommu_map_args *map = arg;
 	unsigned int leaf_pgsize_lg2 = map->leaf_pgsize_lg2;
+	unsigned int leaves_avail;
 	unsigned int start_index;
 	pt_oaddr_t oa = map->oa;
-	unsigned int num_leaves;
+	pt_vaddr_t num_leaves;
 	unsigned int orig_end;
+	unsigned int step_lg2;
 	pt_vaddr_t last_va;
 	unsigned int step;
 	bool need_contig;
@@ -546,21 +548,25 @@ static int __map_range_leaf(struct pt_range *range, void *arg,
 	PT_WARN_ON(map->leaf_level != level);
 	PT_WARN_ON(!pt_can_have_leaf(&pts));
 
-	step = log2_to_int_t(unsigned int,
-			     leaf_pgsize_lg2 - pt_table_item_lg2sz(&pts));
-	need_contig = leaf_pgsize_lg2 != pt_table_item_lg2sz(&pts);
+	step_lg2 = leaf_pgsize_lg2 - pt_table_item_lg2sz(&pts);
+	step = log2_to_int_t(unsigned int, step_lg2);
+	need_contig = step_lg2 != 0;
 
 	_pt_iter_first(&pts);
 	start_index = pts.index;
 	orig_end = pts.end_index;
-	if (pts.index + map->num_leaves < pts.end_index) {
+	leaves_avail =
+		log2_div_t(unsigned int, pts.end_index - pts.index, step_lg2);
+	if (map->num_leaves <= leaves_avail) {
 		/* Need to stop in the middle of the table to change sizes */
-		pts.end_index = pts.index + map->num_leaves;
+		pts.end_index = pts.index + log2_mul(map->num_leaves, step_lg2);
 		num_leaves = 0;
 	} else {
-		num_leaves = map->num_leaves - (pts.end_index - pts.index);
+		num_leaves = map->num_leaves - leaves_avail;
 	}
 
+	PT_WARN_ON(
+		log2_mod_t(unsigned int, pts.end_index - pts.index, step_lg2));
 	do {
 		pts.type = pt_load_entry_raw(&pts);
 		if (pts.type != PT_ENTRY_EMPTY || need_contig) {
@@ -920,8 +926,8 @@ static int NS(map_range)(struct pt_iommu *iommu_table, dma_addr_t iova,
 		return ret;
 
 	/* Calculate target page size and level for the leaves */
-	if (pt_has_system_page_size(common) && len == PAGE_SIZE) {
-		PT_WARN_ON(!(pgsize_bitmap & PAGE_SIZE));
+	if (pt_has_system_page_size(common) && len == PAGE_SIZE &&
+		likely(pgsize_bitmap & PAGE_SIZE)) {
 		if (log2_mod(iova | paddr, PAGE_SHIFT))
 			return -ENXIO;
 		map.leaf_pgsize_lg2 = PAGE_SHIFT;

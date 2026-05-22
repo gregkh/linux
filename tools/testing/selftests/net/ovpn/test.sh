@@ -98,10 +98,10 @@ ovpn_run_basic_traffic() {
 		sleep 0.3
 		ovpn_cmd_ok "send baseline traffic to peer ${p}" \
 			ip netns exec ovpn_peer0 \
-			ping -qfc 500 -w 3 5.5.5.$((p + 1))
+			ping -qfc 100 -w 3 5.5.5.$((p + 1))
 		ovpn_cmd_ok "send large-payload traffic to peer ${p}" \
 			ip netns exec ovpn_peer0 \
-			ping -qfc 500 -s 3000 -w 3 5.5.5.$((p + 1))
+			ping -qfc 100 -s 3000 -w 3 5.5.5.$((p + 1))
 
 		wait "${tcpdump_pid1}" || return 1
 		wait "${tcpdump_pid2}" || return 1

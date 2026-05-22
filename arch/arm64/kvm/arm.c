@@ -4,6 +4,7 @@
  * Author: Christoffer Dall <c.dall@virtualopensystems.com>
  */
 
+#include <linux/arm-smccc.h>
 #include <linux/bug.h>
 #include <linux/cpu_pm.h>
 #include <linux/errno.h>
@@ -2638,6 +2639,22 @@ static int init_pkvm_host_sve_state(void)
 	return 0;
 }
 
+static int pkvm_check_sme_dvmsync_fw_call(void)
+{
+	struct arm_smccc_res res;
+
+	if (!cpus_have_final_cap(ARM64_WORKAROUND_4193714))
+		return 0;
+
+	arm_smccc_1_1_smc(ARM_SMCCC_CPU_WORKAROUND_4193714, &res);
+	if (res.a0) {
+		kvm_err("pKVM requires firmware support for C1-Pro erratum 4193714\n");
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
 /*
  * Finalizes the initialization of hyp mode, once everything else is initialized
  * and the initialziation process cannot fail.
@@ -2835,6 +2852,10 @@ static int __init init_hyp_mode(void)
 		}
 
 		err = init_pkvm_host_sve_state();
+		if (err)
+			goto out_err;
+
+		err = pkvm_check_sme_dvmsync_fw_call();
 		if (err)
 			goto out_err;
 

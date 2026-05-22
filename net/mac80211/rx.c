@@ -4971,7 +4971,7 @@ static bool ieee80211_invoke_fast_rx(struct ieee80211_rx_data *rx,
 	struct sk_buff *skb = rx->skb;
 	struct ieee80211_hdr *hdr = (void *)skb->data;
 	struct ieee80211_rx_status *status = IEEE80211_SKB_RXCB(skb);
-	static ieee80211_rx_result res;
+	ieee80211_rx_result res;
 	int orig_len = skb->len;
 	int hdrlen = ieee80211_hdrlen(hdr->frame_control);
 	int snap_offs = hdrlen;
@@ -5380,7 +5380,9 @@ static void __ieee80211_rx_handle_packet(struct ieee80211_hw *hw,
 				if (!link_sta)
 					goto out;
 
-				ieee80211_rx_data_set_link(&rx, link_sta->link_id);
+				if (!ieee80211_rx_data_set_link(&rx,
+								link_sta->link_id))
+					goto out;
 			}
 
 			if (ieee80211_prepare_and_rx_handle(&rx, skb, true))

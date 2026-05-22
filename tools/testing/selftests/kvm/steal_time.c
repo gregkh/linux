@@ -220,6 +220,8 @@ static void check_steal_time_uapi(void)
 	};
 
 	vcpu_ioctl(vcpu, KVM_HAS_DEVICE_ATTR, &dev);
+	vm_userspace_mem_region_add(vm, VM_MEM_SRC_ANONYMOUS, ST_GPA_BASE, 1, 1, 0);
+	virt_map(vm, ST_GPA_BASE, ST_GPA_BASE, 1);
 
 	st_ipa = (ulong)ST_GPA_BASE | 1;
 	ret = __vcpu_ioctl(vcpu, KVM_SET_DEVICE_ATTR, &dev);

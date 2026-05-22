@@ -920,9 +920,9 @@ static void mctp_test_route_input_cloned_frag(struct kunit *test)
 static void mctp_test_route_input_null_eid(struct kunit *test)
 {
 	struct mctp_hdr hdr = RX_HDR(1, 10, 0, FL_S | FL_E | FL_TO);
+	struct sockaddr_mctp addr = { 0 };
 	struct sk_buff *skb_pkt, *skb_sk;
 	struct mctp_test_dev *dev;
-	struct sockaddr_mctp addr;
 	struct socket *sock;
 	u8 type = 0;
 	int rc;

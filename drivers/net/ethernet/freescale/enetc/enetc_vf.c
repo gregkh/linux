@@ -17,11 +17,36 @@ static void enetc_msg_vsi_write_msg(struct enetc_hw *hw,
 	enetc_wr(hw, ENETC_VSIMSGSNDAR0, val);
 }
 
+static void enetc_msg_dma_free(struct device *dev, struct enetc_msg_swbd *msg)
+{
+	if (msg->vaddr) {
+		dma_free_coherent(dev, msg->size, msg->vaddr, msg->dma);
+		msg->vaddr = NULL;
+	}
+}
+
 static int enetc_msg_vsi_send(struct enetc_si *si, struct enetc_msg_swbd *msg)
 {
+	struct device *dev = &si->pdev->dev;
 	int timeout = 100;
 	u32 vsimsgsr;
 
+	/* The VSI mailbox may be busy if last message was not yet processed
+	 * by PSI. So need to check the mailbox status before sending.
+	 */
+	vsimsgsr = enetc_rd(&si->hw, ENETC_VSIMSGSR);
+	if (vsimsgsr & ENETC_VSIMSGSR_MB) {
+		/* It is safe to free the DMA buffer here, the caller does
+		 * not access the DMA buffer if enetc_msg_vsi_send() fails.
+		 */
+		enetc_msg_dma_free(dev, msg);
+		dev_err(dev, "VSI mailbox is busy\n");
+		return -EIO;
+	}
+
+	/* Free the DMA buffer of the last message */
+	enetc_msg_dma_free(dev, &si->msg);
+	si->msg = *msg;
 	enetc_msg_vsi_write_msg(&si->hw, msg);
 
 	do {
@@ -32,12 +57,15 @@ static int enetc_msg_vsi_send(struct enetc_si *si, struct enetc_msg_swbd *msg)
 		usleep_range(1000, 2000);
 	} while (--timeout);
 
-	if (!timeout)
+	if (!timeout) {
+		dev_err(dev, "VSI mailbox timeout\n");
+
 		return -ETIMEDOUT;
+	}
 
 	/* check for message delivery error */
 	if (vsimsgsr & ENETC_VSIMSGSR_MS) {
-		dev_err(&si->pdev->dev, "VSI command execute error: %d\n",
+		dev_err(dev, "VSI command execute error: %d\n",
 			ENETC_SIMSGSR_GET_MC(vsimsgsr));
 		return -EIO;
 	}
@@ -50,7 +78,6 @@ static int enetc_msg_vsi_set_primary_mac_addr(struct enetc_ndev_priv *priv,
 {
 	struct enetc_msg_cmd_set_primary_mac *cmd;
 	struct enetc_msg_swbd msg;
-	int err;
 
 	msg.size = ALIGN(sizeof(struct enetc_msg_cmd_set_primary_mac), 64);
 	msg.vaddr = dma_alloc_coherent(priv->dev, msg.size, &msg.dma,
@@ -67,11 +94,7 @@ static int enetc_msg_vsi_set_primary_mac_addr(struct enetc_ndev_priv *priv,
 	memcpy(&cmd->mac, saddr, sizeof(struct sockaddr));
 
 	/* send the command and wait */
-	err = enetc_msg_vsi_send(priv->si, &msg);
-
-	dma_free_coherent(priv->dev, msg.size, msg.vaddr, msg.dma);
-
-	return err;
+	return enetc_msg_vsi_send(priv->si, &msg);
 }
 
 static int enetc_vf_set_mac_addr(struct net_device *ndev, void *addr)
@@ -259,6 +282,7 @@ static void enetc_vf_remove(struct pci_dev *pdev)
 {
 	struct enetc_si *si = pci_get_drvdata(pdev);
 	struct enetc_ndev_priv *priv;
+	struct enetc_msg_swbd msg;
 
 	priv = netdev_priv(si->ndev);
 	unregister_netdev(si->ndev);
@@ -270,7 +294,9 @@ static void enetc_vf_remove(struct pci_dev *pdev)
 
 	free_netdev(si->ndev);
 
+	msg = si->msg;
 	enetc_pci_remove(pdev);
+	enetc_msg_dma_free(&pdev->dev, &msg);
 }
 
 static const struct pci_device_id enetc_vf_id_table[] = {

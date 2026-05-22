@@ -117,7 +117,7 @@ static inline struct sk_buff *dequeue_head(struct fq_codel_flow *flow)
 {
 	struct sk_buff *skb = flow->head;
 
-	flow->head = skb->next;
+	WRITE_ONCE(flow->head, skb->next);
 	skb_mark_not_on_list(skb);
 	return skb;
 }
@@ -127,7 +127,7 @@ static inline void flow_queue_add(struct fq_codel_flow *flow,
 				  struct sk_buff *skb)
 {
 	if (flow->head == NULL)
-		flow->head = skb;
+		WRITE_ONCE(flow->head, skb);
 	else
 		flow->tail->next = skb;
 	flow->tail = skb;
@@ -173,8 +173,8 @@ static unsigned int fq_codel_drop(struct Qdisc *sch, unsigned int max_packets,
 	} while (++i < max_packets && len < threshold);
 
 	/* Tell codel to increase its signal strength also */
-	flow->cvars.count += i;
-	q->backlogs[idx] -= len;
+	WRITE_ONCE(flow->cvars.count, flow->cvars.count + i);
+	WRITE_ONCE(q->backlogs[idx], q->backlogs[idx] - len);
 	q->memory_usage -= mem;
 	sch->qstats.drops += i;
 	sch->qstats.backlog -= len;
@@ -204,13 +204,13 @@ static int fq_codel_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	codel_set_enqueue_time(skb);
 	flow = &q->flows[idx];
 	flow_queue_add(flow, skb);
-	q->backlogs[idx] += qdisc_pkt_len(skb);
+	WRITE_ONCE(q->backlogs[idx], q->backlogs[idx] + qdisc_pkt_len(skb));
 	qdisc_qstats_backlog_inc(sch, skb);
 
 	if (list_empty(&flow->flowchain)) {
 		list_add_tail(&flow->flowchain, &q->new_flows);
 		q->new_flow_count++;
-		flow->deficit = q->quantum;
+		WRITE_ONCE(flow->deficit, q->quantum);
 	}
 	get_codel_cb(skb)->mem_usage = skb->truesize;
 	q->memory_usage += get_codel_cb(skb)->mem_usage;
@@ -263,7 +263,8 @@ static struct sk_buff *dequeue_func(struct codel_vars *vars, void *ctx)
 	flow = container_of(vars, struct fq_codel_flow, cvars);
 	if (flow->head) {
 		skb = dequeue_head(flow);
-		q->backlogs[flow - q->flows] -= qdisc_pkt_len(skb);
+		WRITE_ONCE(q->backlogs[flow - q->flows],
+			   q->backlogs[flow - q->flows] - qdisc_pkt_len(skb));
 		q->memory_usage -= get_codel_cb(skb)->mem_usage;
 		sch->q.qlen--;
 		sch->qstats.backlog -= qdisc_pkt_len(skb);
@@ -296,7 +297,7 @@ begin:
 	flow = list_first_entry(head, struct fq_codel_flow, flowchain);
 
 	if (flow->deficit <= 0) {
-		flow->deficit += q->quantum;
+		WRITE_ONCE(flow->deficit, flow->deficit + q->quantum);
 		list_move_tail(&flow->flowchain, &q->old_flows);
 		goto begin;
 	}
@@ -314,7 +315,7 @@ begin:
 		goto begin;
 	}
 	qdisc_bstats_update(sch, skb);
-	flow->deficit -= qdisc_pkt_len(skb);
+	WRITE_ONCE(flow->deficit, flow->deficit - qdisc_pkt_len(skb));
 
 	if (q->cstats.drop_count) {
 		qdisc_tree_reduce_backlog(sch, q->cstats.drop_count,
@@ -328,7 +329,7 @@ begin:
 static void fq_codel_flow_purge(struct fq_codel_flow *flow)
 {
 	rtnl_kfree_skbs(flow->head, flow->tail);
-	flow->head = NULL;
+	WRITE_ONCE(flow->head, NULL);
 }
 
 static void fq_codel_reset(struct Qdisc *sch)
@@ -656,21 +657,21 @@ static int fq_codel_dump_class_stats(struct Qdisc *sch, unsigned long cl,
 
 		memset(&xstats, 0, sizeof(xstats));
 		xstats.type = TCA_FQ_CODEL_XSTATS_CLASS;
-		xstats.class_stats.deficit = flow->deficit;
+		xstats.class_stats.deficit = READ_ONCE(flow->deficit);
 		xstats.class_stats.ldelay =
-			codel_time_to_us(flow->cvars.ldelay);
-		xstats.class_stats.count = flow->cvars.count;
-		xstats.class_stats.lastcount = flow->cvars.lastcount;
-		xstats.class_stats.dropping = flow->cvars.dropping;
-		if (flow->cvars.dropping) {
-			codel_tdiff_t delta = flow->cvars.drop_next -
+			codel_time_to_us(READ_ONCE(flow->cvars.ldelay));
+		xstats.class_stats.count = READ_ONCE(flow->cvars.count);
+		xstats.class_stats.lastcount = READ_ONCE(flow->cvars.lastcount);
+		xstats.class_stats.dropping = READ_ONCE(flow->cvars.dropping);
+		if (xstats.class_stats.dropping) {
+			codel_tdiff_t delta = READ_ONCE(flow->cvars.drop_next) -
 					      codel_get_time();
 
 			xstats.class_stats.drop_next = (delta >= 0) ?
 				codel_time_to_us(delta) :
 				-codel_time_to_us(-delta);
 		}
-		if (flow->head) {
+		if (READ_ONCE(flow->head)) {
 			sch_tree_lock(sch);
 			skb = flow->head;
 			while (skb) {
@@ -679,7 +680,7 @@ static int fq_codel_dump_class_stats(struct Qdisc *sch, unsigned long cl,
 			}
 			sch_tree_unlock(sch);
 		}
-		qs.backlog = q->backlogs[idx];
+		qs.backlog = READ_ONCE(q->backlogs[idx]);
 		qs.drops = 0;
 	}
 	if (gnet_stats_copy_queue(d, NULL, &qs, qs.qlen) < 0)

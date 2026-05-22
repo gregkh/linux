@@ -5607,13 +5607,14 @@ static int pci_try_reset_bus(struct pci_bus *bus)
  *           reset for affected devices
  *
  * This function will first try to reset the slots on this bus if the method is
- * available. If slot reset fails or is not available, this will fall back to a
+ * available. If slot reset is not available, this will fall back to a
  * secondary bus reset.
  */
 static int pci_reset_bridge(struct pci_dev *bridge, bool restore)
 {
 	struct pci_bus *bus = bridge->subordinate;
 	struct pci_slot *slot;
+	int ret = 0;
 
 	if (!bus)
 		return -ENOTTY;
@@ -5627,19 +5628,17 @@ static int pci_reset_bridge(struct pci_dev *bridge, bool restore)
 			goto bus_reset;
 
 	list_for_each_entry(slot, &bus->slots, list) {
-		int ret;
-
 		if (restore)
 			ret = pci_try_reset_slot(slot);
 		else
 			ret = pci_slot_reset(slot, PCI_RESET_DO_RESET);
 
 		if (ret)
-			goto bus_reset;
+			break;
 	}
 
 	mutex_unlock(&pci_slot_mutex);
-	return 0;
+	return ret;
 bus_reset:
 	mutex_unlock(&pci_slot_mutex);
 

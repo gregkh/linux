@@ -687,12 +687,26 @@ static struct io_overflow_cqe *io_alloc_ocqe(struct io_ring_ctx *ctx,
 }
 
 /*
+ * Compute queued CQEs for free-space calculation, clamped to cq_entries.
+ */
+static unsigned int io_cqring_queued(struct io_ring_ctx *ctx)
+{
+	struct io_rings *rings = io_get_rings(ctx);
+	int diff;
+
+	diff = (int)(ctx->cached_cq_tail - READ_ONCE(rings->cq.head));
+	if (diff >= 0)
+		return min((unsigned int)diff, ctx->cq_entries);
+	return 0;
+}
+
+/*
  * Fill an empty dummy CQE, in case alignment is off for posting a 32b CQE
  * because the ring is a single 16b entry away from wrapping.
  */
 static bool io_fill_nop_cqe(struct io_ring_ctx *ctx, unsigned int off)
 {
-	if (__io_cqring_events(ctx) < ctx->cq_entries) {
+	if (io_cqring_queued(ctx) < ctx->cq_entries) {
 		struct io_uring_cqe *cqe = &ctx->rings->cqes[off];
 
 		cqe->user_data = 0;
@@ -713,7 +727,7 @@ bool io_cqe_cache_refill(struct io_ring_ctx *ctx, bool overflow, bool cqe32)
 {
 	struct io_rings *rings = ctx->rings;
 	unsigned int off = ctx->cached_cq_tail & (ctx->cq_entries - 1);
-	unsigned int free, queued, len;
+	unsigned int free, len;
 
 	/*
 	 * Posting into the CQ when there are pending overflowed CQEs may break
@@ -733,9 +747,7 @@ bool io_cqe_cache_refill(struct io_ring_ctx *ctx, bool overflow, bool cqe32)
 		off = 0;
 	}
 
-	/* userspace may cheat modifying the tail, be safe and do min */
-	queued = min(__io_cqring_events(ctx), ctx->cq_entries);
-	free = ctx->cq_entries - queued;
+	free = ctx->cq_entries - io_cqring_queued(ctx);
 	/* we need a contiguous range, limit based on the current array offset */
 	len = min(free, ctx->cq_entries - off);
 	if (len < (cqe32 + 1))
@@ -1452,8 +1464,13 @@ struct io_wq_work *io_wq_free_work(struct io_wq_work *work)
 	struct io_kiocb *nxt = NULL;
 
 	if (req_ref_put_and_test_atomic(req)) {
-		if (req->flags & IO_REQ_LINK_FLAGS)
+		if (req->flags & IO_REQ_LINK_FLAGS) {
+			struct io_ring_ctx *ctx = req->ctx;
+
+			mutex_lock(&ctx->uring_lock);
 			nxt = io_req_find_next(req);
+			mutex_unlock(&ctx->uring_lock);
+		}
 		io_free_req(req);
 	}
 	return nxt ? &nxt->work : NULL;

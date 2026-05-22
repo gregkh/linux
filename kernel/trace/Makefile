@@ -143,8 +143,8 @@ obj-$(CONFIG_TRACE_REMOTE_TEST) += remote_test.o
 targets += undefsyms_base.o
 KASAN_SANITIZE_undefsyms_base.o := y
 
-UNDEFINED_ALLOWLIST = __asan __gcov __kasan __kcsan __hwasan __sancov __sanitizer __tsan __ubsan __x86_indirect_thunk \
-		      __msan simple_ring_buffer \
+UNDEFINED_ALLOWLIST = __asan __gcov __kasan __kcsan __hwasan __sancov __sanitizer __tsan __ubsan __msan \
+		      __aeabi_unwind_cpp __s390_indirect_jump __x86_indirect_thunk simple_ring_buffer \
 		      $(shell $(NM) -u $(obj)/undefsyms_base.o 2>/dev/null | awk '{print $$2}')
 
 quiet_cmd_check_undefined = NM      $<

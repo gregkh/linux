@@ -1654,15 +1654,24 @@ err_prog_put:
 	return err;
 }
 
+static void sk_reuseport_prog_free_rcu(struct rcu_head *rcu)
+{
+	struct bpf_prog_aux *aux = container_of(rcu, struct bpf_prog_aux, rcu);
+	struct bpf_prog *prog = aux->prog;
+
+	bpf_release_orig_filter(prog);
+	bpf_prog_free(prog);
+}
+
 void sk_reuseport_prog_free(struct bpf_prog *prog)
 {
 	if (!prog)
 		return;
 
-	if (prog->type == BPF_PROG_TYPE_SK_REUSEPORT)
-		bpf_prog_put(prog);
+	if (bpf_prog_was_classic(prog))
+		call_rcu(&prog->aux->rcu, sk_reuseport_prog_free_rcu);
 	else
-		bpf_prog_destroy(prog);
+		bpf_prog_put(prog);
 }
 
 static inline int __bpf_try_make_writable(struct sk_buff *skb,
@@ -5481,7 +5490,7 @@ static int sol_tcp_sockopt(struct sock *sk, int optname,
 			   char *optval, int *optlen,
 			   bool getopt)
 {
-	if (sk->sk_protocol != IPPROTO_TCP)
+	if (!sk_is_tcp(sk))
 		return -EINVAL;
 
 	switch (optname) {
@@ -5688,6 +5697,30 @@ const struct bpf_func_proto bpf_sk_getsockopt_proto = {
 	.arg5_type	= ARG_CONST_SIZE,
 };
 
+BPF_CALL_5(bpf_sk_setsockopt_nodelay, struct sock *, sk, int, level,
+	   int, optname, char *, optval, int, optlen)
+{
+	/*
+	 * TCP_NODELAY triggers tcp_push_pending_frames() and re-enters
+	 * CA_EVENT_TX_START in bpf_tcp_cc.
+	 */
+	if (level == SOL_TCP && optname == TCP_NODELAY)
+		return -EOPNOTSUPP;
+
+	return _bpf_setsockopt(sk, level, optname, optval, optlen);
+}
+
+const struct bpf_func_proto bpf_sk_setsockopt_nodelay_proto = {
+	.func		= bpf_sk_setsockopt_nodelay,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_BTF_ID_SOCK_COMMON,
+	.arg2_type	= ARG_ANYTHING,
+	.arg3_type	= ARG_ANYTHING,
+	.arg4_type	= ARG_PTR_TO_MEM | MEM_RDONLY,
+	.arg5_type	= ARG_CONST_SIZE,
+};
+
 BPF_CALL_5(bpf_unlocked_sk_setsockopt, struct sock *, sk, int, level,
 	   int, optname, char *, optval, int, optlen)
 {
@@ -5831,6 +5864,12 @@ BPF_CALL_5(bpf_sock_ops_setsockopt, struct bpf_sock_ops_kern *, bpf_sock,
 	   int, level, int, optname, char *, optval, int, optlen)
 {
 	if (!is_locked_tcp_sock_ops(bpf_sock))
+		return -EOPNOTSUPP;
+
+	/* TCP_NODELAY triggers tcp_push_pending_frames() and re-enters these callbacks. */
+	if ((bpf_sock->op == BPF_SOCK_OPS_HDR_OPT_LEN_CB ||
+	     bpf_sock->op == BPF_SOCK_OPS_WRITE_HDR_OPT_CB) &&
+	    level == SOL_TCP && optname == TCP_NODELAY)
 		return -EOPNOTSUPP;
 
 	return _bpf_setsockopt(bpf_sock->sk, level, optname, optval, optlen);
@@ -6443,6 +6482,8 @@ BPF_CALL_4(bpf_skb_fib_lookup, struct sk_buff *, skb,
 		 * against MTU of FIB lookup resulting net_device
 		 */
 		dev = dev_get_by_index_rcu(net, params->ifindex);
+		if (unlikely(!dev))
+			return -ENODEV;
 		if (!is_skb_forwardable(dev, skb))
 			rc = BPF_FIB_LKUP_RET_FRAG_NEEDED;
 
@@ -7443,7 +7484,7 @@ u32 bpf_tcp_sock_convert_ctx_access(enum bpf_access_type type,
 
 BPF_CALL_1(bpf_tcp_sock, struct sock *, sk)
 {
-	if (sk_fullsock(sk) && sk->sk_protocol == IPPROTO_TCP)
+	if (sk_fullsock(sk) && sk_is_tcp(sk))
 		return (unsigned long)sk;
 
 	return (unsigned long)NULL;
@@ -11915,7 +11956,7 @@ BPF_CALL_1(bpf_skc_to_tcp6_sock, struct sock *, sk)
 	 */
 	BTF_TYPE_EMIT(struct tcp6_sock);
 	if (sk && sk_fullsock(sk) && sk->sk_protocol == IPPROTO_TCP &&
-	    sk->sk_family == AF_INET6)
+	    sk->sk_type == SOCK_STREAM && sk->sk_family == AF_INET6)
 		return (unsigned long)sk;
 
 	return (unsigned long)NULL;
@@ -11931,7 +11972,7 @@ const struct bpf_func_proto bpf_skc_to_tcp6_sock_proto = {
 
 BPF_CALL_1(bpf_skc_to_tcp_sock, struct sock *, sk)
 {
-	if (sk && sk_fullsock(sk) && sk->sk_protocol == IPPROTO_TCP)
+	if (sk && sk_fullsock(sk) && sk_is_tcp(sk))
 		return (unsigned long)sk;
 
 	return (unsigned long)NULL;

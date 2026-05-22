@@ -11,7 +11,6 @@ import logging
 import math
 import multiprocessing
 import re
-import socket
 import struct
 import sys
 import time
@@ -2069,7 +2068,7 @@ class OvsVport(GenericNetlinkSocket):
         elif vport_type == "internal":
             return OvsVport.OVS_VPORT_TYPE_INTERNAL
         elif vport_type == "gre":
-            return OvsVport.OVS_VPORT_TYPE_INTERNAL
+            return OvsVport.OVS_VPORT_TYPE_GRE
         elif vport_type == "vxlan":
             return OvsVport.OVS_VPORT_TYPE_VXLAN
         elif vport_type == "geneve":
@@ -2121,6 +2120,7 @@ class OvsVport(GenericNetlinkSocket):
         )
 
         TUNNEL_DEFAULTS = [("geneve", 6081),
+                           ("gre", 0),
                            ("vxlan", 4789)]
 
         for tnl in TUNNEL_DEFAULTS:
@@ -2129,9 +2129,13 @@ class OvsVport(GenericNetlinkSocket):
                     dport = tnl[1]
 
                 if not lwt:
+                    if tnl[0] == "gre":
+                        # GRE tunnels have no options.
+                        break
+
                     vportopt = OvsVport.ovs_vport_msg.vportopts()
                     vportopt["attrs"].append(
-                        ["OVS_TUNNEL_ATTR_DST_PORT", socket.htons(dport)]
+                        ["OVS_TUNNEL_ATTR_DST_PORT", dport]
                     )
                     msg["attrs"].append(
                         ["OVS_VPORT_ATTR_OPTIONS", vportopt]
@@ -2145,6 +2149,9 @@ class OvsVport(GenericNetlinkSocket):
                                  geneve_port=dport,
                                  geneve_collect_metadata=True,
                                  geneve_udp_zero_csum6_rx=1)
+                    elif tnl[0] == "gre":
+                        ipr.link("add", ifname=vport_ifname, kind="gretap",
+                                 gre_collect_metadata=True)
                     elif tnl[0] == "vxlan":
                         ipr.link("add", ifname=vport_ifname, kind=tnl[0],
                                  vxlan_learning=0, vxlan_collect_metadata=1,
@@ -2563,7 +2570,7 @@ def print_ovsdp_full(dp_lookup_rep, ifindex, ndb=NDB(), vpl=OvsVport()):
             if vpo:
                 dpo = vpo.get_attr("OVS_TUNNEL_ATTR_DST_PORT")
                 if dpo:
-                    opts += " tnl-dport:%s" % socket.ntohs(dpo)
+                    opts += " tnl-dport:%s" % dpo
             print(
                 "  port %d: %s (%s%s)"
                 % (
@@ -2632,7 +2639,7 @@ def main(argv):
         "--ptype",
         type=str,
         default="netdev",
-        choices=["netdev", "internal", "geneve", "vxlan"],
+        choices=["netdev", "internal", "gre", "geneve", "vxlan"],
         help="Interface type (default netdev)",
     )
     addifcmd.add_argument(
@@ -2645,7 +2652,7 @@ def main(argv):
     addifcmd.add_argument(
         "-l",
         "--lwt",
-        type=bool,
+        action=argparse.BooleanOptionalAction,
         default=True,
         help="Use LWT infrastructure instead of vport (default true)."
     )

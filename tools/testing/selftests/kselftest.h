@@ -450,7 +450,7 @@ static inline __noreturn __printf(1, 2) void ksft_exit_skip(const char *msg, ...
 	 */
 	if (ksft_plan || ksft_test_num()) {
 		ksft_cnt.ksft_xskip++;
-		printf("ok %u # SKIP ", 1 + ksft_test_num());
+		printf("ok %u # SKIP ", ksft_test_num());
 	} else {
 		printf("1..0 # SKIP ");
 	}

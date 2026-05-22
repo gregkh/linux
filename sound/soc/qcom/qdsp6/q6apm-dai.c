@@ -497,7 +497,12 @@ static int q6apm_dai_pcm_new(struct snd_soc_component *component, struct snd_soc
 {
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_pcm *pcm = rtd->pcm;
-	int size = BUFFER_BYTES_MAX;
+	/*
+	 * Allocate one extra page as a workaround for a DSP bug where 32-bit
+	 * address arithmetic can overflow when the buffer is placed near the
+	 * end of the addressable range.
+	 */
+	int size = BUFFER_BYTES_MAX + PAGE_SIZE;
 	int graph_id, ret;
 	struct snd_pcm_substream *substream;
 

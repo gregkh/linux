@@ -19,10 +19,8 @@ use crate::{
     },
     error::to_result,
     prelude::*,
-    types::{
-        ARef,
-        Opaque, //
-    }, //
+    sync::aref::ARef,
+    types::Opaque, //
 };
 use core::{
     ops::{

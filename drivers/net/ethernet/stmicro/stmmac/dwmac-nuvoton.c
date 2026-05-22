@@ -100,6 +100,8 @@ static int nvt_gmac_probe(struct platform_device *pdev)
 	if (!priv)
 		return dev_err_probe(dev, -ENOMEM, "Failed to allocate private data\n");
 
+	priv->dev = dev;
+
 	priv->regmap = syscon_regmap_lookup_by_phandle_args(dev->of_node, "nuvoton,sys",
 							    1, &priv->macid);
 	if (IS_ERR(priv->regmap))

@@ -85,4 +85,4 @@ void smbdirect_connection_legacy_debug_proc_show(struct smbdirect_socket *sc,
 		   atomic_read(&sc->mr_io.ready.count),
 		   atomic_read(&sc->mr_io.used.count));
 }
-__SMBDIRECT_EXPORT_SYMBOL__(smbdirect_connection_legacy_debug_proc_show);
+EXPORT_SYMBOL_GPL(smbdirect_connection_legacy_debug_proc_show);

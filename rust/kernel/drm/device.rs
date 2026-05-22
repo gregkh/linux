@@ -119,19 +119,30 @@ impl<T: drm::Driver> Device<T> {
         // compatible `Layout`.
         let layout = Kmalloc::aligned_layout(Layout::new::<Self>());
 
+        // Use a temporary vtable without a `release` callback until `data` is initialized, so
+        // init failure can release the DRM device without dropping uninitialized fields.
+        let alloc_vtable = bindings::drm_driver {
+            release: None,
+            ..Self::VTABLE
+        };
+
         // SAFETY:
-        // - `VTABLE`, as a `const` is pinned to the read-only section of the compilation,
+        // - `alloc_vtable` reference remains valid until no longer used,
         // - `dev` is valid by its type invarants,
         let raw_drm: *mut Self = unsafe {
             bindings::__drm_dev_alloc(
                 dev.as_raw(),
-                &Self::VTABLE,
+                &alloc_vtable,
                 layout.size(),
                 mem::offset_of!(Self, dev),
             )
         }
         .cast();
         let raw_drm = NonNull::new(from_err_ptr(raw_drm)?).ok_or(ENOMEM)?;
+
+        // SAFETY: `raw_drm` is a valid pointer to `Self`, given that `__drm_dev_alloc` was
+        // successful.
+        let drm_dev = unsafe { Self::into_drm_device(raw_drm) };
 
         // SAFETY: `raw_drm` is a valid pointer to `Self`.
         let raw_data = unsafe { ptr::addr_of_mut!((*raw_drm.as_ptr()).data) };
@@ -140,14 +151,13 @@ impl<T: drm::Driver> Device<T> {
         // - `raw_data` is a valid pointer to uninitialized memory.
         // - `raw_data` will not move until it is dropped.
         unsafe { data.__pinned_init(raw_data) }.inspect_err(|_| {
-            // SAFETY: `raw_drm` is a valid pointer to `Self`, given that `__drm_dev_alloc` was
-            // successful.
-            let drm_dev = unsafe { Self::into_drm_device(raw_drm) };
-
             // SAFETY: `__drm_dev_alloc()` was successful, hence `drm_dev` must be valid and the
             // refcount must be non-zero.
             unsafe { bindings::drm_dev_put(drm_dev) };
         })?;
+
+        // SAFETY: `drm_dev` is still private to this function.
+        unsafe { (*drm_dev).driver = const { &Self::VTABLE } };
 
         // SAFETY: The reference count is one, and now we take ownership of that reference as a
         // `drm::Device`.

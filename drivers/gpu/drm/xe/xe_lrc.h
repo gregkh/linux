@@ -130,7 +130,7 @@ u32 xe_lrc_parallel_ggtt_addr(struct xe_lrc *lrc);
 struct iosys_map xe_lrc_parallel_map(struct xe_lrc *lrc);
 
 size_t xe_lrc_reg_size(struct xe_device *xe);
-size_t xe_lrc_skip_size(struct xe_device *xe);
+size_t xe_lrc_engine_state_size(struct xe_gt *gt, enum xe_engine_class class);
 
 void xe_lrc_dump_default(struct drm_printer *p,
 			 struct xe_gt *gt,

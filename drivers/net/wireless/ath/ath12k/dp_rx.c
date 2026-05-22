@@ -565,6 +565,9 @@ static int ath12k_dp_prepare_reo_update_elem(struct ath12k_dp *dp,
 
 	lockdep_assert_held(&dp->dp_lock);
 
+	if (!peer->primary_link)
+		return 0;
+
 	elem = kzalloc_obj(*elem, GFP_ATOMIC);
 	if (!elem)
 		return -ENOMEM;
@@ -1337,7 +1340,7 @@ void ath12k_dp_rx_deliver_msdu(struct ath12k_pdev_dp *dp_pdev, struct napi_struc
 	bool is_mcbc = rxcb->is_mcbc;
 	bool is_eapol = rxcb->is_eapol;
 
-	peer = ath12k_dp_peer_find_by_peerid(dp_pdev, rx_info->peer_id);
+	peer = ath12k_dp_peer_find_by_peerid(dp_pdev, rxcb->peer_id);
 
 	pubsta = peer ? peer->sta : NULL;
 

@@ -1713,17 +1713,30 @@ SMB2_auth_kerberos(struct SMB2_sess_data *sess_data)
 	is_binding = (ses->ses_status == SES_GOOD);
 	spin_unlock(&ses->ses_lock);
 
+	/*
+	 * Per MS-SMB2 3.2.5.3, Session.SessionKey is the first 16 bytes of the
+	 * GSS cryptographic key, right-padded with zero bytes if shorter.
+	 * Allocate at least SMB2_NTLMV2_SESSKEY_SIZE bytes (zeroed) so the KDF
+	 * input buffer is always valid for HMAC-SHA256 even with deprecated
+	 * Kerberos enctypes that return a short session key.
+	 */
+	if (unlikely(msg->sesskey_len < SMB2_NTLMV2_SESSKEY_SIZE))
+		cifs_dbg(VFS,
+			 "short GSS session key (%u bytes); zero-padding per MS-SMB2 3.2.5.3\n",
+			 msg->sesskey_len);
+
 	kfree_sensitive(ses->auth_key.response);
-	ses->auth_key.response = kmemdup(msg->data,
-					 msg->sesskey_len,
-					 GFP_KERNEL);
+	ses->auth_key.len = max_t(unsigned int, msg->sesskey_len,
+				  SMB2_NTLMV2_SESSKEY_SIZE);
+	ses->auth_key.response = kzalloc(ses->auth_key.len, GFP_KERNEL);
 	if (!ses->auth_key.response) {
 		cifs_dbg(VFS, "%s: can't allocate (%u bytes) memory\n",
-			 __func__, msg->sesskey_len);
+			 __func__, ses->auth_key.len);
+		ses->auth_key.len = 0;
 		rc = -ENOMEM;
 		goto out_put_spnego_key;
 	}
-	ses->auth_key.len = msg->sesskey_len;
+	memcpy(ses->auth_key.response, msg->data, msg->sesskey_len);
 
 	sess_data->iov[1].iov_base = msg->data + msg->sesskey_len;
 	sess_data->iov[1].iov_len = msg->secblob_len;

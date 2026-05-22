@@ -18,6 +18,11 @@ efi_status_t check_platform_features(void)
 	return EFI_SUCCESS;
 }
 
+void efi_cache_sync_image(unsigned long image_base, unsigned long alloc_size)
+{
+	asm volatile ("ibar 0" ::: "memory");
+}
+
 struct exit_boot_struct {
 	efi_memory_desc_t	*runtime_map;
 	int			runtime_entry_count;

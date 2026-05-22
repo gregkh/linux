@@ -4721,6 +4721,7 @@ handle_read_data(struct TCP_Server_Info *server, struct mid_q_entry *mid,
 {
 	unsigned int data_offset;
 	unsigned int data_len;
+	unsigned int end_off;
 	unsigned int cur_off;
 	unsigned int cur_page_idx;
 	unsigned int pad_len;
@@ -4836,7 +4837,8 @@ handle_read_data(struct TCP_Server_Info *server, struct mid_q_entry *mid,
 		}
 		rdata->got_bytes = buffer_len;
 
-	} else if (buf_len >= data_offset + data_len) {
+	} else if (!check_add_overflow(data_offset, data_len, &end_off) &&
+		   buf_len >= end_off) {
 		/* read response payload is in buf */
 		WARN_ONCE(buffer, "read data can be either in buf or in buffer");
 		copied = copy_to_iter(buf + data_offset, data_len, &rdata->subreq.io_iter);

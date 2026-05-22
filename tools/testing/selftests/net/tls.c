@@ -946,6 +946,49 @@ TEST_F(tls, peek_and_splice)
 	EXPECT_EQ(memcmp(mem_send, mem_recv, send_len), 0);
 }
 
+TEST_F(tls, splice_to_pipe_small)
+{
+	int send_len = TLS_PAYLOAD_MAX_LEN;
+	char mem_send[TLS_PAYLOAD_MAX_LEN];
+	char mem_recv[TLS_PAYLOAD_MAX_LEN];
+	size_t total = 0;
+	int p[2];
+
+	memrnd(mem_send, sizeof(mem_send));
+
+	ASSERT_GE(pipe(p), 0);
+
+	/* Shrink pipe to 1 page (typically 4096 bytes) to force multiple
+	 * splice iterations for a 16384-byte TLS record.
+	 */
+	EXPECT_GE(fcntl(p[1], F_SETPIPE_SZ, 4096), 4096);
+
+	EXPECT_EQ(send(self->fd, mem_send, send_len, 0), send_len);
+
+	while (total < (size_t)send_len) {
+		ssize_t spliced, drained;
+
+		spliced = splice(self->cfd, NULL, p[1], NULL,
+				 send_len - total, 0);
+		EXPECT_GT(spliced, 0);
+		if (spliced <= 0)
+			break;
+
+		drained = read(p[0], mem_recv + total, spliced);
+		EXPECT_EQ(drained, spliced);
+		if (drained <= 0)
+			break;
+
+		total += drained;
+	}
+
+	EXPECT_EQ(total, (size_t)send_len);
+	EXPECT_EQ(memcmp(mem_send, mem_recv, send_len), 0);
+
+	close(p[0]);
+	close(p[1]);
+}
+
 #define MAX_FRAGS 48
 TEST_F(tls, splice_short)
 {

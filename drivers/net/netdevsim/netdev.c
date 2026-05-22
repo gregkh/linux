@@ -1182,7 +1182,8 @@ void nsim_destroy(struct netdevsim *ns)
 		unregister_netdevice_notifier_dev_net(ns->netdev, &ns->nb,
 						      &ns->nn);
 
-	nsim_psp_uninit(ns);
+	if (nsim_dev_port_is_pf(ns->nsim_dev_port))
+		nsim_psp_uninit(ns);
 
 	rtnl_lock();
 	peer = rtnl_dereference(ns->peer);

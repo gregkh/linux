@@ -1645,6 +1645,10 @@ static unsigned int fib6_mtu(const struct fib6_result *res)
 
 		rcu_read_lock();
 		idev = __in6_dev_get(dev);
+		if (!idev) {
+			rcu_read_unlock();
+			return 0;
+		}
 		mtu = READ_ONCE(idev->cnf.mtu6);
 		rcu_read_unlock();
 	}
@@ -4995,6 +4999,7 @@ static int fib6_ifdown(struct fib6_info *rt, void *p_arg)
 		    rt->fib6_flags & (RTF_LOCAL | RTF_ANYCAST))
 			break;
 		rt->fib6_nh->fib_nh_flags |= RTNH_F_LINKDOWN;
+		fib6_update_sernum(net, rt);
 		rt6_multipath_rebalance(rt);
 		break;
 	}

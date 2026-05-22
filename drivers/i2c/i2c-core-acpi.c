@@ -371,6 +371,7 @@ static const struct acpi_device_id i2c_acpi_force_100khz_device_ids[] = {
 	 * a 400KHz frequency. The root cause of the issue is not known.
 	 */
 	{ "DLL0945", 0 },
+	{ "ELAN0678", 0 },
 	{ "ELAN06FA", 0 },
 	{}
 };

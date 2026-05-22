@@ -77,9 +77,13 @@ static int ads7871_read_reg8(struct spi_device *spi, int reg)
 static int ads7871_read_reg16(struct spi_device *spi, int reg)
 {
 	int ret;
+
 	reg = reg | INST_READ_BM | INST_16BIT_BM;
 	ret = spi_w8r16(spi, reg);
-	return ret;
+	if (ret < 0)
+		return ret;
+
+	return le16_to_cpu((__force __le16)ret);
 }
 
 static int ads7871_write_reg8(struct spi_device *spi, int reg, u8 val)

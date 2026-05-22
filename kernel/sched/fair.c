@@ -882,11 +882,11 @@ bool update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
  *
  * lag_i >= 0 -> V >= v_i
  *
- *     \Sum (v_i - v)*w_i
- * V = ------------------ + v
+ *     \Sum (v_i - v0)*w_i
+ * V = ------------------- + v0
  *          \Sum w_i
  *
- * lag_i >= 0 -> \Sum (v_i - v)*w_i >= (v_i - v)*(\Sum w_i)
+ * lag_i >= 0 -> \Sum (v_i - v0)*w_i >= (v_i - v0)*(\Sum w_i)
  *
  * Note: using 'avg_vruntime() > se->vruntime' is inaccurate due
  *       to the loss in precision caused by the division.
@@ -894,7 +894,7 @@ bool update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
 static int vruntime_eligible(struct cfs_rq *cfs_rq, u64 vruntime)
 {
 	struct sched_entity *curr = cfs_rq->curr;
-	s64 avg = cfs_rq->sum_w_vruntime;
+	s64 key, avg = cfs_rq->sum_w_vruntime;
 	long load = cfs_rq->sum_weight;
 
 	if (curr && curr->on_rq) {
@@ -904,7 +904,36 @@ static int vruntime_eligible(struct cfs_rq *cfs_rq, u64 vruntime)
 		load += weight;
 	}
 
-	return avg >= vruntime_op(vruntime, "-", cfs_rq->zero_vruntime) * load;
+	key = vruntime_op(vruntime, "-", cfs_rq->zero_vruntime);
+
+	/*
+	 * The worst case term for @key includes 'NSEC_TICK * NICE_0_LOAD'
+	 * and @load obviously includes NICE_0_LOAD. NSEC_TICK is around 24
+	 * bits, while NICE_0_LOAD is 20 on 64bit and 10 otherwise.
+	 *
+	 * This gives that on 64bit the product will be at least 64bit which
+	 * overflows s64, while on 32bit it will only be 44bits and should fit
+	 * comfortably.
+	 */
+#ifdef CONFIG_64BIT
+#ifdef CONFIG_ARCH_SUPPORTS_INT128
+	/* This often results in simpler code than __builtin_mul_overflow(). */
+	return avg >= (__int128)key * load;
+#else
+	s64 rhs;
+	/*
+	 * On overflow, the sign of key tells us the correct answer: a large
+	 * positive key means vruntime >> V, so not eligible; a large negative
+	 * key means vruntime << V, so eligible.
+	 */
+	if (check_mul_overflow(key, load, &rhs))
+		return key <= 0;
+
+	return avg >= rhs;
+#endif
+#else /* 32bit */
+	return avg >= key * load;
+#endif
 }
 
 int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
@@ -9145,9 +9174,10 @@ pick:
 
 	/*
 	 * Because p is enqueued, nse being null can only mean that we
-	 * dequeued a delayed task.
+	 * dequeued a delayed task. If there are still entities queued in
+	 * cfs, check if the next one will be p.
 	 */
-	if (!nse)
+	if (!nse && cfs_rq->nr_queued)
 		goto pick;
 
 	if (sched_feat(RUN_TO_PARITY))

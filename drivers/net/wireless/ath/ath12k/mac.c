@@ -788,7 +788,7 @@ struct ath12k_link_vif *ath12k_mac_get_arvif(struct ath12k *ar, u32 vdev_id)
 
 	/* To use the arvif returned, caller must have held rcu read lock.
 	 */
-	WARN_ON(!rcu_read_lock_any_held());
+	lockdep_assert_in_rcu_read_lock();
 	arvif_iter.vdev_id = vdev_id;
 	arvif_iter.ar = ar;
 

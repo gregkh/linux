@@ -1279,11 +1279,12 @@ int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter,
 	return bio_iov_iter_align_down(bio, iter, len_align_mask);
 }
 
-static struct folio *folio_alloc_greedy(gfp_t gfp, size_t *size)
+static struct folio *folio_alloc_greedy(gfp_t gfp, size_t *size,
+		size_t minsize)
 {
 	struct folio *folio;
 
-	while (*size > PAGE_SIZE) {
+	while (*size > minsize) {
 		folio = folio_alloc(gfp | __GFP_NORETRY, get_order(*size));
 		if (folio)
 			return folio;
@@ -1307,7 +1308,7 @@ static void bio_free_folios(struct bio *bio)
 }
 
 static int bio_iov_iter_bounce_write(struct bio *bio, struct iov_iter *iter,
-		size_t maxlen)
+		size_t maxlen, size_t minsize)
 {
 	size_t total_len = min(maxlen, iov_iter_count(iter));
 
@@ -1322,13 +1323,13 @@ static int bio_iov_iter_bounce_write(struct bio *bio, struct iov_iter *iter,
 		size_t this_len = min(total_len, SZ_1M);
 		struct folio *folio;
 
-		if (this_len > PAGE_SIZE * 2)
+		if (this_len > minsize * 2)
 			this_len = rounddown_pow_of_two(this_len);
 
 		if (bio->bi_iter.bi_size > BIO_MAX_SIZE - this_len)
 			break;
 
-		folio = folio_alloc_greedy(GFP_KERNEL, &this_len);
+		folio = folio_alloc_greedy(GFP_KERNEL, &this_len, minsize);
 		if (!folio)
 			break;
 		bio_add_folio_nofail(bio, folio, this_len, 0);
@@ -1344,16 +1345,16 @@ static int bio_iov_iter_bounce_write(struct bio *bio, struct iov_iter *iter,
 
 	if (!bio->bi_iter.bi_size)
 		return -ENOMEM;
-	return 0;
+	return bio_iov_iter_align_down(bio, iter, minsize - 1);
 }
 
 static int bio_iov_iter_bounce_read(struct bio *bio, struct iov_iter *iter,
-		size_t maxlen)
+		size_t maxlen, size_t minsize)
 {
 	size_t len = min3(iov_iter_count(iter), maxlen, SZ_1M);
 	struct folio *folio;
 
-	folio = folio_alloc_greedy(GFP_KERNEL, &len);
+	folio = folio_alloc_greedy(GFP_KERNEL, &len, minsize);
 	if (!folio)
 		return -ENOMEM;
 
@@ -1382,7 +1383,7 @@ static int bio_iov_iter_bounce_read(struct bio *bio, struct iov_iter *iter,
 	bvec_set_folio(&bio->bi_io_vec[0], folio, bio->bi_iter.bi_size, 0);
 	if (iov_iter_extract_will_pin(iter))
 		bio_set_flag(bio, BIO_PAGE_PINNED);
-	return 0;
+	return bio_iov_iter_align_down(bio, iter, minsize - 1);
 }
 
 /**
@@ -1390,6 +1391,7 @@ static int bio_iov_iter_bounce_read(struct bio *bio, struct iov_iter *iter,
  * @bio:	bio to send
  * @iter:	iter to read from / write into
  * @maxlen:	maximum size to bounce
+ * @minsize:	minimum folio allocation size
  *
  * Helper for direct I/O implementations that need to bounce buffer because
  * we need to checksum the data or perform other operations that require
@@ -1397,11 +1399,12 @@ static int bio_iov_iter_bounce_read(struct bio *bio, struct iov_iter *iter,
  * copies the data into it.  Needs to be paired with bio_iov_iter_unbounce()
  * called on completion.
  */
-int bio_iov_iter_bounce(struct bio *bio, struct iov_iter *iter, size_t maxlen)
+int bio_iov_iter_bounce(struct bio *bio, struct iov_iter *iter, size_t maxlen,
+			size_t minsize)
 {
 	if (op_is_write(bio_op(bio)))
-		return bio_iov_iter_bounce_write(bio, iter, maxlen);
-	return bio_iov_iter_bounce_read(bio, iter, maxlen);
+		return bio_iov_iter_bounce_write(bio, iter, maxlen, minsize);
+	return bio_iov_iter_bounce_read(bio, iter, maxlen, minsize);
 }
 
 static void bvec_unpin(struct bio_vec *bv, bool mark_dirty)

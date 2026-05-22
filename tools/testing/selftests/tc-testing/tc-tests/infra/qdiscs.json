@@ -1136,5 +1136,194 @@
         "teardown": [
             "$TC qdisc del dev $DUMMY handle 1: root"
         ]
+    },
+    {
+        "id": "7a5f",
+        "name": "Force red to dequeue from its child's gso_skb with qfq leaf",
+        "category": [
+            "qdisc",
+            "tbf",
+            "red",
+            "qfq"
+        ],
+        "plugins": {
+            "requires": "nsPlugin"
+        },
+        "setup": [
+            "$IP link set dev $DUMMY up || true",
+            "$IP addr add 10.10.11.10/24 dev $DUMMY || true",
+            "$TC qdisc add dev $DUMMY root handle 1: tbf rate 88bit burst 1661b peakrate 2257333 minburst 1024 limit 7b",
+            "$TC qdisc add dev $DUMMY parent 1: handle 2: red limit 757 min 16 max 24 avpkt 16",
+            "$TC qdisc add dev $DUMMY parent 2: handle 3: qfq",
+            "$TC class add dev $DUMMY classid 3:1 parent 3: qfq maxpkt 512 weight 1",
+            "$TC filter add dev $DUMMY parent 3: protocol ip prio 1 matchall classid 3:1 action ok"
+        ],
+        "cmdUnderTest": "ping -c 1 10.10.10.1 -W0.01 -I$DUMMY || true",
+        "expExitCode": "0",
+        "verifyCmd": "$TC -s -j qdisc ls dev $DUMMY parent 1:",
+        "matchJSON": [
+            {
+                "kind": "red",
+                "handle": "2:",
+                "bytes": 98,
+                "packets": 1,
+                "backlog": 0,
+                "qlen": 0
+            }
+        ],
+        "teardown": [
+            "$TC qdisc del dev $DUMMY handle 1: root"
+        ]
+    },
+    {
+        "id": "cdae",
+        "name": "Force sfb to dequeue from its child's gso_skb with qfq leaf",
+        "category": [
+            "qdisc",
+            "tbf",
+            "sfb",
+            "qfq"
+        ],
+        "plugins": {
+            "requires": "nsPlugin"
+        },
+        "setup": [
+            "$IP link set dev $DUMMY up || true",
+            "$IP addr add 10.10.11.10/24 dev $DUMMY || true",
+            "$TC qdisc add dev $DUMMY root handle 1: tbf rate 88bit burst 1661b peakrate 2257333 minburst 1024 limit 7b",
+            "$TC qdisc add dev $DUMMY parent 1: handle 2: sfb",
+            "$TC qdisc add dev $DUMMY parent 2: handle 3: qfq",
+            "$TC class add dev $DUMMY classid 3:1 parent 3: qfq maxpkt 512 weight 1",
+            "$TC filter add dev $DUMMY parent 3: protocol ip prio 1 matchall classid 3:1 action ok"
+        ],
+        "cmdUnderTest": "ping -c 1 10.10.10.1 -W0.01 -I$DUMMY || true",
+        "expExitCode": "0",
+        "verifyCmd": "$TC -s -j qdisc ls dev $DUMMY parent 1:",
+        "matchJSON": [
+            {
+                "kind": "sfb",
+                "handle": "2:",
+                "bytes": 98,
+                "packets": 1,
+                "backlog": 0,
+                "qlen": 0
+            }
+        ],
+        "teardown": [
+            "$TC qdisc del dev $DUMMY handle 1: root"
+        ]
+    },
+    {
+        "id": "291d",
+        "name": "Force red to dequeue from its child's gso_skb with dualpi2 leaf",
+        "category": [
+            "qdisc",
+            "tbf",
+            "red",
+            "dualpi2"
+        ],
+        "plugins": {
+            "requires": "nsPlugin"
+        },
+        "setup": [
+            "$IP link set dev $DUMMY up || true",
+            "$IP addr add 10.10.11.10/24 dev $DUMMY || true",
+            "$TC qdisc add dev $DUMMY root handle 1: tbf rate 88bit burst 1661b peakrate 2257333 minburst 1024 limit 7b",
+            "$TC qdisc add dev $DUMMY parent 1: handle 2: red limit 757 min 16 max 24 avpkt 16",
+            "$TC qdisc add dev $DUMMY parent 2: handle 3: dualpi2"
+        ],
+        "cmdUnderTest": "ping -c 1 10.10.10.1 -W0.01 -I$DUMMY || true",
+        "expExitCode": "0",
+        "verifyCmd": "$TC -s -j qdisc ls dev $DUMMY parent 1:",
+        "matchJSON": [
+            {
+                "kind": "red",
+                "handle": "2:",
+                "bytes": 98,
+                "packets": 1,
+                "backlog": 0,
+                "qlen": 0
+            }
+        ],
+        "teardown": [
+            "$TC qdisc del dev $DUMMY handle 1: root"
+        ]
+    },
+    {
+        "id": "9c6d",
+        "name": "Force sfb to dequeue from its child's gso_skb with dualpi2 leaf",
+        "category": [
+            "qdisc",
+            "tbf",
+            "sfb",
+            "dualpi2"
+        ],
+        "plugins": {
+            "requires": "nsPlugin"
+        },
+        "setup": [
+            "$IP link set dev $DUMMY up || true",
+            "$IP addr add 10.10.11.10/24 dev $DUMMY || true",
+            "$TC qdisc add dev $DUMMY root handle 1: tbf rate 88bit burst 1661b peakrate 2257333 minburst 1024 limit 7b",
+            "$TC qdisc add dev $DUMMY parent 1: handle 2: sfb",
+            "$TC qdisc add dev $DUMMY parent 2: handle 3: dualpi2"
+        ],
+        "cmdUnderTest": "ping -c 1 10.10.10.1 -W0.01 -I$DUMMY || true",
+        "expExitCode": "0",
+        "verifyCmd": "$TC -s -j qdisc ls dev $DUMMY parent 1:",
+        "matchJSON": [
+            {
+                "kind": "sfb",
+                "handle": "2:",
+                "bytes": 98,
+                "packets": 1,
+                "backlog": 0,
+                "qlen": 0
+            }
+        ],
+        "teardown": [
+            "$TC qdisc del dev $DUMMY handle 1: root"
+        ]
+    },
+    {
+        "id": "3a62",
+        "name": "Try to create a qlen underflow with QFQ/CBS",
+        "category": [
+            "qdisc",
+            "qfq",
+            "cbs"
+        ],
+        "plugins": {
+            "requires": "nsPlugin"
+        },
+        "setup": [
+            "$IP link set dev $DUMMY up || true",
+            "$IP addr add 10.10.10.10/24 dev $DUMMY || true",
+            "$TC qdisc add dev $DUMMY root handle 1: qfq",
+            "$TC class add dev $DUMMY classid 1:1 parent 1: qfq",
+            "$TC class add dev $DUMMY classid 1:2 parent 1: qfq",
+            "$TC qdisc add dev $DUMMY handle 2: parent 1:1 cbs",
+            "$TC qdisc add dev $DUMMY handle 3: parent 2: netem delay 5000000000",
+            "$TC filter add dev $DUMMY parent 1: prio 1 u32 match ip dst 10.10.10.1 classid 1:1 action ok",
+            "$TC filter add dev $DUMMY parent 1: prio 2 u32 match ip dst 10.10.10.2 classid 1:2 action ok",
+            "ping -c 1 10.10.10.1 -W0.01 -I$DUMMY || true",
+            "$IP l set $DUMMY down",
+            "$IP l set $DUMMY up",
+            "$TC qdisc replace dev $DUMMY handle 4: parent 2: pfifo"
+        ],
+        "cmdUnderTest": "ping -c 1 10.10.10.2 -W0.01 -I$DUMMY",
+        "expExitCode": "1",
+        "verifyCmd": "$TC -s -j qdisc ls dev $DUMMY parent 1:1",
+        "matchJSON": [
+            {
+                "kind": "cbs",
+                "handle": "2:",
+                "bytes": 0,
+                "packets": 0
+            }
+        ],
+        "teardown": [
+            "$TC qdisc del dev $DUMMY handle 1: root"
+        ]
     }
 ]

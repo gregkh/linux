@@ -1718,7 +1718,8 @@ static int update_parent_effective_cpumask(struct cpuset *cs, int cmd,
 		 */
 		if (is_partition_valid(parent))
 			adding = cpumask_and(tmp->addmask,
-					     xcpus, parent->effective_xcpus);
+					     cs->effective_xcpus,
+					     parent->effective_xcpus);
 		if (old_prs > 0)
 			new_prs = -old_prs;
 
@@ -2993,7 +2994,7 @@ static int cpuset_can_attach(struct cgroup_taskset *tset)
 	struct cpuset *cs, *oldcs;
 	struct task_struct *task;
 	bool setsched_check;
-	int ret;
+	int cpu, ret;
 
 	/* used later by cpuset_attach() */
 	cpuset_attach_old_cs = task_cs(cgroup_taskset_first(tset, &css));
@@ -3038,31 +3039,31 @@ static int cpuset_can_attach(struct cgroup_taskset *tset)
 		}
 
 		if (dl_task(task)) {
+			/*
+			 * Count all migrating DL tasks for cpuset task accounting.
+			 * Only tasks that need a root-domain bandwidth move
+			 * contribute to sum_migrate_dl_bw.
+			 */
 			cs->nr_migrate_dl_tasks++;
-			cs->sum_migrate_dl_bw += task->dl.dl_bw;
+			if (dl_task_needs_bw_move(task, cs->effective_cpus))
+				cs->sum_migrate_dl_bw += task->dl.dl_bw;
 		}
 	}
 
-	if (!cs->nr_migrate_dl_tasks)
+	if (!cs->sum_migrate_dl_bw)
 		goto out_success;
 
-	if (!cpumask_intersects(oldcs->effective_cpus, cs->effective_cpus)) {
-		int cpu = cpumask_any_and(cpu_active_mask, cs->effective_cpus);
-
-		if (unlikely(cpu >= nr_cpu_ids)) {
-			reset_migrate_dl_data(cs);
-			ret = -EINVAL;
-			goto out_unlock;
-		}
-
-		ret = dl_bw_alloc(cpu, cs->sum_migrate_dl_bw);
-		if (ret) {
-			reset_migrate_dl_data(cs);
-			goto out_unlock;
-		}
-
-		cs->dl_bw_cpu = cpu;
+	cpu = cpumask_any_and(cpu_active_mask, cs->effective_cpus);
+	if (unlikely(cpu >= nr_cpu_ids)) {
+		ret = -EINVAL;
+		goto out_unlock;
 	}
+
+	ret = dl_bw_alloc(cpu, cs->sum_migrate_dl_bw);
+	if (ret)
+		goto out_unlock;
+
+	cs->dl_bw_cpu = cpu;
 
 out_success:
 	/*
@@ -3070,7 +3071,10 @@ out_success:
 	 * changes which zero cpus/mems_allowed.
 	 */
 	cs->attach_in_progress++;
+
 out_unlock:
+	if (ret)
+		reset_migrate_dl_data(cs);
 	mutex_unlock(&cpuset_mutex);
 	return ret;
 }
@@ -4176,11 +4180,11 @@ static struct cpuset *nearest_hardwall_ancestor(struct cpuset *cs)
  * current's mems_allowed, yes.  If it's not a __GFP_HARDWALL request and this
  * node is set in the nearest hardwalled cpuset ancestor to current's cpuset,
  * yes.  If current has access to memory reserves as an oom victim, yes.
- * Otherwise, no.
+ * If the current task is PF_EXITING, yes. Otherwise, no.
  *
  * GFP_USER allocations are marked with the __GFP_HARDWALL bit,
  * and do not allow allocations outside the current tasks cpuset
- * unless the task has been OOM killed.
+ * unless the task has been OOM killed or is exiting.
  * GFP_KERNEL allocations are not so marked, so can escape to the
  * nearest enclosing hardwalled ancestor cpuset.
  *
@@ -4194,7 +4198,9 @@ static struct cpuset *nearest_hardwall_ancestor(struct cpuset *cs)
  * The first call here from mm/page_alloc:get_page_from_freelist()
  * has __GFP_HARDWALL set in gfp_mask, enforcing hardwall cpusets,
  * so no allocation on a node outside the cpuset is allowed (unless
- * in interrupt, of course).
+ * in interrupt, of course).  The PF_EXITING check must therefore
+ * come before the __GFP_HARDWALL check, otherwise a dying task
+ * would be blocked on the fast path.
  *
  * The second pass through get_page_from_freelist() doesn't even call
  * here for GFP_ATOMIC calls.  For those calls, the __alloc_pages()
@@ -4204,6 +4210,7 @@ static struct cpuset *nearest_hardwall_ancestor(struct cpuset *cs)
  *	in_interrupt - any node ok (current task context irrelevant)
  *	GFP_ATOMIC   - any node ok
  *	tsk_is_oom_victim   - any node ok
+ *	PF_EXITING   - any node ok (let dying task exit quickly)
  *	GFP_KERNEL   - any node in enclosing hardwalled cpuset ok
  *	GFP_USER     - only nodes in current tasks mems allowed ok.
  */
@@ -4223,11 +4230,10 @@ bool cpuset_current_node_allowed(int node, gfp_t gfp_mask)
 	 */
 	if (unlikely(tsk_is_oom_victim(current)))
 		return true;
-	if (gfp_mask & __GFP_HARDWALL)	/* If hardwall request, stop here */
-		return false;
-
 	if (current->flags & PF_EXITING) /* Let dying task have memory */
 		return true;
+	if (gfp_mask & __GFP_HARDWALL)	/* If hardwall request, stop here */
+		return false;
 
 	/* Not hardwall and node outside mems_allowed: scan up cpusets */
 	spin_lock_irqsave(&callback_lock, flags);

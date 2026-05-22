@@ -96,6 +96,7 @@ TEST_PROGS := \
 	srv6_hl2encap_red_l2vpn_test.sh \
 	srv6_iptunnel_cache.sh \
 	stress_reuseport_listen.sh \
+	tcp_ecmp_failover.sh \
 	tcp_fastopen_backup_key.sh \
 	test_bpf.sh \
 	test_bridge_backup_port.sh \

@@ -120,7 +120,9 @@ struct netdevsim {
 		u64_stats_t tx_packets;
 		u64_stats_t tx_bytes;
 		struct u64_stats_sync syncp;
-		struct psp_dev *dev;
+		struct psp_dev __rcu *dev;
+		struct dentry *rereg;
+		struct mutex rereg_lock;
 		u32 spi;
 		u32 assoc_cnt;
 	} psp;

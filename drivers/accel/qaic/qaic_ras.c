@@ -497,11 +497,11 @@ static void decode_ras_msg(struct qaic_device *qdev, struct ras_data *msg)
 			qdev->ce_count++;
 		break;
 	case UE:
-		if (qdev->ce_count != UINT_MAX)
+		if (qdev->ue_count != UINT_MAX)
 			qdev->ue_count++;
 		break;
 	case UE_NF:
-		if (qdev->ce_count != UINT_MAX)
+		if (qdev->ue_nf_count != UINT_MAX)
 			qdev->ue_nf_count++;
 		break;
 	default:

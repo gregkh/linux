@@ -55,9 +55,11 @@ endif
 ifdef CONFIG_32BIT
 tool-archpref		= $(32bit-tool-archpref)
 UTS_MACHINE		:= loongarch32
+cflags-y		+= $(call cc-option,-m32)
 else
 tool-archpref		= $(64bit-tool-archpref)
 UTS_MACHINE		:= loongarch64
+cflags-y		+= $(call cc-option,-m64)
 endif
 
 ifneq ($(SUBARCH),$(ARCH))

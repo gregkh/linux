@@ -5,6 +5,7 @@
  */
 
 #include <linux/kvm_host.h>
+
 #include <asm/kvm_emulate.h>
 #include <asm/kvm_hyp.h>
 #include <asm/kvm_mmu.h>
@@ -14,6 +15,7 @@
 
 #include <hyp/fault.h>
 
+#include <nvhe/arm-smccc.h>
 #include <nvhe/gfp.h>
 #include <nvhe/memory.h>
 #include <nvhe/mem_protect.h>
@@ -28,6 +30,19 @@ static struct hyp_pool host_s2_pool;
 
 static DEFINE_PER_CPU(struct pkvm_hyp_vm *, __current_vm);
 #define current_vm (*this_cpu_ptr(&__current_vm))
+
+static void pkvm_sme_dvmsync_fw_call(void)
+{
+	if (alternative_has_cap_unlikely(ARM64_WORKAROUND_4193714)) {
+		struct arm_smccc_res res;
+
+		/*
+		 * Ignore the return value. Probing for the workaround
+		 * availability took place in init_hyp_mode().
+		 */
+		hyp_smccc_1_1_smc(ARM_SMCCC_CPU_WORKAROUND_4193714, &res);
+	}
+}
 
 static void guest_lock_component(struct pkvm_hyp_vm *vm)
 {
@@ -574,8 +589,14 @@ static int host_stage2_set_owner_metadata_locked(phys_addr_t addr, u64 size,
 	ret = host_stage2_try(kvm_pgtable_stage2_annotate, &host_mmu.pgt,
 			      addr, size, &host_s2_pool,
 			      KVM_HOST_INVALID_PTE_TYPE_DONATION, annotation);
-	if (!ret)
+	if (!ret) {
+		/*
+		 * After stage2 maintenance has happened, but before the page
+		 * owner has changed.
+		 */
+		pkvm_sme_dvmsync_fw_call();
 		__host_update_page_state(addr, size, PKVM_NOPAGE);
+	}
 
 	return ret;
 }
@@ -1369,6 +1390,22 @@ unlock:
 	return ret && ret != -EHWPOISON ? ret : 0;
 }
 
+/*
+ * share/donate install at most one stage-2 leaf (PAGE_SIZE, or one
+ * KVM_PGTABLE_LAST_LEVEL - 1 block for share). kvm_mmu_cache_min_pages()
+ * bounds the worst-case allocation: exact for the PAGE_SIZE leaf,
+ * conservative by one for the block.
+ */
+static int __guest_check_pgtable_memcache(struct pkvm_hyp_vcpu *vcpu)
+{
+	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
+
+	if (vcpu->vcpu.arch.pkvm_memcache.nr_pages < kvm_mmu_cache_min_pages(vm->pgt.mmu))
+		return -ENOMEM;
+
+	return 0;
+}
+
 int __pkvm_host_donate_guest(u64 pfn, u64 gfn, struct pkvm_hyp_vcpu *vcpu)
 {
 	struct pkvm_hyp_vm *vm = pkvm_hyp_vcpu_to_hyp_vm(vcpu);
@@ -1385,6 +1422,10 @@ int __pkvm_host_donate_guest(u64 pfn, u64 gfn, struct pkvm_hyp_vcpu *vcpu)
 		goto unlock;
 
 	ret = __guest_check_page_state_range(vm, ipa, PAGE_SIZE, PKVM_NOPAGE);
+	if (ret)
+		goto unlock;
+
+	ret = __guest_check_pgtable_memcache(vcpu);
 	if (ret)
 		goto unlock;
 
@@ -1452,6 +1493,10 @@ int __pkvm_host_share_guest(u64 pfn, u64 gfn, u64 nr_pages, struct pkvm_hyp_vcpu
 			goto unlock;
 		}
 	}
+
+	ret = __guest_check_pgtable_memcache(vcpu);
+	if (ret)
+		goto unlock;
 
 	for_each_hyp_page(page, phys, size) {
 		set_host_state(page, PKVM_PAGE_SHARED_OWNED);

@@ -746,9 +746,16 @@ size_t xe_lrc_reg_size(struct xe_device *xe)
 		return 80 * sizeof(u32);
 }
 
-size_t xe_lrc_skip_size(struct xe_device *xe)
+/**
+ * xe_lrc_engine_state_size() - Get size of the engine state within LRC
+ * @gt: the &xe_gt struct instance
+ * @class: Hardware engine class
+ *
+ * Returns: Size of the engine state
+ */
+size_t xe_lrc_engine_state_size(struct xe_gt *gt, enum xe_engine_class class)
 {
-	return LRC_PPHWSP_SIZE + xe_lrc_reg_size(xe);
+	return xe_gt_lrc_hang_replay_size(gt, class) - xe_lrc_reg_size(gt_to_xe(gt));
 }
 
 static inline u32 __xe_lrc_seqno_offset(struct xe_lrc *lrc)

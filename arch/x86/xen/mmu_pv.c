@@ -2145,7 +2145,10 @@ static void xen_set_fixmap(unsigned idx, phys_addr_t phys, pgprot_t prot)
 
 static void xen_enter_lazy_mmu(void)
 {
-	enter_lazy(XEN_LAZY_MMU);
+	preempt_disable();
+	if (xen_get_lazy_mode() != XEN_LAZY_MMU)
+		enter_lazy(XEN_LAZY_MMU);
+	preempt_enable();
 }
 
 static void xen_flush_lazy_mmu(void)
@@ -2182,7 +2185,8 @@ static void xen_leave_lazy_mmu(void)
 {
 	preempt_disable();
 	xen_mc_flush();
-	leave_lazy(XEN_LAZY_MMU);
+	if (xen_get_lazy_mode() != XEN_LAZY_NONE)
+		leave_lazy(XEN_LAZY_MMU);
 	preempt_enable();
 }
 

@@ -118,12 +118,13 @@ qxl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* Complete initialization. */
 	ret = drm_dev_register(&qdev->ddev, ent->driver_data);
 	if (ret)
-		goto modeset_cleanup;
+		goto poll_fini;
 
 	drm_client_setup(&qdev->ddev, NULL);
 	return 0;
 
-modeset_cleanup:
+poll_fini:
+	drm_kms_helper_poll_fini(&qdev->ddev);
 	qxl_modeset_fini(qdev);
 unload:
 	qxl_device_fini(qdev);
@@ -154,6 +155,7 @@ qxl_pci_remove(struct pci_dev *pdev)
 {
 	struct drm_device *dev = pci_get_drvdata(pdev);
 
+	drm_kms_helper_poll_fini(dev);
 	drm_dev_unregister(dev);
 	drm_atomic_helper_shutdown(dev);
 	if (pci_is_vga(pdev) && pdev->revision < 5)

@@ -537,6 +537,26 @@ static const struct file_operations ivpu_fops = {
 #endif
 };
 
+static int ivpu_gem_prime_handle_to_fd(struct drm_device *dev, struct drm_file *file_priv,
+				       u32 handle, u32 flags, int *prime_fd)
+{
+	struct drm_gem_object *obj;
+
+	obj = drm_gem_object_lookup(file_priv, handle);
+	if (!obj)
+		return -ENOENT;
+
+	if (drm_gem_is_imported(obj)) {
+		/* Do not allow re-exporting */
+		drm_gem_object_put(obj);
+		return -EOPNOTSUPP;
+	}
+
+	drm_gem_object_put(obj);
+
+	return drm_gem_prime_handle_to_fd(dev, file_priv, handle, flags, prime_fd);
+}
+
 static const struct drm_driver driver = {
 	.driver_features = DRIVER_GEM | DRIVER_COMPUTE_ACCEL,
 
@@ -545,6 +565,7 @@ static const struct drm_driver driver = {
 
 	.gem_create_object = ivpu_gem_create_object,
 	.gem_prime_import = ivpu_gem_prime_import,
+	.prime_handle_to_fd = ivpu_gem_prime_handle_to_fd,
 
 	.ioctls = ivpu_drm_ioctls,
 	.num_ioctls = ARRAY_SIZE(ivpu_drm_ioctls),

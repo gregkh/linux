@@ -85,17 +85,24 @@ static void ovpn_netdev_write(struct ovpn_peer *peer, struct sk_buff *skb)
 	skb_scrub_packet(skb, true);
 
 	/* network header reset in ovpn_decrypt_post() */
+	skb_reset_mac_header(skb);
 	skb_reset_transport_header(skb);
 	skb_reset_inner_headers(skb);
 
 	/* cause packet to be "received" by the interface */
 	pkt_len = skb->len;
+	/* we may get here in process context in case of TCP connections,
+	 * therefore we have to disable BHs to ensure gro_cells_receive()
+	 * and dev_dstats_rx_add() do not get corrupted or enter deadlock
+	 */
+	local_bh_disable();
 	ret = gro_cells_receive(&peer->ovpn->gro_cells, skb);
 	if (likely(ret == NET_RX_SUCCESS)) {
 		/* update RX stats with the size of decrypted packet */
 		ovpn_peer_stats_increment_rx(&peer->vpn_stats, pkt_len);
 		dev_dstats_rx_add(peer->ovpn->dev, pkt_len);
 	}
+	local_bh_enable();
 }
 
 void ovpn_decrypt_post(void *data, int ret)

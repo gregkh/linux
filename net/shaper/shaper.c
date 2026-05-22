@@ -21,6 +21,8 @@
 
 #define NET_SHAPER_ID_UNSPEC NET_SHAPER_ID_MASK
 
+static_assert(NET_SHAPER_ID_UNSPEC == NET_SHAPER_MAX_HANDLE_ID + 1);
+
 struct net_shaper_hierarchy {
 	struct xarray shapers;
 };
@@ -88,6 +90,12 @@ static int net_shaper_handle_size(void)
 {
 	return nla_total_size(nla_total_size(sizeof(u32)) +
 			      nla_total_size(sizeof(u32)));
+}
+
+static int net_shaper_group_reply_size(void)
+{
+	return nla_total_size(sizeof(u32)) +	/* NET_SHAPER_A_IFINDEX */
+	       net_shaper_handle_size();	/* NET_SHAPER_A_HANDLE */
 }
 
 static int net_shaper_fill_binding(struct sk_buff *msg,
@@ -275,11 +283,13 @@ static void net_shaper_default_parent(const struct net_shaper_handle *handle,
 	parent->id = 0;
 }
 
-/*
- * MARK_0 is already in use due to XA_FLAGS_ALLOC, can't reuse such flag as
- * it's cleared by xa_store().
+/* MARK_0 is already in use due to XA_FLAGS_ALLOC. The VALID mark is set on
+ * an entry only after the device-side configuration has completed
+ * successfully (see net_shaper_commit()). Lookups and dumps must filter on
+ * this mark to avoid exposing tentative entries inserted by
+ * net_shaper_pre_insert() while the driver call is still in flight.
  */
-#define NET_SHAPER_NOT_VALID XA_MARK_1
+#define NET_SHAPER_VALID	XA_MARK_1
 
 static struct net_shaper *
 net_shaper_lookup(struct net_shaper_binding *binding,
@@ -289,10 +299,14 @@ net_shaper_lookup(struct net_shaper_binding *binding,
 	struct net_shaper_hierarchy *hierarchy;
 
 	hierarchy = net_shaper_hierarchy_rcu(binding);
-	if (!hierarchy || xa_get_mark(&hierarchy->shapers, index,
-				      NET_SHAPER_NOT_VALID))
+	if (!hierarchy || !xa_get_mark(&hierarchy->shapers, index,
+				       NET_SHAPER_VALID))
 		return NULL;
 
+	/* Pairs with smp_wmb() in net_shaper_commit(): if the entry is
+	 * valid, its contents must be visible too.
+	 */
+	smp_rmb();
 	return xa_load(&hierarchy->shapers, index);
 }
 
@@ -348,7 +362,7 @@ static int net_shaper_pre_insert(struct net_shaper_binding *binding,
 	    handle->id == NET_SHAPER_ID_UNSPEC) {
 		u32 min, max;
 
-		handle->id = NET_SHAPER_ID_MASK - 1;
+		handle->id = NET_SHAPER_MAX_HANDLE_ID;
 		max = net_shaper_handle_to_index(handle);
 		handle->id = 0;
 		min = net_shaper_handle_to_index(handle);
@@ -370,13 +384,10 @@ static int net_shaper_pre_insert(struct net_shaper_binding *binding,
 		goto free_id;
 	}
 
-	/* Mark 'tentative' shaper inside the hierarchy container.
-	 * xa_set_mark is a no-op if the previous store fails.
+	/* Insert as 'tentative' (no VALID mark). The mark will be set by
+	 * net_shaper_commit() once the driver-side configuration succeeds.
 	 */
-	xa_lock(&hierarchy->shapers);
-	prev = __xa_store(&hierarchy->shapers, index, cur, GFP_KERNEL);
-	__xa_set_mark(&hierarchy->shapers, index, NET_SHAPER_NOT_VALID);
-	xa_unlock(&hierarchy->shapers);
+	prev = xa_store(&hierarchy->shapers, index, cur, GFP_KERNEL);
 	if (xa_err(prev)) {
 		NL_SET_ERR_MSG(extack, "Can't insert shaper into device store");
 		kfree_rcu(cur, rcu);
@@ -413,9 +424,9 @@ static void net_shaper_commit(struct net_shaper_binding *binding,
 		/* Successful update: drop the tentative mark
 		 * and update the hierarchy container.
 		 */
-		__xa_clear_mark(&hierarchy->shapers, index,
-				NET_SHAPER_NOT_VALID);
 		*cur = shapers[i];
+		smp_wmb();
+		__xa_set_mark(&hierarchy->shapers, index, NET_SHAPER_VALID);
 	}
 	xa_unlock(&hierarchy->shapers);
 }
@@ -431,8 +442,9 @@ static void net_shaper_rollback(struct net_shaper_binding *binding)
 		return;
 
 	xa_lock(&hierarchy->shapers);
-	xa_for_each_marked(&hierarchy->shapers, index, cur,
-			   NET_SHAPER_NOT_VALID) {
+	xa_for_each(&hierarchy->shapers, index, cur) {
+		if (xa_get_mark(&hierarchy->shapers, index, NET_SHAPER_VALID))
+			continue;
 		__xa_erase(&hierarchy->shapers, index);
 		kfree(cur);
 	}
@@ -465,10 +477,21 @@ static int net_shaper_parse_handle(const struct nlattr *attr,
 	 * shaper (any other value).
 	 */
 	id_attr = tb[NET_SHAPER_A_HANDLE_ID];
-	if (id_attr)
+	if (id_attr) {
 		id = nla_get_u32(id_attr);
-	else if (handle->scope == NET_SHAPER_SCOPE_NODE)
+	} else if (handle->scope == NET_SHAPER_SCOPE_NODE) {
 		id = NET_SHAPER_ID_UNSPEC;
+	} else if (handle->scope == NET_SHAPER_SCOPE_QUEUE) {
+		NL_SET_ERR_ATTR_MISS(info->extack, attr,
+				     NET_SHAPER_A_HANDLE_ID);
+		return -EINVAL;
+	}
+
+	if (id && handle->scope == NET_SHAPER_SCOPE_NETDEV) {
+		NL_SET_ERR_MSG_ATTR(info->extack, id_attr,
+				    "Netdev scope is a singleton, must use ID 0");
+		return -EINVAL;
+	}
 
 	handle->id = id;
 	return 0;
@@ -836,7 +859,12 @@ int net_shaper_nl_get_dumpit(struct sk_buff *skb,
 		goto out_unlock;
 
 	for (; (shaper = xa_find(&hierarchy->shapers, &ctx->start_index,
-				 U32_MAX, XA_PRESENT)); ctx->start_index++) {
+				 U32_MAX, NET_SHAPER_VALID));
+	     ctx->start_index++) {
+		/* Pairs with smp_wmb() in net_shaper_commit(): the entry
+		 * is marked VALID, so its contents must be visible too.
+		 */
+		smp_rmb();
 		ret = net_shaper_fill_one(skb, binding, shaper, info);
 		if (ret)
 			break;
@@ -932,6 +960,46 @@ static int net_shaper_handle_cmp(const struct net_shaper_handle *a,
 	return memcmp(a, b, sizeof(*a));
 }
 
+static int net_shaper_parse_leaves(struct net_shaper_binding *binding,
+				   struct genl_info *info,
+				   const struct net_shaper *node,
+				   struct net_shaper *leaves,
+				   int leaves_count)
+{
+	struct nlattr *attr;
+	int i, j, ret, rem;
+
+	i = 0;
+	nla_for_each_attr_type(attr, NET_SHAPER_A_LEAVES,
+			       genlmsg_data(info->genlhdr),
+			       genlmsg_len(info->genlhdr), rem) {
+		if (WARN_ON_ONCE(i >= leaves_count))
+			return -EINVAL;
+
+		ret = net_shaper_parse_leaf(binding, attr, info,
+					    node, &leaves[i]);
+		if (ret)
+			return ret;
+
+		/* Reject duplicates */
+		for (j = 0; j < i; j++) {
+			if (net_shaper_handle_cmp(&leaves[i].handle,
+						  &leaves[j].handle))
+				continue;
+
+			NL_SET_ERR_MSG_ATTR_FMT(info->extack, attr,
+						"Duplicate leaf shaper %d:%d",
+						leaves[i].handle.scope,
+						leaves[i].handle.id);
+			return -EINVAL;
+		}
+
+		i++;
+	}
+
+	return 0;
+}
+
 static int net_shaper_parent_from_leaves(int leaves_count,
 					 const struct net_shaper *leaves,
 					 struct net_shaper *node,
@@ -964,15 +1032,22 @@ static int __net_shaper_group(struct net_shaper_binding *binding,
 	int i, ret;
 
 	if (node->handle.scope == NET_SHAPER_SCOPE_NODE) {
+		struct net_shaper *cur = NULL;
+
 		new_node = node->handle.id == NET_SHAPER_ID_UNSPEC;
 
-		if (!new_node && !net_shaper_lookup(binding, &node->handle)) {
-			/* The related attribute is not available when
-			 * reaching here from the delete() op.
-			 */
-			NL_SET_ERR_MSG_FMT(extack, "Node shaper %d:%d does not exists",
-					   node->handle.scope, node->handle.id);
-			return -ENOENT;
+		if (!new_node) {
+			cur = net_shaper_lookup(binding, &node->handle);
+			if (!cur) {
+				/* The related attribute is not available
+				 * when reaching here from the delete() op.
+				 */
+				NL_SET_ERR_MSG_FMT(extack,
+						   "Node shaper %d:%d does not exist",
+						   node->handle.scope,
+						   node->handle.id);
+				return -ENOENT;
+			}
 		}
 
 		/* When unspecified, the node parent scope is inherited from
@@ -984,6 +1059,15 @@ static int __net_shaper_group(struct net_shaper_binding *binding,
 							    extack);
 			if (ret)
 				return ret;
+		}
+
+		if (cur && net_shaper_handle_cmp(&cur->parent,
+						 &node->parent)) {
+			NL_SET_ERR_MSG_FMT(extack,
+					   "Cannot reparent node shaper %d:%d",
+					   node->handle.scope,
+					   node->handle.id);
+			return -EOPNOTSUPP;
 		}
 
 	} else {
@@ -1162,7 +1246,7 @@ static int net_shaper_group_send_reply(struct net_shaper_binding *binding,
 free_msg:
 	/* Should never happen as msg is pre-allocated with enough space. */
 	WARN_ONCE(true, "calculated message payload length (%d)",
-		  net_shaper_handle_size());
+		  net_shaper_group_reply_size());
 	nlmsg_free(msg);
 	return -EMSGSIZE;
 }
@@ -1172,10 +1256,9 @@ int net_shaper_nl_group_doit(struct sk_buff *skb, struct genl_info *info)
 	struct net_shaper **old_nodes, *leaves, node = {};
 	struct net_shaper_hierarchy *hierarchy;
 	struct net_shaper_binding *binding;
-	int i, ret, rem, leaves_count;
+	int i, ret, leaves_count;
 	int old_nodes_count = 0;
 	struct sk_buff *msg;
-	struct nlattr *attr;
 
 	if (GENL_REQ_ATTR_CHECK(info, NET_SHAPER_A_LEAVES))
 		return -EINVAL;
@@ -1203,26 +1286,19 @@ int net_shaper_nl_group_doit(struct sk_buff *skb, struct genl_info *info)
 	if (ret)
 		goto free_leaves;
 
-	i = 0;
-	nla_for_each_attr_type(attr, NET_SHAPER_A_LEAVES,
-			       genlmsg_data(info->genlhdr),
-			       genlmsg_len(info->genlhdr), rem) {
-		if (WARN_ON_ONCE(i >= leaves_count))
-			goto free_leaves;
-
-		ret = net_shaper_parse_leaf(binding, attr, info,
-					    &node, &leaves[i]);
-		if (ret)
-			goto free_leaves;
-		i++;
-	}
+	ret = net_shaper_parse_leaves(binding, info, &node,
+				      leaves, leaves_count);
+	if (ret)
+		goto free_leaves;
 
 	/* Prepare the msg reply in advance, to avoid device operation
 	 * rollback on allocation failure.
 	 */
-	msg = genlmsg_new(net_shaper_handle_size(), GFP_KERNEL);
-	if (!msg)
+	msg = genlmsg_new(net_shaper_group_reply_size(), GFP_KERNEL);
+	if (!msg) {
+		ret = -ENOMEM;
 		goto free_leaves;
+	}
 
 	hierarchy = net_shaper_hierarchy_setup(binding);
 	if (!hierarchy) {

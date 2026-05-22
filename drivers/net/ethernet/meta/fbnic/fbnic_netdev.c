@@ -826,7 +826,8 @@ struct net_device *fbnic_netdev_alloc(struct fbnic_dev *fbd)
 	netif_tx_stop_all_queues(netdev);
 
 	if (fbnic_phylink_create(netdev)) {
-		fbnic_netdev_free(fbd);
+		free_netdev(netdev);
+		fbd->netdev = NULL;
 		return NULL;
 	}
 

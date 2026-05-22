@@ -2242,6 +2242,7 @@ static void record_and_restart(struct perf_event *event, unsigned long val,
 	const u64 last_period = event->hw.last_period;
 	s64 prev, delta, left;
 	int record = 0;
+	int mark_event = regs->dsisr & MMCRA_SAMPLE_ENABLE;
 
 	if (event->hw.state & PERF_HES_STOPPED) {
 		write_pmc(event->hw.idx, 0);
@@ -2304,9 +2305,9 @@ static void record_and_restart(struct perf_event *event, unsigned long val,
 	 * In ISA v3.0 and before values "0" and "7" are considered reserved.
 	 * In ISA v3.1, value "7" has been used to indicate "larx/stcx".
 	 * Drop the sample if "type" has reserved values for this field with a
-	 * ISA version check.
+	 * ISA version check for marked events.
 	 */
-	if (event->attr.sample_type & PERF_SAMPLE_DATA_SRC &&
+	if (mark_event && event->attr.sample_type & PERF_SAMPLE_DATA_SRC &&
 			ppmu->get_mem_data_src) {
 		val = (regs->dar & SIER_TYPE_MASK) >> SIER_TYPE_SHIFT;
 		if (val == 0 || (val == 7 && !cpu_has_feature(CPU_FTR_ARCH_31))) {

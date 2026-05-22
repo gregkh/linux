@@ -750,9 +750,8 @@ static bool has_auxccs(struct drm_device *drm)
 {
 	struct drm_i915_private *i915 = to_i915(drm);
 
-	return IS_GRAPHICS_VER(i915, 9, 12) ||
-	       IS_ALDERLAKE_P(i915) ||
-	       IS_METEORLAKE(i915);
+	return IS_GRAPHICS_VER(i915, 9, 12) &&
+		!HAS_FLAT_CCS(i915);
 }
 
 static bool has_fenced_regions(struct drm_device *drm)

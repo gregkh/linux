@@ -328,7 +328,7 @@ static int omap_dmic_select_fclk(struct omap_dmic *dmic, int clk_id,
 	}
 
 	mux = clk_get_parent(dmic->fclk);
-	if (IS_ERR(mux)) {
+	if (!mux) {
 		dev_err(dmic->dev, "can't get fck mux parent\n");
 		clk_put(parent_clk);
 		return -ENODEV;

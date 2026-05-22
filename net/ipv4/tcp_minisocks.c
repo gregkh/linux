@@ -1012,6 +1012,6 @@ enum skb_drop_reason tcp_child_process(struct sock *parent, struct sock *child,
 	}
 
 	bh_unlock_sock(child);
-	sock_put(child);
+
 	return reason;
 }

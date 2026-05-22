@@ -1491,7 +1491,7 @@ static void prep_ata_v3_hw(struct hisi_hba *hisi_hba,
 		phy_id = device->phy->identify.phy_identifier;
 		hdr->dw0 |= cpu_to_le32((1U << phy_id)
 				<< CMD_HDR_PHY_ID_OFF);
-		hdr->dw0 |= CMD_HDR_FORCE_PHY_MSK;
+		hdr->dw0 |= cpu_to_le32(CMD_HDR_FORCE_PHY_MSK);
 		hdr->dw0 |= cpu_to_le32(4U << CMD_HDR_CMD_OFF);
 	}
 

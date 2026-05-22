@@ -1120,6 +1120,25 @@ static struct xe_vma *xe_vma_create(struct xe_vm *vm,
 
 		xe_bo_assert_held(bo);
 
+		/*
+		 * Reject only WILLNEED mappings on DONTNEED/PURGED BOs. This
+		 * gates new vm_bind ioctls (user supplies WILLNEED) while
+		 * still allowing partial-unbind / remap splits whose new VMAs
+		 * inherit the parent's DONTNEED attr. It must also run before
+		 * xe_bo_willneed_get_locked() below so a 0->1 holder bump
+		 * cannot silently promote DONTNEED back to WILLNEED.
+		 */
+		if (vma->attr.purgeable_state == XE_MADV_PURGEABLE_WILLNEED) {
+			if (xe_bo_madv_is_dontneed(bo)) {
+				xe_vma_free(vma);
+				return ERR_PTR(-EBUSY);
+			}
+			if (xe_bo_is_purged(bo)) {
+				xe_vma_free(vma);
+				return ERR_PTR(-EINVAL);
+			}
+		}
+
 		vm_bo = drm_gpuvm_bo_obtain_locked(vma->gpuva.vm, &bo->ttm.base);
 		if (IS_ERR(vm_bo)) {
 			xe_vma_free(vma);
@@ -1131,6 +1150,10 @@ static struct xe_vma *xe_vma_create(struct xe_vm *vm,
 		vma->gpuva.gem.offset = bo_offset_or_userptr;
 		drm_gpuva_link(&vma->gpuva, vm_bo);
 		drm_gpuvm_bo_put(vm_bo);
+
+		xe_bo_vma_count_inc_locked(bo);
+		if (vma->attr.purgeable_state == XE_MADV_PURGEABLE_WILLNEED)
+			xe_bo_willneed_get_locked(bo);
 	} else /* userptr or null */ {
 		if (!is_null && !is_cpu_addr_mirror) {
 			struct xe_userptr_vma *uvma = to_userptr_vma(vma);
@@ -1208,7 +1231,10 @@ static void xe_vma_destroy(struct xe_vma *vma, struct dma_fence *fence)
 		xe_bo_assert_held(bo);
 
 		drm_gpuva_unlink(&vma->gpuva);
-		xe_bo_recompute_purgeable_state(bo);
+
+		xe_bo_vma_count_dec_locked(bo);
+		if (vma->attr.purgeable_state == XE_MADV_PURGEABLE_WILLNEED)
+			xe_bo_willneed_put_locked(bo);
 	}
 
 	xe_vm_assert_held(vm);
@@ -3016,7 +3042,7 @@ static void vm_bind_ioctl_ops_unwind(struct xe_vm *vm,
  * @res_evict: Allow evicting resources during validation
  * @validate: Perform BO validation
  * @request_decompress: Request BO decompression
- * @check_purged: Reject operation if BO is purged
+ * @check_purged: Reject operation if BO is DONTNEED or PURGED
  */
 struct xe_vma_lock_and_validate_flags {
 	u32 res_evict : 1;
@@ -3030,6 +3056,7 @@ static int vma_lock_and_validate(struct drm_exec *exec, struct xe_vma *vma,
 {
 	struct xe_bo *bo = xe_vma_bo(vma);
 	struct xe_vm *vm = xe_vma_vm(vma);
+	bool validate_bo = flags.validate;
 	int err = 0;
 
 	if (bo) {
@@ -3044,7 +3071,11 @@ static int vma_lock_and_validate(struct drm_exec *exec, struct xe_vma *vma,
 				err = -EINVAL; /* BO already purged */
 		}
 
-		if (!err && flags.validate)
+		/* Don't validate the BO for DONTNEED/PURGED remap remnants. */
+		if (vma->attr.purgeable_state != XE_MADV_PURGEABLE_WILLNEED)
+			validate_bo = false;
+
+		if (!err && validate_bo)
 			err = xe_bo_validate(bo, vm,
 					     xe_vm_allow_vm_eviction(vm) &&
 					     flags.res_evict, exec);
@@ -3152,7 +3183,7 @@ static int op_lock_and_prep(struct drm_exec *exec, struct xe_vm *vm,
 								    op->map.immediate,
 							.request_decompress =
 							op->map.request_decompress,
-							.check_purged = true,
+							.check_purged = false,
 						    });
 		break;
 	case DRM_GPUVA_OP_REMAP:
@@ -3174,7 +3205,7 @@ static int op_lock_and_prep(struct drm_exec *exec, struct xe_vm *vm,
 							    .res_evict = res_evict,
 							    .validate = true,
 							    .request_decompress = false,
-							    .check_purged = true,
+							    .check_purged = false,
 						    });
 		if (!err && op->remap.next)
 			err = vma_lock_and_validate(exec, op->remap.next,
@@ -3182,7 +3213,7 @@ static int op_lock_and_prep(struct drm_exec *exec, struct xe_vm *vm,
 							    .res_evict = res_evict,
 							    .validate = true,
 							    .request_decompress = false,
-							    .check_purged = true,
+							    .check_purged = false,
 						    });
 		break;
 	case DRM_GPUVA_OP_UNMAP:
@@ -3211,9 +3242,11 @@ static int op_lock_and_prep(struct drm_exec *exec, struct xe_vm *vm,
 		}
 
 		/*
-		 * Prefetch attempts to migrate BO's backing store without
-		 * repopulating it first. Purged BOs have no backing store
-		 * to migrate, so reject the operation.
+		 * PREFETCH is the only op that still gates on BO purge state.
+		 * MAP/REMAP handle this inside xe_vma_create() so partial
+		 * unbind on a DONTNEED BO still works. PREFETCH skips
+		 * xe_vma_create() and would migrate a BO with no backing
+		 * store, so reject DONTNEED/PURGED here.
 		 */
 		err = vma_lock_and_validate(exec,
 					    gpuva_to_vma(op->base.prefetch.va),

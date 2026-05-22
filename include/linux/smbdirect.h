@@ -3,17 +3,55 @@
  *   Copyright (C) 2025, Stefan Metzmacher
  */
 
-#ifndef __FS_SMB_COMMON_SMBDIRECT_SMBDIRECT_PUBLIC_H__
-#define __FS_SMB_COMMON_SMBDIRECT_SMBDIRECT_PUBLIC_H__
+#ifndef __LINUX_SMBDIRECT_H__
+#define __LINUX_SMBDIRECT_H__
 
-struct smbdirect_buffer_descriptor_v1;
-struct smbdirect_socket_parameters;
+#include <linux/types.h>
+
+/* SMB-DIRECT buffer descriptor V1 structure [MS-SMBD] 2.2.3.1 */
+struct smbdirect_buffer_descriptor_v1 {
+	__le64 offset;
+	__le32 token;
+	__le32 length;
+} __packed;
+
+/*
+ * Connection parameters mostly from [MS-SMBD] 3.1.1.1
+ *
+ * These are setup and negotiated at the beginning of a
+ * connection and remain constant unless explicitly changed.
+ *
+ * Some values are important for the upper layer.
+ */
+struct smbdirect_socket_parameters {
+	__u64 flags;
+#define SMBDIRECT_FLAG_PORT_RANGE_ONLY_IB ((__u64)0x1)
+#define SMBDIRECT_FLAG_PORT_RANGE_ONLY_IW ((__u64)0x2)
+	__u32 resolve_addr_timeout_msec;
+	__u32 resolve_route_timeout_msec;
+	__u32 rdma_connect_timeout_msec;
+	__u32 negotiate_timeout_msec;
+	__u16 initiator_depth;     /* limited to U8_MAX */
+	__u16 responder_resources; /* limited to U8_MAX */
+	__u16 recv_credit_max;
+	__u16 send_credit_target;
+	__u32 max_send_size;
+	__u32 max_fragmented_send_size;
+	__u32 max_recv_size;
+	__u32 max_fragmented_recv_size;
+	__u32 max_read_write_size;
+	__u32 max_frmr_depth;
+	__u32 keepalive_interval_msec;
+	__u32 keepalive_timeout_msec;
+} __packed;
+
+#define SMBDIRECT_FLAG_PORT_RANGE_MASK ( \
+		SMBDIRECT_FLAG_PORT_RANGE_ONLY_IB | \
+		SMBDIRECT_FLAG_PORT_RANGE_ONLY_IW)
 
 struct smbdirect_socket;
 struct smbdirect_send_batch;
 struct smbdirect_mr_io;
-
-#define __SMBDIRECT_EXPORT_SYMBOL__(__sym) EXPORT_SYMBOL_FOR_MODULES(__sym, "cifs,ksmbd")
 
 #include <rdma/rw.h>
 
@@ -145,4 +183,4 @@ void smbdirect_connection_legacy_debug_proc_show(struct smbdirect_socket *sc,
 						 unsigned int rdma_readwrite_threshold,
 						 struct seq_file *m);
 
-#endif /* __FS_SMB_COMMON_SMBDIRECT_SMBDIRECT_PUBLIC_H__ */
+#endif /* __LINUX_SMBDIRECT_H__ */

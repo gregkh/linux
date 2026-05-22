@@ -260,12 +260,12 @@ typedef struct {
 	char FileName[];
 } __packed FILE_DIRECTORY_INFO;   /* level 0x101 FF resp data */
 
-/* See MS-FSCC 2.4.13 */
+/* See MS-FSCC 2.4.14 */
 struct smb2_file_eof_info { /* encoding of request for level 10 */
 	__le64 EndOfFile; /* new end of file value */
 } __packed; /* level 20 Set */
 
-/* See MS-FSCC 2.4.14 */
+/* See MS-FSCC 2.4.15 */
 typedef struct {
 	__le32 NextEntryOffset;
 	__u32 FileIndex;

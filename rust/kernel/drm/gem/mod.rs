@@ -277,8 +277,17 @@ impl<T: DriverObject> Object<T> {
         // SAFETY: `obj.as_raw()` is guaranteed to be valid by the initialization above.
         unsafe { (*obj.as_raw()).funcs = &Self::OBJECT_FUNCS };
 
-        // SAFETY: The arguments are all valid per the type invariants.
-        to_result(unsafe { bindings::drm_gem_object_init(dev.as_raw(), obj.obj.get(), size) })?;
+        if let Err(err) =
+            // SAFETY: The arguments are all valid per the type invariants.
+            to_result(unsafe {
+                bindings::drm_gem_object_init(dev.as_raw(), obj.obj.get(), size)
+            })
+        {
+            // SAFETY: `drm_gem_object_init()` initializes the private GEM object state before
+            // failing, so `drm_gem_private_object_fini()` is the matching cleanup.
+            unsafe { bindings::drm_gem_private_object_fini(obj.obj.get()) };
+            return Err(err);
+        }
 
         // SAFETY: We will never move out of `Self` as `ARef<Self>` is always treated as pinned.
         let ptr = KBox::into_raw(unsafe { Pin::into_inner_unchecked(obj) });

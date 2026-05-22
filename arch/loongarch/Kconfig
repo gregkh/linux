@@ -220,6 +220,7 @@ menu "Kernel type and options"
 
 choice
 	prompt "Kernel type"
+	default 64BIT # Keep existing behavior
 
 config 32BIT
 	bool "32-bit kernel"

@@ -490,7 +490,7 @@ static void drm_fb_helper_memory_range_to_clip(struct fb_info *info, off_t off, 
 		 * the number of horizontal pixels that need an update.
 		 */
 		off_t bit_off = (off % line_length) * 8;
-		off_t bit_end = (end % line_length) * 8;
+		off_t bit_end = bit_off + len * 8;
 
 		x1 = bit_off / info->var.bits_per_pixel;
 		x2 = DIV_ROUND_UP(bit_end, info->var.bits_per_pixel);

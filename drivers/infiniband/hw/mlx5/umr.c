@@ -147,7 +147,7 @@ int mlx5r_umr_resource_init(struct mlx5_ib_dev *dev)
 	 * UMR qp is set once, never changed until device unload.
 	 * Avoid taking the mutex if initialization is already done.
 	 */
-	if (dev->umrc.qp)
+	if (smp_load_acquire(&dev->umrc.qp))
 		return 0;
 
 	mutex_lock(&dev->umrc.init_lock);
@@ -185,7 +185,7 @@ int mlx5r_umr_resource_init(struct mlx5_ib_dev *dev)
 	sema_init(&dev->umrc.sem, MAX_UMR_WR);
 	mutex_init(&dev->umrc.lock);
 	dev->umrc.state = MLX5_UMR_STATE_ACTIVE;
-	dev->umrc.qp = qp;
+	smp_store_release(&dev->umrc.qp, qp);
 
 	mutex_unlock(&dev->umrc.init_lock);
 	return 0;

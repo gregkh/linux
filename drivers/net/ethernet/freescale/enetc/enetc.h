@@ -330,6 +330,7 @@ struct enetc_si {
 	struct workqueue_struct *workqueue;
 	struct work_struct rx_mode_task;
 	struct dentry *debugfs_root;
+	struct enetc_msg_swbd msg; /* Only valid for VSI */
 };
 
 #define ENETC_SI_ALIGN	32

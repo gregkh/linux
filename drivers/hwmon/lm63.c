@@ -333,7 +333,13 @@ static ssize_t show_fan(struct device *dev, struct device_attribute *devattr,
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct lm63_data *data = lm63_update_device(dev);
-	return sprintf(buf, "%d\n", FAN_FROM_REG(data->fan[attr->index]));
+	int fan;
+
+	mutex_lock(&data->update_lock);
+	fan = FAN_FROM_REG(data->fan[attr->index]);
+	mutex_unlock(&data->update_lock);
+
+	return sprintf(buf, "%d\n", fan);
 }
 
 static ssize_t set_fan(struct device *dev, struct device_attribute *dummy,
@@ -366,12 +372,14 @@ static ssize_t show_pwm1(struct device *dev, struct device_attribute *devattr,
 	int nr = attr->index;
 	int pwm;
 
+	mutex_lock(&data->update_lock);
 	if (data->pwm_highres)
 		pwm = data->pwm1[nr];
 	else
 		pwm = data->pwm1[nr] >= 2 * data->pwm1_freq ?
 		       255 : (data->pwm1[nr] * 255 + data->pwm1_freq) /
 		       (2 * data->pwm1_freq);
+	mutex_unlock(&data->update_lock);
 
 	return sprintf(buf, "%d\n", pwm);
 }
@@ -529,6 +537,7 @@ static ssize_t show_temp11(struct device *dev, struct device_attribute *devattr,
 	int nr = attr->index;
 	int temp;
 
+	mutex_lock(&data->update_lock);
 	if (!nr) {
 		/*
 		 * Use unsigned temperature unless its value is zero.
@@ -544,7 +553,10 @@ static ssize_t show_temp11(struct device *dev, struct device_attribute *devattr,
 		else
 			temp = TEMP11_FROM_REG(data->temp11[nr]);
 	}
-	return sprintf(buf, "%d\n", temp + data->temp2_offset);
+	temp += data->temp2_offset;
+	mutex_unlock(&data->update_lock);
+
+	return sprintf(buf, "%d\n", temp);
 }
 
 static ssize_t set_temp11(struct device *dev, struct device_attribute *devattr,
@@ -592,9 +604,14 @@ static ssize_t temp2_crit_hyst_show(struct device *dev,
 				    struct device_attribute *dummy, char *buf)
 {
 	struct lm63_data *data = lm63_update_device(dev);
-	return sprintf(buf, "%d\n", temp8_from_reg(data, 2)
-		       + data->temp2_offset
-		       - TEMP8_FROM_REG(data->temp2_crit_hyst));
+	int temp;
+
+	mutex_lock(&data->update_lock);
+	temp = temp8_from_reg(data, 2) + data->temp2_offset
+	     - TEMP8_FROM_REG(data->temp2_crit_hyst);
+	mutex_unlock(&data->update_lock);
+
+	return sprintf(buf, "%d\n", temp);
 }
 
 static ssize_t show_lut_temp_hyst(struct device *dev,
@@ -602,10 +619,14 @@ static ssize_t show_lut_temp_hyst(struct device *dev,
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct lm63_data *data = lm63_update_device(dev);
+	int temp;
 
-	return sprintf(buf, "%d\n", lut_temp_from_reg(data, attr->index)
-		       + data->temp2_offset
-		       - TEMP8_FROM_REG(data->lut_temp_hyst));
+	mutex_lock(&data->update_lock);
+	temp = lut_temp_from_reg(data, attr->index) + data->temp2_offset
+	     - TEMP8_FROM_REG(data->lut_temp_hyst);
+	mutex_unlock(&data->update_lock);
+
+	return sprintf(buf, "%d\n", temp);
 }
 
 /*
@@ -616,7 +637,7 @@ static ssize_t temp2_crit_hyst_store(struct device *dev,
 				     struct device_attribute *dummy,
 				     const char *buf, size_t count)
 {
-	struct lm63_data *data = dev_get_drvdata(dev);
+	struct lm63_data *data = lm63_update_device(dev);
 	struct i2c_client *client = data->client;
 	long val;
 	int err;

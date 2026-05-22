@@ -900,10 +900,27 @@ static int ublk_validate_params(const struct ublk_device *ub)
 		if (p->logical_bs_shift > PAGE_SHIFT || p->logical_bs_shift < 9)
 			return -EINVAL;
 
+		/*
+		 * 256M is a reasonable upper bound for physical block size,
+		 * io_min and io_opt; it aligns with the maximum physical
+		 * block size possible in NVMe.
+		 */
+		if (p->physical_bs_shift > ilog2(SZ_256M))
+			return -EINVAL;
+
+		if (p->io_min_shift > ilog2(SZ_256M))
+			return -EINVAL;
+
+		if (p->io_opt_shift > ilog2(SZ_256M))
+			return -EINVAL;
+
 		if (p->logical_bs_shift > p->physical_bs_shift)
 			return -EINVAL;
 
 		if (p->max_sectors > (ub->dev_info.max_io_buf_bytes >> 9))
+			return -EINVAL;
+
+		if (p->max_sectors < PAGE_SECTORS)
 			return -EINVAL;
 
 		if (ublk_dev_is_zoned(ub) && !p->chunk_sectors)
@@ -2397,8 +2414,14 @@ static void ublk_reset_ch_dev(struct ublk_device *ub)
 {
 	int i;
 
-	for (i = 0; i < ub->dev_info.nr_hw_queues; i++)
-		ublk_queue_reinit(ub, ublk_get_queue(ub, i));
+	for (i = 0; i < ub->dev_info.nr_hw_queues; i++) {
+		struct ublk_queue *ubq = ublk_get_queue(ub, i);
+
+		/* Sync with ublk_cancel_cmd() */
+		spin_lock(&ubq->cancel_lock);
+		ublk_queue_reinit(ub, ubq);
+		spin_unlock(&ubq->cancel_lock);
+	}
 
 	/* set to NULL, otherwise new tasks cannot mmap io_cmd_buf */
 	ub->mm = NULL;
@@ -2739,6 +2762,7 @@ static void ublk_cancel_cmd(struct ublk_queue *ubq, unsigned tag,
 {
 	struct ublk_io *io = &ubq->ios[tag];
 	struct ublk_device *ub = ubq->dev;
+	struct io_uring_cmd *cmd = NULL;
 	struct request *req;
 	bool done;
 
@@ -2761,12 +2785,15 @@ static void ublk_cancel_cmd(struct ublk_queue *ubq, unsigned tag,
 
 	spin_lock(&ubq->cancel_lock);
 	done = !!(io->flags & UBLK_IO_FLAG_CANCELED);
-	if (!done)
+	if (!done) {
 		io->flags |= UBLK_IO_FLAG_CANCELED;
+		cmd = io->cmd;
+		io->cmd = NULL;
+	}
 	spin_unlock(&ubq->cancel_lock);
 
-	if (!done)
-		io_uring_cmd_done(io->cmd, UBLK_IO_RES_ABORT, issue_flags);
+	if (!done && cmd)
+		io_uring_cmd_done(cmd, UBLK_IO_RES_ABORT, issue_flags);
 }
 
 /*
@@ -3496,8 +3523,10 @@ static void ublk_ch_uring_cmd_cb(struct io_tw_req tw_req, io_tw_token_t tw)
 {
 	unsigned int issue_flags = IO_URING_CMD_TASK_WORK_ISSUE_FLAGS;
 	struct io_uring_cmd *cmd = io_uring_cmd_from_tw(tw_req);
-	int ret = ublk_ch_uring_cmd_local(cmd, issue_flags);
+	int ret = -ECANCELED;
 
+	if (!tw.cancel)
+		ret = ublk_ch_uring_cmd_local(cmd, issue_flags);
 	if (ret != -EIOCBQUEUED)
 		io_uring_cmd_done(cmd, ret, issue_flags);
 }
@@ -4990,13 +5019,15 @@ static int ublk_ctrl_set_params(struct ublk_device *ub,
 		 */
 		ret = -EACCES;
 	} else if (copy_from_user(&ub->params, argp, ph.len)) {
+		/* zero out partial copy so no stale params survive */
+		memset(&ub->params, 0, sizeof(ub->params));
 		ret = -EFAULT;
 	} else {
 		/* clear all we don't support yet */
 		ub->params.types &= UBLK_PARAM_TYPE_ALL;
 		ret = ublk_validate_params(ub);
 		if (ret)
-			ub->params.types = 0;
+			memset(&ub->params, 0, sizeof(ub->params));
 	}
 	mutex_unlock(&ub->mutex);
 

@@ -411,6 +411,9 @@ int wmidev_invoke_method(struct wmi_device *wdev, u8 instance, u32 method_id,
 
 	obj = aout.pointer;
 	if (!obj) {
+		if (min_size != 0)
+			return -ENOMSG;
+
 		out->length = 0;
 		out->data = ZERO_SIZE_PTR;
 

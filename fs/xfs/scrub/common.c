@@ -251,6 +251,17 @@ xchk_ino_set_preen(
 	trace_xchk_ino_preen(sc, ino, __return_address);
 }
 
+/* Record a block indexed by a file fork that could be optimized. */
+void
+xchk_fblock_set_preen(
+	struct xfs_scrub        *sc,
+	int                     whichfork,
+	xfs_fileoff_t           offset)
+{
+	sc->sm->sm_flags |= XFS_SCRUB_OFLAG_PREEN;
+	trace_xchk_fblock_preen(sc, whichfork, offset, __return_address);
+}
+
 /* Record something being wrong with the filesystem primary superblock. */
 void
 xchk_set_corrupt(

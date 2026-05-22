@@ -3577,6 +3577,9 @@ static int nix_update_mce_rule(struct rvu *rvu, u16 pcifunc,
 	mcam_index = npc_get_nixlf_mcam_index(mcam,
 					      pcifunc & ~RVU_PFVF_FUNC_MASK,
 					      nixlf, type);
+	if (mcam_index < 0)
+		return -EINVAL;
+
 	err = nix_update_mce_list(rvu, pcifunc, mce_list,
 				  mce_idx, mcam_index, add);
 	return err;

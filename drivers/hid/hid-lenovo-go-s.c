@@ -1369,6 +1369,14 @@ static void cfg_setup(struct work_struct *work)
 			"Failed to retrieve IMU Manufacturer: %i\n", ret);
 		return;
 	}
+
+	ret = mcu_property_out(drvdata.hdev, GET_GAMEPAD_CFG, FEATURE_OS_MODE,
+			       NULL, 0);
+	if (ret) {
+		dev_err(&drvdata.hdev->dev,
+			"Failed to retrieve OS Mode: %i\n", ret);
+		return;
+	}
 }
 
 static int hid_gos_cfg_probe(struct hid_device *hdev,
@@ -1427,6 +1435,27 @@ static void hid_gos_cfg_remove(struct hid_device *hdev)
 	hid_set_drvdata(hdev, NULL);
 }
 
+static int hid_gos_cfg_reset_resume(struct hid_device *hdev)
+{
+	u8 os_mode = drvdata.os_mode;
+	int ret;
+
+	ret = mcu_property_out(drvdata.hdev, SET_GAMEPAD_CFG,
+			       FEATURE_OS_MODE, &os_mode, 1);
+	if (ret < 0)
+		return ret;
+
+	ret = mcu_property_out(drvdata.hdev, GET_GAMEPAD_CFG,
+			       FEATURE_OS_MODE, NULL, 0);
+	if (ret < 0)
+		return ret;
+
+	if (drvdata.os_mode != os_mode)
+		return -ENODEV;
+
+	return 0;
+}
+
 static int hid_gos_probe(struct hid_device *hdev,
 			 const struct hid_device_id *id)
 {
@@ -1481,6 +1510,20 @@ static void hid_gos_remove(struct hid_device *hdev)
 	}
 }
 
+static int hid_gos_reset_resume(struct hid_device *hdev)
+{
+	int ep = get_endpoint_address(hdev);
+
+	switch (ep) {
+	case GO_S_CFG_INTF_IN:
+		return hid_gos_cfg_reset_resume(hdev);
+	default:
+		break;
+	}
+
+	return 0;
+}
+
 static const struct hid_device_id hid_gos_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_QHE,
 			 USB_DEVICE_ID_LENOVO_LEGION_GO_S_XINPUT) },
@@ -1496,6 +1539,7 @@ static struct hid_driver hid_lenovo_go_s = {
 	.probe = hid_gos_probe,
 	.remove = hid_gos_remove,
 	.raw_event = hid_gos_raw_event,
+	.reset_resume = hid_gos_reset_resume,
 };
 module_hid_driver(hid_lenovo_go_s);
 

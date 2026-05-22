@@ -1036,6 +1036,28 @@ static struct hidp_session *hidp_session_find(const bdaddr_t *bdaddr)
 }
 
 /*
+ * Consume session->conn: clear the member under hidp_session_sem, then
+ * l2cap_unregister_user() and l2cap_conn_put() the snapshot outside the
+ * sem.  At most one caller wins; later callers see NULL and skip.  The
+ * reference is the one hidp_session_new() took via l2cap_conn_get().
+ */
+static void hidp_session_unregister_conn(struct hidp_session *session)
+{
+	struct l2cap_conn *conn;
+
+	down_write(&hidp_session_sem);
+	conn = session->conn;
+	if (conn)
+		session->conn = NULL;
+	up_write(&hidp_session_sem);
+
+	if (conn) {
+		l2cap_unregister_user(conn, &session->user);
+		l2cap_conn_put(conn);
+	}
+}
+
+/*
  * Start session synchronously
  * This starts a session thread and waits until initialization
  * is done or returns an error if it couldn't be started.
@@ -1311,8 +1333,7 @@ static int hidp_session_thread(void *arg)
 	 * Instead, this call has the same semantics as if user-space tried to
 	 * delete the session.
 	 */
-	if (session->conn)
-		l2cap_unregister_user(session->conn, &session->user);
+	hidp_session_unregister_conn(session);
 
 	hidp_session_put(session);
 
@@ -1418,7 +1439,7 @@ int hidp_connection_del(struct hidp_conndel_req *req)
 				         HIDP_CTRL_VIRTUAL_CABLE_UNPLUG,
 				       NULL, 0);
 	else
-		l2cap_unregister_user(session->conn, &session->user);
+		hidp_session_unregister_conn(session);
 
 	hidp_session_put(session);
 

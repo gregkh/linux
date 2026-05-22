@@ -206,6 +206,14 @@ error_free:
 	return NULL;
 }
 
+static void __free_pages_gpu_account(struct page *p, unsigned int order,
+				     bool reclaim)
+{
+	mod_lruvec_page_state(p, reclaim ? NR_GPU_RECLAIM : NR_GPU_ACTIVE,
+			      -(1 << order));
+	__free_pages(p, order);
+}
+
 /* Reset the caching and pages of size 1 << order */
 static void ttm_pool_free_page(struct ttm_pool *pool, enum ttm_caching caching,
 			       unsigned int order, struct page *p, bool reclaim)
@@ -223,9 +231,7 @@ static void ttm_pool_free_page(struct ttm_pool *pool, enum ttm_caching caching,
 #endif
 
 	if (!pool || !ttm_pool_uses_dma_alloc(pool)) {
-		mod_lruvec_page_state(p, reclaim ? NR_GPU_RECLAIM : NR_GPU_ACTIVE,
-				      -(1 << order));
-		__free_pages(p, order);
+		__free_pages_gpu_account(p, order, reclaim);
 		return;
 	}
 
@@ -606,7 +612,7 @@ static int ttm_pool_restore_commit(struct ttm_pool_tt_restore *restore,
 			 */
 			ttm_pool_split_for_swap(restore->pool, p);
 			copy_highpage(restore->alloced_page + i, p);
-			__free_pages(p, 0);
+			__free_pages_gpu_account(p, 0, false);
 		}
 
 		restore->restored_pages++;
@@ -1068,7 +1074,7 @@ long ttm_pool_backup(struct ttm_pool *pool, struct ttm_tt *tt,
 			if (flags->purge) {
 				shrunken += num_pages;
 				page->private = 0;
-				__free_pages(page, order);
+				__free_pages_gpu_account(page, order, false);
 				memset(tt->pages + i, 0,
 				       num_pages * sizeof(*tt->pages));
 			}
@@ -1109,7 +1115,7 @@ long ttm_pool_backup(struct ttm_pool *pool, struct ttm_tt *tt,
 		}
 		handle = shandle;
 		tt->pages[i] = ttm_backup_handle_to_page_ptr(handle);
-		put_page(page);
+		__free_pages_gpu_account(page, 0, false);
 		shrunken++;
 	}
 
