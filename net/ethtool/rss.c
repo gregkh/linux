@@ -94,8 +94,10 @@ rss_prepare_data(const struct ethnl_req_info *req_base,
 		ret = ops->get_rxfh(dev, data->indir_table, data->hkey,
 				    &dev_hfunc);
 
-	if (ret)
+	if (ret) {
+		kfree(rss_config);
 		goto out_ops;
+	}
 
 	data->hfunc = dev_hfunc;
 out_ops:
