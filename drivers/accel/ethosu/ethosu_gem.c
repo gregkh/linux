@@ -598,7 +598,7 @@ static int ethosu_gem_cmdstream_copy_and_validate(struct drm_device *ddev,
 			if (ethosu_is_u65(edev))
 				st.scale[1].length = cmds[1];
 			else
-				st.weight[1].length = cmds[1];
+				st.weight[2].length = cmds[1];
 			break;
 		case NPU_SET_WEIGHT3_BASE:
 			st.weight[3].base = addr;
