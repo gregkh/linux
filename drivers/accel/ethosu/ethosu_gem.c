@@ -464,7 +464,7 @@ static int ethosu_gem_cmdstream_copy_and_validate(struct drm_device *ddev,
 			st.ifm.broadcast = param;
 			break;
 		case NPU_SET_IFM_REGION:
-			st.ifm.region = param & 0x7f;
+			st.ifm.region = param & 0x7;
 			break;
 		case NPU_SET_IFM_WIDTH0_M1:
 			st.ifm.width0 = param;
