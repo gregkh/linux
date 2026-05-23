@@ -35,54 +35,6 @@
 #include "rdma_core.h"
 #include "uverbs.h"
 
-struct bundle_alloc_head {
-	struct_group_tagged(bundle_alloc_head_hdr, hdr,
-		struct bundle_alloc_head *next;
-	);
-	u8 data[];
-};
-
-struct bundle_priv {
-	/* Must be first */
-	struct bundle_alloc_head_hdr alloc_head;
-	struct bundle_alloc_head *allocated_mem;
-	size_t internal_avail;
-	size_t internal_used;
-
-	struct radix_tree_root *radix;
-	const struct uverbs_api_ioctl_method *method_elm;
-	void __rcu **radix_slots;
-	unsigned long radix_slots_len;
-	u32 method_key;
-
-	struct ib_uverbs_attr __user *user_attrs;
-	struct ib_uverbs_attr *uattrs;
-
-	DECLARE_BITMAP(uobj_finalize, UVERBS_API_ATTR_BKEY_LEN);
-	DECLARE_BITMAP(spec_finalize, UVERBS_API_ATTR_BKEY_LEN);
-	DECLARE_BITMAP(uobj_hw_obj_valid, UVERBS_API_ATTR_BKEY_LEN);
-
-	/*
-	 * Must be last. bundle ends in a flex array which overlaps
-	 * internal_buffer.
-	 */
-	struct uverbs_attr_bundle_hdr bundle;
-	u64 internal_buffer[32];
-};
-
-uverbs_api_ioctl_handler_fn uverbs_get_handler_fn(struct ib_udata *udata)
-{
-	struct uverbs_attr_bundle *bundle =
-		rdma_udata_to_uverbs_attr_bundle(udata);
-	struct bundle_priv *pbundle =
-		container_of(&bundle->hdr, struct bundle_priv, bundle);
-
-	lockdep_assert_held(&bundle->ufile->device->disassociate_srcu);
-
-	return srcu_dereference(pbundle->method_elm->handler,
-				&bundle->ufile->device->disassociate_srcu);
-}
-
 /*
  * Each method has an absolute minimum amount of memory it needs to allocate,
  * precompute that amount and determine if the onstack memory can be used or
@@ -445,13 +397,13 @@ static int ib_uverbs_run_method(struct bundle_priv *pbundle,
 	struct uverbs_attr_bundle *bundle =
 		container_of(&pbundle->bundle, struct uverbs_attr_bundle, hdr);
 	size_t uattrs_size = array_size(sizeof(*pbundle->uattrs), num_attrs);
-	unsigned int destroy_bkey = pbundle->method_elm->destroy_bkey;
+	unsigned int destroy_bkey = bundle->method_elm->destroy_bkey;
 	unsigned int i;
 	int ret;
 
 	/* See uverbs_disassociate_api() */
 	handler = srcu_dereference(
-		pbundle->method_elm->handler,
+		bundle->method_elm->handler,
 		&pbundle->bundle.ufile->device->disassociate_srcu);
 	if (!handler)
 		return -EIO;
@@ -469,12 +421,12 @@ static int ib_uverbs_run_method(struct bundle_priv *pbundle,
 	}
 
 	/* User space did not provide all the mandatory attributes */
-	if (unlikely(!bitmap_subset(pbundle->method_elm->attr_mandatory,
+	if (unlikely(!bitmap_subset(bundle->method_elm->attr_mandatory,
 				    pbundle->bundle.attr_present,
-				    pbundle->method_elm->key_bitmap_len)))
+				    bundle->method_elm->key_bitmap_len)))
 		return -EINVAL;
 
-	if (pbundle->method_elm->has_udata)
+	if (bundle->method_elm->has_udata)
 		uverbs_fill_udata(bundle, &pbundle->bundle.driver_udata,
 				  UVERBS_ATTR_UHW_IN, UVERBS_ATTR_UHW_OUT);
 	else
@@ -499,7 +451,7 @@ static int ib_uverbs_run_method(struct bundle_priv *pbundle,
 	 * assume that the driver wrote to its UHW_OUT and flag userspace
 	 * appropriately.
 	 */
-	if (!ret && pbundle->method_elm->has_udata) {
+	if (!ret && bundle->method_elm->has_udata) {
 		const struct uverbs_attr *attr =
 			uverbs_attr_get(bundle, UVERBS_ATTR_UHW_OUT);
 
@@ -520,7 +472,7 @@ static int ib_uverbs_run_method(struct bundle_priv *pbundle,
 
 static void bundle_destroy(struct bundle_priv *pbundle, bool commit)
 {
-	unsigned int key_bitmap_len = pbundle->method_elm->key_bitmap_len;
+	unsigned int key_bitmap_len = pbundle->bundle.method_elm->key_bitmap_len;
 	struct uverbs_attr_bundle *bundle =
 		container_of(&pbundle->bundle, struct uverbs_attr_bundle, hdr);
 	struct bundle_alloc_head *memblock;
@@ -608,7 +560,7 @@ static int ib_uverbs_cmd_verbs(struct ib_uverbs_file *ufile,
 	}
 
 	/* Space for the pbundle->bundle.attrs flex array */
-	pbundle->method_elm = method_elm;
+	pbundle->bundle.method_elm = method_elm;
 	pbundle->method_key = attrs_iter.index;
 	pbundle->bundle.ufile = ufile;
 	pbundle->bundle.context = NULL; /* only valid if bundle has uobject */
@@ -617,10 +569,12 @@ static int ib_uverbs_cmd_verbs(struct ib_uverbs_file *ufile,
 	pbundle->radix_slots_len = radix_tree_chunk_size(&attrs_iter);
 	pbundle->user_attrs = user_attrs;
 
-	pbundle->internal_used = ALIGN(pbundle->method_elm->key_bitmap_len *
-					       sizeof(*container_of(&pbundle->bundle,
-							struct uverbs_attr_bundle, hdr)->attrs),
-					       sizeof(*pbundle->internal_buffer));
+	pbundle->internal_used = ALIGN(
+		pbundle->bundle.method_elm->key_bitmap_len *
+			sizeof(*container_of(&pbundle->bundle,
+					     struct uverbs_attr_bundle, hdr)
+					->attrs),
+		sizeof(*pbundle->internal_buffer));
 	memset(pbundle->bundle.attr_present, 0,
 	       sizeof(pbundle->bundle.attr_present));
 	memset(pbundle->uobj_finalize, 0, sizeof(pbundle->uobj_finalize));
@@ -860,77 +814,3 @@ void uverbs_finalize_uobj_create(const struct uverbs_attr_bundle *bundle,
 		  pbundle->uobj_hw_obj_valid);
 }
 EXPORT_SYMBOL(uverbs_finalize_uobj_create);
-
-int _ib_copy_validate_udata_in(struct ib_udata *udata, void *req,
-			       size_t kernel_size, size_t minimum_size)
-{
-	int err;
-
-	if (udata->inlen < minimum_size) {
-		ibdev_dbg(
-			rdma_udata_to_dev(udata),
-			"System call driver input udata too small (%zu < %zu) for ioctl %ps called by %pSR\n",
-			udata->inlen, minimum_size,
-			uverbs_get_handler_fn(udata),
-			__builtin_return_address(0));
-		return -EINVAL;
-	}
-
-	err = copy_struct_from_user(req, kernel_size, udata->inbuf,
-				    udata->inlen);
-	if (err) {
-		if (err == -E2BIG) {
-			ibdev_dbg(
-				rdma_udata_to_dev(udata),
-				"System call driver input udata not zero from %zu -> %zu for ioctl %ps called by %pSR\n",
-				minimum_size, udata->inlen,
-				uverbs_get_handler_fn(udata),
-				__builtin_return_address(0));
-			return -EOPNOTSUPP;
-		}
-		ibdev_dbg(
-			rdma_udata_to_dev(udata),
-			"System call driver input udata EFAULT for ioctl %ps called by %pSR\n",
-			uverbs_get_handler_fn(udata),
-			__builtin_return_address(0));
-		return err;
-	}
-	return 0;
-}
-EXPORT_SYMBOL(_ib_copy_validate_udata_in);
-
-int _ib_copy_validate_udata_cm_fail(struct ib_udata *udata, u64 req_cm,
-				    u64 valid_cm)
-{
-	ibdev_dbg(
-		rdma_udata_to_dev(udata),
-		"System call driver input udata has unsupported comp_mask %llx & ~%llx = %llx for ioctl %ps called by %pSR\n",
-		req_cm, valid_cm, req_cm & ~valid_cm,
-		uverbs_get_handler_fn(udata), __builtin_return_address(0));
-	return -EOPNOTSUPP;
-}
-EXPORT_SYMBOL(_ib_copy_validate_udata_cm_fail);
-
-int _ib_respond_udata(struct ib_udata *udata, const void *src, size_t len)
-{
-	size_t copy_len;
-
-	/* 0 length copy_len is a NOP for copy_to_user() and doesn't fail. */
-	copy_len = min(len, udata->outlen);
-	if (copy_to_user(udata->outbuf, src, copy_len))
-		goto err_fault;
-	if (copy_len < udata->outlen) {
-		if (clear_user(udata->outbuf + copy_len,
-			       udata->outlen - copy_len))
-			goto err_fault;
-	}
-	return 0;
-err_fault:
-	ibdev_dbg(
-		rdma_udata_to_dev(udata),
-		"System call driver out udata has EFAULT (%zu into %zu) for ioctl %ps called by %pSR\n",
-		len, udata->outlen, uverbs_get_handler_fn(udata),
-		__builtin_return_address(0));
-	return -EFAULT;
-}
-EXPORT_SYMBOL(_ib_respond_udata);
