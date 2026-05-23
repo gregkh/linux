@@ -1930,11 +1930,11 @@ int iwl_mld_wowlan_suspend(struct iwl_mld *mld, struct cfg80211_wowlan *wowlan)
 	if (WARN_ON(!wowlan))
 		return 1;
 
-	IWL_DEBUG_WOWLAN(mld, "Starting the wowlan suspend flow\n");
-
 	bss_vif = iwl_mld_get_bss_vif(mld);
-	if (WARN_ON(!bss_vif))
+	if (!bss_vif)
 		return 1;
+
+	IWL_DEBUG_WOWLAN(mld, "Starting the wowlan suspend flow\n");
 
 	if (!bss_vif->cfg.assoc) {
 		int ret;

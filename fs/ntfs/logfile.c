@@ -710,6 +710,9 @@ map_vcn:
 		if (unlikely(lcn == LCN_RL_NOT_MAPPED)) {
 			vcn = rl->vcn;
 			kvfree(empty_buf);
+			empty_buf = NULL;
+			kfree(ra);
+			ra = NULL;
 			goto map_vcn;
 		}
 		/* If this run is not valid abort with an error. */
@@ -753,7 +756,7 @@ map_vcn:
 		} while (start < end);
 	} while ((++rl)->vcn < end_vcn);
 	up_write(&log_ni->runlist.lock);
-	kfree(empty_buf);
+	kvfree(empty_buf);
 	kfree(ra);
 	truncate_inode_pages(log_vi->i_mapping, 0);
 	/* Set the flag so we do not have to do it again on remount. */

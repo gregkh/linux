@@ -154,7 +154,8 @@ quiet_cmd_check_undefined = NM      $<
               echo "Unexpected symbols in $<:" >&2; \
               echo "$$undefsyms" >&2; \
               false; \
-          fi
+          fi; \
+          touch $@
 
 $(obj)/%.o.checked: $(obj)/%.o $(obj)/undefsyms_base.o FORCE
 	$(call if_changed,check_undefined)

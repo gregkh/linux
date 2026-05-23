@@ -417,6 +417,107 @@ static void run_tests(int family, enum bpf_map_type map_type)
 	close(map);
 }
 
+/*
+ * Regression test for the KTLS + sockmap (verdict) reverse-order UAF.
+ *
+ * Vulnerable sequence:
+ *   1. Insert receiver socket into sockmap with BPF_SK_SKB_VERDICT program.
+ *      sk->sk_data_ready becomes sk_psock_verdict_data_ready.
+ *   2. Configure TLS RX: tls_sw_strparser_arm() saves
+ *      sk_psock_verdict_data_ready as rx_ctx->saved_data_ready.
+ *
+ * When data arrives, tls_rx_msg_ready() calls saved_data_ready() =
+ * sk_psock_verdict_data_ready(), which calls tcp_read_skb() and drains
+ * sk_receive_queue via __skb_unlink() without advancing copied_seq.
+ * tls_strp_msg_load() then finds the queue empty while tcp_inq() is still
+ * non-zero, hits WARN_ON_ONCE(!first), and leaves a dangling frag_list
+ * pointer that tls_decrypt_sg() walks — a use-after-free.
+ *
+ * The fix adds a tls_sw_has_ctx_rx() check to sk_psock_verdict_data_ready(),
+ * mirroring what sk_psock_strp_data_ready() already does: when a TLS RX
+ * context is present, defer to psock->saved_data_ready (sock_def_readable)
+ * instead of calling tcp_read_skb(), so TLS retains sole ownership of the
+ * receive queue.  Data is then decrypted and returned correctly by
+ * tls_sw_recvmsg().
+ */
+static void test_sockmap_ktls_verdict_with_tls_rx(int family, int sotype)
+{
+	struct tls12_crypto_info_aes_gcm_128 crypto_info = {};
+	char send_buf[] = "hello ktls sockmap reverse order";
+	char recv_buf[sizeof(send_buf)] = {};
+	struct test_sockmap_ktls *skel;
+	int c = -1, p = -1, zero = 0;
+	int prog_fd, map_fd;
+	ssize_t n;
+	int err;
+
+	skel = test_sockmap_ktls__open_and_load();
+	if (!ASSERT_TRUE(skel, "open_and_load"))
+		return;
+
+	err = create_pair(family, sotype, &c, &p);
+	if (!ASSERT_OK(err, "create_pair"))
+		goto out;
+
+	prog_fd = bpf_program__fd(skel->progs.prog_skb_verdict_pass);
+	map_fd = bpf_map__fd(skel->maps.sock_map_verdict);
+
+	err = bpf_prog_attach(prog_fd, map_fd, BPF_SK_SKB_VERDICT, 0);
+	if (!ASSERT_OK(err, "bpf_prog_attach sk_skb verdict"))
+		goto out;
+
+	/* Step 1: configure TLS TX on sender (no sockmap involvement) */
+	err = setsockopt(c, IPPROTO_TCP, TCP_ULP, "tls", strlen("tls"));
+	if (!ASSERT_OK(err, "setsockopt(TCP_ULP) client"))
+		goto out;
+
+	crypto_info.info.version = TLS_1_2_VERSION;
+	crypto_info.info.cipher_type = TLS_CIPHER_AES_GCM_128;
+	memset(crypto_info.key, 0x01, sizeof(crypto_info.key));
+	memset(crypto_info.salt, 0x02, sizeof(crypto_info.salt));
+
+	err = setsockopt(c, SOL_TLS, TLS_TX, &crypto_info, sizeof(crypto_info));
+	if (!ASSERT_OK(err, "setsockopt(TLS_TX)"))
+		goto out;
+
+	/* Step 2: insert receiver into sockmap BEFORE TLS RX */
+	err = bpf_map_update_elem(map_fd, &zero, &p, BPF_NOEXIST);
+	if (!ASSERT_OK(err, "bpf_map_update_elem"))
+		goto out;
+
+	/* Step 3: configure TLS RX AFTER sockmap insertion */
+	err = setsockopt(p, IPPROTO_TCP, TCP_ULP, "tls", strlen("tls"));
+	if (!ASSERT_OK(err, "setsockopt(TCP_ULP) server"))
+		goto out;
+
+	err = setsockopt(p, SOL_TLS, TLS_RX, &crypto_info, sizeof(crypto_info));
+	if (!ASSERT_OK(err, "setsockopt(TLS_RX)"))
+		goto out;
+
+	/*
+	 * A buggy kernel hits WARN_ON_ONCE in tls_strp_load_anchor_with_queue
+	 * and may UAF in tls_decrypt_sg here.  With the fix,
+	 * sk_psock_verdict_data_ready defers to sock_def_readable and TLS
+	 * decrypts the record normally.
+	 */
+	n = send(c, send_buf, sizeof(send_buf), 0);
+	if (!ASSERT_EQ(n, (ssize_t)sizeof(send_buf), "send"))
+		goto out;
+
+	n = recv_timeout(p, recv_buf, sizeof(recv_buf), 0, 5);
+	if (!ASSERT_EQ(n, (ssize_t)sizeof(send_buf), "recv"))
+		goto out;
+
+	ASSERT_OK(memcmp(send_buf, recv_buf, sizeof(send_buf)), "data integrity");
+
+out:
+	if (c != -1)
+		close(c);
+	if (p != -1)
+		close(p);
+	test_sockmap_ktls__destroy(skel);
+}
+
 static void run_ktls_test(int family, int sotype)
 {
 	if (test__start_subtest("tls simple offload"))
@@ -429,6 +530,8 @@ static void run_ktls_test(int family, int sotype)
 		test_sockmap_ktls_tx_no_buf(family, sotype, true);
 	if (test__start_subtest("tls tx with pop"))
 		test_sockmap_ktls_tx_pop(family, sotype);
+	if (test__start_subtest("tls verdict with tls rx"))
+		test_sockmap_ktls_verdict_with_tls_rx(family, sotype);
 }
 
 void test_sockmap_ktls(void)

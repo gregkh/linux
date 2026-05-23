@@ -81,7 +81,7 @@ static int proc_show_files(struct seq_file *m, void *v)
 	read_lock(&global_ft.lock);
 	idr_for_each_entry(global_ft.idr, fp, id) {
 		seq_printf(m, "%#-10x %#-10llx %#-10llx %#-10x",
-			   fp->tcon->id,
+			   fp->tcon ? fp->tcon->id : 0,
 			   fp->persistent_id,
 			   fp->volatile_id,
 			   atomic_read(&fp->refcount));

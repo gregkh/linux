@@ -1297,7 +1297,9 @@ static int ipoib_hard_header(struct sk_buff *skb,
 	return IPOIB_HARD_LEN;
 }
 
-static void ipoib_set_mcast_list(struct net_device *dev)
+static void ipoib_set_rx_mode_async(struct net_device *dev,
+				    struct netdev_hw_addr_list *uc,
+				    struct netdev_hw_addr_list *mc)
 {
 	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
@@ -2160,7 +2162,7 @@ static const struct net_device_ops ipoib_netdev_ops_pf = {
 	.ndo_fix_features	 = ipoib_fix_features,
 	.ndo_start_xmit		 = ipoib_start_xmit,
 	.ndo_tx_timeout		 = ipoib_timeout,
-	.ndo_set_rx_mode	 = ipoib_set_mcast_list,
+	.ndo_set_rx_mode_async	 = ipoib_set_rx_mode_async,
 	.ndo_get_iflink		 = ipoib_get_iflink,
 	.ndo_set_vf_link_state	 = ipoib_set_vf_link_state,
 	.ndo_get_vf_config	 = ipoib_get_vf_config,
@@ -2183,7 +2185,7 @@ static const struct net_device_ops ipoib_netdev_ops_vf = {
 	.ndo_fix_features	 = ipoib_fix_features,
 	.ndo_start_xmit	 	 = ipoib_start_xmit,
 	.ndo_tx_timeout		 = ipoib_timeout,
-	.ndo_set_rx_mode	 = ipoib_set_mcast_list,
+	.ndo_set_rx_mode_async	 = ipoib_set_rx_mode_async,
 	.ndo_get_iflink		 = ipoib_get_iflink,
 	.ndo_get_stats64	 = ipoib_get_stats,
 	.ndo_eth_ioctl		 = ipoib_ioctl,

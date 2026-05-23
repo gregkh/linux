@@ -119,14 +119,13 @@ int ntfs_attrlist_entry_add(struct ntfs_inode *ni, struct attr_record *attr)
 	struct mft_record *ni_mrec;
 	u8 *old_al;
 
-	ntfs_debug("Entering for inode 0x%llx, attr 0x%x.\n",
-			(long long) ni->mft_no,
-			(unsigned int) le32_to_cpu(attr->type));
-
 	if (!ni || !attr) {
 		ntfs_debug("Invalid arguments.\n");
 		return -EINVAL;
 	}
+
+	ntfs_debug("Entering for inode 0x%llx, attr 0x%x.\n",
+			ni->mft_no, (unsigned int) le32_to_cpu(attr->type));
 
 	ni_mrec = map_mft_record(ni);
 	if (IS_ERR(ni_mrec)) {
