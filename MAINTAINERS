@@ -18947,7 +18947,8 @@ F:	drivers/hid/hid-nintendo*
 
 NIOS2 ARCHITECTURE
 M:	Dinh Nguyen <dinguyen@kernel.org>
-S:	Maintained
+M:	Simon Schuster <schuster.simon@siemens-energy.com>
+S:	Supported
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux.git
 F:	arch/nios2/
 
