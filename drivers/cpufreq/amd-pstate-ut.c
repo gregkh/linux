@@ -302,12 +302,6 @@ static int amd_pstate_ut_epp(u32 index)
 	cpufreq_cpu_put(policy);
 	policy = NULL;
 
-	/* disable dynamic EPP before running test */
-	if (cpudata->dynamic_epp) {
-		pr_debug("Dynamic EPP is enabled, disabling it\n");
-		amd_pstate_clear_dynamic_epp(policy);
-	}
-
 	buf = (char *)__get_free_page(GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
@@ -326,6 +320,16 @@ static int amd_pstate_ut_epp(u32 index)
 	cpudata = policy->driver_data;
 	orig_policy = cpudata->policy;
 	cpudata->policy = CPUFREQ_POLICY_POWERSAVE;
+
+	/*
+	 * Disable dynamic EPP before running test. If "orig_dynamic_epp" is
+	 * true, the  driver will do a redundant switch at the end and there
+	 * is no need for enabling it again at the end of the test.
+	 */
+	if (cpudata->dynamic_epp) {
+		pr_debug("Dynamic EPP is enabled, disabling it\n");
+		amd_pstate_clear_dynamic_epp(policy);
+	}
 
 	for (epp = 0; epp <= U8_MAX; epp++) {
 		u8 val;
