@@ -37,7 +37,6 @@ struct perf_pmu_caps {
 };
 
 enum {
-	PERF_PMU_TYPE_TOOL = 0xFFFFFFFE,
 	PERF_PMU_TYPE_FAKE = 0xFFFFFFFF,
 };
 
@@ -286,7 +285,6 @@ struct perf_pmu *perf_pmu__lookup(struct list_head *pmus, int dirfd, const char 
 struct perf_pmu *perf_pmu__create_placeholder_core_pmu(struct list_head *core_pmus);
 void perf_pmu__delete(struct perf_pmu *pmu);
 struct perf_pmu *perf_pmus__find_core_pmu(void);
-
 const char *perf_pmu__name_from_config(struct perf_pmu *pmu, u64 config);
 
 #endif /* __PMU_H */

@@ -15,7 +15,6 @@
 #include <linux/zalloc.h>
 #include "iostat.h"
 #include "util/hashmap.h"
-#include "tool_pmu.h"
 
 struct stats walltime_nsecs_stats;
 struct rusage_stats ru_stats;
