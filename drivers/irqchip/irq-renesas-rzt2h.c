@@ -265,7 +265,7 @@ static int rzt2h_icu_init(struct platform_device *pdev, struct device_node *pare
 	irq_domain = irq_domain_create_hierarchy(parent_domain, 0, RZT2H_ICU_NUM_IRQ,
 						 dev_fwnode(dev), &rzt2h_icu_domain_ops, priv);
 	if (!irq_domain) {
-		pm_runtime_put(dev);
+		pm_runtime_put_sync(dev);
 		return -ENOMEM;
 	}
 
