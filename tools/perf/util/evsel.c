@@ -332,7 +332,7 @@ static int evsel__copy_config_terms(struct evsel *dst, struct evsel *src)
  * The assumption is that @orig is not configured nor opened yet.
  * So we only care about the attributes that can be set while it's parsed.
  */
-struct evsel *evsel__clone(struct evsel *dest, struct evsel *orig)
+struct evsel *evsel__clone(struct evsel *orig)
 {
 	struct evsel *evsel;
 
@@ -345,11 +345,7 @@ struct evsel *evsel__clone(struct evsel *dest, struct evsel *orig)
 	if (orig->bpf_obj)
 		return NULL;
 
-	if (dest)
-		evsel = dest;
-	else
-		evsel = evsel__new(&orig->core.attr);
-
+	evsel = evsel__new(&orig->core.attr);
 	if (evsel == NULL)
 		return NULL;
 
@@ -399,12 +395,11 @@ struct evsel *evsel__clone(struct evsel *dest, struct evsel *orig)
 	evsel->core.leader = orig->core.leader;
 
 	evsel->max_events = orig->max_events;
-	zfree(&evsel->unit);
-	if (orig->unit) {
-		evsel->unit = strdup(orig->unit);
-		if (evsel->unit == NULL)
-			goto out_err;
-	}
+	free((char *)evsel->unit);
+	evsel->unit = strdup(orig->unit);
+	if (evsel->unit == NULL)
+		goto out_err;
+
 	evsel->scale = orig->scale;
 	evsel->snapshot = orig->snapshot;
 	evsel->per_pkg = orig->per_pkg;
