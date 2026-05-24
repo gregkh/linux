@@ -1445,6 +1445,7 @@ static int _do_shadow_pte(struct gmap *sg, gpa_t raddr, union pte *ptep_h, union
 	} else {
 		pgste = _gmap_ptep_xchg(sg->parent, ptep_h, newpte, pgste, f->gfn, false);
 		pgste.vsie_notif = 1;
+		pgste.vsie_gmem = 1;
 	}
 	pgste_set_unlock(ptep_h, pgste);
 	if (rc)
