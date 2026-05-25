@@ -532,10 +532,6 @@ amdgpu_userq_destroy(struct amdgpu_userq_mgr *uq_mgr, struct amdgpu_usermode_que
 	amdgpu_bo_unreserve(queue->db_obj.obj);
 	amdgpu_bo_unref(&queue->db_obj.obj);
 
-	amdgpu_bo_reserve(queue->wptr_obj.obj, true);
-	amdgpu_bo_unpin(queue->wptr_obj.obj);
-	amdgpu_bo_unreserve(queue->wptr_obj.obj);
-	amdgpu_bo_unref(&queue->wptr_obj.obj);
 	kfree(queue);
 
 	pm_runtime_put_autosuspend(adev_to_drm(adev)->dev);
