@@ -1344,8 +1344,7 @@ int amdgpu_userq_start_sched_for_enforce_isolation(struct amdgpu_device *adev,
 }
 
 void amdgpu_userq_gem_va_unmap_validate(struct amdgpu_device *adev,
-					struct amdgpu_bo_va_mapping *mapping,
-					uint64_t saddr)
+					struct amdgpu_bo_va_mapping *mapping)
 {
 	u32 ip_mask = amdgpu_userq_get_supported_ip_mask(adev);
 	struct amdgpu_bo_va *bo_va = mapping->bo_va;
@@ -1354,12 +1353,9 @@ void amdgpu_userq_gem_va_unmap_validate(struct amdgpu_device *adev,
 	if (!ip_mask)
 		return;
 
-	dev_warn_once(adev->dev, "now unmapping a vital queue va:%llx\n", saddr);
 	/**
-	 * The userq VA mapping reservation should include the eviction fence,
-	 * if the eviction fence can't signal successfully during unmapping,
-	 * then driver will warn to flag this improper unmap of the userq VA.
-	 * Note: The eviction fence may be attached to different BOs, and this
+	 * The userq VA mapping reservation should include the eviction fence.
+	 * Note: The eviction fence may be attached to different BOs and this
 	 * unmap is only for one kind of userq VAs, so at this point suppose
 	 * the eviction fence is always unsignaled.
 	 */

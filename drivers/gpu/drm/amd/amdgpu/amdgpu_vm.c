@@ -2006,7 +2006,7 @@ int amdgpu_vm_bo_unmap(struct amdgpu_device *adev,
 	 * from user space.
 	 */
 	if (unlikely(bo_va->userq_va_mapped))
-		amdgpu_userq_gem_va_unmap_validate(adev, mapping, saddr);
+		amdgpu_userq_gem_va_unmap_validate(adev, mapping);
 
 	list_del(&mapping->list);
 	amdgpu_vm_it_remove(mapping, &vm->va);
