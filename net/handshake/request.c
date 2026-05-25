@@ -163,13 +163,16 @@ static void __remove_pending_locked(struct handshake_net *hn,
  * otherwise %false.
  *
  * If @req was on a pending list, it has not yet been accepted.
+ * Returns %false when the net namespace is draining; the drain
+ * loop has taken ownership of the pending list.
  */
 static bool remove_pending(struct handshake_net *hn, struct handshake_req *req)
 {
 	bool ret = false;
 
 	spin_lock(&hn->hn_lock);
-	if (!list_empty(&req->hr_list)) {
+	if (!test_bit(HANDSHAKE_F_NET_DRAINING, &hn->hn_flags) &&
+	    !list_empty(&req->hr_list)) {
 		__remove_pending_locked(hn, req);
 		ret = true;
 	}
@@ -259,17 +262,19 @@ int handshake_req_submit(struct socket *sock, struct handshake_req *req,
 		goto out_unlock;
 	if (!__add_pending_locked(hn, req))
 		goto out_unlock;
+
+	/* Prevent socket release while a handshake request is pending */
+	sock_hold(req->hr_sk);
 	spin_unlock(&hn->hn_lock);
 
 	ret = handshake_genl_notify(net, req->hr_proto, flags);
 	if (ret) {
 		trace_handshake_notify_err(net, req, req->hr_sk, ret);
-		if (remove_pending(hn, req))
+		if (remove_pending(hn, req)) {
+			sock_put(req->hr_sk);
 			goto out_err;
+		}
 	}
-
-	/* Prevent socket release while a handshake request is pending */
-	sock_hold(req->hr_sk);
 
 	trace_handshake_submit(net, req, req->hr_sk);
 	return 0;

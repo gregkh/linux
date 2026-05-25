@@ -205,12 +205,17 @@ static void __net_exit handshake_net_exit(struct net *net)
 	 */
 	spin_lock(&hn->hn_lock);
 	set_bit(HANDSHAKE_F_NET_DRAINING, &hn->hn_flags);
-	list_splice_init(&requests, &hn->hn_requests);
+	list_splice_init(&hn->hn_requests, &requests);
+	list_for_each_entry(req, &requests, hr_list)
+		sock_hold(req->hr_sk);
 	spin_unlock(&hn->hn_lock);
 
 	while (!list_empty(&requests)) {
+		struct sock *sk;
+
 		req = list_first_entry(&requests, struct handshake_req, hr_list);
-		list_del(&req->hr_list);
+		sk = req->hr_sk;
+		list_del_init(&req->hr_list);
 
 		/*
 		 * Requests on this list have not yet been
@@ -218,6 +223,7 @@ static void __net_exit handshake_net_exit(struct net *net)
 		 */
 
 		handshake_complete(req, -ETIMEDOUT, NULL);
+		sock_put(sk);
 	}
 }
 
