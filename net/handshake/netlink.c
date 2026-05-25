@@ -217,11 +217,6 @@ static void __net_exit handshake_net_exit(struct net *net)
 		sk = req->hr_sk;
 		list_del_init(&req->hr_list);
 
-		/*
-		 * Requests on this list have not yet been
-		 * accepted, so they do not have an fd to put.
-		 */
-
 		handshake_complete(req, -ETIMEDOUT, NULL);
 		sock_put(sk);
 	}
