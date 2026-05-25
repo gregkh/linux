@@ -160,17 +160,33 @@ static bool nft_fib6_info_nh_dev_match(const struct net_device *nh_dev,
 	       l3mdev_master_ifindex_rcu(nh_dev) == dev->ifindex;
 }
 
+static int nft_fib6_nh_match_dev_cb(struct fib6_nh *nh, void *arg)
+{
+	const struct net_device *dev = arg;
+
+	return nft_fib6_info_nh_dev_match(nh->fib_nh_dev, dev);
+}
+
 static bool nft_fib6_info_nh_uses_dev(struct fib6_info *rt,
 				      const struct net_device *dev)
 {
 	const struct net_device *nh_dev;
 	struct fib6_info *iter;
 
+	/* External nexthop: fib6_siblings slot aliases nh_list, walk via nh. */
+	if (rt->nh)
+		return nexthop_for_each_fib6_nh(rt->nh,
+						nft_fib6_nh_match_dev_cb,
+						(void *)dev);
+
 	nh_dev = fib6_info_nh_dev(rt);
 	if (nft_fib6_info_nh_dev_match(nh_dev, dev))
 		return true;
 
-	list_for_each_entry(iter, &rt->fib6_siblings, fib6_siblings) {
+	if (!READ_ONCE(rt->fib6_nsiblings))
+		return false;
+
+	list_for_each_entry_rcu(iter, &rt->fib6_siblings, fib6_siblings) {
 		nh_dev = fib6_info_nh_dev(iter);
 
 		if (nft_fib6_info_nh_dev_match(nh_dev, dev))
