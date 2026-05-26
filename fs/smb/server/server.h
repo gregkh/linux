@@ -47,6 +47,7 @@ struct ksmbd_server_config {
 
 	char			*conf[SERVER_CONF_WORK_GROUP + 1];
 	bool			bind_interfaces_only;
+	struct task_struct	*dh_task;
 };
 
 extern struct ksmbd_server_config server_conf;
