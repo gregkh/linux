@@ -109,11 +109,13 @@ EXPORT_SYMBOL(__ref_stack_chk_guard);
 	RET
 .endm
 
+#ifndef CONFIG_X86_64
 .pushsection .text, "ax"
 SYM_FUNC_START(idt_do_interrupt_irqoff)
 	IDT_DO_EVENT_IRQOFF CALL_NOSPEC _ASM_ARG1
 SYM_FUNC_END(idt_do_interrupt_irqoff)
 .popsection
+#endif
 
 .pushsection .noinstr.text, "ax"
 SYM_FUNC_START(idt_do_nmi_irqoff)
