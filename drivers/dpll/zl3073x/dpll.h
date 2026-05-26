@@ -15,7 +15,6 @@
  * @id: DPLL index
  * @check_count: periodic check counter
  * @phase_monitor: is phase offset monitor enabled
- * @freq_monitor: is frequency monitor enabled
  * @ops: DPLL device operations for this instance
  * @dpll_dev: pointer to registered DPLL device
  * @tracker: tracking object for the acquired reference
@@ -28,7 +27,6 @@ struct zl3073x_dpll {
 	u8				id;
 	u8				check_count;
 	bool				phase_monitor;
-	bool				freq_monitor;
 	struct dpll_device_ops		ops;
 	struct dpll_device		*dpll_dev;
 	dpll_tracker			tracker;
