@@ -790,7 +790,7 @@ static int svc_rdma_build_read_chunk(struct svc_rdma_read_info *info,
 /**
  * svc_rdma_copy_inline_range - Copy part of the inline content into pages
  * @info: context for RDMA Reads
- * @offset: offset into the Receive buffer of region to copy
+ * @offset: offset into the inline content of region to copy
  * @remaining: length of region to copy
  *
  * Take a page at a time from rqstp->rq_pages and copy the inline
@@ -807,9 +807,13 @@ static int svc_rdma_copy_inline_range(struct svc_rdma_read_info *info,
 				      unsigned int remaining)
 {
 	struct svc_rdma_recv_ctxt *head = info->ri_readctxt;
-	unsigned char *dst, *src = head->rc_recv_buf;
 	struct svc_rqst *rqstp = info->ri_rqst;
+	unsigned char *dst, *src = rqstp->rq_arg.head[0].iov_base;
+	unsigned int inline_len = rqstp->rq_arg.head[0].iov_len;
 	unsigned int page_no, numpages;
+
+	if (offset > inline_len || remaining > inline_len - offset)
+		return -EINVAL;
 
 	numpages = PAGE_ALIGN(info->ri_pageoff + remaining) >> PAGE_SHIFT;
 	for (page_no = 0; page_no < numpages; page_no++) {
@@ -860,9 +864,10 @@ static noinline int svc_rdma_read_multiple_chunks(struct svc_rdma_read_info *inf
 	const struct svc_rdma_pcl *pcl = &head->rc_read_pcl;
 	struct xdr_buf *buf = &info->ri_rqst->rq_arg;
 	struct svc_rdma_chunk *chunk, *next;
-	unsigned int start, length;
+	unsigned int inline_len, start, length;
 	int ret;
 
+	inline_len = buf->head[0].iov_len;
 	start = 0;
 	chunk = pcl_first_chunk(pcl);
 	length = chunk->ch_position;
@@ -880,6 +885,8 @@ static noinline int svc_rdma_read_multiple_chunks(struct svc_rdma_read_info *inf
 			break;
 
 		start += length;
+		if (info->ri_totalbytes > next->ch_position)
+			return -EINVAL;
 		length = next->ch_position - info->ri_totalbytes;
 		ret = svc_rdma_copy_inline_range(info, start, length);
 		if (ret < 0)
@@ -887,7 +894,9 @@ static noinline int svc_rdma_read_multiple_chunks(struct svc_rdma_read_info *inf
 	}
 
 	start += length;
-	length = head->rc_byte_len - start;
+	if (start > inline_len)
+		return -EINVAL;
+	length = inline_len - start;
 	ret = svc_rdma_copy_inline_range(info, start, length);
 	if (ret < 0)
 		return ret;
@@ -928,6 +937,9 @@ static int svc_rdma_read_data_item(struct svc_rdma_read_info *info)
 	int ret;
 
 	chunk = pcl_first_chunk(&head->rc_read_pcl);
+	if (chunk->ch_position > buf->head[0].iov_len)
+		return -EINVAL;
+
 	ret = svc_rdma_build_read_chunk(info, chunk);
 	if (ret < 0)
 		goto out;
@@ -1028,14 +1040,17 @@ static int svc_rdma_read_call_chunk(struct svc_rdma_read_info *info)
 			pcl_first_chunk(&head->rc_call_pcl);
 	const struct svc_rdma_pcl *pcl = &head->rc_read_pcl;
 	struct svc_rdma_chunk *chunk, *next;
-	unsigned int start, length;
+	unsigned int call_len, start, length;
 	int ret;
 
 	if (pcl_is_empty(pcl))
 		return svc_rdma_build_read_chunk(info, call_chunk);
 
+	call_len = call_chunk->ch_length;
 	start = 0;
 	chunk = pcl_first_chunk(pcl);
+	if (chunk->ch_position > call_len)
+		return -EINVAL;
 	length = chunk->ch_position;
 	ret = svc_rdma_read_chunk_range(info, call_chunk, start, length);
 	if (ret < 0)
@@ -1051,6 +1066,8 @@ static int svc_rdma_read_call_chunk(struct svc_rdma_read_info *info)
 			break;
 
 		start += length;
+		if (info->ri_totalbytes > next->ch_position)
+			return -EINVAL;
 		length = next->ch_position - info->ri_totalbytes;
 		ret = svc_rdma_read_chunk_range(info, call_chunk,
 						start, length);
@@ -1059,7 +1076,9 @@ static int svc_rdma_read_call_chunk(struct svc_rdma_read_info *info)
 	}
 
 	start += length;
-	length = call_chunk->ch_length - start;
+	if (start > call_len)
+		return -EINVAL;
+	length = call_len - start;
 	return svc_rdma_read_chunk_range(info, call_chunk, start, length);
 }
 
