@@ -21,7 +21,6 @@
  * @tracker: tracking object for the acquired reference
  * @lock_status: last saved DPLL lock status
  * @pins: list of pins
- * @change_work: device change notification work
  */
 struct zl3073x_dpll {
 	struct list_head		list;
@@ -35,7 +34,6 @@ struct zl3073x_dpll {
 	dpll_tracker			tracker;
 	enum dpll_lock_status		lock_status;
 	struct list_head		pins;
-	struct work_struct		change_work;
 };
 
 struct zl3073x_dpll *zl3073x_dpll_alloc(struct zl3073x_dev *zldev, u8 ch);
