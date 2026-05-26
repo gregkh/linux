@@ -1594,16 +1594,27 @@ out_unlock:
 static int nfsd_nl_fh_key_set(const struct nlattr *attr, struct nfsd_net *nn)
 {
 	siphash_key_t *fh_key = nn->fh_key;
+	u64 k0, k1;
+	bool changed;
+
+	k0 = get_unaligned_le64(nla_data(attr));
+	k1 = get_unaligned_le64(nla_data(attr) + 8);
 
 	if (!fh_key) {
 		fh_key = kmalloc(sizeof(siphash_key_t), GFP_KERNEL);
-		if (!fh_key)
+		if (!fh_key) {
+			trace_nfsd_ctl_fh_key_set(false, -ENOMEM);
 			return -ENOMEM;
+		}
 		nn->fh_key = fh_key;
+		changed = true;
+	} else {
+		changed = fh_key->key[0] != k0 || fh_key->key[1] != k1;
 	}
 
-	fh_key->key[0] = get_unaligned_le64(nla_data(attr));
-	fh_key->key[1] = get_unaligned_le64(nla_data(attr) + 8);
+	fh_key->key[0] = k0;
+	fh_key->key[1] = k1;
+	trace_nfsd_ctl_fh_key_set(changed, 0);
 	return 0;
 }
 
@@ -1682,7 +1693,6 @@ int nfsd_nl_threads_set_doit(struct sk_buff *skb, struct genl_info *info)
 		attr = info->attrs[NFSD_A_SERVER_FH_KEY];
 		if (attr) {
 			ret = nfsd_nl_fh_key_set(attr, nn);
-			trace_nfsd_ctl_fh_key_set((const char *)nn->fh_key, ret);
 			if (ret)
 				goto out_unlock;
 		}

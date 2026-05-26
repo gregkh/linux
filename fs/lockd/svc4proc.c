@@ -146,8 +146,11 @@ nlm4svc_lookup_file(struct svc_rqst *rqstp, struct nlm_host *host,
 		    struct nlm_lock *lock, struct nlm_file **filp,
 		    struct nlm4_lock *xdr_lock, unsigned char type)
 {
+	bool is_test = (rqstp->rq_proc == NLMPROC4_TEST ||
+			rqstp->rq_proc == NLMPROC4_TEST_MSG);
 	struct file_lock *fl = &lock->fl;
 	struct nlm_file *file = NULL;
+	int mode;
 	__be32 error;
 
 	if (xdr_lock->fh.len > NFS_MAXFHSIZE)
@@ -170,7 +173,8 @@ nlm4svc_lookup_file(struct svc_rqst *rqstp, struct nlm_host *host,
 	fl->c.flc_type = type;
 	lockd_set_file_lock_range4(fl, lock->lock_start, lock->lock_len);
 
-	error = nlm_lookup_file(rqstp, &file, lock);
+	mode = is_test ? O_RDWR : lock_to_openmode(fl);
+	error = nlm_lookup_file(rqstp, &file, lock, mode);
 	switch (error) {
 	case nlm_granted:
 		break;
@@ -184,7 +188,8 @@ nlm4svc_lookup_file(struct svc_rqst *rqstp, struct nlm_host *host,
 	*filp = file;
 
 	fl->c.flc_flags = FL_POSIX;
-	fl->c.flc_file = file->f_file[lock_to_openmode(fl)];
+	fl->c.flc_file = is_test ? nlmsvc_file_file(file)
+				 : file->f_file[mode];
 	fl->c.flc_pid = current->tgid;
 	fl->fl_lmops = &nlmsvc_lock_operations;
 	nlmsvc_locks_init_private(fl, host, (pid_t)lock->svid);
