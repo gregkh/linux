@@ -14,6 +14,8 @@
 #include <linux/userfaultfd_k.h>
 #include <linux/mmu_notifier.h>
 #include <linux/hugetlb.h>
+#include <linux/file.h>
+#include <linux/cleanup.h>
 #include <asm/tlbflush.h>
 #include <asm/tlb.h>
 #include "internal.h"
@@ -443,16 +445,80 @@ static int mfill_copy_folio_locked(struct folio *folio, unsigned long src_addr)
 	return ret;
 }
 
-static int mfill_copy_folio_retry(struct mfill_state *state,
+#define MFILL_RETRY_STATE_VMA_FLAGS \
+	append_vma_flags(__VMA_UFFD_FLAGS, VMA_SHARED_BIT)
+
+/*
+ * VMA state saved before dropping the locks in mfill_copy_folio_retry().
+ * Used to detect VMA replacement or incompatible changes after reacquiring the
+ * locks.
+ */
+struct mfill_retry_state {
+	const struct vm_uffd_ops *ops;
+	struct file *file;
+	vma_flags_t flags;
+	pgoff_t pgoff;
+};
+
+static void mfill_retry_state_save(struct mfill_retry_state *s,
+				   struct vm_area_struct *vma)
+{
+	s->flags = vma_flags_and_mask(&vma->flags, MFILL_RETRY_STATE_VMA_FLAGS);
+	s->ops = vma_uffd_ops(vma);
+	s->pgoff = vma->vm_pgoff;
+
+	if (vma->vm_file)
+		s->file = get_file(vma->vm_file);
+}
+
+static bool mfill_retry_state_changed(struct mfill_retry_state *state,
+				      struct vm_area_struct *vma)
+{
+	vma_flags_t flags = vma_flags_and_mask(&vma->flags,
+					       MFILL_RETRY_STATE_VMA_FLAGS);
+
+	/* Have any UFFD flags (missing, WP, minor) changed? */
+	if (!vma_flags_same_pair(&state->flags, &flags))
+		return true;
+
+	/* VMA type or effective uffd_ops changed while the lock was dropped */
+	if (state->ops != vma_uffd_ops(vma))
+		return true;
+
+	/* VMA was anonymous before; changed only if it no longer is */
+	if (!state->file)
+		return !vma_is_anonymous(vma);
+
+	/* VMA was file backed, but file, inode or offset has changed */
+	if (!vma->vm_file || vma->vm_file->f_inode != state->file->f_inode ||
+	    state->file != vma->vm_file || vma->vm_pgoff != state->pgoff)
+		return true;
+
+	return false;
+}
+
+static void mfill_retry_state_put(struct mfill_retry_state *s)
+{
+	if (s->file)
+		fput(s->file);
+}
+
+DEFINE_FREE(retry_put, struct mfill_retry_state *,
+	    if (_T) mfill_retry_state_put(_T));
+
+static int mfill_copy_folio_retry(struct mfill_state *mfill_state,
 				  struct folio *folio)
 {
-	const struct vm_uffd_ops *orig_ops = vma_uffd_ops(state->vma);
-	unsigned long src_addr = state->src_addr;
+	struct mfill_retry_state retry_state = { 0 };
+	struct mfill_retry_state *for_free __free(retry_put) = &retry_state;
+	unsigned long src_addr = mfill_state->src_addr;
 	void *kaddr;
 	int err;
 
+	mfill_retry_state_save(&retry_state, mfill_state->vma);
+
 	/* retry copying with mm_lock dropped */
-	mfill_put_vma(state);
+	mfill_put_vma(mfill_state);
 
 	kaddr = kmap_local_folio(folio, 0);
 	err = copy_from_user(kaddr, (const void __user *) src_addr, PAGE_SIZE);
@@ -463,19 +529,14 @@ static int mfill_copy_folio_retry(struct mfill_state *state,
 	flush_dcache_folio(folio);
 
 	/* reget VMA and PMD, they could change underneath us */
-	err = mfill_get_vma(state);
+	err = mfill_get_vma(mfill_state);
 	if (err)
 		return err;
 
-	/*
-	 * The VMA type may have changed while the lock was dropped
-	 * (e.g. replaced with a hugetlb mapping), making the caller's
-	 * ops pointer stale.
-	 */
-	if (vma_uffd_ops(state->vma) != orig_ops)
+	if (mfill_retry_state_changed(&retry_state, mfill_state->vma))
 		return -EAGAIN;
 
-	err = mfill_establish_pmd(state);
+	err = mfill_establish_pmd(mfill_state);
 	if (err)
 		return err;
 
