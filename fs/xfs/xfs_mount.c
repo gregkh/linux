@@ -1149,9 +1149,12 @@ xfs_mountfs(
 	 * blocks.
 	 */
 	error = xfs_fs_reserve_ag_blocks(mp);
-	if (error && error == -ENOSPC)
+	if (error) {
+		if (error != -ENOSPC)
+			goto out_rtunmount;
 		xfs_warn(mp,
-	"ENOSPC reserving per-AG metadata pool, log recovery may fail.");
+"ENOSPC reserving per-AG metadata pool, log recovery may fail.");
+	}
 	error = xfs_log_mount_finish(mp);
 	xfs_fs_unreserve_ag_blocks(mp);
 	if (error) {
