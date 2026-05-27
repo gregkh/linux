@@ -552,6 +552,11 @@ static int __mfill_atomic_pte(struct mfill_state *state,
 	struct folio *folio;
 	int ret;
 
+	if (!ops) {
+		VM_WARN_ONCE(1, "UFFDIO_COPY for unsupported VMA");
+		return -EOPNOTSUPP;
+	}
+
 	folio = ops->alloc_folio(state->vma, state->dst_addr);
 	if (!folio)
 		return -ENOMEM;
