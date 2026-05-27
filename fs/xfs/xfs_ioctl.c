@@ -433,9 +433,8 @@ xfs_ioc_rtgroup_geometry(
 		return -EINVAL;
 
 	error = xfs_rtgroup_get_geometry(rtg, &rgeo);
-	xfs_rtgroup_put(rtg);
 	if (error)
-		return error;
+		goto out_put_rtg;
 
 	if (xfs_has_zoned(mp)) {
 		xfs_rtgroup_lock(rtg, XFS_RTGLOCK_RMAP);
@@ -453,8 +452,10 @@ xfs_ioc_rtgroup_geometry(
 	}
 
 	if (copy_to_user(arg, &rgeo, sizeof(rgeo)))
-		return -EFAULT;
-	return 0;
+		error = -EFAULT;
+out_put_rtg:
+	xfs_rtgroup_put(rtg);
+	return error;
 }
 
 /*
