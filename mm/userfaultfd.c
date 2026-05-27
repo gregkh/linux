@@ -68,7 +68,7 @@ static const struct vm_uffd_ops *vma_uffd_ops(struct vm_area_struct *vma)
 {
 	if (vma_is_anonymous(vma))
 		return &anon_uffd_ops;
-	return vma->vm_ops ? vma->vm_ops->uffd_ops : NULL;
+	return vma->vm_ops->uffd_ops;
 }
 
 static __always_inline
