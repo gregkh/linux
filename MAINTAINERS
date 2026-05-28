@@ -1150,7 +1150,7 @@ F:	Documentation/arch/x86/amd-hfi.rst
 F:	drivers/platform/x86/amd/hfi/
 
 AMD IOMMU (AMD-VI)
-M:	Joerg Roedel <joro@8bytes.org>
+M:	Joerg Roedel (AMD) <joro@8bytes.org>
 R:	Suravee Suthikulpanit <suravee.suthikulpanit@amd.com>
 R:	Vasant Hegde <vasant.hegde@amd.com>
 L:	iommu@lists.linux.dev
@@ -13482,7 +13482,7 @@ F:	include/linux/iommu-dma.h
 F:	include/linux/iova.h
 
 IOMMU SUBSYSTEM
-M:	Joerg Roedel <joro@8bytes.org>
+M:	Joerg Roedel (AMD) <joro@8bytes.org>
 M:	Will Deacon <will@kernel.org>
 R:	Robin Murphy <robin.murphy@arm.com>
 L:	iommu@lists.linux.dev
