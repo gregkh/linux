@@ -762,18 +762,15 @@ zl3073x_dev_periodic_work(struct kthread_work *work)
 		dev_warn(zldev->dev, "Failed to update phase offsets: %pe\n",
 			 ERR_PTR(rc));
 
-	/* Update measured input reference frequencies if any DPLL has
-	 * frequency monitoring enabled.
+	/* Update measured input reference frequencies if frequency
+	 * monitoring is enabled.
 	 */
-	list_for_each_entry(zldpll, &zldev->dplls, list) {
-		if (zldpll->freq_monitor) {
-			rc = zl3073x_ref_freq_meas_update(zldev);
-			if (rc)
-				dev_warn(zldev->dev,
-					 "Failed to update measured frequencies: %pe\n",
-					 ERR_PTR(rc));
-			break;
-		}
+	if (zldev->freq_monitor) {
+		rc = zl3073x_ref_freq_meas_update(zldev);
+		if (rc)
+			dev_warn(zldev->dev,
+				 "Failed to update measured frequencies: %pe\n",
+				 ERR_PTR(rc));
 	}
 
 	/* Update references' fractional frequency offsets */
