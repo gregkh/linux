@@ -252,8 +252,12 @@ static int enetc_pf_set_vf_mac(struct net_device *ndev, int vf, u8 *mac)
 		return -EADDRNOTAVAIL;
 
 	vf_state = &pf->vf_state[vf];
+
+	mutex_lock(&vf_state->lock);
 	vf_state->flags |= ENETC_VF_FLAG_PF_SET_MAC;
 	enetc_pf_set_primary_mac_addr(&priv->si->hw, vf + 1, mac);
+	mutex_unlock(&vf_state->lock);
+
 	return 0;
 }
 
@@ -478,49 +482,77 @@ static void enetc_configure_port(struct enetc_pf *pf)
 
 /* Messaging */
 static u16 enetc_msg_pf_set_vf_primary_mac_addr(struct enetc_pf *pf,
-						int vf_id)
+						int vf_id, void *msg)
 {
 	struct enetc_vf_state *vf_state = &pf->vf_state[vf_id];
-	struct enetc_msg_swbd *msg = &pf->rxmsg[vf_id];
-	struct enetc_msg_cmd_set_primary_mac *cmd;
+	struct enetc_msg_cmd_set_primary_mac *cmd = msg;
 	struct device *dev = &pf->si->pdev->dev;
-	u16 cmd_id;
+	u16 cmd_id = cmd->header.id;
 	char *addr;
 
-	cmd = (struct enetc_msg_cmd_set_primary_mac *)msg->vaddr;
-	cmd_id = cmd->header.id;
 	if (cmd_id != ENETC_MSG_CMD_MNG_ADD)
 		return ENETC_MSG_CMD_STATUS_FAIL;
 
 	addr = cmd->mac.sa_data;
-	if (vf_state->flags & ENETC_VF_FLAG_PF_SET_MAC)
-		dev_warn(dev, "Attempt to override PF set mac addr for VF%d\n",
-			 vf_id);
-	else
-		enetc_pf_set_primary_mac_addr(&pf->si->hw, vf_id + 1, addr);
+	if (!is_valid_ether_addr(addr)) {
+		dev_err_ratelimited(dev, "VF%d attempted to set invalid MAC\n",
+				    vf_id);
+		return ENETC_MSG_CMD_STATUS_FAIL;
+	}
+
+	mutex_lock(&vf_state->lock);
+	if (vf_state->flags & ENETC_VF_FLAG_PF_SET_MAC) {
+		mutex_unlock(&vf_state->lock);
+		dev_err_ratelimited(dev,
+				    "VF%d attempted to override PF set MAC\n",
+				    vf_id);
+		return ENETC_MSG_CMD_STATUS_FAIL;
+	}
+
+	enetc_pf_set_primary_mac_addr(&pf->si->hw, vf_id + 1, addr);
+	mutex_unlock(&vf_state->lock);
 
 	return ENETC_MSG_CMD_STATUS_OK;
 }
 
 void enetc_msg_handle_rxmsg(struct enetc_pf *pf, int vf_id, u16 *status)
 {
-	struct enetc_msg_swbd *msg = &pf->rxmsg[vf_id];
+	struct enetc_msg_swbd *msg_swbd = &pf->rxmsg[vf_id];
 	struct device *dev = &pf->si->pdev->dev;
 	struct enetc_msg_cmd_header *cmd_hdr;
 	u16 cmd_type;
+	u8 *msg;
 
-	*status = ENETC_MSG_CMD_STATUS_OK;
-	cmd_hdr = (struct enetc_msg_cmd_header *)msg->vaddr;
+	msg = kzalloc_objs(*msg, msg_swbd->size);
+	if (!msg) {
+		dev_err_ratelimited(dev,
+				    "Failed to allocate message buffer\n");
+		*status = ENETC_MSG_CMD_STATUS_FAIL;
+		return;
+	}
+
+	/* Currently, only ENETC_MSG_CMD_MNG_MAC command is supported, so
+	 * only sizeof(struct enetc_msg_cmd_set_primary_mac) bytes need to
+	 * be copied. This data already includes the cmd_type field, so it
+	 * can correctly return an error code.
+	 */
+	memcpy(msg, msg_swbd->vaddr,
+	       sizeof(struct enetc_msg_cmd_set_primary_mac));
+	cmd_hdr = (struct enetc_msg_cmd_header *)msg;
 	cmd_type = cmd_hdr->type;
 
 	switch (cmd_type) {
 	case ENETC_MSG_CMD_MNG_MAC:
-		*status = enetc_msg_pf_set_vf_primary_mac_addr(pf, vf_id);
+		*status = enetc_msg_pf_set_vf_primary_mac_addr(pf, vf_id, msg);
 		break;
 	default:
-		dev_err(dev, "command not supported (cmd_type: 0x%x)\n",
-			cmd_type);
+		*status = ENETC_MSG_CMD_STATUS_FAIL;
+		dev_err_ratelimited(dev,
+				    "command not supported (cmd_type: 0x%x)\n",
+				    cmd_type);
 	}
+
+	kfree(msg);
 }
 
 #ifdef CONFIG_PCI_IOV
@@ -531,9 +563,9 @@ static int enetc_sriov_configure(struct pci_dev *pdev, int num_vfs)
 	int err;
 
 	if (!num_vfs) {
+		pci_disable_sriov(pdev);
 		enetc_msg_psi_free(pf);
 		pf->num_vfs = 0;
-		pci_disable_sriov(pdev);
 	} else {
 		pf->num_vfs = num_vfs;
 
@@ -960,8 +992,13 @@ static int enetc_pf_probe(struct pci_dev *pdev,
 	if (pf->total_vfs) {
 		pf->vf_state = kzalloc_objs(struct enetc_vf_state,
 					    pf->total_vfs);
-		if (!pf->vf_state)
+		if (!pf->vf_state) {
+			err = -ENOMEM;
 			goto err_alloc_vf_state;
+		}
+
+		for (int i = 0; i < pf->total_vfs; i++)
+			mutex_init(&pf->vf_state[i].lock);
 	}
 
 	err = enetc_setup_mac_addresses(node, pf);

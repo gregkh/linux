@@ -4,7 +4,7 @@
 ALL_TESTS="vlmc_control_test vlmc_querier_test vlmc_igmp_mld_version_test \
 	   vlmc_last_member_test vlmc_startup_query_test vlmc_membership_test \
 	   vlmc_querier_intvl_test vlmc_query_intvl_test vlmc_query_response_intvl_test \
-	   vlmc_router_port_test vlmc_filtering_test"
+	   vlmc_router_port_test vlmc_filtering_test vlmc_mcast_toggle_test"
 NUM_NETIFS=4
 CHECK_TC="yes"
 TEST_GROUP="239.10.10.10"
@@ -535,6 +535,34 @@ vlmc_filtering_test()
 	jq -e "select(.[0].linkinfo.info_data.mcast_vlan_snooping == 1)" &>/dev/null
 	check_fail $? "Vlan filtering is disabled but multicast vlan snooping is still enabled"
 	log_test "Disable multicast vlan snooping when vlan filtering is disabled"
+}
+
+vlmc_mcast_toggle_test()
+{
+	RET=0
+
+	ip link add name br1-mcast up type bridge mcast_snooping 1 mcast_querier 1 vlan_filtering 1
+	ip link add name dummy1-mcast up master br1-mcast type dummy
+
+	# Enabling per-VLAN multicast snooping should disable the per-port
+	# multicast context on "dummy1-mcast".
+	ip link set dev br1-mcast type bridge mcast_vlan_snooping 1
+
+	# Toggling multicast snooping on the bridge should not affect the
+	# per-port multicast context on "dummy1-mcast" given that per-VLAN
+	# multicast snooping is enabled.
+	ip link set dev br1-mcast type bridge mcast_snooping 0
+	ip link set dev br1-mcast type bridge mcast_snooping 1
+
+	# If both the per-port and per-{port, VLAN} multicast contexts are
+	# enabled on "dummy1-mcast", removing it from the bridge will result
+	# in a splat.
+	ip link set dev dummy1-mcast nomaster
+
+	log_test "Toggling mcast snooping with per-VLAN mcast snooping enabled"
+
+	ip link del dev dummy1-mcast
+	ip link del dev br1-mcast
 }
 
 trap cleanup EXIT

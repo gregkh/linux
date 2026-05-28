@@ -771,11 +771,6 @@ static const char *bpf_cmd[] = {
 };
 static DEFINE_STRARRAY(bpf_cmd, "BPF_");
 
-static const char *fsmount_flags[] = {
-	[1] = "CLOEXEC",
-};
-static DEFINE_STRARRAY(fsmount_flags, "FSMOUNT_");
-
 #include "trace/beauty/generated/fsconfig_arrays.c"
 
 static DEFINE_STRARRAY(fsconfig_cmds, "FSCONFIG_");
@@ -1202,7 +1197,9 @@ static const struct syscall_fmt syscall_fmts[] = {
 	{ .name     = "fsconfig",
 	  .arg = { [1] = STRARRAY(cmd, fsconfig_cmds), }, },
 	{ .name     = "fsmount",
-	  .arg = { [1] = STRARRAY_FLAGS(flags, fsmount_flags),
+	  .arg = { [1] = { .scnprintf = SCA_FSMOUNT_FLAGS, /* fsmount_flags */
+			   .strtoul   = STUL_STRARRAYS,
+			   .show_zero = true, },
 		   [2] = { .scnprintf = SCA_FSMOUNT_ATTR_FLAGS, /* attr_flags */ }, }, },
 	{ .name     = "fspick",
 	  .arg = { [0] = { .scnprintf = SCA_FDAT,	  /* dfd */ },

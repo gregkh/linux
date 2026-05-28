@@ -94,6 +94,7 @@ struct acpi_battery {
 	struct power_supply *bat;
 	struct power_supply_desc bat_desc;
 	struct acpi_device *device;
+	struct device *phys_dev;
 	struct notifier_block pm_nb;
 	struct list_head list;
 	unsigned long update_time;
@@ -1033,7 +1034,7 @@ static int acpi_battery_update(struct acpi_battery *battery, bool resume)
 	if ((battery->state & ACPI_BATTERY_STATE_CRITICAL) ||
 	    (test_bit(ACPI_BATTERY_ALARM_PRESENT, &battery->flags) &&
 	     (battery->capacity_now <= battery->alarm)))
-		acpi_pm_wakeup_event(&battery->device->dev);
+		acpi_pm_wakeup_event(battery->phys_dev);
 
 	return result;
 }
@@ -1231,6 +1232,7 @@ static int acpi_battery_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, battery);
 
+	battery->phys_dev = &pdev->dev;
 	battery->device = device;
 
 	result = devm_mutex_init(&pdev->dev, &battery->update_lock);

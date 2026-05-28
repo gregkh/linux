@@ -84,7 +84,13 @@ struct amdgpu_usermode_queue {
 	u32			xcp_id;
 	int			priority;
 	struct dentry		*debugfs_queue;
-	struct delayed_work hang_detect_work;
+
+	/**
+	 * @hang_detect_work:
+	 *
+	 * Delayed work which runs when userq_fences time out.
+	 */
+	struct delayed_work	hang_detect_work;
 	struct kref		refcount;
 
 	struct list_head	userq_va_list;
@@ -116,6 +122,13 @@ struct amdgpu_userq_mgr {
 	struct amdgpu_device		*adev;
 	struct delayed_work		resume_work;
 	struct drm_file			*file;
+
+	/**
+	 * @reset_work:
+	 *
+	 * Reset work which is used when eviction fails.
+	 */
+	struct work_struct		reset_work;
 	atomic_t                        userq_count[AMDGPU_RING_TYPE_MAX];
 };
 
@@ -134,6 +147,7 @@ int amdgpu_userq_ioctl(struct drm_device *dev, void *data, struct drm_file *filp
 int amdgpu_userq_mgr_init(struct amdgpu_userq_mgr *userq_mgr, struct drm_file *file_priv,
 			  struct amdgpu_device *adev);
 
+void amdgpu_userq_mgr_cancel_reset_work(struct amdgpu_device *adev);
 void amdgpu_userq_mgr_cancel_resume(struct amdgpu_userq_mgr *userq_mgr);
 void amdgpu_userq_mgr_fini(struct amdgpu_userq_mgr *userq_mgr);
 

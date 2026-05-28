@@ -304,7 +304,7 @@ static int amdgpu_discovery_get_tmr_info(struct amdgpu_device *adev,
 				adev->virt.crit_regn_tbl[AMD_SRIOV_MSG_IPD_TABLE_ID].offset;
 			adev->discovery.size =
 				adev->virt.crit_regn_tbl[AMD_SRIOV_MSG_IPD_TABLE_ID].size_kb << 10;
-			if (!adev->discovery.offset || !adev->discovery.size)
+			if (!adev->discovery.size)
 				return -EINVAL;
 		} else {
 			goto out;

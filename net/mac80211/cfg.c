@@ -2344,8 +2344,9 @@ static int sta_apply_parameters(struct ieee80211_local *local,
 		sta->sta.max_sp = params->max_sp;
 	}
 
-	ieee80211_sta_set_max_amsdu_subframes(sta, params->ext_capab,
-					      params->ext_capab_len);
+	if (params->ext_capab)
+		ieee80211_sta_set_max_amsdu_subframes(sta, params->ext_capab,
+						      params->ext_capab_len);
 
 	/*
 	 * cfg80211 validates this (1-2007) and allows setting the AID

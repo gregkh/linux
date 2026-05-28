@@ -6933,7 +6933,7 @@ int __init ip6_route_init(void)
 #if defined(CONFIG_BPF_SYSCALL) && defined(CONFIG_PROC_FS)
 	ret = bpf_iter_register();
 	if (ret)
-		goto out_register_late_subsys;
+		goto out_register_notifier;
 #endif
 
 	for_each_possible_cpu(cpu) {
@@ -6946,6 +6946,10 @@ int __init ip6_route_init(void)
 out:
 	return ret;
 
+#if defined(CONFIG_BPF_SYSCALL) && defined(CONFIG_PROC_FS)
+out_register_notifier:
+	unregister_netdevice_notifier(&ip6_route_dev_notifier);
+#endif
 out_register_late_subsys:
 	rtnl_unregister_all(PF_INET6);
 	unregister_pernet_subsys(&ip6_route_net_late_ops);

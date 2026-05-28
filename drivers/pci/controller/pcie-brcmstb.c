@@ -2072,8 +2072,10 @@ static int brcm_pcie_probe(struct platform_device *pdev)
 		return PTR_ERR(pcie->clk);
 
 	ret = of_pci_get_max_link_speed(np);
-	if (pcie_get_link_speed(ret) == PCI_SPEED_UNKNOWN)
+	if (ret < 0 || ret > 3)
 		pcie->gen = 0;
+	else
+		pcie->gen = ret;
 
 	pcie->ssc = of_property_read_bool(np, "brcm,enable-ssc");
 

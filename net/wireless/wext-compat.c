@@ -789,6 +789,8 @@ static int cfg80211_wext_siwfreq(struct net_device *dev,
 		chandef.chan = ieee80211_get_channel(&rdev->wiphy, freq);
 		if (!chandef.chan)
 			return -EINVAL;
+		if (!cfg80211_chandef_valid(&chandef))
+			return -EINVAL;
 		return cfg80211_set_monitor_channel(rdev, dev, &chandef);
 	case NL80211_IFTYPE_MESH_POINT:
 		freq = cfg80211_wext_freq(wextfreq);

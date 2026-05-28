@@ -1272,7 +1272,7 @@ static int ip_rt_bug(struct net *net, struct sock *sk, struct sk_buff *skb)
 		 __func__, &ip_hdr(skb)->saddr, &ip_hdr(skb)->daddr,
 		 skb->dev ? skb->dev->name : "?");
 	kfree_skb(skb);
-	WARN_ON(1);
+	WARN_ON_ONCE(1);
 	return 0;
 }
 

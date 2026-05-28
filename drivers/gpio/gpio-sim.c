@@ -901,7 +901,7 @@ static int gpio_sim_device_activate(struct gpio_sim_device *dev)
 	struct platform_device *pdev;
 	struct fwnode_handle *swnode;
 	struct gpio_sim_bank *bank;
-	int ret;
+	int ret = 0;
 
 	lockdep_assert_held(&dev->lock);
 
@@ -945,9 +945,12 @@ static int gpio_sim_device_activate(struct gpio_sim_device *dev)
 	}
 
 	wait_for_device_probe();
-	if (!device_is_bound(&pdev->dev)) {
-		ret = -ENXIO;
-		goto err_unregister_pdev;
+
+	scoped_guard(device, &pdev->dev) {
+		if (!device_is_bound(&pdev->dev)) {
+			ret = -ENXIO;
+			goto err_unregister_pdev;
+		}
 	}
 
 	dev->pdev = pdev;

@@ -2064,7 +2064,7 @@ F:	Documentation/devicetree/bindings/display/snps,arcpgu.txt
 F:	drivers/gpu/drm/tiny/arcpgu.c
 
 ARCNET NETWORK LAYER
-M:	Michael Grzeschik <m.grzeschik@pengutronix.de>
+M:	Michael Grzeschik <mgr@kernel.org>
 L:	netdev@vger.kernel.org
 S:	Maintained
 F:	drivers/net/arcnet/
@@ -3367,7 +3367,9 @@ F:	drivers/irqchip/irq-rda-intc.c
 F:	drivers/tty/serial/rda-uart.c
 
 ARM/REALTEK ARCHITECTURE
-M:	Andreas Färber <afaerber@suse.de>
+M:	James Tai <james.tai@realtek.com>
+M:	Yu-Chun Lin <eleanor.lin@realtek.com>
+R:	Andreas Färber <afaerber@suse.com>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
 L:	linux-realtek-soc@lists.infradead.org (moderated for non-subscribers)
 S:	Maintained
@@ -3375,6 +3377,7 @@ F:	Documentation/devicetree/bindings/arm/realtek.yaml
 F:	arch/arm/boot/dts/realtek/
 F:	arch/arm/mach-realtek/
 F:	arch/arm64/boot/dts/realtek/
+F:	drivers/pinctrl/realtek/
 
 ARM/RISC-V/RENESAS ARCHITECTURE
 M:	Geert Uytterhoeven <geert+renesas@glider.be>
@@ -13868,6 +13871,7 @@ M:	Pratyush Yadav <pratyush@kernel.org>
 R:	Dave Young <ruirui.yang@linux.dev>
 L:	kexec@lists.infradead.org
 S:	Maintained
+T:	git git://git.kernel.org/pub/scm/linux/kernel/git/liveupdate/linux.git
 F:	Documentation/admin-guide/kdump/
 F:	fs/proc/vmcore.c
 F:	include/linux/crash_core.h
@@ -14185,6 +14189,7 @@ M:	Pasha Tatashin <pasha.tatashin@soleen.com>
 M:	Pratyush Yadav <pratyush@kernel.org>
 L:	kexec@lists.infradead.org
 W:	http://kernel.org/pub/linux/utils/kernel/kexec/
+T:	git git://git.kernel.org/pub/scm/linux/kernel/git/liveupdate/linux.git
 F:	include/linux/kexec.h
 F:	include/uapi/linux/kexec.h
 F:	kernel/kexec*
@@ -14901,6 +14906,7 @@ LIVE UPDATE
 M:	Pasha Tatashin <pasha.tatashin@soleen.com>
 M:	Mike Rapoport <rppt@kernel.org>
 M:	Pratyush Yadav <pratyush@kernel.org>
+L:	kexec@lists.infradead.org
 L:	linux-kernel@vger.kernel.org
 S:	Maintained
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/liveupdate/linux.git
@@ -18631,6 +18637,7 @@ F:	tools/testing/selftests/net/
 X:	Documentation/networking/mac80211-injection.rst
 X:	Documentation/networking/mac80211_hwsim/
 X:	Documentation/networking/regulatory.rst
+X:	include/net/bluetooth/
 X:	include/net/cfg80211.h
 X:	include/net/ieee80211_radiotap.h
 X:	include/net/iw_handler.h
@@ -18940,7 +18947,8 @@ F:	drivers/hid/hid-nintendo*
 
 NIOS2 ARCHITECTURE
 M:	Dinh Nguyen <dinguyen@kernel.org>
-S:	Maintained
+M:	Simon Schuster <schuster.simon@siemens-energy.com>
+S:	Supported
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux.git
 F:	arch/nios2/
 
@@ -20735,15 +20743,13 @@ F:	Documentation/devicetree/bindings/pci/intel,keembay-pcie*
 F:	drivers/pci/controller/dwc/pcie-keembay.c
 
 PCIE DRIVER FOR INTEL LGM GW SOC
-M:	Chuanhua Lei <lchuanhua@maxlinear.com>
 L:	linux-pci@vger.kernel.org
-S:	Maintained
+S:	Orphan
 F:	Documentation/devicetree/bindings/pci/intel-gw-pcie.yaml
 F:	drivers/pci/controller/dwc/pcie-intel-gw.c
 
 PCIE DRIVER FOR MEDIATEK
 M:	Ryder Lee <ryder.lee@mediatek.com>
-M:	Jianjun Wang <jianjun.wang@mediatek.com>
 L:	linux-pci@vger.kernel.org
 L:	linux-mediatek@lists.infradead.org (moderated for non-subscribers)
 S:	Supported

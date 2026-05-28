@@ -268,6 +268,21 @@ void __init idt_setup_early_pf(void)
 }
 #endif
 
+#if IS_ENABLED(CONFIG_KVM_INTEL)
+noinstr void idt_entry_from_kvm(unsigned int vector)
+{
+	if (vector == NMI_VECTOR)
+		return idt_do_nmi_irqoff();
+
+	/*
+	 * Only the NMI path requires noinstr.
+	 */
+	instrumentation_begin();
+	idt_do_interrupt_irqoff(gate_offset(idt_table + vector));
+	instrumentation_end();
+}
+#endif
+
 static void __init idt_map_in_cea(void)
 {
 	/*

@@ -229,6 +229,40 @@ int uverbs_dealloc_mw(struct ib_mw *mw);
 void ib_uverbs_detach_umcast(struct ib_qp *qp,
 			     struct ib_uqp_object *uobj);
 
+struct bundle_alloc_head {
+	struct_group_tagged(bundle_alloc_head_hdr, hdr,
+		struct bundle_alloc_head *next;
+	);
+	u8 data[];
+};
+
+struct bundle_priv {
+	/* Must be first */
+	struct bundle_alloc_head_hdr alloc_head;
+	struct bundle_alloc_head *allocated_mem;
+	size_t internal_avail;
+	size_t internal_used;
+
+	struct radix_tree_root *radix;
+	void __rcu **radix_slots;
+	unsigned long radix_slots_len;
+	u32 method_key;
+
+	struct ib_uverbs_attr __user *user_attrs;
+	struct ib_uverbs_attr *uattrs;
+
+	DECLARE_BITMAP(uobj_finalize, UVERBS_API_ATTR_BKEY_LEN);
+	DECLARE_BITMAP(spec_finalize, UVERBS_API_ATTR_BKEY_LEN);
+	DECLARE_BITMAP(uobj_hw_obj_valid, UVERBS_API_ATTR_BKEY_LEN);
+
+	/*
+	 * Must be last. bundle ends in a flex array which overlaps
+	 * internal_buffer.
+	 */
+	struct uverbs_attr_bundle_hdr bundle;
+	u64 internal_buffer[32];
+};
+
 long ib_uverbs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 
 struct ib_uverbs_flow_spec {

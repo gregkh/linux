@@ -413,6 +413,7 @@ int ntfs_write_volume_label(struct ntfs_volume *vol, char *label)
 {
 	struct ntfs_inode *vol_ni = NTFS_I(vol->vol_ino);
 	struct ntfs_attr_search_ctx *ctx;
+	char *new_label;
 	__le16 *uname;
 	int uname_len, ret;
 
@@ -425,7 +426,7 @@ int ntfs_write_volume_label(struct ntfs_volume *vol, char *label)
 		return uname_len;
 	}
 
-	if (uname_len  > NTFS_MAX_LABEL_LEN) {
+	if (uname_len > NTFS_MAX_LABEL_LEN) {
 		ntfs_error(vol->sb,
 			   "Volume label is too long (max %d characters).",
 			   NTFS_MAX_LABEL_LEN);
@@ -433,11 +434,22 @@ int ntfs_write_volume_label(struct ntfs_volume *vol, char *label)
 		return -EINVAL;
 	}
 
+	/*
+	 * Allocate the in-memory label copy up front. If kstrdup() fails we
+	 * bail out before touching on-disk metadata, so the in-memory label
+	 * and the on-disk label stay in sync.
+	 */
+	new_label = kstrdup(label, GFP_KERNEL);
+	if (!new_label) {
+		kvfree(uname);
+		return -ENOMEM;
+	}
+
 	mutex_lock(&vol_ni->mrec_lock);
 	ctx = ntfs_attr_get_search_ctx(vol_ni, NULL);
 	if (!ctx) {
 		ret = -ENOMEM;
-		goto  out;
+		goto out;
 	}
 
 	if (!ntfs_attr_lookup(AT_VOLUME_NAME, NULL, 0, 0, 0, NULL, 0,
@@ -450,12 +462,14 @@ int ntfs_write_volume_label(struct ntfs_volume *vol, char *label)
 out:
 	mutex_unlock(&vol_ni->mrec_lock);
 	kvfree(uname);
-	mark_inode_dirty_sync(vol->vol_ino);
 
 	if (ret >= 0) {
 		kfree(vol->volume_label);
-		vol->volume_label = kstrdup(label, GFP_KERNEL);
+		vol->volume_label = new_label;
+		mark_inode_dirty_sync(vol->vol_ino);
 		ret = 0;
+	} else {
+		kfree(new_label);
 	}
 	return ret;
 }
@@ -978,6 +992,13 @@ mft_unmap_out:
 			    bytes > vol->mft_record_size ||
 			    ntfs_is_baad_recordp((__le32 *)kmirr))
 				bytes = vol->mft_record_size;
+		}
+		/* Compare the two records. */
+		if (memcmp(kmft, kmirr, bytes)) {
+			ntfs_error(sb,
+				   "$MFT and $MFTMirr record %i do not match.  Run chkdsk.",
+				   i);
+			goto mm_unmap_out;
 		}
 		kmft += vol->mft_record_size;
 		kmirr += vol->mft_record_size;
@@ -1671,7 +1692,7 @@ iput_attrdef_err_out:
 iput_upcase_err_out:
 	vol->upcase_len = 0;
 	mutex_lock(&ntfs_lock);
-	if (vol->upcase == default_upcase) {
+	if (vol->upcase && vol->upcase == default_upcase) {
 		ntfs_nr_upcase_users--;
 		vol->upcase = NULL;
 	}
@@ -1701,7 +1722,7 @@ static void ntfs_volume_free(struct ntfs_volume *vol)
 	 * the number of upcase users if we are a user.
 	 */
 	mutex_lock(&ntfs_lock);
-	if (vol->upcase == default_upcase) {
+	if (vol->upcase && vol->upcase == default_upcase) {
 		ntfs_nr_upcase_users--;
 		vol->upcase = NULL;
 	}
@@ -2494,7 +2515,7 @@ static int ntfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	}
 	vol->upcase_len = 0;
 	mutex_lock(&ntfs_lock);
-	if (vol->upcase == default_upcase) {
+	if (vol->upcase && vol->upcase == default_upcase) {
 		ntfs_nr_upcase_users--;
 		vol->upcase = NULL;
 	}

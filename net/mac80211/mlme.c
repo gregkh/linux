@@ -8164,6 +8164,7 @@ ieee80211_parse_neg_ttlm(struct ieee80211_sub_if_data *sdata,
 					 "No active links for TID %d", tid);
 				return -EINVAL;
 			}
+			pos += map_size;
 		} else {
 			map = 0;
 		}
@@ -8182,7 +8183,6 @@ ieee80211_parse_neg_ttlm(struct ieee80211_sub_if_data *sdata,
 		default:
 			return -EINVAL;
 		}
-		pos += map_size;
 	}
 	return 0;
 }
@@ -11231,6 +11231,9 @@ static void ieee80211_ml_epcs(struct ieee80211_sub_if_data *sdata,
 
 		control = get_unaligned_le16(pos);
 		link_id = control & IEEE80211_MLE_STA_EPCS_CONTROL_LINK_ID;
+
+		if (link_id >= IEEE80211_MLD_MAX_NUM_LINKS)
+			continue;
 
 		link = sdata_dereference(sdata->link[link_id], sdata);
 		if (!link)

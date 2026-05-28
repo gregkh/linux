@@ -67,6 +67,21 @@ static const struct class kfd_class = {
 	.name = kfd_dev_name,
 };
 
+/*
+ * Cache the address space of the chardev on first open so that the reset
+ * path can drop all userspace mappings of doorbell and MMIO ranges via
+ * unmap_mapping_range().
+ */
+static struct address_space *kfd_dev_mapping;
+
+void kfd_dev_unmap_mapping_range(loff_t const holebegin, loff_t const holelen)
+{
+	struct address_space *mapping = READ_ONCE(kfd_dev_mapping);
+
+	if (mapping)
+		unmap_mapping_range(mapping, holebegin, holelen, 1);
+}
+
 static inline struct kfd_process_device *kfd_lock_pdd_by_id(struct kfd_process *p, __u32 gpu_id)
 {
 	struct kfd_process_device *pdd;
@@ -132,6 +147,13 @@ static int kfd_open(struct inode *inode, struct file *filep)
 
 	if (iminor(inode) != 0)
 		return -ENODEV;
+
+	/*
+	 * /dev/kfd is a single chardev so all opens share one inode. Cache
+	 * its address_space on the first open for use by the reset path.
+	 */
+	if (!READ_ONCE(kfd_dev_mapping))
+		cmpxchg(&kfd_dev_mapping, NULL, inode->i_mapping);
 
 	is_32bit_user_mode = in_compat_syscall();
 
