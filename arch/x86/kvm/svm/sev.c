@@ -3947,7 +3947,7 @@ next_range:
 	}
 
 	/* Find the start of the next range which needs processing. */
-	for (idx = idx_start; idx <= idx_end; idx++, hdr->cur_entry++) {
+	for (idx = idx_start; idx <= idx_end; idx++) {
 		entry_start = READ_ONCE(entries[idx]);
 
 		gfn = entry_start.gfn;
@@ -3974,6 +3974,14 @@ next_range:
 
 		if (npages)
 			break;
+
+		/*
+		 * Increment the guest-visible index to communicate the current
+		 * entry back to the guest, e.g. in case of failure.  No need
+		 * for READ_ONCE() as KVM doesn't consume the field, i.e. a
+		 * misbehaving guest can only break itself.
+		 */
+		hdr->cur_entry++;
 	}
 
 	if (idx > idx_end) {
