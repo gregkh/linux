@@ -1834,6 +1834,11 @@ int kvm_init_nv_sysregs(struct kvm_vcpu *vcpu)
 	resx.res1 = VNCR_EL2_RES1;
 	set_sysreg_masks(kvm, VNCR_EL2, resx);
 
+	/* ZCR_EL2 - bits 8:4 are RAZ/WI so treat them as RES0 */
+	resx.res0 = ZCR_ELx_RES0 | GENMASK_ULL(8, 4);
+	resx.res1 = ZCR_ELx_RES1;
+	set_sysreg_masks(kvm, ZCR_EL2, resx);
+
 out:
 	for (enum vcpu_sysreg sr = __SANITISED_REG_START__; sr < NR_SYS_REGS; sr++)
 		__vcpu_rmw_sys_reg(vcpu, sr, |=, 0);
