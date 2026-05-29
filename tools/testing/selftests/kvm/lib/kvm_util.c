@@ -5,13 +5,13 @@
  * Copyright (C) 2018, Google LLC.
  */
 #include "test_util.h"
+#include "kvm_syscalls.h"
 #include "kvm_util.h"
 #include "processor.h"
 #include "ucall_common.h"
 
 #include <assert.h>
 #include <sched.h>
-#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/stat.h>
