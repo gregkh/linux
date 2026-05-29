@@ -259,6 +259,7 @@ struct vcpu_sev_es_state {
 	/* SNP Page-State-Change buffer entries currently being processed */
 	struct {
 		u16 cur_idx;
+		u16 end_idx;
 		u16 batch_size;
 		bool is_2m;
 	} psc;
