@@ -1150,6 +1150,13 @@ int iwl_mld_assign_vif_chanctx(struct ieee80211_hw *hw,
 	if (iwl_mld_can_activate_link(mld, vif, link)) {
 		iwl_mld_tlc_update_phy(mld, vif, link);
 
+		/* FW requires AP_TX_POWER_CONSTRAINTS_CMD before link
+		 * activation for AP and after link activation for STA,
+		 * for an unknown reason.
+		 */
+		if (vif->type == NL80211_IFTYPE_AP)
+			iwl_mld_send_ap_tx_power_constraint_cmd(mld, vif, link);
+
 		ret = iwl_mld_activate_link(mld, link);
 		if (ret)
 			goto err;
