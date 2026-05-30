@@ -1371,10 +1371,8 @@ static int get_min_max_with_quirks(struct usb_mixer_elem_info *cval,
 				goto no_checks;
 
 			ret = check_sticky_volume_control(cval, minchn, saved);
-			if (ret < 0) {
-				snd_usb_set_cur_mix_value(cval, minchn, 0, saved);
-				return ret;
-			}
+			if (ret < 0)
+				goto sticky;
 
 			if (cval->min + cval->res < cval->max)
 				check_volume_control_res(cval, minchn, saved);
@@ -1431,6 +1429,33 @@ no_checks:
 	}
 
 	return 0;
+
+sticky:
+	/*
+	 * It makes no sense to restore the saved value for a sticky mixer,
+	 * since setting any value is a no-op.
+	 *
+	 * However, in some rare cases, SET_CUR is effective despite GET_CUR
+	 * always returns a constant value. These mixers are not sticky, but
+	 * there's no way to distinguish them. Without any additional
+	 * information, the best thing we can do is to set the mixer value to
+	 * the maximum before bailing out, so that a soft mixer can still reach
+	 * the maximum hardware volume if the mixer turns out to be non-sticky.
+	 * Meanwhile, all channels must be synchronized to prevent imbalance
+	 * volume.
+	 */
+	if (!cval->cmask) {
+		snd_usb_set_cur_mix_value(cval, 0, 0, cval->max);
+	} else {
+		for (i = 0; i < MAX_CHANNELS; i++) {
+			idx = 0;
+			if (cval->cmask & BIT(i)) {
+				snd_usb_set_cur_mix_value(cval, i + 1, idx, cval->max);
+				idx++;
+			}
+		}
+	}
+	return ret;
 }
 
 #define get_min_max(cval, def)	get_min_max_with_quirks(cval, def, NULL)
