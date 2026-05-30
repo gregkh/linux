@@ -217,7 +217,7 @@ int ksmbd_query_inode_status(struct dentry *dentry)
 		ret = KSMBD_INODE_STATUS_OK;
 	up_read(&ci->m_lock);
 
-	atomic_dec(&ci->m_count);
+	ksmbd_inode_put(ci);
 	return ret;
 }
 
@@ -719,14 +719,14 @@ struct ksmbd_file *ksmbd_lookup_fd_inode(struct dentry *dentry)
 	down_read(&ci->m_lock);
 	list_for_each_entry(lfp, &ci->m_fp_list, node) {
 		if (inode == file_inode(lfp->filp)) {
-			atomic_dec(&ci->m_count);
 			lfp = ksmbd_fp_get(lfp);
 			up_read(&ci->m_lock);
+			ksmbd_inode_put(ci);
 			return lfp;
 		}
 	}
-	atomic_dec(&ci->m_count);
 	up_read(&ci->m_lock);
+	ksmbd_inode_put(ci);
 	return NULL;
 }
 
