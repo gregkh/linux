@@ -357,20 +357,6 @@ int kho_radix_walk_tree(struct kho_radix_tree *tree,
 }
 EXPORT_SYMBOL_GPL(kho_radix_walk_tree);
 
-static void __kho_unpreserve(struct kho_radix_tree *tree,
-			     unsigned long pfn, unsigned long end_pfn)
-{
-	unsigned int order;
-
-	while (pfn < end_pfn) {
-		order = min(count_trailing_zeros(pfn), ilog2(end_pfn - pfn));
-
-		kho_radix_del_page(tree, pfn, order);
-
-		pfn += 1 << order;
-	}
-}
-
 /* For physically contiguous 0-order pages. */
 static void kho_init_pages(struct page *page, unsigned long nr_pages)
 {
@@ -860,6 +846,37 @@ void kho_unpreserve_folio(struct folio *folio)
 }
 EXPORT_SYMBOL_GPL(kho_unpreserve_folio);
 
+static unsigned int __kho_preserve_pages_order(unsigned long start_pfn,
+					       unsigned long end_pfn)
+{
+	unsigned int order = min(count_trailing_zeros(start_pfn),
+				 ilog2(end_pfn - start_pfn));
+
+	/*
+	 * Make sure all the pages in a single preservation are in the same NUMA
+	 * node. The restore machinery can not cope with a preservation spanning
+	 * multiple NUMA nodes.
+	 */
+	while (pfn_to_nid(start_pfn) != pfn_to_nid(start_pfn + (1UL << order) - 1))
+		order--;
+
+	return order;
+}
+
+static void __kho_unpreserve(struct kho_radix_tree *tree,
+			     unsigned long pfn, unsigned long end_pfn)
+{
+	unsigned int order;
+
+	while (pfn < end_pfn) {
+		order = __kho_preserve_pages_order(pfn, end_pfn);
+
+		kho_radix_del_page(tree, pfn, order);
+
+		pfn += 1 << order;
+	}
+}
+
 /**
  * kho_preserve_pages - preserve contiguous pages across kexec
  * @page: first page in the list.
@@ -885,16 +902,7 @@ int kho_preserve_pages(struct page *page, unsigned long nr_pages)
 	}
 
 	while (pfn < end_pfn) {
-		unsigned int order =
-			min(count_trailing_zeros(pfn), ilog2(end_pfn - pfn));
-
-		/*
-		 * Make sure all the pages in a single preservation are in the
-		 * same NUMA node. The restore machinery can not cope with a
-		 * preservation spanning multiple NUMA nodes.
-		 */
-		while (pfn_to_nid(pfn) != pfn_to_nid(pfn + (1UL << order) - 1))
-			order--;
+		unsigned int order = __kho_preserve_pages_order(pfn, end_pfn);
 
 		err = kho_radix_add_page(tree, pfn, order);
 		if (err) {
