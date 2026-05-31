@@ -60,10 +60,14 @@ static acpi_status acpi_atlas_button_handler(u32 function,
 
 static int atlas_acpi_button_probe(struct platform_device *pdev)
 {
-	struct acpi_device *device = ACPI_COMPANION(&pdev->dev);
+	struct acpi_device *device;
 	acpi_status status;
 	int i;
 	int err;
+
+	device = ACPI_COMPANION(&pdev->dev);
+	if (!device)
+		return -ENODEV;
 
 	input_dev = input_allocate_device();
 	if (!input_dev) {
