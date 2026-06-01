@@ -1613,7 +1613,7 @@ static noinline int search_ioctl(struct btrfs_root *root,
 {
 	struct btrfs_fs_info *info = root->fs_info;
 	struct btrfs_key key;
-	struct btrfs_path *path;
+	BTRFS_PATH_AUTO_FREE(path);
 	int ret;
 	int num_found = 0;
 	unsigned long sk_offset = 0;
@@ -1633,10 +1633,8 @@ static noinline int search_ioctl(struct btrfs_root *root,
 	} else {
 		/* Look up the root from the arguments. */
 		root = btrfs_get_fs_root(info, sk->tree_id, true);
-		if (IS_ERR(root)) {
-			btrfs_free_path(path);
+		if (IS_ERR(root))
 			return PTR_ERR(root);
-		}
 	}
 
 	key.objectid = sk->min_objectid;
@@ -1670,7 +1668,6 @@ static noinline int search_ioctl(struct btrfs_root *root,
 
 	sk->nr_items = num_found;
 	btrfs_put_root(root);
-	btrfs_free_path(path);
 	return ret;
 }
 
@@ -1753,7 +1750,7 @@ static noinline int btrfs_search_path_in_tree(struct btrfs_fs_info *info,
 	int total_len = 0;
 	struct btrfs_inode_ref *iref;
 	struct extent_buffer *l;
-	struct btrfs_path *path;
+	BTRFS_PATH_AUTO_FREE(path);
 
 	if (dirid == BTRFS_FIRST_FREE_OBJECTID) {
 		name[0]='\0';
@@ -1814,7 +1811,6 @@ static noinline int btrfs_search_path_in_tree(struct btrfs_fs_info *info,
 	ret = 0;
 out:
 	btrfs_put_root(root);
-	btrfs_free_path(path);
 	return ret;
 }
 
@@ -1831,8 +1827,8 @@ static int btrfs_search_path_in_tree_user(struct mnt_idmap *idmap,
 	struct btrfs_inode_ref *iref;
 	struct btrfs_root_ref *rref;
 	struct btrfs_root *root = NULL;
-	struct btrfs_path *path;
-	struct btrfs_key key, key2;
+	BTRFS_PATH_AUTO_FREE(path);
+	struct btrfs_key key;
 	struct extent_buffer *leaf;
 	char *ptr;
 	int slot;
@@ -1852,10 +1848,8 @@ static int btrfs_search_path_in_tree_user(struct mnt_idmap *idmap,
 		ptr = &args->path[BTRFS_INO_LOOKUP_USER_PATH_MAX - 1];
 
 		root = btrfs_get_fs_root(fs_info, treeid, true);
-		if (IS_ERR(root)) {
-			ret = PTR_ERR(root);
-			goto out;
-		}
+		if (IS_ERR(root))
+			return PTR_ERR(root);
 
 		key.objectid = dirid;
 		key.type = BTRFS_INODE_REF_KEY;
@@ -1887,24 +1881,6 @@ static int btrfs_search_path_in_tree_user(struct mnt_idmap *idmap,
 			read_extent_buffer(leaf, ptr,
 					(unsigned long)(iref + 1), len);
 
-			/* Check the read+exec permission of this directory */
-			ret = btrfs_previous_item(root, path, dirid,
-						  BTRFS_INODE_ITEM_KEY);
-			if (ret < 0) {
-				goto out_put;
-			} else if (ret > 0) {
-				ret = -ENOENT;
-				goto out_put;
-			}
-
-			leaf = path->nodes[0];
-			slot = path->slots[0];
-			btrfs_item_key_to_cpu(leaf, &key2, slot);
-			if (key2.objectid != dirid) {
-				ret = -ENOENT;
-				goto out_put;
-			}
-
 			/*
 			 * We don't need the path anymore, so release it and
 			 * avoid deadlocks and lockdep warnings in case
@@ -1912,11 +1888,12 @@ static int btrfs_search_path_in_tree_user(struct mnt_idmap *idmap,
 			 * btree and lock the same leaf.
 			 */
 			btrfs_release_path(path);
-			temp_inode = btrfs_iget(key2.objectid, root);
+			temp_inode = btrfs_iget(key.offset, root);
 			if (IS_ERR(temp_inode)) {
 				ret = PTR_ERR(temp_inode);
 				goto out_put;
 			}
+			/* Check the read+exec permission of this directory. */
 			ret = inode_permission(idmap, &temp_inode->vfs_inode,
 					       MAY_READ | MAY_EXEC);
 			iput(&temp_inode->vfs_inode);
@@ -1947,12 +1924,10 @@ static int btrfs_search_path_in_tree_user(struct mnt_idmap *idmap,
 	key.type = BTRFS_ROOT_REF_KEY;
 	key.offset = args->treeid;
 	ret = btrfs_search_slot(NULL, fs_info->tree_root, &key, path, 0, 0);
-	if (ret < 0) {
-		goto out;
-	} else if (ret > 0) {
-		ret = -ENOENT;
-		goto out;
-	}
+	if (ret < 0)
+		return ret;
+	else if (ret > 0)
+		return -ENOENT;
 
 	leaf = path->nodes[0];
 	slot = path->slots[0];
@@ -1962,10 +1937,8 @@ static int btrfs_search_path_in_tree_user(struct mnt_idmap *idmap,
 	item_len = btrfs_item_size(leaf, slot);
 	/* Check if dirid in ROOT_REF corresponds to passed dirid */
 	rref = btrfs_item_ptr(leaf, slot, struct btrfs_root_ref);
-	if (args->dirid != btrfs_root_ref_dirid(leaf, rref)) {
-		ret = -EINVAL;
-		goto out;
-	}
+	if (args->dirid != btrfs_root_ref_dirid(leaf, rref))
+		return -EINVAL;
 
 	/* Copy subvolume's name */
 	item_off += sizeof(struct btrfs_root_ref);
@@ -1975,8 +1948,7 @@ static int btrfs_search_path_in_tree_user(struct mnt_idmap *idmap,
 
 out_put:
 	btrfs_put_root(root);
-out:
-	btrfs_free_path(path);
+
 	return ret;
 }
 
