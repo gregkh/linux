@@ -1082,7 +1082,7 @@ static int iso_sock_rebind_bc(struct sock *sk, struct sockaddr_iso *sa,
 	 * ordering.
 	 */
 	release_sock(sk);
-	hci_dev_lock(bis->hdev);
+	hci_dev_lock(hdev);
 	lock_sock(sk);
 
 	if (!iso_pi(sk)->conn || iso_pi(sk)->conn->hcon != bis) {
