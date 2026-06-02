@@ -54,6 +54,13 @@ int kvm_s390_faultin_gfn(struct kvm_vcpu *vcpu, struct kvm *kvm, struct guest_fa
 			return 0;
 	}
 
+	if (!mc) {
+		local_mc = kvm_s390_new_mmu_cache();
+		if (!local_mc)
+			return -ENOMEM;
+		mc = local_mc;
+	}
+
 	while (rc == -EAGAIN) {
 		f->valid = false;
 		inv_seq = kvm->mmu_invalidate_seq;
@@ -94,14 +101,7 @@ int kvm_s390_faultin_gfn(struct kvm_vcpu *vcpu, struct kvm *kvm, struct guest_fa
 		if (is_error_pfn(f->pfn))
 			return -EFAULT;
 
-		if (!mc) {
-			local_mc = kvm_s390_new_mmu_cache();
-			if (!local_mc)
-				return -ENOMEM;
-			mc = local_mc;
-		}
-
-		/* Loop, will automatically release the faulted page. */
+		/* Loop, release the faulted page. */
 		if (mmu_invalidate_retry_gfn_unsafe(kvm, inv_seq, f->gfn)) {
 			kvm_release_faultin_page(kvm, f->page, true, false);
 			continue;
