@@ -17,24 +17,6 @@
 #include <asm/gmap_helpers.h>
 
 /**
- * ptep_zap_softleaf_entry() - discard a software leaf entry.
- * @mm: the mm
- * @entry: the software leaf entry that needs to be zapped
- *
- * Discards the given software leaf entry. If the leaf entry was an actual
- * swap entry (and not a migration entry, for example), the actual swapped
- * page is also discarded from swap.
- */
-static void ptep_zap_softleaf_entry(struct mm_struct *mm, softleaf_t entry)
-{
-	if (softleaf_is_swap(entry))
-		dec_mm_counter(mm, MM_SWAPENTS);
-	else if (softleaf_is_migration(entry))
-		dec_mm_counter(mm, mm_counter(softleaf_to_folio(entry)));
-	swap_put_entries_direct(entry, 1);
-}
-
-/**
  * try_get_locked_pte() - like get_locked_pte(), but atomic and with trylock
  * @mm: the mm
  * @vmaddr: the userspace virtual address whose pte is to be found
@@ -111,6 +93,7 @@ void gmap_helper_zap_one_page(struct mm_struct *mm, unsigned long vmaddr)
 {
 	struct vm_area_struct *vma;
 	spinlock_t *ptl;	/* Lock for the host (userspace) page table */
+	softleaf_t sl;
 	pte_t *ptep;
 
 	mmap_assert_locked(mm);
@@ -124,8 +107,10 @@ void gmap_helper_zap_one_page(struct mm_struct *mm, unsigned long vmaddr)
 	ptep = try_get_locked_pte(mm, vmaddr, &ptl);
 	if (IS_ERR_OR_NULL(ptep))
 		return;
-	if (pte_swap(*ptep)) {
-		ptep_zap_softleaf_entry(mm, softleaf_from_pte(*ptep));
+	sl = softleaf_from_pte(*ptep);
+	if (pte_swap(*ptep) && softleaf_is_swap(sl)) {
+		dec_mm_counter(mm, MM_SWAPENTS);
+		swap_put_entries_direct(sl, 1);
 		pte_clear(mm, vmaddr, ptep);
 	}
 	pte_unmap_unlock(ptep, ptl);
