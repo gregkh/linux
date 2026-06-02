@@ -566,6 +566,7 @@ static bool mptcp_established_options_dss(struct sock *sk, struct sk_buff *skb,
 {
 	struct mptcp_subflow_context *subflow = mptcp_subflow_ctx(sk);
 	struct mptcp_sock *msk = mptcp_sk(subflow->conn);
+	struct tcp_sock *tp = tcp_sk(sk);
 	unsigned int dss_size = 0;
 	struct mptcp_ext *mpext;
 	unsigned int ack_size;
@@ -613,6 +614,12 @@ static bool mptcp_established_options_dss(struct sock *sk, struct sk_buff *skb,
 	/* Add kind/length/subtype/flag overhead if mapping is not populated */
 	if (dss_size == 0)
 		ack_size += TCPOLEN_MPTCP_DSS_BASE;
+
+	/* The caller is __tcp_transmit_skb(), and will compute the new rcv
+	 * wnd soon: ensure that the window can shrink.
+	 */
+	if (skb)
+		tp->rcv_wnd = tp->rcv_nxt - tp->rcv_wup;
 
 	dss_size += ack_size;
 
