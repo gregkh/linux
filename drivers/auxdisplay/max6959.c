@@ -86,10 +86,7 @@ static const struct linedisp_ops max6959_linedisp_ops = {
 
 static int max6959_enable(struct max6959_priv *priv, bool enable)
 {
-	u8 mask = REG_CONFIGURATION_S_BIT;
-	u8 value = enable ? mask : 0;
-
-	return regmap_update_bits(priv->regmap, REG_CONFIGURATION, mask, value);
+	return regmap_assign_bits(priv->regmap, REG_CONFIGURATION, REG_CONFIGURATION_S_BIT, enable);
 }
 
 static void max6959_power_off(void *priv)
