@@ -572,6 +572,11 @@ static bool mptcp_established_options_dss(struct sock *sk, struct sk_buff *skb,
 	unsigned int ack_size;
 	bool ret = false;
 
+	/* Zero `use_ack` and `use_map` flags with one shot. */
+	BUILD_BUG_ON(sizeof_field(struct mptcp_ext, flags) != sizeof(u16));
+	BUILD_BUG_ON(!IS_ALIGNED(offsetof(struct mptcp_ext, flags),
+				 sizeof(u16)));
+	*(u16 *)&opts->ext_copy.flags = 0;
 	opts->csum_reqd = READ_ONCE(msk->csum_enabled);
 	mpext = skb ? mptcp_get_ext(skb) : NULL;
 
@@ -595,7 +600,6 @@ static bool mptcp_established_options_dss(struct sock *sk, struct sk_buff *skb,
 	/* passive sockets msk will set the 'can_ack' after accept(), even
 	 * if the first subflow may have the already the remote key handy
 	 */
-	opts->ext_copy.use_ack = 0;
 	if (!READ_ONCE(msk->can_ack)) {
 		*size = ALIGN(dss_size, 4);
 		return ret;
