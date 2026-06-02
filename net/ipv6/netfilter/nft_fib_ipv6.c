@@ -191,6 +191,9 @@ static bool nft_fib6_info_nh_uses_dev(struct fib6_info *rt,
 
 		if (nft_fib6_info_nh_dev_match(nh_dev, dev))
 			return true;
+
+		if (!READ_ONCE(rt->fib6_nsiblings))
+			return false;
 	}
 
 	return false;
