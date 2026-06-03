@@ -395,15 +395,28 @@ static long _gmap_unmap_crste(union crste *crstep, gfn_t gfn, gfn_t next, struct
 	struct gmap_unmap_priv *priv = walk->priv;
 	struct folio *folio = NULL;
 	union crste old = *crstep;
+	bool ok;
 
 	if (!old.h.fc)
 		return 0;
 
 	if (old.s.fc1.pr && test_bit(GMAP_FLAG_EXPORT_ON_UNMAP, &priv->gmap->flags))
 		folio = phys_to_folio(crste_origin_large(old));
-	/* No races should happen because kvm->mmu_lock is held in write mode */
-	KVM_BUG_ON(!gmap_crstep_xchg_atomic(priv->gmap, crstep, old, _CRSTE_EMPTY(old.h.tt), gfn),
-		   priv->gmap->kvm);
+	/*
+	 * No races should happen because kvm->mmu_lock is held in write mode,
+	 * but the unmap operation could have triggered an unshadow, which
+	 * causes gmap_crstep_xchg_atomic() to return false and clear the
+	 * vsie_notif bit. Allow the operation to fail once, if the old crste
+	 * had the vsie_notif bit set. A second failure is not allowed, for
+	 * the reasons above.
+	 */
+	ok = gmap_crstep_xchg_atomic(priv->gmap, crstep, old, _CRSTE_EMPTY(old.h.tt), gfn);
+	if (!ok) {
+		KVM_BUG_ON(!old.s.fc1.vsie_notif, priv->gmap->kvm);
+		old.s.fc1.vsie_notif = 0;
+		ok = gmap_crstep_xchg_atomic(priv->gmap, crstep, old, _CRSTE_EMPTY(old.h.tt), gfn);
+		KVM_BUG_ON(!ok, priv->gmap->kvm);
+	}
 	if (folio)
 		uv_convert_from_secure_folio(folio);
 
