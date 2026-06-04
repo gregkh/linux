@@ -27,7 +27,9 @@ struct mptcp_ext {
 	u32		subflow_seq;
 	u16		data_len;
 	__sum16		csum;
-	u8		use_map:1,
+
+	struct_group(flags,
+		u8	use_map:1,
 			dsn64:1,
 			data_fin:1,
 			use_ack:1,
@@ -35,9 +37,10 @@ struct mptcp_ext {
 			mpc_map:1,
 			frozen:1,
 			reset_transient:1;
-	u8		reset_reason:4,
+		u8	reset_reason:4,
 			csum_reqd:1,
 			infinite_map:1;
+	); /* end of flags group */
 };
 
 #define MPTCPOPT_HMAC_LEN	20

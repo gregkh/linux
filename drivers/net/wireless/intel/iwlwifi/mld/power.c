@@ -366,7 +366,7 @@ iwl_mld_send_ap_tx_power_constraint_cmd(struct iwl_mld *mld,
 
 	lockdep_assert_wiphy(mld->wiphy);
 
-	if (!mld_link->active)
+	if (!mld_link->active && vif->type != NL80211_IFTYPE_AP)
 		return;
 
 	if (link->chanreq.oper.chan->band != NL80211_BAND_6GHZ)
