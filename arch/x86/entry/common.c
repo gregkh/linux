@@ -55,7 +55,7 @@ noinstr void x86_entry_from_kvm(unsigned int event_type, unsigned int vector)
 	 * The FRED NMI context is significantly different and will not work
 	 * right (specifically FRED fixed the NMI recursion issue).
 	 */
-	idt_entry_from_kvm(vector);
+	idt_do_nmi_irqoff();
 }
 EXPORT_SYMBOL_FOR_KVM(x86_entry_from_kvm);
 #endif

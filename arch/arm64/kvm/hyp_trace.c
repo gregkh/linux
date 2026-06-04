@@ -189,7 +189,7 @@ static void hyp_trace_buffer_unshare_hyp(struct hyp_trace_buffer *trace_buffer, 
 		if (cpu > last_cpu)
 			break;
 
-		__share_page(rb_desc->meta_va);
+		__unshare_page(rb_desc->meta_va);
 		for (p = 0; p < rb_desc->nr_page_va; p++)
 			__unshare_page(rb_desc->page_va[p]);
 	}
@@ -212,14 +212,15 @@ static int hyp_trace_buffer_share_hyp(struct hyp_trace_buffer *trace_buffer)
 		}
 
 		if (ret) {
-			for (p--; p >= 0; p--)
+			while (--p >= 0)
 				__unshare_page(rb_desc->page_va[p]);
+			__unshare_page(rb_desc->meta_va);
 			break;
 		}
 	}
 
 	if (ret)
-		hyp_trace_buffer_unshare_hyp(trace_buffer, cpu--);
+		hyp_trace_buffer_unshare_hyp(trace_buffer, --cpu);
 
 	return ret;
 }
@@ -248,6 +249,7 @@ static struct trace_buffer_desc *hyp_trace_load(unsigned long size, void *priv)
 		goto err_free_desc;
 
 	trace_buffer->desc = desc;
+	trace_buffer->desc_size = desc_size;
 
 	ret = hyp_trace_buffer_alloc_bpages_backing(trace_buffer, size);
 	if (ret)
@@ -297,6 +299,7 @@ static void hyp_trace_unload(struct trace_buffer_desc *desc, void *priv)
 	hyp_trace_buffer_free_bpages_backing(trace_buffer);
 	free_pages_exact(trace_buffer->desc, trace_buffer->desc_size);
 	trace_buffer->desc = NULL;
+	trace_buffer->desc_size = 0;
 }
 
 static int hyp_trace_enable_tracing(bool enable, void *priv)

@@ -2280,7 +2280,8 @@ void amdgpu_ras_debugfs_create_all(struct amdgpu_device *adev)
 	list_for_each_entry(obj, &con->head, node) {
 		if (amdgpu_ras_is_supported(adev, obj->head.block) &&
 			(obj->attr_inuse == 1)) {
-			sprintf(fs_info.debugfs_name, "%s_err_inject",
+			snprintf(fs_info.debugfs_name, sizeof(fs_info.debugfs_name),
+					"%s_err_inject",
 					get_ras_block_str(&obj->head));
 			fs_info.head = obj->head;
 			amdgpu_ras_debugfs_create(adev, &fs_info, dir);

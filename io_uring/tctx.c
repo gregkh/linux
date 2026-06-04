@@ -139,12 +139,14 @@ static int io_tctx_install_node(struct io_ring_ctx *ctx,
 int __io_uring_add_tctx_node(struct io_ring_ctx *ctx)
 {
 	struct io_uring_task *tctx = current->io_uring;
+	bool new_tctx = false;
 	int ret;
 
 	if (unlikely(!tctx)) {
 		tctx = io_uring_alloc_task_context(current, ctx);
 		if (IS_ERR(tctx))
 			return PTR_ERR(tctx);
+		new_tctx = true;
 
 		if (data_race(ctx->int_flags) & IO_RING_F_IOWQ_LIMITS_SET) {
 			unsigned int limits[2];
@@ -168,13 +170,15 @@ int __io_uring_add_tctx_node(struct io_ring_ctx *ctx)
 	if (tctx->io_wq)
 		io_wq_set_exit_on_idle(tctx->io_wq, false);
 
-	ret = io_tctx_install_node(ctx, tctx);
-	if (!ret) {
+	if (new_tctx)
 		current->io_uring = tctx;
+
+	ret = io_tctx_install_node(ctx, tctx);
+	if (!ret)
 		return 0;
-	}
-	if (!current->io_uring) {
 err_free:
+	if (new_tctx) {
+		current->io_uring = NULL;
 		if (tctx->io_wq) {
 			io_wq_exit_start(tctx->io_wq);
 			io_wq_put_and_exit(tctx->io_wq);

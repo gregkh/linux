@@ -138,6 +138,9 @@ u32 intel_get_platform_id(void)
 {
 	unsigned int val[2];
 
+	if (x86_hypervisor_present)
+		return 0;
+
 	/*
 	 * This can be called early. Use CPUID directly instead of
 	 * relying on cpuinfo_x86 which may not be fully initialized.

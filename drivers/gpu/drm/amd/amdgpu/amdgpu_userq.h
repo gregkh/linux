@@ -48,11 +48,6 @@ struct amdgpu_userq_obj {
 	struct amdgpu_bo *obj;
 };
 
-struct amdgpu_userq_va_cursor {
-	u64			gpu_addr;
-	struct list_head	list;
-};
-
 struct amdgpu_usermode_queue {
 	int			queue_type;
 	enum amdgpu_userq_state state;
@@ -93,7 +88,17 @@ struct amdgpu_usermode_queue {
 	struct delayed_work	hang_detect_work;
 	struct kref		refcount;
 
-	struct list_head	userq_va_list;
+	union {
+		struct {
+			u64 queue_rb;
+			u64 wptr;
+			u64 rptr;
+			u64 eop;
+			u64 shadow;
+			u64 csa;
+		} va;
+		u64 va_array[6];
+	} userq_vas;
 };
 
 struct amdgpu_userq_funcs {
@@ -151,21 +156,10 @@ void amdgpu_userq_mgr_cancel_reset_work(struct amdgpu_device *adev);
 void amdgpu_userq_mgr_cancel_resume(struct amdgpu_userq_mgr *userq_mgr);
 void amdgpu_userq_mgr_fini(struct amdgpu_userq_mgr *userq_mgr);
 
-int amdgpu_userq_create_object(struct amdgpu_userq_mgr *uq_mgr,
-			       struct amdgpu_userq_obj *userq_obj,
-			       int size);
-
-void amdgpu_userq_destroy_object(struct amdgpu_userq_mgr *uq_mgr,
-				 struct amdgpu_userq_obj *userq_obj);
-
 void amdgpu_userq_evict(struct amdgpu_userq_mgr *uq_mgr);
 
 void amdgpu_userq_ensure_ev_fence(struct amdgpu_userq_mgr *userq_mgr,
 				  struct amdgpu_eviction_fence_mgr *evf_mgr);
-
-uint64_t amdgpu_userq_get_doorbell_index(struct amdgpu_userq_mgr *uq_mgr,
-					 struct amdgpu_db_info *db_info,
-					     struct drm_file *filp);
 
 u32 amdgpu_userq_get_supported_ip_mask(struct amdgpu_device *adev);
 bool amdgpu_userq_enabled(struct drm_device *dev);
@@ -185,7 +179,8 @@ void amdgpu_userq_process_fence_irq(struct amdgpu_device *adev, u32 doorbell);
 
 int amdgpu_userq_input_va_validate(struct amdgpu_device *adev,
 				   struct amdgpu_usermode_queue *queue,
-				   u64 addr, u64 expected_size);
+				   u64 addr, u64 expected_size, u64 *va_out);
+
 void amdgpu_userq_gem_va_unmap_validate(struct amdgpu_device *adev,
 					struct amdgpu_bo_va_mapping *mapping,
 					uint64_t saddr);

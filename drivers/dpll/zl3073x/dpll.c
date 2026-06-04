@@ -1079,15 +1079,6 @@ zl3073x_dpll_phase_offset_avg_factor_get(const struct dpll_device *dpll,
 	return 0;
 }
 
-static void
-zl3073x_dpll_change_work(struct work_struct *work)
-{
-	struct zl3073x_dpll *zldpll;
-
-	zldpll = container_of(work, struct zl3073x_dpll, change_work);
-	dpll_device_change_ntf(zldpll->dpll_dev);
-}
-
 static int
 zl3073x_dpll_phase_offset_avg_factor_set(const struct dpll_device *dpll,
 					 void *dpll_priv, u32 factor,
@@ -1113,8 +1104,10 @@ zl3073x_dpll_phase_offset_avg_factor_set(const struct dpll_device *dpll,
 	 * we have to send a notification for other DPLL devices.
 	 */
 	list_for_each_entry(item, &zldpll->dev->dplls, list) {
-		if (item != zldpll)
-			schedule_work(&item->change_work);
+		struct dpll_device *dpll_dev = READ_ONCE(item->dpll_dev);
+
+		if (item != zldpll && dpll_dev)
+			__dpll_device_change_ntf(dpll_dev);
 	}
 
 	return 0;
@@ -1219,7 +1212,7 @@ zl3073x_dpll_freq_monitor_get(const struct dpll_device *dpll,
 {
 	struct zl3073x_dpll *zldpll = dpll_priv;
 
-	if (zldpll->freq_monitor)
+	if (zldpll->dev->freq_monitor)
 		*state = DPLL_FEATURE_STATE_ENABLE;
 	else
 		*state = DPLL_FEATURE_STATE_DISABLE;
@@ -1233,9 +1226,19 @@ zl3073x_dpll_freq_monitor_set(const struct dpll_device *dpll,
 			      enum dpll_feature_state state,
 			      struct netlink_ext_ack *extack)
 {
-	struct zl3073x_dpll *zldpll = dpll_priv;
+	struct zl3073x_dpll *item, *zldpll = dpll_priv;
 
-	zldpll->freq_monitor = (state == DPLL_FEATURE_STATE_ENABLE);
+	zldpll->dev->freq_monitor = (state == DPLL_FEATURE_STATE_ENABLE);
+
+	/* The frequency monitoring is common for all DPLL channels so after
+	 * change we have to send a notification for other DPLL devices.
+	 */
+	list_for_each_entry(item, &zldpll->dev->dplls, list) {
+		struct dpll_device *dpll_dev = READ_ONCE(item->dpll_dev);
+
+		if (item != zldpll && dpll_dev)
+			__dpll_device_change_ntf(dpll_dev);
+	}
 
 	return 0;
 }
@@ -1627,13 +1630,13 @@ zl3073x_dpll_device_register(struct zl3073x_dpll *zldpll)
 static void
 zl3073x_dpll_device_unregister(struct zl3073x_dpll *zldpll)
 {
-	WARN(!zldpll->dpll_dev, "DPLL device is not registered\n");
+	struct dpll_device *dpll_dev = READ_ONCE(zldpll->dpll_dev);
 
-	cancel_work_sync(&zldpll->change_work);
+	WARN(!dpll_dev, "DPLL device is not registered\n");
 
-	dpll_device_unregister(zldpll->dpll_dev, &zldpll->ops, zldpll);
-	dpll_device_put(zldpll->dpll_dev, &zldpll->tracker);
-	zldpll->dpll_dev = NULL;
+	WRITE_ONCE(zldpll->dpll_dev, NULL);
+	dpll_device_unregister(dpll_dev, &zldpll->ops, zldpll);
+	dpll_device_put(dpll_dev, &zldpll->tracker);
 }
 
 /**
@@ -1752,7 +1755,7 @@ zl3073x_dpll_pin_measured_freq_check(struct zl3073x_dpll_pin *pin)
 	u8 ref_id;
 	u32 freq;
 
-	if (!zldpll->freq_monitor)
+	if (!zldpll->dev->freq_monitor)
 		return false;
 
 	ref_id = zl3073x_input_pin_ref_get(pin->id);
@@ -1785,10 +1788,8 @@ zl3073x_dpll_changes_check(struct zl3073x_dpll *zldpll)
 	struct zl3073x_dev *zldev = zldpll->dev;
 	enum dpll_lock_status lock_status;
 	struct device *dev = zldev->dev;
-	const struct zl3073x_chan *chan;
 	struct zl3073x_dpll_pin *pin;
 	int rc;
-	u8 mode;
 
 	zldpll->check_count++;
 
@@ -1806,15 +1807,6 @@ zl3073x_dpll_changes_check(struct zl3073x_dpll *zldpll)
 		zldpll->lock_status = lock_status;
 		dpll_device_change_ntf(zldpll->dpll_dev);
 	}
-
-	/* Input pin monitoring does make sense only in automatic
-	 * or forced reference modes.
-	 */
-	chan = zl3073x_chan_state_get(zldev, zldpll->id);
-	mode = zl3073x_chan_mode_get(chan);
-	if (mode != ZL_DPLL_MODE_REFSEL_MODE_AUTO &&
-	    mode != ZL_DPLL_MODE_REFSEL_MODE_REFLOCK)
-		return;
 
 	/* Update phase offset latch registers for this DPLL if the phase
 	 * offset monitor feature is enabled.
@@ -1926,7 +1918,6 @@ zl3073x_dpll_alloc(struct zl3073x_dev *zldev, u8 ch)
 	zldpll->dev = zldev;
 	zldpll->id = ch;
 	INIT_LIST_HEAD(&zldpll->pins);
-	INIT_WORK(&zldpll->change_work, zl3073x_dpll_change_work);
 
 	return zldpll;
 }

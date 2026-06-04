@@ -225,13 +225,9 @@ static int exp_gre(struct nf_conn *ct, __be16 callid, __be16 peer_callid)
 	if (nf_ct_expect_related(exp_reply, 0) != 0)
 		goto out_unexpect_orig;
 
-	/* Add GRE keymap entries */
-	if (nf_ct_gre_keymap_add(ct, IP_CT_DIR_ORIGINAL, &exp_orig->tuple) != 0)
+	if (!nf_ct_gre_keymap_add(ct, &exp_orig->tuple,
+				  &exp_reply->tuple))
 		goto out_unexpect_both;
-	if (nf_ct_gre_keymap_add(ct, IP_CT_DIR_REPLY, &exp_reply->tuple) != 0) {
-		nf_ct_gre_keymap_destroy(ct);
-		goto out_unexpect_both;
-	}
 	ret = 0;
 
 out_put_both:
