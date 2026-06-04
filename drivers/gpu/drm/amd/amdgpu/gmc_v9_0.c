@@ -1994,6 +1994,7 @@ static int gmc_v9_0_sw_init(struct amdgpu_ip_block *ip_block)
 	 * internal address space.
 	 */
 	adev->gmc.mc_mask = 0xffffffffffffULL; /* 48 bit MC */
+	adev->gmc.pte_addr_mask = 0x0000FFFFFFFFF000ULL; /* 48 bit PA */
 
 	dma_addr_bits = amdgpu_ip_version(adev, GC_HWIP, 0) >=
 					IP_VERSION(9, 4, 2) ?
