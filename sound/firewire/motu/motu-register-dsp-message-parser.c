@@ -393,6 +393,8 @@ unsigned int snd_motu_register_dsp_message_parser_count_event(struct snd_motu *m
 {
 	struct msg_parser *parser = motu->message_parser;
 
+	guard(spinlock_irqsave)(&parser->lock);
+
 	if (parser->pull_pos > parser->push_pos)
 		return EVENT_QUEUE_SIZE - parser->pull_pos + parser->push_pos;
 	else
@@ -402,22 +404,20 @@ unsigned int snd_motu_register_dsp_message_parser_count_event(struct snd_motu *m
 bool snd_motu_register_dsp_message_parser_copy_event(struct snd_motu *motu, u32 *event)
 {
 	struct msg_parser *parser = motu->message_parser;
-	unsigned int pos = parser->pull_pos;
-	unsigned long flags;
+	unsigned int pos;
 
-	if (pos == parser->push_pos)
+	guard(spinlock_irqsave)(&parser->lock);
+
+	if (parser->pull_pos == parser->push_pos)
 		return false;
 
-	spin_lock_irqsave(&parser->lock, flags);
-
+	pos = parser->pull_pos;
 	*event = parser->event_queue[pos];
 
 	++pos;
 	if (pos >= EVENT_QUEUE_SIZE)
 		pos = 0;
 	parser->pull_pos = pos;
-
-	spin_unlock_irqrestore(&parser->lock, flags);
 
 	return true;
 }
