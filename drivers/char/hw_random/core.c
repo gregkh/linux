@@ -574,7 +574,7 @@ int hwrng_register(struct hwrng *rng)
 		 */
 		err = set_current_rng(rng);
 		if (err)
-			goto out_unlock;
+			goto out_list_del;
 		/* to use current_rng in add_early_randomness() we need
 		 * to take a ref
 		 */
@@ -595,6 +595,8 @@ int hwrng_register(struct hwrng *rng)
 	if (is_new_current)
 		put_rng(rng);
 	return 0;
+out_list_del:
+	list_del_init(&rng->list);
 out_unlock:
 	mutex_unlock(&rng_mutex);
 out:
