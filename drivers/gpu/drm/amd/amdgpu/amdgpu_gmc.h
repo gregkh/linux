@@ -280,6 +280,7 @@ struct amdgpu_gmc {
 	u64			real_vram_size;
 	int			vram_mtrr;
 	u64                     mc_mask;
+	uint64_t		pte_addr_mask;
 	const struct firmware   *fw;	/* MC firmware */
 	uint32_t                fw_version;
 	struct amdgpu_irq_src	vm_fault;

@@ -203,7 +203,7 @@ int amdgpu_gtt_mgr_alloc_entries(struct amdgpu_gtt_mgr *mgr,
 	int r;
 
 	/* Align to TLB L2 cache entry size to work around "V bit HW bug" */
-	if (adev->asic_type == CHIP_TAHITI) {
+	if (adev->family == AMDGPU_FAMILY_SI) {
 		alignment = 32 * 1024 / AMDGPU_GPU_PAGE_SIZE;
 		num_pages = ALIGN(num_pages, alignment);
 	}

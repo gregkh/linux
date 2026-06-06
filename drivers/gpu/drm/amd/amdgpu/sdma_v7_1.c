@@ -1316,6 +1316,7 @@ static int sdma_v7_1_sw_init(struct amdgpu_ip_block *ip_block)
 		ring->ring_obj = NULL;
 		ring->use_doorbell = true;
 		ring->me = i;
+		ring->no_user_submission = adev->sdma.no_user_submission;
 
 		for (xcc_id = 0; xcc_id < fls(adev->gfx.xcc_mask); xcc_id++) {
 			if (adev->sdma.instance[i].xcc_id == GET_INST(GC, xcc_id))

@@ -170,7 +170,7 @@ int amdgpu_gmc_set_pte_pde(struct amdgpu_device *adev, void *cpu_pt_addr,
 	/*
 	 * The following is for PTE only. GART does not have PDEs.
 	*/
-	value = addr & 0x0000FFFFFFFFF000ULL;
+	value = addr & adev->gmc.pte_addr_mask;
 	value |= flags;
 	writeq(value, ptr + (gpu_page_idx * 8));
 
@@ -1003,7 +1003,7 @@ void amdgpu_gmc_noretry_set(struct amdgpu_device *adev)
 				gc_ver == IP_VERSION(9, 4, 3) ||
 				gc_ver == IP_VERSION(9, 4, 4) ||
 				gc_ver == IP_VERSION(9, 5, 0) ||
-				gc_ver >= IP_VERSION(10, 3, 0));
+				gc_ver >= IP_VERSION(10, 1, 0));
 
 	if (!amdgpu_sriov_xnack_support(adev))
 		gmc->noretry = 1;

@@ -532,10 +532,6 @@ amdgpu_userq_destroy(struct amdgpu_userq_mgr *uq_mgr, struct amdgpu_usermode_que
 	amdgpu_bo_unreserve(queue->db_obj.obj);
 	amdgpu_bo_unref(&queue->db_obj.obj);
 
-	amdgpu_bo_reserve(queue->wptr_obj.obj, true);
-	amdgpu_bo_unpin(queue->wptr_obj.obj);
-	amdgpu_bo_unreserve(queue->wptr_obj.obj);
-	amdgpu_bo_unref(&queue->wptr_obj.obj);
 	kfree(queue);
 
 	pm_runtime_put_autosuspend(adev_to_drm(adev)->dev);
@@ -887,7 +883,7 @@ amdgpu_userq_restore_all(struct amdgpu_userq_mgr *uq_mgr)
 			continue;
 		}
 
-		r = amdgpu_userq_restore_helper(queue);
+		r = amdgpu_userq_map_helper(queue);
 		if (r)
 			ret = r;
 
@@ -1124,7 +1120,7 @@ amdgpu_userq_evict_all(struct amdgpu_userq_mgr *uq_mgr)
 
 	/* Try to unmap all the queues in this process ctx */
 	xa_for_each(&uq_mgr->userq_xa, queue_id, queue) {
-		r = amdgpu_userq_preempt_helper(queue);
+		r = amdgpu_userq_unmap_helper(queue);
 		if (r)
 			ret = r;
 	}
@@ -1344,8 +1340,7 @@ int amdgpu_userq_start_sched_for_enforce_isolation(struct amdgpu_device *adev,
 }
 
 void amdgpu_userq_gem_va_unmap_validate(struct amdgpu_device *adev,
-					struct amdgpu_bo_va_mapping *mapping,
-					uint64_t saddr)
+					struct amdgpu_bo_va_mapping *mapping)
 {
 	u32 ip_mask = amdgpu_userq_get_supported_ip_mask(adev);
 	struct amdgpu_bo_va *bo_va = mapping->bo_va;
@@ -1354,12 +1349,9 @@ void amdgpu_userq_gem_va_unmap_validate(struct amdgpu_device *adev,
 	if (!ip_mask)
 		return;
 
-	dev_warn_once(adev->dev, "now unmapping a vital queue va:%llx\n", saddr);
 	/**
-	 * The userq VA mapping reservation should include the eviction fence,
-	 * if the eviction fence can't signal successfully during unmapping,
-	 * then driver will warn to flag this improper unmap of the userq VA.
-	 * Note: The eviction fence may be attached to different BOs, and this
+	 * The userq VA mapping reservation should include the eviction fence.
+	 * Note: The eviction fence may be attached to different BOs and this
 	 * unmap is only for one kind of userq VAs, so at this point suppose
 	 * the eviction fence is always unsignaled.
 	 */
