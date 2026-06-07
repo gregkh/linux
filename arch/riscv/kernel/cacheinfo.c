@@ -141,7 +141,7 @@ int populate_cache_leaves(unsigned int cpu)
 
 		levels = level;
 	}
-	of_node_put(np);
+	of_node_put(prev);
 
 	return 0;
 }
