@@ -1373,6 +1373,11 @@ group_extend_out:
 			goto mext_out;
 		}
 
+		if (file_inode(filp)->i_sb != file_inode(donor.file)->i_sb) {
+			err = -EXDEV;
+			goto mext_out;
+		}
+
 		err = mnt_want_write_file(filp);
 		if (err)
 			goto mext_out;
