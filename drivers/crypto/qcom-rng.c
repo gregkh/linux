@@ -65,8 +65,6 @@ static int qcom_rng_read(struct qcom_rng *rng, u8 *data, unsigned int max)
 			return ret;
 
 		val = readl_relaxed(rng->base + PRNG_DATA_OUT);
-		if (!val)
-			return -EINVAL;
 
 		if ((max - currsize) >= WORD_SZ) {
 			memcpy(data, &val, WORD_SZ);
