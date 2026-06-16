@@ -659,6 +659,8 @@ static int uniphier_spi_probe(struct platform_device *pdev)
 	priv->master = master;
 	priv->is_save_param = false;
 
+	init_completion(&priv->xfer_done);
+
 	priv->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(priv->base)) {
 		ret = PTR_ERR(priv->base);
@@ -689,8 +691,6 @@ static int uniphier_spi_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "failed to request IRQ\n");
 		goto out_disable_clk;
 	}
-
-	init_completion(&priv->xfer_done);
 
 	clk_rate = clk_get_rate(priv->clk);
 
