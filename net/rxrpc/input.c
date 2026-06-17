@@ -781,7 +781,18 @@ static void rxrpc_input_soft_acks(struct rxrpc_call *call,
 	struct rxrpc_skb_priv *sp = rxrpc_skb(skb);
 	unsigned int i, old_nacks = 0;
 	rxrpc_seq_t lowest_nak = seq + sp->nr_acks;
-	u8 *acks = skb->data + sizeof(struct rxrpc_wire_header) + sizeof(struct rxrpc_ackpacket);
+	u8 sack[256] __aligned(sizeof(unsigned long));
+	u8 *acks = sack;
+
+	/* Extract the SACK table into a flat buffer rather than accessing it
+	 * directly through skb->data, which is not guaranteed to be linear for
+	 * a fragmented packet (skb_condense() can silently fail to linearise
+	 * it).
+	 */
+	if (skb_copy_bits(skb,
+			  sizeof(struct rxrpc_wire_header) + sizeof(struct rxrpc_ackpacket),
+			  sack, umin(sp->nr_acks, sizeof(sack))) < 0)
+		return;
 
 	for (i = 0; i < sp->nr_acks; i++) {
 		if (acks[i] == RXRPC_ACK_TYPE_ACK) {
