@@ -2222,8 +2222,8 @@ static acpi_status vmbus_walk_resources(struct acpi_resource *res, void *ctx)
 		return AE_NO_MEMORY;
 
 	/* If this range overlaps the virtual TPM, truncate it. */
-	if (end > VTPM_BASE_ADDRESS && start < VTPM_BASE_ADDRESS)
-		end = VTPM_BASE_ADDRESS;
+	if (end >= VTPM_BASE_ADDRESS && start < VTPM_BASE_ADDRESS)
+		end = VTPM_BASE_ADDRESS - 1;
 
 	new_res->name = "hyperv mmio";
 	new_res->flags = IORESOURCE_MEM;
@@ -2290,26 +2290,52 @@ static int vmbus_acpi_remove(struct acpi_device *device)
 
 static void vmbus_reserve_fb(void)
 {
-	int size;
+	resource_size_t start = 0, size;
+	resource_size_t low_mmio_base;
+
+	if (efi_enabled(EFI_BOOT)) {
+		/* Gen2 VM: get FB base from EFI framebuffer */
+		start = screen_info.lfb_base;
+		size = max_t(__u32, screen_info.lfb_size, 0x800000);
+
+		low_mmio_base = hyperv_mmio->start;
+		if (!low_mmio_base || upper_32_bits(low_mmio_base) ||
+		    (start && start < low_mmio_base)) {
+			pr_warn("Unexpected low mmio base %pa\n", &low_mmio_base);
+		} else {
+			/*
+			 * If the kdump/kexec or CVM kernel's lfb_base
+			 * is 0, fall back to the low mmio base.
+			 */
+			if (!start)
+				start = low_mmio_base;
+			/*
+			 * Reserve half of the space below 4GB for high
+			 * resolutions, but cap the reservation to 128MB.
+			 */
+			size = min((SZ_4G - start) / 2, SZ_128M);
+		}
+	} else {
+		/* Gen1 VM: get FB base from screen_info */
+		start = screen_info.lfb_base;
+		size = max_t(__u32, screen_info.lfb_size, 0x4000000);
+	}
+
+	if (!start) {
+		pr_warn("Unexpected framebuffer mmio base of zero\n");
+		return;
+	}
+
 	/*
 	 * Make a claim for the frame buffer in the resource tree under the
 	 * first node, which will be the one below 4GB.  The length seems to
 	 * be underreported, particularly in a Generation 1 VM.  So start out
 	 * reserving a larger area and make it smaller until it succeeds.
 	 */
+	for (; !fb_mmio && (size >= 0x100000); size >>= 1)
+		fb_mmio = __request_region(hyperv_mmio, start, size, fb_mmio_name, 0);
 
-	if (screen_info.lfb_base) {
-		if (efi_enabled(EFI_BOOT))
-			size = max_t(__u32, screen_info.lfb_size, 0x800000);
-		else
-			size = max_t(__u32, screen_info.lfb_size, 0x4000000);
-
-		for (; !fb_mmio && (size >= 0x100000); size >>= 1) {
-			fb_mmio = __request_region(hyperv_mmio,
-						   screen_info.lfb_base, size,
-						   fb_mmio_name, 0);
-		}
-	}
+	pr_info("hv_mmio=%pR,%pR fb=%pR\n", hyperv_mmio, hyperv_mmio->sibling, fb_mmio);
 }
 
 /**
