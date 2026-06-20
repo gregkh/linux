@@ -34,7 +34,7 @@ MODULE_PARM_DESC(batch_mapping, "Batched mapping 1 -Enable; 0 - Disable");
 static int max_iotlb_entries = 2048;
 module_param(max_iotlb_entries, int, 0444);
 MODULE_PARM_DESC(max_iotlb_entries,
-		 "Maximum number of iotlb entries for each address space. 0 means unlimited. (default: 2048)");
+		 "Maximum number of iotlb entries for each address space. (default: 2048)");
 
 static bool use_va = true;
 module_param(use_va, bool, 0444);
@@ -198,6 +198,8 @@ struct vdpasim *vdpasim_create(struct vdpasim_dev_attr *dev_attr,
 	int i, ret = -ENOMEM;
 
 	if (!dev_attr->alloc_size)
+		return ERR_PTR(-EINVAL);
+	if (max_iotlb_entries < 2)
 		return ERR_PTR(-EINVAL);
 
 	if (config->mask & BIT_ULL(VDPA_ATTR_DEV_FEATURES)) {
