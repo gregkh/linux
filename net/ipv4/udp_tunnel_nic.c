@@ -301,7 +301,7 @@ udp_tunnel_nic_device_sync(struct net_device *dev, struct udp_tunnel_nic *utn)
 	const struct udp_tunnel_nic_info *info = dev->udp_tunnel_nic_info;
 	bool may_sleep;
 
-	if (!utn->need_sync)
+	if (!utn->need_sync || utn->work_pending)
 		return;
 
 	/* Drivers which sleep in the callback need to update from
