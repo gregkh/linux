@@ -60,7 +60,7 @@ static struct file *ovl_open_realfile(const struct file *file,
 		if (!inode_owner_or_capable(real_idmap, realinode))
 			flags &= ~O_NOATIME;
 
-		realfile = backing_file_open(&file->f_path, flags, realpath,
+		realfile = backing_file_open(file, flags, realpath,
 					     current_cred());
 	}
 	revert_creds(old_cred);
@@ -527,6 +527,7 @@ static int ovl_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 
 static int ovl_mmap(struct file *file, struct vm_area_struct *vma)
 {
+	struct file *user_file = vma->vm_file;
 	struct file *realfile = file->private_data;
 	const struct cred *old_cred;
 	int ret;
@@ -540,6 +541,11 @@ static int ovl_mmap(struct file *file, struct vm_area_struct *vma)
 	vma_set_file(vma, realfile);
 
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
+	ret = security_mmap_backing_file(vma, realfile, user_file);
+	if (ret) {
+		revert_creds(old_cred);
+		return ret;
+	}
 	ret = call_mmap(vma->vm_file, vma);
 	revert_creds(old_cred);
 	ovl_file_accessed(file);

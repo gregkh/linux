@@ -59,6 +59,7 @@ struct security_hook_list {
 struct lsm_blob_sizes {
 	int	lbs_cred;
 	int	lbs_file;
+	int lbs_backing_file;
 	int	lbs_inode;
 	int	lbs_superblock;
 	int	lbs_ipc;
