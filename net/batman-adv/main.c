@@ -265,6 +265,7 @@ err_orig:
 void batadv_mesh_free(struct net_device *soft_iface)
 {
 	struct batadv_priv *bat_priv = netdev_priv(soft_iface);
+	struct batadv_softif_vlan *vlan;
 
 	atomic_set(&bat_priv->mesh_state, BATADV_MESH_DEACTIVATING);
 
@@ -279,6 +280,22 @@ void batadv_mesh_free(struct net_device *soft_iface)
 	batadv_bla_free(bat_priv);
 
 	batadv_mcast_free(bat_priv);
+
+	/* destroy the "untagged" VLAN in case of an register_netdevice() error.
+	 *
+	 * It will be handled normally by batadv_softif_destroy_netlink() and
+	 * batadv_softif_destroy_sysfs() before they call batadv_sysfs_del_meshif().
+	 *
+	 * But when a veto was received during the registration, the VLAN has to
+	 * be cleaned up in the destructor.
+	 */
+	if (!bat_priv->softif_destroy) {
+		vlan = batadv_softif_vlan_get(bat_priv, BATADV_NO_FLAGS);
+		if (vlan) {
+			batadv_softif_destroy_vlan(bat_priv, vlan);
+			batadv_softif_vlan_put(vlan);
+		}
+	}
 
 	/* Free the TT and the originator tables only after having terminated
 	 * all the other depending components which may use these structures for
