@@ -560,6 +560,7 @@ static int umh_coredump_setup(struct subprocess_info *info, struct cred *new)
 		if (err < 0)
 			goto out_fail;
 
+		fput(pidfs_file);
 		pidfs_file = NULL;
 	}
 
