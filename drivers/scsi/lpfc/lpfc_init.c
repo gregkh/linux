@@ -8175,6 +8175,7 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 			}
 		}
 	}
+	mempool_free(mboxq, phba->mbox_mem_pool);
 
 	lpfc_nvme_mod_param_dep(phba);
 
@@ -8332,8 +8333,6 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 		rc = -ENOMEM;
 		goto out_free_sg_dma_buf;
 	}
-
-	mempool_free(mboxq, phba->mbox_mem_pool);
 
 	/* Verify OAS is supported */
 	lpfc_sli4_oas_verify(phba);
