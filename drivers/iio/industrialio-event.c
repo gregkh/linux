@@ -205,6 +205,8 @@ int iio_event_getfd(struct iio_dev *indio_dev)
 		goto unlock;
 	}
 
+	kfifo_reset_out(&ev_int->det_events);
+
 	iio_device_get(indio_dev);
 
 	fd = anon_inode_getfd("iio:event", &iio_event_chrdev_fileops,
@@ -212,10 +214,7 @@ int iio_event_getfd(struct iio_dev *indio_dev)
 	if (fd < 0) {
 		clear_bit(IIO_BUSY_BIT_POS, &ev_int->flags);
 		iio_device_put(indio_dev);
-	} else {
-		kfifo_reset_out(&ev_int->det_events);
 	}
-
 unlock:
 	mutex_unlock(&indio_dev->mlock);
 	return fd;
