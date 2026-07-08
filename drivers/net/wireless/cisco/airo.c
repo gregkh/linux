@@ -2437,7 +2437,9 @@ void stop_airo_card(struct net_device *dev, int freeres)
 
 EXPORT_SYMBOL(stop_airo_card);
 
-static int wll_header_parse(const struct sk_buff *skb, unsigned char *haddr)
+static int wll_header_parse(const struct sk_buff *skb,
+			    const struct net_device *dev,
+			    unsigned char *haddr)
 {
 	memcpy(haddr, skb_mac_header(skb) + 10, ETH_ALEN);
 	return ETH_ALEN;

@@ -575,6 +575,7 @@ void hostap_dump_tx_header(const char *name, const struct hfa384x_tx_frame *tx)
 
 
 static int hostap_80211_header_parse(const struct sk_buff *skb,
+				     const struct net_device *dev,
 				     unsigned char *haddr)
 {
 	memcpy(haddr, skb_mac_header(skb) + 10, ETH_ALEN); /* addr2 */
