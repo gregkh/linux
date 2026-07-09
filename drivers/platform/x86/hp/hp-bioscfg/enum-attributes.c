@@ -312,10 +312,12 @@ exit_enumeration_package:
  * Populate all properties of an instance under enumeration attribute
  *
  * @enum_obj: ACPI object with enumeration data
+ * @enum_obj_count: Number of elements in @enum_obj
  * @instance_id: The instance to enumerate
  * @attr_name_kobj: The parent kernel object
  */
 int hp_populate_enumeration_package_data(union acpi_object *enum_obj,
+					 int enum_obj_count,
 					 int instance_id,
 					 struct kobject *attr_name_kobj)
 {
@@ -324,7 +326,7 @@ int hp_populate_enumeration_package_data(union acpi_object *enum_obj,
 	enum_data->attr_name_kobj = attr_name_kobj;
 
 	hp_populate_enumeration_elements_from_package(enum_obj,
-						      enum_obj->package.count,
+						      enum_obj_count,
 						      instance_id);
 	hp_update_attribute_permissions(enum_data->common.is_readonly,
 					&enumeration_current_val);
