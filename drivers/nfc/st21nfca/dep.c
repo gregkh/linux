@@ -213,6 +213,9 @@ static int st21nfca_tm_recv_atr_req(struct nfc_hci_dev *hdev,
 		goto exit;
 	}
 
+	if (atr_req->length > skb->len)
+		return -EPROTO;
+
 	r = st21nfca_tm_send_atr_res(hdev, atr_req);
 	if (r)
 		goto exit;
