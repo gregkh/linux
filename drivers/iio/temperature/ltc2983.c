@@ -697,7 +697,7 @@ static struct ltc2983_sensor *ltc2983_rtd_new(const struct device_node *child,
 	int ret = 0;
 	struct device *dev = &st->spi->dev;
 	struct device_node *phandle;
-	u32 excitation_current = 0, n_wires = 0;
+	u32 excitation_current = 0, n_wires = 2;
 
 	rtd = devm_kzalloc(dev, sizeof(*rtd), GFP_KERNEL);
 	if (!rtd)
