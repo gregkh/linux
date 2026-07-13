@@ -274,6 +274,8 @@ static int spear_adc_probe(struct platform_device *pdev)
 	st = iio_priv(indio_dev);
 	st->np = np;
 
+	init_completion(&st->completion);
+
 	/*
 	 * SPEAr600 has a different register layout than other SPEAr SoC's
 	 * (e.g. SPEAr3xx). Let's provide two register base addresses
@@ -333,8 +335,6 @@ static int spear_adc_probe(struct platform_device *pdev)
 	spear_adc_configure(st);
 
 	platform_set_drvdata(pdev, indio_dev);
-
-	init_completion(&st->completion);
 
 	indio_dev->name = SPEAR_ADC_MOD_NAME;
 	indio_dev->info = &spear_adc_info;
