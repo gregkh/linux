@@ -2830,7 +2830,7 @@ static int scmi_probe(struct platform_device *pdev)
 	/* Setup all channels described in the DT at first */
 	ret = scmi_channels_setup(info);
 	if (ret)
-		goto clear_ida;
+		goto clear_txrx_setup;
 
 	ret = bus_register_notifier(&scmi_bus_type, &info->bus_nb);
 	if (ret)
