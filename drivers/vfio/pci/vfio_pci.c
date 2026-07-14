@@ -2094,6 +2094,7 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 out_power:
 	if (!disable_idle_d3)
 		vfio_pci_set_power_state(vdev, PCI_D0);
+	vfio_pci_vga_uninit(vdev);
 out_vf:
 	vfio_pci_vf_uninit(vdev);
 out_reflck:
