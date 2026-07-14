@@ -1899,6 +1899,7 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 out_power:
 	if (!disable_idle_d3)
 		vfio_pci_set_power_state(vdev, PCI_D0);
+	vfio_pci_vga_uninit(vdev);
 out_vf:
 	vfio_pci_vf_uninit(vdev);
 out_group_put:
