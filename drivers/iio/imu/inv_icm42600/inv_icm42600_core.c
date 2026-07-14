@@ -16,7 +16,7 @@
 #include <linux/property.h>
 #include <linux/regmap.h>
 
-#include <linux/iio/common/inv_icm42600_timestamp.h>
+#include <linux/iio/common/inv_sensors_timestamp.h>
 #include <linux/iio/iio.h>
 
 #include "inv_icm42600.h"
@@ -720,8 +720,8 @@ out_unlock:
 static int __maybe_unused inv_icm42600_resume(struct device *dev)
 {
 	struct inv_icm42600_state *st = dev_get_drvdata(dev);
-	struct inv_icm42600_timestamp *gyro_ts = iio_priv(st->indio_gyro);
-	struct inv_icm42600_timestamp *accel_ts = iio_priv(st->indio_accel);
+	struct inv_sensors_timestamp *gyro_ts = iio_priv(st->indio_gyro);
+	struct inv_sensors_timestamp *accel_ts = iio_priv(st->indio_accel);
 	int ret = 0;
 
 	mutex_lock(&st->lock);
@@ -742,8 +742,8 @@ static int __maybe_unused inv_icm42600_resume(struct device *dev)
 
 	/* restore FIFO data streaming */
 	if (st->fifo.on) {
-		inv_icm42600_timestamp_reset(gyro_ts);
-		inv_icm42600_timestamp_reset(accel_ts);
+		inv_sensors_timestamp_reset(gyro_ts);
+		inv_sensors_timestamp_reset(accel_ts);
 		ret = regmap_write(st->map, INV_ICM42600_REG_FIFO_CONFIG,
 				   INV_ICM42600_FIFO_CONFIG_STREAM);
 	}
