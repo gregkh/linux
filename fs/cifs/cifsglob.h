@@ -22,6 +22,7 @@
 #include <crypto/internal/hash.h>
 #include <linux/scatterlist.h>
 #include <uapi/linux/cifs/cifs_mount.h>
+#include "../smbfs_common/smb2pdu.h"
 #include "smb2pdu.h"
 #include "smb2glob.h"
 
@@ -794,7 +795,7 @@ revert_current_mid(struct TCP_Server_Info *server, const unsigned int val)
 
 static inline void
 revert_current_mid_from_hdr(struct TCP_Server_Info *server,
-			    const struct smb2_sync_hdr *shdr)
+			    const struct smb2_hdr *shdr)
 {
 	unsigned int num = le16_to_cpu(shdr->CreditCharge);
 

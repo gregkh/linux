@@ -326,7 +326,7 @@ static struct mid_q_entry *
 __smb2_find_mid(struct TCP_Server_Info *server, char *buf, bool dequeue)
 {
 	struct mid_q_entry *mid;
-	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buf;
+	struct smb2_hdr *shdr = (struct smb2_hdr *)buf;
 	__u64 wire_mid = le64_to_cpu(shdr->MessageId);
 
 	if (shdr->ProtocolId == SMB2_TRANSFORM_PROTO_NUM) {
@@ -368,11 +368,11 @@ static void
 smb2_dump_detail(void *buf, struct TCP_Server_Info *server)
 {
 #ifdef CONFIG_CIFS_DEBUG2
-	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buf;
+	struct smb2_hdr *shdr = (struct smb2_hdr *)buf;
 
 	cifs_server_dbg(VFS, "Cmd: %d Err: 0x%x Flags: 0x%x Mid: %llu Pid: %d\n",
 		 shdr->Command, shdr->Status, shdr->Flags, shdr->MessageId,
-		 shdr->ProcessId);
+		 shdr->Id.SyncId.ProcessId);
 	cifs_server_dbg(VFS, "smb buf %p len %u\n", buf,
 		 server->ops->calc_smb_size(buf, server));
 #endif
@@ -890,7 +890,7 @@ int open_cached_dir(unsigned int xid, struct cifs_tcon *tcon,
 	oparms.fid->persistent_fid = o_rsp->PersistentFileId;
 	oparms.fid->volatile_fid = o_rsp->VolatileFileId;
 #ifdef CONFIG_CIFS_DEBUG2
-	oparms.fid->mid = le64_to_cpu(o_rsp->sync_hdr.MessageId);
+	oparms.fid->mid = le64_to_cpu(o_rsp->hdr.MessageId);
 #endif /* CIFS_DEBUG2 */
 
 	tcon->crfid.tcon = tcon;
@@ -2430,7 +2430,7 @@ again:
 
 	/* If the open failed there is nothing to do */
 	op_rsp = (struct smb2_create_rsp *)rsp_iov[0].iov_base;
-	if (op_rsp == NULL || op_rsp->sync_hdr.Status != STATUS_SUCCESS) {
+	if (op_rsp == NULL || op_rsp->hdr.Status != STATUS_SUCCESS) {
 		cifs_dbg(FYI, "query_dir_first: open failed rc=%d\n", rc);
 		goto qdf_free;
 	}
@@ -2449,7 +2449,7 @@ again:
 	atomic_inc(&tcon->num_remote_opens);
 
 	qd_rsp = (struct smb2_query_directory_rsp *)rsp_iov[1].iov_base;
-	if (qd_rsp->sync_hdr.Status == STATUS_NO_MORE_FILES) {
+	if (qd_rsp->hdr.Status == STATUS_NO_MORE_FILES) {
 		trace_smb3_query_dir_done(xid, fid->persistent_fid,
 					  tcon->tid, tcon->ses->Suid, 0, 0);
 		srch_inf->endOfSearch = true;
@@ -2501,7 +2501,7 @@ smb2_close_dir(const unsigned int xid, struct cifs_tcon *tcon,
 static bool
 smb2_is_status_pending(char *buf, struct TCP_Server_Info *server)
 {
-	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buf;
+	struct smb2_hdr *shdr = (struct smb2_hdr *)buf;
 	int scredits, in_flight;
 
 	if (shdr->Status != STATUS_PENDING)
@@ -2528,13 +2528,14 @@ smb2_is_status_pending(char *buf, struct TCP_Server_Info *server)
 static bool
 smb2_is_session_expired(char *buf)
 {
-	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buf;
+	struct smb2_hdr *shdr = (struct smb2_hdr *)buf;
 
 	if (shdr->Status != STATUS_NETWORK_SESSION_EXPIRED &&
 	    shdr->Status != STATUS_USER_SESSION_DELETED)
 		return false;
 
-	trace_smb3_ses_expired(shdr->TreeId, shdr->SessionId,
+	trace_smb3_ses_expired(le32_to_cpu(shdr->Id.SyncId.TreeId),
+			       le64_to_cpu(shdr->SessionId),
 			       le16_to_cpu(shdr->Command),
 			       le64_to_cpu(shdr->MessageId));
 	cifs_dbg(FYI, "Session expired or deleted\n");
@@ -2545,7 +2546,7 @@ smb2_is_session_expired(char *buf)
 static bool
 smb2_is_status_io_timeout(char *buf)
 {
-	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buf;
+	struct smb2_hdr *shdr = (struct smb2_hdr *)buf;
 
 	if (shdr->Status == STATUS_IO_TIMEOUT)
 		return true;
@@ -2556,7 +2557,7 @@ smb2_is_status_io_timeout(char *buf)
 static void
 smb2_is_network_name_deleted(char *buf, struct TCP_Server_Info *server)
 {
-	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buf;
+	struct smb2_hdr *shdr = (struct smb2_hdr *)buf;
 	struct list_head *tmp, *tmp1;
 	struct cifs_ses *ses;
 	struct cifs_tcon *tcon;
@@ -2569,7 +2570,7 @@ smb2_is_network_name_deleted(char *buf, struct TCP_Server_Info *server)
 		ses = list_entry(tmp, struct cifs_ses, smb_ses_list);
 		list_for_each(tmp1, &ses->tcon_list) {
 			tcon = list_entry(tmp1, struct cifs_tcon, tcon_list);
-			if (tcon->tid == shdr->TreeId) {
+			if (tcon->tid == le32_to_cpu(shdr->Id.SyncId.TreeId)) {
 				tcon->need_reconnect = true;
 				spin_unlock(&cifs_tcp_ses_lock);
 				pr_warn_once("Server share %s deleted.\n",
@@ -2596,9 +2597,9 @@ smb2_oplock_response(struct cifs_tcon *tcon, __u64 persistent_fid,
 void
 smb2_set_related(struct smb_rqst *rqst)
 {
-	struct smb2_sync_hdr *shdr;
+	struct smb2_hdr *shdr;
 
-	shdr = (struct smb2_sync_hdr *)(rqst->rq_iov[0].iov_base);
+	shdr = (struct smb2_hdr *)(rqst->rq_iov[0].iov_base);
 	if (shdr == NULL) {
 		cifs_dbg(FYI, "shdr NULL in smb2_set_related\n");
 		return;
@@ -2611,13 +2612,13 @@ char smb2_padding[7] = {0, 0, 0, 0, 0, 0, 0};
 void
 smb2_set_next_command(struct cifs_tcon *tcon, struct smb_rqst *rqst)
 {
-	struct smb2_sync_hdr *shdr;
+	struct smb2_hdr *shdr;
 	struct cifs_ses *ses = tcon->ses;
 	struct TCP_Server_Info *server = ses->server;
 	unsigned long len = smb_rqst_len(server, rqst);
 	int i, num_padding;
 
-	shdr = (struct smb2_sync_hdr *)(rqst->rq_iov[0].iov_base);
+	shdr = (struct smb2_hdr *)(rqst->rq_iov[0].iov_base);
 	if (shdr == NULL) {
 		cifs_dbg(FYI, "shdr NULL in smb2_set_next_command\n");
 		return;
@@ -3172,7 +3173,7 @@ smb2_query_symlink(const unsigned int xid, struct cifs_tcon *tcon,
 				resp_buftype, rsp_iov);
 
 	create_rsp = rsp_iov[0].iov_base;
-	if (create_rsp && create_rsp->sync_hdr.Status)
+	if (create_rsp && create_rsp->hdr.Status)
 		err_iov = rsp_iov[0];
 	ioctl_rsp = rsp_iov[1].iov_base;
 
@@ -4423,8 +4424,8 @@ static void
 fill_transform_hdr(struct smb2_transform_hdr *tr_hdr, unsigned int orig_len,
 		   struct smb_rqst *old_rq, __le16 cipher_type)
 {
-	struct smb2_sync_hdr *shdr =
-			(struct smb2_sync_hdr *)old_rq->rq_iov[0].iov_base;
+	struct smb2_hdr *shdr =
+			(struct smb2_hdr *)old_rq->rq_iov[0].iov_base;
 
 	memset(tr_hdr, 0, sizeof(struct smb2_transform_hdr));
 	tr_hdr->ProtocolId = SMB2_TRANSFORM_PROTO_NUM;
@@ -4562,7 +4563,7 @@ crypt_message(struct TCP_Server_Info *server, int num_rqst,
 	unsigned int crypt_len = le32_to_cpu(tr_hdr->OriginalMessageSize);
 	void *creq;
 
-	rc = smb2_get_enc_key(server, tr_hdr->SessionId, enc, key);
+	rc = smb2_get_enc_key(server, le64_to_cpu(tr_hdr->SessionId), enc, key);
 	if (rc) {
 		cifs_server_dbg(VFS, "%s: Could not get %scryption key\n", __func__,
 			 enc ? "en" : "de");
@@ -4848,7 +4849,7 @@ handle_read_data(struct TCP_Server_Info *server, struct mid_q_entry *mid,
 	unsigned int cur_page_idx;
 	unsigned int pad_len;
 	struct cifs_readdata *rdata = mid->callback_data;
-	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buf;
+	struct smb2_hdr *shdr = (struct smb2_hdr *)buf;
 	struct bio_vec *bvec = NULL;
 	struct iov_iter iter;
 	struct kvec iov;
@@ -5177,7 +5178,7 @@ receive_encrypted_standard(struct TCP_Server_Info *server,
 {
 	int ret, length;
 	char *buf = server->smallbuf;
-	struct smb2_sync_hdr *shdr;
+	struct smb2_hdr *shdr;
 	unsigned int pdu_length = server->pdu_size;
 	unsigned int buf_size;
 	unsigned int next_cmd;
@@ -5208,7 +5209,7 @@ receive_encrypted_standard(struct TCP_Server_Info *server,
 
 	next_is_large = server->large_buf;
 one_more:
-	shdr = (struct smb2_sync_hdr *)buf;
+	shdr = (struct smb2_hdr *)buf;
 	next_cmd = le32_to_cpu(shdr->NextCommand);
 	if (next_cmd) {
 		if (WARN_ON_ONCE(next_cmd > pdu_length))
@@ -5279,7 +5280,7 @@ smb3_receive_transform(struct TCP_Server_Info *server,
 	unsigned int orig_len = le32_to_cpu(tr_hdr->OriginalMessageSize);
 
 	if (pdu_length < sizeof(struct smb2_transform_hdr) +
-						sizeof(struct smb2_sync_hdr)) {
+						sizeof(struct smb2_hdr)) {
 		cifs_server_dbg(VFS, "Transform message is too small (%u)\n",
 			 pdu_length);
 		cifs_reconnect(server);
@@ -5312,7 +5313,7 @@ smb3_handle_read_data(struct TCP_Server_Info *server, struct mid_q_entry *mid)
 static int
 smb2_next_header(char *buf)
 {
-	struct smb2_sync_hdr *hdr = (struct smb2_sync_hdr *)buf;
+	struct smb2_hdr *hdr = (struct smb2_hdr *)buf;
 	struct smb2_transform_hdr *t_hdr = (struct smb2_transform_hdr *)buf;
 
 	if (hdr->ProtocolId == SMB2_TRANSFORM_PROTO_NUM)
@@ -5856,7 +5857,7 @@ struct smb_version_values smb20_values = {
 	.exclusive_lock_type = SMB2_LOCKFLAG_EXCLUSIVE_LOCK,
 	.shared_lock_type = SMB2_LOCKFLAG_SHARED_LOCK,
 	.unlock_lock_type = SMB2_LOCKFLAG_UNLOCK,
-	.header_size = sizeof(struct smb2_sync_hdr),
+	.header_size = sizeof(struct smb2_hdr),
 	.header_preamble_size = 0,
 	.max_header_size = MAX_SMB2_HDR_SIZE,
 	.read_rsp_size = sizeof(struct smb2_read_rsp),
@@ -5878,7 +5879,7 @@ struct smb_version_values smb21_values = {
 	.exclusive_lock_type = SMB2_LOCKFLAG_EXCLUSIVE_LOCK,
 	.shared_lock_type = SMB2_LOCKFLAG_SHARED_LOCK,
 	.unlock_lock_type = SMB2_LOCKFLAG_UNLOCK,
-	.header_size = sizeof(struct smb2_sync_hdr),
+	.header_size = sizeof(struct smb2_hdr),
 	.header_preamble_size = 0,
 	.max_header_size = MAX_SMB2_HDR_SIZE,
 	.read_rsp_size = sizeof(struct smb2_read_rsp),
@@ -5899,7 +5900,7 @@ struct smb_version_values smb3any_values = {
 	.exclusive_lock_type = SMB2_LOCKFLAG_EXCLUSIVE_LOCK,
 	.shared_lock_type = SMB2_LOCKFLAG_SHARED_LOCK,
 	.unlock_lock_type = SMB2_LOCKFLAG_UNLOCK,
-	.header_size = sizeof(struct smb2_sync_hdr),
+	.header_size = sizeof(struct smb2_hdr),
 	.header_preamble_size = 0,
 	.max_header_size = MAX_SMB2_HDR_SIZE,
 	.read_rsp_size = sizeof(struct smb2_read_rsp),
@@ -5920,7 +5921,7 @@ struct smb_version_values smbdefault_values = {
 	.exclusive_lock_type = SMB2_LOCKFLAG_EXCLUSIVE_LOCK,
 	.shared_lock_type = SMB2_LOCKFLAG_SHARED_LOCK,
 	.unlock_lock_type = SMB2_LOCKFLAG_UNLOCK,
-	.header_size = sizeof(struct smb2_sync_hdr),
+	.header_size = sizeof(struct smb2_hdr),
 	.header_preamble_size = 0,
 	.max_header_size = MAX_SMB2_HDR_SIZE,
 	.read_rsp_size = sizeof(struct smb2_read_rsp),
@@ -5941,7 +5942,7 @@ struct smb_version_values smb30_values = {
 	.exclusive_lock_type = SMB2_LOCKFLAG_EXCLUSIVE_LOCK,
 	.shared_lock_type = SMB2_LOCKFLAG_SHARED_LOCK,
 	.unlock_lock_type = SMB2_LOCKFLAG_UNLOCK,
-	.header_size = sizeof(struct smb2_sync_hdr),
+	.header_size = sizeof(struct smb2_hdr),
 	.header_preamble_size = 0,
 	.max_header_size = MAX_SMB2_HDR_SIZE,
 	.read_rsp_size = sizeof(struct smb2_read_rsp),
@@ -5962,7 +5963,7 @@ struct smb_version_values smb302_values = {
 	.exclusive_lock_type = SMB2_LOCKFLAG_EXCLUSIVE_LOCK,
 	.shared_lock_type = SMB2_LOCKFLAG_SHARED_LOCK,
 	.unlock_lock_type = SMB2_LOCKFLAG_UNLOCK,
-	.header_size = sizeof(struct smb2_sync_hdr),
+	.header_size = sizeof(struct smb2_hdr),
 	.header_preamble_size = 0,
 	.max_header_size = MAX_SMB2_HDR_SIZE,
 	.read_rsp_size = sizeof(struct smb2_read_rsp),
@@ -5983,7 +5984,7 @@ struct smb_version_values smb311_values = {
 	.exclusive_lock_type = SMB2_LOCKFLAG_EXCLUSIVE_LOCK,
 	.shared_lock_type = SMB2_LOCKFLAG_SHARED_LOCK,
 	.unlock_lock_type = SMB2_LOCKFLAG_UNLOCK,
-	.header_size = sizeof(struct smb2_sync_hdr),
+	.header_size = sizeof(struct smb2_hdr),
 	.header_preamble_size = 0,
 	.max_header_size = MAX_SMB2_HDR_SIZE,
 	.read_rsp_size = sizeof(struct smb2_read_rsp),
