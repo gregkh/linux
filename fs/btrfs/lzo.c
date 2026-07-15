@@ -436,7 +436,7 @@ int lzo_decompress(struct list_head *ws, const u8 *data_in,
 	char *kaddr;
 	unsigned long bytes;
 
-	if (srclen < LZO_LEN || srclen > max_segment_len + LZO_LEN * 2)
+	if (srclen <= LZO_LEN * 2 || srclen > max_segment_len + LZO_LEN * 2)
 		return -EUCLEAN;
 
 	in_len = read_compress_length(data_in);
