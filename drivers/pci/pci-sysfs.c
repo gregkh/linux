@@ -1455,8 +1455,8 @@ static ssize_t resource##n##_resize_store(struct device *dev,		\
 					  const char *buf, size_t count)\
 {									\
 	struct pci_dev *pdev = to_pci_dev(dev);				\
-	unsigned long size, flags;					\
-	int ret, i;							\
+	unsigned long size;						\
+	int ret;							\
 	u16 cmd;							\
 									\
 	if (kstrtoul(buf, 0, &size) < 0)				\
@@ -1481,17 +1481,9 @@ static ssize_t resource##n##_resize_store(struct device *dev,		\
 	pci_write_config_word(pdev, PCI_COMMAND,			\
 			      cmd & ~PCI_COMMAND_MEMORY);		\
 									\
-	flags = pci_resource_flags(pdev, n);				\
-									\
 	pci_remove_resource_files(pdev);				\
 									\
-	for (i = 0; i < PCI_STD_NUM_BARS; i++) {			\
-		if (pci_resource_len(pdev, i) &&			\
-		    pci_resource_flags(pdev, i) == flags)		\
-			pci_release_resource(pdev, i);			\
-	}								\
-									\
-	ret = pci_resize_resource(pdev, n, size);			\
+	ret = pci_resize_resource(pdev, n, size, 0);			\
 									\
 	pci_assign_unassigned_bus_resources(pdev->bus);			\
 									\
