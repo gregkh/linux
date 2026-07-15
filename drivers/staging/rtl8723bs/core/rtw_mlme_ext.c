@@ -3341,7 +3341,11 @@ void issue_assocreq(struct adapter *padapter)
 
 	/* vendor specific IE, such as WPA, WMM, WPS */
 	for (i = sizeof(struct ndis_802_11_fix_ie); i < pmlmeinfo->network.IELength;) {
+		if (i + 2 > pmlmeinfo->network.IELength)
+			break;
 		pIE = (struct ndis_80211_var_ie *)(pmlmeinfo->network.IEs + i);
+		if (i + 2 + pIE->Length > pmlmeinfo->network.IELength)
+			break;
 
 		switch (pIE->ElementID) {
 		case _VENDOR_SPECIFIC_IE_:
@@ -6105,7 +6109,11 @@ u8 join_cmd_hdl(struct adapter *padapter, u8 *pbuf)
 
 	/* sizeof(struct ndis_802_11_fix_ie) */
 	for (i = _FIXED_IE_LENGTH_; i < pnetwork->IELength;) {
+		if (i + 2 > pnetwork->IELength)
+			break;
 		pIE = (struct ndis_80211_var_ie *)(pnetwork->IEs + i);
+		if (i + 2 + pIE->Length > pnetwork->IELength)
+			break;
 
 		switch (pIE->ElementID) {
 		case _VENDOR_SPECIFIC_IE_:/* Get WMM IE. */
