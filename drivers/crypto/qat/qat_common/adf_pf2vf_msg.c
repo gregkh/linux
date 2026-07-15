@@ -40,6 +40,9 @@ void adf_enable_vf2pf_interrupts(struct adf_accel_dev *accel_dev,
 	void __iomem *pmisc_addr = pmisc->virt_addr;
 	u32 reg;
 
+	if (READ_ONCE(accel_dev->pf.vf2pf_disabled))
+		return;
+
 	/* Enable VF2PF Messaging Ints - VFs 1 through 16 per vf_mask[15:0] */
 	if (vf_mask & 0xFFFF) {
 		reg = ADF_CSR_RD(pmisc_addr, ADF_DH895XCC_ERRMSK3);
@@ -53,6 +56,19 @@ void adf_enable_vf2pf_interrupts(struct adf_accel_dev *accel_dev,
 		reg &= ~ADF_DH895XCC_ERRMSK5_VF2PF_U_MASK(vf_mask);
 		ADF_CSR_WR(pmisc_addr, ADF_DH895XCC_ERRMSK5, reg);
 	}
+}
+
+void adf_enable_all_vf2pf_interrupts(struct adf_accel_dev *accel_dev,
+				     u32 num_vfs)
+{
+	u32 vf_mask;
+
+	vf_mask = BIT_ULL(num_vfs) - 1;
+	if (!vf_mask)
+		return;
+
+	WRITE_ONCE(accel_dev->pf.vf2pf_disabled, false);
+	adf_enable_vf2pf_interrupts(accel_dev, vf_mask);
 }
 
 void adf_disable_vf2pf_interrupts(struct adf_accel_dev *accel_dev, u32 vf_mask)
@@ -76,6 +92,12 @@ void adf_disable_vf2pf_interrupts(struct adf_accel_dev *accel_dev, u32 vf_mask)
 			ADF_DH895XCC_ERRMSK5_VF2PF_U_MASK(vf_mask);
 		ADF_CSR_WR(pmisc_addr, ADF_DH895XCC_ERRMSK5, reg);
 	}
+}
+
+void adf_disable_all_vf2pf_interrupts(struct adf_accel_dev *accel_dev)
+{
+	WRITE_ONCE(accel_dev->pf.vf2pf_disabled, true);
+	adf_disable_vf2pf_interrupts(accel_dev, GENMASK(31, 0));
 }
 
 static int __adf_iov_putmsg(struct adf_accel_dev *accel_dev, u32 msg, u8 vf_nr)

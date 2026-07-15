@@ -44,15 +44,26 @@ static void adf_iov_send_resp(struct work_struct *work)
 {
 	struct adf_pf2vf_resp *pf2vf_resp =
 		container_of(work, struct adf_pf2vf_resp, pf2vf_resp_work);
+	struct adf_accel_vf_info *vf_info = pf2vf_resp->vf_info;
+	struct adf_accel_dev *accel_dev = vf_info->accel_dev;
 
-	adf_vf2pf_req_hndl(pf2vf_resp->vf_info);
+	if (READ_ONCE(accel_dev->pf.vf2pf_disabled))
+		goto out;
+
+	adf_vf2pf_req_hndl(vf_info);
+
+out:
 	kfree(pf2vf_resp);
 }
 
 static void adf_vf2pf_bh_handler(void *data)
 {
 	struct adf_accel_vf_info *vf_info = (struct adf_accel_vf_info *)data;
+	struct adf_accel_dev *accel_dev = vf_info->accel_dev;
 	struct adf_pf2vf_resp *pf2vf_resp;
+
+	if (READ_ONCE(accel_dev->pf.vf2pf_disabled))
+		return;
 
 	pf2vf_resp = kzalloc(sizeof(*pf2vf_resp), GFP_ATOMIC);
 	if (!pf2vf_resp)
@@ -61,6 +72,12 @@ static void adf_vf2pf_bh_handler(void *data)
 	pf2vf_resp->vf_info = vf_info;
 	INIT_WORK(&pf2vf_resp->pf2vf_resp_work, adf_iov_send_resp);
 	queue_work(pf2vf_resp_wq, &pf2vf_resp->pf2vf_resp_work);
+}
+
+static void adf_flush_pf2vf_resp_wq(void)
+{
+	if (pf2vf_resp_wq)
+		flush_workqueue(pf2vf_resp_wq);
 }
 
 static int adf_enable_sriov(struct adf_accel_dev *accel_dev)
@@ -105,7 +122,7 @@ static int adf_enable_sriov(struct adf_accel_dev *accel_dev)
 	}
 
 	/* Enable VF to PF interrupts for all VFs */
-	adf_enable_vf2pf_interrupts(accel_dev, GENMASK_ULL(totalvfs - 1, 0));
+	adf_enable_all_vf2pf_interrupts(accel_dev, totalvfs);
 
 	/*
 	 * Due to the hardware design, when SR-IOV and the ring arbiter
@@ -142,8 +159,16 @@ void adf_disable_sriov(struct adf_accel_dev *accel_dev)
 
 	pci_disable_sriov(accel_to_pci_dev(accel_dev));
 
-	/* Disable VF to PF interrupts */
-	adf_disable_vf2pf_interrupts(accel_dev, 0xFFFFFFFF);
+	/* Block VF2PF work and disable VF to PF interrupts */
+	adf_disable_all_vf2pf_interrupts(accel_dev);
+	adf_isr_sync_ae_cluster(accel_dev);
+
+	for (i = 0, vf = accel_dev->pf.vf_info; i < totalvfs; i++, vf++) {
+		tasklet_disable(&vf->vf2pf_bh_tasklet);
+		tasklet_kill(&vf->vf2pf_bh_tasklet);
+	}
+
+	adf_flush_pf2vf_resp_wq();
 
 	/* Clear Valid bits in ME Thread to PCIe Function Mapping Group A */
 	for (i = 0; i < ME2FUNCTION_MAP_A_NUM_REGS; i++) {
@@ -159,11 +184,8 @@ void adf_disable_sriov(struct adf_accel_dev *accel_dev)
 		WRITE_CSR_ME2FUNCTION_MAP_B(pmisc_addr, i, reg);
 	}
 
-	for (i = 0, vf = accel_dev->pf.vf_info; i < totalvfs; i++, vf++) {
-		tasklet_disable(&vf->vf2pf_bh_tasklet);
-		tasklet_kill(&vf->vf2pf_bh_tasklet);
+	for (i = 0, vf = accel_dev->pf.vf_info; i < totalvfs; i++, vf++)
 		mutex_destroy(&vf->pf2vf_lock);
-	}
 
 	kfree(accel_dev->pf.vf_info);
 	accel_dev->pf.vf_info = NULL;
