@@ -40,6 +40,7 @@ void ksmbd_conn_free(struct ksmbd_conn *conn)
 	kvfree(conn->request_buf);
 	kfree(conn->preauth_info);
 	kfree(conn->mechToken);
+	ida_destroy(&conn->async_ida);
 	kfree(conn);
 }
 
