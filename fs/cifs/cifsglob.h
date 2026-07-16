@@ -1025,6 +1025,7 @@ struct cached_fid {
  */
 struct cifs_tcon {
 	struct list_head tcon_list;
+	int debug_id;		/* Debugging for tracing */
 	int tc_count;
 	struct list_head rlist; /* reconnect list */
 	atomic_t num_local_opens;  /* num of all opens including disconnected */

@@ -1544,7 +1544,7 @@ static void refresh_mounts(struct cifs_ses **sessions)
 		mutex_unlock(&server->refpath_lock);
 
 		__refresh_tcon(server->origin_fullpath + 1, sessions, tcon, false);
-		cifs_put_tcon(tcon);
+		cifs_put_tcon(tcon, netfs_trace_tcon_ref_put_dfs_refer);
 	}
 }
 

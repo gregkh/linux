@@ -3769,6 +3769,8 @@ void smb2_reconnect_server(struct work_struct *work)
 		list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
 			if (tcon->need_reconnect || tcon->need_reopen_files) {
 				tcon->tc_count++;
+				trace_smb3_tcon_ref(tcon->debug_id, tcon->tc_count,
+						    netfs_trace_tcon_ref_get_reconnect_server);
 				list_add_tail(&tcon->rlist, &tmp_list);
 				tcon_exist = true;
 			}
@@ -3802,7 +3804,7 @@ void smb2_reconnect_server(struct work_struct *work)
 		if (tcon->ipc)
 			cifs_put_smb_ses(tcon->ses);
 		else
-			cifs_put_tcon(tcon);
+			cifs_put_tcon(tcon, netfs_trace_tcon_ref_put_reconnect_server);
 	}
 
 	cifs_dbg(FYI, "Reconnecting tcons finished\n");

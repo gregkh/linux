@@ -705,6 +705,8 @@ static void cifs_umount_begin(struct super_block *sb)
 	tcon = cifs_sb_master_tcon(cifs_sb);
 
 	spin_lock(&cifs_tcp_ses_lock);
+	trace_smb3_tcon_ref(tcon->debug_id, tcon->tc_count,
+			    netfs_trace_tcon_ref_see_umount);
 	if ((tcon->tc_count > 1) || (tcon->tidStatus == CifsExiting)) {
 		/* we have other mounts to same share or we have
 		   already tried to force umount this and woken up
