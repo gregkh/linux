@@ -747,7 +747,7 @@ static int i2c_hid_parse(struct hid_device *hid)
 		ret = i2c_hid_command(client, &hid_report_descr_cmd,
 				      rdesc, rsize);
 		if (ret) {
-			hid_err(hid, "reading report descriptor failed\n");
+			dev_err(&client->dev, "reading report descriptor failed\n");
 			goto out;
 		}
 	}
