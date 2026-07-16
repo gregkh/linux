@@ -1898,6 +1898,9 @@ static void l2cap_conn_del(struct hci_conn *hcon, int err)
 
 	BT_DBG("hcon %p conn %p, err %d", hcon, conn, err);
 
+	cancel_delayed_work_sync(&conn->info_timer);
+	cancel_work_sync(&conn->id_addr_update_work);
+
 	kfree_skb(conn->rx_skb);
 
 	skb_queue_purge(&conn->pending_rx);
@@ -1910,9 +1913,6 @@ static void l2cap_conn_del(struct hci_conn *hcon, int err)
 		cancel_work_sync(&conn->pending_rx_work);
 
 	ida_destroy(&conn->tx_ida);
-
-	if (work_pending(&conn->id_addr_update_work))
-		cancel_work_sync(&conn->id_addr_update_work);
 
 	l2cap_unregister_all_users(conn);
 
@@ -1937,9 +1937,6 @@ static void l2cap_conn_del(struct hci_conn *hcon, int err)
 	mutex_unlock(&conn->chan_lock);
 
 	hci_chan_del(conn->hchan);
-
-	if (conn->info_state & L2CAP_INFO_FEAT_MASK_REQ_SENT)
-		cancel_delayed_work_sync(&conn->info_timer);
 
 	hcon->l2cap_data = NULL;
 	conn->hchan = NULL;
