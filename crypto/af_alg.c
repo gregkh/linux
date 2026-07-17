@@ -977,7 +977,7 @@ ssize_t af_alg_sendpage(struct socket *sock, struct page *page,
 {
 	struct bio_vec bvec;
 	struct msghdr msg = {
-		.msg_flags = flags | MSG_SPLICE_PAGES,
+		.msg_flags = flags,
 	};
 
 	if (flags & MSG_SENDPAGE_NOTLAST)
