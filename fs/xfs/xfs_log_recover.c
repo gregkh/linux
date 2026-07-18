@@ -3325,6 +3325,7 @@ xlog_do_recover(
 	xfs_buf_relse(bp);
 
 	/* re-initialise in-core superblock and geometry structures */
+	mp->m_features |= xfs_sb_version_to_features(sbp);
 	xfs_reinit_percpu_counters(mp);
 	error = xfs_initialize_perag(mp, sbp->sb_agcount, &mp->m_maxagi);
 	if (error) {

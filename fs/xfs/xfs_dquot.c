@@ -1218,7 +1218,7 @@ xfs_qm_dqflush_check(
 
 	/* bigtime flag should never be set on root dquots */
 	if (dqp->q_type & XFS_DQTYPE_BIGTIME) {
-		if (!xfs_sb_version_hasbigtime(&dqp->q_mount->m_sb))
+		if (!xfs_has_bigtime(dqp->q_mount))
 			return __this_address;
 		if (dqp->q_id == 0)
 			return __this_address;
