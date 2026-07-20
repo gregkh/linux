@@ -8031,12 +8031,33 @@ static int btrfs_dio_iomap_end(struct inode *inode, loff_t pos, loff_t length,
 	if (submitted < length) {
 		pos += submitted;
 		length -= submitted;
-		if (write)
+		if (write) {
+			struct btrfs_ordered_extent *ordered;
+
+			/*
+			 * We have a short write, and the ordered extent is
+			 * not split at submission time on this tree, so it
+			 * may cover both the submitted range and the range
+			 * that was never submitted.
+			 *
+			 * Truncate the ordered extent to the part that was
+			 * submitted properly, so the never submitted range
+			 * is reclaimed without inserting a file extent item
+			 * for it and without marking it as an IO error.
+			 */
+			ordered = btrfs_lookup_ordered_extent(BTRFS_I(inode),
+							      pos);
+			if (ordered) {
+				btrfs_mark_ordered_extent_truncated(ordered,
+						pos - ordered->file_offset);
+				btrfs_put_ordered_extent(ordered);
+			}
 			btrfs_mark_ordered_io_finished(BTRFS_I(inode), NULL,
-						       pos, length, false);
-		else
+						       pos, length, true);
+		} else {
 			unlock_extent(&BTRFS_I(inode)->io_tree, pos,
 				      pos + length - 1, NULL);
+		}
 		ret = -ENOTBLK;
 	}
 
@@ -8560,11 +8581,7 @@ static void btrfs_invalidate_folio(struct folio *folio, size_t offset,
 					 EXTENT_LOCKED | EXTENT_DO_ACCOUNTING |
 					 EXTENT_DEFRAG, &cached_state);
 
-		spin_lock_irq(&inode->ordered_tree.lock);
-		set_bit(BTRFS_ORDERED_TRUNCATED, &ordered->flags);
-		ordered->truncated_len = min(ordered->truncated_len,
-					     cur - ordered->file_offset);
-		spin_unlock_irq(&inode->ordered_tree.lock);
+		btrfs_mark_ordered_extent_truncated(ordered, cur - ordered->file_offset);
 
 		/*
 		 * If the ordered extent has finished, we're safe to delete all
