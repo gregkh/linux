@@ -144,16 +144,8 @@ int btrfs_dirty_pages(struct btrfs_inode *inode, struct page **pages,
 
 	end_of_last_block = start_pos + num_bytes - 1;
 
-	/*
-	 * The pages may have already been dirty, clear out old accounting so
-	 * we can set things up properly
-	 */
-	clear_extent_bit(&inode->io_tree, start_pos, end_of_last_block,
-			 EXTENT_DELALLOC | EXTENT_DO_ACCOUNTING | EXTENT_DEFRAG,
-			 cached);
-
-	err = btrfs_set_extent_delalloc(inode, start_pos, end_of_last_block,
-					extra_bits, cached);
+	err = btrfs_reset_extent_delalloc(inode, start_pos, end_of_last_block,
+					  extra_bits, cached);
 	if (err)
 		return err;
 
