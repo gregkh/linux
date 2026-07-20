@@ -298,6 +298,19 @@ void btrfs_add_ordered_sum(struct btrfs_ordered_extent *entry,
 	spin_unlock_irq(&tree->lock);
 }
 
+void btrfs_mark_ordered_extent_truncated(struct btrfs_ordered_extent *ordered,
+					 u64 truncate_len)
+{
+	struct btrfs_ordered_inode_tree *tree;
+
+	tree = &BTRFS_I(ordered->inode)->ordered_tree;
+	ASSERT(truncate_len <= ordered->num_bytes);
+	spin_lock_irq(&tree->lock);
+	set_bit(BTRFS_ORDERED_TRUNCATED, &ordered->flags);
+	ordered->truncated_len = min(ordered->truncated_len, truncate_len);
+	spin_unlock_irq(&tree->lock);
+}
+
 /*
  * Mark all ordered extents io inside the specified range finished.
  *

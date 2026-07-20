@@ -8207,12 +8207,34 @@ static int btrfs_dio_iomap_end(struct inode *inode, loff_t pos, loff_t length,
 	if (submitted < length) {
 		pos += submitted;
 		length -= submitted;
-		if (write)
+		if (write) {
+			struct btrfs_ordered_extent *ordered;
+
+			/*
+			 * We have a short write. Any range that was properly
+			 * submitted will be finished through the bio
+			 * completion path with an uptodate status matching
+			 * the bio status.
+			 *
+			 * The remaining range was never submitted, so mark
+			 * it as truncated and finish it without an error, so
+			 * the extent is reclaimed without inserting a file
+			 * extent item for it and without marking the mapping
+			 * as failed, which would make a later buffered write
+			 * fallback fail with a false -EIO.
+			 */
+			ordered = btrfs_lookup_ordered_extent(BTRFS_I(inode),
+							      pos);
+			ASSERT(ordered);
+			btrfs_mark_ordered_extent_truncated(ordered,
+					pos - ordered->file_offset);
+			btrfs_put_ordered_extent(ordered);
 			__endio_write_update_ordered(BTRFS_I(inode), pos,
-					length, false);
-		else
+					length, true);
+		} else {
 			unlock_extent(&BTRFS_I(inode)->io_tree, pos,
 				      pos + length - 1);
+		}
 		ret = -ENOTBLK;
 	}
 
@@ -8839,11 +8861,7 @@ static void btrfs_invalidatepage(struct page *page, unsigned int offset,
 					 EXTENT_LOCKED | EXTENT_DO_ACCOUNTING |
 					 EXTENT_DEFRAG, 1, 0, &cached_state);
 
-		spin_lock_irq(&inode->ordered_tree.lock);
-		set_bit(BTRFS_ORDERED_TRUNCATED, &ordered->flags);
-		ordered->truncated_len = min(ordered->truncated_len,
-					     cur - ordered->file_offset);
-		spin_unlock_irq(&inode->ordered_tree.lock);
+		btrfs_mark_ordered_extent_truncated(ordered, cur - ordered->file_offset);
 
 		if (btrfs_dec_test_ordered_pending(inode, &ordered,
 						   cur, range_end + 1 - cur)) {
