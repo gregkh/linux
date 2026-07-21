@@ -1089,13 +1089,14 @@ static int exfat_rename_file(struct inode *inode, struct exfat_chain *p_dir,
 		}
 		exfat_update_bh(old_bh, sync);
 		brelse(old_bh);
+
+		exfat_remove_entries(inode, p_dir, oldentry,
+			ES_IDX_FIRST_FILENAME + 1, num_old_entries);
+
 		ret = exfat_init_ext_entry(inode, p_dir, oldentry,
 			num_new_entries, p_uniname);
 		if (ret)
 			return ret;
-
-		exfat_remove_entries(inode, p_dir, oldentry, num_new_entries,
-			num_old_entries);
 	}
 	return 0;
 }
