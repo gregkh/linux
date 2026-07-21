@@ -552,21 +552,43 @@ static void exfat_free_benign_secondary_clusters(struct inode *inode,
 	exfat_free_cluster(inode, &dir);
 }
 
+/*
+ * exfat_init_ext_entry - initialize extension entries of a dentry set
+ * @inode:       parent directory inode
+ * @p_dir:       directory the dentry set is in
+ * @entry:       index of the first entry of the dentry set
+ * @num_entries: number of entries excluding benign secondary entries
+ * @p_uniname:   filename to store
+ * @old_es:      optional source entry set with benign secondary entries, or NULL
+ * @num_extra:   number of benign secondary entries to copy from @old_es
+ *
+ * Set up the file, stream extension, and filename entries, optionally
+ * preserving @num_extra benign secondary entries from @old_es.  @old_es
+ * may refer to the same dentry set that is being initialized.
+ */
 int exfat_init_ext_entry(struct inode *inode, struct exfat_chain *p_dir,
-		int entry, int num_entries, struct exfat_uni_name *p_uniname)
+		int entry, int num_entries, struct exfat_uni_name *p_uniname,
+		struct exfat_entry_set_cache *old_es, int num_extra)
 {
 	struct super_block *sb = inode->i_sb;
-	int i;
+	int i, src_start = 0;
 	unsigned short *uniname = p_uniname->name;
 	struct exfat_dentry *ep;
 	struct buffer_head *bh;
 	int sync = IS_DIRSYNC(inode);
 
+	if (WARN_ON(num_extra < 0 || (num_extra && (!old_es ||
+		    old_es->num_entries < ES_IDX_FIRST_FILENAME + num_extra))))
+		num_extra = 0;
+
+	if (old_es && num_extra > 0)
+		src_start = old_es->num_entries - num_extra;
+
 	ep = exfat_get_dentry(sb, p_dir, entry, &bh);
 	if (!ep)
 		return -EIO;
 
-	ep->dentry.file.num_ext = (unsigned char)(num_entries - 1);
+	ep->dentry.file.num_ext = (unsigned char)(num_entries - 1 + num_extra);
 	exfat_update_bh(bh, sync);
 	brelse(bh);
 
@@ -578,6 +600,19 @@ int exfat_init_ext_entry(struct inode *inode, struct exfat_chain *p_dir,
 	ep->dentry.stream.name_hash = cpu_to_le16(p_uniname->name_hash);
 	exfat_update_bh(bh, sync);
 	brelse(bh);
+
+	if (old_es && num_extra > 0) {
+		for (i = 0; i < num_extra; i++) {
+			ep = exfat_get_dentry(sb, p_dir,
+					      entry + num_entries + i, &bh);
+			if (!ep)
+				return -EIO;
+
+			*ep = *exfat_get_dentry_cached(old_es, src_start + i);
+			exfat_update_bh(bh, sync);
+			brelse(bh);
+		}
+	}
 
 	for (i = EXFAT_FIRST_CLUSTER; i < num_entries; i++) {
 		ep = exfat_get_dentry(sb, p_dir, entry + i, &bh);
@@ -595,7 +630,7 @@ int exfat_init_ext_entry(struct inode *inode, struct exfat_chain *p_dir,
 }
 
 int exfat_remove_entries(struct inode *inode, struct exfat_chain *p_dir,
-		int entry, int order, int num_entries)
+		int entry, int order, int num_entries, bool free_benign)
 {
 	struct super_block *sb = inode->i_sb;
 	int i;
@@ -607,7 +642,7 @@ int exfat_remove_entries(struct inode *inode, struct exfat_chain *p_dir,
 		if (!ep)
 			return -EIO;
 
-		if (exfat_get_entry_type(ep) & TYPE_BENIGN_SEC)
+		if (free_benign && (exfat_get_entry_type(ep) & TYPE_BENIGN_SEC))
 			exfat_free_benign_secondary_clusters(inode, ep);
 
 		exfat_set_entry_type(ep, TYPE_DELETED);
