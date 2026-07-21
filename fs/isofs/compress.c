@@ -288,6 +288,7 @@ static int zisofs_fill_pages(struct inode *inode, int full_page, int pcount,
 		flush_dcache_page(*pages);
 		SetPageUptodate(*pages);
 	}
+	brelse(bh);
 	return 0;
 }
 
