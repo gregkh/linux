@@ -350,6 +350,7 @@ static int scmi_regulator_probe(struct scmi_device *sdev)
 		/* abort on any mem issue */
 		if (ret == -ENOMEM) {
 			of_node_put(child);
+			of_node_put(np);
 			return ret;
 		}
 	}
