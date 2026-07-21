@@ -1015,15 +1015,15 @@ unlock:
 	return err;
 }
 
-static int exfat_rename_file(struct inode *inode, struct exfat_chain *p_dir,
+static int exfat_rename_file(struct inode *parent_inode, struct exfat_chain *p_dir,
 		int oldentry, struct exfat_uni_name *p_uniname,
 		struct exfat_inode_info *ei)
 {
 	int ret, num_old_entries, num_new_entries;
 	struct exfat_dentry *epold, *epnew;
-	struct super_block *sb = inode->i_sb;
+	struct super_block *sb = parent_inode->i_sb;
 	struct buffer_head *new_bh, *old_bh;
-	int sync = IS_DIRSYNC(inode);
+	int sync = IS_DIRSYNC(parent_inode);
 
 	epold = exfat_get_dentry(sb, p_dir, oldentry, &old_bh);
 	if (!epold)
@@ -1041,8 +1041,8 @@ static int exfat_rename_file(struct inode *inode, struct exfat_chain *p_dir,
 	if (num_old_entries < num_new_entries) {
 		int newentry;
 
-		newentry =
-			exfat_find_empty_entry(inode, p_dir, num_new_entries);
+		newentry = exfat_find_empty_entry(parent_inode, p_dir,
+				num_new_entries);
 		if (newentry < 0)
 			return newentry; /* -EIO or -ENOSPC */
 
@@ -1073,12 +1073,12 @@ static int exfat_rename_file(struct inode *inode, struct exfat_chain *p_dir,
 		brelse(old_bh);
 		brelse(new_bh);
 
-		ret = exfat_init_ext_entry(inode, p_dir, newentry,
+		ret = exfat_init_ext_entry(parent_inode, p_dir, newentry,
 			num_new_entries, p_uniname);
 		if (ret)
 			return ret;
 
-		exfat_remove_entries(inode, p_dir, oldentry, 0,
+		exfat_remove_entries(parent_inode, p_dir, oldentry, 0,
 			num_old_entries);
 		ei->dir = *p_dir;
 		ei->entry = newentry;
@@ -1090,10 +1090,10 @@ static int exfat_rename_file(struct inode *inode, struct exfat_chain *p_dir,
 		exfat_update_bh(old_bh, sync);
 		brelse(old_bh);
 
-		exfat_remove_entries(inode, p_dir, oldentry,
+		exfat_remove_entries(parent_inode, p_dir, oldentry,
 			ES_IDX_FIRST_FILENAME + 1, num_old_entries);
 
-		ret = exfat_init_ext_entry(inode, p_dir, oldentry,
+		ret = exfat_init_ext_entry(parent_inode, p_dir, oldentry,
 			num_new_entries, p_uniname);
 		if (ret)
 			return ret;
@@ -1101,13 +1101,13 @@ static int exfat_rename_file(struct inode *inode, struct exfat_chain *p_dir,
 	return 0;
 }
 
-static int exfat_move_file(struct inode *inode, struct exfat_chain *p_olddir,
+static int exfat_move_file(struct inode *parent_inode, struct exfat_chain *p_olddir,
 		int oldentry, struct exfat_chain *p_newdir,
 		struct exfat_uni_name *p_uniname, struct exfat_inode_info *ei)
 {
 	int ret, newentry, num_new_entries, num_old_entries;
 	struct exfat_dentry *epmov, *epnew;
-	struct super_block *sb = inode->i_sb;
+	struct super_block *sb = parent_inode->i_sb;
 	struct buffer_head *mov_bh, *new_bh;
 
 	epmov = exfat_get_dentry(sb, p_olddir, oldentry, &mov_bh);
@@ -1124,7 +1124,8 @@ static int exfat_move_file(struct inode *inode, struct exfat_chain *p_olddir,
 	if (num_new_entries < 0)
 		return num_new_entries;
 
-	newentry = exfat_find_empty_entry(inode, p_newdir, num_new_entries);
+	newentry = exfat_find_empty_entry(parent_inode, p_newdir,
+			num_new_entries);
 	if (newentry < 0)
 		return newentry; /* -EIO or -ENOSPC */
 
@@ -1137,7 +1138,7 @@ static int exfat_move_file(struct inode *inode, struct exfat_chain *p_olddir,
 		epnew->dentry.file.attr |= cpu_to_le16(ATTR_ARCHIVE);
 		ei->attr |= ATTR_ARCHIVE;
 	}
-	exfat_update_bh(new_bh, IS_DIRSYNC(inode));
+	exfat_update_bh(new_bh, IS_DIRSYNC(parent_inode));
 	brelse(mov_bh);
 	brelse(new_bh);
 
@@ -1151,16 +1152,17 @@ static int exfat_move_file(struct inode *inode, struct exfat_chain *p_olddir,
 	}
 
 	*epnew = *epmov;
-	exfat_update_bh(new_bh, IS_DIRSYNC(inode));
+	exfat_update_bh(new_bh, IS_DIRSYNC(parent_inode));
 	brelse(mov_bh);
 	brelse(new_bh);
 
-	ret = exfat_init_ext_entry(inode, p_newdir, newentry, num_new_entries,
-		p_uniname);
+	ret = exfat_init_ext_entry(parent_inode, p_newdir, newentry,
+		num_new_entries, p_uniname);
 	if (ret)
 		return ret;
 
-	exfat_remove_entries(inode, p_olddir, oldentry, 0, num_old_entries);
+	exfat_remove_entries(parent_inode, p_olddir, oldentry, 0,
+		num_old_entries);
 
 	exfat_chain_set(&ei->dir, p_newdir->dir, p_newdir->size,
 		p_newdir->flags);
