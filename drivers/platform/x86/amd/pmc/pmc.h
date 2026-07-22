@@ -37,6 +37,7 @@ struct amd_pmc_dev {
 	struct dentry *dbgfs_dir;
 	struct quirk_entry *quirks;
 	bool disable_8042_wakeup;
+	bool is_first_check_after_suspend;
 };
 
 void amd_pmc_process_restore_quirks(struct amd_pmc_dev *dev);
