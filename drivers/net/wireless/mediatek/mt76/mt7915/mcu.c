@@ -212,7 +212,7 @@ mt7915_mcu_get_sta_nss(u16 mcs_map)
 			break;
 	}
 
-	return nss - 1;
+	return nss ? nss - 1 : 0;
 }
 
 static int __mt7915_mcu_msg_send(struct mt7915_dev *dev, struct sk_buff *skb,
