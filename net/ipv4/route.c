@@ -1733,7 +1733,7 @@ struct rtable *rt_dst_clone(struct net_device *dev, struct rtable *rt)
 		INIT_LIST_HEAD(&new_rt->rt_uncached);
 
 		new_rt->dst.input = READ_ONCE(rt->dst.input);
-		new_rt->dst.output = rt->dst.output;
+		new_rt->dst.output = READ_ONCE(rt->dst.output);
 		new_rt->dst.error = rt->dst.error;
 		new_rt->dst.lastuse = jiffies;
 		new_rt->dst.lwtstate = lwtstate_get(rt->dst.lwtstate);
