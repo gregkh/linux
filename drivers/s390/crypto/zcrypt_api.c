@@ -26,6 +26,7 @@
 #include <linux/cdev.h>
 #include <linux/ctype.h>
 #include <linux/capability.h>
+#include <linux/nospec.h>
 #include <asm/debug.h>
 
 #define CREATE_TRACE_POINTS
@@ -871,6 +872,7 @@ static long _zcrypt_send_cprb(bool userspace, struct ap_perms *perms,
 	tdom = *domain;
 	if (perms != &ap_perms && tdom < AP_DOMAINS) {
 		if (ap_msg.flags & AP_MSG_FLAG_ADMIN) {
+			tdom = array_index_nospec(tdom, AP_DOMAINS);
 			if (!test_bit_inv(tdom, perms->adm)) {
 				rc = -ENODEV;
 				goto out;
@@ -1050,6 +1052,7 @@ static long _zcrypt_send_ep11_cprb(bool userspace, struct ap_perms *perms,
 
 	if (perms != &ap_perms && domain < AP_DOMAINS) {
 		if (ap_msg.flags & AP_MSG_FLAG_ADMIN) {
+			domain = array_index_nospec(domain, AP_DOMAINS);
 			if (!test_bit_inv(domain, perms->adm)) {
 				rc = -ENODEV;
 				goto out_free;
