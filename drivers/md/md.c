@@ -211,7 +211,8 @@ void mddev_create_serial_pool(struct mddev *mddev, struct md_rdev *rdev,
 {
 	int ret = 0;
 
-	if (rdev && !rdev_need_serial(rdev) &&
+	if (!mddev->serialize_policy &&
+	    rdev && !rdev_need_serial(rdev) &&
 	    !test_bit(CollisionCheck, &rdev->flags))
 		return;
 
