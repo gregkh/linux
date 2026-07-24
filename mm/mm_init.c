@@ -241,17 +241,6 @@ static void __ref __init_zone_device_page(struct page *page, unsigned long pfn,
 		set_page_count(page, 0);
 }
 
-#define VMEMMAP_RESERVE_NR	2
-#ifdef CONFIG_ARCH_WANT_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
-#define vmemmap_can_optimize(altmap, pgmap)				\
-	(is_power_of_2(sizeof(struct page)) && !(altmap) &&		\
-	 (((pgmap_vmemmap_nr(pgmap) * sizeof(struct page)) >> PAGE_SHIFT) > \
-	  VMEMMAP_RESERVE_NR))
-#else
-#define vmemmap_can_optimize(altmap, pgmap)	\
-	((void)(altmap), (void)(pgmap), false)
-#endif
-
 #define pageblock_migratetype_init_range(start_pfn, nr_pages, migratetype) \
 do {									\
 	unsigned long __start = (start_pfn);				\
