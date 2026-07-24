@@ -1358,15 +1358,16 @@ static int qcom_scm_assert_valid_wq_ctx(u32 wq_ctx)
 	return 0;
 }
 
-int qcom_scm_wait_for_wq_completion(u32 wq_ctx)
+int qcom_scm_wait_for_wq_completion(struct device *dev, u32 wq_ctx)
 {
+	struct qcom_scm *scm = dev_get_drvdata(dev);
 	int ret;
 
 	ret = qcom_scm_assert_valid_wq_ctx(wq_ctx);
 	if (ret)
 		return ret;
 
-	wait_for_completion(&__scm->waitq_comp);
+	wait_for_completion(&scm->waitq_comp);
 
 	return 0;
 }
@@ -1379,7 +1380,7 @@ static int qcom_scm_waitq_wakeup(struct qcom_scm *scm, unsigned int wq_ctx)
 	if (ret)
 		return ret;
 
-	complete(&__scm->waitq_comp);
+	complete(&scm->waitq_comp);
 
 	return 0;
 }
@@ -1422,6 +1423,7 @@ static int qcom_scm_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	scm->dev = &pdev->dev;
+	platform_set_drvdata(pdev, scm);
 	ret = qcom_scm_find_dload_address(&pdev->dev, &scm->dload_mode_addr);
 	if (ret < 0)
 		return ret;
