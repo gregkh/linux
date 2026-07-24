@@ -14,6 +14,9 @@
 #include <linux/notifier.h>
 #include <linux/sched.h>
 #include <linux/mman.h>
+#include <linux/jiffies.h>
+#include <linux/memremap.h>
+#include <linux/page-isolation.h>
 #include "internal.h"
 
 #ifdef CONFIG_DEBUG_MEMORY_INIT
@@ -204,3 +207,154 @@ static int __init mm_sysfs_init(void)
 	return 0;
 }
 postcore_initcall(mm_sysfs_init);
+
+#ifdef CONFIG_ZONE_DEVICE
+static void __ref __init_zone_device_page(struct page *page, unsigned long pfn,
+					  unsigned long zone_idx, int nid,
+					  struct dev_pagemap *pgmap)
+{
+	__init_single_page(page, pfn, zone_idx, nid);
+
+	/*
+	 * Mark page reserved as it will need to wait for onlining
+	 * phase for it to be fully associated with a zone.
+	 *
+	 * We can use the non-atomic __set_bit operation for setting
+	 * the flag as we are still initializing the pages.
+	 */
+	__SetPageReserved(page);
+
+	/*
+	 * ZONE_DEVICE pages union ->lru with a ->pgmap back pointer
+	 * and zone_device_data.  It is a bug if a ZONE_DEVICE page is
+	 * ever freed or placed on a driver-private list.
+	 */
+	page->pgmap = pgmap;
+	page->zone_device_data = NULL;
+
+	/*
+	 * ZONE_DEVICE pages are released directly to the driver page allocator
+	 * which will set the page count to 1 when allocating the page.
+	 */
+	if (pgmap->type == MEMORY_DEVICE_PRIVATE ||
+	    pgmap->type == MEMORY_DEVICE_COHERENT)
+		set_page_count(page, 0);
+}
+
+#define VMEMMAP_RESERVE_NR	2
+#ifdef CONFIG_ARCH_WANT_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
+#define vmemmap_can_optimize(altmap, pgmap)				\
+	(is_power_of_2(sizeof(struct page)) && !(altmap) &&		\
+	 (((pgmap_vmemmap_nr(pgmap) * sizeof(struct page)) >> PAGE_SHIFT) > \
+	  VMEMMAP_RESERVE_NR))
+#else
+#define vmemmap_can_optimize(altmap, pgmap)	\
+	((void)(altmap), (void)(pgmap), false)
+#endif
+
+#define pageblock_migratetype_init_range(start_pfn, nr_pages, migratetype) \
+do {									\
+	unsigned long __start = (start_pfn);				\
+	unsigned long __pfn = pageblock_align(__start);			\
+	unsigned long __end = __start + (nr_pages);			\
+									\
+	for (; __pfn < __end; __pfn += pageblock_nr_pages) {		\
+		set_pageblock_migratetype(pfn_to_page(__pfn), migratetype); \
+		if (IS_ALIGNED(__pfn, PAGES_PER_SECTION))			\
+			cond_resched();					\
+	}								\
+} while (0)
+
+/*
+ * With compound page geometry and when struct pages are stored in ram most
+ * tail pages are reused. Consequently, the amount of unique struct pages to
+ * initialize is a lot smaller that the total amount of struct pages being
+ * mapped. This is a paired / mild layering violation with explicit knowledge
+ * of how the sparse_vmemmap internals handle compound pages in the lack
+ * of an altmap. See vmemmap_populate_compound_pages().
+ */
+static inline unsigned long compound_nr_pages(struct vmem_altmap *altmap,
+					      struct dev_pagemap *pgmap)
+{
+	if (!vmemmap_can_optimize(altmap, pgmap))
+		return pgmap_vmemmap_nr(pgmap);
+
+	return VMEMMAP_RESERVE_NR * (PAGE_SIZE / sizeof(struct page));
+}
+
+static void __ref memmap_init_compound(struct page *head,
+				       unsigned long head_pfn,
+				       unsigned long zone_idx, int nid,
+				       struct dev_pagemap *pgmap,
+				       unsigned long nr_pages)
+{
+	unsigned long pfn, end_pfn = head_pfn + nr_pages;
+	unsigned int order = pgmap->vmemmap_shift;
+
+	__SetPageHead(head);
+	for (pfn = head_pfn + 1; pfn < end_pfn; pfn++) {
+		struct page *page = pfn_to_page(pfn);
+
+		__init_zone_device_page(page, pfn, zone_idx, nid, pgmap);
+		prep_compound_tail(head, pfn - head_pfn);
+		set_page_count(page, 0);
+
+		/*
+		 * The first tail page stores compound_mapcount_ptr() and
+		 * compound_order() and the second tail page stores
+		 * compound_pincount_ptr(). Call prep_compound_head() after
+		 * the first and second tail pages have been initialized to
+		 * not have the data overwritten.
+		 */
+		if (pfn == head_pfn + 2)
+			prep_compound_head(head, order);
+	}
+}
+
+void __ref memmap_init_zone_device(struct zone *zone,
+				   unsigned long start_pfn,
+				   unsigned long nr_pages,
+				   struct dev_pagemap *pgmap)
+{
+	unsigned long pfn, end_pfn = start_pfn + nr_pages;
+	struct pglist_data *pgdat = zone->zone_pgdat;
+	struct vmem_altmap *altmap = pgmap_altmap(pgmap);
+	unsigned int pfns_per_compound = pgmap_vmemmap_nr(pgmap);
+	unsigned long zone_idx = zone_idx(zone);
+	unsigned long start = jiffies;
+	int nid = pgdat->node_id;
+
+	if (WARN_ON_ONCE(!pgmap || zone_idx != ZONE_DEVICE))
+		return;
+
+	/*
+	 * The call to memmap_init should have already taken care
+	 * of the pages reserved for the memmap, so we can just jump to
+	 * the end of that region and start processing the device pages.
+	 */
+	if (altmap) {
+		start_pfn = altmap->base_pfn + vmem_altmap_offset(altmap);
+		nr_pages = end_pfn - start_pfn;
+	}
+
+	for (pfn = start_pfn; pfn < end_pfn; pfn += pfns_per_compound) {
+		struct page *page = pfn_to_page(pfn);
+
+		__init_zone_device_page(page, pfn, zone_idx, nid, pgmap);
+
+		if (IS_ALIGNED(pfn, PAGES_PER_SECTION))
+			cond_resched();
+
+		if (pfns_per_compound == 1)
+			continue;
+
+		memmap_init_compound(page, pfn, zone_idx, nid, pgmap,
+				     compound_nr_pages(altmap, pgmap));
+	}
+
+	pageblock_migratetype_init_range(start_pfn, nr_pages, MIGRATE_MOVABLE);
+
+	pr_debug("%s initialised %lu pages in %ums\n", __func__,
+		 nr_pages, jiffies_to_msecs(jiffies - start));
+}
+#endif

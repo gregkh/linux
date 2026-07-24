@@ -389,6 +389,10 @@ extern void __putback_isolated_page(struct page *page, unsigned int order,
 extern void memblock_free_pages(struct page *page, unsigned long pfn,
 					unsigned int order);
 extern void __free_pages_core(struct page *page, unsigned int order);
+void __init_single_page(struct page *page, unsigned long pfn,
+			unsigned long zone, int nid);
+void prep_compound_head(struct page *page, unsigned int order);
+void prep_compound_tail(struct page *head, int tail_idx);
 extern void prep_compound_page(struct page *page, unsigned int order);
 extern void post_alloc_hook(struct page *page, unsigned int order,
 					gfp_t gfp_flags);
