@@ -100,10 +100,9 @@ struct iommu_sva *iommu_sva_bind_device(struct device *dev, struct mm_struct *mm
 		goto out_free_domain;
 	domain->users = 1;
 out:
-	mutex_unlock(&iommu_sva_lock);
 	handle->dev = dev;
 	handle->domain = domain;
-
+	mutex_unlock(&iommu_sva_lock);
 	return handle;
 
 out_free_domain:
