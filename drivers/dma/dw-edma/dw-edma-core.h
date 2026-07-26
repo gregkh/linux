@@ -15,6 +15,8 @@
 #include "../virt-dma.h"
 
 #define EDMA_LL_SZ					24
+#define EDMA_MAX_WR_CH					8
+#define EDMA_MAX_RD_CH					8
 
 enum dw_edma_dir {
 	EDMA_DIR_WRITE = 0,
@@ -40,6 +42,7 @@ enum dw_edma_status {
 
 struct dw_edma_chan;
 struct dw_edma_chunk;
+struct dw_edma;
 
 struct dw_edma_burst {
 	struct list_head		list;
@@ -79,13 +82,11 @@ struct dw_edma_desc {
 struct dw_edma_chan {
 	struct virt_dma_chan		vc;
 	struct dw_edma_chip		*chip;
+	struct dw_edma			*dw;
 	int				id;
 	enum dw_edma_dir		dir;
 
-	off_t				ll_off;
 	u32				ll_max;
-
-	off_t				dt_off;
 
 	struct msi_msg			msi;
 
@@ -117,8 +118,10 @@ struct dw_edma {
 	u16				rd_ch_cnt;
 
 	struct dw_edma_region		rg_region;	/* Registers */
-	struct dw_edma_region		ll_region;	/* Linked list */
-	struct dw_edma_region		dt_region;	/* Data */
+	struct dw_edma_region		ll_region_wr[EDMA_MAX_WR_CH];
+	struct dw_edma_region		ll_region_rd[EDMA_MAX_RD_CH];
+	struct dw_edma_region		dt_region_wr[EDMA_MAX_WR_CH];
+	struct dw_edma_region		dt_region_rd[EDMA_MAX_RD_CH];
 
 	struct dw_edma_irq		*irq;
 	int				nr_irqs;
@@ -127,9 +130,12 @@ struct dw_edma {
 	enum dw_edma_mode		mode;
 
 	struct dw_edma_chan		*chan;
-	const struct dw_edma_core_ops	*ops;
 
 	raw_spinlock_t			lock;		/* Only for legacy */
+
+	struct dw_edma_chip             *chip;
+
+	const struct dw_edma_core_ops	*core;
 };
 
 struct dw_edma_sg {

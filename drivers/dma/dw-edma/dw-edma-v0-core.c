@@ -34,7 +34,7 @@ static inline struct dw_edma_v0_regs __iomem *__dw_regs(struct dw_edma *dw)
 #define GET(dw, name)					\
 	readl(&(__dw_regs(dw)->name))
 
-#define SET_RW(dw, dir, name, value)			\
+#define SET_RW_32(dw, dir, name, value)			\
 	do {						\
 		if ((dir) == EDMA_DIR_WRITE)		\
 			SET(dw, wr_##name, value);	\
@@ -42,7 +42,7 @@ static inline struct dw_edma_v0_regs __iomem *__dw_regs(struct dw_edma *dw)
 			SET(dw, rd_##name, value);	\
 	} while (0)
 
-#define GET_RW(dw, dir, name)				\
+#define GET_RW_32(dw, dir, name)			\
 	((dir) == EDMA_DIR_WRITE			\
 	  ? GET(dw, wr_##name)				\
 	  : GET(dw, rd_##name))
@@ -115,7 +115,7 @@ static inline u32 readl_ch(struct dw_edma *dw, enum dw_edma_dir dir, u16 ch,
 	return value;
 }
 
-#define SET_CH(dw, dir, ch, name, value) \
+#define SET_CH_32(dw, dir, ch, name, value) \
 	writel_ch(dw, dir, ch, value, &(__dw_ch_regs(dw, dir, ch)->name))
 
 #define GET_CH(dw, dir, ch, name) \
@@ -167,26 +167,26 @@ void dw_edma_v0_core_clear_done_int(struct dw_edma_chan *chan)
 {
 	struct dw_edma *dw = chan->chip->dw;
 
-	SET_RW(dw, chan->dir, int_clear,
-	       FIELD_PREP(EDMA_V0_DONE_INT_MASK, BIT(chan->id)));
+	SET_RW_32(dw, chan->dir, int_clear,
+		  FIELD_PREP(EDMA_V0_DONE_INT_MASK, BIT(chan->id)));
 }
 
 void dw_edma_v0_core_clear_abort_int(struct dw_edma_chan *chan)
 {
 	struct dw_edma *dw = chan->chip->dw;
 
-	SET_RW(dw, chan->dir, int_clear,
-	       FIELD_PREP(EDMA_V0_ABORT_INT_MASK, BIT(chan->id)));
+	SET_RW_32(dw, chan->dir, int_clear,
+		  FIELD_PREP(EDMA_V0_ABORT_INT_MASK, BIT(chan->id)));
 }
 
 u32 dw_edma_v0_core_status_done_int(struct dw_edma *dw, enum dw_edma_dir dir)
 {
-	return FIELD_GET(EDMA_V0_DONE_INT_MASK, GET_RW(dw, dir, int_status));
+	return FIELD_GET(EDMA_V0_DONE_INT_MASK, GET_RW_32(dw, dir, int_status));
 }
 
 u32 dw_edma_v0_core_status_abort_int(struct dw_edma *dw, enum dw_edma_dir dir)
 {
-	return FIELD_GET(EDMA_V0_ABORT_INT_MASK, GET_RW(dw, dir, int_status));
+	return FIELD_GET(EDMA_V0_ABORT_INT_MASK, GET_RW_32(dw, dir, int_status));
 }
 
 static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk)
@@ -236,35 +236,35 @@ static void dw_edma_v0_core_write_chunk(struct dw_edma_chunk *chunk)
 void dw_edma_v0_core_start(struct dw_edma_chunk *chunk, bool first)
 {
 	struct dw_edma_chan *chan = chunk->chan;
-	struct dw_edma *dw = chan->chip->dw;
+	struct dw_edma *dw = chan->dw;
 	u32 tmp;
 
 	dw_edma_v0_core_write_chunk(chunk);
 
 	if (first) {
 		/* Enable engine */
-		SET_RW(dw, chan->dir, engine_en, BIT(0));
+		SET_RW_32(dw, chan->dir, engine_en, BIT(0));
 		/* Interrupt unmask - done, abort */
-		tmp = GET_RW(dw, chan->dir, int_mask);
+		tmp = GET_RW_32(dw, chan->dir, int_mask);
 		tmp &= ~FIELD_PREP(EDMA_V0_DONE_INT_MASK, BIT(chan->id));
 		tmp &= ~FIELD_PREP(EDMA_V0_ABORT_INT_MASK, BIT(chan->id));
-		SET_RW(dw, chan->dir, int_mask, tmp);
+		SET_RW_32(dw, chan->dir, int_mask, tmp);
 		/* Linked list error */
-		tmp = GET_RW(dw, chan->dir, linked_list_err_en);
+		tmp = GET_RW_32(dw, chan->dir, linked_list_err_en);
 		tmp |= FIELD_PREP(EDMA_V0_LINKED_LIST_ERR_MASK, BIT(chan->id));
-		SET_RW(dw, chan->dir, linked_list_err_en, tmp);
+		SET_RW_32(dw, chan->dir, linked_list_err_en, tmp);
 		/* Channel control */
-		SET_CH(dw, chan->dir, chan->id, ch_control1,
-		       (DW_EDMA_V0_CCS | DW_EDMA_V0_LLE));
+		SET_CH_32(dw, chan->dir, chan->id, ch_control1,
+			  (DW_EDMA_V0_CCS | DW_EDMA_V0_LLE));
 		/* Linked list - low, high */
-		SET_CH(dw, chan->dir, chan->id, llp_low,
-		       lower_32_bits(chunk->ll_region.paddr));
-		SET_CH(dw, chan->dir, chan->id, llp_high,
-		       upper_32_bits(chunk->ll_region.paddr));
+		SET_CH_32(dw, chan->dir, chan->id, llp_low,
+			  lower_32_bits(chunk->ll_region.paddr));
+		SET_CH_32(dw, chan->dir, chan->id, llp_high,
+			  upper_32_bits(chunk->ll_region.paddr));
 	}
 	/* Doorbell */
-	SET_RW(dw, chan->dir, doorbell,
-	       FIELD_PREP(EDMA_V0_DOORBELL_CH_MASK, chan->id));
+	SET_RW_32(dw, chan->dir, doorbell,
+		  FIELD_PREP(EDMA_V0_DOORBELL_CH_MASK, chan->id));
 }
 
 int dw_edma_v0_core_device_config(struct dw_edma_chan *chan)
@@ -273,31 +273,31 @@ int dw_edma_v0_core_device_config(struct dw_edma_chan *chan)
 	u32 tmp = 0;
 
 	/* MSI done addr - low, high */
-	SET_RW(dw, chan->dir, done_imwr_low, chan->msi.address_lo);
-	SET_RW(dw, chan->dir, done_imwr_high, chan->msi.address_hi);
+	SET_RW_32(dw, chan->dir, done_imwr_low, chan->msi.address_lo);
+	SET_RW_32(dw, chan->dir, done_imwr_high, chan->msi.address_hi);
 	/* MSI abort addr - low, high */
-	SET_RW(dw, chan->dir, abort_imwr_low, chan->msi.address_lo);
-	SET_RW(dw, chan->dir, abort_imwr_high, chan->msi.address_hi);
+	SET_RW_32(dw, chan->dir, abort_imwr_low, chan->msi.address_lo);
+	SET_RW_32(dw, chan->dir, abort_imwr_high, chan->msi.address_hi);
 	/* MSI data - low, high */
 	switch (chan->id) {
 	case 0:
 	case 1:
-		tmp = GET_RW(dw, chan->dir, ch01_imwr_data);
+		tmp = GET_RW_32(dw, chan->dir, ch01_imwr_data);
 		break;
 
 	case 2:
 	case 3:
-		tmp = GET_RW(dw, chan->dir, ch23_imwr_data);
+		tmp = GET_RW_32(dw, chan->dir, ch23_imwr_data);
 		break;
 
 	case 4:
 	case 5:
-		tmp = GET_RW(dw, chan->dir, ch45_imwr_data);
+		tmp = GET_RW_32(dw, chan->dir, ch45_imwr_data);
 		break;
 
 	case 6:
 	case 7:
-		tmp = GET_RW(dw, chan->dir, ch67_imwr_data);
+		tmp = GET_RW_32(dw, chan->dir, ch67_imwr_data);
 		break;
 	}
 
@@ -316,22 +316,22 @@ int dw_edma_v0_core_device_config(struct dw_edma_chan *chan)
 	switch (chan->id) {
 	case 0:
 	case 1:
-		SET_RW(dw, chan->dir, ch01_imwr_data, tmp);
+		SET_RW_32(dw, chan->dir, ch01_imwr_data, tmp);
 		break;
 
 	case 2:
 	case 3:
-		SET_RW(dw, chan->dir, ch23_imwr_data, tmp);
+		SET_RW_32(dw, chan->dir, ch23_imwr_data, tmp);
 		break;
 
 	case 4:
 	case 5:
-		SET_RW(dw, chan->dir, ch45_imwr_data, tmp);
+		SET_RW_32(dw, chan->dir, ch45_imwr_data, tmp);
 		break;
 
 	case 6:
 	case 7:
-		SET_RW(dw, chan->dir, ch67_imwr_data, tmp);
+		SET_RW_32(dw, chan->dir, ch67_imwr_data, tmp);
 		break;
 	}
 
