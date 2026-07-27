@@ -132,9 +132,8 @@ void exit_ro_spine(struct ro_spine *s)
 {
 	int i;
 
-	for (i = 0; i < s->count; i++) {
+	for (i = 0; i < s->count; i++)
 		unlock_block(s->info, s->nodes[i]);
-	}
 }
 
 int ro_step(struct ro_spine *s, dm_block_t new_child)
@@ -183,9 +182,8 @@ void exit_shadow_spine(struct shadow_spine *s)
 {
 	int i;
 
-	for (i = 0; i < s->count; i++) {
+	for (i = 0; i < s->count; i++)
 		unlock_block(s->info, s->nodes[i]);
-	}
 }
 
 int shadow_step(struct shadow_spine *s, dm_block_t b,
