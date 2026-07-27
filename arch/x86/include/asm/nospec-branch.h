@@ -293,6 +293,10 @@ void srso_safe_ret(void);
 void srso_alias_safe_ret(void);
 void handle_interrupted_saferet(struct pt_regs *regs);
 
+#ifdef CONFIG_BPF_JIT
+extern void bpf_arch_ibpb(void);
+#endif
+
 #ifdef CONFIG_X86_64
 extern void clear_bhb_loop(void);
 #endif
