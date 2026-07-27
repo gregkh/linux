@@ -6811,6 +6811,7 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 			goto out_free_bsmbx;
 		}
 	}
+	mempool_free(mboxq, phba->mbox_mem_pool);
 
 	/*
 	 * 1 for cmd, 1 for rsp, NVME adds an extra one
@@ -6931,8 +6932,6 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 					i, 0);
 	if (!phba->lpfc_cmd_rsp_buf_pool)
 		goto out_free_sg_dma_buf;
-
-	mempool_free(mboxq, phba->mbox_mem_pool);
 
 	/* Verify OAS is supported */
 	lpfc_sli4_oas_verify(phba);
