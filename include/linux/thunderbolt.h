@@ -189,6 +189,8 @@ void tb_unregister_property_dir(const char *key, struct tb_property_dir *dir);
  * @link_width: Width of the link (1 or 2)
  * @link_usb4: Downstream link is USB4
  * @is_unplugged: The XDomain is unplugged
+ * @removing: Set by tb_xdomain_remove() under @lock to prevent
+ *	      concurrent delayed work queueing
  * @needs_uuid: If the XDomain does not have @remote_uuid it will be
  *		queried first
  * @service_ids: Used to generate IDs for the services
@@ -237,6 +239,7 @@ struct tb_xdomain {
 	unsigned int link_width;
 	bool link_usb4;
 	bool is_unplugged;
+	bool removing;
 	bool needs_uuid;
 	struct ida service_ids;
 	struct ida in_hopids;
