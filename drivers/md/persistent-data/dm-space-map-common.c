@@ -608,6 +608,7 @@ static int sm_ll_inc_overflow(struct ll_disk *ll, dm_block_t b, struct inc_conte
 static inline int shadow_bitmap(struct ll_disk *ll, struct inc_context *ic)
 {
 	int r, inc;
+
 	r = dm_tm_shadow_block(ll->tm, le64_to_cpu(ic->ie_disk.blocknr),
 			       &dm_sm_bitmap_validator, &ic->bitmap_block, &inc);
 	if (r < 0) {
@@ -747,6 +748,7 @@ int sm_ll_inc(struct ll_disk *ll, dm_block_t b, dm_block_t e,
 	*nr_allocations = 0;
 	while (b != e) {
 		int r = __sm_ll_inc(ll, b, e, nr_allocations, &b);
+
 		if (r)
 			return r;
 	}
@@ -929,6 +931,7 @@ int sm_ll_dec(struct ll_disk *ll, dm_block_t b, dm_block_t e,
 	*nr_allocations = 0;
 	while (b != e) {
 		int r = __sm_ll_dec(ll, b, e, nr_allocations, &b);
+
 		if (r)
 			return r;
 	}
@@ -1165,8 +1168,10 @@ static int disk_ll_save_ie(struct ll_disk *ll, dm_block_t index,
 static int disk_ll_init_index(struct ll_disk *ll)
 {
 	unsigned int i;
+
 	for (i = 0; i < IE_CACHE_SIZE; i++) {
 		struct ie_cache *iec = ll->ie_cache + i;
+
 		iec->valid = false;
 		iec->dirty = false;
 	}
@@ -1190,6 +1195,7 @@ static int disk_ll_commit(struct ll_disk *ll)
 
 	for (i = 0; i < IE_CACHE_SIZE; i++) {
 		struct ie_cache *iec = ll->ie_cache + i;
+
 		if (iec->valid && iec->dirty)
 			r = ie_cache_writeback(ll, iec);
 	}

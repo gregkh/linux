@@ -623,6 +623,7 @@ static void __h_insert(struct smq_hash_table *ht, unsigned int bucket, struct en
 static void h_insert(struct smq_hash_table *ht, struct entry *e)
 {
 	unsigned int h = hash_64(from_oblock(e->oblock), ht->hash_bits);
+
 	__h_insert(ht, h, e);
 }
 
@@ -1646,6 +1647,7 @@ static void smq_tick(struct dm_cache_policy *p, bool can_block)
 static void smq_allow_migrations(struct dm_cache_policy *p, bool allow)
 {
 	struct smq_policy *mq = to_smq_policy(p);
+
 	mq->migrations_allowed = allow;
 }
 

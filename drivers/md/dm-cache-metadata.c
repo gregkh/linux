@@ -533,6 +533,7 @@ static int __create_persistent_data_objects(struct dm_cache_metadata *cmd,
 					    bool may_format_device)
 {
 	int r;
+
 	cmd->bm = dm_block_manager_create(cmd->bdev, DM_CACHE_METADATA_BLOCK_SIZE << SECTOR_SHIFT,
 					  CACHE_MAX_CONCURRENT_LOCKS);
 	if (IS_ERR(cmd->bm)) {
@@ -566,6 +567,7 @@ static void update_flags(struct cache_disk_superblock *disk_super,
 			 flags_mutator mutator)
 {
 	uint32_t sb_flags = mutator(le32_to_cpu(disk_super->flags));
+
 	disk_super->flags = cpu_to_le32(sb_flags);
 }
 
@@ -730,6 +732,7 @@ static int __commit_transaction(struct dm_cache_metadata *cmd,
 static __le64 pack_value(dm_oblock_t block, unsigned int flags)
 {
 	uint64_t value = from_oblock(block);
+
 	value <<= 16;
 	value = value | (flags & FLAGS_MASK);
 	return cpu_to_le64(value);
@@ -739,6 +742,7 @@ static void unpack_value(__le64 value_le, dm_oblock_t *block, unsigned int *flag
 {
 	uint64_t value = le64_to_cpu(value_le);
 	uint64_t b = value >> 16;
+
 	*block = to_oblock(b);
 	*flags = value & FLAGS_MASK;
 }
@@ -1258,6 +1262,7 @@ static int __insert(struct dm_cache_metadata *cmd,
 {
 	int r;
 	__le64 value = pack_value(oblock, M_VALID);
+
 	__dm_bless_for_disk(&value);
 
 	r = dm_array_set_value(&cmd->info, cmd->root, from_cblock(cblock),
@@ -1584,6 +1589,7 @@ static int __set_dirty_bits_v1(struct dm_cache_metadata *cmd, unsigned int nr_bi
 {
 	int r;
 	unsigned int i;
+
 	for (i = 0; i < nr_bits; i++) {
 		r = __dirty(cmd, to_cblock(i), test_bit(i, bits));
 		if (r)

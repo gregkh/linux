@@ -273,6 +273,7 @@ static void skip_metadata(struct pstore *ps)
 {
 	uint32_t stride = ps->exceptions_per_area + 1;
 	chunk_t next_free = ps->next_free;
+
 	if (sector_div(next_free, stride) == NUM_SNAPSHOT_HDR_CHUNKS)
 		ps->next_free++;
 }
@@ -517,6 +518,7 @@ static int read_exceptions(struct pstore *ps,
 		if (DM_PREFETCH_CHUNKS) {
 			do {
 				chunk_t pf_chunk = area_location(ps, prefetch_area);
+
 				if (unlikely(pf_chunk >= dm_bufio_get_device_size(client)))
 					break;
 				dm_bufio_prefetch(client, pf_chunk, 1);
@@ -875,6 +877,7 @@ static int persistent_ctr(struct dm_exception_store *store, char *options)
 
 	if (options) {
 		char overflow = toupper(options[0]);
+
 		if (overflow == 'O')
 			store->userspace_supports_overflow = true;
 		else {
