@@ -416,6 +416,14 @@ static bool iptfs_skb_can_add_frags(const struct sk_buff *skb,
 	if (skb_has_frag_list(skb) || skb->pp_recycle != walk->pp_recycle)
 		return false;
 
+	/* Reject an @offset that is at or beyond the end of the walk's data
+	 * before calling iptfs_skb_reset_frag_walk(), whose fragment-advance
+	 * loop is otherwise unbounded and would index past walk->frags[].
+	 * This mirrors the guard already present in iptfs_skb_add_frags().
+	 */
+	if (!walk->nr_frags || offset >= walk->total + walk->initial_offset)
+		return false;
+
 	/* Make offset relative to current frag after setting that */
 	offset = iptfs_skb_reset_frag_walk(walk, offset);
 
