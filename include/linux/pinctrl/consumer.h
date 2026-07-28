@@ -17,6 +17,7 @@
 #include <linux/pinctrl/pinctrl-state.h>
 
 struct device;
+struct gpio_chip;
 
 /* This struct is private to the core and should be regarded as a cookie */
 struct pinctrl;
@@ -28,8 +29,10 @@ struct pinctrl_state;
 extern bool pinctrl_gpio_can_use_line(unsigned gpio);
 extern int pinctrl_gpio_request(unsigned gpio);
 extern void pinctrl_gpio_free(unsigned gpio);
-extern int pinctrl_gpio_direction_input(unsigned gpio);
-extern int pinctrl_gpio_direction_output(unsigned gpio);
+extern int pinctrl_gpio_direction_input(struct gpio_chip *gc,
+					unsigned int offset);
+extern int pinctrl_gpio_direction_output(struct gpio_chip *gc,
+					 unsigned int offset);
 extern int pinctrl_gpio_set_config(unsigned gpio, unsigned long config);
 
 extern struct pinctrl * __must_check pinctrl_get(struct device *dev);
@@ -77,12 +80,14 @@ static inline void pinctrl_gpio_free(unsigned gpio)
 {
 }
 
-static inline int pinctrl_gpio_direction_input(unsigned gpio)
+static inline int
+pinctrl_gpio_direction_input(struct gpio_chip *gc, unsigned int offset)
 {
 	return 0;
 }
 
-static inline int pinctrl_gpio_direction_output(unsigned gpio)
+static inline int
+pinctrl_gpio_direction_output(struct gpio_chip *gc, unsigned int offset)
 {
 	return 0;
 }
