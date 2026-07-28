@@ -312,7 +312,7 @@ static inline void bcm2835_pinctrl_fsel_set(
 
 static int bcm2835_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 {
-	return pinctrl_gpio_direction_input(chip->base + offset);
+	return pinctrl_gpio_direction_input(chip, offset);
 }
 
 static int bcm2835_gpio_get(struct gpio_chip *chip, unsigned offset)
@@ -348,7 +348,7 @@ static int bcm2835_gpio_direction_output(struct gpio_chip *chip,
 		unsigned offset, int value)
 {
 	bcm2835_gpio_set(chip, offset, value);
-	return pinctrl_gpio_direction_output(chip->base + offset);
+	return pinctrl_gpio_direction_output(chip, offset);
 }
 
 static int bcm2835_of_gpio_ranges_fallback(struct gpio_chip *gc,
