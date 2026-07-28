@@ -1353,11 +1353,11 @@ static int hss_init_one(struct platform_device *pdev)
 	}
 
 	dev = alloc_hdlcdev(port);
-	port->netdev = alloc_hdlcdev(port);
-	if (!port->netdev) {
+	if (!dev) {
 		err = -ENOMEM;
 		goto err_plat;
 	}
+	port->netdev = dev;
 
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	hdlc = dev_to_hdlc(dev);
