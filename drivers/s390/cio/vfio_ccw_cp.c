@@ -331,6 +331,7 @@ static struct ccwchain *ccwchain_alloc(struct channel_program *cp, int len)
 		goto out_err;
 
 	list_add_tail(&chain->next, &cp->ccwchain_list);
+	cp->ccwchain_count++;
 
 	return chain;
 
@@ -437,6 +438,10 @@ static int ccwchain_handle_ccw(u32 cda, struct channel_program *cp)
 	len = ccwchain_calc_length(cda, cp);
 	if (len < 0)
 		return len;
+
+	/* Limit number of chains in a single channel program */
+	if (cp->ccwchain_count >= CCWCHAIN_COUNT_MAX)
+		return -EINVAL;
 
 	/* Need alloc a new chain for this one. */
 	chain = ccwchain_alloc(cp, len);
@@ -725,6 +730,7 @@ int cp_init(struct channel_program *cp, union orb *orb)
 			vdev->dev,
 			"Prefetching channel program even though prefetch not specified in ORB");
 
+	cp->ccwchain_count = 0;
 	INIT_LIST_HEAD(&cp->ccwchain_list);
 	memcpy(&cp->orb, orb, sizeof(*orb));
 
