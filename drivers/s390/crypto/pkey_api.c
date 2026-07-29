@@ -336,7 +336,8 @@ static int pkey_verifykey(const struct pkey_seckey *seckey,
 	int rc;
 
 	/* check the secure key for valid AES secure key */
-	rc = cca_check_secaeskeytoken(debug_info, 3, (u8 *)seckey, 0);
+	rc = cca_check_secaeskeytoken(debug_info, 3, (u8 *)seckey,
+				      sizeof(*seckey), 0);
 	if (rc)
 		goto out;
 	if (pattributes)
@@ -839,7 +840,7 @@ static int pkey_verifykey2(const u8 *key, size_t keylen,
 	    hdr->version == TOKVER_CCA_AES) {
 		struct secaeskeytoken *t = (struct secaeskeytoken *)key;
 
-		rc = cca_check_secaeskeytoken(debug_info, 3, key, 0);
+		rc = cca_check_secaeskeytoken(debug_info, 3, key, keylen, 0);
 		if (rc)
 			goto out;
 		if (ktype)
@@ -869,7 +870,7 @@ static int pkey_verifykey2(const u8 *key, size_t keylen,
 		   hdr->version == TOKVER_CCA_VLSC) {
 		struct cipherkeytoken *t = (struct cipherkeytoken *)key;
 
-		rc = cca_check_secaescipherkey(debug_info, 3, key, 0, 1);
+		rc = cca_check_secaescipherkey(debug_info, 3, key, keylen, 0, 1);
 		if (rc)
 			goto out;
 		if (ktype)
@@ -981,12 +982,12 @@ static int pkey_keyblob2pkey2(const struct pkey_apqn *apqns, size_t nr_apqns,
 		if (hdr->version == TOKVER_CCA_AES) {
 			if (keylen != sizeof(struct secaeskeytoken))
 				return -EINVAL;
-			if (cca_check_secaeskeytoken(debug_info, 3, key, 0))
+			if (cca_check_secaeskeytoken(debug_info, 3, key, keylen, 0))
 				return -EINVAL;
 		} else if (hdr->version == TOKVER_CCA_VLSC) {
 			if (keylen < hdr->len || keylen > MAXCCAVLSCTOKENSIZE)
 				return -EINVAL;
-			if (cca_check_secaescipherkey(debug_info, 3, key, 0, 1))
+			if (cca_check_secaescipherkey(debug_info, 3, key, keylen, 0, 1))
 				return -EINVAL;
 		} else {
 			DEBUG_ERR("%s unknown CCA internal token version %d\n",
@@ -1253,13 +1254,13 @@ static int pkey_keyblob2pkey3(const struct pkey_apqn *apqns, size_t nr_apqns,
 			/* CCA AES data key */
 			if (keylen != sizeof(struct secaeskeytoken))
 				return -EINVAL;
-			if (cca_check_secaeskeytoken(debug_info, 3, key, 0))
+			if (cca_check_secaeskeytoken(debug_info, 3, key, keylen, 0))
 				return -EINVAL;
 		} else if (hdr->version == TOKVER_CCA_VLSC) {
 			/* CCA AES cipher key */
 			if (keylen < hdr->len || keylen > MAXCCAVLSCTOKENSIZE)
 				return -EINVAL;
-			if (cca_check_secaescipherkey(debug_info, 3, key, 0, 1))
+			if (cca_check_secaescipherkey(debug_info, 3, key, keylen, 0, 1))
 				return -EINVAL;
 		} else {
 			DEBUG_ERR("%s unknown CCA internal token version %d\n",
