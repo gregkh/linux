@@ -938,8 +938,9 @@ static int ublk_map_io(const struct ublk_queue *ubq, const struct request *req,
 		struct iovec iov;
 		const int dir = ITER_DEST;
 
-		import_single_range(dir, u64_to_user_ptr(io->addr), rq_bytes,
-				&iov, &iter);
+		if (import_single_range(dir, u64_to_user_ptr(io->addr), rq_bytes,
+				&iov, &iter) < 0)
+			return 0;
 
 		return ublk_copy_user_pages(req, 0, &iter, dir);
 	}
@@ -962,8 +963,10 @@ static int ublk_unmap_io(const struct ublk_queue *ubq,
 
 		WARN_ON_ONCE(io->res > rq_bytes);
 
-		import_single_range(dir, u64_to_user_ptr(io->addr), io->res,
-				&iov, &iter);
+		if (import_single_range(dir, u64_to_user_ptr(io->addr), io->res,
+				&iov, &iter) < 0)
+			return 0;
+
 		return ublk_copy_user_pages(req, 0, &iter, dir);
 	}
 	return rq_bytes;
