@@ -45,6 +45,9 @@ static ssize_t proc_bus_pci_read(struct file *file, char __user *buf,
 	else
 		size = 64;
 
+	if (!nbytes)
+		return 0;
+
 	if (pos >= size)
 		return 0;
 	if (nbytes >= size)
@@ -120,6 +123,9 @@ static ssize_t proc_bus_pci_write(struct file *file, const char __user *buf,
 	ret = security_locked_down(LOCKDOWN_PCI_ACCESS);
 	if (ret)
 		return ret;
+
+	if (!nbytes)
+		return 0;
 
 	if (pos >= size)
 		return 0;
