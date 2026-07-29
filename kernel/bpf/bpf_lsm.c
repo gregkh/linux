@@ -42,7 +42,6 @@ BTF_ID(func, bpf_lsm_inode_need_killpriv)
 BTF_ID(func, bpf_lsm_inode_getsecurity)
 BTF_ID(func, bpf_lsm_inode_listsecurity)
 BTF_ID(func, bpf_lsm_inode_copy_up_xattr)
-BTF_ID(func, bpf_lsm_getselfattr)
 BTF_ID(func, bpf_lsm_getprocattr)
 BTF_ID(func, bpf_lsm_setprocattr)
 #ifdef CONFIG_KEYS
