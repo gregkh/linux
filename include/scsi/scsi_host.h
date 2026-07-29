@@ -626,6 +626,10 @@ struct Scsi_Host {
 	 */
 	unsigned nr_hw_queues;
 	unsigned nr_maps;
+
+	/* Don't resume host in EH */
+	bool eh_noresume;
+
 	unsigned active_mode:2;
 
 	/*
@@ -646,9 +650,6 @@ struct Scsi_Host {
 
 	/* Asynchronous scan in progress */
 	unsigned async_scan:1;
-
-	/* Don't resume host in EH */
-	unsigned eh_noresume:1;
 
 	/* The controller does not support WRITE SAME */
 	unsigned no_write_same:1;
