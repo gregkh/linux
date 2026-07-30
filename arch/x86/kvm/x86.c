@@ -11122,7 +11122,8 @@ bool kvm_arch_dy_runnable(struct kvm_vcpu *vcpu)
 		 kvm_test_request(KVM_REQ_EVENT, vcpu))
 		return true;
 
-	if (vcpu->arch.apicv_active && kvm_x86_ops.dy_apicv_has_pending_interrupt(vcpu))
+	if (kvm_vcpu_apicv_active(vcpu) &&
+	    kvm_x86_ops.dy_apicv_has_pending_interrupt(vcpu))
 		return true;
 
 	return false;
