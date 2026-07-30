@@ -190,6 +190,14 @@
 #endif
 .endm
 
+.macro HANDLE_INTR_SAFERET pt_regs
+#ifdef CONFIG_CPU_SRSO
+	ALTERNATIVE_2 "",							\
+		      "call __handle_intr_saferet", X86_FEATURE_SRSO,		\
+		      "call __handle_intr_saferet_alias", X86_FEATURE_SRSO_ALIAS
+#endif
+.endm
+
 /*
  * Macro to execute VERW insns that mitigate transient data sampling
  * attacks such as MDS or TSA. On affected systems a microcode update
@@ -248,6 +256,11 @@ extern void srso_alias_untrain_ret(void);
 
 extern void entry_untrain_ret(void);
 extern void entry_ibpb(void);
+
+struct pt_regs;
+void srso_safe_ret(void);
+void srso_alias_safe_ret(void);
+void handle_interrupted_saferet(struct pt_regs *regs);
 
 extern void (*x86_return_thunk)(void);
 

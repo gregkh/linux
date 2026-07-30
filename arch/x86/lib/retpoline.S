@@ -7,6 +7,7 @@
 #include <asm/alternative.h>
 #include <asm/export.h>
 #include <asm/nospec-branch.h>
+#include <asm/ptrace-abi.h>
 #include <asm/unwind_hints.h>
 #include <asm/frame.h>
 #include <asm/nops.h>
@@ -113,12 +114,84 @@ __EXPORT_THUNK(srso_alias_untrain_ret)
 #endif
 
 SYM_START(srso_alias_safe_ret, SYM_L_GLOBAL, SYM_A_NONE)
+
+	/*
+	 * Tell objtool that those are not function pointers referenced by
+	 * __handle_intr_saferet() / __handle_intr_saferet_alias(). Below too.
+	 */
+	ANNOTATE_NOENDBR
+
+	/*
+	 * Safe-RET sequence. If you need to change it, adjust
+	 * handle_interrupted_saferet() too.
+	 */
 	lea 8(%_ASM_SP), %_ASM_SP
 	UNWIND_HINT_FUNC
+
+	ANNOTATE_NOENDBR
 	ANNOTATE_UNRET_SAFE
 	ret
+	/* End of Safe-RET sequence */
 	int3
 SYM_FUNC_END(srso_alias_safe_ret)
+
+#ifdef CONFIG_CPU_SRSO
+	.pushsection .noinstr.text, "ax"
+
+/*
+ * Out-of-line helpers for HANDLE_INTR_SAFERET.
+ *
+ * Called via ALTERNATIVE_2 from paranoid_entry / error_entry. There is one
+ * entry per SRSO variant so that each only checks its own Safe-RET range,
+ * mirroring the upstream per-feature ALTERNATIVE_2:
+ *
+ *   X86_FEATURE_SRSO       -> __handle_intr_saferet       (srso_safe_ret)
+ *   X86_FEATURE_SRSO_ALIAS -> __handle_intr_saferet_alias (srso_alias_safe_ret)
+ *
+ * If the interrupted RIP falls within the 5-byte Safe-RET sequence, emulate
+ * the remainder of the sequence by calling handle_interrupted_saferet().
+ *
+ * Stack layout on entry (CALL pushed return address):
+ *   pt_regs base at 16(%rsp), RIP field at RIP+16(%rsp)
+ *   (RIP is the pt_regs RIP offset (128) from <asm/ptrace-abi.h>; +16 = 8 for
+ *    pt_regs base at 8(%rsp) at the call site + 8 for the CALL return address)
+ *
+ * The pt_regs pointer is loaded into %rdi *before* FRAME_BEGIN so the 16(%rsp)
+ * offset does not depend on CONFIG_FRAME_POINTER (which would push %rbp and
+ * shift %rsp). FRAME_BEGIN/FRAME_END set up a frame pointer so the call to
+ * handle_interrupted_saferet() does not trip objtool's frame-pointer check on
+ * CONFIG_FRAME_POINTER builds; both are no-ops otherwise.
+ *
+ * Both entries are emitted from one macro: @safe_ret is the label at the start
+ * of the 5-byte Safe-RET sequence whose range the interrupted RIP is tested
+ * against; \@ yields a unique local label per macro instantiation.
+ */
+.macro HANDLE_INTR_SAFERET_FN name safe_ret
+SYM_FUNC_START(\name)
+	UNWIND_HINT_FUNC
+
+	/* Load pt_regs pointer before FRAME_BEGIN adjusts %rsp. */
+	leaq	16(%rsp), %rdi
+	FRAME_BEGIN
+
+	/* Check range: [\safe_ret, \safe_ret + 5] */
+	cmpq	$\safe_ret, RIP(%rdi)
+	jb	.Ldone_\@
+	cmpq	$\safe_ret + 5, RIP(%rdi)
+	ja	.Ldone_\@
+	lfence
+	call	handle_interrupted_saferet
+.Ldone_\@:
+	FRAME_END
+	RET
+SYM_FUNC_END(\name)
+.endm
+
+HANDLE_INTR_SAFERET_FN __handle_intr_saferet	   srso_safe_ret
+HANDLE_INTR_SAFERET_FN __handle_intr_saferet_alias srso_alias_safe_ret
+
+	.popsection
+#endif
 
 	.section .text..__x86.return_thunk
 
@@ -231,8 +304,14 @@ SYM_START(srso_untrain_ret, SYM_L_GLOBAL, SYM_A_NONE)
  * the stack.
  */
 SYM_INNER_LABEL(srso_safe_ret, SYM_L_GLOBAL)
+	/*
+	 * Safe-RET sequence. If you need to change it, adjust
+	 * handle_interrupted_saferet() too.
+	 */
 	lea 8(%_ASM_SP), %_ASM_SP
 	ret
+	/* End of Safe-RET sequence */
+
 	int3
 	int3
 	/* end of movabs */
