@@ -686,7 +686,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 			return ret;
 	}
 
-	if (run->immediate_exit)
+	if (!vcpu->wants_to_run)
 		return -EINTR;
 
 	vcpu_load(vcpu);
