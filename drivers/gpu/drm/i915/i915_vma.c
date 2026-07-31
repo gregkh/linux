@@ -1278,7 +1278,7 @@ int i915_vma_move_to_active(struct i915_vma *vma,
 		obj->read_domains = 0;
 	} else {
 		if (!(flags & __EXEC_OBJECT_NO_RESERVE)) {
-			err = dma_resv_reserve_shared(vma->resv, 1);
+			err = dma_resv_reserve_fences(vma->resv, 1);
 			if (unlikely(err))
 				return err;
 		}
