@@ -78,10 +78,10 @@ static int drm_fbdev_dma_helper_fb_probe(struct drm_fb_helper *fb_helper,
 {
 	struct drm_client_dev *client = &fb_helper->client;
 	struct drm_device *dev = fb_helper->dev;
+	struct fb_info *info = fb_helper->info;
 	struct drm_client_buffer *buffer;
 	struct drm_gem_dma_object *dma_obj;
 	struct drm_framebuffer *fb;
-	struct fb_info *info;
 	u32 format;
 	struct iosys_map map;
 	int ret;
@@ -114,12 +114,6 @@ static int drm_fbdev_dma_helper_fb_probe(struct drm_fb_helper *fb_helper,
 	fb_helper->buffer = buffer;
 	fb_helper->fb = buffer->fb;
 
-	info = drm_fb_helper_alloc_info(fb_helper);
-	if (IS_ERR(info)) {
-		ret = PTR_ERR(info);
-		goto err_drm_client_buffer_vunmap;
-	}
-
 	drm_fb_helper_fill_info(info, fb_helper, sizes);
 
 	info->fbops = &drm_fbdev_dma_fb_ops;
@@ -138,10 +132,6 @@ static int drm_fbdev_dma_helper_fb_probe(struct drm_fb_helper *fb_helper,
 
 	return 0;
 
-err_drm_client_buffer_vunmap:
-	fb_helper->fb = NULL;
-	fb_helper->buffer = NULL;
-	drm_client_buffer_vunmap(buffer);
 err_drm_client_buffer_delete:
 	drm_client_framebuffer_delete(buffer);
 	return ret;
