@@ -120,7 +120,7 @@ static
 int intel_hdcp_read_valid_bksv(struct intel_digital_port *dig_port,
 			       const struct intel_hdcp_shim *shim, u8 *bksv)
 {
-	struct drm_i915_private *i915 = to_i915(dig_port->base.base.dev);
+	struct intel_display *display = to_intel_display(dig_port);
 	int ret, i, tries = 2;
 
 	/* HDCP spec states that we must retry the bksv if it is invalid */
@@ -132,7 +132,7 @@ int intel_hdcp_read_valid_bksv(struct intel_digital_port *dig_port,
 			break;
 	}
 	if (i == tries) {
-		drm_dbg_kms(&i915->drm, "Bksv is invalid\n");
+		drm_dbg_kms(display->drm, "Bksv is invalid\n");
 		return -ENODEV;
 	}
 
@@ -622,15 +622,15 @@ int intel_hdcp_validate_v_prime(struct intel_connector *connector,
 static
 int intel_hdcp_auth_downstream(struct intel_connector *connector)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	const struct intel_hdcp_shim *shim = connector->hdcp.shim;
 	u8 bstatus[2], num_downstream, *ksv_fifo;
 	int ret, i, tries = 3;
 
 	ret = intel_hdcp_poll_ksv_fifo(dig_port, shim);
 	if (ret) {
-		drm_dbg_kms(&i915->drm,
+		drm_dbg_kms(display->drm,
 			    "KSV list failed to become ready (%d)\n", ret);
 		return ret;
 	}
@@ -641,7 +641,7 @@ int intel_hdcp_auth_downstream(struct intel_connector *connector)
 
 	if (DRM_HDCP_MAX_DEVICE_EXCEEDED(bstatus[0]) ||
 	    DRM_HDCP_MAX_CASCADE_EXCEEDED(bstatus[1])) {
-		drm_dbg_kms(&i915->drm, "Max Topology Limit Exceeded\n");
+		drm_dbg_kms(display->drm, "Max Topology Limit Exceeded\n");
 		return -EPERM;
 	}
 
@@ -654,14 +654,14 @@ int intel_hdcp_auth_downstream(struct intel_connector *connector)
 	 */
 	num_downstream = DRM_HDCP_NUM_DOWNSTREAM(bstatus[0]);
 	if (num_downstream == 0) {
-		drm_dbg_kms(&i915->drm,
+		drm_dbg_kms(display->drm,
 			    "Repeater with zero downstream devices\n");
 		return -EINVAL;
 	}
 
 	ksv_fifo = kcalloc(DRM_HDCP_KSV_LEN, num_downstream, GFP_KERNEL);
 	if (!ksv_fifo) {
-		drm_dbg_kms(&i915->drm, "Out of mem: ksv_fifo\n");
+		drm_dbg_kms(display->drm, "Out of mem: ksv_fifo\n");
 		return -ENOMEM;
 	}
 
@@ -669,9 +669,9 @@ int intel_hdcp_auth_downstream(struct intel_connector *connector)
 	if (ret)
 		goto err;
 
-	if (drm_hdcp_check_ksvs_revoked(&i915->drm, ksv_fifo,
+	if (drm_hdcp_check_ksvs_revoked(display->drm, ksv_fifo,
 					num_downstream) > 0) {
-		drm_err(&i915->drm, "Revoked Ksv(s) in ksv_fifo\n");
+		drm_err(display->drm, "Revoked Ksv(s) in ksv_fifo\n");
 		ret = -EPERM;
 		goto err;
 	}
@@ -689,12 +689,12 @@ int intel_hdcp_auth_downstream(struct intel_connector *connector)
 	}
 
 	if (i == tries) {
-		drm_dbg_kms(&i915->drm,
+		drm_dbg_kms(display->drm,
 			    "V Prime validation failed.(%d)\n", ret);
 		goto err;
 	}
 
-	drm_dbg_kms(&i915->drm, "HDCP is enabled (%d downstream devices)\n",
+	drm_dbg_kms(display->drm, "HDCP is enabled (%d downstream devices)\n",
 		    num_downstream);
 	ret = 0;
 err:
@@ -1086,9 +1086,9 @@ static void intel_hdcp_prop_work(struct work_struct *work)
 	struct intel_hdcp *hdcp = container_of(work, struct intel_hdcp,
 					       prop_work);
 	struct intel_connector *connector = intel_hdcp_to_connector(hdcp);
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
+	struct intel_display *display = to_intel_display(connector);
 
-	drm_modeset_lock(&i915->drm.mode_config.connection_mutex, NULL);
+	drm_modeset_lock(&display->drm->mode_config.connection_mutex, NULL);
 	mutex_lock(&hdcp->mutex);
 
 	/*
@@ -1101,7 +1101,7 @@ static void intel_hdcp_prop_work(struct work_struct *work)
 						   hdcp->value);
 
 	mutex_unlock(&hdcp->mutex);
-	drm_modeset_unlock(&i915->drm.mode_config.connection_mutex);
+	drm_modeset_unlock(&display->drm->mode_config.connection_mutex);
 
 	drm_connector_put(&connector->base);
 }
@@ -1116,25 +1116,25 @@ static int
 hdcp2_prepare_ake_init(struct intel_connector *connector,
 		       struct hdcp2_ake_init *ake_data)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
 	ret = arbiter->ops->initiate_hdcp2_session(arbiter->hdcp_dev, data, ake_data);
 	if (ret)
-		drm_dbg_kms(&i915->drm, "Prepare_ake_init failed. %d\n",
+		drm_dbg_kms(display->drm, "Prepare_ake_init failed. %d\n",
 			    ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
@@ -1146,17 +1146,17 @@ hdcp2_verify_rx_cert_prepare_km(struct intel_connector *connector,
 				struct hdcp2_ake_no_stored_km *ek_pub_km,
 				size_t *msg_sz)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
@@ -1164,9 +1164,9 @@ hdcp2_verify_rx_cert_prepare_km(struct intel_connector *connector,
 							 rx_cert, paired,
 							 ek_pub_km, msg_sz);
 	if (ret < 0)
-		drm_dbg_kms(&i915->drm, "Verify rx_cert failed. %d\n",
+		drm_dbg_kms(display->drm, "Verify rx_cert failed. %d\n",
 			    ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
@@ -1174,24 +1174,24 @@ hdcp2_verify_rx_cert_prepare_km(struct intel_connector *connector,
 static int hdcp2_verify_hprime(struct intel_connector *connector,
 			       struct hdcp2_ake_send_hprime *rx_hprime)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
 	ret = arbiter->ops->verify_hprime(arbiter->hdcp_dev, data, rx_hprime);
 	if (ret < 0)
-		drm_dbg_kms(&i915->drm, "Verify hprime failed. %d\n", ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		drm_dbg_kms(display->drm, "Verify hprime failed. %d\n", ret);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
@@ -1200,25 +1200,25 @@ static int
 hdcp2_store_pairing_info(struct intel_connector *connector,
 			 struct hdcp2_ake_send_pairing_info *pairing_info)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
 	ret = arbiter->ops->store_pairing_info(arbiter->hdcp_dev, data, pairing_info);
 	if (ret < 0)
-		drm_dbg_kms(&i915->drm, "Store pairing info failed. %d\n",
+		drm_dbg_kms(display->drm, "Store pairing info failed. %d\n",
 			    ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
@@ -1227,25 +1227,25 @@ static int
 hdcp2_prepare_lc_init(struct intel_connector *connector,
 		      struct hdcp2_lc_init *lc_init)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
 	ret = arbiter->ops->initiate_locality_check(arbiter->hdcp_dev, data, lc_init);
 	if (ret < 0)
-		drm_dbg_kms(&i915->drm, "Prepare lc_init failed. %d\n",
+		drm_dbg_kms(display->drm, "Prepare lc_init failed. %d\n",
 			    ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
@@ -1254,25 +1254,25 @@ static int
 hdcp2_verify_lprime(struct intel_connector *connector,
 		    struct hdcp2_lc_send_lprime *rx_lprime)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
 	ret = arbiter->ops->verify_lprime(arbiter->hdcp_dev, data, rx_lprime);
 	if (ret < 0)
-		drm_dbg_kms(&i915->drm, "Verify L_Prime failed. %d\n",
+		drm_dbg_kms(display->drm, "Verify L_Prime failed. %d\n",
 			    ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
@@ -1280,25 +1280,25 @@ hdcp2_verify_lprime(struct intel_connector *connector,
 static int hdcp2_prepare_skey(struct intel_connector *connector,
 			      struct hdcp2_ske_send_eks *ske_data)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
 	ret = arbiter->ops->get_session_key(arbiter->hdcp_dev, data, ske_data);
 	if (ret < 0)
-		drm_dbg_kms(&i915->drm, "Get session key failed. %d\n",
+		drm_dbg_kms(display->drm, "Get session key failed. %d\n",
 			    ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
@@ -1309,17 +1309,17 @@ hdcp2_verify_rep_topology_prepare_ack(struct intel_connector *connector,
 								*rep_topology,
 				      struct hdcp2_rep_send_ack *rep_send_ack)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
@@ -1328,9 +1328,9 @@ hdcp2_verify_rep_topology_prepare_ack(struct intel_connector *connector,
 							    rep_topology,
 							    rep_send_ack);
 	if (ret < 0)
-		drm_dbg_kms(&i915->drm,
+		drm_dbg_kms(display->drm,
 			    "Verify rep topology failed. %d\n", ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
@@ -1339,71 +1339,71 @@ static int
 hdcp2_verify_mprime(struct intel_connector *connector,
 		    struct hdcp2_rep_stream_ready *stream_ready)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
 	ret = arbiter->ops->verify_mprime(arbiter->hdcp_dev, data, stream_ready);
 	if (ret < 0)
-		drm_dbg_kms(&i915->drm, "Verify mprime failed. %d\n", ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		drm_dbg_kms(display->drm, "Verify mprime failed. %d\n", ret);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
 
 static int hdcp2_authenticate_port(struct intel_connector *connector)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
 	ret = arbiter->ops->enable_hdcp_authentication(arbiter->hdcp_dev, data);
 	if (ret < 0)
-		drm_dbg_kms(&i915->drm, "Enable hdcp auth failed. %d\n",
+		drm_dbg_kms(display->drm, "Enable hdcp auth failed. %d\n",
 			    ret);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
 
 static int hdcp2_close_session(struct intel_connector *connector)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct i915_hdcp_arbiter *arbiter;
 	int ret;
 
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	arbiter = i915->display.hdcp.arbiter;
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	arbiter = display->hdcp.arbiter;
 
 	if (!arbiter || !arbiter->ops) {
-		mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+		mutex_unlock(&display->hdcp.hdcp_mutex);
 		return -EINVAL;
 	}
 
 	ret = arbiter->ops->close_hdcp_session(arbiter->hdcp_dev,
 					     &dig_port->hdcp_port_data);
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return ret;
 }
@@ -1416,8 +1416,8 @@ static int hdcp2_deauthenticate_port(struct intel_connector *connector)
 /* Authentication flow starts from here */
 static int hdcp2_authentication_key_exchange(struct intel_connector *connector)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct intel_hdcp *hdcp = &connector->hdcp;
 	union {
 		struct hdcp2_ake_init ake_init;
@@ -1449,16 +1449,16 @@ static int hdcp2_authentication_key_exchange(struct intel_connector *connector)
 		return ret;
 
 	if (msgs.send_cert.rx_caps[0] != HDCP_2_2_RX_CAPS_VERSION_VAL) {
-		drm_dbg_kms(&i915->drm, "cert.rx_caps dont claim HDCP2.2\n");
+		drm_dbg_kms(display->drm, "cert.rx_caps dont claim HDCP2.2\n");
 		return -EINVAL;
 	}
 
 	hdcp->is_repeater = HDCP_2_2_RX_REPEATER(msgs.send_cert.rx_caps[2]);
 
-	if (drm_hdcp_check_ksvs_revoked(&i915->drm,
+	if (drm_hdcp_check_ksvs_revoked(display->drm,
 					msgs.send_cert.cert_rx.receiver_id,
 					1) > 0) {
-		drm_err(&i915->drm, "Receiver ID is revoked\n");
+		drm_err(display->drm, "Receiver ID is revoked\n");
 		return -EPERM;
 	}
 
@@ -1611,8 +1611,8 @@ out:
 static
 int hdcp2_authenticate_repeater_topology(struct intel_connector *connector)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct intel_hdcp *hdcp = &connector->hdcp;
 	union {
 		struct hdcp2_rep_send_receiverid_list recvid_list;
@@ -1632,7 +1632,7 @@ int hdcp2_authenticate_repeater_topology(struct intel_connector *connector)
 
 	if (HDCP_2_2_MAX_CASCADE_EXCEEDED(rx_info[1]) ||
 	    HDCP_2_2_MAX_DEVS_EXCEEDED(rx_info[1])) {
-		drm_dbg_kms(&i915->drm, "Topology Max Size Exceeded\n");
+		drm_dbg_kms(display->drm, "Topology Max Size Exceeded\n");
 		return -EINVAL;
 	}
 
@@ -1649,23 +1649,23 @@ int hdcp2_authenticate_repeater_topology(struct intel_connector *connector)
 		drm_hdcp_be24_to_cpu((const u8 *)msgs.recvid_list.seq_num_v);
 
 	if (!hdcp->hdcp2_encrypted && seq_num_v) {
-		drm_dbg_kms(&i915->drm,
+		drm_dbg_kms(display->drm,
 			    "Non zero Seq_num_v at first RecvId_List msg\n");
 		return -EINVAL;
 	}
 
 	if (seq_num_v < hdcp->seq_num_v) {
 		/* Roll over of the seq_num_v from repeater. Reauthenticate. */
-		drm_dbg_kms(&i915->drm, "Seq_num_v roll over.\n");
+		drm_dbg_kms(display->drm, "Seq_num_v roll over.\n");
 		return -EINVAL;
 	}
 
 	device_cnt = (HDCP_2_2_DEV_COUNT_HI(rx_info[0]) << 4 |
 		      HDCP_2_2_DEV_COUNT_LO(rx_info[1]));
-	if (drm_hdcp_check_ksvs_revoked(&i915->drm,
+	if (drm_hdcp_check_ksvs_revoked(display->drm,
 					msgs.recvid_list.receiver_ids,
 					device_cnt) > 0) {
-		drm_err(&i915->drm, "Revoked receiver ID(s) is in list\n");
+		drm_err(display->drm, "Revoked receiver ID(s) is in list\n");
 		return -EPERM;
 	}
 
@@ -1686,28 +1686,28 @@ int hdcp2_authenticate_repeater_topology(struct intel_connector *connector)
 
 static int hdcp2_authenticate_sink(struct intel_connector *connector)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct intel_hdcp *hdcp = &connector->hdcp;
 	const struct intel_hdcp_shim *shim = hdcp->shim;
 	int ret;
 
 	ret = hdcp2_authentication_key_exchange(connector);
 	if (ret < 0) {
-		drm_dbg_kms(&i915->drm, "AKE Failed. Err : %d\n", ret);
+		drm_dbg_kms(display->drm, "AKE Failed. Err : %d\n", ret);
 		return ret;
 	}
 
 	ret = hdcp2_locality_check(connector);
 	if (ret < 0) {
-		drm_dbg_kms(&i915->drm,
+		drm_dbg_kms(display->drm,
 			    "Locality Check failed. Err : %d\n", ret);
 		return ret;
 	}
 
 	ret = hdcp2_session_key_exchange(connector);
 	if (ret < 0) {
-		drm_dbg_kms(&i915->drm, "SKE Failed. Err : %d\n", ret);
+		drm_dbg_kms(display->drm, "SKE Failed. Err : %d\n", ret);
 		return ret;
 	}
 
@@ -1722,7 +1722,7 @@ static int hdcp2_authenticate_sink(struct intel_connector *connector)
 	if (hdcp->is_repeater) {
 		ret = hdcp2_authenticate_repeater_topology(connector);
 		if (ret < 0) {
-			drm_dbg_kms(&i915->drm,
+			drm_dbg_kms(display->drm,
 				    "Repeater Auth Failed. Err: %d\n", ret);
 			return ret;
 		}
@@ -1851,7 +1851,7 @@ static int hdcp2_disable_encryption(struct intel_connector *connector)
 static int
 hdcp2_propagate_stream_management_info(struct intel_connector *connector)
 {
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
+	struct intel_display *display = to_intel_display(connector);
 	int i, tries = 3, ret;
 
 	if (!connector->hdcp.is_repeater)
@@ -1864,12 +1864,12 @@ hdcp2_propagate_stream_management_info(struct intel_connector *connector)
 
 		/* Lets restart the auth incase of seq_num_m roll over */
 		if (connector->hdcp.seq_num_m > HDCP_2_2_SEQ_NUM_MAX) {
-			drm_dbg_kms(&i915->drm,
+			drm_dbg_kms(display->drm,
 				    "seq_num_m roll over.(%d)\n", ret);
 			break;
 		}
 
-		drm_dbg_kms(&i915->drm,
+		drm_dbg_kms(display->drm,
 			    "HDCP2 stream management %d of %d Failed.(%d)\n",
 			    i + 1, tries, ret);
 	}
@@ -1879,8 +1879,8 @@ hdcp2_propagate_stream_management_info(struct intel_connector *connector)
 
 static int hdcp2_authenticate_and_encrypt(struct intel_connector *connector)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	int ret = 0, i, tries = 3;
 
 	for (i = 0; i < tries && !dig_port->hdcp_auth_status; i++) {
@@ -1890,7 +1890,7 @@ static int hdcp2_authenticate_and_encrypt(struct intel_connector *connector)
 
 			ret = hdcp2_propagate_stream_management_info(connector);
 			if (ret) {
-				drm_dbg_kms(&i915->drm,
+				drm_dbg_kms(display->drm,
 					    "Stream management failed.(%d)\n",
 					    ret);
 				break;
@@ -1899,15 +1899,15 @@ static int hdcp2_authenticate_and_encrypt(struct intel_connector *connector)
 			ret = hdcp2_authenticate_port(connector);
 			if (!ret)
 				break;
-			drm_dbg_kms(&i915->drm, "HDCP2 port auth failed.(%d)\n",
+			drm_dbg_kms(display->drm, "HDCP2 port auth failed.(%d)\n",
 				    ret);
 		}
 
 		/* Clearing the mei hdcp session */
-		drm_dbg_kms(&i915->drm, "HDCP2.2 Auth %d of %d Failed.(%d)\n",
+		drm_dbg_kms(display->drm, "HDCP2.2 Auth %d of %d Failed.(%d)\n",
 			    i + 1, tries, ret);
 		if (hdcp2_deauthenticate_port(connector) < 0)
-			drm_dbg_kms(&i915->drm, "Port deauth failed.\n");
+			drm_dbg_kms(display->drm, "Port deauth failed.\n");
 	}
 
 	if (!ret && !dig_port->hdcp_auth_status) {
@@ -1918,10 +1918,10 @@ static int hdcp2_authenticate_and_encrypt(struct intel_connector *connector)
 		msleep(HDCP_2_2_DELAY_BEFORE_ENCRYPTION_EN);
 		ret = hdcp2_enable_encryption(connector);
 		if (ret < 0) {
-			drm_dbg_kms(&i915->drm,
+			drm_dbg_kms(display->drm,
 				    "Encryption Enable Failed.(%d)\n", ret);
 			if (hdcp2_deauthenticate_port(connector) < 0)
-				drm_dbg_kms(&i915->drm, "Port deauth failed.\n");
+				drm_dbg_kms(display->drm, "Port deauth failed.\n");
 		}
 	}
 
@@ -1933,22 +1933,22 @@ static int hdcp2_authenticate_and_encrypt(struct intel_connector *connector)
 
 static int _intel_hdcp2_enable(struct intel_connector *connector)
 {
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_hdcp *hdcp = &connector->hdcp;
 	int ret;
 
-	drm_dbg_kms(&i915->drm, "[%s:%d] HDCP2.2 is being enabled. Type: %d\n",
+	drm_dbg_kms(display->drm, "[%s:%d] HDCP2.2 is being enabled. Type: %d\n",
 		    connector->base.name, connector->base.base.id,
 		    hdcp->content_type);
 
 	ret = hdcp2_authenticate_and_encrypt(connector);
 	if (ret) {
-		drm_dbg_kms(&i915->drm, "HDCP2 Type%d  Enabling Failed. (%d)\n",
+		drm_dbg_kms(display->drm, "HDCP2 Type%d  Enabling Failed. (%d)\n",
 			    hdcp->content_type, ret);
 		return ret;
 	}
 
-	drm_dbg_kms(&i915->drm, "[%s:%d] HDCP2.2 is enabled. Type %d\n",
+	drm_dbg_kms(display->drm, "[%s:%d] HDCP2.2 is enabled. Type %d\n",
 		    connector->base.name, connector->base.base.id,
 		    hdcp->content_type);
 
@@ -1959,23 +1959,23 @@ static int _intel_hdcp2_enable(struct intel_connector *connector)
 static int
 _intel_hdcp2_disable(struct intel_connector *connector, bool hdcp2_link_recovery)
 {
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_digital_port *dig_port = intel_attached_dig_port(connector);
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct hdcp_port_data *data = &dig_port->hdcp_port_data;
 	struct intel_hdcp *hdcp = &connector->hdcp;
 	int ret;
 
-	drm_dbg_kms(&i915->drm, "[%s:%d] HDCP2.2 is being Disabled\n",
+	drm_dbg_kms(display->drm, "[%s:%d] HDCP2.2 is being Disabled\n",
 		    connector->base.name, connector->base.base.id);
 
 	if (hdcp->shim->stream_2_2_encryption) {
 		ret = hdcp->shim->stream_2_2_encryption(connector, false);
 		if (ret) {
-			drm_err(&i915->drm, "[%s:%d] Failed to disable HDCP 2.2 stream enc\n",
+			drm_err(display->drm, "[%s:%d] Failed to disable HDCP 2.2 stream enc\n",
 				connector->base.name, connector->base.base.id);
 			return ret;
 		}
-		drm_dbg_kms(&i915->drm, "HDCP 2.2 transcoder: %s stream encryption disabled\n",
+		drm_dbg_kms(display->drm, "HDCP 2.2 transcoder: %s stream encryption disabled\n",
 			    transcoder_name(hdcp->stream_transcoder));
 
 		if (dig_port->num_hdcp_streams > 0 && !hdcp2_link_recovery)
@@ -1985,7 +1985,7 @@ _intel_hdcp2_disable(struct intel_connector *connector, bool hdcp2_link_recovery
 	ret = hdcp2_disable_encryption(connector);
 
 	if (hdcp2_deauthenticate_port(connector) < 0)
-		drm_dbg_kms(&i915->drm, "Port deauth failed.\n");
+		drm_dbg_kms(display->drm, "Port deauth failed.\n");
 
 	connector->hdcp.hdcp2_encrypted = false;
 	dig_port->hdcp_auth_status = false;
@@ -2112,13 +2112,12 @@ static int i915_hdcp_component_bind(struct device *drv_kdev,
 				    struct device *mei_kdev, void *data)
 {
 	struct intel_display *display = to_intel_display(drv_kdev);
-	struct drm_i915_private *i915 = to_i915(display->drm);
 
-	drm_dbg(&i915->drm, "I915 HDCP comp bind\n");
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	i915->display.hdcp.arbiter = (struct i915_hdcp_arbiter *)data;
-	i915->display.hdcp.arbiter->hdcp_dev = mei_kdev;
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	drm_dbg(display->drm, "I915 HDCP comp bind\n");
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	display->hdcp.arbiter = (struct i915_hdcp_arbiter *)data;
+	display->hdcp.arbiter->hdcp_dev = mei_kdev;
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 
 	return 0;
 }
@@ -2127,12 +2126,11 @@ static void i915_hdcp_component_unbind(struct device *drv_kdev,
 				       struct device *mei_kdev, void *data)
 {
 	struct intel_display *display = to_intel_display(drv_kdev);
-	struct drm_i915_private *i915 = to_i915(display->drm);
 
-	drm_dbg(&i915->drm, "I915 HDCP comp unbind\n");
-	mutex_lock(&i915->display.hdcp.hdcp_mutex);
-	i915->display.hdcp.arbiter = NULL;
-	mutex_unlock(&i915->display.hdcp.hdcp_mutex);
+	drm_dbg(display->drm, "I915 HDCP comp unbind\n");
+	mutex_lock(&display->hdcp.hdcp_mutex);
+	display->hdcp.arbiter = NULL;
+	mutex_unlock(&display->hdcp.hdcp_mutex);
 }
 
 static const struct component_ops i915_hdcp_ops = {
@@ -2247,13 +2245,13 @@ static void intel_hdcp2_init(struct intel_connector *connector,
 			     struct intel_digital_port *dig_port,
 			     const struct intel_hdcp_shim *shim)
 {
-	struct drm_i915_private *i915 = to_i915(connector->base.dev);
+	struct intel_display *display = to_intel_display(connector);
 	struct intel_hdcp *hdcp = &connector->hdcp;
 	int ret;
 
 	ret = initialize_hdcp_port_data(connector, dig_port, shim);
 	if (ret) {
-		drm_dbg_kms(&i915->drm, "Mei hdcp data init failed\n");
+		drm_dbg_kms(display->drm, "Mei hdcp data init failed\n");
 		return;
 	}
 

@@ -857,6 +857,9 @@ intel_display_device_probe(struct drm_i915_private *i915, bool has_gmdid,
 	struct pci_dev *pdev = to_pci_dev(i915->drm.dev);
 	int i;
 
+	/* Add drm device backpointer as early as possible. */
+	i915->display.drm = &i915->drm;
+
 	if (has_gmdid)
 		return probe_gmdid_display(i915, gmdid_ver, gmdid_rel, gmdid_step);
 
