@@ -430,6 +430,7 @@ static long __bpf_get_stack(struct pt_regs *regs, struct task_struct *task,
 	if (sysctl_perf_event_max_stack < max_depth)
 		max_depth = sysctl_perf_event_max_stack;
 
+	preempt_disable();
 	if (trace_in)
 		trace = trace_in;
 	else if (kernel && task)
@@ -437,11 +438,10 @@ static long __bpf_get_stack(struct pt_regs *regs, struct task_struct *task,
 	else
 		trace = get_perf_callchain(regs, 0, kernel, user, max_depth,
 					   crosstask, false);
-	if (unlikely(!trace))
+	if (unlikely(!trace) || trace->nr < skip) {
+		preempt_enable();
 		goto err_fault;
-
-	if (trace->nr < skip)
-		goto err_fault;
+	}
 
 	trace_nr = trace->nr - skip;
 	trace_nr = (trace_nr <= num_elem) ? trace_nr : num_elem;
@@ -452,6 +452,7 @@ static long __bpf_get_stack(struct pt_regs *regs, struct task_struct *task,
 		stack_map_get_build_id_offset(buf, ips, trace_nr, user);
 	else
 		memcpy(buf, ips, copy_len);
+	preempt_enable();
 
 	if (size > copy_len)
 		memset(buf + copy_len, 0, size - copy_len);
