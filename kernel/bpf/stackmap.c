@@ -300,6 +300,7 @@ BPF_CALL_3(bpf_get_stackid, struct pt_regs *, regs, struct bpf_map *, map,
 	if (max_depth > sysctl_perf_event_max_stack)
 		max_depth = sysctl_perf_event_max_stack;
 
+	guard(preempt)();
 	trace = get_perf_callchain(regs, 0, kernel, user, max_depth,
 				   false, false);
 
