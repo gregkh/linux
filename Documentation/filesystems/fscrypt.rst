@@ -1068,6 +1068,10 @@ astute users may notice some differences in behavior:
   give the length of the ciphertext, which will be slightly longer
   than the plaintext due to NUL-padding and an extra 2-byte overhead.
 
+- Encrypted files cannot be used directly as swap files.  To swap to
+  an encrypted file, set up a loopback device on top of it.
+  Alternatively, encrypted swap can use a dm-crypt device.
+
 - The maximum length of an encrypted symlink is 2 bytes shorter than
   the maximum length of an unencrypted symlink.  For example, on an
   EXT4 filesystem with a 4K block size, unencrypted symlinks can be up
