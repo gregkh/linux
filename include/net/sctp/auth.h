@@ -23,6 +23,7 @@ struct sctp_association;
 struct sctp_authkey;
 struct sctp_hmacalgo;
 struct crypto_shash;
+struct sctp_cookie;
 
 /*
  * Define a generic struct that will hold all the info
@@ -77,6 +78,8 @@ struct sctp_shared_key *sctp_auth_get_shkey(
 int sctp_auth_asoc_copy_shkeys(const struct sctp_endpoint *ep,
 				struct sctp_association *asoc,
 				gfp_t gfp);
+bool sctp_auth_verify_cookie_params(const struct sctp_endpoint *ep,
+				    const struct sctp_cookie *cookie);
 int sctp_auth_init_hmacs(struct sctp_endpoint *ep, gfp_t gfp);
 void sctp_auth_destroy_hmacs(struct crypto_shash *auth_hmacs[]);
 struct sctp_hmac *sctp_auth_get_hmac(__u16 hmac_id);
