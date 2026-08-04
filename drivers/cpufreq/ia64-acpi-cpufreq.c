@@ -302,7 +302,7 @@ acpi_cpufreq_cpu_init (
 }
 
 
-static void
+static int
 acpi_cpufreq_cpu_exit (
 	struct cpufreq_policy   *policy)
 {
@@ -316,6 +316,8 @@ acpi_cpufreq_cpu_exit (
 		kfree(policy->freq_table);
 		kfree(data);
 	}
+
+	return (0);
 }
 
 
