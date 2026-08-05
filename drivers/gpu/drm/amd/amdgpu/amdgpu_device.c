@@ -380,6 +380,13 @@ void amdgpu_device_detect_runtime_pm_mode(struct amdgpu_device *adev)
 	dev = adev_to_drm(adev);
 
 	adev->pm.rpm_mode = AMDGPU_RUNPM_NONE;
+	if (pci_is_thunderbolt_attached(adev->pdev) ||
+	    dev_is_removable(&adev->pdev->dev)) {
+		dev_info(adev->dev,
+			 "Runtime PM disabled for externally attached device\n");
+		return;
+	}
+
 	bamaco_support = amdgpu_device_supports_baco(dev);
 
 	switch (amdgpu_runtime_pm) {
