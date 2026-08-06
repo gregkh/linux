@@ -7384,7 +7384,8 @@ static void add_to_clear_hash_list(struct list_head *clear_list,
 void ftrace_free_mem(struct module *mod, void *start_ptr, void *end_ptr)
 {
 	unsigned long start = (unsigned long)(start_ptr);
-	unsigned long end = (unsigned long)(end_ptr);
+	/* end is inclusive and end_ptr is exclusive */
+	unsigned long end = (unsigned long)(end_ptr) - 1;
 	struct ftrace_page **last_pg = &ftrace_pages_start;
 	struct ftrace_page *tmp_page = NULL;
 	struct ftrace_page *pg;
@@ -7395,6 +7396,9 @@ void ftrace_free_mem(struct module *mod, void *start_ptr, void *end_ptr)
 	struct list_head clear_hash;
 
 	INIT_LIST_HEAD(&clear_hash);
+
+	if (start_ptr >= end_ptr)
+		return;
 
 	key.ip = start;
 	key.flags = end;	/* overload flags, as it is unsigned long */
