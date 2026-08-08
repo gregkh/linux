@@ -282,6 +282,7 @@ static int ceph_init_file(struct inode *inode, struct file *file, int fmode)
 int ceph_renew_caps(struct inode *inode, int fmode)
 {
 	struct ceph_mds_client *mdsc = ceph_sb_to_mdsc(inode->i_sb);
+	struct ceph_client *cl = mdsc->fsc->client;
 	struct ceph_inode_info *ci = ceph_inode(inode);
 	struct ceph_mds_request *req;
 	int err, flags, wanted;
@@ -293,8 +294,9 @@ int ceph_renew_caps(struct inode *inode, int fmode)
 	    (!(wanted & CEPH_CAP_ANY_WR) || ci->i_auth_cap)) {
 		int issued = __ceph_caps_issued(ci, NULL);
 		spin_unlock(&ci->i_ceph_lock);
-		dout("renew caps %p want %s issued %s updating mds_wanted\n",
-		     inode, ceph_cap_string(wanted), ceph_cap_string(issued));
+		doutc(cl, "%p %llx.%llx want %s issued %s updating mds_wanted\n",
+		      inode, ceph_vinop(inode), ceph_cap_string(wanted),
+		      ceph_cap_string(issued));
 		ceph_check_caps(ci, 0, NULL);
 		return 0;
 	}
@@ -325,7 +327,8 @@ int ceph_renew_caps(struct inode *inode, int fmode)
 	err = ceph_mdsc_do_request(mdsc, NULL, req);
 	ceph_mdsc_put_request(req);
 out:
-	dout("renew caps %p open result=%d\n", inode, err);
+	doutc(cl, "%p %llx.%llx open result=%d\n", inode, ceph_vinop(inode),
+	      err);
 	return err < 0 ? err : 0;
 }
 
