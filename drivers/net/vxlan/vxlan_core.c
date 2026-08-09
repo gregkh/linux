@@ -4315,7 +4315,7 @@ static int vxlan_changelink(struct net_device *dev, struct nlattr *tb[],
 		spin_unlock_bh(&vxlan->hash_lock[hash_index]);
 	}
 
-	if (conf.age_interval != vxlan->cfg.age_interval)
+	if (netif_running(dev) && conf.age_interval != vxlan->cfg.age_interval)
 		mod_timer(&vxlan->age_timer, jiffies);
 
 	netdev_adjacent_change_commit(dst->remote_dev, lowerdev, dev);
