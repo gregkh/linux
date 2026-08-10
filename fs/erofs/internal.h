@@ -364,12 +364,6 @@ struct page *erofs_grab_cache_page_nowait(struct address_space *mapping,
 			readahead_gfp_mask(mapping) & ~__GFP_RECLAIM);
 }
 
-extern const struct super_operations erofs_sops;
-extern struct file_system_type erofs_fs_type;
-
-extern const struct address_space_operations erofs_raw_access_aops;
-extern const struct address_space_operations z_erofs_aops;
-
 enum {
 	BH_Encoded = BH_PrivateStart,
 	BH_FullMapped,
@@ -401,7 +395,6 @@ struct erofs_map_blocks {
 	unsigned int m_flags;
 };
 
-/* Flags used by erofs_map_blocks_flatmode() */
 #define EROFS_GET_BLOCKS_RAW    0x0001
 /*
  * Used to get the exact decompressed length, e.g. fiemap (consider lookback
@@ -419,24 +412,6 @@ enum {
 	Z_EROFS_COMPRESSION_RUNTIME_MAX
 };
 
-/* zmap.c */
-extern const struct iomap_ops z_erofs_iomap_report_ops;
-
-#ifdef CONFIG_EROFS_FS_ZIP
-int z_erofs_fill_inode(struct inode *inode);
-int z_erofs_map_blocks_iter(struct inode *inode,
-			    struct erofs_map_blocks *map,
-			    int flags);
-#else
-static inline int z_erofs_fill_inode(struct inode *inode) { return -EOPNOTSUPP; }
-static inline int z_erofs_map_blocks_iter(struct inode *inode,
-					  struct erofs_map_blocks *map,
-					  int flags)
-{
-	return -EOPNOTSUPP;
-}
-#endif	/* !CONFIG_EROFS_FS_ZIP */
-
 struct erofs_map_dev {
 	struct erofs_fscache *m_fscache;
 	struct block_device *m_bdev;
@@ -447,8 +422,27 @@ struct erofs_map_dev {
 	unsigned int m_deviceid;
 };
 
-/* data.c */
+extern struct file_system_type erofs_fs_type;
+extern const struct super_operations erofs_sops;
+
+extern const struct address_space_operations erofs_raw_access_aops;
+extern const struct address_space_operations z_erofs_aops;
+extern const struct address_space_operations erofs_fscache_access_aops;
+
+extern const struct inode_operations erofs_generic_iops;
+extern const struct inode_operations erofs_symlink_iops;
+extern const struct inode_operations erofs_fast_symlink_iops;
+extern const struct inode_operations erofs_dir_iops;
+
 extern const struct file_operations erofs_file_fops;
+extern const struct file_operations erofs_dir_fops;
+
+extern const struct iomap_ops z_erofs_iomap_report_ops;
+
+/* flags for erofs_fscache_register_cookie() */
+#define EROFS_REG_COOKIE_NEED_INODE	1
+#define EROFS_REG_COOKIE_NEED_NOEXIST	2
+
 void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 			  erofs_off_t *offset, int *lengthp);
 void erofs_unmap_metabuf(struct erofs_buf *buf);
@@ -463,7 +457,6 @@ int erofs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 int erofs_map_blocks(struct inode *inode,
 		     struct erofs_map_blocks *map, int flags);
 
-/* inode.c */
 static inline unsigned long erofs_inode_hash(erofs_nid_t nid)
 {
 #if BITS_PER_LONG == 32
@@ -473,23 +466,12 @@ static inline unsigned long erofs_inode_hash(erofs_nid_t nid)
 #endif
 }
 
-extern const struct inode_operations erofs_generic_iops;
-extern const struct inode_operations erofs_symlink_iops;
-extern const struct inode_operations erofs_fast_symlink_iops;
-
 struct inode *erofs_iget(struct super_block *sb, erofs_nid_t nid);
 int erofs_getattr(struct user_namespace *mnt_userns, const struct path *path,
 		  struct kstat *stat, u32 request_mask,
 		  unsigned int query_flags);
-
-/* namei.c */
-extern const struct inode_operations erofs_dir_iops;
-
 int erofs_namei(struct inode *dir, const struct qstr *name,
 		erofs_nid_t *nid, unsigned int *d_type);
-
-/* dir.c */
-extern const struct file_operations erofs_dir_fops;
 
 static inline void *erofs_vm_map_ram(struct page **pages, unsigned int count)
 {
@@ -506,23 +488,19 @@ static inline void *erofs_vm_map_ram(struct page **pages, unsigned int count)
 	return NULL;
 }
 
-/* pcpubuf.c */
 void *erofs_get_pcpubuf(unsigned int requiredpages);
 void erofs_put_pcpubuf(void *ptr);
 int erofs_pcpubuf_growsize(unsigned int nrpages);
 void erofs_pcpubuf_init(void);
 void erofs_pcpubuf_exit(void);
 
-/* sysfs.c */
 int erofs_register_sysfs(struct super_block *sb);
 void erofs_unregister_sysfs(struct super_block *sb);
 int __init erofs_init_sysfs(void);
 void erofs_exit_sysfs(void);
 
-/* utils.c / zdata.c */
 struct page *erofs_allocpage(struct page **pagepool, gfp_t gfp);
-static inline void erofs_pagepool_add(struct page **pagepool,
-		struct page *page)
+static inline void erofs_pagepool_add(struct page **pagepool, struct page *page)
 {
 	set_page_private(page, (unsigned long)*pagepool);
 	*pagepool = page;
@@ -546,6 +524,9 @@ int erofs_try_to_free_all_cached_pages(struct erofs_sb_info *sbi,
 				       struct erofs_workgroup *egrp);
 int erofs_try_to_free_cached_page(struct page *page);
 int z_erofs_parse_cfgs(struct super_block *sb, struct erofs_super_block *dsb);
+int z_erofs_fill_inode(struct inode *inode);
+int z_erofs_map_blocks_iter(struct inode *inode, struct erofs_map_blocks *map,
+			    int flags);
 #else
 static inline void erofs_shrinker_register(struct super_block *sb) {}
 static inline void erofs_shrinker_unregister(struct super_block *sb) {}
@@ -553,6 +534,7 @@ static inline int erofs_init_shrinker(void) { return 0; }
 static inline void erofs_exit_shrinker(void) {}
 static inline int z_erofs_init_zip_subsystem(void) { return 0; }
 static inline void z_erofs_exit_zip_subsystem(void) {}
+static inline int z_erofs_fill_inode(struct inode *inode) { return -EOPNOTSUPP; }
 #endif	/* !CONFIG_EROFS_FS_ZIP */
 
 #ifdef CONFIG_EROFS_FS_ZIP_LZMA
@@ -561,23 +543,15 @@ void z_erofs_lzma_exit(void);
 #else
 static inline int z_erofs_lzma_init(void) { return 0; }
 static inline int z_erofs_lzma_exit(void) { return 0; }
-#endif	/* !CONFIG_EROFS_FS_ZIP */
+#endif	/* !CONFIG_EROFS_FS_ZIP_LZMA */
 
-/* flags for erofs_fscache_register_cookie() */
-#define EROFS_REG_COOKIE_NEED_INODE	1
-#define EROFS_REG_COOKIE_NEED_NOEXIST	2
-
-/* fscache.c */
 #ifdef CONFIG_EROFS_FS_ONDEMAND
 int erofs_fscache_register_fs(struct super_block *sb);
 void erofs_fscache_unregister_fs(struct super_block *sb);
 
 struct erofs_fscache *erofs_fscache_register_cookie(struct super_block *sb,
-						    char *name,
-						    unsigned int flags);
+					char *name, unsigned int flags);
 void erofs_fscache_unregister_cookie(struct erofs_fscache *fscache);
-
-extern const struct address_space_operations erofs_fscache_access_aops;
 #else
 static inline int erofs_fscache_register_fs(struct super_block *sb)
 {
@@ -587,8 +561,7 @@ static inline void erofs_fscache_unregister_fs(struct super_block *sb) {}
 
 static inline
 struct erofs_fscache *erofs_fscache_register_cookie(struct super_block *sb,
-						     char *name,
-						     unsigned int flags)
+					char *name, unsigned int flags)
 {
 	return ERR_PTR(-EOPNOTSUPP);
 }
