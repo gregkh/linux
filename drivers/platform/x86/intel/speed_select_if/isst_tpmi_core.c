@@ -686,6 +686,7 @@ static long isst_if_clos_assoc(void __user *argp)
 
 #define SST_PP_FEATURE_STATE_START	8
 #define SST_PP_FEATURE_STATE_WIDTH	8
+#define SST_PP_FEATURE_STATE_VALID_MASK	GENMASK(1, 0)
 
 #define SST_BF_FEATURE_SUPPORTED_START	12
 #define SST_BF_FEATURE_SUPPORTED_WIDTH	1
@@ -804,6 +805,9 @@ static int isst_if_set_perf_feature(void __user *argp)
 
 	power_domain_info = get_instance(perf_feature.socket_id, perf_feature.power_domain_id);
 	if (!power_domain_info)
+		return -EINVAL;
+
+	if (perf_feature.feature & ~SST_PP_FEATURE_STATE_VALID_MASK)
 		return -EINVAL;
 
 	_write_pp_info("perf_feature", perf_feature.feature, SST_PP_CONTROL_OFFSET,
