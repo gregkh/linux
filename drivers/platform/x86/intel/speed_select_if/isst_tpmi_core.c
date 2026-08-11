@@ -1153,9 +1153,12 @@ static int isst_if_get_tpmi_instance_count(void __user *argp)
 	if (tpmi_inst.socket_id >= topology_max_packages())
 		return -EINVAL;
 
-	tpmi_inst.count = isst_common.sst_inst[tpmi_inst.socket_id]->number_of_power_domains;
-
 	sst_inst = isst_common.sst_inst[tpmi_inst.socket_id];
+	if (!sst_inst)
+		return -EINVAL;
+
+	tpmi_inst.count = sst_inst->number_of_power_domains;
+
 	tpmi_inst.valid_mask = 0;
 	for (i = 0; i < sst_inst->number_of_power_domains; ++i) {
 		struct tpmi_per_power_domain_info *pd_info;
