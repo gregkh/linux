@@ -1419,7 +1419,8 @@ unwind:
 			break;
 		}
 
-		drm_gpuva_ops_free(&uvmm->umgr, op->ops);
+		if (!IS_ERR_OR_NULL(op->ops))
+			drm_gpuva_ops_free(&uvmm->umgr, op->ops);
 		op->ops = NULL;
 		op->reg = NULL;
 	}
