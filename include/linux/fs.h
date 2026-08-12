@@ -179,6 +179,12 @@ typedef int (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 #define FMODE_BUF_RASYNC	((__force fmode_t)0x40000000)
 
 /*
+ * fsnotify pre-content events do not exist in this kernel, so a file is never
+ * watched by a pre-content event listener.
+ */
+#define FMODE_FSNOTIFY_HSM(mode)	0
+
+/*
  * Attribute flags.  These should be or-ed together to figure out what
  * has been changed!
  */
