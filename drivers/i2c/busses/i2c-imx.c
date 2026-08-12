@@ -832,13 +832,11 @@ static void i2c_imx_slave_init(struct imx_i2c_struct *i2c_imx)
 static int i2c_imx_reg_slave(struct i2c_client *client)
 {
 	struct imx_i2c_struct *i2c_imx = i2c_get_adapdata(client->adapter);
+	unsigned long flags;
 	int ret;
 
 	if (i2c_imx->slave)
 		return -EBUSY;
-
-	i2c_imx->slave = client;
-	i2c_imx->last_slave_event = I2C_SLAVE_STOP;
 
 	/* Resume */
 	ret = pm_runtime_resume_and_get(i2c_imx->adapter.dev.parent);
@@ -846,6 +844,11 @@ static int i2c_imx_reg_slave(struct i2c_client *client)
 		dev_err(&i2c_imx->adapter.dev, "failed to resume i2c controller");
 		return ret;
 	}
+
+	spin_lock_irqsave(&i2c_imx->slave_lock, flags);
+	i2c_imx->slave = client;
+	i2c_imx->last_slave_event = I2C_SLAVE_STOP;
+	spin_unlock_irqrestore(&i2c_imx->slave_lock, flags);
 
 	i2c_imx_slave_init(i2c_imx);
 
