@@ -3888,7 +3888,7 @@ void scx_post_fork(struct task_struct *p)
 
 void scx_cancel_fork(struct task_struct *p)
 {
-	if (scx_enabled()) {
+	if (scx_ops_init_task_enabled) {
 		struct rq *rq;
 		struct rq_flags rf;
 
