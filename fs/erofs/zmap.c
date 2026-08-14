@@ -559,7 +559,8 @@ static int z_erofs_do_map_blocks(struct inode *inode,
 			err = -EFSCORRUPTED;
 			goto unmap_out;
 		}
-		afmt = vi->z_advise & Z_EROFS_ADVISE_INTERLACED_PCLUSTER ?
+		afmt = (vi->z_advise & Z_EROFS_ADVISE_INTERLACED_PCLUSTER) &&
+		       !(map->m_flags & EROFS_MAP_META) ?
 			Z_EROFS_COMPRESSION_INTERLACED :
 			Z_EROFS_COMPRESSION_SHIFTED;
 	} else {
