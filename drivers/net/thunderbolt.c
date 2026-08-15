@@ -856,16 +856,16 @@ static int tbnet_poll(struct napi_struct *napi, int budget)
 		last = net->rx_hdr.frame_index == net->rx_hdr.frame_count - 1;
 
 		rx_packets++;
-		net->stats.rx_bytes += frame_size;
 
 		if (last) {
+			/* Before eth_type_trans() pulls the Ethernet header. */
+			net->stats.rx_packets++;
+			net->stats.rx_bytes += skb->len;
 			skb->protocol = eth_type_trans(skb, net->dev);
 			napi_gro_receive(&net->napi, skb);
 			net->skb = NULL;
 		}
 	}
-
-	net->stats.rx_packets += rx_packets;
 
 	if (cleaned_count)
 		tbnet_alloc_rx_buffers(net, cleaned_count);
