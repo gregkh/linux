@@ -42,7 +42,7 @@ static struct reparse_data_buffer *reparse_buf_ptr(struct kvec *iov)
 {
 	struct reparse_data_buffer *buf;
 	struct smb2_ioctl_rsp *io = iov->iov_base;
-	u32 off, count, len;
+	u32 off, count, len, rdlen;
 
 	count = le32_to_cpu(io->OutputCount);
 	off = le32_to_cpu(io->OutputOffset);
@@ -51,7 +51,11 @@ static struct reparse_data_buffer *reparse_buf_ptr(struct kvec *iov)
 
 	buf = (struct reparse_data_buffer *)((u8 *)io + off);
 	len = sizeof(*buf);
-	if (count < len || count < le16_to_cpu(buf->ReparseDataLength) + len)
+	if (count < len)
+		return ERR_PTR(-EIO);
+
+	rdlen = le16_to_cpu(buf->ReparseDataLength);
+	if (count < rdlen + len)
 		return ERR_PTR(-EIO);
 	return buf;
 }
