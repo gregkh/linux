@@ -958,7 +958,9 @@ static void free_ga_log(struct amd_iommu *iommu)
 {
 #ifdef CONFIG_IRQ_REMAP
 	free_pages((unsigned long)iommu->ga_log, get_order(GA_LOG_SIZE));
+	iommu->ga_log = NULL;
 	free_pages((unsigned long)iommu->ga_log_tail, get_order(8));
+	iommu->ga_log_tail = NULL;
 #endif
 }
 
@@ -1001,6 +1003,9 @@ static int iommu_ga_log_enable(struct amd_iommu *iommu)
 static int iommu_init_ga_log(struct amd_iommu *iommu)
 {
 	if (!AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir))
+		return 0;
+
+	if (iommu->ga_log && iommu->ga_log_tail)
 		return 0;
 
 	iommu->ga_log = (u8 *)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
