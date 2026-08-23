@@ -499,7 +499,7 @@ long kvmppc_rm_h_put_tce_indirect(struct kvm_vcpu *vcpu,
 	/*
 	 * used to check for invalidations in progress
 	 */
-	mmu_seq = kvm->mmu_notifier_seq;
+	mmu_seq = kvm->mmu_invalidate_seq;
 	smp_rmb();
 
 	stt = kvmppc_find_table(vcpu->kvm, liobn);
