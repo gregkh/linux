@@ -729,13 +729,13 @@ xlog_recover_attri_commit_pass2(
 
 	/* Validate xfs_attri_log_format before the large memory allocation */
 	len = sizeof(struct xfs_attri_log_format);
-	if (item->ri_buf[i].i_len != len) {
+	if (item->ri_buf[i].iov_len != len) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 
-	attri_formatp = item->ri_buf[i].i_addr;
+	attri_formatp = item->ri_buf[i].iov_base;
 	if (!xfs_attri_validate(mp, attri_formatp)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
 				attri_formatp, len);
@@ -770,14 +770,14 @@ xlog_recover_attri_commit_pass2(
 	i++;
 
 	/* Validate the attr name */
-	if (item->ri_buf[i].i_len !=
+	if (item->ri_buf[i].iov_len !=
 			xlog_calc_iovec_len(attri_formatp->alfi_name_len)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
 				attri_formatp, len);
 		return -EFSCORRUPTED;
 	}
 
-	attr_name = item->ri_buf[i].i_addr;
+	attr_name = item->ri_buf[i].iov_base;
 	if (!xfs_attr_namecheck(attri_formatp->alfi_attr_filter, attr_name,
 				attri_formatp->alfi_name_len)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
@@ -788,14 +788,14 @@ xlog_recover_attri_commit_pass2(
 
 	/* Validate the attr value, if present */
 	if (attri_formatp->alfi_value_len != 0) {
-		if (item->ri_buf[i].i_len != xlog_calc_iovec_len(attri_formatp->alfi_value_len)) {
+		if (item->ri_buf[i].iov_len != xlog_calc_iovec_len(attri_formatp->alfi_value_len)) {
 			XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, mp,
-					item->ri_buf[0].i_addr,
-					item->ri_buf[0].i_len);
+					item->ri_buf[0].iov_base,
+					item->ri_buf[0].iov_len);
 			return -EFSCORRUPTED;
 		}
 
-		attr_value = item->ri_buf[i].i_addr;
+		attr_value = item->ri_buf[i].iov_base;
 		i++;
 	}
 
@@ -912,10 +912,10 @@ xlog_recover_attrd_commit_pass2(
 {
 	struct xfs_attrd_log_format	*attrd_formatp;
 
-	attrd_formatp = item->ri_buf[0].i_addr;
-	if (item->ri_buf[0].i_len != sizeof(struct xfs_attrd_log_format)) {
+	attrd_formatp = item->ri_buf[0].iov_base;
+	if (item->ri_buf[0].iov_len != sizeof(struct xfs_attrd_log_format)) {
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, log->l_mp,
-				item->ri_buf[0].i_addr, item->ri_buf[0].i_len);
+				item->ri_buf[0].iov_base, item->ri_buf[0].iov_len);
 		return -EFSCORRUPTED;
 	}
 
