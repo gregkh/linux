@@ -511,6 +511,8 @@ static inline struct eventfs_inode *init_ei(struct eventfs_inode *ei, const char
 	if (!ei->name)
 		return NULL;
 	kref_init(&ei->kref);
+	INIT_LIST_HEAD(&ei->children);
+	INIT_LIST_HEAD(&ei->list);
 	return ei;
 }
 
@@ -797,8 +799,6 @@ struct eventfs_inode *eventfs_create_dir(const char *name, struct eventfs_inode 
 	ei->entries = entries;
 	ei->nr_entries = size;
 	ei->data = data;
-	INIT_LIST_HEAD(&ei->children);
-	INIT_LIST_HEAD(&ei->list);
 
 	mutex_lock(&eventfs_mutex);
 	if (!parent->is_freed)
@@ -873,9 +873,6 @@ struct eventfs_inode *eventfs_create_events_dir(const char *name, struct dentry 
 	 * permissions of its parent. But can be reset on remount.
 	 */
 	ei->attr.mode |= EVENTFS_SAVE_UID | EVENTFS_SAVE_GID;
-
-	INIT_LIST_HEAD(&ei->children);
-	INIT_LIST_HEAD(&ei->list);
 
 	ti = get_tracefs(inode);
 	ti->flags |= TRACEFS_EVENT_INODE;
