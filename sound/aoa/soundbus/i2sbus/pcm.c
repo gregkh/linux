@@ -79,10 +79,11 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 	u64 formats = 0;
 	unsigned int rates = 0;
 	struct transfer_info v;
+	int result = 0;
 	int bus_factor = 0, sysclock_factor = 0;
 	int found_this;
 
-	guard(mutex)(&i2sdev->lock);
+	mutex_lock(&i2sdev->lock);
 
 	get_pcm_info(i2sdev, in, &pi, &other);
 
@@ -91,7 +92,8 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 
 	if (pi->active) {
 		/* alsa messed up */
-		return -EBUSY;
+		result = -EBUSY;
+		goto out_unlock;
 	}
 
 	/* we now need to assign the hw */
@@ -115,8 +117,10 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 			ti++;
 		}
 	}
-	if (!masks_inited || !bus_factor || !sysclock_factor)
-		return -ENODEV;
+	if (!masks_inited || !bus_factor || !sysclock_factor) {
+		result = -ENODEV;
+		goto out_unlock;
+	}
 	/* bus dependent stuff */
 	hw->info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
 		   SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_RESUME |
@@ -189,12 +193,15 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 	hw->periods_max = MAX_DBDMA_COMMANDS;
 	err = snd_pcm_hw_constraint_integer(pi->substream->runtime,
 					    SNDRV_PCM_HW_PARAM_PERIODS);
-	if (err < 0)
-		return err;
+	if (err < 0) {
+		result = err;
+		goto out_unlock;
+	}
 	list_for_each_entry(cii, &sdev->codec_list, list) {
 		if (cii->codec->open) {
 			err = cii->codec->open(cii, pi->substream);
 			if (err) {
+				result = err;
 				/* unwind */
 				found_this = 0;
 				list_for_each_entry_reverse(rev,
@@ -206,12 +213,14 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 					if (rev == cii)
 						found_this = 1;
 				}
-				return err;
+				goto out_unlock;
 			}
 		}
 	}
 
-	return 0;
+ out_unlock:
+	mutex_unlock(&i2sdev->lock);
+	return result;
 }
 
 #undef CHECK_RATE
@@ -222,7 +231,7 @@ static int i2sbus_pcm_close(struct i2sbus_dev *i2sdev, int in)
 	struct pcm_info *pi;
 	int err = 0, tmp;
 
-	guard(mutex)(&i2sdev->lock);
+	mutex_lock(&i2sdev->lock);
 
 	get_pcm_info(i2sdev, in, &pi, NULL);
 
@@ -236,6 +245,7 @@ static int i2sbus_pcm_close(struct i2sbus_dev *i2sdev, int in)
 
 	pi->substream = NULL;
 	pi->active = 0;
+	mutex_unlock(&i2sdev->lock);
 	return err;
 }
 
@@ -286,10 +296,10 @@ static void i2sbus_pcm_clear_active(struct i2sbus_dev *i2sdev, int in)
 {
 	struct pcm_info *pi;
 
-	guard(mutex)(&i2sdev->lock);
-
+	mutex_lock(&i2sdev->lock);
 	get_pcm_info(i2sdev, in, &pi, NULL);
 	pi->active = 0;
+	mutex_unlock(&i2sdev->lock);
 }
 
 static inline int i2sbus_hw_params(struct snd_pcm_substream *substream,
@@ -349,25 +359,32 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 	int input_16bit;
 	struct pcm_info *pi, *other;
 	int cnt;
+	int result = 0;
 	unsigned int cmd, stopaddr;
 
-	guard(mutex)(&i2sdev->lock);
+	mutex_lock(&i2sdev->lock);
 
 	get_pcm_info(i2sdev, in, &pi, &other);
 
-	if (pi->dbdma_ring.running)
-		return -EBUSY;
+	if (pi->dbdma_ring.running) {
+		result = -EBUSY;
+		goto out_unlock;
+	}
 	if (pi->dbdma_ring.stopping)
 		i2sbus_wait_for_stop(i2sdev, pi);
 
-	if (!pi->substream || !pi->substream->runtime)
-		return -EINVAL;
+	if (!pi->substream || !pi->substream->runtime) {
+		result = -EINVAL;
+		goto out_unlock;
+	}
 
 	runtime = pi->substream->runtime;
 	if (other->active &&
 	    ((i2sdev->format != runtime->format)
-	     || (i2sdev->rate != runtime->rate)))
-		return -EINVAL;
+	     || (i2sdev->rate != runtime->rate))) {
+		result = -EINVAL;
+		goto out_unlock;
+	}
 
 	i2sdev->format = runtime->format;
 	i2sdev->rate = runtime->rate;
@@ -432,7 +449,8 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 		input_16bit = 0;
 		break;
 	default:
-		return -EINVAL;
+		result = -EINVAL;
+		goto out_unlock;
 	}
 	/* we assume all sysclocks are the same! */
 	bi.sysclock_factor = cii->codec->sysclock_factor;
@@ -440,8 +458,10 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 	if (clock_and_divisors(bi.sysclock_factor,
 			       bi.bus_factor,
 			       runtime->rate,
-			       &sfr) < 0)
-		return -EINVAL;
+			       &sfr) < 0) {
+		result = -EINVAL;
+		goto out_unlock;
+	}
 	switch (bi.bus_factor) {
 	case 32:
 		sfr |= I2S_SF_SERIAL_FORMAT_I2S_32X;
@@ -457,8 +477,10 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 		int err = 0;
 		if (cii->codec->prepare)
 			err = cii->codec->prepare(cii, &bi, pi->substream);
-		if (err)
-			return err;
+		if (err) {
+			result = err;
+			goto out_unlock;
+		}
 	}
 	/* codecs are fine with it, so set our clocks */
 	if (input_16bit)
@@ -475,7 +497,7 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 	if (in_le32(&i2sdev->intfregs->serial_format) == sfr &&
 	    in_le32(&i2sdev->intfregs->data_word_sizes) == dws) {
 		pi->active = 1;
-		return 0;
+		goto out_unlock;
 	}
 
 	/* let's notify the codecs about clocks going away.
@@ -515,7 +537,10 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 			cii->codec->switch_clock(cii, CLOCK_SWITCH_SLAVE);
 
 	pi->active = 1;
-	return 0;
+
+ out_unlock:
+	mutex_unlock(&i2sdev->lock);
+	return result;
 }
 
 #ifdef CONFIG_PM
