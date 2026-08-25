@@ -212,9 +212,10 @@ static void ftr_handle_notify(struct work_struct *work)
 	struct gpio_notification *notif =
 		container_of(work, struct gpio_notification, work.work);
 
-	guard(mutex)(&notif->mutex);
+	mutex_lock(&notif->mutex);
 	if (notif->notify)
 		notif->notify(notif->data);
+	mutex_unlock(&notif->mutex);
 }
 
 static void gpio_enable_dual_edge(int gpio)
@@ -340,17 +341,19 @@ static int ftr_set_notify(struct gpio_runtime *rt,
 	if (!irq)
 		return -ENODEV;
 
-	guard(mutex)(&notif->mutex);
+	mutex_lock(&notif->mutex);
 
 	old = notif->notify;
 
-	if (!old && !notify)
-		return 0;
+	if (!old && !notify) {
+		err = 0;
+		goto out_unlock;
+	}
 
 	if (old && notify) {
 		if (old == notify && notif->data == data)
 			err = 0;
-		return err;
+		goto out_unlock;
 	}
 
 	if (old && !notify)
@@ -359,13 +362,16 @@ static int ftr_set_notify(struct gpio_runtime *rt,
 	if (!old && notify) {
 		err = request_irq(irq, ftr_handle_notify_irq, 0, name, notif);
 		if (err)
-			return err;
+			goto out_unlock;
 	}
 
 	notif->notify = notify;
 	notif->data = data;
 
-	return 0;
+	err = 0;
+ out_unlock:
+	mutex_unlock(&notif->mutex);
+	return err;
 }
 
 static int ftr_get_detect(struct gpio_runtime *rt,
