@@ -146,6 +146,8 @@ int main(int argc, char *argv[])
 	int err;
 	int item = sizeof(sizes)/sizeof(int);
 
+	ksft_print_header();
+
 	page_size = getpagesize();
 	if (!page_size) {
 		ksft_print_msg("ERR: Unable to get page size\n");
