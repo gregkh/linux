@@ -189,6 +189,8 @@ int main(int argc, char *argv[])
 	int err;
 	int item = sizeof(sizes)/sizeof(int);
 
+	ksft_print_header();
+
 	err = mte_default_setup();
 	if (err)
 		return err;
