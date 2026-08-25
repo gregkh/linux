@@ -578,7 +578,7 @@ void __io_commit_cqring_flush(struct io_ring_ctx *ctx)
 	if (ctx->off_timeout_used)
 		io_flush_timeouts(ctx);
 	if (ctx->has_evfd)
-		io_eventfd_signal(ctx, true);
+		io_eventfd_signal(ctx, true, false);
 }
 
 static inline void __io_cq_lock(struct io_ring_ctx *ctx)
@@ -1312,7 +1312,7 @@ static void io_req_local_work_add(struct io_kiocb *req, unsigned flags)
 	if (!head) {
 		io_ctx_mark_taskrun(ctx);
 		if (ctx->has_evfd)
-			io_eventfd_signal(ctx, false);
+			io_eventfd_signal(ctx, false, flags & IOU_F_TWQ_IN_WAKE);
 	}
 
 	nr_wait = atomic_read(&ctx->cq_wait_nr);
