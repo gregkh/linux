@@ -161,7 +161,7 @@ int nvmf_reg_read32(struct nvme_ctrl *ctrl, u32 off, u32 *val)
 	if (unlikely(ret != 0))
 		dev_err(ctrl->device,
 			"Property Get error: %d, offset %#x\n",
-			ret > 0 ? ret & ~NVME_SC_DNR : ret, off);
+			ret > 0 ? ret & ~NVME_STATUS_DNR : ret, off);
 
 	return ret;
 }
@@ -207,7 +207,7 @@ int nvmf_reg_read64(struct nvme_ctrl *ctrl, u32 off, u64 *val)
 	if (unlikely(ret != 0))
 		dev_err(ctrl->device,
 			"Property Get error: %d, offset %#x\n",
-			ret > 0 ? ret & ~NVME_SC_DNR : ret, off);
+			ret > 0 ? ret & ~NVME_STATUS_DNR : ret, off);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(nvmf_reg_read64);
@@ -249,7 +249,7 @@ int nvmf_reg_write32(struct nvme_ctrl *ctrl, u32 off, u32 val)
 	if (unlikely(ret))
 		dev_err(ctrl->device,
 			"Property Set error: %d, offset %#x\n",
-			ret > 0 ? ret & ~NVME_SC_DNR : ret, off);
+			ret > 0 ? ret & ~NVME_STATUS_DNR : ret, off);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(nvmf_reg_write32);
@@ -284,7 +284,7 @@ static void nvmf_log_connect_error(struct nvme_ctrl *ctrl,
 		int errval, int offset, struct nvme_command *cmd,
 		struct nvmf_connect_data *data)
 {
-	int err_sctype = errval & ~NVME_SC_DNR;
+	int err_sctype = errval & ~NVME_STATUS_DNR;
 
 	switch (err_sctype) {
 	case (NVME_SC_CONNECT_INVALID_PARAM):

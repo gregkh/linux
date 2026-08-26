@@ -1622,8 +1622,8 @@ enum {
 	NVME_SC_HOST_PATH_ERROR		= 0x370,
 	NVME_SC_HOST_ABORTED_CMD	= 0x371,
 
-	NVME_SC_CRD			= 0x1800,
-	NVME_SC_DNR			= 0x4000,
+	NVME_STATUS_CRD			= 0x1800,
+	NVME_STATUS_DNR			= 0x4000,
 };
 
 struct nvme_completion {
