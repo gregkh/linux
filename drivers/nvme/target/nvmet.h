@@ -690,7 +690,7 @@ static inline void nvmet_req_cns_error_complete(struct nvmet_req *req)
 	pr_debug("unhandled identify cns %d on qid %d\n",
 	       req->cmd->identify.cns, req->sq->qid);
 	req->error_loc = offsetof(struct nvme_identify, cns);
-	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_SC_DNR);
+	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_STATUS_DNR);
 }
 
 static inline void nvmet_req_bio_put(struct nvmet_req *req, struct bio *bio)
