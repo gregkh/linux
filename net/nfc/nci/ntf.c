@@ -310,7 +310,7 @@ void nci_clear_target_list(struct nci_dev *ndev)
 static void nci_rf_discover_ntf_packet(struct nci_dev *ndev,
 				       struct sk_buff *skb)
 {
-	struct nci_rf_discover_ntf ntf;
+	struct nci_rf_discover_ntf ntf = {};
 	__u8 *data = skb->data;
 	bool add_target = true;
 
@@ -517,7 +517,7 @@ static void nci_rf_intf_activated_ntf_packet(struct nci_dev *ndev,
 					     struct sk_buff *skb)
 {
 	struct nci_conn_info    *conn_info;
-	struct nci_rf_intf_activated_ntf ntf;
+	struct nci_rf_intf_activated_ntf ntf = {};
 	__u8 *data = skb->data;
 	int err = NCI_STATUS_OK;
 
