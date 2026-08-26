@@ -544,6 +544,8 @@ static int nilfs_ioctl_get_bdescs(struct inode *inode, struct file *filp,
  * Return Value: On success, 0 is returned. On error, one of the following
  * negative error codes is returned.
  *
+ * %-EINVAL - Invalid virtual block descriptor.
+ *
  * %-EIO - I/O error.
  *
  * %-ENOMEM - Insufficient amount of memory available.
@@ -557,15 +559,30 @@ static int nilfs_ioctl_move_inode_block(struct inode *inode,
 					struct list_head *buffers)
 {
 	struct buffer_head *bh;
+	__u64 limit_blkidx = (__u64)inode->i_sb->s_maxbytes >> inode->i_blkbits;
 	int ret;
 
-	if (vdesc->vd_flags == 0)
+	/*
+	 * vblocknr 0 is reserved as an invalid pointer.  Also, limit_blkidx
+	 * ensures that the page index converted from vd_vblocknr never
+	 * overflows the page cache limit and respects the architecture's bmap
+	 * key width.
+	 */
+	if (unlikely(vdesc->vd_vblocknr == 0 ||
+			vdesc->vd_vblocknr >= limit_blkidx))
+		return -EINVAL;
+
+	if (vdesc->vd_flags == 0) {
+		if (unlikely(vdesc->vd_offset >= limit_blkidx))
+			return -EINVAL;
+
 		ret = nilfs_gccache_submit_read_data(
 			inode, vdesc->vd_offset, vdesc->vd_blocknr,
 			vdesc->vd_vblocknr, &bh);
-	else
+	} else {
 		ret = nilfs_gccache_submit_read_node(
 			inode, vdesc->vd_blocknr, vdesc->vd_vblocknr, &bh);
+	}
 
 	if (unlikely(ret < 0)) {
 		if (ret == -ENOENT)
