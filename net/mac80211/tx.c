@@ -4954,9 +4954,17 @@ static void ieee80211_beacon_add_tim_pvb(struct ps_data *ps,
  */
 static void ieee80211_s1g_beacon_add_tim_pvb(struct ps_data *ps,
 					     struct sk_buff *skb,
-					     bool mcast_traffic)
+					     bool mcast_traffic,
+					     bool ucast_traffic)
 {
 	int blk;
+
+	/*
+	 * if no unicast and multicast traffic don't emit a bitmap control
+	 * or pvb
+	 */
+	if (!mcast_traffic && !ucast_traffic)
+		return;
 
 	/*
 	 * Emit a bitmap control block with a page slice number of 31 and a
@@ -4965,6 +4973,10 @@ static void ieee80211_s1g_beacon_add_tim_pvb(struct ps_data *ps,
 	 * is encoded in the partial virtual bitmap.
 	 */
 	skb_put_u8(skb, mcast_traffic | (31 << 1));
+
+	/* If there's no unicast traffic we don't need to include a PVB. */
+	if (!ucast_traffic)
+		return;
 
 	/* Emit an encoded block for each non-zero sub-block */
 	for (blk = 0; blk < IEEE80211_MAX_SUPPORTED_S1G_TIM_BLOCKS; blk++) {
@@ -5047,25 +5059,16 @@ static void __ieee80211_beacon_add_tim(struct ieee80211_sub_if_data *sdata,
 
 	ps->dtim_bc_mc = mcast_traffic;
 
-	if (have_bits) {
-		if (s1g)
-			ieee80211_s1g_beacon_add_tim_pvb(ps, skb,
-							 mcast_traffic);
-		else
-			ieee80211_beacon_add_tim_pvb(ps, skb, mcast_traffic);
+	if (s1g) {
+		ieee80211_s1g_beacon_add_tim_pvb(ps, skb, mcast_traffic,
+						 have_bits);
+	} else if (have_bits) {
+		ieee80211_beacon_add_tim_pvb(ps, skb, mcast_traffic);
 	} else {
-		/*
-		 * If there is no buffered unicast traffic for an S1G
-		 * interface, we can exclude the bitmap control. This is in
-		 * contrast to other phy types as they do include the bitmap
-		 * control and pvb even when there is no buffered traffic.
-		 */
-		if (!s1g) {
-			/* Bitmap control */
-			skb_put_u8(skb, mcast_traffic);
-			/* Part Virt Bitmap */
-			skb_put_u8(skb, 0);
-		}
+		/* Bitmap control */
+		skb_put_u8(skb, mcast_traffic);
+		/* Part Virt Bitmap */
+		skb_put_u8(skb, 0);
 	}
 
 	tim->datalen = skb_tail_pointer(skb) - tim->data;
