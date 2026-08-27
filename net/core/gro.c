@@ -182,8 +182,9 @@ int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
 
 	if (unlikely(p->len + len >= GRO_LEGACY_MAX_SIZE)) {
 		if (p->protocol != htons(ETH_P_IPV6) ||
-		    skb_headroom(p) < sizeof(struct hop_jumbo_hdr) ||
+		    p->mac_header < sizeof(struct hop_jumbo_hdr) ||
 		    ipv6_hdr(p)->nexthdr != IPPROTO_TCP ||
+		    NAPI_GRO_CB(skb)->encap_mark ||
 		    p->encapsulation)
 			return -E2BIG;
 	}
