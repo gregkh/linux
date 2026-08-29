@@ -7827,6 +7827,11 @@ static int process_iter_arg(struct bpf_verifier_env *env, int regno, int insn_id
 	int spi, err, i, nr_slots;
 	u32 btf_id;
 
+	if (reg->type != PTR_TO_STACK) {
+		verbose(env, "arg#%d expected pointer to an iterator on stack\n", regno - 1);
+		return -EINVAL;
+	}
+
 	/* btf_check_iter_kfuncs() ensures we don't need to validate anything here */
 	arg = &btf_params(meta->func_proto)[0];
 	t = btf_type_skip_modifiers(meta->btf, arg->type, NULL);	/* PTR */
