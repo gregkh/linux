@@ -606,7 +606,7 @@ static int keyspan_pda_write(struct tty_struct *tty, struct usb_serial_port *por
 	if (rc)
 		return rc;
 
-	return 0;
+	return count;
 }
 
 static void keyspan_pda_dtr_rts(struct usb_serial_port *port, int on)
