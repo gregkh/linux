@@ -467,6 +467,13 @@ int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
 		goto out_device_del;
 
 	/*
+	 * We do not support partitions with zoned block devices, so do not try
+	 * to scan the partitions table.
+	 */
+	if (blk_queue_is_zoned(disk->queue))
+		disk->flags |= GENHD_FL_NO_PART;
+
+	/*
 	 * avoid probable deadlock caused by allocating memory with
 	 * GFP_KERNEL in runtime_resume callback of its all ancestor
 	 * devices
