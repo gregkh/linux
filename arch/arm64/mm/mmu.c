@@ -106,11 +106,27 @@ EXPORT_SYMBOL(phys_mem_access_prot);
 static phys_addr_t __init early_pgtable_alloc(int shift)
 {
 	phys_addr_t phys;
+	void *ptr;
 
 	phys = memblock_phys_alloc_range(PAGE_SIZE, PAGE_SIZE, 0,
 					 MEMBLOCK_ALLOC_NOLEAKTRACE);
 	if (!phys)
 		panic("Failed to allocate page table page\n");
+
+	/*
+	 * The FIX_{PGD,PUD,PMD} slots may be in active use, but the FIX_PTE
+	 * slot will be free, so we can (ab)use the FIX_PTE slot to initialise
+	 * any level of table.
+	 */
+	ptr = pte_set_fixmap(phys);
+
+	memset(ptr, 0, PAGE_SIZE);
+
+	/*
+	 * Implicit barriers also ensure the zeroed page is visible to the page
+	 * table walker
+	 */
+	pte_clear_fixmap();
 
 	return phys;
 }
@@ -151,14 +167,6 @@ bool pgattr_change_is_safe(u64 old, u64 new)
 		mask |= PTE_ATTRINDX_MASK;
 
 	return ((old ^ new) & ~mask) == 0;
-}
-
-static void init_clear_pgtable(void *table)
-{
-	clear_page(table);
-
-	/* Ensure the zeroing is observed by page table walks. */
-	dsb(ishst);
 }
 
 static void init_pte(pte_t *ptep, unsigned long addr, unsigned long end,
@@ -203,15 +211,12 @@ static void alloc_init_cont_pte(pmd_t *pmdp, unsigned long addr,
 			pmdval |= PMD_TABLE_PXN;
 		BUG_ON(!pgtable_alloc);
 		pte_phys = pgtable_alloc(PAGE_SHIFT);
-		ptep = pte_set_fixmap(pte_phys);
-		init_clear_pgtable(ptep);
-		ptep += pte_index(addr);
 		__pmd_populate(pmdp, pte_phys, pmdval);
-	} else {
-		BUG_ON(pmd_bad(pmd));
-		ptep = pte_set_fixmap_offset(pmdp, addr);
+		pmd = READ_ONCE(*pmdp);
 	}
+	BUG_ON(pmd_bad(pmd));
 
+	ptep = pte_set_fixmap_offset(pmdp, addr);
 	do {
 		pgprot_t __prot = prot;
 
@@ -290,15 +295,12 @@ static void alloc_init_cont_pmd(pud_t *pudp, unsigned long addr,
 			pudval |= PUD_TABLE_PXN;
 		BUG_ON(!pgtable_alloc);
 		pmd_phys = pgtable_alloc(PMD_SHIFT);
-		pmdp = pmd_set_fixmap(pmd_phys);
-		init_clear_pgtable(pmdp);
-		pmdp += pmd_index(addr);
 		__pud_populate(pudp, pmd_phys, pudval);
-	} else {
-		BUG_ON(pud_bad(pud));
-		pmdp = pmd_set_fixmap_offset(pudp, addr);
+		pud = READ_ONCE(*pudp);
 	}
+	BUG_ON(pud_bad(pud));
 
+	pmdp = pmd_set_fixmap_offset(pudp, addr);
 	do {
 		pgprot_t __prot = prot;
 
@@ -336,15 +338,12 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 			p4dval |= P4D_TABLE_PXN;
 		BUG_ON(!pgtable_alloc);
 		pud_phys = pgtable_alloc(PUD_SHIFT);
-		pudp = pud_set_fixmap(pud_phys);
-		init_clear_pgtable(pudp);
-		pudp += pud_index(addr);
 		__p4d_populate(p4dp, pud_phys, p4dval);
-	} else {
-		BUG_ON(p4d_bad(p4d));
-		pudp = pud_set_fixmap_offset(p4dp, addr);
+		p4d = READ_ONCE(*p4dp);
 	}
+	BUG_ON(p4d_bad(p4d));
 
+	pudp = pud_set_fixmap_offset(p4dp, addr);
 	do {
 		pud_t old_pud = READ_ONCE(*pudp);
 
@@ -426,10 +425,11 @@ void create_kpti_ng_temp_pgd(pgd_t *pgdir, phys_addr_t phys, unsigned long virt,
 
 static phys_addr_t __pgd_pgtable_alloc(int shift)
 {
-	/* Page is zeroed by init_clear_pgtable() so don't duplicate effort. */
-	void *ptr = (void *)__get_free_page(GFP_PGTABLE_KERNEL & ~__GFP_ZERO);
-
+	void *ptr = (void *)__get_free_page(GFP_PGTABLE_KERNEL);
 	BUG_ON(!ptr);
+
+	/* Ensure the zeroed page is visible to the page table walker */
+	dsb(ishst);
 	return __pa(ptr);
 }
 
