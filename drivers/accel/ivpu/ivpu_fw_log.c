@@ -26,10 +26,17 @@ MODULE_PARM_DESC(ivpu_log_level,
 		 " error=" __stringify(IVPU_FW_LOG_ERROR)
 		 " fatal=" __stringify(IVPU_FW_LOG_FATAL));
 
+struct ivpu_fw_log_desc {
+	struct vpu_tracing_buffer_header *log;
+	u32 header_size;
+	u32 size;
+};
+
 static int fw_log_ptr(struct ivpu_device *vdev, struct ivpu_bo *bo, u32 *offset,
-		      struct vpu_tracing_buffer_header **log_header)
+		      struct ivpu_fw_log_desc *desc)
 {
 	struct vpu_tracing_buffer_header *log;
+	u32 header_size, size;
 
 	if ((*offset + sizeof(*log)) > bo->base.size)
 		return -EINVAL;
@@ -39,26 +46,32 @@ static int fw_log_ptr(struct ivpu_device *vdev, struct ivpu_bo *bo, u32 *offset,
 	if (log->vpu_canary_start != VPU_TRACING_BUFFER_CANARY)
 		return -EINVAL;
 
-	if (log->header_size < sizeof(*log) || log->header_size > 1024) {
-		ivpu_dbg(vdev, FW_BOOT, "Invalid header size 0x%x\n", log->header_size);
+	header_size = READ_ONCE(log->header_size);
+	size = READ_ONCE(log->size);
+
+	if (header_size < sizeof(*log) || header_size > 1024) {
+		ivpu_dbg(vdev, FW_BOOT, "Invalid header size 0x%x\n", header_size);
 		return -EINVAL;
 	}
-	if (log->size < log->header_size) {
-		ivpu_dbg(vdev, FW_BOOT, "Invalid log size 0x%x\n", log->size);
+	if ((char *)log + size > (char *)bo->kvaddr + bo->base.size) {
+		ivpu_dbg(vdev, FW_BOOT, "Invalid log size 0x%x\n", size);
 		return -EINVAL;
 	}
-	if ((char *)log + log->size > (char *)bo->kvaddr + bo->base.size) {
-		ivpu_dbg(vdev, FW_BOOT, "Invalid log size 0x%x\n", log->size);
+	if (size < header_size) {
+		ivpu_dbg(vdev, FW_BOOT, "Invalid log size 0x%x < header size 0x%x\n",
+			 size, header_size);
 		return -EINVAL;
 	}
 
-	*log_header = log;
-	*offset += log->size;
+	desc->log = log;
+	desc->header_size = header_size;
+	desc->size = size;
+	*offset += size;
 
 	ivpu_dbg(vdev, FW_BOOT,
 		 "FW log name \"%.*s\", write offset 0x%x size 0x%x, wrap count %d, hdr version %d size %d format %d, alignment %d",
-		 (int)ARRAY_SIZE(log->name), log->name, log->write_index, log->size,
-		 log->wrap_count, log->header_version, log->header_size, log->format,
+		 (int)ARRAY_SIZE(log->name), log->name, log->write_index, size,
+		 log->wrap_count, log->header_version, header_size, log->format,
 		 log->alignment);
 
 	return 0;
@@ -95,11 +108,12 @@ static void buffer_print(char *buffer, u32 size, struct drm_printer *p)
 		drm_printf(p, "%s\n", line);
 }
 
-static void fw_log_print_buffer(struct ivpu_device *vdev, struct vpu_tracing_buffer_header *log,
+static void fw_log_print_buffer(struct ivpu_device *vdev, struct ivpu_fw_log_desc *desc,
 				const char *prefix, bool only_new_msgs, struct drm_printer *p)
 {
-	char *log_buffer = (void *)log + log->header_size;
-	u32 log_size = log->size - log->header_size;
+	struct vpu_tracing_buffer_header *log = desc->log;
+	char *log_buffer = (void *)log + desc->header_size;
+	u32 log_size = desc->size - desc->header_size;
 	u32 log_start = log->read_index;
 	u32 log_end = log->write_index;
 
@@ -125,26 +139,26 @@ static void fw_log_print_buffer(struct ivpu_device *vdev, struct vpu_tracing_buf
 
 void ivpu_fw_log_print(struct ivpu_device *vdev, bool only_new_msgs, struct drm_printer *p)
 {
-	struct vpu_tracing_buffer_header *log_header;
+	struct ivpu_fw_log_desc desc;
 	u32 next = 0;
 
-	while (fw_log_ptr(vdev, vdev->fw->mem_log_crit, &next, &log_header) == 0)
-		fw_log_print_buffer(vdev, log_header, "VPU critical", only_new_msgs, p);
+	while (fw_log_ptr(vdev, vdev->fw->mem_log_crit, &next, &desc) == 0)
+		fw_log_print_buffer(vdev, &desc, "VPU critical", only_new_msgs, p);
 
 	next = 0;
-	while (fw_log_ptr(vdev, vdev->fw->mem_log_verb, &next, &log_header) == 0)
-		fw_log_print_buffer(vdev, log_header, "VPU verbose", only_new_msgs, p);
+	while (fw_log_ptr(vdev, vdev->fw->mem_log_verb, &next, &desc) == 0)
+		fw_log_print_buffer(vdev, &desc, "VPU verbose", only_new_msgs, p);
 }
 
 void ivpu_fw_log_clear(struct ivpu_device *vdev)
 {
-	struct vpu_tracing_buffer_header *log_header;
+	struct ivpu_fw_log_desc desc;
 	u32 next = 0;
 
-	while (fw_log_ptr(vdev, vdev->fw->mem_log_crit, &next, &log_header) == 0)
-		log_header->read_index = log_header->write_index;
+	while (fw_log_ptr(vdev, vdev->fw->mem_log_crit, &next, &desc) == 0)
+		desc.log->read_index = desc.log->write_index;
 
 	next = 0;
-	while (fw_log_ptr(vdev, vdev->fw->mem_log_verb, &next, &log_header) == 0)
-		log_header->read_index = log_header->write_index;
+	while (fw_log_ptr(vdev, vdev->fw->mem_log_verb, &next, &desc) == 0)
+		desc.log->read_index = desc.log->write_index;
 }
