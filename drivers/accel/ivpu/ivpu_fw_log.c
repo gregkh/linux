@@ -56,9 +56,10 @@ static int fw_log_ptr(struct ivpu_device *vdev, struct ivpu_bo *bo, u32 *offset,
 	*offset += log->size;
 
 	ivpu_dbg(vdev, FW_BOOT,
-		 "FW log name \"%s\", write offset 0x%x size 0x%x, wrap count %d, hdr version %d size %d format %d, alignment %d",
-		 log->name, log->write_index, log->size, log->wrap_count, log->header_version,
-		 log->header_size, log->format, log->alignment);
+		 "FW log name \"%.*s\", write offset 0x%x size 0x%x, wrap count %d, hdr version %d size %d format %d, alignment %d",
+		 (int)ARRAY_SIZE(log->name), log->name, log->write_index, log->size,
+		 log->wrap_count, log->header_version, log->header_size, log->format,
+		 log->alignment);
 
 	return 0;
 }
@@ -104,11 +105,13 @@ static void fw_log_print_buffer(struct ivpu_device *vdev, struct vpu_tracing_buf
 
 	if (!(log->write_index || log->wrap_count) ||
 	    (log->write_index == log->read_index && only_new_msgs)) {
-		drm_printf(p, "==== %s \"%s\" log empty ====\n", prefix, log->name);
+		drm_printf(p, "==== %s \"%.*s\" log empty ====\n", prefix,
+			   (int)ARRAY_SIZE(log->name), log->name);
 		return;
 	}
 
-	drm_printf(p, "==== %s \"%s\" log start ====\n", prefix, log->name);
+	drm_printf(p, "==== %s \"%.*s\" log start ====\n", prefix, (int)ARRAY_SIZE(log->name),
+		   log->name);
 	if (log->write_index > log->read_index) {
 		buffer_print(log_buffer + log_start, log_end - log_start, p);
 	} else {
@@ -116,7 +119,8 @@ static void fw_log_print_buffer(struct ivpu_device *vdev, struct vpu_tracing_buf
 		buffer_print(log_buffer, log_end, p);
 	}
 	drm_printf(p, "\x1b[0m");
-	drm_printf(p, "==== %s \"%s\" log end   ====\n", prefix, log->name);
+	drm_printf(p, "==== %s \"%.*s\" log end   ====\n", prefix, (int)ARRAY_SIZE(log->name),
+		   log->name);
 }
 
 void ivpu_fw_log_print(struct ivpu_device *vdev, bool only_new_msgs, struct drm_printer *p)
