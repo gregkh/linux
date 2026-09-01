@@ -102,15 +102,23 @@ static inline struct ivpu_device *ivpu_bo_to_vdev(struct ivpu_bo *bo)
 	return to_ivpu_device(bo->base.dev);
 }
 
-static inline void *ivpu_to_cpu_addr(struct ivpu_bo *bo, u32 vpu_addr)
+static inline void *ivpu_to_cpu_addr(struct ivpu_bo *bo, u64 vpu_addr, u64 size)
 {
+	u64 bo_size = bo->base.size;
+	u64 offset;
+
 	if (vpu_addr < bo->vpu_addr)
 		return NULL;
 
-	if (vpu_addr >= (bo->vpu_addr + bo->base.size))
+	if (size > bo_size)
 		return NULL;
 
-	return bo->kvaddr + (vpu_addr - bo->vpu_addr);
+	offset = vpu_addr - bo->vpu_addr;
+
+	if (offset > bo_size - size)
+		return NULL;
+
+	return bo->kvaddr + offset;
 }
 
 static inline u32 cpu_to_vpu_addr(struct ivpu_bo *bo, void *cpu_addr)
