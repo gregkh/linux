@@ -2641,8 +2641,8 @@ static int unix_stream_recv_urg(struct unix_stream_read_state *state)
 	return 1;
 }
 
-static struct sk_buff *manage_oob(struct sk_buff *skb, struct sock *sk,
-				  int flags, int copied)
+static struct sk_buff *manage_oob(struct sk_buff *skb, struct sk_buff **last,
+				  struct sock *sk, int flags, int copied)
 {
 	struct unix_sock *u = unix_sk(sk);
 
@@ -2665,8 +2665,10 @@ static struct sk_buff *manage_oob(struct sk_buff *skb, struct sock *sk,
 					__skb_unlink(skb, &sk->sk_receive_queue);
 					unlinked_skb = skb;
 					skb = skb_peek(&sk->sk_receive_queue);
+					*last = skb;
 				}
 			} else if (!sock_flag(sk, SOCK_URGINLINE)) {
+				*last = skb;
 				skb = skb_peek_next(skb, &sk->sk_receive_queue);
 			}
 		}
@@ -2792,7 +2794,7 @@ redo:
 again:
 #if IS_ENABLED(CONFIG_AF_UNIX_OOB)
 		if (skb) {
-			skb = manage_oob(skb, sk, flags, copied);
+			skb = manage_oob(skb, &last, sk, flags, copied);
 			if (!skb && copied) {
 				unix_state_unlock(sk);
 				break;
