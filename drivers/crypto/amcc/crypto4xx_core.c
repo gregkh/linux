@@ -1294,7 +1294,11 @@ static int crypto4xx_probe(struct platform_device *ofdev)
 	}
 
 	/* Register for Crypto isr, Crypto Engine IRQ */
-	core_dev->irq = irq_of_parse_and_map(ofdev->dev.of_node, 0);
+	core_dev->irq = platform_get_irq(ofdev, 0);
+	if (core_dev->irq < 0) {
+		rc = core_dev->irq;
+		goto err_iomap;
+	}
 	rc = devm_request_irq(&ofdev->dev, core_dev->irq,
 			      is_revb ? crypto4xx_ce_interrupt_handler_revb :
 					crypto4xx_ce_interrupt_handler,

@@ -17,10 +17,6 @@
 #define ENETC_MAC_FILTER_TYPE_ALL	(ENETC_MAC_FILTER_TYPE_UC | \
 					 ENETC_MAC_FILTER_TYPE_MC)
 
-struct enetc_mac_addr {
-	u8 addr[ETH_ALEN];
-};
-
 static void enetc4_get_port_caps(struct enetc_pf *pf)
 {
 	struct enetc_hw *hw = &pf->si->hw;

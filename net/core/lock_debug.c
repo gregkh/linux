@@ -65,6 +65,7 @@ int netdev_debug_event(struct notifier_block *nb, unsigned long event,
 		break;
 
 	case NETDEV_CHANGENAME:
+		netdev_assert_locked_ops(dev);
 		ASSERT_RTNL_NET(net);
 		break;
 	}

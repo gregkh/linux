@@ -494,7 +494,7 @@ struct i3c_master_controller_ops {
 	int (*disable_hotjoin)(struct i3c_master_controller *master);
 	int (*set_speed)(struct i3c_master_controller *master, enum i3c_open_drain_speed speed);
 	int (*set_dev_nack_retry)(struct i3c_master_controller *master,
-				  unsigned long dev_nack_retry_cnt);
+				  unsigned int dev_nack_retry_cnt);
 };
 
 /**
@@ -607,14 +607,15 @@ int i3c_master_disec_locked(struct i3c_master_controller *master, u8 addr,
 			    u8 evts);
 int i3c_master_enec_locked(struct i3c_master_controller *master, u8 addr,
 			   u8 evts);
+int i3c_master_enec_disec_locked(struct i3c_master_controller *master, u8 addr,
+				 bool enable, u8 evts, bool suppress_m2);
 int i3c_master_entdaa_locked(struct i3c_master_controller *master);
 int i3c_master_defslvs_locked(struct i3c_master_controller *master);
 
 int i3c_master_get_free_addr(struct i3c_master_controller *master,
 			     u8 start_addr);
 
-int i3c_master_add_i3c_dev_locked(struct i3c_master_controller *master,
-				  u8 addr);
+void i3c_master_add_i3c_dev_locked(struct i3c_master_controller *master, u8 addr);
 int i3c_master_do_daa(struct i3c_master_controller *master);
 int i3c_master_do_daa_ext(struct i3c_master_controller *master, bool rstdaa);
 struct i3c_dma *i3c_master_dma_map_single(struct device *dev, void *ptr,
@@ -624,6 +625,8 @@ void i3c_master_dma_unmap_single(struct i3c_dma *dma_xfer);
 DEFINE_FREE(i3c_master_dma_unmap_single, void *,
 	    if (_T) i3c_master_dma_unmap_single(_T))
 
+int i3c_master_reattach_i3c_dev_locked(struct i3c_dev_desc *dev,
+				       u8 old_dyn_addr);
 int i3c_master_set_info(struct i3c_master_controller *master,
 			const struct i3c_device_info *info);
 

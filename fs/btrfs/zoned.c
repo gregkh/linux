@@ -131,8 +131,10 @@ static int sb_write_pointer(struct block_device *bdev, struct blk_zone *zones,
 			u64 bytenr = ALIGN_DOWN(zone_end, BTRFS_SUPER_INFO_SIZE) -
 						BTRFS_SUPER_INFO_SIZE;
 
+			filemap_invalidate_lock_shared(mapping);
 			page[i] = read_cache_page_gfp(mapping,
 					bytenr >> PAGE_SHIFT, GFP_NOFS);
+			filemap_invalidate_unlock_shared(mapping);
 			if (IS_ERR(page[i])) {
 				if (i == 1)
 					btrfs_release_disk_super(super[0]);
@@ -1325,7 +1327,7 @@ static int btrfs_load_zone_info(struct btrfs_fs_info *fs_info, int zone_idx,
 {
 	struct btrfs_dev_replace *dev_replace = &fs_info->dev_replace;
 	struct btrfs_device *device;
-	int dev_replace_is_ongoing = 0;
+	bool dev_replace_is_ongoing = false;
 	unsigned int nofs_flag;
 	struct blk_zone zone;
 	int ret;
@@ -2791,7 +2793,6 @@ void btrfs_zoned_reserve_data_reloc_bg(struct btrfs_fs_info *fs_info)
 	struct btrfs_block_group *bg;
 	struct list_head *bg_list;
 	u64 alloc_flags;
-	bool first = true;
 	bool did_chunk_alloc = false;
 	int index;
 	int ret;
@@ -2808,17 +2809,12 @@ void btrfs_zoned_reserve_data_reloc_bg(struct btrfs_fs_info *fs_info)
 	alloc_flags = btrfs_get_alloc_profile(fs_info, space_info->flags);
 	index = btrfs_bg_flags_to_raid_index(alloc_flags);
 
-	/* Scan the data space_info to find empty block groups. Take the second one. */
 again:
 	bg_list = &space_info->block_groups[index];
 	list_for_each_entry(bg, bg_list, list) {
+
 		if (bg->alloc_offset != 0)
 			continue;
-
-		if (first) {
-			first = false;
-			continue;
-		}
 
 		if (space_info == data_sinfo) {
 			/* Migrate the block group to the data relocation space_info. */
@@ -2831,8 +2827,6 @@ again:
 
 			down_write(&space_info->groups_sem);
 			list_del_init(&bg->list);
-			/* We can assume this as we choose the second empty one. */
-			ASSERT(!list_empty(&space_info->block_groups[index]));
 			up_write(&space_info->groups_sem);
 
 			spin_lock(&space_info->lock);
@@ -2877,7 +2871,6 @@ again:
 		 * We allocated a new block group in the data relocation space_info. We
 		 * can take that one.
 		 */
-		first = false;
 		did_chunk_alloc = true;
 		goto again;
 	}

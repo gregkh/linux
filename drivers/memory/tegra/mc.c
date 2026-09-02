@@ -50,6 +50,9 @@ static const struct of_device_id tegra_mc_of_match[] = {
 #ifdef CONFIG_ARCH_TEGRA_234_SOC
 	{ .compatible = "nvidia,tegra234-mc", .data = &tegra234_mc_soc },
 #endif
+#ifdef CONFIG_ARCH_TEGRA_238_SOC
+	{ .compatible = "nvidia,tegra238-mc", .data = &tegra238_mc_soc },
+#endif
 #ifdef CONFIG_ARCH_TEGRA_264_SOC
 	{ .compatible = "nvidia,tegra264-mc", .data = &tegra264_mc_soc },
 #endif
@@ -911,6 +914,19 @@ static void tegra_mc_num_channel_enabled(struct tegra_mc *mc)
 	}
 }
 
+static void tegra_mc_setup_intmask(struct tegra_mc *mc)
+{
+	unsigned int i;
+
+	for (i = 0; i < mc->soc->num_intmasks; i++) {
+		if (mc->soc->num_channels)
+			mc_ch_writel(mc, MC_BROADCAST_CHANNEL, mc->soc->intmasks[i].mask,
+				     mc->soc->intmasks[i].reg);
+		else
+			mc_writel(mc, mc->soc->intmasks[i].mask, mc->soc->intmasks[i].reg);
+	}
+}
+
 static int tegra_mc_probe(struct platform_device *pdev)
 {
 	struct tegra_mc *mc;
@@ -971,13 +987,7 @@ static int tegra_mc_probe(struct platform_device *pdev)
 			}
 		}
 
-		for (i = 0; i < mc->soc->num_intmasks; i++) {
-			if (mc->soc->num_channels)
-				mc_ch_writel(mc, MC_BROADCAST_CHANNEL, mc->soc->intmasks[i].mask,
-					     mc->soc->intmasks[i].reg);
-			else
-				mc_writel(mc, mc->soc->intmasks[i].mask, mc->soc->intmasks[i].reg);
-		}
+		tegra_mc_setup_intmask(mc);
 	}
 
 	if (mc->soc->reset_ops) {
@@ -1017,6 +1027,8 @@ static int tegra_mc_resume(struct device *dev)
 
 	if (mc->soc->ops && mc->soc->ops->resume)
 		mc->soc->ops->resume(mc);
+
+	tegra_mc_setup_intmask(mc);
 
 	return 0;
 }

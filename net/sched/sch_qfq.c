@@ -1264,7 +1264,7 @@ static int qfq_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	}
 
 	_bstats_update(&cl->bstats, len, gso_segs);
-	sch->qstats.backlog += len;
+	qstats_backlog_add(sch, len);
 	qdisc_qlen_inc(sch);
 
 	agg = cl->agg;

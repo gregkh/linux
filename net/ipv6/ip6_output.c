@@ -1334,7 +1334,6 @@ struct dst_entry *ip6_sk_dst_lookup_flow(struct sock *sk, struct flowi6 *fl6,
 
 	return dst;
 }
-EXPORT_SYMBOL_GPL(ip6_sk_dst_lookup_flow);
 
 static inline struct ipv6_opt_hdr *ip6_opt_dup(struct ipv6_opt_hdr *src,
 					       gfp_t gfp)

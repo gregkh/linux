@@ -55,6 +55,7 @@ MODULE_FIRMWARE("amdgpu/sdma_6_1_1.bin");
 MODULE_FIRMWARE("amdgpu/sdma_6_1_2.bin");
 MODULE_FIRMWARE("amdgpu/sdma_6_1_3.bin");
 MODULE_FIRMWARE("amdgpu/sdma_6_1_4.bin");
+MODULE_FIRMWARE("amdgpu/sdma_6_4_0.bin");
 
 #define SDMA1_REG_OFFSET 0x600
 #define SDMA0_HYP_DEC_REG_START 0x5880
@@ -1313,7 +1314,6 @@ static int sdma_v6_0_early_init(struct amdgpu_ip_block *ip_block)
 		return r;
 
 	sdma_v6_0_set_ring_funcs(adev);
-	sdma_v6_0_set_buffer_funcs(adev);
 	amdgpu_sdma_set_vm_pte_scheds(adev, &sdma_v6_0_vm_pte_funcs);
 	sdma_v6_0_set_irq_funcs(adev);
 	sdma_v6_0_set_mqd_funcs(adev);
@@ -1477,6 +1477,7 @@ static int sdma_v6_0_hw_init(struct amdgpu_ip_block *ip_block)
 	r = sdma_v6_0_start(adev);
 	if (r)
 		return r;
+	sdma_v6_0_set_buffer_funcs(adev);
 
 	return sdma_v6_0_set_userq_trap_interrupts(adev, true);
 }
@@ -1886,8 +1887,7 @@ static const struct amdgpu_buffer_funcs sdma_v6_0_buffer_funcs = {
 
 static void sdma_v6_0_set_buffer_funcs(struct amdgpu_device *adev)
 {
-	adev->mman.buffer_funcs = &sdma_v6_0_buffer_funcs;
-	adev->mman.buffer_funcs_ring = &adev->sdma.instance[0].ring;
+	amdgpu_sdma_set_buffer_funcs_scheds(adev, &sdma_v6_0_buffer_funcs);
 }
 
 const struct amdgpu_ip_block_version sdma_v6_0_ip_block = {

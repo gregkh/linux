@@ -1224,7 +1224,7 @@ xfs_reflink_set_inode_flag(
 		goto out_error;
 
 	/* Lock both files against IO */
-	if (src->i_ino == dest->i_ino)
+	if (I_INO(src) == I_INO(dest))
 		xfs_ilock(src, XFS_ILOCK_EXCL);
 	else
 		xfs_lock_two_inodes(src, XFS_ILOCK_EXCL, dest, XFS_ILOCK_EXCL);
@@ -1238,7 +1238,7 @@ xfs_reflink_set_inode_flag(
 	} else
 		xfs_iunlock(src, XFS_ILOCK_EXCL);
 
-	if (src->i_ino == dest->i_ino)
+	if (I_INO(src) == I_INO(dest))
 		goto commit_flags;
 
 	if (!xfs_is_reflink_inode(dest)) {

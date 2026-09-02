@@ -463,6 +463,7 @@ static int hisi_spi_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct spi_controller *host;
 	struct hisi_spi *hs;
+	u32 num_cs;
 	int ret, irq;
 
 	irq = platform_get_irq(pdev, 0);
@@ -495,10 +496,11 @@ static int hisi_spi_probe(struct platform_device *pdev)
 	if (host->max_speed_hz == 0)
 		return dev_err_probe(dev, -EINVAL, "spi-max-frequency can't be 0\n");
 
-	ret = device_property_read_u16(dev, "num-cs",
-					&host->num_chipselect);
+	ret = device_property_read_u32(dev, "num-cs", &num_cs);
 	if (ret)
 		host->num_chipselect = DEFAULT_NUM_CS;
+	else
+		host->num_chipselect = num_cs;
 
 	host->use_gpio_descriptors = true;
 	host->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH | SPI_LOOP;

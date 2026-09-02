@@ -3667,7 +3667,11 @@ static int gfx_v9_0_mqd_init(struct amdgpu_ring *ring)
 
 	/* set static priority for a queue/ring */
 	gfx_v9_0_mqd_set_priority(ring, mqd);
-	mqd->cp_hqd_quantum = RREG32_SOC15(GC, 0, mmCP_HQD_QUANTUM);
+	tmp = RREG32_SOC15(GC, 0, mmCP_HQD_QUANTUM);
+	tmp = REG_SET_FIELD(tmp, CP_HQD_QUANTUM, QUANTUM_EN, 1);
+	tmp = REG_SET_FIELD(tmp, CP_HQD_QUANTUM, QUANTUM_SCALE, 1);
+	tmp = REG_SET_FIELD(tmp, CP_HQD_QUANTUM, QUANTUM_DURATION, 1);
+	mqd->cp_hqd_quantum = tmp;
 
 	/* map_queues packet doesn't need activate the queue,
 	 * so only kiq need set this field.
@@ -4046,6 +4050,24 @@ static int gfx_v9_0_hw_init(struct amdgpu_ip_block *ip_block)
 	    !amdgpu_sriov_vf(adev))
 		gfx_v9_4_2_set_power_brake_sequence(adev);
 
+	r = amdgpu_irq_get(adev, &adev->gfx.priv_reg_irq, 0);
+	if (r)
+		return r;
+
+	r = amdgpu_irq_get(adev, &adev->gfx.priv_inst_irq, 0);
+	if (r)
+		goto err_priv_inst;
+
+	r = amdgpu_irq_get(adev, &adev->gfx.bad_op_irq, 0);
+	if (r)
+		goto err_bad_op;
+
+	return 0;
+
+err_bad_op:
+	amdgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
+err_priv_inst:
+	amdgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
 	return r;
 }
 
@@ -4088,11 +4110,9 @@ static int gfx_v9_0_hw_fini(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
 
-	if (amdgpu_ras_is_supported(adev, AMDGPU_RAS_BLOCK__GFX))
-		amdgpu_irq_put(adev, &adev->gfx.cp_ecc_error_irq, 0);
-	amdgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
-	amdgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
 	amdgpu_irq_put(adev, &adev->gfx.bad_op_irq, 0);
+	amdgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
+	amdgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
 
 	/* DF freeze and kcq disable will fail */
 	if (!amdgpu_ras_intr_triggered())
@@ -4896,18 +4916,6 @@ static int gfx_v9_0_late_init(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
 	int r;
-
-	r = amdgpu_irq_get(adev, &adev->gfx.priv_reg_irq, 0);
-	if (r)
-		return r;
-
-	r = amdgpu_irq_get(adev, &adev->gfx.priv_inst_irq, 0);
-	if (r)
-		return r;
-
-	r = amdgpu_irq_get(adev, &adev->gfx.bad_op_irq, 0);
-	if (r)
-		return r;
 
 	r = gfx_v9_0_ecc_late_init(ip_block);
 	if (r)

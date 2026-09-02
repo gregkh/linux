@@ -112,10 +112,6 @@
 #define APP_CFG_REQ		BIT(0)
 #define APP_CPL_STATUS		GENMASK(7, 5)
 
-#define CFG_WRRD_TYPE_0		4
-#define CFG_WR_FMT		2
-#define CFG_RD_FMT		0
-
 #define CFG_DW0_LENGTH(length)	((length) & GENMASK(9, 0))
 #define CFG_DW0_TYPE(type)	(((type) << 24) & GENMASK(28, 24))
 #define CFG_DW0_FMT(fmt)	(((fmt) << 29) & GENMASK(31, 29))
@@ -298,7 +294,7 @@ static int mtk_pcie_hw_rd_cfg(struct mtk_pcie_port *port, u32 bus, u32 devfn,
 	u32 tmp;
 
 	/* Write PCIe configuration transaction header for Cfgrd */
-	writel(CFG_HEADER_DW0(CFG_WRRD_TYPE_0, CFG_RD_FMT),
+	writel(CFG_HEADER_DW0(PCIE_TLP_TYPE_CFG0_RDWR, PCIE_TLP_FMT_3DW_NO_DATA),
 	       port->base + PCIE_CFG_HEADER0);
 	writel(CFG_HEADER_DW1(where, size), port->base + PCIE_CFG_HEADER1);
 	writel(CFG_HEADER_DW2(where, PCI_FUNC(devfn), PCI_SLOT(devfn), bus),
@@ -328,7 +324,7 @@ static int mtk_pcie_hw_wr_cfg(struct mtk_pcie_port *port, u32 bus, u32 devfn,
 			      int where, int size, u32 val)
 {
 	/* Write PCIe configuration transaction header for Cfgwr */
-	writel(CFG_HEADER_DW0(CFG_WRRD_TYPE_0, CFG_WR_FMT),
+	writel(CFG_HEADER_DW0(PCIE_TLP_TYPE_CFG0_RDWR, PCIE_TLP_FMT_3DW_DATA),
 	       port->base + PCIE_CFG_HEADER0);
 	writel(CFG_HEADER_DW1(where, size), port->base + PCIE_CFG_HEADER1);
 	writel(CFG_HEADER_DW2(where, PCI_FUNC(devfn), PCI_SLOT(devfn), bus),
@@ -1196,8 +1192,10 @@ static void mtk_pcie_remove(struct platform_device *pdev)
 	struct mtk_pcie *pcie = platform_get_drvdata(pdev);
 	struct pci_host_bridge *host = pci_host_bridge_from_priv(pcie);
 
+	pci_lock_rescan_remove();
 	pci_stop_root_bus(host->bus);
 	pci_remove_root_bus(host->bus);
+	pci_unlock_rescan_remove();
 	mtk_pcie_free_resources(pcie);
 
 	mtk_pcie_irq_teardown(pcie);

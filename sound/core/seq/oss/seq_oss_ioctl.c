@@ -45,18 +45,17 @@ static int snd_seq_oss_oob_user(struct seq_oss_devinfo *dp, void __user *arg)
 {
 	unsigned char ev[8];
 	struct snd_seq_event tmpev;
-	snd_use_lock_t *lock = NULL;
 
 	if (copy_from_user(ev, arg, 8))
 		return -EFAULT;
 	memset(&tmpev, 0, sizeof(tmpev));
 	snd_seq_oss_fill_addr(dp, &tmpev, dp->addr.client, dp->addr.port);
 	tmpev.time.tick = 0;
-	if (!snd_seq_oss_process_event(dp, (union evrec *)ev, &tmpev, &lock)) {
+
+	snd_use_lock_t *lock __free(seq_oss_use_lock) = NULL;
+
+	if (!snd_seq_oss_process_event(dp, (union evrec *)ev, &tmpev, &lock))
 		snd_seq_oss_dispatch(dp, &tmpev, 0, 0);
-		if (lock)
-			snd_use_lock_free(lock);
-	}
 	return 0;
 }
 
@@ -178,4 +177,3 @@ snd_seq_oss_ioctl(struct seq_oss_devinfo *dp, unsigned int cmd, unsigned long ca
 	}
 	return 0;
 }
-

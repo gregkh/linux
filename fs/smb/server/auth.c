@@ -451,7 +451,7 @@ int ksmbd_krb5_authenticate(struct ksmbd_session *sess, char *in_blob,
 	} else {
 		if (!ksmbd_compare_user(sess->user, user)) {
 			ksmbd_debug(AUTH, "different user tried to reuse session\n");
-			retval = -EPERM;
+			retval = -EKEYREJECTED;
 			ksmbd_free_user(user);
 			goto out;
 		}

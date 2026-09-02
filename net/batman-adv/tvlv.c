@@ -6,6 +6,7 @@
 
 #include "main.h"
 
+#include <linux/bug.h>
 #include <linux/byteorder/generic.h>
 #include <linux/container_of.h>
 #include <linux/errno.h>
@@ -16,6 +17,7 @@
 #include <linux/limits.h>
 #include <linux/list.h>
 #include <linux/lockdep.h>
+#include <linux/log2.h>
 #include <linux/netdevice.h>
 #include <linux/pkt_sched.h>
 #include <linux/rculist.h>
@@ -46,7 +48,7 @@ static void batadv_tvlv_handler_release(struct kref *ref)
 }
 
 /**
- * batadv_tvlv_handler_put() - decrement the tvlv container refcounter and
+ * batadv_tvlv_handler_put() - decrement the tvlv handler refcounter and
  *  possibly release it
  * @tvlv_handler: the tvlv handler to free
  */
@@ -266,32 +268,48 @@ void batadv_tvlv_container_register(struct batadv_priv *bat_priv,
 /**
  * batadv_tvlv_realloc_packet_buff() - reallocate packet buffer to accommodate
  *  requested packet size
- * @packet_buff: packet buffer
- * @packet_buff_len: packet buffer size
- * @min_packet_len: requested packet minimum size
+ * @ogm_buff: ogm packet buffer
  * @additional_packet_len: requested additional packet size on top of minimum
  *  size
  *
- * Return: true of the packet buffer could be changed to the requested size,
+ * Return: true if the packet buffer could be changed to the requested size,
  * false otherwise.
  */
-static bool batadv_tvlv_realloc_packet_buff(unsigned char **packet_buff,
-					    int *packet_buff_len,
-					    int min_packet_len,
-					    int additional_packet_len)
+static bool batadv_tvlv_realloc_packet_buff(struct batadv_ogm_buf *ogm_buff,
+					    size_t additional_packet_len)
 {
 	unsigned char *new_buff;
+	size_t newcapacity;
+	size_t newlen;
 
-	new_buff = kmalloc(min_packet_len + additional_packet_len, GFP_ATOMIC);
+	newlen = ogm_buff->header_length + additional_packet_len;
+	newcapacity = roundup_pow_of_two(newlen);
+
+	/* nothing to reallocate */
+	if (newcapacity == ogm_buff->capacity) {
+		ogm_buff->len = newlen;
+		return true;
+	}
+
+	new_buff = kmalloc(newcapacity, GFP_ATOMIC);
 
 	/* keep old buffer if kmalloc should fail */
-	if (!new_buff)
-		return false;
+	if (!new_buff) {
+		/* continue to use oversize buffer if new data fits */
+		if (newlen <= ogm_buff->capacity) {
+			ogm_buff->len = newlen;
+			return true;
+		}
 
-	memcpy(new_buff, *packet_buff, min_packet_len);
-	kfree(*packet_buff);
-	*packet_buff = new_buff;
-	*packet_buff_len = min_packet_len + additional_packet_len;
+		return false;
+	}
+
+	memcpy(new_buff, ogm_buff->buf, ogm_buff->header_length);
+	kfree(ogm_buff->buf);
+
+	ogm_buff->buf = new_buff;
+	ogm_buff->len = newlen;
+	ogm_buff->capacity = newcapacity;
 
 	return true;
 }
@@ -300,10 +318,7 @@ static bool batadv_tvlv_realloc_packet_buff(unsigned char **packet_buff,
  * batadv_tvlv_container_ogm_append() - append tvlv container content to given
  *  OGM packet buffer
  * @bat_priv: the bat priv with all the mesh interface information
- * @packet_buff: ogm packet buffer
- * @packet_buff_len: ogm packet buffer size including ogm header and tvlv
- *  content
- * @packet_min_len: ogm header size to be preserved for the OGM itself
+ * @ogm_buff: ogm packet buffer
  *
  * The ogm packet might be enlarged or shrunk depending on the current size
  * and the size of the to-be-appended tvlv containers.
@@ -312,8 +327,7 @@ static bool batadv_tvlv_realloc_packet_buff(unsigned char **packet_buff,
  *  if operation failed
  */
 int batadv_tvlv_container_ogm_append(struct batadv_priv *bat_priv,
-				     unsigned char **packet_buff,
-				     int *packet_buff_len, int packet_min_len)
+				     struct batadv_ogm_buf *ogm_buff)
 {
 	struct batadv_tvlv_container *tvlv;
 	struct batadv_tvlv_hdr *tvlv_hdr;
@@ -329,8 +343,7 @@ int batadv_tvlv_container_ogm_append(struct batadv_priv *bat_priv,
 		goto end;
 	}
 
-	ret = batadv_tvlv_realloc_packet_buff(packet_buff, packet_buff_len,
-					      packet_min_len, tvlv_value_len);
+	ret = batadv_tvlv_realloc_packet_buff(ogm_buff, tvlv_value_len);
 	if (!ret) {
 		tvlv_len_ret = -ENOMEM;
 		goto end;
@@ -341,7 +354,7 @@ int batadv_tvlv_container_ogm_append(struct batadv_priv *bat_priv,
 	if (!tvlv_value_len)
 		goto end;
 
-	tvlv_value = (*packet_buff) + packet_min_len;
+	tvlv_value = (u8 *)ogm_buff->buf + ogm_buff->header_length;
 
 	hlist_for_each_entry(tvlv, &bat_priv->tvlv.container_list, list) {
 		tvlv_hdr = tvlv_value;

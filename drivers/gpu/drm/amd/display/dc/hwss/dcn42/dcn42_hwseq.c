@@ -35,7 +35,6 @@
 #include "dc_stream_priv.h"
 #include "dcn35/dcn35_hwseq.h"
 #include "dcn42/dcn42_hwseq.h"
-#include "dce/dmub_hw_lock_mgr.h"
 #include "dio/dcn10/dcn10_dio.h"
 
 #define DC_LOGGER \
@@ -65,7 +64,7 @@ void dcn42_init_hw(struct dc *dc)
 	struct dce_hwseq *hws = dc->hwseq;
 	struct dc_bios *dcb = dc->ctx->dc_bios;
 	struct resource_pool *res_pool = dc->res_pool;
-	int i;
+	unsigned int i;
 	unsigned int edp_num;
 	uint32_t backlight = MAX_BACKLIGHT_LEVEL;
 	uint32_t user_level = MAX_BACKLIGHT_LEVEL;
@@ -471,9 +470,9 @@ static bool is_rmcm_3dlut_fl_supported(struct dc *dc, enum dc_cm2_gpu_mem_size s
 	if (!dc->caps.color.mpc.rmcm_3d_lut_caps.dma_3d_lut)
 		return false;
 	if (size == DC_CM2_GPU_MEM_SIZE_171717)
-		return (dc->caps.color.mpc.rmcm_3d_lut_caps.lut_dim_caps.dim_17);
+		return dc->caps.color.mpc.rmcm_3d_lut_caps.lut_dim_caps.dim_17 != 0u;
 	else if (size == DC_CM2_GPU_MEM_SIZE_333333)
-		return (dc->caps.color.mpc.rmcm_3d_lut_caps.lut_dim_caps.dim_33);
+		return dc->caps.color.mpc.rmcm_3d_lut_caps.lut_dim_caps.dim_33 != 0u;
 	return false;
 }
 
@@ -946,6 +945,7 @@ bool dcn42_set_mcm_luts(struct pipe_ctx *pipe_ctx,
 void dcn42_hardware_release(struct dc *dc)
 {
 	dcn35_hardware_release(dc);
+	dc_dmub_srv_release_hw(dc);
 
 }
 static int count_active_streams(const struct dc *dc)
@@ -967,11 +967,20 @@ void dcn42_calc_blocks_to_gate(struct dc *dc, struct dc_state *context,
 {
 	bool hpo_frl_stream_enc_acquired = false;
 	bool hpo_dp_stream_enc_acquired = false;
-	int i = 0, j = 0;
+	unsigned int i = 0;
+	int j = 0;
 
 	memset(update_state, 0, sizeof(struct pg_block_update));
 
 	update_state->pg_res_update[PG_DIO] = true;
+
+	for (i = 0; i < dc->res_pool->hpo_frl_stream_enc_count; i++) {
+		if (context->res_ctx.is_hpo_frl_stream_enc_acquired[i] &&
+				dc->res_pool->hpo_frl_stream_enc[i]) {
+			hpo_frl_stream_enc_acquired = true;
+			break;
+		}
+	}
 
 	for (i = 0; i < dc->res_pool->hpo_dp_stream_enc_count; i++) {
 		if (context->res_ctx.is_hpo_dp_stream_enc_acquired[i] &&
@@ -1018,11 +1027,14 @@ void dcn42_calc_blocks_to_gate(struct dc *dc, struct dc_state *context,
 		if (pipe_ctx->link_res.dio_link_enc) {
 			update_state->pg_res_update[PG_DIO] = false;
 		}
-		if (pipe_ctx->link_res.hpo_dp_link_enc) {
+		if (pipe_ctx->link_res.hpo_dp_link_enc
+		    || pipe_ctx->link_res.hpo_frl_link_enc) {
 			update_state->pg_res_update[PG_HPO] = false;
 		}
 	}
 
+	if (hpo_frl_stream_enc_acquired)
+		update_state->pg_pipe_res_update[PG_HDMISTREAM][0] = false;
 
 	for (i = 0; i < dc->link_count; i++) {
 		update_state->pg_pipe_res_update[PG_PHYSYMCLK][dc->links[i]->link_enc_hw_inst] = true;
@@ -1042,6 +1054,12 @@ void dcn42_calc_blocks_to_gate(struct dc *dc, struct dc_state *context,
 		}
 	}
 
+	for (i = 0; i < dc->res_pool->hpo_frl_stream_enc_count; i++) {
+		if (dc->current_state->res_ctx.is_hpo_frl_stream_enc_acquired[i]) {
+			update_state->pg_res_update[PG_HPO] = false;
+			break;
+		}
+	}
 }
 
 void dcn42_prepare_bandwidth(
@@ -1089,8 +1107,10 @@ void dcn42_optimize_bandwidth(struct dc *dc, struct dc_state *context)
 void dcn42_calc_blocks_to_ungate(struct dc *dc, struct dc_state *context,
 	struct pg_block_update *update_state)
 {
+	bool hpo_frl_stream_enc_acquired = false;
 	bool hpo_dp_stream_enc_acquired = false;
-	int i = 0, j = 0;
+	unsigned int i = 0;
+	int j = 0;
 
 	memset(update_state, 0, sizeof(struct pg_block_update));
 
@@ -1174,6 +1194,14 @@ void dcn42_calc_blocks_to_ungate(struct dc *dc, struct dc_state *context,
 			break;
 		}
 	}
+	for (i = 0; i < dc->res_pool->hpo_frl_stream_enc_count; i++) {
+		if (context->res_ctx.is_hpo_frl_stream_enc_acquired[i] &&
+				dc->res_pool->hpo_frl_stream_enc[i]) {
+			hpo_frl_stream_enc_acquired = true;
+			break;
+		}
+	}
+
 	for (i = 0; i < dc->res_pool->hpo_dp_stream_enc_count; i++) {
 		if (context->res_ctx.is_hpo_dp_stream_enc_acquired[i] &&
 				dc->res_pool->hpo_dp_stream_enc[i]) {
@@ -1182,9 +1210,11 @@ void dcn42_calc_blocks_to_ungate(struct dc *dc, struct dc_state *context,
 		}
 	}
 
-	if (hpo_dp_stream_enc_acquired)
+	if (hpo_frl_stream_enc_acquired || hpo_dp_stream_enc_acquired)
 		update_state->pg_res_update[PG_HPO] = true;
 
+	if (hpo_frl_stream_enc_acquired)
+		update_state->pg_pipe_res_update[PG_HDMISTREAM][0] = true;
 	if (count_active_streams(dc) > 0) {
 		update_state->pg_res_update[PG_DCCG] = true;
 		update_state->pg_res_update[PG_DCIO] = true;
@@ -1222,6 +1252,7 @@ void dcn42_calc_blocks_to_ungate(struct dc *dc, struct dc_state *context,
 	struct pg_block_update *update_state)
 {
 	int i = 0;
+	int pipe_count = dc->res_pool->pipe_count;
 	struct pg_cntl *pg_cntl = dc->res_pool->pg_cntl;
 	bool block_disabled = true;
 
@@ -1235,7 +1266,7 @@ void dcn42_calc_blocks_to_ungate(struct dc *dc, struct dc_state *context,
 			pg_cntl->funcs->hpo_pg_control(pg_cntl, false);
 	}
 
-	for (i = dc->res_pool->pipe_count - 1; i >= 0; i--) {
+	for (i = pipe_count - 1; i >= 0; i--) {
 		if (update_state->pg_pipe_res_update[PG_HUBP][i] &&
 			update_state->pg_pipe_res_update[PG_DPP][i]) {
 			if (pg_cntl->funcs->hubp_dpp_pg_control)
@@ -1255,7 +1286,7 @@ void dcn42_calc_blocks_to_ungate(struct dc *dc, struct dc_state *context,
 		}
 	}
 
-	for (i = 0; i < dc->res_pool->pipe_count; i++) {
+	for (i = 0; i < pipe_count; i++) {
 		if (!update_state->pg_pipe_res_update[PG_MPCC][i] ||
 			!update_state->pg_pipe_res_update[PG_OPP][i] ||
 			!update_state->pg_pipe_res_update[PG_OPTC][i]) {
@@ -1310,7 +1341,7 @@ void dcn42_calc_blocks_to_ungate(struct dc *dc, struct dc_state *context,
 void dcn42_hw_block_power_up(struct dc *dc,
 	struct pg_block_update *update_state)
 {
-	int i = 0;
+	unsigned int i = 0;
 	struct pg_cntl *pg_cntl = dc->res_pool->pg_cntl;
 	bool block_enabled = false;
 
@@ -1344,7 +1375,7 @@ void dcn42_hw_block_power_up(struct dc *dc,
 			pg_cntl->funcs->plane_otg_pg_control(pg_cntl, true);
 	}
 
-	for (i = 0; i < dc->res_pool->res_cap->num_dsc; i++) {
+	for (i = 0; i < (unsigned int)dc->res_pool->res_cap->num_dsc; i++) {
 		if (update_state->pg_pipe_res_update[PG_DSC][i]) {
 			if (pg_cntl->funcs->dsc_pg_control)
 				pg_cntl->funcs->dsc_pg_control(pg_cntl, i, true);
@@ -1371,7 +1402,7 @@ void dcn42_hw_block_power_up(struct dc *dc,
 void dcn42_root_clock_control(struct dc *dc,
 	struct pg_block_update *update_state, bool power_on)
 {
-	int i = 0;
+	unsigned int i = 0;
 	struct pg_cntl *pg_cntl = dc->res_pool->pg_cntl;
 
 	if (!pg_cntl)
@@ -1394,8 +1425,11 @@ void dcn42_root_clock_control(struct dc *dc,
 				if (dc->hwseq->funcs.physymclk_root_clock_control)
 					dc->hwseq->funcs.physymclk_root_clock_control(dc->hwseq, i, power_on);
 
+		if (update_state->pg_pipe_res_update[PG_HDMISTREAM][0])
+			if (dc->hwseq->funcs.hdmistream_root_clock_control)
+				dc->hwseq->funcs.hdmistream_root_clock_control(dc->hwseq, power_on);
 	}
-	for (i = 0; i < dc->res_pool->res_cap->num_dsc; i++) {
+	for (i = 0; i < (unsigned int)dc->res_pool->res_cap->num_dsc; i++) {
 		if (update_state->pg_pipe_res_update[PG_DSC][i]) {
 			if (power_on) {
 				if (dc->res_pool->dccg->funcs->enable_dsc)
@@ -1424,6 +1458,9 @@ void dcn42_root_clock_control(struct dc *dc,
 				if (dc->hwseq->funcs.physymclk_root_clock_control)
 					dc->hwseq->funcs.physymclk_root_clock_control(dc->hwseq, i, power_on);
 
+		if (update_state->pg_pipe_res_update[PG_HDMISTREAM][0])
+			if (dc->hwseq->funcs.hdmistream_root_clock_control)
+				dc->hwseq->funcs.hdmistream_root_clock_control(dc->hwseq, power_on);
 	}
 }
 void dcn42_setup_stereo(struct pipe_ctx *pipe_ctx, struct dc *dc)

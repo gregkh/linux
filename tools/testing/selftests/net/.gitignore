@@ -6,6 +6,7 @@ busy_poller
 cmsg_sender
 epoll_busy_poll
 fin_ack_lat
+getsockopt_iter
 hwtstamp_config
 icmp_rfc4884
 io_uring_zerocopy_tx

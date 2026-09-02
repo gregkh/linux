@@ -3600,7 +3600,7 @@ int cs_etm__process_auxtrace_info_full(union perf_event *event,
 	etm->tc.time_shift = tc->time_shift;
 	etm->tc.time_mult = tc->time_mult;
 	etm->tc.time_zero = tc->time_zero;
-	if (event_contains(*tc, time_cycles)) {
+	if (event_contains(*tc, cap_user_time_short)) {
 		etm->tc.time_cycles = tc->time_cycles;
 		etm->tc.time_mask = tc->time_mask;
 		etm->tc.cap_user_time_zero = tc->cap_user_time_zero;

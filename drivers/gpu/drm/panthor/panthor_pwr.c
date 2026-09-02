@@ -40,6 +40,9 @@
  * struct panthor_pwr - PWR_CONTROL block management data.
  */
 struct panthor_pwr {
+	/** @iomem: CPU mapping of PWR_CONTROL iomem region */
+	void __iomem *iomem;
+
 	/** @irq: PWR irq. */
 	struct panthor_irq irq;
 
@@ -55,8 +58,10 @@ struct panthor_pwr {
 
 static void panthor_pwr_irq_handler(struct panthor_device *ptdev, u32 status)
 {
+	struct panthor_pwr *pwr = ptdev->pwr;
+
 	spin_lock(&ptdev->pwr->reqs_lock);
-	gpu_write(ptdev->iomem, PWR_INT_CLEAR, status);
+	gpu_write(pwr->irq.iomem, INT_CLEAR, status);
 
 	if (unlikely(status & PWR_IRQ_COMMAND_NOT_ALLOWED))
 		drm_err(&ptdev->base, "PWR_IRQ: COMMAND_NOT_ALLOWED");
@@ -74,15 +79,19 @@ PANTHOR_IRQ_HANDLER(pwr, panthor_pwr_irq_handler);
 
 static void panthor_pwr_write_command(struct panthor_device *ptdev, u32 command, u64 args)
 {
-	if (args)
-		gpu_write64(ptdev->iomem, PWR_CMDARG, args);
+	struct panthor_pwr *pwr = ptdev->pwr;
 
-	gpu_write(ptdev->iomem, PWR_COMMAND, command);
+	if (args)
+		gpu_write64(pwr->iomem, PWR_CMDARG, args);
+
+	gpu_write(pwr->iomem, PWR_COMMAND, command);
 }
 
 static bool reset_irq_raised(struct panthor_device *ptdev)
 {
-	return gpu_read(ptdev->iomem, PWR_INT_RAWSTAT) & PWR_IRQ_RESET_COMPLETED;
+	struct panthor_pwr *pwr = ptdev->pwr;
+
+	return gpu_read(pwr->irq.iomem, INT_RAWSTAT) & PWR_IRQ_RESET_COMPLETED;
 }
 
 static bool reset_pending(struct panthor_device *ptdev)
@@ -92,12 +101,14 @@ static bool reset_pending(struct panthor_device *ptdev)
 
 static int panthor_pwr_reset(struct panthor_device *ptdev, u32 reset_cmd)
 {
+	struct panthor_pwr *pwr = ptdev->pwr;
+
 	scoped_guard(spinlock_irqsave, &ptdev->pwr->reqs_lock) {
 		if (reset_pending(ptdev)) {
 			drm_WARN(&ptdev->base, 1, "Reset already pending");
 		} else {
 			ptdev->pwr->pending_reqs |= PWR_IRQ_RESET_COMPLETED;
-			gpu_write(ptdev->iomem, PWR_INT_CLEAR, PWR_IRQ_RESET_COMPLETED);
+			gpu_write(pwr->irq.iomem, INT_CLEAR, PWR_IRQ_RESET_COMPLETED);
 			panthor_pwr_write_command(ptdev, reset_cmd, 0);
 		}
 	}
@@ -182,11 +193,12 @@ static u8 get_domain_subdomain(struct panthor_device *ptdev, u32 domain)
 static int panthor_pwr_domain_wait_transition(struct panthor_device *ptdev, u32 domain,
 					      u32 timeout_us)
 {
+	struct panthor_pwr *pwr = ptdev->pwr;
 	u32 pwrtrans_reg = get_domain_pwrtrans_reg(domain);
 	u64 val;
 	int ret = 0;
 
-	ret = gpu_read64_poll_timeout(ptdev->iomem, pwrtrans_reg, val, !(PWR_ALL_CORES_MASK & val), 100,
+	ret = gpu_read64_poll_timeout(pwr->iomem, pwrtrans_reg, val, !(PWR_ALL_CORES_MASK & val), 100,
 				      timeout_us);
 	if (ret) {
 		drm_err(&ptdev->base, "%s domain power in transition, pwrtrans(0x%llx)",
@@ -199,22 +211,25 @@ static int panthor_pwr_domain_wait_transition(struct panthor_device *ptdev, u32 
 
 static void panthor_pwr_debug_info_show(struct panthor_device *ptdev)
 {
-	drm_info(&ptdev->base, "GPU_FEATURES:    0x%016llx", gpu_read64(ptdev->iomem, GPU_FEATURES));
-	drm_info(&ptdev->base, "PWR_STATUS:      0x%016llx", gpu_read64(ptdev->iomem, PWR_STATUS));
-	drm_info(&ptdev->base, "L2_PRESENT:      0x%016llx", gpu_read64(ptdev->iomem, PWR_L2_PRESENT));
-	drm_info(&ptdev->base, "L2_PWRTRANS:     0x%016llx", gpu_read64(ptdev->iomem, PWR_L2_PWRTRANS));
-	drm_info(&ptdev->base, "L2_READY:        0x%016llx", gpu_read64(ptdev->iomem, PWR_L2_READY));
-	drm_info(&ptdev->base, "TILER_PRESENT:   0x%016llx", gpu_read64(ptdev->iomem, PWR_TILER_PRESENT));
-	drm_info(&ptdev->base, "TILER_PWRTRANS:  0x%016llx", gpu_read64(ptdev->iomem, PWR_TILER_PWRTRANS));
-	drm_info(&ptdev->base, "TILER_READY:     0x%016llx", gpu_read64(ptdev->iomem, PWR_TILER_READY));
-	drm_info(&ptdev->base, "SHADER_PRESENT:  0x%016llx", gpu_read64(ptdev->iomem, PWR_SHADER_PRESENT));
-	drm_info(&ptdev->base, "SHADER_PWRTRANS: 0x%016llx", gpu_read64(ptdev->iomem, PWR_SHADER_PWRTRANS));
-	drm_info(&ptdev->base, "SHADER_READY:    0x%016llx", gpu_read64(ptdev->iomem, PWR_SHADER_READY));
+	struct panthor_pwr *pwr = ptdev->pwr;
+
+	drm_info(&ptdev->base, "GPU_FEATURES:    0x%016llx", ptdev->gpu_info.gpu_features);
+	drm_info(&ptdev->base, "PWR_STATUS:      0x%016llx", gpu_read64(pwr->iomem, PWR_STATUS));
+	drm_info(&ptdev->base, "L2_PRESENT:      0x%016llx", gpu_read64(pwr->iomem, PWR_L2_PRESENT));
+	drm_info(&ptdev->base, "L2_PWRTRANS:     0x%016llx", gpu_read64(pwr->iomem, PWR_L2_PWRTRANS));
+	drm_info(&ptdev->base, "L2_READY:        0x%016llx", gpu_read64(pwr->iomem, PWR_L2_READY));
+	drm_info(&ptdev->base, "TILER_PRESENT:   0x%016llx", gpu_read64(pwr->iomem, PWR_TILER_PRESENT));
+	drm_info(&ptdev->base, "TILER_PWRTRANS:  0x%016llx", gpu_read64(pwr->iomem, PWR_TILER_PWRTRANS));
+	drm_info(&ptdev->base, "TILER_READY:     0x%016llx", gpu_read64(pwr->iomem, PWR_TILER_READY));
+	drm_info(&ptdev->base, "SHADER_PRESENT:  0x%016llx", gpu_read64(pwr->iomem, PWR_SHADER_PRESENT));
+	drm_info(&ptdev->base, "SHADER_PWRTRANS: 0x%016llx", gpu_read64(pwr->iomem, PWR_SHADER_PWRTRANS));
+	drm_info(&ptdev->base, "SHADER_READY:    0x%016llx", gpu_read64(pwr->iomem, PWR_SHADER_READY));
 }
 
 static int panthor_pwr_domain_transition(struct panthor_device *ptdev, u32 cmd, u32 domain,
 					 u64 mask, u32 timeout_us)
 {
+	struct panthor_pwr *pwr = ptdev->pwr;
 	u32 ready_reg = get_domain_ready_reg(domain);
 	u32 pwr_cmd = PWR_COMMAND_DEF(cmd, domain, get_domain_subdomain(ptdev, domain));
 	u64 expected_val = 0;
@@ -241,12 +256,12 @@ static int panthor_pwr_domain_transition(struct panthor_device *ptdev, u32 cmd, 
 		return ret;
 
 	/* domain already in target state, return early */
-	if ((gpu_read64(ptdev->iomem, ready_reg) & mask) == expected_val)
+	if ((gpu_read64(pwr->iomem, ready_reg) & mask) == expected_val)
 		return 0;
 
 	panthor_pwr_write_command(ptdev, pwr_cmd, mask);
 
-	ret = gpu_read64_poll_timeout(ptdev->iomem, ready_reg, val, (mask & val) == expected_val,
+	ret = gpu_read64_poll_timeout(pwr->iomem, ready_reg, val, (mask & val) == expected_val,
 				      100, timeout_us);
 	if (ret) {
 		drm_err(&ptdev->base,
@@ -279,8 +294,9 @@ static int panthor_pwr_domain_transition(struct panthor_device *ptdev, u32 cmd, 
  */
 static int retract_domain(struct panthor_device *ptdev, u32 domain)
 {
+	struct panthor_pwr *pwr = ptdev->pwr;
 	const u32 pwr_cmd = PWR_COMMAND_DEF(PWR_COMMAND_RETRACT, domain, 0);
-	const u64 pwr_status = gpu_read64(ptdev->iomem, PWR_STATUS);
+	const u64 pwr_status = gpu_read64(pwr->iomem, PWR_STATUS);
 	const u64 delegated_mask = PWR_STATUS_DOMAIN_DELEGATED(domain);
 	const u64 allow_mask = PWR_STATUS_DOMAIN_ALLOWED(domain);
 	u64 val;
@@ -289,7 +305,7 @@ static int retract_domain(struct panthor_device *ptdev, u32 domain)
 	if (drm_WARN_ON(&ptdev->base, domain == PWR_COMMAND_DOMAIN_L2))
 		return -EPERM;
 
-	ret = gpu_read64_poll_timeout(ptdev->iomem, PWR_STATUS, val,
+	ret = gpu_read64_poll_timeout(pwr->iomem, PWR_STATUS, val,
 				      !(PWR_STATUS_RETRACT_PENDING & val), 0,
 				      PWR_RETRACT_TIMEOUT_US);
 	if (ret) {
@@ -308,7 +324,7 @@ static int retract_domain(struct panthor_device *ptdev, u32 domain)
 	 * On successful retraction
 	 * allow-flag will be set with delegated-flag being cleared.
 	 */
-	ret = gpu_read64_poll_timeout(ptdev->iomem, PWR_STATUS, val,
+	ret = gpu_read64_poll_timeout(pwr->iomem, PWR_STATUS, val,
 				      ((delegated_mask | allow_mask) & val) == allow_mask, 10,
 				      PWR_TRANSITION_TIMEOUT_US);
 	if (ret) {
@@ -334,8 +350,9 @@ static int retract_domain(struct panthor_device *ptdev, u32 domain)
  */
 static int delegate_domain(struct panthor_device *ptdev, u32 domain)
 {
+	struct panthor_pwr *pwr = ptdev->pwr;
 	const u32 pwr_cmd = PWR_COMMAND_DEF(PWR_COMMAND_DELEGATE, domain, 0);
-	const u64 pwr_status = gpu_read64(ptdev->iomem, PWR_STATUS);
+	const u64 pwr_status = gpu_read64(pwr->iomem, PWR_STATUS);
 	const u64 allow_mask = PWR_STATUS_DOMAIN_ALLOWED(domain);
 	const u64 delegated_mask = PWR_STATUS_DOMAIN_DELEGATED(domain);
 	u64 val;
@@ -364,7 +381,7 @@ static int delegate_domain(struct panthor_device *ptdev, u32 domain)
 	 * On successful delegation
 	 * allow-flag will be cleared with delegated-flag being set.
 	 */
-	ret = gpu_read64_poll_timeout(ptdev->iomem, PWR_STATUS, val,
+	ret = gpu_read64_poll_timeout(pwr->iomem, PWR_STATUS, val,
 				      ((delegated_mask | allow_mask) & val) == delegated_mask,
 				      10, PWR_TRANSITION_TIMEOUT_US);
 	if (ret) {
@@ -412,7 +429,8 @@ err_retract_shader:
  */
 static int panthor_pwr_domain_force_off(struct panthor_device *ptdev, u32 domain)
 {
-	const u64 domain_ready = gpu_read64(ptdev->iomem, get_domain_ready_reg(domain));
+	struct panthor_pwr *pwr = ptdev->pwr;
+	const u64 domain_ready = gpu_read64(pwr->iomem, get_domain_ready_reg(domain));
 	int ret;
 
 	/* Domain already powered down, early exit. */
@@ -457,6 +475,7 @@ int panthor_pwr_init(struct panthor_device *ptdev)
 	if (!pwr)
 		return -ENOMEM;
 
+	pwr->iomem = ptdev->iomem + PWR_CONTROL_BASE;
 	spin_lock_init(&pwr->reqs_lock);
 	init_waitqueue_head(&pwr->reqs_acked);
 	ptdev->pwr = pwr;
@@ -465,18 +484,21 @@ int panthor_pwr_init(struct panthor_device *ptdev)
 	if (irq < 0)
 		return irq;
 
-	err = panthor_request_pwr_irq(
-		ptdev, &pwr->irq, irq, PWR_INTERRUPTS_MASK,
-		ptdev->iomem + PWR_CONTROL_BASE);
+	err = panthor_request_pwr_irq(ptdev, &pwr->irq, irq,
+				      pwr->iomem + PWR_INT_BASE);
 	if (err)
 		return err;
 
+	panthor_pwr_irq_enable_events(&pwr->irq, PWR_INTERRUPTS_MASK);
+	panthor_pwr_irq_resume(&pwr->irq);
 	return 0;
 }
 
 int panthor_pwr_reset_soft(struct panthor_device *ptdev)
 {
-	if (!(gpu_read64(ptdev->iomem, PWR_STATUS) & PWR_STATUS_ALLOW_SOFT_RESET)) {
+	struct panthor_pwr *pwr = ptdev->pwr;
+
+	if (!(gpu_read64(pwr->iomem, PWR_STATUS) & PWR_STATUS_ALLOW_SOFT_RESET)) {
 		drm_err(&ptdev->base, "RESET_SOFT not allowed");
 		return -EOPNOTSUPP;
 	}
@@ -486,8 +508,9 @@ int panthor_pwr_reset_soft(struct panthor_device *ptdev)
 
 void panthor_pwr_l2_power_off(struct panthor_device *ptdev)
 {
+	struct panthor_pwr *pwr = ptdev->pwr;
 	const u64 l2_allow_mask = PWR_STATUS_DOMAIN_ALLOWED(PWR_COMMAND_DOMAIN_L2);
-	const u64 pwr_status = gpu_read64(ptdev->iomem, PWR_STATUS);
+	const u64 pwr_status = gpu_read64(pwr->iomem, PWR_STATUS);
 
 	/* Abort if L2 power off constraints are not satisfied */
 	if (!(pwr_status & l2_allow_mask)) {
@@ -513,7 +536,8 @@ void panthor_pwr_l2_power_off(struct panthor_device *ptdev)
 
 int panthor_pwr_l2_power_on(struct panthor_device *ptdev)
 {
-	const u32 pwr_status = gpu_read64(ptdev->iomem, PWR_STATUS);
+	struct panthor_pwr *pwr = ptdev->pwr;
+	const u32 pwr_status = gpu_read64(pwr->iomem, PWR_STATUS);
 	const u32 l2_allow_mask = PWR_STATUS_DOMAIN_ALLOWED(PWR_COMMAND_DOMAIN_L2);
 	int ret;
 

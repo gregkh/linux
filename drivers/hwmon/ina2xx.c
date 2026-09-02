@@ -884,11 +884,11 @@ static ssize_t shunt_resistor_store(struct device *dev,
 	if (status < 0)
 		return status;
 
-	hwmon_lock(dev);
-	status = ina2xx_set_shunt(data, val);
-	hwmon_unlock(dev);
-	if (status < 0)
-		return status;
+	scoped_guard(hwmon_lock, dev) {
+		status = ina2xx_set_shunt(data, val);
+		if (status < 0)
+			return status;
+	}
 	return count;
 }
 

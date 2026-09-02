@@ -397,6 +397,13 @@ static int UVERBS_HANDLER(BNXT_RE_METHOD_DBR_ALLOC)(struct uverbs_attr_bundle *a
 		goto free_dpi;
 	}
 
+	/* Save DPI info to the mmap entry so that bnxt_re_mmap_free()
+	 * can free the DPI slot only after the last reference to the
+	 * mmap entry is released.
+	 */
+	obj->entry->dpi = *dpi;
+	obj->entry->dpi_valid = true;
+
 	obj->rdev = rdev;
 	kref_init(&obj->usecnt);
 	uobj->object = obj;
@@ -425,10 +432,12 @@ void bnxt_re_dbr_kref_release(struct kref *ref)
 {
 	struct bnxt_re_dbr_obj *obj =
 		container_of(ref, struct bnxt_re_dbr_obj, usecnt);
-	struct bnxt_re_dev *rdev = obj->rdev;
 
+	/* Drop the driver's reference to the mmap entry (_remove()).
+	 * The DPI slot gets freed from bnxt_re_mmap_free() only
+	 * when there's no VMA mapping reference to it.
+	 */
 	rdma_user_mmap_entry_remove(&obj->entry->rdma_entry);
-	bnxt_qplib_free_uc_dpi(&rdev->qplib_res, &obj->dpi);
 	kfree(obj);
 }
 

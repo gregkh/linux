@@ -195,38 +195,42 @@ static int panthor_gpu_info_init(struct panthor_device *ptdev)
 {
 	unsigned int i;
 
-	ptdev->gpu_info.csf_id = gpu_read(ptdev->iomem, GPU_CSF_ID);
-	ptdev->gpu_info.gpu_rev = gpu_read(ptdev->iomem, GPU_REVID);
-	ptdev->gpu_info.core_features = gpu_read(ptdev->iomem, GPU_CORE_FEATURES);
-	ptdev->gpu_info.l2_features = gpu_read(ptdev->iomem, GPU_L2_FEATURES);
-	ptdev->gpu_info.tiler_features = gpu_read(ptdev->iomem, GPU_TILER_FEATURES);
-	ptdev->gpu_info.mem_features = gpu_read(ptdev->iomem, GPU_MEM_FEATURES);
-	ptdev->gpu_info.mmu_features = gpu_read(ptdev->iomem, GPU_MMU_FEATURES);
-	ptdev->gpu_info.thread_features = gpu_read(ptdev->iomem, GPU_THREAD_FEATURES);
-	ptdev->gpu_info.max_threads = gpu_read(ptdev->iomem, GPU_THREAD_MAX_THREADS);
+	void __iomem *gpu_iomem = ptdev->iomem + GPU_CONTROL_BASE;
+
+	ptdev->gpu_info.csf_id = gpu_read(gpu_iomem, GPU_CSF_ID);
+	ptdev->gpu_info.gpu_rev = gpu_read(gpu_iomem, GPU_REVID);
+	ptdev->gpu_info.core_features = gpu_read(gpu_iomem, GPU_CORE_FEATURES);
+	ptdev->gpu_info.l2_features = gpu_read(gpu_iomem, GPU_L2_FEATURES);
+	ptdev->gpu_info.tiler_features = gpu_read(gpu_iomem, GPU_TILER_FEATURES);
+	ptdev->gpu_info.mem_features = gpu_read(gpu_iomem, GPU_MEM_FEATURES);
+	ptdev->gpu_info.mmu_features = gpu_read(gpu_iomem, GPU_MMU_FEATURES);
+	ptdev->gpu_info.thread_features = gpu_read(gpu_iomem, GPU_THREAD_FEATURES);
+	ptdev->gpu_info.max_threads = gpu_read(gpu_iomem, GPU_THREAD_MAX_THREADS);
 	ptdev->gpu_info.thread_max_workgroup_size =
-		gpu_read(ptdev->iomem, GPU_THREAD_MAX_WORKGROUP_SIZE);
+		gpu_read(gpu_iomem, GPU_THREAD_MAX_WORKGROUP_SIZE);
 	ptdev->gpu_info.thread_max_barrier_size =
-		gpu_read(ptdev->iomem, GPU_THREAD_MAX_BARRIER_SIZE);
-	ptdev->gpu_info.coherency_features = gpu_read(ptdev->iomem, GPU_COHERENCY_FEATURES);
+		gpu_read(gpu_iomem, GPU_THREAD_MAX_BARRIER_SIZE);
+	ptdev->gpu_info.coherency_features = gpu_read(gpu_iomem, GPU_COHERENCY_FEATURES);
 	for (i = 0; i < 4; i++)
 		ptdev->gpu_info.texture_features[i] =
-			gpu_read(ptdev->iomem, GPU_TEXTURE_FEATURES(i));
+			gpu_read(gpu_iomem, GPU_TEXTURE_FEATURES(i));
 
-	ptdev->gpu_info.as_present = gpu_read(ptdev->iomem, GPU_AS_PRESENT);
+	ptdev->gpu_info.as_present = gpu_read(gpu_iomem, GPU_AS_PRESENT);
 
 	/* Introduced in arch 11.x */
-	ptdev->gpu_info.gpu_features = gpu_read64(ptdev->iomem, GPU_FEATURES);
+	ptdev->gpu_info.gpu_features = gpu_read64(gpu_iomem, GPU_FEATURES);
 
 	if (panthor_hw_has_pwr_ctrl(ptdev)) {
+		void __iomem *pwr_iomem = gpu_iomem + PWR_CONTROL_BASE;
+
 		/* Introduced in arch 14.x */
-		ptdev->gpu_info.l2_present = gpu_read64(ptdev->iomem, PWR_L2_PRESENT);
-		ptdev->gpu_info.tiler_present = gpu_read64(ptdev->iomem, PWR_TILER_PRESENT);
-		ptdev->gpu_info.shader_present = gpu_read64(ptdev->iomem, PWR_SHADER_PRESENT);
+		ptdev->gpu_info.l2_present = gpu_read64(pwr_iomem, PWR_L2_PRESENT);
+		ptdev->gpu_info.tiler_present = gpu_read64(pwr_iomem, PWR_TILER_PRESENT);
+		ptdev->gpu_info.shader_present = gpu_read64(pwr_iomem, PWR_SHADER_PRESENT);
 	} else {
-		ptdev->gpu_info.shader_present = gpu_read64(ptdev->iomem, GPU_SHADER_PRESENT);
-		ptdev->gpu_info.tiler_present = gpu_read64(ptdev->iomem, GPU_TILER_PRESENT);
-		ptdev->gpu_info.l2_present = gpu_read64(ptdev->iomem, GPU_L2_PRESENT);
+		ptdev->gpu_info.shader_present = gpu_read64(gpu_iomem, GPU_SHADER_PRESENT);
+		ptdev->gpu_info.tiler_present = gpu_read64(gpu_iomem, GPU_TILER_PRESENT);
+		ptdev->gpu_info.l2_present = gpu_read64(gpu_iomem, GPU_L2_PRESENT);
 	}
 
 	return overload_shader_present(ptdev);

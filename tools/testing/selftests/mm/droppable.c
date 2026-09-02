@@ -26,7 +26,14 @@ int main(int argc, char *argv[])
 	ksft_set_plan(1);
 
 	alloc = mmap(0, alloc_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_DROPPABLE, -1, 0);
-	assert(alloc != MAP_FAILED);
+	if (alloc == MAP_FAILED) {
+		if ((errno == EOPNOTSUPP) || (errno == EINVAL)) {
+			ksft_test_result_skip("MAP_DROPPABLE not supported\n");
+			exit(KSFT_SKIP);
+		}
+		ksft_test_result_fail("mmap error: %s\n", strerror(errno));
+		exit(KSFT_FAIL);
+	}
 	memset(alloc, 'A', alloc_size);
 
 	while (retry_count--) {

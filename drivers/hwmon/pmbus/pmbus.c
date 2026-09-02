@@ -215,6 +215,10 @@ static const struct pmbus_device_info pmbus_info_one_status = {
 static const struct i2c_device_id pmbus_id[] = {
 	{ .name = "adp4000", .driver_data = (kernel_ulong_t)&pmbus_info_one },
 	{ .name = "bmr310", .driver_data = (kernel_ulong_t)&pmbus_info_one_status },
+	{ .name = "bmr316", .driver_data = (kernel_ulong_t)&pmbus_info_one},
+	{ .name = "bmr321", .driver_data = (kernel_ulong_t)&pmbus_info_one},
+	{ .name = "bmr350", .driver_data = (kernel_ulong_t)&pmbus_info_one},
+	{ .name = "bmr351", .driver_data = (kernel_ulong_t)&pmbus_info_one},
 	{ .name = "bmr453", .driver_data = (kernel_ulong_t)&pmbus_info_one },
 	{ .name = "bmr454", .driver_data = (kernel_ulong_t)&pmbus_info_one },
 	{ .name = "bmr456", .driver_data = (kernel_ulong_t)&pmbus_info_one },

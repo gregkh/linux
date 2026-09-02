@@ -240,7 +240,7 @@ void adf_reenable_sriov(struct adf_accel_dev *accel_dev)
 	if (adf_add_sriov_configuration(accel_dev))
 		return;
 
-	dev_dbg(&pdev->dev, "Re-enabling SRIOV\n");
+	pci_dbg(pdev, "Re-enabling SRIOV\n");
 	adf_enable_sriov(accel_dev);
 }
 

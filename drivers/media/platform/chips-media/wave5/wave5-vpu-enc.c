@@ -90,6 +90,22 @@ static const struct vpu_format enc_fmt_list[FMT_TYPES][MAX_FMTS] = {
 			.v4l2_pix_fmt = V4L2_PIX_FMT_NV61M,
 			.v4l2_frmsize = &enc_frmsize[VPU_FMT_TYPE_RAW],
 		},
+		{
+			.v4l2_pix_fmt = V4L2_PIX_FMT_YUYV,
+			.v4l2_frmsize = &enc_frmsize[VPU_FMT_TYPE_RAW],
+		},
+		{
+			.v4l2_pix_fmt = V4L2_PIX_FMT_YVYU,
+			.v4l2_frmsize = &enc_frmsize[VPU_FMT_TYPE_RAW],
+		},
+		{
+			.v4l2_pix_fmt = V4L2_PIX_FMT_UYVY,
+			.v4l2_frmsize = &enc_frmsize[VPU_FMT_TYPE_RAW],
+		},
+		{
+			.v4l2_pix_fmt = V4L2_PIX_FMT_VYUY,
+			.v4l2_frmsize = &enc_frmsize[VPU_FMT_TYPE_RAW],
+		},
 	}
 };
 
@@ -759,6 +775,9 @@ static int wave5_vpu_enc_s_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_MPEG_VIDEO_BITRATE:
 		inst->bit_rate = ctrl->val;
 		break;
+	case V4L2_CID_MPEG_VIDEO_BACKGROUND_DETECTION:
+		inst->enc_param.bg_detection = ctrl->val;
+		break;
 	case V4L2_CID_MPEG_VIDEO_GOP_SIZE:
 		inst->enc_param.avc_idr_period = ctrl->val;
 		break;
@@ -1137,6 +1156,22 @@ static int wave5_set_enc_openparam(struct enc_open_param *open_param,
 	else
 		open_param->src_format = FORMAT_420;
 
+	switch (info->format) {
+	case V4L2_PIX_FMT_YUYV:
+		open_param->packed_format = PACKED_YUYV;
+		break;
+	case V4L2_PIX_FMT_YVYU:
+		open_param->packed_format = PACKED_YVYU;
+		break;
+	case V4L2_PIX_FMT_UYVY:
+		open_param->packed_format = PACKED_UYVY;
+		break;
+	case V4L2_PIX_FMT_VYUY:
+		open_param->packed_format = PACKED_VYUY;
+		break;
+	default:
+		break;
+	}
 	open_param->wave_param.gop_preset_idx = PRESET_IDX_IPP_SINGLE;
 	open_param->wave_param.hvs_qp_scale = 2;
 	open_param->wave_param.hvs_max_delta_qp = 10;
@@ -1186,6 +1221,7 @@ static int wave5_set_enc_openparam(struct enc_open_param *open_param,
 	open_param->wave_param.beta_offset_div2 = input.beta_offset_div2;
 	open_param->wave_param.decoding_refresh_type = input.decoding_refresh_type;
 	open_param->wave_param.intra_period = input.intra_period;
+	open_param->wave_param.bg_detection = input.bg_detection;
 	if (inst->std == W_HEVC_ENC) {
 		if (input.intra_period == 0) {
 			open_param->wave_param.decoding_refresh_type = DEC_REFRESH_TYPE_IDR;
@@ -1682,6 +1718,9 @@ static int wave5_vpu_open_enc(struct file *filp)
 	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
 			  V4L2_CID_MPEG_VIDEO_AU_DELIMITER,
 			  0, 1, 1, 1);
+	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
+			  V4L2_CID_MPEG_VIDEO_BACKGROUND_DETECTION,
+			  0, 1, 1, 0);
 	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
 			  V4L2_CID_HFLIP,
 			  0, 1, 1, 0);

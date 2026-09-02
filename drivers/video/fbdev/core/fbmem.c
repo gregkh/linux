@@ -14,13 +14,13 @@
 #include <linux/console.h>
 #include <linux/export.h>
 #include <linux/fb.h>
-#include <linux/fbcon.h>
 #include <linux/lcd.h>
 #include <linux/leds.h>
 
 #include <video/nomodeset.h>
 
 #include "fb_internal.h"
+#include "fbcon.h"
 
     /*
      *  Frame buffer device initialization and setup routines
@@ -425,6 +425,16 @@ err:
 }
 EXPORT_SYMBOL(fb_blank);
 
+int fb_blank_from_user(struct fb_info *info, int blank)
+{
+	int ret = fb_blank(info, blank);
+
+	/* might again call into fb_blank */
+	fbcon_fb_blanked(info, blank);
+
+	return ret;
+}
+
 static int fb_check_foreignness(struct fb_info *fi)
 {
 	const bool foreign_endian = fi->flags & FBINFO_FOREIGN_ENDIAN;
@@ -676,6 +686,16 @@ void fb_set_suspend(struct fb_info *info, int state)
 	}
 }
 EXPORT_SYMBOL(fb_set_suspend);
+
+/**
+ * fb_switch_outputs - framebuffer got the outputs from vga-switcheroo
+ * @info: framebuffer
+ */
+void fb_switch_outputs(struct fb_info *info)
+{
+	fbcon_remap_all(info);
+}
+EXPORT_SYMBOL(fb_switch_outputs);
 
 static int __init fbmem_init(void)
 {

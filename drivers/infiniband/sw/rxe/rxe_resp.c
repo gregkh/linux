@@ -1528,7 +1528,7 @@ static int flush_recv_wqe(struct rxe_qp *qp, struct rxe_recv_wqe *wqe)
 	return err;
 }
 
-/* drain and optionally complete the recive queue
+/* drain and optionally complete the receive queue
  * if unable to complete a wqe stop completing and
  * just flush the remaining wqes
  */

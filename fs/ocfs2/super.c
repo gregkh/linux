@@ -1224,7 +1224,6 @@ static struct file_system_type ocfs2_fs_type = {
 	.name           = "ocfs2",
 	.kill_sb        = kill_block_super,
 	.fs_flags       = FS_REQUIRES_DEV|FS_RENAME_DOES_D_MOVE,
-	.next           = NULL,
 	.init_fs_context = ocfs2_init_fs_context,
 	.parameters	= ocfs2_param_spec,
 };

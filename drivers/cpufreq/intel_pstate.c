@@ -3053,9 +3053,6 @@ static int __intel_pstate_cpu_init(struct cpufreq_policy *policy)
 	policy->cpuinfo.max_freq = READ_ONCE(global.no_turbo) ?
 			cpu->pstate.max_freq : cpu->pstate.turbo_freq;
 
-	policy->min = policy->cpuinfo.min_freq;
-	policy->max = policy->cpuinfo.max_freq;
-
 	intel_pstate_init_acpi_perf_limits(policy);
 
 	policy->fast_switch_possible = true;
@@ -3827,6 +3824,12 @@ static int __init intel_pstate_init(void)
 	} else {
 		if (no_load)
 			return -ENODEV;
+
+		id = x86_match_cpu(intel_hybrid_scaling_factor);
+		if (id) {
+			pr_info("HWP-disabled hybrid CPU is not supported\n");
+			return -ENODEV;
+		}
 
 		id = x86_match_cpu(intel_pstate_cpu_ids);
 		if (!id) {

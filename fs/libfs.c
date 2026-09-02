@@ -78,8 +78,7 @@ struct dentry *simple_lookup(struct inode *dir, struct dentry *dentry, unsigned 
 	if (IS_ENABLED(CONFIG_UNICODE) && IS_CASEFOLDED(dir))
 		return NULL;
 
-	d_add(dentry, NULL);
-	return NULL;
+	return d_splice_alias(NULL, dentry);
 }
 EXPORT_SYMBOL(simple_lookup);
 
@@ -1259,7 +1258,7 @@ char *simple_transaction_get(struct file *file, const char __user *buf, size_t s
 	if (size > SIMPLE_TRANSACTION_LIMIT - 1)
 		return ERR_PTR(-EFBIG);
 
-	ar = (struct simple_transaction_argresp *)get_zeroed_page(GFP_KERNEL);
+	ar = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!ar)
 		return ERR_PTR(-ENOMEM);
 
@@ -1268,7 +1267,7 @@ char *simple_transaction_get(struct file *file, const char __user *buf, size_t s
 	/* only one write allowed per open */
 	if (file->private_data) {
 		spin_unlock(&simple_transaction_lock);
-		free_page((unsigned long)ar);
+		kfree(ar);
 		return ERR_PTR(-EBUSY);
 	}
 
@@ -1295,7 +1294,7 @@ EXPORT_SYMBOL(simple_transaction_read);
 
 int simple_transaction_release(struct inode *inode, struct file *file)
 {
-	free_page((unsigned long)file->private_data);
+	kfree(file->private_data);
 	return 0;
 }
 EXPORT_SYMBOL(simple_transaction_release);

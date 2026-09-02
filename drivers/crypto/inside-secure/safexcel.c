@@ -1475,7 +1475,7 @@ static int safexcel_probe_generic(void *pdev,
 	peid = version & 255;
 
 	/* Detect EIP206 processing pipe */
-	version = readl(EIP197_PE(priv) + + EIP197_PE_VERSION(0));
+	version = readl(EIP197_PE(priv) + EIP197_PE_VERSION(0));
 	if (EIP197_REG_LO16(version) != EIP206_VERSION_LE) {
 		dev_err(priv->dev, "EIP%d: EIP206 not detected\n", peid);
 		return -ENODEV;

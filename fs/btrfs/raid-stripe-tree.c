@@ -272,7 +272,9 @@ int btrfs_delete_raid_extent(struct btrfs_trans_handle *trans, u64 start, u64 le
 								 &key,
 								 key.offset - length,
 								 length);
-			ASSERT(key.offset - diff_end == length);
+			ASSERT(key.offset - diff_end == length,
+			       "key.offset=%llu diff_end=%llu length=%llu",
+			       key.offset, diff_end, length);
 			break;
 		}
 
@@ -411,6 +413,12 @@ int btrfs_get_raid_extent_offset(struct btrfs_fs_info *fs_info,
 	u64 found_end;
 	int slot;
 	int ret;
+
+	if (unlikely(!stripe_root)) {
+		btrfs_err_rl(fs_info, "missing raid stripe tree root for logical %llu",
+			     logical);
+		return -EUCLEAN;
+	}
 
 	stripe_key.objectid = logical;
 	stripe_key.type = BTRFS_RAID_STRIPE_KEY;

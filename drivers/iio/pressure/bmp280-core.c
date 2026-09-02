@@ -392,7 +392,7 @@ static int bme280_read_calib(struct bmp280_data *data)
 	h4_lower = FIELD_GET(BME280_COMP_H4_MASK_LOW, tmp_1);
 	calib->H4 = sign_extend32(h4_upper | h4_lower, 11);
 	tmp_3 = get_unaligned_le16(&data->bme280_humid_cal_buf[H5]);
-	calib->H5 = sign_extend32(FIELD_GET(BME280_COMP_H5_MASK, tmp_3), 11);
+	calib->H5 = FIELD_GET_SIGNED(BME280_COMP_H5_MASK, tmp_3);
 	calib->H6 = data->bme280_humid_cal_buf[H6];
 
 	return 0;

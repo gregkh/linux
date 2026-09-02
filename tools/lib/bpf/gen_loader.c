@@ -63,6 +63,7 @@ static int realloc_insn_buf(struct bpf_gen *gen, __u32 size)
 		gen->error = -ENOMEM;
 		free(gen->insn_start);
 		gen->insn_start = NULL;
+		gen->insn_cur = NULL;
 		return -ENOMEM;
 	}
 	gen->insn_start = insn_start;
@@ -86,6 +87,7 @@ static int realloc_data_buf(struct bpf_gen *gen, __u32 size)
 		gen->error = -ENOMEM;
 		free(gen->data_start);
 		gen->data_start = NULL;
+		gen->data_cur = NULL;
 		return -ENOMEM;
 	}
 	gen->data_start = data_start;
@@ -158,9 +160,15 @@ void bpf_gen__init(struct bpf_gen *gen, int log_level, int nr_progs, int nr_maps
 
 static int add_data(struct bpf_gen *gen, const void *data, __u32 size)
 {
-	__u32 size8 = roundup(size, 8);
 	__u64 zero = 0;
+	__u32 size8;
 	void *prev;
+
+	if (size > INT32_MAX) {
+		gen->error = -ERANGE;
+		return 0;
+	}
+	size8 = roundup(size, 8);
 
 	if (realloc_data_buf(gen, size8))
 		return 0;
@@ -293,7 +301,6 @@ static void emit_check_err(struct bpf_gen *gen)
 		emit(gen, BPF_JMP_IMM(BPF_JSLT, BPF_REG_7, 0, off));
 	} else {
 		gen->error = -ERANGE;
-		emit(gen, BPF_JMP_IMM(BPF_JA, 0, 0, -1));
 	}
 }
 

@@ -193,10 +193,9 @@ static unsigned long get_obj_and_str(const char *name, char **x)
 
 	*x = NULL;
 
-	if (!read_obj(name)) {
-		x = NULL;
+	if (!read_obj(name))
 		return 0;
-	}
+
 	result = strtoul(buffer, &p, 10);
 	while (*p == ' ')
 		p++;
@@ -1266,7 +1265,6 @@ static void read_slab_dir(void)
 			slab->total_objects = get_obj("total_objects");
 			slab->objs_per_slab = get_obj("objs_per_slab");
 			slab->order = get_obj("order");
-			slab->partial = get_obj("partial");
 			slab->partial = get_obj_and_str("partial", &t);
 			decode_numa_list(slab->numa_partial, t);
 			free(t);

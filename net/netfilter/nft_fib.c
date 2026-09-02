@@ -170,7 +170,7 @@ void nft_fib_store_result(void *reg, const struct nft_fib *priv,
 			strscpy_pad(reg, dev ? dev->name : "", IFNAMSIZ);
 		break;
 	default:
-		WARN_ON_ONCE(1);
+		DEBUG_NET_WARN_ON_ONCE(1);
 		*dreg = 0;
 		break;
 	}

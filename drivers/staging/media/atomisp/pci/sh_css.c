@@ -7,6 +7,7 @@
 /*! \file */
 #include <linux/mm.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/vmalloc.h>
 
 #include "hmm.h"
@@ -1478,7 +1479,7 @@ map_sp_threads(struct ia_css_stream *stream, bool map)
 	enum ia_css_pipe_id pipe_id;
 
 	IA_CSS_ENTER_PRIVATE("stream = %p, map = %s",
-			     stream, map ? "true" : "false");
+			     stream, str_true_false(map));
 
 	if (!stream) {
 		IA_CSS_LEAVE_ERR_PRIVATE(-EINVAL);
@@ -2256,8 +2257,7 @@ alloc_continuous_frames(struct ia_css_pipe *pipe, bool init_time)
 		ia_css_debug_dtrace(IA_CSS_DEBUG_TRACE_PRIVATE,
 				    "alloc_continuous_frames() IA_CSS_FRAME_FORMAT_RAW_PACKED\n");
 		ref_info.format = IA_CSS_FRAME_FORMAT_RAW_PACKED;
-	} else
-	{
+	} else {
 		ia_css_debug_dtrace(IA_CSS_DEBUG_TRACE_PRIVATE,
 				    "alloc_continuous_frames() IA_CSS_FRAME_FORMAT_RAW\n");
 		ref_info.format = IA_CSS_FRAME_FORMAT_RAW;
@@ -5819,36 +5819,37 @@ static int ia_css_pipe_create_cas_scaler_desc_single_output(
 		i *= max_scale_factor_per_stage;
 	}
 
-	descr->in_info = kmalloc(descr->num_stage *
-				 sizeof(struct ia_css_frame_info),
-				 GFP_KERNEL);
+	descr->in_info = kmalloc_objs(*descr->in_info,
+				      descr->num_stage,
+				      GFP_KERNEL);
 	if (!descr->in_info) {
 		err = -ENOMEM;
 		goto ERR;
 	}
-	descr->internal_out_info = kmalloc(descr->num_stage *
-					   sizeof(struct ia_css_frame_info),
-					   GFP_KERNEL);
+	descr->internal_out_info = kmalloc_objs(*descr->internal_out_info,
+						descr->num_stage,
+						GFP_KERNEL);
 	if (!descr->internal_out_info) {
 		err = -ENOMEM;
 		goto ERR;
 	}
-	descr->out_info = kmalloc(descr->num_stage *
-				  sizeof(struct ia_css_frame_info),
-				  GFP_KERNEL);
+	descr->out_info = kmalloc_objs(*descr->out_info,
+				       descr->num_stage,
+				       GFP_KERNEL);
 	if (!descr->out_info) {
 		err = -ENOMEM;
 		goto ERR;
 	}
-	descr->vf_info = kmalloc(descr->num_stage *
-				 sizeof(struct ia_css_frame_info),
-				 GFP_KERNEL);
+	descr->vf_info = kmalloc_objs(*descr->vf_info,
+				      descr->num_stage,
+				      GFP_KERNEL);
 	if (!descr->vf_info) {
 		err = -ENOMEM;
 		goto ERR;
 	}
-	descr->is_output_stage = kmalloc(descr->num_stage * sizeof(bool),
-					 GFP_KERNEL);
+	descr->is_output_stage = kmalloc_objs(*descr->is_output_stage,
+					      descr->num_stage,
+					      GFP_KERNEL);
 	if (!descr->is_output_stage) {
 		err = -ENOMEM;
 		goto ERR;
@@ -5968,35 +5969,37 @@ ia_css_pipe_create_cas_scaler_desc(struct ia_css_pipe *pipe,
 
 	descr->num_stage = num_stages;
 
-	descr->in_info = kmalloc_objs(struct ia_css_frame_info,
-				      descr->num_stage);
+	descr->in_info = kmalloc_objs(*descr->in_info,
+				      descr->num_stage,
+				      GFP_KERNEL);
 	if (!descr->in_info) {
 		err = -ENOMEM;
 		goto ERR;
 	}
-	descr->internal_out_info = kmalloc(descr->num_stage *
-					   sizeof(struct ia_css_frame_info),
-					   GFP_KERNEL);
+	descr->internal_out_info = kmalloc_objs(*descr->internal_out_info,
+						descr->num_stage,
+						GFP_KERNEL);
 	if (!descr->internal_out_info) {
 		err = -ENOMEM;
 		goto ERR;
 	}
-	descr->out_info = kmalloc(descr->num_stage *
-				  sizeof(struct ia_css_frame_info),
-				  GFP_KERNEL);
+	descr->out_info = kmalloc_objs(*descr->out_info,
+				       descr->num_stage,
+				       GFP_KERNEL);
 	if (!descr->out_info) {
 		err = -ENOMEM;
 		goto ERR;
 	}
-	descr->vf_info = kmalloc(descr->num_stage *
-				 sizeof(struct ia_css_frame_info),
-				 GFP_KERNEL);
+	descr->vf_info = kmalloc_objs(*descr->vf_info,
+				      descr->num_stage,
+				      GFP_KERNEL);
 	if (!descr->vf_info) {
 		err = -ENOMEM;
 		goto ERR;
 	}
-	descr->is_output_stage = kmalloc(descr->num_stage * sizeof(bool),
-					 GFP_KERNEL);
+	descr->is_output_stage = kmalloc_objs(*descr->is_output_stage,
+					      descr->num_stage,
+					      GFP_KERNEL);
 	if (!descr->is_output_stage) {
 		err = -ENOMEM;
 		goto ERR;
@@ -7856,8 +7859,7 @@ ia_css_stream_create(const struct ia_css_stream_config *stream_config,
 
 	/* check if mipi size specified */
 	if (stream_config->mode == IA_CSS_INPUT_MODE_BUFFERED_SENSOR)
-		if (!IS_ISP2401 || !stream_config->online)
-		{
+		if (!IS_ISP2401 || !stream_config->online) {
 			unsigned int port = (unsigned int)stream_config->source.port.port;
 
 			if (port >= N_MIPI_PORT_ID) {
@@ -8189,10 +8191,52 @@ ERR:
 	return err;
 }
 
+static void ia_css_stream_destroy_isp2401(struct ia_css_stream *stream)
+{
+	int i, j;
+
+	for (i = 0; i < stream->num_pipes; i++) {
+		struct ia_css_pipe *entry = stream->pipes[i];
+		unsigned int sp_thread_id;
+		struct sh_css_sp_pipeline_terminal *terminal;
+
+		if (!entry)
+			continue;
+
+		if (!ia_css_pipeline_get_sp_thread_id(
+				ia_css_pipe_get_pipe_num(entry), &sp_thread_id))
+			continue;
+
+		terminal = &sh_css_sp_group.pipe_io[sp_thread_id].input;
+
+		for (j = 0; j < IA_CSS_STREAM_MAX_ISYS_STREAM_PER_CH; j++) {
+			ia_css_isys_stream_h isys_stream =
+				&terminal->context.virtual_input_system_stream[j];
+			if (stream->config.isys_config[j].valid && isys_stream->valid)
+				ia_css_isys_stream_destroy(isys_stream);
+		}
+	}
+
+	if (stream->config.mode == IA_CSS_INPUT_MODE_BUFFERED_SENSOR) {
+		for (i = 0; i < stream->num_pipes; i++) {
+			/*
+			 * free any mipi frames that are remaining:
+			 * some test stream create-destroy cycles do
+			 * not generate output frames
+			 * and the mipi buffer is not freed in the
+			 * deque function
+			 */
+			if (stream->pipes[i])
+				free_mipi_frames(stream->pipes[i]);
+		}
+	}
+	stream_unregister_with_csi_rx(stream);
+}
+
 int
 ia_css_stream_destroy(struct ia_css_stream *stream)
 {
-	int i, j;
+	int i;
 	int err = 0;
 
 	IA_CSS_ENTER_PRIVATE("stream = %p", stream);
@@ -8206,48 +8250,8 @@ ia_css_stream_destroy(struct ia_css_stream *stream)
 
 	if ((stream->last_pipe) &&
 	    ia_css_pipeline_is_mapped(stream->last_pipe->pipe_num)) {
-		if (IS_ISP2401) {
-			for (i = 0; i < stream->num_pipes; i++) {
-				struct ia_css_pipe *entry = stream->pipes[i];
-				unsigned int sp_thread_id;
-				struct sh_css_sp_pipeline_terminal *sp_pipeline_input_terminal;
-
-				assert(entry);
-				if (entry) {
-					/* get the SP thread id */
-					if (!ia_css_pipeline_get_sp_thread_id(
-							ia_css_pipe_get_pipe_num(entry), &sp_thread_id))
-						return -EINVAL;
-
-					/* get the target input terminal */
-					sp_pipeline_input_terminal =
-						&sh_css_sp_group.pipe_io[sp_thread_id].input;
-
-					for (j = 0; j < IA_CSS_STREAM_MAX_ISYS_STREAM_PER_CH; j++) {
-						ia_css_isys_stream_h isys_stream =
-							&sp_pipeline_input_terminal->context.virtual_input_system_stream[j];
-						if (stream->config.isys_config[j].valid && isys_stream->valid)
-							ia_css_isys_stream_destroy(isys_stream);
-					}
-				}
-			}
-
-			if (stream->config.mode == IA_CSS_INPUT_MODE_BUFFERED_SENSOR) {
-				for (i = 0; i < stream->num_pipes; i++) {
-					struct ia_css_pipe *entry = stream->pipes[i];
-					/*
-					 * free any mipi frames that are remaining:
-					 * some test stream create-destroy cycles do
-					 * not generate output frames
-					 * and the mipi buffer is not freed in the
-					 * deque function
-					 */
-					if (entry)
-						free_mipi_frames(entry);
-				}
-			}
-			stream_unregister_with_csi_rx(stream);
-		}
+		if (IS_ISP2401)
+			ia_css_stream_destroy_isp2401(stream);
 
 		for (i = 0; i < stream->num_pipes; i++) {
 			struct ia_css_pipe *curr_pipe = stream->pipes[i];

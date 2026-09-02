@@ -996,7 +996,7 @@ static void stripe_add_to_batch_list(struct r5conf *conf,
 	if (test_and_clear_bit(STRIPE_BIT_DELAY, &sh->state)) {
 		int seq = sh->bm_seq;
 		if (test_bit(STRIPE_BIT_DELAY, &sh->batch_head->state) &&
-		    sh->batch_head->bm_seq > seq)
+		    sh->batch_head->bm_seq - seq > 0)
 			seq = sh->batch_head->bm_seq;
 		set_bit(STRIPE_BIT_DELAY, &sh->batch_head->state);
 		sh->batch_head->bm_seq = seq;
@@ -1132,6 +1132,21 @@ static void defer_issue_bios(struct r5conf *conf, sector_t sector,
 	spin_unlock(&conf->pending_bios_lock);
 
 	dispatch_bio_list(&tmp);
+}
+
+static bool raid5_discard_limits(struct mddev *mddev, struct bio *bi)
+{
+	struct r5conf *conf = mddev->private;
+
+	if (mddev->bitmap_id == ID_LLBITMAP)
+		return true;
+
+	if (!conf->raid5_discard_unsupported)
+		return true;
+
+	bi->bi_status = BLK_STS_NOTSUPP;
+	bio_endio(bi);
+	return false;
 }
 
 static void
@@ -5697,7 +5712,10 @@ static void make_discard_request(struct mddev *mddev, struct bio *bi)
 {
 	struct r5conf *conf = mddev->private;
 	sector_t logical_sector, last_sector;
+	sector_t first_stripe, last_stripe;
 	struct stripe_head *sh;
+	struct bvec_iter bi_iter;
+	struct bio *orig_bi = bi;
 	int stripe_sectors;
 
 	/* We need to handle this when io_uring supports discard/trim */
@@ -5708,19 +5726,38 @@ static void make_discard_request(struct mddev *mddev, struct bio *bi)
 		/* Skip discard while reshape is happening */
 		return;
 
-	logical_sector = bi->bi_iter.bi_sector & ~((sector_t)RAID5_STRIPE_SECTORS(conf)-1);
-	last_sector = bio_end_sector(bi);
-
-	bi->bi_next = NULL;
+	if (!raid5_discard_limits(mddev, bi))
+		return;
 
 	stripe_sectors = conf->chunk_sectors *
 		(conf->raid_disks - conf->max_degraded);
-	logical_sector = DIV_ROUND_UP_SECTOR_T(logical_sector,
-					       stripe_sectors);
-	sector_div(last_sector, stripe_sectors);
+	first_stripe = DIV_ROUND_UP_SECTOR_T(bi->bi_iter.bi_sector,
+					     stripe_sectors);
+	last_stripe = bio_end_sector(bi);
+	sector_div(last_stripe, stripe_sectors);
 
-	logical_sector *= conf->chunk_sectors;
-	last_sector *= conf->chunk_sectors;
+	if (first_stripe >= last_stripe) {
+		bio_endio(bi);
+		return;
+	}
+
+	bi_iter = bi->bi_iter;
+	bi->bi_iter.bi_sector = first_stripe * stripe_sectors;
+	bi->bi_iter.bi_size = ((last_stripe - first_stripe) *
+			       stripe_sectors) << 9;
+	md_account_bio(mddev, &bi);
+	orig_bi->bi_iter = bi_iter;
+	bi->bi_iter = bi_iter;
+	bi->bi_next = NULL;
+
+	if (mddev->bitmap_id == ID_LLBITMAP &&
+	    conf->raid5_discard_unsupported) {
+		bio_endio(bi);
+		return;
+	}
+
+	logical_sector = first_stripe * conf->chunk_sectors;
+	last_sector = last_stripe * conf->chunk_sectors;
 
 	for (; logical_sector < last_sector;
 	     logical_sector += RAID5_STRIPE_SECTORS(conf)) {
@@ -6049,8 +6086,11 @@ out_release:
 	raid5_release_stripe(sh);
 out:
 	if (ret == STRIPE_SCHEDULE_AND_RETRY && reshape_interrupted(mddev)) {
-		bi->bi_status = BLK_STS_RESOURCE;
-		ret = STRIPE_WAIT_RESHAPE;
+		if (!mddev_is_dm(mddev) ||
+		    test_bit(MD_DM_SUSPENDING, &mddev->flags)) {
+			bi->bi_status = BLK_STS_RESOURCE;
+			ret = STRIPE_WAIT_RESHAPE;
+		}
 		pr_err_ratelimited("dm-raid456: io across reshape position while reshape can't make progress");
 	}
 	return ret;
@@ -6962,7 +7002,7 @@ raid5_store_rmw_level(struct mddev  *mddev, const char *page, size_t len)
 	if (kstrtoul(page, 10, &new))
 		return -EINVAL;
 
-	if (new != PARITY_DISABLE_RMW && !raid6_call.xor_syndrome)
+	if (new != PARITY_DISABLE_RMW && !raid6_can_xor_syndrome())
 		return -EINVAL;
 
 	if (new != PARITY_DISABLE_RMW &&
@@ -7653,7 +7693,7 @@ static struct r5conf *setup_conf(struct mddev *mddev)
 	conf->level = mddev->new_level;
 	if (conf->level == 6) {
 		conf->max_degraded = 2;
-		if (raid6_call.xor_syndrome)
+		if (raid6_can_xor_syndrome())
 			conf->rmw_level = PARITY_ENABLE_RMW;
 		else
 			conf->rmw_level = PARITY_DISABLE_RMW;
@@ -7808,24 +7848,12 @@ static int raid5_set_limits(struct mddev *mddev)
 		queue_limits_stack_bdev(&lim, rdev->bdev, rdev->new_data_offset,
 				mddev->gendisk->disk_name);
 
-	/*
-	 * Zeroing is required for discard, otherwise data could be lost.
-	 *
-	 * Consider a scenario: discard a stripe (the stripe could be
-	 * inconsistent if discard_zeroes_data is 0); write one disk of the
-	 * stripe (the stripe could be inconsistent again depending on which
-	 * disks are used to calculate parity); the disk is broken; The stripe
-	 * data of this disk is lost.
-	 *
-	 * We only allow DISCARD if the sysadmin has confirmed that only safe
-	 * devices are in use by setting a module parameter.  A better idea
-	 * might be to turn DISCARD into WRITE_ZEROES requests, as that is
-	 * required to be safe.
-	 */
 	if (!devices_handle_discard_safely ||
 	    lim.max_discard_sectors < (stripe >> 9) ||
 	    lim.discard_granularity < stripe)
-		lim.max_hw_discard_sectors = 0;
+		conf->raid5_discard_unsupported = true;
+	else
+		conf->raid5_discard_unsupported = false;
 
 	/*
 	 * Requests require having a bitmap for each stripe.
@@ -7834,6 +7862,7 @@ static int raid5_set_limits(struct mddev *mddev)
 	lim.max_hw_sectors = RAID5_MAX_REQ_STRIPES << RAID5_STRIPE_SHIFT(conf);
 	if ((lim.max_hw_sectors << 9) < lim.io_opt)
 		lim.max_hw_sectors = lim.io_opt >> 9;
+	lim.max_hw_discard_sectors = UINT_MAX;
 
 	/* No restrictions on the number of segments in the request */
 	lim.max_segments = USHRT_MAX;

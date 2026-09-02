@@ -236,19 +236,10 @@ svc_rdma_write_info_alloc(struct svcxprt_rdma *rdma,
 	return info;
 }
 
-static void svc_rdma_write_info_free_async(struct work_struct *work)
-{
-	struct svc_rdma_write_info *info;
-
-	info = container_of(work, struct svc_rdma_write_info, wi_work);
-	svc_rdma_cc_release(info->wi_rdma, &info->wi_cc, DMA_TO_DEVICE);
-	kfree(info);
-}
-
 static void svc_rdma_write_info_free(struct svc_rdma_write_info *info)
 {
-	INIT_WORK(&info->wi_work, svc_rdma_write_info_free_async);
-	queue_work(svcrdma_wq, &info->wi_work);
+	svc_rdma_cc_release(info->wi_rdma, &info->wi_cc, DMA_TO_DEVICE);
+	kfree(info);
 }
 
 /**

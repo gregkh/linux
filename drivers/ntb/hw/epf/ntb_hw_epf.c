@@ -44,6 +44,18 @@
 #define NTB_EPF_DB_DATA(n)	(0x34 + (n) * 4)
 #define NTB_EPF_DB_OFFSET(n)	(0xB4 + (n) * 4)
 
+/*
+ * Legacy doorbell slot layout when paired with pci-epf-*ntb:
+ *
+ *   slot 0 : reserved for link events
+ *   slot 1 : unused (historical extra offset)
+ *   slot 2 : DB#0
+ *   slot 3 : DB#1
+ *   ...
+ *
+ * Thus, NTB_EPF_MIN_DB_COUNT=3 means that we at least create vectors for
+ * doorbells DB#0 and DB#1.
+ */
 #define NTB_EPF_MIN_DB_COUNT	3
 #define NTB_EPF_MAX_DB_COUNT	31
 
@@ -422,6 +434,36 @@ static u64 ntb_epf_db_valid_mask(struct ntb_dev *ntb)
 	return ntb_ndev(ntb)->db_valid_mask;
 }
 
+static int ntb_epf_db_vector_count(struct ntb_dev *ntb)
+{
+	struct ntb_epf_dev *ndev = ntb_ndev(ntb);
+	unsigned int db_count = ndev->db_count;
+
+	/*
+	 * db_count includes an extra skipped slot due to the legacy
+	 * doorbell layout. Expose only the real doorbell vectors.
+	 */
+	if (db_count < NTB_EPF_MIN_DB_COUNT)
+		return 0;
+
+	return db_count - 1;
+}
+
+static u64 ntb_epf_db_vector_mask(struct ntb_dev *ntb, int db_vector)
+{
+	int nr_vec;
+
+	/*
+	 * db_count includes one skipped slot in the legacy layout. Valid
+	 * doorbell vectors are therefore [0 .. (db_count - 2)].
+	 */
+	nr_vec = ntb_epf_db_vector_count(ntb);
+	if (db_vector < 0 || db_vector >= nr_vec)
+		return 0;
+
+	return BIT_ULL(db_vector);
+}
+
 static int ntb_epf_db_set_mask(struct ntb_dev *ntb, u64 db_bits)
 {
 	return 0;
@@ -500,6 +542,14 @@ static int ntb_epf_peer_mw_get_addr(struct ntb_dev *ntb, int idx,
 static int ntb_epf_peer_db_set(struct ntb_dev *ntb, u64 db_bits)
 {
 	struct ntb_epf_dev *ndev = ntb_ndev(ntb);
+	/*
+	 * ffs() returns a 1-based bit index (bit 0 -> 1).
+	 *
+	 * With slot 0 reserved for link events, DB#0 would naturally map to
+	 * slot 1. Historically an extra +1 offset was added, so DB#0 maps to
+	 * slot 2 and slot 1 remains unused. Keep this mapping for
+	 * backward-compatibility.
+	 */
 	u32 interrupt_num = ffs(db_bits) + 1;
 	struct device *dev = ndev->dev;
 	u32 db_entry_size;
@@ -548,6 +598,8 @@ static const struct ntb_dev_ops ntb_epf_ops = {
 	.spad_count		= ntb_epf_spad_count,
 	.peer_mw_count		= ntb_epf_peer_mw_count,
 	.db_valid_mask		= ntb_epf_db_valid_mask,
+	.db_vector_count	= ntb_epf_db_vector_count,
+	.db_vector_mask		= ntb_epf_db_vector_mask,
 	.db_set_mask		= ntb_epf_db_set_mask,
 	.mw_set_trans		= ntb_epf_mw_set_trans,
 	.mw_clear_trans		= ntb_epf_mw_clear_trans,

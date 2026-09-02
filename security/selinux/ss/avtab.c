@@ -393,6 +393,13 @@ int avtab_read_item(struct avtab *a, struct policy_file *fp, struct policydb *po
 				}
 				key.specified = spec_order[i] | enabled;
 				datum.u.data = le32_to_cpu(buf32[items++]);
+
+				if ((key.specified & AVTAB_TYPE) &&
+				    !policydb_simpletype_isvalid(pol, datum.u.data)) {
+					pr_err("SELinux: avtab: invalid type\n");
+					return -EINVAL;
+				}
+
 				rc = insertf(a, &key, &datum, p);
 				if (rc)
 					return rc;
@@ -484,7 +491,7 @@ int avtab_read_item(struct avtab *a, struct policy_file *fp, struct policydb *po
 		datum.u.data = le32_to_cpu(*buf32);
 	}
 	if ((key.specified & AVTAB_TYPE) &&
-	    !policydb_type_isvalid(pol, datum.u.data)) {
+	    !policydb_simpletype_isvalid(pol, datum.u.data)) {
 		pr_err("SELinux: avtab: invalid type\n");
 		return -EINVAL;
 	}
@@ -514,6 +521,11 @@ int avtab_read(struct avtab *a, struct policy_file *fp, struct policydb *pol)
 		rc = -EINVAL;
 		goto bad;
 	}
+
+	/* avtab_read_item() reads at least 96 bytes for any valid entry */
+	rc = size_check(3 * sizeof(u32), nel, fp);
+	if (rc)
+		goto bad;
 
 	rc = avtab_alloc(a, nel);
 	if (rc)

@@ -37,7 +37,7 @@
 #include <asm/delay.h>
 #include <linux/atomic.h>
 #include <linux/jump_label.h>
-#include "kvm_cache_regs.h"
+#include "regs.h"
 #include "irq.h"
 #include "ioapic.h"
 #include "trace.h"
@@ -767,7 +767,7 @@ static inline void apic_set_isr(int vec, struct kvm_lapic *apic)
 		kvm_x86_call(hwapic_isr_update)(apic->vcpu, vec);
 	else {
 		++apic->isr_count;
-		BUG_ON(apic->isr_count > MAX_APIC_VECTOR);
+		KVM_BUG_ON(apic->isr_count > MAX_APIC_VECTOR, apic->vcpu->kvm);
 		/*
 		 * ISR (in service register) bit is set when injecting an interrupt.
 		 * The highest vector is injected. Thus the latest bit set matches
@@ -808,7 +808,7 @@ static inline void apic_clear_isr(int vec, struct kvm_lapic *apic)
 		kvm_x86_call(hwapic_isr_update)(apic->vcpu, apic_find_highest_isr(apic));
 	else {
 		--apic->isr_count;
-		BUG_ON(apic->isr_count < 0);
+		KVM_BUG_ON(apic->isr_count < 0, apic->vcpu->kvm);
 		apic->highest_isr_cache = -1;
 	}
 }

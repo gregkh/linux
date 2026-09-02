@@ -551,29 +551,6 @@ static inline void psock_progs_drop(struct sk_psock_progs *progs)
 	psock_set_prog(&progs->skb_verdict, NULL);
 }
 
-int sk_psock_tls_strp_read(struct sk_psock *psock, struct sk_buff *skb);
-
-static inline bool sk_psock_strp_enabled(struct sk_psock *psock)
-{
-	if (!psock)
-		return false;
-	return !!psock->saved_data_ready;
-}
-
-/* for tcp only, sk is locked */
-static inline ssize_t sk_psock_msg_inq(struct sock *sk)
-{
-	struct sk_psock *psock;
-	ssize_t inq = 0;
-
-	psock = sk_psock_get(sk);
-	if (likely(psock)) {
-		inq = sk_psock_get_msg_len_nolock(psock);
-		sk_psock_put(sk, psock);
-	}
-	return inq;
-}
-
 /* for udp only, sk is not locked */
 static inline ssize_t sk_msg_first_len(struct sock *sk)
 {

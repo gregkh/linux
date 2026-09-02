@@ -5,6 +5,7 @@
 #include <linux/limits.h>
 #include <linux/platform_device.h>
 #include <linux/sysfb.h>
+#include <linux/pm.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
@@ -21,6 +22,7 @@
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_managed.h>
+#include <drm/drm_modeset_helper.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
@@ -246,7 +248,7 @@ static const u64 vesadrm_primary_plane_format_modifiers[] = {
 };
 
 static int vesadrm_primary_plane_helper_atomic_check(struct drm_plane *plane,
-						     struct drm_atomic_state *new_state)
+						     struct drm_atomic_commit *new_state)
 {
 	struct drm_sysfb_device *sysfb = to_drm_sysfb_device(plane->dev);
 	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(new_state, plane);
@@ -315,7 +317,7 @@ static const struct drm_plane_funcs vesadrm_primary_plane_funcs = {
 };
 
 static void vesadrm_crtc_helper_atomic_flush(struct drm_crtc *crtc,
-					     struct drm_atomic_state *state)
+					     struct drm_atomic_commit *state)
 {
 	struct drm_device *dev = crtc->dev;
 	struct drm_sysfb_device *sysfb = to_drm_sysfb_device(dev);
@@ -617,6 +619,22 @@ static struct drm_driver vesadrm_driver = {
  * Platform driver
  */
 
+static int vesadrm_pm_suspend(struct device *dev)
+{
+	struct drm_device *drm = dev_get_drvdata(dev);
+
+	return drm_mode_config_helper_suspend(drm);
+}
+
+static int vesadrm_pm_resume(struct device *dev)
+{
+	struct drm_device *drm = dev_get_drvdata(dev);
+
+	return drm_mode_config_helper_resume(drm);
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(vesadrm_pm_ops, vesadrm_pm_suspend, vesadrm_pm_resume);
+
 static int vesadrm_probe(struct platform_device *pdev)
 {
 	struct vesadrm_device *vesa;
@@ -649,6 +667,7 @@ static void vesadrm_remove(struct platform_device *pdev)
 static struct platform_driver vesadrm_platform_driver = {
 	.driver = {
 		.name = "vesa-framebuffer",
+		.pm = pm_sleep_ptr(&vesadrm_pm_ops),
 	},
 	.probe = vesadrm_probe,
 	.remove = vesadrm_remove,

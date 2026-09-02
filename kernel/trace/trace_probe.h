@@ -238,8 +238,8 @@ struct probe_arg {
 };
 
 struct probe_entry_arg {
-	struct fetch_insn	*code;
 	unsigned int		size;	/* The entry data size */
+	struct fetch_insn	code[] __counted_by(size);
 };
 
 struct trace_uprobe_filter {

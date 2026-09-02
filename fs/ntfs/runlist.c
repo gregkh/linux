@@ -1825,7 +1825,7 @@ struct runlist_element *ntfs_rl_punch_hole(struct runlist_element *dst_rl, int d
 	    !ntfs_rle_contain(s_rl, start_vcn))
 		return ERR_PTR(-EINVAL);
 
-	begin_split = s_rl->vcn != start_vcn ? true : false;
+	begin_split = s_rl->vcn != start_vcn;
 
 	e_rl = ntfs_rl_find_vcn_nolock(dst_rl, end_vcn);
 	if (!e_rl ||
@@ -1833,10 +1833,10 @@ struct runlist_element *ntfs_rl_punch_hole(struct runlist_element *dst_rl, int d
 	    !ntfs_rle_contain(e_rl, end_vcn))
 		return ERR_PTR(-EINVAL);
 
-	end_split = e_rl->vcn + e_rl->length - 1 != end_vcn ? true : false;
+	end_split = e_rl->vcn + e_rl->length - 1 != end_vcn;
 
 	/* @s_rl has to be split into left, punched hole, and right */
-	one_split_3 = e_rl == s_rl && begin_split && end_split ? true : false;
+	one_split_3 = e_rl == s_rl && begin_split && end_split;
 
 	punch_cnt = (int)(e_rl - s_rl) + 1;
 
@@ -1976,7 +1976,7 @@ struct runlist_element *ntfs_rl_collapse_range(struct runlist_element *dst_rl, i
 	    !ntfs_rle_contain(s_rl, start_vcn))
 		return ERR_PTR(-EINVAL);
 
-	begin_split = s_rl->vcn != start_vcn ? true : false;
+	begin_split = s_rl->vcn != start_vcn;
 
 	e_rl = ntfs_rl_find_vcn_nolock(dst_rl, end_vcn);
 	if (!e_rl ||
@@ -1984,10 +1984,10 @@ struct runlist_element *ntfs_rl_collapse_range(struct runlist_element *dst_rl, i
 	    !ntfs_rle_contain(e_rl, end_vcn))
 		return ERR_PTR(-EINVAL);
 
-	end_split = e_rl->vcn + e_rl->length - 1 != end_vcn ? true : false;
+	end_split = e_rl->vcn + e_rl->length - 1 != end_vcn;
 
 	/* @s_rl has to be split into left, collapsed, and right */
-	one_split_3 = e_rl == s_rl && begin_split && end_split ? true : false;
+	one_split_3 = e_rl == s_rl && begin_split && end_split;
 
 	punch_cnt = (int)(e_rl - s_rl) + 1;
 	*punch_rl = kvcalloc(punch_cnt + 1, sizeof(struct runlist_element),

@@ -683,8 +683,8 @@ struct track_data {
 struct hist_elt_data {
 	char *comm;
 	u64 *var_ref_vals;
-	char **field_var_str;
 	int n_field_var_str;
+	char *field_var_str[] __counted_by(n_field_var_str);
 };
 
 struct snapshot_context {
@@ -1629,8 +1629,6 @@ static void hist_elt_data_free(struct hist_elt_data *elt_data)
 	for (i = 0; i < elt_data->n_field_var_str; i++)
 		kfree(elt_data->field_var_str[i]);
 
-	kfree(elt_data->field_var_str);
-
 	kfree(elt_data->comm);
 	kfree(elt_data);
 }
@@ -1650,9 +1648,18 @@ static int hist_trigger_elt_data_alloc(struct tracing_map_elt *elt)
 	struct hist_field *hist_field;
 	unsigned int i, n_str;
 
-	elt_data = kzalloc_obj(*elt_data);
+	BUILD_BUG_ON(STR_VAR_LEN_MAX & (sizeof(u64) - 1));
+
+	n_str = hist_data->n_field_var_str + hist_data->n_save_var_str +
+		hist_data->n_var_str;
+	if (n_str > SYNTH_FIELDS_MAX)
+		return -EINVAL;
+
+	elt_data = kzalloc_flex(*elt_data, field_var_str, n_str);
 	if (!elt_data)
 		return -ENOMEM;
+
+	elt_data->n_field_var_str = n_str;
 
 	for_each_hist_field(i, hist_data) {
 		hist_field = hist_data->fields[i];
@@ -1667,23 +1674,7 @@ static int hist_trigger_elt_data_alloc(struct tracing_map_elt *elt)
 		}
 	}
 
-	n_str = hist_data->n_field_var_str + hist_data->n_save_var_str +
-		hist_data->n_var_str;
-	if (n_str > SYNTH_FIELDS_MAX) {
-		hist_elt_data_free(elt_data);
-		return -EINVAL;
-	}
-
-	BUILD_BUG_ON(STR_VAR_LEN_MAX & (sizeof(u64) - 1));
-
 	size = STR_VAR_LEN_MAX;
-
-	elt_data->field_var_str = kcalloc(n_str, sizeof(char *), GFP_KERNEL);
-	if (!elt_data->field_var_str) {
-		hist_elt_data_free(elt_data);
-		return -EINVAL;
-	}
-	elt_data->n_field_var_str = n_str;
 
 	for (i = 0; i < n_str; i++) {
 		elt_data->field_var_str[i] = kzalloc(size, GFP_KERNEL);

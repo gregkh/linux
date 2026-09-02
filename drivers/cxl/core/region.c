@@ -1148,6 +1148,19 @@ static int cxl_rr_assign_decoder(struct cxl_port *port, struct cxl_region *cxlr,
 static void cxl_region_setup_flags(struct cxl_region *cxlr,
 				   struct cxl_decoder *cxld)
 {
+	if (is_endpoint_decoder(&cxld->dev)) {
+		struct cxl_endpoint_decoder *cxled = to_cxl_endpoint_decoder(&cxld->dev);
+		struct cxl_memdev *cxlmd = cxled_to_memdev(cxled);
+
+		/*
+		 * When a region's memdevs specify an @attach method the attach
+		 * provider is responsible for dispositioning the region for
+		 * both probe and userspace management
+		 */
+		if (cxlmd->attach)
+			set_bit(CXL_REGION_F_LOCK, &cxlr->flags);
+	}
+
 	if (cxld->flags & CXL_DECODER_F_LOCK) {
 		set_bit(CXL_REGION_F_LOCK, &cxlr->flags);
 		clear_bit(CXL_REGION_F_NEEDS_RESET, &cxlr->flags);
@@ -1224,8 +1237,6 @@ static int cxl_port_attach_region(struct cxl_port *port,
 			nr_targets_inc = true;
 		}
 	} else {
-		struct cxl_decoder *cxld;
-
 		cxld = cxl_port_pick_region_decoder(port, cxled, cxlr);
 		if (!cxld) {
 			dev_dbg(&cxlr->dev, "%s: no decoder available\n",
@@ -2203,14 +2214,14 @@ static int cxl_region_attach(struct cxl_region *cxlr,
 	 * will fail when presented as CXL_REGION_F_AUTO.
 	 */
 	for (int i = 0; i < p->nr_targets; i++) {
-		struct cxl_endpoint_decoder *cxled = p->targets[i];
+		struct cxl_endpoint_decoder *target = p->targets[i];
 		int test_pos;
 
-		test_pos = cxl_calc_interleave_pos(cxled, &cxlr->hpa_range);
-		dev_dbg(&cxled->cxld.dev,
-			"Test cxl_calc_interleave_pos(): %s test_pos:%d cxled->pos:%d\n",
-			(test_pos == cxled->pos) ? "success" : "fail",
-			test_pos, cxled->pos);
+		test_pos = cxl_calc_interleave_pos(target, &cxlr->hpa_range);
+		dev_dbg(&target->cxld.dev,
+			"Test cxl_calc_interleave_pos(): %s test_pos:%d target->pos:%d\n",
+			(test_pos == target->pos) ? "success" : "fail",
+			test_pos, target->pos);
 	}
 
 	return 0;
@@ -2568,6 +2579,17 @@ static void unregister_region(struct cxl_region *cxlr)
 	cxlr->hpa_range = DEFINE_RANGE(0, -1);
 
 	cxl_region_iomem_release(cxlr);
+	put_device(&cxlr->dev);
+}
+
+static void endpoint_unregister_region(void *_cxlr)
+{
+	struct cxl_region *cxlr = _cxlr;
+	struct cxl_root_decoder *cxlrd = to_cxl_root_decoder(cxlr->dev.parent);
+
+	guard(mutex)(&cxlrd->regions_lock);
+	if (xa_load(&cxlrd->regions, cxlr->id))
+		unregister_region(cxlr);
 	put_device(&cxlr->dev);
 }
 
@@ -3087,7 +3109,7 @@ int cxl_validate_translation_params(u8 eiw, u16 eig, int pos)
 		return -EINVAL;
 	}
 	if (pos < 0 || pos >= ways) {
-		pr_debug("%s: invalid pos=%d for ways=%u\n", __func__, pos,
+		pr_debug("%s: invalid pos=%d for ways=%d\n", __func__, pos,
 			 ways);
 		return -EINVAL;
 	}
@@ -3133,7 +3155,7 @@ EXPORT_SYMBOL_FOR_MODULES(cxl_calculate_dpa_offset, "cxl_translate");
 
 int cxl_calculate_position(u64 hpa_offset, u8 eiw, u16 eig)
 {
-	unsigned int ways = 0;
+	int ways = 0;
 	u64 shifted, rem;
 	int pos, ret;
 
@@ -3740,6 +3762,9 @@ static struct cxl_region *construct_region(struct cxl_root_decoder *cxlrd,
 	int rc, part = READ_ONCE(cxled->part);
 	struct cxl_region *cxlr;
 
+	if (part < 0)
+		return ERR_PTR(-EBUSY);
+
 	do {
 		cxlr = __create_region(cxlrd, cxlds->part[part].mode,
 				       atomic_read(&cxlrd->region_id),
@@ -4068,6 +4093,103 @@ static int cxl_region_can_probe(struct cxl_region *cxlr)
 	return 0;
 }
 
+static int first_mapped_decoder(struct device *dev, const void *data)
+{
+	struct cxl_endpoint_decoder *cxled;
+
+	if (!is_endpoint_decoder(dev))
+		return 0;
+
+	cxled = to_cxl_endpoint_decoder(dev);
+	if (cxled->cxld.region)
+		return 1;
+
+	return 0;
+}
+
+/*
+ * Runs in cxl_mem_probe context after successful endpoint probe, assumes the
+ * simple case of single mapped decoder per memdev.
+ */
+int cxl_memdev_attach_region(struct cxl_memdev *cxlmd)
+{
+	struct cxl_attach_region *attach =
+		container_of(cxlmd->attach, typeof(*attach), attach);
+	struct cxl_port *endpoint = cxlmd->endpoint;
+	struct cxl_endpoint_decoder *cxled;
+	struct cxl_region *cxlr;
+	int rc;
+
+	/* hold endpoint lock to setup autoremove of the region */
+	guard(device)(&endpoint->dev);
+	if (!endpoint->dev.driver)
+		return -ENXIO;
+	guard(rwsem_read)(&cxl_rwsem.region);
+	guard(rwsem_read)(&cxl_rwsem.dpa);
+
+	/*
+	 * TODO auto-instantiate a region, for now assume this will find an
+	 * auto-region
+	 */
+	struct device *dev __free(put_device) =
+		device_find_child(&endpoint->dev, NULL, first_mapped_decoder);
+
+	if (!dev) {
+		dev_dbg(cxlmd->cxlds->dev, "no region found for memdev %s\n",
+			dev_name(&cxlmd->dev));
+		return -ENXIO;
+	}
+
+	cxled = to_cxl_endpoint_decoder(dev);
+	cxlr = cxled->cxld.region;
+
+	if (cxlr->params.state < CXL_CONFIG_COMMIT) {
+		dev_dbg(cxlmd->cxlds->dev,
+			"region %s not committed for memdev %s\n",
+			dev_name(&cxlr->dev), dev_name(&cxlmd->dev));
+		return -ENXIO;
+	}
+
+	if (cxlr->params.nr_targets > 1) {
+		dev_dbg(cxlmd->cxlds->dev,
+			"Only attach to local non-interleaved region\n");
+		return -ENXIO;
+	}
+
+	/* Only teardown regions that pass validation, ignore the rest */
+	get_device(&cxlr->dev);
+	rc = devm_add_action_or_reset(&endpoint->dev,
+				      endpoint_unregister_region, cxlr);
+	if (rc)
+		return rc;
+
+	attach->hpa_range = (struct range) {
+		.start = cxlr->params.res->start,
+		.end = cxlr->params.res->end,
+	};
+	return 0;
+}
+EXPORT_SYMBOL_FOR_MODULES(cxl_memdev_attach_region, "cxl_mem");
+
+/*
+ * The presence of an attach method indicates that the region is designated for
+ * a purpose outside of CXL core memory expansion defaults.
+ */
+static bool cxl_region_has_memdev_attach(struct cxl_region *cxlr)
+{
+	struct cxl_region_params *p = &cxlr->params;
+
+	for (int i = 0; i < p->nr_targets; i++) {
+		struct cxl_endpoint_decoder *cxled = p->targets[i];
+		struct cxl_memdev *cxlmd = cxled_to_memdev(cxled);
+
+		if (cxlmd->attach)
+			return true;
+	}
+
+	return false;
+}
+
 static int cxl_region_probe(struct device *dev)
 {
 	struct cxl_region *cxlr = to_cxl_region(dev);
@@ -4098,6 +4220,9 @@ static int cxl_region_probe(struct device *dev)
 	rc = cxl_region_setup_poison(cxlr);
 	if (rc)
 		return rc;
+
+	if (cxl_region_has_memdev_attach(cxlr))
+		return 0;
 
 	switch (cxlr->mode) {
 	case CXL_PARTMODE_PMEM:

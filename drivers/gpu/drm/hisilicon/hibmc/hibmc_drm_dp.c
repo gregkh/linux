@@ -161,7 +161,7 @@ static inline int hibmc_dp_prepare(struct hibmc_dp *dp, struct drm_display_mode 
 }
 
 static void hibmc_dp_encoder_enable(struct drm_encoder *drm_encoder,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 {
 	struct hibmc_dp *dp = container_of(drm_encoder, struct hibmc_dp, encoder);
 	struct drm_display_mode *mode = &drm_encoder->crtc->state->mode;
@@ -173,7 +173,7 @@ static void hibmc_dp_encoder_enable(struct drm_encoder *drm_encoder,
 }
 
 static void hibmc_dp_encoder_disable(struct drm_encoder *drm_encoder,
-				     struct drm_atomic_state *state)
+				     struct drm_atomic_commit *state)
 {
 	struct hibmc_dp *dp = container_of(drm_encoder, struct hibmc_dp, encoder);
 

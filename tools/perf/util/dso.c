@@ -1248,7 +1248,8 @@ static enum dso_swap_type dso_swap_type__from_elf_data(unsigned char eidata)
 }
 
 /* Reads e_machine from fd, optionally caching data in dso. */
-uint16_t dso__read_e_machine(struct dso *optional_dso, int fd, uint32_t *e_flags)
+uint16_t dso__read_e_machine_endian(struct dso *optional_dso, int fd, uint32_t *e_flags,
+				    bool *is_big_endian)
 {
 	uint16_t e_machine = EM_NONE;
 	unsigned char e_ident[EI_NIDENT];
@@ -1277,6 +1278,9 @@ uint16_t dso__read_e_machine(struct dso *optional_dso, int fd, uint32_t *e_flags
 	swap_type = dso_swap_type__from_elf_data(e_ident[EI_DATA]);
 	if (swap_type == DSO_SWAP__UNSET)
 		return EM_NONE; // Bad ELF data encoding.
+
+	if (is_big_endian)
+		*is_big_endian = (e_ident[EI_DATA] == ELFDATA2MSB);
 
 	/* Cache the need for swapping. */
 	if (optional_dso) {
@@ -1316,7 +1320,8 @@ uint16_t dso__read_e_machine(struct dso *optional_dso, int fd, uint32_t *e_flags
 	return e_machine;
 }
 
-uint16_t dso__e_machine(struct dso *dso, struct machine *machine, uint32_t *e_flags)
+uint16_t dso__e_machine_endian(struct dso *dso, struct machine *machine, uint32_t *e_flags,
+			       bool *is_big_endian)
 {
 	uint16_t e_machine = EM_NONE;
 	int fd;
@@ -1336,9 +1341,11 @@ uint16_t dso__e_machine(struct dso *dso, struct machine *machine, uint32_t *e_fl
 	case DSO_BINARY_TYPE__BPF_IMAGE:
 	case DSO_BINARY_TYPE__OOL:
 	case DSO_BINARY_TYPE__JAVA_JIT:
-		if (e_flags)
-			*e_flags = EF_HOST;
-		return EM_HOST;
+		if (is_big_endian) {
+			*is_big_endian = perf_arch_is_big_endian(
+				machine && machine->env ? perf_env__arch(machine->env) : NULL);
+		}
+		return perf_env__e_machine(machine ? machine->env : NULL, e_flags);
 	case DSO_BINARY_TYPE__DEBUGLINK:
 	case DSO_BINARY_TYPE__BUILD_ID_CACHE:
 	case DSO_BINARY_TYPE__BUILD_ID_CACHE_DEBUGINFO:
@@ -1366,7 +1373,7 @@ uint16_t dso__e_machine(struct dso *dso, struct machine *machine, uint32_t *e_fl
 	try_to_open_dso(dso, machine);
 	fd = dso__data(dso)->fd;
 	if (fd >= 0)
-		e_machine = dso__read_e_machine(dso, fd, e_flags);
+		e_machine = dso__read_e_machine_endian(dso, fd, e_flags, is_big_endian);
 	else if (e_flags)
 		*e_flags = 0;
 

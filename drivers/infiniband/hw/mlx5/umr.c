@@ -846,7 +846,7 @@ static bool umr_can_use_indirect_mkey(struct mlx5_ib_dev *dev)
 }
 
 int mlx5r_umr_update_xlt(struct mlx5_ib_mr *mr, u64 idx, int npages,
-			 int page_shift, int flags)
+			 int page_shift, int flags, u32 pdn)
 {
 	int desc_size = (flags & MLX5_IB_UPD_XLT_INDIRECT)
 			       ? sizeof(struct mlx5_klm)
@@ -862,7 +862,6 @@ int mlx5r_umr_update_xlt(struct mlx5_ib_mr *mr, u64 idx, int npages,
 	size_t orig_sg_length;
 	size_t pages_iter;
 	struct ib_sge sg;
-	u32 pdn = mlx5_mr_pdn(mr);
 	int err = 0;
 	void *xlt;
 

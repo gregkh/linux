@@ -123,12 +123,6 @@ int tidss_encoder_create(struct tidss_device *tidss,
 		return PTR_ERR(connector);
 	}
 
-	ret = drm_connector_attach_encoder(connector, enc);
-	if (ret) {
-		dev_err(tidss->dev, "attaching encoder to connector failed\n");
-		return ret;
-	}
-
 	t_enc->connector = connector;
 
 	dev_dbg(tidss->dev, "Encoder create done\n");

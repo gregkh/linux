@@ -58,6 +58,7 @@
 #include <linux/percpu-rwsem.h>
 #include <linux/unwind_deferred.h>
 #include <linux/kvm_types.h>
+#include <linux/seq_file.h>
 
 #include "internal.h"
 
@@ -5310,6 +5311,7 @@ static void free_event_rcu(struct rcu_head *head)
 	if (event->ns)
 		put_pid_ns(event->ns);
 	perf_event_free_filter(event);
+	kfree(event->addr_filter_ranges);
 	kmem_cache_free(perf_event_cache, event);
 }
 
@@ -5756,8 +5758,6 @@ static void __free_event(struct perf_event *event)
 
 	if (event->attach_state & PERF_ATTACH_CALLCHAIN)
 		put_callchain_buffers();
-
-	kfree(event->addr_filter_ranges);
 
 	if (event->attach_state & PERF_ATTACH_EXCLUSIVE)
 		exclusive_event_destroy(event);
@@ -7555,6 +7555,33 @@ static int perf_fasync(int fd, struct file *filp, int on)
 	return 0;
 }
 
+static void perf_show_fdinfo(struct seq_file *m, struct file *f)
+{
+	struct perf_event *event = f->private_data;
+	struct perf_event_context *ctx;
+	struct mutex *child_mutex;
+
+	ctx = perf_event_ctx_lock(event);
+	child_mutex = event->parent ? &event->parent->child_mutex : &event->child_mutex;
+	mutex_lock(child_mutex);
+
+	seq_printf(m, "perf_event_attr.type:\t%u\n", event->orig_type);
+	if (event->pmu)
+		seq_printf(m, "pmu_type:\t%u\n", event->pmu->type);
+	seq_printf(m, "perf_event_attr.config:\t0x%llx\n", (unsigned long long)event->attr.config);
+	seq_printf(m, "perf_event_attr.config1:\t0x%llx\n",
+		   (unsigned long long)event->attr.config1);
+	seq_printf(m, "perf_event_attr.config2:\t0x%llx\n",
+		   (unsigned long long)event->attr.config2);
+	seq_printf(m, "perf_event_attr.config3:\t0x%llx\n",
+		   (unsigned long long)event->attr.config3);
+	seq_printf(m, "perf_event_attr.config4:\t0x%llx\n",
+		   (unsigned long long)event->attr.config4);
+
+	mutex_unlock(child_mutex);
+	perf_event_ctx_unlock(event, ctx);
+}
+
 static const struct file_operations perf_fops = {
 	.release		= perf_release,
 	.read			= perf_read,
@@ -7563,6 +7590,7 @@ static const struct file_operations perf_fops = {
 	.compat_ioctl		= perf_compat_ioctl,
 	.mmap			= perf_mmap,
 	.fasync			= perf_fasync,
+	.show_fdinfo		= perf_show_fdinfo,
 };
 
 /*
@@ -11691,6 +11719,15 @@ static int __perf_event_set_bpf_prog(struct perf_event *event,
 	if (prog->type == BPF_PROG_TYPE_KPROBE && prog->sleepable && !is_uprobe)
 		/* only uprobe programs are allowed to be sleepable */
 		return -EINVAL;
+
+	if (prog->type == BPF_PROG_TYPE_TRACEPOINT && prog->sleepable) {
+		/*
+		 * Sleepable tracepoint programs can only attach to faultable
+		 * tracepoints. Currently only syscall tracepoints are faultable.
+		 */
+		if (!is_syscall_tp)
+			return -EINVAL;
+	}
 
 	/* Kprobe override only works for kprobes, not uprobes. */
 	if (prog->kprobe_override && !is_kprobe)

@@ -29,6 +29,7 @@ struct iomap_ioend *iomap_init_ioend(struct inode *inode,
 	ioend->io_offset = file_offset;
 	ioend->io_size = bio->bi_iter.bi_size;
 	ioend->io_sector = bio->bi_iter.bi_sector;
+	ioend->io_vi = NULL;
 	ioend->io_private = NULL;
 	return ioend;
 }
@@ -384,6 +385,8 @@ static bool iomap_ioend_can_merge(struct iomap_ioend *ioend,
 		return false;
 
 	if (ioend->io_bio.bi_status != next->io_bio.bi_status)
+		return false;
+	if (ioend->io_private != next->io_private)
 		return false;
 	if (next->io_flags & IOMAP_IOEND_BOUNDARY)
 		return false;

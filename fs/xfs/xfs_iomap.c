@@ -45,7 +45,7 @@ xfs_alert_fsblock_zero(
 			"Access to block zero in inode %llu "
 			"start_block: %llx start_off: %llx "
 			"blkcnt: %llx extent-state: %x",
-		(unsigned long long)ip->i_ino,
+		(unsigned long long)I_INO(ip),
 		(unsigned long long)imap->br_startblock,
 		(unsigned long long)imap->br_startoff,
 		(unsigned long long)imap->br_blockcount,
@@ -1736,7 +1736,7 @@ restart:
 	if (count_fsb > ac->reserved_blocks) {
 		xfs_warn_ratelimited(mp,
 "Short write on ino 0x%llx comm %.20s due to three-way race with write fault and direct I/O",
-			ip->i_ino, current->comm);
+			I_INO(ip), current->comm);
 		count_fsb = ac->reserved_blocks;
 		if (!count_fsb) {
 			error = -EIO;

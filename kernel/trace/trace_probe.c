@@ -954,15 +954,10 @@ static int __store_entry_arg(struct trace_probe *tp, int argnum)
 	int i, offset, last_offset = 0;
 
 	if (!earg) {
-		earg = kzalloc_obj(*tp->entry_arg);
+		earg = kzalloc_flex(*earg, code, 2 * tp->nr_args + 1);
 		if (!earg)
 			return -ENOMEM;
 		earg->size = 2 * tp->nr_args + 1;
-		earg->code = kzalloc_objs(struct fetch_insn, earg->size);
-		if (!earg->code) {
-			kfree(earg);
-			return -ENOMEM;
-		}
 		/* Fill the code buffer with 'end' to simplify it */
 		for (i = 0; i < earg->size; i++)
 			earg->code[i].op = FETCH_OP_END;
@@ -2175,7 +2170,6 @@ void trace_probe_cleanup(struct trace_probe *tp)
 		traceprobe_free_probe_arg(&tp->args[i]);
 
 	if (tp->entry_arg) {
-		kfree(tp->entry_arg->code);
 		kfree(tp->entry_arg);
 		tp->entry_arg = NULL;
 	}

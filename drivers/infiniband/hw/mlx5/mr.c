@@ -844,7 +844,7 @@ static struct ib_mr *create_user_odp_mr(struct ib_pd *pd, u64 start, u64 length,
 	if (err)
 		goto err_dereg_mr;
 
-	err = mlx5_ib_init_odp_mr(mr);
+	err = mlx5_ib_init_odp_mr(mr, pd);
 	if (err)
 		goto err_dereg_mr;
 	return &mr->ibmr;
@@ -877,7 +877,7 @@ struct ib_mr *mlx5_ib_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	if (access_flags & IB_ACCESS_ON_DEMAND)
 		return create_user_odp_mr(pd, start, length, iova, access_flags,
 					  udata);
-	umem = ib_umem_get(&dev->ib_dev, start, length, access_flags);
+	umem = ib_umem_get_va(&dev->ib_dev, start, length, access_flags);
 	if (IS_ERR(umem))
 		return ERR_CAST(umem);
 	return create_real_mr(pd, umem, iova, access_flags, dmah);
@@ -960,6 +960,10 @@ reg_user_mr_dmabuf(struct ib_pd *pd, struct device *dma_device,
 	atomic_add(ib_umem_num_pages(mr->umem), &dev->mdev->priv.reg_pages);
 	umem_dmabuf->private = mr;
 	if (!pinned_mode) {
+		err = mlx5r_odp_create_eq(dev, &dev->odp_pf_eq);
+		if (err)
+			goto err_dereg_mr;
+
 		err = mlx5r_store_odp_mkey(dev, &mr->mmkey);
 		if (err)
 			goto err_dereg_mr;
@@ -967,7 +971,7 @@ reg_user_mr_dmabuf(struct ib_pd *pd, struct device *dma_device,
 		mr->data_direct = true;
 	}
 
-	err = mlx5_ib_init_dmabuf_mr(mr);
+	err = mlx5_ib_init_dmabuf_mr(mr, pd);
 	if (err)
 		goto err_dereg_mr;
 	return &mr->ibmr;
@@ -1248,8 +1252,8 @@ struct ib_mr *mlx5_ib_rereg_user_mr(struct ib_mr *ib_mr, int flags, u64 start,
 		struct ib_umem *new_umem;
 		unsigned long page_size;
 
-		new_umem = ib_umem_get(&dev->ib_dev, start, length,
-				       new_access_flags);
+		new_umem = ib_umem_get_va(&dev->ib_dev, start, length,
+					  new_access_flags);
 		if (IS_ERR(new_umem))
 			return ERR_CAST(new_umem);
 
@@ -1837,7 +1841,7 @@ int mlx5_ib_alloc_mw(struct ib_mw *ibmw, struct ib_udata *udata)
 	resp.response_length =
 		min(offsetofend(typeof(resp), response_length), udata->outlen);
 	if (resp.response_length) {
-		err = ib_copy_to_udata(udata, &resp, resp.response_length);
+		err = ib_respond_udata(udata, resp);
 		if (err)
 			goto free_mkey;
 	}

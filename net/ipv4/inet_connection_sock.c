@@ -824,7 +824,6 @@ no_route:
 	__IP_INC_STATS(net, IPSTATS_MIB_OUTNOROUTES);
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(inet_csk_route_child_sock);
 
 /* Decide when to expire the request and when to resend SYN-ACK */
 static void syn_ack_recalc(struct request_sock *req,
@@ -901,7 +900,6 @@ struct request_sock *inet_reqsk_alloc(const struct request_sock_ops *ops,
 
 	return req;
 }
-EXPORT_SYMBOL(inet_reqsk_alloc);
 
 void __reqsk_free(struct request_sock *req)
 {
@@ -911,7 +909,6 @@ void __reqsk_free(struct request_sock *req)
 	kfree(req->saved_syn);
 	kmem_cache_free(req->rsk_ops->slab, req);
 }
-EXPORT_SYMBOL_GPL(__reqsk_free);
 
 static struct request_sock *inet_reqsk_clone(struct request_sock *req,
 					     struct sock *sk)
@@ -1292,7 +1289,6 @@ void inet_csk_destroy_sock(struct sock *sk)
 
 	sock_put(sk);
 }
-EXPORT_SYMBOL(inet_csk_destroy_sock);
 
 void inet_csk_prepare_for_destroy_sock(struct sock *sk)
 {
@@ -1314,7 +1310,6 @@ void inet_csk_prepare_forced_close(struct sock *sk)
 	inet_csk_prepare_for_destroy_sock(sk);
 	inet_sk(sk)->inet_num = 0;
 }
-EXPORT_SYMBOL(inet_csk_prepare_forced_close);
 
 static int inet_ulp_can_listen(const struct sock *sk)
 {
@@ -1418,7 +1413,6 @@ struct sock *inet_csk_reqsk_queue_add(struct sock *sk,
 	spin_unlock(&queue->rskq_lock);
 	return child;
 }
-EXPORT_SYMBOL(inet_csk_reqsk_queue_add);
 
 struct sock *inet_csk_complete_hashdance(struct sock *sk, struct sock *child,
 					 struct request_sock *req, bool own_req)

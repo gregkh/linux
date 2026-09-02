@@ -228,10 +228,9 @@ static void init_mqd(struct mqd_manager *mm, void **mqd,
 		m->cp_hqd_aql_control =
 			1 << CP_HQD_AQL_CONTROL__CONTROL0__SHIFT;
 
-	if (q->tba_addr) {
+	if (q->tba_addr)
 		m->compute_pgm_rsrc2 |=
 			(1 << COMPUTE_PGM_RSRC2__TRAP_PRESENT__SHIFT);
-	}
 
 	if (mm->dev->kfd->cwsr_enabled && q->ctx_save_restore_area_address) {
 		m->cp_hqd_persistent_state |=
@@ -245,6 +244,11 @@ static void init_mqd(struct mqd_manager *mm, void **mqd,
 		m->cp_hqd_cntl_stack_offset = q->ctl_stack_size;
 		m->cp_hqd_wg_state_offset = q->ctl_stack_size;
 	}
+
+	mutex_lock(&mm->dev->kfd->profiler_lock);
+	if (mm->dev->kfd->profiler_process != NULL)
+		m->compute_perfcount_enable = 1;
+	mutex_unlock(&mm->dev->kfd->profiler_lock);
 
 	*mqd = m;
 	if (gart_addr)
@@ -327,6 +331,13 @@ static void update_mqd(struct mqd_manager *mm, void *mqd,
 	}
 	if (mm->dev->kfd->cwsr_enabled && q->ctx_save_restore_area_address)
 		m->cp_hqd_ctx_save_control = 0;
+
+	if (minfo) {
+		if (minfo->update_flag == UPDATE_FLAG_PERFCOUNT_ENABLE)
+			m->compute_perfcount_enable = 1;
+		else if (minfo->update_flag == UPDATE_FLAG_PERFCOUNT_DISABLE)
+			m->compute_perfcount_enable = 0;
+	}
 
 	if (KFD_GC_VERSION(mm->dev) != IP_VERSION(9, 4, 3) &&
 	    KFD_GC_VERSION(mm->dev) != IP_VERSION(9, 4, 4) &&

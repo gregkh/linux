@@ -350,7 +350,8 @@ static bool get_ifunc_name(Elf *elf, struct dso *dso, GElf_Ehdr *ehdr,
 	sym = dso__find_symbol_nocache(dso, addr);
 
 	/* Expecting the address to be an IFUNC or IFUNC alias */
-	if (!sym || sym->start != addr || (sym->type != STT_GNU_IFUNC && !sym->ifunc_alias))
+	if (!sym || sym->start != addr ||
+	    (symbol__type(sym) != STT_GNU_IFUNC && !symbol__ifunc_alias(sym)))
 		return false;
 
 	snprintf(buf, buf_sz, "%s@plt", sym->name);
@@ -1637,9 +1638,11 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 		if (!is_label && !elf_sym__filter(&sym))
 			continue;
 
-		/* Reject ARM ELF "mapping symbols": these aren't unique and
+		/*
+		 * Reject ARM ELF "mapping symbols": these aren't unique and
 		 * don't identify functions, so will confuse the profile
-		 * output: */
+		 * output:
+		 */
 		if (ehdr.e_machine == EM_ARM || ehdr.e_machine == EM_AARCH64) {
 			if (elf_name[0] == '$' && strchr("adtx", elf_name[1])
 			    && (elf_name[2] == '\0' || elf_name[2] == '.'))
@@ -1651,6 +1654,10 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 			if (elf_name[0] == '$' && strchr("dx", elf_name[1]))
 				continue;
 		}
+
+		/* Reject kernel mapping symbols for kernel DSOs only */
+		if (dso__kernel(dso) && is_ignored_kernel_symbol(elf_name))
+			continue;
 
 		if (runtime_ss->opdsec && sym.st_shndx == runtime_ss->opdidx) {
 			u32 offset = sym.st_value - syms_ss->opdshdr.sh_addr;
@@ -1772,7 +1779,7 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 
 		arch__sym_update(f, &sym);
 
-		__symbols__insert(dso__symbols(curr_dso), f, dso__kernel(dso));
+		__symbols__insert(dso__symbols(curr_dso), f);
 		nr++;
 	}
 	dso__put(curr_dso);

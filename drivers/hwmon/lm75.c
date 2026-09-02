@@ -14,7 +14,7 @@
 #include <linux/i3c/device.h>
 #include <linux/hwmon.h>
 #include <linux/err.h>
-#include <linux/of.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/util_macros.h>
 #include <linux/regulator/consumer.h>
@@ -123,7 +123,9 @@ struct lm75_data {
 
 static const u8 lm75_sample_set_masks[] = { 0 << 5, 1 << 5, 2 << 5, 3 << 5 };
 
-#define LM75_SAMPLE_CLEAR_MASK	(3 << 5)
+#define LM75_ALERT_POLARITY_HIGH_8_BIT	(BIT(2))
+#define LM75_ALERT_POLARITY_HIGH_16_BIT	(BIT(2) << 8)
+#define LM75_SAMPLE_CLEAR_MASK		(3 << 5)
 
 /* The structure below stores the configuration values of the supported devices.
  * In case of being supported multiple configurations, the default one must
@@ -539,6 +541,8 @@ static umode_t lm75_is_visible(const void *data, enum hwmon_sensor_types type,
 			if (config_data->params->num_sample_times > 1)
 				return 0644;
 			return 0444;
+		default:
+			break;
 		}
 		break;
 	case hwmon_temp:
@@ -554,6 +558,8 @@ static umode_t lm75_is_visible(const void *data, enum hwmon_sensor_types type,
 		case hwmon_temp_alarm:
 			if (config_data->params->alarm)
 				return 0444;
+			break;
+		default:
 			break;
 		}
 		break;
@@ -725,6 +731,7 @@ static void lm75_remove(void *data)
 static int lm75_generic_probe(struct device *dev, const char *name,
 			      enum lm75_type kind, int irq, struct regmap *regmap)
 {
+	u16 clr_mask, pol_mask, set_mask;
 	struct device *hwmon_dev;
 	struct lm75_data *data;
 	int status, err;
@@ -762,8 +769,18 @@ static int lm75_generic_probe(struct device *dev, const char *name,
 		return err;
 	data->orig_conf = status;
 
-	err = lm75_write_config(data, data->params->set_mask,
-				data->params->clr_mask);
+	/* Enforce polarity active-low (default) or active-high (devicetree) */
+	if (!data->params->config_reg_16bits)
+		pol_mask = LM75_ALERT_POLARITY_HIGH_8_BIT;
+	else
+		pol_mask = LM75_ALERT_POLARITY_HIGH_16_BIT;
+
+	clr_mask = data->params->clr_mask | pol_mask;
+	set_mask = data->params->set_mask & ~pol_mask;
+	if (device_property_read_bool(dev, "ti,alert-polarity-active-high"))
+		set_mask |= pol_mask;
+
+	err = lm75_write_config(data, set_mask, clr_mask);
 	if (err)
 		return err;
 
@@ -882,7 +899,7 @@ static int lm75_i3c_probe(struct i3c_device *i3cdev)
 	return lm75_generic_probe(dev, id_data->name, id_data->type, 0, regmap);
 }
 
-static const struct of_device_id __maybe_unused lm75_of_match[] = {
+static const struct of_device_id lm75_of_match[] = {
 	{
 		.compatible = "adi,adt75",
 		.data = (void *)adt75
@@ -1135,7 +1152,7 @@ static struct i2c_driver lm75_i2c_driver = {
 	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name	= "lm75",
-		.of_match_table = of_match_ptr(lm75_of_match),
+		.of_match_table = lm75_of_match,
 		.pm	= LM75_DEV_PM_OPS,
 	},
 	.probe		= lm75_i2c_probe,

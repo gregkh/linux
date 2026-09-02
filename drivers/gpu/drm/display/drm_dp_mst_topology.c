@@ -4437,7 +4437,7 @@ EXPORT_SYMBOL(drm_dp_mst_get_edid);
  * Total slots in the atomic state assigned for this port, or a negative error
  * code if the port no longer exists
  */
-int drm_dp_atomic_find_time_slots(struct drm_atomic_state *state,
+int drm_dp_atomic_find_time_slots(struct drm_atomic_commit *state,
 				  struct drm_dp_mst_topology_mgr *mgr,
 				  struct drm_dp_mst_port *port, int pbn)
 {
@@ -4527,7 +4527,7 @@ EXPORT_SYMBOL(drm_dp_atomic_find_time_slots);
  * Returns:
  * 0 on success, negative error code otherwise
  */
-int drm_dp_atomic_release_time_slots(struct drm_atomic_state *state,
+int drm_dp_atomic_release_time_slots(struct drm_atomic_commit *state,
 				     struct drm_dp_mst_topology_mgr *mgr,
 				     struct drm_dp_mst_port *port)
 {
@@ -4595,7 +4595,7 @@ EXPORT_SYMBOL(drm_dp_atomic_release_time_slots);
  * Returns:
  * 0 if all CRTC commits were retrieved successfully, negative error code otherwise
  */
-int drm_dp_mst_atomic_setup_commit(struct drm_atomic_state *state)
+int drm_dp_mst_atomic_setup_commit(struct drm_atomic_commit *state)
 {
 	struct drm_dp_mst_topology_mgr *mgr;
 	struct drm_dp_mst_topology_state *mst_state;
@@ -4645,7 +4645,7 @@ EXPORT_SYMBOL(drm_dp_mst_atomic_setup_commit);
  * All MST drivers must call this function after calling drm_atomic_helper_wait_for_dependencies(),
  * or whatever their equivalent of that is.
  */
-void drm_dp_mst_atomic_wait_for_dependencies(struct drm_atomic_state *state)
+void drm_dp_mst_atomic_wait_for_dependencies(struct drm_atomic_commit *state)
 {
 	struct drm_dp_mst_topology_state *old_mst_state, *new_mst_state;
 	struct drm_dp_mst_topology_mgr *mgr;
@@ -4702,7 +4702,7 @@ EXPORT_SYMBOL(drm_dp_mst_atomic_wait_for_dependencies);
 int drm_dp_mst_root_conn_atomic_check(struct drm_connector_state *new_conn_state,
 				      struct drm_dp_mst_topology_mgr *mgr)
 {
-	struct drm_atomic_state *state = new_conn_state->state;
+	struct drm_atomic_commit *state = new_conn_state->state;
 	struct drm_connector_state *old_conn_state =
 		drm_atomic_get_old_connector_state(state, new_conn_state->connector);
 	struct drm_crtc_state *crtc_state;
@@ -5440,7 +5440,7 @@ drm_dp_mst_atomic_check_payload_alloc_limits(struct drm_dp_mst_topology_mgr *mgr
  * See also:
  * drm_dp_mst_atomic_enable_dsc()
  */
-int drm_dp_mst_add_affected_dsc_crtcs(struct drm_atomic_state *state, struct drm_dp_mst_topology_mgr *mgr)
+int drm_dp_mst_add_affected_dsc_crtcs(struct drm_atomic_commit *state, struct drm_dp_mst_topology_mgr *mgr)
 {
 	struct drm_dp_mst_topology_state *mst_state;
 	struct drm_dp_mst_atomic_payload *pos;
@@ -5490,7 +5490,7 @@ EXPORT_SYMBOL(drm_dp_mst_add_affected_dsc_crtcs);
 
 /**
  * drm_dp_mst_atomic_enable_dsc - Set DSC Enable Flag to On/Off
- * @state: Pointer to the new drm_atomic_state
+ * @state: Pointer to the new drm_atomic_commit
  * @port: Pointer to the affected MST Port
  * @pbn: Newly recalculated bw required for link with DSC enabled
  * @enable: Boolean flag to enable or disable DSC on the port
@@ -5501,7 +5501,7 @@ EXPORT_SYMBOL(drm_dp_mst_add_affected_dsc_crtcs);
  * ports have DSC enabled
  *
  */
-int drm_dp_mst_atomic_enable_dsc(struct drm_atomic_state *state,
+int drm_dp_mst_atomic_enable_dsc(struct drm_atomic_commit *state,
 				 struct drm_dp_mst_port *port,
 				 int pbn, bool enable)
 {
@@ -5580,7 +5580,7 @@ EXPORT_SYMBOL(drm_dp_mst_atomic_enable_dsc);
  *   - %-EINVAL, if the new state is invalid, because the root port has
  *     too many payloads.
  */
-int drm_dp_mst_atomic_check_mgr(struct drm_atomic_state *state,
+int drm_dp_mst_atomic_check_mgr(struct drm_atomic_commit *state,
 				struct drm_dp_mst_topology_mgr *mgr,
 				struct drm_dp_mst_topology_state *mst_state,
 				struct drm_dp_mst_port **failing_port)
@@ -5627,7 +5627,7 @@ EXPORT_SYMBOL(drm_dp_mst_atomic_check_mgr);
  * Returns:
  * 0 if the new state is valid, negative error code otherwise.
  */
-int drm_dp_mst_atomic_check(struct drm_atomic_state *state)
+int drm_dp_mst_atomic_check(struct drm_atomic_commit *state)
 {
 	struct drm_dp_mst_topology_mgr *mgr;
 	struct drm_dp_mst_topology_state *mst_state;
@@ -5664,7 +5664,7 @@ EXPORT_SYMBOL(drm_dp_mst_topology_state_funcs);
  * RETURNS:
  * The MST topology state or error pointer.
  */
-struct drm_dp_mst_topology_state *drm_atomic_get_mst_topology_state(struct drm_atomic_state *state,
+struct drm_dp_mst_topology_state *drm_atomic_get_mst_topology_state(struct drm_atomic_commit *state,
 								    struct drm_dp_mst_topology_mgr *mgr)
 {
 	return to_dp_mst_topology_state(drm_atomic_get_private_obj_state(state, &mgr->base));
@@ -5685,7 +5685,7 @@ EXPORT_SYMBOL(drm_atomic_get_mst_topology_state);
  * in the global atomic state
  */
 struct drm_dp_mst_topology_state *
-drm_atomic_get_old_mst_topology_state(struct drm_atomic_state *state,
+drm_atomic_get_old_mst_topology_state(struct drm_atomic_commit *state,
 				      struct drm_dp_mst_topology_mgr *mgr)
 {
 	struct drm_private_state *old_priv_state =
@@ -5709,7 +5709,7 @@ EXPORT_SYMBOL(drm_atomic_get_old_mst_topology_state);
  * in the global atomic state
  */
 struct drm_dp_mst_topology_state *
-drm_atomic_get_new_mst_topology_state(struct drm_atomic_state *state,
+drm_atomic_get_new_mst_topology_state(struct drm_atomic_commit *state,
 				      struct drm_dp_mst_topology_mgr *mgr)
 {
 	struct drm_private_state *new_priv_state =

@@ -576,6 +576,7 @@ static void msi2500_disconnect(struct usb_interface *intf)
 	v4l2_device_disconnect(&dev->v4l2_dev);
 	video_unregister_device(&dev->vdev);
 	spi_unregister_controller(dev->ctlr);
+	spi_controller_put(dev->ctlr);
 	mutex_unlock(&dev->v4l2_lock);
 	mutex_unlock(&dev->vb_queue_lock);
 
@@ -1246,10 +1247,8 @@ static int msi2500_probe(struct usb_interface *intf,
 	ctlr->transfer_one_message = msi2500_transfer_one_message;
 	spi_controller_set_devdata(ctlr, dev);
 	ret = spi_register_controller(ctlr);
-	if (ret) {
-		spi_controller_put(ctlr);
-		goto err_unregister_v4l2_dev;
-	}
+	if (ret)
+		goto err_put_controller;
 
 	/* load v4l2 subdevice */
 	sd = v4l2_spi_new_subdev(&dev->v4l2_dev, ctlr, &board_info);
@@ -1292,6 +1291,8 @@ err_free_controls:
 	v4l2_ctrl_handler_free(&dev->hdl);
 err_unregister_controller:
 	spi_unregister_controller(dev->ctlr);
+err_put_controller:
+	spi_controller_put(dev->ctlr);
 err_unregister_v4l2_dev:
 	v4l2_device_unregister(&dev->v4l2_dev);
 err_free_mem:

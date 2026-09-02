@@ -4782,8 +4782,7 @@ static bool __maybe_unused its_enable_quirk_cavium_22375(void *data)
 	struct its_node *its = data;
 
 	/* erratum 22375: only alloc 8MB table size (20 bits) */
-	its->typer &= ~GITS_TYPER_DEVBITS;
-	its->typer |= FIELD_PREP(GITS_TYPER_DEVBITS, 20 - 1);
+	FIELD_MODIFY(GITS_TYPER_DEVBITS, &its->typer, 20 - 1);
 	its->flags |= ITS_FLAGS_WORKAROUND_CAVIUM_22375;
 
 	return true;
@@ -4803,8 +4802,7 @@ static bool __maybe_unused its_enable_quirk_qdf2400_e0065(void *data)
 	struct its_node *its = data;
 
 	/* On QDF2400, the size of the ITE is 16Bytes */
-	its->typer &= ~GITS_TYPER_ITT_ENTRY_SIZE;
-	its->typer |= FIELD_PREP(GITS_TYPER_ITT_ENTRY_SIZE, 16 - 1);
+	FIELD_MODIFY(GITS_TYPER_ITT_ENTRY_SIZE, &its->typer, 16 - 1);
 
 	return true;
 }
@@ -4838,10 +4836,8 @@ static bool __maybe_unused its_enable_quirk_socionext_synquacer(void *data)
 		its->get_msi_base = its_irq_get_msi_base_pre_its;
 
 		ids = ilog2(pre_its_window[1]) - 2;
-		if (device_ids(its) > ids) {
-			its->typer &= ~GITS_TYPER_DEVBITS;
-			its->typer |= FIELD_PREP(GITS_TYPER_DEVBITS, ids - 1);
-		}
+		if (device_ids(its) > ids)
+			FIELD_MODIFY(GITS_TYPER_DEVBITS, &its->typer, ids - 1);
 
 		/* the pre-ITS breaks isolation, so disable MSI remapping */
 		its->msi_domain_flags &= ~IRQ_DOMAIN_FLAG_ISOLATED_MSI;
@@ -5835,6 +5831,7 @@ int __init its_init(struct fwnode_handle *handle, struct rdists *rdists,
 		its_acpi_probe();
 
 	if (list_empty(&its_nodes)) {
+		rdists->has_vlpis = false;
 		pr_warn("ITS: No ITS available, not enabling LPIs\n");
 		return -ENXIO;
 	}

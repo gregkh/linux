@@ -4254,26 +4254,13 @@ int ext4_block_zero_eof(struct inode *inode, loff_t from, loff_t end)
 	return 0;
 }
 
-/*
- * Zero out the unaligned head and tail of the [lstart, lstart+length)
- * range.
- *
- * On return, @partial_zeroed records which edges actually got
- * partial-zeroed.  Set EXT4_PARTIAL_ZERO_START/EXT4_PARTIAL_ZERO_END if
- * the head/tail block got actually partially zeroed (in written, dirty
- * unwritten or delalloc state).  Cleared if the head/tail block is a
- * hole or a clean unwritten block, in which case there is nothing that
- * needs zeroing.  When the head and tail land in the same block, both
- * bits are set together on a successful zeroing.
- */
 int ext4_zero_partial_blocks(struct inode *inode, loff_t lstart, loff_t length,
-			     unsigned int *partial_zeroed)
+			     bool *did_zero)
 {
 	struct super_block *sb = inode->i_sb;
 	unsigned partial_start, partial_end;
 	ext4_fsblk_t start, end;
 	loff_t byte_end = (lstart + length - 1);
-	bool did_zero = false;
 	int err = 0;
 
 	partial_start = lstart & (sb->s_blocksize - 1);
@@ -4285,32 +4272,21 @@ int ext4_zero_partial_blocks(struct inode *inode, loff_t lstart, loff_t length,
 	/* Handle partial zero within the single block */
 	if (start == end &&
 	    (partial_start || (partial_end != sb->s_blocksize - 1))) {
-		err = ext4_block_zero_range(inode, lstart, length, &did_zero,
+		err = ext4_block_zero_range(inode, lstart, length, did_zero,
 					    NULL);
-		if (did_zero)
-			*partial_zeroed |= (EXT4_PARTIAL_ZERO_START |
-					    EXT4_PARTIAL_ZERO_END);
 		return err;
 	}
 	/* Handle partial zero out on the start of the range */
 	if (partial_start) {
 		err = ext4_block_zero_range(inode, lstart, sb->s_blocksize,
-					    &did_zero, NULL);
+					    did_zero, NULL);
 		if (err)
 			return err;
-		if (did_zero)
-			*partial_zeroed |= EXT4_PARTIAL_ZERO_START;
 	}
 	/* Handle partial zero out on the end of the range */
-	if (partial_end != sb->s_blocksize - 1) {
-		did_zero = false;
+	if (partial_end != sb->s_blocksize - 1)
 		err = ext4_block_zero_range(inode, byte_end - partial_end,
-					    partial_end + 1, &did_zero, NULL);
-		if (err)
-			return err;
-		if (did_zero)
-			*partial_zeroed |= EXT4_PARTIAL_ZERO_END;
-	}
+					    partial_end + 1, did_zero, NULL);
 	return err;
 }
 
@@ -4459,7 +4435,7 @@ int ext4_punch_hole(struct file *file, loff_t offset, loff_t length)
 	loff_t end = offset + length;
 	handle_t *handle;
 	unsigned int credits;
-	unsigned int partial_zeroed = 0;
+	bool partial_zeroed = false;
 	int ret;
 
 	trace_ext4_punch_hole(inode, offset, length, 0);
@@ -5049,6 +5025,57 @@ int ext4_get_inode_loc(struct inode *inode, struct ext4_iloc *iloc)
 					"unable to read itable block");
 
 	return ret;
+}
+
+/*
+ * ext4_get_inode_loc_noio() is a best-effort variant of ext4_get_inode_loc().
+ * It looks up the inode table block in the buffer cache and returns -EAGAIN if
+ * the block is not present or not uptodate, without starting any I/O.
+ */
+int ext4_get_inode_loc_noio(struct inode *inode, struct ext4_iloc *iloc)
+{
+	struct super_block *sb = inode->i_sb;
+	struct ext4_group_desc *gdp;
+	struct buffer_head *bh;
+	ext4_fsblk_t block;
+	int inodes_per_block, inode_offset;
+	unsigned long ino = inode->i_ino;
+
+	iloc->bh = NULL;
+	if (ino < EXT4_ROOT_INO ||
+	    ino > le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count))
+		return -EFSCORRUPTED;
+
+	iloc->block_group = (ino - 1) / EXT4_INODES_PER_GROUP(sb);
+	gdp = ext4_get_group_desc(sb, iloc->block_group, NULL);
+	if (!gdp)
+		return -EIO;
+
+	/* Figure out the offset within the block group inode table. */
+	inodes_per_block = EXT4_SB(sb)->s_inodes_per_block;
+	inode_offset = ((ino - 1) % EXT4_INODES_PER_GROUP(sb));
+	iloc->offset = (inode_offset % inodes_per_block) * EXT4_INODE_SIZE(sb);
+
+	block = ext4_inode_table(sb, gdp);
+	if (block <= le32_to_cpu(EXT4_SB(sb)->s_es->s_first_data_block) ||
+	    block >= ext4_blocks_count(EXT4_SB(sb)->s_es)) {
+		ext4_error(sb,
+			   "Invalid inode table block %llu in block_group %u",
+			   block, iloc->block_group);
+		return -EFSCORRUPTED;
+	}
+	block += inode_offset / inodes_per_block;
+
+	bh = sb_find_get_block(sb, block);
+	if (!bh)
+		return -EAGAIN;
+	if (!ext4_buffer_uptodate(bh)) {
+		brelse(bh);
+		return -EAGAIN;
+	}
+
+	iloc->bh = bh;
+	return 0;
 }
 
 

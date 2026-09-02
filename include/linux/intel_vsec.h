@@ -28,6 +28,7 @@
 #define INTEL_DVSEC_TABLE_BAR(x)	((x) & GENMASK(2, 0))
 #define INTEL_DVSEC_TABLE_OFFSET(x)	((x) & GENMASK(31, 3))
 #define TABLE_OFFSET_SHIFT		3
+#define PMT_DISC_DWORDS		4
 
 struct device;
 struct pci_dev;
@@ -122,7 +123,7 @@ struct intel_vsec_platform_info {
 	struct device *parent;
 	struct intel_vsec_header **headers;
 	const struct vsec_feature_dependency *deps;
-	u32 (*acpi_disc)[4];
+	u32 (*acpi_disc)[PMT_DISC_DWORDS];
 	enum intel_vsec_disc_source src;
 	void *priv_data;
 	unsigned long caps;
@@ -153,7 +154,7 @@ struct intel_vsec_platform_info {
 struct intel_vsec_device {
 	struct auxiliary_device auxdev;
 	struct device *dev;
-	u32 (*acpi_disc)[4];
+	u32 (*acpi_disc)[PMT_DISC_DWORDS];
 	enum intel_vsec_disc_source src;
 	struct ida *ida;
 	int num_resources;

@@ -341,6 +341,10 @@ static int gpd_wm2_read_pwm(struct gpd_fan_data *data)
 
 	gpd_ecram_read(drvdata, drvdata->pwm_write, &var);
 
+	// EC PWM register valid range is 1 ~ pwm_max; 0 is an invalid state
+	if (unlikely(!var))
+		return -EIO;
+
 	// Match gpd_generic_write_pwm(u8) below
 	return DIV_ROUND_CLOSEST((var - 1) * 255, (drvdata->pwm_max - 1));
 }
@@ -717,7 +721,7 @@ static int __init gpd_fan_init(void)
 							 match, sizeof(*match));
 
 	if (IS_ERR(gpd_fan_platform_device)) {
-		pr_warn("Failed to create platform device\n");
+		pr_err("Failed to create platform device\n");
 		return PTR_ERR(gpd_fan_platform_device);
 	}
 

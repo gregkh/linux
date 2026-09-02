@@ -238,9 +238,9 @@ int tt_del_tz(const char *arg)
 	int ret;
 	int id;
 
-	ret = sscanf(arg, "%d", &id);
-	if (ret != 1)
-		return -EINVAL;
+	ret = kstrtoint(arg, 10, &id);
+	if (ret < 0)
+		return ret;
 
 	struct tt_work *tt_work __free(kfree) = kzalloc_obj(*tt_work);
 	if (!tt_work)
@@ -278,9 +278,9 @@ static struct tt_thermal_zone *tt_get_tt_zone(const char *arg)
 	struct tt_thermal_zone *tt_zone;
 	int ret, id;
 
-	ret = sscanf(arg, "%d", &id);
-	if (ret != 1)
-		return ERR_PTR(-EINVAL);
+	ret = kstrtoint(arg, 10, &id);
+	if (ret < 0)
+		return ERR_PTR(ret);
 
 	guard(mutex)(&tt_thermal_zones_lock);
 

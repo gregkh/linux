@@ -2539,12 +2539,6 @@ static void fsl_udc_remove(struct platform_device *pdev)
 
 	DECLARE_COMPLETION_ONSTACK(done);
 
-	if (!udc_controller) {
-		dev_err(&pdev->dev,
-			"Driver still in use but removing anyhow\n");
-		return;
-	}
-
 	udc_controller->done = &done;
 	usb_del_gadget_udc(&udc_controller->gadget);
 

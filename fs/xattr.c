@@ -311,7 +311,7 @@ __vfs_setxattr_locked(struct mnt_idmap *idmap, struct dentry *dentry,
 	if (error)
 		goto out;
 
-	error = try_break_deleg(inode, delegated_inode);
+	error = try_break_deleg(inode, 0, delegated_inode);
 	if (error)
 		goto out;
 
@@ -515,9 +515,12 @@ vfs_listxattr(struct dentry *dentry, char *list, size_t size)
 	if (inode->i_op->listxattr) {
 		error = inode->i_op->listxattr(dentry, list, size);
 	} else {
-		error = security_inode_listsecurity(inode, list, size);
-		if (size && error > size)
-			error = -ERANGE;
+		ssize_t remaining = size;
+
+		error = security_inode_listsecurity(inode, &list, &remaining);
+		if (error)
+			return error;
+		error = size - remaining;
 	}
 	return error;
 }
@@ -569,7 +572,7 @@ __vfs_removexattr_locked(struct mnt_idmap *idmap,
 	if (error)
 		goto out;
 
-	error = try_break_deleg(inode, delegated_inode);
+	error = try_break_deleg(inode, 0, delegated_inode);
 	if (error)
 		goto out;
 
@@ -1612,7 +1615,7 @@ ssize_t simple_xattr_list(struct inode *inode, struct list_head *xattrs,
 	if (err)
 		return err;
 
-	err = security_inode_listsecurity(inode, buffer, remaining_size);
+	err = security_inode_listsecurity(inode, &buffer, &remaining_size);
 	if (err < 0)
 		return err;
 
@@ -1676,6 +1679,39 @@ int simple_xattr_add(struct simple_xattr_cache *cache, struct list_head *xattrs,
 
 	list_add_tail_rcu(&new_xattr->node, xattrs);
 	return 0;
+}
+
+/**
+ * simple_xattr_add_limited - add an xattr object, charging per-inode limits
+ * @cache: anchor for the hash table
+ * @xattrs: the header of the xattr object
+ * @limits: per-inode limit counters
+ * @new_xattr: the xattr object to add
+ *
+ * Like simple_xattr_add(), but also accounts @new_xattr against @limits so
+ * that a later removal or replacement of it through simple_xattr_set_limited()
+ * decrements counters that were actually incremented, rather than underflowing
+ * them. Use this instead of simple_xattr_add() when seeding initial xattrs
+ * that share a namespace with the limited set/remove path.
+ *
+ * Return: On success zero is returned. On failure a negative error code is
+ * returned.
+ */
+int simple_xattr_add_limited(struct simple_xattr_cache *cache,
+			     struct list_head *xattrs,
+			     struct simple_xattr_limits *limits,
+			     struct simple_xattr *new_xattr)
+{
+	int err;
+
+	err = simple_xattr_limits_inc(limits, new_xattr->size);
+	if (err)
+		return err;
+
+	err = simple_xattr_add(cache, xattrs, new_xattr);
+	if (err)
+		simple_xattr_limits_dec(limits, new_xattr->size);
+	return err;
 }
 
 /**

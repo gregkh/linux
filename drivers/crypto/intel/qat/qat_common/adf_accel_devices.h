@@ -14,6 +14,7 @@
 #include "adf_anti_rb.h"
 #include "adf_cfg_common.h"
 #include "adf_dc.h"
+#include "adf_kpt.h"
 #include "adf_rl.h"
 #include "adf_telemetry.h"
 #include "adf_pfvf_msg.h"
@@ -330,6 +331,7 @@ struct adf_hw_device_data {
 	struct adf_rl_hw_data rl_data;
 	struct adf_tl_hw_data tl_data;
 	struct adf_anti_rb_hw_data anti_rb_data;
+	struct adf_kpt_hw_data kpt_data;
 	struct qat_migdev_ops vfmig_ops;
 	const char *fw_name;
 	const char *fw_mmp_name;

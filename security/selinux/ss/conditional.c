@@ -12,6 +12,7 @@
 
 #include "security.h"
 #include "conditional.h"
+#include "policydb.h"
 #include "services.h"
 
 /*
@@ -329,6 +330,11 @@ static int cond_read_av_list(struct policydb *p, struct policy_file *fp,
 	if (len == 0)
 		return 0;
 
+	/* avtab_read_item() reads at least 96 bytes for any valid entry */
+	rc = size_check(3 * sizeof(u32), len, fp);
+	if (rc)
+		return rc;
+
 	list->nodes = kzalloc_objs(*list->nodes, len);
 	if (!list->nodes)
 		return -ENOMEM;
@@ -379,6 +385,12 @@ static int cond_read_node(struct policydb *p, struct cond_node *node, struct pol
 
 	/* expr */
 	len = le32_to_cpu(buf[1]);
+
+	/* we will read 64 bytes per node */
+	rc = size_check(2 * sizeof(u32), len, fp);
+	if (rc)
+		return rc;
+
 	node->expr.nodes = kzalloc_objs(*node->expr.nodes, len);
 	if (!node->expr.nodes)
 		return -ENOMEM;
@@ -416,6 +428,11 @@ int cond_read_list(struct policydb *p, struct policy_file *fp)
 		return rc;
 
 	len = le32_to_cpu(buf[0]);
+
+	/* cond_read_node() reads at least 128 bytes for any valid node */
+	rc = size_check(4 * sizeof(u32), len, fp);
+	if (rc)
+		return rc;
 
 	p->cond_list = kzalloc_objs(*p->cond_list, len);
 	if (!p->cond_list)

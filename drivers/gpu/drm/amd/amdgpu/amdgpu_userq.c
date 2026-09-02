@@ -929,12 +929,12 @@ amdgpu_userq_bo_validate(struct amdgpu_device *adev, struct drm_exec *exec,
 	struct amdgpu_bo *bo;
 	int ret;
 
-	spin_lock(&vm->status_lock);
-	while (!list_empty(&vm->invalidated)) {
-		bo_va = list_first_entry(&vm->invalidated,
+	spin_lock(&vm->individual_lock);
+	while (!list_empty(&vm->always_valid.evicted)) {
+		bo_va = list_first_entry(&vm->always_valid.evicted,
 					 struct amdgpu_bo_va,
 					 base.vm_status);
-		spin_unlock(&vm->status_lock);
+		spin_unlock(&vm->individual_lock);
 
 		bo = bo_va->base.bo;
 		ret = drm_exec_prepare_obj(exec, &bo->tbo.base, 2);
@@ -946,14 +946,14 @@ amdgpu_userq_bo_validate(struct amdgpu_device *adev, struct drm_exec *exec,
 		if (ret)
 			return ret;
 
-		/* This moves the bo_va to the done list */
+		/* This moves the bo_va to the idle list */
 		ret = amdgpu_vm_bo_update(adev, bo_va, false);
 		if (ret)
 			return ret;
 
-		spin_lock(&vm->status_lock);
+		spin_lock(&vm->individual_lock);
 	}
-	spin_unlock(&vm->status_lock);
+	spin_unlock(&vm->individual_lock);
 
 	return 0;
 }
@@ -970,6 +970,7 @@ amdgpu_userq_vm_validate(struct amdgpu_userq_mgr *uq_mgr)
 	struct amdgpu_vm *vm = &fpriv->vm;
 	unsigned long key, tmp_key;
 	struct amdgpu_bo_va *bo_va;
+	struct amdgpu_usermode_queue *queue;
 	struct amdgpu_bo *bo;
 	struct drm_exec exec;
 	struct xarray xa;
@@ -985,7 +986,7 @@ retry_lock:
 		if (unlikely(ret))
 			goto unlock_all;
 
-		ret = amdgpu_vm_lock_done_list(vm, &exec, 1);
+		ret = amdgpu_vm_lock_individual(vm, &exec, TTM_NUM_MOVE_FENCES + 1);
 		drm_exec_retry_on_contention(&exec);
 		if (unlikely(ret))
 			goto unlock_all;
@@ -1028,7 +1029,7 @@ retry_lock:
 
 	key = 0;
 	/* Validate User Ptr BOs */
-	list_for_each_entry(bo_va, &vm->done, base.vm_status) {
+	list_for_each_entry(bo_va, &vm->always_valid.idle, base.vm_status) {
 		bo = bo_va->base.bo;
 		if (!bo)
 			continue;
@@ -1078,12 +1079,30 @@ retry_lock:
 
 	/*
 	 * We need to wait for all VM updates to finish before restarting the
-	 * queues. Using the done list like that is now ok since everything is
+	 * queues. Using the idle list like that is now ok since everything is
 	 * locked in place.
 	 */
-	list_for_each_entry(bo_va, &vm->done, base.vm_status)
+	list_for_each_entry(bo_va, &vm->always_valid.idle, base.vm_status)
 		dma_fence_wait(bo_va->last_pt_update, false);
 	dma_fence_wait(vm->last_update, false);
+
+	xa_for_each(&uq_mgr->userq_xa, tmp_key, queue) {
+		bo = queue->wptr_obj.obj;
+		if (!bo) {
+			ret = -EINVAL;
+			goto unlock_all;
+		}
+
+		ret = amdgpu_ttm_alloc_gart(&bo->tbo);
+		if (unlikely(ret)) {
+			drm_file_err(uq_mgr->file,
+				     "failed to bind wptr bo to gart on resume, qid=%lu ret=%d\n",
+				     tmp_key, ret);
+			goto unlock_all;
+		}
+
+		queue->wptr_obj.gpu_addr = amdgpu_bo_gpu_offset(bo);
+	}
 
 	ret = amdgpu_evf_mgr_rearm(&fpriv->evf_mgr, &exec);
 	if (ret)

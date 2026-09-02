@@ -8,6 +8,7 @@
 #include "main.h"
 
 #include <linux/atomic.h>
+#include <linux/bug.h>
 #include <linux/byteorder/generic.h>
 #include <linux/compiler.h>
 #include <linux/container_of.h>
@@ -122,7 +123,7 @@ static bool batadv_compare_backbone_gw(const struct hlist_node *node,
  * @node: list node of the first entry to compare
  * @data2: pointer to the second claims
  *
- * Return: true if the claim have the same data, 0 otherwise
+ * Return: true if the claims have the same data, false otherwise
  */
 static bool batadv_compare_claim(const struct hlist_node *node,
 				 const void *data2)
@@ -1281,7 +1282,7 @@ purge_now:
 
 			if (purged) {
 				/* reference for pending report_work */
-				if (cancel_work_sync(&backbone_gw->report_work))
+				if (disable_work_sync(&backbone_gw->report_work))
 					batadv_backbone_gw_put(backbone_gw);
 
 				/* reference for hash_entry */
@@ -1379,7 +1380,7 @@ void batadv_bla_update_orig_address(struct batadv_priv *bat_priv,
 	bat_priv->bla.claim_dest.group = group;
 
 	/* purge everything when bridge loop avoidance is turned off */
-	if (!atomic_read(&bat_priv->bridge_loop_avoidance))
+	if (!READ_ONCE(bat_priv->bridge_loop_avoidance))
 		oldif = NULL;
 
 	if (!oldif) {
@@ -1483,7 +1484,7 @@ static void batadv_bla_periodic_work(struct work_struct *work)
 	batadv_bla_purge_claims(bat_priv, primary_if, 0);
 	batadv_bla_purge_backbone_gw(bat_priv, 0);
 
-	if (!atomic_read(&bat_priv->bridge_loop_avoidance))
+	if (!READ_ONCE(bat_priv->bridge_loop_avoidance))
 		goto out;
 
 	if (atomic_dec_and_test(&bat_priv->bla.loopdetect_next)) {
@@ -1782,7 +1783,7 @@ bool batadv_bla_is_backbone_gw_orig(struct batadv_priv *bat_priv, u8 *orig,
 	struct batadv_bla_backbone_gw *backbone_gw;
 	int i;
 
-	if (!atomic_read(&bat_priv->bridge_loop_avoidance))
+	if (!READ_ONCE(bat_priv->bridge_loop_avoidance))
 		return false;
 
 	if (!hash)
@@ -1820,7 +1821,7 @@ bool batadv_bla_is_backbone_gw(struct sk_buff *skb,
 	struct batadv_bla_backbone_gw *backbone_gw;
 	unsigned short vid;
 
-	if (!atomic_read(&orig_node->bat_priv->bridge_loop_avoidance))
+	if (!READ_ONCE(orig_node->bat_priv->bridge_loop_avoidance))
 		return false;
 
 	/* first, find out the vid. */
@@ -1849,7 +1850,7 @@ void batadv_bla_free(struct batadv_priv *bat_priv)
 {
 	struct batadv_hard_iface *primary_if;
 
-	cancel_delayed_work_sync(&bat_priv->bla.work);
+	disable_delayed_work_sync(&bat_priv->bla.work);
 	primary_if = batadv_primary_if_get_selected(bat_priv);
 
 	if (bat_priv->bla.claim_hash) {
@@ -1952,7 +1953,7 @@ bool batadv_bla_rx(struct batadv_priv *bat_priv, struct sk_buff *skb,
 	if (!primary_if)
 		goto handled;
 
-	if (!atomic_read(&bat_priv->bridge_loop_avoidance))
+	if (!READ_ONCE(bat_priv->bridge_loop_avoidance))
 		goto allow;
 
 	if (batadv_bla_loopdetect_check(bat_priv, skb, primary_if, vid))
@@ -2084,7 +2085,7 @@ bool batadv_bla_tx(struct batadv_priv *bat_priv, struct sk_buff *skb,
 	if (!primary_if)
 		goto out;
 
-	if (!atomic_read(&bat_priv->bridge_loop_avoidance))
+	if (!READ_ONCE(bat_priv->bridge_loop_avoidance))
 		goto allow;
 
 	if (batadv_bla_process_claim(bat_priv, primary_if, skb))
@@ -2504,7 +2505,7 @@ bool batadv_bla_check_claim(struct batadv_priv *bat_priv,
 	struct batadv_hard_iface *primary_if = NULL;
 	bool ret = true;
 
-	if (!atomic_read(&bat_priv->bridge_loop_avoidance))
+	if (!READ_ONCE(bat_priv->bridge_loop_avoidance))
 		return ret;
 
 	primary_if = batadv_primary_if_get_selected(bat_priv);

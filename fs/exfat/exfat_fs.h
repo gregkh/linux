@@ -294,6 +294,8 @@ struct exfat_inode_info {
 	/* on-disk position of directory entry or 0 */
 	loff_t i_pos;
 	loff_t valid_size;
+	/* page-aligned size that has been zeroed out for mmap */
+	loff_t zeroed_size;
 	/* hash by i_location */
 	struct hlist_node i_hash_fat;
 	/* protect bmap against truncate */
@@ -506,7 +508,7 @@ int exfat_clear_volume_dirty(struct super_block *sb);
 	exfat_cluster_walk(sb, (pclu), 1, ALLOC_FAT_CHAIN)
 
 int exfat_alloc_cluster(struct inode *inode, unsigned int num_alloc,
-		struct exfat_chain *p_chain, bool sync_bmap);
+		struct exfat_chain *p_chain, bool sync_bmap, bool contig);
 int exfat_free_cluster(struct inode *inode, struct exfat_chain *p_chain);
 int exfat_ent_get(struct super_block *sb, unsigned int loc,
 		unsigned int *content, struct buffer_head **last);
@@ -555,12 +557,13 @@ int exfat_trim_fs(struct inode *inode, struct fstrim_range *range);
 /* file.c */
 extern const struct file_operations exfat_file_operations;
 int __exfat_truncate(struct inode *inode);
-void exfat_truncate(struct inode *inode);
 int exfat_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 		  struct iattr *attr);
 int exfat_getattr(struct mnt_idmap *idmap, const struct path *path,
 		  struct kstat *stat, unsigned int request_mask,
 		  unsigned int query_flags);
+struct file_kattr;
+int exfat_fileattr_get(struct dentry *dentry, struct file_kattr *fa);
 int exfat_file_fsync(struct file *file, loff_t start, loff_t end, int datasync);
 long exfat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 long exfat_compat_ioctl(struct file *filp, unsigned int cmd,
@@ -650,7 +653,9 @@ struct inode *exfat_iget(struct super_block *sb, loff_t i_pos);
 int __exfat_write_inode(struct inode *inode, int sync);
 int exfat_write_inode(struct inode *inode, struct writeback_control *wbc);
 void exfat_evict_inode(struct inode *inode);
-int exfat_block_truncate_page(struct inode *inode, loff_t from);
+int exfat_map_cluster(struct inode *inode, unsigned int clu_offset,
+		unsigned int *clu, unsigned int *count, int create,
+		bool *balloc);
 
 /* exfat/nls.c */
 unsigned short exfat_toupper(struct super_block *sb, unsigned short a);

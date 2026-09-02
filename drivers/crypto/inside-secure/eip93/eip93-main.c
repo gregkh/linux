@@ -441,7 +441,6 @@ static int eip93_crypto_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ret = eip93_desc_init(eip93);
-
 	if (ret)
 		return ret;
 

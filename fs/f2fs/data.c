@@ -20,6 +20,7 @@
 #include <linux/sched/signal.h>
 #include <linux/fiemap.h>
 #include <linux/iomap.h>
+#include <linux/fserror.h>
 
 #include "f2fs.h"
 #include "node.h"
@@ -40,12 +41,17 @@ struct f2fs_folio_state {
 	unsigned int		read_pages_pending;
 };
 
+struct f2fs_bio {
+	struct work_struct work;
+	struct bio bio;
+};
+
 #define	F2FS_BIO_POOL_SIZE	NR_CURSEG_TYPE
 
 int __init f2fs_init_bioset(void)
 {
 	return bioset_init(&f2fs_bioset, F2FS_BIO_POOL_SIZE,
-					0, BIOSET_NEED_BVECS);
+			   offsetof(struct f2fs_bio, bio), BIOSET_NEED_BVECS);
 }
 
 void f2fs_destroy_bioset(void)
@@ -336,7 +342,7 @@ static void f2fs_read_end_io(struct bio *bio)
 			f2fs_handle_step_decompress(ctx, intask);
 		} else if (enabled_steps) {
 			INIT_WORK(&ctx->work, f2fs_post_read_work);
-			queue_work(ctx->sbi->post_read_wq, &ctx->work);
+			queue_work(ctx->sbi->wq, &ctx->work);
 			return;
 		}
 	}
@@ -344,13 +350,10 @@ static void f2fs_read_end_io(struct bio *bio)
 	f2fs_verify_and_finish_bio(bio, intask);
 }
 
-static void f2fs_write_end_io(struct bio *bio)
+static void f2fs_write_end_bio(struct bio *bio)
 {
-	struct f2fs_sb_info *sbi;
+	struct f2fs_sb_info *sbi = bio->bi_private;
 	struct folio_iter fi;
-
-	iostat_update_and_unbind_ctx(bio);
-	sbi = bio->bi_private;
 
 	if (time_to_inject(sbi, FAULT_WRITE_IO))
 		bio->bi_status = BLK_STS_IOERR;
@@ -377,9 +380,10 @@ static void f2fs_write_end_io(struct bio *bio)
 
 		if (unlikely(bio->bi_status != BLK_STS_OK)) {
 			mapping_set_error(folio->mapping, -EIO);
-			if (type == F2FS_WB_CP_DATA)
+			if (type == F2FS_WB_CP_DATA) {
 				f2fs_stop_checkpoint(sbi, true,
 						STOP_CP_REASON_WRITE_FAIL);
+			}
 		}
 
 		if (is_node_folio(folio)) {
@@ -405,6 +409,13 @@ static void f2fs_write_end_io(struct bio *bio)
 	}
 
 	bio_put(bio);
+}
+
+static void f2fs_write_end_io(struct bio *bio)
+{
+	iostat_update_and_unbind_ctx(bio);
+
+	f2fs_write_end_bio(bio);
 }
 
 #ifdef CONFIG_BLK_DEV_ZONED
@@ -509,6 +520,8 @@ static struct bio *__bio_alloc(struct f2fs_io_info *fio, int npages)
 		bio->bi_private = sbi;
 		bio->bi_write_hint = f2fs_io_type_to_rw_hint(sbi,
 						fio->type, fio->temp);
+		bio->bi_write_stream = f2fs_io_type_to_write_stream(bdev, fio->type,
+								    fio->temp);
 	}
 	iostat_alloc_and_bind_ctx(sbi, bio, NULL);
 
@@ -1777,6 +1790,7 @@ next_block:
 			err = -EFSCORRUPTED;
 			f2fs_handle_error(sbi,
 					ERROR_CORRUPTED_CLUSTER);
+			fserror_report_file_metadata(inode, err, GFP_NOFS);
 			goto sync_out;
 		}
 
@@ -3714,6 +3728,11 @@ static int prepare_write_begin(struct f2fs_sb_info *sbi,
 	int flag = F2FS_GET_BLOCK_PRE_AIO;
 	int err = 0;
 
+	if (!f2fs_has_inline_data(inode) && !f2fs_compressed_file(inode) &&
+	    (pos & PAGE_MASK) < i_size_read(inode) &&
+	    f2fs_lookup_read_extent_cache_block(inode, index, blk_addr))
+		return 0;
+
 	/*
 	 * If a whole page is being written and we already preallocated all the
 	 * blocks, then there is no need to get a block address now.
@@ -4512,23 +4531,17 @@ void f2fs_destroy_post_read_processing(void)
 	kmem_cache_destroy(bio_post_read_ctx_cache);
 }
 
-int f2fs_init_post_read_wq(struct f2fs_sb_info *sbi)
+int f2fs_init_wq(struct f2fs_sb_info *sbi)
 {
-	if (!f2fs_sb_has_encrypt(sbi) &&
-		!f2fs_sb_has_verity(sbi) &&
-		!f2fs_sb_has_compression(sbi))
-		return 0;
-
-	sbi->post_read_wq = alloc_workqueue("f2fs_post_read_wq",
-						 WQ_UNBOUND | WQ_HIGHPRI,
-						 num_online_cpus());
-	return sbi->post_read_wq ? 0 : -ENOMEM;
+	sbi->wq = alloc_workqueue("f2fs_wq", WQ_UNBOUND | WQ_HIGHPRI,
+				  num_online_cpus());
+	return sbi->wq ? 0 : -ENOMEM;
 }
 
-void f2fs_destroy_post_read_wq(struct f2fs_sb_info *sbi)
+void f2fs_destroy_wq(struct f2fs_sb_info *sbi)
 {
-	if (sbi->post_read_wq)
-		destroy_workqueue(sbi->post_read_wq);
+	if (sbi->wq)
+		destroy_workqueue(sbi->wq);
 }
 
 int __init f2fs_init_bio_entry_cache(void)

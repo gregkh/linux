@@ -232,6 +232,13 @@ static void __remove_profile(struct aa_profile *profile)
 	aa_label_remove(&profile->label);
 	__aafs_profile_rmdir(profile);
 	__list_remove_profile(profile);
+	/* rawdata is only ever referenced by fs lookup, that is no
+	 * longer possible here, so put the reference to it. This will
+	 * enable the rawdata to be freed if for some reason the profile
+	 * is pinned and going to live for a while.
+	 */
+	aa_put_profile_loaddata(profile->rawdata);
+	profile->rawdata = NULL;
 }
 
 /**

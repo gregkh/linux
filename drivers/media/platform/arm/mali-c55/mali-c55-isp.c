@@ -590,6 +590,7 @@ int mali_c55_register_isp(struct mali_c55 *mali_c55)
 	sd->entity.ops = &mali_c55_isp_media_ops;
 	sd->entity.function = MEDIA_ENT_F_PROC_VIDEO_ISP;
 	sd->internal_ops = &mali_c55_isp_internal_ops;
+	sd->dev = mali_c55->dev;
 	strscpy(sd->name, MALI_C55_DRIVER_NAME " isp", sizeof(sd->name));
 
 	isp->pads[MALI_C55_ISP_PAD_SINK_VIDEO].flags = MEDIA_PAD_FL_SINK |

@@ -8,16 +8,12 @@
 
 #define MMU_INT_BASE					0x2000
 
-#define MMU_INT_RAWSTAT					0x2000
-#define MMU_INT_CLEAR					0x2004
-#define MMU_INT_MASK					0x2008
-#define MMU_INT_STAT					0x200c
-
 /* AS_COMMAND register commands */
 
-#define MMU_BASE					0x2400
+#define MMU_AS_BASE					0x2400
+
 #define MMU_AS_SHIFT					6
-#define MMU_AS(as)					(MMU_BASE + ((as) << MMU_AS_SHIFT))
+#define MMU_AS(as)					((as) << MMU_AS_SHIFT)
 
 #define AS_TRANSTAB(as)					(MMU_AS(as) + 0x0)
 #define AS_MEMATTR(as)					(MMU_AS(as) + 0x8)

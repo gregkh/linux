@@ -59,6 +59,7 @@ struct Inner<T> {
 /// # Examples
 ///
 /// ```no_run
+/// # #![cfg(CONFIG_HAS_IOMEM)]
 /// use kernel::{
 ///     bindings,
 ///     device::{
@@ -304,7 +305,7 @@ impl<T: Send + 'static> Devres<T> {
     ///     pci, //
     /// };
     ///
-    /// fn from_core(dev: &pci::Device<Core>, devres: Devres<pci::Bar<0x4>>) -> Result {
+    /// fn from_core(dev: &pci::Device<Core<'_>>, devres: Devres<pci::Bar<'_, 0x4>>) -> Result {
     ///     let bar = devres.access(dev.as_ref())?;
     ///
     ///     let _ = bar.read32(0x0);

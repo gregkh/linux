@@ -259,16 +259,11 @@ static unsigned int ecrdsa_max_size(struct crypto_sig *tfm)
 	return 2 * ctx->pub_key.ndigits * sizeof(u64);
 }
 
-static void ecrdsa_exit_tfm(struct crypto_sig *tfm)
-{
-}
-
 static struct sig_alg ecrdsa_alg = {
 	.verify		= ecrdsa_verify,
 	.set_pub_key	= ecrdsa_set_pub_key,
 	.key_size	= ecrdsa_key_size,
 	.max_size	= ecrdsa_max_size,
-	.exit		= ecrdsa_exit_tfm,
 	.base = {
 		.cra_name	 = "ecrdsa",
 		.cra_driver_name = "ecrdsa-generic",

@@ -15,6 +15,12 @@
 #include <keys/rxrpc-type.h>
 #include "protocol.h"
 
+#define FCRYPT_ROUNDS 16
+
+struct fcrypt_key {
+	__be32 sched[FCRYPT_ROUNDS];
+};
+
 #define FCRYPT_BSIZE 8
 struct rxrpc_crypt {
 	union {
@@ -22,6 +28,19 @@ struct rxrpc_crypt {
 		__be32	n[2];
 	};
 } __attribute__((aligned(8)));
+
+void fcrypt_preparekey(struct fcrypt_key *key, const u8 raw_key[FCRYPT_BSIZE]);
+void fcrypt_pcbc_encrypt(const struct fcrypt_key *key,
+			 const u8 iv[FCRYPT_BSIZE], const void *src, void *dst,
+			 size_t nblocks);
+void fcrypt_pcbc_decrypt(const struct fcrypt_key *key,
+			 const u8 iv[FCRYPT_BSIZE], const void *src, void *dst,
+			 size_t nblocks);
+#if IS_ENABLED(CONFIG_KUNIT)
+struct des_ctx;
+void des_pcbc_decrypt_inplace(const struct des_ctx *key, __le64 iv, u8 *data,
+			      size_t len);
+#endif
 
 #define rxrpc_queue_work(WS)	queue_work(rxrpc_workqueue, (WS))
 #define rxrpc_queue_delayed_work(WS,D)	\
@@ -563,7 +582,7 @@ struct rxrpc_connection {
 	const struct rxrpc_security *security;	/* applied security module */
 	union {
 		struct {
-			struct crypto_sync_skcipher *cipher;	/* encryption handle */
+			struct fcrypt_key *cipher; /* encryption key */
 			struct rxrpc_crypt csum_iv;	/* packet checksum base */
 			u32	nonce;		/* response re-use preventer */
 		} rxkad;

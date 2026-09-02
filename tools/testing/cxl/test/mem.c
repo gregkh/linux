@@ -2,7 +2,6 @@
 // Copyright(c) 2021 Intel Corporation. All rights reserved.
 
 #include <linux/platform_device.h>
-#include <linux/mod_devicetable.h>
 #include <linux/vmalloc.h>
 #include <linux/module.h>
 #include <linux/delay.h>
@@ -1790,7 +1789,7 @@ static int cxl_mock_mem_probe(struct platform_device *pdev)
 
 	cxl_mock_add_event_logs(&mdata->mes);
 
-	cxlmd = devm_cxl_add_memdev(cxlds, NULL);
+	cxlmd = devm_cxl_add_classdev(cxlds);
 	if (IS_ERR(cxlmd))
 		return PTR_ERR(cxlmd);
 

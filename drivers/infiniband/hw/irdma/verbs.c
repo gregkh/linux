@@ -16,9 +16,11 @@ static int irdma_query_device(struct ib_device *ibdev,
 	struct irdma_pci_f *rf = iwdev->rf;
 	struct pci_dev *pcidev = iwdev->rf->pcidev;
 	struct irdma_hw_attrs *hw_attrs = &rf->sc_dev.hw_attrs;
+	int err;
 
-	if (udata->inlen || udata->outlen)
-		return -EINVAL;
+	err = ib_is_udata_in_empty(udata);
+	if (err)
+		return err;
 
 	memset(props, 0, sizeof(*props));
 	addrconf_addr_eui48((u8 *)&props->sys_image_guid,
@@ -74,7 +76,7 @@ static int irdma_query_device(struct ib_device *ibdev,
 	if (hw_attrs->uk_attrs.hw_rev >= IRDMA_GEN_3)
 		props->device_cap_flags |= IB_DEVICE_MEM_WINDOW_TYPE_2B;
 
-	return 0;
+	return ib_respond_empty_udata(udata);
 }
 
 /**
@@ -325,9 +327,9 @@ static int irdma_alloc_ucontext(struct ib_ucontext *uctx,
 		uresp.max_pds = iwdev->rf->sc_dev.hw_attrs.max_hw_pds;
 		uresp.wq_size = iwdev->rf->sc_dev.hw_attrs.max_qp_wr * 2;
 		uresp.kernel_ver = req.userspace_ver;
-		if (ib_copy_to_udata(udata, &uresp,
-				     min(sizeof(uresp), udata->outlen)))
-			return -EFAULT;
+		ret = ib_respond_udata(udata, uresp);
+		if (ret)
+			return ret;
 	} else {
 		u64 bar_off = (uintptr_t)iwdev->rf->sc_dev.hw_regs[IRDMA_DB_ADDR_OFFSET];
 
@@ -354,10 +356,10 @@ static int irdma_alloc_ucontext(struct ib_ucontext *uctx,
 		uresp.comp_mask |= IRDMA_ALLOC_UCTX_MIN_HW_WQ_SIZE;
 		uresp.max_hw_srq_quanta = uk_attrs->max_hw_srq_quanta;
 		uresp.comp_mask |= IRDMA_ALLOC_UCTX_MAX_HW_SRQ_QUANTA;
-		if (ib_copy_to_udata(udata, &uresp,
-				     min(sizeof(uresp), udata->outlen))) {
+		ret = ib_respond_udata(udata, uresp);
+		if (ret) {
 			rdma_user_mmap_entry_remove(ucontext->db_mmap_entry);
-			return -EFAULT;
+			return ret;
 		}
 	}
 
@@ -420,11 +422,9 @@ static int irdma_alloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 						  ibucontext);
 		irdma_sc_pd_init(dev, sc_pd, pd_id, ucontext->abi_ver);
 		uresp.pd_id = pd_id;
-		if (ib_copy_to_udata(udata, &uresp,
-				     min(sizeof(uresp), udata->outlen))) {
-			err = -EFAULT;
+		err = ib_respond_udata(udata, uresp);
+		if (err)
 			goto error;
-		}
 	} else {
 		irdma_sc_pd_init(dev, sc_pd, pd_id, IRDMA_ABI_VER);
 	}
@@ -1122,10 +1122,8 @@ static int irdma_create_qp(struct ib_qp *ibqp,
 		uresp.qp_id = qp_num;
 		uresp.qp_caps = qp->qp_uk.qp_caps;
 
-		err_code = ib_copy_to_udata(udata, &uresp,
-					    min(sizeof(uresp), udata->outlen));
+		err_code = ib_respond_udata(udata, uresp);
 		if (err_code) {
-			ibdev_dbg(&iwdev->ibdev, "VERBS: copy_to_udata failed\n");
 			irdma_destroy_qp(&iwqp->ibqp, udata);
 			return err_code;
 		}
@@ -1610,12 +1608,9 @@ int irdma_modify_qp_roce(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 				uresp.push_valid = 1;
 				uresp.push_offset = iwqp->sc_qp.push_offset;
 			}
-			ret = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp),
-					       udata->outlen));
+			ret = ib_respond_udata(udata, uresp);
 			if (ret) {
 				irdma_remove_push_mmap_entries(iwqp);
-				ibdev_dbg(&iwdev->ibdev,
-					  "VERBS: copy_to_udata failed\n");
 				return ret;
 			}
 		}
@@ -1858,12 +1853,9 @@ int irdma_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
 			uresp.push_offset = iwqp->sc_qp.push_offset;
 		}
 
-		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp),
-				       udata->outlen));
+		err = ib_respond_udata(udata, uresp);
 		if (err) {
 			irdma_remove_push_mmap_entries(iwqp);
-			ibdev_dbg(&iwdev->ibdev,
-				  "VERBS: copy_to_udata failed\n");
 			return err;
 		}
 	}
@@ -2412,11 +2404,9 @@ static int irdma_create_srq(struct ib_srq *ibsrq,
 
 		resp.srq_id = iwsrq->srq_num;
 		resp.srq_size = ukinfo->srq_size;
-		if (ib_copy_to_udata(udata, &resp,
-				     min(sizeof(resp), udata->outlen))) {
-			err_code = -EPROTO;
+		err_code = ib_respond_udata(udata, resp);
+		if (err_code)
 			goto srq_destroy;
-		}
 	}
 
 	return 0;
@@ -2657,13 +2647,9 @@ static int irdma_create_cq(struct ib_cq *ibcq,
 
 		resp.cq_id = info.cq_uk_init_info.cq_id;
 		resp.cq_size = info.cq_uk_init_info.cq_size;
-		if (ib_copy_to_udata(udata, &resp,
-				     min(sizeof(resp), udata->outlen))) {
-			ibdev_dbg(&iwdev->ibdev,
-				  "VERBS: copy to user data\n");
-			err_code = -EPROTO;
+		err_code = ib_respond_udata(udata, resp);
+		if (err_code)
 			goto cq_destroy;
-		}
 	}
 
 	init_completion(&iwcq->free_cq);
@@ -3538,7 +3524,7 @@ static struct ib_mr *irdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
 	if (udata->inlen < IRDMA_MEM_REG_MIN_REQ_LEN)
 		return ERR_PTR(-EINVAL);
 
-	region = ib_umem_get(pd->device, start, len, access);
+	region = ib_umem_get_va(pd->device, start, len, access);
 
 	if (IS_ERR(region)) {
 		ibdev_dbg(&iwdev->ibdev,
@@ -3740,7 +3726,7 @@ static int irdma_rereg_mr_trans(struct irdma_mr *iwmr, u64 start, u64 len,
 	struct ib_umem *region;
 	int err;
 
-	region = ib_umem_get(pd->device, start, len, iwmr->access);
+	region = ib_umem_get_va(pd->device, start, len, iwmr->access);
 	if (IS_ERR(region))
 		return PTR_ERR(region);
 
@@ -5338,7 +5324,7 @@ static int irdma_create_user_ah(struct ib_ah *ibah,
 	mutex_unlock(&iwdev->rf->ah_tbl_lock);
 
 	uresp.ah_id = ah->sc_ah.ah_info.ah_idx;
-	err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
+	err = ib_respond_udata(udata, uresp);
 	if (err)
 		irdma_destroy_ah(ibah, attr->flags);
 

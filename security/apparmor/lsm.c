@@ -1507,7 +1507,7 @@ static int apparmor_socket_shutdown(struct socket *sock, int how)
  *
  * Note: can not sleep may be called with locks held
  *
- * dont want protocol specific in __skb_recv_datagram()
+ * don't want protocol specific in __skb_recv_datagram()
  * to deny an incoming connection  socket_sock_rcv_skb()
  */
 static int apparmor_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)

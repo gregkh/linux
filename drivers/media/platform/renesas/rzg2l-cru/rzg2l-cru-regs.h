@@ -14,12 +14,11 @@
 
 #define CRUnIE_EFE			BIT(17)
 
-#define CRUnIE2_FSxE(x)			BIT(((x) * 3))
 #define CRUnIE2_FExE(x)			BIT(((x) * 3) + 1)
 
 #define CRUnINTS_SFS			BIT(16)
 
-#define CRUnINTS2_FSxS(x)		BIT(((x) * 3))
+#define CRUnINTS2_FExS(x)		BIT(((x) * 3) + 1)
 
 #define CRUnRST_VRESETN			BIT(0)
 

@@ -729,15 +729,11 @@ static int nfnl_cthelper_del(struct sk_buff *skb, const struct nfnl_info *info,
 		     tuple.dst.protonum != cur->tuple.dst.protonum))
 			continue;
 
-		if (refcount_dec_if_one(&cur->refcnt)) {
-			found = true;
-			nf_conntrack_helper_unregister(cur);
+		found = true;
+		nf_conntrack_helper_unregister(cur);
 
-			list_del(&nlcth->list);
-			kfree(nlcth);
-		} else {
-			ret = -EBUSY;
-		}
+		list_del(&nlcth->list);
+		kfree(nlcth);
 	}
 
 	/* Make sure we return success if we flush and there is no helpers */

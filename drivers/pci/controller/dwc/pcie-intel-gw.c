@@ -9,7 +9,6 @@
 #include <linux/clk.h>
 #include <linux/gpio/consumer.h>
 #include <linux/iopoll.h>
-#include <linux/mod_devicetable.h>
 #include <linux/pci_regs.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
@@ -47,7 +46,6 @@
 #define PCIE_APP_IRN_INTD		BIT(16)
 #define PCIE_APP_IRN_MSG_LTR		BIT(18)
 #define PCIE_APP_IRN_SYS_ERR_RC		BIT(29)
-#define PCIE_APP_INTX_OFST		12
 
 #define PCIE_APP_IRN_INT \
 	(PCIE_APP_IRN_AER_REPORT | PCIE_APP_IRN_PME | \
@@ -311,8 +309,6 @@ static int intel_pcie_host_setup(struct intel_pcie *pcie)
 		goto clk_err;
 	}
 
-	pci->atu_base = pci->dbi_base + 0xC0000;
-
 	ret = phy_init(pcie->phy);
 	if (ret)
 		goto phy_err;
@@ -396,6 +392,7 @@ static int intel_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct intel_pcie *pcie;
 	struct dw_pcie_rp *pp;
+	struct resource *res;
 	struct dw_pcie *pci;
 	int ret;
 
@@ -419,6 +416,32 @@ static int intel_pcie_probe(struct platform_device *pdev)
 
 	pci->ops = &intel_pcie_ops;
 	pp->ops = &intel_pcie_dw_ops;
+
+	/*
+	 * If the 'atu' region is not available in the devicetree, use the
+	 * default offset from DBI region for backwards compatibility. The
+	 * 'atu' region should always be specified in the devicetree, as
+	 * this is a hardware-specific address that should not be defined
+	 * in the driver.
+	 */
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "atu");
+	if (!res) {
+		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dbi");
+		pci->dbi_base = devm_pci_remap_cfg_resource(pci->dev, res);
+		if (IS_ERR(pci->dbi_base))
+			return PTR_ERR(pci->dbi_base);
+
+		pci->dbi_phys_addr = res->start;
+		pci->atu_base = devm_ioremap(dev, res->start + 0xC0000, SZ_4K);
+		if (!pci->atu_base) {
+			dev_err(dev, "failed to remap ATU space\n");
+			return -ENOMEM;
+		}
+
+		pci->atu_size = SZ_4K;
+		pci->atu_phys_addr = res->start + 0xC0000;
+		dev_warn(dev, "ATU region not specified in DT. Using default offset\n");
+	}
 
 	ret = dw_pcie_host_init(pp);
 	if (ret) {

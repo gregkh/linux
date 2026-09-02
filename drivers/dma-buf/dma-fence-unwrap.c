@@ -183,8 +183,7 @@ struct dma_fence *__dma_fence_unwrap_merge(unsigned int num_fences,
 
 	if (count > 1) {
 		result = dma_fence_array_create(count, array,
-						dma_fence_context_alloc(1),
-						1, false);
+						dma_fence_context_alloc(1), 1);
 		if (!result) {
 			for (i = 0; i < count; i++)
 				dma_fence_put(array[i]);

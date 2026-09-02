@@ -46,6 +46,7 @@ struct gr3d {
 	unsigned int nclocks;
 	struct reset_control_bulk_data resets[RST_GR3D_MAX];
 	unsigned int nresets;
+	struct tegra_pmc *pmc;
 	struct dev_pm_domain_list *pd_list;
 
 	DECLARE_BITMAP(addr_regs, GR3D_NUM_REGS);
@@ -350,7 +351,8 @@ static int gr3d_power_up_legacy_domain(struct device *dev, const char *name,
 	if (err) {
 		dev_err(dev, "failed to acquire %s reset: %d\n", name, err);
 	} else {
-		err = tegra_powergate_sequence_power_up(id, clk, reset);
+		err = tegra_pmc_powergate_sequence_power_up(gr3d->pmc, id,
+							    clk, reset);
 		reset_control_release(reset);
 	}
 
@@ -381,6 +383,11 @@ static int gr3d_init_power(struct device *dev, struct gr3d *gr3d)
 	if (err < 0) {
 		if (err != -ENOENT)
 			return err;
+
+		gr3d->pmc = devm_tegra_pmc_get(dev);
+		if (IS_ERR(gr3d->pmc))
+			return dev_err_probe(dev, PTR_ERR(gr3d->pmc),
+					     "failed to get PMC\n");
 
 		/*
 		 * Older device-trees don't use GENPD. In this case we should

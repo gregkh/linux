@@ -40,6 +40,8 @@
 
 #include <trace/events/asoc.h>
 
+static u32 pop_time;
+
 /* DAPM context */
 struct snd_soc_dapm_context {
 	enum snd_soc_bias_level bias_level;
@@ -161,14 +163,14 @@ static void dapm_assert_locked(struct snd_soc_dapm_context *dapm)
 		snd_soc_dapm_mutex_assert_held(dapm);
 }
 
-static void dapm_pop_wait(u32 pop_time)
+static void dapm_pop_wait(void)
 {
 	if (pop_time)
 		schedule_timeout_uninterruptible(msecs_to_jiffies(pop_time));
 }
 
-__printf(3, 4)
-static void dapm_pop_dbg(struct device *dev, u32 pop_time, const char *fmt, ...)
+__printf(2, 3)
+static void dapm_pop_dbg(struct device *dev, const char *fmt, ...)
 {
 	va_list args;
 	char *buf;
@@ -1872,8 +1874,7 @@ static void dapm_seq_check_event(struct snd_soc_card *card,
 	if (w->event && (w->event_flags & event)) {
 		int ret;
 
-		dapm_pop_dbg(dev, card->pop_time, "pop test : %s %s\n",
-			w->name, ev_name);
+		dapm_pop_dbg(dev, "pop test : %s %s\n", w->name, ev_name);
 		dapm_async_complete(w->dapm);
 		trace_snd_soc_dapm_widget_event_start(w, event);
 		ret = w->event(w, NULL, event);
@@ -1909,7 +1910,7 @@ static void dapm_seq_run_coalesced(struct snd_soc_card *card,
 		else
 			value |= w->off_val << w->shift;
 
-		dapm_pop_dbg(dev, card->pop_time,
+		dapm_pop_dbg(dev,
 			"pop test : Queue %s: reg=0x%x, 0x%x/0x%x\n",
 			w->name, reg, value, mask);
 
@@ -1923,10 +1924,10 @@ static void dapm_seq_run_coalesced(struct snd_soc_card *card,
 		 * same register.
 		 */
 
-		dapm_pop_dbg(dev, card->pop_time,
+		dapm_pop_dbg(dev,
 			"pop test : Applying 0x%x/0x%x to %x in %dms\n",
-			value, mask, reg, card->pop_time);
-		dapm_pop_wait(card->pop_time);
+			value, mask, reg, pop_time);
+		dapm_pop_wait();
 		dapm_update_bits(dapm, reg, mask, value);
 	}
 
@@ -2392,9 +2393,9 @@ static int dapm_power_widgets(struct snd_soc_card *card, int event,
 			return ret;
 	}
 
-	dapm_pop_dbg(card->dev, card->pop_time,
-		"DAPM sequencing finished, waiting %dms\n", card->pop_time);
-	dapm_pop_wait(card->pop_time);
+	dapm_pop_dbg(card->dev,
+		"DAPM sequencing finished, waiting %dms\n", pop_time);
+	dapm_pop_wait();
 
 	trace_snd_soc_dapm_done(card, event);
 
@@ -2560,6 +2561,11 @@ static const struct file_operations dapm_bias_fops = {
 	.read = dapm_bias_read_file,
 	.llseek = default_llseek,
 };
+
+void snd_soc_dapm_debugfs_pop_time(struct dentry *parent)
+{
+	debugfs_create_u32("dapm_pop_time", 0644, parent, &pop_time);
+}
 
 void snd_soc_dapm_debugfs_init(struct snd_soc_dapm_context *dapm,
 	struct dentry *parent)
@@ -4602,6 +4608,36 @@ void snd_soc_dapm_connect_dai_link_widgets(struct snd_soc_card *card)
 			dapm_connect_dai_pair(card, rtd, codec_dai, cpu_dai);
 		}
 	}
+}
+
+int snd_soc_dapm_ignore_suspend_widgets(struct snd_soc_card *card)
+{
+	struct snd_soc_dapm_widget *w;
+	int i;
+
+	for (i = 0; i < card->num_ignore_suspend_widgets; i++) {
+		w = dapm_find_widget(snd_soc_card_to_dapm(card),
+				     card->ignore_suspend_widgets[i], true);
+		if (!w) {
+			dev_err(card->dev, "ASoC: DAPM unknown ignore suspend widget %s\n",
+				card->ignore_suspend_widgets[i]);
+			return -EINVAL;
+		}
+		w->ignore_suspend = 1;
+	}
+
+	for (i = 0; i < card->num_of_ignore_suspend_widgets; i++) {
+		w = dapm_find_widget(snd_soc_card_to_dapm(card),
+				     card->of_ignore_suspend_widgets[i], true);
+		if (!w) {
+			dev_err(card->dev, "ASoC: DAPM unknown ignore suspend widget %s\n",
+				card->of_ignore_suspend_widgets[i]);
+			return -EINVAL;
+		}
+		w->ignore_suspend = 1;
+	}
+
+	return 0;
 }
 
 static void dapm_stream_event(struct snd_soc_pcm_runtime *rtd, int stream, int event)

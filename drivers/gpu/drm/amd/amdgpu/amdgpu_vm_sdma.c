@@ -257,6 +257,9 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 		}
 
 		if (!p->pages_addr) {
+			if (p->override_pte)
+				amdgpu_gmc_override_vm_pte_flags(p->adev, p->vm, addr, &flags);
+
 			/* set page commands needed */
 			amdgpu_vm_sdma_set_ptes(p, bo, pe, addr, count,
 						incr, flags);
@@ -275,8 +278,14 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 		p->num_dw_left -= nptes * 2;
 		pte = (uint64_t *)&(p->job->ibs->ptr[p->num_dw_left]);
 		for (i = 0; i < nptes; ++i, addr += incr) {
+			u64 oflags = flags;
+
 			pte[i] = amdgpu_vm_map_gart(p->pages_addr, addr);
-			pte[i] |= flags;
+
+			if (p->override_pte)
+				amdgpu_gmc_override_vm_pte_flags(p->adev, p->vm, pte[i], &oflags);
+
+			pte[i] |= oflags;
 		}
 
 		amdgpu_vm_sdma_copy_ptes(p, bo, pe, nptes);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * video.c - V4L2 component for Mostcore
+ * V4L2 component for Mostcore
  *
  * Copyright (C) 2015, Microchip Technology Germany II GmbH & Co. KG
  */
@@ -560,29 +560,8 @@ static int __init comp_init(void)
 
 static void __exit comp_exit(void)
 {
-	struct most_video_dev *mdev, *tmp;
-	LIST_HEAD(free_list);
-
-	/*
-	 * As the mostcore currently doesn't call disconnect_channel()
-	 * for linked channels while we call most_deregister_component()
-	 * we simulate this call here.
-	 * This must be fixed in core.
-	 */
-	spin_lock_irq(&list_lock);
-	list_replace_init(&video_devices, &free_list);
-	spin_unlock_irq(&list_lock);
-
-	list_for_each_entry_safe(mdev, tmp, &free_list, list) {
-		list_del_init(&mdev->list);
-		comp_unregister_videodev(mdev);
-		v4l2_device_disconnect(&mdev->v4l2_dev);
-		v4l2_device_put(&mdev->v4l2_dev);
-	}
-
 	most_deregister_configfs_subsys(&comp);
 	most_deregister_component(&comp);
-	BUG_ON(!list_empty(&video_devices));
 }
 
 module_init(comp_init);

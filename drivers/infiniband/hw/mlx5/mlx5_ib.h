@@ -540,6 +540,7 @@ struct mlx5_ib_qp {
 	struct list_head	cq_recv_list;
 	struct list_head	cq_send_list;
 	struct mlx5_rate_limit	rl;
+	struct mlx5_rate_limit	rl_desired;
 	u32                     underlay_qpn;
 	u32			flags_en;
 	/*
@@ -1213,11 +1214,6 @@ static inline struct mlx5_ib_pd *to_mpd(struct ib_pd *ibpd)
 	return container_of(ibpd, struct mlx5_ib_pd, ibpd);
 }
 
-static inline u32 mlx5_mr_pdn(struct mlx5_ib_mr *mr)
-{
-	return to_mpd(mr->ibmr.pd)->pdn;
-}
-
 static inline struct mlx5_ib_srq *to_msrq(struct ib_srq *ibsrq)
 {
 	return container_of(ibsrq, struct mlx5_ib_srq, ibsrq);
@@ -1268,8 +1264,9 @@ to_mmmap(struct rdma_user_mmap_entry *rdma_entry)
 
 int mlx5_ib_dev_res_cq_init(struct mlx5_ib_dev *dev);
 int mlx5_ib_dev_res_srq_init(struct mlx5_ib_dev *dev);
-int mlx5_ib_db_map_user(struct mlx5_ib_ucontext *context, unsigned long virt,
-			struct mlx5_db *db);
+int mlx5_ib_db_map_user(struct mlx5_ib_ucontext *context,
+			const struct uverbs_attr_bundle *attrs, u16 attr_id,
+			unsigned long virt, struct mlx5_db *db);
 void mlx5_ib_db_unmap_user(struct mlx5_ib_ucontext *context, struct mlx5_db *db);
 void __mlx5_ib_cq_clean(struct mlx5_ib_cq *cq, u32 qpn, struct mlx5_ib_srq *srq);
 void mlx5_ib_cq_clean(struct mlx5_ib_cq *cq, u32 qpn, struct mlx5_ib_srq *srq);
@@ -1422,8 +1419,8 @@ int mlx5_odp_populate_xlt(void *xlt, size_t idx, size_t nentries,
 int mlx5_ib_advise_mr_prefetch(struct ib_pd *pd,
 			       enum ib_uverbs_advise_mr_advice advice,
 			       u32 flags, struct ib_sge *sg_list, u32 num_sge);
-int mlx5_ib_init_odp_mr(struct mlx5_ib_mr *mr);
-int mlx5_ib_init_dmabuf_mr(struct mlx5_ib_mr *mr);
+int mlx5_ib_init_odp_mr(struct mlx5_ib_mr *mr, struct ib_pd *pd);
+int mlx5_ib_init_dmabuf_mr(struct mlx5_ib_mr *mr, struct ib_pd *pd);
 #else /* CONFIG_INFINIBAND_ON_DEMAND_PAGING */
 static inline int mlx5_ib_odp_init_one(struct mlx5_ib_dev *ibdev) { return 0; }
 static inline int mlx5r_odp_create_eq(struct mlx5_ib_dev *dev,
@@ -1451,11 +1448,11 @@ mlx5_ib_advise_mr_prefetch(struct ib_pd *pd,
 {
 	return -EOPNOTSUPP;
 }
-static inline int mlx5_ib_init_odp_mr(struct mlx5_ib_mr *mr)
+static inline int mlx5_ib_init_odp_mr(struct mlx5_ib_mr *mr, struct ib_pd *pd)
 {
 	return -EOPNOTSUPP;
 }
-static inline int mlx5_ib_init_dmabuf_mr(struct mlx5_ib_mr *mr)
+static inline int mlx5_ib_init_dmabuf_mr(struct mlx5_ib_mr *mr, struct ib_pd *pd)
 {
 	return -EOPNOTSUPP;
 }
@@ -1519,6 +1516,7 @@ extern const struct uapi_definition mlx5_ib_flow_defs[];
 extern const struct uapi_definition mlx5_ib_qos_defs[];
 extern const struct uapi_definition mlx5_ib_std_types_defs[];
 extern const struct uapi_definition mlx5_ib_create_cq_defs[];
+extern const struct uapi_definition mlx5_ib_create_qp_defs[];
 
 static inline int is_qp1(enum ib_qp_type qp_type)
 {

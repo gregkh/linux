@@ -262,6 +262,9 @@ int pcim_p2pdma_init(struct pci_dev *pdev)
 	struct pci_p2pdma *p2p;
 	int i, ret;
 
+	if (pdev->non_mappable_bars)
+		return -EOPNOTSUPP;
+
 	p2p = rcu_dereference_protected(pdev->p2pdma, 1);
 	if (p2p)
 		return 0;
@@ -318,7 +321,8 @@ struct p2pdma_provider *pcim_p2pdma_provider(struct pci_dev *pdev, int bar)
 {
 	struct pci_p2pdma *p2p;
 
-	if (!(pci_resource_flags(pdev, bar) & IORESOURCE_MEM))
+	if (!(pci_resource_flags(pdev, bar) & IORESOURCE_MEM) ||
+	    pdev->non_mappable_bars)
 		return NULL;
 
 	p2p = rcu_dereference_protected(pdev->p2pdma, 1);

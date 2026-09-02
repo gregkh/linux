@@ -9,13 +9,6 @@
 #include "icp_qat_fw_loader_handle.h"
 #include "icp_qat_hal.h"
 
-#define ADF_MAJOR_VERSION	0
-#define ADF_MINOR_VERSION	6
-#define ADF_BUILD_VERSION	0
-#define ADF_DRV_VERSION		__stringify(ADF_MAJOR_VERSION) "." \
-				__stringify(ADF_MINOR_VERSION) "." \
-				__stringify(ADF_BUILD_VERSION)
-
 #define ADF_STATUS_RESTARTING 0
 #define ADF_STATUS_STARTING 1
 #define ADF_STATUS_CONFIGURED 2

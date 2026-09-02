@@ -12,6 +12,7 @@
 #include "smb_common.h"
 #include "mgmt/ksmbd_ida.h"
 #include "connection.h"
+#include "compress.h"
 #include "transport_tcp.h"
 #include "transport_rdma.h"
 #include "misc.h"
@@ -487,11 +488,7 @@ recheck:
 		pdu_size = get_rfc1002_len(hdr_buf);
 		ksmbd_debug(CONN, "RFC1002 header %u bytes\n", pdu_size);
 
-		if (ksmbd_conn_good(conn))
-			max_allowed_pdu_size =
-				SMB3_MAX_MSGSIZE + conn->vals->max_write_size;
-		else
-			max_allowed_pdu_size = SMB3_MAX_MSGSIZE;
+		max_allowed_pdu_size = ksmbd_max_allowed_pdu_size(conn);
 
 		if (pdu_size > max_allowed_pdu_size) {
 			pr_err_ratelimited("PDU length(%u) exceeded maximum allowed pdu size(%u) on connection(%d)\n",
@@ -532,6 +529,17 @@ recheck:
 			pr_err("PDU error. Read: %d, Expected: %d\n",
 			       size, pdu_size);
 			continue;
+		}
+
+		if (((struct smb2_hdr *)smb_get_msg(conn->request_buf))->ProtocolId ==
+		    SMB2_COMPRESSION_TRANSFORM_ID) {
+			/*
+			 * Convert the transform into a normal RFC1002-framed SMB2
+			 * request before protocol validation and work allocation.
+			 */
+			if (ksmbd_decompress_request(conn))
+				break;
+			pdu_size = get_rfc1002_len(conn->request_buf);
 		}
 
 		if (!ksmbd_smb_request(conn))

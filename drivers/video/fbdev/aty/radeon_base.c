@@ -95,7 +95,7 @@
 #define MIN_MAPPED_VRAM	(1024*768*1)
 
 #define CHIP_DEF(id, family, flags)					\
-	{ PCI_VENDOR_ID_ATI, id, PCI_ANY_ID, PCI_ANY_ID, 0, 0, (flags) | (CHIP_FAMILY_##family) }
+	{ PCI_DEVICE(PCI_VENDOR_ID_ATI, id), .driver_data = (flags) | (CHIP_FAMILY_##family) }
 
 static const struct pci_device_id radeonfb_pci_table[] = {
         /* Radeon Xpress 200m */

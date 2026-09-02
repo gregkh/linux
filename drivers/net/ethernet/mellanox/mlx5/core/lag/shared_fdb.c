@@ -89,6 +89,76 @@ err:
 	return err;
 }
 
+int mlx5_lag_create_vport_lag(struct mlx5_lag *ldev, u32 group_id)
+{
+	u32 filter = group_id ? group_id : MLX5_LAG_FILTER_ALL;
+	int master_idx = mlx5_lag_get_dev_index_by_seq_filter(ldev, MLX5_LAG_P1,
+							     filter);
+	struct mlx5_eswitch *master_esw;
+	struct mlx5_core_dev *dev0;
+	int i, j;
+	int err;
+
+	if (master_idx < 0)
+		return -EINVAL;
+
+	dev0 = mlx5_lag_pf(ldev, master_idx)->dev;
+	master_esw = dev0->priv.eswitch;
+
+	mlx5_lag_for_each(i, 0, ldev, filter) {
+		struct mlx5_eswitch *slave_esw;
+
+		if (i == master_idx)
+			continue;
+
+		slave_esw = mlx5_lag_pf(ldev, i)->dev->priv.eswitch;
+		err = mlx5_eswitch_offloads_vport_lag_add_one(master_esw,
+							      slave_esw);
+		if (err)
+			goto err;
+	}
+
+	return 0;
+
+err:
+	mlx5_lag_for_each_reverse(j, i - 1, 0, ldev, filter) {
+		struct mlx5_eswitch *slave_esw;
+
+		if (j == master_idx)
+			continue;
+		slave_esw = mlx5_lag_pf(ldev, j)->dev->priv.eswitch;
+		mlx5_eswitch_offloads_vport_lag_del_one(master_esw, slave_esw);
+	}
+	return err;
+}
+
+int mlx5_lag_destroy_vport_lag(struct mlx5_lag *ldev, u32 group_id)
+{
+	u32 filter = group_id ? group_id : MLX5_LAG_FILTER_ALL;
+	int master_idx = mlx5_lag_get_dev_index_by_seq_filter(ldev, MLX5_LAG_P1,
+							     filter);
+	struct mlx5_eswitch *master_esw;
+	struct mlx5_core_dev *dev0;
+	int i;
+
+	if (master_idx < 0)
+		return 0;
+
+	dev0 = mlx5_lag_pf(ldev, master_idx)->dev;
+	master_esw = dev0->priv.eswitch;
+
+	mlx5_lag_for_each(i, 0, ldev, filter) {
+		struct mlx5_core_dev *dev;
+
+		if (i == master_idx)
+			continue;
+		dev = mlx5_lag_pf(ldev, i)->dev;
+		mlx5_eswitch_offloads_vport_lag_del_one(master_esw,
+							dev->priv.eswitch);
+	}
+	return 0;
+}
+
 static void mlx5_lag_destroy_single_fdb_filter(struct mlx5_lag *ldev,
 					       u32 filter)
 {
@@ -141,7 +211,7 @@ int mlx5_lag_shared_fdb_create(struct mlx5_lag *ldev,
 			       enum mlx5_lag_mode mode,
 			       u32 group_id)
 {
-	u32 filter = group_id ? group_id : MLX5_LAG_FILTER_PORTS;
+	u32 filter = group_id ? group_id : MLX5_LAG_FILTER_ALL;
 	int idx = mlx5_lag_get_dev_index_by_seq_filter(ldev, MLX5_LAG_P1,
 						       filter);
 	struct mlx5_core_dev *dev0;
@@ -209,7 +279,7 @@ err_add_devices:
 
 void mlx5_lag_shared_fdb_destroy(struct mlx5_lag *ldev, u32 group_id)
 {
-	u32 filter = group_id ? group_id : MLX5_LAG_FILTER_PORTS;
+	u32 filter = group_id ? group_id : MLX5_LAG_FILTER_ALL;
 	struct lag_func *pf;
 	int err;
 	int i;
@@ -226,6 +296,7 @@ void mlx5_lag_shared_fdb_destroy(struct mlx5_lag *ldev, u32 group_id)
 			pf->sd_fdb_active = false;
 		}
 		mlx5_lag_destroy_single_fdb_filter(ldev, group_id);
+		mlx5_lag_unload_reps_from_locked(ldev, filter);
 	}
 
 	mlx5_lag_add_devices_filter(ldev, filter);

@@ -12,7 +12,6 @@
 #include "nop.h"
 
 struct io_nop {
-	/* NOTE: kiocb has the file as the first member, so don't do it here */
 	struct file     *file;
 	int             result;
 	int		fd;

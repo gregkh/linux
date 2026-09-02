@@ -1943,7 +1943,11 @@ static int gfx_v9_4_3_xcc_mqd_init(struct amdgpu_ring *ring, int xcc_id)
 
 	/* set static priority for a queue/ring */
 	gfx_v9_4_3_mqd_set_priority(ring, mqd);
-	mqd->cp_hqd_quantum = RREG32_SOC15(GC, GET_INST(GC, xcc_id), regCP_HQD_QUANTUM);
+	tmp = RREG32_SOC15(GC, GET_INST(GC, xcc_id), regCP_HQD_QUANTUM);
+	tmp = REG_SET_FIELD(tmp, CP_HQD_QUANTUM, QUANTUM_EN, 1);
+	tmp = REG_SET_FIELD(tmp, CP_HQD_QUANTUM, QUANTUM_SCALE, 1);
+	tmp = REG_SET_FIELD(tmp, CP_HQD_QUANTUM, QUANTUM_DURATION, 1);
+	mqd->cp_hqd_quantum = tmp;
 
 	/* map_queues packet doesn't need activate the queue,
 	 * so only kiq need set this field.
@@ -2367,7 +2371,89 @@ static int gfx_v9_4_3_hw_init(struct amdgpu_ip_block *ip_block)
 	if (r)
 		return r;
 
+	r = amdgpu_irq_get(adev, &adev->gfx.priv_reg_irq, 0);
+	if (r)
+		return r;
+
+	r = amdgpu_irq_get(adev, &adev->gfx.priv_inst_irq, 0);
+	if (r)
+		goto err_priv_inst;
+
+	r = amdgpu_irq_get(adev, &adev->gfx.bad_op_irq, 0);
+	if (r)
+		goto err_bad_op;
+
+	return 0;
+
+err_bad_op:
+	amdgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
+err_priv_inst:
+	amdgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
 	return r;
+}
+
+static int gfx_v9_4_3_perf_monitor_ptl_init(struct amdgpu_device *adev, bool enable)
+{
+	struct amdgpu_ptl *ptl = &adev->psp.ptl;
+	uint32_t ptl_state = enable ? 1 : 0;
+	uint32_t fmt1, fmt2;
+	int r;
+
+	if (!adev->psp.funcs)
+		return -EOPNOTSUPP;
+
+	if (!ptl->hw_supported) {
+		fmt1 = GFX_FTYPE_VECTOR;
+		fmt2 = GFX_FTYPE_F8;
+	} else {
+		fmt1 = ptl->fmt1;
+		fmt2 = ptl->fmt2;
+	}
+
+	/* initialize PTL with default formats: GFX_FTYPE_VECTOR & GFX_FTYPE_F8 */
+	r = amdgpu_ptl_perf_monitor_ctrl(adev, PSP_PTL_PERF_MON_SET, &ptl_state,
+							&fmt1, &fmt2);
+	if (r)
+		return r;
+
+	ptl->hw_supported = true;
+
+	atomic_set(&ptl->disable_ref, 0);
+	if (!enable && !amdgpu_in_reset(adev) && !adev->in_suspend) {
+		dev_dbg(adev->dev,
+			"PTL disabled (amdgpu.ptl=%d)\
+			To enable, set amdgpu.ptl=1 via module param or kernel cmdline\n",
+			amdgpu_ptl);
+		set_bit(AMDGPU_PTL_DISABLE_SYSFS, ptl->disable_bitmap);
+	}
+
+	return 0;
+}
+
+static int gfx_v9_4_3_ptl_hw_init(struct amdgpu_device *adev)
+{
+	struct amdgpu_ptl *ptl = &adev->psp.ptl;
+	bool enable;
+
+	switch (amdgpu_ptl) {
+	case 1:
+		enable = true;
+		break;
+	case 2:
+		/* Permanently disabled - cannot be re-enabled */
+		enable = false;
+		ptl->permanently_disabled = true;
+		break;
+	case -1:
+	case 0:
+	default:
+		enable = false;
+		break;
+	}
+
+	gfx_v9_4_3_perf_monitor_ptl_init(adev, enable ? 1 : 0);
+
+	return 0;
 }
 
 static int gfx_v9_4_3_hw_fini(struct amdgpu_ip_block *ip_block)
@@ -2375,9 +2461,12 @@ static int gfx_v9_4_3_hw_fini(struct amdgpu_ip_block *ip_block)
 	struct amdgpu_device *adev = ip_block->adev;
 	int i, num_xcc;
 
-	amdgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
-	amdgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
+	if (adev->psp.ptl.hw_supported && !amdgpu_in_reset(adev))
+		gfx_v9_4_3_perf_monitor_ptl_init(adev, false);
+
 	amdgpu_irq_put(adev, &adev->gfx.bad_op_irq, 0);
+	amdgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
+	amdgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
 
 	num_xcc = NUM_XCC(adev->gfx.xcc_mask);
 	for (i = 0; i < num_xcc; i++) {
@@ -2401,12 +2490,21 @@ static bool gfx_v9_4_3_is_idle(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
 	int i, num_xcc;
+	u32 gc_ip_version;
 
 	num_xcc = NUM_XCC(adev->gfx.xcc_mask);
+	gc_ip_version = amdgpu_ip_version(adev, GC_HWIP, 0);
+
 	for (i = 0; i < num_xcc; i++) {
-		if (REG_GET_FIELD(RREG32_SOC15(GC, GET_INST(GC, i), regGRBM_STATUS),
-					GRBM_STATUS, GUI_ACTIVE))
-			return false;
+		if (gc_ip_version == IP_VERSION(9, 4, 4)) {
+			if (REG_GET_FIELD(RREG32_SOC15(GC, GET_INST(GC, i), regGRBM_STATUS),
+					  GRBM_STATUS, SPI_BUSY))
+				return false;
+		} else {
+			if (REG_GET_FIELD(RREG32_SOC15(GC, GET_INST(GC, i), regGRBM_STATUS),
+					  GRBM_STATUS, GUI_ACTIVE))
+				return false;
+		}
 	}
 	return true;
 }
@@ -2531,23 +2629,12 @@ static int gfx_v9_4_3_early_init(struct amdgpu_ip_block *ip_block)
 static int gfx_v9_4_3_late_init(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
-	int r;
-
-	r = amdgpu_irq_get(adev, &adev->gfx.priv_reg_irq, 0);
-	if (r)
-		return r;
-
-	r = amdgpu_irq_get(adev, &adev->gfx.priv_inst_irq, 0);
-	if (r)
-		return r;
-
-	r = amdgpu_irq_get(adev, &adev->gfx.bad_op_irq, 0);
-	if (r)
-		return r;
 
 	if (adev->gfx.ras &&
 	    adev->gfx.ras->enable_watchdog_timer)
 		adev->gfx.ras->enable_watchdog_timer(adev);
+
+	gfx_v9_4_3_ptl_hw_init(adev);
 
 	return 0;
 }

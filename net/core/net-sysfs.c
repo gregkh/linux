@@ -37,12 +37,6 @@ static const char fmt_uint[] = "%u\n";
 static const char fmt_ulong[] = "%lu\n";
 static const char fmt_u64[] = "%llu\n";
 
-/* Caller holds RTNL, netdev->lock or RCU */
-static inline int dev_isalive(const struct net_device *dev)
-{
-	return READ_ONCE(dev->reg_state) <= NETREG_REGISTERED;
-}
-
 /* There is a possible ABBA deadlock between rtnl_lock and kernfs_node->active,
  * when unregistering a net device and accessing associated sysfs files. The
  * potential deadlock is as follow:
@@ -2340,6 +2334,9 @@ int netdev_register_kobject(struct net_device *ndev)
 		*groups++ = &wireless_group;
 #endif /* CONFIG_SYSFS */
 
+	/* Hold back the KOBJ_ADD uevent until the device is listed. */
+	dev_set_uevent_suppress(dev, 1);
+
 	error = device_add(dev);
 	if (error)
 		return error;
@@ -2353,6 +2350,17 @@ int netdev_register_kobject(struct net_device *ndev)
 	pm_runtime_set_memalloc_noio(dev, true);
 
 	return error;
+}
+
+/* Announce a fully registered device to userspace. This pairs with the uevent
+ * suppression from netdev_register_kobject().
+ */
+void netdev_uevent_add(struct net_device *ndev)
+{
+	struct device *dev = &ndev->dev;
+
+	dev_set_uevent_suppress(dev, 0);
+	kobject_uevent(&dev->kobj, KOBJ_ADD);
 }
 
 /* Change owner for sysfs entries when moving network devices across network

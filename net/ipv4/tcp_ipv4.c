@@ -1897,7 +1897,6 @@ err_discard:
 	TCP_INC_STATS(sock_net(sk), TCP_MIB_INERRS);
 	goto discard;
 }
-EXPORT_SYMBOL(tcp_v4_do_rcv);
 
 enum skb_drop_reason tcp_add_backlog(struct sock *sk, struct sk_buff *skb)
 {

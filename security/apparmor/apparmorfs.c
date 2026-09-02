@@ -9,6 +9,7 @@
  */
 
 #include <linux/ctype.h>
+#include <linux/slab.h>
 #include <linux/security.h>
 #include <linux/vmalloc.h>
 #include <linux/init.h>
@@ -906,7 +907,7 @@ static void multi_transaction_kref(struct kref *kref)
 	struct multi_transaction *t;
 
 	t = container_of(kref, struct multi_transaction, count);
-	free_page((unsigned long) t);
+	kfree(t);
 }
 
 static struct multi_transaction *
@@ -949,7 +950,7 @@ static struct multi_transaction *multi_transaction_new(struct file *file,
 	if (size > MULTI_TRANSACTION_LIMIT - 1)
 		return ERR_PTR(-EFBIG);
 
-	t = (struct multi_transaction *)get_zeroed_page(GFP_KERNEL);
+	t = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!t)
 		return ERR_PTR(-ENOMEM);
 	kref_init(&t->count);
@@ -2475,6 +2476,7 @@ static struct aa_sfs_entry aa_sfs_entry_versions[] = {
 static struct aa_sfs_entry aa_sfs_entry_policy[] = {
 	AA_SFS_DIR("versions",			aa_sfs_entry_versions),
 	AA_SFS_FILE_BOOLEAN("set_load",		1),
+	AA_SFS_FILE_BOOLEAN("diff-encode",		1),
 	/* number of out of band transitions supported */
 	AA_SFS_FILE_U64("outofband",		MAX_OOB_SUPPORTED),
 	AA_SFS_FILE_U64("permstable32_version",	3),

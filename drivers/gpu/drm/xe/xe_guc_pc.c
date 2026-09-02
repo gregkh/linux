@@ -1323,18 +1323,16 @@ int xe_guc_pc_start(struct xe_guc_pc *pc)
  * xe_guc_pc_stop - Stop GuC's Power Conservation component
  * @pc: Xe_GuC_PC instance
  */
-int xe_guc_pc_stop(struct xe_guc_pc *pc)
+void xe_guc_pc_stop(struct xe_guc_pc *pc)
 {
 	struct xe_device *xe = pc_to_xe(pc);
 
 	if (xe->info.skip_guc_pc)
-		return 0;
+		return;
 
 	mutex_lock(&pc->freq_lock);
 	pc->freq_ready = false;
 	mutex_unlock(&pc->freq_lock);
-
-	return 0;
 }
 
 /**
@@ -1349,10 +1347,10 @@ static void xe_guc_pc_fini_hw(void *arg)
 	if (xe_device_wedged(xe))
 		return;
 
-	CLASS(xe_force_wake, fw_ref)(gt_to_fw(pc_to_gt(pc)), XE_FW_GT);
-	XE_WARN_ON(xe_guc_pc_stop(pc));
+	xe_guc_pc_stop(pc);
 
 	/* Bind requested freq to mert_freq_cap before unload */
+	CLASS(xe_force_wake, fw_ref)(gt_to_fw(pc_to_gt(pc)), XE_FW_GT);
 	pc_set_cur_freq(pc, min(pc_max_freq_cap(pc), xe_guc_pc_get_rpe_freq(pc)));
 }
 

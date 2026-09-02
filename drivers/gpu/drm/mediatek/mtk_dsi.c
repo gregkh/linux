@@ -828,7 +828,7 @@ static void mtk_dsi_bridge_mode_set(struct drm_bridge *bridge,
 }
 
 static void mtk_dsi_bridge_atomic_disable(struct drm_bridge *bridge,
-					  struct drm_atomic_state *state)
+					  struct drm_atomic_commit *state)
 {
 	struct mtk_dsi *dsi = bridge_to_dsi(bridge);
 
@@ -836,7 +836,7 @@ static void mtk_dsi_bridge_atomic_disable(struct drm_bridge *bridge,
 }
 
 static void mtk_dsi_bridge_atomic_enable(struct drm_bridge *bridge,
-					 struct drm_atomic_state *state)
+					 struct drm_atomic_commit *state)
 {
 	struct mtk_dsi *dsi = bridge_to_dsi(bridge);
 
@@ -847,7 +847,7 @@ static void mtk_dsi_bridge_atomic_enable(struct drm_bridge *bridge,
 }
 
 static void mtk_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
-					     struct drm_atomic_state *state)
+					     struct drm_atomic_commit *state)
 {
 	struct mtk_dsi *dsi = bridge_to_dsi(bridge);
 	struct drm_device *drm = bridge->dev;
@@ -862,7 +862,7 @@ static void mtk_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
 }
 
 static void mtk_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
-					       struct drm_atomic_state *state)
+					       struct drm_atomic_commit *state)
 {
 	struct mtk_dsi *dsi = bridge_to_dsi(bridge);
 
@@ -941,7 +941,6 @@ static int mtk_dsi_encoder_init(struct drm_device *drm, struct mtk_dsi *dsi)
 		ret = PTR_ERR(dsi->connector);
 		goto err_cleanup_encoder;
 	}
-	drm_connector_attach_encoder(dsi->connector, &dsi->encoder);
 
 	return 0;
 
@@ -1313,6 +1312,7 @@ static const struct mtk_dsi_driver_data mt8188_dsi_driver_data = {
 
 static const struct of_device_id mtk_dsi_of_match[] = {
 	{ .compatible = "mediatek,mt2701-dsi", .data = &mt2701_dsi_driver_data },
+	{ .compatible = "mediatek,mt8167-dsi", .data = &mt2701_dsi_driver_data },
 	{ .compatible = "mediatek,mt8173-dsi", .data = &mt8173_dsi_driver_data },
 	{ .compatible = "mediatek,mt8183-dsi", .data = &mt8183_dsi_driver_data },
 	{ .compatible = "mediatek,mt8186-dsi", .data = &mt8186_dsi_driver_data },

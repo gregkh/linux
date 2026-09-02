@@ -332,7 +332,7 @@ enum {
 
 struct rpcrdma_buffer;
 struct rpcrdma_req {
-	struct list_head	rl_list;
+	struct llist_node	rl_node;
 	struct rpc_rqst		rl_slot;
 	struct rpcrdma_rep	*rl_reply;
 	struct xdr_stream	rl_stream;
@@ -374,14 +374,14 @@ rpcrdma_mr_pop(struct list_head *list)
 }
 
 /*
- * struct rpcrdma_buffer -- holds list/queue of pre-registered memory for
- * inline requests/replies, and client/server credits.
+ * struct rpcrdma_buffer -- holds pre-registered memory for inline
+ * requests/replies, and client/server credits.
  *
  * One of these is associated with a transport instance
  */
 struct rpcrdma_buffer {
 	spinlock_t		rb_lock;
-	struct list_head	rb_send_bufs;
+	struct llist_head	rb_send_bufs;
 	struct list_head	rb_mrs;
 
 	unsigned long		rb_sc_head;

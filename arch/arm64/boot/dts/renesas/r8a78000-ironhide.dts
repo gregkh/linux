@@ -6,6 +6,7 @@
  */
 
 /dts-v1/;
+#include <dt-bindings/soc/renesas,r8a78000-mfis.h>
 #include "r8a78000.dtsi"
 
 / {
@@ -18,6 +19,19 @@
 
 	chosen {
 		stdout-path = "serial0:1843200n8";
+	};
+
+	firmware {
+		scmi: scmi {
+			compatible = "arm,scmi";
+			mboxes = <&mfis_scp 2 MFIS_CHANNEL_TX>,
+				 <&mfis_scp 2 MFIS_CHANNEL_RX>;
+			mbox-names = "tx", "rx";
+			shmem = <&scmi_tx_shmem>, <&scmi_rx_shmem>;
+			arm,no-completion-irq;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
 	};
 
 	memory@40000000 {
@@ -150,6 +164,22 @@
 	status = "okay";
 };
 
+&mfis_scp {
+	status = "okay";
+};
+
 &scif_clk {
 	clock-frequency = <26000000>;
+};
+
+&stcm_transport {
+	scmi_tx_shmem: sram@1200 {
+		compatible = "arm,scmi-shmem";
+		reg = <0x1200 0x0100>;
+	};
+
+	scmi_rx_shmem: sram@1300 {
+		compatible = "arm,scmi-shmem";
+		reg = <0x1300 0x100>;
+	};
 };

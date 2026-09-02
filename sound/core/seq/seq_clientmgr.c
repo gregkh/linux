@@ -536,6 +536,10 @@ static int bounce_error_event(struct snd_seq_client *client,
 	    ! client->accept_input)
 		return 0; /* ignored */
 
+	if (event->type == SNDRV_SEQ_EVENT_BOUNCE ||
+	    event->type == SNDRV_SEQ_EVENT_KERNEL_ERROR)
+		return err; /* avoid re-bouncing */
+
 	/* set up quoted error */
 	memset(&bounce_ev, 0, sizeof(bounce_ev));
 
@@ -1310,7 +1314,7 @@ static int snd_seq_ioctl_create_port(struct snd_seq_client *client, void *arg)
 		port_idx = -1;
 	if (port_idx >= SNDRV_SEQ_ADDRESS_UNKNOWN)
 		return -EINVAL;
-	err = snd_seq_create_port(client, port_idx, &port);
+	err = snd_seq_create_port(client, &port);
 	if (err < 0)
 		return err;
 
@@ -1329,9 +1333,13 @@ static int snd_seq_ioctl_create_port(struct snd_seq_client *client, void *arg)
 		}
 	}
 
-	info->addr = port->addr;
-
 	snd_seq_set_port_info(port, info);
+	err = snd_seq_insert_port(client, port_idx, port);
+	if (err < 0) {
+		kfree(port);
+		return err;
+	}
+	info->addr = port->addr;
 	if (info->capability & SNDRV_SEQ_PORT_CAP_UMP_ENDPOINT)
 		client->ump_endpoint_port = port->addr.port;
 	snd_seq_system_client_ev_port_start(port->addr.client, port->addr.port);

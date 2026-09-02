@@ -91,6 +91,7 @@
 #include <linux/sched/mm.h>
 #include <linux/sched/coredump.h>
 #include <linux/sched/debug.h>
+#include <linux/sched/exec_state.h>
 #include <linux/sched/stat.h>
 #include <linux/posix-timers.h>
 #include <linux/time_namespace.h>
@@ -252,7 +253,7 @@ static ssize_t get_mm_proctitle(struct mm_struct *mm, char __user *buf,
 	if (pos >= PAGE_SIZE)
 		return 0;
 
-	page = (char *)__get_free_page(GFP_KERNEL);
+	page = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!page)
 		return -ENOMEM;
 
@@ -275,7 +276,7 @@ static ssize_t get_mm_proctitle(struct mm_struct *mm, char __user *buf,
 			ret = len;
 		}
 	}
-	free_page((unsigned long)page);
+	kfree(page);
 	return ret;
 }
 
@@ -338,7 +339,7 @@ static ssize_t get_mm_cmdline(struct mm_struct *mm, char __user *buf,
 	if (count > arg_end - pos)
 		count = arg_end - pos;
 
-	page = (char *)__get_free_page(GFP_KERNEL);
+	page = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!page)
 		return -ENOMEM;
 
@@ -362,7 +363,7 @@ static ssize_t get_mm_cmdline(struct mm_struct *mm, char __user *buf,
 		count -= got;
 	}
 
-	free_page((unsigned long)page);
+	kfree(page);
 	return len;
 }
 
@@ -888,7 +889,7 @@ static ssize_t mem_rw(struct file *file, char __user *buf,
 	if (!mm)
 		return 0;
 
-	page = (char *)__get_free_page(GFP_KERNEL);
+	page = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!page)
 		return -ENOMEM;
 
@@ -929,7 +930,7 @@ static ssize_t mem_rw(struct file *file, char __user *buf,
 
 	mmput(mm);
 free:
-	free_page((unsigned long) page);
+	kfree(page);
 	return copied;
 }
 
@@ -996,7 +997,7 @@ static ssize_t environ_read(struct file *file, char __user *buf,
 	if (!mm || !mm->env_end)
 		return 0;
 
-	page = (char *)__get_free_page(GFP_KERNEL);
+	page = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!page)
 		return -ENOMEM;
 
@@ -1042,7 +1043,7 @@ static ssize_t environ_read(struct file *file, char __user *buf,
 	mmput(mm);
 
 free:
-	free_page((unsigned long) page);
+	kfree(page);
 	return ret;
 }
 
@@ -1879,7 +1880,6 @@ void task_dump_owner(struct task_struct *task, umode_t mode,
 	cred = __task_cred(task);
 	uid = cred->euid;
 	gid = cred->egid;
-	rcu_read_unlock();
 
 	/*
 	 * Before the /proc/pid/status file was created the only way to read
@@ -1889,29 +1889,22 @@ void task_dump_owner(struct task_struct *task, umode_t mode,
 	 * made this apply to all per process world readable and executable
 	 * directories.
 	 */
-	if (mode != (S_IFDIR|S_IRUGO|S_IXUGO)) {
-		struct mm_struct *mm;
-		task_lock(task);
-		mm = task->mm;
-		/* Make non-dumpable tasks owned by some root */
-		if (mm) {
-			if (get_dumpable(mm) != SUID_DUMP_USER) {
-				struct user_namespace *user_ns = mm->user_ns;
+	if (mode != (S_IFDIR | S_IRUGO | S_IXUGO)) {
+		struct task_exec_state *exec_state;
 
-				uid = make_kuid(user_ns, 0);
-				if (!uid_valid(uid))
-					uid = GLOBAL_ROOT_UID;
+		exec_state = task_exec_state_rcu(task);
+		if (READ_ONCE(exec_state->dumpable) != TASK_DUMPABLE_OWNER) {
+			uid = make_kuid(exec_state->user_ns, 0);
+			if (!uid_valid(uid))
+				uid = GLOBAL_ROOT_UID;
 
-				gid = make_kgid(user_ns, 0);
-				if (!gid_valid(gid))
-					gid = GLOBAL_ROOT_GID;
-			}
-		} else {
-			uid = GLOBAL_ROOT_UID;
-			gid = GLOBAL_ROOT_GID;
+			gid = make_kgid(exec_state->user_ns, 0);
+			if (!gid_valid(gid))
+				gid = GLOBAL_ROOT_GID;
 		}
-		task_unlock(task);
 	}
+	rcu_read_unlock();
+
 	*ruid = uid;
 	*rgid = gid;
 }
@@ -2118,8 +2111,7 @@ bool proc_fill_cache(struct file *file, struct dir_context *ctx,
 		goto end_instantiate;
 
 	if (!child) {
-		DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
-		child = d_alloc_parallel(dir, &qname, &wq);
+		child = d_alloc_parallel(dir, &qname);
 		if (IS_ERR(child))
 			goto end_instantiate;
 		if (d_in_lookup(child)) {
@@ -2943,7 +2935,7 @@ static ssize_t proc_coredump_filter_read(struct file *file, char __user *buf,
 	ret = 0;
 	mm = get_task_mm(task);
 	if (mm) {
-		unsigned long flags = __mm_flags_get_dumpable(mm);
+		unsigned long flags = __mm_flags_get_word(mm);
 
 		len = snprintf(buffer, sizeof(buffer), "%08lx\n",
 			       ((flags & MMF_DUMP_FILTER_MASK) >>
@@ -3521,28 +3513,42 @@ out:
 struct tgid_iter {
 	unsigned int tgid;
 	struct task_struct *task;
+	struct pid_namespace *const pid_ns;
 };
-static struct tgid_iter next_tgid(struct pid_namespace *ns, struct tgid_iter iter)
-{
-	struct pid *pid;
 
-	if (iter.task)
-		put_task_struct(iter.task);
-	rcu_read_lock();
-retry:
-	iter.task = NULL;
-	pid = find_ge_pid(iter.tgid, ns);
-	if (pid) {
-		iter.tgid = pid_nr_ns(pid, ns);
-		iter.task = pid_task(pid, PIDTYPE_TGID);
-		if (!iter.task) {
-			iter.tgid += 1;
-			goto retry;
-		}
-		get_task_struct(iter.task);
+static struct tgid_iter
+make_tgid_iter(unsigned int init_tgid, struct pid_namespace *pid_ns)
+{
+	return (struct tgid_iter){
+		.tgid = init_tgid - 1,
+		.pid_ns = pid_ns,
+	};
+}
+
+static bool next_tgid(struct tgid_iter *it)
+{
+	if (it->task) {
+		put_task_struct(it->task);
+		it->task = NULL;
 	}
-	rcu_read_unlock();
-	return iter;
+
+	rcu_read_lock();
+	while (1) {
+		it->tgid += 1;
+		const auto pid = find_ge_pid(it->tgid, it->pid_ns);
+		if (pid) {
+			it->tgid = pid_nr_ns(pid, it->pid_ns);
+			it->task = pid_task(pid, PIDTYPE_TGID);
+			if (it->task) {
+				get_task_struct(it->task);
+				rcu_read_unlock();
+				return true;
+			}
+		} else {
+			rcu_read_unlock();
+			return false;
+		}
+	}
 }
 
 #define TGID_OFFSET (FIRST_PROCESS_ENTRY + 2)
@@ -3550,9 +3556,8 @@ retry:
 /* for the /proc/ directory itself, after non-process stuff has been done */
 int proc_pid_readdir(struct file *file, struct dir_context *ctx)
 {
-	struct tgid_iter iter;
 	struct proc_fs_info *fs_info = proc_sb_info(file_inode(file)->i_sb);
-	struct pid_namespace *ns = proc_pid_ns(file_inode(file)->i_sb);
+	struct pid_namespace *pid_ns = proc_pid_ns(file_inode(file)->i_sb);
 	loff_t pos = ctx->pos;
 
 	if (pos >= PID_MAX_LIMIT + TGID_OFFSET)
@@ -3568,11 +3573,9 @@ int proc_pid_readdir(struct file *file, struct dir_context *ctx)
 			return 0;
 		ctx->pos = pos = pos + 1;
 	}
-	iter.tgid = pos - TGID_OFFSET;
-	iter.task = NULL;
-	for (iter = next_tgid(ns, iter);
-	     iter.task;
-	     iter.tgid += 1, iter = next_tgid(ns, iter)) {
+
+	auto iter = make_tgid_iter(pos - TGID_OFFSET, pid_ns);
+	while (next_tgid(&iter)) {
 		char name[10 + 1];
 		unsigned int len;
 

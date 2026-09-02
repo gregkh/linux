@@ -1226,13 +1226,8 @@ static int lm90_update_alarms_locked(struct lm90_data *data, bool force)
 
 static int lm90_update_alarms(struct lm90_data *data, bool force)
 {
-	int err;
-
-	hwmon_lock(data->hwmon_dev);
-	err = lm90_update_alarms_locked(data, force);
-	hwmon_unlock(data->hwmon_dev);
-
-	return err;
+	guard(hwmon_lock)(data->hwmon_dev);
+	return lm90_update_alarms_locked(data, force);
 }
 
 static void lm90_alert_work(struct work_struct *__work)
@@ -2598,9 +2593,9 @@ static void lm90_stop_work(void *_data)
 {
 	struct lm90_data *data = _data;
 
-	hwmon_lock(data->hwmon_dev);
-	data->shutdown = true;
-	hwmon_unlock(data->hwmon_dev);
+	scoped_guard(hwmon_lock, data->hwmon_dev) {
+		data->shutdown = true;
+	}
 	cancel_delayed_work_sync(&data->alert_work);
 	cancel_work_sync(&data->report_work);
 }
@@ -2946,17 +2941,17 @@ static void lm90_alert(struct i2c_client *client, enum i2c_alert_protocol type,
 		 */
 		struct lm90_data *data = i2c_get_clientdata(client);
 
-		hwmon_lock(data->hwmon_dev);
-		if (!data->shutdown && (data->flags & LM90_HAVE_BROKEN_ALERT) &&
-		    (data->current_alarms & data->alert_alarms)) {
-			if (!(data->config & 0x80)) {
-				dev_dbg(&client->dev, "Disabling ALERT#\n");
-				lm90_update_confreg(data, data->config | 0x80);
+		scoped_guard(hwmon_lock, data->hwmon_dev) {
+			if (!data->shutdown && (data->flags & LM90_HAVE_BROKEN_ALERT) &&
+			    (data->current_alarms & data->alert_alarms)) {
+				if (!(data->config & 0x80)) {
+					dev_dbg(&client->dev, "Disabling ALERT#\n");
+					lm90_update_confreg(data, data->config | 0x80);
+				}
+				schedule_delayed_work(&data->alert_work,
+					max_t(int, HZ, msecs_to_jiffies(data->update_interval)));
 			}
-			schedule_delayed_work(&data->alert_work,
-				max_t(int, HZ, msecs_to_jiffies(data->update_interval)));
 		}
-		hwmon_unlock(data->hwmon_dev);
 	} else {
 		dev_dbg(&client->dev, "Everything OK\n");
 	}

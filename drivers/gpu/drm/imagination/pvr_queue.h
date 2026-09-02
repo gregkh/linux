@@ -141,7 +141,7 @@ struct pvr_queue {
 	u64 callstack_addr;
 };
 
-bool pvr_queue_fence_is_ufo_backed(struct dma_fence *f);
+bool pvr_queue_fence_is_native(struct dma_fence *f);
 
 int pvr_queue_job_init(struct pvr_job *job, u64 drm_client_id);
 

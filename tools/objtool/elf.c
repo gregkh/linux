@@ -208,6 +208,20 @@ struct symbol *find_symbol_containing(const struct section *sec, unsigned long o
 }
 
 /*
+ * Also match the symbol end address which can be used for a bounds comparison.
+ */
+struct symbol *find_symbol_containing_inclusive(const struct section *sec,
+						unsigned long offset)
+{
+	struct symbol *sym = find_symbol_containing(sec, offset);
+
+	if (!sym && offset)
+		sym = find_symbol_containing(sec, offset - 1);
+
+	return sym;
+}
+
+/*
  * Returns size of hole starting at @offset.
  */
 int find_symbol_hole_containing(const struct section *sec, unsigned long offset)
@@ -635,7 +649,7 @@ static int read_symbols(struct elf *elf)
 
 		if (is_file_sym(sym))
 			file = sym;
-		else if (sym->bind == STB_LOCAL)
+		else if (sym->bind == STB_LOCAL && !is_sec_sym(sym))
 			sym->file = file;
 	}
 
@@ -983,6 +997,26 @@ non_local:
 	return sym;
 }
 
+int elf_write_symbol(struct elf *elf, struct symbol *sym)
+{
+	struct section *symtab, *symtab_shndx;
+
+	symtab = find_section_by_name(elf, ".symtab");
+	if (!symtab) {
+		ERROR("no .symtab");
+		return -1;
+	}
+
+	symtab_shndx = find_section_by_name(elf, ".symtab_shndx");
+
+	if (elf_update_symbol(elf, symtab, symtab_shndx, sym))
+		return -1;
+
+	mark_sec_changed(elf, symtab, true);
+
+	return 0;
+}
+
 struct symbol *elf_create_section_symbol(struct elf *elf, struct section *sec)
 {
 	struct symbol *sym = calloc(1, sizeof(*sym));
@@ -1139,6 +1173,17 @@ static int read_relocs(struct elf *elf)
 	return 0;
 }
 
+static void mark_rodata(struct elf *elf)
+{
+	struct section *sec;
+
+	for_each_sec(elf, sec) {
+		if ((strstarts(sec->name, ".rodata") && !strstr(sec->name, ".str1.")) ||
+		    strstarts(sec->name, ".data.rel.ro"))
+			sec->rodata = true;
+	}
+}
+
 struct elf *elf_open_read(const char *name, int flags)
 {
 	struct elf *elf;
@@ -1188,6 +1233,8 @@ struct elf *elf_open_read(const char *name, int flags)
 
 	if (read_sections(elf))
 		goto err;
+
+	mark_rodata(elf);
 
 	if (read_symbols(elf))
 		goto err;

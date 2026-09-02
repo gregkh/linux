@@ -2181,11 +2181,21 @@ int perf_event__synthesize_attr(const struct perf_tool *tool, struct perf_event_
 				u32 ids, u64 *id, perf_event__handler_t process)
 {
 	union perf_event *ev;
-	size_t size;
+	size_t attr_size, size;
 	int err;
 
-	size = sizeof(struct perf_event_attr);
-	size = PERF_ALIGN(size, sizeof(u64));
+	/*
+	 * Use attr->size for the event layout, not the compiled
+	 * sizeof(struct perf_event_attr), so that synthesized events
+	 * match the source perf.data layout.  This matters for perf
+	 * inject, which re-synthesizes attrs from a file that may
+	 * have been recorded by a different version of perf.
+	 * perf_record_header_attr_id() locates the ID array at
+	 * attr->size bytes past the attr.
+	 */
+	attr_size = attr->size ?: sizeof(struct perf_event_attr);
+
+	size = PERF_ALIGN(attr_size, sizeof(u64));
 	size += sizeof(struct perf_event_header);
 	size += ids * sizeof(u64);
 
@@ -2194,7 +2204,14 @@ int perf_event__synthesize_attr(const struct perf_tool *tool, struct perf_event_
 	if (ev == NULL)
 		return -ENOMEM;
 
-	ev->attr.attr = *attr;
+	/*
+	 * Copy only the bytes we understand; zalloc ensures that any
+	 * extra bytes between sizeof(struct perf_event_attr) and
+	 * attr_size are zero when the source file uses a newer, larger
+	 * struct.
+	 */
+	memcpy(&ev->attr.attr, attr, min(sizeof(struct perf_event_attr), attr_size));
+	ev->attr.attr.size = attr_size;
 	memcpy(perf_record_header_attr_id(ev), id, ids * sizeof(u64));
 
 	ev->attr.header.type = PERF_RECORD_HEADER_ATTR;
@@ -2263,16 +2280,24 @@ int perf_event__synthesize_build_id(const struct perf_tool *tool,
 				    struct perf_sample *sample,
 				    struct machine *machine,
 				    perf_event__handler_t process,
-				    const struct evsel *evsel,
 				    __u16 misc,
 				    const struct build_id *bid,
 				    const char *filename)
 {
 	union perf_event ev;
-	size_t len;
+	size_t len, filename_len = strlen(filename);
+	u64 sample_type = sample->evsel ? sample->evsel->core.attr.sample_type : 0;
+	void *array = &ev;
+	int ret;
 
-	len = sizeof(ev.build_id) + strlen(filename) + 1;
+	if (filename_len >= PATH_MAX)
+		return -EINVAL;
+
+	len = sizeof(ev.build_id) + filename_len + 1;
 	len = PERF_ALIGN(len, sizeof(u64));
+
+	if (len + MAX_ID_HDR_ENTRIES * sizeof(__u64) > sizeof(ev))
+		return -E2BIG;
 
 	memset(&ev, 0, len);
 
@@ -2286,23 +2311,17 @@ int perf_event__synthesize_build_id(const struct perf_tool *tool,
 	ev.build_id.header.size = len;
 	strcpy(ev.build_id.filename, filename);
 
-	if (evsel) {
-		void *array = &ev;
-		int ret;
+	array += ev.header.size;
+	ret = perf_event__synthesize_id_sample(array, sample_type, sample);
+	if (ret < 0)
+		return ret;
 
-		array += ev.header.size;
-		ret = perf_event__synthesize_id_sample(array, evsel->core.attr.sample_type, sample);
-		if (ret < 0)
-			return ret;
-
-		if (ret & 7) {
-			pr_err("Bad id sample size %d\n", ret);
-			return -EINVAL;
-		}
-
-		ev.header.size += ret;
+	if (ret & 7) {
+		pr_err("Bad id sample size %d\n", ret);
+		return -EINVAL;
 	}
 
+	ev.header.size += ret;
 	return process(tool, &ev, sample, machine);
 }
 
@@ -2310,7 +2329,6 @@ int perf_event__synthesize_mmap2_build_id(const struct perf_tool *tool,
 					  struct perf_sample *sample,
 					  struct machine *machine,
 					  perf_event__handler_t process,
-					  const struct evsel *evsel,
 					  __u16 misc,
 					  __u32 pid, __u32 tid,
 					  __u64 start, __u64 len, __u64 pgoff,
@@ -2319,12 +2337,20 @@ int perf_event__synthesize_mmap2_build_id(const struct perf_tool *tool,
 					  const char *filename)
 {
 	union perf_event ev;
+	size_t filename_len = strlen(filename);
 	size_t ev_len;
+	u64 sample_type = sample->evsel ? sample->evsel->core.attr.sample_type : 0;
 	void *array;
 	int ret;
 
-	ev_len = sizeof(ev.mmap2) - sizeof(ev.mmap2.filename) + strlen(filename) + 1;
+	if (filename_len >= sizeof(ev.mmap2.filename))
+		return -EINVAL;
+
+	ev_len = sizeof(ev.mmap2) - sizeof(ev.mmap2.filename) + filename_len + 1;
 	ev_len = PERF_ALIGN(ev_len, sizeof(u64));
+
+	if (ev_len + MAX_ID_HDR_ENTRIES * sizeof(__u64) > sizeof(ev))
+		return -E2BIG;
 
 	memset(&ev, 0, ev_len);
 
@@ -2350,7 +2376,7 @@ int perf_event__synthesize_mmap2_build_id(const struct perf_tool *tool,
 
 	array = &ev;
 	array += ev.header.size;
-	ret = perf_event__synthesize_id_sample(array, evsel->core.attr.sample_type, sample);
+	ret = perf_event__synthesize_id_sample(array, sample_type, sample);
 	if (ret < 0)
 		return ret;
 

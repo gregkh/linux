@@ -255,7 +255,7 @@ static int amdgpu_ctx_init_entity(struct amdgpu_ctx *ctx, u32 hw_ip,
 	}
 
 	r = drm_sched_entity_init(&entity->entity, drm_prio, scheds, num_scheds,
-				  &ctx->guilty);
+				  NULL);
 	if (r)
 		goto error_free_entity;
 
@@ -592,6 +592,27 @@ static int amdgpu_ctx_query(struct amdgpu_device *adev,
 
 #define AMDGPU_RAS_COUNTE_DELAY_MS 3000
 
+static bool amdgpu_ctx_guilty(struct amdgpu_ctx *ctx)
+{
+	int i, j, r;
+
+	for (i = 0; i < AMDGPU_HW_IP_NUM; ++i) {
+		for (j = 0; j < amdgpu_ctx_num_entities[i]; ++j) {
+			struct amdgpu_ctx_entity *ctx_entity;
+
+			ctx_entity = ctx->entities[i][j];
+			if (!ctx_entity)
+				continue;
+
+			r = drm_sched_entity_error(&ctx_entity->entity);
+			if (r == -ETIME)
+				return true;
+		}
+	}
+
+	return false;
+}
+
 static int amdgpu_ctx_query2(struct amdgpu_device *adev,
 			     struct amdgpu_fpriv *fpriv, uint32_t id,
 			     union drm_amdgpu_ctx_out *out)
@@ -620,7 +641,7 @@ static int amdgpu_ctx_query2(struct amdgpu_device *adev,
 	if (ctx->generation != amdgpu_vm_generation(adev, &fpriv->vm))
 		out->state.flags |= AMDGPU_CTX_QUERY2_FLAGS_VRAMLOST;
 
-	if (atomic_read(&ctx->guilty))
+	if (amdgpu_ctx_guilty(ctx))
 		out->state.flags |= AMDGPU_CTX_QUERY2_FLAGS_GUILTY;
 
 	if (amdgpu_in_reset(adev))

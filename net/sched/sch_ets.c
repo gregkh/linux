@@ -247,9 +247,7 @@ static int ets_class_change(struct Qdisc *sch, u32 classid, u32 parentid,
 	if (err)
 		return err;
 
-	sch_tree_lock(sch);
-	cl->quantum = quantum;
-	sch_tree_unlock(sch);
+	WRITE_ONCE(cl->quantum, quantum);
 
 	ets_offload_change(sch);
 	return 0;
@@ -320,7 +318,7 @@ static int ets_class_dump(struct Qdisc *sch, unsigned long arg,
 	if (!nest)
 		goto nla_put_failure;
 	if (!ets_class_is_strict(q, cl)) {
-		if (nla_put_u32(skb, TCA_ETS_QUANTA_BAND, cl->quantum))
+		if (nla_put_u32(skb, TCA_ETS_QUANTA_BAND, READ_ONCE(cl->quantum)))
 			goto nla_put_failure;
 	}
 	return nla_nest_end(skb, nest);
@@ -445,10 +443,10 @@ static int ets_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 	if (!cl_is_active(cl) && !ets_class_is_strict(q, cl)) {
 		list_add_tail(&cl->alist, &q->active);
-		cl->deficit = cl->quantum;
+		cl->deficit = READ_ONCE(cl->quantum);
 	}
 
-	sch->qstats.backlog += len;
+	qstats_backlog_add(sch, len);
 	qdisc_qlen_inc(sch);
 	return err;
 }
@@ -499,7 +497,7 @@ static struct sk_buff *ets_qdisc_dequeue(struct Qdisc *sch)
 			return ets_qdisc_dequeue_skb(sch, skb);
 		}
 
-		cl->deficit += cl->quantum;
+		cl->deficit += READ_ONCE(cl->quantum);
 		list_move_tail(&cl->alist, &q->active);
 	}
 out:

@@ -37,6 +37,7 @@
 #include <linux/kfifo.h>
 #include <linux/platform_device.h>
 #include <linux/gfp.h>
+#include <linux/string.h>
 #include <linux/string_choices.h>
 
 #include <linux/uaccess.h>
@@ -1124,8 +1125,8 @@ static int sonypi_acpi_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	sonypi_acpi_device = device;
-	strcpy(acpi_device_name(device), "Sony laptop hotkeys");
-	strcpy(acpi_device_class(device), "sony/hotkey");
+	strscpy(acpi_device_name(device), "Sony laptop hotkeys");
+	strscpy(acpi_device_class(device), "sony/hotkey");
 	return 0;
 }
 

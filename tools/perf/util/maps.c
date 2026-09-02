@@ -40,6 +40,7 @@ DECLARE_RC_STRUCT(maps) {
 #ifdef HAVE_LIBUNWIND_SUPPORT
 	void		*addr_space;
 	const struct unwind_libunwind_ops *unwind_libunwind_ops;
+	uint16_t	 e_machine;
 #endif
 #ifdef HAVE_LIBDW_SUPPORT
 	void		*libdw_addr_space_dwfl;
@@ -197,14 +198,14 @@ void maps__set_addr_space(struct maps *maps, void *addr_space)
 	RC_CHK_ACCESS(maps)->addr_space = addr_space;
 }
 
-const struct unwind_libunwind_ops *maps__unwind_libunwind_ops(const struct maps *maps)
+uint16_t maps__e_machine(const struct maps *maps)
 {
-	return RC_CHK_ACCESS(maps)->unwind_libunwind_ops;
+	return RC_CHK_ACCESS(maps)->e_machine;
 }
 
-void maps__set_unwind_libunwind_ops(struct maps *maps, const struct unwind_libunwind_ops *ops)
+void maps__set_e_machine(struct maps *maps, uint16_t e_machine)
 {
-	RC_CHK_ACCESS(maps)->unwind_libunwind_ops = ops;
+	RC_CHK_ACCESS(maps)->e_machine = e_machine;
 }
 #endif
 #ifdef HAVE_LIBDW_SUPPORT
@@ -1133,6 +1134,14 @@ int maps__copy_from(struct maps *dest, struct maps *parent)
 	down_write(maps__lock(dest));
 	down_read(maps__lock(parent));
 
+#ifdef HAVE_LIBUNWIND_SUPPORT
+	err = unwind__prepare_access(dest, maps__e_machine(parent));
+	if (err) {
+		up_read(maps__lock(parent));
+		up_write(maps__lock(dest));
+		return err;
+	}
+#endif
 	parent_maps_by_address = maps__maps_by_address(parent);
 	n = maps__nr_maps(parent);
 	if (maps__nr_maps(dest) == 0) {
@@ -1162,14 +1171,11 @@ int maps__copy_from(struct maps *dest, struct maps *parent)
 			if (!new)
 				err = -ENOMEM;
 			else {
-				err = unwind__prepare_access(dest, new, NULL);
-				if (!err) {
-					dest_maps_by_address[i] = new;
-					map__set_kmap_maps(new, dest);
-					if (dest_maps_by_name)
-						dest_maps_by_name[i] = map__get(new);
-					RC_CHK_ACCESS(dest)->nr_maps = i + 1;
-				}
+				dest_maps_by_address[i] = new;
+				map__set_kmap_maps(new, dest);
+				if (dest_maps_by_name)
+					dest_maps_by_name[i] = map__get(new);
+				RC_CHK_ACCESS(dest)->nr_maps = i + 1;
 			}
 			if (err)
 				map__put(new);
@@ -1187,9 +1193,7 @@ int maps__copy_from(struct maps *dest, struct maps *parent)
 			if (!new)
 				err = -ENOMEM;
 			else {
-				err = unwind__prepare_access(dest, new, NULL);
-				if (!err)
-					err = __maps__insert(dest, new);
+				err = __maps__insert(dest, new);
 			}
 			map__put(new);
 		}

@@ -1855,8 +1855,8 @@ enum REPARSE_SIGN ni_parse_reparse(struct ntfs_inode *ni, struct ATTRIB *attr,
 static struct folio *ntfs_lock_new_page(struct address_space *mapping,
 					pgoff_t index, gfp_t gfp)
 {
-	struct folio *folio = __filemap_get_folio(mapping, index,
-			FGP_LOCK | FGP_ACCESSED | FGP_CREAT, gfp);
+	struct folio *folio = __filemap_get_folio(
+		mapping, index, FGP_LOCK | FGP_ACCESSED | FGP_CREAT, gfp);
 
 	if (IS_ERR(folio))
 		return folio;
@@ -2894,8 +2894,14 @@ loff_t ni_seek_data_or_hole(struct ntfs_inode *ni, loff_t offset, bool data)
 			 * the file offset is set to offset.
 			 */
 			if (lcn != SPARSE_LCN) {
-				vbo = (u64)vcn << cluster_bits;
-				return max(vbo, offset);
+				/* Normal cluster. */
+				break;
+			}
+
+			if ((ni->std_fa & FILE_ATTRIBUTE_COMPRESSED) &&
+			    (vcn & (NTFS_LZNT_CLUSTERS - 1))) {
+				/* Compressed cluster in compressed frame. */
+				break;
 			}
 		} else {
 			/*
@@ -2909,12 +2915,15 @@ loff_t ni_seek_data_or_hole(struct ntfs_inode *ni, loff_t offset, bool data)
 			    /* native compression hole begins at aligned vcn. */
 			    (!(ni->std_fa & FILE_ATTRIBUTE_COMPRESSED) ||
 			     !(vcn & (NTFS_LZNT_CLUSTERS - 1)))) {
-				vbo = (u64)vcn << cluster_bits;
-				return max(vbo, offset);
+				/* Hole in sparsed or compressed file frame. */
+				break;
 			}
 		}
 
 	}
+
+	vbo = (u64)vcn << cluster_bits;
+	return max(vbo, offset);
 }
 
 /*

@@ -602,8 +602,8 @@ static int cs42l43_pin_probe(struct platform_device *pdev)
 }
 
 static const struct platform_device_id cs42l43_pin_id_table[] = {
-	{ "cs42l43-pinctrl", },
-	{}
+	{ .name = "cs42l43-pinctrl" },
+	{ }
 };
 MODULE_DEVICE_TABLE(platform, cs42l43_pin_id_table);
 

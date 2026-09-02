@@ -990,10 +990,7 @@ int amdgpu_gfx_ras_late_init(struct amdgpu_device *adev, struct ras_common_if *r
 		if (r)
 			return r;
 
-		if (amdgpu_sriov_vf(adev))
-			return r;
-
-		if (adev->gfx.cp_ecc_error_irq.funcs) {
+		if (!amdgpu_sriov_vf(adev) && adev->gfx.cp_ecc_error_irq.funcs) {
 			r = amdgpu_irq_get(adev, &adev->gfx.cp_ecc_error_irq, 0);
 			if (r)
 				goto late_fini;
@@ -1006,6 +1003,21 @@ int amdgpu_gfx_ras_late_init(struct amdgpu_device *adev, struct ras_common_if *r
 late_fini:
 	amdgpu_ras_block_late_fini(adev, ras_block);
 	return r;
+}
+
+void amdgpu_gfx_ras_suspend(struct amdgpu_device *adev,
+			    struct ras_common_if *ras_block)
+{
+	if (!amdgpu_sriov_vf(adev) && adev->gfx.cp_ecc_error_irq.funcs)
+		amdgpu_irq_put(adev, &adev->gfx.cp_ecc_error_irq, 0);
+}
+
+void amdgpu_gfx_ras_fini(struct amdgpu_device *adev,
+			 struct ras_common_if *ras_block)
+{
+	if (!amdgpu_sriov_vf(adev) && adev->gfx.cp_ecc_error_irq.funcs)
+		amdgpu_irq_put(adev, &adev->gfx.cp_ecc_error_irq, 0);
+	amdgpu_ras_block_late_fini(adev, ras_block);
 }
 
 int amdgpu_gfx_ras_sw_init(struct amdgpu_device *adev)
@@ -1035,6 +1047,12 @@ int amdgpu_gfx_ras_sw_init(struct amdgpu_device *adev)
 	/* If not define special ras_late_init function, use gfx default ras_late_init */
 	if (!ras->ras_block.ras_late_init)
 		ras->ras_block.ras_late_init = amdgpu_gfx_ras_late_init;
+
+	if (!ras->ras_block.ras_suspend)
+		ras->ras_block.ras_suspend = amdgpu_gfx_ras_suspend;
+
+	if (!ras->ras_block.ras_fini)
+		ras->ras_block.ras_fini = amdgpu_gfx_ras_fini;
 
 	/* If not defined special ras_cb function, use default ras_cb */
 	if (!ras->ras_block.ras_cb)
@@ -2684,5 +2702,56 @@ void amdgpu_debugfs_compute_sched_mask_init(struct amdgpu_device *adev)
 	debugfs_create_file(name, 0600, root, adev,
 			    &amdgpu_debugfs_compute_sched_mask_fops);
 #endif
+}
+
+int amdgpu_gfx_ring_preempt_ib(struct amdgpu_ring *ring)
+{
+	struct amdgpu_device *adev = ring->adev;
+	struct amdgpu_kiq *kiq = &adev->gfx.kiq[0];
+	struct amdgpu_ring *kiq_ring = &kiq->ring;
+	unsigned long flags;
+	int i;
+
+	if (adev->enable_mes)
+		return -EINVAL;
+
+	if (!kiq->pmf || !kiq->pmf->kiq_unmap_queues)
+		return -EINVAL;
+
+	spin_lock_irqsave(&kiq->ring_lock, flags);
+
+	if (amdgpu_ring_alloc(kiq_ring, kiq->pmf->unmap_queues_size)) {
+		spin_unlock_irqrestore(&kiq->ring_lock, flags);
+		return -ENOMEM;
+	}
+
+	/* assert preemption condition */
+	amdgpu_ring_set_preempt_cond_exec(ring, false);
+
+	/* assert IB preemption, emit the trailing fence */
+	kiq->pmf->kiq_unmap_queues(kiq_ring, ring, PREEMPT_QUEUES_NO_UNMAP,
+					ring->trail_fence_gpu_addr,
+					++ring->trail_seq);
+	amdgpu_ring_commit(kiq_ring);
+
+	spin_unlock_irqrestore(&kiq->ring_lock, flags);
+
+	/* poll the trailing fence */
+	for (i = 0; i < adev->usec_timeout; i++) {
+		if (ring->trail_seq ==
+			le32_to_cpu(*(ring->trail_fence_cpu_addr)))
+			break;
+		udelay(1);
+	}
+
+	/* deassert preemption condition */
+    amdgpu_ring_set_preempt_cond_exec(ring, true);
+
+	if (i >= adev->usec_timeout) {
+		DRM_ERROR("ring %d failed to preempt ib\n", ring->idx);
+		return -EINVAL;
+	}
+
+	return 0;
 }
 

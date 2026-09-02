@@ -511,6 +511,69 @@ copy_struct_to_user(void __user *dst, size_t usize, const void *src,
 	return 0;
 }
 
+static __always_inline void
+__copy_struct_generic_bounce_buffer(void *dst, size_t dstsize,
+				    const void *src, size_t srcsize,
+				    bool *ignored_trailing)
+{
+	size_t size = min(dstsize, srcsize);
+	size_t rest = max(dstsize, srcsize) - size;
+
+	/* Deal with trailing bytes. */
+	if (dstsize > srcsize)
+		memset(dst + size, 0, rest);
+	if (ignored_trailing)
+		*ignored_trailing = dstsize < srcsize &&
+			memchr_inv(src + size, 0, rest) != NULL;
+	/* Copy the interoperable parts of the struct. */
+	memcpy(dst, src, size);
+}
+
+/**
+ * This is like copy_struct_from_user(), but the
+ * src buffer was already copied into a kernel
+ * bounce buffer, so it will never return -EFAULT.
+ */
+static __always_inline __must_check int
+copy_struct_from_bounce_buffer(void *dst, size_t dstsize,
+			       const void *src, size_t srcsize)
+{
+	bool ignored_trailing;
+
+	/* Double check if ksize is larger than a known object size. */
+	if (WARN_ON_ONCE(dstsize > __builtin_object_size(dst, 1)))
+		return -E2BIG;
+
+	__copy_struct_generic_bounce_buffer(dst, dstsize,
+					    src, srcsize,
+					    &ignored_trailing);
+	if (unlikely(ignored_trailing))
+		return -E2BIG;
+
+	return 0;
+}
+
+/**
+ * This is like copy_struct_to_user(), but the
+ * dst buffer is a kernel bounce buffer instead
+ * of a direct userspace buffer, so it will never return -EFAULT.
+ */
+static __always_inline __must_check int
+copy_struct_to_bounce_buffer(void *dst, size_t dstsize,
+			     const void *src,
+			     size_t srcsize,
+			     bool *ignored_trailing)
+{
+	/* Double check if srcsize is larger than a known object size. */
+	if (WARN_ON_ONCE(srcsize > __builtin_object_size(src, 1)))
+		return -E2BIG;
+
+	__copy_struct_generic_bounce_buffer(dst, dstsize,
+					    src, srcsize,
+					    ignored_trailing);
+	return 0;
+}
+
 bool copy_from_kernel_nofault_allowed(const void *unsafe_src, size_t size);
 
 long copy_from_kernel_nofault(void *dst, const void *src, size_t size);
@@ -640,6 +703,17 @@ static inline void user_access_restore(unsigned long flags) { }
 #ifndef user_read_access_begin
 #define user_read_access_begin user_access_begin
 #define user_read_access_end user_access_end
+#endif
+
+#ifndef unsafe_atomic_store_release_user
+# define unsafe_atomic_store_release_user(val, uptr, elbl)	\
+	do {							\
+		if (!IS_ENABLED(CONFIG_ARCH_MEMORY_ORDER_TSO))	\
+			smp_mb();				\
+		else						\
+			barrier();				\
+		unsafe_put_user(val, uptr, elbl);		\
+	} while (0)
 #endif
 
 /* Define RW variant so the below _mode macro expansion works */

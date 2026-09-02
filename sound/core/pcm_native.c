@@ -645,6 +645,14 @@ snd_pcm_state_t snd_pcm_get_state(struct snd_pcm_substream *substream)
 }
 EXPORT_SYMBOL_GPL(snd_pcm_get_state);
 
+static bool snd_pcm_state_open_or_disconnected(struct snd_pcm_substream *substream)
+{
+	snd_pcm_state_t state = snd_pcm_get_state(substream);
+
+	return state == SNDRV_PCM_STATE_OPEN ||
+	       state == SNDRV_PCM_STATE_DISCONNECTED;
+}
+
 static inline void snd_pcm_timer_notify(struct snd_pcm_substream *substream,
 					int event)
 {
@@ -1973,13 +1981,15 @@ static int snd_pcm_reset(struct snd_pcm_substream *substream)
 static int snd_pcm_pre_prepare(struct snd_pcm_substream *substream,
 			       snd_pcm_state_t state)
 {
-	struct snd_pcm_runtime *runtime = substream->runtime;
+	snd_pcm_state_t cur_state = snd_pcm_get_state(substream);
 	int f_flags = (__force int)state;
 
-	if (runtime->state == SNDRV_PCM_STATE_OPEN ||
-	    runtime->state == SNDRV_PCM_STATE_DISCONNECTED)
+	if (cur_state == SNDRV_PCM_STATE_OPEN ||
+	    cur_state == SNDRV_PCM_STATE_DISCONNECTED)
 		return -EBADFD;
-	if (snd_pcm_running(substream))
+	if (cur_state == SNDRV_PCM_STATE_RUNNING ||
+	    (cur_state == SNDRV_PCM_STATE_DRAINING &&
+	     substream->stream == SNDRV_PCM_STREAM_PLAYBACK))
 		return -EBUSY;
 	substream->f_flags = f_flags;
 	return 0;
@@ -2139,7 +2149,7 @@ static int snd_pcm_drain(struct snd_pcm_substream *substream,
 	card = substream->pcm->card;
 	runtime = substream->runtime;
 
-	if (runtime->state == SNDRV_PCM_STATE_OPEN)
+	if (snd_pcm_get_state(substream) == SNDRV_PCM_STATE_OPEN)
 		return -EBADFD;
 
 	if (file) {
@@ -3529,7 +3539,7 @@ int snd_pcm_kernel_ioctl(struct snd_pcm_substream *substream,
 	snd_pcm_uframes_t *frames = arg;
 	snd_pcm_sframes_t result;
 	
-	if (substream->runtime->state == SNDRV_PCM_STATE_DISCONNECTED)
+	if (snd_pcm_get_state(substream) == SNDRV_PCM_STATE_DISCONNECTED)
 		return -EBADFD;
 
 	switch (cmd) {
@@ -3574,8 +3584,7 @@ static ssize_t snd_pcm_read(struct file *file, char __user *buf, size_t count,
 	if (PCM_RUNTIME_CHECK(substream))
 		return -ENXIO;
 	runtime = substream->runtime;
-	if (runtime->state == SNDRV_PCM_STATE_OPEN ||
-	    runtime->state == SNDRV_PCM_STATE_DISCONNECTED)
+	if (snd_pcm_state_open_or_disconnected(substream))
 		return -EBADFD;
 	if (!frame_aligned(runtime, count))
 		return -EINVAL;
@@ -3599,8 +3608,7 @@ static ssize_t snd_pcm_write(struct file *file, const char __user *buf,
 	if (PCM_RUNTIME_CHECK(substream))
 		return -ENXIO;
 	runtime = substream->runtime;
-	if (runtime->state == SNDRV_PCM_STATE_OPEN ||
-	    runtime->state == SNDRV_PCM_STATE_DISCONNECTED)
+	if (snd_pcm_state_open_or_disconnected(substream))
 		return -EBADFD;
 	if (!frame_aligned(runtime, count))
 		return -EINVAL;
@@ -3626,8 +3634,7 @@ static ssize_t snd_pcm_readv(struct kiocb *iocb, struct iov_iter *to)
 	if (PCM_RUNTIME_CHECK(substream))
 		return -ENXIO;
 	runtime = substream->runtime;
-	if (runtime->state == SNDRV_PCM_STATE_OPEN ||
-	    runtime->state == SNDRV_PCM_STATE_DISCONNECTED)
+	if (snd_pcm_state_open_or_disconnected(substream))
 		return -EBADFD;
 	if (!user_backed_iter(to))
 		return -EINVAL;
@@ -3666,8 +3673,7 @@ static ssize_t snd_pcm_writev(struct kiocb *iocb, struct iov_iter *from)
 	if (PCM_RUNTIME_CHECK(substream))
 		return -ENXIO;
 	runtime = substream->runtime;
-	if (runtime->state == SNDRV_PCM_STATE_OPEN ||
-	    runtime->state == SNDRV_PCM_STATE_DISCONNECTED)
+	if (snd_pcm_state_open_or_disconnected(substream))
 		return -EBADFD;
 	if (!user_backed_iter(from))
 		return -EINVAL;

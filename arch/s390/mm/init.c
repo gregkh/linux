@@ -84,6 +84,8 @@ void __init arch_setup_zero_pages(void)
 	empty_zero_page = (unsigned long)memblock_alloc_or_panic(PAGE_SIZE << order, PAGE_SIZE);
 
 	zero_page_mask = ((PAGE_SIZE << order) - 1) & PAGE_MASK;
+
+	set_memory_ro(empty_zero_page, 1UL << order);
 }
 
 void __init arch_zone_limits_init(unsigned long *max_zone_pfns)

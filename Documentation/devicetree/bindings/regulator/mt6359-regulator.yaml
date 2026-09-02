@@ -30,7 +30,7 @@ patternProperties:
     $ref: regulator.yaml#
     unevaluatedProperties: false
 
-  "^ldo_vcn(18|13|33_1_bt|13_1_wifi|33_2_bt|33_2_wifi)$":
+  "^ldo_vcn(18|13|33_[12])$":
     type: object
     $ref: regulator.yaml#
     unevaluatedProperties: false
@@ -53,6 +53,15 @@ patternProperties:
   "^ldo_vsim[12]$":
     type: object
     $ref: regulator.yaml#
+    unevaluatedProperties: false
+
+  "^ldo_vcn33_[12]_(bt|wifi)$":
+    type: object
+    $ref: regulator.yaml#
+    description:
+      vcn33_[12]_(bt|wifi) are incorrect representations.
+      Use vcn33_[12] instead.
+    deprecated: true
     unevaluatedProperties: false
 
 additionalProperties: false
@@ -203,13 +212,8 @@ examples:
           regulator-min-microvolt = <900000>;
           regulator-max-microvolt = <1300000>;
         };
-        mt6359_vcn33_1_bt_ldo_reg: ldo_vcn33_1_bt {
-          regulator-name = "vcn33_1_bt";
-          regulator-min-microvolt = <2800000>;
-          regulator-max-microvolt = <3500000>;
-        };
-        mt6359_vcn33_1_wifi_ldo_reg: ldo_vcn33_1_wifi {
-          regulator-name = "vcn33_1_wifi";
+        mt6359_vcn33_1_bt_ldo_reg: ldo_vcn33_1 {
+          regulator-name = "vcn33_1";
           regulator-min-microvolt = <2800000>;
           regulator-max-microvolt = <3500000>;
         };
@@ -270,13 +274,8 @@ examples:
           regulator-min-microvolt = <2500000>;
           regulator-max-microvolt = <3300000>;
         };
-        mt6359_vcn33_2_bt_ldo_reg: ldo_vcn33_2_bt {
-          regulator-name = "vcn33_2_bt";
-          regulator-min-microvolt = <2800000>;
-          regulator-max-microvolt = <3500000>;
-        };
-        mt6359_vcn33_2_wifi_ldo_reg: ldo_vcn33_2_wifi {
-          regulator-name = "vcn33_2_wifi";
+        mt6359_vcn33_2_bt_ldo_reg: ldo_vcn33_2 {
+          regulator-name = "vcn33_2";
           regulator-min-microvolt = <2800000>;
           regulator-max-microvolt = <3500000>;
         };

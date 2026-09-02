@@ -324,7 +324,7 @@ bool hubp401_construct(
 
 void hubp401_init(struct hubp *hubp);
 
-int hubp401_get_3dlut_fl_done(struct hubp *hubp);
+uint32_t hubp401_get_3dlut_fl_done(struct hubp *hubp);
 
 void hubp401_set_unbounded_requesting(struct hubp *hubp, bool enable);
 

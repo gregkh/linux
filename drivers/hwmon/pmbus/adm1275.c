@@ -839,15 +839,25 @@ static int adm1275_probe(struct i2c_client *client)
 		info->R[PSC_VOLTAGE_OUT] = coefficients[voindex].R;
 	}
 	if (cindex >= 0) {
+		u32 m;
+
 		/* Scale current with sense resistor value */
-		info->m[PSC_CURRENT_OUT] =
-			coefficients[cindex].m * shunt / 1000;
+		if (unlikely(check_mul_overflow(coefficients[cindex].m, shunt, &m))) {
+			dev_err(&client->dev, "Current coefficient overflow\n");
+			return -EOVERFLOW;
+		}
+		info->m[PSC_CURRENT_OUT] = m / 1000;
 		info->b[PSC_CURRENT_OUT] = coefficients[cindex].b;
 		info->R[PSC_CURRENT_OUT] = coefficients[cindex].R;
 	}
 	if (pindex >= 0) {
-		info->m[PSC_POWER] =
-			coefficients[pindex].m * shunt / 1000;
+		u32 m;
+
+		if (unlikely(check_mul_overflow(coefficients[pindex].m, shunt, &m))) {
+			dev_err(&client->dev, "Power coefficient overflow\n");
+			return -EOVERFLOW;
+		}
+		info->m[PSC_POWER] = m / 1000;
 		info->b[PSC_POWER] = coefficients[pindex].b;
 		info->R[PSC_POWER] = coefficients[pindex].R;
 	}

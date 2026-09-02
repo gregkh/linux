@@ -10,6 +10,7 @@
 #include "adf_dbgfs.h"
 #include "adf_heartbeat.h"
 #include "adf_rl.h"
+#include "adf_kpt.h"
 #include "adf_sysfs_anti_rb.h"
 #include "adf_sysfs_ras_counters.h"
 #include "adf_telemetry.h"
@@ -217,6 +218,13 @@ static int adf_dev_start(struct adf_accel_dev *accel_dev)
 	if (hw_data->enable_pm && hw_data->enable_pm(accel_dev)) {
 		dev_err(&GET_DEV(accel_dev), "Failed to configure Power Management\n");
 		return -EFAULT;
+	}
+
+	/* Enable Key Protection Technology (KPT) */
+	ret = adf_enable_kpt(accel_dev);
+	if (ret) {
+		dev_err(&GET_DEV(accel_dev), "Failed to enable KPT\n");
+		return ret;
 	}
 
 	if (hw_data->start_timer) {

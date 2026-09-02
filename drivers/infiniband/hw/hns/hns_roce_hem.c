@@ -1269,8 +1269,6 @@ setup_root_hem(struct hns_roce_dev *hr_dev, struct hns_roce_hem_list *hem_list,
 
 	root_hem = list_first_entry(&head->root,
 				    struct hns_roce_hem_item, list);
-	if (!root_hem)
-		return -ENOMEM;
 
 	total = 0;
 	for (i = 0; i < region_cnt && total <= max_ba_num; i++) {

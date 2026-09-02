@@ -560,7 +560,7 @@ static int tmp401_init_client(struct tmp401_data *data)
 			return ret;
 	}
 
-	ret = of_property_read_u32(data->client->dev.of_node, "ti,n-factor", &nfactor);
+	ret = of_property_read_s32(data->client->dev.of_node, "ti,n-factor", &nfactor);
 	if (!ret) {
 		if (data->kind == tmp401) {
 			dev_err(&data->client->dev, "ti,tmp401 does not support n-factor correction\n");

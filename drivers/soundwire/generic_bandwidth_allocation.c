@@ -9,7 +9,6 @@
 #include <linux/bitops.h>
 #include <linux/device.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/slab.h>
 #include <linux/soundwire/sdw.h>
 #include "bus.h"
@@ -308,22 +307,21 @@ static int sdw_add_element_group_count(struct sdw_group *group,
 		unsigned int *rates;
 		unsigned int *lanes;
 
-		group->max_size += 1;
-		rates = krealloc(group->rates,
-				 (sizeof(int) * group->max_size),
-				 GFP_KERNEL);
+		rates = krealloc_array(group->rates, group->max_size + 1,
+				       sizeof(*group->rates), GFP_KERNEL);
 		if (!rates)
 			return -ENOMEM;
 
 		group->rates = rates;
 
-		lanes = krealloc(group->lanes,
-				 (sizeof(int) * group->max_size),
-				 GFP_KERNEL);
+		lanes = krealloc_array(group->lanes, group->max_size + 1,
+				       sizeof(*group->lanes), GFP_KERNEL);
 		if (!lanes)
 			return -ENOMEM;
 
 		group->lanes = lanes;
+
+		group->max_size += 1;
 	}
 
 	group->rates[group->count] = rate;

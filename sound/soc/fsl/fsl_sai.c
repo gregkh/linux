@@ -355,6 +355,9 @@ static int fsl_sai_set_dai_fmt_tr(struct snd_soc_dai *cpu_dai,
 	unsigned int ofs = sai->soc_data->reg_offset;
 	u32 val_cr2 = 0, val_cr4 = 0;
 
+	if (sai->is_bit_clock_swap)
+		val_cr2 |= FSL_SAI_CR2_BCS;
+
 	if (!sai->is_lsb_first)
 		val_cr4 |= FSL_SAI_CR4_MF;
 
@@ -453,7 +456,8 @@ static int fsl_sai_set_dai_fmt_tr(struct snd_soc_dai *cpu_dai,
 	}
 
 	regmap_update_bits(sai->regmap, FSL_SAI_xCR2(tx, ofs),
-			   FSL_SAI_CR2_BCP | FSL_SAI_CR2_BCD_MSTR, val_cr2);
+			   FSL_SAI_CR2_BCS | FSL_SAI_CR2_BCP | FSL_SAI_CR2_BCD_MSTR,
+			   val_cr2);
 	regmap_update_bits(sai->regmap, FSL_SAI_xCR4(tx, ofs),
 			   FSL_SAI_CR4_MF | FSL_SAI_CR4_FSE |
 			   FSL_SAI_CR4_FSP | FSL_SAI_CR4_FSD_MSTR, val_cr4);
@@ -1553,6 +1557,7 @@ static int fsl_sai_probe(struct platform_device *pdev)
 	sai->soc_data = of_device_get_match_data(dev);
 
 	sai->is_lsb_first = of_property_read_bool(np, "lsb-first");
+	sai->is_bit_clock_swap = of_property_read_bool(np, "fsl,sai-bit-clock-swap");
 
 	base = devm_platform_get_and_ioremap_resource(pdev, 0, &sai->res);
 	if (IS_ERR(base))

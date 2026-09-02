@@ -2631,6 +2631,14 @@ bool triage_sysreg_trap(struct kvm_vcpu *vcpu, int *sr_index)
 		fgtreg = HFGITR2_EL2;
 		break;
 
+	case ICH_HFGRTR_GROUP:
+		fgtreg = is_read ? ICH_HFGRTR_EL2 : ICH_HFGWTR_EL2;
+		break;
+
+	case ICH_HFGITR_GROUP:
+		fgtreg = ICH_HFGITR_EL2;
+		break;
+
 	default:
 		/* Something is really wrong, bail out */
 		WARN_ONCE(1, "Bad FGT group (encoding %08x, config %016llx)\n",
@@ -2738,17 +2746,33 @@ static u64 kvm_check_illegal_exception_return(struct kvm_vcpu *vcpu, u64 spsr)
 	    (spsr & PSR_MODE32_BIT) ||
 	    (vcpu_el2_tge_is_set(vcpu) && (mode == PSR_MODE_EL1t ||
 					   mode == PSR_MODE_EL1h))) {
-		/*
-		 * The guest is playing with our nerves. Preserve EL, SP,
-		 * masks, flags from the existing PSTATE, and set IL.
-		 * The HW will then generate an Illegal State Exception
-		 * immediately after ERET.
-		 */
-		spsr = *vcpu_cpsr(vcpu);
+		u64 mask;
 
-		spsr &= (PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT |
-			 PSR_N_BIT | PSR_Z_BIT | PSR_C_BIT | PSR_V_BIT |
-			 PSR_MODE_MASK | PSR_MODE32_BIT);
+		/*
+		 * On an illegal exception return, the flags and masks are
+		 * taken from the SPSR while PSTATE.{EL,SP,nRW} and, if
+		 * FEAT_GCS, PSTATE.EXLOCK are unchanged (R_VWJHB). Set IL
+		 * so the HW generates an Illegal State Exception right
+		 * after ERET.
+		 */
+		mask = PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT |
+		       PSR_N_BIT | PSR_Z_BIT | PSR_C_BIT | PSR_V_BIT;
+
+		if (kvm_has_feat(vcpu->kvm, ID_AA64MMFR1_EL1, PAN, IMP))
+			mask |= PSR_PAN_BIT;
+		if (kvm_has_feat(vcpu->kvm, ID_AA64PFR1_EL1, NMI, IMP))
+			mask |= ALLINT_ALLINT;
+		/* FEAT_SPE_EXC and FEAT_TRBE_EXC also gate PSTATE.PM one day... */
+		if (kvm_has_feat(vcpu->kvm, ID_AA64DFR1_EL1, EBEP, IMP))
+			mask |= BIT_ULL(32);	/* SPSR_ELx.PM */
+
+		spsr &= mask;
+
+		mask = PSR_MODE_MASK | PSR_MODE32_BIT;
+		if (kvm_has_feat(vcpu->kvm, ID_AA64PFR1_EL1, GCS, IMP))
+			mask |= BIT_ULL(34);	/* PSTATE.EXLOCK */
+
+		spsr |= *vcpu_cpsr(vcpu) & mask;
 		spsr |= PSR_IL_BIT;
 	}
 
@@ -2776,7 +2800,7 @@ void kvm_emulate_nested_eret(struct kvm_vcpu *vcpu)
 		 * ERET handling, and the guest will have a little surprise.
 		 */
 		if (kvm_has_pauth(vcpu->kvm, FPACCOMBINE) && !(spsr & PSR_IL_BIT)) {
-			esr &= ESR_ELx_ERET_ISS_ERETA;
+			esr &= (ESR_ELx_ERET_ISS_ERETA | ESR_ELx_IL);
 			esr |= FIELD_PREP(ESR_ELx_EC_MASK, ESR_ELx_EC_FPAC);
 			kvm_inject_nested_sync(vcpu, esr);
 			return;
@@ -2863,6 +2887,8 @@ static int kvm_inject_nested(struct kvm_vcpu *vcpu, u64 esr_el2,
 
 	preempt_disable();
 
+	vcpu_set_flag(vcpu, IN_NESTED_EXCEPTION);
+
 	/*
 	 * We may have an exception or PC update in the EL0/EL1 context.
 	 * Commit it before entering EL2.
@@ -2885,6 +2911,8 @@ static int kvm_inject_nested(struct kvm_vcpu *vcpu, u64 esr_el2,
 	__kvm_adjust_pc(vcpu);
 
 	kvm_arch_vcpu_load(vcpu, smp_processor_id());
+	vcpu_clear_flag(vcpu, IN_NESTED_EXCEPTION);
+
 	preempt_enable();
 
 	if (kvm_vcpu_has_pmu(vcpu))
@@ -2939,6 +2967,6 @@ int kvm_inject_nested_serror(struct kvm_vcpu *vcpu, u64 esr)
 	 * vSError injection. Manually populate EC for an emulated SError
 	 * exception.
 	 */
-	esr |= FIELD_PREP(ESR_ELx_EC_MASK, ESR_ELx_EC_SERROR);
+	esr |= FIELD_PREP(ESR_ELx_EC_MASK, ESR_ELx_EC_SERROR) | ESR_ELx_IL;
 	return kvm_inject_nested(vcpu, esr, except_type_serror);
 }

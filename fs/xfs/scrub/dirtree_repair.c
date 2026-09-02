@@ -471,7 +471,7 @@ again:
 	if (error)
 		goto out_trans_cancel;
 
-	error = xfs_dir_removename(sc->tp, dp, &dl->xname, sc->ip->i_ino,
+	error = xfs_dir_removename(sc->tp, dp, &dl->xname, I_INO(sc->ip),
 			resblks);
 	if (error) {
 		ASSERT(error != -ENOENT);
@@ -597,7 +597,7 @@ xrep_dirtree_create_adoption_path(
 	 */
 	xfs_inode_to_parent_rec(&dl->pptr_rec, sc->orphanage);
 
-	error = xino_bitmap_set(&path->seen_inodes, sc->orphanage->i_ino);
+	error = xino_bitmap_set(&path->seen_inodes, I_INO(sc->orphanage));
 	if (error)
 		goto out_path;
 

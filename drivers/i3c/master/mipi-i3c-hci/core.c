@@ -8,6 +8,7 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/errno.h>
 #include <linux/i3c/master.h>
@@ -237,13 +238,38 @@ static void i3c_hci_bus_cleanup(struct i3c_master_controller *m)
 
 void mipi_i3c_hci_resume(struct i3c_hci *hci)
 {
-	reg_set(HC_CONTROL, HC_CONTROL_RESUME);
+	u32 reg = reg_read(HC_CONTROL);
+
+	reg |= HC_CONTROL_RESUME;
+	reg &= ~HC_CONTROL_ABORT;
+	reg_write(HC_CONTROL, reg);
+}
+
+void mipi_i3c_hci_abort(struct i3c_hci *hci)
+{
+	u32 reg = reg_read(HC_CONTROL);
+
+	reg &= ~HC_CONTROL_RESUME; /* Do not set resume */
+	reg |= HC_CONTROL_ABORT;
+	reg_write(HC_CONTROL, reg);
 }
 
 /* located here rather than pio.c because needed bits are in core reg space */
 void mipi_i3c_hci_pio_reset(struct i3c_hci *hci)
 {
 	reg_write(RESET_CONTROL, RX_FIFO_RST | TX_FIFO_RST | RESP_QUEUE_RST);
+}
+
+#define ALL_QUEUES_RST (CMD_QUEUE_RST | RESP_QUEUE_RST | RX_FIFO_RST | TX_FIFO_RST | IBI_QUEUE_RST)
+
+void mipi_i3c_hci_pio_reset_all_queues(struct i3c_hci *hci)
+{
+	u32 regval;
+
+	reg_write(RESET_CONTROL, ALL_QUEUES_RST);
+	if (readx_poll_timeout_atomic(reg_read, RESET_CONTROL, regval,
+				      !(regval & ALL_QUEUES_RST), 0, 20))
+		dev_err(&hci->master.dev, "%s: Reset queues failed\n", __func__);
 }
 
 /* located here rather than dct.c because needed bits are in core reg space */
@@ -256,13 +282,30 @@ int i3c_hci_process_xfer(struct i3c_hci *hci, struct hci_xfer *xfer, int n)
 {
 	struct completion *done = xfer[n - 1].completion;
 	unsigned long timeout = xfer[n - 1].timeout;
+	unsigned long remaining_timeout = timeout;
+	long time_taken;
+	bool started;
 	int ret;
+
+	xfer[0].started = false;
 
 	ret = hci->io->queue_xfer(hci, xfer, n);
 	if (ret)
 		return ret;
 
-	if (!wait_for_completion_timeout(done, timeout)) {
+	while (!wait_for_completion_timeout(done, remaining_timeout)) {
+		scoped_guard(spinlock_irqsave, &hci->lock) {
+			started = xfer[0].started;
+			time_taken = jiffies - xfer[0].start_jiffies;
+		}
+		/* Keep waiting if xfer has not started */
+		if (!started)
+			continue;
+		/* Recalculate timeout based on actual start time */
+		if (time_taken < timeout) {
+			remaining_timeout = timeout - time_taken;
+			continue;
+		}
 		if (hci->io->dequeue_xfer(hci, xfer, n)) {
 			dev_err(&hci->master.dev, "%s: timeout error\n", __func__);
 			return -ETIMEDOUT;
@@ -356,11 +399,52 @@ out:
 	return ret;
 }
 
-static int i3c_hci_daa(struct i3c_master_controller *m)
+static int i3c_hci_enable_hotjoin(struct i3c_master_controller *m)
+{
+	struct i3c_hci *hci = to_i3c_hci(m);
+	int ret;
+
+	reg_clear(HC_CONTROL, HC_CONTROL_HOT_JOIN_CTRL);
+
+	/*
+	 * Broadcast Hot_join enable, so that an I3C device that has previously
+	 * had its Hot-Join request NACK'ed knows to try again.
+	 */
+	ret = i3c_master_enec_disec_locked(m, I3C_BROADCAST_ADDR, true, I3C_CCC_EVENT_HJ, true);
+	if (ret) {
+		reg_set(HC_CONTROL, HC_CONTROL_HOT_JOIN_CTRL);
+		dev_err(&hci->master.dev, "Hot-Join ENEC CCC failed\n");
+	}
+
+	return ret;
+}
+
+static int i3c_hci_disable_hotjoin(struct i3c_master_controller *m)
 {
 	struct i3c_hci *hci = to_i3c_hci(m);
 
-	return hci->cmd->perform_daa(hci);
+	reg_set(HC_CONTROL, HC_CONTROL_HOT_JOIN_CTRL);
+	return 0;
+}
+
+static int i3c_hci_daa(struct i3c_master_controller *m)
+{
+	struct i3c_hci *hci = to_i3c_hci(m);
+	int ret;
+
+	ret = hci->cmd->perform_daa(hci);
+
+	if (!hci->hj_init_done) {
+		hci->hj_init_done = true;
+		/*
+		 * Enable Hot-Join by default after initial DAA if it does not
+		 * prevent runtime suspend.
+		 */
+		if (m->rpm_ibi_allowed && !ret)
+			m->hotjoin = !i3c_hci_enable_hotjoin(m);
+	}
+
+	return ret;
 }
 
 static int i3c_hci_i3c_xfers(struct i3c_dev_desc *dev,
@@ -614,7 +698,13 @@ static int i3c_hci_disable_ibi(struct i3c_dev_desc *dev)
 	struct i3c_hci *hci = to_i3c_hci(m);
 
 	__i3c_hci_disable_ibi(hci, dev);
-	return i3c_master_disec_locked(m, dev->info.dyn_addr, I3C_CCC_EVENT_SIR);
+	/*
+	 * The DAT entry is now set to NACK and DISEC this target's IBIs, so
+	 * the IBI teardown can proceed even if DISEC below fails, so ignore
+	 * errors.
+	 */
+	i3c_master_disec_locked(m, dev->info.dyn_addr, I3C_CCC_EVENT_SIR);
+	return 0;
 }
 
 static void i3c_hci_recycle_ibi_slot(struct i3c_dev_desc *dev,
@@ -643,6 +733,8 @@ static const struct i3c_master_controller_ops i3c_hci_ops = {
 	.enable_ibi		= i3c_hci_enable_ibi,
 	.disable_ibi		= i3c_hci_disable_ibi,
 	.recycle_ibi_slot	= i3c_hci_recycle_ibi_slot,
+	.enable_hotjoin		= i3c_hci_enable_hotjoin,
+	.disable_hotjoin	= i3c_hci_disable_hotjoin,
 };
 
 static irqreturn_t i3c_hci_irq_handler(int irq, void *dev_id)
@@ -676,6 +768,7 @@ static irqreturn_t i3c_hci_irq_handler(int irq, void *dev_id)
 	if (val & INTR_HC_INTERNAL_ERR) {
 		dev_err(&hci->master.dev, "Host Controller Internal Error\n");
 		val &= ~INTR_HC_INTERNAL_ERR;
+		hci->recovery_needed = true;
 	}
 
 	if (val)
@@ -806,9 +899,8 @@ int i3c_hci_rpm_suspend(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(i3c_hci_rpm_suspend);
 
-int i3c_hci_rpm_resume(struct device *dev)
+static int i3c_hci_do_reset_and_restore(struct i3c_hci *hci)
 {
-	struct i3c_hci *hci = dev_get_drvdata(dev);
 	int ret;
 
 	ret = i3c_hci_reset_and_init(hci);
@@ -824,10 +916,27 @@ int i3c_hci_rpm_resume(struct device *dev)
 	scoped_guard(spinlock_irqsave, &hci->lock)
 		hci->irq_inactive = false;
 
-	/* Enable bus with Hot-Join disabled */
-	reg_set(HC_CONTROL, HC_CONTROL_BUS_ENABLE | HC_CONTROL_HOT_JOIN_CTRL);
+	/* Enable bus, restoring hot-join state */
+	reg_set(HC_CONTROL,
+		HC_CONTROL_BUS_ENABLE | (hci->master.hotjoin ? 0 : HC_CONTROL_HOT_JOIN_CTRL));
 
 	return 0;
+}
+
+int i3c_hci_reset_and_restore(struct i3c_hci *hci)
+{
+	i3c_hci_bus_disable(hci);
+
+	hci->io->suspend(hci);
+
+	return i3c_hci_do_reset_and_restore(hci);
+}
+
+int i3c_hci_rpm_resume(struct device *dev)
+{
+	struct i3c_hci *hci = dev_get_drvdata(dev);
+
+	return i3c_hci_do_reset_and_restore(hci);
 }
 EXPORT_SYMBOL_GPL(i3c_hci_rpm_resume);
 
@@ -997,6 +1106,7 @@ static int i3c_hci_init(struct i3c_hci *hci)
 static int i3c_hci_probe(struct platform_device *pdev)
 {
 	const struct mipi_i3c_hci_platform_data *pdata = pdev->dev.platform_data;
+	struct clk_bulk_data *clks;
 	struct i3c_hci *hci;
 	int irq, ret;
 
@@ -1006,6 +1116,7 @@ static int i3c_hci_probe(struct platform_device *pdev)
 
 	spin_lock_init(&hci->lock);
 	mutex_init(&hci->control_mutex);
+	init_waitqueue_head(&hci->enqueue_wait_queue);
 
 	/*
 	 * Multi-bus instances share the same MMIO address range, but not
@@ -1028,6 +1139,11 @@ static int i3c_hci_probe(struct platform_device *pdev)
 	hci->quirks = (unsigned long)device_get_match_data(&pdev->dev);
 	if (!hci->quirks && platform_get_device_id(pdev))
 		hci->quirks = platform_get_device_id(pdev)->driver_data;
+
+	ret = devm_clk_bulk_get_all_enabled(&pdev->dev, &clks);
+	if (ret < 0)
+		return dev_err_probe(&pdev->dev, ret,
+				     "Failed to get clocks\n");
 
 	ret = i3c_hci_init(hci);
 	if (ret)
@@ -1059,6 +1175,9 @@ static void i3c_hci_remove(struct platform_device *pdev)
 
 static const __maybe_unused struct of_device_id i3c_hci_of_match[] = {
 	{ .compatible = "mipi-i3c-hci", },
+	{ .compatible = "microchip,sama7d65-i3c-hci",
+	  .data = (void *)(ulong)(HCI_QUIRK_PIO_MODE | HCI_QUIRK_OD_PP_TIMING |
+				  HCI_QUIRK_RESP_BUF_THLD) },
 	{},
 };
 MODULE_DEVICE_TABLE(of, i3c_hci_of_match);
@@ -1070,9 +1189,14 @@ static const struct acpi_device_id i3c_hci_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, i3c_hci_acpi_match);
 
 static const struct platform_device_id i3c_hci_driver_ids[] = {
-	{ .name = "intel-lpss-i3c", HCI_QUIRK_RPM_ALLOWED |
-				    HCI_QUIRK_RPM_IBI_ALLOWED |
-				    HCI_QUIRK_RPM_PARENT_MANAGED },
+	{
+		.name = "intel-lpss-i3c",
+		.driver_data = HCI_QUIRK_RPM_ALLOWED |
+			HCI_QUIRK_RPM_IBI_ALLOWED |
+			HCI_QUIRK_RPM_PARENT_MANAGED |
+			HCI_QUIRK_DMA_ABORT_REQUIRES_PIO_RESET |
+			HCI_QUIRK_DMA_REQUIRES_HC_ABORT,
+	},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(platform, i3c_hci_driver_ids);

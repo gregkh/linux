@@ -2373,7 +2373,7 @@ out:
 	dprintk("%s: inode %s/%llu pNFS layout segment %s for "
 			"(%s, offset: %llu, length: %llu)\n",
 			__func__, ino->i_sb->s_id,
-			(unsigned long long)NFS_FILEID(ino),
+			(unsigned long long)ino->i_ino,
 			IS_ERR_OR_NULL(lseg) ? "not found" : "found",
 			iomode==IOMODE_RW ?  "read/write" : "read-only",
 			(unsigned long long)pos,

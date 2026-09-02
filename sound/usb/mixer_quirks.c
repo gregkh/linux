@@ -1285,7 +1285,7 @@ static int snd_ftu_eff_switch_init(struct usb_mixer_interface *mixer,
 
 	err = snd_usb_ctl_msg(dev, usb_rcvctrlpipe(dev, 0), UAC_GET_CUR,
 			      USB_RECIP_INTERFACE | USB_TYPE_CLASS | USB_DIR_IN,
-			      pval & 0xff00,
+			      (pval & 0xff00) | ((pval & 0xff0000) >> 16),
 			      snd_usb_ctrl_intf(mixer->hostif) | ((pval & 0xff) << 8),
 			      value, 2);
 	if (err < 0)
@@ -1318,7 +1318,7 @@ static int snd_ftu_eff_switch_update(struct usb_mixer_elem_list *list)
 			       usb_sndctrlpipe(chip->dev, 0),
 			       UAC_SET_CUR,
 			       USB_RECIP_INTERFACE | USB_TYPE_CLASS | USB_DIR_OUT,
-			       pval & 0xff00,
+			       (pval & 0xff00) | ((pval & 0xff0000) >> 16),
 			       snd_usb_ctrl_intf(list->mixer->hostif) | ((pval & 0xff) << 8),
 			       value, 2);
 }
@@ -1738,6 +1738,44 @@ static int snd_c400_create_effect_ret_vol_ctls(struct usb_mixer_interface *mixer
 	return 0;
 }
 
+/* output gain knob selectively adjusts outputs as stereo pairs */
+/* reuses functions from FTU effect switch */
+static int snd_c400_knob_switch_info(struct snd_kcontrol *kcontrol,
+					struct snd_ctl_elem_info *uinfo)
+{
+	static const char *const texts[8] = {
+		"None", "1/2", "3/4", "1/2 3/4",
+		"5/6", "1/2 5/6", "3/4 5/6", "1/2 3/4 5/6"
+	};
+
+	return snd_ctl_enum_info(uinfo, 1, ARRAY_SIZE(texts), texts);
+}
+
+static int snd_c400_create_knob_switch(struct usb_mixer_interface *mixer,
+	int validx, int bUnitID)
+{
+	static struct snd_kcontrol_new template = {
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.name = "Output Gain Knob",
+		.index = 0,
+		.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
+		.info = snd_c400_knob_switch_info,
+		.get = snd_ftu_eff_switch_get,
+		.put = snd_ftu_eff_switch_put
+	};
+	struct usb_mixer_elem_list *list;
+	int err;
+
+	err = add_single_ctl_with_resume(mixer, bUnitID,
+					 snd_ftu_eff_switch_update,
+					 &template, &list);
+	if (err < 0)
+		return err;
+	list->kctl->private_value = (validx << 8) | bUnitID;
+	snd_ftu_eff_switch_init(mixer, list->kctl);
+	return 0;
+}
+
 static int snd_c400_create_mixer(struct usb_mixer_interface *mixer)
 {
 	int err;
@@ -1767,6 +1805,10 @@ static int snd_c400_create_mixer(struct usb_mixer_interface *mixer)
 		return err;
 
 	err = snd_c400_create_effect_feedback_ctl(mixer);
+	if (err < 0)
+		return err;
+
+	err = snd_c400_create_knob_switch(mixer, 0x0900, 0x20);
 	if (err < 0)
 		return err;
 

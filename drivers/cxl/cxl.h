@@ -91,7 +91,7 @@ static inline int cxl_hdm_decoder_count(u32 cap_hdr)
 }
 
 /* Encode defined in CXL 2.0 8.2.5.12.7 HDM Decoder Control Register */
-static inline int eig_to_granularity(u16 eig, unsigned int *granularity)
+static inline int eig_to_granularity(u16 eig, int *granularity)
 {
 	if (eig > CXL_DECODER_MAX_ENCODED_IG)
 		return -EINVAL;
@@ -100,7 +100,7 @@ static inline int eig_to_granularity(u16 eig, unsigned int *granularity)
 }
 
 /* Encode defined in CXL ECN "3, 6, 12 and 16-way memory Interleaving" */
-static inline int eiw_to_ways(u8 eiw, unsigned int *ways)
+static inline int eiw_to_ways(u8 eiw, int *ways)
 {
 	switch (eiw) {
 	case 0 ... 4:
@@ -118,6 +118,7 @@ static inline int eiw_to_ways(u8 eiw, unsigned int *ways)
 
 static inline int granularity_to_eig(int granularity, u16 *eig)
 {
+	*eig = 0;
 	if (granularity > SZ_16K || granularity < CXL_DECODER_MIN_GRANULARITY ||
 	    !is_power_of_2(granularity))
 		return -EINVAL;
@@ -127,6 +128,7 @@ static inline int granularity_to_eig(int granularity, u16 *eig)
 
 static inline int ways_to_eiw(unsigned int ways, u8 *eiw)
 {
+	*eiw = 0;
 	if (ways > 16)
 		return -EINVAL;
 	if (is_power_of_2(ways)) {

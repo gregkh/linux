@@ -211,8 +211,7 @@ int pci_rebar_set_size(struct pci_dev *pdev, int bar, int size)
 		return pos;
 
 	pci_read_config_dword(pdev, pos + PCI_REBAR_CTRL, &ctrl);
-	ctrl &= ~PCI_REBAR_CTRL_BAR_SIZE;
-	ctrl |= FIELD_PREP(PCI_REBAR_CTRL_BAR_SIZE, size);
+	FIELD_MODIFY(PCI_REBAR_CTRL_BAR_SIZE, &ctrl, size);
 	pci_write_config_dword(pdev, pos + PCI_REBAR_CTRL, ctrl);
 
 	if (pci_resource_is_iov(bar))
@@ -247,8 +246,7 @@ void pci_restore_rebar_state(struct pci_dev *pdev)
 		bar_idx = ctrl & PCI_REBAR_CTRL_BAR_IDX;
 		res = pci_resource_n(pdev, bar_idx);
 		size = pci_rebar_bytes_to_size(resource_size(res));
-		ctrl &= ~PCI_REBAR_CTRL_BAR_SIZE;
-		ctrl |= FIELD_PREP(PCI_REBAR_CTRL_BAR_SIZE, size);
+		FIELD_MODIFY(PCI_REBAR_CTRL_BAR_SIZE, &ctrl, size);
 		pci_write_config_dword(pdev, pos + PCI_REBAR_CTRL, ctrl);
 	}
 }

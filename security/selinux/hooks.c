@@ -2974,6 +2974,10 @@ static int selinux_inode_init_security(struct inode *inode, struct inode *dir,
 
 	sbsec = selinux_superblock(dir->i_sb);
 
+	if (!selinux_initialized() ||
+	    !(sbsec->flags & SBLABEL_MNT))
+		return -EOPNOTSUPP;
+
 	newsid = crsec->create_sid;
 	newsclass = inode_mode_to_security_class(inode->i_mode);
 	rc = selinux_determine_inode_label(crsec, dir, qstr, newsclass, &newsid);
@@ -2987,10 +2991,6 @@ static int selinux_inode_init_security(struct inode *inode, struct inode *dir,
 		isec->sid = newsid;
 		isec->initialized = LABEL_INITIALIZED;
 	}
-
-	if (!selinux_initialized() ||
-	    !(sbsec->flags & SBLABEL_MNT))
-		return -EOPNOTSUPP;
 
 	xattr = lsm_get_xattr_slot(xattrs, xattr_count);
 	if (xattr) {
@@ -3680,16 +3680,12 @@ static int selinux_inode_setsecurity(struct inode *inode, const char *name,
 	return 0;
 }
 
-static int selinux_inode_listsecurity(struct inode *inode, char *buffer, size_t buffer_size)
+static int selinux_inode_listsecurity(struct inode *inode, char **buffer,
+				ssize_t *remaining_size)
 {
-	const int len = sizeof(XATTR_NAME_SELINUX);
-
 	if (!selinux_initialized())
 		return 0;
-
-	if (buffer && len <= buffer_size)
-		memcpy(buffer, XATTR_NAME_SELINUX, len);
-	return len;
+	return xattr_list_one(buffer, remaining_size, XATTR_NAME_SELINUX);
 }
 
 static void selinux_inode_getlsmprop(struct inode *inode, struct lsm_prop *prop)

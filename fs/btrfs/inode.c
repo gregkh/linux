@@ -226,9 +226,7 @@ static void print_data_reloc_error(const struct btrfs_inode *inode, u64 file_off
 	u32 item_size;
 	int ret;
 
-	mutex_lock(&fs_info->reloc_mutex);
 	logical = btrfs_get_reloc_bg_bytenr(fs_info);
-	mutex_unlock(&fs_info->reloc_mutex);
 
 	if (logical == U64_MAX) {
 		btrfs_warn_rl(fs_info, "has data reloc tree but no running relocation");
@@ -401,28 +399,6 @@ void btrfs_inode_unlock(struct btrfs_inode *inode, unsigned int ilock_flags)
 static inline void btrfs_cleanup_ordered_extents(struct btrfs_inode *inode,
 						 u64 offset, u64 bytes)
 {
-	pgoff_t index = offset >> PAGE_SHIFT;
-	const pgoff_t end_index = (offset + bytes - 1) >> PAGE_SHIFT;
-	struct folio *folio;
-
-	while (index <= end_index) {
-		folio = filemap_get_folio(inode->vfs_inode.i_mapping, index);
-		if (IS_ERR(folio)) {
-			index++;
-			continue;
-		}
-
-		index = folio_next_index(folio);
-		/*
-		 * Here we just clear all Ordered bits for every page in the
-		 * range, then btrfs_mark_ordered_io_finished() will handle
-		 * the ordered extent accounting for the range.
-		 */
-		btrfs_folio_clamp_clear_ordered(inode->root->fs_info, folio,
-						offset, bytes);
-		folio_put(folio);
-	}
-
 	return btrfs_mark_ordered_io_finished(inode, offset, bytes, false);
 }
 
@@ -755,7 +731,7 @@ static inline int inode_need_compress(struct btrfs_inode *inode, u64 start,
 {
 	struct btrfs_fs_info *fs_info = inode->root->fs_info;
 
-	if (!btrfs_inode_can_compress(inode)) {
+	if (unlikely(!btrfs_inode_can_compress(inode))) {
 		DEBUG_WARN("BTRFS: unexpected compression for ino %llu", btrfs_ino(inode));
 		return 0;
 	}
@@ -842,7 +818,7 @@ static struct folio *compressed_bio_last_folio(struct compressed_bio *cb)
 	ASSERT(bio->bi_vcnt);
 
 	bvec = &bio->bi_io_vec[bio->bi_vcnt - 1];
-	paddr = page_to_phys(bvec->bv_page) + bvec->bv_offset + bvec->bv_len - 1;
+	paddr = bvec_phys(bvec) + bvec->bv_len - 1;
 	return page_folio(phys_to_page(paddr));
 }
 
@@ -1406,7 +1382,6 @@ static noinline int cow_file_range(struct btrfs_inode *inode,
 	 * setup for writepage.
 	 */
 	page_ops = ((flags & COW_FILE_RANGE_KEEP_LOCKED) ? 0 : PAGE_UNLOCK);
-	page_ops |= PAGE_SET_ORDERED;
 
 	/*
 	 * Relocation relies on the relocated extents to have exactly the same
@@ -1972,8 +1947,7 @@ static int nocow_one_range(struct btrfs_inode *inode, struct folio *locked_folio
 		goto error;
 	extent_clear_unlock_delalloc(inode, file_pos, end, locked_folio, cached,
 				     EXTENT_LOCKED | EXTENT_DELALLOC |
-				     EXTENT_CLEAR_DATA_RESV,
-				     PAGE_SET_ORDERED);
+				     EXTENT_CLEAR_DATA_RESV, 0);
 	return ret;
 
 error:
@@ -2605,8 +2579,7 @@ void btrfs_set_delalloc_extent(struct btrfs_inode *inode, struct extent_state *s
 
 	lockdep_assert_held(&inode->io_tree.lock);
 
-	if ((bits & EXTENT_DEFRAG) && !(bits & EXTENT_DELALLOC))
-		WARN_ON(1);
+	WARN_ON((bits & EXTENT_DEFRAG) && !(bits & EXTENT_DELALLOC));
 	/*
 	 * set_bit and clear bit hooks normally require _irqsave/restore
 	 * but in this case, we are only testing for the DELALLOC
@@ -2839,206 +2812,178 @@ int btrfs_set_extent_delalloc(struct btrfs_inode *inode, u64 start, u64 end,
 				    EXTENT_DELALLOC | extra_bits, cached_state);
 }
 
-/* see btrfs_writepage_start_hook for details on why this is required */
 struct btrfs_writepage_fixup {
 	struct folio *folio;
 	struct btrfs_inode *inode;
-	struct btrfs_work work;
+	struct work_struct work;
 };
 
-static void btrfs_writepage_fixup_worker(struct btrfs_work *work)
+/*
+ * Do the real fixup work of reserving space for the blocks a folio's fixup
+ * state records. Queued by writepage_fixup() when writeback found the bits set.
+ *
+ * Since the fixup can be cancelled by a task dirtying with a reservation, we must
+ * re-check the state of fixup under the folio lock.
+ */
+static void btrfs_writepage_fixup_worker(struct work_struct *work)
 {
 	struct btrfs_writepage_fixup *fixup =
 		container_of(work, struct btrfs_writepage_fixup, work);
-	struct btrfs_ordered_extent *ordered;
 	struct extent_state *cached_state = NULL;
 	struct extent_changeset *data_reserved = NULL;
+	unsigned long delalloc_bitmap[BITS_TO_LONGS(BTRFS_MAX_BLOCKS_PER_FOLIO)] = { 0 };
 	struct folio *folio = fixup->folio;
 	struct btrfs_inode *inode = fixup->inode;
 	struct btrfs_fs_info *fs_info = inode->root->fs_info;
-	u64 page_start = folio_pos(folio);
-	u64 page_end = folio_next_pos(folio) - 1;
-	int ret = 0;
-	bool free_delalloc_space = true;
+	const unsigned int blocks_per_folio = btrfs_blocks_per_folio(fs_info, folio);
+	const u32 sectorsize = fs_info->sectorsize;
+	const u64 page_start = folio_pos(folio);
+	const u64 page_end = folio_next_pos(folio) - 1;
+	unsigned int start_bit;
+	unsigned int end_bit;
+	unsigned int bit;
+	bool reserved;
+	int ret;
 
 	/*
-	 * This is similar to page_mkwrite, we need to reserve the space before
-	 * we take the folio lock.
+	 * We would prefer to reserve under the folio lock when we know exactly
+	 * which blocks need a reservation. Unfortunately, since the reservation
+	 * can go into flushers which can go into writeback, which takes folio
+	 * locks, that is not possible. Therefore, we have to reserve for the
+	 * whole folio here, then release what we didn't end up needing once we
+	 * figure it out.
+	 *
+	 * Also note the slightly strange error checking. If fixup is actually
+	 * not set, we don't need to mark an error on the mapping. So hang on to
+	 * ret until after we lock and find out if we actually care.
 	 */
 	ret = btrfs_delalloc_reserve_space(inode, &data_reserved, page_start,
 					   folio_size(folio));
+	reserved = (ret == 0);
 again:
 	folio_lock(folio);
 
-	/*
-	 * Before we queued this fixup, we took a reference on the folio.
-	 * folio->mapping may go NULL, but it shouldn't be moved to a different
-	 * address space.
-	 */
-	if (!folio->mapping || !folio_test_dirty(folio) ||
-	    !folio_test_checked(folio)) {
-		/*
-		 * Unfortunately this is a little tricky, either
-		 *
-		 * 1) We got here and our folio had already been dealt with and
-		 *    we reserved our space, thus ret == 0, so we need to just
-		 *    drop our space reservation and bail.  This can happen the
-		 *    first time we come into the fixup worker, or could happen
-		 *    while waiting for the ordered extent.
-		 * 2) Our folio was already dealt with, but we happened to get an
-		 *    ENOSPC above from the btrfs_delalloc_reserve_space.  In
-		 *    this case we obviously don't have anything to release, but
-		 *    because the folio was already dealt with we don't want to
-		 *    mark the folio with an error, so make sure we're resetting
-		 *    ret to 0.  This is why we have this check _before_ the ret
-		 *    check, because we do not want to have a surprise ENOSPC
-		 *    when the folio was already properly dealt with.
-		 */
-		if (!ret) {
-			btrfs_delalloc_release_extents(inode, folio_size(folio));
-			btrfs_delalloc_release_space(inode, data_reserved,
-						     page_start, folio_size(folio),
-						     true);
-		}
+	if (!folio->mapping || !folio_test_fixup_pending(folio)) {
 		ret = 0;
-		goto out_page;
+		goto out;
 	}
-
-	/*
-	 * We can't mess with the folio state unless it is locked, so now that
-	 * it is locked bail if we failed to make our space reservation.
-	 */
 	if (ret)
-		goto out_page;
+		goto out;
 
 	btrfs_lock_extent(&inode->io_tree, page_start, page_end, &cached_state);
 
-	/* already ordered? We're done */
-	if (folio_test_ordered(folio))
-		goto out_reserved;
+	for (bit = 0; bit < blocks_per_folio; bit++) {
+		struct btrfs_ordered_extent *ordered;
+		const u64 start = page_start + (bit << fs_info->sectorsize_bits);
 
-	ordered = btrfs_lookup_ordered_range(inode, page_start, PAGE_SIZE);
-	if (ordered) {
-		btrfs_unlock_extent(&inode->io_tree, page_start, page_end,
-				    &cached_state);
-		folio_unlock(folio);
-		btrfs_start_ordered_extent(ordered);
-		btrfs_put_ordered_extent(ordered);
-		goto again;
-	}
-
-	ret = btrfs_set_extent_delalloc(inode, page_start, page_end, 0,
-					&cached_state);
-	if (ret)
-		goto out_reserved;
-
-	/*
-	 * Everything went as planned, we're now the owner of a dirty page with
-	 * delayed allocation bits set and space reserved for our COW
-	 * destination.
-	 *
-	 * The page was dirty when we started, nothing should have cleaned it.
-	 */
-	BUG_ON(!folio_test_dirty(folio));
-	free_delalloc_space = false;
-out_reserved:
-	btrfs_delalloc_release_extents(inode, PAGE_SIZE);
-	if (free_delalloc_space)
-		btrfs_delalloc_release_space(inode, data_reserved, page_start,
-					     PAGE_SIZE, true);
-	btrfs_unlock_extent(&inode->io_tree, page_start, page_end, &cached_state);
-out_page:
-	if (ret) {
+		if (test_bit(bit, delalloc_bitmap))
+			continue;
+		if (!btrfs_folio_test_fixup(fs_info, folio, start, sectorsize))
+			continue;
 		/*
-		 * We hit ENOSPC or other errors.  Update the mapping and page
-		 * to reflect the errors and clean the page.
+		 * Any task that sets EXTENT_DELALLOC clears the fixup bits
+		 * under the folio lock, so it should be impossible to observe
+		 * both under the lock. Setting delalloc twice would wrongly
+		 * double account the space.
 		 */
-		mapping_set_error(folio->mapping, ret);
-		btrfs_folio_clear_ordered(fs_info, folio, page_start,
-					  folio_size(folio));
-		btrfs_mark_ordered_io_finished(inode, page_start,
-					       folio_size(folio), !ret);
-		folio_clear_dirty_for_io(folio);
+		if (IS_ENABLED(CONFIG_BTRFS_DEBUG) &&
+		    unlikely(btrfs_test_range_bit_exists(&inode->io_tree, start,
+							 start + sectorsize - 1,
+							 EXTENT_DELALLOC))) {
+			DEBUG_WARN("fixup worker: delalloc and fixup conflict. ino %llu start %llu",
+				   btrfs_ino(inode), start);
+			btrfs_folio_clear_fixup(fs_info, folio, start, sectorsize);
+			continue;
+		}
+		ordered = btrfs_lookup_ordered_range(inode, start, sectorsize);
+		if (ordered) {
+			trace_btrfs_writepage_fixup_defer(inode, ordered);
+			btrfs_unlock_extent(&inode->io_tree, page_start,
+					    page_end, &cached_state);
+			folio_unlock(folio);
+			btrfs_start_ordered_extent(ordered);
+			btrfs_put_ordered_extent(ordered);
+			goto again;
+		}
+		ret = btrfs_set_extent_delalloc(inode, start,
+						start + sectorsize - 1, 0,
+						&cached_state);
+		if (ret)
+			break;
+		trace_btrfs_writepage_fixup_reserve(inode, start, sectorsize);
+		btrfs_folio_clear_fixup(fs_info, folio, start, sectorsize);
+		set_bit(bit, delalloc_bitmap);
 	}
-	btrfs_folio_clear_checked(fs_info, folio, page_start, PAGE_SIZE);
+
+	btrfs_unlock_extent(&inode->io_tree, page_start, page_end, &cached_state);
+out:
+	if (ret < 0) {
+		/* Failure here is analogous to failure in writeback. */
+		mapping_set_error(folio->mapping, ret);
+		btrfs_folio_clear_fixup_dirty(fs_info, folio, page_start,
+					      folio_size(folio));
+	}
+	if (reserved) {
+		btrfs_delalloc_release_extents(inode, folio_size(folio));
+		for_each_clear_bitrange(start_bit, end_bit, delalloc_bitmap,
+					blocks_per_folio)
+			btrfs_delalloc_release_space(inode, data_reserved,
+				page_start + (start_bit << fs_info->sectorsize_bits),
+				(end_bit - start_bit) << fs_info->sectorsize_bits,
+				true);
+	}
 	folio_unlock(folio);
 	folio_put(folio);
 	kfree(fixup);
 	extent_changeset_free(data_reserved);
-	/*
-	 * As a precaution, do a delayed iput in case it would be the last iput
-	 * that could need flushing space. Recursing back to fixup worker would
-	 * deadlock.
-	 */
 	btrfs_add_delayed_iput(inode);
 }
 
 /*
- * There are a few paths in the higher layers of the kernel that directly
- * set the folio dirty bit without asking the filesystem if it is a
- * good idea.  This causes problems because we want to make sure COW
- * properly happens and the data=ordered rules are followed.
+ * Queue space reservation fixup work for blocks dirtied without a space reservation.
  *
- * In our case any range that doesn't have the ORDERED bit set
- * hasn't been properly setup for IO.  We kick off an async process
- * to fix it up.  The async helper will wait for ordered extents, set
- * the delalloc bit and make it safe to write the folio.
+ * Should be used by writeback while holding the folio locked.
+ *
+ * If we fail to queue fixup, then the folio state is unchanged and a future
+ * writeback pass will still see it.
  */
-int btrfs_writepage_cow_fixup(struct folio *folio)
+void btrfs_queue_writepage_fixup(struct btrfs_inode *inode, struct folio *folio)
 {
-	struct inode *inode = folio->mapping->host;
-	struct btrfs_fs_info *fs_info = inode_to_fs_info(inode);
+	struct btrfs_fs_info *fs_info = inode->root->fs_info;
 	struct btrfs_writepage_fixup *fixup;
 
-	/* This folio has ordered extent covering it already */
-	if (folio_test_ordered(folio))
-		return 0;
-
 	/*
-	 * For experimental build, we error out instead of EAGAIN.
+	 * Disallow queueing more fixup during unmount to break the cycle
+	 * of writeback queuing fixup queuing writeback etc.
 	 *
-	 * We should not hit such out-of-band dirty folios anymore.
+	 * If it actually hit, then something which was fixup wasn't written
+	 * which we should warn about.
 	 */
-	if (IS_ENABLED(CONFIG_BTRFS_EXPERIMENTAL)) {
-		DEBUG_WARN();
-		btrfs_err_rl(fs_info,
-	"root %lld ino %llu folio %llu is marked dirty without notifying the fs",
-			     btrfs_root_id(BTRFS_I(inode)->root),
-			     btrfs_ino(BTRFS_I(inode)),
-			     folio_pos(folio));
-		return -EUCLEAN;
+	if (btrfs_fs_closing(fs_info)) {
+		btrfs_warn_rl(fs_info,
+	"dropping unqueued fixup blocks at unmount. root %lld ino %llu folio %llu",
+			      btrfs_root_id(inode->root), btrfs_ino(inode),
+			      folio_pos(folio));
+		btrfs_folio_clear_fixup_dirty(fs_info, folio,
+					      folio_pos(folio), folio_size(folio));
+		return;
 	}
-
-	/*
-	 * folio_checked is set below when we create a fixup worker for this
-	 * folio, don't try to create another one if we're already
-	 * folio_test_checked.
-	 *
-	 * The extent_io writepage code will redirty the foio if we send back
-	 * EAGAIN.
-	 */
-	if (folio_test_checked(folio))
-		return -EAGAIN;
 
 	fixup = kzalloc_obj(*fixup, GFP_NOFS);
 	if (!fixup)
-		return -EAGAIN;
+		return;
 
 	/*
-	 * We are already holding a reference to this inode from
-	 * write_cache_pages.  We need to hold it because the space reservation
-	 * takes place outside of the folio lock, and we can't trust
-	 * folio->mapping outside of the folio lock.
+	 * This is called from within extent_write_cache_pages() which
+	 * has successfully done an igrab(). But that will be released at the
+	 * end of the writeback pass. We need to extend it for the worker as well.
 	 */
-	ihold(inode);
-	btrfs_folio_set_checked(fs_info, folio, folio_pos(folio), folio_size(folio));
+	ihold(&inode->vfs_inode);
 	folio_get(folio);
-	btrfs_init_work(&fixup->work, btrfs_writepage_fixup_worker, NULL);
+	INIT_WORK(&fixup->work, btrfs_writepage_fixup_worker);
 	fixup->folio = folio;
-	fixup->inode = BTRFS_I(inode);
-	btrfs_queue_work(fs_info->fixup_workers, &fixup->work);
-
-	return -EAGAIN;
+	fixup->inode = inode;
+	queue_work(fs_info->fixup_workers, &fixup->work);
 }
 
 /*
@@ -3850,7 +3795,7 @@ int btrfs_orphan_cleanup(struct btrfs_root *root)
 
 		if (!inode && root == fs_info->tree_root) {
 			struct btrfs_root *dead_root;
-			int is_dead_root = 0;
+			bool is_dead_root = false;
 
 			/*
 			 * This is an orphan in the tree root. Currently these
@@ -3872,7 +3817,7 @@ int btrfs_orphan_cleanup(struct btrfs_root *root)
 			dead_root = radix_tree_lookup(&fs_info->fs_roots_radix,
 							 (unsigned long)found_key.objectid);
 			if (dead_root && btrfs_root_refs(&dead_root->root_item) == 0)
-				is_dead_root = 1;
+				is_dead_root = true;
 			spin_unlock(&fs_info->fs_roots_radix_lock);
 
 			if (is_dead_root) {
@@ -4798,7 +4743,7 @@ static void btrfs_prune_dentries(struct btrfs_root *root)
 
 	inode = btrfs_find_first_inode(root, min_ino);
 	while (inode) {
-		if (icount_read(&inode->vfs_inode) > 1)
+		if (icount_read_once(&inode->vfs_inode) > 1)
 			d_prune_aliases(&inode->vfs_inode);
 
 		min_ino = btrfs_ino(inode) + 1;
@@ -5259,8 +5204,6 @@ again:
 	folio_zero_range(folio, zero_start - folio_pos(folio),
 			 zero_end - zero_start + 1);
 
-	btrfs_folio_clear_checked(fs_info, folio, block_start,
-				  block_end + 1 - block_start);
 	btrfs_folio_set_dirty(fs_info, folio, block_start,
 			      block_end + 1 - block_start);
 
@@ -7705,12 +7648,6 @@ static int btrfs_migrate_folio(struct address_space *mapping,
 
 	if (ret)
 		return ret;
-
-	if (folio_test_ordered(src)) {
-		folio_clear_ordered(src);
-		folio_set_ordered(dst);
-	}
-
 	return 0;
 }
 #else
@@ -7744,6 +7681,12 @@ static void btrfs_invalidate_folio(struct folio *folio, size_t offset,
 	 */
 	folio_wait_writeback(folio);
 	wait_subpage_spinlock(folio);
+
+	/*
+	 * The invalidated blocks are going away; drop any fixup blocks among
+	 * them, data included, as they have no space reservation.
+	 */
+	btrfs_folio_clear_fixup_dirty(fs_info, folio, page_start + offset, length);
 
 	/*
 	 * For subpage case, we have call sites like
@@ -7799,18 +7742,20 @@ static void btrfs_invalidate_folio(struct folio *folio, size_t offset,
 				page_end);
 		ASSERT(range_end + 1 - cur < U32_MAX);
 		range_len = range_end + 1 - cur;
-		if (!btrfs_folio_test_ordered(fs_info, folio, cur, range_len)) {
-			/*
-			 * If Ordered is cleared, it means endio has
-			 * already been executed for the range.
-			 * We can't delete the extent states as
-			 * btrfs_finish_ordered_io() may still use some of them.
-			 */
+		/*
+		 * If the range is not dirty, the range has been submitted and
+		 * since we have waited for the writeback, endio has been
+		 * executed, thus we must skip the range to avoid double
+		 * accounting for the ordered extent.
+		 */
+		if (!btrfs_folio_test_dirty(fs_info, folio, cur, range_len))
 			goto next;
-		}
-		btrfs_folio_clear_ordered(fs_info, folio, cur, range_len);
 
 		/*
+		 * The range is dirty meaning it has not been submitted.
+		 * Here we need to truncate the OE range as the range will never
+		 * be submitted.
+		 *
 		 * IO on this page will never be started, so we need to account
 		 * for any ordered extents now. Don't clear EXTENT_DELALLOC_NEW
 		 * here, must leave that up for the ordered extent completion.
@@ -7867,13 +7812,8 @@ next:
 					       &cached_state);
 		cur = range_end + 1;
 	}
-	/*
-	 * We have iterated through all ordered extents of the page, the page
-	 * should not have Ordered anymore, or the above iteration
-	 * did something wrong.
-	 */
-	ASSERT(!folio_test_ordered(folio));
-	btrfs_folio_clear_checked(fs_info, folio, folio_pos(folio), folio_size(folio));
+	btrfs_folio_clear_dirty(fs_info, folio, page_start, folio_size(folio));
+	btrfs_clear_folio_dirty_tag(folio);
 	if (!inode_evicting)
 		__btrfs_release_folio(folio, GFP_NOFS);
 	clear_folio_extent_mapped(folio);
@@ -8309,7 +8249,8 @@ static int btrfs_getattr(struct mnt_idmap *idmap,
 	stat->result_mask |= STATX_SUBVOL;
 
 	spin_lock(&BTRFS_I(inode)->lock);
-	delalloc_bytes = BTRFS_I(inode)->new_delalloc_bytes;
+	delalloc_bytes = S_ISREG(inode->i_mode) ?
+			 BTRFS_I(inode)->new_delalloc_bytes : 0;
 	inode_bytes = inode_get_bytes(inode);
 	spin_unlock(&BTRFS_I(inode)->lock);
 	stat->blocks = (ALIGN(inode_bytes, blocksize) +
@@ -9731,7 +9672,7 @@ ssize_t btrfs_encoded_read_regular(struct kiocb *iocb, struct iov_iter *iter,
 	pages = kzalloc_objs(struct page *, nr_pages, GFP_NOFS);
 	if (!pages)
 		return -ENOMEM;
-	ret = btrfs_alloc_page_array(nr_pages, pages, false);
+	ret = btrfs_alloc_page_array(nr_pages, pages, GFP_NOFS);
 	if (ret) {
 		ret = -ENOMEM;
 		goto out;
@@ -10790,6 +10731,41 @@ static const struct file_operations btrfs_dir_file_operations = {
 };
 
 /*
+ * The folio is going dirty without a btrfs delalloc space reservation.
+ * This requires a fixup before writeback which we might sleep so cannot
+ * run in this context, so we merely set state on the folio indicating it
+ * needs fixup before writeback.
+ *
+ * Note that there is no range in the input, so the whole folio is marked
+ * dirty and fixup.
+ *
+ * We believe that all callers of dirty_folio either:
+ * - take the folio lock (e.g. pinned folio release notification).
+ * - take the pte lock but must be running on a dirty pte which means
+ *   page_mkwrite() ran on it and reserved the space. zap_pte_range() cannot
+ *   race with writeback cleaning the folio because writeback runs
+ *   folio_mkclean() which also uses the pte lock and revokes outstanding
+ *   writable mappings.
+ * Therefore, an additional folio private lock (a la bfs->lock for all cases,
+ * not just subpage) is not necessary.
+ */
+static bool btrfs_data_dirty_folio(struct address_space *mapping,
+				   struct folio *folio)
+{
+	struct btrfs_inode *inode = BTRFS_I(mapping->host);
+	struct btrfs_fs_info *fs_info = inode->root->fs_info;
+	const u64 page_start = folio_pos(folio);
+	const u64 range_end = min_t(u64, folio_next_pos(folio),
+				    round_up(i_size_read(&inode->vfs_inode),
+					     fs_info->sectorsize));
+
+	if (range_end > page_start)
+		btrfs_folio_set_fixup_dirty(fs_info, folio, page_start,
+					    range_end - page_start);
+	return filemap_dirty_folio(mapping, folio);
+}
+
+/*
  * btrfs doesn't support the bmap operation because swapfiles
  * use bmap to make a mapping of extents in the file.  They assume
  * these extents won't change over the life of the file and they
@@ -10809,7 +10785,7 @@ static const struct address_space_operations btrfs_aops = {
 	.launder_folio	= btrfs_launder_folio,
 	.release_folio	= btrfs_release_folio,
 	.migrate_folio	= btrfs_migrate_folio,
-	.dirty_folio	= filemap_dirty_folio,
+	.dirty_folio	= btrfs_data_dirty_folio,
 	.error_remove_folio = generic_error_remove_folio,
 	.swap_activate	= btrfs_swap_activate,
 	.swap_deactivate = btrfs_swap_deactivate,

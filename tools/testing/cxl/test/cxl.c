@@ -318,7 +318,7 @@ static struct {
 			.restrictions = ACPI_CEDT_CFMWS_RESTRICT_HOSTONLYMEM |
 					ACPI_CEDT_CFMWS_RESTRICT_VOLATILE,
 			.qtg_id = FAKE_QTG_ID,
-			.window_size = SZ_256M,
+			.window_size = SZ_256M > PMD_SIZE ? SZ_256M : PMD_SIZE,
 		},
 		.target = { 3 },
 	},
@@ -499,9 +499,12 @@ static int populate_cedt(void)
 
 	for (i = cfmws_start; i <= cfmws_end; i++) {
 		struct acpi_cedt_cfmws *window = mock_cfmws[i];
+		int align = SZ_256M;
 
 		cfmws_elc_update(window, i);
-		res = alloc_mock_res(window->window_size, SZ_256M);
+		if (window->restrictions & ACPI_CEDT_CFMWS_RESTRICT_VOLATILE)
+			align = max_t(int, SZ_256M, PMD_SIZE);
+		res = alloc_mock_res(window->window_size, align);
 		if (!res)
 			return -ENOMEM;
 		window->base_hpa = res->range.start;
@@ -1185,15 +1188,11 @@ static bool mock_init_hdm_decoder(struct cxl_decoder *cxld)
 		cxlsd = to_cxl_switch_decoder(dev);
 		if (i == 0) {
 			/* put cxl_mem.4 second in the decode order */
-			if (pdev->id == 4) {
-				cxlsd->target[1] = dport;
+			if (pdev->id == 4)
 				cxlsd->cxld.target_map[1] = dport->port_id;
-			} else {
-				cxlsd->target[0] = dport;
+			else
 				cxlsd->cxld.target_map[0] = dport->port_id;
-			}
 		} else {
-			cxlsd->target[0] = dport;
 			cxlsd->cxld.target_map[0] = dport->port_id;
 		}
 		cxld = &cxlsd->cxld;
@@ -1215,6 +1214,16 @@ static bool mock_init_hdm_decoder(struct cxl_decoder *cxld)
 		};
 		cxld->commit = mock_decoder_commit;
 		cxld->reset = mock_decoder_reset;
+
+		/*
+		 * Only target_map[] is programmed above, mimicking
+		 * firmware. On real hardware target[] is populated as
+		 * dports enumerate, via update_decoder_targets(). The
+		 * mock's dports are already bound by now, so fire that
+		 * resolution explicitly here rather than stamping
+		 * target[] directly.
+		 */
+		cxl_port_update_decoder_targets(iter, dport);
 
 		cxld_registry_update(cxld);
 		put_device(dev);
@@ -1822,6 +1831,12 @@ static __init int cxl_test_init(void)
 {
 	int rc, i;
 	struct range mappable;
+
+	if (!IS_ALIGNED(mock_auto_region_size, PMD_SIZE)) {
+		pr_err_once("mock_auto_region_size %d must be PMD-aligned\n",
+			    mock_auto_region_size);
+		return -EINVAL;
+	}
 
 	cxl_acpi_test();
 	cxl_core_test();

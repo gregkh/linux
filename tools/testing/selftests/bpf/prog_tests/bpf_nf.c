@@ -13,18 +13,18 @@ struct {
 	const char *prog_name;
 	const char *err_msg;
 } test_bpf_nf_fail_tests[] = {
-	{ "alloc_release", "kernel function bpf_ct_release args#0 expected pointer to STRUCT nf_conn but" },
-	{ "insert_insert", "kernel function bpf_ct_insert_entry args#0 expected pointer to STRUCT nf_conn___init but" },
-	{ "lookup_insert", "kernel function bpf_ct_insert_entry args#0 expected pointer to STRUCT nf_conn___init but" },
-	{ "set_timeout_after_insert", "kernel function bpf_ct_set_timeout args#0 expected pointer to STRUCT nf_conn___init but" },
-	{ "set_status_after_insert", "kernel function bpf_ct_set_status args#0 expected pointer to STRUCT nf_conn___init but" },
-	{ "change_timeout_after_alloc", "kernel function bpf_ct_change_timeout args#0 expected pointer to STRUCT nf_conn but" },
-	{ "change_status_after_alloc", "kernel function bpf_ct_change_status args#0 expected pointer to STRUCT nf_conn but" },
+	{ "alloc_release", "kernel function bpf_ct_release R1 expected pointer to STRUCT nf_conn but" },
+	{ "insert_insert", "kernel function bpf_ct_insert_entry R1 expected pointer to STRUCT nf_conn___init but" },
+	{ "lookup_insert", "kernel function bpf_ct_insert_entry R1 expected pointer to STRUCT nf_conn___init but" },
+	{ "set_timeout_after_insert", "kernel function bpf_ct_set_timeout R1 expected pointer to STRUCT nf_conn___init but" },
+	{ "set_status_after_insert", "kernel function bpf_ct_set_status R1 expected pointer to STRUCT nf_conn___init but" },
+	{ "change_timeout_after_alloc", "kernel function bpf_ct_change_timeout R1 expected pointer to STRUCT nf_conn but" },
+	{ "change_status_after_alloc", "kernel function bpf_ct_change_status R1 expected pointer to STRUCT nf_conn but" },
 	{ "write_not_allowlisted_field", "no write support to nf_conn at off" },
-	{ "lookup_null_bpf_tuple", "Possibly NULL pointer passed to trusted arg1" },
-	{ "lookup_null_bpf_opts", "Possibly NULL pointer passed to trusted arg3" },
-	{ "xdp_lookup_null_bpf_tuple", "Possibly NULL pointer passed to trusted arg1" },
-	{ "xdp_lookup_null_bpf_opts", "Possibly NULL pointer passed to trusted arg3" },
+	{ "lookup_null_bpf_tuple", "Possibly NULL pointer passed to trusted R2" },
+	{ "lookup_null_bpf_opts", "Possibly NULL pointer passed to trusted R4" },
+	{ "xdp_lookup_null_bpf_tuple", "Possibly NULL pointer passed to trusted R2" },
+	{ "xdp_lookup_null_bpf_opts", "Possibly NULL pointer passed to trusted R4" },
 };
 
 enum {

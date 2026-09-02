@@ -5126,6 +5126,20 @@ static int dm_integrity_ctr(struct dm_target *ti, unsigned int argc, char **argv
 		ti->error = "Journal mac mismatch";
 		goto bad;
 	}
+	if (ic->fix_hmac && !(ic->sb->flags & cpu_to_le32(SB_FLAG_FIXED_HMAC)) && ic->journal_mac_alg.key_string) {
+		/*
+		 * If this happens, it may be either because someone tampered
+		 * with the device or it may be due to a bug in the
+		 * integritysetup tool.
+		 *
+		 * In the latter case, upgrade to integritysetup 2.8.7 and use
+		 * the argument --integrity-legacy-hmac when using the open
+		 * command.
+		 */
+		r = -EINVAL;
+		ti->error = "fix_hmac is on the command line but not in the superblock";
+		goto bad;
+	}
 
 	get_provided_data_sectors(ic);
 	if (!ic->provided_data_sectors) {

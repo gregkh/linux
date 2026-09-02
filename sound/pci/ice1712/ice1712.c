@@ -86,8 +86,8 @@ MODULE_PARM_DESC(dxr_enable, "Enable DXR support for Terratec DMX6FIRE.");
 
 
 static const struct pci_device_id snd_ice1712_ids[] = {
-	{ PCI_VDEVICE(ICE, PCI_DEVICE_ID_ICE_1712), 0 },   /* ICE1712 */
-	{ 0, }
+	{ PCI_VDEVICE(ICE, PCI_DEVICE_ID_ICE_1712) },   /* ICE1712 */
+	{ }
 };
 
 MODULE_DEVICE_TABLE(pci, snd_ice1712_ids);

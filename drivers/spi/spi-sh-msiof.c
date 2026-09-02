@@ -1217,9 +1217,9 @@ static int sh_msiof_spi_probe(struct platform_device *pdev)
 		info->dtdl = 200;
 
 	if (info->mode == MSIOF_SPI_TARGET)
-		ctlr = spi_alloc_target(dev, sizeof(struct sh_msiof_spi_priv));
+		ctlr = devm_spi_alloc_target(dev, sizeof(struct sh_msiof_spi_priv));
 	else
-		ctlr = spi_alloc_host(dev, sizeof(struct sh_msiof_spi_priv));
+		ctlr = devm_spi_alloc_host(dev, sizeof(struct sh_msiof_spi_priv));
 	if (ctlr == NULL)
 		return -ENOMEM;
 
@@ -1236,26 +1236,21 @@ static int sh_msiof_spi_probe(struct platform_device *pdev)
 	p->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(p->clk)) {
 		dev_err(dev, "cannot get clock\n");
-		ret = PTR_ERR(p->clk);
-		goto err1;
+		return PTR_ERR(p->clk);
 	}
 
 	i = platform_get_irq(pdev, 0);
-	if (i < 0) {
-		ret = i;
-		goto err1;
-	}
+	if (i < 0)
+		return i;
 
 	p->mapbase = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(p->mapbase)) {
-		ret = PTR_ERR(p->mapbase);
-		goto err1;
-	}
+	if (IS_ERR(p->mapbase))
+		return PTR_ERR(p->mapbase);
 
 	ret = devm_request_irq(dev, i, sh_msiof_spi_irq, 0, dev_name(dev), p);
 	if (ret) {
 		dev_err(dev, "unable to request irq\n");
-		goto err1;
+		return ret;
 	}
 
 	p->pdev = pdev;
@@ -1302,8 +1297,7 @@ static int sh_msiof_spi_probe(struct platform_device *pdev)
  err2:
 	sh_msiof_release_dma(p);
 	pm_runtime_disable(dev);
- err1:
-	spi_controller_put(ctlr);
+
 	return ret;
 }
 
@@ -1311,19 +1305,15 @@ static void sh_msiof_spi_remove(struct platform_device *pdev)
 {
 	struct sh_msiof_spi_priv *p = platform_get_drvdata(pdev);
 
-	spi_controller_get(p->ctlr);
-
 	spi_unregister_controller(p->ctlr);
 
 	sh_msiof_release_dma(p);
 	pm_runtime_disable(&pdev->dev);
-
-	spi_controller_put(p->ctlr);
 }
 
 static const struct platform_device_id spi_driver_ids[] = {
-	{ "spi_sh_msiof",	(kernel_ulong_t)&sh_data },
-	{},
+	{ .name = "spi_sh_msiof", .driver_data = (kernel_ulong_t)&sh_data },
+	{ }
 };
 MODULE_DEVICE_TABLE(platform, spi_driver_ids);
 

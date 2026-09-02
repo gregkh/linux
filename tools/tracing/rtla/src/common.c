@@ -5,7 +5,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
-#include <getopt.h>
+#include <unistd.h>
 #include <sys/sysinfo.h>
 
 #include "common.h"
@@ -55,96 +55,6 @@ static void unset_signals(struct common_params *params)
 		alarm(0);
 		signal(SIGALRM, SIG_DFL);
 	}
-}
-
-/*
- * getopt_auto - auto-generates optstring from long_options
- */
-int getopt_auto(int argc, char **argv, const struct option *long_opts)
-{
-	char opts[256];
-	int n = 0;
-
-	for (int i = 0; long_opts[i].name; i++) {
-		if (long_opts[i].val < 32 || long_opts[i].val > 127)
-			continue;
-
-		if (n + 4 >= sizeof(opts))
-			fatal("optstring buffer overflow");
-
-		opts[n++] = long_opts[i].val;
-
-		if (long_opts[i].has_arg == required_argument)
-			opts[n++] = ':';
-		else if (long_opts[i].has_arg == optional_argument) {
-			opts[n++] = ':';
-			opts[n++] = ':';
-		}
-	}
-
-	opts[n] = '\0';
-
-	return getopt_long(argc, argv, opts, long_opts, NULL);
-}
-
-/*
- * set_common_option - set common options
- *
- * @c: option character
- * @argc: argument count
- * @argv: argument vector
- * @common: common parameters structure
- *
- * Parse command line options that are common to all rtla tools.
- *
- * Returns: 1 if the option was set, 0 otherwise.
- */
-int set_common_option(int c, int argc, char **argv, struct common_params *common)
-{
-	struct trace_events *tevent;
-
-	switch (c) {
-	case 'c':
-		if (parse_cpu_set(optarg, &common->monitored_cpus))
-			fatal("Invalid -c cpu list");
-		common->cpus = optarg;
-		break;
-	case 'C':
-		common->cgroup = 1;
-		common->cgroup_name = parse_optional_arg(argc, argv);
-		break;
-	case 'D':
-		config_debug = 1;
-		break;
-	case 'd':
-		common->duration = parse_seconds_duration(optarg);
-		if (!common->duration)
-			fatal("Invalid -d duration");
-		break;
-	case 'e':
-		tevent = trace_event_alloc(optarg);
-		if (!tevent)
-			fatal("Error alloc trace event");
-
-		if (common->events)
-			tevent->next = common->events;
-		common->events = tevent;
-		break;
-	case 'H':
-		common->hk_cpus = 1;
-		if (parse_cpu_set(optarg, &common->hk_cpu_set))
-			fatal("Error parsing house keeping CPUs");
-		break;
-	case 'P':
-		if (parse_prio(optarg, &common->sched_param) == -1)
-			fatal("Invalid -P priority");
-		common->set_sched = 1;
-		break;
-	default:
-		return 0;
-	}
-
-	return 1;
 }
 
 /*

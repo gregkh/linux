@@ -124,16 +124,17 @@ static int tdfxfb_probe(struct pci_dev *pdev, const struct pci_device_id *id);
 static void tdfxfb_remove(struct pci_dev *pdev);
 
 static const struct pci_device_id tdfxfb_id_table[] = {
-	{ PCI_VENDOR_ID_3DFX, PCI_DEVICE_ID_3DFX_BANSHEE,
-	  PCI_ANY_ID, PCI_ANY_ID, PCI_BASE_CLASS_DISPLAY << 16,
-	  0xff0000, 0 },
-	{ PCI_VENDOR_ID_3DFX, PCI_DEVICE_ID_3DFX_VOODOO3,
-	  PCI_ANY_ID, PCI_ANY_ID, PCI_BASE_CLASS_DISPLAY << 16,
-	  0xff0000, 0 },
-	{ PCI_VENDOR_ID_3DFX, PCI_DEVICE_ID_3DFX_VOODOO5,
-	  PCI_ANY_ID, PCI_ANY_ID, PCI_BASE_CLASS_DISPLAY << 16,
-	  0xff0000, 0 },
-	{ 0, }
+	{
+		PCI_DEVICE(PCI_VENDOR_ID_3DFX, PCI_DEVICE_ID_3DFX_BANSHEE),
+		.class = PCI_BASE_CLASS_DISPLAY << 16, .class_mask = 0xff0000,
+	}, {
+		PCI_DEVICE(PCI_VENDOR_ID_3DFX, PCI_DEVICE_ID_3DFX_VOODOO3),
+		.class = PCI_BASE_CLASS_DISPLAY << 16, .class_mask = 0xff0000,
+	}, {
+		PCI_DEVICE(PCI_VENDOR_ID_3DFX, PCI_DEVICE_ID_3DFX_VOODOO5),
+		.class = PCI_BASE_CLASS_DISPLAY << 16, .class_mask = 0xff0000,
+	},
+	{ }
 };
 
 static struct pci_driver tdfxfb_driver = {

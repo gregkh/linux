@@ -343,7 +343,7 @@ int ntfs_index_entries_inconsistent(const struct ntfs_volume *vol,
 
 		if (le16_to_cpu(ie->length) < sizeof(struct index_entry_header)) {
 			ntfs_error(vol->sb,
-				   "Index etnry too small in inode %llu.",
+				   "Index entry too small in inode %llu.",
 				   inum);
 			return -EIO;
 		}

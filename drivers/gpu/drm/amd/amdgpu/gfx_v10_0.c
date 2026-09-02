@@ -7020,6 +7020,11 @@ static int gfx_v10_0_compute_mqd_init(struct amdgpu_device *adev, void *m,
 	tmp = REG_SET_FIELD(tmp, CP_HQD_IB_CONTROL, MIN_IB_AVAIL_SIZE, 3);
 	mqd->cp_hqd_ib_control = tmp;
 
+	tmp = REG_SET_FIELD(0, CP_HQD_QUANTUM, QUANTUM_EN, 1);
+	tmp = REG_SET_FIELD(tmp, CP_HQD_QUANTUM, QUANTUM_SCALE, 1);
+	tmp = REG_SET_FIELD(tmp, CP_HQD_QUANTUM, QUANTUM_DURATION, 1);
+	mqd->cp_hqd_quantum = tmp;
+
 	/* set static priority for a compute queue/ring */
 	mqd->cp_hqd_pipe_priority = prop->hqd_pipe_priority;
 	mqd->cp_hqd_queue_priority = prop->hqd_queue_priority;
@@ -7534,6 +7539,24 @@ static int gfx_v10_0_hw_init(struct amdgpu_ip_block *ip_block)
 	if (amdgpu_ip_version(adev, GC_HWIP, 0) >= IP_VERSION(10, 3, 0) && !amdgpu_sriov_vf(adev))
 		gfx_v10_3_set_power_brake_sequence(adev);
 
+	r = amdgpu_irq_get(adev, &adev->gfx.priv_reg_irq, 0);
+	if (r)
+		return r;
+
+	r = amdgpu_irq_get(adev, &adev->gfx.priv_inst_irq, 0);
+	if (r)
+		goto err_priv_inst;
+
+	r = amdgpu_irq_get(adev, &adev->gfx.bad_op_irq, 0);
+	if (r)
+		goto err_bad_op;
+
+	return 0;
+
+err_bad_op:
+	amdgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
+err_priv_inst:
+	amdgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
 	return r;
 }
 
@@ -7543,9 +7566,9 @@ static int gfx_v10_0_hw_fini(struct amdgpu_ip_block *ip_block)
 
 	cancel_delayed_work_sync(&adev->gfx.idle_work);
 
-	amdgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
-	amdgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
 	amdgpu_irq_put(adev, &adev->gfx.bad_op_irq, 0);
+	amdgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
+	amdgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
 
 	/* WA added for Vangogh asic fixing the SMU suspend failure
 	 * It needs to set power gating again during gfxoff control
@@ -7839,26 +7862,6 @@ static int gfx_v10_0_early_init(struct amdgpu_ip_block *ip_block)
 	gfx_v10_0_init_rlcg_reg_access_ctrl(adev);
 
 	return gfx_v10_0_init_microcode(adev);
-}
-
-static int gfx_v10_0_late_init(struct amdgpu_ip_block *ip_block)
-{
-	struct amdgpu_device *adev = ip_block->adev;
-	int r;
-
-	r = amdgpu_irq_get(adev, &adev->gfx.priv_reg_irq, 0);
-	if (r)
-		return r;
-
-	r = amdgpu_irq_get(adev, &adev->gfx.priv_inst_irq, 0);
-	if (r)
-		return r;
-
-	r = amdgpu_irq_get(adev, &adev->gfx.bad_op_irq, 0);
-	if (r)
-		return r;
-
-	return 0;
 }
 
 static bool gfx_v10_0_is_rlc_enabled(struct amdgpu_device *adev)
@@ -9806,7 +9809,6 @@ static void gfx_v10_0_ring_end_use(struct amdgpu_ring *ring)
 static const struct amd_ip_funcs gfx_v10_0_ip_funcs = {
 	.name = "gfx_v10_0",
 	.early_init = gfx_v10_0_early_init,
-	.late_init = gfx_v10_0_late_init,
 	.sw_init = gfx_v10_0_sw_init,
 	.sw_fini = gfx_v10_0_sw_fini,
 	.hw_init = gfx_v10_0_hw_init,

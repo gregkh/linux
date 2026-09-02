@@ -4070,7 +4070,7 @@
 			d-cache-sets = <256>;
 		};
 
-		cpu1: cpu@1 {
+		cpu1: cpu@10000 {
 			compatible = "arm,neoverse-v3ae";
 			device_type = "cpu";
 			reg = <0x10000>;

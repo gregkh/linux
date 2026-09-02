@@ -968,6 +968,29 @@ int pwrseq_power_off(struct pwrseq_desc *desc)
 }
 EXPORT_SYMBOL_GPL(pwrseq_power_off);
 
+/**
+ * pwrseq_to_device() - Get the pwrseq device pointer from a descriptor.
+ * @desc: Descriptor referencing the power sequencer.
+ *
+ * Return the 'dev' pointer of the power sequencer device associated with @desc.
+ * Consumer drivers can use this to query the pwrseq provider's device tree
+ * node, for example to check for the existence of specific properties.
+ *
+ * Since pwrseq_get() already takes a reference to the pwrseq device, this
+ * function does not take an additional reference.
+ *
+ * Returns:
+ * Pointer to the pwrseq struct device, or NULL if @desc is NULL.
+ */
+struct device *pwrseq_to_device(struct pwrseq_desc *desc)
+{
+	if (!desc)
+		return NULL;
+
+	return &desc->pwrseq->dev;
+}
+EXPORT_SYMBOL_GPL(pwrseq_to_device);
+
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 
 struct pwrseq_debugfs_count_ctx {
@@ -1048,7 +1071,7 @@ static int pwrseq_debugfs_seq_show(struct seq_file *seq, void *data)
 	struct pwrseq_target *target;
 	struct pwrseq_unit *unit;
 
-	seq_printf(seq, "%s:\n", dev_name(dev));
+	seq_printf(seq, "%s (%s):\n", dev_name(dev), dev_name(dev->parent));
 
 	seq_puts(seq, "  targets:\n");
 	list_for_each_entry(target, &pwrseq->targets, list)

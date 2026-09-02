@@ -15,7 +15,6 @@
 #include <linux/jiffies.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -550,7 +549,7 @@ static int atcspi_probe(struct platform_device *pdev)
 	struct resource *mem_res;
 	int ret;
 
-	host = spi_alloc_host(&pdev->dev, sizeof(*spi));
+	host = devm_spi_alloc_host(&pdev->dev, sizeof(*spi));
 	if (!host)
 		return -ENOMEM;
 
@@ -559,21 +558,23 @@ static int atcspi_probe(struct platform_device *pdev)
 	spi->dev = &pdev->dev;
 	dev_set_drvdata(&pdev->dev, host);
 
-	mutex_init(&spi->mutex_lock);
+	ret = devm_mutex_init(&pdev->dev, &spi->mutex_lock);
+	if (ret)
+		return ret;
 
 	ret = atcspi_init_resources(pdev, spi, &mem_res);
 	if (ret)
-		goto free_controller;
+		return ret;
 
 	ret = atcspi_enable_clk(spi);
 	if (ret)
-		goto free_controller;
+		return ret;
 
 	atcspi_init_controller(pdev, spi, host, mem_res);
 
 	ret = atcspi_setup(spi);
 	if (ret)
-		goto free_controller;
+		return ret;
 
 	spi->use_dma = false;
 	if (ATCSPI_DMA_SUPPORT) {
@@ -586,18 +587,11 @@ static int atcspi_probe(struct platform_device *pdev)
 	}
 
 	ret = devm_spi_register_controller(&pdev->dev, host);
-	if (ret) {
-		dev_err_probe(spi->dev, ret,
-			      "Failed to register SPI controller\n");
-		goto free_controller;
-	}
+	if (ret)
+		return dev_err_probe(spi->dev, ret,
+				     "Failed to register SPI controller\n");
 
 	return 0;
-
-free_controller:
-	mutex_destroy(&spi->mutex_lock);
-	spi_controller_put(host);
-	return ret;
 }
 
 static int atcspi_suspend(struct device *dev)

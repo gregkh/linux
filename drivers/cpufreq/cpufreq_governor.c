@@ -112,7 +112,7 @@ void gov_update_cpu_data(struct dbs_data *dbs_data)
 
 			j_cdbs->prev_cpu_idle = get_cpu_idle_time(j, &j_cdbs->prev_update_time,
 								  dbs_data->io_is_busy);
-			j_cdbs->prev_cpu_nice = kcpustat_field(&kcpustat_cpu(j), CPUTIME_NICE, j);
+			j_cdbs->prev_cpu_nice = kcpustat_field(CPUTIME_NICE, j);
 		}
 		mutex_unlock(&policy_dbs->update_mutex);
 	}
@@ -180,7 +180,7 @@ unsigned int dbs_update(struct cpufreq_policy *policy)
 		 * stale-baseline spike (the delta will be at most one sampling
 		 * interval of accumulated nice time, not since boot).
 		 */
-		cur_nice = kcpustat_field(&kcpustat_cpu(j), CPUTIME_NICE, j);
+		cur_nice = kcpustat_field(CPUTIME_NICE, j);
 		if (ignore_nice)
 			idle_time += div_u64(cur_nice - j_cdbs->prev_cpu_nice, NSEC_PER_USEC);
 
@@ -552,7 +552,7 @@ int cpufreq_dbs_governor_start(struct cpufreq_policy *policy)
 		 * Make the first invocation of dbs_update() compute the load.
 		 */
 		j_cdbs->prev_load = 0;
-		j_cdbs->prev_cpu_nice = kcpustat_field(&kcpustat_cpu(j), CPUTIME_NICE, j);
+		j_cdbs->prev_cpu_nice = kcpustat_field(CPUTIME_NICE, j);
 	}
 	mutex_unlock(&policy_dbs->update_mutex);
 

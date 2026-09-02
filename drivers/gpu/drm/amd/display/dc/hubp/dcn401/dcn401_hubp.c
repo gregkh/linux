@@ -63,10 +63,10 @@ void hubp401_enable_3dlut_fl(struct hubp *hubp, bool enable)
 	REG_UPDATE(HUBP_3DLUT_CONTROL, HUBP_3DLUT_ENABLE, enable ? 1 : 0);
 }
 
-int hubp401_get_3dlut_fl_done(struct hubp *hubp)
+uint32_t hubp401_get_3dlut_fl_done(struct hubp *hubp)
 {
 	struct dcn20_hubp *hubp2 = TO_DCN20_HUBP(hubp);
-	int ret;
+	uint32_t ret;
 
 	REG_GET(HUBP_3DLUT_CONTROL, HUBP_3DLUT_DONE, &ret);
 	return ret;

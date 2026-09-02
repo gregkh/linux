@@ -7,7 +7,6 @@
 
 #include <net/sock.h>
 #include <net/tcp.h>
-#include <net/tls.h>
 #include <trace/events/sock.h>
 
 static bool sk_msg_try_coalesce_ok(struct sk_msg *msg, int elem_first_coalesce)
@@ -994,41 +993,6 @@ static int sk_psock_skb_redirect(struct sk_psock *from, struct sk_buff *skb)
 	return 0;
 }
 
-static void sk_psock_tls_verdict_apply(struct sk_buff *skb,
-				       struct sk_psock *from, int verdict)
-{
-	switch (verdict) {
-	case __SK_REDIRECT:
-		sk_psock_skb_redirect(from, skb);
-		break;
-	case __SK_PASS:
-	case __SK_DROP:
-	default:
-		break;
-	}
-}
-
-int sk_psock_tls_strp_read(struct sk_psock *psock, struct sk_buff *skb)
-{
-	struct bpf_prog *prog;
-	int ret = __SK_PASS;
-
-	rcu_read_lock();
-	prog = READ_ONCE(psock->progs.stream_verdict);
-	if (likely(prog)) {
-		skb->sk = psock->sk;
-		skb_dst_drop(skb);
-		skb_bpf_redirect_clear(skb);
-		ret = bpf_prog_run_pin_on_cpu(prog, skb);
-		ret = sk_psock_map_verd(ret, skb_bpf_redirect_fetch(skb));
-		skb->sk = NULL;
-	}
-	sk_psock_tls_verdict_apply(skb, psock, ret);
-	rcu_read_unlock();
-	return ret;
-}
-EXPORT_SYMBOL_GPL(sk_psock_tls_strp_read);
-
 static int sk_psock_verdict_apply(struct sk_psock *psock, struct sk_buff *skb,
 				  int verdict)
 {
@@ -1169,13 +1133,9 @@ static void sk_psock_strp_data_ready(struct sock *sk)
 	rcu_read_lock();
 	psock = sk_psock(sk);
 	if (likely(psock)) {
-		if (tls_sw_has_ctx_rx(sk)) {
-			psock->saved_data_ready(sk);
-		} else {
-			read_lock_bh(&sk->sk_callback_lock);
-			strp_data_ready(&psock->strp);
-			read_unlock_bh(&sk->sk_callback_lock);
-		}
+		read_lock_bh(&sk->sk_callback_lock);
+		strp_data_ready(&psock->strp);
+		read_unlock_bh(&sk->sk_callback_lock);
 	}
 	rcu_read_unlock();
 }
@@ -1277,12 +1237,6 @@ static void sk_psock_verdict_data_ready(struct sock *sk)
 	trace_sk_data_ready(sk);
 
 	rcu_read_lock();
-	psock = sk_psock(sk);
-	if (psock && tls_sw_has_ctx_rx(sk)) {
-		psock->saved_data_ready(sk);
-		rcu_read_unlock();
-		return;
-	}
 	sock = READ_ONCE(sk->sk_socket);
 	if (likely(sock))
 		ops = READ_ONCE(sock->ops);

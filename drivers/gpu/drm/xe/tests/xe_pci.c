@@ -130,12 +130,12 @@ static const char *subplatform_prefix(enum xe_subplatform s)
 	return s == XE_SUBPLATFORM_NONE ? "" : " ";
 }
 
-static const char *step_prefix(enum xe_step step)
+static const char *step_prefix(enum intel_step step)
 {
 	return step == STEP_NONE ? "" : " ";
 }
 
-static const char *step_name(enum xe_step step)
+static const char *step_name(enum intel_step step)
 {
 	return step == STEP_NONE ? "" : xe_step_name(step);
 }

@@ -215,7 +215,7 @@ int btrfs_read_extent_buffer(struct extent_buffer *eb,
 			     const struct btrfs_tree_parent_check *check)
 {
 	struct btrfs_fs_info *fs_info = eb->fs_info;
-	int failed = 0;
+	bool failed = false;
 	int ret;
 	int num_copies = 0;
 	int mirror_num = 0;
@@ -234,7 +234,7 @@ int btrfs_read_extent_buffer(struct extent_buffer *eb,
 			break;
 
 		if (!failed_mirror) {
-			failed = 1;
+			failed = true;
 			failed_mirror = eb->read_mirror;
 		}
 
@@ -491,10 +491,34 @@ static bool btree_release_folio(struct folio *folio, gfp_t gfp_flags)
 static void btree_invalidate_folio(struct folio *folio, size_t offset,
 				 size_t length)
 {
-	struct extent_io_tree *tree;
+	struct extent_io_tree *tree = &folio_to_inode(folio)->io_tree;
+	struct extent_state *cached_state = NULL;
+	const u64 start = folio_pos(folio);
+	const u64 end = folio_next_pos(folio) - 1;
 
-	tree = &folio_to_inode(folio)->io_tree;
-	extent_invalidate_folio(tree, folio, offset);
+	/*
+	 * The range must cover the full @folio.
+	 * Btree inode is never exposed to regular file operations, thus there
+	 * is no partial truncation.
+	 * The folio is only invalidated when the btree inode is evicted.
+	 */
+	ASSERT(offset == 0, "folio=%llu offset=%zu", folio_pos(folio), offset);
+	ASSERT(length == folio_size(folio), "folio=%llu folio_size=%zu length=%zu",
+	       folio_pos(folio), folio_size(folio), length);
+
+	/* This function is only called for the btree inode */
+	ASSERT(tree->owner == IO_TREE_BTREE_INODE_IO);
+
+	btrfs_lock_extent(tree, start, end, &cached_state);
+	folio_wait_writeback(folio);
+
+	/*
+	 * Currently for btree io tree, only EXTENT_LOCKED is utilized,
+	 * so here we only need to unlock the extent range to free any
+	 * existing extent state.
+	 */
+	btrfs_unlock_extent(tree, start, end, &cached_state);
+
 	btree_release_folio(folio, GFP_NOFS);
 	if (folio_get_private(folio)) {
 		btrfs_warn(folio_to_fs_info(folio),
@@ -539,7 +563,7 @@ static bool btree_dirty_folio(struct address_space *mapping,
 			continue;
 		}
 		spin_unlock_irqrestore(&subpage->lock, flags);
-		cur = page_start + cur_bit * fs_info->sectorsize;
+		cur = page_start + (cur_bit << fs_info->sectorsize_bits);
 
 		eb = find_extent_buffer(fs_info, cur);
 		ASSERT(eb);
@@ -1736,7 +1760,8 @@ static int read_backup_root(struct btrfs_fs_info *fs_info, u8 priority)
 /* helper to cleanup workers */
 static void btrfs_stop_all_workers(struct btrfs_fs_info *fs_info)
 {
-	btrfs_destroy_workqueue(fs_info->fixup_workers);
+	if (fs_info->fixup_workers)
+		destroy_workqueue(fs_info->fixup_workers);
 	btrfs_destroy_workqueue(fs_info->delalloc_workers);
 	btrfs_destroy_workqueue(fs_info->workers);
 	if (fs_info->endio_workers)
@@ -1945,7 +1970,7 @@ static int btrfs_init_workqueues(struct btrfs_fs_info *fs_info)
 		btrfs_alloc_workqueue(fs_info, "cache", flags, max_active, 0);
 
 	fs_info->fixup_workers =
-		btrfs_alloc_ordered_workqueue(fs_info, "fixup", ordered_flags);
+		alloc_ordered_workqueue("btrfs-fixup", ordered_flags);
 
 	fs_info->endio_workers =
 		alloc_workqueue("btrfs-endio", flags, max_active);
@@ -2776,6 +2801,7 @@ void btrfs_init_fs_info(struct btrfs_fs_info *fs_info)
 	mutex_init(&fs_info->unused_bg_unpin_mutex);
 	mutex_init(&fs_info->reclaim_bgs_lock);
 	mutex_init(&fs_info->reloc_mutex);
+	spin_lock_init(&fs_info->reloc_ctl_lock);
 	mutex_init(&fs_info->delalloc_root_mutex);
 	mutex_init(&fs_info->zoned_meta_io_lock);
 	mutex_init(&fs_info->zoned_data_reloc_io_lock);
@@ -3316,6 +3342,15 @@ static void invalidate_and_check_btree_folios(struct btrfs_fs_info *fs_info)
 	invalidate_inode_pages2(fs_info->btree_inode->i_mapping);
 }
 
+static u32 calc_block_max_order(u32 sectorsize_bits)
+{
+	u32 max_size;
+
+	max_size = min(BTRFS_MAX_BLOCKS_PER_FOLIO << sectorsize_bits,
+		       BTRFS_MAX_FOLIO_SIZE);
+	return ilog2(round_up(max_size, PAGE_SIZE) >> PAGE_SHIFT);
+}
+
 int __cold open_ctree(struct super_block *sb, struct btrfs_fs_devices *fs_devices)
 {
 	u32 sectorsize;
@@ -3438,7 +3473,15 @@ int __cold open_ctree(struct super_block *sb, struct btrfs_fs_devices *fs_device
 	fs_info->sectorsize = sectorsize;
 	fs_info->sectorsize_bits = ilog2(sectorsize);
 	fs_info->block_min_order = ilog2(round_up(sectorsize, PAGE_SIZE) >> PAGE_SHIFT);
-	fs_info->block_max_order = ilog2((BITS_PER_LONG << fs_info->sectorsize_bits) >> PAGE_SHIFT);
+	/*
+	 * For HIGHMEM, a large folio cannot be mapped in one go, breaking a lot
+	 * of basic assumptions for btrfs IOs.
+	 * Disable large folios for such 32-bit systems.
+	 */
+	if (IS_ENABLED(CONFIG_HIGHMEM))
+		fs_info->block_max_order = fs_info->block_min_order;
+	else
+		fs_info->block_max_order = calc_block_max_order(fs_info->sectorsize_bits);
 	fs_info->csums_per_leaf = BTRFS_MAX_ITEM_SIZE(fs_info) / fs_info->csum_size;
 	fs_info->stripesize = stripesize;
 	fs_info->fs_devices->fs_info = fs_info;
@@ -3491,7 +3534,16 @@ int __cold open_ctree(struct super_block *sb, struct btrfs_fs_devices *fs_device
 	/* Update the values for the current filesystem. */
 	sb->s_blocksize = sectorsize;
 	sb->s_blocksize_bits = blksize_bits(sectorsize);
-	memcpy(&sb->s_uuid, fs_info->fs_devices->fsid, BTRFS_FSID_SIZE);
+	/*
+	 * When temp_fsid is active, fs_devices->fsid is assigned a random UUID
+	 * at mount. This inconsistent UUID causes issues for layered filesystems
+	 * like OverlayFS. Since metadata_uuid may or may not be set, provide the
+	 * on-disk UUID directly from the super_copy.
+	 */
+	if (fs_info->fs_devices->temp_fsid)
+		memcpy(&sb->s_uuid, fs_info->super_copy->fsid, BTRFS_FSID_SIZE);
+	else
+		memcpy(&sb->s_uuid, fs_info->fs_devices->fsid, BTRFS_FSID_SIZE);
 
 	mutex_lock(&fs_info->chunk_mutex);
 	ret = btrfs_read_sys_array(fs_info);
@@ -3629,6 +3681,13 @@ int __cold open_ctree(struct super_block *sb, struct btrfs_fs_devices *fs_device
 			btrfs_err(fs_info, "failed to populate fully_remapped_bgs list: %d", ret);
 			goto fail_sysfs;
 		}
+	}
+
+	ret = btrfs_init_writeback_bio_size(fs_info);
+	if (ret) {
+		btrfs_err(fs_info, "failed to get optimum writeback size: %d",
+			  ret);
+		goto fail_sysfs;
 	}
 
 	btrfs_free_zone_cache(fs_info);
@@ -4249,7 +4308,6 @@ static void warn_about_uncommitted_trans(struct btrfs_fs_info *fs_info)
 		list_del_init(&trans->list);
 
 		btrfs_put_transaction(trans);
-		trace_btrfs_transaction_commit(fs_info);
 	}
 	ASSERT(!found);
 }
@@ -4312,6 +4370,18 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 	btrfs_cleanup_defrag_inodes(fs_info);
 
 	/*
+	 * Before the unmount, we sync down all the writeback which can
+	 * generate fixup work. We are about to run delalloc for autodefrag so
+	 * piggy back on that by also flushing the fixup work which can also
+	 * generate delalloc we would like to get run.
+	 *
+	 * After this, it is still possible that some thread doing writeback is
+	 * in btrfs_queue_writepage_fixup() and might finish queueing some final
+	 * work, racing the btrfs_fs_closing() check there.
+	 */
+	flush_workqueue(fs_info->fixup_workers);
+
+	/*
 	 * Handle the error fs first, as it will flush and wait for all ordered
 	 * extents.  This will generate delayed iputs, thus we want to handle
 	 * it first.
@@ -4319,16 +4389,6 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 	if (unlikely(BTRFS_FS_ERROR(fs_info)))
 		btrfs_error_commit_super(fs_info);
 
-	/*
-	 * Wait for any fixup workers to complete.
-	 * If we don't wait for them here and they are still running by the time
-	 * we call kthread_stop() against the cleaner kthread further below, we
-	 * get an use-after-free on the cleaner because the fixup worker adds an
-	 * inode to the list of delayed iputs and then attempts to wakeup the
-	 * cleaner kthread, which was already stopped and destroyed. We parked
-	 * already the cleaner, but below we run all pending delayed iputs.
-	 */
-	btrfs_flush_workqueue(fs_info->fixup_workers);
 	/*
 	 * Similar case here, we have to wait for delalloc workers before we
 	 * proceed below and stop the cleaner kthread, otherwise we trigger a
@@ -4399,6 +4459,15 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 	cancel_work_sync(&fs_info->em_shrinker_work);
 
 	/*
+	 * Reclaim workers can run writeback which can queue fixup.
+	 * After the above cancel_work_sync() calls, any such queueing attempts are
+	 * guaranteed to see btrfs_fs_closing(), so at this point we can genuinely fully
+	 * flush the fixup workqueue. This relies on the belief that *now* no thread can
+	 * still be sitting in btrfs_queue_writepage_fixup().
+	 */
+	flush_workqueue(fs_info->fixup_workers);
+
+	/*
 	 * Run delayed iputs again because an async reclaim worker may have
 	 * added new ones if it was flushing delalloc:
 	 *
@@ -4452,7 +4521,7 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 	ASSERT(list_empty(&fs_info->delayed_iputs));
 	set_bit(BTRFS_FS_CLOSING_DONE, &fs_info->flags);
 
-	if (btrfs_check_quota_leak(fs_info)) {
+	if (unlikely(btrfs_check_quota_leak(fs_info))) {
 		DEBUG_WARN("qgroup reserved space leaked");
 		btrfs_err(fs_info, "qgroup reserved space leaked");
 	}
@@ -4921,7 +4990,6 @@ static int btrfs_cleanup_transaction(struct btrfs_fs_info *fs_info)
 		spin_unlock(&fs_info->trans_lock);
 
 		btrfs_put_transaction(t);
-		trace_btrfs_transaction_commit(fs_info);
 		spin_lock(&fs_info->trans_lock);
 	}
 	spin_unlock(&fs_info->trans_lock);

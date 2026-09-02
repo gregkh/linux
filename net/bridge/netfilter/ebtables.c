@@ -2493,6 +2493,8 @@ static int do_ebt_get_ctl(struct sock *sk, int cmd, void __user *user, int *len)
 
 	if (!ns_capable(net->user_ns, CAP_NET_ADMIN))
 		return -EPERM;
+	if (!xt_compat_check())
+		return -EPERM;
 
 #ifdef CONFIG_NETFILTER_XTABLES_COMPAT
 	/* try real handler in case userland supplied needed padding */
@@ -2557,6 +2559,8 @@ static int do_ebt_set_ctl(struct sock *sk, int cmd, sockptr_t arg,
 	int ret;
 
 	if (!ns_capable(net->user_ns, CAP_NET_ADMIN))
+		return -EPERM;
+	if (!xt_compat_check())
 		return -EPERM;
 
 	switch (cmd) {

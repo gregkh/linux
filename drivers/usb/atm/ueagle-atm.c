@@ -1560,10 +1560,8 @@ static void cmvs_file_name(struct uea_softc *sc, char *const cmv_name, int ver)
 	} else
 		file = cmv_file[sc->modem_index];
 
-	strcpy(cmv_name, FW_DIR);
-	strlcat(cmv_name, file, UEA_FW_NAME_MAX);
-	if (ver == 2)
-		strlcat(cmv_name, ".v2", UEA_FW_NAME_MAX);
+	snprintf(cmv_name, UEA_FW_NAME_MAX, FW_DIR "%s%s",
+		 file, ver == 2 ? ".v2" : "");
 	kernel_param_unlock(THIS_MODULE);
 }
 

@@ -978,7 +978,7 @@ again:
 	if (ret > 0)
 		written = ret;
 
-	if (iov_iter_count(from) > 0 && (ret == -EFAULT || ret > 0)) {
+	if (iov_iter_count(from) > 0 && (ret == -EFAULT || ret >= 0)) {
 		const size_t left = iov_iter_count(from);
 		/*
 		 * We have more data left to write. Try to fault in as many as

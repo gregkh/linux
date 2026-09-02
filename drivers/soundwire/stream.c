@@ -10,7 +10,6 @@
 #include <linux/init.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/slab.h>
 #include <linux/soundwire/sdw_registers.h>
 #include <linux/soundwire/sdw.h>
@@ -2236,11 +2235,15 @@ EXPORT_SYMBOL(sdw_stream_add_slave);
  * @slave: SDW Slave instance
  * @stream: SoundWire stream
  *
- * This removes and frees port_rt and slave_rt from a stream
+ * This removes and frees port_rt and slave_rt from a stream.
+ * If stream is NULL or an ERR_PTR, do nothing and return 0.
  */
 int sdw_stream_remove_slave(struct sdw_slave *slave,
 			    struct sdw_stream_runtime *stream)
 {
+	if (IS_ERR_OR_NULL(stream))
+		return 0;
+
 	mutex_lock(&slave->bus->bus_lock);
 
 	sdw_slave_port_free(slave, stream);

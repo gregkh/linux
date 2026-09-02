@@ -551,14 +551,8 @@ int netfs_writepages(struct address_space *mapping,
 	struct folio *folio;
 	int error = 0;
 
-	if (!mutex_trylock(&ictx->wb_lock)) {
-		if (wbc->sync_mode == WB_SYNC_NONE) {
-			netfs_stat(&netfs_n_wb_lock_skip);
-			return 0;
-		}
-		netfs_stat(&netfs_n_wb_lock_wait);
-		mutex_lock(&ictx->wb_lock);
-	}
+	if (!netfs_wb_begin(ictx, wbc->sync_mode == WB_SYNC_NONE))
+		return 0;
 
 	/* Need the first folio to be able to set up the op. */
 	folio = writeback_iter(mapping, wbc, NULL, &error);
@@ -595,8 +589,6 @@ int netfs_writepages(struct address_space *mapping,
 	} while ((folio = writeback_iter(mapping, wbc, folio, &error)));
 
 	netfs_end_issue_write(wreq);
-
-	mutex_unlock(&ictx->wb_lock);
 	netfs_wake_collector(wreq);
 
 	netfs_put_request(wreq, netfs_rreq_trace_put_return);
@@ -613,7 +605,7 @@ couldnt_start:
 		netfs_kill_dirty_pages(mapping, wbc, folio);
 	}
 out:
-	mutex_unlock(&ictx->wb_lock);
+	netfs_wb_end(ictx);
 	_leave(" = %d", error);
 	return error;
 }
@@ -627,12 +619,12 @@ struct netfs_io_request *netfs_begin_writethrough(struct kiocb *iocb, size_t len
 	struct netfs_io_request *wreq = NULL;
 	struct netfs_inode *ictx = netfs_inode(file_inode(iocb->ki_filp));
 
-	mutex_lock(&ictx->wb_lock);
+	netfs_wb_begin(ictx, false);
 
 	wreq = netfs_create_write_req(iocb->ki_filp->f_mapping, iocb->ki_filp,
 				      iocb->ki_pos, NETFS_WRITETHROUGH);
 	if (IS_ERR(wreq)) {
-		mutex_unlock(&ictx->wb_lock);
+		netfs_wb_end(ictx);
 		return wreq;
 	}
 
@@ -695,7 +687,6 @@ int netfs_advance_writethrough(struct netfs_io_request *wreq, struct writeback_c
 ssize_t netfs_end_writethrough(struct netfs_io_request *wreq, struct writeback_control *wbc,
 			       struct folio *writethrough_cache)
 {
-	struct netfs_inode *ictx = netfs_inode(wreq->inode);
 	ssize_t ret;
 
 	_enter("R=%x", wreq->debug_id);
@@ -708,8 +699,6 @@ ssize_t netfs_end_writethrough(struct netfs_io_request *wreq, struct writeback_c
 	}
 
 	netfs_end_issue_write(wreq);
-
-	mutex_unlock(&ictx->wb_lock);
 
 	if (wreq->iocb)
 		ret = -EIOCBQUEUED;
@@ -862,15 +851,10 @@ int netfs_writeback_single(struct address_space *mapping,
 	if (WARN_ON_ONCE(!iov_iter_is_folioq(iter)))
 		return -EIO;
 
-	if (!mutex_trylock(&ictx->wb_lock)) {
-		if (wbc->sync_mode == WB_SYNC_NONE) {
-			/* The VFS will have undirtied the inode. */
-			netfs_single_mark_inode_dirty(&ictx->inode);
-			netfs_stat(&netfs_n_wb_lock_skip);
-			return 1;
-		}
-		netfs_stat(&netfs_n_wb_lock_wait);
-		mutex_lock(&ictx->wb_lock);
+	if (!netfs_wb_begin(ictx, wbc->sync_mode == WB_SYNC_NONE)) {
+		/* The VFS will have undirtied the inode. */
+		netfs_single_mark_inode_dirty(&ictx->inode);
+		return 1;
 	}
 
 	wreq = netfs_create_write_req(mapping, NULL, 0, NETFS_WRITEBACK_SINGLE);
@@ -908,7 +892,6 @@ stop:
 	smp_wmb(); /* Write lists before ALL_QUEUED. */
 	set_bit(NETFS_RREQ_ALL_QUEUED, &wreq->flags);
 
-	mutex_unlock(&ictx->wb_lock);
 	netfs_wake_collector(wreq);
 
 	netfs_put_request(wreq, netfs_rreq_trace_put_return);
@@ -916,7 +899,7 @@ stop:
 	return ret;
 
 couldnt_start:
-	mutex_unlock(&ictx->wb_lock);
+	netfs_wb_end(ictx);
 	_leave(" = %d", ret);
 	return ret;
 }

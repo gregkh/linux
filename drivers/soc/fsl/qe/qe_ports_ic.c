@@ -118,7 +118,7 @@ static int qepic_probe(struct platform_device *pdev)
 	if (data->irq < 0)
 		return data->irq;
 
-	data->host = irq_domain_add_linear(dev->of_node, 32, &qepic_host_ops, data);
+	data->host = irq_domain_create_linear(dev_fwnode(dev), 32, &qepic_host_ops, data);
 	if (!data->host)
 		return -ENODEV;
 

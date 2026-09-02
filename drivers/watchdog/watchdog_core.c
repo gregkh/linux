@@ -55,9 +55,9 @@ MODULE_PARM_DESC(stop_on_reboot, "Stop watchdogs on reboot (0=keep watching, 1=s
  * for example when it's impossible to disable it. To do so,
  * raising the initcall level of the watchdog driver is a solution.
  * But in such case, the miscdev is maybe not ready (subsys_initcall), and
- * watchdog_core need miscdev to register the watchdog as a char device.
+ * watchdog_core needs miscdev to register the watchdog as a char device.
  *
- * The deferred registration infrastructure offer a way for the watchdog
+ * The deferred registration infrastructure offers a way for the watchdog
  * subsystem to register a watchdog properly, even before miscdev is ready.
  */
 
@@ -222,11 +222,11 @@ static int watchdog_pm_notifier(struct notifier_block *nb, unsigned long mode,
  * watchdog_set_restart_priority - Change priority of restart handler
  * @wdd: watchdog device
  * @priority: priority of the restart handler, should follow these guidelines:
- *   0:   use watchdog's restart function as last resort, has limited restart
- *        capabilies
- *   128: default restart handler, use if no other handler is expected to be
+ * * 0:   use watchdog's restart function as last resort, has limited restart
+ *        capabilities
+ * * 128: default restart handler, use if no other handler is expected to be
  *        available and/or if restart is sufficient to restart the entire system
- *   255: preempt all other handlers
+ * * 255: preempt all other handlers
  *
  * If a wdd->ops->restart function is provided when watchdog_register_device is
  * called, it will be registered as a restart handler with the priority given

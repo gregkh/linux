@@ -692,9 +692,9 @@ static inline void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *b
 			  TLBF_NOWALKCACHE | TLBF_NOSYNC);
 }
 
-static inline bool __pte_flags_need_flush(ptdesc_t oldval, ptdesc_t newval)
+static inline bool __pte_flags_need_flush(ptval_t oldval, ptval_t newval)
 {
-	ptdesc_t diff = oldval ^ newval;
+	ptval_t diff = oldval ^ newval;
 
 	/* invalid to valid transition requires no flush */
 	if (!(oldval & PTE_VALID))

@@ -131,7 +131,7 @@ static __be32 nlm_do_fopen(struct svc_rqst *rqstp,
  */
 __be32
 nlm_lookup_file(struct svc_rqst *rqstp, struct nlm_file **result,
-		struct nlm_lock *lock, int mode)
+		struct lockd_lock *lock, int mode)
 {
 	struct nlm_file	*file;
 	unsigned int	hash;

@@ -65,11 +65,9 @@ static unsigned int seedsize(struct crypto_alg *alg)
 static int __maybe_unused crypto_rng_report(
 	struct sk_buff *skb, struct crypto_alg *alg)
 {
-	struct crypto_report_rng rrng;
-
-	memset(&rrng, 0, sizeof(rrng));
-
-	strscpy(rrng.type, "rng", sizeof(rrng.type));
+	struct crypto_report_rng rrng = {
+		.type = "rng",
+	};
 
 	rrng.seedsize = seedsize(alg);
 

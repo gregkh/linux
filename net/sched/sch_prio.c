@@ -85,7 +85,7 @@ prio_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
 
 	ret = qdisc_enqueue(skb, qdisc, to_free);
 	if (ret == NET_XMIT_SUCCESS) {
-		sch->qstats.backlog += len;
+		qstats_backlog_add(sch, len);
 		qdisc_qlen_inc(sch);
 		return NET_XMIT_SUCCESS;
 	}

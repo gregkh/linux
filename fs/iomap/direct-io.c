@@ -69,7 +69,7 @@ static void iomap_dio_submit_bio(const struct iomap_iter *iter,
 
 	/* Sync dio can't be polled reliably */
 	if ((iocb->ki_flags & IOCB_HIPRI) && !is_sync_kiocb(iocb)) {
-		bio_set_polled(bio, iocb);
+		bio->bi_opf |= REQ_POLLED;
 		WRITE_ONCE(iocb->private, bio);
 	}
 
@@ -606,9 +606,6 @@ static int iomap_dio_inline_iter(struct iomap_iter *iomi, struct iomap_dio *dio)
 	u64 copied;
 
 	if (WARN_ON_ONCE(!inline_data))
-		return -EIO;
-
-	if (WARN_ON_ONCE(!iomap_inline_data_valid(iomap)))
 		return -EIO;
 
 	if (dio->flags & IOMAP_DIO_WRITE) {

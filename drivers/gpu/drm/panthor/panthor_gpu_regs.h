@@ -31,10 +31,6 @@
 #define GPU_CSF_ID					0x1C
 
 #define GPU_INT_BASE					0x20
-#define GPU_INT_RAWSTAT					0x20
-#define GPU_INT_CLEAR					0x24
-#define GPU_INT_MASK					0x28
-#define GPU_INT_STAT					0x2c
 #define   GPU_IRQ_FAULT					BIT(0)
 #define   GPU_IRQ_PROTM_FAULT				BIT(1)
 #define   GPU_IRQ_RESET_COMPLETED			BIT(8)

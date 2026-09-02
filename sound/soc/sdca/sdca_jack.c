@@ -41,25 +41,11 @@ int sdca_jack_process(struct sdca_interrupt *interrupt)
 	struct jack_state *state = interrupt->priv;
 	struct snd_kcontrol *kctl = state->kctl;
 	struct snd_ctl_elem_value *ucontrol __free(kfree) = NULL;
+	struct soc_enum *soc_enum;
 	unsigned int reg, val;
 	int ret;
 
 	guard(rwsem_write)(rwsem);
-
-	if (!kctl) {
-		const char *name __free(kfree) = kasprintf(GFP_KERNEL, "%s %s",
-							   interrupt->entity->label,
-							   SDCA_CTL_SELECTED_MODE_NAME);
-
-		if (!name)
-			return -ENOMEM;
-
-		kctl = snd_soc_component_get_kcontrol(component, name);
-		if (!kctl)
-			dev_dbg(dev, "control not found: %s\n", name);
-		else
-			state->kctl = kctl;
-	}
 
 	reg = SDW_SDCA_CTL(interrupt->function->desc->adr, interrupt->entity->id,
 			   interrupt->control->sel, 0);
@@ -96,29 +82,20 @@ int sdca_jack_process(struct sdca_interrupt *interrupt)
 
 	dev_dbg(dev, "%s: %#x\n", interrupt->name, val);
 
-	if (kctl) {
-		struct soc_enum *soc_enum = (struct soc_enum *)kctl->private_value;
+	ucontrol = kzalloc_obj(*ucontrol);
+	if (!ucontrol)
+		return -ENOMEM;
 
-		ucontrol = kzalloc_obj(*ucontrol);
-		if (!ucontrol)
-			return -ENOMEM;
+	soc_enum = (struct soc_enum *)kctl->private_value;
+	ucontrol->value.enumerated.item[0] = snd_soc_enum_val_to_item(soc_enum, val);
 
-		ucontrol->value.enumerated.item[0] = snd_soc_enum_val_to_item(soc_enum, val);
-
-		ret = snd_soc_dapm_put_enum_double(kctl, ucontrol);
-		if (ret < 0) {
-			dev_err(dev, "failed to update selected mode: %d\n", ret);
-			return ret;
-		}
-
-		snd_ctl_notify(card->snd_card, SNDRV_CTL_EVENT_MASK_VALUE, &kctl->id);
-	} else {
-		ret = regmap_write(interrupt->function_regmap, reg, val);
-		if (ret) {
-			dev_err(dev, "failed to write selected mode: %d\n", ret);
-			return ret;
-		}
+	ret = snd_soc_dapm_put_enum_double(kctl, ucontrol);
+	if (ret < 0) {
+		dev_err(dev, "failed to update selected mode: %d\n", ret);
+		return ret;
 	}
+
+	snd_ctl_notify(card->snd_card, SNDRV_CTL_EVENT_MASK_VALUE, &kctl->id);
 
 	return sdca_jack_report(interrupt);
 }
@@ -132,10 +109,9 @@ EXPORT_SYMBOL_NS_GPL(sdca_jack_process, "SND_SOC_SDCA");
  */
 int sdca_jack_alloc_state(struct sdca_interrupt *interrupt)
 {
-	struct device *dev = interrupt->dev;
 	struct jack_state *jack_state;
 
-	jack_state = devm_kzalloc(dev, sizeof(*jack_state), GFP_KERNEL);
+	jack_state = kzalloc_obj(*jack_state);
 	if (!jack_state)
 		return -ENOMEM;
 
@@ -146,6 +122,68 @@ int sdca_jack_alloc_state(struct sdca_interrupt *interrupt)
 EXPORT_SYMBOL_NS_GPL(sdca_jack_alloc_state, "SND_SOC_SDCA");
 
 /**
+ * sdca_jack_free_state - free state for a jack interrupt
+ * @interrupt: SDCA interrupt structure.
+ */
+void sdca_jack_free_state(struct sdca_interrupt *interrupt)
+{
+	kfree(interrupt->priv);
+}
+EXPORT_SYMBOL_NS_GPL(sdca_jack_free_state, "SND_SOC_SDCA");
+
+/**
+ * sdca_jack_init_state - Initialise transient state for a jack interrupt
+ * @interrupt: SDCA interrupt structure.
+ *
+ * Return: Zero on success or a negative error code.
+ */
+int sdca_jack_init_state(struct sdca_interrupt *interrupt)
+{
+	struct jack_state *jack_state = interrupt->priv;
+	const char *name __free(kfree) = kasprintf(GFP_KERNEL, "%s %s",
+						   interrupt->entity->label,
+						   SDCA_CTL_SELECTED_MODE_NAME);
+
+	if (!name)
+		return -ENOMEM;
+
+	jack_state->kctl = snd_soc_component_get_kcontrol(interrupt->component, name);
+	if (!jack_state->kctl) {
+		dev_err(interrupt->dev, "control not found: %s\n", name);
+		return -ENODEV;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_NS_GPL(sdca_jack_init_state, "SND_SOC_SDCA");
+
+static int type_get_mask(enum sdca_terminal_type type)
+{
+	switch (type) {
+	case SDCA_TERM_TYPE_LINEIN_STEREO:
+	case SDCA_TERM_TYPE_LINEIN_FRONT_LR:
+	case SDCA_TERM_TYPE_LINEIN_CENTER_LFE:
+	case SDCA_TERM_TYPE_LINEIN_SURROUND_LR:
+	case SDCA_TERM_TYPE_LINEIN_REAR_LR:
+		return SND_JACK_LINEIN;
+	case SDCA_TERM_TYPE_LINEOUT_STEREO:
+	case SDCA_TERM_TYPE_LINEOUT_FRONT_LR:
+	case SDCA_TERM_TYPE_LINEOUT_CENTER_LFE:
+	case SDCA_TERM_TYPE_LINEOUT_SURROUND_LR:
+	case SDCA_TERM_TYPE_LINEOUT_REAR_LR:
+		return SND_JACK_LINEOUT;
+	case SDCA_TERM_TYPE_MIC_JACK:
+		return SND_JACK_MICROPHONE;
+	case SDCA_TERM_TYPE_HEADPHONE_JACK:
+		return SND_JACK_HEADPHONE;
+	case SDCA_TERM_TYPE_HEADSET_JACK:
+		return SND_JACK_HEADSET;
+	default:
+		return 0;
+	}
+}
+
+/**
  * sdca_jack_set_jack - attach an ASoC jack to SDCA
  * @info: SDCA interrupt information.
  * @jack: ASoC jack to be attached.
@@ -154,7 +192,8 @@ EXPORT_SYMBOL_NS_GPL(sdca_jack_alloc_state, "SND_SOC_SDCA");
  */
 int sdca_jack_set_jack(struct sdca_interrupt_info *info, struct snd_soc_jack *jack)
 {
-	int i, ret;
+	int i, j;
+	int ret;
 
 	guard(mutex)(&info->irq_lock);
 
@@ -162,14 +201,30 @@ int sdca_jack_set_jack(struct sdca_interrupt_info *info, struct snd_soc_jack *ja
 		struct sdca_interrupt *interrupt = &info->irqs[i];
 		struct sdca_control *control = interrupt->control;
 		struct sdca_entity *entity = interrupt->entity;
+		struct sdca_control_range *range;
 		struct jack_state *jack_state;
 
-		if (!interrupt->irq)
+		if (!interrupt->dev)
 			continue;
 
 		switch (SDCA_CTL_TYPE(entity->type, control->sel)) {
 		case SDCA_CTL_TYPE_S(GE, DETECTED_MODE):
+			range = sdca_selector_find_range(interrupt->dev, entity,
+							 SDCA_CTL_GE_SELECTED_MODE,
+							 SDCA_SELECTED_MODE_NCOLS, 0);
+			if (!range)
+				return -EINVAL;
+
 			jack_state = interrupt->priv;
+
+			for (j = 0; j < range->rows; j++) {
+				enum sdca_terminal_type type;
+
+				type = sdca_range(range, SDCA_SELECTED_MODE_TERM_TYPE, j);
+
+				jack_state->mask |= type_get_mask(type);
+			}
+
 			jack_state->jack = jack;
 
 			/* Report initial state in case IRQ was already handled */
@@ -191,7 +246,6 @@ int sdca_jack_report(struct sdca_interrupt *interrupt)
 	struct jack_state *jack_state = interrupt->priv;
 	struct sdca_control_range *range;
 	enum sdca_terminal_type type;
-	unsigned int report = 0;
 	unsigned int reg, val;
 	int ret;
 
@@ -213,35 +267,7 @@ int sdca_jack_report(struct sdca_interrupt *interrupt)
 	type = sdca_range_search(range, SDCA_SELECTED_MODE_INDEX,
 				 val, SDCA_SELECTED_MODE_TERM_TYPE);
 
-	switch (type) {
-	case SDCA_TERM_TYPE_LINEIN_STEREO:
-	case SDCA_TERM_TYPE_LINEIN_FRONT_LR:
-	case SDCA_TERM_TYPE_LINEIN_CENTER_LFE:
-	case SDCA_TERM_TYPE_LINEIN_SURROUND_LR:
-	case SDCA_TERM_TYPE_LINEIN_REAR_LR:
-		report = SND_JACK_LINEIN;
-		break;
-	case SDCA_TERM_TYPE_LINEOUT_STEREO:
-	case SDCA_TERM_TYPE_LINEOUT_FRONT_LR:
-	case SDCA_TERM_TYPE_LINEOUT_CENTER_LFE:
-	case SDCA_TERM_TYPE_LINEOUT_SURROUND_LR:
-	case SDCA_TERM_TYPE_LINEOUT_REAR_LR:
-		report = SND_JACK_LINEOUT;
-		break;
-	case SDCA_TERM_TYPE_MIC_JACK:
-		report = SND_JACK_MICROPHONE;
-		break;
-	case SDCA_TERM_TYPE_HEADPHONE_JACK:
-		report = SND_JACK_HEADPHONE;
-		break;
-	case SDCA_TERM_TYPE_HEADSET_JACK:
-		report = SND_JACK_HEADSET;
-		break;
-	default:
-		break;
-	}
-
-	snd_soc_jack_report(jack_state->jack, report, 0xFFFF);
+	snd_soc_jack_report(jack_state->jack, type_get_mask(type), jack_state->mask);
 
 	return 0;
 }

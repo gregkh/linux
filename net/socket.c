@@ -1202,8 +1202,7 @@ static ssize_t sock_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct file *file = iocb->ki_filp;
 	struct socket *sock = file->private_data;
-	struct msghdr msg = {.msg_iter = *to,
-			     .msg_iocb = iocb};
+	struct msghdr msg = {.msg_iter = *to};
 	ssize_t res;
 
 	if (file->f_flags & O_NONBLOCK || (iocb->ki_flags & IOCB_NOWAIT))
@@ -1224,8 +1223,7 @@ static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
 	struct socket *sock = file->private_data;
-	struct msghdr msg = {.msg_iter = *from,
-			     .msg_iocb = iocb};
+	struct msghdr msg = {.msg_iter = *from};
 	ssize_t res;
 
 	if (iocb->ki_pos != 0)
@@ -2078,7 +2076,7 @@ static int __sys_accept4_file(struct file *file, struct sockaddr __user *upeer_s
  *	we open the socket then return an error.
  *
  *	1003.1g adds the ability to recvmsg() to query connection pending
- *	status to recvmsg. We need to add that support in a way thats
+ *	status. We need to add that support in a way that's
  *	clean when we restructure accept also.
  */
 
@@ -2601,7 +2599,6 @@ int __copy_msghdr(struct msghdr *kmsg,
 	if (msg->msg_iovlen > UIO_MAXIOV)
 		return -EMSGSIZE;
 
-	kmsg->msg_iocb = NULL;
 	kmsg->msg_ubuf = NULL;
 	return 0;
 }

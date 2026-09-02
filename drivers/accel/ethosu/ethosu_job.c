@@ -417,9 +417,21 @@ static int ethosu_ioctl_submit_job(struct drm_device *dev, struct drm_file *file
 		struct drm_gem_object *gem;
 
 		/* Can only omit a BO handle if the region is not used or used for SRAM */
-		if (!job->region_bo_handles[i] &&
-		    (!cmd_info->region_size[i] || (i == ETHOSU_SRAM_REGION && job->sram_size)))
-			continue;
+		if (!job->region_bo_handles[i]) {
+			if (!cmd_info->region_size[i])
+				continue;
+			if (i == ETHOSU_SRAM_REGION) {
+				if (cmd_info->region_size[i] <= edev->npu_info.sram_size)
+					continue;
+
+				dev_err(dev->dev,
+					"cmd stream region %d size greater than SRAM size (%llu > %u)\n",
+					i, cmd_info->region_size[i],
+					edev->npu_info.sram_size);
+				ret = -EINVAL;
+				goto out_cleanup_job;
+			}
+		}
 
 		if (job->region_bo_handles[i] && !cmd_info->region_size[i]) {
 			dev_err(dev->dev,

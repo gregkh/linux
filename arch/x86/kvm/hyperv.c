@@ -1974,6 +1974,7 @@ int kvm_hv_vcpu_flush_tlb(struct kvm_vcpu *vcpu)
 	u64 entries[KVM_HV_TLB_FLUSH_FIFO_SIZE];
 	int i, j, count;
 	gva_t gva;
+	bool full = false;
 
 	if (!tdp_enabled || !hv_vcpu)
 		return -EINVAL;
@@ -1982,7 +1983,7 @@ int kvm_hv_vcpu_flush_tlb(struct kvm_vcpu *vcpu)
 
 	count = kfifo_out(&tlb_flush_fifo->entries, entries, KVM_HV_TLB_FLUSH_FIFO_SIZE);
 
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < count && !full; i++) {
 		if (entries[i] == KVM_HV_TLB_FLUSHALL_ENTRY)
 			goto out_flush_all;
 
@@ -1991,11 +1992,11 @@ int kvm_hv_vcpu_flush_tlb(struct kvm_vcpu *vcpu)
 		 * pages to flush.
 		 */
 		gva = entries[i] & PAGE_MASK;
-		for (j = 0; j < (entries[i] & ~PAGE_MASK) + 1; j++) {
+		for (j = 0; j < (entries[i] & ~PAGE_MASK) + 1 && !full; j++) {
 			if (is_noncanonical_invlpg_address(gva + j * PAGE_SIZE, vcpu))
 				continue;
 
-			kvm_x86_call(flush_tlb_gva)(vcpu, gva + j * PAGE_SIZE);
+			kvm_x86_call(flush_tlb_gva)(vcpu, gva + j * PAGE_SIZE, &full);
 		}
 
 		++vcpu->stat.tlb_flush;
@@ -2046,7 +2047,9 @@ static u64 kvm_hv_flush_tlb(struct kvm_vcpu *vcpu, struct kvm_hv_hcall *hc)
 	 * read with kvm_read_guest().
 	 */
 	if (!hc->fast && mmu_is_nested(vcpu)) {
-		hc->ingpa = translate_nested_gpa(vcpu, hc->ingpa, 0, NULL);
+		hc->ingpa = kvm_x86_ops.nested_ops->translate_nested_gpa(
+					vcpu, hc->ingpa,
+					PFERR_GUEST_FINAL_MASK, NULL, 0);
 		if (unlikely(hc->ingpa == INVALID_GPA))
 			return HV_STATUS_INVALID_HYPERCALL_INPUT;
 	}
@@ -2380,10 +2383,10 @@ static void kvm_hv_hypercall_set_result(struct kvm_vcpu *vcpu, u64 result)
 
 	longmode = is_64_bit_hypercall(vcpu);
 	if (longmode)
-		kvm_rax_write(vcpu, result);
+		kvm_rax_write_raw(vcpu, result);
 	else {
-		kvm_rdx_write(vcpu, result >> 32);
-		kvm_rax_write(vcpu, result & 0xffffffff);
+		kvm_edx_write(vcpu, result >> 32);
+		kvm_eax_write(vcpu, result);
 	}
 }
 
@@ -2547,18 +2550,15 @@ int kvm_hv_hypercall(struct kvm_vcpu *vcpu)
 
 #ifdef CONFIG_X86_64
 	if (is_64_bit_hypercall(vcpu)) {
-		hc.param = kvm_rcx_read(vcpu);
-		hc.ingpa = kvm_rdx_read(vcpu);
-		hc.outgpa = kvm_r8_read(vcpu);
+		hc.param = kvm_rcx_read_raw(vcpu);
+		hc.ingpa = kvm_rdx_read_raw(vcpu);
+		hc.outgpa = kvm_r8_read_raw(vcpu);
 	} else
 #endif
 	{
-		hc.param = ((u64)kvm_rdx_read(vcpu) << 32) |
-			    (kvm_rax_read(vcpu) & 0xffffffff);
-		hc.ingpa = ((u64)kvm_rbx_read(vcpu) << 32) |
-			    (kvm_rcx_read(vcpu) & 0xffffffff);
-		hc.outgpa = ((u64)kvm_rdi_read(vcpu) << 32) |
-			     (kvm_rsi_read(vcpu) & 0xffffffff);
+		hc.param = ((u64)kvm_edx_read(vcpu) << 32) | kvm_eax_read(vcpu);
+		hc.ingpa = ((u64)kvm_ebx_read(vcpu) << 32) | kvm_ecx_read(vcpu);
+		hc.outgpa = ((u64)kvm_edi_read(vcpu) << 32) | kvm_esi_read(vcpu);
 	}
 
 	hc.code = hc.param & 0xffff;

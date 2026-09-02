@@ -201,25 +201,24 @@ static void atmel_sha204a_remove(struct i2c_client *client)
 {
 	struct atmel_i2c_client_priv *i2c_priv = i2c_get_clientdata(client);
 
+	sysfs_remove_group(&client->dev.kobj, &atmel_sha204a_groups);
 	devm_hwrng_unregister(&client->dev, &i2c_priv->hwrng);
 	atmel_i2c_flush_queue();
-
-	sysfs_remove_group(&client->dev.kobj, &atmel_sha204a_groups);
 
 	kfree((void *)i2c_priv->hwrng.priv);
 }
 
-static const struct of_device_id atmel_sha204a_dt_ids[] __maybe_unused = {
-	{ .compatible = "atmel,atsha204", .data = &atsha204_quality },
-	{ .compatible = "atmel,atsha204a", },
-	{ /* sentinel */ }
+static const struct of_device_id atmel_sha204a_dt_ids[] = {
+	{ .compatible = "atmel,atsha204" },
+	{ .compatible = "atmel,atsha204a" },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, atmel_sha204a_dt_ids);
 
 static const struct i2c_device_id atmel_sha204a_id[] = {
-	{ "atsha204", (kernel_ulong_t)&atsha204_quality },
-	{ "atsha204a" },
-	{ /* sentinel */ }
+	{ .name = "atsha204", .driver_data = (kernel_ulong_t)&atsha204_quality },
+	{ .name = "atsha204a", .driver_data = (kernel_ulong_t)NULL },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, atmel_sha204a_id);
 
@@ -229,7 +228,7 @@ static struct i2c_driver atmel_sha204a_driver = {
 	.id_table		= atmel_sha204a_id,
 
 	.driver.name		= "atmel-sha204a",
-	.driver.of_match_table	= of_match_ptr(atmel_sha204a_dt_ids),
+	.driver.of_match_table	= atmel_sha204a_dt_ids,
 };
 
 static int __init atmel_sha204a_init(void)

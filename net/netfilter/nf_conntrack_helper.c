@@ -92,7 +92,7 @@ nf_conntrack_helper_try_module_get(const char *name, u16 l3num, u8 protonum)
 #endif
 	if (h != NULL && !try_module_get(h->me))
 		h = NULL;
-	if (h != NULL && !refcount_inc_not_zero(&h->refcnt)) {
+	if (h != NULL && !refcount_inc_not_zero(&h->ct_refcnt)) {
 		module_put(h->me);
 		h = NULL;
 	}
@@ -105,8 +105,9 @@ EXPORT_SYMBOL_GPL(nf_conntrack_helper_try_module_get);
 
 void nf_conntrack_helper_put(struct nf_conntrack_helper *helper)
 {
-	refcount_dec(&helper->refcnt);
 	module_put(helper->me);
+	if (refcount_dec_and_test(&helper->ct_refcnt))
+		kfree_rcu(helper, rcu);
 }
 EXPORT_SYMBOL_GPL(nf_conntrack_helper_put);
 
@@ -208,8 +209,13 @@ int __nf_ct_try_assign_helper(struct nf_conn *ct, struct nf_conn *tmpl,
 	help = nfct_help(ct);
 
 	if (helper == NULL) {
-		if (help)
+		if (help) {
+			struct nf_conntrack_helper *tmp = rcu_dereference(help->helper);
+
 			RCU_INIT_POINTER(help->helper, NULL);
+			if (tmp && refcount_dec_and_test(&tmp->ct_refcnt))
+				kfree_rcu(tmp, rcu);
+		}
 		return 0;
 	}
 
@@ -223,31 +229,22 @@ int __nf_ct_try_assign_helper(struct nf_conn *ct, struct nf_conn *tmpl,
 		 */
 		struct nf_conntrack_helper *tmp = rcu_dereference(help->helper);
 
-		if (tmp && tmp->help != helper->help) {
-			RCU_INIT_POINTER(help->helper, NULL);
+		if (tmp) {
+			if (tmp->help != helper->help) {
+				RCU_INIT_POINTER(help->helper, NULL);
+				if (refcount_dec_and_test(&tmp->ct_refcnt))
+					kfree_rcu(tmp, rcu);
+			}
 			return 0;
 		}
 	}
 
-	rcu_assign_pointer(help->helper, helper);
+	if (refcount_inc_not_zero(&helper->ct_refcnt))
+		rcu_assign_pointer(help->helper, helper);
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(__nf_ct_try_assign_helper);
-
-/* appropriate ct lock protecting must be taken by caller */
-static int unhelp(struct nf_conn *ct, void *me)
-{
-	struct nf_conn_help *help = nfct_help(ct);
-
-	if (help && rcu_dereference_raw(help->helper) == me) {
-		nf_conntrack_event(IPCT_HELPER, ct);
-		RCU_INIT_POINTER(help->helper, NULL);
-	}
-
-	/* We are not intended to delete this conntrack. */
-	return 0;
-}
 
 void nf_ct_helper_destroy(struct nf_conn *ct)
 {
@@ -408,7 +405,7 @@ int __nf_conntrack_helper_register(struct nf_conntrack_helper *me)
 			}
 		}
 	}
-	refcount_set(&me->refcnt, 1);
+	refcount_set(&me->ct_refcnt, 1);
 	hlist_add_head_rcu(&me->hnode, &nf_ct_helper_hash[h]);
 	nf_ct_helper_count++;
 out:
@@ -466,19 +463,18 @@ void nf_conntrack_helper_unregister(struct nf_conntrack_helper *me)
 	nf_ct_helper_count--;
 	mutex_unlock(&nf_ct_helper_mutex);
 
+	/* This helper is going away, disable it. */
+	rcu_assign_pointer(me->help, NULL);
+
 	/* Make sure every nothing is still using the helper unless its a
 	 * connection in the hash.
 	 */
 	synchronize_rcu();
 
 	nf_ct_expect_iterate_destroy(expect_iter_me, me);
-	nf_ct_iterate_destroy(unhelp, me);
 
-	/* nf_ct_iterate_destroy() does an unconditional synchronize_rcu() as
-	 * last step, this ensures rcu readers of exp->helper are done.
-	 * No need for another synchronize_rcu() here.
-	 */
-	kfree(me);
+	if (refcount_dec_and_test(&me->ct_refcnt))
+		kfree_rcu(me, rcu);
 }
 EXPORT_SYMBOL_GPL(nf_conntrack_helper_unregister);
 
@@ -500,7 +496,7 @@ void nf_ct_helper_init(struct nf_conntrack_helper *helper,
 	helper->tuple.dst.protonum = protonum;
 	helper->tuple.src.u.all = htons(spec_port);
 
-	helper->help = help;
+	rcu_assign_pointer(helper->help, help);
 	helper->from_nlattr = from_nlattr;
 	helper->me = module;
 	snprintf(helper->nat_mod_name, sizeof(helper->nat_mod_name),

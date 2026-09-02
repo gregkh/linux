@@ -416,7 +416,7 @@ int pinconf_generic_parse_dt_config(struct device_node *np,
 	 * Now limit the number of configs to the real number of
 	 * found properties.
 	 */
-	*configs = kmemdup(cfg, ncfg * sizeof(unsigned long), GFP_KERNEL);
+	*configs = kmemdup_array(cfg, ncfg, sizeof(unsigned long), GFP_KERNEL);
 	if (!*configs) {
 		ret = -ENOMEM;
 		goto out;

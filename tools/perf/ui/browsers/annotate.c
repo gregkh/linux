@@ -1188,7 +1188,7 @@ int __hist_entry__tui_annotate(struct hist_entry *he, struct map_symbol *ms,
 	if (dso__annotate_warned(dso))
 		return -1;
 
-	if (not_annotated || !sym->annotate2) {
+	if (not_annotated || !symbol__is_annotate2(sym)) {
 		err = symbol__annotate2(ms, evsel, &browser.arch);
 		if (err) {
 			annotate_browser__symbol_annotate_error(&browser, err);

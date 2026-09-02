@@ -304,7 +304,7 @@ void sctp_dbg_objcnt_init(struct net *);
 
 static inline void sctp_dbg_objcnt_init(struct net *net) { return; }
 
-#endif /* CONFIG_SCTP_DBG_OBJCOUNT */
+#endif /* CONFIG_SCTP_DBG_OBJCNT */
 
 #if defined CONFIG_SYSCTL
 void sctp_sysctl_register(void);

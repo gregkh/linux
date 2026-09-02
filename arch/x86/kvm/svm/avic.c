@@ -452,8 +452,8 @@ void avic_ring_doorbell(struct kvm_vcpu *vcpu)
 	int cpu = READ_ONCE(vcpu->cpu);
 
 	if (cpu != get_cpu()) {
-		wrmsrq(MSR_AMD64_SVM_AVIC_DOORBELL, kvm_cpu_get_apicid(cpu));
-		trace_kvm_avic_doorbell(vcpu->vcpu_id, kvm_cpu_get_apicid(cpu));
+		wrmsrq(MSR_AMD64_SVM_AVIC_DOORBELL, cpu_physical_id(cpu));
+		trace_kvm_avic_doorbell(vcpu->vcpu_id, cpu_physical_id(cpu));
 	}
 	put_cpu();
 }
@@ -1005,7 +1005,7 @@ static void __avic_vcpu_load(struct kvm_vcpu *vcpu, int cpu,
 			     enum avic_vcpu_action action)
 {
 	struct kvm_svm *kvm_svm = to_kvm_svm(vcpu->kvm);
-	int h_physical_id = kvm_cpu_get_apicid(cpu);
+	int h_physical_id = cpu_physical_id(cpu);
 	struct vcpu_svm *svm = to_svm(vcpu);
 	unsigned long flags;
 	u64 entry;

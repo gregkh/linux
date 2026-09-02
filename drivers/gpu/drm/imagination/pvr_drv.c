@@ -14,6 +14,7 @@
 #include "pvr_rogue_defs.h"
 #include "pvr_rogue_fwif_client.h"
 #include "pvr_rogue_fwif_shared.h"
+#include "pvr_trace.h"
 #include "pvr_vm.h"
 
 #include <uapi/drm/pvr_drm.h>
@@ -29,7 +30,6 @@
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/of_device.h>
@@ -1151,6 +1151,8 @@ pvr_ioctl_submit_jobs(struct drm_device *drm_dev, void *raw_args,
 	struct pvr_file *pvr_file = to_pvr_file(file);
 	int idx;
 	int err;
+
+	trace_pvr_job_submit_ioctl(pvr_dev, args->jobs.count);
 
 	if (!drm_dev_enter(drm_dev, &idx))
 		return -EIO;

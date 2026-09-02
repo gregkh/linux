@@ -3755,7 +3755,7 @@
 
 			status = "disabled";
 
-			remoteproc_adsp_glink: glink-edge {
+			glink-edge {
 				interrupts = <GIC_SPI 156 IRQ_TYPE_EDGE_RISING>;
 				label = "lpass";
 				qcom,remote-pid = <2>;

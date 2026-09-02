@@ -207,7 +207,7 @@ static int create_signal_event(struct file *devkfd, struct kfd_process *p,
 
 	ret = allocate_event_notification_slot(p, ev, restore_id);
 	if (ret) {
-		pr_warn("Signal event wasn't created because out of kernel memory\n");
+		pr_warn("Failed to create signal event notification slot\n");
 		return ret;
 	}
 

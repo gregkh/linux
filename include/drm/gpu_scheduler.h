@@ -25,10 +25,13 @@
 #define _DRM_GPU_SCHEDULER_H_
 
 #include <drm/spsc_queue.h>
+#include <linux/average.h>
 #include <linux/dma-fence.h>
 #include <linux/completion.h>
 #include <linux/xarray.h>
 #include <linux/workqueue.h>
+
+DECLARE_EWMA(drm_sched_avgtime, 6, 4);
 
 #define MAX_WAIT_SCHED_ENTITY_Q_EMPTY msecs_to_jiffies(1000)
 
@@ -63,6 +66,7 @@ struct drm_file;
  * to an array, and as such should start at 0.
  */
 enum drm_sched_priority {
+	DRM_SCHED_PRIORITY_INVALID = -1, /* Internal marker - do not use. */
 	DRM_SCHED_PRIORITY_KERNEL,
 	DRM_SCHED_PRIORITY_HIGH,
 	DRM_SCHED_PRIORITY_NORMAL,
@@ -70,6 +74,8 @@ enum drm_sched_priority {
 
 	DRM_SCHED_PRIORITY_COUNT
 };
+
+struct drm_sched_entity_stats;
 
 /**
  * struct drm_sched_entity - A wrapper around a job queue (typically
@@ -94,7 +100,8 @@ struct drm_sched_entity {
 	 * @lock:
 	 *
 	 * Lock protecting the run-queue (@rq) to which this entity belongs,
-	 * @priority and the list of schedulers (@sched_list, @num_sched_list).
+	 * @priority, the list of schedulers (@sched_list, @num_sched_list) and
+	 * the @rr_ts field.
 	 */
 	spinlock_t			lock;
 
@@ -108,6 +115,11 @@ struct drm_sched_entity {
 	 * not even a READ_ONCE.
 	 */
 	struct drm_sched_rq		*rq;
+
+	/**
+	 * @stats: Stats object reference held by the entity and jobs.
+	 */
+	struct drm_sched_entity_stats	*stats;
 
 	/**
 	 * @sched_list:
@@ -141,6 +153,18 @@ struct drm_sched_entity {
 	 * drm_sched_entity_set_priority(). Protected by @lock.
 	 */
 	enum drm_sched_priority         priority;
+
+	/**
+	 * @rq_priority: Run-queue priority
+	 */
+	enum drm_sched_priority         rq_priority;
+
+	/**
+	 * @rr_ts:
+	 *
+	 * Fake timestamp of the last popped job from the entity.
+	 */
+	ktime_t				rr_ts;
 
 	/**
 	 * @job_queue: the list of jobs of this entity.
@@ -239,10 +263,11 @@ struct drm_sched_entity {
  * struct drm_sched_rq - queue of entities to be scheduled.
  *
  * @sched: the scheduler to which this rq belongs to.
- * @lock: protects @entities, @rb_tree_root and @current_entity.
- * @current_entity: the entity which is to be scheduled.
+ * @lock: protects @entities, @rb_tree_root, @rr_ts and @head_prio.
+ * @rr_ts: monotonically incrementing fake timestamp for RR mode.
  * @entities: list of the entities to be scheduled.
  * @rb_tree_root: root of time based priority queue of entities for FIFO scheduling
+ * @head_prio: priority of the top tree element.
  *
  * Run queue is a set of entities scheduling command submissions for
  * one specific ring. It implements the scheduling policy that selects
@@ -253,9 +278,10 @@ struct drm_sched_rq {
 
 	spinlock_t			lock;
 	/* Following members are protected by the @lock: */
-	struct drm_sched_entity		*current_entity;
+	ktime_t				rr_ts;
 	struct list_head		entities;
 	struct rb_root_cached		rb_tree_root;
+	enum drm_sched_priority		head_prio;
 };
 
 /**
@@ -356,6 +382,11 @@ struct drm_sched_job {
 
 	struct drm_sched_fence		*s_fence;
 	struct drm_sched_entity         *entity;
+
+	/**
+	 * @entity_stats: Stats object reference held by the job and entity.
+	 */
+	struct drm_sched_entity_stats	*entity_stats;
 
 	enum drm_sched_priority		s_priority;
 	u32				credits;
@@ -543,8 +574,10 @@ struct drm_sched_backend_ops {
  * @credit_count: the current credit count of this scheduler
  * @timeout: the time after which a job is removed from the scheduler.
  * @name: name of the ring for which this scheduler is being used.
- * @num_rqs: Number of run-queues. This is at most DRM_SCHED_PRIORITY_COUNT,
- *           as there's usually one run-queue per priority, but could be less.
+ * @num_user_rqs: Number of run-queues. This is at most
+ *                DRM_SCHED_PRIORITY_COUNT, as there's usually one run-queue per
+ *                priority, but could be less.
+ * @num_rqs: Equal to @num_user_rqs for FIFO and RR and 1 for the FAIR policy.
  * @sched_rq: An allocated array of run-queues of size @num_rqs;
  * @job_scheduled: once drm_sched_entity_flush() is called the scheduler
  *                 waits on this wait queue until all the scheduled jobs are
@@ -552,6 +585,7 @@ struct drm_sched_backend_ops {
  * @job_id_count: used to assign unique id to the each job.
  * @submit_wq: workqueue used to queue @work_run_job and @work_free_job
  * @timeout_wq: workqueue used to queue @work_tdr
+ * @avg_job_us: Average job duration.
  * @work_run_job: work which calls run_job op of each scheduler.
  * @work_free_job: work which calls free_job op of each scheduler.
  * @work_tdr: schedules a delayed call to @drm_sched_job_timedout after the
@@ -577,11 +611,13 @@ struct drm_gpu_scheduler {
 	long				timeout;
 	const char			*name;
 	u32                             num_rqs;
+	u32                             num_user_rqs;
 	struct drm_sched_rq             **sched_rq;
 	wait_queue_head_t		job_scheduled;
 	atomic64_t			job_id_count;
 	struct workqueue_struct		*submit_wq;
 	struct workqueue_struct		*timeout_wq;
+	struct ewma_drm_sched_avgtime   avg_job_us;
 	struct work_struct		work_run_job;
 	struct work_struct		work_free_job;
 	struct delayed_work		work_tdr;
@@ -691,6 +727,7 @@ int drm_sched_entity_init(struct drm_sched_entity *entity,
 			  unsigned int num_sched_list,
 			  atomic_t *guilty);
 long drm_sched_entity_flush(struct drm_sched_entity *entity, long timeout);
+void drm_sched_entity_kill(struct drm_sched_entity *entity);
 void drm_sched_entity_fini(struct drm_sched_entity *entity);
 void drm_sched_entity_destroy(struct drm_sched_entity *entity);
 void drm_sched_entity_set_priority(struct drm_sched_entity *entity,

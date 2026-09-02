@@ -142,10 +142,6 @@ static struct gpio_desc *acpi_get_gpiod(char *path, unsigned int pin)
 	if (!gdev)
 		return ERR_PTR(-EPROBE_DEFER);
 
-	/*
-	 * FIXME: keep track of the reference to the GPIO device somehow
-	 * instead of putting it here.
-	 */
 	return gpio_device_get_desc(gdev, pin);
 }
 
@@ -320,10 +316,17 @@ static struct gpio_desc *acpi_request_own_gpiod(struct gpio_chip *chip,
 						unsigned int index,
 						const char *label)
 {
-	int polarity = GPIO_ACTIVE_HIGH;
-	enum gpiod_flags flags = acpi_gpio_to_gpiod_flags(agpio, polarity);
-	unsigned int pin = agpio->pin_table[index];
+	enum gpiod_flags flags;
 	struct gpio_desc *desc;
+	unsigned int pin;
+	int polarity;
+
+	if (index >= agpio->pin_table_length)
+		return ERR_PTR(-EINVAL);
+
+	pin = agpio->pin_table[index];
+	polarity = GPIO_ACTIVE_HIGH;
+	flags = acpi_gpio_to_gpiod_flags(agpio, polarity);
 
 	desc = gpiochip_request_own_desc(chip, pin, label, polarity, flags);
 	if (IS_ERR(desc))
@@ -337,7 +340,12 @@ static struct gpio_desc *acpi_request_own_gpiod(struct gpio_chip *chip,
 static bool acpi_gpio_irq_is_wake(struct device *parent,
 				  const struct acpi_resource_gpio *agpio)
 {
-	unsigned int pin = agpio->pin_table[0];
+	unsigned int pin;
+
+	if (agpio->pin_table_length == 0)
+		return false;
+
+	pin = agpio->pin_table[0];
 
 	if (agpio->wake_capable != ACPI_WAKE_CAPABLE)
 		return false;
@@ -365,6 +373,9 @@ static acpi_status acpi_gpiochip_alloc_event(struct acpi_resource *ares,
 	int ret, irq;
 
 	if (!acpi_gpio_get_irq_resource(ares, &agpio))
+		return AE_OK;
+
+	if (agpio->pin_table_length == 0)
 		return AE_OK;
 
 	handle = ACPI_HANDLE(chip->parent);
@@ -1087,10 +1098,10 @@ acpi_gpio_adr_space_handler(u32 function, acpi_physical_address address,
 	struct gpio_chip *chip = achip->chip;
 	struct acpi_resource_gpio *agpio;
 	struct acpi_resource *ares;
-	u16 pin_index = address;
+	unsigned int length;
 	acpi_status status;
-	int length;
-	int i;
+	unsigned int i;
+	u16 pin_index;
 
 	status = acpi_buffer_to_resource(achip->conn_info.connection,
 					 achip->conn_info.length, &ares);
@@ -1110,7 +1121,14 @@ acpi_gpio_adr_space_handler(u32 function, acpi_physical_address address,
 		return AE_BAD_PARAMETER;
 	}
 
-	length = min(agpio->pin_table_length, pin_index + bits);
+	/* address represents GPIO pin index in connection table */
+	if (address >= agpio->pin_table_length) {
+		ACPI_FREE(ares);
+		return AE_BAD_PARAMETER;
+	}
+
+	pin_index = address;
+	length = min_t(unsigned int, agpio->pin_table_length, pin_index + bits);
 	for (i = pin_index; i < length; ++i) {
 		unsigned int pin = agpio->pin_table[i];
 		struct acpi_gpio_connection *conn;

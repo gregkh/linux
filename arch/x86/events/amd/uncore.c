@@ -16,6 +16,7 @@
 #include <linux/smp.h>
 
 #include <asm/perf_event.h>
+#include <asm/cpuid/api.h>
 #include <asm/msr.h>
 
 #define NUM_COUNTERS_NB		4
@@ -966,7 +967,7 @@ static void amd_uncore_umc_read(struct perf_event *event)
 	 * UMC counters do not have RDPMC assignments. Read counts directly
 	 * from the corresponding PERF_CTR.
 	 */
-	rdmsrl(hwc->event_base, new);
+	rdmsrq(hwc->event_base, new);
 
 	/*
 	 * Unlike the other uncore counters, UMC counters saturate and set the
@@ -975,7 +976,7 @@ static void amd_uncore_umc_read(struct perf_event *event)
 	 * that the counter never gets a chance to saturate.
 	 */
 	if (new & BIT_ULL(63 - COUNTER_SHIFT)) {
-		wrmsrl(hwc->event_base, 0);
+		wrmsrq(hwc->event_base, 0);
 		local64_set(&hwc->prev_count, 0);
 	} else {
 		local64_set(&hwc->prev_count, new);

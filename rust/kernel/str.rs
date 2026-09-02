@@ -428,6 +428,7 @@ macro_rules! c_str {
     }};
 }
 
+#[cfg(CONFIG_RUST_STR_KUNIT_TEST)]
 #[kunit_tests(rust_kernel_str)]
 mod tests {
     use super::*;

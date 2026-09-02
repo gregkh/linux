@@ -70,7 +70,7 @@ static int hibmc_get_best_clock_idx(const struct drm_display_mode *mode)
 }
 
 static int hibmc_plane_atomic_check(struct drm_plane *plane,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state,
 										 plane);
@@ -116,7 +116,7 @@ static int hibmc_plane_atomic_check(struct drm_plane *plane,
 }
 
 static void hibmc_plane_atomic_update(struct drm_plane *plane,
-				      struct drm_atomic_state *state)
+				      struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *new_state = drm_atomic_get_new_plane_state(state,
 									   plane);
@@ -189,7 +189,7 @@ static void hibmc_crtc_dpms(struct drm_crtc *crtc, u32 dpms)
 }
 
 static void hibmc_crtc_atomic_enable(struct drm_crtc *crtc,
-				     struct drm_atomic_state *state)
+				     struct drm_atomic_commit *state)
 {
 	u32 reg;
 	struct hibmc_drm_private *priv = to_hibmc_drm_private(crtc->dev);
@@ -208,7 +208,7 @@ static void hibmc_crtc_atomic_enable(struct drm_crtc *crtc,
 }
 
 static void hibmc_crtc_atomic_disable(struct drm_crtc *crtc,
-				      struct drm_atomic_state *state)
+				      struct drm_atomic_commit *state)
 {
 	u32 reg;
 	struct hibmc_drm_private *priv = to_hibmc_drm_private(crtc->dev);
@@ -402,7 +402,7 @@ static void hibmc_crtc_mode_set_nofb(struct drm_crtc *crtc)
 }
 
 static void hibmc_crtc_atomic_begin(struct drm_crtc *crtc,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 {
 	u32 reg;
 	struct drm_device *dev = crtc->dev;
@@ -422,7 +422,7 @@ static void hibmc_crtc_atomic_begin(struct drm_crtc *crtc,
 }
 
 static void hibmc_crtc_atomic_flush(struct drm_crtc *crtc,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 
 {
 	unsigned long flags;

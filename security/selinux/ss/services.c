@@ -461,7 +461,7 @@ static void security_dump_masked_av(struct policydb *policydb,
 	struct common_datum *common_dat;
 	struct class_datum *tclass_dat;
 	struct audit_buffer *ab;
-	char *tclass_name;
+	const char *tclass_name;
 	char *scontext_name = NULL;
 	char *tcontext_name = NULL;
 	char *permission_names[SEL_VEC_MAX];
@@ -715,6 +715,9 @@ static void context_struct_compute_av(struct policydb *policydb,
 	 * If the given source and target types have boundary
 	 * constraint, lazy checks have to mask any violated
 	 * permission and notice it to userspace via audit.
+	 *
+	 * Infinite recursion is avoided via a depth pre-check in
+	 * type_bounds_sanity_check().
 	 */
 	type_attribute_bounds_av(policydb, scontext, tcontext,
 				 tclass, avd);

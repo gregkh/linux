@@ -128,7 +128,7 @@ int snd_usb_offload_create_ctl(struct snd_usb_audio *chip, struct device *bedev)
 		 */
 		chip_kctl->private_value = as->pcm_index |
 					  chip->card->number << 16;
-		sprintf(ctl_name, "USB Offload Playback Card Route PCM#%d",
+		snprintf(ctl_name, sizeof(ctl_name), "USB Offload Playback Card Route PCM#%d",
 			as->pcm_index);
 		chip_kctl->name = ctl_name;
 		ret = snd_ctl_add(chip->card, snd_ctl_new1(chip_kctl, bedev));
@@ -143,7 +143,7 @@ int snd_usb_offload_create_ctl(struct snd_usb_audio *chip, struct device *bedev)
 		 */
 		chip_kctl->private_value = as->pcm_index |
 					  chip->card->number << 16;
-		sprintf(ctl_name, "USB Offload Playback PCM Route PCM#%d",
+		snprintf(ctl_name, sizeof(ctl_name), "USB Offload Playback PCM Route PCM#%d",
 			as->pcm_index);
 		chip_kctl->name = ctl_name;
 		ret = snd_ctl_add(chip->card, snd_ctl_new1(chip_kctl, bedev));

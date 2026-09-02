@@ -2,6 +2,7 @@
 
 #include <net/netdev_lock.h>
 
+#include "../core/dev.h"
 #include "common.h"
 #include "netlink.h"
 
@@ -468,21 +469,16 @@ int ethnl_rss_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 {
 	struct rss_nl_dump_ctx *ctx = rss_dump_ctx(cb);
 	struct net *net = sock_net(skb->sk);
-	struct net_device *dev;
 	int ret = 0;
 
-	rtnl_lock();
-	for_each_netdev_dump(net, dev, ctx->ifindex) {
+	for_each_netdev_lock_ops_compat_scoped(net, dev, ctx->ifindex) {
 		if (ctx->match_ifindex && ctx->match_ifindex != ctx->ifindex)
 			break;
 
-		netdev_lock_ops(dev);
 		ret = rss_dump_one_dev(skb, cb, dev);
-		netdev_unlock_ops(dev);
 		if (ret)
 			break;
 	}
-	rtnl_unlock();
 
 	return ret;
 }
@@ -996,7 +992,6 @@ ethnl_rss_create_send_ntf(const struct sk_buff *rsp, struct net_device *dev)
 	nlh = nlmsg_hdr(ntf);
 	/* Convert the reply into a notification */
 	nlh->nlmsg_pid = 0;
-	nlh->nlmsg_seq = ethnl_bcast_seq_next();
 
 	genl_hdr = nlmsg_data(nlh);
 	genl_hdr->cmd =	ETHTOOL_MSG_RSS_CREATE_NTF;
@@ -1039,8 +1034,7 @@ int ethnl_rss_create_doit(struct sk_buff *skb, struct genl_info *info)
 	if (ret)
 		goto exit_free_dev;
 
-	rtnl_lock();
-	netdev_lock_ops(dev);
+	netdev_lock_ops_compat(dev);
 
 	ret = ethnl_ops_begin(dev);
 	if (ret < 0)
@@ -1128,8 +1122,7 @@ exit_clean_data:
 exit_ops:
 	ethnl_ops_complete(dev);
 exit_dev_unlock:
-	netdev_unlock_ops(dev);
-	rtnl_unlock();
+	netdev_unlock_ops_compat(dev);
 exit_free_dev:
 	ethnl_parse_header_dev_put(&req.base);
 exit_free_rsp:
@@ -1182,8 +1175,7 @@ int ethnl_rss_delete_doit(struct sk_buff *skb, struct genl_info *info)
 		goto exit_free_dev;
 	}
 
-	rtnl_lock();
-	netdev_lock_ops(dev);
+	netdev_lock_ops_compat(dev);
 
 	ret = ethnl_ops_begin(dev);
 	if (ret < 0)
@@ -1213,8 +1205,7 @@ exit_unlock:
 	mutex_unlock(&dev->ethtool->rss_lock);
 	ethnl_ops_complete(dev);
 exit_dev_unlock:
-	netdev_unlock_ops(dev);
-	rtnl_unlock();
+	netdev_unlock_ops_compat(dev);
 exit_free_dev:
 	ethnl_parse_header_dev_put(&req);
 	return ret;

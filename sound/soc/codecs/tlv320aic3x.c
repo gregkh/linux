@@ -1702,8 +1702,15 @@ static int aic3x_component_probe(struct snd_soc_component *component)
 	return 0;
 }
 
+static int aic3x_of_xlate_dai_id(struct snd_soc_component *component,
+				   struct device_node *endpoint)
+{
+	return 0;
+}
+
 static const struct snd_soc_component_driver soc_component_dev_aic3x = {
 	.set_bias_level		= aic3x_set_bias_level,
+	.of_xlate_dai_id	= aic3x_of_xlate_dai_id,
 	.probe			= aic3x_component_probe,
 	.controls		= aic3x_snd_controls,
 	.num_controls		= ARRAY_SIZE(aic3x_snd_controls),

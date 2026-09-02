@@ -455,7 +455,7 @@ static int veml6075_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id veml6075_id[] = {
-	{ "veml6075" },
+	{ .name = "veml6075" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, veml6075_id);

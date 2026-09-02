@@ -1143,8 +1143,6 @@ static int unix_create(struct net *net, struct socket *sock, int protocol,
 	if (protocol && protocol != PF_UNIX)
 		return -EPROTONOSUPPORT;
 
-	sock->state = SS_UNCONNECTED;
-
 	switch (sock->type) {
 	case SOCK_STREAM:
 		set_bit(SOCK_CUSTOM_SOCKOPT, &sock->flags);
@@ -1776,7 +1774,6 @@ restart:
 	/* Set credentials */
 	copy_peercred(sk, other);
 
-	sock->state	= SS_CONNECTED;
 	WRITE_ONCE(sk->sk_state, TCP_ESTABLISHED);
 	sock_hold(newsk);
 
@@ -1832,8 +1829,7 @@ static int unix_socketpair(struct socket *socka, struct socket *sockb)
 
 	ska->sk_state = TCP_ESTABLISHED;
 	skb->sk_state = TCP_ESTABLISHED;
-	socka->state  = SS_CONNECTED;
-	sockb->state  = SS_CONNECTED;
+
 	return 0;
 }
 
@@ -1875,7 +1871,6 @@ static int unix_accept(struct socket *sock, struct socket *newsock,
 	/* attach accepted sock to socket */
 	unix_state_lock(tsk);
 	unix_update_edges(unix_sk(tsk));
-	newsock->state = SS_CONNECTED;
 	sock_graft(tsk, newsock);
 	unix_state_unlock(tsk);
 	return 0;

@@ -285,11 +285,14 @@ int tpm_buf_append_name(struct tpm_chip *chip, struct tpm_buf *buf,
 	    mso == TPM2_MSO_NVRAM) {
 		if (!name) {
 			ret = tpm2_read_public(chip, handle, auth->name[slot]);
-			if (ret < 0)
-				goto err;
-
-			name_size_alg = ret;
+		} else {
+			ret = name_size(name);
 		}
+
+		if (ret < 0)
+			goto err;
+
+		name_size_alg = ret;
 	} else {
 		if (name) {
 			dev_err(&chip->dev, "handle 0x%08x does not use a name\n",

@@ -224,6 +224,66 @@ bool run_lookup_entry(const struct runs_tree *run, CLST vcn, CLST *lcn,
 }
 
 /*
+ * run_overlaps
+ *
+ * true if run overlaps with range [svcn, svcn + len)
+ */
+static bool run_overlaps(const struct runs_tree *run, CLST svcn, CLST len,
+			 CLST *vcn, CLST *clen)
+{
+	size_t i;
+	const struct ntfs_run *r = run->runs;
+	CLST end = svcn + len;
+
+	for (i = 0; i < run->count; i++, r++) {
+		/* Check if [r->vcn, r->vcn+r->len) overlaps [svcn, end). */
+		if (r->vcn < end && svcn < r->vcn + r->len) {
+			if (vcn)
+				*vcn = r->vcn;
+			if (clen)
+				*clen = r->len;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+ * run_lookup_entry_da
+ *
+ * - lookup vcn in delalloc run
+ * - lookup vcn in real run
+ * - correct result if real run overlaps with delalloc
+ */
+bool run_lookup_entry_da(const struct runs_tree *run,
+			 const struct runs_tree *run_da, CLST vcn, CLST *lcn,
+			 CLST *len)
+{
+	CLST vcn1, len1;
+
+	if (run_da && run_lookup_entry(run_da, vcn, lcn, len, NULL)) {
+		*lcn = DELALLOC_LCN;
+		return true;
+	}
+
+	if (!run_lookup_entry(run, vcn, lcn, len, NULL))
+		return false;
+
+	if (run_da && run_overlaps(run_da, vcn, *len, &vcn1, &len1)) {
+		/* Correct return value. */
+		if (vcn1 > vcn) {
+			*len = vcn1 - vcn;
+		} else {
+			*lcn = DELALLOC_LCN;
+			*len = len1;
+		}
+	}
+
+	return true;
+}
+
+/*
  * run_truncate_head - Decommit the range before vcn.
  */
 void run_truncate_head(struct runs_tree *run, CLST vcn)
@@ -1285,7 +1345,6 @@ bool run_remove_range(struct runs_tree *run, CLST vcn, CLST len, CLST *done)
 		/* No entries in this run. */
 		return true;
 	}
-
 
 	e = run->runs + run->count;
 	r = run->runs + index;

@@ -33,6 +33,8 @@ static int aie2_max_col = XRS_MAX_COL;
 module_param(aie2_max_col, uint, 0600);
 MODULE_PARM_DESC(aie2_max_col, "Maximum column could be used");
 
+#define DEFAULT_TIME_QUANTUM 30000 /* microseconds */
+
 static char *npu_fw[] = {
 	"npu_7.sbin",
 	"npu.sbin"
@@ -79,7 +81,7 @@ static int aie2_get_mgmt_chann_info(struct amdxdna_dev_hdl *ndev)
 	 * is alive.
 	 */
 	ret = readx_poll_timeout(readl, SRAM_GET_ADDR(ndev, FW_ALIVE_OFF),
-				 addr, addr, AIE2_INTERVAL, AIE2_TIMEOUT);
+				 addr, addr, AIE_INTERVAL, AIE_TIMEOUT);
 	if (ret || !addr)
 		return -ETIME;
 
@@ -186,6 +188,12 @@ static int aie2_mgmt_fw_init(struct amdxdna_dev_hdl *ndev)
 		return ret;
 	}
 
+	ret = aie2_update_prop_time_quota(ndev, DEFAULT_TIME_QUANTUM);
+	if (ret) {
+		XDNA_ERR(ndev->aie.xdna, "Failed to update execution time quantum");
+		return ret;
+	}
+
 	ret = aie2_xdna_reset(ndev);
 	if (ret) {
 		XDNA_ERR(ndev->aie.xdna, "Reset firmware failed");
@@ -211,13 +219,13 @@ static int aie2_mgmt_fw_query(struct amdxdna_dev_hdl *ndev)
 		return ret;
 	}
 
-	ret = aie2_query_aie_metadata(ndev, &ndev->metadata);
+	ret = aie2_query_aie_metadata(ndev, &ndev->aie.metadata);
 	if (ret) {
 		XDNA_ERR(ndev->aie.xdna, "Query AIE metadata failed");
 		return ret;
 	}
 
-	ndev->total_col = min(aie2_max_col, ndev->metadata.cols);
+	ndev->total_col = min(aie2_max_col, ndev->aie.metadata.cols);
 
 	return 0;
 }
@@ -238,6 +246,7 @@ static int aie2_xrs_load(void *cb_arg, struct xrs_action_load *action)
 	xdna = hwctx->client->xdna;
 
 	hwctx->start_col = action->part.start_col;
+	hwctx->num_unused_col = action->part.ncols - hwctx->num_col;
 	hwctx->num_col = action->part.ncols;
 	ret = aie2_create_context(xdna->dev_handle, hwctx);
 	if (ret)
@@ -282,6 +291,12 @@ static struct xrs_action_ops aie2_xrs_actions = {
 	.set_dft_dpm_level = aie2_xrs_set_dft_dpm_level,
 };
 
+static void aie2_smu_fini(struct amdxdna_dev_hdl *ndev)
+{
+	ndev->priv->hw_ops->set_dpm(ndev, 0);
+	aie_smu_fini(ndev->aie.smu_hdl);
+}
+
 static void aie2_hw_stop(struct amdxdna_dev *xdna)
 {
 	struct pci_dev *pdev = to_pci_dev(xdna->ddev.dev);
@@ -297,7 +312,7 @@ static void aie2_hw_stop(struct amdxdna_dev *xdna)
 	aie_destroy_chann(&ndev->aie, &ndev->aie.mgmt_chann);
 	drmm_kfree(&xdna->ddev, ndev->mbox);
 	ndev->mbox = NULL;
-	aie2_psp_stop(ndev->psp_hdl);
+	aie_psp_stop(ndev->aie.psp_hdl);
 	aie2_smu_fini(ndev);
 	aie2_error_async_events_free(ndev);
 	pci_disable_device(pdev);
@@ -344,13 +359,13 @@ static int aie2_hw_start(struct amdxdna_dev *xdna)
 		goto disable_dev;
 	}
 
-	ret = aie2_smu_init(ndev);
+	ret = aie_smu_init(ndev->aie.smu_hdl);
 	if (ret) {
 		XDNA_ERR(xdna, "failed to init smu, ret %d", ret);
 		goto free_channel;
 	}
 
-	ret = aie2_psp_start(ndev->psp_hdl);
+	ret = aie_psp_start(ndev->aie.psp_hdl);
 	if (ret) {
 		XDNA_ERR(xdna, "failed to start psp, ret %d", ret);
 		goto fini_smu;
@@ -405,6 +420,7 @@ static int aie2_hw_start(struct amdxdna_dev *xdna)
 		goto stop_fw;
 	}
 
+	WRITE_ONCE(ndev->last_signal_ts, jiffies);
 	ndev->dev_status = AIE2_DEV_START;
 
 	return 0;
@@ -413,7 +429,7 @@ stop_fw:
 	aie2_suspend_fw(ndev);
 	xdna_mailbox_stop_channel(ndev->aie.mgmt_chann);
 stop_psp:
-	aie2_psp_stop(ndev->psp_hdl);
+	aie_psp_stop(ndev->aie.psp_hdl);
 fini_smu:
 	aie2_smu_fini(ndev);
 free_channel:
@@ -463,7 +479,8 @@ static int aie2_init(struct amdxdna_dev *xdna)
 	void __iomem *tbl[PCI_NUM_RESOURCES] = {0};
 	struct init_config xrs_cfg = { 0 };
 	struct amdxdna_dev_hdl *ndev;
-	struct psp_config psp_conf;
+	struct psp_config psp_conf = { 0 };
+	struct smu_config smu_conf;
 	const struct firmware *fw;
 	unsigned long bars = 0;
 	char *fw_full_path;
@@ -513,9 +530,10 @@ static int aie2_init(struct amdxdna_dev *xdna)
 
 	for (i = 0; i < PSP_MAX_REGS; i++)
 		set_bit(PSP_REG_BAR(ndev, i), &bars);
+	for (i = 0; i < SMU_MAX_REGS; i++)
+		set_bit(SMU_REG_BAR(ndev, i), &bars);
 
 	set_bit(xdna->dev_info->sram_bar, &bars);
-	set_bit(xdna->dev_info->smu_bar, &bars);
 	set_bit(xdna->dev_info->mbox_bar, &bars);
 
 	for (i = 0; i < PCI_NUM_RESOURCES; i++) {
@@ -530,7 +548,6 @@ static int aie2_init(struct amdxdna_dev *xdna)
 	}
 
 	ndev->sram_base = tbl[xdna->dev_info->sram_bar];
-	ndev->smu_base = tbl[xdna->dev_info->smu_bar];
 	ndev->mbox_base = tbl[xdna->dev_info->mbox_bar];
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
@@ -554,11 +571,22 @@ static int aie2_init(struct amdxdna_dev *xdna)
 
 	psp_conf.fw_size = fw->size;
 	psp_conf.fw_buf = fw->data;
+	psp_conf.arg2_mask = GENMASK(23, 0);
+	psp_conf.notify_val = 1;
 	for (i = 0; i < PSP_MAX_REGS; i++)
 		psp_conf.psp_regs[i] = tbl[PSP_REG_BAR(ndev, i)] + PSP_REG_OFF(ndev, i);
-	ndev->psp_hdl = aie2m_psp_create(&xdna->ddev, &psp_conf);
-	if (!ndev->psp_hdl) {
+	ndev->aie.psp_hdl = aiem_psp_create(&xdna->ddev, &psp_conf);
+	if (!ndev->aie.psp_hdl) {
 		XDNA_ERR(xdna, "failed to create psp");
+		ret = -ENOMEM;
+		goto release_fw;
+	}
+
+	for (i = 0; i < SMU_MAX_REGS; i++)
+		smu_conf.smu_regs[i] = tbl[SMU_REG_BAR(ndev, i)] + SMU_REG_OFF(ndev, i);
+	ndev->aie.smu_hdl = aiem_smu_create(&xdna->ddev, &smu_conf);
+	if (!ndev->aie.smu_hdl) {
+		XDNA_ERR(xdna, "failed to create smu");
 		ret = -ENOMEM;
 		goto release_fw;
 	}
@@ -573,7 +601,7 @@ static int aie2_init(struct amdxdna_dev *xdna)
 	xrs_cfg.clk_list.num_levels = ndev->max_dpm_level + 1;
 	for (i = 0; i < xrs_cfg.clk_list.num_levels; i++)
 		xrs_cfg.clk_list.cu_clk_list[i] = ndev->priv->dpm_clk_tbl[i].hclk;
-	xrs_cfg.sys_eff_factor = 1;
+	xrs_cfg.sys_eff_factor = 2;
 	xrs_cfg.ddev = &xdna->ddev;
 	xrs_cfg.actions = &aie2_xrs_actions;
 	xrs_cfg.total_col = ndev->total_col;
@@ -587,6 +615,7 @@ static int aie2_init(struct amdxdna_dev *xdna)
 
 	release_firmware(fw);
 	aie2_msg_init(ndev);
+	amdxdna_vbnv_init(xdna);
 	amdxdna_pm_init(xdna);
 	return 0;
 
@@ -633,53 +662,6 @@ static int aie2_get_aie_status(struct amdxdna_client *client,
 	}
 
 	return 0;
-}
-
-static int aie2_get_aie_metadata(struct amdxdna_client *client,
-				 struct amdxdna_drm_get_info *args)
-{
-	struct amdxdna_drm_query_aie_metadata *meta;
-	struct amdxdna_dev *xdna = client->xdna;
-	struct amdxdna_dev_hdl *ndev;
-	int ret = 0;
-	u32 buf_sz;
-
-	ndev = xdna->dev_handle;
-	meta = kzalloc_obj(*meta);
-	if (!meta)
-		return -ENOMEM;
-
-	meta->col_size = ndev->metadata.size;
-	meta->cols = ndev->metadata.cols;
-	meta->rows = ndev->metadata.rows;
-
-	meta->version.major = ndev->metadata.version.major;
-	meta->version.minor = ndev->metadata.version.minor;
-
-	meta->core.row_count = ndev->metadata.core.row_count;
-	meta->core.row_start = ndev->metadata.core.row_start;
-	meta->core.dma_channel_count = ndev->metadata.core.dma_channel_count;
-	meta->core.lock_count = ndev->metadata.core.lock_count;
-	meta->core.event_reg_count = ndev->metadata.core.event_reg_count;
-
-	meta->mem.row_count = ndev->metadata.mem.row_count;
-	meta->mem.row_start = ndev->metadata.mem.row_start;
-	meta->mem.dma_channel_count = ndev->metadata.mem.dma_channel_count;
-	meta->mem.lock_count = ndev->metadata.mem.lock_count;
-	meta->mem.event_reg_count = ndev->metadata.mem.event_reg_count;
-
-	meta->shim.row_count = ndev->metadata.shim.row_count;
-	meta->shim.row_start = ndev->metadata.shim.row_start;
-	meta->shim.dma_channel_count = ndev->metadata.shim.dma_channel_count;
-	meta->shim.lock_count = ndev->metadata.shim.lock_count;
-	meta->shim.event_reg_count = ndev->metadata.shim.event_reg_count;
-
-	buf_sz = min(args->buffer_size, sizeof(*meta));
-	if (copy_to_user(u64_to_user_ptr(args->buffer), meta, buf_sz))
-		ret = -EFAULT;
-
-	kfree(meta);
-	return ret;
 }
 
 static int aie2_get_aie_version(struct amdxdna_client *client,
@@ -752,6 +734,7 @@ static int aie2_get_clock_metadata(struct amdxdna_client *client,
 	if (!clock)
 		return -ENOMEM;
 
+	aie2_update_counters(ndev);
 	snprintf(clock->mp_npu_clock.name, sizeof(clock->mp_npu_clock.name),
 		 "MP-NPU Clock");
 	clock->mp_npu_clock.freq_mhz = ndev->npuclk_freq;
@@ -912,6 +895,7 @@ static int aie2_query_resource_info(struct amdxdna_client *client,
 	ndev = xdna->dev_handle;
 	priv = ndev->priv;
 
+	aie2_update_counters(ndev);
 	res_info.npu_clk_max = priv->dpm_clk_tbl[ndev->max_dpm_level].hclk;
 	res_info.npu_tops_max = ndev->max_tops;
 	res_info.npu_task_max = priv->hwctx_limit;
@@ -1014,6 +998,7 @@ static int aie2_get_preempt_state(struct amdxdna_client *client,
 static int aie2_get_info(struct amdxdna_client *client, struct amdxdna_drm_get_info *args)
 {
 	struct amdxdna_dev *xdna = client->xdna;
+	struct amdxdna_dev_hdl *ndev = xdna->dev_handle;
 	int ret, idx;
 
 	if (!drm_dev_enter(&xdna->ddev, &idx))
@@ -1028,7 +1013,7 @@ static int aie2_get_info(struct amdxdna_client *client, struct amdxdna_drm_get_i
 		ret = aie2_get_aie_status(client, args);
 		break;
 	case DRM_AMDXDNA_QUERY_AIE_METADATA:
-		ret = aie2_get_aie_metadata(client, args);
+		ret = amdxdna_get_metadata(&ndev->aie, client, args);
 		break;
 	case DRM_AMDXDNA_QUERY_AIE_VERSION:
 		ret = aie2_get_aie_version(client, args);
@@ -1232,6 +1217,21 @@ dev_exit:
 	return ret;
 }
 
+static int aie2_get_dev_rev(struct amdxdna_dev *xdna, u32 *rev)
+{
+	struct amdxdna_dev_hdl *ndev = xdna->dev_handle;
+	enum aie2_dev_revision aie2_rev;
+	int ret;
+
+	drm_WARN_ON(&xdna->ddev, !mutex_is_locked(&xdna->dev_lock));
+	ret = aie2_get_dev_revision(ndev, &aie2_rev);
+
+	if (!ret)
+		*rev = (u32)aie2_rev;
+
+	return ret;
+}
+
 const struct amdxdna_dev_ops aie2_ops = {
 	.init = aie2_init,
 	.fini = aie2_fini,
@@ -1246,4 +1246,6 @@ const struct amdxdna_dev_ops aie2_ops = {
 	.cmd_submit = aie2_cmd_submit,
 	.hmm_invalidate = aie2_hmm_invalidate,
 	.get_array = aie2_get_array,
+	.get_dev_revision = aie2_get_dev_rev,
+	.hwctx_heap_expand = aie2_hwctx_heap_expand,
 };

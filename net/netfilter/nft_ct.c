@@ -1101,7 +1101,6 @@ static void nft_ct_helper_obj_destroy(const struct nft_ctx *ctx,
 {
 	struct nft_ct_helper_obj *priv = nft_obj_data(obj);
 
-	nf_queue_nf_hook_drop(ctx->net);
 	if (priv->helper4)
 		nf_conntrack_helper_put(priv->helper4);
 	if (priv->helper6)
@@ -1133,7 +1132,7 @@ static void nft_ct_helper_obj_eval(struct nft_object *obj,
 		to_assign = priv->helper6;
 		break;
 	default:
-		WARN_ON_ONCE(1);
+		DEBUG_NET_WARN_ON_ONCE(1);
 		return;
 	}
 
@@ -1144,7 +1143,7 @@ static void nft_ct_helper_obj_eval(struct nft_object *obj,
 		return;
 
 	help = nf_ct_helper_ext_add(ct, GFP_ATOMIC);
-	if (help) {
+	if (help && refcount_inc_not_zero(&to_assign->ct_refcnt)) {
 		rcu_assign_pointer(help->helper, to_assign);
 
 		if ((ct->status & IPS_NAT_MASK) && !nfct_seqadj(ct))

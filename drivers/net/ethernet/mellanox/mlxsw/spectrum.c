@@ -5277,8 +5277,8 @@ static int mlxsw_sp_netdevice_event(struct notifier_block *nb,
 }
 
 static const struct pci_device_id mlxsw_sp1_pci_id_table[] = {
-	{PCI_VDEVICE(MELLANOX, PCI_DEVICE_ID_MELLANOX_SPECTRUM), 0},
-	{0, },
+	{PCI_VDEVICE(MELLANOX, PCI_DEVICE_ID_MELLANOX_SPECTRUM) },
+	{ },
 };
 
 static struct pci_driver mlxsw_sp1_pci_driver = {
@@ -5287,8 +5287,8 @@ static struct pci_driver mlxsw_sp1_pci_driver = {
 };
 
 static const struct pci_device_id mlxsw_sp2_pci_id_table[] = {
-	{PCI_VDEVICE(MELLANOX, PCI_DEVICE_ID_MELLANOX_SPECTRUM2), 0},
-	{0, },
+	{PCI_VDEVICE(MELLANOX, PCI_DEVICE_ID_MELLANOX_SPECTRUM2) },
+	{ },
 };
 
 static struct pci_driver mlxsw_sp2_pci_driver = {
@@ -5297,8 +5297,8 @@ static struct pci_driver mlxsw_sp2_pci_driver = {
 };
 
 static const struct pci_device_id mlxsw_sp3_pci_id_table[] = {
-	{PCI_VDEVICE(MELLANOX, PCI_DEVICE_ID_MELLANOX_SPECTRUM3), 0},
-	{0, },
+	{PCI_VDEVICE(MELLANOX, PCI_DEVICE_ID_MELLANOX_SPECTRUM3) },
+	{ },
 };
 
 static struct pci_driver mlxsw_sp3_pci_driver = {
@@ -5307,8 +5307,8 @@ static struct pci_driver mlxsw_sp3_pci_driver = {
 };
 
 static const struct pci_device_id mlxsw_sp4_pci_id_table[] = {
-	{PCI_VDEVICE(MELLANOX, PCI_DEVICE_ID_MELLANOX_SPECTRUM4), 0},
-	{0, },
+	{PCI_VDEVICE(MELLANOX, PCI_DEVICE_ID_MELLANOX_SPECTRUM4) },
+	{ },
 };
 
 static struct pci_driver mlxsw_sp4_pci_driver = {

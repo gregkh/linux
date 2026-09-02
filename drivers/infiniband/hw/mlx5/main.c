@@ -965,8 +965,9 @@ static int mlx5_ib_query_device(struct ib_device *ibdev,
 
 	resp.response_length = resp_len;
 
-	if (uhw && uhw->inlen && !ib_is_udata_cleared(uhw, 0, uhw->inlen))
-		return -EINVAL;
+	err = ib_is_udata_in_empty(uhw);
+	if (err)
+		return err;
 
 	memset(props, 0, sizeof(*props));
 	err = mlx5_query_system_image_guid(ibdev,
@@ -1213,20 +1214,29 @@ static int mlx5_ib_query_device(struct ib_device *ibdev,
 		}
 	}
 
-	if (offsetofend(typeof(resp), packet_pacing_caps) <= uhw_outlen &&
-	    raw_support) {
-		if (MLX5_CAP_QOS(mdev, packet_pacing) &&
-		    MLX5_CAP_GEN(mdev, qos)) {
-			resp.packet_pacing_caps.qp_rate_limit_max =
-				MLX5_CAP_QOS(mdev, packet_pacing_max_rate);
-			resp.packet_pacing_caps.qp_rate_limit_min =
-				MLX5_CAP_QOS(mdev, packet_pacing_min_rate);
-			resp.packet_pacing_caps.supported_qpts |=
-				1 << IB_QPT_RAW_PACKET;
-			if (MLX5_CAP_QOS(mdev, packet_pacing_burst_bound) &&
-			    MLX5_CAP_QOS(mdev, packet_pacing_typical_size))
-				resp.packet_pacing_caps.cap_flags |=
-					MLX5_IB_PP_SUPPORT_BURST;
+	if (offsetofend(typeof(resp), packet_pacing_caps) <= uhw_outlen) {
+		if (MLX5_CAP_GEN(mdev, qos)) {
+			if (MLX5_CAP_QOS(mdev, packet_pacing) && raw_support)
+				resp.packet_pacing_caps.supported_qpts |=
+					BIT(IB_QPT_RAW_PACKET);
+			if (MLX5_CAP_QOS(mdev, packet_pacing_req_ud))
+				resp.packet_pacing_caps.supported_qpts |=
+					BIT(IB_QPT_UD);
+			if (MLX5_CAP_QOS(mdev, packet_pacing_req_uc))
+				resp.packet_pacing_caps.supported_qpts |=
+					BIT(IB_QPT_UC);
+
+			if (resp.packet_pacing_caps.supported_qpts) {
+				resp.packet_pacing_caps.qp_rate_limit_max =
+					MLX5_CAP_QOS(mdev, packet_pacing_max_rate);
+				resp.packet_pacing_caps.qp_rate_limit_min =
+					MLX5_CAP_QOS(mdev, packet_pacing_min_rate);
+
+				if (MLX5_CAP_QOS(mdev, packet_pacing_burst_bound) &&
+				    MLX5_CAP_QOS(mdev, packet_pacing_typical_size))
+					resp.packet_pacing_caps.cap_flags |=
+						MLX5_IB_PP_SUPPORT_BURST;
+			}
 		}
 		resp.response_length += sizeof(resp.packet_pacing_caps);
 	}
@@ -1355,7 +1365,7 @@ static int mlx5_ib_query_device(struct ib_device *ibdev,
 	}
 
 	if (uhw_outlen) {
-		err = ib_copy_to_udata(uhw, &resp, resp.response_length);
+		err = ib_respond_udata(uhw, resp);
 
 		if (err)
 			return err;
@@ -2023,12 +2033,23 @@ int mlx5_ib_enable_lb(struct mlx5_ib_dev *dev, bool td, bool qp)
 	    dev->lb.qps == 1) {
 		if (!dev->lb.enabled) {
 			err = mlx5_nic_vport_update_local_lb(dev->mdev, true);
+			if (err)
+				goto err_rollback;
+
 			dev->lb.enabled = true;
 		}
 	}
 
 	mutex_unlock(&dev->lb.mutex);
 
+	return err;
+
+err_rollback:
+	if (td)
+		dev->lb.user_td--;
+	if (qp)
+		dev->lb.qps--;
+	mutex_unlock(&dev->lb.mutex);
 	return err;
 }
 
@@ -2284,7 +2305,7 @@ uar_done:
 		goto out_mdev;
 
 	resp.response_length = min(udata->outlen, sizeof(resp));
-	err = ib_copy_to_udata(udata, &resp, resp.response_length);
+	err = ib_respond_udata(udata, resp);
 	if (err)
 		goto out_mdev;
 
@@ -2776,7 +2797,7 @@ static int mlx5_ib_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 {
 	struct mlx5_ib_pd *pd = to_mpd(ibpd);
 	struct ib_device *ibdev = ibpd->device;
-	struct mlx5_ib_alloc_pd_resp resp;
+	struct mlx5_ib_alloc_pd_resp resp = {};
 	int err;
 	u32 out[MLX5_ST_SZ_DW(alloc_pd_out)] = {};
 	u32 in[MLX5_ST_SZ_DW(alloc_pd_in)] = {};
@@ -2795,9 +2816,10 @@ static int mlx5_ib_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 	pd->uid = uid;
 	if (udata) {
 		resp.pdn = pd->pdn;
-		if (ib_copy_to_udata(udata, &resp, sizeof(resp))) {
+		err = ib_respond_udata(udata, resp);
+		if (err) {
 			mlx5_cmd_dealloc_pd(to_mdev(ibdev)->mdev, pd->pdn, uid);
-			return -EFAULT;
+			return err;
 		}
 	}
 
@@ -4454,6 +4476,7 @@ static const struct uapi_definition mlx5_ib_defs[] = {
 	UAPI_DEF_CHAIN(mlx5_ib_std_types_defs),
 	UAPI_DEF_CHAIN(mlx5_ib_dm_defs),
 	UAPI_DEF_CHAIN(mlx5_ib_create_cq_defs),
+	UAPI_DEF_CHAIN(mlx5_ib_create_qp_defs),
 
 	UAPI_DEF_CHAIN_OBJ_TREE(UVERBS_OBJECT_DEVICE, &mlx5_ib_query_context),
 	UAPI_DEF_CHAIN_OBJ_TREE(UVERBS_OBJECT_MR, &mlx5_ib_reg_dmabuf_mr),
@@ -5113,7 +5136,7 @@ err_out:
 		if (profile->stage[i].cleanup)
 			profile->stage[i].cleanup(dev);
 	}
-	return -ENOMEM;
+	return err;
 }
 
 static const struct mlx5_ib_profile pf_profile = {

@@ -36,14 +36,7 @@ v3d_init_core(struct v3d_dev *v3d, int core)
 	V3D_CORE_WRITE(core, V3D_CTL_L2TFLEND, ~0);
 }
 
-/* Sets invariant state for the HW. */
-static void
-v3d_init_hw_state(struct v3d_dev *v3d)
-{
-	v3d_init_core(v3d, 0);
-}
-
-static void
+void
 v3d_idle_axi(struct v3d_dev *v3d, int core)
 {
 	if (v3d->ver >= V3D_GEN_71) {
@@ -68,7 +61,7 @@ v3d_idle_axi(struct v3d_dev *v3d, int core)
 	}
 }
 
-static void
+void
 v3d_idle_gca(struct v3d_dev *v3d)
 {
 	if (v3d->ver >= V3D_GEN_41)
@@ -279,6 +272,13 @@ v3d_invalidate_caches(struct v3d_dev *v3d)
 	v3d_invalidate_slices(v3d, 0);
 }
 
+/* Sets invariant state for the HW. */
+void
+v3d_init_hw_state(struct v3d_dev *v3d)
+{
+	v3d_init_core(v3d, 0);
+}
+
 static void
 v3d_huge_mnt_init(struct v3d_dev *v3d)
 {
@@ -347,9 +347,6 @@ v3d_gem_init(struct drm_device *dev)
 		ret = -ENOMEM;
 		goto err_dma_alloc;
 	}
-
-	v3d_init_hw_state(v3d);
-	v3d_mmu_set_page_table(v3d);
 
 	v3d_huge_mnt_init(v3d);
 

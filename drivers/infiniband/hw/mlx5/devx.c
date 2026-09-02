@@ -2287,7 +2287,7 @@ static int devx_umem_get(struct mlx5_ib_dev *dev, struct ib_ucontext *ucontext,
 			return PTR_ERR(umem_dmabuf);
 		obj->umem = &umem_dmabuf->umem;
 	} else {
-		obj->umem = ib_umem_get(&dev->ib_dev, addr, size, access_flags);
+		obj->umem = ib_umem_get_va(&dev->ib_dev, addr, size, access_flags);
 		if (IS_ERR(obj->umem))
 			return PTR_ERR(obj->umem);
 	}
@@ -2528,7 +2528,7 @@ static int deliver_event(struct devx_event_subscription *event_sub,
 			 const void *data)
 {
 	struct devx_async_event_file *ev_file;
-	struct devx_async_event_data *event_data;
+	struct devx_async_event_data *event_data, *to_free;
 	unsigned long flags;
 
 	ev_file = event_sub->ev_file;
@@ -2559,12 +2559,17 @@ static int deliver_event(struct devx_event_subscription *event_sub,
 	event_data->hdr.cookie = event_sub->cookie;
 	memcpy(event_data->hdr.out_data, data, sizeof(struct mlx5_eqe));
 
+	to_free = NULL;
+
 	spin_lock_irqsave(&ev_file->lock, flags);
 	if (!ev_file->is_destroyed)
 		list_add_tail(&event_data->list, &ev_file->event_list);
 	else
-		kfree(event_data);
+		to_free = event_data;
 	spin_unlock_irqrestore(&ev_file->lock, flags);
+
+	kfree(to_free);
+
 	wake_up_interruptible(&ev_file->poll_wait);
 
 	return 0;
@@ -2958,6 +2963,7 @@ static void devx_async_cmd_event_destroy_uobj(struct ib_uobject *uobj,
 			     uobj);
 	struct devx_async_event_queue *ev_queue = &comp_ev_file->ev_queue;
 	struct devx_async_data *entry, *tmp;
+	LIST_HEAD(tmp_list);
 
 	spin_lock_irq(&ev_queue->lock);
 	ev_queue->is_destroyed = 1;
@@ -2967,12 +2973,15 @@ static void devx_async_cmd_event_destroy_uobj(struct ib_uobject *uobj,
 	mlx5_cmd_cleanup_async_ctx(&comp_ev_file->async_ctx);
 
 	spin_lock_irq(&comp_ev_file->ev_queue.lock);
-	list_for_each_entry_safe(entry, tmp,
-				 &comp_ev_file->ev_queue.event_list, list) {
+	/* Move all entries to a temporary list and free them outside lock */
+	list_splice_init(&comp_ev_file->ev_queue.event_list, &tmp_list);
+	spin_unlock_irq(&comp_ev_file->ev_queue.lock);
+
+	/* Free memory outside of critical section */
+	list_for_each_entry_safe(entry, tmp, &tmp_list, list) {
 		list_del(&entry->list);
 		kvfree(entry);
 	}
-	spin_unlock_irq(&comp_ev_file->ev_queue.lock);
 };
 
 static void devx_async_event_destroy_uobj(struct ib_uobject *uobj,
@@ -2982,7 +2991,9 @@ static void devx_async_event_destroy_uobj(struct ib_uobject *uobj,
 		container_of(uobj, struct devx_async_event_file,
 			     uobj);
 	struct devx_event_subscription *event_sub, *event_sub_tmp;
+	struct devx_async_event_data *entry, *tmp;
 	struct mlx5_ib_dev *dev = ev_file->dev;
+	LIST_HEAD(tmp_list);
 
 	spin_lock_irq(&ev_file->lock);
 	ev_file->is_destroyed = 1;
@@ -2996,17 +3007,18 @@ static void devx_async_event_destroy_uobj(struct ib_uobject *uobj,
 			list_del_init(&event_sub->event_list);
 
 	} else {
-		struct devx_async_event_data *entry, *tmp;
-
-		list_for_each_entry_safe(entry, tmp, &ev_file->event_list,
-					 list) {
-			list_del(&entry->list);
-			kfree(entry);
-		}
+		/* Move all entries to a temporary list */
+		list_splice_init(&ev_file->event_list, &tmp_list);
 	}
 
 	spin_unlock_irq(&ev_file->lock);
 	wake_up_interruptible(&ev_file->poll_wait);
+
+	/* Free event data outside of critical section */
+	list_for_each_entry_safe(entry, tmp, &tmp_list, list) {
+		list_del(&entry->list);
+		kfree(entry);
+	}
 
 	mutex_lock(&dev->devx_event_table.event_xa_lock);
 	/* delete the subscriptions which are related to this FD */

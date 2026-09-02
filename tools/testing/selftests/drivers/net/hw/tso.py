@@ -235,6 +235,9 @@ def main() -> None:
             ("vxlan_csum", "", "tx-udp_tnl-csum-segmentation", ("vxlan", "id 100 dstport 4789 udpcsum", ("4", "6"))),
             ("gre",        "4", "tx-gre-segmentation",         ("gre",   "", ("4", "6"))),
             ("gre",        "6", "tx-gre-segmentation",         ("ip6gre","", ("4", "6"))),
+            ("ip",         "6", "tx-ipxip6-segmentation",      ("ip6tnl","mode any", ("4", "6"))),
+            ("ip",         "4", "tx-ipxip4-segmentation",      ("sit","", ("6", ))),
+            ("ip",         "4", "tx-ipxip4-segmentation",      ("ipip","", ("4", ))),
         )
 
         cases = []

@@ -800,6 +800,8 @@ static ssize_t amdgpu_set_pp_od_clk_voltage(struct device *dev,
 	while ((sub_str = strsep(&tmp_str, delimiter)) != NULL) {
 		if (strlen(sub_str) == 0)
 			continue;
+		if (parameter_size >= ARRAY_SIZE(parameter))
+			return -EINVAL;
 		ret = kstrtol(sub_str, 0, &parameter[parameter_size]);
 		if (ret)
 			return -EINVAL;
@@ -868,6 +870,8 @@ static ssize_t amdgpu_get_pp_od_clk_voltage(struct device *dev,
 
 	for (clk_index = 0 ; clk_index < ARRAY_SIZE(od_clocks) ; clk_index++) {
 		amdgpu_dpm_emit_clock_levels(adev, od_clocks[clk_index], buf, &size);
+		if (unlikely(size >= (PAGE_SIZE - 1)))
+			break;
 	}
 
 	if (size == 0)
@@ -1383,7 +1387,6 @@ static ssize_t amdgpu_set_pp_power_profile_mode(struct device *dev,
 	long parameter[64];
 	char *sub_str, buf_cpy[128];
 	char *tmp_str;
-	uint32_t i = 0;
 	char tmp[2];
 	long int profile_mode = 0;
 	const char delimiter[3] = {' ', '\n', '\0'};
@@ -1392,18 +1395,18 @@ static ssize_t amdgpu_set_pp_power_profile_mode(struct device *dev,
 	if (count == 0 || sysfs_streq(buf, ""))
 		return -EINVAL;
 
-	tmp[0] = *(buf);
+	tmp[0] = *(buf++);
 	tmp[1] = '\0';
 	ret = kstrtol(tmp, 0, &profile_mode);
 	if (ret)
 		return -EINVAL;
 
 	if (profile_mode == PP_SMC_POWER_PROFILE_CUSTOM) {
-		if (count < 2 || count > 127)
+		if (count < 2 || count > sizeof(buf_cpy))
 			return -EINVAL;
-		while (isspace(*++buf))
-			i++;
-		memcpy(buf_cpy, buf, count-i);
+		while (isspace(*buf))
+			buf++;
+		strscpy(buf_cpy, buf, sizeof(buf_cpy));
 		tmp_str = buf_cpy;
 		while ((sub_str = strsep(&tmp_str, delimiter)) != NULL) {
 			if (strlen(sub_str) == 0)
@@ -1627,6 +1630,10 @@ static ssize_t amdgpu_set_thermal_throttling_logging(struct device *dev,
 	ret = kstrtol(buf, 0, &throttling_logging_interval);
 	if (ret)
 		return ret;
+
+	/* Reject negative values - only 0 (disable) or 1-3600 (seconds) are valid */
+	if (throttling_logging_interval < 0)
+		return -EINVAL;
 
 	if (throttling_logging_interval > 3600)
 		return -EINVAL;
@@ -1870,12 +1877,12 @@ static ssize_t amdgpu_set_smartshift_bias(struct device *dev,
 {
 	struct drm_device *ddev = dev_get_drvdata(dev);
 	struct amdgpu_device *adev = drm_to_adev(ddev);
-	int r = 0;
+	int r;
 	int bias = 0;
 
 	r = kstrtoint(buf, 10, &bias);
 	if (r)
-		goto out;
+		return r;
 
 	r = amdgpu_pm_get_access(adev);
 	if (r < 0)
@@ -1887,14 +1894,12 @@ static ssize_t amdgpu_set_smartshift_bias(struct device *dev,
 		bias = AMDGPU_SMARTSHIFT_MIN_BIAS;
 
 	amdgpu_smartshift_bias = bias;
-	r = count;
 
 	/* TODO: update bias level with SMU message */
 
-out:
 	amdgpu_pm_put_access(adev);
 
-	return r;
+	return count;
 }
 
 static int ss_power_attr_update(struct amdgpu_device *adev, struct amdgpu_device_attr *attr,
@@ -2042,20 +2047,31 @@ static int pp_dpm_clk_default_attr_update(struct amdgpu_device *adev, struct amd
 		       gc_ver == IP_VERSION(11, 0, 3)) && adev->vcn.num_vcn_inst >= 2))
 			*states = ATTR_STATE_UNSUPPORTED;
 	} else if (DEVICE_ATTR_IS(pp_dpm_pcie)) {
-		if (gc_ver == IP_VERSION(9, 4, 2) ||
-		    amdgpu_is_multi_aid(adev))
+		if (amdgpu_is_multi_aid(adev))
 			*states = ATTR_STATE_UNSUPPORTED;
 	}
 
 	switch (gc_ver) {
 	case IP_VERSION(9, 4, 1):
-	case IP_VERSION(9, 4, 2):
-		/* the Mi series card does not support standalone mclk/socclk/fclk level setting */
+		/* Arcturus does not support standalone mclk/socclk/fclk level setting */
 		if (DEVICE_ATTR_IS(pp_dpm_mclk) ||
 		    DEVICE_ATTR_IS(pp_dpm_socclk) ||
 		    DEVICE_ATTR_IS(pp_dpm_fclk)) {
 			dev_attr->attr.mode &= ~S_IWUGO;
 			dev_attr->store = NULL;
+		}
+		break;
+	case IP_VERSION(9, 4, 2):
+		if (DEVICE_ATTR_IS(pp_dpm_mclk) ||
+		    DEVICE_ATTR_IS(pp_dpm_socclk)) {
+			/* Aldebaran mclk/socclk DPM only supports voltage control,
+			 * not allow to set dpm level directly */
+			dev_attr->attr.mode &= ~S_IWUGO;
+			dev_attr->store = NULL;
+		} else if (DEVICE_ATTR_IS(pp_dpm_fclk) ||
+			   DEVICE_ATTR_IS(pp_dpm_pcie)) {
+			/* Aldebaran does not support fclk/pcie dpm */
+			*states = ATTR_STATE_UNSUPPORTED;
 		}
 		break;
 	default:
@@ -3931,6 +3947,7 @@ static int parse_input_od_command_lines(const char *buf,
 					size_t count,
 					u32 *type,
 					long *params,
+					size_t params_max,
 					uint32_t *num_of_params)
 {
 	const char delimiter[3] = {' ', '\n', '\0'};
@@ -3966,6 +3983,9 @@ static int parse_input_od_command_lines(const char *buf,
 		if (strlen(sub_str) == 0)
 			continue;
 
+		if (parameter_size >= params_max)
+			return -EINVAL;
+
 		ret = kstrtol(sub_str, 0, &params[parameter_size]);
 		if (ret)
 			return -EINVAL;
@@ -3997,6 +4017,7 @@ amdgpu_distribute_custom_od_settings(struct amdgpu_device *adev,
 					   count,
 					   &cmd_type,
 					   parameter,
+					   ARRAY_SIZE(parameter),
 					   &parameter_size);
 	if (ret)
 		return ret;

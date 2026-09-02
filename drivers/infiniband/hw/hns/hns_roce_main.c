@@ -221,6 +221,11 @@ static int hns_roce_query_device(struct ib_device *ib_dev,
 				 struct ib_udata *uhw)
 {
 	struct hns_roce_dev *hr_dev = to_hr_dev(ib_dev);
+	int ret;
+
+	ret = ib_is_udata_in_empty(uhw);
+	if (ret)
+		return ret;
 
 	memset(props, 0, sizeof(*props));
 
@@ -274,7 +279,7 @@ static int hns_roce_query_device(struct ib_device *ib_dev,
 	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_XRC)
 		props->device_cap_flags |= IB_DEVICE_XRC;
 
-	return 0;
+	return ib_respond_empty_udata(uhw);
 }
 
 static int hns_roce_query_port(struct ib_device *ib_dev, u32 port_num,
@@ -477,8 +482,7 @@ static int hns_roce_alloc_ucontext(struct ib_ucontext *uctx,
 
 	resp.cqe_size = hr_dev->caps.cqe_sz;
 
-	ret = ib_copy_to_udata(udata, &resp,
-			       min(udata->outlen, sizeof(resp)));
+	ret = ib_respond_udata(udata, resp);
 	if (ret)
 		goto error_fail_copy_to_udata;
 

@@ -181,7 +181,7 @@ static int alg_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int add
 	if (IS_ERR(type))
 		return PTR_ERR(type);
 
-	private = type->bind(sa->salg_name, sa->salg_feat, sa->salg_mask);
+	private = type->bind(sa->salg_name);
 	if (IS_ERR(private)) {
 		module_put(type->owner);
 		return PTR_ERR(private);
@@ -1086,35 +1086,6 @@ void af_alg_free_resources(struct af_alg_async_req *areq)
 EXPORT_SYMBOL_GPL(af_alg_free_resources);
 
 /**
- * af_alg_async_cb - AIO callback handler
- * @data: async request completion data
- * @err: if non-zero, error result to be returned via ki_complete();
- *       otherwise return the AIO output length via ki_complete().
- *
- * This handler cleans up the struct af_alg_async_req upon completion of the
- * AIO operation.
- *
- * The number of bytes to be generated with the AIO operation must be set
- * in areq->outlen before the AIO callback handler is invoked.
- */
-void af_alg_async_cb(void *data, int err)
-{
-	struct af_alg_async_req *areq = data;
-	struct sock *sk = areq->sk;
-	struct kiocb *iocb = areq->iocb;
-	unsigned int resultlen;
-
-	/* Buffer size written by crypto operation. */
-	resultlen = areq->outlen;
-
-	af_alg_free_resources(areq);
-	sock_put(sk);
-
-	iocb->ki_complete(iocb, err ? err : (int)resultlen);
-}
-EXPORT_SYMBOL_GPL(af_alg_async_cb);
-
-/**
  * af_alg_poll - poll system call handler
  * @file: file pointer
  * @sock: socket to poll
@@ -1154,8 +1125,8 @@ struct af_alg_async_req *af_alg_alloc_areq(struct sock *sk,
 	struct af_alg_ctx *ctx = alg_sk(sk)->private;
 	struct af_alg_async_req *areq;
 
-	/* Only one AIO request can be in flight. */
-	if (ctx->inflight)
+	/* Only one request can be in flight. */
+	if (WARN_ON_ONCE(ctx->inflight))
 		return ERR_PTR(-EBUSY);
 
 	areq = sock_kmalloc(sk, areqlen, GFP_KERNEL);

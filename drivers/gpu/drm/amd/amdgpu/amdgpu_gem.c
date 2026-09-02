@@ -249,7 +249,7 @@ static int amdgpu_gem_object_open(struct drm_gem_object *obj,
 
 	drm_exec_init(&exec, DRM_EXEC_IGNORE_DUPLICATES, 0);
 	drm_exec_until_all_locked(&exec) {
-		r = drm_exec_prepare_obj(&exec, &abo->tbo.base, 1);
+		r = drm_exec_prepare_obj(&exec, &abo->tbo.base, TTM_NUM_MOVE_FENCES + 1);
 		drm_exec_retry_on_contention(&exec);
 		if (unlikely(r))
 			goto out_unlock;

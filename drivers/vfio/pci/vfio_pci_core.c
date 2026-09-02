@@ -11,6 +11,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/aperture.h>
+#include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/eventfd.h>
 #include <linux/file.h>
@@ -29,6 +30,7 @@
 #include <linux/sched/mm.h>
 #include <linux/iommufd.h>
 #include <linux/pci-p2pdma.h>
+#include <linux/seq_file.h>
 #if IS_ENABLED(CONFIG_EEH)
 #include <asm/eeh.h>
 #endif
@@ -37,10 +39,6 @@
 
 #define DRIVER_AUTHOR   "Alex Williamson <alex.williamson@redhat.com>"
 #define DRIVER_DESC "core driver for VFIO based PCI devices"
-
-static bool nointxmask;
-static bool disable_vga;
-static bool disable_idle_d3;
 
 static void vfio_pci_eventfd_rcu_free(struct rcu_head *rcu)
 {
@@ -92,14 +90,68 @@ struct vfio_pci_vf_token {
 	int			users;
 };
 
-static inline bool vfio_vga_disabled(void)
+static inline bool vfio_vga_disabled(struct vfio_pci_core_device *vdev)
 {
 #ifdef CONFIG_VFIO_PCI_VGA
-	return disable_vga;
+	return vdev->disable_vga;
 #else
 	return true;
 #endif
 }
+
+#ifdef CONFIG_VFIO_DEBUGFS
+static struct vfio_pci_core_device *
+vfio_pci_core_debugfs_private(struct seq_file *seq)
+{
+	struct device *dev = seq->private;
+	struct vfio_device *core_vdev = container_of(dev, struct vfio_device,
+						     device);
+
+	return container_of(core_vdev, struct vfio_pci_core_device, vdev);
+}
+
+static int vfio_pci_core_debugfs_nointxmask(struct seq_file *seq, void *data)
+{
+	struct vfio_pci_core_device *vdev = vfio_pci_core_debugfs_private(seq);
+
+	seq_puts(seq, vdev->nointxmask ? "Y\n" : "N\n");
+	return 0;
+}
+
+static int vfio_pci_core_debugfs_disable_idle_d3(struct seq_file *seq,
+						 void *data)
+{
+	struct vfio_pci_core_device *vdev = vfio_pci_core_debugfs_private(seq);
+
+	seq_puts(seq, vdev->disable_idle_d3 ? "Y\n" : "N\n");
+	return 0;
+}
+
+/*
+ * disable_idle_d3 and nointxmask are writable module parameters latched
+ * per device at init, so a device's effective value can differ from the
+ * current parameter setting.  Expose the per-device (read-only) values
+ * here for visibility; read-only parameters can't drift and are omitted.
+ */
+static void vfio_pci_core_debugfs_init(struct vfio_pci_core_device *vdev)
+{
+	struct device *dev = &vdev->vdev.device;
+	struct dentry *pci_dir;
+
+	if (IS_ERR_OR_NULL(vdev->vdev.debug_root))
+		return;
+
+	pci_dir = debugfs_create_dir("pci", vdev->vdev.debug_root);
+	debugfs_create_devm_seqfile(dev, "nointxmask", pci_dir,
+				    vfio_pci_core_debugfs_nointxmask);
+	debugfs_create_devm_seqfile(dev, "disable_idle_d3", pci_dir,
+				    vfio_pci_core_debugfs_disable_idle_d3);
+}
+#else
+static inline void vfio_pci_core_debugfs_init(struct vfio_pci_core_device *vdev)
+{
+}
+#endif /* CONFIG_VFIO_DEBUGFS */
 
 /*
  * Our VGA arbiter participation is limited since we don't know anything
@@ -111,11 +163,12 @@ static inline bool vfio_vga_disabled(void)
  */
 static unsigned int vfio_pci_set_decode(struct pci_dev *pdev, bool single_vga)
 {
+	struct vfio_pci_core_device *vdev = dev_get_drvdata(&pdev->dev);
 	struct pci_dev *tmp = NULL;
 	unsigned char max_busnr;
 	unsigned int decodes;
 
-	if (single_vga || !vfio_vga_disabled() || pci_is_root_bus(pdev->bus))
+	if (single_vga || !vfio_vga_disabled(vdev) || pci_is_root_bus(pdev->bus))
 		return VGA_RSRC_NORMAL_IO | VGA_RSRC_NORMAL_MEM |
 		       VGA_RSRC_LEGACY_IO | VGA_RSRC_LEGACY_MEM;
 
@@ -562,7 +615,7 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 	if (!vdev->pci_saved_state)
 		pci_dbg(pdev, "%s: Couldn't store saved state\n", __func__);
 
-	if (likely(!nointxmask)) {
+	if (likely(!vdev->nointxmask)) {
 		if (vfio_pci_nointx(pdev)) {
 			pci_info(pdev, "Masking broken INTx support\n");
 			vdev->nointx = true;
@@ -602,7 +655,7 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 		vdev->has_dyn_msix = false;
 	}
 
-	if (!vfio_vga_disabled() && vfio_pci_is_vga(pdev))
+	if (!vfio_vga_disabled(vdev) && vfio_pci_is_vga(pdev))
 		vdev->has_vga = true;
 
 	vfio_pci_core_map_bars(vdev);
@@ -1765,7 +1818,7 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	struct pci_dev *pdev = vdev->pdev;
 	unsigned int index;
 	u64 phys_len, req_len, pgoff, req_start;
-	int ret;
+	void __iomem *bar_io;
 
 	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
 
@@ -1799,12 +1852,11 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 		return -EINVAL;
 
 	/*
-	 * Even though we don't make use of the barmap for the mmap,
-	 * we need to request the region and the barmap tracks that.
+	 * Ensure the BAR resource region is reserved for use.
 	 */
-	ret = vfio_pci_core_setup_barmap(vdev, index);
-	if (ret)
-		return ret;
+	bar_io = vfio_pci_core_get_iomap(vdev, index);
+	if (IS_ERR(bar_io))
+		return PTR_ERR(bar_io);
 
 	vma->vm_private_data = vdev;
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
@@ -2145,8 +2197,6 @@ int vfio_pci_core_init_dev(struct vfio_device *core_vdev)
 	init_rwsem(&vdev->memory_lock);
 	xa_init(&vdev->ctx);
 
-	vdev->disable_idle_d3 = disable_idle_d3;
-
 	return 0;
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_init_dev);
@@ -2248,6 +2298,9 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	ret = vfio_register_group_dev(&vdev->vdev);
 	if (ret)
 		goto out_power;
+
+	vfio_pci_core_debugfs_init(vdev);
+
 	return 0;
 
 out_power:
@@ -2616,15 +2669,6 @@ static void vfio_pci_dev_set_try_reset(struct vfio_device_set *dev_set)
 		pm_runtime_put(&cur->pdev->dev);
 	}
 }
-
-void vfio_pci_core_set_params(bool is_nointxmask, bool is_disable_vga,
-			      bool is_disable_idle_d3)
-{
-	nointxmask = is_nointxmask;
-	disable_vga = is_disable_vga;
-	disable_idle_d3 = is_disable_idle_d3;
-}
-EXPORT_SYMBOL_GPL(vfio_pci_core_set_params);
 
 static void vfio_pci_core_cleanup(void)
 {

@@ -7,6 +7,8 @@
  *   Copyright (c) 2002 by Takashi Iwai <tiwai@suse.de>
  */
 
+#include <sound/core.h>
+
 /* handling of USB vendor/product ID pairs as 32-bit numbers */
 #define USB_ID(vendor, product) (((unsigned int)(vendor) << 16) | (product))
 #define USB_ID_VENDOR(id) ((id) >> 16)
@@ -41,8 +43,7 @@ struct snd_usb_audio {
 	unsigned int system_suspend;
 	atomic_t active;
 	atomic_t shutdown;
-	atomic_t usage_count;
-	wait_queue_head_t shutdown_wait;
+	struct snd_refcount usage_count;
 	unsigned int quirk_flags;
 	unsigned int need_delayed_register:1; /* warn for delayed registration */
 	int num_interfaces;

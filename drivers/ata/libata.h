@@ -88,7 +88,8 @@ extern int ata_down_xfermask_limit(struct ata_device *dev, unsigned int sel);
 extern unsigned int ata_dev_set_feature(struct ata_device *dev,
 					u8 subcmd, u8 action);
 extern void ata_qc_free(struct ata_queued_cmd *qc);
-extern void ata_qc_issue(struct ata_queued_cmd *qc);
+extern void ata_qc_issue(struct ata_port *ap, struct ata_queued_cmd *qc)
+	__must_hold(ap->lock);
 extern void __ata_qc_complete(struct ata_queued_cmd *qc);
 extern int atapi_check_dma(struct ata_queued_cmd *qc);
 extern void swap_buf_le16(u16 *buf, unsigned int buf_words);
@@ -175,7 +176,9 @@ void ata_scsi_sdev_config(struct scsi_device *sdev);
 int ata_scsi_dev_config(struct scsi_device *sdev, struct queue_limits *lim,
 		struct ata_device *dev);
 enum scsi_qc_status __ata_scsi_queuecmd(struct scsi_cmnd *scmd,
-					struct ata_device *dev);
+					struct ata_device *dev,
+					struct ata_port *ap)
+	__must_hold(ap->lock);
 void ata_scsi_deferred_qc_work(struct work_struct *work);
 enum scsi_timeout_action ata_scsi_requeue_deferred_qc(struct ata_port *ap,
 						      struct scsi_cmnd *scmd);
@@ -183,8 +186,10 @@ enum scsi_timeout_action ata_scsi_requeue_deferred_qc(struct ata_port *ap,
 /* libata-eh.c */
 extern unsigned int ata_internal_cmd_timeout(struct ata_device *dev, u8 cmd);
 extern void ata_internal_cmd_timed_out(struct ata_device *dev, u8 cmd);
-extern void ata_eh_acquire(struct ata_port *ap);
-extern void ata_eh_release(struct ata_port *ap);
+extern void ata_eh_acquire(struct ata_port *ap)
+	__acquires(&ap->host->eh_mutex);
+extern void ata_eh_release(struct ata_port *ap)
+	__releases(&ap->host->eh_mutex);
 extern void ata_scsi_error(struct Scsi_Host *host);
 extern void ata_eh_fastdrain_timerfn(struct timer_list *t);
 extern void ata_qc_schedule_eh(struct ata_queued_cmd *qc);
@@ -197,11 +202,13 @@ extern void ata_eh_done(struct ata_link *link, struct ata_device *dev,
 extern void ata_eh_autopsy(struct ata_port *ap);
 const char *ata_get_cmd_name(u8 command);
 extern void ata_eh_report(struct ata_port *ap);
-extern int ata_eh_reset(struct ata_link *link, int classify,
-			struct ata_reset_operations *reset_ops);
+extern int ata_eh_reset(struct ata_port *ap, struct ata_link *link,
+			int classify, struct ata_reset_operations *reset_ops)
+	__must_hold(&ap->host->eh_mutex);
 extern int ata_eh_recover(struct ata_port *ap,
 			  struct ata_reset_operations *reset_ops,
-			  struct ata_link **r_failed_disk);
+			  struct ata_link **r_failed_disk)
+	__must_hold(&ap->host->eh_mutex);
 extern void ata_eh_finish(struct ata_port *ap);
 extern int ata_ering_map(struct ata_ering *ering,
 			 int (*map_fn)(struct ata_ering_entry *, void *),

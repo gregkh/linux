@@ -5175,7 +5175,7 @@ static void rtl8xxxu_tx_complete(struct urb *urb)
 }
 
 static void rtl8xxxu_dump_action(struct device *dev,
-				 struct ieee80211_hdr *hdr)
+				 struct ieee80211_hdr *hdr, unsigned int skb_len)
 {
 	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)hdr;
 	u16 cap, timeout;
@@ -5183,8 +5183,14 @@ static void rtl8xxxu_dump_action(struct device *dev,
 	if (!(rtl8xxxu_debug & RTL8XXXU_DEBUG_ACTION))
 		return;
 
+	if (skb_len < IEEE80211_MIN_ACTION_SIZE(action_code))
+		return;
+
 	switch (mgmt->u.action.action_code) {
 	case WLAN_ACTION_ADDBA_RESP:
+		if (skb_len < IEEE80211_MIN_ACTION_SIZE(addba_resp))
+			break;
+
 		cap = le16_to_cpu(mgmt->u.action.addba_resp.capab);
 		timeout = le16_to_cpu(mgmt->u.action.addba_resp.timeout);
 		dev_info(dev, "WLAN_ACTION_ADDBA_RESP: "
@@ -5197,6 +5203,9 @@ static void rtl8xxxu_dump_action(struct device *dev,
 			 le16_to_cpu(mgmt->u.action.addba_resp.status));
 		break;
 	case WLAN_ACTION_ADDBA_REQ:
+		if (skb_len < IEEE80211_MIN_ACTION_SIZE(addba_req))
+			break;
+
 		cap = le16_to_cpu(mgmt->u.action.addba_req.capab);
 		timeout = le16_to_cpu(mgmt->u.action.addba_req.timeout);
 		dev_info(dev, "WLAN_ACTION_ADDBA_REQ: "
@@ -5486,7 +5495,7 @@ static void rtl8xxxu_tx(struct ieee80211_hw *hw,
 	}
 
 	if (ieee80211_is_action(hdr->frame_control))
-		rtl8xxxu_dump_action(dev, hdr);
+		rtl8xxxu_dump_action(dev, hdr, skb->len);
 
 	tx_info->rate_driver_data[0] = hw;
 

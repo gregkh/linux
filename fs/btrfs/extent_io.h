@@ -55,7 +55,6 @@ enum {
 	/* Page starts writeback, clear dirty bit and set writeback bit */
 	ENUM_BIT(PAGE_START_WRITEBACK),
 	ENUM_BIT(PAGE_END_WRITEBACK),
-	ENUM_BIT(PAGE_SET_ORDERED),
 };
 
 /*
@@ -387,15 +386,23 @@ void extent_clear_unlock_delalloc(struct btrfs_inode *inode, u64 start, u64 end,
 				  const struct folio *locked_folio,
 				  struct extent_state **cached,
 				  u32 bits_to_clear, unsigned long page_ops);
-int extent_invalidate_folio(struct extent_io_tree *tree,
-			    struct folio *folio, size_t offset);
 void btrfs_clear_buffer_dirty(struct btrfs_trans_handle *trans,
 			      struct extent_buffer *buf);
 
-int btrfs_alloc_page_array(unsigned int nr_pages, struct page **page_array,
-			   bool nofail);
+static inline void btrfs_clear_folio_dirty_tag(struct folio *folio)
+{
+	ASSERT(!folio_test_dirty(folio));
+	ASSERT(folio_test_locked(folio));
+	ASSERT(folio->mapping);
+	xa_lock_irq(&folio->mapping->i_pages);
+	__xa_clear_mark(&folio->mapping->i_pages, folio->index,
+			PAGECACHE_TAG_DIRTY);
+	xa_unlock_irq(&folio->mapping->i_pages);
+}
+
+int btrfs_alloc_page_array(unsigned int nr_pages, struct page **page_array, gfp_t gfp);
 int btrfs_alloc_folio_array(unsigned int nr_folios, unsigned int order,
-			    struct folio **folio_array);
+			    struct folio **folio_array, gfp_t gfp);
 
 #ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
 bool find_lock_delalloc_range(struct inode *inode,

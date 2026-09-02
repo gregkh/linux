@@ -173,7 +173,7 @@ struct ffa_partition_info;
 #if IS_REACHABLE(CONFIG_ARM_FFA_TRANSPORT)
 struct ffa_device *
 ffa_device_register(const struct ffa_partition_info *part_info,
-		    const struct ffa_ops *ops);
+		    const struct ffa_ops *ops, struct device *parent);
 void ffa_device_unregister(struct ffa_device *ffa_dev);
 int ffa_driver_register(struct ffa_driver *driver, struct module *owner,
 			const char *mod_name);
@@ -184,7 +184,7 @@ bool ffa_device_is_valid(struct ffa_device *ffa_dev);
 #else
 static inline struct ffa_device *
 ffa_device_register(const struct ffa_partition_info *part_info,
-		    const struct ffa_ops *ops)
+		    const struct ffa_ops *ops, struct device *parent)
 {
 	return NULL;
 }
@@ -420,6 +420,13 @@ struct ffa_mem_region {
 
 #define FFA_EMAD_HAS_IMPDEF_FIELD(version)	((version) >= FFA_VERSION_1_2)
 #define FFA_MEM_REGION_HAS_EP_MEM_OFFSET(version) ((version) > FFA_VERSION_1_0)
+
+/* The layout changed from FFA_VERSION_1_0 and the region includes an
+ * ep_mem_offset.
+ */
+#define FFA_MEM_REGION_SZ(version)		(!FFA_MEM_REGION_HAS_EP_MEM_OFFSET((version)) ?\
+						 offsetof(struct ffa_mem_region, ep_mem_offset) :\
+						 sizeof(struct ffa_mem_region))
 
 static inline u32 ffa_emad_size_get(u32 ffa_version)
 {

@@ -962,11 +962,8 @@ int attr_data_get_block(struct ntfs_inode *ni, CLST vcn, CLST clen, CLST *lcn,
 
 	/* Try to find in cache. */
 	down_read(&ni->file.run_lock);
-	if (!no_da && run_lookup_entry(&ni->file.run_da, vcn, lcn, len, NULL)) {
-		/* The requested vcn is delay allocated. */
-		*lcn = DELALLOC_LCN;
-	} else if (run_lookup_entry(&ni->file.run, vcn, lcn, len, NULL)) {
-		/* The requested vcn is known in current run. */
+	if (run_lookup_entry_da(&ni->file.run, !no_da ? &ni->file.run_da : NULL,
+				vcn, lcn, len)) {
 	} else {
 		*len = 0;
 	}
@@ -1012,11 +1009,8 @@ int attr_data_get_block_locked(struct ntfs_inode *ni, CLST vcn, CLST clen,
 	int step;
 
 again:
-	if (da && run_lookup_entry(run_da, vcn, lcn, len, NULL)) {
-		/* The requested vcn is delay allocated. */
-		*lcn = DELALLOC_LCN;
-	} else if (run_lookup_entry(run, vcn, lcn, len, NULL)) {
-		/* The requested vcn is known in current run. */
+	if (run_lookup_entry_da(run, da ? &ni->file.run_da : NULL, vcn, lcn,
+				len)) {
 	} else {
 		*len = 0;
 	}
@@ -1104,7 +1098,8 @@ again:
 	}
 
 	if (!*len) {
-		if (run_lookup_entry(run, vcn, lcn, len, NULL)) {
+		if (run_lookup_entry_da(run, da ? run_da : NULL, vcn, lcn,
+					len)) {
 			if (*lcn != SPARSE_LCN || !new)
 				goto ok; /* Slow normal way without allocation. */
 
@@ -1161,7 +1156,7 @@ again:
 			struct ATTRIB *attr2;
 
 			attr2 = ni_find_attr(ni, attr_b, &le_b, ATTR_DATA, NULL,
-					       0, &vcn0, &mi);
+					     0, &vcn0, &mi);
 			if (!attr2) {
 				err = -EINVAL;
 				goto out;

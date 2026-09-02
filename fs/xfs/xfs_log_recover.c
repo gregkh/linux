@@ -1921,13 +1921,6 @@ xlog_recover_reorder_trans(
 			xfs_warn(log->l_mp,
 				"%s: unrecognized type of log operation (%d)",
 				__func__, ITEM_TYPE(item));
-			ASSERT(0);
-			/*
-			 * return the remaining items back to the transaction
-			 * item list so they can be freed in caller.
-			 */
-			if (!list_empty(&sort_list))
-				list_splice_init(&sort_list, &trans->r_itemq);
 			error = -EFSCORRUPTED;
 			break;
 		}
@@ -1955,7 +1948,15 @@ xlog_recover_reorder_trans(
 		}
 	}
 
-	ASSERT(list_empty(&sort_list));
+	/*
+	 * Return the remaining items back to the transaction item list so they
+	 * can be freed in caller.  This should only happen when we encounter
+	 * an error.
+	 */
+	if (!list_empty(&sort_list)) {
+		ASSERT(error);
+		list_splice_init(&sort_list, &trans->r_itemq);
+	}
 	if (!list_empty(&buffer_list))
 		list_splice(&buffer_list, &trans->r_itemq);
 	if (!list_empty(&item_list))

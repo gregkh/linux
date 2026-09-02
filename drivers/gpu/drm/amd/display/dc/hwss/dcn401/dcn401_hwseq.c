@@ -40,6 +40,7 @@
 #include "link_enc_cfg.h"
 #include "../hw_sequencer.h"
 #include "dio/dcn10/dcn10_dio.h"
+#include "gpio_service_interface.h"
 
 #define DC_LOGGER_INIT(logger)
 
@@ -143,7 +144,7 @@ void dcn401_init_hw(struct dc *dc)
 	struct dce_hwseq *hws = dc->hwseq;
 	struct dc_bios *dcb = dc->ctx->dc_bios;
 	struct resource_pool *res_pool = dc->res_pool;
-	int i;
+	unsigned int i;
 	unsigned int edp_num;
 	uint32_t backlight = MAX_BACKLIGHT_LEVEL;
 	uint32_t user_level = MAX_BACKLIGHT_LEVEL;
@@ -319,6 +320,32 @@ void dcn401_init_hw(struct dc *dc)
 			backlight = link->panel_cntl->funcs->hw_init(link->panel_cntl);
 			user_level = link->panel_cntl->stored_backlight_registers.USER_LEVEL;
 		}
+
+		if (link->ctx->dc->config.dp_connector_no_native_i2c && link->no_ddc_pin) {
+			struct graphics_object_i2c_info i2c_info;
+			struct ddc *ddc_pin;
+			struct gpio_ddc_hw_info hw_info;
+
+			if (link->ctx->dc_bios->funcs->get_i2c_info(dcb, link->link_id, &i2c_info) == BP_RESULT_OK) {
+				hw_info.ddc_channel = i2c_info.i2c_line;
+				hw_info.hw_supported = i2c_info.i2c_hw_assist;
+
+				ddc_pin = dal_gpio_create_ddc(
+					link->ctx->gpio_service,
+					i2c_info.gpio_info.clk_a_register_index,
+					1 << i2c_info.gpio_info.clk_a_shift,
+					&hw_info);
+
+				if (ddc_pin) {
+					// need to switch pad to aux mode, one time only
+					// TODO: Handle result
+					dal_ddc_open(ddc_pin, GPIO_MODE_HARDWARE,
+						GPIO_DDC_CONFIG_TYPE_MODE_AUX);
+
+					dal_gpio_destroy_ddc(&ddc_pin);
+				}
+			}
+		}
 	}
 
 	for (i = 0; i < dc->res_pool->pipe_count; i++) {
@@ -493,12 +520,10 @@ void dcn401_populate_mcm_luts(struct dc *dc,
 		break;
 	case DC_CM2_TRANSFER_FUNC_SOURCE_VIDMEM:
 		switch (mcm_luts.lut3d_data.gpu_mem_params.size) {
-#if defined(CONFIG_DRM_AMD_DC_DCN4_2)
 		case DC_CM2_GPU_MEM_SIZE_333333:
 			if (dc->caps.color.mpc.rmcm_3d_lut_caps.lut_dim_caps.dim_33)
 				width = hubp_3dlut_fl_width_33;
 			break;
-#endif
 		case DC_CM2_GPU_MEM_SIZE_171717:
 			width = hubp_3dlut_fl_width_17;
 			break;
@@ -762,6 +787,9 @@ static void enable_stream_timing_calc(
 			stream->link->phy_state.symclk_state = SYMCLK_ON_TX_ON;
 	}
 
+	if (pipe_ctx->stream_res.tg->funcs->set_h_timing_div_manual_mode) {
+		*manual_mode = !is_h_timing_divisible_by_2(stream);
+	}
 	params->vertical_total_min = stream->adjust.v_total_min;
 	params->vertical_total_max = stream->adjust.v_total_max;
 	params->vertical_total_mid = stream->adjust.v_total_mid;
@@ -819,6 +847,8 @@ enum dc_status dcn401_enable_stream_timing(
 	if (dc->res_pool->dccg->funcs->set_dtbclk_p_src) {
 		if (dc_is_dp_signal(stream->signal) || dc_is_virtual_signal(stream->signal)) {
 			dc->res_pool->dccg->funcs->set_dtbclk_p_src(dc->res_pool->dccg, DPREFCLK, pipe_ctx->stream_res.tg->inst);
+		} else if (dc_is_hdmi_frl_signal(stream->signal)) {
+			dc->res_pool->dccg->funcs->set_dtbclk_p_src(dc->res_pool->dccg, DTBCLK0, pipe_ctx->stream_res.tg->inst);
 		}
 	}
 
@@ -857,6 +887,8 @@ enum dc_status dcn401_enable_stream_timing(
 		pipe_ctx->stream->signal,
 		true);
 
+	if (pipe_ctx->stream_res.tg->funcs->set_h_timing_div_manual_mode)
+		pipe_ctx->stream_res.tg->funcs->set_h_timing_div_manual_mode(pipe_ctx->stream_res.tg, manual_mode);
 	for (i = 0; i < opp_cnt; i++) {
 		opp_heads[i]->stream_res.opp->funcs->opp_pipe_clock_control(
 				opp_heads[i]->stream_res.opp,
@@ -1281,8 +1313,8 @@ static bool dcn401_check_no_memory_request_for_cab(struct dc *dc)
 
 static uint32_t dcn401_calculate_cab_allocation(struct dc *dc, struct dc_state *ctx)
 {
-	int i;
-	uint8_t num_ways = 0;
+	unsigned int i;
+	uint32_t num_ways = 0;
 	uint32_t mall_ss_size_bytes = 0;
 
 	mall_ss_size_bytes = ctx->bw_ctx.bw.dcn.mall_ss_size_bytes;
@@ -1313,7 +1345,8 @@ static uint32_t dcn401_calculate_cab_allocation(struct dc *dc, struct dc_state *
 bool dcn401_apply_idle_power_optimizations(struct dc *dc, bool enable)
 {
 	union dmub_rb_cmd cmd;
-	uint8_t ways, i;
+	uint32_t ways;
+	uint8_t i;
 	int j;
 	bool mall_ss_unsupported = false;
 	struct dc_plane_state *plane = NULL;
@@ -1366,7 +1399,7 @@ bool dcn401_apply_idle_power_optimizations(struct dc *dc, bool enable)
 			}
 			if (ways <= dc->caps.cache_num_ways && !mall_ss_unsupported) {
 				cmd.cab.header.sub_type = DMUB_CMD__CAB_DCN_SS_FIT_IN_CAB;
-				cmd.cab.cab_alloc_ways = ways;
+				cmd.cab.cab_alloc_ways = (uint8_t)ways;
 				DC_LOG_MALL("cab allocation: %d ways. CAB action: DCN_SS_FIT_IN_CAB\n", ways);
 			} else {
 				cmd.cab.header.sub_type = DMUB_CMD__CAB_DCN_SS_NOT_FIT_IN_CAB;
@@ -1422,10 +1455,13 @@ void dcn401_prepare_bandwidth(struct dc *dc,
 		context->bw_ctx.bw.dcn.clk.p_state_change_support = false;
 	}
 
-	if (dc->clk_mgr->dc_mode_softmax_enabled)
-		if (dc->clk_mgr->clks.dramclk_khz <= dc->clk_mgr->bw_params->dc_mode_softmax_memclk * 1000 &&
-				context->bw_ctx.bw.dcn.clk.dramclk_khz > dc->clk_mgr->bw_params->dc_mode_softmax_memclk * 1000)
+	if (dc->clk_mgr->dc_mode_softmax_enabled) {
+		int softmax_memclk_khz = dc->clk_mgr->bw_params->dc_mode_softmax_memclk * 1000;
+
+		if (dc->clk_mgr->clks.dramclk_khz <= softmax_memclk_khz &&
+				context->bw_ctx.bw.dcn.clk.dramclk_khz > softmax_memclk_khz)
 			dc->clk_mgr->funcs->set_max_memclk(dc->clk_mgr, dc->clk_mgr->bw_params->clk_table.entries[dc->clk_mgr->bw_params->clk_table.num_entries - 1].memclk_mhz);
+	}
 
 	/* Increase clocks */
 	dc->clk_mgr->funcs->update_clocks(
@@ -1471,7 +1507,7 @@ void dcn401_optimize_bandwidth(
 		struct dc *dc,
 		struct dc_state *context)
 {
-	int i;
+	unsigned int i;
 	struct hubbub *hubbub = dc->res_pool->hubbub;
 
 	/* enable fams2 if needed */
@@ -1491,10 +1527,13 @@ void dcn401_optimize_bandwidth(
 		hubbub->funcs->program_arbiter(hubbub, &context->bw_ctx.bw.dcn.arb_regs, true);
 	}
 
-	if (dc->clk_mgr->dc_mode_softmax_enabled)
-		if (dc->clk_mgr->clks.dramclk_khz > dc->clk_mgr->bw_params->dc_mode_softmax_memclk * 1000 &&
-				context->bw_ctx.bw.dcn.clk.dramclk_khz <= dc->clk_mgr->bw_params->dc_mode_softmax_memclk * 1000)
+	if (dc->clk_mgr->dc_mode_softmax_enabled) {
+		int softmax_memclk_khz = dc->clk_mgr->bw_params->dc_mode_softmax_memclk * 1000;
+
+		if (dc->clk_mgr->clks.dramclk_khz > softmax_memclk_khz &&
+				context->bw_ctx.bw.dcn.clk.dramclk_khz <= softmax_memclk_khz)
 			dc->clk_mgr->funcs->set_max_memclk(dc->clk_mgr, dc->clk_mgr->bw_params->dc_mode_softmax_memclk);
+	}
 
 	/* increase compbuf size */
 	if (hubbub->funcs->program_compbuf_segments)
@@ -1557,12 +1596,15 @@ void dcn401_dmub_hw_control_lock_fast(union block_sequence_params *params)
 void dcn401_fams2_update_config(struct dc *dc, struct dc_state *context, bool enable)
 {
 	bool fams2_info_required;
+	bool fams2_enabled;
+	bool fams2_legacy_no_fams2;
 
 	if (!dc->ctx || !dc->ctx->dmub_srv || !dc->debug.fams2_config.bits.enable)
 		return;
 
-	fams2_info_required = context->bw_ctx.bw.dcn.fams2_global_config.features.bits.enable;
-	fams2_info_required |= context->bw_ctx.bw.dcn.fams2_global_config.features.bits.legacy_method_no_fams2;
+	fams2_enabled = context->bw_ctx.bw.dcn.fams2_global_config.features.bits.enable != 0u;
+	fams2_legacy_no_fams2 = context->bw_ctx.bw.dcn.fams2_global_config.features.bits.legacy_method_no_fams2 != 0u;
+	fams2_info_required = fams2_enabled || fams2_legacy_no_fams2;
 
 	dc_dmub_srv_fams2_update_config(dc, context, enable && fams2_info_required);
 }
@@ -1594,7 +1636,7 @@ static void update_dsc_for_odm_change(struct dc *dc, struct dc_state *context,
 
 	if (otg_master->stream_res.dsc)
 		dcn32_update_dsc_on_stream(otg_master,
-				otg_master->stream->timing.flags.DSC);
+				otg_master->stream->timing.flags.DSC != 0u);
 	if (old_otg_master && old_otg_master->stream_res.dsc) {
 		for (i = 0; i < old_opp_head_count; i++) {
 			old_pipe = old_opp_heads[i];
@@ -1811,6 +1853,12 @@ void dcn401_unblank_stream(struct pipe_ctx *pipe_ctx,
 		pipe_ctx->stream_res.stream_enc->funcs->dp_unblank(link, pipe_ctx->stream_res.stream_enc, &params);
 	}
 
+	if (dc_is_hdmi_frl_signal(pipe_ctx->stream->signal)) {
+		if (link->link_status.link_active && link->frl_link_settings.frl_link_rate != 0)
+			pipe_ctx->stream_res.hpo_frl_stream_enc->funcs->hdmi_frl_unblank(
+					pipe_ctx->stream_res.hpo_frl_stream_enc,
+					pipe_ctx->stream_res.tg->inst);
+	}
 	if (link->local_sink && link->local_sink->sink_signal == SIGNAL_TYPE_EDP)
 		hws->funcs.edp_backlight_control(link, true);
 }
@@ -1942,6 +1990,9 @@ void dcn401_perform_3dlut_wa_unlock(struct pipe_ctx *pipe_ctx)
 	 * This is meant to work around a known HW issue where VREADY will cancel the pending 3DLUT_ENABLE signal regardless
 	 * of whether OTG lock is currently being held or not.
 	 */
+	if (!pipe_ctx)
+		return;
+
 	struct pipe_ctx *wa_pipes[MAX_PIPES] = { NULL };
 	struct pipe_ctx *odm_pipe, *mpc_pipe;
 	int i, wa_pipe_ct = 0;
@@ -2462,7 +2513,7 @@ void dcn401_program_front_end_for_ctx(
 	struct dc *dc,
 	struct dc_state *context)
 {
-	int i;
+	unsigned int i;
 	unsigned int prev_hubp_count = 0;
 	unsigned int hubp_count = 0;
 	struct dce_hwseq *hws = dc->hwseq;
@@ -2629,7 +2680,7 @@ void dcn401_post_unlock_program_front_end(
 	unsigned int timeout_us = 100000;
 	unsigned int polling_interval_us = 1;
 	struct dce_hwseq *hwseq = dc->hwseq;
-	int i;
+	unsigned int i;
 
 	for (i = 0; i < dc->res_pool->pipe_count; i++)
 		if (resource_is_pipe_type(&dc->current_state->res_ctx.pipe_ctx[i], OPP_HEAD) &&
@@ -2653,7 +2704,7 @@ void dcn401_post_unlock_program_front_end(
 		if (pipe->plane_state && !pipe->top_pipe && pipe->update_flags.bits.enable &&
 			dc_state_get_pipe_subvp_type(context, pipe) != SUBVP_PHANTOM) {
 			struct hubp *hubp = pipe->plane_res.hubp;
-			int j = 0;
+			unsigned int j = 0;
 
 			for (j = 0; j < timeout_us / polling_interval_us
 				&& hubp->funcs->hubp_is_flip_pending(hubp); j++)
@@ -2672,7 +2723,7 @@ void dcn401_post_unlock_program_front_end(
 		if (resource_is_pipe_type(old_pipe, OTG_MASTER) && resource_is_pipe_type(pipe, OTG_MASTER) &&
 			resource_get_odm_slice_count(old_pipe) < resource_get_odm_slice_count(pipe) &&
 			dc_state_get_pipe_subvp_type(context, pipe) != SUBVP_PHANTOM) {
-			int j = 0;
+			unsigned int j = 0;
 			struct timing_generator *tg = pipe->stream_res.tg;
 
 			if (tg->funcs->get_optc_double_buffer_pending) {
@@ -2757,7 +2808,7 @@ bool dcn401_update_bandwidth(
 	struct dc *dc,
 	struct dc_state *context)
 {
-	int i;
+	unsigned int i;
 	struct dce_hwseq *hws = dc->hwseq;
 
 	/* recalculate DML parameters */
@@ -3258,9 +3309,10 @@ void dcn401_program_all_writeback_pipes_in_tree_sequence(
 		struct block_sequence_state *seq_state)
 {
 	struct dwbc *dwb;
-	int i_wb, i_pipe;
+	unsigned int i_wb, i_pipe;
+	unsigned int num_dwb_cap = (unsigned int)dc->res_pool->res_cap->num_dwb;
 
-	if (!stream || stream->num_wb_info > dc->res_pool->res_cap->num_dwb)
+	if (!stream || (unsigned int)stream->num_wb_info > num_dwb_cap)
 		return;
 
 	/* For each writeback pipe */
@@ -3422,7 +3474,7 @@ void dcn401_setup_gsl_group_as_lock_sequence(
 
 		group_idx = find_free_gsl_group(dc);
 		ASSERT(group_idx != 0);
-		pipe_ctx->stream_res.gsl_group = group_idx;
+		pipe_ctx->stream_res.gsl_group = (uint8_t)group_idx;
 
 		/* set gsl group reg field and mark resource used */
 		switch (group_idx) {
@@ -3908,7 +3960,7 @@ void dcn401_update_mpcc_sequence(struct dc *dc,
 
 static struct hubp *get_hubp_by_inst(struct resource_pool *res_pool, int mpcc_inst)
 {
-	int i;
+	unsigned int i;
 
 	for (i = 0; i < res_pool->pipe_count; i++) {
 		if (res_pool->hubps[i]->inst == mpcc_inst)
@@ -3983,7 +4035,7 @@ void dcn401_set_hdr_multiplier_sequence(struct pipe_ctx *pipe_ctx,
 void dcn401_program_mall_pipe_config_sequence(struct dc *dc, struct dc_state *context,
 		struct block_sequence_state *seq_state)
 {
-	int i;
+	unsigned int i;
 	unsigned int num_ways = dcn401_calculate_cab_allocation(dc, context);
 	bool cache_cursor = false;
 

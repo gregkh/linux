@@ -154,7 +154,6 @@ struct arch_va_list {
 };
 extern void *__warn_args(struct arch_va_list *args, struct pt_regs *regs);
 static __always_inline __printf(1, 2) void __WARN_validate_printf(const char *fmt, ...) { }
-#endif /* __ASSEMBLER__ */
 
 #define __WARN_bug_entry(flags, format) ({				\
 	struct bug_entry *bug;						\
@@ -189,6 +188,7 @@ do {									\
 	}								\
 	__ret_warn_on;							\
 })
+#endif /* __ASSEMBLER__ */
 
 #endif /* HAVE_ARCH_BUG_FORMAT_ARGS */
 

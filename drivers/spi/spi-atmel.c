@@ -1568,7 +1568,7 @@ static int atmel_spi_probe(struct platform_device *pdev)
 		return PTR_ERR(clk);
 
 	/* setup spi core then atmel-specific driver state */
-	host = spi_alloc_host(&pdev->dev, sizeof(*as));
+	host = devm_spi_alloc_host(&pdev->dev, sizeof(*as));
 	if (!host)
 		return -ENOMEM;
 
@@ -1595,18 +1595,15 @@ static int atmel_spi_probe(struct platform_device *pdev)
 
 	as->pdev = pdev;
 	as->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &regs);
-	if (IS_ERR(as->regs)) {
-		ret = PTR_ERR(as->regs);
-		goto out_unmap_regs;
-	}
+	if (IS_ERR(as->regs))
+		return PTR_ERR(as->regs);
+
 	as->phybase = regs->start;
 	as->irq = irq;
 	as->clk = clk;
 	as->gclk = devm_clk_get_optional(&pdev->dev, "spi_gclk");
-	if (IS_ERR(as->gclk)) {
-		ret = PTR_ERR(as->gclk);
-		goto out_unmap_regs;
-	}
+	if (IS_ERR(as->gclk))
+		return PTR_ERR(as->gclk);
 
 	init_completion(&as->xfer_completion);
 
@@ -1616,11 +1613,10 @@ static int atmel_spi_probe(struct platform_device *pdev)
 	as->use_pdc = false;
 	if (as->caps.has_dma_support) {
 		ret = atmel_spi_configure_dma(host, as);
-		if (ret == 0) {
+		if (ret == 0)
 			as->use_dma = true;
-		} else if (ret == -EPROBE_DEFER) {
-			goto out_unmap_regs;
-		}
+		else if (ret == -EPROBE_DEFER)
+			return ret;
 	} else if (as->caps.has_pdc_support) {
 		as->use_pdc = true;
 	}
@@ -1636,12 +1632,12 @@ static int atmel_spi_probe(struct platform_device *pdev)
 					0, dev_name(&pdev->dev), host);
 	}
 	if (ret)
-		goto out_unmap_regs;
+		return ret;
 
 	/* Initialize the hardware */
 	ret = clk_prepare_enable(clk);
 	if (ret)
-		goto out_free_irq;
+		return ret;
 
 	/*
 	 * In cases where the peripheral clock is higher,the FLEX_SPI_CSRx.SCBR
@@ -1690,9 +1686,7 @@ out_free_dma:
 		clk_disable_unprepare(as->gclk);
 out_disable_clk:
 	clk_disable_unprepare(clk);
-out_free_irq:
-out_unmap_regs:
-	spi_controller_put(host);
+
 	return ret;
 }
 
@@ -1700,8 +1694,6 @@ static void atmel_spi_remove(struct platform_device *pdev)
 {
 	struct spi_controller	*host = platform_get_drvdata(pdev);
 	struct atmel_spi	*as = spi_controller_get_devdata(host);
-
-	spi_controller_get(host);
 
 	pm_runtime_get_sync(&pdev->dev);
 
@@ -1723,8 +1715,6 @@ static void atmel_spi_remove(struct platform_device *pdev)
 
 	pm_runtime_put_noidle(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	spi_controller_put(host);
 }
 
 static int atmel_spi_runtime_suspend(struct device *dev)

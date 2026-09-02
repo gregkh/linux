@@ -267,6 +267,7 @@ static struct mtk_ecc *mtk_ecc_get(struct device_node *np)
 {
 	struct platform_device *pdev;
 	struct mtk_ecc *ecc;
+	int ret;
 
 	pdev = of_find_device_by_node(np);
 	if (!pdev)
@@ -278,7 +279,12 @@ static struct mtk_ecc *mtk_ecc_get(struct device_node *np)
 		return ERR_PTR(-EPROBE_DEFER);
 	}
 
-	clk_prepare_enable(ecc->clk);
+	ret = clk_prepare_enable(ecc->clk);
+	if (ret) {
+		put_device(&pdev->dev);
+		return ERR_PTR(ret);
+	}
+
 	mtk_ecc_hw_init(ecc);
 
 	return ecc;

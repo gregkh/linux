@@ -80,6 +80,12 @@ netdev_assert_locked_ops_compat_or_invisible(const struct net_device *dev)
 		netdev_assert_locked_ops_compat(dev);
 }
 
+static inline void netdev_assert_locked_ops(const struct net_device *dev)
+{
+	if (netdev_need_ops_lock(dev))
+		netdev_assert_locked(dev);
+}
+
 static inline void netdev_lock_ops_compat(struct net_device *dev)
 {
 	if (netdev_need_ops_lock(dev))
@@ -94,6 +100,14 @@ static inline void netdev_unlock_ops_compat(struct net_device *dev)
 		netdev_unlock(dev);
 	else
 		rtnl_unlock();
+}
+
+/* Matching "ops protected" category from netdevice.h */
+static inline int netdev_is_locked_ops_compat(const struct net_device *dev)
+{
+	if (netdev_need_ops_lock(dev))
+		return lockdep_is_held(&dev->lock);
+	return lockdep_rtnl_is_held();
 }
 
 static inline int netdev_lock_cmp_fn(const struct lockdep_map *a,
@@ -131,6 +145,9 @@ static inline int netdev_lock_cmp_fn(const struct lockdep_map *a,
 
 #define netdev_lock_dereference(p, dev)				\
 	rcu_dereference_protected(p, lockdep_is_held(&(dev)->lock))
+
+#define netdev_ops_lock_dereference(p, dev)				\
+	rcu_dereference_protected(p, netdev_is_locked_ops_compat(dev))
 
 int netdev_debug_event(struct notifier_block *nb, unsigned long event,
 		       void *ptr);

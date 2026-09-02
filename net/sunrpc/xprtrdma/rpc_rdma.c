@@ -1341,8 +1341,8 @@ void rpcrdma_complete_rqst(struct rpcrdma_rep *rep)
 	struct rpc_rqst *rqst = rep->rr_rqst;
 	int status;
 
-	/* I3: every registered MR has been invalidated and
-	 * ib_dma_unmap_sg()'d before complete_rqst runs.
+	/* I3: rl_registered has been drained by frwr_unmap before
+	 * complete_rqst runs.
 	 */
 	WARN_ON_ONCE(!list_empty(&rpcr_to_rdmar(rqst)->rl_registered));
 

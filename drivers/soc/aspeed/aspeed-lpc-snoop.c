@@ -380,6 +380,7 @@ static const struct of_device_id aspeed_lpc_snoop_match[] = {
 	  .data = &ast2500_model_data },
 	{ },
 };
+MODULE_DEVICE_TABLE(of, aspeed_lpc_snoop_match);
 
 static struct platform_driver aspeed_lpc_snoop_driver = {
 	.driver = {
@@ -392,7 +393,6 @@ static struct platform_driver aspeed_lpc_snoop_driver = {
 
 module_platform_driver(aspeed_lpc_snoop_driver);
 
-MODULE_DEVICE_TABLE(of, aspeed_lpc_snoop_match);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Robert Lippert <rlippert@google.com>");
 MODULE_DESCRIPTION("Linux driver to control Aspeed LPC snoop functionality");

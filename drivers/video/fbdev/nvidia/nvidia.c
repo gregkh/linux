@@ -58,9 +58,12 @@
 #define MAX_CURS		32
 
 static const struct pci_device_id nvidiafb_pci_tbl[] = {
-	{PCI_VENDOR_ID_NVIDIA, PCI_ANY_ID, PCI_ANY_ID, PCI_ANY_ID,
-	 PCI_BASE_CLASS_DISPLAY << 16, 0xff0000, 0},
-	{ 0, }
+	{
+		PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_ANY_ID),
+		.class = PCI_BASE_CLASS_DISPLAY << 16,
+		.class_mask = 0xff0000
+	},
+	{ }
 };
 MODULE_DEVICE_TABLE(pci, nvidiafb_pci_tbl);
 

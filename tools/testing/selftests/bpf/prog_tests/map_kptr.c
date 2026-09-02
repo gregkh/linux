@@ -143,11 +143,67 @@ static void wait_for_map_release(void)
 	map_kptr__destroy(skel);
 }
 
+enum map_update_kptr_case {
+	MAP_UPDATE_KPTR_ARRAY,
+	MAP_UPDATE_KPTR_HASH,
+	MAP_UPDATE_KPTR_HASH_MALLOC,
+};
+
+static struct bpf_program *map_update_kptr_prog(struct map_kptr *skel,
+						enum map_update_kptr_case test)
+{
+	switch (test) {
+	case MAP_UPDATE_KPTR_ARRAY:
+		return skel->progs.test_array_map_update_kptr;
+	case MAP_UPDATE_KPTR_HASH:
+		return skel->progs.test_hash_map_update_kptr;
+	case MAP_UPDATE_KPTR_HASH_MALLOC:
+		return skel->progs.test_hash_malloc_map_update_kptr;
+	}
+
+	return NULL;
+}
+
+static void test_map_update_kptr(enum map_update_kptr_case test)
+{
+	LIBBPF_OPTS(bpf_test_run_opts, opts);
+	struct map_kptr *skel;
+	struct bpf_program *prog;
+	int ret;
+
+	skel = map_kptr__open_and_load();
+	if (!ASSERT_OK_PTR(skel, "map_kptr__open_and_load"))
+		return;
+
+	prog = map_update_kptr_prog(skel, test);
+	if (!ASSERT_OK_PTR(prog, "map_update_kptr_prog"))
+		goto out;
+
+	ret = bpf_prog_test_run_opts(bpf_program__fd(prog), &opts);
+	if (!ASSERT_OK(ret, "map_update_kptr"))
+		goto out;
+	if (!ASSERT_OK(opts.retval, "map_update_kptr retval"))
+		goto out;
+
+	ASSERT_EQ(skel->bss->num_of_refs, 3, "refs_after_update");
+
+out:
+	map_kptr__destroy(skel);
+	wait_for_map_release();
+}
+
 void serial_test_map_kptr(void)
 {
 	struct rcu_tasks_trace_gp *skel;
 
 	RUN_TESTS(map_kptr_fail);
+
+	if (test__start_subtest("update_array_map_kptr"))
+		test_map_update_kptr(MAP_UPDATE_KPTR_ARRAY);
+	if (test__start_subtest("update_hash_map_kptr"))
+		test_map_update_kptr(MAP_UPDATE_KPTR_HASH);
+	if (test__start_subtest("update_hash_malloc_map_kptr"))
+		test_map_update_kptr(MAP_UPDATE_KPTR_HASH_MALLOC);
 
 	skel = rcu_tasks_trace_gp__open_and_load();
 	if (!ASSERT_OK_PTR(skel, "rcu_tasks_trace_gp__open_and_load"))

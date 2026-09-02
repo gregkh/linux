@@ -116,12 +116,12 @@ nft_meta_get_eval_pkttype_lo(const struct nft_pktinfo *pkt,
 			nft_reg_store8(dest, PACKET_MULTICAST);
 			break;
 		default:
-			WARN_ON_ONCE(1);
+			DEBUG_NET_WARN_ON_ONCE(1);
 			return false;
 		}
 		break;
 	default:
-		WARN_ON_ONCE(1);
+		DEBUG_NET_WARN_ON_ONCE(1);
 		return false;
 	}
 
@@ -460,7 +460,7 @@ void nft_meta_get_eval(const struct nft_expr *expr,
 		nft_meta_get_eval_sdifname(dest, pkt);
 		break;
 	default:
-		WARN_ON(1);
+		DEBUG_NET_WARN_ON_ONCE(1);
 		goto err;
 	}
 	return;
@@ -506,7 +506,7 @@ void nft_meta_set_eval(const struct nft_expr *expr,
 		break;
 #endif
 	default:
-		WARN_ON(1);
+		DEBUG_NET_WARN_ON_ONCE(1);
 	}
 }
 EXPORT_SYMBOL_GPL(nft_meta_set_eval);
@@ -887,7 +887,7 @@ void nft_meta_inner_eval(const struct nft_expr *expr,
 		nft_reg_store8(dest, tun_ctx->l4proto);
 		break;
 	default:
-		WARN_ON_ONCE(1);
+		DEBUG_NET_WARN_ON_ONCE(1);
 		goto err;
 	}
 	return;

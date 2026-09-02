@@ -131,7 +131,7 @@ struct aa_loaddata {
 int aa_unpack(struct aa_loaddata *udata, struct list_head *lh, const char **ns);
 
 /**
- * aa_get_loaddata - get a reference count from a counted data reference
+ * aa_get_i_loaddata - get a reference count from a counted data reference
  * @data: reference to get a count on
  *
  * Returns: pointer to reference

@@ -178,6 +178,9 @@ static int __tpm_tis_relinquish_locality(struct tpm_tis_data *priv, int l)
 {
 	tpm_tis_write8(priv, TPM_ACCESS(l), TPM_ACCESS_ACTIVE_LOCALITY);
 
+	if (test_bit(TPM_TIS_SETTLE_AFTER_RELINQUISH, &priv->flags))
+		tpm_msleep(TPM_TIMEOUT);
+
 	return 0;
 }
 
@@ -799,9 +802,10 @@ out:
 static bool tpm_tis_req_canceled(struct tpm_chip *chip, u8 status)
 {
 	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
+	u16 vendor_id = priv->did_vid;
 
 	if (!test_bit(TPM_TIS_DEFAULT_CANCELLATION, &priv->flags)) {
-		switch (priv->manufacturer_id) {
+		switch (vendor_id) {
 		case TPM_VID_WINBOND:
 			return ((status == TPM_STS_VALID) ||
 				(status == (TPM_STS_VALID | TPM_STS_COMMAND_READY)));
@@ -1122,7 +1126,8 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 		      const struct tpm_tis_phy_ops *phy_ops,
 		      acpi_handle acpi_dev_handle)
 {
-	u32 vendor;
+	u16 vendor_id;
+	u16 device_id;
 	u32 intfcaps;
 	u32 intmask;
 	u32 clkrun_val;
@@ -1155,20 +1160,24 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 
 	dev_set_drvdata(&chip->dev, priv);
 
-	rc = tpm_tis_read32(priv, TPM_DID_VID(0), &vendor);
+	rc = tpm_tis_read32(priv, TPM_DID_VID(0), &priv->did_vid);
 	if (rc < 0)
 		return rc;
 
-	priv->manufacturer_id = vendor;
+	vendor_id = priv->did_vid;
+	device_id = priv->did_vid >> 16;
 
-	if (priv->manufacturer_id == TPM_VID_ATML &&
+	if (vendor_id == TPM_VID_ATML &&
 		!(chip->flags & TPM_CHIP_FLAG_TPM2)) {
 		priv->timeout_min = TIS_TIMEOUT_MIN_ATML;
 		priv->timeout_max = TIS_TIMEOUT_MAX_ATML;
 	}
 
-	if (priv->manufacturer_id == TPM_VID_IFX)
+	if (vendor_id == TPM_VID_IFX)
 		set_bit(TPM_TIS_STATUS_VALID_RETRY, &priv->flags);
+
+	if (vendor_id == TPM_VID_WINBOND && device_id == 0x00FE)
+		set_bit(TPM_TIS_SETTLE_AFTER_RELINQUISH, &priv->flags);
 
 	if (is_bsw()) {
 		priv->ilb_base_addr = ioremap(INTEL_LEGACY_BLK_BASE_ADDR,
@@ -1254,9 +1263,9 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 	if (rc < 0)
 		goto out_err;
 
-	dev_info(dev, "%s TPM (device-id 0x%X, rev-id %d)\n",
+	dev_info(dev, "%s TPM (vendor-id 0x%X, device-id 0x%X, rev-id %d)\n",
 		 (chip->flags & TPM_CHIP_FLAG_TPM2) ? "2.0" : "1.2",
-		 vendor >> 16, rid);
+		 vendor_id, device_id, rid);
 
 	probe = probe_itpm(chip);
 	if (probe < 0) {
@@ -1322,6 +1331,9 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 
 	return 0;
 out_err:
+	dev_err(dev, "TPM vid 0x%X, did 0x%X init failed with error %d\n",
+		vendor_id, device_id, rc);
+
 	if (chip->ops->clk_enable != NULL)
 		chip->ops->clk_enable(chip, false);
 

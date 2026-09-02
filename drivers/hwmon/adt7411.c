@@ -169,11 +169,11 @@ static ssize_t adt7411_set_bit(struct device *dev,
 	if (ret || flag > 1)
 		return -EINVAL;
 
-	hwmon_lock(dev);
-	ret = adt7411_modify_bit(client, s_attr2->index, s_attr2->nr, flag);
-	/* force update */
-	data->next_update = jiffies;
-	hwmon_unlock(dev);
+	scoped_guard(hwmon_lock, dev) {
+		ret = adt7411_modify_bit(client, s_attr2->index, s_attr2->nr, flag);
+		/* force update */
+		data->next_update = jiffies;
+	}
 
 	return ret < 0 ? ret : count;
 }

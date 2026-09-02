@@ -59,6 +59,10 @@ struct lag_func {
 	struct mlx5_nb port_change_nb;
 	u32 group_id;        /* SD group ID, 0 = not SD */
 	bool sd_fdb_active;  /* set on all SD group members */
+	/* Lag demux resources - only populated on master devices */
+	struct mlx5_flow_table   *lag_demux_ft;
+	struct mlx5_flow_group   *lag_demux_fg;
+	struct xarray		  lag_demux_rules;
 };
 
 /* Used for collection of netdev event info. */
@@ -95,9 +99,6 @@ struct mlx5_lag {
 	/* Protect lag fields/state changes */
 	struct mutex		  lock;
 	struct lag_mpesw	  lag_mpesw;
-	struct mlx5_flow_table   *lag_demux_ft;
-	struct mlx5_flow_group   *lag_demux_fg;
-	struct xarray		  lag_demux_rules;
 };
 
 static inline struct mlx5_lag *
@@ -157,6 +158,14 @@ __mlx5_lag_is_sd(struct mlx5_lag *ldev, struct mlx5_core_dev *dev)
 }
 
 static inline bool
+__mlx5_lag_dev_is_port(struct mlx5_lag *ldev, struct mlx5_core_dev *dev)
+{
+	struct lag_func *pf = mlx5_lag_pf_by_dev(ldev, dev);
+
+	return pf && xa_get_mark(&ldev->pfs, pf->idx, MLX5_LAG_XA_MARK_PORT);
+}
+
+static inline bool
 __mlx5_lag_is_active(struct mlx5_lag *ldev)
 {
 	return ldev->mode != MLX5_LAG_MODE_NONE;
@@ -174,6 +183,8 @@ int mlx5_lag_shared_fdb_create(struct mlx5_lag *ldev,
 			       enum mlx5_lag_mode mode,
 			       u32 group_id);
 void mlx5_lag_shared_fdb_destroy(struct mlx5_lag *ldev, u32 group_id);
+int mlx5_lag_create_vport_lag(struct mlx5_lag *ldev, u32 group_id);
+int mlx5_lag_destroy_vport_lag(struct mlx5_lag *ldev, u32 group_id);
 int mlx5_lag_create_single_fdb(struct mlx5_lag *ldev);
 void mlx5_lag_destroy_single_fdb(struct mlx5_lag *ldev);
 bool mlx5_lag_shared_fdb_supported(struct mlx5_lag *ldev);
@@ -190,6 +201,18 @@ static inline int mlx5_lag_shared_fdb_create(struct mlx5_lag *ldev,
 static inline void mlx5_lag_shared_fdb_destroy(struct mlx5_lag *ldev,
 					       u32 group_id) {}
 
+static inline int mlx5_lag_create_vport_lag(struct mlx5_lag *ldev,
+					    u32 group_id)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int mlx5_lag_destroy_vport_lag(struct mlx5_lag *ldev,
+					     u32 group_id)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline int mlx5_lag_create_single_fdb(struct mlx5_lag *ldev)
 {
 	return -EOPNOTSUPP;
@@ -202,6 +225,7 @@ static inline bool mlx5_lag_shared_fdb_supported(struct mlx5_lag *ldev)
 }
 #endif
 bool mlx5_lag_check_prereq(struct mlx5_lag *ldev);
+bool mlx5_lag_is_sd(struct mlx5_core_dev *dev);
 int mlx5_lag_demux_init(struct mlx5_core_dev *dev,
 			struct mlx5_flow_table_attr *ft_attr);
 void mlx5_lag_demux_cleanup(struct mlx5_core_dev *dev);
@@ -286,6 +310,7 @@ int mlx5_lag_num_devs(struct mlx5_lag *ldev);
 int mlx5_lag_num_netdevs(struct mlx5_lag *ldev);
 int mlx5_lag_reload_ib_reps_from_locked(struct mlx5_lag *ldev, u32 flags,
 					u32 filter, bool cont_on_fail);
+void mlx5_lag_unload_reps_from_locked(struct mlx5_lag *ldev, u32 filter);
 int mlx5_ldev_add_mdev(struct mlx5_lag *ldev, struct mlx5_core_dev *dev,
 		       u32 group_id);
 void mlx5_ldev_remove_mdev(struct mlx5_lag *ldev, struct mlx5_core_dev *dev);

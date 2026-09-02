@@ -243,13 +243,9 @@ static int mana_ib_create_qp_rss(struct ib_qp *ibqp, struct ib_pd *pd,
 	if (ret)
 		goto free_vport;
 
-	ret = ib_copy_to_udata(udata, &resp, sizeof(resp));
-	if (ret) {
-		ibdev_dbg(&mdev->ib_dev,
-			  "Failed to copy to udata create rss-qp, %d\n",
-			  ret);
+	ret = ib_respond_udata(udata, resp);
+	if (ret)
 		goto err_disable_vport_rx;
-	}
 
 	kfree(mana_ind_table);
 
@@ -398,13 +394,9 @@ static int mana_ib_create_qp_raw(struct ib_qp *ibqp, struct ib_pd *ibpd,
 	resp.cqid = send_cq->queue.id;
 	resp.tx_vp_offset = pd->tx_vp_offset;
 
-	err = ib_copy_to_udata(udata, &resp, sizeof(resp));
-	if (err) {
-		ibdev_dbg(&mdev->ib_dev,
-			  "Failed copy udata for create qp-raw, %d\n",
-			  err);
+	err = ib_respond_udata(udata, resp);
+	if (err)
 		goto err_remove_cq_cb;
-	}
 
 	return 0;
 
@@ -602,11 +594,9 @@ static int mana_ib_create_rc_qp(struct ib_qp *ibqp, struct ib_pd *ibpd,
 			resp.queue_id[j] = qp->rc_qp.queues[i].id;
 			j++;
 		}
-		err = ib_copy_to_udata(udata, &resp, min(sizeof(resp), udata->outlen));
-		if (err) {
-			ibdev_dbg(&mdev->ib_dev, "Failed to copy to udata, %d\n", err);
+		err = ib_respond_udata(udata, resp);
+		if (err)
 			goto destroy_qp;
-		}
 	}
 
 	err = mana_table_store_qp(mdev, qp);

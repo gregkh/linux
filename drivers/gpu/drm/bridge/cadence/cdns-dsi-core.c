@@ -591,7 +591,7 @@ cdns_dsi_bridge_mode_valid(struct drm_bridge *bridge,
 }
 
 static void cdns_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
-						struct drm_atomic_state *state)
+						struct drm_atomic_commit *state)
 {
 	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
 	struct cdns_dsi *dsi = input_to_dsi(input);
@@ -701,7 +701,7 @@ static void cdns_dsi_init_link(struct cdns_dsi *dsi)
 }
 
 static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
-					      struct drm_atomic_state *state)
+					      struct drm_atomic_commit *state)
 {
 	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
 	struct cdns_dsi *dsi = input_to_dsi(input);

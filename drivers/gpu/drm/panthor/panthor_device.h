@@ -14,6 +14,7 @@
 #include <linux/spinlock.h>
 
 #include <drm/drm_device.h>
+#include <drm/drm_gem.h>
 #include <drm/drm_mm.h>
 #include <drm/gpu_scheduler.h>
 #include <drm/panthor_drm.h>
@@ -180,6 +181,75 @@ struct panthor_device {
 
 	/** @devfreq: Device frequency scaling management data. */
 	struct panthor_devfreq *devfreq;
+
+	/** @reclaim: Reclaim related stuff */
+	struct {
+		/** @reclaim.shrinker: Shrinker instance */
+		struct shrinker *shrinker;
+
+		/**
+		 * @reclaim.unused: BOs with unused pages
+		 *
+		 * Basically all buffers that got mmapped, vmapped or GPU mapped and
+		 * then unmapped. There should be no contention on these buffers,
+		 * making them ideal to reclaim.
+		 */
+		struct drm_gem_lru unused;
+
+		/**
+		 * @reclaim.mmapped: mmap()-ed buffers
+		 *
+		 * Those are relatively easy to reclaim since we don't need user
+		 * agreement, we can simply teardown the mapping and let it fault on
+		 * the next access.
+		 */
+		struct drm_gem_lru mmapped;
+
+		/**
+		 * @reclaim.gpu_mapped_shared: shared BO LRU list
+		 *
+		 * That's the most tricky BO type to reclaim, because it involves
+		 * tearing down all mappings in all VMs where this BO is mapped,
+		 * which increases the risk of contention and thus decreases the
+		 * likeliness of success.
+		 */
+		struct drm_gem_lru gpu_mapped_shared;
+
+		/**
+		 * @reclaim.vms: VM LRU list
+		 *
+		 * VMs that have reclaimable BOs only mapped to a single VM are placed
+		 * in this LRU. Reclaiming such BOs implies waiting for VM idleness
+		 * (no in-flight GPU jobs targeting this VM), meaning we can't reclaim
+		 * those if we're in a context where we can't block/sleep.
+		 */
+		struct list_head vms;
+
+		/**
+		 * @reclaim.gpu_mapped_count: Global counter of pages that are GPU mapped
+		 *
+		 * Allows us to get the number of reclaimable pages without walking
+		 * the vms and gpu_mapped_shared LRUs.
+		 */
+		long gpu_mapped_count;
+
+		/**
+		 * @reclaim.retry_count: Number of times we ran the shrinker without being
+		 * able to reclaim stuff
+		 *
+		 * Used to stop scanning GEMs when too many attempts were made
+		 * without progress.
+		 */
+		atomic_t retry_count;
+
+#ifdef CONFIG_DEBUG_FS
+		/**
+		 * @reclaim.nr_pages_reclaimed_on_last_scan: Number of pages reclaimed on the last
+		 * shrinker scan
+		 */
+		unsigned long nr_pages_reclaimed_on_last_scan;
+#endif
+	} reclaim;
 
 	/** @unplug: Device unplug related fields. */
 	struct {
@@ -515,14 +585,15 @@ static inline void panthor_ ## __name ## _irq_resume(struct panthor_irq *pirq)		
 												\
 static int panthor_request_ ## __name ## _irq(struct panthor_device *ptdev,			\
 					      struct panthor_irq *pirq,				\
-					      int irq, u32 mask, void __iomem *iomem)		\
+					      int irq, void __iomem *iomem)			\
 {												\
 	pirq->ptdev = ptdev;									\
 	pirq->irq = irq;									\
-	pirq->mask = mask;									\
+	pirq->mask = 0;										\
 	pirq->iomem = iomem;									\
 	spin_lock_init(&pirq->mask_lock);							\
-	panthor_ ## __name ## _irq_resume(pirq);						\
+	atomic_set(&pirq->state, PANTHOR_IRQ_STATE_SUSPENDED);					\
+	gpu_write(pirq->iomem, INT_MASK, 0);							\
 												\
 	return devm_request_threaded_irq(ptdev->base.dev, irq,					\
 					 panthor_ ## __name ## _irq_raw_handler,		\

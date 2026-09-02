@@ -358,6 +358,7 @@ struct ufshcd_tx_eqtr_record {
  * @eqtr_record: Pointer to TX EQTR record
  * @is_valid: True if parameter contains valid TX Equalization settings
  * @is_applied: True if settings have been applied to UniPro of both sides
+ * @is_trained: True if parameters obtained from TX EQTR procedure
  */
 struct ufshcd_tx_eq_params {
 	struct ufshcd_tx_eq_settings host[UFS_MAX_LANES];
@@ -365,6 +366,7 @@ struct ufshcd_tx_eq_params {
 	struct ufshcd_tx_eqtr_record *eqtr_record;
 	bool is_valid;
 	bool is_applied;
+	bool is_trained;
 };
 
 /**
@@ -804,6 +806,13 @@ enum ufshcd_quirks {
 	 * delay after enabling VCC to ensure it's stable.
 	 */
 	UFSHCD_QUIRK_VCC_ON_DELAY			= 1 << 27,
+
+	/*
+	 * This quirk indicates that Host supports TX Equalization Training
+	 * (EQTR) using Adapt L0L1L2L3 length which is larger than what is
+	 * allowed by M-PHY spec ver 6.0.
+	 */
+	UFSHCD_QUIRK_EXTENDED_TX_EQTR_ADAPT_LENGTH_L0L1L2L3	= 1 << 28,
 };
 
 enum ufshcd_caps {

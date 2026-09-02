@@ -72,6 +72,7 @@
 
 #define ATH12K_MAX_MLO_PEERS            256
 #define ATH12K_MLO_PEER_ID_INVALID      0xFFFF
+#define ATH12K_MLO_PEER_ID_PENDING      0xFFFE
 
 #define ATH12K_INVALID_RSSI_FULL -1
 #define ATH12K_INVALID_RSSI_EMPTY -128
@@ -353,6 +354,9 @@ struct ath12k_link_vif {
 	u16 num_stations;
 	bool is_csa_in_progress;
 	struct wiphy_work bcn_tx_work;
+
+	bool set_wds_vdev_param;
+	bool nawds_enabled;
 };
 
 struct ath12k_vif {
@@ -492,6 +496,10 @@ struct ath12k_link_sta {
 	/* link address similar to ieee80211_link_sta */
 	u8 addr[ETH_ALEN];
 
+	u16 tcl_metadata;
+	u16 ast_hash;
+	u16 ast_idx;
+
 	/* the following are protected by ar->data_lock */
 	u32 changed; /* IEEE80211_RC_* */
 	u32 bw;
@@ -527,6 +535,8 @@ struct ath12k_sta {
 	u16 free_logical_link_idx_map;
 
 	enum ieee80211_sta_state state;
+
+	bool enable_4addr;
 };
 
 #define ATH12K_HALF_20MHZ_BW	10
@@ -542,8 +552,8 @@ struct ath12k_sta {
 #define ATH12K_MAX_5GHZ_FREQ	(ATH12K_5GHZ_MAX_CENTER + ATH12K_HALF_20MHZ_BW)
 #define ATH12K_MIN_6GHZ_FREQ	(ATH12K_6GHZ_MIN_CENTER - ATH12K_HALF_20MHZ_BW)
 #define ATH12K_MAX_6GHZ_FREQ	(ATH12K_6GHZ_MAX_CENTER + ATH12K_HALF_20MHZ_BW)
-#define ATH12K_NUM_CHANS 101
-#define ATH12K_MAX_5GHZ_CHAN 173
+#define ATH12K_NUM_CHANS 102
+#define ATH12K_MAX_5GHZ_CHAN 177
 
 static inline bool ath12k_is_2ghz_channel_freq(u32 freq)
 {
@@ -763,6 +773,14 @@ struct ath12k {
 	struct ath12k_pdev_rssi_offsets rssi_info;
 
 	struct ath12k_thermal thermal;
+
+	/* Protected by ar->data_lock */
+	struct ath12k_incumbent_signal_interference {
+		u32 center_freq;
+		enum nl80211_chan_width width;
+		u32 chan_bw_interference_bitmap;
+		bool handling_in_progress;
+	} incumbent_signal_interference;
 };
 
 struct ath12k_hw {
@@ -776,6 +794,8 @@ struct ath12k_hw {
 	enum ath12k_hw_state state;
 	bool regd_updated;
 	bool use_6ghz_regd;
+	bool host_alloc_ml_id;
+	struct completion peer_ml_id_done;
 
 	u8 num_radio;
 

@@ -110,11 +110,11 @@ static const struct isl1208_config config_raa215300_a0 = {
 };
 
 static const struct i2c_device_id isl1208_id[] = {
-	{ "isl1208", .driver_data = (kernel_ulong_t)&config_isl1208 },
-	{ "isl1209", .driver_data = (kernel_ulong_t)&config_isl1209 },
-	{ "isl1218", .driver_data = (kernel_ulong_t)&config_isl1218 },
-	{ "isl1219", .driver_data = (kernel_ulong_t)&config_isl1219 },
-	{ "raa215300_a0", .driver_data = (kernel_ulong_t)&config_raa215300_a0 },
+	{ .name = "isl1208", .driver_data = (kernel_ulong_t)&config_isl1208 },
+	{ .name = "isl1209", .driver_data = (kernel_ulong_t)&config_isl1209 },
+	{ .name = "isl1218", .driver_data = (kernel_ulong_t)&config_isl1218 },
+	{ .name = "isl1219", .driver_data = (kernel_ulong_t)&config_isl1219 },
+	{ .name = "raa215300_a0", .driver_data = (kernel_ulong_t)&config_raa215300_a0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, isl1208_id);

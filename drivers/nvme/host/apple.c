@@ -819,7 +819,7 @@ static int apple_nvme_init_hctx(struct blk_mq_hw_ctx *hctx, void *data,
 
 static int apple_nvme_init_request(struct blk_mq_tag_set *set,
 				   struct request *req, unsigned int hctx_idx,
-				   unsigned int numa_node)
+				   int numa_node)
 {
 	struct apple_nvme_queue *q = set->driver_data;
 	struct apple_nvme *anv = queue_to_apple_nvme(q);
@@ -858,7 +858,7 @@ static void apple_nvme_disable(struct apple_nvme *anv, bool shutdown)
 	 * doing a safe shutdown.
 	 */
 	if (!dead && shutdown && freeze)
-		nvme_wait_freeze_timeout(&anv->ctrl, NVME_IO_TIMEOUT);
+		nvme_wait_freeze_timeout(&anv->ctrl);
 
 	nvme_quiesce_io_queues(&anv->ctrl);
 

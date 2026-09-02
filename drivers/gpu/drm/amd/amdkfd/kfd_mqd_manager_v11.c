@@ -163,10 +163,9 @@ static void init_mqd(struct mqd_manager *mm, void **mqd,
 	if (amdgpu_amdkfd_have_atomics_support(mm->dev->adev))
 		m->cp_hqd_hq_status0 |= 1 << 29;
 
-	if (q->format == KFD_QUEUE_FORMAT_AQL) {
+	if (q->format == KFD_QUEUE_FORMAT_AQL)
 		m->cp_hqd_aql_control =
 			1 << CP_HQD_AQL_CONTROL__CONTROL0__SHIFT;
-	}
 
 	if (mm->dev->kfd->cwsr_enabled) {
 		m->cp_hqd_persistent_state |=
@@ -180,6 +179,11 @@ static void init_mqd(struct mqd_manager *mm, void **mqd,
 		m->cp_hqd_cntl_stack_offset = q->ctl_stack_size;
 		m->cp_hqd_wg_state_offset = q->ctl_stack_size;
 	}
+
+	mutex_lock(&mm->dev->kfd->profiler_lock);
+	if (mm->dev->kfd->profiler_process != NULL)
+		m->compute_perfcount_enable = 1;
+	mutex_unlock(&mm->dev->kfd->profiler_lock);
 
 	*mqd = m;
 	if (gart_addr)
@@ -258,6 +262,12 @@ static void update_mqd(struct mqd_manager *mm, void *mqd,
 	}
 	if (mm->dev->kfd->cwsr_enabled)
 		m->cp_hqd_ctx_save_control = 0;
+	if (minfo) {
+		if (minfo->update_flag == UPDATE_FLAG_PERFCOUNT_ENABLE)
+			m->compute_perfcount_enable = 1;
+		else if (minfo->update_flag == UPDATE_FLAG_PERFCOUNT_DISABLE)
+			m->compute_perfcount_enable = 0;
+	}
 
 	update_cu_mask(mm, mqd, minfo);
 	set_priority(m, q);

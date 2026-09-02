@@ -260,10 +260,10 @@ void dlm_print_one_mle(struct dlm_master_list_entry *mle)
 {
 	char *buf;
 
-	buf = (char *) get_zeroed_page(GFP_ATOMIC);
+	buf = kzalloc(PAGE_SIZE, GFP_ATOMIC);
 	if (buf) {
 		dump_mle(mle, buf, PAGE_SIZE - 1);
-		free_page((unsigned long)buf);
+		kfree(buf);
 	}
 }
 
@@ -280,7 +280,7 @@ static struct dentry *dlm_debugfs_root;
 /* begin - utils funcs */
 static int debug_release(struct inode *inode, struct file *file)
 {
-	free_page((unsigned long)file->private_data);
+	kfree(file->private_data);
 	return 0;
 }
 
@@ -327,17 +327,15 @@ static int debug_purgelist_open(struct inode *inode, struct file *file)
 	struct dlm_ctxt *dlm = inode->i_private;
 	char *buf = NULL;
 
-	buf = (char *) get_zeroed_page(GFP_NOFS);
+	buf = kzalloc(PAGE_SIZE, GFP_NOFS);
 	if (!buf)
-		goto bail;
+		return -ENOMEM;
 
 	i_size_write(inode, debug_purgelist_print(dlm, buf, PAGE_SIZE - 1));
 
 	file->private_data = buf;
 
 	return 0;
-bail:
-	return -ENOMEM;
 }
 
 static const struct file_operations debug_purgelist_fops = {
@@ -384,17 +382,15 @@ static int debug_mle_open(struct inode *inode, struct file *file)
 	struct dlm_ctxt *dlm = inode->i_private;
 	char *buf = NULL;
 
-	buf = (char *) get_zeroed_page(GFP_NOFS);
+	buf = kzalloc(PAGE_SIZE, GFP_NOFS);
 	if (!buf)
-		goto bail;
+		return -ENOMEM;
 
 	i_size_write(inode, debug_mle_print(dlm, buf, PAGE_SIZE - 1));
 
 	file->private_data = buf;
 
 	return 0;
-bail:
-	return -ENOMEM;
 }
 
 static const struct file_operations debug_mle_fops = {
@@ -783,17 +779,15 @@ static int debug_state_open(struct inode *inode, struct file *file)
 	struct dlm_ctxt *dlm = inode->i_private;
 	char *buf = NULL;
 
-	buf = (char *) get_zeroed_page(GFP_NOFS);
+	buf = kzalloc(PAGE_SIZE, GFP_NOFS);
 	if (!buf)
-		goto bail;
+		return -ENOMEM;
 
 	i_size_write(inode, debug_state_print(dlm, buf, PAGE_SIZE - 1));
 
 	file->private_data = buf;
 
 	return 0;
-bail:
-	return -ENOMEM;
 }
 
 static const struct file_operations debug_state_fops = {

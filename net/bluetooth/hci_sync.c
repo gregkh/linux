@@ -4696,10 +4696,32 @@ static int hci_set_le_support_sync(struct hci_dev *hdev)
 				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
 }
 
+/* LE Set Host Feature V2 */
+static int hci_le_set_host_feature_v2_sync(struct hci_dev *hdev, u16 bit,
+					   u8 value)
+{
+	struct hci_cp_le_set_host_feature_v2 cp;
+
+	memset(&cp, 0, sizeof(cp));
+
+	/* Connected Isochronous Channels (Host Support) */
+	cp.bit_number = cpu_to_le16(bit);
+	cp.bit_value = value;
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_HOST_FEATURE_V2,
+				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+}
+
 /* LE Set Host Feature */
-static int hci_le_set_host_feature_sync(struct hci_dev *hdev, u8 bit, u8 value)
+static int hci_le_set_host_feature_sync(struct hci_dev *hdev, u16 bit, u8 value)
 {
 	struct hci_cp_le_set_host_feature cp;
+
+	if (ll_ext_feature_capable(hdev) && hdev->commands[47] & BIT(4))
+		return hci_le_set_host_feature_v2_sync(hdev, bit, value);
+
+	if (bit > 255)
+		return 0;
 
 	memset(&cp, 0, sizeof(cp));
 

@@ -544,13 +544,6 @@ int ibopen(struct inode *inode, struct file *filep)
 	priv = filep->private_data;
 	init_gpib_file_private((struct gpib_file_private *)filep->private_data);
 
-	if (board->use_count == 0) {
-		int retval;
-
-		retval = request_module("gpib%i", minor);
-		if (retval)
-			dev_dbg(board->gpib_dev, "request module returned %i\n", retval);
-	}
 	if (board->interface) {
 		if (!try_module_get(board->provider_module)) {
 			dev_err(board->gpib_dev, "try_module_get() failed\n");

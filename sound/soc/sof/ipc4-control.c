@@ -13,13 +13,12 @@
 #include "ipc4-topology.h"
 
 static int sof_ipc4_set_get_kcontrol_data(struct snd_sof_control *scontrol,
+					  struct sof_ipc4_msg *msg,
 					  bool set, bool lock)
 {
-	struct sof_ipc4_control_data *cdata = scontrol->ipc_control_data;
 	struct snd_soc_component *scomp = scontrol->scomp;
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	const struct sof_ipc_ops *iops = sdev->ipc->ops;
-	struct sof_ipc4_msg *msg = &cdata->msg;
 	struct snd_sof_widget *swidget;
 	bool widget_found = false;
 	int ret = 0;
@@ -88,9 +87,9 @@ sof_ipc4_set_volume_data(struct snd_sof_dev *sdev, struct snd_sof_widget *swidge
 {
 	struct sof_ipc4_control_data *cdata = scontrol->ipc_control_data;
 	struct sof_ipc4_gain *gain = swidget->private;
-	struct sof_ipc4_msg *msg = &cdata->msg;
 	struct sof_ipc4_gain_params params;
 	bool all_channels_equal = true;
+	struct sof_ipc4_msg msg;
 	u32 value;
 	int ret, i;
 
@@ -107,6 +106,7 @@ sof_ipc4_set_volume_data(struct snd_sof_dev *sdev, struct snd_sof_widget *swidge
 	 * notify DSP with a single IPC message if all channel values are equal. Otherwise send
 	 * a separate IPC for each channel.
 	 */
+	memcpy(&msg, &cdata->msg, sizeof(msg));
 	for (i = 0; i < scontrol->num_channels; i++) {
 		if (all_channels_equal) {
 			params.channels = SOF_IPC4_GAIN_ALL_CHANNELS_MASK;
@@ -121,12 +121,10 @@ sof_ipc4_set_volume_data(struct snd_sof_dev *sdev, struct snd_sof_widget *swidge
 		params.curve_duration_h = gain->data.params.curve_duration_h;
 		params.curve_type = gain->data.params.curve_type;
 
-		msg->data_ptr = &params;
-		msg->data_size = sizeof(params);
+		msg.data_ptr = &params;
+		msg.data_size = sizeof(params);
 
-		ret = sof_ipc4_set_get_kcontrol_data(scontrol, true, lock);
-		msg->data_ptr = NULL;
-		msg->data_size = 0;
+		ret = sof_ipc4_set_get_kcontrol_data(scontrol, &msg, true, lock);
 		if (ret < 0) {
 			dev_err(sdev->dev, "Failed to set volume update for %s\n",
 				scontrol->name);
@@ -208,7 +206,7 @@ sof_ipc4_set_generic_control_data(struct snd_sof_dev *sdev,
 {
 	struct sof_ipc4_control_data *cdata = scontrol->ipc_control_data;
 	struct sof_ipc4_control_msg_payload *data;
-	struct sof_ipc4_msg *msg = &cdata->msg;
+	struct sof_ipc4_msg msg;
 	size_t data_size;
 	unsigned int i;
 	int ret;
@@ -225,12 +223,11 @@ sof_ipc4_set_generic_control_data(struct snd_sof_dev *sdev,
 		data->chanv[i].value = cdata->chanv[i].value;
 	}
 
-	msg->data_ptr = data;
-	msg->data_size = data_size;
+	memcpy(&msg, &cdata->msg, sizeof(msg));
+	msg.data_ptr = data;
+	msg.data_size = data_size;
 
-	ret = sof_ipc4_set_get_kcontrol_data(scontrol, true, lock);
-	msg->data_ptr = NULL;
-	msg->data_size = 0;
+	ret = sof_ipc4_set_get_kcontrol_data(scontrol, &msg, true, lock);
 	if (ret < 0)
 		dev_err(sdev->dev, "Failed to set control update for %s\n",
 			scontrol->name);
@@ -245,7 +242,7 @@ static void sof_ipc4_refresh_generic_control(struct snd_sof_control *scontrol)
 	struct sof_ipc4_control_data *cdata = scontrol->ipc_control_data;
 	struct snd_soc_component *scomp = scontrol->scomp;
 	struct sof_ipc4_control_msg_payload *data;
-	struct sof_ipc4_msg *msg = &cdata->msg;
+	struct sof_ipc4_msg msg;
 	size_t data_size;
 	unsigned int i;
 	int ret;
@@ -263,13 +260,13 @@ static void sof_ipc4_refresh_generic_control(struct snd_sof_control *scontrol)
 
 	data->id = cdata->index;
 	data->num_elems = scontrol->num_channels;
-	msg->data_ptr = data;
-	msg->data_size = data_size;
+
+	memcpy(&msg, &cdata->msg, sizeof(msg));
+	msg.data_ptr = data;
+	msg.data_size = data_size;
 
 	scontrol->comp_data_dirty = false;
-	ret = sof_ipc4_set_get_kcontrol_data(scontrol, false, true);
-	msg->data_ptr = NULL;
-	msg->data_size = 0;
+	ret = sof_ipc4_set_get_kcontrol_data(scontrol, &msg, false, true);
 	if (!ret) {
 		for (i = 0; i < scontrol->num_channels; i++) {
 			cdata->chanv[i].channel = data->chanv[i].channel;
@@ -291,7 +288,7 @@ sof_ipc4_set_bytes_control_data(struct snd_sof_control *scontrol, bool lock)
 	struct snd_soc_component *scomp = scontrol->scomp;
 	struct sof_ipc4_control_msg_payload *msg_data;
 	struct sof_abi_hdr *data = cdata->data;
-	struct sof_ipc4_msg *msg = &cdata->msg;
+	struct sof_ipc4_msg msg;
 	size_t data_size;
 	int ret;
 
@@ -304,14 +301,13 @@ sof_ipc4_set_bytes_control_data(struct snd_sof_control *scontrol, bool lock)
 	msg_data->num_elems = data->size;
 	memcpy(msg_data->data, data->data, data->size);
 
-	msg->extension = SOF_IPC4_MOD_EXT_MSG_PARAM_ID(data->type);
+	memcpy(&msg, &cdata->msg, sizeof(msg));
+	msg.extension = SOF_IPC4_MOD_EXT_MSG_PARAM_ID(data->type);
 
-	msg->data_ptr = msg_data;
-	msg->data_size = data_size;
+	msg.data_ptr = msg_data;
+	msg.data_size = data_size;
 
-	ret = sof_ipc4_set_get_kcontrol_data(scontrol, true, lock);
-	msg->data_ptr = NULL;
-	msg->data_size = 0;
+	ret = sof_ipc4_set_get_kcontrol_data(scontrol, &msg, true, lock);
 	if (ret < 0)
 		dev_err(scomp->dev, "%s: Failed to set control update for %s\n",
 			__func__, scontrol->name);
@@ -328,7 +324,7 @@ sof_ipc4_refresh_bytes_control(struct snd_sof_control *scontrol, bool lock)
 	struct snd_soc_component *scomp = scontrol->scomp;
 	struct sof_ipc4_control_msg_payload *msg_data;
 	struct sof_abi_hdr *data = cdata->data;
-	struct sof_ipc4_msg *msg = &cdata->msg;
+	struct sof_ipc4_msg msg;
 	size_t data_size;
 	int ret = 0;
 
@@ -346,29 +342,30 @@ sof_ipc4_refresh_bytes_control(struct snd_sof_control *scontrol, bool lock)
 	if (!msg_data)
 		return -ENOMEM;
 
-	msg->extension = SOF_IPC4_MOD_EXT_MSG_PARAM_ID(data->type);
+	memcpy(&msg, &cdata->msg, sizeof(msg));
+	msg.extension = SOF_IPC4_MOD_EXT_MSG_PARAM_ID(data->type);
 
 	msg_data->id = cdata->index;
 	msg_data->num_elems = 0; /* ignored for bytes */
 
-	msg->data_ptr = msg_data;
-	msg->data_size = data_size;
+	msg.data_ptr = msg_data;
+	msg.data_size = data_size;
 
 	scontrol->comp_data_dirty = false;
-	ret = sof_ipc4_set_get_kcontrol_data(scontrol, false, lock);
+	ret = sof_ipc4_set_get_kcontrol_data(scontrol, &msg, false, lock);
 	if (!ret) {
-		if (msg->data_size > scontrol->max_size - sizeof(*data)) {
+		if (msg.data_size > scontrol->max_size - sizeof(*data)) {
 			dev_err(scomp->dev,
 				"%s: no space for data in %s (%zu, %zu)\n",
-				__func__, scontrol->name, msg->data_size,
+				__func__, scontrol->name, msg.data_size,
 				scontrol->max_size - sizeof(*data));
 			ret = -EINVAL;
 			goto out;
 		}
 
-		data->size = msg->data_size;
+		data->size = msg.data_size;
 		scontrol->size = sizeof(*cdata) + sizeof(*data) + data->size;
-		memcpy(data->data, msg->data_ptr, data->size);
+		memcpy(data->data, msg.data_ptr, data->size);
 	} else {
 		dev_err(scomp->dev, "Failed to read control data for %s\n",
 			scontrol->name);
@@ -376,9 +373,6 @@ sof_ipc4_refresh_bytes_control(struct snd_sof_control *scontrol, bool lock)
 	}
 
 out:
-	msg->data_ptr = NULL;
-	msg->data_size = 0;
-
 	kfree(msg_data);
 
 	return ret;
@@ -508,7 +502,7 @@ static int sof_ipc4_set_get_bytes_data(struct snd_sof_dev *sdev,
 {
 	struct sof_ipc4_control_data *cdata = scontrol->ipc_control_data;
 	struct sof_abi_hdr *data = cdata->data;
-	struct sof_ipc4_msg *msg = &cdata->msg;
+	struct sof_ipc4_msg msg;
 	int ret = 0;
 
 	/* Send the new data to the firmware only if it is powered up */
@@ -530,27 +524,25 @@ static int sof_ipc4_set_get_bytes_data(struct snd_sof_dev *sdev,
 			return sof_ipc4_refresh_bytes_control(scontrol, lock);
 	}
 
-	msg->extension = SOF_IPC4_MOD_EXT_MSG_PARAM_ID(data->type);
+	memcpy(&msg, &cdata->msg, sizeof(msg));
+	msg.extension = SOF_IPC4_MOD_EXT_MSG_PARAM_ID(data->type);
 
-	msg->data_ptr = data->data;
+	msg.data_ptr = data->data;
 	if (set)
-		msg->data_size = data->size;
+		msg.data_size = data->size;
 	else
-		msg->data_size = scontrol->max_size - sizeof(*data);
+		msg.data_size = scontrol->max_size - sizeof(*data);
 
-	ret = sof_ipc4_set_get_kcontrol_data(scontrol, set, lock);
+	ret = sof_ipc4_set_get_kcontrol_data(scontrol, &msg, set, lock);
 	if (ret < 0) {
 		dev_err(sdev->dev, "Failed to %s for %s\n",
 			set ? "set bytes update" : "get bytes",
 			scontrol->name);
 	} else if (!set) {
 		/* Update the sizes according to the received payload data */
-		data->size = msg->data_size;
+		data->size = msg.data_size;
 		scontrol->size = sizeof(*cdata) + sizeof(*data) + data->size;
 	}
-
-	msg->data_ptr = NULL;
-	msg->data_size = 0;
 
 	return ret;
 }

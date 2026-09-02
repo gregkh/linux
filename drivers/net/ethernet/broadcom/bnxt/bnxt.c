@@ -4855,11 +4855,11 @@ static void bnxt_init_ring_params(struct bnxt *bp)
 {
 	unsigned int rx_size;
 
-	bp->rx_copybreak = BNXT_DEFAULT_RX_COPYBREAK;
+	bp->rx_copybreak = 0; /* rx-copybreak disabled by default */
 	/* Try to fit 4 chunks into a 4k page */
 	rx_size = SZ_1K -
 		NET_SKB_PAD - SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-	bp->dev->cfg->hds_thresh = max(BNXT_DEFAULT_RX_COPYBREAK, rx_size);
+	bp->dev->cfg->hds_thresh = max(BNXT_MIN_RX_HDR_BUF, rx_size);
 }
 
 /* bp->rx_ring_size, bp->tx_ring_size, dev->mtu, BNXT_FLAG_{G|L}RO flags must
@@ -4920,7 +4920,7 @@ void bnxt_set_ring_params(struct bnxt *bp)
 				  ALIGN(max(NET_SKB_PAD, XDP_PACKET_HEADROOM), 8) -
 				  SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 		} else {
-			rx_size = max3(BNXT_DEFAULT_RX_COPYBREAK,
+			rx_size = max3(BNXT_MIN_RX_HDR_BUF,
 				       bp->rx_copybreak,
 				       bp->dev->cfg_pending->hds_thresh);
 			rx_size = SKB_DATA_ALIGN(rx_size + NET_IP_ALIGN);
@@ -11296,8 +11296,12 @@ static int bnxt_init_chip(struct bnxt *bp, bool irq_re_init)
 	}
 
 	rc = bnxt_cfg_rx_mode(bp, &bp->dev->uc, true);
-	if (rc)
+	if (rc == -EAGAIN) {
+		netif_rx_mode_schedule_retry(bp->dev);
+		rc = 0;
+	} else if (rc) {
 		goto err_out;
+	}
 
 skip_rx_mask:
 	rc = bnxt_hwrm_set_coal(bp);
@@ -13751,9 +13755,9 @@ static bool bnxt_uc_list_updated(struct bnxt *bp,
 	return false;
 }
 
-static void bnxt_set_rx_mode(struct net_device *dev,
-			     struct netdev_hw_addr_list *uc,
-			     struct netdev_hw_addr_list *mc)
+static int bnxt_set_rx_mode(struct net_device *dev,
+			    struct netdev_hw_addr_list *uc,
+			    struct netdev_hw_addr_list *mc)
 {
 	struct bnxt *bp = netdev_priv(dev);
 	struct bnxt_vnic_info *vnic;
@@ -13762,7 +13766,7 @@ static void bnxt_set_rx_mode(struct net_device *dev,
 	u32 mask;
 
 	if (!test_bit(BNXT_STATE_OPEN, &bp->state))
-		return;
+		return 0;
 
 	vnic = &bp->vnic_info[BNXT_VNIC_DEFAULT];
 	mask = vnic->rx_mask;
@@ -13788,8 +13792,10 @@ static void bnxt_set_rx_mode(struct net_device *dev,
 	if (mask != vnic->rx_mask || uc_update || mc_update) {
 		vnic->rx_mask = mask;
 
-		bnxt_cfg_rx_mode(bp, uc, uc_update);
+		return bnxt_cfg_rx_mode(bp, uc, uc_update);
 	}
+
+	return 0;
 }
 
 static int bnxt_cfg_rx_mode(struct bnxt *bp, struct netdev_hw_addr_list *uc,
@@ -13828,11 +13834,10 @@ static int bnxt_cfg_rx_mode(struct bnxt *bp, struct netdev_hw_addr_list *uc,
 		rc = bnxt_hwrm_set_vnic_filter(bp, 0, i, vnic->uc_list + off);
 		if (rc) {
 			if (BNXT_VF(bp) && rc == -ENODEV) {
-				if (!test_and_set_bit(BNXT_STATE_L2_FILTER_RETRY, &bp->state))
-					netdev_warn(bp->dev, "Cannot configure L2 filters while PF is unavailable, will retry\n");
-				else
-					netdev_dbg(bp->dev, "PF still unavailable while configuring L2 filters.\n");
-				rc = 0;
+				netdev_warn(bp->dev, "Cannot configure L2 filters while PF is unavailable, will retry\n");
+				rc = -EAGAIN;
+			} else if (rc == -EAGAIN) {
+				netdev_warn(bp->dev, "FW busy while setting vnic filter, will retry\n");
 			} else {
 				netdev_err(bp->dev, "HWRM vnic filter failure rc: %x\n", rc);
 			}
@@ -13840,8 +13845,6 @@ static int bnxt_cfg_rx_mode(struct bnxt *bp, struct netdev_hw_addr_list *uc,
 			return rc;
 		}
 	}
-	if (test_and_clear_bit(BNXT_STATE_L2_FILTER_RETRY, &bp->state))
-		netdev_notice(bp->dev, "Retry of L2 filter configuration successful.\n");
 
 skip_uc:
 	if ((vnic->rx_mask & CFA_L2_SET_RX_MASK_REQ_MASK_PROMISCUOUS) &&
@@ -14432,9 +14435,6 @@ static void bnxt_timer(struct timer_list *t)
 		}
 	}
 
-	if (test_bit(BNXT_STATE_L2_FILTER_RETRY, &bp->state))
-		bnxt_queue_sp_work(bp, BNXT_RX_MASK_SP_EVENT);
-
 	if ((BNXT_CHIP_P5(bp)) && !bp->chip_rev && netif_carrier_ok(dev))
 		bnxt_queue_sp_work(bp, BNXT_RING_COAL_NOW_SP_EVENT);
 
@@ -14834,7 +14834,6 @@ static void bnxt_ulp_restart(struct bnxt *bp)
 static void bnxt_sp_task(struct work_struct *work)
 {
 	struct bnxt *bp = container_of(work, struct bnxt, sp_task);
-	struct net_device *dev = bp->dev;
 
 	set_bit(BNXT_STATE_IN_SP_TASK, &bp->state);
 	smp_mb__after_atomic();
@@ -14915,13 +14914,6 @@ static void bnxt_sp_task(struct work_struct *work)
 	/* These functions below will clear BNXT_STATE_IN_SP_TASK.  They
 	 * must be the last functions to be called before exiting.
 	 */
-	if (test_and_clear_bit(BNXT_RX_MASK_SP_EVENT, &bp->sp_event)) {
-		bnxt_lock_sp(bp);
-		if (test_bit(BNXT_STATE_OPEN, &bp->state))
-			bnxt_cfg_rx_mode(bp, &dev->uc, true);
-		bnxt_unlock_sp(bp);
-	}
-
 	if (test_and_clear_bit(BNXT_RESET_TASK_SP_EVENT, &bp->sp_event))
 		bnxt_reset(bp, false);
 
@@ -17262,7 +17254,7 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	dev->queue_mgmt_ops = &bnxt_queue_mgmt_ops_unsupp;
 	if (BNXT_SUPPORTS_QUEUE_API(bp))
 		dev->queue_mgmt_ops = &bnxt_queue_mgmt_ops;
-	dev->netmem_tx = true;
+	dev->netmem_tx = NETMEM_TX_DMA;
 
 	rc = register_netdev(dev);
 	if (rc)
@@ -17535,7 +17527,6 @@ static pci_ers_result_t bnxt_io_slot_reset(struct pci_dev *pdev)
 				pci_write_config_dword(bp->pdev, off, 0);
 		}
 		pci_restore_state(pdev);
-		pci_save_state(pdev);
 
 		bnxt_inv_fw_health_reg(bp);
 		bnxt_try_map_fw_health_reg(bp);

@@ -33,7 +33,7 @@
  * dynamically, rather then relying on e.g. Devicetree and phandles.
  */
 
-#define MSM_PULL_MASK		GENMASK(2, 0)
+#define MSM_PULL_MASK		GENMASK(1, 0)
 #define MSM_PULL_DOWN		1
 #define MSM_PULL_UP		3
 #define TLMM_REG_SIZE		0x1000

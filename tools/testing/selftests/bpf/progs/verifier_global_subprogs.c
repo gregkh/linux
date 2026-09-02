@@ -46,12 +46,13 @@ __noinline long global_dead(void)
 }
 
 SEC("?raw_tp")
-__success __log_level(2)
+__success __log_level(6)
 /* main prog is validated completely first */
 __msg("('global_calls_good_only') is global and assumed valid.")
 /* eventually global_good() is transitively validated as well */
 __msg("Validating global_good() func")
 __msg("('global_good') is safe for any args that match its prototype")
+__msg("insns processed {{[0-9]+\\+[0-9]+\\+[0-9]+$}}")
 int chained_global_func_calls_success(void)
 {
 	int sum = 0;
@@ -182,6 +183,16 @@ int arg_tag_nonnull_ptr_good(void *ctx)
 	int y = 74;
 
 	return subprog_nonnull_ptr_good(&x, &y);
+}
+
+SEC("?raw_tp")
+__failure __log_level(2)
+__msg("R1 is expected to be non-NULL")
+int arg_tag_nonnull_ptr_null_bad(void *ctx)
+{
+	int y = 74;
+
+	return subprog_nonnull_ptr_good(NULL, &y);
 }
 
 /* this global subprog can be now called from many types of entry progs, each

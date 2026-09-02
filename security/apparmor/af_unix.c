@@ -615,7 +615,7 @@ static int unix_peer_perm(const struct cred *subj_cred,
 					  peer_label, &ad));
 }
 
-/**
+/*
  *
  * Requires: lock held on both @sk and @peer_sk
  *           called by unix_stream_connect, unix_may_send

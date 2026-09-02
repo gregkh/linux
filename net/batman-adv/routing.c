@@ -597,7 +597,7 @@ batadv_find_router(struct batadv_priv *bat_priv,
 	/* only consider bonding for recv_if == BATADV_IF_DEFAULT (first hop)
 	 * and if activated.
 	 */
-	if (!(recv_if == BATADV_IF_DEFAULT && atomic_read(&bat_priv->bonding)))
+	if (!(recv_if == BATADV_IF_DEFAULT && READ_ONCE(bat_priv->bonding)))
 		return router;
 
 	/* bonding: loop through the list of possible routers found
@@ -819,7 +819,7 @@ batadv_reroute_unicast_packet(struct batadv_priv *bat_priv, struct sk_buff *skb,
 			goto out;
 
 		orig_addr = orig_node->orig;
-		orig_ttvn = (u8)atomic_read(&orig_node->last_ttvn);
+		orig_ttvn = READ_ONCE(orig_node->last_ttvn);
 	}
 
 	/* update the packet header */
@@ -899,7 +899,7 @@ static bool batadv_check_unicast_ttvn(struct batadv_priv *bat_priv,
 		if (!orig_node)
 			return false;
 
-		curr_ttvn = (u8)atomic_read(&orig_node->last_ttvn);
+		curr_ttvn = READ_ONCE(orig_node->last_ttvn);
 		batadv_orig_node_put(orig_node);
 	}
 
