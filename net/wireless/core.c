@@ -167,9 +167,9 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 			continue;
 		wdev->netdev->netns_immutable = false;
 		err = dev_change_net_namespace(wdev->netdev, net, "wlan%d");
+		wdev->netdev->netns_immutable = true;
 		if (err)
 			break;
-		wdev->netdev->netns_immutable = true;
 	}
 
 	if (err) {
