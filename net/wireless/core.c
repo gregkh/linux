@@ -165,20 +165,24 @@ static int cfg80211_switch_wdev_netns(struct wireless_dev *wdev,
 	return err;
 }
 
-int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
-			  struct net *net)
+static int __cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
+				   struct net *net, bool force)
 {
 	struct net *old_net = wiphy_net(&rdev->wiphy);
-	struct wireless_dev *wdev;
+	struct wireless_dev *wdev, *tmp;
 	int err = 0;
 
-	if (!(rdev->wiphy.flags & WIPHY_FLAG_NETNS_OK))
-		return -EOPNOTSUPP;
-
-	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
+	list_for_each_entry_safe(wdev, tmp, &rdev->wiphy.wdev_list, list) {
 		err = cfg80211_switch_wdev_netns(wdev, net);
-		if (err)
+		if (!err)
+			continue;
+		if (!force)
 			goto undo;
+		/* remove interfaces that fail to allow wiphy switching */
+		dev_close(wdev->netdev);
+		scoped_guard(wiphy, &rdev->wiphy)
+			cfg80211_unregister_wdev(wdev);
+		err = 0;
 	}
 
 	scoped_guard(wiphy, &rdev->wiphy) {
@@ -196,7 +200,7 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 		/* this only fails on allocation failure */
 		err = device_rename(&rdev->wiphy.dev,
 				    dev_name(&rdev->wiphy.dev));
-		if (err)
+		if (err && !force)
 			wiphy_net_set(&rdev->wiphy, old_net);
 
 		nl80211_notify_wiphy(rdev, NL80211_CMD_NEW_WIPHY);
@@ -209,8 +213,8 @@ int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
 		}
 	}
 
-	if (!err)
-		return 0;
+	if (!err || force)
+		return err;
 
 	/* set to the last one to undo all of them */
 	wdev = list_entry(&rdev->wiphy.wdev_list, typeof(*wdev), list);
@@ -224,6 +228,15 @@ undo:
 		WARN_ON(cfg80211_switch_wdev_netns(wdev, old_net));
 
 	return err;
+}
+
+int cfg80211_switch_netns(struct cfg80211_registered_device *rdev,
+			  struct net *net)
+{
+	if (!(rdev->wiphy.flags & WIPHY_FLAG_NETNS_OK))
+		return -EOPNOTSUPP;
+
+	return __cfg80211_switch_netns(rdev, net, false);
 }
 
 static void cfg80211_rfkill_poll(struct rfkill *rfkill, void *data)
@@ -1764,7 +1777,7 @@ static void __net_exit cfg80211_pernet_exit(struct net *net)
 	rtnl_lock();
 	for_each_rdev(rdev) {
 		if (net_eq(wiphy_net(&rdev->wiphy), net))
-			WARN_ON(cfg80211_switch_netns(rdev, &init_net));
+			WARN_ON(__cfg80211_switch_netns(rdev, &init_net, true));
 	}
 	rtnl_unlock();
 }
