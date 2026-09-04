@@ -51,6 +51,9 @@ static long syscall_trace_enter(struct pt_regs *regs, long syscall,
 		ret = arch_syscall_enter_tracehook(regs);
 		if (ret || (ti_work & _TIF_SYSCALL_EMU))
 			return -1L;
+
+		/* ptrace might have changed work flags */
+		ti_work = READ_ONCE(current_thread_info()->flags);
 	}
 
 	/* Do seccomp after ptrace, to catch any tracer changes. */
