@@ -1142,6 +1142,7 @@ ieee80211_tdls_mgmt_setup(struct wiphy *wiphy, struct net_device *dev,
 	struct ieee80211_local *local = sdata->local;
 	enum ieee80211_smps_mode smps_mode =
 		sdata->deflink.u.mgd.driver_smps_mode;
+	struct sta_info *sta;
 	int ret;
 
 	/* don't support setup with forced SMPS mode that's not off */
@@ -1168,14 +1169,10 @@ ieee80211_tdls_mgmt_setup(struct wiphy *wiphy, struct net_device *dev,
 	 * Allow error packets to be sent - sometimes we don't even add a STA
 	 * before failing the setup.
 	 */
-	if (status_code == 0) {
-		rcu_read_lock();
-		if (!sta_info_get(sdata, peer)) {
-			rcu_read_unlock();
-			ret = -ENOLINK;
-			goto out_unlock;
-		}
-		rcu_read_unlock();
+	sta = sta_info_get(sdata, peer);
+	if ((status_code == 0 && !sta) || (sta && !sta->sta.tdls)) {
+		ret = -ENOLINK;
+		goto out_unlock;
 	}
 
 	ieee80211_flush_queues(local, sdata, false);
@@ -1442,16 +1439,16 @@ int ieee80211_tdls_oper(struct wiphy *wiphy, struct net_device *dev,
 	 */
 	tdls_dbg(sdata, "TDLS oper %d peer %pM\n", oper, peer);
 
+	sta = sta_info_get(sdata, peer);
+	if (!sta || !sta->sta.tdls)
+		return -ENOLINK;
+
 	switch (oper) {
 	case NL80211_TDLS_ENABLE_LINK:
 		if (sdata->vif.bss_conf.csa_active) {
 			tdls_dbg(sdata, "TDLS: disallow link during CSA\n");
 			return -EBUSY;
 		}
-
-		sta = sta_info_get(sdata, peer);
-		if (!sta || !sta->sta.tdls)
-			return -ENOLINK;
 
 		iee80211_tdls_recalc_chanctx(sdata, sta);
 		iee80211_tdls_recalc_ht_protection(sdata, sta);
