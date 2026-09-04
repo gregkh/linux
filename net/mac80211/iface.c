@@ -1606,8 +1606,12 @@ int ieee80211_do_open(struct wireless_dev *wdev, bool coming_up)
  err_del_interface:
 	drv_remove_interface(local, sdata);
  err_stop:
-	if (!local->open_count)
+	if (!local->open_count) {
+		ieee80211_led_radio(local, false);
+		ieee80211_mod_tpt_led_trig(local, 0,
+					   IEEE80211_TPT_LEDTRIG_FL_RADIO);
 		drv_stop(local, false);
+	}
 	if (sdata->vif.type == NL80211_IFTYPE_NAN_DATA)
 		RCU_INIT_POINTER(sdata->u.nan_data.nmi, NULL);
 	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN)
