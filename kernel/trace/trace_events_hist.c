@@ -6333,11 +6333,17 @@ static struct event_trigger_ops event_hist_trigger_ops = {
 
 static int event_hist_trigger_named_init(struct event_trigger_data *data)
 {
+	int ret;
+
+	ret = event_hist_trigger_init(data->named_data);
+	if (ret < 0)
+		return ret;
+
 	data->ref++;
 
 	save_named_trigger(data->named_data->name, data);
 
-	return event_hist_trigger_init(data->named_data);
+	return 0;
 }
 
 static void event_hist_trigger_named_free(struct event_trigger_data *data)
