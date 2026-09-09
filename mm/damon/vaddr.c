@@ -516,7 +516,6 @@ void damon_va_prepare_access_checks(struct damon_ctx *ctx)
 }
 
 struct damon_young_walk_private {
-	unsigned long *page_sz;
 	bool young;
 };
 
@@ -545,10 +544,8 @@ static int damon_young_pmd_entry(pmd_t *pmd, unsigned long addr,
 			goto huge_out;
 		if (pmd_young(*pmd) || !page_is_idle(page) ||
 					mmu_notifier_test_young(walk->mm,
-						addr)) {
-			*priv->page_sz = ((1UL) << HPAGE_PMD_SHIFT);
+						addr))
 			priv->young = true;
-		}
 		put_page(page);
 huge_out:
 		spin_unlock(ptl);
@@ -567,10 +564,8 @@ regular_page:
 	if (!page)
 		goto out;
 	if (pte_young(*pte) || !page_is_idle(page) ||
-			mmu_notifier_test_young(walk->mm, addr)) {
-		*priv->page_sz = PAGE_SIZE;
+			mmu_notifier_test_young(walk->mm, addr))
 		priv->young = true;
-	}
 	put_page(page);
 out:
 	pte_unmap_unlock(pte, ptl);
@@ -581,11 +576,9 @@ static struct mm_walk_ops damon_young_ops = {
 	.pmd_entry = damon_young_pmd_entry,
 };
 
-static bool damon_va_young(struct mm_struct *mm, unsigned long addr,
-		unsigned long *page_sz)
+static bool damon_va_young(struct mm_struct *mm, unsigned long addr)
 {
 	struct damon_young_walk_private arg = {
-		.page_sz = page_sz,
 		.young = false,
 	};
 
@@ -604,25 +597,11 @@ static bool damon_va_young(struct mm_struct *mm, unsigned long addr,
 static void damon_va_check_access(struct damon_ctx *ctx,
 			       struct mm_struct *mm, struct damon_region *r)
 {
-	static struct mm_struct *last_mm;
-	static unsigned long last_addr;
-	static unsigned long last_page_sz = PAGE_SIZE;
-	static bool last_accessed;
+	bool accessed;
 
-	/* If the region is in the last checked page, reuse the result */
-	if (mm == last_mm && (ALIGN_DOWN(last_addr, last_page_sz) ==
-				ALIGN_DOWN(r->sampling_addr, last_page_sz))) {
-		if (last_accessed)
-			r->nr_accesses++;
-		return;
-	}
-
-	last_accessed = damon_va_young(mm, r->sampling_addr, &last_page_sz);
-	if (last_accessed)
+	accessed = damon_va_young(mm, r->sampling_addr);
+	if (accessed)
 		r->nr_accesses++;
-
-	last_mm = mm;
-	last_addr = r->sampling_addr;
 }
 
 unsigned int damon_va_check_accesses(struct damon_ctx *ctx)
