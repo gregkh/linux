@@ -26,6 +26,9 @@ struct dentry;
 #define UCSI_MESSAGE_OUT		32
 #define UCSIv2_MESSAGE_OUT		272
 
+/* PPM communication timeout in milliseconds */
+#define UCSI_TIMEOUT_MS		10000
+
 /* UCSI versions */
 #define UCSI_VERSION_1_2	0x0120
 #define UCSI_VERSION_2_0	0x0200
