@@ -190,7 +190,7 @@ xchk_rtsum_record_free(
 	rtlen = xfs_rtxlen_to_extlen(mp, rec->ar_extcount);
 
 	if (!xfs_verify_rtbext(mp, rtbno, rtlen)) {
-		xchk_ino_xref_set_corrupt(sc, rtg_bitmap(rtg)->i_ino);
+		xchk_ip_xref_set_corrupt(sc, rtg_bitmap(rtg));
 		return -EFSCORRUPTED;
 	}
 
