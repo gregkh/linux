@@ -206,6 +206,7 @@ struct cc2520_private {
 	bool is_tx;			/* Flag for sync b/w Tx and Rx */
 	bool amplified;			/* Flag for CC2591 */
 	struct gpio_desc *fifo_pin;	/* FIFO GPIO pin number */
+	int fifop_irq;			/* FIFOP IRQ */
 	struct work_struct fifop_irqwork;/* Workqueue for FIFOP */
 	spinlock_t lock;		/* Lock for is_tx*/
 	struct completion tx_complete;	/* Work completion for Tx */
@@ -1117,8 +1118,9 @@ static int cc2520_probe(struct spi_device *spi)
 		goto err_hw_init;
 
 	/* Set up fifop interrupt */
+	priv->fifop_irq = gpiod_to_irq(fifop);
 	ret = devm_request_irq(&spi->dev,
-			       gpiod_to_irq(fifop),
+			       priv->fifop_irq,
 			       cc2520_fifop_isr,
 			       IRQF_TRIGGER_RISING,
 			       dev_name(&spi->dev),
@@ -1156,11 +1158,11 @@ static void cc2520_remove(struct spi_device *spi)
 {
 	struct cc2520_private *priv = spi_get_drvdata(spi);
 
-	mutex_destroy(&priv->buffer_mutex);
-	flush_work(&priv->fifop_irqwork);
-
+	disable_irq(priv->fifop_irq);
+	cancel_work_sync(&priv->fifop_irqwork);
 	ieee802154_unregister_hw(priv->hw);
 	ieee802154_free_hw(priv->hw);
+	mutex_destroy(&priv->buffer_mutex);
 }
 
 static const struct spi_device_id cc2520_ids[] = {
