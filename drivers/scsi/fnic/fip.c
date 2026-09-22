@@ -737,7 +737,7 @@ void fnic_work_on_fip_timer(struct work_struct *work)
 		if (memcmp(iport->selected_fcf.fcf_mac, zmac, ETH_ALEN) != 0) {
 
 			if (iport->flags & FNIC_FIRST_LINK_UP) {
-				fnic_scsi_fcpio_reset(iport->fnic);
+				fnic_fcpio_reset(iport->fnic);
 				iport->flags &= ~FNIC_FIRST_LINK_UP;
 			}
 

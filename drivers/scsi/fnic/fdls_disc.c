@@ -4613,7 +4613,7 @@ void fnic_fdls_disc_start(struct fnic_iport_s *iport)
 	if (!iport->usefip) {
 		if (iport->flags & FNIC_FIRST_LINK_UP) {
 			spin_unlock_irqrestore(&fnic->fnic_lock, fnic->lock_flags);
-			fnic_scsi_fcpio_reset(iport->fnic);
+			fnic_fcpio_reset(iport->fnic);
 			spin_lock_irqsave(&fnic->fnic_lock, fnic->lock_flags);
 
 			iport->flags &= ~FNIC_FIRST_LINK_UP;
@@ -5072,7 +5072,7 @@ void fnic_fdls_link_down(struct fnic_iport_s *iport)
 	iport->fabric.flags = 0;
 
 	spin_unlock_irqrestore(&fnic->fnic_lock, fnic->lock_flags);
-	fnic_scsi_fcpio_reset(iport->fnic);
+	fnic_fcpio_reset(iport->fnic);
 	spin_lock_irqsave(&fnic->fnic_lock, fnic->lock_flags);
 	list_for_each_entry_safe(tport, next, &iport->tport_list, links) {
 		FNIC_FCS_DBG(KERN_INFO, fnic->host, fnic->fnic_num,
