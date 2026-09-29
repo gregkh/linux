@@ -772,6 +772,9 @@ op_map(struct nouveau_uvma *uvma)
 {
 	struct nouveau_bo *nvbo = nouveau_gem_object(uvma->va.gem.obj);
 
+	if (drm_gpuva_invalidated(&uvma->va))
+		return;
+
 	nouveau_uvma_map(uvma, nouveau_mem(nvbo->bo.resource));
 }
 
@@ -1334,6 +1337,13 @@ nouveau_uvmm_bind_job_submit(struct nouveau_job *job)
 				continue;
 
 			nvbo = nouveau_gem_object(obj);
+			if (!(nvbo->valid_domains &
+			      (NOUVEAU_GEM_DOMAIN_VRAM | NOUVEAU_GEM_DOMAIN_GART))) {
+				ret = -EINVAL;
+				op = list_last_op(&bind_job->ops);
+				goto unwind;
+			}
+
 			nouveau_bo_placement_set(nvbo, nvbo->valid_domains, 0);
 			ret = nouveau_bo_validate(nvbo, true, false);
 			if (ret) {
