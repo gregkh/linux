@@ -6390,7 +6390,7 @@ __init int intel_pmu_init(void)
 		x86_pmu.flags |= PMU_FL_INSTR_LATENCY;
 
 		intel_pmu_pebs_data_source_grt();
-		x86_pmu.pebs_latency_data = adl_latency_data_small;
+		x86_pmu.pebs_latency_data = grt_latency_data;
 		x86_pmu.get_event_constraints = tnt_get_event_constraints;
 		x86_pmu.limit_period = spr_limit_period;
 		td_attr = tnt_events_attrs;
@@ -6810,7 +6810,7 @@ __init int intel_pmu_init(void)
 		x86_pmu.flags |= PMU_FL_NO_HT_SHARING;
 		x86_pmu.flags |= PMU_FL_INSTR_LATENCY;
 		x86_pmu.lbr_pt_coexist = true;
-		x86_pmu.pebs_latency_data = adl_latency_data_small;
+		x86_pmu.pebs_latency_data = grt_latency_data;
 		x86_pmu.num_topdown_events = 8;
 		static_call_update(intel_pmu_update_topdown_event,
 				   &adl_update_topdown_event);
