@@ -184,6 +184,7 @@ typedef struct lpfcMboxq {
 	struct lpfc_vport *vport; /* virtual port pointer */
 	void *ctx_ndlp;		  /* caller ndlp information */
 	void *ctx_buf;		  /* caller buffer information */
+	void *ext_buf;		  /* extended mailbox payload */
 	void *context3;
 
 	void (*mbox_cmpl) (struct lpfc_hba *, struct lpfcMboxq *);
