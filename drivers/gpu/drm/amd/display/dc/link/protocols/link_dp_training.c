@@ -1608,7 +1608,8 @@ bool perform_link_training_with_retries(
 				 */
 				bool result;
 				result = cp_psp->funcs.enable_assr(cp_psp->handle, link);
-				if (!result && link->panel_mode != DP_PANEL_MODE_EDP)
+				if (!result && link->panel_mode_initialized &&
+				    link->panel_mode != DP_PANEL_MODE_EDP)
 					panel_mode = DP_PANEL_MODE_DEFAULT;
 			}
 		}
