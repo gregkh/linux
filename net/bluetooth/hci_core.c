@@ -3375,9 +3375,6 @@ static struct hci_conn *hci_low_sent(struct hci_dev *hdev, __u8 type,
 	struct hci_conn *conn = NULL, *c;
 	unsigned int num = 0, min = ~0;
 
-	/* We don't have to lock device here. Connections are always
-	 * added and removed with TX task disabled. */
-
 	rcu_read_lock();
 
 	list_for_each_entry_rcu(c, &h->list, list) {
@@ -3572,6 +3569,8 @@ static void hci_sched_sco(struct hci_dev *hdev, __u8 type)
 	int quote, *cnt;
 	unsigned int pkts = hdev->sco_pkts;
 
+	lockdep_assert_held(&hdev->lock);
+
 	bt_dev_dbg(hdev, "type %u", type);
 
 	if (!hci_conn_num(hdev, type) || !pkts)
@@ -3727,6 +3726,9 @@ static void hci_sched_iso(struct hci_dev *hdev)
 
 	cnt = hdev->iso_pkts ? &hdev->iso_cnt :
 		hdev->le_pkts ? &hdev->le_cnt : &hdev->acl_cnt;
+
+	hci_dev_lock(hdev);
+
 	while (*cnt && (conn = hci_low_sent(hdev, CIS_LINK, BIS_LINK,
 					    &quote))) {
 		while (quote-- && (skb = skb_dequeue(&conn->data_q))) {
@@ -3739,6 +3741,8 @@ static void hci_sched_iso(struct hci_dev *hdev)
 			(*cnt)--;
 		}
 	}
+
+	hci_dev_unlock(hdev);
 }
 
 static void hci_tx_work(struct work_struct *work)
@@ -3751,8 +3755,10 @@ static void hci_tx_work(struct work_struct *work)
 
 	if (!hci_dev_test_flag(hdev, HCI_USER_CHANNEL)) {
 		/* Schedule queues and send stuff to HCI driver */
+		hci_dev_lock(hdev);
 		hci_sched_sco(hdev, SCO_LINK);
 		hci_sched_sco(hdev, ESCO_LINK);
+		hci_dev_unlock(hdev);
 		hci_sched_iso(hdev);
 		hci_sched_acl(hdev);
 		hci_sched_le(hdev);
