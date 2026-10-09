@@ -3146,9 +3146,7 @@ retry:
 	f2fs_unlock_op(sbi);
 
 	if (f2fs_sb_has_blkzoned(sbi) && err && gc_required) {
-		f2fs_down_write(&sbi->gc_lock);
-		err = f2fs_gc_range(sbi, 0, GET_SEGNO(sbi, FDEV(0).end_blk), true, 1);
-		f2fs_up_write(&sbi->gc_lock);
+		err = f2fs_gc_range(sbi, 0, GET_SEGNO(sbi, FDEV(0).end_blk), true, 1, true);
 		if (err)
 			return err;
 		err = f2fs_sync_fs(sbi->sb, 1);
