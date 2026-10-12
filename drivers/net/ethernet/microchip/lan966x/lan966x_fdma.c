@@ -120,8 +120,10 @@ static int lan966x_fdma_rx_alloc(struct lan966x_rx *rx)
 	size = ALIGN(size, PAGE_SIZE);
 
 	rx->dcbs = dma_alloc_coherent(lan966x->dev, size, &rx->dma, GFP_KERNEL);
-	if (!rx->dcbs)
+	if (!rx->dcbs) {
+		page_pool_destroy(rx->page_pool);
 		return -ENOMEM;
+	}
 
 	rx->last_entry = rx->dcbs;
 	rx->db_index = 0;
@@ -1048,7 +1050,9 @@ int lan966x_fdma_init(struct lan966x *lan966x)
 
 	err = lan966x_fdma_tx_alloc(&lan966x->tx);
 	if (err) {
+		lan966x_fdma_rx_free_pages(&lan966x->rx);
 		lan966x_fdma_rx_free(&lan966x->rx);
+		page_pool_destroy(lan966x->rx.page_pool);
 		return err;
 	}
 
