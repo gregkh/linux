@@ -671,6 +671,7 @@ static int lkkbd_connect(struct serio *serio, struct serio_driver *drv)
 	return 0;
 
  fail3:	serio_close(serio);
+	cancel_work_sync(&lk->tq);
  fail2:	serio_set_drvdata(serio, NULL);
  fail1:	input_free_device(input_dev);
 	kfree(lk);
@@ -687,6 +688,7 @@ static void lkkbd_disconnect(struct serio *serio)
 	input_get_device(lk->dev);
 	input_unregister_device(lk->dev);
 	serio_close(serio);
+	cancel_work_sync(&lk->tq);
 	serio_set_drvdata(serio, NULL);
 	input_put_device(lk->dev);
 	kfree(lk);
