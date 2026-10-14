@@ -253,6 +253,10 @@ static int snd_ctl_led_set_id(int card_number, struct snd_ctl_elem_id *id,
 		down_write(&card->controls_rwsem);
 		kctl = snd_ctl_find_id_locked(card, id);
 		if (kctl) {
+			if (!kctl->info || !kctl->get) {
+				err = -EINVAL;
+				goto unlock;
+			}
 			ioff = snd_ctl_get_ioff(kctl, id);
 			vd = &kctl->vd[ioff];
 			access = vd->access & SNDRV_CTL_ELEM_ACCESS_LED_MASK;
