@@ -5984,11 +5984,12 @@ void mlx5e_netdev_attach_nic_profile(struct mlx5e_priv *priv)
 	mlx5e_netdev_change_profile(priv, &mlx5e_nic_profile, NULL);
 }
 
-void mlx5e_destroy_netdev(struct mlx5e_priv *priv)
+void mlx5e_destroy_netdev(struct net_device *netdev)
 {
-	struct net_device *netdev = priv->netdev;
+	struct mlx5e_priv *priv = netdev_priv(netdev);
 
-	mlx5e_priv_cleanup(priv);
+	if (priv->profile)
+		mlx5e_priv_cleanup(priv);
 	free_netdev(netdev);
 }
 
@@ -6116,7 +6117,7 @@ err_resume:
 err_profile_cleanup:
 	profile->cleanup(priv);
 err_destroy_netdev:
-	mlx5e_destroy_netdev(priv);
+	mlx5e_destroy_netdev(netdev);
 err_devlink_port_unregister:
 	mlx5e_devlink_port_unregister(mlx5e_dev);
 err_devlink_unregister:
@@ -6134,13 +6135,15 @@ static void mlx5e_remove(struct auxiliary_device *adev)
 	pm_message_t state = {};
 
 	mlx5_core_uplink_netdev_set(mdev, NULL);
-	mlx5e_dcbnl_delete_app(priv);
+
+	if (priv->profile)
+		mlx5e_dcbnl_delete_app(priv);
 	unregister_netdev(netdev);
 	mlx5e_suspend(adev, state);
 	/* Avoid cleanup if profile rollback failed. */
 	if (priv->profile)
 		priv->profile->cleanup(priv);
-	mlx5e_destroy_netdev(priv);
+	mlx5e_destroy_netdev(netdev);
 	mlx5e_devlink_port_unregister(mlx5e_dev);
 	mlx5e_destroy_devlink(mlx5e_dev);
 }
