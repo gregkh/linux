@@ -454,6 +454,12 @@ int sdw_hda_dai_hw_params(struct snd_pcm_substream *substream,
 	struct snd_sof_dev *sdev;
 	int ret;
 
+	if (!w) {
+		dev_err(cpu_dai->dev, "%s widget not found, check amp link num in the topology\n",
+			cpu_dai->name);
+		return -EINVAL;
+	}
+
 	ret = non_hda_dai_hw_params(substream, params, cpu_dai);
 	if (ret < 0) {
 		dev_err(cpu_dai->dev, "%s: non_hda_dai_hw_params failed %d\n", __func__, ret);
