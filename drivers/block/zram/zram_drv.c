@@ -2023,6 +2023,8 @@ static void zram_destroy_comps(struct zram *zram)
 			kfree(zram->comp_algs[prio]);
 		zram->comp_algs[prio] = NULL;
 	}
+
+	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
 }
 
 static void zram_reset_device(struct zram *zram)
@@ -2040,8 +2042,6 @@ static void zram_reset_device(struct zram *zram)
 	zram_destroy_comps(zram);
 	memset(&zram->stats, 0, sizeof(zram->stats));
 	reset_bdev(zram);
-
-	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
 	up_write(&zram->init_lock);
 }
 
