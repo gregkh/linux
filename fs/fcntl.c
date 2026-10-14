@@ -291,6 +291,9 @@ static long fcntl_rw_hint(struct file *file, unsigned int cmd,
 			return -EFAULT;
 		return 0;
 	case F_SET_RW_HINT:
+		/* nothing is ever written to it */
+		if (IS_IMMUTABLE(inode))
+			return -EPERM;
 		if (copy_from_user(&hint, argp, sizeof(hint)))
 			return -EFAULT;
 		if (!rw_hint_valid(hint))
