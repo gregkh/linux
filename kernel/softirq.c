@@ -9,6 +9,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#define INSTANTIATE_EXPORTED_INTERRUPT_DISABLE
 #include <linux/export.h>
 #include <linux/kernel_stat.h>
 #include <linux/interrupt.h>
@@ -86,6 +87,28 @@ DEFINE_PER_CPU(int, hardirqs_enabled);
 DEFINE_PER_CPU(int, hardirq_context);
 EXPORT_PER_CPU_SYMBOL_GPL(hardirqs_enabled);
 EXPORT_PER_CPU_SYMBOL_GPL(hardirq_context);
+#endif
+
+DEFINE_PER_CPU(unsigned long, local_interrupt_disable_state);
+
+void _local_interrupt_save_state(unsigned long flags)
+{
+	__local_interrupt_save_state(flags);
+}
+EXPORT_SYMBOL(_local_interrupt_save_state);
+
+void _local_interrupt_enable(void)
+{
+	__local_interrupt_enable();
+}
+EXPORT_SYMBOL(_local_interrupt_enable);
+
+#ifndef CONFIG_HAS_SEPARATE_PREEMPT_RESCHED_BITS
+/*
+ * Any 32bit architecture that still cares about performance should
+ * probably ensure this is near preempt_count.
+ */
+DEFINE_PER_CPU(unsigned int, nmi_nesting);
 #endif
 
 /*
@@ -729,7 +752,7 @@ static inline void __irq_exit_rcu(void)
 	if (!in_interrupt() && local_softirq_pending()) {
 		/*
 		 * If we left hrtimers unarmed, make sure to arm them now,
-		 * before enabling interrupts to run SoftIRQ.
+		 * before enabling interrupts to run softirq.
 		 */
 		hrtimer_rearm_deferred();
 		invoke_softirq();

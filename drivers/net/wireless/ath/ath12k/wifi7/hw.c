@@ -393,6 +393,7 @@ static const struct ath12k_hw_params ath12k_wifi7_hw_params[] = {
 					BIT(NL80211_IFTYPE_MESH_POINT) |
 					BIT(NL80211_IFTYPE_AP_VLAN),
 		.supports_monitor = false,
+		.supports_cong_ctrl_max_msdus = true,
 
 		.idle_ps = false,
 		.download_calib = true,
@@ -485,6 +486,7 @@ static const struct ath12k_hw_params ath12k_wifi7_hw_params[] = {
 				   BIT(NL80211_IFTYPE_P2P_CLIENT) |
 				   BIT(NL80211_IFTYPE_P2P_GO),
 		.supports_monitor = true,
+		.supports_cong_ctrl_max_msdus = false,
 
 		.idle_ps = true,
 		.download_calib = false,
@@ -575,6 +577,7 @@ static const struct ath12k_hw_params ath12k_wifi7_hw_params[] = {
 					BIT(NL80211_IFTYPE_MESH_POINT) |
 					BIT(NL80211_IFTYPE_AP_VLAN),
 		.supports_monitor = true,
+		.supports_cong_ctrl_max_msdus = true,
 
 		.idle_ps = false,
 		.download_calib = true,
@@ -663,6 +666,7 @@ static const struct ath12k_hw_params ath12k_wifi7_hw_params[] = {
 				   BIT(NL80211_IFTYPE_AP) |
 				   BIT(NL80211_IFTYPE_MESH_POINT),
 		.supports_monitor = true,
+		.supports_cong_ctrl_max_msdus = true,
 
 		.idle_ps = false,
 		.download_calib = true,
@@ -698,7 +702,7 @@ static const struct ath12k_hw_params ath12k_wifi7_hw_params[] = {
 
 		.ce_ie_addr = &ath12k_wifi7_ce_ie_addr_ipq5332,
 		.ce_remap = &ath12k_wifi7_ce_remap_ipq5332,
-		.bdf_addr_offset = 0xC00000,
+		.bdf_addr_offset = 0x1A00000,
 
 		.dp_primary_link_only = true,
 		.client = {
@@ -749,6 +753,7 @@ static const struct ath12k_hw_params ath12k_wifi7_hw_params[] = {
 				   BIT(NL80211_IFTYPE_P2P_CLIENT) |
 				   BIT(NL80211_IFTYPE_P2P_GO),
 		.supports_monitor = true,
+		.supports_cong_ctrl_max_msdus = false,
 
 		.idle_ps = true,
 		.download_calib = false,
@@ -839,6 +844,7 @@ static const struct ath12k_hw_params ath12k_wifi7_hw_params[] = {
 				   BIT(NL80211_IFTYPE_AP) |
 				   BIT(NL80211_IFTYPE_MESH_POINT),
 		.supports_monitor = true,
+		.supports_cong_ctrl_max_msdus = true,
 
 		.idle_ps = false,
 		.download_calib = true,
@@ -1038,6 +1044,9 @@ static void ath12k_wifi7_mac_op_tx(struct ieee80211_hw *hw,
 				continue;
 
 			tmp_ar = tmp_arvif->ar;
+			if (unlikely(test_bit(ATH12K_FLAG_CRASH_FLUSH, &tmp_ar->ab->dev_flags)))
+				continue;
+
 			tmp_dp = ath12k_ab_to_dp(tmp_ar->ab);
 			tmp_dp_pdev = ath12k_dp_to_pdev_dp(tmp_dp,
 							   tmp_ar->pdev_idx);
@@ -1046,18 +1055,22 @@ static void ath12k_wifi7_mac_op_tx(struct ieee80211_hw *hw,
 
 			if (cb_flags & ATH12K_SKB_HW_80211_ENCAP) {
 				/*
-				 * skb->data may be modified for the iova_mask devices.
-				 * It is better to use skb_copy() for such devices
-				 * to avoid any potential skb corruption related issues.
+				 * skb->data may be modified for the
+				 * iova_mask devices. It is better to
+				 * use skb_copy() for such devices to
+				 * avoid any potential skb corruption
+				 * related issues.
 				 */
-				if (tmp_dp->hw_params->iova_mask)
+				if (tmp_dp->hw_params->iova_mask) {
 					msdu_copied = skb_copy(skb, GFP_ATOMIC);
-				else
+				} else {
 					/*
-					 * ath12k_wifi7_dp_tx() should treat cloned HW-encap
-					 * Ethernet multicast frames as read-only.
+					 * ath12k_wifi7_dp_tx() should
+					 * treat cloned HW-encap Ethernet
+					 * multicast frames as read-only.
 					 */
 					msdu_copied = skb_clone(skb, GFP_ATOMIC);
+				}
 				if (!msdu_copied) {
 					ath12k_err(ar->ab,
 						   "skb copy/clone failure link_id 0x%X vdevid 0x%X\n",

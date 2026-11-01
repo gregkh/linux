@@ -2505,6 +2505,8 @@ int cmd_stat(int argc, const char **argv)
 			"display details about each run (only with -r option)"),
 		OPT_BOOLEAN('n', "null", &stat_config.null_run,
 			"null run - dont start any counters"),
+		OPT_BOOLEAN(0, "hide-zero-events", &stat_config.hide_zero,
+			"Do not show events with a zero count"),
 		OPT_INCR('d', "detailed", &detailed_run,
 			"detailed run - start a lot of events"),
 		OPT_BOOLEAN('S', "sync", &sync_run,
@@ -2654,6 +2656,13 @@ int cmd_stat(int argc, const char **argv)
 					PARSE_OPT_STOP_AT_NON_OPTION);
 
 	stat_config.aggr_mode = opt_aggr_mode_to_aggr_mode(&opt_mode);
+
+	if (stat_config.csv_sep && stat_config.json_output) {
+		fprintf(stderr, "cannot use both --field-separator and --json-output\n");
+		parse_options_usage(stat_usage, stat_options, "x", 1);
+		parse_options_usage(NULL, stat_options, "j", 1);
+		goto out;
+	}
 
 	if (stat_config.csv_sep) {
 		stat_config.csv_output = true;
@@ -2891,7 +2900,8 @@ int cmd_stat(int argc, const char **argv)
 			goto out;
 		}
 
-		if (evlist__expand_cgroup(evsel_list, stat_config.cgroup_list, true) < 0) {
+		if (evlist__expand_cgroup(evsel_list, stat_config.cgroup_list,
+					  !target.use_bpf) < 0) {
 			parse_options_usage(stat_usage, stat_options,
 					    "for-each-cgroup", 0);
 			goto out;

@@ -1320,14 +1320,8 @@ static void vmbus_message_sched(struct hv_per_cpu_context *hv_cpu, void *message
 	msg = (struct hv_message *)message_page_addr + VMBUS_MESSAGE_SINT;
 
 	/* Check if there are actual msgs to be processed */
-	if (msg->header.message_type != HVMSG_NONE) {
-		if (msg->header.message_type == HVMSG_TIMER_EXPIRED) {
-			hv_stimer0_isr();
-			vmbus_signal_eom(msg, HVMSG_TIMER_EXPIRED);
-		} else {
-			tasklet_schedule(&hv_cpu->msg_dpc);
-		}
-	}
+	if (msg->header.message_type != HVMSG_NONE)
+		tasklet_schedule(&hv_cpu->msg_dpc);
 }
 
 static void __vmbus_isr(void)
@@ -2929,23 +2923,19 @@ static void hv_crash_handler(struct pt_regs *regs)
 static int hv_synic_suspend(void *data)
 {
 	/*
-	 * When we reach here, all the non-boot CPUs have been offlined.
-	 * If we're in a legacy configuration where stimer Direct Mode is
-	 * not enabled, the stimers on the non-boot CPUs have been unbound
-	 * in hv_synic_cleanup() -> hv_stimer_legacy_cleanup() ->
-	 * hv_stimer_cleanup() -> clockevents_unbind_device().
+	 * When we reach here, all the non-boot CPUs have been offlined,
+	 * and their stimers have been cleaned up by the cpuhp teardown
+	 * callback hv_stimer_cleanup().
 	 *
 	 * hv_synic_suspend() only runs on CPU0 with interrupts disabled.
-	 * Here we do not call hv_stimer_legacy_cleanup() on CPU0 because:
-	 * 1) it's unnecessary as interrupts remain disabled between
-	 * syscore_suspend() and syscore_resume(): see create_image() and
+	 * The stimer on CPU0 is not explicitly cleaned up here because:
+	 * 1) it's harmless as interrupts remain disabled between
+	 * syscore_suspend() and syscore_resume(), so the stimer cannot
+	 * fire during this window: see create_image() and
 	 * resume_target_kernel()
 	 * 2) the stimer on CPU0 is automatically disabled later by
 	 * syscore_suspend() -> timekeeping_suspend() -> tick_suspend() -> ...
 	 * -> clockevents_shutdown() -> ... -> hv_ce_shutdown()
-	 * 3) a warning would be triggered if we call
-	 * clockevents_unbind_device(), which may sleep, in an
-	 * interrupts-disabled context.
 	 */
 
 	hv_hyp_synic_disable_regs(0);

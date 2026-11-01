@@ -23,6 +23,7 @@
 #include "wow.h"
 #include "dp_cmn.h"
 #include "peer.h"
+#include "qmi.h"
 
 unsigned int ath12k_debug_mask;
 module_param_named(debug_mask, ath12k_debug_mask, uint, 0644);
@@ -52,6 +53,7 @@ ath12k_mem_profile_based_param ath12k_mem_profile_based_param[] = {
 			.rxdma_monitor_dst_ring_size = 8192,
 			.num_pool_tx_desc = 32768,
 			.rx_desc_count = 12288,
+			.rx_release_ring_size = 16384,
 		},
 	},
 [ATH12K_QMI_MEMORY_MODE_LOW_512_M] = {
@@ -65,6 +67,7 @@ ath12k_mem_profile_based_param ath12k_mem_profile_based_param[] = {
 			.rxdma_monitor_dst_ring_size = 512,
 			.num_pool_tx_desc = 16384,
 			.rx_desc_count = 6144,
+			.rx_release_ring_size = 8192,
 		},
 	},
 };
@@ -683,8 +686,10 @@ static void ath12k_core_stop(struct ath12k_base *ab)
 
 	ath12k_core_to_group_ref_put(ab);
 
-	if (!test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags))
+	if (!test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags)) {
+		ath12k_dp_reoq_lut_addr_reset(ath12k_ab_to_dp(ab));
 		ath12k_qmi_firmware_stop(ab);
+	}
 
 	ath12k_acpi_stop(ab);
 
@@ -792,7 +797,7 @@ static int ath12k_core_soc_create(struct ath12k_base *ab)
 	int ret;
 
 	if (ath12k_ftm_mode) {
-		ab->fw_mode = ATH12K_FIRMWARE_MODE_FTM;
+		ab->fw_mode = ATH12K_QMI_FIRMWARE_MODE_FTM;
 		ath12k_info(ab, "Booting in ftm mode\n");
 	}
 
@@ -1186,7 +1191,7 @@ err_mac_destroy:
 }
 
 static int ath12k_core_start_firmware(struct ath12k_base *ab,
-				      enum ath12k_firmware_mode mode)
+				      enum ath12k_qmi_firmware_mode mode)
 {
 	int ret;
 
@@ -1346,6 +1351,7 @@ err_core_stop:
 	goto exit;
 
 err_deinit:
+	ath12k_dp_reoq_lut_addr_reset(ath12k_ab_to_dp(ab));
 	ath12k_dp_cmn_device_deinit(ath12k_ab_to_dp(ab));
 	mutex_unlock(&ab->core_lock);
 	mutex_unlock(&ag->mutex);

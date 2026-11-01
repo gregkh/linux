@@ -152,24 +152,6 @@ int io_futex_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	return 0;
 }
 
-/*
- * A wait on a private futex does not block the submitter. Even a single
- * threaded task can go on and have the mm private hash installed by clone()
- * or prctl(), which does not pick up waiters from the global hash. Make
- * sure the private hash exists before the first waiter is queued.
- */
-static int io_futex_prep_private(struct io_kiocb *req)
-{
-	int ret = futex_hash_allocate_default();
-
-	if (unlikely(ret))
-		return ret;
-
-	/* inflight tracking only needed for mm private hash */
-	io_req_track_inflight(req);
-	return 0;
-}
-
 int io_futex_wait_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
 	struct io_futex *iof = io_kiocb_to_cmd(req, struct io_futex);
@@ -179,8 +161,9 @@ int io_futex_wait_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	if (unlikely(ret))
 		return ret;
 
+	/* inflight tracking only needed for mm private hash */
 	if (!(iof->futex_flags & FLAGS_SHARED))
-		return io_futex_prep_private(req);
+		io_req_track_inflight(req);
 	return 0;
 }
 
@@ -230,13 +213,10 @@ int io_futexv_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		return ret;
 	}
 
+	/* inflight tracking only needed for mm private hash */
 	for (i = 0; i < iof->futex_nr; i++) {
 		if (!(ifd->futexv[i].w.flags & FLAGS_SHARED)) {
-			ret = io_futex_prep_private(req);
-			if (ret) {
-				kfree(ifd);
-				return ret;
-			}
+			io_req_track_inflight(req);
 			break;
 		}
 	}
@@ -303,8 +283,6 @@ int io_futexv_wait(struct io_kiocb *req, unsigned int issue_flags)
 		 */
 		__set_current_state(TASK_RUNNING);
 		hlist_add_head(&req->hash_node, &ctx->futex_list);
-		if (io_wq_cancel_seen(req, issue_flags))
-			__io_futex_cancel(req);
 	} else {
 		iof->futexv_unqueued = 1;
 		if (woken != -1)
@@ -345,8 +323,6 @@ int io_futex_wait(struct io_kiocb *req, unsigned int issue_flags)
 			       &ifd->q, NULL, NULL);
 	if (!ret) {
 		hlist_add_head(&req->hash_node, &ctx->futex_list);
-		if (io_wq_cancel_seen(req, issue_flags))
-			__io_futex_cancel(req);
 		io_ring_submit_unlock(ctx, issue_flags);
 
 		return IOU_ISSUE_SKIP_COMPLETE;

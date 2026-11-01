@@ -237,7 +237,7 @@ static int aia_init(struct kvm *kvm)
 		return -EBUSY;
 
 	/* We might be in the middle of creating a VCPU? */
-	if (kvm->created_vcpus != atomic_read(&kvm->online_vcpus))
+	if (kvm_is_vcpu_creation_in_progress(kvm))
 		return -EBUSY;
 
 	/* Number of sources should be less than or equals number of IDs */
@@ -246,6 +246,12 @@ static int aia_init(struct kvm *kvm)
 
 	/* APLIC base is required for non-zero number of sources */
 	if (aia->nr_sources && aia->aplic_addr == KVM_RISCV_AIA_UNDEF_ADDR)
+		return -EINVAL;
+
+	/* Group index bits must not overlap guest and HART index bits. */
+	if (aia->nr_group_bits &&
+	    aia->nr_group_shift < (IMSIC_MMIO_PAGE_SHIFT +
+	    			   aia->nr_guest_bits + aia->nr_hart_bits))
 		return -EINVAL;
 
 	/* Initialize APLIC */

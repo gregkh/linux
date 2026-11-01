@@ -413,7 +413,19 @@ enum notify_type4 {
         NOTIFY4_REMOVE_ENTRY = 2,
         NOTIFY4_ADD_ENTRY = 3,
         NOTIFY4_RENAME_ENTRY = 4,
-        NOTIFY4_CHANGE_COOKIE_VERIFIER = 5
+        NOTIFY4_CHANGE_COOKIE_VERIFIER = 5,
+        /* Proposed in RFC8881bis */
+        NOTIFY4_GFLAG_EXTEND = 6,
+        NOTIFY4_AUFLAG_VALID = 7,
+        NOTIFY4_AUFLAG_USER = 8,
+        NOTIFY4_AUFLAG_GROUP = 9,
+        NOTIFY4_AUFLAG_OTHER = 10,
+        NOTIFY4_CHANGE_AUTH = 11,
+        NOTIFY4_CFLAG_ORDER = 12,
+        NOTIFY4_AUFLAG_GANOW = 13,
+        NOTIFY4_AUFLAG_GALATER = 14,
+        NOTIFY4_CHANGE_GA = 15,
+        NOTIFY4_CHANGE_AMASK = 16
 };
 
 /* Changed entry information.  */
@@ -433,6 +445,7 @@ struct notify_remove4 {
         notify_entry4   nrm_old_entry;
         nfs_cookie4     nrm_old_entry_cookie;
 };
+pragma public notify_remove4;
 
 struct notify_add4 {
         /*
@@ -446,15 +459,18 @@ struct notify_add4 {
         prev_entry4         nad_prev_entry<1>;
         bool                nad_last_entry;
 };
+pragma public notify_add4;
 
 struct notify_attr4 {
         notify_entry4   na_changed_entry;
 };
+pragma public notify_attr4;
 
 struct notify_rename4 {
         notify_remove4  nrn_old_entry;
         notify_add4     nrn_new_entry;
 };
+pragma public notify_rename4;
 
 struct notify_verifier4 {
         verifier4       nv_old_cookieverf;
@@ -478,6 +494,7 @@ struct CB_NOTIFY4args {
         nfs_fh4     cna_fh;
         notify4     cna_changes<>;
 };
+pragma public CB_NOTIFY4args;
 
 struct CB_NOTIFY4res {
         nfsstat4    cnr_status;

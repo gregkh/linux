@@ -34,7 +34,7 @@ struct dentry_bucket {
 #define FUSE_HASH_BITS	5
 #define FUSE_HASH_SIZE	(1 << FUSE_HASH_BITS)
 static struct dentry_bucket dentry_hash[FUSE_HASH_SIZE];
-struct delayed_work dentry_tree_work;
+static struct delayed_work dentry_tree_work;
 
 /* Minimum invalidation work queue frequency */
 #define FUSE_DENTRY_INVAL_FREQ_MIN 5
@@ -1093,7 +1093,7 @@ static int fuse_mknod(struct mnt_idmap *idmap, struct inode *dir,
 }
 
 static int fuse_create(struct mnt_idmap *idmap, struct inode *dir,
-		       struct dentry *entry, umode_t mode, bool excl)
+		       struct dentry *entry, umode_t mode)
 {
 	return fuse_mknod(idmap, dir, entry, mode, 0);
 }
@@ -1125,6 +1125,14 @@ static struct dentry *fuse_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 
 	if (!fm->fc->dont_mask)
 		mode &= ~current_umask();
+
+	/*
+	 * vfs_mkdir() now passes S_IFDIR in @mode, but @mode is forwarded
+	 * verbatim to the userspace server which has only ever been given the
+	 * permission bits. Strip the type bit until the protocol is known to
+	 * cope with it.
+	 */
+	mode &= ~S_IFDIR;
 
 	memset(&inarg, 0, sizeof(inarg));
 	inarg.mode = mode;
@@ -2289,6 +2297,9 @@ int fuse_do_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 	 */
 	if ((is_truncate || !is_wb) &&
 	    S_ISREG(inode->i_mode) && oldsize != outarg.attr.size) {
+		if (outarg.attr.size > oldsize)
+			truncate_pagecache_range(inode, oldsize,
+						 outarg.attr.size - 1);
 		truncate_pagecache(inode, outarg.attr.size);
 		invalidate_inode_pages2(mapping);
 	}

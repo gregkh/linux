@@ -568,6 +568,12 @@ static inline u64 uncore_read_counter(struct intel_uncore_box *box,
 	return box->pmu->type->ops->read_counter(box, event);
 }
 
+static inline bool uncore_box_active(struct intel_uncore_box *box)
+{
+	return (!box->pmu->type->ops->init_box ||
+		test_bit(UNCORE_BOX_FLAG_INITIALIZED, &box->flags));
+}
+
 static inline int uncore_box_init(struct intel_uncore_box *box)
 {
 	int ret = 0;

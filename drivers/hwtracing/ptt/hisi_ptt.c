@@ -194,7 +194,6 @@ static int hisi_ptt_trace_start(struct hisi_ptt *hisi_ptt)
 {
 	struct hisi_ptt_trace_ctrl *ctrl = &hisi_ptt->trace_ctrl;
 	u32 val;
-	int i;
 
 	/* Check device idle before start trace */
 	if (!hisi_ptt_wait_trace_hw_idle(hisi_ptt)) {
@@ -221,10 +220,6 @@ static int hisi_ptt_trace_start(struct hisi_ptt *hisi_ptt)
 
 	/* Reset the index of current buffer */
 	hisi_ptt->trace_ctrl.buf_index = 0;
-
-	/* Zero the trace buffers */
-	for (i = 0; i < HISI_PTT_TRACE_BUF_CNT; i++)
-		memset(ctrl->trace_buf[i].addr, 0, HISI_PTT_TRACE_BUF_SIZE);
 
 	/* Clear the interrupt status */
 	writel(HISI_PTT_TRACE_INT_STAT_MASK, hisi_ptt->iobase + HISI_PTT_TRACE_INT_STAT);
@@ -786,7 +781,7 @@ static ssize_t cpumask_show(struct device *dev, struct device_attribute *attr,
 	struct hisi_ptt *hisi_ptt = to_hisi_ptt(dev_get_drvdata(dev));
 	const cpumask_t *cpumask = cpumask_of_node(dev_to_node(&hisi_ptt->pdev->dev));
 
-	return cpumap_print_to_pagebuf(true, buf, cpumask);
+	return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(cpumask));
 }
 static DEVICE_ATTR_RO(cpumask);
 

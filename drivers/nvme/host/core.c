@@ -33,6 +33,13 @@
 
 #define NVME_MINORS		(1U << MINORBITS)
 
+/*
+ * Write hints (bio->bi_write_stream) are u8, so FDP placement handles beyond
+ * U8_MAX can never be selected. Cap the handle count to bound both the RUH
+ * status buffer and the per-head plids array.
+ */
+#define NVME_MAX_PLIDS		U8_MAX
+
 struct nvme_ns_info {
 	struct nvme_ns_ids ids;
 	u32 nsid;
@@ -126,8 +133,8 @@ EXPORT_SYMBOL_GPL(nvme_reset_wq);
 struct workqueue_struct *nvme_delete_wq;
 EXPORT_SYMBOL_GPL(nvme_delete_wq);
 
-static LIST_HEAD(nvme_subsystems);
 DEFINE_MUTEX(nvme_subsystems_lock);
+static LIST_HEAD_GUARDED(nvme_subsystems, nvme_subsystems_lock);
 
 static DEFINE_IDA(nvme_instance_ida);
 static dev_t nvme_ctrl_base_chr_devt;
@@ -1271,7 +1278,7 @@ u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_start, "NVME_TARGET_PASSTHRU");
 
-void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
+u32 nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 		       struct nvme_command *cmd, int status)
 {
 	if (effects & NVME_CMD_EFFECTS_CSE_MASK) {
@@ -1292,7 +1299,7 @@ void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 		flush_work(&ctrl->scan_work);
 	}
 	if (ns)
-		return;
+		return effects;
 
 	switch (cmd->common.opcode) {
 	case nvme_admin_set_features:
@@ -1313,6 +1320,8 @@ void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 	default:
 		break;
 	}
+
+	return effects;
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_end, "NVME_TARGET_PASSTHRU");
 
@@ -1586,7 +1595,11 @@ static int nvme_identify_ns_descs(struct nvme_ctrl *ctrl,
 	for (pos = 0; pos < NVME_IDENTIFY_DATA_SIZE; pos += len) {
 		struct nvme_ns_id_desc *cur = data + pos;
 
+		if (pos + sizeof(*cur) > NVME_IDENTIFY_DATA_SIZE)
+			break;
 		if (cur->nidl == 0)
+			break;
+		if (pos + sizeof(*cur) + cur->nidl > NVME_IDENTIFY_DATA_SIZE)
 			break;
 
 		len = nvme_process_ns_desc(ctrl, &info->ids, cur, &csi_seen);
@@ -2340,7 +2353,7 @@ static int nvme_query_fdp_info(struct nvme_ns *ns, struct nvme_ns_info *info)
 	if (!info->runs)
 		return ret;
 
-	size = struct_size(ruhs, ruhsd, S8_MAX - 1);
+	size = struct_size(ruhs, ruhsd, NVME_MAX_PLIDS);
 	ruhs = kzalloc(size, GFP_KERNEL);
 	if (!ruhs)
 		return -ENOMEM;
@@ -2355,12 +2368,11 @@ static int nvme_query_fdp_info(struct nvme_ns *ns, struct nvme_ns_info *info)
 		goto free;
 	}
 
-	head->nr_plids = le16_to_cpu(ruhs->nruhsd);
+	head->nr_plids = min(le16_to_cpu(ruhs->nruhsd), NVME_MAX_PLIDS);
 	if (!head->nr_plids)
 		goto free;
 
-	head->plids = kcalloc(head->nr_plids, sizeof(*head->plids),
-			      GFP_KERNEL);
+	head->plids = kzalloc_objs(*head->plids, head->nr_plids);
 	if (!head->plids) {
 		dev_warn(ctrl->device,
 			 "failed to allocate %u FDP placement IDs\n",
@@ -2599,12 +2611,25 @@ static int nvme_update_ns_info(struct nvme_ns *ns, struct nvme_ns_info *info)
 		lim.max_write_streams = ns_lim->max_write_streams;
 		lim.write_stream_granularity = ns_lim->write_stream_granularity;
 		ret = queue_limits_commit_update(ns->head->disk->queue, &lim);
+		if (ret)
+			goto unfreeze_head_queue;
 
 		set_capacity_and_notify(ns->head->disk, get_capacity(ns->disk));
 		set_disk_ro(ns->head->disk, nvme_ns_is_readonly(ns, info));
 		nvme_mpath_revalidate_paths(ns->head);
 
+unfreeze_head_queue:
 		blk_mq_unfreeze_queue(ns->head->disk->queue, memflags);
+
+		/*
+		 * Wait until the head queue is unfrozen before revalidating
+		 * its zones. blk_revalidate_disk_zones() takes the queue limits
+		 * lock and then freezes the queue on its own, so it must not be
+		 * called with the queue already frozen. This is also what
+		 * nvme_update_ns_info_block() does for ns->disk.
+		 */
+		if (!ret)
+			ret = nvme_mpath_revalidate_zones(ns->head);
 	}
 
 	return ret;
@@ -3212,6 +3237,7 @@ static void nvme_put_subsystem(struct nvme_subsystem *subsys)
 }
 
 static struct nvme_subsystem *__nvme_find_get_subsystem(const char *subsysnqn)
+	__must_hold(&nvme_subsystems_lock)
 {
 	struct nvme_subsystem *subsys;
 
@@ -3256,6 +3282,7 @@ static inline bool nvme_is_io_ctrl(struct nvme_ctrl *ctrl)
 
 static bool nvme_validate_cntlid(struct nvme_subsystem *subsys,
 		struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
+	__must_hold(&nvme_subsystems_lock)
 {
 	struct nvme_ctrl *tmp;
 

@@ -159,8 +159,6 @@ MODULE_LICENSE("GPL");
 #define ECO_MODE_ON		0x80
 
 #define ACPI_PCC_DRIVER_NAME	"Panasonic Laptop Support"
-#define ACPI_PCC_DEVICE_NAME	"Hotkey"
-#define ACPI_PCC_CLASS		"pcc"
 
 #define ACPI_PCC_INPUT_PHYS	"panasonic/hkey0"
 
@@ -1026,8 +1024,6 @@ static int acpi_pcc_hotkey_probe(struct platform_device *pdev)
 	pcc->device = device;
 	pcc->handle = device->handle;
 	device->driver_data = pcc;
-	strscpy(acpi_device_name(device), ACPI_PCC_DEVICE_NAME);
-	strscpy(acpi_device_class(device), ACPI_PCC_CLASS);
 
 	result = acpi_pcc_init_input(pcc);
 	if (result) {

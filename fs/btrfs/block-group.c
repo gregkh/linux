@@ -2630,10 +2630,9 @@ static int fill_dummy_bgs(struct btrfs_fs_info *fs_info)
 
 		/* Fill dummy cache as FULL */
 		bg->length = map->chunk_len;
-		bg->flags = map->type;
+		bg->flags = map->on_disk_type;
 		bg->cached = BTRFS_CACHE_FINISHED;
 		bg->used = map->chunk_len;
-		bg->flags = map->type;
 		bg->space_info = btrfs_find_space_info(fs_info, bg->flags);
 		ret = btrfs_add_block_group_cache(bg);
 		/*
@@ -3075,20 +3074,24 @@ struct btrfs_block_group *btrfs_make_block_group(struct btrfs_trans_handle *tran
 		return ERR_PTR(ret);
 	}
 
+	/*
+	 * Ensure the corresponding space_info object is created and
+	 * assigned to our block group. We want our bg to be added to the rbtree
+	 * with its ->space_info set.
+	 *
+	 * On a zoned filesystem btrfs_add_new_free_space() ends up in
+	 * __btrfs_add_free_space_zoned(), which dereferences
+	 * block_group->space_info, so it has to be set beforehand.
+	 */
+	cache->space_info = space_info;
+	ASSERT(cache->space_info);
+
 	ret = btrfs_add_new_free_space(cache, chunk_offset, chunk_offset + size, NULL);
 	btrfs_free_excluded_extents(cache);
 	if (ret) {
 		btrfs_put_block_group(cache);
 		return ERR_PTR(ret);
 	}
-
-	/*
-	 * Ensure the corresponding space_info object is created and
-	 * assigned to our block group. We want our bg to be added to the rbtree
-	 * with its ->space_info set.
-	 */
-	cache->space_info = space_info;
-	ASSERT(cache->space_info);
 
 	ret = btrfs_add_block_group_cache(cache);
 	if (ret) {
@@ -3922,7 +3925,7 @@ int btrfs_update_block_group(struct btrfs_trans_handle *trans,
 		old_val += num_bytes;
 		cache->used = old_val;
 		cache->reserved -= num_bytes;
-		cache->reclaim_mark = 0;
+		cache->reclaim_mark = false;
 		space_info->bytes_reserved -= num_bytes;
 		space_info->bytes_used += num_bytes;
 		space_info->disk_used += num_bytes * factor;

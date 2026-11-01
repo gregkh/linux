@@ -9,6 +9,7 @@
 
 #include <linux/export.h>
 
+#include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_probe_helper.h>
@@ -52,6 +53,9 @@ static int of_display_mode_bridge_get_modes(struct drm_bridge *bridge,
 }
 
 static const struct drm_bridge_funcs of_display_mode_bridge_funcs = {
+	.atomic_create_state = drm_atomic_helper_bridge_create_state,
+	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
+	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.attach = of_display_mode_bridge_attach,
 	.get_modes = of_display_mode_bridge_get_modes,
 };

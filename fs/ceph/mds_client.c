@@ -491,11 +491,11 @@ static int parse_reply_info_readdir(void **p, void *end,
 		struct inode *inode = d_inode(req->r_dentry);
 		struct ceph_inode_info *ci = ceph_inode(inode);
 		struct ceph_mds_reply_dir_entry *rde = info->dir_entries + i;
-		struct fscrypt_str tname = FSTR_INIT(NULL, 0);
 		struct fscrypt_str oname = FSTR_INIT(NULL, 0);
 		struct ceph_fname fname;
 		u32 altname_len, _name_len;
 		u8 *altname, *_name;
+		u8 *tname = NULL;
 
 		/* dentry */
 		ceph_decode_32_safe(p, end, _name_len, bad);
@@ -547,7 +547,7 @@ static int parse_reply_info_readdir(void **p, void *end,
 			 * suitable temporary working space instead.
 			 */
 			if (likely(!is_vmalloc_addr(_name)))
-				tname.name = _name;
+				tname = _name;
 
 			/*
 			 * Set oname to _name too, and this will be
@@ -564,7 +564,7 @@ static int parse_reply_info_readdir(void **p, void *end,
 			oname.len = altname_len;
 		}
 		rde->is_nokey = false;
-		err = ceph_fname_to_usr(&fname, &tname, &oname, &rde->is_nokey);
+		err = ceph_fname_to_usr(&fname, tname, &oname, &rde->is_nokey);
 		if (err) {
 			pr_err_client(cl, "unable to decode %.*s, got %d\n",
 				      _name_len, _name, err);
@@ -1850,16 +1850,19 @@ static void __open_export_target_sessions(struct ceph_mds_client *mdsc,
  * session caps
  */
 
-static void detach_cap_releases(struct ceph_mds_session *session,
-				struct list_head *target)
+static int detach_cap_releases(struct ceph_mds_session *session,
+			       struct list_head *target)
 {
 	struct ceph_client *cl = session->s_mdsc->fsc->client;
+	const int num_cap_releases = session->s_num_cap_releases;
 
 	lockdep_assert_held(&session->s_cap_lock);
 
 	list_splice_init(&session->s_cap_releases, target);
 	session->s_num_cap_releases = 0;
 	doutc(cl, "mds%d\n", session->s_mds);
+
+	return num_cap_releases;
 }
 
 static void dispose_cap_releases(struct ceph_mds_client *mdsc,
@@ -1953,7 +1956,7 @@ int ceph_iterate_session_caps(struct ceph_mds_session *session,
 
 		spin_lock(&session->s_cap_lock);
 		p = p->next;
-		if (!cap->ci) {
+		if (ceph_cap_is_removed(cap)) {
 			doutc(cl, "finishing cap %p removal\n", cap);
 			BUG_ON(cap->session != session);
 			cap->session = NULL;
@@ -2309,7 +2312,7 @@ static int trim_caps_cb(struct inode *inode, int mds, void *arg)
 
 	if (oissued) {
 		/* we aren't the only cap.. just remove us */
-		ceph_remove_cap(mdsc, cap, true);
+		ceph_remove_cap(mdsc, cap, ci, true);
 		(*remaining)--;
 	} else {
 		struct dentry *dentry;
@@ -2515,9 +2518,7 @@ static void ceph_send_cap_releases(struct ceph_mds_client *mdsc,
 
 	spin_lock(&session->s_cap_lock);
 again:
-	list_splice_init(&session->s_cap_releases, &tmp_list);
-	num_cap_releases = session->s_num_cap_releases;
-	session->s_num_cap_releases = 0;
+	num_cap_releases = detach_cap_releases(session, &tmp_list);
 	spin_unlock(&session->s_cap_lock);
 
 	while (!list_empty(&tmp_list)) {
@@ -4141,13 +4142,19 @@ static void handle_reply(struct ceph_mds_session *session, struct ceph_msg *msg)
 		list_add_tail(&req->r_unsafe_item, &req->r_session->s_unsafe);
 	}
 
+	/*
+	 * Now that all mutex-protected state has been updated above
+	 * (the request has been unregistered or added to the
+	 * session's unsafe list), we can unlock it.
+	 */
+	mutex_unlock(&mdsc->mutex);
+
 	doutc(cl, "tid %lld result %d\n", tid, result);
 	if (test_bit(CEPHFS_FEATURE_REPLY_ENCODING, &session->s_features))
 		err = parse_reply_info(session, msg, req, (u64)-1);
 	else
 		err = parse_reply_info(session, msg, req,
 				       session->s_con.peer_features);
-	mutex_unlock(&mdsc->mutex);
 
 	/* Must find target inode outside of mutexes to avoid deadlocks */
 	rinfo = &req->r_reply_info;
@@ -5485,7 +5492,7 @@ static void ceph_mdsc_reset_workfn(struct work_struct *work)
 		goto out_complete;
 	}
 
-	sessions = kcalloc(max_sessions, sizeof(*sessions), GFP_KERNEL);
+	sessions = kzalloc_objs(*sessions, max_sessions);
 	if (!sessions) {
 		mutex_unlock(&mdsc->mutex);
 		ret = -ENOMEM;
@@ -5808,7 +5815,7 @@ int ceph_mdsc_schedule_reset(struct ceph_mds_client *mdsc,
 	strscpy(st->last_reason, msg, sizeof(st->last_reason));
 	spin_unlock(&st->lock);
 
-	if (WARN_ON_ONCE(!queue_work(system_unbound_wq, &mdsc->reset_work))) {
+	if (WARN_ON_ONCE(!queue_work(system_dfl_wq, &mdsc->reset_work))) {
 		spin_lock(&st->lock);
 		st->phase = CEPH_CLIENT_RESET_IDLE;
 		st->last_errno = -EALREADY;

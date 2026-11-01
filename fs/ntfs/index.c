@@ -1108,8 +1108,8 @@ static s64 ntfs_ibm_get_free(struct ntfs_index_context *icx)
 
 	bm = ntfs_attr_readall(icx->idx_ni, AT_BITMAP,  icx->name, icx->name_len,
 			&size);
-	if (!bm)
-		return -EIO;
+	if (IS_ERR(bm))
+		return PTR_ERR(bm);
 
 	for (byte = 0; byte < size; byte++) {
 		if (bm[byte] == 255)
@@ -1660,7 +1660,7 @@ resplit:
 			goto out;
 		}
 	} else {
-		si = kzalloc(sizeof(struct split_info), GFP_NOFS);
+		si = kzalloc_obj(struct split_info, GFP_NOFS);
 		if (!si) {
 			ntfs_ibm_clear(icx, new_vcn);
 			ret = -ENOMEM;

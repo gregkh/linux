@@ -1613,8 +1613,8 @@ void usb_serial_deregister_drivers(struct usb_serial_driver *const serial_driver
 
 	usb_deregister(udriver);
 
-	for (; *serial_drivers; ++serial_drivers)
-		usb_serial_deregister(*serial_drivers);
+	for (sd = serial_drivers; *sd; ++sd)
+		usb_serial_deregister(*sd);
 
 	kfree(udriver);
 }

@@ -1827,7 +1827,7 @@ static int kfd_ptl_control(struct kfd_process_device *pdd, bool enable)
 	uint32_t ptl_state = enable ? 1 : 0;
 	int ret;
 
-	if (!ptl->hw_supported)
+	if (ptl->hw_supported_state != AMDGPU_PTL_HW_SUPPORTED)
 		return -EOPNOTSUPP;
 
 	if (!pdd->dev->kfd2kgd || !pdd->dev->kfd2kgd->ptl_ctrl)
@@ -1847,6 +1847,9 @@ int kfd_ptl_disable_request(struct kfd_process_device *pdd,
 	struct amdgpu_device *adev = pdd->dev->adev;
 	struct amdgpu_ptl *ptl = &adev->psp.ptl;
 	int ret = 0;
+
+	if (ptl->hw_supported_state != AMDGPU_PTL_HW_SUPPORTED)
+		return -EOPNOTSUPP;
 
 	mutex_lock(&ptl->mutex);
 
@@ -1876,6 +1879,9 @@ int kfd_ptl_disable_release(struct kfd_process_device *pdd,
 	struct amdgpu_device *adev = pdd->dev->adev;
 	struct amdgpu_ptl *ptl = &adev->psp.ptl;
 	int ret = 0;
+
+	if (ptl->hw_supported_state != AMDGPU_PTL_HW_SUPPORTED)
+		return -EOPNOTSUPP;
 
 	mutex_lock(&ptl->mutex);
 
@@ -1958,13 +1964,13 @@ static int criu_checkpoint_devices(struct kfd_process *p,
 	struct kfd_criu_device_bucket *device_buckets = NULL;
 	int ret = 0, i;
 
-	device_buckets = kvcalloc(num_devices, sizeof(*device_buckets), GFP_KERNEL);
+	device_buckets = kvzalloc_objs(*device_buckets, num_devices);
 	if (!device_buckets) {
 		ret = -ENOMEM;
 		goto exit;
 	}
 
-	device_priv = kvcalloc(num_devices, sizeof(*device_priv), GFP_KERNEL);
+	device_priv = kvzalloc_objs(*device_priv, num_devices);
 	if (!device_priv) {
 		ret = -ENOMEM;
 		goto exit;
@@ -2084,17 +2090,17 @@ static int criu_checkpoint_bos(struct kfd_process *p,
 	int ret = 0, pdd_index, bo_index = 0, id;
 	void *mem;
 
-	bo_buckets = kvcalloc(num_bos, sizeof(*bo_buckets), GFP_KERNEL);
+	bo_buckets = kvzalloc_objs(*bo_buckets, num_bos);
 	if (!bo_buckets)
 		return -ENOMEM;
 
-	bo_privs = kvcalloc(num_bos, sizeof(*bo_privs), GFP_KERNEL);
+	bo_privs = kvzalloc_objs(*bo_privs, num_bos);
 	if (!bo_privs) {
 		ret = -ENOMEM;
 		goto exit;
 	}
 
-	files = kvcalloc(num_bos, sizeof(struct file *), GFP_KERNEL);
+	files = kvzalloc_objs(struct file *, num_bos);
 	if (!files) {
 		ret = -ENOMEM;
 		goto exit;
@@ -2625,7 +2631,7 @@ static int criu_restore_bos(struct kfd_process *p,
 	if (!bo_buckets)
 		return -ENOMEM;
 
-	files = kvcalloc(args->num_bos, sizeof(struct file *), GFP_KERNEL);
+	files = kvzalloc_objs(struct file *, args->num_bos);
 	if (!files) {
 		ret = -ENOMEM;
 		goto exit;
@@ -3348,6 +3354,11 @@ static int kfd_ioctl_create_process(struct file *filep, struct kfd_process *p, v
 	}
 
 	filep->private_data = process;
+	ret = kfd_debugfs_add_process(process);
+	if (ret)
+		pr_warn("Failed to create debugfs entry for the kfd_process, ret = %d\n",
+			ret);
+
 	mutex_unlock(&kfd_processes_mutex);
 
 	ret = kfd_create_process_sysfs(process);
@@ -3362,7 +3373,7 @@ static int kfd_ioctl_create_process(struct file *filep, struct kfd_process *p, v
 	return 0;
 }
 
-static inline uint32_t profile_lock_device(struct kfd_process *p,
+static inline int profile_lock_device(struct kfd_process *p,
 					   uint32_t gpu_id, uint32_t op)
 {
 	struct kfd_process_device *pdd;
@@ -3389,7 +3400,7 @@ static inline uint32_t profile_lock_device(struct kfd_process *p,
 			kfd->profiler_process = p;
 			status = 0;
 			mutex_unlock(&kfd->profiler_lock);
-			if (ptl->hw_supported) {
+			if (ptl->hw_supported_state == AMDGPU_PTL_HW_SUPPORTED) {
 				status = kfd_ptl_disable_request(pdd, p);
 				if (status != 0)
 					dev_err(kfd_device,
@@ -3407,7 +3418,7 @@ static inline uint32_t profile_lock_device(struct kfd_process *p,
 		status = 0;
 		mutex_unlock(&kfd->profiler_lock);
 
-		if (ptl->hw_supported) {
+		if (ptl->hw_supported_state == AMDGPU_PTL_HW_SUPPORTED) {
 			status = kfd_ptl_disable_release(pdd, p);
 			if (status)
 				dev_err(kfd_device,
@@ -3755,10 +3766,10 @@ static int kfd_mmio_mmap(struct kfd_node *dev, struct kfd_process *process,
 				vma->vm_page_prot);
 }
 
-
 static int kfd_mmap(struct file *filep, struct vm_area_struct *vma)
 {
 	struct kfd_process *process;
+	struct kfd_process_device *pdd;
 	struct kfd_node *dev = NULL;
 	unsigned long mmap_offset;
 	unsigned int gpu_id;
@@ -3772,8 +3783,10 @@ static int kfd_mmap(struct file *filep, struct vm_area_struct *vma)
 
 	mmap_offset = vma->vm_pgoff << PAGE_SHIFT;
 	gpu_id = KFD_MMAP_GET_GPU_ID(mmap_offset);
-	if (gpu_id)
-		dev = kfd_device_by_id(gpu_id);
+
+	pdd = kfd_process_device_data_by_id(process, gpu_id);
+	if (pdd)
+		dev = pdd->dev;
 
 	switch (mmap_offset & KFD_MMAP_TYPE_MASK) {
 	case KFD_MMAP_TYPE_DOORBELL:
@@ -3782,7 +3795,8 @@ static int kfd_mmap(struct file *filep, struct vm_area_struct *vma)
 		return kfd_doorbell_mmap(dev, process, vma);
 
 	case KFD_MMAP_TYPE_EVENTS:
-		return kfd_event_mmap(process, vma);
+		pr_warn("KFD_MMAP_TYPE_EVENTS is no longer supported\n");
+		return -EINVAL;
 
 	case KFD_MMAP_TYPE_RESERVED_MEM:
 		pr_warn("KFD_MMAP_TYPE_RESERVED_MEM is no longer supported\n");

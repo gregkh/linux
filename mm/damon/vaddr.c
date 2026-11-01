@@ -10,6 +10,7 @@
 #include <linux/mman.h>
 #include <linux/mmu_notifier.h>
 #include <linux/page_idle.h>
+#include <linux/pagemap.h>
 #include <linux/pagewalk.h>
 #include <linux/sched/mm.h>
 
@@ -493,18 +494,17 @@ static bool damon_va_young(struct mm_struct *mm, unsigned long addr)
  * r	the region to be checked
  */
 static void __damon_va_check_access(struct mm_struct *mm,
-				struct damon_region *r,
-				struct damon_attrs *attrs)
+				struct damon_region *r)
 {
 	bool accessed;
 
 	if (!mm) {
-		damon_update_region_access_rate(r, false, attrs);
+		damon_update_region_access_rate(r, false);
 		return;
 	}
 
 	accessed = damon_va_young(mm, r->sampling_addr);
-	damon_update_region_access_rate(r, accessed, attrs);
+	damon_update_region_access_rate(r, accessed);
 }
 
 static unsigned int damon_va_check_accesses(struct damon_ctx *ctx)
@@ -517,7 +517,7 @@ static unsigned int damon_va_check_accesses(struct damon_ctx *ctx)
 	damon_for_each_target(t, ctx) {
 		mm = damon_get_mm(t);
 		damon_for_each_region(r, t) {
-			__damon_va_check_access(mm, r, &ctx->attrs);
+			__damon_va_check_access(mm, r);
 			max_nr_accesses = max(r->nr_accesses, max_nr_accesses);
 		}
 		if (mm)
@@ -610,8 +610,8 @@ static void damos_va_migrate_dests_add(struct folio *folio,
 	}
 
 	order = folio_order(folio);
-	ilx = vma->vm_pgoff >> order;
-	ilx += (addr - vma->vm_start) >> (PAGE_SHIFT + order);
+	ilx = vma_start_pgoff(vma) >> order;
+	ilx += linear_page_delta(vma, addr) >> order;
 
 	for (i = 0; i < dests->nr_dests; i++)
 		weight_total += dests->weight_arr[i];
@@ -967,7 +967,7 @@ static int __init damon_va_initcall(void)
 	if (err)
 		return err;
 	return damon_register_ops(&ops_fvaddr);
-};
+}
 
 subsys_initcall(damon_va_initcall);
 

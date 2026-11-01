@@ -463,7 +463,7 @@ int ntfs_sync_mft_mirror(struct ntfs_volume *vol, const u64 mft_no,
 {
 	u8 *kmirr;
 	struct folio *folio;
-	unsigned int folio_ofs, lcn_folio_off = 0;
+	unsigned int folio_ofs;
 	int err = 0;
 	struct bio *bio;
 
@@ -493,15 +493,11 @@ int ntfs_sync_mft_mirror(struct ntfs_volume *vol, const u64 mft_no,
 	memcpy(kmirr, m, vol->mft_record_size);
 	kunmap_local(kmirr);
 
-	if (vol->cluster_size_bits > PAGE_SHIFT) {
-		lcn_folio_off = folio->index << PAGE_SHIFT;
-		lcn_folio_off &= vol->cluster_size_mask;
-	}
-
 	bio = bio_alloc(vol->sb->s_bdev, 1, REQ_OP_WRITE, GFP_NOIO);
 	bio->bi_iter.bi_sector =
-		NTFS_B_TO_SECTOR(vol, NTFS_CLU_TO_B(vol, vol->mftmirr_lcn) +
-				 lcn_folio_off + folio_ofs);
+		ntfs_bytes_to_bio_sector(NTFS_CLU_TO_B(vol, vol->mftmirr_lcn) +
+					 ((u64)folio->index << PAGE_SHIFT) +
+					 folio_ofs);
 
 	if (bio_add_folio(bio, folio, vol->mft_record_size, folio_ofs))
 		err = submit_bio_wait(bio);
@@ -593,8 +589,8 @@ int write_mft_record_nolock(struct ntfs_inode *ni, struct mft_record *m, int syn
 
 		bio = bio_alloc(vol->sb->s_bdev, 1, REQ_OP_WRITE, GFP_NOIO);
 		bio->bi_iter.bi_sector =
-			NTFS_B_TO_SECTOR(vol, NTFS_CLU_TO_B(vol, ni->mft_lcn[i]) +
-					 clu_off);
+			ntfs_bytes_to_bio_sector(NTFS_CLU_TO_B(vol, ni->mft_lcn[i]) +
+						 clu_off);
 
 		if (!bio_add_folio(bio, folio, folio_size,
 				   ni->folio_ofs + offset)) {
@@ -2664,7 +2660,7 @@ mft_rec_already_initialized:
 		 * record.
 		 */
 
-		(*ni)->mrec = kmalloc(vol->mft_record_size, GFP_NOFS);
+		(*ni)->mrec = kmemdup(m, vol->mft_record_size, GFP_NOFS);
 		if (!(*ni)->mrec) {
 			folio_unlock(folio);
 			kunmap_local(m);
@@ -2673,7 +2669,6 @@ mft_rec_already_initialized:
 			goto undo_mftbmp_alloc;
 		}
 
-		memcpy((*ni)->mrec, m, vol->mft_record_size);
 		post_read_mst_fixup((struct ntfs_record *)(*ni)->mrec, vol->mft_record_size);
 		ntfs_mft_mark_dirty(folio);
 		folio_unlock(folio);
@@ -2893,11 +2888,13 @@ static int ntfs_write_mft_block(struct folio *folio, struct writeback_control *w
 	struct ntfs_inode *ni = NTFS_I(vi);
 	struct ntfs_volume *vol = ni->vol;
 	u8 *kaddr;
-	struct ntfs_inode **locked_nis __free(kfree) = kmalloc_array(PAGE_SIZE / NTFS_BLOCK_SIZE,
-							sizeof(struct ntfs_inode *), GFP_NOFS);
+	struct ntfs_inode **locked_nis __free(kfree) = kmalloc_objs(struct ntfs_inode *,
+								    PAGE_SIZE / NTFS_BLOCK_SIZE,
+								    GFP_NOFS);
 	int nr_locked_nis = 0, err = 0, mft_ofs, prev_mft_ofs;
-	struct inode **ref_inos __free(kfree) = kmalloc_array(PAGE_SIZE / NTFS_BLOCK_SIZE,
-							      sizeof(struct inode *), GFP_NOFS);
+	struct inode **ref_inos __free(kfree) = kmalloc_objs(struct inode *,
+							     PAGE_SIZE / NTFS_BLOCK_SIZE,
+							     GFP_NOFS);
 	int nr_ref_inos = 0;
 	struct bio *bio = NULL;
 	u64 mft_no;
@@ -3000,8 +2997,8 @@ flush_bio:
 				bio = bio_alloc(vol->sb->s_bdev, 1, REQ_OP_WRITE,
 						GFP_NOIO);
 				bio->bi_iter.bi_sector =
-					ntfs_bytes_to_sector(vol,
-							ntfs_cluster_to_bytes(vol, lcn) + off);
+					ntfs_bytes_to_bio_sector(
+						ntfs_cluster_to_bytes(vol, lcn) + off);
 			}
 
 			if (vol->cluster_size == NTFS_BLOCK_SIZE &&

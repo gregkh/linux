@@ -2208,6 +2208,10 @@ int nfs_atomic_open(struct inode *dir, struct dentry *dentry,
 		goto out;
 	}
 	file->f_mode |= FMODE_CAN_ODIRECT;
+	if (test_bit(NFS_CONTEXT_O_DIRECT, &ctx->flags)) {
+		file->f_flags |= O_DIRECT;
+		open_flags |= O_DIRECT;
+	}
 
 	err = nfs_finish_open(ctx, ctx->dentry, file, open_flags);
 	trace_nfs_atomic_open_exit(dir, ctx, open_flags, err);
@@ -2434,9 +2438,9 @@ out_err:
 }
 
 int nfs_create(struct mnt_idmap *idmap, struct inode *dir,
-	       struct dentry *dentry, umode_t mode, bool excl)
+	       struct dentry *dentry, umode_t mode)
 {
-	return nfs_do_create(dir, dentry, mode, excl ? O_EXCL : 0);
+	return nfs_do_create(dir, dentry, mode, O_EXCL);
 }
 EXPORT_SYMBOL_GPL(nfs_create);
 
@@ -2481,7 +2485,7 @@ struct dentry *nfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 			dir->i_sb->s_id, dir->i_ino, dentry);
 
 	attr.ia_valid = ATTR_MODE;
-	attr.ia_mode = mode | S_IFDIR;
+	attr.ia_mode = mode;
 
 	trace_nfs_mkdir_enter(dir, dentry);
 	ret = NFS_PROTO(dir)->mkdir(dir, dentry, &attr);
@@ -2674,6 +2678,12 @@ int nfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 		d_drop(dentry);
 		folio_put(folio);
 		return error;
+	}
+
+	if (unlikely(!d_is_symlink(dentry))) {
+		d_drop(dentry);
+		folio_put(folio);
+		return 0;
 	}
 
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));

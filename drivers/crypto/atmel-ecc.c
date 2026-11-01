@@ -30,7 +30,6 @@ static struct atmel_ecc_driver_data driver_data;
  * @client: I2C client device
  * @fallback: ECDH fallback used for caller-provided private keys
  * @public_key: cached public key for the device-generated private key
- * @curve_id: elliptic curve id
  * @do_fallback: true when ECDH operations should use @fallback
  *
  * The caller must not invoke set_secret() while generate_public_key()
@@ -40,7 +39,6 @@ struct atmel_ecdh_ctx {
 	struct i2c_client *client;
 	struct crypto_kpp *fallback;
 	const u8 *public_key;
-	unsigned int curve_id;
 	bool do_fallback;
 };
 
@@ -108,17 +106,14 @@ static int atmel_ecdh_set_secret(struct crypto_kpp *tfm, const void *buf,
 	atmel_i2c_init_genkey_cmd(cmd, DATA_SLOT_2);
 
 	ret = atmel_i2c_send_receive(ctx->client, cmd);
-	if (ret)
-		goto free_public_key;
+	if (ret) {
+		kfree(public_key);
+		goto free_cmd;
+	}
 
 	memcpy(public_key, &cmd->data[RSP_DATA_IDX], ATMEL_ECC_PUBKEY_SIZE);
 	ctx->public_key = public_key;
 
-	kfree(cmd);
-	return 0;
-
-free_public_key:
-	kfree(public_key);
 free_cmd:
 	kfree(cmd);
 	return ret;
@@ -129,7 +124,6 @@ static int atmel_ecdh_generate_public_key(struct kpp_request *req)
 	struct crypto_kpp *tfm = crypto_kpp_reqtfm(req);
 	struct atmel_ecdh_ctx *ctx = kpp_tfm_ctx(tfm);
 	size_t copied, nbytes;
-	int ret = 0;
 
 	if (ctx->do_fallback) {
 		kpp_request_set_tfm(req, ctx->fallback);
@@ -147,9 +141,9 @@ static int atmel_ecdh_generate_public_key(struct kpp_request *req)
 				     sg_nents_for_len(req->dst, nbytes),
 				     ctx->public_key, nbytes);
 	if (copied != nbytes)
-		ret = -EINVAL;
+		return -EINVAL;
 
-	return ret;
+	return 0;
 }
 
 static int atmel_ecdh_compute_shared_secret(struct kpp_request *req)
@@ -243,7 +237,6 @@ static int atmel_ecdh_init_tfm(struct crypto_kpp *tfm)
 	struct crypto_kpp *fallback;
 	struct atmel_ecdh_ctx *ctx = kpp_tfm_ctx(tfm);
 
-	ctx->curve_id = ECC_CURVE_NIST_P256;
 	ctx->client = atmel_ecc_i2c_client_alloc();
 	if (IS_ERR(ctx->client)) {
 		pr_err("tfm - i2c_client binding failed\n");

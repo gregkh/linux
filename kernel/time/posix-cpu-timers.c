@@ -1361,8 +1361,11 @@ static void handle_posix_cpu_timers(struct task_struct *tsk)
 	unsigned long flags, start;
 	LIST_HEAD(firing);
 
-	if (!lock_task_sighand(tsk, &flags))
-		return;
+	/*
+	 * tsk is current and ->sighand is stable, see the
+	 * tsk->exit_state check in run_posix_cpu_timers()
+	 */
+	spin_lock_irqsave(&tsk->sighand->siglock, flags);
 
 	do {
 		/*
@@ -1422,7 +1425,7 @@ static void handle_posix_cpu_timers(struct task_struct *tsk)
 	 * that gets the timer lock before we do will give it up and
 	 * spin until we've taken care of that timer below.
 	 */
-	unlock_task_sighand(tsk, &flags);
+	spin_unlock_irqrestore(&tsk->sighand->siglock, flags);
 
 	/*
 	 * Now that all the timers on our list have the firing flag,

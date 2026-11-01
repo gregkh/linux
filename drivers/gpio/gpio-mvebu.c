@@ -37,6 +37,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/machine.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/irqchip/chained_irq.h>
@@ -114,7 +115,7 @@ struct mvebu_gpio_chip {
 	struct regmap     *regs;
 	u32		   offset;
 	struct regmap     *percpu_regs;
-	int		   irqbase;
+	int		   bank_irq[4];
 	struct irq_domain *domain;
 	int		   soc_variant;
 
@@ -604,6 +605,34 @@ static const struct regmap_config mvebu_gpio_regmap_config = {
 };
 
 /*
+ * Forward wake-up configuration to the parent bank IRQ.
+ * @d:		interrupt data
+ * @enable:	enable as wake-up if non-zero
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+static int mvebu_gpio_set_wake_irq(struct irq_data *d, unsigned int enable)
+{
+	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
+	struct mvebu_gpio_chip *mvchip = gc->private;
+	int bank;
+	int irq;
+
+	bank = d->hwirq / 8;
+	if (bank >= ARRAY_SIZE(mvchip->bank_irq))
+		return -EINVAL;
+
+	irq = mvchip->bank_irq[bank];
+	if (irq <= 0)
+		return -EINVAL;
+
+	if (enable)
+		return enable_irq_wake(irq);
+
+	return disable_irq_wake(irq);
+}
+
+/*
  * Functions implementing the pwm_chip methods
  */
 static struct mvebu_pwm *to_mvebu_pwm(struct pwm_chip *chip)
@@ -1005,6 +1034,8 @@ static int mvebu_gpio_suspend(struct platform_device *pdev, pm_message_t state)
 static int mvebu_gpio_resume(struct platform_device *pdev)
 {
 	struct mvebu_gpio_chip *mvchip = platform_get_drvdata(pdev);
+	u32 edge_cache = ~0U, level_cache = ~0U;
+	unsigned long flags;
 	int i;
 
 	regmap_write(mvchip->regs, GPIO_OUT_OFF + mvchip->offset,
@@ -1016,32 +1047,51 @@ static int mvebu_gpio_resume(struct platform_device *pdev)
 	regmap_write(mvchip->regs, GPIO_IN_POL_OFF + mvchip->offset,
 		     mvchip->in_pol_reg);
 
+	/*
+	 * genirq skips mask_irq() for a line it already considers masked, so
+	 * unmasking one behind its back leaves an asserted level line that
+	 * nobody masks. Restore only bits the irqchip cache still has set.
+	 *
+	 * Snapshot the caches under the raw spinlock, but release it before
+	 * the regmap writes below: regmap_write() takes a sleepable lock on
+	 * PREEMPT_RT.
+	 */
+	if (mvchip->domain) {
+		struct irq_chip_generic *gc;
+
+		gc = irq_get_domain_generic_chip(mvchip->domain, 0);
+		raw_spin_lock_irqsave(&gc->lock, flags);
+		level_cache = gc->chip_types[0].mask_cache_priv;
+		edge_cache = gc->chip_types[1].mask_cache_priv;
+		raw_spin_unlock_irqrestore(&gc->lock, flags);
+	}
+
 	switch (mvchip->soc_variant) {
 	case MVEBU_GPIO_SOC_VARIANT_ORION:
 	case MVEBU_GPIO_SOC_VARIANT_A8K:
 		regmap_write(mvchip->regs, GPIO_EDGE_MASK_OFF + mvchip->offset,
-			     mvchip->edge_mask_regs[0]);
+			     mvchip->edge_mask_regs[0] & edge_cache);
 		regmap_write(mvchip->regs, GPIO_LEVEL_MASK_OFF + mvchip->offset,
-			     mvchip->level_mask_regs[0]);
+			     mvchip->level_mask_regs[0] & level_cache);
 		break;
 	case MVEBU_GPIO_SOC_VARIANT_MV78200:
 		for (i = 0; i < 2; i++) {
 			regmap_write(mvchip->regs,
 				     GPIO_EDGE_MASK_MV78200_OFF(i),
-				     mvchip->edge_mask_regs[i]);
+				     mvchip->edge_mask_regs[i] & edge_cache);
 			regmap_write(mvchip->regs,
 				     GPIO_LEVEL_MASK_MV78200_OFF(i),
-				     mvchip->level_mask_regs[i]);
+				     mvchip->level_mask_regs[i] & level_cache);
 		}
 		break;
 	case MVEBU_GPIO_SOC_VARIANT_ARMADAXP:
 		for (i = 0; i < 4; i++) {
 			regmap_write(mvchip->regs,
 				     GPIO_EDGE_MASK_ARMADAXP_OFF(i),
-				     mvchip->edge_mask_regs[i]);
+				     mvchip->edge_mask_regs[i] & edge_cache);
 			regmap_write(mvchip->regs,
 				     GPIO_LEVEL_MASK_ARMADAXP_OFF(i),
-				     mvchip->level_mask_regs[i]);
+				     mvchip->level_mask_regs[i] & level_cache);
 		}
 		break;
 	default:
@@ -1253,7 +1303,7 @@ static int mvebu_gpio_probe(struct platform_device *pdev)
 
 	err = irq_alloc_domain_generic_chips(
 	    mvchip->domain, ngpios, 2, np->name, handle_level_irq,
-	    IRQ_NOREQUEST | IRQ_NOPROBE | IRQ_LEVEL, 0, 0);
+	    IRQ_NOREQUEST | IRQ_NOPROBE | IRQ_LEVEL, 0, IRQ_GC_INIT_NESTED_LOCK);
 	if (err) {
 		dev_err(&pdev->dev, "couldn't allocate irq chips %s (DT).\n",
 			mvchip->chip.label);
@@ -1267,18 +1317,22 @@ static int mvebu_gpio_probe(struct platform_device *pdev)
 	gc = irq_get_domain_generic_chip(mvchip->domain, 0);
 	gc->private = mvchip;
 	ct = &gc->chip_types[0];
-	ct->type = IRQ_TYPE_LEVEL_HIGH | IRQ_TYPE_LEVEL_LOW;
+	ct->type = IRQ_TYPE_LEVEL_MASK;
 	ct->chip.irq_mask = mvebu_gpio_level_irq_mask;
 	ct->chip.irq_unmask = mvebu_gpio_level_irq_unmask;
 	ct->chip.irq_set_type = mvebu_gpio_irq_set_type;
+	ct->chip.irq_set_wake = mvebu_gpio_set_wake_irq;
+	ct->chip.flags = IRQCHIP_SET_TYPE_MASKED | IRQCHIP_MASK_ON_SUSPEND;
 	ct->chip.name = mvchip->chip.label;
 
 	ct = &gc->chip_types[1];
-	ct->type = IRQ_TYPE_EDGE_RISING | IRQ_TYPE_EDGE_FALLING;
+	ct->type = IRQ_TYPE_EDGE_BOTH;
 	ct->chip.irq_ack = mvebu_gpio_irq_ack;
 	ct->chip.irq_mask = mvebu_gpio_edge_irq_mask;
 	ct->chip.irq_unmask = mvebu_gpio_edge_irq_unmask;
 	ct->chip.irq_set_type = mvebu_gpio_irq_set_type;
+	ct->chip.irq_set_wake = mvebu_gpio_set_wake_irq;
+	ct->chip.flags = IRQCHIP_SET_TYPE_MASKED | IRQCHIP_MASK_ON_SUSPEND;
 	ct->handler = handle_edge_irq;
 	ct->chip.name = mvchip->chip.label;
 
@@ -1287,13 +1341,14 @@ static int mvebu_gpio_probe(struct platform_device *pdev)
 	 * interrupt handlers, with each handler dealing with 8 GPIO
 	 * pins.
 	 */
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < ARRAY_SIZE(mvchip->bank_irq); i++) {
 		int irq = platform_get_irq_optional(pdev, i);
 
 		if (irq < 0)
 			continue;
 		irq_set_chained_handler_and_data(irq, mvebu_gpio_irq_handler,
 						 mvchip);
+		mvchip->bank_irq[i] = irq;
 	}
 
 	return 0;

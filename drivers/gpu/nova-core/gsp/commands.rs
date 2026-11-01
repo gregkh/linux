@@ -5,6 +5,7 @@ use core::{
     array,
     convert::Infallible,
     ffi::FromBytesUntilNulError,
+    ops::Range,
     str::Utf8Error, //
 };
 
@@ -33,6 +34,7 @@ use crate::{
         },
     },
     sbuffer::SBufferIter,
+    vgpu::VgpuState, //
 };
 
 /// The `GspSetSystemInfo` command.
@@ -71,7 +73,7 @@ pub(crate) struct SetRegistry {
 
 impl SetRegistry {
     /// Creates a new `SetRegistry` command, using a set of hardcoded entries.
-    pub(crate) fn new() -> Result<Self> {
+    pub(crate) fn new(vgpu_state: VgpuState) -> Result<Self> {
         let mut entries = KVec::new();
 
         // RMSecBusResetEnable - enables PCI secondary bus reset
@@ -102,6 +104,17 @@ impl SetRegistry {
             },
             GFP_KERNEL,
         )?;
+
+        if matches!(vgpu_state, VgpuState::Enabled { .. }) {
+            // RMSetSriovMode - required when vGPU is enabled.
+            entries.push(
+                RegistryEntry {
+                    key: "RMSetSriovMode",
+                    value: 1,
+                },
+                GFP_KERNEL,
+            )?;
+        }
 
         Ok(Self { entries })
     }
@@ -198,22 +211,30 @@ impl CommandToGsp for GetGspStaticInfo {
     }
 }
 
-/// The reply from the GSP to the [`GetGspInfo`] command.
+/// The reply from the GSP to the [`GetGspStaticInfo`] command.
 pub(crate) struct GetGspStaticInfoReply {
     gpu_name: [u8; 64],
+    /// Usable FB (VRAM) regions for driver memory allocation.
+    pub(crate) usable_fb_regions: KVec<Range<u64>>,
 }
 
 impl MessageFromGsp for GetGspStaticInfoReply {
     const FUNCTION: MsgFunction = MsgFunction::GetGspStaticInfo;
     type Message = fw::commands::GspStaticConfigInfo;
-    type InitError = Infallible;
+    type InitError = Error;
 
     fn read(
         msg: &Self::Message,
         _sbuffer: &mut SBufferIter<array::IntoIter<&[u8], 2>>,
     ) -> Result<Self, Self::InitError> {
+        let mut usable_fb_regions = KVec::new();
+        for region in msg.usable_fb_regions() {
+            usable_fb_regions.push(region, GFP_KERNEL)?;
+        }
+
         Ok(GetGspStaticInfoReply {
             gpu_name: msg.gpu_name_str(),
+            usable_fb_regions,
         })
     }
 }

@@ -296,6 +296,26 @@ static int regmap_irq_set_wake(struct irq_data *data, unsigned int on)
 	return 0;
 }
 
+static int regmap_irq_reqres(struct irq_data *data)
+{
+	struct regmap_irq_chip_data *d = irq_data_get_irq_chip_data(data);
+	irq_hw_number_t hwirq = irqd_to_hwirq(data);
+
+	if (d->chip->irq_reqres)
+		return d->chip->irq_reqres(d->chip->irq_drv_data, hwirq);
+
+	return 0;
+}
+
+static void regmap_irq_relres(struct irq_data *data)
+{
+	struct regmap_irq_chip_data *d = irq_data_get_irq_chip_data(data);
+	irq_hw_number_t hwirq = irqd_to_hwirq(data);
+
+	if (d->chip->irq_relres)
+		d->chip->irq_relres(d->chip->irq_drv_data, hwirq);
+}
+
 static const struct irq_chip regmap_irq_chip = {
 	.irq_bus_lock		= regmap_irq_lock,
 	.irq_bus_sync_unlock	= regmap_irq_sync_unlock,
@@ -303,6 +323,8 @@ static const struct irq_chip regmap_irq_chip = {
 	.irq_enable		= regmap_irq_enable,
 	.irq_set_type		= regmap_irq_set_type,
 	.irq_set_wake		= regmap_irq_set_wake,
+	.irq_request_resources  = regmap_irq_reqres,
+	.irq_release_resources  = regmap_irq_relres,
 };
 
 static inline int read_sub_irq_data(struct regmap_irq_chip_data *data,
@@ -941,7 +963,7 @@ int regmap_add_irq_chip_fwnode(struct fwnode_handle *fwnode,
 	return 0;
 
 err_domain:
-	/* Should really dispose of the domain but... */
+	irq_domain_remove(d->domain);
 err_mutex:
 	mutex_destroy(&d->lock);
 	lockdep_unregister_key(&d->lock_key);

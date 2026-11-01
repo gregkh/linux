@@ -2,6 +2,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2358,7 +2359,6 @@ static int hists_browser__scnprintf_title(struct hist_browser *browser, char *bf
 
 struct popup_action {
 	unsigned long		time;
-	struct thread		*thread;
 	int (*fn)(struct hist_browser *browser, struct popup_action *act);
 	struct map_symbol	ms;
 	int			socket;
@@ -2821,7 +2821,7 @@ add_script_opt(struct hist_browser *browser,
 	       struct popup_action *act, char **optstr,
 	       struct thread *thread, struct symbol *sym)
 {
-	int n, j;
+	int n, j, ret;
 	struct hist_entry *he;
 
 	n = add_script_opt_2(act, optstr, thread, sym, "");
@@ -2829,17 +2829,26 @@ add_script_opt(struct hist_browser *browser,
 	he = hist_browser__selected_entry(browser);
 	if (sort_order && strstr(sort_order, "time")) {
 		char tstr[128];
+		struct popup_action *time_act = act;
+		char **time_optstr = optstr;
 
-		optstr++;
-		act++;
+		if (n > 0) {
+			time_optstr++;
+			time_act++;
+		}
+		if (he == NULL)
+			return n;
 		j = sprintf(tstr, " in ");
 		j += timestamp__scnprintf_usec(he->time, tstr + j,
 					       sizeof tstr - j);
 		j += sprintf(tstr + j, "-");
 		timestamp__scnprintf_usec(he->time + symbol_conf.time_quantum,
 				          tstr + j, sizeof tstr - j);
-		n += add_script_opt_2(act, optstr, thread, sym, tstr);
-		act->time = he->time;
+		ret = add_script_opt_2(time_act, time_optstr, thread, sym, tstr);
+		if (ret > 0) {
+			time_act->time = he->time;
+			n += ret;
+		}
 	}
 	return n;
 }
@@ -3247,7 +3256,10 @@ do_hotkey:		 // key came straight from options ui__popup_menu()
 					"To remove the filter later, press / + ENTER.",
 					buf, "ENTER: OK, ESC: Cancel",
 					delay_secs * 2) == K_ENTER) {
-				hists->symbol_filter_str = *buf ? buf : NULL;
+				char *new_filter = *buf ? strdup(buf) : NULL;
+
+				zfree(&hists->symbol_filter_str);
+				hists->symbol_filter_str = new_filter;
 				hists__filter_by_symbol(hists);
 				hist_browser__reset(browser);
 			}

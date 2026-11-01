@@ -31,7 +31,11 @@
 #define REG(cpu, x)		(realtek_ictl_base[cpu] + x)
 
 struct realtek_ictl_output {
+	struct fwnode_handle	*fwnode;
 	struct irq_domain	*domain;
+	unsigned int		parent_irq;
+	unsigned int		parent_hwirq;
+	unsigned int		index;
 	u32			mask;
 };
 
@@ -125,14 +129,30 @@ static int intc_map(struct irq_domain *d, unsigned int irq, irq_hw_number_t hw_i
 	guard(raw_spinlock_irqsave)(&irq_lock);
 	output->mask |= BIT(hw_irq);
 	for_each_present_cpu(cpu)
-		write_irr(cpu, hw_irq, 1);
+		write_irr(cpu, hw_irq, output->parent_hwirq - 1);
 
 	return 0;
 }
 
+static int intc_select(struct irq_domain *d, struct irq_fwspec *fwspec,
+		       enum irq_domain_bus_token bus_token)
+{
+	struct realtek_ictl_output *output = d->host_data;
+	unsigned int index = 0;
+
+	if (fwspec->fwnode != output->fwnode)
+		return false;
+
+	if (fwspec->param_count == 2)
+		index = fwspec->param[1];
+
+	return index == output->index;
+}
+
 static const struct irq_domain_ops irq_domain_ops = {
-	.map = intc_map,
-	.xlate = irq_domain_xlate_onecell,
+	.map	= intc_map,
+	.select	= intc_select,
+	.xlate	= irq_domain_xlate_onecell,
 };
 
 static void realtek_irq_dispatch(struct irq_desc *desc)
@@ -161,53 +181,72 @@ out:
 
 static int __init realtek_setup_parents(struct device_node *node)
 {
-	int err, parent_irq, num_parents = of_irq_count(node);
+	int p, cnt, err, parent_irq, num_parents = of_irq_count(node);
 	struct realtek_ictl_output *output;
+	struct irq_data *parent_data;
 	struct of_phandle_args oirq;
 	struct irq_domain *domain;
 
-	output = kcalloc(1, sizeof(*output), GFP_KERNEL);
+	cnt = max(1, num_parents);
+	output = kzalloc_objs(*output, cnt);
 	if (!output)
 		return -ENOMEM;
 
-	if (WARN_ON(!num_parents)) {
-		/*
-		 * If DT contains no parent interrupts, assume MIPS IRQ 2 (HW0) is
-		 * connected to the first output. This is the case for all known hardware.
-		 */
-		oirq.np = of_find_compatible_node(NULL, NULL,
-						  "mti,cpu-interrupt-controller");
-		if (!oirq.np) {
+	for (p = 0; p < cnt; p++) {
+		if (WARN_ON(!num_parents)) {
+			/*
+			 * If DT contains no parent interrupts, assume MIPS IRQ 2 (HW0) is
+			 * connected to the first output. This is the case for all known hardware.
+			 */
+			oirq.np = of_find_compatible_node(NULL, NULL,
+							  "mti,cpu-interrupt-controller");
+			if (!oirq.np) {
+				err = -EINVAL;
+				goto err_out;
+			}
+
+			oirq.args_count = 1;
+			oirq.args[0] = 2;
+			parent_irq = irq_create_of_mapping(&oirq);
+			of_node_put(oirq.np);
+		} else {
+			parent_irq = of_irq_get(node, p);
+		}
+
+		if (parent_irq <= 0) {
+			err = parent_irq ? parent_irq : -ENODEV;
+			goto err_out;
+		}
+
+		parent_data = irq_get_irq_data(parent_irq);
+		if (!parent_data) {
 			err = -EINVAL;
 			goto err_out;
 		}
 
-		oirq.args_count = 1;
-		oirq.args[0] = 2;
-		parent_irq = irq_create_of_mapping(&oirq);
-		of_node_put(oirq.np);
-	} else {
-		parent_irq = of_irq_get(node, 0);
-	}
+		domain = irq_domain_create_linear(of_fwnode_handle(node), RTL_ICTL_NUM_INPUTS,
+						  &irq_domain_ops, &output[p]);
+		if (!domain) {
+			err = -ENOMEM;
+			goto err_out;
+		}
 
-	if (parent_irq <= 0) {
-		err = parent_irq ? parent_irq : -ENODEV;
-		goto err_out;
+		output[p].domain = domain;
+		output[p].fwnode = of_fwnode_handle(node);
+		output[p].index = p;
+		output[p].parent_irq = parent_irq;
+		output[p].parent_hwirq = irqd_to_hwirq(parent_data);
+		irq_set_chained_handler_and_data(parent_irq, realtek_irq_dispatch, &output[p]);
 	}
-
-	domain = irq_domain_create_linear(of_fwnode_handle(node), RTL_ICTL_NUM_INPUTS,
-					  &irq_domain_ops, output);
-	if (!domain) {
-		err = -ENOMEM;
-		goto err_out;
-	}
-
-	output->domain = domain;
-	irq_set_chained_handler_and_data(parent_irq, realtek_irq_dispatch, output);
 
 	return 0;
 
 err_out:
+	while (p--) {
+		irq_set_chained_handler_and_data(output[p].parent_irq, NULL, NULL);
+		irq_domain_remove(output[p].domain);
+	}
+
 	kfree(output);
 
 	return err;

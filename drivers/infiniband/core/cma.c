@@ -2104,7 +2104,7 @@ static void destroy_id_handler_unlock(struct rdma_id_private *id_priv)
 	/*
 	 * Setting the state to destroyed under the handler mutex provides a
 	 * fence against calling handler callbacks. If this is invoked due to
-	 * the failure of a handler callback then it guarentees that no future
+	 * the failure of a handler callback then it guarantees that no future
 	 * handlers will be called.
 	 */
 	lockdep_assert_held(&id_priv->handler_mutex);

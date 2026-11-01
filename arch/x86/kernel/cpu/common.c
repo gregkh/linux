@@ -339,16 +339,16 @@ bool cpuid_feature(void)
 
 static void squash_the_stupid_serial_number(struct cpuinfo_x86 *c)
 {
-	unsigned long lo, hi;
+	struct msr val;
 
 	if (!cpu_has(c, X86_FEATURE_PN) || !disable_x86_serial_nr)
 		return;
 
 	/* Disable processor serial number: */
 
-	rdmsr(MSR_IA32_BBL_CR_CTL, lo, hi);
-	lo |= 0x200000;
-	wrmsr(MSR_IA32_BBL_CR_CTL, lo, hi);
+	rdmsrq(MSR_IA32_BBL_CR_CTL, val.q);
+	val.l |= 0x200000;
+	wrmsrq(MSR_IA32_BBL_CR_CTL, val.q);
 
 	pr_notice("CPU serial number disabled.\n");
 	clear_cpu_cap(c, X86_FEATURE_PN);
@@ -942,26 +942,27 @@ void get_cpu_vendor(struct cpuinfo_x86 *c)
 
 void cpu_detect(struct cpuinfo_x86 *c)
 {
-	/* Get vendor name */
-	cpuid(0x00000000, (unsigned int *)&c->cpuid_level,
-	      (unsigned int *)&c->x86_vendor_id[0],
-	      (unsigned int *)&c->x86_vendor_id[8],
-	      (unsigned int *)&c->x86_vendor_id[4]);
+	const struct leaf_0x0_0 *l0 = cpuid_leaf(c, 0x0);
+	const struct leaf_0x1_0 *l1;
+
+	c->cpuid_level = l0->max_std_leaf;
+	*(u32 *)&c->x86_vendor_id[0] = l0->cpu_vendorid_0;
+	*(u32 *)&c->x86_vendor_id[4] = l0->cpu_vendorid_1;
+	*(u32 *)&c->x86_vendor_id[8] = l0->cpu_vendorid_2;
 
 	c->x86 = 4;
-	/* Intel-defined flags: level 0x00000001 */
-	if (c->cpuid_level >= 0x00000001) {
-		u32 junk, tfms, cap0, misc;
 
-		cpuid(0x00000001, &tfms, &misc, &junk, &cap0);
-		c->x86		= x86_family(tfms);
-		c->x86_model	= x86_model(tfms);
-		c->x86_stepping	= x86_stepping(tfms);
+	l1 = cpuid_leaf(c, 0x1);
+	if (!l1)
+		return;
 
-		if (cap0 & (1<<19)) {
-			c->x86_clflush_size = ((misc >> 8) & 0xff) * 8;
-			c->x86_cache_alignment = c->x86_clflush_size;
-		}
+	c->x86		= cpuid_family(l1);
+	c->x86_model	= cpuid_model(l1);
+	c->x86_stepping	= l1->stepping;
+
+	if (l1->clflush) {
+		c->x86_clflush_size	= l1->clflush_size * 8;
+		c->x86_cache_alignment	= c->x86_clflush_size;
 	}
 }
 
@@ -1660,7 +1661,7 @@ static inline bool parse_set_clear_cpuid(char *arg, bool set)
 	int taint = 0;
 
 	while (arg) {
-		bool found __maybe_unused = false;
+		bool found = false;
 		unsigned int bit;
 
 		opt = strsep(&arg, ",");
@@ -2245,7 +2246,7 @@ DEFINE_PER_CPU_CACHE_HOT(struct task_struct *, current_task) = &init_task;
 EXPORT_PER_CPU_SYMBOL(current_task);
 EXPORT_PER_CPU_SYMBOL(const_current_task);
 
-DEFINE_PER_CPU_CACHE_HOT(int, __preempt_count) = INIT_PREEMPT_COUNT;
+DEFINE_PER_CPU_CACHE_HOT(unsigned long, __preempt_count) = INIT_PREEMPT_COUNT;
 EXPORT_PER_CPU_SYMBOL(__preempt_count);
 
 DEFINE_PER_CPU_CACHE_HOT(unsigned long, cpu_current_top_of_stack) = TOP_OF_INIT_STACK;
@@ -2308,8 +2309,10 @@ static inline void idt_syscall_init(void)
 /* May not be marked __init: used by software suspend */
 void syscall_init(void)
 {
+	struct msr val = { .h = (__USER32_CS << 16) | __KERNEL_CS };
+
 	/* The default user and kernel segments */
-	wrmsr(MSR_STAR, 0, (__USER32_CS << 16) | __KERNEL_CS);
+	wrmsrq(MSR_STAR, val.q);
 
 	/*
 	 * Except the IA32_STAR MSR, there is NO need to setup SYSCALL and

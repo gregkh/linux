@@ -299,7 +299,7 @@ static struct file *secretmem_file_create(unsigned long flags)
 		goto err_free_priv;
 	}
 
-	mapping_set_gfp_mask(inode->i_mapping, GFP_HIGHUSER);
+	mapping_set_gfp_mask(inode->i_mapping, GFP_USER);
 	mapping_set_unevictable(inode->i_mapping);
 
 	inode->i_op = &secretmem_iops;

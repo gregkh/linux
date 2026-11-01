@@ -114,6 +114,8 @@ struct cfg80211_registered_device {
 	struct work_struct destroy_work;
 	struct wiphy_work sched_scan_stop_wk;
 	struct work_struct sched_scan_res_wk;
+	struct wiphy_work reg_check_chans_wk;
+	struct work_struct reg_leave_nan_wk;
 
 	struct cfg80211_chan_def radar_chandef;
 	struct work_struct propagate_radar_detect_wk;
@@ -410,7 +412,7 @@ void cfg80211_mlme_purge_registrations(struct wireless_dev *wdev);
 int cfg80211_mlme_mgmt_tx(struct cfg80211_registered_device *rdev,
 			  struct wireless_dev *wdev,
 			  struct cfg80211_mgmt_tx_params *params,
-			  u64 *cookie);
+			  u64 cookie);
 void cfg80211_oper_and_ht_capa(struct ieee80211_ht_cap *ht_capa,
 			       const struct ieee80211_ht_cap *ht_capa_mask);
 void cfg80211_oper_and_vht_capa(struct ieee80211_vht_cap *vht_capa,
@@ -451,8 +453,9 @@ void cfg80211_sme_abandon_assoc(struct wireless_dev *wdev);
 
 /* internal helpers */
 bool cfg80211_supported_cipher_suite(struct wiphy *wiphy, u32 cipher);
-bool cfg80211_valid_key_idx(struct cfg80211_registered_device *rdev,
-			    int key_idx, bool pairwise);
+bool cfg80211_valid_key_idx(struct wireless_dev *wdev,
+			    int key_idx, bool pairwise,
+			    const u8 *mac_addr);
 int cfg80211_validate_key_settings(struct cfg80211_registered_device *rdev,
 				   struct wireless_dev *wdev,
 				   struct key_params *params, int key_idx,

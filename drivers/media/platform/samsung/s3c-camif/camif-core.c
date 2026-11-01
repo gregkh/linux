@@ -12,7 +12,6 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/errno.h>
-#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -407,7 +406,7 @@ static int s3c_camif_probe(struct platform_device *pdev)
 
 	camif->dev = dev;
 
-	if (!pdata || !pdata->gpio_get || !pdata->gpio_put) {
+	if (!pdata) {
 		dev_err(dev, "wrong platform data\n");
 		return -EINVAL;
 	}
@@ -424,9 +423,7 @@ static int s3c_camif_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	ret = pdata->gpio_get();
-	if (ret < 0)
-		return ret;
+	/* FIXME: get GPIOs here */
 
 	ret = s3c_camif_create_subdev(camif);
 	if (ret < 0)
@@ -499,14 +496,12 @@ err_disable:
 err_clk:
 	s3c_camif_unregister_subdev(camif);
 err_sd:
-	pdata->gpio_put();
 	return ret;
 }
 
 static void s3c_camif_remove(struct platform_device *pdev)
 {
 	struct camif_dev *camif = platform_get_drvdata(pdev);
-	struct s3c_camif_plat_data *pdata = &camif->pdata;
 
 	media_device_unregister(&camif->media_dev);
 	media_device_cleanup(&camif->media_dev);
@@ -516,7 +511,6 @@ static void s3c_camif_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	camif_clk_put(camif);
 	s3c_camif_unregister_subdev(camif);
-	pdata->gpio_put();
 }
 
 static int s3c_camif_runtime_resume(struct device *dev)

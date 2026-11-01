@@ -9,7 +9,6 @@
 #include <linux/fsnotify.h>
 #include <linux/poll.h>
 #include <linux/nospec.h>
-#include <linux/compat.h>
 #include <linux/io_uring/cmd.h>
 #include <linux/indirect_call_wrapper.h>
 
@@ -50,33 +49,20 @@ static bool io_file_supports_nowait(struct io_kiocb *req, __poll_t mask)
 	return false;
 }
 
-static int io_iov_compat_buffer_select_prep(struct io_rw *rw)
-{
-	struct compat_iovec __user *uiov = u64_to_user_ptr(rw->addr);
-	struct compat_iovec iov;
-
-	if (copy_from_user(&iov, uiov, sizeof(iov)))
-		return -EFAULT;
-	rw->len = iov.iov_len;
-	return 0;
-}
-
 static int io_iov_buffer_select_prep(struct io_kiocb *req)
 {
 	struct iovec __user *uiov;
-	struct iovec iov;
+	struct iovec fast_iov, *iov;
 	struct io_rw *rw = io_kiocb_to_cmd(req, struct io_rw);
 
 	if (rw->len != 1)
 		return -EINVAL;
 
-	if (io_is_compat(req->ctx))
-		return io_iov_compat_buffer_select_prep(rw);
-
 	uiov = u64_to_user_ptr(rw->addr);
-	if (copy_from_user(&iov, uiov, sizeof(*uiov)))
-		return -EFAULT;
-	rw->len = iov.iov_len;
+	iov = iovec_from_user(uiov, 1, 1, &fast_iov, io_is_compat(req->ctx));
+	if (IS_ERR(iov))
+		return PTR_ERR(iov);
+	rw->len = iov->iov_len;
 	return 0;
 }
 
@@ -624,6 +610,24 @@ static void io_complete_rw_iopoll(struct kiocb *kiocb, long res)
 	smp_store_release(&req->iopoll_completed, 1);
 }
 
+static inline ssize_t io_fixup_restart_res(ssize_t ret)
+{
+	switch (ret) {
+	case -ERESTARTSYS:
+	case -ERESTARTNOINTR:
+	case -ERESTARTNOHAND:
+	case -ERESTART_RESTARTBLOCK:
+		/*
+		 * We can't just restart the syscall, since previously
+		 * submitted sqes may already be in progress. Just fail
+		 * this IO with EINTR.
+		 */
+		return -EINTR;
+	default:
+		return ret;
+	}
+}
+
 static inline void io_rw_done(struct io_kiocb *req, ssize_t ret)
 {
 	struct io_rw *rw = io_kiocb_to_cmd(req, struct io_rw);
@@ -876,6 +880,7 @@ static int io_rw_init_file(struct io_kiocb *req, fmode_t mode, int rw_type)
 		kiocb->private = NULL;
 		kiocb->ki_flags |= IOCB_HIPRI;
 		req->iopoll_completed = 0;
+		req->cqe.flags = 0;
 		if (ctx->flags & IORING_SETUP_HYBRID_IOPOLL) {
 			/* make sure every req only blocks once*/
 			req->flags &= ~REQ_F_IOPOLL_STATE;
@@ -1378,7 +1383,7 @@ int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin)
 		list_del(&req->iopoll_node);
 		wq_list_add_tail(&req->comp_list, &ctx->submit_state.compl_reqs);
 		nr_events++;
-		req->cqe.flags = io_put_kbuf(req, max(req->cqe.res, 0), NULL);
+		req->cqe.flags |= io_put_kbuf(req, max(req->cqe.res, 0), NULL);
 		if (!io_is_uring_cmd(req))
 			io_req_rw_cleanup(req, 0);
 	}

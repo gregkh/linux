@@ -364,9 +364,6 @@ int rtl83xx_port_bridge_join(struct dsa_switch *ds, int port,
 	if (!priv->ops->port_add_isolation)
 		return -EOPNOTSUPP;
 
-	if (!priv->ops->port_set_learning)
-		return -EOPNOTSUPP;
-
 	dev_dbg(priv->dev, "bridge %d join port %d\n", bridge.num, port);
 
 	/* Add this port to the isolation group of every other port
@@ -404,9 +401,11 @@ int rtl83xx_port_bridge_join(struct dsa_switch *ds, int port,
 			goto undo_self_isolation;
 	}
 
-	ret = priv->ops->port_set_learning(priv, port, true);
-	if (ret)
-		goto undo_efid;
+	if (priv->ops->port_set_learning) {
+		ret = priv->ops->port_set_learning(priv, port, true);
+		if (ret)
+			goto undo_efid;
+	}
 
 	return 0;
 
@@ -451,9 +450,6 @@ void rtl83xx_port_bridge_leave(struct dsa_switch *ds, int port,
 	if (!priv->ops->port_remove_isolation)
 		return;
 
-	if (!priv->ops->port_set_learning)
-		return;
-
 	dev_dbg(priv->dev, "bridge %d leave port %d\n", bridge.num, port);
 
 	/* Remove this port from the isolation group of every other
@@ -482,11 +478,13 @@ void rtl83xx_port_bridge_leave(struct dsa_switch *ds, int port,
 	 * downstream DSA ports from the isolation group.
 	 */
 
-	ret = priv->ops->port_set_learning(priv, port, false);
-	if (ret)
-		dev_err(priv->dev,
-			"failed to disable learning on port %d: %pe\n",
-			port, ERR_PTR(ret));
+	if (priv->ops->port_set_learning) {
+		ret = priv->ops->port_set_learning(priv, port, false);
+		if (ret)
+			dev_err(priv->dev,
+				"failed to disable learning on port %d: %pe\n",
+				port, ERR_PTR(ret));
+	}
 
 	/* Remove those ports from the isolation group of this port */
 	ret = priv->ops->port_remove_isolation(priv, port, mask);

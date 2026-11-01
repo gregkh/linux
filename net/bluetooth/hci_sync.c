@@ -874,32 +874,6 @@ void hci_cmd_sync_cancel_entry(struct hci_dev *hdev,
 }
 EXPORT_SYMBOL(hci_cmd_sync_cancel_entry);
 
-/* Dequeue one HCI command entry:
- *
- * - Lookup and cancel first entry that matches.
- */
-bool hci_cmd_sync_dequeue_once(struct hci_dev *hdev,
-			       hci_cmd_sync_work_func_t func,
-			       void *data, hci_cmd_sync_work_destroy_t destroy)
-{
-	struct hci_cmd_sync_work_entry *entry;
-
-	mutex_lock(&hdev->cmd_sync_work_lock);
-
-	entry = _hci_cmd_sync_lookup_entry(hdev, func, data, destroy);
-	if (!entry) {
-		mutex_unlock(&hdev->cmd_sync_work_lock);
-		return false;
-	}
-
-	_hci_cmd_sync_cancel_entry(hdev, entry, -ECANCELED);
-
-	mutex_unlock(&hdev->cmd_sync_work_lock);
-
-	return true;
-}
-EXPORT_SYMBOL(hci_cmd_sync_dequeue_once);
-
 /* Dequeue HCI command entry:
  *
  * - Lookup and cancel any entry that matches by function callback or data or
@@ -1184,6 +1158,32 @@ int hci_update_random_address_sync(struct hci_dev *hdev, bool require_privacy,
 	return 0;
 }
 
+static int hci_disable_ext_adv_legacy_instance_sync(struct hci_dev *hdev)
+{
+	struct hci_cp_le_set_ext_adv_enable *cp;
+	struct hci_cp_ext_adv_set *set;
+	u8 data[sizeof(*cp) + sizeof(*set) * 1];
+	u8 size;
+
+	if (!hci_dev_test_flag(hdev, HCI_LE_ADV_0))
+		return 0;
+
+	memset(data, 0, sizeof(data));
+
+	cp = (void *)data;
+	set = (void *)cp->data;
+
+	cp->num_of_sets = 0x01;
+	cp->enable = 0x00;
+
+	set->handle = 0x00;
+
+	size = sizeof(*cp) + sizeof(*set) * cp->num_of_sets;
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EXT_ADV_ENABLE,
+				     size, data, HCI_CMD_TIMEOUT);
+}
+
 static int hci_disable_ext_adv_instance_sync(struct hci_dev *hdev, u8 instance)
 {
 	struct hci_cp_le_set_ext_adv_enable *cp;
@@ -1411,6 +1411,10 @@ int hci_setup_ext_adv_instance_sync(struct hci_dev *hdev, u8 instance)
 			return -EINVAL;
 		}
 	} else {
+		err = hci_disable_ext_adv_legacy_instance_sync(hdev);
+		if (err)
+			return err;
+
 		adv = NULL;
 	}
 
@@ -3805,17 +3809,19 @@ static const struct hci_init_stage hci_init0[] = {
 
 int hci_reset_sync(struct hci_dev *hdev)
 {
-	int err;
-
 	set_bit(HCI_RESET, &hdev->flags);
 
-	err = __hci_cmd_sync_status(hdev, HCI_OP_RESET, 0, NULL,
-				    HCI_CMD_TIMEOUT);
-	if (err)
-		return err;
-
-	return 0;
+	return __hci_cmd_sync_status(hdev, HCI_OP_RESET, 0, NULL,
+				     HCI_CMD_TIMEOUT);
 }
+
+/* Send a raw HCI reset for use by vendor drivers */
+int __hci_reset_sync(struct hci_dev *hdev)
+{
+	return __hci_cmd_sync_status(hdev, HCI_OP_RESET, 0, NULL,
+				     HCI_INIT_TIMEOUT);
+}
+EXPORT_SYMBOL(__hci_reset_sync);
 
 static int hci_init0_sync(struct hci_dev *hdev)
 {
@@ -4590,6 +4596,10 @@ static int hci_le_set_event_mask_sync(struct hci_dev *hdev)
 		events[6] |= 0x02;	/* LE CS Subevent Result Continue event */
 		events[6] |= 0x04;	/* LE CS Test End Complete event */
 	}
+
+	if (le_sci_capable(hdev))
+		events[6] |= 0x40;	/* LE Connection Rate Change event */
+
 	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EVENT_MASK,
 				     sizeof(events), events, HCI_CMD_TIMEOUT);
 }
@@ -4758,12 +4768,77 @@ static int hci_le_set_host_feature_sync(struct hci_dev *hdev, u16 bit, u8 value)
 				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
 }
 
+static int hci_le_read_conn_interval_sync(struct hci_dev *hdev)
+{
+	if (!le_sci_capable(hdev))
+		return 0;
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_READ_CONN_INTERVAL,
+				     0, NULL, HCI_CMD_TIMEOUT);
+}
+
+static int hci_le_set_def_rate_sync(struct hci_dev *hdev)
+{
+	struct hci_cp_le_set_def_rate cp;
+	u16 interval_min = 0x000a;	/* 1.25 ms */
+	u16 interval_max = 0x0078;	/* 15 ms */
+
+	if (!le_sci_capable(hdev))
+		return 0;
+
+	/* Clamp the interval range to the controller's minimum supported
+	 * connection interval (read via HCI_OP_LE_READ_CONN_INTERVAL) so the
+	 * default rate parameters are not rejected. The maximum is raised as
+	 * well if needed to keep interval_min <= interval_max.
+	 */
+	if (hdev->le_min_rate_interval > interval_min) {
+		interval_min = hdev->le_min_rate_interval;
+		if (interval_min > interval_max)
+			interval_max = interval_min;
+	}
+
+	memset(&cp, 0, sizeof(cp));
+
+	/* Use the HIDS 1.2 recommended Full Range mode values as the default
+	 * rate parameters (see HOGP v1.2 spec). Connection intervals are in
+	 * units of 0.125 ms and the supervision timeout is in units of 10 ms.
+	 */
+	cp.interval_min = cpu_to_le16(interval_min);
+	cp.interval_max = cpu_to_le16(interval_max);
+	cp.subrate_min = cpu_to_le16(0x0001);
+	cp.subrate_max = cpu_to_le16(0x0004);
+	cp.max_latency = cpu_to_le16(0x0000);
+	cp.cont_num = cpu_to_le16(0x0001);
+	cp.supv_timeout = cpu_to_le16(0x000c);	/* 120 ms */
+
+	/* The connection event length recommended in requests by a Peripheral
+	 * uses units of 125 us with a valid range of 0x0001 to 0x7CFF
+	 * (0.125 ms to 3.999875 s), so 0x0000 cannot be used. Also note that
+	 * the Controller is not required to use these values:
+	 *
+	 * BLUETOOTH CORE SPECIFICATION Version 6.2 | Vol 4, Part E
+	 * 7.8.158. LE Set Default Rate Parameters command
+	 *
+	 * The Min_CE_Length and Max_CE_Length parameters provide the
+	 * Controller with the expected minimum and maximum length of the
+	 * connection events. The Controller is not required to use these
+	 * values.
+	 *
+	 * So it is safe to just use the minimum.
+	 */
+	cp.min_ce_len = cpu_to_le16(0x0001);
+	cp.max_ce_len = cpu_to_le16(0x0001);
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_DEF_RATE,
+				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+}
+
 /* Set Host Features, each feature needs to be sent separately since
  * HCI_OP_LE_SET_HOST_FEATURE doesn't support setting all of them at once.
  */
 static int hci_le_set_host_features_sync(struct hci_dev *hdev)
 {
-	int err;
+	int err = 0;
 
 	if (cis_capable(hdev)) {
 		/* Connected Isochronous Channels (Host Support) */
@@ -4774,9 +4849,16 @@ static int hci_le_set_host_features_sync(struct hci_dev *hdev)
 			return err;
 	}
 
-	if (le_cs_capable(hdev))
+	if (le_cs_capable(hdev)) {
 		/* Channel Sounding (Host Support) */
 		err = hci_le_set_host_feature_sync(hdev, 47, 0x01);
+		if (err)
+			return err;
+	}
+
+	if (le_sci_capable(hdev))
+		/* Shorter Connection Intervals (Host Support) */
+		err = hci_le_set_host_feature_sync(hdev, 73, 0x01);
 
 	return err;
 }
@@ -4809,6 +4891,10 @@ static const struct hci_init_stage le_init3[] = {
 	HCI_INIT(hci_set_le_support_sync),
 	/* HCI_OP_LE_SET_HOST_FEATURE */
 	HCI_INIT(hci_le_set_host_features_sync),
+	/* HCI_OP_LE_READ_CONN_INTERVAL */
+	HCI_INIT(hci_le_read_conn_interval_sync),
+	/* HCI_OP_LE_SET_DEF_RATE */
+	HCI_INIT(hci_le_set_def_rate_sync),
 	{}
 };
 
@@ -6378,8 +6464,7 @@ static int hci_update_event_filter_sync(struct hci_dev *hdev)
 		goto update_scan;
 	}
 
-	accept_list = kmalloc_array(num_entries, sizeof(*accept_list),
-				    GFP_KERNEL);
+	accept_list = kmalloc_objs(*accept_list, num_entries);
 	if (!accept_list) {
 		hci_dev_unlock(hdev);
 		return -ENOMEM;
@@ -7386,6 +7471,91 @@ int hci_le_conn_update_sync(struct hci_dev *hdev, struct hci_conn *conn,
 
 	return __hci_cmd_sync_status(hdev, HCI_OP_LE_CONN_UPDATE,
 				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+}
+
+static int hci_le_conn_rate_request_sync(struct hci_dev *hdev, void *data)
+{
+	struct hci_conn *conn = data;
+	struct hci_conn_params *params;
+	struct hci_cp_le_conn_rate cp;
+
+	hci_dev_lock(hdev);
+
+	/* The request was queued asynchronously so re-validate the connection
+	 * and its parameters under hdev->lock. The connection may have been
+	 * torn down, or may not have a valid handle yet (still connecting),
+	 * and the parameters may have been removed in the meantime (e.g. by
+	 * Load Connection Parameters). Snapshot the rate values so the
+	 * blocking command below can run without holding hdev->lock.
+	 */
+	if (!hci_conn_valid(hdev, conn) ||
+	    HCI_CONN_HANDLE_UNSET(conn->handle)) {
+		hci_dev_unlock(hdev);
+		return -ECANCELED;
+	}
+
+	params = hci_conn_params_lookup(hdev, &conn->dst, conn->dst_type);
+	if (!params) {
+		hci_dev_unlock(hdev);
+		return -ECANCELED;
+	}
+
+	memset(&cp, 0, sizeof(cp));
+	cp.handle	= cpu_to_le16(conn->handle);
+	cp.interval_min	= cpu_to_le16(params->rate_min_interval);
+	cp.interval_max	= cpu_to_le16(params->rate_max_interval);
+	cp.subrate_min	= cpu_to_le16(params->subrate_min);
+	cp.subrate_max	= cpu_to_le16(params->subrate_max);
+	cp.max_latency	= cpu_to_le16(params->max_latency);
+	cp.cont_num	= cpu_to_le16(params->cont_num);
+	cp.supv_timeout	= cpu_to_le16(params->rate_supv_timeout);
+
+	/* The connection event length recommended in requests by a Peripheral
+	 * uses units of 125 us with a valid range of 0x0001 to 0x7CFF
+	 * (0.125 ms to 3.999875 s), so 0x0000 cannot be used. Also note that
+	 * the Controller is not required to use these values:
+	 *
+	 * BLUETOOTH CORE SPECIFICATION Version 6.2 | Vol 4, Part E
+	 * 7.8.157. LE Connection Rate Request command
+	 *
+	 * The Min_CE_Length and Max_CE_Length parameters provide the
+	 * Controller with the expected minimum and maximum length of the
+	 * connection events. The Controller is not required to use these
+	 * values.
+	 *
+	 * So it is safe to just use the minimum.
+	 */
+	cp.min_ce_len	= cpu_to_le16(0x0001);
+	cp.max_ce_len	= cpu_to_le16(0x0001);
+
+	hci_dev_unlock(hdev);
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_CONN_RATE,
+				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+}
+
+static void hci_le_conn_rate_request_destroy(struct hci_dev *hdev, void *data,
+					     int err)
+{
+	struct hci_conn *conn = data;
+
+	hci_conn_put(conn);
+}
+
+int hci_le_conn_rate_request(struct hci_dev *hdev, struct hci_conn *conn)
+{
+	int err;
+
+	/* Hold a reference to the connection so it cannot be freed while the
+	 * request is pending or running on the cmd_sync worker.
+	 */
+	err = hci_cmd_sync_queue(hdev, hci_le_conn_rate_request_sync,
+				 hci_conn_get(conn),
+				 hci_le_conn_rate_request_destroy);
+	if (err < 0)
+		hci_conn_put(conn);
+
+	return err;
 }
 
 static void create_pa_complete(struct hci_dev *hdev, void *data, int err)

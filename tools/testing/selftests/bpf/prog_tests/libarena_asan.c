@@ -85,7 +85,7 @@ out:
  * Run the test depending on whether LLVM can compile arena ASAN
  * programs.
  */
-void test_libarena_asan(void)
+void serial_test_libarena_asan(void)
 {
 #ifdef HAS_BPF_ARENA_ASAN
 	run_test();

@@ -16,6 +16,56 @@
 
 static_assert(!(KVM_POSSIBLE_CR0_GUEST_BITS & X86_CR0_PDPTR_BITS));
 
+#define CR0_RESERVED_BITS                                               \
+	(~(unsigned long)(X86_CR0_PE | X86_CR0_MP | X86_CR0_EM | X86_CR0_TS \
+			  | X86_CR0_ET | X86_CR0_NE | X86_CR0_WP | X86_CR0_AM \
+			  | X86_CR0_NW | X86_CR0_CD | X86_CR0_PG))
+
+#define CR4_RESERVED_BITS                                               \
+	(~(unsigned long)(X86_CR4_VME | X86_CR4_PVI | X86_CR4_TSD | X86_CR4_DE\
+			  | X86_CR4_PSE | X86_CR4_PAE | X86_CR4_MCE     \
+			  | X86_CR4_PGE | X86_CR4_PCE | X86_CR4_OSFXSR | X86_CR4_PCIDE \
+			  | X86_CR4_OSXSAVE | X86_CR4_SMEP | X86_CR4_FSGSBASE \
+			  | X86_CR4_OSXMMEXCPT | X86_CR4_LA57 | X86_CR4_VMXE \
+			  | X86_CR4_SMAP | X86_CR4_PKE | X86_CR4_UMIP \
+			  | X86_CR4_LAM_SUP | X86_CR4_CET))
+
+#define CR8_RESERVED_BITS (~(unsigned long)X86_CR8_TPR)
+
+#define DR6_BUS_LOCK   (1 << 11)
+#define DR6_BD		(1 << 13)
+#define DR6_BS		(1 << 14)
+#define DR6_BT		(1 << 15)
+#define DR6_RTM		(1 << 16)
+/*
+ * DR6_ACTIVE_LOW combines fixed-1 and active-low bits.
+ * We can regard all the bits in DR6_FIXED_1 as active_low bits;
+ * they will never be 0 for now, but when they are defined
+ * in the future it will require no code change.
+ *
+ * DR6_ACTIVE_LOW is also used as the init/reset value for DR6.
+ */
+#define DR6_ACTIVE_LOW	0xffff0ff0
+#define DR6_VOLATILE	0x0001e80f
+#define DR6_FIXED_1	(DR6_ACTIVE_LOW & ~DR6_VOLATILE)
+
+#define DR7_BP_EN_MASK	0x000000ff
+#define DR7_GE		(1 << 9)
+#define DR7_GD		(1 << 13)
+#define DR7_VOLATILE	0xffff2bff
+
+void kvm_post_set_cr0(struct kvm_vcpu *vcpu, unsigned long old_cr0, unsigned long cr0);
+void kvm_post_set_cr4(struct kvm_vcpu *vcpu, unsigned long old_cr4, unsigned long cr4);
+int kvm_set_cr0(struct kvm_vcpu *vcpu, unsigned long cr0);
+int kvm_set_cr3(struct kvm_vcpu *vcpu, unsigned long cr3);
+int kvm_set_cr4(struct kvm_vcpu *vcpu, unsigned long cr4);
+int kvm_set_cr8(struct kvm_vcpu *vcpu, unsigned long cr8);
+int kvm_set_dr(struct kvm_vcpu *vcpu, int dr, unsigned long val);
+unsigned long kvm_get_dr(struct kvm_vcpu *vcpu, int dr);
+unsigned long kvm_get_cr8(struct kvm_vcpu *vcpu);
+void kvm_lmsw(struct kvm_vcpu *vcpu, unsigned long msw);
+int load_pdptrs(struct kvm_vcpu *vcpu, unsigned long cr3);
+
 static inline bool is_long_mode(struct kvm_vcpu *vcpu)
 {
 #ifdef CONFIG_X86_64
@@ -433,7 +483,24 @@ static inline unsigned long kvm_get_segment_base(struct kvm_vcpu *vcpu, int seg)
 	return kvm_x86_call(get_segment_base)(vcpu, seg);
 }
 
+static inline void kvm_set_segment(struct kvm_vcpu *vcpu,
+				   struct kvm_segment *var, int seg)
+{
+	kvm_x86_call(set_segment)(vcpu, var, seg);
+}
+
+static inline void kvm_get_segment(struct kvm_vcpu *vcpu,
+				   struct kvm_segment *var, int seg)
+{
+	kvm_x86_call(get_segment)(vcpu, var, seg);
+}
+
+unsigned long kvm_get_linear_rip(struct kvm_vcpu *vcpu);
+bool kvm_is_linear_rip(struct kvm_vcpu *vcpu, unsigned long linear_rip);
+
+unsigned long kvm_get_rflags(struct kvm_vcpu *vcpu);
 void __kvm_set_rflags(struct kvm_vcpu *vcpu, unsigned long rflags);
+void kvm_set_rflags(struct kvm_vcpu *vcpu, unsigned long rflags);
 
 void kvm_vcpu_ioctl_x86_get_sregs2(struct kvm_vcpu *vcpu,
 				   struct kvm_sregs2 *sregs2);
@@ -444,6 +511,7 @@ void kvm_run_sync_regs_to_user(struct kvm_vcpu *vcpu);
 int kvm_run_sync_regs_from_user(struct kvm_vcpu *vcpu);
 
 void kvm_update_dr0123(struct kvm_vcpu *vcpu);
+void kvm_update_dr7(struct kvm_vcpu *vcpu);
 int kvm_vcpu_ioctl_x86_get_debugregs(struct kvm_vcpu *vcpu,
 				     struct kvm_debugregs *dbgregs);
 int kvm_vcpu_ioctl_x86_set_debugregs(struct kvm_vcpu *vcpu,

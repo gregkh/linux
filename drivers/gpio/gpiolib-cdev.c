@@ -2671,7 +2671,7 @@ static int gpio_chrdev_open(struct inode *inode, struct file *file)
 	struct gpio_chardev_data *cdev;
 	int ret = -ENOMEM;
 
-	cdev = kzalloc(sizeof(*cdev), GFP_KERNEL);
+	cdev = kzalloc_obj(*cdev);
 	if (!cdev)
 		return -ENOMEM;
 
@@ -2700,15 +2700,8 @@ static int gpio_chrdev_open(struct inode *inode, struct file *file)
 	file->private_data = cdev;
 	cdev->fp = file;
 
-	ret = nonseekable_open(inode, file);
-	if (ret)
-		goto out_unregister_device_notifier;
+	return nonseekable_open(inode, file);
 
-	return ret;
-
-out_unregister_device_notifier:
-	blocking_notifier_chain_unregister(&gdev->device_notifier,
-					   &cdev->device_unregistered_nb);
 out_unregister_line_notifier:
 	scoped_guard(write_lock_irqsave, &gdev->line_state_lock)
 		raw_notifier_chain_unregister(&gdev->line_state_notifier,

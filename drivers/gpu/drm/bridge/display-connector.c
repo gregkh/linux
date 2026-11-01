@@ -224,7 +224,7 @@ static const struct drm_bridge_funcs display_connector_bridge_funcs = {
 	.atomic_get_input_bus_fmts = display_connector_get_input_bus_fmts,
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
-	.atomic_reset = drm_atomic_helper_bridge_reset,
+	.atomic_create_state = drm_atomic_helper_bridge_create_state,
 };
 
 static irqreturn_t display_connector_hpd_irq(int irq, void *arg)

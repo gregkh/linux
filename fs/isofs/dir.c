@@ -84,7 +84,7 @@ int get_acorn_filename(struct iso_directory_record *de,
  */
 static int do_isofs_readdir(struct inode *inode, struct file *file,
 		struct dir_context *ctx,
-		char *tmpname, struct iso_directory_record *tmpde)
+		char *tmpname)
 {
 	unsigned long bufsize = ISOFS_BUFFER_SIZE(inode);
 	unsigned char bufbits = ISOFS_BUFFER_BITS(inode);
@@ -110,49 +110,26 @@ static int do_isofs_readdir(struct inode *inode, struct file *file,
 				return 0;
 		}
 
-		de = (struct iso_directory_record *) (bh->b_data + offset);
-
-		de_len = *(unsigned char *)de;
-
+		de = (struct iso_directory_record *)(bh->b_data + offset);
 		/*
-		 * If the length byte is zero, we should move on to the next
-		 * CDROM sector.  If we are at the end of the directory, we
-		 * kick out of the while loop.
+		 * If we are at the end of a block (or at its zero-padded
+		 * tail), move on to the next CDROM sector.  If we are at the
+		 * end of the directory, we'll abort the while loop.
 		 */
-
-		if (de_len == 0) {
+		if (offset >= bufsize || de->length[0] == 0) {
 			brelse(bh);
 			bh = NULL;
-			ctx->pos = (ctx->pos + ISOFS_BLOCK_SIZE) & ~(ISOFS_BLOCK_SIZE - 1);
-			block = ctx->pos >> bufbits;
+			block++;
+			ctx->pos = (loff_t)block << bufbits;
 			offset = 0;
 			continue;
 		}
-
+		de_len = de->length[0];
 		block_saved = block;
 		offset_saved = offset;
 		offset += de_len;
 
-		/* Make sure we have a full directory entry */
-		if (offset >= bufsize) {
-			int slop = bufsize - offset + de_len;
-			memcpy(tmpde, de, slop);
-			offset &= bufsize - 1;
-			block++;
-			brelse(bh);
-			bh = NULL;
-			if (offset) {
-				bh = isofs_bread(inode, block);
-				if (!bh)
-					return 0;
-				memcpy((void *) tmpde + slop, bh->b_data, offset);
-			}
-			de = tmpde;
-		}
-		/* Basic sanity check, whether name doesn't exceed dir entry */
-		if (de_len < sizeof(struct iso_directory_record) ||
-		    de_len < de->name_len[0] +
-					sizeof(struct iso_directory_record)) {
+		if (!isofs_dir_record_valid(de, offset_saved, bufsize)) {
 			printk(KERN_NOTICE "iso9660: Corrupted directory entry"
 			       " in block %lu of inode %llu\n", block,
 			       inode->i_ino);
@@ -254,16 +231,13 @@ static int isofs_readdir(struct file *file, struct dir_context *ctx)
 {
 	int result;
 	char *tmpname;
-	struct iso_directory_record *tmpde;
 	struct inode *inode = file_inode(file);
 
-	tmpname = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	tmpname = kmalloc(1024, GFP_KERNEL);
 	if (tmpname == NULL)
 		return -ENOMEM;
 
-	tmpde = (struct iso_directory_record *) (tmpname+1024);
-
-	result = do_isofs_readdir(inode, file, ctx, tmpname, tmpde);
+	result = do_isofs_readdir(inode, file, ctx, tmpname);
 
 	kfree(tmpname);
 	return result;
@@ -299,5 +273,4 @@ const struct inode_operations isofs_dir_inode_operations =
 	.lookup = isofs_lookup,
 	.fileattr_get = isofs_fileattr_get,
 };
-
 

@@ -1057,10 +1057,8 @@ static int bq24257_probe(struct i2c_client *client)
 					IRQF_TRIGGER_FALLING |
 					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
 					bq->info->name, bq);
-	if (ret) {
-		dev_err(dev, "Failed to request IRQ #%d\n", client->irq);
+	if (ret)
 		return ret;
-	}
 
 	return 0;
 }

@@ -21,30 +21,6 @@
 /* The total header size for SMB2 read and write */
 #define SMB2_READWRITE_PDU_HEADER_SIZE (48 + sizeof(struct smb2_hdr))
 
-/* See MS-SMB2 2.2.43 */
-struct smb2_rdma_transform {
-	__le16 RdmaDescriptorOffset;
-	__le16 RdmaDescriptorLength;
-	__le32 Channel; /* for values see channel description in smb2 read above */
-	__le16 TransformCount;
-	__le16 Reserved1;
-	__le32 Reserved2;
-} __packed;
-
-/* TransformType */
-#define SMB2_RDMA_TRANSFORM_TYPE_ENCRYPTION	0x0001
-#define SMB2_RDMA_TRANSFORM_TYPE_SIGNING	0x0002
-
-struct smb2_rdma_crypto_transform {
-	__le16	TransformType;
-	__le16	SignatureLength;
-	__le16	NonceLength;
-	__u16	Reserved;
-	__u8	Signature[]; /* variable length */
-	/* u8 Nonce[] */
-	/* followed by padding */
-} __packed;
-
 /*
  *	Definitions for SMB2 Protocol Data Units (network frames)
  *
@@ -248,8 +224,7 @@ struct smb2_file_id_extd_directory_info {
 extern char smb2_padding[7];
 
 /*
- * See POSIX-SMB2 2.2.14.2.16
- * Link: https://gitlab.com/samba-team/smb3-posix-spec/-/blob/master/smb3_posix_extensions.md
+ * See POSIX-SMB2 2.1.3.2.1
  */
 struct create_posix_rsp {
 	u32 nlink;
@@ -262,6 +237,7 @@ struct create_posix_rsp {
 #define SMB2_QUERY_DIRECTORY_IOV_SIZE 2
 
 /*
+ * See POSIX-FSCC 2.2.1
  * SMB2-only POSIX info level for query dir
  *
  * See posix_info_sid_size(), posix_info_extra_size() and
@@ -280,13 +256,17 @@ struct smb2_posix_info {
 	__le64 Inode;
 	__le32 DeviceId;
 	__le32 Zero;
-	/* beginning of POSIX Create Context Response */
+	/*
+	 * Beginning of POSIX Create Context Response
+	 * See POSIX-SMB2 2.1.3.2.1
+	 */
 	__le32 HardLinks;
 	__le32 ReparseTag;
 	__le32 Mode;
 	/*
 	 * var sized owner SID
 	 * var sized group SID
+	 * End of POSIX Create Context Response
 	 * le32 filenamelength
 	 * u8  filename[]
 	 */

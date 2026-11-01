@@ -632,7 +632,7 @@ void em2828X_decoder_vmux(struct em28xx *dev, unsigned int vin)
 	default:
 		dev_dbg(&dev->intf->dev, "EM2828X_SVIDEO\n");
 		break;
-	};
+	}
 
 	em28xx_write_reg(dev, 0x24, 0x00);
 	em28xx_write_reg(dev, 0x25, 0x02);

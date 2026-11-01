@@ -347,12 +347,8 @@ static int bq256xx_array_parse(int array_size, int val, const int array[])
 		if (val == array[i])
 			return i;
 
-		if (val > array[i - 1] && val < array[i]) {
-			if (val < array[i])
-				return i - 1;
-			else
-				return i;
-		}
+		if (val > array[i - 1] && val < array[i])
+			return i - 1;
 	}
 	return -EINVAL;
 }
@@ -1753,10 +1749,8 @@ static int bq256xx_probe(struct i2c_client *client)
 						IRQF_TRIGGER_FALLING |
 						IRQF_ONESHOT,
 						dev_name(&client->dev), bq);
-		if (ret < 0) {
-			dev_err(dev, "get irq fail: %d\n", ret);
+		if (ret < 0)
 			return ret;
-		}
 	}
 
 	ret = bq256xx_hw_init(bq);

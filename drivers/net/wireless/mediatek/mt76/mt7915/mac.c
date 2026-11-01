@@ -1292,6 +1292,7 @@ mt7915_mac_restart(struct mt7915_dev *dev)
 	struct mt7915_phy *phy2;
 	struct mt76_phy *ext_phy;
 	struct mt76_dev *mdev = &dev->mt76;
+	bool run_main, run_ext;
 	int i, ret;
 
 	ext_phy = dev->mt76.phys[MT_BAND1];
@@ -1387,13 +1388,17 @@ mt7915_mac_restart(struct mt7915_dev *dev)
 	mt7915_init_txpower(phy2);
 	ret = mt7915_txbf_init(dev);
 
-	if (test_bit(MT76_STATE_RUNNING, &dev->mphy.state)) {
+	run_main = test_and_clear_bit(MT76_STATE_RUNNING, &dev->mphy.state);
+	run_ext = ext_phy &&
+		  test_and_clear_bit(MT76_STATE_RUNNING, &ext_phy->state);
+
+	if (run_main) {
 		ret = mt7915_run(dev->mphy.hw);
 		if (ret)
 			goto out;
 	}
 
-	if (ext_phy && test_bit(MT76_STATE_RUNNING, &ext_phy->state)) {
+	if (run_ext) {
 		ret = mt7915_run(ext_phy->hw);
 		if (ret)
 			goto out;
@@ -1463,6 +1468,10 @@ mt7915_mac_full_reset(struct mt7915_dev *dev)
 	dev->recovery.hw_full_reset = false;
 
 	mutex_unlock(&dev->mt76.mutex);
+
+	ieee80211_wake_queues(mt76_hw(dev));
+	if (ext_phy)
+		ieee80211_wake_queues(ext_phy->hw);
 
 	ieee80211_restart_hw(mt76_hw(dev));
 	if (ext_phy)
@@ -1925,7 +1934,7 @@ void mt7915_mac_update_stats(struct mt7915_phy *phy)
 static void mt7915_mac_severe_check(struct mt7915_phy *phy)
 {
 	struct mt7915_dev *dev = phy->dev;
-	u32 trb;
+	u32 trb, ple_err;
 
 	if (!phy->omac_mask)
 		return;
@@ -1945,6 +1954,17 @@ static void mt7915_mac_severe_check(struct mt7915_phy *phy)
 				   phy->mt76->band_idx);
 
 	phy->trb_ts = trb;
+
+	ple_err = mt76_rr(dev, MT_SWDEF_PLE1_STATS);
+	if ((ple_err & MT_SWDEF_PLE1_MDP_RIOC_HANG_ERR) &&
+	    !(dev->ple1_sts & MT_SWDEF_PLE1_MDP_RIOC_HANG_ERR)) {
+		dev_warn(dev->mt76.dev,
+			 "band%d: PLE error 0x%x detected, triggering L1 SER\n",
+			 phy->mt76->band_idx, ple_err);
+		mt7915_mcu_set_ser(dev, SER_RECOVER, SER_SET_RECOVER_L1,
+				   phy->mt76->band_idx);
+	}
+	dev->ple1_sts = ple_err;
 }
 
 void mt7915_mac_sta_rc_work(struct work_struct *work)

@@ -145,6 +145,7 @@ struct bpf_map_ops {
 	int (*map_direct_value_meta)(const struct bpf_map *map,
 				     u64 imm, u32 *off);
 	int (*map_mmap)(struct bpf_map *map, struct vm_area_struct *vma);
+	vm_fault_t (*map_mmap_fault)(struct bpf_map *map, struct vm_fault *vmf);
 	__poll_t (*map_poll)(struct bpf_map *map, struct file *filp,
 			     struct poll_table_struct *pts);
 	unsigned long (*map_get_unmapped_area)(struct file *filep, unsigned long addr,
@@ -299,7 +300,6 @@ struct bpf_map_owner {
 
 struct bpf_map {
 	u8 sha[SHA256_DIGEST_SIZE];
-	u32 excl;
 	const struct bpf_map_ops *ops;
 	struct bpf_map *inner_map_meta;
 #ifdef CONFIG_SECURITY
@@ -889,8 +889,8 @@ enum bpf_arg_type {
 	ARG_PTR_TO_MEM,		/* pointer to valid memory (stack, packet, map value) */
 	ARG_PTR_TO_ARENA,
 
-	ARG_CONST_SIZE,		/* number of bytes accessed from memory */
-	ARG_CONST_SIZE_OR_ZERO,	/* number of bytes accessed from memory or 0 */
+	ARG_MEM_SIZE,		/* number of bytes accessed from memory */
+	ARG_MEM_SIZE_OR_ZERO,	/* number of bytes accessed from memory or 0 */
 
 	ARG_PTR_TO_CTX,		/* pointer to context */
 	ARG_ANYTHING,		/* any (initialized) argument is ok */
@@ -962,6 +962,21 @@ enum bpf_return_type {
 };
 static_assert(__BPF_RET_TYPE_MAX <= BPF_BASE_TYPE_LIMIT);
 
+/* The longest tracepoint has 12 args.
+ * See include/trace/bpf_probe.h
+ *
+ * Also reuse this macro for maximum number of arguments a BPF function
+ * or a kfunc can have. Args 1-5 are passed in registers, args 6-12 via
+ * stack arg slots. The JIT may map some stack arg slots to registers based
+ * on the native calling convention (e.g., arg 6 to R9 on x86-64).
+ */
+#define MAX_BPF_FUNC_ARGS 12
+
+/* The maximum number of arguments passed through registers
+ * a single function may have.
+ */
+#define MAX_BPF_FUNC_REG_ARGS 5
+
 /* eBPF function prototype used by verifier to allow BPF_CALLs from eBPF programs
  * to in-kernel helper functions and for adjusting imm32 field in BPF_CALL
  * instructions after verifying
@@ -986,7 +1001,7 @@ struct bpf_func_proto {
 			enum bpf_arg_type arg4_type;
 			enum bpf_arg_type arg5_type;
 		};
-		enum bpf_arg_type arg_type[5];
+		enum bpf_arg_type arg_type[MAX_BPF_FUNC_ARGS];
 	};
 	union {
 		struct {
@@ -996,7 +1011,7 @@ struct bpf_func_proto {
 			u32 *arg4_btf_id;
 			u32 *arg5_btf_id;
 		};
-		u32 *arg_btf_id[5];
+		u32 *arg_btf_id[MAX_BPF_FUNC_ARGS];
 		struct {
 			size_t arg1_size;
 			size_t arg2_size;
@@ -1004,7 +1019,7 @@ struct bpf_func_proto {
 			size_t arg4_size;
 			size_t arg5_size;
 		};
-		size_t arg_size[5];
+		size_t arg_size[MAX_BPF_FUNC_ARGS];
 	};
 	int *ret_btf_id; /* return value btf_id */
 	bool (*allowed)(const struct bpf_prog *prog);
@@ -1179,26 +1194,14 @@ struct bpf_prog_offload {
 	u32			jited_len;
 };
 
-/* The longest tracepoint has 12 args.
- * See include/trace/bpf_probe.h
- *
- * Also reuse this macro for maximum number of arguments a BPF function
- * or a kfunc can have. Args 1-5 are passed in registers, args 6-12 via
- * stack arg slots. The JIT may map some stack arg slots to registers based
- * on the native calling convention (e.g., arg 6 to R9 on x86-64).
- */
-#define MAX_BPF_FUNC_ARGS 12
-
-/* The maximum number of arguments passed through registers
- * a single function may have.
- */
-#define MAX_BPF_FUNC_REG_ARGS 5
-
-/* The argument is a structure or a union. */
-#define BTF_FMODEL_STRUCT_ARG		BIT(0)
-
 /* The argument is signed. */
 #define BTF_FMODEL_SIGNED_ARG		BIT(1)
+
+/* The argument is an arena pointer. */
+#define BTF_FMODEL_ARENA_ARG		BIT(2)
+
+/* The argument is nullable. */
+#define BTF_FMODEL_NULLABLE_ARG		BIT(3)
 
 struct btf_func_model {
 	u8 ret_size;
@@ -1276,6 +1279,15 @@ struct bpf_tramp_nodes {
 	struct bpf_tramp_node *nodes[BPF_MAX_TRAMP_LINKS];
 	int nr_nodes;
 };
+
+/*
+ * The arena base against which a struct_ops trampoline converts the
+ * arguments marked with BTF_FMODEL_ARENA_ARG while saving them into the BPF
+ * ctx, ctx[arg] = (u32)(kaddr - kern_vm_start). Zero when the trampoline
+ * converts nothing.
+ */
+u64 bpf_tramp_arena_base(const struct btf_func_model *m,
+			 struct bpf_tramp_nodes *tnodes, u32 flags);
 
 struct bpf_tramp_run_ctx;
 
@@ -1544,8 +1556,8 @@ int arch_prepare_bpf_dispatcher(void *image, void *buf, s64 *funcs, int num_func
 
 int bpf_trampoline_multi_attach(struct bpf_prog *prog, u32 *ids,
 				struct bpf_tracing_multi_link *link);
-int bpf_trampoline_multi_detach(struct bpf_prog *prog,
-				struct bpf_tracing_multi_link *link);
+void bpf_trampoline_multi_detach(struct bpf_prog *prog,
+				 struct bpf_tracing_multi_link *link);
 void bpf_trampoline_set_flags(struct bpf_trampoline *tr, u32 flags);
 
 /*
@@ -1665,10 +1677,9 @@ static inline int bpf_trampoline_multi_attach(struct bpf_prog *prog, u32 *ids,
 {
 	return -ENOTSUPP;
 }
-static inline int bpf_trampoline_multi_detach(struct bpf_prog *prog,
-					      struct bpf_tracing_multi_link *link)
+static inline void bpf_trampoline_multi_detach(struct bpf_prog *prog,
+					       struct bpf_tracing_multi_link *link)
 {
-	return -ENOTSUPP;
 }
 static inline void bpf_trampoline_set_flags(struct bpf_trampoline *tr, u32 flags) {}
 #endif
@@ -1676,8 +1687,9 @@ static inline void bpf_trampoline_set_flags(struct bpf_trampoline *tr, u32 flags
 struct bpf_func_info_aux {
 	u16 linkage;
 	bool unreliable;
-	bool called : 1;
-	bool verified : 1;
+	/* Indexed by in_sleepable. */
+	bool called[2];
+	bool verified[2];
 };
 
 enum bpf_jit_poke_reason {
@@ -2220,6 +2232,12 @@ static inline bool is_tracing_multi(enum bpf_attach_type type)
 {
 	return type == BPF_TRACE_FENTRY_MULTI || type == BPF_TRACE_FEXIT_MULTI ||
 	       type == BPF_TRACE_FSESSION_MULTI;
+}
+
+static inline bool is_struct_ops_tramp(const struct bpf_tramp_nodes *fentry_nodes)
+{
+	return fentry_nodes->nr_nodes == 1 &&
+	       fentry_nodes->nodes[0]->link->type == BPF_LINK_TYPE_STRUCT_OPS;
 }
 
 #if defined(CONFIG_BPF_JIT) && defined(CONFIG_BPF_SYSCALL)
@@ -4168,8 +4186,16 @@ static inline bool bpf_is_subprog(const struct bpf_prog *prog)
 }
 
 const struct bpf_line_info *bpf_find_linfo(const struct bpf_prog *prog, u32 insn_off);
-void bpf_get_linfo_file_line(struct btf *btf, const struct bpf_line_info *linfo,
-			     const char **filep, const char **linep, int *nump);
+struct bpf_linfo_source {
+	const char *file;
+	const char *line;
+	u32 file_name_off;
+	int line_num;
+	int line_col;
+};
+
+void bpf_get_linfo_source(struct btf *btf, const struct bpf_line_info *linfo,
+			  struct bpf_linfo_source *src);
 int bpf_prog_get_file_line(struct bpf_prog *prog, unsigned long ip, const char **filep,
 			   const char **linep, int *nump);
 struct bpf_prog *bpf_prog_find_from_stack(void);

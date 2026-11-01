@@ -613,6 +613,8 @@ static void mt7996_remove_interface(struct ieee80211_hw *hw,
 	unsigned int link_id;
 	int i;
 
+	mutex_lock(&dev->mt76.mutex);
+
 	/* Remove all active links */
 	for_each_set_bit(link_id, &rem_links, IEEE80211_MLD_MAX_NUM_LINKS) {
 		struct mt7996_vif_link *link;
@@ -628,6 +630,8 @@ static void mt7996_remove_interface(struct ieee80211_hw *hw,
 
 		mt7996_vif_link_destroy(phy, link, vif, NULL);
 	}
+
+	mutex_unlock(&dev->mt76.mutex);
 
 	ieee80211_iterate_active_interfaces_mtx(hw, 0, mt7996_remove_iter,
 						&rdata);
@@ -2042,6 +2046,14 @@ static void mt7996_sta_set_4addr(struct ieee80211_hw *hw,
 			continue;
 
 		mt7996_mcu_wtbl_update_hdr_trans(dev, vif, link, msta_link);
+
+		/* HW cannot derive the BSSID from 4-address non-AMSDU frames,
+		 * so PS exit is missed on links other than the setup link.
+		 * Let the firmware wake those links instead.
+		 */
+		if (enabled && msta->deflink_id != link_id &&
+		    is_mt7996(&dev->mt76))
+			mt7996_mcu_ps_leave(dev, link, msta_link);
 	}
 
 	mutex_unlock(&dev->mt76.mutex);
@@ -2449,6 +2461,23 @@ mt7996_net_fill_forward_path(struct ieee80211_hw *hw,
 	return 0;
 }
 
+#if defined(CONFIG_NET_MEDIATEK_SOC_WED) || defined(CONFIG_MT7996_NPU)
+static int
+mt7996_net_setup_tc(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+		    struct net_device *netdev, enum tc_setup_type type,
+		    void *type_data)
+{
+#ifdef CONFIG_NET_MEDIATEK_SOC_WED
+	struct mt7996_dev *dev = mt7996_hw_dev(hw);
+
+	if (mtk_wed_device_active(&dev->mt76.mmio.wed))
+		return mt76_wed_net_setup_tc(hw, vif, netdev, type,
+					     type_data);
+#endif
+	return mt76_npu_net_setup_tc(hw, vif, netdev, type, type_data);
+}
+#endif
+
 static int
 mt7996_change_vif_links(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			u16 old_links, u16 new_links,
@@ -2576,10 +2605,8 @@ const struct ieee80211_ops mt7996_ops = {
 #endif
 	.set_radar_background = mt7996_set_radar_background,
 	.net_fill_forward_path = mt7996_net_fill_forward_path,
-#ifdef CONFIG_NET_MEDIATEK_SOC_WED
-	.net_setup_tc = mt76_wed_net_setup_tc,
-#elif defined(CONFIG_MT7996_NPU)
-	.net_setup_tc = mt76_npu_net_setup_tc,
+#if defined(CONFIG_NET_MEDIATEK_SOC_WED) || defined(CONFIG_MT7996_NPU)
+	.net_setup_tc = mt7996_net_setup_tc,
 #endif
 	.change_vif_links = mt7996_change_vif_links,
 	.change_sta_links = mt7996_mac_sta_change_links,

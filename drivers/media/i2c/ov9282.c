@@ -197,7 +197,6 @@ struct ov9282_mode {
  * @noncontinuous_clock: Selection of CSI2 noncontinuous clock mode
  * @cur_mode: Pointer to current selected sensor mode
  * @code: Mbus code currently selected
- * @mutex: Mutex for serializing sensor controls
  */
 struct ov9282 {
 	struct device *dev;

@@ -661,8 +661,6 @@ static struct request *blk_mq_alloc_cached_request(struct request_queue *q,
 
 		if (blk_mq_get_hctx_type(opf) != rq->mq_hctx->type)
 			return NULL;
-		if (op_is_flush(rq->cmd_flags) != op_is_flush(opf))
-			return NULL;
 
 		rq_list_pop(&plug->cached_rqs);
 		rq->cmd_flags = opf;
@@ -3075,8 +3073,6 @@ static struct request *blk_mq_get_cached_request(struct blk_plug *plug,
 	if (type != rq->mq_hctx->type &&
 	    (type != HCTX_TYPE_READ || rq->mq_hctx->type != HCTX_TYPE_DEFAULT))
 		return NULL;
-	if (op_is_flush(rq->cmd_flags) != op_is_flush(opf))
-		return NULL;
 	rq_list_pop(&plug->cached_rqs);
 	return rq;
 }
@@ -4990,6 +4986,7 @@ void blk_mq_free_tag_set(struct blk_mq_tag_set *set)
 	srcu_barrier(&set->tags_srcu);
 	cleanup_srcu_struct(&set->tags_srcu);
 	if (set->flags & BLK_MQ_F_BLOCKING) {
+		srcu_barrier(set->srcu);
 		cleanup_srcu_struct(set->srcu);
 		kfree(set->srcu);
 	}

@@ -12,12 +12,15 @@
 #include <linux/socket.h>
 #include <net/ipv6.h>
 
-#include "audit.h"
 #include "common.h"
 #include "cred.h"
+#include "domain.h"
 #include "limits.h"
+#include "log.h"
 #include "net.h"
 #include "ruleset.h"
+
+#include <trace/events/landlock.h>
 
 int landlock_append_net_rule(struct landlock_ruleset *const ruleset,
 			     const u16 port, access_mask_t access_rights,
@@ -32,14 +35,39 @@ int landlock_append_net_rule(struct landlock_ruleset *const ruleset,
 	BUILD_BUG_ON(sizeof(port) > sizeof(id.key.data));
 
 	/* Transforms relative access rights to absolute ones. */
-	access_rights |= LANDLOCK_MASK_ACCESS_NET &
-			 ~landlock_get_net_access_mask(ruleset, 0);
+	access_rights |= LANDLOCK_MASK_ACCESS_NET & ~ruleset->handled_masks.net;
 
 	mutex_lock(&ruleset->lock);
 	err = landlock_insert_rule(ruleset, id, access_rights, flags);
+
+	/*
+	 * Emit after the rule insertion succeeds, so every event corresponds to
+	 * a rule that is actually in the ruleset.  The ruleset lock is still
+	 * held for BTF consistency (enforced by lockdep_assert_held in
+	 * TP_fast_assign).
+	 */
+	if (!err)
+		trace_landlock_add_rule_net_port(ruleset, flags, access_rights,
+						 port);
 	mutex_unlock(&ruleset->lock);
 
 	return err;
+}
+
+static bool unmask_layers_net(const struct landlock_domain *const domain,
+			      const struct landlock_id id,
+			      struct layer_masks *masks,
+			      access_mask_t access_request)
+{
+	const struct landlock_rule *rule = NULL;
+	bool ret;
+
+	ret = landlock_unmask_layers(domain, id, masks, &rule);
+	if (rule)
+		trace_landlock_check_rule_net_port(
+			domain, rule, access_request,
+			ntohs((__force __be16)id.key.data));
+	return ret;
 }
 
 static int current_check_access_socket(struct socket *const sock,
@@ -51,7 +79,6 @@ static int current_check_access_socket(struct socket *const sock,
 	unsigned short sock_family;
 	__be16 port;
 	struct layer_masks layer_masks = {};
-	const struct landlock_rule *rule;
 	struct landlock_id id = {
 		.type = LANDLOCK_KEY_NET_PORT,
 	};
@@ -66,7 +93,7 @@ static int current_check_access_socket(struct socket *const sock,
 		return 0;
 
 	/* Checks for minimal header length to safely read sa_family. */
-	if (addrlen < offsetofend(typeof(*address), sa_family))
+	if (addrlen < (int)offsetofend(typeof(*address), sa_family))
 		return -EINVAL;
 
 	/*
@@ -118,6 +145,17 @@ static int current_check_access_socket(struct socket *const sock,
 						.audit.u.net = &audit_net,
 						.access = access_request,
 						.layer_masks = &layer_masks,
+#ifdef CONFIG_TRACEPOINTS
+						.trace_net =
+							&(struct landlock_net_trace){
+								.address =
+									address,
+								.addrlen =
+									addrlen,
+								.socket_family =
+									sock_family,
+							},
+#endif /* CONFIG_TRACEPOINTS */
 					});
 				return -EACCES;
 			}
@@ -237,26 +275,34 @@ static int current_check_access_socket(struct socket *const sock,
 	id.key.data = (__force uintptr_t)port;
 	BUILD_BUG_ON(sizeof(port) > sizeof(id.key.data));
 
-	rule = landlock_find_rule(subject->domain, id);
 	access_request = landlock_init_layer_masks(subject->domain,
 						   access_request, &layer_masks,
 						   LANDLOCK_KEY_NET_PORT);
 	if (!access_request)
 		return 0;
 
-	if (landlock_unmask_layers(rule, &layer_masks))
+	if (unmask_layers_net(subject->domain, id, &layer_masks,
+			      access_request))
 		return 0;
 
 	audit_net.family = address->sa_family;
 	audit_net.sk = sock->sk;
-	landlock_log_denial(subject,
-			    &(struct landlock_request){
-				    .type = LANDLOCK_REQUEST_NET_ACCESS,
-				    .audit.type = LSM_AUDIT_DATA_NET,
-				    .audit.u.net = &audit_net,
-				    .access = access_request,
-				    .layer_masks = &layer_masks,
-			    });
+	landlock_log_denial(
+		subject, &(struct landlock_request){
+				 .type = LANDLOCK_REQUEST_NET_ACCESS,
+				 .audit.type = LSM_AUDIT_DATA_NET,
+				 .audit.u.net = &audit_net,
+				 .access = access_request,
+				 .layer_masks = &layer_masks,
+#ifdef CONFIG_TRACEPOINTS
+				 .trace_net =
+					 &(struct landlock_net_trace){
+						 .address = address,
+						 .addrlen = addrlen,
+						 .socket_family = sock_family,
+					 },
+#endif /* CONFIG_TRACEPOINTS */
+			 });
 	return -EACCES;
 }
 

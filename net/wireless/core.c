@@ -335,9 +335,8 @@ int cfg80211_nan_set_local_schedule(struct cfg80211_registered_device *rdev,
 	if (!sched->n_channels)
 		return 0;
 
-	wdev->u.nan.chandefs = kcalloc(sched->n_channels,
-				       sizeof(*wdev->u.nan.chandefs),
-				       GFP_KERNEL);
+	wdev->u.nan.chandefs = kzalloc_objs(*wdev->u.nan.chandefs,
+					    sched->n_channels);
 	if (!wdev->u.nan.chandefs)
 		return -ENOMEM;
 
@@ -670,6 +669,8 @@ use_default_name:
 	INIT_WORK(&rdev->destroy_work, cfg80211_destroy_iface_wk);
 	wiphy_work_init(&rdev->sched_scan_stop_wk, cfg80211_sched_scan_stop_wk);
 	INIT_WORK(&rdev->sched_scan_res_wk, cfg80211_sched_scan_results_wk);
+	wiphy_work_init(&rdev->reg_check_chans_wk, reg_leave_invalid_chans_wk);
+	INIT_WORK(&rdev->reg_leave_nan_wk, reg_leave_invalid_nan_wk);
 	INIT_WORK(&rdev->propagate_radar_detect_wk,
 		  cfg80211_propagate_radar_detect_wk);
 	INIT_WORK(&rdev->propagate_cac_done_wk, cfg80211_propagate_cac_done_wk);
@@ -1369,6 +1370,7 @@ void wiphy_unregister(struct wiphy *wiphy)
 	cancel_delayed_work_sync(&rdev->dfs_update_channels_wk);
 	cancel_delayed_work_sync(&rdev->background_cac_done_wk);
 	flush_work(&rdev->destroy_work);
+	flush_work(&rdev->reg_leave_nan_wk);
 	flush_work(&rdev->propagate_radar_detect_wk);
 	flush_work(&rdev->propagate_cac_done_wk);
 	flush_work(&rdev->mgmt_registrations_update_wk);

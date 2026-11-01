@@ -856,7 +856,7 @@ static int exec_mmap(struct linux_binprm *bprm)
 	tsk = current;
 	old_mm = current->mm;
 	/* Clean up futexes and release the mm */
-	exec_mm_release(tsk, old_mm);
+	mm_exit_exec_release(tsk, old_mm);
 
 	ret = down_write_killable(&tsk->signal->exec_update_lock);
 	if (ret)
@@ -1105,6 +1105,17 @@ void __set_task_comm(struct task_struct *tsk, const char *buf, bool exec)
 	perf_event_comm(tsk, exec);
 }
 
+/*
+ * The file the process presents as: its exe link and comm. A transparent
+ * dispatch presents as the binary, which is bprm->executable.
+ */
+static struct file *bprm_identity_file(const struct linux_binprm *bprm)
+{
+	if (bprm->interp_flags & BINPRM_FLAGS_TRANSPARENT_INTERP)
+		return bprm->executable;
+	return bprm->file;
+}
+
 static void posixtimer_exec(struct task_struct *me)
 {
 #ifdef CONFIG_POSIX_TIMERS
@@ -1127,6 +1138,10 @@ int begin_new_exec(struct linux_binprm * bprm)
 	struct task_struct *me = current;
 	int retval;
 
+	/* A pending PT_INTERP substitution this format cannot consume. */
+	if (bprm->loader)
+		return -ENOEXEC;
+
 	/* Once we are committed compute the creds */
 	retval = bprm_creds_from_file(bprm);
 	if (retval)
@@ -1145,13 +1160,6 @@ int begin_new_exec(struct linux_binprm * bprm)
 	 */
 	bprm->point_of_no_return = true;
 
-	/*
-	 * Cancel any io_uring activity across execve. This runs task work
-	 * that may still create an io-wq worker, so do it while de_thread()
-	 * can still zap it.
-	 */
-	io_uring_task_cancel();
-
 	/* Make this the only thread in the thread group */
 	retval = de_thread(me);
 	if (retval)
@@ -1168,6 +1176,10 @@ int begin_new_exec(struct linux_binprm * bprm)
 
 	/* see the comment in check_unsafe_exec() */
 	current->fs->in_exec = 0;
+	/*
+	 * Cancel any io_uring activity across execve
+	 */
+	io_uring_task_cancel();
 
 	/* Ensure the files table is not shared. */
 	retval = unshare_files();
@@ -1193,7 +1205,7 @@ int begin_new_exec(struct linux_binprm * bprm)
 	 * not visible until then. Doing it here also ensures
 	 * we don't race against replace_mm_exe_file().
 	 */
-	retval = set_mm_exe_file(bprm->mm, bprm->file);
+	retval = set_mm_exe_file(bprm->mm, bprm_identity_file(bprm));
 	if (retval)
 		goto out;
 
@@ -1267,6 +1279,8 @@ int begin_new_exec(struct linux_binprm * bprm)
 	 * Let's fix it up to be something reasonable.
 	 */
 	if (bprm->comm_from_dentry) {
+		struct file *comm_file = bprm_identity_file(bprm);
+
 		/*
 		 * Hold RCU lock to keep the name from being freed behind our back.
 		 * Use acquire semantics to make sure the terminating NUL from
@@ -1276,7 +1290,7 @@ int begin_new_exec(struct linux_binprm * bprm)
 		 * detecting a concurrent rename and just want a terminated name.
 		 */
 		rcu_read_lock();
-		__set_task_comm(me, smp_load_acquire(&bprm->file->f_path.dentry->d_name.name),
+		__set_task_comm(me, smp_load_acquire(&comm_file->f_path.dentry->d_name.name),
 				true);
 		rcu_read_unlock();
 	} else {
@@ -1317,10 +1331,17 @@ int begin_new_exec(struct linux_binprm * bprm)
 
 	/* Pass the opened binary to the interpreter. */
 	if (bprm->have_execfd) {
-		retval = FD_ADD(0, bprm->executable);
-		if (retval < 0)
-			goto out_unlock;
+		struct file *executable = bprm->executable;
+
+		/* mm->exe_file carries its own write denial now so drop it. */
+		exe_file_allow_write_access(executable);
 		bprm->executable = NULL;
+		retval = FD_ADD(0, executable);
+		if (retval < 0) {
+			/* The reference was not consumed. */
+			fput(executable);
+			goto out_unlock;
+		}
 		bprm->execfd = retval;
 	}
 	return 0;
@@ -1420,6 +1441,39 @@ static void do_close_execat(struct file *file)
 	fput(file);
 }
 
+/**
+ * bprm_open_interpreter - open the interpreter the binary asks for
+ * @bprm: binary that is being executed
+ * @path: the interpreter path named in the binary's PT_INTERP
+ *
+ * A binfmt_misc loader entry substitutes for the interpreter the binary
+ * names. Hand out the stashed substitute if there is one and open @path
+ * if there is not. The caller owns the reference either way and releases
+ * it like any other open_exec() one.
+ *
+ * Return: the interpreter on success, an ERR_PTR on failure
+ */
+struct file *bprm_open_interpreter(struct linux_binprm *bprm, const char *path)
+{
+	if (bprm->loader)
+		return no_free_ptr(bprm->loader);
+	return open_exec(path);
+}
+
+/**
+ * bprm_drop_loader - discard a PT_INTERP substitute that does not apply
+ * @bprm: binary that is being executed
+ *
+ * A binary without PT_INTERP has nothing to substitute for, so drop the
+ * override and let the binary load natively rather than have
+ * begin_new_exec() refuse it. A no-op once bprm_open_interpreter() took
+ * the substitute.
+ */
+void bprm_drop_loader(struct linux_binprm *bprm)
+{
+	do_close_execat(no_free_ptr(bprm->loader));
+}
+
 static void free_bprm(struct linux_binprm *bprm)
 {
 	if (bprm->mm) {
@@ -1438,12 +1492,17 @@ static void free_bprm(struct linux_binprm *bprm)
 	/* exec swapped the mm but failed before setup_new_exec() freed it */
 	if (bprm->old_mm)
 		exec_mm_put_old(bprm->old_mm);
+	/* An unconsumed PT_INTERP substitute from a binfmt_misc loader entry. */
+	bprm_drop_loader(bprm);
 	do_close_execat(bprm->file);
-	if (bprm->executable)
-		fput(bprm->executable);
+	do_close_execat(bprm->executable);
 	/* If a binfmt changed the interp, free it. */
 	if (bprm->interp != bprm->filename)
 		kfree(bprm->interp);
+	kfree(bprm->bpf_interp);
+	if (bprm->bpf_interp_file)
+		fput(bprm->bpf_interp_file);
+	kfree(bprm->bpf_interp_arg);
 	kfree(bprm->fdpath);
 	kfree(bprm);
 }
@@ -1755,19 +1814,23 @@ static int exec_binprm(struct linux_binprm *bprm)
 		if (!bprm->interpreter)
 			break;
 
+		/* A stashed PT_INTERP substitute belonged to the replaced file. */
+		bprm_drop_loader(bprm);
+
 		exec = bprm->file;
 		bprm->file = bprm->interpreter;
 		bprm->interpreter = NULL;
 
-		exe_file_allow_write_access(exec);
 		if (unlikely(bprm->have_execfd)) {
 			if (bprm->executable) {
-				fput(exec);
+				do_close_execat(exec);
 				return -ENOEXEC;
 			}
+			/* Kept for AT_EXECFD; the write denial rides along until hand-over. */
 			bprm->executable = exec;
-		} else
-			fput(exec);
+		} else {
+			do_close_execat(exec);
+		}
 	}
 
 	audit_bprm(bprm);

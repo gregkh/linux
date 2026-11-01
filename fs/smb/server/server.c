@@ -24,6 +24,8 @@
 #include "auth.h"
 #include "stats.h"
 #include "compress.h"
+#include "mgmt/share_config.h"
+#include "mgmt/tree_connect.h"
 
 int ksmbd_debug_types;
 
@@ -260,6 +262,15 @@ static void __handle_ksmbd_work(struct ksmbd_work *work,
 							STATUS_NETWORK_NAME_DELETED);
 					goto send;
 				}
+
+				if (work->tcon &&
+				    test_share_config_flag(work->tcon->share_conf,
+							   KSMBD_SHARE_FLAG_ENCRYPT_DATA) &&
+				    !work->encrypted) {
+					conn->ops->set_rsp_status(work,
+								  STATUS_ACCESS_DENIED);
+					goto send;
+				}
 			}
 		}
 
@@ -371,7 +382,6 @@ static void handle_ksmbd_work(struct work_struct *wk)
 static int queue_ksmbd_work(struct ksmbd_conn *conn)
 {
 	struct ksmbd_work *work;
-	bool wait_for_neg = ksmbd_conn_new(conn) || ksmbd_conn_need_negotiate(conn);
 	int err;
 
 	err = ksmbd_init_smb_server(conn);
@@ -394,10 +404,6 @@ static int queue_ksmbd_work(struct ksmbd_conn *conn)
 	conn->last_active = jiffies;
 	INIT_WORK(&work->work, handle_ksmbd_work);
 	ksmbd_queue_work(work);
-	/* Negotiation can change conn->ops, finish it before reading another PDU. */
-	if (wait_for_neg)
-		wait_event(conn->req_running_q,
-			   atomic_read(&conn->req_running) == 0);
 	return 0;
 }
 
@@ -625,11 +631,16 @@ static int ksmbd_server_shutdown(void)
 {
 	WRITE_ONCE(server_conf.state, SERVER_STATE_SHUTTING_DOWN);
 
-	ksmbd_proc_cleanup();
 	class_unregister(&ksmbd_control_class);
 	ksmbd_workqueue_destroy();
 	ksmbd_ipc_release();
 	ksmbd_conn_transport_destroy();
+	/*
+	 * ksmbd_conn_transport_destroy() calls delete_proc_clients() and destroys
+	 * sessions. ksmbd_session_destroy() removes each session's proc entry.
+	 * Keep the procfs tree alive until these entries have been removed.
+	 */
+	ksmbd_proc_cleanup();
 	ksmbd_crypto_destroy();
 	ksmbd_free_global_file_table();
 	destroy_lease_table(NULL);

@@ -22,6 +22,7 @@
 #include "smb2glob.h"
 #include "smb2proto.h"
 #include "cached_dir.h"
+#include "reparse.h"
 #include "../common/smb2status.h"
 #include "../common/smbfsctl.h"
 
@@ -247,7 +248,7 @@ replay_again:
 	num_rqst = 0;
 	server = cifs_pick_channel(ses);
 
-	vars = kzalloc_obj(*vars, GFP_KERNEL);
+	vars = kzalloc_obj(*vars);
 	if (vars == NULL) {
 		rc = -ENOMEM;
 		goto out;
@@ -590,6 +591,7 @@ finished:
 		idata->contains_posix_file_info = false;
 		if (le32_to_cpu(idata->fi.NumberOfLinks) == 0)
 			idata->fi.NumberOfLinks = cpu_to_le32(1); /* dummy value */
+		idata->unknown_nlink = true;
 		idata->fi.DeletePending = 0; /* successful open = not delete pending */
 		idata->fi.Directory = !!(le32_to_cpu(create_rsp->FileAttributes) & ATTR_DIRECTORY);
 
@@ -1016,12 +1018,13 @@ int smb2_query_path_info(const unsigned int xid,
 		/*
 		 * If the symlink was already parsed in create response then it is needed to fix
 		 * its type now (after the second call with OPEN_REPARSE_POINT which filled the
-		 * data->fi.Attributes). If the symlink was not parsed in create response then
+		 * metadata attributes). If the symlink was not parsed in create response then
 		 * the data->symlink_target was not filled yet and then the type will be fixed
 		 * later after data->symlink_target is filled.
 		 */
 		if (data->reparse.tag == IO_REPARSE_TAG_SYMLINK && !rc && data->symlink_target) {
-			bool directory = le32_to_cpu(data->fi.Attributes) & ATTR_DIRECTORY;
+			bool directory = cifs_open_data_attrs(data) & ATTR_DIRECTORY;
+
 			rc = smb2_fix_symlink_target_type(&data->symlink_target, directory, cifs_sb);
 		}
 		break;

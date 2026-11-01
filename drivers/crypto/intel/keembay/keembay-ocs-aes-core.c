@@ -11,6 +11,7 @@
 #include <crypto/internal/aead.h>
 #include <crypto/internal/skcipher.h>
 #include <crypto/scatterwalk.h>
+#include <crypto/utils.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/dma-mapping.h>
@@ -919,7 +920,7 @@ static int kmb_ocs_aead_run(struct aead_request *req)
 
 	/* For GCM decrypt, we have to compare in_tag with out_tag. */
 	if (rctx->instruction == OCS_DECRYPT) {
-		rc = memcmp(rctx->in_tag, rctx->out_tag, tag_size) ?
+		rc = crypto_memneq(rctx->in_tag, rctx->out_tag, tag_size) ?
 		     -EBADMSG : 0;
 		goto exit;
 	}
@@ -1612,10 +1613,8 @@ static int kmb_ocs_aes_probe(struct platform_device *pdev)
 
 	rc = devm_request_threaded_irq(dev, aes_dev->irq, ocs_aes_irq_handler,
 				       NULL, 0, "keembay-ocs-aes", aes_dev);
-	if (rc < 0) {
-		dev_err(dev, "Could not request IRQ\n");
+	if (rc < 0)
 		return rc;
-	}
 
 	INIT_LIST_HEAD(&aes_dev->list);
 	spin_lock(&ocs_aes.lock);

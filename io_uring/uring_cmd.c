@@ -87,7 +87,7 @@ static void io_uring_cmd_del_cancelable(struct io_uring_cmd *cmd,
 
 	cmd->flags &= ~IORING_URING_CMD_CANCELABLE;
 	io_ring_submit_lock(ctx, issue_flags);
-	hlist_del_init(&req->hash_node);
+	hlist_del(&req->hash_node);
 	io_ring_submit_unlock(ctx, issue_flags);
 }
 
@@ -326,7 +326,7 @@ void io_uring_cmd_issue_blocking(struct io_uring_cmd *ioucmd)
 {
 	struct io_kiocb *req = cmd_to_io_kiocb(ioucmd);
 
-	io_req_queue_iowq(req);
+	io_queue_iowq(req);
 }
 
 int io_cmd_poll_multishot(struct io_uring_cmd *cmd,

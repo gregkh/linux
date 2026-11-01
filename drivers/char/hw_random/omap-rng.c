@@ -391,11 +391,8 @@ static int of_get_omap_rng_device_details(struct omap_rng_dev *priv,
 
 		err = devm_request_irq(dev, irq, omap4_rng_irq,
 				       IRQF_TRIGGER_NONE, dev_name(dev), priv);
-		if (err) {
-			dev_err(dev, "unable to request irq %d, err = %d\n",
-				irq, err);
+		if (err)
 			return err;
-		}
 
 		/*
 		 * On OMAP4, enabling the shutdown_oflo interrupt is

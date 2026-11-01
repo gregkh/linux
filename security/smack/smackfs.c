@@ -124,7 +124,7 @@ struct smack_known *smack_syslog_label;
 /*
  * Ptrace current rule
  * SMACK_PTRACE_DEFAULT    regular smack ptrace rules (/proc based)
- * SMACK_PTRACE_EXACT      labels must match, but can be overriden with
+ * SMACK_PTRACE_EXACT      labels must match, but can be overridden with
  *			   CAP_SYS_PTRACE
  * SMACK_PTRACE_DRACONIAN  labels must match, CAP_SYS_PTRACE has no effect
  */

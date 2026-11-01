@@ -13,6 +13,10 @@
 #include <linux/utsname.h>
 
 #define FC_FC4_TYPE_SCSI 0x08
+#define FNIC_NVME_FEAT_TARG (1 << 0)
+#define FNIC_NVME_FEAT_INIT (1 << 1)
+#define FNIC_NVME_FEAT_DISC (1 << 2)
+
 #define PORT_SPEED_BIT_8 8
 #define PORT_SPEED_BIT_9 9
 #define PORT_SPEED_BIT_14 14
@@ -323,12 +327,19 @@ void fdls_schedule_oxid_free_retry_work(struct work_struct *work)
 			return;
 		}
 
-		clear_bit(idx, oxid_pool->pending_schedule_free);
 		reclaim_entry->oxid_idx = idx;
 		reclaim_entry->expires = round_jiffies(jiffies + delay_j);
+
 		spin_lock_irqsave(&fnic->fnic_lock, flags);
+		/* Reset may have cleared this bit while this worker allocated. */
+		if (!test_and_clear_bit(idx, oxid_pool->pending_schedule_free)) {
+			spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+			kfree(reclaim_entry);
+			continue;
+		}
 		list_add_tail(&reclaim_entry->links, &oxid_pool->oxid_reclaim_list);
 		spin_unlock_irqrestore(&fnic->fnic_lock, flags);
+
 		schedule_delayed_work(&oxid_pool->oxid_reclaim_work, delay_j);
 	}
 }
@@ -383,10 +394,25 @@ static bool fdls_is_oxid_tgt_req(uint16_t oxid)
 	return true;
 }
 
+static inline bool fdls_is_oxid_nvme_req(uint16_t oxid)
+{
+	return FNIC_FRAME_TYPE(oxid) == FNIC_FRAME_TYPE_NVME_LS;
+}
+
 static void fdls_reset_oxid_pool(struct fnic_iport_s *iport)
 {
 	struct fnic_oxid_pool_s *oxid_pool = &iport->oxid_pool;
+	struct reclaim_entry_s *reclaim_entry, *next;
 
+	cancel_delayed_work(&oxid_pool->oxid_reclaim_work);
+	cancel_delayed_work(&oxid_pool->schedule_oxid_free_retry);
+	list_for_each_entry_safe(reclaim_entry, next,
+				 &oxid_pool->oxid_reclaim_list, links) {
+		list_del(&reclaim_entry->links);
+		kfree(reclaim_entry);
+	}
+	bitmap_clear(oxid_pool->pending_schedule_free, 0, FNIC_OXID_POOL_SZ);
+	bitmap_clear(oxid_pool->bitmap, 0, FNIC_OXID_POOL_SZ);
 	oxid_pool->next_idx = 0;
 }
 
@@ -562,6 +588,22 @@ static void fdls_init_fabric_abts_frame(uint8_t *frame,
 	};
 }
 
+static void fdls_set_frame_type(struct fnic *fnic, uint8_t *frame_type)
+{
+	if (IS_FNIC_FCP_INITIATOR(fnic))
+		*frame_type = FC_TYPE_FCP;
+	else if (IS_FNIC_NVME_INITIATOR(fnic))
+		*frame_type = FC_TYPE_NVME;
+}
+
+static void fdls_set_feature_type(struct fnic *fnic, uint8_t *feature_type)
+{
+	if (IS_FNIC_FCP_INITIATOR(fnic))
+		*feature_type = FCP_FEAT_INIT;
+	else if (IS_FNIC_NVME_INITIATOR(fnic))
+		*feature_type = FNIC_NVME_FEAT_INIT;
+}
+
 static void
 fdls_send_rscn_resp(struct fnic_iport_s *iport,
 		    struct fc_frame_header *rscn_fchdr)
@@ -627,6 +669,50 @@ fdls_send_logo_resp(struct fnic_iport_s *iport,
 
 	fnic_send_fcoe_frame(iport, frame, frame_size);
 }
+
+int fdls_send_ls_req_abts(struct fnic_iport_s *iport,
+		struct fnic_tport_s *tport, unsigned int oxid)
+{
+	uint8_t *frame;
+	uint8_t s_id[3];
+	uint8_t d_id[3];
+	struct fnic *fnic = iport->fnic;
+	struct fc_frame_header *pls_req_abts;
+	uint16_t frame_size = FNIC_ETH_FCOE_HDRS_OFFSET +
+			sizeof(struct fc_frame_header);
+	int ret;
+
+	frame = fdls_alloc_frame(iport);
+	if (frame == NULL) {
+		FNIC_FCS_DBG(KERN_ERR, fnic,
+				"Failed to allocate frame to send ls req ABTS");
+		return -ENOMEM;
+	}
+
+	pls_req_abts = (struct fc_frame_header *) (frame +
+			FNIC_ETH_FCOE_HDRS_OFFSET);
+	fdls_init_fabric_abts_frame(frame, iport);
+
+	hton24(s_id, iport->fcid);
+	hton24(d_id, tport->fcid);
+	FNIC_STD_SET_S_ID(*pls_req_abts, s_id);
+	FNIC_STD_SET_D_ID(*pls_req_abts, d_id);
+
+	FNIC_STD_SET_OX_ID(*pls_req_abts, oxid);
+
+	FNIC_FCS_DBG(KERN_INFO, fnic,
+		"iport 0x%x: tport: 0x%x FDLS sending ls req abts with oxid: 0x%x",
+		iport->fcid, tport->fcid, oxid);
+
+	ret = fnic_send_fcoe_frame(iport, frame, frame_size);
+	if (ret) {
+		mempool_free(frame, fnic->frame_pool);
+		return ret;
+	}
+
+	return 0;
+}
+
 
 void
 fdls_send_tport_abts(struct fnic_iport_s *iport,
@@ -1137,10 +1223,10 @@ static void fdls_send_gpn_ft(struct fnic_iport_s *iport, int fdls_state)
 		      .fh_rx_id = cpu_to_be16(FNIC_UNASSIGNED_RXID)},
 		.fc_std_ct_hdr = {.ct_rev = FC_CT_REV, .ct_fs_type = FC_FST_DIR,
 			      .ct_fs_subtype = FC_NS_SUBTYPE,
-			      .ct_cmd = cpu_to_be16(FC_NS_GPN_FT)},
-		.gpn_ft.fn_fc4_type = 0x08
+			      .ct_cmd = cpu_to_be16(FC_NS_GPN_FT)}
 	};
 
+	fdls_set_frame_type(fnic, &pgpn_ft->gpn_ft.fn_fc4_type);
 	hton24(fcid, iport->fcid);
 	FNIC_STD_SET_S_ID(pgpn_ft->fchdr, fcid);
 
@@ -1264,11 +1350,18 @@ bool fdls_delete_tport(struct fnic_iport_s *iport, struct fnic_tport_s *tport)
 		tport->timer_pending = 0;
 	}
 
-	spin_unlock_irqrestore(&fnic->fnic_lock, fnic->lock_flags);
-	fnic_rport_exch_reset(iport->fnic, tport->fcid);
-	spin_lock_irqsave(&fnic->fnic_lock, fnic->lock_flags);
+	if (IS_FNIC_FCP_INITIATOR(fnic)) {
+		spin_unlock_irqrestore(&fnic->fnic_lock, fnic->lock_flags);
+		fnic_rport_exch_reset(iport->fnic, tport->fcid);
+		spin_lock_irqsave(&fnic->fnic_lock, fnic->lock_flags);
+	} else if (IS_FNIC_NVME_INITIATOR(fnic)) {
+		spin_unlock_irqrestore(&fnic->fnic_lock, fnic->lock_flags);
+		nvfnic_exch_reset(iport, tport);
+		spin_lock_irqsave(&fnic->fnic_lock, fnic->lock_flags);
+	}
 
-	if (tport->flags & FNIC_FDLS_SCSI_REGISTERED) {
+	if ((tport->flags & FNIC_FDLS_SCSI_REGISTERED) ||
+	    (tport->flags & FNIC_FDLS_NVME_REGISTERED)) {
 		tport_del_evt =
 			kzalloc_obj(struct fnic_tport_event_s, GFP_ATOMIC);
 		if (!tport_del_evt) {
@@ -1288,6 +1381,7 @@ bool fdls_delete_tport(struct fnic_iport_s *iport, struct fnic_tport_s *tport)
 		list_del(&tport->links);
 		kfree(tport);
 	}
+
 	return true;
 }
 
@@ -1404,12 +1498,16 @@ static void fdls_send_register_fc4_types(struct fnic_iport_s *iport)
 	}
 	FNIC_STD_SET_OX_ID(prft_id->fchdr, oxid);
 
+	if (IS_FNIC_NVME_INITIATOR(fnic))
+		prft_id->rft_id.fr_fts.ff_type_map[FC_TYPE_NVME / FC_NS_BPW] =
+			cpu_to_be32(1 << (FC_TYPE_NVME % FC_NS_BPW));
+	else if (IS_FNIC_FCP_INITIATOR(fnic))
+		prft_id->rft_id.fr_fts.ff_type_map[FC_TYPE_FCP / FC_NS_BPW] =
+			cpu_to_be32(1 << (FC_TYPE_FCP % FC_NS_BPW));
 
-	prft_id->rft_id.fr_fts.ff_type_map[0] =
-	    cpu_to_be32(1 << FC_TYPE_FCP);
+	prft_id->rft_id.fr_fts.ff_type_map[FC_TYPE_CT / FC_NS_BPW] |=
+		cpu_to_be32(1 << (FC_TYPE_CT % FC_NS_BPW));
 
-	prft_id->rft_id.fr_fts.ff_type_map[1] =
-	cpu_to_be32(1 << (FC_TYPE_CT % FC_NS_BPW));
 	FNIC_FCS_DBG(KERN_INFO, fnic,
 		     "0x%x: FDLS send RFT 0x%08x 0x%08x 0x%08x with oxid: 0x%x",
 		     iport->fcid, prft_id->rft_id.fr_fts.ff_type_map[0],
@@ -1449,9 +1547,10 @@ static void fdls_send_register_fc4_features(struct fnic_iport_s *iport)
 		.fc_std_ct_hdr = {.ct_rev = FC_CT_REV, .ct_fs_type = FC_FST_DIR,
 			      .ct_fs_subtype = FC_NS_SUBTYPE,
 			      .ct_cmd = cpu_to_be16(FC_NS_RFF_ID)},
-		.rff_id.fr_feat = 0x2,
-		.rff_id.fr_type = FC_TYPE_FCP
 	};
+
+	fdls_set_frame_type(fnic, &prff_id->rff_id.fr_type);
+	fdls_set_feature_type(fnic, &prff_id->rff_id.fr_feat);
 
 	hton24(fcid, iport->fcid);
 	FNIC_STD_SET_S_ID(prff_id->fchdr, fcid);
@@ -1468,8 +1567,6 @@ static void fdls_send_register_fc4_features(struct fnic_iport_s *iport)
 		return;
 	}
 	FNIC_STD_SET_OX_ID(prff_id->fchdr, oxid);
-
-	prff_id->rff_id.fr_type = FC_TYPE_FCP;
 
 	FNIC_FCS_DBG(KERN_INFO, fnic,
 		"0x%x: FDLS send RFF with oxid: 0x%x type 0%x feat 0%x",
@@ -1508,12 +1605,20 @@ fdls_send_tgt_prli(struct fnic_iport_s *iport, struct fnic_tport_s *tport)
 		.fchdr = {.fh_r_ctl = FC_RCTL_ELS_REQ, .fh_type = FC_TYPE_ELS,
 			  .fh_f_ctl = {FNIC_ELS_REQ_FCTL, 0, 0},
 			  .fh_rx_id = cpu_to_be16(FNIC_UNASSIGNED_RXID)},
-		.els_prli = {.prli_cmd = ELS_PRLI,
-			     .prli_spp_len = 16,
-			     .prli_len = cpu_to_be16(0x14)},
-		.sp = {.spp_type = 0x08, .spp_flags = 0x0020,
-		       .spp_params = cpu_to_be32(0xA2)}
+		.els_prli = {.prli_cmd = ELS_PRLI},
+		.sp = {.spp_params = cpu_to_be32(iport->service_params)}
 	};
+
+	fdls_set_frame_type(fnic, &pprli->sp.spp_type);
+	if (IS_FNIC_FCP_INITIATOR(fnic)) {
+		pprli->els_prli.prli_spp_len = 16;
+		pprli->els_prli.prli_len = cpu_to_be16(0x14);
+		pprli->sp.spp_flags = FC_SPP_EST_IMG_PAIR;
+	} else if (IS_FNIC_NVME_INITIATOR(fnic)) {
+		/* Per FC-NVMe, Establish Image Pair must not be set for NVMe PRLI. */
+		pprli->els_prli.prli_spp_len = 20;
+		pprli->els_prli.prli_len = cpu_to_be16(0x18);
+	}
 
 	oxid = fdls_alloc_oxid(iport, FNIC_FRAME_TYPE_TGT_PRLI, &tport->active_oxid);
 	if (oxid == FNIC_UNASSIGNED_OXID) {
@@ -1794,6 +1899,7 @@ static struct fnic_tport_s *fdls_create_tport(struct fnic_iport_s *iport,
 	tport->fcid = fcid;
 	tport->wwpn = wwpn;
 	tport->iport = iport;
+	INIT_LIST_HEAD(&tport->ls_req_list);
 
 	FNIC_FCS_DBG(KERN_DEBUG, fnic,
 				 "Need to setup tport timer callback");
@@ -2067,7 +2173,10 @@ static void fdls_fdmi_register_pa(struct fnic_iport_s *iport)
 	put_unaligned_be64(iport->wwnn, data);
 
 	memset(data, 0, FNIC_FDMI_FC4_LEN);
-	data[2] = 1;
+	if (IS_FNIC_FCP_INITIATOR(fnic))
+		data[2] = 1;
+	else if (IS_FNIC_NVME_INITIATOR(fnic))
+		data[6] = 1;
 	fnic_fdmi_attr_set(fdmi_attr, FNIC_FDMI_TYPE_FC4_TYPES,
 		FNIC_FDMI_FC4_LEN, data, &attr_off_bytes);
 
@@ -2083,8 +2192,12 @@ static void fdls_fdmi_register_pa(struct fnic_iport_s *iport)
 	fnic_fdmi_attr_set(fdmi_attr, FNIC_FDMI_TYPE_MAX_FRAME_SIZE,
 		FNIC_FDMI_MFS_LEN, data, &attr_off_bytes);
 
-	snprintf(tmp_data, FNIC_FDMI_OS_NAME_LEN - 1, "host%d",
-		 fnic->host->host_no);
+	if (IS_FNIC_FCP_INITIATOR(fnic))
+		snprintf(tmp_data, FNIC_FDMI_OS_NAME_LEN - 1, "host%d",
+			fnic->host->host_no);
+	else if (IS_FNIC_NVME_INITIATOR(fnic))
+		snprintf(tmp_data, FNIC_FDMI_OS_NAME_LEN - 1, "nvfnic%d",
+			fnic->fnic_num);
 	strscpy_pad(data, tmp_data, FNIC_FDMI_OS_NAME_LEN);
 	fnic_fdmi_attr_set(fdmi_attr, FNIC_FDMI_TYPE_OS_NAME,
 		FNIC_FDMI_OS_NAME_LEN, data, &attr_off_bytes);
@@ -2092,9 +2205,11 @@ static void fdls_fdmi_register_pa(struct fnic_iport_s *iport)
 	FNIC_FCS_DBG(KERN_INFO, fnic,
 			"OS name set <%s>, off=%d", data, attr_off_bytes);
 
-	sprintf(fc_host_system_hostname(fnic->host), "%s", utsname()->nodename);
-	strscpy_pad(data, fc_host_system_hostname(fnic->host),
-					FNIC_FDMI_HN_LEN);
+	if (IS_FNIC_FCP_INITIATOR(fnic))
+		sprintf(fc_host_system_hostname(fnic->host), "%s",
+			utsname()->nodename);
+
+	strscpy_pad(data, utsname()->nodename, FNIC_FDMI_HN_LEN);
 	fnic_fdmi_attr_set(fdmi_attr, FNIC_FDMI_TYPE_HOST_NAME,
 		FNIC_FDMI_HN_LEN, data, &attr_off_bytes);
 
@@ -2396,6 +2511,8 @@ static void fdls_tport_timer_callback(struct timer_list *t)
 	struct fnic *fnic = iport->fnic;
 	uint16_t oxid;
 	unsigned long flags;
+	struct fc_frame_header fchdr = {0};
+	uint8_t fcid[3];
 
 	spin_lock_irqsave(&fnic->fnic_lock, flags);
 	if (!tport->timer_pending) {
@@ -2488,6 +2605,12 @@ static void fdls_tport_timer_callback(struct timer_list *t)
 		FNIC_FCS_DBG(KERN_INFO, fnic,
 			"0x%x timeout tport 0x%x oxid 0x%x state %d\n",
 			iport->fcid, tport->fcid, oxid, tport->state);
+		if (IS_FNIC_NVME_INITIATOR(fnic)) {
+			hton24(fcid, tport->fcid);
+			FNIC_STD_SET_S_ID(fchdr, fcid);
+			FNIC_STD_SET_OX_ID(fchdr, oxid);
+			nvfnic_process_ls_abts_rsp(iport, &fchdr);
+		}
 		break;
 	}
 	spin_unlock_irqrestore(&fnic->fnic_lock, flags);
@@ -2792,9 +2915,16 @@ fdls_process_tgt_prli_rsp(struct fnic_iport_s *iport,
 		FNIC_FCS_DBG(KERN_INFO, fnic,
 					 "PRLI accepted from target: 0x%x", tgt_fcid);
 
-		if (prli_rsp->sp.spp_type != FC_FC4_TYPE_SCSI) {
+		if (IS_FNIC_FCP_INITIATOR(fnic) &&
+		    prli_rsp->sp.spp_type != FC_FC4_TYPE_SCSI) {
 			FNIC_FCS_DBG(KERN_INFO, fnic,
 				 "mismatched target zoned with FC SCSI initiator: 0x%x",
+				 tgt_fcid);
+			mismatched_tgt = true;
+		} else if (IS_FNIC_NVME_INITIATOR(fnic) &&
+			   prli_rsp->sp.spp_type != FC_TYPE_NVME) {
+			FNIC_FCS_DBG(KERN_ERR, fnic,
+				 "mismatched target zoned with NVME initiator: 0x%x",
 				 tgt_fcid);
 			mismatched_tgt = true;
 		}
@@ -2848,14 +2978,22 @@ fdls_process_tgt_prli_rsp(struct fnic_iport_s *iport,
 	tport->fcp_csp = be32_to_cpu(prli_rsp->sp.spp_params);
 	tport->retry_counter = 0;
 
-	if (tport->fcp_csp & FCP_SPPF_RETRY)
-		tport->tgt_flags |= FNIC_FC_RP_FLAGS_RETRY;
+	if (IS_FNIC_FCP_INITIATOR(fnic)) {
+		if (tport->fcp_csp & FCP_SPPF_RETRY)
+			tport->tgt_flags |= FNIC_FC_RP_FLAGS_RETRY;
+	} else if (IS_FNIC_NVME_INITIATOR(fnic)) {
+		if (tport->fcp_csp & FNIC_NVME_SP_SLER)
+			tport->tgt_flags |= FNIC_FC_RP_FLAGS_RETRY;
+	}
 
 	/* Check if the device plays Target Mode Function */
-	if (!(tport->fcp_csp & FCP_PRLI_FUNC_TARGET)) {
+	if ((IS_FNIC_FCP_INITIATOR(fnic) &&
+	     !(tport->fcp_csp & FCP_PRLI_FUNC_TARGET)) ||
+	    (IS_FNIC_NVME_INITIATOR(fnic) &&
+	     !(tport->fcp_csp & FCP_PRLI_FUNC_TARGET))) {
 		FNIC_FCS_DBG(KERN_INFO, fnic,
-			 "Remote port(0x%x): no target support. Deleting it\n",
-			 tgt_fcid);
+				 "Remote port(0x%x): no target support. Deleting it\n",
+				 tgt_fcid);
 		fdls_tgt_logout(iport, tport);
 		fdls_delete_tport(iport, tport);
 		return;
@@ -2864,20 +3002,23 @@ fdls_process_tgt_prli_rsp(struct fnic_iport_s *iport,
 	fdls_set_tport_state(tport, FDLS_TGT_STATE_READY);
 
 	/* Inform the driver about new target added */
-	tport_add_evt = kzalloc_obj(struct fnic_tport_event_s, GFP_ATOMIC);
-	if (!tport_add_evt) {
-		FNIC_FCS_DBG(KERN_INFO, fnic,
+	if (IS_FNIC_FCP_INITIATOR(fnic) ||
+	    IS_FNIC_NVME_INITIATOR(fnic)) {
+		tport_add_evt = kzalloc_obj(struct fnic_tport_event_s, GFP_ATOMIC);
+		if (!tport_add_evt) {
+			FNIC_FCS_DBG(KERN_INFO, fnic,
 				     "iport fcid: 0x%x tport event memory allocation failure: 0x%0x\n",
 				     iport->fcid, tport->fcid);
-		return;
-	}
-	tport_add_evt->event = TGT_EV_RPORT_ADD;
-	tport_add_evt->arg1 = (void *) tport;
+			return;
+		}
+		tport_add_evt->event = TGT_EV_RPORT_ADD;
+		tport_add_evt->arg1 = (void *)tport;
 		FNIC_FCS_DBG(KERN_INFO, fnic,
 			     "iport fcid: 0x%x add tport event fcid: 0x%x\n",
 			     tport->fcid, iport->fcid);
-	list_add_tail(&tport_add_evt->links, &fnic->tport_event_list);
-	queue_work(fnic_event_queue, &fnic->tport_work);
+		list_add_tail(&tport_add_evt->links, &fnic->tport_event_list);
+		queue_work(fnic_event_queue, &fnic->tport_work);
+	}
 }
 
 
@@ -3526,9 +3667,11 @@ fdls_process_flogi_rsp(struct fnic_iport_s *iport,
 					 "From fabric: R_A_TOV: %d E_D_TOV: %d",
 					 iport->r_a_tov, iport->e_d_tov);
 
-		fc_host_fabric_name(iport->fnic->host) =
-		get_unaligned_be64(&FNIC_LOGI_NODE_NAME(flogi_rsp->els));
-		fc_host_port_id(iport->fnic->host) = iport->fcid;
+		if (IS_FNIC_FCP_INITIATOR(fnic)) {
+			fc_host_fabric_name(iport->fnic->host) =
+					get_unaligned_be64(&FNIC_LOGI_NODE_NAME(flogi_rsp->els));
+			fc_host_port_id(iport->fnic->host) = iport->fcid;
+		}
 
 		fnic_fdls_learn_fcoe_macs(iport, rx_frame, fcid);
 
@@ -4618,9 +4761,11 @@ void fnic_fdls_disc_start(struct fnic_iport_s *iport)
 {
 	struct fnic *fnic = iport->fnic;
 
-	fc_host_fabric_name(iport->fnic->host) = 0;
-	fc_host_post_event(iport->fnic->host, fc_get_event_number(),
-					   FCH_EVT_LIPRESET, 0);
+	if (IS_FNIC_FCP_INITIATOR(fnic)) {
+		fc_host_fabric_name(iport->fnic->host) = 0;
+		fc_host_post_event(iport->fnic->host, fc_get_event_number(),
+						FCH_EVT_LIPRESET, 0);
+	}
 
 	if (!iport->usefip) {
 		if (iport->flags & FNIC_FIRST_LINK_UP) {
@@ -4793,6 +4938,8 @@ fnic_fdls_validate_and_get_frame_type(struct fnic_iport_s *iport,
 			return FNIC_FDMI_BLS_ABTS_RSP;
 		} else if (fdls_is_oxid_tgt_req(oxid)) {
 			return FNIC_TPORT_BLS_ABTS_RSP;
+		} else if (fdls_is_oxid_nvme_req(oxid)) {
+			return FNIC_LS_REQ_ABTS_RSP;
 		}
 		FNIC_FCS_DBG(KERN_INFO, fnic,
 			"Received ABTS rsp with unknown oxid(0x%x) from 0x%x. Dropping frame",
@@ -5025,6 +5172,9 @@ void fnic_fdls_recv_frame(struct fnic_iport_s *iport, void *rx_frame,
 	case FNIC_FABRIC_BLS_ABTS_RSP:
 			fdls_process_fabric_abts_rsp(iport, fchdr);
 		break;
+	case FNIC_LS_REQ_ABTS_RSP:
+		nvfnic_process_ls_abts_rsp(iport, fchdr);
+		break;
 	case FNIC_FDMI_BLS_ABTS_RSP:
 		fdls_process_fdmi_abts_rsp(iport, fchdr);
 		break;
@@ -5083,14 +5233,18 @@ void fnic_fdls_link_down(struct fnic_iport_s *iport)
 	fdls_set_state((&iport->fabric), FDLS_STATE_LINKDOWN);
 	iport->fabric.flags = 0;
 
-	spin_unlock_irqrestore(&fnic->fnic_lock, fnic->lock_flags);
-	fnic_fcpio_reset(iport->fnic);
-	spin_lock_irqsave(&fnic->fnic_lock, fnic->lock_flags);
-	list_for_each_entry_safe(tport, next, &iport->tport_list, links) {
-		FNIC_FCS_DBG(KERN_INFO, fnic,
+	if (IS_FNIC_FCP_INITIATOR(fnic) ||
+	    IS_FNIC_NVME_INITIATOR(fnic)) {
+		spin_unlock_irqrestore(&fnic->fnic_lock, fnic->lock_flags);
+		fnic_fcpio_reset(iport->fnic);
+		spin_lock_irqsave(&fnic->fnic_lock, fnic->lock_flags);
+		list_for_each_entry_safe(tport, next, &iport->tport_list, links) {
+			FNIC_FCS_DBG(KERN_INFO, fnic,
 					 "removing rport: 0x%x", tport->fcid);
-		fdls_delete_tport(iport, tport);
+			fdls_delete_tport(iport, tport);
+		}
 	}
+	fdls_reset_oxid_pool(iport);
 
 	if (fnic_fdmi_support == 1) {
 		if (iport->fabric.fdmi_pending > 0) {

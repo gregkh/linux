@@ -88,9 +88,8 @@ static unsigned long direct_pages_count[PG_LEVEL_NUM];
 void update_page_count(int level, unsigned long pages)
 {
 	/* Protect against CPA */
-	spin_lock(&pgd_lock);
+	guard(spinlock)(&pgd_lock);
 	direct_pages_count[level] += pages;
-	spin_unlock(&pgd_lock);
 }
 
 static void split_page_count(int level)
@@ -420,7 +419,7 @@ static void __cpa_collapse_large_pages(struct cpa_data *cpa)
 	int collapsed = 0;
 	int i;
 
-	spin_lock(&cpa_lock);
+	guard(spinlock)(&cpa_lock);
 
 	if (cpa->flags & (CPA_PAGES_ARRAY | CPA_ARRAY)) {
 		for (i = 0; i < cpa->numpages; i++)
@@ -435,10 +434,8 @@ static void __cpa_collapse_large_pages(struct cpa_data *cpa)
 			collapsed += collapse_large_pages(addr, &pgtables);
 	}
 
-	if (!collapsed) {
-		spin_unlock(&cpa_lock);
+	if (!collapsed)
 		return;
-	}
 
 	flush_tlb_all();
 
@@ -454,8 +451,6 @@ static void __cpa_collapse_large_pages(struct cpa_data *cpa)
 		else
 			pagetable_free(ptdesc);
 	}
-
-	spin_unlock(&cpa_lock);
 }
 
 static void cpa_collapse_large_pages(struct cpa_data *cpa)
@@ -476,7 +471,7 @@ static void cpa_flush(struct cpa_data *cpa, int cache)
 
 	BUG_ON(irqs_disabled() && !early_boot_irqs_disabled);
 
-	if (cache && !static_cpu_has(X86_FEATURE_CLFLUSH)) {
+	if (cache && !cpu_feature_enabled(X86_FEATURE_CLFLUSH)) {
 		cpa_flush_all(cache);
 		goto collapse_large_pages;
 	}
@@ -916,24 +911,23 @@ static void __set_pmd_pte(pte_t *kpte, unsigned long address, pte_t pte)
 {
 	/* change init_mm */
 	set_pte_atomic(kpte, pte);
-#ifdef CONFIG_X86_32
-	{
-		struct page *page;
 
-		list_for_each_entry(page, &pgd_list, lru) {
+	if (IS_ENABLED(CONFIG_X86_32)) {
+		struct ptdesc *ptdesc;
+
+		list_for_each_entry(ptdesc, &pgd_list, pt_list) {
 			pgd_t *pgd;
 			p4d_t *p4d;
 			pud_t *pud;
 			pmd_t *pmd;
 
-			pgd = (pgd_t *)page_address(page) + pgd_index(address);
+			pgd = (pgd_t *)ptdesc_address(ptdesc) + pgd_index(address);
 			p4d = p4d_offset(pgd, address);
 			pud = pud_offset(p4d, address);
 			pmd = pmd_offset(pud, address);
 			set_pte_atomic((pte_t *)pmd, pte);
 		}
 	}
-#endif
 }
 
 static pgprot_t pgprot_clear_protnone_bits(pgprot_t prot)
@@ -1103,16 +1097,11 @@ static int __should_split_large_page(pte_t *kpte, unsigned long address,
 static int should_split_large_page(pte_t *kpte, unsigned long address,
 				   struct cpa_data *cpa)
 {
-	int do_split;
-
 	if (cpa->force_split)
 		return 1;
 
-	spin_lock(&pgd_lock);
-	do_split = __should_split_large_page(kpte, address, cpa);
-	spin_unlock(&pgd_lock);
-
-	return do_split;
+	guard(spinlock)(&pgd_lock);
+	return __should_split_large_page(kpte, address, cpa);
 }
 
 static void split_set_pte(struct cpa_data *cpa, pte_t *pte, unsigned long pfn,
@@ -1162,16 +1151,14 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
 	bool nx, rw;
 	pte_t *tmp;
 
-	spin_lock(&pgd_lock);
+	guard(spinlock)(&pgd_lock);
 	/*
 	 * Check for races, another CPU might have split this page
 	 * up for us already:
 	 */
 	tmp = _lookup_address_cpa(cpa, address, &level, &nx, &rw);
-	if (tmp != kpte) {
-		spin_unlock(&pgd_lock);
+	if (tmp != kpte)
 		return 1;
-	}
 
 	paravirt_alloc_pte(&init_mm, page_to_pfn(base));
 
@@ -1204,7 +1191,6 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
 		break;
 
 	default:
-		spin_unlock(&pgd_lock);
 		return 1;
 	}
 
@@ -1252,7 +1238,6 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
 	 * just split large page entry.
 	 */
 	flush_tlb_all();
-	spin_unlock(&pgd_lock);
 
 	return 0;
 }
@@ -1327,11 +1312,11 @@ static int collapse_pmd_page(pmd_t *pmd, unsigned long addr,
 	list_add(&page_ptdesc(pmd_page(old_pmd))->pt_list, pgtables);
 
 	if (IS_ENABLED(CONFIG_X86_32)) {
-		struct page *page;
+		struct ptdesc *ptdesc;
 
 		/* Update all PGD tables to use the same large page */
-		list_for_each_entry(page, &pgd_list, lru) {
-			pgd_t *pgd = (pgd_t *)page_address(page) + pgd_index(addr);
+		list_for_each_entry(ptdesc, &pgd_list, pt_list) {
+			pgd_t *pgd = (pgd_t *)ptdesc_address(ptdesc) + pgd_index(addr);
 			p4d_t *p4d = p4d_offset(pgd, addr);
 			pud_t *pud = pud_offset(p4d, addr);
 			pmd_t *pmd = pmd_offset(pud, addr);
@@ -1405,7 +1390,7 @@ static int collapse_pud_page(pud_t *pud, unsigned long addr,
  */
 static int collapse_large_pages(unsigned long addr, struct list_head *pgtables)
 {
-	int collapsed = 0;
+	int collapsed;
 	pgd_t *pgd;
 	p4d_t *p4d;
 	pud_t *pud;
@@ -1413,26 +1398,24 @@ static int collapse_large_pages(unsigned long addr, struct list_head *pgtables)
 
 	addr &= PMD_MASK;
 
-	spin_lock(&pgd_lock);
+	guard(spinlock)(&pgd_lock);
 	pgd = pgd_offset_k(addr);
 	if (pgd_none(*pgd))
-		goto out;
+		return 0;
 	p4d = p4d_offset(pgd, addr);
 	if (p4d_none(*p4d))
-		goto out;
+		return 0;
 	pud = pud_offset(p4d, addr);
 	if (!pud_present(*pud) || pud_leaf(*pud))
-		goto out;
+		return 0;
 	pmd = pmd_offset(pud, addr);
 	if (!pmd_present(*pmd) || pmd_leaf(*pmd))
-		goto out;
+		return 0;
 
 	collapsed = collapse_pmd_page(pmd, addr, pgtables);
 	if (collapsed)
 		collapsed += collapse_pud_page(pud, addr, pgtables);
 
-out:
-	spin_unlock(&pgd_lock);
 	return collapsed;
 }
 

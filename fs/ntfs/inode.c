@@ -170,16 +170,19 @@ struct inode *ntfs_iget(struct super_block *sb, u64 mft_no)
 	/* If this is a freshly allocated inode, need to read it now. */
 	if (inode_state_read_once(vi) & I_NEW) {
 		err = ntfs_read_locked_inode(vi);
-		unlock_new_inode(vi);
+		if (err) {
+			remove_inode_hash(vi);
+			discard_new_inode(vi);
+		} else
+			unlock_new_inode(vi);
 	}
 	/*
-	 * There is no point in keeping bad inodes around if the failure was
-	 * due to ENOMEM. We want to be able to retry again later.
+	 * There is no point in keeping bad inodes around. This also
+	 * simplifies things in that we never need to check for bad inodes
+	 * elsewhere.
 	 */
-	if (unlikely(err == -ENOMEM)) {
-		iput(vi);
+	if (unlikely(err))
 		vi = ERR_PTR(err);
-	}
 	return vi;
 }
 
@@ -230,17 +233,19 @@ struct inode *ntfs_attr_iget(struct inode *base_vi, __le32 type,
 	/* If this is a freshly allocated inode, need to read it now. */
 	if (inode_state_read_once(vi) & I_NEW) {
 		err = ntfs_read_locked_attr_inode(base_vi, vi);
-		unlock_new_inode(vi);
+		if (err) {
+			remove_inode_hash(vi);
+			discard_new_inode(vi);
+		} else
+			unlock_new_inode(vi);
 	}
 	/*
 	 * There is no point in keeping bad attribute inodes around. This also
 	 * simplifies things in that we never need to check for bad attribute
 	 * inodes elsewhere.
 	 */
-	if (unlikely(err)) {
-		iput(vi);
+	if (unlikely(err))
 		vi = ERR_PTR(err);
-	}
 	return vi;
 }
 
@@ -285,17 +290,19 @@ struct inode *ntfs_index_iget(struct inode *base_vi, __le16 *name,
 	/* If this is a freshly allocated inode, need to read it now. */
 	if (inode_state_read_once(vi) & I_NEW) {
 		err = ntfs_read_locked_index_inode(base_vi, vi);
-		unlock_new_inode(vi);
+		if (err) {
+			remove_inode_hash(vi);
+			discard_new_inode(vi);
+		} else
+			unlock_new_inode(vi);
 	}
 	/*
 	 * There is no point in keeping bad index inodes around.  This also
 	 * simplifies things in that we never need to check for bad index
 	 * inodes elsewhere.
 	 */
-	if (unlikely(err)) {
-		iput(vi);
+	if (unlikely(err))
 		vi = ERR_PTR(err);
-	}
 	return vi;
 }
 
@@ -869,7 +876,9 @@ skip_attr_list_load:
 	if (ni->flags & FILE_ATTR_REPARSE_POINT) {
 		unsigned int mode;
 
-		mode = ntfs_make_symlink(ni);
+		err = ntfs_parse_reparse(ni, &mode);
+		if (err)
+			goto unm_err_out;
 		if (mode)
 			vi->i_mode |= mode;
 		else {
@@ -1089,6 +1098,11 @@ view_index_meta:
 		/* Setup the state. */
 		if (a->flags & (ATTR_COMPRESSION_MASK | ATTR_IS_SPARSE)) {
 			if (a->flags & ATTR_COMPRESSION_MASK) {
+				if (NInoWofCompressed(ni)) {
+					ntfs_error(vi->i_sb,
+						"Found native compression on a WOF file.");
+					goto unm_err_out;
+				}
 				NInoSetCompressed(ni);
 				ni->flags |= FILE_ATTR_COMPRESSED;
 				if (vol->cluster_size > 4096) {
@@ -1119,7 +1133,7 @@ view_index_meta:
 		}
 		if (a->non_resident) {
 			NInoSetNonResident(ni);
-			if (NInoCompressed(ni) || NInoSparse(ni)) {
+			if (NInoCompressed(ni) || (NInoSparse(ni) && !NInoWofCompressed(ni))) {
 				if (NInoCompressed(ni) &&
 				    a->data.non_resident.compression_unit != 4) {
 					ntfs_error(vi->i_sb,
@@ -1214,7 +1228,8 @@ no_data_attr_special_case:
 	 * sizes of all non-resident attributes present to give us the Linux
 	 * correct size that should go into i_blocks (after division by 512).
 	 */
-	if (S_ISREG(vi->i_mode) && (NInoCompressed(ni) || NInoSparse(ni)))
+	if (S_ISREG(vi->i_mode) &&
+	    (NInoCompressed(ni) || (NInoSparse(ni) && !NInoWofCompressed(ni))))
 		vi->i_blocks = ni->itype.compressed.size >> 9;
 	else
 		vi->i_blocks = ni->allocated_size >> 9;
@@ -1398,7 +1413,7 @@ static int ntfs_read_locked_attr_inode(struct inode *base_vi, struct inode *vi)
 				"Attribute name is placed after the mapping pairs array.");
 			goto unm_err_out;
 		}
-		if (NInoCompressed(ni) || NInoSparse(ni)) {
+		if (NInoCompressed(ni) || (NInoSparse(ni) && !NInoWofCompressed(ni))) {
 			if (NInoCompressed(ni) && a->data.non_resident.compression_unit != 4) {
 				ntfs_error(vi->i_sb,
 					"Found non-standard compression unit (%u instead of 4).  Cannot handle this.",
@@ -1848,7 +1863,7 @@ int ntfs_read_inode_mount(struct inode *vi)
 	struct mft_record *m = NULL;
 	struct attr_record *a;
 	struct ntfs_attr_search_ctx *ctx;
-	unsigned int i, nr_blocks;
+	unsigned int i;
 	int err;
 	size_t new_rl_count;
 
@@ -1891,11 +1906,6 @@ int ntfs_read_inode_mount(struct inode *vi)
 		ntfs_error(sb, "Failed to allocate buffer for $MFT record 0.");
 		goto err_out;
 	}
-
-	/* Determine the first block of the $MFT/$DATA attribute. */
-	nr_blocks = ntfs_bytes_to_sector(vol, vol->mft_record_size);
-	if (!nr_blocks)
-		nr_blocks = 1;
 
 	/* Load $MFT/$DATA's first mft record. */
 	err = ntfs_bdev_read(sb->s_bdev, (char *)m,
@@ -2409,7 +2419,7 @@ int ntfs_show_options(struct seq_file *sf, struct dentry *root)
 }
 
 int ntfs_extend_initialized_size(struct inode *vi, const loff_t offset,
-				 const loff_t new_size, bool bsync)
+				 const loff_t new_size)
 {
 	struct ntfs_inode *ni = NTFS_I(vi);
 	loff_t old_init_size;
@@ -2436,10 +2446,6 @@ int ntfs_extend_initialized_size(struct inode *vi, const loff_t offset,
 				       &ntfs_iomap_folio_ops, NULL);
 		if (err)
 			return err;
-		if (bsync)
-			err = filemap_write_and_wait_range(vi->i_mapping,
-							   old_init_size,
-							   offset - 1);
 	}
 
 
@@ -3781,8 +3787,7 @@ static s64 __ntfs_inode_non_resident_attr_pwrite(struct inode *vi,
 				bio = bio_alloc(vol->sb->s_bdev, 1, REQ_OP_WRITE,
 						GFP_NOIO);
 				bio->bi_iter.bi_sector =
-					ntfs_bytes_to_sector(vol,
-							ntfs_cluster_to_bytes(vol, lcn) +
+					ntfs_bytes_to_bio_sector(ntfs_cluster_to_bytes(vol, lcn) +
 							lcn_folio_off);
 
 				length = min_t(unsigned long,

@@ -2210,31 +2210,39 @@ next:
 	return 0;
 }
 
+void f2fs_reset_gc_victim_resource(struct f2fs_sb_info *sbi,
+			unsigned int start, unsigned int end)
+{
+	int i;
+
+	mutex_lock(&DIRTY_I(sbi)->seglist_lock);
+	for (i = 0; i < MAX_GC_POLICY; i++)
+		if (SIT_I(sbi)->last_victim[i] >= start &&
+			SIT_I(sbi)->last_victim[i] <= end)
+			SIT_I(sbi)->last_victim[i] = 0;
+
+	for (i = BG_GC; i <= FG_GC; i++)
+		if (sbi->next_victim_seg[i] >= start &&
+			sbi->next_victim_seg[i] <= end)
+			sbi->next_victim_seg[i] = NULL_SEGNO;
+	mutex_unlock(&DIRTY_I(sbi)->seglist_lock);
+}
+
 static int free_segment_range(struct f2fs_sb_info *sbi,
 				unsigned int secs, bool dry_run)
 {
 	unsigned int secno, next_inuse, start, end, end_secno;
 	struct cp_control cpc = { CP_RESIZE, 0, 0, 0 };
 	unsigned int freed_secs = 0;
-	int gc_mode, gc_type;
 	int err = 0;
 	int type;
 
-	/* Force block allocation for GC */
 	MAIN_SECS(sbi) -= secs;
 	start = MAIN_SECS(sbi) * SEGS_PER_SEC(sbi);
 	end = MAIN_SEGS(sbi) - 1;
 	end_secno = GET_SEC_FROM_SEG(sbi, end);
 
-	mutex_lock(&DIRTY_I(sbi)->seglist_lock);
-	for (gc_mode = 0; gc_mode < MAX_GC_POLICY; gc_mode++)
-		if (SIT_I(sbi)->last_victim[gc_mode] >= start)
-			SIT_I(sbi)->last_victim[gc_mode] = 0;
-
-	for (gc_type = BG_GC; gc_type <= FG_GC; gc_type++)
-		if (sbi->next_victim_seg[gc_type] >= start)
-			sbi->next_victim_seg[gc_type] = NULL_SEGNO;
-	mutex_unlock(&DIRTY_I(sbi)->seglist_lock);
+	f2fs_reset_gc_victim_resource(sbi, start, end);
 
 	spin_lock(&FREE_I(sbi)->segmap_lock);
 	for (secno = MAIN_SECS(sbi); secno <= end_secno; secno++) {
@@ -2448,7 +2456,7 @@ out_drop_write:
 	set_sbi_flag(sbi, SBI_IS_RESIZEFS);
 	err = free_segment_range(sbi, secs, false);
 	if (err)
-		goto recover_out;
+		goto recover_user_blocks;
 
 	update_sb_metadata(sbi, -secs);
 
@@ -2470,11 +2478,14 @@ out_drop_write:
 		f2fs_commit_super(sbi, false);
 	}
 recover_out:
-	clear_sbi_flag(sbi, SBI_IS_RESIZEFS);
 	if (err) {
+		f2fs_bug_on(sbi, err == -EAGAIN);
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
 		f2fs_err(sbi, "resize_fs failed, should run fsck to repair!");
-
+	}
+recover_user_blocks:
+	clear_sbi_flag(sbi, SBI_IS_RESIZEFS);
+	if (err) {
 		spin_lock(&sbi->stat_lock);
 		sbi->user_block_count += shrunk_blocks;
 		spin_unlock(&sbi->stat_lock);

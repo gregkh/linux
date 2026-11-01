@@ -2858,7 +2858,8 @@ static void integrity_bio_wait(struct work_struct *w)
 		switch (r) {
 			case DM_MAPIO_KILL:
 				bio->bi_status = BLK_STS_IOERR;
-				fallthrough;
+				bio_endio(bio);
+				return;
 			case DM_MAPIO_REMAPPED:
 				submit_bio_noacct(bio);
 				fallthrough;
@@ -3118,7 +3119,7 @@ static void do_journal_write(struct dm_integrity_c *ic, unsigned int write_start
 				r = dm_integrity_rw_tag(ic, journal_entry_tag(ic, je2), &metadata_block, &metadata_offset,
 							ic->tag_size, TAG_WRITE);
 				if (unlikely(r))
-					dm_integrity_io_error(ic, "reading tags", r);
+					dm_integrity_io_error(ic, "writing tags", r);
 			}
 
 			atomic_inc(&comp.in_flight);
@@ -4771,6 +4772,7 @@ retest_commit_id:
 	if (!ic->journal_tree) {
 		*error = "Could not allocate memory for journal tree";
 		r = -ENOMEM;
+		goto bad;
 	}
 bad:
 	kfree(crypt_data);

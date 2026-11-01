@@ -2545,7 +2545,7 @@ static int ntfs_init_fs_context(struct fs_context *fc)
 	struct ntfs_volume *vol;
 
 	/* Allocate a new struct ntfs_volume and place it in sb->s_fs_info. */
-	vol = kmalloc(sizeof(struct ntfs_volume), GFP_NOFS);
+	vol = kmalloc_obj(struct ntfs_volume, GFP_NOFS);
 	if (!vol)
 		return -ENOMEM;
 
@@ -2698,6 +2698,9 @@ static void __exit exit_ntfs_fs(void)
 	 * destroy cache.
 	 */
 	rcu_barrier();
+#ifdef CONFIG_NTFS_FS_WOF_COMPRESSION
+	ntfs_wof_free_workspaces();
+#endif
 	kmem_cache_destroy(ntfs_big_inode_cache);
 	kmem_cache_destroy(ntfs_inode_cache);
 	kmem_cache_destroy(ntfs_name_cache);

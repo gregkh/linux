@@ -129,7 +129,8 @@ out_unlock:
 
 static int ntfs_file_release(struct inode *vi, struct file *filp)
 {
-	if (!NInoCompressed(NTFS_I(vi)))
+	if (!NInoCompressed(NTFS_I(vi)) &&
+	    !NInoWofCompressed(NTFS_I(vi)))
 		return ntfs_trim_prealloc(vi);
 
 	return 0;
@@ -257,10 +258,11 @@ static int ntfs_setattr_size(struct inode *vi, struct iattr *attr)
 	int err;
 	loff_t old_size = vi->i_size;
 
-	if (NInoCompressed(ni) || NInoEncrypted(ni)) {
-		ntfs_warning(vi->i_sb,
-			"Changes in inode size are not supported yet for %s files, ignoring.",
-			NInoCompressed(ni) ? "compressed" : "encrypted");
+	if (NInoCompressed(ni) || NInoEncrypted(ni) || NInoWofCompressed(ni)) {
+		ntfs_warning(
+			vi->i_sb,
+			"Changes in inode size are not supported yet for %s files.",
+			NInoEncrypted(ni) ? "encrypted" : "compressed");
 		return -EOPNOTSUPP;
 	}
 
@@ -315,6 +317,13 @@ int ntfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 	err = setattr_prepare(idmap, dentry, attr);
 	if (err)
 		goto out;
+
+	if ((ia_valid & ATTR_SIZE) &&
+	    (NInoCompressed(ni) || NInoEncrypted(ni) ||
+	     NInoWofCompressed(ni))) {
+		err = -EOPNOTSUPP;
+		goto out;
+	}
 
 	if (!(vol->vol_flags & VOLUME_IS_DIRTY))
 		ntfs_set_volume_flags(vol, VOLUME_IS_DIRTY);
@@ -378,7 +387,7 @@ int ntfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 	stat->result_mask |= STATX_BTIME;
 	stat->btime = NTFS_I(inode)->i_crtime;
 
-	if (NInoCompressed(ni))
+	if (NInoCompressed(ni) || NInoWofCompressed(ni))
 		stat->attributes |= STATX_ATTR_COMPRESSED;
 
 	if (NInoEncrypted(ni))
@@ -403,7 +412,8 @@ int ntfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 			bdev_logical_block_size(inode->i_sb->s_bdev);
 
 		stat->result_mask |= STATX_DIOALIGN;
-		if (!NInoCompressed(ni) && !NInoEncrypted(ni)) {
+		if (!NInoCompressed(ni) && !NInoEncrypted(ni) &&
+		    !NInoWofCompressed(ni)) {
 			stat->dio_mem_align = align;
 			stat->dio_offset_align = align;
 		}
@@ -415,6 +425,10 @@ int ntfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 static loff_t ntfs_file_llseek(struct file *file, loff_t offset, int whence)
 {
 	struct inode *inode = file->f_mapping->host;
+
+	if (NInoWofCompressed(NTFS_I(inode)) &&
+	    (whence == SEEK_HOLE || whence == SEEK_DATA))
+		return -EOPNOTSUPP;
 
 	switch (whence) {
 	case SEEK_HOLE:
@@ -446,7 +460,8 @@ static ssize_t ntfs_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	if (NVolShutdown(NTFS_SB(sb)))
 		return -EIO;
 
-	if (NInoCompressed(NTFS_I(vi)) && iocb->ki_flags & IOCB_DIRECT)
+	if ((NInoCompressed(NTFS_I(vi)) || NInoWofCompressed(NTFS_I(vi))) &&
+	    iocb->ki_flags & IOCB_DIRECT)
 		return -EOPNOTSUPP;
 
 	inode_lock_shared(vi);
@@ -537,6 +552,31 @@ out:
 	return ret;
 }
 
+static int ntfs_expand_for_write(struct ntfs_inode *ni, loff_t end)
+{
+	struct ntfs_volume *vol = ni->vol;
+	loff_t prealloc_size = 0;
+	int err;
+
+	if (end <= ni->data_size)
+		return 0;
+
+	if (NInoCompressed(ni)) {
+		if (end > ni->allocated_size)
+			prealloc_size = round_up(end,
+						 ni->itype.compressed.block_size);
+	} else if (end > ni->allocated_size &&
+		   end < ni->allocated_size + vol->preallocated_size) {
+		prealloc_size = ni->allocated_size + vol->preallocated_size;
+	}
+
+	mutex_lock(&ni->mrec_lock);
+	err = ntfs_attr_expand(ni, end, prealloc_size);
+	mutex_unlock(&ni->mrec_lock);
+
+	return err;
+}
+
 static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
@@ -545,12 +585,15 @@ static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct ntfs_volume *vol = ni->vol;
 	ssize_t ret;
 	ssize_t count;
-	loff_t pos;
+	loff_t pos, end;
 	int err;
 	loff_t old_data_size, old_init_size;
 
 	if (NVolShutdown(vol))
 		return -EIO;
+
+	if (NInoWofCompressed(ni))
+		return -EOPNOTSUPP;
 
 	if (NInoEncrypted(ni)) {
 		ntfs_error(vi->i_sb, "Writing for %s files is not supported yet",
@@ -582,9 +625,23 @@ static ssize_t ntfs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
 	pos = iocb->ki_pos;
 	count = ret;
+	end = pos + count;
 
 	old_data_size = ni->data_size;
 	old_init_size = ni->initialized_size;
+
+	if (end > old_data_size) {
+		ret = ntfs_expand_for_write(ni, end);
+		if (ret < 0)
+			goto out;
+	}
+
+	if (NInoNonResident(ni) && !NInoCompressed(ni) &&
+	    end > old_init_size) {
+		ret = ntfs_extend_initialized_size(vi, pos, end);
+		if (ret < 0)
+			goto out;
+	}
 
 	if (NInoNonResident(ni) && NInoCompressed(ni)) {
 		ret = ntfs_compress_write(ni, pos, count, from);
@@ -623,6 +680,9 @@ static vm_fault_t ntfs_filemap_page_mkwrite(struct vm_fault *vmf)
 	struct address_space *mapping = inode->i_mapping;
 	vm_fault_t ret;
 
+	if (NInoWofCompressed(NTFS_I(inode)))
+		return VM_FAULT_SIGBUS;
+
 	sb_start_pagefault(inode->i_sb);
 	file_update_time(vmf->vma->vm_file);
 
@@ -652,7 +712,7 @@ static int ntfs_file_mmap_prepare(struct vm_area_desc *desc)
 	if (NVolShutdown(NTFS_SB(file->f_mapping->host->i_sb)))
 		return -EIO;
 
-	if (NInoCompressed(NTFS_I(inode)))
+	if (NInoCompressed(NTFS_I(inode)) || NInoWofCompressed(NTFS_I(inode)))
 		return -EOPNOTSUPP;
 
 	if (vma_desc_test_all(desc, VMA_SHARED_BIT, VMA_MAYWRITE_BIT)) {
@@ -665,7 +725,7 @@ static int ntfs_file_mmap_prepare(struct vm_area_desc *desc)
 			   from + desc->end - desc->start);
 
 		if (NTFS_I(inode)->initialized_size < to) {
-			err = ntfs_extend_initialized_size(inode, to, to, false);
+			err = ntfs_extend_initialized_size(inode, to, to);
 			if (err)
 				return err;
 		}
@@ -680,6 +740,9 @@ static int ntfs_file_mmap_prepare(struct vm_area_desc *desc)
 static int ntfs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 		u64 start, u64 len)
 {
+	if (NInoWofCompressed(NTFS_I(inode)))
+		return -EOPNOTSUPP;
+
 	return iomap_fiemap(inode, fieinfo, start, len, &ntfs_read_iomap_ops);
 }
 
@@ -1073,6 +1136,9 @@ static long ntfs_fallocate(struct file *file, int mode, loff_t offset, loff_t le
 	if (mode & ~(NTFS_FALLOC_FL_SUPPORTED))
 		return -EOPNOTSUPP;
 
+	if (NInoCompressed(ni) || NInoEncrypted(ni) || NInoWofCompressed(ni))
+		return -EOPNOTSUPP;
+
 	if (!NVolFreeClusterKnown(vol))
 		wait_event(vol->free_waitq, NVolFreeClusterKnown(vol));
 
@@ -1096,12 +1162,13 @@ static long ntfs_fallocate(struct file *file, int mode, loff_t offset, loff_t le
 	old_size = i_size_read(vi);
 
 	inode_lock(vi);
-	if (NInoCompressed(ni) || NInoEncrypted(ni)) {
+	if (NInoCompressed(ni) || NInoEncrypted(ni) || NInoWofCompressed(ni)) {
 		inode_unlock(vi);
 		return -EOPNOTSUPP;
 	}
 
 	inode_dio_wait(vi);
+	/* Take invalidate_lock for all fallocate operations to prevent races */
 	filemap_invalidate_lock(vi->i_mapping);
 
 	switch (mode & FALLOC_FL_MODE_MASK) {
@@ -1132,7 +1199,9 @@ out:
 		truncate_pagecache(vi, old_size);
 		pagecache_isize_extended(vi, old_size, offset);
 	}
+
 	filemap_invalidate_unlock(vi->i_mapping);
+
 	if (!err) {
 		NInoSetFileNameDirty(ni);
 		inode_set_mtime_to_ts(vi, inode_set_ctime_current(vi));

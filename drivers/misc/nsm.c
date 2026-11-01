@@ -61,7 +61,7 @@ struct nsm {
 /* NSM device ID */
 static const struct virtio_device_id id_table[] = {
 	{ VIRTIO_ID_NITRO_SEC_MOD, VIRTIO_DEV_ANY_ID },
-	{ 0 },
+	{ }
 };
 
 static struct nsm *file_to_nsm(struct file *file)
@@ -365,9 +365,8 @@ static long nsm_dev_ioctl(struct file *file, unsigned int cmd,
 		return -EINVAL;
 
 	/* Copy user argument struct to kernel argument struct */
-	r = -EFAULT;
 	if (copy_from_user(&raw, argp, _IOC_SIZE(cmd)))
-		return r;
+		return -EFAULT;
 
 	mutex_lock(&nsm->lock);
 

@@ -50,6 +50,7 @@ struct sugov_cpu {
 
 	unsigned long		util;
 	unsigned long		bw_min;
+	unsigned long		bw_max;
 
 	/* The field below is for single-CPU policies only: */
 #ifdef CONFIG_NO_HZ_COMMON
@@ -243,6 +244,7 @@ static void sugov_get_util(struct sugov_cpu *sg_cpu, unsigned long boost)
 	util = effective_cpu_util(sg_cpu->cpu, util, &min, &max);
 	util = max(util, boost);
 	sg_cpu->bw_min = min;
+	sg_cpu->bw_max = max;
 	sg_cpu->util = sugov_effective_cpu_perf(sg_cpu->cpu, util, min, max);
 }
 
@@ -495,7 +497,7 @@ static void sugov_update_single_perf(struct update_util_data *hook, u64 time,
 		sg_cpu->util = prev_util;
 
 	cpufreq_driver_adjust_perf(sg_policy->policy, sg_cpu->bw_min,
-				   sg_cpu->util, max_cap);
+				   sg_cpu->util, sg_cpu->bw_max, max_cap);
 
 	sg_policy->need_freq_update = false;
 	sg_policy->last_freq_update_time = time;
@@ -601,7 +603,7 @@ static ssize_t rate_limit_us_show(struct gov_attr_set *attr_set, char *buf)
 {
 	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
 
-	return sprintf(buf, "%u\n", tunables->rate_limit_us);
+	return sysfs_emit(buf, "%u\n", tunables->rate_limit_us);
 }
 
 static ssize_t

@@ -61,7 +61,7 @@ void rdma_restrack_clean(struct ib_device *dev)
  * @type: actual type of object to operate
  * @show_details: count driver specific objects
  */
-int rdma_restrack_count(struct ib_device *dev, enum rdma_restrack_type type,
+u32 rdma_restrack_count(struct ib_device *dev, enum rdma_restrack_type type,
 			bool show_details)
 {
 	struct rdma_restrack_root *rt = &dev->res[type];
@@ -104,6 +104,8 @@ static struct ib_device *res_to_dev(struct rdma_restrack_entry *res)
 		return container_of(res, struct ib_srq, res)->device;
 	case RDMA_RESTRACK_DMAH:
 		return container_of(res, struct ib_dmah, res)->device;
+	case RDMA_RESTRACK_COMP_CNTR:
+		return container_of(res, struct ib_comp_cntr, res)->device;
 	default:
 		WARN_ONCE(true, "Wrong resource tracking type %u\n", res->type);
 		return NULL;

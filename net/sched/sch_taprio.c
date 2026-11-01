@@ -1185,7 +1185,7 @@ static int taprio_parse_mqprio_opt(struct net_device *dev,
 	bool allow_overlapping_txqs = TXTIME_ASSIST_IS_ENABLED(taprio_flags);
 
 	if (!qopt) {
-		if (!dev->num_tc) {
+		if (!netdev_get_num_tc(dev)) {
 			NL_SET_ERR_MSG(extack, "'mqprio' configuration is necessary");
 			return -EINVAL;
 		}
@@ -1439,9 +1439,10 @@ static void taprio_offload_config_changed(struct taprio_sched *q)
 
 static u32 tc_map_to_queue_mask(struct net_device *dev, u32 tc_mask)
 {
+	int num_tc = netdev_get_num_tc(dev);
 	u32 i, queue_mask = 0;
 
-	for (i = 0; i < dev->num_tc; i++) {
+	for (i = 0; i < num_tc; i++) {
 		struct netdev_tc_txq res;
 
 		if (!(tc_mask & BIT(i)))
@@ -1799,7 +1800,7 @@ static int taprio_mqprio_cmp(const struct net_device *dev,
 {
 	int i;
 
-	if (!mqprio || mqprio->num_tc != dev->num_tc)
+	if (!mqprio || mqprio->num_tc != netdev_get_num_tc(dev))
 		return -1;
 
 	for (i = 0; i < mqprio->num_tc; i++) {
@@ -1812,7 +1813,7 @@ static int taprio_mqprio_cmp(const struct net_device *dev,
 	}
 
 	for (i = 0; i <= TC_BITMASK; i++)
-		if (dev->prio_tc_map[i] != mqprio->prio_tc_map[i])
+		if (netdev_get_prio_tc_map(dev, i) != mqprio->prio_tc_map[i])
 			return -1;
 
 	return 0;

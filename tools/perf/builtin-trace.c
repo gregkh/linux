@@ -226,6 +226,7 @@ struct trace {
 	bool			force;
 	bool			vfs_getname;
 	bool			force_btf;
+	bool			bitmask_list;
 	bool			summary_bpf;
 	int			trace_pgfaults;
 	char			*perfconfig_events;
@@ -2098,6 +2099,49 @@ static bool is_internal_field(struct tep_format_field *field)
 	return !strcmp(field->type, "__data_loc char[]");
 }
 
+static bool field_has_hex_fmt(struct tep_format_field *field, int len)
+{
+	const char *fmt, *pos, *end = NULL;
+
+	if (!field || !field->event || !field->event->print_fmt.format)
+		return false;
+
+	fmt = field->event->print_fmt.format;
+
+	/* NB: Limit scanning strictly to the quoted printf format string */
+	if (*fmt == '"') {
+		const char *p = ++fmt;
+
+		while (*p) {
+			if (*p == '\\' && p[1] != '\0') {
+				/* NB: Skip escaped character */
+				p += 2;
+			} else if (*p == '"') {
+				end = p;
+				break;
+			} else {
+				p++;
+			}
+		}
+	} else {
+		end = strchr(fmt, ',');
+	}
+
+	for (pos = strstr(fmt, field->name); pos && (!end || pos < end);
+	     pos = strstr(pos + 1, field->name)) {
+		if (pos == fmt || !(isalnum(pos[-1]) || pos[-1] == '_')) {
+			const char *after = pos + len;
+
+			if (*after == '=' && (strstarts(after + 1, "0x") ||
+					      strstarts(after + 1, "%#") ||
+					      strstarts(after + 1, "%p")))
+				return true;
+		}
+	}
+
+	return false;
+}
+
 static struct tep_format_field *
 syscall_arg_fmt__init_array(struct syscall_arg_fmt *arg, struct tep_format_field *field,
 			    bool *use_btf)
@@ -2125,7 +2169,8 @@ syscall_arg_fmt__init_array(struct syscall_arg_fmt *arg, struct tep_format_field
 		    ((len >= 4 && strcmp(field->name + len - 4, "name") == 0) ||
 		     strstr(field->name, "path") != NULL)) {
 			arg->scnprintf = SCA_FILENAME;
-		} else if ((field->flags & TEP_FIELD_IS_POINTER) || strstr(field->name, "addr"))
+		} else if ((field->flags & TEP_FIELD_IS_POINTER) || strstr(field->name, "addr") ||
+			   field_has_hex_fmt(field, len))
 			arg->scnprintf = SCA_PTR;
 		else if (strcmp(field->type, "pid_t") == 0)
 			arg->scnprintf = SCA_PID;
@@ -3223,6 +3268,13 @@ static unsigned char bitmap_byte(const unsigned long *mask, int byte_idx)
 	return b_val;
 }
 
+static bool trace__field_is_ip(const char *name)
+{
+	return !strcmp(name, "__probe_ip") ||
+	       !strcmp(name, "caller_ip") ||
+	       !strcmp(name, "call_site");
+}
+
 static size_t trace__fprintf_tp_fields(struct trace *trace, struct perf_sample *sample,
 				       struct thread *thread, void *augmented_args, int augmented_args_size)
 {
@@ -3235,6 +3287,7 @@ static size_t trace__fprintf_tp_fields(struct trace *trace, struct perf_sample *
 	size_t printed = 0, btf_printed;
 	unsigned long val;
 	u8 bit = 1;
+	bool is_probe_ip;
 	struct syscall_arg syscall_arg = {
 		.augmented = {
 			.size = augmented_args_size,
@@ -3280,6 +3333,9 @@ static size_t trace__fprintf_tp_fields(struct trace *trace, struct perf_sample *
 
 			if (syscall_arg.len == 0) {
 				printed += scnprintf(bf + printed, size - printed, "0");
+			} else if (trace->bitmask_list) {
+				printed += bitmap_scnprintf(mask, syscall_arg.len * 8,
+							    bf + printed, size - printed);
 			} else {
 				int i;
 				bool skip_zero = true;
@@ -3319,9 +3375,14 @@ static size_t trace__fprintf_tp_fields(struct trace *trace, struct perf_sample *
 		 * Suppress it by default to avoid cluttering the output.
 		 * If verbose mode is enabled, ensure it is formatted as a
 		 * hexadecimal memory address rather than a signed integer.
+		 *
+		 * caller_ip and call_site are also expected to be instruction
+		 * pointers and should always be represented in hexadecimal.
 		 */
-		if (evsel__is_probe(evsel) && !strcmp(field->name, "__probe_ip")) {
-			if (!verbose)
+		is_probe_ip = evsel__is_probe(evsel) && !strcmp(field->name, "__probe_ip");
+
+		if (is_probe_ip || trace__field_is_ip(field->name)) {
+			if (is_probe_ip && !verbose)
 				continue;
 
 			printed += scnprintf(bf + printed, size - printed,
@@ -3731,8 +3792,11 @@ static void trace__handle_event(struct trace *trace, union perf_event *event, st
 		return;
 	}
 
-	if (sample->evsel == NULL)
+	if (sample->evsel == NULL) {
 		sample->evsel = evlist__id2evsel(trace->evlist, sample->id);
+		if (sample->evsel)
+			evsel__get(sample->evsel);
+	}
 
 	if (sample->evsel == NULL) {
 		fprintf(trace->output, "Unknown tp ID %" PRIu64 ", skipping...\n", sample->id);
@@ -5590,6 +5654,7 @@ int cmd_trace(int argc, const char **argv)
 		     "start"),
 	OPT_BOOLEAN(0, "force-btf", &trace.force_btf, "Prefer btf_dump general pretty printer"
 		       "to customized ones"),
+	OPT_BOOLEAN(0, "bitmask-list", &trace.bitmask_list, "Show bitmask as a human-readable list"),
 	OPT_BOOLEAN(0, "bpf-summary", &trace.summary_bpf, "Summary syscall stats in BPF"),
 	OPT_INTEGER(0, "max-summary", &trace.max_summary,
 		     "Max number of entries in the summary."),

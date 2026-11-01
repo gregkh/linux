@@ -108,7 +108,6 @@ enum acpi_bus_device_type {
 	ACPI_BUS_DEVICE_TYPE_COUNT
 };
 
-struct acpi_driver;
 struct acpi_device;
 
 /*
@@ -159,39 +158,9 @@ struct acpi_hotplug_context {
 };
 
 /*
- * ACPI Driver
- * -----------
- */
-
-typedef int (*acpi_op_add) (struct acpi_device * device);
-typedef void (*acpi_op_remove) (struct acpi_device *device);
-typedef void (*acpi_op_notify) (struct acpi_device * device, u32 event);
-
-struct acpi_device_ops {
-	acpi_op_add add;
-	acpi_op_remove remove;
-	acpi_op_notify notify;
-};
-
-#define ACPI_DRIVER_ALL_NOTIFY_EVENTS	0x1	/* system AND device events */
-
-struct acpi_driver {
-	char name[80];
-	char class[80];
-	const struct acpi_device_id *ids; /* Supported Hardware IDs */
-	unsigned int flags;
-	struct acpi_device_ops ops;
-	struct device_driver drv;
-};
-
-/*
  * ACPI Device
  * -----------
  */
-
-bool acpi_of_match_device(const struct acpi_device *adev,
-			  const struct of_device_id *of_match_table,
-			  const struct of_device_id **of_id);
 
 /* Status (_STA) */
 
@@ -211,7 +180,6 @@ struct acpi_device_flags {
 	u32 removable:1;
 	u32 ejectable:1;
 	u32 power_manageable:1;
-	u32 match_driver:1;
 	u32 initialized:1;
 	u32 visited:1;
 	u32 hotplug_notify:1;
@@ -221,7 +189,7 @@ struct acpi_device_flags {
 	u32 cca_seen:1;
 	u32 enumeration_by_parent:1;
 	u32 honor_deps:1;
-	u32 reserved:18;
+	u32 reserved:19;
 };
 
 /* File System */
@@ -234,12 +202,8 @@ struct acpi_device_dir {
 
 /* Plug and Play */
 
-#define MAX_ACPI_DEVICE_NAME_LEN	40
-#define MAX_ACPI_CLASS_NAME_LEN		20
 typedef char acpi_bus_id[8];
 typedef u64 acpi_bus_address;
-typedef char acpi_device_name[MAX_ACPI_DEVICE_NAME_LEN];
-typedef char acpi_device_class[MAX_ACPI_CLASS_NAME_LEN];
 
 struct acpi_hardware_id {
 	struct list_head list;
@@ -261,16 +225,12 @@ struct acpi_device_pnp {
 	acpi_bus_address bus_address;	/* _ADR */
 	char *unique_id;		/* _UID */
 	struct list_head ids;		/* _HID and _CIDs */
-	acpi_device_name device_name;	/* Driver-determined */
-	acpi_device_class device_class;	/*        "          */
 };
 
 #define acpi_device_bid(d)	((d)->pnp.bus_id)
 #define acpi_device_adr(d)	((d)->pnp.bus_address)
 const char *acpi_device_hid(struct acpi_device *device);
 #define acpi_device_uid(d)	((d)->pnp.unique_id)
-#define acpi_device_name(d)	((d)->pnp.device_name)
-#define acpi_device_class(d)	((d)->pnp.device_class)
 
 /* Power Management */
 
@@ -438,7 +398,7 @@ enum acpi_device_swnode_ep_props {
  * @lane_polarities: "lane-polarities" property values.
  * @link_frequencies: "link_frequencies" property values.
  * @port_nr: Port number.
- * @crs_crs2_local: _CRS CSI2 record present (i.e. this is a transmitter one).
+ * @crs_csi2_local: _CRS CSI2 record present (i.e. this is a transmitter one).
  * @port_props: Port properties.
  * @ep_props: Endpoint properties.
  * @remote_ep: Reference to the remote endpoint.
@@ -461,7 +421,7 @@ struct acpi_device_software_node_port {
  * struct acpi_device_software_nodes - Software nodes for an ACPI device
  * @dev_props: Device properties.
  * @nodes: Software nodes for root as well as ports and endpoints.
- * @nodeprts: Array of software node pointers, for (un)registering them.
+ * @nodeptrs: Array of software node pointers, for (un)registering them.
  * @ports: Information related to each port and endpoint within a port.
  * @num_ports: The number of ports.
  */
@@ -570,7 +530,6 @@ static inline void *acpi_driver_data(struct acpi_device *d)
 }
 
 #define to_acpi_device(d)	container_of(d, struct acpi_device, dev)
-#define to_acpi_driver(d)	container_of_const(d, struct acpi_driver, drv)
 
 static inline struct acpi_device *acpi_dev_parent(struct acpi_device *adev)
 {
@@ -610,6 +569,9 @@ int acpi_dev_for_each_child_reverse(struct acpi_device *adev,
  * Events
  * ------
  */
+
+#define MAX_ACPI_CLASS_NAME_LEN		20
+typedef char acpi_device_class[MAX_ACPI_CLASS_NAME_LEN];
 
 struct acpi_bus_event {
 	struct list_head node;
@@ -676,13 +638,6 @@ void acpi_scan_lock_release(void);
 void acpi_lock_hp_context(void);
 void acpi_unlock_hp_context(void);
 int acpi_scan_add_handler(struct acpi_scan_handler *handler);
-/*
- * use a macro to avoid include chaining to get THIS_MODULE
- */
-#define acpi_bus_register_driver(drv) \
-	__acpi_bus_register_driver(drv, THIS_MODULE)
-int __acpi_bus_register_driver(struct acpi_driver *driver, struct module *owner);
-void acpi_bus_unregister_driver(struct acpi_driver *driver);
 int acpi_bus_scan(acpi_handle handle);
 void acpi_bus_trim(struct acpi_device *start);
 acpi_status acpi_bus_get_ejd(acpi_handle handle, acpi_handle * ejd);
@@ -696,18 +651,6 @@ static inline bool acpi_device_enumerated(struct acpi_device *adev)
 {
 	return adev && adev->flags.initialized && adev->flags.visited;
 }
-
-/**
- * module_acpi_driver(acpi_driver) - Helper macro for registering an ACPI driver
- * @__acpi_driver: acpi_driver struct
- *
- * Helper macro for ACPI drivers which do not do anything special in module
- * init/exit. This eliminates a lot of boilerplate. Each module may only
- * use this macro once, and calling it replaces module_init() and module_exit()
- */
-#define module_acpi_driver(__acpi_driver) \
-	module_driver(__acpi_driver, acpi_bus_register_driver, \
-		      acpi_bus_unregister_driver)
 
 /*
  * Bind physical devices with ACPI devices
@@ -1004,13 +947,6 @@ u32 arch_acpi_add_auto_dep(acpi_handle handle);
 static inline struct device *acpi_bus_get_primary_device(struct acpi_device *adev)
 {
 	return NULL;
-}
-
-static inline bool acpi_of_match_device(const struct acpi_device *adev,
-					const struct of_device_id *of_match_table,
-					const struct of_device_id **of_id)
-{
-	return false;
 }
 
 static inline int register_acpi_bus_type(void *bus) { return 0; }

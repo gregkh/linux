@@ -261,11 +261,11 @@ static void ie31200_clear_error_info(struct mem_ctl_info *mci)
 	 * the ECC error log registers in all memory controllers.
 	 */
 	if (cfg->msr_clear_eccerrlog_offset) {
-		if (wrmsr_safe(cfg->msr_clear_eccerrlog_offset,
-			       cfg->reg_eccerrlog_ce_mask |
-			       cfg->reg_eccerrlog_ce_ovfl_mask |
-			       cfg->reg_eccerrlog_ue_mask |
-			       cfg->reg_eccerrlog_ue_ovfl_mask, 0) < 0)
+		if (wrmsrq_safe(cfg->msr_clear_eccerrlog_offset,
+			        cfg->reg_eccerrlog_ce_mask |
+			        cfg->reg_eccerrlog_ce_ovfl_mask |
+			        cfg->reg_eccerrlog_ue_mask |
+			        cfg->reg_eccerrlog_ue_ovfl_mask) < 0)
 			ie31200_printk(KERN_ERR, "Failed to wrmsr.\n");
 
 		return;
@@ -416,7 +416,23 @@ static void populate_dimm_info(struct dimm_data *dd, u32 addr_decode, int dimm,
 {
 	dd->size = field_get(cfg->reg_mad_dimm_size_mask[dimm], addr_decode) * cfg->reg_mad_dimm_size_granularity;
 	dd->ranks = field_get(cfg->reg_mad_dimm_rank_mask[dimm], addr_decode) + 1;
-	dd->dtype = field_get(cfg->reg_mad_dimm_width_mask[dimm], addr_decode) + DEV_X8;
+
+	switch (field_get(cfg->reg_mad_dimm_width_mask[dimm], addr_decode)) {
+	case 0:
+		dd->dtype = DEV_X8;
+		break;
+	case 1:
+		dd->dtype = DEV_X16;
+		break;
+	case 2:
+		dd->dtype = DEV_X32;
+		break;
+	case 3:
+		dd->dtype = DEV_X64;
+		break;
+	default:
+		dd->dtype = DEV_UNKNOWN;
+	}
 }
 
 static void ie31200_get_dimm_config(struct mem_ctl_info *mci, void __iomem *window,

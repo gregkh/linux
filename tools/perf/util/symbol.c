@@ -880,8 +880,8 @@ static int map__process_kallsym_symbol(void *arg, const char *name,
 	if (!symbol_type__filter(type))
 		return 0;
 
-	/* Ignore mapping symbols in kallsyms */
-	if (is_ignored_kernel_symbol(name))
+	/* Ignore mapping and livepatch symbols in kallsyms */
+	if (is_ignored_kernel_symbol(name) || is_livepatch_symbol(name))
 		return 0;
 
 	/*

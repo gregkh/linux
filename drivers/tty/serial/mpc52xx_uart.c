@@ -634,6 +634,9 @@ static void __exit mpc512x_psc_fifoc_uninit(void)
 	}
 }
 
+static struct clk *psc_mclk_clk[MPC52xx_PSC_MAXNUM];
+static struct clk *psc_ipg_clk[MPC52xx_PSC_MAXNUM];
+
 /* 512x specific interrupt handler. The caller holds the port lock */
 static irqreturn_t mpc512x_psc_handle_irq(struct uart_port *port)
 {
@@ -645,15 +648,14 @@ static irqreturn_t mpc512x_psc_handle_irq(struct uart_port *port)
 
 	/* Check if it is an interrupt for this port */
 	psc_num = (port->mapbase & 0xf00) >> 8;
+	if (psc_num >= ARRAY_SIZE(psc_mclk_clk))
+		return IRQ_NONE;
 	if (test_bit(psc_num, &fifoc_int) ||
 	    test_bit(psc_num + 16, &fifoc_int))
 		return mpc5xxx_uart_process_int(port);
 
 	return IRQ_NONE;
 }
-
-static struct clk *psc_mclk_clk[MPC52xx_PSC_MAXNUM];
-static struct clk *psc_ipg_clk[MPC52xx_PSC_MAXNUM];
 
 /* called from within the .request_port() callback (allocation) */
 static int mpc512x_psc_alloc_clock(struct uart_port *port)
@@ -663,6 +665,8 @@ static int mpc512x_psc_alloc_clock(struct uart_port *port)
 	int err;
 
 	psc_num = (port->mapbase & 0xf00) >> 8;
+	if (psc_num >= ARRAY_SIZE(psc_mclk_clk))
+		return -EINVAL;
 
 	clk = devm_clk_get(port->dev, "mclk");
 	if (IS_ERR(clk)) {
@@ -711,6 +715,8 @@ static void mpc512x_psc_relse_clock(struct uart_port *port)
 	struct clk *clk;
 
 	psc_num = (port->mapbase & 0xf00) >> 8;
+	if (psc_num >= ARRAY_SIZE(psc_mclk_clk))
+		return;
 	clk = psc_mclk_clk[psc_num];
 	if (clk) {
 		clk_disable_unprepare(clk);
@@ -733,6 +739,8 @@ static int mpc512x_psc_endis_clock(struct uart_port *port, int enable)
 		return 0;
 
 	psc_num = (port->mapbase & 0xf00) >> 8;
+	if (psc_num >= ARRAY_SIZE(psc_mclk_clk))
+		return -ENODEV;
 	psc_clk = psc_mclk_clk[psc_num];
 	if (!psc_clk) {
 		dev_err(port->dev, "Failed to get PSC clock entry!\n");

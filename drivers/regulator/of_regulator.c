@@ -929,6 +929,11 @@ static int is_supply_name(const char *name)
  * before returning to the caller, and @consumers will not be
  * changed.
  *
+ * On success the array is allocated here and handed to the caller, which
+ * owns it from then on: release the regulators with regulator_bulk_free()
+ * and free the array itself with kfree(). The supply names live in the
+ * same allocation, so they are gone once the array is freed.
+ *
  * Return: Number of regulators on success, or a negative error number
  *	   on failure.
  */

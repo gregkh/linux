@@ -1041,11 +1041,14 @@ static void iwl_mei_read_from_q(const u8 *q_head, u32 q_sz,
 	u32 rd = *_rd;
 
 	if (rd + len <= q_sz) {
-		memcpy(buf, q_head + rd, len);
+		if (buf)
+			memcpy(buf, q_head + rd, len);
 		rd += len;
 	} else {
-		memcpy(buf, q_head + rd, q_sz - rd);
-		memcpy(buf + q_sz - rd, q_head, len - (q_sz - rd));
+		if (buf) {
+			memcpy(buf, q_head + rd, q_sz - rd);
+			memcpy(buf + q_sz - rd, q_head, len - (q_sz - rd));
+		}
 		rd = len - (q_sz - rd);
 	}
 
@@ -1086,24 +1089,29 @@ static void iwl_mei_handle_sap_data(struct mei_cl_device *cldev,
 			break;
 		}
 
+		valid_rx_sz -= len;
+
 		if (len < sizeof(*ethhdr)) {
 			dev_err(&cldev->dev,
 				"Data len is smaller than an ethernet header? len = %d\n",
 				len);
+			iwl_mei_read_from_q(q_head, q_sz, &rd, wr, NULL, len);
+			continue;
 		}
-
-		valid_rx_sz -= len;
 
 		if (le16_to_cpu(hdr.type) != SAP_MSG_DATA_PACKET) {
 			dev_err(&cldev->dev, "Unsupported Rx data: type %d, len %d\n",
 				le16_to_cpu(hdr.type), len);
+			iwl_mei_read_from_q(q_head, q_sz, &rd, wr, NULL, len);
 			continue;
 		}
 
 		/* We need enough room for the WiFi header + SNAP + IV */
 		skb = netdev_alloc_skb(netdev, len + QOS_HDR_IV_SNAP_LEN);
-		if (!skb)
+		if (!skb) {
+			iwl_mei_read_from_q(q_head, q_sz, &rd, wr, NULL, len);
 			continue;
+		}
 
 		skb_reserve(skb, QOS_HDR_IV_SNAP_LEN);
 		ethhdr = skb_push(skb, sizeof(*ethhdr));

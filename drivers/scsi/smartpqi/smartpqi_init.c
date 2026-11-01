@@ -34,11 +34,11 @@
 #define BUILD_TIMESTAMP
 #endif
 
-#define DRIVER_VERSION		"2.1.36-026"
+#define DRIVER_VERSION		"2.1.42-011"
 #define DRIVER_MAJOR		2
 #define DRIVER_MINOR		1
-#define DRIVER_RELEASE		36
-#define DRIVER_REVISION		26
+#define DRIVER_RELEASE		42
+#define DRIVER_REVISION		11
 
 #define DRIVER_NAME		"Microchip SmartPQI Driver (v" \
 				DRIVER_VERSION BUILD_TIMESTAMP ")"
@@ -6935,6 +6935,144 @@ out:
 	return rc;
 }
 
+static int pqi_big_passthru_ioctl(struct pqi_ctrl_info *ctrl_info, void __user *arg)
+{
+	int rc;
+	char *kernel_buffer = NULL;
+	u16 iu_length;
+	size_t sense_data_length;
+	BIG_IOCTL_Command_struct iocommand;
+	struct pqi_raid_path_request request;
+	struct pqi_raid_error_info pqi_error_info;
+	struct ciss_error_info ciss_error_info;
+
+	if (pqi_ctrl_offline(ctrl_info))
+		return -ENXIO;
+	if (pqi_ofa_in_progress(ctrl_info) && pqi_ctrl_blocked(ctrl_info))
+		return -EBUSY;
+	if (!arg)
+		return -EINVAL;
+	if (!capable(CAP_SYS_RAWIO))
+		return -EPERM;
+	if (copy_from_user(&iocommand, arg, sizeof(iocommand)))
+		return -EFAULT;
+	if (iocommand.buf_size < 1 &&
+		iocommand.Request.Type.Direction != XFER_NONE)
+		return -EINVAL;
+	if (iocommand.Request.CDBLen > sizeof(request.cdb))
+		return -EINVAL;
+	if (iocommand.Request.Type.Type != TYPE_CMD)
+		return -EINVAL;
+
+	switch (iocommand.Request.Type.Direction) {
+	case XFER_NONE:
+	case XFER_WRITE:
+	case XFER_READ:
+	case XFER_READ | XFER_WRITE:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (iocommand.buf_size > 0) {
+		kernel_buffer = kmalloc(iocommand.buf_size, GFP_KERNEL);
+		if (!kernel_buffer)
+			return -ENOMEM;
+		if (iocommand.Request.Type.Direction & XFER_WRITE) {
+			if (copy_from_user(kernel_buffer, iocommand.buf,
+				iocommand.buf_size)) {
+				rc = -EFAULT;
+				goto out;
+			}
+		} else {
+			memset(kernel_buffer, 0, iocommand.buf_size);
+		}
+	}
+
+	memset(&request, 0, sizeof(request));
+
+	request.header.iu_type = PQI_REQUEST_IU_RAID_PATH_IO;
+	iu_length = offsetof(struct pqi_raid_path_request, sg_descriptors) -
+		PQI_REQUEST_HEADER_LENGTH;
+	memcpy(request.lun_number, iocommand.LUN_info.LunAddrBytes, sizeof(request.lun_number));
+	memcpy(request.cdb, iocommand.Request.CDB, iocommand.Request.CDBLen);
+	request.additional_cdb_bytes_usage = SOP_ADDITIONAL_CDB_BYTES_0;
+
+	switch (iocommand.Request.Type.Direction) {
+	case XFER_NONE:
+		request.data_direction = SOP_NO_DIRECTION_FLAG;
+		break;
+	case XFER_WRITE:
+		request.data_direction = SOP_WRITE_FLAG;
+		break;
+	case XFER_READ:
+		request.data_direction = SOP_READ_FLAG;
+		break;
+	case XFER_READ | XFER_WRITE:
+		request.data_direction = SOP_BIDIRECTIONAL;
+		break;
+	}
+
+	request.task_attribute = SOP_TASK_ATTRIBUTE_SIMPLE;
+
+	if (iocommand.buf_size > 0) {
+		put_unaligned_le32(iocommand.buf_size, &request.buffer_length);
+
+		rc = pqi_map_single(ctrl_info->pci_dev,
+			&request.sg_descriptors[0], kernel_buffer,
+			iocommand.buf_size, DMA_BIDIRECTIONAL);
+		if (rc)
+			goto out;
+
+		iu_length += sizeof(request.sg_descriptors[0]);
+	}
+
+	put_unaligned_le16(iu_length, &request.header.iu_length);
+
+	if (ctrl_info->raid_iu_timeout_supported)
+		put_unaligned_le32(iocommand.Request.Timeout, &request.timeout);
+
+	rc = pqi_submit_raid_request_synchronous(ctrl_info, &request.header,
+		PQI_SYNC_FLAGS_INTERRUPTABLE, &pqi_error_info);
+
+	if (iocommand.buf_size > 0)
+		pqi_pci_unmap(ctrl_info->pci_dev, request.sg_descriptors, 1, DMA_BIDIRECTIONAL);
+
+	memset(&iocommand.error_info, 0, sizeof(iocommand.error_info));
+
+	if (rc == 0) {
+		pqi_error_info_to_ciss(&pqi_error_info, &ciss_error_info);
+		iocommand.error_info.ScsiStatus = ciss_error_info.scsi_status;
+		iocommand.error_info.CommandStatus = ciss_error_info.command_status;
+		sense_data_length = ciss_error_info.sense_data_length;
+		if (sense_data_length) {
+			if (sense_data_length > sizeof(iocommand.error_info.SenseInfo))
+				sense_data_length = sizeof(iocommand.error_info.SenseInfo);
+			memcpy(iocommand.error_info.SenseInfo,
+				pqi_error_info.data, sense_data_length);
+			iocommand.error_info.SenseLen = sense_data_length;
+		}
+	}
+
+	if (copy_to_user(arg, &iocommand, sizeof(iocommand))) {
+		rc = -EFAULT;
+		goto out;
+	}
+
+	if (rc == 0 && iocommand.buf_size > 0 &&
+		(iocommand.Request.Type.Direction & XFER_READ)) {
+		if (copy_to_user(iocommand.buf, kernel_buffer,
+			iocommand.buf_size)) {
+			rc = -EFAULT;
+		}
+	}
+
+out:
+	kfree(kernel_buffer);
+
+	return rc;
+}
+
 static int pqi_ioctl(struct scsi_device *sdev, unsigned int cmd,
 		     void __user *arg)
 {
@@ -6957,6 +7095,12 @@ static int pqi_ioctl(struct scsi_device *sdev, unsigned int cmd,
 		break;
 	case CCISS_PASSTHRU:
 		rc = pqi_passthru_ioctl(ctrl_info, arg);
+		break;
+	case CCISS_BIG_PASSTHRU:
+		rc = pqi_big_passthru_ioctl(ctrl_info, arg);
+		break;
+	case CCISS_BIG_PASSTHRU_SUPPORTED:
+		rc = 0;
 		break;
 	default:
 		rc = -EINVAL;
@@ -10172,7 +10316,27 @@ static const struct pci_device_id pqi_pci_id_table[] = {
 	},
 	{
 		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
+			       0x207d, 0x4246)
+	},
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
+			       0x207d, 0x4256)
+	},
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
+			       0x207d, 0x4356)
+	},
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
 			       0x207d, 0x4840)
+	},
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
+			       0x207d, 0x4940)
+	},
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
+			       0x207d, 0x4a46)
 	},
 	{
 		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
@@ -10360,6 +10524,18 @@ static const struct pci_device_id pqi_pci_id_table[] = {
 	},
 	{
 		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
+			       0x1cf2, 0x5451)
+	},
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
+			       0x1cf2, 0x5452)
+	},
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
+			       0x1cf2, 0x5453)
+	},
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
 			       0x1cf2, 0x54da)
 	},
 	{
@@ -10397,6 +10573,10 @@ static const struct pci_device_id pqi_pci_id_table[] = {
 	{
 		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
 			       0x1f3f, 0x0610)
+	},
+	{
+		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,
+			       0x1f3f, 0x0670)
 	},
 	{
 		PCI_DEVICE_SUB(PCI_VENDOR_ID_ADAPTEC2, 0x028f,

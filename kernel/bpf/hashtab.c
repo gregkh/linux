@@ -517,7 +517,7 @@ static int bpf_ma_set_dtor(struct bpf_map *map, struct bpf_mem_alloc *ma,
 	if (IS_ERR_OR_NULL(map->record))
 		return 0;
 
-	hrec = kzalloc(sizeof(*hrec), GFP_KERNEL);
+	hrec = kzalloc_obj(*hrec);
 	if (!hrec)
 		return -ENOMEM;
 	hrec->key_size = map->key_size;
@@ -1015,7 +1015,6 @@ static void dec_elem_count(struct bpf_htab *htab)
 	else
 		atomic_dec(&htab->count);
 }
-
 
 static void free_htab_elem(struct bpf_htab *htab, struct htab_elem *l)
 {
@@ -2999,7 +2998,6 @@ static int rhtab_delete_elem(struct bpf_rhtab *rhtab, struct rhtab_elem *elem, v
 	bpf_mem_cache_free_rcu(&rhtab->ma, elem);
 	return 0;
 }
-
 
 static long rhtab_map_delete_elem(struct bpf_map *map, void *key)
 {

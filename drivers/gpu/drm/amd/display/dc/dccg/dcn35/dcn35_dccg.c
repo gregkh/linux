@@ -1654,7 +1654,7 @@ void dccg35_set_dpstreamclk_root_clock_gating(struct dccg *dccg, int dp_hpo_inst
 
 
 
-static void dccg35_set_hdmistreamclk(
+void dccg35_set_hdmistreamclk(
 		struct dccg *dccg,
 		enum streamclk_source src,
 		uint32_t otg_inst)
@@ -1680,8 +1680,11 @@ void dccg35_set_hdmistreamclk_root_clock_gating(struct dccg *dccg, bool enable)
 {
 	struct dcn_dccg *dccg_dcn = TO_DCN_DCCG(dccg);
 
-	if (dccg->ctx->dc->debug.root_clock_optimization.bits.hdmistream)
-		REG_UPDATE(DCCG_GATE_DISABLE_CNTL6, HDMISTREAMCLK0_ROOT_GATE_DISABLE, enable ? 1 : 0);
+	if (!dccg->ctx->dc->debug.root_clock_optimization.bits.hdmistream && !enable) {
+		DC_LOG_DEBUG("%s: HDMISTREAMCLK0_ROOT_GATE DISABLE = 0 bypassed", __func__);
+		return;
+	}
+	REG_UPDATE(DCCG_GATE_DISABLE_CNTL6, HDMISTREAMCLK0_ROOT_GATE_DISABLE, enable ? 1 : 0);
 
 	DC_LOG_DEBUG("%s: HDMISTREAMCLK0_ROOT_GATE_DISABLE = %d\n", __func__, enable ? 1 : 0);
 }

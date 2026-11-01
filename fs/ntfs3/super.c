@@ -23,6 +23,7 @@
  * allocated_size                - Total size of clusters allocated for non-resident content
  * total_size                    - Actual size of allocated clusters for sparse or compressed attributes
  *                               - Constraint: valid_size <= data_size <= allocated_size
+ * ADS                           - Alternative data stream: Named data attribute (0x80)
  *
  * WSL - Windows Subsystem for Linux
  * https://docs.microsoft.com/en-us/windows/wsl/file-permissions
@@ -250,6 +251,11 @@ static inline void put_mount_options(struct ntfs_mount_options *options)
 	kfree(options);
 }
 
+static void put_mount_options_rcu(struct rcu_head *head)
+{
+	put_mount_options(container_of(head, struct ntfs_mount_options, rcu));
+}
+
 enum Opt {
 	Opt_uid,
 	Opt_gid,
@@ -272,6 +278,8 @@ enum Opt {
 	Opt_nocase,
 	Opt_delalloc,
 	Opt_delalloc_bool,
+	Opt_ads,
+	Opt_ads_bool,
 	Opt_err,
 };
 
@@ -298,6 +306,8 @@ static const struct fs_parameter_spec ntfs_fs_parameters[] = {
 	fsparam_flag("nocase",		Opt_nocase),
 	fsparam_flag("delalloc",	Opt_delalloc),
 	fsparam_bool("delalloc",	Opt_delalloc_bool),
+	fsparam_flag("ads",		Opt_ads),
+	fsparam_bool("ads",		Opt_ads_bool),
 	{}
 };
 // clang-format on
@@ -421,6 +431,12 @@ static int ntfs_fs_parse_param(struct fs_context *fc,
 	case Opt_delalloc_bool:
 		opts->delalloc = result.boolean;
 		break;
+	case Opt_ads:
+		opts->ads = 1;
+		break;
+	case Opt_ads_bool:
+		opts->ads = result.boolean;
+		break;
 	default:
 		/* Should not be here unless we forget add case. */
 		return -EINVAL;
@@ -433,6 +449,7 @@ static int ntfs_fs_reconfigure(struct fs_context *fc)
 	struct super_block *sb = fc->root->d_sb;
 	struct ntfs_sb_info *sbi = sb->s_fs_info;
 	struct ntfs_mount_options *new_opts = fc->fs_private;
+	struct ntfs_mount_options *old_opts;
 	int ro_rw;
 
 	ro_rw = sb_rdonly(sb) && !(fc->sb_flags & SB_RDONLY);
@@ -462,7 +479,15 @@ static int ntfs_fs_reconfigure(struct fs_context *fc)
 	}
 
 	sync_filesystem(sb);
-	swap(sbi->options, fc->fs_private);
+	old_opts = sbi->options;
+	/* pairs with the READ_ONCE() in ntfs_nls_to_utf16() */
+	smp_store_release(&sbi->options, new_opts);
+	fc->fs_private = NULL;
+	/*
+	 * ntfs_d_hash() and ntfs_d_compare() of a pathwalk in rcu mode may
+	 * still read the old options through the sbi.
+	 */
+	call_rcu(&old_opts->rcu, put_mount_options_rcu);
 
 	return 0;
 }
@@ -799,6 +824,8 @@ static int ntfs_show_options(struct seq_file *m, struct dentry *root)
 		seq_puts(m, ",nocase");
 	if (opts->delalloc)
 		seq_puts(m, ",delalloc");
+	if (opts->ads)
+		seq_puts(m, ",ads");
 
 	return 0;
 }
@@ -1205,7 +1232,7 @@ read_boot:
 #ifdef CONFIG_NTFS3_64BIT_CLUSTER
 	if (clusters >= (1ull << (64 - cluster_bits)))
 		sbi->maxbytes = -1;
-	sbi->maxbytes_sparse = -1;
+	sbi->maxbytes_sparse = MAX_LFS_FILESIZE;
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 #else
 	/* Maximum size for sparse file. */
@@ -1474,7 +1501,10 @@ static int ntfs_fill_super(struct super_block *sb, struct fs_context *fc)
 					    Add2Ptr(a, roff),
 					    le32_to_cpu(a->size) - roff);
 			if (err < 0) {
-				ntfs_err(sb, "Failed to unpack $MFT bitmap extent (%d).", err);
+				ntfs_err(
+					sb,
+					"Failed to unpack $MFT bitmap extent (%d).",
+					err);
 				goto put_inode_out;
 			}
 			err = 0;
@@ -1882,9 +1912,9 @@ static int ntfs_init_fs_context(struct fs_context *fc)
 	/* Default options. */
 	opts->fs_uid = current_uid();
 	opts->fs_gid = current_gid();
-	opts->fs_fmask_inv = ~current_umask();
-	opts->fs_dmask_inv = ~current_umask();
+	opts->fs_fmask_inv = opts->fs_dmask_inv = ~current_umask();
 	opts->prealloc = 1;
+	opts->ads = 1;
 
 #ifdef CONFIG_NTFS3_FS_POSIX_ACL
 	/* Set the default value 'acl' */
@@ -1946,7 +1976,6 @@ static struct file_system_type ntfs_fs_type = {
 	.kill_sb		= ntfs3_kill_sb,
 	.fs_flags		= FS_REQUIRES_DEV | FS_ALLOW_IDMAP,
 };
-
 // clang-format on
 
 static int __init init_ntfs_fs(void)

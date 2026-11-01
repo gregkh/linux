@@ -339,14 +339,15 @@ static struct btrfs_backref_node *walk_down_backref(
 
 static bool reloc_root_is_dead(const struct btrfs_root *root)
 {
-	/*
-	 * Pair with set_bit/clear_bit in clean_dirty_subvols and
-	 * btrfs_update_reloc_root. We need to see the updated bit before
-	 * trying to access reloc_root
-	 */
-	smp_rmb();
 	if (test_bit(BTRFS_ROOT_DEAD_RELOC_TREE, &root->state))
 		return true;
+	/*
+	 * Pairs with set_bit/clear_bit in clear_reloc_root() and
+	 * btrfs_update_reloc_root(). We need to see the updated bit before
+	 * trying to access root->reloc_root in our callers.
+	 */
+	smp_rmb();
+
 	return false;
 }
 
@@ -4151,10 +4152,10 @@ static int copy_remapped_data(struct btrfs_fs_info *fs_info, u64 old_addr,
 			      u64 new_addr, u64 length)
 {
 	int ret;
-	u64 copy_len = min_t(u64, length, SZ_1M);
+	const u64 copy_len = min_t(u64, length, SZ_1M);
 	struct page **pages;
 	struct reloc_io_private priv;
-	unsigned int nr_pages = DIV_ROUND_UP(length, PAGE_SIZE);
+	const unsigned int nr_pages = DIV_ROUND_UP(copy_len, PAGE_SIZE);
 
 	pages = kzalloc_objs(struct page *, nr_pages, GFP_NOFS);
 	if (!pages)

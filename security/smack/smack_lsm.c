@@ -3378,6 +3378,8 @@ smk_tskacc_msq(struct task_struct *tsk, struct kern_ipc_perm *isp, int access)
 #ifdef CONFIG_AUDIT
 	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_IPC);
 	ad.a.u.ipc_id = isp->id;
+	if (!tsk_is_current)
+		ad.sad.subj_tsk = tsk;
 #endif
 	rc = smk_tskacc(tsp, msp, access, &ad);
 	rc = smk_bu_tsk_to_obj(tsk, tsp, "msq", msp, access, rc);

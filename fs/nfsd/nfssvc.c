@@ -237,15 +237,21 @@ static void nfsd_net_free(struct percpu_ref *ref)
  */
 #define	NFSD_MAXSERVS		8192
 
+/**
+ * nfsd_nrthreads - report a namespace's configured nfsd thread count
+ * @net: network namespace to query
+ *
+ * Return: the configured thread ceiling, or 0 when no service runs.
+ */
 int nfsd_nrthreads(struct net *net)
 {
-	int i, rv = 0;
+	int rv = 0;
 	struct nfsd_net *nn = net_generic(net, nfsd_net_id);
 
+	/* nfsd_mutex keeps nn->nfsd_serv valid across the read. */
 	mutex_lock(&nfsd_mutex);
 	if (nn->nfsd_serv)
-		for (i = 0; i < nn->nfsd_serv->sv_nrpools; ++i)
-			rv += nn->nfsd_serv->sv_pools[i].sp_nrthrmax;
+		rv = svc_serv_maxthreads(nn->nfsd_serv);
 	mutex_unlock(&nfsd_mutex);
 	return rv;
 }
@@ -649,7 +655,7 @@ int nfsd_nrpools(struct net *net)
 	if (nn->nfsd_serv == NULL)
 		return 0;
 	else
-		return nn->nfsd_serv->sv_nrpools;
+		return svc_serv_nrpools(nn->nfsd_serv);
 }
 
 int nfsd_get_nrthreads(int n, int *nthreads, struct net *net)
@@ -659,7 +665,7 @@ int nfsd_get_nrthreads(int n, int *nthreads, struct net *net)
 	int i;
 
 	if (serv)
-		for (i = 0; i < serv->sv_nrpools && i < n; i++)
+		for (i = 0; i < svc_serv_nrpools(serv) && i < n; i++)
 			nthreads[i] = serv->sv_pools[i].sp_nrthrmax;
 	return 0;
 }
@@ -693,8 +699,8 @@ int nfsd_set_nrthreads(int n, int *nthreads, struct net *net)
 	if (n == 1)
 		return svc_set_num_threads(nn->nfsd_serv, nn->min_threads, nthreads[0]);
 
-	if (n > nn->nfsd_serv->sv_nrpools)
-		n = nn->nfsd_serv->sv_nrpools;
+	if (n > svc_serv_nrpools(nn->nfsd_serv))
+		n = svc_serv_nrpools(nn->nfsd_serv);
 
 	/* enforce a global maximum number of threads */
 	tot = 0;
@@ -725,7 +731,7 @@ int nfsd_set_nrthreads(int n, int *nthreads, struct net *net)
 	}
 
 	/* Anything undefined in array is considered to be 0 */
-	for (i = n; i < nn->nfsd_serv->sv_nrpools; ++i) {
+	for (i = n; i < svc_serv_nrpools(nn->nfsd_serv); ++i) {
 		err = svc_set_pool_threads(nn->nfsd_serv,
 					   &nn->nfsd_serv->sv_pools[i],
 					   0, 0);

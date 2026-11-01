@@ -27,6 +27,7 @@
 #include "vnic_stats.h"
 #include "vnic_scsi.h"
 #include "fnic_fdls.h"
+#include "fnic_nvme.h"
 
 #define DRV_NAME		"fnic"
 #define DRV_DESCRIPTION		"Cisco FCoE HBA Driver"
@@ -43,6 +44,7 @@
 #define FNIC_DFLT_QUEUE_DEPTH	256
 #define	FNIC_STATS_RATE_LIMIT	4 /* limit rate at which stats are pulled up */
 #define LUN0_DELAY_TIME			9
+#define FNIC_ROLE_CONFIG_MASK   (0xFF0)
 
 /*
  * Tag bits used for special requests.
@@ -79,6 +81,8 @@
 #define FNIC_DEV_RST_ABTS_DONE          BIT(19)
 #define FNIC_DEV_RST_TERM_DONE          BIT(20)
 #define FNIC_DEV_RST_ABTS_PENDING       BIT(21)
+#define FNIC_NVME_ADMIN_IO_TIMER_PENDING BIT(22)
+#define FNIC_NVME_ADMIN_IO              BIT(23)
 
 #define FNIC_FW_RESET_TIMEOUT        60000	/* mSec   */
 #define FNIC_FCOE_MAX_CMD_LEN        16
@@ -237,7 +241,7 @@ extern spinlock_t reset_fnic_list_lock;
 extern struct list_head reset_fnic_list;
 extern struct workqueue_struct *reset_fnic_work_queue;
 extern struct work_struct reset_fnic_work;
-
+extern struct workqueue_struct *fnic_cmpl_queue;
 
 #define FNIC_MAIN_LOGGING 0x01
 #define FNIC_FCS_LOGGING 0x02
@@ -349,6 +353,11 @@ struct fnic_frame_list {
 	void *fp;
 	int frame_len;
 	int rx_ethhdr_stripped;
+};
+
+struct fnic_tag_t {
+	struct list_head free_list;
+	int tag_id;
 };
 
 struct fnic_event {
@@ -468,6 +477,15 @@ struct fnic {
 	struct list_head vlan_list;
 	/*** FIP related data members  -- end ***/
 
+	/* NVME data members */
+	struct dentry *fnic_nvmef_debugfs_host;
+	struct dentry *fnic_nvmef_debugfs_file;
+	struct sbitmap nvfnic_tag_map;
+	struct work_struct nvme_io_cmpl_work;
+	atomic_t nvme_io_event_queued;
+	struct llist_head nvme_io_event_llist;
+	struct completion *nvme_lport_unreg_done;
+
 	/* copy work queue cache line section */
 	____cacheline_aligned struct vnic_wq_copy hw_copy_wq[FNIC_WQ_COPY_MAX];
 	____cacheline_aligned struct fnic_cpy_wq sw_copy_wq[FNIC_WQ_COPY_MAX];
@@ -521,6 +539,7 @@ int fnic_host_reset(struct Scsi_Host *shost);
 void fnic_reset(struct Scsi_Host *shost);
 int fnic_issue_fc_host_lip(struct Scsi_Host *shost);
 void fnic_get_host_port_state(struct Scsi_Host *shost);
+void fnic_fcpio_reset(struct fnic *fnic);
 int fnic_wq_copy_cmpl_handler(struct fnic *fnic, int copy_work_to_do, unsigned int cq_index);
 int fnic_wq_cmpl_handler(struct fnic *fnic, int);
 int fnic_flogi_reg_handler(struct fnic *fnic, u32);
@@ -534,6 +553,9 @@ void fnic_log_q_error(struct fnic *fnic);
 void fnic_handle_link_event(struct fnic *fnic);
 int fnic_stats_debugfs_init(struct fnic *fnic);
 void fnic_stats_debugfs_remove(struct fnic *fnic);
+void fnic_nvmef_debugfs_init(struct fnic *fnic);
+void fnic_nvmef_debugfs_remove(struct fnic *fnic);
+int nvfnic_get_nvmef_info(struct fnic *fnic, struct fnic_nvmef_info *info);
 int fnic_is_abts_pending(struct fnic *, struct scsi_cmnd *);
 
 void fnic_handle_fip_frame(struct work_struct *work);
@@ -567,6 +589,8 @@ void fnic_scsi_unload(struct fnic *fnic);
 void fnic_scsi_unload_cleanup(struct fnic *fnic);
 int fnic_get_debug_info(struct stats_debug_info *info,
 			struct fnic *fnic);
+int free_wq_copy_descs(struct fnic *fnic, struct vnic_wq_copy *wq,
+			unsigned int hwq);
 
 struct fnic_scsi_iter_data {
 	struct fnic *fnic;

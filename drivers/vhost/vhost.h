@@ -29,6 +29,7 @@ struct vhost_work {
 
 struct vhost_worker;
 struct vhost_dev;
+struct vhost_msg_node;
 
 struct vhost_worker_ops {
 	int (*create)(struct vhost_worker *worker, struct vhost_dev *dev,
@@ -148,6 +149,8 @@ struct vhost_virtqueue {
 	/* Protected by virtqueue mutex. */
 	struct vhost_iotlb *umem;
 	struct vhost_iotlb *iotlb;
+	/* Protected by dev->iotlb_lock. */
+	struct vhost_msg_node *iotlb_miss;
 	void *private_data;
 	VIRTIO_DECLARE_FEATURES(acked_features);
 	u64 acked_backend_features;

@@ -692,7 +692,6 @@ static void cec_pin_rx_states(struct cec_pin *pin, ktime_t ts)
 		v = cec_pin_read(pin);
 		if (!v)
 			break;
-		pin->state = CEC_ST_RX_START_BIT_HIGH;
 		delta = ktime_us_delta(ts, pin->ts);
 		/* Start bit low is too short, go back to idle */
 		if (delta < CEC_TIM_START_BIT_LOW_MIN - CEC_TIM_IDLE_SAMPLE) {
@@ -703,7 +702,16 @@ static void cec_pin_rx_states(struct cec_pin *pin, ktime_t ts)
 			cec_pin_to_idle(pin);
 			break;
 		}
+		pin->state = CEC_ST_RX_START_BIT_HIGH;
 		if (rx_arb_lost(pin, &poll)) {
+			/*
+			 * Normally rx_toggle is toggled in cec_pin_to_idle()
+			 * when we're in an RX state, but here we switch to TX
+			 * mode, so cec_pin_to_idle() sees a TX mode and never
+			 * toggles rx_toggle. So toggle it here as a special
+			 * corner case.
+			 */
+			pin->rx_toggle ^= 1;
 			cec_msg_init(&pin->tx_msg, poll >> 4, poll & 0xf);
 			pin->tx_generated_poll = true;
 			pin->tx_extra_bytes = 0;

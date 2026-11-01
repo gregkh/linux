@@ -84,14 +84,14 @@ static int rvt_query_device(struct ib_device *ibdev,
 	struct rvt_dev_info *rdi = ib_to_rvt(ibdev);
 	int err;
 
-	err = ib_is_udata_in_empty(uhw);
+	err = ib_no_udata_io(uhw);
 	if (err)
 		return err;
 	/*
 	 * Return rvt_dev_info.dparms.props contents
 	 */
 	*props = rdi->dparms.props;
-	return ib_respond_empty_udata(uhw);
+	return 0;
 }
 
 static int rvt_get_numa_node(struct ib_device *ibdev)

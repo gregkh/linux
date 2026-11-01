@@ -2,11 +2,18 @@
 #include "io_uring.h"
 #include "wait.h"
 #include "loop.h"
+#include "tctx.h"
 
 static inline int io_loop_nr_cqes(const struct io_ring_ctx *ctx,
 				  const struct iou_loop_params *lp)
 {
 	return lp->cq_wait_idx - READ_ONCE(ctx->rings->cq.tail);
+}
+
+static inline void io_loop_wait_start(struct io_ring_ctx *ctx, unsigned nr_wait)
+{
+	atomic_set(&ctx->cq_wait_nr, nr_wait);
+	set_current_state(TASK_INTERRUPTIBLE);
 }
 
 static inline void io_loop_wait_finish(struct io_ring_ctx *ctx)
@@ -18,7 +25,7 @@ static inline void io_loop_wait_finish(struct io_ring_ctx *ctx)
 static void io_loop_wait(struct io_ring_ctx *ctx, struct iou_loop_params *lp,
 			 unsigned nr_wait)
 {
-	io_cq_wait_arm(ctx, nr_wait);
+	io_loop_wait_start(ctx, nr_wait);
 
 	if (unlikely(io_local_work_pending(ctx) ||
 		     io_loop_nr_cqes(ctx, lp) <= 0) ||
@@ -74,6 +81,10 @@ static int __io_run_loop(struct io_ring_ctx *ctx)
 int io_run_loop(struct io_ring_ctx *ctx)
 {
 	int ret;
+
+	ret = io_uring_add_tctx_node(ctx);
+	if (unlikely(ret))
+		return ret;
 
 	if (!io_allowed_run_tw(ctx))
 		return -EEXIST;

@@ -919,3 +919,60 @@ module_exit(kone_exit);
 MODULE_AUTHOR("Stefan Achatz");
 MODULE_DESCRIPTION("USB Roccat Kone driver");
 MODULE_LICENSE("GPL v2");
+
+#if IS_ENABLED(CONFIG_HID_ROCCAT_KONE_KUNIT_TEST)
+#include <kunit/test.h>
+
+/*
+ * Regression test for the out-of-bounds read in
+ * kone_keep_values_up_to_date(): a malicious USB device sends a
+ * "switch profile" HID event (event == kone_mouse_event_switch_profile)
+ * with an attacker-chosen value in 0..255, which is used unbounded as
+ * profiles[value - 1].  On an unpatched kernel the attack case triggers a
+ * KASAN slab-out-of-bounds read; the fix must leave actual_dpi unchanged.
+ */
+static void kone_profile_index_oob_test(struct kunit *test)
+{
+	struct kone_device *kone;
+	struct kone_mouse_event ev = {};
+	/*
+	 * Allocate only up to the end of profiles[] so that any index past
+	 * the 5-element array is IMMEDIATELY out of bounds and lands in the
+	 * KASAN redzone (a far over-read would hit unrelated valid memory and
+	 * escape KASAN).
+	 */
+	size_t sz = offsetof(struct kone_device, profiles) +
+		    sizeof(kone->profiles);
+
+	kone = kunit_kzalloc(test, sz, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, kone);
+	kone->profiles[0].startup_dpi = 0x42;
+
+	/* benign control: a valid in-range value drives the SAME path and
+	 * must succeed (proves the trigger reaches the real code).
+	 */
+	ev.event = kone_mouse_event_switch_profile;
+	ev.value = 1;
+	kone_keep_values_up_to_date(kone, &ev);
+	KUNIT_EXPECT_EQ(test, kone->actual_dpi, 0x42);
+
+	/* attack: value == ARRAY_SIZE(profiles) + 1 reads profiles[5], one
+	 * element past the array end -> KASAN slab-out-of-bounds read on an
+	 * unpatched kernel. The fix must reject it (actual_dpi unchanged).
+	 */
+	ev.value = ARRAY_SIZE(kone->profiles) + 1;
+	kone_keep_values_up_to_date(kone, &ev);
+	KUNIT_EXPECT_EQ(test, kone->actual_dpi, 0x42);
+}
+
+static struct kunit_case kone_test_cases[] = {
+	KUNIT_CASE(kone_profile_index_oob_test),
+	{}
+};
+
+static struct kunit_suite kone_test_suite = {
+	.name = "hid-roccat-kone",
+	.test_cases = kone_test_cases,
+};
+kunit_test_suite(kone_test_suite);
+#endif /* CONFIG_HID_ROCCAT_KONE_KUNIT_TEST */

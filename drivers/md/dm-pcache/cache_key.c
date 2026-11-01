@@ -288,7 +288,7 @@ int cache_subtree_walk(struct pcache_cache_subtree_walk_ctx *ctx)
 
 		/*
 		 * If key_tmp starts after the end of key, stop traversing.
-		 *	  |--------|
+		 *        |--------|
 		 * |====|
 		 */
 		if (cache_key_lstart(key_tmp) >= cache_key_lend(key)) {
@@ -811,12 +811,12 @@ int cache_replay(struct pcache_cache *cache)
 
 			pcache_dev_debug(pcache, "last kset replay, next: %u\n", kset_onmedia->next_cache_seg_id);
 
-			if (++last_hops > cache->n_segs) {
+			if (!cache_seg_id_valid(cache, kset_onmedia->next_cache_seg_id)) {
 				ret = -EIO;
 				goto out;
 			}
 
-			if (!cache_seg_id_valid(cache, kset_onmedia->next_cache_seg_id)) {
+			if (++last_hops > cache->n_segs) {
 				ret = -EIO;
 				goto out;
 			}
@@ -895,7 +895,7 @@ int cache_verify_dirty_tail(struct pcache_cache *cache)
 		}
 
 		if (kset_onmedia->flags & PCACHE_KSET_FLAGS_LAST) {
-			if (kset_onmedia->next_cache_seg_id >= cache->cache_info.n_segs) {
+			if (!cache_seg_id_valid(cache, kset_onmedia->next_cache_seg_id)) {
 				ret = -EIO;
 				goto out;
 			}

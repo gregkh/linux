@@ -70,6 +70,7 @@ struct ivpu_ipc_info {
 	struct gen_pool *mm_tx;
 	struct ivpu_bo *mem_tx;
 	struct ivpu_bo *mem_rx;
+	struct kmem_cache *rx_msg_cache;
 
 	atomic_t rx_msg_count;
 

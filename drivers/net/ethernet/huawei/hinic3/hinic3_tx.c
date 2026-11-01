@@ -581,8 +581,6 @@ static netdev_tx_t hinic3_send_one_skb(struct sk_buff *skb,
 		*wqe_combo.task = task;
 
 	tx_info = &txq->tx_info[pi];
-	tx_info->skb = skb;
-	tx_info->wqebb_cnt = wqebb_cnt;
 
 	err = hinic3_tx_map_skb(netdev, skb, txq, tx_info, &wqe_combo);
 	if (err) {
@@ -591,6 +589,9 @@ static netdev_tx_t hinic3_send_one_skb(struct sk_buff *skb,
 		txq->sq->owner = saved_sq_owner;
 		goto err_drop_pkt;
 	}
+
+	tx_info->skb = skb;
+	tx_info->wqebb_cnt = wqebb_cnt;
 
 	netif_subqueue_sent(netdev, txq->sq->q_id, skb->len);
 	netif_subqueue_maybe_stop(netdev, txq->sq->q_id,

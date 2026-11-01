@@ -413,7 +413,6 @@ int exfat_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 		 * about to be freed.
 		 */
 		inode_dio_wait(inode);
-		down_write(&EXFAT_I(inode)->truncate_lock);
 		truncate_setsize(inode, attr->ia_size);
 
 		/*
@@ -421,7 +420,6 @@ int exfat_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 		 * is already written by it, so mark_inode_dirty() is unneeded.
 		 */
 		exfat_truncate(inode);
-		up_write(&EXFAT_I(inode)->truncate_lock);
 	} else
 		mark_inode_dirty(inode);
 
@@ -566,7 +564,7 @@ static int exfat_ioctl_get_volume_label(struct super_block *sb, unsigned long ar
 	if (ret < 0)
 		return ret;
 
-	ret = exfat_utf16_to_nls(sb, &uniname, label, uniname.name_len);
+	ret = exfat_utf16_to_nls(sb, &uniname, label, sizeof(label));
 	if (ret < 0)
 		return ret;
 

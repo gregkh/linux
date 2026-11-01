@@ -1469,6 +1469,9 @@ int kvm_vcpu_ioctl_interrupt(struct kvm_vcpu *vcpu, struct kvm_interrupt *irq)
 	if (vector >= EXCCODE_INT_NUM)
 		return -EINVAL;
 
+	if (kvm_arch_irqchip_in_kernel(vcpu->kvm))
+		return -EINVAL;
+
 	if (!kvm_guest_has_msgint(&vcpu->arch) && (vector == INT_AVEC))
 		return -EINVAL;
 
@@ -1477,7 +1480,7 @@ int kvm_vcpu_ioctl_interrupt(struct kvm_vcpu *vcpu, struct kvm_interrupt *irq)
 	else if (intr < 0)
 		kvm_dequeue_irq(vcpu, -intr);
 	else {
-		kvm_err("%s: invalid interrupt ioctl %d\n", __func__, irq->irq);
+		kvm_pr_unimpl("%s: invalid interrupt ioctl %d\n", __func__, irq->irq);
 		return -EINVAL;
 	}
 

@@ -138,6 +138,15 @@ test_kvm_stat_live() {
 	echo "perf kvm stat live test [Success]"
 }
 
+test_kvm_default_event() {
+	echo "Testing perf kvm record default event with command line"
+
+	# Check if kvm record with default events handle command line arguments
+	perf kvm record -p "${qemu_pid}" -o /dev/null sleep 1
+
+	echo "perf kvm record default event [Success]"
+}
+
 setup_qemu() {
 	# Find qemu
 	if [ "$(uname -m)" = "x86_64" ]; then
@@ -191,6 +200,7 @@ if [ $err -eq 0 ]; then
 	test_kvm_record_report
 	test_kvm_buildid_list
 	test_kvm_stat_live
+	test_kvm_default_event
 fi
 
 cleanup

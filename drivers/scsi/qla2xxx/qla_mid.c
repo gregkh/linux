@@ -574,7 +574,7 @@ qla25xx_free_req_que(struct scsi_qla_host *vha, struct req_que *req)
 {
 	struct qla_hw_data *ha = vha->hw;
 	uint16_t que_id = req->id;
-	size_t req_entry_size = sizeof(request_t);
+	size_t req_entry_size = qla_req_entry_size(ha);
 
 	if (req->ring)
 		dma_free_coherent(&ha->pdev->dev,
@@ -597,7 +597,7 @@ qla25xx_free_rsp_que(struct scsi_qla_host *vha, struct rsp_que *rsp)
 {
 	struct qla_hw_data *ha = vha->hw;
 	uint16_t que_id = rsp->id;
-	size_t rsp_entry_size = sizeof(response_t);
+	size_t rsp_entry_size = qla_rsp_entry_size(ha);
 
 	if (rsp->msix && rsp->msix->have_irq) {
 		free_irq(rsp->msix->vector, rsp->msix->handle);
@@ -717,6 +717,7 @@ qla25xx_create_req_que(struct qla_hw_data *ha, uint16_t options,
 	uint16_t que_id = 0;
 	device_reg_t *reg;
 	uint32_t cnt;
+	size_t req_entry_size = qla_req_entry_size(ha);
 
 	req = kzalloc_obj(struct req_que);
 	if (req == NULL) {
@@ -727,12 +728,16 @@ qla25xx_create_req_que(struct qla_hw_data *ha, uint16_t options,
 
 	req->length = REQUEST_ENTRY_CNT_24XX;
 	req->ring = dma_alloc_coherent(&ha->pdev->dev,
-			(req->length + 1) * sizeof(request_t),
+			(req->length + 1) * req_entry_size,
 			&req->dma, GFP_KERNEL);
 	if (req->ring == NULL) {
 		ql_log(ql_log_fatal, base_vha, 0x00da,
 		    "Failed to allocate memory for request_ring.\n");
 		goto que_failed;
+	}
+	if (IS_QLA29XX(ha)) {
+		req->ring_ext = (struct request_ext *)req->ring;
+		req->ring_ext_ptr = req->ring_ext;
 	}
 
 	ret = qla2x00_alloc_outstanding_cmds(ha, req);
@@ -779,7 +784,15 @@ qla25xx_create_req_que(struct qla_hw_data *ha, uint16_t options,
 		req->outstanding_cmds[cnt] = NULL;
 	req->current_outstanding_cmd = 1;
 
+	/*
+	 * Re-anchor both the 24xx (ring_ptr) and 29xx (ring_ext_ptr) views
+	 * at the start of the ring.  Keeping them reset together here
+	 * guarantees they stay in sync with ring_index=0 regardless of any
+	 * prior allocator/fast-path advances against this queue.
+	 */
 	req->ring_ptr = req->ring;
+	if (IS_QLA29XX(ha))
+		req->ring_ext_ptr = req->ring_ext;
 	req->ring_index = 0;
 	req->cnt = req->length;
 	req->id = que_id;
@@ -787,7 +800,15 @@ qla25xx_create_req_que(struct qla_hw_data *ha, uint16_t options,
 	req->req_q_in = &reg->isp25mq.req_q_in;
 	req->req_q_out = &reg->isp25mq.req_q_out;
 	req->max_q_depth = ha->req_q_map[0]->max_q_depth;
-	req->out_ptr = (uint16_t *)(req->ring + req->length);
+	/*
+	 * out_ptr sits in the scratch slot immediately after the ring.  Use
+	 * the 29xx-stride pointer when the ring is 128-byte-per-entry so the
+	 * pointer arithmetic resolves to the correct byte offset.
+	 */
+	if (IS_QLA29XX(ha))
+		req->out_ptr = (uint16_t *)(req->ring_ext + req->length);
+	else
+		req->out_ptr = (uint16_t *)(req->ring + req->length);
 	mutex_unlock(&ha->mq_lock);
 	ql_dbg(ql_dbg_multiq, base_vha, 0xc004,
 	    "ring_ptr=%p ring_index=%d, "
@@ -841,6 +862,7 @@ qla25xx_create_rsp_que(struct qla_hw_data *ha, uint16_t options,
 	struct scsi_qla_host *vha = pci_get_drvdata(ha->pdev);
 	uint16_t que_id = 0;
 	device_reg_t *reg;
+	size_t rsp_entry_size = qla_rsp_entry_size(ha);
 
 	rsp = kzalloc_obj(struct rsp_que);
 	if (rsp == NULL) {
@@ -851,12 +873,16 @@ qla25xx_create_rsp_que(struct qla_hw_data *ha, uint16_t options,
 
 	rsp->length = RESPONSE_ENTRY_CNT_MQ;
 	rsp->ring = dma_alloc_coherent(&ha->pdev->dev,
-			(rsp->length + 1) * sizeof(response_t),
+			(rsp->length + 1) * rsp_entry_size,
 			&rsp->dma, GFP_KERNEL);
 	if (rsp->ring == NULL) {
 		ql_log(ql_log_warn, base_vha, 0x00e1,
 		    "Failed to allocate memory for response ring.\n");
 		goto que_failed;
+	}
+	if (IS_QLA29XX(ha)) {
+		rsp->ring_ext = (struct response_ext *)rsp->ring;
+		rsp->ring_ext_ptr = rsp->ring_ext;
 	}
 
 	mutex_lock(&ha->mq_lock);
@@ -896,7 +922,10 @@ qla25xx_create_rsp_que(struct qla_hw_data *ha, uint16_t options,
 	reg = ISP_QUE_REG(ha, que_id);
 	rsp->rsp_q_in = &reg->isp25mq.rsp_q_in;
 	rsp->rsp_q_out = &reg->isp25mq.rsp_q_out;
-	rsp->in_ptr = (uint16_t *)(rsp->ring + rsp->length);
+	if (IS_QLA29XX(ha))
+		rsp->in_ptr = (uint16_t *)(rsp->ring_ext + rsp->length);
+	else
+		rsp->in_ptr = (uint16_t *)(rsp->ring + rsp->length);
 	mutex_unlock(&ha->mq_lock);
 	ql_dbg(ql_dbg_multiq, base_vha, 0xc00b,
 	    "options=%x id=%d rsp_q_in=%p rsp_q_out=%p\n",
@@ -960,14 +989,6 @@ int qla24xx_control_vp(scsi_qla_host_t *vha, int cmd)
 	    "Entered %s cmd %x index %d.\n", __func__, cmd, vp_index);
 
 	if (vp_index == 0 || vp_index >= ha->max_npiv_vports)
-		return QLA_PARAMETER_ERROR;
-
-	/*
-	 * The VP_CTRL IOCB selects the target VP through a fixed 128-bit
-	 * (16-byte) vp_idx_map bitmap, so vp_index must fit within it even
-	 * if firmware advertises more NPIV vports.
-	 */
-	if (vp_index > sizeof_field(struct vp_ctrl_entry_24xx, vp_idx_map) * 8)
 		return QLA_PARAMETER_ERROR;
 
 	/*

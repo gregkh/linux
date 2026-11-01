@@ -778,41 +778,41 @@ static void cxl_cper_post_prot_err(struct cxl_cper_sec_prot_err *prot_err,
 #endif
 }
 
-int cxl_cper_register_prot_err_work(struct work_struct *work)
+void cxl_cper_register_prot_err_work(struct work_struct *work)
 {
 	guard(raw_spinlock_irqsave)(&cxl_cper_prot_err_work_lock);
 
 	if (WARN_ONCE(cxl_cper_prot_err_work,
 		      "CPER-CXL kfifo consumer already registered\n"))
-		return -EINVAL;
+		return;
 	cxl_cper_prot_err_work = work;
-	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(cxl_cper_register_prot_err_work, "CXL");
+EXPORT_SYMBOL_FOR_MODULES(cxl_cper_register_prot_err_work, "cxl_core");
 
-int cxl_cper_unregister_prot_err_work(struct work_struct *work)
+void cxl_cper_unregister_prot_err_work(void)
 {
+	struct work_struct *old;
+
 	scoped_guard(raw_spinlock_irqsave, &cxl_cper_prot_err_work_lock) {
-		if (WARN_ONCE(cxl_cper_prot_err_work != work,
-			      "CPER-CXL kfifo consumer mismatch on unregister\n"))
-			return -EINVAL;
+		WARN_ONCE(!cxl_cper_prot_err_work,
+			  "CPER-CXL kfifo consumer not registered on unregister\n");
+		old = cxl_cper_prot_err_work;
 		cxl_cper_prot_err_work = NULL;
 	}
 
-	cancel_work_sync(work);
+	if (old)
+		cancel_work_sync(old);
 
 	/* Discard stale entries so they are not replayed on next module load */
 	kfifo_reset(&cxl_cper_prot_err_fifo);
-
-	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(cxl_cper_unregister_prot_err_work, "CXL");
+EXPORT_SYMBOL_FOR_MODULES(cxl_cper_unregister_prot_err_work, "cxl_core");
 
 int cxl_cper_prot_err_kfifo_get(struct cxl_cper_prot_err_work_data *wd)
 {
 	return kfifo_get(&cxl_cper_prot_err_fifo, wd);
 }
-EXPORT_SYMBOL_NS_GPL(cxl_cper_prot_err_kfifo_get, "CXL");
+EXPORT_SYMBOL_FOR_MODULES(cxl_cper_prot_err_kfifo_get, "cxl_core");
 
 /* Room for 8 entries for each of the 4 event log queues */
 #define CXL_CPER_FIFO_DEPTH 32
@@ -867,12 +867,12 @@ int cxl_cper_register_work(struct work_struct *work)
 }
 EXPORT_SYMBOL_NS_GPL(cxl_cper_register_work, "CXL");
 
-int cxl_cper_unregister_work(struct work_struct *work)
+void cxl_cper_unregister_work(struct work_struct *work)
 {
 	scoped_guard(raw_spinlock_irqsave, &cxl_cper_work_lock) {
 		if (WARN_ONCE(cxl_cper_work != work,
 			      "CXL CPER kfifo consumer mismatch on unregister\n"))
-			return -EINVAL;
+			return;
 		cxl_cper_work = NULL;
 	}
 
@@ -880,8 +880,6 @@ int cxl_cper_unregister_work(struct work_struct *work)
 
 	/* Discard stale entries so they are not replayed on next module load */
 	kfifo_reset(&cxl_cper_fifo);
-
-	return 0;
 }
 EXPORT_SYMBOL_NS_GPL(cxl_cper_unregister_work, "CXL");
 
@@ -1399,8 +1397,16 @@ static int ghes_in_nmi_queue_one_entry(struct ghes *ghes,
 	ghes_clear_estatus(ghes, &tmp_header, buf_paddr, fixmap_idx);
 
 	/* This error has been reported before, don't process it again. */
-	if (ghes_estatus_cached(estatus))
+	if (ghes_estatus_cached(estatus)) {
+		/*
+		 * Return failure on duplicate SEA entries so that the
+		 * subsequent SEA handler invocation sends a SIGBUS signal to
+		 * the task to prevent it from re-entering the handler loop.
+		 */
+		if (is_hest_sync_notify(ghes))
+			rc = -ECANCELED;
 		goto no_work;
+	}
 
 	llist_add(&estatus_node->llnode, &ghes_estatus_llist);
 
@@ -1413,8 +1419,8 @@ no_work:
 	return rc;
 }
 
-static int ghes_in_nmi_spool_from_list(struct list_head *rcu_list,
-				       enum fixed_addresses fixmap_idx)
+static int __maybe_unused ghes_in_nmi_spool_from_list(struct list_head *rcu_list,
+			       enum fixed_addresses fixmap_idx)
 {
 	int ret = -ENOENT;
 	struct ghes *ghes;

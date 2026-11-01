@@ -46,7 +46,7 @@
  * before remapping.
  *
  * Once a zone does not contain any valid data, be that through GC or user
- * block removal, it is queued for for a zone reset.  The reset operation
+ * block removal, it is queued for a zone reset.  The reset operation
  * carefully ensures that the RT device cache is flushed and all transactions
  * referencing the rmap have been committed to disk.
  */
@@ -812,7 +812,7 @@ xfs_zone_gc_split_write(
 
 	split_sectors = bio_split_rw_at(&chunk->bio, lim, &nsegs,
 			lim->max_zone_append_sectors << SECTOR_SHIFT);
-	if (!split_sectors)
+	if (split_sectors <= 0)
 		return NULL;
 
 	/* ensure the split chunk is still block size aligned */
@@ -869,6 +869,11 @@ xfs_zone_gc_write_chunk(
 	WRITE_ONCE(chunk->state, XFS_GC_BIO_NEW);
 	list_move_tail(&chunk->entry, &data->writing);
 
+	/*
+	 * If we run on top of stacked block device, the read I/O might have
+	 * reset bi_bdev, restore it to the one we want.
+	 */
+	bio_set_dev(&chunk->bio, mp->m_rtdev_targp->bt_bdev);
 	bio_reuse(&chunk->bio, REQ_OP_WRITE);
 	while ((split_chunk = xfs_zone_gc_split_write(data, chunk)))
 		xfs_zone_gc_submit_write(data, split_chunk);

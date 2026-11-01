@@ -45,27 +45,24 @@
 #include <linux/rseq.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#include <linux/kmemleak.h>
 #include <linux/wait_bit.h>
 
 #include <vdso/futex.h>
 
+#include <asm/runtime-const.h>
+
 #include "futex.h"
 #include "../locking/rtmutex_common.h"
 
-/*
- * The base of the bucket array and its size are always used together
- * (after initialization only in futex_hash()), so ensure that they
- * reside in the same cacheline.
- */
-static struct {
-	unsigned long            hashmask;
-	unsigned int		 hashshift;
-	struct futex_hash_bucket *queues[MAX_NUMNODES];
-} __futex_data __read_mostly __aligned(2*sizeof(long));
+static u32 __futex_mask __ro_after_init;
+static u32 __futex_shift __ro_after_init;
+static struct futex_hash_bucket **__futex_queues __ro_after_init;
 
-#define futex_hashmask	(__futex_data.hashmask)
-#define futex_hashshift	(__futex_data.hashshift)
-#define futex_queues	(__futex_data.queues)
+static __always_inline struct futex_hash_bucket **futex_queues(void)
+{
+	return runtime_const_ptr(__futex_queues);
+}
 
 struct futex_private_hash {
 	int		state;
@@ -404,13 +401,13 @@ __futex_hash(union futex_key *key, struct futex_private_hash *fph, struct futex_
 		 * NOTE: this isn't perfectly uniform, but it is fast and
 		 * handles sparse node masks.
 		 */
-		node = (hash >> futex_hashshift) % nr_node_ids;
+		node = runtime_const_shift_right_32(hash, __futex_shift) % nr_node_ids;
 		if (!node_possible(node)) {
 			node = find_next_bit_wrap(node_possible_map.bits, nr_node_ids, node);
 		}
 	}
 
-	return &futex_queues[node][hash & futex_hashmask];
+	return &futex_queues()[node][runtime_const_mask_32(hash, __futex_mask)];
 }
 
 /**
@@ -535,7 +532,7 @@ int get_futex_key(u32 __user *uaddr, unsigned int flags, union futex_key *key,
 	 * The futex address must be "naturally" aligned.
 	 */
 	key->both.offset = address % PAGE_SIZE;
-	if (unlikely((address % size) != 0))
+	if (unlikely((address & (size-1)) != 0))
 		return -EINVAL;
 	address -= key->both.offset;
 
@@ -1552,30 +1549,27 @@ static void futex_cleanup_end(struct task_struct *tsk)
 	mutex_unlock(&tsk->futex.exit_mutex);
 }
 
-void futex_exit_release(struct task_struct *tsk)
+/*
+ * Invoked from mm_exit_exec_release() to cleanup the robust lists and pi state
+ * of the outgoing task.
+ *
+ * exec() makes it interesting for futexes because the TID of the task stays the
+ * same, but from a futex perspective the task has to be treated like an exiting
+ * task. This is especially important for the sanity check for private futexes
+ * in attach_to_pi_owner() which compares the owner's mm with the waiter's mm.
+ *
+ * That check would give the wrong answer if futex_cleanup_end() would
+ * set the state to FUTEX_STATE_OK as long as the task still has the old
+ * mm.
+ *
+ * After the task has switched to the new mm it sets it to
+ * FUTEX_STATE_OK again in futex_exec_done().
+ */
+void futex_exit_exec_release(struct task_struct *tsk)
 {
 	futex_cleanup_begin(tsk);
 	futex_cleanup(tsk);
 	futex_cleanup_end(tsk);
-}
-
-void futex_exec_release(struct task_struct *tsk)
-{
-	/*
-	 * exec() makes it interesting for futexes because the TID of the task
-	 * stays the same, but from a futex perspective the task has to be
-	 * treated like an exiting task. This is especially important for the
-	 * sanity check for private futexes in attach_to_pi_owner() which
-	 * compares the owner's mm with the waiter's mm.
-	 *
-	 * That check would give the wrong answer if futex_cleanup_end() would
-	 * set the state to FUTEX_STATE_OK as long as the task still has the old
-	 * mm.
-	 *
-	 * After the task has switched to the new mm it sets it to
-	 * FUTEX_STATE_OK again in futex_exec_done().
-	 */
-	futex_exit_release(tsk);
 }
 
 /*
@@ -1810,8 +1804,7 @@ void futex_hash_free(struct mm_struct *mm)
 	free_percpu(mm->futex.phash.ref);
 	kvfree(mm->futex.phash.hash_new);
 	fph = rcu_dereference_raw(mm->futex.phash.hash);
-	if (fph)
-		kvfree(fph);
+	kvfree(fph);
 }
 
 static bool futex_pivot_pending(struct mm_struct *mm)
@@ -1889,8 +1882,8 @@ static int futex_hash_allocate(unsigned int hash_slots, unsigned int flags)
 			free_percpu(ref);
 	}
 
-	fph = kvzalloc(struct_size(fph, queues, hash_slots),
-		       GFP_KERNEL_ACCOUNT | __GFP_NOWARN);
+	fph = kvzalloc_flex(*fph, queues, hash_slots,
+			    GFP_KERNEL_ACCOUNT | __GFP_NOWARN);
 	if (!fph)
 		return -ENOMEM;
 
@@ -2015,7 +2008,7 @@ int futex_hash_allocate_default(void)
 	 *   16 <= threads * 4 <= global hash size
 	 */
 	buckets = roundup_pow_of_two(4 * threads);
-	buckets = clamp(buckets, 16, futex_hashmask + 1);
+	buckets = clamp(buckets, 16, __futex_mask + 1);
 
 	if (current_buckets >= buckets)
 		return 0;
@@ -2112,9 +2105,21 @@ static int __init futex_init(void)
 	hashsize = max(4, hashsize);
 	hashsize = roundup_pow_of_two(hashsize);
 #endif
-	futex_hashshift = ilog2(hashsize);
+	__futex_mask = hashsize - 1;
+	__futex_shift = ilog2(hashsize);
 	size = sizeof(struct futex_hash_bucket) * hashsize;
 	order = get_order(size);
+
+	__futex_queues = kzalloc_objs(*__futex_queues, nr_node_ids);
+	kmemleak_not_leak(__futex_queues);
+
+	runtime_const_init(shift, __futex_shift);
+	runtime_const_init(mask,  __futex_mask);
+	runtime_const_init(ptr,   __futex_queues);
+
+	barrier();
+
+	BUG_ON(!futex_queues());
 
 	for_each_node(n) {
 		struct futex_hash_bucket *table;
@@ -2129,10 +2134,9 @@ static int __init futex_init(void)
 		for (i = 0; i < hashsize; i++)
 			futex_hash_bucket_init(&table[i]);
 
-		futex_queues[n] = table;
+		futex_queues()[n] = table;
 	}
 
-	futex_hashmask = hashsize - 1;
 	pr_info("futex hash table entries: %lu (%lu bytes on %d NUMA nodes, total %lu KiB, %s).\n",
 		hashsize, size, num_possible_nodes(), size * num_possible_nodes() / 1024,
 		order > MAX_PAGE_ORDER ? "vmalloc" : "linear");

@@ -6,6 +6,8 @@
 #include <linux/fs_pin.h>
 
 extern struct file_system_type nullfs_fs_type;
+extern struct dentry *nullfs_new_file(struct super_block *sb);
+extern struct vfsmount *knullfs;
 extern struct list_head notify_list;
 
 struct mnt_namespace {
@@ -41,8 +43,11 @@ struct mnt_pcp {
 struct mountpoint {
 	struct hlist_node m_hash;
 	struct dentry *m_dentry;
-	struct hlist_head m_list;
+	struct hlist_head m_list;	/* mounts on it and pins */
+	struct hlist_head m_covers;	/* covers of unmounted parents */
 };
+
+struct mnt_cover;
 
 struct mount {
 	struct hlist_node mnt_hash;
@@ -85,7 +90,7 @@ struct mount {
 	struct mountpoint *mnt_mp;	/* where is it mounted */
 	union {
 		struct hlist_node mnt_mp_list;	/* list mounts with the same mountpoint */
-		struct hlist_node mnt_umount;
+		struct hlist_node mnt_umount;	/* on the unmounted list */
 	};
 #ifdef CONFIG_FSNOTIFY
 	struct fsnotify_mark_connector __rcu *mnt_fsnotify_marks;
@@ -99,7 +104,8 @@ struct mount {
 	int mnt_group_id;		/* peer group identifier */
 	int mnt_expiry_mark;		/* true if marked for expiry */
 	struct hlist_head mnt_pins;
-	struct hlist_head mnt_stuck_children;
+	struct mnt_cover *mnt_cover;	/* the one it may leave behind */
+	struct hlist_head mnt_covers;	/* left behind by its unmounted children */
 	struct hlist_node mnt_ns_visible; /* link in ns->mnt_visible_mounts */
 	struct mount *overmount;	/* mounted on ->mnt_root */
 } __randomize_layout;

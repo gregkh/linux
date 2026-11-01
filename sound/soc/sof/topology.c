@@ -309,7 +309,7 @@ static const struct sof_dai_types sof_dais[] = {
 	{"ACPHS_VIRTUAL", SOF_DAI_AMD_HS_VIRTUAL},
 	{"MICFIL", SOF_DAI_IMX_MICFIL},
 	{"ACP_SDW", SOF_DAI_AMD_SDW},
-
+	{"ACPTDM", SOF_DAI_AMD_I2S},
 };
 
 static enum sof_ipc_dai_type find_dai(const char *name)
@@ -1108,7 +1108,7 @@ static int sof_connect_dai_widget(struct snd_soc_component *scomp,
 
 	full = NULL;
 	partial = NULL;
-	list_for_each_entry(rtd, &card->rtd_list, list) {
+	for_each_card_rtds(card, rtd) {
 		/* does stream match DAI link ? */
 		if (rtd->dai_link->stream_name) {
 			if (!strcmp(rtd->dai_link->stream_name, w->sname)) {
@@ -1173,7 +1173,7 @@ static void sof_disconnect_dai_widget(struct snd_soc_component *scomp,
 	else
 		return;
 
-	list_for_each_entry(rtd, &card->rtd_list, list) {
+	for_each_card_rtds(card, rtd) {
 		/* does stream match DAI link ? */
 		if (!rtd->dai_link->stream_name ||
 		    !strstr(rtd->dai_link->stream_name, sname))
@@ -1949,8 +1949,7 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 			       private->array, le32_to_cpu(private->size));
 	if (ret < 0) {
 		dev_err(scomp->dev, "Failed tp parse common DAI link tokens\n");
-		kfree(slink);
-		return ret;
+		goto free_slink;
 	}
 
 	token_list = tplg_ops ? tplg_ops->token_list : NULL;
@@ -2001,6 +2000,7 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 	case SOF_DAI_AMD_HS:
 	case SOF_DAI_AMD_SP_VIRTUAL:
 	case SOF_DAI_AMD_HS_VIRTUAL:
+	case SOF_DAI_AMD_I2S:
 		token_id = SOF_ACPI2S_TOKENS;
 		num_tuples += token_list[SOF_ACPI2S_TOKENS].count;
 		break;
@@ -2019,8 +2019,8 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 	/* allocate memory for tuples array */
 	slink->tuples = kzalloc_objs(*slink->tuples, num_tuples);
 	if (!slink->tuples) {
-		kfree(slink);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto free_slink;
 	}
 
 	if (token_list[SOF_DAI_LINK_TOKENS].tokens) {
@@ -2076,6 +2076,7 @@ out:
 
 err:
 	kfree(slink->tuples);
+free_slink:
 	kfree(slink);
 
 	return ret;
@@ -2511,13 +2512,12 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_sof_pdata *sof_pdata = sdev->pdata;
 	const char *tplg_filename_prefix = sof_pdata->tplg_filename_prefix;
-	const struct firmware *fw;
-	const char **tplg_files;
 	int tplg_cnt = 0;
 	int ret;
 	int i;
 
-	tplg_files = kcalloc(scomp->card->num_links, sizeof(char *), GFP_KERNEL);
+	const char **tplg_files __free(kfree) =
+		kcalloc(scomp->card->num_links, sizeof(char *), GFP_KERNEL);
 	if (!tplg_files)
 		return -ENOMEM;
 
@@ -2543,10 +2543,8 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 								       tplg_filename_prefix,
 								       &tplg_files,
 								       no_fallback);
-		if (tplg_cnt < 0) {
-			kfree(tplg_files);
+		if (tplg_cnt < 0)
 			return tplg_cnt;
-		}
 	}
 
 	/*
@@ -2557,8 +2555,6 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 		if (strstr(file, "dummy")) {
 			dev_err(scomp->dev,
 				"Function topology is required, please upgrade sof-firmware\n");
-
-			kfree(tplg_files);
 			return -EINVAL;
 		}
 		tplg_files[0] = file;
@@ -2573,6 +2569,7 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 		if (tplg_files[0] != file)
 			dev_info(scomp->dev, "loading topology %d: %s\n", i, tplg_files[i]);
 
+		const struct firmware *fw __free(firmware) = NULL;
 		ret = request_firmware(&fw, tplg_files[i], scomp->dev);
 		if (ret < 0) {
 			/*
@@ -2590,8 +2587,6 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 			ret = snd_soc_tplg_component_load(scomp, &sof_dspless_tplg_ops, fw);
 		else
 			ret = snd_soc_tplg_component_load(scomp, &sof_tplg_ops, fw);
-
-		release_firmware(fw);
 
 		if (ret < 0) {
 			dev_err(scomp->dev, "tplg %s component load failed %d\n",
@@ -2611,6 +2606,8 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 			goto out;
 		}
 		dev_info(scomp->dev, "loading feature topology %d: %s\n", i, feature_topology);
+
+		const struct firmware *fw __free(firmware) = NULL;
 		ret = request_firmware(&fw, feature_topology, scomp->dev);
 		if (ret < 0) {
 			/*
@@ -2635,8 +2632,6 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 		else
 			ret = snd_soc_tplg_component_load(scomp, &sof_tplg_ops, fw);
 
-		release_firmware(fw);
-
 		if (ret < 0) {
 			dev_err(scomp->dev, "feature tplg %s component load failed %d\n",
 				feature_topologies[i], ret);
@@ -2654,8 +2649,6 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 out:
 	if (ret >= 0 && sdev->led_present)
 		ret = snd_ctl_led_request();
-
-	kfree(tplg_files);
 
 	return ret;
 }

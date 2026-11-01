@@ -887,6 +887,7 @@ enum net_device_path_type {
 	DEV_PATH_DSA,
 	DEV_PATH_MTK_WDMA,
 	DEV_PATH_TUN,
+	DEV_PATH_IEEE80211,
 };
 
 struct net_device_path {
@@ -909,7 +910,7 @@ struct net_device_path {
 				struct in6_addr	dst_v6;
 			};
 
-			u8	l3_proto;
+			u8	inner_proto;
 		} tun;
 		struct {
 			enum {
@@ -946,12 +947,15 @@ struct net_device_path_stack {
 struct net_device_path_ctx {
 	const struct net_device *dev;
 	u8			daddr[ETH_ALEN];
+	__be16			ether_type;
 
 	int			num_vlans;
 	struct {
 		u16		id;
 		__be16		proto;
 	} vlan[NET_DEVICE_PATH_VLAN_MAX];
+
+	bool			ieee80211;
 };
 
 enum tc_setup_type {
@@ -1853,6 +1857,8 @@ enum netdev_reg_state {
  *	@napi_list:	List entry used for polling NAPI devices
  *	@unreg_list:	List entry  when we are unregistering the
  *			device; see the function unregister_netdev
+ *	@unreg_list_net:List entry when we are unregistering the cross-netns
+ *			device; see the function unregister_netdevice_queue_net()
  *	@close_list:	List entry used when we are closing the device
  *	@ptype_all:     Device-specific packet handlers for all protocols
  *	@ptype_specific: Device-specific, protocol-specific packet handlers
@@ -2249,6 +2255,9 @@ struct net_device {
 	struct list_head	dev_list;
 	struct list_head	napi_list;
 	struct list_head	unreg_list;
+#ifdef CONFIG_DEBUG_NET_SMALL_RTNL
+	struct list_head	unreg_list_net;
+#endif
 	struct list_head	close_list;
 	struct list_head	ptype_all;
 
@@ -2666,16 +2675,16 @@ static inline bool netif_elide_gro(const struct net_device *dev)
 static inline
 int netdev_get_prio_tc_map(const struct net_device *dev, u32 prio)
 {
-	return dev->prio_tc_map[prio & TC_BITMASK];
+	return READ_ONCE(dev->prio_tc_map[prio & TC_BITMASK]);
 }
 
 static inline
 int netdev_set_prio_tc_map(struct net_device *dev, u8 prio, u8 tc)
 {
-	if (tc >= dev->num_tc)
+	if (tc >= READ_ONCE(dev->num_tc))
 		return -EINVAL;
 
-	dev->prio_tc_map[prio & TC_BITMASK] = tc & TC_BITMASK;
+	WRITE_ONCE(dev->prio_tc_map[prio & TC_BITMASK], tc & TC_BITMASK);
 	return 0;
 }
 
@@ -2685,9 +2694,9 @@ int netdev_set_tc_queue(struct net_device *dev, u8 tc, u16 count, u16 offset);
 int netdev_set_num_tc(struct net_device *dev, u8 num_tc);
 
 static inline
-int netdev_get_num_tc(struct net_device *dev)
+int netdev_get_num_tc(const struct net_device *dev)
 {
-	return dev->num_tc;
+	return READ_ONCE(dev->num_tc);
 }
 
 static inline void net_prefetch(void *p)
@@ -2714,7 +2723,7 @@ int netdev_bind_sb_channel_queue(struct net_device *dev,
 int netdev_set_sb_channel(struct net_device *dev, u16 channel);
 static inline int netdev_get_sb_channel(struct net_device *dev)
 {
-	return max_t(int, -dev->num_tc, 0);
+	return max_t(int, -READ_ONCE(dev->num_tc), 0);
 }
 
 static inline
@@ -3480,6 +3489,25 @@ static inline void unregister_netdevice(struct net_device *dev)
 {
 	unregister_netdevice_queue(dev, NULL);
 }
+
+#ifdef CONFIG_DEBUG_NET_SMALL_RTNL
+void unregister_netdevice_queue_net(struct net *net, struct net_device *dev,
+				    struct list_head *head);
+void unregister_netdevice_many_net(struct net *net);
+void unregister_netdevice_queue_many_net(struct net *net, struct list_head *head);
+#else
+static inline void unregister_netdevice_queue_net(struct net *net,
+						  struct net_device *dev,
+						  struct list_head *head)
+{
+	unregister_netdevice_queue(dev, head);
+}
+
+static inline void unregister_netdevice_queue_many_net(struct net *net,
+						       struct list_head *head)
+{
+}
+#endif
 
 int netdev_refcnt_read(const struct net_device *dev);
 void free_netdev(struct net_device *dev);

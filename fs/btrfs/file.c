@@ -1573,8 +1573,6 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	else
 		btrfs_inode_lock(inode, BTRFS_ILOCK_MMAP);
 
-	atomic_inc(&root->log_batch);
-
 	/*
 	 * Before we acquired the inode's lock and the mmap lock, someone may
 	 * have dirtied more pages in the target range. We need to make sure
@@ -1656,8 +1654,6 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 
 	if (ret)
 		goto out_release_extents;
-
-	atomic_inc(&root->log_batch);
 
 	if (skip_inode_logging(&ctx)) {
 		/*
@@ -2663,8 +2659,8 @@ static int btrfs_punch_hole(struct file *file, loff_t offset, loff_t len)
 
 	lockstart = round_up(offset, fs_info->sectorsize);
 	lockend = round_down(offset + len, fs_info->sectorsize) - 1;
-	same_block = (BTRFS_BYTES_TO_BLKS(fs_info, offset))
-		== (BTRFS_BYTES_TO_BLKS(fs_info, offset + len - 1));
+	same_block = (offset >> fs_info->sectorsize_bits) ==
+		     ((offset + len - 1) >> fs_info->sectorsize_bits);
 	/*
 	 * Only do this if we are in the same block and we aren't doing the
 	 * entire block.
@@ -2868,7 +2864,7 @@ enum {
 static int btrfs_zero_range_check_range_boundary(struct btrfs_inode *inode,
 						 u64 offset)
 {
-	const u64 sectorsize = inode->root->fs_info->sectorsize;
+	const u32 sectorsize = inode->root->fs_info->sectorsize;
 	struct extent_map *em;
 	int ret;
 
@@ -2898,7 +2894,7 @@ static int btrfs_zero_range(struct inode *inode,
 	struct extent_changeset *data_reserved = NULL;
 	int ret;
 	u64 alloc_hint = 0;
-	const u64 sectorsize = fs_info->sectorsize;
+	const u32 sectorsize = fs_info->sectorsize;
 	const u64 orig_start = offset;
 	const u64 orig_end = offset + len - 1;
 	u64 alloc_start = round_down(offset, sectorsize);
@@ -2947,8 +2943,8 @@ static int btrfs_zero_range(struct inode *inode,
 	}
 	btrfs_free_extent_map(em);
 
-	if (BTRFS_BYTES_TO_BLKS(fs_info, offset) ==
-	    BTRFS_BYTES_TO_BLKS(fs_info, offset + len - 1)) {
+	if ((offset >> fs_info->sectorsize_bits) ==
+	    ((offset + len - 1) >> fs_info->sectorsize_bits)) {
 		em = btrfs_get_extent(BTRFS_I(inode), NULL, alloc_start, sectorsize);
 		if (IS_ERR(em)) {
 			ret = PTR_ERR(em);

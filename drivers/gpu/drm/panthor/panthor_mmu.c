@@ -210,14 +210,6 @@ struct panthor_vm_op_ctx {
 		/** @map.bo_offset: Offset in the buffer object. */
 		u64 bo_offset;
 
-		/**
-		 * @map.sgt: sg-table pointing to pages backing the GEM object.
-		 *
-		 * This is gathered at job creation time, such that we don't have
-		 * to allocate in ::run_job().
-		 */
-		struct sg_table *sgt;
-
 		/** @map.bo: the BO being mapped. */
 		struct panthor_gem_object *bo;
 	} map;
@@ -314,7 +306,7 @@ struct panthor_vm {
 		/** @kernel_auto_va.start: Start of the automatic VA-range for kernel BOs. */
 		u64 start;
 
-		/** @kernel_auto_va.size: Size of the automatic VA-range for kernel BOs. */
+		/** @kernel_auto_va.end: End of the automatic VA-range for kernel BOs. */
 		u64 end;
 	} kernel_auto_va;
 
@@ -2919,7 +2911,7 @@ panthor_vm_create(struct panthor_device *ptdev, bool for_mcu,
 	refcount_set(&vm->as.active_cnt, 0);
 
 	pgtbl_cfg = (struct io_pgtable_cfg) {
-		.pgsize_bitmap	= SZ_4K | SZ_2M,
+		.pgsize_bitmap	= ptdev->mmu_info.page_size_bitmap,
 		.ias		= va_bits,
 		.oas		= pa_bits,
 		.coherent_walk	= ptdev->coherent,
@@ -3381,6 +3373,11 @@ static void panthor_mmu_release_wq(struct drm_device *ddev, void *res)
 	destroy_workqueue(res);
 }
 
+static void panthor_mmu_info_init(struct panthor_device *ptdev)
+{
+	ptdev->mmu_info.page_size_bitmap = SZ_4K | SZ_2M;
+}
+
 /**
  * panthor_mmu_init() - Initialize the MMU logic.
  * @ptdev: Device.
@@ -3392,6 +3389,8 @@ int panthor_mmu_init(struct panthor_device *ptdev)
 	u32 va_bits = GPU_MMU_FEATURES_VA_BITS(ptdev->gpu_info.mmu_features);
 	struct panthor_mmu *mmu;
 	int ret, irq;
+
+	panthor_mmu_info_init(ptdev);
 
 	mmu = drmm_kzalloc(&ptdev->base, sizeof(*mmu), GFP_KERNEL);
 	if (!mmu)

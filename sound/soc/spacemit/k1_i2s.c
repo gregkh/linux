@@ -335,6 +335,11 @@ static int spacemit_i2s_dai_remove(struct snd_soc_dai *dai)
 	return 0;
 }
 
+static const u64 spacemit_i2s_selectable_formats =
+	SND_SOC_POSSIBLE_DAIFMT_I2S	|
+	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
+	SND_SOC_POSSIBLE_DAIFMT_DSP_B;
+
 static const struct snd_soc_dai_ops spacemit_i2s_dai_ops = {
 	.probe = spacemit_i2s_dai_probe,
 	.remove = spacemit_i2s_dai_remove,
@@ -343,6 +348,8 @@ static const struct snd_soc_dai_ops spacemit_i2s_dai_ops = {
 	.set_sysclk = spacemit_i2s_set_sysclk,
 	.set_fmt = spacemit_i2s_set_fmt,
 	.trigger = spacemit_i2s_trigger,
+	.auto_selectable_formats = &spacemit_i2s_selectable_formats,
+	.num_auto_selectable_formats = 1,
 };
 
 static struct snd_soc_dai_driver spacemit_i2s_dai = {
@@ -459,7 +466,7 @@ static int spacemit_i2s_probe(struct platform_device *pdev)
 
 	i2s->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(i2s->base))
-		return dev_err_probe(i2s->dev, PTR_ERR(i2s->base), "failed to map registers\n");
+		return PTR_ERR(i2s->base);
 
 	i2s->reset = devm_reset_control_get_exclusive(&pdev->dev, NULL);
 	if (IS_ERR(i2s->reset))
@@ -476,7 +483,7 @@ static int spacemit_i2s_probe(struct platform_device *pdev)
 					      &spacemit_i2s_component,
 					      dai, 1);
 	if (ret)
-		return dev_err_probe(i2s->dev, ret, "failed to register component");
+		return ret;
 
 	return devm_snd_dmaengine_pcm_register(&pdev->dev, &spacemit_dmaengine_pcm_config, 0);
 }

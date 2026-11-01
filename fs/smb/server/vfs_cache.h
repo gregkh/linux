@@ -117,6 +117,7 @@ struct ksmbd_file {
 
 	bool				is_nt_open;
 	bool				attrib_only;
+	bool				allocation_size_set;
 
 	char				client_guid[16];
 	char				create_guid[16];
@@ -126,6 +127,13 @@ struct ksmbd_file {
 	struct list_head		node;
 	struct list_head		blocked_works;
 	struct list_head		lock_list;
+	/*
+	 * Per-handle FileDispositionInformation delete-pending state for a
+	 * stream handle -- separate from ksmbd_inode's inode-wide m_flags,
+	 * which have no way to record which stream on a multi-stream file
+	 * was actually marked for deletion. See ksmbd_fd_set_delete_pending().
+	 */
+	bool				stream_del_pending;
 
 	unsigned int			durable_timeout;
 	unsigned int			durable_scavenger_timeout;
@@ -141,6 +149,10 @@ struct ksmbd_file {
 	bool				is_durable;
 	bool				is_persistent;
 	bool				is_resilient;
+	bool				has_app_instance_id;
+	bool				app_instance_version_valid;
+	u64				app_instance_version_high;
+	u64				app_instance_version_low;
 	bool				durable_reconnect_disabled;
 	bool				durable_replay_consumed;
 
@@ -201,10 +213,12 @@ void ksmbd_put_durable_fd(struct ksmbd_file *fp);
 int ksmbd_invalidate_durable_fd(unsigned long long id);
 bool ksmbd_has_other_active_fd(struct ksmbd_file *fp);
 bool ksmbd_has_stream_without_delete_share(struct ksmbd_file *fp);
+struct ksmbd_file *ksmbd_lookup_fd_app_instance_id(char *app_instance_id);
 int ksmbd_close_fd_app_instance_id(char *app_instance_id);
 struct ksmbd_file *ksmbd_lookup_fd_cguid(char *cguid);
 struct ksmbd_file *ksmbd_lookup_fd_inode(struct dentry *dentry);
-bool ksmbd_has_open_files(struct dentry *dentry);
+bool ksmbd_has_other_nonposix_open(struct dentry *dentry);
+bool ksmbd_has_nonposix_open_child(struct ksmbd_file *old_fp);
 unsigned int ksmbd_open_durable_fd(struct ksmbd_file *fp);
 struct ksmbd_file *ksmbd_open_fd(struct ksmbd_work *work, struct file *filp);
 void ksmbd_launch_ksmbd_durable_scavenger(void);
@@ -240,6 +254,8 @@ void ksmbd_set_inode_pending_delete(struct ksmbd_file *fp);
 void ksmbd_clear_inode_pending_delete(struct ksmbd_file *fp);
 void ksmbd_fd_set_delete_on_close(struct ksmbd_file *fp,
 				  int file_info);
+void ksmbd_fd_set_delete_pending(struct ksmbd_file *fp);
+void ksmbd_fd_clear_delete_pending(struct ksmbd_file *fp);
 int ksmbd_reopen_durable_fd(struct ksmbd_work *work, struct ksmbd_file *fp);
 int ksmbd_validate_name_reconnect(struct ksmbd_share_config *share,
 				  struct ksmbd_file *fp, char *name);

@@ -251,7 +251,8 @@ extern struct nfs_client *nfs4_set_ds_client(struct nfs_server *mds_srv,
 					     int ds_addrlen, int ds_proto,
 					     unsigned int ds_timeo,
 					     unsigned int ds_retrans,
-					     u32 minor_version);
+					     u32 minor_version,
+					     bool tightly_coupled);
 extern struct rpc_clnt *nfs4_find_or_create_ds_client(struct nfs_client *,
 						struct inode *);
 extern void nfs4_session_limit_rwsize(struct nfs_server *server);
@@ -396,7 +397,7 @@ extern unsigned long nfs_access_cache_scan(struct shrinker *shrink,
 struct dentry *nfs_lookup(struct inode *, struct dentry *, unsigned int);
 void nfs_d_prune_case_insensitive_aliases(struct inode *inode);
 int nfs_create(struct mnt_idmap *, struct inode *, struct dentry *,
-	       umode_t, bool);
+	       umode_t);
 struct dentry *nfs_mkdir(struct mnt_idmap *, struct inode *, struct dentry *,
 			 umode_t);
 int nfs_rmdir(struct inode *, struct dentry *);
@@ -480,7 +481,7 @@ extern int nfs_local_doio(struct nfs_client *,
 			  const struct rpc_call_ops *);
 extern int nfs_local_commit(struct nfsd_file *,
 			    struct nfs_commit_data *,
-			    const struct rpc_call_ops *, int);
+			    const struct rpc_call_ops *);
 extern bool nfs_server_is_local(const struct nfs_client *clp);
 
 #else /* CONFIG_NFS_LOCALIO */
@@ -502,7 +503,7 @@ static inline int nfs_local_doio(struct nfs_client *clp,
 }
 static inline int nfs_local_commit(struct nfsd_file *localio,
 				struct nfs_commit_data *data,
-				const struct rpc_call_ops *call_ops, int how)
+				const struct rpc_call_ops *call_ops)
 {
 	return -EINVAL;
 }

@@ -278,7 +278,7 @@ const struct bpf_func_proto bpf_get_current_comm_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
-	.arg2_type	= ARG_CONST_SIZE,
+	.arg2_type	= ARG_MEM_SIZE,
 };
 
 #if defined(CONFIG_QUEUED_SPINLOCKS) || defined(CONFIG_BPF_ARCH_SPINLOCK)
@@ -539,7 +539,7 @@ const struct bpf_func_proto bpf_strtol_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_MEM | MEM_RDONLY,
-	.arg2_type	= ARG_CONST_SIZE,
+	.arg2_type	= ARG_MEM_SIZE,
 	.arg3_type	= ARG_ANYTHING,
 	.arg4_type	= ARG_PTR_TO_FIXED_SIZE_MEM | MEM_UNINIT | MEM_WRITE | MEM_ALIGNED,
 	.arg4_size	= sizeof(s64),
@@ -567,7 +567,7 @@ const struct bpf_func_proto bpf_strtoul_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_MEM | MEM_RDONLY,
-	.arg2_type	= ARG_CONST_SIZE,
+	.arg2_type	= ARG_MEM_SIZE,
 	.arg3_type	= ARG_ANYTHING,
 	.arg4_type	= ARG_PTR_TO_FIXED_SIZE_MEM | MEM_UNINIT | MEM_WRITE | MEM_ALIGNED,
 	.arg4_size	= sizeof(u64),
@@ -583,7 +583,7 @@ static const struct bpf_func_proto bpf_strncmp_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_MEM | MEM_RDONLY,
-	.arg2_type	= ARG_CONST_SIZE,
+	.arg2_type	= ARG_MEM_SIZE,
 	.arg3_type	= ARG_PTR_TO_CONST_STR,
 };
 
@@ -627,7 +627,7 @@ const struct bpf_func_proto bpf_get_ns_current_pid_tgid_proto = {
 	.arg1_type	= ARG_ANYTHING,
 	.arg2_type	= ARG_ANYTHING,
 	.arg3_type      = ARG_PTR_TO_UNINIT_MEM,
-	.arg4_type      = ARG_CONST_SIZE,
+	.arg4_type      = ARG_MEM_SIZE,
 };
 
 static const struct bpf_func_proto bpf_get_raw_smp_processor_id_proto = {
@@ -653,7 +653,7 @@ const struct bpf_func_proto bpf_event_output_data_proto =  {
 	.arg2_type      = ARG_CONST_MAP_PTR,
 	.arg3_type      = ARG_ANYTHING,
 	.arg4_type      = ARG_PTR_TO_MEM | MEM_RDONLY,
-	.arg5_type      = ARG_CONST_SIZE_OR_ZERO,
+	.arg5_type      = ARG_MEM_SIZE_OR_ZERO,
 };
 
 BPF_CALL_3(bpf_copy_from_user, void *, dst, u32, size,
@@ -675,7 +675,7 @@ const struct bpf_func_proto bpf_copy_from_user_proto = {
 	.might_sleep	= true,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
-	.arg2_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg2_type	= ARG_MEM_SIZE_OR_ZERO,
 	.arg3_type	= ARG_ANYTHING,
 };
 
@@ -706,7 +706,7 @@ const struct bpf_func_proto bpf_copy_from_user_task_proto = {
 	.might_sleep	= true,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
-	.arg2_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg2_type	= ARG_MEM_SIZE_OR_ZERO,
 	.arg3_type	= ARG_ANYTHING,
 	.arg4_type	= ARG_PTR_TO_BTF_ID,
 	.arg4_btf_id	= &btf_tracing_ids[BTF_TRACING_TYPE_TASK],
@@ -1093,10 +1093,10 @@ const struct bpf_func_proto bpf_snprintf_proto = {
 	.gpl_only	= true,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_MEM_OR_NULL | MEM_WRITE,
-	.arg2_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg2_type	= ARG_MEM_SIZE_OR_ZERO,
 	.arg3_type	= ARG_PTR_TO_CONST_STR,
 	.arg4_type	= ARG_PTR_TO_MEM | PTR_MAYBE_NULL | MEM_RDONLY,
-	.arg5_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg5_type	= ARG_MEM_SIZE_OR_ZERO,
 };
 
 static void *map_key_from_value(struct bpf_map *map, void *value, u32 *arr_idx)
@@ -1888,7 +1888,7 @@ static const struct bpf_func_proto bpf_dynptr_from_mem_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
-	.arg2_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg2_type	= ARG_MEM_SIZE_OR_ZERO,
 	.arg3_type	= ARG_ANYTHING,
 	.arg4_type	= ARG_PTR_TO_DYNPTR | DYNPTR_TYPE_LOCAL | MEM_UNINIT | MEM_WRITE,
 };
@@ -1943,7 +1943,7 @@ static const struct bpf_func_proto bpf_dynptr_read_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
-	.arg2_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg2_type	= ARG_MEM_SIZE_OR_ZERO,
 	.arg3_type	= ARG_PTR_TO_DYNPTR,
 	.arg4_type	= ARG_ANYTHING,
 	.arg5_type	= ARG_ANYTHING,
@@ -2004,7 +2004,7 @@ static const struct bpf_func_proto bpf_dynptr_write_proto = {
 	.arg1_type	= ARG_PTR_TO_DYNPTR,
 	.arg2_type	= ARG_ANYTHING,
 	.arg3_type	= ARG_PTR_TO_MEM | MEM_RDONLY,
-	.arg4_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg4_type	= ARG_MEM_SIZE_OR_ZERO,
 	.arg5_type	= ARG_ANYTHING,
 };
 
@@ -3406,10 +3406,10 @@ __bpf_kfunc void bpf_throw(u64 cookie)
 	WARN(1, "A call to BPF exception callback should never return\n");
 }
 
-__bpf_kfunc int bpf_wq_init(struct bpf_wq *wq, void *p__map, unsigned int flags)
+__bpf_kfunc int bpf_wq_init(struct bpf_wq *wq, void *p__const_map, unsigned int flags)
 {
 	struct bpf_async_kern *async = (struct bpf_async_kern *)wq;
-	struct bpf_map *map = p__map;
+	struct bpf_map *map = p__const_map;
 
 	BUILD_BUG_ON(sizeof(struct bpf_async_kern) > sizeof(struct bpf_wq));
 	BUILD_BUG_ON(__alignof__(struct bpf_async_kern) != __alignof__(struct bpf_wq));
@@ -4645,17 +4645,17 @@ release_prog:
  * mode
  * @task: Task struct for which callback should be scheduled
  * @tw: Pointer to struct bpf_task_work in BPF map value for internal bookkeeping
- * @map__map: bpf_map that embeds struct bpf_task_work in the values
+ * @map__const_map: bpf_map that embeds struct bpf_task_work in the values
  * @callback: pointer to BPF subprogram to call
  * @aux: pointer to bpf_prog_aux of the caller BPF program, implicitly set by the verifier
  *
  * Return: 0 if task work has been scheduled successfully, negative error code otherwise
  */
 __bpf_kfunc int bpf_task_work_schedule_signal(struct task_struct *task, struct bpf_task_work *tw,
-					      void *map__map, bpf_task_work_callback_t callback,
+					      void *map__const_map, bpf_task_work_callback_t callback,
 					      struct bpf_prog_aux *aux)
 {
-	return bpf_task_work_schedule(task, tw, map__map, callback, aux, TWA_SIGNAL);
+	return bpf_task_work_schedule(task, tw, map__const_map, callback, aux, TWA_SIGNAL);
 }
 
 /**
@@ -4663,17 +4663,17 @@ __bpf_kfunc int bpf_task_work_schedule_signal(struct task_struct *task, struct b
  * mode
  * @task: Task struct for which callback should be scheduled
  * @tw: Pointer to struct bpf_task_work in BPF map value for internal bookkeeping
- * @map__map: bpf_map that embeds struct bpf_task_work in the values
+ * @map__const_map: bpf_map that embeds struct bpf_task_work in the values
  * @callback: pointer to BPF subprogram to call
  * @aux: pointer to bpf_prog_aux of the caller BPF program, implicitly set by the verifier
  *
  * Return: 0 if task work has been scheduled successfully, negative error code otherwise
  */
 __bpf_kfunc int bpf_task_work_schedule_resume(struct task_struct *task, struct bpf_task_work *tw,
-					      void *map__map, bpf_task_work_callback_t callback,
+					      void *map__const_map, bpf_task_work_callback_t callback,
 					      struct bpf_prog_aux *aux)
 {
-	return bpf_task_work_schedule(task, tw, map__map, callback, aux, TWA_RESUME);
+	return bpf_task_work_schedule(task, tw, map__const_map, callback, aux, TWA_RESUME);
 }
 
 static int make_file_dynptr(struct file *file, u32 flags, bool may_sleep,
@@ -4814,30 +4814,32 @@ BTF_ID_FLAGS(func, bpf_obj_drop, KF_RELEASE | KF_IMPLICIT_ARGS)
 BTF_ID_FLAGS(func, bpf_obj_drop_impl, KF_RELEASE)
 BTF_ID_FLAGS(func, bpf_percpu_obj_drop, KF_RELEASE | KF_IMPLICIT_ARGS)
 BTF_ID_FLAGS(func, bpf_percpu_obj_drop_impl, KF_RELEASE)
-BTF_ID_FLAGS(func, bpf_refcount_acquire, KF_ACQUIRE | KF_RET_NULL | KF_RCU | KF_IMPLICIT_ARGS)
-BTF_ID_FLAGS(func, bpf_refcount_acquire_impl, KF_ACQUIRE | KF_RET_NULL | KF_RCU)
-BTF_ID_FLAGS(func, bpf_list_push_front, KF_IMPLICIT_ARGS)
-BTF_ID_FLAGS(func, bpf_list_push_front_impl)
-BTF_ID_FLAGS(func, bpf_list_push_back, KF_IMPLICIT_ARGS)
-BTF_ID_FLAGS(func, bpf_list_push_back_impl)
-BTF_ID_FLAGS(func, bpf_list_add, KF_IMPLICIT_ARGS)
-BTF_ID_FLAGS(func, bpf_list_pop_front, KF_ACQUIRE | KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_list_pop_back, KF_ACQUIRE | KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_list_del, KF_ACQUIRE | KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_list_front, KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_list_back, KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_list_is_first)
-BTF_ID_FLAGS(func, bpf_list_is_last)
-BTF_ID_FLAGS(func, bpf_list_empty)
+BTF_ID_FLAGS(func, bpf_refcount_acquire,
+	     KF_ACQUIRE | KF_RET_NULL | KF_RCU | KF_IMPLICIT_ARGS | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_refcount_acquire_impl,
+	     KF_ACQUIRE | KF_RET_NULL | KF_RCU | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_push_front, KF_IMPLICIT_ARGS | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_push_front_impl, KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_push_back, KF_IMPLICIT_ARGS | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_push_back_impl, KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_add, KF_IMPLICIT_ARGS | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_pop_front, KF_ACQUIRE | KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_pop_back, KF_ACQUIRE | KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_del, KF_ACQUIRE | KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_front, KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_back, KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_is_first, KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_is_last, KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_list_empty, KF_SPINLOCK_SAFE)
 BTF_ID_FLAGS(func, bpf_task_acquire, KF_ACQUIRE | KF_RCU | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_task_release, KF_RELEASE)
-BTF_ID_FLAGS(func, bpf_rbtree_remove, KF_ACQUIRE | KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_rbtree_add, KF_IMPLICIT_ARGS)
-BTF_ID_FLAGS(func, bpf_rbtree_add_impl)
-BTF_ID_FLAGS(func, bpf_rbtree_first, KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_rbtree_root, KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_rbtree_left, KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_rbtree_right, KF_RET_NULL)
+BTF_ID_FLAGS(func, bpf_rbtree_remove, KF_ACQUIRE | KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_rbtree_add, KF_IMPLICIT_ARGS | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_rbtree_add_impl, KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_rbtree_first, KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_rbtree_root, KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_rbtree_left, KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_rbtree_right, KF_RET_NULL | KF_SPINLOCK_SAFE)
 
 #ifdef CONFIG_CGROUPS
 BTF_ID_FLAGS(func, bpf_cgroup_acquire, KF_ACQUIRE | KF_RCU | KF_RET_NULL)
@@ -4871,7 +4873,6 @@ static const struct btf_kfunc_id_set generic_kfunc_set = {
 	.set   = &generic_btf_ids,
 };
 
-
 BTF_ID_LIST(generic_dtor_ids)
 BTF_ID(struct, task_struct)
 BTF_ID(func, bpf_task_release_dtor)
@@ -4882,14 +4883,14 @@ BTF_ID(func, bpf_cgroup_release_dtor)
 
 BTF_KFUNCS_START(common_btf_ids)
 BTF_ID_FLAGS(func, bpf_cast_to_kern_ctx, KF_FASTCALL)
-BTF_ID_FLAGS(func, bpf_rdonly_cast, KF_FASTCALL)
+BTF_ID_FLAGS(func, bpf_rdonly_cast, KF_FASTCALL | KF_PERFMON)
 BTF_ID_FLAGS(func, bpf_rcu_read_lock)
 BTF_ID_FLAGS(func, bpf_rcu_read_unlock)
 BTF_ID_FLAGS(func, bpf_dynptr_slice, KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_dynptr_slice_rdwr, KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_iter_num_new, KF_ITER_NEW)
-BTF_ID_FLAGS(func, bpf_iter_num_next, KF_ITER_NEXT | KF_RET_NULL)
-BTF_ID_FLAGS(func, bpf_iter_num_destroy, KF_ITER_DESTROY)
+BTF_ID_FLAGS(func, bpf_iter_num_new, KF_ITER_NEW | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_iter_num_next, KF_ITER_NEXT | KF_RET_NULL | KF_SPINLOCK_SAFE)
+BTF_ID_FLAGS(func, bpf_iter_num_destroy, KF_ITER_DESTROY | KF_SPINLOCK_SAFE)
 BTF_ID_FLAGS(func, bpf_iter_task_vma_new, KF_ITER_NEW | KF_RCU)
 BTF_ID_FLAGS(func, bpf_iter_task_vma_next, KF_ITER_NEXT | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_iter_task_vma_destroy, KF_ITER_DESTROY)
@@ -4919,26 +4920,26 @@ BTF_ID_FLAGS(func, bpf_wq_set_callback, KF_IMPLICIT_ARGS)
 BTF_ID_FLAGS(func, bpf_wq_start)
 BTF_ID_FLAGS(func, bpf_preempt_disable)
 BTF_ID_FLAGS(func, bpf_preempt_enable)
-BTF_ID_FLAGS(func, bpf_iter_bits_new, KF_ITER_NEW)
+BTF_ID_FLAGS(func, bpf_iter_bits_new, KF_ITER_NEW | KF_PERFMON)
 BTF_ID_FLAGS(func, bpf_iter_bits_next, KF_ITER_NEXT | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_iter_bits_destroy, KF_ITER_DESTROY)
-BTF_ID_FLAGS(func, bpf_copy_from_user_str, KF_SLEEPABLE)
-BTF_ID_FLAGS(func, bpf_copy_from_user_task_str, KF_SLEEPABLE)
-BTF_ID_FLAGS(func, bpf_get_kmem_cache)
+BTF_ID_FLAGS(func, bpf_copy_from_user_str, KF_SLEEPABLE | KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_copy_from_user_task_str, KF_SLEEPABLE | KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_get_kmem_cache, KF_PERFMON)
 BTF_ID_FLAGS(func, bpf_iter_kmem_cache_new, KF_ITER_NEW | KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpf_iter_kmem_cache_next, KF_ITER_NEXT | KF_RET_NULL | KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpf_iter_kmem_cache_destroy, KF_ITER_DESTROY | KF_SLEEPABLE)
 BTF_ID_FLAGS(func, bpf_local_irq_save)
 BTF_ID_FLAGS(func, bpf_local_irq_restore)
 #ifdef CONFIG_BPF_EVENTS
-BTF_ID_FLAGS(func, bpf_probe_read_user_dynptr)
-BTF_ID_FLAGS(func, bpf_probe_read_kernel_dynptr)
-BTF_ID_FLAGS(func, bpf_probe_read_user_str_dynptr)
-BTF_ID_FLAGS(func, bpf_probe_read_kernel_str_dynptr)
-BTF_ID_FLAGS(func, bpf_copy_from_user_dynptr, KF_SLEEPABLE)
-BTF_ID_FLAGS(func, bpf_copy_from_user_str_dynptr, KF_SLEEPABLE)
-BTF_ID_FLAGS(func, bpf_copy_from_user_task_dynptr, KF_SLEEPABLE)
-BTF_ID_FLAGS(func, bpf_copy_from_user_task_str_dynptr, KF_SLEEPABLE)
+BTF_ID_FLAGS(func, bpf_probe_read_user_dynptr, KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_probe_read_kernel_dynptr, KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_probe_read_user_str_dynptr, KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_probe_read_kernel_str_dynptr, KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_copy_from_user_dynptr, KF_SLEEPABLE | KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_copy_from_user_str_dynptr, KF_SLEEPABLE | KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_copy_from_user_task_dynptr, KF_SLEEPABLE | KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_copy_from_user_task_str_dynptr, KF_SLEEPABLE | KF_PERFMON)
 #endif
 #ifdef CONFIG_DMA_SHARED_BUFFER
 BTF_ID_FLAGS(func, bpf_iter_dmabuf_new, KF_ITER_NEW | KF_SLEEPABLE)
@@ -4946,26 +4947,26 @@ BTF_ID_FLAGS(func, bpf_iter_dmabuf_next, KF_ITER_NEXT | KF_RET_NULL | KF_SLEEPAB
 BTF_ID_FLAGS(func, bpf_iter_dmabuf_destroy, KF_ITER_DESTROY | KF_SLEEPABLE)
 #endif
 BTF_ID_FLAGS(func, __bpf_trap)
-BTF_ID_FLAGS(func, bpf_strcmp);
-BTF_ID_FLAGS(func, bpf_strcasecmp);
-BTF_ID_FLAGS(func, bpf_strncasecmp);
-BTF_ID_FLAGS(func, bpf_strchr);
-BTF_ID_FLAGS(func, bpf_strchrnul);
-BTF_ID_FLAGS(func, bpf_strnchr);
-BTF_ID_FLAGS(func, bpf_strrchr);
-BTF_ID_FLAGS(func, bpf_strlen);
-BTF_ID_FLAGS(func, bpf_strnlen);
-BTF_ID_FLAGS(func, bpf_strspn);
-BTF_ID_FLAGS(func, bpf_strcspn);
-BTF_ID_FLAGS(func, bpf_strstr);
-BTF_ID_FLAGS(func, bpf_strcasestr);
-BTF_ID_FLAGS(func, bpf_strnstr);
-BTF_ID_FLAGS(func, bpf_strncasestr);
+BTF_ID_FLAGS(func, bpf_strcmp, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strcasecmp, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strncasecmp, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strchr, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strchrnul, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strnchr, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strrchr, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strlen, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strnlen, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strspn, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strcspn, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strstr, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strcasestr, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strnstr, KF_PERFMON);
+BTF_ID_FLAGS(func, bpf_strncasestr, KF_PERFMON);
 #if defined(CONFIG_BPF_LSM) && defined(CONFIG_CGROUPS)
 BTF_ID_FLAGS(func, bpf_cgroup_read_xattr, KF_RCU)
 #endif
-BTF_ID_FLAGS(func, bpf_stream_vprintk, KF_IMPLICIT_ARGS)
-BTF_ID_FLAGS(func, bpf_stream_print_stack, KF_IMPLICIT_ARGS)
+BTF_ID_FLAGS(func, bpf_stream_vprintk, KF_IMPLICIT_ARGS | KF_SPINLOCK_SAFE | KF_PERFMON)
+BTF_ID_FLAGS(func, bpf_stream_print_stack, KF_IMPLICIT_ARGS | KF_SPINLOCK_SAFE | KF_PERFMON)
 BTF_ID_FLAGS(func, bpf_task_work_schedule_signal, KF_IMPLICIT_ARGS)
 BTF_ID_FLAGS(func, bpf_task_work_schedule_resume, KF_IMPLICIT_ARGS)
 BTF_ID_FLAGS(func, bpf_dynptr_from_file)

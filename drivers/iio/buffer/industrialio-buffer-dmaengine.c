@@ -56,6 +56,23 @@ static void iio_dmaengine_buffer_block_done(void *data,
 	iio_dma_buffer_block_done(block);
 }
 
+/*
+ * Cyclic transfers run until abort. Cap active cyclic blocks to one until there
+ * is a use case for more.
+ */
+static bool iio_dmaengine_buffer_has_active_cyclic(struct dmaengine_buffer *dmaengine_buffer)
+{
+	struct iio_dma_buffer_block *block;
+
+	guard(spinlock_irqsave)(&dmaengine_buffer->queue.list_lock);
+	list_for_each_entry(block, &dmaengine_buffer->active, head) {
+		if (block->cyclic)
+			return true;
+	}
+
+	return false;
+}
+
 static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 					     struct iio_dma_buffer_block *block)
 {
@@ -79,7 +96,14 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 	else
 		dma_dir = DMA_MEM_TO_DEV;
 
+	if (block->cyclic && iio_dmaengine_buffer_has_active_cyclic(dmaengine_buffer)) {
+		dev_err(queue->dev, "cyclic DMA transfer already active\n");
+		return -EBUSY;
+	}
+
 	if (block->sg_table) {
+		unsigned long flags;
+
 		/*
 		 * Only the first sgt->nents entries carry a valid
 		 * sg_dma_address()/sg_dma_len() pair as mapping the table may
@@ -88,7 +112,7 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 		 */
 		nents = block->sg_table->nents;
 
-		vecs = kmalloc_array(nents, sizeof(*vecs), GFP_ATOMIC);
+		vecs = kmalloc_objs(*vecs, nents, GFP_ATOMIC);
 		if (!vecs)
 			return -ENOMEM;
 
@@ -105,9 +129,19 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 
 		nents = i;
 
+		if (block->cyclic)
+			flags = DMA_PREP_REPEAT;
+		else
+			flags = DMA_PREP_INTERRUPT;
+
+		/*
+		 * A new transfer may need to end an already active cyclic transfer
+		 * before it can run, so always set the EOT flag.
+		 */
+		flags |= DMA_PREP_LOAD_EOT;
 		desc = dmaengine_prep_peripheral_dma_vec(dmaengine_buffer->chan,
 							 vecs, nents, dma_dir,
-							 DMA_PREP_INTERRUPT);
+							 flags);
 		kfree(vecs);
 	} else {
 		max_size = min(block->size, dmaengine_buffer->max_size);
@@ -128,8 +162,10 @@ static int iio_dmaengine_buffer_submit_block(struct iio_dma_buffer_queue *queue,
 	if (!desc)
 		return -ENOMEM;
 
-	desc->callback_result = iio_dmaengine_buffer_block_done;
-	desc->callback_param = block;
+	if (!block->cyclic) {
+		desc->callback_result = iio_dmaengine_buffer_block_done;
+		desc->callback_param = block;
+	}
 
 	cookie = dmaengine_submit(desc);
 	if (dma_submit_error(cookie))

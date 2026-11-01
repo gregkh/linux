@@ -53,12 +53,10 @@ static int rwbf_quirk;
 #define rwbf_required(iommu)	(rwbf_quirk || cap_rwbf((iommu)->cap))
 
 /*
- * set to 1 to panic kernel if can't successfully enable VT-d
- * (used when kernel is launched w/ TXT)
+ * Skip forcing iommu on and avoid tboot-related kernel panics during
+ * initialization when set to 1 (via intel_iommu=tboot_noforce).
  */
-static int force_on = 0;
 int intel_iommu_tboot_noforce;
-static int no_platform_optin;
 
 #define ROOT_ENTRY_NR (VTD_PAGE_SIZE/sizeof(struct root_entry))
 
@@ -199,7 +197,11 @@ static LIST_HEAD(dmar_satc_units);
 
 static void intel_iommu_domain_free(struct iommu_domain *domain);
 
-int dmar_disabled = !IS_ENABLED(CONFIG_INTEL_IOMMU_DEFAULT_ON);
+#ifdef CONFIG_INTEL_IOMMU_DEFAULT_ON
+int dmar_policy = DMAR_ON;
+#else
+int dmar_policy = DMAR_DEFAULT_OFF;
+#endif
 int intel_iommu_sm = IS_ENABLED(CONFIG_INTEL_IOMMU_SCALABLE_MODE_DEFAULT_ON);
 
 int intel_iommu_enabled = 0;
@@ -240,11 +242,10 @@ static int __init intel_iommu_setup(char *str)
 
 	while (*str) {
 		if (!strncmp(str, "on", 2)) {
-			dmar_disabled = 0;
+			dmar_policy = DMAR_ON;
 			pr_info("IOMMU enabled\n");
 		} else if (!strncmp(str, "off", 3)) {
-			dmar_disabled = 1;
-			no_platform_optin = 1;
+			dmar_policy = DMAR_USER_OFF;
 			pr_info("IOMMU disabled\n");
 		} else if (!strncmp(str, "igfx_off", 8)) {
 			disable_igfx_iommu = 1;
@@ -876,8 +877,14 @@ static void iommu_enable_pci_ats(struct device_domain_info *info)
 	if (!pci_ats_page_aligned(pdev))
 		return;
 
-	if (!pci_enable_ats(pdev, VTD_PAGE_SHIFT))
-		info->ats_enabled = 1;
+	/*
+	 * pci_enable_ats() should not fail here because earlier checks
+	 * have already verified support and configuration.
+	 */
+	if (WARN_ON(pci_enable_ats(pdev, VTD_PAGE_SHIFT)))
+		return;
+
+	info->ats_enabled = 1;
 }
 
 static void iommu_disable_pci_ats(struct device_domain_info *info)
@@ -1046,7 +1053,7 @@ int domain_attach_iommu(struct dmar_domain *domain, struct intel_iommu *iommu)
 	}
 
 	num = ida_alloc_range(&iommu->domain_ida, IDA_START_DID,
-			      cap_ndoms(iommu->cap) - 1, GFP_KERNEL);
+			      iommu->max_domain_id - 1, GFP_KERNEL);
 	if (num < 0) {
 		pr_err("%s: No free domain ids\n", iommu->name);
 		goto err_unlock;
@@ -1111,7 +1118,7 @@ static void copied_context_tear_down(struct intel_iommu *iommu,
 	context_clear_present(context);
 	__iommu_flush_cache(iommu, context, sizeof(*context));
 
-	if (did_old < cap_ndoms(iommu->cap)) {
+	if (did_old < iommu->max_domain_id) {
 		iommu->flush.flush_context(iommu, did_old,
 					   PCI_DEVID(bus, devfn),
 					   DMA_CCMD_MASK_NOBIT,
@@ -1514,7 +1521,7 @@ static int copy_context_table(struct intel_iommu *iommu,
 			continue;
 
 		did = context_domain_id(&ce);
-		if (did >= 0 && did < cap_ndoms(iommu->cap))
+		if (did >= 0 && did < iommu->max_domain_id)
 			ida_alloc_range(&iommu->domain_ida, did, did, GFP_KERNEL);
 
 		set_context_copied(iommu, bus, devfn);
@@ -1560,12 +1567,16 @@ static int copy_translation_tables(struct intel_iommu *iommu)
 		return -ENOMEM;
 
 	old_rt_phys = rtaddr_reg & VTD_PAGE_MASK;
-	if (!old_rt_phys)
-		return -EINVAL;
+	if (!old_rt_phys) {
+		ret = -EINVAL;
+		goto err_free_bitmap;
+	}
 
 	old_rt = memremap(old_rt_phys, PAGE_SIZE, MEMREMAP_WB);
-	if (!old_rt)
-		return -ENOMEM;
+	if (!old_rt) {
+		ret = -ENOMEM;
+		goto err_free_bitmap;
+	}
 
 	/* This is too big for the stack - allocate it from slab */
 	ctxt_table_entries = ext ? 512 : 256;
@@ -1609,11 +1620,14 @@ static int copy_translation_tables(struct intel_iommu *iommu)
 
 	__iommu_flush_cache(iommu, iommu->root_entry, PAGE_SIZE);
 
-	ret = 0;
+	memunmap(old_rt);
+	return 0;
 
 out_unmap:
 	memunmap(old_rt);
-
+err_free_bitmap:
+	bitmap_free(iommu->copied_tables);
+	iommu->copied_tables = NULL;
 	return ret;
 }
 
@@ -1712,7 +1726,7 @@ static int __init init_dmars(void)
 			 * we always have to disable PMRs or DMA may fail on
 			 * this device
 			 */
-			if (force_on)
+			if (dmar_policy_force_on())
 				iommu_disable_protect_mem_regions(iommu);
 			continue;
 		}
@@ -1804,7 +1818,7 @@ static int init_iommu_hw(void)
 			 * we always have to disable PMRs or DMA may fail on
 			 * this device
 			 */
-			if (force_on)
+			if (dmar_policy_force_on())
 				iommu_disable_protect_mem_regions(iommu);
 			continue;
 		}
@@ -1865,7 +1879,7 @@ static void iommu_resume(void *data)
 	unsigned long flag;
 
 	if (init_iommu_hw()) {
-		if (force_on)
+		if (dmar_policy_force_on())
 			panic("tboot: IOMMU setup failed, DMAR can not resume!\n");
 		else
 			WARN(1, "IOMMU setup failed, DMAR can not resume!\n");
@@ -2133,7 +2147,7 @@ static int intel_iommu_add(struct dmar_drhd_unit *dmaru)
 		/*
 		 * we always have to disable PMRs or DMA may fail on this device
 		 */
-		if (force_on)
+		if (dmar_policy_force_on())
 			iommu_disable_protect_mem_regions(iommu);
 		return 0;
 	}
@@ -2371,7 +2385,7 @@ void intel_iommu_shutdown(void)
 	struct dmar_drhd_unit *drhd;
 	struct intel_iommu *iommu = NULL;
 
-	if (no_iommu || dmar_disabled)
+	if (dmar_policy_off())
 		return;
 
 	/*
@@ -2434,7 +2448,7 @@ static ssize_t domains_supported_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
 	struct intel_iommu *iommu = dev_to_intel_iommu(dev);
-	return sysfs_emit(buf, "%ld\n", cap_ndoms(iommu->cap));
+	return sysfs_emit(buf, "%ld\n", iommu->max_domain_id);
 }
 static DEVICE_ATTR_RO(domains_supported);
 
@@ -2445,7 +2459,7 @@ static ssize_t domains_used_show(struct device *dev,
 	unsigned int count = 0;
 	int id;
 
-	for (id = 0; id < cap_ndoms(iommu->cap); id++)
+	for (id = 0; id < iommu->max_domain_id; id++)
 		if (ida_exists(&iommu->domain_ida, id))
 			count++;
 
@@ -2486,25 +2500,25 @@ static bool has_external_pci(void)
 	return false;
 }
 
-static int __init platform_optin_force_iommu(void)
+static void __init platform_optin_force_iommu(void)
 {
-	if (no_iommu || !dmar_platform_optin() || no_platform_optin ||
-	    !has_external_pci())
-		return 0;
+	if (!dmar_platform_optin() || !dmar_can_force_on(DMAR_FORCEON_PLATFORM))
+		return;
 
-	if (dmar_disabled)
-		pr_info("Intel-IOMMU force enabled due to platform opt in\n");
+	if (!has_external_pci())
+		return;
 
 	/*
 	 * If Intel-IOMMU is disabled by default, we will apply identity
 	 * map for all devices except those marked as being untrusted.
 	 */
-	if (dmar_disabled)
+	if (dmar_policy_off()) {
+		pr_info("Intel-IOMMU force enabled due to platform opt in\n");
 		iommu_set_default_passthrough(false);
+	}
 
-	dmar_disabled = 0;
-
-	return 1;
+	/* No concurrent access to dmar_policy at this point. */
+	dmar_policy = DMAR_FORCE_ON;
 }
 
 static int __init probe_acpi_namespace_devices(void)
@@ -2544,18 +2558,20 @@ static int __init probe_acpi_namespace_devices(void)
 	return 0;
 }
 
-static __init int tboot_force_iommu(void)
+static __init void tboot_force_iommu(void)
 {
-	if (!tboot_enabled())
-		return 0;
+	if (!tboot_enabled() || intel_iommu_tboot_noforce)
+		return;
 
-	if (no_iommu || dmar_disabled)
+	if (!dmar_can_force_on(DMAR_FORCEON_TBOOT))
+		panic("tboot: Failed to force IOMMU on\n");
+
+	if (dmar_policy_off())
 		pr_warn("Forcing Intel-IOMMU to enabled\n");
 
-	dmar_disabled = 0;
+	/* No concurrent access to dmar_policy at this point. */
+	dmar_policy = DMAR_FORCE_ON;
 	no_iommu = 0;
-
-	return 1;
 }
 
 int __init intel_iommu_init(void)
@@ -2568,18 +2584,19 @@ int __init intel_iommu_init(void)
 	 * Intel IOMMU is required for a TXT/tboot launch or platform
 	 * opt in, so enforce that.
 	 */
-	force_on = (!intel_iommu_tboot_noforce && tboot_force_iommu()) ||
-		    platform_optin_force_iommu();
+	tboot_force_iommu();
+	if (!dmar_policy_force_on())
+		platform_optin_force_iommu();
 
 	down_write(&dmar_global_lock);
 	if (dmar_table_init()) {
-		if (force_on)
+		if (dmar_policy_force_on())
 			panic("tboot: Failed to initialize DMAR table\n");
 		goto out_free_dmar;
 	}
 
 	if (dmar_dev_scope_init() < 0) {
-		if (force_on)
+		if (dmar_policy_force_on())
 			panic("tboot: Failed to initialize DMAR device scope\n");
 		goto out_free_dmar;
 	}
@@ -2597,7 +2614,7 @@ int __init intel_iommu_init(void)
 	if (!no_iommu)
 		intel_iommu_debugfs_init();
 
-	if (no_iommu || dmar_disabled) {
+	if (dmar_policy_off()) {
 		/*
 		 * We exit the function here to ensure IOMMU's remapping and
 		 * mempool aren't setup, which means that the IOMMU's PMRs
@@ -2633,7 +2650,7 @@ int __init intel_iommu_init(void)
 
 	ret = init_dmars();
 	if (ret) {
-		if (force_on)
+		if (dmar_policy_force_on())
 			panic("tboot: Failed to initialize DMARs\n");
 		pr_err("Initialization failed\n");
 		goto out_free_dmar;
@@ -3298,7 +3315,10 @@ static struct iommu_device *intel_iommu_probe_device(struct device *dev)
 
 	dev_iommu_priv_set(dev, info);
 	if (pdev && pci_ats_supported(pdev)) {
-		pci_prepare_ats(pdev, VTD_PAGE_SHIFT);
+		ret = pci_prepare_ats(pdev, VTD_PAGE_SHIFT);
+		if (ret)
+			goto free;
+
 		ret = device_rbtree_insert(iommu, info);
 		if (ret)
 			goto free;

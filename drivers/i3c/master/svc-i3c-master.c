@@ -1496,8 +1496,11 @@ static int svc_i3c_master_xfer(struct svc_i3c_master *master,
 			svc_i3c_master_emit_force_exit(master);
 
 		/* Wait idle if stop is sent. */
-		readl_poll_timeout(master->regs + SVC_I3C_MSTATUS, reg,
-				   SVC_I3C_MSTATUS_STATE_IDLE(reg), 0, 1000);
+		ret = readl_poll_timeout(master->regs + SVC_I3C_MSTATUS, reg,
+					 SVC_I3C_MSTATUS_STATE_IDLE(reg),
+					 0, 1000);
+		if (ret)
+			goto cleanup;
 	}
 
 	return 0;
@@ -1508,6 +1511,7 @@ emit_stop:
 	else
 		svc_i3c_master_emit_force_exit(master);
 
+cleanup:
 	svc_i3c_master_clear_merrwarn(master);
 	svc_i3c_master_flush_fifo(master);
 
@@ -1721,8 +1725,8 @@ static int svc_i3c_master_send_direct_ccc_cmd(struct svc_i3c_master *master,
 		svc_i3c_master_dequeue_xfer(master, xfer);
 	mutex_unlock(&master->lock);
 
-	if (cmd->actual_len != xfer_len)
-		ccc->dests[0].payload.len = cmd->actual_len;
+	if (ccc->rnw)
+		ccc->dests[0].payload.actual_len = cmd->actual_len;
 
 	ret = xfer->ret;
 	svc_i3c_master_free_xfer(xfer);

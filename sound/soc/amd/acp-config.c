@@ -31,6 +31,13 @@ static const struct dmi_system_id acp70_acpi_flag_override_table[] = {
 		},
 	},
 	{
+		/* ASUS EXPERTBOOK AM7406CKA (Kraken Point, ACP 7.0) */
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ASUS EXPERTBOOK AM7406CKA"),
+		},
+	},
+	{
 		/* ASUS Zenbook S16 UM5606GA (Strix Point, ACP 7.0) */
 		.matches = {
 			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC."),
@@ -52,6 +59,13 @@ static const struct dmi_system_id acp70_acpi_flag_override_table[] = {
 		},
 	},
 	{
+		/* Lenovo Yoga Pro 7 14ASP9 (Strix Point, ACP 7.0) */
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "83HN"),
+		},
+	},
+	{
 		.matches = {
 			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "FA401EA"),
@@ -61,6 +75,27 @@ static const struct dmi_system_id acp70_acpi_flag_override_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Vivobook 18 M1807GA"),
+		},
+	},
+	{
+		/* ASUS Zenbook S14 UM5406GA (Strix Point, ACP 7.0) */
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Zenbook S14 UM5406GA"),
+		},
+	},
+	{
+		/* HP OmniBook X Flip 14-kc0xxx (Strix Point, ACP 7.2) */
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "HP"),
+			DMI_MATCH(DMI_BOARD_NAME, "8EA1"),
+		},
+	},
+	{
+		/* HP OmniBook X Flip 16-cc0xxx */
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "HP"),
+			DMI_MATCH(DMI_BOARD_NAME, "8EA2"),
 		},
 	},
 	{}
@@ -197,6 +232,20 @@ static const struct config_entry config_table[] = {
 					DMI_EXACT_MATCH(DMI_BOARD_VENDOR, "HUAWEI"),
 					DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "HVY-WXX9"),
 					DMI_EXACT_MATCH(DMI_PRODUCT_VERSION, "M1040"),
+				},
+			},
+			{}
+		},
+	},
+	{
+		.flags = FLAG_AMD_LEGACY,
+		.device = ACP_PCI_DEV_ID,
+		.dmi_table = (const struct dmi_system_id []) {
+			{
+				.matches = {
+					DMI_EXACT_MATCH(DMI_BOARD_VENDOR, "HUAWEI"),
+					DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "HVY-WXX9"),
+					DMI_EXACT_MATCH(DMI_PRODUCT_VERSION, "M1060"),
 				},
 			},
 			{}
@@ -378,6 +427,18 @@ struct snd_soc_acpi_mach snd_soc_acpi_amd_acp70_sof_machines[] = {
 	{},
 };
 EXPORT_SYMBOL(snd_soc_acpi_amd_acp70_sof_machines);
+
+struct snd_soc_acpi_mach snd_soc_acpi_amd_acp7x_sof_machines[] = {
+	{
+		.id = "AMDI1010",
+		.drv_name = "acp7x-dsp",
+		.pdata = &acp_quirk_data,
+		.fw_filename = "sof-acp7x.ri",
+		.sof_tplg_filename = "sof-acp7x.tplg",
+	},
+	{},
+};
+EXPORT_SYMBOL(snd_soc_acpi_amd_acp7x_sof_machines);
 
 MODULE_DESCRIPTION("AMD ACP Machine Configuration Module");
 MODULE_LICENSE("Dual BSD/GPL");

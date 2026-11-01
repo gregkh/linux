@@ -183,10 +183,8 @@ static int qce_ahash_update(struct ahash_request *req)
 	struct qce_sha_reqctx *rctx = ahash_request_ctx_dma(req);
 	struct qce_alg_template *tmpl = to_ahash_tmpl(req->base.tfm);
 	struct qce_device *qce = tmpl->qce;
-	struct scatterlist *sg_last, *sg;
-	unsigned int total, len;
+	unsigned int total;
 	unsigned int hash_later;
-	unsigned int nbytes;
 	unsigned int blocksize;
 
 	blocksize = crypto_tfm_alg_blocksize(crypto_ahash_tfm(tfm));
@@ -234,28 +232,8 @@ static int qce_ahash_update(struct ahash_request *req)
 	if (!hash_later)
 		hash_later = blocksize;
 
-	if (hash_later) {
-		unsigned int src_offset = req->nbytes - hash_later;
-		scatterwalk_map_and_copy(rctx->buf, req->src, src_offset,
-					 hash_later, 0);
-	}
-
-	/* here nbytes is multiple of blocksize */
-	nbytes = total - hash_later;
-
-	len = rctx->buflen;
-	sg = sg_last = req->src;
-
-	while (len < nbytes && sg) {
-		if (len + sg_dma_len(sg) > nbytes)
-			break;
-		len += sg_dma_len(sg);
-		sg_last = sg;
-		sg = sg_next(sg);
-	}
-
-	if (!sg_last)
-		return -EINVAL;
+	scatterwalk_map_and_copy(rctx->buf, req->src, req->nbytes - hash_later,
+				 hash_later, 0);
 
 	if (rctx->buflen) {
 		sg_init_table(rctx->sg, 2);
@@ -264,7 +242,8 @@ static int qce_ahash_update(struct ahash_request *req)
 		req->src = rctx->sg;
 	}
 
-	req->nbytes = nbytes;
+	/* hash only complete blocks */
+	req->nbytes = total - hash_later;
 	rctx->buflen = hash_later;
 
 	return qce->async_req_enqueue(tmpl->qce, &req->base);

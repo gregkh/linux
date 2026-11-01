@@ -298,8 +298,6 @@ struct exfat_inode_info {
 	loff_t zeroed_size;
 	/* hash by i_location */
 	struct hlist_node i_hash_fat;
-	/* protect bmap against truncate */
-	struct rw_semaphore truncate_lock;
 	struct inode vfs_inode;
 	/* File creation time */
 	struct timespec64 i_crtime;
@@ -487,10 +485,10 @@ static inline u32 exfat_dentries_to_bytes(u32 dentry)
 /*
  * helpers for cluster size to dentry size conversion.
  */
-static inline u32 exfat_cluster_to_dentries(struct exfat_sb_info *sbi,
+static inline u64 exfat_cluster_to_dentries(struct exfat_sb_info *sbi,
 		u32 nr_clusters)
 {
-	return nr_clusters << (sbi->cluster_size_bits - DENTRY_SIZE_BITS);
+	return (u64)nr_clusters << (sbi->cluster_size_bits - DENTRY_SIZE_BITS);
 }
 
 static inline u32 exfat_dentries_to_cluster(struct exfat_sb_info *sbi,

@@ -432,6 +432,7 @@ static int record_root_in_trans(struct btrfs_trans_handle *trans,
 		spin_lock(&fs_info->fs_roots_radix_lock);
 		if (btrfs_get_root_last_trans(root) == trans->transid && !force) {
 			spin_unlock(&fs_info->fs_roots_radix_lock);
+			clear_bit(BTRFS_ROOT_IN_TRANS_SETUP, &root->state);
 			return 0;
 		}
 		radix_tree_tag_set(&fs_info->fs_roots_radix,
@@ -1528,12 +1529,8 @@ static noinline int commit_fs_roots(struct btrfs_trans_handle *trans)
 			ASSERT(atomic_read(&root->log_writers) == 0,
 			       "atomic_read(&root->log_writers)=%d",
 			       atomic_read(&root->log_writers));
-			ASSERT(atomic_read(&root->log_commit[0]) == 0,
-			       "atomic_read(&root->log_commit[0])=%d",
-			       atomic_read(&root->log_commit[0]));
-			ASSERT(atomic_read(&root->log_commit[1]) == 0,
-			       "atomic_read(&root->log_commit[1])=%d",
-			       atomic_read(&root->log_commit[1]));
+			ASSERT(!root->log_commit[0]);
+			ASSERT(!root->log_commit[1]);
 
 			radix_tree_tag_clear(&fs_info->fs_roots_radix,
 					(unsigned long)btrfs_root_id(root),
@@ -1651,7 +1648,7 @@ static int qgroup_account_snapshot(struct btrfs_trans_handle *trans,
 	ret = btrfs_write_and_wait_transaction(trans);
 	if (unlikely(ret)) {
 		btrfs_err(fs_info,
-"error while writing out transaction during qgroup snapshot accounting: %d", ret);
+"error while writing out transaction during qgroup snapshot accounting: %pe", ERR_PTR(ret));
 		return ret;
 	}
 
@@ -2597,7 +2594,7 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 
 	ret = btrfs_write_and_wait_transaction(trans);
 	if (unlikely(ret)) {
-		btrfs_err(fs_info, "error while writing out transaction: %d", ret);
+		btrfs_err(fs_info, "error while writing out transaction: %pe", ERR_PTR(ret));
 		/*
 		 * Abort before releasing tree_log_mutex, so a log sync waiting
 		 * on it sees the fs error and skips writing super_for_commit
@@ -2764,8 +2761,8 @@ void __cold __btrfs_abort_transaction(struct btrfs_trans_handle *trans,
 	WRITE_ONCE(trans->transaction->aborted, error);
 	trace_btrfs_transaction_abort(trans);
 	if (first_hit) {
-		btrfs_err(fs_info, "Transaction %llu aborted (error %d)",
-			  trans->transid, error);
+		btrfs_err(fs_info, "Transaction %llu aborted (%pe)",
+			  trans->transid, ERR_PTR(error));
 		if (error == -ENOSPC)
 			btrfs_dump_space_info_for_trans_abort(fs_info);
 	}

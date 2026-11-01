@@ -1266,7 +1266,7 @@ static void apply_cmsg_types(int fd, const struct cfg_cmsg_types *cmsg)
 
 static void parse_cmsg_types(const char *type)
 {
-	char *next = strchr(type, ',');
+	const char *next = strchr(type, ',');
 	unsigned int len = 0;
 
 	cfg_cmsg_types.cmsg_enabled = 1;
@@ -1294,7 +1294,7 @@ static void parse_cmsg_types(const char *type)
 
 static void parse_setsock_options(const char *name)
 {
-	char *next = strchr(name, ',');
+	const char *next = strchr(name, ',');
 	unsigned int len = 0;
 
 	if (next) {

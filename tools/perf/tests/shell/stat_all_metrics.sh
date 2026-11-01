@@ -7,7 +7,7 @@ ParanoidAndNotRoot()
   [ "$(id -u)" != 0 ] && [ "$(cat /proc/sys/kernel/perf_event_paranoid)" -gt $1 ]
 }
 
-test_prog="sleep 0.01"
+test_prog="true"
 system_wide_flag="-a"
 if ParanoidAndNotRoot 0
 then

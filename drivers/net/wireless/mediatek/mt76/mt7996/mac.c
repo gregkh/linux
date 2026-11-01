@@ -1256,8 +1256,6 @@ mt7996_tx_check_aggr(struct ieee80211_link_sta *link_sta,
 		return;
 
 	tid = skb->priority & IEEE80211_QOS_CTL_TID_MASK;
-	if (tid >= 6) /* skip VO queue */
-		return;
 
 	if (is_8023) {
 		fc = IEEE80211_FTYPE_DATA |
@@ -2517,6 +2515,8 @@ mt7996_mac_full_reset(struct mt7996_dev *dev)
 
 	mutex_unlock(&dev->mt76.mutex);
 
+	ieee80211_wake_queues(mt76_hw(dev));
+
 	ieee80211_restart_hw(mt76_hw(dev));
 }
 
@@ -3217,6 +3217,12 @@ void mt7996_mac_add_twt_setup(struct ieee80211_hw *hw,
 	struct mt7996_dev *dev = mt7996_hw_dev(hw);
 	struct mt7996_twt_flow *flow;
 	u8 flowid, table_id, exp;
+
+	/* the firmware does not support iTWT agreements with MLD peers, and
+	 * driver TWT state is only tracked on the default link
+	 */
+	if (sta->mlo)
+		goto out;
 
 	if (mt7996_mac_check_twt_req(twt))
 		goto out;

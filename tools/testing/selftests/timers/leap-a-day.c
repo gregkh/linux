@@ -51,7 +51,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
-#include <include/vdso/time64.h>
+#include "clock-helpers.h"
 #include "kselftest.h"
 
 #define CLOCK_TAI 11

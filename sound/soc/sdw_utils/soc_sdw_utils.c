@@ -81,6 +81,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* speaker */
 				.direction = {true, false},
 				.dai_name = "tac5xx2-aif1",
+				.component_name = "tac5572",
 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
 				.dailink = {SOC_SDW_AMP_OUT_DAI_ID, SOC_SDW_UNUSED_DAI_ID},
 				.init = asoc_sdw_ti_amp_init,
@@ -94,6 +95,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* mic */
 				.direction = {false, true},
 				.dai_name = "tac5xx2-aif2",
+				.component_name = "tac5572",
 				.dai_type = SOC_SDW_DAI_TYPE_MIC,
 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_DMIC_DAI_ID},
 				.rtd_init = asoc_sdw_ti_dmic_rtd_init,
@@ -102,6 +104,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* UAJ */
 				.direction = {true, true},
 				.dai_name = "tac5xx2-aif3",
+				.component_name = "tac5572",
 				.dai_type = SOC_SDW_DAI_TYPE_JACK,
 				.dailink = {SOC_SDW_JACK_OUT_DAI_ID, SOC_SDW_JACK_IN_DAI_ID},
 				.controls = generic_jack_controls,
@@ -122,6 +125,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* speaker with IV sense feedback */
 				.direction = {true, true},
 				.dai_name = "tac5xx2-aif1",
+				.component_name = "tac5672",
 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
 				.dailink = {SOC_SDW_AMP_OUT_DAI_ID, SOC_SDW_AMP_IN_DAI_ID},
 				.init = asoc_sdw_ti_amp_init,
@@ -135,6 +139,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* mic */
 				.direction = {false, true},
 				.dai_name = "tac5xx2-aif2",
+				.component_name = "tac5672",
 				.dai_type = SOC_SDW_DAI_TYPE_MIC,
 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_DMIC_DAI_ID},
 				.rtd_init = asoc_sdw_ti_dmic_rtd_init,
@@ -143,6 +148,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* UAJ */
 				.direction = {true, true},
 				.dai_name = "tac5xx2-aif3",
+				.component_name = "tac5672",
 				.dai_type = SOC_SDW_DAI_TYPE_JACK,
 				.dailink = {SOC_SDW_JACK_OUT_DAI_ID, SOC_SDW_JACK_IN_DAI_ID},
 				.controls = generic_jack_controls,
@@ -163,6 +169,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* speaker with echo reference feedback */
 				.direction = {true, true},
 				.dai_name = "tac5xx2-aif1",
+				.component_name = "tac5682",
 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
 				.dailink = {SOC_SDW_AMP_OUT_DAI_ID, SOC_SDW_AMP_IN_DAI_ID},
 				.init = asoc_sdw_ti_amp_init,
@@ -176,6 +183,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* mic */
 				.direction = {false, true},
 				.dai_name = "tac5xx2-aif2",
+				.component_name = "tac5682",
 				.dai_type = SOC_SDW_DAI_TYPE_MIC,
 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_DMIC_DAI_ID},
 				.rtd_init = asoc_sdw_ti_dmic_rtd_init,
@@ -184,6 +192,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* UAJ */
 				.direction = {true, true},
 				.dai_name = "tac5xx2-aif3",
+				.component_name = "tac5682",
 				.dai_type = SOC_SDW_DAI_TYPE_JACK,
 				.dailink = {SOC_SDW_JACK_OUT_DAI_ID, SOC_SDW_JACK_IN_DAI_ID},
 				.controls = generic_jack_controls,
@@ -203,6 +212,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 			{
 				.direction = {true, false},
 				.dai_name = "tac5xx2-aif1",
+				.component_name = "tas2883",
 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
 				.dailink = {SOC_SDW_AMP_OUT_DAI_ID, SOC_SDW_UNUSED_DAI_ID},
 				.init = asoc_sdw_ti_amp_init,
@@ -216,6 +226,7 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				/* mic */
 				.direction = {false, true},
 				.dai_name = "tac5xx2-aif2",
+				.component_name = "tas2883",
 				.dai_type = SOC_SDW_DAI_TYPE_MIC,
 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_DMIC_DAI_ID},
 				.rtd_init = asoc_sdw_ti_dmic_rtd_init,
@@ -800,7 +811,6 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				.dai_name = "cs35l56-ot25",
 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_AMP_IN_DAI_ID},
-				.rtd_init = asoc_sdw_cs_spk_feedback_rtd_init,
 			},
 		},
 		.dai_num = 2,
@@ -829,7 +839,6 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				.dai_name = "cs35l56-ot25",
 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_AMP_IN_DAI_ID},
-				.rtd_init = asoc_sdw_cs_spk_feedback_rtd_init,
 			},
 		},
 		.dai_num = 2,
@@ -858,7 +867,6 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				.dai_name = "cs35l56-ot25",
 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_AMP_IN_DAI_ID},
-				.rtd_init = asoc_sdw_cs_spk_feedback_rtd_init,
 			},
 		},
 		.dai_num = 2,
@@ -887,7 +895,6 @@ struct asoc_sdw_codec_info codec_info_list[] = {
 				.dai_name = "cs35l56-ot25",
 				.dai_type = SOC_SDW_DAI_TYPE_AMP,
 				.dailink = {SOC_SDW_UNUSED_DAI_ID, SOC_SDW_AMP_IN_DAI_ID},
-				.rtd_init = asoc_sdw_cs_spk_feedback_rtd_init,
 			},
 		},
 		.dai_num = 2,
@@ -1510,9 +1517,24 @@ int asoc_sdw_trigger(struct snd_pcm_substream *substream, int cmd)
 	}
 
 	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_RESUME:
+		/*
+		 * The peripherals lose their port configuration when the
+		 * controller is power-gated during system suspend, and an
+		 * application that restarts the stream with
+		 * SNDRV_PCM_IOCTL_RESUME - which platforms advertising
+		 * SNDRV_PCM_INFO_RESUME allow - never goes through
+		 * .prepare() again.  Prepare the stream here so that the
+		 * ports are reprogrammed before they are enabled;
+		 * sdw_prepare_stream() reapplies the parameters without
+		 * recomputing them when the stream is disabled.
+		 */
+		ret = sdw_prepare_stream(sdw_stream);
+		if (ret)
+			break;
+		fallthrough;
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-	case SNDRV_PCM_TRIGGER_RESUME:
 		ret = sdw_enable_stream(sdw_stream);
 		break;
 
@@ -1826,9 +1848,7 @@ static int is_sdca_aux_dev_present(struct device *dev,
 				   int adr_index)
 {
 	struct sdw_slave *slave;
-	struct device *sdw_dev;
 	const char *sdw_codec_name;
-	int ret = 0;
 	int i;
 
 	if (!aux_codec_name)
@@ -1838,7 +1858,8 @@ static int is_sdca_aux_dev_present(struct device *dev,
 	if (!sdw_codec_name)
 		return -ENOMEM;
 
-	sdw_dev = bus_find_device_by_name(&sdw_bus_type, NULL, sdw_codec_name);
+	struct device *sdw_dev __free(put_device) =
+		bus_find_device_by_name(&sdw_bus_type, NULL, sdw_codec_name);
 	if (!sdw_dev) {
 		dev_err(dev, "codec %s not found\n", sdw_codec_name);
 		return -EINVAL;
@@ -1848,24 +1869,19 @@ static int is_sdca_aux_dev_present(struct device *dev,
 
 	if (!slave->sdca_data.interface_revision) {
 		dev_warn(dev, "No SDCA properties, assuming aux '%s' present\n", aux_codec_name);
-		ret = 1;
-		goto put_dev;
+		return 1;
 	}
 
 	for (i = 0; i < slave->sdca_data.num_functions; i++) {
 		const char *fname = slave->sdca_data.function[i].name;
 
-		if (fname && strstr(aux_codec_name, fname)) {
-			ret = 1;
-			goto put_dev;
-		}
+		if (fname && strstr(aux_codec_name, fname))
+			return 1;
 	}
 
 	dev_dbg(dev, "SDCA function for aux '%s' NOT FOUND on slave, skipping\n", aux_codec_name);
 
-put_dev:
-	put_device(sdw_dev);
-	return ret;
+	return 0;
 }
 
 int asoc_sdw_count_sdw_endpoints(struct snd_soc_card *card,
@@ -1965,9 +1981,8 @@ static int is_sdca_endpoint_present(struct device *dev,
 	const struct snd_soc_acpi_endpoint *adr_end;
 	const struct asoc_sdw_dai_info *dai_info;
 	struct sdw_slave *slave;
-	struct device *sdw_dev;
 	const char *sdw_codec_name;
-	int ret, i;
+	int i;
 
 	adr_end = &adr_dev->endpoints[end_index];
 	dai_info = &codec_info->dais[adr_end->num];
@@ -1976,7 +1991,8 @@ static int is_sdca_endpoint_present(struct device *dev,
 	if (!sdw_codec_name)
 		return -ENOMEM;
 
-	sdw_dev = bus_find_device_by_name(&sdw_bus_type, NULL, sdw_codec_name);
+	struct device *sdw_dev __free(put_device) =
+		bus_find_device_by_name(&sdw_bus_type, NULL, sdw_codec_name);
 	if (!sdw_dev) {
 		dev_err(dev, "codec %s not found\n", sdw_codec_name);
 		return -EINVAL;
@@ -1987,8 +2003,7 @@ static int is_sdca_endpoint_present(struct device *dev,
 	/* Make sure BIOS provides SDCA properties */
 	if (!slave->sdca_data.interface_revision) {
 		dev_warn(&slave->dev, "SDCA properties not found in the BIOS\n");
-		ret = 1;
-		goto put_device;
+		return 1;
 	}
 
 	for (i = 0; i < slave->sdca_data.num_functions; i++) {
@@ -1997,8 +2012,7 @@ static int is_sdca_endpoint_present(struct device *dev,
 		if (dai_type == dai_info->dai_type) {
 			dev_dbg(&slave->dev, "DAI type %d sdca function %s found\n",
 				dai_type, slave->sdca_data.function[i].name);
-			ret = 1;
-			goto put_device;
+			return 1;
 		}
 	}
 
@@ -2006,11 +2020,7 @@ static int is_sdca_endpoint_present(struct device *dev,
 		"SDCA device function for DAI type %d not supported, skip endpoint\n",
 		dai_info->dai_type);
 
-	ret = 0;
-
-put_device:
-	put_device(sdw_dev);
-	return ret;
+	return 0;
 }
 
 int asoc_sdw_parse_sdw_endpoints(struct device *dev,

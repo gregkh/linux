@@ -859,7 +859,7 @@ struct ath12k *ath12k_mac_get_ar_by_pdev_id(struct ath12k_base *ab, u32 pdev_id)
 		return NULL;
 
 	for (i = 0; i < ab->num_radios; i++) {
-		if (ab->fw_mode == ATH12K_FIRMWARE_MODE_FTM)
+		if (ab->fw_mode == ATH12K_QMI_FIRMWARE_MODE_FTM)
 			pdev = &ab->pdevs[i];
 		else
 			pdev = rcu_dereference(ab->pdevs_active[i]);
@@ -4046,6 +4046,17 @@ static void ath12k_bss_assoc(struct ath12k *ar,
 	if (ret)
 		ath12k_warn(ar->ab, "failed to set vdev %i OBSS PD parameters: %d\n",
 			    arvif->vdev_id, ret);
+
+	if (ar->ab->hw_params->supports_sta_ps &&
+	    ahvif->vdev_type == WMI_VDEV_TYPE_STA &&
+	    ahvif->vdev_subtype == WMI_VDEV_SUBTYPE_NONE) {
+		ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+						    WMI_VDEV_PARAM_DTIM_POLICY,
+						    WMI_DTIM_POLICY_STICK);
+		if (ret)
+			ath12k_warn(ar->ab, "failed to set vdev %d stick DTIM policy: %d\n",
+				    arvif->vdev_id, ret);
+	}
 
 	if (test_bit(WMI_TLV_SERVICE_11D_OFFLOAD, ar->ab->wmi_ab.svc_map) &&
 	    ahvif->vdev_type == WMI_VDEV_TYPE_STA &&
@@ -9774,6 +9785,19 @@ static int ath12k_mac_start(struct ath12k *ar)
 		goto err;
 	}
 
+	if (ab->hw_params->supports_cong_ctrl_max_msdus) {
+		ret = ath12k_wmi_pdev_set_param(ar,
+						WMI_PDEV_PARAM_SET_CONG_CTRL_MAX_MSDUS,
+						ATH12K_NUM_POOL_TX_DESC(ab),
+						pdev->pdev_id);
+		if (ret) {
+			ath12k_err(ab,
+				   "failed to set congestion control MAX MSDUS: %d\n",
+				   ret);
+			goto err;
+		}
+	}
+
 	__ath12k_set_antenna(ar, ar->cfg_tx_chainmask, ar->cfg_rx_chainmask);
 
 	/* TODO: Do we need to enable ANI? */
@@ -14917,12 +14941,6 @@ static int ath12k_mac_hw_register(struct ath12k_hw *ah)
 				   NL80211_FEATURE_AP_SCAN;
 
 	wiphy->features |= NL80211_FEATURE_TX_POWER_INSERTION;
-
-	/* MLO is not yet supported so disable Wireless Extensions for now
-	 * to make sure ath12k users don't use it. This flag can be removed
-	 * once WIPHY_FLAG_SUPPORTS_MLO is enabled.
-	 */
-	wiphy->flags |= WIPHY_FLAG_DISABLE_WEXT;
 
 	/* Copy over MLO related capabilities received from
 	 * WMI_SERVICE_READY_EXT2_EVENT if single_chip_mlo_supp is set.

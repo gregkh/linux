@@ -31,33 +31,107 @@ DECLARE_RWSEM(conn_list_lock);
 #ifdef CONFIG_PROC_FS
 static struct proc_dir_entry *proc_clients;
 
+static const char *ksmbd_conn_state_string(struct ksmbd_conn *conn)
+{
+	switch (READ_ONCE(conn->status)) {
+	case KSMBD_SESS_NEW:
+		return "new";
+	case KSMBD_SESS_GOOD:
+		return "good";
+	case KSMBD_SESS_EXITING:
+		return "exiting";
+	case KSMBD_SESS_NEED_RECONNECT:
+		return "reconnect";
+	case KSMBD_SESS_NEED_NEGOTIATE:
+		return "negotiate";
+	case KSMBD_SESS_NEED_SETUP:
+		return "setup";
+	case KSMBD_SESS_RELEASING:
+		return "releasing";
+	default:
+		return "unknown";
+	}
+}
+
+static const char *ksmbd_conn_transport_string(struct ksmbd_conn *conn)
+{
+	if (conn->transport->ops->rdma_read || conn->transport->ops->rdma_write)
+		return "smbdirect";
+	return "tcp";
+}
+
+static void proc_show_conn_feature(struct seq_file *m, bool *separator,
+				   bool enabled, const char *name)
+{
+	if (!enabled)
+		return;
+	seq_printf(m, "%s%s", *separator ? "," : "", name);
+	*separator = true;
+}
+
+static void proc_show_conn_features(struct seq_file *m,
+				    struct ksmbd_conn *conn)
+{
+	bool separator = false;
+
+	proc_show_conn_feature(m, &separator,
+			       conn->sign || conn->signing_negotiated, "sign");
+	proc_show_conn_feature(m, &separator, conn->cipher_type, "encrypt");
+	proc_show_conn_feature(m, &separator,
+			       conn->compress_algorithm != SMB3_COMPRESS_NONE,
+			       "compress");
+	proc_show_conn_feature(m, &separator, conn->rdma_transform_ids,
+			       "rdma-transform");
+	proc_show_conn_feature(m, &separator, conn->posix_ext_supported, "posix");
+	if (!separator)
+		seq_puts(m, "none");
+}
+
 static int proc_show_clients(struct seq_file *m, void *v)
 {
 	struct ksmbd_conn *conn;
 	struct timespec64 now, t;
 	int i;
 
-	seq_printf(m, "#%-40s %-10s %-10s %-12s %-10s %s\n",
-		   "<client>", "<dialect>", "<credits>", "<open files>",
-		   "<requests>", "<last active>");
-
 	down_read(&conn_list_lock);
 	hash_for_each(conn_list, i, conn, hlist) {
+		unsigned int outstanding_credits, total_credits;
+		unsigned long id;
+		void *entry;
+		unsigned int sessions = 0;
+
 		jiffies_to_timespec64(jiffies - conn->last_active, &t);
 		ktime_get_real_ts64(&now);
 		t = timespec64_sub(now, t);
+
+		spin_lock(&conn->credits_lock);
+		outstanding_credits = conn->outstanding_credits;
+		total_credits = conn->total_credits;
+		spin_unlock(&conn->credits_lock);
+
+		rcu_read_lock();
+		xa_for_each(&conn->sessions, id, entry)
+			sessions++;
+		rcu_read_unlock();
 #if IS_ENABLED(CONFIG_IPV6)
 		if (!conn->inet_addr)
-			seq_printf(m, " %-40pI6c", &conn->inet6_addr);
+			seq_printf(m, "client:\t%pI6c\n", &conn->inet6_addr);
 		else
 #endif
-			seq_printf(m, " %-40pI4", &conn->inet_addr);
-		seq_printf(m, " 0x%-8x %-10u %-12d %-10d %ptT\n",
-			   conn->dialect,
-			   conn->total_credits,
-			   atomic_read(&conn->stats.open_files_count),
-			   atomic_read(&conn->req_running),
-			   &t);
+			seq_printf(m, "client:\t%pI4\n", &conn->inet_addr);
+		seq_printf(m, "transport:\t%s\n", ksmbd_conn_transport_string(conn));
+		seq_printf(m, "state:\t%s\n", ksmbd_conn_state_string(conn));
+		seq_printf(m, "dialect:\t0x%04x\n", conn->dialect);
+		seq_printf(m, "credits:\t%u/%u\n", outstanding_credits,
+			   total_credits);
+		seq_printf(m, "sessions:\t%u\n", sessions);
+		seq_printf(m, "open_files:\t%d\n",
+			   atomic_read(&conn->stats.open_files_count));
+		seq_printf(m, "requests:\t%lld\n",
+			   atomic64_read(&conn->stats.request_served));
+		seq_puts(m, "features:\t");
+		proc_show_conn_features(m, conn);
+		seq_printf(m, "\nlast_active:\t%ptT\n\n", &t);
 	}
 	up_read(&conn_list_lock);
 	return 0;
@@ -131,7 +205,7 @@ static void __ksmbd_conn_release_work(struct work_struct *work)
 
 	ida_destroy(&conn->async_ida);
 	conn->transport->ops->free_transport(conn->transport);
-	kfree(conn);
+	kfree_sensitive(conn);
 }
 
 /**
@@ -197,7 +271,7 @@ void ksmbd_conn_free(struct ksmbd_conn *conn)
 	 */
 	xa_destroy(&conn->sessions);
 	kvfree(conn->request_buf);
-	kfree(conn->preauth_info);
+	kfree_sensitive(conn->preauth_info);
 	kfree(conn->mechToken);
 	ksmbd_preauth_session_destroy(conn);
 	ksmbd_conn_put(conn);
@@ -234,6 +308,14 @@ struct ksmbd_conn *ksmbd_conn_alloc(void)
 	atomic_set(&conn->refcnt, 1);
 	conn->total_credits = 1;
 	conn->outstanding_credits = 0;
+
+	/*
+	 * The command sequence window starts as the set { 0 } when the
+	 * connection is established.
+	 */
+	conn->seq_low = 0;
+	conn->seq_high = 1;
+	__set_bit(0, conn->seq_bitmap);
 
 	init_waitqueue_head(&conn->req_running_q);
 	init_waitqueue_head(&conn->r_count_q);
@@ -429,7 +511,8 @@ retry_idle:
 	return 0;
 }
 
-int ksmbd_conn_write(struct ksmbd_work *work)
+static int __ksmbd_conn_write(struct ksmbd_work *work,
+			      struct ksmbd_transport_write *tx)
 {
 	struct ksmbd_conn *conn = work->conn;
 	int sent;
@@ -445,12 +528,14 @@ int ksmbd_conn_write(struct ksmbd_work *work)
 	if (!work->iov_idx)
 		return -EINVAL;
 
+	tx->iov = work->iov;
+	tx->iov_cnt = work->iov_cnt;
+	tx->size = get_rfc1002_len(work->iov[0].iov_base) + 4;
+	tx->need_invalidate_rkey = work->need_invalidate_rkey;
+	tx->remote_key = work->remote_key;
+
 	ksmbd_conn_lock(conn);
-	sent = conn->transport->ops->writev(conn->transport, work->iov,
-			work->iov_cnt,
-			get_rfc1002_len(work->iov[0].iov_base) + 4,
-			work->need_invalidate_rkey,
-			work->remote_key);
+	sent = conn->transport->ops->writev(conn->transport, tx);
 	ksmbd_conn_unlock(conn);
 
 	if (sent < 0) {
@@ -459,6 +544,22 @@ int ksmbd_conn_write(struct ksmbd_work *work)
 	}
 
 	return 0;
+}
+
+int ksmbd_conn_write(struct ksmbd_work *work)
+{
+	struct ksmbd_transport_write tx = {};
+
+	return __ksmbd_conn_write(work, &tx);
+}
+
+int ksmbd_conn_write_eor(struct ksmbd_work *work)
+{
+	struct ksmbd_transport_write tx = {
+		.msg_flags = MSG_EOR,
+	};
+
+	return __ksmbd_conn_write(work, &tx);
 }
 
 int ksmbd_conn_rdma_read(struct ksmbd_conn *conn,
@@ -813,7 +914,7 @@ again:
 		if (atomic_dec_and_test(&target->refcnt)) {
 			ida_destroy(&target->async_ida);
 			t->ops->free_transport(t);
-			kfree(target);
+			kfree_sensitive(target);
 		}
 		goto again;
 	}

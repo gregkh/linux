@@ -10,11 +10,12 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/landlock.h>
 #include <linux/in.h>
+#include <linux/landlock.h>
 #include <sched.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
@@ -22,6 +23,9 @@
 
 #include "audit.h"
 #include "common.h"
+#include "trace.h"
+
+#define TRACE_TASK "net_test"
 
 const short sock_port_start = (1 << 10);
 
@@ -3283,6 +3287,611 @@ TEST_F(audit, sendmsg)
 	EXPECT_EQ(0, records.domain);
 
 	EXPECT_EQ(0, close(sock_fd));
+}
+
+/* Trace tests */
+
+/* clang-format off */
+FIXTURE(trace_net) {
+	/* clang-format on */
+	int tracefs_ok;
+};
+
+FIXTURE_SETUP(trace_net)
+{
+	int ret;
+
+	/* Isolate the network namespace so the bound port cannot collide. */
+	setup_loopback(_metadata);
+
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	ASSERT_EQ(0, unshare(CLONE_NEWNS));
+	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL));
+
+	ret = tracefs_fixture_setup();
+	if (ret) {
+		clear_cap(_metadata, CAP_SYS_ADMIN);
+		self->tracefs_ok = 0;
+		SKIP(return, "tracefs not available");
+	}
+	self->tracefs_ok = 1;
+
+	ASSERT_EQ(0,
+		  tracefs_enable_event(TRACEFS_DENY_ACCESS_NET_ENABLE, true));
+	ASSERT_EQ(0, tracefs_clear());
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+}
+
+FIXTURE_TEARDOWN(trace_net)
+{
+	if (!self->tracefs_ok)
+		return;
+
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	tracefs_enable_event(TRACEFS_DENY_ACCESS_NET_ENABLE, false);
+	tracefs_fixture_teardown();
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+}
+
+/*
+ * Baseline: verifies that without Landlock, the bind succeeds and no
+ * deny_access_net trace event fires.
+ */
+/* clang-format off */
+FIXTURE_VARIANT(trace_net)
+{
+	/* clang-format on */
+	bool sandbox;
+	int bind_port_offset; /* 0 = allowed port, 1 = denied port */
+	int expect_denied;
+};
+
+/* Unsandboxed: no Landlock, bind should succeed with no events. */
+/* clang-format off */
+FIXTURE_VARIANT_ADD(trace_net, unsandboxed) {
+	/* clang-format on */
+	.sandbox = false,
+	.bind_port_offset = 0,
+	.expect_denied = 0,
+};
+
+/* Denied: sandboxed, bind to port not in ruleset. */
+/* clang-format off */
+FIXTURE_VARIANT_ADD(trace_net, bind_denied) {
+	/* clang-format on */
+	.sandbox = true,
+	.bind_port_offset = 1,
+	.expect_denied = 1,
+};
+
+/* Allowed: sandboxed, bind to port in ruleset. */
+/* clang-format off */
+FIXTURE_VARIANT_ADD(trace_net, bind_allowed) {
+	/* clang-format on */
+	.sandbox = true,
+	.bind_port_offset = 0,
+	.expect_denied = 0,
+};
+
+TEST_F(trace_net, deny_access_net_bind)
+{
+	char *buf;
+	int count, status;
+	pid_t child;
+
+	if (!self->tracefs_ok)
+		SKIP(return, "tracefs not available");
+
+	ASSERT_EQ(0, tracefs_clear_buf());
+
+	child = fork();
+	ASSERT_LE(0, child);
+
+	if (child == 0) {
+		struct sockaddr_in addr = {
+			.sin_family = AF_INET,
+			.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+		};
+		int sock_fd;
+
+		if (variant->sandbox) {
+			struct landlock_ruleset_attr ruleset_attr = {
+				.handled_access_net =
+					LANDLOCK_ACCESS_NET_BIND_TCP,
+			};
+			struct landlock_net_port_attr port_attr = {
+				.allowed_access = LANDLOCK_ACCESS_NET_BIND_TCP,
+				.port = sock_port_start,
+			};
+			int ruleset_fd;
+
+			ruleset_fd = landlock_create_ruleset(
+				&ruleset_attr, sizeof(ruleset_attr), 0);
+			if (ruleset_fd < 0)
+				_exit(1);
+
+			if (landlock_add_rule(ruleset_fd,
+					      LANDLOCK_RULE_NET_PORT,
+					      &port_attr, 0)) {
+				close(ruleset_fd);
+				_exit(1);
+			}
+
+			prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+			if (landlock_restrict_self(ruleset_fd, 0)) {
+				close(ruleset_fd);
+				_exit(1);
+			}
+			close(ruleset_fd);
+		}
+
+		sock_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+		if (sock_fd < 0)
+			_exit(1);
+
+		addr.sin_port =
+			htons(sock_port_start + variant->bind_port_offset);
+		if (variant->expect_denied) {
+			/* Bind should be denied. */
+			if (bind(sock_fd, (struct sockaddr *)&addr,
+				 sizeof(addr)) == 0) {
+				close(sock_fd);
+				_exit(2);
+			}
+			if (errno != EACCES) {
+				close(sock_fd);
+				_exit(3);
+			}
+		} else {
+			/* Bind should succeed. */
+			if (bind(sock_fd, (struct sockaddr *)&addr,
+				 sizeof(addr))) {
+				close(sock_fd);
+				_exit(2);
+			}
+		}
+		close(sock_fd);
+		_exit(0);
+	}
+
+	ASSERT_EQ(child, waitpid(child, &status, 0));
+	ASSERT_TRUE(WIFEXITED(status));
+	EXPECT_EQ(0, WEXITSTATUS(status));
+
+	buf = tracefs_read_buf();
+	ASSERT_NE(NULL, buf);
+
+	count = tracefs_count_matches(buf, REGEX_DENY_ACCESS_NET(TRACE_TASK));
+	if (variant->expect_denied) {
+		EXPECT_EQ(variant->expect_denied, count)
+		{
+			TH_LOG("Expected deny_access_net event, got %d\n%s",
+			       count, buf);
+		}
+	} else {
+		EXPECT_EQ(0, count)
+		{
+			TH_LOG("Expected 0 deny_access_net events, "
+			       "got %d\n%s",
+			       count, buf);
+		}
+	}
+
+	free(buf);
+}
+
+/*
+ * Anchors the denial fields shared by every deny_access_net event so a port
+ * test also proves the denying domain, execution status, logging verdict, and
+ * exact blocked access.
+ */
+static void
+expect_net_deny_common_fields(struct __test_metadata *const _metadata,
+			      const char *const buf,
+			      const char *const expected_blockers)
+{
+	char field[64];
+
+	ASSERT_EQ(0,
+		  tracefs_extract_field(buf, REGEX_DENY_ACCESS_NET(TRACE_TASK),
+					"domain", field, sizeof(field)));
+	EXPECT_STRNE("0", field);
+
+	/* Same exec that restricted itself, no exec in between. */
+	ASSERT_EQ(0,
+		  tracefs_extract_field(buf, REGEX_DENY_ACCESS_NET(TRACE_TASK),
+					"same_exec", field, sizeof(field)));
+	EXPECT_STREQ("1", field);
+
+	/* Default flags, same exec: audit would log this denial. */
+	ASSERT_EQ(0,
+		  tracefs_extract_field(buf, REGEX_DENY_ACCESS_NET(TRACE_TASK),
+					"logged", field, sizeof(field)));
+	EXPECT_STREQ("1", field);
+
+	ASSERT_EQ(0,
+		  tracefs_extract_field(buf, REGEX_DENY_ACCESS_NET(TRACE_TASK),
+					"blockers", field, sizeof(field)));
+	EXPECT_STREQ(expected_blockers, field);
+}
+
+enum trace_net_operation {
+	TRACE_NET_BIND,
+	TRACE_NET_SEND,
+};
+
+/* clang-format off */
+FIXTURE(trace_net_address) {
+	/* clang-format on */
+	int tracefs_ok;
+};
+
+FIXTURE_SETUP(trace_net_address)
+{
+	int ret;
+
+	/* Isolate the network namespace so the bound port cannot collide. */
+	setup_loopback(_metadata);
+
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	ASSERT_EQ(0, unshare(CLONE_NEWNS));
+	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL));
+
+	ret = tracefs_fixture_setup();
+	if (ret) {
+		clear_cap(_metadata, CAP_SYS_ADMIN);
+		self->tracefs_ok = 0;
+		SKIP(return, "tracefs not available");
+	}
+	self->tracefs_ok = 1;
+
+	ASSERT_EQ(0,
+		  tracefs_enable_event(TRACEFS_DENY_ACCESS_NET_ENABLE, true));
+	ASSERT_EQ(0, tracefs_clear());
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+}
+
+FIXTURE_TEARDOWN(trace_net_address)
+{
+	if (!self->tracefs_ok)
+		return;
+
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	tracefs_enable_event(TRACEFS_DENY_ACCESS_NET_ENABLE, false);
+	tracefs_fixture_teardown();
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+}
+
+/* clang-format off */
+FIXTURE_VARIANT(trace_net_address) {
+	/* clang-format on */
+	int socket_family;
+	int socket_type;
+	enum trace_net_operation operation;
+	int address_family;
+	socklen_t addrlen;
+	__u64 handled_access;
+	const char *expected_blockers;
+	bool address_port_zero;
+	bool expected_address_port;
+	int expected_port;
+};
+
+/* clang-format off */
+FIXTURE_VARIANT_ADD(trace_net_address, ipv4_tcp_bind) {
+	/* clang-format on */
+	.socket_family = AF_INET,
+	.socket_type = SOCK_STREAM,
+	.operation = TRACE_NET_BIND,
+	.address_family = AF_INET,
+	.addrlen = sizeof(struct sockaddr_in),
+	.handled_access = LANDLOCK_ACCESS_NET_BIND_TCP,
+	.expected_blockers = "bind_tcp",
+	.expected_address_port = true,
+};
+
+/* Explicit bind(0) has a checked zero port. */
+/* clang-format off */
+FIXTURE_VARIANT_ADD(trace_net_address, ipv4_udp_bind_zero) {
+	/* clang-format on */
+	.socket_family = AF_INET,
+	.socket_type = SOCK_DGRAM,
+	.operation = TRACE_NET_BIND,
+	.address_family = AF_INET,
+	.addrlen = sizeof(struct sockaddr_in),
+	.handled_access = LANDLOCK_ACCESS_NET_BIND_UDP,
+	.expected_blockers = "bind_udp",
+	.address_port_zero = true,
+	.expected_port = 0,
+};
+
+/* A UDP send can deny its synthetic unspecified bind endpoint. */
+/* clang-format off */
+FIXTURE_VARIANT_ADD(trace_net_address, ipv6_udp_autobind) {
+	/* clang-format on */
+	.socket_family = AF_INET6,
+	.socket_type = SOCK_DGRAM,
+	.operation = TRACE_NET_SEND,
+	.address_family = AF_INET6,
+	.addrlen = sizeof(struct sockaddr_in6),
+	.handled_access = LANDLOCK_ACCESS_NET_BIND_UDP,
+	.expected_blockers = "bind_udp",
+	.expected_port = 0,
+};
+
+/* A family-only address has no checked port. */
+/* clang-format off */
+FIXTURE_VARIANT_ADD(trace_net_address, ipv6_unspec_udp_send_min) {
+	/* clang-format on */
+	.socket_family = AF_INET6,
+	.socket_type = SOCK_DGRAM,
+	.operation = TRACE_NET_SEND,
+	.address_family = AF_UNSPEC,
+	.addrlen = sizeof(sa_family_t),
+	.handled_access = LANDLOCK_ACCESS_NET_CONNECT_SEND_UDP,
+	.expected_blockers = "connect_send_udp",
+	.expected_port = -1,
+};
+
+static void set_trace_net_address(struct sockaddr_storage *const storage,
+				  const int socket_family,
+				  const int address_family,
+				  const unsigned short port)
+{
+	memset(storage, 0, sizeof(*storage));
+
+	if (socket_family == AF_INET) {
+		struct sockaddr_in *const addr4 = (struct sockaddr_in *)storage;
+
+		addr4->sin_family = address_family;
+		addr4->sin_port = htons(port);
+		addr4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	} else {
+		struct sockaddr_in6 *const addr6 =
+			(struct sockaddr_in6 *)storage;
+
+		addr6->sin6_family = address_family;
+		addr6->sin6_port = htons(port);
+		addr6->sin6_addr = in6addr_loopback;
+	}
+}
+
+/* Verifies the actionable signed port for representative checked shapes. */
+TEST_F(trace_net_address, deny_access_net)
+{
+	const char *const event_regex = REGEX_DENY_ACCESS_NET(TRACE_TASK);
+	const unsigned short address_port =
+		variant->address_port_zero ? 0 : sock_port_start + 1;
+	const int expected_port = variant->expected_address_port ?
+					  address_port :
+					  variant->expected_port;
+	const struct landlock_ruleset_attr ruleset_attr = {
+		.handled_access_net = variant->handled_access,
+	};
+	struct sockaddr_storage address;
+	char field[64], expected[16];
+	char *buf;
+	int count, ret, ruleset_fd, socket_fd, status;
+	pid_t child;
+
+	if (!self->tracefs_ok)
+		SKIP(return, "tracefs not available");
+
+	set_trace_net_address(&address, variant->socket_family,
+			      variant->address_family, address_port);
+	socket_fd = socket(variant->socket_family,
+			   variant->socket_type | SOCK_CLOEXEC, 0);
+	ASSERT_LE(0, socket_fd);
+	ruleset_fd =
+		landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
+	ASSERT_LE(0, ruleset_fd);
+	ASSERT_EQ(0, tracefs_clear_buf());
+
+	child = fork();
+	ASSERT_LE(0, child);
+	if (child == 0) {
+		if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
+			_exit(1);
+		if (landlock_restrict_self(ruleset_fd, 0))
+			_exit(2);
+		close(ruleset_fd);
+
+		switch (variant->operation) {
+		case TRACE_NET_BIND:
+			ret = bind(socket_fd, (const struct sockaddr *)&address,
+				   variant->addrlen);
+			break;
+		case TRACE_NET_SEND:
+			ret = sendto(socket_fd, "A", 1, MSG_NOSIGNAL,
+				     (const struct sockaddr *)&address,
+				     variant->addrlen);
+			break;
+		default:
+			_exit(3);
+		}
+		if (ret >= 0 || errno != EACCES)
+			_exit(4);
+		close(socket_fd);
+
+		_exit(0);
+	}
+	close(ruleset_fd);
+	close(socket_fd);
+
+	ASSERT_EQ(child, waitpid(child, &status, 0));
+	ASSERT_TRUE(WIFEXITED(status));
+	ASSERT_EQ(0, WEXITSTATUS(status));
+
+	buf = tracefs_read_buf();
+	ASSERT_NE(NULL, buf);
+	count = tracefs_count_matches(buf, event_regex);
+	if (count != 1)
+		TH_LOG("Expected 1 denial event, got %d\n%s", count, buf);
+	ASSERT_EQ(1, count);
+	expect_net_deny_common_fields(_metadata, buf,
+				      variant->expected_blockers);
+
+	ASSERT_EQ(0, tracefs_extract_field(buf, event_regex, "port", field,
+					   sizeof(field)));
+	snprintf(expected, sizeof(expected), "%d", expected_port);
+	EXPECT_STREQ(expected, field);
+
+	free(buf);
+}
+
+/* Field verification for the check_rule_net_port event on an allowed access. */
+
+/* clang-format off */
+FIXTURE(trace_net_check_rule) {
+	/* clang-format on */
+	int tracefs_ok;
+};
+
+FIXTURE_SETUP(trace_net_check_rule)
+{
+	int ret;
+
+	/* Isolate the network namespace so the bound port cannot collide. */
+	setup_loopback(_metadata);
+
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	ASSERT_EQ(0, unshare(CLONE_NEWNS));
+	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL));
+
+	ret = tracefs_fixture_setup();
+	if (ret) {
+		clear_cap(_metadata, CAP_SYS_ADMIN);
+		self->tracefs_ok = 0;
+		SKIP(return, "tracefs not available");
+	}
+	self->tracefs_ok = 1;
+
+	ASSERT_EQ(0, tracefs_enable_event(TRACEFS_CHECK_RULE_NET_ENABLE, true));
+	ASSERT_EQ(0, tracefs_clear());
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+}
+
+FIXTURE_TEARDOWN(trace_net_check_rule)
+{
+	if (!self->tracefs_ok)
+		return;
+
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	tracefs_enable_event(TRACEFS_CHECK_RULE_NET_ENABLE, false);
+	tracefs_fixture_teardown();
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+}
+
+/*
+ * Verifies that an allowed bind matching a net-port rule emits exactly one
+ * landlock_check_rule_net_port event with the enforcing domain, the requested
+ * access, the checked port (host endianness), and the per-layer grants.  The
+ * whole event is anchored to exact values so removing the check_rule_net_port
+ * emission or introducing a byte-order or field-plumbing regression fails the
+ * test.
+ */
+TEST_F(trace_net_check_rule, check_rule_net_fields)
+{
+	pid_t child;
+	int status;
+	char *buf;
+	char field[64], expected[16];
+
+	if (!self->tracefs_ok)
+		SKIP(return, "tracefs not available");
+
+	child = fork();
+	ASSERT_LE(0, child);
+
+	if (child == 0) {
+		struct landlock_ruleset_attr ruleset_attr = {
+			.handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP,
+		};
+		struct landlock_net_port_attr port_attr = {
+			.allowed_access = LANDLOCK_ACCESS_NET_BIND_TCP,
+			.port = sock_port_start,
+		};
+		struct sockaddr_in addr = {
+			.sin_family = AF_INET,
+			.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+		};
+		int ruleset_fd, sock_fd;
+
+		ruleset_fd = landlock_create_ruleset(&ruleset_attr,
+						     sizeof(ruleset_attr), 0);
+		if (ruleset_fd < 0)
+			_exit(1);
+
+		if (landlock_add_rule(ruleset_fd, LANDLOCK_RULE_NET_PORT,
+				      &port_attr, 0)) {
+			close(ruleset_fd);
+			_exit(1);
+		}
+
+		prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+		if (landlock_restrict_self(ruleset_fd, 0)) {
+			close(ruleset_fd);
+			_exit(1);
+		}
+		close(ruleset_fd);
+
+		/* Bind to the allowed port: succeeds and matches the rule. */
+		sock_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+		if (sock_fd < 0)
+			_exit(1);
+
+		addr.sin_port = htons(sock_port_start);
+		if (bind(sock_fd, (struct sockaddr *)&addr, sizeof(addr))) {
+			close(sock_fd);
+			_exit(2);
+		}
+		close(sock_fd);
+		_exit(0);
+	}
+
+	ASSERT_EQ(child, waitpid(child, &status, 0));
+	ASSERT_TRUE(WIFEXITED(status));
+	EXPECT_EQ(0, WEXITSTATUS(status));
+
+	buf = tracefs_read_buf();
+	ASSERT_NE(NULL, buf);
+
+	/* A single-layer domain matching one port rule emits one event. */
+	EXPECT_EQ(1,
+		  tracefs_count_matches(buf, REGEX_CHECK_RULE_NET(TRACE_TASK)))
+	{
+		TH_LOG("Expected 1 check_rule_net_port event\n%s", buf);
+	}
+
+	ASSERT_EQ(0,
+		  tracefs_extract_field(buf, REGEX_CHECK_RULE_NET(TRACE_TASK),
+					"domain", field, sizeof(field)));
+	EXPECT_STRNE("0", field);
+
+	ASSERT_EQ(0, tracefs_extract_field(
+			     buf, REGEX_CHECK_RULE_NET(TRACE_TASK),
+			     "access_request", field, sizeof(field)));
+	EXPECT_STREQ("bind_tcp", field);
+
+	/*
+	 * The port is reported in host endianness (UAPI convention), so on
+	 * little-endian htons(sock_port_start) would print a different value:
+	 * the exact match also catches byte-order regressions.
+	 */
+	ASSERT_EQ(0,
+		  tracefs_extract_field(buf, REGEX_CHECK_RULE_NET(TRACE_TASK),
+					"port", field, sizeof(field)));
+	snprintf(expected, sizeof(expected), "%llu",
+		 (unsigned long long)sock_port_start);
+	EXPECT_STREQ(expected, field);
+
+	/* One layer that fully grants the request: grants={bind_tcp}. */
+	ASSERT_EQ(0,
+		  tracefs_extract_field(buf, REGEX_CHECK_RULE_NET(TRACE_TASK),
+					"grants", field, sizeof(field)));
+	EXPECT_STREQ("{bind_tcp}", field);
+
+	free(buf);
 }
 
 TEST_HARNESS_MAIN

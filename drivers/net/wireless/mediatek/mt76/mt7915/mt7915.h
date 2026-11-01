@@ -205,6 +205,7 @@ struct mt7915_phy {
 
 	struct ieee80211_vif *monitor_vif;
 
+	struct thermal_zone_device *tzone;
 	struct thermal_cooling_device *cdev;
 	u8 cdev_state;
 	u8 throttle_state;
@@ -295,6 +296,7 @@ struct mt7915_dev {
 	spinlock_t reg_lock;
 
 	u32 hw_pattern;
+	u32 ple1_sts;
 
 	bool dbdc_support;
 	bool flash_mode;

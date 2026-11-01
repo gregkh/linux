@@ -144,12 +144,10 @@ struct nvme_tcp_queue {
 	void (*state_change)(struct sock *);
 	void (*data_ready)(struct sock *);
 	void (*write_space)(struct sock *);
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-	struct lock_class_key nvme_tcp_sk_key;
-	struct lock_class_key nvme_tcp_slock_key;
-#endif
 };
+
+static DEFINE_MUTEX(nvme_tcp_ctrl_mutex);
+static LIST_HEAD_GUARDED(nvme_tcp_ctrl_list, nvme_tcp_ctrl_mutex);
 
 struct nvme_tcp_ctrl {
 	/* read only in the hot path */
@@ -157,7 +155,8 @@ struct nvme_tcp_ctrl {
 	struct blk_mq_tag_set	tag_set;
 
 	/* other member variables */
-	struct list_head	list;
+	struct list_head	list
+		__guarded_by(&nvme_tcp_ctrl_mutex);
 	struct blk_mq_tag_set	admin_tag_set;
 	struct sockaddr_storage addr;
 	struct sockaddr_storage src_addr;
@@ -169,8 +168,6 @@ struct nvme_tcp_ctrl {
 	u32			io_queues[HCTX_MAX_TYPES];
 };
 
-static LIST_HEAD(nvme_tcp_ctrl_list);
-static DEFINE_MUTEX(nvme_tcp_ctrl_mutex);
 static struct workqueue_struct *nvme_tcp_wq;
 static const struct blk_mq_ops nvme_tcp_mq_ops;
 static const struct blk_mq_ops nvme_tcp_admin_mq_ops;
@@ -183,9 +180,12 @@ static int nvme_tcp_try_send(struct nvme_tcp_queue *queue);
  * a separate class prevents lockdep from conflating nvme-tcp socket use with
  * user-space socket API use.
  */
-static void nvme_tcp_reclassify_socket(struct nvme_tcp_queue *queue)
+static struct lock_class_key nvme_tcp_sk_key[2];
+static struct lock_class_key nvme_tcp_slock_key[2];
+
+static void nvme_tcp_reclassify_socket(struct socket *sock)
 {
-	struct sock *sk = queue->sock->sk;
+	struct sock *sk = sock->sk;
 
 	if (WARN_ON_ONCE(!sock_allow_reclassification(sk)))
 		return;
@@ -193,20 +193,22 @@ static void nvme_tcp_reclassify_socket(struct nvme_tcp_queue *queue)
 	switch (sk->sk_family) {
 	case AF_INET:
 		sock_lock_init_class_and_name(sk, "slock-AF_INET-NVME",
-					      &queue->nvme_tcp_slock_key,
+					      &nvme_tcp_slock_key[0],
 					      "sk_lock-AF_INET-NVME",
-					      &queue->nvme_tcp_sk_key);
+					      &nvme_tcp_sk_key[0]);
 		break;
 	case AF_INET6:
 		sock_lock_init_class_and_name(sk, "slock-AF_INET6-NVME",
-					      &queue->nvme_tcp_slock_key,
+					      &nvme_tcp_slock_key[1],
 					      "sk_lock-AF_INET6-NVME",
-					      &queue->nvme_tcp_sk_key);
+					      &nvme_tcp_sk_key[1]);
 		break;
 	default:
 		WARN_ON_ONCE(1);
 	}
 }
+#else
+static void nvme_tcp_reclassify_socket(struct socket *sock) { }
 #endif
 
 static inline struct nvme_tcp_ctrl *to_tcp_ctrl(struct nvme_ctrl *ctrl)
@@ -359,7 +361,7 @@ static void nvme_tcp_init_iter(struct nvme_tcp_request *req,
 		iov_iter_bvec(&req->iter, dir,
 			__bvec_iter_bvec(bio->bi_io_vec, bio->bi_iter), nr_bvec,
 			bio->bi_iter.bi_size);
-		req->iter.iov_offset = bio->bi_iter.bi_bvec_done;
+		req->iter.iov_offset = bio->bi_iter.bi_offset;
 	}
 }
 
@@ -691,7 +693,7 @@ static int nvme_tcp_handle_c2h_data(struct nvme_tcp_queue *queue,
 		dev_err(queue->ctrl->ctrl.device,
 			"queue %d tag %#x unexpected data for a write\n",
 			nvme_tcp_queue_id(queue), rq->tag);
-		return -EIO;
+		return -EPROTO;
 	}
 
 	req = blk_mq_rq_to_pdu(rq);
@@ -1521,11 +1523,6 @@ static void nvme_tcp_free_queue(struct nvme_ctrl *nctrl, int qid)
 	mutex_destroy(&queue->send_mutex);
 	mutex_destroy(&queue->queue_lock);
 	mutex_destroy(&queue->pf_cache_lock);
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-	lockdep_unregister_key(&queue->nvme_tcp_sk_key);
-	lockdep_unregister_key(&queue->nvme_tcp_slock_key);
-#endif
 }
 
 static int nvme_tcp_init_connection(struct nvme_tcp_queue *queue)
@@ -1873,12 +1870,6 @@ static int nvme_tcp_alloc_queue(struct nvme_ctrl *nctrl, int qid,
 
 	sk_net_refcnt_upgrade(queue->sock->sk);
 
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-	lockdep_register_key(&queue->nvme_tcp_sk_key);
-	lockdep_register_key(&queue->nvme_tcp_slock_key);
-	nvme_tcp_reclassify_socket(queue);
-#endif
-
 	/* Single syn retry */
 	tcp_sock_set_syncnt(queue->sock->sk, 1);
 
@@ -1966,6 +1957,8 @@ static int nvme_tcp_alloc_queue(struct nvme_ctrl *nctrl, int qid,
 			goto err_init_connect;
 	}
 
+	nvme_tcp_reclassify_socket(queue->sock);
+
 	ret = nvme_tcp_init_connection(queue);
 	if (ret)
 		goto err_init_connect;
@@ -1982,10 +1975,6 @@ err_sock:
 	/* Use sync variant - see nvme_tcp_free_queue() for explanation */
 	__fput_sync(queue->sock->file);
 	queue->sock = NULL;
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-	lockdep_unregister_key(&queue->nvme_tcp_sk_key);
-	lockdep_unregister_key(&queue->nvme_tcp_slock_key);
-#endif
 err_destroy_mutex:
 	mutex_destroy(&queue->send_mutex);
 	mutex_destroy(&queue->queue_lock);
@@ -2639,7 +2628,7 @@ static void nvme_tcp_free_ctrl(struct nvme_ctrl *nctrl)
 {
 	struct nvme_tcp_ctrl *ctrl = to_tcp_ctrl(nctrl);
 
-	if (list_empty(&ctrl->list))
+	if (list_empty_careful(&ctrl->list))
 		goto free_ctrl;
 
 	mutex_lock(&nvme_tcp_ctrl_mutex);
@@ -2982,7 +2971,10 @@ static struct nvme_tcp_ctrl *nvme_tcp_alloc_ctrl(struct device *dev,
 	if (!ctrl)
 		return ERR_PTR(-ENOMEM);
 
-	INIT_LIST_HEAD(&ctrl->list);
+	/*
+	 * Safe to init list while allocating ctrl object.
+	 */
+	context_unsafe(INIT_LIST_HEAD(&ctrl->list));
 	ctrl->ctrl.opts = opts;
 	ctrl->ctrl.queue_count = opts->nr_io_queues + opts->nr_write_queues +
 				opts->nr_poll_queues + 1;
@@ -3023,7 +3015,8 @@ static struct nvme_tcp_ctrl *nvme_tcp_alloc_ctrl(struct device *dev,
 	}
 
 	if (opts->mask & NVMF_OPT_HOST_IFACE) {
-		if (!__dev_get_by_name(&init_net, opts->host_iface)) {
+		if (!__dev_get_by_name(current->nsproxy->net_ns,
+				       opts->host_iface)) {
 			pr_err("invalid interface passed: %s\n",
 			       opts->host_iface);
 			ret = -ENODEV;

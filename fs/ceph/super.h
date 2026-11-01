@@ -45,6 +45,7 @@
 #define CEPH_MOUNT_OPT_ASYNC_DIROPS    (1<<15) /* allow async directory ops */
 #define CEPH_MOUNT_OPT_NOPAGECACHE     (1<<16) /* bypass pagecache altogether */
 #define CEPH_MOUNT_OPT_SPARSEREAD      (1<<17) /* always do sparse reads */
+#define CEPH_MOUNT_OPT_NEARFULL_SYNC   (1<<18) /* sync writes when nearfull */
 
 #define CEPH_MOUNT_OPT_DEFAULT			\
 	(CEPH_MOUNT_OPT_DCACHE |		\
@@ -203,7 +204,19 @@ struct ceph_fs_client {
  */
 struct ceph_cap {
 	struct ceph_inode_info *ci;
-	struct rb_node ci_node;          /* per-ci cap tree */
+
+	/**
+	 * Per-ci cap tree.  Protected with
+	 * `ceph_inode_info.i_ceph_lock`.
+	 *
+	 * Clearing this field with RB_CLEAR_NODE() requires holding
+	 * both `ceph_inode_info.i_ceph_lock` and
+	 * `ceph_mds_session->s_cap_lock`.  Calling RB_EMPTY_NODE()
+	 * (via ceph_cap_is_removed()) requires holding at least one
+	 * of these.
+	 */
+	struct rb_node ci_node;
+
 	struct ceph_mds_session *session;
 	struct list_head session_caps;   /* per-session caplist */
 	u64 cap_id;       /* unique cap id (mds provided) */
@@ -1283,8 +1296,22 @@ extern void ceph_add_cap(struct inode *inode,
 			 unsigned issued, unsigned wanted,
 			 unsigned cap, unsigned seq, u64 realmino, int flags,
 			 struct ceph_cap **new_cap);
-extern void __ceph_remove_cap(struct ceph_cap *cap, bool queue_release);
+
+/**
+ * Determine whether __ceph_remove_cap() has been called on this #cap
+ * (but the object has not yet been freed because it is protected by
+ * `ceph_mds_session.s_cap_iterator`).
+ *
+ * Caller must lock either `ceph_inode_info.i_ceph_lock` or
+ * `ceph_mds_session.s_cap_lock`.
+ */
+static inline bool ceph_cap_is_removed(const struct ceph_cap *cap)
+{
+	return RB_EMPTY_NODE(&cap->ci_node);
+}
+
 extern void ceph_remove_cap(struct ceph_mds_client *mdsc, struct ceph_cap *cap,
+			    struct ceph_inode_info *ci,
 			    bool queue_release);
 extern void __ceph_remove_caps(struct ceph_inode_info *ci);
 extern void ceph_put_cap(struct ceph_mds_client *mdsc,

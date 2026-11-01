@@ -1824,6 +1824,7 @@ void netif_close_many(struct list_head *head, bool unlink)
 	__dev_close_many(head);
 
 	list_for_each_entry_safe(dev, tmp, head, close_list) {
+		netdev_assert_locked_ops_compat(dev);
 		rtmsg_ifinfo(RTM_NEWLINK, dev, IFF_UP | IFF_RUNNING, GFP_KERNEL, 0, NULL);
 		call_netdevice_notifiers(NETDEV_DOWN, dev);
 		if (unlink)
@@ -1934,9 +1935,11 @@ static void call_netdevice_unregister_notifiers(struct notifier_block *nb,
 						struct net_device *dev)
 {
 	if (dev->flags & IFF_UP) {
+		netdev_lock_ops(dev);
 		call_netdevice_notifier(nb, NETDEV_GOING_DOWN,
 					dev);
 		call_netdevice_notifier(nb, NETDEV_DOWN, dev);
+		netdev_unlock_ops(dev);
 	}
 	call_netdevice_notifier(nb, NETDEV_UNREGISTER, dev);
 }
@@ -2657,7 +2660,7 @@ static void netif_setup_tc(struct net_device *dev, unsigned int txq)
 	/* If TC0 is invalidated disable TC mapping */
 	if (res.offset + res.count > txq) {
 		netdev_warn(dev, "Number of in use tx queues changed invalidating tc mappings. Priority traffic classification disabled!\n");
-		dev->num_tc = 0;
+		WRITE_ONCE(dev->num_tc, 0);
 		return;
 	}
 
@@ -2676,7 +2679,7 @@ static void netif_setup_tc(struct net_device *dev, unsigned int txq)
 
 int netdev_txq_to_tc(struct net_device *dev, unsigned int txq)
 {
-	if (dev->num_tc) {
+	if (READ_ONCE(dev->num_tc)) {
 		struct netdev_tc_txq *tc = &dev->tc_to_txq[0];
 		int i;
 
@@ -2878,18 +2881,19 @@ int __netif_set_xps_queue(struct net_device *dev, const unsigned long *mask,
 			  u16 index, enum xps_map_type type)
 {
 	struct xps_dev_maps *dev_maps, *new_dev_maps = NULL, *old_dev_maps = NULL;
+	int maps_sz, num_tc = 1, tc = 0, dev_num_tc;
 	const unsigned long *online_mask = NULL;
 	bool active = false, copy = false;
 	int i, j, tci, numa_node_id = -2;
-	int maps_sz, num_tc = 1, tc = 0;
 	struct xps_map *map, *new_map;
 	unsigned int nr_ids;
 
 	WARN_ON_ONCE(index >= dev->num_tx_queues);
 
-	if (dev->num_tc) {
+	dev_num_tc = READ_ONCE(dev->num_tc);
+	if (dev_num_tc) {
 		/* Do not allow XPS on subordinate device directly */
-		num_tc = dev->num_tc;
+		num_tc = dev_num_tc;
 		if (num_tc < 0)
 			return -EINVAL;
 
@@ -3113,10 +3117,11 @@ void netdev_reset_tc(struct net_device *dev)
 	netdev_unbind_all_sb_channels(dev);
 
 	/* Reset TC configuration of device */
-	dev->num_tc = 0;
+	WRITE_ONCE(dev->num_tc, 0);
 	for (i = 0; i < TC_MAX_QUEUE; i++)
 		WRITE_ONCE(dev->tc_to_txq[i].combined, 0);
-	memset(dev->prio_tc_map, 0, sizeof(dev->prio_tc_map));
+	for (i = 0; i <= TC_BITMASK; i++)
+		WRITE_ONCE(dev->prio_tc_map[i], 0);
 }
 EXPORT_SYMBOL(netdev_reset_tc);
 
@@ -3127,7 +3132,7 @@ int netdev_set_tc_queue(struct net_device *dev, u8 tc, u16 count, u16 offset)
 		.offset = offset,
 	};
 
-	if (tc >= dev->num_tc)
+	if (tc >= READ_ONCE(dev->num_tc))
 		return -EINVAL;
 
 #ifdef CONFIG_XPS
@@ -3148,7 +3153,7 @@ int netdev_set_num_tc(struct net_device *dev, u8 num_tc)
 #endif
 	netdev_unbind_all_sb_channels(dev);
 
-	dev->num_tc = num_tc;
+	WRITE_ONCE(dev->num_tc, num_tc);
 	return 0;
 }
 EXPORT_SYMBOL(netdev_set_num_tc);
@@ -3164,7 +3169,8 @@ void netdev_unbind_sb_channel(struct net_device *dev,
 #endif
 	for (i = 0; i < TC_MAX_QUEUE; i++)
 		WRITE_ONCE(sb_dev->tc_to_txq[i].combined, 0);
-	memset(sb_dev->prio_tc_map, 0, sizeof(sb_dev->prio_tc_map));
+	for (i = 0; i <= TC_BITMASK; i++)
+		WRITE_ONCE(sb_dev->prio_tc_map[i], 0);
 
 	while (txq-- != &dev->_tx[0]) {
 		if (txq->sb_dev == sb_dev)
@@ -3178,7 +3184,7 @@ int netdev_bind_sb_channel_queue(struct net_device *dev,
 				 u8 tc, u16 count, u16 offset)
 {
 	/* Make certain the sb_dev and dev are already configured */
-	if (sb_dev->num_tc >= 0 || tc >= dev->num_tc)
+	if (READ_ONCE(sb_dev->num_tc) >= 0 || tc >= READ_ONCE(dev->num_tc))
 		return -EINVAL;
 
 	/* We cannot hand out queues we don't have */
@@ -3217,7 +3223,7 @@ int netdev_set_sb_channel(struct net_device *dev, u16 channel)
 	if (channel > S16_MAX)
 		return -EINVAL;
 
-	dev->num_tc = -channel;
+	WRITE_ONCE(dev->num_tc, -channel);
 
 	return 0;
 }
@@ -3246,7 +3252,7 @@ int netif_set_real_num_tx_queues(struct net_device *dev, unsigned int txq)
 		if (rc)
 			return rc;
 
-		if (dev->num_tc)
+		if (READ_ONCE(dev->num_tc))
 			netif_setup_tc(dev, txq);
 
 		net_shaper_set_real_num_tx_queues(dev, txq);
@@ -3555,7 +3561,7 @@ static u16 skb_tx_hash(const struct net_device *dev,
 	u16 qoffset = 0;
 	u16 qcount = dev->real_num_tx_queues;
 
-	if (dev->num_tc) {
+	if (READ_ONCE(dev->num_tc)) {
 		u8 tc = netdev_get_prio_tc_map(dev, skb->priority);
 		struct netdev_tc_txq res;
 
@@ -9880,6 +9886,8 @@ void __dev_notify_flags(struct net_device *dev, unsigned int old_flags,
 {
 	unsigned int changes = dev->flags ^ old_flags;
 
+	netdev_assert_locked_ops_compat(dev);
+
 	if (gchanges)
 		rtmsg_ifinfo(RTM_NEWLINK, dev, gchanges, GFP_ATOMIC, portid, nlh);
 
@@ -11710,8 +11718,13 @@ static struct net_device *netdev_wait_allrefs_any(struct list_head *list)
 			rtnl_lock();
 
 			/* Rebroadcast unregister notification */
-			list_for_each_entry(dev, list, todo_list)
+			list_for_each_entry(dev, list, todo_list) {
+				struct net *net = dev_net(dev);
+
+				__rtnl_net_lock(net);
 				call_netdevice_notifiers(NETDEV_UNREGISTER, dev);
+				__rtnl_net_unlock(net);
+			}
 
 			__rtnl_unlock();
 			rcu_barrier();
@@ -12189,6 +12202,9 @@ struct net_device *alloc_netdev_mqs(int sizeof_priv, const char *name,
 
 	INIT_LIST_HEAD(&dev->napi_list);
 	INIT_LIST_HEAD(&dev->unreg_list);
+#ifdef CONFIG_DEBUG_NET_SMALL_RTNL
+	INIT_LIST_HEAD(&dev->unreg_list_net);
+#endif
 	INIT_LIST_HEAD(&dev->close_list);
 	INIT_LIST_HEAD(&dev->link_watch_list);
 	INIT_LIST_HEAD(&dev->adj_list.upper);
@@ -12407,6 +12423,10 @@ void unregister_netdevice_queue(struct net_device *dev, struct list_head *head)
 {
 	ASSERT_RTNL();
 
+#ifdef CONFIG_DEBUG_NET_SMALL_RTNL
+	DEBUG_NET_WARN_ON_ONCE(!list_empty(&dev->unreg_list_net));
+#endif
+
 	if (head) {
 		list_move_tail(&dev->unreg_list, head);
 	} else {
@@ -12584,6 +12604,16 @@ void unregister_netdevice_many_notify(struct list_head *head,
 	synchronize_net();
 
 	list_for_each_entry(dev, head, unreg_list) {
+#ifdef CONFIG_DEBUG_NET_SMALL_RTNL
+		struct net *net = dev_net(dev);
+
+		/* spin_lock() can be moved outside of the loop
+		 * once the per-netns RTNL conversion completes.
+		 */
+		spin_lock(&net->dev_unreg_lock);
+		list_del(&dev->unreg_list_net);
+		spin_unlock(&net->dev_unreg_lock);
+#endif
 		netdev_put(dev, &dev->dev_registered_tracker);
 		net_set_todo(dev);
 		cnt++;
@@ -12605,6 +12635,96 @@ void unregister_netdevice_many(struct list_head *head)
 	unregister_netdevice_many_notify(head, 0, NULL);
 }
 EXPORT_SYMBOL(unregister_netdevice_many);
+
+#ifdef CONFIG_DEBUG_NET_SMALL_RTNL
+void unregister_netdevice_queue_net(struct net *net, struct net_device *dev,
+				    struct list_head *head)
+{
+	netdev_lock(dev);
+
+	if (net_eq(dev_net(dev), net)) {
+		netdev_unlock(dev);
+		unregister_netdevice_queue(dev, head);
+		return;
+	}
+
+	net = dev_net(dev);
+
+	spin_lock(&net->dev_unreg_lock);
+
+	DEBUG_NET_WARN_ON_ONCE(!list_empty(&dev->unreg_list));
+	DEBUG_NET_WARN_ON_ONCE(!list_empty(&dev->unreg_list_net));
+
+	list_add_tail(&dev->unreg_list_net, &net->dev_unreg_head);
+	rtnl_net_queue_work(net);
+
+	spin_unlock(&net->dev_unreg_lock);
+
+	netdev_unlock(dev);
+}
+EXPORT_SYMBOL(unregister_netdevice_queue_net);
+
+void unregister_netdevice_queue_many_net(struct net *net, struct list_head *head)
+{
+	struct net_device *dev, *tmp;
+
+	spin_lock(&net->dev_unreg_lock);
+	list_for_each_entry_safe(dev, tmp, head, unreg_list) {
+		/* Once all cross-netns unregister_netdevice_queue() is
+		 * converted to _net() (or for debugging), remove this check.
+		 */
+		if (!net_eq(dev_net(dev), net))
+			continue;
+
+		DEBUG_NET_WARN_ONCE(!net_eq(dev_net(dev), net),
+				    "%s was unregistered from a different netns.\n",
+				    dev->name);
+
+		list_del_init(&dev->unreg_list);
+		list_move_tail(&dev->unreg_list_net, &net->dev_unreg_head);
+	}
+	spin_unlock(&net->dev_unreg_lock);
+}
+
+static void unregister_netdevice_move_net(struct net *net_old,
+					  struct net *net,
+					  struct net_device *dev)
+{
+	if (net_old > net) {
+		spin_lock(&net->dev_unreg_lock);
+		spin_lock_nested(&net_old->dev_unreg_lock, SINGLE_DEPTH_NESTING);
+	} else {
+		spin_lock(&net_old->dev_unreg_lock);
+		spin_lock_nested(&net->dev_unreg_lock, SINGLE_DEPTH_NESTING);
+	}
+
+	if (!list_empty(&dev->unreg_list_net)) {
+		list_del(&dev->unreg_list_net);
+		list_add_tail(&dev->unreg_list_net, &net->dev_unreg_head);
+	}
+
+	spin_unlock(&net_old->dev_unreg_lock);
+	spin_unlock(&net->dev_unreg_lock);
+}
+
+void unregister_netdevice_many_net(struct net *net)
+{
+	struct net_device *dev, *tmp;
+	LIST_HEAD(unreg_head_net);
+	LIST_HEAD(unreg_head);
+
+	spin_lock(&net->dev_unreg_lock);
+	list_splice_init(&net->dev_unreg_head, &unreg_head_net);
+	spin_unlock(&net->dev_unreg_lock);
+
+	list_for_each_entry_safe(dev, tmp, &unreg_head_net, unreg_list_net) {
+		list_del_init(&dev->unreg_list_net);
+		list_add_tail(&dev->unreg_list, &unreg_head);
+	}
+
+	unregister_netdevice_many(&unreg_head);
+}
+#endif
 
 /**
  *	unregister_netdev - remove device from the kernel
@@ -12767,6 +12887,10 @@ int __dev_change_net_namespace(struct net_device *dev, struct net *net,
 	dev_net_set(dev, net);
 	netdev_unlock(dev);
 	dev->ifindex = new_ifindex;
+
+#ifdef CONFIG_DEBUG_NET_SMALL_RTNL
+	unregister_netdevice_move_net(net_old, net, dev);
+#endif
 
 	if (new_name[0]) {
 		/* Rename the netdev to prepared name */
@@ -13155,7 +13279,7 @@ static void __net_exit default_device_exit_net(struct net *net)
 	 * Push all migratable network devices back to the
 	 * initial network namespace
 	 */
-	ASSERT_RTNL();
+
 	for_each_netdev_safe(net, dev, aux) {
 		int err;
 		char fb_name[IFNAMSIZ];
@@ -13194,21 +13318,36 @@ static void __net_exit default_device_exit_batch(struct list_head *net_list)
 	LIST_HEAD(dev_kill_list);
 
 	rtnl_lock();
+
+	__rtnl_net_lock(&init_net);
+
 	list_for_each_entry(net, net_list, exit_list) {
+		__rtnl_net_lock(net);
 		default_device_exit_net(net);
+		__rtnl_net_unlock(net);
+
 		cond_resched();
 	}
 
+	__rtnl_net_unlock(&init_net);
+
 	list_for_each_entry(net, net_list, exit_list) {
+		__rtnl_net_lock(net);
+
 		for_each_netdev_reverse(net, dev) {
 			if (dev->rtnl_link_ops && dev->rtnl_link_ops->dellink)
 				dev->rtnl_link_ops->dellink(dev, &dev_kill_list);
 			else
 				unregister_netdevice_queue(dev, &dev_kill_list);
 		}
+
+		unregister_netdevice_queue_many_net(net, &dev_kill_list);
+		__rtnl_net_unlock(net);
 	}
 	unregister_netdevice_many(&dev_kill_list);
 	rtnl_unlock();
+
+	rtnl_net_flush_workqueue();
 }
 
 static struct pernet_operations __net_initdata default_device_ops = {

@@ -668,9 +668,13 @@ static int sec_ctx_base_init(struct sec_ctx *ctx)
 	sec = container_of(ctx->qps[0]->qm, struct sec_dev, qm);
 	ctx->sec = sec;
 	ctx->dev = &sec->qm.pdev->dev;
-	ctx->hlf_q_num = sec->ctx_q_num >> 1;
 
 	ctx->pbuf_supported = ctx->sec->iommu_used;
+	if (sec->qm.ver < QM_HW_V3)
+		ctx->type_supported = SEC_BD_TYPE2;
+	else
+		ctx->type_supported = SEC_BD_TYPE3;
+
 	ctx->qp_ctx = kzalloc_objs(struct sec_qp_ctx, sec->ctx_q_num);
 	if (!ctx->qp_ctx) {
 		ret = -ENOMEM;
@@ -2067,13 +2071,10 @@ static int sec_skcipher_ctx_init(struct crypto_skcipher *tfm)
 	if (!ctx->qps)
 		return 0;
 
-	if (ctx->sec->qm.ver < QM_HW_V3) {
-		ctx->type_supported = SEC_BD_TYPE2;
-		ctx->req_op = &sec_skcipher_req_ops;
-	} else {
-		ctx->type_supported = SEC_BD_TYPE3;
+	if (ctx->type_supported == SEC_BD_TYPE3)
 		ctx->req_op = &sec_skcipher_req_ops_v3;
-	}
+	else
+		ctx->req_op = &sec_skcipher_req_ops;
 
 	return 0;
 }
@@ -2100,13 +2101,11 @@ static int sec_aead_init(struct crypto_aead *tfm)
 	ret = sec_ctx_base_init(ctx);
 	if (ret)
 		return ret;
-	if (ctx->sec->qm.ver < QM_HW_V3) {
-		ctx->type_supported = SEC_BD_TYPE2;
-		ctx->req_op = &sec_aead_req_ops;
-	} else {
-		ctx->type_supported = SEC_BD_TYPE3;
+
+	if (ctx->type_supported == SEC_BD_TYPE3)
 		ctx->req_op = &sec_aead_req_ops_v3;
-	}
+	else
+		ctx->req_op = &sec_aead_req_ops;
 
 	ret = sec_auth_init(ctx);
 	if (ret)

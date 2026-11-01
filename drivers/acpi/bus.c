@@ -628,41 +628,6 @@ static void acpi_bus_notify(acpi_handle handle, u32 type, void *data)
 	acpi_evaluate_ost(handle, type, ACPI_OST_SC_NON_SPECIFIC_FAILURE, NULL);
 }
 
-static void acpi_notify_device(acpi_handle handle, u32 event, void *data)
-{
-	struct acpi_device *device = data;
-	struct acpi_driver *acpi_drv = to_acpi_driver(device->dev.driver);
-
-	acpi_drv->ops.notify(device, event);
-}
-
-static int acpi_device_install_notify_handler(struct acpi_device *device,
-					      struct acpi_driver *acpi_drv)
-{
-	u32 type = acpi_drv->flags & ACPI_DRIVER_ALL_NOTIFY_EVENTS ?
-				ACPI_ALL_NOTIFY : ACPI_DEVICE_NOTIFY;
-	acpi_status status;
-
-	status = acpi_install_notify_handler(device->handle, type,
-					     acpi_notify_device, device);
-	if (ACPI_FAILURE(status))
-		return -EINVAL;
-
-	return 0;
-}
-
-static void acpi_device_remove_notify_handler(struct acpi_device *device,
-					      struct acpi_driver *acpi_drv)
-{
-	u32 type = acpi_drv->flags & ACPI_DRIVER_ALL_NOTIFY_EVENTS ?
-				ACPI_ALL_NOTIFY : ACPI_DEVICE_NOTIFY;
-
-	acpi_remove_notify_handler(device->handle, type,
-				   acpi_notify_device);
-
-	acpi_os_wait_events_complete();
-}
-
 int acpi_dev_install_notify_handler(struct acpi_device *adev,
 				    u32 handler_type,
 				    acpi_notify_handler handler, void *context)
@@ -928,9 +893,9 @@ const struct acpi_device *acpi_companion_match(const struct device *dev)
  * identifiers and a _DSD object with the "compatible" property, use that
  * property to match against the given list of identifiers.
  */
-bool acpi_of_match_device(const struct acpi_device *adev,
-			  const struct of_device_id *of_match_table,
-			  const struct of_device_id **of_id)
+static bool acpi_of_match_device(const struct acpi_device *adev,
+				 const struct of_device_id *of_match_table,
+				 const struct of_device_id **of_id)
 {
 	const union acpi_object *of_compatible, *obj;
 	int i, nval;
@@ -1152,56 +1117,12 @@ bool acpi_driver_match_device(struct device *dev,
 EXPORT_SYMBOL_GPL(acpi_driver_match_device);
 
 /* --------------------------------------------------------------------------
-                              ACPI Driver Management
-   -------------------------------------------------------------------------- */
-
-/**
- * __acpi_bus_register_driver - register a driver with the ACPI bus
- * @driver: driver being registered
- * @owner: owning module/driver
- *
- * Registers a driver with the ACPI bus.  Searches the namespace for all
- * devices that match the driver's criteria and binds.  Returns zero for
- * success or a negative error status for failure.
- */
-int __acpi_bus_register_driver(struct acpi_driver *driver, struct module *owner)
-{
-	if (acpi_disabled)
-		return -ENODEV;
-	driver->drv.name = driver->name;
-	driver->drv.bus = &acpi_bus_type;
-	driver->drv.owner = owner;
-
-	return driver_register(&driver->drv);
-}
-
-EXPORT_SYMBOL(__acpi_bus_register_driver);
-
-/**
- * acpi_bus_unregister_driver - unregisters a driver with the ACPI bus
- * @driver: driver to unregister
- *
- * Unregisters a driver with the ACPI bus.  Searches the namespace for all
- * devices that match the driver's criteria and unbinds.
- */
-void acpi_bus_unregister_driver(struct acpi_driver *driver)
-{
-	driver_unregister(&driver->drv);
-}
-
-EXPORT_SYMBOL(acpi_bus_unregister_driver);
-
-/* --------------------------------------------------------------------------
                               ACPI Bus operations
    -------------------------------------------------------------------------- */
 
 static int acpi_bus_match(struct device *dev, const struct device_driver *drv)
 {
-	struct acpi_device *acpi_dev = to_acpi_device(dev);
-	const struct acpi_driver *acpi_drv = to_acpi_driver(drv);
-
-	return acpi_dev->flags.match_driver
-		&& !acpi_match_device_ids(acpi_dev, acpi_drv->ids);
+	return 0;
 }
 
 static int acpi_device_uevent(const struct device *dev, struct kobj_uevent_env *env)
@@ -1209,66 +1130,9 @@ static int acpi_device_uevent(const struct device *dev, struct kobj_uevent_env *
 	return __acpi_device_uevent_modalias(to_acpi_device(dev), env);
 }
 
-static int acpi_device_probe(struct device *dev)
-{
-	struct acpi_device *acpi_dev = to_acpi_device(dev);
-	struct acpi_driver *acpi_drv = to_acpi_driver(dev->driver);
-	int ret;
-
-	if (acpi_dev->handler && !acpi_is_pnp_device(acpi_dev))
-		return -EINVAL;
-
-	if (!acpi_drv->ops.add)
-		return -ENOSYS;
-
-	ret = acpi_drv->ops.add(acpi_dev);
-	if (ret) {
-		acpi_dev->driver_data = NULL;
-		return ret;
-	}
-
-	pr_debug("Driver [%s] successfully bound to device [%s]\n",
-		 acpi_drv->name, acpi_dev->pnp.bus_id);
-
-	if (acpi_drv->ops.notify) {
-		ret = acpi_device_install_notify_handler(acpi_dev, acpi_drv);
-		if (ret) {
-			if (acpi_drv->ops.remove)
-				acpi_drv->ops.remove(acpi_dev);
-
-			acpi_dev->driver_data = NULL;
-			return ret;
-		}
-	}
-
-	pr_debug("Found driver [%s] for device [%s]\n", acpi_drv->name,
-		 acpi_dev->pnp.bus_id);
-
-	get_device(dev);
-	return 0;
-}
-
-static void acpi_device_remove(struct device *dev)
-{
-	struct acpi_device *acpi_dev = to_acpi_device(dev);
-	struct acpi_driver *acpi_drv = to_acpi_driver(dev->driver);
-
-	if (acpi_drv->ops.notify)
-		acpi_device_remove_notify_handler(acpi_dev, acpi_drv);
-
-	if (acpi_drv->ops.remove)
-		acpi_drv->ops.remove(acpi_dev);
-
-	acpi_dev->driver_data = NULL;
-
-	put_device(dev);
-}
-
 const struct bus_type acpi_bus_type = {
 	.name		= "acpi",
 	.match		= acpi_bus_match,
-	.probe		= acpi_device_probe,
-	.remove		= acpi_device_remove,
 	.uevent		= acpi_device_uevent,
 };
 

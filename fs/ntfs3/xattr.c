@@ -663,7 +663,6 @@ static noinline int ntfs_set_acl_ex(struct mnt_idmap *idmap,
 			inode->i_mode = old_mode;
 			goto out;
 		}
-		inode->i_mode = mode;
 	}
 	set_cached_acl(inode, type, acl);
 	inode_set_ctime_current(inode);

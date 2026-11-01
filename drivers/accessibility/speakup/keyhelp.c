@@ -15,8 +15,8 @@
 #define MAXFUNCS 130
 #define MAXKEYS 256
 static const int num_key_names = MSG_KEYNAMES_END - MSG_KEYNAMES_START + 1;
-static u_short key_offsets[MAXFUNCS], key_data[MAXKEYS];
-static u_short masks[] = { 32, 16, 8, 4, 2, 1 };
+static u16 key_offsets[MAXFUNCS], key_data[MAXKEYS];
+static u16 masks[] = { 32, 16, 8, 4, 2, 1 };
 
 static short letter_offsets[26] = {
 	-1, -1, -1, -1, -1, -1, -1, -1,
@@ -50,7 +50,7 @@ static int cur_item, nstates;
 static void build_key_data(void)
 {
 	u_char *kp, counters[MAXFUNCS], ch, ch1;
-	u_short *p_key, key;
+	u16 *p_key, key;
 	int i, offset = 1;
 
 	nstates = (int)(state_tbl[-1]);
@@ -136,12 +136,12 @@ static void help_init(void)
 	}
 }
 
-int spk_handle_help(struct vc_data *vc, u_char type, u_char ch, u_short key)
+int spk_handle_help(struct vc_data *vc, u_char type, u_char ch, u16 key)
 {
 	int i, n;
 	char *name;
 	u_char func, *kp;
-	u_short *p_keys, val;
+	u16 *p_keys, val;
 
 	if (letter_offsets[0] == -1)
 		help_init();

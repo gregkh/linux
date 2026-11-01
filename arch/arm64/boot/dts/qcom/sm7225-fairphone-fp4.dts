@@ -711,9 +711,8 @@
 };
 
 &ipa {
-	qcom,gsi-loader = "self";
-	memory-region = <&pil_ipa_fw_mem>;
 	firmware-name = "qcom/sm7225/fairphone4/ipa_fws.mbn";
+
 	status = "okay";
 };
 

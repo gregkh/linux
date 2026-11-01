@@ -15,7 +15,6 @@
 #include <string.h>
 
 #include <dirent.h>
-#include "util/term.h"
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/zalloc.h>
@@ -171,6 +170,7 @@ static struct test_workload *workloads[] = {
 	&workload__jitdump,
 	&workload__context_switch_loop,
 	&workload__deterministic,
+	&workload__callchain,
 
 #ifdef HAVE_RUST_SUPPORT
 	&workload__code_with_type,
@@ -536,8 +536,14 @@ static int print_test_result(struct test_suite *t, int curr_suite, int curr_test
 			const char *reason = skip_reason(t, curr_test_case);
 			char *escaped_reason = xml_escape(reason ? reason : "Skip");
 
-			strbuf_addf(&junit_xml_buf, "      <skipped message=\"%s\"/>\n",
-				    escaped_reason);
+			if (err_output && *err_output) {
+				strbuf_addf(&junit_xml_buf,
+					    "      <skipped message=\"%s\">\n%s\n      </skipped>\n",
+					    escaped_reason, escaped_err);
+			} else {
+				strbuf_addf(&junit_xml_buf, "      <skipped message=\"%s\"/>\n",
+					    escaped_reason);
+			}
 			free(escaped_reason);
 		}
 		strbuf_addstr(&junit_xml_buf, "    </testcase>\n");

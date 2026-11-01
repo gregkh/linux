@@ -19,6 +19,8 @@
 #include <net/checksum.h>
 
 #include "nfsd.h"
+#include "netns.h"
+#include "stats.h"
 #include "cache.h"
 #include "trace.h"
 

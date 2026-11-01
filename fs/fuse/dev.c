@@ -213,10 +213,13 @@ EXPORT_SYMBOL_GPL(fuse_req_hash);
 /*
  * A new request is available, wake fiq->waitq
  */
-static void fuse_dev_wake_and_unlock(struct fuse_iqueue *fiq)
+static void fuse_dev_wake_and_unlock(struct fuse_iqueue *fiq, bool sync)
 __releases(fiq->lock)
 {
-	wake_up(&fiq->waitq);
+	if (sync)
+		wake_up_sync(&fiq->waitq);
+	else
+		wake_up(&fiq->waitq);
 	kill_fasync(&fiq->fasync, SIGIO, POLL_IN);
 	spin_unlock(&fiq->lock);
 }
@@ -233,7 +236,7 @@ void fuse_dev_queue_forget(struct fuse_iqueue *fiq,
 	if (fiq->connected) {
 		fiq->forget_list_tail->next = forget;
 		fiq->forget_list_tail = forget;
-		fuse_dev_wake_and_unlock(fiq);
+		fuse_dev_wake_and_unlock(fiq, false);
 	} else {
 		kfree(forget);
 		spin_unlock(&fiq->lock);
@@ -255,7 +258,7 @@ void fuse_dev_queue_interrupt(struct fuse_iqueue *fiq, struct fuse_req *req)
 			list_del_init(&req->intr_entry);
 			spin_unlock(&fiq->lock);
 		} else  {
-			fuse_dev_wake_and_unlock(fiq);
+			fuse_dev_wake_and_unlock(fiq, false);
 		}
 	} else {
 		spin_unlock(&fiq->lock);
@@ -285,11 +288,13 @@ EXPORT_SYMBOL_GPL(fuse_request_assign_unique);
 
 static void fuse_dev_queue_req(struct fuse_iqueue *fiq, struct fuse_req *req)
 {
+	bool sync = test_and_clear_bit(FR_SYNC_WAKEUP, &req->flags);
+
 	spin_lock(&fiq->lock);
 	if (fiq->connected) {
 		fuse_request_assign_unique_locked(fiq, req);
 		list_add_tail(&req->list, &fiq->pending);
-		fuse_dev_wake_and_unlock(fiq);
+		fuse_dev_wake_and_unlock(fiq, sync);
 	} else {
 		spin_unlock(&fiq->lock);
 		req->out.h.error = -ENOTCONN;
@@ -401,7 +406,8 @@ void fuse_chan_max_background_set(struct fuse_chan *fch, unsigned int val)
 	fch->max_background = val;
 	fch->blocked = fch->num_background >= fch->max_background;
 	if (!fch->blocked)
-		wake_up(&fch->blocked_waitq);
+		wake_up_nr(&fch->blocked_waitq,
+			   fch->max_background - fch->num_background);
 	spin_unlock(&fch->bg_lock);
 }
 
@@ -752,6 +758,11 @@ static void __fuse_request_send(struct fuse_req *req)
 	/* acquire extra reference, since request is still needed after
 	   fuse_request_end() */
 	__fuse_get_request(req);
+	/*
+	 * This is a synchronous request: the caller will block waiting for
+	 * the answer. Hint the scheduler via wake_up_sync().
+	 */
+	set_bit(FR_SYNC_WAKEUP, &req->flags);
 	fuse_send_one(fiq, req);
 
 	request_wait_answer(req);
@@ -1249,11 +1260,25 @@ int fuse_copy_folio(struct fuse_copy_state *cs, struct folio **foliop,
 
 	if (folio) {
 		size = folio_size(folio);
-		if (zeroing && count < size)
-			folio_zero_range(folio, 0, size);
+		if (zeroing && count < size) {
+			/*
+			 * When the copy is skipped the folio already holds the
+			 * payload, so only the bytes outside [offset, offset +
+			 * count) may be zeroed.
+			 *
+			 * Otherwise, the whole folio is cleared first so that a
+			 * failed copy leaves zeros rather than stale folio
+			 * contents.
+			 */
+			if (cs->skip_folio_copy)
+				folio_zero_segments(folio, 0, offset,
+						    offset + count, size);
+			else
+				folio_zero_range(folio, 0, size);
+		}
 	}
 
-	while (count) {
+	while (!cs->skip_folio_copy && count) {
 		if (cs->write && cs->pipebufs && folio) {
 			/*
 			 * Can't control lifetime of pipe buffers, so always
@@ -1346,6 +1371,10 @@ int fuse_copy_args(struct fuse_copy_state *cs, unsigned numargs,
 	for (i = 0; !err && i < numargs; i++)  {
 		struct fuse_arg *arg = &args[i];
 		if (i == numargs - 1 && argpages)
+			/*
+			 * if cs->skip_folio_copy is set, this just does any
+			 * needed zeroing. No copying is involved.
+			 */
 			err = fuse_copy_folios(cs, arg->size, zeroing);
 		else
 			err = fuse_copy_one(cs, arg->value, arg->size);
@@ -1806,7 +1835,7 @@ void fuse_chan_resend(struct fuse_chan *fch)
 	}
 	/* iq and pq requests are both oldest to newest */
 	list_splice(&to_queue, &fiq->pending);
-	fuse_dev_wake_and_unlock(fiq);
+	fuse_dev_wake_and_unlock(fiq, false);
 }
 
 /* Look up request on processing list by unique ID */

@@ -81,6 +81,7 @@
 #include "include/file.h"
 #include "include/ipc.h"
 #include "include/match.h"
+#include "include/net.h"
 #include "include/path.h"
 #include "include/policy.h"
 #include "include/policy_ns.h"
@@ -1170,6 +1171,8 @@ static struct aa_profile *update_to_newest_parent(struct aa_profile *new)
  * @label: label that is attempting to load/replace policy
  * @mask: permission mask
  * @udata: serialized data stream  (NOT NULL)
+ * @compressed_profile: The userspace-provided compressed profile. May be NULL
+ * @compressed_size: If compressed_data is not NULL, the compressed data size
  *
  * unpack and replace a profile on the profile list and uses of that profile
  * by any task creds via invalidating the old version of the profile, which
@@ -1179,7 +1182,8 @@ static struct aa_profile *update_to_newest_parent(struct aa_profile *new)
  * Returns: size of data consumed else error code on failure.
  */
 ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
-			    u32 mask, struct aa_loaddata *udata)
+			    u32 mask, struct aa_loaddata *udata,
+			    char *compressed_profile, size_t compressed_size)
 {
 	const char *ns_name = NULL, *info = NULL;
 	struct aa_ns *ns = NULL;
@@ -1192,7 +1196,7 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 	op = mask & AA_MAY_REPLACE_POLICY ? OP_PROF_REPL : OP_PROF_LOAD;
 	aa_get_profile_loaddata(udata);
 	/* released below */
-	error = aa_unpack(udata, &lh, &ns_name);
+	error = aa_unpack(udata, &lh, &ns_name, compressed_profile, compressed_size);
 	if (error)
 		goto out;
 

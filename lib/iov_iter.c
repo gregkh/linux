@@ -1491,6 +1491,7 @@ void iov_iter_restore(struct iov_iter *i, struct iov_iter_state *state)
 		i->__iov -= state->nr_segs - i->nr_segs;
 	i->nr_segs = state->nr_segs;
 }
+EXPORT_SYMBOL_FOR_MODULES(iov_iter_restore, "vmw_vsock_virtio_transport_common");
 
 /*
  * Extract a list of contiguous pages from an ITER_FOLIOQ iterator.  This does
@@ -1634,7 +1635,7 @@ static ssize_t iov_iter_extract_bvec_pages(struct iov_iter *i,
 	}
 	bi.bi_idx = 0;
 	bi.bi_size = maxsize;
-	bi.bi_bvec_done = skip;
+	bi.bi_offset = skip;
 
 	maxpages = want_pages_array(pages, maxsize, skip, maxpages);
 	if (!maxpages)

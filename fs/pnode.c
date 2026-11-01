@@ -697,8 +697,8 @@ static void handle_locked(struct mount *m, struct list_head *to_umount)
  * the same parent and mountpoint; that will be remedied as soon as we
  * return from propagate_umount() - its caller (umount_tree()) will detach
  * the stack from the parent it (and now @m) is attached to.  umount_tree()
- * might choose to keep unmounted pieces stuck to each other, but it always
- * detaches them from the mounts that remain in the tree.
+ * detaches every unmounted mount from its parent, whether that parent
+ * remains in the tree or not.
  */
 static void reparent(struct mount *m)
 {

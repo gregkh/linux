@@ -48,6 +48,7 @@
 #include "dm_helpers.h"
 #include "ddc_service_types.h"
 #include "clk_mgr.h"
+#include "amdgpu_dm_helpers.h"
 
 #define MCCS_DEST_ADDR (0x6E >> 1)
 #define MCCS_SRC_ADDR	0x51
@@ -88,14 +89,15 @@ union vcp_reply {
 	unsigned char raw[11];
 };
 
-static u32 edid_extract_panel_id(struct edid *edid)
+STATIC_IFN_KUNIT u32 edid_extract_panel_id(struct edid *edid)
 {
 	return (u32)edid->mfg_id[0] << 24   |
 	       (u32)edid->mfg_id[1] << 16   |
 	       (u32)EDID_PRODUCT_ID(edid);
 }
+EXPORT_IF_KUNIT(edid_extract_panel_id);
 
-static void apply_edid_quirks(struct dc_link *link, struct edid *edid,
+STATIC_IFN_KUNIT void apply_edid_quirks(struct dc_link *link, struct edid *edid,
 			      struct dc_edid_caps *edid_caps)
 {
 	struct amdgpu_dm_connector *aconnector = link->priv;
@@ -149,6 +151,7 @@ static void apply_edid_quirks(struct dc_link *link, struct edid *edid,
 		return;
 	}
 }
+EXPORT_IF_KUNIT(apply_edid_quirks);
 
 /**
  * dm_helpers_parse_edid_caps() - Parse edid caps
@@ -205,6 +208,12 @@ enum dc_edid_status dm_helpers_parse_edid_caps(
 					__func__, connector->name, edid_caps->frl_dsc_10bpc, edid_caps->frl_dsc_12bpc, \
 					edid_caps->frl_dsc_all_bpp, edid_caps->frl_dsc_native_420, edid_caps->frl_dsc_max_slices, \
 					edid_caps->frl_dsc_max_frl_rate, edid_caps->frl_dsc_total_chunk_kbytes);
+		if (aconnector->hdmi_comp_auto) {
+			edid_caps->panel_patch.hdmi_comp_auto = true;
+			link->ctx->dc->debug.force_frl_max = true;
+			link->ctx->dc->debug.force_frl_dsc = true;
+			drm_dbg_driver(connector->dev, "%s: HDMI_FRL [%s] hdmi_comp_auto --> enabled\n", __func__, connector->name);
+		}
 	}
 
 	apply_edid_quirks(link, edid_buf, edid_caps);
@@ -240,8 +249,9 @@ enum dc_edid_status dm_helpers_parse_edid_caps(
 
 	return result;
 }
+EXPORT_IF_KUNIT(dm_helpers_parse_edid_caps);
 
-static void
+STATIC_IFN_KUNIT void
 fill_dc_mst_payload_table_from_drm(struct dc_link *link,
 				   bool enable,
 				   struct drm_dp_mst_atomic_payload *target_payload,
@@ -291,13 +301,15 @@ fill_dc_mst_payload_table_from_drm(struct dc_link *link,
 	/* Overwrite the old table */
 	*table = new_table;
 }
+EXPORT_IF_KUNIT(fill_dc_mst_payload_table_from_drm);
 
 void dm_helpers_dp_update_branch_info(
 	struct dc_context *ctx,
 	const struct dc_link *link)
 {}
+EXPORT_IF_KUNIT(dm_helpers_dp_update_branch_info);
 
-static void dm_helpers_construct_old_payload(
+STATIC_IFN_KUNIT void dm_helpers_construct_old_payload(
 			struct drm_dp_mst_topology_mgr *mgr,
 			struct drm_dp_mst_topology_state *mst_state,
 			struct drm_dp_mst_atomic_payload *new_payload,
@@ -328,6 +340,7 @@ static void dm_helpers_construct_old_payload(
 	old_payload->time_slots = allocated_time_slots;
 	old_payload->pbn = allocated_time_slots * pbn_per_slot;
 }
+EXPORT_IF_KUNIT(dm_helpers_construct_old_payload);
 
 /*
  * Writes payload allocation table in immediate downstream device.
@@ -380,6 +393,7 @@ bool dm_helpers_dp_mst_write_payload_allocation_table(
 
 	return true;
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_mst_write_payload_allocation_table);
 
 /*
  * poll pending down reply
@@ -388,6 +402,7 @@ void dm_helpers_dp_mst_poll_pending_down_reply(
 	struct dc_context *ctx,
 	const struct dc_link *link)
 {}
+EXPORT_IF_KUNIT(dm_helpers_dp_mst_poll_pending_down_reply);
 
 /*
  * Clear payload allocation table before enable MST DP link.
@@ -396,6 +411,7 @@ void dm_helpers_dp_mst_clear_payload_allocation_table(
 	struct dc_context *ctx,
 	const struct dc_link *link)
 {}
+EXPORT_IF_KUNIT(dm_helpers_dp_mst_clear_payload_allocation_table);
 
 /*
  * Polls for ACT (allocation change trigger) handled and sends
@@ -426,6 +442,7 @@ enum act_return_status dm_helpers_dp_mst_poll_for_allocation_change_trigger(
 
 	return ACT_SUCCESS;
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_mst_poll_for_allocation_change_trigger);
 
 void dm_helpers_dp_mst_send_payload_allocation(
 		struct dc_context *ctx,
@@ -460,6 +477,7 @@ void dm_helpers_dp_mst_send_payload_allocation(
 			clr_flag, false);
 	}
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_mst_send_payload_allocation);
 
 void dm_helpers_dp_mst_update_mst_mgr_for_deallocation(
 		struct dc_context *ctx,
@@ -488,6 +506,7 @@ void dm_helpers_dp_mst_update_mst_mgr_for_deallocation(
 	amdgpu_dm_set_mst_status(&aconnector->mst_status, set_flag, true);
 	amdgpu_dm_set_mst_status(&aconnector->mst_status, clr_flag, false);
  }
+EXPORT_IF_KUNIT(dm_helpers_dp_mst_update_mst_mgr_for_deallocation);
 
 void dm_dtn_log_begin(struct dc_context *ctx,
 	struct dc_log_buffer_ctx *log_ctx)
@@ -501,6 +520,7 @@ void dm_dtn_log_begin(struct dc_context *ctx,
 
 	dm_dtn_log_append_v(ctx, log_ctx, "%s", msg);
 }
+EXPORT_IF_KUNIT(dm_dtn_log_begin);
 
 __printf(3, 4)
 void dm_dtn_log_append_v(struct dc_context *ctx,
@@ -563,6 +583,7 @@ void dm_dtn_log_append_v(struct dc_context *ctx,
 	if (n > 0)
 		log_ctx->pos += n;
 }
+EXPORT_IF_KUNIT(dm_dtn_log_append_v);
 
 void dm_dtn_log_end(struct dc_context *ctx,
 	struct dc_log_buffer_ctx *log_ctx)
@@ -576,6 +597,7 @@ void dm_dtn_log_end(struct dc_context *ctx,
 
 	dm_dtn_log_append_v(ctx, log_ctx, "%s", msg);
 }
+EXPORT_IF_KUNIT(dm_dtn_log_end);
 
 bool dm_helpers_dp_mst_start_top_mgr(
 		struct dc_context *ctx,
@@ -610,6 +632,7 @@ bool dm_helpers_dp_mst_start_top_mgr(
 
 	return true;
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_mst_start_top_mgr);
 
 bool dm_helpers_dp_mst_stop_top_mgr(
 		struct dc_context *ctx,
@@ -632,6 +655,7 @@ bool dm_helpers_dp_mst_stop_top_mgr(
 
 	return false;
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_mst_stop_top_mgr);
 
 bool dm_helpers_dp_read_dpcd(
 		struct dc_context *ctx,
@@ -649,6 +673,7 @@ bool dm_helpers_dp_read_dpcd(
 	return drm_dp_dpcd_read(&aconnector->dm_dp_aux.aux, address, data,
 				size) == size;
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_read_dpcd);
 
 bool dm_helpers_dp_write_dpcd(
 		struct dc_context *ctx,
@@ -665,6 +690,7 @@ bool dm_helpers_dp_write_dpcd(
 	return drm_dp_dpcd_write(&aconnector->dm_dp_aux.aux,
 			address, (uint8_t *)data, size) > 0;
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_write_dpcd);
 
 bool dm_helpers_submit_i2c(
 		struct dc_context *ctx,
@@ -700,6 +726,7 @@ bool dm_helpers_submit_i2c(
 
 	return result;
 }
+EXPORT_IF_KUNIT(dm_helpers_submit_i2c);
 
 bool dm_helpers_execute_fused_io(
 		struct dc_context *ctx,
@@ -713,8 +740,9 @@ bool dm_helpers_execute_fused_io(
 
 	return amdgpu_dm_execute_fused_io(dev, link, commands, count, timeout_us);
 }
+EXPORT_IF_KUNIT(dm_helpers_execute_fused_io);
 
-static bool execute_synaptics_rc_command(struct drm_dp_aux *aux,
+STATIC_IFN_KUNIT bool execute_synaptics_rc_command(struct drm_dp_aux *aux,
 		bool is_write_cmd,
 		unsigned char cmd,
 		unsigned int length,
@@ -786,8 +814,9 @@ err:
 	DRM_ERROR("%s: write cmd ..., err = %d\n",  __func__, ret);
 	return false;
 }
+EXPORT_IF_KUNIT(execute_synaptics_rc_command);
 
-static void apply_synaptics_fifo_reset_wa(struct drm_dp_aux *aux)
+STATIC_IFN_KUNIT void apply_synaptics_fifo_reset_wa(struct drm_dp_aux *aux)
 {
 	unsigned char data[16] = {0};
 
@@ -851,11 +880,12 @@ static void apply_synaptics_fifo_reset_wa(struct drm_dp_aux *aux)
 
 	drm_dbg_dp(aux->drm_dev, "Done\n");
 }
+EXPORT_IF_KUNIT(apply_synaptics_fifo_reset_wa);
 
 /* MST Dock */
 static const uint8_t SYNAPTICS_DEVICE_ID[] = "SYNA";
 
-static uint8_t write_dsc_enable_synaptics_non_virtual_dpcd_mst(
+STATIC_IFN_KUNIT uint8_t write_dsc_enable_synaptics_non_virtual_dpcd_mst(
 		struct drm_dp_aux *aux,
 		const struct dc_stream_state *stream,
 		bool enable)
@@ -891,6 +921,7 @@ static uint8_t write_dsc_enable_synaptics_non_virtual_dpcd_mst(
 
 	return ret;
 }
+EXPORT_IF_KUNIT(write_dsc_enable_synaptics_non_virtual_dpcd_mst);
 
 bool dm_helpers_dp_write_dsc_enable(
 		struct dc_context *ctx,
@@ -974,12 +1005,28 @@ bool dm_helpers_dp_write_dsc_enable(
 
 	return ret;
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_write_dsc_enable);
+
+#if IS_ENABLED(CONFIG_DRM_AMD_DC_KUNIT_TEST)
+uint dm_helpers_get_dc_debug_mask(void)
+{
+	return amdgpu_dc_debug_mask;
+}
+EXPORT_IF_KUNIT(dm_helpers_get_dc_debug_mask);
+
+void dm_helpers_set_dc_debug_mask(uint debug_mask)
+{
+	amdgpu_dc_debug_mask = debug_mask;
+}
+EXPORT_IF_KUNIT(dm_helpers_set_dc_debug_mask);
+#endif
 
 bool dm_helpers_dp_write_hblank_reduction(struct dc_context *ctx, const struct dc_stream_state *stream)
 {
 	// TODO
 	return false;
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_write_hblank_reduction);
 
 bool dm_helpers_is_dp_sink_present(struct dc_link *link)
 {
@@ -996,8 +1043,9 @@ bool dm_helpers_is_dp_sink_present(struct dc_link *link)
 	mutex_unlock(&aconnector->dm_dp_aux.aux.hw_mutex);
 	return dp_sink_present;
 }
+EXPORT_IF_KUNIT(dm_helpers_is_dp_sink_present);
 
-static int
+STATIC_IFN_KUNIT int
 dm_helpers_probe_acpi_edid(void *data, u8 *buf, unsigned int block, size_t len)
 {
 	struct drm_connector *connector = data;
@@ -1035,8 +1083,9 @@ cleanup:
 
 	return r;
 }
+EXPORT_IF_KUNIT(dm_helpers_probe_acpi_edid);
 
-static const struct drm_edid *
+STATIC_IFN_KUNIT const struct drm_edid *
 dm_helpers_read_acpi_edid(struct amdgpu_dm_connector *aconnector)
 {
 	struct drm_connector *connector = &aconnector->base;
@@ -1057,8 +1106,9 @@ dm_helpers_read_acpi_edid(struct amdgpu_dm_connector *aconnector)
 
 	return drm_edid_read_custom(connector, dm_helpers_probe_acpi_edid, connector);
 }
+EXPORT_IF_KUNIT(dm_helpers_read_acpi_edid);
 
-static const struct drm_edid *
+STATIC_IFN_KUNIT const struct drm_edid *
 dm_helpers_read_vbios_hardcoded_edid(struct dc_link *link, struct amdgpu_dm_connector *aconnector)
 {
 	struct dc_bios *bios = link->ctx->dc_bios;
@@ -1096,8 +1146,9 @@ dm_helpers_read_vbios_hardcoded_edid(struct dc_link *link, struct amdgpu_dm_conn
 
 	return edid;
 }
+EXPORT_IF_KUNIT(dm_helpers_read_vbios_hardcoded_edid);
 
-static uint8_t get_max_frl_rate(uint8_t max_lanes, uint8_t max_rate_per_lane)
+STATIC_IFN_KUNIT uint8_t get_max_frl_rate(uint8_t max_lanes, uint8_t max_rate_per_lane)
 {
 	uint8_t max_frl_rate;
 
@@ -1118,8 +1169,9 @@ static uint8_t get_max_frl_rate(uint8_t max_lanes, uint8_t max_rate_per_lane)
 
 	return max_frl_rate;
 }
+EXPORT_IF_KUNIT(get_max_frl_rate);
 
-static uint8_t get_dsc_max_slices(uint8_t max_slices, int clk_per_slice)
+STATIC_IFN_KUNIT uint8_t get_dsc_max_slices(uint8_t max_slices, int clk_per_slice)
 {
 	uint8_t dsc_max_slices;
 
@@ -1142,6 +1194,7 @@ static uint8_t get_dsc_max_slices(uint8_t max_slices, int clk_per_slice)
 
 	return dsc_max_slices;
 }
+EXPORT_IF_KUNIT(get_dsc_max_slices);
 
 void populate_hdmi_info_from_connector(bool enable_frl, struct drm_hdmi_info *hdmi, struct dc_edid_caps *edid_caps)
 {
@@ -1150,9 +1203,10 @@ void populate_hdmi_info_from_connector(bool enable_frl, struct drm_hdmi_info *hd
 		edid_caps->max_frl_rate = get_max_frl_rate(hdmi->max_lanes, hdmi->max_frl_rate_per_lane);
 		edid_caps->frl_dsc_support = hdmi->dsc_cap.v_1p2;
 		if (edid_caps->frl_dsc_support) {
-			if (hdmi->dsc_cap.bpc_supported == 10)
+			/* HF-VSDB DSC max bpc is cumulative: >=12 implies 10 and 8. */
+			if (hdmi->dsc_cap.bpc_supported >= 10)
 				edid_caps->frl_dsc_10bpc = true;
-			else if (hdmi->dsc_cap.bpc_supported == 12)
+			if (hdmi->dsc_cap.bpc_supported >= 12)
 				edid_caps->frl_dsc_12bpc = true;
 			edid_caps->frl_dsc_all_bpp = hdmi->dsc_cap.all_bpp;
 			edid_caps->frl_dsc_native_420 = hdmi->dsc_cap.native_420;
@@ -1162,6 +1216,7 @@ void populate_hdmi_info_from_connector(bool enable_frl, struct drm_hdmi_info *hd
 		}
 	}
 }
+EXPORT_IF_KUNIT(populate_hdmi_info_from_connector);
 
 enum dc_edid_status dm_helpers_read_local_edid(
 		struct dc_context *ctx,
@@ -1293,6 +1348,7 @@ int dm_helper_dmub_aux_transfer_sync(
 	return amdgpu_dm_process_dmub_aux_transfer_sync(ctx, link->link_index, payload,
 			operation_result);
 }
+EXPORT_IF_KUNIT(dm_helper_dmub_aux_transfer_sync);
 
 int dm_helpers_dmub_set_config_sync(struct dc_context *ctx,
 		const struct dc_link *link,
@@ -1307,18 +1363,21 @@ void dm_set_dcn_clocks(struct dc_context *ctx, struct dc_clocks *clks)
 {
 	/* TODO: something */
 }
+EXPORT_IF_KUNIT(dm_set_dcn_clocks);
 
 void dm_helpers_dmu_timeout(struct dc_context *ctx)
 {
 	// TODO:
 	//amdgpu_device_gpu_recover(dc_context->driver-context, NULL);
 }
+EXPORT_IF_KUNIT(dm_helpers_dmu_timeout);
 
 void dm_helpers_smu_timeout(struct dc_context *ctx, unsigned int msg_id, unsigned int param, unsigned int timeout_us)
 {
 	// TODO:
 	//amdgpu_device_gpu_recover(dc_context->driver-context, NULL);
 }
+EXPORT_IF_KUNIT(dm_helpers_smu_timeout);
 
 void dm_helpers_init_panel_settings(
 	struct dc_context *ctx,
@@ -1337,6 +1396,7 @@ void dm_helpers_init_panel_settings(
 	panel_config->dsc.disable_dsc_edp = false;
 	panel_config->dsc.force_dsc_edp_policy = 0;
 }
+EXPORT_IF_KUNIT(dm_helpers_init_panel_settings);
 
 void dm_helpers_override_panel_settings(
 	struct dc_context *ctx,
@@ -1354,6 +1414,7 @@ void dm_helpers_override_panel_settings(
 		link->panel_config.psr.disallow_replay = true;
 	}
 }
+EXPORT_IF_KUNIT(dm_helpers_override_panel_settings);
 
 void *dm_helpers_allocate_gpu_mem(
 		struct dc_context *ctx,
@@ -1390,6 +1451,7 @@ bool dm_helpers_dmub_outbox_interrupt_control(struct dc_context *ctx, bool enabl
 			 enable ? "en" : "dis", ret);
 	return ret;
 }
+EXPORT_IF_KUNIT(dm_helpers_dmub_outbox_interrupt_control);
 
 void dm_helpers_mst_enable_stream_features(const struct dc_stream_state *stream)
 {
@@ -1415,6 +1477,7 @@ void dm_helpers_mst_enable_stream_features(const struct dc_stream_state *stream)
 					 &new_downspread.raw,
 					 sizeof(new_downspread));
 }
+EXPORT_IF_KUNIT(dm_helpers_mst_enable_stream_features);
 
 bool dm_helpers_dp_handle_test_pattern_request(
 		struct dc_context *ctx,
@@ -1553,11 +1616,13 @@ bool dm_helpers_dp_handle_test_pattern_request(
 
 	return false;
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_handle_test_pattern_request);
 
 void dm_set_phyd32clk(struct dc_context *ctx, int freq_khz)
 {
        // TODO
 }
+EXPORT_IF_KUNIT(dm_set_phyd32clk);
 
 void dm_helpers_enable_periodic_detection(struct dc_context *ctx, bool enable)
 {
@@ -1569,6 +1634,7 @@ void dm_helpers_enable_periodic_detection(struct dc_context *ctx, bool enable)
 			schedule_work(&adev->dm.idle_workqueue->work);
 	}
 }
+EXPORT_IF_KUNIT(dm_helpers_enable_periodic_detection);
 
 void dm_helpers_dp_mst_update_branch_bandwidth(
 		struct dc_context *ctx,
@@ -1576,25 +1642,34 @@ void dm_helpers_dp_mst_update_branch_bandwidth(
 {
 	// TODO
 }
+EXPORT_IF_KUNIT(dm_helpers_dp_mst_update_branch_bandwidth);
 
-static bool dm_is_freesync_pcon_whitelist(const uint32_t branch_dev_id)
+STATIC_IFN_KUNIT const uint32_t dm_freesync_pcon_whitelist[] = {
+	DP_BRANCH_DEVICE_ID_0060AD,
+	DP_BRANCH_DEVICE_ID_00E04C,
+	DP_BRANCH_DEVICE_ID_90CC24,
+	DP_BRANCH_DEVICE_ID_001CF8,
+	DP_BRANCH_DEVICE_ID_001FF2,
+};
+EXPORT_IF_KUNIT(dm_freesync_pcon_whitelist);
+
+STATIC_IFN_KUNIT uint32_t dm_freesync_pcon_whitelist_count(void)
 {
-	bool ret_val = false;
-
-	switch (branch_dev_id) {
-	case DP_BRANCH_DEVICE_ID_0060AD:
-	case DP_BRANCH_DEVICE_ID_00E04C:
-	case DP_BRANCH_DEVICE_ID_90CC24:
-	case DP_BRANCH_DEVICE_ID_001CF8:
-	case DP_BRANCH_DEVICE_ID_001FF2:
-		ret_val = true;
-		break;
-	default:
-		break;
-	}
-
-	return ret_val;
+	return ARRAY_SIZE(dm_freesync_pcon_whitelist);
 }
+EXPORT_IF_KUNIT(dm_freesync_pcon_whitelist_count);
+
+STATIC_IFN_KUNIT bool dm_is_freesync_pcon_whitelist(const uint32_t branch_dev_id)
+{
+	u32 i;
+
+	for (i = 0; i < dm_freesync_pcon_whitelist_count(); i++)
+		if (dm_freesync_pcon_whitelist[i] == branch_dev_id)
+			return true;
+
+	return false;
+}
+EXPORT_IF_KUNIT(dm_is_freesync_pcon_whitelist);
 
 enum adaptive_sync_type dm_get_adaptive_sync_support_type(struct dc_link *link)
 {
@@ -1614,18 +1689,21 @@ enum adaptive_sync_type dm_get_adaptive_sync_support_type(struct dc_link *link)
 
 	return as_type;
 }
+EXPORT_IF_KUNIT(dm_get_adaptive_sync_support_type);
 
 bool dm_helpers_is_fullscreen(struct dc_context *ctx, struct dc_stream_state *stream)
 {
 	// TODO
 	return false;
 }
+EXPORT_IF_KUNIT(dm_helpers_is_fullscreen);
 
 bool dm_helpers_is_hdr_on(struct dc_context *ctx, struct dc_stream_state *stream)
 {
 	// TODO
 	return false;
 }
+EXPORT_IF_KUNIT(dm_helpers_is_hdr_on);
 
 static int mccs_operation_vcp_request(unsigned int vcp_code, struct dc_link *link,
 				union vcp_reply *reply)
@@ -1751,6 +1829,7 @@ void dm_helpers_read_mccs_caps(struct dc_context *ctx, struct dc_link *link,
 		}
 	}
 }
+EXPORT_IF_KUNIT(dm_helpers_read_mccs_caps);
 
 static int mccs_operation_vcp_set(unsigned int vcp_code, struct dc_link *link, uint16_t value)
 {
@@ -1825,4 +1904,11 @@ void dm_helpers_mccs_vcp_set(struct dc_context *ctx, struct dc_link *link,
 		drm_dbg_driver(dev, "%s: Failed to set VCP code %d", __func__,
 				sink->edid_caps.freesync_vcp_code);
 }
+EXPORT_IF_KUNIT(dm_helpers_mccs_vcp_set);
 
+bool dm_helpers_submit_i2c_over_aux(struct ddc_service *ddc, uint32_t address, uint8_t offset,
+				    uint8_t *cmdBuffer, uint32_t len, bool read)
+{
+	//TODO: Implement this
+	return false;
+}

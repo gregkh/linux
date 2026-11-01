@@ -73,6 +73,7 @@ static int run_libarena_parallel_test_workers(struct libarena *skel,
 	uint32_t nthreads;
 	void *thread_ret;
 	int ret, err = 0;
+	int worker_err;
 	int i;
 
 	for (nthreads = 0; nthreads < UINT_MAX; nthreads++) {
@@ -118,7 +119,22 @@ static int run_libarena_parallel_test_workers(struct libarena *skel,
 			continue;
 		}
 
-		err = err ?: (long)thread_ret;
+		worker_err = (long)thread_ret;
+
+		/*
+		 * A worker that bails out because another one already gave up
+		 * reports -EINTR. It is collateral damage that carries no
+		 * information, so skip it entirely: never let it become the
+		 * reported error, and don't log it either.
+		 */
+		if (!worker_err || worker_err == -EINTR)
+			continue;
+
+		if (!err)
+			err = worker_err;
+
+		fprintf(stdout, "%.*s__%d returned %d\n", (int)prefixlen, name,
+			i, worker_err);
 	}
 
 	free(threads);
@@ -202,7 +218,7 @@ static void run_libarena_parallel_test(struct libarena *skel, struct bpf_program
 	run_libarena_parallel_fini(skel, name, prefixlen);
 }
 
-void test_libarena(void)
+void serial_test_libarena(void)
 {
 	struct arena_alloc_reserve_args args;
 	struct libarena *skel;

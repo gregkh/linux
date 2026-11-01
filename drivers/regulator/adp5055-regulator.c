@@ -403,8 +403,8 @@ static const struct of_device_id adp5055_of_match[] = {
 MODULE_DEVICE_TABLE(of, adp5055_of_match);
 
 static const struct i2c_device_id adp5055_ids[] = {
-	{ .name = "adp5055"},
-	{ },
+	{ .name = "adp5055" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adp5055_ids);
 

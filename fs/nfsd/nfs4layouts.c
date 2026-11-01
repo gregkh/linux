@@ -248,12 +248,13 @@ nfsd4_alloc_layout_stateid(struct nfsd4_compound_state *cstate,
 			NFSPROC4_CLNT_CB_LAYOUT);
 
 	if (parent->sc_type == SC_TYPE_DELEG) {
-		spin_lock(&fp->fi_lock);
-		ls->ls_file = nfsd_file_get(fp->fi_deleg_file);
-		spin_unlock(&fp->fi_lock);
+		rcu_read_lock();
+		ls->ls_file = nfsd_file_get(rcu_dereference(fp->fi_deleg_file));
+		rcu_read_unlock();
 	} else {
 		ls->ls_file = find_any_file(fp);
 	}
+
 	if (!ls->ls_file) {
 		nfs4_put_stid(stp);
 		return NULL;
@@ -659,7 +660,7 @@ nfsd4_cb_layout_fail(struct nfs4_layout_stateid *ls, struct nfsd_file *file)
 	}
 }
 
-static void
+static bool
 nfsd4_cb_layout_prepare(struct nfsd4_callback *cb)
 {
 	struct nfs4_layout_stateid *ls =
@@ -668,6 +669,7 @@ nfsd4_cb_layout_prepare(struct nfsd4_callback *cb)
 	mutex_lock(&ls->ls_mutex);
 	nfs4_inc_and_copy_stateid(&ls->ls_recall_sid, &ls->ls_stid);
 	mutex_unlock(&ls->ls_mutex);
+	return true;
 }
 
 static int

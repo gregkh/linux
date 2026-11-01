@@ -10,6 +10,11 @@
 #ifndef __AA_TASK_H
 #define __AA_TASK_H
 
+#include <linux/sched.h>
+
+#include "audit.h"
+#include "label.h"
+
 static inline struct aa_task_ctx *task_ctx(struct task_struct *task)
 {
 	return task->security + apparmor_blob_sizes.lbs_task;

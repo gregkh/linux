@@ -612,8 +612,7 @@ static int pf1550_charger_probe(struct platform_device *pdev)
 						IRQF_NO_SUSPEND,
 						"pf1550-charger", chg);
 		if (ret)
-			return dev_err_probe(&pdev->dev, ret,
-					     "failed irq request\n");
+			return ret;
 	}
 
 	pf1550_dt_parse_dev_info(chg);

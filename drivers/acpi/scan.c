@@ -28,9 +28,7 @@
 #include "internal.h"
 #include "sleep.h"
 
-#define ACPI_BUS_CLASS			"system_bus"
 #define ACPI_BUS_HID			"LNXSYBUS"
-#define ACPI_BUS_DEVICE_NAME		"System Bus"
 
 #define INVALID_ACPI_HANDLE	((acpi_handle)ZERO_PAGE(0))
 
@@ -273,13 +271,9 @@ static int acpi_scan_check_and_detach(struct acpi_device *adev, void *p)
 		}
 	}
 
-	adev->flags.match_driver = false;
-	if (handler) {
-		if (handler->detach)
-			handler->detach(adev);
-	} else {
-		device_release_driver(&adev->dev);
-	}
+	if (handler && handler->detach)
+		handler->detach(adev);
+
 	/*
 	 * Most likely, the device is going away, so put it into D3cold before
 	 * that.
@@ -859,6 +853,7 @@ static const char * const acpi_ignore_dep_ids[] = {
 
 /* List of HIDs for which we honor deps of matching ACPI devs, when checking _DEP lists. */
 static const char * const acpi_honor_dep_ids[] = {
+	"ARMH0003", /* ARM GICv5 IWB */
 	"INT3472", /* Camera sensor PMIC / clk and regulator info */
 	"INTC1059", /* IVSC (TGL) driver must be loaded to allow i2c access to camera sensors */
 	"INTC1095", /* IVSC (ADL) driver must be loaded to allow i2c access to camera sensors */
@@ -867,6 +862,7 @@ static const char * const acpi_honor_dep_ids[] = {
 	"INTC10DE", /* CVS (LNL) driver must be loaded to allow camera streaming */
 	"INTC10E0", /* CVS (ARL) driver must be loaded to allow camera streaming */
 	"INTC10E1", /* CVS (PTL) driver must be loaded to allow camera streaming */
+	"INTC10FA", /* CVS (NVL) driver must be loaded to allow camera streaming */
 	"RSCV0001", /* RISC-V PLIC */
 	"RSCV0002", /* RISC-V APLIC */
 	"RSCV0005", /* RISC-V SBI MPXY MBOX */
@@ -1452,8 +1448,6 @@ static void acpi_set_pnp_ids(acpi_handle handle, struct acpi_device_pnp *pnp,
 			 acpi_object_is_system_bus(handle)) {
 			/* \_SB, \_TZ, LNXSYBUS */
 			acpi_add_id(pnp, ACPI_BUS_HID);
-			strscpy(pnp->device_name, ACPI_BUS_DEVICE_NAME);
-			strscpy(pnp->device_class, ACPI_BUS_CLASS);
 		}
 
 		break;
@@ -1757,6 +1751,7 @@ static bool acpi_device_enumeration_by_parent(struct acpi_device *device)
 	 * by the drivers/platform/x86/serial-multi-instantiate.c driver, which
 	 * knows which client device id to use for each resource.
 	 */
+		{"AWDZ8399", },
 		{"BSG1160", },
 		{"BSG2150", },
 		{"CSC3551", },
@@ -1773,7 +1768,6 @@ static bool acpi_device_enumeration_by_parent(struct acpi_device *device)
 	 * Some ACPI devs contain SerialBus resources even though they are not
 	 * attached to a serial bus at all.
 	 */
-		{ACPI_VIDEO_HID, },
 		{"MSHW0028", },
 	/*
 	 * HIDs of device with an UartSerialBusV2 resource for which userspace
@@ -1795,6 +1789,9 @@ static bool acpi_device_enumeration_by_parent(struct acpi_device *device)
 	     fwnode_property_present(&device->fwnode, "i2cAddress") ||
 	     fwnode_property_present(&device->fwnode, "baud")))
 		return true;
+
+	if (acpi_dev_is_video_device(device))
+		return false;
 
 	if (!acpi_match_device_ids(device, ignore_serial_bus_ids))
 		return false;
@@ -1820,13 +1817,13 @@ void acpi_init_device_object(struct acpi_device *device, acpi_handle handle,
 	device->dev.release = release;
 	device->dev.bus = &acpi_bus_type;
 	device->dev.groups = acpi_groups;
+	device_set_pm_not_required(&device->dev);
 	fwnode_init(&device->fwnode, &acpi_device_fwnode_ops);
 	acpi_set_device_status(device, ACPI_STA_DEFAULT);
 	acpi_device_get_busid(device);
 	acpi_set_pnp_ids(handle, &device->pnp, type);
 	acpi_init_properties(device);
 	acpi_bus_get_flags(device);
-	device->flags.match_driver = false;
 	device->flags.initialized = true;
 	device->flags.enumeration_by_parent =
 		acpi_device_enumeration_by_parent(device);
@@ -2378,15 +2375,10 @@ static int acpi_bus_attach(struct acpi_device *device, void *first_pass)
 	if (ret < 0)
 		return 0;
 
-	device->flags.match_driver = true;
 	if (ret > 0 && !device->flags.enumeration_by_parent) {
 		acpi_device_set_enumerated(device);
 		goto ok;
 	}
-
-	ret = device_attach(&device->dev);
-	if (ret < 0)
-		return 0;
 
 	if (device->pnp.type.platform_id || device->pnp.type.backlight ||
 	    device->flags.enumeration_by_parent)

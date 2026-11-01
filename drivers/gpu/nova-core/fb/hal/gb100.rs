@@ -22,9 +22,11 @@ use kernel::{
 
 use crate::{
     driver::Bar0,
-    fb::hal::FbHal,
+    fb::{
+        hal::FbHal,
+        regs, //
+    },
     num::usize_into_u32,
-    regs, //
 };
 
 struct Gb100;
@@ -109,9 +111,9 @@ impl FbHal for Gb100 {
         pmu_reserved_size_gb100()
     }
 
-    fn non_wpr_heap_size(&self) -> u32 {
+    fn non_wpr_heap_size(&self) -> u64 {
         // Non-WPR heap for GB10x (see Open RM: kgspGetNonWprHeapSize, GB100/GB102).
-        u32::SZ_2M
+        u64::SZ_2M
     }
 
     fn frts_size(&self) -> u64 {

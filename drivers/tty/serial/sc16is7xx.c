@@ -216,7 +216,7 @@
 #define SC16IS7XX_TLR_TX_TRIGGER(words)	((((words) / 4) & 0x0f) << 0)
 #define SC16IS7XX_TLR_RX_TRIGGER(words)	((((words) / 4) & 0x0f) << 4)
 
-#define SC16IS7XX_TX_TRIGGER_LEVEL	8
+#define SC16IS7XX_TX_TRIGGER_LEVEL	32
 
 /* IOControl register bits (Only 75x/76x) */
 #define SC16IS7XX_IOCONTROL_LATCH_BIT	BIT(0)   /* Enable input latching */
@@ -1517,14 +1517,7 @@ static int sc16is7xx_setup_channel(struct sc16is7xx_one *one, int i,
 	port->type	= PORT_SC16IS7XX;
 	port->fifosize	= SC16IS7XX_FIFO_SIZE;
 	port->flags	= UPF_FIXED_TYPE | UPF_LOW_LATENCY;
-	port->iobase	= i;
-	/*
-	 * Use all ones as membase to make sure uart_configure_port() in
-	 * serial_core.c does not abort for SPI/I2C devices where the
-	 * membase address is not applicable.
-	 */
-	port->membase	= (void __iomem *)~0;
-	port->iotype	= UPIO_PORT;
+	port->iotype	= UPIO_BUS;
 	port->rs485_config = sc16is7xx_config_rs485;
 	port->rs485_supported = sc16is7xx_rs485_supported;
 	port->ops	= &sc16is7xx_ops;

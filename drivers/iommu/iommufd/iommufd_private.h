@@ -118,6 +118,16 @@ int iopt_map_pages(struct io_pagetable *iopt, struct list_head *pages_list,
 int iopt_unmap_iova(struct io_pagetable *iopt, unsigned long iova,
 		    unsigned long length, unsigned long *unmapped);
 int iopt_unmap_all(struct io_pagetable *iopt, unsigned long *unmapped);
+#ifdef CONFIG_IOMMUFD_NOIOMMU
+int iopt_get_phys(struct io_pagetable *iopt, unsigned long iova, u64 *paddr,
+		  u64 *length);
+#else
+static inline int iopt_get_phys(struct io_pagetable *iopt, unsigned long iova,
+				u64 *paddr, u64 *length)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 
 int iopt_read_and_clear_dirty_data(struct io_pagetable *iopt,
 				   struct iommu_domain *domain,
@@ -347,6 +357,14 @@ int iommufd_ioas_map_file(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_change_process(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_copy(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_unmap(struct iommufd_ucmd *ucmd);
+#ifdef CONFIG_IOMMUFD_NOIOMMU
+int iommufd_ioas_noiommu_get_pa(struct iommufd_ucmd *ucmd);
+#else
+static inline int iommufd_ioas_noiommu_get_pa(struct iommufd_ucmd *ucmd)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 int iommufd_ioas_option(struct iommufd_ucmd *ucmd);
 int iommufd_option_rlimit_mode(struct iommu_option *cmd,
 			       struct iommufd_ctx *ictx);
@@ -465,6 +483,8 @@ static inline void iommufd_hw_pagetable_put(struct iommufd_ctx *ictx,
 	refcount_dec(&hwpt->obj.users);
 }
 
+extern const struct iommu_ops iommufd_noiommu_ops;
+
 struct iommufd_attach;
 
 struct iommufd_group {
@@ -500,6 +520,16 @@ iommufd_get_device(struct iommufd_ucmd *ucmd, u32 id)
 	return container_of(iommufd_get_object(ucmd->ictx, id,
 					       IOMMUFD_OBJ_DEVICE),
 			    struct iommufd_device, obj);
+}
+
+static inline struct iommu_device *
+iommufd_device_get_iommu_dev(struct iommufd_device *idev)
+{
+	if (IS_ENABLED(CONFIG_IOMMUFD_NOIOMMU) && !idev->igroup->group)
+		return NULL;
+	if (WARN_ON_ONCE(!idev->dev->iommu))
+		return NULL;
+	return __iommu_get_iommu_dev(idev->dev);
 }
 
 void iommufd_device_pre_destroy(struct iommufd_object *obj);

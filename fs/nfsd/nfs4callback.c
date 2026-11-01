@@ -39,6 +39,7 @@
 #include "nfsd.h"
 #include "state.h"
 #include "netns.h"
+#include "stats.h"
 #include "trace.h"
 #include "xdr4cb.h"
 #include "xdr4.h"
@@ -891,6 +892,84 @@ static void encode_stateowner(struct xdr_stream *xdr, struct nfs4_stateowner *so
 	xdr_encode_opaque(p, so->so_owner.data, so->so_owner.len);
 }
 
+static void nfs4_xdr_enc_cb_notify(struct rpc_rqst *req,
+				   struct xdr_stream *xdr,
+				   const void *data)
+{
+	const struct nfsd4_callback *cb = data;
+	struct nfsd4_cb_notify *ncn = container_of(cb, struct nfsd4_cb_notify, ncn_cb);
+	struct nfs4_delegation *dp = container_of(ncn, struct nfs4_delegation, dl_cb_notify);
+	struct nfs4_cb_compound_hdr hdr = {
+		.ident = 0,
+		.minorversion = cb->cb_clp->cl_minorversion,
+	};
+	struct CB_NOTIFY4args args;
+	unsigned int start;
+
+	WARN_ON_ONCE(hdr.minorversion == 0);
+
+	encode_cb_compound4args(xdr, &hdr);
+	encode_cb_sequence4args(xdr, cb, &hdr);
+
+	/*
+	 * nfsd4_cb_notify_prepare() sized the payload against a single page,
+	 * but did not account for the compound, sequence, stateid, and
+	 * filehandle encoded here. If the variable-length encode overflows the
+	 * backchannel send buffer, roll back to before the operation so that a
+	 * truncated CB_NOTIFY is never placed on the wire.
+	 */
+	start = xdr_stream_pos(xdr);
+
+	if (xdr_stream_encode_u32(xdr, OP_CB_NOTIFY) < 0)
+		goto out_err;
+
+	args.cna_stateid.seqid = dp->dl_stid.sc_stateid.si_generation;
+	memcpy(&args.cna_stateid.other, &dp->dl_stid.sc_stateid.si_opaque,
+	       ARRAY_SIZE(args.cna_stateid.other));
+	args.cna_fh.len = dp->dl_stid.sc_file->fi_fhandle.fh_size;
+	args.cna_fh.data = dp->dl_stid.sc_file->fi_fhandle.fh_raw;
+	args.cna_changes.count = ncn->ncn_nf_cnt;
+	args.cna_changes.element = ncn->ncn_nf;
+	if (!xdrgen_encode_CB_NOTIFY4args(xdr, &args))
+		goto out_err;
+
+	hdr.nops++;
+	encode_cb_nops(&hdr);
+	return;
+
+out_err:
+	/*
+	 * Drop the CB_NOTIFY op and emit a valid CB_SEQUENCE-only compound so
+	 * the client still advances its slot. Flag the failure so the done
+	 * handler recalls the delegation and the missed notification is not
+	 * silently lost. The flag is written here in the transmit path and read
+	 * in the done handler; the two are serialized phases of the same
+	 * rpc_task, so no additional barrier is needed.
+	 */
+	ncn->ncn_encode_err = true;
+	xdr_truncate_encode(xdr, start);
+	encode_cb_nops(&hdr);
+}
+
+static int nfs4_xdr_dec_cb_notify(struct rpc_rqst *rqstp,
+				  struct xdr_stream *xdr,
+				  void *data)
+{
+	struct nfsd4_callback *cb = data;
+	struct nfs4_cb_compound_hdr hdr;
+	int status;
+
+	status = decode_cb_compound4res(xdr, &hdr);
+	if (unlikely(status))
+		return status;
+
+	status = decode_cb_sequence4res(xdr, cb);
+	if (unlikely(status || cb->cb_seq_status))
+		return status;
+
+	return decode_cb_op_status(xdr, OP_CB_NOTIFY, &cb->cb_status);
+}
+
 static void nfs4_xdr_enc_cb_notify_lock(struct rpc_rqst *req,
 					struct xdr_stream *xdr,
 					const void *data)
@@ -1052,6 +1131,7 @@ static const struct rpc_procinfo nfs4_cb_procedures[] = {
 #ifdef CONFIG_NFSD_PNFS
 	PROC(CB_LAYOUT,	COMPOUND,	cb_layout,	cb_layout),
 #endif
+	PROC(CB_NOTIFY,		COMPOUND,	cb_notify,	cb_notify),
 	PROC(CB_NOTIFY_LOCK,	COMPOUND,	cb_notify_lock,	cb_notify_lock),
 	PROC(CB_OFFLOAD,	COMPOUND,	cb_offload,	cb_offload),
 	PROC(CB_RECALL_ANY,	COMPOUND,	cb_recall_any,	cb_recall_any),
@@ -1365,6 +1445,16 @@ static void nfsd41_destroy_cb(struct nfsd4_callback *cb)
 		clear_and_wake_up_bit(NFSD4_CALLBACK_RUNNING, &cb->cb_flags);
 	else
 		clear_bit(NFSD4_CALLBACK_RUNNING, &cb->cb_flags);
+
+	/*
+	 * Order the clear of NFSD4_CALLBACK_RUNNING above before the ->release()
+	 * callback below. A release op may re-check producer-side state to decide
+	 * whether to requeue itself (see nfsd4_cb_notify_release()), and that
+	 * check must not be reordered ahead of the clear. The plain clear_bit()
+	 * path carries no ordering; clear_and_wake_up_bit() already issues this
+	 * barrier internally, so the extra one is harmless there.
+	 */
+	smp_mb__after_atomic();
 
 	if (cb->cb_ops && cb->cb_ops->release)
 		cb->cb_ops->release(cb);
@@ -1790,7 +1880,10 @@ nfsd4_run_cb_work(struct work_struct *work)
 
 	if (!test_and_clear_bit(NFSD4_CALLBACK_REQUEUE, &cb->cb_flags)) {
 		if (cb->cb_ops && cb->cb_ops->prepare)
-			cb->cb_ops->prepare(cb);
+			if (!cb->cb_ops->prepare(cb)) {
+				nfsd41_destroy_cb(cb);
+				return;
+			}
 	}
 
 	cb->cb_msg.rpc_cred = clp->cl_cb_cred;
@@ -1829,12 +1922,31 @@ void nfsd4_init_cb(struct nfsd4_callback *cb, struct nfs4_client *clp,
 bool nfsd4_run_cb(struct nfsd4_callback *cb)
 {
 	struct nfs4_client *clp = cb->cb_clp;
+	struct nfsd_net *nn = net_generic(clp->net, nfsd_net_id);
+	const struct nfsd4_callback_ops *ops = cb->cb_ops;
+	u32 minorversion = clp->cl_minorversion;
 	bool queued;
 
 	nfsd41_cb_inflight_begin(clp);
 	queued = nfsd4_queue_cb(cb);
-	if (!queued)
+	if (queued) {
+		if (ops) {
+			nfsd_stats_cb_op_inc(nn, ops->opcode);
+			/*
+			 * Minorversion > 0 callbacks prepend a CB_SEQUENCE op
+			 * (see encode_cb_sequence4args()); count it like the
+			 * forechannel counts SEQUENCE, so it isn't perpetually
+			 * reported as zero.  CB_NULL probes (ops == NULL) carry
+			 * no CB_SEQUENCE -- and on 4.1+ they are dropped without
+			 * sending any RPC (see nfsd4_run_cb_work()) -- so they
+			 * must not be counted here.
+			 */
+			if (minorversion > 0)
+				nfsd_stats_cb_op_inc(nn, OP_CB_SEQUENCE);
+		}
+	} else {
 		nfsd41_cb_inflight_end(clp);
+	}
 	return queued;
 }
 
@@ -1869,12 +1981,12 @@ int nfsd_net_cb_init(struct nfsd_net *nn)
 {
 	struct nfsd_net_cb *cb;
 
-	cb = kzalloc(sizeof(*cb), GFP_KERNEL);
+	cb = kzalloc_obj(*cb);
 	if (!cb)
 		return -ENOMEM;
 
 	cb->version4.counts = kzalloc_objs(unsigned int,
-			ARRAY_SIZE(nfs4_cb_procedures), GFP_KERNEL);
+			ARRAY_SIZE(nfs4_cb_procedures));
 	if (!cb->version4.counts) {
 		kfree(cb);
 		return -ENOMEM;
