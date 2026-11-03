@@ -6339,6 +6339,12 @@ static int smb2_create_link(struct ksmbd_work *work,
 	}
 
 	ksmbd_debug(SMB, "target name is %s\n", target_name);
+	/* The share root must never be removed. */
+	if (link_name[0] == '\0') {
+		rc = -EINVAL;
+		goto out;
+	}
+
 	rc = ksmbd_vfs_kern_path_locked(work, link_name, LOOKUP_NO_SYMLINKS,
 					&parent_path, &path, 0);
 	if (rc) {
