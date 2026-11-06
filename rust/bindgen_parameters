@@ -24,6 +24,7 @@
 --opaque-type spinlock
 
 # enums that appear in indirect function calls should specify a cfi type
+--newtype-enum dma_data_direction
 --newtype-enum hrtimer_restart
 --newtype-enum irqreturn
 
