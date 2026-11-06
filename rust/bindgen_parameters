@@ -24,6 +24,7 @@
 --opaque-type spinlock
 
 # enums that appear in indirect function calls should specify a cfi type
+--newtype-enum hrtimer_restart
 --newtype-enum irqreturn
 
 # `seccomp`'s comment gets understood as a doctest
